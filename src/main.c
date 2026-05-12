@@ -1,5 +1,6 @@
 #include "cli.h"
 #include "util/log.h"
+#include "util/file.h"
 #include "http/client.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,12 @@ int main(int argc, char *argv[])
 			return 0;
 		}
 	}
-	log_init(NULL, LOG_INFO);
+	char *log_dir = file_expand_path("~/.multi-agent/log");
+	file_ensure_dir(log_dir);
+	char log_path[512];
+	snprintf(log_path, sizeof(log_path), "%s/agent.log", log_dir);
+	free(log_dir);
+	log_init(log_path, LOG_INFO);
 	http_init();
 	struct cli_context ctx;
 	int rc = cli_init(&ctx, config_path);
