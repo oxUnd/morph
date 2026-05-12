@@ -173,12 +173,14 @@ static int output_callback(enum react_step_type type, const char *content,
 	case REACT_STEP_THOUGHT:
 		if (content && *content) {
 			if (!ctx->streaming) {
-				printf("\033[2m");
+				printf("\r\033[K\033[2m");
 				ctx->streaming = 1;
 			}
 			fputs(content, stdout);
 			fflush(stdout);
 		} else if (!ctx->streaming) {
+			printf("\033[2m...\033[0m");
+			fflush(stdout);
 			ctx->streaming = 1;
 		}
 		break;
@@ -217,9 +219,10 @@ static int output_callback(enum react_step_type type, const char *content,
 			printf("\033[0m\n");
 			ctx->streaming = 0;
 		}
-		if (content && *content) {
+		if (content && *content)
 			markdown_render_ansi(content);
-		}
+		else
+			printf("\n");
 		fflush(stdout);
 		break;
 	}
