@@ -210,6 +210,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 				ctx->config.models.text.model, &s);
 	if (rc == 0) {
 		ctx->current_session = s;
+		ctx->session_is_new = (strcmp(name, "new_session") == 0);
 		CMD_OK("created and switched to session: %s", name);
 	} else {
 		CMD_ERROR("failed to create session: %s", name);
@@ -879,9 +880,12 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 			log_err("failed to get default session");
 			return rc;
 		}
+		ctx->session_is_new = 0;
 	} else if (rc < 0) {
 		log_err("failed to create default session");
 		return rc;
+	} else {
+		ctx->session_is_new = 1;
 	}
 	ctx->running = 1;
 	ctx->streaming = 0;
@@ -1111,7 +1115,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	/* Auto-name session from first user input */
 	int msg_count = message_count(&ctx->database, ctx->current_session.id);
-	if (msg_count == 0 && input[0] != '/') {
+	if (ctx->session_is_new && input[0] != '/') {
 		char title[48];
 		size_t i = 0;
 		while (input[i] && i < sizeof(title) - 1) {
@@ -1122,6 +1126,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		session_rename(&ctx->database, ctx->current_session.id, title);
 		strncpy(ctx->current_session.name, title,
 			sizeof(ctx->current_session.name) - 1);
+		ctx->session_is_new = 0;
 	}
 
 	react_run(ctx->react, effective_input, output_callback, ctx);

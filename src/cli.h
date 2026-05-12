@@ -19,6 +19,7 @@ struct cli_context {
 	struct model *vid_llm;
 	int running;
 	int streaming;
+	int session_is_new;
 	char image_path[512];
 };
 
