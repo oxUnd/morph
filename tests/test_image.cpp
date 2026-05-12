@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 
 static int create_test_png(const char *path) {
 	unsigned char buf[] = {
@@ -160,4 +161,113 @@ TEST_F(ImgGenToolTest, InfoInvalidFile) {
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result, nullptr);
 	free(result);
+}
+
+TEST(ImageDetectFmt, Png) {
+	unsigned char png[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00};
+	EXPECT_EQ(image_detect_fmt(png, sizeof(png)), 100);
+}
+
+TEST(ImageDetectFmt, Jpeg) {
+	unsigned char jpg[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00};
+	EXPECT_EQ(image_detect_fmt(jpg, sizeof(jpg)), 101);
+}
+
+TEST(ImageDetectFmt, Unknown) {
+	unsigned char raw[] = {0x00, 0x01, 0x02, 0x03};
+	EXPECT_EQ(image_detect_fmt(raw, sizeof(raw)), 0);
+}
+
+TEST(ImageDetectFmt, ShortBuffer) {
+	unsigned char buf[] = {0x89};
+	EXPECT_EQ(image_detect_fmt(buf, 1), 0);
+}
+
+static int create_test_jpeg(const char *path) {
+	unsigned char buf[] = {
+		0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46,
+		0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+		0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+		0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+		0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0A, 0x0C,
+		0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+		0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D,
+		0x1A, 0x1C, 0x1C, 0x20, 0x24, 0x2E, 0x27, 0x20,
+		0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
+		0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27,
+		0x39, 0x3D, 0x38, 0x32, 0x3C, 0x2E, 0x33, 0x34,
+		0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+		0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4,
+		0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+		0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+		0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xDA,
+		0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00,
+		0x7B, 0x94, 0x11, 0xCD, 0xA5, 0xFF, 0xD9
+	};
+	FILE *f = fopen(path, "wb");
+	if (!f) return -1;
+	size_t written = fwrite(buf, 1, sizeof(buf), f);
+	fclose(f);
+	return (written == sizeof(buf)) ? 0 : -1;
+}
+
+TEST(ImageRender, KittyJpegProtocol) {
+	const char *path = "/tmp/test_kitty_jpeg.jpg";
+	ASSERT_EQ(create_test_jpeg(path), 0);
+	setenv("KITTY_WINDOW_ID", "12345", 1);
+
+	char captured[4096] = {0};
+	fflush(stdout);
+	int pipefd[2];
+	ASSERT_EQ(pipe(pipefd), 0);
+	int old_stdout = dup(STDOUT_FILENO);
+	ASSERT_NE(old_stdout, -1);
+	ASSERT_EQ(dup2(pipefd[1], STDOUT_FILENO), STDOUT_FILENO);
+	close(pipefd[1]);
+
+	int rc = image_render_terminal(path);
+
+	fflush(stdout);
+	dup2(old_stdout, STDOUT_FILENO);
+	close(old_stdout);
+	ssize_t n = read(pipefd[0], captured, sizeof(captured) - 1);
+	close(pipefd[0]);
+	if (n > 0) captured[n] = '\0';
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(strstr(captured, "f=101"), nullptr)
+		<< "JPEG data should use f=101 in kitty protocol, got: " << captured;
+	unsetenv("KITTY_WINDOW_ID");
+	remove(path);
+}
+
+TEST(ImageRender, KittyPngProtocol) {
+	const char *path = "/tmp/test_kitty_png.png";
+	ASSERT_EQ(create_test_png(path), 0);
+	setenv("KITTY_WINDOW_ID", "12345", 1);
+
+	char captured[4096] = {0};
+	fflush(stdout);
+	int pipefd[2];
+	ASSERT_EQ(pipe(pipefd), 0);
+	int old_stdout = dup(STDOUT_FILENO);
+	ASSERT_NE(old_stdout, -1);
+	ASSERT_EQ(dup2(pipefd[1], STDOUT_FILENO), STDOUT_FILENO);
+	close(pipefd[1]);
+
+	int rc = image_render_terminal(path);
+
+	fflush(stdout);
+	dup2(old_stdout, STDOUT_FILENO);
+	close(old_stdout);
+	ssize_t n = read(pipefd[0], captured, sizeof(captured) - 1);
+	close(pipefd[0]);
+	if (n > 0) captured[n] = '\0';
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(strstr(captured, "f=100"), nullptr)
+		<< "PNG data should use f=100 in kitty protocol, got: " << captured;
+	unsetenv("KITTY_WINDOW_ID");
+	remove(path);
 }

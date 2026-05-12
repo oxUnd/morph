@@ -44,7 +44,7 @@ static int detect_sixel(void)
 	return term && strstr(term, "sixel");
 }
 
-static int detect_img_fmt(const unsigned char *data, size_t len)
+int image_detect_fmt(const unsigned char *data, size_t len)
 {
 	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G')
 		return 100;
@@ -66,7 +66,7 @@ static int render_kitty(const char *path)
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
-	int fmt = detect_img_fmt(data, rd);
+	int fmt = image_detect_fmt(data, rd);
 	size_t b64_len = (rd + 2) / 3 * 4;
 	char *b64 = malloc(b64_len + 1);
 	if (!b64) { free(data); return -1; }
