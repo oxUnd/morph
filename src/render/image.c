@@ -46,39 +46,10 @@ static int detect_sixel(void)
 
 static int render_kitty(const char *path)
 {
-	FILE *f = fopen(path, "rb");
-	if (!f)
+	if (!path || !*path)
 		return -1;
-	fseek(f, 0, SEEK_END);
-	long fsize = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); return -1; }
-	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); return -1; }
-	size_t rd = fread(data, 1, (size_t)fsize, f);
-	fclose(f);
-
-	size_t b64_len = (rd + 2) / 3 * 4 + 1;
-	char *b64 = malloc(b64_len);
-	if (!b64) { free(data); return -1; }
-	b64_encode(data, rd, b64, &b64_len);
-	b64[b64_len] = '\0';
-	free(data);
-
-	printf("\033_Ga=T,f=0");
-	for (size_t i = 0; i < b64_len; i += 4096) {
-		size_t chunk = (b64_len - i < 4096) ? (b64_len - i) : 4096;
-		int is_last = (i + chunk >= b64_len);
-		if (i == 0) {
-			if (!is_last)
-				printf(",m=1");
-		} else {
-			printf("\033_Gm=%d", is_last ? 0 : 1);
-		}
-		printf(";%.*s\033\\", (int)chunk, b64 + i);
-	}
+	printf("\033_Ga=T,t=f,f=0;%s\033\\\n", path);
 	fflush(stdout);
-	free(b64);
 	return 0;
 }
 
