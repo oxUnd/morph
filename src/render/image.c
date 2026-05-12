@@ -44,6 +44,15 @@ static int detect_sixel(void)
 	return term && strstr(term, "sixel");
 }
 
+static int detect_img_fmt(const unsigned char *data, size_t len)
+{
+	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G')
+		return 100;
+	if (len >= 2 && data[0] == 0xFF && data[1] == 0xD8)
+		return 101;
+	return 0;
+}
+
 static int render_kitty(const char *path)
 {
 	FILE *f = fopen(path, "rb");
@@ -57,6 +66,7 @@ static int render_kitty(const char *path)
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
+	int fmt = detect_img_fmt(data, rd);
 	size_t b64_len = (rd + 2) / 3 * 4;
 	char *b64 = malloc(b64_len + 1);
 	if (!b64) { free(data); return -1; }
@@ -70,9 +80,9 @@ static int render_kitty(const char *path)
 		int is_last = (i + chunk >= b64_len);
 		if (i == 0) {
 			if (is_last)
-				printf("\033_Ga=T,f=100;");
+				printf("\033_Ga=T,f=%d;", fmt);
 			else
-				printf("\033_Ga=T,f=100,m=1;");
+				printf("\033_Ga=T,f=%d,m=1;", fmt);
 		} else {
 			printf("\033_Gm=%d;", is_last ? 0 : 1);
 		}

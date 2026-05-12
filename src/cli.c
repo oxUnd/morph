@@ -1042,7 +1042,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		       content ? content : "");
 		if (content && strncmp(content, "image generated: ", 17) == 0) {
 			const char *path_start = content + 17;
-			const char *path_end = strchr(path_start, ' ');
+			const char *path_end = strstr(path_start, " (");
 			if (!path_end)
 				path_end = path_start + strlen(path_start);
 			size_t plen = (size_t)(path_end - path_start);
@@ -1056,7 +1056,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		}
 		if (content && strncmp(content, "video generated: ", 17) == 0) {
 			const char *path_start = content + 17;
-			const char *path_end = strchr(path_start, ' ');
+			const char *path_end = strstr(path_start, " (");
 			if (!path_end)
 				path_end = path_start + strlen(path_start);
 			size_t plen = (size_t)(path_end - path_start);
