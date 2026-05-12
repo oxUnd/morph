@@ -210,7 +210,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 				ctx->config.models.text.model, &s);
 	if (rc == 0) {
 		ctx->current_session = s;
-		ctx->session_is_new = (strcmp(name, "new_session") == 0);
+		ctx->session_auto_named = (strcmp(name, "new_session") == 0);
 		CMD_OK("created and switched to session: %s", name);
 	} else {
 		CMD_ERROR("failed to create session: %s", name);
@@ -235,6 +235,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (rc == 0) {
 		ctx->current_session = s;
+		ctx->session_auto_named = 1;
 		CMD_OK("switched to session: %s", s.name);
 	} else {
 		CMD_ERROR("session not found: %s", name);
@@ -880,12 +881,9 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 			log_err("failed to get default session");
 			return rc;
 		}
-		ctx->session_is_new = 0;
-	} else if (rc < 0) {
-		log_err("failed to create default session");
-		return rc;
+		ctx->session_auto_named = 0;
 	} else {
-		ctx->session_is_new = 1;
+		ctx->session_auto_named = 0;
 	}
 	ctx->running = 1;
 	ctx->streaming = 0;
@@ -1115,18 +1113,22 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	/* Auto-name session from first user input */
 	int msg_count = message_count(&ctx->database, ctx->current_session.id);
-	if (ctx->session_is_new && input[0] != '/') {
+	if (!ctx->session_auto_named && input[0] != '/') {
 		char title[48];
-		size_t i = 0;
-		while (input[i] && i < sizeof(title) - 1) {
-			title[i] = input[i];
-			i++;
+		size_t len = strlen(input);
+		size_t max_len = sizeof(title) - 4;
+		if (len > max_len) {
+			memcpy(title, input, max_len);
+			title[max_len] = '\0';
+			strcat(title, "...");
+		} else {
+			memcpy(title, input, len);
+			title[len] = '\0';
 		}
-		title[i] = '\0';
 		session_rename(&ctx->database, ctx->current_session.id, title);
 		strncpy(ctx->current_session.name, title,
 			sizeof(ctx->current_session.name) - 1);
-		ctx->session_is_new = 0;
+		ctx->session_auto_named = 1;
 	}
 
 	react_run(ctx->react, effective_input, output_callback, ctx);
