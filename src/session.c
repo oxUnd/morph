@@ -327,3 +327,70 @@ int message_count(struct db *db, int64_t session_id)
 	sqlite3_finalize(stmt);
 	return count;
 }
+
+int trace_save(struct db *db, int64_t session_id, int round_no,
+	       const char *steps_json, int aborted)
+{
+	if (!db || !db->handle || !steps_json)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "INSERT INTO react_traces(session_id,round_no,steps_json,aborted,created_at)"
+			  " VALUES(?,?,?,?,?)";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	sqlite3_bind_int(stmt, 2, round_no);
+	sqlite3_bind_text(stmt, 3, steps_json, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 4, aborted);
+	sqlite3_bind_int64(stmt, 5, (int64_t)time(NULL));
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return (rc == SQLITE_DONE) ? 0 : -EIO;
+}
+
+char *trace_load_latest(struct db *db, int64_t session_id,
+			int *out_round_no, int *out_aborted)
+{
+	if (!db || !db->handle)
+		return NULL;
+	sqlite3_stmt *stmt;
+	const char *sql = "SELECT round_no,steps_json,aborted FROM react_traces"
+			  " WHERE session_id=? ORDER BY round_no DESC LIMIT 1";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return NULL;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = sqlite3_step(stmt);
+	char *json = NULL;
+	if (rc == SQLITE_ROW) {
+		if (out_round_no)
+			*out_round_no = sqlite3_column_int(stmt, 0);
+		const char *text = (const char *)sqlite3_column_text(stmt, 1);
+		if (text)
+			json = strdup(text);
+		if (out_aborted)
+			*out_aborted = sqlite3_column_int(stmt, 2);
+	}
+	sqlite3_finalize(stmt);
+	return json;
+}
+
+int trace_get_next_round_no(struct db *db, int64_t session_id)
+{
+	if (!db || !db->handle)
+		return 1;
+	sqlite3_stmt *stmt;
+	const char *sql = "SELECT COALESCE(MAX(round_no), 0) + 1 FROM react_traces"
+			  " WHERE session_id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return 1;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = sqlite3_step(stmt);
+	int next = 1;
+	if (rc == SQLITE_ROW)
+		next = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return next;
+}

@@ -1,109 +1,32 @@
 #include "manifest.h"
 #include "util/log.h"
-#include "util/file.h"
+#include "toml.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static char *find_value(const char *data, const char *key)
+static void parse_string_list(toml_array_t *arr, char ***out_list, int *out_count)
 {
-	char search[256];
-	snprintf(search, sizeof(search), "%s=", key);
-	const char *p = strstr(data, search);
-	if (!p) {
-		snprintf(search, sizeof(search), "%s =", key);
-		p = strstr(data, search);
-	}
-	if (!p)
-		return NULL;
-	p += strlen(search);
-	while (*p == ' ' || *p == '\t')
-		p++;
-	if ((*p == '"' || *p == '\'')) {
-		char quote = *p++;
-		const char *end = strchr(p, quote);
-		if (!end)
-			return NULL;
-		size_t len = (size_t)(end - p);
-		char *val = malloc(len + 1);
-		if (!val)
-			return NULL;
-		memcpy(val, p, len);
-		val[len] = '\0';
-		return val;
-	}
-	const char *end = p;
-	while (*end && *end != '\n' && *end != '\r' && *end != ' ' && *end != '\t')
-		end++;
-	size_t len = (size_t)(end - p);
-	char *val = malloc(len + 1);
-	if (!val)
-		return NULL;
-	memcpy(val, p, len);
-	val[len] = '\0';
-	return val;
-}
-
-static char **parse_string_list(const char *data, const char *key, int *count)
-{
-	*count = 0;
-	char search[256];
-	snprintf(search, sizeof(search), "%s=[", key);
-	const char *p = strstr(data, search);
-	if (!p) {
-		snprintf(search, sizeof(search), "%s = [", key);
-		p = strstr(data, search);
-	}
-	if (!p)
-		return NULL;
-	p = strchr(p, '[');
-	if (!p)
-		return NULL;
-	p++;
-	int cap = 8;
-	char **list = malloc(sizeof(char *) * (size_t)cap);
+	*out_list = NULL;
+	*out_count = 0;
+	if (!arr)
+		return;
+	int n = toml_array_nelem(arr);
+	if (n <= 0)
+		return;
+	char **list = calloc((size_t)n, sizeof(char *));
 	if (!list)
-		return NULL;
-	while (*p && *p != ']') {
-		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')
-			p++;
-		if (*p == ']')
-			break;
-		char quote = '\0';
-		if (*p == '"' || *p == '\'')
-			quote = *p++;
-		const char *start = p;
-		if (quote) {
-			while (*p && *p != quote)
-				p++;
-		} else {
-			while (*p && *p != ' ' && *p != ',' && *p != ']' &&
-			       *p != '\n' && *p != '\r')
-				p++;
+		return;
+	int count = 0;
+	for (int i = 0; i < n; i++) {
+		toml_datum_t d = toml_string_at(arr, i);
+		if (d.ok) {
+			list[count++] = d.u.s;
 		}
-		size_t len = (size_t)(p - start);
-		if (len == 0)
-			continue;
-		if (*count >= cap) {
-			cap *= 2;
-			char **new_list = realloc(list, sizeof(char *) * (size_t)cap);
-			if (!new_list) {
-				for (int i = 0; i < *count; i++)
-					free(list[i]);
-				free(list);
-				return NULL;
-			}
-			list = new_list;
-		}
-		list[*count] = malloc(len + 1);
-		memcpy(list[*count], start, len);
-		list[*count][len] = '\0';
-		(*count)++;
-		if (quote && *p)
-			p++;
 	}
-	return list;
+	*out_list = list;
+	*out_count = count;
 }
 
 int manifest_parse(const char *toml_data, struct skill_manifest *out)
@@ -111,62 +34,59 @@ int manifest_parse(const char *toml_data, struct skill_manifest *out)
 	if (!toml_data || !out)
 		return -EINVAL;
 	memset(out, 0, sizeof(*out));
-	char *val;
-	val = find_value(toml_data, "name");
-	if (val) {
-		strncpy(out->name, val, sizeof(out->name) - 1);
-		free(val);
+
+	char *copy = strdup(toml_data);
+	if (!copy)
+		return -ENOMEM;
+
+	char errbuf[256];
+	toml_table_t *tbl = toml_parse(copy, errbuf, sizeof(errbuf));
+	if (!tbl) {
+		log_err("manifest parse error: %s", errbuf);
+		free(copy);
+		return -EIO;
 	}
-	val = find_value(toml_data, "version");
-	if (val) {
-		strncpy(out->version, val, sizeof(out->version) - 1);
-		free(val);
-	}
-	val = find_value(toml_data, "description");
-	if (val) {
-		strncpy(out->description, val, sizeof(out->description) - 1);
-		free(val);
-	}
-	val = find_value(toml_data, "author");
-	if (val) {
-		strncpy(out->author, val, sizeof(out->author) - 1);
-		free(val);
-	}
-	val = find_value(toml_data, "type");
-	if (val) {
-		strncpy(out->type, val, sizeof(out->type) - 1);
-		free(val);
-	}
-	val = find_value(toml_data, "entry");
-	if (val) {
-		strncpy(out->entry, val, sizeof(out->entry) - 1);
-		free(val);
-	}
-	val = find_value(toml_data, "permissions");
-	if (val) {
-		out->permissions = (unsigned int)strtoul(val, NULL, 0);
-		free(val);
-	}
-	val = find_value(toml_data, "max_memory_mb");
-	if (val) {
-		out->max_memory_mb = atoi(val);
-		free(val);
-	}
-	val = find_value(toml_data, "max_cpu_seconds");
-	if (val) {
-		out->max_cpu_seconds = atoi(val);
-		free(val);
-	}
-	val = find_value(toml_data, "args_schema");
-	if (val)
-		out->args_schema = val;
-	val = find_value(toml_data, "output_schema");
-	if (val)
-		out->output_schema = val;
-	out->allowed_paths = parse_string_list(toml_data, "allowed_paths",
-					       &out->allowed_paths_count);
-	out->allowed_env = parse_string_list(toml_data, "allowed_env",
-					     &out->allowed_env_count);
+
+#define MGET_STR(key, buf) do { \
+	toml_datum_t _d = toml_string_in(tbl, key); \
+	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
+} while(0)
+
+#define MGET_INT(key, var) do { \
+	toml_datum_t _d = toml_int_in(tbl, key); \
+	if (_d.ok) var = (int)_d.u.i; \
+} while(0)
+
+#define MGET_UINT(key, var) do { \
+	toml_datum_t _d = toml_int_in(tbl, key); \
+	if (_d.ok) var = (unsigned int)_d.u.i; \
+} while(0)
+
+	MGET_STR("name", out->name);
+	MGET_STR("version", out->version);
+	MGET_STR("description", out->description);
+	MGET_STR("author", out->author);
+	MGET_STR("type", out->type);
+	MGET_STR("entry", out->entry);
+
+	MGET_UINT("permissions", out->permissions);
+	MGET_INT("max_memory_mb", out->max_memory_mb);
+	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
+
+	toml_datum_t as = toml_string_in(tbl, "args_schema");
+	if (as.ok) out->args_schema = as.u.s; else as.u.s = NULL;
+
+	toml_datum_t os = toml_string_in(tbl, "output_schema");
+	if (os.ok) out->output_schema = os.u.s; else os.u.s = NULL;
+
+	toml_array_t *ap = toml_array_in(tbl, "allowed_paths");
+	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
+
+	toml_array_t *ae = toml_array_in(tbl, "allowed_env");
+	parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
+
+	toml_free(tbl);
+	free(copy);
 	log_info("manifest parsed: name=%s type=%s", out->name, out->type);
 	return 0;
 }
@@ -175,11 +95,60 @@ int manifest_parse_file(const char *path, struct skill_manifest *out)
 {
 	if (!path || !out)
 		return -EINVAL;
-	size_t len = 0;
-	char *data = file_read_all(path, &len);
-	if (!data)
+	FILE *f = fopen(path, "r");
+	if (!f)
 		return -ENOENT;
-	int rc = manifest_parse(data, out);
-	free(data);
-	return rc;
+
+	char errbuf[256];
+	toml_table_t *tbl = toml_parse_file(f, errbuf, sizeof(errbuf));
+	fclose(f);
+
+	if (!tbl) {
+		log_err("manifest parse error in %s: %s", path, errbuf);
+		return -EIO;
+	}
+
+	memset(out, 0, sizeof(*out));
+
+#define MFGET_STR(key, buf) do { \
+	toml_datum_t _d = toml_string_in(tbl, key); \
+	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
+} while(0)
+
+#define MFGET_INT(key, var) do { \
+	toml_datum_t _d = toml_int_in(tbl, key); \
+	if (_d.ok) var = (int)_d.u.i; \
+} while(0)
+
+#define MFGET_UINT(key, var) do { \
+	toml_datum_t _d = toml_int_in(tbl, key); \
+	if (_d.ok) var = (unsigned int)_d.u.i; \
+} while(0)
+
+	MFGET_STR("name", out->name);
+	MFGET_STR("version", out->version);
+	MFGET_STR("description", out->description);
+	MFGET_STR("author", out->author);
+	MFGET_STR("type", out->type);
+	MFGET_STR("entry", out->entry);
+
+	MFGET_UINT("permissions", out->permissions);
+	MFGET_INT("max_memory_mb", out->max_memory_mb);
+	MFGET_INT("max_cpu_seconds", out->max_cpu_seconds);
+
+	toml_datum_t as = toml_string_in(tbl, "args_schema");
+	if (as.ok) out->args_schema = as.u.s; else as.u.s = NULL;
+
+	toml_datum_t os = toml_string_in(tbl, "output_schema");
+	if (os.ok) out->output_schema = os.u.s; else os.u.s = NULL;
+
+	toml_array_t *ap = toml_array_in(tbl, "allowed_paths");
+	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
+
+	toml_array_t *ae = toml_array_in(tbl, "allowed_env");
+	parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
+
+	toml_free(tbl);
+	log_info("manifest parsed: name=%s type=%s", out->name, out->type);
+	return 0;
 }

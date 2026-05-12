@@ -52,6 +52,12 @@ struct message *message_list(struct db *db, int64_t session_id, int *count);
 void message_free_list(struct message *head);
 int message_count(struct db *db, int64_t session_id);
 
+int trace_save(struct db *db, int64_t session_id, int round_no,
+	       const char *steps_json, int aborted);
+char *trace_load_latest(struct db *db, int64_t session_id,
+			int *out_round_no, int *out_aborted);
+int trace_get_next_round_no(struct db *db, int64_t session_id);
+
 #ifdef __cplusplus
 }
 #endif

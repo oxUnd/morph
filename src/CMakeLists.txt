@@ -17,6 +17,23 @@ set(MULTI_AGENT_LIBS
 	CURL::libcurl
 )
 
+add_library(multi-agent-toml STATIC
+	${CMAKE_SOURCE_DIR}/vendor/toml.c
+)
+target_include_directories(multi-agent-toml PUBLIC
+	${CMAKE_SOURCE_DIR}/vendor
+)
+target_compile_options(multi-agent-toml PRIVATE
+	-Wno-implicit-function-declaration
+	-Wno-implicit-int
+	-Wno-sign-conversion
+	-Wno-shorten-64-to-32
+	-Wno-empty-body
+)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/toml.c PROPERTIES
+	COMPILE_FLAGS "-include ${CMAKE_CURRENT_SOURCE_DIR}/vendor_toml_compat.h"
+)
+
 add_library(multi-agent-config STATIC
 	config.c
 )
@@ -24,7 +41,7 @@ target_include_directories(multi-agent-config PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent-config PUBLIC multi-agent-util)
+target_link_libraries(multi-agent-config PUBLIC multi-agent-util multi-agent-toml)
 
 add_library(multi-agent-session STATIC
 	session.c

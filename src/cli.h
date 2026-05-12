@@ -16,6 +16,7 @@ struct cli_context {
 	struct tokenizer *tokenizer;
 	struct model *llm;
 	struct model *img_llm;
+	struct model *vid_llm;
 	int running;
 	int streaming;
 	char image_path[512];

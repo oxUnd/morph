@@ -8,4 +8,4 @@ target_include_directories(multi-agent-skill PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 	${CMAKE_SOURCE_DIR}/src/agent
 )
-target_link_libraries(multi-agent-skill PUBLIC multi-agent-util multi-agent-sandbox)
+target_link_libraries(multi-agent-skill PUBLIC multi-agent-util multi-agent-sandbox multi-agent-toml)

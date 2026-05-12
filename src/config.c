@@ -1,10 +1,10 @@
 #include "config.h"
 #include "util/log.h"
-#include "util/file.h"
+#include "toml.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
-#include <ctype.h>
+#include <stdio.h>
 
 void config_set_defaults(struct config *cfg)
 {
@@ -71,150 +71,58 @@ void config_set_defaults(struct config *cfg)
 	cfg->skill.default_max_cpu_seconds = 30;
 }
 
-static char *trim(char *s)
-{
-	while (*s && isspace((unsigned char)*s))
-		s++;
-	char *end = s + strlen(s) - 1;
-	while (end > s && isspace((unsigned char)*end))
-		*end-- = '\0';
-	return s;
-}
+#define CFG_STR(tab, key, buf) do { \
+	toml_datum_t _d = toml_string_in(tab, key); \
+	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
+} while(0)
 
-static int parse_bool(const char *s)
-{
-	return (strcasecmp(s, "true") == 0 || strcasecmp(s, "1") == 0);
-}
+#define CFG_INT(tab, key, var) do { \
+	toml_datum_t _d = toml_int_in(tab, key); \
+	if (_d.ok) var = (int)_d.u.i; \
+} while(0)
 
-static char *unquote(char *s)
+#define CFG_DBL(tab, key, var) do { \
+	toml_datum_t _d = toml_double_in(tab, key); \
+	if (_d.ok) var = _d.u.d; \
+} while(0)
+
+static toml_table_t *table_path(toml_table_t *root, const char *path)
 {
-	size_t len = strlen(s);
-	if (len >= 2 && ((s[0] == '"' && s[len - 1] == '"') ||
-			 (s[0] == '\'' && s[len - 1] == '\''))) {
-		s[len - 1] = '\0';
-		memmove(s, s + 1, len - 1);
+	if (!root || !path || !*path)
+		return root;
+	char buf[256];
+	strncpy(buf, path, sizeof(buf) - 1);
+	toml_table_t *tbl = root;
+	char *part = buf;
+	while (part && *part) {
+		char *dot = strchr(part, '.');
+		if (dot)
+			*dot = '\0';
+		if (*part) {
+			tbl = toml_table_in(tbl, part);
+			if (!tbl)
+				return NULL;
+		}
+		part = dot ? dot + 1 : NULL;
 	}
-	return s;
+	return tbl;
 }
 
-static int find_section(const char *line, char *section, size_t section_len)
+static void load_model_entry(toml_table_t *parent, const char *sub,
+			     struct config_model_entry *e)
 {
-	const char *p = strchr(line, '[');
-	if (!p)
-		return 0;
-	const char *e = strchr(p, ']');
-	if (!e)
-		return 0;
-	size_t len = (size_t)(e - p - 1);
-	if (len >= section_len)
-		len = section_len - 1;
-	memcpy(section, p + 1, len);
-	section[len] = '\0';
-	return 1;
-}
-
-static void apply_kv(struct config *cfg, const char *section,
-		     const char *key, const char *value)
-{
-	if (strcmp(section, "general") == 0) {
-		if (strcmp(key, "default_session") == 0)
-			strncpy(cfg->general.default_session, value,
-				sizeof(cfg->general.default_session) - 1);
-		else if (strcmp(key, "output_dir") == 0)
-			strncpy(cfg->general.output_dir, value,
-				sizeof(cfg->general.output_dir) - 1);
-		else if (strcmp(key, "log_level") == 0)
-			strncpy(cfg->general.log_level, value,
-				sizeof(cfg->general.log_level) - 1);
-		else if (strcmp(key, "log_file") == 0)
-			strncpy(cfg->general.log_file, value,
-				sizeof(cfg->general.log_file) - 1);
-	} else if (strcmp(section, "model.text") == 0) {
-		if (strcmp(key, "provider") == 0)
-			strncpy(cfg->models.text.provider, value,
-				sizeof(cfg->models.text.provider) - 1);
-		else if (strcmp(key, "model") == 0)
-			strncpy(cfg->models.text.model, value,
-				sizeof(cfg->models.text.model) - 1);
-		else if (strcmp(key, "api_base") == 0)
-			strncpy(cfg->models.text.api_base, value,
-				sizeof(cfg->models.text.api_base) - 1);
-		else if (strcmp(key, "api_key_env") == 0)
-			strncpy(cfg->models.text.api_key_env, value,
-				sizeof(cfg->models.text.api_key_env) - 1);
-		else if (strcmp(key, "api_key") == 0)
-			strncpy(cfg->models.text.api_key, value,
-				sizeof(cfg->models.text.api_key) - 1);
-		else if (strcmp(key, "context_limit") == 0)
-			cfg->models.text.context_limit = atoi(value);
-		else if (strcmp(key, "timeout_seconds") == 0)
-			cfg->models.text.timeout_seconds = atoi(value);
-	} else if (strcmp(section, "model.image") == 0) {
-		if (strcmp(key, "provider") == 0)
-			strncpy(cfg->models.image.provider, value,
-				sizeof(cfg->models.image.provider) - 1);
-		else if (strcmp(key, "model") == 0)
-			strncpy(cfg->models.image.model, value,
-				sizeof(cfg->models.image.model) - 1);
-		else if (strcmp(key, "api_base") == 0)
-			strncpy(cfg->models.image.api_base, value,
-				sizeof(cfg->models.image.api_base) - 1);
-		else if (strcmp(key, "api_key_env") == 0)
-			strncpy(cfg->models.image.api_key_env, value,
-				sizeof(cfg->models.image.api_key_env) - 1);
-		else if (strcmp(key, "api_key") == 0)
-			strncpy(cfg->models.image.api_key, value,
-				sizeof(cfg->models.image.api_key) - 1);
-	} else if (strcmp(section, "model.video") == 0) {
-		if (strcmp(key, "provider") == 0)
-			strncpy(cfg->models.video.provider, value,
-				sizeof(cfg->models.video.provider) - 1);
-		else if (strcmp(key, "model") == 0)
-			strncpy(cfg->models.video.model, value,
-				sizeof(cfg->models.video.model) - 1);
-		else if (strcmp(key, "api_base") == 0)
-			strncpy(cfg->models.video.api_base, value,
-				sizeof(cfg->models.video.api_base) - 1);
-		else if (strcmp(key, "api_key_env") == 0)
-			strncpy(cfg->models.video.api_key_env, value,
-				sizeof(cfg->models.video.api_key_env) - 1);
-		else if (strcmp(key, "api_key") == 0)
-			strncpy(cfg->models.video.api_key, value,
-				sizeof(cfg->models.video.api_key) - 1);
-		else if (strcmp(key, "poll_interval_seconds") == 0)
-			cfg->models.video.poll_interval_seconds = atoi(value);
-		else if (strcmp(key, "poll_timeout_seconds") == 0)
-			cfg->models.video.poll_timeout_seconds = atoi(value);
-	} else if (strcmp(section, "react") == 0) {
-		if (strcmp(key, "max_iterations") == 0)
-			cfg->react.max_iterations = atoi(value);
-		else if (strcmp(key, "step_timeout_seconds") == 0)
-			cfg->react.step_timeout_seconds = atoi(value);
-		else if (strcmp(key, "tool_max_retries") == 0)
-			cfg->react.tool_max_retries = atoi(value);
-	} else if (strcmp(section, "context") == 0) {
-		if (strcmp(key, "summarize_threshold_ratio") == 0)
-			cfg->context.summarize_threshold_ratio = atof(value);
-		else if (strcmp(key, "compress_target_ratio") == 0)
-			cfg->context.compress_target_ratio = atof(value);
-		else if (strcmp(key, "keep_recent_rounds") == 0)
-			cfg->context.keep_recent_rounds = atoi(value);
-	} else if (strcmp(section, "render") == 0) {
-		if (strcmp(key, "prefer_image_protocol") == 0)
-			strncpy(cfg->render.prefer_image_protocol, value,
-				sizeof(cfg->render.prefer_image_protocol) - 1);
-		else if (strcmp(key, "mpv_args") == 0)
-			strncpy(cfg->render.mpv_args, value,
-				sizeof(cfg->render.mpv_args) - 1);
-	} else if (strcmp(section, "skill") == 0) {
-		if (strcmp(key, "dir") == 0)
-			strncpy(cfg->skill.dir, value,
-				sizeof(cfg->skill.dir) - 1);
-		else if (strcmp(key, "default_max_memory_mb") == 0)
-			cfg->skill.default_max_memory_mb = atoi(value);
-		else if (strcmp(key, "default_max_cpu_seconds") == 0)
-			cfg->skill.default_max_cpu_seconds = atoi(value);
-	}
+	toml_table_t *t = parent ? toml_table_in(parent, sub) : NULL;
+	if (!t)
+		return;
+	CFG_STR(t, "provider", e->provider);
+	CFG_STR(t, "model", e->model);
+	CFG_STR(t, "api_base", e->api_base);
+	CFG_STR(t, "api_key_env", e->api_key_env);
+	CFG_STR(t, "api_key", e->api_key);
+	CFG_INT(t, "context_limit", e->context_limit);
+	CFG_INT(t, "timeout_seconds", e->timeout_seconds);
+	CFG_INT(t, "poll_interval_seconds", e->poll_interval_seconds);
+	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);
 }
 
 int config_load(struct config *cfg, const char *path)
@@ -223,54 +131,62 @@ int config_load(struct config *cfg, const char *path)
 		return -EINVAL;
 	config_set_defaults(cfg);
 
-	size_t len = 0;
-	char *data = file_read_all(path, &len);
-	if (!data) {
+	FILE *f = fopen(path, "r");
+	if (!f) {
 		log_warn("config file not found: %s, using defaults", path);
 		return 0;
 	}
 
-	char section[128] = "general";
-	char *line = data;
-	while (line && *line) {
-		char *nl = strchr(line, '\n');
-		if (nl)
-			*nl = '\0';
-		char *trimmed = trim(line);
-		if (*trimmed == '\0' || *trimmed == '#') {
-			line = nl ? nl + 1 : NULL;
-			continue;
-		}
-		char sec[128];
-		if (find_section(trimmed, sec, sizeof(sec))) {
-			strncpy(section, sec, sizeof(section) - 1);
-			line = nl ? nl + 1 : NULL;
-			continue;
-		}
-		char *eq = strchr(trimmed, '=');
-		if (eq) {
-			*eq = '\0';
-			char *key = trim(trimmed);
-			char *raw_val = trim(eq + 1);
-			char *comment = NULL;
-			int in_q = 0;
-			for (char *p = raw_val; *p; p++) {
-				if (*p == '"')
-					in_q = !in_q;
-				else if (*p == '#' && !in_q) {
-					comment = p;
-					break;
-				}
-			}
-			if (comment)
-				*comment = '\0';
-			char *val = unquote(trim(raw_val));
-			apply_kv(cfg, section, key, val);
-		}
-		line = nl ? nl + 1 : NULL;
+	char errbuf[256];
+	toml_table_t *tbl = toml_parse_file(f, errbuf, sizeof(errbuf));
+	fclose(f);
+
+	if (!tbl) {
+		log_warn("config parse error: %s, using defaults", errbuf);
+		return 0;
 	}
 
-	free(data);
+	toml_table_t *general = table_path(tbl, "general");
+	if (general) {
+		CFG_STR(general, "default_session", cfg->general.default_session);
+		CFG_STR(general, "output_dir", cfg->general.output_dir);
+		CFG_STR(general, "log_level", cfg->general.log_level);
+		CFG_STR(general, "log_file", cfg->general.log_file);
+	}
+
+	toml_table_t *model_tbl = table_path(tbl, "model");
+	load_model_entry(model_tbl, "text", &cfg->models.text);
+	load_model_entry(model_tbl, "image", &cfg->models.image);
+	load_model_entry(model_tbl, "video", &cfg->models.video);
+
+	toml_table_t *react = table_path(tbl, "react");
+	if (react) {
+		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
+		CFG_INT(react, "step_timeout_seconds", cfg->react.step_timeout_seconds);
+		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
+	}
+
+	toml_table_t *context = table_path(tbl, "context");
+	if (context) {
+		CFG_DBL(context, "summarize_threshold_ratio", cfg->context.summarize_threshold_ratio);
+		CFG_DBL(context, "compress_target_ratio", cfg->context.compress_target_ratio);
+		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
+	}
+
+	toml_table_t *render = table_path(tbl, "render");
+	if (render) {
+		CFG_STR(render, "prefer_image_protocol", cfg->render.prefer_image_protocol);
+		CFG_STR(render, "mpv_args", cfg->render.mpv_args);
+	}
+
+	toml_table_t *skill = table_path(tbl, "skill");
+	if (skill) {
+		CFG_STR(skill, "dir", cfg->skill.dir);
+		CFG_INT(skill, "default_max_memory_mb", cfg->skill.default_max_memory_mb);
+		CFG_INT(skill, "default_max_cpu_seconds", cfg->skill.default_max_cpu_seconds);
+	}
+
+	toml_free(tbl);
 	log_info("config loaded from: %s", path);
 	return 0;
 }

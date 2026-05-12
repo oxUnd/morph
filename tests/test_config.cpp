@@ -111,11 +111,12 @@ TEST_F(ConfigTest, CommentLines) {
 # this is a comment
 [general]
 # another comment
-default_session = "comment_test
+default_session = "comment_test"
 )";
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
 	int rc = config_load(&cfg, config_path);
 	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(cfg.general.default_session, "comment_test");
 }
