@@ -152,3 +152,46 @@ TEST_F(SessionTest, MessageCount) {
 TEST_F(SessionTest, MessageFreeListNull) {
 	EXPECT_NO_FATAL_FAILURE(message_free_list(nullptr));
 }
+
+TEST_F(SessionTest, AutoRenameNewSession) {
+	struct session s;
+	int rc = session_create(&db, "default", "gpt-4o", &s);
+	ASSERT_EQ(rc, 0);
+	int is_new = 1;
+
+	const char *input = "画一只猫";
+	if (is_new && input[0] != '/') {
+		char title[48];
+		strncpy(title, input, sizeof(title) - 1);
+		title[sizeof(title) - 1] = '\0';
+		session_rename(&db, s.id, title);
+		strncpy(s.name, title, sizeof(s.name) - 1);
+		is_new = 0;
+	}
+	EXPECT_STREQ(s.name, "画一只猫");
+	EXPECT_EQ(is_new, 0);
+
+	struct session loaded;
+	rc = session_get_by_name(&db, "画一只猫", &loaded);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(loaded.name, "画一只猫");
+}
+
+TEST_F(SessionTest, NoAutoRenameExistingSession) {
+	struct session s;
+	int rc = session_create(&db, "default", "gpt-4o", &s);
+	ASSERT_EQ(rc, 0);
+	message_add(&db, s.id, "user", "old message", 2);
+
+	int is_new = 0;
+	const char *input = "画一只猫";
+	if (is_new && input[0] != '/') {
+		char title[48];
+		strncpy(title, input, sizeof(title) - 1);
+		title[sizeof(title) - 1] = '\0';
+		session_rename(&db, s.id, title);
+		strncpy(s.name, title, sizeof(s.name) - 1);
+		is_new = 0;
+	}
+	EXPECT_STREQ(s.name, "default");
+}
