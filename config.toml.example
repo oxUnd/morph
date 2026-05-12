@@ -1,0 +1,86 @@
+# multi-agent configuration file
+# Place at ~/.multi-agent/config.toml
+# Environment variables referenced by api_key_env must be set before launch.
+
+[general]
+# Default session name on startup
+default_session = "default"
+# Directory for generated output files
+output_dir = "~/.multi-agent/output"
+# Log level: debug, info, warn, error
+log_level = "info"
+# Log file path
+log_file = "~/.multi-agent/log/agent.log"
+
+# ──────────────────────────────────────────────
+# Text (chat) model
+# ──────────────────────────────────────────────
+[model.text]
+provider    = "openai"
+model       = "gpt-4o"
+api_base    = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+context_limit    = 128000
+timeout_seconds  = 60
+
+# ── Volcengine (火山引擎) example ────────────
+# provider    = "volcengine"
+# model       = "ep-2025xxxxxxxx-xxxxx"   # Ark endpoint ID
+# api_base    = "https://ark.cn-beijing.volces.com/api/v3"
+# api_key_env = "VOLCENGINE_API_KEY"
+# context_limit = 128000
+
+# ── DeepSeek example ─────────────────────────
+# provider    = "deepseek"
+# model       = "deepseek-chat"
+# api_base    = "https://api.deepseek.com/v1"
+# api_key_env = "DEEPSEEK_API_KEY"
+
+# ── Anthropic example ────────────────────────
+# provider    = "anthropic"
+# model       = "claude-sonnet-4-20250514"
+# api_base    = "https://api.anthropic.com"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+# ──────────────────────────────────────────────
+# Image generation model
+# ──────────────────────────────────────────────
+[model.image]
+provider    = "openai"
+model       = "dall-e-3"
+api_base    = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+# ──────────────────────────────────────────────
+# Video generation model
+# ──────────────────────────────────────────────
+[model.video]
+provider            = "volcengine"
+model               = ""
+api_base            = "https://ark.cn-beijing.volces.com/api/v3"
+api_key_env         = "VOLCENGINE_API_KEY"
+poll_interval_seconds = 5
+poll_timeout_seconds  = 600
+
+[react]
+max_iterations      = 10
+step_timeout_seconds = 60
+tool_max_retries    = 3
+
+[context]
+# Compress when token usage exceeds context_limit * threshold
+summarize_threshold_ratio = 0.8
+# After compression, target this fraction of context_limit
+compress_target_ratio     = 0.5
+# Always keep the most recent N conversation rounds
+keep_recent_rounds        = 6
+
+[render]
+# Image display: auto / kitty / sixel / iterm
+prefer_image_protocol = "auto"
+mpv_args = "--really-quiet"
+
+[skill]
+dir = "~/.multi-agent/skills"
+default_max_memory_mb   = 128
+default_max_cpu_seconds = 30

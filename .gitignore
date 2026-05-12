@@ -1,0 +1,55 @@
+# Build
+build/
+cmake-build-*/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+._*
+
+# Compiled
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake.in
+!CMakeLists.txt
+
+# Dependencies (fetched by CMake)
+vendor/md4c/
+
+# Config with secrets
+config.toml
+!config.toml.example
+
+# Runtime data
+.multi-agent/
+
+# Logs
+*.log
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+
+# Debug
+*.dSYM/
+core
+vgcore.*

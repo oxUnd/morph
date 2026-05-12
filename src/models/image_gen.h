@@ -1,0 +1,24 @@
+#ifndef IMAGE_GEN_H
+#define IMAGE_GEN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct model;
+
+struct image_result {
+	char path[512];
+	char url[512];
+	int width;
+	int height;
+};
+
+int image_gen_create(struct model *self, const char *prompt, const char *style,
+		    const char *size, struct image_result *result);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

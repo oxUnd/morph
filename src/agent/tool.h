@@ -1,0 +1,45 @@
+#ifndef TOOL_H
+#define TOOL_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <errno.h>
+
+#define TOOL_NAME_MAX 64
+#define TOOL_DESC_MAX 512
+#define TOOL_ARGS_SPEC_MAX 1024
+#define TOOL_MAX_ENTRIES 64
+
+struct tool_desc {
+	char name[TOOL_NAME_MAX];
+	char desc[TOOL_DESC_MAX];
+	char args_spec[TOOL_ARGS_SPEC_MAX];
+};
+
+typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
+
+struct tool_entry {
+	struct tool_desc desc;
+	tool_exec_fn exec;
+	void *user_data;
+};
+
+struct tool_registry {
+	struct tool_entry entries[TOOL_MAX_ENTRIES];
+	int count;
+};
+
+void tool_registry_init(struct tool_registry *reg);
+int tool_register(struct tool_registry *reg, const char *name, const char *desc,
+		  const char *args_spec, tool_exec_fn exec, void *user_data);
+struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
+int tool_exec(struct tool_registry *reg, const char *name,
+	      const char *args_json, char **result_json);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
