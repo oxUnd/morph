@@ -46,10 +46,41 @@ static int detect_sixel(void)
 
 static int render_kitty(const char *path)
 {
-	if (!path || !*path)
-		return -1;
-	printf("\033_Ga=T,t=f,f=0;%s\033\\\n", path);
+	FILE *f = fopen(path, "rb");
+	if (!f) return -1;
+	fseek(f, 0, SEEK_END);
+	long fsize = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (fsize <= 0) { fclose(f); return -1; }
+	unsigned char *data = malloc((size_t)fsize);
+	if (!data) { fclose(f); return -1; }
+	size_t rd = fread(data, 1, (size_t)fsize, f);
+	fclose(f);
+
+	size_t b64_len = (rd + 2) / 3 * 4;
+	char *b64 = malloc(b64_len + 1);
+	if (!b64) { free(data); return -1; }
+	b64_encode(data, rd, b64, &b64_len);
+	b64[b64_len] = '\0';
+	free(data);
+
+	const size_t chunk_size = 4096;
+	for (size_t i = 0; i < b64_len; i += chunk_size) {
+		size_t chunk = (b64_len - i < chunk_size) ? (b64_len - i) : chunk_size;
+		int is_last = (i + chunk >= b64_len);
+		if (i == 0) {
+			if (is_last)
+				printf("\033_Ga=T,f=100;");
+			else
+				printf("\033_Ga=T,f=100,m=1;");
+		} else {
+			printf("\033_Gm=%d;", is_last ? 0 : 1);
+		}
+		printf("%.*s\033\\", (int)chunk, b64 + i);
+	}
 	fflush(stdout);
+	free(b64);
+	printf("\n");
 	return 0;
 }
 
@@ -100,10 +131,8 @@ int image_render_terminal(const char *path)
 
 	if (detect_kitty()) {
 		log_info("image_render: using kitty protocol");
-		if (render_kitty(path) == 0) {
-			printf("\n");
+		if (render_kitty(path) == 0)
 			return 0;
-		}
 		log_warn("image_render: kitty protocol failed, trying fallback");
 	}
 	if (detect_iterm2()) {
