@@ -46,10 +46,17 @@ timeout_seconds  = 60
 # Image generation model
 # ──────────────────────────────────────────────
 [model.image]
-provider    = "openai"
-model       = "dall-e-3"
-api_base    = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY"
+# ── OpenAI DALL-E ─────────────────────────────
+# provider    = "openai"
+# model       = "dall-e-3"
+# api_base    = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+
+# ── Volcengine seedream (recommended) ─────────
+provider    = "volcengine"
+model       = "doubao-seedream-5-0-260128"
+api_base    = "https://ark.cn-beijing.volces.com/api/v3"
+api_key_env = "VOLCENGINE_API_KEY"
 
 # ──────────────────────────────────────────────
 # Video generation model
