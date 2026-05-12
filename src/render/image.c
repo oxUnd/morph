@@ -27,7 +27,10 @@ static void b64_encode(const unsigned char *in, size_t in_len,
 
 static int detect_kitty(void)
 {
-	return getenv("KITTY_WINDOW_ID") != NULL;
+	if (getenv("KITTY_WINDOW_ID"))
+		return 1;
+	const char *term = getenv("TERM");
+	return term && strstr(term, "kitty");
 }
 
 static int detect_iterm2(void)
@@ -62,11 +65,17 @@ static int render_kitty(const char *path)
 	b64[b64_len] = '\0';
 	free(data);
 
-	printf("\033_Ga=T,f=100;");
+	printf("\033_Ga=T,f=0");
 	for (size_t i = 0; i < b64_len; i += 4096) {
 		size_t chunk = (b64_len - i < 4096) ? (b64_len - i) : 4096;
-		if (i > 0) printf("\033_Gm=1;");
-		printf("%.*s\033\\", (int)chunk, b64 + i);
+		int is_last = (i + chunk >= b64_len);
+		if (i == 0) {
+			if (!is_last)
+				printf(",m=1");
+		} else {
+			printf("\033_Gm=%d", is_last ? 0 : 1);
+		}
+		printf(";%.*s\033\\", (int)chunk, b64 + i);
 	}
 	fflush(stdout);
 	free(b64);
@@ -119,21 +128,26 @@ int image_render_terminal(const char *path)
 	}
 
 	if (detect_kitty()) {
+		log_info("image_render: using kitty protocol");
 		if (render_kitty(path) == 0) {
 			printf("\n");
 			return 0;
 		}
+		log_warn("image_render: kitty protocol failed, trying fallback");
 	}
 	if (detect_iterm2()) {
+		log_info("image_render: using iterm2 protocol");
 		if (render_iterm2(path) == 0) {
 			printf("\n");
 			return 0;
 		}
 	}
 	if (detect_sixel()) {
+		log_info("image_render: using sixel");
 		if (render_sixel(path) == 0)
 			return 0;
 	}
+	log_info("image_render: no terminal protocol detected, printing path");
 	printf("(image: %s)\n", path);
 	fflush(stdout);
 	return 0;
