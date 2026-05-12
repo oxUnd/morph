@@ -17,6 +17,7 @@
 #include <string.h>
 #include <time.h>
 #include <signal.h>
+#include <unistd.h>
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
@@ -130,12 +131,17 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	return 0;
 }
 
-static volatile int sigint_received = 0;
+static volatile sig_atomic_t sigint_received = 0;
 
 static void sigint_handler(int sig)
 {
 	(void)sig;
 	sigint_received = 1;
+	/* Write a newline directly so the next prompt appears on a fresh line.
+	 * Async-signal-safe: do not use stdio here. */
+	if (write(STDOUT_FILENO, "\n", 1) < 0) {
+		/* ignore */
+	}
 }
 
 void cli_run(struct cli_context *ctx)
@@ -144,13 +150,26 @@ void cli_run(struct cli_context *ctx)
 		return;
 	printf("multi-agent v0.1  |  /help 查看命令\n\n");
 	char line[4096];
+
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = sigint_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0; /* no SA_RESTART: interrupt readline/fgets so they return */
+	sigaction(SIGINT, &sa, NULL);
+
 #ifdef HAVE_READLINE
 	using_history();
 	while (ctx->running) {
 		char prompt[512];
 		snprintf(prompt, sizeof(prompt), "[%s] > ", ctx->current_session.name);
+		sigint_received = 0;
 		char *input = readline(prompt);
 		if (!input) {
+			if (sigint_received) {
+				sigint_received = 0;
+				continue;
+			}
 			if (feof(stdin))
 				break;
 			clearerr(stdin);
@@ -166,15 +185,16 @@ void cli_run(struct cli_context *ctx)
 		free(input);
 	}
 #else
-	signal(SIGINT, sigint_handler);
 	while (ctx->running) {
-		if (sigint_received) {
-			sigint_received = 0;
-			printf("\n");
-		}
 		printf("[%s] > ", ctx->current_session.name);
 		fflush(stdout);
+		sigint_received = 0;
 		if (!fgets(line, sizeof(line), stdin)) {
+			if (sigint_received) {
+				sigint_received = 0;
+				clearerr(stdin);
+				continue;
+			}
 			if (feof(stdin))
 				break;
 			clearerr(stdin);
@@ -185,8 +205,8 @@ void cli_run(struct cli_context *ctx)
 			continue;
 		cli_handle_command(ctx, line);
 	}
-	signal(SIGINT, SIG_DFL);
 #endif
+	signal(SIGINT, SIG_DFL);
 }
 
 static int output_callback(enum react_step_type type, const char *content,
