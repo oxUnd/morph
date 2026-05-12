@@ -56,7 +56,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	const char *api_base = self ? self->api_base : "https://api.openai.com/v1";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
 	const char *model_id = (self && self->model_id[0]) ? self->model_id : "dall-e-3";
-	const char *img_size = size ? size : "1024x1024";
+	const char *img_size = size ? size : "2048x2048";
 
 	char url[512];
 	snprintf(url, sizeof(url), "%s/images/generations", api_base);

@@ -18,6 +18,7 @@ struct cli_context {
 	struct model *img_llm;
 	int running;
 	int streaming;
+	char image_path[512];
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path);

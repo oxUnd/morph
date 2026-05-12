@@ -4,9 +4,13 @@
 #include "agent/tokenizer.h"
 #include "agent/tools/text_gen.h"
 #include "agent/tools/img_gen.h"
+#include "agent/tools/img_edit.h"
+#include "agent/tools/img_info.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
+#include "render/image.h"
+#include "stb_image.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +98,12 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	img_gen_init(&ctx->tools, img_llm);
 	log_info("registered img_gen tool");
 
+	img_edit_init(&ctx->tools, llm);
+	log_info("registered img_edit tool");
+
+	img_info_init(&ctx->tools);
+	log_info("registered img_info tool");
+
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
 	if (rc == -EEXIST) {
@@ -109,6 +119,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	}
 	ctx->running = 1;
 	ctx->streaming = 0;
+	ctx->image_path[0] = '\0';
 	log_info("cli initialized");
 	return 0;
 }
@@ -458,7 +469,27 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		return 0;
 	}
 	if (strncmp(input, "/image", 6) == 0) {
-		printf("image injection not yet available (M2)\n");
+		const char *path = input[6] == ' ' ? input + 7 : NULL;
+		if (!path || !*path) {
+			printf("usage: /image <file_path>\n");
+			return -EINVAL;
+		}
+		char *expanded = file_expand_path(path);
+		if (!file_exists(expanded)) {
+			printf("file not found: %s\n", expanded);
+			free(expanded);
+			return -ENOENT;
+		}
+		int w = 0, h = 0, ch = 0;
+		if (!stbi_info(expanded, &w, &h, &ch)) {
+			printf("not a valid image file: %s\n", expanded);
+			free(expanded);
+			return -EIO;
+		}
+		strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
+		image_render_terminal(expanded);
+		printf("image loaded: %s (%dx%d, %d channels)\n", expanded, w, h, ch);
+		free(expanded);
 		return 0;
 	}
 	if (strncmp(input, "/video", 6) == 0) {
@@ -470,9 +501,19 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		return 0;
 	}
 
-	react_run(ctx->react, input, output_callback, ctx);
-	int user_tokens = tokenizer_count(ctx->tokenizer, input);
-	message_add(&ctx->database, ctx->current_session.id, "user", input, user_tokens);
+	char input_buf[8192];
+	const char *effective_input = input;
+	if (ctx->image_path[0]) {
+		int n = snprintf(input_buf, sizeof(input_buf),
+				 "[Image: %s]\n%s", ctx->image_path, input);
+		if (n > 0 && (size_t)n < sizeof(input_buf))
+			effective_input = input_buf;
+		ctx->image_path[0] = '\0';
+	}
+
+	react_run(ctx->react, effective_input, output_callback, ctx);
+	int user_tokens = tokenizer_count(ctx->tokenizer, effective_input);
+	message_add(&ctx->database, ctx->current_session.id, "user", effective_input, user_tokens);
 	session_update_tokens(&ctx->database, ctx->current_session.id, user_tokens);
 	ctx->streaming = 0;
 	return 0;

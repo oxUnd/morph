@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "models/image_gen.h"
 #include "agent/tools/img_gen.h"
+#include "agent/tools/img_edit.h"
+#include "agent/tools/img_info.h"
 #include "agent/tool.h"
 #include "render/image.h"
 #include <string.h>
@@ -58,4 +60,47 @@ TEST_F(ImgGenToolTest, ToolNotFound) {
 	char *result = NULL;
 	int rc = tool_exec(&reg, "nonexistent", "{}", &result);
 	EXPECT_NE(rc, 0);
+}
+
+TEST_F(ImgGenToolTest, EditRegister) {
+	int rc = img_edit_init(&reg, NULL);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_edit");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_edit");
+}
+
+TEST_F(ImgGenToolTest, EditMissingArgs) {
+	img_edit_init(&reg, NULL);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_edit", "{}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, InfoRegister) {
+	int rc = img_info_init(&reg);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_info");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_info");
+}
+
+TEST_F(ImgGenToolTest, InfoMissingPath) {
+	img_info_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_info", "{}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, InfoInvalidFile) {
+	img_info_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_info", "{\"file_path\":\"/nonexistent.png\"}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
 }
