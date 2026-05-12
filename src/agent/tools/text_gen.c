@@ -1,6 +1,7 @@
 #include "text_gen.h"
 #include "util/log.h"
 #include "models/llm.h"
+#include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,18 @@ static char *extract_prompt(const char *args_json)
 {
 	if (!args_json || !*args_json)
 		return NULL;
+
+	cJSON *root = cJSON_Parse(args_json);
+	if (root) {
+		cJSON *prompt = cJSON_GetObjectItem(root, "prompt");
+		if (cJSON_IsString(prompt) && prompt->valuestring) {
+			char *result = strdup(prompt->valuestring);
+			cJSON_Delete(root);
+			return result;
+		}
+		cJSON_Delete(root);
+	}
+
 	const char *p = strstr(args_json, "\"prompt\"");
 	if (p) {
 		const char *colon = strchr(p + 7, ':');
@@ -48,48 +61,26 @@ static char *extract_prompt(const char *args_json)
 		char *result = malloc(len + 1);
 		if (!result)
 			return NULL;
-		memcpy(result, colon, len);
-		result[len] = '\0';
-		char *dst = result;
-		char *src = result;
-		while (*src) {
-			if (*src == '\\' && *(src + 1)) {
-				char next = *(src + 1);
-				switch (next) {
-				case 'n': *dst++ = '\n'; break;
-				case 't': *dst++ = '\t'; break;
-				case '"': *dst++ = '"'; break;
-				case '\'': *dst++ = '\''; break;
-				case '\\': *dst++ = '\\'; break;
-				default: *dst++ = next; break;
+		size_t di = 0;
+		for (size_t si = 0; si < len; si++) {
+			if (colon[si] == '\\' && si + 1 < len) {
+				switch (colon[si + 1]) {
+				case 'n': result[di++] = '\n'; si++; break;
+				case 't': result[di++] = '\t'; si++; break;
+				case '"': result[di++] = '"'; si++; break;
+				case '\'': result[di++] = '\''; si++; break;
+				case '\\': result[di++] = '\\'; si++; break;
+				default: result[di++] = colon[si]; break;
 				}
-				src += 2;
 			} else {
-				*dst++ = *src++;
+				result[di++] = colon[si];
 			}
 		}
-		*dst = '\0';
+		result[di] = '\0';
 		return result;
 	}
 
-	size_t len = strlen(args_json);
-	const char *start = args_json;
-	while (*start == ' ' || *start == '\t')
-		start++;
-	char *result = malloc(len + 1);
-	if (!result)
-		return NULL;
-	size_t i = 0;
-	while (*start && *start != ')') {
-		if (*start == '\\' && *(start + 1)) {
-			result[i++] = *(start + 1);
-			start += 2;
-		} else {
-			result[i++] = *start++;
-		}
-	}
-	result[i] = '\0';
-	return result;
+	return strdup(args_json);
 }
 
 struct text_gen_stream_ctx {

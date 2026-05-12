@@ -3,6 +3,7 @@
 #include "util/file.h"
 #include "http/client.h"
 #include "http/sse.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,54 +131,45 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	if (!data || !*data)
 		return 0;
 
-	const char *json_str = data;
-	if (strcmp(json_str, "[DONE]") == 0)
+	if (strcmp(data, "[DONE]") == 0)
 		return 0;
 
-	const char *content_key = strstr(json_str, "\"content\"");
-	if (!content_key)
-		return 0;
-	const char *val_start = strchr(content_key + 9, '"');
-	if (!val_start)
-		return 0;
-	val_start++;
-	const char *val_end = strchr(val_start, '"');
-	if (!val_end)
+	cJSON *root = cJSON_Parse(data);
+	if (!root)
 		return 0;
 
-	size_t clen = (size_t)(val_end - val_start);
-	char *content = malloc(clen + 1);
-	if (!content)
-		return -ENOMEM;
-	memcpy(content, val_start, clen);
-	content[clen] = '\0';
-
-	char *unescaped = malloc(clen * 2 + 1);
-	if (unescaped) {
-		size_t j = 0;
-		for (size_t i = 0; i < clen; i++) {
-			if (content[i] == '\\' && i + 1 < clen) {
-				switch (content[i + 1]) {
-				case 'n': unescaped[j++] = '\n'; i++; break;
-				case 'r': unescaped[j++] = '\r'; i++; break;
-				case 't': unescaped[j++] = '\t'; i++; break;
-				case '"': unescaped[j++] = '"'; i++; break;
-				case '\\': unescaped[j++] = '\\'; i++; break;
-				default: unescaped[j++] = content[i]; break;
-				}
-			} else {
-				unescaped[j++] = content[i];
-			}
-		}
-		unescaped[j] = '\0';
+	cJSON *choices = cJSON_GetObjectItem(root, "choices");
+	if (!cJSON_IsArray(choices)) {
+		cJSON_Delete(root);
+		return 0;
 	}
 
-	llm_stream_append(ctx, unescaped ? unescaped : content);
-	if (ctx->user_cb)
-		ctx->user_cb(unescaped ? unescaped : content, ctx->user_data);
+	cJSON *first = cJSON_GetArrayItem(choices, 0);
+	if (!first) {
+		cJSON_Delete(root);
+		return 0;
+	}
 
-	free(unescaped);
-	free(content);
+	cJSON *delta = cJSON_GetObjectItem(first, "delta");
+	if (!delta) {
+		cJSON *text_item = cJSON_GetObjectItem(first, "text");
+		if (cJSON_IsString(text_item) && text_item->valuestring) {
+			llm_stream_append(ctx, text_item->valuestring);
+			if (ctx->user_cb)
+				ctx->user_cb(text_item->valuestring, ctx->user_data);
+		}
+		cJSON_Delete(root);
+		return 0;
+	}
+
+	cJSON *content = cJSON_GetObjectItem(delta, "content");
+	if (cJSON_IsString(content) && content->valuestring) {
+		llm_stream_append(ctx, content->valuestring);
+		if (ctx->user_cb)
+			ctx->user_cb(content->valuestring, ctx->user_data);
+	}
+
+	cJSON_Delete(root);
 	return 0;
 }
 
@@ -249,6 +241,11 @@ static int llm_chat(struct model *self, const char *system_prompt,
 		log_err("llm_chat: SSE request failed: %d", status);
 		llm_stream_free(&ctx);
 		return status;
+	}
+	if (status >= 400) {
+		log_err("llm_chat: API returned HTTP %d", status);
+		llm_stream_free(&ctx);
+		return -EIO;
 	}
 
 	llm_stream_free(&ctx);

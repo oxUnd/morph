@@ -47,6 +47,8 @@ struct react_context {
 	void *llm_model;
 	char *final_answer;
 	enum react_state state;
+	char tool_fail_name[64];
+	int tool_fail_count;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,

@@ -57,6 +57,10 @@ void react_context_destroy(struct react_context *ctx)
 	if (!ctx)
 		return;
 	react_reset(ctx);
+	if (ctx->messages) {
+		msg_list_destroy(ctx->messages);
+		ctx->messages = NULL;
+	}
 	free(ctx->final_answer);
 	free(ctx);
 }
@@ -76,10 +80,8 @@ void react_reset(struct react_context *ctx)
 	ctx->state = REACT_STATE_INIT;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
-	if (ctx->messages) {
-		msg_list_destroy(ctx->messages);
-		ctx->messages = NULL;
-	}
+	ctx->tool_fail_name[0] = '\0';
+	ctx->tool_fail_count = 0;
 }
 
 struct react_step *react_step_create(enum react_step_type type,
@@ -196,6 +198,7 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		"\nConstraints:\n"
 		"- One Thought + one Action per turn.\n"
 		"- If no tool is needed, go straight to Final.\n"
+		"- If a tool fails twice with the same args, change strategy or finalize.\n"
 		"- Maximum %d iterations.\n\n",
 		ctx->max_iterations);
 
@@ -234,7 +237,6 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 	return 0;
 }
 
-/* Store the accumulated LLM response for parsing */
 struct react_stream_data {
 	char *response;
 	size_t len;
@@ -290,7 +292,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		struct model *llm = (struct model *)ctx->llm_model;
 
-		/* If no LLM model available, output prompt as thought + final (fallback) */
 		if (!llm || !llm->api_key[0]) {
 			struct react_step *thought = react_step_create(
 				REACT_STEP_THOUGHT, "Processing user input...", NULL, NULL);
@@ -312,7 +313,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 		}
 
-		/* Call LLM */
 		const char *msgs[] = { prompt };
 		struct react_stream_data sd = {
 			.response = malloc(8192),
@@ -331,8 +331,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (cb)
 			cb(REACT_STEP_THOUGHT, "", user_data);
 
-int status = llm->chat(llm, NULL, msgs, 1,
-					  react_stream_cb, &sd);
+		int status = llm->chat(llm, NULL, msgs, 1, react_stream_cb, &sd);
 
 		if (status < 0) {
 			log_err("react_run: LLM call failed: %d", status);
@@ -347,7 +346,6 @@ int status = llm->chat(llm, NULL, msgs, 1,
 
 		free(prompt);
 
-		/* Parse LLM response for Thought/Action/Final patterns */
 		char *final_text = extract_after_prefix(sd.response, "Final:");
 		char *action_text = extract_after_prefix(sd.response, "Action:");
 		char *thought_text = extract_after_prefix(sd.response, "Thought:");
@@ -362,7 +360,6 @@ int status = llm->chat(llm, NULL, msgs, 1,
 		}
 
 		if (final_text) {
-			/* LLM produced Final: answer */
 			struct react_step *final_step = react_step_create(
 				REACT_STEP_FINAL, final_text, NULL, NULL);
 			add_step(ctx, final_step);
@@ -373,7 +370,6 @@ int status = llm->chat(llm, NULL, msgs, 1,
 			free(sd.response);
 			break;
 		} else if (action_text && has_tools) {
-			/* LLM wants to call a tool */
 			ctx->state = REACT_STATE_ACTING;
 			char tool_name[64] = {0};
 			char tool_args[1024] = {0};
@@ -385,7 +381,6 @@ int status = llm->chat(llm, NULL, msgs, 1,
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
 
-				/* Execute the tool */
 				ctx->state = REACT_STATE_OBSERVING;
 				char *result = NULL;
 				int tool_rc = tool_exec(ctx->tools, tool_name,
@@ -395,12 +390,37 @@ int status = llm->chat(llm, NULL, msgs, 1,
 					snprintf(obs_buf, sizeof(obs_buf),
 						"tool error: %s (code %d)",
 						result ? result : "unknown error", tool_rc);
+					if (strcmp(tool_name, ctx->tool_fail_name) == 0)
+						ctx->tool_fail_count++;
+					else {
+						strncpy(ctx->tool_fail_name, tool_name,
+							sizeof(ctx->tool_fail_name) - 1);
+						ctx->tool_fail_count = 1;
+					}
 				} else {
 					snprintf(obs_buf, sizeof(obs_buf), "%s",
 						result ? result : "(no output)");
+					ctx->tool_fail_name[0] = '\0';
+					ctx->tool_fail_count = 0;
 				}
 				free(result);
 				free(action_text);
+
+				if (ctx->tool_fail_count >= 2) {
+					struct react_step *final_step = react_step_create(
+						REACT_STEP_FINAL,
+						"Tool repeatedly failed. Please try a different approach.",
+						NULL, NULL);
+					add_step(ctx, final_step);
+					free(ctx->final_answer);
+					ctx->final_answer = strdup(
+						"Tool repeatedly failed. Please try a different approach.");
+					ctx->state = REACT_STATE_DONE;
+					free(sd.response);
+					ctx->tool_fail_name[0] = '\0';
+					ctx->tool_fail_count = 0;
+					break;
+				}
 
 				struct react_step *obs = react_step_create(
 					REACT_STEP_OBSERVATION, obs_buf, NULL, NULL);
@@ -410,9 +430,7 @@ int status = llm->chat(llm, NULL, msgs, 1,
 			} else {
 				free(action_text);
 			}
-			/* Continue loop - next iteration will include observation */
 		} else {
-			/* No Final or Action found - treat entire response as final */
 			struct react_step *final_step = react_step_create(
 				REACT_STEP_FINAL, sd.response, NULL, NULL);
 			add_step(ctx, final_step);
@@ -425,6 +443,13 @@ int status = llm->chat(llm, NULL, msgs, 1,
 		}
 
 		free(sd.response);
+	}
+
+	if (ctx->state == REACT_STATE_DONE && ctx->final_answer) {
+		struct message_list *asst = msg_list_create("assistant",
+			ctx->final_answer,
+			tokenizer_count(ctx->tokenizer, ctx->final_answer));
+		msg_list_append(&ctx->messages, asst);
 	}
 
 	if (ctx->state == REACT_STATE_ABORT)
