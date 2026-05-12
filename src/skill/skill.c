@@ -1,11 +1,15 @@
 #include "skill.h"
 #include "util/log.h"
 #include "manifest.h"
+#include "ipc/jsonrpc.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 int skill_load(struct skill *sk, const char *dir_path)
 {
@@ -72,6 +76,42 @@ int skill_unload(struct skill *sk)
 	return 0;
 }
 
+static int read_fd(int fd, char **out, size_t *out_len)
+{
+	size_t cap = 8192;
+	size_t len = 0;
+	char *buf = malloc(cap);
+	if (!buf)
+		return -ENOMEM;
+
+	while (1) {
+		if (len + 4096 > cap) {
+			cap *= 2;
+			char *new_buf = realloc(buf, cap);
+			if (!new_buf) {
+				free(buf);
+				return -ENOMEM;
+			}
+			buf = new_buf;
+		}
+		ssize_t n = read(fd, buf + len, cap - len - 1);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			free(buf);
+			return -EIO;
+		}
+		if (n == 0)
+			break;
+		len += (size_t)n;
+	}
+	buf[len] = '\0';
+	*out = buf;
+	if (out_len)
+		*out_len = len;
+	return 0;
+}
+
 int skill_run(struct skill *sk, const char *args_json, char **result_json)
 {
 	if (!sk || !args_json || !result_json)
@@ -83,37 +123,140 @@ int skill_run(struct skill *sk, const char *args_json, char **result_json)
 
 	if (strcmp(sk->manifest.type, "exec") == 0 && sk->exec_path[0]) {
 		log_info("executing skill: %s", sk->exec_path);
-		FILE *pipe = popen(sk->exec_path, "r");
-		if (!pipe) {
-			log_err("failed to execute skill: %s", sk->exec_path);
+
+		int stdin_pipe[2];
+		int stdout_pipe[2];
+
+		if (pipe(stdin_pipe) < 0) {
+			log_err("skill_run: pipe failed");
 			return -EIO;
 		}
-		char buf[8192];
-		size_t total = 0;
-		char *result = malloc(8192);
-		if (!result) {
-			pclose(pipe);
+		if (pipe(stdout_pipe) < 0) {
+			close(stdin_pipe[0]);
+			close(stdin_pipe[1]);
+			log_err("skill_run: pipe failed");
+			return -EIO;
+		}
+
+		pid_t pid = fork();
+		if (pid < 0) {
+			close(stdin_pipe[0]);
+			close(stdin_pipe[1]);
+			close(stdout_pipe[0]);
+			close(stdout_pipe[1]);
+			log_err("skill_run: fork failed");
+			return -EIO;
+		}
+
+		if (pid == 0) {
+			close(stdin_pipe[1]);
+			close(stdout_pipe[0]);
+			dup2(stdin_pipe[0], STDIN_FILENO);
+			dup2(stdout_pipe[1], STDOUT_FILENO);
+			close(stdin_pipe[0]);
+			close(stdout_pipe[1]);
+
+			struct sandbox_config sb_cfg;
+			memset(&sb_cfg, 0, sizeof(sb_cfg));
+			sb_cfg.permissions = sk->manifest.permissions;
+			sb_cfg.max_memory_mb = sk->manifest.max_memory_mb;
+			sb_cfg.max_cpu_seconds = sk->manifest.max_cpu_seconds;
+			sb_cfg.allowed_paths = sk->manifest.allowed_paths;
+			sb_cfg.allowed_paths_count = sk->manifest.allowed_paths_count;
+			sandbox_enter(&sb_cfg);
+
+			execlp(sk->exec_path, sk->exec_path, (char *)NULL);
+			_exit(127);
+		}
+
+		close(stdin_pipe[0]);
+		close(stdout_pipe[1]);
+
+		struct jsonrpc_request req;
+		memset(&req, 0, sizeof(req));
+		req.id = 1;
+		req.method = "run";
+		req.params_json = args_json;
+
+		char *request_str = jsonrpc_build_request(&req);
+		if (!request_str) {
+			close(stdin_pipe[1]);
+			close(stdout_pipe[0]);
+			waitpid(pid, NULL, 0);
+			*result_json = strdup("{\"error\":\"failed to build JSON-RPC request\"}");
 			return -ENOMEM;
 		}
-		size_t cap = 8192;
-		size_t n;
-		while ((n = fread(buf, 1, sizeof(buf), pipe)) > 0) {
-			if (total + n >= cap) {
-				cap = (total + n) * 2;
-				char *new_result = realloc(result, cap);
-				if (!new_result) {
-					free(result);
-					pclose(pipe);
-					return -ENOMEM;
-				}
-				result = new_result;
+
+		size_t req_len = strlen(request_str);
+		ssize_t written = 0;
+		while ((size_t)written < req_len) {
+			ssize_t n = write(stdin_pipe[1],
+					  request_str + written,
+					  req_len - (size_t)written);
+			if (n < 0) {
+				if (errno == EINTR)
+					continue;
+				free(request_str);
+				close(stdin_pipe[1]);
+				close(stdout_pipe[0]);
+				waitpid(pid, NULL, 0);
+				*result_json = strdup("{\"error\":\"failed to write to skill\"}");
+				return -EIO;
 			}
-			memcpy(result + total, buf, n);
-			total += n;
+			written += n;
 		}
-		result[total] = '\0';
-		pclose(pipe);
-		*result_json = result;
+		/* JSON-RPC is line-based: terminate with newline */
+		write(stdin_pipe[1], "\n", 1);
+		close(stdin_pipe[1]);
+		free(request_str);
+
+		char *raw_response = NULL;
+		int rc = read_fd(stdout_pipe[0], &raw_response, NULL);
+		close(stdout_pipe[0]);
+
+		int status;
+		waitpid(pid, &status, 0);
+
+		if (rc < 0 || !raw_response) {
+			free(raw_response);
+			*result_json = strdup("{\"error\":\"failed to read skill output\"}");
+			return -EIO;
+		}
+
+		/* If the child was killed (sandbox), report that */
+		if (WIFSIGNALED(status)) {
+			log_warn("skill %s killed by signal %d",
+				 sk->manifest.name, WTERMSIG(status));
+			free(raw_response);
+			*result_json = strdup("{\"error\":\"skill process was terminated\"}");
+			return -EIO;
+		}
+
+		/* Parse JSON-RPC response and extract result field */
+		struct jsonrpc_response jr;
+		int parse_rc = jsonrpc_parse_response(raw_response, &jr);
+		free(raw_response);
+
+		if (parse_rc < 0) {
+			*result_json = strdup("{\"error\":\"invalid JSON-RPC response\"}");
+			return -EIO;
+		}
+
+		if (jr.has_error) {
+			char err_buf[1024];
+			snprintf(err_buf, sizeof(err_buf),
+				 "{\"error\":\"skill error: %s (code %d)\"}",
+				 jr.error_message ? jr.error_message : "unknown",
+				 jr.error_code);
+			*result_json = strdup(err_buf);
+			jsonrpc_response_free(&jr);
+			return -EIO;
+		}
+
+		*result_json = jr.result_json ? jr.result_json : strdup("{}");
+		/* ownership transferred, do not free result_json */
+		jr.result_json = NULL;
+		jsonrpc_response_free(&jr);
 		return 0;
 	}
 

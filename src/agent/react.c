@@ -1,5 +1,6 @@
 #include "react.h"
 #include "tokenizer.h"
+#include "compress.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include <errno.h>
@@ -300,6 +301,18 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		ctx->state = REACT_STATE_THINKING;
+
+		/* Auto-compress if context exceeds threshold */
+		if (context_needs_compress(ctx->messages, ctx->tokenizer,
+					   &ctx->compress)) {
+			struct compress_result cr = {0};
+			compress_sliding_window(&ctx->messages,
+						ctx->compress.max_history_rounds,
+						&cr);
+			log_info("auto-compress: removed %d messages (%d -> %d tokens)",
+				 cr.messages_removed, cr.original_tokens,
+				 cr.compressed_tokens);
+		}
 
 		char *prompt = NULL;
 		int rc = build_prompt(ctx, user_input, &prompt);

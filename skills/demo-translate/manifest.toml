@@ -1,0 +1,11 @@
+name = "translate"
+version = "1.0.0"
+description = "Translate text between languages"
+author = "multi-agent"
+type = "exec"
+entry = "translate.sh"
+permissions = 0
+max_memory_mb = 64
+max_cpu_seconds = 10
+args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"target_lang\":{\"type\":\"string\"}}}"
+output_schema = "string"

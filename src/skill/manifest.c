@@ -11,6 +11,10 @@ static char *find_value(const char *data, const char *key)
 	char search[256];
 	snprintf(search, sizeof(search), "%s=", key);
 	const char *p = strstr(data, search);
+	if (!p) {
+		snprintf(search, sizeof(search), "%s =", key);
+		p = strstr(data, search);
+	}
 	if (!p)
 		return NULL;
 	p += strlen(search);

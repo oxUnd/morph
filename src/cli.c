@@ -3,6 +3,8 @@
 #include "util/file.h"
 #include "agent/tokenizer.h"
 #include "agent/tools/text_gen.h"
+#include "skill/skill.h"
+#include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_edit.h"
 #include "agent/tools/img_info.h"
@@ -26,6 +28,15 @@
 
 static const char *default_db_path = "~/.multi-agent/data.db";
 static const char *default_config_path = "~/.multi-agent/config.toml";
+
+/* Wrapper to adapt skill_run to tool_exec_fn signature */
+static int skill_run_wrapper(const char *args_json, char **result_json, void *user_data)
+{
+	struct skill *sk = user_data;
+	if (!sk)
+		return -EINVAL;
+	return skill_run(sk, args_json, result_json);
+}
 
 int cli_init(struct cli_context *ctx, const char *config_path)
 {
@@ -90,6 +101,9 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	text_gen_init(&ctx->tools, llm);
 	log_info("registered text_gen tool");
 
+	text_qa_init(&ctx->tools, llm);
+	log_info("registered text_qa tool");
+
 	const char *img_api_key = NULL;
 	if (ctx->config.models.image.api_key[0])
 		img_api_key = ctx->config.models.image.api_key;
@@ -110,6 +124,44 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 
 	img_info_init(&ctx->tools);
 	log_info("registered img_info tool");
+
+	/* Auto-discover skills from skills/ directory */
+	char skills_dir[512] = {0};
+	char *skills_home = file_expand_path("~/.multi-agent/skills");
+	if (skills_home) {
+		strncpy(skills_dir, skills_home, sizeof(skills_dir) - 1);
+		free(skills_home);
+	} else {
+		strncpy(skills_dir, "skills", sizeof(skills_dir) - 1);
+	}
+	if (!file_exists(skills_dir))
+		file_ensure_dir(skills_dir);
+	char **skill_dirs = NULL;
+	int skill_count = 0;
+	if (file_list_dirs(skills_dir, &skill_dirs, &skill_count) == 0) {
+		for (int i = 0; i < skill_count; i++) {
+			char sd_path[1024];
+			snprintf(sd_path, sizeof(sd_path), "%s/%s", skills_dir, skill_dirs[i]);
+			struct skill sk;
+			int rc2 = skill_load(&sk, sd_path);
+			if (rc2 == 0 && sk.enabled) {
+				/* Register skill as a tool via wrapper */
+				struct skill *sk_ptr = malloc(sizeof(*sk_ptr));
+				if (sk_ptr) {
+					memcpy(sk_ptr, &sk, sizeof(sk));
+					tool_register(&ctx->tools, sk.manifest.name,
+						      sk.manifest.description,
+						      sk.manifest.args_schema ?
+						      sk.manifest.args_schema : "",
+						      skill_run_wrapper, sk_ptr);
+					log_info("registered skill: %s", sk.manifest.name);
+				}
+			} else {
+				skill_unload(&sk);
+			}
+		}
+		file_free_list(skill_dirs, skill_count);
+	}
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
@@ -614,6 +666,12 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	int user_tokens = tokenizer_count(ctx->tokenizer, effective_input);
 	message_add(&ctx->database, ctx->current_session.id, "user", effective_input, user_tokens);
 	session_update_tokens(&ctx->database, ctx->current_session.id, user_tokens);
+	if (ctx->react && ctx->react->final_answer) {
+		int asst_tokens = tokenizer_count(ctx->tokenizer, ctx->react->final_answer);
+		message_add(&ctx->database, ctx->current_session.id, "assistant",
+			    ctx->react->final_answer, asst_tokens);
+		session_update_tokens(&ctx->database, ctx->current_session.id, asst_tokens);
+	}
 	ctx->streaming = 0;
 	return 0;
 }

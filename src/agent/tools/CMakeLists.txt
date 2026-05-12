@@ -1,5 +1,6 @@
 add_library(multi-agent-tools STATIC
 	text_gen.c
+	text_qa.c
 	img_gen.c
 	img_edit.c
 	img_info.c
