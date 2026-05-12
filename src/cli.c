@@ -1081,6 +1081,8 @@ static int output_callback(enum react_step_type type, const char *content,
 			markdown_render_ansi(content);
 		else
 			printf("\n");
+		
+		printf("\n");
 		fflush(stdout);
 		break;
 	}
