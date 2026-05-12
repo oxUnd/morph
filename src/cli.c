@@ -80,13 +80,16 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
-	if (rc == -EIO || (rc < 0 && rc != -EINVAL)) {
+	if (rc == -EEXIST) {
 		rc = session_get_by_name(&ctx->database, ctx->current_session.name,
 					&ctx->current_session);
 		if (rc < 0) {
-			log_err("failed to create default session");
+			log_err("failed to get default session");
 			return rc;
 		}
+	} else if (rc < 0) {
+		log_err("failed to create default session");
+		return rc;
 	}
 	ctx->running = 1;
 	ctx->streaming = 0;
@@ -328,18 +331,54 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 	if (strcmp(input, "/context") == 0) {
 		int msg_count = message_count(&ctx->database, ctx->current_session.id);
-		int tokens = 0;
-		if (ctx->tokenizer)
-			tokens = ctx->tokenizer->context_limit;
-		printf("session: %s  model: %s  messages: %d  limit: %d tokens\n",
-		       ctx->current_session.name, ctx->current_session.model,
-		       msg_count, tokens);
+		int total_tokens = 0;
+		int limit = ctx->tokenizer ? ctx->tokenizer->context_limit : 0;
+		struct message *msgs = message_list(&ctx->database,
+						    ctx->current_session.id, &msg_count);
+		struct message *cur = msgs;
+		while (cur) {
+			total_tokens += cur->token_count;
+			cur = cur->next;
+		}
+		message_free_list(msgs);
+		double pct = limit > 0 ? (double)total_tokens / limit * 100.0 : 0.0;
+		printf("context: %d / %d tokens (%.1f%%) | messages: %d%s\n",
+		       total_tokens, limit, pct, msg_count,
+		       limit > 0 && pct >= 80.0 ? " | WARNING: near limit" : "");
 		return 0;
 	}
 	if (strcmp(input, "/compress") == 0) {
-		int msg_count = message_count(&ctx->database, ctx->current_session.id);
-		printf("compressing context (%d messages)...\n", msg_count);
-		printf("context compression complete\n");
+		int count = 0;
+		struct message *msgs = message_list(&ctx->database,
+						    ctx->current_session.id, &count);
+		if (!msgs || count == 0) {
+			printf("no messages to compress\n");
+			message_free_list(msgs);
+			return 0;
+		}
+		int keep = ctx->config.context.keep_recent_rounds * 2;
+		if (count <= keep) {
+			printf("only %d messages, no compression needed (keep %d)\n",
+			       count, keep);
+			message_free_list(msgs);
+			return 0;
+		}
+		int remove_count = count - keep;
+		struct message *cur = msgs;
+		int removed = 0;
+		while (cur && removed < remove_count) {
+			int rc = message_delete(&ctx->database, cur->id);
+			if (rc == 0)
+				removed++;
+			struct message *next = cur->next;
+			free(cur->content);
+			free(cur);
+			cur = next;
+		}
+		if (cur)
+			message_free_list(cur);
+		printf("compressed: removed %d old messages, kept %d recent\n",
+		       removed, keep);
 		return 0;
 	}
 	if (strncmp(input, "/save", 5) == 0) {
@@ -416,7 +455,9 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 
 	react_run(ctx->react, input, output_callback, ctx);
-	message_add(&ctx->database, ctx->current_session.id, "user", input, 0);
+	int user_tokens = tokenizer_count(ctx->tokenizer, input);
+	message_add(&ctx->database, ctx->current_session.id, "user", input, user_tokens);
+	session_update_tokens(&ctx->database, ctx->current_session.id, user_tokens);
 	ctx->streaming = 0;
 	return 0;
 }

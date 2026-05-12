@@ -43,9 +43,11 @@ int session_list(struct db *db, struct session **out, int *count);
 int session_rename(struct db *db, int64_t id, const char *new_name);
 int session_delete(struct db *db, int64_t id);
 int session_update_model(struct db *db, int64_t id, const char *model);
+int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens);
 
 int message_add(struct db *db, int64_t session_id, const char *role,
 		const char *content, int token_count);
+int message_delete(struct db *db, int64_t message_id);
 struct message *message_list(struct db *db, int64_t session_id, int *count);
 void message_free_list(struct message *head);
 int message_count(struct db *db, int64_t session_id);

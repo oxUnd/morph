@@ -24,6 +24,10 @@ int session_create(struct db *db, const char *name, const char *model,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE) {
+		if (rc == SQLITE_CONSTRAINT) {
+			log_dbg("session already exists: %s", name);
+			return -EEXIST;
+		}
 		log_err("session create failed: %s", sqlite3_errmsg(db->handle));
 		return -EIO;
 	}
@@ -201,6 +205,25 @@ int session_update_model(struct db *db, int64_t id, const char *model)
 	return 0;
 }
 
+int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens)
+{
+	if (!db || !db->handle)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "UPDATE sessions SET token_used = token_used + ?, updated_at = ? WHERE id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_int64(stmt, 1, added_tokens);
+	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
+	sqlite3_bind_int64(stmt, 3, id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		return -EIO;
+	return 0;
+}
+
 int message_add(struct db *db, int64_t session_id, const char *role,
 		const char *content, int token_count)
 {
@@ -222,6 +245,21 @@ int message_add(struct db *db, int64_t session_id, const char *role,
 	if (rc != SQLITE_DONE)
 		return -EIO;
 	return 0;
+}
+
+int message_delete(struct db *db, int64_t message_id)
+{
+	if (!db || !db->handle)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "DELETE FROM messages WHERE id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_int64(stmt, 1, message_id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return (rc == SQLITE_DONE) ? 0 : -EIO;
 }
 
 struct message *message_list(struct db *db, int64_t session_id, int *count)
