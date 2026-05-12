@@ -14,6 +14,7 @@ set(TEST_SOURCES
 	test_react.cpp
 	test_sse.cpp
 	test_http.cpp
+	test_image.cpp
 )
 
 add_executable(multi-agent-tests ${TEST_SOURCES})

@@ -15,6 +15,7 @@ struct cli_context {
 	struct react_context *react;
 	struct tokenizer *tokenizer;
 	struct model *llm;
+	struct model *img_llm;
 	int running;
 	int streaming;
 };

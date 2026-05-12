@@ -1,5 +1,6 @@
 add_library(multi-agent-tools STATIC
 	text_gen.c
+	img_gen.c
 )
 
 target_include_directories(multi-agent-tools PUBLIC

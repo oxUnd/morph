@@ -3,6 +3,7 @@
 #include "util/file.h"
 #include "agent/tokenizer.h"
 #include "agent/tools/text_gen.h"
+#include "agent/tools/img_gen.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
@@ -77,6 +78,21 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 
 	text_gen_init(&ctx->tools, llm);
 	log_info("registered text_gen tool");
+
+	const char *img_api_key = NULL;
+	if (ctx->config.models.image.api_key[0])
+		img_api_key = ctx->config.models.image.api_key;
+	else
+		img_api_key = getenv(ctx->config.models.image.api_key_env);
+	struct model *img_llm = model_llm_create(
+		ctx->config.models.image.provider,
+		ctx->config.models.image.model,
+		ctx->config.models.image.api_base[0] ?
+			ctx->config.models.image.api_base : NULL,
+		img_api_key ? img_api_key : "");
+	ctx->img_llm = img_llm;
+	img_gen_init(&ctx->tools, img_llm);
+	log_info("registered img_gen tool");
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
@@ -478,7 +494,7 @@ void cli_print_help(void)
 	printf("  /compress        - Manual compress\n");
 	printf("  /save [fmt]      - Export session (md/json/txt)\n");
 	printf("  /export <fmt>    - Alias for /save\n");
-	printf("  /image <path>    - Inject image (M2)\n");
+	printf("  /image <path>    - Inject image into current message (M2)\n");
 	printf("  /video <path>    - Inject video (M3)\n");
 	printf("  /config          - View config\n");
 	printf("  /skill list       - List tools/skills\n");
@@ -495,6 +511,8 @@ void cli_shutdown(struct cli_context *ctx)
 		tokenizer_destroy(ctx->tokenizer);
 	if (ctx->llm)
 		model_destroy(ctx->llm);
+	if (ctx->img_llm)
+		model_destroy(ctx->img_llm);
 	db_close(&ctx->database);
 	log_info("cli shutdown complete");
 }
