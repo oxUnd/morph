@@ -134,8 +134,13 @@ static int parse_action(const char *text, char *tool_name, size_t tn_size,
 	if (*text != '(')
 		return -1;
 	text++;
-	char *end = strchr(text, ')');
-	if (!end)
+	size_t len = strlen(text);
+	if (len == 0)
+		return -1;
+	const char *end = text + len - 1;
+	while (end > text && isspace((unsigned char)*end))
+		end--;
+	if (*end != ')')
 		return -1;
 	size_t arg_len = (size_t)(end - text);
 	if (arg_len >= ta_size)
