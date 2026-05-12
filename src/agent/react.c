@@ -199,8 +199,27 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		"- One Thought + one Action per turn.\n"
 		"- If no tool is needed, go straight to Final.\n"
 		"- If a tool fails twice with the same args, change strategy or finalize.\n"
-		"- Maximum %d iterations.\n\n",
+		"- Maximum %d iterations.\n\n"
+		"\nConversation history:\n",
 		ctx->max_iterations);
+
+	/* Include past conversation history (all messages except the current input) */
+	struct message_list *hist = ctx->messages;
+	int hist_count = msg_list_count(ctx->messages);
+	int cur_idx = 0;
+	while (hist && cur_idx < hist_count - 1) {
+		const char *role_label = (strcmp(hist->role, "assistant") == 0) ? "Assistant" : "User";
+		len += snprintf(buf + len, cap - len, "%s: %s\n", role_label,
+				hist->content ? hist->content : "");
+		if (len + 1024 > cap) {
+			cap *= 2;
+			char *new_buf = realloc(buf, cap);
+			if (!new_buf) { free(buf); return -ENOMEM; }
+			buf = new_buf;
+		}
+		hist = hist->next;
+		cur_idx++;
+	}
 
 	struct react_step *step = ctx->steps;
 	while (step) {
