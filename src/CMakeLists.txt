@@ -61,7 +61,21 @@ target_include_directories(multi-agent PRIVATE
 )
 target_link_libraries(multi-agent ${MULTI_AGENT_LIBS} multi-agent-cli)
 
-find_package(Readline)
-if(Readline_FOUND)
-	target_link_libraries(multi-agent Readline::Readline)
+find_path(READLINE_INCLUDE_DIR readline/readline.h
+	/opt/homebrew/opt/readline/include
+	/usr/local/opt/readline/include
+	/usr/include
+)
+find_library(READLINE_LIBRARY readline
+	/opt/homebrew/opt/readline/lib
+	/usr/local/opt/readline/lib
+	/usr/lib
+)
+if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
+	target_include_directories(multi-agent PRIVATE ${READLINE_INCLUDE_DIR})
+	target_link_libraries(multi-agent ${READLINE_LIBRARY})
+	add_compile_definitions(HAVE_READLINE=1)
+	message(STATUS "readline found: ${READLINE_LIBRARY}")
+else()
+	message(STATUS "readline not found, using fgets")
 endif()

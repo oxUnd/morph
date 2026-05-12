@@ -17,6 +17,11 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef HAVE_READLINE
+#include <readline/readline.h>
+#include <readline/history.h>
+#endif
+
 static const char *default_db_path = "~/.multi-agent/data.db";
 static const char *default_config_path = "~/.multi-agent/config.toml";
 
@@ -130,6 +135,23 @@ void cli_run(struct cli_context *ctx)
 		return;
 	printf("multi-agent v0.1  |  /help 查看命令\n\n");
 	char line[4096];
+#ifdef HAVE_READLINE
+	using_history();
+	while (ctx->running) {
+		char prompt[512];
+		snprintf(prompt, sizeof(prompt), "[%s] > ", ctx->current_session.name);
+		char *input = readline(prompt);
+		if (!input)
+			break;
+		if (input[0] != '\0') {
+			add_history(input);
+			strncpy(line, input, sizeof(line) - 1);
+			line[sizeof(line) - 1] = '\0';
+			cli_handle_command(ctx, line);
+		}
+		free(input);
+	}
+#else
 	while (ctx->running) {
 		printf("[%s] > ", ctx->current_session.name);
 		fflush(stdout);
@@ -140,6 +162,7 @@ void cli_run(struct cli_context *ctx)
 			continue;
 		cli_handle_command(ctx, line);
 	}
+#endif
 }
 
 static int output_callback(enum react_step_type type, const char *content,
