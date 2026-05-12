@@ -1050,6 +1050,8 @@ static int output_callback(enum react_step_type type, const char *content,
 			if (img_path) {
 				memcpy(img_path, path_start, plen);
 				img_path[plen] = '\0';
+				log_info("rendering image: path='%s' exists=%d",
+					 img_path, file_exists(img_path));
 				image_render_terminal(img_path);
 				free(img_path);
 			}
