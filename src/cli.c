@@ -255,12 +255,13 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	printf("  %-5s %-30s %-35s %s\n", "---", "---", "---", "---");
 	for (int i = 0; i < count; i++) {
 		int is_current = (list[i].id == ctx->current_session.id);
+		const char *model = is_current ? ctx->config.models.text.model : list[i].model;
 		printf("  %s%-5lld%s %-30s %-35s %lld\n",
 		       is_current ? ANSI_GREEN : "",
 		       (long long)list[i].id,
 		       is_current ? ANSI_RESET : "",
 		       list[i].name,
-		       list[i].model,
+		       model,
 		       (long long)list[i].token_used);
 	}
 	free(list);
@@ -882,6 +883,10 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 			return rc;
 		}
 		ctx->session_auto_named = 0;
+		session_update_model(&ctx->database, ctx->current_session.id,
+				    ctx->config.models.text.model);
+		strncpy(ctx->current_session.model, ctx->config.models.text.model,
+			sizeof(ctx->current_session.model) - 1);
 	} else {
 		ctx->session_auto_named = 0;
 	}
