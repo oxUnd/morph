@@ -49,7 +49,6 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	*result_json = strdup(error);
 	log_info("img_gen: %s", error);
 
-	image_render_terminal(img_res.path);
 	return 0;
 }
 

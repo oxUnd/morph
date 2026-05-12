@@ -173,6 +173,20 @@ static int output_callback(enum react_step_type type, const char *content,
 			ctx->streaming = 0;
 		}
 		printf("\033[2m[Observation]\033[0m %s\n", content ? content : "");
+		if (content && strncmp(content, "image generated: ", 17) == 0) {
+			const char *path_start = content + 17;
+			const char *path_end = strchr(path_start, ' ');
+			if (!path_end)
+				path_end = path_start + strlen(path_start);
+			size_t plen = (size_t)(path_end - path_start);
+			char *img_path = malloc(plen + 1);
+			if (img_path) {
+				memcpy(img_path, path_start, plen);
+				img_path[plen] = '\0';
+				image_render_terminal(img_path);
+				free(img_path);
+			}
+		}
 		fflush(stdout);
 		break;
 	case REACT_STEP_FINAL:
