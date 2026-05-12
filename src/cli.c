@@ -283,10 +283,10 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		struct session *list;
 		int count = 0;
 		session_list(&ctx->database, &list, &count);
-		printf("  %-5s %-20s %-15s %s\n", "ID", "Name", "Model", "Tokens");
-		printf("  %-5s %-20s %-15s %s\n", "---", "---", "---", "---");
+		printf("  %-5s %-30s %-35s %s\n", "ID", "Name", "Model", "Tokens");
+		printf("  %-5s %-30s %-35s %s\n", "---", "---", "---", "---");
 		for (int i = 0; i < count; i++)
-			printf("  %-5lld %-20s %-15s %lld\n",
+			printf("  %-5lld %-30s %-35s %lld\n",
 			       (long long)list[i].id, list[i].name,
 			       list[i].model, (long long)list[i].token_used);
 		free(list);
@@ -549,6 +549,21 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		if (n > 0 && (size_t)n < sizeof(input_buf))
 			effective_input = input_buf;
 		ctx->image_path[0] = '\0';
+	}
+
+	/* Auto-name session from first user input */
+	int msg_count = message_count(&ctx->database, ctx->current_session.id);
+	if (msg_count == 0 && input[0] != '/') {
+		char title[48];
+		size_t i = 0;
+		while (input[i] && i < sizeof(title) - 1) {
+			title[i] = input[i];
+			i++;
+		}
+		title[i] = '\0';
+		session_rename(&ctx->database, ctx->current_session.id, title);
+		strncpy(ctx->current_session.name, title,
+			sizeof(ctx->current_session.name) - 1);
 	}
 
 	react_run(ctx->react, effective_input, output_callback, ctx);
