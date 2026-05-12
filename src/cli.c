@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <signal.h>
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
@@ -129,6 +130,14 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	return 0;
 }
 
+static volatile int sigint_received = 0;
+
+static void sigint_handler(int sig)
+{
+	(void)sig;
+	sigint_received = 1;
+}
+
 void cli_run(struct cli_context *ctx)
 {
 	if (!ctx)
@@ -141,8 +150,13 @@ void cli_run(struct cli_context *ctx)
 		char prompt[512];
 		snprintf(prompt, sizeof(prompt), "[%s] > ", ctx->current_session.name);
 		char *input = readline(prompt);
-		if (!input)
-			break;
+		if (!input) {
+			if (feof(stdin))
+				break;
+			clearerr(stdin);
+			printf("\n");
+			continue;
+		}
 		if (input[0] != '\0') {
 			add_history(input);
 			strncpy(line, input, sizeof(line) - 1);
@@ -152,16 +166,26 @@ void cli_run(struct cli_context *ctx)
 		free(input);
 	}
 #else
+	signal(SIGINT, sigint_handler);
 	while (ctx->running) {
+		if (sigint_received) {
+			sigint_received = 0;
+			printf("\n");
+		}
 		printf("[%s] > ", ctx->current_session.name);
 		fflush(stdout);
-		if (!fgets(line, sizeof(line), stdin))
-			break;
+		if (!fgets(line, sizeof(line), stdin)) {
+			if (feof(stdin))
+				break;
+			clearerr(stdin);
+			continue;
+		}
 		line[strcspn(line, "\n")] = '\0';
 		if (line[0] == '\0')
 			continue;
 		cli_handle_command(ctx, line);
 	}
+	signal(SIGINT, SIG_DFL);
 #endif
 }
 
