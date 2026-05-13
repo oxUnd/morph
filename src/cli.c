@@ -64,6 +64,29 @@ static size_t utf8_truncate(const char *s, size_t max_bytes)
 /* Remove invalid UTF-8 byte sequences in-place.
  * Valid sequences are kept; invalid bytes are simply removed.
  * This ensures the string is always safe for libedit / readline rendering. */
+/* Load stored messages from DB into react context.
+ * Clears any existing in-memory messages first. */
+static void session_load_history(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->react)
+		return;
+	msg_list_destroy(ctx->react->messages);
+	ctx->react->messages = NULL;
+	int count = 0;
+	struct message *list = message_list(&ctx->database, ctx->current_session.id, &count);
+	struct message *cur = list;
+	while (cur) {
+		struct message_list *m = msg_list_create(cur->role, cur->content,
+							  cur->token_count);
+		if (m) {
+			m->compressed = cur->compressed;
+			msg_list_append(&ctx->react->messages, m);
+		}
+		cur = cur->next;
+	}
+	message_free_list(list);
+}
+
 static void utf8_sanitize_inplace(char *s)
 {
 	if (!s) return;
@@ -267,6 +290,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
+		session_load_history(ctx);
 		ctx->session_auto_named = (strcmp(name, "new_session") == 0);
 		CMD_OK("created and switched to session: %s", name);
 	} else {
@@ -293,6 +317,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
+		session_load_history(ctx);
 		ctx->session_auto_named = 1;
 		CMD_OK("switched to session: %s", ctx->current_session.name);
 	} else {
@@ -1016,6 +1041,7 @@ struct model *llm = model_llm_create(
 		strncpy(ctx->current_session.model, ctx->config.models.text.model,
 			sizeof(ctx->current_session.model) - 1);
 		utf8_sanitize_inplace(ctx->current_session.name);
+		session_load_history(ctx);
 	} else {
 		ctx->session_auto_named = 0;
 	}
