@@ -560,8 +560,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 				REACT_STEP_FINAL, final_text, NULL, NULL);
 			add_step(ctx, final_step);
 			free(ctx->final_answer);
-			ctx->final_answer = final_text;
+			ctx->final_answer = strdup(final_text);
 			ctx->state = REACT_STATE_DONE;
+			if (cb)
+				cb(REACT_STEP_FINAL, final_text, user_data);
+			free(final_text);
 			free(action_text);
 			free(sd.response);
 			break;
@@ -662,6 +665,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 					free(ctx->final_answer);
 					ctx->final_answer = strdup(fail_msg);
 					ctx->state = REACT_STATE_DONE;
+					if (cb)
+						cb(REACT_STEP_FINAL, fail_msg, user_data);
 					free(sd.response);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
@@ -693,6 +698,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 			free(ctx->final_answer);
 			ctx->final_answer = strdup(sd.response);
 			ctx->state = REACT_STATE_DONE;
+			if (cb)
+				cb(REACT_STEP_FINAL, sd.response, user_data);
 			free(action_text);
 			free(sd.response);
 			break;
