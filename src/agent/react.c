@@ -212,53 +212,6 @@ static char *extract_after_prefix(const char *response, const char *prefix)
 	return strdup(p);
 }
 
-static char *build_steps_text(struct react_context *ctx)
-{
-	size_t cap = 4096;
-	size_t len = 0;
-	char *buf = malloc(cap);
-	if (!buf)
-		return NULL;
-	buf[0] = '\0';
-
-	struct react_step *step = ctx->steps;
-	while (step) {
-		switch (step->type) {
-		case REACT_STEP_THOUGHT:
-			len += snprintf(buf + len, cap - len, "Thought: %s\n",
-					step->content ? step->content : "");
-			break;
-		case REACT_STEP_ACTION:
-			len += snprintf(buf + len, cap - len, "Action: %s(%s)\n",
-					step->tool_name ? step->tool_name : "",
-					step->tool_args ? step->tool_args : "");
-			break;
-		case REACT_STEP_OBSERVATION:
-			len += snprintf(buf + len, cap - len, "Observation: %s\n",
-					step->content ? step->content : "");
-			break;
-		case REACT_STEP_FINAL:
-			len += snprintf(buf + len, cap - len, "Final: %s\n",
-					step->content ? step->content : "");
-			break;
-		}
-		if (len + 1024 > cap) {
-			size_t new_cap = cap * 2;
-			while (new_cap < len + 1024)
-				new_cap *= 2;
-			char *new_buf = realloc(buf, new_cap);
-			if (!new_buf) { free(buf); return NULL; }
-			cap = new_cap;
-			buf = new_buf;
-		}
-		step = step->next;
-	}
-
-	if (len > 0 && buf[len - 1] == '\n')
-		buf[len - 1] = '\0';
-	return buf;
-}
-
 static int build_prompt(struct react_context *ctx, const char *user_input,
 			char **out_prompt)
 {
@@ -719,14 +672,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 	}
 
 	if (ctx->state == REACT_STATE_DONE && ctx->steps) {
-		char *steps_text = build_steps_text(ctx);
-		if (steps_text) {
-			struct message_list *asst = msg_list_create("assistant",
-				steps_text,
-				tokenizer_count(ctx->tokenizer, steps_text));
-			msg_list_append(&ctx->messages, asst);
-			free(steps_text);
-		}
+		const char *answer = ctx->final_answer ? ctx->final_answer : "(no answer)";
+		struct message_list *asst = msg_list_create("assistant",
+			answer,
+			tokenizer_count(ctx->tokenizer, answer));
+		msg_list_append(&ctx->messages, asst);
 	}
 
 	if (ctx->state == REACT_STATE_ABORT)
