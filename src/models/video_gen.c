@@ -2,6 +2,8 @@
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/base64.h"
+#include "util/image_util.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -59,15 +61,27 @@ int video_gen_create(struct model *self, const char *prompt,
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 	cJSON *item = cJSON_CreateObject();
 	cJSON_AddStringToObject(item, "type", "text");
-
-	char full_prompt[8192];
-	if (image_path && image_path[0])
-		snprintf(full_prompt, sizeof(full_prompt), "%s\nreference image: %s",
-			 prompt, image_path);
-	else
-		snprintf(full_prompt, sizeof(full_prompt), "%s", prompt);
-	cJSON_AddStringToObject(item, "text", full_prompt);
+	cJSON_AddStringToObject(item, "text", prompt);
 	cJSON_AddItemToArray(content_arr, item);
+
+	if (image_path && image_path[0]) {
+		char *b64 = image_encode_base64(image_path, 1024);
+		if (b64) {
+			size_t uri_len = 22 + strlen(b64) + 1;
+			char *data_uri = malloc(uri_len);
+			if (data_uri) {
+				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
+				cJSON *img_item = cJSON_CreateObject();
+				cJSON_AddStringToObject(img_item, "type", "image_url");
+				cJSON *url_obj = cJSON_CreateObject();
+				cJSON_AddStringToObject(url_obj, "url", data_uri);
+				cJSON_AddItemToObject(img_item, "image_url", url_obj);
+				cJSON_AddItemToArray(content_arr, img_item);
+				free(data_uri);
+			}
+			free(b64);
+		}
+	}
 
 	if (duration > 0)
 		cJSON_AddNumberToObject(body_json, "duration", duration);
@@ -75,6 +89,9 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	char *body_str = cJSON_PrintUnformatted(body_json);
 	cJSON_Delete(body_json);
+
+	log_info("video_gen: request body (%zu bytes)", strlen(body_str));
+	log_dbg("video_gen: request body:\n%s", body_str);
 
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header),
@@ -96,6 +113,8 @@ int video_gen_create(struct model *self, const char *prompt,
 	char video_url[2048] = {0};
 
 	if (resp.status_code == 200 && resp.body) {
+		log_dbg("video_gen: submit response (%d):\n%s",
+			resp.status_code, resp.body);
 		cJSON *root = cJSON_Parse(resp.body);
 		if (root) {
 			cJSON *id_item = cJSON_GetObjectItem(root, "id");
@@ -122,8 +141,10 @@ int video_gen_create(struct model *self, const char *prompt,
 		log_err("video_gen: no task id in submit response");
 		return -EIO;
 	}
-	log_info("video_gen: task submitted: %s (status=%s)",
-		 task_id, task_status);
+	if (task_status[0])
+		log_info("video_gen: task submitted: %s (status=%s)", task_id, task_status);
+	else
+		log_info("video_gen: task submitted: %s", task_id);
 
 	if (video_url[0]) {
 		goto download;
@@ -181,7 +202,14 @@ int video_gen_create(struct model *self, const char *prompt,
 			}
 
 			if (strcmp(st, "failed") == 0) {
-				log_err("video_gen: task failed: %s", task_id);
+				cJSON *err_obj = cJSON_GetObjectItem(first, "error");
+				const char *err_code = cJSON_IsObject(err_obj)
+						       ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "code")) : "";
+				const char *err_msg = cJSON_IsObject(err_obj)
+						      ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "message")) : "";
+				log_err("video_gen: task %s failed: %s %s",
+					task_id, err_code, err_msg);
+				log_dbg("video_gen: poll response body:\n%s", qresp.body);
 				cJSON_Delete(qroot);
 				http_response_free(&qresp);
 				return -EIO;

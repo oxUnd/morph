@@ -1,30 +1,12 @@
 #include "image.h"
 #include "util/log.h"
+#include "util/base64.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-
-static const char *b64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static void b64_encode(const unsigned char *in, size_t in_len,
-		       char *out, size_t *out_len)
-{
-	*out_len = 0;
-	for (size_t i = 0; i < in_len; i += 3) {
-		unsigned int val = (unsigned int)in[i] << 16;
-		if (i + 1 < in_len)
-			val |= (unsigned int)in[i + 1] << 8;
-		if (i + 2 < in_len)
-			val |= (unsigned int)in[i + 2];
-		out[(*out_len)++] = b64_alphabet[(val >> 18) & 0x3F];
-		out[(*out_len)++] = b64_alphabet[(val >> 12) & 0x3F];
-		out[(*out_len)++] = (i + 1 < in_len) ? b64_alphabet[(val >> 6) & 0x3F] : '=';
-		out[(*out_len)++] = (i + 2 < in_len) ? b64_alphabet[val & 0x3F] : '=';
-	}
-}
 
 static int detect_kitty(void)
 {
@@ -91,12 +73,10 @@ static int render_kitty(const char *path)
 	int fmt = image_detect_fmt(data, rd);
 	int cols = terminal_cols();
 
-	size_t b64_len = (rd + 2) / 3 * 4;
-	char *b64 = malloc(b64_len + 1);
-	if (!b64) { free(data); return -1; }
-	b64_encode(data, rd, b64, &b64_len);
-	b64[b64_len] = '\0';
+	char *b64 = base64_encode(data, rd);
 	free(data);
+	if (!b64) return -1;
+	size_t b64_len = strlen(b64);
 
 	log_info("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d chunks=%zu",
 		 path, fmt, rd, b64_len, cols,
@@ -148,12 +128,10 @@ static int render_iterm2(const char *path)
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
-	size_t b64_len = (rd + 2) / 3 * 4 + 1;
-	char *b64 = malloc(b64_len);
-	if (!b64) { free(data); return -1; }
-	b64_encode(data, rd, b64, &b64_len);
-	b64[b64_len] = '\0';
+	char *b64 = base64_encode(data, rd);
 	free(data);
+	if (!b64) return -1;
+	size_t b64_len = strlen(b64);
 
 	fflush(stdout);
 	char hdr[128];

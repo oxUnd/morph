@@ -12,6 +12,9 @@
 #include "agent/tools/img_resize.h"
 #include "agent/tools/img_convert.h"
 #include "agent/tools/vid_gen.h"
+#include "agent/tools/file_read.h"
+#include "agent/tools/file_list.h"
+#include "agent/tools/file_info.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
@@ -1013,6 +1016,15 @@ struct model *llm = model_llm_create(
 
 	img_info_init(&ctx->tools);
 	log_info("registered img_info tool");
+
+	file_read_init(&ctx->tools);
+	log_info("registered file_read tool");
+
+	file_list_init(&ctx->tools);
+	log_info("registered file_list tool");
+
+	file_info_init(&ctx->tools);
+	log_info("registered file_info tool");
 
 	img_resize_init(&ctx->tools);
 	log_info("registered img_resize tool");

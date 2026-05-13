@@ -24,8 +24,10 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 		if (cJSON_IsString(p)) prompt = p->valuestring;
 		cJSON *img = cJSON_GetObjectItem(root, "image_path");
 		if (cJSON_IsString(img)) image_path = img->valuestring;
+		cJSON *ri = cJSON_GetObjectItem(root, "reference_image");
+		if (cJSON_IsString(ri) && !image_path) image_path = ri->valuestring;
 		cJSON *d = cJSON_GetObjectItem(root, "duration");
-		if (cJSON_IsNumber(d)) duration = d->valuedouble;
+		if (cJSON_IsNumber(d)) duration = (int)d->valuedouble;
 	}
 	if (!prompt) {
 		cJSON_Delete(root);
@@ -57,7 +59,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm)
 		return -EINVAL;
 	g_vid_llm = video_llm;
 	return tool_register(reg, "vid_gen",
-		"Generate a video from text prompt",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"image_path\":{\"type\":\"string\"},\"duration\":{\"type\":\"integer\"}}}",
+		"Generate a video from a text prompt, with an optional reference_image (file path) for img2vid. Provide prompt, optional image_path/reference_image, optional duration (seconds).",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"image_path\":{\"type\":\"string\"},\"reference_image\":{\"type\":\"string\"},\"duration\":{\"type\":\"integer\"}}}",
 		vid_gen_exec, NULL);
 }

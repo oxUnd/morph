@@ -15,7 +15,8 @@ struct image_result {
 };
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
-		    const char *size, struct image_result *result);
+		    const char *size, const char *image_path,
+		    struct image_result *result);
 
 #ifdef __cplusplus
 }

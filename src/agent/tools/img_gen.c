@@ -19,6 +19,7 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	const char *prompt = NULL;
 	const char *style = NULL;
 	const char *size = NULL;
+	const char *ref_img = NULL;
 	if (root) {
 		cJSON *p = cJSON_GetObjectItem(root, "prompt");
 		if (cJSON_IsString(p)) prompt = p->valuestring;
@@ -26,6 +27,8 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		if (cJSON_IsString(s)) style = s->valuestring;
 		cJSON *sz = cJSON_GetObjectItem(root, "size");
 		if (cJSON_IsString(sz)) size = sz->valuestring;
+		cJSON *ri = cJSON_GetObjectItem(root, "reference_image");
+		if (cJSON_IsString(ri)) ref_img = ri->valuestring;
 	}
 	if (!prompt) {
 		cJSON_Delete(root);
@@ -34,7 +37,7 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	}
 
 	struct image_result img_res = {0};
-	int rc = image_gen_create(g_img_llm, prompt, style, size, &img_res);
+	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_img, &img_res);
 	cJSON_Delete(root);
 
 	if (rc < 0) {
@@ -58,7 +61,7 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm)
 		return -EINVAL;
 	g_img_llm = image_llm;
 	return tool_register(reg, "img_gen",
-		"Generate an image from text prompt",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"style\":{\"type\":\"string\"},\"size\":{\"type\":\"string\"}}}",
+		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size, optional reference_image (file path to a reference image).",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"style\":{\"type\":\"string\"},\"size\":{\"type\":\"string\"},\"reference_image\":{\"type\":\"string\"}}}",
 		img_gen_exec, NULL);
 }

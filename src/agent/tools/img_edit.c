@@ -1,8 +1,8 @@
 #include "img_edit.h"
 #include "util/log.h"
+#include "util/base64.h"
 #include "http/client.h"
 #include "cJSON.h"
-#include "stb_image.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,39 +20,6 @@ static const char *mime_type(const char *path)
 	if (strcasecmp(ext, ".webp") == 0) return "image/webp";
 	if (strcasecmp(ext, ".bmp") == 0) return "image/bmp";
 	return "image/png";
-}
-
-static char *b64_encode_file(const char *path, size_t *out_len)
-{
-	FILE *f = fopen(path, "rb");
-	if (!f) return NULL;
-	fseek(f, 0, SEEK_END);
-	long sz = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (sz <= 0) { fclose(f); return NULL; }
-	unsigned char *data = malloc((size_t)sz);
-	if (!data) { fclose(f); return NULL; }
-	size_t rd = fread(data, 1, (size_t)sz, f);
-	fclose(f);
-
-	static const char *abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-	size_t b64_len = (rd + 2) / 3 * 4;
-	char *b64 = malloc(b64_len + 1);
-	if (!b64) { free(data); return NULL; }
-	size_t j = 0;
-	for (size_t i = 0; i < rd; i += 3) {
-		unsigned int v = (unsigned int)data[i] << 16;
-		if (i + 1 < rd) v |= (unsigned int)data[i + 1] << 8;
-		if (i + 2 < rd) v |= (unsigned int)data[i + 2];
-		b64[j++] = abc[(v >> 18) & 0x3F];
-		b64[j++] = abc[(v >> 12) & 0x3F];
-		b64[j++] = (i + 1 < rd) ? abc[(v >> 6) & 0x3F] : '=';
-		b64[j++] = (i + 2 < rd) ? abc[v & 0x3F] : '=';
-	}
-	b64[j] = '\0';
-	free(data);
-	if (out_len) *out_len = b64_len;
-	return b64;
 }
 
 static int img_edit_exec(const char *args_json, char **result_json, void *user_data)
@@ -81,8 +48,7 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 		return -ENOSYS;
 	}
 
-	size_t b64_len = 0;
-	char *b64 = b64_encode_file(file_path, &b64_len);
+	char *b64 = base64_encode_file(file_path);
 	if (!b64) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to read image\"}");

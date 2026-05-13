@@ -34,12 +34,12 @@ static int create_test_png(const char *path) {
 
 TEST(ImageGen, InvalidPrompt) {
 	struct image_result result;
-	int rc = image_gen_create(NULL, NULL, NULL, NULL, &result);
+	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, &result);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(ImageGen, NullResult) {
-	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL);
+	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 

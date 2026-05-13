@@ -2,6 +2,8 @@ add_library(multi-agent-util STATIC
 	arena.c
 	log.c
 	file.c
+	base64.c
+	image_util.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 )
 

@@ -2,6 +2,8 @@
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/base64.h"
+#include "util/image_util.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -10,7 +12,6 @@
 #include <stdio.h>
 #include <time.h>
 
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 static int download_url(const char *url, const char *out_path)
@@ -31,6 +32,18 @@ static int download_url(const char *url, const char *out_path)
 	return rc;
 }
 
+static const char *mime_by_ext(const char *path)
+{
+	const char *e = strrchr(path, '.');
+	if (!e) return "image/png";
+	if (strcasecmp(e, ".png") == 0) return "image/png";
+	if (strcasecmp(e, ".jpg") == 0 || strcasecmp(e, ".jpeg") == 0) return "image/jpeg";
+	if (strcasecmp(e, ".gif") == 0) return "image/gif";
+	if (strcasecmp(e, ".webp") == 0) return "image/webp";
+	if (strcasecmp(e, ".bmp") == 0) return "image/bmp";
+	return "image/png";
+}
+
 static const char *style_prefix(const char *style)
 {
 	if (!style || !*style)
@@ -47,7 +60,8 @@ static const char *style_prefix(const char *style)
 }
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
-		     const char *size, struct image_result *result)
+		     const char *size, const char *image_path,
+		     struct image_result *result)
 {
 	if (!prompt || !result)
 		return -EINVAL;
@@ -71,6 +85,21 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	cJSON_AddNumberToObject(body_json, "n", 1);
 	cJSON_AddStringToObject(body_json, "size", img_size);
 	cJSON_AddStringToObject(body_json, "response_format", "url");
+
+	if (image_path && image_path[0]) {
+		char *b64 = image_encode_base64(image_path, 2048);
+		if (b64) {
+			size_t uri_len = 22 + strlen(b64) + 1;
+			char *data_uri = malloc(uri_len);
+			if (data_uri) {
+				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
+				cJSON_AddStringToObject(body_json, "image", data_uri);
+				free(data_uri);
+			}
+			free(b64);
+		}
+	}
+
 	char *body_str = cJSON_PrintUnformatted(body_json);
 	cJSON_Delete(body_json);
 
@@ -136,7 +165,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	if (img) {
 		result->width = w;
 		result->height = h;
-		STBI_FREE(img);
+		free(img);
 	}
 	log_info("image generated: %s (%dx%d)", out_path, result->width, result->height);
 	cJSON_Delete(root);

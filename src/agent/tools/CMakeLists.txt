@@ -7,6 +7,9 @@ add_library(multi-agent-tools STATIC
 	img_resize.c
 	img_convert.c
 	vid_gen.c
+	file_read.c
+	file_list.c
+	file_info.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
