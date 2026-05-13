@@ -36,6 +36,22 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		return -EINVAL;
 	}
 
+	if (size) {
+		int valid = 0;
+		if (strcmp(size, "2k") == 0 || strcmp(size, "3k") == 0 || strcmp(size, "4k") == 0)
+			valid = 1;
+		else {
+			int w, h;
+			if (sscanf(size, "%dx%d", &w, &h) == 2)
+				valid = 1;
+		}
+		if (!valid) {
+			cJSON_Delete(root);
+			*result_json = strdup("{\"error\":\"invalid size, use WIDTHxHEIGHT (e.g. 2048x2048), 2k, 3k, or 4k\"}");
+			return -EINVAL;
+		}
+	}
+
 	struct image_result img_res = {0};
 	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_img, &img_res);
 	cJSON_Delete(root);
@@ -61,7 +77,7 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm)
 		return -EINVAL;
 	g_img_llm = image_llm;
 	return tool_register(reg, "img_gen",
-		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size, optional reference_image (file path to a reference image).",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"style\":{\"type\":\"string\"},\"size\":{\"type\":\"string\"},\"reference_image\":{\"type\":\"string\"}}}",
+		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size (must be WIDTHxHEIGHT like '2048x2048' or '1024x1024', or '2k'/'3k'/'4k'), optional reference_image (file path to a reference image).",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"style\":{\"type\":\"string\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT (e.g. 2048x2048, 1024x1024), 2k, 3k, or 4k\"},\"reference_image\":{\"type\":\"string\"}}}",
 		img_gen_exec, NULL);
 }
