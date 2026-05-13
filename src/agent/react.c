@@ -14,6 +14,54 @@
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
+struct collect_data {
+	char *buf;
+	size_t len;
+	size_t cap;
+};
+
+static int collect_cb(const char *token, void *user_data)
+{
+	struct collect_data *cd = user_data;
+	size_t tlen = strlen(token);
+	if (cd->len + tlen + 1 >= cd->cap) {
+		cd->cap = (cd->len + tlen + 1) * 2;
+		char *new_b = realloc(cd->buf, cd->cap);
+		if (!new_b) return -ENOMEM;
+		cd->buf = new_b;
+	}
+	memcpy(cd->buf + cd->len, token, tlen);
+	cd->len += tlen;
+	cd->buf[cd->len] = '\0';
+	return 0;
+}
+
+static int summarize_cb(const char *text, void *user_data, char **out)
+{
+	struct react_context *ctx = user_data;
+	struct model *llm = ctx->llm_model;
+	if (!llm || !llm->chat || !llm->api_key[0]) {
+		*out = strdup(text);
+		return *out ? 0 : -ENOMEM;
+	}
+	const char *sys = "You are a conversation summarizer. "
+		"Summarize the following conversation concisely, "
+		"preserving all file paths, generated outputs, errors, "
+		"and key decisions made. Use 2-4 sentences.";
+	const char *msgs[] = { sys, text };
+	struct collect_data cd = { .buf = malloc(8192), .len = 0, .cap = 8192 };
+	if (!cd.buf) return -ENOMEM;
+	cd.buf[0] = '\0';
+	int rc = llm->chat(llm, NULL, msgs, 2, collect_cb, &cd);
+	if (rc < 0) {
+		free(cd.buf);
+		*out = strdup(text);
+		return *out ? 0 : -ENOMEM;
+	}
+	*out = cd.buf;
+	return 0;
+}
+
 static int case_ncmp(const char *s1, const char *s2, size_t n)
 {
 	while (n-- > 0) {
@@ -83,6 +131,8 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->arena = arena_create(0);
 	if (cfg)
 		ctx->compress = *cfg;
+	ctx->compress.summarize = summarize_cb;
+	ctx->compress.summarize_user_data = ctx;
 	return ctx;
 }
 
@@ -417,14 +467,19 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (context_needs_compress(ctx->messages, ctx->tokenizer,
 					   &ctx->compress)) {
 			struct compress_result cr = {0};
-			compress_sliding_window(&ctx->messages,
-						ctx->compress.max_history_rounds,
-						&cr);
-			log_info("auto-compress: removed %d messages (%d -> %d tokens)",
-				 cr.messages_removed, cr.original_tokens,
-				 cr.compressed_tokens);
+			compress_detect_react_cycles(ctx->messages);
+			compress_react_trace(&ctx->messages, &cr);
+			int rc = compress_summarize(&ctx->messages,
+				ctx->compress.max_history_rounds,
+				ctx->compress.summarize,
+				ctx->compress.summarize_user_data,
+				&cr);
+			log_info("auto-compress: detected+removed %d, summarized %d messages (%d -> %d tokens)",
+				 cr.messages_removed, cr.messages_summarized,
+				 cr.original_tokens, cr.compressed_tokens);
 			free(cr.summary);
 			key_info_free(cr.preserved);
+			(void)rc;
 		}
 
 		char *prompt = NULL;

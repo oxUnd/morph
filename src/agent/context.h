@@ -24,11 +24,15 @@ struct key_info {
 	struct key_info *next;
 };
 
+typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
+
 struct compress_config {
 	int max_context_tokens;
 	int max_history_rounds;
 	double summarize_threshold_ratio;
 	double compress_target_ratio;
+	summarize_fn summarize;
+	void *summarize_user_data;
 };
 
 struct compress_result {

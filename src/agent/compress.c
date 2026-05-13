@@ -2,12 +2,43 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+static const char *key_patterns[] = {
+	"file_path", "output", "result", "path",
+	"error", "generated", "downloaded", "saved",
+	"created", "wrote",
+	NULL
+};
 
 static const char *is_system_role(struct message_list *msg)
 {
 	if (msg && msg->role && strcmp(msg->role, "system") == 0)
 		return msg->content;
 	return NULL;
+}
+
+static struct key_info *key_info_add(struct key_info *head, const char *key,
+				      const char *content)
+{
+	if (!key || !content) return head;
+	struct key_info *cur = head;
+	while (cur) {
+		if (strcmp(cur->key, key) == 0) return head;
+		cur = cur->next;
+	}
+	const char *match = strstr(content, key);
+	if (!match) return head;
+	const char *ls = match;
+	while (ls > content && *(ls - 1) != '\n') ls--;
+	const char *le = match;
+	while (*le && *le != '\n') le++;
+	struct key_info *n = calloc(1, sizeof(*n));
+	if (!n) return head;
+	n->key = strdup(key);
+	n->value = strndup(ls, (size_t)(le - ls));
+	n->next = head;
+	return n;
 }
 
 int compress_sliding_window(struct message_list **head, int keep_rounds,
@@ -21,7 +52,6 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 	int total = msg_list_count(*head);
 	int to_preserve = keep_rounds * 2;
 
-	struct message_list *sys_msg_save = NULL;
 	int removed = 0;
 	int original_tokens = context_token_count(*head, NULL);
 	memset(result, 0, sizeof(*result));
@@ -37,11 +67,10 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 			continue;
 		}
 		struct message_list *next = cur->next;
-		if (prev) {
+		if (prev)
 			prev->next = next;
-		} else {
+		else
 			*head = next;
-		}
 		free(cur->role);
 		free(cur->content);
 		free(cur);
@@ -83,32 +112,56 @@ int compress_react_trace(struct message_list **head,
 	return 0;
 }
 
-static const char *key_patterns[] = {
-	"file_path",
-	"output",
-	"result",
-	"path",
-	NULL
-};
+int compress_detect_react_cycles(struct message_list *head)
+{
+	if (!head) return 0;
+	int marked = 0;
+	struct message_list *cur = head;
+	while (cur && cur->next && cur->next->next) {
+		if (cur->compressed || cur->next->compressed ||
+		    cur->next->next->compressed) {
+			cur = cur->next;
+			continue;
+		}
+		const char *r1 = cur->role;
+		const char *r2 = cur->next->role;
+		const char *r3 = cur->next->next->role;
+		const char *c1 = cur->content ? cur->content : "";
+		const char *c3 = cur->next->next->content ?
+				 cur->next->next->content : "";
+		int is_react = 0;
+		if (r1 && r2 && r3 &&
+		    strcmp(r1, "assistant") == 0 &&
+		    strcmp(r2, "assistant") == 0 &&
+		    strcmp(r3, "user") == 0 &&
+		    (strstr(c1, "Thought:") == c1 ||
+		     strstr(c3, "Observation:") == c3 ||
+		     strstr(c3, "tool error:") == c3))
+			is_react = 1;
+		if (is_react) {
+			cur->compressed = 1;
+			cur->next->compressed = 1;
+			cur->next->next->compressed = 1;
+			marked += 3;
+			cur = cur->next->next->next;
+		} else {
+			cur = cur->next;
+		}
+	}
+	return marked;
+}
 
 struct key_info *extract_key_info(struct message_list *head)
 {
-	struct key_info *info_head = NULL;
-	struct key_info **tail = &info_head;
+	struct key_info *info = NULL;
 	struct message_list *cur = head;
 	while (cur) {
-		for (const char **p = key_patterns; *p; p++) {
-			if (strstr(cur->content, *p)) {
-				struct key_info *ki = calloc(1, sizeof(*ki));
-				ki->key = strdup(*p);
-				ki->value = strdup(cur->content);
-				*tail = ki;
-				tail = &ki->next;
-			}
-		}
+		if (!cur->content) { cur = cur->next; continue; }
+		for (const char **p = key_patterns; *p; p++)
+			info = key_info_add(info, *p, cur->content);
 		cur = cur->next;
 	}
-	return info_head;
+	return info;
 }
 
 void key_info_free(struct key_info *head)
@@ -121,4 +174,119 @@ void key_info_free(struct key_info *head)
 		free(cur);
 		cur = next;
 	}
+}
+
+int compress_summarize(struct message_list **head, int keep_rounds,
+		       summarize_fn fn, void *fn_user,
+		       struct compress_result *result)
+{
+	if (!head || !*head || keep_rounds < 0 || !fn)
+		return -EINVAL;
+	if (!result)
+		return -EINVAL;
+
+	memset(result, 0, sizeof(*result));
+	result->original_tokens = context_token_count(*head, NULL);
+
+	int total = msg_list_count(*head);
+	int to_keep = keep_rounds * 2;
+	int to_summarize = total - to_keep;
+	if (to_summarize <= 0)
+		return 0;
+
+	struct message_list *cur = *head;
+	struct message_list *split = NULL;
+	int idx = 0;
+	size_t text_cap = 8192;
+	size_t text_len = 0;
+	char *text = malloc(text_cap);
+	if (!text) return -ENOMEM;
+	text[0] = '\0';
+
+	while (cur && idx < to_summarize) {
+		if (is_system_role(cur) || cur->compressed) {
+			split = cur;
+			idx++;
+			cur = cur->next;
+			continue;
+		}
+		size_t needed = strlen(cur->content) + 32;
+		if (text_len + needed > text_cap) {
+			while (text_cap < text_len + needed)
+				text_cap *= 2;
+			char *new_t = realloc(text, text_cap);
+			if (!new_t) { free(text); return -ENOMEM; }
+			text = new_t;
+		}
+		text_len += snprintf(text + text_len, text_cap - text_len,
+				     "[%s]: %s\n", cur->role, cur->content);
+		split = cur;
+		idx++;
+		cur = cur->next;
+	}
+
+	if (text_len == 0) {
+		free(text);
+		return 0;
+	}
+
+	char *summary = NULL;
+	int rc = fn(text, fn_user, &summary);
+	free(text);
+	if (rc < 0 || !summary)
+		return rc;
+
+	struct message_list *keep_head = split ? split->next : NULL;
+	if (split) split->next = NULL;
+
+	cur = *head;
+	struct message_list *rechain = NULL;
+	struct message_list **rechain_tail = &rechain;
+	while (cur && cur != keep_head) {
+		struct message_list *next = cur->next;
+		if (is_system_role(cur)) {
+			*rechain_tail = cur;
+			cur->next = NULL;
+			rechain_tail = &cur->next;
+		} else if (cur->compressed) {
+			result->messages_summarized++;
+			free(cur->role);
+			free(cur->content);
+			free(cur);
+		} else {
+			result->messages_summarized++;
+			if (cur->content)
+				result->preserved = key_info_add(result->preserved,
+					"summarized", cur->content);
+			free(cur->role);
+			free(cur->content);
+			free(cur);
+		}
+		cur = next;
+	}
+
+	int stok = (int)(strlen(summary) / 4);
+	if (stok < 1) stok = 1;
+
+	char *role = strdup("system");
+	if (!role) { free(summary); return -ENOMEM; }
+
+	struct message_list *summary_msg = calloc(1, sizeof(*summary_msg));
+	if (!summary_msg) { free(role); free(summary); return -ENOMEM; }
+	summary_msg->role = role;
+	summary_msg->content = summary;
+	summary_msg->token_count = stok;
+
+	*head = summary_msg;
+	if (rechain) {
+		summary_msg->next = rechain;
+		struct message_list *r = rechain;
+		while (r->next) r = r->next;
+		r->next = keep_head;
+	} else {
+		summary_msg->next = keep_head;
+	}
+
+	result->compressed_tokens = context_token_count(*head, NULL);
+	return 1;
 }
