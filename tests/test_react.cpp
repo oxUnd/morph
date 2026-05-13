@@ -146,6 +146,63 @@ static struct model *create_mock_streaming_llm(const char *response)
 	return m;
 }
 
+/* ---- Multi-response mock: returns different responses per call ---- */
+
+struct multi_mock_data {
+	const char **responses;
+	int count;
+	int call_count;
+	int should_fail;
+};
+
+static int multi_mock_chat(struct model *self, const char *system_prompt,
+			   const char **messages, int n,
+			   sse_callback cb, void *user_data)
+{
+	(void)system_prompt;
+	(void)messages;
+	(void)n;
+	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
+	int idx = data->call_count;
+	data->call_count++;
+	if (data->should_fail)
+		return -EIO;
+	if (idx < data->count && cb && data->responses[idx])
+		cb(data->responses[idx], user_data);
+	return 200;
+}
+
+static void multi_mock_destroy(struct model *self)
+{
+	if (self && self->handle) {
+		free(self->handle);
+		self->handle = NULL;
+	}
+	free(self);
+}
+
+static struct model *create_multi_mock_llm(const char **responses, int count)
+{
+	struct model *m = (struct model *)calloc(1, sizeof(*m));
+	if (!m) return NULL;
+	strncpy(m->provider, "mock", sizeof(m->provider) - 1);
+	strncpy(m->model_id, "mock-model", sizeof(m->model_id) - 1);
+	strncpy(m->api_key, "mock-key", sizeof(m->api_key) - 1);
+	strncpy(m->api_base, "http://localhost:1", sizeof(m->api_base) - 1);
+	m->context_limit = 128000;
+	m->timeout_seconds = 60;
+	m->chat = multi_mock_chat;
+	m->generate = NULL;
+	m->destroy = multi_mock_destroy;
+	struct multi_mock_data *d = (struct multi_mock_data *)calloc(1, sizeof(*d));
+	d->responses = responses;
+	d->count = count;
+	d->call_count = 0;
+	d->should_fail = 0;
+	m->handle = d;
+	return m;
+}
+
 /* ---- basic fixture ---- */
 
 class ReactTest : public ::testing::Test {
@@ -473,6 +530,87 @@ TEST_F(MockLlmTest, LlmMultiStepCallCount) {
 	ctx->max_iterations = 5;
 	react_run(ctx, "multi-step question", nullptr, nullptr);
 	EXPECT_GE(llm_data->call_count, 1);
+	react_context_destroy(ctx);
+}
+
+/* ---- Multi-response termination tests ---- */
+
+TEST_F(MockLlmTest, ActionThenFinal) {
+	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
+		"Thought: Tool done.\nFinal: The answer is here."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "answer is here") != nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ActionActionThenFinal) {
+	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
+		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
+		"Thought: Done.\nFinal: Final result after two steps."
+	};
+	llm = create_multi_mock_llm(responses, 3);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "multi step", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "after two steps") != nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ActionNeverFinal) {
+	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
+		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
+		"Thought: Step 3.\nAction: test_tool({\"p\":\"3\"})\n",
+		"Thought: Step 4.\nAction: test_tool({\"p\":\"4\"})\n",
+		"Thought: Step 5.\nAction: test_tool({\"p\":\"5\"})\n",
+	};
+	llm = create_multi_mock_llm(responses, 5);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 3;
+	int rc = react_run(ctx, "never final", nullptr, nullptr);
+	EXPECT_NE(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ToolFailThenFinal) {
+	tool_register(&tools, "fail_tool", "Fails always", "{}",
+		      failing_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})\n",
+		"Thought: It failed, giving up.\nFinal: Sorry, tool failed."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "call tool", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "failed") != nullptr);
 	react_context_destroy(ctx);
 }
 
