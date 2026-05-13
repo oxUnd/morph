@@ -1,5 +1,6 @@
 # Build
 build/
+build-asan/
 cmake-build-*/
 out/
 
@@ -22,6 +23,7 @@ out/
 *.so
 *.dylib
 *.exe
+asan_err.txt
 
 # CMake
 CMakeCache.txt
