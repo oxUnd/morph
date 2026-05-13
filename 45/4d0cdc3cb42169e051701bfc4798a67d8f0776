@@ -1,0 +1,154 @@
+src/session.c
+  d5f685d6017512ca 35-47,50-51,55-57 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a0426320b9aa66757dd45cc","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Range":[35,47]},{"Range":[50,51]},{"Range":[55,57]}]}]}
+src/cli.c
+  d5f685d6017512ca 435-439,1225-1227,1233,1288-1291,1298 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a0426320b9aa66757dd45cc","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Range":[435,439]},{"Range":[1225,1227]},{"Single":1233},{"Range":[1288,1291]},{"Single":1298}]}]}
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "454d0cdc3cb42169e051701bfc4798a67d8f0776",
+  "prompts": {
+    "d5f685d6017512ca": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a04031d0b9aa66757dd43a5",
+        "model": "openrouter-2o__dev"
+      },
+      "human_author": "xiangshouding <fansekey@gmail.com>",
+      "messages": [],
+      "total_additions": 60,
+      "total_deletions": 36,
+      "accepted_lines": 34,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/cli.c": [
+      {
+        "hash": "d5f685d6017512ca",
+        "line_ranges": [
+          {
+            "Range": [
+              435,
+              439
+            ]
+          },
+          {
+            "Range": [
+              1225,
+              1227
+            ]
+          },
+          {
+            "Single": 1233
+          },
+          {
+            "Range": [
+              1288,
+              1291
+            ]
+          },
+          {
+            "Single": 1298
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a0426320b9aa66757dd45cc",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Range": [
+                  435,
+                  439
+                ]
+              },
+              {
+                "Range": [
+                  1225,
+                  1227
+                ]
+              },
+              {
+                "Single": 1233
+              },
+              {
+                "Range": [
+                  1288,
+                  1291
+                ]
+              },
+              {
+                "Single": 1298
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "src/session.c": [
+      {
+        "hash": "d5f685d6017512ca",
+        "line_ranges": [
+          {
+            "Range": [
+              35,
+              47
+            ]
+          },
+          {
+            "Range": [
+              50,
+              51
+            ]
+          },
+          {
+            "Range": [
+              55,
+              57
+            ]
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a0426320b9aa66757dd45cc",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Range": [
+                  35,
+                  47
+                ]
+              },
+              {
+                "Range": [
+                  50,
+                  51
+                ]
+              },
+              {
+                "Range": [
+                  55,
+                  57
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "remote_transcripts": {
+    "d5f685d6017512ca": {
+      "tool": "trae",
+      "conversation_id": "6a04031d0b9aa66757dd43a5",
+      "session_id": "6a04031d0b9aa66757dd43a5",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
