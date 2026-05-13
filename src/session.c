@@ -32,15 +32,29 @@ int session_create(struct db *db, const char *name, const char *model,
 		return -EIO;
 	}
 	if (out) {
+		/* name/model may alias fields inside *out (e.g. when caller
+		 * passes &ctx->current_session.name), so snapshot first
+		 * before memset zeroes the destination. */
+		char name_buf[sizeof(out->name)];
+		char model_buf[sizeof(out->model)];
+		name_buf[0] = '\0';
+		model_buf[0] = '\0';
+		strncpy(name_buf, name, sizeof(name_buf) - 1);
+		name_buf[sizeof(name_buf) - 1] = '\0';
+		if (model) {
+			strncpy(model_buf, model, sizeof(model_buf) - 1);
+			model_buf[sizeof(model_buf) - 1] = '\0';
+		}
 		memset(out, 0, sizeof(*out));
 		out->id = sqlite3_last_insert_rowid(db->handle);
-		strncpy(out->name, name, sizeof(out->name) - 1);
-		if (model)
-			strncpy(out->model, model, sizeof(out->model) - 1);
+		memcpy(out->name, name_buf, sizeof(out->name));
+		memcpy(out->model, model_buf, sizeof(out->model));
 		out->created_at = now;
 		out->updated_at = now;
 	}
-	log_info("session created: %s (id=%lld)", name, (long long)out->id);
+	log_info("session created: %s (id=%lld)", out ? out->name : name,
+		 out ? (long long)out->id :
+		       (long long)sqlite3_last_insert_rowid(db->handle));
 	return 0;
 }
 

@@ -432,8 +432,11 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		const char *role = cur->role;
 		const char *label = (strcmp(role, "user") == 0) ? "You" :
 				   (strcmp(role, "assistant") == 0) ? "AI" : role;
-		printf(ANSI_DIM "[%s]" ANSI_RESET " %s\n", label,
-		       cur->content ? cur->content : "(empty)");
+		printf(ANSI_DIM "[%s]" ANSI_RESET " ", label);
+		if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
+			markdown_render_ansi(cur->content);
+		else
+			printf("%s\n", cur->content ? cur->content : "(empty)");
 		cur = cur->next;
 	}
 	message_free_list(msgs);
@@ -1219,13 +1222,15 @@ static int output_callback(enum react_step_type type, const char *content,
 	case REACT_STEP_THOUGHT:
 		if (content && *content) {
 			if (!ctx->streaming) {
-				printf("\r\033[K" ANSI_DIM);
+				/* ESC 7 = save cursor (DECSC), works regardless
+				 * of terminal width / soft wrap. */
+				printf("\r\033[K\033" "7" ANSI_DIM);
 				ctx->streaming = 1;
 			}
 			fputs(content, stdout);
 			fflush(stdout);
 		} else if (!ctx->streaming) {
-			printf(ANSI_DIM "..." ANSI_RESET);
+			printf("\033" "7" ANSI_DIM "..." ANSI_RESET);
 			fflush(stdout);
 			ctx->streaming = 1;
 		}
@@ -1280,14 +1285,17 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_FINAL:
 		if (ctx->streaming) {
-			printf(ANSI_RESET "\n");
+			/* Restore to the saved cursor (DECRC) and clear
+			 * everything below, handling soft-wrapped lines
+			 * correctly. Then render the markdown cleanly. */
+			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
 		}
 		if (content && *content)
 			markdown_render_ansi(content);
 		else
 			printf("\n");
-		
+
 		printf("\n");
 		fflush(stdout);
 		break;
