@@ -67,6 +67,7 @@ void react_reset(struct react_context *ctx);
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
+extern volatile sig_atomic_t react_sigint_flag;
 
 struct react_step *react_step_create(enum react_step_type type,
 				     const char *content,

@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <time.h>
+#include <signal.h>
+
+volatile sig_atomic_t react_sigint_flag = 0;
 
 static int case_ncmp(const char *s1, const char *s2, size_t n)
 {
@@ -365,6 +368,11 @@ struct react_stream_data {
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
+	if (react_sigint_flag) {
+		if (sd->cancelled)
+			*sd->cancelled = 1;
+		react_sigint_flag = 0;
+	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
 	size_t tlen = strlen(token);
@@ -400,6 +408,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int has_tools = ctx->tools && ctx->tools->count > 0;
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
+		if (react_sigint_flag) {
+			ctx->cancelled = 1;
+			react_sigint_flag = 0;
+		}
 		if (ctx->cancelled) {
 			log_info("react_run: cancelled by user at iteration %d", iteration);
 			ctx->state = REACT_STATE_ABORT;
@@ -477,6 +489,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		free(prompt);
 
+		if (react_sigint_flag) {
+			ctx->cancelled = 1;
+			react_sigint_flag = 0;
+		}
 		if (ctx->cancelled) {
 			log_info("react_run: cancelled during LLM call");
 			struct react_step *obs = react_step_create(
@@ -567,6 +583,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
 
+				if (react_sigint_flag) {
+					ctx->cancelled = 1;
+					react_sigint_flag = 0;
+				}
 				if (ctx->cancelled) {
 					struct react_step *obs = react_step_create(
 						REACT_STEP_OBSERVATION,
