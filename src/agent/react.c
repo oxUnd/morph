@@ -11,6 +11,32 @@
 #include <ctype.h>
 #include <time.h>
 
+static int case_ncmp(const char *s1, const char *s2, size_t n)
+{
+	while (n-- > 0) {
+		int c1 = tolower((unsigned char)*s1++);
+		int c2 = tolower((unsigned char)*s2++);
+		if (c1 != c2)
+			return c1 - c2;
+		if (c1 == '\0')
+			return 0;
+	}
+	return 0;
+}
+
+static const char *find_ci(const char *haystack, const char *needle)
+{
+	if (!haystack || !needle || !*needle)
+		return haystack;
+	size_t needle_len = strlen(needle);
+	while (*haystack) {
+		if (case_ncmp(haystack, needle, needle_len) == 0)
+			return haystack;
+		haystack++;
+	}
+	return NULL;
+}
+
 const char *react_step_type_name(enum react_step_type type)
 {
 	switch (type) {
@@ -172,7 +198,7 @@ static char *extract_after_prefix(const char *response, const char *prefix)
 {
 	if (!response || !prefix)
 		return NULL;
-	const char *p = strcasestr(response, prefix);
+	const char *p = find_ci(response, prefix);
 	if (!p)
 		return NULL;
 	p += strlen(prefix);
@@ -181,6 +207,50 @@ static char *extract_after_prefix(const char *response, const char *prefix)
 	if (!*p)
 		return strdup("");
 	return strdup(p);
+}
+
+static char *build_steps_text(struct react_context *ctx)
+{
+	size_t cap = 4096;
+	size_t len = 0;
+	char *buf = malloc(cap);
+	if (!buf)
+		return NULL;
+	buf[0] = '\0';
+
+	struct react_step *step = ctx->steps;
+	while (step) {
+		switch (step->type) {
+		case REACT_STEP_THOUGHT:
+			len += snprintf(buf + len, cap - len, "Thought: %s\n",
+					step->content ? step->content : "");
+			break;
+		case REACT_STEP_ACTION:
+			len += snprintf(buf + len, cap - len, "Action: %s(%s)\n",
+					step->tool_name ? step->tool_name : "",
+					step->tool_args ? step->tool_args : "");
+			break;
+		case REACT_STEP_OBSERVATION:
+			len += snprintf(buf + len, cap - len, "Observation: %s\n",
+					step->content ? step->content : "");
+			break;
+		case REACT_STEP_FINAL:
+			len += snprintf(buf + len, cap - len, "Final: %s\n",
+					step->content ? step->content : "");
+			break;
+		}
+		if (len + 1024 > cap) {
+			cap *= 2;
+			char *new_buf = realloc(buf, cap);
+			if (!new_buf) { free(buf); return NULL; }
+			buf = new_buf;
+		}
+		step = step->next;
+	}
+
+	if (len > 0 && buf[len - 1] == '\n')
+		buf[len - 1] = '\0';
+	return buf;
 }
 
 static int build_prompt(struct react_context *ctx, const char *user_input,
@@ -523,8 +593,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 						cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
 					free(result);
 					free(action_text);
-					ctx->tool_fail_name[0] = '\0';
-					ctx->tool_fail_count = 0;
 					free(sd.response);
 					continue;
 				}
@@ -576,6 +644,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (cb)
 					cb(REACT_STEP_OBSERVATION, obs_buf, user_data);
 			} else {
+				struct react_step *obs = react_step_create(
+					REACT_STEP_OBSERVATION,
+					"tool error: invalid action format — expected Action: tool_name(args)",
+					NULL, NULL);
+				add_step(ctx, obs);
+				if (cb)
+					cb(REACT_STEP_OBSERVATION,
+					   "tool error: invalid action format — expected Action: tool_name(args)",
+					   user_data);
 				free(action_text);
 			}
 		} else {
@@ -612,11 +689,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 		ctx->state = REACT_STATE_ABORT;
 	}
 
-	if (ctx->state == REACT_STATE_DONE && ctx->final_answer) {
-		struct message_list *asst = msg_list_create("assistant",
-			ctx->final_answer,
-			tokenizer_count(ctx->tokenizer, ctx->final_answer));
-		msg_list_append(&ctx->messages, asst);
+	if (ctx->state == REACT_STATE_DONE && ctx->steps) {
+		char *steps_text = build_steps_text(ctx);
+		if (steps_text) {
+			struct message_list *asst = msg_list_create("assistant",
+				steps_text,
+				tokenizer_count(ctx->tokenizer, steps_text));
+			msg_list_append(&ctx->messages, asst);
+			free(steps_text);
+		}
 	}
 
 	if (ctx->state == REACT_STATE_ABORT)
