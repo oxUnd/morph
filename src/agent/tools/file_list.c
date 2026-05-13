@@ -38,8 +38,8 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	const char *resolved = expanded ? expanded : dir_path;
 
 	DIR *d = opendir(resolved);
-	free(expanded);
 	if (!d) {
+		free(expanded);
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"directory not found\"}");
 		return -ENOENT;
@@ -74,6 +74,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 			cJSON_AddItemToArray(files, e);
 	}
 	closedir(d);
+	free(expanded);
 
 	int dirc = cJSON_GetArraySize(dirs);
 	cJSON **darr = malloc(sizeof(cJSON *) * (size_t)(dirc + 1));
