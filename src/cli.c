@@ -48,6 +48,62 @@
 static const char *default_db_path = "~/.multi-agent/data.db";
 static const char *default_config_path = "~/.multi-agent/config.toml";
 
+static size_t utf8_truncate(const char *s, size_t max_bytes)
+{
+	if (!s) return 0;
+	size_t len = strlen(s);
+	if (len <= max_bytes) return len;
+	/* Walk backward from max_bytes to find a valid UTF-8 start byte.
+	 * Continuation bytes match 0x80-0xBF; start bytes are 0xC0+ or ASCII <0x80. */
+	size_t pos = max_bytes;
+	while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
+		pos--;
+	return pos;
+}
+
+/* Remove invalid UTF-8 byte sequences in-place.
+ * Valid sequences are kept; invalid bytes are simply removed.
+ * This ensures the string is always safe for libedit / readline rendering. */
+static void utf8_sanitize_inplace(char *s)
+{
+	if (!s) return;
+	unsigned char *p = (unsigned char *)s;
+	size_t r = 0, w = 0;
+	while (p[r]) {
+		unsigned char c = p[r];
+		if (c < 0x80) {
+			p[w++] = p[r++];
+		} else if ((c & 0xE0) == 0xC0) {
+			if ((p[r+1] & 0xC0) == 0x80) {
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+			} else {
+				r++;
+			}
+		} else if ((c & 0xF0) == 0xE0) {
+			if ((p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80) {
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+			} else {
+				r++;
+			}
+		} else if ((c & 0xF8) == 0xF0) {
+			if ((p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80 && (p[r+3] & 0xC0) == 0x80) {
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+				p[w++] = p[r++];
+			} else {
+				r++;
+			}
+		} else {
+			r++;
+		}
+	}
+	p[w] = '\0';
+}
+
 /* ---- arg/argv helpers ---- */
 
 static int argv_split(const char *input, char **argv, int max_args)
@@ -210,6 +266,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 				ctx->config.models.text.model, &s);
 	if (rc == 0) {
 		ctx->current_session = s;
+		utf8_sanitize_inplace(ctx->current_session.name);
 		ctx->session_auto_named = (strcmp(name, "new_session") == 0);
 		CMD_OK("created and switched to session: %s", name);
 	} else {
@@ -235,8 +292,9 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (rc == 0) {
 		ctx->current_session = s;
+		utf8_sanitize_inplace(ctx->current_session.name);
 		ctx->session_auto_named = 1;
-		CMD_OK("switched to session: %s", s.name);
+		CMD_OK("switched to session: %s", ctx->current_session.name);
 	} else {
 		CMD_ERROR("session not found: %s", name);
 	}
@@ -279,6 +337,7 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		strncpy(ctx->current_session.name, new_name,
 			sizeof(ctx->current_session.name) - 1);
+		utf8_sanitize_inplace(ctx->current_session.name);
 		CMD_OK("session renamed to: %s", new_name);
 	} else {
 		CMD_ERROR("failed to rename session");
@@ -956,6 +1015,7 @@ struct model *llm = model_llm_create(
 				    ctx->config.models.text.model);
 		strncpy(ctx->current_session.model, ctx->config.models.text.model,
 			sizeof(ctx->current_session.model) - 1);
+		utf8_sanitize_inplace(ctx->current_session.name);
 	} else {
 		ctx->session_auto_named = 0;
 	}
@@ -1186,14 +1246,14 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 
 	/* Auto-name session from first user input */
-	int msg_count = message_count(&ctx->database, ctx->current_session.id);
 	if (!ctx->session_auto_named && input[0] != '/') {
 		char title[48];
 		size_t len = strlen(input);
-		size_t max_len = sizeof(title) - 4;
-		if (len > max_len) {
-			memcpy(title, input, max_len);
-			title[max_len] = '\0';
+		size_t max_bytes = sizeof(title) - 4;
+		if (len > max_bytes) {
+			size_t chop = utf8_truncate(input, max_bytes);
+			memcpy(title, input, chop);
+			title[chop] = '\0';
 			strcat(title, "...");
 		} else {
 			memcpy(title, input, len);

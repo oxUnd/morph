@@ -9,6 +9,7 @@ protected:
 	struct db db;
 	char db_path[256];
 	void SetUp() override {
+		memset(&db, 0, sizeof(db));
 		snprintf(db_path, sizeof(db_path), "/tmp/ma_test_%d.db", getpid());
 		std::remove(db_path);
 	}

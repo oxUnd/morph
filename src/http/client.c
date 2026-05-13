@@ -44,14 +44,13 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
 	size_t total = size * nmemb;
-	char *new_headers = realloc(resp->headers,
-				    strlen(resp->headers ? resp->headers : "") + total + 1);
+	size_t old_len = resp->headers ? strlen(resp->headers) : 0;
+	char *new_headers = realloc(resp->headers, old_len + total + 1);
 	if (!new_headers)
 		return total;
 	resp->headers = new_headers;
-	size_t cur_len = strlen(resp->headers);
-	memcpy(resp->headers + cur_len, ptr, total);
-	resp->headers[cur_len + total] = '\0';
+	memcpy(resp->headers + old_len, ptr, total);
+	resp->headers[old_len + total] = '\0';
 	return total;
 }
 

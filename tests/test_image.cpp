@@ -242,6 +242,22 @@ TEST(ImageRender, KittyJpegProtocol) {
 	remove(path);
 }
 
+TEST(ImageDetectFmt, WebpMagicBytes) {
+	unsigned char webp[] = {0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50};
+	EXPECT_EQ(image_detect_fmt(webp, sizeof(webp)), 0)
+		<< "WebP not natively detected by image_detect_fmt";
+}
+
+TEST(ImageDetectFmt, GifMagicBytes) {
+	unsigned char gif[] = {0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x00};
+	EXPECT_EQ(image_detect_fmt(gif, sizeof(gif)), 0)
+		<< "GIF not natively detected by image_detect_fmt";
+}
+
+TEST(ImageDetectFmt, NullInput) {
+	EXPECT_EQ(image_detect_fmt(NULL, 0), 0);
+}
+
 TEST(ImageRender, KittyPngProtocol) {
 	const char *path = "/tmp/test_kitty_png.png";
 	ASSERT_EQ(create_test_png(path), 0);

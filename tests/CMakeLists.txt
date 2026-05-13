@@ -12,6 +12,7 @@ set(TEST_SOURCES
 	test_tool.cpp
 	test_context.cpp
 	test_tokenizer.cpp
+	test_text_gen.cpp
 	test_compress.cpp
 	test_react.cpp
 	test_sse.cpp
