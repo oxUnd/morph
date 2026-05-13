@@ -240,9 +240,12 @@ static char *build_steps_text(struct react_context *ctx)
 			break;
 		}
 		if (len + 1024 > cap) {
-			cap *= 2;
-			char *new_buf = realloc(buf, cap);
+			size_t new_cap = cap * 2;
+			while (new_cap < len + 1024)
+				new_cap *= 2;
+			char *new_buf = realloc(buf, new_cap);
 			if (!new_buf) { free(buf); return NULL; }
+			cap = new_cap;
 			buf = new_buf;
 		}
 		step = step->next;
@@ -300,9 +303,12 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		len += snprintf(buf + len, cap - len, "%s: %s\n", role_label,
 				hist->content ? hist->content : "");
 		if (len + 1024 > cap) {
-			cap *= 2;
-			char *new_buf = realloc(buf, cap);
+			size_t new_cap = cap * 2;
+			while (new_cap < len + 1024)
+				new_cap *= 2;
+			char *new_buf = realloc(buf, new_cap);
 			if (!new_buf) { free(buf); return -ENOMEM; }
+			cap = new_cap;
 			buf = new_buf;
 		}
 		hist = hist->next;
@@ -331,9 +337,12 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 			break;
 		}
 		if (len + 1024 > cap) {
-			cap *= 2;
-			char *new_buf = realloc(buf, cap);
+			size_t new_cap = cap * 2;
+			while (new_cap < len + 1024)
+				new_cap *= 2;
+			char *new_buf = realloc(buf, new_cap);
 			if (!new_buf) { free(buf); return -ENOMEM; }
+			cap = new_cap;
 			buf = new_buf;
 		}
 		step = step->next;
