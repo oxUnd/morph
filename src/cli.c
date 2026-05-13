@@ -786,13 +786,15 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	else
 		api_key = getenv(ctx->config.models.text.api_key_env);
 
-	struct model *llm = model_llm_create(
+struct model *llm = model_llm_create(
 		ctx->config.models.text.provider,
 		ctx->config.models.text.model,
 		ctx->config.models.text.api_base,
 		api_key ? api_key : "");
-	ctx->llm = llm;
-	ctx->react->llm_model = llm;
+  ctx->llm = llm;
+  ctx->react->llm_model = llm;
+  if (llm)
+	  llm->timeout_seconds = ctx->config.react.step_timeout_seconds;
 
 	text_gen_init(&ctx->tools, llm);
 	log_info("registered text_gen tool");
@@ -1136,7 +1138,15 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->session_auto_named = 1;
 	}
 
+	sigint_received = 0;
+	if (ctx->react)
+		react_cancel(ctx->react);
+
 	react_run(ctx->react, effective_input, output_callback, ctx);
+
+	if (ctx->react && ctx->react->state == REACT_STATE_ABORT) {
+		printf("\n" ANSI_YELLOW "[aborted] ReAct loop cancelled or timed out." ANSI_RESET "\n");
+	}
 
 	/* Persist trace to DB */
 	if (ctx->react && ctx->react->steps) {

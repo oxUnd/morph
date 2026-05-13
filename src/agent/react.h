@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <signal.h>
 #include "agent/tool.h"
 #include "agent/context.h"
 
@@ -49,6 +50,7 @@ struct react_context {
 	enum react_state state;
 	char tool_fail_name[64];
 	int tool_fail_count;
+	volatile sig_atomic_t cancelled;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,
@@ -62,6 +64,7 @@ void react_reset(struct react_context *ctx);
 
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
+void react_cancel(struct react_context *ctx);
 
 struct react_step *react_step_create(enum react_step_type type,
 				     const char *content,

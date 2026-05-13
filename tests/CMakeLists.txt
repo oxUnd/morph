@@ -1,5 +1,7 @@
 include(GoogleTest)
 
+find_package(Threads REQUIRED)
+
 set(TEST_SOURCES
 	test_arena.cpp
 	test_log.cpp
@@ -49,6 +51,7 @@ target_link_libraries(multi-agent-tests PRIVATE
 	GTest::gtest_main
 	SQLite::SQLite3
 	CURL::libcurl
+	 Threads::Threads
 )
 
 gtest_discover_tests(multi-agent-tests)

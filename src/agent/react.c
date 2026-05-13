@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <time.h>
 
 const char *react_step_type_name(enum react_step_type type)
 {
@@ -48,6 +49,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->step_timeout_seconds = 60;
 	ctx->tool_max_retries = 3;
 	ctx->state = REACT_STATE_INIT;
+	ctx->cancelled = 0;
 	if (cfg)
 		ctx->compress = *cfg;
 	return ctx;
@@ -83,6 +85,13 @@ void react_reset(struct react_context *ctx)
 	ctx->final_answer = NULL;
 	ctx->tool_fail_name[0] = '\0';
 	ctx->tool_fail_count = 0;
+	ctx->cancelled = 0;
+}
+
+void react_cancel(struct react_context *ctx)
+{
+	if (ctx)
+		ctx->cancelled = 1;
 }
 
 struct react_step *react_step_create(enum react_step_type type,
@@ -198,13 +207,12 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		"Final: <your answer>\n"
 		"\nConstraints:\n"
 		"- One Thought + one Action per turn.\n"
-		"- If no tool is needed, go straight to Final.\n"
+		"- Action MUST be a tool listed above. If no tool is needed, go straight to Final.\n"
 		"- If a tool fails twice with the same args, change strategy or finalize.\n"
 		"- Maximum %d iterations.\n\n"
 		"\nConversation history:\n",
 		ctx->max_iterations);
 
-	/* Include past conversation history (all messages except the current input) */
 	struct message_list *hist = ctx->messages;
 	int hist_count = msg_list_count(ctx->messages);
 	int cur_idx = 0;
@@ -263,11 +271,14 @@ struct react_stream_data {
 	size_t cap;
 	react_output_cb user_cb;
 	void *user_data;
+	volatile sig_atomic_t *cancelled;
 };
 
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
+	if (sd->cancelled && *sd->cancelled)
+		return -EINTR;
 	size_t tlen = strlen(token);
 	if (sd->len + tlen + 1 >= sd->cap) {
 		sd->cap = (sd->len + tlen + 1) * 2;
@@ -300,9 +311,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int has_tools = ctx->tools && ctx->tools->count > 0;
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
+		if (ctx->cancelled) {
+			log_info("react_run: cancelled by user at iteration %d", iteration);
+			ctx->state = REACT_STATE_ABORT;
+			break;
+		}
+
 		ctx->state = REACT_STATE_THINKING;
 
-		/* Auto-compress if context exceeds threshold */
 		if (context_needs_compress(ctx->messages, ctx->tokenizer,
 					   &ctx->compress)) {
 			struct compress_result cr = {0};
@@ -352,6 +368,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			.cap = 8192,
 			.user_cb = cb,
 			.user_data = user_data,
+			.cancelled = &ctx->cancelled,
 		};
 		if (!sd.response) {
 			free(prompt);
@@ -363,7 +380,26 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (cb)
 			cb(REACT_STEP_THOUGHT, "", user_data);
 
+		time_t llm_start = time(NULL);
 		int status = llm->chat(llm, NULL, msgs, 1, react_stream_cb, &sd);
+		time_t llm_end = time(NULL);
+
+		free(prompt);
+
+		if (ctx->cancelled) {
+			log_info("react_run: cancelled during LLM call");
+			struct react_step *obs = react_step_create(
+				REACT_STEP_OBSERVATION,
+				"LLM call interrupted by user", NULL, NULL);
+			add_step(ctx, obs);
+			if (sd.response[0]) {
+				free(ctx->final_answer);
+				ctx->final_answer = strdup(sd.response);
+			}
+			ctx->state = REACT_STATE_ABORT;
+			free(sd.response);
+			break;
+		}
 
 		if (status < 0) {
 			log_err("react_run: LLM call failed: %d", status);
@@ -371,12 +407,39 @@ int react_run(struct react_context *ctx, const char *user_input,
 				REACT_STEP_OBSERVATION, "LLM call failed", NULL, NULL);
 			add_step(ctx, err);
 			free(sd.response);
-			free(prompt);
 			ctx->state = REACT_STATE_ABORT;
 			return status;
 		}
 
-		free(prompt);
+		if (ctx->step_timeout_seconds > 0 &&
+		    (llm_end - llm_start) >= ctx->step_timeout_seconds) {
+			log_warn("react_run: LLM call exceeded step timeout (%lds >= %ds)",
+				 (long)(llm_end - llm_start),
+				 ctx->step_timeout_seconds);
+			char timeout_msg[256];
+			snprintf(timeout_msg, sizeof(timeout_msg),
+				 "LLM call timed out (took %lds, limit %ds)",
+				 (long)(llm_end - llm_start),
+				 ctx->step_timeout_seconds);
+			struct react_step *obs = react_step_create(
+				REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL);
+			add_step(ctx, obs);
+			if (cb)
+				cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
+			if (sd.response[0]) {
+				char *final_text = extract_after_prefix(sd.response, "Final:");
+				if (final_text) {
+					free(ctx->final_answer);
+					ctx->final_answer = final_text;
+				} else {
+					free(ctx->final_answer);
+					ctx->final_answer = strdup(sd.response);
+				}
+			}
+			free(sd.response);
+			ctx->state = REACT_STATE_DONE;
+			break;
+		}
 
 		char *final_text = extract_after_prefix(sd.response, "Final:");
 		char *action_text = extract_after_prefix(sd.response, "Action:");
@@ -413,12 +476,50 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
 
+				if (ctx->cancelled) {
+					struct react_step *obs = react_step_create(
+						REACT_STEP_OBSERVATION,
+						"Tool execution cancelled by user", NULL, NULL);
+					add_step(ctx, obs);
+					ctx->state = REACT_STATE_ABORT;
+					free(action_text);
+					free(sd.response);
+					break;
+				}
+
 				ctx->state = REACT_STATE_OBSERVING;
 				char *result = NULL;
+				time_t tool_start = time(NULL);
 				int tool_rc = tool_exec(ctx->tools, tool_name,
 							tool_args, &result);
+				time_t tool_end = time(NULL);
+
+				if (ctx->step_timeout_seconds > 0 &&
+				    (tool_end - tool_start) >= ctx->step_timeout_seconds) {
+					log_warn("react_run: tool '%s' exceeded step timeout (%lds >= %ds)",
+						 tool_name, (long)(tool_end - tool_start),
+						 ctx->step_timeout_seconds);
+					char timeout_msg[512];
+					snprintf(timeout_msg, sizeof(timeout_msg),
+						"tool error: '%s' timed out (took %lds, limit %ds)",
+						tool_name, (long)(tool_end - tool_start),
+						ctx->step_timeout_seconds);
+					struct react_step *obs = react_step_create(
+						REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL);
+					add_step(ctx, obs);
+					if (cb)
+						cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
+					free(result);
+					free(action_text);
+					ctx->tool_fail_name[0] = '\0';
+					ctx->tool_fail_count = 0;
+					free(sd.response);
+					continue;
+				}
+
 				char obs_buf[4096];
 				if (tool_rc < 0) {
+					ctx->state = REACT_STATE_TOOL_FAIL;
 					snprintf(obs_buf, sizeof(obs_buf),
 						"tool error: %s (code %d)",
 						result ? result : "unknown error", tool_rc);
@@ -438,15 +539,18 @@ int react_run(struct react_context *ctx, const char *user_input,
 				free(result);
 				free(action_text);
 
-				if (ctx->tool_fail_count >= 2) {
+				if (ctx->tool_fail_count >= ctx->tool_max_retries) {
+					log_warn("react_run: tool '%s' failed %d times consecutively, forcing Final",
+						 ctx->tool_fail_name, ctx->tool_fail_count);
+					char fail_msg[256];
+					snprintf(fail_msg, sizeof(fail_msg),
+						"Tool '%s' repeatedly failed. Please try a different approach.",
+						ctx->tool_fail_name);
 					struct react_step *final_step = react_step_create(
-						REACT_STEP_FINAL,
-						"Tool repeatedly failed. Please try a different approach.",
-						NULL, NULL);
+						REACT_STEP_FINAL, fail_msg, NULL, NULL);
 					add_step(ctx, final_step);
 					free(ctx->final_answer);
-					ctx->final_answer = strdup(
-						"Tool repeatedly failed. Please try a different approach.");
+					ctx->final_answer = strdup(fail_msg);
 					ctx->state = REACT_STATE_DONE;
 					free(sd.response);
 					ctx->tool_fail_name[0] = '\0';
@@ -475,6 +579,25 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 
 		free(sd.response);
+	}
+
+	if (ctx->state != REACT_STATE_DONE && ctx->state != REACT_STATE_ABORT) {
+		log_warn("react_run: max iterations (%d) reached, aborting", ctx->max_iterations);
+		if (!ctx->final_answer) {
+			struct react_step *last_obs = NULL;
+			struct react_step *cur = ctx->steps;
+			while (cur) {
+				if (cur->type == REACT_STEP_OBSERVATION)
+					last_obs = cur;
+				cur = cur->next;
+			}
+			if (last_obs && last_obs->content) {
+				ctx->final_answer = strdup(last_obs->content);
+			} else {
+				ctx->final_answer = strdup("Maximum iterations reached. No final answer produced.");
+			}
+		}
+		ctx->state = REACT_STATE_ABORT;
 	}
 
 	if (ctx->state == REACT_STATE_DONE && ctx->final_answer) {

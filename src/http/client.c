@@ -296,6 +296,72 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 	return (int)status;
 }
 
+int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
+			     const char *content_type, const char **extra_headers,
+			     int extra_header_count, long timeout_seconds,
+			     http_callback cb, void *user_data)
+{
+	if (!url || !cb)
+		return -EINVAL;
+	if (!http_initialized)
+		http_init();
+
+	CURL *curl = curl_easy_init();
+	if (!curl)
+		return -EIO;
+
+	struct curl_slist *headers = NULL;
+	char ct[256];
+	if (content_type) {
+		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
+	} else {
+		snprintf(ct, sizeof(ct), "Content-Type: application/json");
+	}
+	headers = curl_slist_append(headers, ct);
+	headers = curl_slist_append(headers, "Accept: text/event-stream");
+
+	for (int i = 0; i < extra_header_count; i++) {
+		if (extra_headers && extra_headers[i])
+			headers = curl_slist_append(headers, extra_headers[i]);
+	}
+
+	struct sse_write_data swd;
+	swd.cb = cb;
+	swd.user_data = user_data;
+	sse_parser_init(&swd.parser, NULL, NULL);
+
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 300L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+
+	if (body && body_len > 0) {
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
+	}
+
+	CURLcode rc = curl_easy_perform(curl);
+	curl_slist_free_all(headers);
+	sse_parser_free(&swd.parser);
+
+	if (rc != CURLE_OK) {
+		curl_easy_cleanup(curl);
+		if (rc == CURLE_OPERATION_TIMEDOUT) {
+			log_warn("http_post_sse_ex_timeout: request timed out after %lds", timeout_seconds);
+			return -ETIMEDOUT;
+		}
+		log_err("sse request failed: %s", curl_easy_strerror(rc));
+		return -EIO;
+	}
+
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	curl_easy_cleanup(curl);
+	return (int)status;
+}
+
 void http_response_free(struct http_response *resp)
 {
 	if (!resp)

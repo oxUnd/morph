@@ -39,6 +39,10 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 		     const char *content_type, const char **extra_headers,
 		     int extra_header_count, http_callback cb, void *user_data);
+int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
+			     const char *content_type, const char **extra_headers,
+			     int extra_header_count, long timeout_seconds,
+			     http_callback cb, void *user_data);
 void http_response_free(struct http_response *resp);
 
 #ifdef __cplusplus

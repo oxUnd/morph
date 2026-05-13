@@ -229,9 +229,11 @@ static int llm_chat(struct model *self, const char *system_prompt,
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };
-	int status = http_post_sse_ex(url, body, (size_t)body_len,
+
+	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
+	int status = http_post_sse_ex_timeout(url, body, (size_t)body_len,
 				       "application/json",
-				       extra_headers, 1,
+				       extra_headers, 1, timeout,
 				       llm_sse_http_cb, &parser);
 
 	sse_parser_free(&parser);
@@ -336,6 +338,7 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	if (api_key)
 		strncpy(m->api_key, api_key, sizeof(m->api_key) - 1);
 	m->context_limit = 128000;
+	m->timeout_seconds = 0;
 	m->chat = llm_chat;
 	m->generate = llm_generate;
 	m->destroy = llm_destroy;

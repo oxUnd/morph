@@ -16,6 +16,7 @@ struct model {
 	char api_key[256];
 	char model_id[128];
 	int context_limit;
+	long timeout_seconds;
 	void *handle;
 	int (*chat)(struct model *self, const char *system_prompt,
 		    const char **messages, int n,
