@@ -91,3 +91,16 @@ mpv_args = "--really-quiet"
 dir = "~/.multi-agent/skills"
 default_max_memory_mb   = 128
 default_max_cpu_seconds = 30
+
+[prompt]
+# Optional: path to a plain-text file containing additional system prompt
+# content appended after the default ReAct system prompt header.
+# The file content is inserted before "Available tools:" and the output
+# format instructions.
+system_prompt_file = ""
+
+# Optional: directory containing multiple prompt fragment files (.txt).
+# All files are loaded in alphabetical order and concatenated after
+# system_prompt_file (if set). Skills or users can drop prompt files here
+# to inject additional instructions into every LLM call.
+system_prompt_dir = ""

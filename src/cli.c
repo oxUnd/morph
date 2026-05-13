@@ -779,6 +779,71 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		return -ENOMEM;
 	}
 
+	if (ctx->config.prompt.system_prompt_file[0]) {
+		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_file);
+		if (expanded) {
+			char *content = file_read_all(expanded, NULL);
+			if (content) {
+				size_t len = strlen(content);
+				while (len > 0 && (content[len-1] == '\n' ||
+				       content[len-1] == '\r' || content[len-1] == ' '))
+					content[--len] = '\0';
+				ctx->react->system_prompt = content;
+				log_info("loaded system prompt: %s",
+					 ctx->config.prompt.system_prompt_file);
+			} else {
+				log_warn("failed to read system prompt: %s",
+					 ctx->config.prompt.system_prompt_file);
+			}
+			free(expanded);
+		}
+	}
+
+	if (ctx->config.prompt.system_prompt_dir[0]) {
+		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_dir);
+		if (expanded) {
+			char **files = NULL;
+			int nfiles = 0;
+			if (file_list_files(expanded, &files, &nfiles) == 0) {
+				for (int i = 0; i < nfiles; i++) {
+					char full[4096];
+					snprintf(full, sizeof(full), "%s/%s", expanded, files[i]);
+					char *content = file_read_all(full, NULL);
+					if (!content)
+						continue;
+					size_t clen = strlen(content);
+					while (clen > 0 && (content[clen-1] == '\n' ||
+					       content[clen-1] == '\r' || content[clen-1] == ' '))
+						content[--clen] = '\0';
+					if (!clen) {
+						free(content);
+						continue;
+					}
+					char *old = ctx->react->system_prompt;
+					size_t old_len = old ? strlen(old) : 0;
+					char *combined = malloc(old_len + 3 + clen + 1);
+					if (combined) {
+						if (old) {
+							memcpy(combined, old, old_len);
+							combined[old_len] = '\n';
+							combined[old_len + 1] = '\n';
+							memcpy(combined + old_len + 2, content, clen + 1);
+						} else {
+							memcpy(combined, content, clen + 1);
+						}
+						ctx->react->system_prompt = combined;
+					}
+					free(old);
+					free(content);
+				}
+				file_free_list(files, nfiles);
+				log_info("loaded %d prompt files from: %s",
+					 nfiles, ctx->config.prompt.system_prompt_dir);
+			}
+			free(expanded);
+		}
+	}
+
 	strncpy(ctx->current_session.name, ctx->config.general.default_session,
 		sizeof(ctx->current_session.name) - 1);
 

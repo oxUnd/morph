@@ -186,6 +186,12 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(skill, "default_max_cpu_seconds", cfg->skill.default_max_cpu_seconds);
 	}
 
+	toml_table_t *prompt = table_path(tbl, "prompt");
+	if (prompt) {
+		CFG_STR(prompt, "system_prompt_file", cfg->prompt.system_prompt_file);
+		CFG_STR(prompt, "system_prompt_dir", cfg->prompt.system_prompt_dir);
+	}
+
 	toml_free(tbl);
 	log_info("config loaded from: %s", path);
 	return 0;

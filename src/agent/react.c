@@ -67,6 +67,7 @@ void react_context_destroy(struct react_context *ctx)
 		ctx->messages = NULL;
 	}
 	free(ctx->final_answer);
+	free(ctx->system_prompt);
 	arena_destroy(ctx->arena);
 	free(ctx);
 }
@@ -193,6 +194,9 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 
 	len += snprintf(buf + len, cap - len,
 		"You are a multi-modal content creation assistant.\n");
+	if (ctx->system_prompt) {
+		len += snprintf(buf + len, cap - len, "%s\n", ctx->system_prompt);
+	}
 	if (ctx->tools && ctx->tools->count > 0) {
 		len += snprintf(buf + len, cap - len,
 			"Available tools:\n");

@@ -56,6 +56,11 @@ struct config_skill {
 	int default_max_cpu_seconds;
 };
 
+struct config_prompt {
+	char system_prompt_file[512];
+	char system_prompt_dir[512];
+};
+
 struct config {
 	struct config_general general;
 	struct config_models models;
@@ -63,6 +68,7 @@ struct config {
 	struct config_context context;
 	struct config_render render;
 	struct config_skill skill;
+	struct config_prompt prompt;
 };
 
 int config_load(struct config *cfg, const char *path);

@@ -52,6 +52,7 @@ struct react_context {
 	int tool_fail_count;
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
+	char *system_prompt;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,

@@ -74,3 +74,60 @@ TEST_F(FileTest, WriteEmpty) {
 	int rc = file_write_all(test_file, "", 0);
 	EXPECT_EQ(rc, 0);
 }
+
+TEST_F(FileTest, ListFiles) {
+	const char *d = "/tmp/ma_test_list";
+	file_ensure_dir(d);
+	file_write_all("/tmp/ma_test_list/z_last.txt", "z", 1);
+	file_write_all("/tmp/ma_test_list/a_first.txt", "a", 1);
+	file_write_all("/tmp/ma_test_list/m_mid.txt", "m", 1);
+	char **names = nullptr;
+	int n = 0;
+	int rc = file_list_files(d, &names, &n);
+	EXPECT_EQ(rc, 0);
+	ASSERT_EQ(n, 3);
+	EXPECT_STREQ(names[0], "a_first.txt");
+	EXPECT_STREQ(names[1], "m_mid.txt");
+	EXPECT_STREQ(names[2], "z_last.txt");
+	file_free_list(names, n);
+	std::remove("/tmp/ma_test_list/z_last.txt");
+	std::remove("/tmp/ma_test_list/a_first.txt");
+	std::remove("/tmp/ma_test_list/m_mid.txt");
+	std::remove(d);
+}
+
+TEST_F(FileTest, ListFilesEmptyDir) {
+	const char *d = "/tmp/ma_test_empty";
+	file_ensure_dir(d);
+	char **names = nullptr;
+	int n = 999;
+	int rc = file_list_files(d, &names, &n);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(n, 0);
+	file_free_list(names, n);
+	std::remove(d);
+}
+
+TEST_F(FileTest, ListFilesNoDir) {
+	char **names = nullptr;
+	int n = 0;
+	int rc = file_list_files("/tmp/nonexistent_xyz_12345", &names, &n);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(FileTest, ListFilesSkipsDirs) {
+	const char *d = "/tmp/ma_test_skip";
+	file_ensure_dir(d);
+	file_write_all("/tmp/ma_test_skip/file.txt", "f", 1);
+	file_ensure_dir("/tmp/ma_test_skip/subdir");
+	char **names = nullptr;
+	int n = 0;
+	int rc = file_list_files(d, &names, &n);
+	EXPECT_EQ(rc, 0);
+	ASSERT_EQ(n, 1);
+	EXPECT_STREQ(names[0], "file.txt");
+	file_free_list(names, n);
+	std::remove("/tmp/ma_test_skip/file.txt");
+	std::remove("/tmp/ma_test_skip/subdir");
+	std::remove(d);
+}

@@ -831,3 +831,78 @@ TEST_F(MockServerTest, SSEWithTimeout) {
 	sse_parser_free(&parser2);
 	mock_server_stop(&srv);
 }
+
+/* ============================================= */
+/* System prompt tests                           */
+/* ============================================= */
+
+TEST_F(ReactTest, SystemPromptCreateDestroy) {
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->system_prompt = strdup("Be creative and concise.");
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, SystemPromptNoCrash) {
+	setup_llm_with_response("Final: done");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->system_prompt = strdup("Always rhyme.");
+	react_run(ctx, "say something", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	react_context_destroy(ctx);
+}
+
+struct capt_prompt_data {
+	char *prompt;
+	const char *resp;
+};
+
+static int capt_prompt_chat(struct model *self, const char *system_prompt,
+			    const char **messages, int n,
+			    sse_callback cb, void *user_data)
+{
+	(void)system_prompt;
+	(void)user_data;
+	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
+	free(d->prompt);
+	d->prompt = (n > 0 && messages[0]) ? strdup(messages[0]) : nullptr;
+	if (cb && d->resp)
+		cb(d->resp, user_data);
+	return 200;
+}
+
+static void capt_prompt_destroy(struct model *self)
+{
+	if (!self) return;
+	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
+	free(d->prompt);
+	free(d);
+	free(self);
+}
+
+TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
+	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->system_prompt = strdup("Custom instruction here.");
+	react_run(ctx, "hello", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->prompt, nullptr);
+	const char *found = strstr(cd->prompt, "Custom instruction here.");
+	EXPECT_NE(found, nullptr) << "system_prompt should appear in the LLM prompt";
+	react_context_destroy(ctx);
+}

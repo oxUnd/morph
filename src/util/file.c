@@ -140,6 +140,63 @@ int file_list_dirs(const char *dir, char ***out_names, int *out_count)
 	return 0;
 }
 
+static int name_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char **)a, *(const char **)b);
+}
+
+int file_list_files(const char *dir, char ***out_names, int *out_count)
+{
+	if (!dir || !out_names || !out_count)
+		return -EINVAL;
+	DIR *d = opendir(dir);
+	if (!d)
+		return -ENOENT;
+	int cap = 16;
+	int n = 0;
+	char **list = malloc(sizeof(char *) * (size_t)cap);
+	if (!list) {
+		closedir(d);
+		return -ENOMEM;
+	}
+	struct dirent *entry;
+	while ((entry = readdir(d)) != NULL) {
+		if (entry->d_name[0] == '.')
+			continue;
+		char full[4096];
+		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
+		struct stat st;
+		if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
+			continue;
+		if (n >= cap) {
+			cap *= 2;
+			char **new_list = realloc(list, sizeof(char *) * (size_t)cap);
+			if (!new_list) {
+				for (int i = 0; i < n; i++)
+					free(list[i]);
+				free(list);
+				closedir(d);
+				return -ENOMEM;
+			}
+			list = new_list;
+		}
+		list[n] = strdup(entry->d_name);
+		if (!list[n]) {
+			for (int i = 0; i < n; i++)
+				free(list[i]);
+			free(list);
+			closedir(d);
+			return -ENOMEM;
+		}
+		n++;
+	}
+	closedir(d);
+	qsort(list, (size_t)n, sizeof(char *), name_cmp);
+	*out_names = list;
+	*out_count = n;
+	return 0;
+}
+
 void file_free_list(char **list, int count)
 {
 	if (!list)
