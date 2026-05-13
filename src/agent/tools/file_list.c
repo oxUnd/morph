@@ -11,8 +11,13 @@
 
 static int name_cmp(const void *a, const void *b)
 {
-	return strcmp((*(const cJSON **)a)->valuestring,
-	              (*(const cJSON **)b)->valuestring);
+	const cJSON *item_a = *(const cJSON **)a;
+	const cJSON *item_b = *(const cJSON **)b;
+	cJSON *na = cJSON_GetObjectItem(item_a, "name");
+	cJSON *nb = cJSON_GetObjectItem(item_b, "name");
+	const char *sa = cJSON_IsString(na) ? na->valuestring : "";
+	const char *sb = cJSON_IsString(nb) ? nb->valuestring : "";
+	return strcmp(sa, sb);
 }
 
 static int file_list_exec(const char *args_json, char **result_json, void *user_data)
