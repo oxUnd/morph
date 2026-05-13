@@ -48,8 +48,10 @@ static void ctx_init(struct ansi_ctx *ctx, char *buf, size_t cap)
 
 static void ctx_append(struct ansi_ctx *ctx, const char *s, size_t n)
 {
-	if (!ctx->buf)
+	if (!ctx->buf) {
+		ctx->len += n;
 		return;
+	}
 	size_t space = ctx->cap > 0 ? ctx->cap - 1 - ctx->len : 0;
 	size_t to_write = n < space ? n : space;
 	if (to_write > 0) {
