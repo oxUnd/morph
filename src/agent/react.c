@@ -117,6 +117,7 @@ void react_reset(struct react_context *ctx)
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
 	ctx->tool_fail_name[0] = '\0';
+	ctx->tool_fail_args[0] = '\0';
 	ctx->tool_fail_count = 0;
 	ctx->cancelled = 0;
 }
@@ -178,18 +179,58 @@ static int parse_action(const char *text, char *tool_name, size_t tn_size,
 	while (*text && *text != '(' && !isspace((unsigned char)*text) && i < tn_size - 1)
 		tool_name[i++] = *text++;
 	tool_name[i] = '\0';
+	while (*text && isspace((unsigned char)*text))
+		text++;
 	if (*text != '(')
 		return -1;
 	text++;
-	size_t len = strlen(text);
-	if (len == 0)
+
+	/* Walk char-by-char, tracking string and bracket nesting so that we
+	 * correctly handle JSON args like {"path":"a)b","n":1}. */
+	int paren = 1;     /* we already consumed the opening '(' */
+	int brace = 0;
+	int bracket = 0;
+	int in_str = 0;
+	int escape = 0;
+	const char *p = text;
+	const char *close = NULL;
+	for (; *p; p++) {
+		char c = *p;
+		if (in_str) {
+			if (escape) {
+				escape = 0;
+			} else if (c == '\\') {
+				escape = 1;
+			} else if (c == '"') {
+				in_str = 0;
+			}
+			continue;
+		}
+		if (c == '"') {
+			in_str = 1;
+		} else if (c == '{') {
+			brace++;
+		} else if (c == '}') {
+			if (brace > 0)
+				brace--;
+		} else if (c == '[') {
+			bracket++;
+		} else if (c == ']') {
+			if (bracket > 0)
+				bracket--;
+		} else if (c == '(') {
+			paren++;
+		} else if (c == ')') {
+			paren--;
+			if (paren == 0 && brace == 0 && bracket == 0) {
+				close = p;
+				break;
+			}
+		}
+	}
+	if (!close)
 		return -1;
-	const char *end = text + len - 1;
-	while (end > text && isspace((unsigned char)*end))
-		end--;
-	if (*end != ')')
-		return -1;
-	size_t arg_len = (size_t)(end - text);
+	size_t arg_len = (size_t)(close - text);
 	if (arg_len >= ta_size)
 		arg_len = ta_size - 1;
 	memcpy(tool_args, text, arg_len);
@@ -585,17 +626,24 @@ int react_run(struct react_context *ctx, const char *user_input,
 					snprintf(obs_buf, sizeof(obs_buf),
 						"tool error: %s (code %d)",
 						result ? result : "unknown error", tool_rc);
-					if (strcmp(tool_name, ctx->tool_fail_name) == 0)
+					if (strcmp(tool_name, ctx->tool_fail_name) == 0 &&
+					    strcmp(tool_args, ctx->tool_fail_args) == 0) {
+						/* Same tool + same args failed again. */
 						ctx->tool_fail_count++;
-					else {
+					} else {
 						strncpy(ctx->tool_fail_name, tool_name,
 							sizeof(ctx->tool_fail_name) - 1);
+						ctx->tool_fail_name[sizeof(ctx->tool_fail_name) - 1] = '\0';
+						strncpy(ctx->tool_fail_args, tool_args,
+							sizeof(ctx->tool_fail_args) - 1);
+						ctx->tool_fail_args[sizeof(ctx->tool_fail_args) - 1] = '\0';
 						ctx->tool_fail_count = 1;
 					}
 				} else {
 					snprintf(obs_buf, sizeof(obs_buf), "%s",
 						result ? result : "(no output)");
 					ctx->tool_fail_name[0] = '\0';
+					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 				}
 				free(result);
@@ -616,6 +664,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					ctx->state = REACT_STATE_DONE;
 					free(sd.response);
 					ctx->tool_fail_name[0] = '\0';
+					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 					break;
 				}

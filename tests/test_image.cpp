@@ -3,6 +3,8 @@
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_edit.h"
 #include "agent/tools/img_info.h"
+#include "agent/tools/img_resize.h"
+#include "agent/tools/img_convert.h"
 #include "agent/tool.h"
 #include "render/image.h"
 #include <string.h>
@@ -158,6 +160,62 @@ TEST_F(ImgGenToolTest, InfoInvalidFile) {
 	img_info_init(&reg);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_info", "{\"file_path\":\"/nonexistent.png\"}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, ResizeRegister) {
+	int rc = img_resize_init(&reg);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_resize");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_resize");
+}
+
+TEST_F(ImgGenToolTest, ResizeMissingArgs) {
+	img_resize_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_resize", "{}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, ResizeInvalidFile) {
+	img_resize_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_resize",
+		"{\"file_path\":\"/nonexistent.png\",\"width\":10,\"height\":10}",
+		&result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, ConvertRegister) {
+	int rc = img_convert_init(&reg);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_convert");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_convert");
+}
+
+TEST_F(ImgGenToolTest, ConvertMissingArgs) {
+	img_convert_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_convert", "{}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, ConvertUnsupportedFormat) {
+	img_convert_init(&reg);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_convert",
+		"{\"file_path\":\"/tmp/x.png\",\"format\":\"avif\"}",
+		&result);
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result, nullptr);
 	free(result);

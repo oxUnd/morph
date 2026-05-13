@@ -2,12 +2,15 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "agent/tokenizer.h"
+#include "agent/compress.h"
 #include "agent/tools/text_gen.h"
 #include "skill/skill.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_edit.h"
 #include "agent/tools/img_info.h"
+#include "agent/tools/img_resize.h"
+#include "agent/tools/img_convert.h"
 #include "agent/tools/vid_gen.h"
 #include "db/database.h"
 #include "config.h"
@@ -617,21 +620,55 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 		message_free_list(msgs);
 		return 0;
 	}
-	int remove_count = count - keep;
-	struct message *cur = msgs;
-	int removed = 0;
-	while (cur && removed < remove_count) {
-		int rc = message_delete(&ctx->database, cur->id);
-		if (rc == 0)
-			removed++;
-		struct message *next = cur->next;
-		free(cur->content);
-		free(cur);
-		cur = next;
+
+	/* Build an in-memory list mirroring DB rows so we can apply the
+	 * layered compression fallback (REQUIREMENTS §6.3): react_trace →
+	 * sliding_window. Track which DB ids survive; everything else is
+	 * deleted from the DB. */
+	struct message_list *head = NULL;
+	int *ids = calloc((size_t)count, sizeof(*ids));
+	int n_ids = 0;
+	for (struct message *m = msgs; m; m = m->next) {
+		struct message_list *node = msg_list_create(m->role, m->content,
+							    m->token_count);
+		if (!node)
+			continue;
+		node->compressed = m->compressed;
+		msg_list_append(&head, node);
+		ids[n_ids++] = (int)m->id;
 	}
-	if (cur)
-		message_free_list(cur);
-	CMD_OK("compressed: removed %d old messages, kept %d recent", removed, keep);
+	message_free_list(msgs);
+
+	struct compress_result trace_res = {0};
+	(void)compress_react_trace(&head, &trace_res);
+	struct compress_result win_res = {0};
+	int rc = compress_sliding_window(&head,
+		ctx->config.context.keep_recent_rounds, &win_res);
+	if (rc < 0) {
+		msg_list_destroy(head);
+		free(ids);
+		CMD_ERROR("compression failed: %d", rc);
+		return rc;
+	}
+
+	/* Compute survivors by walking remaining list and matching content
+	 * with the original DB rows (preserving order).  Entries from the
+	 * tail of `ids` correspond to the last messages, which sliding_window
+	 * keeps; we delete the prefix that was dropped. */
+	int kept = msg_list_count(head);
+	int removed = count - kept;
+	for (int i = 0; i < removed; i++) {
+		/* Best-effort: delete by id; keep going on failure. */
+		(void)message_delete(&ctx->database, ids[i]);
+	}
+	msg_list_destroy(head);
+	free(ids);
+
+	/* Refresh in-memory react context from DB. */
+	session_load_history(ctx);
+
+	CMD_OK("compressed: react_trace removed %d, sliding_window removed %d, kept %d",
+	       trace_res.messages_removed, win_res.messages_removed, kept);
 	return 0;
 }
 
@@ -973,6 +1010,12 @@ struct model *llm = model_llm_create(
 
 	img_info_init(&ctx->tools);
 	log_info("registered img_info tool");
+
+	img_resize_init(&ctx->tools);
+	log_info("registered img_resize tool");
+
+	img_convert_init(&ctx->tools);
+	log_info("registered img_convert tool");
 
 	const char *vid_api_key = NULL;
 	if (ctx->config.models.video.api_key[0])

@@ -49,6 +49,7 @@ struct react_context {
 	char *final_answer;
 	enum react_state state;
 	char tool_fail_name[64];
+	char tool_fail_args[512];
 	int tool_fail_count;
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
