@@ -124,6 +124,8 @@ void react_step_destroy(struct react_step *step)
 
 static void add_step(struct react_context *ctx, struct react_step *step)
 {
+	if (!step)
+		return;
 	if (!ctx->steps) {
 		ctx->steps = step;
 	} else {
