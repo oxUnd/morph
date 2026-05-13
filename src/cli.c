@@ -769,7 +769,7 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("file not found: %s", argv[1]);
 		return -ENOENT;
 	}
-	if (video_play(argv[1]) != 0) {
+	if (video_play(argv[1], ctx->config.render.mpv_args) != 0) {
 		CMD_ERROR("failed to play video: %s", argv[1]);
 		return -EIO;
 	}
@@ -1289,7 +1289,7 @@ static int output_callback(enum react_step_type type, const char *content,
 			if (vid_path) {
 				memcpy(vid_path, path_start, plen);
 				vid_path[plen] = '\0';
-				video_play(vid_path);
+				video_play(vid_path, ctx->config.render.mpv_args);
 				free(vid_path);
 			}
 		}

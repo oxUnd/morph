@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-int video_play(const char *path);
+int video_play(const char *path, const char *mpv_args);
 
 #ifdef __cplusplus
 }
