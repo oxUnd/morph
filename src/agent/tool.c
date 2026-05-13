@@ -10,6 +10,19 @@ void tool_registry_init(struct tool_registry *reg)
 	memset(reg, 0, sizeof(*reg));
 }
 
+void tool_registry_cleanup(struct tool_registry *reg)
+{
+	tool_entry_cleanup_user_data(reg);
+}
+
+void tool_entry_cleanup_user_data(struct tool_registry *reg)
+{
+	if (!reg)
+		return;
+	for (int i = 0; i < reg->count; i++)
+		free(reg->entries[i].user_data);
+}
+
 static int find_tool(struct tool_registry *reg, const char *name)
 {
 	for (int i = 0; i < reg->count; i++) {

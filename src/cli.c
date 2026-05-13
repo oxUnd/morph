@@ -762,6 +762,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 					  ctx->config.models.text.context_limit);
 	if (!ctx->tokenizer) {
 		log_err("failed to create tokenizer");
+		db_close(&ctx->database);
 		return -ENOMEM;
 	}
 	struct compress_config compress_cfg = {
@@ -774,6 +775,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	if (!ctx->react) {
 		log_err("failed to create react context");
 		tokenizer_destroy(ctx->tokenizer);
+		db_close(&ctx->database);
 		return -ENOMEM;
 	}
 
@@ -1198,6 +1200,14 @@ void cli_shutdown(struct cli_context *ctx)
 		react_context_destroy(ctx->react);
 	if (ctx->tokenizer)
 		tokenizer_destroy(ctx->tokenizer);
+	for (int i = 0; i < ctx->tools.count; i++) {
+		void *ud = ctx->tools.entries[i].user_data;
+		if (ud) {
+			skill_unload((struct skill *)ud);
+			free(ud);
+			ctx->tools.entries[i].user_data = NULL;
+		}
+	}
 	if (ctx->llm)
 		model_destroy(ctx->llm);
 	if (ctx->img_llm)

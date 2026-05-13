@@ -3,6 +3,7 @@
 #include "compress.h"
 #include "models/llm.h"
 #include "util/log.h"
+#include "util/arena.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->tool_max_retries = 3;
 	ctx->state = REACT_STATE_INIT;
 	ctx->cancelled = 0;
+	ctx->arena = arena_create(0);
 	if (cfg)
 		ctx->compress = *cfg;
 	return ctx;
@@ -65,6 +67,7 @@ void react_context_destroy(struct react_context *ctx)
 		ctx->messages = NULL;
 	}
 	free(ctx->final_answer);
+	arena_destroy(ctx->arena);
 	free(ctx);
 }
 
@@ -302,6 +305,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	if (!ctx || !user_input)
 		return -EINVAL;
 	react_reset(ctx);
+	arena_reset(ctx->arena);
 	ctx->state = REACT_STATE_THINKING;
 
 	struct message_list *msg = msg_list_create("user", user_input,
@@ -328,6 +332,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 			log_info("auto-compress: removed %d messages (%d -> %d tokens)",
 				 cr.messages_removed, cr.original_tokens,
 				 cr.compressed_tokens);
+			free(cr.summary);
+			key_info_free(cr.preserved);
 		}
 
 		char *prompt = NULL;
