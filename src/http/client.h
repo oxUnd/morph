@@ -29,6 +29,8 @@ struct http_request {
 int http_init(void);
 void http_cleanup(void);
 int http_get(const char *url, struct http_response *resp);
+int http_get_ex(const char *url, const char **extra_headers,
+		int extra_header_count, struct http_response *resp);
 int http_post(const char *url, const char *body, size_t body_len,
 	      const char *content_type, struct http_response *resp);
 int http_post_ex(const char *url, const char *body, size_t body_len,

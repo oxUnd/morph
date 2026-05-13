@@ -105,6 +105,46 @@ int http_get(const char *url, struct http_response *resp)
 	return do_request(url, "GET", NULL, 0, NULL, resp, 30);
 }
 
+int http_get_ex(const char *url, const char **extra_headers,
+		int extra_header_count, struct http_response *resp)
+{
+	if (!url || !resp)
+		return -EINVAL;
+	memset(resp, 0, sizeof(*resp));
+	if (!http_initialized)
+		http_init();
+	CURL *curl = curl_easy_init();
+	if (!curl)
+		return -EIO;
+	struct curl_slist *headers = NULL;
+	for (int i = 0; i < extra_header_count; i++) {
+		if (extra_headers && extra_headers[i])
+			headers = curl_slist_append(headers, extra_headers[i]);
+	}
+	if (headers)
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
+	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	CURLcode rc = curl_easy_perform(curl);
+	if (headers)
+		curl_slist_free_all(headers);
+	if (rc != CURLE_OK) {
+		curl_easy_cleanup(curl);
+		log_err("http request failed: %s", curl_easy_strerror(rc));
+		return -EIO;
+	}
+	long status = 0;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	resp->status_code = (int)status;
+	curl_easy_cleanup(curl);
+	return 0;
+}
+
 int http_post(const char *url, const char *body, size_t body_len,
 	      const char *content_type, struct http_response *resp)
 {
