@@ -1044,3 +1044,384 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	EXPECT_NE(found, nullptr) << "system_prompt should appear in the LLM prompt";
 	react_context_destroy(ctx);
 }
+
+/* ============================================= */
+/* Multi-turn conversation (message accumulation)*/
+/* ============================================= */
+
+TEST_F(MockLlmTest, MultiTurnMessageAccumulation) {
+	setup_llm_with_response("Final: ok");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	react_run(ctx, "turn 1", nullptr, nullptr);
+	int after_first = msg_list_count(ctx->messages);
+	EXPECT_EQ(after_first, 2);
+
+	react_run(ctx, "turn 2", nullptr, nullptr);
+	int after_second = msg_list_count(ctx->messages);
+	EXPECT_EQ(after_second, 4);
+
+	react_run(ctx, "turn 3", nullptr, nullptr);
+	int after_third = msg_list_count(ctx->messages);
+	EXPECT_EQ(after_third, 6);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, MultiTurnFinalAnswerUpdated) {
+	setup_llm_with_response("Final: first answer");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	react_run(ctx, "first", nullptr, nullptr);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "first answer") != nullptr);
+
+	llm_data->response = "Final: second answer";
+	react_run(ctx, "second", nullptr, nullptr);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "second answer") != nullptr);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, MultiTurnMessageRolesAlternate) {
+	setup_llm_with_response("Final: answer");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	react_run(ctx, "hello", nullptr, nullptr);
+	struct message_list *cur = ctx->messages;
+	EXPECT_STREQ(cur->role, "user");
+	EXPECT_STREQ(cur->content, "hello");
+	cur = cur->next;
+	ASSERT_NE(cur, nullptr);
+	EXPECT_STREQ(cur->role, "assistant");
+	EXPECT_TRUE(strstr(cur->content, "answer") != nullptr);
+
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Compression integration within react_run      */
+/* ============================================= */
+
+static int test_compress_cb(const char *text, void *user_data, char **out)
+{
+	(void)text;
+	(void)user_data;
+	*out = strdup("[COMPRESSED SUMMARY]");
+	return *out ? 0 : -ENOMEM;
+}
+
+TEST_F(MockLlmTest, CompressTriggerInReact) {
+	cfg.max_context_tokens = 6;
+	cfg.summarize_threshold_ratio = 0.5;
+
+	setup_llm_with_response("Final: after compress");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->compress.summarize = test_compress_cb;
+	ctx->compress.summarize_user_data = nullptr;
+	ctx->compress.max_history_rounds = 1;
+
+	react_run(ctx, "first", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+
+	react_run(ctx, "second", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
+	cfg.max_context_tokens = 6;
+	cfg.summarize_threshold_ratio = 0.5;
+
+	setup_llm_with_response("Final: ok");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->compress.summarize = test_compress_cb;
+	ctx->compress.summarize_user_data = nullptr;
+	ctx->compress.max_history_rounds = 1;
+
+	for (int i = 0; i < 4; i++) {
+		char input[32];
+		snprintf(input, sizeof(input), "run %d", i);
+		react_run(ctx, input, nullptr, nullptr);
+		EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+		EXPECT_NE(ctx->final_answer, nullptr);
+	}
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Tool execution edge cases                     */
+/* ============================================= */
+
+TEST_F(MockLlmTest, ActionToolNotFound) {
+	tool_register(&tools, "good_tool", "Works", "{}", test_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: try bad tool.\nAction: bad_tool({\"x\":1})\n",
+		"Thought: it failed.\nFinal: tool not available"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "not available") != nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ActionInvalidFormat) {
+	tool_register(&tools, "test_tool", "Test", "{}", test_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: bad format.\nAction: test_tool({\"x\")\n",
+		"Thought: adjusting.\nFinal: recovered"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "recovered") != nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ActionNoToolsRegistered) {
+	setup_llm_with_response("Action: some_tool({})\n");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	react_context_destroy(ctx);
+}
+
+static int null_result_tool_fn(const char *args_json, char **result_json, void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	*result_json = NULL;
+	return 0;
+}
+
+TEST_F(MockLlmTest, ToolNullResult) {
+	tool_register(&tools, "null_tool", "Returns null result", "{}",
+		      null_result_tool_fn, nullptr);
+	const char *responses[] = {
+		"Thought: calling null tool.\nAction: null_tool({})\n",
+		"Thought: got null.\nFinal: handled null result"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "handled null result") != nullptr);
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* LLM response edge cases                       */
+/* ============================================= */
+
+TEST_F(MockLlmTest, EmptyLlmResponse) {
+	setup_llm_with_response("");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ResponseOnlyFinalPrefix) {
+	setup_llm_with_response("Final:");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_STREQ(ctx->final_answer, "");
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ThoughtOnly) {
+	setup_llm_with_response("Thought: just thinking\n");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int rc = react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Cancellation during tool execution            */
+/* ============================================= */
+
+static int self_cancel_tool_fn(const char *args_json, char **result_json, void *user_data)
+{
+	(void)args_json;
+	struct react_context *ctx = (struct react_context *)user_data;
+	ctx->cancelled = 1;
+	*result_json = strdup("{\"cancelled\":true}");
+	return 0;
+}
+
+TEST_F(MockLlmTest, CancelDuringToolExecution) {
+	const char *responses[] = {
+		"Thought: run self-cancel tool.\nAction: self_cancel({})\n",
+	};
+	llm = create_multi_mock_llm(responses, 1);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	tool_register(&tools, "self_cancel", "Cancels context", "{}",
+		      self_cancel_tool_fn, ctx);
+	ctx->max_iterations = 5;
+	int rc = react_run(ctx, "cancel me", nullptr, nullptr);
+	EXPECT_NE(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Step list traversal                           */
+/* ============================================= */
+
+TEST_F(MockLlmTest, StepLinkedListTraversal) {
+	const char *responses[] = {
+		"Thought: step 1.\nAction: counter({})\n",
+		"Thought: step 2.\nFinal: done after two steps"
+	};
+	int call_count = 0;
+	tool_register(&tools, "counter", "Counts", "{}",
+		      call_count_tool_fn, &call_count);
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	react_run(ctx, "multi-step flow", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_GE(call_count, 1);
+	ASSERT_GE(ctx->step_count, 3);
+	struct react_step *s = ctx->steps;
+	int type_order[] = {REACT_STEP_THOUGHT, REACT_STEP_ACTION,
+			    REACT_STEP_OBSERVATION, REACT_STEP_THOUGHT,
+			    REACT_STEP_FINAL};
+	int idx = 0;
+	while (s && idx < 5) {
+		EXPECT_EQ(s->type, type_order[idx]);
+		s = s->next;
+		idx++;
+	}
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Context reuse after complex interaction       */
+/* ============================================= */
+
+TEST_F(MockLlmTest, ReuseContextAfterDone) {
+	setup_llm_with_response("Final: first");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	react_run(ctx, "first input", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+
+	llm_data->response = "Final: second";
+	react_run(ctx, "second input", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_TRUE(strstr(ctx->final_answer, "second") != nullptr);
+
+	react_context_destroy(ctx);
+}
+
+/* ============================================= */
+/* Message list with file paths                  */
+/* ============================================= */
+
+TEST_F(ReactTest, MsgListWithFilePaths) {
+	struct message_list *m = msg_list_create("user", "check file", 2);
+	ASSERT_NE(m, nullptr);
+	m->file_paths = (char **)calloc(2, sizeof(char *));
+	m->file_paths[0] = strdup("/tmp/test.txt");
+	m->file_count = 1;
+	EXPECT_STREQ(m->file_paths[0], "/tmp/test.txt");
+	EXPECT_EQ(m->file_count, 1);
+	msg_list_destroy(m);
+}
+
+TEST_F(ReactTest, MsgListCreateNullContent) {
+	struct message_list *m = msg_list_create("user", nullptr, 1);
+	ASSERT_NE(m, nullptr);
+	EXPECT_STREQ(m->content, "");
+	msg_list_destroy(m);
+}
+
+TEST_F(ReactTest, MsgListAppendToNullHead) {
+	struct message_list *head = nullptr;
+	msg_list_append(nullptr, nullptr);
+	EXPECT_NO_FATAL_FAILURE(msg_list_append(&head, nullptr));
+	EXPECT_EQ(msg_list_count(head), 0);
+}
+
+TEST_F(ReactTest, ContextNeedsCompressExactThreshold) {
+	struct compress_config test_cfg = {
+		.max_context_tokens = 10,
+		.max_history_rounds = 2,
+		.summarize_threshold_ratio = 0.5,
+	};
+	struct message_list *head = nullptr;
+	for (int i = 0; i < 5; i++)
+		msg_list_append(&head, msg_list_create("user", "msg", 1));
+	int needs = context_needs_compress(head, nullptr, &test_cfg);
+	EXPECT_EQ(needs, 1);
+	msg_list_destroy(head);
+}
+
+TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
+	struct compress_config test_cfg = {
+		.max_context_tokens = 100,
+		.max_history_rounds = 2,
+		.summarize_threshold_ratio = 0.5,
+	};
+	struct message_list *head = nullptr;
+	msg_list_append(&head, msg_list_create("user", "hi", 1));
+	int needs = context_needs_compress(head, nullptr, &test_cfg);
+	EXPECT_EQ(needs, 0);
+	msg_list_destroy(head);
+}
