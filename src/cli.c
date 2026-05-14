@@ -133,6 +133,66 @@ static void utf8_sanitize_inplace(char *s)
 	p[w] = '\0';
 }
 
+static int utf8_display_width(const char *s)
+{
+	if (!s) return 0;
+	int w = 0;
+	const unsigned char *p = (const unsigned char *)s;
+	while (*p) {
+		uint32_t cp;
+		int bytes;
+		if (*p < 0x80) {
+			cp = *p; bytes = 1;
+		} else if ((*p & 0xE0) == 0xC0) {
+			cp = *p & 0x1F; bytes = 2;
+		} else if ((*p & 0xF0) == 0xE0) {
+			cp = *p & 0x0F; bytes = 3;
+		} else if ((*p & 0xF8) == 0xF0) {
+			cp = *p & 0x07; bytes = 4;
+		} else {
+			p++; continue;
+		}
+		for (int i = 1; i < bytes; i++) {
+			if ((p[i] & 0xC0) != 0x80) { bytes = 0; break; }
+		}
+		if (bytes == 0) { p++; continue; }
+		for (int i = 1; i < bytes; i++)
+			cp = (cp << 6) | (p[i] & 0x3F);
+		p += bytes;
+		if (cp < 0x20) continue;
+		if ((cp >= 0x1100 && cp <= 0x115F) ||
+		    (cp >= 0x2329 && cp <= 0x232A) ||
+		    (cp >= 0x2E80 && cp <= 0x303E) ||
+		    (cp >= 0x3040 && cp <= 0x334F) ||
+		    (cp >= 0x3400 && cp <= 0x4DBF) ||
+		    (cp >= 0x4E00 && cp <= 0x9FFF) ||
+		    (cp >= 0xA960 && cp <= 0xA97C) ||
+		    (cp >= 0xAC00 && cp <= 0xD7A3) ||
+		    (cp >= 0xD7B0 && cp <= 0xD7C6) ||
+		    (cp >= 0xF900 && cp <= 0xFAFF) ||
+		    (cp >= 0xFE10 && cp <= 0xFE19) ||
+		    (cp >= 0xFE30 && cp <= 0xFE6F) ||
+		    (cp >= 0xFF01 && cp <= 0xFF60) ||
+		    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+		    (cp >= 0x20000 && cp <= 0x2FFFD) ||
+		    (cp >= 0x30000 && cp <= 0x3FFFD))
+			w += 2;
+		else
+			w += 1;
+	}
+	return w;
+}
+
+static void print_padded(const char *s, int target_width)
+{
+	if (!s) s = "";
+	int dw = utf8_display_width(s);
+	fputs(s, stdout);
+	int pad = target_width - dw;
+	for (int i = 0; i < pad; i++)
+		putchar(' ');
+}
+
 /* ---- arg/argv helpers ---- */
 
 static int argv_split(const char *input, char **argv, int max_args)
@@ -340,18 +400,29 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	int count = 0;
 	session_list(&ctx->database, &list, &count);
 	CMD_HEADER("sessions (%d)", count);
-	printf("  %-5s %-30s %-35s %s\n", "ID", "Name", "Model", "Tokens");
-	printf("  %-5s %-30s %-35s %s\n", "---", "---", "---", "---");
+	printf("  ");
+	print_padded("ID", 5); putchar(' ');
+	print_padded("Name", 45); putchar(' ');
+	print_padded("Model", 30); putchar(' ');
+	printf("Tokens\n");
+	printf("  ");
+	print_padded("---", 5); putchar(' ');
+	print_padded("---", 45); putchar(' ');
+	print_padded("---", 30); putchar(' ');
+	printf("---\n");
 	for (int i = 0; i < count; i++) {
 		int is_current = (list[i].id == ctx->current_session.id);
 		const char *model = is_current ? ctx->config.models.text.model : list[i].model;
-		printf("  %s%-5lld%s %-30s %-35s %lld\n",
-		       is_current ? ANSI_GREEN : "",
-		       (long long)list[i].id,
-		       is_current ? ANSI_RESET : "",
-		       list[i].name,
-		       model,
-		       (long long)list[i].token_used);
+		char id_buf[16];
+		snprintf(id_buf, sizeof(id_buf), "%lld", (long long)list[i].id);
+		printf("  ");
+		if (is_current) fputs(ANSI_GREEN, stdout);
+		print_padded(id_buf, 5);
+		if (is_current) fputs(ANSI_RESET, stdout);
+		putchar(' ');
+		print_padded(list[i].name, 45); putchar(' ');
+		print_padded(model, 30); putchar(' ');
+		printf("%lld\n", (long long)list[i].token_used);
 	}
 	free(list);
 	return 0;
