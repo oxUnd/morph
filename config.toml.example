@@ -1,16 +1,16 @@
-# multi-agent configuration file
-# Place at ~/.multi-agent/config.toml
+# morph configuration file
+# Place at ~/.morph/config.toml
 # Environment variables referenced by api_key_env must be set before launch.
 
 [general]
 # Default session name on startup
 default_session = "default"
 # Directory for generated output files
-output_dir = "~/.multi-agent/output"
+output_dir = "~/.morph/output"
 # Log level: debug, info, warn, error
 log_level = "info"
 # Log file path
-log_file = "~/.multi-agent/log/agent.log"
+log_file = "~/.morph/log/agent.log"
 
 # ──────────────────────────────────────────────
 # Text (chat) model
@@ -86,7 +86,7 @@ prefer_image_protocol = "auto"
 mpv_args = "--really-quiet"
 
 [skill]
-dir = "~/.multi-agent/skills"
+dir = "~/.morph/skills"
 default_max_memory_mb   = 128
 default_max_cpu_seconds = 30
 

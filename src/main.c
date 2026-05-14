@@ -15,11 +15,11 @@ int main(int argc, char *argv[])
 		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)
 			config_path = argv[++i];
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			printf("Usage: multi-agent [-c config_path]\n");
+			printf("Usage: morph [-c config_path]\n");
 			return 0;
 		}
 	}
-	char *log_dir = file_expand_path("~/.multi-agent/log");
+	char *log_dir = file_expand_path("~/.morph/log");
 	file_ensure_dir(log_dir);
 	char log_path[512];
 	snprintf(log_path, sizeof(log_path), "%s/agent.log", log_dir);

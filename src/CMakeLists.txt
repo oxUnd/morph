@@ -1,29 +1,29 @@
-set(MULTI_AGENT_SOURCES
+set(MORPH_SOURCES
 	main.c
 )
 
-set(MULTI_AGENT_LIBS
-	multi-agent-util
-	multi-agent-db
-	multi-agent-http
-	multi-agent-agent
-	multi-agent-models
-	multi-agent-skill
-	multi-agent-ipc
-	multi-agent-tools
-	multi-agent-config
-	multi-agent-session
+set(MORPH_LIBS
+	morph-util
+	morph-db
+	morph-http
+	morph-agent
+	morph-models
+	morph-skill
+	morph-ipc
+	morph-tools
+	morph-config
+	morph-session
 	SQLite::SQLite3
 	CURL::libcurl
 )
 
-add_library(multi-agent-toml STATIC
+add_library(morph-toml STATIC
 	${CMAKE_SOURCE_DIR}/vendor/toml.c
 )
-target_include_directories(multi-agent-toml PUBLIC
+target_include_directories(morph-toml PUBLIC
 	${CMAKE_SOURCE_DIR}/vendor
 )
-target_compile_options(multi-agent-toml PRIVATE
+target_compile_options(morph-toml PRIVATE
 	-Wno-implicit-function-declaration
 	-Wno-implicit-int
 	-Wno-sign-conversion
@@ -34,23 +34,23 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/toml.c PROPERTIES
 	COMPILE_FLAGS "-include ${CMAKE_CURRENT_SOURCE_DIR}/vendor_toml_compat.h"
 )
 
-add_library(multi-agent-config STATIC
+add_library(morph-config STATIC
 	config.c
 )
-target_include_directories(multi-agent-config PUBLIC
+target_include_directories(morph-config PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent-config PUBLIC multi-agent-util multi-agent-toml)
+target_link_libraries(morph-config PUBLIC morph-util morph-toml)
 
-add_library(multi-agent-session STATIC
+add_library(morph-session STATIC
 	session.c
 )
-target_include_directories(multi-agent-session PUBLIC
+target_include_directories(morph-session PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent-session PUBLIC multi-agent-util multi-agent-db)
+target_link_libraries(morph-session PUBLIC morph-util morph-db)
 
 add_subdirectory(render)
 add_subdirectory(agent)
@@ -62,21 +62,21 @@ add_subdirectory(http)
 add_subdirectory(db)
 add_subdirectory(util)
 
-add_library(multi-agent-cli STATIC
+add_library(morph-cli STATIC
 	cli.c
 )
-target_include_directories(multi-agent-cli PUBLIC
+target_include_directories(morph-cli PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent-cli PUBLIC multi-agent-util multi-agent-db multi-agent-agent multi-agent-http multi-agent-models multi-agent-config multi-agent-session multi-agent-render)
+target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render)
 
-add_executable(multi-agent ${MULTI_AGENT_SOURCES})
-target_include_directories(multi-agent PRIVATE
+add_executable(morph ${MORPH_SOURCES})
+target_include_directories(morph PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent ${MULTI_AGENT_LIBS} multi-agent-cli)
+target_link_libraries(morph ${MORPH_LIBS} morph-cli)
 
 find_path(READLINE_INCLUDE_DIR readline/readline.h
 	/opt/homebrew/opt/readline/include
@@ -89,8 +89,8 @@ find_library(READLINE_LIBRARY readline
 	/usr/lib
 )
 if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
-	target_include_directories(multi-agent PRIVATE ${READLINE_INCLUDE_DIR})
-	target_link_libraries(multi-agent ${READLINE_LIBRARY})
+	target_include_directories(morph PRIVATE ${READLINE_INCLUDE_DIR})
+	target_link_libraries(morph ${READLINE_LIBRARY})
 	add_compile_definitions(HAVE_READLINE=1)
 	message(STATUS "readline found: ${READLINE_LIBRARY}")
 else()

@@ -51,8 +51,8 @@
 #define CMD_OK(fmt, ...) \
 	printf(ANSI_GREEN fmt ANSI_RESET "\n", ##__VA_ARGS__)
 
-static const char *default_db_path = "~/.multi-agent/data.db";
-static const char *default_config_path = "~/.multi-agent/config.toml";
+static const char *default_db_path = "~/.morph/data.db";
+static const char *default_config_path = "~/.morph/config.toml";
 
 static size_t utf8_truncate(const char *s, size_t max_bytes)
 {
@@ -276,7 +276,7 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 			printf("  " ANSI_DIM "usage: %s" ANSI_RESET "\n", e->usage);
 		return 0;
 	}
-	printf(ANSI_BOLD "multi-agent commands:" ANSI_RESET "\n");
+	printf(ANSI_BOLD "morph commands:" ANSI_RESET "\n");
 	for (int i = 0; i < num_commands; i++) {
 		if (strcmp(commands[i].name, "/q") == 0)
 			continue;
@@ -874,7 +874,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		config_load(&ctx->config, expanded);
 	free(expanded);
 	char *db_path = file_expand_path(default_db_path);
-	char *db_dir = file_expand_path("~/.multi-agent");
+	char *db_dir = file_expand_path("~/.morph");
 	file_ensure_dir(db_dir);
 	free(db_dir);
 	int rc = db_open(&ctx->database, db_path);
@@ -1057,7 +1057,7 @@ struct model *llm = model_llm_create(
 
 	/* Auto-discover skills from skills/ directory */
 	char skills_dir[512] = {0};
-	char *skills_home = file_expand_path("~/.multi-agent/skills");
+	char *skills_home = file_expand_path("~/.morph/skills");
 	if (skills_home) {
 		strncpy(skills_dir, skills_home, sizeof(skills_dir) - 1);
 		free(skills_home);
@@ -1169,7 +1169,7 @@ void cli_run(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
-	printf("multi-agent v0.1  |  " ANSI_DIM "/help 查看命令" ANSI_RESET "\n\n");
+	printf("morph v0.1  |  " ANSI_DIM "/help 查看命令" ANSI_RESET "\n\n");
 	char line[8192];
 
 	struct sigaction sa;

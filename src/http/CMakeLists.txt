@@ -1,10 +1,10 @@
-add_library(multi-agent-http STATIC
+add_library(morph-http STATIC
 	client.c
 	sse.c
 )
 
-target_include_directories(multi-agent-http PUBLIC
+target_include_directories(morph-http PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(multi-agent-http PUBLIC multi-agent-util CURL::libcurl)
+target_link_libraries(morph-http PUBLIC morph-util CURL::libcurl)

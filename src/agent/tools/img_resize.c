@@ -113,7 +113,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		strncpy(final_path, out_path_in, sizeof(final_path) - 1);
 		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
-		char *out_dir = file_expand_path("~/.multi-agent/output");
+		char *out_dir = file_expand_path("~/.morph/output");
 		file_ensure_dir(out_dir);
 		const char *ext = out_ext(file_path);
 		snprintf(final_path, sizeof(final_path),

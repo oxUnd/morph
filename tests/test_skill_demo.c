@@ -11,7 +11,7 @@ int main(void)
 		rc = skill_load(&sk, "../skills/demo-translate");
 	}
 	if (rc < 0) {
-		rc = skill_load(&sk, "/Users/und/Work/c-family/multi-agent/skills/demo-translate");
+		rc = skill_load(&sk, "/Users/und/Work/c-family/morph/skills/demo-translate");
 	}
 	if (rc < 0) {
 		printf("FAIL: skill_load failed (%d)\n", rc);

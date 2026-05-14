@@ -1,4 +1,4 @@
-add_library(multi-agent-tools STATIC
+add_library(morph-tools STATIC
 	text_gen.c
 	text_qa.c
 	img_gen.c
@@ -17,10 +17,10 @@ set_source_files_properties(img_resize.c img_convert.c PROPERTIES
 	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion -Wno-shadow -Wno-unused-but-set-variable -Wno-unused-function -Wno-double-promotion -Wno-cast-qual -Wno-missing-field-initializers"
 )
 
-target_include_directories(multi-agent-tools PUBLIC
+target_include_directories(morph-tools PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/models
 )
-target_link_libraries(multi-agent-tools PUBLIC multi-agent-agent multi-agent-models multi-agent-http multi-agent-util)
+target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util)

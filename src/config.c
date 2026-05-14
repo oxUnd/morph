@@ -14,11 +14,11 @@ void config_set_defaults(struct config *cfg)
 
 	strncpy(cfg->general.default_session, "default",
 		sizeof(cfg->general.default_session) - 1);
-	strncpy(cfg->general.output_dir, "~/.multi-agent/output",
+	strncpy(cfg->general.output_dir, "~/.morph/output",
 		sizeof(cfg->general.output_dir) - 1);
 	strncpy(cfg->general.log_level, "info",
 		sizeof(cfg->general.log_level) - 1);
-	strncpy(cfg->general.log_file, "~/.multi-agent/log/agent.log",
+	strncpy(cfg->general.log_file, "~/.morph/log/agent.log",
 		sizeof(cfg->general.log_file) - 1);
 
 	strncpy(cfg->models.text.provider, "openai",
@@ -65,7 +65,7 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->render.mpv_args, "--really-quiet",
 		sizeof(cfg->render.mpv_args) - 1);
 
-	strncpy(cfg->skill.dir, "~/.multi-agent/skills",
+	strncpy(cfg->skill.dir, "~/.morph/skills",
 		sizeof(cfg->skill.dir) - 1);
 	cfg->skill.default_max_memory_mb = 128;
 	cfg->skill.default_max_cpu_seconds = 30;

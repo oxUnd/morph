@@ -23,7 +23,7 @@
 面向内容创作者的 **CLI 多题材 AI Agent**，纯 C 实现，以终端对话驱动文字/图片/视频的理解与生成，帮助创作者完成从选题到成品的全流程。
 
 ### 1.2 暂定名
-**multi-agent**（命名待定，见 §14 开放问题）
+**morph**
 
 ### 1.3 差异化价值
 1. **一站式跨模态**：文字、图片、视频统一入口，ReAct 自动编排
@@ -176,9 +176,9 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 ### 5.1 启动与对话示例
 
 ```text
-$ multi-agent
+$ morph
 
-multi-agent v0.1  |  /help 查看命令
+morph v0.1  |  /help 查看命令
 
 [default] > 帮我写一个赛博朋克短视频脚本，并配图和视频
 
@@ -187,10 +187,10 @@ multi-agent v0.1  |  /help 查看命令
 [Obs]    霓虹灯在雨幕中闪烁……
 [Thought] 根据第二幕生成配图。
 [Action]  img_gen(prompt="赛博朋克街道夜景，霓虹灯", style="realistic")
-[Obs]    saved: ~/.multi-agent/output/img_20260512_01.png
+[Obs]    saved: ~/.morph/output/img_20260512_01.png
 [Thought] 将配图扩展为 5s 视频。
 [Action]  vid_gen(image="img_20260512_01.png", duration=5)
-[Obs]    saved: ~/.multi-agent/output/vid_20260512_01.mp4
+[Obs]    saved: ~/.morph/output/vid_20260512_01.mp4
 [Final]   完成，图片已在终端预览，视频用 mpv 播放。
 
 [default] > /context
@@ -281,7 +281,7 @@ saved: session "赛博朋克项目"
                  │
 ┌────────────────▼────────────────────────────┐
 │  存储 / 文件 / 日志                          │
-│  SQLite | ~/.multi-agent/output | log file  │
+│  SQLite | ~/.morph/output | log file        │
 └─────────────────────────────────────────────┘
 ```
 
@@ -451,14 +451,14 @@ CREATE INDEX idx_outputs_session   ON outputs(session_id, created_at);
 
 ### 6.7 配置文件 Schema
 
-`~/.multi-agent/config.toml`（权限 0600）：
+`~/.morph/config.toml`（权限 0600）：
 
 ```toml
 [general]
 default_session = "default"
-output_dir = "~/.multi-agent/output"
+output_dir = "~/.morph/output"
 log_level = "info"
-log_file = "~/.multi-agent/log/agent.log"
+log_file = "~/.morph/log/agent.log"
 
 [model.text]
 provider = "openai"
@@ -495,7 +495,7 @@ prefer_image_protocol = "auto"
 mpv_args = ["--really-quiet"]
 
 [skill]
-dir = "~/.multi-agent/skills"
+dir = "~/.morph/skills"
 default_max_memory_mb = 128
 default_max_cpu_seconds = 30
 ```
@@ -505,7 +505,7 @@ default_max_cpu_seconds = 30
 ### 6.8 项目结构
 
 ```
-multi-agent/
+morph/
 ├── CMakeLists.txt
 ├── cmake/
 │   └── FindModules/
@@ -944,7 +944,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 | Token 用量 | 每次 LLM 调用记录 `prompt_tokens / completion_tokens / cost_estimate` |
 | 工具调用埋点 | 工具名、耗时、成功/失败、参数摘要（脱敏） |
 | 错误上报 | 默认仅本地；可配置 `[telemetry]` 开关（opt-in） |
-| 调试模式 | `MULTI_AGENT_DEBUG=1` 打印每次 HTTP request/response |
+| 调试模式 | `MORPH_DEBUG=1` 打印每次 HTTP request/response |
 
 ---
 

@@ -20,9 +20,9 @@ set(TEST_SOURCES
 	test_image.cpp
 )
 
-add_executable(multi-agent-tests ${TEST_SOURCES})
+add_executable(morph-tests ${TEST_SOURCES})
 
-target_include_directories(multi-agent-tests PRIVATE
+target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src
 	${CMAKE_SOURCE_DIR}/src/util
 	${CMAKE_SOURCE_DIR}/src/db
@@ -36,23 +36,23 @@ target_include_directories(multi-agent-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/render
 )
 
-target_link_libraries(multi-agent-tests PRIVATE
-	multi-agent-util
-	multi-agent-db
-	multi-agent-agent
-	multi-agent-http
-	multi-agent-sandbox
-	multi-agent-skill
-	multi-agent-ipc
-	multi-agent-models
-	multi-agent-render
-	multi-agent-config
-	multi-agent-session
-	multi-agent-tools
+target_link_libraries(morph-tests PRIVATE
+	morph-util
+	morph-db
+	morph-agent
+	morph-http
+	morph-sandbox
+	morph-skill
+	morph-ipc
+	morph-models
+	morph-render
+	morph-config
+	morph-session
+	morph-tools
 	GTest::gtest_main
 	SQLite::SQLite3
 	CURL::libcurl
 	 Threads::Threads
 )
 
-gtest_discover_tests(multi-agent-tests)
+gtest_discover_tests(morph-tests)

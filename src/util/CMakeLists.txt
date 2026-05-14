@@ -1,4 +1,4 @@
-add_library(multi-agent-util STATIC
+add_library(morph-util STATIC
 	arena.c
 	log.c
 	file.c
@@ -7,7 +7,7 @@ add_library(multi-agent-util STATIC
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 )
 
-target_include_directories(multi-agent-util PUBLIC
+target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/vendor
 )

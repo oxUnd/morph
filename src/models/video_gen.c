@@ -230,7 +230,7 @@ int video_gen_create(struct model *self, const char *prompt,
 download:
 	strncpy(result->url, video_url, sizeof(result->url) - 1);
 
-	char *out_dir = file_expand_path("~/.multi-agent/output");
+	char *out_dir = file_expand_path("~/.morph/output");
 	file_ensure_dir(out_dir);
 	char out_path[1024];
 	snprintf(out_path, sizeof(out_path), "%s/vid_%lld.mp4",

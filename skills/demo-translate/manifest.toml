@@ -1,7 +1,7 @@
 name = "translate"
 version = "1.0.0"
 description = "Translate text between languages"
-author = "multi-agent"
+author = "morph"
 type = "exec"
 entry = "translate.sh"
 permissions = 0

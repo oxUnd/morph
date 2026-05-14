@@ -108,7 +108,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		strncpy(final_path, out_path_in, sizeof(final_path) - 1);
 		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
-		char *out_dir = file_expand_path("~/.multi-agent/output");
+		char *out_dir = file_expand_path("~/.morph/output");
 		file_ensure_dir(out_dir);
 		snprintf(final_path, sizeof(final_path),
 			 "%s/img_converted_%lld.%s",
