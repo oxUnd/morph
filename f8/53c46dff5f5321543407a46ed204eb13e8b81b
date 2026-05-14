@@ -1,0 +1,63 @@
+src/agent/react.c
+  2c000cc1bccd95af 348,397 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a0560c40b9aa66757dd4692","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Single":348},{"Single":397}]}]}
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "f853c46dff5f5321543407a46ed204eb13e8b81b",
+  "prompts": {
+    "2c000cc1bccd95af": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a05600d0b9aa66757dd467c",
+        "model": "openrouter-2o__dev"
+      },
+      "human_author": "xiangshouding <fansekey@gmail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 5,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/agent/react.c": [
+      {
+        "hash": "2c000cc1bccd95af",
+        "line_ranges": [
+          {
+            "Single": 348
+          },
+          {
+            "Single": 397
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a0560c40b9aa66757dd4692",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Single": 348
+              },
+              {
+                "Single": 397
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "remote_transcripts": {
+    "2c000cc1bccd95af": {
+      "tool": "trae",
+      "conversation_id": "6a05600d0b9aa66757dd467c",
+      "session_id": "6a05600d0b9aa66757dd467c",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
