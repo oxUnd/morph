@@ -314,6 +314,18 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 
 	len += snprintf(buf + len, cap - len,
 		"You are a multi-modal content creation assistant.\n");
+
+	{
+		time_t now = time(NULL);
+		struct tm tm_local;
+		localtime_r(&now, &tm_local);
+		char time_buf[128];
+		strftime(time_buf, sizeof(time_buf),
+			 "%Y-%m-%d %A %H:%M:%S %Z", &tm_local);
+		len += snprintf(buf + len, cap - len,
+			"Current time: %s\n", time_buf);
+	}
+
 	if (ctx->system_prompt) {
 		len += snprintf(buf + len, cap - len, "%s\n", ctx->system_prompt);
 	}
