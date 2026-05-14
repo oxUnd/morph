@@ -373,8 +373,10 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 300L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, timeout_seconds > 0 ? timeout_seconds : 300L);
+	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
 
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
@@ -388,7 +390,7 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		if (rc == CURLE_OPERATION_TIMEDOUT) {
-			log_warn("http_post_sse_ex_timeout: request timed out after %lds", timeout_seconds);
+			log_warn("http_post_sse_ex_timeout: connection stalled (no data for %lds)", timeout_seconds);
 			return -ETIMEDOUT;
 		}
 		log_err("sse request failed: %s", curl_easy_strerror(rc));

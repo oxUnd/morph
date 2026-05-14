@@ -23,7 +23,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.models.text.provider, "openai");
 	EXPECT_STREQ(cfg.models.text.model, "gpt-4o");
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
-	EXPECT_EQ(cfg.models.text.timeout_seconds, 60);
+	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
 	EXPECT_EQ(cfg.react.step_timeout_seconds, 60);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);

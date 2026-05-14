@@ -30,7 +30,7 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->models.text.api_key_env, "OPENAI_API_KEY",
 		sizeof(cfg->models.text.api_key_env) - 1);
 	cfg->models.text.context_limit = 128000;
-	cfg->models.text.timeout_seconds = 60;
+	cfg->models.text.timeout_seconds = 300;
 
 	strncpy(cfg->models.image.provider, "openai",
 		sizeof(cfg->models.image.provider) - 1);

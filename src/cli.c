@@ -905,6 +905,9 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		db_close(&ctx->database);
 		return -ENOMEM;
 	}
+	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
+	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
+	ctx->react->max_iterations = ctx->config.react.max_iterations;
 
 	if (ctx->config.prompt.system_prompt_file[0]) {
 		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_file);
@@ -988,7 +991,7 @@ struct model *llm = model_llm_create(
   ctx->llm = llm;
   ctx->react->llm_model = llm;
   if (llm)
-	  llm->timeout_seconds = ctx->config.react.step_timeout_seconds;
+	  llm->timeout_seconds = ctx->config.models.text.timeout_seconds;
 
 	text_gen_init(&ctx->tools, llm);
 	log_info("registered text_gen tool");

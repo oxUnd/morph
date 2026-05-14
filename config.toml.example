@@ -65,7 +65,7 @@ poll_timeout_seconds  = 600
 
 [react]
 max_iterations      = 10
-step_timeout_seconds = 60
+step_timeout_seconds  = 300
 tool_max_retries    = 3
 
 [context]
