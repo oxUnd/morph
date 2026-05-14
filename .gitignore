@@ -11,6 +11,7 @@ out/
 *.swo
 *~
 .cache/
+.trae
 
 # macOS
 .DS_Store

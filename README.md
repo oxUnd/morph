@@ -8,7 +8,8 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 
 - **Multimodal in one place**: text chat, image generation/editing, and video generation under a single entry point
 - **ReAct engine**: automatic Thought → Action → Observation orchestration
-- **Ext extensions**: hot-pluggable extensions running in a sandbox, written in any language
+- **Skills**: hot-loadable instruction packs (SKILL.md) that inject specialized behavior into the agent
+- **Extensions**: hot-pluggable extensions running in a sandbox, written in any language
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
 - **Lightweight**: minimal static dependencies, fast startup
 
@@ -59,6 +60,7 @@ src/
   agent/    ReAct loop, context compression, tool dispatch
   models/   LLM / image / video backends
   tools/    Built-in tools (text_gen, img_gen, vid_gen, ...)
+  skill/    Skill discovery, parsing, and activation
   ext/      Ext loading and management
   sandbox/  Sandboxed ext execution
   ipc/      JSON-RPC
