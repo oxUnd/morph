@@ -205,6 +205,11 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(prompt, "system_prompt_dir", cfg->prompt.system_prompt_dir);
 	}
 
+	toml_table_t *skill = table_path(tbl, "skill");
+	if (skill) {
+		CFG_STR(skill, "dir", cfg->skill.dir);
+	}
+
 	toml_free(tbl);
 	log_info("config loaded from: %s", path);
 	return 0;

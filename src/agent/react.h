@@ -8,6 +8,7 @@ extern "C" {
 #include <signal.h>
 #include "agent/tool.h"
 #include "agent/context.h"
+#include "skill/skill.h"
 
 enum react_step_type {
 	REACT_STEP_THOUGHT,
@@ -54,6 +55,7 @@ struct react_context {
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
 	char *system_prompt;
+	struct skill_registry *skills;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,

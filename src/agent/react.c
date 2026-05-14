@@ -340,6 +340,21 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 				ctx->tools->entries[i].desc.desc);
 		}
 	}
+	if (ctx->skills && ctx->skills->count > 0) {
+		len += snprintf(buf + len, cap - len,
+			"\nAvailable skills:\n");
+		for (int i = 0; i < ctx->skills->count; i++) {
+			if (!ctx->skills->entries[i].enabled)
+				continue;
+			len += snprintf(buf + len, cap - len, "- %s: %s\n",
+				ctx->skills->entries[i].fm.name,
+				ctx->skills->entries[i].fm.description);
+		}
+		len += snprintf(buf + len, cap - len,
+			"\nWhen a task matches a skill's description, "
+			"call the activate_skill tool with the skill's name "
+			"to load its full instructions.\n");
+	}
 	len += snprintf(buf + len, cap - len,
 		"\nOutput format (strict):\n"
 		"Thought: <your reasoning>\n"
@@ -355,6 +370,22 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		"- Maximum %d iterations.\n\n"
 		"\nConversation history:\n",
 		ctx->max_iterations);
+
+	if (ctx->skills) {
+		char *active = skill_build_activated_instructions(ctx->skills);
+		if (active) {
+			size_t alen = strlen(active);
+			while (len + alen + 1 >= cap) {
+				cap *= 2;
+				char *nb = realloc(buf, cap);
+				if (!nb) { free(buf); free(active); return -ENOMEM; }
+				buf = nb;
+			}
+			memcpy(buf + len, active, alen + 1);
+			len += alen;
+			free(active);
+		}
+	}
 
 	struct message_list *hist = ctx->messages;
 	while (hist) {

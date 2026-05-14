@@ -18,6 +18,7 @@ set(TEST_SOURCES
 	test_sse.cpp
 	test_http.cpp
 	test_image.cpp
+	test_skill.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
@@ -34,6 +35,7 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/models
 	${CMAKE_SOURCE_DIR}/src/http
 	${CMAKE_SOURCE_DIR}/src/render
+	${CMAKE_SOURCE_DIR}/src/skill
 )
 
 target_link_libraries(morph-tests PRIVATE
@@ -49,6 +51,7 @@ target_link_libraries(morph-tests PRIVATE
 	morph-config
 	morph-session
 	morph-tools
+	morph-skill
 	GTest::gtest_main
 	SQLite::SQLite3
 	CURL::libcurl

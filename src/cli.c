@@ -15,6 +15,7 @@
 #include "agent/tools/file_read.h"
 #include "agent/tools/file_list.h"
 #include "agent/tools/file_info.h"
+#include "agent/tools/skill_activate.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
@@ -249,6 +250,7 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv);
 static int cmd_image(struct cli_context *ctx, int argc, char **argv);
 static int cmd_video(struct cli_context *ctx, int argc, char **argv);
 static int cmd_ext(struct cli_context *ctx, int argc, char **argv);
+static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
@@ -296,6 +298,8 @@ static const struct cmd_entry commands[] = {
 	{ "/vid",     cmd_video,   "Alias for /video",                  "/vid <file_path>" },
 	{ "/ext",     cmd_ext,     "List or manage tools and exts",     "/ext list" },
 	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
+	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },
+	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
 };
 
@@ -959,6 +963,96 @@ static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
+static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *sub = cmd_arg(argc, argv, 1);
+	if (sub && strcmp(sub, "list") == 0) {
+		CMD_HEADER("available skills (%d)", ctx->skills->count);
+		for (int i = 0; i < ctx->skills->count; i++) {
+			struct skill_entry *e = &ctx->skills->entries[i];
+			const char *marker = e->activated ? ANSI_GREEN " *" ANSI_RESET : "";
+			printf("  %-25s %s%s\n", e->fm.name, e->fm.description,
+			       marker);
+		}
+		if (ctx->skills->count == 0)
+			printf("  (none — install skills to ~/.morph/skills/ or ~/.agents/skills/)\n");
+		else
+			printf("  " ANSI_DIM "(%s* = activated)" ANSI_RESET "\n", ANSI_GREEN);
+		return 0;
+	}
+	if (sub && strcmp(sub, "info") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /skill info <name>");
+			return -EINVAL;
+		}
+		struct skill_entry *e = skill_lookup(ctx->skills, name);
+		if (!e) {
+			CMD_ERROR("skill not found: %s", name);
+			return -ENOENT;
+		}
+		printf("  %-15s %s\n", "Name", e->fm.name);
+		printf("  %-15s %s\n", "Description", e->fm.description);
+		printf("  %-15s %s\n", "Directory", e->skill_dir);
+		printf("  %-15s %s\n", "Enabled", e->enabled ? "yes" : "no");
+		printf("  %-15s %s\n", "Activated", e->activated ? "yes" : "no");
+		if (e->fm.license[0])
+			printf("  %-15s %s\n", "License", e->fm.license);
+		if (e->fm.compatibility[0])
+			printf("  %-15s %s\n", "Compatibility", e->fm.compatibility);
+		if (e->fm.allowed_tools[0])
+			printf("  %-15s %s\n", "Allowed tools", e->fm.allowed_tools);
+		for (int i = 0; i < e->fm.metadata_count; i++)
+			printf("  %-15s %s = %s\n", (i == 0) ? "Metadata" : "",
+			       e->fm.metadata[i].key, e->fm.metadata[i].value);
+		return 0;
+	}
+	if (sub && strcmp(sub, "activate") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /skill activate <name>");
+			return -EINVAL;
+		}
+		struct skill_entry *e = skill_lookup(ctx->skills, name);
+		if (!e) {
+			CMD_ERROR("skill not found: %s", name);
+			return -ENOENT;
+		}
+		int rc = skill_activate(e);
+		if (rc == 0 && e->activated)
+			CMD_OK("skill '%s' activated", name);
+		else if (rc < 0)
+			CMD_ERROR("failed to activate skill '%s': %d", name, rc);
+		else
+			CMD_OK("skill '%s' already activated", name);
+		return rc < 0 ? rc : 0;
+	}
+	if (sub && strcmp(sub, "deactivate") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /skill deactivate <name>");
+			return -EINVAL;
+		}
+		struct skill_entry *e = skill_lookup(ctx->skills, name);
+		if (!e) {
+			CMD_ERROR("skill not found: %s", name);
+			return -ENOENT;
+		}
+		skill_deactivate(e);
+		CMD_OK("skill '%s' deactivated", name);
+		return 0;
+	}
+	CMD_HEADER("available skills (%d)", ctx->skills->count);
+	for (int i = 0; i < ctx->skills->count; i++) {
+		struct skill_entry *e = &ctx->skills->entries[i];
+		const char *marker = e->activated ? ANSI_GREEN " *" ANSI_RESET : "";
+		printf("  %-25s %s%s\n", e->fm.name, e->fm.description, marker);
+	}
+	if (ctx->skills->count == 0)
+		printf("  (none — install skills to ~/.morph/skills/ or ~/.agents/skills/)\n");
+	return 0;
+}
+
 /* ---- dispatch ---- */
 
 static int cmd_dispatch(struct cli_context *ctx, const char *input)
@@ -1208,6 +1302,45 @@ struct model *llm = model_llm_create(
 		}
 		file_free_list(ext_dirs, ext_count);
 	}
+
+	ctx->skills = calloc(1, sizeof(*ctx->skills));
+	if (!ctx->skills) {
+		log_err("failed to allocate skill registry");
+		return -ENOMEM;
+	}
+	skill_registry_init(ctx->skills);
+
+	if (ctx->config.skill.dir[0]) {
+		char *skill_dir = file_expand_path(ctx->config.skill.dir);
+		if (skill_dir) {
+			if (file_exists(skill_dir))
+				skill_discover(ctx->skills, skill_dir);
+			free(skill_dir);
+		}
+	} else {
+		char *morph_skills = file_expand_path("~/.morph/skills");
+		if (morph_skills) {
+			if (!file_exists(morph_skills))
+				file_ensure_dir(morph_skills);
+			skill_discover(ctx->skills, morph_skills);
+			free(morph_skills);
+		}
+		char *agents_skills = file_expand_path("~/.agents/skills");
+		if (agents_skills) {
+			if (!file_exists(agents_skills))
+				file_ensure_dir(agents_skills);
+			skill_discover(ctx->skills, agents_skills);
+			free(agents_skills);
+		}
+	}
+
+	if (ctx->skills->count > 0) {
+		skill_activate_init(&ctx->tools, ctx->skills);
+		log_info("registered activate_skill tool (%d skills discovered)",
+			 ctx->skills->count);
+	}
+
+	ctx->react->skills = ctx->skills;
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
@@ -1554,6 +1687,9 @@ void cli_shutdown(struct cli_context *ctx)
 		model_destroy(ctx->img_llm);
 	if (ctx->vid_llm)
 		model_destroy(ctx->vid_llm);
+	skill_registry_cleanup(ctx->skills);
+	free(ctx->skills);
+	ctx->skills = NULL;
 	db_close(&ctx->database);
 	log_info("cli shutdown complete");
 }

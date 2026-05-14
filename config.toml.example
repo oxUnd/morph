@@ -102,3 +102,9 @@ system_prompt_file = ""
 # system_prompt_file (if set). Exts or users can drop prompt files here
 # to inject additional instructions into every LLM call.
 system_prompt_dir = ""
+
+[skill]
+# Optional: custom directory for skills.
+# Defaults to ~/.morph/skills/ and ~/.agents/skills/ if empty.
+# Skills follow the Agent Skills open standard (agentskills.io).
+dir = ""

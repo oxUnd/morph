@@ -6,12 +6,14 @@
 #include "session.h"
 #include "agent/react.h"
 #include "models/llm.h"
+#include "skill/skill.h"
 
 struct cli_context {
 	struct config config;
 	struct db database;
 	struct session current_session;
 	struct tool_registry tools;
+	struct skill_registry *skills;
 	struct react_context *react;
 	struct tokenizer *tokenizer;
 	struct model *llm;

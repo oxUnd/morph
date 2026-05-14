@@ -13,6 +13,7 @@ set(MORPH_LIBS
 	morph-tools
 	morph-config
 	morph-session
+	morph-skill
 	SQLite::SQLite3
 	CURL::libcurl
 )
@@ -56,6 +57,7 @@ add_subdirectory(render)
 add_subdirectory(agent)
 add_subdirectory(sandbox)
 add_subdirectory(ext)
+add_subdirectory(skill)
 add_subdirectory(ipc)
 add_subdirectory(models)
 add_subdirectory(http)
@@ -69,7 +71,7 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render)
+target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill)
 
 add_executable(morph ${MORPH_SOURCES})
 set_target_properties(morph PROPERTIES
