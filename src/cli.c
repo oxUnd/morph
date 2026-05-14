@@ -1507,7 +1507,10 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_ACTION:
 		if (ctx->streaming) {
-			printf(ANSI_RESET "\n");
+			/* Restore cursor and clear streamed text, same as
+			 * REACT_STEP_FINAL so the raw LLM output is replaced
+			 * by the formatted [Action] label. */
+			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
 		}
 		printf(ANSI_BOLD ANSI_YELLOW "[Action]" ANSI_RESET " %s\n",
@@ -1516,7 +1519,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_OBSERVATION:
 		if (ctx->streaming) {
-			printf(ANSI_RESET "\n");
+			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
 		}
 		printf(ANSI_DIM "[Observation]" ANSI_RESET " %s\n",
