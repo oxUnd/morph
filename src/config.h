@@ -55,7 +55,7 @@ struct config_render {
 	char mpv_args[256];
 };
 
-struct config_skill {
+struct config_ext {
 	char dir[512];
 	int default_max_memory_mb;
 	int default_max_cpu_seconds;
@@ -72,7 +72,7 @@ struct config {
 	struct config_react react;
 	struct config_context context;
 	struct config_render render;
-	struct config_skill skill;
+	struct config_ext ext;
 	struct config_prompt prompt;
 };
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Demo translate skill — JSON-RPC 2.0 over stdin/stdout
+# Demo translate ext — JSON-RPC 2.0 over stdin/stdout
 # Reads a JSON-RPC request line from stdin, writes response to stdout.
 
 set -e

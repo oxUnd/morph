@@ -29,7 +29,7 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/agent/tools
 	${CMAKE_SOURCE_DIR}/src/sandbox
-	${CMAKE_SOURCE_DIR}/src/skill
+	${CMAKE_SOURCE_DIR}/src/ext
 	${CMAKE_SOURCE_DIR}/src/ipc
 	${CMAKE_SOURCE_DIR}/src/models
 	${CMAKE_SOURCE_DIR}/src/http
@@ -42,7 +42,7 @@ target_link_libraries(morph-tests PRIVATE
 	morph-agent
 	morph-http
 	morph-sandbox
-	morph-skill
+	morph-ext
 	morph-ipc
 	morph-models
 	morph-render

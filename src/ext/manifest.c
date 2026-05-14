@@ -29,7 +29,7 @@ static void parse_string_list(toml_array_t *arr, char ***out_list, int *out_coun
 	*out_count = count;
 }
 
-int manifest_parse(const char *toml_data, struct skill_manifest *out)
+int manifest_parse(const char *toml_data, struct ext_manifest *out)
 {
 	if (!toml_data || !out)
 		return -EINVAL;
@@ -91,7 +91,7 @@ int manifest_parse(const char *toml_data, struct skill_manifest *out)
 	return 0;
 }
 
-int manifest_parse_file(const char *path, struct skill_manifest *out)
+int manifest_parse_file(const char *path, struct ext_manifest *out)
 {
 	if (!path || !out)
 		return -EINVAL;

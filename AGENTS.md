@@ -9,11 +9,11 @@
 ## Architecture Overview
 - **ReAct loop**: Thought → Action → Observation → Final. Core in `src/agent/react.c`.
 - **3 model backends**: `llm` (text chat), `image_gen`, `video_gen` — each configured independently in config.toml.
-- **Skills**: hot-pluggable extensions via sandbox; live in `~/.morph/skills/`. Manifest format: TOML with `entry`, `permissions`, `args_schema`. Demo at `skills/demo-translate/`.
+- **Exts**: hot-pluggable extensions via sandbox; live in `~/.morph/exts/`. Manifest format: TOML with `entry`, `permissions`, `args_schema`. Demo at `exts/demo-translate/`.
 - **Tools**: built-in (text_gen, text_qa, img_gen, img_edit, img_info, vid_gen) under `src/agent/tools/`.
 - **IPC**: JSON-RPC in `src/ipc/`.
 - **Context compression**: built-in in `src/agent/compress.c`, triggered at `summarize_threshold_ratio` (default 0.8).
-- **Sandbox**: safe skill execution in `src/sandbox/`.
+- **Sandbox**: safe ext execution in `src/sandbox/`.
 
 ## Library Dependency Chain
 All libraries are static. The dependency order is:
@@ -29,7 +29,7 @@ morph-agent (react, context, compress, tokenizer, tool)
   ↓
 morph-tools (text_gen, text_qa, img_gen, img_edit, img_info, vid_gen)
   ↓
-morph-sandbox ──→ morph-skill
+morph-sandbox ──→ morph-ext
 morph-config (TOML-based) ──→ morph-cli (main CLI binary)
 morph-render (markdown via md4c, image, video)
 morph-ipc (jsonrpc)

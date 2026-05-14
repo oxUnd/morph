@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 
-int skill_run(const char *args_json, char **result_json)
+int ext_run(const char *args_json, char **result_json)
 {
 	if (!args_json || !result_json)
 		return -1;

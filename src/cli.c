@@ -4,7 +4,7 @@
 #include "agent/tokenizer.h"
 #include "agent/compress.h"
 #include "agent/tools/text_gen.h"
-#include "skill/skill.h"
+#include "ext/ext.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_edit.h"
@@ -248,7 +248,7 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv);
 static int cmd_config(struct cli_context *ctx, int argc, char **argv);
 static int cmd_image(struct cli_context *ctx, int argc, char **argv);
 static int cmd_video(struct cli_context *ctx, int argc, char **argv);
-static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
+static int cmd_ext(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
@@ -294,21 +294,21 @@ static const struct cmd_entry commands[] = {
 	{ "/img",     cmd_image,   "Alias for /image",                   "/img <file_path>" },
 	{ "/video",   cmd_video,   "Inject a video (M3)",               "/video <file_path>" },
 	{ "/vid",     cmd_video,   "Alias for /video",                  "/vid <file_path>" },
-	{ "/skill",   cmd_skill,   "List or manage tools and skills",   "/skill list" },
-	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
+	{ "/ext",     cmd_ext,     "List or manage tools and exts",     "/ext list" },
+	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
 };
 
 static const int num_commands = (int)(sizeof(commands) / sizeof(commands[0]));
 
-/* ---- skill_run wrapper ---- */
+/* ---- ext_run wrapper ---- */
 
-static int skill_run_wrapper(const char *args_json, char **result_json, void *user_data)
+static int ext_run_wrapper(const char *args_json, char **result_json, void *user_data)
 {
-	struct skill *sk = user_data;
-	if (!sk)
+	struct ext *ex = user_data;
+	if (!ex)
 		return -EINVAL;
-	return skill_run(sk, args_json, result_json);
+	return ext_run(ex, args_json, result_json);
 }
 
 static const struct cmd_entry *cmd_lookup(const char *name)
@@ -894,7 +894,7 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
+static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *sub = cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
@@ -911,7 +911,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cmd_arg(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR("usage: /skill info <name>");
+			CMD_ERROR("usage: /ext info <name>");
 			return -EINVAL;
 		}
 		struct tool_entry *e = tool_lookup(&ctx->tools, name);
@@ -926,22 +926,22 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "install") == 0) {
-		CMD_ERROR("skill install not yet implemented (M4)");
+		CMD_ERROR("ext install not yet implemented (M4)");
 		return 0;
 	}
 	if (sub && strcmp(sub, "remove") == 0) {
-		CMD_ERROR("skill remove not yet implemented (M4)");
+		CMD_ERROR("ext remove not yet implemented (M4)");
 		return 0;
 	}
 	if (sub && strcmp(sub, "enable") == 0) {
-		CMD_ERROR("skill enable not yet implemented (M4)");
+		CMD_ERROR("ext enable not yet implemented (M4)");
 		return 0;
 	}
 	if (sub && strcmp(sub, "disable") == 0) {
-		CMD_ERROR("skill disable not yet implemented (M4)");
+		CMD_ERROR("ext disable not yet implemented (M4)");
 		return 0;
 	}
-	/* /skill alone → show tools */
+	/* /ext alone → show tools */
 	CMD_HEADER("registered tools (%d)", ctx->tools.count);
 	for (int i = 0; i < ctx->tools.count; i++) {
 		printf("  %-15s %s\n",
@@ -1172,41 +1172,41 @@ struct model *llm = model_llm_create(
 		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
 	}
 
-	/* Auto-discover skills from skills/ directory */
-	char skills_dir[512] = {0};
-	char *skills_home = file_expand_path("~/.morph/skills");
-	if (skills_home) {
-		strncpy(skills_dir, skills_home, sizeof(skills_dir) - 1);
-		free(skills_home);
+	/* Auto-discover exts from exts/ directory */
+	char exts_dir[512] = {0};
+	char *exts_home = file_expand_path("~/.morph/exts");
+	if (exts_home) {
+		strncpy(exts_dir, exts_home, sizeof(exts_dir) - 1);
+		free(exts_home);
 	} else {
-		strncpy(skills_dir, "skills", sizeof(skills_dir) - 1);
+		strncpy(exts_dir, "exts", sizeof(exts_dir) - 1);
 	}
-	if (!file_exists(skills_dir))
-		file_ensure_dir(skills_dir);
-	char **skill_dirs = NULL;
-	int skill_count = 0;
-	if (file_list_dirs(skills_dir, &skill_dirs, &skill_count) == 0) {
-		for (int i = 0; i < skill_count; i++) {
-			char sd_path[1024];
-			snprintf(sd_path, sizeof(sd_path), "%s/%s", skills_dir, skill_dirs[i]);
-			struct skill sk;
-			int rc2 = skill_load(&sk, sd_path);
-			if (rc2 == 0 && sk.enabled) {
-				struct skill *sk_ptr = malloc(sizeof(*sk_ptr));
-				if (sk_ptr) {
-					memcpy(sk_ptr, &sk, sizeof(sk));
-					tool_register(&ctx->tools, sk.manifest.name,
-						      sk.manifest.description,
-						      sk.manifest.args_schema ?
-						      sk.manifest.args_schema : "",
-						      skill_run_wrapper, sk_ptr);
-					log_info("registered skill: %s", sk.manifest.name);
+	if (!file_exists(exts_dir))
+		file_ensure_dir(exts_dir);
+	char **ext_dirs = NULL;
+	int ext_count = 0;
+	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) == 0) {
+		for (int i = 0; i < ext_count; i++) {
+			char ed_path[1024];
+			snprintf(ed_path, sizeof(ed_path), "%s/%s", exts_dir, ext_dirs[i]);
+			struct ext ex;
+			int rc2 = ext_load(&ex, ed_path);
+			if (rc2 == 0 && ex.enabled) {
+				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
+				if (ex_ptr) {
+					memcpy(ex_ptr, &ex, sizeof(ex));
+					tool_register(&ctx->tools, ex.manifest.name,
+						      ex.manifest.description,
+						      ex.manifest.args_schema ?
+						      ex.manifest.args_schema : "",
+						      ext_run_wrapper, ex_ptr);
+					log_info("registered ext: %s", ex.manifest.name);
 				}
 			} else {
-				skill_unload(&sk);
+				ext_unload(&ex);
 			}
 		}
-		file_free_list(skill_dirs, skill_count);
+		file_free_list(ext_dirs, ext_count);
 	}
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
@@ -1543,7 +1543,7 @@ void cli_shutdown(struct cli_context *ctx)
 	for (int i = 0; i < ctx->tools.count; i++) {
 		void *ud = ctx->tools.entries[i].user_data;
 		if (ud) {
-			skill_unload((struct skill *)ud);
+			ext_unload((struct ext *)ud);
 			free(ud);
 			ctx->tools.entries[i].user_data = NULL;
 		}

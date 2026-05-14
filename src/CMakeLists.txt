@@ -8,7 +8,7 @@ set(MORPH_LIBS
 	morph-http
 	morph-agent
 	morph-models
-	morph-skill
+	morph-ext
 	morph-ipc
 	morph-tools
 	morph-config
@@ -55,7 +55,7 @@ target_link_libraries(morph-session PUBLIC morph-util morph-db)
 add_subdirectory(render)
 add_subdirectory(agent)
 add_subdirectory(sandbox)
-add_subdirectory(skill)
+add_subdirectory(ext)
 add_subdirectory(ipc)
 add_subdirectory(models)
 add_subdirectory(http)

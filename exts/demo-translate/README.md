@@ -1,6 +1,6 @@
 # demo-translate
 
-An `exec` skill that translates text between languages (hardcoded demo responses).
+An `exec` ext that translates text between languages (hardcoded demo responses).
 
 ## Type
 
@@ -8,11 +8,11 @@ An `exec` skill that translates text between languages (hardcoded demo responses
 
 ## Install
 
-Copy to `~/.morph/skills/`:
+Copy to `~/.morph/exts/`:
 
 ```bash
-cp -r skills/demo-translate ~/.morph/skills/
-chmod +x ~/.morph/skills/demo-translate/translate.sh
+cp -r exts/demo-translate ~/.morph/exts/
+chmod +x ~/.morph/exts/demo-translate/translate.sh
 ```
 
 ## Usage
@@ -29,7 +29,7 @@ The ReAct loop calls it automatically:
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"run","params":{"text":"hello world","target_lang":"zh"}}' | \
-  ~/.morph/skills/demo-translate/translate.sh
+  ~/.morph/exts/demo-translate/translate.sh
 ```
 
 Output:
@@ -40,7 +40,7 @@ Output:
 
 ## Permission
 
-`permissions = 4` (`SKILL_PERM_EXEC`) — required because the shell script needs to fork child processes (`sed`, `echo`).
+`permissions = 4` (`EXT_PERM_EXEC`) — required because the shell script needs to fork child processes (`sed`, `echo`).
 
 ## Supported languages
 

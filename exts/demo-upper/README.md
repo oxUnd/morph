@@ -1,6 +1,6 @@
 # demo-upper
 
-A `.so` skill that converts text to uppercase.
+A `.so` ext that converts text to uppercase.
 
 ## Type
 
@@ -8,12 +8,12 @@ A `.so` skill that converts text to uppercase.
 
 ## Install
 
-Copy to `~/.morph/skills/`:
+Copy to `~/.morph/exts/`:
 
 ```bash
-cp -r skills/demo-upper ~/.morph/skills/
+cp -r exts/demo-upper ~/.morph/exts/
 # Build the .so (if not already compiled):
-cc -shared -fPIC -o ~/.morph/skills/demo-upper/upper.so ~/.morph/skills/demo-upper/upper.c
+cc -shared -fPIC -o ~/.morph/exts/demo-upper/upper.so ~/.morph/exts/demo-upper/upper.c
 ```
 
 ## Usage
@@ -39,4 +39,4 @@ echo '{"jsonrpc":"2.0","id":1,"method":"run","params":{"text":"hello"}}' | \
 
 ## Entry point
 
-Exports `int skill_run(const char *args_json, char **result_json)` from `upper.so`.
+Exports `int ext_run(const char *args_json, char **result_json)` from `upper.so`.

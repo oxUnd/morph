@@ -229,7 +229,7 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	rc = fb_allow(&fb, __NR_lstat);     if (rc < 0) goto fail;
 #endif
 
-	if (permissions & SKILL_PERM_NETWORK) {
+	if (permissions & EXT_PERM_NETWORK) {
 #ifdef __NR_socket
 		rc = fb_allow(&fb, __NR_socket);    if (rc < 0) goto fail;
 #endif
@@ -269,14 +269,14 @@ int sandbox_apply_seccomp(unsigned int permissions)
 #endif
 	}
 
-	if (permissions & SKILL_PERM_EXEC) {
+	if (permissions & EXT_PERM_EXEC) {
 		rc = fb_allow(&fb, SYS_execve);     if (rc < 0) goto fail;
 #ifdef __NR_execveat
 		rc = fb_allow(&fb, __NR_execveat);  if (rc < 0) goto fail;
 #endif
 	}
 
-	if (permissions & SKILL_PERM_FILESYS) {
+	if (permissions & EXT_PERM_FILESYS) {
 #ifdef __NR_mkdir
 		rc = fb_allow(&fb, __NR_mkdir);     if (rc < 0) goto fail;
 #endif

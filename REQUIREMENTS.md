@@ -9,8 +9,8 @@
 |------|------|
 | Agent | 本产品运行实体，封装 ReAct 循环、工具与会话 |
 | ReAct | Reasoning + Acting，LLM 输出 Thought/Action，运行时回填 Observation 的循环 |
-| Tool | Agent 可调用的能力单元，包含**内置工具**与**Skill**两类 |
-| Skill | 用户/社区编写的可热插拔扩展，以 `.so` 或可执行文件形态存在，运行在沙箱中 |
+| Tool | Agent 可调用的能力单元，包含**内置工具**与**Ext**两类 |
+| Ext | 用户/社区编写的可热插拔扩展，以 `.so` 或可执行文件形态存在，运行在沙箱中 |
 | Session | 一段连续对话的上下文集合，持久化在 SQLite |
 | Context Window | 单次 LLM 调用送入的 token 总量 |
 | MVP | Minimum Viable Product，M1 里程碑交付物 |
@@ -29,7 +29,7 @@
 1. **一站式跨模态**：文字、图片、视频统一入口，ReAct 自动编排
 2. **终端原生**：零 GUI 依赖，可嵌入 shell 管道与 CI 流水线
 3. **纯 C + 零运行时**：编译即用，内存占用低，启动 < 50ms
-4. **可扩展**：Skill 沙箱机制允许任意语言编写扩展，主进程不被污染
+4. **可扩展**：Ext 沙箱机制允许任意语言编写扩展，主进程不被污染
 5. **本地优先**：会话与产物全部本地持久化，离线可回看
 
 ### 1.4 非目标（Non-Goals）
@@ -49,7 +49,7 @@
 | 设计师 | 视觉原型探索 | 描述 → 参考图 → 迭代 |
 | 小说/编剧 | 故事线+分镜 | 大纲 → 角色卡 → 分镜图 |
 | 开发者 | 自动化内容流水线 | CLI 管道 → 批量生成 |
-| Skill 开发者 | 扩展 Agent 能力 | manifest + 编译 → 注册 |
+| Ext 开发者 | 扩展 Agent 能力 | manifest + 编译 → 注册 |
 
 ---
 
@@ -67,7 +67,7 @@
 | 资源 | 单次对话峰值内存 | < 80MB |
 | 质量 | 单元测试覆盖率（核心模块） | ≥ 70% |
 | 质量 | Valgrind 内存泄漏 | 0 definitely lost |
-| 安全 | Skill 沙箱逃逸用例（见 §10） | 100% 阻断 |
+| 安全 | Ext 沙箱逃逸用例（见 §10） | 100% 阻断 |
 | 兼容 | macOS 14+ / Ubuntu 22.04+ / Arch Linux 冒烟测试 | 100% |
 
 ---
@@ -154,20 +154,20 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 | 图视联动 | Thought: 图片变视频 → Action: vid_gen(image) → Final: 视频文件 |
 | 全链路 | Thought: 选题 → Action: text_gen → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
 
-### 4.8 Skill 沙箱系统
+### 4.8 Ext 沙箱系统
 
 | 功能 | 描述 | 优先级 |
 |------|------|--------|
 | 自动发现 | 扫描目录，解析 manifest.toml | P0（裁剪后） |
-| 注册到 Tool Registry | Skill 即 Tool | P0 |
+| 注册到 Tool Registry | Ext 即 Tool | P0 |
 | 沙箱执行（seccomp + rlimit） | Linux | P0 |
 | 沙箱执行（sandbox-exec） | macOS | P1 |
-| Skill 启停 | enable / disable | P1 |
-| Skill 安装/卸载 | install / remove（本地路径） | P1 |
+| Ext 启停 | enable / disable | P1 |
+| Ext 安装/卸载 | install / remove（本地路径） | P1 |
 | 远程仓库拉取 | git clone | P2 |
 | Namespace 隔离（PID/NET） | 强隔离 | P2 |
 
-> **MVP 范围裁剪**：M1 的 Skill 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱推迟到 V0.4。
+> **MVP 范围裁剪**：M1 的 Ext 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱推迟到 V0.4。
 
 ---
 
@@ -226,7 +226,7 @@ saved: session "赛博朋克项目"
 
 | 命令 | 功能 | 示例 |
 |------|------|------|
-| `/help [cmd]` | 帮助 | `/help skill` |
+| `/help [cmd]` | 帮助 | `/help ext` |
 | `/new [name]` | 新建会话 | `/new 项目A` |
 | `/switch <name\|id>` | 切换会话 | — |
 | `/list` | 会话列表 | — |
@@ -242,12 +242,12 @@ saved: session "赛博朋克项目"
 | `/image <path>` | 注入图片 | — |
 | `/video <path>` | 注入视频 | — |
 | `/config` | 打开/查看配置 | — |
-| `/skill list` | 已安装 Skill | — |
-| `/skill install <path>` | 本地路径或 git | — |
-| `/skill enable <name>` | 启用 | — |
-| `/skill disable <name>` | 禁用（不卸载） | — |
-| `/skill remove <name>` | 卸载 | — |
-| `/skill info <name>` | 详情（权限、参数） | — |
+| `/ext list` | 已安装 Ext | — |
+| `/ext install <path>` | 本地路径或 git | — |
+| `/ext enable <name>` | 启用 | — |
+| `/ext disable <name>` | 禁用（不卸载） | — |
+| `/ext remove <name>` | 卸载 | — |
+| `/ext info <name>` | 详情（权限、参数） | — |
 | `/quit` / `Ctrl-D` | 退出 | — |
 
 ---
@@ -266,9 +266,9 @@ saved: session "赛博朋克项目"
 │  ┌──────────────────────────────────────┐   │
 │  │ LLM 推理（Thought/Action/Obs/Final）│   │
 │  ├──────────────────────────────────────┤   │
-│  │ Tool Registry（内置 + Skill）        │   │
+│  │ Tool Registry（内置 + Ext）        │   │
 │  ├──────────────────────────────────────┤   │
-│  │ Skill Sandbox（seccomp/rlimit/ns）  │   │
+│  │ Ext Sandbox（seccomp/rlimit/ns）  │   │
 │  ├──────────────────────────────────────┤   │
 │  │ Context Manager（token/压缩/摘要）  │   │
 │  └──────────────────────────────────────┘   │
@@ -423,7 +423,7 @@ CREATE TABLE react_traces (
 	created_at  INTEGER NOT NULL
 );
 
-CREATE TABLE skills (
+CREATE TABLE exts (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	name         TEXT UNIQUE NOT NULL,
 	version      TEXT,
@@ -494,8 +494,8 @@ keep_recent_rounds = 6
 prefer_image_protocol = "auto"
 mpv_args = ["--really-quiet"]
 
-[skill]
-dir = "~/.morph/skills"
+[ext]
+dir = "~/.morph/exts"
 default_max_memory_mb = 128
 default_max_cpu_seconds = 30
 ```
@@ -571,15 +571,15 @@ morph/
 │   │   ├── sandbox.h
 │   │   ├── loader.c
 │   │   └── loader.h
-│   ├── skill/
+│   ├── ext/
 │   │   ├── CMakeLists.txt
-│   │   ├── skill.c
-│   │   ├── skill.h
+│   │   ├── ext.c
+│   │   ├── ext.h
 │   │   ├── manifest.c
 │   │   └── manifest.h
 │   ├── ipc/
 │   │   ├── CMakeLists.txt
-│   │   ├── jsonrpc.c             # Skill ↔ 主进程 JSON-RPC 2.0
+│   │   ├── jsonrpc.c             # Ext ↔ 主进程 JSON-RPC 2.0
 │   │   └── jsonrpc.h
 │   ├── models/
 │   │   ├── CMakeLists.txt
@@ -770,9 +770,9 @@ typedef int (*sse_callback)(const char *token, void *user_data);
 | file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 |
 | file_list | 列出目录内容 | path | 本地 | 内置 |
 | file_info | 文件元数据 | path | 本地 | 内置 |
-| translate | 文本翻译 | prompt, target_lang | LLM | Skill |
-| web_search | 网页搜索 | query | 外部 API | Skill |
-| ... | 社区/自定义 Skill | 按 manifest 定义 | 按定义 | Skill |
+| translate | 文本翻译 | prompt, target_lang | LLM | Ext |
+| web_search | 网页搜索 | query | 外部 API | Ext |
+| ... | 社区/自定义 Ext | 按 manifest 定义 | 按定义 | Ext |
 
 #### 6.9.5 上下文压缩
 
@@ -840,20 +840,20 @@ int compress_system_prompt(char *system_prompt, int target_tokens,
 			  struct tokenizer *tok);
 ```
 
-#### 6.9.6 Skill 系统
+#### 6.9.6 Ext 系统
 
 | 类型 | 格式 | 执行方式 | 隔离级别 |
 |------|------|---------|---------|
-| 原生 Skill | `skill.so` | dlopen 加载，隔离线程执行 | seccomp-bpf 限制系统调用 |
-| 外部 Skill | `skill`（可执行） | fork+execvp，子进程执行 | namespace+seccomp+rlimit 全隔离 |
+| 原生 Ext | `ext.so` | dlopen 加载，隔离线程执行 | seccomp-bpf 限制系统调用 |
+| 外部 Ext | `ext`（可执行） | fork+execvp，子进程执行 | namespace+seccomp+rlimit 全隔离 |
 
 ```c
-#define SKILL_PERM_NETWORK    (1 << 0)
-#define SKILL_PERM_FILESYS    (1 << 1)
-#define SKILL_PERM_EXEC       (1 << 2)
-#define SKILL_PERM_ENV        (1 << 3)
+#define EXT_PERM_NETWORK    (1 << 0)
+#define EXT_PERM_FILESYS    (1 << 1)
+#define EXT_PERM_EXEC       (1 << 2)
+#define EXT_PERM_ENV        (1 << 3)
 
-struct skill_manifest {
+struct ext_manifest {
 	char *name;
 	char *version;
 	char *description;
@@ -871,8 +871,8 @@ struct skill_manifest {
 	char *output_schema;		/* "string" 或 "json" */
 };
 
-struct skill {
-	struct skill_manifest manifest;
+struct ext {
+	struct ext_manifest manifest;
 	char *path;
 	void *dl_handle;		/* dlopen 句柄（.so 类型） */
 	int (*run)(const char *args_json, char **result_json);
@@ -881,28 +881,28 @@ struct skill {
 	int enabled;
 };
 
-int skill_load(struct skill *sk, const char *dir_path);
-int skill_unload(struct skill *sk);
-int skill_run(struct skill *sk, const char *args_json, char **result_json);
+int ext_load(struct ext *sk, const char *dir_path);
+int ext_unload(struct ext *sk);
+int ext_run(struct ext *sk, const char *args_json, char **result_json);
 ```
 
-#### 6.9.7 Skill ↔ 主进程 IPC
+#### 6.9.7 Ext ↔ 主进程 IPC
 
 **协议**：基于行的 JSON-RPC 2.0，主进程通过 `stdin/stdout` 与子进程双向通信（`.so` 类型在隔离线程内通过环形 buffer）。
 
-**主进程 → Skill**（单次调用）：
+**主进程 → Ext**（单次调用）：
 ```json
 {"jsonrpc":"2.0","id":1,"method":"run","params":{"prompt":"hi","target_lang":"en"}}
 ```
 
-**Skill → 主进程**（可选回调，用于流式输出与权限请求）：
+**Ext → 主进程**（可选回调，用于流式输出与权限请求）：
 ```json
 {"jsonrpc":"2.0","method":"log","params":{"level":"info","msg":"calling api..."}}
 {"jsonrpc":"2.0","method":"stream","params":{"chunk":"He"}}
 {"jsonrpc":"2.0","method":"request_permission","params":{"perm":"network"}}
 ```
 
-**Skill → 主进程（最终结果）**：
+**Ext → 主进程（最终结果）**：
 ```json
 {"jsonrpc":"2.0","id":1,"result":{"text":"Hello"}}
 {"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"upstream timeout"}}
@@ -977,12 +977,12 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 | 跨平台 | GitHub Actions：ubuntu-22.04，macos-14 | 冒烟全过 |
 
 **沙箱逃逸用例**（必须 100% 阻断）：
-1. Skill 调用 `execve("/bin/sh", ...)` 而未声明 `exec` 权限
-2. Skill 打开 `/etc/shadow` 而未声明对应 `filesystem` 路径
-3. Skill `socket(AF_INET, ...)` 而未声明 `network`
-4. Skill `fork()` 炸弹超过 rlimit
-5. Skill 内存分配超过 `max_memory_mb` → 被 OOM 杀掉，主进程不崩
-6. Skill 死循环超过 `max_cpu_seconds` → 被 SIGKILL
+1. Ext 调用 `execve("/bin/sh", ...)` 而未声明 `exec` 权限
+2. Ext 打开 `/etc/shadow` 而未声明对应 `filesystem` 路径
+3. Ext `socket(AF_INET, ...)` 而未声明 `network`
+4. Ext `fork()` 炸弹超过 rlimit
+5. Ext 内存分配超过 `max_memory_mb` → 被 OOM 杀掉，主进程不崩
+6. Ext 死循环超过 `max_cpu_seconds` → 被 SIGKILL
 
 ---
 
@@ -996,7 +996,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 | 安装 | `cmake -B build && cmake --build build && cmake --install build` |
 | 跨平台 | macOS 14+ / Ubuntu 22.04+ / Arch Linux 优先；Windows（MinGW）P3 |
 | 离线 | 无网时可浏览历史与已生成产物 |
-| 安全 | API Key 文件 0600；不上传用户数据；Skill 沙箱最小权限 |
+| 安全 | API Key 文件 0600；不上传用户数据；Ext 沙箱最小权限 |
 | 扩展 | 新增模型仅需实现 `struct model` 接口 |
 | 编译器 | GCC ≥ 10 / Clang ≥ 14，C11 |
 | 国际化 | 内置中英双语 prompt 与帮助文案；可通过 `LANG` 切换 |
@@ -1008,12 +1008,12 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 
 | 里程碑 | 周次 | 交付物 | 验收 KPI |
 |--------|------|--------|---------|
-| **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Skill（无沙箱） | 首 token < 1s；7 个 `/` commands 可用；Valgrind clean |
+| **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | 首 token < 1s；7 个 `/` commands 可用；Valgrind clean |
 | M2 / V0.2 | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | 图片 P95 < 30s |
 | M3 / V0.3 | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 | 视频任务可后台轮询 |
-| M4 / V0.4 | W11–W13 | Skill 沙箱（seccomp+rlimit+landlock）+ install/enable/disable | 沙箱逃逸 6/6 阻断 |
+| M4 / V0.4 | W11–W13 | Ext 沙箱（seccomp+rlimit+landlock）+ install/enable/disable | 沙箱逃逸 6/6 阻断 |
 | M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩 + 关键信息提取 | 长对话 token 节省 ≥ 40% |
-| M6 / V1.0 | W16–W18 | 多模型切换 + Skill 市场（git）+ macOS sandbox-exec + Homebrew formula | macOS 冒烟通过 |
+| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ macOS sandbox-exec + Homebrew formula | macOS 冒烟通过 |
 
 ---
 
@@ -1027,12 +1027,12 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 | 终端兼容性 | 图片显示异常 | 三协议探测 + 路径回退 | M2 |
 | C 开发效率 | 进度滞后 | 单文件库优先 + 接口抽象 + CI 强约束 | M1 |
 | 内存管理 | 泄漏/崩溃 | Arena + Valgrind/ASan in CI | M1 |
-| Skill 安全 | 恶意 Skill | 沙箱 + 最小权限 + 审计 | M4 |
+| Ext 安全 | 恶意 Ext | 沙箱 + 最小权限 + 审计 | M4 |
 | 沙箱逃逸 | 系统安全 | 专项测试集 + 安全评审 | M4 |
 | 摘要丢关键信息 | 上下文劣化 | 关键信息强制保留 + 用户阈值可调 | M5 |
 | Token 计数误差 | 截断/浪费 | 多 tokenizer + 保守估算 + 分批 | M1 |
 | 静态体积超 8MB | 不达 KPI | 动态链接 + LTO + strip + 删除未使用代码 | M1 |
-| Skill IPC 性能 | 流式卡顿 | 行缓冲 + 共享内存（P2） | M4 |
+| Ext IPC 性能 | 流式卡顿 | 行缓冲 + 共享内存（P2） | M4 |
 
 ---
 
@@ -1047,5 +1047,5 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 | 5 | 终端图片是否 fallback feh/sxiv | **Decided**：否，只回退路径 | 减少依赖 |
 | 6 | 视频理解是否本地抽帧 | Open | M3 评测精度 vs 成本 |
 | 7 | 是否发布 Homebrew/AUR | M6 决策 | — |
-| 8 | Skill 是否需 NetNS 隔离 | **Decided**：P2 | 默认 seccomp 即可 |
-| 9 | `.so` Skill 是否需符号可见性限制 | **Decided**：是 | 仅导出 `skill_run` |
+| 8 | Ext 是否需 NetNS 隔离 | **Decided**：P2 | 默认 seccomp 即可 |
+| 9 | `.so` Ext 是否需符号可见性限制 | **Decided**：是 | 仅导出 `ext_run` |

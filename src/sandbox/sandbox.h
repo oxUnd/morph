@@ -5,10 +5,10 @@
 extern "C" {
 #endif
 
-#define SKILL_PERM_NETWORK	(1 << 0)
-#define SKILL_PERM_FILESYS	(1 << 1)
-#define SKILL_PERM_EXEC		(1 << 2)
-#define SKILL_PERM_ENV		(1 << 3)
+#define EXT_PERM_NETWORK	(1 << 0)
+#define EXT_PERM_FILESYS	(1 << 1)
+#define EXT_PERM_EXEC		(1 << 2)
+#define EXT_PERM_ENV		(1 << 3)
 
 struct sandbox_config {
 	unsigned int permissions;

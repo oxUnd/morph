@@ -6,7 +6,7 @@ add_library(morph-sandbox STATIC
 target_include_directories(morph-sandbox PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
-	${CMAKE_SOURCE_DIR}/src/skill
+	${CMAKE_SOURCE_DIR}/src/ext
 )
 target_link_libraries(morph-sandbox PUBLIC morph-util ${CMAKE_DL_LIBS})
 

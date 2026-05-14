@@ -85,8 +85,8 @@ keep_recent_rounds        = 6
 prefer_image_protocol = "auto"
 mpv_args = "--really-quiet"
 
-[skill]
-dir = "~/.morph/skills"
+[ext]
+dir = "~/.morph/exts"
 default_max_memory_mb   = 128
 default_max_cpu_seconds = 30
 
@@ -99,6 +99,6 @@ system_prompt_file = ""
 
 # Optional: directory containing multiple prompt fragment files (.txt).
 # All files are loaded in alphabetical order and concatenated after
-# system_prompt_file (if set). Skills or users can drop prompt files here
+# system_prompt_file (if set). Exts or users can drop prompt files here
 # to inject additional instructions into every LLM call.
 system_prompt_dir = ""

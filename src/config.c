@@ -65,10 +65,10 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->render.mpv_args, "--really-quiet",
 		sizeof(cfg->render.mpv_args) - 1);
 
-	strncpy(cfg->skill.dir, "~/.morph/skills",
-		sizeof(cfg->skill.dir) - 1);
-	cfg->skill.default_max_memory_mb = 128;
-	cfg->skill.default_max_cpu_seconds = 30;
+	strncpy(cfg->ext.dir, "~/.morph/exts",
+		sizeof(cfg->ext.dir) - 1);
+	cfg->ext.default_max_memory_mb = 128;
+	cfg->ext.default_max_cpu_seconds = 30;
 }
 
 #define CFG_STR(tab, key, buf) do { \
@@ -192,11 +192,11 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(render, "mpv_args", cfg->render.mpv_args);
 	}
 
-	toml_table_t *skill = table_path(tbl, "skill");
-	if (skill) {
-		CFG_STR(skill, "dir", cfg->skill.dir);
-		CFG_INT(skill, "default_max_memory_mb", cfg->skill.default_max_memory_mb);
-		CFG_INT(skill, "default_max_cpu_seconds", cfg->skill.default_max_cpu_seconds);
+	toml_table_t *ext = table_path(tbl, "ext");
+	if (ext) {
+		CFG_STR(ext, "dir", cfg->ext.dir);
+		CFG_INT(ext, "default_max_memory_mb", cfg->ext.default_max_memory_mb);
+		CFG_INT(ext, "default_max_cpu_seconds", cfg->ext.default_max_cpu_seconds);
 	}
 
 	toml_table_t *prompt = table_path(tbl, "prompt");

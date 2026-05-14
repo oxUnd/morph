@@ -1,6 +1,6 @@
 name = "upper"
 version = "1.0.0"
-description = "Convert text to uppercase (demo .so skill)"
+description = "Convert text to uppercase (demo .so ext)"
 author = "morph"
 type = "so"
 entry = "upper.so"

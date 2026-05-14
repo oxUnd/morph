@@ -37,7 +37,7 @@ static const char *schema_sql =
 	"aborted INTEGER DEFAULT 0,"
 	"created_at INTEGER NOT NULL);"
 
-	"CREATE TABLE IF NOT EXISTS skills ("
+	"CREATE TABLE IF NOT EXISTS exts ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"name TEXT UNIQUE NOT NULL,"
 	"version TEXT,"

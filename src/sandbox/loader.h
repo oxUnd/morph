@@ -5,11 +5,11 @@
 extern "C" {
 #endif
 
-struct skill;
+struct ext;
 
-int skill_load_so(struct skill *sk, const char *path);
-int skill_load_exec(struct skill *sk, const char *path);
-void skill_unload_so(struct skill *sk);
+int ext_load_so(struct ext *ex, const char *path);
+int ext_load_exec(struct ext *ex, const char *path);
+void ext_unload_so(struct ext *ex);
 
 #ifdef __cplusplus
 }

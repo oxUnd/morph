@@ -1,5 +1,5 @@
-#ifndef SKILL_H
-#define SKILL_H
+#ifndef EXT_H
+#define EXT_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -8,7 +8,7 @@ extern "C" {
 #include "sandbox.h"
 #include "agent/tool.h"
 
-struct skill_manifest {
+struct ext_manifest {
 	char name[64];
 	char version[32];
 	char description[256];
@@ -26,8 +26,8 @@ struct skill_manifest {
 	char *output_schema;
 };
 
-struct skill {
-	struct skill_manifest manifest;
+struct ext {
+	struct ext_manifest manifest;
 	char path[512];
 	void *dl_handle;
 	int (*run)(const char *args_json, char **result_json);
@@ -36,9 +36,9 @@ struct skill {
 	int enabled;
 };
 
-int skill_load(struct skill *sk, const char *dir_path);
-int skill_unload(struct skill *sk);
-int skill_run(struct skill *sk, const char *args_json, char **result_json);
+int ext_load(struct ext *ex, const char *dir_path);
+int ext_unload(struct ext *ex);
+int ext_run(struct ext *ex, const char *args_json, char **result_json);
 
 #ifdef __cplusplus
 }
