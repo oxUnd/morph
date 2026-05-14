@@ -72,6 +72,9 @@ target_include_directories(morph-cli PUBLIC
 target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render)
 
 add_executable(morph ${MORPH_SOURCES})
+set_target_properties(morph PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
 target_include_directories(morph PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
