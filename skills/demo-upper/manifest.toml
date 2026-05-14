@@ -1,0 +1,11 @@
+name = "upper"
+version = "1.0.0"
+description = "Convert text to uppercase (demo .so skill)"
+author = "morph"
+type = "so"
+entry = "upper.so"
+permissions = 0
+max_memory_mb = 32
+max_cpu_seconds = 5
+args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}"
+output_schema = "string"

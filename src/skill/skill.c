@@ -1,4 +1,5 @@
 #include "skill.h"
+#include "loader.h"
 #include "util/log.h"
 #include "manifest.h"
 #include "ipc/jsonrpc.h"
@@ -34,14 +35,19 @@ int skill_load(struct skill *sk, const char *dir_path)
 	}
 
 	if (strcmp(sk->manifest.type, "exec") == 0) {
-		snprintf(sk->exec_path, sizeof(sk->exec_path), "%s/%s",
-			 dir_path, sk->manifest.entry);
-		sk->run = NULL;
-		log_info("loaded exec skill: %s from %s", sk->manifest.name, sk->exec_path);
+		rc = skill_load_exec(sk, dir_path);
+		if (rc < 0) {
+			log_err("skill_load: failed to load exec skill %s: %d",
+				sk->manifest.name, rc);
+			return rc;
+		}
 	} else if (strcmp(sk->manifest.type, "so") == 0) {
-		log_info("so skill loading not yet implemented: %s", sk->manifest.name);
-		sk->dl_handle = NULL;
-		sk->run = NULL;
+		rc = skill_load_so(sk, dir_path);
+		if (rc < 0) {
+			log_err("skill_load: failed to load so skill %s: %d",
+				sk->manifest.name, rc);
+			return rc;
+		}
 	} else {
 		log_warn("unknown skill type: %s", sk->manifest.type);
 	}
