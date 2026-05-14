@@ -345,9 +345,7 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		ctx->max_iterations);
 
 	struct message_list *hist = ctx->messages;
-	int hist_count = msg_list_count(ctx->messages);
-	int cur_idx = 0;
-	while (hist && cur_idx < hist_count - 1) {
+	while (hist) {
 		const char *role_label = (strcmp(hist->role, "assistant") == 0) ? "Assistant" : "User";
 		len += snprintf(buf + len, cap - len, "%s: %s\n", role_label,
 				hist->content ? hist->content : "");
@@ -361,7 +359,6 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 			buf = new_buf;
 		}
 		hist = hist->next;
-		cur_idx++;
 	}
 
 	struct react_step *step = ctx->steps;
@@ -397,7 +394,7 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		step = step->next;
 	}
 
-	len += snprintf(buf + len, cap - len, "\nUser: %s\n", user_input);
+	(void)user_input; /* current user input is already the last entry in ctx->messages */
 	*out_prompt = buf;
 	return 0;
 }
