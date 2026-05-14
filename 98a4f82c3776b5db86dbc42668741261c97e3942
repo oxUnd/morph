@@ -1,0 +1,93 @@
+src/agent/react.c
+  d5f685d6017512ca 563,565-567,668-669,701-702 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a0415e80b9aa66757dd452b","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Single":563},{"Range":[565,567]},{"Range":[668,669]},{"Range":[701,702]}]}]}
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "98a4f82c3776b5db86dbc42668741261c97e3942",
+  "prompts": {
+    "d5f685d6017512ca": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a04031d0b9aa66757dd43a5",
+        "model": "openrouter-2o__dev"
+      },
+      "human_author": "xiangshouding <fansekey@gmail.com>",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 1,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/agent/react.c": [
+      {
+        "hash": "d5f685d6017512ca",
+        "line_ranges": [
+          {
+            "Single": 563
+          },
+          {
+            "Range": [
+              565,
+              567
+            ]
+          },
+          {
+            "Range": [
+              668,
+              669
+            ]
+          },
+          {
+            "Range": [
+              701,
+              702
+            ]
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a0415e80b9aa66757dd452b",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Single": 563
+              },
+              {
+                "Range": [
+                  565,
+                  567
+                ]
+              },
+              {
+                "Range": [
+                  668,
+                  669
+                ]
+              },
+              {
+                "Range": [
+                  701,
+                  702
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "remote_transcripts": {
+    "d5f685d6017512ca": {
+      "tool": "trae",
+      "conversation_id": "6a04031d0b9aa66757dd43a5",
+      "session_id": "6a04031d0b9aa66757dd43a5",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
