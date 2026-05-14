@@ -359,12 +359,12 @@ LLM 调用前:
 | HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
 | JSON | cJSON | ✓ | 单文件嵌入 |
-| TOML | tomlc99 | ✓ | 单文件嵌入 |
+| TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入 |
 | Markdown | md4c | ✓ | 单文件嵌入 |
 | 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件 |
 | 终端图像 | libsixel（可选）+ 自实现 kitty/iterm2 协议 | 可选 | 缺失时回退路径 |
-| Token 计数 | tiktoken-c（BPE） | ✓ | 多模型分词器 |
-| 异步 / 子进程 | libuv | ✓ | 事件循环 + 子进程管理 |
+| Token 计数 | 自实现 Unicode-Aware 估算（tokenizer.c） | ✓ | BPE 推迟到 P2 |
+| 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需 libuv |
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
 | 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |
@@ -559,8 +559,12 @@ morph/
 │   │   │   ├── img_info.h
 │   │   │   ├── vid_gen.c
 │   │   │   ├── vid_gen.h
-│   │   │   ├── vid_qa.c
-│   │   │   └── vid_qa.h
+│   │   │   ├── file_read.c
+│   │   │   ├── file_read.h
+│   │   │   ├── file_list.c
+│   │   │   ├── file_list.h
+│   │   │   ├── file_info.c
+│   │   │   └── file_info.h
 │   ├── sandbox/
 │   │   ├── CMakeLists.txt
 │   │   ├── sandbox.c
@@ -579,7 +583,6 @@ morph/
 │   │   └── jsonrpc.h
 │   ├── models/
 │   │   ├── CMakeLists.txt
-│   │   ├── base.h
 │   │   ├── llm.c
 │   │   ├── llm.h
 │   │   ├── image_gen.c
@@ -595,9 +598,7 @@ morph/
 │   ├── db/
 │   │   ├── CMakeLists.txt
 │   │   ├── database.c
-│   │   ├── database.h
-│   │   ├── schema.sql            # 建表 DDL
-│   │   └── migrations/           # 版本迁移脚本
+│   │   └── database.h
 │   └── util/
 │       ├── CMakeLists.txt
 │       ├── arena.c
@@ -605,29 +606,39 @@ morph/
 │       ├── file.c
 │       ├── file.h
 │       ├── log.c
-│       └── log.h
+│       ├── log.h
+│       ├── base64.c
+│       ├── base64.h
+│       ├── image_util.c
+│       └── image_util.h
 ├── vendor/
 │   ├── cJSON.c
 │   ├── cJSON.h
-│   ├── tomlc99.c
-│   ├── tomlc99.h
+│   ├── toml.c
+│   ├── toml.h
 │   ├── md4c.c
 │   ├── md4c.h
 │   ├── stb_image.h
 │   ├── stb_image_write.h
 │   ├── stb_image_resize2.h
-│   ├── tiktoken.c
-│   └── tiktoken.h
+│   └── base64.h
 └── tests/
     ├── CMakeLists.txt
-    ├── test_session.c
-    ├── test_config.c
-    ├── test_http.c
-    ├── test_render.c
-    ├── test_compress.c
-    ├── test_sandbox.c
-    ├── test_react.c
-    └── test_main.c
+    ├── test_arena.cpp
+    ├── test_log.cpp
+    ├── test_sse.cpp
+    ├── test_database.cpp
+    ├── test_tool.cpp
+    ├── test_context.cpp
+    ├── test_config.cpp
+    ├── test_file.cpp
+    ├── test_tokenizer.cpp
+    ├── test_session.cpp
+    ├── test_http.cpp
+    ├── test_text_gen.cpp
+    ├── test_image.cpp
+    ├── test_compress.cpp
+    └── test_react.cpp
 ```
 
 ### 6.9 关键接口设计
@@ -705,9 +716,10 @@ struct tool_entry {
 };
 
 struct tool_registry {
-	struct tool_entry *entries;
+	struct tool_entry entries[64];
 	int count;
-	int capacity;
+	char *disabled[32];
+	int disabled_count;
 };
 
 int tool_register(struct tool_registry *reg,
@@ -723,17 +735,19 @@ int tool_exec(struct tool_registry *reg, const char *name,
 
 ```c
 struct model {
-	const char *name;
-	const char *provider;
+	char name[64];
+	char provider[32];
+	char api_base[256];
+	char api_key[256];
+	char model_id[128];
+	int  context_limit;
+	int  timeout_seconds;
 	void       *handle;
 	int  (*chat)      (struct model *self, const char *prompt,
 			   const char **messages, int n,
 			   sse_callback cb, void *user_data);
 	int  (*generate)  (struct model *self, const char *prompt,
 			   const char *out_path);
-	int  (*understand)(struct model *self, const char *file_path,
-			   const char *question,
-			   sse_callback cb, void *user_data);
 	void (*destroy)   (struct model *self);
 };
 
@@ -752,7 +766,10 @@ typedef int (*sse_callback)(const char *token, void *user_data);
 | img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 |
 | img_info | 图片信息 | file_path | stb_image | 内置 |
 | vid_gen | 视频生成 | prompt, file_path?, duration, style | 可灵 / 即梦 | 内置 |
-| vid_qa | 视频理解 | file_path, question | GPT-4o / Gemini | 内置 |
+| vid_qa | 视频理解 | file_path, question | GPT-4o / Gemini | 内置（P1） |
+| file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 |
+| file_list | 列出目录内容 | path | 本地 | 内置 |
+| file_info | 文件元数据 | path | 本地 | 内置 |
 | translate | 文本翻译 | prompt, target_lang | LLM | Skill |
 | web_search | 网页搜索 | query | 外部 API | Skill |
 | ... | 社区/自定义 Skill | 按 manifest 定义 | 按定义 | Skill |
@@ -952,7 +969,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg);
 
 | 层级 | 工具 | 覆盖目标 |
 |------|------|---------|
-| 单元 | 自实现 mini-test 框架（单文件） | 核心模块 ≥ 70% |
+| 单元 | GoogleTest（CMake FetchContent） | 核心模块 ≥ 70% |
 | 集成 | Mock LLM（本地 HTTP server，返回固定 SSE 流） | ReAct 全流程 |
 | 模糊 | libFuzzer / AFL++ | manifest.toml 解析、JSON 解析 |
 | 内存 | Valgrind + ASan + UBSan | 0 lost，0 UB |
