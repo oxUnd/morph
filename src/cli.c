@@ -258,27 +258,44 @@ struct cmd_entry {
 	int (*handler)(struct cli_context *ctx, int argc, char **argv);
 	const char *desc;
 	const char *usage;
+	/* TODO: add `is_alias` flag to cmd_entry so help rendering doesn't need
+	 *       to match desc against "Alias for" prefix — fragile and not i18n-safe */
 };
 
 static const struct cmd_entry commands[] = {
 	{ "/quit",    cmd_quit,    "Exit the program",                  "" },
 	{ "/q",       cmd_quit,    "Alias for /quit",                   "" },
 	{ "/help",    cmd_help,    "Show help for commands",            "/help [command]" },
+	{ "/h",       cmd_help,    "Alias for /help",                   "/h [command]" },
 	{ "/new",     cmd_new,     "Create a new session",              "/new [name]" },
+	{ "/n",       cmd_new,     "Alias for /new",                    "/n [name]" },
 	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id>" },
+	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id>" },
 	{ "/list",    cmd_list,    "List all sessions",                 "/list" },
+	{ "/ls",      cmd_list,    "Alias for /list",                   "/ls" },
 	{ "/rename",  cmd_rename,  "Rename current session",            "/rename <new_name>" },
+	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
 	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },
+	{ "/del",     cmd_delete,  "Alias for /delete",                 "/del <name|id>" },
 	{ "/history", cmd_history, "Show recent messages",              "/history [n|--all]" },
+	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all]" },
 	{ "/model",   cmd_model,   "View or switch the LLM model",      "/model [name]" },
+	{ "/m",       cmd_model,   "Alias for /model",                   "/m [name]" },
 	{ "/trace",   cmd_trace,   "Show ReAct trace for current turn", "/trace [--from-db]" },
+	{ "/t",       cmd_trace,   "Alias for /trace",                   "/t [--from-db]" },
 	{ "/context", cmd_context, "Show token usage and context info", "/context" },
+	{ "/ctx",     cmd_context, "Alias for /context",                 "/ctx" },
 	{ "/compress",cmd_compress,"Manually compress context window",  "/compress" },
+	{ "/cp",      cmd_compress,"Alias for /compress",                "/cp" },
 	{ "/save",    cmd_save,    "Export session to a file",          "/save [format]" },
 	{ "/config",  cmd_config,  "View current configuration",        "/config" },
+	{ "/cfg",     cmd_config,  "Alias for /config",                 "/cfg" },
 	{ "/image",   cmd_image,   "Inject an image into context",      "/image <file_path>" },
+	{ "/img",     cmd_image,   "Alias for /image",                   "/img <file_path>" },
 	{ "/video",   cmd_video,   "Inject a video (M3)",               "/video <file_path>" },
+	{ "/vid",     cmd_video,   "Alias for /video",                  "/vid <file_path>" },
 	{ "/skill",   cmd_skill,   "List or manage tools and skills",   "/skill list" },
+	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
 };
 
@@ -338,9 +355,38 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 	}
 	printf(ANSI_BOLD "morph commands:" ANSI_RESET "\n");
 	for (int i = 0; i < num_commands; i++) {
-		if (strcmp(commands[i].name, "/q") == 0)
-			continue;
-		printf("  %-20s %s\n", commands[i].name, commands[i].desc);
+		const char *desc = commands[i].desc;
+		int alias_end = i;
+		for (int j = i + 1; j < num_commands; j++) {
+			if (commands[j].handler != commands[i].handler)
+				break;
+			alias_end = j;
+		}
+		/* TODO: consider grouping aliases via is_alias flag instead of relying
+	 *       on adjacent entries sharing the same handler — fragile if table
+	 *       gets reordered */
+	if (alias_end > i && strncmp(desc, "Alias for", 9) == 0)
+			desc = commands[alias_end].desc;
+		const char *pri = commands[i].name;
+		const char *alt = (alias_end > i) ? commands[i + 1].name : NULL;
+		char display[128];
+		if (alt) {
+			const char *shorter = (strlen(pri) <= strlen(alt)) ? pri : alt;
+			const char *longer  = (strlen(pri) <= strlen(alt)) ? alt : pri;
+			const char *s = shorter + 1;
+			const char *l = longer + 1;
+			size_t slen = strlen(s);
+			if (strncmp(s, l, slen) == 0)
+				snprintf(display, sizeof(display), "/%s[%s]", s, l + slen);
+			else
+				snprintf(display, sizeof(display), "%s,%s", shorter, longer);
+		} else {
+			snprintf(display, sizeof(display), "%s", pri);
+		}
+		printf("  ");
+		print_padded(display, 24);
+		printf("%s\n", desc);
+		i = alias_end;
 	}
 	return 0;
 }
