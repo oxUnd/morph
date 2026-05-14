@@ -76,3 +76,28 @@ int tool_exec(struct tool_registry *reg, const char *name,
 		return -ENOSYS;
 	return e->exec(args_json, result_json, e->user_data);
 }
+
+int tool_disable(struct tool_registry *reg, const char *name)
+{
+	if (!reg || !name)
+		return -EINVAL;
+	if (reg->disabled_count >= TOOL_DISABLED_MAX)
+		return -ENOSPC;
+	if (tool_is_disabled(reg, name))
+		return 0;
+	strncpy(reg->disabled[reg->disabled_count], name, TOOL_NAME_MAX - 1);
+	reg->disabled_count++;
+	log_info("tool disabled: %s", name);
+	return 0;
+}
+
+int tool_is_disabled(struct tool_registry *reg, const char *name)
+{
+	if (!reg || !name)
+		return 0;
+	for (int i = 0; i < reg->disabled_count; i++) {
+		if (strcmp(reg->disabled[i], name) == 0)
+			return 1;
+	}
+	return 0;
+}

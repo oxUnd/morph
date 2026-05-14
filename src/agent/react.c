@@ -321,6 +321,8 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		len += snprintf(buf + len, cap - len,
 			"Available tools:\n");
 		for (int i = 0; i < ctx->tools->count; i++) {
+			if (tool_is_disabled(ctx->tools, ctx->tools->entries[i].desc.name))
+				continue;
 			len += snprintf(buf + len, cap - len, "- %s: %s\n",
 				ctx->tools->entries[i].desc.name,
 				ctx->tools->entries[i].desc.desc);
@@ -412,6 +414,7 @@ struct react_stream_data {
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
+	log_dbg("react_stream_cb: token=\"%s\"", token);
 	if (react_sigint_flag) {
 		if (sd->cancelled)
 			*sd->cancelled = 1;
@@ -653,6 +656,22 @@ int react_run(struct react_context *ctx, const char *user_input,
 				ctx->state = REACT_STATE_OBSERVING;
 				char *result = NULL;
 				time_t tool_start = time(NULL);
+
+				if (tool_is_disabled(ctx->tools, tool_name)) {
+					log_info("react_run: tool '%s' is disabled", tool_name);
+					result = malloc(256);
+					snprintf(result, 256,
+						"tool error: '%s' is disabled in configuration",
+						tool_name);
+					struct react_step *obs = react_step_create(
+						REACT_STEP_OBSERVATION, result, NULL, NULL);
+					add_step(ctx, obs);
+					free(result);
+					free(action_text);
+					free(sd.response);
+					continue;
+				}
+
 				int tool_rc = tool_exec(ctx->tools, tool_name,
 							tool_args, &result);
 				time_t tool_end = time(NULL);

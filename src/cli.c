@@ -1050,6 +1050,11 @@ struct model *llm = model_llm_create(
 	vid_gen_init(&ctx->tools, vid_llm);
 	log_info("registered vid_gen tool");
 
+	/* Apply disabled tools from config */
+	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
+		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
+	}
+
 	/* Auto-discover skills from skills/ directory */
 	char skills_dir[512] = {0};
 	char *skills_home = file_expand_path("~/.multi-agent/skills");

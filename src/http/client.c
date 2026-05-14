@@ -213,6 +213,7 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct sse_write_data *swd = data;
 	size_t total = size * nmemb;
+	log_dbg("sse_write_cb: received %zu bytes", total);
 	sse_parser_feed(&swd->parser, (const char *)ptr, total);
 	if (swd->cb)
 		swd->cb((const char *)ptr, total, swd->user_data);

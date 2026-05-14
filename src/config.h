@@ -33,10 +33,15 @@ struct config_models {
 	struct config_model_entry video;
 };
 
+#define DISABLED_TOOLS_MAX 32
+#define DISABLED_TOOL_NAME_MAX 64
+
 struct config_react {
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
+	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
+	int disabled_tools_count;
 };
 
 struct config_context {

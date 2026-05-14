@@ -131,8 +131,10 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	if (!data || !*data)
 		return 0;
 
-	if (strcmp(data, "[DONE]") == 0)
+	if (strcmp(data, "[DONE]") == 0) {
+		log_dbg("llm_sse_event_cb: [DONE]");
 		return 0;
+	}
 
 	cJSON *root = cJSON_Parse(data);
 	if (!root)
@@ -189,6 +191,8 @@ static int llm_chat(struct model *self, const char *system_prompt,
 		return -EINVAL;
 	}
 
+	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
+
 	char *msgs_json = NULL;
 	int rc = build_messages_json(system_prompt, messages, n, &msgs_json);
 	if (rc < 0)
@@ -228,10 +232,12 @@ static int llm_chat(struct model *self, const char *system_prompt,
 	const char *extra_headers[] = { auth_header };
 
 	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
+	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	int status = http_post_sse_ex_timeout(url, body, (size_t)body_len,
 				       "application/json",
 				       extra_headers, 1, timeout,
 				       llm_sse_http_cb, &parser);
+	log_dbg("llm_chat: SSE request done, status=%d", status);
 
 	sse_parser_free(&parser);
 	free(body);

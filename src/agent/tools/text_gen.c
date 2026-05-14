@@ -92,6 +92,7 @@ struct text_gen_stream_ctx {
 static int text_gen_stream_cb(const char *token, void *user_data)
 {
 	struct text_gen_stream_ctx *ctx = user_data;
+	log_dbg("text_gen_stream_cb: token=\"%s\", len=%zu", token, ctx->len);
 	size_t tlen = strlen(token);
 	if (ctx->len + tlen + 1 >= ctx->cap) {
 		ctx->cap = (ctx->len + tlen + 1) * 2;
