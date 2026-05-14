@@ -39,8 +39,8 @@ default_session = "my_session"
 log_level = "debug"
 
 [model.text]
-provider = "anthropic"
-model = "claude-3.5"
+provider = "deepseek"
+model = "deepseek-chat"
 context_limit = 200000
 
 [react]
@@ -57,8 +57,8 @@ keep_recent_rounds = 10
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "my_session");
 	EXPECT_STREQ(cfg.general.log_level, "debug");
-	EXPECT_STREQ(cfg.models.text.provider, "anthropic");
-	EXPECT_STREQ(cfg.models.text.model, "claude-3.5");
+	EXPECT_STREQ(cfg.models.text.provider, "deepseek");
+	EXPECT_STREQ(cfg.models.text.model, "deepseek-chat");
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.step_timeout_seconds, 30);

@@ -49,7 +49,7 @@ Third-party code bundled in `vendor/`: cJSON.c/h (JSON parsing), stb_image.h (im
 - Config file via `-c` / `--config` flag. Example: `config.toml.example`
 - API keys read from env vars (`api_key_env` field)
 - Logs: `~/.multi-agent/log/agent.log`
-- Providers: openai, volcengine, deepseek, anthropic
+- Providers: openai, volcengine, deepseek
 - Output dir defaults to `~/.multi-agent/output`
 
 ## Conventions

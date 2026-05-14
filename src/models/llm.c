@@ -221,10 +221,7 @@ static int llm_chat(struct model *self, const char *system_prompt,
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
 
 	char url[512];
-	if (strcmp(self->provider, "anthropic") == 0)
-		snprintf(url, sizeof(url), "%s/messages", self->api_base);
-	else
-		snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
+	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
@@ -287,10 +284,7 @@ static int llm_generate(struct model *self, const char *prompt,
 
 	struct http_response resp = {0};
 	char url[512];
-	if (strcmp(self->provider, "anthropic") == 0)
-		snprintf(url, sizeof(url), "%s/messages", self->api_base);
-	else
-		snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
+	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };

@@ -36,12 +36,6 @@ timeout_seconds  = 60
 # api_base    = "https://api.deepseek.com/v1"
 # api_key_env = "DEEPSEEK_API_KEY"
 
-# ── Anthropic example ────────────────────────
-# provider    = "anthropic"
-# model       = "claude-sonnet-4-20250514"
-# api_base    = "https://api.anthropic.com"
-# api_key_env = "ANTHROPIC_API_KEY"
-
 # ──────────────────────────────────────────────
 # Image generation model
 # ──────────────────────────────────────────────
