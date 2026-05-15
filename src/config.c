@@ -30,6 +30,7 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->models.text.api_key_env, "OPENAI_API_KEY",
 		sizeof(cfg->models.text.api_key_env) - 1);
 	cfg->models.text.context_limit = 128000;
+	cfg->models.text.max_tokens = 4096;
 	cfg->models.text.timeout_seconds = 300;
 
 	strncpy(cfg->models.image.provider, "openai",
@@ -120,6 +121,7 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	CFG_STR(t, "api_key_env", e->api_key_env);
 	CFG_STR(t, "api_key", e->api_key);
 	CFG_INT(t, "context_limit", e->context_limit);
+	CFG_INT(t, "max_tokens", e->max_tokens);
 	CFG_INT(t, "timeout_seconds", e->timeout_seconds);
 	CFG_INT(t, "poll_interval_seconds", e->poll_interval_seconds);
 	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);

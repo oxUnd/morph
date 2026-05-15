@@ -22,6 +22,7 @@ struct config_model_entry {
 	char api_key_env[64];
 	char api_key[256];
 	int context_limit;
+	int max_tokens;
 	int timeout_seconds;
 	int poll_interval_seconds;
 	int poll_timeout_seconds;

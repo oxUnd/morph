@@ -89,7 +89,8 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 	cJSON *body_obj = cJSON_CreateObject();
 	cJSON_AddStringToObject(body_obj, "model", g_llm->model_id);
 	cJSON_AddItemToObject(body_obj, "messages", msgs);
-	cJSON_AddNumberToObject(body_obj, "max_tokens", 4096);
+	cJSON_AddNumberToObject(body_obj, "max_tokens",
+				g_llm->max_tokens > 0 ? g_llm->max_tokens : 4096);
 	char *body_str = cJSON_PrintUnformatted(body_obj);
 	cJSON_Delete(body_obj);
 

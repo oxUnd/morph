@@ -209,8 +209,9 @@ static int llm_chat(struct model *self, const char *system_prompt,
 		"{\"model\":\"%s\","
 		"\"messages\":%s,"
 		"\"stream\":true,"
-		"\"max_tokens\":4096}",
-		self->model_id, msgs_json);
+		"\"max_tokens\":%d}",
+		self->model_id, msgs_json,
+		self->max_tokens > 0 ? self->max_tokens : 4096);
 	free(msgs_json);
 
 	if (body_len < 0 || (size_t)body_len >= body_cap) {
@@ -279,8 +280,9 @@ static int llm_generate(struct model *self, const char *prompt,
 	int body_len = snprintf(body, body_cap,
 		"{\"model\":\"%s\","
 		"\"messages\":%s,"
-		"\"max_tokens\":4096}",
-		self->model_id, msgs_json);
+		"\"max_tokens\":%d}",
+		self->model_id, msgs_json,
+		self->max_tokens > 0 ? self->max_tokens : 4096);
 	free(msgs_json);
 
 	if (body_len < 0 || (size_t)body_len >= body_cap) {
@@ -338,6 +340,7 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	if (api_key)
 		strncpy(m->api_key, api_key, sizeof(m->api_key) - 1);
 	m->context_limit = 128000;
+	m->max_tokens = 4096;
 	m->timeout_seconds = 0;
 	m->chat = llm_chat;
 	m->generate = llm_generate;
