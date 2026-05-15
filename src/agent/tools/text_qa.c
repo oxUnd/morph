@@ -114,7 +114,10 @@ static int text_qa_exec(const char *args_json, char **result_json, void *user_da
 	char *prompt = extract_param(args_json, "prompt");
 	if (!prompt || !*prompt) {
 		free(prompt);
-		*result_json = strdup("{\"error\":\"missing or empty prompt\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing or empty 'prompt' parameter. "
+			"Usage: text_qa({\\\"prompt\\\": \\\"summarize this\\\", "
+			"\\\"context\\\": \\\"...\\\"})\"}");
 		return -EINVAL;
 	}
 

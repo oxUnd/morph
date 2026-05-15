@@ -67,7 +67,10 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 
 	if (!file_path || (target_w <= 0 && target_h <= 0)) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing file_path or width/height\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
+			"Usage: img_resize({\\\"file_path\\\": \\\"img.png\\\", "
+			"\\\"width\\\": 800, \\\"height\\\": 600})\"}");
 		return -EINVAL;
 	}
 

@@ -33,7 +33,9 @@ static int img_info_exec(const char *args_json, char **result_json, void *user_d
 	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing file_path\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'file_path' parameter. "
+			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}");
 		return -EINVAL;
 	}
 

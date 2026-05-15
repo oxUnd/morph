@@ -359,7 +359,7 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 	len += snprintf(buf + len, cap - len,
 		"\nOutput format (strict):\n"
 		"Thought: <your reasoning>\n"
-		"Action: <tool_name>(<json_args>)\n"
+		"Action: <tool_name>(<json_args_object>)\n"
 		"\nAfter each Action you will receive:\n"
 		"Observation: <tool result or error>\n"
 		"\nWhen done, output exactly:\n"
@@ -367,6 +367,8 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		"\nConstraints:\n"
 		"- One Thought + one Action per turn.\n"
 		"- Action MUST be a tool listed above. If no tool is needed, go straight to Final.\n"
+		"- <json_args_object> MUST be a JSON object, e.g. {\"key\": \"value\"}. "
+		"Never pass a bare string, number, or array.\n"
 		"- If a tool fails twice with the same args, change strategy or finalize.\n"
 		"- Maximum %d iterations.\n\n"
 		"\nConversation history:\n",

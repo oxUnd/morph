@@ -35,7 +35,9 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	const char *dir_path = cJSON_IsString(dp) ? dp->valuestring : NULL;
 	if (!dir_path) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing dir_path\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'dir_path' parameter. "
+			"Usage: file_list({\\\"dir_path\\\": \\\"path/to/dir\\\"})\"}");
 		return -EINVAL;
 	}
 

@@ -36,7 +36,9 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing file_path\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'file_path' parameter. "
+			"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}");
 		return -EINVAL;
 	}
 

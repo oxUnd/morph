@@ -38,7 +38,10 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 	const char *prompt = cJSON_IsString(p) ? p->valuestring : NULL;
 	if (!file_path || !prompt) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing file_path or prompt\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'file_path' or 'prompt' parameter. "
+			"Usage: img_edit({\\\"file_path\\\": \\\"img.png\\\", "
+			"\\\"prompt\\\": \\\"make it night\\\"})\"}");
 		return -EINVAL;
 	}
 

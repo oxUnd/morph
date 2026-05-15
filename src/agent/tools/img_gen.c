@@ -32,7 +32,9 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	}
 	if (!prompt) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing prompt\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'prompt' parameter. "
+			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}");
 		return -EINVAL;
 	}
 

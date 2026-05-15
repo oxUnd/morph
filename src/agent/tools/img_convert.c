@@ -84,7 +84,10 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 
 	if (!file_path || !fmt_in) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing file_path or format\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing 'file_path' or 'format' parameter. "
+			"Usage: img_convert({\\\"file_path\\\": \\\"img.png\\\", "
+			"\\\"format\\\": \\\"jpg\\\"})\"}");
 		return -EINVAL;
 	}
 

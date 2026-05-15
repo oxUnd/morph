@@ -116,7 +116,9 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 	char *prompt = extract_prompt(args_json);
 	if (!prompt || !*prompt) {
 		free(prompt);
-		*result_json = strdup("{\"error\":\"missing or empty prompt\"}");
+		*result_json = strdup(
+			"{\"error\":\"missing or empty 'prompt' parameter. "
+			"Usage: text_gen({\\\"prompt\\\": \\\"tell me a story\\\"})\"}");
 		return -EINVAL;
 	}
 
