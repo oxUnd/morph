@@ -11,6 +11,17 @@ static const char *key_patterns[] = {
 	NULL
 };
 
+static void msg_free(struct message_list *msg)
+{
+	if (!msg) return;
+	free(msg->role);
+	free(msg->content);
+	for (int i = 0; i < msg->file_count; i++)
+		free(msg->file_paths[i]);
+	free(msg->file_paths);
+	free(msg);
+}
+
 static const char *is_system_role(struct message_list *msg)
 {
 	if (msg && msg->role && strcmp(msg->role, "system") == 0)
@@ -71,9 +82,7 @@ int compress_sliding_window(struct message_list **head, int keep_rounds,
 			prev->next = next;
 		else
 			*head = next;
-		free(cur->role);
-		free(cur->content);
-		free(cur);
+		msg_free(cur);
 		removed++;
 		cur = next;
 	}
@@ -98,9 +107,7 @@ int compress_react_trace(struct message_list **head,
 				prev->next = next;
 			else
 				*head = next;
-			free(cur->role);
-			free(cur->content);
-			free(cur);
+			msg_free(cur);
 			removed++;
 			cur = next;
 		} else {
@@ -250,17 +257,13 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 			rechain_tail = &cur->next;
 		} else if (cur->compressed) {
 			result->messages_summarized++;
-			free(cur->role);
-			free(cur->content);
-			free(cur);
+			msg_free(cur);
 		} else {
 			result->messages_summarized++;
 			if (cur->content)
 				result->preserved = key_info_add(result->preserved,
 					"summarized", cur->content);
-			free(cur->role);
-			free(cur->content);
-			free(cur);
+			msg_free(cur);
 		}
 		cur = next;
 	}
