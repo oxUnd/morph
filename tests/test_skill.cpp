@@ -93,6 +93,35 @@ TEST_F(SkillParseTest, QuotedValues) {
 	EXPECT_STREQ(fm.description, "A description with: colons");
 }
 
+TEST_F(SkillParseTest, BlockScalarChinese) {
+	const char *data =
+		"---\n"
+		"name: 中文技能\n"
+		"description: |\n"
+		"  这是一个多行的中文描述。\n"
+		"  第二行内容。\n"
+		"---\n"
+		"# 正文\n";
+	int rc = skill_parse(data, strlen(data), &fm, &body);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "中文技能");
+	EXPECT_NE(strstr(fm.description, "这是一个多行的中文描述。"), nullptr);
+	EXPECT_NE(strstr(fm.description, "第二行内容。"), nullptr);
+}
+
+TEST_F(SkillParseTest, EmptyValueFollowedByKey) {
+	const char *data =
+		"---\n"
+		"name: x\n"
+		"description:\n"
+		"license: MIT\n"
+		"---\n";
+	int rc = skill_parse(data, strlen(data), &fm, &body);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "x");
+	EXPECT_STREQ(fm.license, "MIT");
+}
+
 TEST_F(SkillParseTest, NullInput) {
 	int rc = skill_parse(nullptr, 0, &fm, &body);
 	EXPECT_NE(rc, 0);

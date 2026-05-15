@@ -1,35 +1,11 @@
 #include "skill_parse.h"
 #include "util/log.h"
+#include "util/file.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-
-static char *read_file_all(const char *path, size_t *out_len)
-{
-	FILE *f = fopen(path, "r");
-	if (!f)
-		return NULL;
-	fseek(f, 0, SEEK_END);
-	long sz = ftell(f);
-	if (sz < 0) {
-		fclose(f);
-		return NULL;
-	}
-	fseek(f, 0, SEEK_SET);
-	char *buf = malloc((size_t)sz + 1);
-	if (!buf) {
-		fclose(f);
-		return NULL;
-	}
-	size_t nread = fread(buf, 1, (size_t)sz, f);
-	buf[nread] = '\0';
-	fclose(f);
-	if (out_len)
-		*out_len = nread;
-	return buf;
-}
 
 static const char *find_closing_delim(const char *data, size_t len)
 {
@@ -169,9 +145,11 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 		if (in_block_scalar && current_key) {
 			int indent = get_indent(line);
 			if (line[0] != '\0' && !is_blank_line(line) && indent <= block_indent) {
-				strip_trailing_newlines(block_value);
-				if (strcmp(current_key, "metadata") != 0)
-					parse_yaml_scalar(current_key, block_value, fm);
+				if (block_value) {
+					strip_trailing_newlines(block_value);
+					if (strcmp(current_key, "metadata") != 0)
+						parse_yaml_scalar(current_key, block_value, fm);
+				}
 				free(current_key);
 				current_key = NULL;
 				free(block_value);
@@ -255,7 +233,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 				free(current_key);
 			current_key = key;
 			in_block_scalar = 1;
-			block_indent = indent + 2;
+			block_indent = indent;
 			if (block_value) {
 				free(block_value);
 				block_value = NULL;
@@ -270,7 +248,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 				free(current_key);
 			current_key = key;
 			in_block_scalar = 1;
-			block_indent = indent + 2;
+			block_indent = indent;
 			if (block_value) {
 				free(block_value);
 				block_value = NULL;
@@ -373,7 +351,7 @@ int skill_parse_file(const char *path, struct skill_frontmatter *fm,
 		return -EINVAL;
 
 	size_t len = 0;
-	char *data = read_file_all(path, &len);
+	char *data = file_read_all(path, &len);
 	if (!data) {
 		log_err("skill_parse_file: failed to read %s", path);
 		return -ENOENT;
