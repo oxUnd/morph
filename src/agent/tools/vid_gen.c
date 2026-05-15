@@ -50,7 +50,7 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 	snprintf(error, sizeof(error),
 		 "video generated: %s (%ds)", vid_res.path, vid_res.duration_seconds);
 	*result_json = strdup(error);
-	log_info("vid_gen: %s", error);
+	log_dbg("vid_gen: %s", error);
 
 	return 0;
 }

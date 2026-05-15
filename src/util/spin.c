@@ -86,6 +86,65 @@ static void format_elapsed(char *buf, size_t len, time_t start)
 	}
 }
 
+static size_t utf8_visible_len(const char *s)
+{
+	size_t n = 0;
+	while (*s) {
+		if ((*s & 0xC0) != 0x80)
+			n++;
+		s++;
+	}
+	return n;
+}
+
+static const char *utf8_skip_back(const char *start, const char *end, size_t chars)
+{
+	while (end > start && chars > 0) {
+		end--;
+		if ((*end & 0xC0) != 0x80)
+			chars--;
+	}
+	while (end > start && (*end & 0xC0) == 0x80)
+		end--;
+	return end;
+}
+
+static int utf8_char_bytes(const char *s)
+{
+	unsigned char c = (unsigned char)*s;
+	if (c < 0x80) return 1;
+	if ((c & 0xE0) == 0xC0) return 2;
+	if ((c & 0xF0) == 0xE0) return 3;
+	if ((c & 0xF8) == 0xF0) return 4;
+	return 1;
+}
+
+static const char *utf8_skip_forward(const char *s, size_t chars)
+{
+	while (*s && chars > 0) {
+		int cb = utf8_char_bytes(s);
+		s += cb;
+		chars--;
+	}
+	return s;
+}
+
+static size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t max_vis)
+{
+	size_t written = 0;
+	size_t vis = 0;
+	while (*src && vis < max_vis) {
+		int cb = utf8_char_bytes(src);
+		if (written + cb >= dst_cap) break;
+		memcpy(dst + written, src, cb);
+		written += cb;
+		src += cb;
+		vis++;
+	}
+	dst[written] = '\0';
+	return vis;
+}
+
 void spin_render(struct spin_context *ctx)
 {
 	if (!ctx || !ctx->running) return;
@@ -108,7 +167,25 @@ void spin_render(struct spin_context *ctx)
 	} else {
 		fprintf(ctx->output, "%s %s \033[2m%s\033[0m", frame, ctx->message, elapsed);
 		if (ctx->submessage[0]) {
-			fprintf(ctx->output, " \033[36m→\033[0m \033[2m%s\033[0m", ctx->submessage);
+			size_t msg_vis = utf8_visible_len(ctx->message);
+			size_t elapsed_vis = elapsed[0] ? utf8_visible_len(elapsed) + 3 : 0;
+			size_t used = 4 + msg_vis + 1 + elapsed_vis + 4;
+			size_t max_sub = 80 > used ? 80 - used : 20;
+			size_t sub_vis = utf8_visible_len(ctx->submessage);
+			if (sub_vis <= max_sub) {
+				fprintf(ctx->output, " \033[36m→\033[0m \033[2m%s\033[0m",
+					ctx->submessage);
+			} else {
+				size_t scroll_range = sub_vis - max_sub + 1;
+				size_t scroll_speed = 2;
+				size_t offset = ((size_t)ctx->frame / scroll_speed) % (scroll_range + 8);
+				if (offset > scroll_range)
+					offset = scroll_range;
+				const char *start = utf8_skip_forward(ctx->submessage, offset);
+				char buf[512];
+				utf8_copy_vis(buf, sizeof(buf), start, max_sub);
+				fprintf(ctx->output, " \033[36m→\033[0m \033[2m%s\033[0m", buf);
+			}
 		}
 	}
 
@@ -213,8 +290,20 @@ void spin_set_sub(struct spin_context *ctx, const char *submessage)
 	if (!ctx) return;
 	pthread_mutex_lock(&ctx->mutex);
 	if (submessage) {
-		strncpy(ctx->submessage, submessage, sizeof(ctx->submessage) - 1);
-		ctx->submessage[sizeof(ctx->submessage) - 1] = '\0';
+		size_t len = strlen(submessage);
+		size_t max = sizeof(ctx->submessage) - 1;
+		const char *src = submessage;
+		size_t src_len = len;
+		if (len > max) {
+			src = submessage + len - max;
+			src_len = max;
+			while (src_len > 0 && (*src & 0xC0) == 0x80) {
+				src++;
+				src_len--;
+			}
+		}
+		memcpy(ctx->submessage, src, src_len);
+		ctx->submessage[src_len] = '\0';
 	} else {
 		ctx->submessage[0] = '\0';
 	}

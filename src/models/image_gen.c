@@ -167,7 +167,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		result->height = h;
 		free(img);
 	}
-	log_info("image generated: %s (%dx%d)", out_path, result->width, result->height);
+	log_dbg("image generated: %s (%dx%d)", out_path, result->width, result->height);
 	cJSON_Delete(root);
 	return 0;
 }

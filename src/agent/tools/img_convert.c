@@ -133,7 +133,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		 "image converted: %s (%s, %dx%d)",
 		 final_path, nfmt, w, h);
 	*result_json = strdup(buf);
-	log_info("img_convert: %s", buf);
+	log_dbg("img_convert: %s", buf);
 
 	cJSON_Delete(root);
 	return 0;

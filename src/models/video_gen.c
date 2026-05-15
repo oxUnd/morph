@@ -245,6 +245,6 @@ download:
 	result->duration_seconds = duration > 0 ? duration : 5;
 	result->status = 1;
 
-	log_info("video generated: %s (%ds)", out_path, result->duration_seconds);
+	log_dbg("video generated: %s (%ds)", out_path, result->duration_seconds);
 	return 0;
 }

@@ -1560,27 +1560,39 @@ static int output_callback(enum react_step_type type, const char *content,
 			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
-		if (ctx->spin.running) {
-			char action_label[256] = {0};
+		if (content && strncmp(content, "Executing ", 10) == 0) {
+			if (ctx->spin.running) {
+				char msg[256];
+				snprintf(msg, sizeof(msg), "Running %s", content + 10);
+				spin_update(&ctx->spin, msg);
+			}
+			break;
+		}
+		if (content && strstr(content, " completed")) {
+			break;
+		}
+		{
+			char tool_name[64] = {0};
 			if (content) {
-				if (strncmp(content, "Executing ", 10) == 0) {
-					snprintf(action_label, sizeof(action_label), "%s", content + 10);
+				const char *paren = strchr(content, '(');
+				if (paren) {
+					size_t nlen = (size_t)(paren - content);
+					if (nlen >= sizeof(tool_name)) nlen = sizeof(tool_name) - 1;
+					memcpy(tool_name, content, nlen);
+					tool_name[nlen] = '\0';
 				} else {
-					snprintf(action_label, sizeof(action_label), "%s", content);
+					snprintf(tool_name, sizeof(tool_name), "%s", content);
 				}
 			}
 			if (!ctx->spin.running) {
 				spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
-					  action_label[0] ? action_label : "Executing");
+					   tool_name[0] ? tool_name : "Executing");
 			} else {
-				char msg[512];
-				snprintf(msg, sizeof(msg), "Running %s", action_label);
-				spin_update(&ctx->spin, msg);
+				spin_update(&ctx->spin, tool_name[0] ? tool_name : "Executing");
 			}
+			if (content)
+				spin_set_sub(&ctx->spin, content);
 		}
-		printf(ANSI_BOLD ANSI_YELLOW "[Action]" ANSI_RESET " %s\n",
-		       content ? content : "");
-		fflush(stdout);
 		break;
 	case REACT_STEP_OBSERVATION:
 		if (ctx->streaming) {
@@ -1615,7 +1627,7 @@ static int output_callback(enum react_step_type type, const char *content,
 			if (img_path) {
 				memcpy(img_path, path_start, plen);
 				img_path[plen] = '\0';
-				log_info("rendering image: path='%s' exists=%d",
+				log_dbg("rendering image: path='%s' exists=%d",
 					 img_path, file_exists(img_path));
 				image_render_terminal(img_path);
 				free(img_path);

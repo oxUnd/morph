@@ -139,7 +139,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	snprintf(buf, sizeof(buf),
 		 "image resized: %s (%dx%d)", final_path, target_w, target_h);
 	*result_json = strdup(buf);
-	log_info("img_resize: %s", buf);
+	log_dbg("img_resize: %s", buf);
 
 	cJSON_Delete(root);
 	return 0;

@@ -78,7 +78,7 @@ static int render_kitty(const char *path)
 	if (!b64) return -1;
 	size_t b64_len = strlen(b64);
 
-	log_info("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d chunks=%zu",
+	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d chunks=%zu",
 		 path, fmt, rd, b64_len, cols,
 		 (b64_len + 4095) / 4096);
 
@@ -161,28 +161,28 @@ int image_render_terminal(const char *path)
 		return -EINVAL;
 	}
 
-	log_info("image_render: path='%s' kitty=%d iterm2=%d sixel=%d",
+	log_dbg("image_render: path='%s' kitty=%d iterm2=%d sixel=%d",
 		 path, detect_kitty(), detect_iterm2(), detect_sixel());
 
 	if (detect_kitty()) {
-		log_info("image_render: trying kitty protocol");
+		log_dbg("image_render: trying kitty protocol");
 		if (render_kitty(path) == 0)
 			return 0;
 		log_warn("image_render: kitty protocol failed, trying fallback");
 	}
 	if (detect_iterm2()) {
-		log_info("image_render: trying iterm2 protocol");
+		log_dbg("image_render: trying iterm2 protocol");
 		if (render_iterm2(path) == 0) {
 			write_all(STDOUT_FILENO, "\n", 1);
 			return 0;
 		}
 	}
 	if (detect_sixel()) {
-		log_info("image_render: trying sixel");
+		log_dbg("image_render: trying sixel");
 		if (render_sixel(path) == 0)
 			return 0;
 	}
-	log_info("image_render: no terminal protocol detected, printing path");
+	log_dbg("image_render: no terminal protocol detected, printing path");
 	printf("(image: %s)\n", path);
 	fflush(stdout);
 	return 0;

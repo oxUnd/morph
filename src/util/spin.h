@@ -32,7 +32,7 @@ struct spin_context {
 	enum spin_style style;
 	enum spin_state state;
 	char message[256];
-	char submessage[128];
+	char submessage[512];
 	FILE *output;
 	int interval_ms;
 	volatile int running;
