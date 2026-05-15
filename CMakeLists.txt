@@ -19,6 +19,7 @@ if(ENABLE_ASAN)
 	set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fsanitize=address -fsanitize=undefined")
 endif()
 
+find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(CURL REQUIRED)
 

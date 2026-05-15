@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <signal.h>
+#include <pthread.h>
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
@@ -20,6 +21,99 @@ struct collect_data {
 	size_t len;
 	size_t cap;
 };
+
+struct async_tool_call {
+	struct tool_registry *tools;
+	const char *tool_name;
+	const char *tool_args;
+	const char *tool_call_id;
+	char *result;
+	int rc;
+	react_output_cb output_cb;
+	void *output_user_data;
+	volatile sig_atomic_t completed;
+	volatile sig_atomic_t cancelled;
+	pthread_mutex_t mutex;
+};
+
+static void async_tool_call_init(struct async_tool_call *call)
+{
+	if (!call)
+		return;
+	memset(call, 0, sizeof(*call));
+	pthread_mutex_init(&call->mutex, NULL);
+	call->completed = 0;
+	call->cancelled = 0;
+}
+
+static void async_tool_call_cleanup(struct async_tool_call *call)
+{
+	if (!call)
+		return;
+	pthread_mutex_destroy(&call->mutex);
+	free(call->result);
+}
+
+static void *async_tool_exec(void *arg)
+{
+	struct async_tool_call *call = (struct async_tool_call *)arg;
+	if (!call)
+		return NULL;
+
+	char action_buf[512];
+	snprintf(action_buf, sizeof(action_buf), "Executing %s...", call->tool_name);
+	if (call->output_cb)
+		call->output_cb(REACT_STEP_ACTION, action_buf, call->output_user_data);
+
+	if (tool_is_disabled(call->tools, call->tool_name)) {
+		char disabled_msg[256];
+		snprintf(disabled_msg, sizeof(disabled_msg),
+			 "tool error: '%s' is disabled in configuration",
+			 call->tool_name);
+		
+		pthread_mutex_lock(&call->mutex);
+		call->result = strdup(disabled_msg);
+		call->rc = -1;
+		call->completed = 1;
+		pthread_mutex_unlock(&call->mutex);
+	} else {
+		char *res = NULL;
+		int rc = tool_exec(call->tools, call->tool_name, call->tool_args, &res);
+
+		pthread_mutex_lock(&call->mutex);
+		if (call->cancelled) {
+			free(res);
+			call->completed = 1;
+			pthread_mutex_unlock(&call->mutex);
+			return NULL;
+		}
+
+		if (rc < 0) {
+			const char *raw = res ? res : "unknown error";
+			size_t need = strlen(raw) + 64;
+			char *buf = malloc(need);
+			if (buf)
+				snprintf(buf, need, "tool error: %s (code %d)", raw, rc);
+			call->result = buf;
+			call->rc = rc;
+		} else {
+			const char *raw = res ? res : "(no output)";
+			call->result = utf8_dup_clamped(raw, 256 * 1024);
+			call->rc = 0;
+		}
+		call->completed = 1;
+		pthread_mutex_unlock(&call->mutex);
+
+		free(res);
+	}
+
+	char done_buf[512];
+	snprintf(done_buf, sizeof(done_buf), "%s completed", call->tool_name);
+	if (call->output_cb)
+		call->output_cb(REACT_STEP_ACTION, done_buf, call->output_user_data);
+
+	return NULL;
+}
 
 static int collect_cb(const char *token, void *user_data)
 {
@@ -602,25 +696,49 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 			ctx->state = REACT_STATE_ACTING;
 
-			for (int i = 0; i < response.tool_call_count; i++) {
+			int num_tools = response.tool_call_count;
+			pthread_t *threads = calloc((size_t)num_tools, sizeof(pthread_t));
+			struct async_tool_call *calls = calloc((size_t)num_tools, sizeof(struct async_tool_call));
+
+			for (int i = 0; i < num_tools; i++) {
+				async_tool_call_init(&calls[i]);
+
 				struct tool_call *tc = &response.tool_calls[i];
 				const char *tool_name = tc->name;
 				const char *tool_args = tc->arguments ? tc->arguments : "{}";
 
 				char action_text[512];
-				snprintf(action_text, sizeof(action_text),
-					 "%s(%s)", tool_name, tool_args);
+				snprintf(action_text, sizeof(action_text), "%s(%s)", tool_name, tool_args);
 				struct react_step *action = react_step_create(
-					REACT_STEP_ACTION, action_text,
-					tool_name, tool_args, tc->id);
+					REACT_STEP_ACTION, action_text, tool_name, tool_args, tc->id);
 				add_step(ctx, action);
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
 
-				if (react_sigint_flag) {
-					ctx->cancelled = 1;
-					react_sigint_flag = 0;
+				calls[i].tools = ctx->tools;
+				calls[i].tool_name = tool_name;
+				calls[i].tool_args = tool_args;
+				calls[i].tool_call_id = tc->id;
+				calls[i].output_cb = cb;
+				calls[i].output_user_data = user_data;
+
+				pthread_create(&threads[i], NULL, async_tool_exec, &calls[i]);
+			}
+
+			if (react_sigint_flag) {
+				ctx->cancelled = 1;
+				react_sigint_flag = 0;
+			}
+
+			for (int i = 0; i < num_tools; i++) {
+				if (ctx->cancelled) {
+					pthread_mutex_lock(&calls[i].mutex);
+					calls[i].cancelled = 1;
+					pthread_mutex_unlock(&calls[i].mutex);
 				}
+
+				pthread_join(threads[i], NULL);
+
 				if (ctx->cancelled) {
 					struct react_step *obs = react_step_create(
 						REACT_STEP_OBSERVATION,
@@ -632,116 +750,33 @@ int react_run(struct react_context *ctx, const char *user_input,
 				}
 
 				ctx->state = REACT_STATE_OBSERVING;
-				char *result = NULL;
-				time_t tool_start = time(NULL);
+				struct async_tool_call *call = &calls[i];
 
-				if (tool_is_disabled(ctx->tools, tool_name)) {
-					log_info("react_run: tool '%s' is disabled", tool_name);
-					char disabled_msg[256];
-					snprintf(disabled_msg, sizeof(disabled_msg),
-						 "tool error: '%s' is disabled in configuration",
-						 tool_name);
-					result = strdup(disabled_msg);
-					struct react_step *obs = react_step_create(
-						REACT_STEP_OBSERVATION, disabled_msg,
-						NULL, NULL, NULL);
-					add_step(ctx, obs);
-					if (cb)
-						cb(REACT_STEP_OBSERVATION, disabled_msg, user_data);
+				pthread_mutex_lock(&call->mutex);
+				int rc = call->rc;
+				char *result = call->result;
+				call->result = NULL;
+				pthread_mutex_unlock(&call->mutex);
 
-					if (msg_count >= msg_cap) {
-						msg_cap = msg_count + 16;
-						struct chat_message *new_m = realloc(messages,
-							(size_t)msg_cap * sizeof(*new_m));
-						if (!new_m) break;
-						messages = new_m;
-						memset(messages + msg_count, 0,
-						       (size_t)(msg_cap - msg_count) * sizeof(*messages));
-					}
-					struct chat_message *tool_msg = &messages[msg_count];
-					tool_msg->role = strdup("tool");
-					tool_msg->content = strdup(disabled_msg);
-					tool_msg->tool_call_id = strdup(tc->id);
-					tool_msg->tool_calls = NULL;
-					tool_msg->tool_call_count = 0;
-					msg_count++;
-					free(result);
-					continue;
-				}
-
-				int tool_rc = tool_exec(ctx->tools, tool_name,
-							tool_args, &result);
-				time_t tool_end = time(NULL);
-
-				if (ctx->step_timeout_seconds > 0 &&
-				    (tool_end - tool_start) >= ctx->step_timeout_seconds) {
-					log_warn("react_run: tool '%s' exceeded step timeout",
-						 tool_name);
-					char timeout_msg[512];
-					snprintf(timeout_msg, sizeof(timeout_msg),
-						"tool error: '%s' timed out (took %lds, limit %ds)",
-						tool_name, (long)(tool_end - tool_start),
-						ctx->step_timeout_seconds);
-					struct react_step *obs = react_step_create(
-						REACT_STEP_OBSERVATION, timeout_msg,
-						NULL, NULL, NULL);
-					add_step(ctx, obs);
-					if (cb)
-						cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
-					free(result);
-
-					if (msg_count >= msg_cap) {
-						msg_cap = msg_count + 16;
-						struct chat_message *new_m = realloc(messages,
-							(size_t)msg_cap * sizeof(*new_m));
-						if (!new_m) break;
-						messages = new_m;
-						memset(messages + msg_count, 0,
-						       (size_t)(msg_cap - msg_count) * sizeof(*messages));
-					}
-					struct chat_message *tool_msg = &messages[msg_count];
-					tool_msg->role = strdup("tool");
-					tool_msg->content = strdup(timeout_msg);
-					tool_msg->tool_call_id = strdup(tc->id);
-					tool_msg->tool_calls = NULL;
-					tool_msg->tool_call_count = 0;
-					msg_count++;
-					continue;
-				}
-
-				#define REACT_OBS_MAX_BYTES (256 * 1024)
-				char *obs_buf = NULL;
-				if (tool_rc < 0) {
+				if (rc < 0) {
 					ctx->state = REACT_STATE_TOOL_FAIL;
-					const char *raw = result ? result : "unknown error";
-					size_t need = strlen(raw) + 64;
-					obs_buf = malloc(need);
-					if (obs_buf)
-						snprintf(obs_buf, need,
-							"tool error: %s (code %d)",
-							raw, tool_rc);
-					if (strcmp(tool_name, ctx->tool_fail_name) == 0 &&
-					    strcmp(tool_args, ctx->tool_fail_args) == 0) {
+					if (strcmp(call->tool_name, ctx->tool_fail_name) == 0 &&
+					    strcmp(call->tool_args, ctx->tool_fail_args) == 0) {
 						ctx->tool_fail_count++;
 					} else {
-						strncpy(ctx->tool_fail_name, tool_name,
+						strncpy(ctx->tool_fail_name, call->tool_name,
 							sizeof(ctx->tool_fail_name) - 1);
 						ctx->tool_fail_name[sizeof(ctx->tool_fail_name) - 1] = '\0';
-						strncpy(ctx->tool_fail_args, tool_args,
+						strncpy(ctx->tool_fail_args, call->tool_args,
 							sizeof(ctx->tool_fail_args) - 1);
 						ctx->tool_fail_args[sizeof(ctx->tool_fail_args) - 1] = '\0';
 						ctx->tool_fail_count = 1;
 					}
 				} else {
-					const char *raw = result ? result : "(no output)";
-					obs_buf = utf8_dup_clamped(raw, REACT_OBS_MAX_BYTES);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 				}
-				if (!obs_buf)
-					obs_buf = strdup("");
-				free(result);
 
 				if (ctx->tool_fail_count >= ctx->tool_max_retries) {
 					log_warn("react_run: tool '%s' failed %d times consecutively, forcing Final",
@@ -758,26 +793,32 @@ int react_run(struct react_context *ctx, const char *user_input,
 					ctx->state = REACT_STATE_DONE;
 					if (cb)
 						cb(REACT_STEP_FINAL, fail_msg, user_data);
-					free(obs_buf);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 					chat_response_free(&response);
+					free(threads);
+					for (int j = 0; j < num_tools; j++) {
+						async_tool_call_cleanup(&calls[j]);
+					}
+					free(calls);
+					free(result);
 					goto done;
 				}
 
+				const char *obs_text = result ? result : "";
 				struct react_step *obs = react_step_create(
-					REACT_STEP_OBSERVATION, obs_buf, NULL, NULL, NULL);
+					REACT_STEP_OBSERVATION, obs_text, NULL, NULL, NULL);
 				add_step(ctx, obs);
 				if (cb)
-					cb(REACT_STEP_OBSERVATION, obs_buf, user_data);
+					cb(REACT_STEP_OBSERVATION, obs_text, user_data);
 
 				if (msg_count >= msg_cap) {
 					msg_cap = msg_count + 16;
 					struct chat_message *new_m = realloc(messages,
 						(size_t)msg_cap * sizeof(*new_m));
 					if (!new_m) {
-						free(obs_buf);
+						free(result);
 						break;
 					}
 					messages = new_m;
@@ -786,14 +827,20 @@ int react_run(struct react_context *ctx, const char *user_input,
 				}
 				struct chat_message *tool_msg = &messages[msg_count];
 				tool_msg->role = strdup("tool");
-				tool_msg->content = strdup(obs_buf);
-				tool_msg->tool_call_id = strdup(tc->id);
+				tool_msg->content = strdup(obs_text);
+				tool_msg->tool_call_id = strdup(call->tool_call_id);
 				tool_msg->tool_calls = NULL;
 				tool_msg->tool_call_count = 0;
 				msg_count++;
 
-				free(obs_buf);
+				free(result);
 			}
+
+			free(threads);
+			for (int i = 0; i < num_tools; i++) {
+				async_tool_call_cleanup(&calls[i]);
+			}
+			free(calls);
 
 			if (ctx->cancelled) {
 				chat_response_free(&response);
