@@ -63,32 +63,6 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	return 0;
 }
 
-static int case_ncmp(const char *s1, const char *s2, size_t n)
-{
-	while (n-- > 0) {
-		int c1 = tolower((unsigned char)*s1++);
-		int c2 = tolower((unsigned char)*s2++);
-		if (c1 != c2)
-			return c1 - c2;
-		if (c1 == '\0')
-			return 0;
-	}
-	return 0;
-}
-
-static const char *find_ci(const char *haystack, const char *needle)
-{
-	if (!haystack || !needle || !*needle)
-		return haystack;
-	size_t needle_len = strlen(needle);
-	while (*haystack) {
-		if (case_ncmp(haystack, needle, needle_len) == 0)
-			return haystack;
-		haystack++;
-	}
-	return NULL;
-}
-
 const char *react_step_type_name(enum react_step_type type)
 {
 	switch (type) {
@@ -182,7 +156,8 @@ void react_cancel(struct react_context *ctx)
 struct react_step *react_step_create(enum react_step_type type,
 				     const char *content,
 				     const char *tool_name,
-				     const char *tool_args)
+				     const char *tool_args,
+				     const char *tool_call_id)
 {
 	struct react_step *s = calloc(1, sizeof(*s));
 	if (!s)
@@ -191,6 +166,7 @@ struct react_step *react_step_create(enum react_step_type type,
 	s->content = content ? strdup(content) : NULL;
 	s->tool_name = tool_name ? strdup(tool_name) : NULL;
 	s->tool_args = tool_args ? strdup(tool_args) : NULL;
+	s->tool_call_id = tool_call_id ? strdup(tool_call_id) : NULL;
 	return s;
 }
 
@@ -201,6 +177,7 @@ void react_step_destroy(struct react_step *step)
 	free(step->content);
 	free(step->tool_name);
 	free(step->tool_args);
+	free(step->tool_call_id);
 	free(step);
 }
 
@@ -219,99 +196,13 @@ static void add_step(struct react_context *ctx, struct react_step *step)
 	ctx->step_count++;
 }
 
-static int parse_action(const char *text, char *tool_name, size_t tn_size,
-			char *tool_args, size_t ta_size)
+static char *build_system_prompt(struct react_context *ctx)
 {
-	if (!text)
-		return -1;
-	while (*text && isspace((unsigned char)*text))
-		text++;
-	size_t i = 0;
-	while (*text && *text != '(' && !isspace((unsigned char)*text) && i < tn_size - 1)
-		tool_name[i++] = *text++;
-	tool_name[i] = '\0';
-	while (*text && isspace((unsigned char)*text))
-		text++;
-	if (*text != '(')
-		return -1;
-	text++;
-
-	/* Walk char-by-char, tracking string and bracket nesting so that we
-	 * correctly handle JSON args like {"path":"a)b","n":1}. */
-	int paren = 1;     /* we already consumed the opening '(' */
-	int brace = 0;
-	int bracket = 0;
-	int in_str = 0;
-	int escape = 0;
-	const char *p = text;
-	const char *close = NULL;
-	for (; *p; p++) {
-		char c = *p;
-		if (in_str) {
-			if (escape) {
-				escape = 0;
-			} else if (c == '\\') {
-				escape = 1;
-			} else if (c == '"') {
-				in_str = 0;
-			}
-			continue;
-		}
-		if (c == '"') {
-			in_str = 1;
-		} else if (c == '{') {
-			brace++;
-		} else if (c == '}') {
-			if (brace > 0)
-				brace--;
-		} else if (c == '[') {
-			bracket++;
-		} else if (c == ']') {
-			if (bracket > 0)
-				bracket--;
-		} else if (c == '(') {
-			paren++;
-		} else if (c == ')') {
-			paren--;
-			if (paren == 0 && brace == 0 && bracket == 0) {
-				close = p;
-				break;
-			}
-		}
-	}
-	if (!close)
-		return -1;
-	size_t arg_len = (size_t)(close - text);
-	if (arg_len >= ta_size)
-		arg_len = ta_size - 1;
-	memcpy(tool_args, text, arg_len);
-	tool_args[arg_len] = '\0';
-	return 0;
-}
-
-static char *extract_after_prefix(const char *response, const char *prefix)
-{
-	if (!response || !prefix)
-		return NULL;
-	const char *p = find_ci(response, prefix);
-	if (!p)
-		return NULL;
-	p += strlen(prefix);
-	while (*p && isspace((unsigned char)*p))
-		p++;
-	if (!*p)
-		return strdup("");
-	return strdup(p);
-}
-
-static int build_prompt(struct react_context *ctx, const char *user_input,
-			char **out_prompt)
-{
-	size_t cap = 16384;
+	size_t cap = 8192;
 	size_t len = 0;
 	char *buf = malloc(cap);
 	if (!buf)
-		return -ENOMEM;
+		return NULL;
 
 	len += snprintf(buf + len, cap - len,
 		"You are a multi-modal content creation assistant.\n");
@@ -328,19 +219,16 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 	}
 
 	if (ctx->system_prompt) {
+		size_t sp_len = strlen(ctx->system_prompt);
+		while (len + sp_len + 2 >= cap) {
+			cap *= 2;
+			char *nb = realloc(buf, cap);
+			if (!nb) { free(buf); return NULL; }
+			buf = nb;
+		}
 		len += snprintf(buf + len, cap - len, "%s\n", ctx->system_prompt);
 	}
-	if (ctx->tools && ctx->tools->count > 0) {
-		len += snprintf(buf + len, cap - len,
-			"Available tools:\n");
-		for (int i = 0; i < ctx->tools->count; i++) {
-			if (tool_is_disabled(ctx->tools, ctx->tools->entries[i].desc.name))
-				continue;
-			len += snprintf(buf + len, cap - len, "- %s: %s\n",
-				ctx->tools->entries[i].desc.name,
-				ctx->tools->entries[i].desc.desc);
-		}
-	}
+
 	if (ctx->skills && ctx->skills->count > 0) {
 		len += snprintf(buf + len, cap - len,
 			"\nAvailable skills:\n");
@@ -356,22 +244,15 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 			"call the activate_skill tool with the skill's name "
 			"to load its full instructions.\n");
 	}
+
 	len += snprintf(buf + len, cap - len,
-		"\nOutput format (strict):\n"
-		"Thought: <your reasoning>\n"
-		"Action: <tool_name>(<json_args_object>)\n"
-		"\nAfter each Action you will receive:\n"
-		"Observation: <tool result or error>\n"
-		"\nWhen done, output exactly:\n"
-		"Final: <your answer>\n"
-		"\nConstraints:\n"
-		"- One Thought + one Action per turn.\n"
-		"- Action MUST be a tool listed above. If no tool is needed, go straight to Final.\n"
-		"- <json_args_object> MUST be a JSON object, e.g. {\"key\": \"value\"}. "
-		"Never pass a bare string, number, or array.\n"
-		"- If a tool fails twice with the same args, change strategy or finalize.\n"
-		"- Maximum %d iterations.\n\n"
-		"\nConversation history:\n",
+		"\nInstructions:\n"
+		"- Use the provided tools to accomplish tasks.\n"
+		"- If you need to call a tool, use the function calling interface. "
+		"You may also include a brief thought in your text response before calling tools.\n"
+		"- If no tool is needed, respond directly with your answer.\n"
+		"- If a tool fails twice with the same args, change strategy or respond directly.\n"
+		"- Maximum %d tool-calling iterations.\n",
 		ctx->max_iterations);
 
 	if (ctx->skills) {
@@ -381,7 +262,7 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 			while (len + alen + 1 >= cap) {
 				cap *= 2;
 				char *nb = realloc(buf, cap);
-				if (!nb) { free(buf); free(active); return -ENOMEM; }
+				if (!nb) { free(buf); free(active); return NULL; }
 				buf = nb;
 			}
 			memcpy(buf + len, active, alen + 1);
@@ -390,74 +271,34 @@ static int build_prompt(struct react_context *ctx, const char *user_input,
 		}
 	}
 
-	struct message_list *hist = ctx->messages;
-	while (hist) {
-		const char *role_label = (strcmp(hist->role, "assistant") == 0) ? "Assistant" : "User";
-		len += snprintf(buf + len, cap - len, "%s: %s\n", role_label,
-				hist->content ? hist->content : "");
-		if (len + 1024 > cap) {
-			size_t new_cap = cap * 2;
-			while (new_cap < len + 1024)
-				new_cap *= 2;
-			char *new_buf = realloc(buf, new_cap);
-			if (!new_buf) { free(buf); return -ENOMEM; }
-			cap = new_cap;
-			buf = new_buf;
-		}
-		hist = hist->next;
-	}
-
-	struct react_step *step = ctx->steps;
-	while (step) {
-		switch (step->type) {
-		case REACT_STEP_THOUGHT:
-			len += snprintf(buf + len, cap - len,
-				"Thought: %s\n", step->content ? step->content : "");
-			break;
-		case REACT_STEP_ACTION:
-			len += snprintf(buf + len, cap - len,
-				"Action: %s(%s)\n",
-				step->tool_name ? step->tool_name : "",
-				step->tool_args ? step->tool_args : "");
-			break;
-		case REACT_STEP_OBSERVATION:
-			len += snprintf(buf + len, cap - len,
-				"Observation: %s\n",
-				step->content ? step->content : "");
-			break;
-		default:
-			break;
-		}
-		if (len + 1024 > cap) {
-			size_t new_cap = cap * 2;
-			while (new_cap < len + 1024)
-				new_cap *= 2;
-			char *new_buf = realloc(buf, new_cap);
-			if (!new_buf) { free(buf); return -ENOMEM; }
-			cap = new_cap;
-			buf = new_buf;
-		}
-		step = step->next;
-	}
-
-	(void)user_input; /* current user input is already the last entry in ctx->messages */
-	*out_prompt = buf;
-	return 0;
+	return buf;
 }
 
 struct react_stream_data {
-	char *response;
-	size_t len;
-	size_t cap;
 	react_output_cb user_cb;
 	void *user_data;
 	volatile sig_atomic_t *cancelled;
+	char *accumulated;
+	size_t acc_len;
+	size_t acc_cap;
 };
 
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
-	log_dbg("react_stream_cb: token=\"%s\"", token);
+	size_t tlen = strlen(token);
+	if (sd->acc_len + tlen + 1 >= sd->acc_cap) {
+		sd->acc_cap = (sd->acc_len + tlen + 1) * 2;
+		char *new_acc = realloc(sd->accumulated, sd->acc_cap);
+		if (new_acc) {
+			sd->accumulated = new_acc;
+		}
+	}
+	if (sd->accumulated && sd->acc_len + tlen < sd->acc_cap) {
+		memcpy(sd->accumulated + sd->acc_len, token, tlen);
+		sd->acc_len += tlen;
+		sd->accumulated[sd->acc_len] = '\0';
+	}
 	if (react_sigint_flag) {
 		if (sd->cancelled)
 			*sd->cancelled = 1;
@@ -465,21 +306,31 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
-	size_t tlen = strlen(token);
-	if (sd->len + tlen + 1 >= sd->cap) {
-		sd->cap = (sd->len + tlen + 1) * 2;
-		char *new_resp = realloc(sd->response, sd->cap);
-		if (!new_resp)
-			return -ENOMEM;
-		sd->response = new_resp;
-	}
-	memcpy(sd->response + sd->len, token, tlen);
-	sd->len += tlen;
-	sd->response[sd->len] = '\0';
-
 	if (sd->user_cb)
 		sd->user_cb(REACT_STEP_THOUGHT, token, sd->user_data);
 	return 0;
+}
+
+static int count_active_tools(struct tool_registry *reg)
+{
+	int count = 0;
+	for (int i = 0; i < reg->count; i++) {
+		if (!tool_is_disabled(reg, reg->entries[i].desc.name))
+			count++;
+	}
+	return count;
+}
+
+static void collect_active_tools(struct tool_registry *reg,
+				 struct tool_desc *out, int max_count)
+{
+	int idx = 0;
+	for (int i = 0; i < reg->count && idx < max_count; i++) {
+		if (!tool_is_disabled(reg, reg->entries[i].desc.name)) {
+			out[idx] = reg->entries[i].desc;
+			idx++;
+		}
+	}
 }
 
 int react_run(struct react_context *ctx, const char *user_input,
@@ -495,7 +346,83 @@ int react_run(struct react_context *ctx, const char *user_input,
 						  tokenizer_count(ctx->tokenizer, user_input));
 	msg_list_append(&ctx->messages, msg);
 
+	struct model *llm = (struct model *)ctx->llm_model;
+
+	if (!llm || !llm->api_key[0]) {
+		struct react_step *thought = react_step_create(
+			REACT_STEP_THOUGHT, "Processing user input...", NULL, NULL, NULL);
+		add_step(ctx, thought);
+		if (cb)
+			cb(REACT_STEP_THOUGHT, "Processing user input...", user_data);
+
+		free(ctx->final_answer);
+		ctx->final_answer = strdup(user_input);
+
+		struct react_step *final_step = react_step_create(
+			REACT_STEP_FINAL, user_input, NULL, NULL, NULL);
+		add_step(ctx, final_step);
+		if (cb)
+			cb(REACT_STEP_FINAL, user_input, user_data);
+
+		ctx->state = REACT_STATE_DONE;
+		return 0;
+	}
+
+	char *system_prompt = build_system_prompt(ctx);
+	if (!system_prompt) {
+		log_err("react_run: failed to build system prompt");
+		ctx->state = REACT_STATE_ABORT;
+		return -ENOMEM;
+	}
+
 	int has_tools = ctx->tools && ctx->tools->count > 0;
+	int active_tool_count = has_tools ? count_active_tools(ctx->tools) : 0;
+	struct tool_desc *active_tools = NULL;
+	if (active_tool_count > 0) {
+		active_tools = calloc((size_t)active_tool_count, sizeof(*active_tools));
+		if (!active_tools) {
+			free(system_prompt);
+			ctx->state = REACT_STATE_ABORT;
+			return -ENOMEM;
+		}
+		collect_active_tools(ctx->tools, active_tools, active_tool_count);
+	}
+
+	int msg_cap = 64;
+	int msg_count = 0;
+	struct chat_message *messages = calloc((size_t)msg_cap, sizeof(*messages));
+	if (!messages) {
+		free(system_prompt);
+		free(active_tools);
+		ctx->state = REACT_STATE_ABORT;
+		return -ENOMEM;
+	}
+
+	struct message_list *hist = ctx->messages;
+	while (hist) {
+		if (msg_count >= msg_cap) {
+			msg_cap *= 2;
+			struct chat_message *new_m = realloc(messages,
+				(size_t)msg_cap * sizeof(*new_m));
+			if (!new_m) {
+				free(system_prompt);
+				free(active_tools);
+				free(messages);
+				ctx->state = REACT_STATE_ABORT;
+				return -ENOMEM;
+			}
+			messages = new_m;
+			memset(messages + msg_count, 0,
+			       (size_t)(msg_cap - msg_count) * sizeof(*messages));
+		}
+		messages[msg_count].role = strdup(hist->role);
+		messages[msg_count].content = hist->content ? strdup(hist->content) : strdup("");
+		messages[msg_count].tool_call_id = NULL;
+		messages[msg_count].tool_calls = NULL;
+		messages[msg_count].tool_call_count = 0;
+		msg_count++;
+		hist = hist->next;
+	}
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		if (react_sigint_flag) {
@@ -528,61 +455,53 @@ int react_run(struct react_context *ctx, const char *user_input,
 			(void)rc;
 		}
 
-		char *prompt = NULL;
-		int rc = build_prompt(ctx, user_input, &prompt);
-		if (rc < 0) {
-			log_err("react_run: failed to build prompt");
-			ctx->state = REACT_STATE_ABORT;
-			return rc;
-		}
-
-		struct model *llm = (struct model *)ctx->llm_model;
-
-		if (!llm || !llm->api_key[0]) {
-			struct react_step *thought = react_step_create(
-				REACT_STEP_THOUGHT, "Processing user input...", NULL, NULL);
-			add_step(ctx, thought);
-			if (cb)
-				cb(REACT_STEP_THOUGHT, "Processing user input...", user_data);
-
-			free(ctx->final_answer);
-			ctx->final_answer = strdup(user_input);
-
-			struct react_step *final_step = react_step_create(
-				REACT_STEP_FINAL, user_input, NULL, NULL);
-			add_step(ctx, final_step);
-			if (cb)
-				cb(REACT_STEP_FINAL, user_input, user_data);
-
-			ctx->state = REACT_STATE_DONE;
-			free(prompt);
-			break;
-		}
-
-		const char *msgs[] = { prompt };
-		struct react_stream_data sd = {
-			.response = malloc(8192),
-			.len = 0,
-			.cap = 8192,
-			.user_cb = cb,
-			.user_data = user_data,
-			.cancelled = &ctx->cancelled,
-		};
-		if (!sd.response) {
-			free(prompt);
-			ctx->state = REACT_STATE_ABORT;
-			return -ENOMEM;
-		}
-		sd.response[0] = '\0';
-
 		if (cb)
 			cb(REACT_STEP_THOUGHT, "", user_data);
 
-		time_t llm_start = time(NULL);
-		int status = llm->chat(llm, NULL, msgs, 1, react_stream_cb, &sd);
-		time_t llm_end = time(NULL);
+		struct react_stream_data sd = {
+			.user_cb = cb,
+			.user_data = user_data,
+			.cancelled = &ctx->cancelled,
+			.accumulated = malloc(8192),
+			.acc_len = 0,
+			.acc_cap = 8192,
+		};
+		if (sd.accumulated)
+			sd.accumulated[0] = '\0';
 
-		free(prompt);
+		struct chat_response response = {0};
+		time_t llm_start = time(NULL);
+		int status;
+
+		if (llm->chat_with_tools) {
+			status = llm->chat_with_tools(llm, system_prompt,
+						      messages, msg_count,
+						      active_tools, active_tool_count,
+						      &response,
+						      react_stream_cb, &sd);
+		} else {
+			int hist_n = 0;
+			struct message_list *h = ctx->messages;
+			while (h) { hist_n++; h = h->next; }
+			const char **hist_msgs = calloc((size_t)hist_n, sizeof(*hist_msgs));
+			if (hist_msgs) {
+				h = ctx->messages;
+				for (int i = 0; i < hist_n && h; i++) {
+					hist_msgs[i] = h->content ? h->content : "";
+					h = h->next;
+				}
+			}
+			status = llm->chat(llm, system_prompt,
+					   hist_msgs, hist_n,
+					   react_stream_cb, &sd);
+			free(hist_msgs);
+			if (status >= 0 && sd.accumulated) {
+				response.content = sd.accumulated;
+				sd.accumulated = NULL;
+			}
+		}
+
+		time_t llm_end = time(NULL);
 
 		if (react_sigint_flag) {
 			ctx->cancelled = 1;
@@ -592,24 +511,29 @@ int react_run(struct react_context *ctx, const char *user_input,
 			log_info("react_run: cancelled during LLM call");
 			struct react_step *obs = react_step_create(
 				REACT_STEP_OBSERVATION,
-				"LLM call interrupted by user", NULL, NULL);
+				"LLM call interrupted by user", NULL, NULL, NULL);
 			add_step(ctx, obs);
-			if (sd.response[0]) {
+			if (response.content) {
 				free(ctx->final_answer);
-				ctx->final_answer = strdup(sd.response);
+				ctx->final_answer = strdup(response.content);
 			}
 			ctx->state = REACT_STATE_ABORT;
-			free(sd.response);
+			chat_response_free(&response);
 			break;
 		}
 
 		if (status < 0) {
 			log_err("react_run: LLM call failed: %d", status);
 			struct react_step *err = react_step_create(
-				REACT_STEP_OBSERVATION, "LLM call failed", NULL, NULL);
+				REACT_STEP_OBSERVATION, "LLM call failed", NULL, NULL, NULL);
 			add_step(ctx, err);
-			free(sd.response);
+			chat_response_free(&response);
 			ctx->state = REACT_STATE_ABORT;
+			free(system_prompt);
+			free(active_tools);
+			for (int i = 0; i < msg_count; i++)
+				chat_message_cleanup(&messages[i]);
+			free(messages);
 			return status;
 		}
 
@@ -624,59 +548,71 @@ int react_run(struct react_context *ctx, const char *user_input,
 				 (long)(llm_end - llm_start),
 				 ctx->step_timeout_seconds);
 			struct react_step *obs = react_step_create(
-				REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL);
+				REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL, NULL);
 			add_step(ctx, obs);
 			if (cb)
 				cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
-			if (sd.response[0]) {
-				char *final_text = extract_after_prefix(sd.response, "Final:");
-				if (final_text) {
-					free(ctx->final_answer);
-					ctx->final_answer = final_text;
-				} else {
-					free(ctx->final_answer);
-					ctx->final_answer = strdup(sd.response);
-				}
+			if (response.content) {
+				free(ctx->final_answer);
+				ctx->final_answer = strdup(response.content);
 			}
-			free(sd.response);
+			chat_response_free(&response);
 			ctx->state = REACT_STATE_DONE;
 			break;
 		}
 
-		char *final_text = extract_after_prefix(sd.response, "Final:");
-		char *action_text = extract_after_prefix(sd.response, "Action:");
-		char *thought_text = extract_after_prefix(sd.response, "Thought:");
-
-		if (thought_text) {
-			char *newline = strchr(thought_text, '\n');
-			if (newline) *newline = '\0';
+		if (response.content && *response.content) {
 			struct react_step *thought = react_step_create(
-				REACT_STEP_THOUGHT, thought_text, NULL, NULL);
+				REACT_STEP_THOUGHT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
-			free(thought_text);
 		}
 
-		if (final_text) {
-			struct react_step *final_step = react_step_create(
-				REACT_STEP_FINAL, final_text, NULL, NULL);
-			add_step(ctx, final_step);
-			free(ctx->final_answer);
-			ctx->final_answer = strdup(final_text);
-			ctx->state = REACT_STATE_DONE;
-			if (cb)
-				cb(REACT_STEP_FINAL, final_text, user_data);
-			free(final_text);
-			free(action_text);
-			free(sd.response);
-			break;
-		} else if (action_text && has_tools) {
+		if (response.tool_call_count > 0 && has_tools) {
+			if (msg_count + 1 + response.tool_call_count >= msg_cap) {
+				msg_cap = msg_count + 1 + response.tool_call_count + 16;
+				struct chat_message *new_m = realloc(messages,
+					(size_t)msg_cap * sizeof(*new_m));
+				if (!new_m) {
+					chat_response_free(&response);
+					ctx->state = REACT_STATE_ABORT;
+					break;
+				}
+				messages = new_m;
+				memset(messages + msg_count, 0,
+				       (size_t)(msg_cap - msg_count) * sizeof(*messages));
+			}
+
+			struct chat_message *asst_msg = &messages[msg_count];
+			asst_msg->role = strdup("assistant");
+			asst_msg->content = (response.content && *response.content)
+					     ? strdup(response.content) : NULL;
+			asst_msg->tool_calls = calloc((size_t)response.tool_call_count,
+						      sizeof(*asst_msg->tool_calls));
+			asst_msg->tool_call_count = response.tool_call_count;
+			for (int j = 0; j < response.tool_call_count; j++) {
+				strncpy(asst_msg->tool_calls[j].id, response.tool_calls[j].id,
+					sizeof(asst_msg->tool_calls[j].id) - 1);
+				strncpy(asst_msg->tool_calls[j].name, response.tool_calls[j].name,
+					sizeof(asst_msg->tool_calls[j].name) - 1);
+				asst_msg->tool_calls[j].arguments =
+					response.tool_calls[j].arguments
+					? strdup(response.tool_calls[j].arguments) : strdup("");
+			}
+			msg_count++;
+
 			ctx->state = REACT_STATE_ACTING;
-			char tool_name[64] = {0};
-			char tool_args[1024] = {0};
-			if (parse_action(action_text, tool_name, sizeof(tool_name),
-					tool_args, sizeof(tool_args)) == 0) {
+
+			for (int i = 0; i < response.tool_call_count; i++) {
+				struct tool_call *tc = &response.tool_calls[i];
+				const char *tool_name = tc->name;
+				const char *tool_args = tc->arguments ? tc->arguments : "{}";
+
+				char action_text[512];
+				snprintf(action_text, sizeof(action_text),
+					 "%s(%s)", tool_name, tool_args);
 				struct react_step *action = react_step_create(
-					REACT_STEP_ACTION, action_text, tool_name, tool_args);
+					REACT_STEP_ACTION, action_text,
+					tool_name, tool_args, tc->id);
 				add_step(ctx, action);
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
@@ -688,11 +624,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (ctx->cancelled) {
 					struct react_step *obs = react_step_create(
 						REACT_STEP_OBSERVATION,
-						"Tool execution cancelled by user", NULL, NULL);
+						"Tool execution cancelled by user",
+						NULL, NULL, NULL);
 					add_step(ctx, obs);
 					ctx->state = REACT_STATE_ABORT;
-					free(action_text);
-					free(sd.response);
 					break;
 				}
 
@@ -702,16 +637,35 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 				if (tool_is_disabled(ctx->tools, tool_name)) {
 					log_info("react_run: tool '%s' is disabled", tool_name);
-					result = malloc(256);
-					snprintf(result, 256,
-						"tool error: '%s' is disabled in configuration",
-						tool_name);
+					char disabled_msg[256];
+					snprintf(disabled_msg, sizeof(disabled_msg),
+						 "tool error: '%s' is disabled in configuration",
+						 tool_name);
+					result = strdup(disabled_msg);
 					struct react_step *obs = react_step_create(
-						REACT_STEP_OBSERVATION, result, NULL, NULL);
+						REACT_STEP_OBSERVATION, disabled_msg,
+						NULL, NULL, NULL);
 					add_step(ctx, obs);
+					if (cb)
+						cb(REACT_STEP_OBSERVATION, disabled_msg, user_data);
+
+					if (msg_count >= msg_cap) {
+						msg_cap = msg_count + 16;
+						struct chat_message *new_m = realloc(messages,
+							(size_t)msg_cap * sizeof(*new_m));
+						if (!new_m) break;
+						messages = new_m;
+						memset(messages + msg_count, 0,
+						       (size_t)(msg_cap - msg_count) * sizeof(*messages));
+					}
+					struct chat_message *tool_msg = &messages[msg_count];
+					tool_msg->role = strdup("tool");
+					tool_msg->content = strdup(disabled_msg);
+					tool_msg->tool_call_id = strdup(tc->id);
+					tool_msg->tool_calls = NULL;
+					tool_msg->tool_call_count = 0;
+					msg_count++;
 					free(result);
-					free(action_text);
-					free(sd.response);
 					continue;
 				}
 
@@ -721,29 +675,40 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 				if (ctx->step_timeout_seconds > 0 &&
 				    (tool_end - tool_start) >= ctx->step_timeout_seconds) {
-					log_warn("react_run: tool '%s' exceeded step timeout (%lds >= %ds)",
-						 tool_name, (long)(tool_end - tool_start),
-						 ctx->step_timeout_seconds);
+					log_warn("react_run: tool '%s' exceeded step timeout",
+						 tool_name);
 					char timeout_msg[512];
 					snprintf(timeout_msg, sizeof(timeout_msg),
 						"tool error: '%s' timed out (took %lds, limit %ds)",
 						tool_name, (long)(tool_end - tool_start),
 						ctx->step_timeout_seconds);
 					struct react_step *obs = react_step_create(
-						REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL);
+						REACT_STEP_OBSERVATION, timeout_msg,
+						NULL, NULL, NULL);
 					add_step(ctx, obs);
 					if (cb)
 						cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
 					free(result);
-					free(action_text);
-					free(sd.response);
+
+					if (msg_count >= msg_cap) {
+						msg_cap = msg_count + 16;
+						struct chat_message *new_m = realloc(messages,
+							(size_t)msg_cap * sizeof(*new_m));
+						if (!new_m) break;
+						messages = new_m;
+						memset(messages + msg_count, 0,
+						       (size_t)(msg_cap - msg_count) * sizeof(*messages));
+					}
+					struct chat_message *tool_msg = &messages[msg_count];
+					tool_msg->role = strdup("tool");
+					tool_msg->content = strdup(timeout_msg);
+					tool_msg->tool_call_id = strdup(tc->id);
+					tool_msg->tool_calls = NULL;
+					tool_msg->tool_call_count = 0;
+					msg_count++;
 					continue;
 				}
 
-				/* Large observations (e.g. activated skill bodies) must be
-				 * dynamically allocated and clamped on a UTF-8 boundary; otherwise
-				 * a multi-byte character split mid-sequence ends up in the LLM
-				 * request body and triggers API 4xx. */
 				#define REACT_OBS_MAX_BYTES (256 * 1024)
 				char *obs_buf = NULL;
 				if (tool_rc < 0) {
@@ -757,7 +722,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 							raw, tool_rc);
 					if (strcmp(tool_name, ctx->tool_fail_name) == 0 &&
 					    strcmp(tool_args, ctx->tool_fail_args) == 0) {
-						/* Same tool + same args failed again. */
 						ctx->tool_fail_count++;
 					} else {
 						strncpy(ctx->tool_fail_name, tool_name,
@@ -778,7 +742,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (!obs_buf)
 					obs_buf = strdup("");
 				free(result);
-				free(action_text);
 
 				if (ctx->tool_fail_count >= ctx->tool_max_retries) {
 					log_warn("react_run: tool '%s' failed %d times consecutively, forcing Final",
@@ -788,56 +751,74 @@ int react_run(struct react_context *ctx, const char *user_input,
 						"Tool '%s' repeatedly failed. Please try a different approach.",
 						ctx->tool_fail_name);
 					struct react_step *final_step = react_step_create(
-						REACT_STEP_FINAL, fail_msg, NULL, NULL);
+						REACT_STEP_FINAL, fail_msg, NULL, NULL, NULL);
 					add_step(ctx, final_step);
 					free(ctx->final_answer);
 					ctx->final_answer = strdup(fail_msg);
 					ctx->state = REACT_STATE_DONE;
 					if (cb)
 						cb(REACT_STEP_FINAL, fail_msg, user_data);
-					free(sd.response);
 					free(obs_buf);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
-					break;
+					chat_response_free(&response);
+					goto done;
 				}
 
 				struct react_step *obs = react_step_create(
-					REACT_STEP_OBSERVATION, obs_buf, NULL, NULL);
+					REACT_STEP_OBSERVATION, obs_buf, NULL, NULL, NULL);
 				add_step(ctx, obs);
 				if (cb)
 					cb(REACT_STEP_OBSERVATION, obs_buf, user_data);
+
+				if (msg_count >= msg_cap) {
+					msg_cap = msg_count + 16;
+					struct chat_message *new_m = realloc(messages,
+						(size_t)msg_cap * sizeof(*new_m));
+					if (!new_m) {
+						free(obs_buf);
+						break;
+					}
+					messages = new_m;
+					memset(messages + msg_count, 0,
+					       (size_t)(msg_cap - msg_count) * sizeof(*messages));
+				}
+				struct chat_message *tool_msg = &messages[msg_count];
+				tool_msg->role = strdup("tool");
+				tool_msg->content = strdup(obs_buf);
+				tool_msg->tool_call_id = strdup(tc->id);
+				tool_msg->tool_calls = NULL;
+				tool_msg->tool_call_count = 0;
+				msg_count++;
+
 				free(obs_buf);
-			} else {
-				struct react_step *obs = react_step_create(
-					REACT_STEP_OBSERVATION,
-					"tool error: invalid action format — expected Action: tool_name(args)",
-					NULL, NULL);
-				add_step(ctx, obs);
-				if (cb)
-					cb(REACT_STEP_OBSERVATION,
-					   "tool error: invalid action format — expected Action: tool_name(args)",
-					   user_data);
-				free(action_text);
+			}
+
+			if (ctx->cancelled) {
+				chat_response_free(&response);
+				break;
 			}
 		} else {
+			const char *final_text = response.content
+						  ? response.content : "(no response)";
 			struct react_step *final_step = react_step_create(
-				REACT_STEP_FINAL, sd.response, NULL, NULL);
+				REACT_STEP_FINAL, final_text, NULL, NULL, NULL);
 			add_step(ctx, final_step);
 			free(ctx->final_answer);
-			ctx->final_answer = strdup(sd.response);
+			ctx->final_answer = strdup(final_text);
 			ctx->state = REACT_STATE_DONE;
 			if (cb)
-				cb(REACT_STEP_FINAL, sd.response, user_data);
-			free(action_text);
-			free(sd.response);
+				cb(REACT_STEP_FINAL, final_text, user_data);
+			chat_response_free(&response);
 			break;
 		}
 
-		free(sd.response);
+		chat_response_free(&response);
+		free(sd.accumulated);
 	}
 
+done:
 	if (ctx->state != REACT_STATE_DONE && ctx->state != REACT_STATE_ABORT) {
 		log_warn("react_run: max iterations (%d) reached, aborting", ctx->max_iterations);
 		if (!ctx->final_answer) {
@@ -864,6 +845,12 @@ int react_run(struct react_context *ctx, const char *user_input,
 			tokenizer_count(ctx->tokenizer, answer));
 		msg_list_append(&ctx->messages, asst);
 	}
+
+	free(system_prompt);
+	free(active_tools);
+	for (int i = 0; i < msg_count; i++)
+		chat_message_cleanup(&messages[i]);
+	free(messages);
 
 	if (ctx->state == REACT_STATE_ABORT)
 		return -1;

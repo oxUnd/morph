@@ -51,6 +51,30 @@ static int call_count_tool_fn(const char *args_json, char **result_json, void *u
 	return 0;
 }
 
+/* ---- mock LLM helpers ---- */
+
+struct mock_collect_data {
+	char *buf;
+	size_t len;
+	size_t cap;
+};
+
+static int mock_collect_cb(const char *token, void *user_data)
+{
+	struct mock_collect_data *cd = (struct mock_collect_data *)user_data;
+	size_t tlen = strlen(token);
+	if (cd->len + tlen + 1 >= cd->cap) {
+		cd->cap = (cd->len + tlen + 1) * 2;
+		char *new_b = (char *)realloc(cd->buf, cd->cap);
+		if (!new_b) return -ENOMEM;
+		cd->buf = new_b;
+	}
+	memcpy(cd->buf + cd->len, token, tlen);
+	cd->len += tlen;
+	cd->buf[cd->len] = '\0';
+	return 0;
+}
+
 /* ---- mock LLM ---- */
 
 struct mock_llm_data {
@@ -108,6 +132,118 @@ static int mock_llm_streaming_chat(struct model *self, const char *system_prompt
 	return 200;
 }
 
+static char *strcasestr_local(const char *haystack, const char *needle)
+{
+	size_t nlen = strlen(needle);
+	while (*haystack) {
+		if (strncasecmp(haystack, needle, nlen) == 0)
+			return (char *)haystack;
+		haystack++;
+	}
+	return nullptr;
+}
+
+static int mock_chat_with_tools(struct model *self,
+				const char *system_prompt,
+				struct chat_message *messages, int msg_count,
+				struct tool_desc *tools, int tool_count,
+				struct chat_response *response,
+				sse_callback thought_cb, void *thought_ud)
+{
+	(void)system_prompt;
+	(void)messages;
+	(void)msg_count;
+	(void)tools;
+	(void)tool_count;
+
+	struct mock_collect_data cd = {nullptr, 0, 0};
+	cd.buf = (char *)malloc(8192);
+	cd.cap = 8192;
+	cd.buf[0] = '\0';
+
+	int status = self->chat(self, nullptr, nullptr, 0, mock_collect_cb, &cd);
+	if (status < 0) {
+		free(cd.buf);
+		return status;
+	}
+
+	memset(response, 0, sizeof(*response));
+
+	char *action_pos = strcasestr_local(cd.buf, "Action:");
+	if (action_pos && tool_count > 0) {
+		if (action_pos > cd.buf) {
+			size_t tlen = action_pos - cd.buf;
+			char *thought = (char *)malloc(tlen + 1);
+			memcpy(thought, cd.buf, tlen);
+			thought[tlen] = '\0';
+			while (tlen > 0 && isspace((unsigned char)thought[tlen-1]))
+				thought[--tlen] = '\0';
+			char *t = thought;
+			if (strncasecmp(t, "Thought:", 8) == 0) {
+				t += 8;
+				while (*t == ' ') t++;
+			}
+			if (*t) {
+				response->content = strdup(t);
+				if (thought_cb)
+					thought_cb(t, thought_ud);
+			}
+			free(thought);
+		}
+
+		const char *ap = action_pos + 7;
+		while (*ap == ' ') ap++;
+		char tool_name[64] = {0};
+		int ni = 0;
+		while (*ap && *ap != '(' && *ap != '\n' && ni < 63)
+			tool_name[ni++] = *ap++;
+		char *args = strdup("{}");
+		if (*ap == '(') {
+			ap++;
+			const char *args_start = ap;
+			int depth = 1;
+			while (*ap && depth > 0) {
+				if (*ap == '(') depth++;
+				else if (*ap == ')') depth--;
+				ap++;
+			}
+			size_t alen = (size_t)((ap - 1) - args_start);
+			free(args);
+			args = (char *)malloc(alen + 1);
+			memcpy(args, args_start, alen);
+			args[alen] = '\0';
+		}
+		response->tool_calls = (struct tool_call *)calloc(1, sizeof(*response->tool_calls));
+		response->tool_call_count = 1;
+		snprintf(response->tool_calls[0].id, sizeof(response->tool_calls[0].id),
+			 "call_mock_%d", 0);
+		strncpy(response->tool_calls[0].name, tool_name,
+			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].arguments = args;
+	} else {
+		const char *content = cd.buf;
+		char *final_pos = strcasestr_local(cd.buf, "Final:");
+		if (final_pos) {
+			final_pos += 6;
+			while (*final_pos == ' ') final_pos++;
+			content = final_pos;
+		} else {
+			char *thought_pos = strcasestr_local(cd.buf, "Thought:");
+			if (thought_pos) {
+				thought_pos += 8;
+				while (*thought_pos == ' ') thought_pos++;
+				content = thought_pos;
+			}
+		}
+		response->content = strdup(content);
+		if (thought_cb && response->content && *response->content)
+			thought_cb(response->content, thought_ud);
+	}
+
+	free(cd.buf);
+	return 200;
+}
+
 static void mock_llm_destroy(struct model *self)
 {
 	if (self && self->handle) {
@@ -128,6 +264,7 @@ static struct model *create_mock_llm(const char *response)
 	m->context_limit = 128000;
 	m->timeout_seconds = 60;
 	m->chat = mock_llm_chat;
+	m->chat_with_tools = mock_chat_with_tools;
 	m->generate = NULL;
 	m->destroy = mock_llm_destroy;
 	struct mock_llm_data *data = (struct mock_llm_data *)calloc(1, sizeof(*data));
@@ -172,6 +309,105 @@ static int multi_mock_chat(struct model *self, const char *system_prompt,
 	return 200;
 }
 
+static int multi_mock_chat_with_tools(struct model *self,
+				      const char *system_prompt,
+				      struct chat_message *messages, int msg_count,
+				      struct tool_desc *tools, int tool_count,
+				      struct chat_response *response,
+				      sse_callback thought_cb, void *thought_ud)
+{
+	(void)system_prompt;
+	(void)messages;
+	(void)msg_count;
+	(void)tools;
+	(void)tool_count;
+
+	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
+	int idx = data->call_count;
+
+	struct mock_collect_data cd = {nullptr, 0, 0};
+	cd.buf = (char *)malloc(8192);
+	cd.cap = 8192;
+	cd.buf[0] = '\0';
+
+	if (data->should_fail) {
+		free(cd.buf);
+		return -EIO;
+	}
+	if (idx < data->count && data->responses[idx])
+		mock_collect_cb(data->responses[idx], &cd);
+	data->call_count++;
+
+	memset(response, 0, sizeof(*response));
+
+	char *action_pos = strcasestr_local(cd.buf, "Action:");
+	if (action_pos && tool_count > 0) {
+		if (action_pos > cd.buf) {
+			size_t tlen = action_pos - cd.buf;
+			char *thought = (char *)malloc(tlen + 1);
+			memcpy(thought, cd.buf, tlen);
+			thought[tlen] = '\0';
+			while (tlen > 0 && isspace((unsigned char)thought[tlen-1]))
+				thought[--tlen] = '\0';
+			char *t = thought;
+			if (strncasecmp(t, "Thought:", 8) == 0) {
+				t += 8;
+				while (*t == ' ') t++;
+			}
+			if (*t) {
+				response->content = strdup(t);
+				if (thought_cb)
+					thought_cb(t, thought_ud);
+			}
+			free(thought);
+		}
+
+		const char *ap = action_pos + 7;
+		while (*ap == ' ') ap++;
+		char tool_name[64] = {0};
+		int ni = 0;
+		while (*ap && *ap != '(' && *ap != '\n' && ni < 63)
+			tool_name[ni++] = *ap++;
+		char *args = strdup("{}");
+		if (*ap == '(') {
+			ap++;
+			const char *args_start = ap;
+			int depth = 1;
+			while (*ap && depth > 0) {
+				if (*ap == '(') depth++;
+				else if (*ap == ')') depth--;
+				ap++;
+			}
+			size_t alen = (size_t)((ap - 1) - args_start);
+			free(args);
+			args = (char *)malloc(alen + 1);
+			memcpy(args, args_start, alen);
+			args[alen] = '\0';
+		}
+		response->tool_calls = (struct tool_call *)calloc(1, sizeof(*response->tool_calls));
+		response->tool_call_count = 1;
+		snprintf(response->tool_calls[0].id, sizeof(response->tool_calls[0].id),
+			 "call_mock_%d", idx);
+		strncpy(response->tool_calls[0].name, tool_name,
+			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].arguments = args;
+	} else {
+		const char *content = cd.buf;
+		char *final_pos = strcasestr_local(cd.buf, "Final:");
+		if (final_pos) {
+			final_pos += 6;
+			while (*final_pos == ' ') final_pos++;
+			content = final_pos;
+		}
+		response->content = strdup(content);
+		if (thought_cb && response->content && *response->content)
+			thought_cb(response->content, thought_ud);
+	}
+
+	free(cd.buf);
+	return 200;
+}
+
 static void multi_mock_destroy(struct model *self)
 {
 	if (self && self->handle) {
@@ -192,6 +428,7 @@ static struct model *create_multi_mock_llm(const char **responses, int count)
 	m->context_limit = 128000;
 	m->timeout_seconds = 60;
 	m->chat = multi_mock_chat;
+	m->chat_with_tools = multi_mock_chat_with_tools;
 	m->generate = NULL;
 	m->destroy = multi_mock_destroy;
 	struct multi_mock_data *d = (struct multi_mock_data *)calloc(1, sizeof(*d));
@@ -310,7 +547,7 @@ TEST_F(ReactTest, CancelFn) {
 }
 
 TEST_F(ReactTest, CreateStep) {
-	struct react_step *s = react_step_create(REACT_STEP_THOUGHT, "thinking", nullptr, nullptr);
+	struct react_step *s = react_step_create(REACT_STEP_THOUGHT, "thinking", nullptr, nullptr, nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_THOUGHT);
 	EXPECT_STREQ(s->content, "thinking");
@@ -319,7 +556,7 @@ TEST_F(ReactTest, CreateStep) {
 
 TEST_F(ReactTest, CreateStepWithTool) {
 	struct react_step *s = react_step_create(REACT_STEP_ACTION, "calling tool",
-						 "text_gen", "{\"prompt\":\"hi\"}");
+						 "text_gen", "{\"prompt\":\"hi\"}", nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_ACTION);
 	EXPECT_STREQ(s->tool_name, "text_gen");
@@ -994,6 +1231,7 @@ TEST_F(MockLlmTest, SystemPromptNoCrash) {
 
 struct capt_prompt_data {
 	char *prompt;
+	char *system_prompt;
 	const char *resp;
 };
 
@@ -1001,13 +1239,43 @@ static int capt_prompt_chat(struct model *self, const char *system_prompt,
 			    const char **messages, int n,
 			    sse_callback cb, void *user_data)
 {
-	(void)system_prompt;
 	(void)user_data;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->prompt);
 	d->prompt = (n > 0 && messages[0]) ? strdup(messages[0]) : nullptr;
+	free(d->system_prompt);
+	d->system_prompt = system_prompt ? strdup(system_prompt) : nullptr;
 	if (cb && d->resp)
 		cb(d->resp, user_data);
+	return 200;
+}
+
+static int capt_prompt_chat_with_tools(struct model *self,
+				       const char *system_prompt,
+				       struct chat_message *messages, int msg_count,
+				       struct tool_desc *tools, int tool_count,
+				       struct chat_response *response,
+				       sse_callback thought_cb, void *thought_ud)
+{
+	(void)messages;
+	(void)msg_count;
+	(void)tools;
+	(void)tool_count;
+	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
+	free(d->system_prompt);
+	d->system_prompt = system_prompt ? strdup(system_prompt) : nullptr;
+
+	memset(response, 0, sizeof(*response));
+	const char *content = d->resp ? d->resp : "";
+	char *final_pos = strcasestr_local((char *)content, "Final:");
+	if (final_pos) {
+		final_pos += 6;
+		while (*final_pos == ' ') final_pos++;
+		content = final_pos;
+	}
+	response->content = strdup(content);
+	if (thought_cb && response->content)
+		thought_cb(response->content, thought_ud);
 	return 200;
 }
 
@@ -1016,6 +1284,7 @@ static void capt_prompt_destroy(struct model *self)
 	if (!self) return;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->prompt);
+	free(d->system_prompt);
 	free(d);
 	free(self);
 }
@@ -1029,6 +1298,7 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
 	llm->context_limit = 128000;
 	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
 	llm->destroy = capt_prompt_destroy;
 	llm->handle = cd;
 	llm_data = nullptr;
@@ -1039,8 +1309,9 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	ctx->system_prompt = strdup("Custom instruction here.");
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
-	ASSERT_NE(cd->prompt, nullptr);
-	const char *found = strstr(cd->prompt, "Custom instruction here.");
+	const char *found = nullptr;
+	if (cd->system_prompt)
+		found = strstr(cd->system_prompt, "Custom instruction here.");
 	EXPECT_NE(found, nullptr) << "system_prompt should appear in the LLM prompt";
 	react_context_destroy(ctx);
 }

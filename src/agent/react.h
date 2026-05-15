@@ -33,6 +33,7 @@ struct react_step {
 	char *content;
 	char *tool_name;
 	char *tool_args;
+	char *tool_call_id;
 	struct react_step *next;
 };
 
@@ -75,7 +76,8 @@ extern volatile sig_atomic_t react_sigint_flag;
 struct react_step *react_step_create(enum react_step_type type,
 				     const char *content,
 				     const char *tool_name,
-				     const char *tool_args);
+				     const char *tool_args,
+				     const char *tool_call_id);
 void react_step_destroy(struct react_step *step);
 
 const char *react_step_type_name(enum react_step_type type);

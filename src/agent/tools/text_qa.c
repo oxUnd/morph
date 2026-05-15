@@ -171,6 +171,6 @@ int text_qa_init(struct tool_registry *reg, struct model *llm)
 	g_qa_llm = llm;
 	return tool_register(reg, "text_qa",
 		"Answer questions, rewrite text, or transform content based on context",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"}}}",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"The question or instruction to answer\"},\"context\":{\"type\":\"string\",\"description\":\"Reference context for the question\"}},\"required\":[\"prompt\"]}",
 		text_qa_exec, NULL);
 }

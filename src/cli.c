@@ -635,6 +635,7 @@ static struct react_step *json_to_react_steps(const char *json, int *out_count)
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
+		cJSON *tool_call_id = cJSON_GetObjectItem(obj, "tool_call_id");
 		char args_buf[1024] = {0};
 		if (cJSON_IsString(tool_args) && tool_args->valuestring)
 			snprintf(args_buf, sizeof(args_buf), "%s(%s)",
@@ -644,7 +645,8 @@ static struct react_step *json_to_react_steps(const char *json, int *out_count)
 			type,
 			cJSON_IsString(content) ? content->valuestring : NULL,
 			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
-			args_buf[0] ? args_buf : NULL);
+			args_buf[0] ? args_buf : NULL,
+			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : NULL);
 		if (s) {
 			tail->next = s;
 			tail = s;
@@ -663,6 +665,7 @@ static void free_json_react_steps(struct react_step *steps)
 		free(steps->content);
 		free(steps->tool_name);
 		free(steps->tool_args);
+		free(steps->tool_call_id);
 		free(steps);
 		steps = next;
 	}
@@ -1648,6 +1651,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 				cJSON_AddStringToObject(obj, "tool_name", cur->tool_name);
 			if (cur->tool_args)
 				cJSON_AddStringToObject(obj, "tool_args", cur->tool_args);
+			if (cur->tool_call_id)
+				cJSON_AddStringToObject(obj, "tool_call_id", cur->tool_call_id);
 			cJSON_AddItemToArray(arr, obj);
 			cur = cur->next;
 		}

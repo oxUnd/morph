@@ -147,9 +147,9 @@ int img_convert_init(struct tool_registry *reg)
 		"Convert an image to another format (png/jpg/bmp/tga). "
 		"Provide file_path, format, optional output_path and quality (jpg only).",
 		"{\"type\":\"object\",\"properties\":"
-		"{\"file_path\":{\"type\":\"string\"},"
-		"\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",\"tga\"]},"
-		"\"output_path\":{\"type\":\"string\"},"
-		"\"quality\":{\"type\":\"integer\"}}}",
+		"{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},"
+		"\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",\"tga\"],\"description\":\"Target image format\"},"
+		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"},"
+		"\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality (1-100, optional)\"}},\"required\":[\"file_path\",\"format\"]}",
 		img_convert_exec, NULL);
 }

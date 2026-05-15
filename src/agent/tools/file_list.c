@@ -126,6 +126,6 @@ int file_list_init(struct tool_registry *reg)
 	if (!reg) return -EINVAL;
 	return tool_register(reg, "file_list",
 		"List files and directories in a directory. Provide dir_path. Returns sorted entries with name and type (file/dir).",
-		"{\"type\":\"object\",\"properties\":{\"dir_path\":{\"type\":\"string\"}}}",
+		"{\"type\":\"object\",\"properties\":{\"dir_path\":{\"type\":\"string\",\"description\":\"Path to the directory to list\"}},\"required\":[\"dir_path\"]}",
 		file_list_exec, NULL);
 }

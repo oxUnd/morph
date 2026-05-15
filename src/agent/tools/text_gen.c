@@ -161,6 +161,6 @@ int text_gen_init(struct tool_registry *reg, struct model *llm)
 	g_llm = llm;
 	return tool_register(reg, "text_gen",
 		"Generate text content based on a prompt",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"},\"style\":{\"type\":\"string\"},\"length\":{\"type\":\"string\"}}}",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"The text prompt to generate content from\"},\"style\":{\"type\":\"string\",\"description\":\"Writing style (e.g. formal, casual, creative)\"},\"length\":{\"type\":\"string\",\"description\":\"Desired length (e.g. short, medium, long)\"}},\"required\":[\"prompt\"]}",
 		text_gen_exec, NULL);
 }

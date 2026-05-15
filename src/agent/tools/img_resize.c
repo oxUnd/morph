@@ -155,9 +155,9 @@ int img_resize_init(struct tool_registry *reg)
 		"If only one of width/height is given, the other is computed "
 		"to preserve aspect ratio.",
 		"{\"type\":\"object\",\"properties\":"
-		"{\"file_path\":{\"type\":\"string\"},"
-		"\"width\":{\"type\":\"integer\"},"
-		"\"height\":{\"type\":\"integer\"},"
-		"\"output_path\":{\"type\":\"string\"}}}",
+		"{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},"
+		"\"width\":{\"type\":\"integer\",\"description\":\"Target width in pixels\"},"
+		"\"height\":{\"type\":\"integer\",\"description\":\"Target height in pixels\"},"
+		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"}},\"required\":[\"file_path\"]}",
 		img_resize_exec, NULL);
 }

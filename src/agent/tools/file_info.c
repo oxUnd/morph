@@ -93,6 +93,6 @@ int file_info_init(struct tool_registry *reg)
 	if (!reg) return -EINVAL;
 	return tool_register(reg, "file_info",
 		"Get file or directory metadata (type, size, permissions, modification time, extension). Provide file_path.",
-		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\"}}}",
+		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the file or directory\"}},\"required\":[\"file_path\"]}",
 		file_info_exec, NULL);
 }
