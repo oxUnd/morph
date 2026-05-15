@@ -1,0 +1,87 @@
+src/agent/compress.c
+  87412d742c09ac38 14-24,85,110,260,266 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a06d5af0b9aa66757dd50dd","tool_type":"agent","tool_id":"SearchReplace","line_ranges":[{"Range":[14,24]},{"Single":85},{"Single":110},{"Single":260},{"Single":266}]}]}
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "4a1994b8655e29f6d85c6b880c28a94f50e1aa56",
+  "prompts": {
+    "87412d742c09ac38": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a06d0460b9aa66757dd4fb8",
+        "model": "glm-5.1__dev"
+      },
+      "human_author": "xiangshouding <fansekey@gmail.com>",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 13,
+      "accepted_lines": 16,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/agent/compress.c": [
+      {
+        "hash": "87412d742c09ac38",
+        "line_ranges": [
+          {
+            "Range": [
+              14,
+              24
+            ]
+          },
+          {
+            "Single": 85
+          },
+          {
+            "Single": 110
+          },
+          {
+            "Single": 260
+          },
+          {
+            "Single": 266
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a06d5af0b9aa66757dd50dd",
+            "tool_type": "agent",
+            "tool_id": "SearchReplace",
+            "line_ranges": [
+              {
+                "Range": [
+                  14,
+                  24
+                ]
+              },
+              {
+                "Single": 85
+              },
+              {
+                "Single": 110
+              },
+              {
+                "Single": 260
+              },
+              {
+                "Single": 266
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "remote_transcripts": {
+    "87412d742c09ac38": {
+      "tool": "trae",
+      "conversation_id": "6a06d0460b9aa66757dd4fb8",
+      "session_id": "6a06d0460b9aa66757dd4fb8",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
