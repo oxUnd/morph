@@ -19,6 +19,8 @@ set(TEST_SOURCES
 	test_http.cpp
 	test_image.cpp
 	test_skill.cpp
+	test_markdown.cpp
+	test_bash_exec.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})

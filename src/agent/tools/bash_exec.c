@@ -62,6 +62,9 @@ static int is_blocked_command(const char *cmd)
 		size_t blen = strlen(*p);
 		if (base_len == blen && strncmp(base, *p, blen) == 0)
 			return 1;
+		if (base_len > blen && base[blen] == '.' &&
+		    strncmp(base, *p, blen) == 0)
+			return 1;
 		if (len == blen && strncmp(cmd, *p, blen) == 0)
 			return 1;
 	}
@@ -75,7 +78,7 @@ static int contains_blocked_command(const char *cmd)
 	const char *p = cmd;
 	while (*p) {
 		if (*p == ';' || *p == '&' || *p == '|' || *p == '`' ||
-		    *p == '\n') {
+		    *p == '\n' || *p == '(') {
 			p++;
 			while (*p == ' ' || *p == '\t' || *p == '&' || *p == '|')
 				p++;
