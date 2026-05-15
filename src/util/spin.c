@@ -25,13 +25,13 @@ static const char *state_prefix(enum spin_state state)
 {
 	switch (state) {
 	case SPIN_STATE_IDLE:       return "";
-	case SPIN_STATE_THINKING:   return "💭";
-	case SPIN_STATE_LOADING:    return "⏳";
-	case SPIN_STATE_EXECUTING:  return "⚙";
-	case SPIN_STATE_DOWNLOADING: return "⬇";
-	case SPIN_STATE_UPLOADING:  return "⬆";
-	case SPIN_STATE_COMPLETE:   return "✅";
-	case SPIN_STATE_ERROR:      return "❌";
+	case SPIN_STATE_THINKING:   return "\033[1;36m>>\033[0m";
+	case SPIN_STATE_LOADING:    return "\033[1;33m~~\033[0m";
+	case SPIN_STATE_EXECUTING:  return "\033[1;33m->\033[0m";
+	case SPIN_STATE_DOWNLOADING: return "\033[1;34mvv\033[0m";
+	case SPIN_STATE_UPLOADING:  return "\033[1;34m^^\033[0m";
+	case SPIN_STATE_COMPLETE:   return "\033[1;32mOK\033[0m";
+	case SPIN_STATE_ERROR:      return "\033[1;31mERR\033[0m";
 	default:                    return "";
 	}
 }
