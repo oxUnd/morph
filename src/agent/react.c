@@ -4,6 +4,7 @@
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/arena.h"
+#include "util/utf8.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,57 +14,6 @@
 #include <signal.h>
 
 volatile sig_atomic_t react_sigint_flag = 0;
-
-/* Find a valid UTF-8 character boundary at or before max_bytes.
- * UTF-8 continuation bytes are 0x80..0xBF; lead bytes are ASCII (<0x80) or 0xC0+.
- * Prevents chopping a multi-byte character mid-sequence and shipping the
- * resulting half-byte into the LLM request body (which causes API 4xx). */
-static size_t react_utf8_safe_len(const char *s, size_t max_bytes)
-{
-	if (!s)
-		return 0;
-	size_t len = strlen(s);
-	if (len <= max_bytes)
-		return len;
-	size_t pos = max_bytes;
-	while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
-		pos--;
-	return pos;
-}
-
-/* Duplicate src into a freshly-allocated buffer no larger than max_bytes
- * (including trailing NUL), keeping UTF-8 sequences intact. Returns NULL on
- * allocation failure. When truncation occurs, "…(truncated)" is appended. */
-static char *react_dup_utf8_clamped(const char *src, size_t max_bytes)
-{
-	if (!src)
-		return NULL;
-	size_t len = strlen(src);
-	if (len < max_bytes) {
-		char *dup = malloc(len + 1);
-		if (!dup)
-			return NULL;
-		memcpy(dup, src, len + 1);
-		return dup;
-	}
-	const char marker[] = "…(truncated)";
-	size_t marker_len = sizeof(marker) - 1;
-	if (max_bytes <= marker_len + 1) {
-		char *dup = malloc(1);
-		if (!dup)
-			return NULL;
-		dup[0] = '\0';
-		return dup;
-	}
-	size_t cut = react_utf8_safe_len(src, max_bytes - marker_len - 1);
-	char *dup = malloc(cut + marker_len + 1);
-	if (!dup)
-		return NULL;
-	memcpy(dup, src, cut);
-	memcpy(dup + cut, marker, marker_len);
-	dup[cut + marker_len] = '\0';
-	return dup;
-}
 
 struct collect_data {
 	char *buf;
@@ -818,7 +768,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					}
 				} else {
 					const char *raw = result ? result : "(no output)";
-					obs_buf = react_dup_utf8_clamped(raw, REACT_OBS_MAX_BYTES);
+					obs_buf = utf8_dup_clamped(raw, REACT_OBS_MAX_BYTES);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;

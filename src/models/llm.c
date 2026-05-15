@@ -1,6 +1,7 @@
 #include "llm.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/utf8.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include "cJSON.h"
@@ -14,23 +15,34 @@ static char *escape_json_string(const char *s)
 	if (!s)
 		return strdup("");
 	size_t len = strlen(s);
-	size_t cap = len * 2 + 1;
-	char *out = malloc(cap);
-	if (!out)
+
+	/* First strip any malformed UTF-8 so the request body is always valid;
+	 * see util/utf8.h for rationale. */
+	char *clean = malloc(len + 1);
+	if (!clean)
 		return NULL;
+	size_t clean_len = utf8_sanitize_into(clean, s, len);
+	clean[clean_len] = '\0';
+
+	size_t cap = clean_len * 2 + 1;
+	char *out = malloc(cap);
+	if (!out) {
+		free(clean);
+		return NULL;
+	}
 	size_t j = 0;
-	size_t i = 0;
-	while (i < len) {
+	for (size_t i = 0; i < clean_len; i++) {
 		if (j + 8 >= cap) {
 			cap *= 2;
 			char *new_out = realloc(out, cap);
 			if (!new_out) {
 				free(out);
+				free(clean);
 				return NULL;
 			}
 			out = new_out;
 		}
-		unsigned char c = (unsigned char)s[i];
+		unsigned char c = (unsigned char)clean[i];
 		if (c < 0x20) {
 			switch (c) {
 			case '\n': out[j++] = '\\'; out[j++] = 'n'; break;
@@ -44,37 +56,18 @@ static char *escape_json_string(const char *s)
 						      "\\u%04x", c);
 				break;
 			}
-			i++;
-			continue;
-		}
-		if (c == '"')  { out[j++] = '\\'; out[j++] = '"';  i++; continue; }
-		if (c == '\\') { out[j++] = '\\'; out[j++] = '\\'; i++; continue; }
-		if (c < 0x80) {
+		} else if (c == '"') {
+			out[j++] = '\\';
+			out[j++] = '"';
+		} else if (c == '\\') {
+			out[j++] = '\\';
+			out[j++] = '\\';
+		} else {
 			out[j++] = (char)c;
-			i++;
-			continue;
 		}
-		/* Validate the multi-byte UTF-8 sequence; drop any malformed
-		 * bytes so they cannot trigger downstream API 4xx errors. */
-		size_t need;
-		if      ((c & 0xE0) == 0xC0) need = 2;
-		else if ((c & 0xF0) == 0xE0) need = 3;
-		else if ((c & 0xF8) == 0xF0) need = 4;
-		else { i++; continue; }
-		if (i + need > len) break;
-		int ok = 1;
-		for (size_t k = 1; k < need; k++) {
-			if (((unsigned char)s[i + k] & 0xC0) != 0x80) {
-				ok = 0;
-				break;
-			}
-		}
-		if (!ok) { i++; continue; }
-		for (size_t k = 0; k < need; k++)
-			out[j++] = s[i + k];
-		i += need;
 	}
 	out[j] = '\0';
+	free(clean);
 	return out;
 }
 
