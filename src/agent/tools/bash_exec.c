@@ -17,6 +17,77 @@
 #define BASH_EXEC_DEFAULT_TIMEOUT 30
 #define BASH_EXEC_MAX_OUTPUT (256 * 1024)
 
+static const char *blocked_commands[] = {
+	"rm", "rmdir",
+	"mkfs", "dd",
+	"shutdown", "reboot", "poweroff", "halt",
+	"init",
+	"mv", "cp",
+	"chmod", "chown", "chgrp", "chattr",
+	"useradd", "userdel", "usermod",
+	"groupadd", "groupdel",
+	"passwd",
+	"crontab",
+	"systemctl", "service",
+	"launchctl",
+	"kill", "killall", "pkill",
+	"apt", "apt-get", "yum", "dnf", "brew", "pip", "pip3", "npm", "gem", "cargo",
+	"curl", "wget",
+	"ssh", "scp", "sftp", "rsync",
+	"mount", "umount",
+	"fdisk", "parted", "diskutil",
+	"sysctl",
+	"iptables", "ip6tables",
+	"defaults",
+	NULL
+};
+
+static int is_blocked_command(const char *cmd)
+{
+	while (*cmd == ' ' || *cmd == '\t')
+		cmd++;
+	const char *end = cmd;
+	while (*end && *end != ' ' && *end != '\t' && *end != ';' &&
+	       *end != '&' && *end != '|' && *end != '\n' && *end != '(' &&
+	       *end != '`' && *end != '$')
+		end++;
+	size_t len = (size_t)(end - cmd);
+	if (len == 0)
+		return 0;
+	const char *base = end;
+	while (base > cmd && *(base - 1) != '/')
+		base--;
+	size_t base_len = (size_t)(end - base);
+	for (const char **p = blocked_commands; *p; p++) {
+		size_t blen = strlen(*p);
+		if (base_len == blen && strncmp(base, *p, blen) == 0)
+			return 1;
+		if (len == blen && strncmp(cmd, *p, blen) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int contains_blocked_command(const char *cmd)
+{
+	if (is_blocked_command(cmd))
+		return 1;
+	const char *p = cmd;
+	while (*p) {
+		if (*p == ';' || *p == '&' || *p == '|' || *p == '`' ||
+		    *p == '\n') {
+			p++;
+			while (*p == ' ' || *p == '\t' || *p == '&' || *p == '|')
+				p++;
+			if (is_blocked_command(p))
+				return 1;
+		} else {
+			p++;
+		}
+	}
+	return 0;
+}
+
 struct buf {
 	char *data;
 	size_t len;
@@ -137,6 +208,18 @@ static int bash_exec_run(const char *args_json, char **result_json,
 			"{\"error\":\"missing 'command' parameter. "
 			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}");
 		return -EINVAL;
+	}
+
+	if (contains_blocked_command(command)) {
+		log_warn("bash_exec: blocked dangerous command: %s", command);
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup(
+			"{\"error\":\"command blocked for safety. "
+			"Destructive operations (rm, mv, cp, chmod, curl, ssh, "
+			"kill, package managers, etc.) are not allowed. "
+			"Use read-only alternatives instead.\"}");
+		return -EPERM;
 	}
 
 	int out_pipe[2], err_pipe[2];
@@ -267,6 +350,8 @@ int bash_exec_init(struct tool_registry *reg)
 		"Execute a shell command in a sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
+		"DANGEROUS commands are blocked: rm, mv, cp, chmod, curl, wget, ssh, "
+		"kill, package managers, and other destructive operations. "
 		"Args: command (required), cwd (optional working dir), "
 		"timeout_seconds (optional, default 30).",
 		"{\"type\":\"object\",\"properties\":{"
