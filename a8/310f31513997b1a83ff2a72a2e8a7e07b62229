@@ -1,0 +1,178 @@
+src/agent/react.c
+  bb45f1fc234a256b 17-67,791-796,799-805,820-821,826-827,847,859 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a06b64c0b9aa66757dd4cf5","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Range":[17,67]},{"Range":[791,796]},{"Range":[799,805]},{"Range":[820,821]},{"Range":[826,827]},{"Single":847},{"Single":859}]}]}
+src/models/llm.c
+  bb45f1fc234a256b 22-24,33-70,72-75 gitai:{"mixed_line_ranges":[],"operations":[{"operation_id":"6a06b64c0b9aa66757dd4cf5","tool_type":"agent","tool_id":"Edit","line_ranges":[{"Range":[22,24]},{"Range":[33,70]},{"Range":[72,75]}]}]}
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "a8310f31513997b1a83ff2a72a2e8a7e07b62229",
+  "prompts": {
+    "bb45f1fc234a256b": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a06ad780b9aa66757dd4b42",
+        "model": "openrouter-2o__dev"
+      },
+      "human_author": "xiangshouding <fansekey@gmail.com>",
+      "messages": [],
+      "total_additions": 124,
+      "total_deletions": 24,
+      "accepted_lines": 122,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/agent/react.c": [
+      {
+        "hash": "bb45f1fc234a256b",
+        "line_ranges": [
+          {
+            "Range": [
+              17,
+              67
+            ]
+          },
+          {
+            "Range": [
+              791,
+              796
+            ]
+          },
+          {
+            "Range": [
+              799,
+              805
+            ]
+          },
+          {
+            "Range": [
+              820,
+              821
+            ]
+          },
+          {
+            "Range": [
+              826,
+              827
+            ]
+          },
+          {
+            "Single": 847
+          },
+          {
+            "Single": 859
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a06b64c0b9aa66757dd4cf5",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Range": [
+                  17,
+                  67
+                ]
+              },
+              {
+                "Range": [
+                  791,
+                  796
+                ]
+              },
+              {
+                "Range": [
+                  799,
+                  805
+                ]
+              },
+              {
+                "Range": [
+                  820,
+                  821
+                ]
+              },
+              {
+                "Range": [
+                  826,
+                  827
+                ]
+              },
+              {
+                "Single": 847
+              },
+              {
+                "Single": 859
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "src/models/llm.c": [
+      {
+        "hash": "bb45f1fc234a256b",
+        "line_ranges": [
+          {
+            "Range": [
+              22,
+              24
+            ]
+          },
+          {
+            "Range": [
+              33,
+              70
+            ]
+          },
+          {
+            "Range": [
+              72,
+              75
+            ]
+          }
+        ],
+        "mixed_line_ranges": [],
+        "operations": [
+          {
+            "operation_id": "6a06b64c0b9aa66757dd4cf5",
+            "tool_type": "agent",
+            "tool_id": "Edit",
+            "line_ranges": [
+              {
+                "Range": [
+                  22,
+                  24
+                ]
+              },
+              {
+                "Range": [
+                  33,
+                  70
+                ]
+              },
+              {
+                "Range": [
+                  72,
+                  75
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "remote_transcripts": {
+    "bb45f1fc234a256b": {
+      "tool": "trae",
+      "conversation_id": "6a06ad780b9aa66757dd4b42",
+      "session_id": "6a06ad780b9aa66757dd4b42",
+      "status": "remote_only",
+      "message": "Remote transcript resolution is not implemented yet for TRAE prompts."
+    }
+  }
+}
