@@ -1629,38 +1629,6 @@ static int output_callback(enum react_step_type type, const char *content,
 				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 			}
 		}
-		printf(ANSI_DIM "[Observation]" ANSI_RESET " %s\n",
-		       content ? content : "");
-		if (content && strncmp(content, "image generated: ", 17) == 0) {
-			const char *path_start = content + 17;
-			const char *path_end = strstr(path_start, " (");
-			if (!path_end)
-				path_end = path_start + strlen(path_start);
-			size_t plen = (size_t)(path_end - path_start);
-			char *img_path = malloc(plen + 1);
-			if (img_path) {
-				memcpy(img_path, path_start, plen);
-				img_path[plen] = '\0';
-				log_dbg("rendering image: path='%s' exists=%d",
-					 img_path, file_exists(img_path));
-				image_render_terminal(img_path);
-				free(img_path);
-			}
-		}
-		if (content && strncmp(content, "video generated: ", 17) == 0) {
-			const char *path_start = content + 17;
-			const char *path_end = strstr(path_start, " (");
-			if (!path_end)
-				path_end = path_start + strlen(path_start);
-			size_t plen = (size_t)(path_end - path_start);
-			char *vid_path = malloc(plen + 1);
-			if (vid_path) {
-				memcpy(vid_path, path_start, plen);
-				vid_path[plen] = '\0';
-				video_play(vid_path, ctx->config.render.mpv_args);
-				free(vid_path);
-			}
-		}
 		fflush(stdout);
 		break;
 	case REACT_STEP_REFLECTION:
