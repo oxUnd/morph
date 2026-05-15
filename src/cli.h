@@ -7,6 +7,7 @@
 #include "agent/react.h"
 #include "models/llm.h"
 #include "skill/skill.h"
+#include "util/spin.h"
 
 struct cli_context {
 	struct config config;
@@ -23,6 +24,7 @@ struct cli_context {
 	int streaming;
 	int session_auto_named;
 	char image_path[512];
+	struct spin_context spin;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path);

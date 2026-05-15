@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/spin.h"
 #include "agent/tokenizer.h"
 #include "agent/compress.h"
 #include "agent/tools/text_gen.h"
@@ -1377,6 +1378,10 @@ struct model *llm = model_llm_create(
 	ctx->streaming = 0;
 	ctx->image_path[0] = '\0';
 	log_info("cli initialized");
+
+	spin_init(&ctx->spin, stdout);
+	spin_set_cancel_flag(&ctx->spin, &react_sigint_flag);
+
 	return 0;
 }
 
@@ -1500,18 +1505,42 @@ static int output_callback(enum react_step_type type, const char *content,
 			   void *user_data)
 {
 	struct cli_context *ctx = user_data;
+
+	if (ctx->spin.running && ctx->spin.state != SPIN_STATE_COMPLETE &&
+	    ctx->spin.state != SPIN_STATE_ERROR) {
+		if (type == REACT_STEP_ACTION || type == REACT_STEP_OBSERVATION) {
+			if (ctx->spin.frame % 4 == 0) {
+				printf("\r\033[K");
+				if (type == REACT_STEP_ACTION && content) {
+					printf(ANSI_YELLOW "⚙ " ANSI_RESET);
+					if (strncmp(content, "Executing ", 10) == 0) {
+						const char *tool_name = content + 10;
+						printf("%s...", tool_name);
+					} else {
+						printf("%s", content);
+					}
+				} else if (type == REACT_STEP_OBSERVATION) {
+					printf(ANSI_DIM "✓ done" ANSI_RESET);
+				}
+				fflush(stdout);
+			}
+			ctx->spin.frame++;
+		}
+	}
+
 	switch (type) {
 	case REACT_STEP_THOUGHT:
 		if (content && *content) {
 			if (!ctx->streaming) {
-				/* ESC 7 = save cursor (DECSC), works regardless
-				 * of terminal width / soft wrap. */
 				printf("\r\033[K\033" "7" ANSI_DIM);
 				ctx->streaming = 1;
 			}
 			fputs(content, stdout);
 			fflush(stdout);
 		} else if (!ctx->streaming) {
+			if (!ctx->spin.running) {
+				spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
+			}
 			printf("\033" "7" ANSI_DIM "..." ANSI_RESET);
 			fflush(stdout);
 			ctx->streaming = 1;
@@ -1519,11 +1548,26 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_ACTION:
 		if (ctx->streaming) {
-			/* Restore cursor and clear streamed text, same as
-			 * REACT_STEP_FINAL so the raw LLM output is replaced
-			 * by the formatted [Action] label. */
 			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
+		}
+		if (ctx->spin.running) {
+			char action_label[256] = {0};
+			if (content) {
+				if (strncmp(content, "Executing ", 10) == 0) {
+					snprintf(action_label, sizeof(action_label), "%s", content + 10);
+				} else {
+					snprintf(action_label, sizeof(action_label), "%s", content);
+				}
+			}
+			if (!ctx->spin.running) {
+				spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
+					  action_label[0] ? action_label : "Executing");
+			} else {
+				char msg[512];
+				snprintf(msg, sizeof(msg), "Running %s", action_label);
+				spin_update(&ctx->spin, msg);
+			}
 		}
 		printf(ANSI_BOLD ANSI_YELLOW "[Action]" ANSI_RESET " %s\n",
 		       content ? content : "");
@@ -1533,6 +1577,22 @@ static int output_callback(enum react_step_type type, const char *content,
 		if (ctx->streaming) {
 			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
+		}
+		if (ctx->spin.running) {
+			char msg[128] = {0};
+			if (content && strncmp(content, "tool error:", 11) == 0) {
+				snprintf(msg, sizeof(msg), "Tool execution failed");
+				spin_stop(&ctx->spin, SPIN_STATE_ERROR, msg);
+			} else if (content && strncmp(content, "image generated:", 15) == 0) {
+				snprintf(msg, sizeof(msg), "Image generated");
+				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+			} else if (content && strncmp(content, "video generated:", 16) == 0) {
+				snprintf(msg, sizeof(msg), "Video generated");
+				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+			} else {
+				snprintf(msg, sizeof(msg), "Done");
+				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+			}
 		}
 		printf(ANSI_DIM "[Observation]" ANSI_RESET " %s\n",
 		       content ? content : "");
@@ -1570,11 +1630,18 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_FINAL:
 		if (ctx->streaming) {
-			/* Restore to the saved cursor (DECRC) and clear
-			 * everything below, handling soft-wrapped lines
-			 * correctly. Then render the markdown cleanly. */
 			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
 			ctx->streaming = 0;
+		}
+		if (ctx->spin.running) {
+			char msg[128];
+			if (content && *content) {
+				snprintf(msg, sizeof(msg), "Done");
+			} else {
+				snprintf(msg, sizeof(msg), "No output");
+			}
+			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+			printf("\n");
 		}
 		if (content && *content)
 			markdown_render_ansi(content);

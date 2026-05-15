@@ -5,6 +5,7 @@ add_library(morph-util STATIC
 	base64.c
 	image_util.c
 	utf8.c
+	spin.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 )
 
