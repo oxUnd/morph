@@ -1510,50 +1510,54 @@ static int output_callback(enum react_step_type type, const char *content,
 {
 	struct cli_context *ctx = user_data;
 
-	if (ctx->spin.running && ctx->spin.state != SPIN_STATE_COMPLETE &&
-	    ctx->spin.state != SPIN_STATE_ERROR) {
-		if (type == REACT_STEP_ACTION || type == REACT_STEP_OBSERVATION ||
-		    type == REACT_STEP_REFLECTION) {
-			if (ctx->spin.frame % 4 == 0) {
-				printf("\r\033[K");
-				if (type == REACT_STEP_ACTION && content) {
-					printf(ANSI_YELLOW "⚙ " ANSI_RESET);
-					if (strncmp(content, "Executing ", 10) == 0) {
-						const char *tool_name = content + 10;
-						printf("%s...", tool_name);
-					} else {
-						printf("%s", content);
-					}
-				} else if (type == REACT_STEP_OBSERVATION) {
-					printf(ANSI_DIM "✓ done" ANSI_RESET);
-				}
-				fflush(stdout);
-			}
-			ctx->spin.frame++;
-		}
-	}
-
 	switch (type) {
 	case REACT_STEP_THOUGHT:
 		if (content && *content) {
 			if (!ctx->streaming) {
-				printf("\r\033[K\033" "7" ANSI_DIM);
 				ctx->streaming = 1;
+				ctx->stream_buf[0] = '\0';
+				ctx->stream_buf_len = 0;
+				if (!ctx->spin.running) {
+					spin_start(&ctx->spin, SPIN_STATE_THINKING,
+						   "Thinking");
+				}
 			}
-			fputs(content, stdout);
-			fflush(stdout);
+			size_t clen = strlen(content);
+			size_t avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
+			if (clen > avail) {
+				size_t keep = sizeof(ctx->stream_buf) / 2;
+				memmove(ctx->stream_buf, ctx->stream_buf + ctx->stream_buf_len - keep, keep);
+				ctx->stream_buf_len = keep;
+				avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
+			}
+			if (clen > avail)
+				clen = avail;
+			memcpy(ctx->stream_buf + ctx->stream_buf_len, content, clen);
+			ctx->stream_buf_len += clen;
+			ctx->stream_buf[ctx->stream_buf_len] = '\0';
+
+			const char *last_nl = strrchr(ctx->stream_buf, '\n');
+			const char *preview = last_nl ? last_nl + 1 : ctx->stream_buf;
+			while (*preview == ' ' || *preview == '\t')
+				preview++;
+			size_t plen = strlen(preview);
+			if (plen > 60)
+				preview = preview + plen - 60;
+			char sub[128];
+			snprintf(sub, sizeof(sub), "%.60s", preview);
+			spin_set_sub(&ctx->spin, sub);
 		} else if (!ctx->streaming) {
 			if (!ctx->spin.running) {
 				spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
 			}
-			printf("\033" "7" ANSI_DIM "..." ANSI_RESET);
-			fflush(stdout);
 			ctx->streaming = 1;
+			ctx->stream_buf[0] = '\0';
+			ctx->stream_buf_len = 0;
 		}
 		break;
 	case REACT_STEP_ACTION:
 		if (ctx->streaming) {
-			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
+			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
 		if (ctx->spin.running) {
@@ -1580,7 +1584,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_OBSERVATION:
 		if (ctx->streaming) {
-			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
+			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
 		if (ctx->spin.running) {
@@ -1635,7 +1639,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_REFLECTION:
 		if (ctx->streaming) {
-			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
+			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
 		if (ctx->spin.running) {
@@ -1647,7 +1651,7 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	case REACT_STEP_FINAL:
 		if (ctx->streaming) {
-			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
+			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
 		if (ctx->spin.running) {

@@ -25,6 +25,8 @@ struct cli_context {
 	int session_auto_named;
 	char image_path[512];
 	struct spin_context spin;
+	char stream_buf[4096];
+	size_t stream_buf_len;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path);
