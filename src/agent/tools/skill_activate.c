@@ -81,15 +81,16 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 	}
 
 	size_t body_len = strlen(skill->body);
-	size_t result_len = 64 + strlen(name) + body_len + 16;
+	size_t dir_len = strlen(skill->skill_dir);
+	size_t result_len = 128 + strlen(name) + dir_len + body_len + 16;
 	char *result = malloc(result_len);
 	if (!result) {
 		*result_json = strdup("{\"error\":\"out of memory\"}");
 		return -ENOMEM;
 	}
 	snprintf(result, result_len,
-		 "<skill name=\"%s\">\n%s\n</skill>",
-		 name, skill->body);
+		 "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>",
+		 name, skill->skill_dir, skill->body);
 	*result_json = result;
 
 	log_info("skill_activate: '%s' activated (%zu bytes of instructions)",

@@ -208,7 +208,7 @@ char *skill_build_activated_instructions(struct skill_registry *reg)
 		if (!e->activated || !e->body || !e->body[0])
 			continue;
 
-		size_t needed = 64 + strlen(e->fm.name) + strlen(e->body);
+		size_t needed = 128 + strlen(e->fm.name) + strlen(e->skill_dir) + strlen(e->body);
 		while (len + needed + 1 >= cap) {
 			cap *= 2;
 			char *nb = realloc(buf, cap);
@@ -220,8 +220,8 @@ char *skill_build_activated_instructions(struct skill_registry *reg)
 		}
 
 		len += (size_t)snprintf(buf + len, cap - len,
-					"<skill name=\"%s\">\n%s\n</skill>\n\n",
-					e->fm.name, e->body);
+					"<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
+					e->fm.name, e->skill_dir, e->body);
 	}
 
 	if (len == 0) {
