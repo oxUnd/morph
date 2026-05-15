@@ -1,5 +1,4 @@
 #include "markdown.h"
-#include "image.h"
 #include "md4c.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -946,11 +945,6 @@ void markdown_render_ansi(const char *md)
 	printf("%s\n", buf);
 	fflush(stdout);
 	free(buf);
-
-	for (int i = 0; i < ctx.media_count; i++) {
-		if (strcmp(ctx.media[i].type, "image") == 0)
-			image_render_terminal(ctx.media[i].path);
-	}
 	free_media(&ctx);
 }
 
