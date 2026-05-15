@@ -1,0 +1,278 @@
+#include "bash_exec.h"
+#include "sandbox.h"
+#include "util/log.h"
+#include "cJSON.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/select.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#define BASH_EXEC_DEFAULT_TIMEOUT 30
+#define BASH_EXEC_MAX_OUTPUT (256 * 1024)
+
+struct buf {
+	char *data;
+	size_t len;
+	size_t cap;
+};
+
+static int buf_append(struct buf *b, const char *s, size_t n)
+{
+	if (b->len >= BASH_EXEC_MAX_OUTPUT)
+		return 0;
+	if (b->len + n > BASH_EXEC_MAX_OUTPUT)
+		n = BASH_EXEC_MAX_OUTPUT - b->len;
+	if (b->len + n + 1 > b->cap) {
+		size_t nc = b->cap ? b->cap * 2 : 4096;
+		while (b->len + n + 1 > nc)
+			nc *= 2;
+		char *p = realloc(b->data, nc);
+		if (!p)
+			return -ENOMEM;
+		b->data = p;
+		b->cap = nc;
+	}
+	memcpy(b->data + b->len, s, n);
+	b->len += n;
+	b->data[b->len] = '\0';
+	return 0;
+}
+
+static int read_pipes_with_timeout(int out_fd, int err_fd,
+				   struct buf *out_buf, struct buf *err_buf,
+				   int timeout_seconds, int *timed_out)
+{
+	int max_fd = (out_fd > err_fd) ? out_fd : err_fd;
+	int out_open = 1, err_open = 1;
+	time_t deadline = time(NULL) + timeout_seconds;
+
+	fcntl(out_fd, F_SETFL, O_NONBLOCK);
+	fcntl(err_fd, F_SETFL, O_NONBLOCK);
+
+	while (out_open || err_open) {
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		if (out_open)
+			FD_SET(out_fd, &rfds);
+		if (err_open)
+			FD_SET(err_fd, &rfds);
+
+		time_t now = time(NULL);
+		if (now >= deadline) {
+			*timed_out = 1;
+			return 0;
+		}
+		struct timeval tv;
+		tv.tv_sec = deadline - now;
+		tv.tv_usec = 0;
+
+		int rc = select(max_fd + 1, &rfds, NULL, NULL, &tv);
+		if (rc < 0) {
+			if (errno == EINTR)
+				continue;
+			return -EIO;
+		}
+		if (rc == 0) {
+			*timed_out = 1;
+			return 0;
+		}
+
+		char tmp[4096];
+		if (out_open && FD_ISSET(out_fd, &rfds)) {
+			ssize_t n = read(out_fd, tmp, sizeof(tmp));
+			if (n > 0)
+				buf_append(out_buf, tmp, (size_t)n);
+			else if (n == 0)
+				out_open = 0;
+			else if (errno != EAGAIN && errno != EINTR)
+				out_open = 0;
+		}
+		if (err_open && FD_ISSET(err_fd, &rfds)) {
+			ssize_t n = read(err_fd, tmp, sizeof(tmp));
+			if (n > 0)
+				buf_append(err_buf, tmp, (size_t)n);
+			else if (n == 0)
+				err_open = 0;
+			else if (errno != EAGAIN && errno != EINTR)
+				err_open = 0;
+		}
+	}
+	return 0;
+}
+
+static int bash_exec_run(const char *args_json, char **result_json,
+			 void *user_data)
+{
+	(void)user_data;
+	if (!result_json)
+		return -EINVAL;
+
+	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	const char *command = NULL;
+	const char *cwd = NULL;
+	int timeout = BASH_EXEC_DEFAULT_TIMEOUT;
+	if (root) {
+		cJSON *c = cJSON_GetObjectItem(root, "command");
+		if (cJSON_IsString(c) && c->valuestring)
+			command = c->valuestring;
+		cJSON *w = cJSON_GetObjectItem(root, "cwd");
+		if (cJSON_IsString(w) && w->valuestring)
+			cwd = w->valuestring;
+		cJSON *t = cJSON_GetObjectItem(root, "timeout_seconds");
+		if (cJSON_IsNumber(t) && t->valuedouble > 0)
+			timeout = (int)t->valuedouble;
+	}
+
+	if (!command || !*command) {
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup(
+			"{\"error\":\"missing 'command' parameter. "
+			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}");
+		return -EINVAL;
+	}
+
+	int out_pipe[2], err_pipe[2];
+	if (pipe(out_pipe) < 0) {
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup("{\"error\":\"pipe() failed\"}");
+		return -EIO;
+	}
+	if (pipe(err_pipe) < 0) {
+		close(out_pipe[0]);
+		close(out_pipe[1]);
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup("{\"error\":\"pipe() failed\"}");
+		return -EIO;
+	}
+
+	log_info("bash_exec: running '%s' (cwd=%s, timeout=%ds)",
+		 command, cwd ? cwd : ".", timeout);
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		close(out_pipe[0]); close(out_pipe[1]);
+		close(err_pipe[0]); close(err_pipe[1]);
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup("{\"error\":\"fork() failed\"}");
+		return -EIO;
+	}
+
+	if (pid == 0) {
+		close(out_pipe[0]);
+		close(err_pipe[0]);
+		dup2(out_pipe[1], STDOUT_FILENO);
+		dup2(err_pipe[1], STDERR_FILENO);
+		close(out_pipe[1]);
+		close(err_pipe[1]);
+
+		int devnull = open("/dev/null", O_RDONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			close(devnull);
+		}
+
+		if (cwd && *cwd) {
+			if (chdir(cwd) != 0) {
+				fprintf(stderr,
+					"bash_exec: chdir(%s) failed: %s\n",
+					cwd, strerror(errno));
+				_exit(126);
+			}
+		}
+
+		struct sandbox_config sb;
+		memset(&sb, 0, sizeof(sb));
+		sb.permissions = EXT_PERM_EXEC | EXT_PERM_FILESYS |
+				 EXT_PERM_NETWORK | EXT_PERM_ENV;
+		sb.max_memory_mb = 512;
+		sb.max_cpu_seconds = timeout;
+		sandbox_enter(&sb);
+
+		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+		fprintf(stderr, "bash_exec: execl failed: %s\n",
+			strerror(errno));
+		_exit(127);
+	}
+
+	close(out_pipe[1]);
+	close(err_pipe[1]);
+
+	struct buf out_buf = {0};
+	struct buf err_buf = {0};
+	int timed_out = 0;
+	read_pipes_with_timeout(out_pipe[0], err_pipe[0],
+				&out_buf, &err_buf, timeout, &timed_out);
+	close(out_pipe[0]);
+	close(err_pipe[0]);
+
+	int status = 0;
+	if (timed_out) {
+		log_warn("bash_exec: timeout after %ds, killing pid %d",
+			 timeout, pid);
+		kill(pid, SIGKILL);
+	}
+	waitpid(pid, &status, 0);
+
+	int exit_code = -1;
+	const char *signal_name = NULL;
+	if (WIFEXITED(status))
+		exit_code = WEXITSTATUS(status);
+	else if (WIFSIGNALED(status))
+		signal_name = strsignal(WTERMSIG(status));
+
+	cJSON *out = cJSON_CreateObject();
+	cJSON_AddStringToObject(out, "command", command);
+	if (cwd)
+		cJSON_AddStringToObject(out, "cwd", cwd);
+	cJSON_AddNumberToObject(out, "exit_code", exit_code);
+	cJSON_AddBoolToObject(out, "timed_out", timed_out);
+	if (signal_name)
+		cJSON_AddStringToObject(out, "signal", signal_name);
+	cJSON_AddStringToObject(out, "stdout",
+				out_buf.data ? out_buf.data : "");
+	cJSON_AddStringToObject(out, "stderr",
+				err_buf.data ? err_buf.data : "");
+	cJSON_AddBoolToObject(out, "stdout_truncated",
+			      out_buf.len >= BASH_EXEC_MAX_OUTPUT);
+	cJSON_AddBoolToObject(out, "stderr_truncated",
+			      err_buf.len >= BASH_EXEC_MAX_OUTPUT);
+
+	char *str = cJSON_PrintUnformatted(out);
+	cJSON_Delete(out);
+	free(out_buf.data);
+	free(err_buf.data);
+	if (root)
+		cJSON_Delete(root);
+
+	*result_json = str ? str : strdup("{}");
+	return 0;
+}
+
+int bash_exec_init(struct tool_registry *reg)
+{
+	if (!reg)
+		return -EINVAL;
+	return tool_register(reg, "bash_exec",
+		"Execute a shell command in a sandboxed subprocess. "
+		"Captures stdout/stderr and exit code. Use this to run "
+		"commands described in skill instructions (build/test/lint/git/etc.). "
+		"Args: command (required), cwd (optional working dir), "
+		"timeout_seconds (optional, default 30).",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"command\":{\"type\":\"string\",\"description\":\"shell command to execute via /bin/sh -c\"},"
+		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
+		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime (default 30)\"}"
+		"},\"required\":[\"command\"]}",
+		bash_exec_run, NULL);
+}

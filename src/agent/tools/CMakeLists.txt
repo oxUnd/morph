@@ -11,6 +11,7 @@ add_library(morph-tools STATIC
 	file_list.c
 	file_info.c
 	skill_activate.c
+	bash_exec.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
@@ -24,4 +25,4 @@ target_include_directories(morph-tools PUBLIC
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/models
 )
-target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util morph-skill)
+target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util morph-skill morph-sandbox)

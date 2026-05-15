@@ -16,6 +16,7 @@
 #include "agent/tools/file_list.h"
 #include "agent/tools/file_info.h"
 #include "agent/tools/skill_activate.h"
+#include "agent/tools/bash_exec.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
@@ -1201,8 +1202,13 @@ struct model *llm = model_llm_create(
 		api_key ? api_key : "");
   ctx->llm = llm;
   ctx->react->llm_model = llm;
-  if (llm)
+  if (llm) {
 	  llm->timeout_seconds = ctx->config.models.text.timeout_seconds;
+	  if (ctx->config.models.text.max_tokens > 0)
+		  llm->max_tokens = ctx->config.models.text.max_tokens;
+	  if (ctx->config.models.text.context_limit > 0)
+		  llm->context_limit = ctx->config.models.text.context_limit;
+  }
 
 	text_gen_init(&ctx->tools, llm);
 	log_info("registered text_gen tool");
@@ -1239,6 +1245,9 @@ struct model *llm = model_llm_create(
 
 	file_info_init(&ctx->tools);
 	log_info("registered file_info tool");
+
+	bash_exec_init(&ctx->tools);
+	log_info("registered bash_exec tool");
 
 	img_resize_init(&ctx->tools);
 	log_info("registered img_resize tool");
