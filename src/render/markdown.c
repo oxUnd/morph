@@ -97,15 +97,27 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		}
 		break;
 	case MD_BLOCK_QUOTE:
+		if (ctx->new_line_needed) {
+			ctx_str(ctx, "\n");
+			ctx->new_line_needed = 0;
+		}
 		ctx->block_depth++;
 		ctx_str(ctx, ANSI_DIM);
 		ctx_str(ctx, "│ ");
 		break;
 	case MD_BLOCK_UL:
 	case MD_BLOCK_OL:
+		if (ctx->new_line_needed) {
+			ctx_str(ctx, "\n");
+			ctx->new_line_needed = 0;
+		}
 		ctx->list_depth++;
 		break;
 	case MD_BLOCK_LI:
+		if (ctx->new_line_needed) {
+			ctx_str(ctx, "\n");
+			ctx->new_line_needed = 0;
+		}
 		ctx_str(ctx, "  ");
 		for (int i = 1; i < ctx->list_depth; i++)
 			ctx_str(ctx, "  ");
