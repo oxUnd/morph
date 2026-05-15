@@ -615,12 +615,12 @@ static int is_video_ext(const char *path, size_t len)
 		    strcmp(ext, ".mov") == 0 ||
 		    strcmp(ext, ".avi") == 0 ||
 		    strcmp(ext, ".mkv") == 0 ||
-		    strcmp(ext, ".webm") == 0)
+		    strcmp(ext, ".m4v") == 0)
 			return 1;
 	}
 	if (len > 5) {
 		const char *ext5 = path + len - 5;
-		if (strcmp(ext5, ".m4v") == 0 ||
+		if (strcmp(ext5, ".webm") == 0 ||
 		    strcmp(ext5, ".mpeg") == 0)
 			return 1;
 	}

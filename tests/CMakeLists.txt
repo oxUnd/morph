@@ -21,6 +21,7 @@ set(TEST_SOURCES
 	test_skill.cpp
 	test_markdown.cpp
 	test_bash_exec.cpp
+	test_spin.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})

@@ -1696,3 +1696,86 @@ TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
 	EXPECT_EQ(needs, 0);
 	msg_list_destroy(head);
 }
+
+/* ============================================= */
+/* Reflection tests                              */
+/* ============================================= */
+
+TEST_F(ReactTest, ReflectionStepTypeName) {
+	EXPECT_STREQ(react_step_type_name(REACT_STEP_REFLECTION), "Reflection");
+}
+
+TEST_F(ReactTest, ReflectionStateName) {
+	EXPECT_STREQ(react_state_name(REACT_STATE_REFLECTING), "REFLECTING");
+}
+
+TEST_F(ReactTest, ReflectionDefaultDisabled) {
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	EXPECT_EQ(ctx->reflection_enabled, 0);
+	EXPECT_EQ(ctx->reflection_count, 0);
+	react_context_destroy(ctx);
+}
+
+TEST_F(ReactTest, ReflectionEnabledField) {
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->reflection_enabled = 1;
+	ctx->reflection_max_retries = 2;
+	EXPECT_EQ(ctx->reflection_enabled, 1);
+	EXPECT_EQ(ctx->reflection_max_retries, 2);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ReflectionDisabledNoReflectionStep) {
+	setup_llm_with_response("Final: direct answer");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->reflection_enabled = 0;
+	react_run(ctx, "hello", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	bool has_reflection = false;
+	struct react_step *s = ctx->steps;
+	while (s) {
+		if (s->type == REACT_STEP_REFLECTION)
+			has_reflection = true;
+		s = s->next;
+	}
+	EXPECT_FALSE(has_reflection);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ReflectionEnabledWithDirectFinal) {
+	const char *responses[] = {
+		"Final: the answer",
+		"VERDICT: APPROVE"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->reflection_enabled = 1;
+	ctx->reflection_max_retries = 1;
+	react_run(ctx, "hello", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ReflectionCancelDuringReflection) {
+	const char *responses[] = {
+		"Final: answer",
+		"VERDICT: REJECT\nFEEDBACK: improve it"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->reflection_enabled = 1;
+	ctx->reflection_max_retries = 3;
+	react_cancel(ctx);
+	react_run(ctx, "test", nullptr, nullptr);
+	EXPECT_TRUE(ctx->state == REACT_STATE_ABORT ||
+		    ctx->state == REACT_STATE_DONE);
+	react_context_destroy(ctx);
+}

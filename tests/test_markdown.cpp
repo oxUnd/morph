@@ -2,6 +2,8 @@
 #include "render/markdown.h"
 #include <string.h>
 #include <stdlib.h>
+#include <vector>
+#include <string>
 
 static std::string render(const char *md)
 {
@@ -527,4 +529,131 @@ TEST(MarkdownRender, ListWithCodeBlock)
 	std::string plain = strip_ansi(out);
 	EXPECT_TRUE(plain.find("item1") != std::string::npos);
 	EXPECT_TRUE(plain.find("code") != std::string::npos);
+}
+
+/* ============================================= */
+/* Media collection tests (markdown_render_ansi_with_media) */
+/* ============================================= */
+
+struct media_entry {
+	std::string type;
+	std::string path;
+};
+
+struct media_collector {
+	std::vector<media_entry> entries;
+};
+
+static void test_media_cb(const char *type, const char *path, void *user)
+{
+	auto *col = (media_collector *)user;
+	col->entries.push_back({type, path});
+}
+
+TEST(MarkdownMedia, NullInput)
+{
+	media_collector col;
+	EXPECT_NO_FATAL_FAILURE(markdown_render_ansi_with_media(NULL, test_media_cb, &col));
+	EXPECT_NO_FATAL_FAILURE(markdown_render_ansi_with_media("hello", NULL, &col));
+	EXPECT_EQ(col.entries.size(), 0u);
+}
+
+TEST(MarkdownMedia, ImageCollected)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("![alt](photo.png)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "image");
+	EXPECT_EQ(col.entries[0].path, "photo.png");
+}
+
+TEST(MarkdownMedia, VideoFromImageSyntax)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("![video](clip.mp4)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "video");
+	EXPECT_EQ(col.entries[0].path, "clip.mp4");
+}
+
+TEST(MarkdownMedia, VideoFromLinkSyntax)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("[watch](movie.mov)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "video");
+	EXPECT_EQ(col.entries[0].path, "movie.mov");
+}
+
+TEST(MarkdownMedia, NonVideoLinkNotCollected)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("[click](http://example.com)", test_media_cb, &col);
+	EXPECT_EQ(col.entries.size(), 0u);
+}
+
+TEST(MarkdownMedia, MultipleImages)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("![a](1.png) and ![b](2.jpg)", test_media_cb, &col);
+	EXPECT_EQ(col.entries.size(), 2u);
+	EXPECT_EQ(col.entries[0].type, "image");
+	EXPECT_EQ(col.entries[1].type, "image");
+}
+
+TEST(MarkdownMedia, MixedImageAndVideo)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("![pic](img.png)\n\n![vid](out.webm)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 2u);
+	EXPECT_EQ(col.entries[0].type, "image");
+	EXPECT_EQ(col.entries[1].type, "video");
+}
+
+TEST(MarkdownMedia, VideoExtensions)
+{
+	const char *exts[] = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "mpeg"};
+	for (const char *ext : exts) {
+		media_collector col;
+		std::string filename = std::string("test.") + ext;
+		std::string md = std::string("![v](") + filename + ")";
+		markdown_render_ansi_with_media(md.c_str(), test_media_cb, &col);
+		ASSERT_EQ(col.entries.size(), 1u) << "Failed for extension: " << ext
+			<< " path='" << (col.entries.size() > 0 ? col.entries[0].path : "") << "'";
+		EXPECT_EQ(col.entries[0].type, "video") << "Failed for extension: " << ext
+			<< " path='" << col.entries[0].path << "'";
+	}
+}
+
+TEST(MarkdownMedia, FileURIStripped)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("![img](file:///tmp/photo.png)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "image");
+	EXPECT_EQ(col.entries[0].path, "/tmp/photo.png");
+}
+
+TEST(MarkdownMedia, VideoFromLinkWithVideoExt)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("[download](archive.mkv)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "video");
+}
+
+TEST(MarkdownMedia, ImageInParagraph)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("Here is a picture:\n\n![cat](cat.png)", test_media_cb, &col);
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "image");
+	EXPECT_EQ(col.entries[0].path, "cat.png");
+}
+
+TEST(MarkdownMedia, NoMediaInPlainMarkdown)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("# Hello\n\n**bold** text\n\n- item1\n- item2", test_media_cb, &col);
+	EXPECT_EQ(col.entries.size(), 0u);
 }
