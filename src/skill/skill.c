@@ -135,7 +135,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 
 		reg->count++;
 		discovered++;
-		log_info("skill_discover: found '%s' — %s", fm.name, fm.description);
+		log_info("skill_discover: found '%s'", fm.name);
 	}
 
 	closedir(dir);
