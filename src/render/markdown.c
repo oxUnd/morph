@@ -1,4 +1,5 @@
 #include "markdown.h"
+#include "image.h"
 #include "md4c.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +81,11 @@ struct table_state {
 };
 
 /* ---------------- main context ---------------- */
+struct collected_media {
+	char *type;
+	char *path;
+};
+
 struct ansi_ctx {
 	struct sbuf out;	/* primary output */
 	int bold_depth;
@@ -98,6 +104,8 @@ struct ansi_ctx {
 	struct table_state *table;
 	int current_link_href_pending;
 	struct sbuf link_href;
+	struct collected_media media[64];
+	int media_count;
 };
 
 /* Append to either the active table cell or the main output, depending on
@@ -600,6 +608,47 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 	return 0;
 }
 
+static int is_video_ext(const char *path, size_t len)
+{
+	if (len > 4) {
+		const char *ext = path + len - 4;
+		if (strcmp(ext, ".mp4") == 0 ||
+		    strcmp(ext, ".mov") == 0 ||
+		    strcmp(ext, ".avi") == 0 ||
+		    strcmp(ext, ".mkv") == 0 ||
+		    strcmp(ext, ".webm") == 0)
+			return 1;
+	}
+	if (len > 5) {
+		const char *ext5 = path + len - 5;
+		if (strcmp(ext5, ".m4v") == 0 ||
+		    strcmp(ext5, ".mpeg") == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void collect_media(struct ansi_ctx *ctx, const char *src, size_t src_len, const char *default_type)
+{
+	if (ctx->media_count >= 64)
+		return;
+	const char *s = src;
+	size_t slen = src_len;
+	if (slen > 7 && strncmp(s, "file://", 7) == 0) {
+		s += 7;
+		slen -= 7;
+	}
+	char *path = malloc(slen + 1);
+	if (!path)
+		return;
+	memcpy(path, s, slen);
+	path[slen] = '\0';
+	const char *type = is_video_ext(path, slen) ? "video" : default_type;
+	ctx->media[ctx->media_count].type = strdup(type);
+	ctx->media[ctx->media_count].path = path;
+	ctx->media_count++;
+}
+
 /* ---------------- span handlers ---------------- */
 static void append_attr(struct ansi_ctx *ctx, const MD_ATTRIBUTE *attr)
 {
@@ -710,6 +759,9 @@ static int leave_span(MD_SPANTYPE type, void *detail, void *userdata)
 		ctx->link_depth--;
 		if (ctx->current_link_href_pending && ctx->link_href.buf &&
 		    ctx->link_href.len > 0) {
+			if (is_video_ext(ctx->link_href.buf, ctx->link_href.len)) {
+				collect_media(ctx, ctx->link_href.buf, ctx->link_href.len, "video");
+			}
 			out_append(ctx, ANSI_DIM);
 			out_append(ctx, " (");
 			out_append_n(ctx, ctx->link_href.buf, ctx->link_href.len);
@@ -725,9 +777,13 @@ static int leave_span(MD_SPANTYPE type, void *detail, void *userdata)
 		break;
 	case MD_SPAN_IMG: {
 		struct MD_SPAN_IMG_DETAIL *im = detail;
-		out_append(ctx, "](");
-		if (im) append_attr(ctx, &im->src);
-		out_append(ctx, ")");
+		out_append(ctx, "]");
+		if (im && im->src.text && im->src.size > 0) {
+			out_append(ctx, "(");
+			append_attr(ctx, &im->src);
+			out_append(ctx, ")");
+			collect_media(ctx, im->src.text, im->src.size, "image");
+		}
 		out_append(ctx, ANSI_RESET);
 		reapply_inline(ctx);
 		break;
@@ -838,6 +894,38 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	return ctx.out.len;
 }
 
+static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
+{
+	if (!md)
+		return;
+
+	MD_PARSER parser = {0};
+	parser.abi_version = 0;
+	parser.flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
+		       MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS |
+		       MD_FLAG_COLLAPSEWHITESPACE;
+	parser.enter_block = enter_block;
+	parser.leave_block = leave_block;
+	parser.enter_span = enter_span;
+	parser.leave_span = leave_span;
+	parser.text = text_callback;
+	parser.debug_log = debug_log;
+
+	md_parse(md, (MD_SIZE)strlen(md), &parser, ctx);
+
+	free(ctx->link_href.buf);
+	if (ctx->table)
+		free_table(ctx->table);
+}
+
+static void free_media(struct ansi_ctx *ctx)
+{
+	for (int i = 0; i < ctx->media_count; i++) {
+		free(ctx->media[i].type);
+		free(ctx->media[i].path);
+	}
+}
+
 void markdown_render_ansi(const char *md)
 {
 	if (!md)
@@ -847,8 +935,48 @@ void markdown_render_ansi(const char *md)
 	char *buf = malloc(buf_len);
 	if (!buf)
 		return;
-	markdown_render_ansi_to_buf(md, buf, buf_len);
+
+	struct ansi_ctx ctx = {0};
+	sbuf_init(&ctx.out, buf, buf_len);
+
+	render_ansi_impl(md, &ctx);
+
+	if (ctx.out.len < ctx.out.cap)
+		buf[ctx.out.len] = '\0';
 	printf("%s\n", buf);
 	fflush(stdout);
 	free(buf);
+
+	for (int i = 0; i < ctx.media_count; i++) {
+		if (strcmp(ctx.media[i].type, "image") == 0)
+			image_render_terminal(ctx.media[i].path);
+	}
+	free_media(&ctx);
+}
+
+void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void *user)
+{
+	if (!md || !cb)
+		return;
+	size_t len = markdown_render_ansi_to_buf(md, NULL, 0);
+	size_t buf_len = len + 1;
+	char *buf = malloc(buf_len);
+	if (!buf)
+		return;
+
+	struct ansi_ctx ctx = {0};
+	sbuf_init(&ctx.out, buf, buf_len);
+
+	render_ansi_impl(md, &ctx);
+
+	if (ctx.out.len < ctx.out.cap)
+		buf[ctx.out.len] = '\0';
+	printf("%s\n", buf);
+	fflush(stdout);
+	free(buf);
+
+	for (int i = 0; i < ctx.media_count; i++) {
+		cb(ctx.media[i].type, ctx.media[i].path, user);
+	}
+	free_media(&ctx);
 }

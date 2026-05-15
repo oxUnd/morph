@@ -39,6 +39,8 @@
 #include <readline/history.h>
 #endif
 
+static void media_callback(const char *type, const char *path, void *user);
+
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
 #define ANSI_RED    "\033[31m"
@@ -560,7 +562,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 				   (strcmp(role, "assistant") == 0) ? "AI" : role;
 		printf(ANSI_DIM "[%s]" ANSI_RESET " ", label);
 		if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
-			markdown_render_ansi(cur->content);
+			markdown_render_ansi_with_media(cur->content, media_callback, NULL);
 		else
 			printf("%s\n", cur->content ? cur->content : "(empty)");
 		cur = cur->next;
@@ -1130,9 +1132,9 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	ctx->react->reflection_max_retries = ctx->config.react.reflection_max_retries;
 
 	if (ctx->config.prompt.system_prompt_file[0]) {
-		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_file);
-		if (expanded) {
-			char *content = file_read_all(expanded, NULL);
+		char *exp = file_expand_path(ctx->config.prompt.system_prompt_file);
+		if (exp) {
+			char *content = file_read_all(exp, NULL);
 			if (content) {
 				size_t len = strlen(content);
 				while (len > 0 && (content[len-1] == '\n' ||
@@ -1145,19 +1147,19 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 				log_warn("failed to read system prompt: %s",
 					 ctx->config.prompt.system_prompt_file);
 			}
-			free(expanded);
+			free(exp);
 		}
 	}
 
 	if (ctx->config.prompt.system_prompt_dir[0]) {
-		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_dir);
-		if (expanded) {
+		char *exp2 = file_expand_path(ctx->config.prompt.system_prompt_dir);
+		if (exp2) {
 			char **files = NULL;
 			int nfiles = 0;
-			if (file_list_files(expanded, &files, &nfiles) == 0) {
+			if (file_list_files(exp2, &files, &nfiles) == 0) {
 				for (int i = 0; i < nfiles; i++) {
 					char full[4096];
-					snprintf(full, sizeof(full), "%s/%s", expanded, files[i]);
+					snprintf(full, sizeof(full), "%s/%s", exp2, files[i]);
 					char *content = file_read_all(full, NULL);
 					if (!content)
 						continue;
@@ -1190,7 +1192,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 				log_info("loaded %d prompt files from: %s",
 					 nfiles, ctx->config.prompt.system_prompt_dir);
 			}
-			free(expanded);
+			free(exp2);
 		}
 	}
 
@@ -1505,6 +1507,18 @@ void cli_run(struct cli_context *ctx)
 
 /* ---- output_callback ---- */
 
+static void media_callback(const char *type, const char *path, void *user)
+{
+	if (strcmp(type, "image") == 0) {
+		image_render_terminal(path);
+	} else if (strcmp(type, "video") == 0) {
+		struct cli_context *ctx = (struct cli_context *)user;
+		const char *mpv = (ctx && ctx->config.render.mpv_args[0])
+				  ? ctx->config.render.mpv_args : NULL;
+		video_play(path, mpv);
+	}
+}
+
 static int output_callback(enum react_step_type type, const char *content,
 			   void *user_data)
 {
@@ -1677,7 +1691,7 @@ static int output_callback(enum react_step_type type, const char *content,
 			printf("\n");
 		}
 		if (content && *content)
-			markdown_render_ansi(content);
+			markdown_render_ansi_with_media(content, media_callback, ctx);
 		else
 			printf("\n");
 
