@@ -14,6 +14,57 @@
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
+/* Find a valid UTF-8 character boundary at or before max_bytes.
+ * UTF-8 continuation bytes are 0x80..0xBF; lead bytes are ASCII (<0x80) or 0xC0+.
+ * Prevents chopping a multi-byte character mid-sequence and shipping the
+ * resulting half-byte into the LLM request body (which causes API 4xx). */
+static size_t react_utf8_safe_len(const char *s, size_t max_bytes)
+{
+	if (!s)
+		return 0;
+	size_t len = strlen(s);
+	if (len <= max_bytes)
+		return len;
+	size_t pos = max_bytes;
+	while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
+		pos--;
+	return pos;
+}
+
+/* Duplicate src into a freshly-allocated buffer no larger than max_bytes
+ * (including trailing NUL), keeping UTF-8 sequences intact. Returns NULL on
+ * allocation failure. When truncation occurs, "…(truncated)" is appended. */
+static char *react_dup_utf8_clamped(const char *src, size_t max_bytes)
+{
+	if (!src)
+		return NULL;
+	size_t len = strlen(src);
+	if (len < max_bytes) {
+		char *dup = malloc(len + 1);
+		if (!dup)
+			return NULL;
+		memcpy(dup, src, len + 1);
+		return dup;
+	}
+	const char marker[] = "…(truncated)";
+	size_t marker_len = sizeof(marker) - 1;
+	if (max_bytes <= marker_len + 1) {
+		char *dup = malloc(1);
+		if (!dup)
+			return NULL;
+		dup[0] = '\0';
+		return dup;
+	}
+	size_t cut = react_utf8_safe_len(src, max_bytes - marker_len - 1);
+	char *dup = malloc(cut + marker_len + 1);
+	if (!dup)
+		return NULL;
+	memcpy(dup, src, cut);
+	memcpy(dup + cut, marker, marker_len);
+	dup[cut + marker_len] = '\0';
+	return dup;
+}
+
 struct collect_data {
 	char *buf;
 	size_t len;
@@ -737,12 +788,21 @@ int react_run(struct react_context *ctx, const char *user_input,
 					continue;
 				}
 
-				char obs_buf[4096];
+				/* Large observations (e.g. activated skill bodies) must be
+				 * dynamically allocated and clamped on a UTF-8 boundary; otherwise
+				 * a multi-byte character split mid-sequence ends up in the LLM
+				 * request body and triggers API 4xx. */
+				#define REACT_OBS_MAX_BYTES (256 * 1024)
+				char *obs_buf = NULL;
 				if (tool_rc < 0) {
 					ctx->state = REACT_STATE_TOOL_FAIL;
-					snprintf(obs_buf, sizeof(obs_buf),
-						"tool error: %s (code %d)",
-						result ? result : "unknown error", tool_rc);
+					const char *raw = result ? result : "unknown error";
+					size_t need = strlen(raw) + 64;
+					obs_buf = malloc(need);
+					if (obs_buf)
+						snprintf(obs_buf, need,
+							"tool error: %s (code %d)",
+							raw, tool_rc);
 					if (strcmp(tool_name, ctx->tool_fail_name) == 0 &&
 					    strcmp(tool_args, ctx->tool_fail_args) == 0) {
 						/* Same tool + same args failed again. */
@@ -757,12 +817,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 						ctx->tool_fail_count = 1;
 					}
 				} else {
-					snprintf(obs_buf, sizeof(obs_buf), "%s",
-						result ? result : "(no output)");
+					const char *raw = result ? result : "(no output)";
+					obs_buf = react_dup_utf8_clamped(raw, REACT_OBS_MAX_BYTES);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 				}
+				if (!obs_buf)
+					obs_buf = strdup("");
 				free(result);
 				free(action_text);
 
@@ -782,6 +844,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					if (cb)
 						cb(REACT_STEP_FINAL, fail_msg, user_data);
 					free(sd.response);
+					free(obs_buf);
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
@@ -793,6 +856,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				add_step(ctx, obs);
 				if (cb)
 					cb(REACT_STEP_OBSERVATION, obs_buf, user_data);
+				free(obs_buf);
 			} else {
 				struct react_step *obs = react_step_create(
 					REACT_STEP_OBSERVATION,

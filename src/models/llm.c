@@ -19,8 +19,9 @@ static char *escape_json_string(const char *s)
 	if (!out)
 		return NULL;
 	size_t j = 0;
-	for (size_t i = 0; i < len; i++) {
-		if (j + 3 >= cap) {
+	size_t i = 0;
+	while (i < len) {
+		if (j + 8 >= cap) {
 			cap *= 2;
 			char *new_out = realloc(out, cap);
 			if (!new_out) {
@@ -29,14 +30,49 @@ static char *escape_json_string(const char *s)
 			}
 			out = new_out;
 		}
-		switch (s[i]) {
-		case '"':  out[j++] = '\\'; out[j++] = '"'; break;
-		case '\\': out[j++] = '\\'; out[j++] = '\\'; break;
-		case '\n': out[j++] = '\\'; out[j++] = 'n'; break;
-		case '\r': out[j++] = '\\'; out[j++] = 'r'; break;
-		case '\t': out[j++] = '\\'; out[j++] = 't'; break;
-		default:   out[j++] = s[i]; break;
+		unsigned char c = (unsigned char)s[i];
+		if (c < 0x20) {
+			switch (c) {
+			case '\n': out[j++] = '\\'; out[j++] = 'n'; break;
+			case '\r': out[j++] = '\\'; out[j++] = 'r'; break;
+			case '\t': out[j++] = '\\'; out[j++] = 't'; break;
+			case '\b': out[j++] = '\\'; out[j++] = 'b'; break;
+			case '\f': out[j++] = '\\'; out[j++] = 'f'; break;
+			default:
+				/* Escape any other control char as \u00XX. */
+				j += (size_t)snprintf(out + j, cap - j,
+						      "\\u%04x", c);
+				break;
+			}
+			i++;
+			continue;
 		}
+		if (c == '"')  { out[j++] = '\\'; out[j++] = '"';  i++; continue; }
+		if (c == '\\') { out[j++] = '\\'; out[j++] = '\\'; i++; continue; }
+		if (c < 0x80) {
+			out[j++] = (char)c;
+			i++;
+			continue;
+		}
+		/* Validate the multi-byte UTF-8 sequence; drop any malformed
+		 * bytes so they cannot trigger downstream API 4xx errors. */
+		size_t need;
+		if      ((c & 0xE0) == 0xC0) need = 2;
+		else if ((c & 0xF0) == 0xE0) need = 3;
+		else if ((c & 0xF8) == 0xF0) need = 4;
+		else { i++; continue; }
+		if (i + need > len) break;
+		int ok = 1;
+		for (size_t k = 1; k < need; k++) {
+			if (((unsigned char)s[i + k] & 0xC0) != 0x80) {
+				ok = 0;
+				break;
+			}
+		}
+		if (!ok) { i++; continue; }
+		for (size_t k = 0; k < need; k++)
+			out[j++] = s[i + k];
+		i += need;
 	}
 	out[j] = '\0';
 	return out;
