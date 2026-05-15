@@ -596,6 +596,7 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 		case REACT_STEP_THOUGHT:	color = ANSI_DIM; break;
 		case REACT_STEP_ACTION:		color = ANSI_YELLOW; break;
 		case REACT_STEP_OBSERVATION:	color = ANSI_DIM; break;
+		case REACT_STEP_REFLECTION:	color = ANSI_CYAN; break;
 		case REACT_STEP_FINAL:		color = ANSI_GREEN; break;
 		default:			color = ""; break;
 		}
@@ -632,6 +633,7 @@ static struct react_step *json_to_react_steps(const char *json, int *out_count)
 		if (strcmp(type_name, "Thought") == 0)		type = REACT_STEP_THOUGHT;
 		else if (strcmp(type_name, "Action") == 0)	type = REACT_STEP_ACTION;
 		else if (strcmp(type_name, "Observation") == 0)	type = REACT_STEP_OBSERVATION;
+		else if (strcmp(type_name, "Reflection") == 0)	type = REACT_STEP_REFLECTION;
 		else if (strcmp(type_name, "Final") == 0)	type = REACT_STEP_FINAL;
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
@@ -1124,6 +1126,8 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
+	ctx->react->reflection_enabled = ctx->config.react.reflection_enabled;
+	ctx->react->reflection_max_retries = ctx->config.react.reflection_max_retries;
 
 	if (ctx->config.prompt.system_prompt_file[0]) {
 		char *expanded = file_expand_path(ctx->config.prompt.system_prompt_file);
@@ -1508,7 +1512,8 @@ static int output_callback(enum react_step_type type, const char *content,
 
 	if (ctx->spin.running && ctx->spin.state != SPIN_STATE_COMPLETE &&
 	    ctx->spin.state != SPIN_STATE_ERROR) {
-		if (type == REACT_STEP_ACTION || type == REACT_STEP_OBSERVATION) {
+		if (type == REACT_STEP_ACTION || type == REACT_STEP_OBSERVATION ||
+		    type == REACT_STEP_REFLECTION) {
 			if (ctx->spin.frame % 4 == 0) {
 				printf("\r\033[K");
 				if (type == REACT_STEP_ACTION && content) {
@@ -1626,6 +1631,18 @@ static int output_callback(enum react_step_type type, const char *content,
 				free(vid_path);
 			}
 		}
+		fflush(stdout);
+		break;
+	case REACT_STEP_REFLECTION:
+		if (ctx->streaming) {
+			fputs(ANSI_RESET "\033" "8" "\r\033[J", stdout);
+			ctx->streaming = 0;
+		}
+		if (ctx->spin.running) {
+			spin_update(&ctx->spin, "Reflecting");
+		}
+		printf(ANSI_BOLD ANSI_CYAN "[Reflection]" ANSI_RESET " %s\n",
+		       content ? content : "");
 		fflush(stdout);
 		break;
 	case REACT_STEP_FINAL:

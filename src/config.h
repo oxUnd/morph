@@ -41,6 +41,8 @@ struct config_react {
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
+	int reflection_enabled;
+	int reflection_max_retries;
 	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
 	int disabled_tools_count;
 };

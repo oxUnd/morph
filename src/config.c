@@ -56,6 +56,8 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.max_iterations = 10;
 	cfg->react.step_timeout_seconds = 60;
 	cfg->react.tool_max_retries = 3;
+	cfg->react.reflection_enabled = 0;
+	cfg->react.reflection_max_retries = 1;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
@@ -166,6 +168,8 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
 		CFG_INT(react, "step_timeout_seconds", cfg->react.step_timeout_seconds);
 		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
+		CFG_INT(react, "reflection_enabled", cfg->react.reflection_enabled);
+		CFG_INT(react, "reflection_max_retries", cfg->react.reflection_max_retries);
 		toml_array_t *dt = toml_array_in(react, "disabled_tools");
 		if (dt) {
 			int count = 0;
@@ -227,9 +231,11 @@ void config_print(const struct config *cfg)
 	log_info("  [model.text] provider=%s model=%s api_base=%s",
 		 cfg->models.text.provider, cfg->models.text.model,
 		 cfg->models.text.api_base);
-	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d disabled=%d",
+	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d reflection=%d/%d disabled=%d",
 		 cfg->react.max_iterations, cfg->react.step_timeout_seconds,
-		 cfg->react.tool_max_retries, cfg->react.disabled_tools_count);
+		 cfg->react.tool_max_retries,
+		 cfg->react.reflection_enabled, cfg->react.reflection_max_retries,
+		 cfg->react.disabled_tools_count);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	log_info("  [context] threshold=%.1f target=%.1f keep=%d",

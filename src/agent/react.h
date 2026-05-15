@@ -14,6 +14,7 @@ enum react_step_type {
 	REACT_STEP_THOUGHT,
 	REACT_STEP_ACTION,
 	REACT_STEP_OBSERVATION,
+	REACT_STEP_REFLECTION,
 	REACT_STEP_FINAL,
 };
 
@@ -22,6 +23,7 @@ enum react_state {
 	REACT_STATE_THINKING,
 	REACT_STATE_ACTING,
 	REACT_STATE_OBSERVING,
+	REACT_STATE_REFLECTING,
 	REACT_STATE_FINAL,
 	REACT_STATE_DONE,
 	REACT_STATE_ABORT,
@@ -43,6 +45,9 @@ struct react_context {
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
+	int reflection_enabled;
+	int reflection_max_retries;
+	int reflection_count;
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;

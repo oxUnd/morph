@@ -70,6 +70,12 @@ poll_timeout_seconds  = 600
 max_iterations      = 10
 step_timeout_seconds  = 300
 tool_max_retries    = 3
+# Enable reflection / self-critique phase.
+# When enabled, the agent reviews its own proposed answer before finalizing.
+# If the critique identifies issues, the agent revises its answer.
+reflection_enabled  = false
+# Maximum number of reflection-revision cycles per query.
+reflection_max_retries = 1
 # Disable specific tools by name. Supported tool names:
 # text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert,
 # vid_gen, file_read, file_list, file_info
