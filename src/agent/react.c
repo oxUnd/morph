@@ -1,6 +1,7 @@
 #include "react.h"
 #include "tokenizer.h"
 #include "compress.h"
+#include "system_prompt.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/arena.h"
@@ -318,25 +319,22 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	if (!buf)
 		return NULL;
 
-	len += snprintf(buf + len, cap - len,
-		"You are a multi-modal content creation assistant.\n");
-
+	char time_buf[128];
 	{
 		time_t now = time(NULL);
 		struct tm tm_local;
 		localtime_r(&now, &tm_local);
-		char time_buf[128];
 		strftime(time_buf, sizeof(time_buf),
 			 "%Y-%m-%d %A %H:%M:%S %Z", &tm_local);
-		len += snprintf(buf + len, cap - len,
-			"Current time: %s\n", time_buf);
 	}
+
+	len += snprintf(buf + len, cap - len,
+		MORPH_SYSTEM_PROMPT, time_buf, ctx->max_iterations);
 
 	if (ctx->system_prompt) {
 		size_t sp_len = strlen(ctx->system_prompt);
 		while (len + sp_len + 2 >= cap) {
 			cap *= 2;
-			/* Arena allocations are not reallocable, so we'll just allocate a new buffer and copy */
 			char *nb = arena_alloc(arena, cap);
 			if (!nb) return NULL;
 			memcpy(nb, buf, len);
@@ -363,24 +361,9 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 				ctx->skills->entries[i].fm.description);
 		}
 		len += snprintf(buf + len, cap - len,
-			"\nWhen a task matches a skill's description, "
-			"call the activate_skill tool with the skill's name "
-			"to load its full instructions.\n");
+			"\nWhen a skill matches the task, call activate_skill "
+			"with the skill name to load its full instructions.\n");
 	}
-
-	len += snprintf(buf + len, cap - len,
-		"\nInstructions:\n"
-		"- Use the provided tools to accomplish tasks.\n"
-		"- If you need to call a tool, use the function calling interface. "
-		"You may also include a brief thought in your text response before calling tools.\n"
-		"- If no tool is needed, respond directly with your answer.\n"
-		"- If a tool fails twice with the same args, change strategy or respond directly.\n"
-		"- Maximum %d tool-calling iterations.\n"
-		"- When tools produce image or video files, ALWAYS reference them in your "
-		"final answer using:\n"
-		"  Images: ![image](/path/to/file.png)\n"
-		"  Videos: [video](/path/to/file.mp4)\n",
-		ctx->max_iterations);
 
 	if (ctx->skills) {
 		char *active = skill_build_activated_instructions(ctx->skills);
@@ -436,6 +419,38 @@ static int answer_has_output(const char *answer)
 	return 0;
 }
 
+static int answer_has_media_ref(const char *answer)
+{
+	if (!answer || !*answer)
+		return 0;
+	return (strstr(answer, "![image](") != NULL ||
+		strstr(answer, "[video](") != NULL);
+}
+
+static int count_creative_tool_calls(struct react_step *steps)
+{
+	if (!steps)
+		return 0;
+	static const char *creative_tools[] = {
+		"img_gen", "img_edit", "img_resize", "img_convert",
+		"vid_gen", "text_gen", NULL
+	};
+	int count = 0;
+	struct react_step *cur = steps;
+	while (cur) {
+		if (cur->type == REACT_STEP_ACTION && cur->tool_name) {
+			for (const char **t = creative_tools; *t; t++) {
+				if (strcmp(cur->tool_name, *t) == 0) {
+					count++;
+					break;
+				}
+			}
+		}
+		cur = cur->next;
+	}
+	return count;
+}
+
 static struct guardrail_result guardrail_check(struct react_context *ctx,
 					      const char *proposed_answer)
 {
@@ -463,6 +478,19 @@ static struct guardrail_result guardrail_check(struct react_context *ctx,
 			 "Answer does not contain generated output. "
 				 "Ensure tools produce and report output files.");
 		return r;
+	}
+
+	{
+		int creative_calls = count_creative_tool_calls(ctx->steps);
+		if (creative_calls > 0 && !answer_has_media_ref(proposed_answer)) {
+			r.verdict = GUARDRAIL_FAIL_NO_OUTPUT;
+			snprintf(r.reason, sizeof(r.reason),
+				 "Creative tools were called but the answer does not "
+				 "reference any generated files with markdown. "
+				 "Include ![image](path) or [video](path) for all "
+				 "generated assets.");
+			return r;
+		}
 	}
 
 	if (!proposed_answer || !*proposed_answer ||
