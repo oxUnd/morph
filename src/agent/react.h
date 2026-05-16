@@ -23,7 +23,7 @@ enum react_state {
 	REACT_STATE_THINKING,
 	REACT_STATE_ACTING,
 	REACT_STATE_OBSERVING,
-	REACT_STATE_REFLECTING,
+	REACT_STATE_GUARDRAIL,
 	REACT_STATE_FINAL,
 	REACT_STATE_DONE,
 	REACT_STATE_ABORT,
@@ -39,15 +39,35 @@ struct react_step {
 	struct react_step *next;
 };
 
+enum guardrail_verdict {
+	GUARDRAIL_PASS,
+	GUARDRAIL_FAIL_NO_TOOLS,
+	GUARDRAIL_FAIL_NO_OUTPUT,
+	GUARDRAIL_FAIL_EMPTY_ANSWER,
+	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,
+};
+
+struct guardrail_result {
+	enum guardrail_verdict verdict;
+	char reason[512];
+};
+
+struct guardrail_config {
+	int enabled;
+	int max_retries;
+	int min_tool_calls;
+	int must_have_output;
+	int max_empty_rounds;
+};
+
 struct react_context {
 	struct react_step *steps;
 	int step_count;
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
-	int reflection_enabled;
-	int reflection_max_retries;
-	int reflection_count;
+	struct guardrail_config guardrail;
+	int guardrail_retry_count;
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;
@@ -58,6 +78,7 @@ struct react_context {
 	char tool_fail_name[64];
 	char tool_fail_args[512];
 	int tool_fail_count;
+	int empty_round_count;
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
 	char *system_prompt;
@@ -69,7 +90,8 @@ typedef int (*react_output_cb)(enum react_step_type type,
 
 struct react_context *react_context_create(struct tool_registry *tools,
 					   struct tokenizer *tok,
-					   struct compress_config *cfg);
+					   struct compress_config *cfg,
+					   struct guardrail_config *gcfg);
 void react_context_destroy(struct react_context *ctx);
 void react_reset(struct react_context *ctx);
 

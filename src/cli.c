@@ -857,6 +857,8 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  max_iterations = %d\n", ctx->config.react.max_iterations);
 	printf("  step_timeout = %d\n", ctx->config.react.step_timeout_seconds);
 	printf("  tool_max_retries = %d\n", ctx->config.react.tool_max_retries);
+	printf("  guardrail_enabled = %d\n", ctx->config.react.guardrail_enabled);
+	printf("  guardrail_max_retries = %d\n", ctx->config.react.guardrail_max_retries);
 	printf(ANSI_BOLD "[context]" ANSI_RESET "\n");
 	printf("  threshold = %.1f\n", ctx->config.context.summarize_threshold_ratio);
 	printf("  target = %.1f\n", ctx->config.context.compress_target_ratio);
@@ -1119,7 +1121,14 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		.summarize_threshold_ratio = ctx->config.context.summarize_threshold_ratio,
 		.compress_target_ratio = ctx->config.context.compress_target_ratio,
 	};
-	ctx->react = react_context_create(&ctx->tools, ctx->tokenizer, &compress_cfg);
+	struct guardrail_config guardrail_cfg = {
+		.enabled = ctx->config.react.guardrail_enabled,
+		.max_retries = ctx->config.react.guardrail_max_retries,
+		.min_tool_calls = ctx->config.react.guardrail_min_tool_calls,
+		.must_have_output = ctx->config.react.guardrail_must_have_output,
+		.max_empty_rounds = ctx->config.react.guardrail_max_empty_rounds,
+	};
+	ctx->react = react_context_create(&ctx->tools, ctx->tokenizer, &compress_cfg, &guardrail_cfg);
 	if (!ctx->react) {
 		log_err("failed to create react context");
 		tokenizer_destroy(ctx->tokenizer);
@@ -1129,8 +1138,6 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
-	ctx->react->reflection_enabled = ctx->config.react.reflection_enabled;
-	ctx->react->reflection_max_retries = ctx->config.react.reflection_max_retries;
 
 	if (ctx->config.prompt.system_prompt_file[0]) {
 		char *exp = file_expand_path(ctx->config.prompt.system_prompt_file);
@@ -1641,9 +1648,9 @@ static int output_callback(enum react_step_type type, const char *content,
 			ctx->streaming = 0;
 		}
 		if (ctx->spin.running) {
-			spin_update(&ctx->spin, "Reflecting");
+			spin_update(&ctx->spin, "Guardrail check");
 		}
-		printf(ANSI_BOLD ANSI_CYAN "[Reflection]" ANSI_RESET " %s\n",
+		printf(ANSI_BOLD ANSI_CYAN "[Guardrail]" ANSI_RESET " %s\n",
 		       content ? content : "");
 		fflush(stdout);
 		break;

@@ -133,17 +133,11 @@ int compress_detect_react_cycles(struct message_list *head)
 		const char *r1 = cur->role;
 		const char *r2 = cur->next->role;
 		const char *r3 = cur->next->next->role;
-		const char *c1 = cur->content ? cur->content : "";
-		const char *c3 = cur->next->next->content ?
-				 cur->next->next->content : "";
 		int is_react = 0;
 		if (r1 && r2 && r3 &&
 		    strcmp(r1, "assistant") == 0 &&
 		    strcmp(r2, "assistant") == 0 &&
-		    strcmp(r3, "user") == 0 &&
-		    (strstr(c1, "Thought:") == c1 ||
-		     strstr(c3, "Observation:") == c3 ||
-		     strstr(c3, "tool error:") == c3))
+		    strcmp(r3, "user") == 0)
 			is_react = 1;
 		if (is_react) {
 			cur->compressed = 1;

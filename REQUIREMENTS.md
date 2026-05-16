@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
-> **文档版本**: v0.2 (优化版)
-> **状态**: Draft for Review
+> **文档版本**: v0.3
+> **状态**: Updated — 同步代码实际行为
 
 ## 0. 术语与缩写
 
@@ -180,26 +180,42 @@ $ morph
 
 morph v0.1  |  /help 查看命令
 
-[default] > 帮我写一个赛博朋克短视频脚本，并配图和视频
+[abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
+⠋ Thinking → 赛博朋克短视频脚本...
+-> text_gen → prompt="赛博朋克短视频脚本"
+OK Done (3s)
+⠋ Thinking → 根据第二幕生成配图...
+-> img_gen → prompt="赛博朋克街道夜景，霓虹灯", style="realistic"
+OK Image generated (8s)
+⠋ Thinking → 将配图扩展为 5s 视频...
+-> vid_gen → image="img_20260512_01.png", duration=5
+OK Video generated (25s)
+[Guardrail] No tools called but output expected. Try using available tools.
 
-[Thought] 用户需要脚本+配图+视频。先写脚本。
-[Action]  text_gen(prompt="赛博朋克短视频脚本")
-[Obs]    霓虹灯在雨幕中闪烁……
-[Thought] 根据第二幕生成配图。
-[Action]  img_gen(prompt="赛博朋克街道夜景，霓虹灯", style="realistic")
-[Obs]    saved: ~/.morph/output/img_20260512_01.png
-[Thought] 将配图扩展为 5s 视频。
-[Action]  vid_gen(image="img_20260512_01.png", duration=5)
-[Obs]    saved: ~/.morph/output/vid_20260512_01.mp4
-[Final]   完成，图片已在终端预览，视频用 mpv 播放。
+(最终结果经 Markdown→ANSI 渲染输出，图片在终端内联预览，视频用 mpv 播放)
 
-[default] > /context
-context: 4321 / 128000 tokens (3.4%) | rounds: 1 | compressed: no
-[default] > /trace
-(打印本轮完整 ReAct 轨迹)
-[default] > /save 赛博朋克项目
-saved: session "赛博朋克项目"
+[abc1] $ /context
+context: 4321 / 128000 tokens (3.4%) | messages: 5
+[abc1] $ /trace
+--- ReAct trace (赛博朋克短视频)
+  1. [Thought] 用户需要脚本+配图+视频。先写脚本。
+  2. [Action] text_gen(prompt="赛博朋克短视频脚本") (tool: text_gen)
+  3. [Observation] 霓虹灯在雨幕中闪烁……
+  4. [Thought] 根据第二幕生成配图。
+  5. [Action] img_gen(prompt="赛博朋克街道夜景") (tool: img_gen)
+  6. [Observation] image generated: ~/.morph/output/img_20260512_01.png
+  7. [Thought] 将配图扩展为 5s 视频。
+  8. [Action] vid_gen(image="img_20260512_01.png") (tool: vid_gen)
+  9. [Observation] video generated: ~/.morph/output/vid_20260512_01.mp4
+  10. [Guardrail] No tools called but output expected
+  11. [Final] 完成，图片已在终端预览，视频用 mpv 播放。
+state: DONE, steps: 11
+[abc1] $ /save
+--- saving session to 赛博朋克短视频_1715817600.md
+saved 5 messages
 ```
+
+> **说明**：ReAct 过程中不再逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在单行内指示当前状态（见 §6.11）。仅在 `/trace` 命令中展示完整步骤列表。Guardrail 验证失败时会直接打印 `[Guardrail]` 标签行。
 
 ### 5.2 输入方式
 
@@ -215,7 +231,11 @@ saved: session "赛博朋克项目"
 
 | 输出 | 渲染 | 备注 |
 |------|------|------|
-| 文字 | 自实现 Markdown→ANSI（基于 md4c） | 颜色 / 粗体 / 代码块 |
+| ReAct 过程 | Spinner 动画（单行，4 样式可选：dots/arrow/pulse/braille） | 状态前缀：`>>` 思考 / `->` 执行 / `OK` 完成 / `ERR` 错误 |
+| Thought 流式预览 | Spinner submessage 滚动显示最近 token | 超长自动滚动，最多 80 列可见 |
+| 耗时 | 阶段完成后显示 `(Ns)` 或 `(Nm Ns)` | 紧跟状态前缀 |
+| Guardrail | 直接打印 `[Guardrail]` 标签行 | 粗体青色 |
+| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 | 颜色 / 粗体 / 代码块；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
 | 图片 | 终端协议优先级：**kitty > iterm2 > sixel > 文件路径回退** | 自动探测 |
 | 视频 | fork+exec mpv | 失败回退到打印路径 |
 | 链接 | OSC 8 超链接 | 不支持时降级为纯 URL |
@@ -223,32 +243,39 @@ saved: session "赛博朋克项目"
 ### 5.4 完整命令表
 
 > 每个命令需在 `--help` 与 README 中保持文案一致（测试用例覆盖）
+> 主命令与短别名共享同一 handler，帮助中合并显示。
 
-| 命令 | 功能 | 示例 |
-|------|------|------|
-| `/help [cmd]` | 帮助 | `/help ext` |
-| `/new [name]` | 新建会话 | `/new 项目A` |
-| `/switch <name\|id>` | 切换会话 | — |
-| `/list` | 会话列表 | — |
-| `/rename <new>` | 重命名当前会话 | — |
-| `/delete <name\|id>` | 删除会话 | — |
-| `/history [n]` | 当前会话最近 n 条 | `/history 20` |
-| `/model [name]` | 查看/切换当前模型 | `/model gpt-4o` |
-| `/trace` | 当前轮次 ReAct 轨迹 | — |
-| `/context` | token 用量与压缩状态 | — |
-| `/compress` | 手动触发压缩 | — |
-| `/save [name]` | 导出会话 | `/save md` |
-| `/export <fmt>` | 导出为 md/json/txt | — |
-| `/image <path>` | 注入图片 | — |
-| `/video <path>` | 注入视频 | — |
-| `/config` | 打开/查看配置 | — |
-| `/ext list` | 已安装 Ext | — |
-| `/ext install <path>` | 本地路径或 git | — |
-| `/ext enable <name>` | 启用 | — |
-| `/ext disable <name>` | 禁用（不卸载） | — |
-| `/ext remove <name>` | 卸载 | — |
-| `/ext info <name>` | 详情（权限、参数） | — |
-| `/quit` / `Ctrl-D` | 退出 | — |
+| 命令 | 别名 | 功能 | 示例 |
+|------|------|------|------|
+| `/quit` | `/q` | 退出 | `/q` |
+| `/help [cmd]` | `/h` | 帮助 | `/h ext` |
+| `/new [name]` | `/n` | 新建会话 | `/n 项目A` |
+| `/switch <name\|id\|display_id>` | `/s` | 切换会话 | `/s abc1` |
+| `/list` | `/ls` | 会话列表（含 display_id） | — |
+| `/rename <new>` | `/rn` | 重命名当前会话 | `/rn 项目B` |
+| `/delete <name\|id>` | `/del` | 删除会话 | `/del 3` |
+| `/history [n\|--all]` | `/hi` | 当前会话最近 n 条 | `/hi --all` |
+| `/model [name]` | `/m` | 查看/切换当前模型 | `/m gpt-4o` |
+| `/trace [--from-db]` | `/t` | 当前轮次 ReAct 轨迹 | `/t --from-db` |
+| `/context` | `/ctx` | token 用量与上下文信息 | — |
+| `/compress` | `/cp` | 手动触发压缩 | — |
+| `/save [format]` | — | 导出会话（md/json/txt） | `/save md` |
+| `/export <fmt>` | — | `/save` 别名 | — |
+| `/config` | `/cfg` | 查看当前配置 | — |
+| `/image <path>` | `/img` | 注入图片 | `/img ./photo.jpg` |
+| `/video <path>` | `/vid` | 注入视频（M3） | `/vid ./clip.mp4` |
+| `/ext list` | `/x list` | 已注册工具列表 | — |
+| `/ext info <name>` | — | 工具详情 | `/ext info text_gen` |
+| `/ext install <path>` | — | 本地路径安装（M4） | — |
+| `/ext enable <name>` | — | 启用（M4） | — |
+| `/ext disable <name>` | — | 禁用（M4） | — |
+| `/ext remove <name>` | — | 卸载（M4） | — |
+| `/skill list` | `/sk list` | 已发现 Skill 列表 | — |
+| `/skill info <name>` | — | Skill 详情 | `/skill info code-review` |
+| `/skill activate <name>` | — | 激活 Skill | `/skill activate code-review` |
+| `/skill deactivate <name>` | — | 停用 Skill | `/skill deactivate code-review` |
+
+> **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
 
 ---
 
@@ -290,17 +317,19 @@ saved: session "赛博朋克项目"
 #### 6.2.1 单步状态机
 
 ```
-INIT → THINKING → ACTING → OBSERVING → THINKING → ... → FINAL → DONE
-                       ↘ TOOL_FAIL → THINKING（重试，带错误上下文）
-                       ↘ MAX_ITER  → ABORT（返回部分结果）
+INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL → FINAL → DONE
+                        ↘ TOOL_FAIL → THINKING（重试，带错误上下文）
+                        ↘ MAX_ITER  → ABORT（返回部分结果）
+                        ↘ GUARDRAIL_FAIL → THINKING（Guardrail 验证失败，回灌原因重试）
 ```
 
 #### 6.2.2 终止条件（必须全部实现）
 
-1. LLM 输出 `Final:` → 正常结束
+1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
 2. 步数达到 `max_iterations`（默认 10，可配置） → 返回最后一次 Observation 并标记 `aborted`
 3. 单步耗时超过 `step_timeout_seconds`（默认 60s） → 中断该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
+5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由客观条件验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
 
 #### 6.2.3 工具失败处理
 
@@ -314,22 +343,16 @@ You are a multi-modal content creation assistant.
 Available tools:
 {tool_descriptions}
 
-Output format (strict):
-Thought: <your reasoning>
-Action: <tool_name>(<json_args>)
-
-After each Action you will receive:
-Observation: <tool result or error>
-
-When done, output exactly:
-Final: <your answer>
-
-Constraints:
-- One Thought + one Action per turn.
-- Action MUST be a tool listed above. If no tool is needed, go straight to Final.
-- If a tool fails twice with the same args, change strategy or finalize.
-- Maximum {max_iterations} iterations.
+Instructions:
+- Use the provided tools to accomplish tasks.
+- If you need to call a tool, use the function calling interface.
+  You may also include a brief thought in your text response before calling tools.
+- If no tool is needed, respond directly with your answer.
+- If a tool fails twice with the same args, change strategy or respond directly.
+- Maximum {max_iterations} tool-calling iterations.
 ```
+
+> **注意**：morph 已从文本解析（`Thought: ... Action: ... Final: ...`）迁移到 OpenAI Function Calling。LLM 的结构化工具调用通过 `tool_calls` 字段传递，无需文本格式约束。
 
 ### 6.3 上下文压缩流程（层级 fallback）
 
@@ -390,6 +413,7 @@ LLM 调用前:
 CREATE TABLE sessions (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
 	name        TEXT UNIQUE NOT NULL,
+	display_id  TEXT UNIQUE,
 	model       TEXT,
 	created_at  INTEGER NOT NULL,
 	updated_at  INTEGER NOT NULL,
@@ -484,6 +508,12 @@ poll_timeout_seconds = 600
 max_iterations = 10
 step_timeout_seconds = 60
 tool_max_retries = 3
+guardrail_enabled = false
+guardrail_max_retries = 1
+guardrail_min_tool_calls = 1
+guardrail_must_have_output = true
+guardrail_max_empty_rounds = 2
+disabled_tools = []
 
 [context]
 summarize_threshold_ratio = 0.8
@@ -493,6 +523,13 @@ keep_recent_rounds = 6
 [render]
 prefer_image_protocol = "auto"
 mpv_args = ["--really-quiet"]
+
+[skill]
+dir = "~/.morph/skills"
+
+[prompt]
+system_prompt_file = ""
+system_prompt_dir = ""
 
 [ext]
 dir = "~/.morph/exts"
@@ -564,7 +601,17 @@ morph/
 │   │   │   ├── file_list.c
 │   │   │   ├── file_list.h
 │   │   │   ├── file_info.c
-│   │   │   └── file_info.h
+│   │   │   ├── file_info.h
+│   │   │   ├── bash_exec.c
+│   │   │   ├── bash_exec.h
+│   │   │   ├── skill_activate.c
+│   │   │   └── skill_activate.h
+│   ├── skill/
+│   │   ├── CMakeLists.txt
+│   │   ├── skill.c
+│   │   ├── skill.h
+│   │   ├── skill_parse.c
+│   │   └── skill_parse.h
 │   ├── sandbox/
 │   │   ├── CMakeLists.txt
 │   │   ├── sandbox.c
@@ -579,7 +626,7 @@ morph/
 │   │   └── manifest.h
 │   ├── ipc/
 │   │   ├── CMakeLists.txt
-│   │   ├── jsonrpc.c             # Ext ↔ 主进程 JSON-RPC 2.0
+│   │   ├── jsonrpc.c
 │   │   └── jsonrpc.h
 │   ├── models/
 │   │   ├── CMakeLists.txt
@@ -607,6 +654,10 @@ morph/
 │       ├── file.h
 │       ├── log.c
 │       ├── log.h
+│       ├── spin.c
+│       ├── spin.h
+│       ├── utf8.c
+│       ├── utf8.h
 │       ├── base64.c
 │       ├── base64.h
 │       ├── image_util.c
@@ -626,6 +677,7 @@ morph/
     ├── CMakeLists.txt
     ├── test_arena.cpp
     ├── test_log.cpp
+    ├── test_spin.cpp
     ├── test_sse.cpp
     ├── test_database.cpp
     ├── test_tool.cpp
@@ -638,7 +690,10 @@ morph/
     ├── test_text_gen.cpp
     ├── test_image.cpp
     ├── test_compress.cpp
-    └── test_react.cpp
+    ├── test_react.cpp
+    ├── test_markdown.cpp
+    ├── test_skill.cpp
+    └── test_bash_exec.cpp
 ```
 
 ### 6.9 关键接口设计
@@ -651,6 +706,7 @@ enum react_step_type {
 	REACT_STEP_THOUGHT,
 	REACT_STEP_ACTION,
 	REACT_STEP_OBSERVATION,
+	REACT_STEP_REFLECTION,
 	REACT_STEP_FINAL,
 };
 
@@ -660,6 +716,7 @@ enum react_state {
 	REACT_STATE_THINKING,
 	REACT_STATE_ACTING,
 	REACT_STATE_OBSERVING,
+	REACT_STATE_GUARDRAIL,
 	REACT_STATE_FINAL,
 	REACT_STATE_DONE,
 	REACT_STATE_ABORT,		/* 超过 max_iterations */
@@ -672,7 +729,31 @@ struct react_step {
 	char *content;
 	char *tool_name;
 	char *tool_args;
+	char *tool_call_id;		/* Function Calling 的 tool_call ID */
 	struct react_step *next;
+};
+
+/* Guardrail 验证结果 */
+enum guardrail_verdict {
+	GUARDRAIL_PASS,
+	GUARDRAIL_FAIL_NO_TOOLS,		/* 未调用工具但期望有输出 */
+	GUARDRAIL_FAIL_NO_OUTPUT,		/* 回答中无生成产物 */
+	GUARDRAIL_FAIL_EMPTY_ANSWER,		/* 空回答 */
+	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,	/* 连续空回答 */
+};
+
+struct guardrail_result {
+	enum guardrail_verdict verdict;
+	char reason[512];
+};
+
+/* Guardrail 配置 */
+struct guardrail_config {
+	int enabled;
+	int max_retries;
+	int min_tool_calls;		/* 期望最少工具调用次数 */
+	int must_have_output;		/* 回答中是否必须包含生成产物 */
+	int max_empty_rounds;		/* 连续空回答上限 */
 };
 
 /* ReAct 循环上下文 */
@@ -682,16 +763,35 @@ struct react_context {
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
+	struct guardrail_config guardrail;
+	int guardrail_retry_count;
 	struct tool_registry *tools;
-	struct model *llm;
-	struct session *session;
-	struct compress_config compress;
+	struct message_list *messages;
 	struct tokenizer *tokenizer;
+	struct compress_config compress;
+	void *llm_model;		/* struct model *（不透明指针） */
+	char *final_answer;
+	enum react_state state;
+	char tool_fail_name[64];
+	char tool_fail_args[512];
+	int tool_fail_count;
+	int empty_round_count;
+	volatile sig_atomic_t cancelled;
+	struct arena *arena;
+	char *system_prompt;
+	struct skill_registry *skills;
 };
+
+/* ReAct 输出回调（替代旧 sse_callback，用于 CLI Spinner 驱动） */
+typedef int (*react_output_cb)(enum react_step_type type,
+			       const char *content, void *user_data);
 
 /* ReAct 循环执行 */
 int react_run(struct react_context *ctx, const char *user_input,
-	      sse_callback cb, void *user_data);
+	      react_output_cb cb, void *user_data);
+
+/* 取消当前 ReAct 循环（Ctrl-C 触发） */
+void react_cancel(struct react_context *ctx);
 
 /* 重置当前轮次轨迹 */
 void react_reset(struct react_context *ctx);
@@ -729,6 +829,8 @@ int tool_register(struct tool_registry *reg,
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, char **result_json);
+int tool_disable(struct tool_registry *reg, const char *name);
+int tool_is_disabled(struct tool_registry *reg, const char *name);
 ```
 
 #### 6.9.3 模型接口
@@ -770,6 +872,8 @@ typedef int (*sse_callback)(const char *token, void *user_data);
 | file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 |
 | file_list | 列出目录内容 | path | 本地 | 内置 |
 | file_info | 文件元数据 | path | 本地 | 内置 |
+| bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 |
+| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 |
 | translate | 文本翻译 | prompt, target_lang | LLM | Ext |
 | web_search | 网页搜索 | query | 外部 API | Ext |
 | ... | 社区/自定义 Ext | 按 manifest 定义 | 按定义 | Ext |
@@ -935,9 +1039,197 @@ int sandbox_apply_fs(const char **allowed_paths, int count);
 int sandbox_enter_darwin(struct sandbox_config *cfg);
 ```
 
+#### 6.9.9 ReAct Function Calling
+
+ReAct 循环使用 LLM 原生 Function Calling（而非文本解析 `Action: tool_name(args)` 格式）。LLM 返回 `tool_calls` 数组，每个元素包含 `function.name`、`function.arguments`（JSON）和 `id`。运行时将 `id` 回填到 `tool_call_id`，用于后续 `tool_role` 消息关联。
+
+**优势**：
+- 无需正则解析 LLM 自由文本，避免格式错误
+- 原生支持多工具并行调用（LLM 可一次返回多个 `tool_calls`）
+- 参数自动 JSON 结构化，减少解析歧义
+
+**并行执行**：当 LLM 返回多个 `tool_calls` 时，每个工具调用在独立 pthread 中执行，通过 `async_tool_call` 结构跟踪完成状态，完成后逐一回灌 Observation。
+
+#### 6.9.10 Guardrail 输出验证
+
+当 LLM 返回不含工具调用的文本响应（即 `tool_call_count == 0`）时，进入 Guardrail 验证。Guardrail 用**客观可验证条件**替代 LLM 主观自评，确保输出质量：
+
+| 验证条件 | 说明 |
+|----------|------|
+| `min_tool_calls` | 若期望有生成产物，检查本轮是否至少调用了 N 个工具 |
+| `must_have_output` | 检查回答中是否包含生成产物标记（`saved:`/`.png`/`.mp4` 等） |
+| `max_empty_rounds` | 连续空回答次数上限 |
+
+**验证通过** → 进入 Final。
+**验证失败** → 构造包含具体失败原因的 user message 回灌给 LLM，回到 THINKING 重试（最多 `guardrail_max_retries` 次）。
+
+**与旧 Reflection 的区别**：
+
+| 维度 | Reflection（旧） | Guardrail（新） |
+|------|-----------------|-----------------|
+| 评估方式 | LLM 自评（`VERDICT: SATISFACTORY`） | 客观条件验证 |
+| LLM 调用 | +1 次/轮独立调用 | 0 次额外调用 |
+| 解析方式 | `strstr`/`strncmp` 文本匹配 | 结构化条件判断 |
+| 可靠性 | LLM 倾向给自己好评 | 基于可验证信号 |
+
 ---
 
-## 7. 编码规范（Linux Kernel Style）
+### 6.10 Skill 系统
+
+Skill 是热加载的指令包（`SKILL.md` 文件），可向 Agent 注入专业领域行为。与 Ext 不同，Skill 不引入新工具，而是通过系统提示扩展 Agent 的推理能力。
+
+#### 6.10.1 Skill 发现
+
+搜索路径（按顺序）：
+1. `[skill] dir` 配置项（默认 `~/.morph/skills/`）
+2. `~/.agents/skills/`（兼容标准路径）
+
+每个子目录视为一个 Skill，需包含 `SKILL.md` 文件。
+
+#### 6.10.2 Skill 解析（frontmatter）
+
+`SKILL.md` 使用 YAML frontmatter 格式：
+
+```markdown
+---
+name: code-review
+description: Code review and analysis
+license: MIT
+compatibility: morph>=0.1
+allowed_tools: text_gen,text_qa,file_read
+metadata:
+  author: morph-team
+  version: "1.0"
+---
+
+(Skill instructions in Markdown — injected into system prompt when activated)
+```
+
+#### 6.10.3 Skill 激活
+
+- **自动激活**：Skill 可设置 `auto_activate: true`，启动时自动注入
+- **手动激活**：通过 `/skill activate <name>` 命令或 `skill_activate` 工具（由 ReAct 调用）
+- **激活效果**：Skill 的 Markdown 内容以 `<skill name="xxx">` 标签包裹注入系统提示
+
+#### 6.10.4 Skill 数据结构
+
+```c
+struct skill_frontmatter {
+	char name[64];
+	char description[256];
+	char license[64];
+	char compatibility[64];
+	char allowed_tools[256];
+	struct { char key[64]; char value[128]; } metadata[8];
+	int metadata_count;
+};
+
+struct skill_entry {
+	struct skill_frontmatter fm;
+	char skill_dir[512];		/* Skill 所在目录 */
+	char *instructions;		/* SKILL.md 内容（frontmatter 之后） */
+	int enabled;
+	int activated;
+};
+
+struct skill_registry {
+	struct skill_entry entries[32];
+	int count;
+};
+
+void skill_registry_init(struct skill_registry *reg);
+int skill_discover(struct skill_registry *reg, const char *dir);
+struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
+int skill_activate(struct skill_entry *entry);
+void skill_deactivate(struct skill_entry *entry);
+char *skill_build_activated_instructions(struct skill_registry *reg);
+```
+
+---
+
+### 6.11 Spinner 动画系统
+
+ReAct 过程中不逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在终端单行内指示当前状态。
+
+#### 6.11.1 Spinner 状态
+
+| 状态 | 前缀 | 含义 |
+|------|------|------|
+| `SPIN_STATE_IDLE` | （空） | 空闲 |
+| `SPIN_STATE_THINKING` | `>>` | LLM 推理中 |
+| `SPIN_STATE_LOADING` | `~~` | 加载数据 |
+| `SPIN_STATE_EXECUTING` | `->` | 执行工具 |
+| `SPIN_STATE_DOWNLOADING` | `vv` | 下载数据 |
+| `SPIN_STATE_UPLOADING` | `^^` | 上传数据 |
+| `SPIN_STATE_COMPLETE` | `OK` | 完成 |
+| `SPIN_STATE_ERROR` | `ERR` | 错误 |
+
+#### 6.11.2 Spinner 样式
+
+| 样式 | 帧序列 |
+|------|--------|
+| `SPIN_STYLE_DOTS`（默认） | ⠋⠙⠹⠸⠼⠴⠦⠧ |
+| `SPIN_STYLE_ARROW` | ←↖↑↗→↘↓↙ |
+| `SPIN_STYLE_PULSE` | ◐◓◑◒ |
+| `SPIN_STYLE_BRAILLE` | ⠛⠟⠿⠻⠽⠾⠿⠾ |
+
+#### 6.11.3 Spinner 渲染
+
+```
+⠋ Thinking → 流式预览文本... 3s
+-> text_gen → prompt="..." 1s
+OK Done (3s)
+ERR Tool execution failed (1s)
+```
+
+- **帧间隔**：120ms
+- **submessage**：附加在主消息后，通过 `→` 分隔；超长时自动水平滚动（2 字符/帧），最多 80 列可见
+- **耗时**：运行阶段在右侧显示实时计时（`Ns` / `Nm Ns` / `Nh Nm`）；完成后在状态前缀后显示总耗时
+- **流式 Thought 预览**：LLM 流式输出 token 时，取最后一行非空内容（最多 60 字符）作为 submessage 实时更新
+
+#### 6.11.4 Spinner 线程模型
+
+Spinner 在独立 pthread 中运行，主线程通过 mutex 保护状态更新：
+
+```c
+struct spin_context {
+	enum spin_style style;
+	enum spin_state state;
+	char message[256];
+	char submessage[512];		/* 附加信息（流式预览等） */
+	FILE *output;
+	int interval_ms;		/* 默认 120 */
+	volatile int running;
+	volatile int active;
+	int frame;
+	time_t start_time;
+	time_t last_update;
+	pthread_t thread;
+	pthread_mutex_t mutex;
+	volatile sig_atomic_t *cancel_flag;  /* 指向 react_sigint_flag */
+};
+
+void spin_init(struct spin_context *ctx, FILE *output);
+void spin_start(struct spin_context *ctx, enum spin_state state, const char *message);
+void spin_update(struct spin_context *ctx, const char *message);
+void spin_set_sub(struct spin_context *ctx, const char *submessage);
+void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char *message);
+void spin_clear(struct spin_context *ctx);
+void spin_destroy(struct spin_context *ctx);
+void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag);
+```
+
+#### 6.11.5 CLI 输出回调映射
+
+`output_callback` 将 ReAct 步骤类型映射到 Spinner 行为：
+
+| 步骤类型 | Spinner 行为 |
+|---------|-------------|
+| `REACT_STEP_THOUGHT` | `spin_start(THINKING)` 或 `spin_set_sub(流式预览)` |
+| `REACT_STEP_ACTION` | `spin_update(EXECUTING, tool_name)` + `spin_set_sub(tool_args)` |
+| `REACT_STEP_OBSERVATION` | `spin_stop(COMPLETE/ERROR, 结果摘要)` |
+| `REACT_STEP_REFLECTION` | 直接打印 `[Guardrail]` 行（验证失败原因） |
+| `REACT_STEP_FINAL` | `spin_stop(COMPLETE)` + `markdown_render_ansi_with_media()` |
 
 - Tab 缩进（8 字符宽）；软上限 80，硬上限 100
 - 函数名 `snake_case`，类型 `struct foo`；宏全大写

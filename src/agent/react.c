@@ -157,7 +157,7 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	return 0;
 }
 
-const char *react_step_type_name(enum react_step_type type)
+	const char *react_step_type_name(enum react_step_type type)
 {
 	switch (type) {
 	case REACT_STEP_THOUGHT:	return "Thought";
@@ -176,7 +176,7 @@ const char *react_state_name(enum react_state state)
 	case REACT_STATE_THINKING:	return "THINKING";
 	case REACT_STATE_ACTING:	return "ACTING";
 	case REACT_STATE_OBSERVING:	return "OBSERVING";
-	case REACT_STATE_REFLECTING:	return "REFLECTING";
+	case REACT_STATE_GUARDRAIL:	return "GUARDRAIL";
 	case REACT_STATE_FINAL:		return "FINAL";
 	case REACT_STATE_DONE:		return "DONE";
 	case REACT_STATE_ABORT:		return "ABORT";
@@ -187,7 +187,8 @@ const char *react_state_name(enum react_state state)
 
 struct react_context *react_context_create(struct tool_registry *tools,
 					   struct tokenizer *tok,
-					   struct compress_config *cfg)
+					   struct compress_config *cfg,
+					   struct guardrail_config *gcfg)
 {
 	struct react_context *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
@@ -197,9 +198,8 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->max_iterations = 10;
 	ctx->step_timeout_seconds = 60;
 	ctx->tool_max_retries = 3;
-	ctx->reflection_enabled = 0;
-	ctx->reflection_max_retries = 1;
-	ctx->reflection_count = 0;
+	ctx->empty_round_count = 0;
+	ctx->guardrail_retry_count = 0;
 	ctx->state = REACT_STATE_INIT;
 	ctx->cancelled = 0;
 	ctx->arena = arena_create(0);
@@ -207,6 +207,15 @@ struct react_context *react_context_create(struct tool_registry *tools,
 		ctx->compress = *cfg;
 	ctx->compress.summarize = summarize_cb;
 	ctx->compress.summarize_user_data = ctx;
+	if (gcfg)
+		ctx->guardrail = *gcfg;
+	else {
+		ctx->guardrail.enabled = 0;
+		ctx->guardrail.max_retries = 1;
+		ctx->guardrail.min_tool_calls = 1;
+		ctx->guardrail.must_have_output = 1;
+		ctx->guardrail.max_empty_rounds = 2;
+	}
 	return ctx;
 }
 
@@ -243,7 +252,8 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_fail_name[0] = '\0';
 	ctx->tool_fail_args[0] = '\0';
 	ctx->tool_fail_count = 0;
-	ctx->reflection_count = 0;
+	ctx->guardrail_retry_count = 0;
+	ctx->empty_round_count = 0;
 	ctx->cancelled = 0;
 }
 
@@ -374,159 +384,86 @@ static char *build_system_prompt(struct react_context *ctx)
 	return buf;
 }
 
-static const char *reflection_system_prompt =
-	"You are a critical reviewer evaluating an AI assistant's proposed answer. "
-	"Analyze the answer for:\n"
-	"1. Correctness: Are there factual errors or logical flaws?\n"
-	"2. Completeness: Does it fully address the user's original request?\n"
-	"3. Clarity: Is the answer clear and well-structured?\n"
-	"4. Safety: Does it avoid harmful, unethical, or dangerous content?\n\n"
-	"Respond in this exact format:\n"
-	"VERDICT: SATISFACTORY or VERDICT: NEEDS_REVISION\n"
-	"CRITIQUE: <your detailed analysis>\n"
-	"SUGGESTION: <specific improvements if NEEDS_REVISION, or 'None' if SATISFACTORY>\n\n"
-	"Be strict. Only mark SATISFACTORY if the answer is genuinely good. "
-	"If there are any meaningful issues, mark NEEDS_REVISION.";
-
-enum reflection_verdict {
-	REFLECTION_SATISFACTORY,
-	REFLECTION_NEEDS_REVISION,
-	REFLECTION_PARSE_ERROR,
-};
-
-struct reflection_result {
-	enum reflection_verdict verdict;
-	char *critique;
-	char *suggestion;
-};
-
-static void reflection_result_free(struct reflection_result *r)
+static int count_tool_call_steps(struct react_step *steps, int *total_tools)
 {
-	if (!r)
-		return;
-	free(r->critique);
-	free(r->suggestion);
-}
-
-static enum reflection_verdict parse_verdict(const char *text)
-{
-	if (!text)
-		return REFLECTION_PARSE_ERROR;
-	const char *p = strstr(text, "VERDICT:");
-	if (!p)
-		return REFLECTION_PARSE_ERROR;
-	p += 7;
-	while (*p == ' ' || *p == '\t')
-		p++;
-	if (strncmp(p, "SATISFACTORY", 12) == 0)
-		return REFLECTION_SATISFACTORY;
-	if (strncmp(p, "NEEDS_REVISION", 14) == 0)
-		return REFLECTION_NEEDS_REVISION;
-	return REFLECTION_PARSE_ERROR;
-}
-
-static char *extract_field(const char *text, const char *field_name)
-{
-	if (!text || !field_name)
-		return NULL;
-	const char *start = strstr(text, field_name);
-	if (!start)
-		return NULL;
-	start += strlen(field_name);
-	while (*start == ' ' || *start == '\t')
-		start++;
-	const char *end = start;
-	while (*end && *end != '\n')
-		end++;
-	size_t len = (size_t)(end - start);
-	char *result = malloc(len + 1);
-	if (!result)
-		return NULL;
-	memcpy(result, start, len);
-	result[len] = '\0';
-	while (len > 0 && (result[len - 1] == ' ' || result[len - 1] == '\t' ||
-			   result[len - 1] == '\r'))
-		result[--len] = '\0';
-	return result;
-}
-
-static int reflection_collect_cb(const char *token, void *user_data)
-{
-	struct collect_data *cd = user_data;
-	if (react_sigint_flag) {
-		react_sigint_flag = 0;
-		return -EINTR;
+	if (!steps || !total_tools)
+		return 0;
+	int count = 0;
+	struct react_step *cur = steps;
+	while (cur) {
+		if (cur->type == REACT_STEP_ACTION)
+			count++;
+		cur = cur->next;
 	}
-	size_t tlen = strlen(token);
-	if (cd->len + tlen + 1 >= cd->cap) {
-		cd->cap = (cd->len + tlen + 1) * 2;
-		char *new_b = realloc(cd->buf, cd->cap);
-		if (!new_b) return -ENOMEM;
-		cd->buf = new_b;
+	if (total_tools)
+		*total_tools = count;
+	return count;
+}
+
+static int answer_has_output(const char *answer)
+{
+	if (!answer || !*answer)
+		return 0;
+	static const char *output_patterns[] = {
+		"saved:", "generated:", "downloaded:", "created:",
+		"wrote:", "image generated:", "video generated:",
+		"~/.morph/output/", "/output/", ".png", ".jpg",
+		".mp4", ".gif", ".webp",
+		NULL
+	};
+	for (const char **p = output_patterns; *p; p++) {
+		if (strstr(answer, *p))
+			return 1;
 	}
-	memcpy(cd->buf + cd->len, token, tlen);
-	cd->len += tlen;
-	cd->buf[cd->len] = '\0';
 	return 0;
 }
 
-static int perform_reflection(struct react_context *ctx,
-			      const char *user_input,
-			      const char *proposed_answer,
-			      struct reflection_result *out)
+static struct guardrail_result guardrail_check(struct react_context *ctx,
+					      const char *proposed_answer)
 {
-	if (!ctx || !proposed_answer || !out)
-		return -EINVAL;
-	struct model *llm = (struct model *)ctx->llm_model;
-	if (!llm || !llm->chat || !llm->api_key[0])
-		return -EINVAL;
-	memset(out, 0, sizeof(*out));
+	struct guardrail_result r = { .verdict = GUARDRAIL_PASS, .reason = {0} };
+	if (!ctx || !ctx->guardrail.enabled)
+		return r;
 
-	size_t cap = strlen(user_input) + strlen(proposed_answer) + 256;
-	char *user_msg = malloc(cap);
-	if (!user_msg)
-		return -ENOMEM;
-	snprintf(user_msg, cap,
-		 "User's original request:\n%s\n\n"
-		 "Proposed answer:\n%s\n\n"
-		 "Evaluate this answer using the format specified.",
-		 user_input ? user_input : "(no input)",
-		 proposed_answer);
-
-	const char *msgs[] = { reflection_system_prompt, user_msg };
-	struct collect_data cd = { .buf = malloc(8192), .len = 0, .cap = 8192 };
-	if (!cd.buf) {
-		free(user_msg);
-		return -ENOMEM;
-	}
-	cd.buf[0] = '\0';
-
-	int rc = llm->chat(llm, NULL, msgs, 2, reflection_collect_cb, &cd);
-	free(user_msg);
-
-	if (rc < 0) {
-		free(cd.buf);
-		return rc;
+	if (ctx->guardrail.must_have_output &&
+	    !answer_has_output(proposed_answer) &&
+	    ctx->guardrail.min_tool_calls > 0) {
+		int tool_count = 0;
+		count_tool_call_steps(ctx->steps, &tool_count);
+		if (tool_count < ctx->guardrail.min_tool_calls) {
+			r.verdict = GUARDRAIL_FAIL_NO_TOOLS;
+			snprintf(r.reason, sizeof(r.reason),
+				 "No tools were called but output was expected. "
+				 "Try using the available tools to generate content.");
+			return r;
+		}
 	}
 
-	if (ctx->cancelled) {
-		free(cd.buf);
-		return -EINTR;
+	if (ctx->guardrail.must_have_output && !answer_has_output(proposed_answer)) {
+		r.verdict = GUARDRAIL_FAIL_NO_OUTPUT;
+		snprintf(r.reason, sizeof(r.reason),
+			 "Answer does not contain generated output. "
+				 "Ensure tools produce and report output files.");
+		return r;
 	}
 
-	out->verdict = parse_verdict(cd.buf);
-	out->critique = extract_field(cd.buf, "CRITIQUE:");
-	out->suggestion = extract_field(cd.buf, "SUGGESTION:");
-
-	if (out->verdict == REFLECTION_PARSE_ERROR) {
-		if (cd.buf && strstr(cd.buf, "SATISFACTORY"))
-			out->verdict = REFLECTION_SATISFACTORY;
-		else if (cd.buf && strstr(cd.buf, "NEEDS_REVISION"))
-			out->verdict = REFLECTION_NEEDS_REVISION;
+	if (!proposed_answer || !*proposed_answer ||
+	    strcmp(proposed_answer, "(no response)") == 0) {
+		ctx->empty_round_count++;
+		if (ctx->empty_round_count >= ctx->guardrail.max_empty_rounds) {
+			r.verdict = GUARDRAIL_FAIL_CONSECUTIVE_EMPTY;
+			snprintf(r.reason, sizeof(r.reason),
+				 "Multiple empty responses. Provide a substantive answer.");
+			return r;
+		}
+		r.verdict = GUARDRAIL_FAIL_EMPTY_ANSWER;
+		snprintf(r.reason, sizeof(r.reason),
+			 "Empty answer. Please provide a response.");
+		return r;
 	}
 
-	free(cd.buf);
-	return 0;
+	ctx->empty_round_count = 0;
+	return r;
 }
 
 struct react_stream_data {
@@ -1011,131 +948,88 @@ int react_run(struct react_context *ctx, const char *user_input,
 			const char *proposed = response.content
 					       ? response.content : "(no response)";
 
-			if (ctx->reflection_enabled &&
-			    ctx->reflection_count < ctx->reflection_max_retries) {
-				ctx->state = REACT_STATE_REFLECTING;
+			if (ctx->guardrail.enabled &&
+			    ctx->guardrail_retry_count < ctx->guardrail.max_retries) {
+				ctx->state = REACT_STATE_GUARDRAIL;
 
-				if (cb)
-					cb(REACT_STEP_REFLECTION, "", user_data);
+				struct guardrail_result gr = guardrail_check(ctx, proposed);
 
-				struct reflection_result rr = {0};
-				int rr_rc = perform_reflection(ctx, user_input,
-							       proposed, &rr);
+				if (gr.verdict != GUARDRAIL_PASS) {
+					ctx->guardrail_retry_count++;
+					log_info("guardrail: %s (attempt %d/%d)",
+						 gr.reason,
+						 ctx->guardrail_retry_count,
+						 ctx->guardrail.max_retries);
 
-				if (react_sigint_flag) {
-					ctx->cancelled = 1;
-					react_sigint_flag = 0;
-				}
-				if (ctx->cancelled) {
-					reflection_result_free(&rr);
-					chat_response_free(&response);
-					free(ctx->final_answer);
-					ctx->final_answer = strdup(proposed);
-					struct react_step *obs = react_step_create(
-						REACT_STEP_OBSERVATION,
-						"Reflection interrupted by user",
+					struct react_step *refl_step = react_step_create(
+						REACT_STEP_REFLECTION, gr.reason,
 						NULL, NULL, NULL);
-					add_step(ctx, obs);
-					ctx->state = REACT_STATE_ABORT;
-					break;
-				}
+					add_step(ctx, refl_step);
+					if (cb)
+						cb(REACT_STEP_REFLECTION, gr.reason,
+						   user_data);
 
-				if (rr_rc < 0) {
-					log_warn("reflection call failed (%d), accepting answer as-is",
-						 rr_rc);
+					if (msg_count + 2 >= msg_cap) {
+						msg_cap = msg_count + 16;
+						struct chat_message *new_m = realloc(messages,
+							(size_t)msg_cap * sizeof(*new_m));
+						if (!new_m) {
+							chat_response_free(&response);
+							ctx->state = REACT_STATE_ABORT;
+							break;
+						}
+						messages = new_m;
+						memset(messages + msg_count, 0,
+						       (size_t)(msg_cap - msg_count) *
+						       sizeof(*messages));
+					}
+
+					struct chat_message *asst_msg = &messages[msg_count];
+					asst_msg->role = strdup("assistant");
+					asst_msg->content = strdup(proposed);
+					asst_msg->tool_call_id = NULL;
+					asst_msg->tool_calls = NULL;
+					asst_msg->tool_call_count = 0;
+					msg_count++;
+
+					size_t rev_cap = strlen(gr.reason) + 128;
+					char *rev_msg = malloc(rev_cap);
+					if (rev_msg) {
+						snprintf(rev_msg, rev_cap,
+							 "Your previous answer did not meet quality requirements.\n"
+							 "Reason: %s\n"
+							 "Please try again using the available tools.",
+							 gr.reason);
+					}
+
+					struct chat_message *user_msg = &messages[msg_count];
+					user_msg->role = strdup("user");
+					user_msg->content = rev_msg ? rev_msg :
+								strdup("Please revise your answer using the available tools.");
+					user_msg->tool_call_id = NULL;
+					user_msg->tool_calls = NULL;
+					user_msg->tool_call_count = 0;
+					msg_count++;
+
+					struct message_list *ml_asst = msg_list_create(
+						"assistant", proposed,
+						tokenizer_count(ctx->tokenizer, proposed));
+					msg_list_append(&ctx->messages, ml_asst);
+
+					struct message_list *ml_user = msg_list_create(
+						"user",
+						rev_msg ? rev_msg : "Please revise your answer using the available tools.",
+						tokenizer_count(ctx->tokenizer,
+							rev_msg ? rev_msg : "Please revise your answer using the available tools."));
+					msg_list_append(&ctx->messages, ml_user);
+
+					chat_response_free(&response);
+					free(sd.accumulated);
+					sd.accumulated = NULL;
+					continue;
 				} else {
-					size_t crit_len = rr.critique ? strlen(rr.critique) : 0;
-					size_t sugg_len = rr.suggestion ? strlen(rr.suggestion) : 0;
-					char *refl_text = malloc(crit_len + sugg_len + 64);
-					if (refl_text) {
-						snprintf(refl_text,
-							 crit_len + sugg_len + 64,
-							 "Critique: %s | Suggestion: %s",
-							 rr.critique ? rr.critique : "none",
-							 rr.suggestion ? rr.suggestion : "none");
-						struct react_step *refl_step = react_step_create(
-							REACT_STEP_REFLECTION, refl_text,
-							NULL, NULL, NULL);
-						add_step(ctx, refl_step);
-						if (cb)
-							cb(REACT_STEP_REFLECTION, refl_text,
-							   user_data);
-						free(refl_text);
-					}
-
-					if (rr.verdict == REFLECTION_NEEDS_REVISION) {
-						ctx->reflection_count++;
-						log_info("reflection: NEEDS_REVISION (attempt %d/%d)",
-							 ctx->reflection_count,
-							 ctx->reflection_max_retries);
-
-						if (msg_count + 2 >= msg_cap) {
-							msg_cap = msg_count + 16;
-							struct chat_message *new_m = realloc(messages,
-								(size_t)msg_cap * sizeof(*new_m));
-							if (!new_m) {
-								reflection_result_free(&rr);
-								chat_response_free(&response);
-								ctx->state = REACT_STATE_ABORT;
-								break;
-							}
-							messages = new_m;
-							memset(messages + msg_count, 0,
-							       (size_t)(msg_cap - msg_count) *
-							       sizeof(*messages));
-						}
-
-						struct chat_message *asst_msg = &messages[msg_count];
-						asst_msg->role = strdup("assistant");
-						asst_msg->content = strdup(proposed);
-						asst_msg->tool_call_id = NULL;
-						asst_msg->tool_calls = NULL;
-						asst_msg->tool_call_count = 0;
-						msg_count++;
-
-						size_t rev_cap = sugg_len + crit_len + 128;
-						char *rev_msg = malloc(rev_cap);
-						if (rev_msg) {
-							snprintf(rev_msg, rev_cap,
-								 "Your previous answer needs revision.\n"
-								 "Critique: %s\n"
-								 "Suggestion: %s\n"
-								 "Please provide an improved answer.",
-								 rr.critique ? rr.critique : "none",
-								 rr.suggestion ? rr.suggestion : "none");
-						}
-
-						struct chat_message *user_msg = &messages[msg_count];
-						user_msg->role = strdup("user");
-						user_msg->content = rev_msg ? rev_msg :
-									strdup("Please revise your answer.");
-						user_msg->tool_call_id = NULL;
-						user_msg->tool_calls = NULL;
-						user_msg->tool_call_count = 0;
-						msg_count++;
-
-						struct message_list *ml_asst = msg_list_create(
-							"assistant", proposed,
-							tokenizer_count(ctx->tokenizer, proposed));
-						msg_list_append(&ctx->messages, ml_asst);
-
-						struct message_list *ml_user = msg_list_create(
-							"user",
-							rev_msg ? rev_msg : "Please revise your answer.",
-							tokenizer_count(ctx->tokenizer,
-								rev_msg ? rev_msg : "Please revise your answer."));
-						msg_list_append(&ctx->messages, ml_user);
-
-						reflection_result_free(&rr);
-						chat_response_free(&response);
-						free(sd.accumulated);
-						sd.accumulated = NULL;
-						continue;
-					} else {
-						log_info("reflection: SATISFACTORY");
-					}
+					log_info("guardrail: PASS");
 				}
-				reflection_result_free(&rr);
 			}
 
 			struct react_step *final_step = react_step_create(

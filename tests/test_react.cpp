@@ -498,7 +498,7 @@ protected:
 /* ============================================= */
 
 TEST_F(ReactTest, CreateDestroy) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_INIT);
 	EXPECT_EQ(ctx->max_iterations, 10);
@@ -506,7 +506,7 @@ TEST_F(ReactTest, CreateDestroy) {
 }
 
 TEST_F(ReactTest, DefaultTimeoutAndRetries) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->step_timeout_seconds, 60);
 	EXPECT_EQ(ctx->tool_max_retries, 3);
@@ -514,7 +514,7 @@ TEST_F(ReactTest, DefaultTimeoutAndRetries) {
 }
 
 TEST_F(ReactTest, Reset) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->state = REACT_STATE_THINKING;
 	react_reset(ctx);
@@ -526,7 +526,7 @@ TEST_F(ReactTest, Reset) {
 }
 
 TEST_F(ReactTest, CancelAndAbort) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	react_cancel(ctx);
 	EXPECT_EQ(ctx->cancelled, 1);
@@ -537,7 +537,7 @@ TEST_F(ReactTest, CancelAndAbort) {
 }
 
 TEST_F(ReactTest, CancelFn) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->cancelled, 0);
 	react_cancel(ctx);
@@ -596,7 +596,7 @@ TEST_F(ReactTest, StepDestroyNull) {
 TEST_F(ReactTest, ToolRegistryIntegration) {
 	tool_register(&tools, "text_gen", "Generate text",
 		      "{\"type\":\"object\"}", test_tool_fn, nullptr);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->tools->count, 1);
 	struct tool_entry *e = tool_lookup(ctx->tools, "text_gen");
@@ -606,14 +606,14 @@ TEST_F(ReactTest, ToolRegistryIntegration) {
 }
 
 TEST_F(ReactTest, RunBasic) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	int rc = react_run(ctx, "hello world", nullptr, nullptr);
 	react_context_destroy(ctx);
 }
 
 TEST_F(ReactTest, RunNullInput) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	int rc = react_run(ctx, nullptr, nullptr, nullptr);
 	EXPECT_NE(rc, 0);
@@ -621,7 +621,7 @@ TEST_F(ReactTest, RunNullInput) {
 }
 
 TEST_F(ReactTest, NullContext) {
-	EXPECT_NE(react_context_create(nullptr, tok, &cfg), nullptr);
+	EXPECT_NE(react_context_create(nullptr, tok, &cfg, nullptr), nullptr);
 }
 
 TEST_F(ReactTest, RunWithCallback) {
@@ -631,7 +631,7 @@ TEST_F(ReactTest, RunWithCallback) {
 		callback_count++;
 		return 0;
 	};
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	react_run(ctx, "test input", cb, nullptr);
 	react_context_destroy(ctx);
@@ -639,7 +639,7 @@ TEST_F(ReactTest, RunWithCallback) {
 }
 
 TEST_F(ReactTest, MaxIterationsAbort) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->max_iterations = 1;
 	react_run(ctx, "test", nullptr, nullptr);
@@ -651,7 +651,7 @@ TEST_F(ReactTest, MaxIterationsAbort) {
 TEST_F(ReactTest, ToolFailThresholdThree) {
 	tool_register(&tools, "failing_tool", "Always fails",
 		      "{}", failing_tool_fn, nullptr);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->tool_max_retries, 3);
 	react_context_destroy(ctx);
@@ -663,7 +663,7 @@ TEST_F(ReactTest, ToolFailThresholdThree) {
 
 TEST_F(MockLlmTest, LlmFinalDirectly) {
 	setup_llm_with_response("Final: Hello, I can help with that.");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "hello", nullptr, nullptr);
@@ -675,7 +675,7 @@ TEST_F(MockLlmTest, LlmFinalDirectly) {
 
 TEST_F(MockLlmTest, LlmThoughtAndFinal) {
 	setup_llm_with_response("Thought: Let me think.\nFinal: Here is my answer.");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "what is 2+2?", nullptr, nullptr);
@@ -688,7 +688,7 @@ TEST_F(MockLlmTest, LlmThoughtAndFinal) {
 TEST_F(MockLlmTest, LlmActionToolCall) {
 	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr);
 	setup_llm_with_response("Thought: Using test tool.\nAction: test_tool({\"prompt\":\"hi\"})\n\nFinal: Done.");
-	struct react_context *ctx2 = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx2 = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx2, nullptr);
 	ctx2->llm_model = llm;
 	ctx2->max_iterations = 5;
@@ -706,7 +706,7 @@ TEST_F(MockLlmTest, LlmActionToolCall) {
 
 TEST_F(MockLlmTest, LlmStreamingFinal) {
 	setup_streaming_llm_with_response("Final: streamed answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "stream test", nullptr, nullptr);
@@ -720,7 +720,7 @@ TEST_F(MockLlmTest, LlmToolFailRetries) {
 	tool_register(&tools, "fail_tool", "Fails every time", "{}",
 		      failing_tool_fn, nullptr);
 	setup_llm_with_response("Thought: try fail_tool.\nAction: fail_tool({\"q\":\"test\"})");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -735,7 +735,7 @@ TEST_F(MockLlmTest, LlmToolFailMaxRetries) {
 	tool_register(&tools, "fail_tool", "Fails every time", "{}",
 		      failing_tool_fn, nullptr);
 	setup_llm_with_response("Thought: try again.\nAction: fail_tool({\"q\":\"test\"})");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 10;
@@ -749,7 +749,7 @@ TEST_F(MockLlmTest, LlmToolFailMaxRetries) {
 
 TEST_F(MockLlmTest, LlmCallCount) {
 	setup_llm_with_response("Final: direct answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "simple question", nullptr, nullptr);
@@ -761,7 +761,7 @@ TEST_F(MockLlmTest, LlmMultiStepCallCount) {
 	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr);
 	setup_llm_with_response(
 		"Thought: Step 1.\nAction: test_tool({\"prompt\":\"hi\"})");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -779,7 +779,7 @@ TEST_F(MockLlmTest, ActionThenFinal) {
 		"Thought: Tool done.\nFinal: The answer is here."
 	};
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -799,7 +799,7 @@ TEST_F(MockLlmTest, ActionActionThenFinal) {
 		"Thought: Done.\nFinal: Final result after two steps."
 	};
 	llm = create_multi_mock_llm(responses, 3);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -821,7 +821,7 @@ TEST_F(MockLlmTest, ActionNeverFinal) {
 		"Thought: Step 5.\nAction: test_tool({\"p\":\"5\"})\n",
 	};
 	llm = create_multi_mock_llm(responses, 5);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 3;
@@ -839,7 +839,7 @@ TEST_F(MockLlmTest, ToolFailThenFinal) {
 		"Thought: It failed, giving up.\nFinal: Sorry, tool failed."
 	};
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -855,7 +855,7 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	llm = create_mock_llm("should not matter");
 	llm_data = (struct mock_llm_data *)llm->handle;
 	llm_data->should_fail = 1;
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "trigger LLM failure", nullptr, nullptr);
@@ -866,7 +866,7 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 
 TEST_F(MockLlmTest, StepCountAfterFinal) {
 	setup_llm_with_response("Final: quick answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "simple", nullptr, nullptr);
@@ -876,7 +876,7 @@ TEST_F(MockLlmTest, StepCountAfterFinal) {
 
 TEST_F(MockLlmTest, CallbackReceivesFinalStep) {
 	setup_llm_with_response("Final: direct answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	react_run(ctx, "simple question", nullptr, nullptr);
@@ -888,7 +888,7 @@ TEST_F(MockLlmTest, CallbackReceivesFinalStep) {
 
 TEST_F(MockLlmTest, CancelDuringRun) {
 	setup_llm_with_response("Thought: thinking...\nFinal: answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -912,7 +912,7 @@ TEST_F(MockLlmTest, ModelTimeoutField) {
 TEST_F(MockLlmTest, ConfigurableMaxIterations) {
 	setup_llm_with_response("Thought: looping.\nAction: test_tool({})");
 	tool_register(&tools, "test_tool", "Test", "{}", test_tool_fn, nullptr);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 3;
@@ -929,7 +929,7 @@ TEST_F(MockLlmTest, ToolCallCount) {
 	tool_register(&tools, "counter", "Counts calls", "{}",
 		      call_count_tool_fn, &call_count);
 	setup_llm_with_response("Thought: call counter.\nAction: counter({})");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -1212,7 +1212,7 @@ TEST_F(MockServerTest, SSEWithTimeout) {
 /* ============================================= */
 
 TEST_F(ReactTest, SystemPromptCreateDestroy) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->system_prompt = strdup("Be creative and concise.");
 	react_context_destroy(ctx);
@@ -1220,7 +1220,7 @@ TEST_F(ReactTest, SystemPromptCreateDestroy) {
 
 TEST_F(MockLlmTest, SystemPromptNoCrash) {
 	setup_llm_with_response("Final: done");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->system_prompt = strdup("Always rhyme.");
@@ -1303,7 +1303,7 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	llm->handle = cd;
 	llm_data = nullptr;
 
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->system_prompt = strdup("Custom instruction here.");
@@ -1322,7 +1322,7 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 
 TEST_F(MockLlmTest, MultiTurnMessageAccumulation) {
 	setup_llm_with_response("Final: ok");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 
@@ -1343,7 +1343,7 @@ TEST_F(MockLlmTest, MultiTurnMessageAccumulation) {
 
 TEST_F(MockLlmTest, MultiTurnFinalAnswerUpdated) {
 	setup_llm_with_response("Final: first answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 
@@ -1361,7 +1361,7 @@ TEST_F(MockLlmTest, MultiTurnFinalAnswerUpdated) {
 
 TEST_F(MockLlmTest, MultiTurnMessageRolesAlternate) {
 	setup_llm_with_response("Final: answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 
@@ -1394,7 +1394,7 @@ TEST_F(MockLlmTest, CompressTriggerInReact) {
 	cfg.summarize_threshold_ratio = 0.5;
 
 	setup_llm_with_response("Final: after compress");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->compress.summarize = test_compress_cb;
@@ -1415,7 +1415,7 @@ TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
 	cfg.summarize_threshold_ratio = 0.5;
 
 	setup_llm_with_response("Final: ok");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->compress.summarize = test_compress_cb;
@@ -1443,7 +1443,7 @@ TEST_F(MockLlmTest, ActionToolNotFound) {
 		"Thought: it failed.\nFinal: tool not available"
 	};
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -1462,7 +1462,7 @@ TEST_F(MockLlmTest, ActionInvalidFormat) {
 		"Thought: adjusting.\nFinal: recovered"
 	};
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -1476,7 +1476,7 @@ TEST_F(MockLlmTest, ActionInvalidFormat) {
 
 TEST_F(MockLlmTest, ActionNoToolsRegistered) {
 	setup_llm_with_response("Action: some_tool({})\n");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
@@ -1502,7 +1502,7 @@ TEST_F(MockLlmTest, ToolNullResult) {
 		"Thought: got null.\nFinal: handled null result"
 	};
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -1520,7 +1520,7 @@ TEST_F(MockLlmTest, ToolNullResult) {
 
 TEST_F(MockLlmTest, EmptyLlmResponse) {
 	setup_llm_with_response("");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
@@ -1532,7 +1532,7 @@ TEST_F(MockLlmTest, EmptyLlmResponse) {
 
 TEST_F(MockLlmTest, ResponseOnlyFinalPrefix) {
 	setup_llm_with_response("Final:");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
@@ -1545,7 +1545,7 @@ TEST_F(MockLlmTest, ResponseOnlyFinalPrefix) {
 
 TEST_F(MockLlmTest, ThoughtOnly) {
 	setup_llm_with_response("Thought: just thinking\n");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
@@ -1573,7 +1573,7 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 		"Thought: run self-cancel tool.\nAction: self_cancel({})\n",
 	};
 	llm = create_multi_mock_llm(responses, 1);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	tool_register(&tools, "self_cancel", "Cancels context", "{}",
@@ -1598,7 +1598,7 @@ TEST_F(MockLlmTest, StepLinkedListTraversal) {
 	tool_register(&tools, "counter", "Counts", "{}",
 		      call_count_tool_fn, &call_count);
 	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
@@ -1625,7 +1625,7 @@ TEST_F(MockLlmTest, StepLinkedListTraversal) {
 
 TEST_F(MockLlmTest, ReuseContextAfterDone) {
 	setup_llm_with_response("Final: first");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 
@@ -1698,81 +1698,83 @@ TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
 }
 
 /* ============================================= */
-/* Reflection tests                              */
+/* Guardrail tests                                */
 /* ============================================= */
 
-TEST_F(ReactTest, ReflectionStepTypeName) {
+TEST_F(ReactTest, GuardrailStepTypeName) {
 	EXPECT_STREQ(react_step_type_name(REACT_STEP_REFLECTION), "Reflection");
 }
 
-TEST_F(ReactTest, ReflectionStateName) {
-	EXPECT_STREQ(react_state_name(REACT_STATE_REFLECTING), "REFLECTING");
+TEST_F(ReactTest, GuardrailStateName) {
+	EXPECT_STREQ(react_state_name(REACT_STATE_GUARDRAIL), "GUARDRAIL");
 }
 
-TEST_F(ReactTest, ReflectionDefaultDisabled) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+TEST_F(ReactTest, GuardrailDefaultDisabled) {
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
-	EXPECT_EQ(ctx->reflection_enabled, 0);
-	EXPECT_EQ(ctx->reflection_count, 0);
+	EXPECT_EQ(ctx->guardrail.enabled, 0);
+	EXPECT_EQ(ctx->guardrail_retry_count, 0);
 	react_context_destroy(ctx);
 }
 
-TEST_F(ReactTest, ReflectionEnabledField) {
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+TEST_F(ReactTest, GuardrailEnabledField) {
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
-	ctx->reflection_enabled = 1;
-	ctx->reflection_max_retries = 2;
-	EXPECT_EQ(ctx->reflection_enabled, 1);
-	EXPECT_EQ(ctx->reflection_max_retries, 2);
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 2;
+	ctx->guardrail.min_tool_calls = 1;
+	ctx->guardrail.must_have_output = 1;
+	ctx->guardrail.max_empty_rounds = 2;
+	EXPECT_EQ(ctx->guardrail.enabled, 1);
+	EXPECT_EQ(ctx->guardrail.max_retries, 2);
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, ReflectionDisabledNoReflectionStep) {
+TEST_F(MockLlmTest, GuardrailDisabledNoGuardrailStep) {
 	setup_llm_with_response("Final: direct answer");
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ctx->reflection_enabled = 0;
+	ctx->guardrail.enabled = 0;
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
-	bool has_reflection = false;
+	bool has_guardrail = false;
 	struct react_step *s = ctx->steps;
 	while (s) {
 		if (s->type == REACT_STEP_REFLECTION)
-			has_reflection = true;
+			has_guardrail = true;
 		s = s->next;
 	}
-	EXPECT_FALSE(has_reflection);
+	EXPECT_FALSE(has_guardrail);
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, ReflectionEnabledWithDirectFinal) {
+TEST_F(MockLlmTest, GuardrailEnabledPassesOnGoodAnswer) {
 	const char *responses[] = {
-		"Final: the answer",
-		"VERDICT: APPROVE"
+		"Final: the answer with saved: output.png",
 	};
-	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	llm = create_multi_mock_llm(responses, 1);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ctx->reflection_enabled = 1;
-	ctx->reflection_max_retries = 1;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	ctx->guardrail.must_have_output = 0;
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, ReflectionCancelDuringReflection) {
+TEST_F(MockLlmTest, GuardrailCancelDuringRetry) {
 	const char *responses[] = {
 		"Final: answer",
-		"VERDICT: REJECT\nFEEDBACK: improve it"
 	};
-	llm = create_multi_mock_llm(responses, 2);
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg);
+	llm = create_multi_mock_llm(responses, 1);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	ctx->reflection_enabled = 1;
-	ctx->reflection_max_retries = 3;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 3;
 	react_cancel(ctx);
 	react_run(ctx, "test", nullptr, nullptr);
 	EXPECT_TRUE(ctx->state == REACT_STATE_ABORT ||

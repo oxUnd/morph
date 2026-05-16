@@ -41,8 +41,11 @@ struct config_react {
 	int max_iterations;
 	int step_timeout_seconds;
 	int tool_max_retries;
-	int reflection_enabled;
-	int reflection_max_retries;
+	int guardrail_enabled;
+	int guardrail_max_retries;
+	int guardrail_min_tool_calls;
+	int guardrail_must_have_output;
+	int guardrail_max_empty_rounds;
 	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
 	int disabled_tools_count;
 };
