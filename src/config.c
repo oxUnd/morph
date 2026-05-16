@@ -58,8 +58,6 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.tool_max_retries = 3;
 	cfg->react.guardrail_enabled = 0;
 	cfg->react.guardrail_max_retries = 1;
-	cfg->react.guardrail_min_tool_calls = 1;
-	cfg->react.guardrail_must_have_output = 1;
 	cfg->react.guardrail_max_empty_rounds = 2;
 
 	cfg->react.hitl_enabled = 0;
@@ -89,6 +87,11 @@ void config_set_defaults(struct config *cfg)
 #define CFG_INT(tab, key, var) do { \
 	toml_datum_t _d = toml_int_in(tab, key); \
 	if (_d.ok) var = (int)_d.u.i; \
+} while(0)
+
+#define CFG_BOOL(tab, key, var) do { \
+	toml_datum_t _d = toml_bool_in(tab, key); \
+	if (_d.ok) var = (int)_d.u.b; \
 } while(0)
 
 #define CFG_DBL(tab, key, var) do { \
@@ -175,10 +178,8 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
 		CFG_INT(react, "step_timeout_seconds", cfg->react.step_timeout_seconds);
 		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
-		CFG_INT(react, "guardrail_enabled", cfg->react.guardrail_enabled);
+		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
-		CFG_INT(react, "guardrail_min_tool_calls", cfg->react.guardrail_min_tool_calls);
-		CFG_INT(react, "guardrail_must_have_output", cfg->react.guardrail_must_have_output);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
 		toml_array_t *dt = toml_array_in(react, "disabled_tools");
 		if (dt) {
@@ -193,8 +194,8 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.disabled_tools_count = count;
 		}
-		CFG_INT(react, "hitl_enabled", cfg->react.hitl_enabled);
-		CFG_INT(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
+		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
+		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
 		toml_array_t *ht = toml_array_in(react, "hitl_tools");
 		if (ht) {
 			int count = 0;
@@ -256,11 +257,10 @@ void config_print(const struct config *cfg)
 	log_info("  [model.text] provider=%s model=%s api_base=%s",
 		 cfg->models.text.provider, cfg->models.text.model,
 		 cfg->models.text.api_base);
-	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d min_tools=%d must_output=%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
+	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
 		 cfg->react.max_iterations, cfg->react.step_timeout_seconds,
 		 cfg->react.tool_max_retries,
 		 cfg->react.guardrail_enabled, cfg->react.guardrail_max_retries,
-		 cfg->react.guardrail_min_tool_calls, cfg->react.guardrail_must_have_output,
 		 cfg->react.guardrail_max_empty_rounds,
 		 cfg->react.disabled_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,

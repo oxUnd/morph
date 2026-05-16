@@ -41,8 +41,8 @@ struct react_step {
 
 enum guardrail_verdict {
 	GUARDRAIL_PASS,
-	GUARDRAIL_FAIL_NO_TOOLS,
-	GUARDRAIL_FAIL_NO_OUTPUT,
+	GUARDRAIL_FAIL_TOOLS_ALL_FAILED,
+	GUARDRAIL_FAIL_CREATIVE_NO_MEDIA,
 	GUARDRAIL_FAIL_EMPTY_ANSWER,
 	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,
 };
@@ -80,8 +80,6 @@ struct guardrail_result {
 struct guardrail_config {
 	int enabled;
 	int max_retries;
-	int min_tool_calls;
-	int must_have_output;
 	int max_empty_rounds;
 };
 

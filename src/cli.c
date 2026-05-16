@@ -1173,8 +1173,6 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	struct guardrail_config guardrail_cfg = {
 		.enabled = ctx->config.react.guardrail_enabled,
 		.max_retries = ctx->config.react.guardrail_max_retries,
-		.min_tool_calls = ctx->config.react.guardrail_min_tool_calls,
-		.must_have_output = ctx->config.react.guardrail_must_have_output,
 		.max_empty_rounds = ctx->config.react.guardrail_max_empty_rounds,
 	};
 	ctx->react = react_context_create(&ctx->tools, ctx->tokenizer, &compress_cfg, &guardrail_cfg);
@@ -1845,12 +1843,12 @@ static int output_callback(enum react_step_type type, const char *content,
 			spin_set_sub(&ctx->spin, NULL);
 			ctx->streaming = 0;
 		}
-		if (ctx->spin.running) {
-			spin_update(&ctx->spin, "Guardrail check");
-		}
-		printf(ANSI_BOLD ANSI_CYAN "[Guardrail]" ANSI_RESET " %s\n",
+		spin_pause(&ctx->spin);
+		printf("\r\033[K");
+		printf(ANSI_BOLD ANSI_CYAN "🛡 Guardrail" ANSI_RESET " %s\n",
 		       content ? content : "");
 		fflush(stdout);
+		spin_resume(&ctx->spin);
 		break;
 	case REACT_STEP_FINAL:
 		if (ctx->streaming) {
@@ -1891,29 +1889,59 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	if (!ctx)
 		return HITL_DENY;
 
-	if (ctx->spin.running)
-		spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, "");
+	spin_pause(&ctx->spin);
 
-	printf(ANSI_BOLD ANSI_YELLOW "[HITL]" ANSI_RESET " Tool wants to execute: "
-	       ANSI_BOLD "%s" ANSI_RESET "\n", tool_name);
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_YELLOW "⚠ Approval Required" ANSI_RESET "\n");
+	printf("  Tool: " ANSI_BOLD "%s" ANSI_RESET "\n", tool_name);
 
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
-		printf(ANSI_DIM "  Args: %s" ANSI_RESET "\n", tool_args);
+		char display_args[512];
+		strncpy(display_args, tool_args, sizeof(display_args) - 1);
+		display_args[sizeof(display_args) - 1] = '\0';
+		size_t alen = strlen(display_args);
+		if (alen > 200) {
+			display_args[197] = '.';
+			display_args[198] = '.';
+			display_args[199] = '.';
+			display_args[200] = '\0';
+		}
+		printf("  Args: " ANSI_DIM "%s" ANSI_RESET "\n", display_args);
 	}
 
 	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
-	       ANSI_RED "n" ANSI_RESET "]o / [a]lways for this session: ");
+	       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
 	fflush(stdout);
 
 	char buf[16];
-	if (!fgets(buf, sizeof(buf), stdin))
+	FILE *tty = fopen("/dev/tty", "r");
+	if (!tty) {
+		printf("\n");
 		return HITL_DENY;
+	}
+	if (!fgets(buf, sizeof(buf), tty)) {
+		fclose(tty);
+		printf("\n");
+		return HITL_DENY;
+	}
+	fclose(tty);
 
+	enum hitl_verdict v;
 	if (buf[0] == 'a' || buf[0] == 'A')
-		return HITL_ALWAYS;
-	if (buf[0] == 'y' || buf[0] == 'Y')
-		return HITL_APPROVE;
-	return HITL_DENY;
+		v = HITL_ALWAYS;
+	else if (buf[0] == 'y' || buf[0] == 'Y')
+		v = HITL_APPROVE;
+	else
+		v = HITL_DENY;
+
+	if (v == HITL_APPROVE || v == HITL_ALWAYS)
+		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
+		       tool_name, v == HITL_ALWAYS ? ", always" : "");
+	else
+		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (%s)\n", tool_name);
+
+	fflush(stdout);
+	return v;
 }
 
 /* ---- cli_handle_command ---- */

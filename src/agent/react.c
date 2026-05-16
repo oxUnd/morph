@@ -250,8 +250,6 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	else {
 		ctx->guardrail.enabled = 0;
 		ctx->guardrail.max_retries = 1;
-		ctx->guardrail.min_tool_calls = 1;
-		ctx->guardrail.must_have_output = 1;
 		ctx->guardrail.max_empty_rounds = 2;
 	}
 	ctx->hitl.enabled = 0;
@@ -429,71 +427,51 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	return buf;
 }
 
-static int count_tool_call_steps(struct react_step *steps, int *total_tools)
+static int is_creative_tool(const char *name)
 {
-	if (!steps || !total_tools)
+	if (!name)
 		return 0;
-	int count = 0;
-	struct react_step *cur = steps;
-	while (cur) {
-		if (cur->type == REACT_STEP_ACTION)
-			count++;
-		cur = cur->next;
-	}
-	if (total_tools)
-		*total_tools = count;
-	return count;
-}
-
-static int answer_has_output(const char *answer)
-{
-	if (!answer || !*answer)
-		return 0;
-	static const char *output_patterns[] = {
-		"saved:", "generated:", "downloaded:", "created:",
-		"wrote:", "image generated:", "video generated:",
-		"~/.morph/output/", "/output/", ".png", ".jpg",
-		".mp4", ".gif", ".webp",
-		NULL
+	static const char *creative[] = {
+		"img_gen", "img_edit", "img_resize", "img_convert",
+		"vid_gen", "text_gen", NULL
 	};
-	for (const char **p = output_patterns; *p; p++) {
-		if (strstr(answer, *p))
+	for (const char **t = creative; *t; t++) {
+		if (strcmp(name, *t) == 0)
 			return 1;
 	}
 	return 0;
 }
 
-static int answer_has_media_ref(const char *answer)
+static int obs_is_error(const char *content)
 {
-	if (!answer || !*answer)
-		return 0;
-	return (strstr(answer, "![image](") != NULL ||
-		strstr(answer, "[video](") != NULL);
+	if (!content)
+		return 1;
+	return (strncmp(content, "tool error:", 11) == 0 ||
+		strncmp(content, "error:", 6) == 0 ||
+		strncmp(content, "failed:", 7) == 0);
 }
 
-static int count_creative_tool_calls(struct react_step *steps)
+static int obs_has_file_ref(const char *content)
 {
-	if (!steps)
+	if (!content)
 		return 0;
-	static const char *creative_tools[] = {
-		"img_gen", "img_edit", "img_resize", "img_convert",
-		"vid_gen", "text_gen", NULL
-	};
-	int count = 0;
-	struct react_step *cur = steps;
-	while (cur) {
-		if (cur->type == REACT_STEP_ACTION && cur->tool_name) {
-			for (const char **t = creative_tools; *t; t++) {
-				if (strcmp(cur->tool_name, *t) == 0) {
-					count++;
-					break;
-				}
-			}
-		}
-		cur = cur->next;
-	}
-	return count;
+	return (strstr(content, ".png") != NULL ||
+		strstr(content, ".jpg") != NULL ||
+		strstr(content, ".jpeg") != NULL ||
+		strstr(content, ".gif") != NULL ||
+		strstr(content, ".webp") != NULL ||
+		strstr(content, ".mp4") != NULL ||
+		strstr(content, "saved:") != NULL ||
+		strstr(content, "generated:") != NULL ||
+		strstr(content, "~/.morph/output/") != NULL);
 }
+
+struct tool_outcome {
+	char name[64];
+	int succeeded;
+	int is_creative;
+	int has_file_output;
+};
 
 static struct guardrail_result guardrail_check(struct react_context *ctx,
 					      const char *proposed_answer)
@@ -501,41 +479,6 @@ static struct guardrail_result guardrail_check(struct react_context *ctx,
 	struct guardrail_result r = { .verdict = GUARDRAIL_PASS, .reason = {0} };
 	if (!ctx || !ctx->guardrail.enabled)
 		return r;
-
-	if (ctx->guardrail.must_have_output &&
-	    !answer_has_output(proposed_answer) &&
-	    ctx->guardrail.min_tool_calls > 0) {
-		int tool_count = 0;
-		count_tool_call_steps(ctx->steps, &tool_count);
-		if (tool_count < ctx->guardrail.min_tool_calls) {
-			r.verdict = GUARDRAIL_FAIL_NO_TOOLS;
-			snprintf(r.reason, sizeof(r.reason),
-				 "No tools were called but output was expected. "
-				 "Try using the available tools to generate content.");
-			return r;
-		}
-	}
-
-	if (ctx->guardrail.must_have_output && !answer_has_output(proposed_answer)) {
-		r.verdict = GUARDRAIL_FAIL_NO_OUTPUT;
-		snprintf(r.reason, sizeof(r.reason),
-			 "Answer does not contain generated output. "
-				 "Ensure tools produce and report output files.");
-		return r;
-	}
-
-	{
-		int creative_calls = count_creative_tool_calls(ctx->steps);
-		if (creative_calls > 0 && !answer_has_media_ref(proposed_answer)) {
-			r.verdict = GUARDRAIL_FAIL_NO_OUTPUT;
-			snprintf(r.reason, sizeof(r.reason),
-				 "Creative tools were called but the answer does not "
-				 "reference any generated files with markdown. "
-				 "Include ![image](path) or [video](path) for all "
-				 "generated assets.");
-			return r;
-		}
-	}
 
 	if (!proposed_answer || !*proposed_answer ||
 	    strcmp(proposed_answer, "(no response)") == 0) {
@@ -551,8 +494,87 @@ static struct guardrail_result guardrail_check(struct react_context *ctx,
 			 "Empty answer. Please provide a response.");
 		return r;
 	}
-
 	ctx->empty_round_count = 0;
+
+	struct tool_outcome outcomes[64];
+	int outcome_count = 0;
+	{
+		struct react_step *cur = ctx->steps;
+		struct react_step *obs_cursor = ctx->steps;
+		while (cur && outcome_count < 64) {
+			if (cur->type == REACT_STEP_ACTION && cur->tool_name) {
+				struct tool_outcome *o = &outcomes[outcome_count++];
+				strncpy(o->name, cur->tool_name, sizeof(o->name) - 1);
+				o->name[sizeof(o->name) - 1] = '\0';
+				o->is_creative = is_creative_tool(cur->tool_name);
+				o->succeeded = 0;
+				o->has_file_output = 0;
+				struct react_step *obs = obs_cursor;
+				while (obs) {
+					if (obs->type == REACT_STEP_OBSERVATION) {
+						if (obs_is_error(obs->content)) {
+							o->succeeded = 0;
+						} else {
+							o->succeeded = 1;
+							if (obs->content)
+								o->has_file_output = obs_has_file_ref(obs->content);
+						}
+						break;
+					}
+					obs = obs->next;
+				}
+				obs_cursor = obs ? obs->next : NULL;
+			}
+			cur = cur->next;
+		}
+	}
+
+	if (outcome_count == 0)
+		return r;
+
+	int all_failed = 1;
+	int any_creative = 0;
+	int creative_all_no_file = 1;
+	char failed_names[256] = {0};
+	size_t fn_len = 0;
+	for (int i = 0; i < outcome_count; i++) {
+		struct tool_outcome *o = &outcomes[i];
+		if (o->succeeded) {
+			all_failed = 0;
+		} else {
+			size_t nlen = strlen(o->name);
+			if (fn_len + nlen + 2 < sizeof(failed_names)) {
+				if (fn_len > 0) {
+					strcat(failed_names, ", ");
+					fn_len += 2;
+				}
+				strcat(failed_names, o->name);
+				fn_len += nlen;
+			}
+		}
+		if (o->is_creative) {
+			any_creative = 1;
+			if (o->has_file_output)
+				creative_all_no_file = 0;
+		}
+	}
+
+	if (all_failed) {
+		r.verdict = GUARDRAIL_FAIL_TOOLS_ALL_FAILED;
+		snprintf(r.reason, sizeof(r.reason),
+			 "All tool calls failed (%s). Check arguments or try different tools.",
+			 failed_names);
+		return r;
+	}
+
+	if (any_creative && creative_all_no_file) {
+		r.verdict = GUARDRAIL_FAIL_CREATIVE_NO_MEDIA;
+		snprintf(r.reason, sizeof(r.reason),
+			 "Creative tools were called but no output files were produced. "
+			 "Verify tool parameters and include generated assets in your response.");
+		return r;
+	}
+
 	return r;
 }
 
@@ -883,9 +905,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 			int *hitl_denied = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(int));
 			memset(hitl_denied, 0, (size_t)num_tools * sizeof(int));
 
-			for (int i = 0; i < num_tools; i++) {
+			for (int i = 0; i < num_tools; i++)
 				async_tool_call_init(&calls[i]);
 
+			for (int i = 0; i < num_tools; i++) {
 				struct tool_call *tc = &response.tool_calls[i];
 				const char *tool_name = tc->name;
 				const char *tool_args = tc->arguments ? tc->arguments : "{}";
@@ -915,21 +938,23 @@ int react_run(struct react_context *ctx, const char *user_input,
 								REACT_STEP_ACTION, action_text,
 								tool_name, tool_args, tc->id);
 							add_step(ctx, action);
-							if (cb)
-								cb(REACT_STEP_ACTION, action_text,
-								   user_data);
 							struct react_step *obs = react_step_create(
 								ctx->arena,
 								REACT_STEP_OBSERVATION,
 								deny_msg, NULL, NULL, NULL);
 							add_step(ctx, obs);
-							if (cb)
-								cb(REACT_STEP_OBSERVATION, deny_msg,
-								   user_data);
-							continue;
 						}
 					}
 				}
+			}
+
+			for (int i = 0; i < num_tools; i++) {
+				if (hitl_denied[i])
+					continue;
+
+				struct tool_call *tc = &response.tool_calls[i];
+				const char *tool_name = tc->name;
+				const char *tool_args = tc->arguments ? tc->arguments : "{}";
 
 				char action_text[512];
 				snprintf(action_text, sizeof(action_text), "%s(%s)", tool_name, tool_args);
@@ -1136,14 +1161,32 @@ int react_run(struct react_context *ctx, const char *user_input,
 					asst_msg->tool_call_count = 0;
 					msg_count++;
 
-					size_t rev_cap = strlen(gr.reason) + 128;
+					size_t rev_cap = strlen(gr.reason) + 256;
 					char *rev_msg = arena_alloc(ctx->arena, rev_cap);
 					if (rev_msg) {
+						const char *action;
+						switch (gr.verdict) {
+						case GUARDRAIL_FAIL_TOOLS_ALL_FAILED:
+							action = "All your tool calls failed. "
+								 "Check the error messages above, fix your "
+								 "tool arguments, and try again with corrected parameters.";
+							break;
+						case GUARDRAIL_FAIL_CREATIVE_NO_MEDIA:
+							action = "Your creative tool calls did not produce output files. "
+								 "Verify the tool parameters are correct and ensure "
+								 "generated assets are referenced in your response.";
+							break;
+						case GUARDRAIL_FAIL_EMPTY_ANSWER:
+						case GUARDRAIL_FAIL_CONSECUTIVE_EMPTY:
+							action = "Provide a substantive answer.";
+							break;
+						default:
+							action = "Try again using the available tools.";
+							break;
+						}
 						snprintf(rev_msg, rev_cap,
-							 "Your previous answer did not meet quality requirements.\n"
-							 "Reason: %s\n"
-							 "Please try again using the available tools.",
-							 gr.reason);
+							 "Quality check failed: %s\n%s",
+							 gr.reason, action);
 					}
 
 					struct chat_message *user_msg = &messages[msg_count];

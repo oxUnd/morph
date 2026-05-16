@@ -51,6 +51,8 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 void spin_update(struct spin_context *ctx, const char *message);
 void spin_set_sub(struct spin_context *ctx, const char *submessage);
 void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char *message);
+void spin_pause(struct spin_context *ctx);
+void spin_resume(struct spin_context *ctx);
 void spin_render(struct spin_context *ctx);
 void spin_clear(struct spin_context *ctx);
 void spin_destroy(struct spin_context *ctx);

@@ -401,6 +401,35 @@ void spin_clear(struct spin_context *ctx)
 	fflush(ctx->output);
 }
 
+void spin_pause(struct spin_context *ctx)
+{
+	if (!ctx) return;
+
+	pthread_mutex_lock(&ctx->mutex);
+	if (!ctx->running) {
+		pthread_mutex_unlock(&ctx->mutex);
+		return;
+	}
+	ctx->active = 0;
+	pthread_mutex_unlock(&ctx->mutex);
+
+	fprintf(ctx->output, "\r\033[K");
+	fflush(ctx->output);
+}
+
+void spin_resume(struct spin_context *ctx)
+{
+	if (!ctx) return;
+
+	pthread_mutex_lock(&ctx->mutex);
+	if (ctx->running) {
+		ctx->active = 1;
+		ctx->frame = 0;
+		ctx->last_render_width = 0;
+	}
+	pthread_mutex_unlock(&ctx->mutex);
+}
+
 /* ---- spin_destroy ---- */
 
 void spin_destroy(struct spin_context *ctx)

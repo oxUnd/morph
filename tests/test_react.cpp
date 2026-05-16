@@ -1737,8 +1737,6 @@ TEST_F(ReactTest, GuardrailEnabledField) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->guardrail.enabled = 1;
 	ctx->guardrail.max_retries = 2;
-	ctx->guardrail.min_tool_calls = 1;
-	ctx->guardrail.must_have_output = 1;
 	ctx->guardrail.max_empty_rounds = 2;
 	EXPECT_EQ(ctx->guardrail.enabled, 1);
 	EXPECT_EQ(ctx->guardrail.max_retries, 2);
@@ -1774,7 +1772,6 @@ TEST_F(MockLlmTest, GuardrailEnabledPassesOnGoodAnswer) {
 	ctx->llm_model = llm;
 	ctx->guardrail.enabled = 1;
 	ctx->guardrail.max_retries = 1;
-	ctx->guardrail.must_have_output = 0;
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	react_context_destroy(ctx);
