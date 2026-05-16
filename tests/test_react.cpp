@@ -6,6 +6,7 @@
 #include "util/arena.h"
 #include "http/client.h"
 #include "http/sse.h"
+#include "config.h"
 #include <string.h>
 #include <signal.h>
 #include <thread>
@@ -1793,5 +1794,214 @@ TEST_F(MockLlmTest, GuardrailCancelDuringRetry) {
 	react_run(ctx, "test", nullptr, nullptr);
 	EXPECT_TRUE(ctx->state == REACT_STATE_ABORT ||
 		    ctx->state == REACT_STATE_DONE);
+	react_context_destroy(ctx);
+}
+
+/* ---- HITL (Human-in-the-Loop) tests ---- */
+
+static int hitl_deny_count = 0;
+
+static enum hitl_verdict hitl_deny_callback(const char *tool_name,
+					     const char *tool_args,
+					     void *user_data)
+{
+	(void)tool_args;
+	(void)user_data;
+	hitl_deny_count++;
+	if (strcmp(tool_name, "dangerous_tool") == 0)
+		return HITL_DENY;
+	return HITL_APPROVE;
+}
+
+static enum hitl_verdict hitl_always_callback(const char *tool_name,
+					      const char *tool_args,
+					      void *user_data)
+{
+	(void)tool_args;
+	(void)user_data;
+	if (strcmp(tool_name, "dangerous_tool") == 0)
+		return HITL_ALWAYS;
+	return HITL_APPROVE;
+}
+
+static enum hitl_verdict hitl_approve_all_callback(const char *tool_name,
+						   const char *tool_args,
+						   void *user_data)
+{
+	(void)tool_name;
+	(void)tool_args;
+	(void)user_data;
+	return HITL_APPROVE;
+}
+
+TEST(HitlTest, NeedsApprovalDisabled) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "test_tool", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "test_tool"), 0);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, NeedsApprovalEnabledAllTools) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "test_tool", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "test_tool"), 1);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, NeedsApprovalSpecificTool) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL);
+	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.tools_count = 1;
+	strncpy(ctx->hitl.tools[0], "bash_exec", HITL_TOOL_NAME_MAX - 1);
+	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 1);
+	EXPECT_EQ(hitl_needs_approval(ctx, "file_read"), 0);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, NeedsApprovalAutoApproved) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	hitl_add_auto_approved(&ctx->hitl, "bash_exec");
+	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 0);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL);
+	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	ASSERT_NE(e, nullptr);
+	e->flags |= TOOL_FLAG_READONLY;
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 1;
+	ctx->hitl.tools_count = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "file_read"), 0);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, NeedsApprovalReadonlyNoAutoApprove) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL);
+	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	ASSERT_NE(e, nullptr);
+	e->flags |= TOOL_FLAG_READONLY;
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "file_read"), 1);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, AddAutoApprovedIdempotent) {
+	struct hitl_config h;
+	memset(&h, 0, sizeof(h));
+	h.auto_approved_count = 0;
+	hitl_add_auto_approved(&h, "tool_a");
+	EXPECT_EQ(h.auto_approved_count, 1);
+	hitl_add_auto_approved(&h, "tool_a");
+	EXPECT_EQ(h.auto_approved_count, 1);
+	hitl_add_auto_approved(&h, "tool_b");
+	EXPECT_EQ(h.auto_approved_count, 2);
+}
+
+TEST(HitlTest, ConfigDefaultsDisabled) {
+	struct config cfg;
+	config_set_defaults(&cfg);
+	EXPECT_EQ(cfg.react.hitl_enabled, 0);
+	EXPECT_EQ(cfg.react.hitl_tools_count, 0);
+	EXPECT_EQ(cfg.react.hitl_auto_approve_readonly, 1);
+}
+
+TEST(HitlTest, ToolIsReadonly) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL);
+	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 0);
+	struct tool_entry *e = tool_lookup(&reg, "file_read");
+	ASSERT_NE(e, nullptr);
+	e->flags |= TOOL_FLAG_READONLY;
+	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 1);
+	EXPECT_EQ(tool_is_readonly(&reg, "nonexistent"), 0);
+}
+
+TEST(HitlTest, DenyCallbackPreventsExecution) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL);
+	tool_register(&reg, "safe_tool", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	ctx->hitl.approval_cb = hitl_deny_callback;
+	ctx->hitl.approval_user_data = NULL;
+	hitl_deny_count = 0;
+	enum hitl_verdict v1 = ctx->hitl.approval_cb("dangerous_tool", "{}", NULL);
+	EXPECT_EQ(v1, HITL_DENY);
+	enum hitl_verdict v2 = ctx->hitl.approval_cb("safe_tool", "{}", NULL);
+	EXPECT_EQ(v2, HITL_APPROVE);
+	EXPECT_EQ(hitl_deny_count, 2);
+	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, AlwaysCallbackAutoApproves) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL);
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	ctx->hitl.approval_cb = hitl_always_callback;
+	ctx->hitl.approval_user_data = NULL;
+	enum hitl_verdict v = ctx->hitl.approval_cb("dangerous_tool", "{}", NULL);
+	EXPECT_EQ(v, HITL_ALWAYS);
+	hitl_add_auto_approved(&ctx->hitl, "dangerous_tool");
+	EXPECT_EQ(hitl_needs_approval(ctx, "dangerous_tool"), 0);
 	react_context_destroy(ctx);
 }

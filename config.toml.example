@@ -88,6 +88,19 @@ guardrail_max_empty_rounds = 2
 # vid_gen, file_read, file_list, file_info
 # disabled_tools = ["vid_gen", "img_edit"]
 
+# ── Human-in-the-Loop (HITL) ──────────────────
+# When enabled, the agent asks for user confirmation before executing
+# certain tools. The user can approve (y), deny (n), or always-approve
+# (a) a tool for the rest of the session.
+hitl_enabled = false
+# List of tool names requiring explicit approval.
+# If empty and hitl_enabled is true, ALL tools require approval
+# (except read-only tools when hitl_auto_approve_readonly is true).
+# hitl_tools = ["bash_exec", "img_edit", "vid_gen"]
+# Automatically approve read-only tools (file_read, file_list,
+# file_info, img_info, text_qa) without prompting.
+hitl_auto_approve_readonly = true
+
 [context]
 # Compress when token usage exceeds context_limit * threshold
 summarize_threshold_ratio = 0.8

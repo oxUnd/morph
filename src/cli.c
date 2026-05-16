@@ -42,6 +42,10 @@
 
 static void media_callback(const char *type, const char *path, void *user);
 
+static enum hitl_verdict hitl_approval_callback(const char *tool_name,
+						const char *tool_args,
+						void *user_data);
+
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
 #define ANSI_RED    "\033[31m"
@@ -1183,6 +1187,16 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
+	ctx->react->hitl.enabled = ctx->config.react.hitl_enabled;
+	ctx->react->hitl.auto_approve_readonly = ctx->config.react.hitl_auto_approve_readonly;
+	ctx->react->hitl.tools_count = ctx->config.react.hitl_tools_count;
+	for (int i = 0; i < ctx->config.react.hitl_tools_count; i++)
+		strncpy(ctx->react->hitl.tools[i], ctx->config.react.hitl_tools[i],
+			HITL_TOOL_NAME_MAX - 1);
+	if (ctx->react->hitl.enabled) {
+		ctx->react->hitl.approval_cb = hitl_approval_callback;
+		ctx->react->hitl.approval_user_data = ctx;
+	}
 
 	if (ctx->config.prompt.system_prompt_file[0]) {
 		char *exp = file_expand_path(ctx->config.prompt.system_prompt_file);
@@ -1336,6 +1350,19 @@ struct model *llm = model_llm_create(
 	/* Apply disabled tools from config */
 	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
 		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
+	}
+
+	/* Mark read-only tools for HITL auto-approve */
+	{
+		static const char *readonly_tools[] = {
+			"file_read", "file_list", "file_info",
+			"img_info", "text_qa", NULL
+		};
+		for (const char **t = readonly_tools; *t; t++) {
+			struct tool_entry *e = tool_lookup(&ctx->tools, *t);
+			if (e)
+				e->flags |= TOOL_FLAG_READONLY;
+		}
 	}
 
 	/* Auto-discover exts from exts/ directory */
@@ -1854,6 +1881,39 @@ static int output_callback(enum react_step_type type, const char *content,
 		break;
 	}
 	return 0;
+}
+
+static enum hitl_verdict hitl_approval_callback(const char *tool_name,
+						const char *tool_args,
+						void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (!ctx)
+		return HITL_DENY;
+
+	if (ctx->spin.running)
+		spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, "");
+
+	printf(ANSI_BOLD ANSI_YELLOW "[HITL]" ANSI_RESET " Tool wants to execute: "
+	       ANSI_BOLD "%s" ANSI_RESET "\n", tool_name);
+
+	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
+		printf(ANSI_DIM "  Args: %s" ANSI_RESET "\n", tool_args);
+	}
+
+	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
+	       ANSI_RED "n" ANSI_RESET "]o / [a]lways for this session: ");
+	fflush(stdout);
+
+	char buf[16];
+	if (!fgets(buf, sizeof(buf), stdin))
+		return HITL_DENY;
+
+	if (buf[0] == 'a' || buf[0] == 'A')
+		return HITL_ALWAYS;
+	if (buf[0] == 'y' || buf[0] == 'Y')
+		return HITL_APPROVE;
+	return HITL_DENY;
 }
 
 /* ---- cli_handle_command ---- */

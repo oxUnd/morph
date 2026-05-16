@@ -62,6 +62,10 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.guardrail_must_have_output = 1;
 	cfg->react.guardrail_max_empty_rounds = 2;
 
+	cfg->react.hitl_enabled = 0;
+	cfg->react.hitl_tools_count = 0;
+	cfg->react.hitl_auto_approve_readonly = 1;
+
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
 	cfg->context.keep_recent_rounds = 6;
@@ -189,6 +193,21 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.disabled_tools_count = count;
 		}
+		CFG_INT(react, "hitl_enabled", cfg->react.hitl_enabled);
+		CFG_INT(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
+		toml_array_t *ht = toml_array_in(react, "hitl_tools");
+		if (ht) {
+			int count = 0;
+			for (; count < HITL_TOOLS_MAX; count++) {
+				toml_datum_t val = toml_string_at(ht, count);
+				if (!val.ok)
+					break;
+				strncpy(cfg->react.hitl_tools[count], val.u.s,
+					HITL_TOOL_NAME_MAX - 1);
+				free(val.u.s);
+			}
+			cfg->react.hitl_tools_count = count;
+		}
 	}
 
 	toml_table_t *context = table_path(tbl, "context");
@@ -237,15 +256,19 @@ void config_print(const struct config *cfg)
 	log_info("  [model.text] provider=%s model=%s api_base=%s",
 		 cfg->models.text.provider, cfg->models.text.model,
 		 cfg->models.text.api_base);
-	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d min_tools=%d must_output=%d max_empty=%d disabled=%d",
+	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d min_tools=%d must_output=%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
 		 cfg->react.max_iterations, cfg->react.step_timeout_seconds,
 		 cfg->react.tool_max_retries,
 		 cfg->react.guardrail_enabled, cfg->react.guardrail_max_retries,
 		 cfg->react.guardrail_min_tool_calls, cfg->react.guardrail_must_have_output,
 		 cfg->react.guardrail_max_empty_rounds,
-		 cfg->react.disabled_tools_count);
+		 cfg->react.disabled_tools_count,
+		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
+		 cfg->react.hitl_tools_count);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
+	for (int i = 0; i < cfg->react.hitl_tools_count; i++)
+		log_info("    hitl_tool: %s", cfg->react.hitl_tools[i]);
 	log_info("  [context] threshold=%.1f target=%.1f keep=%d",
 		 cfg->context.summarize_threshold_ratio,
 		 cfg->context.compress_target_ratio,

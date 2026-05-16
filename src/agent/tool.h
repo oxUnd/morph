@@ -13,6 +13,8 @@ extern "C" {
 #define TOOL_MAX_ENTRIES 64
 #define TOOL_DISABLED_MAX 32
 
+#define TOOL_FLAG_READONLY 0x01
+
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
 	char desc[TOOL_DESC_MAX];
@@ -25,6 +27,7 @@ struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	void *user_data;
+	unsigned int flags;
 };
 
 struct tool_registry {
@@ -44,6 +47,7 @@ int tool_exec(struct tool_registry *reg, const char *name,
 void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);
+int tool_is_readonly(struct tool_registry *reg, const char *name);
 
 #ifdef __cplusplus
 }

@@ -101,3 +101,13 @@ int tool_is_disabled(struct tool_registry *reg, const char *name)
 	}
 	return 0;
 }
+
+int tool_is_readonly(struct tool_registry *reg, const char *name)
+{
+	if (!reg || !name)
+		return 0;
+	struct tool_entry *e = tool_lookup(reg, name);
+	if (!e)
+		return 0;
+	return (e->flags & TOOL_FLAG_READONLY) != 0;
+}

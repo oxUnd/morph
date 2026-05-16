@@ -17,6 +17,44 @@
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
+int hitl_needs_approval(struct react_context *ctx, const char *tool_name)
+{
+	if (!ctx || !tool_name)
+		return 0;
+	struct hitl_config *h = &ctx->hitl;
+	if (!h->enabled)
+		return 0;
+	for (int i = 0; i < h->auto_approved_count; i++) {
+		if (strcmp(h->auto_approved[i], tool_name) == 0)
+			return 0;
+	}
+	if (h->tools_count > 0) {
+		for (int i = 0; i < h->tools_count; i++) {
+			if (strcmp(h->tools[i], tool_name) == 0)
+				return 1;
+		}
+		return 0;
+	}
+	if (h->auto_approve_readonly && tool_is_readonly(ctx->tools, tool_name))
+		return 0;
+	return 1;
+}
+
+void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name)
+{
+	if (!h || !tool_name)
+		return;
+	if (h->auto_approved_count >= HITL_AUTO_APPROVED_MAX)
+		return;
+	for (int i = 0; i < h->auto_approved_count; i++) {
+		if (strcmp(h->auto_approved[i], tool_name) == 0)
+			return;
+	}
+	strncpy(h->auto_approved[h->auto_approved_count], tool_name,
+		HITL_TOOL_NAME_MAX - 1);
+	h->auto_approved_count++;
+}
+
 struct collect_data {
 	char *buf;
 	size_t len;
@@ -216,6 +254,12 @@ struct react_context *react_context_create(struct tool_registry *tools,
 		ctx->guardrail.must_have_output = 1;
 		ctx->guardrail.max_empty_rounds = 2;
 	}
+	ctx->hitl.enabled = 0;
+	ctx->hitl.tools_count = 0;
+	ctx->hitl.auto_approve_readonly = 1;
+	ctx->hitl.approval_cb = NULL;
+	ctx->hitl.approval_user_data = NULL;
+	ctx->hitl.auto_approved_count = 0;
 	return ctx;
 }
 
@@ -834,8 +878,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 			ctx->state = REACT_STATE_ACTING;
 
 			int num_tools = response.tool_call_count;
-			pthread_t *threads = calloc((size_t)num_tools, sizeof(pthread_t));
-			struct async_tool_call *calls = calloc((size_t)num_tools, sizeof(struct async_tool_call));
+			pthread_t *threads = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(pthread_t));
+			struct async_tool_call *calls = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(struct async_tool_call));
+			int *hitl_denied = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(int));
+			memset(hitl_denied, 0, (size_t)num_tools * sizeof(int));
 
 			for (int i = 0; i < num_tools; i++) {
 				async_tool_call_init(&calls[i]);
@@ -843,6 +889,47 @@ int react_run(struct react_context *ctx, const char *user_input,
 				struct tool_call *tc = &response.tool_calls[i];
 				const char *tool_name = tc->name;
 				const char *tool_args = tc->arguments ? tc->arguments : "{}";
+
+				if (hitl_needs_approval(ctx, tool_name)) {
+					if (ctx->hitl.approval_cb) {
+						enum hitl_verdict v =
+							ctx->hitl.approval_cb(
+								tool_name,
+								tool_args,
+								ctx->hitl.approval_user_data);
+						if (v == HITL_ALWAYS) {
+							hitl_add_auto_approved(
+								&ctx->hitl,
+								tool_name);
+						} else if (v == HITL_DENY) {
+							hitl_denied[i] = 1;
+							char deny_msg[512];
+							snprintf(deny_msg, sizeof(deny_msg),
+								 "tool error: '%s' execution denied by user",
+								 tool_name);
+							char action_text[512];
+							snprintf(action_text, sizeof(action_text),
+								 "%s(%s)", tool_name, tool_args);
+							struct react_step *action = react_step_create(
+								ctx->arena,
+								REACT_STEP_ACTION, action_text,
+								tool_name, tool_args, tc->id);
+							add_step(ctx, action);
+							if (cb)
+								cb(REACT_STEP_ACTION, action_text,
+								   user_data);
+							struct react_step *obs = react_step_create(
+								ctx->arena,
+								REACT_STEP_OBSERVATION,
+								deny_msg, NULL, NULL, NULL);
+							add_step(ctx, obs);
+							if (cb)
+								cb(REACT_STEP_OBSERVATION, deny_msg,
+								   user_data);
+							continue;
+						}
+					}
+				}
 
 				char action_text[512];
 				snprintf(action_text, sizeof(action_text), "%s(%s)", tool_name, tool_args);
@@ -868,6 +955,29 @@ int react_run(struct react_context *ctx, const char *user_input,
 			}
 
 			for (int i = 0; i < num_tools; i++) {
+				if (hitl_denied[i]) {
+					struct tool_call *tc = &response.tool_calls[i];
+					const char *deny_text = "tool error: execution denied by user";
+					if (msg_count >= msg_cap) {
+						int old_cap = msg_cap;
+						msg_cap = msg_count + 16;
+						struct chat_message *new_m = arena_alloc(ctx->arena, (size_t)msg_cap * sizeof(*new_m));
+						if (!new_m)
+							break;
+						memcpy(new_m, messages, (size_t)old_cap * sizeof(*new_m));
+						memset(new_m + old_cap, 0, (size_t)(msg_cap - old_cap) * sizeof(*new_m));
+						messages = new_m;
+					}
+					struct chat_message *tool_msg = &messages[msg_count];
+					tool_msg->role = arena_strdup(ctx->arena, "tool");
+					tool_msg->content = arena_strdup(ctx->arena, deny_text);
+					tool_msg->tool_call_id = arena_strdup(ctx->arena, tc->id);
+					tool_msg->tool_calls = NULL;
+					tool_msg->tool_call_count = 0;
+					msg_count++;
+					continue;
+				}
+
 				if (ctx->cancelled) {
 					pthread_mutex_lock(&calls[i].mutex);
 					calls[i].cancelled = 1;
@@ -934,11 +1044,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 					ctx->tool_fail_args[0] = '\0';
 					ctx->tool_fail_count = 0;
 					chat_response_free(&response);
-					free(threads);
 					for (int j = 0; j < num_tools; j++) {
 						async_tool_call_cleanup(&calls[j]);
 					}
-					free(calls);
 					free(result);
 					goto done;
 				}
@@ -973,11 +1081,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 				free(result);
 			}
 
-			free(threads);
 			for (int i = 0; i < num_tools; i++) {
 				async_tool_call_cleanup(&calls[i]);
 			}
-			free(calls);
 
 			if (ctx->cancelled) {
 				chat_response_free(&response);

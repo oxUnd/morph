@@ -36,6 +36,8 @@ struct config_models {
 
 #define DISABLED_TOOLS_MAX 32
 #define DISABLED_TOOL_NAME_MAX 64
+#define HITL_TOOLS_MAX 32
+#define HITL_TOOL_NAME_MAX 64
 
 struct config_react {
 	int max_iterations;
@@ -48,6 +50,10 @@ struct config_react {
 	int guardrail_max_empty_rounds;
 	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
 	int disabled_tools_count;
+	int hitl_enabled;
+	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
+	int hitl_tools_count;
+	int hitl_auto_approve_readonly;
 };
 
 struct config_context {

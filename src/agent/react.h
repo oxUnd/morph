@@ -47,6 +47,31 @@ enum guardrail_verdict {
 	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,
 };
 
+#define HITL_TOOLS_MAX 32
+#define HITL_TOOL_NAME_MAX 64
+#define HITL_AUTO_APPROVED_MAX 32
+
+enum hitl_verdict {
+	HITL_APPROVE,
+	HITL_DENY,
+	HITL_ALWAYS,
+};
+
+typedef enum hitl_verdict (*hitl_approval_cb)(const char *tool_name,
+					      const char *tool_args,
+					      void *user_data);
+
+struct hitl_config {
+	int enabled;
+	char tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
+	int tools_count;
+	int auto_approve_readonly;
+	hitl_approval_cb approval_cb;
+	void *approval_user_data;
+	char auto_approved[HITL_AUTO_APPROVED_MAX][HITL_TOOL_NAME_MAX];
+	int auto_approved_count;
+};
+
 struct guardrail_result {
 	enum guardrail_verdict verdict;
 	char reason[512];
@@ -68,6 +93,7 @@ struct react_context {
 	int tool_max_retries;
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;
+	struct hitl_config hitl;
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;
@@ -99,6 +125,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
 extern volatile sig_atomic_t react_sigint_flag;
+
+int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
+void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
 
 struct react_step *react_step_create(struct arena *arena,
 				     enum react_step_type type,
