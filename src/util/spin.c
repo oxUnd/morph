@@ -358,6 +358,8 @@ void spin_clear(struct spin_context *ctx)
 	fflush(ctx->output);
 }
 
+/* ---- spin_destroy ---- */
+
 void spin_destroy(struct spin_context *ctx)
 {
 	if (!ctx) return;

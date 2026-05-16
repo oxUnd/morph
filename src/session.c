@@ -1,9 +1,25 @@
 #include "session.h"
 #include "util/log.h"
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static void generate_display_id(char *buf, size_t size)
+{
+	unsigned char raw[4];
+#ifdef __APPLE__
+	arc4random_buf(raw, sizeof(raw));
+#else
+	static int seeded = 0;
+	if (!seeded) { srand((unsigned)(time(NULL) ^ (uintptr_t)buf)); seeded = 1; }
+	for (size_t i = 0; i < sizeof(raw); i++) raw[i] = (unsigned char)(rand() & 0xFF);
+#endif
+	snprintf(buf, size, "%08x",
+		 (unsigned)(((unsigned)raw[0] << 24) | ((unsigned)raw[1] << 16)
+			  | ((unsigned)raw[2] << 8) | (unsigned)raw[3]));
+}
 
 int session_create(struct db *db, const char *name, const char *model,
 		   struct session *out)
@@ -11,18 +27,40 @@ int session_create(struct db *db, const char *name, const char *model,
 	if (!db || !db->handle || !name)
 		return -EINVAL;
 	int64_t now = (int64_t)time(NULL);
+	char display_id[16];
+	generate_display_id(display_id, sizeof(display_id));
+
+		char name_buf[256];
+	char model_buf[64];
+	name_buf[0] = '\0';
+	model_buf[0] = '\0';
+	strncpy(name_buf, name, sizeof(name_buf) - 1);
+	name_buf[sizeof(name_buf) - 1] = '\0';
+	if (model) {
+		strncpy(model_buf, model, sizeof(model_buf) - 1);
+		model_buf[sizeof(model_buf) - 1] = '\0';
+	}
+
 	sqlite3_stmt *stmt;
-	const char *sql = "INSERT INTO sessions(name,model,created_at,updated_at,token_used)"
-			  " VALUES(?,?,?,?,0)";
-	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return -EIO;
-	sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, model ? model : "", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, now);
-	sqlite3_bind_int64(stmt, 4, now);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
+	const char *sql = "INSERT INTO sessions(display_id,name,model,created_at,updated_at,token_used)"
+			  " VALUES(?,?,?,?,?,0)";
+	int rc;
+	int retries = 3;
+	do {
+		if (retries < 3) /* regenerate on retry */
+			generate_display_id(display_id, sizeof(display_id));
+		rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+		if (rc != SQLITE_OK)
+			return -EIO;
+		sqlite3_bind_text(stmt, 1, display_id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 2, name_buf, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, model_buf[0] ? model_buf : "", -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 4, now);
+		sqlite3_bind_int64(stmt, 5, now);
+		rc = sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	} while (rc == SQLITE_CONSTRAINT && retries-- > 0);
+
 	if (rc != SQLITE_DONE) {
 		if (rc == SQLITE_CONSTRAINT) {
 			log_dbg("session already exists: %s", name);
@@ -32,29 +70,19 @@ int session_create(struct db *db, const char *name, const char *model,
 		return -EIO;
 	}
 	if (out) {
-		/* name/model may alias fields inside *out (e.g. when caller
-		 * passes &ctx->current_session.name), so snapshot first
-		 * before memset zeroes the destination. */
-		char name_buf[sizeof(out->name)];
-		char model_buf[sizeof(out->model)];
-		name_buf[0] = '\0';
-		model_buf[0] = '\0';
-		strncpy(name_buf, name, sizeof(name_buf) - 1);
-		name_buf[sizeof(name_buf) - 1] = '\0';
-		if (model) {
-			strncpy(model_buf, model, sizeof(model_buf) - 1);
-			model_buf[sizeof(model_buf) - 1] = '\0';
-		}
 		memset(out, 0, sizeof(*out));
 		out->id = sqlite3_last_insert_rowid(db->handle);
+		memcpy(out->display_id, display_id, sizeof(out->display_id));
 		memcpy(out->name, name_buf, sizeof(out->name));
 		memcpy(out->model, model_buf, sizeof(out->model));
 		out->created_at = now;
 		out->updated_at = now;
 	}
-	log_info("session created: %s (id=%lld)", out ? out->name : name,
+	log_info("session created: %s (id=%lld, display=%s)",
+		 out ? out->name : name,
 		 out ? (long long)out->id :
-		       (long long)sqlite3_last_insert_rowid(db->handle));
+		       (long long)sqlite3_last_insert_rowid(db->handle),
+		 display_id);
 	return 0;
 }
 
@@ -63,7 +91,7 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 	if (!db || !db->handle || !name || !out)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,name,model,created_at,updated_at,token_used"
+	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
 			  " FROM sessions WHERE name=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -73,14 +101,16 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 	if (rc == SQLITE_ROW) {
 		memset(out, 0, sizeof(*out));
 		out->id = sqlite3_column_int64(stmt, 0);
-		strncpy(out->name, (const char *)sqlite3_column_text(stmt, 1),
+		const char *d = (const char *)sqlite3_column_text(stmt, 1);
+		if (d) strncpy(out->display_id, d, sizeof(out->display_id) - 1);
+		strncpy(out->name, (const char *)sqlite3_column_text(stmt, 2),
 			sizeof(out->name) - 1);
-		const char *m = (const char *)sqlite3_column_text(stmt, 2);
+		const char *m = (const char *)sqlite3_column_text(stmt, 3);
 		if (m)
 			strncpy(out->model, m, sizeof(out->model) - 1);
-		out->created_at = sqlite3_column_int64(stmt, 3);
-		out->updated_at = sqlite3_column_int64(stmt, 4);
-		out->token_used = sqlite3_column_int64(stmt, 5);
+		out->created_at = sqlite3_column_int64(stmt, 4);
+		out->updated_at = sqlite3_column_int64(stmt, 5);
+		out->token_used = sqlite3_column_int64(stmt, 6);
 		sqlite3_finalize(stmt);
 		return 0;
 	}
@@ -93,7 +123,7 @@ int session_get_by_id(struct db *db, int64_t id, struct session *out)
 	if (!db || !db->handle || !out)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,name,model,created_at,updated_at,token_used"
+	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
 			  " FROM sessions WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -103,14 +133,48 @@ int session_get_by_id(struct db *db, int64_t id, struct session *out)
 	if (rc == SQLITE_ROW) {
 		memset(out, 0, sizeof(*out));
 		out->id = sqlite3_column_int64(stmt, 0);
-		strncpy(out->name, (const char *)sqlite3_column_text(stmt, 1),
+		const char *d = (const char *)sqlite3_column_text(stmt, 1);
+		if (d) strncpy(out->display_id, d, sizeof(out->display_id) - 1);
+		strncpy(out->name, (const char *)sqlite3_column_text(stmt, 2),
 			sizeof(out->name) - 1);
-		const char *m = (const char *)sqlite3_column_text(stmt, 2);
+		const char *m = (const char *)sqlite3_column_text(stmt, 3);
 		if (m)
 			strncpy(out->model, m, sizeof(out->model) - 1);
-		out->created_at = sqlite3_column_int64(stmt, 3);
-		out->updated_at = sqlite3_column_int64(stmt, 4);
-		out->token_used = sqlite3_column_int64(stmt, 5);
+		out->created_at = sqlite3_column_int64(stmt, 4);
+		out->updated_at = sqlite3_column_int64(stmt, 5);
+		out->token_used = sqlite3_column_int64(stmt, 6);
+		sqlite3_finalize(stmt);
+		return 0;
+	}
+	sqlite3_finalize(stmt);
+	return -ENOENT;
+}
+
+int session_get_by_display_id(struct db *db, const char *display_id, struct session *out)
+{
+	if (!db || !db->handle || !display_id || !out)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
+			  " FROM sessions WHERE display_id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_text(stmt, 1, display_id, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		memset(out, 0, sizeof(*out));
+		out->id = sqlite3_column_int64(stmt, 0);
+		const char *d = (const char *)sqlite3_column_text(stmt, 1);
+		if (d) strncpy(out->display_id, d, sizeof(out->display_id) - 1);
+		strncpy(out->name, (const char *)sqlite3_column_text(stmt, 2),
+			sizeof(out->name) - 1);
+		const char *m = (const char *)sqlite3_column_text(stmt, 3);
+		if (m)
+			strncpy(out->model, m, sizeof(out->model) - 1);
+		out->created_at = sqlite3_column_int64(stmt, 4);
+		out->updated_at = sqlite3_column_int64(stmt, 5);
+		out->token_used = sqlite3_column_int64(stmt, 6);
 		sqlite3_finalize(stmt);
 		return 0;
 	}
@@ -123,7 +187,7 @@ int session_list(struct db *db, struct session **out, int *count)
 	if (!db || !db->handle || !out || !count)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,name,model,created_at,updated_at,token_used"
+	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
 			  " FROM sessions ORDER BY updated_at DESC";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -148,14 +212,16 @@ int session_list(struct db *db, struct session **out, int *count)
 		}
 		memset(&list[n], 0, sizeof(list[n]));
 		list[n].id = sqlite3_column_int64(stmt, 0);
-		strncpy(list[n].name, (const char *)sqlite3_column_text(stmt, 1),
+		const char *d = (const char *)sqlite3_column_text(stmt, 1);
+		if (d) strncpy(list[n].display_id, d, sizeof(list[n].display_id) - 1);
+		strncpy(list[n].name, (const char *)sqlite3_column_text(stmt, 2),
 			sizeof(list[n].name) - 1);
-		const char *m = (const char *)sqlite3_column_text(stmt, 2);
+		const char *m = (const char *)sqlite3_column_text(stmt, 3);
 		if (m)
 			strncpy(list[n].model, m, sizeof(list[n].model) - 1);
-		list[n].created_at = sqlite3_column_int64(stmt, 3);
-		list[n].updated_at = sqlite3_column_int64(stmt, 4);
-		list[n].token_used = sqlite3_column_int64(stmt, 5);
+		list[n].created_at = sqlite3_column_int64(stmt, 4);
+		list[n].updated_at = sqlite3_column_int64(stmt, 5);
+		list[n].token_used = sqlite3_column_int64(stmt, 6);
 		n++;
 	}
 	sqlite3_finalize(stmt);
@@ -388,6 +454,30 @@ char *trace_load_latest(struct db *db, int64_t session_id,
 	}
 	sqlite3_finalize(stmt);
 	return json;
+}
+
+int session_ensure_display_id(struct db *db, struct session *s)
+{
+	if (!db || !db->handle || !s)
+		return -EINVAL;
+	if (s->display_id[0])
+		return 0;
+	char id_str[16];
+	generate_display_id(id_str, sizeof(id_str));
+	sqlite3_stmt *stmt;
+	const char *sql = "UPDATE sessions SET display_id=? WHERE id=?";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		return -EIO;
+	sqlite3_bind_text(stmt, 1, id_str, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, s->id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc == SQLITE_DONE) {
+		memcpy(s->display_id, id_str, sizeof(s->display_id));
+		return 0;
+	}
+	return -EIO;
 }
 
 int trace_get_next_round_no(struct db *db, int64_t session_id)

@@ -7,6 +7,7 @@
 static const char *schema_sql =
 	"CREATE TABLE IF NOT EXISTS sessions ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"display_id TEXT UNIQUE,"
 	"name TEXT UNIQUE NOT NULL,"
 	"model TEXT,"
 	"created_at INTEGER NOT NULL,"
@@ -102,9 +103,32 @@ int db_exec(struct db *db, const char *sql)
 	return 0;
 }
 
+static int db_migrate_display_id(struct db *db)
+{
+	sqlite3_stmt *stmt;
+	const char *sql = "PRAGMA table_info(sessions)";
+	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
+		return 0;
+	int has = 0;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *cname = (const char *)sqlite3_column_text(stmt, 1);
+		if (cname && strcmp(cname, "display_id") == 0) {
+			has = 1;
+			break;
+		}
+	}
+	sqlite3_finalize(stmt);
+	if (!has)
+		db_exec(db, "ALTER TABLE sessions ADD COLUMN display_id TEXT UNIQUE");
+	return 0;
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
 		return -EINVAL;
-	return db_exec(db, schema_sql);
+	int rc = db_exec(db, schema_sql);
+	if (rc != 0)
+		return rc;
+	return db_migrate_display_id(db);
 }

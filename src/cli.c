@@ -412,7 +412,8 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 		utf8_sanitize_inplace(ctx->current_session.name);
 		session_load_history(ctx);
 		ctx->session_auto_named = (strcmp(name, "new_session") == 0);
-		CMD_OK("created and switched to session: %s", name);
+		CMD_OK("created and switched to session: %s [%s]", name,
+		       ctx->current_session.display_id);
 	} else {
 		CMD_ERROR("failed to create session: %s", name);
 	}
@@ -423,11 +424,13 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *name = cmd_arg(argc, argv, 1);
 	if (!name) {
-		CMD_ERROR("usage: /switch <name|id>");
+		CMD_ERROR("usage: /switch <name|id|display_id>");
 		return -EINVAL;
 	}
 	struct session s;
 	int rc = session_get_by_name(&ctx->database, name, &s);
+	if (rc < 0)
+		rc = session_get_by_display_id(&ctx->database, name, &s);
 	if (rc < 0) {
 		char *end;
 		long id = strtol(name, &end, 10);
@@ -455,23 +458,21 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	session_list(&ctx->database, &list, &count);
 	CMD_HEADER("sessions (%d)", count);
 	printf("  ");
-	print_padded("ID", 5); putchar(' ');
+	print_padded("ID", 10); putchar(' ');
 	print_padded("Name", 45); putchar(' ');
 	print_padded("Model", 30); putchar(' ');
 	printf("Tokens\n");
 	printf("  ");
-	print_padded("---", 5); putchar(' ');
+	print_padded("---", 10); putchar(' ');
 	print_padded("---", 45); putchar(' ');
 	print_padded("---", 30); putchar(' ');
 	printf("---\n");
 	for (int i = 0; i < count; i++) {
 		int is_current = (list[i].id == ctx->current_session.id);
 		const char *model = is_current ? ctx->config.models.text.model : list[i].model;
-		char id_buf[16];
-		snprintf(id_buf, sizeof(id_buf), "%lld", (long long)list[i].id);
 		printf("  ");
 		if (is_current) fputs(ANSI_GREEN, stdout);
-		print_padded(id_buf, 5);
+		print_padded(list[i].display_id, 10);
 		if (is_current) fputs(ANSI_RESET, stdout);
 		putchar(' ');
 		print_padded(list[i].name, 45); putchar(' ');
@@ -1380,6 +1381,9 @@ struct model *llm = model_llm_create(
 	} else {
 		ctx->session_auto_named = 0;
 	}
+
+	session_ensure_display_id(&ctx->database, &ctx->current_session);
+
 	ctx->running = 1;
 	ctx->streaming = 0;
 	ctx->image_path[0] = '\0';
@@ -1457,8 +1461,8 @@ void cli_run(struct cli_context *ctx)
 	rl_attempted_completion_function = cmd_completion;
 	while (ctx->running) {
 		char prompt[512];
-		snprintf(prompt, sizeof(prompt), ANSI_GREEN "[%s]" ANSI_RESET " > ",
-			 ctx->current_session.name);
+		snprintf(prompt, sizeof(prompt), ANSI_GREEN "[%s]" ANSI_RESET " $ ",
+			 ctx->current_session.display_id);
 		sigint_received = 0;
 		char *input = readline(prompt);
 		if (!input) {
@@ -1482,7 +1486,7 @@ void cli_run(struct cli_context *ctx)
 	}
 #else
 	while (ctx->running) {
-		printf(ANSI_GREEN "[%s]" ANSI_RESET " > ", ctx->current_session.name);
+		printf(ANSI_GREEN "[%s]" ANSI_RESET " $ ", ctx->current_session.display_id);
 		fflush(stdout);
 		sigint_received = 0;
 		if (!fgets(line, sizeof(line), stdin)) {

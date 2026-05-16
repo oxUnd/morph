@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "db/database.h"
 #include "session.h"
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -29,6 +30,11 @@ TEST_F(SessionTest, CreateSession) {
 	EXPECT_STREQ(s.name, "test_session");
 	EXPECT_STREQ(s.model, "gpt-4o");
 	EXPECT_GT(s.id, 0);
+	EXPECT_STRNE(s.display_id, "");
+	EXPECT_EQ(strlen(s.display_id), 8);
+	// hex format
+	for (int i = 0; s.display_id[i]; i++)
+		EXPECT_TRUE(isxdigit(s.display_id[i]));
 }
 
 TEST_F(SessionTest, CreateDuplicate) {
@@ -211,6 +217,64 @@ TEST_F(SessionTest, AutoRenameExistingSession) {
 	}
 	EXPECT_STREQ(s.name, "画一只猫");
 	EXPECT_EQ(auto_named, 1);
+}
+
+TEST_F(SessionTest, DisplayIdGetByDisplayId) {
+	struct session s;
+	session_create(&db, "display_find", "gpt-4o", &s);
+	ASSERT_STRNE(s.display_id, "");
+
+	struct session found;
+	int rc = session_get_by_display_id(&db, s.display_id, &found);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(found.id, s.id);
+	EXPECT_STREQ(found.display_id, s.display_id);
+	EXPECT_STREQ(found.name, s.name);
+
+	rc = session_get_by_display_id(&db, "00000000", &found);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SessionTest, DisplayIdUnique) {
+	struct session s1, s2;
+	session_create(&db, "unique1", "gpt-4o", &s1);
+	session_create(&db, "unique2", "gpt-4o", &s2);
+	// extremely unlikely to collide, but still…
+	EXPECT_STRNE(s1.display_id, s2.display_id);
+	EXPECT_EQ(strlen(s1.display_id), strlen(s2.display_id));
+}
+
+TEST_F(SessionTest, DisplayIdPersist) {
+	struct session s;
+	session_create(&db, "persist_test", "gpt-4o", &s);
+	ASSERT_STRNE(s.display_id, "");
+
+	struct session loaded;
+	int rc = session_get_by_id(&db, s.id, &loaded);
+	ASSERT_EQ(rc, 0);
+	EXPECT_STREQ(loaded.display_id, s.display_id);
+
+	rc = session_get_by_name(&db, "persist_test", &loaded);
+	ASSERT_EQ(rc, 0);
+	EXPECT_STREQ(loaded.display_id, s.display_id);
+}
+
+TEST_F(SessionTest, DisplayIdInList) {
+	session_create(&db, "list_display", "gpt-4o", nullptr);
+	struct session *list;
+	int count;
+	session_list(&db, &list, &count);
+	ASSERT_GE(count, 1);
+	bool found = false;
+	for (int i = 0; i < count; i++) {
+		if (strcmp(list[i].name, "list_display") == 0) {
+			found = true;
+			EXPECT_EQ(strlen(list[i].display_id), 8);
+			break;
+		}
+	}
+	EXPECT_TRUE(found);
+	free(list);
 }
 
 TEST_F(SessionTest, AutoRenameTruncation) {

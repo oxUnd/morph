@@ -46,17 +46,27 @@ static void rotate_log(void)
 	long pos = ftell(log_state.file);
 	if (pos < MAX_LOG_FILE_SIZE)
 		return;
+
+	char old_path[520];
+	snprintf(old_path, sizeof(old_path), "%s.old", log_state.path);
 	fclose(log_state.file);
-	for (int i = MAX_LOG_FILES - 1; i > 0; i--) {
-		char old_name[520], new_name[520];
-		snprintf(old_name, sizeof(old_name), "%s.%d", log_state.path, i);
-		snprintf(new_name, sizeof(new_name), "%s.%d", log_state.path, i + 1);
-		rename(old_name, new_name);
+	rename(log_state.path, old_path);
+
+	log_state.file = fopen(log_state.path, "a");
+	if (!log_state.file) {
+		log_state.file = fopen(old_path, "a");
+		return;
 	}
+
 	char backup[520];
 	snprintf(backup, sizeof(backup), "%s.1", log_state.path);
-	rename(log_state.path, backup);
-	log_state.file = fopen(log_state.path, "a");
+	for (int i = MAX_LOG_FILES; i > 1; i--) {
+		char from[520], to[520];
+		snprintf(from, sizeof(from), "%s.%d", log_state.path, i - 1);
+		snprintf(to, sizeof(to), "%s.%d", log_state.path, i);
+		rename(from, to);
+	}
+	rename(old_path, backup);
 }
 
 void log_write(enum log_level level, const char *fmt, ...)
@@ -72,13 +82,11 @@ void log_write(enum log_level level, const char *fmt, ...)
 	va_list ap;
 	va_start(ap, fmt);
 
-	FILE *targets[2] = {stderr, log_state.file};
-	for (int i = 0; i < 2; i++) {
-		if (!targets[i])
-			continue;
-		fprintf(targets[i], "[%s] [%s] ", ts, level_strings[level]);
-		vfprintf(targets[i], fmt, ap);
-		fprintf(targets[i], "\n");
+	if (log_state.file) {
+		fprintf(log_state.file, "[%s] [%s] ", ts, level_strings[level]);
+		vfprintf(log_state.file, fmt, ap);
+		fprintf(log_state.file, "\n");
+		fflush(log_state.file);
 	}
 
 	va_end(ap);

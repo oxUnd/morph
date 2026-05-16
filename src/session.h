@@ -10,6 +10,7 @@ extern "C" {
 
 struct session {
 	int64_t id;
+	char display_id[16];
 	char name[256];
 	char model[64];
 	int64_t created_at;
@@ -39,11 +40,14 @@ struct message_attachment {
 int session_create(struct db *db, const char *name, const char *model, struct session *out);
 int session_get_by_name(struct db *db, const char *name, struct session *out);
 int session_get_by_id(struct db *db, int64_t id, struct session *out);
+int session_get_by_display_id(struct db *db, const char *display_id, struct session *out);
 int session_list(struct db *db, struct session **out, int *count);
 int session_rename(struct db *db, int64_t id, const char *new_name);
 int session_delete(struct db *db, int64_t id);
 int session_update_model(struct db *db, int64_t id, const char *model);
 int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens);
+
+int session_ensure_display_id(struct db *db, struct session *s);
 
 int message_add(struct db *db, int64_t session_id, const char *role,
 		const char *content, int token_count);
