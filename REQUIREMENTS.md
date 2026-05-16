@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
-> **文档版本**: v0.3
-> **状态**: Updated — 同步代码实际行为
+> **文档版本**: v0.4
+> **状态**: Updated — 同步代码实际行为（含 HITL、Guardrail 改版、系统提示重写）
 
 ## 0. 术语与缩写
 
@@ -160,8 +160,8 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 |------|------|--------|
 | 自动发现 | 扫描目录，解析 manifest.toml | P0（裁剪后） |
 | 注册到 Tool Registry | Ext 即 Tool | P0 |
-| 沙箱执行（seccomp + rlimit） | Linux | P0 |
-| 沙箱执行（sandbox-exec） | macOS | P1 |
+| 沙箱执行（seccomp + rlimit） | Linux | P0（裁剪后） |
+| 沙箱执行（sandbox-exec） | macOS | P2（未实现 `sandbox_enter_darwin`） |
 | Ext 启停 | enable / disable | P1 |
 | Ext 安装/卸载 | install / remove（本地路径） | P1 |
 | 远程仓库拉取 | git clone | P2 |
@@ -215,7 +215,7 @@ state: DONE, steps: 11
 saved 5 messages
 ```
 
-> **说明**：ReAct 过程中不再逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在单行内指示当前状态（见 §6.11）。仅在 `/trace` 命令中展示完整步骤列表。Guardrail 验证失败时会直接打印 `[Guardrail]` 标签行。
+> **说明**：ReAct 过程中不再逐行打印 Thought/Action/Observation，而是通过 Spinner 动画在单行内指示当前状态（见 §6.11）。仅在 `/trace` 命令中展示完整步骤列表。Guardrail 验证失败时会直接打印 `[Guardrail]` 标签行。当 HITL 启用时，工具执行前会提示用户确认（`[y/n/a]`）。
 
 ### 5.2 输入方式
 
@@ -274,6 +274,7 @@ saved 5 messages
 | `/skill info <name>` | — | Skill 详情 | `/skill info code-review` |
 | `/skill activate <name>` | — | 激活 Skill | `/skill activate code-review` |
 | `/skill deactivate <name>` | — | 停用 Skill | `/skill deactivate code-review` |
+| `/render <path>` | `/r` | 渲染文件（图片/视频/Markdown） | `/r output.png` |
 
 > **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
 
@@ -318,16 +319,17 @@ saved 5 messages
 
 ```
 INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL → FINAL → DONE
-                        ↘ TOOL_FAIL → THINKING（重试，带错误上下文）
-                        ↘ MAX_ITER  → ABORT（返回部分结果）
-                        ↘ GUARDRAIL_FAIL → THINKING（Guardrail 验证失败，回灌原因重试）
+                    ↘ HITL_DENY → OBSERVING(denied) → THINKING
+                    ↘ TOOL_FAIL → THINKING（重试，带错误上下文）
+                    ↘ MAX_ITER  → ABORT（返回部分结果）
+                    ↘ GUARDRAIL_FAIL → THINKING（Guardrail 验证失败，回灌原因重试）
 ```
 
 #### 6.2.2 终止条件（必须全部实现）
 
 1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
 2. 步数达到 `max_iterations`（默认 10，可配置） → 返回最后一次 Observation 并标记 `aborted`
-3. 单步耗时超过 `step_timeout_seconds`（默认 60s） → 中断该工具调用，生成失败 Observation 回灌
+3. 单步耗时超过 `step_timeout_seconds`（默认 300s） → 中断该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
 5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由客观条件验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
 
@@ -338,18 +340,20 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 
 #### 6.2.4 Prompt 模板（完整）
 
-```
-You are a multi-modal content creation assistant.
-Available tools:
-{tool_descriptions}
+系统提示定义在 `src/agent/system_prompt.h`，以 `MORPH_SYSTEM_PROMPT` 宏实现，包含两个格式化占位符（`%s` 当前时间、`%d` 最大迭代次数）。
 
-Instructions:
-- Use the provided tools to accomplish tasks.
-- If you need to call a tool, use the function calling interface.
-  You may also include a brief thought in your text response before calling tools.
-- If no tool is needed, respond directly with your answer.
-- If a tool fails twice with the same args, change strategy or respond directly.
-- Maximum {max_iterations} tool-calling iterations.
+提示核心定位为「autonomous creative director and visual production system」，包含 12 条创意原则（Intent Expansion、Visual Consistency、Cinematic Thinking、Composition Intelligence、Style Intelligence、Video Understanding、Multi-Stage Generation、Self-Critique、Creative Taste、World Building、Human Collaboration、Autonomous Execution）以及工具使用指导、创作工作流、质量检查清单和错误恢复策略。
+
+运行时 `build_system_prompt()` 依次拼接：
+1. `MORPH_SYSTEM_PROMPT` 基础模板
+2. `system_prompt` 自定义扩展（来自配置 `system_prompt_file` + `system_prompt_dir`）
+3. 已发现 Skill 目录
+4. 已激活 Skill 的完整指令内容
+
+```
+You are Morph, an autonomous creative director and visual production system.
+...
+Maximum %d tool-calling iterations.
 ```
 
 > **注意**：morph 已从文本解析（`Thought: ... Action: ... Final: ...`）迁移到 OpenAI Function Calling。LLM 的结构化工具调用通过 `tool_calls` 字段传递，无需文本格式约束。
@@ -360,17 +364,15 @@ Instructions:
 LLM 调用前:
   1. tokenize(messages) → total_tokens
   2. if total_tokens < threshold → 直接发送，结束
-  3. extract_key_info(messages) → preserve list
-  4. compress_react_trace()        ← 先压本轮已完成的 ReAct 步骤
-  5. if 仍超阈值: compress_multimedia_refs()
+  3. compress_detect_react_cycles(messages)  ← 标记循环模式消息
+  4. compress_react_trace(messages)          ← 移除已标记的压缩消息
+  5. compress_summarize(早期对话 → 单条 summary)
   6. if 仍超阈值: compress_sliding_window(keep=N rounds)
-  7. if 仍超阈值: compress_summarize(早期对话 → 单条 summary)
-  8. if 仍超阈值: compress_recursive(对 summary 再摘要)
-  9. if 仍超阈值: compress_system_prompt(裁工具描述)
- 10. inject(preserve list + 压缩后 messages) → LLM
+  7. extract_key_info(messages) → preserve list
+  8. inject(preserve list + 压缩后 messages) → LLM
 ```
 
-> 关键修订：步骤之间是「层级 fallback」而非并列，且关键信息提取始终在压缩之前，避免被丢弃。
+> 关键修订：步骤之间是「层级 fallback」而非并列。`compress_detect_react_cycles` 先标记循环，`compress_react_trace` 再移除已标记消息。`compress_summarize` 使用注入的 `summarize_fn` 回调（react.c 中使用 LLM 实现），而非直接依赖 `struct model *`。`compress_recursive` 和 `compress_system_prompt` 尚未实现（P1/P2）。
 
 ### 6.4 技术选型
 
@@ -381,17 +383,17 @@ LLM 调用前:
 | CLI 输入 | readline（GNU）/ editline（BSD） | ✓ | macOS 默认 editline |
 | HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
-| JSON | cJSON | ✓ | 单文件嵌入 |
-| TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入 |
-| Markdown | md4c | ✓ | 单文件嵌入 |
-| 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件 |
-| 终端图像 | libsixel（可选）+ 自实现 kitty/iterm2 协议 | 可选 | 缺失时回退路径 |
+| JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
+| TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
+| Markdown | md4c v0.5.3 | ✓ | CMake FetchContent 拉取，非 vendor/ 嵌入 |
+| 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
+| 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
 | Token 计数 | 自实现 Unicode-Aware 估算（tokenizer.c） | ✓ | BPE 推迟到 P2 |
 | 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需 libuv |
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
 | 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |
-| 沙箱（macOS） | sandbox-exec（系统命令） | ✓ | 子进程方式 |
+| 沙箱（macOS） | sandbox-exec（系统命令） | ✓ | 子进程方式（P2，未实现） |
 | 视频播放 | fork+exec `mpv`（系统二进制） | ✓ | 用户指定 |
 | 抽帧（可选） | ffmpeg（系统二进制） | 可选 | 视频理解本地 fallback |
 | 日志 | 自实现（stderr + rotating file） | ✓ | 见 §9 |
@@ -400,11 +402,11 @@ LLM 调用前:
 
 | 能力 | 推荐 API | 备注 |
 |------|----------|------|
-| 文字对话 | OpenAI GPT-4o / Claude 3.5 / DeepSeek | 多模型可切 |
-| 文生图 | DALL-E 3 / Stable Diffusion API | — |
+| 文字对话 | OpenAI GPT-4o / Claude 3.5 / DeepSeek / Volcengine | 多模型可切 |
+| 文生图 | DALL-E 3 / Volcengine Seedream / Stable Diffusion API | — |
 | 图片理解 | GPT-4o Vision / Claude Vision | — |
-| 文生视频 | 可灵 / 即梦 / Runway | 国内优先 |
-| 图生视频 | 可灵 / 即梦 / Pika | 国内优先 |
+| 文生视频 | 可灵 / 即梦 / Runway / Volcengine | 国内优先 |
+| 图生视频 | 可灵 / 即梦 / Pika / Volcengine | 国内优先 |
 | 视频理解 | GPT-4o / Gemini + 本地 ffmpeg 抽帧 | 双路 |
 
 ### 6.6 数据持久化（SQLite Schema）
@@ -490,6 +492,7 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 context_limit = 128000
+max_tokens = 4096
 timeout_seconds = 60
 
 [model.image]
@@ -506,14 +509,17 @@ poll_timeout_seconds = 600
 
 [react]
 max_iterations = 10
-step_timeout_seconds = 60
+step_timeout_seconds = 300
 tool_max_retries = 3
 guardrail_enabled = false
-guardrail_max_retries = 1
-guardrail_min_tool_calls = 1
-guardrail_must_have_output = true
+guardrail_max_retries = 2
 guardrail_max_empty_rounds = 2
 disabled_tools = []
+
+# Human-in-the-Loop (HITL)
+hitl_enabled = false
+# hitl_tools = ["bash_exec", "img_edit", "vid_gen"]
+hitl_auto_approve_readonly = true
 
 [context]
 summarize_threshold_ratio = 0.8
@@ -522,7 +528,7 @@ keep_recent_rounds = 6
 
 [render]
 prefer_image_protocol = "auto"
-mpv_args = ["--really-quiet"]
+mpv_args = "--really-quiet"
 
 [skill]
 dir = "~/.morph/skills"
@@ -537,18 +543,40 @@ default_max_memory_mb = 128
 default_max_cpu_seconds = 30
 ```
 
-**API Key 解析优先级**：CLI flag > 环境变量（`api_key_env`）> 系统 keyring（macOS Keychain / Linux libsecret，P1）> 配置中 `api_key`（明文，**不推荐**，CLI 启动时警告）。
+> **与旧版差异**：
+> - 新增 `[model.text]` 的 `max_tokens` 字段
+> - `step_timeout_seconds` 默认值由 60 改为 300
+> - `guardrail_max_retries` 默认值由 1 改为 2
+> - 移除 `guardrail_min_tool_calls`、`guardrail_must_have_output`（改为 Guardrail 内部基于工具执行结果的客观判断）
+> - 新增 HITL 配置项：`hitl_enabled`、`hitl_tools`、`hitl_auto_approve_readonly`
+> - `render.mpv_args` 由数组改为字符串
+> - `summarize_threshold_ratio` / `compress_target_ratio` 实际为浮点数
+
+**API Key 解析优先级**：CLI flag > 环境变量（`api_key_env`）> 配置中 `api_key`（明文，**不推荐**，CLI 启动时警告）。系统 keyring（macOS Keychain / Linux libsecret）计划为 P1。
 
 ### 6.8 项目结构
 
 ```
 morph/
 ├── CMakeLists.txt
-├── cmake/
-│   └── FindModules/
 ├── README.md
 ├── REQUIREMENTS.md
-├── config.example.toml
+├── AGENTS.md
+├── config.toml.example
+├── exts/
+│   ├── demo-upper/
+│   │   ├── manifest.toml
+│   │   ├── upper.c
+│   │   └── README.md
+│   └── demo-translate/
+│       ├── manifest.toml
+│       ├── translate.sh
+│       └── README.md
+├── skills/
+│   └── code-review/
+│       └── SKILL.md
+├── misc/
+│   └── demo.png
 ├── src/
 │   ├── CMakeLists.txt
 │   ├── main.c
@@ -558,6 +586,7 @@ morph/
 │   ├── config.h
 │   ├── session.c
 │   ├── session.h
+│   ├── vendor_toml_compat.h
 │   ├── render/
 │   │   ├── CMakeLists.txt
 │   │   ├── markdown.c
@@ -578,34 +607,35 @@ morph/
 │   │   ├── tokenizer.h
 │   │   ├── tool.c
 │   │   ├── tool.h
-│   │   ├── tools/
-│   │   │   ├── CMakeLists.txt
-│   │   │   ├── text_gen.c
-│   │   │   ├── text_gen.h
-│   │   │   ├── text_qa.c
-│   │   │   ├── text_qa.h
-│   │   │   ├── img_gen.c
-│   │   │   ├── img_gen.h
-│   │   │   ├── img_edit.c
-│   │   │   ├── img_edit.h
-│   │   │   ├── img_resize.c
-│   │   │   ├── img_resize.h
-│   │   │   ├── img_convert.c
-│   │   │   ├── img_convert.h
-│   │   │   ├── img_info.c
-│   │   │   ├── img_info.h
-│   │   │   ├── vid_gen.c
-│   │   │   ├── vid_gen.h
-│   │   │   ├── file_read.c
-│   │   │   ├── file_read.h
-│   │   │   ├── file_list.c
-│   │   │   ├── file_list.h
-│   │   │   ├── file_info.c
-│   │   │   ├── file_info.h
-│   │   │   ├── bash_exec.c
-│   │   │   ├── bash_exec.h
-│   │   │   ├── skill_activate.c
-│   │   │   └── skill_activate.h
+│   │   ├── system_prompt.h
+│   │   └── tools/
+│   │       ├── CMakeLists.txt
+│   │       ├── text_gen.c
+│   │       ├── text_gen.h
+│   │       ├── text_qa.c
+│   │       ├── text_qa.h
+│   │       ├── img_gen.c
+│   │       ├── img_gen.h
+│   │       ├── img_edit.c
+│   │       ├── img_edit.h
+│   │       ├── img_info.c
+│   │       ├── img_info.h
+│   │       ├── img_resize.c
+│   │       ├── img_resize.h
+│   │       ├── img_convert.c
+│   │       ├── img_convert.h
+│   │       ├── vid_gen.c
+│   │       ├── vid_gen.h
+│   │       ├── file_read.c
+│   │       ├── file_read.h
+│   │       ├── file_list.c
+│   │       ├── file_list.h
+│   │       ├── file_info.c
+│   │       ├── file_info.h
+│   │       ├── bash_exec.c
+│   │       ├── bash_exec.h
+│   │       ├── skill_activate.c
+│   │       └── skill_activate.h
 │   ├── skill/
 │   │   ├── CMakeLists.txt
 │   │   ├── skill.c
@@ -667,12 +697,9 @@ morph/
 │   ├── cJSON.h
 │   ├── toml.c
 │   ├── toml.h
-│   ├── md4c.c
-│   ├── md4c.h
 │   ├── stb_image.h
 │   ├── stb_image_write.h
-│   ├── stb_image_resize2.h
-│   └── base64.h
+│   └── stb_image_resize2.h
 └── tests/
     ├── CMakeLists.txt
     ├── test_arena.cpp
@@ -693,8 +720,24 @@ morph/
     ├── test_react.cpp
     ├── test_markdown.cpp
     ├── test_skill.cpp
-    └── test_bash_exec.cpp
+    ├── test_bash_exec.cpp
+    ├── test_render.cpp
+    └── test_ext_demo.c
 ```
+
+> **与旧版差异说明**：
+> - `cmake/FindModules/` 已移除（未使用）
+> - `vendor/md4c.c` / `vendor/md4c.h` 已移除——md4c 由 CMake FetchContent 拉取（v0.5.3），不在 vendor/ 中
+> - `vendor/base64.h` 已移除——base64 实现在 `src/util/base64.c/.h`
+> - `config.example.toml` 重命名为 `config.toml.example`
+> - 新增 `src/vendor_toml_compat.h`（抑制 vendored toml.c 编译警告）
+> - 新增 `src/agent/system_prompt.h`（系统提示模板）
+> - 新增 `exts/` 目录含两个 demo Ext
+> - 新增 `skills/` 目录含 code-review 示例
+> - 新增 `misc/` 辅助文件目录
+> - 新增 `AGENTS.md`（Agent 开发指南）
+> - 新增 `test_render.cpp`、`test_ext_demo.c`（未纳入 CMake 构建）
+> - 无 `vid_qa` 工具实现（原列表中的 P1 项）
 
 ### 6.9 关键接口设计
 
@@ -736,8 +779,8 @@ struct react_step {
 /* Guardrail 验证结果 */
 enum guardrail_verdict {
 	GUARDRAIL_PASS,
-	GUARDRAIL_FAIL_NO_TOOLS,		/* 未调用工具但期望有输出 */
-	GUARDRAIL_FAIL_NO_OUTPUT,		/* 回答中无生成产物 */
+	GUARDRAIL_FAIL_TOOLS_ALL_FAILED,	/* 所有工具调用均失败 */
+	GUARDRAIL_FAIL_CREATIVE_NO_MEDIA,	/* 创意工具调用但无输出文件 */
 	GUARDRAIL_FAIL_EMPTY_ANSWER,		/* 空回答 */
 	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,	/* 连续空回答 */
 };
@@ -751,9 +794,33 @@ struct guardrail_result {
 struct guardrail_config {
 	int enabled;
 	int max_retries;
-	int min_tool_calls;		/* 期望最少工具调用次数 */
-	int must_have_output;		/* 回答中是否必须包含生成产物 */
 	int max_empty_rounds;		/* 连续空回答上限 */
+};
+
+/* Human-in-the-Loop (HITL) 审批机制 */
+#define HITL_TOOLS_MAX 32
+#define HITL_TOOL_NAME_MAX 64
+#define HITL_AUTO_APPROVED_MAX 32
+
+enum hitl_verdict {
+	HITL_APPROVE,
+	HITL_DENY,
+	HITL_ALWAYS,		/* 本次审批后，该工具自动批准 */
+};
+
+typedef enum hitl_verdict (*hitl_approval_cb)(const char *tool_name,
+					      const char *tool_args,
+					      void *user_data);
+
+struct hitl_config {
+	int enabled;
+	char tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];  /* 需审批的工具列表 */
+	int tools_count;
+	int auto_approve_readonly;		/* 自动批准只读工具 */
+	hitl_approval_cb approval_cb;
+	void *approval_user_data;
+	char auto_approved[HITL_AUTO_APPROVED_MAX][HITL_TOOL_NAME_MAX];
+	int auto_approved_count;
 };
 
 /* ReAct 循环上下文 */
@@ -765,6 +832,7 @@ struct react_context {
 	int tool_max_retries;
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;
+	struct hitl_config hitl;		/* HITL 审批配置 */
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;
@@ -786,123 +854,207 @@ struct react_context {
 typedef int (*react_output_cb)(enum react_step_type type,
 			       const char *content, void *user_data);
 
+/* ReAct 循环上下文创建与销毁 */
+struct react_context *react_context_create(struct tool_registry *tools,
+					   struct tokenizer *tok,
+					   struct compress_config *cfg,
+					   struct guardrail_config *gcfg);
+void react_context_destroy(struct react_context *ctx);
+
 /* ReAct 循环执行 */
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 
 /* 取消当前 ReAct 循环（Ctrl-C 触发） */
 void react_cancel(struct react_context *ctx);
+extern volatile sig_atomic_t react_sigint_flag;
 
 /* 重置当前轮次轨迹 */
 void react_reset(struct react_context *ctx);
+
+/* HITL 辅助函数 */
+int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
+void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
+
+/* 步骤创建与辅助 */
+struct react_step *react_step_create(struct arena *arena,
+				     enum react_step_type type,
+				     const char *content,
+				     const char *tool_name,
+				     const char *tool_args,
+				     const char *tool_call_id);
+void react_step_destroy(struct react_step *step);
+const char *react_step_type_name(enum react_step_type type);
+const char *react_state_name(enum react_state state);
 ```
+
+> **与旧版差异**：Guardrail `verdict` 枚举值已从 `FAIL_NO_TOOLS`/`FAIL_NO_OUTPUT` 改为 `FAIL_TOOLS_ALL_FAILED`/`FAIL_CREATIVE_NO_MEDIA`（更精确描述失败场景）。`guardrail_config` 移除 `min_tool_calls` 与 `must_have_output`（改为 Guardrail 内部基于工具执行结果的客观判断）。新增 `hitl_config`（Human-in-the-Loop 审批机制）。新增 `react_context_create`/`destroy`（替代直接 calloc）。
 
 #### 6.9.2 工具系统
 
 ```c
+#define TOOL_NAME_MAX 64
+#define TOOL_DESC_MAX 512
+#define TOOL_ARGS_SPEC_MAX 1024
+#define TOOL_MAX_ENTRIES 64
+#define TOOL_DISABLED_MAX 32
+
+#define TOOL_FLAG_READONLY 0x01
+
 struct tool_desc {
-	const char *name;
-	const char *desc;
-	const char *args_spec;		/* JSON Schema */
+	char name[TOOL_NAME_MAX];
+	char desc[TOOL_DESC_MAX];
+	char args_spec[TOOL_ARGS_SPEC_MAX];
 };
 
-typedef int (*tool_exec_fn)(const char *args_json,
-			    char **result_json, void *user_data);
+typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
 
 struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	void *user_data;
+	unsigned int flags;		/* TOOL_FLAG_READONLY 等 */
 };
 
 struct tool_registry {
-	struct tool_entry entries[64];
+	struct tool_entry entries[TOOL_MAX_ENTRIES];
 	int count;
-	char *disabled[32];
+	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
 	int disabled_count;
 };
 
-int tool_register(struct tool_registry *reg,
-		  const char *name, const char *desc,
-		  const char *args_spec,
-		  tool_exec_fn exec, void *user_data);
+void tool_registry_init(struct tool_registry *reg);
+void tool_registry_cleanup(struct tool_registry *reg);
+int tool_register(struct tool_registry *reg, const char *name, const char *desc,
+		  const char *args_spec, tool_exec_fn exec, void *user_data);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, char **result_json);
+void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);
+int tool_is_readonly(struct tool_registry *reg, const char *name);
 ```
+
+> **与旧版差异**：`tool_desc` 字段由 `const char *` 改为固定大小 `char[]` 数组。新增 `flags` 字段（`TOOL_FLAG_READONLY` 标记只读工具，用于 HITL 自动批准）。新增 `tool_registry_init`/`cleanup`、`tool_entry_cleanup_user_data`、`tool_is_readonly`。
 
 #### 6.9.3 模型接口
 
 ```c
+struct arena;
+
+typedef int (*sse_callback)(const char *token, void *user_data);
+
+struct tool_desc;
+
+struct tool_call {
+	char id[128];
+	char name[64];
+	char *arguments;
+};
+
+struct chat_message {
+	char *role;
+	char *content;
+	char *tool_call_id;
+	struct tool_call *tool_calls;
+	int tool_call_count;
+};
+
+struct chat_response {
+	char *content;
+	struct tool_call *tool_calls;
+	int tool_call_count;
+	struct arena *arena;
+};
+
 struct model {
 	char name[64];
 	char provider[32];
 	char api_base[256];
 	char api_key[256];
 	char model_id[128];
-	int  context_limit;
-	int  timeout_seconds;
-	void       *handle;
-	int  (*chat)      (struct model *self, const char *prompt,
-			   const char **messages, int n,
-			   sse_callback cb, void *user_data);
-	int  (*generate)  (struct model *self, const char *prompt,
-			   const char *out_path);
-	void (*destroy)   (struct model *self);
+	int context_limit;
+	int max_tokens;		/* 单次响应最大生成 token 数 */
+	long timeout_seconds;
+	void *handle;
+	int (*chat)(struct model *self, struct arena *arena,
+		    const char *system_prompt,
+		    const char **messages, int n,
+		    sse_callback cb, void *user_data);
+	int (*chat_with_tools)(struct model *self, struct arena *arena,
+			       const char *system_prompt,
+			       struct chat_message *messages, int msg_count,
+			       struct tool_desc *tools, int tool_count,
+			       struct chat_response *response,
+			       sse_callback thought_cb, void *thought_ud);
+	int (*generate)(struct model *self, const char *prompt,
+			const char *out_path);
+	void (*destroy)(struct model *self);
 };
 
-typedef int (*sse_callback)(const char *token, void *user_data);
+struct model *model_llm_create(const char *provider, const char *model_id,
+			       const char *api_base, const char *api_key);
+void model_destroy(struct model *m);
+
+void chat_response_free(struct chat_response *resp);
+void chat_message_cleanup(struct chat_message *msg, struct arena *arena);
+void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 ```
+
+> **与旧版差异**：新增 `max_tokens` 字段。`timeout_seconds` 类型由 `int` 改为 `long`。`chat` 签名增加 `struct arena *` 参数和 `system_prompt`。新增 `chat_with_tools` 函数指针（Function Calling 接口，接收 `chat_message` 结构体和 `tool_desc` 数组，返回 `chat_response` 含 `tool_calls`）。新增 `chat_response`（含 `arena` 用于批量释放）、`chat_message`（含 `tool_call_id`/`tool_calls`）、`tool_call` 结构体。新增 `model_llm_create`/`model_destroy`/`chat_response_free`/`chat_message_cleanup`/`tool_call_cleanup` 辅助函数。
 
 #### 6.9.4 内置工具列表
 
-| 工具名 | 功能 | 参数 | 对应模型 | 类型 |
-|--------|------|------|---------|------|
-| text_gen | 文字内容生成 | prompt, style, length | LLM | 内置 |
-| text_qa | 文字问答/改写 | prompt, context | LLM | 内置 |
-| img_gen | 图片生成 | prompt, style, size | DALL-E / SD | 内置 |
-| img_edit | 图片编辑/理解 | prompt, file_path | GPT-4o Vision | 内置 |
-| img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 |
-| img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 |
-| img_info | 图片信息 | file_path | stb_image | 内置 |
-| vid_gen | 视频生成 | prompt, file_path?, duration, style | 可灵 / 即梦 | 内置 |
-| vid_qa | 视频理解 | file_path, question | GPT-4o / Gemini | 内置（P1） |
-| file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 |
-| file_list | 列出目录内容 | path | 本地 | 内置 |
-| file_info | 文件元数据 | path | 本地 | 内置 |
-| bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 |
-| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 |
-| translate | 文本翻译 | prompt, target_lang | LLM | Ext |
-| web_search | 网页搜索 | query | 外部 API | Ext |
+| 工具名 | 功能 | 参数 | 对应模型 | 类型 | 只读 |
+|--------|------|------|---------|------|------|
+| text_gen | 文字内容生成 | prompt, style, length | LLM | 内置 | 否 |
+| text_qa | 文字问答/改写 | prompt, context | LLM | 内置 | 是 |
+| img_gen | 图片生成 | prompt, style, size, reference_image | DALL-E / SD / Volcengine | 内置 | 否 |
+| img_edit | 图片编辑/理解 | prompt, file_path | GPT-4o Vision | 内置 | 否 |
+| img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 | 否 |
+| img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 | 否 |
+| img_info | 图片信息 | file_path | stb_image | 内置 | 是 |
+| vid_gen | 视频生成 | prompt, image_path?, duration, style | 可灵 / 即梦 / Volcengine | 内置 | 否 |
+| file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 | 是 |
+| file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
+| file_info | 文件元数据 | path | 本地 | 内置 | 是 |
+| bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
+| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 否 |
+| translate | 文本翻译 | text, target_lang | LLM | Ext |
+| upper | 文本转大写 | text | 本地 | Ext |
 | ... | 社区/自定义 Ext | 按 manifest 定义 | 按定义 | Ext |
+
+> **与旧版差异**：移除 `vid_qa`（未实现，仍为 P1 计划项）。新增「只读」列（`TOOL_FLAG_READONLY` 标记，用于 HITL 自动批准）。`img_gen` 新增 `reference_image` 参数（风格/视觉一致性）。Ext 示例增加 `upper`（demo-upper）。
 
 #### 6.9.5 上下文压缩
 
 ```c
+typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
+
 enum compress_policy {
 	COMPRESS_SLIDING_WINDOW,
 	COMPRESS_SUMMARIZE,
 	COMPRESS_REACT_TRACE,
-	COMPRESS_RECURSIVE,
 };
 
 struct compress_config {
 	int max_context_tokens;
 	int max_history_rounds;
-	int summarize_threshold_ratio;	/* 默认 80% */
-	int compress_target_ratio;	/* 默认 50% */
+	double summarize_threshold_ratio;	/* 默认 0.8 */
+	double compress_target_ratio;		/* 默认 0.5 */
+	summarize_fn summarize;			/* 摘要回调（由 react.c 内部提供） */
+	void *summarize_user_data;
 };
 
-struct message {
-	char *role;			/* system/user/assistant/observation */
+struct message_list {
+	char *role;
 	char *content;
 	char **file_paths;
 	int file_count;
 	int token_count;
 	int compressed;
-	struct message *next;
+	struct message_list *next;
 };
 
 struct key_info {
@@ -912,7 +1064,7 @@ struct key_info {
 };
 
 struct tokenizer {
-	const char *model_name;
+	char model_name[64];
 	int context_limit;
 	int (*count)(const char *text);
 };
@@ -926,23 +1078,23 @@ struct compress_result {
 	struct key_info *preserved;
 };
 
-int context_token_count(struct message *head, struct tokenizer *tok);
-int context_needs_compress(struct message *head, struct tokenizer *tok,
-			    struct compress_config *cfg);
-int compress_sliding_window(struct message *head, int keep_rounds,
+int context_token_count(struct message_list *head, struct tokenizer *tok);
+int context_needs_compress(struct message_list *head, struct tokenizer *tok,
+			   struct compress_config *cfg);
+
+int compress_sliding_window(struct message_list **head, int keep_rounds,
 			    struct compress_result *result);
-int compress_summarize(struct message *head, struct model *llm,
-		       struct tokenizer *tok, struct compress_config *cfg,
-		       struct compress_result *result);
-int compress_react_trace(struct message *head,
+int compress_react_trace(struct message_list **head,
 			 struct compress_result *result);
-struct key_info *extract_key_info(struct message *head);
-int compress_recursive(struct message *head, struct model *llm,
-		       struct tokenizer *tok, struct compress_config *cfg,
+int compress_detect_react_cycles(struct message_list *head);
+struct key_info *extract_key_info(struct message_list *head);
+void key_info_free(struct key_info *head);
+int compress_summarize(struct message_list **head, int keep_rounds,
+		       summarize_fn fn, void *fn_user,
 		       struct compress_result *result);
-int compress_system_prompt(char *system_prompt, int target_tokens,
-			  struct tokenizer *tok);
 ```
+
+> **与旧版差异**：`compress_config` 中 `summarize_threshold_ratio` / `compress_target_ratio` 类型由 `int` 改为 `double`。新增 `summarize` 函数指针和 `summarize_user_data`（摘要由调用方注入，react.c 中使用 LLM 实现）。`compress_summarize` 签名由 `struct model *llm` 改为 `summarize_fn fn + void *fn_user`。移除 `compress_recursive()`（未实现，P2）。移除 `compress_system_prompt()`（未实现，P1）。新增 `compress_detect_react_cycles()`（标记循环模式消息供后续移除）。新增 `key_info_free()`。`message_list`（原 `message`）字段 `role`/`content` 改为 `char *`。
 
 #### 6.9.6 Ext 系统
 
@@ -952,18 +1104,13 @@ int compress_system_prompt(char *system_prompt, int target_tokens,
 | 外部 Ext | `ext`（可执行） | fork+execvp，子进程执行 | namespace+seccomp+rlimit 全隔离 |
 
 ```c
-#define EXT_PERM_NETWORK    (1 << 0)
-#define EXT_PERM_FILESYS    (1 << 1)
-#define EXT_PERM_EXEC       (1 << 2)
-#define EXT_PERM_ENV        (1 << 3)
-
 struct ext_manifest {
-	char *name;
-	char *version;
-	char *description;
-	char *author;
-	char *type;			/* "so" 或 "exec" */
-	char *entry;			/* exec 可执行文件名; so 符号名 */
+	char name[64];
+	char version[32];
+	char description[256];
+	char author[64];
+	char type[16];			/* "so" 或 "exec" */
+	char entry[128];		/* exec 可执行文件名; so 符号名 */
 	unsigned int permissions;
 	char **allowed_paths;
 	int allowed_paths_count;
@@ -972,23 +1119,25 @@ struct ext_manifest {
 	int max_memory_mb;
 	int max_cpu_seconds;
 	char *args_schema;
-	char *output_schema;		/* "string" 或 "json" */
+	char *output_schema;
 };
 
 struct ext {
 	struct ext_manifest manifest;
-	char *path;
+	char path[512];
 	void *dl_handle;		/* dlopen 句柄（.so 类型） */
 	int (*run)(const char *args_json, char **result_json);
-	char *exec_path;		/* exec 类型子进程路径 */
+	char exec_path[512];		/* exec 类型子进程路径 */
 	struct tool_desc tool_desc;	/* 注册到 Tool Registry */
 	int enabled;
 };
 
-int ext_load(struct ext *sk, const char *dir_path);
-int ext_unload(struct ext *sk);
-int ext_run(struct ext *sk, const char *args_json, char **result_json);
+int ext_load(struct ext *ex, const char *dir_path);
+int ext_unload(struct ext *ex);
+int ext_run(struct ext *ex, const char *args_json, char **result_json);
 ```
+
+> **与旧版差异**：`ext_manifest` 各字段由 `char *` 改为固定大小 `char[]`（`type[16]`、`entry[128]`、`author[64]`）。`ext` 结构 `path`/`exec_path` 改为 `char[512]`。
 
 #### 6.9.7 Ext ↔ 主进程 IPC
 
@@ -1012,18 +1161,43 @@ int ext_run(struct ext *sk, const char *args_json, char **result_json);
 {"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"upstream timeout"}}
 ```
 
+```c
+struct jsonrpc_request {
+	int id;
+	const char *method;
+	const char *params_json;
+};
+
+struct jsonrpc_response {
+	int id;
+	char *result_json;
+	int has_error;
+	int error_code;
+	char *error_message;
+};
+
+char *jsonrpc_build_request(const struct jsonrpc_request *req);
+int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out);
+void jsonrpc_response_free(struct jsonrpc_response *resp);
+```
+
 #### 6.9.8 沙箱机制
 
 | 平台 | 机制 | 默认拒绝 | 按权限放开 |
 |------|------|---------|-----------|
 | Linux | seccomp-bpf + rlimit + landlock | 所有 syscall | 见权限位域 |
 | Linux 强隔离（P2） | + unshare（NEWPID/NEWNET/NEWNS） | 网络/PID | 仅 PERM_NETWORK |
-| macOS | sandbox-exec + .sb profile | 网络/文件 | 同上 |
+| macOS | sandbox-exec + .sb profile | 网络/文件 | 同上（P2，当前未实现 `sandbox_enter_darwin`） |
 
 **最小 syscall 白名单**（默认）：
 `read, write, mmap, munmap, mprotect, brk, exit, exit_group, futex, rt_sigaction, rt_sigprocmask, clock_gettime, getpid, gettid, close, fstat, lseek, poll, ppoll, nanosleep`
 
 ```c
+#define EXT_PERM_NETWORK	(1 << 0)
+#define EXT_PERM_FILESYS	(1 << 1)
+#define EXT_PERM_EXEC		(1 << 2)
+#define EXT_PERM_ENV		(1 << 3)
+
 struct sandbox_config {
 	unsigned int permissions;
 	char **allowed_paths;
@@ -1034,10 +1208,11 @@ struct sandbox_config {
 
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(unsigned int permissions);
-int sandbox_apply_rlimits(int max_memory_mb, int max_cpu_seconds);
+int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_cpu_seconds);
 int sandbox_apply_fs(const char **allowed_paths, int count);
-int sandbox_enter_darwin(struct sandbox_config *cfg);
 ```
+
+> **与旧版差异**：`sandbox_apply_rlimits` 签名新增 `permissions` 参数（根据权限调整 rlimit 策略）。`sandbox_enter_darwin` 已在头文件中移除声明（尚未实现，推迟到 P2）。
 
 #### 6.9.9 ReAct Function Calling
 
@@ -1050,18 +1225,21 @@ ReAct 循环使用 LLM 原生 Function Calling（而非文本解析 `Action: too
 
 **并行执行**：当 LLM 返回多个 `tool_calls` 时，每个工具调用在独立 pthread 中执行，通过 `async_tool_call` 结构跟踪完成状态，完成后逐一回灌 Observation。
 
+**Human-in-the-Loop (HITL)**：当 `hitl_enabled` 时，工具执行前检查 `hitl_needs_approval()`。若需审批，调用 `approval_cb` 获取用户决定（`APPROVE`/`DENY`/`ALWAYS`）。`ALWAYS` 将该工具加入 `auto_approved` 列表，后续不再提示。只读工具（`TOOL_FLAG_READONLY`）在 `auto_approve_readonly` 时自动批准。
+
 #### 6.9.10 Guardrail 输出验证
 
 当 LLM 返回不含工具调用的文本响应（即 `tool_call_count == 0`）时，进入 Guardrail 验证。Guardrail 用**客观可验证条件**替代 LLM 主观自评，确保输出质量：
 
 | 验证条件 | 说明 |
 |----------|------|
-| `min_tool_calls` | 若期望有生成产物，检查本轮是否至少调用了 N 个工具 |
-| `must_have_output` | 检查回答中是否包含生成产物标记（`saved:`/`.png`/`.mp4` 等） |
-| `max_empty_rounds` | 连续空回答次数上限 |
+| 所有工具均失败 | 检查本轮所有工具调用是否均返回错误 |
+| 创意工具无输出文件 | 创意工具（img_gen/vid_gen/text_gen 等）被调用但 Observation 中无文件引用 |
+| 空回答 | 回答为空或 `"(no response)"` |
+| 连续空回答 | 连续空回答次数达到 `max_empty_rounds` 上限 |
 
 **验证通过** → 进入 Final。
-**验证失败** → 构造包含具体失败原因的 user message 回灌给 LLM，回到 THINKING 重试（最多 `guardrail_max_retries` 次）。
+**验证失败** → 构造包含具体失败原因和修正指导的 user message 回灌给 LLM，回到 THINKING 重试（最多 `guardrail_max_retries` 次）。
 
 **与旧 Reflection 的区别**：
 
@@ -1114,36 +1292,56 @@ metadata:
 #### 6.10.4 Skill 数据结构
 
 ```c
+#define SKILL_NAME_MAX 65
+#define SKILL_DESC_MAX 1025
+#define SKILL_MAX_ENTRIES 64
+#define SKILL_PATH_MAX 512
+#define SKILL_METADATA_MAX 16
+#define SKILL_METADATA_KEY_MAX 64
+#define SKILL_METADATA_VAL_MAX 256
+
+struct skill_metadata_entry {
+	char key[SKILL_METADATA_KEY_MAX];
+	char value[SKILL_METADATA_VAL_MAX];
+};
+
 struct skill_frontmatter {
-	char name[64];
-	char description[256];
-	char license[64];
-	char compatibility[64];
-	char allowed_tools[256];
-	struct { char key[64]; char value[128]; } metadata[8];
+	char name[SKILL_NAME_MAX];
+	char description[SKILL_DESC_MAX];
+	char license[256];
+	char compatibility[512];
+	char allowed_tools[1024];
+	struct skill_metadata_entry metadata[SKILL_METADATA_MAX];
 	int metadata_count;
 };
 
 struct skill_entry {
 	struct skill_frontmatter fm;
-	char skill_dir[512];		/* Skill 所在目录 */
-	char *instructions;		/* SKILL.md 内容（frontmatter 之后） */
+	char skill_dir[SKILL_PATH_MAX];
+	char skill_md_path[SKILL_PATH_MAX];
+	char *body;			/* SKILL.md 内容（frontmatter 之后） */
+	int body_loaded;
 	int enabled;
 	int activated;
 };
 
 struct skill_registry {
-	struct skill_entry entries[32];
+	struct skill_entry entries[SKILL_MAX_ENTRIES];
 	int count;
 };
 
 void skill_registry_init(struct skill_registry *reg);
-int skill_discover(struct skill_registry *reg, const char *dir);
+void skill_registry_cleanup(struct skill_registry *reg);
+int skill_discover(struct skill_registry *reg, const char *dir_path);
 struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
-int skill_activate(struct skill_entry *entry);
-void skill_deactivate(struct skill_entry *entry);
+int skill_activate(struct skill_entry *skill);
+void skill_deactivate(struct skill_entry *skill);
+void skill_deactivate_all(struct skill_registry *reg);
 char *skill_build_activated_instructions(struct skill_registry *reg);
+int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size);
 ```
+
+> **与旧版差异**：`skill_frontmatter` 字段尺寸调整（`name[65]`、`description[1025]`、`compatibility[512]`、`allowed_tools[1024]`、`metadata[16]`、`value[256]`）。`skill_entry` 新增 `skill_md_path`、`body_loaded`。新增 `skill_registry_cleanup`、`skill_deactivate_all`、`skill_build_catalog`。
 
 ---
 
@@ -1204,6 +1402,7 @@ struct spin_context {
 	int frame;
 	time_t start_time;
 	time_t last_update;
+	size_t last_render_width;	/* 上次渲染宽度（用于清除） */
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	volatile sig_atomic_t *cancel_flag;  /* 指向 react_sigint_flag */
@@ -1214,10 +1413,15 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 void spin_update(struct spin_context *ctx, const char *message);
 void spin_set_sub(struct spin_context *ctx, const char *submessage);
 void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char *message);
+void spin_pause(struct spin_context *ctx);
+void spin_resume(struct spin_context *ctx);
+void spin_render(struct spin_context *ctx);
 void spin_clear(struct spin_context *ctx);
 void spin_destroy(struct spin_context *ctx);
 void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag);
 ```
+
+> **与旧版差异**：新增 `last_render_width` 字段。新增 `spin_pause`/`spin_resume`/`spin_render` 函数。
 
 #### 6.11.5 CLI 输出回调映射
 
@@ -1332,8 +1536,8 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 
 | # | 问题 | 状态 | 决策建议 |
 |---|------|------|---------|
-| 1 | 产品命名 | Open | M2 前定 |
-| 2 | 优先接入哪些 API | **Decided**（M1）：OpenAI + 可灵 | — |
+| 1 | 产品命名 | **Decided**：morph | — |
+| 2 | 优先接入哪些 API | **Decided**（M1）：OpenAI + 可灵 + Volcengine | — |
 | 3 | 是否支持本地模型（Ollama） | Open | P2 评估 |
 | 4 | SQLite 是否硬依赖 | **Decided**：是 | 简化数据层 |
 | 5 | 终端图片是否 fallback feh/sxiv | **Decided**：否，只回退路径 | 减少依赖 |
