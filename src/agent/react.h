@@ -100,11 +100,13 @@ int react_run(struct react_context *ctx, const char *user_input,
 void react_cancel(struct react_context *ctx);
 extern volatile sig_atomic_t react_sigint_flag;
 
-struct react_step *react_step_create(enum react_step_type type,
+struct react_step *react_step_create(struct arena *arena,
+				     enum react_step_type type,
 				     const char *content,
 				     const char *tool_name,
 				     const char *tool_args,
 				     const char *tool_call_id);
+
 void react_step_destroy(struct react_step *step);
 
 const char *react_step_type_name(enum react_step_type type);

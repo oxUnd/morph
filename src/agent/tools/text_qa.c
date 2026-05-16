@@ -1,5 +1,6 @@
 #include "text_qa.h"
 #include "util/log.h"
+#include "util/arena.h"
 #include "models/llm.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -138,6 +139,13 @@ static int text_qa_exec(const char *args_json, char **result_json, void *user_da
 
 	free(context);
 
+	struct arena *arena = arena_create(64 * 1024);
+	if (!arena) {
+		free(prompt);
+		*result_json = strdup("{\"error\":\"memory allocation failed\"}");
+		return -ENOMEM;
+	}
+
 	const char *messages[] = { qa_prompt };
 	struct text_qa_stream_ctx ctx = {
 		.response = malloc(8192),
@@ -145,21 +153,24 @@ static int text_qa_exec(const char *args_json, char **result_json, void *user_da
 		.cap = 8192,
 	};
 	if (!ctx.response) {
+		arena_destroy(arena);
 		free(prompt);
 		return -ENOMEM;
 	}
 	ctx.response[0] = '\0';
 
-	int status = g_qa_llm->chat(g_qa_llm, NULL, messages, 1,
+	int status = g_qa_llm->chat(g_qa_llm, arena, NULL, messages, 1,
 				    text_qa_stream_cb, &ctx);
 	if (status < 0) {
 		free(ctx.response);
+		arena_destroy(arena);
 		free(prompt);
 		*result_json = strdup("{\"error\":\"LLM call failed\"}");
 		return status;
 	}
 
 	*result_json = ctx.response;
+	arena_destroy(arena);
 	free(prompt);
 	return 0;
 }

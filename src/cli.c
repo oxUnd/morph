@@ -2,6 +2,7 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "util/spin.h"
+#include "util/arena.h"
 #include "agent/tokenizer.h"
 #include "agent/compress.h"
 #include "agent/tools/text_gen.h"
@@ -616,7 +617,7 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 	       state_name ? state_name : "n/a", count);
 }
 
-static struct react_step *json_to_react_steps(const char *json, int *out_count)
+static struct react_step *json_to_react_steps(struct arena *arena, const char *json, int *out_count)
 {
 	if (!json)
 		return NULL;
@@ -648,6 +649,7 @@ static struct react_step *json_to_react_steps(const char *json, int *out_count)
 				 cJSON_IsString(tool_name) ? tool_name->valuestring : "",
 				 tool_args->valuestring);
 		struct react_step *s = react_step_create(
+			arena,
 			type,
 			cJSON_IsString(content) ? content->valuestring : NULL,
 			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
@@ -662,19 +664,6 @@ static struct react_step *json_to_react_steps(const char *json, int *out_count)
 	if (out_count)
 		*out_count = count;
 	return head.next;
-}
-
-static void free_json_react_steps(struct react_step *steps)
-{
-	while (steps) {
-		struct react_step *next = steps->next;
-		free(steps->content);
-		free(steps->tool_name);
-		free(steps->tool_args);
-		free(steps->tool_call_id);
-		free(steps);
-		steps = next;
-	}
 }
 
 static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
@@ -695,13 +684,14 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 		CMD_HEADER("ReAct trace (round %d, %s)", round_no,
 			   aborted ? "aborted" : "completed");
 		int count = 0;
-		struct react_step *steps = json_to_react_steps(json, &count);
+		struct arena *arena = arena_create(64 * 1024);
+		struct react_step *steps = json_to_react_steps(arena, json, &count);
 		if (steps) {
 			print_trace_steps(steps, count, aborted ? "ABORT" : "DONE");
-			free_json_react_steps(steps);
 		} else {
 			printf("  (raw) %s\n", json);
 		}
+		arena_destroy(arena);
 		free(json);
 		return 0;
 	}

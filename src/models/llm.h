@@ -7,6 +7,8 @@ extern "C" {
 
 #include "http/client.h"
 
+struct arena;
+
 typedef int (*sse_callback)(const char *token, void *user_data);
 
 struct tool_desc;
@@ -41,10 +43,11 @@ struct model {
 	int max_tokens;
 	long timeout_seconds;
 	void *handle;
-	int (*chat)(struct model *self, const char *system_prompt,
+	int (*chat)(struct model *self, struct arena *arena,
+		    const char *system_prompt,
 		    const char **messages, int n,
 		    sse_callback cb, void *user_data);
-	int (*chat_with_tools)(struct model *self,
+	int (*chat_with_tools)(struct model *self, struct arena *arena,
 			       const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,

@@ -3,6 +3,7 @@
 #include "agent/tool.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
+#include "util/arena.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include <string.h>
@@ -84,10 +85,12 @@ struct mock_llm_data {
 	int should_fail;
 };
 
-static int mock_llm_chat(struct model *self, const char *system_prompt,
+static int mock_llm_chat(struct model *self, struct arena *arena,
+			  const char *system_prompt,
 			  const char **messages, int n,
 			  sse_callback cb, void *user_data)
 {
+	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -102,10 +105,12 @@ static int mock_llm_chat(struct model *self, const char *system_prompt,
 	return 200;
 }
 
-static int mock_llm_streaming_chat(struct model *self, const char *system_prompt,
+static int mock_llm_streaming_chat(struct model *self, struct arena *arena,
+				    const char *system_prompt,
 				    const char **messages, int n,
 				    sse_callback cb, void *user_data)
 {
+	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -143,13 +148,14 @@ static char *strcasestr_local(const char *haystack, const char *needle)
 	return nullptr;
 }
 
-static int mock_chat_with_tools(struct model *self,
+static int mock_chat_with_tools(struct model *self, struct arena *arena,
 				const char *system_prompt,
 				struct chat_message *messages, int msg_count,
 				struct tool_desc *tools, int tool_count,
 				struct chat_response *response,
 				sse_callback thought_cb, void *thought_ud)
 {
+	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)msg_count;
@@ -161,7 +167,7 @@ static int mock_chat_with_tools(struct model *self,
 	cd.cap = 8192;
 	cd.buf[0] = '\0';
 
-	int status = self->chat(self, nullptr, nullptr, 0, mock_collect_cb, &cd);
+	int status = self->chat(self, arena, nullptr, nullptr, 0, mock_collect_cb, &cd);
 	if (status < 0) {
 		free(cd.buf);
 		return status;
@@ -292,10 +298,12 @@ struct multi_mock_data {
 	int should_fail;
 };
 
-static int multi_mock_chat(struct model *self, const char *system_prompt,
+static int multi_mock_chat(struct model *self, struct arena *arena,
+			   const char *system_prompt,
 			   const char **messages, int n,
 			   sse_callback cb, void *user_data)
 {
+	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
@@ -309,13 +317,14 @@ static int multi_mock_chat(struct model *self, const char *system_prompt,
 	return 200;
 }
 
-static int multi_mock_chat_with_tools(struct model *self,
+static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 				      const char *system_prompt,
 				      struct chat_message *messages, int msg_count,
 				      struct tool_desc *tools, int tool_count,
 				      struct chat_response *response,
 				      sse_callback thought_cb, void *thought_ud)
 {
+	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)msg_count;
@@ -547,21 +556,23 @@ TEST_F(ReactTest, CancelFn) {
 }
 
 TEST_F(ReactTest, CreateStep) {
-	struct react_step *s = react_step_create(REACT_STEP_THOUGHT, "thinking", nullptr, nullptr, nullptr);
+	struct arena *arena = arena_create(1024);
+	struct react_step *s = react_step_create(arena, REACT_STEP_THOUGHT, "thinking", nullptr, nullptr, nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_THOUGHT);
 	EXPECT_STREQ(s->content, "thinking");
-	react_step_destroy(s);
+	arena_destroy(arena);
 }
 
 TEST_F(ReactTest, CreateStepWithTool) {
-	struct react_step *s = react_step_create(REACT_STEP_ACTION, "calling tool",
+	struct arena *arena = arena_create(1024);
+	struct react_step *s = react_step_create(arena, REACT_STEP_ACTION, "calling tool",
 						 "text_gen", "{\"prompt\":\"hi\"}", nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_ACTION);
 	EXPECT_STREQ(s->tool_name, "text_gen");
 	EXPECT_STREQ(s->tool_args, "{\"prompt\":\"hi\"}");
-	react_step_destroy(s);
+	arena_destroy(arena);
 }
 
 TEST_F(ReactTest, StepNames) {
@@ -1235,10 +1246,12 @@ struct capt_prompt_data {
 	const char *resp;
 };
 
-static int capt_prompt_chat(struct model *self, const char *system_prompt,
+static int capt_prompt_chat(struct model *self, struct arena *arena,
+			    const char *system_prompt,
 			    const char **messages, int n,
 			    sse_callback cb, void *user_data)
 {
+	(void)arena;
 	(void)user_data;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->prompt);
@@ -1250,13 +1263,14 @@ static int capt_prompt_chat(struct model *self, const char *system_prompt,
 	return 200;
 }
 
-static int capt_prompt_chat_with_tools(struct model *self,
+static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 				       const char *system_prompt,
 				       struct chat_message *messages, int msg_count,
 				       struct tool_desc *tools, int tool_count,
 				       struct chat_response *response,
 				       sse_callback thought_cb, void *thought_ud)
 {
+	(void)arena;
 	(void)messages;
 	(void)msg_count;
 	(void)tools;

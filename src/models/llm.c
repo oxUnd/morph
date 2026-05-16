@@ -3,6 +3,7 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "util/utf8.h"
+#include "util/arena.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include "cJSON.h"
@@ -11,34 +12,32 @@
 #include <string.h>
 #include <stdio.h>
 
-static char *escape_json_string(const char *s)
+static char *escape_json_string(struct arena *arena, const char *s)
 {
 	if (!s)
-		return strdup("");
+		return arena_strdup(arena, "");
 	size_t len = strlen(s);
 
-	char *clean = malloc(len + 1);
+	char *clean = arena_alloc(arena, len + 1);
 	if (!clean)
 		return NULL;
 	size_t clean_len = utf8_sanitize_into(clean, s, len);
 	clean[clean_len] = '\0';
 
 	size_t cap = clean_len * 2 + 1;
-	char *out = malloc(cap);
+	char *out = arena_alloc(arena, cap);
 	if (!out) {
-		free(clean);
 		return NULL;
 	}
 	size_t j = 0;
 	for (size_t i = 0; i < clean_len; i++) {
 		if (j + 8 >= cap) {
 			cap *= 2;
-			char *new_out = realloc(out, cap);
+			char *new_out = arena_alloc(arena, cap);
 			if (!new_out) {
-				free(out);
-				free(clean);
 				return NULL;
 			}
+			memcpy(new_out, out, j);
 			out = new_out;
 		}
 		unsigned char c = (unsigned char)clean[i];
@@ -65,17 +64,17 @@ static char *escape_json_string(const char *s)
 		}
 	}
 	out[j] = '\0';
-	free(clean);
 	return out;
 }
 
-static int build_messages_json(const char *system_prompt,
+static int build_messages_json(struct arena *arena,
+				const char *system_prompt,
 				const char **messages, int n,
 				char **out_json)
 {
 	size_t cap = 8192;
 	size_t len = 0;
-	char *buf = malloc(cap);
+	char *buf = arena_alloc(arena, cap);
 	if (!buf)
 		return -ENOMEM;
 
@@ -83,11 +82,10 @@ static int build_messages_json(const char *system_prompt,
 	int first = 1;
 
 	if (system_prompt && *system_prompt) {
-		char *esc = escape_json_string(system_prompt);
-		if (!esc) { free(buf); return -ENOMEM; }
+		char *esc = escape_json_string(arena, system_prompt);
+		if (!esc) { return -ENOMEM; }
 		len += snprintf(buf + len, cap - len,
 				"{\"role\":\"system\",\"content\":\"%s\"}", esc);
-		free(esc);
 		first = 0;
 	}
 
@@ -95,19 +93,19 @@ static int build_messages_json(const char *system_prompt,
 		if (!first)
 			len += snprintf(buf + len, cap - len, ",");
 		const char *role = (i % 2 == 0) ? "user" : "assistant";
-		char *esc = escape_json_string(messages[i]);
-		if (!esc) { free(buf); return -ENOMEM; }
+		char *esc = escape_json_string(arena, messages[i]);
+		if (!esc) { return -ENOMEM; }
 		size_t needed = len + strlen(esc) + 64;
 		if (needed > cap) {
 			cap = needed * 2;
-			char *new_buf = realloc(buf, cap);
-			if (!new_buf) { free(buf); free(esc); return -ENOMEM; }
+			char *new_buf = arena_alloc(arena, cap);
+			if (!new_buf) { return -ENOMEM; }
+			memcpy(new_buf, buf, len);
 			buf = new_buf;
 		}
 		len += snprintf(buf + len, cap - len,
 				"{\"role\":\"%s\",\"content\":\"%s\"}",
 				role, esc);
-		free(esc);
 		first = 0;
 	}
 	len += snprintf(buf + len, cap - len, "]");
@@ -118,19 +116,23 @@ static int build_messages_json(const char *system_prompt,
 struct llm_stream_ctx {
 	sse_callback user_cb;
 	void *user_data;
+	struct arena *arena;
 	char *accumulated;
 	size_t acc_len;
+	size_t acc_cap;
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	int tool_call_cap;
 };
 
-static void llm_stream_init(struct llm_stream_ctx *ctx,
+static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 			     sse_callback cb, void *user_data)
 {
 	ctx->user_cb = cb;
 	ctx->user_data = user_data;
-	ctx->accumulated = malloc(8192);
+	ctx->arena = arena;
+	ctx->acc_cap = 8192;
+	ctx->accumulated = arena_alloc(arena, ctx->acc_cap);
 	ctx->acc_len = 0;
 	if (ctx->accumulated)
 		ctx->accumulated[0] = '\0';
@@ -142,10 +144,15 @@ static void llm_stream_init(struct llm_stream_ctx *ctx,
 static void llm_stream_append(struct llm_stream_ctx *ctx, const char *text)
 {
 	size_t tlen = strlen(text);
-	char *new_acc = realloc(ctx->accumulated, ctx->acc_len + tlen + 1);
-	if (!new_acc)
-		return;
-	ctx->accumulated = new_acc;
+	if (ctx->acc_len + tlen + 1 > ctx->acc_cap) {
+		size_t new_cap = (ctx->acc_len + tlen + 1) * 2;
+		char *new_acc = arena_alloc(ctx->arena, new_cap);
+		if (!new_acc)
+			return;
+		memcpy(new_acc, ctx->accumulated, ctx->acc_len);
+		ctx->accumulated = new_acc;
+		ctx->acc_cap = new_cap;
+	}
 	memcpy(ctx->accumulated + ctx->acc_len, text, tlen);
 	ctx->acc_len += tlen;
 	ctx->accumulated[ctx->acc_len] = '\0';
@@ -156,10 +163,11 @@ static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
 {
 	if (index >= ctx->tool_call_cap) {
 		int new_cap = index + 4;
-		struct tool_call *new_tc = realloc(ctx->tool_calls,
-						   (size_t)new_cap * sizeof(*new_tc));
+		struct tool_call *new_tc = arena_alloc(ctx->arena, (size_t)new_cap * sizeof(*new_tc));
 		if (!new_tc)
 			return NULL;
+		if (ctx->tool_calls)
+			memcpy(new_tc, ctx->tool_calls, (size_t)ctx->tool_call_cap * sizeof(*new_tc));
 		for (int i = ctx->tool_call_cap; i < new_cap; i++)
 			memset(&new_tc[i], 0, sizeof(new_tc[i]));
 		ctx->tool_calls = new_tc;
@@ -172,14 +180,7 @@ static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
 
 static void llm_stream_free(struct llm_stream_ctx *ctx)
 {
-	free(ctx->accumulated);
-	ctx->accumulated = NULL;
-	for (int i = 0; i < ctx->tool_call_count; i++)
-		free(ctx->tool_calls[i].arguments);
-	free(ctx->tool_calls);
-	ctx->tool_calls = NULL;
-	ctx->tool_call_count = 0;
-	ctx->tool_call_cap = 0;
+	(void)ctx;
 }
 
 static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
@@ -190,8 +191,7 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 		resp->tool_call_count = 0;
 		return;
 	}
-	resp->tool_calls = calloc((size_t)ctx->tool_call_count,
-				   sizeof(*resp->tool_calls));
+	resp->tool_calls = arena_alloc(ctx->arena, (size_t)ctx->tool_call_count * sizeof(*resp->tool_calls));
 	if (!resp->tool_calls) {
 		resp->tool_call_count = 0;
 		return;
@@ -282,9 +282,10 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 				if (cJSON_IsString(args_item) && args_item->valuestring) {
 					size_t existing = tc->arguments ? strlen(tc->arguments) : 0;
 					size_t add_len = strlen(args_item->valuestring);
-					char *new_args = realloc(tc->arguments,
-								 existing + add_len + 1);
+					char *new_args = arena_alloc(ctx->arena, existing + add_len + 1);
 					if (new_args) {
+						if (tc->arguments)
+							memcpy(new_args, tc->arguments, existing);
 						tc->arguments = new_args;
 						memcpy(tc->arguments + existing,
 						       args_item->valuestring,
@@ -307,7 +308,8 @@ static int llm_sse_http_cb(const char *data, size_t len, void *ud)
 	return 0;
 }
 
-static int llm_chat(struct model *self, const char *system_prompt,
+static int llm_chat(struct model *self, struct arena *arena,
+		    const char *system_prompt,
 		    const char **messages, int n,
 		    sse_callback cb, void *user_data)
 {
@@ -319,14 +321,13 @@ static int llm_chat(struct model *self, const char *system_prompt,
 	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
 
 	char *msgs_json = NULL;
-	int rc = build_messages_json(system_prompt, messages, n, &msgs_json);
+	int rc = build_messages_json(arena, system_prompt, messages, n, &msgs_json);
 	if (rc < 0)
 		return rc;
 
 	size_t body_cap = strlen(msgs_json) + 512;
-	char *body = malloc(body_cap);
+	char *body = arena_alloc(arena, body_cap);
 	if (!body) {
-		free(msgs_json);
 		return -ENOMEM;
 	}
 
@@ -337,15 +338,13 @@ static int llm_chat(struct model *self, const char *system_prompt,
 		"\"max_tokens\":%d}",
 		self->model_id, msgs_json,
 		self->max_tokens > 0 ? self->max_tokens : 4096);
-	free(msgs_json);
 
 	if (body_len < 0 || (size_t)body_len >= body_cap) {
-		free(body);
 		return -EIO;
 	}
 
 	struct llm_stream_ctx ctx;
-	llm_stream_init(&ctx, cb, user_data);
+	llm_stream_init(&ctx, arena, cb, user_data);
 
 	struct sse_parser parser;
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
@@ -366,20 +365,16 @@ static int llm_chat(struct model *self, const char *system_prompt,
 	log_dbg("llm_chat: SSE request done, status=%d", status);
 
 	sse_parser_free(&parser);
-	free(body);
 
 	if (status < 0) {
 		log_err("llm_chat: SSE request failed: %d", status);
-		llm_stream_free(&ctx);
 		return status;
 	}
 	if (status >= 400) {
 		log_err("llm_chat: API returned HTTP %d", status);
-		llm_stream_free(&ctx);
 		return -EIO;
 	}
 
-	llm_stream_free(&ctx);
 	return status;
 }
 
@@ -466,7 +461,7 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 	return arr;
 }
 
-static int llm_chat_with_tools(struct model *self,
+static int llm_chat_with_tools(struct model *self, struct arena *arena,
 			       const char *system_prompt,
 			       struct chat_message *messages, int msg_count,
 			       struct tool_desc *tools, int tool_count,
@@ -477,10 +472,6 @@ static int llm_chat_with_tools(struct model *self,
 		log_err("llm_chat_with_tools: no API key configured");
 		return -EINVAL;
 	}
-	if (!response)
-		return -EINVAL;
-
-	memset(response, 0, sizeof(*response));
 
 	log_dbg("llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d",
 		self->model_id, tool_count, msg_count);
@@ -509,7 +500,7 @@ static int llm_chat_with_tools(struct model *self,
 		return -ENOMEM;
 
 	struct llm_stream_ctx ctx;
-	llm_stream_init(&ctx, thought_cb, thought_ud);
+	llm_stream_init(&ctx, arena, thought_cb, thought_ud);
 
 	struct sse_parser parser;
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
@@ -534,26 +525,21 @@ static int llm_chat_with_tools(struct model *self,
 
 	if (status < 0) {
 		log_err("llm_chat_with_tools: SSE request failed: %d", status);
-		llm_stream_free(&ctx);
 		return status;
 	}
 	if (status >= 400) {
 		log_err("llm_chat_with_tools: API returned HTTP %d", status);
-		llm_stream_free(&ctx);
 		return -EIO;
 	}
 
 	if (ctx.accumulated && *ctx.accumulated)
 		response->content = ctx.accumulated;
 	else {
-		free(ctx.accumulated);
 		response->content = NULL;
 	}
-	ctx.accumulated = NULL;
 
 	llm_stream_transfer_tool_calls(&ctx, response);
 
-	llm_stream_free(&ctx);
 	return status;
 }
 
@@ -563,16 +549,22 @@ static int llm_generate(struct model *self, const char *prompt,
 	if (!self || !prompt)
 		return -EINVAL;
 
+	struct arena *arena = arena_create(8192);
+	if (!arena)
+		return -ENOMEM;
+
 	const char *messages[] = { prompt };
 	char *msgs_json = NULL;
-	int rc = build_messages_json(NULL, messages, 1, &msgs_json);
-	if (rc < 0)
+	int rc = build_messages_json(arena, NULL, messages, 1, &msgs_json);
+	if (rc < 0) {
+		arena_destroy(arena);
 		return rc;
+	}
 
 	size_t body_cap = strlen(msgs_json) + 256;
 	char *body = malloc(body_cap);
 	if (!body) {
-		free(msgs_json);
+		arena_destroy(arena);
 		return -ENOMEM;
 	}
 
@@ -582,7 +574,7 @@ static int llm_generate(struct model *self, const char *prompt,
 		"\"max_tokens\":%d}",
 		self->model_id, msgs_json,
 		self->max_tokens > 0 ? self->max_tokens : 4096);
-	free(msgs_json);
+	arena_destroy(arena);
 
 	if (body_len < 0 || (size_t)body_len >= body_cap) {
 		free(body);

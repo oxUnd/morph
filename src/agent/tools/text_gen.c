@@ -1,5 +1,6 @@
 #include "text_gen.h"
 #include "util/log.h"
+#include "util/arena.h"
 #include "models/llm.h"
 #include "cJSON.h"
 #include <stdlib.h>
@@ -128,6 +129,13 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 		return -ENOSYS;
 	}
 
+	struct arena *arena = arena_create(64 * 1024);
+	if (!arena) {
+		free(prompt);
+		*result_json = strdup("{\"error\":\"memory allocation failed\"}");
+		return -ENOMEM;
+	}
+
 	const char *messages[] = { prompt };
 	struct text_gen_stream_ctx ctx = {
 		.response = malloc(8192),
@@ -135,21 +143,24 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 		.cap = 8192,
 	};
 	if (!ctx.response) {
+		arena_destroy(arena);
 		free(prompt);
 		return -ENOMEM;
 	}
 	ctx.response[0] = '\0';
 
-	int status = g_llm->chat(g_llm, NULL, messages, 1,
+	int status = g_llm->chat(g_llm, arena, NULL, messages, 1,
 				 text_gen_stream_cb, &ctx);
 	if (status < 0) {
 		free(ctx.response);
+		arena_destroy(arena);
 		free(prompt);
 		*result_json = strdup("{\"error\":\"LLM call failed\"}");
 		return status;
 	}
 
 	*result_json = ctx.response;
+	arena_destroy(arena);
 	free(prompt);
 	return 0;
 }
