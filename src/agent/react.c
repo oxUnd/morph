@@ -362,7 +362,11 @@ static char *build_system_prompt(struct react_context *ctx)
 		"You may also include a brief thought in your text response before calling tools.\n"
 		"- If no tool is needed, respond directly with your answer.\n"
 		"- If a tool fails twice with the same args, change strategy or respond directly.\n"
-		"- Maximum %d tool-calling iterations.\n",
+		"- Maximum %d tool-calling iterations.\n"
+		"- When tools produce image or video files, ALWAYS reference them in your "
+		"final answer using:\n"
+		"  Images: ![image](/path/to/file.png)\n"
+		"  Videos: [video](/path/to/file.mp4)\n",
 		ctx->max_iterations);
 
 	if (ctx->skills) {

@@ -40,6 +40,7 @@ struct spin_context {
 	int frame;
 	time_t start_time;
 	time_t last_update;
+	size_t last_render_width;
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	volatile sig_atomic_t *cancel_flag;

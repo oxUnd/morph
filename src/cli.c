@@ -1518,6 +1518,132 @@ void cli_run(struct cli_context *ctx)
 
 /* ---- output_callback ---- */
 
+static int is_image_ext(const char *path)
+{
+	const char *ext = strrchr(path, '.');
+	if (!ext) return 0;
+	return (strcasecmp(ext, ".png") == 0 || strcasecmp(ext, ".jpg") == 0 ||
+		strcasecmp(ext, ".jpeg") == 0 || strcasecmp(ext, ".gif") == 0 ||
+		strcasecmp(ext, ".webp") == 0 || strcasecmp(ext, ".bmp") == 0);
+}
+
+static int is_video_ext(const char *path)
+{
+	const char *ext = strrchr(path, '.');
+	if (!ext) return 0;
+	return (strcasecmp(ext, ".mp4") == 0 || strcasecmp(ext, ".mov") == 0 ||
+		strcasecmp(ext, ".avi") == 0 || strcasecmp(ext, ".mkv") == 0 ||
+		strcasecmp(ext, ".webm") == 0);
+}
+
+static int is_media_path(const char *path)
+{
+	return is_image_ext(path) || is_video_ext(path);
+}
+
+static char *wrap_bare_media_paths(const char *content)
+{
+	if (!content || !*content)
+		return NULL;
+
+	size_t len = strlen(content);
+	size_t cap = len * 3 + 1;
+	char *out = malloc(cap);
+	if (!out)
+		return NULL;
+	size_t olen = 0;
+
+	const char *p = content;
+	while (*p) {
+		if (p[0] == '!' && p[1] == '[') {
+			const char *close = strchr(p + 2, ')');
+			if (close) {
+				size_t chunk = (close - p) + 1;
+				memcpy(out + olen, p, chunk);
+				olen += chunk;
+				p = close + 1;
+				continue;
+			}
+		}
+		if (p[0] == '[' && p[1] != ']') {
+			const char *close = strchr(p + 1, ')');
+			if (close) {
+				size_t chunk = (close - p) + 1;
+				memcpy(out + olen, p, chunk);
+				olen += chunk;
+				p = close + 1;
+				continue;
+			}
+		}
+
+		const char *path_start = NULL;
+		const char *q = p;
+		while (*q) {
+			if ((q == content || q[-1] == ' ' || q[-1] == '\n' || q[-1] == '\r' || q[-1] == '\t' || q[-1] == ':' || q[-1] == '`') &&
+			    (strncmp(q, "~/.morph/output/", 16) == 0 ||
+			     strncmp(q, "/.morph/output/", 15) == 0)) {
+				path_start = q;
+				break;
+			}
+			q++;
+		}
+
+		if (!path_start) {
+			out[olen++] = *p++;
+			continue;
+		}
+
+		if (path_start > p) {
+			size_t pre = path_start - p;
+			memcpy(out + olen, p, pre);
+			olen += pre;
+		}
+
+		const char *path_end = path_start;
+		while (*path_end && *path_end != ' ' && *path_end != '\n' &&
+		       *path_end != '\r' && *path_end != '\t' &&
+		       *path_end != ')' && *path_end != ']' &&
+		       *path_end != '`' && *path_end != '"' &&
+		       *path_end != '\'' && *path_end != ',' &&
+		       *path_end != ';' && *path_end != '\0')
+			path_end++;
+
+		size_t path_len = (size_t)(path_end - path_start);
+		if (path_len > 0 && is_media_path(path_start)) {
+			const char *prefix;
+			const char *suffix;
+			if (is_image_ext(path_start)) {
+				prefix = "![image](";
+				suffix = ")";
+			} else {
+				prefix = "[video](";
+				suffix = ")";
+			}
+			size_t plen = strlen(prefix);
+			size_t slen = strlen(suffix);
+			while (olen + plen + path_len + slen + 1 >= cap) {
+				cap *= 2;
+				char *nb = realloc(out, cap);
+				if (!nb) { free(out); return NULL; }
+				out = nb;
+			}
+			memcpy(out + olen, prefix, plen);
+			olen += plen;
+			memcpy(out + olen, path_start, path_len);
+			olen += path_len;
+			memcpy(out + olen, suffix, slen);
+			olen += slen;
+		} else {
+			memcpy(out + olen, path_start, path_len);
+			olen += path_len;
+		}
+		p = path_end;
+	}
+
+	out[olen] = '\0';
+	return out;
+}
+
 static void media_callback(const char *type, const char *path, void *user)
 {
 	if (strcmp(type, "image") == 0) {
@@ -1669,10 +1795,14 @@ static int output_callback(enum react_step_type type, const char *content,
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 			printf("\n");
 		}
-		if (content && *content)
-			markdown_render_ansi_with_media(content, media_callback, ctx);
-		else
+		if (content && *content) {
+			char *wrapped = wrap_bare_media_paths(content);
+			markdown_render_ansi_with_media(wrapped ? wrapped : content,
+							media_callback, ctx);
+			free(wrapped);
+		} else {
 			printf("\n");
+		}
 
 		printf("\n");
 		fflush(stdout);

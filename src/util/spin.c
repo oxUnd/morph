@@ -2,6 +2,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 
 #define FRAME_INTERVAL_MS 120
 
@@ -80,33 +81,10 @@ static void format_elapsed(char *buf, size_t len, time_t start)
 	if (elapsed < 60) {
 		snprintf(buf, len, "%lds", elapsed);
 	} else if (elapsed < 3600) {
-		snprintf(buf, len, "%ldm %ds", elapsed / 60, elapsed % 60);
+		snprintf(buf, len, "%ldm %lds", elapsed / 60, elapsed % 60);
 	} else {
-		snprintf(buf, len, "%ldh %dm", elapsed / 3600, (elapsed % 3600) / 60);
+		snprintf(buf, len, "%ldh %ldm", elapsed / 3600, (elapsed % 3600) / 60);
 	}
-}
-
-static size_t utf8_visible_len(const char *s)
-{
-	size_t n = 0;
-	while (*s) {
-		if ((*s & 0xC0) != 0x80)
-			n++;
-		s++;
-	}
-	return n;
-}
-
-static const char *utf8_skip_back(const char *start, const char *end, size_t chars)
-{
-	while (end > start && chars > 0) {
-		end--;
-		if ((*end & 0xC0) != 0x80)
-			chars--;
-	}
-	while (end > start && (*end & 0xC0) == 0x80)
-		end--;
-	return end;
 }
 
 static int utf8_char_bytes(const char *s)
@@ -117,6 +95,41 @@ static int utf8_char_bytes(const char *s)
 	if ((c & 0xF0) == 0xE0) return 3;
 	if ((c & 0xF8) == 0xF0) return 4;
 	return 1;
+}
+
+static int utf8_char_width(const char *s)
+{
+	const unsigned char *p = (const unsigned char *)s;
+	unsigned int cp = 0;
+	int bytes = utf8_char_bytes(s);
+	if (bytes == 1) return 1;
+	if (bytes == 2) { cp = ((unsigned)p[0] & 0x1F) << 6 | ((unsigned)p[1] & 0x3F); }
+	else if (bytes == 3) { cp = ((unsigned)p[0] & 0x0F) << 12 | ((unsigned)p[1] & 0x3F) << 6 | ((unsigned)p[2] & 0x3F); }
+	else if (bytes == 4) { cp = ((unsigned)p[0] & 0x07) << 18 | ((unsigned)p[1] & 0x3F) << 12 | ((unsigned)p[2] & 0x3F) << 6 | ((unsigned)p[3] & 0x3F); }
+	else return 1;
+	if (cp < 0x1100) return 1;
+	if (cp < 0x1160) return 2;
+	if (cp >= 0x2E80 && cp <= 0xA4CF) return 2;
+	if (cp >= 0xAC00 && cp <= 0xD7AF) return 2;
+	if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
+	if (cp >= 0xFE30 && cp <= 0xFE6F) return 2;
+	if (cp >= 0xFF01 && cp <= 0xFF60) return 2;
+	if (cp >= 0xFFE0 && cp <= 0xFFE6) return 2;
+	if (cp >= 0x20000 && cp <= 0x2FFFD) return 2;
+	if (cp >= 0x30000 && cp <= 0x3FFFD) return 2;
+	return 1;
+}
+
+static size_t utf8_visible_len(const char *s)
+{
+	size_t n = 0;
+	while (*s) {
+		if ((*s & 0xC0) != 0x80) {
+			n += (size_t)utf8_char_width(s);
+		}
+		s++;
+	}
+	return n;
 }
 
 static const char *utf8_skip_forward(const char *s, size_t chars)
@@ -134,7 +147,7 @@ static size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t m
 	size_t written = 0;
 	size_t vis = 0;
 	while (*src && vis < max_vis) {
-		int cb = utf8_char_bytes(src);
+		size_t cb = (size_t)utf8_char_bytes(src);
 		if (written + cb >= dst_cap) break;
 		memcpy(dst + written, src, cb);
 		written += cb;
@@ -143,6 +156,14 @@ static size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t m
 	}
 	dst[written] = '\0';
 	return vis;
+}
+
+static size_t get_term_width(void)
+{
+	struct winsize ws;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+		return (size_t)ws.ws_col;
+	return 80;
 }
 
 void spin_render(struct spin_context *ctx)
@@ -157,24 +178,36 @@ void spin_render(struct spin_context *ctx)
 	char elapsed[32];
 	format_elapsed(elapsed, sizeof(elapsed), ctx->start_time);
 
+	size_t term_w = get_term_width();
+	size_t vis_width = 0;
+
 	fprintf(ctx->output, "\r\033[K");
 
 	if (ctx->state == SPIN_STATE_COMPLETE || ctx->state == SPIN_STATE_ERROR) {
+		size_t prefix_vis = utf8_visible_len(prefix);
+		size_t msg_vis = utf8_visible_len(ctx->message);
 		fprintf(ctx->output, "%s %s", prefix, ctx->message);
+		vis_width = prefix_vis + 1 + msg_vis;
 		if (elapsed[0]) {
 			fprintf(ctx->output, " \033[2m(%s)\033[0m", elapsed);
+			vis_width += 1 + utf8_visible_len(elapsed) + 2;
 		}
 	} else {
+		size_t frame_vis = utf8_visible_len(frame);
+		size_t msg_vis = utf8_visible_len(ctx->message);
+		size_t elapsed_vis = elapsed[0] ? utf8_visible_len(elapsed) : 0;
 		fprintf(ctx->output, "%s %s \033[2m%s\033[0m", frame, ctx->message, elapsed);
+		vis_width = frame_vis + 1 + msg_vis + 1 + elapsed_vis;
+
 		if (ctx->submessage[0]) {
-			size_t msg_vis = utf8_visible_len(ctx->message);
-			size_t elapsed_vis = elapsed[0] ? utf8_visible_len(elapsed) + 3 : 0;
-			size_t used = 4 + msg_vis + 1 + elapsed_vis + 4;
-			size_t max_sub = 80 > used ? 80 - used : 20;
+			size_t used = vis_width + 3;
+			size_t term_max = term_w > used ? term_w - used : 20;
+			size_t max_sub = term_max < 60 ? term_max : 60;
 			size_t sub_vis = utf8_visible_len(ctx->submessage);
 			if (sub_vis <= max_sub) {
 				fprintf(ctx->output, " \033[36m→\033[0m \033[2m%s\033[0m",
 					ctx->submessage);
+				vis_width = used + sub_vis;
 			} else {
 				size_t scroll_range = sub_vis - max_sub + 1;
 				size_t scroll_speed = 2;
@@ -183,11 +216,19 @@ void spin_render(struct spin_context *ctx)
 					offset = scroll_range;
 				const char *start = utf8_skip_forward(ctx->submessage, offset);
 				char buf[512];
-				utf8_copy_vis(buf, sizeof(buf), start, max_sub);
+				size_t copied_vis = utf8_copy_vis(buf, sizeof(buf), start, max_sub);
 				fprintf(ctx->output, " \033[36m→\033[0m \033[2m%s\033[0m", buf);
+				vis_width = used + copied_vis;
 			}
 		}
 	}
+
+	if (vis_width < ctx->last_render_width) {
+		size_t pad = ctx->last_render_width - vis_width;
+		for (size_t i = 0; i < pad; i++)
+			fputc(' ', ctx->output);
+	}
+	ctx->last_render_width = vis_width;
 
 	fflush(ctx->output);
 }
@@ -251,6 +292,7 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 	ctx->frame = 0;
 	ctx->start_time = time(NULL);
 	ctx->last_update = ctx->start_time;
+	ctx->last_render_width = 0;
 	ctx->submessage[0] = '\0';
 
 	if (message) {
@@ -338,6 +380,7 @@ void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char
 	pthread_join(ctx->thread, NULL);
 
 	ctx->frame = 0;
+	ctx->last_render_width = 0;
 	fprintf(ctx->output, "\r\033[K");
 
 	char elapsed[32];
