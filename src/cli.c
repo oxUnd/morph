@@ -260,6 +260,8 @@ static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
 
+static int cmd_render(struct cli_context *ctx, int argc, char **argv);
+
 struct cmd_entry {
 	const char *name;
 	int (*handler)(struct cli_context *ctx, int argc, char **argv);
@@ -305,6 +307,8 @@ static const struct cmd_entry commands[] = {
 	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
 	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },
 	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
+	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
+	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
 };
 
@@ -956,6 +960,57 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (ctx->tools.count == 0)
 		printf("  (none)\n");
+	return 0;
+}
+
+static int cmd_render(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *path = cmd_arg(argc, argv, 1);
+	if (!path) {
+		CMD_ERROR("usage: /render <file_path>");
+		return -EINVAL;
+	}
+	char *expanded = file_expand_path(path);
+	if (!file_exists(expanded)) {
+		CMD_ERROR("file not found: %s", expanded);
+		free(expanded);
+		return -ENOENT;
+	}
+	const char *ext = strrchr(expanded, '.');
+	if (ext) ext++;
+	if (ext && (strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
+		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
+		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
+		if (video_play(expanded, ctx->config.render.mpv_args) != 0) {
+			CMD_ERROR("failed to play video: %s", expanded);
+			free(expanded);
+			return -EIO;
+		}
+		CMD_OK("video: %s", expanded);
+	} else if (ext && (strcasecmp(ext, "png") == 0 || strcasecmp(ext, "jpg") == 0 ||
+			   strcasecmp(ext, "jpeg") == 0 || strcasecmp(ext, "gif") == 0 ||
+			   strcasecmp(ext, "webp") == 0 || strcasecmp(ext, "bmp") == 0 ||
+			   strcasecmp(ext, "tga") == 0 || strcasecmp(ext, "hdr") == 0)) {
+		int w = 0, h = 0, ch = 0;
+		if (!stbi_info(expanded, &w, &h, &ch)) {
+			CMD_ERROR("not a valid image file: %s", expanded);
+			free(expanded);
+			return -EIO;
+		}
+		image_render_terminal(expanded);
+		CMD_OK("image: %s (%dx%d)", expanded, w, h);
+	} else {
+		size_t len = 0;
+		char *text = file_read_all(expanded, &len);
+		if (!text) {
+			CMD_ERROR("failed to read file: %s", expanded);
+			free(expanded);
+			return -EIO;
+		}
+		markdown_render_ansi(text);
+		free(text);
+	}
+	free(expanded);
 	return 0;
 }
 
