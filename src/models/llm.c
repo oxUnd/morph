@@ -191,7 +191,8 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 		resp->tool_call_count = 0;
 		return;
 	}
-	resp->tool_calls = arena_alloc(ctx->arena, (size_t)ctx->tool_call_count * sizeof(*resp->tool_calls));
+	resp->tool_calls = calloc((size_t)ctx->tool_call_count,
+				   sizeof(*resp->tool_calls));
 	if (!resp->tool_calls) {
 		resp->tool_call_count = 0;
 		return;
@@ -202,8 +203,9 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 			sizeof(resp->tool_calls[i].id) - 1);
 		strncpy(resp->tool_calls[i].name, ctx->tool_calls[i].name,
 			sizeof(resp->tool_calls[i].name) - 1);
-		resp->tool_calls[i].arguments = ctx->tool_calls[i].arguments;
-		ctx->tool_calls[i].arguments = NULL;
+		resp->tool_calls[i].arguments =
+			ctx->tool_calls[i].arguments
+			? strdup(ctx->tool_calls[i].arguments) : strdup("");
 	}
 }
 
@@ -472,6 +474,10 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 		log_err("llm_chat_with_tools: no API key configured");
 		return -EINVAL;
 	}
+	if (!response)
+		return -EINVAL;
+
+	memset(response, 0, sizeof(*response));
 
 	log_dbg("llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d",
 		self->model_id, tool_count, msg_count);
@@ -533,7 +539,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	}
 
 	if (ctx.accumulated && *ctx.accumulated)
-		response->content = ctx.accumulated;
+		response->content = strdup(ctx.accumulated);
 	else {
 		response->content = NULL;
 	}

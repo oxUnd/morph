@@ -1034,7 +1034,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 					msg_list_append(&ctx->messages, ml_user);
 
 					chat_response_free(&response);
-					free(sd.accumulated);
 					sd.accumulated = NULL;
 					continue;
 				} else {
