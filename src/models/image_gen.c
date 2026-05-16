@@ -4,6 +4,7 @@
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/image_util.h"
+#include "util/arena.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -67,6 +68,10 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 
+	struct arena *arena = arena_create(8192);
+	if (!arena)
+		return -ENOMEM;
+
 	const char *api_base = self ? self->api_base : "https://api.openai.com/v1";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
 	const char *model_id = (self && self->model_id[0]) ? self->model_id : "dall-e-3";
@@ -90,18 +95,27 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		char *b64 = image_encode_base64(image_path, 2048);
 		if (b64) {
 			size_t uri_len = 22 + strlen(b64) + 1;
-			char *data_uri = malloc(uri_len);
+			char *data_uri = arena_alloc(arena, uri_len);
 			if (data_uri) {
 				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
 				cJSON_AddStringToObject(body_json, "image", data_uri);
-				free(data_uri);
 			}
 			free(b64);
 		}
 	}
 
-	char *body_str = cJSON_PrintUnformatted(body_json);
+	size_t body_cap = 8192;
+	char *body_str = arena_alloc(arena, body_cap);
+	while (body_str && !cJSON_PrintPreallocated(body_json, body_str, (int)body_cap, 0)) {
+		body_cap *= 2;
+		body_str = arena_alloc(arena, body_cap);
+	}
 	cJSON_Delete(body_json);
+
+	if (!body_str) {
+		arena_destroy(arena);
+		return -ENOMEM;
+	}
 
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
@@ -110,7 +124,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	struct http_response resp = {0};
 	int rc = http_post_ex(url, body_str, strlen(body_str),
 			      "application/json", hdrs, 1, &resp);
-	free(body_str);
+	arena_destroy(arena);
 
 	if (rc < 0) {
 		log_err("image_gen: HTTP request failed");

@@ -31,6 +31,7 @@ struct chat_response {
 	char *content;
 	struct tool_call *tool_calls;
 	int tool_call_count;
+	struct arena *arena;
 };
 
 struct model {
@@ -62,8 +63,8 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 void model_destroy(struct model *m);
 
 void chat_response_free(struct chat_response *resp);
-void chat_message_cleanup(struct chat_message *msg);
-void tool_call_cleanup(struct tool_call *tc);
+void chat_message_cleanup(struct chat_message *msg, struct arena *arena);
+void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 
 #ifdef __cplusplus
 }

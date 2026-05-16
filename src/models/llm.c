@@ -191,8 +191,7 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 		resp->tool_call_count = 0;
 		return;
 	}
-	resp->tool_calls = calloc((size_t)ctx->tool_call_count,
-				   sizeof(*resp->tool_calls));
+	resp->tool_calls = arena_alloc(ctx->arena, (size_t)ctx->tool_call_count * sizeof(*resp->tool_calls));
 	if (!resp->tool_calls) {
 		resp->tool_call_count = 0;
 		return;
@@ -205,7 +204,8 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 			sizeof(resp->tool_calls[i].name) - 1);
 		resp->tool_calls[i].arguments =
 			ctx->tool_calls[i].arguments
-			? strdup(ctx->tool_calls[i].arguments) : strdup("");
+			? arena_strdup(ctx->arena, ctx->tool_calls[i].arguments)
+			: arena_strdup(ctx->arena, "");
 	}
 }
 
@@ -478,6 +478,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 		return -EINVAL;
 
 	memset(response, 0, sizeof(*response));
+	response->arena = arena;
 
 	log_dbg("llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d",
 		self->model_id, tool_count, msg_count);
@@ -499,7 +500,12 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	cJSON_AddNumberToObject(root, "max_tokens",
 				self->max_tokens > 0 ? self->max_tokens : 4096);
 
-	char *body = cJSON_PrintUnformatted(root);
+	size_t body_cap = 8192;
+	char *body = arena_alloc(arena, body_cap);
+	while (body && !cJSON_PrintPreallocated(root, body, (int)body_cap, 0)) {
+		body_cap *= 2;
+		body = arena_alloc(arena, body_cap);
+	}
 	cJSON_Delete(root);
 
 	if (!body)
@@ -527,7 +533,6 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	log_dbg("llm_chat_with_tools: SSE request done, status=%d", status);
 
 	sse_parser_free(&parser);
-	free(body);
 
 	if (status < 0) {
 		log_err("llm_chat_with_tools: SSE request failed: %d", status);
@@ -539,7 +544,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	}
 
 	if (ctx.accumulated && *ctx.accumulated)
-		response->content = strdup(ctx.accumulated);
+		response->content = ctx.accumulated;
 	else {
 		response->content = NULL;
 	}
@@ -568,7 +573,7 @@ static int llm_generate(struct model *self, const char *prompt,
 	}
 
 	size_t body_cap = strlen(msgs_json) + 256;
-	char *body = malloc(body_cap);
+	char *body = arena_alloc(arena, body_cap);
 	if (!body) {
 		arena_destroy(arena);
 		return -ENOMEM;
@@ -580,10 +585,9 @@ static int llm_generate(struct model *self, const char *prompt,
 		"\"max_tokens\":%d}",
 		self->model_id, msgs_json,
 		self->max_tokens > 0 ? self->max_tokens : 4096);
-	arena_destroy(arena);
 
 	if (body_len < 0 || (size_t)body_len >= body_cap) {
-		free(body);
+		arena_destroy(arena);
 		return -EIO;
 	}
 
@@ -595,7 +599,7 @@ static int llm_generate(struct model *self, const char *prompt,
 	const char *extra_headers[] = { auth_header };
 	rc = http_post_ex(url, body, (size_t)body_len,
 			  "application/json", extra_headers, 1, &resp);
-	free(body);
+	arena_destroy(arena);
 
 	if (rc < 0) {
 		http_response_free(&resp);
@@ -656,6 +660,10 @@ void chat_response_free(struct chat_response *resp)
 {
 	if (!resp)
 		return;
+	if (resp->arena) {
+		memset(resp, 0, sizeof(*resp));
+		return;
+	}
 	free(resp->content);
 	resp->content = NULL;
 	for (int i = 0; i < resp->tool_call_count; i++)
@@ -665,10 +673,14 @@ void chat_response_free(struct chat_response *resp)
 	resp->tool_call_count = 0;
 }
 
-void chat_message_cleanup(struct chat_message *msg)
+void chat_message_cleanup(struct chat_message *msg, struct arena *arena)
 {
 	if (!msg)
 		return;
+	if (arena) {
+		memset(msg, 0, sizeof(*msg));
+		return;
+	}
 	free(msg->role);
 	free(msg->content);
 	free(msg->tool_call_id);
@@ -678,10 +690,14 @@ void chat_message_cleanup(struct chat_message *msg)
 	memset(msg, 0, sizeof(*msg));
 }
 
-void tool_call_cleanup(struct tool_call *tc)
+void tool_call_cleanup(struct tool_call *tc, struct arena *arena)
 {
 	if (!tc)
 		return;
+	if (arena) {
+		memset(tc, 0, sizeof(*tc));
+		return;
+	}
 	free(tc->arguments);
 	tc->arguments = NULL;
 }

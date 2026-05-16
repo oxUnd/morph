@@ -4,6 +4,7 @@
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/image_util.h"
+#include "util/arena.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -39,6 +40,10 @@ int video_gen_create(struct model *self, const char *prompt,
 		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 
+	struct arena *arena = arena_create(8192);
+	if (!arena)
+		return -ENOMEM;
+
 	const char *api_base = self ? self->api_base : "";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
 	const char *model_id = (self && self->model_id[0]) ? self->model_id
@@ -48,6 +53,7 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	if (!api_base[0]) {
 		log_err("video_gen: no api_base configured");
+		arena_destroy(arena);
 		return -EINVAL;
 	}
 
@@ -68,7 +74,7 @@ int video_gen_create(struct model *self, const char *prompt,
 		char *b64 = image_encode_base64(image_path, 1024);
 		if (b64) {
 			size_t uri_len = 22 + strlen(b64) + 1;
-			char *data_uri = malloc(uri_len);
+			char *data_uri = arena_alloc(arena, uri_len);
 			if (data_uri) {
 				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
 				cJSON *img_item = cJSON_CreateObject();
@@ -77,7 +83,6 @@ int video_gen_create(struct model *self, const char *prompt,
 				cJSON_AddStringToObject(url_obj, "url", data_uri);
 				cJSON_AddItemToObject(img_item, "image_url", url_obj);
 				cJSON_AddItemToArray(content_arr, img_item);
-				free(data_uri);
 			}
 			free(b64);
 		}
@@ -87,8 +92,18 @@ int video_gen_create(struct model *self, const char *prompt,
 		cJSON_AddNumberToObject(body_json, "duration", duration);
 	cJSON_AddNumberToObject(body_json, "n", 1);
 
-	char *body_str = cJSON_PrintUnformatted(body_json);
+	size_t body_cap = 8192;
+	char *body_str = arena_alloc(arena, body_cap);
+	while (body_str && !cJSON_PrintPreallocated(body_json, body_str, (int)body_cap, 0)) {
+		body_cap *= 2;
+		body_str = arena_alloc(arena, body_cap);
+	}
 	cJSON_Delete(body_json);
+
+	if (!body_str) {
+		arena_destroy(arena);
+		return -ENOMEM;
+	}
 
 	log_info("video_gen: request body (%zu bytes)", strlen(body_str));
 	log_dbg("video_gen: request body:\n%s", body_str);
@@ -101,10 +116,11 @@ int video_gen_create(struct model *self, const char *prompt,
 	struct http_response resp = {0};
 	int rc = http_post_ex(submit_url, body_str, strlen(body_str),
 			      "application/json", hdrs, 1, &resp);
-	free(body_str);
+	arena_reset(arena);
 
 	if (rc < 0) {
 		log_err("video_gen: submit request failed");
+		arena_destroy(arena);
 		return rc;
 	}
 
@@ -139,6 +155,7 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	if (!task_id[0]) {
 		log_err("video_gen: no task id in submit response");
+		arena_destroy(arena);
 		return -EIO;
 	}
 	if (task_status[0])
@@ -147,6 +164,7 @@ int video_gen_create(struct model *self, const char *prompt,
 		log_info("video_gen: task submitted: %s", task_id);
 
 	if (video_url[0]) {
+		arena_destroy(arena);
 		goto download;
 	}
 
@@ -212,6 +230,7 @@ int video_gen_create(struct model *self, const char *prompt,
 				log_dbg("video_gen: poll response body:\n%s", qresp.body);
 				cJSON_Delete(qroot);
 				http_response_free(&qresp);
+				arena_destroy(arena);
 				return -EIO;
 			}
 
@@ -221,6 +240,8 @@ int video_gen_create(struct model *self, const char *prompt,
 		cJSON_Delete(qroot);
 		http_response_free(&qresp);
 	}
+
+	arena_destroy(arena);
 
 	if (!video_url[0]) {
 		log_err("video_gen: timed out for task: %s", task_id);
