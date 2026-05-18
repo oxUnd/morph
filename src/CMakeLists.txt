@@ -14,6 +14,7 @@ set(MORPH_LIBS
 	morph-config
 	morph-session
 	morph-skill
+	morph-mcp
 	SQLite::SQLite3
 	CURL::libcurl
 )
@@ -58,6 +59,7 @@ add_subdirectory(agent)
 add_subdirectory(sandbox)
 add_subdirectory(ext)
 add_subdirectory(skill)
+add_subdirectory(mcp)
 add_subdirectory(ipc)
 add_subdirectory(models)
 add_subdirectory(http)

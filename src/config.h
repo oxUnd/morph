@@ -80,6 +80,33 @@ struct config_skill {
 	char dir[512];
 };
 
+#define MCP_SERVER_MAX 32
+#define MCP_SERVER_NAME_MAX 64
+#define MCP_CMD_ARGS_MAX 32
+#define MCP_CMD_ARG_LEN_MAX 256
+#define MCP_ENV_MAX 16
+#define MCP_ENV_VAL_MAX 512
+
+struct config_mcp_server {
+	char name[MCP_SERVER_NAME_MAX];
+	char transport[16];
+	/* stdio */
+	char command[256];
+	char args[MCP_CMD_ARGS_MAX][MCP_CMD_ARG_LEN_MAX];
+	int args_count;
+	char env_keys[MCP_ENV_MAX][64];
+	char env_vals[MCP_ENV_MAX][MCP_ENV_VAL_MAX];
+	int env_count;
+	/* http */
+	char http_url[512];
+	char http_auth_token_env[64];
+};
+
+struct config_mcp {
+	struct config_mcp_server servers[MCP_SERVER_MAX];
+	int server_count;
+};
+
 struct config {
 	struct config_general general;
 	struct config_models models;
@@ -89,6 +116,7 @@ struct config {
 	struct config_ext ext;
 	struct config_prompt prompt;
 	struct config_skill skill;
+	struct config_mcp mcp;
 };
 
 int config_load(struct config *cfg, const char *path);

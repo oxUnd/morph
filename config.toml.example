@@ -136,3 +136,35 @@ system_prompt_dir = ""
 # Defaults to ~/.morph/skills/ and ~/.agents/skills/ if empty.
 # Skills follow the Agent Skills open standard (agentskills.io).
 dir = ""
+
+# ──────────────────────────────────────────────
+# MCP (Model Context Protocol) servers
+# ──────────────────────────────────────────────
+# MCP servers are discovered at startup and their tools/resources/prompts
+# are automatically registered as morph tools.
+#
+# Supported transports:
+#   "stdio" — launch a local subprocess (recommended for local servers)
+#   "http"  — connect to a remote Streamable HTTP endpoint
+#
+# Example: Local filesystem server (stdio)
+# [[mcp.servers]]
+# name      = "filesystem"
+# transport = "stdio"
+# command   = "npx"
+# args      = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+#
+# Example: GitHub server (stdio)
+# [[mcp.servers]]
+# name      = "github"
+# transport = "stdio"
+# command   = "npx"
+# args      = ["-y", "@modelcontextprotocol/server-github"]
+# env       = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_xxx" }
+#
+# Example: Remote HTTP server
+# [[mcp.servers]]
+# name          = "remote-api"
+# transport     = "http"
+# url           = "https://api.example.com/mcp"
+# auth_token_env = "MCP_REMOTE_TOKEN"

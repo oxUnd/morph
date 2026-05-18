@@ -242,6 +242,51 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(skill, "dir", cfg->skill.dir);
 	}
 
+	toml_array_t *mcp_servers = toml_array_in(tbl, "mcp.servers");
+	if (mcp_servers) {
+		int i = 0;
+		for (; i < toml_array_nelem(mcp_servers) && i < MCP_SERVER_MAX; i++) {
+			toml_table_t *srv = toml_table_at(mcp_servers, i);
+			if (!srv)
+				continue;
+			struct config_mcp_server *ms = &cfg->mcp.servers[i];
+			CFG_STR(srv, "name", ms->name);
+			CFG_STR(srv, "transport", ms->transport);
+			CFG_STR(srv, "command", ms->command);
+			CFG_STR(srv, "url", ms->http_url);
+			CFG_STR(srv, "auth_token_env", ms->http_auth_token_env);
+
+			toml_array_t *args_arr = toml_array_in(srv, "args");
+			if (args_arr) {
+				int j = 0;
+				for (; j < toml_array_nelem(args_arr) && j < MCP_CMD_ARGS_MAX; j++) {
+					toml_datum_t a = toml_string_at(args_arr, j);
+					if (!a.ok)
+						break;
+					strncpy(ms->args[j], a.u.s, MCP_CMD_ARG_LEN_MAX - 1);
+					ms->args_count++;
+					free(a.u.s);
+				}
+			}
+
+			toml_table_t *env_tbl = toml_table_in(srv, "env");
+			if (env_tbl) {
+				int ei = 0;
+				for (int ki = 0; ki < 64 && ei < MCP_ENV_MAX; ki++) {
+					const char *key = toml_key_in(env_tbl, ki);
+					if (!key)
+						break;
+					strncpy(ms->env_keys[ei], key, 63);
+					CFG_STR(env_tbl, key, ms->env_vals[ei]);
+					ei++;
+				}
+				ms->env_count = ei;
+			}
+
+			cfg->mcp.server_count++;
+		}
+	}
+
 	toml_free(tbl);
 	log_info("config loaded from: %s", path);
 	return 0;

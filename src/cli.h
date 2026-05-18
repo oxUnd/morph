@@ -8,6 +8,7 @@
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "util/spin.h"
+#include "mcp/mcp.h"
 
 struct cli_context {
 	struct config config;
@@ -20,6 +21,7 @@ struct cli_context {
 	struct model *llm;
 	struct model *img_llm;
 	struct model *vid_llm;
+	struct mcp_registry mcp;
 	int running;
 	int streaming;
 	int session_auto_named;

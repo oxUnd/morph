@@ -19,6 +19,7 @@
 #include "agent/tools/file_info.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tools/bash_exec.h"
+#include "mcp/mcp.h"
 #include "db/database.h"
 #include "config.h"
 #include "render/markdown.h"
@@ -260,6 +261,7 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv);
 static int cmd_video(struct cli_context *ctx, int argc, char **argv);
 static int cmd_ext(struct cli_context *ctx, int argc, char **argv);
 static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
+static int cmd_mcp(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
@@ -311,6 +313,7 @@ static const struct cmd_entry commands[] = {
 	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
 	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },
 	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
+	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
@@ -1114,6 +1117,201 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
+/* ---- mcp command ---- */
+
+static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *sub = cmd_arg(argc, argv, 1);
+
+	if (!sub || strcmp(sub, "list") == 0 || strcmp(sub, "status") == 0) {
+		CMD_HEADER("MCP servers (%d)", ctx->mcp.count);
+		if (ctx->mcp.count == 0) {
+			printf("  (none — add servers to config.toml under [mcp.servers])\n");
+			return 0;
+		}
+		for (int i = 0; i < ctx->mcp.count; i++) {
+			struct mcp_client *mc = ctx->mcp.servers[i];
+			const char *status = mc->connected ?
+				ANSI_GREEN "connected" ANSI_RESET :
+				ANSI_YELLOW "disconnected" ANSI_RESET;
+			const char *transport = mc->config.transport ==
+				MCP_TRANSPORT_STDIO ? "stdio" : "http";
+
+			printf("  %s%-20s%s  [%s]  %s\n",
+				ANSI_BOLD, mc->config.name, ANSI_RESET,
+				transport, status);
+			if (mc->connected) {
+				printf("    server: %s v%s | proto: %s\n",
+					mc->server_name, mc->server_version,
+					mc->negotiated_version);
+				printf("    tools: %-3s  resources: %-3s  prompts: %-3s\n",
+					mc->supports_tools ? "yes" : "no",
+					mc->supports_resources ? "yes" : "no",
+					mc->supports_prompts ? "yes" : "no");
+			}
+		}
+		return 0;
+	}
+
+	if (strcmp(sub, "tools") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /mcp tools <server_name>");
+			return -EINVAL;
+		}
+		struct mcp_client *mc = mcp_registry_get(&ctx->mcp, name);
+		if (!mc) {
+			CMD_ERROR("MCP server not found: %s", name);
+			return -ENOENT;
+		}
+		int rc = mcp_ensure_connected(mc);
+		if (rc < 0) {
+			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			return rc;
+		}
+		struct mcp_tool_desc *tools = NULL;
+		int count = 0;
+		struct arena *arena = arena_create(0);
+		if (!arena) {
+			CMD_ERROR("failed to create arena");
+			return -ENOMEM;
+		}
+		rc = mcp_list_tools(mc, arena, &tools, &count);
+		if (rc < 0) {
+			CMD_ERROR("failed to list tools: %d", rc);
+			arena_destroy(arena);
+			return rc;
+		}
+		CMD_HEADER("MCP tools for '%s' (%d)", name, count);
+		for (int i = 0; i < count; i++) {
+			printf("  %-30s %s\n", tools[i].name, tools[i].description);
+		}
+		arena_destroy(arena);
+		return 0;
+	}
+
+	if (strcmp(sub, "resources") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /mcp resources <server_name>");
+			return -EINVAL;
+		}
+		struct mcp_client *mc = mcp_registry_get(&ctx->mcp, name);
+		if (!mc) {
+			CMD_ERROR("MCP server not found: %s", name);
+			return -ENOENT;
+		}
+		int rc = mcp_ensure_connected(mc);
+		if (rc < 0) {
+			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			return rc;
+		}
+		struct mcp_resource_desc *res = NULL;
+		int count = 0;
+		struct arena *arena = arena_create(0);
+		if (!arena) {
+			CMD_ERROR("failed to create arena");
+			return -ENOMEM;
+		}
+		rc = mcp_list_resources(mc, arena, &res, &count);
+		if (rc < 0) {
+			CMD_ERROR("failed to list resources: %d", rc);
+			arena_destroy(arena);
+			return rc;
+		}
+		CMD_HEADER("MCP resources for '%s' (%d)", name, count);
+		for (int i = 0; i < count; i++) {
+			printf("  %-30s %s\n", res[i].name, res[i].description);
+			printf("    uri: %s\n", res[i].uri);
+		}
+		arena_destroy(arena);
+		return 0;
+	}
+
+	if (strcmp(sub, "prompts") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /mcp prompts <server_name>");
+			return -EINVAL;
+		}
+		struct mcp_client *mc = mcp_registry_get(&ctx->mcp, name);
+		if (!mc) {
+			CMD_ERROR("MCP server not found: %s", name);
+			return -ENOENT;
+		}
+		int rc = mcp_ensure_connected(mc);
+		if (rc < 0) {
+			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			return rc;
+		}
+		struct mcp_prompt_desc *prompts = NULL;
+		int count = 0;
+		struct arena *arena = arena_create(0);
+		if (!arena) {
+			CMD_ERROR("failed to create arena");
+			return -ENOMEM;
+		}
+		rc = mcp_list_prompts(mc, arena, &prompts, &count);
+		if (rc < 0) {
+			CMD_ERROR("failed to list prompts: %d", rc);
+			arena_destroy(arena);
+			return rc;
+		}
+		CMD_HEADER("MCP prompts for '%s' (%d)", name, count);
+		for (int i = 0; i < count; i++) {
+			printf("  %-30s %s\n", prompts[i].name, prompts[i].description);
+		}
+		arena_destroy(arena);
+		return 0;
+	}
+
+	if (strcmp(sub, "connect") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /mcp connect <server_name>");
+			return -EINVAL;
+		}
+		struct mcp_client *mc = mcp_registry_get(&ctx->mcp, name);
+		if (!mc) {
+			CMD_ERROR("MCP server not found: %s", name);
+			return -ENOENT;
+		}
+		if (mc->connected) {
+			CMD_OK("MCP server '%s' already connected", name);
+			return 0;
+		}
+		int rc = mcp_ensure_connected(mc);
+		if (rc < 0) {
+			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			return rc;
+		}
+		mcp_register_server_tools(mc, &ctx->tools);
+		mcp_register_server_resources(mc, &ctx->tools);
+		mcp_register_server_prompts(mc, &ctx->tools);
+		CMD_OK("MCP server '%s' connected", name);
+		return 0;
+	}
+
+	if (strcmp(sub, "disconnect") == 0) {
+		const char *name = cmd_arg(argc, argv, 2);
+		if (!name) {
+			CMD_ERROR("usage: /mcp disconnect <server_name>");
+			return -EINVAL;
+		}
+		struct mcp_client *mc = mcp_registry_get(&ctx->mcp, name);
+		if (!mc) {
+			CMD_ERROR("MCP server not found: %s", name);
+			return -ENOENT;
+		}
+		mcp_disconnect(mc);
+		CMD_OK("MCP server '%s' disconnected", name);
+		return 0;
+	}
+
+	CMD_ERROR("unknown MCP subcommand: %s. Try: list, tools, resources, prompts, connect, disconnect", sub);
+	return -EINVAL;
+}
+
 /* ---- dispatch ---- */
 
 static int cmd_dispatch(struct cli_context *ctx, const char *input)
@@ -1398,6 +1596,50 @@ struct model *llm = model_llm_create(
 			}
 		}
 		file_free_list(ext_dirs, ext_count);
+	}
+
+	/* Initialize MCP servers from config (lazy connect on first use) */
+	mcp_registry_init(&ctx->mcp);
+	for (int i = 0; i < ctx->config.mcp.server_count; i++) {
+		struct mcp_server_config scfg;
+		memset(&scfg, 0, sizeof(scfg));
+		struct config_mcp_server *cs = &ctx->config.mcp.servers[i];
+
+		strncpy(scfg.name, cs->name, MCP_NAME_MAX - 1);
+		scfg.transport = (strcmp(cs->transport, "http") == 0)
+			       ? MCP_TRANSPORT_STREAMABLE_HTTP
+			       : MCP_TRANSPORT_STDIO;
+
+		if (scfg.transport == MCP_TRANSPORT_STDIO) {
+			strncpy(scfg.command, cs->command, sizeof(scfg.command) - 1);
+			scfg.cmd_args_count = cs->args_count;
+			for (int j = 0; j < cs->args_count; j++)
+				strncpy(scfg.cmd_args[j], cs->args[j], MCP_CMD_ARG_MAX - 1);
+			scfg.env_count = cs->env_count;
+			for (int j = 0; j < cs->env_count; j++) {
+				strncpy(scfg.env_keys[j], cs->env_keys[j], 63);
+				strncpy(scfg.env_vals[j], cs->env_vals[j], MCP_ENV_VAL_MAX - 1);
+			}
+		} else {
+			strncpy(scfg.http_url, cs->http_url, sizeof(scfg.http_url) - 1);
+			strncpy(scfg.http_auth_token_env, cs->http_auth_token_env, 63);
+		}
+
+		int rc2 = mcp_registry_add(&ctx->mcp, &scfg);
+		if (rc2 == 0) {
+			/* Eagerly connect and register tools */
+			struct mcp_client *mc = mcp_registry_get(&ctx->mcp, scfg.name);
+			if (mc) {
+				rc2 = mcp_ensure_connected(mc);
+				if (rc2 == 0) {
+					mcp_register_server_tools(mc, &ctx->tools);
+					mcp_register_server_resources(mc, &ctx->tools);
+					mcp_register_server_prompts(mc, &ctx->tools);
+				} else {
+					log_warn("mcp: failed to connect to '%s': %d", scfg.name, rc2);
+				}
+			}
+		}
 	}
 
 	ctx->skills = calloc(1, sizeof(*ctx->skills));
@@ -2063,6 +2305,7 @@ void cli_shutdown(struct cli_context *ctx)
 	skill_registry_cleanup(ctx->skills);
 	free(ctx->skills);
 	ctx->skills = NULL;
+	mcp_registry_cleanup(&ctx->mcp);
 	db_close(&ctx->database);
 	log_info("cli shutdown complete");
 }
