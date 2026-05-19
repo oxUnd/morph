@@ -741,6 +741,40 @@ morph/
 
 ### 6.9 关键接口设计
 
+#### 6.9.0 内存管理（Arena）
+
+全局采用 Arena 线性分配器替代逐个 `malloc`/`free`，从架构层面消除内存泄漏与 double-free 风险。
+
+**设计要点**：
+- Bump-pointer 分配，内存零初始化（`memset`），对齐至 `sizeof(void *)`
+- 单个 Arena 由带头链表的 region 组成；当前 region 不够时自动链入新 region（同容量或按需扩容）
+- 默认 region 大小 64KB（`ARENA_DEFAULT_SIZE`），可按需指定
+- 生命周期：scope 级创建（`arena_create`），scope 退出时整体销毁（`arena_destroy`）；无需逐个释放
+- `arena_reset` 释放溢出 region 并重置主 region，允许复用同一 arena 实例
+- 所有核心结构体（`react_context`、`chat_response` 等）持有 `struct arena *`，内部字符串与动态数据均从 arena 分配
+
+**与 `xmalloc`/`xfree` 的关系**：仅 arena 内部的 region 创建/销毁使用 `malloc`/`free`；业务代码全部通过 `arena_alloc`/`arena_strdup` 分配，禁止业务层直接调用 `malloc`/`free`。
+
+```c
+#define ARENA_DEFAULT_SIZE (64 * 1024)
+
+struct arena {
+	char *buf;		/* 当前 region 缓冲区 */
+	size_t cap;		/* 当前 region 容量 */
+	size_t used;		/* 当前 region 已用字节 */
+	struct arena *next;	/* 溢出 region 链表 */
+};
+
+struct arena *arena_create(size_t cap);		/* 0 使用默认大小 */
+void arena_destroy(struct arena *a);		/* 递归释放所有 region */
+void *arena_alloc(struct arena *a, size_t size);		/* 对齐分配，零填充 */
+void *arena_alloc_aligned(struct arena *a, size_t size, size_t align);
+void arena_reset(struct arena *a);		/* 释放溢出 region，重置主 region */
+char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制 */
+```
+
+> **KPI 关联**：Arena 批量释放保证 Valgrind `0 definitely lost`（§3）；单次 `arena_destroy` 代替 N 次 `free`，降低空闲内存碎片，支撑「空闲常驻 < 15MB」指标。
+
 #### 6.9.1 ReAct 循环
 
 ```c
@@ -1442,7 +1476,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 - C 风格注释，禁止 `//`
 - `sizeof(var)` 而非 `sizeof(type)`
 - 多语句宏 `do { } while (0)` 包裹
-- 内存：统一通过 `xmalloc/xfree` 包装层调用，失败立即返回
+- 内存：统一通过 arena 分配（见 §6.9.0），禁止业务层直接 `malloc`/`free`；arena_alloc 失败返回 NULL，调用方 `goto out`
 - 静态检查：`-Wall -Wextra -Wpedantic -Wshadow -Wconversion`，CI 必须 0 warning
 
 ---
