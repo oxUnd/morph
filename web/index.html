@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Morph — minimal client</title>
+<style>
+  body{font-family:system-ui,-apple-system,Helvetica,sans-serif;max-width:780px;margin:2rem auto;padding:0 1rem;color:#222}
+  h1{font-size:1.2rem;letter-spacing:.02em}
+  textarea{width:100%;min-height:5rem;font:inherit;padding:.5rem}
+  button{font:inherit;padding:.4rem .8rem}
+  pre{background:#f4f4f6;padding:.6rem;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+  .ev{padding:.4rem;border-left:3px solid #888;margin:.4rem 0;background:#fafafa}
+  .ev.thought    {border-color:#5b8def}
+  .ev.tool_call  {border-color:#e08e3c}
+  .ev.tool_result{border-color:#3ca87b}
+  .ev.final      {border-color:#9c3cf3;background:#f7eefe}
+  .ev.error      {border-color:#d53d3d;background:#fff0f0}
+  .ts{color:#888;font-size:.78rem;margin-right:.4rem}
+</style>
+</head>
+<body>
+<h1>Morph — minimal client</h1>
+<div>
+  <label>Bearer: <input id="bearer" placeholder="optional" size="30" /></label>
+  <button id="newSess">New session</button>
+  <span id="sid"></span>
+</div>
+<div style="margin-top:1rem">
+  <textarea id="prompt" placeholder="Ask Morph anything…"></textarea>
+  <div><button id="send">Send</button></div>
+</div>
+<h2 style="margin-top:1.5rem;font-size:1rem">Stream</h2>
+<div id="log"></div>
+
+<script>
+let sid = null, es = null;
+const log = document.getElementById('log');
+
+function authHdr() {
+  const b = document.getElementById('bearer').value.trim();
+  return b ? { 'Authorization': 'Bearer ' + b } : {};
+}
+function api(path, opts={}) {
+  opts.headers = Object.assign({'Content-Type':'application/json'}, authHdr(), opts.headers||{});
+  return fetch(path, opts);
+}
+function append(type, payload, id) {
+  const el = document.createElement('div');
+  el.className = 'ev ' + type;
+  const ts = new Date().toLocaleTimeString();
+  el.innerHTML = `<span class="ts">${ts}</span><strong>${type}</strong>` +
+                 `<pre>${JSON.stringify(payload,null,2)}</pre>`;
+  log.appendChild(el);
+  el.scrollIntoView({behavior:'smooth', block:'end'});
+}
+
+document.getElementById('newSess').onclick = async () => {
+  const r = await api('/api/sessions', {
+    method:'POST', body: JSON.stringify({name:'web', model:'default'})
+  });
+  if (!r.ok) { alert('create failed'); return; }
+  const j = await r.json();
+  sid = j.id;
+  document.getElementById('sid').textContent = ' session=' + sid;
+
+  if (es) es.close();
+  // EventSource doesn't allow custom headers, so for bearer auth use a query
+  // param fallback in production; for trust-header mode the proxy injects it.
+  es = new EventSource('/api/sessions/' + sid + '/events');
+  ['ready','turn_start','thought','tool_call','tool_result','reflection',
+   'final','turn_end','canvas_node_added','canvas_node_patched','error'
+  ].forEach(t => es.addEventListener(t, e => {
+    let p; try { p = JSON.parse(e.data); } catch { p = e.data; }
+    append(t, p, e.lastEventId);
+  }));
+};
+
+document.getElementById('send').onclick = async () => {
+  if (!sid) { alert('start a session first'); return; }
+  const prompt = document.getElementById('prompt').value;
+  await api('/api/sessions/' + sid + '/turns', {
+    method:'POST', body: JSON.stringify({prompt})
+  });
+};
+</script>
+</body>
+</html>

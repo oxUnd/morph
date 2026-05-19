@@ -66,6 +66,10 @@ add_subdirectory(http)
 add_subdirectory(db)
 add_subdirectory(util)
 
+if(BUILD_FASTCGI)
+    add_subdirectory(fastcgi)
+endif()
+
 add_library(morph-cli STATIC
 	cli.c
 )

@@ -12,6 +12,7 @@ set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
 option(BUILD_TESTS "Build tests" ON)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(BUILD_FASTCGI "Build FastCGI front-end (morph-fastcgi)" OFF)
 
 if(ENABLE_ASAN)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer")

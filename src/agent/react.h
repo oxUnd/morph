@@ -72,6 +72,14 @@ struct hitl_config {
 	int auto_approved_count;
 };
 
+struct react_action {
+	const char *type;          /* "approve" | "reject" | "cancel" | "prompt" */
+	const char *payload_json;
+};
+
+typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
+				     int timeout_sec);
+
 struct guardrail_result {
 	enum guardrail_verdict verdict;
 	char reason[512];
@@ -107,10 +115,14 @@ struct react_context {
 	struct arena *arena;
 	char *system_prompt;
 	struct skill_registry *skills;
+	react_action_drain_fn action_drain_fn;
+	void *action_drain_user_data;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,
 			       const char *content, void *user_data);
+
+struct session_store;
 
 struct react_context *react_context_create(struct tool_registry *tools,
 					   struct tokenizer *tok,
@@ -119,6 +131,11 @@ struct react_context *react_context_create(struct tool_registry *tools,
 void react_context_destroy(struct react_context *ctx);
 void react_reset(struct react_context *ctx);
 
+struct react_context *
+react_context_create_for_session(struct session_store *store,
+				 const char *session_id,
+				 const char *user_id);
+
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
@@ -126,6 +143,9 @@ extern volatile sig_atomic_t react_sigint_flag;
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
+
+int react_set_action_drain(struct react_context *ctx,
+			   react_action_drain_fn fn, void *user);
 
 struct react_step *react_step_create(struct arena *arena,
 				     enum react_step_type type,

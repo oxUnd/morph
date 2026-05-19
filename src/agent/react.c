@@ -55,6 +55,16 @@ void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name)
 	h->auto_approved_count++;
 }
 
+int react_set_action_drain(struct react_context *ctx,
+			   react_action_drain_fn fn, void *user)
+{
+	if (!ctx)
+		return -EINVAL;
+	ctx->action_drain_fn = fn;
+	ctx->action_drain_user_data = user;
+	return 0;
+}
+
 struct collect_data {
 	char *buf;
 	size_t len;
@@ -738,6 +748,18 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 		}
 
+		if (ctx->action_drain_fn) {
+			struct react_action act;
+			int got = ctx->action_drain_fn(ctx->action_drain_user_data,
+						       &act, 0);
+			if (got > 0 && strcmp(act.type, "cancel") == 0)
+				ctx->cancelled = 1;
+		}
+		if (ctx->cancelled) {
+			ctx->state = REACT_STATE_ABORT;
+			break;
+		}
+
 		ctx->state = REACT_STATE_THINKING;
 
 		if (context_needs_compress(ctx->messages, ctx->tokenizer,
@@ -1108,6 +1130,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 			for (int i = 0; i < num_tools; i++) {
 				async_tool_call_cleanup(&calls[i]);
+			}
+
+			if (ctx->action_drain_fn) {
+				struct react_action act;
+				int got = ctx->action_drain_fn(ctx->action_drain_user_data,
+							       &act, 0);
+				if (got > 0 && strcmp(act.type, "cancel") == 0)
+					ctx->cancelled = 1;
 			}
 
 			if (ctx->cancelled) {

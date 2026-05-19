@@ -1,0 +1,40 @@
+[Unit]
+Description=Morph FastCGI worker
+After=network.target
+
+[Service]
+Type=simple
+User=morph
+Group=www-data
+
+# === runtime config ===
+Environment=MORPH_FCGI_LISTEN=unix:/run/morph-fastcgi.sock
+Environment=MORPH_FCGI_DB=/var/lib/morph/morph.db
+Environment=MORPH_FCGI_WORKERS=8
+# Pick ONE of the auth modes below (or neither for anonymous):
+# Environment=MORPH_FCGI_SECRET=replace-me
+# Environment=MORPH_FCGI_TRUST_HDR=X-Remote-User
+
+ExecStart=/usr/local/bin/morph-fastcgi
+Restart=on-failure
+RestartSec=2
+
+# === sandboxing ===
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/morph /run
+RuntimeDirectory=morph-fastcgi
+RuntimeDirectoryMode=0750
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
