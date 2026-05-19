@@ -198,10 +198,12 @@ int mcp_ensure_connected(struct mcp_client *client)
 		return -EINVAL;
 
 	pthread_mutex_lock(&client->lock);
-	if (client->connected) {
+	if (client->connected || client->connecting) {
 		pthread_mutex_unlock(&client->lock);
-		return 0;
+		return client->connecting ? -EAGAIN : 0;
 	}
+	client->connecting = 1;
+	pthread_mutex_unlock(&client->lock);
 
 	int rc;
 	if (client->config.transport == MCP_TRANSPORT_STDIO)
@@ -212,7 +214,12 @@ int mcp_ensure_connected(struct mcp_client *client)
 	if (rc == 0)
 		rc = mcp_stdio_initialize(client);
 
+	pthread_mutex_lock(&client->lock);
+	client->connecting = 0;
+	if (rc == 0)
+		client->connected = 1;
 	pthread_mutex_unlock(&client->lock);
+
 	return rc;
 }
 

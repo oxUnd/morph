@@ -73,6 +73,7 @@ struct mcp_server_config {
 struct mcp_client {
 	struct mcp_server_config config;
 	int connected;
+	int connecting;
 	char negotiated_version[32];
 	char server_name[MCP_NAME_MAX];
 	char server_version[64];

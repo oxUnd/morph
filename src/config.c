@@ -242,7 +242,9 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(skill, "dir", cfg->skill.dir);
 	}
 
-	toml_array_t *mcp_servers = toml_array_in(tbl, "mcp.servers");
+	toml_table_t *mcp_tbl = table_path(tbl, "mcp");
+	toml_array_t *mcp_servers = mcp_tbl
+		? toml_array_in(mcp_tbl, "servers") : NULL;
 	if (mcp_servers) {
 		int i = 0;
 		for (; i < toml_array_nelem(mcp_servers) && i < MCP_SERVER_MAX; i++) {

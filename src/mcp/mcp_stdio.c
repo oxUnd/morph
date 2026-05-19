@@ -41,6 +41,7 @@ static char *mcp_stdio_recv(struct mcp_client *client, int timeout_ms)
 {
 	char buf[MCP_READ_BUF_MAX];
 	size_t pos = 0;
+	int skipped = 0;
 
 	for (;;) {
 		struct pollfd pfd;
@@ -57,8 +58,8 @@ static char *mcp_stdio_recv(struct mcp_client *client, int timeout_ms)
 			return NULL;
 		}
 
-		char c;
-		ssize_t n = read(client->stdout_fd, &c, 1);
+		ssize_t n = read(client->stdout_fd, buf + pos,
+				 sizeof(buf) - pos - 1);
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;
@@ -70,26 +71,39 @@ static char *mcp_stdio_recv(struct mcp_client *client, int timeout_ms)
 			return NULL;
 		}
 
-		if (c == '\n')
-			break;
-		if (c == '\r')
+		pos += (size_t)n;
+		buf[pos] = '\0';
+
+		char *nl = strchr(buf, '\n');
+		if (!nl) {
+			if (pos >= sizeof(buf) - 1) {
+				log_warn("mcp stdio: line too long, flushing");
+				pos = 0;
+			}
 			continue;
+		}
 
-		if (pos < sizeof(buf) - 1)
-			buf[pos++] = c;
+		*nl = '\0';
+		size_t line_len = (size_t)(nl - buf);
+
+		if (line_len > 0 && buf[line_len - 1] == '\r')
+			buf[--line_len] = '\0';
+
+		if (line_len == 0 || buf[0] != '{') {
+			if (!skipped)
+				log_warn("mcp stdio: skipping non-JSON: %.80s", buf);
+			skipped++;
+			size_t remain = pos - line_len - 1;
+			memmove(buf, nl + 1, remain);
+			pos = remain;
+			continue;
+		}
+
+		char *out = malloc(line_len + 1);
+		if (out)
+			memcpy(out, buf, line_len + 1);
+		return out;
 	}
-
-	buf[pos] = '\0';
-
-	if (pos == 0 || buf[0] != '{') {
-		log_warn("mcp stdio: non-JSON line: %.80s", buf);
-		return NULL;
-	}
-
-	char *out = malloc(pos + 1);
-	if (out)
-		memcpy(out, buf, pos + 1);
-	return out;
 }
 
 /* ----- stdio request: send + recv + parse ----- */
@@ -101,6 +115,9 @@ int mcp_stdio_request(struct mcp_client *client, int req_id,
 	char *req = mcp_build_request(req_id, method, params_json);
 	if (!req)
 		return -ENOMEM;
+
+	log_info("mcp stdio: sending '%s' to '%s'",
+		 method, client->config.name);
 
 	pthread_mutex_lock(&client->lock);
 	int rc = mcp_stdio_send(client, req);
@@ -154,6 +171,12 @@ int mcp_stdio_connect(struct mcp_client *client)
 		close(to_child[0]);
 		close(from_child[1]);
 
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDERR_FILENO);
+			close(devnull);
+		}
+
 		int argc = 1 + client->config.cmd_args_count;
 		char **argv = calloc((size_t)(argc + 1), sizeof(char *));
 		if (!argv)
@@ -173,7 +196,6 @@ int mcp_stdio_connect(struct mcp_client *client)
 		}
 
 		execvp(client->config.command, argv);
-		log_err("mcp stdio: exec '%s' failed: %s", client->config.command, strerror(errno));
 		_exit(127);
 	}
 
