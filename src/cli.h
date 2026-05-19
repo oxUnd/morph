@@ -5,6 +5,7 @@
 #include "db/database.h"
 #include "session.h"
 #include "agent/react.h"
+#include "agent/plan.h"
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "util/spin.h"
@@ -15,6 +16,7 @@ struct cli_context {
 	struct db database;
 	struct session current_session;
 	struct tool_registry tools;
+	struct plan_registry plans;
 	struct skill_registry *skills;
 	struct react_context *react;
 	struct tokenizer *tokenizer;

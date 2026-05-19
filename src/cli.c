@@ -19,6 +19,8 @@
 #include "agent/tools/file_info.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tools/bash_exec.h"
+#include "agent/plan.h"
+#include "agent/tools/plan.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "config.h"
@@ -1684,6 +1686,10 @@ struct model *llm = model_llm_create(
 		log_info("registered activate_skill tool (%d skills discovered)",
 			 ctx->skills->count);
 	}
+
+	plan_registry_init(&ctx->plans);
+	plan_tool_init(&ctx->tools, &ctx->plans, llm);
+	log_info("registered plan tool");
 
 	ctx->react->skills = ctx->skills;
 

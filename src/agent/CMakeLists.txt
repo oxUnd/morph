@@ -4,6 +4,7 @@ add_library(morph-agent STATIC
 	compress.c
 	tokenizer.c
 	tool.c
+	plan.c
 )
 
 target_include_directories(morph-agent PUBLIC
