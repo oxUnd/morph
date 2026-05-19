@@ -434,6 +434,49 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 	return arr;
 }
 
+static cJSON *normalize_params_to_schema(cJSON *params)
+{
+	if (!params)
+		return NULL;
+	if (cJSON_IsObject(params)) {
+		if (!cJSON_HasObjectItem(params, "type"))
+			cJSON_AddStringToObject(params, "type", "object");
+		return params;
+	}
+	if (cJSON_IsArray(params)) {
+		cJSON *schema = cJSON_CreateObject();
+		cJSON_AddStringToObject(schema, "type", "object");
+		cJSON *props = cJSON_CreateObject();
+		cJSON *required = cJSON_CreateArray();
+		cJSON *item;
+		cJSON_ArrayForEach(item, params) {
+			cJSON *name = cJSON_GetObjectItem(item, "name");
+			if (!cJSON_IsString(name))
+				continue;
+			cJSON *prop = cJSON_CreateObject();
+			cJSON_AddStringToObject(prop, "type", "string");
+			cJSON *desc = cJSON_GetObjectItem(item, "description");
+			if (cJSON_IsString(desc))
+				cJSON_AddStringToObject(prop, "description",
+							desc->valuestring);
+			cJSON_AddItemToObject(props, name->valuestring, prop);
+			cJSON *req = cJSON_GetObjectItem(item, "required");
+			if (cJSON_IsBool(req) && cJSON_IsTrue(req))
+				cJSON_AddItemToArray(required,
+						     cJSON_CreateString(name->valuestring));
+		}
+		cJSON_AddItemToObject(schema, "properties", props);
+		if (cJSON_GetArraySize(required) > 0)
+			cJSON_AddItemToObject(schema, "required", required);
+		else
+			cJSON_Delete(required);
+		cJSON_Delete(params);
+		return schema;
+	}
+	cJSON_Delete(params);
+	return NULL;
+}
+
 static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 {
 	cJSON *arr = cJSON_CreateArray();
@@ -445,17 +488,15 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 		cJSON_AddStringToObject(func, "name", tools[i].name);
 		cJSON_AddStringToObject(func, "description", tools[i].desc);
 
-		if (tools[i].args_spec[0]) {
-			cJSON *params = cJSON_Parse(tools[i].args_spec);
-			if (params)
-				cJSON_AddItemToObject(func, "parameters", params);
-			else
-				cJSON_AddItemToObject(func, "parameters",
-						      cJSON_CreateObject());
-		} else {
+		cJSON *params = NULL;
+		if (tools[i].args_spec[0])
+			params = cJSON_Parse(tools[i].args_spec);
+		params = normalize_params_to_schema(params);
+		if (params)
+			cJSON_AddItemToObject(func, "parameters", params);
+		else
 			cJSON_AddItemToObject(func, "parameters",
-					      cJSON_CreateObject());
-		}
+					      cJSON_Parse("{\"type\":\"object\",\"properties\":{}}"));
 
 		cJSON_AddItemToObject(tool, "function", func);
 		cJSON_AddItemToArray(arr, tool);
