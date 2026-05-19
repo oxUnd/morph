@@ -212,7 +212,7 @@ int mcp_ensure_connected(struct mcp_client *client)
 		rc = mcp_http_connect(client);
 
 	if (rc == 0)
-		rc = mcp_stdio_initialize(client);
+		rc = mcp_initialize(client);
 
 	pthread_mutex_lock(&client->lock);
 	client->connecting = 0;

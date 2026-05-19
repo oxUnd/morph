@@ -142,6 +142,30 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	return 0;
 }
 
+/* Strip SSE envelope: extract JSON from "event: message\ndata: <json>\n" */
+static char *mcp_http_extract_sse_json(const char *raw, size_t len)
+{
+	/* Look for "data: " prefix */
+	const char *data_prefix = "data: ";
+	const char *data_start = strstr(raw, data_prefix);
+	if (!data_start)
+		return NULL;
+	data_start += strlen(data_prefix);
+
+	/* Find end of line (first \n or \r after data) */
+	const char *end = data_start;
+	while ((size_t)(end - raw) < len && *end != '\n' && *end != '\r')
+		end++;
+
+	size_t json_len = (size_t)(end - data_start);
+	char *json = malloc(json_len + 1);
+	if (!json)
+		return NULL;
+	memcpy(json, data_start, json_len);
+	json[json_len] = '\0';
+	return json;
+}
+
 /* ---- Public HTTP transport functions ---- */
 
 int mcp_http_connect(struct mcp_client *client)
@@ -191,15 +215,23 @@ int mcp_http_initialize(struct mcp_client *client)
 		return rc ? rc : -EIO;
 	}
 
+	/* Handle SSE-wrapped response */
+	char *resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
+	if (!resp_json)
+		resp_json = resp_raw;
+	else
+		free(resp_raw);
+
 	/* Parse initialize response */
-	int parse_rc = mcp_parse_result(resp_raw, NULL);
+	char *result_str = NULL;
+	int parse_rc = mcp_parse_result(resp_json, &result_str);
 	if (parse_rc < 0) {
 		log_err("mcp http: initialize response had error");
-		free(resp_raw);
+		free(resp_json);
 		return parse_rc;
 	}
 
-	cJSON *obj = cJSON_Parse(resp_raw);
+	cJSON *obj = cJSON_Parse(result_str);
 	if (obj) {
 		cJSON *v = cJSON_GetObjectItem(obj, "protocolVersion");
 		if (v && cJSON_IsString(v))
@@ -227,7 +259,8 @@ int mcp_http_initialize(struct mcp_client *client)
 
 		cJSON_Delete(obj);
 	}
-	free(resp_raw);
+	free(result_str);
+	free(resp_json);
 
 	log_info("mcp http: initialized '%s' (server=%s v%s, proto=%s)",
 		 client->config.name,
@@ -266,23 +299,14 @@ int mcp_http_request(struct mcp_client *client, const char *method,
 		return rc ? rc : -EIO;
 	}
 
-	/* Handle SSE responses */
-	if (strstr(resp_raw, "data:") != NULL) {
-		struct sse_parser parser;
-		sse_parser_init(&parser);
-		char *json_msg = sse_parser_feed(&parser, resp_raw, strlen(resp_raw));
-		if (json_msg) {
-			rc = mcp_parse_result(json_msg, out_result);
-			free(json_msg);
-		} else {
-			/* Maybe the whole response is one SSE event without data: prefix */
-			rc = mcp_parse_result(resp_raw, out_result);
-		}
-		free(resp_raw);
-		return rc;
+	/* Handle SSE-wrapped responses */
+	char *resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
+	if (resp_json) {
+		rc = mcp_parse_result(resp_json, out_result);
+		free(resp_json);
+	} else {
+		rc = mcp_parse_result(resp_raw, out_result);
 	}
-
-	rc = mcp_parse_result(resp_raw, out_result);
 	free(resp_raw);
 	return rc;
 }
