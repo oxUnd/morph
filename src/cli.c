@@ -413,9 +413,15 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 {
+	char name_buf[256];
 	const char *name = cmd_arg(argc, argv, 1);
-	if (!name)
-		name = "new_session";
+	int auto_named = 0;
+	if (!name) {
+		auto_named = 1;
+		snprintf(name_buf, sizeof(name_buf), "new_%lld",
+			 (long long)time(NULL));
+		name = name_buf;
+	}
 	struct session s;
 	int rc = session_create(&ctx->database, name,
 				ctx->config.models.text.model, &s);
@@ -423,7 +429,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
 		session_load_history(ctx);
-		ctx->session_auto_named = (strcmp(name, "new_session") == 0);
+		ctx->session_auto_named = !auto_named;
 		CMD_OK("created and switched to session: %s [%s]", name,
 		       ctx->current_session.display_id);
 	} else {

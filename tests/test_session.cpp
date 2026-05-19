@@ -161,7 +161,7 @@ TEST_F(SessionTest, MessageFreeListNull) {
 
 TEST_F(SessionTest, AutoRenameNewSession) {
 	struct session s;
-	int rc = session_create(&db, "default", "gpt-4o", &s);
+	int rc = session_create(&db, "new", "gpt-4o", &s);
 	ASSERT_EQ(rc, 0);
 	int auto_named = 0;
 
@@ -193,7 +193,7 @@ TEST_F(SessionTest, AutoRenameNewSession) {
 
 TEST_F(SessionTest, AutoRenameExistingSession) {
 	struct session s;
-	int rc = session_create(&db, "default", "gpt-4o", &s);
+	int rc = session_create(&db, "new", "gpt-4o", &s);
 	ASSERT_EQ(rc, 0);
 	message_add(&db, s.id, "user", "old message", 2);
 
@@ -277,9 +277,49 @@ TEST_F(SessionTest, DisplayIdInList) {
 	free(list);
 }
 
+TEST_F(SessionTest, AutoNamedUnique) {
+	/* Simulate cmd_new: generate unique name with timestamp */
+	struct session s1, s2;
+	char name1[256], name2[256];
+	snprintf(name1, sizeof(name1), "new_%lld", (long long)time(NULL));
+	int rc = session_create(&db, name1, "gpt-4o", &s1);
+	EXPECT_EQ(rc, 0);
+
+	/* Second call at a different time should not collide */
+	sleep(1);
+	snprintf(name2, sizeof(name2), "new_%lld", (long long)time(NULL));
+	rc = session_create(&db, name2, "gpt-4o", &s2);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STRNE(s1.name, s2.name);
+}
+
+TEST_F(SessionTest, AutoRenameFromUniqueName) {
+	struct session s;
+	char name[256];
+	snprintf(name, sizeof(name), "new_%lld", (long long)time(NULL));
+	int rc = session_create(&db, name, "gpt-4o", &s);
+	ASSERT_EQ(rc, 0);
+
+	/* Auto-rename on first user input (same logic as cli.c L2210-2227) */
+	const char *input = "hello world";
+	char title[48];
+	size_t len = strlen(input);
+	memcpy(title, input, len);
+	title[len] = '\0';
+	session_rename(&db, s.id, title);
+	strncpy(s.name, title, sizeof(s.name) - 1);
+
+	EXPECT_STREQ(s.name, "hello world");
+
+	struct session loaded;
+	rc = session_get_by_name(&db, "hello world", &loaded);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(loaded.name, "hello world");
+}
+
 TEST_F(SessionTest, AutoRenameTruncation) {
 	struct session s;
-	int rc = session_create(&db, "default", "gpt-4o", &s);
+	int rc = session_create(&db, "new", "gpt-4o", &s);
 	ASSERT_EQ(rc, 0);
 	int auto_named = 0;
 
