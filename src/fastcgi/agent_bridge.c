@@ -14,6 +14,7 @@
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "config.h"
+#include "util/log.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +37,20 @@ static void bridge_init_once(void)
 		config_load(&g_config, path);
 	} else {
 		config_load(&g_config, "config.toml");
+	}
+
+	/* Initialize logging from config, with fallback */
+	{
+		const char *lf = g_config.general.log_file;
+		char log_path[512];
+		if (lf && lf[0] == '/') {
+			snprintf(log_path, sizeof(log_path), "%s", lf);
+		} else {
+			snprintf(log_path, sizeof(log_path),
+				 "/var/lib/morph/log/fastcgi.log");
+		}
+		log_init(log_path, LOG_DEBUG);
+		fprintf(stderr, "fcgi-bridge: log initialized to %s\n", log_path);
 	}
 
 	g_tokenizer = tokenizer_create(

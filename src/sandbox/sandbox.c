@@ -2,6 +2,7 @@
 #include "util/log.h"
 #include <errno.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/resource.h>
 
@@ -172,14 +173,18 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	rc = fb_allow(&fb, SYS_rt_sigaction); if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_rt_sigprocmask); if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_ioctl);      if (rc < 0) goto fail;
+#ifdef SYS_poll
 	rc = fb_allow(&fb, SYS_poll);       if (rc < 0) goto fail;
+#endif
 	rc = fb_allow(&fb, SYS_mremap);     if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_nanosleep);  if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_clock_gettime); if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_getpid);     if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_sendfile);   if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_dup);       if (rc < 0) goto fail;
+#ifdef SYS_dup2
 	rc = fb_allow(&fb, SYS_dup2);       if (rc < 0) goto fail;
+#endif
 	rc = fb_allow(&fb, SYS_getdents64); if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_gettid);     if (rc < 0) goto fail;
 	rc = fb_allow(&fb, SYS_futex);      if (rc < 0) goto fail;

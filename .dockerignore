@@ -1,0 +1,5 @@
+.git
+build
+.gitignore
+.DS_Store
+**/*.md

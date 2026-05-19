@@ -52,10 +52,10 @@ void reply_json(request_t *r, int status, const char *body) {
 	FCGX_FPrintF(r->fcgx->out,
 		"Status: %s\r\n"
 		"Content-Type: application/json; charset=utf-8\r\n"
-		"Content-Length: %zu\r\n"
+		"Content-Length: %lu\r\n"
 		"Cache-Control: no-store\r\n"
 		"\r\n",
-		status_text(status), blen);
+		status_text(status), (unsigned long)blen);
 	if (blen) FCGX_PutStr(body, (int)blen, r->fcgx->out);
 }
 

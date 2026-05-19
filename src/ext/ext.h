@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include "sandbox.h"
+#include "sandbox/sandbox.h"
 #include "agent/tool.h"
 
 struct ext_manifest {

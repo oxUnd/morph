@@ -56,7 +56,7 @@ function append(type, payload, id) {
 
 document.getElementById('newSess').onclick = async () => {
   const r = await api('/api/sessions', {
-    method:'POST', body: JSON.stringify({name:'web', model:'default'})
+    method:'POST', body: JSON.stringify({name:'web-'+Date.now(), model:'default'})
   });
   if (!r.ok) { alert('create failed'); return; }
   const j = await r.json();
