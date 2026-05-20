@@ -2240,6 +2240,9 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->session_auto_named = 1;
 	}
 
+	printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET "\n", input);
+	fflush(stdout);
+
 	sigint_received = 0;
 	if (ctx->react)
 		react_cancel(ctx->react);
