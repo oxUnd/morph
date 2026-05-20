@@ -518,7 +518,7 @@ TEST_F(ReactTest, CreateDestroy) {
 TEST_F(ReactTest, DefaultTimeoutAndRetries) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
-	EXPECT_EQ(ctx->step_timeout_seconds, 60);
+	EXPECT_EQ(ctx->step_timeout_seconds, 330);
 	EXPECT_EQ(ctx->tool_max_retries, 3);
 	react_context_destroy(ctx);
 }

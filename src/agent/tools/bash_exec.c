@@ -14,8 +14,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#define BASH_EXEC_DEFAULT_TIMEOUT 30
 #define BASH_EXEC_MAX_OUTPUT (256 * 1024)
+
+static int bash_exec_default_timeout = 60;
+
+void bash_exec_set_default_timeout(int seconds)
+{
+	if (seconds > 0)
+		bash_exec_default_timeout = seconds;
+}
 
 static const char *blocked_commands[] = {
 	"rm", "rmdir",
@@ -191,7 +198,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
 	const char *command = NULL;
 	const char *cwd = NULL;
-	int timeout = BASH_EXEC_DEFAULT_TIMEOUT;
+	int timeout = bash_exec_default_timeout;
 	if (root) {
 		cJSON *c = cJSON_GetObjectItem(root, "command");
 		if (cJSON_IsString(c) && c->valuestring)
@@ -356,11 +363,13 @@ int bash_exec_init(struct tool_registry *reg)
 		"DANGEROUS commands are blocked: rm, mv, cp, chmod, curl, wget, ssh, "
 		"kill, package managers, and other destructive operations. "
 		"Args: command (required), cwd (optional working dir), "
-		"timeout_seconds (optional, default 30).",
+		"timeout_seconds (optional, default 60). "
+		"Use 120-300 for builds, large test suites, or git operations; "
+		"use 30 for quick queries.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":\"shell command to execute via /bin/sh -c\"},"
 		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
-		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime (default 30)\"}"
+		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime in seconds (default 60; use 120-300 for builds/tests/git)\"}"
 		"},\"required\":[\"command\"]}",
 		bash_exec_run, NULL, NULL);
 }

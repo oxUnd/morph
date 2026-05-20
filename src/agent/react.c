@@ -244,7 +244,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->tools = tools;
 	ctx->tokenizer = tok;
 	ctx->max_iterations = 10;
-	ctx->step_timeout_seconds = 60;
+	ctx->step_timeout_seconds = 330;
 	ctx->tool_max_retries = 3;
 	ctx->empty_round_count = 0;
 	ctx->guardrail_retry_count = 0;

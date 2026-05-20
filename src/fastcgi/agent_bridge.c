@@ -181,6 +181,7 @@ react_context_create_for_session(struct session_store *store,
 	ctx->step_timeout_seconds = g_config.react.step_timeout_seconds;
 	ctx->tool_max_retries     = g_config.react.tool_max_retries;
 	ctx->llm_model            = g_llm;
+	bash_exec_set_default_timeout(g_config.react.bash_exec_default_timeout);
 
 	/* Load session from DB to get its numeric id */
 	struct session sess;

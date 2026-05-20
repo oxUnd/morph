@@ -1391,6 +1391,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
+	bash_exec_set_default_timeout(ctx->config.react.bash_exec_default_timeout);
 	ctx->react->hitl.enabled = ctx->config.react.hitl_enabled;
 	ctx->react->hitl.auto_approve_readonly = ctx->config.react.hitl_auto_approve_readonly;
 	ctx->react->hitl.tools_count = ctx->config.react.hitl_tools_count;

@@ -25,8 +25,9 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
-	EXPECT_EQ(cfg.react.step_timeout_seconds, 60);
+	EXPECT_EQ(cfg.react.step_timeout_seconds, 330);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
+	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);

@@ -52,6 +52,7 @@ struct config_react {
 	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int hitl_tools_count;
 	int hitl_auto_approve_readonly;
+	int bash_exec_default_timeout;
 };
 
 struct config_context {

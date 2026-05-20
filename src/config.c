@@ -54,7 +54,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->models.video.poll_timeout_seconds = 600;
 
 	cfg->react.max_iterations = 10;
-	cfg->react.step_timeout_seconds = 60;
+	cfg->react.step_timeout_seconds = 330;
 	cfg->react.tool_max_retries = 3;
 	cfg->react.guardrail_enabled = 0;
 	cfg->react.guardrail_max_retries = 1;
@@ -63,6 +63,8 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.hitl_enabled = 0;
 	cfg->react.hitl_tools_count = 0;
 	cfg->react.hitl_auto_approve_readonly = 1;
+
+	cfg->react.bash_exec_default_timeout = 60;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
@@ -196,6 +198,7 @@ int config_load(struct config *cfg, const char *path)
 		}
 		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
+		CFG_INT(react, "bash_exec_default_timeout", cfg->react.bash_exec_default_timeout);
 		toml_array_t *ht = toml_array_in(react, "hitl_tools");
 		if (ht) {
 			int count = 0;
@@ -312,6 +315,7 @@ void config_print(const struct config *cfg)
 		 cfg->react.disabled_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
+	log_info("    bash_exec_default_timeout: %d", cfg->react.bash_exec_default_timeout);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.hitl_tools_count; i++)

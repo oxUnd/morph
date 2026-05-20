@@ -67,9 +67,10 @@ poll_interval_seconds = 5
 poll_timeout_seconds  = 600
 
 [react]
-max_iterations      = 10
-step_timeout_seconds  = 300
+max_iterations      = 15
+step_timeout_seconds  = 330
 tool_max_retries    = 3
+bash_exec_default_timeout = 60
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names

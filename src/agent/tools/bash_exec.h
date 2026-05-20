@@ -8,6 +8,7 @@ extern "C" {
 #include "agent/tool.h"
 
 int bash_exec_init(struct tool_registry *reg);
+void bash_exec_set_default_timeout(int seconds);
 
 #ifdef __cplusplus
 }
