@@ -40,21 +40,69 @@ struct turn_job {
 	char  session_id[64];
 	char  user_id[64];
 	char *input;
+	char  last_tool[128];
 };
 
 static void bridge_cb(int step_type, const char *payload_json, void *u) {
 	struct turn_job *j = (struct turn_job *)u;
-	const char *type = "thought";
+	if (!payload_json)
+		payload_json = "";
+
 	switch (step_type) {
-	case 0: type = "thought";     break;
-	case 1: type = "tool_call";   break;
-	case 2: type = "tool_result"; break;
-	case 3: type = "reflection";  break;
-	case 4: type = "final";       break;
-	default: type = "step";       break;
+	case 0: /* REACT_STEP_THOUGHT */
+		event_sink_thought(j->store, j->session_id, payload_json);
+		break;
+
+	case 1: { /* REACT_STEP_ACTION -> tool_call */
+		/* skip status messages like "Executing img_gen..." / "img_gen completed" */
+		const char *paren = strchr(payload_json, '(');
+		if (!paren) break;
+
+		size_t name_len = (size_t)(paren - payload_json);
+		if (name_len < 1 || name_len > 120) break;
+
+		char tool_name[128];
+		snprintf(tool_name, sizeof(tool_name), "%.*s",
+			 (int)name_len, payload_json);
+
+		/* extract args between ( and the trailing ) */
+		const char *args_start = paren + 1;
+		const char *end = payload_json + strlen(payload_json);
+		if (end > args_start && end[-1] == ')')
+			end--;
+
+		size_t args_len = (size_t)(end - args_start);
+		if (args_len > 4096) args_len = 4096;
+
+		char args_json[4100];
+		snprintf(args_json, sizeof(args_json), "%.*s",
+			 (int)args_len, args_start);
+
+		snprintf(j->last_tool, sizeof(j->last_tool), "%s", tool_name);
+		event_sink_tool_call(j->store, j->session_id,
+				     tool_name, args_json);
+		break;
 	}
-	events_publish(j->store, j->session_id, type,
-		       payload_json ? payload_json : "{}");
+
+	case 2: /* REACT_STEP_OBSERVATION -> tool_result */
+		event_sink_tool_result(j->store, j->session_id,
+				       j->last_tool, payload_json);
+		j->last_tool[0] = '\0';
+		break;
+
+	case 3: /* REACT_STEP_REFLECTION — piggyback on thought schema */
+		event_sink_thought(j->store, j->session_id, payload_json);
+		break;
+
+	case 4: /* REACT_STEP_FINAL */
+		event_sink_final(j->store, j->session_id, payload_json);
+		break;
+
+	default:
+		events_publish(j->store, j->session_id, "step",
+			       payload_json);
+		break;
+	}
 }
 
 static void *turn_thread(void *arg) {

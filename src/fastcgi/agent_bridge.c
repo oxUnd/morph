@@ -12,6 +12,19 @@
 #include "session.h"
 #include "agent/context.h"
 #include "agent/tokenizer.h"
+#include "agent/tool.h"
+#include "agent/tools/text_gen.h"
+#include "agent/tools/text_qa.h"
+#include "agent/tools/img_gen.h"
+#include "agent/tools/img_edit.h"
+#include "agent/tools/img_info.h"
+#include "agent/tools/img_resize.h"
+#include "agent/tools/img_convert.h"
+#include "agent/tools/file_read.h"
+#include "agent/tools/file_list.h"
+#include "agent/tools/file_info.h"
+#include "agent/tools/bash_exec.h"
+#include "agent/tools/vid_gen.h"
 #include "models/llm.h"
 #include "config.h"
 #include "util/log.h"
@@ -24,6 +37,7 @@ static pthread_once_t  g_once    = PTHREAD_ONCE_INIT;
 static struct config   g_config;
 static struct tokenizer *g_tokenizer = NULL;
 static struct model      *g_llm       = NULL;
+static struct tool_registry g_tools;
 
 static void bridge_init_once(void)
 {
@@ -80,6 +94,60 @@ static void bridge_init_once(void)
 
 	if (!g_llm)
 		fprintf(stderr, "fcgi-bridge: model_llm_create failed\n");
+
+	/* Register tools — same set as cli.c */
+	tool_registry_init(&g_tools);
+
+	text_gen_init(&g_tools, g_llm);
+	text_qa_init(&g_tools, g_llm);
+
+	/* Image generation model */
+	{
+		const char *img_key = g_config.models.image.api_key[0]
+			? g_config.models.image.api_key
+			: getenv(g_config.models.image.api_key_env);
+		struct model *img_m = model_llm_create(
+			g_config.models.image.provider,
+			g_config.models.image.model,
+			g_config.models.image.api_base[0]
+				? g_config.models.image.api_base : NULL,
+			img_key ? img_key : "");
+		if (img_m) {
+			img_gen_init(&g_tools, img_m);
+			img_edit_init(&g_tools, g_llm);
+		}
+	}
+
+	img_info_init(&g_tools);
+	img_resize_init(&g_tools);
+	img_convert_init(&g_tools);
+
+	file_read_init(&g_tools);
+	file_list_init(&g_tools);
+	file_info_init(&g_tools);
+
+	bash_exec_init(&g_tools);
+
+	/* Video generation model */
+	{
+		const char *vid_key = g_config.models.video.api_key[0]
+			? g_config.models.video.api_key
+			: getenv(g_config.models.video.api_key_env);
+		struct model *vid_m = model_llm_create(
+			g_config.models.video.provider,
+			g_config.models.video.model,
+			g_config.models.video.api_base[0]
+				? g_config.models.video.api_base : NULL,
+			vid_key ? vid_key : "");
+		if (vid_m)
+			vid_gen_init(&g_tools, vid_m);
+	}
+
+	/* Apply disabled_tools from config */
+	for (int i = 0; i < g_config.react.disabled_tools_count; i++)
+		tool_disable(&g_tools, g_config.react.disabled_tools[i]);
+
+	log_info("fcgi-bridge: registered %d tools", g_tools.count);
 }
 
 struct react_context *
@@ -104,9 +172,8 @@ react_context_create_for_session(struct session_store *store,
 		.compress_target_ratio = g_config.context.compress_target_ratio,
 	};
 
-	/* tools deliberately NULL — caller registers them */
 	struct react_context *ctx = react_context_create(
-		NULL, g_tokenizer, &ccfg, &gcfg);
+		&g_tools, g_tokenizer, &ccfg, &gcfg);
 	if (!ctx)
 		return NULL;
 
