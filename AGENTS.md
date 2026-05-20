@@ -1,24 +1,27 @@
 # morph Agent Guide
 
 ## Build & Test
-- CMake ≥ 3.20 required
+- CMake ≥ 3.20 required (README says 3.16 but `CMakeLists.txt` enforces 3.20)
 - Build: `cmake -S . -B build && cmake --build build`
 - Tests are ON by default (`BUILD_TESTS` defaults to ON); no flag needed
 - Run all tests: `cd build && ctest --output-on-failure`
 - Run a single test: `cd build && ctest -R test_arena --output-on-failure`
 - Run test binary directly: `cd build && ./morph-tests --gtest_filter=TestArena*`
 - ASAN build: `cmake -S . -B build -DENABLE_ASAN=ON && cmake --build build`
+- FastCGI front-end: `cmake -S . -B build -DBUILD_FASTCGI=ON && cmake --build build`
 - Clean build: `rm -rf build`
 
 ## Architecture Overview
 - **ReAct loop**: Thought → Action → Observation → Guardrail → Final. Core in `src/agent/react.c`. Uses OpenAI Function Calling (not text parsing).
 - **3 model backends**: `llm` (text chat), `image_gen`, `video_gen` — each configured independently in config.toml.
-- **Tools**: 14 built-in tools under `src/agent/tools/`: text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate.
+- **Tools**: 15 built-in tools under `src/agent/tools/`: text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate, plan.
+- **Plan subsystem**: structured multi-step planning with status tracking. Code in `src/agent/plan.c`. Registered as `plan` tool.
+- **MCP**: Model Context Protocol client (stdio + Streamable HTTP). Discovers and auto-registers remote tools/resources/prompts as morph tools. Code in `src/mcp/`. Config via `[[mcp.servers]]` in config.toml.
 - **Skills**: hot-loadable instruction packs (`SKILL.md` with YAML frontmatter). Discovery from `~/.morph/skills/` and `~/.agents/skills/`. Code in `src/skill/`. Examples in `skills/`.
 - **Exts**: hot-pluggable extensions via sandbox; live in `~/.morph/exts/`. Manifest format: TOML with `entry`, `permissions`, `args_schema`. Demo at `exts/demo-translate/`, `exts/demo-upper/`.
 - **IPC**: JSON-RPC over stdin/stdout for ext subprocesses. Code in `src/ipc/`.
 - **Context compression**: hierarchical fallback in `src/agent/compress.c`, triggered at `summarize_threshold_ratio` (default 0.8).
-- **Sandbox**: seccomp+rlimit (Linux), sandbox-exec (macOS). Code in `src/sandbox/`.
+- **Sandbox**: seccomp+rlimit (Linux), sandbox-exec (macOS, P2 — not yet implemented). Code in `src/sandbox/`.
 
 ## Library Dependency Chain
 All libraries are static. Derived from actual CMake link targets:
@@ -30,12 +33,13 @@ morph-util (arena, log, file, cJSON, base64, utf8, spin) ← base lib, cJSON com
 morph-db (SQLite) ──→ morph-session
 morph-http (client, SSE: libcurl) ──→ morph-models (llm, image_gen, video_gen)
   ↓
-morph-agent (react, context, compress, tokenizer, tool) ← links Threads
+morph-agent (react, context, compress, tokenizer, tool, plan) ← links Threads
   ↓
 morph-tools ← links morph-agent, morph-models, morph-http, morph-util, morph-skill, morph-sandbox
   ↓
 morph-skill ← links morph-util, morph-agent
 morph-sandbox ──→ morph-ext
+morph-mcp ← links morph-util, morph-agent, morph-http
 morph-render (markdown via md4c, image, video)
 morph-config (TOML-based) ──→ morph-cli (main CLI lib)
 morph-ipc (jsonrpc)
@@ -53,8 +57,10 @@ md4c is **fetched** by CMake FetchContent (not in vendor/). stb_image_write/resi
 - **Optional**: libseccomp (Linux sandbox)
 
 ## Configuration
-- Config file via `-c` / `--config` flag. Example: `config.toml.example`
+- Default config path: `~/.morph/config.toml` (must create manually: `mkdir -p ~/.morph && cp config.toml.example ~/.morph/config.toml`)
+- Override via `-c` / `--config` flag
 - API keys read from env vars (`api_key_env` field) — never hardcode in config
+- MCP servers configured via `[[mcp.servers]]` TOML array in config.toml (stdio or HTTP transport)
 - Logs: `~/.morph/log/agent.log`
 - Output dir defaults to `~/.morph/output`
 - Debug: `MORPH_DEBUG=1` prints every HTTP request/response
@@ -74,6 +80,7 @@ These differ from typical C defaults and must be followed:
 ## Test Conventions
 - Tests are C++17 (GoogleTest) linking C static libs
 - Test files in `tests/` named `test_<module>.cpp`
+- `test_ext_demo.c` exists but is **not** in the CMake test build — do not rely on it
 - Integration tests use mock LLM (local HTTP server returning fixed SSE)
 - Memory testing: Valgrind + ASan + UBSan expected clean
 
@@ -83,3 +90,4 @@ These differ from typical C defaults and must be followed:
 - `config.toml` is gitignored (contains API keys); use `config.toml.example` as template
 - `vendor/md4c/` is gitignored (fetched at build time)
 - `.morph/` is gitignored (runtime data dir)
+- macOS sandbox (`sandbox-exec`) is not yet implemented — only Linux seccomp is active
