@@ -358,7 +358,7 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 			   "{\"name\":\"review\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "<skill name=\"review\">"), nullptr);
+	EXPECT_NE(strstr(result, "<skill name=\"review\" dir=\""), nullptr);
 	EXPECT_NE(strstr(result, "Check bugs."), nullptr);
 	free(result);
 
