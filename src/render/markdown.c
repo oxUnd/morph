@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -79,6 +81,30 @@ struct table_state {
 	size_t cell_raw_cap;
 };
 
+/* ---------------- terminal width ---------------- */
+static int get_term_width(void)
+{
+	struct winsize ws;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+		return (int)ws.ws_col;
+	if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+		return (int)ws.ws_col;
+	const char *cols = getenv("COLUMNS");
+	if (cols) {
+		int v = atoi(cols);
+		if (v > 0)
+			return v;
+	}
+	return 80;
+}
+
+/* ---------------- line wrapping ---------------- */
+struct wrapped_line {
+	char *raw;	 /* ANSI-decorated text for this sub-line */
+	size_t raw_len;
+	size_t vis_width; /* visible column width (ANSI stripped) */
+};
+
 /* ---------------- main context ---------------- */
 struct collected_media {
 	char *type;
@@ -102,6 +128,7 @@ struct ansi_ctx {
 	int last_block_was_visible;
 	struct table_state *table;
 	int current_link_href_pending;
+	int term_width;
 	struct sbuf link_href;
 	struct collected_media media[64];
 	int media_count;
@@ -435,6 +462,273 @@ static size_t utf8_visible_cols(const char *s, size_t len)
 	return cols;
 }
 
+/* Advance past one UTF-8 character starting at s[pos]. Returns the byte
+ * length of the character. Sets *out_cols to the visible column width. */
+static size_t utf8_char_at(const char *s, size_t len, size_t pos, size_t *out_cols)
+{
+	if (pos >= len) {
+		*out_cols = 0;
+		return 0;
+	}
+	unsigned char c = (unsigned char)s[pos];
+	size_t byte_len;
+	if (c < 0x80) {
+		byte_len = 1;
+		*out_cols = 1;
+	} else if ((c & 0xE0) == 0xC0) {
+		byte_len = 2;
+		*out_cols = 1;
+	} else if ((c & 0xF0) == 0xE0) {
+		byte_len = 3;
+		*out_cols = 2;
+	} else if ((c & 0xF8) == 0xF0) {
+		byte_len = 4;
+		*out_cols = 2;
+	} else {
+		byte_len = 1;
+		*out_cols = 1;
+	}
+	if (pos + byte_len > len)
+		byte_len = len - pos;
+	return byte_len;
+}
+
+/* Check if the UTF-8 character at s[pos] is a CJK ideograph or wide symbol.
+ * Used to identify word boundaries for wrapping: CJK chars are boundaries. */
+static int utf8_is_cjk(const char *s, size_t len, size_t pos)
+{
+	if (pos >= len)
+		return 0;
+	unsigned char c = (unsigned char)s[pos];
+	unsigned cp = 0;
+	if (c < 0x80) {
+		cp = c;
+	} else if ((c & 0xE0) == 0xC0 && pos + 1 < len) {
+		cp = ((unsigned)(c & 0x1F) << 6) | ((unsigned char)s[pos + 1] & 0x3F);
+	} else if ((c & 0xF0) == 0xE0 && pos + 2 < len) {
+		cp = ((unsigned)(c & 0x0F) << 12) |
+		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 6) |
+		     ((unsigned char)s[pos + 2] & 0x3F);
+	} else if ((c & 0xF8) == 0xF0 && pos + 3 < len) {
+		cp = ((unsigned)(c & 0x07) << 18) |
+		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 12) |
+		     ((unsigned)((unsigned char)s[pos + 2] & 0x3F) << 6) |
+		     ((unsigned char)s[pos + 3] & 0x3F);
+	}
+	/* CJK Unified Ideographs: U+4E00..U+9FFF */
+	/* CJK Extension A: U+3400..U+4DBF */
+	/* Fullwidth forms: U+FF01..U+FF60 */
+	/* CJK Compatibility: U+F900..U+FAFF */
+	/* Hiragana: U+3040..U+309F, Katakana: U+30A0..U+30FF */
+	return (cp >= 0x4E00 && cp <= 0x9FFF) ||
+	       (cp >= 0x3400 && cp <= 0x4DBF) ||
+	       (cp >= 0xFF01 && cp <= 0xFF60) ||
+	       (cp >= 0xF900 && cp <= 0xFAFF) ||
+	       (cp >= 0x3040 && cp <= 0x309F) ||
+	       (cp >= 0x30A0 && cp <= 0x30FF);
+}
+
+/* Wrap a single cell's raw (ANSI-decorated) content to fit within max_cols
+ * visible columns. Produces an array of wrapped_line structs. Sets
+ * *out_count to the number of lines. Caller must free each line->raw and
+ * the returned array itself. */
+static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
+					     const char *plain, size_t plain_len,
+					     size_t max_cols,
+					     unsigned *out_count)
+{
+	*out_count = 0;
+	if (max_cols == 0)
+		max_cols = 1;
+
+	/* Upper bound: one line per character is enough */
+	unsigned cap = (unsigned)(plain_len + 1);
+	if (cap < 4)
+		cap = 4;
+	struct wrapped_line *lines = calloc(cap, sizeof(struct wrapped_line));
+	if (!lines)
+		return NULL;
+
+	/* Parse the raw text, producing sub-lines of at most max_cols visible
+	 * width, breaking at word/CJK boundaries where possible. */
+	size_t ri = 0;		/* position in raw */
+	size_t pi = 0;		/* position in plain */
+	size_t line_start = 0;	/* start of current sub-line in raw */
+	size_t line_vis = 0;	/* visible cols in current sub-line */
+	size_t line_count = 0;
+
+	while (ri < raw_len) {
+		if ((unsigned char)raw[ri] == 0x1b && ri + 1 < raw_len && raw[ri + 1] == '[') {
+			/* ANSI escape: skip it entirely; it has zero visible width */
+			size_t end = ri + 2;
+			while (end < raw_len && !((raw[end] >= 'A' && raw[end] <= 'Z') ||
+						  (raw[end] >= 'a' && raw[end] <= 'z')))
+				end++;
+			if (end < raw_len)
+				end++;
+			ri = end;
+			/* pi does not advance because ANSI codes have no plain
+			 * representation */
+			continue;
+		}
+
+		/* Determine the UTF-8 character at plain[pi] */
+		size_t char_cols = 0;
+		size_t char_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
+		int is_cjk = utf8_is_cjk(plain, plain_len, pi);
+		int is_space = ((unsigned char)plain[pi] == ' ');
+
+		if (line_vis + char_cols > max_cols && line_vis > 0) {
+			/* This character would overflow the line. Break here. */
+			if (line_count >= cap) {
+				cap *= 2;
+				struct wrapped_line *nl = realloc(lines, cap * sizeof(struct wrapped_line));
+				if (!nl) {
+					for (unsigned k = 0; k < line_count; k++)
+						free(lines[k].raw);
+					free(lines);
+					return NULL;
+				}
+				lines = nl;
+			}
+			size_t seg_len = ri - line_start;
+			lines[line_count].raw = malloc(seg_len + 1);
+			if (!lines[line_count].raw) {
+				for (unsigned k = 0; k < line_count; k++)
+					free(lines[k].raw);
+				free(lines);
+				return NULL;
+			}
+			memcpy(lines[line_count].raw, raw + line_start, seg_len);
+			lines[line_count].raw[seg_len] = '\0';
+			lines[line_count].raw_len = seg_len;
+			lines[line_count].vis_width = line_vis;
+			line_count++;
+
+			line_start = ri;
+			line_vis = 0;
+		}
+
+		ri += char_bytes;
+		pi += char_bytes;
+		line_vis += char_cols;
+	}
+
+	/* Flush remaining content as the last sub-line */
+	if (ri > line_start || line_count == 0) {
+		if (line_count >= cap) {
+			cap *= 2;
+			struct wrapped_line *nl = realloc(lines, cap * sizeof(struct wrapped_line));
+			if (!nl) {
+				for (unsigned k = 0; k < line_count; k++)
+					free(lines[k].raw);
+				free(lines);
+				return NULL;
+			}
+			lines = nl;
+		}
+		size_t seg_len = ri - line_start;
+		lines[line_count].raw = malloc(seg_len + 1);
+		if (!lines[line_count].raw) {
+			for (unsigned k = 0; k < line_count; k++)
+				free(lines[k].raw);
+			free(lines);
+			return NULL;
+		}
+		memcpy(lines[line_count].raw, raw + line_start, seg_len);
+		lines[line_count].raw[seg_len] = '\0';
+		lines[line_count].raw_len = seg_len;
+		lines[line_count].vis_width = line_vis;
+		line_count++;
+	}
+
+	*out_count = line_count;
+	return lines;
+}
+
+static void free_wrapped_lines(struct wrapped_line *lines, unsigned count)
+{
+	if (!lines)
+		return;
+	for (unsigned i = 0; i < count; i++)
+		free(lines[i].raw);
+	free(lines);
+}
+
+/* Calculate column widths constrained to terminal width.
+ * col_w is initialized with natural (content-max) widths.
+ * This function adjusts them to fit within avail_width.
+ * First column is preserved as much as possible. */
+static void distribute_col_widths(size_t *col_w, unsigned col_count,
+				  size_t prefix_width, int term_width)
+{
+	if (!col_w || col_count == 0)
+		return;
+
+	/* Border overhead: each column has "│ " (2 cols) + trailing "│" (1 col)
+	 * + 1 space padding after content. Total border = col_count*2 + 1 + col_count
+	 * = col_count*3 + 1 */
+	size_t border_overhead = (size_t)col_count * 2 + 1 + col_count;
+	size_t total_natural = 0;
+	for (unsigned c = 0; c < col_count; c++)
+		total_natural += col_w[c];
+
+	size_t total_width = prefix_width + border_overhead + total_natural;
+
+	/* If it fits, no adjustment needed */
+	if (term_width <= 0 || total_width <= (size_t)term_width)
+		return;
+
+	size_t avail = (size_t)term_width;
+	if (avail < prefix_width + border_overhead) {
+		/* Even the minimal frame doesn't fit — just use natural widths */
+		return;
+	}
+	size_t avail_content = avail - prefix_width - border_overhead;
+
+	/* Minimum column width: 4 cols (at least 2 visible chars + some space) */
+	size_t min_w = 4;
+	size_t total_min = (size_t)col_count * min_w;
+	if (avail_content < total_min) {
+		/* Even minimums don't fit — distribute equally */
+		size_t each = avail_content / col_count;
+		for (unsigned c = 0; c < col_count; c++)
+			col_w[c] = each;
+		return;
+	}
+
+	/* First pass: preserve first column width if possible */
+	/* Remaining columns share the rest */
+	if (col_w[0] > avail_content - (col_count - 1) * min_w) {
+		/* First column must be shrunk too */
+		size_t first_max = avail_content - (col_count - 1) * min_w;
+		if (first_max < min_w)
+			first_max = min_w;
+		col_w[0] = first_max < col_w[0] ? first_max : col_w[0];
+	}
+
+	/* Shrink columns from right to left until we fit */
+	for (int pass = 0; pass < 3; pass++) {
+		size_t used = 0;
+		for (unsigned c = 0; c < col_count; c++)
+			used += col_w[c];
+		if (used <= avail_content)
+			break;
+
+		size_t excess = used - avail_content;
+		for (int c = (int)col_count - 1; c >= (pass == 0 ? 1 : 0); c--) {
+			if (col_w[c] <= min_w)
+				continue;
+			size_t room = col_w[c] - min_w;
+			size_t take = room < excess ? room : excess;
+			col_w[c] -= take;
+			excess -= take;
+			if (excess == 0)
+				break;
+		}
+	}
+}
+
 static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 {
 	if (!t || t->col_count == 0 || t->row_count == 0)
@@ -454,43 +748,103 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 		}
 	}
 
+	/* Constrain column widths to terminal width */
+	size_t prefix_width = (size_t)(ctx->quote_depth * 2);
+	distribute_col_widths(col_w, t->col_count, prefix_width,
+			      ctx->term_width);
+
+	/* Wrap each cell content to its constrained column width */
+	unsigned **wrap_counts = calloc(t->row_count, sizeof(unsigned *));
+	struct wrapped_line ***wrap_lines = calloc(t->row_count, sizeof(struct wrapped_line **));
+	if (!wrap_counts || !wrap_lines) {
+		free(col_w);
+		free(wrap_counts);
+		free(wrap_lines);
+		return;
+	}
+
 	for (unsigned r = 0; r < t->row_count; r++) {
-		if (r > 0)
-			newline_with_prefix(ctx);
-		else
-			start_content_line(ctx);
 		struct table_row *row = &t->rows[r];
+		wrap_counts[r] = calloc(t->col_count, sizeof(unsigned));
+		wrap_lines[r] = calloc(t->col_count, sizeof(struct wrapped_line *));
+		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
+			wrap_lines[r][c] = wrap_cell_content(
+				row->cells[c].raw, row->cells[c].raw_len,
+				row->cells[c].plain, row->cells[c].plain_len,
+				col_w[c], &wrap_counts[r][c]);
+		}
+	}
+
+	for (unsigned r = 0; r < t->row_count; r++) {
+		struct table_row *row = &t->rows[r];
+		/* Find max number of wrapped lines for this data row */
+		unsigned max_lines = 1;
 		for (unsigned c = 0; c < t->col_count; c++) {
-			out_append(ctx, ANSI_DIM);
-			out_append(ctx, "│ ");
-			out_append(ctx, ANSI_RESET);
-			reapply_inline(ctx);
-			const char *raw = c < row->cell_count ? row->cells[c].raw : "";
-			size_t raw_len = c < row->cell_count ? row->cells[c].raw_len : 0;
-			size_t plain_w = c < row->cell_count
-				? utf8_visible_cols(row->cells[c].plain, row->cells[c].plain_len)
-				: 0;
-			size_t pad = col_w[c] > plain_w ? col_w[c] - plain_w : 0;
-			MD_ALIGN al = t->align[c];
-			size_t left = 0, right = 0;
-			if (al == MD_ALIGN_RIGHT) left = pad;
-			else if (al == MD_ALIGN_CENTER) { left = pad / 2; right = pad - left; }
-			else right = pad;
-			for (size_t i = 0; i < left; i++) out_append(ctx, " ");
-			if (r == 0)
-				out_append(ctx, ANSI_BOLD);
-			out_append_n(ctx, raw, raw_len);
-			if (r == 0) {
+			if (c < row->cell_count && wrap_counts[r] &&
+			    wrap_counts[r][c] > max_lines)
+				max_lines = wrap_counts[r][c];
+		}
+
+		for (unsigned ln = 0; ln < max_lines; ln++) {
+			if (r > 0 || ln > 0)
+				newline_with_prefix(ctx);
+			else
+				start_content_line(ctx);
+
+			for (unsigned c = 0; c < t->col_count; c++) {
+				out_append(ctx, ANSI_DIM);
+				out_append(ctx, "│ ");
 				out_append(ctx, ANSI_RESET);
 				reapply_inline(ctx);
+
+				struct wrapped_line *cell_lines =
+					(c < row->cell_count && wrap_lines[r])
+						? wrap_lines[r][c] : NULL;
+				unsigned cell_nlines =
+					(c < row->cell_count && wrap_counts[r])
+						? wrap_counts[r][c] : 0;
+
+				const char *seg_raw = "";
+				size_t seg_raw_len = 0;
+				size_t seg_vis = 0;
+
+				if (ln < cell_nlines && cell_lines) {
+					seg_raw = cell_lines[ln].raw;
+					seg_raw_len = cell_lines[ln].raw_len;
+					seg_vis = cell_lines[ln].vis_width;
+				}
+
+				size_t target_w = col_w[c];
+				size_t pad = target_w > seg_vis ? target_w - seg_vis : 0;
+
+				MD_ALIGN al = t->align[c];
+				size_t left = 0, right = 0;
+				if (al == MD_ALIGN_RIGHT) left = pad;
+				else if (al == MD_ALIGN_CENTER) {
+					left = pad / 2;
+					right = pad - left;
+				} else {
+					right = pad;
+				}
+
+				for (size_t i = 0; i < left; i++)
+					out_append(ctx, " ");
+				if (r == 0)
+					out_append(ctx, ANSI_BOLD);
+				out_append_n(ctx, seg_raw, seg_raw_len);
+				if (r == 0) {
+					out_append(ctx, ANSI_RESET);
+					reapply_inline(ctx);
+				}
+				for (size_t i = 0; i < right; i++)
+					out_append(ctx, " ");
+				out_append(ctx, " ");
 			}
-			for (size_t i = 0; i < right; i++) out_append(ctx, " ");
-			out_append(ctx, " ");
+			out_append(ctx, ANSI_DIM);
+			out_append(ctx, "│");
+			out_append(ctx, ANSI_RESET);
+			reapply_inline(ctx);
 		}
-		out_append(ctx, ANSI_DIM);
-		out_append(ctx, "│");
-		out_append(ctx, ANSI_RESET);
-		reapply_inline(ctx);
 
 		if (r == 0 && t->head_row_count > 0) {
 			newline_with_prefix(ctx);
@@ -505,6 +859,22 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 			reapply_inline(ctx);
 		}
 	}
+
+	/* Free wrapped lines */
+	for (unsigned r = 0; r < t->row_count; r++) {
+		if (wrap_lines[r]) {
+			for (unsigned c = 0; c < t->col_count && c < t->rows[r].cell_count; c++) {
+				if (wrap_lines[r][c])
+					free_wrapped_lines(wrap_lines[r][c],
+							   wrap_counts ? wrap_counts[r][c] : 0);
+			}
+			free(wrap_lines[r]);
+		}
+		if (wrap_counts && wrap_counts[r])
+			free(wrap_counts[r]);
+	}
+	free(wrap_lines);
+	free(wrap_counts);
 	free(col_w);
 	ctx->last_block_was_visible = 1;
 }
@@ -869,6 +1239,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
+	ctx.term_width = get_term_width();
 
 	MD_PARSER parser = {0};
 	parser.abi_version = 0;
@@ -937,6 +1308,7 @@ void markdown_render_ansi(const char *md)
 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
+	ctx.term_width = get_term_width();
 
 	render_ansi_impl(md, &ctx);
 
@@ -960,6 +1332,7 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
+	ctx.term_width = get_term_width();
 
 	render_ansi_impl(md, &ctx);
 

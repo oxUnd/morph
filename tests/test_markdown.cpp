@@ -657,3 +657,43 @@ TEST(MarkdownMedia, NoMediaInPlainMarkdown)
 	markdown_render_ansi_with_media("# Hello\n\n**bold** text\n\n- item1\n- item2", test_media_cb, &col);
 	EXPECT_EQ(col.entries.size(), 0u);
 }
+
+TEST(MarkdownRender, TableWrapDoesNotCrash)
+{
+	const char *md = "| Name | Description |\n|------|-------------|\n| Alice | This is a very long description that should definitely wrap across multiple lines when the terminal is narrow |\n| Bob | Short |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Alice") != std::string::npos);
+	EXPECT_TRUE(plain.find("Bob") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableWideContentRenders)
+{
+	std::string long_text(200, 'X');
+	std::string md_str = "| Key | Value |\n|-----|-------|\n| a | " + long_text + " |";
+	std::string out = render(md_str.c_str());
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Key") != std::string::npos);
+	EXPECT_TRUE(plain.find("a") != std::string::npos);
+	EXPECT_TRUE(plain.find("X") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableNarrowNoOverflow)
+{
+	const char *md = "| Header1 | Header2 | Header3 |\n|---------|----------|---------|\n| AAAAAAAAAAAAAA | BBBBBBBBBBBBBB | CCCCCCCCCCCCCC |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Header1") != std::string::npos);
+	EXPECT_TRUE(plain.find("Header2") != std::string::npos);
+	EXPECT_TRUE(plain.find("Header3") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableWrapCJKContent)
+{
+	/* CJK characters in table cells */
+	const char *md = "| \xe5\x90\x8d\xe5\x89\x8d | \xe8\xaa\xac\xe6\x98\x8e |\n|------|----------|\n| \xe5\xa4\xaa\xe9\x83\x8e | \xe3\x81\x93\xe3\x82\x8c\xe3\x81\xaf\xe9\x9d\x9e\xe5\xb8\xb8\xe3\x81\xab\xe9\x95\xb7\xe3\x81\x84\xe8\xaa\xac\xe6\x98\x8e\xe6\x96\x87\xe3\x81\xa7\xe3\x81\x99 |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("30") != std::string::npos ||
+		    plain.find("\xe5\x90\x8d") != std::string::npos);
+}
