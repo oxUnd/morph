@@ -63,5 +63,5 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm)
 	return tool_register(reg, "vid_gen",
 		"Generate a video from a text prompt, with an optional reference_image (file path) for img2vid. Provide prompt, optional image_path/reference_image, optional duration (seconds).",
 		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the video to generate\"},\"image_path\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2vid\"},\"reference_image\":{\"type\":\"string\",\"description\":\"Alternative file path to a reference image\"},\"duration\":{\"type\":\"integer\",\"description\":\"Video duration in seconds\"}},\"required\":[\"prompt\"]}",
-		vid_gen_exec, NULL);
+		vid_gen_exec, NULL, NULL);
 }

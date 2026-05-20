@@ -65,5 +65,5 @@ int img_info_init(struct tool_registry *reg)
 	return tool_register(reg, "img_info",
 		"Get image metadata (dimensions, format, color channels). Provide file_path.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"}},\"required\":[\"file_path\"]}",
-		img_info_exec, NULL);
+		img_info_exec, NULL, NULL);
 }

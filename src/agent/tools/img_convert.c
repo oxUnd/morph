@@ -151,5 +151,5 @@ int img_convert_init(struct tool_registry *reg)
 		"\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",\"tga\"],\"description\":\"Target image format\"},"
 		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"},"
 		"\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality (1-100, optional)\"}},\"required\":[\"file_path\",\"format\"]}",
-		img_convert_exec, NULL);
+		img_convert_exec, NULL, NULL);
 }

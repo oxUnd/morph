@@ -1592,11 +1592,12 @@ struct model *llm = model_llm_create(
 				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
 				if (ex_ptr) {
 					memcpy(ex_ptr, &ex, sizeof(ex));
-					tool_register(&ctx->tools, ex.manifest.name,
-						      ex.manifest.description,
-						      ex.manifest.args_schema ?
-						      ex.manifest.args_schema : "",
-						      ext_run_wrapper, ex_ptr);
+				tool_register(&ctx->tools, ex.manifest.name,
+					      ex.manifest.description,
+					      ex.manifest.args_schema ?
+					      ex.manifest.args_schema : "",
+					      ext_run_wrapper, ex_ptr,
+					      ext_user_data_destroy);
 					log_info("registered ext: %s", ex.manifest.name);
 				}
 			} else {
@@ -2300,14 +2301,7 @@ void cli_shutdown(struct cli_context *ctx)
 		react_context_destroy(ctx->react);
 	if (ctx->tokenizer)
 		tokenizer_destroy(ctx->tokenizer);
-	for (int i = 0; i < ctx->tools.count; i++) {
-		void *ud = ctx->tools.entries[i].user_data;
-		if (ud) {
-			ext_unload((struct ext *)ud);
-			free(ud);
-			ctx->tools.entries[i].user_data = NULL;
-		}
-	}
+	tool_registry_cleanup(&ctx->tools);
 	if (ctx->llm)
 		model_destroy(ctx->llm);
 	if (ctx->img_llm)

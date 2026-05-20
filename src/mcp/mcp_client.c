@@ -770,7 +770,8 @@ int mcp_register_server_tools(struct mcp_client *client,
 			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
 
 		rc = tool_register(reg, tool_name, tools[i].description,
-				   schema, mcp_tool_exec, binding);
+				   schema, mcp_tool_exec, binding,
+				   (tool_user_data_destroy_fn)free);
 		if (rc < 0) {
 			log_warn("mcp: failed to register tool '%s' (rc=%d)", tool_name, rc);
 			free(binding);
@@ -857,7 +858,8 @@ int mcp_register_server_resources(struct mcp_client *client,
 
 		rc = tool_register(reg, tool_name, desc_buf,
 				   "{\"type\":\"object\",\"additionalProperties\":false}",
-				   mcp_resource_exec, binding);
+				   mcp_resource_exec, binding,
+				   (tool_user_data_destroy_fn)free);
 		if (rc < 0) {
 			log_warn("mcp: failed to register resource '%s' (rc=%d)", tool_name, rc);
 			free(binding);
@@ -946,7 +948,8 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
 
 		rc = tool_register(reg, tool_name, prompts[i].description,
-				   schema, mcp_prompt_exec, binding);
+				   schema, mcp_prompt_exec, binding,
+				   (tool_user_data_destroy_fn)free);
 		if (rc < 0) {
 			log_warn("mcp: failed to register prompt '%s' (rc=%d)", tool_name, rc);
 			free(binding);

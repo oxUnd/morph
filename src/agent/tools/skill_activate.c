@@ -109,5 +109,5 @@ int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills
 		"{\"type\":\"object\",\"properties\":{"
 		"\"name\":{\"type\":\"string\",\"description\":\"The skill name to activate\"}"
 		"},\"required\":[\"name\"]}",
-		skill_activate_exec, NULL);
+		skill_activate_exec, NULL, NULL);
 }

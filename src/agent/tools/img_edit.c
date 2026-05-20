@@ -143,5 +143,5 @@ int img_edit_init(struct tool_registry *reg, struct model *llm)
 	return tool_register(reg, "img_edit",
 		"Analyze or answer questions about an image. Provide file_path and prompt describing what to look for.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file to analyze\"},\"prompt\":{\"type\":\"string\",\"description\":\"What to look for or ask about the image\"}},\"required\":[\"file_path\",\"prompt\"]}",
-		img_edit_exec, NULL);
+		img_edit_exec, NULL, NULL);
 }

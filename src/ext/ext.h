@@ -39,6 +39,7 @@ struct ext {
 int ext_load(struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
 int ext_run(struct ext *ex, const char *args_json, char **result_json);
+void ext_user_data_destroy(void *user_data);
 
 #ifdef __cplusplus
 }

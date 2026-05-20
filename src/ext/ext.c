@@ -82,6 +82,15 @@ int ext_unload(struct ext *ex)
 	return 0;
 }
 
+void ext_user_data_destroy(void *user_data)
+{
+	struct ext *ex = (struct ext *)user_data;
+	if (!ex)
+		return;
+	ext_unload(ex);
+	free(ex);
+}
+
 static int read_fd(int fd, char **out, size_t *out_len)
 {
 	size_t cap = 8192;

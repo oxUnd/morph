@@ -159,5 +159,5 @@ int img_resize_init(struct tool_registry *reg)
 		"\"width\":{\"type\":\"integer\",\"description\":\"Target width in pixels\"},"
 		"\"height\":{\"type\":\"integer\",\"description\":\"Target height in pixels\"},"
 		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"}},\"required\":[\"file_path\"]}",
-		img_resize_exec, NULL);
+		img_resize_exec, NULL, NULL);
 }

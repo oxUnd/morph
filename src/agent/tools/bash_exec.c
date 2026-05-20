@@ -362,5 +362,5 @@ int bash_exec_init(struct tool_registry *reg)
 		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
 		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime (default 30)\"}"
 		"},\"required\":[\"command\"]}",
-		bash_exec_run, NULL);
+		bash_exec_run, NULL, NULL);
 }

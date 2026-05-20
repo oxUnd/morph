@@ -453,5 +453,5 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
 		"\"status\":{\"type\":\"string\",\"description\":\"New status (for update): pending, in_progress, completed, failed, skipped\"}"
 		"},\"required\":[\"command\"]}",
-		plan_tool_exec, NULL);
+		plan_tool_exec, NULL, NULL);
 }

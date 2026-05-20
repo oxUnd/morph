@@ -22,11 +22,13 @@ struct tool_desc {
 };
 
 typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
+typedef void (*tool_user_data_destroy_fn)(void *user_data);
 
 struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	void *user_data;
+	tool_user_data_destroy_fn user_data_destroy;
 	unsigned int flags;
 };
 
@@ -40,7 +42,8 @@ struct tool_registry {
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 int tool_register(struct tool_registry *reg, const char *name, const char *desc,
-		  const char *args_spec, tool_exec_fn exec, void *user_data);
+		  const char *args_spec, tool_exec_fn exec, void *user_data,
+		  tool_user_data_destroy_fn user_data_destroy);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, char **result_json);

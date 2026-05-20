@@ -19,8 +19,12 @@ void tool_entry_cleanup_user_data(struct tool_registry *reg)
 {
 	if (!reg)
 		return;
-	for (int i = 0; i < reg->count; i++)
-		free(reg->entries[i].user_data);
+	for (int i = 0; i < reg->count; i++) {
+		void *ud = reg->entries[i].user_data;
+		if (ud && reg->entries[i].user_data_destroy)
+			reg->entries[i].user_data_destroy(ud);
+		reg->entries[i].user_data = NULL;
+	}
 }
 
 static int find_tool(struct tool_registry *reg, const char *name)
@@ -33,7 +37,8 @@ static int find_tool(struct tool_registry *reg, const char *name)
 }
 
 int tool_register(struct tool_registry *reg, const char *name, const char *desc,
-		  const char *args_spec, tool_exec_fn exec, void *user_data)
+		  const char *args_spec, tool_exec_fn exec, void *user_data,
+		  tool_user_data_destroy_fn user_data_destroy)
 {
 	if (!reg || !name || !exec)
 		return -EINVAL;
@@ -49,6 +54,7 @@ int tool_register(struct tool_registry *reg, const char *name, const char *desc,
 		sizeof(e->desc.args_spec) - 1);
 	e->exec = exec;
 	e->user_data = user_data;
+	e->user_data_destroy = user_data_destroy;
 	reg->count++;
 	log_dbg("tool registered: %s", name);
 	return 0;
