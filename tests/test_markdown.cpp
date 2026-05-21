@@ -2,6 +2,7 @@
 #include "render/markdown.h"
 #include <string.h>
 #include <stdlib.h>
+#include <sstream>
 #include <vector>
 #include <string>
 
@@ -690,10 +691,123 @@ TEST(MarkdownRender, TableNarrowNoOverflow)
 
 TEST(MarkdownRender, TableWrapCJKContent)
 {
-	/* CJK characters in table cells */
 	const char *md = "| \xe5\x90\x8d\xe5\x89\x8d | \xe8\xaa\xac\xe6\x98\x8e |\n|------|----------|\n| \xe5\xa4\xaa\xe9\x83\x8e | \xe3\x81\x93\xe3\x82\x8c\xe3\x81\xaf\xe9\x9d\x9e\xe5\xb8\xb8\xe3\x81\xab\xe9\x95\xb7\xe3\x81\x84\xe8\xaa\xac\xe6\x98\x8e\xe6\x96\x87\xe3\x81\xa7\xe3\x81\x99 |";
 	std::string out = render(md);
 	std::string plain = strip_ansi(out);
-	EXPECT_TRUE(plain.find("30") != std::string::npos ||
-		    plain.find("\xe5\x90\x8d") != std::string::npos);
+	EXPECT_TRUE(plain.find("\xe5\x90\x8d") != std::string::npos);
+	EXPECT_TRUE(plain.find("\xe8\xaa\xac") != std::string::npos);
+	EXPECT_TRUE(plain.find("\xe5\xa4\xaa") != std::string::npos);
+}
+
+static size_t count_visible_cols(const std::string &s)
+{
+	size_t cols = 0;
+	for (size_t i = 0; i < s.size(); ) {
+		unsigned char c = (unsigned char)s[i];
+		if (c < 0x80) { cols++; i++; }
+		else if ((c & 0xE0) == 0xC0) { cols++; i += 2; }
+		else if ((c & 0xF0) == 0xE0) { cols += 2; i += 3; }
+		else if ((c & 0xF8) == 0xF0) { cols += 2; i += 4; }
+		else { cols++; i++; }
+	}
+	return cols;
+}
+
+static size_t count_segment_width(const std::string &line, size_t start, size_t end)
+{
+	std::string seg = line.substr(start, end - start);
+	size_t w = 0;
+	for (size_t i = 0; i < seg.size(); ) {
+		unsigned char c = (unsigned char)seg[i];
+		if (c == ' ') { w++; i++; }
+		else if (c < 0x80) { w++; i++; }
+		else if ((c & 0xE0) == 0xC0) { w++; i += 2; }
+		else if ((c & 0xF0) == 0xE0) { w += 2; i += 3; }
+		else if ((c & 0xF8) == 0xF0) { w += 2; i += 4; }
+		else { w++; i++; }
+	}
+	return w;
+}
+
+TEST(MarkdownRender, TableCJKAlignment)
+{
+	const char *md = "| \xe5\x90\x8d\xe5\x89\x8d | \xe5\x80\xa4 |\n|------|------|\n| ABC | 10 |\n| \xe3\x81\x82\xe3\x81\x84 | 20 |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+
+	std::istringstream stream(plain);
+	std::string line;
+	std::vector<size_t> col_widths;
+	bool found_data = false;
+	while (std::getline(stream, line)) {
+		size_t pos = 0;
+		std::vector<size_t> widths;
+		while (pos < line.size()) {
+			size_t next = line.find("\xe2\x94\x82", pos);
+			if (next == std::string::npos) {
+				size_t end = line.find('|', pos);
+				if (end == std::string::npos) break;
+				next = end;
+			}
+			if (next > pos) {
+				widths.push_back(count_segment_width(line, pos, next));
+			}
+			pos = next + 3;
+		}
+		if (!widths.empty()) {
+			if (col_widths.empty()) {
+				col_widths = widths;
+				found_data = true;
+			} else if (widths.size() == col_widths.size()) {
+				for (size_t i = 0; i < widths.size(); i++) {
+					EXPECT_EQ(widths[i], col_widths[i])
+						<< "Column " << i << " width mismatch";
+				}
+			}
+		}
+	}
+	EXPECT_TRUE(found_data);
+}
+
+TEST(MarkdownRender, TableCJKWrapAtCharBoundary)
+{
+	std::string cjk_text;
+	for (int i = 0; i < 30; i++)
+		cjk_text += "\xe6\xbc\xa2";
+	const char *md_prefix = "| \xe5\x90\x8d\xe5\x89\x8d | ";
+	const char *md_suffix = " |";
+	std::string md = md_prefix + cjk_text + md_suffix;
+	std::string out = render(md.c_str());
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("\xe6\xbc\xa2") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableNonCJK3ByteWidth)
+{
+	const char *md = "| Sym | Val |\n|-----|-----|\n| \xe2\x89\xa5 | 10 |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("\xe2\x89\xa5") != std::string::npos);
+	EXPECT_TRUE(plain.find("10") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableWordBoundaryWrap)
+{
+	const char *md = "| Name | Description |\n|------|-------------|\n| Test | This is a very long description that should wrap at word boundaries |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("description") != std::string::npos);
+	EXPECT_TRUE(plain.find("Test") != std::string::npos);
+}
+
+TEST(MarkdownRender, TableMixedCJKAsciiAlignment)
+{
+	const char *md = "| \xe5\xb1\xa4\xe7\xb4\x9a | \xe9\x81\xb8\xe5\x9e\x8b | \xe5\x8f\x96\xe8\x88\x8e |\n|------|------|------|\n| core | GPT-4o | best |\n| fast | DeepSeek | cheap |";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("core") != std::string::npos);
+	EXPECT_TRUE(plain.find("GPT-4o") != std::string::npos);
+	EXPECT_TRUE(plain.find("fast") != std::string::npos);
+	EXPECT_TRUE(plain.find("DeepSeek") != std::string::npos);
+	EXPECT_TRUE(plain.find("\xe5\xb1\xa4") != std::string::npos);
 }

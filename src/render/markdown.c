@@ -421,9 +421,8 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 	return 0;
 }
 
-/* Strip ANSI escape sequences and count visible width (assumes ASCII +
- * UTF-8). Returns visible byte count; for now we approximate width as the
- * count of UTF-8 character starts (good enough for ASCII-heavy tables). */
+/* Strip ANSI escape sequences, producing a plain-text copy.
+ * Returns the byte length of the plain text. */
 static size_t strip_ansi(const char *src, size_t len, char **out_plain)
 {
 	char *plain = malloc(len + 1);
@@ -448,16 +447,110 @@ static size_t strip_ansi(const char *src, size_t len, char **out_plain)
 	return j;
 }
 
+/* Decode a single UTF-8 code point starting at s[pos].
+ * Sets *out_byte_len to the byte length of the character.
+ * Returns the decoded Unicode code point (0 on error/EOF). */
+static unsigned utf8_decode_cp(const char *s, size_t len, size_t pos,
+			       size_t *out_byte_len)
+{
+	if (pos >= len) {
+		*out_byte_len = 0;
+		return 0;
+	}
+	unsigned char c = (unsigned char)s[pos];
+	unsigned cp = 0;
+	size_t bl = 1;
+	if (c < 0x80) {
+		cp = c;
+		bl = 1;
+	} else if ((c & 0xE0) == 0xC0 && pos + 1 < len) {
+		cp = ((unsigned)(c & 0x1F) << 6) |
+		     ((unsigned char)s[pos + 1] & 0x3F);
+		bl = 2;
+	} else if ((c & 0xF0) == 0xE0 && pos + 2 < len) {
+		cp = ((unsigned)(c & 0x0F) << 12) |
+		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 6) |
+		     ((unsigned char)s[pos + 2] & 0x3F);
+		bl = 3;
+	} else if ((c & 0xF8) == 0xF0 && pos + 3 < len) {
+		cp = ((unsigned)(c & 0x07) << 18) |
+		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 12) |
+		     ((unsigned)((unsigned char)s[pos + 2] & 0x3F) << 6) |
+		     ((unsigned char)s[pos + 3] & 0x3F);
+		bl = 4;
+	}
+	if (pos + bl > len)
+		bl = len - pos;
+	*out_byte_len = bl;
+	return cp;
+}
+
+/* Return the visible column width of a Unicode code point. */
+static size_t utf8_cp_width(unsigned cp)
+{
+	/* Zero-width characters */
+	if (cp >= 0x0300 && cp <= 0x036F) return 0;
+	if (cp >= 0x0483 && cp <= 0x0489) return 0;
+	if (cp >= 0x1AB0 && cp <= 0x1AFF) return 0;
+	if (cp >= 0x1DC0 && cp <= 0x1DFF) return 0;
+	if (cp >= 0x20D0 && cp <= 0x20FF) return 0;
+	if (cp >= 0xFE20 && cp <= 0xFE2F) return 0;
+	if (cp == 0x00AD) return 0;
+	if (cp == 0x034F) return 0;
+	if (cp == 0x200B) return 0;
+	if (cp == 0x200C) return 0;
+	if (cp == 0x200D) return 0;
+	if (cp == 0x2060) return 0;
+	if (cp >= 0xFE00 && cp <= 0xFE0F) return 0;
+	if (cp >= 0xE0100 && cp <= 0xE01EF) return 0;
+
+	/* CJK wide characters: 2 columns */
+	if (cp >= 0x1100 && cp <= 0x11FF) return 2;
+	if (cp >= 0x2E80 && cp <= 0x2EFF) return 2;
+	if (cp >= 0x2F00 && cp <= 0x2FDF) return 2;
+	if (cp >= 0x3040 && cp <= 0x309F) return 2;
+	if (cp >= 0x30A0 && cp <= 0x30FF) return 2;
+	if (cp >= 0x3100 && cp <= 0x312F) return 2;
+	if (cp >= 0x3130 && cp <= 0x318F) return 2;
+	if (cp >= 0x3190 && cp <= 0x319F) return 2;
+	if (cp >= 0x3200 && cp <= 0x32FF) return 2;
+	if (cp >= 0x3300 && cp <= 0x33FF) return 2;
+	if (cp >= 0x3400 && cp <= 0x4DBF) return 2;
+	if (cp >= 0x4E00 && cp <= 0x9FFF) return 2;
+	if (cp >= 0xA000 && cp <= 0xA4CF) return 2;
+	if (cp >= 0xAC00 && cp <= 0xD7AF) return 2;
+	if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
+	if (cp >= 0xFE30 && cp <= 0xFE6F) return 2;
+	if (cp >= 0xFF01 && cp <= 0xFFEF) return 2;
+	if (cp >= 0x20000 && cp <= 0x2EBEF) return 2;
+	if (cp >= 0x2F800 && cp <= 0x2FA1F) return 2;
+	if (cp >= 0x30000 && cp <= 0x3134F) return 2;
+
+	/* Emoji: approximate as 2 columns */
+	if (cp >= 0x1F600 && cp <= 0x1F64F) return 2;
+	if (cp >= 0x1F300 && cp <= 0x1F5FF) return 2;
+	if (cp >= 0x1F680 && cp <= 0x1F6FF) return 2;
+	if (cp >= 0x1F900 && cp <= 0x1F9FF) return 2;
+	if (cp >= 0x1FA00 && cp <= 0x1FA6F) return 2;
+	if (cp >= 0x1FA70 && cp <= 0x1FAFF) return 2;
+	if (cp >= 0x2600 && cp <= 0x26FF) return 2;
+	if (cp >= 0x2700 && cp <= 0x27BF) return 2;
+	if (cp >= 0x1F000 && cp <= 0x1F02F) return 2;
+	if (cp >= 0x1F0A0 && cp <= 0x1F0FF) return 2;
+
+	/* All other characters (including 3/4-byte non-CJK): 1 column */
+	return 1;
+}
+
+/* Count the total visible column width of a UTF-8 string. */
 static size_t utf8_visible_cols(const char *s, size_t len)
 {
 	size_t cols = 0;
 	for (size_t i = 0; i < len; ) {
-		unsigned char c = (unsigned char)s[i];
-		if (c < 0x80) { i++; cols++; }
-		else if ((c & 0xE0) == 0xC0) { i += 2; cols++; }
-		else if ((c & 0xF0) == 0xE0) { i += 3; cols += 2; /* CJK approx */ }
-		else if ((c & 0xF8) == 0xF0) { i += 4; cols += 2; }
-		else { i++; cols++; }
+		size_t bl;
+		unsigned cp = utf8_decode_cp(s, len, i, &bl);
+		cols += utf8_cp_width(cp);
+		i += bl ? bl : 1;
 	}
 	return cols;
 }
@@ -466,66 +559,41 @@ static size_t utf8_visible_cols(const char *s, size_t len)
  * length of the character. Sets *out_cols to the visible column width. */
 static size_t utf8_char_at(const char *s, size_t len, size_t pos, size_t *out_cols)
 {
-	if (pos >= len) {
-		*out_cols = 0;
-		return 0;
-	}
-	unsigned char c = (unsigned char)s[pos];
-	size_t byte_len;
-	if (c < 0x80) {
-		byte_len = 1;
-		*out_cols = 1;
-	} else if ((c & 0xE0) == 0xC0) {
-		byte_len = 2;
-		*out_cols = 1;
-	} else if ((c & 0xF0) == 0xE0) {
-		byte_len = 3;
-		*out_cols = 2;
-	} else if ((c & 0xF8) == 0xF0) {
-		byte_len = 4;
-		*out_cols = 2;
-	} else {
-		byte_len = 1;
-		*out_cols = 1;
-	}
-	if (pos + byte_len > len)
-		byte_len = len - pos;
-	return byte_len;
+	size_t bl;
+	unsigned cp = utf8_decode_cp(s, len, pos, &bl);
+	*out_cols = utf8_cp_width(cp);
+	return bl ? bl : 1;
 }
 
 /* Check if the UTF-8 character at s[pos] is a CJK ideograph or wide symbol.
  * Used to identify word boundaries for wrapping: CJK chars are boundaries. */
 static int utf8_is_cjk(const char *s, size_t len, size_t pos)
 {
-	if (pos >= len)
-		return 0;
-	unsigned char c = (unsigned char)s[pos];
-	unsigned cp = 0;
-	if (c < 0x80) {
-		cp = c;
-	} else if ((c & 0xE0) == 0xC0 && pos + 1 < len) {
-		cp = ((unsigned)(c & 0x1F) << 6) | ((unsigned char)s[pos + 1] & 0x3F);
-	} else if ((c & 0xF0) == 0xE0 && pos + 2 < len) {
-		cp = ((unsigned)(c & 0x0F) << 12) |
-		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 6) |
-		     ((unsigned char)s[pos + 2] & 0x3F);
-	} else if ((c & 0xF8) == 0xF0 && pos + 3 < len) {
-		cp = ((unsigned)(c & 0x07) << 18) |
-		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 12) |
-		     ((unsigned)((unsigned char)s[pos + 2] & 0x3F) << 6) |
-		     ((unsigned char)s[pos + 3] & 0x3F);
-	}
-	/* CJK Unified Ideographs: U+4E00..U+9FFF */
-	/* CJK Extension A: U+3400..U+4DBF */
-	/* Fullwidth forms: U+FF01..U+FF60 */
-	/* CJK Compatibility: U+F900..U+FAFF */
-	/* Hiragana: U+3040..U+309F, Katakana: U+30A0..U+30FF */
-	return (cp >= 0x4E00 && cp <= 0x9FFF) ||
-	       (cp >= 0x3400 && cp <= 0x4DBF) ||
-	       (cp >= 0xFF01 && cp <= 0xFF60) ||
-	       (cp >= 0xF900 && cp <= 0xFAFF) ||
-	       (cp >= 0x3040 && cp <= 0x309F) ||
-	       (cp >= 0x30A0 && cp <= 0x30FF);
+	size_t bl;
+	unsigned cp = utf8_decode_cp(s, len, pos, &bl);
+	/* CJK Unified Ideographs */
+	if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
+	if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
+	/* CJK Compatibility Ideographs */
+	if (cp >= 0xF900 && cp <= 0xFAFF) return 1;
+	/* CJK Unified Ideographs Extension B-I */
+	if (cp >= 0x20000 && cp <= 0x2EBEF) return 1;
+	if (cp >= 0x30000 && cp <= 0x3134F) return 1;
+	/* CJK Radicals / Kangxi */
+	if (cp >= 0x2E80 && cp <= 0x2EFF) return 1;
+	if (cp >= 0x2F00 && cp <= 0x2FDF) return 1;
+	/* Bopomofo */
+	if (cp >= 0x3100 && cp <= 0x312F) return 1;
+	/* Hiragana / Katakana */
+	if (cp >= 0x3040 && cp <= 0x309F) return 1;
+	if (cp >= 0x30A0 && cp <= 0x30FF) return 1;
+	/* Hangul */
+	if (cp >= 0xAC00 && cp <= 0xD7AF) return 1;
+	if (cp >= 0x1100 && cp <= 0x11FF) return 1;
+	if (cp >= 0x3130 && cp <= 0x318F) return 1;
+	/* Fullwidth forms */
+	if (cp >= 0xFF01 && cp <= 0xFFEF) return 1;
+	return 0;
 }
 
 /* Wrap a single cell's raw (ANSI-decorated) content to fit within max_cols
@@ -541,7 +609,6 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 	if (max_cols == 0)
 		max_cols = 1;
 
-	/* Upper bound: one line per character is enough */
 	unsigned cap = (unsigned)(plain_len + 1);
 	if (cap < 4)
 		cap = 4;
@@ -549,17 +616,18 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 	if (!lines)
 		return NULL;
 
-	/* Parse the raw text, producing sub-lines of at most max_cols visible
-	 * width, breaking at word/CJK boundaries where possible. */
-	size_t ri = 0;		/* position in raw */
-	size_t pi = 0;		/* position in plain */
-	size_t line_start = 0;	/* start of current sub-line in raw */
-	size_t line_vis = 0;	/* visible cols in current sub-line */
+	size_t ri = 0;
+	size_t pi = 0;
+	size_t line_start = 0;
+	size_t line_vis = 0;
 	size_t line_count = 0;
+
+	/* Track last break opportunity (after a space or CJK character) */
+	size_t break_ri = 0;
+	size_t break_vis = 0;
 
 	while (ri < raw_len) {
 		if ((unsigned char)raw[ri] == 0x1b && ri + 1 < raw_len && raw[ri + 1] == '[') {
-			/* ANSI escape: skip it entirely; it has zero visible width */
 			size_t end = ri + 2;
 			while (end < raw_len && !((raw[end] >= 'A' && raw[end] <= 'Z') ||
 						  (raw[end] >= 'a' && raw[end] <= 'z')))
@@ -567,19 +635,25 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			if (end < raw_len)
 				end++;
 			ri = end;
-			/* pi does not advance because ANSI codes have no plain
-			 * representation */
 			continue;
 		}
 
-		/* Determine the UTF-8 character at plain[pi] */
 		size_t char_cols = 0;
 		size_t char_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
 		int is_cjk = utf8_is_cjk(plain, plain_len, pi);
 		int is_space = ((unsigned char)plain[pi] == ' ');
 
 		if (line_vis + char_cols > max_cols && line_vis > 0) {
-			/* This character would overflow the line. Break here. */
+			/* Overflow: break at last break opportunity if available */
+			size_t seg_ri, seg_vis;
+			if (break_ri > line_start && break_vis > 0) {
+				seg_ri = break_ri;
+				seg_vis = break_vis;
+			} else {
+				seg_ri = ri;
+				seg_vis = line_vis;
+			}
+
 			if (line_count >= cap) {
 				cap *= 2;
 				struct wrapped_line *nl = realloc(lines, cap * sizeof(struct wrapped_line));
@@ -591,7 +665,7 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 				}
 				lines = nl;
 			}
-			size_t seg_len = ri - line_start;
+			size_t seg_len = seg_ri - line_start;
 			lines[line_count].raw = malloc(seg_len + 1);
 			if (!lines[line_count].raw) {
 				for (unsigned k = 0; k < line_count; k++)
@@ -602,16 +676,48 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			memcpy(lines[line_count].raw, raw + line_start, seg_len);
 			lines[line_count].raw[seg_len] = '\0';
 			lines[line_count].raw_len = seg_len;
-			lines[line_count].vis_width = line_vis;
+			lines[line_count].vis_width = seg_vis;
 			line_count++;
 
-			line_start = ri;
+			line_start = seg_ri;
+			line_vis = seg_vis;
+			break_ri = line_start;
+			break_vis = 0;
+
+			/* Skip leading spaces on new line */
+			while (ri < raw_len && pi < plain_len &&
+			       (unsigned char)plain[pi] == ' ') {
+				size_t skip_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
+				ri += skip_bytes;
+				pi += skip_bytes;
+				line_start = ri;
+			}
+			/* Recalculate current character after skip */
+			if (ri >= raw_len)
+				break;
+			char_cols = 0;
+			char_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
+			is_cjk = utf8_is_cjk(plain, plain_len, pi);
+			is_space = 0;
 			line_vis = 0;
+			break_ri = line_start;
+			break_vis = 0;
+		}
+
+		/* Record break opportunity after spaces and CJK characters */
+		if (is_space || is_cjk) {
+			break_ri = ri + char_bytes;
+			break_vis = 0;
 		}
 
 		ri += char_bytes;
 		pi += char_bytes;
 		line_vis += char_cols;
+
+		/* Update break_vis to reflect accumulated width at the break point */
+		if (break_vis == 0 && (is_space || is_cjk)) {
+			break_vis = line_vis;
+		}
 	}
 
 	/* Flush remaining content as the last sub-line */
@@ -642,7 +748,7 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 		line_count++;
 	}
 
-	*out_count = line_count;
+	*out_count = (unsigned)line_count;
 	return lines;
 }
 
