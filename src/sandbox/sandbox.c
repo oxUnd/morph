@@ -6,25 +6,36 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/resource.h>
 
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_cpu_seconds)
+extern char **environ;
+
+int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
+			  int max_cpu_seconds, int max_file_size_mb,
+			  int max_processes)
 {
 	struct rlimit rl;
 
 	if (max_memory_mb > 0) {
-#ifdef __linux__
 		rl.rlim_cur = (rlim_t)max_memory_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
+#ifdef RLIMIT_AS
 		if (setrlimit(RLIMIT_AS, &rl) != 0) {
 			log_warn("sandbox: setrlimit RLIMIT_AS failed: %s",
 				 strerror(errno));
 		} else {
-			log_info("sandbox: RLIMIT_AS set to %dMB", max_memory_mb);
+			log_info("sandbox: RLIMIT_AS set to %dMB",
+				 max_memory_mb);
 		}
 #else
-		(void)max_memory_mb;
-		log_info("sandbox: RLIMIT_AS skipped (not enforced on this OS)");
+		log_info("sandbox: RLIMIT_AS not available on this OS");
+#endif
+#ifdef RLIMIT_DATA
+		if (setrlimit(RLIMIT_DATA, &rl) != 0) {
+			log_warn("sandbox: setrlimit RLIMIT_DATA failed: %s",
+				 strerror(errno));
+		}
 #endif
 	}
 
@@ -35,9 +46,38 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_c
 			log_warn("sandbox: setrlimit RLIMIT_CPU failed: %s",
 				 strerror(errno));
 		} else {
-			log_info("sandbox: RLIMIT_CPU set to %ds", max_cpu_seconds);
+			log_info("sandbox: RLIMIT_CPU set to %ds",
+				 max_cpu_seconds);
 		}
 	}
+
+	if (max_file_size_mb > 0) {
+		rl.rlim_cur = (rlim_t)max_file_size_mb * 1024 * 1024;
+		rl.rlim_max = (rlim_t)max_file_size_mb * 1024 * 1024;
+		if (setrlimit(RLIMIT_FSIZE, &rl) != 0) {
+			log_warn("sandbox: setrlimit RLIMIT_FSIZE failed: %s",
+				 strerror(errno));
+		} else {
+			log_info("sandbox: RLIMIT_FSIZE set to %dMB",
+				 max_file_size_mb);
+		}
+	}
+
+#ifdef RLIMIT_NPROC
+	if (max_processes > 0) {
+		rl.rlim_cur = (rlim_t)max_processes;
+		rl.rlim_max = (rlim_t)max_processes;
+		if (setrlimit(RLIMIT_NPROC, &rl) != 0) {
+			log_warn("sandbox: setrlimit RLIMIT_NPROC failed: %s",
+				 strerror(errno));
+		} else {
+			log_info("sandbox: RLIMIT_NPROC set to %d",
+				 max_processes);
+		}
+	}
+#else
+	(void)max_processes;
+#endif
 
 	rl.rlim_cur = 256;
 	rl.rlim_max = 256;
@@ -48,8 +88,112 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_c
 		log_info("sandbox: RLIMIT_NOFILE set to 256");
 	}
 
+	/* Disable core dumps to avoid leaking sensitive memory */
+	rl.rlim_cur = 0;
+	rl.rlim_max = 0;
+	if (setrlimit(RLIMIT_CORE, &rl) != 0) {
+		log_warn("sandbox: setrlimit RLIMIT_CORE failed: %s",
+			 strerror(errno));
+	}
+
 	(void)permissions;
 
+	return 0;
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * Environment variable filtering
+ *
+ * Always-allowed minimal vars (needed for libc / dynamic loader):
+ *   PATH, HOME, USER, LANG, LC_*, TZ, TMPDIR
+ * Anything else is dropped unless EXT_PERM_ENV is set, or the var
+ * name appears in allowed_env.
+ * ──────────────────────────────────────────────────────────────── */
+
+static int env_is_essential(const char *name)
+{
+	static const char *const essentials[] = {
+		"PATH", "HOME", "USER", "LOGNAME", "SHELL",
+		"LANG", "TZ", "TMPDIR", "PWD",
+		NULL
+	};
+	for (int i = 0; essentials[i]; i++) {
+		if (strcmp(name, essentials[i]) == 0)
+			return 1;
+	}
+	if (strncmp(name, "LC_", 3) == 0)
+		return 1;
+	return 0;
+}
+
+static int env_in_allow_list(const char *name,
+			     const char *const *allowed,
+			     int count)
+{
+	if (!allowed)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		if (allowed[i] && strcmp(name, allowed[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+int sandbox_apply_env(const char **allowed_env, int count,
+		      unsigned int permissions)
+{
+	/* If ENV permission is set with no explicit allow list, leave
+	 * the environment untouched — the caller has opted in. */
+	if ((permissions & EXT_PERM_ENV) && (count <= 0 || !allowed_env)) {
+		log_info("sandbox: env unrestricted (EXT_PERM_ENV set)");
+		return 0;
+	}
+
+	/* Build a snapshot of variable names to remove. We can't iterate
+	 * environ while calling unsetenv, since unsetenv mutates it. */
+	int env_count = 0;
+	while (environ && environ[env_count])
+		env_count++;
+
+	if (env_count == 0)
+		return 0;
+
+	char **names = calloc((size_t)env_count, sizeof(char *));
+	if (!names)
+		return -ENOMEM;
+
+	int n_names = 0;
+	for (int i = 0; i < env_count; i++) {
+		const char *entry = environ[i];
+		const char *eq = strchr(entry, '=');
+		if (!eq)
+			continue;
+		size_t name_len = (size_t)(eq - entry);
+		char *name = malloc(name_len + 1);
+		if (!name)
+			continue;
+		memcpy(name, entry, name_len);
+		name[name_len] = '\0';
+
+		int keep = env_is_essential(name) ||
+			   env_in_allow_list(name, allowed_env, count);
+		if (keep) {
+			free(name);
+		} else {
+			names[n_names++] = name;
+		}
+	}
+
+	int removed = 0;
+	for (int i = 0; i < n_names; i++) {
+		if (unsetenv(names[i]) == 0)
+			removed++;
+		free(names[i]);
+	}
+	free(names);
+
+	log_info("sandbox: env filtered (%d vars removed, %d allowed)",
+		 removed, count);
 	return 0;
 }
 
@@ -323,11 +467,25 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		off += n;
 	remaining = sizeof(sbpl) - (size_t)off;
 
-	/* Always allow file reading */
-	n = snprintf(sbpl + off, remaining,
-		     "(allow file-read*)\n");
-	if (n > 0 && (size_t)n < remaining)
-		off += n;
+	/* File read: restricted to allowed paths if specified */
+	if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
+		for (int i = 0; i < cfg->allowed_paths_count; i++) {
+			if (!cfg->allowed_paths[i])
+				continue;
+			remaining = sizeof(sbpl) - (size_t)off;
+			n = snprintf(sbpl + off, remaining,
+				     "(allow file-read* "
+				     "(subpath \"%s\"))\n",
+				     cfg->allowed_paths[i]);
+			if (n > 0 && (size_t)n < remaining)
+				off += n;
+		}
+	} else {
+		n = snprintf(sbpl + off, remaining,
+			     "(allow file-read*)\n");
+		if (n > 0 && (size_t)n < remaining)
+			off += n;
+	}
 	remaining = sizeof(sbpl) - (size_t)off;
 
 	/* File write: restricted to allowed paths or fully allowed */
@@ -741,29 +899,27 @@ int sandbox_apply_seccomp(unsigned int permissions)
 
 #endif /* !__linux__ */
 
-#ifndef __APPLE__
-
-int sandbox_enter_darwin(struct sandbox_config *cfg)
-{
-	if (!cfg)
-		return -EINVAL;
-	(void)cfg;
-	return 0;
-}
-
-#endif /* !__APPLE__ */
-
 int sandbox_enter(struct sandbox_config *cfg)
 {
 	if (!cfg)
 		return -EINVAL;
 
-	log_info("sandbox_enter: perms=0x%x mem=%dMB cpu=%ds",
-		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds);
+	log_info("sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d",
+		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
+		 cfg->max_file_size_mb, cfg->max_processes);
 
 	int rc;
 
-	rc = sandbox_apply_rlimits(cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds);
+	rc = sandbox_apply_env((const char **)cfg->allowed_env,
+			       cfg->allowed_env_count,
+			       cfg->permissions);
+	if (rc < 0)
+		log_warn("sandbox: env filter failed: %d", rc);
+
+	rc = sandbox_apply_rlimits(cfg->permissions, cfg->max_memory_mb,
+				   cfg->max_cpu_seconds,
+				   cfg->max_file_size_mb,
+				   cfg->max_processes);
 	if (rc < 0)
 		return rc;
 

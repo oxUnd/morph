@@ -25,6 +25,7 @@ set(TEST_SOURCES
 	test_render.cpp
 	test_mcp.cpp
 	test_ask_user.cpp
+	test_sandbox.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
