@@ -419,8 +419,9 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 
 	if (ctx->ask_user_fn) {
 		len += snprintf(buf + len, cap - len,
-			"\nIf you need clarification or user input, "
-			"call ask_user with your question.\n");
+			"\nYou have the ask_user tool. Use it ONLY for genuine "
+			"ambiguity or irreversible decisions. Prefer acting on "
+			"reasonable assumptions rather than blocking for input.\n");
 	}
 
 	if (ctx->skills) {

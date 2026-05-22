@@ -104,9 +104,16 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 	g_ask_user_data = user_data;
 	return tool_register(reg, "ask_user",
 		"Ask the user a question and wait for their response. "
-		"Use when you need clarification, additional information, "
-		"or a decision before proceeding. "
-		"If 'choices' is provided, the user will pick from them.",
+		"Use when: the request is ambiguous with multiple valid "
+		"interpretations; you need a decision between mutually "
+		"exclusive approaches; an action is irreversible or "
+		"destructive; you lack critical information. "
+		"Do NOT use when: you can make a reasonable default choice "
+		"(prefer action over inaction); the question is trivial; "
+		"you already have enough context. If unsure, proceed with "
+		"your best judgment and state your assumption. "
+		"When presenting options, use 'choices' for structured "
+		"selection.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"question\":{\"type\":\"string\","
 		"\"description\":\"The question to ask the user\"},"
