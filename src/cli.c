@@ -1780,7 +1780,7 @@ void cli_run(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
-	printf("morph v0.1  |  " ANSI_DIM "/help 查看命令" ANSI_RESET "\n\n");
+	printf("morph v" MORPH_VERSION "  |  " ANSI_DIM "/help 查看命令" ANSI_RESET "\n\n");
 	char line[8192];
 
 	struct sigaction sa;
