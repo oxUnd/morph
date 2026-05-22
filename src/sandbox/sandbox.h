@@ -21,7 +21,8 @@ struct sandbox_config {
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(unsigned int permissions);
 int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_cpu_seconds);
-int sandbox_apply_fs(const char **allowed_paths, int count);
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions);
 
 #ifdef __cplusplus
 }

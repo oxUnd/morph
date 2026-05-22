@@ -1,8 +1,10 @@
 #include "sandbox.h"
 #include "util/log.h"
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/resource.h>
 
@@ -51,14 +53,432 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_c
 	return 0;
 }
 
-int sandbox_apply_fs(const char **allowed_paths, int count)
+/* ────────────────────────────────────────────────────────────────
+ * Filesystem path restrictions
+ * ──────────────────────────────────────────────────────────────── */
+
+#ifdef __linux__
+
+/*
+ * Landlock LSM implementation (Linux 5.13+)
+ *
+ * Uses raw syscalls to avoid glibc version dependency.
+ * Gracefully degrades: if the kernel doesn't support landlock,
+ * we log a warning and continue with seccomp+rlimit only.
+ */
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+
+#ifndef O_PATH
+#define O_PATH 0x200000
+#endif
+
+/*
+ * Landlock access rights constants.
+ * We define these ourselves rather than including <linux/landlock.h>
+ * because older glibc/kernel headers may not have them.
+ */
+#ifndef LANDLOCK_ACCESS_FS_EXECUTE
+#define LANDLOCK_ACCESS_FS_EXECUTE        (1ULL << 0)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_WRITE_FILE
+#define LANDLOCK_ACCESS_FS_WRITE_FILE     (1ULL << 1)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_READ_FILE
+#define LANDLOCK_ACCESS_FS_READ_FILE      (1ULL << 2)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_READ_DIR
+#define LANDLOCK_ACCESS_FS_READ_DIR       (1ULL << 3)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_DIR
+#define LANDLOCK_ACCESS_FS_REMOVE_DIR     (1ULL << 4)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_FILE
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE    (1ULL << 5)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_CHAR
+#define LANDLOCK_ACCESS_FS_MAKE_CHAR      (1ULL << 6)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_DIR
+#define LANDLOCK_ACCESS_FS_MAKE_DIR       (1ULL << 7)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_REG
+#define LANDLOCK_ACCESS_FS_MAKE_REG       (1ULL << 8)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SOCK
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK      (1ULL << 9)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_FIFO
+#define LANDLOCK_ACCESS_FS_MAKE_FIFO      (1ULL << 10)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_BLOCK
+#define LANDLOCK_ACCESS_FS_MAKE_BLOCK     (1ULL << 11)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SYM
+#define LANDLOCK_ACCESS_FS_MAKE_SYM       (1ULL << 12)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_REFER
+#define LANDLOCK_ACCESS_FS_REFER          (1ULL << 13)
+#endif
+#ifndef LANDLOCK_ACCESS_FS_TRUNCATE
+#define LANDLOCK_ACCESS_FS_TRUNCATE       (1ULL << 14)
+#endif
+
+#ifndef LANDLOCK_RULE_PATH_BENEATH
+#define LANDLOCK_RULE_PATH_BENEATH 1
+#endif
+
+struct ll_ruleset_attr {
+	uint64_t handled_access_fs;
+	uint64_t handled_access_net;
+};
+
+struct ll_path_beneath_attr {
+	uint64_t allowed_access;
+	int32_t parent_fd;
+	uint32_t reserved;
+};
+
+static int ll_create_ruleset(uint64_t fs_access)
+{
+	struct ll_ruleset_attr attr;
+	memset(&attr, 0, sizeof(attr));
+	attr.handled_access_fs = fs_access;
+	return (int)syscall(__NR_landlock_create_ruleset,
+			    &attr, sizeof(attr), 0);
+}
+
+static int ll_add_rule(int ruleset_fd, int path_fd, uint64_t access)
+{
+	struct ll_path_beneath_attr pb;
+	memset(&pb, 0, sizeof(pb));
+	pb.allowed_access = access;
+	pb.parent_fd = path_fd;
+	return (int)syscall(__NR_landlock_add_rule,
+			    ruleset_fd, LANDLOCK_RULE_PATH_BENEATH,
+			    &pb, 0);
+}
+
+static int ll_restrict_self(int ruleset_fd)
+{
+	return (int)syscall(__NR_landlock_restrict_self, ruleset_fd, 0);
+}
+
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions)
+{
+	/* Probe for landlock support */
+	int probe_fd = ll_create_ruleset(0);
+	if (probe_fd < 0) {
+		if (errno == EOPNOTSUPP || errno == ENOSYS) {
+			log_info("sandbox: landlock not supported by kernel, "
+				 "fs restrictions skipped");
+			return 0;
+		}
+		log_warn("sandbox: landlock probe failed: %s, "
+			 "fs restrictions skipped", strerror(errno));
+		return 0;
+	}
+	close(probe_fd);
+
+	/*
+	 * Determine handled access rights.
+	 *
+	 * We always handle read+execute so that the default-deny policy
+	 * blocks write operations unless explicitly allowed via rules.
+	 *
+	 * If EXT_PERM_FILESYS is NOT set, we create a read-only sandbox:
+	 *   - read file/dir + execute are allowed everywhere
+	 *   - write operations are blocked (not in handled_access_fs,
+	 *     so they fall through to kernel default which is... allow)
+	 *   Wait - landlock only restricts what's in handled_access_fs.
+	 *   To block writes, we MUST include them in handled_access_fs
+	 *   but NOT add any rules granting them.
+	 *
+	 * If EXT_PERM_FILESYS IS set with allowed_paths, we grant
+	 * write access only under those paths.
+	 *
+	 * If EXT_PERM_FILESYS IS set without allowed_paths, we grant
+	 * write access everywhere (no landlock rules for write).
+	 *
+	 * Strategy: always handle write rights in the ruleset so that
+	 * landlock will enforce the default-deny on writes. Then add
+	 * per-path rules that grant write access only where requested.
+	 */
+	uint64_t read_access =
+		LANDLOCK_ACCESS_FS_READ_FILE |
+		LANDLOCK_ACCESS_FS_READ_DIR |
+		LANDLOCK_ACCESS_FS_EXECUTE;
+
+	uint64_t write_access =
+		LANDLOCK_ACCESS_FS_WRITE_FILE |
+		LANDLOCK_ACCESS_FS_MAKE_REG |
+		LANDLOCK_ACCESS_FS_MAKE_DIR |
+		LANDLOCK_ACCESS_FS_REMOVE_FILE |
+		LANDLOCK_ACCESS_FS_REMOVE_DIR |
+		LANDLOCK_ACCESS_FS_MAKE_SYM |
+		LANDLOCK_ACCESS_FS_MAKE_CHAR |
+		LANDLOCK_ACCESS_FS_MAKE_FIFO |
+		LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+		LANDLOCK_ACCESS_FS_MAKE_SOCK |
+		LANDLOCK_ACCESS_FS_REFER |
+		LANDLOCK_ACCESS_FS_TRUNCATE;
+
+	uint64_t handled = read_access;
+	int needs_write_rules = 0;
+
+	if (permissions & EXT_PERM_FILESYS) {
+		if (count > 0 && allowed_paths) {
+			/*
+			 * FILESYS requested with path restrictions:
+			 * handle write access in ruleset (default-deny),
+			 * then grant write on specific paths.
+			 */
+			handled |= write_access;
+			needs_write_rules = 1;
+		} else {
+			/*
+			 * FILESYS requested without path restrictions:
+			 * don't handle write access in the ruleset,
+			 * so writes are NOT restricted by landlock.
+			 * (They may still be restricted by seccomp.)
+			 */
+		}
+	} else {
+		/*
+		 * No FILESYS permission: handle write access in the
+		 * ruleset without granting it anywhere = default-deny.
+		 */
+		handled |= write_access;
+	}
+
+	int ruleset_fd = ll_create_ruleset(handled);
+	if (ruleset_fd < 0) {
+		log_warn("sandbox: landlock create_ruleset failed: %s",
+			 strerror(errno));
+		return 0;
+	}
+
+	/*
+	 * Add rules for each allowed path.
+	 * All paths get read+execute.
+	 * Paths also get write if needs_write_rules is set.
+	 */
+	uint64_t path_access = read_access;
+	if (needs_write_rules)
+		path_access |= write_access;
+
+	for (int i = 0; i < count; i++) {
+		if (!allowed_paths[i])
+			continue;
+		int fd = open(allowed_paths[i], O_PATH | O_CLOEXEC);
+		if (fd < 0) {
+			log_warn("sandbox: landlock: cannot open path '%s': %s",
+				 allowed_paths[i], strerror(errno));
+			continue;
+		}
+		if (ll_add_rule(ruleset_fd, fd, path_access) < 0) {
+			log_warn("sandbox: landlock: add_rule for '%s' failed: %s",
+				 allowed_paths[i], strerror(errno));
+			close(fd);
+			continue;
+		}
+		log_info("sandbox: landlock: allowed path '%s' "
+			 "(access=0x%llx)", allowed_paths[i],
+			 (unsigned long long)path_access);
+		close(fd);
+	}
+
+	/*
+	 * PR_SET_NO_NEW_PRIVS must be set before landlock_restrict_self.
+	 * This is also done in sandbox_apply_seccomp(), but we need it
+	 * here first since landlock comes before seccomp in sandbox_enter().
+	 */
+	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+		log_warn("sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s",
+			 strerror(errno));
+		close(ruleset_fd);
+		return 0;
+	}
+
+	if (ll_restrict_self(ruleset_fd) < 0) {
+		log_warn("sandbox: landlock: restrict_self failed: %s",
+			 strerror(errno));
+		close(ruleset_fd);
+		return 0;
+	}
+
+	close(ruleset_fd);
+	log_info("sandbox: landlock fs restrictions applied "
+		 "(perms=0x%x, %d allowed paths)", permissions, count);
+	return 0;
+}
+
+#elif defined(__APPLE__)
+
+/*
+ * macOS implementation using sandbox_init() with SBPL profile.
+ *
+ * sandbox_init(profile, 0, &errorbuf) accepts raw SBPL strings
+ * when flags=0 (not SANDBOX_NAMED). This is the same approach
+ * used by Chromium's Seatbelt wrapper.
+ *
+ * The SBPL (Sandbox Profile Language) is a Scheme-like DSL that
+ * Apple uses internally. Although sandbox_init is marked deprecated,
+ * it remains functional on all macOS versions and is the only
+ * programmatic way to apply fine-grained filesystem restrictions
+ * without wrapping the command in sandbox-exec(1).
+ *
+ * We must declare sandbox_init/sandbox_free_error directly because
+ * our own "sandbox.h" header shadows Apple's system <sandbox.h>.
+ */
+extern int sandbox_init(const char *profile, uint64_t flags, char **errorbuf);
+extern void sandbox_free_error(char *errorbuf);
+
+/* Suppress deprecation warnings — Chromium does the same */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions)
+{
+	/*
+	 * On macOS, filesystem restrictions are handled entirely
+	 * by sandbox_enter_darwin() which applies the full SBPL
+	 * profile including fs rules. We don't apply fs restrictions
+	 * separately here to avoid calling sandbox_init twice.
+	 */
+	(void)allowed_paths;
+	(void)count;
+	(void)permissions;
+	log_info("sandbox: macOS fs restrictions deferred to "
+		 "sandbox_enter_darwin (SBPL profile)");
+	return 0;
+}
+
+int sandbox_enter_darwin(struct sandbox_config *cfg)
+{
+	if (!cfg)
+		return -EINVAL;
+
+	/* Build SBPL profile string */
+	char sbpl[8192];
+	int off = 0;
+	int n;
+	size_t remaining;
+
+	remaining = sizeof(sbpl);
+	n = snprintf(sbpl + off, remaining,
+		     "(version 1)\n"
+		     "(deny default)\n");
+	if (n > 0 && (size_t)n < remaining)
+		off += n;
+	remaining = sizeof(sbpl) - (size_t)off;
+
+	/* Always allow file reading */
+	n = snprintf(sbpl + off, remaining,
+		     "(allow file-read*)\n");
+	if (n > 0 && (size_t)n < remaining)
+		off += n;
+	remaining = sizeof(sbpl) - (size_t)off;
+
+	/* File write: restricted to allowed paths or fully allowed */
+	if (cfg->permissions & EXT_PERM_FILESYS) {
+		if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
+			for (int i = 0; i < cfg->allowed_paths_count; i++) {
+				if (!cfg->allowed_paths[i])
+					continue;
+				remaining = sizeof(sbpl) - (size_t)off;
+				n = snprintf(sbpl + off, remaining,
+					     "(allow file-write* "
+					     "(subpath \"%s\"))\n",
+					     cfg->allowed_paths[i]);
+				if (n > 0 && (size_t)n < remaining)
+					off += n;
+			}
+		} else {
+			remaining = sizeof(sbpl) - (size_t)off;
+			n = snprintf(sbpl + off, remaining,
+				     "(allow file-write*)\n");
+			if (n > 0 && (size_t)n < remaining)
+				off += n;
+		}
+	}
+	/* No EXT_PERM_FILESYS: writes are denied by (deny default) */
+
+	/* Network access */
+	if (cfg->permissions & EXT_PERM_NETWORK) {
+		remaining = sizeof(sbpl) - (size_t)off;
+		n = snprintf(sbpl + off, remaining,
+			     "(allow network*)\n");
+		if (n > 0 && (size_t)n < remaining)
+			off += n;
+	}
+
+	/* Process execution */
+	if (cfg->permissions & EXT_PERM_EXEC) {
+		remaining = sizeof(sbpl) - (size_t)off;
+		n = snprintf(sbpl + off, remaining,
+			     "(allow process-exec)\n");
+		if (n > 0 && (size_t)n < remaining)
+			off += n;
+	}
+
+	/* Basic process operations needed for normal functioning */
+	remaining = sizeof(sbpl) - (size_t)off;
+	n = snprintf(sbpl + off, remaining,
+		     "(allow process-fork)\n"
+		     "(allow signal (target same-sandbox))\n"
+		     "(allow mach-lookup)\n"
+		     "(allow sysctl-read)\n");
+	if (n > 0 && (size_t)n < remaining)
+		off += n;
+
+	log_info("sandbox: macOS SBPL profile:\n%s", sbpl);
+
+	char *errorbuf = NULL;
+	int rv = sandbox_init(sbpl, 0, &errorbuf);
+
+	if (rv != 0) {
+		log_warn("sandbox: sandbox_init failed: %s",
+			 errorbuf ? errorbuf : "unknown error");
+		if (errorbuf)
+			sandbox_free_error(errorbuf);
+		/* Non-fatal: degrade to rlimits only */
+		return 0;
+	}
+
+	if (errorbuf)
+		sandbox_free_error(errorbuf);
+
+	log_info("sandbox: macOS sandbox_init applied (perms=0x%x)",
+		 cfg->permissions);
+	return 0;
+}
+
+#pragma clang diagnostic pop
+
+#else /* Neither Linux nor macOS */
+
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions)
 {
 	(void)allowed_paths;
 	(void)count;
-	log_info("sandbox: filesystem path restrictions not yet enforced "
-		 "(requires landlock on Linux or sandbox-exec on macOS)");
+	(void)permissions;
+	log_info("sandbox: filesystem path restrictions not available "
+		 "on this platform");
 	return 0;
 }
+
+#endif /* platform-specific fs implementations */
+
+/* ────────────────────────────────────────────────────────────────
+ * Seccomp-BPF (Linux only)
+ * ──────────────────────────────────────────────────────────────── */
 
 #ifdef __linux__
 
@@ -66,7 +486,6 @@ int sandbox_apply_fs(const char **allowed_paths, int count)
 #include <linux/filter.h>
 #include <linux/audit.h>
 #include <sys/prctl.h>
-#include <sys/syscall.h>
 #include <unistd.h>
 
 #if defined(__x86_64__)
@@ -331,6 +750,10 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	if (rc < 0)
 		goto fail;
 
+	/*
+	 * PR_SET_NO_NEW_PRIVS may have already been set by
+	 * sandbox_apply_fs (landlock). Setting it again is harmless.
+	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
 		log_err("sandbox: PR_SET_NO_NEW_PRIVS failed: %s",
 			strerror(errno));
@@ -361,7 +784,7 @@ fail:
 
 #endif /* __linux__ */
 
-#if defined(__APPLE__) || !defined(__linux__)
+#if !defined(__linux__)
 
 int sandbox_apply_seccomp(unsigned int permissions)
 {
@@ -371,18 +794,19 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	return 0;
 }
 
+#endif /* !__linux__ */
+
+#ifndef __APPLE__
+
 int sandbox_enter_darwin(struct sandbox_config *cfg)
 {
 	if (!cfg)
 		return -EINVAL;
-
-	log_info("sandbox_enter_darwin: macOS sandbox-exec integration is P1 "
-		 "(perms=0x%x)", cfg->permissions);
 	(void)cfg;
 	return 0;
 }
 
-#endif /* __APPLE__ || !__linux__ */
+#endif /* !__APPLE__ */
 
 int sandbox_enter(struct sandbox_config *cfg)
 {
@@ -399,7 +823,8 @@ int sandbox_enter(struct sandbox_config *cfg)
 		return rc;
 
 	rc = sandbox_apply_fs((const char **)cfg->allowed_paths,
-			       cfg->allowed_paths_count);
+			       cfg->allowed_paths_count,
+			       cfg->permissions);
 	if (rc < 0)
 		log_warn("sandbox: fs restriction failed: %d", rc);
 

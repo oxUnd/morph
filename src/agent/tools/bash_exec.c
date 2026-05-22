@@ -290,6 +290,9 @@ static int bash_exec_run(const char *args_json, char **result_json,
 				 EXT_PERM_NETWORK | EXT_PERM_ENV;
 		sb.max_memory_mb = 512;
 		sb.max_cpu_seconds = timeout;
+		if (cwd && *cwd)
+			sb.allowed_paths = (char **)&cwd;
+		sb.allowed_paths_count = (cwd && *cwd) ? 1 : 0;
 		sandbox_enter(&sb);
 
 		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
