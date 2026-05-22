@@ -77,6 +77,12 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_c
 #include <sys/prctl.h>
 #include <linux/landlock.h>
 
+/* LANDLOCK_ACCESS_FS_TRUNCATE was added in Landlock ABI v3 (kernel 6.2).
+ * Older kernel headers (e.g. Debian 12 / linux-libc-dev 6.1) lack it. */
+#ifndef LANDLOCK_ACCESS_FS_TRUNCATE
+#define LANDLOCK_ACCESS_FS_TRUNCATE       (1ULL << 14)
+#endif
+
 #ifndef O_PATH
 #define O_PATH 0x200000
 #endif
