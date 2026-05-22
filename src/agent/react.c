@@ -417,6 +417,12 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			"with the skill name to load its full instructions.\n");
 	}
 
+	if (ctx->ask_user_fn) {
+		len += snprintf(buf + len, cap - len,
+			"\nIf you need clarification or user input, "
+			"call ask_user with your question.\n");
+	}
+
 	if (ctx->skills) {
 		char *active = skill_build_activated_instructions(ctx->skills);
 		if (active) {

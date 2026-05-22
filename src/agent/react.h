@@ -8,6 +8,7 @@ extern "C" {
 #include <signal.h>
 #include "agent/tool.h"
 #include "agent/context.h"
+#include "agent/tools/ask_user.h"
 #include "skill/skill.h"
 
 enum react_step_type {
@@ -100,6 +101,8 @@ struct react_context {
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;
 	struct hitl_config hitl;
+	ask_user_callback_fn ask_user_fn;
+	void *ask_user_data;
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;

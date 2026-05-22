@@ -13,6 +13,7 @@ add_library(morph-tools STATIC
 	skill_activate.c
 	bash_exec.c
 	plan.c
+	ask_user.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings

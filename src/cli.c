@@ -19,6 +19,7 @@
 #include "agent/tools/file_info.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tools/bash_exec.h"
+#include "agent/tools/ask_user.h"
 #include "agent/plan.h"
 #include "agent/tools/plan.h"
 #include "mcp/mcp.h"
@@ -1339,6 +1340,12 @@ static int cmd_dispatch(struct cli_context *ctx, const char *input)
 
 /* ---- cli_init ---- */
 
+static int cli_ask_user_callback(const char *question,
+				  const char *const *choices,
+				  int choices_count,
+				  char **answer,
+				  void *user_data);
+
 int cli_init(struct cli_context *ctx, const char *config_path)
 {
 	if (!ctx)
@@ -1637,18 +1644,7 @@ struct model *llm = model_llm_create(
 
 		int rc2 = mcp_registry_add(&ctx->mcp, &scfg);
 		if (rc2 == 0) {
-			/* Eagerly connect and register tools */
-			struct mcp_client *mc = mcp_registry_get(&ctx->mcp, scfg.name);
-			if (mc) {
-				rc2 = mcp_ensure_connected(mc);
-				if (rc2 == 0) {
-					mcp_register_server_tools(mc, &ctx->tools);
-					mcp_register_server_resources(mc, &ctx->tools);
-					mcp_register_server_prompts(mc, &ctx->tools);
-				} else {
-					log_warn("mcp: failed to connect to '%s': %d", scfg.name, rc2);
-				}
-			}
+			log_info("mcp: registered server '%s' (use /mcp connect to activate)", scfg.name);
 		}
 	}
 
@@ -1692,6 +1688,11 @@ struct model *llm = model_llm_create(
 	plan_registry_init(&ctx->plans);
 	plan_tool_init(&ctx->tools, &ctx->plans, llm);
 	log_info("registered plan tool");
+
+	ask_user_init(&ctx->tools, cli_ask_user_callback, ctx);
+	ctx->react->ask_user_fn = cli_ask_user_callback;
+	ctx->react->ask_user_data = ctx;
+	log_info("registered ask_user tool");
 
 	ctx->react->skills = ctx->skills;
 
@@ -2134,6 +2135,64 @@ static int output_callback(enum react_step_type type, const char *content,
 		fflush(stdout);
 		break;
 	}
+	return 0;
+}
+
+static int cli_ask_user_callback(const char *question,
+				  const char *const *choices,
+				  int choices_count,
+				  char **answer,
+				  void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (!ctx || !answer)
+		return -EINVAL;
+
+	spin_pause(&ctx->spin);
+
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
+
+	if (choices && choices_count > 0) {
+		for (int i = 0; i < choices_count; i++)
+			printf("  %d. %s\n", i + 1, choices[i]);
+		printf("  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
+		       choices_count);
+	} else {
+		printf("  > ");
+	}
+	fflush(stdout);
+
+	char buf[1024] = {0};
+	FILE *tty = fopen("/dev/tty", "r");
+	if (!tty) {
+		printf("\n");
+		spin_resume(&ctx->spin);
+		*answer = strdup("");
+		return -ENOTTY;
+	}
+	if (!fgets(buf, sizeof(buf), tty)) {
+		fclose(tty);
+		printf("\n");
+		spin_resume(&ctx->spin);
+		*answer = strdup("");
+		return -EIO;
+	}
+	fclose(tty);
+
+	buf[strcspn(buf, "\n")] = '\0';
+
+	if (choices && choices_count > 0) {
+		int n = atoi(buf);
+		if (n >= 1 && n <= choices_count)
+			*answer = strdup(choices[n - 1]);
+		else
+			*answer = strdup(buf);
+	} else {
+		*answer = strdup(buf);
+	}
+
+	spin_resume(&ctx->spin);
 	return 0;
 }
 
