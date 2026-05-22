@@ -624,6 +624,7 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 
 	/* Track last break opportunity (after a space or CJK character) */
 	size_t break_ri = 0;
+	size_t break_pi = 0;
 	size_t break_vis = 0;
 
 	while (ri < raw_len) {
@@ -644,11 +645,17 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 		int is_space = ((unsigned char)plain[pi] == ' ');
 
 		if (line_vis + char_cols > max_cols && line_vis > 0) {
-			/* Overflow: break at last break opportunity if available */
+			/* Overflow: break at last break opportunity if available.
+			 * If we break at an earlier point, rewind ri/pi back to
+			 * that point so any already-consumed chars after the
+			 * break get re-processed on the next line — otherwise
+			 * their visible width would be lost. */
 			size_t seg_ri, seg_vis;
 			if (break_ri > line_start && break_vis > 0) {
 				seg_ri = break_ri;
 				seg_vis = break_vis;
+				ri = break_ri;
+				pi = break_pi;
 			} else {
 				seg_ri = ri;
 				seg_vis = line_vis;
@@ -680,8 +687,9 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			line_count++;
 
 			line_start = seg_ri;
-			line_vis = seg_vis;
+			line_vis = 0;
 			break_ri = line_start;
+			break_pi = pi;
 			break_vis = 0;
 
 			/* Skip leading spaces on new line */
@@ -701,12 +709,14 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			is_space = 0;
 			line_vis = 0;
 			break_ri = line_start;
+			break_pi = pi;
 			break_vis = 0;
 		}
 
 		/* Record break opportunity after spaces and CJK characters */
 		if (is_space || is_cjk) {
 			break_ri = ri + char_bytes;
+			break_pi = pi + char_bytes;
 			break_vis = 0;
 		}
 
