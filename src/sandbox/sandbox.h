@@ -14,14 +14,23 @@ struct sandbox_config {
 	unsigned int permissions;
 	char **allowed_paths;
 	int allowed_paths_count;
+	char **allowed_env;
+	int allowed_env_count;
 	int max_memory_mb;
 	int max_cpu_seconds;
+	int max_file_size_mb;
+	int max_processes;
 };
 
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(unsigned int permissions);
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_cpu_seconds);
-int sandbox_apply_fs(const char **allowed_paths, int count);
+int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
+			  int max_cpu_seconds, int max_file_size_mb,
+			  int max_processes);
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions);
+int sandbox_apply_env(const char **allowed_env, int count,
+		      unsigned int permissions);
 
 #ifdef __cplusplus
 }

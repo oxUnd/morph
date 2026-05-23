@@ -178,6 +178,8 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			sb_cfg.max_cpu_seconds = ex->manifest.max_cpu_seconds;
 			sb_cfg.allowed_paths = ex->manifest.allowed_paths;
 			sb_cfg.allowed_paths_count = ex->manifest.allowed_paths_count;
+			sb_cfg.allowed_env = ex->manifest.allowed_env;
+			sb_cfg.allowed_env_count = ex->manifest.allowed_env_count;
 			sandbox_enter(&sb_cfg);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);

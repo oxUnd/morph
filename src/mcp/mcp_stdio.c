@@ -220,7 +220,7 @@ int mcp_stdio_initialize(struct mcp_client *client)
 		 "{"
 		 "\"protocolVersion\":\"%s\","
 		 "\"capabilities\":{\"roots\":{\"listChanged\":false}},"
-		 "\"clientInfo\":{\"name\":\"morph\",\"version\":\"0.1.0\"}"
+		 "\"clientInfo\":{\"name\":\"morph\",\"version\":\"" MORPH_VERSION "\"}"
 		 "}",
 		 MCP_PROTOCOL_VERSION);
 
