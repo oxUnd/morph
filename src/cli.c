@@ -1348,6 +1348,32 @@ static int cmd_dispatch(struct cli_context *ctx, const char *input)
 
 /* ---- cli_init ---- */
 
+struct auto_connect_work {
+	struct mcp_client *client;
+	struct tool_registry *tools;
+	int result;
+	int done;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+};
+
+static void *auto_connect_thread(void *arg)
+{
+	struct auto_connect_work *w = arg;
+	int rc = mcp_ensure_connected(w->client);
+	if (rc == 0) {
+		mcp_register_server_tools(w->client, w->tools);
+		mcp_register_server_resources(w->client, w->tools);
+		mcp_register_server_prompts(w->client, w->tools);
+	}
+	pthread_mutex_lock(&w->lock);
+	w->result = rc;
+	w->done = 1;
+	pthread_cond_signal(&w->cond);
+	pthread_mutex_unlock(&w->lock);
+	return NULL;
+}
+
 static int cli_ask_user_callback(const char *question,
 				  const char *const *choices,
 				  int choices_count,
@@ -1650,9 +1676,74 @@ struct model *llm = model_llm_create(
 			strncpy(scfg.http_auth_token_env, cs->http_auth_token_env, 63);
 		}
 
+		scfg.auto_connect = cs->auto_connect;
+		scfg.connect_timeout = cs->connect_timeout;
+
 		int rc2 = mcp_registry_add(&ctx->mcp, &scfg);
 		if (rc2 == 0) {
-			log_info("mcp: registered server '%s' (use /mcp connect to activate)", scfg.name);
+			log_info("mcp: registered server '%s'%s", scfg.name,
+				 scfg.auto_connect ? " (auto_connect)" : "");
+		}
+	}
+
+	/* Auto-connect MCP servers that have auto_connect = true */
+	for (int i = 0; i < ctx->mcp.count; i++) {
+		struct mcp_client *mc = ctx->mcp.servers[i];
+		if (!mc->config.auto_connect)
+			continue;
+		int timeout = mc->config.connect_timeout;
+		log_info("mcp: auto-connecting '%s'%s...",
+			 mc->config.name,
+			 timeout > 0 ? " (timeout enabled)" : "");
+		if (timeout > 0) {
+			struct auto_connect_work w;
+			w.client = mc;
+			w.tools = &ctx->tools;
+			w.result = -1;
+			w.done = 0;
+			pthread_mutex_init(&w.lock, NULL);
+			pthread_cond_init(&w.cond, NULL);
+			pthread_t tid;
+			int terr = pthread_create(&tid, NULL,
+						  auto_connect_thread, &w);
+			if (terr != 0) {
+				pthread_mutex_destroy(&w.lock);
+				pthread_cond_destroy(&w.cond);
+				log_warn("mcp: auto-connect thread failed for '%s'",
+					 mc->config.name);
+				continue;
+			}
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_sec += timeout;
+			pthread_mutex_lock(&w.lock);
+			while (!w.done)
+				pthread_cond_timedwait(&w.cond, &w.lock, &ts);
+			pthread_mutex_unlock(&w.lock);
+			pthread_join(tid, NULL);
+			pthread_mutex_destroy(&w.lock);
+			pthread_cond_destroy(&w.cond);
+			if (w.done && w.result == 0)
+				log_info("mcp: auto-connected '%s'",
+					 mc->config.name);
+			else if (w.done)
+				log_warn("mcp: auto-connect failed for '%s': %d",
+					 mc->config.name, w.result);
+			else
+				log_warn("mcp: auto-connect timed out for '%s'",
+					 mc->config.name);
+		} else {
+			int rc3 = mcp_ensure_connected(mc);
+			if (rc3 == 0) {
+				mcp_register_server_tools(mc, &ctx->tools);
+				mcp_register_server_resources(mc, &ctx->tools);
+				mcp_register_server_prompts(mc, &ctx->tools);
+				log_info("mcp: auto-connected '%s'",
+					 mc->config.name);
+			} else {
+				log_warn("mcp: auto-connect failed for '%s': %d",
+					 mc->config.name, rc3);
+			}
 		}
 	}
 

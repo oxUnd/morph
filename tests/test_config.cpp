@@ -121,3 +121,31 @@ default_session = "comment_test"
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "comment_test");
 }
+
+TEST_F(ConfigTest, McpServerAutoConnect) {
+	const char *toml = R"(
+[[mcp.servers]]
+name = "auto-srv"
+transport = "stdio"
+command = "npx"
+args = ["-y", "some-server"]
+auto_connect = true
+connect_timeout = 30
+
+[[mcp.servers]]
+name = "lazy-srv"
+transport = "stdio"
+command = "npx"
+args = ["-y", "other-server"]
+)";
+	file_write_all(config_path, toml, strlen(toml));
+
+	struct config cfg;
+	int rc = config_load(&cfg, config_path);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(cfg.mcp.server_count, 2);
+	EXPECT_EQ(cfg.mcp.servers[0].auto_connect, 1);
+	EXPECT_EQ(cfg.mcp.servers[0].connect_timeout, 30);
+	EXPECT_EQ(cfg.mcp.servers[1].auto_connect, 0);
+	EXPECT_EQ(cfg.mcp.servers[1].connect_timeout, 0);
+}

@@ -260,6 +260,8 @@ int config_load(struct config *cfg, const char *path)
 			CFG_STR(srv, "command", ms->command);
 			CFG_STR(srv, "url", ms->http_url);
 			CFG_STR(srv, "auth_token_env", ms->http_auth_token_env);
+			CFG_BOOL(srv, "auto_connect", ms->auto_connect);
+			CFG_INT(srv, "connect_timeout", ms->connect_timeout);
 
 			toml_array_t *args_arr = toml_array_in(srv, "args");
 			if (args_arr) {

@@ -101,6 +101,9 @@ struct config_mcp_server {
 	/* http */
 	char http_url[512];
 	char http_auth_token_env[64];
+	/* startup */
+	int auto_connect;
+	int connect_timeout;
 };
 
 struct config_mcp {

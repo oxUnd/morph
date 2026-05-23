@@ -125,21 +125,41 @@ TEST_F(McpRegistryTest, MaxServers) {
 	EXPECT_EQ(reg.count, MCP_MAX_SERVERS);
 }
 
-TEST_F(McpRegistryTest, ClientInitialState) {
-	struct mcp_server_config cfg = make_stdio_cfg("check-state");
-	mcp_registry_add(&reg, &cfg);
-	struct mcp_client *client = mcp_registry_get(&reg, "check-state");
-	ASSERT_NE(client, nullptr);
+	TEST_F(McpRegistryTest, ClientInitialState) {
+		struct mcp_server_config cfg = make_stdio_cfg("check-state");
+		mcp_registry_add(&reg, &cfg);
+		struct mcp_client *client = mcp_registry_get(&reg, "check-state");
+		ASSERT_NE(client, nullptr);
 
-	EXPECT_EQ(client->connected, 0);
-	EXPECT_EQ(client->next_req_id, 1);
-	EXPECT_EQ(client->server_pid, -1);
-	EXPECT_EQ(client->stdin_fd, -1);
-	EXPECT_EQ(client->stdout_fd, -1);
-	EXPECT_EQ(client->supports_tools, 0);
-	EXPECT_EQ(client->supports_resources, 0);
-	EXPECT_EQ(client->supports_prompts, 0);
-}
+		EXPECT_EQ(client->connected, 0);
+		EXPECT_EQ(client->next_req_id, 1);
+		EXPECT_EQ(client->server_pid, -1);
+		EXPECT_EQ(client->stdin_fd, -1);
+		EXPECT_EQ(client->stdout_fd, -1);
+		EXPECT_EQ(client->supports_tools, 0);
+		EXPECT_EQ(client->supports_resources, 0);
+		EXPECT_EQ(client->supports_prompts, 0);
+	}
+
+	TEST_F(McpRegistryTest, AutoConnectFieldsPreserved) {
+		struct mcp_server_config cfg = make_stdio_cfg("auto-srv");
+		cfg.auto_connect = 1;
+		cfg.connect_timeout = 30;
+		mcp_registry_add(&reg, &cfg);
+		struct mcp_client *client = mcp_registry_get(&reg, "auto-srv");
+		ASSERT_NE(client, nullptr);
+		EXPECT_EQ(client->config.auto_connect, 1);
+		EXPECT_EQ(client->config.connect_timeout, 30);
+	}
+
+	TEST_F(McpRegistryTest, AutoConnectDefaultsZero) {
+		struct mcp_server_config cfg = make_stdio_cfg("lazy-srv");
+		mcp_registry_add(&reg, &cfg);
+		struct mcp_client *client = mcp_registry_get(&reg, "lazy-srv");
+		ASSERT_NE(client, nullptr);
+		EXPECT_EQ(client->config.auto_connect, 0);
+		EXPECT_EQ(client->config.connect_timeout, 0);
+	}
 
 /* ----- JSON-RPC request building ----- */
 

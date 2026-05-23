@@ -150,10 +150,12 @@ dir = ""
 #
 # Example: Local filesystem server (stdio)
 # [[mcp.servers]]
-# name      = "filesystem"
-# transport = "stdio"
-# command   = "npx"
-# args      = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+# name           = "filesystem"
+# transport      = "stdio"
+# command        = "npx"
+# args           = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
+# auto_connect   = true         # Connect at startup instead of lazy (default: false)
+# connect_timeout = 30          # Seconds to wait before giving up (default: 0 = no timeout)
 #
 # Example: GitHub server (stdio)
 # [[mcp.servers]]
@@ -169,3 +171,11 @@ dir = ""
 # transport     = "http"
 # url           = "https://api.example.com/mcp"
 # auth_token_env = "MCP_REMOTE_TOKEN"
+#
+# Example: Web Search, use exa.ai
+# [[mcp.servers]]
+# name          = "exa"
+# transport     = "http"
+# url           = "https://mcp.exa.ai/mcp"
+# auto_connect  = true
+# connect_timeout = 30
