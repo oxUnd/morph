@@ -65,11 +65,34 @@ md4c is **fetched** by CMake FetchContent (not in vendor/). stb_image_write/resi
 - Output dir defaults to `~/.morph/output`
 - Debug: `MORPH_DEBUG=1` prints every HTTP request/response
 
+## Error Handling
+- **Error type**: `typedef int morph_err_t` (defined in `src/util/error.h`)
+- **Convention**: `0` = success, `< 0` = error; **never** return bare `-1`
+- **POSIX errno**: use for system-level errors (e.g., `-EINVAL`, `-ENOMEM`, `-ENOENT`, `-EIO`, `-EPERM`, `-ECANCELED`)
+- **Application codes**: `enum morph_error` starting at `-257` (base `-256`), for domain-specific errors:
+  - `MORPH_ERR_NOT_CONFIGURED` (-257): missing API key / model config
+  - `MORPH_ERR_NOT_INITIALIZED` (-258): subsystem not initialized
+  - `MORPH_ERR_API` (-259): remote API returned HTTP error
+  - `MORPH_ERR_NETWORK` (-260): curl / connection failure
+  - `MORPH_ERR_PARSE` (-261): JSON / TOML / YAML parse failure
+  - `MORPH_ERR_PROTOCOL` (-262): response missing expected fields
+  - `MORPH_ERR_DB` (-263): SQLite operation failure
+  - `MORPH_ERR_FORMAT` (-264): invalid image / media format
+  - `MORPH_ERR_PROCESSING` (-265): image resize / convert failure
+  - `MORPH_ERR_SANDBOX` (-266): extension killed by sandbox
+  - `MORPH_ERR_LOAD` (-267): dlopen / dlsym failure
+  - `MORPH_ERR_LLM` (-268): LLM chat call failed
+- **`MORPH_RETURN(code)`**: use instead of `return code;` for error returns — auto-logs `morph_strerror(code)` + `__FILE__:__LINE__` in debug mode, zero-overhead in release
+- **`MORPH_SET_ERR(var, code)`**: use in `goto out` patterns to capture error code + log in debug mode
+- **`morph_strerror(err)`**: returns human-readable string for all error codes (POSIX + custom); use for LLM-facing and user-facing messages, never raw `%d`
+- **System calls**: return `-errno` (not `-EIO`) when `pipe()`, `fork()`, `select()`, `opendir()` etc. fail
+- **`goto out` pattern**: must propagate error code via `int rc = 0; ... rc = some_call(); ... out: return rc;` — never discard error codes by returning 0 unconditionally
+
 ## C Coding Conventions (from REQUIREMENTS.md §6.11)
 These differ from typical C defaults and must be followed:
 - **No `//` comments** — C-style `/* */` only
 - **`sizeof(var)`** not `sizeof(type)`
-- **Error codes**: negative errno (`-EINVAL`, `-ENOMEM`)
+- **Error codes**: negative errno (`-EINVAL`, `-ENOMEM`) or `MORPH_ERR_*` from `src/util/error.h`; use `MORPH_RETURN(code)` instead of bare `return code;` for all error returns
 - **Cleanup**: `goto out;` pattern, no early returns with leak
 - **Memory**: `xmalloc`/`xfree` wrappers — failure aborts, no NULL checks needed
 - **Multi-statement macros**: wrapped in `do { } while (0)`

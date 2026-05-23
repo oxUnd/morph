@@ -1471,8 +1471,10 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 
 - Tab 缩进（8 字符宽）；软上限 80，硬上限 100
 - 函数名 `snake_case`，类型 `struct foo`；宏全大写
-- 错误码使用负 `errno`（`-EINVAL` / `-ENOMEM`）
-- 集中清理 `goto out;`
+- 错误码使用负 `errno`（`-EINVAL` / `-ENOMEM`）或 `MORPH_ERR_*`（`src/util/error.h`）；错误返回必须使用 `MORPH_RETURN(code)` 而非裸 `return code;`
+- `goto out;` 必须传播错误码：`int rc = 0; ... if ((rc = call()) < 0) goto out; ... out: return rc;`，禁止无条件 `return 0`
+- 系统调用失败返回 `-errno`，禁止硬编码 `-EIO`
+- 用户/LLM 面向消息使用 `morph_strerror(rc)`，禁止裸 `%d`
 - C 风格注释，禁止 `//`
 - `sizeof(var)` 而非 `sizeof(type)`
 - 多语句宏 `do { } while (0)` 包裹
