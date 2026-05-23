@@ -2442,16 +2442,51 @@ static int cli_ask_user_callback(const char *question,
 	printf("\r\033[K");
 	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
 
+	char prompt[64];
 	if (choices && choices_count > 0) {
 		for (int i = 0; i < choices_count; i++)
 			printf("  %d. %s\n", i + 1, choices[i]);
-		printf("  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
-		       choices_count);
+		snprintf(prompt, sizeof(prompt),
+			 "  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
+			 choices_count);
 	} else {
-		printf("  > ");
+		snprintf(prompt, sizeof(prompt), "  > ");
 	}
+#ifdef HAVE_READLINE
+	{
+		char *input = NULL;
+		FILE *tty = fopen("/dev/tty", "r");
+		if (tty) {
+			FILE *old_in = rl_instream;
+			rl_instream = tty;
+			input = readline(prompt);
+			rl_instream = old_in;
+			fclose(tty);
+		} else {
+			input = readline(prompt);
+		}
+		if (!input) {
+			printf("\n");
+			spin_resume(&ctx->spin);
+			*answer = strdup("");
+			return -EIO;
+		}
+		if (input[0] != '\0')
+			add_history(input);
+		if (choices && choices_count > 0) {
+			int n = atoi(input);
+			if (n >= 1 && n <= choices_count) {
+				*answer = strdup(choices[n - 1]);
+				free(input);
+			} else {
+				*answer = input;
+			}
+		} else {
+			*answer = input;
+		}
+	}
+#else
 	fflush(stdout);
-
 	char buf[1024] = {0};
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
@@ -2480,6 +2515,7 @@ static int cli_ask_user_callback(const char *question,
 	} else {
 		*answer = strdup(buf);
 	}
+#endif
 
 	spin_resume(&ctx->spin);
 	return 0;
@@ -2513,6 +2549,21 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 		printf("  Args: " ANSI_DIM "%s" ANSI_RESET "\n", display_args);
 	}
 
+#ifdef HAVE_READLINE
+	char *rl_input = readline("  [y]es / [n]o / [a]lways: ");
+	if (!rl_input) {
+		printf("\n");
+		return HITL_DENY;
+	}
+	enum hitl_verdict v;
+	if (rl_input[0] == 'a' || rl_input[0] == 'A')
+		v = HITL_ALWAYS;
+	else if (rl_input[0] == 'y' || rl_input[0] == 'Y')
+		v = HITL_APPROVE;
+	else
+		v = HITL_DENY;
+	free(rl_input);
+#else
 	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
 	       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
 	fflush(stdout);
@@ -2537,6 +2588,7 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 		v = HITL_APPROVE;
 	else
 		v = HITL_DENY;
+#endif
 
 	if (v == HITL_APPROVE || v == HITL_ALWAYS)
 		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
@@ -2597,8 +2649,13 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	react_run(ctx->react, effective_input, output_callback, ctx);
 
+	if (ctx->spin.running) {
+		spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Error");
+		printf("\n");
+	}
+
 	if (ctx->react && ctx->react->state == REACT_STATE_ABORT) {
-		printf("\n" ANSI_YELLOW "[aborted] ReAct loop cancelled or timed out." ANSI_RESET "\n");
+		printf(ANSI_YELLOW "[aborted] ReAct loop cancelled or timed out." ANSI_RESET "\n");
 	}
 
 	/* Persist trace to DB */

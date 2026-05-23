@@ -303,11 +303,61 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	return 0;
 }
 
-static int llm_sse_http_cb(const char *data, size_t len, void *ud)
+struct llm_http_ctx {
+	struct sse_parser *parser;
+	struct arena *arena;
+	char *error_buf;
+	size_t error_len;
+	size_t error_cap;
+};
+
+static int llm_http_cb(const char *data, size_t len, void *ud)
 {
-	struct sse_parser *parser = ud;
-	sse_parser_feed(parser, data, len);
+	struct llm_http_ctx *hctx = ud;
+	if (hctx->parser)
+		sse_parser_feed(hctx->parser, data, len);
+	if (hctx->error_buf && hctx->arena) {
+		size_t needed = hctx->error_len + len + 1;
+		if (needed > hctx->error_cap && hctx->error_cap < 65536) {
+			size_t new_cap = needed * 2;
+			if (new_cap > 65536)
+				new_cap = 65536;
+			if (needed > new_cap)
+				return 0;
+			char *new_buf = arena_alloc(hctx->arena, new_cap);
+			if (!new_buf)
+				return 0;
+			if (hctx->error_len > 0)
+				memcpy(new_buf, hctx->error_buf,
+				       hctx->error_len);
+			hctx->error_buf = new_buf;
+			hctx->error_cap = new_cap;
+		}
+		if (needed <= hctx->error_cap) {
+			memcpy(hctx->error_buf + hctx->error_len, data, len);
+			hctx->error_len += len;
+			hctx->error_buf[hctx->error_len] = '\0';
+		}
+	}
 	return 0;
+}
+
+static const char *llm_extract_error(const char *raw)
+{
+	if (!raw || !*raw)
+		return NULL;
+	cJSON *root = cJSON_Parse(raw);
+	if (!root)
+		return NULL;
+	const char *msg = NULL;
+	cJSON *err_obj = cJSON_GetObjectItem(root, "error");
+	if (cJSON_IsObject(err_obj)) {
+		cJSON *msg_item = cJSON_GetObjectItem(err_obj, "message");
+		if (cJSON_IsString(msg_item) && msg_item->valuestring)
+			msg = msg_item->valuestring;
+	}
+	cJSON_Delete(root);
+	return msg;
 }
 
 static int llm_chat(struct model *self, struct arena *arena,
@@ -351,6 +401,13 @@ static int llm_chat(struct model *self, struct arena *arena,
 	struct sse_parser parser;
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
 
+	struct llm_http_ctx hctx;
+	hctx.parser = &parser;
+	hctx.arena = arena;
+	hctx.error_buf = arena_alloc(arena, 4096);
+	hctx.error_len = 0;
+	hctx.error_cap = hctx.error_buf ? 4096 : 0;
+
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
@@ -363,7 +420,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 	int status = http_post_sse_ex_timeout(url, body, (size_t)body_len,
 				       "application/json",
 				       extra_headers, 1, timeout,
-				       llm_sse_http_cb, &parser);
+				       llm_http_cb, &hctx);
 	log_dbg("llm_chat: SSE request done, status=%d", status);
 
 	sse_parser_free(&parser);
@@ -373,7 +430,14 @@ static int llm_chat(struct model *self, struct arena *arena,
 		return status;
 	}
 	if (status >= 400) {
-		log_err("llm_chat: API returned HTTP %d", status);
+		const char *detail = NULL;
+		if (hctx.error_buf && hctx.error_len > 0)
+			detail = llm_extract_error(hctx.error_buf);
+		if (detail)
+			log_err("llm_chat: API returned HTTP %d: %s",
+				status, detail);
+		else
+			log_err("llm_chat: API returned HTTP %d", status);
 		return -EIO;
 	}
 
@@ -558,6 +622,13 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	struct sse_parser parser;
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
 
+	struct llm_http_ctx hctx;
+	hctx.parser = &parser;
+	hctx.arena = arena;
+	hctx.error_buf = arena_alloc(arena, 4096);
+	hctx.error_len = 0;
+	hctx.error_cap = hctx.error_buf ? 4096 : 0;
+
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
@@ -570,7 +641,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	int status = http_post_sse_ex_timeout(url, body, strlen(body),
 				       "application/json",
 				       extra_headers, 1, timeout,
-				       llm_sse_http_cb, &parser);
+				       llm_http_cb, &hctx);
 	log_dbg("llm_chat_with_tools: SSE request done, status=%d", status);
 
 	sse_parser_free(&parser);
@@ -580,7 +651,17 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 		return status;
 	}
 	if (status >= 400) {
-		log_err("llm_chat_with_tools: API returned HTTP %d", status);
+		const char *detail = NULL;
+		if (hctx.error_buf && hctx.error_len > 0)
+			detail = llm_extract_error(hctx.error_buf);
+		if (detail) {
+			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
+				status, detail);
+			response->content = arena_strdup(arena, detail);
+		} else {
+			log_err("llm_chat_with_tools: API returned HTTP %d",
+				status);
+		}
 		return -EIO;
 	}
 

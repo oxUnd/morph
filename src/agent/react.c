@@ -1156,9 +1156,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		if (status < 0) {
 			log_err("react_run: LLM call failed: %d", status);
+			const char *err_content = "LLM call failed";
+			if (response.content && *response.content)
+				err_content = response.content;
 			struct react_step *err = react_step_create(ctx->arena,
-				REACT_STEP_OBSERVATION, "LLM call failed", NULL, NULL, NULL);
+				REACT_STEP_OBSERVATION, err_content, NULL, NULL, NULL);
 			add_step(ctx, err);
+			if (cb)
+				cb(REACT_STEP_OBSERVATION, err_content, user_data);
 			chat_response_free(&response);
 			ctx->state = REACT_STATE_ABORT;
 			return status;
