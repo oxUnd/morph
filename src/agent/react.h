@@ -110,8 +110,8 @@ struct react_context {
 	void *llm_model;
 	char *final_answer;
 	enum react_state state;
-	char tool_fail_name[64];
-	char tool_fail_args[512];
+	char *tool_fail_name;
+	char *tool_fail_args;
 	int tool_fail_count;
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;

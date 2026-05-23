@@ -301,8 +301,8 @@ void react_reset(struct react_context *ctx)
 	ctx->state = REACT_STATE_INIT;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
-	ctx->tool_fail_name[0] = '\0';
-	ctx->tool_fail_args[0] = '\0';
+				ctx->tool_fail_name = NULL;
+					ctx->tool_fail_args = NULL;
 	ctx->tool_fail_count = 0;
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
@@ -959,12 +959,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 							snprintf(deny_msg, sizeof(deny_msg),
 								 "tool error: '%s' execution denied by user",
 								 tool_name);
-							char action_text[512];
-							snprintf(action_text, sizeof(action_text),
-								 "%s(%s)", tool_name, tool_args);
+							size_t at_len2 = strlen(tool_name) + strlen(tool_args) + 4;
+							char *action_text2 = arena_alloc(ctx->arena, at_len2);
+							if (action_text2)
+								snprintf(action_text2, at_len2,
+									 "%s(%s)", tool_name, tool_args);
 							struct react_step *action = react_step_create(
 								ctx->arena,
-								REACT_STEP_ACTION, action_text,
+								REACT_STEP_ACTION, action_text2 ? action_text2 : "",
 								tool_name, tool_args, tc->id);
 							add_step(ctx, action);
 							struct react_step *obs = react_step_create(
@@ -985,10 +987,13 @@ int react_run(struct react_context *ctx, const char *user_input,
 				const char *tool_name = tc->name;
 				const char *tool_args = tc->arguments ? tc->arguments : "{}";
 
-				char action_text[512];
-				snprintf(action_text, sizeof(action_text), "%s(%s)", tool_name, tool_args);
+				size_t at_len = strlen(tool_name) + strlen(tool_args) + 4;
+				char *action_text = arena_alloc(ctx->arena, at_len);
+				if (action_text)
+					snprintf(action_text, at_len, "%s(%s)", tool_name, tool_args);
 				struct react_step *action = react_step_create(ctx->arena,
-					REACT_STEP_ACTION, action_text, tool_name, tool_args, tc->id);
+					REACT_STEP_ACTION, action_text ? action_text : "",
+					tool_name, tool_args, tc->id);
 				add_step(ctx, action);
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text, user_data);
@@ -1061,18 +1066,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 				if (rc < 0) {
 					ctx->state = REACT_STATE_TOOL_FAIL;
-					if (strcmp(call->tool_name, ctx->tool_fail_name) == 0 &&
-					    strcmp(call->tool_args, ctx->tool_fail_args) == 0) {
-						ctx->tool_fail_count++;
-					} else {
-						strncpy(ctx->tool_fail_name, call->tool_name,
-							sizeof(ctx->tool_fail_name) - 1);
-						ctx->tool_fail_name[sizeof(ctx->tool_fail_name) - 1] = '\0';
-						strncpy(ctx->tool_fail_args, call->tool_args,
-							sizeof(ctx->tool_fail_args) - 1);
-						ctx->tool_fail_args[sizeof(ctx->tool_fail_args) - 1] = '\0';
-						ctx->tool_fail_count = 1;
-					}
+				if (ctx->tool_fail_name && strcmp(call->tool_name, ctx->tool_fail_name) == 0 &&
+				    ctx->tool_fail_args && strcmp(call->tool_args, ctx->tool_fail_args) == 0) {
+					ctx->tool_fail_count++;
+				} else {
+					ctx->tool_fail_name = arena_strdup(ctx->arena, call->tool_name);
+					ctx->tool_fail_args = arena_strdup(ctx->arena, call->tool_args);
+					ctx->tool_fail_count = 1;
+				}
 				} else {
 					ctx->tool_fail_name[0] = '\0';
 					ctx->tool_fail_args[0] = '\0';

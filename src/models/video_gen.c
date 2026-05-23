@@ -33,11 +33,13 @@ static int download_url(const char *url, const char *out_path)
 }
 
 int video_gen_create(struct model *self, const char *prompt,
-		    const char *image_path, int duration,
-		    struct video_result *result)
+		    const char **image_paths, int num_images,
+		    int duration, struct video_result *result)
 {
 	if (!prompt || !result)
 		return -EINVAL;
+	if (num_images < 0)
+		num_images = 0;
 	memset(result, 0, sizeof(*result));
 
 	struct arena *arena = arena_create(8192);
@@ -65,27 +67,49 @@ int video_gen_create(struct model *self, const char *prompt,
 	cJSON_AddStringToObject(body_json, "model", model_id);
 
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
+
+	const char *final_prompt = prompt;
+	if (num_images > 1) {
+		size_t suffix_len = 64 + (size_t)num_images * 16;
+		size_t total = strlen(prompt) + suffix_len;
+		char *buf = arena_alloc(arena, total);
+		if (buf) {
+			size_t off = (size_t)snprintf(buf, total, "%s\n[Ref images: ", prompt);
+			for (int i = 0; i < num_images; i++) {
+				if (i > 0)
+					off += (size_t)snprintf(buf + off, total - off, ", ");
+				off += (size_t)snprintf(buf + off, total - off, "image#%d", i + 1);
+			}
+			off += (size_t)snprintf(buf + off, total - off, "]");
+			final_prompt = buf;
+		}
+	}
+
 	cJSON *item = cJSON_CreateObject();
 	cJSON_AddStringToObject(item, "type", "text");
-	cJSON_AddStringToObject(item, "text", prompt);
+	cJSON_AddStringToObject(item, "text", final_prompt);
 	cJSON_AddItemToArray(content_arr, item);
 
-	if (image_path && image_path[0]) {
-		char *b64 = image_encode_base64(image_path, 1024);
-		if (b64) {
-			size_t uri_len = 22 + strlen(b64) + 1;
-			char *data_uri = arena_alloc(arena, uri_len);
-			if (data_uri) {
-				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
-				cJSON *img_item = cJSON_CreateObject();
-				cJSON_AddStringToObject(img_item, "type", "image_url");
-				cJSON *url_obj = cJSON_CreateObject();
-				cJSON_AddStringToObject(url_obj, "url", data_uri);
-				cJSON_AddItemToObject(img_item, "image_url", url_obj);
-				cJSON_AddItemToArray(content_arr, img_item);
-			}
-			free(b64);
+	for (int i = 0; i < num_images; i++) {
+		if (!image_paths || !image_paths[i] || !image_paths[i][0])
+			continue;
+		char *b64 = image_encode_base64(image_paths[i], 1024);
+		if (!b64) {
+			log_warn("video_gen: failed to encode image: %s", image_paths[i]);
+			continue;
 		}
+		size_t uri_len = 22 + strlen(b64) + 1;
+		char *data_uri = arena_alloc(arena, uri_len);
+		if (data_uri) {
+			snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
+			cJSON *img_item = cJSON_CreateObject();
+			cJSON_AddStringToObject(img_item, "type", "image_url");
+			cJSON *url_obj = cJSON_CreateObject();
+			cJSON_AddStringToObject(url_obj, "url", data_uri);
+			cJSON_AddItemToObject(img_item, "image_url", url_obj);
+			cJSON_AddItemToArray(content_arr, img_item);
+		}
+		free(b64);
 	}
 
 	if (duration > 0)

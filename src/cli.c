@@ -663,22 +663,26 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
 		cJSON *tool_call_id = cJSON_GetObjectItem(obj, "tool_call_id");
-		char args_buf[1024] = {0};
-		if (cJSON_IsString(tool_args) && tool_args->valuestring)
-			snprintf(args_buf, sizeof(args_buf), "%s(%s)",
-				 cJSON_IsString(tool_name) ? tool_name->valuestring : "",
-				 tool_args->valuestring);
+		char *args_buf = NULL;
+		if (cJSON_IsString(tool_args) && tool_args->valuestring) {
+			const char *tn = cJSON_IsString(tool_name) ? tool_name->valuestring : "";
+			size_t ab_len = strlen(tn) + strlen(tool_args->valuestring) + 4;
+			args_buf = malloc(ab_len);
+			if (args_buf)
+				snprintf(args_buf, ab_len, "%s(%s)", tn, tool_args->valuestring);
+		}
 		struct react_step *s = react_step_create(
 			arena,
 			type,
 			cJSON_IsString(content) ? content->valuestring : NULL,
 			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
-			args_buf[0] ? args_buf : NULL,
+			args_buf ? args_buf : NULL,
 			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : NULL);
 		if (s) {
 			tail->next = s;
 			tail = s;
 		}
+		free(args_buf);
 	}
 	cJSON_Delete(arr);
 	if (out_count)
