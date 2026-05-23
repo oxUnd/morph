@@ -25,6 +25,8 @@
 #include "agent/tools/file_info.h"
 #include "agent/tools/bash_exec.h"
 #include "agent/tools/vid_gen.h"
+#include "agent/tools/plan.h"
+#include "agent/tools/ask_user.h"
 #include "models/llm.h"
 #include "config.h"
 #include "util/log.h"
@@ -38,6 +40,7 @@ static struct config   g_config;
 static struct tokenizer *g_tokenizer = NULL;
 static struct model      *g_llm       = NULL;
 static struct tool_registry g_tools;
+static struct plan_registry g_plans;
 
 static void bridge_init_once(void)
 {
@@ -146,6 +149,10 @@ static void bridge_init_once(void)
 	/* Apply disabled_tools from config */
 	for (int i = 0; i < g_config.react.disabled_tools_count; i++)
 		tool_disable(&g_tools, g_config.react.disabled_tools[i]);
+
+	plan_registry_init(&g_plans);
+	plan_tool_init(&g_tools, &g_plans, g_llm);
+	ask_user_init(&g_tools, NULL, NULL);
 
 	log_info("fcgi-bridge: registered %d tools", g_tools.count);
 }

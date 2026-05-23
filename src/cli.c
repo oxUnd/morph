@@ -1613,6 +1613,7 @@ static int cli_init_models(struct cli_context *ctx)
  */
 static int cli_init_tools(struct cli_context *ctx)
 {
+	int rc = 0;
 	text_gen_init(&ctx->tools, ctx->llm);
 	log_info("registered text_gen tool");
 
@@ -1648,10 +1649,6 @@ static int cli_init_tools(struct cli_context *ctx)
 
 	vid_gen_init(&ctx->tools, ctx->vid_llm);
 	log_info("registered vid_gen tool");
-
-	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
-		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
-	}
 
 	{
 		static const char *readonly_tools[] = {
@@ -1703,13 +1700,20 @@ static int cli_init_tools(struct cli_context *ctx)
 	}
 
 	plan_registry_init(&ctx->plans);
-	plan_tool_init(&ctx->tools, &ctx->plans, ctx->llm);
-	log_info("registered plan tool");
+	rc = plan_tool_init(&ctx->tools, &ctx->plans, ctx->llm);
+	if (rc < 0)
+		log_err("failed to register plan tool: %s", morph_strerror(rc));
+	else
+		log_info("registered plan tool");
 
 	ask_user_init(&ctx->tools, cli_ask_user_callback, ctx);
 	ctx->react->ask_user_fn = cli_ask_user_callback;
 	ctx->react->ask_user_data = ctx;
 	log_info("registered ask_user tool");
+
+	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
+		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
+	}
 
 	ctx->react->skills = ctx->skills;
 
@@ -2336,7 +2340,18 @@ static int output_handle_observation(struct cli_context *ctx, const char *conten
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 		}
 	}
-	fflush(stdout);
+	if (content && *content
+	    && strncmp(content, "image generated:", 15) != 0
+	    && strncmp(content, "video generated:", 16) != 0) {
+		printf("\n");
+		size_t len = strlen(content);
+		if (len > 2000) {
+			printf("%.1997s...\n", content);
+		} else {
+			printf("%s\n", content);
+		}
+		fflush(stdout);
+	}
 	return 0;
 }
 

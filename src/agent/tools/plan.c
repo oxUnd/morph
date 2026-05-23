@@ -435,7 +435,6 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 		*result_json = strdup(out_buf);
 
 	} else {
-		cJSON_Delete(root);
 		snprintf(out_buf, sizeof(out_buf),
 			"{\"error\":\"unknown command '%s'. "
 			"Commands: create, update, get, list\"}",
