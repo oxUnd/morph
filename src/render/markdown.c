@@ -786,19 +786,26 @@ static void free_wrapped_lines(struct wrapped_line *lines, unsigned count)
 	free(lines);
 }
 
-/* Calculate column widths constrained to terminal width.
- * col_w is initialized with natural (content-max) widths.
- * This function adjusts them to fit within avail_width.
- * First column is preserved as much as possible. */
+/* Calculate column widths constrained to terminal width using water-filling.
+ *
+ * Water-filling: iteratively raise a "water level" = remaining_space /
+ * unfixed_count.  Columns whose natural width ≤ level are fixed at their
+ * natural width (narrow columns stay narrow — no wasted space).  The
+ * remaining space is shared equally among the still-unfixed (wider)
+ * columns.  This produces balanced output where wide columns shrink
+ * proportionally and narrow columns are never inflated or crushed.
+ *
+ * Example: natural [50, 12, 12, 8], avail 60
+ *   Round 1: target = 60/4 = 15 → cols 1,2,3 ≤ 15 → fixed at 12,12,8
+ *   Round 2: remaining = 60-32 = 28, unfixed = 1 → col 0 = 28
+ *   Result:  [28, 12, 12, 8]
+ */
 static void distribute_col_widths(size_t *col_w, unsigned col_count,
 				  size_t prefix_width, int term_width)
 {
 	if (!col_w || col_count == 0)
 		return;
 
-	/* Border overhead: each column has "│ " (2 cols) + trailing "│" (1 col)
-	 * + 1 space padding after content. Total border = col_count*2 + 1 + col_count
-	 * = col_count*3 + 1 */
 	size_t border_overhead = (size_t)col_count * 2 + 1 + col_count;
 	size_t total_natural = 0;
 	for (unsigned c = 0; c < col_count; c++)
@@ -806,58 +813,84 @@ static void distribute_col_widths(size_t *col_w, unsigned col_count,
 
 	size_t total_width = prefix_width + border_overhead + total_natural;
 
-	/* If it fits, no adjustment needed */
 	if (term_width <= 0 || total_width <= (size_t)term_width)
 		return;
 
 	size_t avail = (size_t)term_width;
-	if (avail < prefix_width + border_overhead) {
-		/* Even the minimal frame doesn't fit — just use natural widths */
+	if (avail < prefix_width + border_overhead)
 		return;
-	}
 	size_t avail_content = avail - prefix_width - border_overhead;
 
-	/* Minimum column width: 4 cols (at least 2 visible chars + some space) */
 	size_t min_w = 4;
 	size_t total_min = (size_t)col_count * min_w;
 	if (avail_content < total_min) {
-		/* Even minimums don't fit — distribute equally */
 		size_t each = avail_content / col_count;
 		for (unsigned c = 0; c < col_count; c++)
 			col_w[c] = each;
 		return;
 	}
 
-	/* First pass: preserve first column width if possible */
-	/* Remaining columns share the rest */
-	if (col_w[0] > avail_content - (col_count - 1) * min_w) {
-		/* First column must be shrunk too */
-		size_t first_max = avail_content - (col_count - 1) * min_w;
-		if (first_max < min_w)
-			first_max = min_w;
-		col_w[0] = first_max < col_w[0] ? first_max : col_w[0];
+	/* Save natural widths; we'll write results back into col_w */
+	size_t *natural = malloc(col_count * sizeof(size_t));
+	if (!natural)
+		return;
+	for (unsigned c = 0; c < col_count; c++)
+		natural[c] = col_w[c];
+
+	int *fixed = calloc(col_count, sizeof(int));
+	if (!fixed) {
+		free(natural);
+		return;
 	}
 
-	/* Shrink columns from right to left until we fit */
-	for (int pass = 0; pass < 3; pass++) {
-		size_t used = 0;
-		for (unsigned c = 0; c < col_count; c++)
-			used += col_w[c];
-		if (used <= avail_content)
-			break;
+	size_t remaining = avail_content;
+	unsigned unfixed = col_count;
 
-		size_t excess = used - avail_content;
-		for (int c = (int)col_count - 1; c >= (pass == 0 ? 1 : 0); c--) {
-			if (col_w[c] <= min_w)
+	/* Iteratively find the water level */
+	for (unsigned iter = 0; iter < col_count; iter++) {
+		if (unfixed == 0)
+			break;
+		size_t target = remaining / unfixed;
+
+		int progress = 0;
+		for (unsigned c = 0; c < col_count; c++) {
+			if (fixed[c])
 				continue;
-			size_t room = col_w[c] - min_w;
-			size_t take = room < excess ? room : excess;
-			col_w[c] -= take;
-			excess -= take;
-			if (excess == 0)
-				break;
+			if (natural[c] <= target) {
+				col_w[c] = natural[c];
+				remaining -= natural[c];
+				fixed[c] = 1;
+				unfixed--;
+				progress = 1;
+			}
+		}
+		if (!progress)
+			break;
+	}
+
+	/* Distribute remaining space among unfixed columns */
+	if (unfixed > 0) {
+		size_t each = remaining / unfixed;
+		size_t extra = remaining - each * unfixed;
+		for (unsigned c = 0; c < col_count; c++) {
+			if (fixed[c])
+				continue;
+			col_w[c] = each;
+			if (extra > 0) {
+				col_w[c]++;
+				extra--;
+			}
 		}
 	}
+
+	/* Enforce minimum width */
+	for (unsigned c = 0; c < col_count; c++) {
+		if (col_w[c] < min_w)
+			col_w[c] = min_w;
+	}
+
+	free(fixed);
+	free(natural);
 }
 
 static void render_table(struct ansi_ctx *ctx, struct table_state *t)
