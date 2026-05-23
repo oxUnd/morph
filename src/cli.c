@@ -778,6 +778,10 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 	 * deleted from the DB. */
 	struct message_list *head = NULL;
 	int *ids = calloc((size_t)count, sizeof(*ids));
+	if (!ids) {
+		message_free_list(msgs);
+		return -ENOMEM;
+	}
 	int n_ids = 0;
 	for (struct message *m = msgs; m; m = m->next) {
 		struct message_list *node = msg_list_create(m->role, m->content,

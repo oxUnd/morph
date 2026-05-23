@@ -112,6 +112,12 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
 		char *out_dir = file_expand_path("~/.morph/output");
+		if (!out_dir) {
+			stbi_image_free(data);
+			cJSON_Delete(root);
+			*result_json = strdup("{\"error\":\"failed to expand output path\"}");
+			return -ENOMEM;
+		}
 		file_ensure_dir(out_dir);
 		snprintf(final_path, sizeof(final_path),
 			 "%s/img_converted_%lld.%s",

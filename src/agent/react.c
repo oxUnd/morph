@@ -610,13 +610,14 @@ static int react_stream_cb(const char *token, void *user_data)
 	struct react_stream_data *sd = user_data;
 	size_t tlen = strlen(token);
 	if (sd->acc_len + tlen + 1 >= sd->acc_cap) {
-		sd->acc_cap = (sd->acc_len + tlen + 1) * 2;
-		char *new_acc = arena_alloc(sd->arena, sd->acc_cap);
+		size_t new_cap = (sd->acc_len + tlen + 1) * 2;
+		char *new_acc = arena_alloc(sd->arena, new_cap);
 		if (new_acc) {
 			if (sd->accumulated) {
 				memcpy(new_acc, sd->accumulated, sd->acc_len);
 			}
 			sd->accumulated = new_acc;
+			sd->acc_cap = new_cap;
 		}
 	}
 	if (sd->accumulated && sd->acc_len + tlen < sd->acc_cap) {
@@ -817,6 +818,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 		struct message_list *h = ctx->messages;
 		while (h) { hist_n++; h = h->next; }
 		const char **hist_msgs = arena_alloc(ctx->arena, (size_t)hist_n * sizeof(*hist_msgs));
+		if (!hist_msgs && hist_n > 0) {
+			chat_response_free(&response);
+			ctx->state = REACT_STATE_ABORT;
+			break;
+		}
 		if (hist_msgs) {
 			h = ctx->messages;
 			for (int i = 0; i < hist_n && h; i++) {
@@ -914,6 +920,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 			asst_msg->content = (response.content && *response.content)
 					     ? arena_strdup(ctx->arena, response.content) : NULL;
 			asst_msg->tool_calls = arena_alloc(ctx->arena, (size_t)response.tool_call_count * sizeof(*asst_msg->tool_calls));
+			if (!asst_msg->tool_calls) {
+				chat_response_free(&response);
+				ctx->state = REACT_STATE_ABORT;
+				break;
+			}
 			asst_msg->tool_call_count = response.tool_call_count;
 			for (int j = 0; j < response.tool_call_count; j++) {
 				strncpy(asst_msg->tool_calls[j].id, response.tool_calls[j].id,
@@ -932,6 +943,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 			pthread_t *threads = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(pthread_t));
 			struct async_tool_call *calls = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(struct async_tool_call));
 			int *hitl_denied = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(int));
+			if (!threads || !calls || !hitl_denied) {
+				chat_response_free(&response);
+				ctx->state = REACT_STATE_ABORT;
+				break;
+			}
 			memset(hitl_denied, 0, (size_t)num_tools * sizeof(int));
 
 			for (int i = 0; i < num_tools; i++)
@@ -996,7 +1012,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					tool_name, tool_args, tc->id);
 				add_step(ctx, action);
 				if (cb)
-					cb(REACT_STEP_ACTION, action_text, user_data);
+					cb(REACT_STEP_ACTION, action_text ? action_text : "", user_data);
 
 				calls[i].tools = ctx->tools;
 				calls[i].tool_name = tool_name;
@@ -1075,18 +1091,19 @@ int react_run(struct react_context *ctx, const char *user_input,
 					ctx->tool_fail_count = 1;
 				}
 				} else {
-					ctx->tool_fail_name[0] = '\0';
-					ctx->tool_fail_args[0] = '\0';
-					ctx->tool_fail_count = 0;
-				}
+			ctx->tool_fail_name = NULL;
+				ctx->tool_fail_args = NULL;
+				ctx->tool_fail_count = 0;
+			}
 
 				if (ctx->tool_fail_count >= ctx->tool_max_retries) {
+					const char *fail_name = ctx->tool_fail_name ? ctx->tool_fail_name : "(unknown)";
 					log_warn("react_run: tool '%s' failed %d times consecutively, forcing Final",
-						 ctx->tool_fail_name, ctx->tool_fail_count);
+						 fail_name, ctx->tool_fail_count);
 					char fail_msg[256];
 					snprintf(fail_msg, sizeof(fail_msg),
 						"Tool '%s' repeatedly failed. Please try a different approach.",
-						ctx->tool_fail_name);
+						fail_name);
 					struct react_step *final_step = react_step_create(ctx->arena,
 						REACT_STEP_FINAL, fail_msg, NULL, NULL, NULL);
 					add_step(ctx, final_step);
@@ -1095,8 +1112,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 					ctx->state = REACT_STATE_DONE;
 					if (cb)
 						cb(REACT_STEP_FINAL, fail_msg, user_data);
-					ctx->tool_fail_name[0] = '\0';
-					ctx->tool_fail_args[0] = '\0';
+					ctx->tool_fail_name = NULL;
+					ctx->tool_fail_args = NULL;
 					ctx->tool_fail_count = 0;
 					chat_response_free(&response);
 					for (int j = 0; j < num_tools; j++) {

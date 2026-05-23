@@ -117,6 +117,13 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
 		char *out_dir = file_expand_path("~/.morph/output");
+		if (!out_dir) {
+			stbi_image_free(dst);
+			stbi_image_free(src);
+			cJSON_Delete(root);
+			*result_json = strdup("{\"error\":\"failed to expand output path\"}");
+			return -ENOMEM;
+		}
 		file_ensure_dir(out_dir);
 		const char *ext = out_ext(file_path);
 		snprintf(final_path, sizeof(final_path),

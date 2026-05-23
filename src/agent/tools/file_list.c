@@ -85,6 +85,14 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 
 	int dirc = cJSON_GetArraySize(dirs);
 	cJSON **darr = malloc(sizeof(cJSON *) * (size_t)(dirc + 1));
+	if (!darr) {
+		cJSON_Delete(dirs);
+		cJSON_Delete(files);
+		cJSON_Delete(entries);
+		free(expanded);
+		*result_json = strdup("{\"error\":\"out of memory\"}");
+		return -ENOMEM;
+	}
 	for (int i = 0; i < dirc; i++)
 		darr[i] = cJSON_GetArrayItem(dirs, i);
 	qsort(darr, (size_t)dirc, sizeof(cJSON *), name_cmp);
@@ -95,6 +103,14 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 
 	int filec = cJSON_GetArraySize(files);
 	cJSON **farr = malloc(sizeof(cJSON *) * (size_t)(filec + 1));
+	if (!farr) {
+		cJSON_Delete(sorted_dirs);
+		cJSON_Delete(files);
+		cJSON_Delete(entries);
+		free(expanded);
+		*result_json = strdup("{\"error\":\"out of memory\"}");
+		return -ENOMEM;
+	}
 	for (int i = 0; i < filec; i++)
 		farr[i] = cJSON_GetArrayItem(files, i);
 	qsort(farr, (size_t)filec, sizeof(cJSON *), name_cmp);
