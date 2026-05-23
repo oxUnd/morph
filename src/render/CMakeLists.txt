@@ -9,4 +9,6 @@ target_include_directories(morph-render PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 
+target_compile_definitions(morph-render PRIVATE _XOPEN_SOURCE=700)
+
 target_link_libraries(morph-render PUBLIC morph-util md4c)

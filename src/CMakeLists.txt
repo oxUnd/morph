@@ -78,7 +78,7 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill)
+target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox)
 
 add_executable(morph ${MORPH_SOURCES})
 set_target_properties(morph PROPERTIES

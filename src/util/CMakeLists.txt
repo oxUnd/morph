@@ -13,3 +13,5 @@ target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/vendor
 )
+
+target_link_libraries(morph-util PUBLIC m)
