@@ -2299,6 +2299,7 @@ static int output_handle_action(struct cli_context *ctx, const char *content)
 				snprintf(tool_name, sizeof(tool_name), "%s", content);
 			}
 		}
+		ctx->last_tool_was_plan = (strcmp(tool_name, "plan") == 0);
 		if (!ctx->spin.running) {
 			spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
 				   tool_name[0] ? tool_name : "Executing");
@@ -2340,7 +2341,7 @@ static int output_handle_observation(struct cli_context *ctx, const char *conten
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 		}
 	}
-	if (content && *content
+	if (ctx->last_tool_was_plan && content && *content
 	    && strncmp(content, "image generated:", 15) != 0
 	    && strncmp(content, "video generated:", 16) != 0) {
 		printf("\n");

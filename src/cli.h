@@ -27,6 +27,7 @@ struct cli_context {
 	int running;
 	int streaming;
 	int session_auto_named;
+	int last_tool_was_plan;
 	char image_path[512];
 	struct spin_context spin;
 	char stream_buf[4096];

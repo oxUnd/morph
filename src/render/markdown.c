@@ -1393,6 +1393,14 @@ static void debug_log(const char *msg, void *userdata)
 	(void)msg;
 }
 
+static void free_media(struct ansi_ctx *ctx)
+{
+	for (int i = 0; i < ctx->media_count; i++) {
+		free(ctx->media[i].type);
+		free(ctx->media[i].path);
+	}
+}
+
 /* ---------------- public API ---------------- */
 size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 {
@@ -1422,6 +1430,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	free(ctx.link_href.buf);
 	if (ctx.table)
 		free_table(ctx.table);
+	free_media(&ctx);
 
 	if (buf && ctx.out.len < ctx.out.cap)
 		buf[ctx.out.len] = '\0';
@@ -1450,14 +1459,6 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	free(ctx->link_href.buf);
 	if (ctx->table)
 		free_table(ctx->table);
-}
-
-static void free_media(struct ansi_ctx *ctx)
-{
-	for (int i = 0; i < ctx->media_count; i++) {
-		free(ctx->media[i].type);
-		free(ctx->media[i].path);
-	}
 }
 
 void markdown_render_ansi(const char *md)
