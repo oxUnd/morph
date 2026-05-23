@@ -5,6 +5,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <wchar.h>
+#include <locale.h>
 
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -485,10 +487,10 @@ static unsigned utf8_decode_cp(const char *s, size_t len, size_t pos,
 	return cp;
 }
 
-/* Return the visible column width of a Unicode code point. */
-static size_t utf8_cp_width(unsigned cp)
+/* Fallback width table for when wcwidth() returns -1 (e.g. C locale).
+ * Covers zero-width, CJK wide, and emoji ranges. */
+static size_t cp_width_fallback(unsigned cp)
 {
-	/* Zero-width characters */
 	if (cp >= 0x0300 && cp <= 0x036F) return 0;
 	if (cp >= 0x0483 && cp <= 0x0489) return 0;
 	if (cp >= 0x1AB0 && cp <= 0x1AFF) return 0;
@@ -504,7 +506,6 @@ static size_t utf8_cp_width(unsigned cp)
 	if (cp >= 0xFE00 && cp <= 0xFE0F) return 0;
 	if (cp >= 0xE0100 && cp <= 0xE01EF) return 0;
 
-	/* CJK wide characters: 2 columns */
 	if (cp >= 0x1100 && cp <= 0x11FF) return 2;
 	if (cp >= 0x2E80 && cp <= 0x2EFF) return 2;
 	if (cp >= 0x2F00 && cp <= 0x2FDF) return 2;
@@ -526,7 +527,6 @@ static size_t utf8_cp_width(unsigned cp)
 	if (cp >= 0x2F800 && cp <= 0x2FA1F) return 2;
 	if (cp >= 0x30000 && cp <= 0x3134F) return 2;
 
-	/* Emoji: approximate as 2 columns */
 	if (cp >= 0x1F600 && cp <= 0x1F64F) return 2;
 	if (cp >= 0x1F300 && cp <= 0x1F5FF) return 2;
 	if (cp >= 0x1F680 && cp <= 0x1F6FF) return 2;
@@ -538,8 +538,23 @@ static size_t utf8_cp_width(unsigned cp)
 	if (cp >= 0x1F000 && cp <= 0x1F02F) return 2;
 	if (cp >= 0x1F0A0 && cp <= 0x1F0FF) return 2;
 
-	/* All other characters (including 3/4-byte non-CJK): 1 column */
 	return 1;
+}
+
+/* Return the visible column width of a Unicode code point.
+ * Uses wcwidth() which respects LC_CTYPE (e.g. CJK locale
+ * treats East Asian Ambiguous chars as width 2).
+ * Falls back to hardcoded ranges if wcwidth() returns -1. */
+static size_t utf8_cp_width(unsigned cp)
+{
+	if (cp == 0)
+		return 0;
+	int w = wcwidth((wchar_t)cp);
+	if (w > 0)
+		return (size_t)w;
+	if (w == 0)
+		return 0;
+	return cp_width_fallback(cp);
 }
 
 /* Count the total visible column width of a UTF-8 string. */

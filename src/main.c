@@ -2,12 +2,14 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "http/client.h"
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 int main(int argc, char *argv[])
 {
+	setlocale(LC_ALL, "");
 	const char *config_path = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
