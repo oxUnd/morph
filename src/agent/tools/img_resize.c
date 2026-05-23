@@ -1,6 +1,7 @@
 #include "img_resize.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -79,7 +80,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	if (!src) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to load image\"}");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
 	/* Maintain aspect ratio if only one dim is given */
@@ -107,7 +108,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		free(dst);
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"resize failed\"}");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PROCESSING);
 	}
 	stbi_image_free(src);
 

@@ -1,5 +1,6 @@
 #include "img_info.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include <errno.h>
@@ -43,7 +44,7 @@ static int img_info_exec(const char *args_json, char **result_json, void *user_d
 	if (!stbi_info(file_path, &w, &h, &ch)) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"not a valid image\"}");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
 	cJSON *out = cJSON_CreateObject();

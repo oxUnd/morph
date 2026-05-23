@@ -1,6 +1,7 @@
 #include "image.h"
 #include "util/log.h"
 #include "util/base64.h"
+#include "util/error.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,14 +60,14 @@ static int render_kitty(const char *path)
 	FILE *f = fopen(path, "rb");
 	if (!f) {
 		log_warn("render_kitty: cannot open '%s'", path);
-		return -1;
+		MORPH_RETURN(-EIO);
 	}
 	fseek(f, 0, SEEK_END);
 	long fsize = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); return -1; }
+	if (fsize <= 0) { fclose(f); MORPH_RETURN(-EIO); }
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); return -1; }
+	if (!data) { fclose(f); MORPH_RETURN(-ENOMEM); }
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
@@ -75,7 +76,7 @@ static int render_kitty(const char *path)
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) return -1;
+	if (!b64) MORPH_RETURN(-ENOMEM);
 	size_t b64_len = strlen(b64);
 
 	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d chunks=%zu",
@@ -118,19 +119,19 @@ static int render_iterm2(const char *path)
 {
 	FILE *f = fopen(path, "rb");
 	if (!f)
-		return -1;
+		MORPH_RETURN(-EIO);
 	fseek(f, 0, SEEK_END);
 	long fsize = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); return -1; }
+	if (fsize <= 0) { fclose(f); MORPH_RETURN(-EIO); }
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); return -1; }
+	if (!data) { fclose(f); MORPH_RETURN(-ENOMEM); }
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) return -1;
+	if (!b64) MORPH_RETURN(-ENOMEM);
 	size_t b64_len = strlen(b64);
 
 	fflush(stdout);

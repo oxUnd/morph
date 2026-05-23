@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "fcgi_io.h"
+#include "util/error.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,15 +11,15 @@ int fcgi_read_body(request_t *r, char **out, size_t *len) {
 	*len = 0;
 	if (r->content_length <= 0) {
 		*out = calloc(1, 1);
-		return *out ? 0 : -1;
+		return *out ? 0 : -ENOMEM;
 	}
-	if (r->content_length > FCGI_MAX_BODY_BYTES) return -1;
+	if (r->content_length > FCGI_MAX_BODY_BYTES) MORPH_RETURN(-EFBIG);
 
 	char *buf = malloc((size_t)r->content_length + 1);
-	if (!buf) return -1;
+	if (!buf) MORPH_RETURN(-ENOMEM);
 
 	int got = FCGX_GetStr(buf, r->content_length, r->fcgx->in);
-	if (got != r->content_length) { free(buf); return -1; }
+	if (got != r->content_length) { free(buf); MORPH_RETURN(-EIO); }
 	buf[got] = '\0';
 	*out = buf;
 	*len = (size_t)got;
@@ -106,7 +107,7 @@ void sse_write_heartbeat(request_t *r) {
 }
 
 int sse_flush(request_t *r) {
-	if (FCGX_FFlush(r->fcgx->out) < 0) return -1;
-	if (FCGX_GetError(r->fcgx->out)  != 0) return -1;
+	if (FCGX_FFlush(r->fcgx->out) < 0) MORPH_RETURN(-EIO);
+	if (FCGX_GetError(r->fcgx->out)  != 0) MORPH_RETURN(-EIO);
 	return 0;
 }

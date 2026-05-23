@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/error.h"
 
 static struct model *g_qa_llm;
 
@@ -125,7 +126,7 @@ static int text_qa_exec(const char *args_json, char **result_json, void *user_da
 	if (!g_qa_llm || !g_qa_llm->api_key[0]) {
 		*result_json = strdup("{\"error\":\"no LLM model configured\"}");
 		free(prompt);
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	char *context = extract_param(args_json, "context");

@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "util/error.h"
 
 static struct plan_registry *g_plans;
 static struct model *g_llm;
@@ -174,7 +175,7 @@ static int auto_decompose(const char *goal, const char **step_descs,
 	if (!goal || !step_descs || max_steps <= 0)
 		return -EINVAL;
 	if (!g_llm || !g_llm->chat || !g_llm->api_key[0])
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 
 	char prompt[2048];
 	snprintf(prompt, sizeof(prompt),
@@ -209,7 +210,7 @@ static int auto_decompose(const char *goal, const char **step_descs,
 
 	if (status < 0 || !ctx.result[0]) {
 		free(ctx.result);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_LLM);
 	}
 
 	int count = parse_steps_from_text(ctx.result, step_descs, max_steps);
@@ -283,6 +284,13 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			const char *tmp_descs[PLAN_MAX_STEPS];
 			memset(tmp_descs, 0, sizeof(tmp_descs));
 			rc = auto_decompose(goal, tmp_descs, PLAN_MAX_STEPS);
+			if (rc < 0) {
+				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
+				cJSON_Delete(root);
+				*result_json = strdup(
+					"{\"error\":\"auto-decompose failed\"}");
+				MORPH_RETURN(rc);
+			}
 			if (rc > 0) {
 				step_count = rc;
 				for (int i = 0; i < step_count; i++)
@@ -403,14 +411,26 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			}
 		} else {
 			char fmt[4096];
-			plan_get_formatted(g_plans, fmt, sizeof(fmt));
+			rc = plan_get_formatted(g_plans, fmt, sizeof(fmt));
+			if (rc < 0) {
+				cJSON_Delete(root);
+				*result_json = strdup(
+					"{\"error\":\"plan formatting failed\"}");
+				MORPH_RETURN(rc);
+			}
 			snprintf(out_buf, sizeof(out_buf), "%s", fmt);
 		}
 		*result_json = strdup(out_buf);
 
 	} else if (strcmp(command, "list") == 0) {
 		char fmt[4096];
-		plan_get_formatted(g_plans, fmt, sizeof(fmt));
+		rc = plan_get_formatted(g_plans, fmt, sizeof(fmt));
+		if (rc < 0) {
+			cJSON_Delete(root);
+			*result_json = strdup(
+				"{\"error\":\"plan formatting failed\"}");
+			MORPH_RETURN(rc);
+		}
 		snprintf(out_buf, sizeof(out_buf), "%s", fmt);
 		*result_json = strdup(out_buf);
 

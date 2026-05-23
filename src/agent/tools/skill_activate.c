@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/error.h"
 
 static struct skill_registry *g_skills;
 
@@ -15,7 +16,7 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 		return -EINVAL;
 	if (!g_skills) {
 		*result_json = strdup("{\"error\":\"skill system not initialized\"}");
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
 	}
 
 	char name[SKILL_NAME_MAX] = {0};

@@ -6,6 +6,7 @@
 #include "util/log.h"
 #include "util/arena.h"
 #include "util/utf8.h"
+#include "util/error.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -145,7 +146,7 @@ static void *async_tool_exec(void *arg)
 		
 		pthread_mutex_lock(&call->mutex);
 		call->result = strdup(disabled_msg);
-		call->rc = -1;
+		call->rc = -EPERM;
 		call->completed = 1;
 		pthread_mutex_unlock(&call->mutex);
 	} else {
@@ -165,7 +166,7 @@ static void *async_tool_exec(void *arg)
 			size_t need = strlen(raw) + 64;
 			char *buf = malloc(need);
 			if (buf)
-				snprintf(buf, need, "tool error: %s (code %d)", raw, rc);
+				snprintf(buf, need, "tool error: %s (%s)", raw, morph_strerror(rc));
 			call->result = buf;
 			call->rc = rc;
 		} else {
@@ -1414,6 +1415,6 @@ done:
 	}
 
 	if (ctx->state == REACT_STATE_ABORT)
-		return -1;
+		MORPH_RETURN(-ECANCELED);
 	return 0;
 }

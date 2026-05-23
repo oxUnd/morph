@@ -1,6 +1,7 @@
 #include "file_read.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -27,9 +28,9 @@ static int buf_append(struct line_buffer *b, const char *s, size_t n)
 		if (new_cap > MAX_CONTENT_SIZE)
 			new_cap = MAX_CONTENT_SIZE;
 		if (b->len + n + 1 > new_cap)
-			return -1;
+			MORPH_RETURN(-EFBIG);
 		char *tmp = realloc(b->data, new_cap);
-		if (!tmp) return -1;
+		if (!tmp) MORPH_RETURN(-ENOMEM);
 		b->data = tmp;
 		b->cap = new_cap;
 	}

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "util/error.h"
 
 static ask_user_callback_fn g_ask_user_cb;
 static void *g_ask_user_data;
@@ -18,7 +19,7 @@ static int ask_user_exec(const char *args_json, char **result_json,
 	if (!g_ask_user_cb) {
 		*result_json = strdup(
 			"{\"error\":\"ask_user callback not configured\"}");
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	char question[1024] = {0};

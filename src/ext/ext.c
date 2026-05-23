@@ -1,6 +1,7 @@
 #include "ext.h"
 #include "loader.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "manifest.h"
 #include "ipc/jsonrpc.h"
 #include <errno.h>
@@ -11,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "util/error.h"
 
 int ext_load(struct ext *ex, const char *dir_path)
 {
@@ -144,13 +146,13 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		if (pipe(stdin_pipe) < 0) {
 			log_err("ext_run: pipe failed");
-			return -EIO;
+			MORPH_RETURN(-errno);
 		}
 		if (pipe(stdout_pipe) < 0) {
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			log_err("ext_run: pipe failed");
-			return -EIO;
+			MORPH_RETURN(-errno);
 		}
 
 		pid_t pid = fork();
@@ -160,7 +162,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
 			log_err("ext_run: fork failed");
-			return -EIO;
+			MORPH_RETURN(-errno);
 		}
 
 		if (pid == 0) {
@@ -246,7 +248,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				 ex->manifest.name, WTERMSIG(status));
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"ext process was terminated\"}");
-			return -EIO;
+			MORPH_RETURN(MORPH_ERR_SANDBOX);
 		}
 
 		/* Parse JSON-RPC response and extract result field */
@@ -256,7 +258,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		if (parse_rc < 0) {
 			*result_json = strdup("{\"error\":\"invalid JSON-RPC response\"}");
-			return -EIO;
+			MORPH_RETURN(MORPH_ERR_PARSE);
 		}
 
 		if (jr.has_error) {
@@ -267,7 +269,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				 jr.error_code);
 			*result_json = strdup(err_buf);
 			jsonrpc_response_free(&jr);
-			return -EIO;
+			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
 
 		*result_json = jr.result_json ? jr.result_json : strdup("{}");
@@ -278,5 +280,5 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 	}
 
 	log_info("ext_run: no run function for %s", ex->manifest.name);
-	return -ENOSYS;
+	MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 }

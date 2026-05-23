@@ -4,6 +4,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "util/arena.h"
+#include "util/error.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include "cJSON.h"
@@ -11,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "util/error.h"
 
 static char *escape_json_string(struct arena *arena, const char *s)
 {
@@ -367,7 +369,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 {
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat: no API key configured");
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
@@ -438,7 +440,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 				status, detail);
 		else
 			log_err("llm_chat: API returned HTTP %d", status);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	return status;
@@ -577,7 +579,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 {
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_tools: no API key configured");
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!response)
 		return -EINVAL;
@@ -662,7 +664,7 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 			log_err("llm_chat_with_tools: API returned HTTP %d",
 				status);
 		}
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	if (ctx.accumulated && *ctx.accumulated)
@@ -731,7 +733,7 @@ static int llm_generate(struct model *self, const char *prompt,
 	if (resp.status_code != 200) {
 		log_err("llm_generate: API returned %d", resp.status_code);
 		http_response_free(&resp);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	rc = 0;

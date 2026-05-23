@@ -24,6 +24,7 @@
 #include "session_store.h"
 #include "router.h"
 #include "auth.h"
+#include "util/error.h"
 
 static int g_listen_fd = -1;
 static struct session_store *g_store = NULL;
@@ -40,7 +41,7 @@ static int open_listen(const char *spec) {
 	int fd = FCGX_OpenSocket(spec, backlog);
 	if (fd < 0) {
 		fprintf(stderr, "FCGX_OpenSocket(%s) failed\n", spec);
-		return -1;
+		MORPH_RETURN(-EIO);
 	}
 	if (spec[0] == '/' || strncmp(spec, "unix:", 5) == 0) {
 		const char *path = spec[0] == '/' ? spec : spec + 5;

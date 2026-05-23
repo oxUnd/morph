@@ -1,6 +1,7 @@
 #include "client.h"
 #include "sse.h"
 #include "util/log.h"
+#include "util/error.h"
 #include <errno.h>
 #include <curl/curl.h>
 #include <stdlib.h>
@@ -62,7 +63,7 @@ static int do_request(const char *url, const char *method, const char *body,
 		http_init();
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
+		MORPH_RETURN(-ENOMEM);
 	struct curl_slist *headers = NULL;
 	if (content_type) {
 		char ct[256];
@@ -88,7 +89,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		log_err("http request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -115,7 +116,7 @@ int http_get_ex(const char *url, const char **extra_headers,
 		http_init();
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
+		MORPH_RETURN(-ENOMEM);
 	struct curl_slist *headers = NULL;
 	for (int i = 0; i < extra_header_count; i++) {
 		if (extra_headers && extra_headers[i])
@@ -136,7 +137,7 @@ int http_get_ex(const char *url, const char **extra_headers,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		log_err("http request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -164,7 +165,7 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 		http_init();
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
+		MORPH_RETURN(-ENOMEM);
 	struct curl_slist *headers = NULL;
 	if (content_type) {
 		char ct[256];
@@ -194,7 +195,7 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		log_err("http_post_ex request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -230,7 +231,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
+		MORPH_RETURN(-ENOMEM);
 
 	struct curl_slist *headers = NULL;
 	char ct[256];
@@ -266,7 +267,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 
 	long status = 0;
@@ -286,7 +287,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
+		MORPH_RETURN(-ENOMEM);
 
 	struct curl_slist *headers = NULL;
 	char ct[256];
@@ -327,7 +328,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
 		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 
 	long status = 0;
@@ -348,8 +349,7 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 
 	CURL *curl = curl_easy_init();
 	if (!curl)
-		return -EIO;
-
+		MORPH_RETURN(-ENOMEM);
 	struct curl_slist *headers = NULL;
 	char ct[256];
 	if (content_type) {
@@ -395,7 +395,7 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			return -ETIMEDOUT;
 		}
 		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 
 	long status = 0;

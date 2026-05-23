@@ -2,6 +2,7 @@
 #include "skill_parse.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,7 +66,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 	DIR *dir = opendir(expanded);
 	if (!dir) {
 		free(expanded);
-		return -EIO;
+		MORPH_RETURN(-errno);
 	}
 
 	int discovered = 0;

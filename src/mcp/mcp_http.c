@@ -1,6 +1,8 @@
 #include "mcp/mcp.h"
 #include "cJSON.h"
 #include "util/log.h"
+#include "util/error.h"
+#include "util/error.h"
 #include <curl/curl.h>
 #include <errno.h>
 #include <stdio.h>
@@ -116,7 +118,7 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	if (res != CURLE_OK) {
 		log_err("mcp http: request failed: %s", curl_easy_strerror(res));
 		free(resp_ctx.data);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 
 	long http_code = 0;
@@ -131,7 +133,7 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	if (http_code >= 400) {
 		log_err("mcp http: HTTP error %ld", http_code);
 		free(resp_ctx.data);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	if (out_response)
@@ -212,7 +214,7 @@ int mcp_http_initialize(struct mcp_client *client)
 	if (rc < 0 || !resp_raw) {
 		log_err("mcp http: initialize failed");
 		free(resp_raw);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	/* Handle SSE-wrapped response */
@@ -296,7 +298,7 @@ int mcp_http_request(struct mcp_client *client, const char *method,
 	if (rc < 0 || !resp_raw) {
 		log_err("mcp http: request '%s' failed", method);
 		free(resp_raw);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	/* Handle SSE-wrapped responses */

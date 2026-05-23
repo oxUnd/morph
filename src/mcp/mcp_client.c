@@ -2,6 +2,7 @@
 #include "cJSON.h"
 #include "util/arena.h"
 #include "util/log.h"
+#include "util/error.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,7 +60,7 @@ int mcp_parse_result(const char *resp_json, char **out_result)
 	cJSON *obj = cJSON_Parse(resp_json);
 	if (!obj) {
 		log_err("mcp: failed to parse response JSON");
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *err = cJSON_GetObjectItem(obj, "error");
@@ -257,14 +258,14 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 
 	if (rc < 0 || !result) {
 		free(result);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: tools/list response parse error");
 		free(result);
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *tools_arr = cJSON_GetObjectItem(obj, "tools");
@@ -344,7 +345,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
 			*out_result_json = strdup("{\"error\":\"empty response\",\"isError\":true}");
-			return -EIO;
+			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
 		*out_result_json = malloc(256);
 		snprintf(*out_result_json, 256,
@@ -359,7 +360,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		log_err("mcp: tools/call response parse error");
 		*out_result_json = strdup("{\"error\":\"response parse error\",\"isError\":true}");
 		free(result);
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *is_err = cJSON_GetObjectItem(obj, "isError");
@@ -426,7 +427,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 	cJSON_Delete(obj);
 	free(result);
-	return tool_error ? -1 : 0;
+	return tool_error ? -EIO : 0;
 }
 
 /* ----- MCP resources/list ----- */
@@ -449,14 +450,14 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 
 	if (rc < 0 || !result) {
 		free(result);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: resources/list response parse error");
 		free(result);
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *res_arr = cJSON_GetObjectItem(obj, "resources");
@@ -528,7 +529,7 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena, const char
 
 	if (rc < 0 || !result) {
 		free(result);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	cJSON *obj = cJSON_Parse(result);
@@ -600,14 +601,14 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 
 	if (rc < 0 || !result) {
 		free(result);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: prompts/list response parse error");
 		free(result);
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *prompts_arr = cJSON_GetObjectItem(obj, "prompts");
@@ -686,7 +687,7 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 
 	if (rc < 0 || !result) {
 		free(result);
-		return rc ? rc : -EIO;
+		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	*out_result = mcp_strdup_result(arena, result);

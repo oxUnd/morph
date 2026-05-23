@@ -1,5 +1,6 @@
 #include "database.h"
 #include "util/log.h"
+#include "util/error.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
@@ -72,7 +73,7 @@ int db_open(struct db *db, const char *path)
 		log_err("failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
 		sqlite3_close(db->handle);
 		db->handle = NULL;
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_DB);
 	}
 	sqlite3_exec(db->handle, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);

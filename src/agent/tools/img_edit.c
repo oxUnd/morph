@@ -1,12 +1,14 @@
 #include "img_edit.h"
 #include "util/log.h"
 #include "util/base64.h"
+#include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include "util/error.h"
 
 static struct model *g_llm;
 
@@ -48,14 +50,14 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 	if (!g_llm || !g_llm->api_key[0]) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"no LLM configured\"}");
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	char *b64 = base64_encode_file(file_path);
 	if (!b64) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to read image\"}");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 	const char *mime = mime_type(file_path);
 
@@ -115,7 +117,7 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 		http_response_free(&resp);
 		*result_json = strdup("{\"error\":\"Vision API call failed\"}");
 		cJSON_Delete(root);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	cJSON *resp_root = cJSON_Parse(resp.body);

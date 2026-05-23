@@ -5,6 +5,7 @@
 #include "util/base64.h"
 #include "util/image_util.h"
 #include "util/arena.h"
+#include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include "util/error.h"
 
 static int download_url(const char *url, const char *out_path)
 {
@@ -25,7 +27,7 @@ static int download_url(const char *url, const char *out_path)
 	if (resp.status_code != 200) {
 		log_err("video download returned HTTP %d", resp.status_code);
 		http_response_free(&resp);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 	rc = file_write_all(out_path, resp.body, resp.body_len);
 	http_response_free(&resp);
@@ -56,7 +58,7 @@ int video_gen_create(struct model *self, const char *prompt,
 	if (!api_base[0]) {
 		log_err("video_gen: no api_base configured");
 		arena_destroy(arena);
-		return -EINVAL;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	char submit_url[512];
@@ -180,7 +182,7 @@ int video_gen_create(struct model *self, const char *prompt,
 	if (!task_id[0]) {
 		log_err("video_gen: no task id in submit response");
 		arena_destroy(arena);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
 	if (task_status[0])
 		log_info("video_gen: task submitted: %s (status=%s)", task_id, task_status);
@@ -255,7 +257,7 @@ int video_gen_create(struct model *self, const char *prompt,
 				cJSON_Delete(qroot);
 				http_response_free(&qresp);
 				arena_destroy(arena);
-				return -EIO;
+				MORPH_RETURN(MORPH_ERR_API);
 			}
 
 			log_info("video_gen: task %s status=%s", task_id, st);

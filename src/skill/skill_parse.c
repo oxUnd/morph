@@ -1,5 +1,6 @@
 #include "skill_parse.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "util/file.h"
 #include <errno.h>
 #include <stdio.h>
@@ -321,7 +322,7 @@ int skill_parse(const char *data, size_t len, struct skill_frontmatter *fm,
 	const char *closing = find_closing_delim(data, len);
 	if (!closing) {
 		log_warn("skill_parse: no YAML frontmatter delimiters found");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	const char *yaml_start = data + 3;

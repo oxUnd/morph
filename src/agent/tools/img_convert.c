@@ -1,6 +1,7 @@
 #include "img_convert.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -103,7 +104,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 	if (!data) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to load image\"}");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
 	char final_path[1024];

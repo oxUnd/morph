@@ -1,6 +1,7 @@
 #include "loader.h"
 #include "ext.h"
 #include "util/log.h"
+#include "util/error.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +27,7 @@ int ext_load_so(struct ext *ex, const char *path)
 	if (!handle) {
 		log_err("ext_load_so: dlopen %s failed: %s", full_path,
 			dlerror());
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_LOAD);
 	}
 
 	typedef int (*run_fn)(const char *, char **);

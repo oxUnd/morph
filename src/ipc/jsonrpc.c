@@ -1,5 +1,6 @@
 #include "jsonrpc.h"
 #include "cJSON.h"
+#include "util/error.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -34,13 +35,13 @@ char *jsonrpc_build_request(const struct jsonrpc_request *req)
 int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 {
 	if (!resp_str || !out)
-		return -1;
+		MORPH_RETURN(-EINVAL);
 
 	memset(out, 0, sizeof(*out));
 
 	cJSON *root = cJSON_Parse(resp_str);
 	if (!root)
-		return -1;
+		MORPH_RETURN(-EPROTO);
 
 	cJSON *id_item = cJSON_GetObjectItem(root, "id");
 	if (cJSON_IsNumber(id_item))

@@ -1,5 +1,6 @@
 #include "manifest.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "toml.h"
 #include <errno.h>
 #include <stdio.h>
@@ -44,7 +45,7 @@ int manifest_parse(const char *toml_data, struct ext_manifest *out)
 	if (!tbl) {
 		log_err("manifest parse error: %s", errbuf);
 		free(copy);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 #define MGET_STR(key, buf) do { \
@@ -105,7 +106,7 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 
 	if (!tbl) {
 		log_err("manifest parse error in %s: %s", path, errbuf);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	memset(out, 0, sizeof(*out));

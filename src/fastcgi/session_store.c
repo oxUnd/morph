@@ -10,6 +10,7 @@
 #include <sqlite3.h>
 
 #include "session.h"
+#include "util/error.h"
 
 struct event_subscriber {
 	char     session_id[64];
@@ -96,18 +97,18 @@ int store_create_session(struct session_store *s, const char *user_id,
 			 const char *name, const char *model,
 			 char out_session_id[64]) {
 	struct session sess;
-	if (session_create(&s->db, name, model, &sess) != 0) return -1;
-	if (session_ensure_display_id(&s->db, &sess) != 0) return -1;
+	if (session_create(&s->db, name, model, &sess) != 0) MORPH_RETURN(-EIO);
+	if (session_ensure_display_id(&s->db, &sess) != 0) MORPH_RETURN(-EIO);
 	snprintf(out_session_id, 64, "%s", sess.display_id);
 
 	const char *sql = "INSERT OR REPLACE INTO fcgi_session_owner(session_id,user_id) VALUES(?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text(st, 1, out_session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id,        -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	return rc == SQLITE_DONE ? 0 : -1;
+	return rc == SQLITE_DONE ? 0 : -EIO;
 }
 
 int store_session_owned_by(struct session_store *s, const char *session_id,
@@ -130,12 +131,12 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 		"JOIN sessions s ON s.display_id = o.session_id "
 		"WHERE o.user_id=? ORDER BY s.updated_at DESC";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 
 	size_t cap = 1024, len = 0;
 	char *buf = malloc(cap);
-	if (!buf) { sqlite3_finalize(st); return -1; }
+	if (!buf) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
 	len += (size_t)snprintf(buf + len, cap - len, "{\"items\":[");
 
 	int first = 1;
@@ -166,14 +167,14 @@ int events_publish(struct session_store *s, const char *session_id,
 		   const char *type, const char *payload) {
 	const char *sql = "INSERT INTO fcgi_events(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, type,       -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 4, now_unix());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) return -1;
+	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
 
 	pthread_mutex_lock(&s->mu);
 	pthread_cond_broadcast(&s->cv);
@@ -187,7 +188,7 @@ static int events_fetch_after(struct session_store *s, const char *session_id,
 		"SELECT id,type,payload,ts FROM fcgi_events "
 		"WHERE session_id=? AND id>? ORDER BY id LIMIT 1";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, last_id);
 
@@ -228,14 +229,14 @@ int actions_enqueue(struct session_store *s, const char *session_id,
 		    const char *type, const char *payload) {
 	const char *sql = "INSERT INTO fcgi_actions(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, type,       -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 4, now_unix());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) return -1;
+	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
 
 	actions_signal(s, session_id);
 	return 0;
@@ -305,12 +306,12 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 		"SELECT id,parent_id,kind,x,y,w,h,content_ref,meta,updated_at "
 		"FROM fcgi_canvas_nodes WHERE session_id=? ORDER BY updated_at";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
 	size_t cap = 2048, len = 0;
 	char *buf = malloc(cap);
-	if (!buf) { sqlite3_finalize(st); return -1; }
+	if (!buf) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
 	len += (size_t)snprintf(buf + len, cap - len, "{\"nodes\":[");
 	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
@@ -359,7 +360,7 @@ int canvas_add_node(struct session_store *s, const char *session_id,
 		"INSERT INTO fcgi_canvas_nodes(id,session_id,kind,x,y,w,h,meta,created_at,updated_at) "
 		"VALUES(?,?,'node',0,0,0,0,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text (st, 1, out_node_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, session_id,  -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, node_json ? node_json : "{}", -1, SQLITE_TRANSIENT);
@@ -367,7 +368,7 @@ int canvas_add_node(struct session_store *s, const char *session_id,
 	sqlite3_bind_int64(st, 5, now_unix());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	return rc == SQLITE_DONE ? 0 : -1;
+	return rc == SQLITE_DONE ? 0 : -EIO;
 }
 
 int canvas_patch_node(struct session_store *s, const char *session_id,
@@ -376,7 +377,7 @@ int canvas_patch_node(struct session_store *s, const char *session_id,
 		"UPDATE fcgi_canvas_nodes SET meta=?, updated_at=? "
 		"WHERE id=? AND session_id=?";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text (st, 1, patch_json ? patch_json : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, now_unix());
 	sqlite3_bind_text (st, 3, node_id,    -1, SQLITE_TRANSIENT);
@@ -384,6 +385,6 @@ int canvas_patch_node(struct session_store *s, const char *session_id,
 	int rc = sqlite3_step(st);
 	int changes = sqlite3_changes(s->db.handle);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) return -1;
-	return changes > 0 ? 0 : -1;
+	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
+	return changes > 0 ? 0 : -ENOENT;
 }

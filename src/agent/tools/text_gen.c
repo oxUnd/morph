@@ -5,6 +5,7 @@
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
+#include "util/error.h"
 
 static struct model *g_llm;
 
@@ -126,7 +127,7 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 	if (!g_llm || !g_llm->api_key[0]) {
 		*result_json = strdup("{\"error\":\"no LLM model configured\"}");
 		free(prompt);
-		return -ENOSYS;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	struct arena *arena = arena_create(64 * 1024);

@@ -5,6 +5,8 @@
 #include "util/base64.h"
 #include "util/image_util.h"
 #include "util/arena.h"
+#include "util/error.h"
+#include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -26,7 +28,7 @@ static int download_url(const char *url, const char *out_path)
 	if (resp.status_code != 200) {
 		log_err("download returned HTTP %d", resp.status_code);
 		http_response_free(&resp);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 	rc = file_write_all(out_path, resp.body, resp.body_len);
 	http_response_free(&resp);
@@ -135,27 +137,27 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		log_err("image_gen: API returned HTTP %d: %s",
 			resp.status_code, resp.body ? resp.body : "");
 		http_response_free(&resp);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	cJSON *root = cJSON_Parse(resp.body);
 	http_response_free(&resp);
 	if (!root) {
 		log_err("image_gen: failed to parse response");
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
 	cJSON *data_arr = cJSON_GetObjectItem(root, "data");
 	if (!cJSON_IsArray(data_arr) || cJSON_GetArraySize(data_arr) == 0) {
 		cJSON_Delete(root);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
 
 	cJSON *first = cJSON_GetArrayItem(data_arr, 0);
 	cJSON *img_url = cJSON_GetObjectItem(first, "url");
 	if (!cJSON_IsString(img_url) || !img_url->valuestring) {
 		cJSON_Delete(root);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
 
 	strncpy(result->url, img_url->valuestring, sizeof(result->url) - 1);

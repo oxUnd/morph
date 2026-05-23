@@ -1,6 +1,7 @@
 #include "bash_exec.h"
 #include "sandbox.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -158,7 +159,7 @@ static int read_pipes_with_timeout(int out_fd, int err_fd,
 		if (rc < 0) {
 			if (errno == EINTR)
 				continue;
-			return -EIO;
+			MORPH_RETURN(-errno);
 		}
 		if (rc == 0) {
 			*timed_out = 1;
@@ -237,7 +238,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"pipe() failed\"}");
-		return -EIO;
+		MORPH_RETURN(-errno);
 	}
 	if (pipe(err_pipe) < 0) {
 		close(out_pipe[0]);
@@ -245,7 +246,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"pipe() failed\"}");
-		return -EIO;
+		MORPH_RETURN(-errno);
 	}
 
 	log_info("bash_exec: running '%s' (cwd=%s, timeout=%ds)",
@@ -258,7 +259,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"fork() failed\"}");
-		return -EIO;
+		MORPH_RETURN(-errno);
 	}
 
 	if (pid == 0) {

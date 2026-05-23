@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "util/spin.h"
 #include "util/arena.h"
 #include "agent/tokenizer.h"
@@ -810,7 +811,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 	if (rc < 0) {
 		msg_list_destroy(head);
 		free(ids);
-		CMD_ERROR("compression failed: %d", rc);
+		CMD_ERROR("compression failed: %s", morph_strerror(rc));
 		return rc;
 	}
 
@@ -909,7 +910,7 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 	if (!stbi_info(expanded, &w, &h, &ch)) {
 		CMD_ERROR("not a valid image file: %s", expanded);
 		free(expanded);
-		return -EIO;
+		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
 	image_render_terminal(expanded);
@@ -1027,7 +1028,7 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 		if (!stbi_info(expanded, &w, &h, &ch)) {
 			CMD_ERROR("not a valid image file: %s", expanded);
 			free(expanded);
-			return -EIO;
+			MORPH_RETURN(MORPH_ERR_FORMAT);
 		}
 		image_render_terminal(expanded);
 		CMD_OK("image: %s (%dx%d)", expanded, w, h);
@@ -1111,7 +1112,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		if (rc == 0 && e->activated)
 			CMD_OK("skill '%s' activated", name);
 		else if (rc < 0)
-			CMD_ERROR("failed to activate skill '%s': %d", name, rc);
+			CMD_ERROR("failed to activate skill '%s': %s", name, morph_strerror(rc));
 		else
 			CMD_OK("skill '%s' already activated", name);
 		return rc < 0 ? rc : 0;
@@ -1191,7 +1192,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = mcp_ensure_connected(mc);
 		if (rc < 0) {
-			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
 		struct mcp_tool_desc *tools = NULL;
@@ -1203,7 +1204,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		rc = mcp_list_tools(mc, arena, &tools, &count);
 		if (rc < 0) {
-			CMD_ERROR("failed to list tools: %d", rc);
+			CMD_ERROR("failed to list tools: %s", morph_strerror(rc));
 			arena_destroy(arena);
 			return rc;
 		}
@@ -1228,7 +1229,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = mcp_ensure_connected(mc);
 		if (rc < 0) {
-			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
 		struct mcp_resource_desc *res = NULL;
@@ -1240,7 +1241,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		rc = mcp_list_resources(mc, arena, &res, &count);
 		if (rc < 0) {
-			CMD_ERROR("failed to list resources: %d", rc);
+			CMD_ERROR("failed to list resources: %s", morph_strerror(rc));
 			arena_destroy(arena);
 			return rc;
 		}
@@ -1266,7 +1267,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = mcp_ensure_connected(mc);
 		if (rc < 0) {
-			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
 		struct mcp_prompt_desc *prompts = NULL;
@@ -1278,7 +1279,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		rc = mcp_list_prompts(mc, arena, &prompts, &count);
 		if (rc < 0) {
-			CMD_ERROR("failed to list prompts: %d", rc);
+			CMD_ERROR("failed to list prompts: %s", morph_strerror(rc));
 			arena_destroy(arena);
 			return rc;
 		}
@@ -1307,7 +1308,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = mcp_ensure_connected(mc);
 		if (rc < 0) {
-			CMD_ERROR("failed to connect to '%s': %d", name, rc);
+			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
 		mcp_register_server_tools(mc, &ctx->tools);
