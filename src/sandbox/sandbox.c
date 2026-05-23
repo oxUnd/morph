@@ -467,8 +467,18 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		off += n;
 	remaining = sizeof(sbpl) - (size_t)off;
 
-	/* File read: restricted to allowed paths if specified */
-	if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
+	/*
+	 * File read: when process execution is allowed, the spawned
+	 * process needs to read system libraries (/usr/lib, /System,
+	 * etc.) so file-read* must be granted globally.  Otherwise,
+	 * restrict to the specified allowed paths only.
+	 */
+	if (cfg->permissions & EXT_PERM_EXEC) {
+		n = snprintf(sbpl + off, remaining,
+			     "(allow file-read*)\n");
+		if (n > 0 && (size_t)n < remaining)
+			off += n;
+	} else if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
 		for (int i = 0; i < cfg->allowed_paths_count; i++) {
 			if (!cfg->allowed_paths[i])
 				continue;

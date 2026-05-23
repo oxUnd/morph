@@ -254,9 +254,9 @@ TEST_F(SkillRegistryTest, BuildActivatedInstructions) {
 	skill_activate(skill_lookup(&reg, "s2"));
 	char *instr = skill_build_activated_instructions(&reg);
 	ASSERT_NE(instr, nullptr);
-	EXPECT_NE(strstr(instr, "<skill name=\"s1\">"), nullptr);
+	EXPECT_NE(strstr(instr, "<skill name=\"s1\" "), nullptr);
 	EXPECT_NE(strstr(instr, "# One"), nullptr);
-	EXPECT_NE(strstr(instr, "<skill name=\"s2\">"), nullptr);
+	EXPECT_NE(strstr(instr, "<skill name=\"s2\" "), nullptr);
 	EXPECT_NE(strstr(instr, "# Two"), nullptr);
 	free(instr);
 	remove_skill("s1");

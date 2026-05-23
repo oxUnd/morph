@@ -629,7 +629,7 @@ TEST_F(BashExecTest, ResultJsonFormat)
 {
 	bash_exec_init(&reg);
 	int rc;
-	std::string result = exec_command(reg, "echo hi", rc);
+	std::string result = exec_command(reg, "echo out && echo err >&2", rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_FALSE(get_json_field(result, "command").empty());
 	EXPECT_TRUE(get_json_field(result, "exit_code") != "");

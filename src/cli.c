@@ -117,14 +117,14 @@ static void utf8_sanitize_inplace(char *s)
 		if (c < 0x80) {
 			p[w++] = p[r++];
 		} else if ((c & 0xE0) == 0xC0) {
-			if ((p[r+1] & 0xC0) == 0x80) {
+			if (p[r+1] && (p[r+1] & 0xC0) == 0x80) {
 				p[w++] = p[r++];
 				p[w++] = p[r++];
 			} else {
 				r++;
 			}
 		} else if ((c & 0xF0) == 0xE0) {
-			if ((p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80) {
+			if (p[r+1] && p[r+2] && (p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80) {
 				p[w++] = p[r++];
 				p[w++] = p[r++];
 				p[w++] = p[r++];
@@ -132,7 +132,7 @@ static void utf8_sanitize_inplace(char *s)
 				r++;
 			}
 		} else if ((c & 0xF8) == 0xF0) {
-			if ((p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80 && (p[r+3] & 0xC0) == 0x80) {
+			if (p[r+1] && p[r+2] && p[r+3] && (p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80 && (p[r+3] & 0xC0) == 0x80) {
 				p[w++] = p[r++];
 				p[w++] = p[r++];
 				p[w++] = p[r++];
@@ -454,8 +454,9 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		rc = session_get_by_display_id(&ctx->database, name, &s);
 	if (rc < 0) {
 		char *end;
+		errno = 0;
 		long id = strtol(name, &end, 10);
-		if (*end == '\0')
+		if (*end == '\0' && errno == 0)
 			rc = session_get_by_id(&ctx->database, (int64_t)id, &s);
 	}
 	if (rc == 0) {
@@ -515,6 +516,7 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		strncpy(ctx->current_session.name, new_name,
 			sizeof(ctx->current_session.name) - 1);
+		ctx->current_session.name[sizeof(ctx->current_session.name) - 1] = '\0';
 		utf8_sanitize_inplace(ctx->current_session.name);
 		CMD_OK("session renamed to: %s", new_name);
 	} else {
@@ -536,8 +538,9 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 		id = s.id;
 	else {
 		char *end;
+		errno = 0;
 		id = strtol(name, &end, 10);
-		if (*end != '\0')
+		if (*end != '\0' || errno != 0)
 			id = -1;
 	}
 	if (id < 0) {
@@ -599,10 +602,13 @@ static int cmd_model(struct cli_context *ctx, int argc, char **argv)
 	if (name) {
 		strncpy(ctx->current_session.model, name,
 			sizeof(ctx->current_session.model) - 1);
+		ctx->current_session.model[sizeof(ctx->current_session.model) - 1] = '\0';
 		session_update_model(&ctx->database, ctx->current_session.id, name);
-		if (ctx->llm)
+		if (ctx->llm) {
 			strncpy(ctx->llm->model_id, name,
 				sizeof(ctx->llm->model_id) - 1);
+			ctx->llm->model_id[sizeof(ctx->llm->model_id) - 1] = '\0';
+		}
 		CMD_OK("model switched to: %s", name);
 	} else {
 		printf("current model: %s\n", ctx->current_session.model);
@@ -642,8 +648,10 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 	if (!json)
 		return NULL;
 	cJSON *arr = cJSON_Parse(json);
-	if (!cJSON_IsArray(arr))
+	if (!cJSON_IsArray(arr)) {
+		cJSON_Delete(arr);
 		return NULL;
+	}
 	int count = cJSON_GetArraySize(arr);
 	struct react_step head = {0};
 	struct react_step *tail = &head;
@@ -1346,7 +1354,8 @@ static int cmd_dispatch(struct cli_context *ctx, const char *input)
 	return e->handler(ctx, argc, argv);
 }
 
-/* ---- cli_init ---- */
+
+/* ---- cli_init helpers ---- */
 
 struct auto_connect_work {
 	struct mcp_client *client;
@@ -1380,11 +1389,15 @@ static int cli_ask_user_callback(const char *question,
 				  char **answer,
 				  void *user_data);
 
-int cli_init(struct cli_context *ctx, const char *config_path)
+/*
+ * Load configuration from TOML file and set defaults.
+ * ctx - CLI context to configure.
+ * config_path - Path to config file, or NULL for default.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_config(struct cli_context *ctx, const char *config_path)
 {
-	if (!ctx)
-		return -EINVAL;
-	memset(ctx, 0, sizeof(*ctx));
 	config_set_defaults(&ctx->config);
 	if (!config_path)
 		config_path = default_config_path;
@@ -1392,6 +1405,17 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	if (file_exists(expanded))
 		config_load(&ctx->config, expanded);
 	free(expanded);
+	return 0;
+}
+
+/*
+ * Open the database and initialize its schema.
+ * ctx - CLI context with config already loaded.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_database(struct cli_context *ctx)
+{
 	char *db_path = file_expand_path(default_db_path);
 	char *db_dir = file_expand_path("~/.morph");
 	file_ensure_dir(db_dir);
@@ -1403,7 +1427,20 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		return rc;
 	}
 	db_init_schema(&ctx->database);
+	return 0;
+}
+
+/*
+ * Create tokenizer, react context, and LLM/image/video models.
+ * Configures compress, guardrail, HITL, and system prompts.
+ * ctx - CLI context with config and database initialized.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_models(struct cli_context *ctx)
+{
 	tool_registry_init(&ctx->tools);
+
 	ctx->tokenizer = tokenizer_create(ctx->config.models.text.model,
 					  ctx->config.models.text.context_limit);
 	if (!ctx->tokenizer) {
@@ -1411,6 +1448,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		db_close(&ctx->database);
 		return -ENOMEM;
 	}
+
 	struct compress_config compress_cfg = {
 		.max_context_tokens = ctx->config.models.text.context_limit,
 		.max_history_rounds = ctx->config.context.keep_recent_rounds,
@@ -1422,7 +1460,8 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 		.max_retries = ctx->config.react.guardrail_max_retries,
 		.max_empty_rounds = ctx->config.react.guardrail_max_empty_rounds,
 	};
-	ctx->react = react_context_create(&ctx->tools, ctx->tokenizer, &compress_cfg, &guardrail_cfg);
+	ctx->react = react_context_create(&ctx->tools, ctx->tokenizer,
+					  &compress_cfg, &guardrail_cfg);
 	if (!ctx->react) {
 		log_err("failed to create react context");
 		tokenizer_destroy(ctx->tokenizer);
@@ -1511,6 +1550,7 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 
 	strncpy(ctx->current_session.name, ctx->config.general.default_session,
 		sizeof(ctx->current_session.name) - 1);
+	ctx->current_session.name[sizeof(ctx->current_session.name) - 1] = '\0';
 
 	const char *api_key = NULL;
 	if (ctx->config.models.text.api_key[0])
@@ -1518,26 +1558,20 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	else
 		api_key = getenv(ctx->config.models.text.api_key_env);
 
-struct model *llm = model_llm_create(
+	struct model *llm = model_llm_create(
 		ctx->config.models.text.provider,
 		ctx->config.models.text.model,
 		ctx->config.models.text.api_base,
 		api_key ? api_key : "");
-  ctx->llm = llm;
-  ctx->react->llm_model = llm;
-  if (llm) {
-	  llm->timeout_seconds = ctx->config.models.text.timeout_seconds;
-	  if (ctx->config.models.text.max_tokens > 0)
-		  llm->max_tokens = ctx->config.models.text.max_tokens;
-	  if (ctx->config.models.text.context_limit > 0)
-		  llm->context_limit = ctx->config.models.text.context_limit;
-  }
-
-	text_gen_init(&ctx->tools, llm);
-	log_info("registered text_gen tool");
-
-	text_qa_init(&ctx->tools, llm);
-	log_info("registered text_qa tool");
+	ctx->llm = llm;
+	ctx->react->llm_model = llm;
+	if (llm) {
+		llm->timeout_seconds = ctx->config.models.text.timeout_seconds;
+		if (ctx->config.models.text.max_tokens > 0)
+			llm->max_tokens = ctx->config.models.text.max_tokens;
+		if (ctx->config.models.text.context_limit > 0)
+			llm->context_limit = ctx->config.models.text.context_limit;
+	}
 
 	const char *img_api_key = NULL;
 	if (ctx->config.models.image.api_key[0])
@@ -1551,10 +1585,43 @@ struct model *llm = model_llm_create(
 			ctx->config.models.image.api_base : NULL,
 		img_api_key ? img_api_key : "");
 	ctx->img_llm = img_llm;
-	img_gen_init(&ctx->tools, img_llm);
+
+	const char *vid_api_key = NULL;
+	if (ctx->config.models.video.api_key[0])
+		vid_api_key = ctx->config.models.video.api_key;
+	else
+		vid_api_key = getenv(ctx->config.models.video.api_key_env);
+	struct model *vid_llm = model_llm_create(
+		ctx->config.models.video.provider,
+		ctx->config.models.video.model,
+		ctx->config.models.video.api_base[0] ?
+			ctx->config.models.video.api_base : NULL,
+		vid_api_key ? vid_api_key : "");
+	ctx->vid_llm = vid_llm;
+
+	return 0;
+}
+
+/*
+ * Register all built-in tools and configure tool flags.
+ * Includes text_gen, text_qa, img_*, vid_*, file_*, bash_exec,
+ * skill, plan, and ask_user tools.
+ * ctx - CLI context with models and react context initialized.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_tools(struct cli_context *ctx)
+{
+	text_gen_init(&ctx->tools, ctx->llm);
+	log_info("registered text_gen tool");
+
+	text_qa_init(&ctx->tools, ctx->llm);
+	log_info("registered text_qa tool");
+
+	img_gen_init(&ctx->tools, ctx->img_llm);
 	log_info("registered img_gen tool");
 
-	img_edit_init(&ctx->tools, llm);
+	img_edit_init(&ctx->tools, ctx->llm);
 	log_info("registered img_edit tool");
 
 	img_info_init(&ctx->tools);
@@ -1578,27 +1645,13 @@ struct model *llm = model_llm_create(
 	img_convert_init(&ctx->tools);
 	log_info("registered img_convert tool");
 
-	const char *vid_api_key = NULL;
-	if (ctx->config.models.video.api_key[0])
-		vid_api_key = ctx->config.models.video.api_key;
-	else
-		vid_api_key = getenv(ctx->config.models.video.api_key_env);
-	struct model *vid_llm = model_llm_create(
-		ctx->config.models.video.provider,
-		ctx->config.models.video.model,
-		ctx->config.models.video.api_base[0] ?
-			ctx->config.models.video.api_base : NULL,
-		vid_api_key ? vid_api_key : "");
-	ctx->vid_llm = vid_llm;
-	vid_gen_init(&ctx->tools, vid_llm);
+	vid_gen_init(&ctx->tools, ctx->vid_llm);
 	log_info("registered vid_gen tool");
 
-	/* Apply disabled tools from config */
 	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
 		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
 	}
 
-	/* Mark read-only tools for HITL auto-approve */
 	{
 		static const char *readonly_tools[] = {
 			"file_read", "file_list", "file_info",
@@ -1611,7 +1664,65 @@ struct model *llm = model_llm_create(
 		}
 	}
 
-	/* Auto-discover exts from exts/ directory */
+	ctx->skills = calloc(1, sizeof(*ctx->skills));
+	if (!ctx->skills) {
+		log_err("failed to allocate skill registry");
+		return -ENOMEM;
+	}
+	skill_registry_init(ctx->skills);
+
+	if (ctx->config.skill.dir[0]) {
+		char *skill_dir = file_expand_path(ctx->config.skill.dir);
+		if (skill_dir) {
+			if (file_exists(skill_dir))
+				skill_discover(ctx->skills, skill_dir);
+			free(skill_dir);
+		}
+	} else {
+		char *morph_skills = file_expand_path("~/.morph/skills");
+		if (morph_skills) {
+			if (!file_exists(morph_skills))
+				file_ensure_dir(morph_skills);
+			skill_discover(ctx->skills, morph_skills);
+			free(morph_skills);
+		}
+		char *agents_skills = file_expand_path("~/.agents/skills");
+		if (agents_skills) {
+			if (!file_exists(agents_skills))
+				file_ensure_dir(agents_skills);
+			skill_discover(ctx->skills, agents_skills);
+			free(agents_skills);
+		}
+	}
+
+	if (ctx->skills->count > 0) {
+		skill_activate_init(&ctx->tools, ctx->skills);
+		log_info("registered activate_skill tool (%d skills discovered)",
+			 ctx->skills->count);
+	}
+
+	plan_registry_init(&ctx->plans);
+	plan_tool_init(&ctx->tools, &ctx->plans, ctx->llm);
+	log_info("registered plan tool");
+
+	ask_user_init(&ctx->tools, cli_ask_user_callback, ctx);
+	ctx->react->ask_user_fn = cli_ask_user_callback;
+	ctx->react->ask_user_data = ctx;
+	log_info("registered ask_user tool");
+
+	ctx->react->skills = ctx->skills;
+
+	return 0;
+}
+
+/*
+ * Discover and load extensions from the ~/.morph/exts directory.
+ * ctx - CLI context with tool registry initialized.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_exts(struct cli_context *ctx)
+{
 	char exts_dir[512] = {0};
 	char *exts_home = file_expand_path("~/.morph/exts");
 	if (exts_home) {
@@ -1629,17 +1740,17 @@ struct model *llm = model_llm_create(
 			char ed_path[1024];
 			snprintf(ed_path, sizeof(ed_path), "%s/%s", exts_dir, ext_dirs[i]);
 			struct ext ex;
-			int rc2 = ext_load(&ex, ed_path);
-			if (rc2 == 0 && ex.enabled) {
+			int rc = ext_load(&ex, ed_path);
+			if (rc == 0 && ex.enabled) {
 				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
 				if (ex_ptr) {
 					memcpy(ex_ptr, &ex, sizeof(ex));
-				tool_register(&ctx->tools, ex.manifest.name,
-					      ex.manifest.description,
-					      ex.manifest.args_schema ?
-					      ex.manifest.args_schema : "",
-					      ext_run_wrapper, ex_ptr,
-					      ext_user_data_destroy);
+					tool_register(&ctx->tools, ex.manifest.name,
+						      ex.manifest.description,
+						      ex.manifest.args_schema ?
+						      ex.manifest.args_schema : "",
+						      ext_run_wrapper, ex_ptr,
+						      ext_user_data_destroy);
 					log_info("registered ext: %s", ex.manifest.name);
 				}
 			} else {
@@ -1648,8 +1759,17 @@ struct model *llm = model_llm_create(
 		}
 		file_free_list(ext_dirs, ext_count);
 	}
+	return 0;
+}
 
-	/* Initialize MCP servers from config (lazy connect on first use) */
+/*
+ * Initialize MCP servers from config and auto-connect those with auto_connect=true.
+ * ctx - CLI context with config and tool registry initialized.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+static int cli_init_mcp(struct cli_context *ctx)
+{
 	mcp_registry_init(&ctx->mcp);
 	for (int i = 0; i < ctx->config.mcp.server_count; i++) {
 		struct mcp_server_config scfg;
@@ -1679,14 +1799,13 @@ struct model *llm = model_llm_create(
 		scfg.auto_connect = cs->auto_connect;
 		scfg.connect_timeout = cs->connect_timeout;
 
-		int rc2 = mcp_registry_add(&ctx->mcp, &scfg);
-		if (rc2 == 0) {
+		int rc = mcp_registry_add(&ctx->mcp, &scfg);
+		if (rc == 0) {
 			log_info("mcp: registered server '%s'%s", scfg.name,
 				 scfg.auto_connect ? " (auto_connect)" : "");
 		}
 	}
 
-	/* Auto-connect MCP servers that have auto_connect = true */
 	for (int i = 0; i < ctx->mcp.count; i++) {
 		struct mcp_client *mc = ctx->mcp.servers[i];
 		if (!mc->config.auto_connect)
@@ -1747,53 +1866,48 @@ struct model *llm = model_llm_create(
 		}
 	}
 
-	ctx->skills = calloc(1, sizeof(*ctx->skills));
-	if (!ctx->skills) {
-		log_err("failed to allocate skill registry");
-		return -ENOMEM;
-	}
-	skill_registry_init(ctx->skills);
+	return 0;
+}
 
-	if (ctx->config.skill.dir[0]) {
-		char *skill_dir = file_expand_path(ctx->config.skill.dir);
-		if (skill_dir) {
-			if (file_exists(skill_dir))
-				skill_discover(ctx->skills, skill_dir);
-			free(skill_dir);
-		}
-	} else {
-		char *morph_skills = file_expand_path("~/.morph/skills");
-		if (morph_skills) {
-			if (!file_exists(morph_skills))
-				file_ensure_dir(morph_skills);
-			skill_discover(ctx->skills, morph_skills);
-			free(morph_skills);
-		}
-		char *agents_skills = file_expand_path("~/.agents/skills");
-		if (agents_skills) {
-			if (!file_exists(agents_skills))
-				file_ensure_dir(agents_skills);
-			skill_discover(ctx->skills, agents_skills);
-			free(agents_skills);
-		}
-	}
+/*
+ * Initialize the CLI context: load config, open database, create models,
+ * register tools, discover extensions and MCP servers, and prepare session.
+ * ctx - CLI context to initialize (must be zeroed by caller or here).
+ * config_path - Path to config file, or NULL for default.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+int cli_init(struct cli_context *ctx, const char *config_path)
+{
+	if (!ctx)
+		return -EINVAL;
+	memset(ctx, 0, sizeof(*ctx));
 
-	if (ctx->skills->count > 0) {
-		skill_activate_init(&ctx->tools, ctx->skills);
-		log_info("registered activate_skill tool (%d skills discovered)",
-			 ctx->skills->count);
-	}
+	int rc;
 
-	plan_registry_init(&ctx->plans);
-	plan_tool_init(&ctx->tools, &ctx->plans, llm);
-	log_info("registered plan tool");
+	rc = cli_init_config(ctx, config_path);
+	if (rc < 0)
+		return rc;
 
-	ask_user_init(&ctx->tools, cli_ask_user_callback, ctx);
-	ctx->react->ask_user_fn = cli_ask_user_callback;
-	ctx->react->ask_user_data = ctx;
-	log_info("registered ask_user tool");
+	rc = cli_init_database(ctx);
+	if (rc < 0)
+		return rc;
 
-	ctx->react->skills = ctx->skills;
+	rc = cli_init_models(ctx);
+	if (rc < 0)
+		goto fail;
+
+	rc = cli_init_tools(ctx);
+	if (rc < 0)
+		goto fail;
+
+	rc = cli_init_exts(ctx);
+	if (rc < 0)
+		goto fail;
+
+	rc = cli_init_mcp(ctx);
+	if (rc < 0)
+		goto fail;
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
@@ -1802,7 +1916,7 @@ struct model *llm = model_llm_create(
 					&ctx->current_session);
 		if (rc < 0) {
 			log_err("failed to get default session");
-			return rc;
+			goto fail;
 		}
 		ctx->session_auto_named = 0;
 		session_update_model(&ctx->database, ctx->current_session.id,
@@ -1826,6 +1940,10 @@ struct model *llm = model_llm_create(
 	spin_set_cancel_flag(&ctx->spin, &react_sigint_flag);
 
 	return 0;
+
+fail:
+	cli_shutdown(ctx);
+	return rc;
 }
 
 /* ---- sigint ---- */
@@ -2082,6 +2200,212 @@ static void media_callback(const char *type, const char *path, void *user)
 	}
 }
 
+
+/* ---- output_callback helpers ---- */
+
+/*
+ * Handle THOUGHT step: update spinner with streaming thought content.
+ * ctx - CLI context.
+ * content - Thought content fragment (may be NULL or empty).
+ *
+ * Returns 0 always.
+ */
+static int output_handle_thought(struct cli_context *ctx, const char *content)
+{
+	if (content && *content) {
+		if (!ctx->streaming) {
+			ctx->streaming = 1;
+			ctx->stream_buf[0] = '\0';
+			ctx->stream_buf_len = 0;
+			if (!ctx->spin.running) {
+				spin_start(&ctx->spin, SPIN_STATE_THINKING,
+					   "Thinking");
+			}
+		}
+		size_t clen = strlen(content);
+		size_t avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
+		if (clen > avail) {
+			size_t keep = sizeof(ctx->stream_buf) / 2;
+			memmove(ctx->stream_buf, ctx->stream_buf + ctx->stream_buf_len - keep, keep);
+			ctx->stream_buf_len = keep;
+			avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
+		}
+		if (clen > avail)
+			clen = avail;
+		memcpy(ctx->stream_buf + ctx->stream_buf_len, content, clen);
+		ctx->stream_buf_len += clen;
+		ctx->stream_buf[ctx->stream_buf_len] = '\0';
+
+		const char *last_nl = strrchr(ctx->stream_buf, '\n');
+		const char *preview = last_nl ? last_nl + 1 : ctx->stream_buf;
+		while (*preview == ' ' || *preview == '\t')
+			preview++;
+		size_t plen = strlen(preview);
+		if (plen > 60)
+			preview = preview + plen - 60;
+		char sub[128];
+		snprintf(sub, sizeof(sub), "%.60s", preview);
+		spin_set_sub(&ctx->spin, sub);
+	} else if (!ctx->streaming) {
+		if (!ctx->spin.running) {
+			spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
+		}
+		ctx->streaming = 1;
+		ctx->stream_buf[0] = '\0';
+		ctx->stream_buf_len = 0;
+	}
+	return 0;
+}
+
+/*
+ * Handle ACTION step: show tool execution spinner.
+ * ctx - CLI context.
+ * content - Action description, typically "tool_name(args)".
+ *
+ * Returns 0 always.
+ */
+static int output_handle_action(struct cli_context *ctx, const char *content)
+{
+	if (ctx->streaming) {
+		spin_set_sub(&ctx->spin, NULL);
+		ctx->streaming = 0;
+	}
+	if (content && strncmp(content, "Executing ", 10) == 0) {
+		if (ctx->spin.running) {
+			char msg[256];
+			snprintf(msg, sizeof(msg), "Running %s", content + 10);
+			spin_update(&ctx->spin, msg);
+		}
+		return 0;
+	}
+	if (content && strstr(content, " completed")) {
+		return 0;
+	}
+	{
+		char tool_name[64] = {0};
+		if (content) {
+			const char *paren = strchr(content, '(');
+			if (paren) {
+				size_t nlen = (size_t)(paren - content);
+				if (nlen >= sizeof(tool_name)) nlen = sizeof(tool_name) - 1;
+				memcpy(tool_name, content, nlen);
+				tool_name[nlen] = '\0';
+			} else {
+				snprintf(tool_name, sizeof(tool_name), "%s", content);
+			}
+		}
+		if (!ctx->spin.running) {
+			spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
+				   tool_name[0] ? tool_name : "Executing");
+		} else {
+			spin_update(&ctx->spin, tool_name[0] ? tool_name : "Executing");
+		}
+		if (content)
+			spin_set_sub(&ctx->spin, content);
+	}
+	return 0;
+}
+
+/*
+ * Handle OBSERVATION step: stop spinner with appropriate status.
+ * ctx - CLI context.
+ * content - Observation content (tool result or error).
+ *
+ * Returns 0 always.
+ */
+static int output_handle_observation(struct cli_context *ctx, const char *content)
+{
+	if (ctx->streaming) {
+		spin_set_sub(&ctx->spin, NULL);
+		ctx->streaming = 0;
+	}
+	if (ctx->spin.running) {
+		char msg[128] = {0};
+		if (content && strncmp(content, "tool error:", 11) == 0) {
+			snprintf(msg, sizeof(msg), "Tool execution failed");
+			spin_stop(&ctx->spin, SPIN_STATE_ERROR, msg);
+		} else if (content && strncmp(content, "image generated:", 15) == 0) {
+			snprintf(msg, sizeof(msg), "Image generated");
+			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+		} else if (content && strncmp(content, "video generated:", 16) == 0) {
+			snprintf(msg, sizeof(msg), "Video generated");
+			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+		} else {
+			snprintf(msg, sizeof(msg), "Done");
+			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+		}
+	}
+	fflush(stdout);
+	return 0;
+}
+
+/*
+ * Handle REFLECTION step: display guardrail message.
+ * ctx - CLI context.
+ * content - Reflection message from guardrail.
+ *
+ * Returns 0 always.
+ */
+static int output_handle_reflection(struct cli_context *ctx, const char *content)
+{
+	if (ctx->streaming) {
+		spin_set_sub(&ctx->spin, NULL);
+		ctx->streaming = 0;
+	}
+	spin_pause(&ctx->spin);
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_CYAN "🛡 Guardrail" ANSI_RESET " %s\n",
+	       content ? content : "");
+	fflush(stdout);
+	spin_resume(&ctx->spin);
+	return 0;
+}
+
+/*
+ * Handle FINAL step: render the final answer as markdown.
+ * ctx - CLI context.
+ * content - Final answer content (may be NULL or empty).
+ *
+ * Returns 0 always.
+ */
+static int output_handle_final(struct cli_context *ctx, const char *content)
+{
+	if (ctx->streaming) {
+		spin_set_sub(&ctx->spin, NULL);
+		ctx->streaming = 0;
+	}
+	if (ctx->spin.running) {
+		char msg[128];
+		if (content && *content) {
+			snprintf(msg, sizeof(msg), "Done");
+		} else {
+			snprintf(msg, sizeof(msg), "No output");
+		}
+		spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
+		printf("\n");
+	}
+	if (content && *content) {
+		char *wrapped = wrap_bare_media_paths(content);
+		markdown_render_ansi_with_media(wrapped ? wrapped : content,
+						media_callback, ctx);
+		free(wrapped);
+	} else {
+		printf("\n");
+	}
+
+	printf("\n");
+	fflush(stdout);
+	return 0;
+}
+
+/*
+ * ReAct output callback: dispatch step-type events to per-type handlers.
+ * type - Step type (THOUGHT, ACTION, OBSERVATION, REFLECTION, FINAL).
+ * content - Step content string.
+ * user_data - Pointer to cli_context.
+ *
+ * Returns 0 always.
+ */
 static int output_callback(enum react_step_type type, const char *content,
 			   void *user_data)
 {
@@ -2089,153 +2413,19 @@ static int output_callback(enum react_step_type type, const char *content,
 
 	switch (type) {
 	case REACT_STEP_THOUGHT:
-		if (content && *content) {
-			if (!ctx->streaming) {
-				ctx->streaming = 1;
-				ctx->stream_buf[0] = '\0';
-				ctx->stream_buf_len = 0;
-				if (!ctx->spin.running) {
-					spin_start(&ctx->spin, SPIN_STATE_THINKING,
-						   "Thinking");
-				}
-			}
-			size_t clen = strlen(content);
-			size_t avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
-			if (clen > avail) {
-				size_t keep = sizeof(ctx->stream_buf) / 2;
-				memmove(ctx->stream_buf, ctx->stream_buf + ctx->stream_buf_len - keep, keep);
-				ctx->stream_buf_len = keep;
-				avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
-			}
-			if (clen > avail)
-				clen = avail;
-			memcpy(ctx->stream_buf + ctx->stream_buf_len, content, clen);
-			ctx->stream_buf_len += clen;
-			ctx->stream_buf[ctx->stream_buf_len] = '\0';
-
-			const char *last_nl = strrchr(ctx->stream_buf, '\n');
-			const char *preview = last_nl ? last_nl + 1 : ctx->stream_buf;
-			while (*preview == ' ' || *preview == '\t')
-				preview++;
-			size_t plen = strlen(preview);
-			if (plen > 60)
-				preview = preview + plen - 60;
-			char sub[128];
-			snprintf(sub, sizeof(sub), "%.60s", preview);
-			spin_set_sub(&ctx->spin, sub);
-		} else if (!ctx->streaming) {
-			if (!ctx->spin.running) {
-				spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
-			}
-			ctx->streaming = 1;
-			ctx->stream_buf[0] = '\0';
-			ctx->stream_buf_len = 0;
-		}
-		break;
+		return output_handle_thought(ctx, content);
 	case REACT_STEP_ACTION:
-		if (ctx->streaming) {
-			spin_set_sub(&ctx->spin, NULL);
-			ctx->streaming = 0;
-		}
-		if (content && strncmp(content, "Executing ", 10) == 0) {
-			if (ctx->spin.running) {
-				char msg[256];
-				snprintf(msg, sizeof(msg), "Running %s", content + 10);
-				spin_update(&ctx->spin, msg);
-			}
-			break;
-		}
-		if (content && strstr(content, " completed")) {
-			break;
-		}
-		{
-			char tool_name[64] = {0};
-			if (content) {
-				const char *paren = strchr(content, '(');
-				if (paren) {
-					size_t nlen = (size_t)(paren - content);
-					if (nlen >= sizeof(tool_name)) nlen = sizeof(tool_name) - 1;
-					memcpy(tool_name, content, nlen);
-					tool_name[nlen] = '\0';
-				} else {
-					snprintf(tool_name, sizeof(tool_name), "%s", content);
-				}
-			}
-			if (!ctx->spin.running) {
-				spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
-					   tool_name[0] ? tool_name : "Executing");
-			} else {
-				spin_update(&ctx->spin, tool_name[0] ? tool_name : "Executing");
-			}
-			if (content)
-				spin_set_sub(&ctx->spin, content);
-		}
-		break;
+		return output_handle_action(ctx, content);
 	case REACT_STEP_OBSERVATION:
-		if (ctx->streaming) {
-			spin_set_sub(&ctx->spin, NULL);
-			ctx->streaming = 0;
-		}
-		if (ctx->spin.running) {
-			char msg[128] = {0};
-			if (content && strncmp(content, "tool error:", 11) == 0) {
-				snprintf(msg, sizeof(msg), "Tool execution failed");
-				spin_stop(&ctx->spin, SPIN_STATE_ERROR, msg);
-			} else if (content && strncmp(content, "image generated:", 15) == 0) {
-				snprintf(msg, sizeof(msg), "Image generated");
-				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-			} else if (content && strncmp(content, "video generated:", 16) == 0) {
-				snprintf(msg, sizeof(msg), "Video generated");
-				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-			} else {
-				snprintf(msg, sizeof(msg), "Done");
-				spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-			}
-		}
-		fflush(stdout);
-		break;
+		return output_handle_observation(ctx, content);
 	case REACT_STEP_REFLECTION:
-		if (ctx->streaming) {
-			spin_set_sub(&ctx->spin, NULL);
-			ctx->streaming = 0;
-		}
-		spin_pause(&ctx->spin);
-		printf("\r\033[K");
-		printf(ANSI_BOLD ANSI_CYAN "🛡 Guardrail" ANSI_RESET " %s\n",
-		       content ? content : "");
-		fflush(stdout);
-		spin_resume(&ctx->spin);
-		break;
+		return output_handle_reflection(ctx, content);
 	case REACT_STEP_FINAL:
-		if (ctx->streaming) {
-			spin_set_sub(&ctx->spin, NULL);
-			ctx->streaming = 0;
-		}
-		if (ctx->spin.running) {
-			char msg[128];
-			if (content && *content) {
-				snprintf(msg, sizeof(msg), "Done");
-			} else {
-				snprintf(msg, sizeof(msg), "No output");
-			}
-			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-			printf("\n");
-		}
-		if (content && *content) {
-			char *wrapped = wrap_bare_media_paths(content);
-			markdown_render_ansi_with_media(wrapped ? wrapped : content,
-							media_callback, ctx);
-			free(wrapped);
-		} else {
-			printf("\n");
-		}
-
-		printf("\n");
-		fflush(stdout);
-		break;
+		return output_handle_final(ctx, content);
 	}
 	return 0;
 }
+
 
 static int cli_ask_user_callback(const char *question,
 				  const char *const *choices,
