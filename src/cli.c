@@ -1967,6 +1967,8 @@ static void sigint_handler(int sig)
 
 #ifdef HAVE_READLINE
 
+static struct cli_context *g_comp_ctx;
+
 static char *cmd_completion_generator(const char *text, int state)
 {
 	static int idx;
@@ -1984,6 +1986,53 @@ static char *cmd_completion_generator(const char *text, int state)
 	return NULL;
 }
 
+static char *session_completion_generator(const char *text, int state)
+{
+	static struct session *slist;
+	static int scount;
+	static int idx;
+	static int len;
+
+	if (state == 0) {
+		if (slist) {
+			free(slist);
+			slist = NULL;
+		}
+		scount = 0;
+		idx = 0;
+		len = (int)strlen(text);
+		if (!g_comp_ctx)
+			return NULL;
+		session_list(&g_comp_ctx->database, &slist, &scount);
+	}
+
+	while (idx < scount) {
+		struct session *s = &slist[idx];
+		idx++;
+		if (s->display_id[0] &&
+		    strncmp(s->display_id, text, (size_t)len) == 0)
+			return strdup(s->display_id);
+		if (s->name[0] &&
+		    strncmp(s->name, text, (size_t)len) == 0)
+			return strdup(s->name);
+	}
+
+	if (slist) {
+		free(slist);
+		slist = NULL;
+	}
+	scount = 0;
+	return NULL;
+}
+
+static int is_session_arg_command(const char *cmd)
+{
+	return (strcmp(cmd, "/switch") == 0 ||
+		strcmp(cmd, "/s") == 0 ||
+		strcmp(cmd, "/delete") == 0 ||
+		strcmp(cmd, "/del") == 0);
+}
+
 static char **cmd_completion(const char *text, int start, int end)
 {
 	(void)end;
@@ -1991,6 +2040,13 @@ static char **cmd_completion(const char *text, int start, int end)
 		rl_attempted_completion_function = NULL;
 	if (start == 0)
 		return rl_completion_matches(text, cmd_completion_generator);
+
+	char *cmd = rl_copy_text(0, start - 1);
+	int match = is_session_arg_command(cmd);
+	free(cmd);
+	if (match)
+		return rl_completion_matches(text, session_completion_generator);
+
 	return NULL;
 }
 
@@ -2014,6 +2070,7 @@ void cli_run(struct cli_context *ctx)
 
 #ifdef HAVE_READLINE
 	using_history();
+	g_comp_ctx = ctx;
 	rl_attempted_completion_function = cmd_completion;
 	while (ctx->running) {
 		char prompt[512];
