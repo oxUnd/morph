@@ -60,3 +60,6 @@ exts/**/package-lock.json
 *.dSYM/
 core
 vgcore.*
+__pycache__/
+eval/eval_config.toml
+eval/results/
