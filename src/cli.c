@@ -2052,6 +2052,93 @@ static char **cmd_completion(const char *text, int start, int end)
 
 #endif
 
+/* ---- cli_run_once ---- */
+
+static void emit_trace_json(struct cli_context *ctx, double elapsed)
+{
+	if (!ctx->react)
+		return;
+	cJSON *root = cJSON_CreateObject();
+	switch (ctx->react->state) {
+	case REACT_STATE_DONE:
+		cJSON_AddStringToObject(root, "state", "done");
+		break;
+	case REACT_STATE_ABORT:
+		cJSON_AddStringToObject(root, "state", "abort");
+		break;
+	case REACT_STATE_TOOL_FAIL:
+		cJSON_AddStringToObject(root, "state", "tool_fail");
+		break;
+	default:
+		cJSON_AddStringToObject(root, "state", "unknown");
+		break;
+	}
+	if (ctx->react->final_answer)
+		cJSON_AddStringToObject(root, "final_answer",
+					ctx->react->final_answer);
+	else
+		cJSON_AddStringToObject(root, "final_answer", "");
+	cJSON *steps = cJSON_CreateArray();
+	struct react_step *cur = ctx->react->steps;
+	while (cur) {
+		cJSON *s = cJSON_CreateObject();
+		cJSON_AddStringToObject(s, "type",
+					react_step_type_name(cur->type));
+		if (cur->content)
+			cJSON_AddStringToObject(s, "content", cur->content);
+		if (cur->tool_name)
+			cJSON_AddStringToObject(s, "tool_name", cur->tool_name);
+		if (cur->tool_args)
+			cJSON_AddStringToObject(s, "tool_args", cur->tool_args);
+		cJSON_AddItemToArray(steps, s);
+		cur = cur->next;
+	}
+	cJSON_AddItemToObject(root, "steps", steps);
+	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
+	char *json = cJSON_PrintUnformatted(root);
+	printf("%s\n", json);
+	free(json);
+	cJSON_Delete(root);
+}
+
+void cli_run_once(struct cli_context *ctx, const char *prompt)
+{
+	if (!ctx || !prompt)
+		return;
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = sigint_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	sigaction(SIGINT, &sa, NULL);
+	struct timespec ts_start, ts_end;
+	clock_gettime(CLOCK_MONOTONIC, &ts_start);
+	sigint_received = 0;
+	if (ctx->react)
+		react_cancel(ctx->react);
+	/*
+	 * In trace-json mode, redirect stdout to stderr so that
+	 * only the JSON trace appears on stdout for machine parsing.
+	 */
+	int saved_stdout = -1;
+	if (ctx->trace_json) {
+		saved_stdout = dup(STDOUT_FILENO);
+		dup2(STDERR_FILENO, STDOUT_FILENO);
+	}
+	cli_handle_command(ctx, prompt);
+	if (saved_stdout >= 0) {
+		fflush(stdout);
+		dup2(saved_stdout, STDOUT_FILENO);
+		close(saved_stdout);
+	}
+	clock_gettime(CLOCK_MONOTONIC, &ts_end);
+	double elapsed = (ts_end.tv_sec - ts_start.tv_sec)
+			 + (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
+	if (ctx->trace_json)
+		emit_trace_json(ctx, elapsed);
+	signal(SIGINT, SIG_DFL);
+}
+
 /* ---- cli_run ---- */
 
 void cli_run(struct cli_context *ctx)

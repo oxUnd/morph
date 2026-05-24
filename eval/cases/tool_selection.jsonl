@@ -1,0 +1,55 @@
+{"id":"ts_001","prompt":"生成一张日落图片","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"日落"}}],"category":"image"}
+{"id":"ts_002","prompt":"Generate an image of a cat sitting on a windowsill","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"cat"}}],"category":"image"}
+{"id":"ts_003","prompt":"画一张动漫风格的少女头像","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"少女"}}],"category":"image"}
+{"id":"ts_004","prompt":"Create a realistic landscape photo of mountains at dawn","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"mountains"}}],"category":"image"}
+{"id":"ts_005","prompt":"这张图片 /tmp/photo.jpg 里有什么内容？","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/tmp/photo.jpg"}}],"category":"image"}
+{"id":"ts_006","prompt":"What is in this image: /home/user/pic.png","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/home/user/pic.png"}}],"category":"image"}
+{"id":"ts_007","prompt":"分析图片 /tmp/test.bmp 的内容","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/tmp/test.bmp"}}],"category":"image"}
+{"id":"ts_008","prompt":"Describe what you see in /data/photo.jpg","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/data/photo.jpg"}}],"category":"image"}
+{"id":"ts_009","prompt":"获取图片 /tmp/output.png 的尺寸和格式信息","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/tmp/output.png"}}],"category":"image"}
+{"id":"ts_010","prompt":"Get metadata for image /home/user/photo.jpg","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/home/user/photo.jpg"}}],"category":"image"}
+{"id":"ts_011","prompt":"图片 /tmp/img.png 的分辨率是多少","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/tmp/img.png"}}],"category":"image"}
+{"id":"ts_012","prompt":"把 /tmp/photo.jpg 缩放到 800x600","expected_tools":[{"name":"img_resize","args_contains":{"file_path":"/tmp/photo.jpg","width":800,"height":600}}],"category":"image"}
+{"id":"ts_013","prompt":"Resize /home/user/pic.png to 1024x768","expected_tools":[{"name":"img_resize","args_contains":{"file_path":"/home/user/pic.png","width":1024}}],"category":"image"}
+{"id":"ts_014","prompt":"将图片 /tmp/large.png 缩小到宽度 512 像素","expected_tools":[{"name":"img_resize","args_contains":{"file_path":"/tmp/large.png","width":512}}],"category":"image"}
+{"id":"ts_015","prompt":"Convert /tmp/photo.png to JPEG format","expected_tools":[{"name":"img_convert","args_contains":{"file_path":"/tmp/photo.png","format":"jpg"}}],"category":"image"}
+{"id":"ts_016","prompt":"把 /tmp/image.bmp 转换成 PNG 格式","expected_tools":[{"name":"img_convert","args_contains":{"file_path":"/tmp/image.bmp","format":"png"}}],"category":"image"}
+{"id":"ts_017","prompt":"Convert /tmp/pic.tga to JPEG with quality 90","expected_tools":[{"name":"img_convert","args_contains":{"file_path":"/tmp/pic.tga","format":"jpg"}}],"category":"image"}
+{"id":"ts_018","prompt":"生成一段 5 秒的日落视频","expected_tools":[{"name":"vid_gen","args_contains":{"prompt":"日落"}}],"category":"video"}
+{"id":"ts_019","prompt":"Create a video of a cat playing with a ball","expected_tools":[{"name":"vid_gen","args_contains":{"prompt":"cat"}}],"category":"video"}
+{"id":"ts_020","prompt":"用图片 /tmp/img1.jpg 和 /tmp/img2.jpg 生成视频","expected_tools":[{"name":"vid_gen","args_contains":{"reference_images":"/tmp/img1.jpg"}}],"category":"video"}
+{"id":"ts_021","prompt":"Generate a 10-second video of ocean waves","expected_tools":[{"name":"vid_gen","args_contains":{"prompt":"ocean"}}],"category":"video"}
+{"id":"ts_022","prompt":"写一首关于秋天的诗","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"秋天"}}],"category":"text"}
+{"id":"ts_023","prompt":"Write a formal email declining a meeting invitation","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"email"}}],"category":"text"}
+{"id":"ts_024","prompt":"用轻松的风格写一段产品介绍","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"产品"}}],"category":"text"}
+{"id":"ts_025","prompt":"Generate a creative short story about time travel","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"time travel"}}],"category":"text"}
+{"id":"ts_026","prompt":"写一篇长文介绍人工智能的发展历史","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"人工智能"}}],"category":"text"}
+{"id":"ts_027","prompt":"什么是量子计算？","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"量子计算"}}],"category":"text"}
+{"id":"ts_028","prompt":"How does photosynthesis work?","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"photosynthesis"}}],"category":"text"}
+{"id":"ts_029","prompt":"解释一下相对论的基本原理","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"相对论"}}],"category":"text"}
+{"id":"ts_030","prompt":"What are the advantages of Rust over C++?","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"Rust"}}],"category":"text"}
+{"id":"ts_031","prompt":"读取 /etc/hosts 文件的内容","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/etc/hosts"}}],"category":"file"}
+{"id":"ts_032","prompt":"Read the contents of /home/user/notes.txt","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/home/user/notes.txt"}}],"category":"file"}
+{"id":"ts_033","prompt":"查看 /var/log/syslog 的前 50 行","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/var/log/syslog","limit":50}}],"category":"file"}
+{"id":"ts_034","prompt":"Show me lines 100-150 of /home/user/data.csv","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/home/user/data.csv","offset":100}}],"category":"file"}
+{"id":"ts_035","prompt":"列出 /home/user/documents 目录下的文件","expected_tools":[{"name":"file_list","args_contains":{"dir_path":"/home/user/documents"}}],"category":"file"}
+{"id":"ts_036","prompt":"List files in /tmp directory","expected_tools":[{"name":"file_list","args_contains":{"dir_path":"/tmp"}}],"category":"file"}
+{"id":"ts_037","prompt":"查看 /var/log 目录内容","expected_tools":[{"name":"file_list","args_contains":{"dir_path":"/var/log"}}],"category":"file"}
+{"id":"ts_038","prompt":"/home/user/report.pdf 的大小是多少","expected_tools":[{"name":"file_info","args_contains":{"file_path":"/home/user/report.pdf"}}],"category":"file"}
+{"id":"ts_039","prompt":"Get file metadata for /tmp/data.json","expected_tools":[{"name":"file_info","args_contains":{"file_path":"/tmp/data.json"}}],"category":"file"}
+{"id":"ts_040","prompt":"查看 /etc/nginx/nginx.conf 的文件信息","expected_tools":[{"name":"file_info","args_contains":{"file_path":"/etc/nginx/nginx.conf"}}],"category":"file"}
+{"id":"ts_041","prompt":"运行 ls -la 命令查看当前目录","expected_tools":[{"name":"bash_exec","args_contains":{"command":"ls"}}],"category":"system"}
+{"id":"ts_042","prompt":"Run `git status` in the current directory","expected_tools":[{"name":"bash_exec","args_contains":{"command":"git status"}}],"category":"system"}
+{"id":"ts_043","prompt":"统计 /var/log/app.log 中 ERROR 出现的次数","expected_tools":[{"name":"bash_exec","args_contains":{"command":"grep"}}],"category":"system"}
+{"id":"ts_044","prompt":"Find all Python files in /home/user/project","expected_tools":[{"name":"bash_exec","args_contains":{"command":"find"}}],"category":"system"}
+{"id":"ts_045","prompt":"检查端口 8080 是否在监听","expected_tools":[{"name":"bash_exec","args_contains":{"command":"8080"}}],"category":"system"}
+{"id":"ts_046","prompt":"创建一个名为「项目开发」的计划，目标是在两周内完成前端重构","expected_tools":[{"name":"plan","args_contains":{"command":"create","goal":"前端重构"}}],"category":"planning"}
+{"id":"ts_047","prompt":"Create a plan called 'Deploy' with goal: deploy the app to production","expected_tools":[{"name":"plan","args_contains":{"command":"create","goal":"deploy"}}],"category":"planning"}
+{"id":"ts_048","prompt":"查看当前所有计划","expected_tools":[{"name":"plan","args_contains":{"command":"list"}}],"category":"planning"}
+{"id":"ts_049","prompt":"将计划「项目开发」的第 2 步标记为完成","expected_tools":[{"name":"plan","args_contains":{"command":"update","status":"completed"}}],"category":"planning"}
+{"id":"ts_050","prompt":"Activate the coding skill","expected_tools":[{"name":"activate_skill","args_contains":{"name":"coding"}}],"category":"skill"}
+{"id":"ts_051","prompt":"加载写作技能","expected_tools":[{"name":"activate_skill","args_contains":{"name":"写作"}}],"category":"skill"}
+{"id":"ts_052","prompt":"Activate the translation skill","expected_tools":[{"name":"activate_skill","args_contains":{"name":"translation"}}],"category":"skill"}
+{"id":"ts_053","prompt":"你想用哪种编程语言？Python 还是 JavaScript？","expected_tools":[{"name":"ask_user","args_contains":{"question":"Python"}}],"category":"interaction"}
+{"id":"ts_054","prompt":"Ask the user which database they prefer: MySQL or PostgreSQL","expected_tools":[{"name":"ask_user","args_contains":{"question":"database"}}],"category":"interaction"}
+{"id":"ts_055","prompt":"询问用户想要什么颜色主题","expected_tools":[{"name":"ask_user","args_contains":{"question":"颜色"}}],"category":"interaction"}

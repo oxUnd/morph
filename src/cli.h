@@ -32,10 +32,12 @@ struct cli_context {
 	struct spin_context spin;
 	char stream_buf[4096];
 	size_t stream_buf_len;
+	int trace_json;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path);
 void cli_run(struct cli_context *ctx);
+void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);
 int cli_handle_command(struct cli_context *ctx, const char *input);
 void cli_print_help(void);

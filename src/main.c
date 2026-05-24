@@ -11,13 +11,21 @@ int main(int argc, char *argv[])
 {
 	setlocale(LC_ALL, "");
 	const char *config_path = NULL;
+	const char *one_shot_prompt = NULL;
+	int trace_json = 0;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
 			config_path = argv[++i];
 		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)
 			config_path = argv[++i];
+		else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc)
+			one_shot_prompt = argv[++i];
+		else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
+			one_shot_prompt = argv[++i];
+		else if (strcmp(argv[i], "--trace-json") == 0)
+			trace_json = 1;
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			printf("Usage: morph [-c config_path]\n");
+			printf("Usage: morph [-c config_path] [-p prompt] [--trace-json]\n");
 			return 0;
 		}
 	}
@@ -34,7 +42,12 @@ int main(int argc, char *argv[])
 		log_err("failed to initialize: %d", rc);
 		return 1;
 	}
-	cli_run(&ctx);
+	ctx.trace_json = trace_json;
+	if (one_shot_prompt) {
+		cli_run_once(&ctx, one_shot_prompt);
+	} else {
+		cli_run(&ctx);
+	}
 	cli_shutdown(&ctx);
 	http_cleanup();
 	log_shutdown();
