@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "mcp/mcp.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <string.h>
@@ -270,7 +271,7 @@ TEST_F(McpJsonRpcTest, ParseResultInvalidJson) {
 	const char *resp = "not json at all";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, MORPH_ERR_PARSE);
 }
 
 TEST_F(McpJsonRpcTest, ParseResultNullOut) {
@@ -282,7 +283,7 @@ TEST_F(McpJsonRpcTest, ParseResultNullOut) {
 TEST_F(McpJsonRpcTest, ParseResultNullInput) {
 	char *result = nullptr;
 	int rc = mcp_parse_result(nullptr, &result);
-	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(rc, MORPH_ERR_PARSE);
 }
 
 /* ----- Null parameter validation ----- */
@@ -577,5 +578,5 @@ TEST_F(McpArenaTest, ArenaAllocAfterListSimulated) {
 class McpStrdupTest : public ::testing::Test {};
 
 TEST_F(McpStrdupTest, StrdupResultNullInput) {
-	EXPECT_EQ(mcp_parse_result(nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(mcp_parse_result(nullptr, nullptr), MORPH_ERR_PARSE);
 }

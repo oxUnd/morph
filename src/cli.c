@@ -2041,7 +2041,7 @@ static char **cmd_completion(const char *text, int start, int end)
 	if (start == 0)
 		return rl_completion_matches(text, cmd_completion_generator);
 
-	char *cmd = rl_copy_text(0, start - 1);
+	char *cmd = strndup(rl_line_buffer, (size_t)(start - 1));
 	int match = is_session_arg_command(cmd);
 	free(cmd);
 	if (match)
@@ -2164,7 +2164,7 @@ static char *wrap_bare_media_paths(const char *content)
 		if (p[0] == '!' && p[1] == '[') {
 			const char *close = strchr(p + 2, ')');
 			if (close) {
-				size_t chunk = (close - p) + 1;
+				size_t chunk = (size_t)(close - p) + 1;
 				memcpy(out + olen, p, chunk);
 				olen += chunk;
 				p = close + 1;
@@ -2174,7 +2174,7 @@ static char *wrap_bare_media_paths(const char *content)
 		if (p[0] == '[' && p[1] != ']') {
 			const char *close = strchr(p + 1, ')');
 			if (close) {
-				size_t chunk = (close - p) + 1;
+				size_t chunk = (size_t)(close - p) + 1;
 				memcpy(out + olen, p, chunk);
 				olen += chunk;
 				p = close + 1;
@@ -2200,7 +2200,7 @@ static char *wrap_bare_media_paths(const char *content)
 		}
 
 		if (path_start > p) {
-			size_t pre = path_start - p;
+			size_t pre = (size_t)(path_start - p);
 			memcpy(out + olen, p, pre);
 			olen += pre;
 		}
