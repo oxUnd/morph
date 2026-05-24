@@ -52,6 +52,10 @@ config.toml
 *.gcda
 *.gcov
 
+# Ext dependencies
+exts/**/node_modules/
+exts/**/package-lock.json
+
 # Debug
 *.dSYM/
 core

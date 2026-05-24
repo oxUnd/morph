@@ -73,6 +73,7 @@ int manifest_parse(const char *toml_data, struct ext_manifest *out)
 	MGET_UINT("permissions", out->permissions);
 	MGET_INT("max_memory_mb", out->max_memory_mb);
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
+	MGET_INT("max_open_files", out->max_open_files);
 
 	toml_datum_t as = toml_string_in(tbl, "args_schema");
 	if (as.ok) out->args_schema = as.u.s; else as.u.s = NULL;
@@ -136,6 +137,7 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 	MFGET_UINT("permissions", out->permissions);
 	MFGET_INT("max_memory_mb", out->max_memory_mb);
 	MFGET_INT("max_cpu_seconds", out->max_cpu_seconds);
+	MFGET_INT("max_open_files", out->max_open_files);
 
 	toml_datum_t as = toml_string_in(tbl, "args_schema");
 	if (as.ok) out->args_schema = as.u.s; else as.u.s = NULL;

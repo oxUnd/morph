@@ -20,13 +20,14 @@ struct sandbox_config {
 	int max_cpu_seconds;
 	int max_file_size_mb;
 	int max_processes;
+	int max_open_files;
 };
 
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(unsigned int permissions);
 int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 			  int max_cpu_seconds, int max_file_size_mb,
-			  int max_processes);
+			  int max_processes, int max_open_files);
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions);
 int sandbox_apply_env(const char **allowed_env, int count,

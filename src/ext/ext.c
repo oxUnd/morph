@@ -143,6 +143,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		int stdin_pipe[2];
 		int stdout_pipe[2];
+		int stderr_pipe[2];
 
 		if (pipe(stdin_pipe) < 0) {
 			log_err("ext_run: pipe failed");
@@ -154,6 +155,14 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			log_err("ext_run: pipe failed");
 			MORPH_RETURN(-errno);
 		}
+		if (pipe(stderr_pipe) < 0) {
+			close(stdin_pipe[0]);
+			close(stdin_pipe[1]);
+			close(stdout_pipe[0]);
+			close(stdout_pipe[1]);
+			log_err("ext_run: pipe failed");
+			MORPH_RETURN(-errno);
+		}
 
 		pid_t pid = fork();
 		if (pid < 0) {
@@ -161,6 +170,8 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
+			close(stderr_pipe[0]);
+			close(stderr_pipe[1]);
 			log_err("ext_run: fork failed");
 			MORPH_RETURN(-errno);
 		}
@@ -168,10 +179,13 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		if (pid == 0) {
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
+			close(stderr_pipe[0]);
 			dup2(stdin_pipe[0], STDIN_FILENO);
 			dup2(stdout_pipe[1], STDOUT_FILENO);
+			dup2(stderr_pipe[1], STDERR_FILENO);
 			close(stdin_pipe[0]);
 			close(stdout_pipe[1]);
+			close(stderr_pipe[1]);
 
 			struct sandbox_config sb_cfg;
 			memset(&sb_cfg, 0, sizeof(sb_cfg));
@@ -182,6 +196,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			sb_cfg.allowed_paths_count = ex->manifest.allowed_paths_count;
 			sb_cfg.allowed_env = ex->manifest.allowed_env;
 			sb_cfg.allowed_env_count = ex->manifest.allowed_env_count;
+			sb_cfg.max_open_files = ex->manifest.max_open_files;
 			sandbox_enter(&sb_cfg);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
@@ -190,6 +205,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		close(stdin_pipe[0]);
 		close(stdout_pipe[1]);
+		close(stderr_pipe[1]);
 
 		struct jsonrpc_request req;
 		memset(&req, 0, sizeof(req));
@@ -201,6 +217,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		if (!request_str) {
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
+			close(stderr_pipe[0]);
 			waitpid(pid, NULL, 0);
 			*result_json = strdup("{\"error\":\"failed to build JSON-RPC request\"}");
 			return -ENOMEM;
@@ -218,6 +235,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				free(request_str);
 				close(stdin_pipe[1]);
 				close(stdout_pipe[0]);
+				close(stderr_pipe[0]);
 				waitpid(pid, NULL, 0);
 				*result_json = strdup("{\"error\":\"failed to write to ext\"}");
 				return -EIO;
@@ -233,8 +251,18 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		int rc = read_fd(stdout_pipe[0], &raw_response, NULL);
 		close(stdout_pipe[0]);
 
+		char *child_stderr = NULL;
+		read_fd(stderr_pipe[0], &child_stderr, NULL);
+		close(stderr_pipe[0]);
+
 		int status;
 		waitpid(pid, &status, 0);
+
+		if (child_stderr && child_stderr[0]) {
+			log_warn("ext %s stderr: %s",
+				 ex->manifest.name, child_stderr);
+		}
+		free(child_stderr);
 
 		if (rc < 0 || !raw_response) {
 			free(raw_response);

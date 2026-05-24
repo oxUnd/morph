@@ -13,25 +13,39 @@ extern char **environ;
 
 int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 			  int max_cpu_seconds, int max_file_size_mb,
-			  int max_processes)
+			  int max_processes, int max_open_files)
 {
 	struct rlimit rl;
 
 	if (max_memory_mb > 0) {
+		/*
+		 * When EXEC permission is granted, skip RLIMIT_AS.
+		 * RLIMIT_AS limits the total virtual address space
+		 * (mmap + brk), which breaks multi-process runtimes
+		 * like Chromium that lazy-mmap large V8 CodeRange
+		 * regions across several child processes.  RLIMIT_DATA
+		 * still limits heap allocation via brk/sbrk.
+		 */
+		if (!(permissions & EXT_PERM_EXEC)) {
+			rl.rlim_cur = (rlim_t)max_memory_mb * 1024 * 1024;
+			rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
+#ifdef RLIMIT_AS
+			if (setrlimit(RLIMIT_AS, &rl) != 0) {
+				log_warn("sandbox: setrlimit RLIMIT_AS failed: %s",
+					 strerror(errno));
+			} else {
+				log_info("sandbox: RLIMIT_AS set to %dMB",
+					 max_memory_mb);
+			}
+#else
+			log_info("sandbox: RLIMIT_AS not available on this OS");
+#endif
+		} else {
+			log_info("sandbox: RLIMIT_AS skipped (EXT_PERM_EXEC set)");
+		}
+#ifdef RLIMIT_DATA
 		rl.rlim_cur = (rlim_t)max_memory_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
-#ifdef RLIMIT_AS
-		if (setrlimit(RLIMIT_AS, &rl) != 0) {
-			log_warn("sandbox: setrlimit RLIMIT_AS failed: %s",
-				 strerror(errno));
-		} else {
-			log_info("sandbox: RLIMIT_AS set to %dMB",
-				 max_memory_mb);
-		}
-#else
-		log_info("sandbox: RLIMIT_AS not available on this OS");
-#endif
-#ifdef RLIMIT_DATA
 		if (setrlimit(RLIMIT_DATA, &rl) != 0) {
 			log_warn("sandbox: setrlimit RLIMIT_DATA failed: %s",
 				 strerror(errno));
@@ -79,13 +93,14 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 	(void)max_processes;
 #endif
 
-	rl.rlim_cur = 256;
-	rl.rlim_max = 256;
+	rl.rlim_cur = max_open_files > 0 ? (rlim_t)max_open_files : 256;
+	rl.rlim_max = max_open_files > 0 ? (rlim_t)max_open_files : 256;
 	if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
 		log_warn("sandbox: setrlimit RLIMIT_NOFILE failed: %s",
 			 strerror(errno));
 	} else {
-		log_info("sandbox: RLIMIT_NOFILE set to 256");
+		log_info("sandbox: RLIMIT_NOFILE set to %d",
+			 max_open_files > 0 ? max_open_files : 256);
 	}
 
 	/* Disable core dumps to avoid leaking sensitive memory */
@@ -766,6 +781,155 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	rc = fb_allow(&fb, __NR_lstat);     if (rc < 0) goto fail;
 #endif
 
+	/*
+	 * Additional syscalls needed by most programs (glibc, dynamic
+	 * linker, V8/Node.js, Python, Go, etc.).  These are read-only
+	 * or process-internal operations that do not compromise sandbox
+	 * security.
+	 */
+#ifdef __NR_fcntl
+	rc = fb_allow(&fb, __NR_fcntl);          if (rc < 0) goto fail;
+#endif
+#ifdef __NR_prlimit64
+	rc = fb_allow(&fb, __NR_prlimit64);      if (rc < 0) goto fail;
+#endif
+#ifdef __NR_rseq
+	rc = fb_allow(&fb, __NR_rseq);           if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getuid
+	rc = fb_allow(&fb, __NR_getuid);         if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getgid
+	rc = fb_allow(&fb, __NR_getgid);         if (rc < 0) goto fail;
+#endif
+#ifdef __NR_geteuid
+	rc = fb_allow(&fb, __NR_geteuid);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getegid
+	rc = fb_allow(&fb, __NR_getegid);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getppid
+	rc = fb_allow(&fb, __NR_getppid);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getcwd
+	rc = fb_allow(&fb, __NR_getcwd);         if (rc < 0) goto fail;
+#endif
+#ifdef __NR_uname
+	rc = fb_allow(&fb, __NR_uname);          if (rc < 0) goto fail;
+#endif
+#ifdef __NR_statx
+	rc = fb_allow(&fb, __NR_statx);          if (rc < 0) goto fail;
+#endif
+#ifdef __NR_statfs
+	rc = fb_allow(&fb, __NR_statfs);         if (rc < 0) goto fail;
+#endif
+#ifdef __NR_fstatfs
+	rc = fb_allow(&fb, __NR_fstatfs);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sigaltstack
+	rc = fb_allow(&fb, __NR_sigaltstack);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_madvise
+	rc = fb_allow(&fb, __NR_madvise);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_pread64
+	rc = fb_allow(&fb, __NR_pread64);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_pwrite64
+	rc = fb_allow(&fb, __NR_pwrite64);       if (rc < 0) goto fail;
+#endif
+#ifdef __NR_dup3
+	rc = fb_allow(&fb, __NR_dup3);           if (rc < 0) goto fail;
+#endif
+#ifdef __NR_rt_sigreturn
+	rc = fb_allow(&fb, __NR_rt_sigreturn);   if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sched_getaffinity
+	rc = fb_allow(&fb, __NR_sched_getaffinity); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sched_getparam
+	rc = fb_allow(&fb, __NR_sched_getparam); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sched_getscheduler
+	rc = fb_allow(&fb, __NR_sched_getscheduler); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_clock_getres
+	rc = fb_allow(&fb, __NR_clock_getres);   if (rc < 0) goto fail;
+#endif
+#ifdef __NR_memfd_create
+	rc = fb_allow(&fb, __NR_memfd_create);   if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sysinfo
+	rc = fb_allow(&fb, __NR_sysinfo);        if (rc < 0) goto fail;
+#endif
+#ifdef __NR_fadvise64
+	rc = fb_allow(&fb, __NR_fadvise64);      if (rc < 0) goto fail;
+#endif
+#ifdef __NR_inotify_init1
+	rc = fb_allow(&fb, __NR_inotify_init1);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_inotify_add_watch
+	rc = fb_allow(&fb, __NR_inotify_add_watch); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getpriority
+	rc = fb_allow(&fb, __NR_getpriority);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_restart_syscall
+	rc = fb_allow(&fb, __NR_restart_syscall); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_faccessat2
+	rc = fb_allow(&fb, __NR_faccessat2);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_landlock_create_ruleset
+	rc = fb_allow(&fb, __NR_landlock_create_ruleset); if (rc < 0) goto fail;
+#endif
+
+	/*
+	 * Event-driven I/O syscalls (epoll, eventfd, timerfd).
+	 * Needed by libuv, libevent, libev, and any modern runtime
+	 * that uses Linux's event loop primitives.
+	 */
+#ifdef __NR_epoll_create1
+	rc = fb_allow(&fb, __NR_epoll_create1);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_epoll_ctl
+	rc = fb_allow(&fb, __NR_epoll_ctl);      if (rc < 0) goto fail;
+#endif
+#ifdef __NR_epoll_pwait
+	rc = fb_allow(&fb, __NR_epoll_pwait);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_epoll_wait
+	rc = fb_allow(&fb, __NR_epoll_wait);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_eventfd2
+	rc = fb_allow(&fb, __NR_eventfd2);       if (rc < 0) goto fail;
+#endif
+#ifdef __NR_timerfd_create
+	rc = fb_allow(&fb, __NR_timerfd_create); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_timerfd_settime
+	rc = fb_allow(&fb, __NR_timerfd_settime); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_timerfd_gettime
+	rc = fb_allow(&fb, __NR_timerfd_gettime); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_signalfd4
+	rc = fb_allow(&fb, __NR_signalfd4);      if (rc < 0) goto fail;
+#endif
+
+	/*
+	 * io_uring syscalls — Node.js 22+ probes these at startup.
+	 * If blocked, Node.js falls back to epoll, but since our
+	 * default action is KILL_PROCESS (not ERRNO), a missing
+	 * allow entry crashes the process.
+	 */
+#ifdef __NR_io_uring_setup
+	rc = fb_allow(&fb, __NR_io_uring_setup); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_io_uring_enter
+	rc = fb_allow(&fb, __NR_io_uring_enter); if (rc < 0) goto fail;
+#endif
+
 	if (permissions & EXT_PERM_NETWORK) {
 #ifdef __NR_socket
 		rc = fb_allow(&fb, __NR_socket);    if (rc < 0) goto fail;
@@ -804,12 +968,89 @@ int sandbox_apply_seccomp(unsigned int permissions)
 #ifdef __NR_shutdown
 		rc = fb_allow(&fb, __NR_shutdown);  if (rc < 0) goto fail;
 #endif
+#ifdef __NR_sendmmsg
+		rc = fb_allow(&fb, __NR_sendmmsg);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_recvmmsg
+		rc = fb_allow(&fb, __NR_recvmmsg);  if (rc < 0) goto fail;
+#endif
 	}
 
 	if (permissions & EXT_PERM_EXEC) {
 		rc = fb_allow(&fb, SYS_execve);     if (rc < 0) goto fail;
 #ifdef __NR_execveat
 		rc = fb_allow(&fb, __NR_execveat);  if (rc < 0) goto fail;
+#endif
+		/*
+		 * Thread / process management syscalls needed by
+		 * interpreters and runtimes (Node.js, Python, Go, etc.)
+		 * that spawn worker threads or child processes.
+		 */
+#ifdef __NR_clone
+		rc = fb_allow(&fb, __NR_clone);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_clone3
+		rc = fb_allow(&fb, __NR_clone3);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_wait4
+		rc = fb_allow(&fb, __NR_wait4);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_setpgid
+		rc = fb_allow(&fb, __NR_setpgid);   if (rc < 0) goto fail;
+#endif
+#ifdef __NR_capget
+		rc = fb_allow(&fb, __NR_capget);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_prctl
+		rc = fb_allow(&fb, __NR_prctl);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_socketpair
+		rc = fb_allow(&fb, __NR_socketpair); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_chdir
+		rc = fb_allow(&fb, __NR_chdir);     if (rc < 0) goto fail;
+#endif
+#ifdef __NR_pidfd_open
+		rc = fb_allow(&fb, __NR_pidfd_open); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_pidfd_send_signal
+		rc = fb_allow(&fb, __NR_pidfd_send_signal); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_tgkill
+		rc = fb_allow(&fb, __NR_tgkill);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_rt_tgsigqueueinfo
+		rc = fb_allow(&fb, __NR_rt_tgsigqueueinfo); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getgroups
+		rc = fb_allow(&fb, __NR_getgroups);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getresuid
+		rc = fb_allow(&fb, __NR_getresuid);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_getresgid
+		rc = fb_allow(&fb, __NR_getresgid);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_setgroups
+		rc = fb_allow(&fb, __NR_setgroups);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_setsid
+		rc = fb_allow(&fb, __NR_setsid);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_kill
+		rc = fb_allow(&fb, __NR_kill);      if (rc < 0) goto fail;
+#endif
+#ifdef __NR_capset
+		rc = fb_allow(&fb, __NR_capset);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_setpriority
+		rc = fb_allow(&fb, __NR_setpriority); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sched_setaffinity
+		rc = fb_allow(&fb, __NR_sched_setaffinity); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_sched_setscheduler
+		rc = fb_allow(&fb, __NR_sched_setscheduler); if (rc < 0) goto fail;
 #endif
 	}
 
@@ -856,10 +1097,43 @@ int sandbox_apply_seccomp(unsigned int permissions)
 #ifdef __NR_ftruncate
 		rc = fb_allow(&fb, __NR_ftruncate); if (rc < 0) goto fail;
 #endif
+#ifdef __NR_fallocate
+		rc = fb_allow(&fb, __NR_fallocate); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_copy_file_range
+		rc = fb_allow(&fb, __NR_copy_file_range); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_fdatasync
+		rc = fb_allow(&fb, __NR_fdatasync);  if (rc < 0) goto fail;
+#endif
+#ifdef __NR_flock
+		rc = fb_allow(&fb, __NR_flock);      if (rc < 0) goto fail;
+#endif
+#ifdef __NR_symlinkat
+		rc = fb_allow(&fb, __NR_symlinkat);  if (rc < 0) goto fail;
+#endif
 	}
 
+	/*
+	 * Default action for unmatched syscalls.
+	 *
+	 * Without EXEC permission: KILL_PROCESS — strict sandbox,
+	 * no subprocess execution expected.
+	 *
+	 * With EXEC permission: ERRNO(ENOSYS) — subprocess-heavy
+	 * extensions (e.g., Chromium) may use syscalls we haven't
+	 * explicitly allowed.  Returning ENOSYS lets them degrade
+	 * gracefully instead of being killed, and allows their own
+	 * seccomp filters to stack on top of ours without conflict.
+	 */
+	unsigned int default_action;
+	if (permissions & EXT_PERM_EXEC)
+		default_action = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
+	else
+		default_action = SECCOMP_RET_KILL_PROCESS;
+
 	rc = fb_append(&fb, (struct sock_filter)BPF_STMT(
-		BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+		BPF_RET | BPF_K, default_action));
 	if (rc < 0)
 		goto fail;
 
@@ -929,7 +1203,8 @@ int sandbox_enter(struct sandbox_config *cfg)
 	rc = sandbox_apply_rlimits(cfg->permissions, cfg->max_memory_mb,
 				   cfg->max_cpu_seconds,
 				   cfg->max_file_size_mb,
-				   cfg->max_processes);
+				   cfg->max_processes,
+				   cfg->max_open_files);
 	if (rc < 0)
 		return rc;
 

@@ -1,0 +1,10 @@
+{
+  "type": "module",
+  "dependencies": {
+    "effect": "^3.16",
+    "@effect/platform": "^0.84",
+    "@effect/platform-node": "^0.84",
+    "turndown": "^7.2.0",
+    "playwright-core": "^1.60.0"
+  }
+}

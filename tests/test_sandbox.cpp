@@ -108,7 +108,7 @@ TEST(SandboxRlimitTest, FsizeBlocksLargeWrites)
 		 * instead of being killed. */
 		signal(SIGXFSZ, SIG_IGN);
 
-		int rv = sandbox_apply_rlimits(0, 0, 0, 1, 0);
+		int rv = sandbox_apply_rlimits(0, 0, 0, 1, 0, 0);
 		if (rv != 0)
 			return 10;
 
@@ -143,7 +143,7 @@ TEST(SandboxRlimitTest, FsizeBlocksLargeWrites)
 TEST(SandboxRlimitTest, CoreDumpDisabled)
 {
 	int rc = run_in_child([]() {
-		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0);
+		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 0);
 		if (rv != 0)
 			return 10;
 		struct rlimit rl;
@@ -159,13 +159,29 @@ TEST(SandboxRlimitTest, CoreDumpDisabled)
 TEST(SandboxRlimitTest, NofileCappedAt256)
 {
 	int rc = run_in_child([]() {
-		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0);
+		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 0);
 		if (rv != 0)
 			return 10;
 		struct rlimit rl;
 		if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
 			return 11;
 		if (rl.rlim_cur != 256)
+			return 12;
+		return 0;
+	});
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxRlimitTest, NofileCustomLimit)
+{
+	int rc = run_in_child([]() {
+		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 4096);
+		if (rv != 0)
+			return 10;
+		struct rlimit rl;
+		if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
+			return 11;
+		if (rl.rlim_cur != 4096)
 			return 12;
 		return 0;
 	});
