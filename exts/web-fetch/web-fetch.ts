@@ -3,6 +3,7 @@ import { HttpClient, HttpClientRequest } from "@effect/platform"
 import { NodeContext, NodeHttpClient, NodeRuntime } from "@effect/platform-node"
 import * as readline from "node:readline"
 import * as fs from "node:fs"
+import * as os from "node:os"
 import TurndownService from "turndown"
 
 type Format = "markdown" | "text" | "html"
@@ -197,6 +198,9 @@ const CHROMIUM_CANDIDATES = [
 	"/usr/bin/chromium",
 	"/usr/bin/google-chrome",
 	"/usr/bin/google-chrome-stable",
+	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+	"/Applications/Chromium.app/Contents/MacOS/Chromium",
+	"/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
 ]
 
 function findChromium(): string | null {
@@ -250,7 +254,7 @@ function fetchWithJs(params: FetchParams): Effect.Effect<FetchResult, Error> {
 		const browser = yield* Effect.tryPromise({
 			try: () =>
 				playwrightModule.chromium.launchPersistentContext(
-					`/tmp/chromium-webfetch-${process.pid}`,
+					`${os.tmpdir()}/chromium-webfetch-${process.pid}`,
 					{
 						executablePath: execPath,
 						headless: true,
