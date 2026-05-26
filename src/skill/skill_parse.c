@@ -362,3 +362,81 @@ int skill_parse_file(const char *path, struct skill_frontmatter *fm,
 	free(data);
 	return rc;
 }
+
+int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
+{
+	if (!path || !fm)
+		return -EINVAL;
+	memset(fm, 0, sizeof(*fm));
+
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		log_err("skill_parse_frontmatter: failed to open %s", path);
+		MORPH_RETURN(-ENOENT);
+	}
+
+	char line[4096];
+
+	if (!fgets(line, sizeof(line), f)) {
+		fclose(f);
+		log_warn("skill_parse_frontmatter: empty file %s", path);
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
+
+	size_t llen = strlen(line);
+	while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == '\n'))
+		line[--llen] = '\0';
+	if (llen < 3 || memcmp(line, "---", 3) != 0) {
+		fclose(f);
+		log_warn("skill_parse_frontmatter: no opening --- in %s", path);
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
+
+	size_t yaml_cap = 4096;
+	size_t yaml_len = 0;
+	char *yaml_buf = malloc(yaml_cap);
+	if (!yaml_buf) {
+		fclose(f);
+		MORPH_RETURN(-ENOMEM);
+	}
+	yaml_buf[0] = '\0';
+
+	int found_closing = 0;
+	while (fgets(line, sizeof(line), f)) {
+		llen = strlen(line);
+		while (llen > 0 && (line[llen - 1] == '\r' || line[llen - 1] == '\n'))
+			line[--llen] = '\0';
+
+		if (llen == 3 && memcmp(line, "---", 3) == 0) {
+			found_closing = 1;
+			break;
+		}
+
+		if (yaml_len + llen + 2 >= yaml_cap) {
+			yaml_cap = (yaml_cap + llen + 2) * 2;
+			char *nb = realloc(yaml_buf, yaml_cap);
+			if (!nb) {
+				free(yaml_buf);
+				fclose(f);
+				MORPH_RETURN(-ENOMEM);
+			}
+			yaml_buf = nb;
+		}
+		memcpy(yaml_buf + yaml_len, line, llen);
+		yaml_len += llen;
+		yaml_buf[yaml_len++] = '\n';
+		yaml_buf[yaml_len] = '\0';
+	}
+
+	fclose(f);
+
+	if (!found_closing) {
+		free(yaml_buf);
+		log_warn("skill_parse_frontmatter: no closing --- in %s", path);
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
+
+	parse_yaml_block(yaml_buf, yaml_len, fm);
+	free(yaml_buf);
+	return 0;
+}

@@ -92,7 +92,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 
 		struct skill_frontmatter fm;
 		memset(&fm, 0, sizeof(fm));
-		int rc = skill_parse_file(skill_md_path, &fm, NULL);
+		int rc = skill_parse_frontmatter(skill_md_path, &fm);
 		if (rc < 0) {
 			log_warn("skill_discover: failed to parse %s: %d",
 				 skill_md_path, rc);

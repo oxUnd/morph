@@ -383,3 +383,117 @@ TEST_F(SkillActivateToolTest, ActivateMissingName) {
 	EXPECT_NE(rc, 0);
 	free(result);
 }
+
+class SkillParseFrontmatterTest : public ::testing::Test {
+protected:
+	struct skill_frontmatter fm;
+	char tmppath[256];
+	void SetUp() override {
+		memset(&fm, 0, sizeof(fm));
+		snprintf(tmppath, sizeof(tmppath),
+			 "/tmp/morph_frontmatter_test_%d.md", getpid());
+	}
+	void TearDown() override {
+		unlink(tmppath);
+	}
+	void write_file(const char *content) {
+		FILE *f = fopen(tmppath, "w");
+		ASSERT_NE(f, nullptr);
+		fputs(content, f);
+		fclose(f);
+	}
+};
+
+TEST_F(SkillParseFrontmatterTest, BasicFrontmatter) {
+	write_file(
+		"---\n"
+		"name: test-fm\n"
+		"description: A frontmatter-only test.\n"
+		"---\n"
+		"# Body\n"
+		"This body should not be read.\n");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "test-fm");
+	EXPECT_STREQ(fm.description, "A frontmatter-only test.");
+}
+
+TEST_F(SkillParseFrontmatterTest, AllFields) {
+	write_file(
+		"---\n"
+		"name: full-fm\n"
+		"description: Full frontmatter.\n"
+		"license: MIT\n"
+		"compatibility: Requires git\n"
+		"allowed-tools: Bash(git:*) Read\n"
+		"metadata:\n"
+		"  author: test\n"
+		"  version: \"1.0\"\n"
+		"---\n"
+		"Big body here.\n");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "full-fm");
+	EXPECT_STREQ(fm.license, "MIT");
+	EXPECT_STREQ(fm.compatibility, "Requires git");
+	EXPECT_STREQ(fm.allowed_tools, "Bash(git:*) Read");
+	EXPECT_EQ(fm.metadata_count, 2);
+	EXPECT_STREQ(fm.metadata[0].key, "author");
+	EXPECT_STREQ(fm.metadata[0].value, "test");
+}
+
+TEST_F(SkillParseFrontmatterTest, LargeBodySkipped) {
+	std::string content = "---\nname: big-body\ndescription: Has big body.\n---\n";
+	for (int i = 0; i < 10000; i++)
+		content += "Line of body content that should be skipped.\n";
+	write_file(content.c_str());
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "big-body");
+	EXPECT_STREQ(fm.description, "Has big body.");
+}
+
+TEST_F(SkillParseFrontmatterTest, NoClosingDelimiter) {
+	write_file("---\nname: broken\ndescription: No close.\n");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SkillParseFrontmatterTest, NoOpeningDelimiter) {
+	write_file("name: nope\ndescription: Bad.\n---\n");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SkillParseFrontmatterTest, EmptyFile) {
+	write_file("");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SkillParseFrontmatterTest, NonexistentFile) {
+	int rc = skill_parse_frontmatter("/tmp/nonexistent_12345.md", &fm);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(SkillParseFrontmatterTest, NullParams) {
+	struct skill_frontmatter tmp;
+	EXPECT_NE(skill_parse_frontmatter(nullptr, &tmp), 0);
+	EXPECT_NE(skill_parse_frontmatter("/tmp/x", nullptr), 0);
+}
+
+TEST_F(SkillParseFrontmatterTest, BlockScalarDescription) {
+	write_file(
+		"---\n"
+		"name: block-fm\n"
+		"description: |\n"
+		"  Line one.\n"
+		"  Line two.\n"
+		"---\n"
+		"Body.\n");
+	int rc = skill_parse_frontmatter(tmppath, &fm);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(fm.name, "block-fm");
+	EXPECT_NE(strstr(fm.description, "Line one."), nullptr);
+	EXPECT_NE(strstr(fm.description, "Line two."), nullptr);
+}
