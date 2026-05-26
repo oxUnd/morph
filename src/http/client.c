@@ -10,6 +10,26 @@
 static int http_initialized = 0;
 static volatile sig_atomic_t *http_cancel_flag = NULL;
 
+static int curl_debug_cb(CURL *handle, curl_infotype type,
+			 char *data, size_t size, void *userp)
+{
+	(void)handle;
+	(void)userp;
+	if (type == CURLINFO_HEADER_OUT) {
+		log_dbg(">> %.*s", (int)size, data);
+	} else if (type == CURLINFO_HEADER_IN) {
+		log_dbg("<< %.*s", (int)size, data);
+	}
+	return 0;
+}
+
+static void curl_set_debug(CURL *curl)
+{
+	curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+	curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
+	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+}
+
 void http_set_cancel_flag(volatile sig_atomic_t *flag)
 {
 	http_cancel_flag = flag;
@@ -122,6 +142,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);
+	curl_set_debug(curl);
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
@@ -174,6 +195,7 @@ int http_get_ex(const char *url, const char **extra_headers,
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_set_debug(curl);
 	CURLcode rc = curl_easy_perform(curl);
 	if (headers)
 		curl_slist_free_all(headers);
@@ -228,6 +250,7 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_set_debug(curl);
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
@@ -302,6 +325,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_set_debug(curl);
 	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {
@@ -363,6 +387,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_set_debug(curl);
 	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {
@@ -426,6 +451,7 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, timeout_seconds > 0 ? timeout_seconds : 300L);
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+	curl_set_debug(curl);
 	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {

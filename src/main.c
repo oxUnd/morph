@@ -34,7 +34,7 @@ int main(int argc, char *argv[])
 	char log_path[512];
 	snprintf(log_path, sizeof(log_path), "%s/agent.log", log_dir);
 	free(log_dir);
-	log_init(log_path, LOG_INFO);
+	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
 	struct cli_context ctx;
 	int rc = cli_init(&ctx, config_path);

@@ -358,7 +358,7 @@ static int llm_http_cb(const char *data, size_t len, void *ud)
 	return 0;
 }
 
-static const char *llm_extract_error(const char *raw)
+static const char *llm_extract_error(const char *raw, struct arena *arena)
 {
 	if (!raw || !*raw)
 		return NULL;
@@ -370,7 +370,7 @@ static const char *llm_extract_error(const char *raw)
 	if (cJSON_IsObject(err_obj)) {
 		cJSON *msg_item = cJSON_GetObjectItem(err_obj, "message");
 		if (cJSON_IsString(msg_item) && msg_item->valuestring)
-			msg = msg_item->valuestring;
+			msg = arena_strdup(arena, msg_item->valuestring);
 	}
 	cJSON_Delete(root);
 	return msg;
@@ -411,6 +411,9 @@ static int llm_chat(struct model *self, struct arena *arena,
 		return -EIO;
 	}
 
+	size_t clean_len = utf8_sanitize_into(body, body, (size_t)body_len);
+	body[clean_len] = '\0';
+
 	struct llm_stream_ctx ctx;
 	llm_stream_init(&ctx, arena, cb, user_data);
 
@@ -448,7 +451,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 	if (status >= 400) {
 		const char *detail = NULL;
 		if (hctx.error_buf && hctx.error_len > 0)
-			detail = llm_extract_error(hctx.error_buf);
+			detail = llm_extract_error(hctx.error_buf, arena);
 		if (detail)
 			log_err("llm_chat: API returned HTTP %d: %s",
 				status, detail);
@@ -632,6 +635,10 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	if (!body)
 		return -ENOMEM;
 
+	size_t body_len = strlen(body);
+	size_t clean_len = utf8_sanitize_into(body, body, body_len);
+	body[clean_len] = '\0';
+
 	struct llm_stream_ctx ctx;
 	llm_stream_init(&ctx, arena, thought_cb, thought_ud);
 
@@ -669,11 +676,11 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	if (status >= 400) {
 		const char *detail = NULL;
 		if (hctx.error_buf && hctx.error_len > 0)
-			detail = llm_extract_error(hctx.error_buf);
+			detail = llm_extract_error(hctx.error_buf, arena);
 		if (detail) {
 			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
 				status, detail);
-			response->content = arena_strdup(arena, detail);
+			response->content = (char *)detail;
 		} else {
 			log_err("llm_chat_with_tools: API returned HTTP %d",
 				status);
