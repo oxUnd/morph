@@ -12,6 +12,10 @@
 #include "handlers.h"
 #include "../session_store.h"
 #include "../event_sink.h"
+#include "agent/react.h"
+#include "agent/tokenizer.h"
+#include "agent/memory.h"
+#include "session.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -29,10 +33,14 @@ react_context_create_for_session(struct session_store *store,
 
 __attribute__((weak)) int
 react_run(struct react_context *ctx, const char *user_input,
-	  void (*cb)(int step_type, const char *payload, void *u), void *u);
+	  int (*cb)(enum react_step_type step_type, const char *payload, void *u),
+	  void *u);
 
 __attribute__((weak)) void
 react_context_destroy(struct react_context *ctx);
+
+__attribute__((weak)) int
+react_memory_options_for_session(struct memory_options *out);
 /* -------------------------------------------------------- */
 
 struct turn_job {
@@ -43,7 +51,7 @@ struct turn_job {
 	char  last_tool[128];
 };
 
-static void bridge_cb(int step_type, const char *payload_json, void *u) {
+static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u) {
 	struct turn_job *j = (struct turn_job *)u;
 	if (!payload_json)
 		payload_json = "";
@@ -51,7 +59,7 @@ static void bridge_cb(int step_type, const char *payload_json, void *u) {
 	switch (step_type) {
 	case 0: /* REACT_STEP_THOUGHT */
 		event_sink_thought(j->store, j->session_id, payload_json);
-		break;
+		return 0;
 
 	case 1: { /* REACT_STEP_ACTION -> tool_call */
 		/* skip status messages like "Executing img_gen..." / "img_gen completed" */
@@ -81,32 +89,43 @@ static void bridge_cb(int step_type, const char *payload_json, void *u) {
 		snprintf(j->last_tool, sizeof(j->last_tool), "%s", tool_name);
 		event_sink_tool_call(j->store, j->session_id,
 				     tool_name, args_json);
-		break;
+		return 0;
 	}
 
 	case 2: /* REACT_STEP_OBSERVATION -> tool_result */
 		event_sink_tool_result(j->store, j->session_id,
 				       j->last_tool, payload_json);
 		j->last_tool[0] = '\0';
-		break;
+		return 0;
 
 	case 3: /* REACT_STEP_REFLECTION — piggyback on thought schema */
 		event_sink_thought(j->store, j->session_id, payload_json);
-		break;
+		return 0;
 
 	case 4: /* REACT_STEP_FINAL */
 		event_sink_final(j->store, j->session_id, payload_json);
-		break;
+		return 0;
 
 	default:
 		events_publish(j->store, j->session_id, "step",
 			       payload_json);
-		break;
+		return 0;
 	}
+	return 0;
 }
 
 static void *turn_thread(void *arg) {
 	struct turn_job *j = (struct turn_job *)arg;
+	struct memory_options mem_opts = {
+		.enabled = 1,
+		.hot_path_enabled = 1,
+		.cold_path_enabled = 1,
+		.max_facts = 6,
+		.max_episodes = 4,
+		.max_procedures = 4,
+		.max_context_chars = 3000,
+	};
+	struct session sess = {0};
 
 	if (!react_context_create_for_session || !react_run) {
 		events_publish(j->store, j->session_id, "error",
@@ -123,9 +142,66 @@ static void *turn_thread(void *arg) {
 		goto out;
 	}
 
+	if (react_memory_options_for_session)
+		react_memory_options_for_session(&mem_opts);
+	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
+		char *memory_ctx = memory_build_context(&j->store->db, sess.id,
+							j->input, &mem_opts);
+		react_set_memory_context(rctx, memory_ctx);
+		free(memory_ctx);
+	}
+
 	events_publish(j->store, j->session_id, "turn_start",
 		       "{\"phase\":\"begin\"}");
 	react_run(rctx, j->input ? j->input : "", bridge_cb, j);
+
+	if (sess.id > 0) {
+		cJSON *arr = cJSON_CreateArray();
+		struct react_step *cur = rctx->steps;
+		while (cur) {
+			cJSON *obj = cJSON_CreateObject();
+			cJSON_AddStringToObject(obj, "type",
+						react_step_type_name(cur->type));
+			if (cur->content)
+				cJSON_AddStringToObject(obj, "content", cur->content);
+			if (cur->tool_name)
+				cJSON_AddStringToObject(obj, "tool_name", cur->tool_name);
+			if (cur->tool_args)
+				cJSON_AddStringToObject(obj, "tool_args", cur->tool_args);
+			if (cur->tool_call_id)
+				cJSON_AddStringToObject(obj, "tool_call_id",
+							cur->tool_call_id);
+			cJSON_AddItemToArray(arr, obj);
+			cur = cur->next;
+		}
+		{
+			char *json = cJSON_PrintUnformatted(arr);
+			int round_no = trace_get_next_round_no(&j->store->db, sess.id);
+			int aborted = (rctx->state == REACT_STATE_ABORT) ? 1 : 0;
+			trace_save(&j->store->db, sess.id, round_no,
+				   json ? json : "[]", aborted);
+			free(json);
+		}
+		cJSON_Delete(arr);
+
+		if (j->input && *j->input) {
+			int user_tokens = tokenizer_count(rctx->tokenizer, j->input);
+			message_add(&j->store->db, sess.id, "user", j->input,
+				    user_tokens);
+			session_update_tokens(&j->store->db, sess.id, user_tokens);
+		}
+		if (rctx->final_answer && *rctx->final_answer) {
+			int asst_tokens =
+				tokenizer_count(rctx->tokenizer, rctx->final_answer);
+			message_add(&j->store->db, sess.id, "assistant",
+				    rctx->final_answer, asst_tokens);
+			session_update_tokens(&j->store->db, sess.id, asst_tokens);
+		}
+		memory_consolidate_turn(&j->store->db, sess.id, j->input,
+					rctx->final_answer, rctx->steps,
+					rctx->state == REACT_STATE_DONE,
+					&mem_opts);
+	}
 	events_publish(j->store, j->session_id, "turn_end",
 		       "{\"phase\":\"done\"}");
 

@@ -69,6 +69,16 @@ struct config_context {
 	int keep_recent_rounds;
 };
 
+struct config_memory {
+	int enabled;
+	int hot_path_enabled;
+	int cold_path_enabled;
+	int max_facts;
+	int max_episodes;
+	int max_procedures;
+	int max_context_chars;
+};
+
 struct config_render {
 	char prefer_image_protocol[16];
 	char mpv_args[256];
@@ -124,6 +134,7 @@ struct config {
 	struct config_models models;
 	struct config_react react;
 	struct config_context context;
+	struct config_memory memory;
 	struct config_render render;
 	struct config_ext ext;
 	struct config_prompt prompt;

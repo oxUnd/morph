@@ -392,6 +392,7 @@ void react_context_destroy(struct react_context *ctx)
 	}
 	free(ctx->final_answer);
 	free(ctx->system_prompt);
+	free(ctx->memory_context);
 	arena_destroy(ctx->arena);
 	free(ctx);
 }
@@ -425,6 +426,23 @@ void react_cancel(struct react_context *ctx)
 {
 	if (ctx)
 		ctx->cancelled = 1;
+}
+
+int react_set_memory_context(struct react_context *ctx,
+			     const char *memory_context)
+{
+	char *dup = NULL;
+
+	if (!ctx)
+		return -EINVAL;
+	if (memory_context) {
+		dup = strdup(memory_context);
+		if (!dup)
+			return -ENOMEM;
+	}
+	free(ctx->memory_context);
+	ctx->memory_context = dup;
+	return 0;
 }
 
 struct react_step *react_step_create(struct arena *arena,
@@ -505,6 +523,19 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			buf = nb;
 		}
 		len += snprintf(buf + len, cap - len, "%s\n", ctx->system_prompt);
+	}
+
+	if (ctx->memory_context && ctx->memory_context[0]) {
+		size_t mp_len = strlen(ctx->memory_context);
+		while (len + mp_len + 3 >= cap) {
+			cap *= 2;
+			char *nb = arena_alloc(arena, cap);
+			if (!nb) return NULL;
+			memcpy(nb, buf, len);
+			buf = nb;
+		}
+		len += snprintf(buf + len, cap - len, "\n%s\n",
+				ctx->memory_context);
 	}
 
 	if (ctx->skills && ctx->skills->count > 0) {

@@ -58,9 +58,53 @@ static const char *schema_sql =
 	"model TEXT,"
 	"created_at INTEGER NOT NULL);"
 
+	"CREATE TABLE IF NOT EXISTS memory_profiles ("
+	"session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
+	"profile_text TEXT NOT NULL DEFAULT '',"
+	"updated_at INTEGER NOT NULL);"
+
+	"CREATE TABLE IF NOT EXISTS memory_facts ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"key_name TEXT NOT NULL,"
+	"value_text TEXT NOT NULL,"
+	"source_text TEXT,"
+	"confidence REAL DEFAULT 1.0,"
+	"is_current INTEGER NOT NULL DEFAULT 1,"
+	"valid_from INTEGER NOT NULL,"
+	"valid_to INTEGER,"
+	"superseded_by INTEGER,"
+	"created_at INTEGER NOT NULL,"
+	"updated_at INTEGER NOT NULL);"
+
+	"CREATE TABLE IF NOT EXISTS memory_episodes ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"task_type TEXT,"
+	"summary_text TEXT NOT NULL,"
+	"outcome_text TEXT,"
+	"success INTEGER NOT NULL DEFAULT 1,"
+	"entities TEXT,"
+	"created_at INTEGER NOT NULL);"
+
+	"CREATE TABLE IF NOT EXISTS memory_procedures ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"rule_text TEXT NOT NULL,"
+	"trigger_text TEXT,"
+	"evidence_count INTEGER NOT NULL DEFAULT 1,"
+	"updated_at INTEGER NOT NULL,"
+	"UNIQUE(session_id, rule_text));"
+
 	"CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);"
 	"CREATE INDEX IF NOT EXISTS idx_traces_session ON react_traces(session_id, round_no);"
-	"CREATE INDEX IF NOT EXISTS idx_outputs_session ON outputs(session_id, created_at);";
+	"CREATE INDEX IF NOT EXISTS idx_outputs_session ON outputs(session_id, created_at);"
+	"CREATE INDEX IF NOT EXISTS idx_memory_facts_session_key "
+	"ON memory_facts(session_id, key_name, is_current, updated_at);"
+	"CREATE INDEX IF NOT EXISTS idx_memory_episodes_session "
+	"ON memory_episodes(session_id, created_at);"
+	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
+	"ON memory_procedures(session_id, updated_at);";
 
 int db_open(struct db *db, const char *path)
 {

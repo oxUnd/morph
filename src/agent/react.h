@@ -117,6 +117,7 @@ struct react_context {
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
 	char *system_prompt;
+	char *memory_context;
 	struct skill_registry *skills;
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;
@@ -143,6 +144,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
 void react_cancel_active(void);
+int react_set_memory_context(struct react_context *ctx, const char *memory_context);
 extern volatile sig_atomic_t react_sigint_flag;
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);

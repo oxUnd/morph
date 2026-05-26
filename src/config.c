@@ -71,6 +71,14 @@ void config_set_defaults(struct config *cfg)
 	cfg->context.compress_target_ratio = 0.5;
 	cfg->context.keep_recent_rounds = 6;
 
+	cfg->memory.enabled = 1;
+	cfg->memory.hot_path_enabled = 1;
+	cfg->memory.cold_path_enabled = 1;
+	cfg->memory.max_facts = 6;
+	cfg->memory.max_episodes = 4;
+	cfg->memory.max_procedures = 4;
+	cfg->memory.max_context_chars = 3000;
+
 	strncpy(cfg->render.prefer_image_protocol, "auto",
 		sizeof(cfg->render.prefer_image_protocol) - 1);
 	strncpy(cfg->render.mpv_args, "--really-quiet",
@@ -249,6 +257,17 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
 	}
 
+	toml_table_t *memory = table_path(tbl, "memory");
+	if (memory) {
+		CFG_BOOL(memory, "enabled", cfg->memory.enabled);
+		CFG_BOOL(memory, "hot_path_enabled", cfg->memory.hot_path_enabled);
+		CFG_BOOL(memory, "cold_path_enabled", cfg->memory.cold_path_enabled);
+		CFG_INT(memory, "max_facts", cfg->memory.max_facts);
+		CFG_INT(memory, "max_episodes", cfg->memory.max_episodes);
+		CFG_INT(memory, "max_procedures", cfg->memory.max_procedures);
+		CFG_INT(memory, "max_context_chars", cfg->memory.max_context_chars);
+	}
+
 	toml_table_t *render = table_path(tbl, "render");
 	if (render) {
 		CFG_STR(render, "prefer_image_protocol", cfg->render.prefer_image_protocol);
@@ -359,4 +378,12 @@ void config_print(const struct config *cfg)
 		 cfg->context.summarize_threshold_ratio,
 		 cfg->context.compress_target_ratio,
 		 cfg->context.keep_recent_rounds);
+	log_info("  [memory] enabled=%d hot=%d cold=%d facts=%d episodes=%d procedures=%d chars=%d",
+		 cfg->memory.enabled,
+		 cfg->memory.hot_path_enabled,
+		 cfg->memory.cold_path_enabled,
+		 cfg->memory.max_facts,
+		 cfg->memory.max_episodes,
+		 cfg->memory.max_procedures,
+		 cfg->memory.max_context_chars);
 }

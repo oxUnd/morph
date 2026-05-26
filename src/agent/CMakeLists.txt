@@ -5,12 +5,13 @@ add_library(morph-agent STATIC
 	tokenizer.c
 	tool.c
 	plan.c
+	memory.c
 )
 
 target_include_directories(morph-agent PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-agent PUBLIC morph-util Threads::Threads)
+target_link_libraries(morph-agent PUBLIC morph-util morph-db Threads::Threads)
 
 add_subdirectory(tools)

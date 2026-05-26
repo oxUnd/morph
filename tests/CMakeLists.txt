@@ -9,6 +9,7 @@ set(TEST_SOURCES
 	test_database.cpp
 	test_config.cpp
 	test_session.cpp
+	test_memory.cpp
 	test_tool.cpp
 	test_context.cpp
 	test_tokenizer.cpp

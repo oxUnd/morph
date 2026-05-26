@@ -25,6 +25,7 @@
 #include "agent/tools/plan.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
+#include "agent/memory.h"
 #include "config.h"
 #include "render/markdown.h"
 #include "render/image.h"
@@ -106,6 +107,38 @@ static void session_load_history(struct cli_context *ctx)
 		cur = cur->next;
 	}
 	message_free_list(list);
+}
+
+static struct memory_options cli_memory_options(const struct cli_context *ctx)
+{
+	struct memory_options opts;
+
+	memset(&opts, 0, sizeof(opts));
+	if (!ctx)
+		return opts;
+	opts.enabled = ctx->config.memory.enabled;
+	opts.hot_path_enabled = ctx->config.memory.hot_path_enabled;
+	opts.cold_path_enabled = ctx->config.memory.cold_path_enabled;
+	opts.max_facts = ctx->config.memory.max_facts;
+	opts.max_episodes = ctx->config.memory.max_episodes;
+	opts.max_procedures = ctx->config.memory.max_procedures;
+	opts.max_context_chars = ctx->config.memory.max_context_chars;
+	return opts;
+}
+
+static void cli_refresh_memory_context(struct cli_context *ctx,
+				       const char *query)
+{
+	struct memory_options opts;
+	char *memory_ctx;
+
+	if (!ctx || !ctx->react)
+		return;
+	opts = cli_memory_options(ctx);
+	memory_ctx = memory_build_context(&ctx->database, ctx->current_session.id,
+					  query, &opts);
+	react_set_memory_context(ctx->react, memory_ctx);
+	free(memory_ctx);
 }
 
 static void utf8_sanitize_inplace(char *s)
@@ -266,6 +299,7 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv);
 static int cmd_ext(struct cli_context *ctx, int argc, char **argv);
 static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
 static int cmd_mcp(struct cli_context *ctx, int argc, char **argv);
+static int cmd_memory(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
@@ -318,6 +352,8 @@ static const struct cmd_entry commands[] = {
 	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },
 	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
 	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
+	{ "/memory",  cmd_memory,  "Show or clear long-term memory",    "/memory [show|clear] [all|facts|episodes|procedures]" },
+	{ "/mem",     cmd_memory,  "Alias for /memory",                 "/mem [show|clear] [all|facts|episodes|procedures]" },
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
@@ -890,7 +926,92 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  threshold = %.1f\n", ctx->config.context.summarize_threshold_ratio);
 	printf("  target = %.1f\n", ctx->config.context.compress_target_ratio);
 	printf("  keep_rounds = %d\n", ctx->config.context.keep_recent_rounds);
+	printf(ANSI_BOLD "[memory]" ANSI_RESET "\n");
+	printf("  enabled = %d\n", ctx->config.memory.enabled);
+	printf("  hot_path_enabled = %d\n", ctx->config.memory.hot_path_enabled);
+	printf("  cold_path_enabled = %d\n", ctx->config.memory.cold_path_enabled);
+	printf("  max_facts = %d\n", ctx->config.memory.max_facts);
+	printf("  max_episodes = %d\n", ctx->config.memory.max_episodes);
+	printf("  max_procedures = %d\n", ctx->config.memory.max_procedures);
+	printf("  max_context_chars = %d\n", ctx->config.memory.max_context_chars);
 	return 0;
+}
+
+static const char *memory_scope_display(enum memory_clear_scope scope)
+{
+	switch (scope) {
+	case MEMORY_CLEAR_ALL:
+		return "all";
+	case MEMORY_CLEAR_FACTS:
+		return "facts";
+	case MEMORY_CLEAR_EPISODES:
+		return "episodes";
+	case MEMORY_CLEAR_PROCEDURES:
+		return "procedures";
+	default:
+		return "unknown";
+	}
+}
+
+static int memory_parse_scope(const char *name, enum memory_clear_scope *scope)
+{
+	if (!scope)
+		return -EINVAL;
+	if (!name || strcmp(name, "all") == 0) {
+		*scope = MEMORY_CLEAR_ALL;
+		return 0;
+	}
+	if (strcmp(name, "facts") == 0) {
+		*scope = MEMORY_CLEAR_FACTS;
+		return 0;
+	}
+	if (strcmp(name, "episodes") == 0) {
+		*scope = MEMORY_CLEAR_EPISODES;
+		return 0;
+	}
+	if (strcmp(name, "procedures") == 0 ||
+	    strcmp(name, "rules") == 0) {
+		*scope = MEMORY_CLEAR_PROCEDURES;
+		return 0;
+	}
+	return -EINVAL;
+}
+
+static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *sub = cmd_arg(argc, argv, 1);
+
+	if (!sub || strcmp(sub, "show") == 0 || strcmp(sub, "view") == 0) {
+		char *rendered = memory_render_session(
+			&ctx->database, ctx->current_session.id,
+			ctx->config.memory.max_episodes);
+		CMD_HEADER("memory (%s)", ctx->current_session.name);
+		printf("%s\n", rendered ? rendered :
+		       "No long-term memory stored for this session.");
+		free(rendered);
+		return 0;
+	}
+
+	if (strcmp(sub, "clear") == 0) {
+		enum memory_clear_scope scope = MEMORY_CLEAR_ALL;
+		const char *target = cmd_arg(argc, argv, 2);
+		if (memory_parse_scope(target, &scope) != 0) {
+			CMD_ERROR("usage: /memory clear [all|facts|episodes|procedures]");
+			return -EINVAL;
+		}
+		if (memory_clear(&ctx->database, ctx->current_session.id, scope) != 0) {
+			CMD_ERROR("failed to clear memory");
+			return -EIO;
+		}
+		if (ctx->react)
+			react_set_memory_context(ctx->react, NULL);
+		CMD_OK("cleared %s memory for session: %s",
+		       memory_scope_display(scope), ctx->current_session.name);
+		return 0;
+	}
+
+	CMD_ERROR("usage: /memory [show|clear] [all|facts|episodes|procedures]");
+	return -EINVAL;
 }
 
 static int cmd_image(struct cli_context *ctx, int argc, char **argv)
@@ -2822,6 +2943,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	if (ctx->react)
 		react_cancel(ctx->react);
 
+	cli_refresh_memory_context(ctx, effective_input);
+
 	react_run(ctx->react, effective_input, output_callback, ctx);
 
 	if (ctx->spin.running) {
@@ -2875,6 +2998,14 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		message_add(&ctx->database, ctx->current_session.id, "assistant",
 			    ctx->react->final_answer, asst_tokens);
 		session_update_tokens(&ctx->database, ctx->current_session.id, asst_tokens);
+	}
+	if (ctx->react) {
+		struct memory_options mem_opts = cli_memory_options(ctx);
+		memory_consolidate_turn(&ctx->database, ctx->current_session.id,
+					effective_input, ctx->react->final_answer,
+					ctx->react->steps,
+					ctx->react->state == REACT_STATE_DONE,
+					&mem_opts);
 	}
 	ctx->streaming = 0;
 	return 0;

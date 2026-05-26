@@ -10,6 +10,7 @@
 #include "react.h"
 #include "session_store.h"
 #include "session.h"
+#include "agent/memory.h"
 #include "agent/context.h"
 #include "agent/tokenizer.h"
 #include "agent/tool.h"
@@ -30,6 +31,7 @@
 #include "models/llm.h"
 #include "config.h"
 #include "util/log.h"
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,24 @@ static struct tokenizer *g_tokenizer = NULL;
 static struct model      *g_llm       = NULL;
 static struct tool_registry g_tools;
 static struct plan_registry g_plans;
+
+static void bridge_init_once(void);
+
+int react_memory_options_for_session(struct memory_options *out)
+{
+	if (!out)
+		return -EINVAL;
+	pthread_once(&g_once, bridge_init_once);
+	memset(out, 0, sizeof(*out));
+	out->enabled = g_config.memory.enabled;
+	out->hot_path_enabled = g_config.memory.hot_path_enabled;
+	out->cold_path_enabled = g_config.memory.cold_path_enabled;
+	out->max_facts = g_config.memory.max_facts;
+	out->max_episodes = g_config.memory.max_episodes;
+	out->max_procedures = g_config.memory.max_procedures;
+	out->max_context_chars = g_config.memory.max_context_chars;
+	return 0;
+}
 
 static void bridge_init_once(void)
 {
