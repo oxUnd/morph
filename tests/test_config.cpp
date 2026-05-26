@@ -27,7 +27,10 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.max_iterations, 10);
 	EXPECT_EQ(cfg.react.step_timeout_seconds, 330);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
+	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
 	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
+	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 0);
+	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 0);
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
@@ -47,6 +50,9 @@ context_limit = 200000
 [react]
 max_iterations = 5
 step_timeout_seconds = 30
+bash_exec_enabled = true
+bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
+bash_exec_allowed_cwds = ["/tmp"]
 
 [context]
 keep_recent_rounds = 10
@@ -63,6 +69,12 @@ keep_recent_rounds = 10
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.step_timeout_seconds, 30);
+	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
+	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 2);
+	EXPECT_STREQ(cfg.react.bash_exec_allowed_commands[0],
+		     "cmake --build build");
+	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 1);
+	EXPECT_STREQ(cfg.react.bash_exec_allowed_cwds[0], "/tmp");
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
 }
 

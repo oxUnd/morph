@@ -64,6 +64,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.hitl_tools_count = 0;
 	cfg->react.hitl_auto_approve_readonly = 1;
 
+	cfg->react.bash_exec_enabled = 0;
 	cfg->react.bash_exec_default_timeout = 60;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
@@ -198,7 +199,34 @@ int config_load(struct config *cfg, const char *path)
 		}
 		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
+		CFG_BOOL(react, "bash_exec_enabled", cfg->react.bash_exec_enabled);
 		CFG_INT(react, "bash_exec_default_timeout", cfg->react.bash_exec_default_timeout);
+		toml_array_t *bc = toml_array_in(react, "bash_exec_allowed_commands");
+		if (bc) {
+			int count = 0;
+			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
+				toml_datum_t val = toml_string_at(bc, count);
+				if (!val.ok)
+					break;
+				strncpy(cfg->react.bash_exec_allowed_commands[count],
+					val.u.s, BASH_EXEC_COMMAND_MAX - 1);
+				free(val.u.s);
+			}
+			cfg->react.bash_exec_allowed_commands_count = count;
+		}
+		toml_array_t *bw = toml_array_in(react, "bash_exec_allowed_cwds");
+		if (bw) {
+			int count = 0;
+			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
+				toml_datum_t val = toml_string_at(bw, count);
+				if (!val.ok)
+					break;
+				strncpy(cfg->react.bash_exec_allowed_cwds[count],
+					val.u.s, BASH_EXEC_CWD_MAX - 1);
+				free(val.u.s);
+			}
+			cfg->react.bash_exec_allowed_cwds_count = count;
+		}
 		toml_array_t *ht = toml_array_in(react, "hitl_tools");
 		if (ht) {
 			int count = 0;
@@ -317,7 +345,12 @@ void config_print(const struct config *cfg)
 		 cfg->react.disabled_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
-	log_info("    bash_exec_default_timeout: %d", cfg->react.bash_exec_default_timeout);
+	log_info("    bash_exec_enabled: %d timeout: %d",
+		 cfg->react.bash_exec_enabled,
+		 cfg->react.bash_exec_default_timeout);
+	log_info("    bash_exec_allowed_commands: %d allowed_cwds: %d",
+		 cfg->react.bash_exec_allowed_commands_count,
+		 cfg->react.bash_exec_allowed_cwds_count);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.hitl_tools_count; i++)

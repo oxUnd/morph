@@ -193,8 +193,8 @@ TEST(SandboxRlimitTest, NofileCustomLimit)
  *
  * On macOS the SBPL profile (deny default) is applied. Without
  * EXT_PERM_FILESYS, file writes outside allowed_paths must fail.
- * On Linux, seccomp+landlock should achieve the same; if landlock
- * isn't available the test still verifies sandbox_enter returns 0.
+ * On Linux, seccomp+landlock should achieve the same. Isolation
+ * initialization now fails closed rather than degrading silently.
  * ------------------------------------------------------------------ */
 
 #if defined(__APPLE__)
@@ -219,20 +219,13 @@ TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 
 		fd = open(tmpl, O_WRONLY);
 		if (fd >= 0) {
-			/* sandbox_init() returns EPERM and the impl
-			 * degrades to "rlimits only" (see sandbox.c).
-			 * That means sandbox isn't actually active in
-			 * this child — skip rather than fail. */
 			close(fd);
 			unlink(tmpl);
-			return 77; /* sentinel: skipped */
+			return 12;
 		}
 		unlink(tmpl);
 		return 0;
 	});
-	if (rc == 77)
-		GTEST_SKIP() << "sandbox_init not effective in this "
-				"test environment (degrades to rlimits)";
 	EXPECT_EQ(rc, 0);
 }
 #endif

@@ -1638,8 +1638,21 @@ static int cli_init_tools(struct cli_context *ctx)
 	file_info_init(&ctx->tools);
 	log_info("registered file_info tool");
 
-	bash_exec_init(&ctx->tools);
-	log_info("registered bash_exec tool");
+	if (ctx->config.react.bash_exec_enabled) {
+		bash_exec_clear_allowlist();
+		for (int i = 0;
+		     i < ctx->config.react.bash_exec_allowed_commands_count; i++)
+			bash_exec_allow_command(
+				ctx->config.react.bash_exec_allowed_commands[i]);
+		for (int i = 0;
+		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
+			bash_exec_allow_cwd(
+				ctx->config.react.bash_exec_allowed_cwds[i]);
+		bash_exec_init(&ctx->tools);
+		log_info("registered bash_exec tool (explicitly enabled)");
+	} else {
+		log_info("bash_exec tool disabled by default");
+	}
 
 	img_resize_init(&ctx->tools);
 	log_info("registered img_resize tool");

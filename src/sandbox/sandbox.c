@@ -278,13 +278,12 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	int probe_fd = ll_create_ruleset(0);
 	if (probe_fd < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS) {
-			log_info("sandbox: landlock not supported by kernel, "
-				 "fs restrictions skipped");
-			return 0;
+			log_err("sandbox: landlock not supported by kernel");
+			return -ENOSYS;
 		}
-		log_warn("sandbox: landlock probe failed: %s, "
-			 "fs restrictions skipped", strerror(errno));
-		return 0;
+		log_err("sandbox: landlock probe failed: %s",
+			strerror(errno));
+		return -errno;
 	}
 	close(probe_fd);
 
@@ -361,9 +360,9 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 
 	int ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0) {
-		log_warn("sandbox: landlock create_ruleset failed: %s",
+		log_err("sandbox: landlock create_ruleset failed: %s",
 			 strerror(errno));
-		return 0;
+		return -errno;
 	}
 
 	/*
@@ -402,17 +401,17 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	 * here first since landlock comes before seccomp in sandbox_enter().
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
-		log_warn("sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s",
+		log_err("sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s",
 			 strerror(errno));
 		close(ruleset_fd);
-		return 0;
+		return -errno;
 	}
 
 	if (ll_restrict_self(ruleset_fd) < 0) {
-		log_warn("sandbox: landlock: restrict_self failed: %s",
+		log_err("sandbox: landlock: restrict_self failed: %s",
 			 strerror(errno));
 		close(ruleset_fd);
-		return 0;
+		return -errno;
 	}
 
 	close(ruleset_fd);
@@ -575,8 +574,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 			 errorbuf ? errorbuf : "unknown error");
 		if (errorbuf)
 			sandbox_free_error(errorbuf);
-		/* Non-fatal: degrade to rlimits only */
-		return 0;
+		return -EPERM;
 	}
 
 	if (errorbuf)
@@ -1198,7 +1196,7 @@ int sandbox_enter(struct sandbox_config *cfg)
 			       cfg->allowed_env_count,
 			       cfg->permissions);
 	if (rc < 0)
-		log_warn("sandbox: env filter failed: %d", rc);
+		return rc;
 
 	rc = sandbox_apply_rlimits(cfg->permissions, cfg->max_memory_mb,
 				   cfg->max_cpu_seconds,
@@ -1212,7 +1210,7 @@ int sandbox_enter(struct sandbox_config *cfg)
 			       cfg->allowed_paths_count,
 			       cfg->permissions);
 	if (rc < 0)
-		log_warn("sandbox: fs restriction failed: %d", rc);
+		return rc;
 
 #ifdef __linux__
 	rc = sandbox_apply_seccomp(cfg->permissions);
@@ -1221,9 +1219,10 @@ int sandbox_enter(struct sandbox_config *cfg)
 #elif defined(__APPLE__)
 	rc = sandbox_enter_darwin(cfg);
 	if (rc < 0)
-		log_warn("sandbox: macOS sandbox failed (non-fatal): %d", rc);
+		return rc;
 #else
-	log_warn("sandbox: no platform-specific isolation available");
+	log_err("sandbox: no platform-specific isolation available");
+	return -ENOSYS;
 #endif
 
 	return 0;

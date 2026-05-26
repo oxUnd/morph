@@ -56,14 +56,18 @@ The binary lands at `build/src/fastcgi/morph-fastcgi`.
 export MORPH_FCGI_LISTEN="unix:/run/morph-fastcgi.sock"
 export MORPH_FCGI_DB="/var/lib/morph/morph.db"
 export MORPH_FCGI_WORKERS=8
-# either of these enables auth (both => trust-header wins):
+# At least one authentication mode is required (both => trust-header wins):
 export MORPH_FCGI_SECRET="my-bearer-secret"
+# Use only behind a trusted proxy that removes client-supplied identity headers:
 export MORPH_FCGI_TRUST_HDR="X-Remote-User"
 
 ./build/src/fastcgi/morph-fastcgi
 ```
 
 `MORPH_FCGI_LISTEN` accepts `unix:/path/sock`, `:9000`, or `127.0.0.1:9000`.
+The process refuses to start unless `MORPH_FCGI_SECRET` or
+`MORPH_FCGI_TRUST_HDR` is set. When trust-header authentication is used, the
+configured header is the only accepted identity source.
 
 ---
 

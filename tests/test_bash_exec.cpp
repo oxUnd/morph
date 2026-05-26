@@ -12,20 +12,37 @@ protected:
 	struct tool_registry reg;
 	void SetUp() override {
 		tool_registry_init(&reg);
+		bash_exec_clear_allowlist();
 	}
 	void TearDown() override {
 		tool_registry_cleanup(&reg);
 	}
 };
 
-static std::string exec_tool(struct tool_registry &reg, const char *args_json,
-			     int &rc)
+static std::string exec_raw(struct tool_registry &reg, const char *args_json,
+			    int &rc)
 {
 	char *result = NULL;
 	rc = tool_exec(&reg, "bash_exec", args_json, &result);
 	std::string s(result ? result : "");
 	free(result);
 	return s;
+}
+
+static std::string exec_tool(struct tool_registry &reg, const char *args_json,
+			     int &rc)
+{
+	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	if (root) {
+		cJSON *command = cJSON_GetObjectItem(root, "command");
+		cJSON *cwd = cJSON_GetObjectItem(root, "cwd");
+		if (cJSON_IsString(command) && command->valuestring)
+			bash_exec_allow_command(command->valuestring);
+		if (cJSON_IsString(cwd) && cwd->valuestring)
+			bash_exec_allow_cwd(cwd->valuestring);
+		cJSON_Delete(root);
+	}
+	return exec_raw(reg, args_json, rc);
 }
 
 static std::string exec_command(struct tool_registry &reg, const char *cmd,
@@ -131,6 +148,35 @@ TEST_F(BashExecTest, NullResultPtr)
 	bash_exec_init(&reg);
 	int rc = tool_exec(&reg, "bash_exec", "{\"command\":\"echo hi\"}", NULL);
 	EXPECT_EQ(rc, -EINVAL);
+}
+
+TEST_F(BashExecTest, PolicyDeniesWithoutRules)
+{
+	bash_exec_init(&reg);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_TRUE(result.find("explicitly allowed") != std::string::npos);
+}
+
+TEST_F(BashExecTest, PolicyDeniesAdditionalArguments)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("echo hi"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"echo hi extra\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+}
+
+TEST_F(BashExecTest, PolicyDeniesUnconfiguredCwd)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("pwd"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"pwd\",\"cwd\":\"/tmp\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
 }
 
 TEST_F(BashExecTest, BlockedRm)
@@ -579,6 +625,20 @@ TEST_F(BashExecTest, AllowedEnv)
 	EXPECT_EQ(rc, 0);
 }
 
+TEST_F(BashExecTest, SensitiveEnvIsNotInherited)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(setenv("MORPH_BASH_SECRET", "do-not-expose", 1), 0);
+	int rc;
+	std::string result = exec_tool(
+		reg,
+		"{\"command\":\"printf '%s' \\\"$MORPH_BASH_SECRET\\\"\"}",
+		rc);
+	unsetenv("MORPH_BASH_SECRET");
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(get_json_field(result, "stdout").empty());
+}
+
 TEST_F(BashExecTest, AllowedDate)
 {
 	bash_exec_init(&reg);
@@ -684,8 +744,8 @@ TEST_F(BashExecTest, CwdInvalid)
 	int rc;
 	std::string args = "{\"command\":\"pwd\",\"cwd\":\"/nonexistent_dir_xyz\"}";
 	std::string result = exec_tool(reg, args.c_str(), rc);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(get_json_int(result, "exit_code"), 126);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_TRUE(result.find("explicitly allowed") != std::string::npos);
 }
 
 TEST_F(BashExecTest, TimeoutOption)
@@ -757,12 +817,31 @@ TEST_F(BashExecTest, PipeAllowed)
 	EXPECT_EQ(rc, 0);
 }
 
-TEST_F(BashExecTest, RedirectAllowed)
+TEST_F(BashExecTest, RedirectOutsideCwdDenied)
+{
+	bash_exec_init(&reg);
+	remove("/tmp/morph_test_bash_exec_redirect");
+	int rc;
+	std::string result = exec_command(
+		reg, "echo hi > /tmp/morph_test_bash_exec_redirect", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(get_json_int(result, "exit_code"), 0);
+	EXPECT_NE(access("/tmp/morph_test_bash_exec_redirect", F_OK), 0);
+}
+
+TEST_F(BashExecTest, RedirectWithinCwdAllowed)
 {
 	bash_exec_init(&reg);
 	int rc;
-	std::string result = exec_command(reg, "echo hi > /tmp/morph_test_bash_exec_redirect && cat /tmp/morph_test_bash_exec_redirect", rc);
+	std::string result = exec_tool(
+		reg,
+		"{\"command\":\"echo hi > morph_test_bash_exec_redirect && "
+		"cat morph_test_bash_exec_redirect\",\"cwd\":\"/tmp\"}",
+		rc);
 	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_TRUE(get_json_field(result, "stdout").find("hi") !=
+		    std::string::npos);
 	remove("/tmp/morph_test_bash_exec_redirect");
 }
 

@@ -7,11 +7,13 @@
  *   MORPH_FCGI_LISTEN     unix:/run/morph-fastcgi.sock | :9000 | 127.0.0.1:9000
  *   MORPH_FCGI_WORKERS    integer (default 8)
  *   MORPH_FCGI_DB         path to morph SQLite DB
- *   MORPH_FCGI_SECRET     bearer token (optional)
- *   MORPH_FCGI_TRUST_HDR  e.g. "X-Remote-User" (optional)
+ *   MORPH_FCGI_SECRET     bearer token
+ *   MORPH_FCGI_TRUST_HDR  trusted proxy identity header, e.g. "X-Remote-User"
  */
 #define _GNU_SOURCE
 #include <fcgiapp.h>
+#include <ctype.h>
+#include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -29,6 +31,7 @@
 static int g_listen_fd = -1;
 static struct session_store *g_store = NULL;
 static volatile sig_atomic_t g_shutdown = 0;
+static char g_trust_param[96] = {0};
 
 static const char *getenv_or(const char *k, const char *fallback) {
 	const char *v = getenv(k);
@@ -48,6 +51,29 @@ static int open_listen(const char *spec) {
 		chmod(path, 0660);
 	}
 	return fd;
+}
+
+static int configure_trust_param(const char *header)
+{
+	size_t off;
+
+	g_trust_param[0] = '\0';
+	if (!header || !*header)
+		return 0;
+	snprintf(g_trust_param, sizeof(g_trust_param), "HTTP_");
+	off = strlen(g_trust_param);
+	for (const unsigned char *p = (const unsigned char *)header; *p; p++) {
+		if (off + 1 >= sizeof(g_trust_param))
+			MORPH_RETURN(-ENAMETOOLONG);
+		if (isalnum(*p))
+			g_trust_param[off++] = (char)toupper(*p);
+		else if (*p == '-')
+			g_trust_param[off++] = '_';
+		else
+			MORPH_RETURN(-EINVAL);
+	}
+	g_trust_param[off] = '\0';
+	return 0;
 }
 
 static void on_signal(int sig) {
@@ -74,7 +100,8 @@ static void populate_request(request_t *r, FCGX_Request *req) {
 	if (!r->path) r->path = FCGX_GetParam("REQUEST_URI", req->envp);
 	r->query      = FCGX_GetParam("QUERY_STRING",     req->envp);
 	r->auth_hdr   = FCGX_GetParam("HTTP_AUTHORIZATION", req->envp);
-	r->trust_user = FCGX_GetParam("HTTP_X_REMOTE_USER", req->envp);
+	r->trust_user = g_trust_param[0]
+		? FCGX_GetParam(g_trust_param, req->envp) : NULL;
 	r->last_event_id = FCGX_GetParam("HTTP_LAST_EVENT_ID", req->envp);
 	r->content_type  = FCGX_GetParam("CONTENT_TYPE",  req->envp);
 	const char *clen = FCGX_GetParam("CONTENT_LENGTH", req->envp);
@@ -119,6 +146,16 @@ int main(int argc, char **argv) {
 
 	const char *secret    = getenv("MORPH_FCGI_SECRET");
 	const char *trust_hdr = getenv("MORPH_FCGI_TRUST_HDR");
+
+	if ((!secret || !*secret) && (!trust_hdr || !*trust_hdr)) {
+		fprintf(stderr, "morph-fastcgi: MORPH_FCGI_SECRET or "
+			"MORPH_FCGI_TRUST_HDR is required\n");
+		return 4;
+	}
+	if (configure_trust_param(trust_hdr) < 0) {
+		fprintf(stderr, "morph-fastcgi: invalid MORPH_FCGI_TRUST_HDR\n");
+		return 4;
+	}
 
 	if (FCGX_Init() != 0) { fprintf(stderr, "FCGX_Init failed\n"); return 1; }
 

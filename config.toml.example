@@ -70,7 +70,16 @@ poll_timeout_seconds  = 600
 max_iterations      = 15
 step_timeout_seconds  = 330
 tool_max_retries    = 3
+# Disabled by default because this permits model-initiated process execution.
+# When enabled, commands have no network or secret environment access, and
+# can write only below their explicit cwd.
+bash_exec_enabled = false
 bash_exec_default_timeout = 60
+# Full command strings must match exactly; additional parameters are denied.
+# A cwd is optional for read-only commands, but any supplied cwd must appear
+# in bash_exec_allowed_cwds. File writes are confined to an allowed cwd.
+# bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
+# bash_exec_allowed_cwds = ["/absolute/path/to/morph"]
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names
@@ -85,7 +94,7 @@ guardrail_max_retries = 2
 guardrail_max_empty_rounds = 2
 # Disable specific tools by name. Supported tool names:
 # text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert,
-# vid_gen, file_read, file_list, file_info
+# vid_gen, file_read, file_list, file_info, bash_exec
 # disabled_tools = ["vid_gen", "img_edit"]
 
 # ── Human-in-the-Loop (HITL) ──────────────────

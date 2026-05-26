@@ -5,6 +5,7 @@
 #include "cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,13 +17,81 @@
 #include <unistd.h>
 
 #define BASH_EXEC_MAX_OUTPUT (256 * 1024)
+#define BASH_EXEC_ALLOW_MAX 32
+#define BASH_EXEC_RULE_MAX 1024
 
 static int bash_exec_default_timeout = 60;
+static char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_RULE_MAX];
+static int bash_exec_allowed_commands_count;
+static char bash_exec_allowed_cwds[BASH_EXEC_ALLOW_MAX][PATH_MAX];
+static int bash_exec_allowed_cwds_count;
 
 void bash_exec_set_default_timeout(int seconds)
 {
 	if (seconds > 0)
 		bash_exec_default_timeout = seconds;
+}
+
+void bash_exec_clear_allowlist(void)
+{
+	memset(bash_exec_allowed_commands, 0, sizeof(bash_exec_allowed_commands));
+	memset(bash_exec_allowed_cwds, 0, sizeof(bash_exec_allowed_cwds));
+	bash_exec_allowed_commands_count = 0;
+	bash_exec_allowed_cwds_count = 0;
+}
+
+int bash_exec_allow_command(const char *command)
+{
+	if (!command || !*command)
+		MORPH_RETURN(-EINVAL);
+	if (strlen(command) >= BASH_EXEC_RULE_MAX)
+		MORPH_RETURN(-ENAMETOOLONG);
+	if (bash_exec_allowed_commands_count >= BASH_EXEC_ALLOW_MAX)
+		MORPH_RETURN(-ENOSPC);
+	snprintf(bash_exec_allowed_commands[bash_exec_allowed_commands_count],
+		 BASH_EXEC_RULE_MAX, "%s", command);
+	bash_exec_allowed_commands_count++;
+	return 0;
+}
+
+int bash_exec_allow_cwd(const char *cwd)
+{
+	char resolved[PATH_MAX];
+
+	if (!cwd || !*cwd)
+		MORPH_RETURN(-EINVAL);
+	if (!realpath(cwd, resolved))
+		MORPH_RETURN(-errno);
+	if (bash_exec_allowed_cwds_count >= BASH_EXEC_ALLOW_MAX)
+		MORPH_RETURN(-ENOSPC);
+	snprintf(bash_exec_allowed_cwds[bash_exec_allowed_cwds_count],
+		 PATH_MAX, "%s", resolved);
+	bash_exec_allowed_cwds_count++;
+	return 0;
+}
+
+static int command_is_allowed(const char *command)
+{
+	for (int i = 0; i < bash_exec_allowed_commands_count; i++) {
+		if (strcmp(command, bash_exec_allowed_commands[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int cwd_is_allowed(const char *cwd)
+{
+	char resolved[PATH_MAX];
+
+	if (!cwd || !*cwd)
+		return 1;
+	if (!realpath(cwd, resolved))
+		return 0;
+	for (int i = 0; i < bash_exec_allowed_cwds_count; i++) {
+		if (strcmp(resolved, bash_exec_allowed_cwds[i]) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 static const char *blocked_commands[] = {
@@ -221,6 +290,16 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		return -EINVAL;
 	}
 
+	if (!command_is_allowed(command) || !cwd_is_allowed(cwd)) {
+		log_warn("bash_exec: command or cwd not allowed by policy");
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup(
+			"{\"error\":\"command or cwd is not explicitly allowed "
+			"by bash_exec policy\"}");
+		return -EPERM;
+	}
+
 	if (contains_blocked_command(command)) {
 		log_warn("bash_exec: blocked dangerous command: %s", command);
 		if (root)
@@ -263,6 +342,9 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	}
 
 	if (pid == 0) {
+		char resolved_cwd[PATH_MAX];
+		const char *sandbox_cwd = cwd;
+
 		close(out_pipe[0]);
 		close(err_pipe[0]);
 		dup2(out_pipe[1], STDOUT_FILENO);
@@ -277,24 +359,35 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		}
 
 		if (cwd && *cwd) {
-			if (chdir(cwd) != 0) {
+			if (!realpath(cwd, resolved_cwd) ||
+			    chdir(resolved_cwd) != 0) {
 				fprintf(stderr,
 					"bash_exec: chdir(%s) failed: %s\n",
 					cwd, strerror(errno));
 				_exit(126);
 			}
+			sandbox_cwd = resolved_cwd;
 		}
 
 		struct sandbox_config sb;
+		int sb_rc;
 		memset(&sb, 0, sizeof(sb));
-		sb.permissions = EXT_PERM_EXEC | EXT_PERM_FILESYS |
-				 EXT_PERM_NETWORK | EXT_PERM_ENV;
+		sb.permissions = EXT_PERM_EXEC;
+		if (cwd && *cwd)
+			sb.permissions |= EXT_PERM_FILESYS;
 		sb.max_memory_mb = 512;
 		sb.max_cpu_seconds = timeout;
-		if (cwd && *cwd)
-			sb.allowed_paths = (char **)&cwd;
-		sb.allowed_paths_count = (cwd && *cwd) ? 1 : 0;
-		sandbox_enter(&sb);
+		if (sandbox_cwd && *sandbox_cwd)
+			sb.allowed_paths = (char **)&sandbox_cwd;
+		sb.allowed_paths_count =
+			(sandbox_cwd && *sandbox_cwd) ? 1 : 0;
+		sb_rc = sandbox_enter(&sb);
+		if (sb_rc < 0) {
+			fprintf(stderr,
+				"bash_exec: sandbox initialization failed: %s\n",
+				morph_strerror(sb_rc));
+			_exit(126);
+		}
 
 		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
 		fprintf(stderr, "bash_exec: execl failed: %s\n",
@@ -361,9 +454,12 @@ int bash_exec_init(struct tool_registry *reg)
 	if (!reg)
 		return -EINVAL;
 	return tool_register(reg, "bash_exec",
-		"Execute a shell command in a sandboxed subprocess. "
+		"Execute a shell command in a restricted sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
+		"Network and non-essential inherited environment variables are unavailable. "
+		"File writes require an explicit cwd and are limited to that directory. "
+		"Commands and cwd values must match the configured allowlists exactly. "
 		"DANGEROUS commands are blocked: rm, mv, cp, chmod, curl, wget, ssh, "
 		"kill, package managers, and other destructive operations. "
 		"Args: command (required), cwd (optional working dir), "

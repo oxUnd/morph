@@ -38,6 +38,9 @@ struct config_models {
 #define DISABLED_TOOL_NAME_MAX 64
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
+#define BASH_EXEC_ALLOW_MAX 32
+#define BASH_EXEC_COMMAND_MAX 1024
+#define BASH_EXEC_CWD_MAX 512
 
 struct config_react {
 	int max_iterations;
@@ -52,7 +55,12 @@ struct config_react {
 	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int hitl_tools_count;
 	int hitl_auto_approve_readonly;
+	int bash_exec_enabled;
 	int bash_exec_default_timeout;
+	char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_COMMAND_MAX];
+	int bash_exec_allowed_commands_count;
+	char bash_exec_allowed_cwds[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int bash_exec_allowed_cwds_count;
 };
 
 struct config_context {

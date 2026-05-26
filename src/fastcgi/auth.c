@@ -8,6 +8,8 @@ static char g_secret[256] = {0};
 static char g_trust_hdr[64] = {0};
 
 void auth_init(const char *bearer_secret, const char *trust_header) {
+	memset(g_secret, 0, sizeof(g_secret));
+	memset(g_trust_hdr, 0, sizeof(g_trust_hdr));
 	if (bearer_secret) snprintf(g_secret,    sizeof(g_secret),    "%s", bearer_secret);
 	if (trust_header)  snprintf(g_trust_hdr, sizeof(g_trust_hdr), "%s", trust_header);
 }
@@ -34,6 +36,5 @@ int auth_check(request_t *r) {
 		snprintf(r->user_id, sizeof(r->user_id), "shared");
 		return 1;
 	}
-	snprintf(r->user_id, sizeof(r->user_id), "anonymous");
-	return 1;
+	return 0;
 }

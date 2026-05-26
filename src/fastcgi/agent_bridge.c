@@ -129,7 +129,21 @@ static void bridge_init_once(void)
 	file_list_init(&g_tools);
 	file_info_init(&g_tools);
 
-	bash_exec_init(&g_tools);
+	if (g_config.react.bash_exec_enabled) {
+		bash_exec_clear_allowlist();
+		for (int i = 0;
+		     i < g_config.react.bash_exec_allowed_commands_count; i++)
+			bash_exec_allow_command(
+				g_config.react.bash_exec_allowed_commands[i]);
+		for (int i = 0;
+		     i < g_config.react.bash_exec_allowed_cwds_count; i++)
+			bash_exec_allow_cwd(
+				g_config.react.bash_exec_allowed_cwds[i]);
+		bash_exec_init(&g_tools);
+		log_info("fcgi-bridge: bash_exec explicitly enabled");
+	} else {
+		log_info("fcgi-bridge: bash_exec disabled by default");
+	}
 
 	/* Video generation model */
 	{
