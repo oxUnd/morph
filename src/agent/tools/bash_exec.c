@@ -547,7 +547,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		struct sandbox_config sb;
 		int sb_rc;
 		memset(&sb, 0, sizeof(sb));
-		sb.permissions = EXT_PERM_EXEC;
+		sb.permissions = EXT_PERM_EXEC | EXT_PERM_NETWORK;
 		if (cwd && *cwd)
 			sb.permissions |= EXT_PERM_FILESYS;
 		sb.max_memory_mb = 512;

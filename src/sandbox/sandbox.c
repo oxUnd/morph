@@ -543,6 +543,29 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 			     "(allow network*)\n");
 		if (n > 0 && (size_t)n < remaining)
 			off += n;
+		/*
+		 * DNS resolution on macOS requires reading
+		 * /etc/resolv.conf and accessing mDNSResponder
+		 * via Mach IPC (already covered by the
+		 * mach-lookup baseline rule).  When EXEC is
+		 * not set, file-read* is restricted so we
+		 * must add explicit subpath rules for the
+		 * resolver paths.
+		 */
+		if (!(cfg->permissions & EXT_PERM_EXEC)) {
+			remaining = sizeof(sbpl) - (size_t)off;
+			n = snprintf(sbpl + off, remaining,
+				     "(allow file-read* "
+				     "(subpath \"/etc/resolv.conf\"))\n"
+				     "(allow file-read* "
+				     "(subpath \"/private/etc/resolv.conf\"))\n"
+				     "(allow file-read* "
+				     "(subpath \"/private/var/run/mDNSResponder\"))\n"
+				     "(allow file-read* "
+				     "(subpath \"/private/var/run/\"))\n");
+			if (n > 0 && (size_t)n < remaining)
+				off += n;
+		}
 	}
 
 	/* Process execution */
