@@ -3,6 +3,7 @@
 #include "compress.h"
 #include "system_prompt.h"
 #include "models/llm.h"
+#include "http/client.h"
 #include "util/log.h"
 #include "util/arena.h"
 #include "util/utf8.h"
@@ -17,6 +18,14 @@
 #include <pthread.h>
 
 volatile sig_atomic_t react_sigint_flag = 0;
+
+static struct react_context *react_active_ctx = NULL;
+
+void react_cancel_active(void)
+{
+	if (react_active_ctx)
+		react_active_ctx->cancelled = 1;
+}
 
 /*
  * Check whether a tool requires human-in-the-loop approval.
@@ -95,36 +104,101 @@ struct collect_data {
 	size_t cap;
 };
 
+/*
+ * Per-tool async execution state.
+ *
+ * Lifetime ownership:
+ * - Created by async_tool_call_create() before pthread_create().
+ * - Normally destroyed by async_tool_call_destroy() in react_run after join.
+ * - On cancellation, ownership is transferred to the worker thread by
+ *   setting `detached = 1` under the mutex and calling pthread_detach();
+ *   the worker thread then frees the struct itself at exit.
+ *
+ * tool_name / tool_args / tool_call_id are owned copies so they survive
+ * even after the originating chat_response or arena is reset.
+ */
 struct async_tool_call {
 	struct tool_registry *tools;
-	const char *tool_name;
-	const char *tool_args;
-	const char *tool_call_id;
+	char *tool_name;
+	char *tool_args;
+	char *tool_call_id;
 	char *result;
 	int rc;
 	react_output_cb output_cb;
 	void *output_user_data;
 	volatile sig_atomic_t completed;
 	volatile sig_atomic_t cancelled;
+	volatile sig_atomic_t detached;
 	pthread_mutex_t mutex;
 };
 
-static void async_tool_call_init(struct async_tool_call *call)
+static struct async_tool_call *
+async_tool_call_create(struct tool_registry *tools,
+		       const char *tool_name,
+		       const char *tool_args,
+		       const char *tool_call_id,
+		       react_output_cb output_cb,
+		       void *output_user_data)
 {
+	struct async_tool_call *call = calloc(1, sizeof(*call));
 	if (!call)
-		return;
-	memset(call, 0, sizeof(*call));
+		return NULL;
 	pthread_mutex_init(&call->mutex, NULL);
-	call->completed = 0;
-	call->cancelled = 0;
+	call->tools = tools;
+	call->tool_name = strdup(tool_name ? tool_name : "");
+	call->tool_args = strdup(tool_args ? tool_args : "{}");
+	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
+	call->output_cb = output_cb;
+	call->output_user_data = output_user_data;
+	if (!call->tool_name || !call->tool_args || !call->tool_call_id) {
+		free(call->tool_name);
+		free(call->tool_args);
+		free(call->tool_call_id);
+		pthread_mutex_destroy(&call->mutex);
+		free(call);
+		return NULL;
+	}
+	return call;
 }
 
-static void async_tool_call_cleanup(struct async_tool_call *call)
+static void async_tool_call_destroy(struct async_tool_call *call)
 {
 	if (!call)
 		return;
 	pthread_mutex_destroy(&call->mutex);
+	free(call->tool_name);
+	free(call->tool_args);
+	free(call->tool_call_id);
 	free(call->result);
+	free(call);
+}
+
+/*
+ * Wait for a tool worker to finish.
+ *
+ * When the cancel flag is not set, joins normally and returns 0.
+ *
+ * On cancellation, ownership of `call` is transferred to the worker
+ * thread by setting `detached = 1` under the mutex, then detaching the
+ * thread. Caller must NOT touch `call` afterwards; the worker will free
+ * it itself when it exits.
+ *
+ * Returns 0 if joined normally, -ECANCELED if detached.
+ */
+static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
+			    struct async_tool_call *call)
+{
+	if (!cancelled || !*cancelled) {
+		pthread_join(thread, NULL);
+		return 0;
+	}
+
+	pthread_mutex_lock(&call->mutex);
+	call->cancelled = 1;
+	call->detached = 1;
+	pthread_mutex_unlock(&call->mutex);
+	pthread_detach(thread);
+	return -ECANCELED;
 }
 
 static void *async_tool_exec(void *arg)
@@ -138,53 +212,65 @@ static void *async_tool_exec(void *arg)
 	if (call->output_cb)
 		call->output_cb(REACT_STEP_ACTION, action_buf, call->output_user_data);
 
+	int notify_done = 0;
+
 	if (tool_is_disabled(call->tools, call->tool_name)) {
 		char disabled_msg[256];
 		snprintf(disabled_msg, sizeof(disabled_msg),
 			 "tool error: '%s' is disabled in configuration",
 			 call->tool_name);
-		
+
 		pthread_mutex_lock(&call->mutex);
 		call->result = strdup(disabled_msg);
 		call->rc = -EPERM;
 		call->completed = 1;
 		pthread_mutex_unlock(&call->mutex);
+		notify_done = 1;
 	} else {
 		char *res = NULL;
-		int rc = tool_exec(call->tools, call->tool_name, call->tool_args, &res);
+		int rc = tool_exec(call->tools, call->tool_name,
+				   call->tool_args, &res);
 
 		pthread_mutex_lock(&call->mutex);
-		if (call->cancelled) {
-			free(res);
+		int was_cancelled = call->cancelled;
+		if (was_cancelled) {
 			call->completed = 1;
-			pthread_mutex_unlock(&call->mutex);
-			return NULL;
-		}
-
-		if (rc < 0) {
+		} else if (rc < 0) {
 			const char *raw = res ? res : "unknown error";
 			size_t need = strlen(raw) + 64;
 			char *buf = malloc(need);
 			if (buf)
-				snprintf(buf, need, "tool error: %s (%s)", raw, morph_strerror(rc));
+				snprintf(buf, need, "tool error: %s (%s)",
+					 raw, morph_strerror(rc));
 			call->result = buf;
 			call->rc = rc;
+			call->completed = 1;
 		} else {
 			const char *raw = res ? res : "(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
 			call->rc = 0;
+			call->completed = 1;
 		}
-		call->completed = 1;
 		pthread_mutex_unlock(&call->mutex);
 
 		free(res);
+		notify_done = !was_cancelled;
 	}
 
-	char done_buf[512];
-	snprintf(done_buf, sizeof(done_buf), "%s completed", call->tool_name);
-	if (call->output_cb)
-		call->output_cb(REACT_STEP_ACTION, done_buf, call->output_user_data);
+	if (notify_done) {
+		char done_buf[512];
+		snprintf(done_buf, sizeof(done_buf),
+			 "%s completed", call->tool_name);
+		if (call->output_cb)
+			call->output_cb(REACT_STEP_ACTION, done_buf,
+					call->output_user_data);
+	}
 
+	pthread_mutex_lock(&call->mutex);
+	int detached = call->detached;
+	pthread_mutex_unlock(&call->mutex);
+	if (detached)
+		async_tool_call_destroy(call);
 	return NULL;
 }
 
@@ -1040,6 +1126,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 		hist = hist->next;
 	}
 
+	react_active_ctx = ctx;
+	http_set_cancel_flag(&ctx->cancelled);
+
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		if (react_sigint_flag) {
 			ctx->cancelled = 1;
@@ -1167,7 +1256,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				cb(REACT_STEP_OBSERVATION, err_content, user_data);
 			chat_response_free(&response);
 			ctx->state = REACT_STATE_ABORT;
-			return status;
+			break;
 		}
 
 		if (ctx->step_timeout_seconds > 0 &&
@@ -1235,7 +1324,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 			int num_tools = response.tool_call_count;
 			pthread_t *threads = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(pthread_t));
-			struct async_tool_call *calls = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(struct async_tool_call));
+			struct async_tool_call **calls = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(*calls));
 			int *hitl_denied = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(int));
 			if (!threads || !calls || !hitl_denied) {
 				chat_response_free(&response);
@@ -1243,9 +1332,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				break;
 			}
 			memset(hitl_denied, 0, (size_t)num_tools * sizeof(int));
-
-			for (int i = 0; i < num_tools; i++)
-				async_tool_call_init(&calls[i]);
+			memset(calls, 0, (size_t)num_tools * sizeof(*calls));
 
 			react_check_hitl_approvals(ctx, &response, hitl_denied, cb, user_data);
 
@@ -1268,14 +1355,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 				if (cb)
 					cb(REACT_STEP_ACTION, action_text ? action_text : "", user_data);
 
-				calls[i].tools = ctx->tools;
-				calls[i].tool_name = tool_name;
-				calls[i].tool_args = tool_args;
-				calls[i].tool_call_id = tc->id;
-				calls[i].output_cb = cb;
-				calls[i].output_user_data = user_data;
+				calls[i] = async_tool_call_create(ctx->tools, tool_name,
+								  tool_args, tc->id,
+								  cb, user_data);
+				if (!calls[i]) {
+					ctx->state = REACT_STATE_ABORT;
+					break;
+				}
 
-				pthread_create(&threads[i], NULL, async_tool_exec, &calls[i]);
+				pthread_create(&threads[i], NULL, async_tool_exec, calls[i]);
 			}
 
 			if (react_sigint_flag) {
@@ -1291,15 +1379,20 @@ int react_run(struct react_context *ctx, const char *user_input,
 					continue;
 				}
 
+				if (!calls[i])
+					continue;
+
 				if (ctx->cancelled) {
-					pthread_mutex_lock(&calls[i].mutex);
-					calls[i].cancelled = 1;
-					pthread_mutex_unlock(&calls[i].mutex);
+					pthread_mutex_lock(&calls[i]->mutex);
+					calls[i]->cancelled = 1;
+					pthread_mutex_unlock(&calls[i]->mutex);
 				}
 
-				pthread_join(threads[i], NULL);
-
-				if (ctx->cancelled) {
+				if (join_tool_thread(threads[i], &ctx->cancelled,
+						     calls[i]) != 0) {
+					/* Ownership transferred to detached worker; do not
+					 * touch calls[i] anymore. */
+					calls[i] = NULL;
 					struct react_step *obs = react_step_create(ctx->arena,
 						REACT_STEP_OBSERVATION,
 						"Tool execution cancelled by user",
@@ -1310,7 +1403,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				}
 
 				ctx->state = REACT_STATE_OBSERVING;
-				struct async_tool_call *call = &calls[i];
+				struct async_tool_call *call = calls[i];
 
 				pthread_mutex_lock(&call->mutex);
 				int rc = call->rc;
@@ -1320,8 +1413,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 				if (react_track_tool_failure(ctx, call->tool_name, call->tool_args, rc, cb, user_data)) {
 					chat_response_free(&response);
-					for (int j = 0; j < num_tools; j++)
-						async_tool_call_cleanup(&calls[j]);
+					for (int j = 0; j < num_tools; j++) {
+						async_tool_call_destroy(calls[j]);
+						calls[j] = NULL;
+					}
 					free(result);
 					goto done;
 				}
@@ -1340,7 +1435,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 			}
 
 			for (int i = 0; i < num_tools; i++) {
-				async_tool_call_cleanup(&calls[i]);
+				if (calls[i]) {
+					async_tool_call_destroy(calls[i]);
+					calls[i] = NULL;
+				}
 			}
 
 			if (ctx->action_drain_fn) {
@@ -1387,6 +1485,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 	}
 
 done:
+	http_set_cancel_flag(NULL);
+	react_active_ctx = NULL;
+
 	if (ctx->state != REACT_STATE_DONE && ctx->state != REACT_STATE_ABORT) {
 		log_warn("react_run: max iterations (%d) reached, aborting", ctx->max_iterations);
 		if (!ctx->final_answer) {

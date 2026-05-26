@@ -32,6 +32,7 @@ static const char *state_prefix(enum spin_state state)
 	case SPIN_STATE_DOWNLOADING: return "\033[1;34mvv\033[0m";
 	case SPIN_STATE_UPLOADING:  return "\033[1;34m^^\033[0m";
 	case SPIN_STATE_COMPLETE:   return "\033[1;32mOK\033[0m";
+	case SPIN_STATE_ABORT:      return "\033[1;33m!!\033[0m";
 	case SPIN_STATE_ERROR:      return "\033[1;31mERR\033[0m";
 	default:                    return "";
 	}
@@ -47,6 +48,7 @@ static const char *state_text(enum spin_state state)
 	case SPIN_STATE_DOWNLOADING: return "Downloading";
 	case SPIN_STATE_UPLOADING:  return "Uploading";
 	case SPIN_STATE_COMPLETE:   return "Done";
+	case SPIN_STATE_ABORT:      return "Aborted";
 	case SPIN_STATE_ERROR:      return "Error";
 	default:                    return "";
 	}
@@ -183,7 +185,9 @@ void spin_render(struct spin_context *ctx)
 
 	fprintf(ctx->output, "\r\033[K");
 
-	if (ctx->state == SPIN_STATE_COMPLETE || ctx->state == SPIN_STATE_ERROR) {
+	if (ctx->state == SPIN_STATE_COMPLETE ||
+	    ctx->state == SPIN_STATE_ABORT ||
+	    ctx->state == SPIN_STATE_ERROR) {
 		size_t prefix_vis = utf8_visible_len(prefix);
 		size_t msg_vis = utf8_visible_len(ctx->message);
 		fprintf(ctx->output, "%s %s", prefix, ctx->message);

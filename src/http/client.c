@@ -8,6 +8,49 @@
 #include <string.h>
 
 static int http_initialized = 0;
+static volatile sig_atomic_t *http_cancel_flag = NULL;
+
+void http_set_cancel_flag(volatile sig_atomic_t *flag)
+{
+	http_cancel_flag = flag;
+}
+
+static int http_cancelled(void)
+{
+	return http_cancel_flag && *http_cancel_flag;
+}
+
+static int sse_xferinfo_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
+			   curl_off_t ultotal, curl_off_t ulnow)
+{
+	(void)clientp;
+	(void)dltotal;
+	(void)dlnow;
+	(void)ultotal;
+	(void)ulnow;
+	return http_cancelled() ? 1 : 0;
+}
+
+static void sse_apply_cancel_opts(CURL *curl)
+{
+	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, sse_xferinfo_cb);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
+}
+
+static int sse_map_curl_error(CURLcode rc)
+{
+	if (rc == CURLE_OK)
+		return 0;
+	if (http_cancelled() ||
+	    rc == CURLE_WRITE_ERROR ||
+	    rc == CURLE_ABORTED_BY_CALLBACK) {
+		log_info("http: request cancelled by user");
+		return -ECANCELED;
+	}
+	log_err("sse request failed: %s", curl_easy_strerror(rc));
+	return MORPH_ERR_NETWORK;
+}
 
 int http_init(void)
 {
@@ -215,9 +258,14 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	struct sse_write_data *swd = data;
 	size_t total = size * nmemb;
 	log_dbg("sse_write_cb: received %zu bytes", total);
+	if (http_cancelled())
+		return 0;
 	sse_parser_feed(&swd->parser, (const char *)ptr, total);
-	if (swd->cb)
-		swd->cb((const char *)ptr, total, swd->user_data);
+	if (swd->cb) {
+		int rc = swd->cb((const char *)ptr, total, swd->user_data);
+		if (rc != 0 || http_cancelled())
+			return 0;
+	}
 	return total;
 }
 
@@ -254,6 +302,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
@@ -266,8 +315,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
-		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+		return sse_map_curl_error(rc);
 	}
 
 	long status = 0;
@@ -315,6 +363,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
@@ -327,8 +376,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
-		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+		return sse_map_curl_error(rc);
 	}
 
 	long status = 0;
@@ -378,6 +426,7 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, timeout_seconds > 0 ? timeout_seconds : 300L);
 	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+	sse_apply_cancel_opts(curl);
 
 	if (body && body_len > 0) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
@@ -390,12 +439,13 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 
 	if (rc != CURLE_OK) {
 		curl_easy_cleanup(curl);
+		if (http_cancelled())
+			return -ECANCELED;
 		if (rc == CURLE_OPERATION_TIMEDOUT) {
 			log_warn("http_post_sse_ex_timeout: connection stalled (no data for %lds)", timeout_seconds);
 			return -ETIMEDOUT;
 		}
-		log_err("sse request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+		return sse_map_curl_error(rc);
 	}
 
 	long status = 0;

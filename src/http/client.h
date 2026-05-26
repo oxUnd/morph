@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include <signal.h>
 
 typedef int (*http_callback)(const char *data, size_t len, void *user_data);
 
@@ -28,6 +29,7 @@ struct http_request {
 
 int http_init(void);
 void http_cleanup(void);
+void http_set_cancel_flag(volatile sig_atomic_t *flag);
 int http_get(const char *url, struct http_response *resp);
 int http_get_ex(const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp);

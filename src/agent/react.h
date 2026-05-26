@@ -142,6 +142,7 @@ react_context_create_for_session(struct session_store *store,
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
+void react_cancel_active(void);
 extern volatile sig_atomic_t react_sigint_flag;
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);

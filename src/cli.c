@@ -1972,6 +1972,7 @@ static void sigint_handler(int sig)
 {
 	(void)sig;
 	react_sigint_flag = 1;
+	react_cancel_active();
 	sigint_received = 1;
 	if (write(STDOUT_FILENO, "\n", 1) < 0) {
 		/* ignore */
@@ -2824,7 +2825,12 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	react_run(ctx->react, effective_input, output_callback, ctx);
 
 	if (ctx->spin.running) {
-		spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Error");
+		if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
+		    ctx->react->cancelled) {
+			spin_stop(&ctx->spin, SPIN_STATE_ABORT, "Cancelled");
+		} else {
+			spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Error");
+		}
 		printf("\n");
 	}
 

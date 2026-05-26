@@ -244,8 +244,14 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 		cJSON *text_item = cJSON_GetObjectItem(first, "text");
 		if (cJSON_IsString(text_item) && text_item->valuestring) {
 			llm_stream_append(ctx, text_item->valuestring);
-			if (ctx->user_cb)
-				ctx->user_cb(text_item->valuestring, ctx->user_data);
+			if (ctx->user_cb) {
+				int rc = ctx->user_cb(text_item->valuestring,
+						      ctx->user_data);
+				if (rc != 0) {
+					cJSON_Delete(root);
+					return rc;
+				}
+			}
 		}
 		cJSON_Delete(root);
 		return 0;
@@ -254,8 +260,13 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	cJSON *content = cJSON_GetObjectItem(delta, "content");
 	if (cJSON_IsString(content) && content->valuestring) {
 		llm_stream_append(ctx, content->valuestring);
-		if (ctx->user_cb)
-			ctx->user_cb(content->valuestring, ctx->user_data);
+		if (ctx->user_cb) {
+			int rc = ctx->user_cb(content->valuestring, ctx->user_data);
+			if (rc != 0) {
+				cJSON_Delete(root);
+				return rc;
+			}
+		}
 	}
 
 	cJSON *tool_calls_arr = cJSON_GetObjectItem(delta, "tool_calls");
@@ -316,8 +327,11 @@ struct llm_http_ctx {
 static int llm_http_cb(const char *data, size_t len, void *ud)
 {
 	struct llm_http_ctx *hctx = ud;
-	if (hctx->parser)
-		sse_parser_feed(hctx->parser, data, len);
+	if (hctx->parser) {
+		int rc = sse_parser_feed(hctx->parser, data, len);
+		if (rc != 0)
+			return rc;
+	}
 	if (hctx->error_buf && hctx->arena) {
 		size_t needed = hctx->error_len + len + 1;
 		if (needed > hctx->error_cap && hctx->error_cap < 65536) {

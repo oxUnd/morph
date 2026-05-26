@@ -18,7 +18,7 @@ struct sse_parser {
 };
 
 void sse_parser_init(struct sse_parser *p, sse_event_cb cb, void *user_data);
-void sse_parser_feed(struct sse_parser *p, const char *data, size_t len);
+int sse_parser_feed(struct sse_parser *p, const char *data, size_t len);
 void sse_parser_free(struct sse_parser *p);
 
 #ifdef __cplusplus
