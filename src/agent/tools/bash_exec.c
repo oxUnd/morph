@@ -25,6 +25,8 @@ static char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_RULE_MAX];
 static int bash_exec_allowed_commands_count;
 static char bash_exec_allowed_cwds[BASH_EXEC_ALLOW_MAX][PATH_MAX];
 static int bash_exec_allowed_cwds_count;
+static bash_exec_approval_cb_t bash_exec_approval_cb;
+static void *bash_exec_approval_user_data;
 
 void bash_exec_set_default_timeout(int seconds)
 {
@@ -38,45 +40,142 @@ void bash_exec_clear_allowlist(void)
 	memset(bash_exec_allowed_cwds, 0, sizeof(bash_exec_allowed_cwds));
 	bash_exec_allowed_commands_count = 0;
 	bash_exec_allowed_cwds_count = 0;
+	bash_exec_approval_cb = NULL;
+	bash_exec_approval_user_data = NULL;
 }
 
-int bash_exec_allow_command(const char *command)
+void bash_exec_set_approval_callback(bash_exec_approval_cb_t cb,
+				     void *user_data)
 {
-	if (!command || !*command)
+	bash_exec_approval_cb = cb;
+	bash_exec_approval_user_data = user_data;
+}
+
+int bash_exec_allow_command(const char *pattern)
+{
+	if (!pattern || !*pattern)
 		MORPH_RETURN(-EINVAL);
-	if (strlen(command) >= BASH_EXEC_RULE_MAX)
+	if (strlen(pattern) >= BASH_EXEC_RULE_MAX)
 		MORPH_RETURN(-ENAMETOOLONG);
+	for (int i = 0; i < bash_exec_allowed_commands_count; i++) {
+		if (strcmp(bash_exec_allowed_commands[i], pattern) == 0)
+			return 0;
+	}
 	if (bash_exec_allowed_commands_count >= BASH_EXEC_ALLOW_MAX)
 		MORPH_RETURN(-ENOSPC);
 	snprintf(bash_exec_allowed_commands[bash_exec_allowed_commands_count],
-		 BASH_EXEC_RULE_MAX, "%s", command);
+		 BASH_EXEC_RULE_MAX, "%s", pattern);
 	bash_exec_allowed_commands_count++;
 	return 0;
 }
 
-int bash_exec_allow_cwd(const char *cwd)
+int bash_exec_allow_cwd(const char *path)
 {
 	char resolved[PATH_MAX];
+	const char *stored;
 
-	if (!cwd || !*cwd)
+	if (!path || !*path)
 		MORPH_RETURN(-EINVAL);
-	if (!realpath(cwd, resolved))
-		MORPH_RETURN(-errno);
+	if (strcmp(path, "*") == 0) {
+		stored = "*";
+	} else {
+		if (!realpath(path, resolved))
+			MORPH_RETURN(-errno);
+		stored = resolved;
+	}
+	for (int i = 0; i < bash_exec_allowed_cwds_count; i++) {
+		if (strcmp(bash_exec_allowed_cwds[i], stored) == 0)
+			return 0;
+	}
 	if (bash_exec_allowed_cwds_count >= BASH_EXEC_ALLOW_MAX)
 		MORPH_RETURN(-ENOSPC);
 	snprintf(bash_exec_allowed_cwds[bash_exec_allowed_cwds_count],
-		 PATH_MAX, "%s", resolved);
+		 PATH_MAX, "%s", stored);
 	bash_exec_allowed_cwds_count++;
 	return 0;
+}
+
+static const char *skip_ws(const char *s)
+{
+	while (*s == ' ' || *s == '\t')
+		s++;
+	return s;
+}
+
+static int has_whitespace(const char *s)
+{
+	for (; *s; s++) {
+		if (*s == ' ' || *s == '\t')
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * Match a single command-allowlist pattern against a (whitespace-stripped)
+ * command. Patterns:
+ *   "*"              - wildcard, matches anything
+ *   "prog" (no ws)   - first-token (program-name) match: command begins with
+ *                      `prog` followed by EOS or whitespace
+ *   "prefix*"        - prefix match: command begins with the literal prefix
+ *                      and the prefix is followed by EOS or whitespace
+ *   "exact args"     - exact string match
+ */
+static int command_matches_pattern(const char *cmd, const char *pat)
+{
+	cmd = skip_ws(cmd);
+	pat = skip_ws(pat);
+	if (!*pat)
+		return 0;
+	if (strcmp(pat, "*") == 0)
+		return 1;
+	size_t plen = strlen(pat);
+	if (pat[plen - 1] == '*') {
+		size_t base = plen - 1;
+		while (base > 0 &&
+		       (pat[base - 1] == ' ' || pat[base - 1] == '\t'))
+			base--;
+		if (base == 0)
+			return 1;
+		if (strncmp(cmd, pat, base) != 0)
+			return 0;
+		char after = cmd[base];
+		return after == '\0' || after == ' ' || after == '\t';
+	}
+	if (!has_whitespace(pat)) {
+		if (strncmp(cmd, pat, plen) != 0)
+			return 0;
+		char after = cmd[plen];
+		return after == '\0' || after == ' ' || after == '\t';
+	}
+	return strcmp(cmd, pat) == 0;
 }
 
 static int command_is_allowed(const char *command)
 {
 	for (int i = 0; i < bash_exec_allowed_commands_count; i++) {
-		if (strcmp(command, bash_exec_allowed_commands[i]) == 0)
+		if (command_matches_pattern(
+			    command, bash_exec_allowed_commands[i]))
 			return 1;
 	}
 	return 0;
+}
+
+static int cwd_matches_pattern(const char *resolved, const char *pat)
+{
+	if (strcmp(pat, "*") == 0)
+		return 1;
+	if (strcmp(resolved, pat) == 0)
+		return 1;
+	size_t plen = strlen(pat);
+	if (plen == 0)
+		return 0;
+	if (strncmp(resolved, pat, plen) != 0)
+		return 0;
+	if (resolved[plen] != '/')
+		return 0;
+	/* "/" itself as root would match every absolute path; permit it. */
+	return 1;
 }
 
 static int cwd_is_allowed(const char *cwd)
@@ -88,9 +187,39 @@ static int cwd_is_allowed(const char *cwd)
 	if (!realpath(cwd, resolved))
 		return 0;
 	for (int i = 0; i < bash_exec_allowed_cwds_count; i++) {
-		if (strcmp(resolved, bash_exec_allowed_cwds[i]) == 0)
+		if (cwd_matches_pattern(
+			    resolved, bash_exec_allowed_cwds[i]))
 			return 1;
 	}
+	return 0;
+}
+
+/*
+ * Extract a program name (first whitespace-delimited token, stripped of
+ * any leading directory path) suitable for adding to the runtime command
+ * allowlist. Returns 0 on success and writes a NUL-terminated string to
+ * out; returns a negative error code otherwise.
+ */
+static int extract_program_name(const char *command, char *out, size_t outsize)
+{
+	if (!command || !out || outsize == 0)
+		return -EINVAL;
+	const char *p = skip_ws(command);
+	const char *start = p;
+	while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '|' &&
+	       *p != '&' && *p != '\n' && *p != '(' && *p != '`' &&
+	       *p != '$')
+		p++;
+	if (p == start)
+		return -EINVAL;
+	const char *base = p;
+	while (base > start && *(base - 1) != '/')
+		base--;
+	size_t len = (size_t)(p - base);
+	if (len == 0 || len + 1 > outsize)
+		return -EINVAL;
+	memcpy(out, base, len);
+	out[len] = '\0';
 	return 0;
 }
 
@@ -290,16 +419,6 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		return -EINVAL;
 	}
 
-	if (!command_is_allowed(command) || !cwd_is_allowed(cwd)) {
-		log_warn("bash_exec: command or cwd not allowed by policy");
-		if (root)
-			cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"command or cwd is not explicitly allowed "
-			"by bash_exec policy\"}");
-		return -EPERM;
-	}
-
 	if (contains_blocked_command(command)) {
 		log_warn("bash_exec: blocked dangerous command: %s", command);
 		if (root)
@@ -310,6 +429,62 @@ static int bash_exec_run(const char *args_json, char **result_json,
 			"kill, package managers, etc.) are not allowed. "
 			"Use read-only alternatives instead.\"}");
 		return -EPERM;
+	}
+
+	int cmd_ok = command_is_allowed(command);
+	int cwd_ok = cwd_is_allowed(cwd);
+	if (!cmd_ok || !cwd_ok) {
+		if (!bash_exec_approval_cb) {
+			log_warn("bash_exec: command or cwd not allowed "
+				 "and no approval callback registered");
+			if (root)
+				cJSON_Delete(root);
+			*result_json = strdup(
+				"{\"error\":\"command or cwd is not allowed "
+				"by bash_exec policy and no interactive "
+				"approval is available\"}");
+			return -EPERM;
+		}
+		enum bash_exec_verdict v = bash_exec_approval_cb(
+			command, cwd, bash_exec_approval_user_data);
+		if (v == BASH_EXEC_DENY) {
+			log_warn("bash_exec: command denied by user");
+			if (root)
+				cJSON_Delete(root);
+			*result_json = strdup(
+				"{\"error\":\"command execution denied "
+				"by user\"}");
+			return -EPERM;
+		}
+		if (v == BASH_EXEC_ALWAYS) {
+			char prog[BASH_EXEC_RULE_MAX];
+			if (!cmd_ok &&
+			    extract_program_name(command, prog,
+						 sizeof(prog)) == 0) {
+				int rc = bash_exec_allow_command(prog);
+				if (rc < 0)
+					log_warn("bash_exec: failed to "
+						 "persist program '%s' "
+						 "(rc=%d)", prog, rc);
+				else
+					log_info("bash_exec: persisted "
+						 "program '%s' for session",
+						 prog);
+			}
+			if (!cwd_ok && cwd && *cwd) {
+				int rc = bash_exec_allow_cwd(cwd);
+				if (rc < 0)
+					log_warn("bash_exec: failed to "
+						 "persist cwd '%s' (rc=%d)",
+						 cwd, rc);
+				else
+					log_info("bash_exec: persisted "
+						 "cwd '%s' for session",
+						 cwd);
+			}
+		} else {
+			log_info("bash_exec: command approved once by user");
+		}
 	}
 
 	int out_pipe[2], err_pipe[2];
@@ -459,9 +634,11 @@ int bash_exec_init(struct tool_registry *reg)
 		"commands described in skill instructions (build/test/lint/git/etc.). "
 		"Network and non-essential inherited environment variables are unavailable. "
 		"File writes require an explicit cwd and are limited to that directory. "
-		"Commands and cwd values must match the configured allowlists exactly. "
-		"DANGEROUS commands are blocked: rm, mv, cp, chmod, curl, wget, ssh, "
-		"kill, package managers, and other destructive operations. "
+		"Commands matching the configured allowlist run silently; "
+		"anything else triggers an interactive approval prompt to the user "
+		"(yes/no/always). DANGEROUS commands are blocked unconditionally: "
+		"rm, mv, cp, chmod, curl, wget, ssh, kill, package managers, "
+		"and other destructive operations. "
 		"Args: command (required), cwd (optional working dir), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "

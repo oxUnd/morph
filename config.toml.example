@@ -75,11 +75,32 @@ tool_max_retries    = 3
 # can write only below their explicit cwd.
 bash_exec_enabled = false
 bash_exec_default_timeout = 60
-# Full command strings must match exactly; additional parameters are denied.
-# A cwd is optional for read-only commands, but any supplied cwd must appear
-# in bash_exec_allowed_cwds. File writes are confined to an allowed cwd.
-# bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
-# bash_exec_allowed_cwds = ["/absolute/path/to/morph"]
+# Allowlist patterns. Commands matching one of these run silently.
+# Anything NOT matched (and not on the hardcoded dangerous blocklist
+# like rm/mv/cp/chmod/curl/wget/ssh/kill/apt/pip/npm/...) triggers an
+# interactive y/n/a prompt before execution; "always" persists the
+# program name (and resolved cwd) to this session's allowlist.
+#
+# Pattern syntax for bash_exec_allowed_commands:
+#   "*"                  any command (dangerous blocklist still applies)
+#   "prog"               any invocation of `prog` (e.g. `prog --help`)
+#   "prog *"             any command starting with `prog `
+#   "prog sub *"         any command starting with `prog sub `
+#   "prog exact args"    exact string match
+#
+# bash_exec_allowed_commands = [
+#   "cmake",                    # any cmake invocation
+#   "ctest",                    # any ctest invocation
+#   "git",                      # any git invocation
+#   "lark-cli",                 # CLI bundled with skills/lark-*
+#   "gh pr *",                  # only gh pr subcommands
+#   "cmake --build build",      # legacy exact match still works
+# ]
+#
+# bash_exec_allowed_cwds entries are interpreted as subtree roots:
+# the requested cwd is allowed if it equals one of these paths or
+# resolves to a subdirectory of one. Use "*" to allow any cwd.
+# bash_exec_allowed_cwds = ["/absolute/path/to/your/project"]
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names

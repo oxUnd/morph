@@ -156,7 +156,8 @@ TEST_F(BashExecTest, PolicyDeniesWithoutRules)
 	int rc;
 	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
-	EXPECT_TRUE(result.find("explicitly allowed") != std::string::npos);
+	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
+		    result.find("interactive approval") != std::string::npos);
 }
 
 TEST_F(BashExecTest, PolicyDeniesAdditionalArguments)
@@ -745,7 +746,8 @@ TEST_F(BashExecTest, CwdInvalid)
 	std::string args = "{\"command\":\"pwd\",\"cwd\":\"/nonexistent_dir_xyz\"}";
 	std::string result = exec_tool(reg, args.c_str(), rc);
 	EXPECT_EQ(rc, -EPERM);
-	EXPECT_TRUE(result.find("explicitly allowed") != std::string::npos);
+	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
+		    result.find("interactive approval") != std::string::npos);
 }
 
 TEST_F(BashExecTest, TimeoutOption)
@@ -1077,4 +1079,224 @@ TEST_F(BashExecTest, AllowedTr)
 	int rc;
 	std::string result = exec_command(reg, "echo HELLO | tr A-Z a-z", rc);
 	EXPECT_EQ(rc, 0);
+}
+
+/* ---- Pattern-based command allowlist ---- */
+
+TEST_F(BashExecTest, ProgramNamePatternAllowsArgs)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("echo"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"echo hi there friends\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(get_json_field(result, "command"), "echo hi there friends");
+}
+
+TEST_F(BashExecTest, ProgramNamePatternRequiresTokenBoundary)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("ech"), 0);
+	int rc;
+	exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+}
+
+TEST_F(BashExecTest, PrefixWildcardAllowsSubcommands)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("git status *"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"git status --short\"}", rc);
+	EXPECT_EQ(rc, 0);
+}
+
+TEST_F(BashExecTest, PrefixWildcardRejectsOtherSubcommand)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("git status *"), 0);
+	int rc;
+	exec_raw(reg, "{\"command\":\"git log --oneline\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+}
+
+TEST_F(BashExecTest, WildcardStarAllowsArbitraryCommand)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("*"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"echo wild\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(get_json_field(result, "command"), "echo wild");
+}
+
+TEST_F(BashExecTest, WildcardStarStillRespectsBlocklist)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("*"), 0);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"rm -rf /\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_TRUE(result.find("blocked") != std::string::npos);
+}
+
+TEST_F(BashExecTest, ExactPatternStillRequiresExactMatch)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("echo hi"), 0);
+	int rc;
+	exec_raw(reg, "{\"command\":\"echo hi extra\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+}
+
+/* ---- Subtree cwd allowlist ---- */
+
+TEST_F(BashExecTest, CwdSubtreeAllowed)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("pwd"), 0);
+	ASSERT_EQ(bash_exec_allow_cwd("/tmp"), 0);
+	mkdir("/tmp/morph_bash_subtree", 0755);
+	int rc;
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_subtree\"}",
+		rc);
+	EXPECT_EQ(rc, 0);
+	rmdir("/tmp/morph_bash_subtree");
+}
+
+TEST_F(BashExecTest, CwdSubtreeRejectsSiblingPrefix)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("pwd"), 0);
+	mkdir("/tmp/morph_bash_root", 0755);
+	mkdir("/tmp/morph_bash_root_sibling", 0755);
+	ASSERT_EQ(bash_exec_allow_cwd("/tmp/morph_bash_root"), 0);
+	int rc;
+	exec_raw(reg,
+		 "{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_root_sibling\"}",
+		 rc);
+	EXPECT_EQ(rc, -EPERM);
+	rmdir("/tmp/morph_bash_root");
+	rmdir("/tmp/morph_bash_root_sibling");
+}
+
+TEST_F(BashExecTest, CwdWildcardAllowsAny)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("pwd"), 0);
+	ASSERT_EQ(bash_exec_allow_cwd("*"), 0);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"pwd\",\"cwd\":\"/tmp\"}", rc);
+	EXPECT_EQ(rc, 0);
+}
+
+/* ---- Approval callback ---- */
+
+struct ApprovalState {
+	int calls;
+	enum bash_exec_verdict next;
+	std::string last_command;
+	std::string last_cwd;
+};
+
+static enum bash_exec_verdict approval_stub(const char *command,
+					    const char *cwd,
+					    void *user_data)
+{
+	ApprovalState *s = static_cast<ApprovalState *>(user_data);
+	s->calls++;
+	s->last_command = command ? command : "";
+	s->last_cwd = cwd ? cwd : "";
+	return s->next;
+}
+
+TEST_F(BashExecTest, ApprovalCallbackAllowsOnce)
+{
+	bash_exec_init(&reg);
+	ApprovalState state{0, BASH_EXEC_ALLOW, "", ""};
+	bash_exec_set_approval_callback(approval_stub, &state);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_EQ(state.last_command, "echo hi");
+	EXPECT_EQ(get_json_field(result, "command"), "echo hi");
+}
+
+TEST_F(BashExecTest, ApprovalCallbackDenies)
+{
+	bash_exec_init(&reg);
+	ApprovalState state{0, BASH_EXEC_DENY, "", ""};
+	bash_exec_set_approval_callback(approval_stub, &state);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_TRUE(result.find("denied") != std::string::npos);
+}
+
+TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
+{
+	bash_exec_init(&reg);
+	ApprovalState state{0, BASH_EXEC_ALWAYS, "", ""};
+	bash_exec_set_approval_callback(approval_stub, &state);
+	int rc;
+	exec_raw(reg, "{\"command\":\"echo first\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	std::string r2 = exec_raw(reg, "{\"command\":\"echo second arg\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1); /* callback NOT called again */
+	EXPECT_EQ(get_json_field(r2, "command"), "echo second arg");
+}
+
+TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsCwd)
+{
+	bash_exec_init(&reg);
+	ASSERT_EQ(bash_exec_allow_command("pwd"), 0);
+	mkdir("/tmp/morph_bash_persist", 0755);
+	mkdir("/tmp/morph_bash_persist/sub", 0755);
+	ApprovalState state{0, BASH_EXEC_ALWAYS, "", ""};
+	bash_exec_set_approval_callback(approval_stub, &state);
+	int rc;
+	exec_raw(reg,
+		 "{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_persist\"}",
+		 rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	exec_raw(reg,
+		 "{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_persist/sub\"}",
+		 rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	rmdir("/tmp/morph_bash_persist/sub");
+	rmdir("/tmp/morph_bash_persist");
+}
+
+TEST_F(BashExecTest, BlocklistOverridesApprovalCallback)
+{
+	bash_exec_init(&reg);
+	ApprovalState state{0, BASH_EXEC_ALWAYS, "", ""};
+	bash_exec_set_approval_callback(approval_stub, &state);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"rm -rf /\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_EQ(state.calls, 0);
+	EXPECT_TRUE(result.find("blocked") != std::string::npos);
+}
+
+TEST_F(BashExecTest, NoCallbackKeepsStrictDeny)
+{
+	bash_exec_init(&reg);
+	int rc;
+	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
+		    result.find("interactive approval") != std::string::npos);
 }

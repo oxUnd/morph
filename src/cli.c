@@ -52,6 +52,10 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data);
 
+static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
+							  const char *cwd,
+							  void *user_data);
+
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
 #define ANSI_RED    "\033[31m"
@@ -1769,6 +1773,8 @@ static int cli_init_tools(struct cli_context *ctx)
 		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
 			bash_exec_allow_cwd(
 				ctx->config.react.bash_exec_allowed_cwds[i]);
+		bash_exec_set_approval_callback(
+			bash_exec_approval_callback, ctx);
 		bash_exec_init(&ctx->tools);
 		log_info("registered bash_exec tool (explicitly enabled)");
 	} else {
@@ -2817,6 +2823,72 @@ static int cli_ask_user_callback(const char *question,
 	return 0;
 }
 
+/*
+ * Generic y/n/a prompt shared by HITL and bash_exec approval flows.
+ *
+ * subject - Short label rendered after the "Approved (...)"/"Denied (...)"
+ *           summary so the user knows which decision they made.
+ *
+ * Returns:
+ *   0 - denied
+ *   1 - approved once
+ *   2 - approved with "always" semantics
+ */
+static int prompt_yna(const char *subject)
+{
+#ifdef HAVE_READLINE
+	char *rl_input = readline("  [y]es / [n]o / [a]lways: ");
+	if (!rl_input) {
+		printf("\n");
+		return 0;
+	}
+	int v;
+	if (rl_input[0] == 'a' || rl_input[0] == 'A')
+		v = 2;
+	else if (rl_input[0] == 'y' || rl_input[0] == 'Y')
+		v = 1;
+	else
+		v = 0;
+	free(rl_input);
+#else
+	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
+	       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
+	fflush(stdout);
+
+	char buf[16];
+	FILE *tty = fopen("/dev/tty", "r");
+	if (!tty) {
+		printf("\n");
+		return 0;
+	}
+	if (!fgets(buf, sizeof(buf), tty)) {
+		fclose(tty);
+		printf("\n");
+		return 0;
+	}
+	fclose(tty);
+
+	int v;
+	if (buf[0] == 'a' || buf[0] == 'A')
+		v = 2;
+	else if (buf[0] == 'y' || buf[0] == 'Y')
+		v = 1;
+	else
+		v = 0;
+#endif
+
+	if (v == 1 || v == 2)
+		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
+		       subject ? subject : "",
+		       v == 2 ? ", always" : "");
+	else
+		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (%s)\n",
+		       subject ? subject : "");
+
+	fflush(stdout);
+	return v;
+}
+
 static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data)
@@ -2845,55 +2917,51 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 		printf("  Args: " ANSI_DIM "%s" ANSI_RESET "\n", display_args);
 	}
 
-#ifdef HAVE_READLINE
-	char *rl_input = readline("  [y]es / [n]o / [a]lways: ");
-	if (!rl_input) {
-		printf("\n");
-		return HITL_DENY;
+	int v = prompt_yna(tool_name);
+	if (v == 2)
+		return HITL_ALWAYS;
+	if (v == 1)
+		return HITL_APPROVE;
+	return HITL_DENY;
+}
+
+static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
+							  const char *cwd,
+							  void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (!ctx)
+		return BASH_EXEC_DENY;
+
+	spin_pause(&ctx->spin);
+
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_YELLOW "⚠ Shell Command Approval" ANSI_RESET "\n");
+
+	if (command) {
+		char display[512];
+		strncpy(display, command, sizeof(display) - 1);
+		display[sizeof(display) - 1] = '\0';
+		size_t alen = strlen(display);
+		if (alen > 380) {
+			display[377] = '.';
+			display[378] = '.';
+			display[379] = '.';
+			display[380] = '\0';
+		}
+		printf("  Cmd:  " ANSI_BOLD "%s" ANSI_RESET "\n", display);
 	}
-	enum hitl_verdict v;
-	if (rl_input[0] == 'a' || rl_input[0] == 'A')
-		v = HITL_ALWAYS;
-	else if (rl_input[0] == 'y' || rl_input[0] == 'Y')
-		v = HITL_APPROVE;
-	else
-		v = HITL_DENY;
-	free(rl_input);
-#else
-	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
-	       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
-	fflush(stdout);
+	if (cwd && *cwd)
+		printf("  Cwd:  " ANSI_DIM "%s" ANSI_RESET "\n", cwd);
+	printf("  " ANSI_DIM "'always' will trust this program (and cwd) "
+	       "for the rest of the session." ANSI_RESET "\n");
 
-	char buf[16];
-	FILE *tty = fopen("/dev/tty", "r");
-	if (!tty) {
-		printf("\n");
-		return HITL_DENY;
-	}
-	if (!fgets(buf, sizeof(buf), tty)) {
-		fclose(tty);
-		printf("\n");
-		return HITL_DENY;
-	}
-	fclose(tty);
-
-	enum hitl_verdict v;
-	if (buf[0] == 'a' || buf[0] == 'A')
-		v = HITL_ALWAYS;
-	else if (buf[0] == 'y' || buf[0] == 'Y')
-		v = HITL_APPROVE;
-	else
-		v = HITL_DENY;
-#endif
-
-	if (v == HITL_APPROVE || v == HITL_ALWAYS)
-		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
-		       tool_name, v == HITL_ALWAYS ? ", always" : "");
-	else
-		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (%s)\n", tool_name);
-
-	fflush(stdout);
-	return v;
+	int v = prompt_yna("bash_exec");
+	if (v == 2)
+		return BASH_EXEC_ALWAYS;
+	if (v == 1)
+		return BASH_EXEC_ALLOW;
+	return BASH_EXEC_DENY;
 }
 
 /* ---- cli_handle_command ---- */
