@@ -1247,6 +1247,232 @@ static void free_media(struct ansi_ctx *ctx)
 	}
 }
 
+/* ---------------- markdown pre-normalization ---------------- */
+
+static int is_table_sep_line(const char *line, size_t len)
+{
+	int has_pipe = 0;
+	int has_dash = 0;
+	size_t i = 0;
+	while (i < len) {
+		unsigned char c = (unsigned char)line[i];
+		if (c == '|') {
+			has_pipe = 1;
+			i++;
+		} else if (c == '-') {
+			has_dash = 1;
+			i++;
+		} else if (c == ':' || c == ' ' || c == '\t') {
+			i++;
+		} else if (c == 0xef && i + 2 < len) {
+			unsigned char b1 = (unsigned char)line[i + 1];
+			unsigned char b2 = (unsigned char)line[i + 2];
+			if (b1 == 0xbd && b2 == 0x9c) {
+				has_pipe = 1;
+				i += 3;
+			} else if (b1 == 0xbc && b2 == 0x8d) {
+				has_dash = 1;
+				i += 3;
+			} else if (b1 == 0xbc && b2 == 0x9a) {
+				i += 3;
+			} else {
+				return 0;
+			}
+		} else {
+			return 0;
+		}
+	}
+	return has_pipe && has_dash;
+}
+
+static int line_has_pipe(const char *line, size_t len)
+{
+	size_t i = 0;
+	while (i < len) {
+		unsigned char c = (unsigned char)line[i];
+		if (c == '|')
+			return 1;
+		if (c == 0xef && i + 2 < len) {
+			unsigned char b1 = (unsigned char)line[i + 1];
+			unsigned char b2 = (unsigned char)line[i + 2];
+			if (b1 == 0xbd && b2 == 0x9c)
+				return 1;
+			i += 3;
+		} else if (c < 0x80) {
+			i++;
+		} else if ((c & 0xE0) == 0xC0) {
+			i += 2;
+		} else if ((c & 0xF0) == 0xE0) {
+			i += 3;
+		} else if ((c & 0xF8) == 0xF0) {
+			i += 4;
+		} else {
+			i++;
+		}
+	}
+	return 0;
+}
+
+static char *md_normalize(const char *md)
+{
+	size_t len = strlen(md);
+	size_t cap = len * 2 + 1;
+	char *out = malloc(cap);
+	if (!out)
+		return NULL;
+	size_t olen = 0;
+
+	const char *p = md;
+	int in_code_fence = 0;
+	char fence_char = 0;
+	int fence_len = 0;
+
+	char *pending = NULL;
+	size_t pending_len = 0;
+	int pending_blank = 0;
+	int prev_was_blank = 1;
+
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		size_t line_len;
+		const char *next_line;
+		if (nl) {
+			const char *raw_end = nl;
+			while (raw_end > p && raw_end[-1] == '\r')
+				raw_end--;
+			line_len = (size_t)(raw_end - p);
+			next_line = nl + 1;
+		} else {
+			line_len = strlen(p);
+			next_line = p + line_len;
+		}
+
+		while (line_len > 0 && (p[line_len - 1] == '\r' ||
+		       p[line_len - 1] == ' ' || p[line_len - 1] == '\t'))
+			line_len--;
+
+		int is_blank = (line_len == 0);
+
+		if (line_len >= 3 && (p[0] == '`' || p[0] == '~')) {
+			char fc = p[0];
+			int fl = 0;
+			size_t fi = 0;
+			while (fi < line_len && p[fi] == fc) {
+				fl++;
+				fi++;
+			}
+			if (fl >= 3) {
+				if (!in_code_fence) {
+					in_code_fence = 1;
+					fence_char = fc;
+					fence_len = fl;
+				} else if (fc == fence_char && fl >= fence_len) {
+					in_code_fence = 0;
+				}
+			}
+		}
+
+		if (pending) {
+			int need_blank_before_pending = 0;
+			if (!in_code_fence && !is_blank && !pending_blank &&
+			    is_table_sep_line(p, line_len) &&
+			    line_has_pipe(pending, pending_len)) {
+				need_blank_before_pending = !prev_was_blank;
+			}
+
+			if (need_blank_before_pending) {
+				if (olen + 1 >= cap) {
+					cap *= 2;
+					char *nb = realloc(out, cap);
+					if (!nb) { free(out); free(pending); return NULL; }
+					out = nb;
+				}
+				out[olen++] = '\n';
+			}
+
+			size_t need = pending_len + 1;
+			while (olen + need >= cap) {
+				cap *= 2;
+				char *nb = realloc(out, cap);
+				if (!nb) { free(out); free(pending); return NULL; }
+				out = nb;
+			}
+			memcpy(out + olen, pending, pending_len);
+			olen += pending_len;
+			out[olen++] = '\n';
+
+			prev_was_blank = pending_blank;
+			free(pending);
+			pending = NULL;
+		}
+
+		if (is_blank) {
+			if (olen + 1 >= cap) {
+				cap *= 2;
+				char *nb = realloc(out, cap);
+				if (!nb) { free(out); free(pending); return NULL; }
+				out = nb;
+			}
+			out[olen++] = '\n';
+			prev_was_blank = 1;
+		} else {
+			pending_len = line_len;
+			pending = malloc(pending_len + 1);
+			if (!pending) { free(out); return NULL; }
+
+			size_t wi = 0;
+			for (size_t i = 0; i < line_len; ) {
+				unsigned char c = (unsigned char)p[i];
+				if (c == 0xef && i + 2 < line_len) {
+					unsigned char b1 = (unsigned char)p[i + 1];
+					unsigned char b2 = (unsigned char)p[i + 2];
+					if (b1 == 0xbd && b2 == 0x9c) {
+						pending[wi++] = '|';
+						i += 3;
+						continue;
+					}
+					if (is_table_sep_line(p, line_len)) {
+						if (b1 == 0xbc && b2 == 0x8d) {
+							pending[wi++] = '-';
+							i += 3;
+							continue;
+						}
+						if (b1 == 0xbc && b2 == 0x9a) {
+							pending[wi++] = ':';
+							i += 3;
+							continue;
+						}
+					}
+				}
+				pending[wi++] = p[i];
+				i++;
+			}
+			pending_len = wi;
+			pending[wi] = '\0';
+			pending_blank = 0;
+		}
+
+		p = next_line;
+	}
+
+	if (pending) {
+		size_t need = pending_len + 1;
+		while (olen + need >= cap) {
+			cap *= 2;
+			char *nb = realloc(out, cap);
+			if (!nb) { free(out); free(pending); return NULL; }
+			out = nb;
+		}
+		memcpy(out + olen, pending, pending_len);
+		olen += pending_len;
+		out[olen++] = '\n';
+		free(pending);
+	}
+
+	out[olen] = '\0';
+	return out;
+}
+
 /* ---------------- public API ---------------- */
 size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 {
@@ -1254,6 +1480,9 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 		return 0;
 	if (buf && buf_len > 0)
 		buf[0] = '\0';
+
+	char *norm = md_normalize(md);
+	const char *input = norm ? norm : md;
 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
@@ -1271,8 +1500,9 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	parser.text = text_callback;
 	parser.debug_log = debug_log;
 
-	md_parse(md, (MD_SIZE)strlen(md), &parser, &ctx);
+	md_parse(input, (MD_SIZE)strlen(input), &parser, &ctx);
 
+	free(norm);
 	free(ctx.link_href.buf);
 	if (ctx.table)
 		free_table(ctx.table);
@@ -1288,6 +1518,9 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	if (!md)
 		return;
 
+	char *norm = md_normalize(md);
+	const char *input = norm ? norm : md;
+
 	MD_PARSER parser = {0};
 	parser.abi_version = 0;
 	parser.flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
@@ -1300,8 +1533,9 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	parser.text = text_callback;
 	parser.debug_log = debug_log;
 
-	md_parse(md, (MD_SIZE)strlen(md), &parser, ctx);
+	md_parse(input, (MD_SIZE)strlen(input), &parser, ctx);
 
+	free(norm);
 	free(ctx->link_href.buf);
 	if (ctx->table)
 		free_table(ctx->table);
