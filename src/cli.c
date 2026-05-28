@@ -2033,7 +2033,7 @@ static char *cmd_completion_generator(const char *text, int state)
 		const char *name = commands[idx].name;
 		idx++;
 		if (strncmp(name, text, (size_t)len) == 0)
-			return strdup(name + 1); /* strip leading / */
+			return strdup(name);
 	}
 	return NULL;
 }
@@ -2088,8 +2088,7 @@ static int is_session_arg_command(const char *cmd)
 static char **cmd_completion(const char *text, int start, int end)
 {
 	(void)end;
-	if (start == 0 && text[0] == '/')
-		rl_attempted_completion_function = NULL;
+	rl_attempted_completion_over = 1;
 	if (start == 0)
 		return rl_completion_matches(text, cmd_completion_generator);
 
