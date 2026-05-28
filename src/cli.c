@@ -22,6 +22,7 @@
 #include "agent/tools/skill_activate.h"
 #include "agent/tools/bash_exec.h"
 #include "agent/tools/ask_user.h"
+#include "agent/tools/img_annotate.h"
 #include "agent/plan.h"
 #include "agent/tools/plan.h"
 #include "mcp/mcp.h"
@@ -1647,6 +1648,22 @@ static int cli_init_models(struct cli_context *ctx)
  *
  * Returns 0 on success, negative errno on failure.
  */
+static void cli_img_annotate_pause(void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (ctx)
+		spin_pause(&ctx->spin);
+}
+
+static void cli_img_annotate_resume(void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (ctx) {
+		fflush(stdout);
+		spin_resume(&ctx->spin);
+	}
+}
+
 static int cli_init_tools(struct cli_context *ctx)
 {
 	int rc = 0;
@@ -1761,6 +1778,10 @@ static int cli_init_tools(struct cli_context *ctx)
 	ctx->react->ask_user_fn = cli_ask_user_callback;
 	ctx->react->ask_user_data = ctx;
 	log_info("registered ask_user tool");
+
+	img_annotate_init(&ctx->tools, cli_img_annotate_pause,
+			  cli_img_annotate_resume, ctx);
+	log_info("registered img_annotate tool");
 
 	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
 		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
