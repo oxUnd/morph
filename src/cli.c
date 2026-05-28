@@ -4,6 +4,7 @@
 #include "util/error.h"
 #include "util/spin.h"
 #include "util/arena.h"
+#include "util/utf8.h"
 #include "agent/tokenizer.h"
 #include "agent/compress.h"
 #include "agent/tools/text_gen.h"
@@ -74,19 +75,6 @@ static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
 static const char *default_db_path = "~/.morph/data.db";
 static const char *default_config_path = "~/.morph/config.toml";
 
-static size_t utf8_truncate(const char *s, size_t max_bytes)
-{
-	if (!s) return 0;
-	size_t len = strlen(s);
-	if (len <= max_bytes) return len;
-	/* Walk backward from max_bytes to find a valid UTF-8 start byte.
-	 * Continuation bytes match 0x80-0xBF; start bytes are 0xC0+ or ASCII <0x80. */
-	size_t pos = max_bytes;
-	while (pos > 0 && ((unsigned char)s[pos] & 0xC0) == 0x80)
-		pos--;
-	return pos;
-}
-
 /* Remove invalid UTF-8 byte sequences in-place.
  * Valid sequences are kept; invalid bytes are simply removed.
  * This ensures the string is always safe for libedit / readline rendering. */
@@ -143,96 +131,6 @@ static void cli_refresh_memory_context(struct cli_context *ctx,
 					  query, &opts);
 	react_set_memory_context(ctx->react, memory_ctx);
 	free(memory_ctx);
-}
-
-static void utf8_sanitize_inplace(char *s)
-{
-	if (!s) return;
-	unsigned char *p = (unsigned char *)s;
-	size_t r = 0, w = 0;
-	while (p[r]) {
-		unsigned char c = p[r];
-		if (c < 0x80) {
-			p[w++] = p[r++];
-		} else if ((c & 0xE0) == 0xC0) {
-			if (p[r+1] && (p[r+1] & 0xC0) == 0x80) {
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-			} else {
-				r++;
-			}
-		} else if ((c & 0xF0) == 0xE0) {
-			if (p[r+1] && p[r+2] && (p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80) {
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-			} else {
-				r++;
-			}
-		} else if ((c & 0xF8) == 0xF0) {
-			if (p[r+1] && p[r+2] && p[r+3] && (p[r+1] & 0xC0) == 0x80 && (p[r+2] & 0xC0) == 0x80 && (p[r+3] & 0xC0) == 0x80) {
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-				p[w++] = p[r++];
-			} else {
-				r++;
-			}
-		} else {
-			r++;
-		}
-	}
-	p[w] = '\0';
-}
-
-static int utf8_display_width(const char *s)
-{
-	if (!s) return 0;
-	int w = 0;
-	const unsigned char *p = (const unsigned char *)s;
-	while (*p) {
-		uint32_t cp;
-		int bytes;
-		if (*p < 0x80) {
-			cp = *p; bytes = 1;
-		} else if ((*p & 0xE0) == 0xC0) {
-			cp = *p & 0x1F; bytes = 2;
-		} else if ((*p & 0xF0) == 0xE0) {
-			cp = *p & 0x0F; bytes = 3;
-		} else if ((*p & 0xF8) == 0xF0) {
-			cp = *p & 0x07; bytes = 4;
-		} else {
-			p++; continue;
-		}
-		for (int i = 1; i < bytes; i++) {
-			if ((p[i] & 0xC0) != 0x80) { bytes = 0; break; }
-		}
-		if (bytes == 0) { p++; continue; }
-		for (int i = 1; i < bytes; i++)
-			cp = (cp << 6) | (p[i] & 0x3F);
-		p += bytes;
-		if (cp < 0x20) continue;
-		if ((cp >= 0x1100 && cp <= 0x115F) ||
-		    (cp >= 0x2329 && cp <= 0x232A) ||
-		    (cp >= 0x2E80 && cp <= 0x303E) ||
-		    (cp >= 0x3040 && cp <= 0x334F) ||
-		    (cp >= 0x3400 && cp <= 0x4DBF) ||
-		    (cp >= 0x4E00 && cp <= 0x9FFF) ||
-		    (cp >= 0xA960 && cp <= 0xA97C) ||
-		    (cp >= 0xAC00 && cp <= 0xD7A3) ||
-		    (cp >= 0xD7B0 && cp <= 0xD7C6) ||
-		    (cp >= 0xF900 && cp <= 0xFAFF) ||
-		    (cp >= 0xFE10 && cp <= 0xFE19) ||
-		    (cp >= 0xFE30 && cp <= 0xFE6F) ||
-		    (cp >= 0xFF01 && cp <= 0xFF60) ||
-		    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-		    (cp >= 0x20000 && cp <= 0x2FFFD) ||
-		    (cp >= 0x30000 && cp <= 0x3FFFD))
-			w += 2;
-		else
-			w += 1;
-	}
-	return w;
 }
 
 static void print_padded(const char *s, int target_width)

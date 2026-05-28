@@ -47,8 +47,37 @@ morph-ipc (jsonrpc)
 Entrypoint: `src/main.c` → initializes logging, HTTP, config, then runs CLI via `cli_run()`.
 
 ## Vendor
-Bundled in `vendor/`: cJSON.c/h, stb_image.h, stb_image_write.h, stb_image_resize2.h, toml.c/h. Compiled as part of the project, **not** fetched separately.
+Bundled in `vendor/`: cJSON.c/h, stb_image.h, stb_image_write.h, stb_image_resize2.h, toml.c/h, sheredom_utf8.h. Compiled as part of the project, **not** fetched separately.
 md4c is **fetched** by CMake FetchContent (not in vendor/). stb_image_write/resize2 have heavy warning suppressions in `src/agent/tools/CMakeLists.txt`.
+
+## UTF-8 Utilities
+All UTF-8 operations must use the shared API in `src/util/utf8.h` — **never** hand-roll your own UTF-8 decode/encode/width logic. The header wraps [sheredom/utf8.h](https://github.com/sheredom/utf8.h) (vendored as `vendor/sheredom_utf8.h`, header-only, all functions `inline`) and adds project-specific extensions.
+
+**Include**: `#include "util/utf8.h"` (from outside `src/util/`) or `#include "utf8.h"` (from within `src/util/`)
+
+**sheredom primitives** (available after including the header — no extra link):
+- `utf8codepoint(str, &cp)` — decode next codepoint, returns advanced pointer; `cp` is `utf8_int32_t`
+- `utf8codepointcalcsize(str)` — byte length of next codepoint
+- `utf8len(str)` / `utf8nlen(str, n)` — count codepoints
+- `utf8valid(str)` / `utf8nvalid(str, n)` — validate, return NULL if valid
+- `utf8dup(str)` / `utf8ndup(str, n)` — strdup with UTF-8 awareness
+- `utf8size_lazy(str)` / `utf8nsize_lazy(str, n)` — byte length without NUL
+- `utf8ncpy`, `utf8ncat`, `utf8cmp`, `utf8casecmp`, `utf8chr`, `utf8rchr`, `utf8str`, `utf8casestr`, etc.
+
+**Project-specific extensions** (defined in `src/util/utf8.c`, link `morph-util`):
+- `utf8_safe_len(s, max_bytes)` — largest length ≤ max_bytes that doesn't split a multi-byte sequence
+- `utf8_dup_clamped(src, max_bytes)` — strdup with truncation; appends `"…(truncated)"` when cut
+- `utf8_sanitize_into(dst, src, src_len)` — copy dropping malformed bytes and embedded NULs; returns bytes written
+- `utf8_sanitize_inplace(s)` — in-place sanitize (removes invalid UTF-8)
+- `utf8_cp_width(cp)` — display column width for a codepoint (uses `wcwidth()` + comprehensive fallback table covering CJK/emoji)
+- `utf8_visible_len(s)` — total display column width of a string
+- `utf8_skip_forward(s, chars)` — advance pointer past N codepoints
+- `utf8_copy_vis(dst, dst_cap, src, max_vis)` — copy up to max_vis visible characters
+- `utf8_is_cjk_cp(cp)` — check if a codepoint is CJK ideograph / wide symbol
+- `utf8_truncate(s, max_bytes)` — find safe UTF-8 truncation point
+- `utf8_display_width(s)` — convenience wrapper returning `int`
+
+**Width table**: `utf8_cp_width` uses `cli.c`'s comprehensive table (0x1100–0x3FFFD CJK ranges + 0x1F000–0x1FAFF emoji ranges + zero-width combining marks). All former per-file CJK tables have been consolidated here.
 
 ## Dependencies
 - **Required**: SQLite3, libcurl, CMake ≥ 3.20

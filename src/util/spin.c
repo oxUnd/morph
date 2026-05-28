@@ -1,4 +1,5 @@
 #include "spin.h"
+#include "utf8.h"
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
@@ -89,76 +90,6 @@ static void format_elapsed(char *buf, size_t len, time_t start)
 	}
 }
 
-static int utf8_char_bytes(const char *s)
-{
-	unsigned char c = (unsigned char)*s;
-	if (c < 0x80) return 1;
-	if ((c & 0xE0) == 0xC0) return 2;
-	if ((c & 0xF0) == 0xE0) return 3;
-	if ((c & 0xF8) == 0xF0) return 4;
-	return 1;
-}
-
-static int utf8_char_width(const char *s)
-{
-	const unsigned char *p = (const unsigned char *)s;
-	unsigned int cp = 0;
-	int bytes = utf8_char_bytes(s);
-	if (bytes == 1) return 1;
-	if (bytes == 2) { cp = ((unsigned)p[0] & 0x1F) << 6 | ((unsigned)p[1] & 0x3F); }
-	else if (bytes == 3) { cp = ((unsigned)p[0] & 0x0F) << 12 | ((unsigned)p[1] & 0x3F) << 6 | ((unsigned)p[2] & 0x3F); }
-	else if (bytes == 4) { cp = ((unsigned)p[0] & 0x07) << 18 | ((unsigned)p[1] & 0x3F) << 12 | ((unsigned)p[2] & 0x3F) << 6 | ((unsigned)p[3] & 0x3F); }
-	else return 1;
-	if (cp < 0x1100) return 1;
-	if (cp < 0x1160) return 2;
-	if (cp >= 0x2E80 && cp <= 0xA4CF) return 2;
-	if (cp >= 0xAC00 && cp <= 0xD7AF) return 2;
-	if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
-	if (cp >= 0xFE30 && cp <= 0xFE6F) return 2;
-	if (cp >= 0xFF01 && cp <= 0xFF60) return 2;
-	if (cp >= 0xFFE0 && cp <= 0xFFE6) return 2;
-	if (cp >= 0x20000 && cp <= 0x2FFFD) return 2;
-	if (cp >= 0x30000 && cp <= 0x3FFFD) return 2;
-	return 1;
-}
-
-static size_t utf8_visible_len(const char *s)
-{
-	size_t n = 0;
-	while (*s) {
-		if ((*s & 0xC0) != 0x80) {
-			n += (size_t)utf8_char_width(s);
-		}
-		s++;
-	}
-	return n;
-}
-
-static const char *utf8_skip_forward(const char *s, size_t chars)
-{
-	while (*s && chars > 0) {
-		int cb = utf8_char_bytes(s);
-		s += cb;
-		chars--;
-	}
-	return s;
-}
-
-static size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t max_vis)
-{
-	size_t written = 0;
-	size_t vis = 0;
-	while (*src && vis < max_vis) {
-		size_t cb = (size_t)utf8_char_bytes(src);
-		if (written + cb >= dst_cap) break;
-		memcpy(dst + written, src, cb);
-		written += cb;
-		src += cb;
-		vis++;
-	}
-	dst[written] = '\0';
-	return vis;
-}
 
 static size_t get_term_width(void)
 {

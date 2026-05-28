@@ -1,12 +1,11 @@
 #include "markdown.h"
+#include "util/utf8.h"
 #include "md4c.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
-#include <wchar.h>
-#include <locale.h>
 
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -449,167 +448,6 @@ static size_t strip_ansi(const char *src, size_t len, char **out_plain)
 	return j;
 }
 
-/* Decode a single UTF-8 code point starting at s[pos].
- * Sets *out_byte_len to the byte length of the character.
- * Returns the decoded Unicode code point (0 on error/EOF). */
-static unsigned utf8_decode_cp(const char *s, size_t len, size_t pos,
-			       size_t *out_byte_len)
-{
-	if (pos >= len) {
-		*out_byte_len = 0;
-		return 0;
-	}
-	unsigned char c = (unsigned char)s[pos];
-	unsigned cp = 0;
-	size_t bl = 1;
-	if (c < 0x80) {
-		cp = c;
-		bl = 1;
-	} else if ((c & 0xE0) == 0xC0 && pos + 1 < len) {
-		cp = ((unsigned)(c & 0x1F) << 6) |
-		     ((unsigned char)s[pos + 1] & 0x3F);
-		bl = 2;
-	} else if ((c & 0xF0) == 0xE0 && pos + 2 < len) {
-		cp = ((unsigned)(c & 0x0F) << 12) |
-		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 6) |
-		     ((unsigned char)s[pos + 2] & 0x3F);
-		bl = 3;
-	} else if ((c & 0xF8) == 0xF0 && pos + 3 < len) {
-		cp = ((unsigned)(c & 0x07) << 18) |
-		     ((unsigned)((unsigned char)s[pos + 1] & 0x3F) << 12) |
-		     ((unsigned)((unsigned char)s[pos + 2] & 0x3F) << 6) |
-		     ((unsigned char)s[pos + 3] & 0x3F);
-		bl = 4;
-	}
-	if (pos + bl > len)
-		bl = len - pos;
-	*out_byte_len = bl;
-	return cp;
-}
-
-/* Fallback width table for when wcwidth() returns -1 (e.g. C locale).
- * Covers zero-width, CJK wide, and emoji ranges. */
-static size_t cp_width_fallback(unsigned cp)
-{
-	if (cp >= 0x0300 && cp <= 0x036F) return 0;
-	if (cp >= 0x0483 && cp <= 0x0489) return 0;
-	if (cp >= 0x1AB0 && cp <= 0x1AFF) return 0;
-	if (cp >= 0x1DC0 && cp <= 0x1DFF) return 0;
-	if (cp >= 0x20D0 && cp <= 0x20FF) return 0;
-	if (cp >= 0xFE20 && cp <= 0xFE2F) return 0;
-	if (cp == 0x00AD) return 0;
-	if (cp == 0x034F) return 0;
-	if (cp == 0x200B) return 0;
-	if (cp == 0x200C) return 0;
-	if (cp == 0x200D) return 0;
-	if (cp == 0x2060) return 0;
-	if (cp >= 0xFE00 && cp <= 0xFE0F) return 0;
-	if (cp >= 0xE0100 && cp <= 0xE01EF) return 0;
-
-	if (cp >= 0x1100 && cp <= 0x11FF) return 2;
-	if (cp >= 0x2E80 && cp <= 0x2EFF) return 2;
-	if (cp >= 0x2F00 && cp <= 0x2FDF) return 2;
-	if (cp >= 0x3040 && cp <= 0x309F) return 2;
-	if (cp >= 0x30A0 && cp <= 0x30FF) return 2;
-	if (cp >= 0x3100 && cp <= 0x312F) return 2;
-	if (cp >= 0x3130 && cp <= 0x318F) return 2;
-	if (cp >= 0x3190 && cp <= 0x319F) return 2;
-	if (cp >= 0x3200 && cp <= 0x32FF) return 2;
-	if (cp >= 0x3300 && cp <= 0x33FF) return 2;
-	if (cp >= 0x3400 && cp <= 0x4DBF) return 2;
-	if (cp >= 0x4E00 && cp <= 0x9FFF) return 2;
-	if (cp >= 0xA000 && cp <= 0xA4CF) return 2;
-	if (cp >= 0xAC00 && cp <= 0xD7AF) return 2;
-	if (cp >= 0xF900 && cp <= 0xFAFF) return 2;
-	if (cp >= 0xFE30 && cp <= 0xFE6F) return 2;
-	if (cp >= 0xFF01 && cp <= 0xFFEF) return 2;
-	if (cp >= 0x20000 && cp <= 0x2EBEF) return 2;
-	if (cp >= 0x2F800 && cp <= 0x2FA1F) return 2;
-	if (cp >= 0x30000 && cp <= 0x3134F) return 2;
-
-	if (cp >= 0x1F600 && cp <= 0x1F64F) return 2;
-	if (cp >= 0x1F300 && cp <= 0x1F5FF) return 2;
-	if (cp >= 0x1F680 && cp <= 0x1F6FF) return 2;
-	if (cp >= 0x1F900 && cp <= 0x1F9FF) return 2;
-	if (cp >= 0x1FA00 && cp <= 0x1FA6F) return 2;
-	if (cp >= 0x1FA70 && cp <= 0x1FAFF) return 2;
-	if (cp >= 0x2600 && cp <= 0x26FF) return 2;
-	if (cp >= 0x2700 && cp <= 0x27BF) return 2;
-	if (cp >= 0x1F000 && cp <= 0x1F02F) return 2;
-	if (cp >= 0x1F0A0 && cp <= 0x1F0FF) return 2;
-
-	return 1;
-}
-
-/* Return the visible column width of a Unicode code point.
- * Uses wcwidth() which respects LC_CTYPE (e.g. CJK locale
- * treats East Asian Ambiguous chars as width 2).
- * Falls back to hardcoded ranges if wcwidth() returns -1. */
-static size_t utf8_cp_width(unsigned cp)
-{
-	if (cp == 0)
-		return 0;
-	int w = wcwidth((wchar_t)cp);
-	if (w > 0)
-		return (size_t)w;
-	if (w == 0)
-		return 0;
-	return cp_width_fallback(cp);
-}
-
-/* Count the total visible column width of a UTF-8 string. */
-static size_t utf8_visible_cols(const char *s, size_t len)
-{
-	size_t cols = 0;
-	for (size_t i = 0; i < len; ) {
-		size_t bl;
-		unsigned cp = utf8_decode_cp(s, len, i, &bl);
-		cols += utf8_cp_width(cp);
-		i += bl ? bl : 1;
-	}
-	return cols;
-}
-
-/* Advance past one UTF-8 character starting at s[pos]. Returns the byte
- * length of the character. Sets *out_cols to the visible column width. */
-static size_t utf8_char_at(const char *s, size_t len, size_t pos, size_t *out_cols)
-{
-	size_t bl;
-	unsigned cp = utf8_decode_cp(s, len, pos, &bl);
-	*out_cols = utf8_cp_width(cp);
-	return bl ? bl : 1;
-}
-
-/* Check if the UTF-8 character at s[pos] is a CJK ideograph or wide symbol.
- * Used to identify word boundaries for wrapping: CJK chars are boundaries. */
-static int utf8_is_cjk(const char *s, size_t len, size_t pos)
-{
-	size_t bl;
-	unsigned cp = utf8_decode_cp(s, len, pos, &bl);
-	/* CJK Unified Ideographs */
-	if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
-	if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
-	/* CJK Compatibility Ideographs */
-	if (cp >= 0xF900 && cp <= 0xFAFF) return 1;
-	/* CJK Unified Ideographs Extension B-I */
-	if (cp >= 0x20000 && cp <= 0x2EBEF) return 1;
-	if (cp >= 0x30000 && cp <= 0x3134F) return 1;
-	/* CJK Radicals / Kangxi */
-	if (cp >= 0x2E80 && cp <= 0x2EFF) return 1;
-	if (cp >= 0x2F00 && cp <= 0x2FDF) return 1;
-	/* Bopomofo */
-	if (cp >= 0x3100 && cp <= 0x312F) return 1;
-	/* Hiragana / Katakana */
-	if (cp >= 0x3040 && cp <= 0x309F) return 1;
-	if (cp >= 0x30A0 && cp <= 0x30FF) return 1;
-	/* Hangul */
-	if (cp >= 0xAC00 && cp <= 0xD7AF) return 1;
-	if (cp >= 0x1100 && cp <= 0x11FF) return 1;
-	if (cp >= 0x3130 && cp <= 0x318F) return 1;
-	/* Fullwidth forms */
-	if (cp >= 0xFF01 && cp <= 0xFFEF) return 1;
-	return 0;
-}
 
 /* Wrap a single cell's raw (ANSI-decorated) content to fit within max_cols
  * visible columns. Produces an array of wrapped_line structs. Sets
@@ -654,9 +492,12 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			continue;
 		}
 
-		size_t char_cols = 0;
-		size_t char_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
-		int is_cjk = utf8_is_cjk(plain, plain_len, pi);
+		utf8_int32_t cp_raw;
+		size_t char_bytes = (size_t)utf8codepointcalcsize(plain + pi);
+		utf8codepoint(plain + pi, &cp_raw);
+		unsigned cp = (unsigned)cp_raw;
+		size_t char_cols = (size_t)utf8_cp_width(cp);
+		int is_cjk = utf8_is_cjk_cp(cp);
 		int is_space = ((unsigned char)plain[pi] == ' ');
 
 		if (line_vis + char_cols > max_cols && line_vis > 0) {
@@ -710,7 +551,10 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			/* Skip leading spaces on new line */
 			while (ri < raw_len && pi < plain_len &&
 			       (unsigned char)plain[pi] == ' ') {
-				size_t skip_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
+				utf8_int32_t skip_cp_raw;
+				size_t skip_bytes = (size_t)utf8codepointcalcsize(plain + pi);
+				utf8codepoint(plain + pi, &skip_cp_raw);
+				char_cols = (size_t)utf8_cp_width((unsigned)skip_cp_raw);
 				ri += skip_bytes;
 				pi += skip_bytes;
 				line_start = ri;
@@ -718,9 +562,12 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			/* Recalculate current character after skip */
 			if (ri >= raw_len)
 				break;
-			char_cols = 0;
-			char_bytes = utf8_char_at(plain, plain_len, pi, &char_cols);
-			is_cjk = utf8_is_cjk(plain, plain_len, pi);
+			utf8_int32_t cp2_raw;
+			char_bytes = (size_t)utf8codepointcalcsize(plain + pi);
+			utf8codepoint(plain + pi, &cp2_raw);
+			unsigned cp2 = (unsigned)cp2_raw;
+			char_cols = (size_t)utf8_cp_width(cp2);
+			is_cjk = utf8_is_cjk_cp(cp2);
 			is_space = 0;
 			line_vis = 0;
 			break_ri = line_start;
@@ -905,8 +752,7 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 	for (unsigned r = 0; r < t->row_count; r++) {
 		struct table_row *row = &t->rows[r];
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
-			size_t w = utf8_visible_cols(row->cells[c].plain,
-						     row->cells[c].plain_len);
+			size_t w = utf8_visible_len(row->cells[c].plain);
 			if (w > col_w[c])
 				col_w[c] = w;
 		}

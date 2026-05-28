@@ -1,5 +1,6 @@
 #include "tokenizer.h"
 #include "agent/context.h"
+#include "util/utf8.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -61,19 +62,13 @@ static enum char_class classify_utf8(const unsigned char **p)
 		return CHAR_ASCII_PUNCT;
 	}
 
-	unsigned int cp = 0;
-	int bytes = 0;
-	if ((b0 & 0xE0) == 0xC0) { bytes = 2; cp = b0 & 0x1F; }
-	else if ((b0 & 0xF0) == 0xE0) { bytes = 3; cp = b0 & 0x0F; }
-	else if ((b0 & 0xF8) == 0xF0) { bytes = 4; cp = b0 & 0x07; }
-	else { (*p)++; return CHAR_OTHER; }
+	utf8_int32_t cp_raw;
+	const char *next = utf8codepoint((const char *)*p, &cp_raw);
+	unsigned cp = (unsigned)cp_raw;
+	*p = (const unsigned char *)next;
 
-	for (int i = 1; i < bytes; i++) {
-		if ((*p)[i] == 0 || ((*p)[i] & 0xC0) != 0x80)
-			return CHAR_OTHER;
-		cp = (cp << 6) | ((*p)[i] & 0x3F);
-	}
-	*p += bytes;
+	if (cp == 0)
+		return CHAR_OTHER;
 
 	/* CJK Unified Ideographs */
 	if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
