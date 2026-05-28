@@ -203,6 +203,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
 static int cmd_mcp(struct cli_context *ctx, int argc, char **argv);
 static int cmd_memory(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
+static int cmd_clear(struct cli_context *ctx, int argc, char **argv);
 
 /* ---- dispatch table ---- */
 
@@ -259,6 +260,8 @@ static const struct cmd_entry commands[] = {
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
+	{ "/clear",   cmd_clear,   "Clear the terminal screen",         "/clear" },
+	{ "/cl",      cmd_clear,   "Alias for /clear",                  "/cl" },
 };
 
 static const int num_commands = (int)(sizeof(commands) / sizeof(commands[0]));
@@ -1073,6 +1076,16 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv)
 {
 	printf("use /save [format] instead\n");
+	return 0;
+}
+
+static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
+{
+	(void)ctx;
+	(void)argc;
+	(void)argv;
+	printf("\033[2J\033[H");
+	fflush(stdout);
 	return 0;
 }
 
