@@ -227,8 +227,8 @@ static const struct cmd_entry commands[] = {
 	{ "/h",       cmd_help,    "Alias for /help",                   "/h [command]" },
 	{ "/new",     cmd_new,     "Create a new session",              "/new [name]" },
 	{ "/n",       cmd_new,     "Alias for /new",                    "/n [name]" },
-	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id>" },
-	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id>" },
+	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id|^N>" },
+	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id|^N>" },
 	{ "/list",    cmd_list,    "List sessions",                     "/list [n|query|--all]" },
 	{ "/ls",      cmd_list,    "Alias for /list",                   "/ls [n|query|--all]" },
 	{ "/rename",  cmd_rename,  "Rename current session",            "/rename <new_name>" },
@@ -389,20 +389,54 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *name = cmd_arg(argc, argv, 1);
 	if (!name) {
-		CMD_ERROR("usage: /switch <name|id|display_id>");
+		CMD_ERROR("usage: /switch <name|id|^N>");
 		return -EINVAL;
 	}
+
 	struct session s;
-	int rc = session_get_by_name(&ctx->database, name, &s);
-	if (rc < 0)
-		rc = session_get_by_display_id(&ctx->database, name, &s);
-	if (rc < 0) {
-		char *end;
-		errno = 0;
-		long id = strtol(name, &end, 10);
-		if (*end == '\0' && errno == 0)
-			rc = session_get_by_id(&ctx->database, (int64_t)id, &s);
+	int rc = -1;
+
+	if (name[0] == '^') {
+		int idx = 1;
+		if (name[1] != '\0') {
+			char *end;
+			errno = 0;
+			long n = strtol(name + 1, &end, 10);
+			if (*end != '\0' || errno != 0 || n < 1) {
+				CMD_ERROR("session not found: %s", name);
+				return -ENOENT;
+			}
+			idx = (int)n;
+		}
+		struct session *list;
+		int count = 0;
+		session_list(&ctx->database, &list, &count, 0, NULL);
+		int picked = 0;
+		for (int i = 0; i < count; i++) {
+			if (list[i].id == ctx->current_session.id)
+				continue;
+			picked++;
+			if (picked == idx) {
+				s = list[i];
+				rc = 0;
+				break;
+			}
+		}
+		free(list);
+	} else {
+		rc = session_get_by_name(&ctx->database, name, &s);
+		if (rc < 0)
+			rc = session_get_by_display_id(&ctx->database, name, &s);
+		if (rc < 0) {
+			char *end;
+			errno = 0;
+			long id = strtol(name, &end, 10);
+			if (*end == '\0' && errno == 0)
+				rc = session_get_by_id(&ctx->database,
+						       (int64_t)id, &s);
+		}
 	}
+
 	if (rc == 0) {
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
