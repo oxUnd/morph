@@ -3009,11 +3009,25 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 	if (ctx->react) {
 		struct memory_options mem_opts = cli_memory_options(ctx);
-		memory_consolidate_turn(&ctx->database, ctx->current_session.id,
-					effective_input, ctx->react->final_answer,
-					ctx->react->steps,
-					ctx->react->state == REACT_STATE_DONE,
-					&mem_opts);
+		/* Run consolidation on a background worker so the prompt
+		 * returns immediately. The LLM extraction path is the
+		 * slow one (1-3s blocking HTTP); offloading it keeps the
+		 * REPL responsive. */
+		int async_rc = memory_consolidate_turn_async(
+			&ctx->database, ctx->current_session.id,
+			effective_input, ctx->react->final_answer,
+			ctx->react->steps,
+			ctx->react->state == REACT_STATE_DONE,
+			&mem_opts);
+		if (async_rc != 0) {
+			memory_consolidate_turn(&ctx->database,
+						ctx->current_session.id,
+						effective_input,
+						ctx->react->final_answer,
+						ctx->react->steps,
+						ctx->react->state == REACT_STATE_DONE,
+						&mem_opts);
+		}
 	}
 	ctx->streaming = 0;
 	return 0;
@@ -3025,6 +3039,9 @@ void cli_shutdown(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	/* Drain the memory async worker before tearing down the db so
+	 * any in-flight consolidation job finishes against a live file. */
+	memory_async_shutdown();
 	if (ctx->react)
 		react_context_destroy(ctx->react);
 	if (ctx->tokenizer)

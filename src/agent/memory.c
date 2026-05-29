@@ -7,6 +7,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -2147,4 +2148,250 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 	free(llm_decisions);
 	free(llm_artifacts);
 	return worst;
+}
+
+/* ----------------------------------------------------------------------
+ * Async consolidate worker.
+ *
+ * Background:
+ *   memory_capture_llm_path() makes a blocking HTTP SSE call that can
+ *   take 1-3 seconds. When invoked from the CLI on the main thread it
+ *   stalls the readline prompt right after the assistant finishes.
+ *
+ * Design:
+ *   A single long-lived worker thread owns its own SQLite connection
+ *   (opened against the same db->path) and drains a FIFO queue of jobs
+ *   posted by memory_consolidate_turn_async(). The caller deep-copies
+ *   user_input / assistant_output / react_step list into the job, so
+ *   the foreground may free or reuse those buffers immediately.
+ *
+ *   We pin to one worker (not a pool) on purpose: SQLite + LLM API
+ *   serialisation is fine, and one writer keeps the WAL contention low.
+ *
+ * Lifecycle:
+ *   The worker is started lazily on the first async submission and is
+ *   torn down by memory_async_shutdown() (CLI calls this just before
+ *   db_close so all in-flight jobs flush first).
+ * ---------------------------------------------------------------------- */
+
+struct memory_job {
+	char *db_path;
+	int64_t session_id;
+	char *user_input;
+	char *assistant_output;
+	struct react_step *steps;
+	int success;
+	struct memory_options opts;
+	struct memory_job *next;
+};
+
+static pthread_mutex_t g_async_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_async_cv = PTHREAD_COND_INITIALIZER;
+static struct memory_job *g_async_head;
+static struct memory_job *g_async_tail;
+static pthread_t g_async_thread;
+static int g_async_running;
+static int g_async_stop;
+
+static void memory_steps_free(struct react_step *s)
+{
+	while (s) {
+		struct react_step *n = s->next;
+		free(s->content);
+		free(s->tool_name);
+		free(s->tool_args);
+		free(s->tool_call_id);
+		free(s);
+		s = n;
+	}
+}
+
+static struct react_step *memory_steps_dup(const struct react_step *src)
+{
+	struct react_step *head = NULL;
+	struct react_step *tail = NULL;
+
+	for (const struct react_step *cur = src; cur; cur = cur->next) {
+		struct react_step *node = calloc(1, sizeof(*node));
+		if (!node) {
+			memory_steps_free(head);
+			return NULL;
+		}
+		node->type = cur->type;
+		if (cur->content) {
+			node->content = strdup(cur->content);
+			if (!node->content)
+				goto oom;
+		}
+		if (cur->tool_name) {
+			node->tool_name = strdup(cur->tool_name);
+			if (!node->tool_name)
+				goto oom;
+		}
+		if (cur->tool_args) {
+			node->tool_args = strdup(cur->tool_args);
+			if (!node->tool_args)
+				goto oom;
+		}
+		if (cur->tool_call_id) {
+			node->tool_call_id = strdup(cur->tool_call_id);
+			if (!node->tool_call_id)
+				goto oom;
+		}
+		if (!head)
+			head = node;
+		else
+			tail->next = node;
+		tail = node;
+		continue;
+oom:
+		free(node->content);
+		free(node->tool_name);
+		free(node->tool_args);
+		free(node->tool_call_id);
+		free(node);
+		memory_steps_free(head);
+		return NULL;
+	}
+	return head;
+}
+
+static void memory_job_free(struct memory_job *j)
+{
+	if (!j)
+		return;
+	free(j->db_path);
+	free(j->user_input);
+	free(j->assistant_output);
+	memory_steps_free(j->steps);
+	free(j);
+}
+
+static void *memory_async_worker(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		struct memory_job *job = NULL;
+
+		pthread_mutex_lock(&g_async_lock);
+		while (!g_async_stop && !g_async_head)
+			pthread_cond_wait(&g_async_cv, &g_async_lock);
+		if (g_async_stop && !g_async_head) {
+			pthread_mutex_unlock(&g_async_lock);
+			break;
+		}
+		job = g_async_head;
+		g_async_head = job->next;
+		if (!g_async_head)
+			g_async_tail = NULL;
+		pthread_mutex_unlock(&g_async_lock);
+
+		if (!job)
+			continue;
+
+		/* Worker owns its own SQLite handle so it never collides
+		 * with the foreground db on the main thread. WAL keeps
+		 * concurrent reads/writes consistent. */
+		struct db worker_db = {0};
+		int rc = db_open(&worker_db, job->db_path);
+		if (rc == 0) {
+			memory_consolidate_turn(&worker_db, job->session_id,
+						job->user_input,
+						job->assistant_output,
+						job->steps,
+						job->success,
+						&job->opts);
+			db_close(&worker_db);
+		} else {
+			log_dbg("memory: async worker failed to open db: %d",
+				rc);
+		}
+		memory_job_free(job);
+	}
+	return NULL;
+}
+
+static int memory_async_ensure_worker(void)
+{
+	int rc = 0;
+
+	pthread_mutex_lock(&g_async_lock);
+	if (!g_async_running) {
+		g_async_stop = 0;
+		if (pthread_create(&g_async_thread, NULL,
+				   memory_async_worker, NULL) != 0)
+			rc = -errno;
+		else
+			g_async_running = 1;
+	}
+	pthread_mutex_unlock(&g_async_lock);
+	return rc;
+}
+
+int memory_consolidate_turn_async(struct db *db, int64_t session_id,
+				  const char *user_input,
+				  const char *assistant_output,
+				  const struct react_step *steps,
+				  int success,
+				  const struct memory_options *opts)
+{
+	struct memory_job *job;
+
+	if (!db || !db->path[0] || !opts || !opts->enabled || !user_input)
+		return 0;
+
+	job = calloc(1, sizeof(*job));
+	if (!job)
+		return -ENOMEM;
+	job->db_path = strdup(db->path);
+	job->user_input = strdup(user_input);
+	if (assistant_output)
+		job->assistant_output = strdup(assistant_output);
+	job->steps = memory_steps_dup(steps);
+	job->session_id = session_id;
+	job->success = success;
+	job->opts = *opts;
+	if (!job->db_path || !job->user_input ||
+	    (assistant_output && !job->assistant_output) ||
+	    (steps && !job->steps)) {
+		memory_job_free(job);
+		return -ENOMEM;
+	}
+
+	if (memory_async_ensure_worker() != 0) {
+		memory_job_free(job);
+		return -EAGAIN;
+	}
+
+	pthread_mutex_lock(&g_async_lock);
+	if (g_async_tail)
+		g_async_tail->next = job;
+	else
+		g_async_head = job;
+	g_async_tail = job;
+	pthread_cond_signal(&g_async_cv);
+	pthread_mutex_unlock(&g_async_lock);
+	return 0;
+}
+
+void memory_async_shutdown(void)
+{
+	pthread_t th;
+	int running;
+
+	pthread_mutex_lock(&g_async_lock);
+	running = g_async_running;
+	if (running) {
+		g_async_stop = 1;
+		th = g_async_thread;
+		pthread_cond_broadcast(&g_async_cv);
+	}
+	pthread_mutex_unlock(&g_async_lock);
+
+	if (running)
+		pthread_join(th, NULL);
+
+	pthread_mutex_lock(&g_async_lock);
+	g_async_running = 0;
+	pthread_mutex_unlock(&g_async_lock);
 }

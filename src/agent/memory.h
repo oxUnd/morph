@@ -47,6 +47,25 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 			    int success,
 			    const struct memory_options *opts);
 
+/* Asynchronous variant: deep-copies all inputs and posts a job to a
+ * background worker thread that owns its own SQLite connection. The
+ * caller may free user_input/assistant_output/steps and continue to
+ * interact with the foreground db immediately after this returns.
+ *
+ * Returns 0 on enqueue, negative errno on alloc / thread creation
+ * failure (caller may then fall back to memory_consolidate_turn). */
+int memory_consolidate_turn_async(struct db *db, int64_t session_id,
+				  const char *user_input,
+				  const char *assistant_output,
+				  const struct react_step *steps,
+				  int success,
+				  const struct memory_options *opts);
+
+/* Drain the async queue and join the worker thread. CLI must call this
+ * before db_close() so any in-flight job finishes against a still-open
+ * database file. Safe to call when the worker was never started. */
+void memory_async_shutdown(void);
+
 int memory_clear(struct db *db, int64_t session_id,
 		 enum memory_clear_scope scope);
 
