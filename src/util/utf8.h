@@ -20,6 +20,12 @@ int utf8_cp_width(unsigned cp);
 
 size_t utf8_visible_len(const char *s);
 
+/* Same as utf8_visible_len, but skips ANSI CSI escape sequences
+ * (ESC '[' params final-byte) and OSC sequences (ESC ']' ... BEL or
+ * ESC '\\'). Use this when the input string carries SGR colour codes
+ * so the column count reflects what the terminal actually shows. */
+size_t utf8_visible_len_ansi(const char *s);
+
 const char *utf8_skip_forward(const char *s, size_t chars);
 
 size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src,

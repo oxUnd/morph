@@ -153,6 +153,52 @@ size_t utf8_visible_len(const char *s)
 	return n;
 }
 
+size_t utf8_visible_len_ansi(const char *s)
+{
+	if (!s)
+		return 0;
+	size_t n = 0;
+	const unsigned char *p = (const unsigned char *)s;
+	while (*p) {
+		if (*p == 0x1B && p[1] == '[') {
+			/* CSI: ESC '[' params (0x30-0x3F) intermediates
+			 * (0x20-0x2F)* final (0x40-0x7E). */
+			p += 2;
+			while (*p && *p < 0x40)
+				p++;
+			if (*p)
+				p++;
+			continue;
+		}
+		if (*p == 0x1B && p[1] == ']') {
+			/* OSC: ESC ']' ... terminated by BEL (0x07) or
+			 * ST (ESC '\\'). */
+			p += 2;
+			while (*p && *p != 0x07) {
+				if (*p == 0x1B && p[1] == '\\') {
+					p += 2;
+					goto osc_done;
+				}
+				p++;
+			}
+			if (*p == 0x07)
+				p++;
+osc_done:
+			continue;
+		}
+		if (*p == 0x1B && p[1]) {
+			/* Other 2-byte escape (ESC + final). Skip both. */
+			p += 2;
+			continue;
+		}
+		utf8_int32_t cp;
+		const char *next = utf8codepoint((const char *)p, &cp);
+		n += (size_t)utf8_cp_width((unsigned)cp);
+		p = (const unsigned char *)next;
+	}
+	return n;
+}
+
 const char *utf8_skip_forward(const char *s, size_t chars)
 {
 	while (*s && chars > 0) {
