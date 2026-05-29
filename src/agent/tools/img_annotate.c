@@ -340,8 +340,201 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			cJSON *root = cJSON_Parse(buf);
 
 			if (root) {
-				cJSON_Delete(root);
-				*result_json = buf;
+				/*
+				 * Build compositing_plan from arrows:
+				 * count how many arrows point to each
+				 * image (to.image_index), find the
+				 * main image (most to's, tie-break by
+				 * smallest image_index), then emit a
+				 * structured plan the LLM can use for
+				 * image generation.
+				 */
+				cJSON *arrows = cJSON_GetObjectItem(
+							root, "arrows");
+				if (cJSON_IsArray(arrows) &&
+				    cJSON_GetArraySize(arrows) > 0) {
+					int to_count[MAX_IMAGES] = {0};
+					int nimages = 0;
+					int main_idx = -1;
+					int max_count = 0;
+					int ai;
+
+					cJSON *imgs = cJSON_GetObjectItem(
+							root, "images");
+					if (cJSON_IsArray(imgs))
+						nimages = cJSON_GetArraySize(
+								imgs);
+
+					for (ai = 0;
+					     ai < cJSON_GetArraySize(arrows);
+					     ai++) {
+						cJSON *a = cJSON_GetArrayItem(
+								arrows, ai);
+						cJSON *to = cJSON_GetObjectItem(
+								a, "to");
+						if (!to) continue;
+						cJSON *ti = cJSON_GetObjectItem(
+								to,
+								"image_index");
+						if (cJSON_IsNumber(ti) &&
+						    ti->valueint >= 0 &&
+						    ti->valueint < nimages &&
+						    ti->valueint < MAX_IMAGES)
+							to_count[ti->valueint]++;
+					}
+
+					for (ai = 0;
+					     ai < nimages && ai < MAX_IMAGES;
+					     ai++) {
+						if (to_count[ai] > max_count) {
+							max_count = to_count[ai];
+							main_idx = ai;
+						}
+					}
+
+					if (main_idx >= 0 && max_count > 0) {
+						cJSON *plan = cJSON_CreateObject();
+						cJSON *sources = cJSON_CreateArray();
+						cJSON *mbboxes = cJSON_CreateArray();
+
+						cJSON_AddNumberToObject(plan,
+							"main_image_index",
+							main_idx);
+
+						cJSON *mi = cJSON_GetArrayItem(
+								imgs,
+								main_idx);
+						if (mi) {
+							cJSON *mp = cJSON_GetObjectItem(
+								mi, "path");
+							if (mp &&
+							    cJSON_IsString(mp))
+								cJSON_AddStringToObject(
+									plan,
+									"main_image_path",
+									mp->valuestring);
+						}
+
+						for (ai = 0;
+						     ai < cJSON_GetArraySize(arrows);
+						     ai++) {
+							cJSON *a = cJSON_GetArrayItem(
+									arrows, ai);
+							cJSON *to = cJSON_GetObjectItem(
+									a, "to");
+							cJSON *from = cJSON_GetObjectItem(
+									a, "from");
+							if (!to || !from)
+								continue;
+							cJSON *ti = cJSON_GetObjectItem(
+									to,
+									"image_index");
+							if (!cJSON_IsNumber(ti))
+								continue;
+							if (ti->valueint !=
+							    main_idx)
+								continue;
+
+							cJSON *src = cJSON_CreateObject();
+							cJSON *fi = cJSON_GetObjectItem(
+									from,
+									"image_index");
+							if (fi &&
+							    cJSON_IsNumber(fi)) {
+								cJSON_AddNumberToObject(
+									src,
+									"from_image_index",
+									fi->valueint);
+								cJSON *si = cJSON_GetArrayItem(
+										imgs,
+										fi->valueint);
+								if (si) {
+									cJSON *sp = cJSON_GetObjectItem(
+										si, "path");
+									if (sp &&
+									    cJSON_IsString(sp))
+										cJSON_AddStringToObject(
+											src,
+											"from_image_path",
+											sp->valuestring);
+								}
+							}
+
+							cJSON *fx = cJSON_GetObjectItem(
+									from, "x");
+							cJSON *fy = cJSON_GetObjectItem(
+									from, "y");
+							if (fx && cJSON_IsNumber(fx))
+								cJSON_AddNumberToObject(
+									src, "from_x",
+									fx->valuedouble);
+							if (fy && cJSON_IsNumber(fy))
+								cJSON_AddNumberToObject(
+									src, "from_y",
+									fy->valuedouble);
+
+							cJSON *tx = cJSON_GetObjectItem(
+									to, "x");
+							cJSON *ty = cJSON_GetObjectItem(
+									to, "y");
+							if (tx && cJSON_IsNumber(tx))
+								cJSON_AddNumberToObject(
+									src, "to_x",
+									tx->valuedouble);
+							if (ty && cJSON_IsNumber(ty))
+								cJSON_AddNumberToObject(
+									src, "to_y",
+									ty->valuedouble);
+
+							cJSON *lbl = cJSON_GetObjectItem(
+									a, "label");
+							if (lbl &&
+							    cJSON_IsString(lbl))
+								cJSON_AddStringToObject(
+									src, "label",
+									lbl->valuestring);
+
+							cJSON_AddItemToArray(sources, src);
+						}
+
+						cJSON_AddItemToObject(plan,
+							"sources", sources);
+
+						cJSON *bboxes = cJSON_GetObjectItem(
+									root,
+									"bboxes");
+						if (cJSON_IsArray(bboxes)) {
+							for (ai = 0;
+							     ai < cJSON_GetArraySize(bboxes);
+							     ai++) {
+								cJSON *b = cJSON_GetArrayItem(
+										bboxes, ai);
+								cJSON *bi = cJSON_GetObjectItem(
+										b,
+										"image_index");
+								if (bi &&
+								    cJSON_IsNumber(bi) &&
+								    bi->valueint == main_idx)
+									cJSON_AddItemToArray(
+										mbboxes,
+										cJSON_Duplicate(b, 1));
+							}
+						}
+						cJSON_AddItemToObject(plan,
+							"main_bboxes", mbboxes);
+
+						cJSON_AddItemToObject(root,
+							"compositing_plan",
+							plan);
+					}
+				}
+
+				{
+					char *out = cJSON_PrintUnformatted(root);
+					cJSON_Delete(root);
+					free(buf);
+					*result_json = out;
+				}
 				free(editor_path);
 				for (i = 0; i < npaths; i++)
 					free(paths[i]);
@@ -415,6 +608,16 @@ int img_annotate_init(struct tool_registry *reg,
 		"compositing instructions across images "
 		"(e.g. 'mark objects in these photos' or "
 		"'composite the chair from image 1 into image 2'). "
+		"When arrows are present the output also contains "
+		"a 'compositing_plan' field: 'main_image_index' "
+		"is the image that receives the most arrow "
+		"pointers (the base/main image); 'sources' lists "
+		"each source image with its from/to coordinates "
+		"and label; 'main_bboxes' lists all bboxes on "
+		"the main image. Use compositing_plan to drive "
+		"image generation: use the main image as the "
+		"base and composite source content at the "
+		"indicated positions. "
 		"Do NOT use this for automated image operations "
 		"like resize, crop, or format conversion.",
 		"{\"type\":\"object\",\"properties\":{"
