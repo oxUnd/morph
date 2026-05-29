@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
@@ -36,12 +37,15 @@ static int download_url(const char *url, const char *out_path)
 
 int video_gen_create(struct model *self, const char *prompt,
 		    const char **image_paths, int num_images,
+		    const char **video_paths, int num_videos,
 		    int duration, struct video_result *result)
 {
 	if (!prompt || !result)
 		return -EINVAL;
 	if (num_images < 0)
 		num_images = 0;
+	if (num_videos < 0)
+		num_videos = 0;
 	memset(result, 0, sizeof(*result));
 
 	struct arena *arena = arena_create(8192);
@@ -71,18 +75,32 @@ int video_gen_create(struct model *self, const char *prompt,
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 
 	const char *final_prompt = prompt;
-	if (num_images > 1) {
-		size_t suffix_len = 64 + (size_t)num_images * 16;
+	if (num_images > 1 || num_videos > 0) {
+		size_t suffix_len = 96 + (size_t)(num_images + num_videos) * 16;
 		size_t total = strlen(prompt) + suffix_len;
 		char *buf = arena_alloc(arena, total);
 		if (buf) {
-			size_t off = (size_t)snprintf(buf, total, "%s\n[Ref images: ", prompt);
-			for (int i = 0; i < num_images; i++) {
-				if (i > 0)
-					off += (size_t)snprintf(buf + off, total - off, ", ");
-				off += (size_t)snprintf(buf + off, total - off, "image#%d", i + 1);
+			size_t off = (size_t)snprintf(buf, total, "%s", prompt);
+			if (num_images > 1) {
+				off += (size_t)snprintf(buf + off, total - off,
+						       "\n[Ref images: ");
+				for (int i = 0; i < num_images; i++) {
+					if (i > 0)
+						off += (size_t)snprintf(buf + off, total - off, ", ");
+					off += (size_t)snprintf(buf + off, total - off, "image#%d", i + 1);
+				}
+				off += (size_t)snprintf(buf + off, total - off, "]");
 			}
-			off += (size_t)snprintf(buf + off, total - off, "]");
+			if (num_videos > 0) {
+				off += (size_t)snprintf(buf + off, total - off,
+						       "\n[Ref videos: ");
+				for (int i = 0; i < num_videos; i++) {
+					if (i > 0)
+						off += (size_t)snprintf(buf + off, total - off, ", ");
+					off += (size_t)snprintf(buf + off, total - off, "video#%d", i + 1);
+				}
+				off += (size_t)snprintf(buf + off, total - off, "]");
+			}
 			final_prompt = buf;
 		}
 	}
@@ -110,6 +128,63 @@ int video_gen_create(struct model *self, const char *prompt,
 			cJSON_AddStringToObject(url_obj, "url", data_uri);
 			cJSON_AddItemToObject(img_item, "image_url", url_obj);
 			cJSON_AddItemToArray(content_arr, img_item);
+		}
+		free(b64);
+	}
+
+	for (int i = 0; i < num_videos; i++) {
+		if (!video_paths || !video_paths[i] || !video_paths[i][0])
+			continue;
+		const char *vpath = video_paths[i];
+		const char *url_to_send = NULL;
+		char *b64 = NULL;
+
+		if (strncmp(vpath, "http://", 7) == 0 ||
+		    strncmp(vpath, "https://", 8) == 0) {
+			url_to_send = vpath;
+		} else {
+			size_t vlen = 0;
+			char *vdata = file_read_all(vpath, &vlen);
+			if (!vdata || vlen == 0) {
+				log_warn("video_gen: failed to read video: %s", vpath);
+				free(vdata);
+				continue;
+			}
+			b64 = base64_encode((unsigned char *)vdata, vlen);
+			free(vdata);
+			if (!b64) {
+				log_warn("video_gen: failed to encode video: %s", vpath);
+				continue;
+			}
+			const char *mime = "video/mp4";
+			const char *ext = strrchr(vpath, '.');
+			if (ext) {
+				if (!strcasecmp(ext, ".mov"))
+					mime = "video/quicktime";
+				else if (!strcasecmp(ext, ".webm"))
+					mime = "video/webm";
+				else if (!strcasecmp(ext, ".mkv"))
+					mime = "video/x-matroska";
+				else if (!strcasecmp(ext, ".avi"))
+					mime = "video/x-msvideo";
+			}
+			size_t uri_len = strlen("data:") + strlen(mime) +
+					 strlen(";base64,") + strlen(b64) + 1;
+			char *data_uri = arena_alloc(arena, uri_len);
+			if (data_uri) {
+				snprintf(data_uri, uri_len, "data:%s;base64,%s",
+					 mime, b64);
+				url_to_send = data_uri;
+			}
+		}
+
+		if (url_to_send) {
+			cJSON *vid_item = cJSON_CreateObject();
+			cJSON_AddStringToObject(vid_item, "type", "video_url");
+			cJSON *url_obj = cJSON_CreateObject();
+			cJSON_AddStringToObject(url_obj, "url", url_to_send);
+			cJSON_AddItemToObject(vid_item, "video_url", url_obj);
+			cJSON_AddItemToArray(content_arr, vid_item);
 		}
 		free(b64);
 	}
@@ -175,7 +250,14 @@ int video_gen_create(struct model *self, const char *prompt,
 						sizeof(video_url) - 1);
 			}
 			cJSON_Delete(root);
+		} else {
+			log_err("video_gen: failed to parse submit response: %s",
+				resp.body);
 		}
+	} else {
+		log_err("video_gen: submit HTTP %d, body:\n%s",
+			resp.status_code,
+			resp.body ? resp.body : "(empty)");
 	}
 	http_response_free(&resp);
 
