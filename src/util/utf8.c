@@ -212,13 +212,21 @@ size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t max_vis)
 {
 	size_t written = 0;
 	size_t vis = 0;
-	while (*src && vis < max_vis) {
+	if (!dst || dst_cap == 0)
+		return 0;
+	while (*src) {
+		utf8_int32_t cp;
+		(void)utf8codepoint(src, &cp);
 		size_t cb = (size_t)utf8codepointcalcsize(src);
-		if (written + cb >= dst_cap) break;
+		size_t w = (size_t)utf8_cp_width((unsigned)cp);
+		if (vis + w > max_vis)
+			break;
+		if (written + cb >= dst_cap)
+			break;
 		memcpy(dst + written, src, cb);
 		written += cb;
 		src += cb;
-		vis++;
+		vis += w;
 	}
 	dst[written] = '\0';
 	return vis;
