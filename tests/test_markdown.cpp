@@ -140,7 +140,6 @@ TEST(MarkdownRender, CodeBlockWithLang)
 {
 	std::string out = render("```python\nprint('hi')\n```");
 	EXPECT_TRUE(contains(out, "python"));
-	EXPECT_TRUE(contains(out, "\033[48;5;236m"));
 	std::string plain = strip_ansi(out);
 	EXPECT_TRUE(plain.find("print('hi')") != std::string::npos);
 }
@@ -267,7 +266,6 @@ TEST(MarkdownRender, BoldItalic)
 TEST(MarkdownRender, InlineCode)
 {
 	std::string out = render("`code`");
-	EXPECT_TRUE(contains(out, "\033[48;5;236m"));
 	EXPECT_TRUE(contains(out, "\033[36m"));
 	std::string plain = strip_ansi(out);
 	EXPECT_TRUE(plain.find("code") != std::string::npos);

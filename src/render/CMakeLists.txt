@@ -1,5 +1,7 @@
 add_library(morph-render STATIC
 	markdown.c
+	highlight.c
+	latex_unicode.c
 	image.c
 	video.c
 )

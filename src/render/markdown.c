@@ -1,4 +1,6 @@
 #include "markdown.h"
+#include "highlight.h"
+#include "latex_unicode.h"
 #include "util/utf8.h"
 #include "md4c.h"
 #include <stdio.h>
@@ -20,40 +22,9 @@
 #define ANSI_MAGENTA   "\033[35m"
 #define ANSI_CYAN      "\033[36m"
 #define ANSI_GRAY      "\033[90m"
-#define ANSI_BG_CODE   "\033[48;5;236m"
 
 /* ---------------- text buffer ---------------- */
-struct sbuf {
-	char *buf;	/* may be NULL when only sizing */
-	size_t len;
-	size_t cap;	/* 0 when sizing only */
-};
-
-static void sbuf_init(struct sbuf *s, char *buf, size_t cap)
-{
-	s->buf = buf;
-	s->cap = cap;
-	s->len = 0;
-}
-
-static void sbuf_append_n(struct sbuf *s, const char *src, size_t n)
-{
-	if (!s->buf) {
-		s->len += n;
-		return;
-	}
-	size_t space = s->cap > 0 ? s->cap - 1 - s->len : 0;
-	size_t to_write = n < space ? n : space;
-	if (to_write > 0) {
-		memcpy(s->buf + s->len, src, to_write);
-		s->len += to_write;
-	}
-}
-
-static void sbuf_append(struct sbuf *s, const char *str)
-{
-	sbuf_append_n(s, str, strlen(str));
-}
+/* sbuf is defined in highlight.h */
 
 /* ---------------- table buffering ---------------- */
 struct table_cell {
@@ -131,6 +102,13 @@ struct ansi_ctx {
 	int current_link_href_pending;
 	int term_width;
 	struct sbuf link_href;
+	char code_lang[32];
+	size_t code_lang_len;
+	char *code_raw;
+	size_t code_raw_len;
+	size_t code_raw_cap;
+	int in_code_block;
+	int latex_display;
 	struct collected_media media[64];
 	int media_count;
 };
@@ -255,15 +233,23 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		struct MD_BLOCK_CODE_DETAIL *c = detail;
 		ensure_blank_line(ctx);
 		ctx->code_depth++;
+		ctx->in_code_block = 1;
+		ctx->code_raw_len = 0;
+		if (c->lang.text && c->lang.size > 0) {
+			size_t n = c->lang.size < 31 ? c->lang.size : 31;
+			memcpy(ctx->code_lang, c->lang.text, n);
+			ctx->code_lang[n] = '\0';
+			ctx->code_lang_len = n;
+		} else {
+			ctx->code_lang[0] = '\0';
+			ctx->code_lang_len = 0;
+		}
 		out_append(ctx, ANSI_DIM);
 		out_append(ctx, "```");
-		if (c->lang.text && c->lang.size > 0) {
-			out_append_n(ctx, c->lang.text, c->lang.size);
-		}
+		if (ctx->code_lang_len > 0)
+			out_append_n(ctx, ctx->code_lang, ctx->code_lang_len);
 		out_append(ctx, ANSI_RESET);
 		newline_with_prefix(ctx);
-		out_append(ctx, ANSI_BG_CODE);
-		out_append(ctx, ANSI_GRAY);
 		break;
 	}
 	case MD_BLOCK_HTML:
@@ -918,7 +904,33 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		out_append(ctx, ANSI_RESET);
 		ctx->last_block_was_visible = 1;
 		break;
-	case MD_BLOCK_CODE:
+	case MD_BLOCK_CODE: {
+		ctx->in_code_block = 0;
+		/* highlight buffered code */
+		struct sbuf hl;
+		char hlbuf[16384];
+		sbuf_init(&hl, hlbuf, sizeof(hlbuf));
+		highlight_code(ctx->code_lang, ctx->code_lang_len,
+			       ctx->code_raw, ctx->code_raw_len,
+			       &hl, NULL, NULL);
+		/* emit highlighted code with line prefix handling */
+		const char *htext = hl.buf ? hl.buf : ctx->code_raw;
+		size_t hlen = hl.buf ? hl.len : ctx->code_raw_len;
+		size_t start = 0;
+		for (size_t j = 0; j < hlen; j++) {
+			if (htext[j] == '\n') {
+				out_append_n(ctx, htext + start, j - start);
+				out_append(ctx, ANSI_RESET);
+				newline_with_prefix(ctx);
+				start = j + 1;
+			}
+		}
+		if (start < hlen)
+			out_append_n(ctx, htext + start, hlen - start);
+		free(ctx->code_raw);
+		ctx->code_raw = NULL;
+		ctx->code_raw_cap = 0;
+		ctx->code_raw_len = 0;
 		out_append(ctx, ANSI_RESET);
 		newline_with_prefix(ctx);
 		out_append(ctx, ANSI_DIM);
@@ -927,6 +939,7 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		ctx->code_depth--;
 		ctx->last_block_was_visible = 1;
 		break;
+	}
 	case MD_BLOCK_HTML:
 		out_append(ctx, ANSI_RESET);
 		ctx->last_block_was_visible = 1;
@@ -1058,7 +1071,6 @@ static int enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 		break;
 	case MD_SPAN_CODE:
 		ctx->code_depth++;
-		out_append(ctx, ANSI_BG_CODE);
 		out_append(ctx, ANSI_CYAN);
 		break;
 	case MD_SPAN_A: {
@@ -1089,9 +1101,10 @@ static int enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 		break;
 	}
 	case MD_SPAN_LATEXMATH:
+		ctx->latex_display = 0;
+		break;
 	case MD_SPAN_LATEXMATH_DISPLAY:
-		out_append(ctx, ANSI_CYAN);
-		out_append(ctx, "$");
+		ctx->latex_display = 1;
 		break;
 	case MD_SPAN_WIKILINK:
 		out_append(ctx, ANSI_UNDERLINE);
@@ -1169,7 +1182,6 @@ static int leave_span(MD_SPANTYPE type, void *detail, void *userdata)
 	}
 	case MD_SPAN_LATEXMATH:
 	case MD_SPAN_LATEXMATH_DISPLAY:
-		out_append(ctx, "$");
 		out_append(ctx, ANSI_RESET);
 		reapply_inline(ctx);
 		break;
@@ -1201,22 +1213,48 @@ static int text_callback(MD_TEXTTYPE type, const MD_CHAR *text,
 	case MD_TEXT_NORMAL:
 	case MD_TEXT_ENTITY:
 	case MD_TEXT_HTML:
-	case MD_TEXT_LATEXMATH:
 		out_append_n(ctx, text, size);
 		return 0;
+	case MD_TEXT_LATEXMATH: {
+		char ubuf[4096];
+		int flags = ctx->latex_display ? LATEX_DISPLAY : LATEX_INLINE;
+		int ulen = latex_to_unicode(text, size, ubuf,
+					    sizeof(ubuf), flags);
+		out_append(ctx, ANSI_CYAN);
+		if (ctx->latex_display)
+			out_append(ctx, " ");
+		if (ulen > 0)
+			out_append_n(ctx, ubuf, (size_t)ulen);
+		else
+			out_append_n(ctx, text, size);
+		if (ctx->latex_display)
+			out_append(ctx, " ");
+		break;
+	}
 	case MD_TEXT_CODE: {
-		/* For a fenced code block md4c emits text including '\n'.
-		 * We must re-emit the line prefix (and re-open the bg color)
-		 * after each newline so the colored block stays continuous. */
-		if (ctx->code_depth > 0 && ctx->table == NULL) {
+		if (ctx->in_code_block) {
+			/* buffer code for highlighting */
+			size_t need = ctx->code_raw_len + size + 1;
+			if (need > ctx->code_raw_cap) {
+				size_t nc = ctx->code_raw_cap ? ctx->code_raw_cap * 2 : 256;
+				while (nc < need)
+					nc *= 2;
+				char *nb = realloc(ctx->code_raw, nc);
+				if (!nb)
+					return 0;
+				ctx->code_raw = nb;
+				ctx->code_raw_cap = nc;
+			}
+			memcpy(ctx->code_raw + ctx->code_raw_len, text, size);
+			ctx->code_raw_len += size;
+			ctx->code_raw[ctx->code_raw_len] = '\0';
+		} else if (ctx->code_depth > 0 && ctx->table == NULL) {
 			MD_SIZE start = 0;
 			for (MD_SIZE i = 0; i < size; i++) {
 				if (text[i] == '\n') {
 					out_append_n(ctx, text + start, i - start);
 					out_append(ctx, ANSI_RESET);
 					newline_with_prefix(ctx);
-					out_append(ctx, ANSI_BG_CODE);
-					out_append(ctx, ANSI_GRAY);
 					start = i + 1;
 				}
 			}
@@ -1231,6 +1269,7 @@ static int text_callback(MD_TEXTTYPE type, const MD_CHAR *text,
 		out_append_n(ctx, text, size);
 		return 0;
 	}
+	return 0;
 }
 
 static void debug_log(const char *msg, void *userdata)
@@ -1492,7 +1531,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	parser.abi_version = 0;
 	parser.flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
 		       MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS |
-		       MD_FLAG_COLLAPSEWHITESPACE;
+		       MD_FLAG_COLLAPSEWHITESPACE | MD_FLAG_LATEXMATHSPANS;
 	parser.enter_block = enter_block;
 	parser.leave_block = leave_block;
 	parser.enter_span = enter_span;
@@ -1504,6 +1543,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 
 	free(norm);
 	free(ctx.link_href.buf);
+	free(ctx.code_raw);
 	if (ctx.table)
 		free_table(ctx.table);
 	free_media(&ctx);
@@ -1525,7 +1565,7 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	parser.abi_version = 0;
 	parser.flags = MD_FLAG_STRIKETHROUGH | MD_FLAG_TABLES |
 		       MD_FLAG_TASKLISTS | MD_FLAG_PERMISSIVEAUTOLINKS |
-		       MD_FLAG_COLLAPSEWHITESPACE;
+		       MD_FLAG_COLLAPSEWHITESPACE | MD_FLAG_LATEXMATHSPANS;
 	parser.enter_block = enter_block;
 	parser.leave_block = leave_block;
 	parser.enter_span = enter_span;
