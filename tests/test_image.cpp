@@ -294,8 +294,15 @@ TEST(ImageRender, KittyJpegProtocol) {
 	if (n > 0) captured[n] = '\0';
 
 	EXPECT_EQ(rc, 0);
-	EXPECT_NE(strstr(captured, "f=101"), nullptr)
-		<< "JPEG data should use f=101 in kitty protocol, got: " << captured;
+	/*
+	 * Kitty's graphics protocol only supports f=100 (PNG), f=24 (RGB),
+	 * and f=32 (RGBA). JPEG input must be transcoded to PNG before
+	 * transmission, so we expect f=100 in the output stream.
+	 */
+	EXPECT_NE(strstr(captured, "f=100"), nullptr)
+		<< "JPEG input must be transcoded to PNG (f=100) for kitty, got: " << captured;
+	EXPECT_EQ(strstr(captured, "f=101"), nullptr)
+		<< "f=101 is not a valid kitty graphics format, got: " << captured;
 	unsetenv("KITTY_WINDOW_ID");
 	remove(path);
 }

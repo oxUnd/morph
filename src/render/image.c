@@ -9,6 +9,15 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+/*
+ * stb_image / stb_image_write are already compiled with their
+ * STB_*_IMPLEMENTATION macros in src/util/image_util.c (linked via
+ * morph-util). Including the headers here without the impl macros
+ * just gives us the prototypes; the symbols resolve at link time.
+ */
+#include "stb_image.h"
+#include "stb_image_write.h"
+
 static int detect_kitty(void)
 {
 	if (getenv("KITTY_WINDOW_ID"))
@@ -55,32 +64,131 @@ static void write_all(int fd, const char *buf, size_t len)
 	}
 }
 
-static int render_kitty(const char *path)
+/* stb_image_write callback: append bytes into a growing buffer. */
+struct png_sink {
+	unsigned char *buf;
+	size_t len;
+	size_t cap;
+	int oom;
+};
+
+static void png_sink_write(void *ctx, void *data, int size)
+{
+	struct png_sink *s = ctx;
+	if (s->oom || size <= 0) return;
+	size_t need = s->len + (size_t)size;
+	if (need > s->cap) {
+		size_t ncap = s->cap ? s->cap * 2 : 4096;
+		while (ncap < need) ncap *= 2;
+		unsigned char *nb = realloc(s->buf, ncap);
+		if (!nb) { s->oom = 1; return; }
+		s->buf = nb;
+		s->cap = ncap;
+	}
+	memcpy(s->buf + s->len, data, (size_t)size);
+	s->len += (size_t)size;
+}
+
+/*
+ * Read file at path into a freshly malloc'd buffer. Returns 0 on success
+ * and stores buf+len. On error returns negative errno; caller does not
+ * need to free.
+ */
+static int read_file_all(const char *path, unsigned char **out, size_t *out_len)
 {
 	FILE *f = fopen(path, "rb");
-	if (!f) {
-		log_warn("render_kitty: cannot open '%s'", path);
-		MORPH_RETURN(-EIO);
-	}
-	fseek(f, 0, SEEK_END);
+	if (!f) return -EIO;
+	if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -EIO; }
 	long fsize = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); MORPH_RETURN(-EIO); }
+	if (fsize <= 0) { fclose(f); return -EIO; }
+	if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -EIO; }
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); MORPH_RETURN(-ENOMEM); }
+	if (!data) { fclose(f); return -ENOMEM; }
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
+	if (rd != (size_t)fsize) { free(data); return -EIO; }
+	*out = data;
+	*out_len = rd;
+	return 0;
+}
 
-	int fmt = image_detect_fmt(data, rd);
+/*
+ * Kitty's graphics protocol only accepts f=24 (RGB), f=32 (RGBA),
+ * and f=100 (PNG). JPEG/WebP/GIF/BMP are NOT directly supported.
+ * If the input is not already PNG, decode it with stb_image and
+ * re-encode as PNG before transmitting.
+ *
+ * On success: *out_data / *out_len is a malloc'd buffer the caller
+ * must free; *out_fmt is set to 100.
+ */
+static int load_as_png(const char *path, unsigned char **out_data,
+		       size_t *out_len, int *out_fmt)
+{
+	unsigned char *raw = NULL;
+	size_t raw_len = 0;
+	int rc = read_file_all(path, &raw, &raw_len);
+	if (rc != 0) return rc;
+
+	int fmt = image_detect_fmt(raw, raw_len);
+	if (fmt == 100) {
+		*out_data = raw;
+		*out_len = raw_len;
+		*out_fmt = 100;
+		return 0;
+	}
+
+	/* Not PNG (JPEG, or unknown like WebP/GIF/BMP). Decode + reencode. */
+	int w = 0, h = 0, ch = 0;
+	unsigned char *pixels = stbi_load_from_memory(raw, (int)raw_len,
+						      &w, &h, &ch, 4);
+	free(raw);
+	if (!pixels) {
+		log_warn("render_kitty: stbi_load_from_memory failed for '%s': %s",
+			 path, stbi_failure_reason());
+		return -EIO;
+	}
+
+	struct png_sink sink = {0};
+	int wrote = stbi_write_png_to_func(png_sink_write, &sink,
+					   w, h, 4, pixels, w * 4);
+	stbi_image_free(pixels);
+	if (!wrote || sink.oom || sink.len == 0) {
+		free(sink.buf);
+		return -ENOMEM;
+	}
+
+	*out_data = sink.buf;
+	*out_len = sink.len;
+	*out_fmt = 100;
+	return 0;
+}
+
+static int render_kitty(const char *path)
+{
+	unsigned char *data = NULL;
+	size_t rd = 0;
+	int fmt = 0;
+	int rc = load_as_png(path, &data, &rd, &fmt);
+	if (rc != 0) {
+		log_warn("render_kitty: load_as_png('%s') failed: %d", path, rc);
+		MORPH_RETURN(rc);
+	}
+
 	int cols = terminal_cols();
+	/*
+	 * 默认按终端宽度的 50% 显示，避免大图占满整个屏幕。
+	 * kitty 在只指定 c= 时会自动保持宽高比，按列数缩放。
+	 */
+	int disp_cols = cols / 2;
+	if (disp_cols < 1) disp_cols = 1;
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
 	if (!b64) MORPH_RETURN(-ENOMEM);
 	size_t b64_len = strlen(b64);
 
-	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d chunks=%zu",
-		 path, fmt, rd, b64_len, cols,
+	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d disp_cols=%d chunks=%zu",
+		 path, fmt, rd, b64_len, cols, disp_cols,
 		 (b64_len + 4095) / 4096);
 
 	fflush(stdout);
@@ -95,10 +203,10 @@ static int render_kitty(const char *path)
 		if (i == 0) {
 			if (is_last)
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,c=%d;", fmt, cols);
+					"\033_Ga=T,f=%d,c=%d;", fmt, disp_cols);
 			else
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,c=%d,m=1;", fmt, cols);
+					"\033_Ga=T,f=%d,c=%d,m=1;", fmt, disp_cols);
 		} else {
 			hdr_len = snprintf(hdr, sizeof(hdr),
 				"\033_Gm=%d;", is_last ? 0 : 1);
