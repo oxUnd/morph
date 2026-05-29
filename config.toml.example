@@ -139,6 +139,39 @@ compress_target_ratio     = 0.5
 # Always keep the most recent N conversation rounds
 keep_recent_rounds        = 6
 
+[memory]
+# Master switch for the agent memory subsystem.
+# When disabled, no memories are recorded or injected into the system prompt.
+enabled = true
+# Hot path: heuristic anchor-based fact extraction.
+# Scans user input for phrases like "call me X", "I live in Y",
+# "reply in Chinese", "be concise" and upserts facts/procedures
+# directly without LLM involvement.
+hot_path_enabled = true
+# Cold path: episode recording after each turn.
+# Stores a structured episode record (task, outcome, tools used, result).
+cold_path_enabled = true
+# LLM-driven structured extraction.
+# Sends the turn to the chat LLM to extract facts, rules, and episode
+# metadata as JSON. Silently falls back to anchor heuristics if the
+# LLM is unavailable or returns invalid JSON.
+llm_extract_enabled = true
+# Maximum number of current facts to include in the memory context
+# injected into the system prompt. Facts ordered by updated_at DESC.
+max_facts = 6
+# Maximum number of recent episodes to include in the memory context.
+# Only included when the user query contains temporal/episodic phrases
+# (e.g. "last time", "previous", "上次", "之前").
+max_episodes = 4
+# Maximum number of standing rules/procedures to include in the memory
+# context. Only included when the user query contains procedure-related
+# phrases (e.g. "always", "prefer", "风格").
+max_procedures = 4
+# Hard character limit on the total memory context string injected into
+# the LLM system prompt. Prevents memory from consuming too much of the
+# context window.
+max_context_chars = 3000
+
 [render]
 # Image display: auto / kitty / sixel / iterm
 prefer_image_protocol = "auto"

@@ -837,6 +837,7 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  enabled = %d\n", ctx->config.memory.enabled);
 	printf("  hot_path_enabled = %d\n", ctx->config.memory.hot_path_enabled);
 	printf("  cold_path_enabled = %d\n", ctx->config.memory.cold_path_enabled);
+	printf("  llm_extract_enabled = %d\n", ctx->config.memory.llm_extract_enabled);
 	printf("  max_facts = %d\n", ctx->config.memory.max_facts);
 	printf("  max_episodes = %d\n", ctx->config.memory.max_episodes);
 	printf("  max_procedures = %d\n", ctx->config.memory.max_procedures);
