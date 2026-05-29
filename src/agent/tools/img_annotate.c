@@ -12,6 +12,8 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 
+#define MAX_IMAGES 32
+
 static img_annotate_pause_fn g_pause_fn;
 static img_annotate_resume_fn g_resume_fn;
 static void *g_cb_user_data;
@@ -60,12 +62,14 @@ static char *find_editor_binary(void)
 static int img_annotate_exec(const char *args_json, char **result_json,
 			     void *user_data)
 {
-	char path[1024] = {0};
+	char *paths[MAX_IMAGES] = {NULL};
+	int npaths = 0;
 	char *editor_path = NULL;
 	pid_t pid;
 	int pipefd[2];
 	int status;
 	int rc = 0;
+	int i;
 
 	(void)user_data;
 	if (!result_json)
@@ -74,7 +78,9 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	if (!args_json || !*args_json) {
 		*result_json = strdup(
 			"{\"error\":\"missing arguments. "
-			"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"})\"}");
+			"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
+			"or img_annotate({\\\"paths\\\": "
+			"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
 		MORPH_RETURN(-EINVAL);
 	}
 
@@ -86,29 +92,80 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				"{\"error\":\"invalid JSON arguments\"}");
 			MORPH_RETURN(-EINVAL);
 		}
-		cJSON *p = cJSON_GetObjectItem(root, "path");
-		if (!cJSON_IsString(p) || !p->valuestring || !p->valuestring[0]) {
-			cJSON_Delete(root);
-			*result_json = strdup(
-				"{\"error\":\"missing or empty 'path' parameter. "
-				"Usage: img_annotate({\\\"path\\\": "
-				"\\\"image.jpg\\\"})\"}");
-			MORPH_RETURN(-EINVAL);
+
+		/*
+		 * Accept either "paths" (array of strings) or
+		 * "path" (single string, backward-compatible).
+		 */
+		cJSON *arr = cJSON_GetObjectItem(root, "paths");
+		if (cJSON_IsArray(arr)) {
+			int sz = cJSON_GetArraySize(arr);
+			if (sz <= 0) {
+				cJSON_Delete(root);
+				*result_json = strdup(
+					"{\"error\":\"'paths' array is empty\"}");
+				MORPH_RETURN(-EINVAL);
+			}
+			if (sz > MAX_IMAGES) {
+				cJSON_Delete(root);
+				char err[128];
+				snprintf(err, sizeof(err),
+					 "{\"error\":\"too many images "
+					 "(max %d)\"}", MAX_IMAGES);
+				*result_json = strdup(err);
+				MORPH_RETURN(-EINVAL);
+			}
+			for (i = 0; i < sz; i++) {
+				cJSON *item = cJSON_GetArrayItem(arr, i);
+				if (!cJSON_IsString(item) ||
+				    !item->valuestring ||
+				    !item->valuestring[0]) {
+					cJSON_Delete(root);
+					for (int j = 0; j < npaths; j++)
+						free(paths[j]);
+					*result_json = strdup(
+						"{\"error\":\"'paths' contains "
+						"invalid entry\"}");
+					MORPH_RETURN(-EINVAL);
+				}
+				paths[npaths++] = strdup(item->valuestring);
+			}
+		} else {
+			cJSON *p = cJSON_GetObjectItem(root, "path");
+			if (!cJSON_IsString(p) || !p->valuestring ||
+			    !p->valuestring[0]) {
+				cJSON_Delete(root);
+				*result_json = strdup(
+					"{\"error\":\"missing 'path' or "
+					"'paths' parameter. "
+					"Usage: img_annotate({\\\"path\\\": "
+					"\\\"image.jpg\\\"}) or "
+					"img_annotate({\\\"paths\\\": "
+					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
+				MORPH_RETURN(-EINVAL);
+			}
+			paths[npaths++] = strdup(p->valuestring);
 		}
-		strncpy(path, p->valuestring, sizeof(path) - 1);
 		cJSON_Delete(root);
 	}
 
-	if (!file_exists(path)) {
-		char err[1100];
-		snprintf(err, sizeof(err),
-			 "{\"error\":\"image file not found: %s\"}", path);
-		*result_json = strdup(err);
-		MORPH_RETURN(-ENOENT);
+	for (i = 0; i < npaths; i++) {
+		if (!file_exists(paths[i])) {
+			char err[1100];
+			snprintf(err, sizeof(err),
+				 "{\"error\":\"image file not found: %s\"}",
+				 paths[i]);
+			*result_json = strdup(err);
+			for (int j = 0; j < npaths; j++)
+				free(paths[j]);
+			MORPH_RETURN(-ENOENT);
+		}
 	}
 
 	editor_path = find_editor_binary();
 	if (!editor_path) {
+		for (i = 0; i < npaths; i++)
+			free(paths[i]);
 		*result_json = strdup(
 			"{\"error\":\"could not locate morph-editor binary. "
 			"Set MORPH_EDITOR env var or install morph-editor.\"}");
@@ -117,6 +174,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 
 	if (pipe(pipefd) < 0) {
 		free(editor_path);
+		for (i = 0; i < npaths; i++)
+			free(paths[i]);
 		*result_json = strdup(
 			"{\"error\":\"pipe() failed\"}");
 		MORPH_RETURN(-errno);
@@ -135,6 +194,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		if (g_resume_fn)
 			g_resume_fn(g_cb_user_data);
 		free(editor_path);
+		for (i = 0; i < npaths; i++)
+			free(paths[i]);
 		*result_json = strdup(
 			"{\"error\":\"fork() failed\"}");
 		MORPH_RETURN(-errno);
@@ -142,30 +203,48 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 
 	if (pid == 0) {
 		/*
-		 * Child process: exec morph-editor.
+		 * Child process: exec morph-editor with all
+		 * image paths.  morph-editor "open" subcommand
+		 * accepts multiple paths for multi-image
+		 * annotation.
 		 *
-		 * Redirect stdout to the pipe so we can capture the
-		 * bbox JSON that morph-editor prints on exit
-		 * (editor_dump_on_quit).  stderr and stdin are
-		 * inherited directly so termbox2 can use /dev/tty
-		 * for rendering and input.
+		 * Redirect stdout to the pipe so we can capture
+		 * the annotation JSON that morph-editor prints on
+		 * exit (editor_dump_on_quit).  stderr and stdin
+		 * are inherited directly so termbox2 can use
+		 * /dev/tty for rendering and input.
 		 */
 		close(pipefd[0]);
 		if (dup2(pipefd[1], STDOUT_FILENO) < 0)
 			_exit(126);
 		close(pipefd[1]);
 
-		if (editor_path[0]) {
-			execl(editor_path, "morph-editor", "open", path,
-			      (char *)NULL);
-		} else {
-			execlp("morph-editor", "morph-editor", "open", path,
-			       (char *)NULL);
+		/*
+		 * Build argv: morph-editor open path1 path2 ...
+		 * +1 for program name, +1 for "open", +npaths,
+		 * +1 for NULL sentinel.
+		 */
+		{
+			int argc = 2 + npaths + 1;
+			char **argv = malloc(sizeof(char *) *
+					     (size_t)argc);
+			if (!argv)
+				_exit(126);
+			argv[0] = "morph-editor";
+			argv[1] = "open";
+			for (i = 0; i < npaths; i++)
+				argv[2 + i] = paths[i];
+			argv[2 + npaths] = NULL;
+
+			if (editor_path[0])
+				execv(editor_path, argv);
+			else
+				execvp("morph-editor", argv);
+			_exit(127);
 		}
-		_exit(127);
 	}
 
-	/* Parent: close write end, read bbox JSON from child */
+	/* Parent: close write end, read annotation JSON from child */
 	close(pipefd[1]);
 
 	{
@@ -190,6 +269,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 					if (g_resume_fn)
 						g_resume_fn(g_cb_user_data);
 					free(editor_path);
+					for (i = 0; i < npaths; i++)
+						free(paths[i]);
 					*result_json = strdup(
 						"{\"error\":\"out of memory "
 						"reading editor output\"}");
@@ -232,6 +313,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			 */
 			free(buf);
 			free(editor_path);
+			for (i = 0; i < npaths; i++)
+				free(paths[i]);
 			if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
 				char err[256];
 				snprintf(err, sizeof(err),
@@ -242,17 +325,16 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				MORPH_RETURN(-EIO);
 			}
 			*result_json = strdup(
-				"{\"path\":\"\",\"width\":0,\"height\":0,"
-				"\"bboxes\":[]}");
+				"{\"images\":[],\"bboxes\":[],\"arrows\":[]}");
 			return 0;
 		}
 
 		/*
 		 * Validate that the output is valid JSON containing
-		 * bbox data.  morph-editor outputs:
-		 *   {"path":"...","width":N,"height":N,"bboxes":[...]}
-		 * If valid, pass it through as-is.  Otherwise wrap it
-		 * in an error envelope.
+		 * annotation data.  morph-editor outputs:
+		 *   {"images":[...],"bboxes":[...],"arrows":[...]}
+		 * If valid, pass it through as-is.  Otherwise wrap
+		 * it in an error envelope.
 		 */
 		{
 			cJSON *root = cJSON_Parse(buf);
@@ -261,6 +343,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				cJSON_Delete(root);
 				*result_json = buf;
 				free(editor_path);
+				for (i = 0; i < npaths; i++)
+					free(paths[i]);
 				return 0;
 			}
 		}
@@ -281,6 +365,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			cJSON_Delete(out);
 			free(buf);
 			free(editor_path);
+			for (i = 0; i < npaths; i++)
+				free(paths[i]);
 			*result_json = tmp_str;
 			MORPH_RETURN(-MORPH_ERR_PARSE);
 		}
@@ -302,24 +388,44 @@ int img_annotate_init(struct tool_registry *reg,
 	g_cb_user_data = user_data;
 
 	return tool_register(reg, "img_annotate",
-		"Open an image in the interactive terminal image editor "
-		"(morph-editor) for manual bounding box annotation. "
+		"Open one or more images in the interactive terminal "
+		"image editor (morph-editor) for manual annotation. "
+		"Supports two annotation types: "
+		"1) bounding boxes (bboxes) to label regions of "
+		"interest; "
+		"2) arrows to specify compositing — the object at "
+		"the arrow's source end will be blended/composited "
+		"into the target position the arrow points to "
+		"(cross-image compositing is supported). "
 		"The editor takes over the terminal: the user draws "
-		 "bounding boxes with the mouse, labels them, then "
+		"bboxes and arrows with the mouse, labels them, then "
 		"presses 'q' to quit. On exit the annotations are "
 		"returned as JSON: "
-		"{\"path\":\"...\",\"width\":N,\"height\":N,"
-		"\"bboxes\":[{\"id\":1,\"x\":...,\"y\":...,"
-		"\"w\":...,\"h\":...,\"label\":\"...\"},...]}. "
+		"{\"images\":[{\"path\":\"...\",\"width\":N,"
+		"\"height\":N},...],"
+		"\"bboxes\":[{\"id\":1,\"image_index\":N,"
+		"\"x\":...,\"y\":...,\"w\":...,\"h\":...,"
+		"\"label\":\"...\"},...],"
+		"\"arrows\":[{\"id\":1,\"from\":{\"image_index\":N,"
+		"\"x\":...,\"y\":...},\"to\":{\"image_index\":N,"
+		"\"x\":...,\"y\":...},\"label\":\"...\","
+		"\"color\":\"#rrggbb\"},...]}. "
 		"Use this tool when you need the user to manually "
-		"identify or mark regions of interest in an image "
-		"(e.g. 'please mark the objects in this photo'). "
+		"identify regions of interest or specify "
+		"compositing instructions across images "
+		"(e.g. 'mark objects in these photos' or "
+		"'composite the chair from image 1 into image 2'). "
 		"Do NOT use this for automated image operations "
 		"like resize, crop, or format conversion.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"path\":{\"type\":\"string\","
-		"\"description\":\"Path to the image file to "
-		"annotate\"}"
-		"},\"required\":[\"path\"]}",
+		"\"description\":\"Path to a single image file to "
+		"annotate (use either 'path' or 'paths', not both)\"},"
+		"\"paths\":{\"type\":\"array\",\"items\":{"
+		"\"type\":\"string\"},"
+		"\"description\":\"Array of image file paths to "
+		"annotate together (use either 'path' or 'paths', "
+		"not both)\"}"
+		"},\"required\":[]}",
 		img_annotate_exec, NULL, NULL);
 }
