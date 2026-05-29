@@ -112,6 +112,7 @@ static struct memory_options cli_memory_options(const struct cli_context *ctx)
 	opts.enabled = ctx->config.memory.enabled;
 	opts.hot_path_enabled = ctx->config.memory.hot_path_enabled;
 	opts.cold_path_enabled = ctx->config.memory.cold_path_enabled;
+	opts.llm_extract_enabled = ctx->config.memory.llm_extract_enabled;
 	opts.max_facts = ctx->config.memory.max_facts;
 	opts.max_episodes = ctx->config.memory.max_episodes;
 	opts.max_procedures = ctx->config.memory.max_procedures;
@@ -888,9 +889,13 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 	const char *sub = cmd_arg(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "show") == 0 || strcmp(sub, "view") == 0) {
+		/*
+		 * Pass 0 to render every stored episode/change so /mem
+		 * gives the user the full picture; max_episodes is only
+		 * a hint for the React-loop context window.
+		 */
 		char *rendered = memory_render_session(
-			&ctx->database, ctx->current_session.id,
-			ctx->config.memory.max_episodes);
+			&ctx->database, ctx->current_session.id, 0);
 		CMD_HEADER("memory (%s)", ctx->current_session.name);
 		printf("%s\n", rendered ? rendered :
 		       "No long-term memory stored for this session.");
@@ -1610,6 +1615,9 @@ static int cli_init_models(struct cli_context *ctx)
 		if (ctx->config.models.text.context_limit > 0)
 			llm->context_limit = ctx->config.models.text.context_limit;
 	}
+	/* Wire the chat LLM into the memory subsystem so cold-path
+	 * consolidation can use LLM-driven extraction. */
+	memory_set_llm(llm);
 
 	const char *img_api_key = NULL;
 	if (ctx->config.models.image.api_key[0])

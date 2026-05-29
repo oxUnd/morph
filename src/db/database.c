@@ -2,6 +2,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -70,6 +71,8 @@ static const char *schema_sql =
 	"value_text TEXT NOT NULL,"
 	"source_text TEXT,"
 	"confidence REAL DEFAULT 1.0,"
+	"category TEXT DEFAULT 'general',"
+	"importance REAL DEFAULT 0.5,"
 	"is_current INTEGER NOT NULL DEFAULT 1,"
 	"valid_from INTEGER NOT NULL,"
 	"valid_to INTEGER,"
@@ -85,6 +88,10 @@ static const char *schema_sql =
 	"outcome_text TEXT,"
 	"success INTEGER NOT NULL DEFAULT 1,"
 	"entities TEXT,"
+	"key_decisions TEXT,"
+	"artifacts TEXT,"
+	"tools_used TEXT,"
+	"importance REAL DEFAULT 0.5,"
 	"created_at INTEGER NOT NULL);"
 
 	"CREATE TABLE IF NOT EXISTS memory_procedures ("
@@ -168,6 +175,55 @@ static int db_migrate_display_id(struct db *db)
 	return 0;
 }
 
+static int db_table_has_column(struct db *db, const char *table,
+			       const char *column)
+{
+	sqlite3_stmt *stmt = NULL;
+	char sql[128];
+	int has = 0;
+
+	snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
+		return 0;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *cname = (const char *)sqlite3_column_text(stmt, 1);
+		if (cname && strcmp(cname, column) == 0) {
+			has = 1;
+			break;
+		}
+	}
+	sqlite3_finalize(stmt);
+	return has;
+}
+
+static void db_add_column_if_missing(struct db *db, const char *table,
+				     const char *column, const char *type_def)
+{
+	char sql[256];
+
+	if (db_table_has_column(db, table, column))
+		return;
+	snprintf(sql, sizeof(sql),
+		 "ALTER TABLE %s ADD COLUMN %s %s",
+		 table, column, type_def);
+	db_exec(db, sql);
+}
+
+static int db_migrate_memory_columns(struct db *db)
+{
+	db_add_column_if_missing(db, "memory_facts", "category",
+				 "TEXT DEFAULT 'general'");
+	db_add_column_if_missing(db, "memory_facts", "importance",
+				 "REAL DEFAULT 0.5");
+	db_add_column_if_missing(db, "memory_episodes", "key_decisions",
+				 "TEXT");
+	db_add_column_if_missing(db, "memory_episodes", "artifacts", "TEXT");
+	db_add_column_if_missing(db, "memory_episodes", "tools_used", "TEXT");
+	db_add_column_if_missing(db, "memory_episodes", "importance",
+				 "REAL DEFAULT 0.5");
+	return 0;
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
@@ -175,5 +231,8 @@ int db_init_schema(struct db *db)
 	int rc = db_exec(db, schema_sql);
 	if (rc != 0)
 		return rc;
-	return db_migrate_display_id(db);
+	rc = db_migrate_display_id(db);
+	if (rc != 0)
+		return rc;
+	return db_migrate_memory_columns(db);
 }

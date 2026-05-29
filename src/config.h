@@ -73,6 +73,7 @@ struct config_memory {
 	int enabled;
 	int hot_path_enabled;
 	int cold_path_enabled;
+	int llm_extract_enabled;
 	int max_facts;
 	int max_episodes;
 	int max_procedures;

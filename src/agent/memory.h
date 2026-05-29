@@ -8,10 +8,13 @@ extern "C" {
 #include "db/database.h"
 #include "agent/react.h"
 
+struct model;
+
 struct memory_options {
 	int enabled;
 	int hot_path_enabled;
 	int cold_path_enabled;
+	int llm_extract_enabled;
 	int max_facts;
 	int max_episodes;
 	int max_procedures;
@@ -24,6 +27,11 @@ enum memory_clear_scope {
 	MEMORY_CLEAR_EPISODES,
 	MEMORY_CLEAR_PROCEDURES,
 };
+
+/* Inject the LLM model used for structured extraction / consolidation.
+ * Pass NULL to disable LLM-based memory and fall back to anchor heuristics
+ * only. Safe to call multiple times. */
+void memory_set_llm(struct model *llm);
 
 char *memory_build_context(struct db *db, int64_t session_id,
 			   const char *query,

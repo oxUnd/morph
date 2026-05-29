@@ -120,6 +120,7 @@ static void *turn_thread(void *arg) {
 		.enabled = 1,
 		.hot_path_enabled = 1,
 		.cold_path_enabled = 1,
+		.llm_extract_enabled = 1,
 		.max_facts = 6,
 		.max_episodes = 4,
 		.max_procedures = 4,

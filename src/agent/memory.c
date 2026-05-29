@@ -1,4 +1,9 @@
 #include "agent/memory.h"
+#include "models/llm.h"
+#include "util/arena.h"
+#include "util/log.h"
+#include "util/utf8.h"
+#include "cJSON.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -10,10 +15,20 @@
 #include <string.h>
 #include <time.h>
 
-#define MEMORY_APPEND_INIT_CAP   256
-#define MEMORY_RENDER_CAP        16384
+#define MEMORY_APPEND_INIT_CAP   1024
+#define MEMORY_RENDER_CAP        (1024 * 1024)
 #define MEMORY_VALUE_MIN_BYTES   2
 #define MEMORY_VALUE_MAX_BYTES   200
+
+/* LLM model used for structured extraction (optional). Set via
+ * memory_set_llm(); guarded by g_memory_llm_lock to remain thread-safe
+ * across CLI / FastCGI worker threads. */
+static struct model *g_memory_llm;
+
+void memory_set_llm(struct model *llm)
+{
+	g_memory_llm = llm;
+}
 
 static int64_t memory_now_unix(void)
 {
@@ -103,17 +118,21 @@ static void memory_trim_inplace(char *s)
 
 static char *memory_snippet(const char *text, size_t max_len)
 {
-	size_t len;
+	size_t safe;
 	char *out;
 
 	if (!text)
 		return strdup("");
-	len = strlen(text);
-	if (len > max_len)
-		len = max_len;
-	out = strndup(text, len);
+	/*
+	 * Clamp to a UTF-8 boundary so we never split a multi-byte
+	 * codepoint mid-stream — otherwise CJK input gets chopped to
+	 * something like "蓬松\xE2" which renders as "蓬松�".
+	 */
+	safe = utf8_safe_len(text, max_len);
+	out = strndup(text, safe);
 	if (!out)
 		return NULL;
+	utf8_sanitize_inplace(out);
 	memory_trim_inplace(out);
 	return out;
 }
@@ -299,7 +318,8 @@ static int memory_appendf(char **buf, size_t *cap, size_t *len,
 
 static int memory_upsert_fact(struct db *db, int64_t session_id,
 			      const char *key_name, const char *value_text,
-			      const char *source_text)
+			      const char *source_text,
+			      const char *category, double importance)
 {
 	sqlite3_stmt *stmt = NULL;
 	const char *select_sql =
@@ -314,6 +334,10 @@ static int memory_upsert_fact(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || !key_name || !value_text || !*value_text)
 		return -EINVAL;
+	if (!category || !*category)
+		category = "general";
+	if (importance < 0.0 || importance > 1.0)
+		importance = 0.5;
 
 	rc = sqlite3_prepare_v2(db->handle, select_sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -335,7 +359,8 @@ static int memory_upsert_fact(struct db *db, int64_t session_id,
 	if (old_id > 0 && old_value && strcmp(old_value, value_text) == 0) {
 		const char *update_sql =
 			"UPDATE memory_facts "
-			"SET source_text=?, updated_at=?, valid_to=NULL, is_current=1 "
+			"SET source_text=?, updated_at=?, valid_to=NULL, is_current=1, "
+			"category=?, importance=? "
 			"WHERE id=?";
 		rc = sqlite3_prepare_v2(db->handle, update_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK) {
@@ -345,7 +370,9 @@ static int memory_upsert_fact(struct db *db, int64_t session_id,
 		sqlite3_bind_text(stmt, 1, source_text ? source_text : "", -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_int64(stmt, 2, now);
-		sqlite3_bind_int64(stmt, 3, old_id);
+		sqlite3_bind_text(stmt, 3, category, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_double(stmt, 4, importance);
+		sqlite3_bind_int64(stmt, 5, old_id);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		free(old_value);
@@ -381,8 +408,9 @@ static int memory_upsert_fact(struct db *db, int64_t session_id,
 		const char *insert_sql =
 			"INSERT INTO memory_facts("
 			"session_id,key_name,value_text,source_text,confidence,"
+			"category,importance,"
 			"is_current,valid_from,valid_to,superseded_by,created_at,updated_at"
-			") VALUES(?,?,?,?,1.0,1,?,NULL,NULL,?,?)";
+			") VALUES(?,?,?,?,1.0,?,?,1,?,NULL,NULL,?,?)";
 		int64_t new_id;
 		rc = sqlite3_prepare_v2(db->handle, insert_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
@@ -392,9 +420,11 @@ static int memory_upsert_fact(struct db *db, int64_t session_id,
 		sqlite3_bind_text(stmt, 3, value_text, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 4, source_text ? source_text : "", -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt, 5, now);
-		sqlite3_bind_int64(stmt, 6, now);
+		sqlite3_bind_text(stmt, 5, category, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_double(stmt, 6, importance);
 		sqlite3_bind_int64(stmt, 7, now);
+		sqlite3_bind_int64(stmt, 8, now);
+		sqlite3_bind_int64(stmt, 9, now);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE)
@@ -531,7 +561,7 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 			label = "Current goal";
 		else if (strcmp(key_name, "location") == 0)
 			label = "Location";
-		memory_appendf(&profile, &cap, &len, 2048, "- %s: %s\n",
+		memory_appendf(&profile, &cap, &len, 16384, "- %s: %s\n",
 			       label, value_text);
 	}
 	sqlite3_finalize(stmt);
@@ -636,12 +666,13 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id,
 	if (!db || !db->handle || !user_input)
 		return -EINVAL;
 
-#define TRY_FACT(key, ci, raw)						\
+#define TRY_FACT(key, ci, raw, cat, importance)				\
 	do {								\
 		if (memory_try_anchors(user_input, value, sizeof(value),\
 				       ci, raw)) {			\
 			rc = memory_upsert_fact(db, session_id, key,	\
-						value, user_input);	\
+						value, user_input,	\
+						cat, importance);	\
 			if (rc != 0 && worst == 0)			\
 				worst = rc;				\
 			else if (rc == 0)				\
@@ -649,19 +680,21 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id,
 		}							\
 	} while (0)
 
-	TRY_FACT("preferred_name", preferred_name_ci, preferred_name_raw);
+	TRY_FACT("preferred_name", preferred_name_ci, preferred_name_raw,
+		 "identity", 0.9);
 	/* user_name comes after location-style anchors so "I am in Tokyo"
 	 * never lands here; user_name_ci itself uses strict anchors. */
-	TRY_FACT("user_name", user_name_ci, user_name_raw);
-	TRY_FACT("goal", goal_ci, goal_raw);
-	TRY_FACT("location", location_ci, location_raw);
+	TRY_FACT("user_name", user_name_ci, user_name_raw, "identity", 0.85);
+	TRY_FACT("goal", goal_ci, goal_raw, "goal", 0.7);
+	TRY_FACT("location", location_ci, location_raw, "context", 0.6);
 #undef TRY_FACT
 
 #define APPLY_PREF(value_text, rule_text)				\
 	do {								\
 		rc = memory_upsert_fact(db, session_id,			\
 					"preferred_language",		\
-					value_text, user_input);	\
+					value_text, user_input,		\
+					"preference", 0.8);		\
 		if (rc != 0 && worst == 0) worst = rc;			\
 		else if (rc == 0) dirty = 1;				\
 		rc = memory_upsert_procedure(db, session_id,		\
@@ -689,7 +722,8 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id,
 	do {								\
 		rc = memory_upsert_fact(db, session_id,			\
 					"response_style",		\
-					value_text, user_input);	\
+					value_text, user_input,		\
+					"preference", 0.75);		\
 		if (rc != 0 && worst == 0) worst = rc;			\
 		else if (rc == 0) dirty = 1;				\
 		rc = memory_upsert_procedure(db, session_id,		\
@@ -797,7 +831,10 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 				 const char *user_input,
 				 const char *assistant_output,
 				 const struct react_step *steps,
-				 int success)
+				 int success,
+				 const char *key_decisions,
+				 const char *artifacts,
+				 double importance)
 {
 	sqlite3_stmt *stmt = NULL;
 	char tools[256];
@@ -810,6 +847,8 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || !user_input)
 		return -EINVAL;
+	if (importance < 0.0 || importance > 1.0)
+		importance = 0.5;
 
 	memory_collect_tools(steps, tools, sizeof(tools));
 	user_snip = memory_snippet(user_input, 220);
@@ -837,8 +876,10 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 	{
 		const char *insert_sql =
 			"INSERT INTO memory_episodes("
-			"session_id,task_type,summary_text,outcome_text,success,entities,created_at"
-			") VALUES(?,?,?,?,?,?,?)";
+			"session_id,task_type,summary_text,outcome_text,success,"
+			"entities,key_decisions,artifacts,tools_used,importance,"
+			"created_at"
+			") VALUES(?,?,?,?,?,?,?,?,?,?,?)";
 		rc = sqlite3_prepare_v2(db->handle, insert_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK) {
 			free(user_snip);
@@ -851,7 +892,15 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 		sqlite3_bind_text(stmt, 4, assistant_snip, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int(stmt, 5, success ? 1 : 0);
 		sqlite3_bind_text(stmt, 6, tools, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt, 7, memory_now_unix());
+		sqlite3_bind_text(stmt, 7,
+				  key_decisions ? key_decisions : "", -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 8,
+				  artifacts ? artifacts : "", -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 9, tools, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_double(stmt, 10, importance);
+		sqlite3_bind_int64(stmt, 11, memory_now_unix());
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	}
@@ -1119,6 +1168,235 @@ char *memory_build_context(struct db *db, int64_t session_id,
 	return buf;
 }
 
+/* --- /mem 树形渲染辅助 ------------------------------------------------ */
+
+static int memory_count_rows(struct db *db, const char *sql,
+			     int64_t session_id)
+{
+	sqlite3_stmt *stmt = NULL;
+	int n = 0;
+	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
+		return 0;
+	sqlite3_bind_int64(stmt, 1, session_id);
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		n = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return n;
+}
+
+static void memory_emit_profile_body(char **buf, size_t *cap, size_t *len,
+				     const char *vbar, const char *body)
+{
+	const char *p = body;
+	int first = 1;
+	if (!body || !*body)
+		return;
+	while (*p) {
+		const char *nl = strchr(p, '\n');
+		size_t n = nl ? (size_t)(nl - p) : strlen(p);
+		if (n > 0) {
+			if (first)
+				memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+					       "%s└── %.*s\n",
+					       vbar, (int)n, p);
+			else
+				memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+					       "%s    %.*s\n",
+					       vbar, (int)n, p);
+			first = 0;
+		}
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
+}
+
+/*
+ * Print one logical sub-node value, soft-wrapping it into multiple
+ * indented continuation lines if the body is wider than `wrap` bytes.
+ * `wrap` is a *soft* byte cap; the actual cut is always rounded down to
+ * a UTF-8 codepoint boundary so CJK never gets mojibake.
+ *
+ * Embedded '\n' / '\r' inside `body` are treated as hard line breaks:
+ * each new logical line is re-prefixed with `prefix_cont`, so the
+ * outer tree structure (│   /     guides) never gets broken by the
+ * inner content.
+ */
+static void memory_emit_wrapped(char **buf, size_t *cap, size_t *len,
+				const char *prefix_first,
+				const char *prefix_cont,
+				const char *label,
+				const char *body,
+				size_t wrap)
+{
+	const char *p;
+	int line = 0;
+
+	if (!body || !*body)
+		return;
+	p = body;
+	while (*p) {
+		const char *nl;
+		size_t logical;
+		size_t take;
+
+		/* 跳过领头的 '\r' / '\n' / 多余空白，避免输出空行 */
+		while (*p == '\n' || *p == '\r')
+			p++;
+		if (!*p)
+			break;
+
+		/* 当前 logical line 在下一个换行符处终止 */
+		nl = strpbrk(p, "\n\r");
+		logical = nl ? (size_t)(nl - p) : strlen(p);
+		if (logical == 0) {
+			p = nl ? nl + 1 : p + strlen(p);
+			continue;
+		}
+		take = logical > wrap ? utf8_safe_len(p, wrap) : logical;
+		if (take == 0)
+			take = logical;
+
+		if (line == 0) {
+			if (label && *label)
+				memory_appendf(buf, cap, len,
+					       MEMORY_RENDER_CAP,
+					       "%s%s: %.*s\n",
+					       prefix_first, label,
+					       (int)take, p);
+			else
+				memory_appendf(buf, cap, len,
+					       MEMORY_RENDER_CAP,
+					       "%s%.*s\n",
+					       prefix_first,
+					       (int)take, p);
+		} else {
+			memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+				       "%s%.*s\n",
+				       prefix_cont, (int)take, p);
+		}
+		p += take;
+		line++;
+		if (line > 4) /* hard stop after a few wraps */
+			break;
+	}
+}
+
+/*
+ * Pull "Task: ...", "Outcome: ...", "Tools: ...", "Result: ..." from a
+ * legacy-format summary built by memory_insert_episode(). Each output
+ * pointer is non-NULL only if the field is present; substring is into
+ * `summary` (NUL-terminated via static buffer reuse not needed — caller
+ * can copy if it must outlive the original buffer).
+ */
+struct episode_view {
+	char task[512];
+	char outcome[64];
+	char tools[256];
+	char result[1024];
+	int has_task;
+	int has_outcome;
+	int has_tools;
+	int has_result;
+};
+
+static void memory_copy_field(char *dst, size_t cap, const char *src,
+			      size_t n)
+{
+	size_t take = n;
+	if (cap == 0)
+		return;
+	if (take >= cap)
+		take = cap - 1;
+	/* Trim trailing whitespace before the boundary. */
+	while (take > 0 && (src[take - 1] == ' ' ||
+			    src[take - 1] == '\t' ||
+			    src[take - 1] == '\n'))
+		take--;
+	/* Snap to UTF-8 boundary. */
+	take = utf8_safe_len(src, take);
+	memcpy(dst, src, take);
+	dst[take] = '\0';
+	utf8_sanitize_inplace(dst);
+}
+
+static void memory_parse_episode(const char *summary, struct episode_view *v)
+{
+	const char *fields[4];
+	const char *labels[4] = {"Task: ", "Outcome: ", "Tools: ", "Result: "};
+	const char *next;
+	int i;
+
+	memset(v, 0, sizeof(*v));
+	if (!summary || !*summary)
+		return;
+
+	for (i = 0; i < 4; i++)
+		fields[i] = strstr(summary, labels[i]);
+
+	for (i = 0; i < 4; i++) {
+		size_t off;
+		size_t end;
+		const char *body;
+		if (!fields[i])
+			continue;
+		off = strlen(labels[i]);
+		body = fields[i] + off;
+		/*
+		 * Find the next " | <Label>: " separator, whichever
+		 * comes first; otherwise consume to end of string.
+		 */
+		next = NULL;
+		{
+			int j;
+			for (j = 0; j < 4; j++) {
+				if (!fields[j] || j == i)
+					continue;
+				if (fields[j] <= fields[i])
+					continue;
+				if (!next || fields[j] < next)
+					next = fields[j];
+			}
+		}
+		if (next) {
+			/* Walk back over " | " separator (3 bytes). */
+			end = (size_t)(next - body);
+			while (end > 0 && (body[end - 1] == ' ' ||
+					   body[end - 1] == '|'))
+				end--;
+		} else {
+			end = strlen(body);
+		}
+		switch (i) {
+		case 0:
+			memory_copy_field(v->task, sizeof(v->task), body, end);
+			v->has_task = v->task[0] != '\0';
+			break;
+		case 1:
+			memory_copy_field(v->outcome, sizeof(v->outcome),
+					  body, end);
+			v->has_outcome = v->outcome[0] != '\0';
+			break;
+		case 2:
+			memory_copy_field(v->tools, sizeof(v->tools), body, end);
+			v->has_tools = v->tools[0] != '\0';
+			break;
+		case 3:
+			memory_copy_field(v->result, sizeof(v->result),
+					  body, end);
+			v->has_result = v->result[0] != '\0';
+			break;
+		}
+	}
+	/* Fallback: no labels at all → treat the whole thing as task. */
+	if (!v->has_task && !v->has_outcome && !v->has_tools &&
+	    !v->has_result) {
+		memory_copy_field(v->task, sizeof(v->task), summary,
+				  strlen(summary));
+		v->has_task = v->task[0] != '\0';
+	}
+}
+
 char *memory_render_session(struct db *db, int64_t session_id,
 			    int max_episodes)
 {
@@ -1126,172 +1404,340 @@ char *memory_render_session(struct db *db, int64_t session_id,
 	char *buf = NULL;
 	size_t cap = 0;
 	size_t len = 0;
-	int appended = 0;
-	int episode_limit = max_episodes > 0 ? max_episodes : 8;
+	/*
+	 * max_episodes is a soft cap: <= 0 means "render everything".
+	 * The /mem command intentionally passes 0 to show the full record.
+	 */
+	int episode_cap = max_episodes > 0 ? max_episodes : -1;
+
+	int has_profile = 0;
+	int n_facts = 0;
+	int n_rules = 0;
+	int n_episodes_total = 0;
+	int n_episodes = 0;
+	int n_changes = 0;
+	int sections_total = 0;
+	int sections_seen = 0;
 
 	if (!db || !db->handle)
 		return NULL;
 
-	{
-		const char *profile_sql =
-			"SELECT profile_text FROM memory_profiles WHERE session_id=?";
-		if (sqlite3_prepare_v2(db->handle, profile_sql, -1, &stmt, NULL) ==
-		    SQLITE_OK) {
+	/* Detect section presence and counts up-front so we know which
+	 * branch is the last one (├── vs └──) without a two-pass render. */
+	if (sqlite3_prepare_v2(db->handle,
+		"SELECT profile_text FROM memory_profiles WHERE session_id=?",
+		-1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, session_id);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *p =
+				(const char *)sqlite3_column_text(stmt, 0);
+			if (p && *p)
+				has_profile = 1;
+		}
+		sqlite3_finalize(stmt);
+	}
+
+	n_facts = memory_count_rows(db,
+		"SELECT COUNT(*) FROM memory_facts "
+		"WHERE session_id=? AND is_current=1", session_id);
+	n_rules = memory_count_rows(db,
+		"SELECT COUNT(*) FROM memory_procedures WHERE session_id=?",
+		session_id);
+	n_episodes_total = memory_count_rows(db,
+		"SELECT COUNT(*) FROM memory_episodes WHERE session_id=?",
+		session_id);
+	n_episodes = (episode_cap >= 0 && n_episodes_total > episode_cap)
+		? episode_cap : n_episodes_total;
+	n_changes = memory_count_rows(db,
+		"SELECT COUNT(*) FROM memory_facts "
+		"WHERE session_id=? AND is_current=0", session_id);
+
+	sections_total =
+		(has_profile ? 1 : 0) +
+		(n_facts > 0 ? 1 : 0) +
+		(n_rules > 0 ? 1 : 0) +
+		(n_episodes > 0 ? 1 : 0) +
+		(n_changes > 0 ? 1 : 0);
+
+	if (sections_total == 0)
+		return strdup("No long-term memory stored for this session.");
+
+	memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP, "memory\n");
+
+	/* Profile */
+	if (has_profile) {
+		sections_seen++;
+		int last = (sections_seen == sections_total);
+		const char *branch = last ? "└──" : "├──";
+		const char *vbar   = last ? "    " : "│   ";
+		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+			       "%s Profile\n", branch);
+		if (sqlite3_prepare_v2(db->handle,
+			"SELECT profile_text FROM memory_profiles "
+			"WHERE session_id=?",
+			-1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
 			if (sqlite3_step(stmt) == SQLITE_ROW) {
-				const char *profile =
-					(const char *)sqlite3_column_text(stmt, 0);
-				if (profile && *profile) {
-					memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-						       "Profile\n%s",
-						       profile);
-					if (profile[strlen(profile) - 1] != '\n')
-						memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-							       "\n");
-					appended = 1;
-				}
+				const char *p = (const char *)
+					sqlite3_column_text(stmt, 0);
+				memory_emit_profile_body(&buf, &cap, &len,
+							 vbar, p);
 			}
 			sqlite3_finalize(stmt);
 		}
 	}
 
-	{
-		const char *facts_sql =
-			"SELECT key_name, value_text FROM memory_facts "
+	/* Current facts */
+	if (n_facts > 0) {
+		sections_seen++;
+		int last = (sections_seen == sections_total);
+		const char *branch = last ? "└──" : "├──";
+		const char *vbar   = last ? "    " : "│   ";
+		int idx = 0;
+		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+			       "%s Current facts (%d)\n", branch, n_facts);
+		if (sqlite3_prepare_v2(db->handle,
+			"SELECT key_name, value_text, category, importance "
+			"FROM memory_facts "
 			"WHERE session_id=? AND is_current=1 "
-			"ORDER BY updated_at DESC";
-		int count = 0;
-		if (sqlite3_prepare_v2(db->handle, facts_sql, -1, &stmt, NULL) ==
-		    SQLITE_OK) {
+			"ORDER BY importance DESC, updated_at DESC",
+			-1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				const char *key_name =
-					(const char *)sqlite3_column_text(stmt, 0);
-				const char *value_text =
-					(const char *)sqlite3_column_text(stmt, 1);
+				const char *key_name = (const char *)
+					sqlite3_column_text(stmt, 0);
+				const char *value_text = (const char *)
+					sqlite3_column_text(stmt, 1);
+				const char *category = (const char *)
+					sqlite3_column_text(stmt, 2);
+				double importance =
+					sqlite3_column_double(stmt, 3);
+				const char *cb;
 				if (!key_name || !value_text)
 					continue;
-				if (count == 0) {
-					if (appended)
-						memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-							       "\n");
-					memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-						       "Current facts\n");
-				}
-				memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-					       "- %s: %s\n",
+				cb = (idx == n_facts - 1) ? "└──" : "├──";
+				memory_appendf(&buf, &cap, &len,
+					       MEMORY_RENDER_CAP,
+					       "%s%s [%s|imp=%.2f] %s: %s\n",
+					       vbar, cb,
+					       category && *category ?
+						       category : "general",
+					       importance,
 					       key_name, value_text);
-				count++;
-				appended = 1;
+				idx++;
 			}
 			sqlite3_finalize(stmt);
 		}
 	}
 
-	{
-		const char *proc_sql =
+	/* Standing rules */
+	if (n_rules > 0) {
+		sections_seen++;
+		int last = (sections_seen == sections_total);
+		const char *branch = last ? "└──" : "├──";
+		const char *vbar   = last ? "    " : "│   ";
+		int idx = 0;
+		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+			       "%s Standing rules (%d)\n", branch, n_rules);
+		if (sqlite3_prepare_v2(db->handle,
 			"SELECT rule_text, evidence_count "
 			"FROM memory_procedures "
 			"WHERE session_id=? "
-			"ORDER BY evidence_count DESC, updated_at DESC";
-		int count = 0;
-		if (sqlite3_prepare_v2(db->handle, proc_sql, -1, &stmt, NULL) ==
-		    SQLITE_OK) {
+			"ORDER BY evidence_count DESC, updated_at DESC",
+			-1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				const char *rule_text =
-					(const char *)sqlite3_column_text(stmt, 0);
+				const char *rule_text = (const char *)
+					sqlite3_column_text(stmt, 0);
 				int evidence = sqlite3_column_int(stmt, 1);
+				const char *cb;
 				if (!rule_text)
 					continue;
-				if (count == 0) {
-					if (appended)
-						memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-							       "\n");
-					memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-						       "Standing rules\n");
-				}
-				memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-					       "- %s (evidence=%d)\n",
-					       rule_text, evidence);
-				count++;
-				appended = 1;
+				cb = (idx == n_rules - 1) ? "└──" : "├──";
+				memory_appendf(&buf, &cap, &len,
+					       MEMORY_RENDER_CAP,
+					       "%s%s %s (evidence=%d)\n",
+					       vbar, cb, rule_text, evidence);
+				idx++;
 			}
 			sqlite3_finalize(stmt);
 		}
 	}
 
-	{
-		const char *episodes_sql =
-			"SELECT summary_text FROM memory_episodes "
+	/* Recent episodes */
+	if (n_episodes > 0) {
+		sections_seen++;
+		int last = (sections_seen == sections_total);
+		const char *branch = last ? "└──" : "├──";
+		const char *vbar   = last ? "    " : "│   ";
+		int idx = 0;
+		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+			       "%s Recent episodes (%d/%d)\n",
+			       branch, n_episodes, n_episodes_total);
+		if (sqlite3_prepare_v2(db->handle,
+			"SELECT summary_text, key_decisions, artifacts, "
+			"tools_used, importance, created_at "
+			"FROM memory_episodes "
 			"WHERE session_id=? "
-			"ORDER BY created_at DESC LIMIT ?";
-		int count = 0;
-		if (sqlite3_prepare_v2(db->handle, episodes_sql, -1, &stmt, NULL) ==
-		    SQLITE_OK) {
+			"ORDER BY created_at DESC",
+			-1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
-			sqlite3_bind_int(stmt, 2, episode_limit);
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				const char *summary =
-					(const char *)sqlite3_column_text(stmt, 0);
+				const char *summary = (const char *)
+					sqlite3_column_text(stmt, 0);
+				const char *decisions = (const char *)
+					sqlite3_column_text(stmt, 1);
+				const char *artifacts = (const char *)
+					sqlite3_column_text(stmt, 2);
+				const char *tools_col = (const char *)
+					sqlite3_column_text(stmt, 3);
+				double importance =
+					sqlite3_column_double(stmt, 4);
+				long long created_at = (long long)
+					sqlite3_column_int64(stmt, 5);
+				const char *cb;
+				const char *vbar2;
+				struct episode_view ev;
+				/*
+				 * Each rendered child line lives under
+				 * `vbar + vbar2 + ...`. We assemble the
+				 * concrete prefixes lazily per sub-node so
+				 * we always know if the next sibling is
+				 * "last" (└──) or "middle" (├──).
+				 */
+				char prefix_first[64];
+				char prefix_cont[64];
+				int total_subs;
+				int sub_idx;
+
 				if (!summary)
 					continue;
-				if (count == 0) {
-					if (appended)
-						memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-							       "\n");
-					memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-						       "Recent episodes\n");
+				if (idx >= n_episodes)
+					break;
+				cb = (idx == n_episodes - 1) ? "└──" : "├──";
+				vbar2 = (idx == n_episodes - 1) ?
+					"    " : "│   ";
+
+				/* Episode header is short and structured: just
+				 * the importance/timestamp + outcome flag. */
+				memory_parse_episode(summary, &ev);
+				memory_appendf(&buf, &cap, &len,
+					       MEMORY_RENDER_CAP,
+					       "%s%s [imp=%.2f t=%lld]%s%s\n",
+					       vbar, cb,
+					       importance, created_at,
+					       ev.has_outcome ? " " : "",
+					       ev.has_outcome ?
+						       ev.outcome : "");
+
+				total_subs =
+					(ev.has_task ? 1 : 0) +
+					(ev.has_tools ? 1 : 0) +
+					((tools_col && *tools_col &&
+					  !ev.has_tools) ? 1 : 0) +
+					(ev.has_result ? 1 : 0) +
+					((decisions && *decisions) ? 1 : 0) +
+					((artifacts && *artifacts) ? 1 : 0);
+				sub_idx = 0;
+
+				#define MEMORY_PFX(is_last)                          \
+					do {                                         \
+						snprintf(prefix_first,               \
+							 sizeof(prefix_first),       \
+							 "%s%s%s ", vbar, vbar2,     \
+							 (is_last) ? "└──"           \
+								   : "├──");        \
+						snprintf(prefix_cont,                \
+							 sizeof(prefix_cont),        \
+							 "%s%s    ", vbar, vbar2);   \
+					} while (0)
+
+				if (ev.has_task) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"task", ev.task, 200);
 				}
-				memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-					       "- %s\n", summary);
-				count++;
-				appended = 1;
+				if (ev.has_tools) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"tools", ev.tools, 200);
+				} else if (tools_col && *tools_col) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"tools", tools_col, 200);
+				}
+				if (decisions && *decisions) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"decisions", decisions, 200);
+				}
+				if (artifacts && *artifacts) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"artifacts", artifacts, 200);
+				}
+				if (ev.has_result) {
+					MEMORY_PFX(++sub_idx == total_subs);
+					memory_emit_wrapped(&buf, &cap, &len,
+						prefix_first, prefix_cont,
+						"result", ev.result, 200);
+				}
+
+				#undef MEMORY_PFX
+				idx++;
 			}
 			sqlite3_finalize(stmt);
 		}
 	}
 
-	{
-		const char *changes_sql =
-			"SELECT old.key_name, old.value_text, cur.value_text "
+	/* Recent changes */
+	if (n_changes > 0) {
+		const char *vbar = "    ";
+		int idx = 0;
+		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+			       "└── Recent changes (%d)\n", n_changes);
+		if (sqlite3_prepare_v2(db->handle,
+			"SELECT old.key_name, old.value_text, "
+			"cur.value_text, old.updated_at "
 			"FROM memory_facts old "
-			"LEFT JOIN memory_facts cur ON cur.id = old.superseded_by "
+			"LEFT JOIN memory_facts cur "
+			"  ON cur.id = old.superseded_by "
 			"WHERE old.session_id=? AND old.is_current=0 "
-			"ORDER BY old.updated_at DESC LIMIT 6";
-		int count = 0;
-		if (sqlite3_prepare_v2(db->handle, changes_sql, -1, &stmt, NULL) ==
-		    SQLITE_OK) {
+			"ORDER BY old.updated_at DESC",
+			-1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, session_id);
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				const char *key_name =
-					(const char *)sqlite3_column_text(stmt, 0);
-				const char *old_value =
-					(const char *)sqlite3_column_text(stmt, 1);
-				const char *new_value =
-					(const char *)sqlite3_column_text(stmt, 2);
+				const char *key_name = (const char *)
+					sqlite3_column_text(stmt, 0);
+				const char *old_value = (const char *)
+					sqlite3_column_text(stmt, 1);
+				const char *new_value = (const char *)
+					sqlite3_column_text(stmt, 2);
+				long long changed_at = (long long)
+					sqlite3_column_int64(stmt, 3);
+				const char *cb;
 				if (!key_name || !old_value)
 					continue;
-				if (count == 0) {
-					if (appended)
-						memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-							       "\n");
-					memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-						       "Recent changes\n");
-				}
-				memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
-					       "- %s: %s -> %s\n",
+				cb = (idx == n_changes - 1) ? "└──" : "├──";
+				memory_appendf(&buf, &cap, &len,
+					       MEMORY_RENDER_CAP,
+					       "%s%s %s: %s -> %s (t=%lld)\n",
+					       vbar, cb,
 					       key_name, old_value,
-					       new_value ? new_value : "(unset)");
-				count++;
-				appended = 1;
+					       new_value ? new_value :
+							   "(unset)",
+					       changed_at);
+				idx++;
 			}
 			sqlite3_finalize(stmt);
 		}
 	}
 
-	if (!appended)
-		return strdup("No long-term memory stored for this session.");
 	return buf;
 }
 
@@ -1349,6 +1795,308 @@ int memory_clear(struct db *db, int64_t session_id,
 	}
 }
 
+/* ---- LLM-driven structured extraction ---------------------------------
+ *
+ * On each consolidated turn we ask the LLM to produce a single JSON
+ * envelope with three sections:
+ *   { "facts":[{key,value,category,importance}],
+ *     "rules":[{rule_text,trigger}],
+ *     "episode":{key_decisions,artifacts,importance} }
+ *
+ * facts/rules are merged into memory_facts / memory_procedures using the
+ * same dedup/upsert pipeline as the anchor path. The episode block
+ * augments the structured fields written into memory_episodes.
+ *
+ * Failures (LLM unconfigured, network error, malformed JSON) degrade
+ * silently — the anchor path still runs, so memory never gets worse than
+ * before this hook existed.
+ * --------------------------------------------------------------------- */
+
+static const char MEMORY_LLM_SYSTEM[] =
+	"You distill a single user/assistant turn into durable memory. "
+	"Be conservative: only emit items that will still be true and useful "
+	"in a future, unrelated turn. Drop pleasantries, error chatter, and "
+	"anything bound to the current question. "
+	"Output STRICT JSON matching this schema and nothing else:\n"
+	"{\n"
+	"  \"facts\":[{\"key\":string, \"value\":string,"
+	" \"category\":string, \"importance\":number}],\n"
+	"  \"rules\":[{\"rule_text\":string, \"trigger\":string}],\n"
+	"  \"episode\":{\"key_decisions\":string,"
+	" \"artifacts\":string, \"importance\":number}\n"
+	"}\n"
+	"Rules:\n"
+	"- key uses snake_case; common keys: user_name, preferred_name, "
+	"preferred_language, response_style, goal, location, project, "
+	"tech_stack, constraint, deadline, contact.\n"
+	"- category is one of: identity, preference, goal, context, project, "
+	"constraint, relationship, general.\n"
+	"- importance is between 0 and 1; >=0.8 only for stable identity / "
+	"explicit standing instructions.\n"
+	"- rule_text is an imperative directive the assistant should obey "
+	"in future turns.\n"
+	"- artifacts is a comma-separated list of file paths, URLs, or IDs "
+	"produced this turn.\n"
+	"- Use empty arrays / strings when there is nothing to record. "
+	"Never invent facts not grounded in the turn.\n"
+	"- Output JSON only — no markdown, no commentary.";
+
+static char *memory_llm_extract_json(const char *user_input,
+				     const char *assistant_output,
+				     const char *tool_names,
+				     int success);
+
+static cJSON *memory_llm_parse_envelope(const char *raw)
+{
+	const char *p;
+	const char *end;
+	cJSON *root;
+
+	if (!raw)
+		return NULL;
+	p = strchr(raw, '{');
+	if (!p)
+		return NULL;
+	end = strrchr(p, '}');
+	if (!end || end <= p)
+		return NULL;
+	{
+		size_t len = (size_t)(end - p) + 1;
+		char *trimmed = (char *)malloc(len + 1);
+		if (!trimmed)
+			return NULL;
+		memcpy(trimmed, p, len);
+		trimmed[len] = '\0';
+		root = cJSON_Parse(trimmed);
+		free(trimmed);
+	}
+	return root;
+}
+
+static const char *memory_json_string(const cJSON *obj, const char *field,
+				      const char *fallback)
+{
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, field);
+	if (cJSON_IsString(item) && item->valuestring && *item->valuestring)
+		return item->valuestring;
+	return fallback;
+}
+
+static double memory_json_number(const cJSON *obj, const char *field,
+				 double fallback)
+{
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, field);
+	if (cJSON_IsNumber(item))
+		return item->valuedouble;
+	return fallback;
+}
+
+static int memory_apply_llm_envelope(struct db *db, int64_t session_id,
+				     const char *user_input,
+				     cJSON *root,
+				     char **out_decisions,
+				     char **out_artifacts,
+				     double *out_importance)
+{
+	cJSON *facts;
+	cJSON *rules;
+	cJSON *episode;
+	cJSON *item;
+	int dirty = 0;
+	int worst = 0;
+	int rc;
+
+	if (!root)
+		return -EINVAL;
+
+	facts = cJSON_GetObjectItemCaseSensitive(root, "facts");
+	if (cJSON_IsArray(facts)) {
+		cJSON_ArrayForEach(item, facts) {
+			const char *key = memory_json_string(item, "key", NULL);
+			const char *value =
+				memory_json_string(item, "value", NULL);
+			const char *category =
+				memory_json_string(item, "category",
+						   "general");
+			double importance =
+				memory_json_number(item, "importance", 0.5);
+			if (!key || !value)
+				continue;
+			if (!*key || !*value)
+				continue;
+			if (strlen(value) > MEMORY_VALUE_MAX_BYTES)
+				continue;
+			rc = memory_upsert_fact(db, session_id, key, value,
+						user_input, category,
+						importance);
+			if (rc != 0 && worst == 0)
+				worst = rc;
+			else if (rc == 0)
+				dirty = 1;
+		}
+	}
+
+	rules = cJSON_GetObjectItemCaseSensitive(root, "rules");
+	if (cJSON_IsArray(rules)) {
+		cJSON_ArrayForEach(item, rules) {
+			const char *rule =
+				memory_json_string(item, "rule_text", NULL);
+			const char *trigger =
+				memory_json_string(item, "trigger",
+						   user_input);
+			if (!rule || !*rule)
+				continue;
+			rc = memory_upsert_procedure(db, session_id, rule,
+						     trigger);
+			if (rc != 0 && worst == 0)
+				worst = rc;
+		}
+	}
+
+	episode = cJSON_GetObjectItemCaseSensitive(root, "episode");
+	if (cJSON_IsObject(episode)) {
+		const char *kd =
+			memory_json_string(episode, "key_decisions", "");
+		const char *ar =
+			memory_json_string(episode, "artifacts", "");
+		double imp = memory_json_number(episode, "importance", 0.5);
+		if (out_decisions)
+			*out_decisions = strdup(kd);
+		if (out_artifacts)
+			*out_artifacts = strdup(ar);
+		if (out_importance)
+			*out_importance = imp;
+	}
+
+	if (dirty) {
+		rc = memory_refresh_profile(db, session_id);
+		if (rc != 0 && worst == 0)
+			worst = rc;
+	}
+	return worst;
+}
+
+struct memory_llm_buf {
+	char *data;
+	size_t len;
+	size_t cap;
+};
+
+static int memory_llm_stream_cb(const char *token, void *user_data)
+{
+	struct memory_llm_buf *buf = (struct memory_llm_buf *)user_data;
+	size_t tlen;
+
+	if (!token)
+		return 0;
+	tlen = strlen(token);
+	if (buf->len + tlen + 1 >= buf->cap) {
+		size_t new_cap = (buf->len + tlen + 1) * 2;
+		char *tmp = (char *)realloc(buf->data, new_cap);
+		if (!tmp)
+			return -ENOMEM;
+		buf->data = tmp;
+		buf->cap = new_cap;
+	}
+	memcpy(buf->data + buf->len, token, tlen);
+	buf->len += tlen;
+	buf->data[buf->len] = '\0';
+	return 0;
+}
+
+static char *memory_llm_extract_json(const char *user_input,
+				     const char *assistant_output,
+				     const char *tool_names,
+				     int success)
+{
+	struct model *llm = g_memory_llm;
+	struct arena *arena;
+	char *prompt;
+	size_t prompt_cap;
+	const char *messages[1];
+	struct memory_llm_buf buf = {0};
+	int rc;
+
+	if (!llm || !llm->chat || !llm->api_key[0] || !user_input)
+		return NULL;
+
+	prompt_cap = strlen(user_input) +
+		     (assistant_output ? strlen(assistant_output) : 0) +
+		     (tool_names ? strlen(tool_names) : 0) + 1024;
+	prompt = (char *)malloc(prompt_cap);
+	if (!prompt)
+		return NULL;
+	snprintf(prompt, prompt_cap,
+		 "Turn outcome: %s\n"
+		 "Tools used: %s\n"
+		 "User said:\n%s\n\n"
+		 "Assistant said:\n%s\n",
+		 success ? "completed" : "aborted",
+		 (tool_names && *tool_names) ? tool_names : "(none)",
+		 user_input,
+		 (assistant_output && *assistant_output) ? assistant_output
+							 : "(no answer)");
+
+	arena = arena_create(64 * 1024);
+	if (!arena) {
+		free(prompt);
+		return NULL;
+	}
+
+	buf.cap = 4096;
+	buf.data = (char *)malloc(buf.cap);
+	if (!buf.data) {
+		arena_destroy(arena);
+		free(prompt);
+		return NULL;
+	}
+	buf.data[0] = '\0';
+
+	messages[0] = prompt;
+	rc = llm->chat(llm, arena, MEMORY_LLM_SYSTEM, messages, 1,
+		       memory_llm_stream_cb, &buf);
+	arena_destroy(arena);
+	free(prompt);
+
+	if (rc != 0 || buf.len == 0) {
+		log_dbg("memory: LLM extraction failed (rc=%d, len=%zu)",
+			rc, buf.len);
+		free(buf.data);
+		return NULL;
+	}
+	return buf.data;
+}
+
+static int memory_capture_llm_path(struct db *db, int64_t session_id,
+				   const char *user_input,
+				   const char *assistant_output,
+				   const struct react_step *steps,
+				   int success,
+				   char **out_decisions,
+				   char **out_artifacts,
+				   double *out_importance)
+{
+	char tools[256];
+	char *raw;
+	cJSON *root;
+	int rc;
+
+	memory_collect_tools(steps, tools, sizeof(tools));
+	raw = memory_llm_extract_json(user_input, assistant_output, tools,
+				      success);
+	if (!raw)
+		return -ENODATA;
+	root = memory_llm_parse_envelope(raw);
+	free(raw);
+	if (!root)
+		return -EINVAL;
+	rc = memory_apply_llm_envelope(db, session_id, user_input, root,
+				       out_decisions, out_artifacts,
+				       out_importance);
+	cJSON_Delete(root);
+	return rc;
+}
+
 int memory_consolidate_turn(struct db *db, int64_t session_id,
 			    const char *user_input,
 			    const char *assistant_output,
@@ -1358,20 +2106,45 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 {
 	int worst = 0;
 	int rc;
+	int llm_ran = 0;
+	char *llm_decisions = NULL;
+	char *llm_artifacts = NULL;
+	double llm_importance = 0.5;
 
 	if (!db || !db->handle || !opts || !opts->enabled || !user_input)
 		return 0;
 
-	if (opts->hot_path_enabled) {
-		rc = memory_capture_hot_path(db, session_id, user_input);
-		if (rc != 0)
+	/* LLM path runs first so its facts win recency tiebreaks against
+	 * the heuristic anchors. The anchor path always runs as a safety
+	 * net for offline / rate-limited scenarios. */
+	if (opts->llm_extract_enabled) {
+		rc = memory_capture_llm_path(db, session_id, user_input,
+					     assistant_output, steps,
+					     success, &llm_decisions,
+					     &llm_artifacts, &llm_importance);
+		if (rc == 0)
+			llm_ran = 1;
+		else if (rc != -ENODATA && worst == 0)
 			worst = rc;
 	}
-	if (opts->cold_path_enabled) {
-		rc = memory_insert_episode(db, session_id, user_input,
-					   assistant_output, steps, success);
+
+	if (opts->hot_path_enabled) {
+		rc = memory_capture_hot_path(db, session_id, user_input);
 		if (rc != 0 && worst == 0)
 			worst = rc;
 	}
+
+	if (opts->cold_path_enabled) {
+		rc = memory_insert_episode(db, session_id, user_input,
+					   assistant_output, steps, success,
+					   llm_ran ? llm_decisions : NULL,
+					   llm_ran ? llm_artifacts : NULL,
+					   llm_ran ? llm_importance : 0.5);
+		if (rc != 0 && worst == 0)
+			worst = rc;
+	}
+
+	free(llm_decisions);
+	free(llm_artifacts);
 	return worst;
 }

@@ -55,6 +55,7 @@ int react_memory_options_for_session(struct memory_options *out)
 	out->enabled = g_config.memory.enabled;
 	out->hot_path_enabled = g_config.memory.hot_path_enabled;
 	out->cold_path_enabled = g_config.memory.cold_path_enabled;
+	out->llm_extract_enabled = g_config.memory.llm_extract_enabled;
 	out->max_facts = g_config.memory.max_facts;
 	out->max_episodes = g_config.memory.max_episodes;
 	out->max_procedures = g_config.memory.max_procedures;
@@ -117,6 +118,9 @@ static void bridge_init_once(void)
 
 	if (!g_llm)
 		fprintf(stderr, "fcgi-bridge: model_llm_create failed\n");
+
+	/* Wire chat LLM into memory subsystem for cold-path extraction. */
+	memory_set_llm(g_llm);
 
 	/* Register tools — same set as cli.c */
 	tool_registry_init(&g_tools);
