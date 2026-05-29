@@ -41,7 +41,9 @@ int session_create(struct db *db, const char *name, const char *model, struct se
 int session_get_by_name(struct db *db, const char *name, struct session *out);
 int session_get_by_id(struct db *db, int64_t id, struct session *out);
 int session_get_by_display_id(struct db *db, const char *display_id, struct session *out);
-int session_list(struct db *db, struct session **out, int *count);
+int session_list(struct db *db, struct session **out, int *count,
+		 int limit, const char *filter);
+int session_count(struct db *db);
 int session_rename(struct db *db, int64_t id, const char *new_name);
 int session_delete(struct db *db, int64_t id);
 int session_update_model(struct db *db, int64_t id, const char *model);

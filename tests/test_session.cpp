@@ -82,7 +82,7 @@ TEST_F(SessionTest, ListSessions) {
 	session_create(&db, "s3", "gpt-4o", &s3);
 	struct session *list;
 	int count = 0;
-	int rc = session_list(&db, &list, &count);
+	int rc = session_list(&db, &list, &count, 0, NULL);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(count, 3);
 	free(list);
@@ -263,7 +263,7 @@ TEST_F(SessionTest, DisplayIdInList) {
 	session_create(&db, "list_display", "gpt-4o", nullptr);
 	struct session *list;
 	int count;
-	session_list(&db, &list, &count);
+	session_list(&db, &list, &count, 0, NULL);
 	ASSERT_GE(count, 1);
 	bool found = false;
 	for (int i = 0; i < count; i++) {

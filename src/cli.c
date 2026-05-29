@@ -229,8 +229,8 @@ static const struct cmd_entry commands[] = {
 	{ "/n",       cmd_new,     "Alias for /new",                    "/n [name]" },
 	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id>" },
 	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id>" },
-	{ "/list",    cmd_list,    "List all sessions",                 "/list" },
-	{ "/ls",      cmd_list,    "Alias for /list",                   "/ls" },
+	{ "/list",    cmd_list,    "List sessions",                     "/list [n|query|--all]" },
+	{ "/ls",      cmd_list,    "Alias for /list",                   "/ls [n|query|--all]" },
 	{ "/rename",  cmd_rename,  "Rename current session",            "/rename <new_name>" },
 	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
 	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },
@@ -415,14 +415,56 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
+#define SESSION_LIST_DEFAULT 20
+
 static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 {
-	(void)argc;
-	(void)argv;
+	int limit = SESSION_LIST_DEFAULT;
+	const char *filter = NULL;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--all") == 0)
+			limit = 0;
+		else if (argv[i][0] && isdigit((unsigned char)argv[i][0]))
+			limit = atoi(argv[i]);
+		else
+			filter = argv[i];
+	}
+	if (limit < 0)
+		limit = 0;
+
 	struct session *list;
 	int count = 0;
-	session_list(&ctx->database, &list, &count);
-	CMD_HEADER("sessions (%d)", count);
+	session_list(&ctx->database, &list, &count, limit, filter);
+
+	int total = session_count(&ctx->database);
+
+	if (filter && filter[0]) {
+		if (limit > 0 && count < total)
+			printf(ANSI_BOLD ANSI_CYAN
+			       "--- sessions (%d of %d, \""
+			       ANSI_YELLOW "%s"
+			       ANSI_CYAN "\")"
+			       ANSI_RESET "\n",
+			       count, total, filter);
+		else
+			printf(ANSI_BOLD ANSI_CYAN
+			       "--- sessions (%d of %d, \""
+			       ANSI_YELLOW "%s"
+			       ANSI_CYAN "\")"
+			       ANSI_RESET "\n",
+			       count, total, filter);
+	} else if (limit > 0 && count < total) {
+		printf(ANSI_BOLD ANSI_CYAN
+		       "--- sessions (%d of %d, use --all for more)"
+		       ANSI_RESET "\n",
+		       count, total);
+	} else {
+		printf(ANSI_BOLD ANSI_CYAN
+		       "--- sessions (%d)"
+		       ANSI_RESET "\n",
+		       count);
+	}
+
 	printf("  ");
 	print_padded("ID", 10); putchar(' ');
 	print_padded("Name", 45); putchar(' ');
@@ -2085,7 +2127,7 @@ static char *session_completion_generator(const char *text, int state)
 		len = (int)strlen(text);
 		if (!g_comp_ctx)
 			return NULL;
-		session_list(&g_comp_ctx->database, &slist, &scount);
+		session_list(&g_comp_ctx->database, &slist, &scount, 0, NULL);
 	}
 
 	while (idx < scount) {

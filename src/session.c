@@ -183,16 +183,42 @@ int session_get_by_display_id(struct db *db, const char *display_id, struct sess
 	return -ENOENT;
 }
 
-int session_list(struct db *db, struct session **out, int *count)
+int session_list(struct db *db, struct session **out, int *count,
+		 int limit, const char *filter)
 {
 	if (!db || !db->handle || !out || !count)
 		return -EINVAL;
+
+	char sql[512];
+	int pos = snprintf(sql, sizeof(sql),
+		"SELECT id,display_id,name,model,created_at,updated_at,token_used"
+		" FROM sessions");
+	int bind_idx = 1;
+
+	if (filter && filter[0]) {
+		pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
+				" WHERE name LIKE ?");
+	}
+	pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
+			" ORDER BY updated_at DESC");
+	if (limit > 0)
+		pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
+				" LIMIT ?");
+
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,display_id,name,model,created_at,updated_at,token_used"
-			  " FROM sessions ORDER BY updated_at DESC";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		MORPH_RETURN(MORPH_ERR_DB);
+
+	if (filter && filter[0]) {
+		char pattern[260];
+		snprintf(pattern, sizeof(pattern), "%%%s%%", filter);
+		sqlite3_bind_text(stmt, bind_idx, pattern, -1, SQLITE_TRANSIENT);
+		bind_idx++;
+	}
+	if (limit > 0)
+		sqlite3_bind_int(stmt, bind_idx, limit);
+
 	int cap = 16;
 	int n = 0;
 	struct session *list = malloc(sizeof(*list) * (size_t)cap);
@@ -229,6 +255,23 @@ int session_list(struct db *db, struct session **out, int *count)
 	*out = list;
 	*count = n;
 	return 0;
+}
+
+int session_count(struct db *db)
+{
+	if (!db || !db->handle)
+		return -EINVAL;
+	sqlite3_stmt *stmt;
+	const char *sql = "SELECT COUNT(*) FROM sessions";
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = sqlite3_step(stmt);
+	int count = 0;
+	if (rc == SQLITE_ROW)
+		count = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return count;
 }
 
 int session_rename(struct db *db, int64_t id, const char *new_name)
