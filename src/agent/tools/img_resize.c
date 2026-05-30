@@ -1,4 +1,5 @@
 #include "img_resize.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/error.h"
@@ -46,9 +47,10 @@ static int write_by_ext(const char *path, const char *ext, int w, int h, int ch,
 
 static int img_resize_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
 	if (!result_json)
 		return -EINVAL;
+
+	struct tool_context *tctx = user_data;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
@@ -114,10 +116,21 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 
 	char final_path[1024];
 	if (out_path_in && *out_path_in) {
+		if (tctx && tool_context_check_write_path(tctx, out_path_in) < 0) {
+			cJSON_Delete(root);
+			*result_json = strdup(
+				"{\"error\":\"write path outside output directory: permission denied\"}");
+			MORPH_RETURN(-EPERM);
+		}
 		strncpy(final_path, out_path_in, sizeof(final_path) - 1);
 		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
-		char *out_dir = file_expand_path("~/.morph/output");
+		const char *odir = tctx ? tool_context_output_dir(tctx) : NULL;
+		char *out_dir;
+		if (odir)
+			out_dir = file_expand_path(odir);
+		else
+			out_dir = file_expand_path("~/.morph/output");
 		if (!out_dir) {
 			stbi_image_free(dst);
 			stbi_image_free(src);
@@ -153,7 +166,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	return 0;
 }
 
-int img_resize_init(struct tool_registry *reg)
+int img_resize_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
@@ -167,5 +180,5 @@ int img_resize_init(struct tool_registry *reg)
 		"\"width\":{\"type\":\"integer\",\"description\":\"Target width in pixels\"},"
 		"\"height\":{\"type\":\"integer\",\"description\":\"Target height in pixels\"},"
 		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"}},\"required\":[\"file_path\"]}",
-		img_resize_exec, NULL, NULL);
+		img_resize_exec, tctx, NULL);
 }

@@ -4,6 +4,7 @@ add_library(morph-agent STATIC
 	compress.c
 	tokenizer.c
 	tool.c
+	tool_context.c
 	plan.c
 	memory.c
 	guardrail.c

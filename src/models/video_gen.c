@@ -38,7 +38,8 @@ static int download_url(const char *url, const char *out_path)
 int video_gen_create(struct model *self, const char *prompt,
 		    const char **image_paths, int num_images,
 		    const char **video_paths, int num_videos,
-		    int duration, struct video_result *result)
+		    int duration, const char *output_dir,
+		    struct video_result *result)
 {
 	if (!prompt || !result)
 		return -EINVAL;
@@ -359,7 +360,11 @@ int video_gen_create(struct model *self, const char *prompt,
 download:
 	strncpy(result->url, video_url, sizeof(result->url) - 1);
 
-	char *out_dir = file_expand_path("~/.morph/output");
+	char *out_dir;
+	if (output_dir && output_dir[0])
+		out_dir = file_expand_path(output_dir);
+	else
+		out_dir = file_expand_path("~/.morph/output");
 	file_ensure_dir(out_dir);
 	char out_path[1024];
 	snprintf(out_path, sizeof(out_path), "%s/vid_%lld.mp4",

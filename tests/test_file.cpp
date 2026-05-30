@@ -131,3 +131,48 @@ TEST_F(FileTest, ListFilesSkipsDirs) {
 	std::remove("/tmp/ma_test_skip/subdir");
 	std::remove(d);
 }
+
+TEST_F(FileTest, ResolvePathAbsolute) {
+	char *resolved = file_resolve_path("/tmp");
+	ASSERT_NE(resolved, nullptr);
+	EXPECT_NE(resolved[0], '\0');
+	free(resolved);
+}
+
+TEST_F(FileTest, ResolvePathHome) {
+	char *resolved = file_resolve_path("~/test_resolve");
+	ASSERT_NE(resolved, nullptr);
+	EXPECT_NE(resolved[0], '~');
+	EXPECT_NE(resolved[0], '\0');
+	free(resolved);
+}
+
+TEST_F(FileTest, PathIsWithinBasic) {
+	char *resolved = file_resolve_path("/tmp");
+	ASSERT_NE(resolved, nullptr);
+	char path_buf[512];
+	snprintf(path_buf, sizeof(path_buf), "%s/ma_test_dir/file.txt", resolved);
+	free(resolved);
+	file_ensure_dir("/tmp/ma_test_dir");
+	EXPECT_EQ(path_is_within(path_buf, "/tmp/ma_test_dir"), 1);
+	EXPECT_EQ(path_is_within("/var/other/file.txt", "/tmp/ma_test_dir"), 0);
+	std::remove("/tmp/ma_test_dir");
+}
+
+TEST_F(FileTest, PathIsWithinExactMatch) {
+	EXPECT_EQ(path_is_within("/tmp/ma_test_dir", "/tmp/ma_test_dir"), 1);
+}
+
+TEST_F(FileTest, PathIsWithinPrefixAttack) {
+	EXPECT_EQ(path_is_within("/tmp/ma_test_dir_other/file.txt", "/tmp/ma_test_dir"), 0);
+}
+
+TEST_F(FileTest, PathIsWithinNull) {
+	EXPECT_EQ(path_is_within(NULL, "/tmp"), 0);
+	EXPECT_EQ(path_is_within("/tmp", NULL), 0);
+}
+
+TEST_F(FileTest, ResolvePathNull) {
+	char *resolved = file_resolve_path(NULL);
+	EXPECT_EQ(resolved, nullptr);
+}

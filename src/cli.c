@@ -25,11 +25,14 @@
 #include "agent/tools/img_annotate.h"
 #include "agent/plan.h"
 #include "agent/guardrail.h"
+#include "agent/tool_context.h"
 #include "agent/tools/plan.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "agent/memory.h"
 #include "config.h"
+#include "models/image_gen.h"
+#include "models/video_gen.h"
 #include "render/markdown.h"
 #include "render/image.h"
 #include "render/video.h"
@@ -55,9 +58,9 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data);
 
-static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
-							  const char *cwd,
-							  void *user_data);
+static enum command_verdict command_approval_callback(const char *command,
+						      const char *cwd,
+						      void *user_data);
 
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
@@ -1788,16 +1791,29 @@ static void cli_img_annotate_resume(void *user_data)
 	}
 }
 
+static enum write_verdict write_approval_callback(const char *path,
+						   const char *output_dir,
+						   void *user_data);
+
 static int cli_init_tools(struct cli_context *ctx)
 {
 	int rc = 0;
+
+	ctx->tctx = tool_context_create(ctx->config.general.output_dir);
+	if (!ctx->tctx) {
+		log_err("failed to create tool context");
+		return -ENOMEM;
+	}
+	ctx->tctx->approval_fn = write_approval_callback;
+	ctx->tctx->approval_user_data = ctx;
+
 	text_gen_init(&ctx->tools, ctx->llm);
 	log_info("registered text_gen tool");
 
 	text_qa_init(&ctx->tools, ctx->llm);
 	log_info("registered text_qa tool");
 
-	img_gen_init(&ctx->tools, ctx->img_llm);
+	img_gen_init(&ctx->tools, ctx->img_llm, ctx->tctx);
 	log_info("registered img_gen tool");
 
 	img_edit_init(&ctx->tools, ctx->llm);
@@ -1816,30 +1832,31 @@ static int cli_init_tools(struct cli_context *ctx)
 	log_info("registered file_info tool");
 
 	if (ctx->config.react.bash_exec_enabled) {
-		bash_exec_clear_allowlist();
 		for (int i = 0;
 		     i < ctx->config.react.bash_exec_allowed_commands_count; i++)
-			bash_exec_allow_command(
+			tool_context_allow_command(
+				ctx->tctx,
 				ctx->config.react.bash_exec_allowed_commands[i]);
 		for (int i = 0;
 		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
-			bash_exec_allow_cwd(
+			tool_context_allow_exec_dir(
+				ctx->tctx,
 				ctx->config.react.bash_exec_allowed_cwds[i]);
-		bash_exec_set_approval_callback(
-			bash_exec_approval_callback, ctx);
-		bash_exec_init(&ctx->tools);
+		tool_context_set_command_approval(
+			ctx->tctx, command_approval_callback, ctx);
+		bash_exec_init(&ctx->tools, ctx->tctx);
 		log_info("registered bash_exec tool (explicitly enabled)");
 	} else {
 		log_info("bash_exec tool disabled by default");
 	}
 
-	img_resize_init(&ctx->tools);
+	img_resize_init(&ctx->tools, ctx->tctx);
 	log_info("registered img_resize tool");
 
-	img_convert_init(&ctx->tools);
+	img_convert_init(&ctx->tools, ctx->tctx);
 	log_info("registered img_convert tool");
 
-	vid_gen_init(&ctx->tools, ctx->vid_llm);
+	vid_gen_init(&ctx->tools, ctx->vid_llm, ctx->tctx);
 	log_info("registered vid_gen tool");
 
 	{
@@ -2145,10 +2162,12 @@ static int cli_init_mcp(struct cli_context *ctx)
  * register tools, discover extensions and MCP servers, and prepare session.
  * ctx - CLI context to initialize (must be zeroed by caller or here).
  * config_path - Path to config file, or NULL for default.
+ * workdir - Override output directory, or NULL for config default.
  *
  * Returns 0 on success, negative errno on failure.
  */
-int cli_init(struct cli_context *ctx, const char *config_path)
+int cli_init(struct cli_context *ctx, const char *config_path,
+	     const char *workdir)
 {
 	if (!ctx)
 		return -EINVAL;
@@ -2159,6 +2178,10 @@ int cli_init(struct cli_context *ctx, const char *config_path)
 	rc = cli_init_config(ctx, config_path);
 	if (rc < 0)
 		return rc;
+
+	if (workdir && *workdir)
+		strncpy(ctx->config.general.output_dir, workdir,
+			sizeof(ctx->config.general.output_dir) - 1);
 
 	rc = cli_init_database(ctx);
 	if (rc < 0)
@@ -3050,13 +3073,13 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	return HITL_DENY;
 }
 
-static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
-							  const char *cwd,
-							  void *user_data)
+static enum command_verdict command_approval_callback(const char *command,
+						      const char *cwd,
+						      void *user_data)
 {
 	struct cli_context *ctx = user_data;
 	if (!ctx)
-		return BASH_EXEC_DENY;
+		return COMMAND_DENY;
 
 	spin_pause(&ctx->spin);
 
@@ -3083,10 +3106,35 @@ static enum bash_exec_verdict bash_exec_approval_callback(const char *command,
 
 	int v = prompt_yna("bash_exec");
 	if (v == 2)
-		return BASH_EXEC_ALWAYS;
+		return COMMAND_ALWAYS;
 	if (v == 1)
-		return BASH_EXEC_ALLOW;
-	return BASH_EXEC_DENY;
+		return COMMAND_ALLOW;
+	return COMMAND_DENY;
+}
+
+static enum write_verdict write_approval_callback(const char *path,
+						   const char *output_dir,
+						   void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (!ctx)
+		return WRITE_DENY;
+
+	spin_pause(&ctx->spin);
+
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_YELLOW "⚠ Write Path Approval" ANSI_RESET "\n");
+	printf("  Path:  " ANSI_BOLD "%s" ANSI_RESET "\n", path);
+	printf("  " ANSI_DIM "Output dir: %s" ANSI_RESET "\n", output_dir);
+	printf("  " ANSI_DIM "'always' will trust this directory "
+	       "for the rest of the session." ANSI_RESET "\n");
+
+	int v = prompt_yna("write_path");
+	if (v == 2)
+		return WRITE_ALWAYS;
+	if (v == 1)
+		return WRITE_ALLOW;
+	return WRITE_DENY;
 }
 
 /* ---- cli_handle_command ---- */
@@ -3232,6 +3280,10 @@ void cli_shutdown(struct cli_context *ctx)
 	if (ctx->tokenizer)
 		tokenizer_destroy(ctx->tokenizer);
 	tool_registry_cleanup(&ctx->tools);
+	if (ctx->tctx) {
+		tool_context_destroy(ctx->tctx);
+		ctx->tctx = NULL;
+	}
 	if (ctx->llm)
 		model_destroy(ctx->llm);
 	if (ctx->img_llm)

@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 
 char *file_read_all(const char *path, size_t *out_len)
 {
@@ -204,4 +205,60 @@ void file_free_list(char **list, int count)
 	for (int i = 0; i < count; i++)
 		free(list[i]);
 	free(list);
+}
+
+char *file_resolve_path(const char *path)
+{
+	if (!path)
+		return NULL;
+	char *expanded = file_expand_path(path);
+	if (!expanded)
+		return NULL;
+	char resolved[PATH_MAX];
+	if (realpath(expanded, resolved)) {
+		free(expanded);
+		return strdup(resolved);
+	}
+	char tmp[PATH_MAX];
+	strncpy(tmp, expanded, sizeof(tmp) - 1);
+	tmp[sizeof(tmp) - 1] = '\0';
+	char *slash = strrchr(tmp, '/');
+	if (slash && slash != tmp) {
+		*slash = '\0';
+		char dir_resolved[PATH_MAX];
+		if (realpath(tmp, dir_resolved)) {
+			free(expanded);
+			size_t dlen = strlen(dir_resolved);
+			size_t flen = strlen(slash + 1);
+			char *result = malloc(dlen + 1 + flen + 1);
+			if (!result)
+				return NULL;
+			snprintf(result, dlen + 1 + flen + 1,
+				 "%s/%s", dir_resolved, slash + 1);
+			return result;
+		}
+	}
+	return expanded;
+}
+
+int path_is_within(const char *path, const char *dir)
+{
+	if (!path || !dir)
+		return 0;
+	char *resolved_path = file_resolve_path(path);
+	char *resolved_dir = file_resolve_path(dir);
+	if (!resolved_path || !resolved_dir) {
+		free(resolved_path);
+		free(resolved_dir);
+		return 0;
+	}
+	size_t dlen = strlen(resolved_dir);
+	int within = 0;
+	if (strncmp(resolved_path, resolved_dir, dlen) == 0) {
+		if (resolved_path[dlen] == '/' || resolved_path[dlen] == '\0')
+			within = 1;
+	}
+	free(resolved_path);
+	free(resolved_dir);
+	return within;
 }

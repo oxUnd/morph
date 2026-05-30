@@ -34,12 +34,12 @@ static int create_test_png(const char *path) {
 
 TEST(ImageGen, InvalidPrompt) {
 	struct image_result result;
-	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, &result);
+	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, NULL, &result);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(ImageGen, NullResult) {
-	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL, NULL);
+	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL, NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 
@@ -97,7 +97,7 @@ protected:
 };
 
 TEST_F(ImgGenToolTest, RegisterTool) {
-	int rc = img_gen_init(&reg, NULL);
+	int rc = img_gen_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(reg.count, 1);
 	struct tool_entry *e = tool_lookup(&reg, "img_gen");
@@ -106,7 +106,7 @@ TEST_F(ImgGenToolTest, RegisterTool) {
 }
 
 TEST_F(ImgGenToolTest, ExecMissingPrompt) {
-	img_gen_init(&reg, NULL);
+	img_gen_init(&reg, NULL, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_gen", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -166,7 +166,7 @@ TEST_F(ImgGenToolTest, InfoInvalidFile) {
 }
 
 TEST_F(ImgGenToolTest, ResizeRegister) {
-	int rc = img_resize_init(&reg);
+	int rc = img_resize_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&reg, "img_resize");
 	ASSERT_NE(e, nullptr);
@@ -174,7 +174,7 @@ TEST_F(ImgGenToolTest, ResizeRegister) {
 }
 
 TEST_F(ImgGenToolTest, ResizeMissingArgs) {
-	img_resize_init(&reg);
+	img_resize_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_resize", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -183,7 +183,7 @@ TEST_F(ImgGenToolTest, ResizeMissingArgs) {
 }
 
 TEST_F(ImgGenToolTest, ResizeInvalidFile) {
-	img_resize_init(&reg);
+	img_resize_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_resize",
 		"{\"file_path\":\"/nonexistent.png\",\"width\":10,\"height\":10}",
@@ -194,7 +194,7 @@ TEST_F(ImgGenToolTest, ResizeInvalidFile) {
 }
 
 TEST_F(ImgGenToolTest, ConvertRegister) {
-	int rc = img_convert_init(&reg);
+	int rc = img_convert_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&reg, "img_convert");
 	ASSERT_NE(e, nullptr);
@@ -202,7 +202,7 @@ TEST_F(ImgGenToolTest, ConvertRegister) {
 }
 
 TEST_F(ImgGenToolTest, ConvertMissingArgs) {
-	img_convert_init(&reg);
+	img_convert_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_convert", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -211,7 +211,7 @@ TEST_F(ImgGenToolTest, ConvertMissingArgs) {
 }
 
 TEST_F(ImgGenToolTest, ConvertUnsupportedFormat) {
-	img_convert_init(&reg);
+	img_convert_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_convert",
 		"{\"file_path\":\"/tmp/x.png\",\"format\":\"avif\"}",

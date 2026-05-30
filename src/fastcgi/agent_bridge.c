@@ -15,6 +15,7 @@
 #include "agent/context.h"
 #include "agent/tokenizer.h"
 #include "agent/tool.h"
+#include "agent/tool_context.h"
 #include "agent/tools/text_gen.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
@@ -47,6 +48,7 @@ static struct tokenizer *g_tokenizer = NULL;
 static struct model      *g_llm       = NULL;
 static struct tool_registry g_tools;
 static struct plan_registry g_plans;
+static struct tool_context *g_tctx    = NULL;
 
 static void bridge_init_once(void);
 
@@ -129,6 +131,10 @@ static void bridge_init_once(void)
 	/* Register tools — same set as cli.c */
 	tool_registry_init(&g_tools);
 
+	g_tctx = tool_context_create(g_config.general.output_dir);
+	if (!g_tctx)
+		fprintf(stderr, "fcgi-bridge: tool_context_create failed\n");
+
 	text_gen_init(&g_tools, g_llm);
 	text_qa_init(&g_tools, g_llm);
 
@@ -144,30 +150,31 @@ static void bridge_init_once(void)
 				? g_config.models.image.api_base : NULL,
 			img_key ? img_key : "");
 		if (img_m) {
-			img_gen_init(&g_tools, img_m);
+			img_gen_init(&g_tools, img_m, g_tctx);
 			img_edit_init(&g_tools, g_llm);
 		}
 	}
 
 	img_info_init(&g_tools);
-	img_resize_init(&g_tools);
-	img_convert_init(&g_tools);
+	img_resize_init(&g_tools, g_tctx);
+	img_convert_init(&g_tools, g_tctx);
 
 	file_read_init(&g_tools);
 	file_list_init(&g_tools);
 	file_info_init(&g_tools);
 
 	if (g_config.react.bash_exec_enabled) {
-		bash_exec_clear_allowlist();
 		for (int i = 0;
 		     i < g_config.react.bash_exec_allowed_commands_count; i++)
-			bash_exec_allow_command(
+			tool_context_allow_command(
+				g_tctx,
 				g_config.react.bash_exec_allowed_commands[i]);
 		for (int i = 0;
 		     i < g_config.react.bash_exec_allowed_cwds_count; i++)
-			bash_exec_allow_cwd(
+			tool_context_allow_exec_dir(
+				g_tctx,
 				g_config.react.bash_exec_allowed_cwds[i]);
-		bash_exec_init(&g_tools);
+		bash_exec_init(&g_tools, g_tctx);
 		log_info("fcgi-bridge: bash_exec explicitly enabled");
 	} else {
 		log_info("fcgi-bridge: bash_exec disabled by default");
@@ -185,7 +192,7 @@ static void bridge_init_once(void)
 				? g_config.models.video.api_base : NULL,
 			vid_key ? vid_key : "");
 		if (vid_m)
-			vid_gen_init(&g_tools, vid_m);
+			vid_gen_init(&g_tools, vid_m, g_tctx);
 	}
 
 	/* Apply disabled_tools from config */

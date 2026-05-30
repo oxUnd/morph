@@ -1,4 +1,5 @@
 #include "img_gen.h"
+#include "agent/tool_context.h"
 #include "models/image_gen.h"
 #include "render/image.h"
 #include "util/log.h"
@@ -11,7 +12,7 @@ static struct model *g_img_llm;
 
 static int img_gen_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json)
 		return -EINVAL;
 
@@ -54,8 +55,10 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		}
 	}
 
+	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	struct image_result img_res = {0};
-	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_img, &img_res);
+	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_img,
+				  output_dir, &img_res);
 	cJSON_Delete(root);
 
 	if (rc < 0) {
@@ -73,7 +76,8 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	return 0;
 }
 
-int img_gen_init(struct tool_registry *reg, struct model *image_llm)
+int img_gen_init(struct tool_registry *reg, struct model *image_llm,
+		 struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
@@ -82,5 +86,5 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm)
 		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size (must be WIDTHxHEIGHT like '2048x2048' or '2k'/'3k'/'4k'), optional reference_image (file path to a reference image)."
 		"size must be greater than 2k.",
 		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT (e.g. 2048x2048, 2k, 3k, or 4k)\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
-		img_gen_exec, NULL, NULL);
+		img_gen_exec, NULL, tctx);
 }

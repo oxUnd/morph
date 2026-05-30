@@ -64,6 +64,7 @@ static const char *style_prefix(const char *style)
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
 		     const char *size, const char *image_path,
+		     const char *output_dir,
 		     struct image_result *result)
 {
 	if (!prompt || !result)
@@ -162,7 +163,11 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 
 	strncpy(result->url, img_url->valuestring, sizeof(result->url) - 1);
 
-	char *out_dir = file_expand_path("~/.morph/output");
+	char *out_dir;
+	if (output_dir && output_dir[0])
+		out_dir = file_expand_path(output_dir);
+	else
+		out_dir = file_expand_path("~/.morph/output");
 	file_ensure_dir(out_dir);
 	char out_path[1024];
 	snprintf(out_path, sizeof(out_path), "%s/img_%lld.png",

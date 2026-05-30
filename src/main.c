@@ -211,6 +211,7 @@ int main(int argc, char *argv[])
 {
 	setlocale(LC_ALL, "");
 	const char *config_path = NULL;
+	const char *workdir = NULL;
 	const char *one_shot_prompt = NULL;
 	int trace_json = 0;
 	int show_version = 0;
@@ -219,6 +220,10 @@ int main(int argc, char *argv[])
 			config_path = argv[++i];
 		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)
 			config_path = argv[++i];
+		else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc)
+			workdir = argv[++i];
+		else if (strcmp(argv[i], "--workdir") == 0 && i + 1 < argc)
+			workdir = argv[++i];
 		else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc)
 			one_shot_prompt = argv[++i];
 		else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
@@ -228,7 +233,7 @@ int main(int argc, char *argv[])
 		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
 			show_version = 1;
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			printf("Usage: morph [-c config_path] [-p prompt] [-v] [--trace-json]\n");
+			printf("Usage: morph [-c config_path] [-w workdir] [-p prompt] [-v] [--trace-json]\n");
 			return 0;
 		}
 	}
@@ -244,7 +249,7 @@ int main(int argc, char *argv[])
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
 	struct cli_context ctx;
-	int rc = cli_init(&ctx, config_path);
+	int rc = cli_init(&ctx, config_path, workdir);
 	if (rc < 0) {
 		log_err("failed to initialize: %d", rc);
 		return 1;

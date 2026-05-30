@@ -1,4 +1,5 @@
 #include "vid_gen.h"
+#include "agent/tool_context.h"
 #include "models/video_gen.h"
 #include "render/video.h"
 #include "util/log.h"
@@ -14,7 +15,7 @@ static struct model *g_vid_llm;
 
 static int vid_gen_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json)
 		return -EINVAL;
 
@@ -77,13 +78,14 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 		return -EINVAL;
 	}
 
+	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	struct video_result vid_res = {0};
 	int rc = video_gen_create(g_vid_llm, prompt,
 				  num_images > 0 ? image_paths : NULL,
 				  num_images,
 				  num_videos > 0 ? video_paths : NULL,
 				  num_videos,
-				  duration, &vid_res);
+				  duration, output_dir, &vid_res);
 	cJSON_Delete(root);
 
 	if (rc < 0) {
@@ -100,7 +102,8 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 	return 0;
 }
 
-int vid_gen_init(struct tool_registry *reg, struct model *video_llm)
+int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
+		 struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
@@ -119,5 +122,5 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm)
 		"\"reference_videos\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of local file paths or http(s) URLs to reference videos for vid2vid. Pass ALL videos in one array, not one at a time. Videos are labeled video#1, video#2, etc. in order\"},"
 		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration in seconds\"}"
 		"},\"required\":[\"prompt\"]}",
-		vid_gen_exec, NULL, NULL);
+		vid_gen_exec, NULL, tctx);
 }

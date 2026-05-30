@@ -6,6 +6,7 @@
 #include "session.h"
 #include "agent/react.h"
 #include "agent/plan.h"
+#include "agent/tool_context.h"
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "util/spin.h"
@@ -24,6 +25,7 @@ struct cli_context {
 	struct model *img_llm;
 	struct model *vid_llm;
 	struct mcp_registry mcp;
+	struct tool_context *tctx;
 	int running;
 	int streaming;
 	int session_auto_named;
@@ -35,7 +37,8 @@ struct cli_context {
 	int trace_json;
 };
 
-int cli_init(struct cli_context *ctx, const char *config_path);
+int cli_init(struct cli_context *ctx, const char *config_path,
+	     const char *workdir);
 void cli_run(struct cli_context *ctx);
 void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);

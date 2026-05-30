@@ -17,7 +17,8 @@ struct video_result {
 int video_gen_create(struct model *self, const char *prompt,
 		    const char **image_paths, int num_images,
 		    const char **video_paths, int num_videos,
-		    int duration, struct video_result *result);
+		    int duration, const char *output_dir,
+		    struct video_result *result);
 
 #ifdef __cplusplus
 }
