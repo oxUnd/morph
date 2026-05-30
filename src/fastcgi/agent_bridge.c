@@ -131,7 +131,8 @@ static void bridge_init_once(void)
 	/* Register tools — same set as cli.c */
 	tool_registry_init(&g_tools);
 
-	g_tctx = tool_context_create(g_config.general.output_dir);
+	g_tctx = tool_context_create(g_config.general.output_dir,
+				     g_config.general.output_dir);
 	if (!g_tctx)
 		fprintf(stderr, "fcgi-bridge: tool_context_create failed\n");
 
@@ -159,9 +160,9 @@ static void bridge_init_once(void)
 	img_resize_init(&g_tools, g_tctx);
 	img_convert_init(&g_tools, g_tctx);
 
-	file_read_init(&g_tools);
-	file_list_init(&g_tools);
-	file_info_init(&g_tools);
+	file_read_init(&g_tools, g_tctx);
+	file_list_init(&g_tools, g_tctx);
+	file_info_init(&g_tools, g_tctx);
 
 	if (g_config.react.bash_exec_enabled) {
 		for (int i = 0;

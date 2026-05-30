@@ -30,6 +30,7 @@ typedef enum command_verdict (*tool_command_approval_fn)(
 	const char *command, const char *cwd, void *user_data);
 
 struct tool_context {
+	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	tool_write_approval_fn approval_fn;
 	void *approval_user_data;
@@ -43,8 +44,10 @@ struct tool_context {
 	int exec_allowed_dirs_count;
 };
 
-struct tool_context *tool_context_create(const char *output_dir);
+struct tool_context *tool_context_create(const char *workdir,
+					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
+const char *tool_context_workdir(const struct tool_context *tctx);
 const char *tool_context_output_dir(const struct tool_context *tctx);
 int tool_context_check_write_path(struct tool_context *tctx, const char *path);
 void tool_context_add_allowed_dir(struct tool_context *tctx, const char *dir);

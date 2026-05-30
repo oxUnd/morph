@@ -26,6 +26,7 @@ struct cli_context {
 	struct model *vid_llm;
 	struct mcp_registry mcp;
 	struct tool_context *tctx;
+	char workdir[512];
 	int running;
 	int streaming;
 	int session_auto_named;

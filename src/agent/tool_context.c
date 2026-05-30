@@ -93,20 +93,38 @@ static int extract_program_name(const char *command, char *out, size_t outsize)
 	return 0;
 }
 
-struct tool_context *tool_context_create(const char *output_dir)
+static void resolve_into(char *dst, size_t dst_size, const char *src)
+{
+	if (!src || !*src) {
+		dst[0] = '\0';
+		return;
+	}
+	char *resolved = file_resolve_path(src);
+	if (resolved) {
+		strncpy(dst, resolved, dst_size - 1);
+		dst[dst_size - 1] = '\0';
+		free(resolved);
+	} else {
+		char *expanded = file_expand_path(src);
+		if (expanded) {
+			strncpy(dst, expanded, dst_size - 1);
+			dst[dst_size - 1] = '\0';
+			free(expanded);
+		} else {
+			strncpy(dst, src, dst_size - 1);
+			dst[dst_size - 1] = '\0';
+		}
+	}
+}
+
+struct tool_context *tool_context_create(const char *workdir,
+					 const char *output_dir)
 {
 	struct tool_context *tctx = calloc(1, sizeof(*tctx));
 	if (!tctx)
 		return NULL;
-	char *resolved = file_resolve_path(output_dir);
-	if (resolved) {
-		strncpy(tctx->output_dir, resolved,
-			sizeof(tctx->output_dir) - 1);
-		free(resolved);
-	} else {
-		strncpy(tctx->output_dir, output_dir,
-			sizeof(tctx->output_dir) - 1);
-	}
+	resolve_into(tctx->workdir, sizeof(tctx->workdir), workdir);
+	resolve_into(tctx->output_dir, sizeof(tctx->output_dir), output_dir);
 	tctx->approval_fn = NULL;
 	tctx->approval_user_data = NULL;
 	tctx->allowed_dirs_count = 0;
@@ -120,6 +138,13 @@ struct tool_context *tool_context_create(const char *output_dir)
 void tool_context_destroy(struct tool_context *tctx)
 {
 	free(tctx);
+}
+
+const char *tool_context_workdir(const struct tool_context *tctx)
+{
+	if (!tctx)
+		return NULL;
+	return tctx->workdir;
 }
 
 const char *tool_context_output_dir(const struct tool_context *tctx)

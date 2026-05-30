@@ -101,6 +101,7 @@ struct react_context {
 	char *system_prompt;
 	char *memory_context;
 	struct skill_registry *skills;
+	char *workdir;
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;
 };

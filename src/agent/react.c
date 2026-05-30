@@ -396,6 +396,7 @@ void react_context_destroy(struct react_context *ctx)
 	free(ctx->final_answer);
 	free(ctx->system_prompt);
 	free(ctx->memory_context);
+	free(ctx->workdir);
 	arena_destroy(ctx->arena);
 	free(ctx);
 }
@@ -515,6 +516,18 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 
 	len += snprintf(buf + len, cap - len,
 		MORPH_SYSTEM_PROMPT, time_buf, ctx->max_iterations);
+
+	if (ctx->workdir && *ctx->workdir) {
+		while (len + 256 >= cap) {
+			cap *= 2;
+			char *nb = arena_alloc(arena, cap);
+			if (!nb) return NULL;
+			memcpy(nb, buf, len);
+			buf = nb;
+		}
+		len += snprintf(buf + len, cap - len,
+			"\nWorking directory: %s\n", ctx->workdir);
+	}
 
 	if (ctx->system_prompt) {
 		size_t sp_len = strlen(ctx->system_prompt);

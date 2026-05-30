@@ -7,7 +7,9 @@ extern "C" {
 
 #include "agent/tool.h"
 
-int file_read_init(struct tool_registry *reg);
+struct tool_context;
+
+int file_read_init(struct tool_registry *reg, struct tool_context *tctx);
 
 #ifdef __cplusplus
 }

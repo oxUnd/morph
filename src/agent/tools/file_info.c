@@ -1,4 +1,5 @@
 #include "file_info.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "cJSON.h"
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <limits.h>
 
 static const char *file_type_str(mode_t mode)
 {
@@ -23,7 +25,7 @@ static const char *file_type_str(mode_t mode)
 
 static int file_info_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -42,12 +44,38 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 		return -EINVAL;
 	}
 
+	char resolved_path[PATH_MAX];
 	char *expanded = file_expand_path(file_path);
-	const char *resolved = expanded ? expanded : file_path;
+	if (expanded) {
+		if (expanded[0] == '/') {
+			strncpy(resolved_path, expanded, sizeof(resolved_path) - 1);
+			resolved_path[sizeof(resolved_path) - 1] = '\0';
+		} else {
+			const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+			if (wd && *wd)
+				snprintf(resolved_path, sizeof(resolved_path),
+					 "%s/%s", wd, expanded);
+			else
+				strncpy(resolved_path, expanded,
+					sizeof(resolved_path) - 1);
+		}
+		free(expanded);
+	} else if (file_path[0] == '/' || file_path[0] == '~') {
+		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
+		resolved_path[sizeof(resolved_path) - 1] = '\0';
+	} else {
+		const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+		if (wd && *wd)
+			snprintf(resolved_path, sizeof(resolved_path),
+				 "%s/%s", wd, file_path);
+		else
+			strncpy(resolved_path, file_path,
+				sizeof(resolved_path) - 1);
+	}
+	resolved_path[sizeof(resolved_path) - 1] = '\0';
 
 	struct stat st;
-	if (stat(resolved, &st) != 0) {
-		free(expanded);
+	if (stat(resolved_path, &st) != 0) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"path does not exist\"}");
 		return -ENOENT;
@@ -82,17 +110,16 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
-	free(expanded);
 	cJSON_Delete(root);
 	*result_json = str;
 	return 0;
 }
 
-int file_info_init(struct tool_registry *reg)
+int file_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
 	return tool_register(reg, "file_info",
 		"Get file or directory metadata (type, size, permissions, modification time, extension). Provide file_path.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the file or directory\"}},\"required\":[\"file_path\"]}",
-		file_info_exec, NULL, NULL);
+		file_info_exec, tctx, NULL);
 }

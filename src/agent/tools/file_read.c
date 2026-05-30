@@ -1,4 +1,5 @@
 #include "file_read.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/error.h"
@@ -7,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 #define BINARY_CHECK_SIZE 4096
 #define MAX_LINE_LENGTH 65536
@@ -52,7 +54,7 @@ static int is_binary(const char *data, size_t len)
 
 static int file_read_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -84,12 +86,38 @@ static int file_read_exec(const char *args_json, char **result_json, void *user_
 	if (cJSON_IsNumber(ml) && ml->valuedouble > 0)
 		limit_val = (long)ml->valuedouble;
 
+	char resolved_path[PATH_MAX];
 	char *expanded = file_expand_path(file_path);
-	const char *resolved = expanded ? expanded : file_path;
+	if (expanded) {
+		if (expanded[0] == '/') {
+			strncpy(resolved_path, expanded, sizeof(resolved_path) - 1);
+			resolved_path[sizeof(resolved_path) - 1] = '\0';
+		} else {
+			const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+			if (wd && *wd)
+				snprintf(resolved_path, sizeof(resolved_path),
+					 "%s/%s", wd, expanded);
+			else
+				strncpy(resolved_path, expanded,
+					sizeof(resolved_path) - 1);
+		}
+		free(expanded);
+	} else if (file_path[0] == '/' || file_path[0] == '~') {
+		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
+		resolved_path[sizeof(resolved_path) - 1] = '\0';
+	} else {
+		const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+		if (wd && *wd)
+			snprintf(resolved_path, sizeof(resolved_path),
+				 "%s/%s", wd, file_path);
+		else
+			strncpy(resolved_path, file_path,
+				sizeof(resolved_path) - 1);
+	}
+	resolved_path[sizeof(resolved_path) - 1] = '\0';
 
 	size_t data_len = 0;
-	char *data = file_read_all(resolved, &data_len);
-	free(expanded);
+	char *data = file_read_all(resolved_path, &data_len);
 
 	if (!data) {
 		cJSON_Delete(root);
@@ -205,11 +233,11 @@ static int file_read_exec(const char *args_json, char **result_json, void *user_
 	return 0;
 }
 
-int file_read_init(struct tool_registry *reg)
+int file_read_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
 	return tool_register(reg, "file_read",
 		"Read a text file's content. Provide file_path, optional offset (line number, 0-indexed, to start from), and limit/max_lines (max lines to return, default 1000). Binary files return a short hex preview instead.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the text file to read\"},\"offset\":{\"type\":\"integer\",\"description\":\"Line number to start from (0-indexed)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return\"},\"max_lines\":{\"type\":\"integer\",\"description\":\"Max lines to return (alternative to limit)\"}},\"required\":[\"file_path\"]}",
-		file_read_exec, NULL, NULL);
+		file_read_exec, tctx, NULL);
 }

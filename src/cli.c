@@ -1705,6 +1705,12 @@ static int cli_init_models(struct cli_context *ctx)
 		ctx->react->hitl.approval_user_data = ctx;
 	}
 
+	if (ctx->workdir[0]) {
+		ctx->react->workdir = strdup(ctx->workdir);
+		if (!ctx->react->workdir)
+			log_warn("failed to set react workdir");
+	}
+
 	if (ctx->config.prompt.system_prompt_file[0]) {
 		char *exp = file_expand_path(ctx->config.prompt.system_prompt_file);
 		if (exp) {
@@ -1897,7 +1903,8 @@ static int cli_init_tools(struct cli_context *ctx)
 {
 	int rc = 0;
 
-	ctx->tctx = tool_context_create(ctx->config.general.output_dir);
+	ctx->tctx = tool_context_create(ctx->workdir,
+					ctx->config.general.output_dir);
 	if (!ctx->tctx) {
 		log_err("failed to create tool context");
 		return -ENOMEM;
@@ -1920,13 +1927,13 @@ static int cli_init_tools(struct cli_context *ctx)
 	img_info_init(&ctx->tools);
 	log_info("registered img_info tool");
 
-	file_read_init(&ctx->tools);
+	file_read_init(&ctx->tools, ctx->tctx);
 	log_info("registered file_read tool");
 
-	file_list_init(&ctx->tools);
+	file_list_init(&ctx->tools, ctx->tctx);
 	log_info("registered file_list tool");
 
-	file_info_init(&ctx->tools);
+	file_info_init(&ctx->tools, ctx->tctx);
 	log_info("registered file_info tool");
 
 	if (ctx->config.react.bash_exec_enabled) {
@@ -2260,7 +2267,11 @@ static int cli_init_mcp(struct cli_context *ctx)
  * register tools, discover extensions and MCP servers, and prepare session.
  * ctx - CLI context to initialize (must be zeroed by caller or here).
  * config_path - Path to config file, or NULL for default.
- * workdir - Override output directory, or NULL for config default.
+ * workdir - Override working directory (-w flag), or NULL for cwd.
+ *
+ * Priority:
+ *   workdir (if -w given): both workdir and output_dir = resolved -w value
+ *   no -w: workdir = cwd, output_dir = config value (default ~/.morph/output)
  *
  * Returns 0 on success, negative errno on failure.
  */
@@ -2277,9 +2288,33 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	if (rc < 0)
 		return rc;
 
-	if (workdir && *workdir)
-		strncpy(ctx->config.general.output_dir, workdir,
-			sizeof(ctx->config.general.output_dir) - 1);
+	if (workdir && *workdir) {
+		char *resolved = file_resolve_path(workdir);
+		if (resolved) {
+			strncpy(ctx->workdir, resolved,
+				sizeof(ctx->workdir) - 1);
+			strncpy(ctx->config.general.output_dir, resolved,
+				sizeof(ctx->config.general.output_dir) - 1);
+			free(resolved);
+		} else {
+			char *expanded = file_expand_path(workdir);
+			if (expanded) {
+				strncpy(ctx->workdir, expanded,
+					sizeof(ctx->workdir) - 1);
+				strncpy(ctx->config.general.output_dir, expanded,
+					sizeof(ctx->config.general.output_dir) - 1);
+				free(expanded);
+			} else {
+				strncpy(ctx->workdir, workdir,
+					sizeof(ctx->workdir) - 1);
+				strncpy(ctx->config.general.output_dir, workdir,
+					sizeof(ctx->config.general.output_dir) - 1);
+			}
+		}
+	} else {
+		if (!getcwd(ctx->workdir, sizeof(ctx->workdir)))
+			strncpy(ctx->workdir, ".", 2);
+	}
 
 	rc = cli_init_database(ctx);
 	if (rc < 0)

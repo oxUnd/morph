@@ -1,4 +1,5 @@
 #include "file_list.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "cJSON.h"
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 static int name_cmp(const void *a, const void *b)
 {
@@ -22,7 +24,7 @@ static int name_cmp(const void *a, const void *b)
 
 static int file_list_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -41,12 +43,38 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		return -EINVAL;
 	}
 
+	char resolved_path[PATH_MAX];
 	char *expanded = file_expand_path(dir_path);
-	const char *resolved = expanded ? expanded : dir_path;
-
-	DIR *d = opendir(resolved);
-	if (!d) {
+	if (expanded) {
+		if (expanded[0] == '/') {
+			strncpy(resolved_path, expanded, sizeof(resolved_path) - 1);
+			resolved_path[sizeof(resolved_path) - 1] = '\0';
+		} else {
+			const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+			if (wd && *wd)
+				snprintf(resolved_path, sizeof(resolved_path),
+					 "%s/%s", wd, expanded);
+			else
+				strncpy(resolved_path, expanded,
+					sizeof(resolved_path) - 1);
+		}
 		free(expanded);
+	} else if (dir_path[0] == '/' || dir_path[0] == '~') {
+		strncpy(resolved_path, dir_path, sizeof(resolved_path) - 1);
+		resolved_path[sizeof(resolved_path) - 1] = '\0';
+	} else {
+		const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
+		if (wd && *wd)
+			snprintf(resolved_path, sizeof(resolved_path),
+				 "%s/%s", wd, dir_path);
+		else
+			strncpy(resolved_path, dir_path,
+				sizeof(resolved_path) - 1);
+	}
+	resolved_path[sizeof(resolved_path) - 1] = '\0';
+
+	DIR *d = opendir(resolved_path);
+	if (!d) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"directory not found\"}");
 		return -ENOENT;
@@ -64,8 +92,8 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
 			continue;
 
-		char full[4096];
-		snprintf(full, sizeof(full), "%s/%s", resolved, entry->d_name);
+		char full[PATH_MAX];
+		snprintf(full, sizeof(full), "%s/%s", resolved_path, entry->d_name);
 		struct stat st;
 		int is_dir = 0;
 		if (stat(full, &st) == 0)
@@ -81,7 +109,6 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 			cJSON_AddItemToArray(files, e);
 	}
 	closedir(d);
-	free(expanded);
 
 	int dirc = cJSON_GetArraySize(dirs);
 	cJSON **darr = malloc(sizeof(cJSON *) * (size_t)(dirc + 1));
@@ -89,7 +116,6 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		cJSON_Delete(dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		free(expanded);
 		*result_json = strdup("{\"error\":\"out of memory\"}");
 		return -ENOMEM;
 	}
@@ -107,7 +133,6 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		cJSON_Delete(sorted_dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		free(expanded);
 		*result_json = strdup("{\"error\":\"out of memory\"}");
 		return -ENOMEM;
 	}
@@ -137,11 +162,11 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	return 0;
 }
 
-int file_list_init(struct tool_registry *reg)
+int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
 	return tool_register(reg, "file_list",
 		"List files and directories in a directory. Provide dir_path. Returns sorted entries with name and type (file/dir).",
 		"{\"type\":\"object\",\"properties\":{\"dir_path\":{\"type\":\"string\",\"description\":\"Path to the directory to list\"}},\"required\":[\"dir_path\"]}",
-		file_list_exec, NULL, NULL);
+		file_list_exec, tctx, NULL);
 }

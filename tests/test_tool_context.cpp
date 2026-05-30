@@ -12,17 +12,20 @@ protected:
 };
 
 TEST_F(ToolContextTest, CreateDestroy) {
-	struct tool_context *tctx = tool_context_create("/tmp/test_output");
+	struct tool_context *tctx = tool_context_create("/tmp/test_workdir", "/tmp/test_output");
 	ASSERT_NE(tctx, nullptr);
 	EXPECT_NE(tool_context_output_dir(tctx)[0], '\0');
 	EXPECT_NE(tool_context_output_dir(tctx)[0], '~');
+	EXPECT_NE(tool_context_workdir(tctx)[0], '\0');
+	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
 	tool_context_destroy(tctx);
 }
 
 TEST_F(ToolContextTest, CreateWithTilde) {
-	struct tool_context *tctx = tool_context_create("~/.morph/output");
+	struct tool_context *tctx = tool_context_create("~/test", "~/.morph/output");
 	ASSERT_NE(tctx, nullptr);
 	EXPECT_NE(tool_context_output_dir(tctx)[0], '~');
+	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
 	tool_context_destroy(tctx);
 }
 
@@ -31,7 +34,7 @@ TEST_F(ToolContextTest, OutputDirNull) {
 }
 
 TEST_F(ToolContextTest, CheckWritePathWithinOutputDir) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_check_write_path(tctx, "/tmp/test_file.txt");
 	EXPECT_EQ(rc, 0);
@@ -39,7 +42,7 @@ TEST_F(ToolContextTest, CheckWritePathWithinOutputDir) {
 }
 
 TEST_F(ToolContextTest, CheckWritePathOutsideOutputDir) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_check_write_path(tctx, "/var/test_file.txt");
 	EXPECT_EQ(rc, -1);
@@ -47,7 +50,7 @@ TEST_F(ToolContextTest, CheckWritePathOutsideOutputDir) {
 }
 
 TEST_F(ToolContextTest, CheckWritePathNull) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_check_write_path(tctx, NULL);
 	EXPECT_NE(rc, 0);
@@ -92,7 +95,7 @@ static enum write_verdict test_approval_always(const char *path,
 }
 
 TEST_F(ToolContextTest, CheckWritePathApprovalAllow) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tctx->approval_fn = test_approval_allow;
 	tctx->approval_user_data = NULL;
@@ -102,7 +105,7 @@ TEST_F(ToolContextTest, CheckWritePathApprovalAllow) {
 }
 
 TEST_F(ToolContextTest, CheckWritePathApprovalDeny) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tctx->approval_fn = test_approval_deny;
 	tctx->approval_user_data = NULL;
@@ -113,7 +116,7 @@ TEST_F(ToolContextTest, CheckWritePathApprovalDeny) {
 
 TEST_F(ToolContextTest, CheckWritePathApprovalAlwaysAddsDir) {
 	always_dir_count = 0;
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tctx->approval_fn = test_approval_always;
 	tctx->approval_user_data = NULL;
@@ -128,7 +131,7 @@ TEST_F(ToolContextTest, CheckWritePathApprovalAlwaysAddsDir) {
 }
 
 TEST_F(ToolContextTest, AddAllowedDir) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_add_allowed_dir(tctx, "/var/log");
 	EXPECT_EQ(tctx->allowed_dirs_count, 1);
@@ -138,7 +141,7 @@ TEST_F(ToolContextTest, AddAllowedDir) {
 }
 
 TEST_F(ToolContextTest, AddAllowedDirDuplicate) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_add_allowed_dir(tctx, "/var/log");
 	tool_context_add_allowed_dir(tctx, "/var/log");
@@ -149,7 +152,7 @@ TEST_F(ToolContextTest, AddAllowedDirDuplicate) {
 /* ---- Command approval tests ---- */
 
 TEST_F(ToolContextTest, AllowCommand) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_command(tctx, "echo");
 	EXPECT_EQ(rc, 0);
@@ -158,7 +161,7 @@ TEST_F(ToolContextTest, AllowCommand) {
 }
 
 TEST_F(ToolContextTest, AllowCommandDuplicate) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "echo");
 	tool_context_allow_command(tctx, "echo");
@@ -167,7 +170,7 @@ TEST_F(ToolContextTest, AllowCommandDuplicate) {
 }
 
 TEST_F(ToolContextTest, AllowCommandNullPattern) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_command(tctx, NULL);
 	EXPECT_NE(rc, 0);
@@ -175,7 +178,7 @@ TEST_F(ToolContextTest, AllowCommandNullPattern) {
 }
 
 TEST_F(ToolContextTest, AllowCommandEmptyPattern) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_command(tctx, "");
 	EXPECT_NE(rc, 0);
@@ -188,7 +191,7 @@ TEST_F(ToolContextTest, AllowCommandNullTctx) {
 }
 
 TEST_F(ToolContextTest, AllowExecDir) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_exec_dir(tctx, "/tmp");
 	EXPECT_EQ(rc, 0);
@@ -197,7 +200,7 @@ TEST_F(ToolContextTest, AllowExecDir) {
 }
 
 TEST_F(ToolContextTest, AllowExecDirWildcard) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_exec_dir(tctx, "*");
 	EXPECT_EQ(rc, 0);
@@ -206,7 +209,7 @@ TEST_F(ToolContextTest, AllowExecDirWildcard) {
 }
 
 TEST_F(ToolContextTest, AllowExecDirDuplicate) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_exec_dir(tctx, "/tmp");
 	tool_context_allow_exec_dir(tctx, "/tmp");
@@ -215,7 +218,7 @@ TEST_F(ToolContextTest, AllowExecDirDuplicate) {
 }
 
 TEST_F(ToolContextTest, AllowExecDirNull) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_allow_exec_dir(tctx, NULL);
 	EXPECT_NE(rc, 0);
@@ -223,7 +226,7 @@ TEST_F(ToolContextTest, AllowExecDirNull) {
 }
 
 TEST_F(ToolContextTest, CheckCommandAllowed) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "echo");
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
@@ -232,7 +235,7 @@ TEST_F(ToolContextTest, CheckCommandAllowed) {
 }
 
 TEST_F(ToolContextTest, CheckCommandDenied) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
 	EXPECT_EQ(rc, -EPERM);
@@ -240,7 +243,7 @@ TEST_F(ToolContextTest, CheckCommandDenied) {
 }
 
 TEST_F(ToolContextTest, CheckCommandNull) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	int rc = tool_context_check_command(tctx, NULL, NULL);
 	EXPECT_NE(rc, 0);
@@ -285,7 +288,7 @@ static enum command_verdict test_cmd_always(const char *command,
 }
 
 TEST_F(ToolContextTest, CheckCommandCallbackAllow) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_command_approval(tctx, test_cmd_allow, NULL);
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
@@ -294,7 +297,7 @@ TEST_F(ToolContextTest, CheckCommandCallbackAllow) {
 }
 
 TEST_F(ToolContextTest, CheckCommandCallbackDeny) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_command_approval(tctx, test_cmd_deny, NULL);
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
@@ -304,7 +307,7 @@ TEST_F(ToolContextTest, CheckCommandCallbackDeny) {
 
 TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsProgram) {
 	cmd_always_calls = 0;
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_command_approval(tctx, test_cmd_always, NULL);
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
@@ -319,7 +322,7 @@ TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsProgram) {
 
 TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsCwd) {
 	cmd_always_calls = 0;
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "pwd");
 	tool_context_set_command_approval(tctx, test_cmd_always, NULL);
@@ -338,7 +341,7 @@ TEST_F(ToolContextTest, SetCommandApprovalNullTctx) {
 }
 
 TEST_F(ToolContextTest, CheckCommandCwdAllowed) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "pwd");
 	tool_context_allow_exec_dir(tctx, "/tmp");
@@ -348,7 +351,7 @@ TEST_F(ToolContextTest, CheckCommandCwdAllowed) {
 }
 
 TEST_F(ToolContextTest, CheckCommandCwdDenied) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "pwd");
 	int rc = tool_context_check_command(tctx, "pwd", "/var");
@@ -357,7 +360,7 @@ TEST_F(ToolContextTest, CheckCommandCwdDenied) {
 }
 
 TEST_F(ToolContextTest, CheckCommandNoCwdAllowed) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "echo");
 	int rc = tool_context_check_command(tctx, "echo hi", NULL);
@@ -366,7 +369,7 @@ TEST_F(ToolContextTest, CheckCommandNoCwdAllowed) {
 }
 
 TEST_F(ToolContextTest, CheckCommandPatternWildcard) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "*");
 	int rc = tool_context_check_command(tctx, "anything here", NULL);
@@ -375,7 +378,7 @@ TEST_F(ToolContextTest, CheckCommandPatternWildcard) {
 }
 
 TEST_F(ToolContextTest, CheckCommandPatternPrefix) {
-	struct tool_context *tctx = tool_context_create("/tmp");
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command(tctx, "cmake*");
 	int rc = tool_context_check_command(tctx, "cmake --build build", NULL);

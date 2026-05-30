@@ -14,7 +14,7 @@ protected:
 	struct tool_context *tctx;
 	void SetUp() override {
 		tool_registry_init(&reg);
-		tctx = tool_context_create("/tmp");
+		tctx = tool_context_create("/tmp", "/tmp");
 	}
 	void TearDown() override {
 		tool_context_destroy(tctx);

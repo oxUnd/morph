@@ -254,13 +254,13 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	}
 
 	const char *effective_cwd = cwd;
-	char output_dir_buf[PATH_MAX];
+	char workdir_buf[PATH_MAX];
 	if ((!effective_cwd || !*effective_cwd) && tctx) {
-		const char *od = tool_context_output_dir(tctx);
-		if (od && *od) {
-			strncpy(output_dir_buf, od, sizeof(output_dir_buf) - 1);
-			output_dir_buf[sizeof(output_dir_buf) - 1] = '\0';
-			effective_cwd = output_dir_buf;
+		const char *wd = tool_context_workdir(tctx);
+		if (wd && *wd) {
+			strncpy(workdir_buf, wd, sizeof(workdir_buf) - 1);
+			workdir_buf[sizeof(workdir_buf) - 1] = '\0';
+			effective_cwd = workdir_buf;
 		}
 	}
 
