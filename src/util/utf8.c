@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include "utf8.h"
 
 #include <stdlib.h>
