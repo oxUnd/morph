@@ -274,8 +274,13 @@ static int ll_restrict_self(int ruleset_fd)
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
-	/* Probe for landlock support */
-	int probe_fd = ll_create_ruleset(0);
+	/*
+	 * Probe for landlock support.
+	 * Landlock ABI v4+ (kernel 6.6+) rejects rulesets with
+	 * handled_access_fs=0, returning ENOMSG.  Use a non-zero
+	 * access mask so the probe works across all ABI versions.
+	 */
+	int probe_fd = ll_create_ruleset(LANDLOCK_ACCESS_FS_READ_FILE);
 	if (probe_fd < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS) {
 			log_err("sandbox: landlock not supported by kernel");
@@ -290,26 +295,23 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	/*
 	 * Determine handled access rights.
 	 *
-	 * We always handle read+execute so that the default-deny policy
-	 * blocks write operations unless explicitly allowed via rules.
+	 * We always handle both read+execute and write in the ruleset,
+	 * then grant access only via explicit per-path rules (whitelist).
 	 *
-	 * If EXT_PERM_FILESYS is NOT set, we create a read-only sandbox:
-	 *   - read file/dir + execute are allowed everywhere
-	 *   - write operations are blocked (not in handled_access_fs,
-	 *     so they fall through to kernel default which is... allow)
-	 *   Wait - landlock only restricts what's in handled_access_fs.
-	 *   To block writes, we MUST include them in handled_access_fs
-	 *   but NOT add any rules granting them.
+	 * When EXT_PERM_EXEC is set, the child needs to read and execute
+	 * system paths (/bin, /usr/lib, /etc, etc.) to function.  We add
+	 * a built-in set of essential system paths with read+execute so
+	 * that the sandbox is not overly restrictive, while still
+	 * preventing reads from arbitrary user paths (home directories,
+	 * data mounts, etc.).
 	 *
-	 * If EXT_PERM_FILESYS IS set with allowed_paths, we grant
-	 * write access only under those paths.
+	 * When EXT_PERM_EXEC is NOT set, no system path rules are added —
+	 * only the caller-specified allowed_paths are readable.
 	 *
-	 * If EXT_PERM_FILESYS IS set without allowed_paths, we grant
-	 * write access everywhere (no landlock rules for write).
-	 *
-	 * Strategy: always handle write rights in the ruleset so that
-	 * landlock will enforce the default-deny on writes. Then add
-	 * per-path rules that grant write access only where requested.
+	 * Write policy:
+	 *   FILESYS + paths  → handle write, grant on allowed_paths
+	 *   FILESYS, no paths → don't handle write (unrestricted)
+	 *   No FILESYS        → handle write, no rules (default-deny)
 	 */
 	uint64_t read_access =
 		LANDLOCK_ACCESS_FS_READ_FILE |
@@ -330,33 +332,22 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 		LANDLOCK_ACCESS_FS_REFER |
 		LANDLOCK_ACCESS_FS_TRUNCATE;
 
-	uint64_t handled = read_access;
+	uint64_t handled = read_access | write_access;
 	int needs_write_rules = 0;
 
 	if (permissions & EXT_PERM_FILESYS) {
 		if (count > 0 && allowed_paths) {
-			/*
-			 * FILESYS requested with path restrictions:
-			 * handle write access in ruleset (default-deny),
-			 * then grant write on specific paths.
-			 */
-			handled |= write_access;
 			needs_write_rules = 1;
 		} else {
 			/*
 			 * FILESYS requested without path restrictions:
 			 * don't handle write access in the ruleset,
 			 * so writes are NOT restricted by landlock.
-			 * (They may still be restricted by seccomp.)
 			 */
+			handled &= ~write_access;
 		}
-	} else {
-		/*
-		 * No FILESYS permission: handle write access in the
-		 * ruleset without granting it anywhere = default-deny.
-		 */
-		handled |= write_access;
 	}
+	/* else: no FILESYS, write_access stays in handled = default-deny */
 
 	int ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0) {
@@ -366,7 +357,7 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	}
 
 	/*
-	 * Add rules for each allowed path.
+	 * Add rules for each caller-specified allowed path.
 	 * All paths get read+execute.
 	 * Paths also get write if needs_write_rules is set.
 	 */
@@ -393,6 +384,48 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			 "(access=0x%llx)", allowed_paths[i],
 			 (unsigned long long)path_access);
 		close(fd);
+	}
+
+	/*
+	 * When EXT_PERM_EXEC is set, add built-in system path rules
+	 * with read+execute so that the sandboxed process can actually
+	 * execute programs.  Without these, landlock's default-deny
+	 * blocks reading /bin/sh, dynamic linker, shared libraries, etc.
+	 */
+	if (permissions & EXT_PERM_EXEC) {
+		static const char *const sys_paths[] = {
+			"/bin",
+			"/sbin",
+			"/usr",
+			"/lib",
+			"/lib32",
+			"/lib64",
+			"/etc",
+			"/dev",
+			"/proc",
+			"/sys",
+			"/tmp",
+			"/var/tmp",
+			"/run",
+			"/snap",
+			"/opt",
+			"/nix",
+			NULL
+		};
+		for (int i = 0; sys_paths[i]; i++) {
+			int fd = open(sys_paths[i], O_PATH | O_CLOEXEC);
+			if (fd < 0)
+				continue;
+			if (ll_add_rule(ruleset_fd, fd, read_access) < 0) {
+				log_warn("sandbox: landlock: system path "
+					 "'%s' add_rule failed: %s",
+					 sys_paths[i], strerror(errno));
+			} else {
+				log_info("sandbox: landlock: system path "
+					 "'%s' (read+exec)", sys_paths[i]);
+			}
+			close(fd);
+		}
 	}
 
 	/*

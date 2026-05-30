@@ -830,14 +830,17 @@ TEST_F(BashExecTest, RedirectOutsideCwdDenied)
 	GTEST_SKIP() << "sandbox not implemented on this platform";
 #endif
 	bash_exec_init(&reg, tctx);
-	remove("/tmp/morph_test_bash_exec_redirect");
+	remove("/var/tmp/morph_test_bash_exec_redirect");
 	int rc;
-	std::string result = exec_command(
-		reg, tctx, "echo hi > /tmp/morph_test_bash_exec_redirect", rc);
+	std::string result = exec_tool(
+		reg, tctx,
+		"{\"command\":\"echo hi > /var/tmp/morph_test_bash_exec_redirect\","
+		"\"cwd\":\"/tmp\"}",
+		rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_NE(get_json_int(result, "exit_code"), 0);
-	EXPECT_NE(access("/tmp/morph_test_bash_exec_redirect", F_OK), 0);
-	remove("/tmp/morph_test_bash_exec_redirect");
+	EXPECT_NE(access("/var/tmp/morph_test_bash_exec_redirect", F_OK), 0);
+	remove("/var/tmp/morph_test_bash_exec_redirect");
 }
 
 TEST_F(BashExecTest, RedirectWithinCwdAllowed)
