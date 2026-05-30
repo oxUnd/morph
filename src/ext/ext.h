@@ -8,13 +8,21 @@ extern "C" {
 #include "sandbox/sandbox.h"
 #include "agent/tool.h"
 
+enum ext_purpose {
+	EXT_PURPOSE_TOOL      = 0,
+	EXT_PURPOSE_GUARDRAIL = 1,
+};
+
 struct ext_manifest {
 	char name[64];
 	char version[32];
 	char description[256];
 	char author[64];
 	char type[16];
+	enum ext_purpose purpose;
 	char entry[128];
+	char hook[32];
+	char action_text[512];
 	unsigned int permissions;
 	char **allowed_paths;
 	int allowed_paths_count;

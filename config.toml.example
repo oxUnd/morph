@@ -106,6 +106,7 @@ bash_exec_default_timeout = 60
 # - All tools failed → retry with specific failed tool names
 # - Creative tools called but no output files → retry with guidance
 # - Empty answer → retry or force finalize
+# - Creative tool reports missing file → retry with error injected
 # Guardrail only triggers when tools were actually called; pure text Q&A
 # (no tools used) always passes.
 guardrail_enabled   = false
@@ -113,6 +114,53 @@ guardrail_enabled   = false
 guardrail_max_retries = 2
 # Maximum consecutive empty answers before forcing finalization.
 guardrail_max_empty_rounds = 2
+
+## Guardrail: disable specific built-in rules by name.
+## Built-in rules: empty_answer, consecutive_empty,
+##   tools_all_failed, creative_no_media, creative_file_missing
+# guardrail_disabled_rules = ["creative_file_missing"]
+
+## Guardrail: LLM model for semantic checks (uses same api_key as main LLM)
+# guardrail_llm_model = "gpt-4o-mini"
+
+## Guardrail: LLM-based semantic rules
+## Only suitable for INPUT and OUTPUT hooks (low-frequency).
+## The LLM returns {"pass": true/false, "reason": "..."}.
+## On timeout or parse failure, defaults to PASS.
+# [[react.guardrail_llm_rules]]
+# name = "no_pii"
+# hook = "input"
+# description = "Check if the user input contains personally identifiable information (PII) such as social security numbers, credit card numbers, or private addresses."
+# action_text = "Do not include personal identifiable information in your request."
+
+# [[react.guardrail_llm_rules]]
+# name = "output_safety"
+# hook = "output"
+# description = "Check if the proposed answer contains harmful, offensive, or inappropriate content."
+# action_text = "Revise your answer to remove any harmful or inappropriate content."
+
+## Guardrail: Ext-based rules
+## ──────────────────────────
+## Auto-discovery: guardrail exts placed in ~/.morph/exts/ with
+##   purpose = "guardrail" in their manifest.toml are automatically
+##   registered. No config needed — just install and enable guardrails.
+##   The manifest must include: hook, action_text, type, entry.
+##
+## Manual config (for external scripts not in ~/.morph/exts/):
+## ext_type = "exec" (default) — subprocess communicating via JSON-RPC over stdin/stdout
+## ext_type = "so" — shared library loaded via dlopen; must export:
+##   int guardrail_check(const char *text, const char *rule,
+##                       const char *description, char **result_json)
+##   result_json must be malloc'd JSON: {"pass":bool,"reason":"..."}
+## The subprocess receives JSON-RPC: {"text":"...", "rule":"...", "description":"..."}
+## and must return: {"pass": true/false, "reason": "..."}
+## On timeout or process failure, defaults to PASS.
+# [[react.guardrail_ext_rules]]
+# name = "custom_check"
+# hook = "output"
+# ext_type = "exec"
+# ext_entry = "/path/to/guardrail-script"
+# action_text = "Revise your answer to pass the custom check."
 # Disable specific tools by name. Supported tool names:
 # text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert,
 # vid_gen, file_read, file_list, file_info, bash_exec

@@ -193,6 +193,53 @@ int config_load(struct config *cfg, const char *path)
 		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
+		CFG_STR(react, "guardrail_llm_model", cfg->react.guardrail_llm_model);
+		toml_array_t *gdr = toml_array_in(react, "guardrail_disabled_rules");
+		if (gdr) {
+			int gcount = 0;
+			for (; gcount < GUARDRAIL_DISABLED_RULES_MAX; gcount++) {
+				toml_datum_t val = toml_string_at(gdr, gcount);
+				if (!val.ok)
+					break;
+				strncpy(cfg->react.guardrail_disabled_rules[gcount],
+					val.u.s, CFG_GR_NAME_MAX - 1);
+				free(val.u.s);
+			}
+			cfg->react.guardrail_disabled_rule_count = gcount;
+		}
+		toml_array_t *llm_arr = toml_array_in(react, "guardrail_llm_rules");
+		if (llm_arr) {
+			for (int li = 0; li < toml_array_nelem(llm_arr) &&
+			     cfg->react.guardrail_llm_rule_count < GUARDRAIL_LLM_RULES_MAX; li++) {
+				toml_table_t *lt = toml_table_at(llm_arr, li);
+				if (!lt) continue;
+				struct config_guardrail_llm_rule *lr =
+					&cfg->react.guardrail_llm_rules[
+						cfg->react.guardrail_llm_rule_count];
+				CFG_STR(lt, "name", lr->name);
+				CFG_STR(lt, "hook", lr->hook);
+				CFG_STR(lt, "description", lr->description);
+				CFG_STR(lt, "action_text", lr->action_text);
+				cfg->react.guardrail_llm_rule_count++;
+			}
+		}
+		toml_array_t *ext_arr = toml_array_in(react, "guardrail_ext_rules");
+		if (ext_arr) {
+			for (int ei = 0; ei < toml_array_nelem(ext_arr) &&
+			     cfg->react.guardrail_ext_rule_count < GUARDRAIL_EXT_RULES_MAX; ei++) {
+				toml_table_t *et = toml_table_at(ext_arr, ei);
+				if (!et) continue;
+				struct config_guardrail_ext_rule *er =
+					&cfg->react.guardrail_ext_rules[
+						cfg->react.guardrail_ext_rule_count];
+				CFG_STR(et, "name", er->name);
+				CFG_STR(et, "hook", er->hook);
+				CFG_STR(et, "ext_type", er->ext_type);
+				CFG_STR(et, "ext_entry", er->ext_entry);
+				CFG_STR(et, "action_text", er->action_text);
+				cfg->react.guardrail_ext_rule_count++;
+			}
+		}
 		toml_array_t *dt = toml_array_in(react, "disabled_tools");
 		if (dt) {
 			int count = 0;

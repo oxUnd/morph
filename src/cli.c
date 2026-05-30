@@ -24,6 +24,7 @@
 #include "agent/tools/ask_user.h"
 #include "agent/tools/img_annotate.h"
 #include "agent/plan.h"
+#include "agent/guardrail.h"
 #include "agent/tools/plan.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
@@ -1696,6 +1697,44 @@ static int cli_init_models(struct cli_context *ctx)
 	 * consolidation can use LLM-driven extraction. */
 	memory_set_llm(llm);
 
+	for (int i = 0; i < ctx->config.react.guardrail_llm_rule_count; i++) {
+		struct config_guardrail_llm_rule *cr =
+			&ctx->config.react.guardrail_llm_rules[i];
+		enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
+		if (strcmp(cr->hook, "input") == 0)
+			hook = GUARDRAIL_HOOK_INPUT;
+		guardrail_rule_register(&ctx->react->guardrail, cr->name,
+			hook, GUARDRAIL_RULE_LLM, NULL,
+			cr->description, NULL, cr->action_text);
+	}
+	for (int i = 0; i < ctx->config.react.guardrail_ext_rule_count; i++) {
+		struct config_guardrail_ext_rule *cr =
+			&ctx->config.react.guardrail_ext_rules[i];
+		enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
+		if (strcmp(cr->hook, "input") == 0)
+			hook = GUARDRAIL_HOOK_INPUT;
+		guardrail_rule_register(&ctx->react->guardrail, cr->name,
+			hook, GUARDRAIL_RULE_EXT, NULL,
+			cr->ext_type[0] == '\0' || strcmp(cr->ext_type, "exec") == 0
+				? NULL : cr->ext_type,
+			cr->ext_entry, cr->action_text);
+		if (strcmp(cr->ext_type, "so") == 0) {
+			struct guardrail_rule *r =
+				guardrail_rule_lookup(&ctx->react->guardrail, cr->name);
+			if (r) {
+				r->ext_type = GUARDRAIL_EXT_SO;
+				guardrail_ext_so_load(r);
+			}
+		}
+	}
+	if (ctx->config.react.guardrail_llm_model[0] && llm)
+		guardrail_set_llm(&ctx->react->guardrail, llm);
+	else if (llm)
+		guardrail_set_llm(&ctx->react->guardrail, llm);
+	for (int i = 0; i < ctx->config.react.guardrail_disabled_rule_count; i++)
+		guardrail_rule_disable(&ctx->react->guardrail,
+			ctx->config.react.guardrail_disabled_rules[i]);
+
 	const char *img_api_key = NULL;
 	if (ctx->config.models.image.api_key[0])
 		img_api_key = ctx->config.models.image.api_key;
@@ -1904,6 +1943,76 @@ static int cli_init_exts(struct cli_context *ctx)
 			struct ext ex;
 			int rc = ext_load(&ex, ed_path);
 			if (rc == 0 && ex.enabled) {
+				if (ex.manifest.purpose == EXT_PURPOSE_GUARDRAIL) {
+					enum guardrail_hook gh =
+						GUARDRAIL_HOOK_OUTPUT;
+					if (strcmp(ex.manifest.hook, "input")
+					    == 0)
+						gh = GUARDRAIL_HOOK_INPUT;
+					else if (strcmp(ex.manifest.hook,
+							"tool_output") == 0)
+						gh =
+						GUARDRAIL_HOOK_TOOL_OUTPUT;
+					enum guardrail_ext_type et =
+						GUARDRAIL_EXT_EXEC;
+					if (strcmp(ex.manifest.type, "so")
+					    == 0)
+						et = GUARDRAIL_EXT_SO;
+					guardrail_rule_register(
+						&ctx->react->guardrail,
+						ex.manifest.name, gh,
+						GUARDRAIL_RULE_EXT, NULL,
+						ex.manifest.description,
+						NULL,
+						ex.manifest.action_text[0]
+							? ex.manifest.action_text
+							: NULL);
+					if (et == GUARDRAIL_EXT_SO) {
+						struct guardrail_rule *r =
+							guardrail_rule_lookup(
+							  &ctx->react->guardrail,
+							  ex.manifest.name);
+						if (r) {
+							r->ext_type =
+								GUARDRAIL_EXT_SO;
+							char full[1024];
+							snprintf(full,
+								 sizeof(full),
+								 "%s/%s",
+								 ed_path,
+								 ex.manifest.entry);
+							strncpy(r->ext_entry,
+								full,
+								sizeof(r->ext_entry)
+								- 1);
+							guardrail_ext_so_load(
+								r);
+						}
+					} else {
+						struct guardrail_rule *r =
+							guardrail_rule_lookup(
+							  &ctx->react->guardrail,
+							  ex.manifest.name);
+						if (r) {
+							r->ext_type =
+								GUARDRAIL_EXT_EXEC;
+							char full[1024];
+							snprintf(full,
+								 sizeof(full),
+								 "%s/%s",
+								 ed_path,
+								 ex.manifest.entry);
+							strncpy(r->ext_entry,
+								full,
+								sizeof(r->ext_entry)
+								- 1);
+						}
+					}
+					log_info("registered guardrail ext: %s",
+						 ex.manifest.name);
+					ext_unload(&ex);
+					continue;
+				}
 				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
 				if (ex_ptr) {
 					memcpy(ex_ptr, &ex, sizeof(ex));

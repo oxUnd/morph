@@ -2029,3 +2029,270 @@ TEST(HitlTest, AlwaysCallbackAutoApproves) {
 	EXPECT_EQ(hitl_needs_approval(ctx, "dangerous_tool"), 0);
 	react_context_destroy(ctx);
 }
+
+/* ============================================= */
+/* Extensible Guardrail tests                    */
+/* ============================================= */
+
+TEST(Guardrail, RegisterBuiltinRules) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	EXPECT_EQ(cfg.rule_count, 5);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "empty_answer"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "consecutive_empty"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "tools_all_failed"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_no_media"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_file_missing"), nullptr);
+}
+
+TEST(Guardrail, RuleEnableDisable) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	EXPECT_EQ(guardrail_rule_disable(&cfg, "empty_answer"), 0);
+	EXPECT_EQ(guardrail_rule_lookup(&cfg, "empty_answer")->enabled, 0);
+	EXPECT_EQ(guardrail_rule_enable(&cfg, "empty_answer"), 0);
+	EXPECT_EQ(guardrail_rule_lookup(&cfg, "empty_answer")->enabled, 1);
+	EXPECT_EQ(guardrail_rule_disable(&cfg, "nonexistent"), -ENOENT);
+}
+
+TEST(Guardrail, EmptyAnswerFail) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	EXPECT_STREQ(r.triggered_rule->name, "empty_answer");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, EmptyAnswerPass) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "Hello world";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, CustomCRule) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	auto my_check = [](const struct guardrail_eval_ctx *ctx,
+			   char *reason, size_t cap) -> enum guardrail_verdict {
+		if (ctx->user_input && strstr(ctx->user_input, "forbidden"))
+			{ snprintf(reason, cap, "Forbidden word"); return GUARDRAIL_FAIL; }
+		return GUARDRAIL_PASS;
+	};
+	guardrail_rule_register(&cfg, "no_forbidden", GUARDRAIL_HOOK_INPUT,
+		GUARDRAIL_RULE_C, my_check, NULL, NULL, "Do not use forbidden words.");
+	EXPECT_EQ(cfg.rule_count, 6);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.user_input = "this is forbidden text";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	EXPECT_STREQ(r.triggered_rule->name, "no_forbidden");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, DisabledConfigPasses) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 0;
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, DuplicateNameRejected) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	int rc = guardrail_rule_register(&cfg, "empty_answer",
+		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C, NULL, NULL, NULL, NULL);
+	EXPECT_EQ(rc, -EEXIST);
+}
+
+TEST(Guardrail, ConsecutiveEmptyFail) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	guardrail_rule_disable(&cfg, "empty_answer");
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "";
+	ctx.empty_round_count = 3;
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	EXPECT_STREQ(r.triggered_rule->name, "consecutive_empty");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, RuleLookupNull) {
+	EXPECT_EQ(guardrail_rule_lookup(NULL, "test"), nullptr);
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	EXPECT_EQ(guardrail_rule_lookup(&cfg, "test"), nullptr);
+}
+
+TEST(Guardrail, HookIsolation) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, LlmRuleNoModelPasses) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.llm = NULL;
+	guardrail_rule_register(&cfg, "llm_check", GUARDRAIL_HOOK_INPUT,
+		GUARDRAIL_RULE_LLM, NULL, "Check for bad content", NULL, "Fix it.");
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.user_input = "bad stuff";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_INPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, ExtRuleNoEntryPasses) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	guardrail_rule_register(&cfg, "ext_check", GUARDRAIL_HOOK_OUTPUT,
+		GUARDRAIL_RULE_EXT, NULL, NULL, "", "Fix it.");
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "answer";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, SetLlm) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	guardrail_set_llm(&cfg, NULL);
+	EXPECT_EQ(cfg.llm, nullptr);
+	struct model m;
+	memset(&m, 0, sizeof(m));
+	guardrail_set_llm(&cfg, &m);
+	EXPECT_EQ(cfg.llm, &m);
+}
+
+TEST(Guardrail, BuiltinRulesAutoRegistered) {
+	struct guardrail_config gcfg;
+	memset(&gcfg, 0, sizeof(gcfg));
+	gcfg.enabled = 1;
+	struct compress_config ccfg = {0};
+	struct react_context *ctx = react_context_create(nullptr, nullptr, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	EXPECT_EQ(ctx->guardrail.rule_count, 5);
+	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "empty_answer"), nullptr);
+	react_context_destroy(ctx);
+}
+
+static enum guardrail_verdict mock_so_check_fn(
+	const struct guardrail_eval_ctx *ctx,
+	char *reason_out, size_t reason_cap)
+{
+	if (ctx->proposed_answer && strstr(ctx->proposed_answer, "BLOCK"))
+	{
+		snprintf(reason_out, reason_cap, "Blocked by mock .so rule.");
+		return GUARDRAIL_FAIL;
+	}
+	return GUARDRAIL_PASS;
+}
+
+TEST(Guardrail, ExtSoRuleWithCheckFn) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	guardrail_rule_register(&cfg, "so_check", GUARDRAIL_HOOK_OUTPUT,
+		GUARDRAIL_RULE_C, mock_so_check_fn, NULL, NULL, "Fix it.");
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "This is BLOCK content";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	EXPECT_STREQ(r.triggered_rule->name, "so_check");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, ExtSoLoadBadPathFails) {
+	struct guardrail_rule rule;
+	memset(&rule, 0, sizeof(rule));
+	strncpy(rule.name, "bad_so", sizeof(rule.name) - 1);
+	strncpy(rule.ext_entry, "/nonexistent/path.so", sizeof(rule.ext_entry) - 1);
+	int rc = guardrail_ext_so_load(&rule);
+	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rule.dl_handle, nullptr);
+	EXPECT_EQ(rule.ext_check, nullptr);
+}
+
+TEST(Guardrail, ExtSoUnloadNullSafe) {
+	guardrail_ext_so_unload(nullptr);
+	struct guardrail_rule rule;
+	memset(&rule, 0, sizeof(rule));
+	guardrail_ext_so_unload(&rule);
+}

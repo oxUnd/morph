@@ -41,6 +41,28 @@ struct config_models {
 #define BASH_EXEC_ALLOW_MAX 32
 #define BASH_EXEC_COMMAND_MAX 1024
 #define BASH_EXEC_CWD_MAX 512
+#define GUARDRAIL_DISABLED_RULES_MAX 16
+#define GUARDRAIL_LLM_RULES_MAX 8
+#define GUARDRAIL_EXT_RULES_MAX 8
+#define CFG_GR_NAME_MAX 64
+#define CFG_GR_DESC_MAX 1024
+#define CFG_GR_ACTION_MAX 512
+#define CFG_GR_EXT_ENTRY_MAX 512
+
+struct config_guardrail_llm_rule {
+	char name[CFG_GR_NAME_MAX];
+	char hook[32];
+	char description[CFG_GR_DESC_MAX];
+	char action_text[CFG_GR_ACTION_MAX];
+};
+
+struct config_guardrail_ext_rule {
+	char name[CFG_GR_NAME_MAX];
+	char hook[32];
+	char ext_type[8];
+	char ext_entry[CFG_GR_EXT_ENTRY_MAX];
+	char action_text[CFG_GR_ACTION_MAX];
+};
 
 struct config_react {
 	int max_iterations;
@@ -49,6 +71,13 @@ struct config_react {
 	int guardrail_enabled;
 	int guardrail_max_retries;
 	int guardrail_max_empty_rounds;
+	char guardrail_disabled_rules[GUARDRAIL_DISABLED_RULES_MAX][CFG_GR_NAME_MAX];
+	int guardrail_disabled_rule_count;
+	struct config_guardrail_llm_rule guardrail_llm_rules[GUARDRAIL_LLM_RULES_MAX];
+	int guardrail_llm_rule_count;
+	struct config_guardrail_ext_rule guardrail_ext_rules[GUARDRAIL_EXT_RULES_MAX];
+	int guardrail_ext_rule_count;
+	char guardrail_llm_model[128];
 	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
 	int disabled_tools_count;
 	int hitl_enabled;

@@ -8,6 +8,7 @@
  * Linked into morph-fastcgi; overrides the weak symbols in turns.c.
  */
 #include "react.h"
+#include "guardrail.h"
 #include "session_store.h"
 #include "session.h"
 #include "agent/memory.h"
@@ -28,9 +29,12 @@
 #include "agent/tools/vid_gen.h"
 #include "agent/tools/plan.h"
 #include "agent/tools/ask_user.h"
+#include "ext/ext.h"
+#include "ext/manifest.h"
 #include "models/llm.h"
 #include "config.h"
 #include "util/log.h"
+#include "util/file.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -195,6 +199,78 @@ static void bridge_init_once(void)
 	log_info("fcgi-bridge: registered %d tools", g_tools.count);
 }
 
+static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
+{
+	char exts_dir[512] = {0};
+	char *exts_home = file_expand_path("~/.morph/exts");
+	if (exts_home) {
+		strncpy(exts_dir, exts_home, sizeof(exts_dir) - 1);
+		free(exts_home);
+	} else {
+		return;
+	}
+	if (!file_exists(exts_dir))
+		return;
+	char **ext_dirs = NULL;
+	int ext_count = 0;
+	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) != 0)
+		return;
+	for (int i = 0; i < ext_count; i++) {
+		char ed_path[1024];
+		snprintf(ed_path, sizeof(ed_path), "%s/%s",
+			 exts_dir, ext_dirs[i]);
+		struct ext ex;
+		int rc = ext_load(&ex, ed_path);
+		if (rc != 0 || !ex.enabled
+		    || ex.manifest.purpose != EXT_PURPOSE_GUARDRAIL) {
+			ext_unload(&ex);
+			continue;
+		}
+		enum guardrail_hook gh = GUARDRAIL_HOOK_OUTPUT;
+		if (strcmp(ex.manifest.hook, "input") == 0)
+			gh = GUARDRAIL_HOOK_INPUT;
+		else if (strcmp(ex.manifest.hook, "tool_output") == 0)
+			gh = GUARDRAIL_HOOK_TOOL_OUTPUT;
+		enum guardrail_ext_type et = GUARDRAIL_EXT_EXEC;
+		if (strcmp(ex.manifest.type, "so") == 0)
+			et = GUARDRAIL_EXT_SO;
+		guardrail_rule_register(gcfg, ex.manifest.name, gh,
+					GUARDRAIL_RULE_EXT, NULL,
+					ex.manifest.description, NULL,
+					ex.manifest.action_text[0]
+						? ex.manifest.action_text
+						: NULL);
+		if (et == GUARDRAIL_EXT_SO) {
+			struct guardrail_rule *r =
+				guardrail_rule_lookup(gcfg, ex.manifest.name);
+			if (r) {
+				r->ext_type = GUARDRAIL_EXT_SO;
+				char full[1024];
+				snprintf(full, sizeof(full), "%s/%s",
+					 ed_path, ex.manifest.entry);
+				strncpy(r->ext_entry, full,
+					sizeof(r->ext_entry) - 1);
+				guardrail_ext_so_load(r);
+			}
+		} else {
+			struct guardrail_rule *r =
+				guardrail_rule_lookup(gcfg, ex.manifest.name);
+			if (r) {
+				r->ext_type = GUARDRAIL_EXT_EXEC;
+				char full[1024];
+				snprintf(full, sizeof(full), "%s/%s",
+					 ed_path, ex.manifest.entry);
+				strncpy(r->ext_entry, full,
+					sizeof(r->ext_entry) - 1);
+			}
+		}
+		log_info("fcgi-bridge: registered guardrail ext: %s",
+			 ex.manifest.name);
+		ext_unload(&ex);
+	}
+	file_free_list(ext_dirs, ext_count);
+}
+
 struct react_context *
 react_context_create_for_session(struct session_store *store,
 				 const char *session_id,
@@ -227,6 +303,43 @@ react_context_create_for_session(struct session_store *store,
 	ctx->tool_max_retries     = g_config.react.tool_max_retries;
 	ctx->llm_model            = g_llm;
 	bash_exec_set_default_timeout(g_config.react.bash_exec_default_timeout);
+
+	for (int i = 0; i < g_config.react.guardrail_llm_rule_count; i++) {
+		struct config_guardrail_llm_rule *cr =
+			&g_config.react.guardrail_llm_rules[i];
+		enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
+		if (strcmp(cr->hook, "input") == 0)
+			hook = GUARDRAIL_HOOK_INPUT;
+		guardrail_rule_register(&ctx->guardrail, cr->name,
+			hook, GUARDRAIL_RULE_LLM, NULL,
+			cr->description, NULL, cr->action_text);
+	}
+	for (int i = 0; i < g_config.react.guardrail_ext_rule_count; i++) {
+		struct config_guardrail_ext_rule *cr =
+			&g_config.react.guardrail_ext_rules[i];
+		enum guardrail_hook hook = GUARDRAIL_HOOK_OUTPUT;
+		if (strcmp(cr->hook, "input") == 0)
+			hook = GUARDRAIL_HOOK_INPUT;
+		guardrail_rule_register(&ctx->guardrail, cr->name,
+			hook, GUARDRAIL_RULE_EXT, NULL,
+			cr->ext_type[0] == '\0' || strcmp(cr->ext_type, "exec") == 0
+				? NULL : cr->ext_type,
+			cr->ext_entry, cr->action_text);
+		if (strcmp(cr->ext_type, "so") == 0) {
+			struct guardrail_rule *r =
+				guardrail_rule_lookup(&ctx->guardrail, cr->name);
+			if (r) {
+				r->ext_type = GUARDRAIL_EXT_SO;
+				guardrail_ext_so_load(r);
+			}
+		}
+	}
+	bridge_discover_guardrail_exts(&ctx->guardrail);
+	if (g_llm)
+		guardrail_set_llm(&ctx->guardrail, g_llm);
+	for (int i = 0; i < g_config.react.guardrail_disabled_rule_count; i++)
+		guardrail_rule_disable(&ctx->guardrail,
+			g_config.react.guardrail_disabled_rules[i]);
 
 	/* Load session from DB to get its numeric id */
 	struct session sess;

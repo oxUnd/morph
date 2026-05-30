@@ -8,6 +8,7 @@ extern "C" {
 #include <signal.h>
 #include "agent/tool.h"
 #include "agent/context.h"
+#include "agent/guardrail.h"
 #include "agent/tools/ask_user.h"
 #include "skill/skill.h"
 
@@ -38,14 +39,6 @@ struct react_step {
 	char *tool_args;
 	char *tool_call_id;
 	struct react_step *next;
-};
-
-enum guardrail_verdict {
-	GUARDRAIL_PASS,
-	GUARDRAIL_FAIL_TOOLS_ALL_FAILED,
-	GUARDRAIL_FAIL_CREATIVE_NO_MEDIA,
-	GUARDRAIL_FAIL_EMPTY_ANSWER,
-	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,
 };
 
 #define HITL_TOOLS_MAX 32
@@ -80,17 +73,6 @@ struct react_action {
 
 typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 				     int timeout_sec);
-
-struct guardrail_result {
-	enum guardrail_verdict verdict;
-	char reason[512];
-};
-
-struct guardrail_config {
-	int enabled;
-	int max_retries;
-	int max_empty_rounds;
-};
 
 struct react_context {
 	struct react_step *steps;

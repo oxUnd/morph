@@ -6,6 +6,7 @@ add_library(morph-agent STATIC
 	tool.c
 	plan.c
 	memory.c
+	guardrail.c
 )
 
 target_include_directories(morph-agent PUBLIC

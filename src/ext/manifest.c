@@ -30,6 +30,13 @@ static void parse_string_list(toml_array_t *arr, char ***out_list, int *out_coun
 	*out_count = count;
 }
 
+static enum ext_purpose parse_purpose(const char *s)
+{
+	if (!s) return EXT_PURPOSE_TOOL;
+	if (strcmp(s, "guardrail") == 0) return EXT_PURPOSE_GUARDRAIL;
+	return EXT_PURPOSE_TOOL;
+}
+
 int manifest_parse(const char *toml_data, struct ext_manifest *out)
 {
 	if (!toml_data || !out)
@@ -70,6 +77,15 @@ int manifest_parse(const char *toml_data, struct ext_manifest *out)
 	MGET_STR("type", out->type);
 	MGET_STR("entry", out->entry);
 
+	{
+		toml_datum_t pd = toml_string_in(tbl, "purpose");
+		out->purpose = parse_purpose(pd.ok ? pd.u.s : NULL);
+		if (pd.ok) free(pd.u.s);
+	}
+
+	MGET_STR("hook", out->hook);
+	MGET_STR("action_text", out->action_text);
+
 	MGET_UINT("permissions", out->permissions);
 	MGET_INT("max_memory_mb", out->max_memory_mb);
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
@@ -89,7 +105,8 @@ int manifest_parse(const char *toml_data, struct ext_manifest *out)
 
 	toml_free(tbl);
 	free(copy);
-	log_info("manifest parsed: name=%s type=%s", out->name, out->type);
+	log_info("manifest parsed: name=%s type=%s purpose=%d",
+		 out->name, out->type, out->purpose);
 	return 0;
 }
 
@@ -134,6 +151,15 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 	MFGET_STR("type", out->type);
 	MFGET_STR("entry", out->entry);
 
+	{
+		toml_datum_t pd = toml_string_in(tbl, "purpose");
+		out->purpose = parse_purpose(pd.ok ? pd.u.s : NULL);
+		if (pd.ok) free(pd.u.s);
+	}
+
+	MFGET_STR("hook", out->hook);
+	MFGET_STR("action_text", out->action_text);
+
 	MFGET_UINT("permissions", out->permissions);
 	MFGET_INT("max_memory_mb", out->max_memory_mb);
 	MFGET_INT("max_cpu_seconds", out->max_cpu_seconds);
@@ -152,6 +178,7 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 	parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
 
 	toml_free(tbl);
-	log_info("manifest parsed: name=%s type=%s", out->name, out->type);
+	log_info("manifest parsed: name=%s type=%s purpose=%d",
+		 out->name, out->type, out->purpose);
 	return 0;
 }

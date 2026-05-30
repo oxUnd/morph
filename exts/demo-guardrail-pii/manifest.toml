@@ -1,0 +1,14 @@
+name = "guardrail-pii"
+version = "1.0.0"
+description = "Check if the text contains personally identifiable information (PII) such as SSN, credit card numbers, email addresses, phone numbers, or credentials"
+author = "morph"
+purpose = "guardrail"
+type = "so"
+entry = "pii_check.so"
+hook = "input"
+action_text = "Do not include personal identifiable information (SSN, credit card, email, phone, passwords) in your request."
+permissions = 0
+max_memory_mb = 16
+max_cpu_seconds = 2
+args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to check for PII\"}}}"
+output_schema = "string"
