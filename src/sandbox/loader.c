@@ -13,7 +13,7 @@ int ext_load_so(struct ext *ex, const char *path)
 	if (!ex || !path)
 		return -EINVAL;
 
-	char full_path[1024];
+	char full_path[PATH_MAX];
 	snprintf(full_path, sizeof(full_path), "%s/%s", path,
 		 ex->manifest.entry);
 
@@ -66,7 +66,7 @@ int ext_load_exec(struct ext *ex, const char *path)
 	if (!ex || !path)
 		return -EINVAL;
 
-	char full_path[1024];
+	char full_path[PATH_MAX];
 	snprintf(full_path, sizeof(full_path), "%s/%s", path,
 		 ex->manifest.entry);
 

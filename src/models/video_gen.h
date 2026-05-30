@@ -5,11 +5,13 @@
 extern "C" {
 #endif
 
+#include <limits.h>
+
 struct model;
 
 struct video_result {
-	char path[512];
-	char url[512];
+	char path[PATH_MAX];
+	char url[PATH_MAX];
 	int duration_seconds;
 	int status;
 };

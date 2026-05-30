@@ -5,9 +5,11 @@
 extern "C" {
 #endif
 
-#define TOOL_CONTEXT_OUTPUT_DIR_MAX 512
+#include <limits.h>
+
+#define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
 #define TOOL_CONTEXT_ALLOW_MAX 32
-#define TOOL_CONTEXT_ALLOW_PATH_MAX 512
+#define TOOL_CONTEXT_ALLOW_PATH_MAX PATH_MAX
 #define TOOL_CONTEXT_COMMAND_MAX 1024
 
 enum write_verdict {

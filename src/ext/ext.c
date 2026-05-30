@@ -21,7 +21,7 @@ int ext_load(struct ext *ex, const char *dir_path)
 	memset(ex, 0, sizeof(*ex));
 	strncpy(ex->path, dir_path, sizeof(ex->path) - 1);
 
-	char manifest_path[1024];
+	char manifest_path[PATH_MAX];
 	snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.toml", dir_path);
 
 	struct stat st;

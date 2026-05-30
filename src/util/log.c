@@ -1,4 +1,5 @@
 #include "log.h"
+#include <limits.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -10,7 +11,7 @@
 static struct {
 	enum log_level level;
 	FILE *file;
-	char path[512];
+	char path[PATH_MAX];
 } log_state = {
 	.level = LOG_INFO,
 	.file = NULL,
@@ -47,7 +48,7 @@ static void rotate_log(void)
 	if (pos < MAX_LOG_FILE_SIZE)
 		return;
 
-	char old_path[520];
+	char old_path[PATH_MAX + 4];
 	snprintf(old_path, sizeof(old_path), "%s.old", log_state.path);
 	fclose(log_state.file);
 	rename(log_state.path, old_path);

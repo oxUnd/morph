@@ -47,7 +47,7 @@ int file_write_all(const char *path, const char *data, size_t len)
 
 int file_ensure_dir(const char *path)
 {
-	char tmp[4096];
+	char tmp[PATH_MAX];
 	strncpy(tmp, path, sizeof(tmp) - 1);
 	tmp[sizeof(tmp) - 1] = '\0';
 	size_t len = strlen(tmp);
@@ -108,7 +108,7 @@ int file_list_dirs(const char *dir, char ***out_names, int *out_count)
 	while ((entry = readdir(d)) != NULL) {
 		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
 			continue;
-		char full[4096];
+		char full[PATH_MAX];
 		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
 		struct stat st;
 		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
@@ -164,7 +164,7 @@ int file_list_files(const char *dir, char ***out_names, int *out_count)
 	while ((entry = readdir(d)) != NULL) {
 		if (entry->d_name[0] == '.')
 			continue;
-		char full[4096];
+		char full[PATH_MAX];
 		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
 		struct stat st;
 		if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))

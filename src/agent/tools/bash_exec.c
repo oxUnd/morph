@@ -168,7 +168,7 @@ static int read_pipes_with_timeout(int out_fd, int err_fd,
 			return 0;
 		}
 
-		char tmp[4096];
+		char tmp[BUFSIZ];
 		if (out_open && FD_ISSET(out_fd, &rfds)) {
 			ssize_t n = read(out_fd, tmp, sizeof(tmp));
 			if (n > 0)

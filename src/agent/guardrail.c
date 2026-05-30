@@ -232,7 +232,7 @@ gr_creative_file_missing(const struct guardrail_eval_ctx *ctx,
 		return GUARDRAIL_PASS;
 	if (!ctx->tool_result || obs_is_error(ctx->tool_result))
 		return GUARDRAIL_PASS;
-	char path[512];
+	char path[PATH_MAX];
 	if (extract_file_path(ctx->tool_result, path, sizeof(path))
 	    && !file_exists(path)) {
 		snprintf(reason_out, reason_cap,

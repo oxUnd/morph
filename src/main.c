@@ -243,7 +243,7 @@ int main(int argc, char *argv[])
 	}
 	char *log_dir = file_expand_path("~/.morph/log");
 	file_ensure_dir(log_dir);
-	char log_path[512];
+	char log_path[PATH_MAX];
 	snprintf(log_path, sizeof(log_path), "%s/agent.log", log_dir);
 	free(log_dir);
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);

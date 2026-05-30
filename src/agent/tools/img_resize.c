@@ -114,7 +114,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	}
 	stbi_image_free(src);
 
-	char final_path[1024];
+	char final_path[PATH_MAX];
 	if (out_path_in && *out_path_in) {
 		if (tctx && tool_context_check_write_path(tctx, out_path_in) < 0) {
 			cJSON_Delete(root);

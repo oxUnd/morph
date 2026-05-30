@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <limits.h>
 #include <stddef.h>
 #include <pthread.h>
 #include <sys/types.h>
@@ -16,11 +17,11 @@ extern "C" {
 #define MCP_NAME_MAX           128
 #define MCP_DESC_MAX           1024
 #define MCP_SCHEMA_MAX         4096
-#define MCP_URI_MAX            1024
+#define MCP_URI_MAX            PATH_MAX
 #define MCP_CMD_MAX            64
 #define MCP_CMD_ARG_MAX        256
 #define MCP_ENV_MAX            16
-#define MCP_ENV_VAL_MAX        512
+#define MCP_ENV_VAL_MAX        PATH_MAX
 #define MCP_MAX_SERVERS        32
 #define MCP_JSON_BUF_MAX       65536
 #define MCP_READ_BUF_MAX       131072
@@ -65,7 +66,7 @@ struct mcp_server_config {
 	char env_vals[MCP_ENV_MAX][MCP_ENV_VAL_MAX];
 	int env_count;
 	/* http */
-	char http_url[512];
+	char http_url[PATH_MAX];
 	char http_auth_token_env[64];
 	/* startup */
 	int auto_connect;

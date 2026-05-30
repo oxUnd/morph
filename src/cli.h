@@ -26,14 +26,14 @@ struct cli_context {
 	struct model *vid_llm;
 	struct mcp_registry mcp;
 	struct tool_context *tctx;
-	char workdir[512];
+	char workdir[PATH_MAX];
 	int running;
 	int streaming;
 	int session_auto_named;
 	int last_tool_was_plan;
-	char image_path[512];
+	char image_path[PATH_MAX];
 	struct spin_context spin;
-	char stream_buf[4096];
+	char stream_buf[BUFSIZ];
 	size_t stream_buf_len;
 	int trace_json;
 };

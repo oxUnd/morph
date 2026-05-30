@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "db/database.h"
+#include <limits.h>
 #include <stdint.h>
 
 struct session {
@@ -33,7 +34,7 @@ struct message_attachment {
 	int64_t id;
 	int64_t message_id;
 	char kind[32];
-	char path[512];
+	char path[PATH_MAX];
 	char sha256[65];
 };
 

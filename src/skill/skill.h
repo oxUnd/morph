@@ -5,12 +5,13 @@
 extern "C" {
 #endif
 
+#include <limits.h>
 #include <stddef.h>
 
 #define SKILL_NAME_MAX 65
 #define SKILL_DESC_MAX 1025
 #define SKILL_MAX_ENTRIES 64
-#define SKILL_PATH_MAX 512
+#define SKILL_PATH_MAX PATH_MAX
 #define SKILL_METADATA_MAX 16
 #define SKILL_METADATA_KEY_MAX 64
 #define SKILL_METADATA_VAL_MAX 256

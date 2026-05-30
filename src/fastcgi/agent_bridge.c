@@ -76,7 +76,7 @@ static void bridge_init_once(void)
 	/* Try HOME/.morph/config.toml, fall back to cwd */
 	const char *home = getenv("HOME");
 	if (home) {
-		char path[1024];
+		char path[PATH_MAX];
 		snprintf(path, sizeof(path), "%s/.morph/config.toml", home);
 		config_load(&g_config, path);
 	} else {
@@ -86,7 +86,7 @@ static void bridge_init_once(void)
 	/* Initialize logging from config, with fallback */
 	{
 		const char *lf = g_config.general.log_file;
-		char log_path[512];
+		char log_path[PATH_MAX];
 		if (lf && lf[0] == '/') {
 			snprintf(log_path, sizeof(log_path), "%s", lf);
 		} else {
@@ -209,7 +209,7 @@ static void bridge_init_once(void)
 
 static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 {
-	char exts_dir[512] = {0};
+	char exts_dir[PATH_MAX] = {0};
 	char *exts_home = file_expand_path("~/.morph/exts");
 	if (exts_home) {
 		strncpy(exts_dir, exts_home, sizeof(exts_dir) - 1);
@@ -224,7 +224,7 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) != 0)
 		return;
 	for (int i = 0; i < ext_count; i++) {
-		char ed_path[1024];
+		char ed_path[PATH_MAX];
 		snprintf(ed_path, sizeof(ed_path), "%s/%s",
 			 exts_dir, ext_dirs[i]);
 		struct ext ex;
@@ -253,7 +253,7 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 				guardrail_rule_lookup(gcfg, ex.manifest.name);
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_SO;
-				char full[1024];
+				char full[PATH_MAX];
 				snprintf(full, sizeof(full), "%s/%s",
 					 ed_path, ex.manifest.entry);
 				strncpy(r->ext_entry, full,
@@ -265,7 +265,7 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 				guardrail_rule_lookup(gcfg, ex.manifest.name);
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_EXEC;
-				char full[1024];
+				char full[PATH_MAX];
 				snprintf(full, sizeof(full), "%s/%s",
 					 ed_path, ex.manifest.entry);
 				strncpy(r->ext_entry, full,

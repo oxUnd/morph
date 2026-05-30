@@ -5,12 +5,13 @@
 extern "C" {
 #endif
 
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdint.h>
 
 struct db {
 	sqlite3 *handle;
-	char path[512];
+	char path[PATH_MAX];
 };
 
 int db_open(struct db *db, const char *path);

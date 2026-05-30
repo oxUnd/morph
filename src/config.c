@@ -379,7 +379,7 @@ int config_load(struct config *cfg, const char *path)
 					const char *key = toml_key_in(env_tbl, ki);
 					if (!key)
 						break;
-					strncpy(ms->env_keys[ei], key, 63);
+					strncpy(ms->env_keys[ei], key, sizeof(ms->env_keys[ei]) - 1);
 					CFG_STR(env_tbl, key, ms->env_vals[ei]);
 					ei++;
 				}

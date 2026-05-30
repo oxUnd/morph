@@ -5,14 +5,16 @@
 extern "C" {
 #endif
 
+#include <limits.h>
+
 #define CONFIG_MAX_KEY_LEN 256
 #define CONFIG_MAX_VAL_LEN 2048
 
 struct config_general {
 	char default_session[256];
-	char output_dir[512];
+	char output_dir[PATH_MAX];
 	char log_level[16];
-	char log_file[512];
+	char log_file[PATH_MAX];
 };
 
 struct config_model_entry {
@@ -40,14 +42,14 @@ struct config_models {
 #define HITL_TOOL_NAME_MAX 64
 #define BASH_EXEC_ALLOW_MAX 32
 #define BASH_EXEC_COMMAND_MAX 1024
-#define BASH_EXEC_CWD_MAX 512
+#define BASH_EXEC_CWD_MAX PATH_MAX
 #define GUARDRAIL_DISABLED_RULES_MAX 16
 #define GUARDRAIL_LLM_RULES_MAX 8
 #define GUARDRAIL_EXT_RULES_MAX 8
 #define CFG_GR_NAME_MAX 64
 #define CFG_GR_DESC_MAX 1024
 #define CFG_GR_ACTION_MAX 512
-#define CFG_GR_EXT_ENTRY_MAX 512
+#define CFG_GR_EXT_ENTRY_MAX PATH_MAX
 
 struct config_guardrail_llm_rule {
 	char name[CFG_GR_NAME_MAX];
@@ -115,18 +117,18 @@ struct config_render {
 };
 
 struct config_ext {
-	char dir[512];
+	char dir[PATH_MAX];
 	int default_max_memory_mb;
 	int default_max_cpu_seconds;
 };
 
 struct config_prompt {
-	char system_prompt_file[512];
-	char system_prompt_dir[512];
+	char system_prompt_file[PATH_MAX];
+	char system_prompt_dir[PATH_MAX];
 };
 
 struct config_skill {
-	char dir[512];
+	char dir[PATH_MAX];
 };
 
 #define MCP_SERVER_MAX 32
@@ -134,7 +136,7 @@ struct config_skill {
 #define MCP_CMD_ARGS_MAX 32
 #define MCP_CMD_ARG_LEN_MAX 256
 #define MCP_ENV_MAX 16
-#define MCP_ENV_VAL_MAX 512
+#define MCP_ENV_VAL_MAX PATH_MAX
 
 struct config_mcp_server {
 	char name[MCP_SERVER_NAME_MAX];
@@ -147,7 +149,7 @@ struct config_mcp_server {
 	char env_vals[MCP_ENV_MAX][MCP_ENV_VAL_MAX];
 	int env_count;
 	/* http */
-	char http_url[512];
+	char http_url[PATH_MAX];
 	char http_auth_token_env[64];
 	/* startup */
 	int auto_connect;

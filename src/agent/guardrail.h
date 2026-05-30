@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "util/arena.h"
+#include <limits.h>
 #include <stddef.h>
 
 enum guardrail_verdict {
@@ -24,7 +25,7 @@ enum guardrail_hook {
 #define GUARDRAIL_ACTION_MAX         512
 #define GUARDRAIL_NAME_MAX           64
 #define GUARDRAIL_DESC_MAX           1024
-#define GUARDRAIL_EXT_ENTRY_MAX      512
+#define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
 
 struct react_step;
 

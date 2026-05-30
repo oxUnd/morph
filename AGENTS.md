@@ -121,6 +121,12 @@ All UTF-8 operations must use the shared API in `src/util/utf8.h` — **never** 
 These differ from typical C defaults and must be followed:
 - **No `//` comments** — C-style `/* */` only
 - **`sizeof(var)`** not `sizeof(type)`
+- **Use `<limits.h>` constants for system limits** — never hardcode sizes that correspond to POSIX/system limits:
+  - Filesystem path buffers → `PATH_MAX` (not `512`/`1024`/`4096`)
+  - stdio I/O buffers → `BUFSIZ` (not `4096`)
+  - Do **not** use `NAME_MAX` for logical names (tool names, skill names, etc.) — those are application-defined, keep named `#define` constants like `TOOL_NAME_MAX`
+  - Application-specific limits (e.g. `MAX_CONTENT_SIZE`, `ARENA_DEFAULT_SIZE`) stay as named `#define`s
+  - `strncpy` must use `sizeof(dst) - 1`, never magic numbers like `63`
 - **Error codes**: negative errno (`-EINVAL`, `-ENOMEM`) or `MORPH_ERR_*` from `src/util/error.h`; use `MORPH_RETURN(code)` instead of bare `return code;` for all error returns
 - **Cleanup**: `goto out;` pattern, no early returns with leak
 - **Memory**: `xmalloc`/`xfree` wrappers — failure aborts, no NULL checks needed

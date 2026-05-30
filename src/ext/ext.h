@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <limits.h>
 #include "sandbox/sandbox.h"
 #include "agent/tool.h"
 
@@ -37,10 +38,10 @@ struct ext_manifest {
 
 struct ext {
 	struct ext_manifest manifest;
-	char path[512];
+	char path[PATH_MAX];
 	void *dl_handle;
 	int (*run)(const char *args_json, char **result_json);
-	char exec_path[512];
+	char exec_path[PATH_MAX];
 	struct tool_desc tool_desc;
 	int enabled;
 };

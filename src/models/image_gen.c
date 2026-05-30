@@ -169,7 +169,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	else
 		out_dir = file_expand_path("~/.morph/output");
 	file_ensure_dir(out_dir);
-	char out_path[1024];
+	char out_path[PATH_MAX];
 	snprintf(out_path, sizeof(out_path), "%s/img_%lld.png",
 		 out_dir, (long long)time(NULL));
 	free(out_dir);

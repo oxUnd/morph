@@ -5,6 +5,7 @@
 #include "cJSON.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,8 +31,8 @@ static void *g_cb_user_data;
 static char *find_editor_binary(void)
 {
 	const char *env;
-	char buf[4096];
-	char cwd[4096];
+	char buf[PATH_MAX];
+	char cwd[PATH_MAX];
 
 	env = getenv("MORPH_EDITOR");
 	if (env && env[0]) {

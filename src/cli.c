@@ -867,7 +867,7 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 	int count = 0;
 	struct message *msgs = message_list(&ctx->database,
 					     ctx->current_session.id, &count);
-	char filename[512];
+	char filename[PATH_MAX];
 	snprintf(filename, sizeof(filename), "%s_%lld.%s",
 		 ctx->current_session.name,
 		 (long long)time(NULL), fmt);
@@ -1738,7 +1738,7 @@ static int cli_init_models(struct cli_context *ctx)
 			int nfiles = 0;
 			if (file_list_files(exp2, &files, &nfiles) == 0) {
 				for (int i = 0; i < nfiles; i++) {
-					char full[4096];
+					char full[PATH_MAX];
 					snprintf(full, sizeof(full), "%s/%s", exp2, files[i]);
 					char *content = file_read_all(full, NULL);
 					if (!content)
@@ -2046,7 +2046,7 @@ static int cli_init_tools(struct cli_context *ctx)
  */
 static int cli_init_exts(struct cli_context *ctx)
 {
-	char exts_dir[512] = {0};
+	char exts_dir[PATH_MAX] = {0};
 	char *exts_home = file_expand_path("~/.morph/exts");
 	if (exts_home) {
 		strncpy(exts_dir, exts_home, sizeof(exts_dir) - 1);
@@ -2060,7 +2060,7 @@ static int cli_init_exts(struct cli_context *ctx)
 	int ext_count = 0;
 	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) == 0) {
 		for (int i = 0; i < ext_count; i++) {
-			char ed_path[1024];
+			char ed_path[PATH_MAX];
 			snprintf(ed_path, sizeof(ed_path), "%s/%s", exts_dir, ext_dirs[i]);
 			struct ext ex;
 			int rc = ext_load(&ex, ed_path);
@@ -2097,7 +2097,7 @@ static int cli_init_exts(struct cli_context *ctx)
 						if (r) {
 							r->ext_type =
 								GUARDRAIL_EXT_SO;
-							char full[1024];
+							char full[PATH_MAX];
 							snprintf(full,
 								 sizeof(full),
 								 "%s/%s",
@@ -2118,7 +2118,7 @@ static int cli_init_exts(struct cli_context *ctx)
 						if (r) {
 							r->ext_type =
 								GUARDRAIL_EXT_EXEC;
-							char full[1024];
+							char full[PATH_MAX];
 							snprintf(full,
 								 sizeof(full),
 								 "%s/%s",
@@ -2181,12 +2181,12 @@ static int cli_init_mcp(struct cli_context *ctx)
 				strncpy(scfg.cmd_args[j], cs->args[j], MCP_CMD_ARG_MAX - 1);
 			scfg.env_count = cs->env_count;
 			for (int j = 0; j < cs->env_count; j++) {
-				strncpy(scfg.env_keys[j], cs->env_keys[j], 63);
+				strncpy(scfg.env_keys[j], cs->env_keys[j], sizeof(scfg.env_keys[j]) - 1);
 				strncpy(scfg.env_vals[j], cs->env_vals[j], MCP_ENV_VAL_MAX - 1);
 			}
 		} else {
 			strncpy(scfg.http_url, cs->http_url, sizeof(scfg.http_url) - 1);
-			strncpy(scfg.http_auth_token_env, cs->http_auth_token_env, 63);
+			strncpy(scfg.http_auth_token_env, cs->http_auth_token_env, sizeof(scfg.http_auth_token_env) - 1);
 		}
 
 		scfg.auto_connect = cs->auto_connect;
