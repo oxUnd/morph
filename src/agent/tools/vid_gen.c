@@ -122,5 +122,5 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		"\"reference_videos\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of local file paths or http(s) URLs to reference videos for vid2vid. Pass ALL videos in one array, not one at a time. Videos are labeled video#1, video#2, etc. in order\"},"
 		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration in seconds\"}"
 		"},\"required\":[\"prompt\"]}",
-		vid_gen_exec, NULL, tctx);
+		vid_gen_exec, tctx, NULL);
 }
