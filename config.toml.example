@@ -109,7 +109,7 @@ bash_exec_default_timeout = 60
 # - Creative tool reports missing file → retry with error injected
 # Guardrail only triggers when tools were actually called; pure text Q&A
 # (no tools used) always passes.
-guardrail_enabled   = false
+# guardrail_enabled   = false
 # Maximum number of guardrail-retry cycles per query.
 guardrail_max_retries = 2
 # Maximum consecutive empty answers before forcing finalization.

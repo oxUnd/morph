@@ -56,7 +56,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.max_iterations = 10;
 	cfg->react.step_timeout_seconds = 330;
 	cfg->react.tool_max_retries = 3;
-	cfg->react.guardrail_enabled = 0;
+	cfg->react.guardrail_enabled = 1;
 	cfg->react.guardrail_max_retries = 1;
 	cfg->react.guardrail_max_empty_rounds = 2;
 
