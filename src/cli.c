@@ -898,30 +898,128 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  default_session = %s\n", ctx->config.general.default_session);
 	printf("  output_dir = %s\n", ctx->config.general.output_dir);
 	printf("  log_level = %s\n", ctx->config.general.log_level);
+	printf("  log_file = %s\n", ctx->config.general.log_file);
 	printf(ANSI_BOLD "[model.text]" ANSI_RESET "\n");
 	printf("  provider = %s\n", ctx->config.models.text.provider);
 	printf("  model = %s\n", ctx->config.models.text.model);
 	printf("  api_base = %s\n", ctx->config.models.text.api_base);
 	printf("  context_limit = %d\n", ctx->config.models.text.context_limit);
+	printf("  max_tokens = %d\n", ctx->config.models.text.max_tokens);
+	printf("  timeout_seconds = %d\n",
+	       ctx->config.models.text.timeout_seconds);
+	printf(ANSI_BOLD "[model.image]" ANSI_RESET "\n");
+	printf("  provider = %s\n", ctx->config.models.image.provider);
+	printf("  model = %s\n", ctx->config.models.image.model);
+	printf("  api_base = %s\n", ctx->config.models.image.api_base);
+	printf("  context_limit = %d\n",
+	       ctx->config.models.image.context_limit);
+	printf(ANSI_BOLD "[model.video]" ANSI_RESET "\n");
+	printf("  provider = %s\n", ctx->config.models.video.provider);
+	printf("  model = %s\n", ctx->config.models.video.model);
+	printf("  api_base = %s\n", ctx->config.models.video.api_base);
+	printf("  context_limit = %d\n",
+	       ctx->config.models.video.context_limit);
 	printf(ANSI_BOLD "[react]" ANSI_RESET "\n");
 	printf("  max_iterations = %d\n", ctx->config.react.max_iterations);
-	printf("  step_timeout = %d\n", ctx->config.react.step_timeout_seconds);
+	printf("  step_timeout = %d\n",
+	       ctx->config.react.step_timeout_seconds);
 	printf("  tool_max_retries = %d\n", ctx->config.react.tool_max_retries);
-	printf("  guardrail_enabled = %d\n", ctx->config.react.guardrail_enabled);
-	printf("  guardrail_max_retries = %d\n", ctx->config.react.guardrail_max_retries);
+	printf("  guardrail_enabled = %d\n",
+	       ctx->config.react.guardrail_enabled);
+	printf("  guardrail_max_retries = %d\n",
+	       ctx->config.react.guardrail_max_retries);
+	printf("  guardrail_max_empty_rounds = %d\n",
+	       ctx->config.react.guardrail_max_empty_rounds);
+	printf("  guardrail_llm_model = %s\n",
+	       ctx->config.react.guardrail_llm_model);
+	printf("  hitl_enabled = %d\n", ctx->config.react.hitl_enabled);
+	printf("  hitl_auto_approve_readonly = %d\n",
+	       ctx->config.react.hitl_auto_approve_readonly);
+	printf("  bash_exec_enabled = %d\n",
+	       ctx->config.react.bash_exec_enabled);
+	printf("  bash_exec_default_timeout = %d\n",
+	       ctx->config.react.bash_exec_default_timeout);
+	if (ctx->config.react.disabled_tools_count > 0) {
+		printf("  disabled_tools =");
+		for (int i = 0; i < ctx->config.react.disabled_tools_count; i++)
+			printf(" %s", ctx->config.react.disabled_tools[i]);
+		printf("\n");
+	}
+	if (ctx->config.react.hitl_tools_count > 0) {
+		printf("  hitl_tools =");
+		for (int i = 0; i < ctx->config.react.hitl_tools_count; i++)
+			printf(" %s", ctx->config.react.hitl_tools[i]);
+		printf("\n");
+	}
+	if (ctx->config.react.bash_exec_allowed_commands_count > 0) {
+		printf("  bash_exec_allowed_commands =");
+		for (int i = 0;
+		     i < ctx->config.react.bash_exec_allowed_commands_count;
+		     i++)
+			printf(" %s",
+			       ctx->config.react.bash_exec_allowed_commands[i]);
+		printf("\n");
+	}
+	if (ctx->config.react.bash_exec_allowed_cwds_count > 0) {
+		printf("  bash_exec_allowed_cwds =");
+		for (int i = 0;
+		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
+			printf(" %s",
+			       ctx->config.react.bash_exec_allowed_cwds[i]);
+		printf("\n");
+	}
 	printf(ANSI_BOLD "[context]" ANSI_RESET "\n");
-	printf("  threshold = %.1f\n", ctx->config.context.summarize_threshold_ratio);
-	printf("  target = %.1f\n", ctx->config.context.compress_target_ratio);
-	printf("  keep_rounds = %d\n", ctx->config.context.keep_recent_rounds);
+	printf("  threshold = %.1f\n",
+	       ctx->config.context.summarize_threshold_ratio);
+	printf("  target = %.1f\n",
+	       ctx->config.context.compress_target_ratio);
+	printf("  keep_rounds = %d\n",
+	       ctx->config.context.keep_recent_rounds);
 	printf(ANSI_BOLD "[memory]" ANSI_RESET "\n");
 	printf("  enabled = %d\n", ctx->config.memory.enabled);
-	printf("  hot_path_enabled = %d\n", ctx->config.memory.hot_path_enabled);
-	printf("  cold_path_enabled = %d\n", ctx->config.memory.cold_path_enabled);
-	printf("  llm_extract_enabled = %d\n", ctx->config.memory.llm_extract_enabled);
+	printf("  hot_path_enabled = %d\n",
+	       ctx->config.memory.hot_path_enabled);
+	printf("  cold_path_enabled = %d\n",
+	       ctx->config.memory.cold_path_enabled);
+	printf("  llm_extract_enabled = %d\n",
+	       ctx->config.memory.llm_extract_enabled);
 	printf("  max_facts = %d\n", ctx->config.memory.max_facts);
 	printf("  max_episodes = %d\n", ctx->config.memory.max_episodes);
 	printf("  max_procedures = %d\n", ctx->config.memory.max_procedures);
-	printf("  max_context_chars = %d\n", ctx->config.memory.max_context_chars);
+	printf("  max_context_chars = %d\n",
+	       ctx->config.memory.max_context_chars);
+	printf(ANSI_BOLD "[render]" ANSI_RESET "\n");
+	printf("  prefer_image_protocol = %s\n",
+	       ctx->config.render.prefer_image_protocol);
+	printf("  mpv_args = %s\n", ctx->config.render.mpv_args);
+	printf(ANSI_BOLD "[ext]" ANSI_RESET "\n");
+	printf("  dir = %s\n", ctx->config.ext.dir);
+	printf("  default_max_memory_mb = %d\n",
+	       ctx->config.ext.default_max_memory_mb);
+	printf("  default_max_cpu_seconds = %d\n",
+	       ctx->config.ext.default_max_cpu_seconds);
+	printf(ANSI_BOLD "[prompt]" ANSI_RESET "\n");
+	printf("  system_prompt_file = %s\n",
+	       ctx->config.prompt.system_prompt_file);
+	printf("  system_prompt_dir = %s\n",
+	       ctx->config.prompt.system_prompt_dir);
+	printf(ANSI_BOLD "[skill]" ANSI_RESET "\n");
+	printf("  dir = %s\n", ctx->config.skill.dir);
+	printf(ANSI_BOLD "[mcp]" ANSI_RESET "\n");
+	printf("  server_count = %d\n", ctx->config.mcp.server_count);
+	for (int i = 0; i < ctx->config.mcp.server_count; i++) {
+		struct config_mcp_server *s = &ctx->config.mcp.servers[i];
+		printf("  [[mcp.servers.%d]]\n", i);
+		printf("    name = %s\n", s->name);
+		printf("    transport = %s\n", s->transport);
+		if (strcmp(s->transport, "stdio") == 0) {
+			printf("    command = %s\n", s->command);
+			printf("    args_count = %d\n", s->args_count);
+		} else {
+			printf("    http_url = %s\n", s->http_url);
+		}
+		printf("    auto_connect = %d\n", s->auto_connect);
+	}
 	return 0;
 }
 
