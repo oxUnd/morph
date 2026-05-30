@@ -104,6 +104,12 @@ struct react_context {
 	char *workdir;
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;
+	int sub_agent_depth;
+	struct {
+		char name[64];
+		char description[256];
+	} *sub_agent_info;
+	int sub_agent_info_count;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,
@@ -129,6 +135,10 @@ void react_cancel(struct react_context *ctx);
 void react_cancel_active(void);
 int react_set_memory_context(struct react_context *ctx, const char *memory_context);
 extern volatile sig_atomic_t react_sigint_flag;
+
+int react_active_count(void);
+void react_active_push(struct react_context *ctx);
+void react_active_pop(struct react_context *ctx);
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);

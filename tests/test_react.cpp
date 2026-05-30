@@ -1123,6 +1123,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 static void mock_server_stop(struct mock_server *srv)
 {
 	srv->running = 0;
+	shutdown(srv->server_fd, SHUT_RDWR);
 	close(srv->server_fd);
 	pthread_join(srv->thread, nullptr);
 }

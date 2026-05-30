@@ -28,6 +28,7 @@ set(TEST_SOURCES
 	test_ask_user.cpp
 	test_sandbox.cpp
 	test_tool_context.cpp
+	test_sub_agent.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})

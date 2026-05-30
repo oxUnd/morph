@@ -284,9 +284,38 @@ dir = ""
 # auth_token_env = "MCP_REMOTE_TOKEN"
 #
 # Example: Web Search, use exa.ai
-# [[mcp.servers]]
-# name          = "exa"
-# transport     = "http"
-# url           = "https://mcp.exa.ai/mcp"
-# auto_connect  = true
 # connect_timeout = 30
+
+# ──────────────────────────────────────────────
+# Sub-Agents
+# ──────────────────────────────────────────────
+# Sub-agents are specialized agent instances that can be delegated tasks
+# by the main agent. Each sub-agent has its own system prompt, tool set,
+# and iteration limit.
+#
+# Tools created for each sub-agent:
+#   agent_<name>  — invoke synchronously (blocks until done)
+#   delegate      — start asynchronously, returns task_id
+#   fanout        — run multiple tasks in parallel
+#   agent_status  — check status of async task
+#
+# Example: Research sub-agent
+# [[agent.sub_agents]]
+# name = "researcher"
+# description = "Deep research and information gathering agent"
+# system_prompt_file = "~/.morph/prompts/researcher.md"
+# max_iterations = 5
+# allowed_tools = ["text_gen", "text_qa", "file_read"]
+# context_policy = "task_only"        # full | summary | task_only
+# merge_strategy = "synthesize"       # synthesize | concat | raw (for fanout)
+# output_schema = '{"type":"object","properties":{"findings":{"type":"string"},"sources":{"type":"array","items":{"type":"string"}}},"required":["findings"]}'
+#
+# Example: Code review sub-agent
+# [[agent.sub_agents]]
+# name = "reviewer"
+# description = "Code review specialist that checks for bugs and style issues"
+# system_prompt_file = "~/.morph/prompts/reviewer.md"
+# max_iterations = 3
+# allowed_tools = ["file_read", "file_list", "file_info", "text_gen"]
+# disabled_tools = ["bash_exec"]
+# context_policy = "task_only"

@@ -7,6 +7,8 @@ extern "C" {
 
 #include <limits.h>
 
+#define SUB_AGENT_TOOL_NAME_MAX 64
+
 #define CONFIG_MAX_KEY_LEN 256
 #define CONFIG_MAX_VAL_LEN 2048
 
@@ -161,6 +163,42 @@ struct config_mcp {
 	int server_count;
 };
 
+#define SUB_AGENT_MAX 16
+#define SUB_AGENT_NAME_MAX 64
+#define SUB_AGENT_TOOL_MAX 32
+
+enum sub_agent_context_policy {
+	SUB_AGENT_CTX_FULL,
+	SUB_AGENT_CTX_SUMMARY,
+	SUB_AGENT_CTX_TASK_ONLY
+};
+
+enum sub_agent_merge_strategy {
+	SUB_AGENT_MERGE_SYNTHESIZE,
+	SUB_AGENT_MERGE_CONCAT,
+	SUB_AGENT_MERGE_RAW
+};
+
+struct config_sub_agent {
+	char name[SUB_AGENT_NAME_MAX];
+	char description[256];
+	char system_prompt_file[PATH_MAX];
+	char model[64];
+	int max_iterations;
+	char allowed_tools[SUB_AGENT_TOOL_MAX][SUB_AGENT_TOOL_NAME_MAX];
+	int allowed_tools_count;
+	char disabled_tools[SUB_AGENT_TOOL_MAX][SUB_AGENT_TOOL_NAME_MAX];
+	int disabled_tools_count;
+	enum sub_agent_context_policy context_policy;
+	enum sub_agent_merge_strategy merge_strategy;
+	char *output_schema;
+};
+
+struct config_sub_agents {
+	struct config_sub_agent entries[SUB_AGENT_MAX];
+	int count;
+};
+
 struct config {
 	struct config_general general;
 	struct config_models models;
@@ -172,9 +210,11 @@ struct config {
 	struct config_prompt prompt;
 	struct config_skill skill;
 	struct config_mcp mcp;
+	struct config_sub_agents sub_agents;
 };
 
 int config_load(struct config *cfg, const char *path);
+int config_load_sub_agents(struct config *cfg, const char *path);
 void config_set_defaults(struct config *cfg);
 void config_print(const struct config *cfg);
 

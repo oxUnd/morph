@@ -8,7 +8,7 @@
 #include <string.h>
 
 static int http_initialized = 0;
-static volatile sig_atomic_t *http_cancel_flag = NULL;
+static __thread volatile sig_atomic_t *http_cancel_flag = NULL;
 
 static int curl_debug_cb(CURL *handle, curl_infotype type,
 			 char *data, size_t size, void *userp)
@@ -127,6 +127,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	struct curl_slist *headers = NULL;
 	if (content_type) {
 		char ct[256];
@@ -181,6 +182,7 @@ int http_get_ex(const char *url, const char **extra_headers,
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	struct curl_slist *headers = NULL;
 	for (int i = 0; i < extra_header_count; i++) {
 		if (extra_headers && extra_headers[i])
@@ -231,6 +233,7 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	struct curl_slist *headers = NULL;
 	if (content_type) {
 		char ct[256];
@@ -303,6 +306,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 
 	struct curl_slist *headers = NULL;
 	char ct[256];
@@ -360,6 +364,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 
 	struct curl_slist *headers = NULL;
 	char ct[256];
@@ -419,10 +424,11 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 		return -EINVAL;
 	if (!http_initialized)
 		http_init();
-
 	CURL *curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
+
 	struct curl_slist *headers = NULL;
 	char ct[256];
 	if (content_type) {

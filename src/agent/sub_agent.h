@@ -1,0 +1,125 @@
+#ifndef SUB_AGENT_H
+#define SUB_AGENT_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "config.h"
+#include "agent/react.h"
+#include "agent/tool.h"
+#include "agent/context.h"
+#include <pthread.h>
+
+#define SUB_AGENT_TASK_MAX 8
+#define SUB_AGENT_TASK_ID_MAX 32
+#define SUB_AGENT_MAX_DEPTH 2
+
+enum sub_agent_task_status {
+	SUB_AGENT_PENDING,
+	SUB_AGENT_RUNNING,
+	SUB_AGENT_COMPLETED,
+	SUB_AGENT_FAILED,
+	SUB_AGENT_CANCELLED
+};
+
+struct sub_agent_entry {
+	struct config_sub_agent cfg;
+	char *system_prompt;
+	struct model *llm;
+};
+
+struct sub_agent_task {
+	char id[SUB_AGENT_TASK_ID_MAX];
+	int agent_index;
+	char *task_description;
+	enum sub_agent_task_status status;
+	char *result;
+	int error_code;
+	struct react_context *child_ctx;
+	pthread_t thread;
+	int joined;
+	pthread_mutex_t mutex;
+};
+
+struct sub_agent_trace_event {
+	char trace_id[36];
+	char parent_trace_id[36];
+	char agent_name[SUB_AGENT_NAME_MAX];
+	int64_t start_ms;
+	int64_t end_ms;
+	char mode[16];
+	int iteration_count;
+	int token_usage;
+	char *result_preview;
+};
+
+struct sub_agent_runtime {
+	struct sub_agent_entry entries[SUB_AGENT_MAX];
+	int entry_count;
+	struct sub_agent_task tasks[SUB_AGENT_TASK_MAX];
+	int task_count;
+	int next_task_id;
+	struct tool_registry *parent_tools;
+	struct model *default_llm;
+	struct tokenizer *tokenizer;
+	struct compress_config *compress;
+	int depth;
+	char trace_file[PATH_MAX];
+};
+
+struct sub_agent_runtime *
+sub_agent_runtime_create(struct tool_registry *parent_tools,
+			 struct model *default_llm,
+			 struct tokenizer *tokenizer,
+			 struct compress_config *compress);
+
+void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
+
+int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
+				  struct config_sub_agents *cfg);
+
+struct sub_agent_entry *
+sub_agent_find(struct sub_agent_runtime *rt, const char *name);
+
+struct tool_registry *
+sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
+			      struct sub_agent_entry *entry);
+
+struct react_context *
+sub_agent_create_context(struct sub_agent_runtime *rt,
+			 struct sub_agent_entry *entry,
+			 const char *task);
+
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
+			  struct sub_agent_entry *entry,
+			  const char *task, char **result);
+
+int sub_agent_delegate(struct sub_agent_runtime *rt,
+		       const char *agent_name, const char *task,
+		       char **task_id_out);
+
+int sub_agent_fanout(struct sub_agent_runtime *rt,
+		     const char *agent_name,
+		     const char **tasks, int task_count,
+		     enum sub_agent_merge_strategy merge,
+		     char **result);
+
+int sub_agent_check_status(struct sub_agent_runtime *rt,
+			   const char *task_id,
+			   enum sub_agent_task_status *status_out,
+			   char **result_out);
+
+int sub_agent_apply_output_schema(const char *text,
+				  const char *schema,
+				  struct model *llm,
+				  char **result);
+
+void sub_agent_trace_write(struct sub_agent_runtime *rt,
+			   struct sub_agent_trace_event *ev);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -7,6 +7,7 @@
 #include "agent/react.h"
 #include "agent/plan.h"
 #include "agent/tool_context.h"
+#include "agent/sub_agent.h"
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "util/spin.h"
@@ -26,6 +27,7 @@ struct cli_context {
 	struct model *vid_llm;
 	struct mcp_registry mcp;
 	struct tool_context *tctx;
+	struct sub_agent_runtime *sub_agents;
 	char workdir[PATH_MAX];
 	int running;
 	int streaming;

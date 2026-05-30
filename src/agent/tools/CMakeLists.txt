@@ -15,6 +15,7 @@ add_library(morph-tools STATIC
 	plan.c
 	ask_user.c
 	img_annotate.c
+	sub_agent_tools.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings

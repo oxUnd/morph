@@ -20,12 +20,47 @@
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
-static struct react_context *react_active_ctx = NULL;
+#define REACT_ACTIVE_MAX 16
+static struct react_context *react_active_stack[REACT_ACTIVE_MAX];
+static int react_active_count_val = 0;
+static pthread_mutex_t react_active_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int react_active_count(void)
+{
+	pthread_mutex_lock(&react_active_mutex);
+	int c = react_active_count_val;
+	pthread_mutex_unlock(&react_active_mutex);
+	return c;
+}
+
+void react_active_push(struct react_context *ctx)
+{
+	pthread_mutex_lock(&react_active_mutex);
+	if (react_active_count_val < REACT_ACTIVE_MAX)
+		react_active_stack[react_active_count_val++] = ctx;
+	pthread_mutex_unlock(&react_active_mutex);
+}
+
+void react_active_pop(struct react_context *ctx)
+{
+	pthread_mutex_lock(&react_active_mutex);
+	for (int i = react_active_count_val - 1; i >= 0; i--) {
+		if (react_active_stack[i] == ctx) {
+			react_active_stack[i] = react_active_stack[react_active_count_val - 1];
+			react_active_count_val--;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&react_active_mutex);
+}
 
 void react_cancel_active(void)
 {
-	if (react_active_ctx)
-		react_active_ctx->cancelled = 1;
+	pthread_mutex_lock(&react_active_mutex);
+	for (int i = 0; i < react_active_count_val; i++)
+		react_active_stack[i]->cancelled = 1;
+	pthread_mutex_unlock(&react_active_mutex);
+	react_sigint_flag = 1;
 }
 
 /*
@@ -576,6 +611,35 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			"with the skill name to load its full instructions.\n");
 	}
 
+	if (ctx->sub_agent_info && ctx->sub_agent_info_count > 0) {
+		while (len + 512 >= cap) {
+			cap *= 2;
+			char *nb = arena_alloc(arena, cap);
+			if (!nb) return NULL;
+			memcpy(nb, buf, len);
+			buf = nb;
+		}
+		len += snprintf(buf + len, cap - len,
+			"\nAvailable sub-agents:\n");
+		for (int i = 0; i < ctx->sub_agent_info_count; i++) {
+			while (len + 256 >= cap) {
+				cap *= 2;
+				char *nb = arena_alloc(arena, cap);
+				if (!nb) return NULL;
+				memcpy(nb, buf, len);
+				buf = nb;
+			}
+			len += snprintf(buf + len, cap - len,
+				"- agent_%s: %s\n",
+				ctx->sub_agent_info[i].name,
+				ctx->sub_agent_info[i].description);
+		}
+		len += snprintf(buf + len, cap - len,
+			"\nTo delegate a task, call agent_<name> with a task "
+			"description. For parallel execution, use fanout. "
+			"For async delegation, use delegate + agent_status.\n");
+	}
+
 	if (ctx->ask_user_fn) {
 		len += snprintf(buf + len, cap - len,
 			"\nYou have the ask_user tool. Use it ONLY for genuine "
@@ -1055,7 +1119,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		hist = hist->next;
 	}
 
-	react_active_ctx = ctx;
+	react_active_push(ctx);
 	http_set_cancel_flag(&ctx->cancelled);
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
@@ -1446,7 +1510,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 done:
 	http_set_cancel_flag(NULL);
-	react_active_ctx = NULL;
+	react_active_pop(ctx);
 
 	if (ctx->state != REACT_STATE_DONE && ctx->state != REACT_STATE_ABORT) {
 		log_warn("react_run: max iterations (%d) reached, aborting", ctx->max_iterations);

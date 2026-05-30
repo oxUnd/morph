@@ -27,6 +27,7 @@
 #include "agent/guardrail.h"
 #include "agent/tool_context.h"
 #include "agent/tools/plan.h"
+#include "agent/tools/sub_agent_tools.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "agent/memory.h"
@@ -2263,6 +2264,55 @@ static int cli_init_mcp(struct cli_context *ctx)
 }
 
 /*
+ * Initialize sub-agents from config.
+ * Creates the sub-agent runtime, loads config, and registers tools.
+ */
+static int cli_init_sub_agents(struct cli_context *ctx)
+{
+	if (ctx->config.sub_agents.count == 0)
+		return 0;
+	ctx->sub_agents = sub_agent_runtime_create(
+		&ctx->tools, ctx->llm, ctx->tokenizer,
+		&ctx->react->compress);
+	if (!ctx->sub_agents) {
+		log_err("failed to create sub-agent runtime");
+		return -ENOMEM;
+	}
+	int rc = sub_agent_runtime_load_config(
+		ctx->sub_agents, &ctx->config.sub_agents);
+	if (rc < 0) {
+		log_err("failed to load sub-agent config: %s",
+			morph_strerror(rc));
+		return rc;
+	}
+	sub_agent_tools_register_all(&ctx->tools, ctx->sub_agents);
+	ctx->react->sub_agent_depth = 0;
+	if (ctx->sub_agents->entry_count > 0) {
+		ctx->react->sub_agent_info = calloc(
+			(size_t)ctx->sub_agents->entry_count,
+			sizeof(*ctx->react->sub_agent_info));
+		if (ctx->react->sub_agent_info) {
+			for (int i = 0; i < ctx->sub_agents->entry_count;
+			     i++) {
+				strncpy(
+					ctx->react->sub_agent_info[i].name,
+					ctx->sub_agents->entries[i].cfg.name,
+					sizeof(ctx->react->sub_agent_info[i].name) - 1);
+				strncpy(
+					ctx->react->sub_agent_info[i].description,
+					ctx->sub_agents->entries[i].cfg.description,
+					sizeof(ctx->react->sub_agent_info[i].description) - 1);
+			}
+			ctx->react->sub_agent_info_count =
+				ctx->sub_agents->entry_count;
+		}
+	}
+	log_info("registered %d sub-agent(s)",
+		 ctx->sub_agents->entry_count);
+	return 0;
+}
+
+/*
  * Initialize the CLI context: load config, open database, create models,
  * register tools, discover extensions and MCP servers, and prepare session.
  * ctx - CLI context to initialize (must be zeroed by caller or here).
@@ -2333,6 +2383,10 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 		goto fail;
 
 	rc = cli_init_mcp(ctx);
+	if (rc < 0)
+		goto fail;
+
+	rc = cli_init_sub_agents(ctx);
 	if (rc < 0)
 		goto fail;
 
@@ -3408,8 +3462,12 @@ void cli_shutdown(struct cli_context *ctx)
 	/* Drain the memory async worker before tearing down the db so
 	 * any in-flight consolidation job finishes against a live file. */
 	memory_async_shutdown();
-	if (ctx->react)
+	if (ctx->react) {
+		free(ctx->react->sub_agent_info);
+		ctx->react->sub_agent_info = NULL;
+		ctx->react->sub_agent_info_count = 0;
 		react_context_destroy(ctx->react);
+	}
 	if (ctx->tokenizer)
 		tokenizer_destroy(ctx->tokenizer);
 	tool_registry_cleanup(&ctx->tools);
@@ -3423,6 +3481,10 @@ void cli_shutdown(struct cli_context *ctx)
 		model_destroy(ctx->img_llm);
 	if (ctx->vid_llm)
 		model_destroy(ctx->vid_llm);
+	if (ctx->sub_agents) {
+		sub_agent_runtime_destroy(ctx->sub_agents);
+		ctx->sub_agents = NULL;
+	}
 	skill_registry_cleanup(ctx->skills);
 	free(ctx->skills);
 	ctx->skills = NULL;
