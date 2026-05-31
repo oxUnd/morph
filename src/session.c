@@ -410,7 +410,7 @@ struct message *message_list(struct db *db, int64_t session_id, int *count)
 		m->session_id = sqlite3_column_int64(stmt, 1);
 		strncpy(m->role, (const char *)sqlite3_column_text(stmt, 2),
 			sizeof(m->role) - 1);
-		m->content = strdup((const char *)sqlite3_column_text(stmt, 3));
+		{ const char *_ct = (const char *)sqlite3_column_text(stmt, 3); m->content = _ct ? strdup(_ct) : strdup(""); }
 		m->token_count = sqlite3_column_int(stmt, 4);
 		m->compressed = sqlite3_column_int(stmt, 5);
 		m->created_at = sqlite3_column_int64(stmt, 6);

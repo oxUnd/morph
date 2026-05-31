@@ -8,6 +8,8 @@ extern "C" {
 #include "agent/context.h"
 #include <errno.h>
 
+struct arena;
+
 int compress_sliding_window(struct message_list **head, int keep_rounds,
 			    struct compress_result *result);
 int compress_react_trace(struct message_list **head,
@@ -18,6 +20,7 @@ void key_info_free(struct key_info *head);
 int compress_detect_react_cycles(struct message_list *head);
 int compress_summarize(struct message_list **head, int keep_rounds,
 		       summarize_fn fn, void *fn_user,
+		       struct arena *session,
 		       struct compress_result *result);
 
 #ifdef __cplusplus

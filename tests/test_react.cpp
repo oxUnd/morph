@@ -457,6 +457,7 @@ protected:
 	struct tool_registry tools;
 	struct tokenizer *tok;
 	struct compress_config cfg;
+	struct arena *ar;
 	void SetUp() override {
 		tool_registry_init(&tools);
 		tok = tokenizer_create("gpt-4o", 128000);
@@ -464,9 +465,11 @@ protected:
 		cfg.max_history_rounds = 6;
 		cfg.summarize_threshold_ratio = 0.8;
 		cfg.compress_target_ratio = 0.5;
+		ar = arena_create(0);
 	}
 	void TearDown() override {
 		tokenizer_destroy(tok);
+		arena_destroy(ar);
 	}
 };
 
@@ -1689,21 +1692,19 @@ TEST_F(MockLlmTest, ReuseContextAfterDone) {
 /* ============================================= */
 
 TEST_F(ReactTest, MsgListWithFilePaths) {
-	struct message_list *m = msg_list_create("user", "check file", 2);
+	struct message_list *m = msg_list_create(ar, "user", "check file", 2);
 	ASSERT_NE(m, nullptr);
 	m->file_paths = (char **)calloc(2, sizeof(char *));
 	m->file_paths[0] = strdup("/tmp/test.txt");
 	m->file_count = 1;
 	EXPECT_STREQ(m->file_paths[0], "/tmp/test.txt");
 	EXPECT_EQ(m->file_count, 1);
-	msg_list_destroy(m);
 }
 
 TEST_F(ReactTest, MsgListCreateNullContent) {
-	struct message_list *m = msg_list_create("user", nullptr, 1);
+	struct message_list *m = msg_list_create(ar, "user", nullptr, 1);
 	ASSERT_NE(m, nullptr);
 	EXPECT_STREQ(m->content, "");
-	msg_list_destroy(m);
 }
 
 TEST_F(ReactTest, MsgListAppendToNullHead) {
@@ -1721,10 +1722,9 @@ TEST_F(ReactTest, ContextNeedsCompressExactThreshold) {
 	};
 	struct message_list *head = nullptr;
 	for (int i = 0; i < 5; i++)
-		msg_list_append(&head, msg_list_create("user", "msg", 1));
+		msg_list_append(&head, msg_list_create(ar, "user", "msg", 1));
 	int needs = context_needs_compress(head, nullptr, &test_cfg);
 	EXPECT_EQ(needs, 1);
-	msg_list_destroy(head);
 }
 
 TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
@@ -1734,10 +1734,9 @@ TEST_F(ReactTest, ContextNeedsCompressBelowThreshold) {
 		.summarize_threshold_ratio = 0.5,
 	};
 	struct message_list *head = nullptr;
-	msg_list_append(&head, msg_list_create("user", "hi", 1));
+	msg_list_append(&head, msg_list_create(ar, "user", "hi", 1));
 	int needs = context_needs_compress(head, nullptr, &test_cfg);
 	EXPECT_EQ(needs, 0);
-	msg_list_destroy(head);
 }
 
 /* ============================================= */

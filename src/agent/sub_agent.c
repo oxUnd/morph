@@ -70,9 +70,12 @@ void sub_agent_runtime_destroy(struct sub_agent_runtime *rt)
 		free(rt->tasks[i].task_description);
 		free(rt->tasks[i].result);
 		if (rt->tasks[i].child_ctx && !rt->tasks[i].joined) {
+			struct tool_registry *ct = rt->tasks[i].child_ctx->tools;
 			react_cancel(rt->tasks[i].child_ctx);
 			pthread_join(rt->tasks[i].thread, NULL);
 			react_context_destroy(rt->tasks[i].child_ctx);
+			tool_registry_cleanup(ct);
+			free(ct);
 		}
 	}
 	free(rt);

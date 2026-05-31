@@ -8,6 +8,8 @@ extern "C" {
 #include "agent/tool.h"
 #include <stdint.h>
 
+struct arena;
+
 struct message_list {
 	char *role;
 	char *content;
@@ -50,7 +52,7 @@ struct tokenizer {
 	int (*count)(const char *text);
 };
 
-struct message_list *msg_list_create(const char *role, const char *content,
+struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,
 				      int token_count);
 void msg_list_append(struct message_list **head, struct message_list *msg);
 void msg_list_destroy(struct message_list *head);

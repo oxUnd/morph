@@ -96,7 +96,7 @@ static void session_load_history(struct cli_context *ctx)
 	struct message *list = message_list(&ctx->database, ctx->current_session.id, &count);
 	struct message *cur = list;
 	while (cur) {
-		struct message_list *m = msg_list_create(cur->role, cur->content,
+		struct message_list *m = msg_list_create(ctx->react->session, cur->role, cur->content,
 							  cur->token_count);
 		if (m) {
 			m->compressed = cur->compressed;
@@ -810,14 +810,17 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 	 * sliding_window. Track which DB ids survive; everything else is
 	 * deleted from the DB. */
 	struct message_list *head = NULL;
+	struct arena *cmp_arena = arena_create(0);
 	int *ids = calloc((size_t)count, sizeof(*ids));
-	if (!ids) {
+	if (!cmp_arena || !ids) {
 		message_free_list(msgs);
+		if (cmp_arena) arena_destroy(cmp_arena);
+		free(ids);
 		return -ENOMEM;
 	}
 	int n_ids = 0;
 	for (struct message *m = msgs; m; m = m->next) {
-		struct message_list *node = msg_list_create(m->role, m->content,
+		struct message_list *node = msg_list_create(cmp_arena, m->role, m->content,
 							    m->token_count);
 		if (!node)
 			continue;
@@ -833,7 +836,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 	int rc = compress_sliding_window(&head,
 		ctx->config.context.keep_recent_rounds, &win_res);
 	if (rc < 0) {
-		msg_list_destroy(head);
+		arena_destroy(cmp_arena);
 		free(ids);
 		CMD_ERROR("compression failed: %s", morph_strerror(rc));
 		return rc;
@@ -850,6 +853,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 		(void)message_delete(&ctx->database, ids[i]);
 	}
 	msg_list_destroy(head);
+	arena_destroy(cmp_arena);
 	free(ids);
 
 	/* Refresh in-memory react context from DB. */

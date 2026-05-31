@@ -1,16 +1,21 @@
 #include "context.h"
+#include "util/arena.h"
 #include <stdlib.h>
 #include <string.h>
 
-struct message_list *msg_list_create(const char *role, const char *content,
+struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,
 				      int token_count)
 {
-	struct message_list *m = calloc(1, sizeof(*m));
+	struct message_list *m = arena_alloc(session, sizeof(*m));
 	if (!m)
 		return NULL;
-	m->role = strdup(role ? role : "");
-	m->content = strdup(content ? content : "");
+	m->role = arena_strdup(session, role ? role : "");
+	m->content = arena_strdup(session, content ? content : "");
 	m->token_count = token_count;
+	m->file_paths = NULL;
+	m->file_count = 0;
+	m->compressed = 0;
+	m->next = NULL;
 	return m;
 }
 
@@ -30,17 +35,7 @@ void msg_list_append(struct message_list **head, struct message_list *msg)
 
 void msg_list_destroy(struct message_list *head)
 {
-	struct message_list *cur = head;
-	while (cur) {
-		struct message_list *next = cur->next;
-		free(cur->role);
-		free(cur->content);
-		for (int i = 0; i < cur->file_count; i++)
-			free(cur->file_paths[i]);
-		free(cur->file_paths);
-		free(cur);
-		cur = next;
-	}
+	(void)head;
 }
 
 int msg_list_count(struct message_list *head)

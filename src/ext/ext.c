@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #include "util/error.h"
 
 int ext_load(struct ext *ex, const char *dir_path)
@@ -69,7 +70,8 @@ int ext_unload(struct ext *ex)
 	if (!ex)
 		return -EINVAL;
 	if (ex->dl_handle) {
-		log_info("ext_unload: would dlclose %s", ex->manifest.name);
+		log_info("ext_unload: dlclose %s", ex->manifest.name);
+		dlclose(ex->dl_handle);
 		ex->dl_handle = NULL;
 	}
 	free(ex->manifest.args_schema);

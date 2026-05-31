@@ -422,7 +422,6 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		}
 	} else {
 		*out_result_json = mcp_strdup_result(arena, result);
-		result = NULL;
 	}
 
 	cJSON_Delete(obj);
@@ -573,7 +572,6 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena, const char
 		*out_content = mcp_strdup_result(arena, combined);
 	} else {
 		*out_content = mcp_strdup_result(arena, result);
-		result = NULL;
 	}
 
 	cJSON_Delete(obj);

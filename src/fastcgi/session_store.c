@@ -147,7 +147,12 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 		int64_t ca = sqlite3_column_int64(st, 3);
 		int64_t ua = sqlite3_column_int64(st, 4);
 
-		while (cap - len < 512) { cap *= 2; buf = realloc(buf, cap); }
+		while (cap - len < 512) {
+			cap *= 2;
+			char *tmp = realloc(buf, cap);
+			if (!tmp) { free(buf); sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+			buf = tmp;
+		}
 		len += (size_t)snprintf(buf + len, cap - len,
 			"%s{\"id\":\"%s\",\"name\":\"%s\",\"model\":\"%s\","
 			"\"created_at\":%lld,\"updated_at\":%lld}",
@@ -157,7 +162,12 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 		first = 0;
 	}
 	sqlite3_finalize(st);
-	while (cap - len < 4) { cap *= 2; buf = realloc(buf, cap); }
+	while (cap - len < 4) {
+		cap *= 2;
+		char *tmp = realloc(buf, cap);
+		if (!tmp) { free(buf); MORPH_RETURN(-ENOMEM); }
+		buf = tmp;
+	}
 	len += (size_t)snprintf(buf + len, cap - len, "]}");
 	*out_json = buf;
 	return 0;
@@ -315,7 +325,12 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 	len += (size_t)snprintf(buf + len, cap - len, "{\"nodes\":[");
 	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
-		while (cap - len < 1024) { cap *= 2; buf = realloc(buf, cap); }
+		while (cap - len < 1024) {
+			cap *= 2;
+			char *tmp = realloc(buf, cap);
+			if (!tmp) { free(buf); sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+			buf = tmp;
+		}
 		const char *id     = (const char *)sqlite3_column_text(st, 0);
 		const char *parent = (const char *)sqlite3_column_text(st, 1);
 		const char *kind   = (const char *)sqlite3_column_text(st, 2);
@@ -341,7 +356,12 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 		first = 0;
 	}
 	sqlite3_finalize(st);
-	while (cap - len < 4) { cap *= 2; buf = realloc(buf, cap); }
+	while (cap - len < 4) {
+		cap *= 2;
+		char *tmp = realloc(buf, cap);
+		if (!tmp) { free(buf); MORPH_RETURN(-ENOMEM); }
+		buf = tmp;
+	}
 	len += (size_t)snprintf(buf + len, cap - len, "]}");
 	*out_json = buf;
 	return 0;

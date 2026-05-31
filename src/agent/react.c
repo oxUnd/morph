@@ -339,15 +339,17 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 		"preserving all file paths, generated outputs, errors, "
 		"and key decisions made. Use 2-4 sentences.";
 	const char *msgs[] = { text };
-	struct collect_data cd = { .buf = arena_alloc(ctx->arena, 8192), .len = 0, .cap = 8192 };
+	struct collect_data cd = { .buf = malloc(8192), .len = 0, .cap = 8192 };
 	if (!cd.buf) return -ENOMEM;
 	cd.buf[0] = '\0';
 	int rc = llm->chat(llm, ctx->arena, sys, msgs, 1, collect_cb, &cd);
 	if (rc < 0) {
+		free(cd.buf);
 		*out = strdup(text);
 		return *out ? 0 : -ENOMEM;
 	}
 	*out = strdup(cd.buf);
+	free(cd.buf);
 	return 0;
 }
 
@@ -397,6 +399,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->state = REACT_STATE_INIT;
 	ctx->cancelled = 0;
 	ctx->arena = arena_create(0);
+	ctx->session = arena_create(0);
 	if (cfg)
 		ctx->compress = *cfg;
 	ctx->compress.summarize = summarize_cb;
@@ -424,15 +427,13 @@ void react_context_destroy(struct react_context *ctx)
 	if (!ctx)
 		return;
 	react_reset(ctx);
-	if (ctx->messages) {
-		msg_list_destroy(ctx->messages);
-		ctx->messages = NULL;
-	}
 	free(ctx->final_answer);
 	free(ctx->system_prompt);
 	free(ctx->memory_context);
 	free(ctx->workdir);
 	arena_destroy(ctx->arena);
+	if (ctx->session)
+		arena_destroy(ctx->session);
 	free(ctx);
 }
 
@@ -988,12 +989,10 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	user_msg->tool_calls = NULL;
 	user_msg->tool_call_count = 0;
 	(*msg_count)++;
-	struct message_list *ml_asst = msg_list_create(
-		"assistant", proposed,
+	struct message_list *ml_asst = msg_list_create(ctx->session, "assistant", proposed,
 		tokenizer_count(ctx->tokenizer, proposed));
 	msg_list_append(&ctx->messages, ml_asst);
-	struct message_list *ml_user = msg_list_create(
-		"user",
+	struct message_list *ml_user = msg_list_create(ctx->session, "user",
 		rev_msg ? rev_msg : "Please revise your answer using the available tools.",
 		tokenizer_count(ctx->tokenizer,
 			rev_msg ? rev_msg : "Please revise your answer using the available tools."));
@@ -1050,7 +1049,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 	}
 
-	struct message_list *msg = msg_list_create("user", user_input,
+	struct message_list *msg = msg_list_create(ctx->session, "user", user_input,
 						  tokenizer_count(ctx->tokenizer, user_input));
 	msg_list_append(&ctx->messages, msg);
 
@@ -1156,6 +1155,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				ctx->compress.max_history_rounds,
 				ctx->compress.summarize,
 				ctx->compress.summarize_user_data,
+				ctx->session,
 				&cr);
 			log_info("auto-compress: detected+removed %d, summarized %d messages (%d -> %d tokens)",
 				 cr.messages_removed, cr.messages_summarized,
@@ -1213,6 +1213,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			if (status >= 0 && sd.accumulated) {
 				response.content = sd.accumulated;
 				sd.accumulated = NULL;
+				response.arena = ctx->arena;
 			}
 		}
 
@@ -1406,9 +1407,21 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 				if (react_track_tool_failure(ctx, call->tool_name, call->tool_args, rc, cb, user_data)) {
 					chat_response_free(&response);
-					for (int j = 0; j < num_tools; j++) {
-						async_tool_call_destroy(calls[j]);
-						calls[j] = NULL;
+					for (int j = i + 1; j < num_tools; j++) {
+						if (calls[j]) {
+							pthread_mutex_lock(&calls[j]->mutex);
+							calls[j]->cancelled = 1;
+							calls[j]->detached = 1;
+							pthread_mutex_unlock(&calls[j]->mutex);
+							pthread_detach(threads[j]);
+							calls[j] = NULL;
+						}
+					}
+					for (int j = 0; j <= i; j++) {
+						if (calls[j]) {
+							async_tool_call_destroy(calls[j]);
+							calls[j] = NULL;
+						}
 					}
 					free(result);
 					goto done;
@@ -1460,8 +1473,17 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 			for (int i = 0; i < num_tools; i++) {
 				if (calls[i]) {
-					async_tool_call_destroy(calls[i]);
-					calls[i] = NULL;
+					if (!calls[i]->completed) {
+						pthread_mutex_lock(&calls[i]->mutex);
+						calls[i]->cancelled = 1;
+						calls[i]->detached = 1;
+						pthread_mutex_unlock(&calls[i]->mutex);
+						pthread_detach(threads[i]);
+						calls[i] = NULL;
+					} else {
+						async_tool_call_destroy(calls[i]);
+						calls[i] = NULL;
+					}
 				}
 			}
 
@@ -1533,7 +1555,7 @@ done:
 
 	if (ctx->state == REACT_STATE_DONE && ctx->steps) {
 		const char *answer = ctx->final_answer ? ctx->final_answer : "(no answer)";
-		struct message_list *asst = msg_list_create("assistant",
+		struct message_list *asst = msg_list_create(ctx->session, "assistant",
 			answer,
 			tokenizer_count(ctx->tokenizer, answer));
 		msg_list_append(&ctx->messages, asst);

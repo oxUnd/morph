@@ -1,4 +1,5 @@
 #include "compress.h"
+#include "util/arena.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,13 +14,7 @@ static const char *key_patterns[] = {
 
 static void msg_free(struct message_list *msg)
 {
-	if (!msg) return;
-	free(msg->role);
-	free(msg->content);
-	for (int i = 0; i < msg->file_count; i++)
-		free(msg->file_paths[i]);
-	free(msg->file_paths);
-	free(msg);
+	(void)msg;
 }
 
 static const char *is_system_role(struct message_list *msg)
@@ -179,6 +174,7 @@ void key_info_free(struct key_info *head)
 
 int compress_summarize(struct message_list **head, int keep_rounds,
 		       summarize_fn fn, void *fn_user,
+		       struct arena *session,
 		       struct compress_result *result)
 {
 	if (!head || !*head || keep_rounds < 0 || !fn)
@@ -265,14 +261,15 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	int stok = (int)(strlen(summary) / 4);
 	if (stok < 1) stok = 1;
 
-	char *role = strdup("system");
-	if (!role) { free(summary); return -ENOMEM; }
-
-	struct message_list *summary_msg = calloc(1, sizeof(*summary_msg));
-	if (!summary_msg) { free(role); free(summary); return -ENOMEM; }
-	summary_msg->role = role;
-	summary_msg->content = summary;
+	struct message_list *summary_msg = arena_alloc(session, sizeof(*summary_msg));
+	if (!summary_msg) { free(summary); return -ENOMEM; }
+	summary_msg->role = arena_strdup(session, "system");
+	summary_msg->content = arena_strdup(session, summary);
+	free(summary);
 	summary_msg->token_count = stok;
+	summary_msg->file_paths = NULL;
+	summary_msg->file_count = 0;
+	summary_msg->compressed = 0;
 
 	*head = summary_msg;
 	if (rechain) {

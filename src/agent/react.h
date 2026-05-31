@@ -98,6 +98,7 @@ struct react_context {
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
+	struct arena *session;
 	char *system_prompt;
 	char *memory_context;
 	struct skill_registry *skills;
