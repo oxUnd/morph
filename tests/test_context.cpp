@@ -84,7 +84,7 @@ TEST_F(ContextTest, NeedsCompress) {
 
 	char long_text[600];
 	int pos = 0;
-	for (int i = 0; i < 50 && pos < 598; i++) {
+	for (int i = 0; i < 100 && pos < 598; i++) {
 		long_text[pos++] = (char)0xE4;
 		long_text[pos++] = (char)0xB8;
 		long_text[pos++] = (char)0xAD;
@@ -92,7 +92,7 @@ TEST_F(ContextTest, NeedsCompress) {
 	long_text[pos] = '\0';
 	msg_list_append(&head, msg_list_create(ar, "user", long_text, 0));
 	int count = context_token_count(head, tok);
-	EXPECT_GE(count, 80) << "Expected >= 80 tokens for 50 CJK chars, got " << count;
+	EXPECT_GE(count, 80) << "Expected >= 80 tokens for 100 CJK chars, got " << count;
 	EXPECT_EQ(context_needs_compress(head, tok, &cfg), 1);
 }
 

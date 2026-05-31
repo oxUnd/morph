@@ -7,12 +7,17 @@ add_library(morph-util STATIC
 	utf8.c
 	spin.c
 	error.c
+	bpe.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 )
 
 target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/vendor
+)
+
+target_compile_definitions(morph-util PUBLIC
+	VENDOR_TIKTOKEN_DIR="${CMAKE_BINARY_DIR}/tiktoken"
 )
 
 target_link_libraries(morph-util PUBLIC m)

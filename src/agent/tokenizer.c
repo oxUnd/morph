@@ -1,5 +1,6 @@
 #include "tokenizer.h"
 #include "agent/context.h"
+#include "util/bpe.h"
 #include "util/utf8.h"
 #include <stdlib.h>
 #include <string.h>
@@ -269,17 +270,36 @@ struct tokenizer *tokenizer_create(const char *model_name, int context_limit)
 		sizeof(tok->model_name) - 1);
 	tok->context_limit = context_limit > 0 ? context_limit : 128000;
 	tok->count = tokenizer_estimate_tokens;
+
+	enum bpe_encoding enc = BPE_CL100K_BASE;
+	if (model_name) {
+		if (strstr(model_name, "o200k") ||
+		    strstr(model_name, "gpt-4o-2024-08") ||
+		    strstr(model_name, "gpt-4o-2025") ||
+		    strstr(model_name, "o1-") ||
+		    strstr(model_name, "o3-") ||
+		    strstr(model_name, "o4-"))
+			enc = BPE_O200K_BASE;
+	}
+
+	tok->encoder = bpe_encoder_create(enc, NULL);
 	return tok;
 }
 
 void tokenizer_destroy(struct tokenizer *tok)
 {
+	if (!tok) return;
+	bpe_encoder_destroy(tok->encoder);
 	free(tok);
 }
 
 int tokenizer_count(struct tokenizer *tok, const char *text)
 {
-	if (!tok || !tok->count)
+	if (!tok)
 		return tokenizer_estimate_tokens(text);
-	return tok->count(text);
+	if (tok->encoder)
+		return bpe_count_tokens(tok->encoder, text);
+	if (tok->count)
+		return tok->count(text);
+	return tokenizer_estimate_tokens(text);
 }

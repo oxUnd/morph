@@ -1,4 +1,6 @@
 #include "context.h"
+#include "agent/tokenizer.h"
+#include "util/bpe.h"
 #include "util/arena.h"
 #include <stdlib.h>
 #include <string.h>
@@ -54,10 +56,14 @@ int context_token_count(struct message_list *head, struct tokenizer *tok)
 	int total = 0;
 	struct message_list *cur = head;
 	while (cur) {
-		if (tok && tok->count)
+		if (cur->token_count > 0)
+			total += cur->token_count;
+		else if (tok && tok->encoder)
+			total += bpe_count_tokens(tok->encoder, cur->content);
+		else if (tok && tok->count)
 			total += tok->count(cur->content);
 		else
-			total += cur->token_count;
+			total += tokenizer_estimate_tokens(cur->content);
 		cur = cur->next;
 	}
 	return total;

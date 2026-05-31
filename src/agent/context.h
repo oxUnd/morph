@@ -46,10 +46,13 @@ struct compress_result {
 	struct key_info *preserved;
 };
 
+struct bpe_encoder;
+
 struct tokenizer {
 	char model_name[64];
 	int context_limit;
 	int (*count)(const char *text);
+	struct bpe_encoder *encoder;
 };
 
 struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,

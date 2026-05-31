@@ -32,6 +32,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(md4c)
 
+configure_file(
+	${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
+	${CMAKE_BINARY_DIR}/tiktoken/cl100k_base.tiktoken COPYONLY)
+configure_file(
+	${CMAKE_SOURCE_DIR}/vendor/tiktoken/o200k_base.tiktoken
+	${CMAKE_BINARY_DIR}/tiktoken/o200k_base.tiktoken COPYONLY)
+
 add_subdirectory(src)
 
 if(BUILD_TESTS)

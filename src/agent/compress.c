@@ -1,4 +1,5 @@
 #include "compress.h"
+#include "agent/tokenizer.h"
 #include "util/arena.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -258,7 +259,7 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 		cur = next;
 	}
 
-	int stok = (int)(strlen(summary) / 4);
+	int stok = tokenizer_estimate_tokens(summary);
 	if (stok < 1) stok = 1;
 
 	struct message_list *summary_msg = arena_alloc(session, sizeof(*summary_msg));

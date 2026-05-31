@@ -992,10 +992,10 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	struct message_list *ml_asst = msg_list_create(ctx->session, "assistant", proposed,
 		tokenizer_count(ctx->tokenizer, proposed));
 	msg_list_append(&ctx->messages, ml_asst);
+	const char *rev_text = rev_msg ? rev_msg :
+		"Please revise your answer using the available tools.";
 	struct message_list *ml_user = msg_list_create(ctx->session, "user",
-		rev_msg ? rev_msg : "Please revise your answer using the available tools.",
-		tokenizer_count(ctx->tokenizer,
-			rev_msg ? rev_msg : "Please revise your answer using the available tools."));
+		rev_text, tokenizer_count(ctx->tokenizer, rev_text));
 	msg_list_append(&ctx->messages, ml_user);
 	return 1;
 }
