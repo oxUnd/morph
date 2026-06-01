@@ -953,6 +953,9 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			log_warn("mcp: failed to register prompt '%s' (rc=%d)", tool_name, rc);
 			free(binding);
 		} else {
+			struct tool_entry *e = tool_lookup(reg, tool_name);
+			if (e)
+				e->flags |= TOOL_FLAG_READONLY;
 			log_info("mcp: registered prompt '%s' -> '%s'", prompts[i].name, tool_name);
 		}
 	}

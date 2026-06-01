@@ -956,6 +956,22 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 			printf(" %s", ctx->config.react.hitl_tools[i]);
 		printf("\n");
 	}
+	{
+		int ro = 0, rw = 0;
+		for (int i = 0; i < ctx->tools.count; i++)
+			if (ctx->tools.entries[i].flags & TOOL_FLAG_READONLY)
+				ro++;
+			else
+				rw++;
+		printf(ANSI_BOLD "[tools]" ANSI_RESET " %d registered"
+		       " (" ANSI_GREEN "%d readonly" ANSI_RESET ", %d read-write)\n",
+		       ctx->tools.count, ro, rw);
+		printf("  readonly:");
+		for (int i = 0; i < ctx->tools.count; i++)
+			if (ctx->tools.entries[i].flags & TOOL_FLAG_READONLY)
+				printf(" %s", ctx->tools.entries[i].desc.name);
+		printf("\n");
+	}
 	if (ctx->config.react.bash_exec_allowed_commands_count > 0) {
 		printf("  bash_exec_allowed_commands =");
 		for (int i = 0;
@@ -1972,7 +1988,10 @@ static int cli_init_tools(struct cli_context *ctx)
 	{
 		static const char *readonly_tools[] = {
 			"file_read", "file_list", "file_info",
-			"img_info", "text_qa", NULL
+			"img_info", "text_qa",
+			"ask_user", "activate_skill", "plan",
+			"agent_status",
+			NULL
 		};
 		for (const char **t = readonly_tools; *t; t++) {
 			struct tool_entry *e = tool_lookup(&ctx->tools, *t);

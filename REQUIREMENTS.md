@@ -1054,7 +1054,10 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
 | file_info | 文件元数据 | path | 本地 | 内置 | 是 |
 | bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
-| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 否 |
+| plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
+| ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
+| agent_status | 查询子任务状态 | task_id | 本地 | 子代理 | 是 |
+| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
 | translate | 文本翻译 | text, target_lang | LLM | Ext |
 | upper | 文本转大写 | text | 本地 | Ext |
 | ... | 社区/自定义 Ext | 按 manifest 定义 | 按定义 | Ext |
