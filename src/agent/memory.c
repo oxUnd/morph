@@ -23,12 +23,26 @@
 
 /* LLM model used for structured extraction (optional). Set via
  * memory_set_llm(); guarded by g_memory_llm_lock to remain thread-safe
- * across CLI / FastCGI worker threads. */
+ * across CLI / FastCGI worker threads (in particular the async
+ * consolidation worker reads the pointer concurrently with foreground
+ * set/clear calls). */
 static struct model *g_memory_llm;
+static pthread_mutex_t g_memory_llm_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void memory_set_llm(struct model *llm)
 {
+	pthread_mutex_lock(&g_memory_llm_lock);
 	g_memory_llm = llm;
+	pthread_mutex_unlock(&g_memory_llm_lock);
+}
+
+static struct model *memory_get_llm(void)
+{
+	struct model *llm;
+	pthread_mutex_lock(&g_memory_llm_lock);
+	llm = g_memory_llm;
+	pthread_mutex_unlock(&g_memory_llm_lock);
+	return llm;
 }
 
 static int64_t memory_now_unix(void)
@@ -833,6 +847,7 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 				 const char *assistant_output,
 				 const struct react_step *steps,
 				 int success,
+				 const char *entities,
 				 const char *key_decisions,
 				 const char *artifacts,
 				 double importance)
@@ -892,7 +907,9 @@ static int memory_insert_episode(struct db *db, int64_t session_id,
 		sqlite3_bind_text(stmt, 3, summary, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 4, assistant_snip, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int(stmt, 5, success ? 1 : 0);
-		sqlite3_bind_text(stmt, 6, tools, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6,
+				  entities ? entities : "", -1,
+				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 7,
 				  key_decisions ? key_decisions : "", -1,
 				  SQLITE_TRANSIENT);
@@ -1823,7 +1840,7 @@ static const char MEMORY_LLM_SYSTEM[] =
 	"  \"facts\":[{\"key\":string, \"value\":string,"
 	" \"category\":string, \"importance\":number}],\n"
 	"  \"rules\":[{\"rule_text\":string, \"trigger\":string}],\n"
-	"  \"episode\":{\"key_decisions\":string,"
+	"  \"episode\":{\"entities\":string, \"key_decisions\":string,"
 	" \"artifacts\":string, \"importance\":number}\n"
 	"}\n"
 	"Rules:\n"
@@ -1836,6 +1853,8 @@ static const char MEMORY_LLM_SYSTEM[] =
 	"explicit standing instructions.\n"
 	"- rule_text is an imperative directive the assistant should obey "
 	"in future turns.\n"
+	"- entities is a comma-separated list of salient nouns the turn "
+	"discusses (people, products, files, places).\n"
 	"- artifacts is a comma-separated list of file paths, URLs, or IDs "
 	"produced this turn.\n"
 	"- Use empty arrays / strings when there is nothing to record. "
@@ -1895,6 +1914,7 @@ static double memory_json_number(const cJSON *obj, const char *field,
 static int memory_apply_llm_envelope(struct db *db, int64_t session_id,
 				     const char *user_input,
 				     cJSON *root,
+				     char **out_entities,
 				     char **out_decisions,
 				     char **out_artifacts,
 				     double *out_importance)
@@ -1956,11 +1976,15 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id,
 
 	episode = cJSON_GetObjectItemCaseSensitive(root, "episode");
 	if (cJSON_IsObject(episode)) {
+		const char *ent =
+			memory_json_string(episode, "entities", "");
 		const char *kd =
 			memory_json_string(episode, "key_decisions", "");
 		const char *ar =
 			memory_json_string(episode, "artifacts", "");
 		double imp = memory_json_number(episode, "importance", 0.5);
+		if (out_entities)
+			*out_entities = strdup(ent);
 		if (out_decisions)
 			*out_decisions = strdup(kd);
 		if (out_artifacts)
@@ -2010,7 +2034,7 @@ static char *memory_llm_extract_json(const char *user_input,
 				     const char *tool_names,
 				     int success)
 {
-	struct model *llm = g_memory_llm;
+	struct model *llm = memory_get_llm();
 	struct arena *arena;
 	char *prompt;
 	size_t prompt_cap;
@@ -2073,6 +2097,7 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id,
 				   const char *assistant_output,
 				   const struct react_step *steps,
 				   int success,
+				   char **out_entities,
 				   char **out_decisions,
 				   char **out_artifacts,
 				   double *out_importance)
@@ -2092,8 +2117,8 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id,
 	if (!root)
 		return -EINVAL;
 	rc = memory_apply_llm_envelope(db, session_id, user_input, root,
-				       out_decisions, out_artifacts,
-				       out_importance);
+				       out_entities, out_decisions,
+				       out_artifacts, out_importance);
 	cJSON_Delete(root);
 	return rc;
 }
@@ -2108,6 +2133,7 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 	int worst = 0;
 	int rc;
 	int llm_ran = 0;
+	char *llm_entities = NULL;
 	char *llm_decisions = NULL;
 	char *llm_artifacts = NULL;
 	double llm_importance = 0.5;
@@ -2121,7 +2147,8 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 	if (opts->llm_extract_enabled) {
 		rc = memory_capture_llm_path(db, session_id, user_input,
 					     assistant_output, steps,
-					     success, &llm_decisions,
+					     success, &llm_entities,
+					     &llm_decisions,
 					     &llm_artifacts, &llm_importance);
 		if (rc == 0)
 			llm_ran = 1;
@@ -2138,6 +2165,7 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 	if (opts->cold_path_enabled) {
 		rc = memory_insert_episode(db, session_id, user_input,
 					   assistant_output, steps, success,
+					   llm_ran ? llm_entities : NULL,
 					   llm_ran ? llm_decisions : NULL,
 					   llm_ran ? llm_artifacts : NULL,
 					   llm_ran ? llm_importance : 0.5);
@@ -2145,6 +2173,7 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 			worst = rc;
 	}
 
+	free(llm_entities);
 	free(llm_decisions);
 	free(llm_artifacts);
 	return worst;

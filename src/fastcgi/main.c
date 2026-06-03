@@ -27,6 +27,7 @@
 #include "router.h"
 #include "auth.h"
 #include "util/error.h"
+#include "agent/memory.h"
 
 static int g_listen_fd = -1;
 static struct session_store *g_store = NULL;
@@ -183,6 +184,10 @@ int main(int argc, char **argv) {
 	}
 	for (int i = 0; i < n_workers; i++) pthread_join(threads[i], NULL);
 	free(threads);
+
+	/* Drain in-flight memory consolidation jobs before closing the
+	 * shared SQLite handle they depend on. */
+	memory_async_shutdown();
 
 	session_store_close(g_store);
 	fprintf(stderr, "morph-fastcgi: shutdown clean\n");

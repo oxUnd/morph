@@ -198,10 +198,11 @@ static void *turn_thread(void *arg) {
 				    rctx->final_answer, asst_tokens);
 			session_update_tokens(&j->store->db, sess.id, asst_tokens);
 		}
-		memory_consolidate_turn(&j->store->db, sess.id, j->input,
-					rctx->final_answer, rctx->steps,
-					rctx->state == REACT_STATE_DONE,
-					&mem_opts);
+		memory_consolidate_turn_async(&j->store->db, sess.id,
+					      j->input,
+					      rctx->final_answer, rctx->steps,
+					      rctx->state == REACT_STATE_DONE,
+					      &mem_opts);
 	}
 	events_publish(j->store, j->session_id, "turn_end",
 		       "{\"phase\":\"done\"}");
