@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
-> **文档版本**: v0.4
-> **状态**: Updated — 同步代码实际行为（含 HITL、Guardrail 改版、系统提示重写）
+> **文档版本**: v0.5
+> **状态**: Updated — 同步代码实际行为（v0.3.0），新增 MCP / 记忆 / 子代理 / 可插拔 Guardrail / FastCGI / BPE Tokenizer
 
 ## 0. 术语与缩写
 
@@ -14,6 +14,9 @@
 | Session | 一段连续对话的上下文集合，持久化在 SQLite |
 | Context Window | 单次 LLM 调用送入的 token 总量 |
 | MVP | Minimum Viable Product，M1 里程碑交付物 |
+| MCP | Model Context Protocol，标准化的远程工具/资源/提示词发现协议 |
+| Sub-agent | 可配置的子代理，拥有独立系统提示、模型和工具限制 |
+| Memory | 长期记忆系统，跨会话保留事实、经历和程序性知识 |
 
 ---
 
@@ -31,9 +34,12 @@
 3. **纯 C + 零运行时**：编译即用，内存占用低，启动 < 50ms
 4. **可扩展**：Ext 沙箱机制允许任意语言编写扩展，主进程不被污染
 5. **本地优先**：会话与产物全部本地持久化，离线可回看
+6. **MCP 集成**：通过 Model Context Protocol 接入远程工具生态
+7. **子代理编排**：可配置专用子代理处理特定领域任务
+8. **长期记忆**：跨会话记忆事实、经历和行为模式
 
 ### 1.4 非目标（Non-Goals）
-- 不提供图形界面（GUI / Web UI）
+- 不提供原生 GUI（可选 FastCGI 前端用于 Web API 集成，见 §4.13）
 - 不在端侧运行大模型推理（始终通过 API 调用）
 - 不替代专业剪辑工具（只做生成，不做后期工程）
 - MVP 不支持 Windows 原生（WSL 可用）
@@ -50,6 +56,7 @@
 | 小说/编剧 | 故事线+分镜 | 大纲 → 角色卡 → 分镜图 |
 | 开发者 | 自动化内容流水线 | CLI 管道 → 批量生成 |
 | Ext 开发者 | 扩展 Agent 能力 | manifest + 编译 → 注册 |
+| Web 集成者 | 通过 HTTP API 接入 | FastCGI + nginx 部署 |
 
 ---
 
@@ -96,7 +103,7 @@
 
 | 功能 | 描述 | 优先级 |
 |------|------|--------|
-| Token 计数 | 调用前精确估算，基于模型 tokenizer | P0 |
+| Token 计数 | 调用前精确估算，支持 BPE（CL100K/O200K）+ Unicode-Aware 估算 | P0 |
 | 滑动窗口 | 保留最近 N 轮 + 系统提示 | P0 |
 | 自动摘要 | 超阈值时，对早期历史摘要 | P0 |
 | `/context` 命令 | 查看 token 用量与压缩状态 | P0 |
@@ -127,6 +134,7 @@
 | 图片缩放 | stb_image_resize2 | P0 |
 | 图片格式转换 | stb_image + stb_image_write | P0 |
 | 图片信息查询 | stb_image（尺寸/格式等） | P0 |
+| 图片标注 | 在图片上添加文字/图形标注 | P0 |
 | 图片编辑 | 局部修改、风格迁移 | P1 |
 | 一致性生成 | 同一角色多场景 | P1 |
 | 批量生成 | 一次多变体 | P2 |
@@ -153,14 +161,16 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 | 文图联动 | Thought: 生成文案 → Action: text_gen → Obs: 文案 → Thought: 配图 → Action: img_gen → Final: 文案+配图 |
 | 图视联动 | Thought: 图片变视频 → Action: vid_gen(image) → Final: 视频文件 |
 | 全链路 | Thought: 选题 → Action: text_gen → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
+| 子代理委派 | Thought: 需要专业翻译 → Action: agent_delegate(translate-agent, task) → Obs: 翻译结果 → Final |
 
 ### 4.8 Ext 沙箱系统
 
 | 功能 | 描述 | 优先级 |
 |------|------|--------|
-| 自动发现 | 扫描目录，解析 manifest.toml | P0（裁剪后） |
+| 自动发现 | 扫描目录，解析 manifest.toml | P0 |
 | 注册到 Tool Registry | Ext 即 Tool | P0 |
-| 沙箱执行（seccomp + rlimit） | Linux | P0（裁剪后） |
+| 沙箱执行（seccomp + rlimit） | Linux | P0 |
+| Guardrail Ext | Ext 可作为 Guardrail 规则插件（.so） | P0 |
 | 沙箱执行（sandbox-exec） | macOS | P2（未实现 `sandbox_enter_darwin`） |
 | Ext 启停 | enable / disable | P1 |
 | Ext 安装/卸载 | install / remove（本地路径） | P1 |
@@ -168,6 +178,74 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 | Namespace 隔离（PID/NET） | 强隔离 | P2 |
 
 > **MVP 范围裁剪**：M1 的 Ext 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱推迟到 V0.4。
+
+### 4.9 长期记忆系统
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| 事实记忆（Facts） | 提取用户偏好、项目信息等结构化事实 | P0 |
+| 经历记忆（Episodes） | 记录任务执行过程、工具使用、结果 | P0 |
+| 程序性记忆（Procedures） | 学习重复性行为模式为规则 | P0 |
+| LLM 驱动提取 | 使用 LLM 进行结构化记忆提取 | P0 |
+| 启发式回退 | LLM 不可用时使用锚点启发式提取 | P0 |
+| 异步整合 | 后台线程异步整合记忆，不阻塞主流程 | P0 |
+| 记忆上下文注入 | 构建记忆上下文注入 ReAct 推理 | P0 |
+| `/memory` 命令 | 查看/清除记忆 | P0 |
+| 跨会话持久化 | SQLite 持久化，会话级作用域 | P0 |
+
+### 4.10 MCP（Model Context Protocol）
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| stdio 传输 | fork+exec 子进程，stdin/stdout JSON-RPC | P0 |
+| Streamable HTTP 传输 | libcurl HTTP 连接 | P0 |
+| 工具发现与注册 | tools/list → 自动注册为 morph 工具 | P0 |
+| 资源发现与读取 | resources/list + resources/read | P0 |
+| 提示词发现与获取 | prompts/list + prompts/get | P0 |
+| 多服务器管理 | 最多 32 个 MCP 服务器 | P0 |
+| 自动连接 | 启动时自动连接 + 超时控制 | P0 |
+| `/mcp` 命令 | list/tools/resources/prompts/connect/disconnect | P0 |
+| 延迟连接 | 按需连接（lazy connect） | P0 |
+
+### 4.11 子代理系统
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| 可配置子代理 | 独立系统提示、模型、工具限制 | P0 |
+| 同步调用 | agent_sync：阻塞等待结果 | P0 |
+| 异步委派 | agent_delegate：后台执行 + agent_status 查询 | P0 |
+| 并行扇出 | agent_fanout：多任务并行 + 合并策略 | P0 |
+| 上下文策略 | full / summary / task_only | P0 |
+| 合并策略 | synthesize / concat / raw | P0 |
+| 输出 Schema | 约束子代理输出格式 | P0 |
+| 递归深度限制 | 最大嵌套深度 2 层 | P0 |
+| 追踪日志 | 子代理执行轨迹记录 | P0 |
+
+### 4.12 可插拔 Guardrail 引擎
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| C 函数规则 | 内置 C 函数实现验证逻辑 | P0 |
+| LLM 评估规则 | 使用 LLM 进行主观质量评估 | P0 |
+| Ext 插件规则 | .so 动态库作为验证插件 | P0 |
+| 三个 Hook 点 | input / tool_output / output | P0 |
+| 配置驱动 | 通过 config.toml 注册/启停规则 | P0 |
+| 内置规则 | 自动注册的默认验证规则 | P0 |
+| 失败重试 | Guardrail 失败回灌原因，LLM 重试 | P0 |
+
+### 4.13 FastCGI Web 前端
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| RESTful API | 会话 CRUD + 对话 turns + canvas | P0 |
+| SSE 流式输出 | 实时推送 thought/tool_call/final 等事件 | P0 |
+| SQLite WAL 共享 | CLI 与 FastCGI 共享同一数据库 | P0 |
+| Bearer 认证 | API Key 认证 | P0 |
+| X-Remote-User 认证 | 反向代理信任头认证 | P0 |
+| 可选构建 | `BUILD_FASTCGI=ON` CMake 选项 | P0 |
+| Action 机制 | Web → Agent 命令注入（approve/reject/cancel） | P0 |
+
+> **定位**：FastCGI 前端是可选的 HTTP API 层，用于将 morph agent 集成到 Web 系统。不提供原生 GUI，Web UI 由外部前端实现。
 
 ---
 
@@ -178,7 +256,7 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 ```text
 $ morph
 
-morph v0.1  |  /help 查看命令
+morph v0.3  |  /help 查看命令
 
 [abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
 ⠋ Thinking → 赛博朋克短视频脚本...
@@ -235,7 +313,7 @@ saved 5 messages
 | Thought 流式预览 | Spinner submessage 滚动显示最近 token | 超长自动滚动，最多 80 列可见 |
 | 耗时 | 阶段完成后显示 `(Ns)` 或 `(Nm Ns)` | 紧跟状态前缀 |
 | Guardrail | 直接打印 `[Guardrail]` 标签行 | 粗体青色 |
-| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 | 颜色 / 粗体 / 代码块；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
+| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 + 代码高亮 + LaTeX Unicode | 颜色 / 粗体 / 代码块 / 语法高亮 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
 | 图片 | 终端协议优先级：**kitty > iterm2 > sixel > 文件路径回退** | 自动探测 |
 | 视频 | fork+exec mpv | 失败回退到打印路径 |
 | 链接 | OSC 8 超链接 | 不支持时降级为纯 URL |
@@ -250,8 +328,8 @@ saved 5 messages
 | `/quit` | `/q` | 退出 | `/q` |
 | `/help [cmd]` | `/h` | 帮助 | `/h ext` |
 | `/new [name]` | `/n` | 新建会话 | `/n 项目A` |
-| `/switch <name\|id\|display_id>` | `/s` | 切换会话 | `/s abc1` |
-| `/list` | `/ls` | 会话列表（含 display_id） | — |
+| `/switch <name\|id\|display_id>` | `/s` | 切换会话（支持 `^N` 索引） | `/s abc1` |
+| `/list [filter] [--all]` | `/ls` | 会话列表（含 display_id，支持过滤） | `/ls --all` |
 | `/rename <new>` | `/rn` | 重命名当前会话 | `/rn 项目B` |
 | `/delete <name\|id>` | `/del` | 删除会话 | `/del 3` |
 | `/history [n\|--all]` | `/hi` | 当前会话最近 n 条 | `/hi --all` |
@@ -263,20 +341,30 @@ saved 5 messages
 | `/export <fmt>` | — | `/save` 别名 | — |
 | `/config` | `/cfg` | 查看当前配置 | — |
 | `/image <path>` | `/img` | 注入图片 | `/img ./photo.jpg` |
-| `/video <path>` | `/vid` | 注入视频（M3） | `/vid ./clip.mp4` |
+| `/video <path>` | `/vid` | 注入视频 | `/vid ./clip.mp4` |
 | `/ext list` | `/x list` | 已注册工具列表 | — |
 | `/ext info <name>` | — | 工具详情 | `/ext info text_gen` |
-| `/ext install <path>` | — | 本地路径安装（M4） | — |
-| `/ext enable <name>` | — | 启用（M4） | — |
-| `/ext disable <name>` | — | 禁用（M4） | — |
-| `/ext remove <name>` | — | 卸载（M4） | — |
+| `/ext install <path>` | — | 本地路径安装（stub） | — |
+| `/ext enable <name>` | — | 启用（stub） | — |
+| `/ext disable <name>` | — | 禁用（stub） | — |
+| `/ext remove <name>` | — | 卸载（stub） | — |
 | `/skill list` | `/sk list` | 已发现 Skill 列表 | — |
 | `/skill info <name>` | — | Skill 详情 | `/skill info code-review` |
 | `/skill activate <name>` | — | 激活 Skill | `/skill activate code-review` |
 | `/skill deactivate <name>` | — | 停用 Skill | `/skill deactivate code-review` |
 | `/render <path>` | `/r` | 渲染文件（图片/视频/Markdown） | `/r output.png` |
+| `/mcp list` | — | 已配置 MCP 服务器列表 | — |
+| `/mcp tools <server>` | — | 服务器提供的工具 | — |
+| `/mcp resources <server>` | — | 服务器提供的资源 | — |
+| `/mcp prompts <server>` | — | 服务器提供的提示词 | — |
+| `/mcp connect <server>` | — | 连接 MCP 服务器 | — |
+| `/mcp disconnect <server>` | — | 断开 MCP 服务器 | — |
+| `/memory show` | `/mem show` | 查看当前会话记忆 | — |
+| `/memory clear [scope]` | `/mem clear` | 清除记忆（all/facts/episodes/procedures） | `/mem clear facts` |
+| `/clear` | `/cl` | 清屏 | — |
 
 > **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
+> **stub 标注**：`/ext install/enable/disable/remove` 当前为 stub 实现，打印 "not yet implemented"。
 
 ---
 
@@ -287,6 +375,7 @@ saved 5 messages
 ```
 ┌─────────────────────────────────────────────┐
 │  CLI 交互层（readline + ANSI + 终端图像）    │
+│  FastCGI 前端（可选，RESTful + SSE）         │
 └────────────────┬────────────────────────────┘
                  │
 ┌────────────────▼────────────────────────────┐
@@ -294,11 +383,19 @@ saved 5 messages
 │  ┌──────────────────────────────────────┐   │
 │  │ LLM 推理（Thought/Action/Obs/Final）│   │
 │  ├──────────────────────────────────────┤   │
-│  │ Tool Registry（内置 + Ext）        │   │
+│  │ Tool Registry（内置 + Ext + MCP）   │   │
 │  ├──────────────────────────────────────┤   │
-│  │ Ext Sandbox（seccomp/rlimit/ns）  │   │
+│  │ Sub-agent 子代理编排                 │   │
+│  ├──────────────────────────────────────┤   │
+│  │ Guardrail 可插拔规则引擎            │   │
 │  ├──────────────────────────────────────┤   │
 │  │ Context Manager（token/压缩/摘要）  │   │
+│  ├──────────────────────────────────────┤   │
+│  │ Memory（事实/经历/程序性记忆）       │   │
+│  ├──────────────────────────────────────┤   │
+│  │ Plan（多步计划管理）                 │   │
+│  ├──────────────────────────────────────┤   │
+│  │ Ext Sandbox（seccomp/rlimit/ns）  │   │
 │  └──────────────────────────────────────┘   │
 └────────────────┬────────────────────────────┘
                  │
@@ -329,9 +426,9 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 
 1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
 2. 步数达到 `max_iterations`（默认 10，可配置） → 返回最后一次 Observation 并标记 `aborted`
-3. 单步耗时超过 `step_timeout_seconds`（默认 300s） → 中断该工具调用，生成失败 Observation 回灌
+3. 单步耗时超过 `step_timeout_seconds`（默认 330s） → 中断该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
-5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由客观条件验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
+5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
 
 #### 6.2.3 工具失败处理
 
@@ -349,6 +446,7 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 2. `system_prompt` 自定义扩展（来自配置 `system_prompt_file` + `system_prompt_dir`）
 3. 已发现 Skill 目录
 4. 已激活 Skill 的完整指令内容
+5. 记忆上下文（`memory_context`，来自 Memory 子系统）
 
 ```
 You are Morph, an autonomous creative director and visual production system.
@@ -386,9 +484,12 @@ LLM 调用前:
 | JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
 | TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
 | Markdown | md4c v0.5.3 | ✓ | CMake FetchContent 拉取，非 vendor/ 嵌入 |
+| 代码高亮 | 自实现 ANSI 语法高亮 | ✓ | `src/render/highlight.c` |
+| LaTeX 渲染 | 自实现 LaTeX→Unicode | ✓ | `src/render/latex_unicode.c` |
 | 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
 | 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
-| Token 计数 | 自实现 Unicode-Aware 估算（tokenizer.c） | ✓ | BPE 推迟到 P2 |
+| Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
+| UTF-8 | sheredom/utf8.h + 项目扩展 | ✓ | vendored header-only + `src/util/utf8.c` |
 | 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需 libuv |
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
@@ -397,6 +498,8 @@ LLM 调用前:
 | 视频播放 | fork+exec `mpv`（系统二进制） | ✓ | 用户指定 |
 | 抽帧（可选） | ffmpeg（系统二进制） | 可选 | 视频理解本地 fallback |
 | 日志 | 自实现（stderr + rotating file） | ✓ | 见 §9 |
+| MCP 协议 | 自实现 JSON-RPC（stdio + HTTP） | ✓ | 协议版本 2025-06-18 |
+| FastCGI | libfcgi（可选构建） | 可选 | `BUILD_FASTCGI=ON` |
 
 ### 6.5 模型/API 接入策略
 
@@ -405,8 +508,8 @@ LLM 调用前:
 | 文字对话 | OpenAI GPT-4o / Claude 3.5 / DeepSeek / Volcengine | 多模型可切 |
 | 文生图 | DALL-E 3 / Volcengine Seedream / Stable Diffusion API | — |
 | 图片理解 | GPT-4o Vision / Claude Vision | — |
-| 文生视频 | 可灵 / 即梦 / Runway / Volcengine | 国内优先 |
-| 图生视频 | 可灵 / 即梦 / Pika / Volcengine | 国内优先 |
+| 文生视频 | Volcengine / 可灵 / 即梦 / Runway | 国内优先 |
+| 图生视频 | Volcengine / 可灵 / 即梦 / Pika | 国内优先 |
 | 视频理解 | GPT-4o / Gemini + 本地 ffmpeg 抽帧 | 双路 |
 
 ### 6.6 数据持久化（SQLite Schema）
@@ -470,9 +573,60 @@ CREATE TABLE outputs (
 	created_at INTEGER NOT NULL
 );
 
+CREATE TABLE memory_profiles (
+	session_id  INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+	profile_text TEXT,
+	updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE memory_facts (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	key_name    TEXT NOT NULL,
+	value_text  TEXT NOT NULL,
+	source_text TEXT,
+	confidence  REAL DEFAULT 1.0,
+	category    TEXT,
+	importance  REAL DEFAULT 0.5,
+	is_current  INTEGER DEFAULT 1,
+	valid_from  INTEGER,
+	valid_to    INTEGER,
+	superseded_by INTEGER,
+	created_at  INTEGER NOT NULL,
+	updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE memory_episodes (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	task_type    TEXT,
+	summary_text TEXT NOT NULL,
+	outcome_text TEXT,
+	success      INTEGER,
+	entities     TEXT,
+	key_decisions TEXT,
+	artifacts    TEXT,
+	tools_used   TEXT,
+	importance   REAL DEFAULT 0.5,
+	created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE memory_procedures (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	rule_text    TEXT NOT NULL,
+	trigger_text TEXT,
+	evidence_count INTEGER DEFAULT 1,
+	updated_at   INTEGER NOT NULL,
+	UNIQUE(session_id, rule_text)
+);
+
 CREATE INDEX idx_messages_session  ON messages(session_id, created_at);
 CREATE INDEX idx_traces_session    ON react_traces(session_id, round_no);
 CREATE INDEX idx_outputs_session   ON outputs(session_id, created_at);
+CREATE INDEX idx_memory_facts_session_key ON memory_facts(session_id, key_name);
+CREATE INDEX idx_memory_episodes_session  ON memory_episodes(session_id, created_at);
+CREATE INDEX idx_memory_procedures_session ON memory_procedures(session_id);
 ```
 
 ### 6.7 配置文件 Schema
@@ -493,7 +647,7 @@ api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 context_limit = 128000
 max_tokens = 4096
-timeout_seconds = 60
+timeout_seconds = 300
 
 [model.image]
 provider = "openai"
@@ -501,20 +655,45 @@ model = "dall-e-3"
 api_key_env = "OPENAI_API_KEY"
 
 [model.video]
-provider = "kling"
-model = "kling-1.5"
-api_key_env = "KLING_API_KEY"
+provider = "volcengine"
+model = "doubao-seedream"
+api_key_env = "VOLCENGINE_API_KEY"
 poll_interval_seconds = 5
 poll_timeout_seconds = 600
 
 [react]
 max_iterations = 10
-step_timeout_seconds = 300
+step_timeout_seconds = 330
 tool_max_retries = 3
-guardrail_enabled = false
-guardrail_max_retries = 2
+guardrail_enabled = true
+guardrail_max_retries = 1
 guardrail_max_empty_rounds = 2
 disabled_tools = []
+
+# Guardrail 规则配置
+guardrail_disabled_rules = []
+guardrail_llm_model = ""
+
+# Guardrail LLM 评估规则
+# [[react.guardrail_llm_rules]]
+# name = "quality-check"
+# hook = "output"
+# description = "Check output quality"
+# action_text = "Improve the output quality"
+
+# Guardrail Ext 插件规则
+# [[react.guardrail_ext_rules]]
+# name = "pii-check"
+# hook = "output"
+# ext_type = "so"
+# ext_entry = "pii_check.so"
+# action_text = "Remove PII from output"
+
+# bash_exec 配置
+bash_exec_enabled = true
+bash_exec_default_timeout = 30
+bash_exec_allowed_commands = []
+bash_exec_allowed_cwds = []
 
 # Human-in-the-Loop (HITL)
 hitl_enabled = false
@@ -525,6 +704,16 @@ hitl_auto_approve_readonly = true
 summarize_threshold_ratio = 0.8
 compress_target_ratio = 0.5
 keep_recent_rounds = 6
+
+[memory]
+enabled = true
+hot_path_enabled = true
+cold_path_enabled = true
+llm_extract_enabled = true
+max_facts = 100
+max_episodes = 50
+max_procedures = 30
+max_context_chars = 4000
 
 [render]
 prefer_image_protocol = "auto"
@@ -541,16 +730,45 @@ system_prompt_dir = ""
 dir = "~/.morph/exts"
 default_max_memory_mb = 128
 default_max_cpu_seconds = 30
+
+# MCP 服务器配置
+# [[mcp.servers]]
+# name = "my-server"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@my/mcp-server"]
+# env = { "API_KEY" = "my-key" }
+# auto_connect = true
+# connect_timeout = 10
+
+# [[mcp.servers]]
+# name = "remote-server"
+# transport = "http"
+# url = "https://mcp.example.com"
+# auth_token_env = "MCP_AUTH_TOKEN"
+# auto_connect = true
+# connect_timeout = 15
+
+# 子代理配置
+# [[agent.sub_agents]]
+# name = "translate-agent"
+# description = "Specialized translation sub-agent"
+# system_prompt_file = "~/.morph/prompts/translate.md"
+# model = "gpt-4o"
+# max_iterations = 5
+# allowed_tools = ["text_gen", "text_qa"]
+# disabled_tools = []
+# context_policy = "task_only"
+# merge_strategy = "raw"
+# output_schema = ""
 ```
 
-> **与旧版差异**：
-> - 新增 `[model.text]` 的 `max_tokens` 字段
-> - `step_timeout_seconds` 默认值由 60 改为 300
-> - `guardrail_max_retries` 默认值由 1 改为 2
-> - 移除 `guardrail_min_tool_calls`、`guardrail_must_have_output`（改为 Guardrail 内部基于工具执行结果的客观判断）
-> - 新增 HITL 配置项：`hitl_enabled`、`hitl_tools`、`hitl_auto_approve_readonly`
-> - `render.mpv_args` 由数组改为字符串
-> - `summarize_threshold_ratio` / `compress_target_ratio` 实际为浮点数
+> **默认值说明**：
+> - `step_timeout_seconds` 默认 330（含 LLM 调用 + 工具执行）
+> - `guardrail_enabled` 默认 true
+> - `guardrail_max_retries` 默认 1
+> - `timeout_seconds`（text model）默认 300
+> - video provider 默认 volcengine
 
 **API Key 解析优先级**：CLI flag > 环境变量（`api_key_env`）> 配置中 `api_key`（明文，**不推荐**，CLI 启动时警告）。系统 keyring（macOS Keychain / Linux libsecret）计划为 P1。
 
@@ -568,10 +786,19 @@ morph/
 │   │   ├── manifest.toml
 │   │   ├── upper.c
 │   │   └── README.md
-│   └── demo-translate/
+│   ├── demo-translate/
+│   │   ├── manifest.toml
+│   │   ├── translate.sh
+│   │   └── README.md
+│   ├── demo-guardrail-pii/
+│   │   ├── manifest.toml
+│   │   ├── pii_check.c
+│   │   └── README.md
+│   └── web-fetch/
 │       ├── manifest.toml
-│       ├── translate.sh
-│       └── README.md
+│       ├── web-fetch.ts
+│       ├── web-fetch.sh
+│       └── package.json
 ├── skills/
 │   └── code-review/
 │       └── SKILL.md
@@ -591,6 +818,10 @@ morph/
 │   │   ├── CMakeLists.txt
 │   │   ├── markdown.c
 │   │   ├── markdown.h
+│   │   ├── highlight.c
+│   │   ├── highlight.h
+│   │   ├── latex_unicode.c
+│   │   ├── latex_unicode.h
 │   │   ├── image.c
 │   │   ├── image.h
 │   │   ├── video.c
@@ -607,6 +838,16 @@ morph/
 │   │   ├── tokenizer.h
 │   │   ├── tool.c
 │   │   ├── tool.h
+│   │   ├── tool_context.c
+│   │   ├── tool_context.h
+│   │   ├── guardrail.c
+│   │   ├── guardrail.h
+│   │   ├── plan.c
+│   │   ├── plan.h
+│   │   ├── memory.c
+│   │   ├── memory.h
+│   │   ├── sub_agent.c
+│   │   ├── sub_agent.h
 │   │   ├── system_prompt.h
 │   │   └── tools/
 │   │       ├── CMakeLists.txt
@@ -624,6 +865,8 @@ morph/
 │   │       ├── img_resize.h
 │   │       ├── img_convert.c
 │   │       ├── img_convert.h
+│   │       ├── img_annotate.c
+│   │       ├── img_annotate.h
 │   │       ├── vid_gen.c
 │   │       ├── vid_gen.h
 │   │       ├── file_read.c
@@ -635,7 +878,13 @@ morph/
 │   │       ├── bash_exec.c
 │   │       ├── bash_exec.h
 │   │       ├── skill_activate.c
-│   │       └── skill_activate.h
+│   │       ├── skill_activate.h
+│   │       ├── plan.c
+│   │       ├── plan.h
+│   │       ├── ask_user.c
+│   │       ├── ask_user.h
+│   │       ├── sub_agent_tools.c
+│   │       └── sub_agent_tools.h
 │   ├── skill/
 │   │   ├── CMakeLists.txt
 │   │   ├── skill.c
@@ -658,6 +907,12 @@ morph/
 │   │   ├── CMakeLists.txt
 │   │   ├── jsonrpc.c
 │   │   └── jsonrpc.h
+│   ├── mcp/
+│   │   ├── CMakeLists.txt
+│   │   ├── mcp.h
+│   │   ├── mcp_client.c
+│   │   ├── mcp_http.c
+│   │   └── mcp_stdio.c
 │   ├── models/
 │   │   ├── CMakeLists.txt
 │   │   ├── llm.c
@@ -676,6 +931,32 @@ morph/
 │   │   ├── CMakeLists.txt
 │   │   ├── database.c
 │   │   └── database.h
+│   ├── fastcgi/
+│   │   ├── CMakeLists.txt
+│   │   ├── README.md
+│   │   ├── PATCHES.md
+│   │   ├── main.c
+│   │   ├── router.c
+│   │   ├── router.h
+│   │   ├── session_store.c
+│   │   ├── session_store.h
+│   │   ├── auth.c
+│   │   ├── auth.h
+│   │   ├── fcgi_io.c
+│   │   ├── fcgi_io.h
+│   │   ├── event_sink.c
+│   │   ├── event_sink.h
+│   │   ├── action_pump.c
+│   │   ├── action_pump.h
+│   │   ├── agent_bridge.c
+│   │   └── handlers/
+│   │       ├── handlers.h
+│   │       ├── health.c
+│   │       ├── sessions.c
+│   │       ├── turns.c
+│   │       ├── canvas.c
+│   │       ├── actions.c
+│   │       └── events.c
 │   └── util/
 │       ├── CMakeLists.txt
 │       ├── arena.c
@@ -691,7 +972,11 @@ morph/
 │       ├── base64.c
 │       ├── base64.h
 │       ├── image_util.c
-│       └── image_util.h
+│       ├── image_util.h
+│       ├── error.c
+│       ├── error.h
+│       ├── bpe.c
+│       └── bpe.h
 ├── vendor/
 │   ├── cJSON.c
 │   ├── cJSON.h
@@ -699,7 +984,11 @@ morph/
 │   ├── toml.h
 │   ├── stb_image.h
 │   ├── stb_image_write.h
-│   └── stb_image_resize2.h
+│   ├── stb_image_resize2.h
+│   ├── sheredom_utf8.h
+│   └── tiktoken/
+│       ├── cl100k_base.tiktoken
+│       └── o200k_base.tiktoken
 └── tests/
     ├── CMakeLists.txt
     ├── test_arena.cpp
@@ -722,22 +1011,15 @@ morph/
     ├── test_skill.cpp
     ├── test_bash_exec.cpp
     ├── test_render.cpp
+    ├── test_memory.cpp
+    ├── test_mcp.cpp
+    ├── test_ask_user.cpp
+    ├── test_sandbox.cpp
+    ├── test_tool_context.cpp
+    ├── test_sub_agent.cpp
+    ├── systest.sh
     └── test_ext_demo.c
 ```
-
-> **与旧版差异说明**：
-> - `cmake/FindModules/` 已移除（未使用）
-> - `vendor/md4c.c` / `vendor/md4c.h` 已移除——md4c 由 CMake FetchContent 拉取（v0.5.3），不在 vendor/ 中
-> - `vendor/base64.h` 已移除——base64 实现在 `src/util/base64.c/.h`
-> - `config.example.toml` 重命名为 `config.toml.example`
-> - 新增 `src/vendor_toml_compat.h`（抑制 vendored toml.c 编译警告）
-> - 新增 `src/agent/system_prompt.h`（系统提示模板）
-> - 新增 `exts/` 目录含两个 demo Ext
-> - 新增 `skills/` 目录含 code-review 示例
-> - 新增 `misc/` 辅助文件目录
-> - 新增 `AGENTS.md`（Agent 开发指南）
-> - 新增 `test_render.cpp`、`test_ext_demo.c`（未纳入 CMake 构建）
-> - 无 `vid_qa` 工具实现（原列表中的 P1 项）
 
 ### 6.9 关键接口设计
 
@@ -748,7 +1030,7 @@ morph/
 **设计要点**：
 - Bump-pointer 分配，内存零初始化（`memset`），对齐至 `sizeof(void *)`
 - 单个 Arena 由带头链表的 region 组成；当前 region 不够时自动链入新 region（同容量或按需扩容）
-- 默认 region 大小 64KB（`ARENA_DEFAULT_SIZE`），可按需指定
+- 默认 region 大小 64KB（内部常量），可按需指定
 - 生命周期：scope 级创建（`arena_create`），scope 退出时整体销毁（`arena_destroy`）；无需逐个释放
 - `arena_reset` 释放溢出 region 并重置主 region，允许复用同一 arena 实例
 - 所有核心结构体（`react_context`、`chat_response` 等）持有 `struct arena *`，内部字符串与动态数据均从 arena 分配
@@ -756,8 +1038,6 @@ morph/
 **与 `xmalloc`/`xfree` 的关系**：仅 arena 内部的 region 创建/销毁使用 `malloc`/`free`；业务代码全部通过 `arena_alloc`/`arena_strdup` 分配，禁止业务层直接调用 `malloc`/`free`。
 
 ```c
-#define ARENA_DEFAULT_SIZE (64 * 1024)
-
 struct arena {
 	char *buf;		/* 当前 region 缓冲区 */
 	size_t cap;		/* 当前 region 容量 */
@@ -810,27 +1090,6 @@ struct react_step {
 	struct react_step *next;
 };
 
-/* Guardrail 验证结果 */
-enum guardrail_verdict {
-	GUARDRAIL_PASS,
-	GUARDRAIL_FAIL_TOOLS_ALL_FAILED,	/* 所有工具调用均失败 */
-	GUARDRAIL_FAIL_CREATIVE_NO_MEDIA,	/* 创意工具调用但无输出文件 */
-	GUARDRAIL_FAIL_EMPTY_ANSWER,		/* 空回答 */
-	GUARDRAIL_FAIL_CONSECUTIVE_EMPTY,	/* 连续空回答 */
-};
-
-struct guardrail_result {
-	enum guardrail_verdict verdict;
-	char reason[512];
-};
-
-/* Guardrail 配置 */
-struct guardrail_config {
-	int enabled;
-	int max_retries;
-	int max_empty_rounds;		/* 连续空回答上限 */
-};
-
 /* Human-in-the-Loop (HITL) 审批机制 */
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
@@ -857,6 +1116,15 @@ struct hitl_config {
 	int auto_approved_count;
 };
 
+/* FastCGI Action 机制 */
+struct react_action {
+	const char *type;          /* "approve" | "reject" | "cancel" | "prompt" */
+	const char *payload_json;
+};
+
+typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
+				     int timeout_sec);
+
 /* ReAct 循环上下文 */
 struct react_context {
 	struct react_step *steps;
@@ -866,7 +1134,9 @@ struct react_context {
 	int tool_max_retries;
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;
-	struct hitl_config hitl;		/* HITL 审批配置 */
+	struct hitl_config hitl;
+	ask_user_callback_fn ask_user_fn;
+	void *ask_user_data;
 	struct tool_registry *tools;
 	struct message_list *messages;
 	struct tokenizer *tokenizer;
@@ -874,17 +1144,28 @@ struct react_context {
 	void *llm_model;		/* struct model *（不透明指针） */
 	char *final_answer;
 	enum react_state state;
-	char tool_fail_name[64];
-	char tool_fail_args[512];
+	char *tool_fail_name;
+	char *tool_fail_args;
 	int tool_fail_count;
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;
 	struct arena *arena;
+	struct arena *session;		/* 会话级 arena（跨轮次持久） */
 	char *system_prompt;
+	char *memory_context;		/* 记忆上下文注入 */
 	struct skill_registry *skills;
+	char *workdir;
+	react_action_drain_fn action_drain_fn;
+	void *action_drain_user_data;
+	int sub_agent_depth;		/* 子代理嵌套深度 */
+	struct {
+		char name[64];
+		char description[256];
+	} *sub_agent_info;
+	int sub_agent_info_count;
 };
 
-/* ReAct 输出回调（替代旧 sse_callback，用于 CLI Spinner 驱动） */
+/* ReAct 输出回调（用于 CLI Spinner 驱动） */
 typedef int (*react_output_cb)(enum react_step_type type,
 			       const char *content, void *user_data);
 
@@ -894,6 +1175,14 @@ struct react_context *react_context_create(struct tool_registry *tools,
 					   struct compress_config *cfg,
 					   struct guardrail_config *gcfg);
 void react_context_destroy(struct react_context *ctx);
+void react_reset(struct react_context *ctx);
+
+/* FastCGI 会话工厂 */
+struct session_store;
+struct react_context *
+react_context_create_for_session(struct session_store *store,
+				 const char *session_id,
+				 const char *user_id);
 
 /* ReAct 循环执行 */
 int react_run(struct react_context *ctx, const char *user_input,
@@ -901,10 +1190,20 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 /* 取消当前 ReAct 循环（Ctrl-C 触发） */
 void react_cancel(struct react_context *ctx);
+void react_cancel_active(void);
 extern volatile sig_atomic_t react_sigint_flag;
 
-/* 重置当前轮次轨迹 */
-void react_reset(struct react_context *ctx);
+/* 记忆上下文 */
+int react_set_memory_context(struct react_context *ctx, const char *memory_context);
+
+/* 活跃 ReAct 实例管理（子代理支持） */
+int react_active_count(void);
+void react_active_push(struct react_context *ctx);
+void react_active_pop(struct react_context *ctx);
+
+/* Action 机制（FastCGI 集成） */
+int react_set_action_drain(struct react_context *ctx,
+			   react_action_drain_fn fn, void *user);
 
 /* HITL 辅助函数 */
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
@@ -921,8 +1220,6 @@ void react_step_destroy(struct react_step *step);
 const char *react_step_type_name(enum react_step_type type);
 const char *react_state_name(enum react_state state);
 ```
-
-> **与旧版差异**：Guardrail `verdict` 枚举值已从 `FAIL_NO_TOOLS`/`FAIL_NO_OUTPUT` 改为 `FAIL_TOOLS_ALL_FAILED`/`FAIL_CREATIVE_NO_MEDIA`（更精确描述失败场景）。`guardrail_config` 移除 `min_tool_calls` 与 `must_have_output`（改为 Guardrail 内部基于工具执行结果的客观判断）。新增 `hitl_config`（Human-in-the-Loop 审批机制）。新增 `react_context_create`/`destroy`（替代直接 calloc）。
 
 #### 6.9.2 工具系统
 
@@ -942,11 +1239,13 @@ struct tool_desc {
 };
 
 typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
+typedef void (*tool_user_data_destroy_fn)(void *user_data);
 
 struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	void *user_data;
+	tool_user_data_destroy_fn user_data_destroy;
 	unsigned int flags;		/* TOOL_FLAG_READONLY 等 */
 };
 
@@ -960,7 +1259,8 @@ struct tool_registry {
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 int tool_register(struct tool_registry *reg, const char *name, const char *desc,
-		  const char *args_spec, tool_exec_fn exec, void *user_data);
+		  const char *args_spec, tool_exec_fn exec, void *user_data,
+		  tool_user_data_destroy_fn user_data_destroy);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, char **result_json);
@@ -969,8 +1269,6 @@ int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);
 int tool_is_readonly(struct tool_registry *reg, const char *name);
 ```
-
-> **与旧版差异**：`tool_desc` 字段由 `const char *` 改为固定大小 `char[]` 数组。新增 `flags` 字段（`TOOL_FLAG_READONLY` 标记只读工具，用于 HITL 自动批准）。新增 `tool_registry_init`/`cleanup`、`tool_entry_cleanup_user_data`、`tool_is_readonly`。
 
 #### 6.9.3 模型接口
 
@@ -1036,8 +1334,6 @@ void chat_message_cleanup(struct chat_message *msg, struct arena *arena);
 void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 ```
 
-> **与旧版差异**：新增 `max_tokens` 字段。`timeout_seconds` 类型由 `int` 改为 `long`。`chat` 签名增加 `struct arena *` 参数和 `system_prompt`。新增 `chat_with_tools` 函数指针（Function Calling 接口，接收 `chat_message` 结构体和 `tool_desc` 数组，返回 `chat_response` 含 `tool_calls`）。新增 `chat_response`（含 `arena` 用于批量释放）、`chat_message`（含 `tool_call_id`/`tool_calls`）、`tool_call` 结构体。新增 `model_llm_create`/`model_destroy`/`chat_response_free`/`chat_message_cleanup`/`tool_call_cleanup` 辅助函数。
-
 #### 6.9.4 内置工具列表
 
 | 工具名 | 功能 | 参数 | 对应模型 | 类型 | 只读 |
@@ -1049,31 +1345,29 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 | 否 |
 | img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 | 否 |
 | img_info | 图片信息 | file_path | stb_image | 内置 | 是 |
-| vid_gen | 视频生成 | prompt, image_path?, duration, style | 可灵 / 即梦 / Volcengine | 内置 | 否 |
+| img_annotate | 图片标注 | file_path, annotations | 本地 | 内置 | 否 |
+| vid_gen | 视频生成 | prompt, image_path?, duration, style | Volcengine / 可灵 / 即梦 | 内置 | 否 |
 | file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 | 是 |
 | file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
 | file_info | 文件元数据 | path | 本地 | 内置 | 是 |
 | bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
 | plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
 | ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
-| agent_status | 查询子任务状态 | task_id | 本地 | 子代理 | 是 |
 | skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
-| translate | 文本翻译 | text, target_lang | LLM | Ext |
-| upper | 文本转大写 | text | 本地 | Ext |
-| ... | 社区/自定义 Ext | 按 manifest 定义 | 按定义 | Ext |
-
-> **与旧版差异**：移除 `vid_qa`（未实现，仍为 P1 计划项）。新增「只读」列（`TOOL_FLAG_READONLY` 标记，用于 HITL 自动批准）。`img_gen` 新增 `reference_image` 参数（风格/视觉一致性）。Ext 示例增加 `upper`（demo-upper）。
+| agent_delegate | 异步委派子代理任务 | agent_name, task | 本地 | 子代理 | 否 |
+| agent_status | 查询子任务状态 | task_id | 本地 | 子代理 | 是 |
+| agent_sync | 同步调用子代理 | agent_name, task | 本地 | 子代理 | 否 |
+| agent_fanout | 并行扇出子代理任务 | agent_name, tasks, merge | 本地 | 子代理 | 否 |
+| translate | 文本翻译 | text, target_lang | LLM | Ext | — |
+| upper | 文本转大写 | text | 本地 | Ext | — |
+| ... | 社区/自定义 Ext + MCP 远程工具 | 按 manifest/API 定义 | 按定义 | Ext/MCP | — |
 
 #### 6.9.5 上下文压缩
 
+上下文相关结构体定义在 `context.h`，压缩函数在 `compress.h`。
+
 ```c
 typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
-
-enum compress_policy {
-	COMPRESS_SLIDING_WINDOW,
-	COMPRESS_SUMMARIZE,
-	COMPRESS_REACT_TRACE,
-};
 
 struct compress_config {
 	int max_context_tokens;
@@ -1100,10 +1394,13 @@ struct key_info {
 	struct key_info *next;
 };
 
+struct bpe_encoder;
+
 struct tokenizer {
 	char model_name[64];
 	int context_limit;
 	int (*count)(const char *text);
+	struct bpe_encoder *encoder;	/* BPE 编码器（可选） */
 };
 
 struct compress_result {
@@ -1115,10 +1412,19 @@ struct compress_result {
 	struct key_info *preserved;
 };
 
+/* 消息链表辅助 */
+struct message_list *msg_list_create(struct arena *session, const char *role,
+				      const char *content, int token_count);
+void msg_list_append(struct message_list **head, struct message_list *msg);
+void msg_list_destroy(struct message_list *head);
+int msg_list_count(struct message_list *head);
+
+/* 上下文管理 */
 int context_token_count(struct message_list *head, struct tokenizer *tok);
 int context_needs_compress(struct message_list *head, struct tokenizer *tok,
 			   struct compress_config *cfg);
 
+/* 压缩策略 */
 int compress_sliding_window(struct message_list **head, int keep_rounds,
 			    struct compress_result *result);
 int compress_react_trace(struct message_list **head,
@@ -1128,10 +1434,9 @@ struct key_info *extract_key_info(struct message_list *head);
 void key_info_free(struct key_info *head);
 int compress_summarize(struct message_list **head, int keep_rounds,
 		       summarize_fn fn, void *fn_user,
+		       struct arena *session,
 		       struct compress_result *result);
 ```
-
-> **与旧版差异**：`compress_config` 中 `summarize_threshold_ratio` / `compress_target_ratio` 类型由 `int` 改为 `double`。新增 `summarize` 函数指针和 `summarize_user_data`（摘要由调用方注入，react.c 中使用 LLM 实现）。`compress_summarize` 签名由 `struct model *llm` 改为 `summarize_fn fn + void *fn_user`。移除 `compress_recursive()`（未实现，P2）。移除 `compress_system_prompt()`（未实现，P1）。新增 `compress_detect_react_cycles()`（标记循环模式消息供后续移除）。新增 `key_info_free()`。`message_list`（原 `message`）字段 `role`/`content` 改为 `char *`。
 
 #### 6.9.6 Ext 系统
 
@@ -1139,15 +1444,24 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 |------|------|---------|---------|
 | 原生 Ext | `ext.so` | dlopen 加载，隔离线程执行 | seccomp-bpf 限制系统调用 |
 | 外部 Ext | `ext`（可执行） | fork+execvp，子进程执行 | namespace+seccomp+rlimit 全隔离 |
+| Guardrail Ext | `ext.so` | dlopen 加载，Guardrail 规则回调 | 同原生 Ext |
 
 ```c
+enum ext_purpose {
+	EXT_PURPOSE_TOOL      = 0,
+	EXT_PURPOSE_GUARDRAIL = 1,
+};
+
 struct ext_manifest {
 	char name[64];
 	char version[32];
 	char description[256];
 	char author[64];
 	char type[16];			/* "so" 或 "exec" */
+	enum ext_purpose purpose;
 	char entry[128];		/* exec 可执行文件名; so 符号名 */
+	char hook[32];			/* Guardrail hook 点 */
+	char action_text[512];		/* Guardrail 失败时的修正指导 */
 	unsigned int permissions;
 	char **allowed_paths;
 	int allowed_paths_count;
@@ -1155,16 +1469,17 @@ struct ext_manifest {
 	int allowed_env_count;
 	int max_memory_mb;
 	int max_cpu_seconds;
+	int max_open_files;
 	char *args_schema;
 	char *output_schema;
 };
 
 struct ext {
 	struct ext_manifest manifest;
-	char path[512];
+	char path[PATH_MAX];
 	void *dl_handle;		/* dlopen 句柄（.so 类型） */
 	int (*run)(const char *args_json, char **result_json);
-	char exec_path[512];		/* exec 类型子进程路径 */
+	char exec_path[PATH_MAX];	/* exec 类型子进程路径 */
 	struct tool_desc tool_desc;	/* 注册到 Tool Registry */
 	int enabled;
 };
@@ -1172,9 +1487,8 @@ struct ext {
 int ext_load(struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
 int ext_run(struct ext *ex, const char *args_json, char **result_json);
+void ext_user_data_destroy(void *user_data);
 ```
-
-> **与旧版差异**：`ext_manifest` 各字段由 `char *` 改为固定大小 `char[]`（`type[16]`、`entry[128]`、`author[64]`）。`ext` 结构 `path`/`exec_path` 改为 `char[512]`。
 
 #### 6.9.7 Ext ↔ 主进程 IPC
 
@@ -1239,17 +1553,25 @@ struct sandbox_config {
 	unsigned int permissions;
 	char **allowed_paths;
 	int allowed_paths_count;
+	char **allowed_env;
+	int allowed_env_count;
 	int max_memory_mb;
 	int max_cpu_seconds;
+	int max_file_size_mb;
+	int max_processes;
+	int max_open_files;
 };
 
 int sandbox_enter(struct sandbox_config *cfg);
 int sandbox_apply_seccomp(unsigned int permissions);
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb, int max_cpu_seconds);
-int sandbox_apply_fs(const char **allowed_paths, int count);
+int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
+			  int max_cpu_seconds, int max_file_size_mb,
+			  int max_processes, int max_open_files);
+int sandbox_apply_fs(const char **allowed_paths, int count,
+		     unsigned int permissions);
+int sandbox_apply_env(const char **allowed_env, int count,
+		      unsigned int permissions);
 ```
-
-> **与旧版差异**：`sandbox_apply_rlimits` 签名新增 `permissions` 参数（根据权限调整 rlimit 策略）。`sandbox_enter_darwin` 已在头文件中移除声明（尚未实现，推迟到 P2）。
 
 #### 6.9.9 ReAct Function Calling
 
@@ -1264,28 +1586,555 @@ ReAct 循环使用 LLM 原生 Function Calling（而非文本解析 `Action: too
 
 **Human-in-the-Loop (HITL)**：当 `hitl_enabled` 时，工具执行前检查 `hitl_needs_approval()`。若需审批，调用 `approval_cb` 获取用户决定（`APPROVE`/`DENY`/`ALWAYS`）。`ALWAYS` 将该工具加入 `auto_approved` 列表，后续不再提示。只读工具（`TOOL_FLAG_READONLY`）在 `auto_approve_readonly` 时自动批准。
 
-#### 6.9.10 Guardrail 输出验证
+#### 6.9.10 可插拔 Guardrail 引擎
 
-当 LLM 返回不含工具调用的文本响应（即 `tool_call_count == 0`）时，进入 Guardrail 验证。Guardrail 用**客观可验证条件**替代 LLM 主观自评，确保输出质量：
+Guardrail 采用可插拔规则引擎架构，支持三种规则类型和三个 hook 点。
 
-| 验证条件 | 说明 |
-|----------|------|
-| 所有工具均失败 | 检查本轮所有工具调用是否均返回错误 |
-| 创意工具无输出文件 | 创意工具（img_gen/vid_gen/text_gen 等）被调用但 Observation 中无文件引用 |
-| 空回答 | 回答为空或 `"(no response)"` |
-| 连续空回答 | 连续空回答次数达到 `max_empty_rounds` 上限 |
+**规则类型**：
 
-**验证通过** → 进入 Final。
-**验证失败** → 构造包含具体失败原因和修正指导的 user message 回灌给 LLM，回到 THINKING 重试（最多 `guardrail_max_retries` 次）。
+| 类型 | 实现方式 | 适用场景 |
+|------|---------|---------|
+| `GUARDRAIL_RULE_C` | 内置 C 函数 | 客观条件验证（空回答、工具全失败等） |
+| `GUARDRAIL_RULE_LLM` | LLM 评估 | 主观质量评估（输出是否满足用户意图） |
+| `GUARDRAIL_RULE_EXT` | .so 动态库插件 | 自定义验证逻辑（PII 检测等） |
 
-**与旧 Reflection 的区别**：
+**Hook 点**：
 
-| 维度 | Reflection（旧） | Guardrail（新） |
-|------|-----------------|-----------------|
-| 评估方式 | LLM 自评（`VERDICT: SATISFACTORY`） | 客观条件验证 |
-| LLM 调用 | +1 次/轮独立调用 | 0 次额外调用 |
-| 解析方式 | `strstr`/`strncmp` 文本匹配 | 结构化条件判断 |
-| 可靠性 | LLM 倾向给自己好评 | 基于可验证信号 |
+| Hook | 触发时机 |
+|------|---------|
+| `GUARDRAIL_HOOK_INPUT` | 用户输入进入 ReAct 前 |
+| `GUARDRAIL_HOOK_TOOL_OUTPUT` | 工具执行结果回灌前 |
+| `GUARDRAIL_HOOK_OUTPUT` | LLM 最终输出返回用户前 |
+
+```c
+enum guardrail_verdict {
+	GUARDRAIL_PASS = 0,
+	GUARDRAIL_FAIL = 1,
+};
+
+enum guardrail_hook {
+	GUARDRAIL_HOOK_INPUT,
+	GUARDRAIL_HOOK_TOOL_OUTPUT,
+	GUARDRAIL_HOOK_OUTPUT,
+};
+
+#define GUARDRAIL_RULES_MAX          16
+#define GUARDRAIL_REASON_MAX         512
+#define GUARDRAIL_ACTION_MAX         512
+#define GUARDRAIL_NAME_MAX           64
+#define GUARDRAIL_DESC_MAX           1024
+#define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
+
+struct guardrail_eval_ctx {
+	const char *user_input;
+	const char *tool_name;
+	const char *tool_args;
+	const char *tool_result;
+	const char *proposed_answer;
+	const void *steps;
+	int empty_round_count;
+	struct arena *arena;
+};
+
+typedef enum guardrail_verdict (*guardrail_rule_fn)(
+	const struct guardrail_eval_ctx *ctx,
+	char *reason_out,
+	size_t reason_cap);
+
+enum guardrail_rule_type {
+	GUARDRAIL_RULE_C,
+	GUARDRAIL_RULE_LLM,
+	GUARDRAIL_RULE_EXT,
+};
+
+enum guardrail_ext_type {
+	GUARDRAIL_EXT_EXEC = 0,
+	GUARDRAIL_EXT_SO   = 1,
+};
+
+typedef int (*guardrail_ext_check_fn)(const char *text,
+				      const char *rule_name,
+				      const char *description,
+				      char **result_json);
+
+struct guardrail_rule {
+	char name[GUARDRAIL_NAME_MAX];
+	enum guardrail_hook hook;
+	enum guardrail_rule_type type;
+	enum guardrail_ext_type ext_type;
+	int enabled;
+	guardrail_rule_fn check;
+	void *dl_handle;
+	guardrail_ext_check_fn ext_check;
+	char description[GUARDRAIL_DESC_MAX];
+	char ext_entry[GUARDRAIL_EXT_ENTRY_MAX];
+	char action_text[GUARDRAIL_ACTION_MAX];
+};
+
+struct guardrail_result {
+	enum guardrail_verdict verdict;
+	char reason[GUARDRAIL_REASON_MAX];
+	const struct guardrail_rule *triggered_rule;
+};
+
+struct model;
+
+struct guardrail_config {
+	int enabled;
+	int max_retries;
+	int max_empty_rounds;
+	struct guardrail_rule rules[GUARDRAIL_RULES_MAX];
+	int rule_count;
+	struct model *llm;		/* LLM 评估规则使用的模型 */
+};
+
+/* 规则管理 */
+int guardrail_rule_register(struct guardrail_config *cfg,
+			     const char *name,
+			     enum guardrail_hook hook,
+			     enum guardrail_rule_type type,
+			     guardrail_rule_fn check,
+			     const char *description,
+			     const char *ext_entry,
+			     const char *action_text);
+int guardrail_ext_so_load(struct guardrail_rule *rule);
+void guardrail_ext_so_unload(struct guardrail_rule *rule);
+int guardrail_rule_disable(struct guardrail_config *cfg, const char *name);
+int guardrail_rule_enable(struct guardrail_config *cfg, const char *name);
+struct guardrail_rule *guardrail_rule_lookup(struct guardrail_config *cfg,
+					      const char *name);
+
+/* 内置规则注册 */
+void guardrail_register_builtin_rules(struct guardrail_config *cfg);
+
+/* Hook 执行 */
+struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
+					   enum guardrail_hook hook,
+					   const struct guardrail_eval_ctx *eval);
+
+/* LLM 绑定 */
+void guardrail_set_llm(struct guardrail_config *cfg, struct model *llm);
+```
+
+**内置规则**（`guardrail_register_builtin_rules` 自动注册）：
+
+| 规则名 | Hook | 类型 | 验证条件 |
+|--------|------|------|---------|
+| all-tools-failed | output | C | 所有工具调用均返回错误 |
+| creative-no-media | output | C | 创意工具被调用但无输出文件 |
+| empty-answer | output | C | 回答为空或 `"(no response)"` |
+| consecutive-empty | output | C | 连续空回答达到上限 |
+
+**验证流程**：
+1. LLM 返回无工具调用的文本 → 进入 `GUARDRAIL_HOOK_OUTPUT` hook
+2. 遍历所有已启用的 output 规则，逐一执行 `check`
+3. 任一规则返回 `GUARDRAIL_FAIL` → 构造 `action_text` 作为修正指导回灌
+4. 所有规则通过 → 进入 Final
+
+#### 6.9.11 长期记忆接口
+
+```c
+struct memory_options {
+	int enabled;
+	int hot_path_enabled;
+	int cold_path_enabled;
+	int llm_extract_enabled;
+	int max_facts;
+	int max_episodes;
+	int max_procedures;
+	int max_context_chars;
+};
+
+enum memory_clear_scope {
+	MEMORY_CLEAR_ALL = 0,
+	MEMORY_CLEAR_FACTS,
+	MEMORY_CLEAR_EPISODES,
+	MEMORY_CLEAR_PROCEDURES,
+};
+
+/* LLM 模型绑定（NULL 则回退到启发式提取） */
+void memory_set_llm(struct model *llm);
+
+/* 构建记忆上下文（注入 ReAct 系统提示） */
+char *memory_build_context(struct db *db, int64_t session_id,
+			   const char *query,
+			   const struct memory_options *opts);
+
+/* 渲染会话记忆摘要 */
+char *memory_render_session(struct db *db, int64_t session_id,
+			    int max_episodes);
+
+/* 同步整合（当前轮次 → 记忆） */
+int memory_consolidate_turn(struct db *db, int64_t session_id,
+			    const char *user_input,
+			    const char *assistant_output,
+			    const struct react_step *steps,
+			    int success,
+			    const struct memory_options *opts);
+
+/* 异步整合（后台线程，不阻塞主流程） */
+int memory_consolidate_turn_async(struct db *db, int64_t session_id,
+				  const char *user_input,
+				  const char *assistant_output,
+				  const struct react_step *steps,
+				  int success,
+				  const struct memory_options *opts);
+
+/* 异步队列排空 + 线程回收 */
+void memory_async_shutdown(void);
+
+/* 清除记忆 */
+int memory_clear(struct db *db, int64_t session_id,
+		 enum memory_clear_scope scope);
+```
+
+#### 6.9.12 MCP 接口
+
+```c
+#define MCP_PROTOCOL_VERSION   "2025-06-18"
+#define MCP_NAME_MAX           128
+#define MCP_DESC_MAX           1024
+#define MCP_SCHEMA_MAX         4096
+#define MCP_URI_MAX            PATH_MAX
+#define MCP_CMD_MAX            64
+#define MCP_CMD_ARG_MAX        256
+#define MCP_ENV_MAX            16
+#define MCP_ENV_VAL_MAX        PATH_MAX
+#define MCP_MAX_SERVERS        32
+#define MCP_JSON_BUF_MAX       65536
+#define MCP_READ_BUF_MAX       131072
+
+enum mcp_transport_type {
+	MCP_TRANSPORT_STDIO,
+	MCP_TRANSPORT_STREAMABLE_HTTP,
+};
+
+struct mcp_tool_desc {
+	char name[MCP_NAME_MAX];
+	char title[MCP_NAME_MAX];
+	char description[MCP_DESC_MAX];
+	char input_schema[MCP_SCHEMA_MAX];
+};
+
+struct mcp_resource_desc {
+	char uri[MCP_URI_MAX];
+	char name[MCP_NAME_MAX];
+	char description[MCP_DESC_MAX];
+	char mime_type[64];
+};
+
+struct mcp_prompt_desc {
+	char name[MCP_NAME_MAX];
+	char description[MCP_DESC_MAX];
+	char arguments_schema[MCP_SCHEMA_MAX];
+};
+
+struct mcp_server_config {
+	char name[MCP_NAME_MAX];
+	enum mcp_transport_type transport;
+	/* stdio */
+	char command[256];
+	char cmd_args[MCP_CMD_MAX][MCP_CMD_ARG_MAX];
+	int cmd_args_count;
+	char env_keys[MCP_ENV_MAX][64];
+	char env_vals[MCP_ENV_MAX][MCP_ENV_VAL_MAX];
+	int env_count;
+	/* http */
+	char http_url[PATH_MAX];
+	char http_auth_token_env[64];
+	/* startup */
+	int auto_connect;
+	int connect_timeout;
+};
+
+struct mcp_client {
+	struct mcp_server_config config;
+	int connected;
+	int connecting;
+	char negotiated_version[32];
+	char server_name[MCP_NAME_MAX];
+	char server_version[64];
+	int supports_tools;
+	int supports_resources;
+	int supports_prompts;
+	int tools_list_changed;
+	/* stdio transport */
+	pid_t server_pid;
+	int stdin_fd;
+	int stdout_fd;
+	/* http transport */
+	void *curl_handle;
+	char session_id[128];
+	int next_req_id;
+	pthread_mutex_t lock;
+};
+
+struct mcp_registry {
+	struct mcp_client *servers[MCP_MAX_SERVERS];
+	int count;
+};
+
+/* 注册表管理 */
+void mcp_registry_init(struct mcp_registry *reg);
+int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
+struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name);
+int mcp_registry_count(struct mcp_registry *reg);
+void mcp_registry_cleanup(struct mcp_registry *reg);
+
+/* 生命周期 */
+int mcp_connect_stdio(struct mcp_client *client);
+int mcp_connect_http(struct mcp_client *client);
+int mcp_initialize(struct mcp_client *client);
+void mcp_disconnect(struct mcp_client *client);
+int mcp_ensure_connected(struct mcp_client *client);
+
+/* 工具 */
+int mcp_list_tools(struct mcp_client *client, struct arena *arena,
+		   struct mcp_tool_desc **out_tools, int *out_count);
+int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
+		  const char *args_json, char **out_result_json);
+
+/* 资源 */
+int mcp_list_resources(struct mcp_client *client, struct arena *arena,
+		       struct mcp_resource_desc **out_res, int *out_count);
+int mcp_read_resource(struct mcp_client *client, struct arena *arena,
+		      const char *uri, char **out_content);
+
+/* 提示词 */
+int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
+		     struct mcp_prompt_desc **out_prompts, int *out_count);
+int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
+		   const char *args_json, char **out_result);
+
+/* 工具 */
+int mcp_ping(struct mcp_client *client);
+
+/* morph 工具注册表集成 */
+int mcp_register_server_tools(struct mcp_client *client,
+			      struct tool_registry *reg);
+int mcp_register_server_resources(struct mcp_client *client,
+				  struct tool_registry *reg);
+int mcp_register_server_prompts(struct mcp_client *client,
+				struct tool_registry *reg);
+```
+
+#### 6.9.13 子代理接口
+
+```c
+#define SUB_AGENT_TASK_MAX 8
+#define SUB_AGENT_TASK_ID_MAX 32
+#define SUB_AGENT_MAX_DEPTH 2
+
+enum sub_agent_task_status {
+	SUB_AGENT_PENDING,
+	SUB_AGENT_RUNNING,
+	SUB_AGENT_COMPLETED,
+	SUB_AGENT_FAILED,
+	SUB_AGENT_CANCELLED
+};
+
+struct sub_agent_entry {
+	struct config_sub_agent cfg;
+	char *system_prompt;
+	struct model *llm;
+};
+
+struct sub_agent_task {
+	char id[SUB_AGENT_TASK_ID_MAX];
+	int agent_index;
+	char *task_description;
+	enum sub_agent_task_status status;
+	char *result;
+	int error_code;
+	struct react_context *child_ctx;
+	pthread_t thread;
+	int joined;
+	pthread_mutex_t mutex;
+};
+
+struct sub_agent_trace_event {
+	char trace_id[36];
+	char parent_trace_id[36];
+	char agent_name[SUB_AGENT_NAME_MAX];
+	int64_t start_ms;
+	int64_t end_ms;
+	char mode[16];
+	int iteration_count;
+	int token_usage;
+	char *result_preview;
+};
+
+struct sub_agent_runtime {
+	struct sub_agent_entry entries[SUB_AGENT_MAX];
+	int entry_count;
+	struct sub_agent_task tasks[SUB_AGENT_TASK_MAX];
+	int task_count;
+	int next_task_id;
+	struct tool_registry *parent_tools;
+	struct model *default_llm;
+	struct tokenizer *tokenizer;
+	struct compress_config *compress;
+	int depth;
+	char trace_file[PATH_MAX];
+};
+
+struct sub_agent_runtime *
+sub_agent_runtime_create(struct tool_registry *parent_tools,
+			 struct model *default_llm,
+			 struct tokenizer *tokenizer,
+			 struct compress_config *compress);
+void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
+int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
+				  struct config_sub_agents *cfg);
+struct sub_agent_entry *
+sub_agent_find(struct sub_agent_runtime *rt, const char *name);
+struct tool_registry *
+sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
+			      struct sub_agent_entry *entry);
+struct react_context *
+sub_agent_create_context(struct sub_agent_runtime *rt,
+			 struct sub_agent_entry *entry,
+			 const char *task);
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
+			  struct sub_agent_entry *entry,
+			  const char *task, char **result);
+int sub_agent_delegate(struct sub_agent_runtime *rt,
+		       const char *agent_name, const char *task,
+		       char **task_id_out);
+int sub_agent_fanout(struct sub_agent_runtime *rt,
+		     const char *agent_name,
+		     const char **tasks, int task_count,
+		     enum sub_agent_merge_strategy merge,
+		     char **result);
+int sub_agent_check_status(struct sub_agent_runtime *rt,
+			   const char *task_id,
+			   enum sub_agent_task_status *status_out,
+			   char **result_out);
+int sub_agent_apply_output_schema(const char *text,
+				  const char *schema,
+				  struct model *llm,
+				  char **result);
+void sub_agent_trace_write(struct sub_agent_runtime *rt,
+			   struct sub_agent_trace_event *ev);
+```
+
+#### 6.9.14 Tool Context 接口
+
+Tool Context 管理工具执行时的路径权限和命令审批。
+
+```c
+#define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
+#define TOOL_CONTEXT_ALLOW_MAX 32
+#define TOOL_CONTEXT_ALLOW_PATH_MAX PATH_MAX
+#define TOOL_CONTEXT_COMMAND_MAX 1024
+
+enum write_verdict {
+	WRITE_DENY = 0,
+	WRITE_ALLOW = 1,
+	WRITE_ALWAYS = 2,
+};
+
+typedef enum write_verdict (*tool_write_approval_fn)(const char *path,
+						     const char *output_dir,
+						     void *user_data);
+
+enum command_verdict {
+	COMMAND_DENY = 0,
+	COMMAND_ALLOW = 1,
+	COMMAND_ALWAYS = 2,
+};
+
+typedef enum command_verdict (*tool_command_approval_fn)(
+	const char *command, const char *cwd, void *user_data);
+
+struct tool_context {
+	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
+	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
+	tool_write_approval_fn approval_fn;
+	void *approval_user_data;
+	char allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int allowed_dirs_count;
+	tool_command_approval_fn command_approval_fn;
+	void *command_approval_user_data;
+	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_COMMAND_MAX];
+	int allowed_commands_count;
+	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int exec_allowed_dirs_count;
+};
+
+struct tool_context *tool_context_create(const char *workdir,
+					 const char *output_dir);
+void tool_context_destroy(struct tool_context *tctx);
+const char *tool_context_workdir(const struct tool_context *tctx);
+const char *tool_context_output_dir(const struct tool_context *tctx);
+int tool_context_check_write_path(struct tool_context *tctx, const char *path);
+void tool_context_add_allowed_dir(struct tool_context *tctx, const char *dir);
+void tool_context_set_command_approval(struct tool_context *tctx,
+				       tool_command_approval_fn fn,
+				       void *user_data);
+int tool_context_allow_command(struct tool_context *tctx, const char *pattern);
+int tool_context_allow_exec_dir(struct tool_context *tctx, const char *path);
+int tool_context_check_command(struct tool_context *tctx,
+			       const char *command, const char *cwd);
+```
+
+#### 6.9.15 Plan 子系统接口
+
+```c
+#define PLAN_NAME_MAX 64
+#define PLAN_GOAL_MAX 512
+#define PLAN_STEP_DESC_MAX 256
+#define PLAN_MAX_STEPS 32
+#define PLAN_MAX_PLANS 8
+#define PLAN_STATUS_MAX 16
+
+struct plan_step {
+	int id;
+	char description[PLAN_STEP_DESC_MAX];
+	char status[PLAN_STATUS_MAX]; /* pending, in_progress, completed, failed, skipped */
+};
+
+struct plan {
+	char name[PLAN_NAME_MAX];
+	char goal[PLAN_GOAL_MAX];
+	struct plan_step steps[PLAN_MAX_STEPS];
+	int step_count;
+	int active_step; /* index of current active step, -1 if none */
+};
+
+struct plan_registry {
+	struct plan plans[PLAN_MAX_PLANS];
+	int count;
+};
+
+void plan_registry_init(struct plan_registry *reg);
+struct plan *plan_create(struct plan_registry *reg, const char *name,
+			 const char *goal, const char **step_descs,
+			 int step_count);
+struct plan *plan_find(struct plan_registry *reg, const char *name);
+int plan_update_step(struct plan_registry *reg, const char *plan_name,
+		     int step_id, const char *status);
+int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size);
+```
+
+#### 6.9.16 BPE Tokenizer 接口
+
+```c
+enum bpe_encoding {
+	BPE_CL100K_BASE,	/* GPT-4 / GPT-3.5 */
+	BPE_O200K_BASE,		/* GPT-4o */
+};
+
+struct bpe_encoder;
+
+struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
+				       const char *vocab_dir);
+void bpe_encoder_destroy(struct bpe_encoder *enc);
+int bpe_count_tokens(struct bpe_encoder *enc, const char *text);
+int bpe_count_tokens_n(struct bpe_encoder *enc, const char *text, size_t len);
+```
+
+> **词表文件**：`vendor/tiktoken/cl100k_base.tiktoken` 和 `vendor/tiktoken/o200k_base.tiktoken`，构建时复制到 build 目录。
 
 ---
 
@@ -1332,7 +2181,7 @@ metadata:
 #define SKILL_NAME_MAX 65
 #define SKILL_DESC_MAX 1025
 #define SKILL_MAX_ENTRIES 64
-#define SKILL_PATH_MAX 512
+#define SKILL_PATH_MAX PATH_MAX
 #define SKILL_METADATA_MAX 16
 #define SKILL_METADATA_KEY_MAX 64
 #define SKILL_METADATA_VAL_MAX 256
@@ -1377,8 +2226,6 @@ void skill_deactivate_all(struct skill_registry *reg);
 char *skill_build_activated_instructions(struct skill_registry *reg);
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size);
 ```
-
-> **与旧版差异**：`skill_frontmatter` 字段尺寸调整（`name[65]`、`description[1025]`、`compatibility[512]`、`allowed_tools[1024]`、`metadata[16]`、`value[256]`）。`skill_entry` 新增 `skill_md_path`、`body_loaded`。新增 `skill_registry_cleanup`、`skill_deactivate_all`、`skill_build_catalog`。
 
 ---
 
@@ -1458,8 +2305,6 @@ void spin_destroy(struct spin_context *ctx);
 void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag);
 ```
 
-> **与旧版差异**：新增 `last_render_width` 字段。新增 `spin_pause`/`spin_resume`/`spin_render` 函数。
-
 #### 6.11.5 CLI 输出回调映射
 
 `output_callback` 将 ReAct 步骤类型映射到 Spinner 行为：
@@ -1471,6 +2316,8 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | `REACT_STEP_OBSERVATION` | `spin_stop(COMPLETE/ERROR, 结果摘要)` |
 | `REACT_STEP_REFLECTION` | 直接打印 `[Guardrail]` 行（验证失败原因） |
 | `REACT_STEP_FINAL` | `spin_stop(COMPLETE)` + `markdown_render_ansi_with_media()` |
+
+### 6.12 C 编码规范
 
 - Tab 缩进（8 字符宽）；软上限 80，硬上限 100
 - 函数名 `snake_case`，类型 `struct foo`；宏全大写
@@ -1486,6 +2333,37 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 
 ---
 
+## 7. 错误处理
+
+### 7.1 错误码体系
+
+```c
+typedef int morph_err_t;
+
+enum morph_error {
+	MORPH_ERR_NOT_CONFIGURED  = -257,
+	MORPH_ERR_NOT_INITIALIZED = -258,
+	MORPH_ERR_API             = -259,
+	MORPH_ERR_NETWORK         = -260,
+	MORPH_ERR_PARSE           = -261,
+	MORPH_ERR_PROTOCOL        = -262,
+	MORPH_ERR_DB              = -263,
+	MORPH_ERR_FORMAT          = -264,
+	MORPH_ERR_PROCESSING      = -265,
+	MORPH_ERR_SANDBOX         = -266,
+	MORPH_ERR_LOAD            = -267,
+	MORPH_ERR_LLM             = -268,
+};
+```
+
+### 7.2 错误处理宏
+
+- `MORPH_RETURN(code)`：debug 模式日志 + 返回；release 模式直接返回
+- `MORPH_SET_ERR(var, code)`：debug 模式日志 + 赋值；release 模式直接赋值
+- `morph_strerror(err)`：返回所有错误码（POSIX + 自定义）的人类可读字符串
+
+---
+
 ## 8. 日志与可观测性
 
 | 项 | 设计 |
@@ -1495,6 +2373,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | ReAct 轨迹 | 写入 `react_traces` 表 + `--trace-file` 可导出 JSON |
 | Token 用量 | 每次 LLM 调用记录 `prompt_tokens / completion_tokens / cost_estimate` |
 | 工具调用埋点 | 工具名、耗时、成功/失败、参数摘要（脱敏） |
+| 子代理追踪 | 子代理执行轨迹写入 trace 文件 |
 | 错误上报 | 默认仅本地；可配置 `[telemetry]` 开关（opt-in） |
 | 调试模式 | `MORPH_DEBUG=1` 打印每次 HTTP request/response |
 
@@ -1506,10 +2385,44 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 |------|------|---------|
 | 单元 | GoogleTest（CMake FetchContent） | 核心模块 ≥ 70% |
 | 集成 | Mock LLM（本地 HTTP server，返回固定 SSE 流） | ReAct 全流程 |
-| 模糊 | libFuzzer / AFL++ | manifest.toml 解析、JSON 解析 |
+| 系统 | Shell 脚本（`systest.sh`） | 端到端 CLI 流程 |
+| 模糊 | libFuzzer / AFL++ | manifest.toml 解析、JSON 解析（尚未实现） |
 | 内存 | Valgrind + ASan + UBSan | 0 lost，0 UB |
 | 沙箱逃逸 | 专项用例集（见下） | 100% 阻断 |
 | 跨平台 | GitHub Actions：ubuntu-22.04，macos-14 | 冒烟全过 |
+
+**测试文件清单**：
+
+| 文件 | 测试模块 |
+|------|---------|
+| `test_arena.cpp` | Arena 内存分配器 |
+| `test_log.cpp` | 日志系统 |
+| `test_spin.cpp` | Spinner 动画 |
+| `test_sse.cpp` | SSE 解析器 |
+| `test_database.cpp` | SQLite 数据库 |
+| `test_tool.cpp` | 工具注册表 |
+| `test_context.cpp` | 上下文管理 |
+| `test_config.cpp` | 配置解析 |
+| `test_file.cpp` | 文件工具 |
+| `test_tokenizer.cpp` | Token 计数 |
+| `test_session.cpp` | 会话管理 |
+| `test_http.cpp` | HTTP 客户端 |
+| `test_text_gen.cpp` | 文字生成工具 |
+| `test_image.cpp` | 图片处理 |
+| `test_compress.cpp` | 上下文压缩 |
+| `test_react.cpp` | ReAct 循环 |
+| `test_markdown.cpp` | Markdown 渲染 |
+| `test_skill.cpp` | Skill 系统 |
+| `test_bash_exec.cpp` | Shell 执行工具 |
+| `test_render.cpp` | 渲染系统 |
+| `test_memory.cpp` | 长期记忆 |
+| `test_mcp.cpp` | MCP 客户端 |
+| `test_ask_user.cpp` | 用户交互工具 |
+| `test_sandbox.cpp` | 沙箱机制 |
+| `test_tool_context.cpp` | 工具执行上下文 |
+| `test_sub_agent.cpp` | 子代理系统 |
+| `systest.sh` | 端到端系统测试 |
+| `test_ext_demo.c` | Ext demo（未纳入 CMake 构建） |
 
 **沙箱逃逸用例**（必须 100% 阻断）：
 1. Ext 调用 `execve("/bin/sh", ...)` 而未声明 `exec` 权限
@@ -1541,14 +2454,16 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 
 ## 11. 里程碑
 
-| 里程碑 | 周次 | 交付物 | 验收 KPI |
-|--------|------|--------|---------|
-| **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | 首 token < 1s；7 个 `/` commands 可用；Valgrind clean |
-| M2 / V0.2 | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | 图片 P95 < 30s |
-| M3 / V0.3 | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 | 视频任务可后台轮询 |
-| M4 / V0.4 | W11–W13 | Ext 沙箱（seccomp+rlimit+landlock）+ install/enable/disable | 沙箱逃逸 6/6 阻断 |
-| M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩 + 关键信息提取 | 长对话 token 节省 ≥ 40% |
-| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ macOS sandbox-exec + Homebrew formula | macOS 冒烟通过 |
+| 里程碑 | 周次 | 交付物 | 状态 |
+|--------|------|--------|------|
+| **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
+| **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
+| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.0） |
+| M4 / V0.4 | W11–W13 | Ext 沙箱完善（seccomp+rlimit+landlock）+ install/enable/disable + macOS sandbox-exec | 进行中 |
+| M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | 待开始 |
+| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | 待开始 |
+
+> **M3 提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端（新增需求）。
 
 ---
 
@@ -1565,9 +2480,12 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | Ext 安全 | 恶意 Ext | 沙箱 + 最小权限 + 审计 | M4 |
 | 沙箱逃逸 | 系统安全 | 专项测试集 + 安全评审 | M4 |
 | 摘要丢关键信息 | 上下文劣化 | 关键信息强制保留 + 用户阈值可调 | M5 |
-| Token 计数误差 | 截断/浪费 | 多 tokenizer + 保守估算 + 分批 | M1 |
+| Token 计数误差 | 截断/浪费 | BPE + 保守估算 + 分批 | M1（BPE 已在 M3 实现） |
 | 静态体积超 8MB | 不达 KPI | 动态链接 + LTO + strip + 删除未使用代码 | M1 |
 | Ext IPC 性能 | 流式卡顿 | 行缓冲 + 共享内存（P2） | M4 |
+| MCP 服务器不稳定 | 远程工具不可用 | 延迟连接 + 超时控制 + 优雅降级 | M3 |
+| 记忆系统准确性 | 错误记忆注入 | LLM 提取 + 置信度 + 用户可清除 | M3 |
+| 子代理递归 | 资源耗尽 | 最大深度 2 层限制 | M3 |
 
 ---
 
@@ -1576,7 +2494,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | # | 问题 | 状态 | 决策建议 |
 |---|------|------|---------|
 | 1 | 产品命名 | **Decided**：morph | — |
-| 2 | 优先接入哪些 API | **Decided**（M1）：OpenAI + 可灵 + Volcengine | — |
+| 2 | 优先接入哪些 API | **Decided**（M1）：OpenAI + Volcengine | — |
 | 3 | 是否支持本地模型（Ollama） | Open | P2 评估 |
 | 4 | SQLite 是否硬依赖 | **Decided**：是 | 简化数据层 |
 | 5 | 终端图片是否 fallback feh/sxiv | **Decided**：否，只回退路径 | 减少依赖 |
@@ -1584,3 +2502,6 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | 7 | 是否发布 Homebrew/AUR | M6 决策 | — |
 | 8 | Ext 是否需 NetNS 隔离 | **Decided**：P2 | 默认 seccomp 即可 |
 | 9 | `.so` Ext 是否需符号可见性限制 | **Decided**：是 | 仅导出 `ext_run` |
+| 10 | MCP 协议版本跟进策略 | **Decided**：跟踪最新稳定版（当前 2025-06-18） | — |
+| 11 | FastCGI 是否需要 WebSocket 支持 | Open | SSE 已满足流式需求 |
+| 12 | 记忆系统是否需要跨用户共享 | **Decided**：否，会话级作用域 | 隐私优先 |
