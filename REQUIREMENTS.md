@@ -439,17 +439,19 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 
 系统提示定义在 `src/agent/system_prompt.h`，以 `MORPH_SYSTEM_PROMPT` 宏实现，包含两个格式化占位符（`%s` 当前时间、`%d` 最大迭代次数）。
 
-提示核心定位为「autonomous creative director and visual production system」，包含 12 条创意原则（Intent Expansion、Visual Consistency、Cinematic Thinking、Composition Intelligence、Style Intelligence、Video Understanding、Multi-Stage Generation、Self-Critique、Creative Taste、World Building、Human Collaboration、Autonomous Execution）以及工具使用指导、创作工作流、质量检查清单和错误恢复策略。
+提示核心定位为通用 AI Agent，包含 6 条通用原则（Intent Understanding、Planning、Tool Selection、Result Verification、Error Recovery、Collaboration）以及通用工作流、技能提示和规则。
+
+创作能力通过 `skills/creation/SKILL.md` 技能提供，包含 12 条创意原则、创作工具使用指导、创作工作流、质量检查清单和错误恢复策略。LLM 在识别到用户有创作/视觉生产需求时，自动调用 `activate_skill("creation")` 加载完整创作指令。
 
 运行时 `build_system_prompt()` 依次拼接：
-1. `MORPH_SYSTEM_PROMPT` 基础模板
+1. `MORPH_SYSTEM_PROMPT` 基础模板（通用 Agent）
 2. `system_prompt` 自定义扩展（来自配置 `system_prompt_file` + `system_prompt_dir`）
-3. 已发现 Skill 目录
-4. 已激活 Skill 的完整指令内容
-5. 记忆上下文（`memory_context`，来自 Memory 子系统）
+3. 记忆上下文（`memory_context`，来自 Memory 子系统）
+4. 已发现 Skill 目录
+5. 已激活 Skill 的完整指令内容（含创作技能）
 
 ```
-You are Morph, an autonomous creative director and visual production system.
+You are Morph, an autonomous AI agent.
 ...
 Maximum %d tool-calling iterations.
 ```
