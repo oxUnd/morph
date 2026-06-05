@@ -1903,6 +1903,28 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 	react_context_destroy(ctx);
 }
 
+TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
+	struct tool_registry reg;
+	tool_registry_init(&reg);
+	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
+		      NULL);
+	struct tool_entry *e = tool_lookup(&reg, "bash_exec");
+	ASSERT_NE(e, nullptr);
+	e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.enabled = 1;
+	ctx->hitl.tools_count = 2;
+	strncpy(ctx->hitl.tools[0], "bash_exec", HITL_TOOL_NAME_MAX - 1);
+	strncpy(ctx->hitl.tools[1], "dangerous_tool", HITL_TOOL_NAME_MAX - 1);
+	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 0);
+	EXPECT_EQ(hitl_needs_approval(ctx, "dangerous_tool"), 1);
+	react_context_destroy(ctx);
+}
+
 TEST(HitlTest, NeedsApprovalAutoApproved) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);

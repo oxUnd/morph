@@ -236,7 +236,15 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	}
 
 	if (tctx) {
-		int rc = tool_context_check_command(tctx, command, cwd);
+		struct tool_operation op = {
+			.kind = TOOL_OP_COMMAND,
+			.tool_name = "bash_exec",
+			.action = command,
+			.target = NULL,
+			.scope = cwd,
+			.details_json = args_json,
+		};
+		int rc = tool_context_check_operation(tctx, &op);
 		if (rc < 0) {
 			if (root)
 				cJSON_Delete(root);
@@ -420,7 +428,7 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, "bash_exec",
+	int rc = tool_register(reg, "bash_exec",
 		"Execute a shell command in a restricted sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
@@ -441,4 +449,10 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime in seconds (default 60; use 120-300 for builds/tests/git)\"}"
 		"},\"required\":[\"command\"]}",
 		bash_exec_run, tctx, NULL);
+	if (rc == 0) {
+		struct tool_entry *e = tool_lookup(reg, "bash_exec");
+		if (e)
+			e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
+	}
+	return rc;
 }

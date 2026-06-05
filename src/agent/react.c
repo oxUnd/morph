@@ -82,6 +82,8 @@ int hitl_needs_approval(struct react_context *ctx, const char *tool_name)
 		if (strcmp(h->auto_approved[i], tool_name) == 0)
 			return 0;
 	}
+	if (tool_has_flag(ctx->tools, tool_name, TOOL_FLAG_INTERNAL_APPROVAL))
+		return 0;
 	if (h->tools_count > 0) {
 		for (int i = 0; i < h->tools_count; i++) {
 			if (strcmp(h->tools[i], tool_name) == 0)

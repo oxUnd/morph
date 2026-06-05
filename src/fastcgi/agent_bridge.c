@@ -174,12 +174,12 @@ static void bridge_init_once(void)
 	if (g_config.react.bash_exec_enabled) {
 		for (int i = 0;
 		     i < g_config.react.bash_exec_allowed_commands_count; i++)
-			tool_context_allow_command(
+			tool_context_allow_command_pattern(
 				g_tctx,
 				g_config.react.bash_exec_allowed_commands[i]);
 		for (int i = 0;
 		     i < g_config.react.bash_exec_allowed_cwds_count; i++)
-			tool_context_allow_exec_dir(
+			tool_context_allow_command_scope(
 				g_tctx,
 				g_config.react.bash_exec_allowed_cwds[i]);
 		bash_exec_init(&g_tools, g_tctx);

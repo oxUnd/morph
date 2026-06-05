@@ -41,9 +41,9 @@ static std::string exec_tool(struct tool_registry &reg,
 		cJSON *command = cJSON_GetObjectItem(root, "command");
 		cJSON *cwd = cJSON_GetObjectItem(root, "cwd");
 		if (cJSON_IsString(command) && command->valuestring)
-			tool_context_allow_command(tctx, command->valuestring);
+			tool_context_allow_command_pattern(tctx, command->valuestring);
 		if (cJSON_IsString(cwd) && cwd->valuestring)
-			tool_context_allow_exec_dir(tctx, cwd->valuestring);
+			tool_context_allow_command_scope(tctx, cwd->valuestring);
 		cJSON_Delete(root);
 	}
 	return exec_raw(reg, args_json, rc);
@@ -168,7 +168,7 @@ TEST_F(BashExecTest, PolicyDeniesWithoutRules)
 TEST_F(BashExecTest, PolicyDeniesAdditionalArguments)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "echo hi"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "echo hi"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"echo hi extra\"}", rc);
@@ -178,7 +178,7 @@ TEST_F(BashExecTest, PolicyDeniesAdditionalArguments)
 TEST_F(BashExecTest, PolicyDeniesUnconfiguredCwd)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "pwd"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "pwd"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"pwd\",\"cwd\":\"/tmp\"}", rc);
@@ -1098,7 +1098,7 @@ TEST_F(BashExecTest, AllowedTr)
 TEST_F(BashExecTest, ProgramNamePatternAllowsArgs)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "echo"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "echo"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"echo hi there friends\"}", rc);
@@ -1109,7 +1109,7 @@ TEST_F(BashExecTest, ProgramNamePatternAllowsArgs)
 TEST_F(BashExecTest, ProgramNamePatternRequiresTokenBoundary)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "ech"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "ech"), 0);
 	int rc;
 	exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
@@ -1118,7 +1118,7 @@ TEST_F(BashExecTest, ProgramNamePatternRequiresTokenBoundary)
 TEST_F(BashExecTest, PrefixWildcardAllowsSubcommands)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "git status *"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "git status *"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"git status --short\"}", rc);
@@ -1128,7 +1128,7 @@ TEST_F(BashExecTest, PrefixWildcardAllowsSubcommands)
 TEST_F(BashExecTest, PrefixWildcardRejectsOtherSubcommand)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "git status *"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "git status *"), 0);
 	int rc;
 	exec_raw(reg, "{\"command\":\"git log --oneline\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
@@ -1137,7 +1137,7 @@ TEST_F(BashExecTest, PrefixWildcardRejectsOtherSubcommand)
 TEST_F(BashExecTest, WildcardStarAllowsArbitraryCommand)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "*"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "*"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"echo wild\"}", rc);
@@ -1148,7 +1148,7 @@ TEST_F(BashExecTest, WildcardStarAllowsArbitraryCommand)
 TEST_F(BashExecTest, WildcardStarStillRespectsBlocklist)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "*"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "*"), 0);
 	int rc;
 	std::string result = exec_raw(reg, "{\"command\":\"rm -rf /\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
@@ -1158,7 +1158,7 @@ TEST_F(BashExecTest, WildcardStarStillRespectsBlocklist)
 TEST_F(BashExecTest, ExactPatternStillRequiresExactMatch)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "echo hi"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "echo hi"), 0);
 	int rc;
 	exec_raw(reg, "{\"command\":\"echo hi extra\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
@@ -1169,8 +1169,8 @@ TEST_F(BashExecTest, ExactPatternStillRequiresExactMatch)
 TEST_F(BashExecTest, CwdSubtreeAllowed)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "pwd"), 0);
-	ASSERT_EQ(tool_context_allow_exec_dir(tctx, "/tmp"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "pwd"), 0);
+	ASSERT_EQ(tool_context_allow_command_scope(tctx, "/tmp"), 0);
 	mkdir("/tmp/morph_bash_subtree", 0755);
 	int rc;
 	std::string result = exec_raw(
@@ -1184,10 +1184,10 @@ TEST_F(BashExecTest, CwdSubtreeAllowed)
 TEST_F(BashExecTest, CwdSubtreeRejectsSiblingPrefix)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "pwd"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "pwd"), 0);
 	mkdir("/tmp/morph_bash_root", 0755);
 	mkdir("/tmp/morph_bash_root_sibling", 0755);
-	ASSERT_EQ(tool_context_allow_exec_dir(tctx, "/tmp/morph_bash_root"), 0);
+	ASSERT_EQ(tool_context_allow_command_scope(tctx, "/tmp/morph_bash_root"), 0);
 	int rc;
 	exec_raw(reg,
 		 "{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_root_sibling\"}",
@@ -1200,8 +1200,8 @@ TEST_F(BashExecTest, CwdSubtreeRejectsSiblingPrefix)
 TEST_F(BashExecTest, CwdWildcardAllowsAny)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "pwd"), 0);
-	ASSERT_EQ(tool_context_allow_exec_dir(tctx, "*"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "pwd"), 0);
+	ASSERT_EQ(tool_context_allow_command_scope(tctx, "*"), 0);
 	int rc;
 	std::string result = exec_raw(
 		reg, "{\"command\":\"pwd\",\"cwd\":\"/tmp\"}", rc);
@@ -1212,27 +1212,27 @@ TEST_F(BashExecTest, CwdWildcardAllowsAny)
 
 struct ApprovalState {
 	int calls;
-	enum command_verdict next;
+	enum tool_operation_verdict next;
 	std::string last_command;
 	std::string last_cwd;
 };
 
-static enum command_verdict approval_stub(const char *command,
-					  const char *cwd,
-					  void *user_data)
+static enum tool_operation_verdict approval_stub(
+	const struct tool_operation *op, void *user_data)
 {
 	ApprovalState *s = static_cast<ApprovalState *>(user_data);
 	s->calls++;
-	s->last_command = command ? command : "";
-	s->last_cwd = cwd ? cwd : "";
+	EXPECT_EQ(op->kind, TOOL_OP_COMMAND);
+	s->last_command = op->action ? op->action : "";
+	s->last_cwd = op->scope ? op->scope : "";
 	return s->next;
 }
 
 TEST_F(BashExecTest, ApprovalCallbackAllowsOnce)
 {
 	bash_exec_init(&reg, tctx);
-	ApprovalState state{0, COMMAND_ALLOW, "", ""};
-	tool_context_set_command_approval(tctx, approval_stub, &state);
+	ApprovalState state{0, TOOL_OP_ALLOW, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
 	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
 	EXPECT_EQ(rc, 0);
@@ -1244,8 +1244,8 @@ TEST_F(BashExecTest, ApprovalCallbackAllowsOnce)
 TEST_F(BashExecTest, ApprovalCallbackDenies)
 {
 	bash_exec_init(&reg, tctx);
-	ApprovalState state{0, COMMAND_DENY, "", ""};
-	tool_context_set_command_approval(tctx, approval_stub, &state);
+	ApprovalState state{0, TOOL_OP_DENY, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
 	std::string result = exec_raw(reg, "{\"command\":\"echo hi\"}", rc);
 	EXPECT_EQ(rc, -EPERM);
@@ -1256,8 +1256,8 @@ TEST_F(BashExecTest, ApprovalCallbackDenies)
 TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
 {
 	bash_exec_init(&reg, tctx);
-	ApprovalState state{0, COMMAND_ALWAYS, "", ""};
-	tool_context_set_command_approval(tctx, approval_stub, &state);
+	ApprovalState state{0, TOOL_OP_ALWAYS, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
 	exec_raw(reg, "{\"command\":\"echo first\"}", rc);
 	EXPECT_EQ(rc, 0);
@@ -1271,11 +1271,11 @@ TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
 TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsCwd)
 {
 	bash_exec_init(&reg, tctx);
-	ASSERT_EQ(tool_context_allow_command(tctx, "pwd"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "pwd"), 0);
 	mkdir("/tmp/morph_bash_persist", 0755);
 	mkdir("/tmp/morph_bash_persist/sub", 0755);
-	ApprovalState state{0, COMMAND_ALWAYS, "", ""};
-	tool_context_set_command_approval(tctx, approval_stub, &state);
+	ApprovalState state{0, TOOL_OP_ALWAYS, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
 	exec_raw(reg,
 		 "{\"command\":\"pwd\",\"cwd\":\"/tmp/morph_bash_persist\"}",
@@ -1294,8 +1294,8 @@ TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsCwd)
 TEST_F(BashExecTest, BlocklistOverridesApprovalCallback)
 {
 	bash_exec_init(&reg, tctx);
-	ApprovalState state{0, COMMAND_ALWAYS, "", ""};
-	tool_context_set_command_approval(tctx, approval_stub, &state);
+	ApprovalState state{0, TOOL_OP_ALWAYS, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
 	std::string result = exec_raw(reg, "{\"command\":\"rm -rf /\"}", rc);
 	EXPECT_EQ(rc, -EPERM);

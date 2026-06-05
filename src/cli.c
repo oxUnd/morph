@@ -59,9 +59,6 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data);
 
-static enum command_verdict command_approval_callback(const char *command,
-						      const char *cwd,
-						      void *user_data);
 
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
@@ -1916,13 +1913,8 @@ static void cli_img_annotate_resume(void *user_data)
 	}
 }
 
-static enum write_verdict write_approval_callback(const char *path,
-						   const char *output_dir,
-						   void *user_data);
-static enum tool_path_verdict path_approval_callback(enum tool_path_op op,
-						     const char *path,
-						     const char *root,
-						     void *user_data);
+static enum tool_operation_verdict operation_approval_callback(
+	const struct tool_operation *op, void *user_data);
 
 static int cli_init_tools(struct cli_context *ctx)
 {
@@ -1934,9 +1926,8 @@ static int cli_init_tools(struct cli_context *ctx)
 		log_err("failed to create tool context");
 		return -ENOMEM;
 	}
-	tool_context_set_path_approval(ctx->tctx, path_approval_callback, ctx);
-	ctx->tctx->approval_fn = write_approval_callback;
-	ctx->tctx->approval_user_data = ctx;
+	tool_context_set_operation_approval(ctx->tctx,
+					    operation_approval_callback, ctx);
 
 	text_gen_init(&ctx->tools, ctx->llm);
 	log_info("registered text_gen tool");
@@ -1965,16 +1956,14 @@ static int cli_init_tools(struct cli_context *ctx)
 	if (ctx->config.react.bash_exec_enabled) {
 		for (int i = 0;
 		     i < ctx->config.react.bash_exec_allowed_commands_count; i++)
-			tool_context_allow_command(
+			tool_context_allow_command_pattern(
 				ctx->tctx,
 				ctx->config.react.bash_exec_allowed_commands[i]);
 		for (int i = 0;
 		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
-			tool_context_allow_exec_dir(
+			tool_context_allow_command_scope(
 				ctx->tctx,
 				ctx->config.react.bash_exec_allowed_cwds[i]);
-		tool_context_set_command_approval(
-			ctx->tctx, command_approval_callback, ctx);
 		bash_exec_init(&ctx->tools, ctx->tctx);
 		log_info("registered bash_exec tool (explicitly enabled)");
 	} else {
@@ -3412,135 +3401,113 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	return HITL_DENY;
 }
 
-static enum command_verdict command_approval_callback(const char *command,
-						      const char *cwd,
-						      void *user_data)
+static const char *operation_label(enum tool_operation_kind kind)
 {
-	struct cli_context *ctx = user_data;
-	if (!ctx)
-		return COMMAND_DENY;
-
-	spin_pause(&ctx->spin);
-
-	printf("\r\033[K");
-	printf(ANSI_BOLD ANSI_YELLOW "⚠ Shell Command Approval" ANSI_RESET "\n");
-
-	if (command) {
-		char display[512];
-		strncpy(display, command, sizeof(display) - 1);
-		display[sizeof(display) - 1] = '\0';
-		size_t alen = strlen(display);
-		if (alen > 380) {
-			display[377] = '.';
-			display[378] = '.';
-			display[379] = '.';
-			display[380] = '\0';
-		}
-		printf("  Cmd:  " ANSI_BOLD "%s" ANSI_RESET "\n", display);
-	}
-	if (cwd && *cwd)
-		printf("  Cwd:  " ANSI_DIM "%s" ANSI_RESET "\n", cwd);
-	printf("  " ANSI_DIM "'always' will trust this program (and cwd) "
-	       "for the rest of the session." ANSI_RESET "\n");
-
-	int v = prompt_yna("bash_exec");
-	if (v == 2)
-		return COMMAND_ALWAYS;
-	if (v == 1)
-		return COMMAND_ALLOW;
-	return COMMAND_DENY;
-}
-
-static const char *path_op_label(enum tool_path_op op)
-{
-	switch (op) {
-	case TOOL_PATH_READ:
+	switch (kind) {
+	case TOOL_OP_COMMAND:
+		return "Shell Command Approval";
+	case TOOL_OP_PATH_READ:
 		return "Read Path Approval";
-	case TOOL_PATH_LIST:
+	case TOOL_OP_PATH_LIST:
 		return "List Path Approval";
-	case TOOL_PATH_WRITE:
+	case TOOL_OP_PATH_WRITE:
 		return "Write Path Approval";
+	case TOOL_OP_NETWORK:
+		return "Network Approval";
+	case TOOL_OP_EXTERNAL_SEND:
+		return "External Send Approval";
 	}
-	return "Path Approval";
+	return "Operation Approval";
 }
 
-static const char *path_op_subject(enum tool_path_op op)
+static const char *operation_subject(enum tool_operation_kind kind)
 {
-	switch (op) {
-	case TOOL_PATH_READ:
+	switch (kind) {
+	case TOOL_OP_COMMAND:
+		return "command";
+	case TOOL_OP_PATH_READ:
 		return "read_path";
-	case TOOL_PATH_LIST:
+	case TOOL_OP_PATH_LIST:
 		return "list_path";
-	case TOOL_PATH_WRITE:
+	case TOOL_OP_PATH_WRITE:
 		return "write_path";
+	case TOOL_OP_NETWORK:
+		return "network";
+	case TOOL_OP_EXTERNAL_SEND:
+		return "external_send";
 	}
-	return "path";
+	return "operation";
 }
 
-static const char *path_op_root_label(enum tool_path_op op)
+static const char *operation_scope_label(enum tool_operation_kind kind)
 {
-	switch (op) {
-	case TOOL_PATH_READ:
-	case TOOL_PATH_LIST:
+	switch (kind) {
+	case TOOL_OP_COMMAND:
+		return "Cwd";
+	case TOOL_OP_PATH_READ:
+	case TOOL_OP_PATH_LIST:
 		return "Workspace";
-	case TOOL_PATH_WRITE:
+	case TOOL_OP_PATH_WRITE:
 		return "Output dir";
+	case TOOL_OP_NETWORK:
+		return "Scope";
+	case TOOL_OP_EXTERNAL_SEND:
+		return "Scope";
 	}
-	return "Root";
+	return "Scope";
 }
 
-static enum tool_path_verdict path_approval_callback(enum tool_path_op op,
-						     const char *path,
-						     const char *root,
-						     void *user_data)
+static enum tool_operation_verdict operation_approval_callback(
+	const struct tool_operation *op, void *user_data)
 {
 	struct cli_context *ctx = user_data;
-	if (!ctx)
-		return TOOL_PATH_DENY;
+	if (!ctx || !op)
+		return TOOL_OP_DENY;
 
 	spin_pause(&ctx->spin);
 
 	printf("\r\033[K");
 	printf(ANSI_BOLD ANSI_YELLOW "⚠ %s" ANSI_RESET "\n",
-	       path_op_label(op));
-	printf("  Path:  " ANSI_BOLD "%s" ANSI_RESET "\n",
-	       path ? path : "");
-	printf("  " ANSI_DIM "%s: %s" ANSI_RESET "\n",
-	       path_op_root_label(op), root ? root : "");
-	printf("  " ANSI_DIM "'always' will trust this directory "
-	       "for the rest of the session." ANSI_RESET "\n");
+	       operation_label(op->kind));
+	if (op->tool_name && *op->tool_name)
+		printf("  Tool: " ANSI_BOLD "%s" ANSI_RESET "\n",
+		       op->tool_name);
+	if (op->kind == TOOL_OP_COMMAND) {
+		const char *command = op->action;
+		if (command) {
+			char display[512];
+			strncpy(display, command, sizeof(display) - 1);
+			display[sizeof(display) - 1] = '\0';
+			size_t alen = strlen(display);
+			if (alen > 380) {
+				display[377] = '.';
+				display[378] = '.';
+				display[379] = '.';
+				display[380] = '\0';
+			}
+			printf("  Cmd:  " ANSI_BOLD "%s" ANSI_RESET "\n",
+			       display);
+		}
+	} else if (op->target && *op->target) {
+		printf("  Target: " ANSI_BOLD "%s" ANSI_RESET "\n",
+		       op->target);
+	}
+	if (op->scope && *op->scope)
+		printf("  %s:  " ANSI_DIM "%s" ANSI_RESET "\n",
+		       operation_scope_label(op->kind), op->scope);
+	if (op->kind == TOOL_OP_COMMAND)
+		printf("  " ANSI_DIM "'always' will trust this program "
+		       "(and cwd) for the rest of the session." ANSI_RESET "\n");
+	else
+		printf("  " ANSI_DIM "'always' will trust this scope "
+		       "for the rest of the session." ANSI_RESET "\n");
 
-	int v = prompt_yna(path_op_subject(op));
+	int v = prompt_yna(operation_subject(op->kind));
 	if (v == 2)
-		return TOOL_PATH_ALWAYS;
+		return TOOL_OP_ALWAYS;
 	if (v == 1)
-		return TOOL_PATH_ALLOW;
-	return TOOL_PATH_DENY;
-}
-
-static enum write_verdict write_approval_callback(const char *path,
-						   const char *output_dir,
-						   void *user_data)
-{
-	struct cli_context *ctx = user_data;
-	if (!ctx)
-		return WRITE_DENY;
-
-	spin_pause(&ctx->spin);
-
-	printf("\r\033[K");
-	printf(ANSI_BOLD ANSI_YELLOW "⚠ Write Path Approval" ANSI_RESET "\n");
-	printf("  Path:  " ANSI_BOLD "%s" ANSI_RESET "\n", path);
-	printf("  " ANSI_DIM "Output dir: %s" ANSI_RESET "\n", output_dir);
-	printf("  " ANSI_DIM "'always' will trust this directory "
-	       "for the rest of the session." ANSI_RESET "\n");
-
-	int v = prompt_yna("write_path");
-	if (v == 2)
-		return WRITE_ALWAYS;
-	if (v == 1)
-		return WRITE_ALLOW;
-	return WRITE_DENY;
+		return TOOL_OP_ALLOW;
+	return TOOL_OP_DENY;
 }
 
 /* ---- cli_handle_command ---- */
