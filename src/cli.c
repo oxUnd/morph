@@ -3480,10 +3480,19 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 void cli_shutdown(struct cli_context *ctx)
 {
+	int wait_for_memory;
+
 	if (!ctx)
 		return;
 	/* Drain the memory async worker before tearing down the db so
 	 * any in-flight consolidation job finishes against a live file. */
+	wait_for_memory = memory_async_pending();
+	if (wait_for_memory) {
+		printf(ANSI_DIM
+		       "Saving memory summary before exit, please wait..."
+		       ANSI_RESET "\n");
+		fflush(stdout);
+	}
 	memory_async_shutdown();
 	if (ctx->react) {
 		free(ctx->react->sub_agent_info);

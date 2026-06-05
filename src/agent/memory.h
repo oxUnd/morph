@@ -66,6 +66,10 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
  * database file. Safe to call when the worker was never started. */
 void memory_async_shutdown(void);
 
+/* Return non-zero when async memory consolidation has queued or in-flight
+ * work that shutdown may need to wait for. */
+int memory_async_pending(void);
+
 int memory_clear(struct db *db, int64_t session_id,
 		 enum memory_clear_scope scope);
 

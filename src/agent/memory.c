@@ -2221,6 +2221,7 @@ static struct memory_job *g_async_tail;
 static pthread_t g_async_thread;
 static int g_async_running;
 static int g_async_stop;
+static int g_async_active;
 
 static void memory_steps_free(struct react_step *s)
 {
@@ -2313,6 +2314,7 @@ static void *memory_async_worker(void *arg)
 		g_async_head = job->next;
 		if (!g_async_head)
 			g_async_tail = NULL;
+		g_async_active = 1;
 		pthread_mutex_unlock(&g_async_lock);
 
 		if (!job)
@@ -2336,6 +2338,10 @@ static void *memory_async_worker(void *arg)
 				rc);
 		}
 		memory_job_free(job);
+
+		pthread_mutex_lock(&g_async_lock);
+		g_async_active = 0;
+		pthread_mutex_unlock(&g_async_lock);
 	}
 	return NULL;
 }
@@ -2422,5 +2428,16 @@ void memory_async_shutdown(void)
 
 	pthread_mutex_lock(&g_async_lock);
 	g_async_running = 0;
+	g_async_active = 0;
 	pthread_mutex_unlock(&g_async_lock);
+}
+
+int memory_async_pending(void)
+{
+	int pending;
+
+	pthread_mutex_lock(&g_async_lock);
+	pending = g_async_running && (g_async_active || g_async_head != NULL);
+	pthread_mutex_unlock(&g_async_lock);
+	return pending;
 }
