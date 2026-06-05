@@ -69,10 +69,6 @@ struct turn_job {
 
 static const char *bridge_output_dir(void)
 {
-	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
-
-	if (env && *env)
-		return env;
 	if (fcgi_artifact_output_dir)
 		return fcgi_artifact_output_dir();
 	return "/var/lib/morph/output";

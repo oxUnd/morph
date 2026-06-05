@@ -55,6 +55,9 @@ static void bridge_init_once(void);
 const char *fcgi_artifact_output_dir(void)
 {
 	pthread_once(&g_once, bridge_init_once);
+	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
+	if (env && *env)
+		return env;
 	return g_config.general.output_dir[0]
 		? g_config.general.output_dir : "/var/lib/morph/output";
 }
@@ -80,28 +83,39 @@ static void bridge_init_once(void)
 {
 	config_set_defaults(&g_config);
 
-	/* Try HOME/.morph/config.toml, fall back to cwd */
-	const char *home = getenv("HOME");
-	if (home) {
-		char path[PATH_MAX];
-		snprintf(path, sizeof(path), "%s/.morph/config.toml", home);
-		config_load(&g_config, path);
+	/* MORPH_FCGI_CONFIG env → $HOME/.morph/config.toml */
+	const char *cfg_env = getenv("MORPH_FCGI_CONFIG");
+	if (cfg_env && *cfg_env) {
+		config_load(&g_config, cfg_env);
 	} else {
-		config_load(&g_config, "config.toml");
+		const char *home = getenv("HOME");
+		if (home) {
+			char path[PATH_MAX];
+			snprintf(path, sizeof(path),
+				 "%s/.morph/config.toml", home);
+			config_load(&g_config, path);
+		}
+	}
+
+	/* Environment variable overrides (take precedence over config) */
+	{
+		const char *env;
+		if ((env = getenv("MORPH_FCGI_OUTPUT_DIR")) && *env)
+			strncpy(g_config.general.output_dir, env,
+				sizeof(g_config.general.output_dir) - 1);
+		if ((env = getenv("MORPH_FCGI_LOG_FILE")) && *env)
+			strncpy(g_config.general.log_file, env,
+				sizeof(g_config.general.log_file) - 1);
 	}
 
 	/* Initialize logging from config, with fallback */
 	{
 		const char *lf = g_config.general.log_file;
-		char log_path[PATH_MAX];
-		if (lf && lf[0] == '/') {
-			snprintf(log_path, sizeof(log_path), "%s", lf);
-		} else {
-			snprintf(log_path, sizeof(log_path),
-				 "/var/lib/morph/log/fastcgi.log");
-		}
+		const char *log_path = (lf && *lf)
+			? lf : "/var/lib/morph/log/fastcgi.log";
 		log_init(log_path, LOG_DEBUG);
-		fprintf(stderr, "fcgi-bridge: log initialized to %s\n", log_path);
+		fprintf(stderr, "fcgi-bridge: log initialized to %s\n",
+			log_path);
 	}
 
 	g_tokenizer = tokenizer_create(

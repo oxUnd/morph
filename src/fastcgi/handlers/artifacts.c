@@ -16,10 +16,6 @@ __attribute__((weak)) const char *fcgi_artifact_output_dir(void);
 
 static const char *artifact_root(void)
 {
-	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
-
-	if (env && *env)
-		return env;
 	if (fcgi_artifact_output_dir)
 		return fcgi_artifact_output_dir();
 	return "/var/lib/morph/output";

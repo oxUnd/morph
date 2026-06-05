@@ -28,9 +28,9 @@ RUN sed -i 's|deb.debian.org|mirrors.huaweicloud.com|g; s|security.debian.org|mi
     nginx \
     libfcgi0ldbl libsqlite3-0 libcurl4 libssl3 ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --home /var/lib/morph --shell /usr/sbin/nologin morph \
- && mkdir -p /var/lib/morph /var/lib/morph/log /var/www/morph /var/lib/nginx \
- && chown -R morph:morph /var/lib/morph /var/lib/nginx /var/log/nginx
+ && useradd --system --home /home/morph --shell /usr/sbin/nologin morph \
+ && mkdir -p /home/morph/.morph /var/lib/morph /var/lib/morph/log /var/www/morph /var/lib/nginx \
+ && chown -R morph:morph /home/morph /var/lib/morph /var/lib/nginx /var/log/nginx
 
 COPY --from=build /src/build/src/fastcgi/morph-fastcgi /usr/local/bin/morph-fastcgi
 COPY web/index.html /var/www/morph/index.html
@@ -43,8 +43,14 @@ RUN ln -sf /etc/nginx/sites-available/morph /etc/nginx/sites-enabled/default \
 ENV MORPH_FCGI_LISTEN=:9000
 ENV MORPH_FCGI_DB=/var/lib/morph/morph.db
 ENV MORPH_FCGI_WORKERS=4
+ENV MORPH_FCGI_CONFIG=/home/morph/.morph/config.toml
+ENV MORPH_FCGI_OUTPUT_DIR=/var/lib/morph/output
+ENV MORPH_FCGI_LOG_FILE=/var/lib/morph/log/fastcgi.log
 EXPOSE 80
 
 CMD ["/bin/bash", "-c", \
-    "su -s /bin/sh morph -c '/usr/local/bin/morph-fastcgi' & \
+    "export HOME=/home/morph MORPH_FCGI_CONFIG=/home/morph/.morph/config.toml \
+     MORPH_FCGI_OUTPUT_DIR=/var/lib/morph/output \
+     MORPH_FCGI_LOG_FILE=/var/lib/morph/log/fastcgi.log \
+    && exec su -s /bin/sh morph -c 'exec /usr/local/bin/morph-fastcgi' & \
      nginx -g 'daemon off;'"]

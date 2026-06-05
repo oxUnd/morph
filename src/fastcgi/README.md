@@ -154,8 +154,10 @@ SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
 | `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
 | `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
 | `MORPH_FCGI_WORKERS` | `8` | Worker threads (1–64) |
-| `MORPH_FCGI_TRUST_HDR` | _(none)_ | Trusted proxy identity header |
+| `MORPH_FCGI_CONFIG` | `$HOME/.morph/config.toml` | Path to config file |
 | `MORPH_FCGI_OUTPUT_DIR` | _(from config)_ | Override artifact output directory |
+| `MORPH_FCGI_LOG_FILE` | _(from config)_ | Override log file path |
+| `MORPH_FCGI_TRUST_HDR` | _(none)_ | Trusted proxy identity header |
 | `MORPH_FCGI_ALLOW_SIGNUP` | _(none)_ | Set to `1` to enable public signup |
 | `MORPH_FCGI_SIGNUP_CODE` | _(none)_ | Optional invite code for signup |
 
@@ -177,16 +179,18 @@ Examples in `web/deploy/`:
 docker build -t morph-fastcgi -f web/deploy/Dockerfile .
 
 docker run -d --name morph -p 8080:80 \
-  -v ~/.morph/config.toml:/var/lib/morph/.morph/config.toml:ro \
-  -v ~/.morph/output:/var/lib/morph/.morph/output \
-  -v ~/.morph/log:/var/lib/morph/.morph/log \
-  -e HOME=/var/lib/morph \
-  -e MORPH_FCGI_OUTPUT_DIR=/var/lib/morph/.morph/output \
+  -v ~/.morph/config.toml:/home/morph/.morph/config.toml:ro \
+  -v ~/.morph/skills:/home/morph/.morph/skills:ro \
+  -v ~/.morph/exts:/home/morph/.morph/exts:ro \
+  -v ~/.morph/output:/var/lib/morph/output \
+  -v ~/.morph/log:/var/lib/morph/log \
   morph-fastcgi
 ```
 
-The config must have `output_dir = "~/.morph/output"` so the path resolves
-correctly inside the container (`HOME=/var/lib/morph`).
+Environment variables `MORPH_FCGI_CONFIG`, `MORPH_FCGI_OUTPUT_DIR`, and
+`MORPH_FCGI_LOG_FILE` are set in the Dockerfile to point to the container
+paths. Config path values with `~` are expanded at load time, so
+`output_dir = "~/.morph/output"` resolves correctly inside the container.
 
 ---
 

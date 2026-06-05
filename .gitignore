@@ -63,3 +63,4 @@ vgcore.*
 __pycache__/
 eval/eval_config.toml
 eval/results/
+_deps/

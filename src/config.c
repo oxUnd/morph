@@ -1,5 +1,6 @@
 #include "config.h"
 #include "util/log.h"
+#include "util/file.h"
 #include "toml.h"
 #include <errno.h>
 #include <string.h>
@@ -149,6 +150,32 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	CFG_INT(t, "timeout_seconds", e->timeout_seconds);
 	CFG_INT(t, "poll_interval_seconds", e->poll_interval_seconds);
 	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);
+}
+
+static void expand_path_field(char *buf, size_t len)
+{
+	if (!buf[0])
+		return;
+	char *expanded = file_expand_path(buf);
+	if (expanded) {
+		strncpy(buf, expanded, len - 1);
+		buf[len - 1] = '\0';
+		free(expanded);
+	}
+}
+
+static void config_expand_paths(struct config *cfg)
+{
+	expand_path_field(cfg->general.output_dir, sizeof(cfg->general.output_dir));
+	expand_path_field(cfg->general.log_file, sizeof(cfg->general.log_file));
+	expand_path_field(cfg->ext.dir, sizeof(cfg->ext.dir));
+	expand_path_field(cfg->skill.dir, sizeof(cfg->skill.dir));
+	expand_path_field(cfg->prompt.system_prompt_file, sizeof(cfg->prompt.system_prompt_file));
+	expand_path_field(cfg->prompt.system_prompt_dir, sizeof(cfg->prompt.system_prompt_dir));
+	for (int i = 0; i < cfg->mcp.server_count; i++) {
+		struct config_mcp_server *s = &cfg->mcp.servers[i];
+		expand_path_field(s->command, sizeof(s->command));
+	}
 }
 
 int config_load(struct config *cfg, const char *path)
@@ -391,6 +418,9 @@ int config_load(struct config *cfg, const char *path)
 	}
 
 	toml_free(tbl);
+
+	config_expand_paths(cfg);
+
 	log_info("config loaded from: %s", path);
 
 	(void)config_load_sub_agents(cfg, path);
