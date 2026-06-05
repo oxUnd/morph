@@ -1,4 +1,5 @@
 #include "img_annotate.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/error.h"
@@ -71,8 +72,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	int status;
 	int rc = 0;
 	int i;
+	struct tool_context *tctx = user_data;
 
-	(void)user_data;
 	if (!result_json)
 		return -EINVAL;
 
@@ -151,7 +152,33 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	}
 
 	for (i = 0; i < npaths; i++) {
-		if (!file_exists(paths[i])) {
+		char resolved[PATH_MAX];
+		if (tctx) {
+			rc = tool_context_authorize_path(
+				tctx, TOOL_PATH_READ, paths[i],
+				resolved, sizeof(resolved));
+			if (rc < 0) {
+				char err[1100];
+				if (rc == -ENOENT)
+					snprintf(err, sizeof(err),
+						 "{\"error\":\"image file not found: %s\"}",
+						 paths[i]);
+				else
+					snprintf(err, sizeof(err),
+						 "{\"error\":\"read path outside workspace: permission denied\"}");
+				*result_json = strdup(err);
+				for (int j = 0; j < npaths; j++)
+					free(paths[j]);
+				return rc;
+			}
+			free(paths[i]);
+			paths[i] = strdup(resolved);
+			if (!paths[i]) {
+				for (int j = 0; j < npaths; j++)
+					free(paths[j]);
+				MORPH_RETURN(-ENOMEM);
+			}
+		} else if (!file_exists(paths[i])) {
 			char err[1100];
 			snprintf(err, sizeof(err),
 				 "{\"error\":\"image file not found: %s\"}",
@@ -572,7 +599,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 int img_annotate_init(struct tool_registry *reg,
 		      img_annotate_pause_fn pause_fn,
 		      img_annotate_resume_fn resume_fn,
-		      void *user_data)
+		      void *user_data,
+		      struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
@@ -631,5 +659,5 @@ int img_annotate_init(struct tool_registry *reg,
 		"annotate together (use either 'path' or 'paths', "
 		"not both)\"}"
 		"},\"required\":[]}",
-		img_annotate_exec, NULL, NULL);
+		img_annotate_exec, tctx, NULL);
 }

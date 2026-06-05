@@ -3,10 +3,13 @@
 #include "models/image_gen.h"
 #include "render/image.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "cJSON.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 static struct model *g_img_llm;
 
@@ -56,8 +59,27 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
+	char resolved_ref[PATH_MAX];
+	const char *ref_to_send = ref_img;
+	if (ref_img && *ref_img && tctx) {
+		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
+						     ref_img, resolved_ref,
+						     sizeof(resolved_ref));
+		if (rc < 0) {
+			cJSON_Delete(root);
+			if (rc == -ENOENT)
+				*result_json = strdup(
+					"{\"error\":\"reference image not found\"}");
+			else
+				*result_json = strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}");
+			return rc;
+		}
+		ref_to_send = resolved_ref;
+	}
+
 	struct image_result img_res = {0};
-	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_img,
+	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_to_send,
 				  output_dir, &img_res);
 	cJSON_Delete(root);
 

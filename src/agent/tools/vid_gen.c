@@ -4,14 +4,22 @@
 #include "render/video.h"
 #include "util/log.h"
 #include "cJSON.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 #define MAX_REF_IMAGES 16
 #define MAX_REF_VIDEOS 8
 
 static struct model *g_vid_llm;
+
+static int is_http_url(const char *s)
+{
+	return s && (strncmp(s, "http://", 7) == 0 ||
+		     strncmp(s, "https://", 8) == 0);
+}
 
 static int vid_gen_exec(const char *args_json, char **result_json, void *user_data)
 {
@@ -78,12 +86,58 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 		return -EINVAL;
 	}
 
+	char resolved_images[MAX_REF_IMAGES][PATH_MAX];
+	char resolved_videos[MAX_REF_VIDEOS][PATH_MAX];
+	const char *image_paths_to_send[MAX_REF_IMAGES];
+	const char *video_paths_to_send[MAX_REF_VIDEOS];
+
+	for (int i = 0; i < num_images; i++) {
+		image_paths_to_send[i] = image_paths[i];
+		if (tctx && image_paths[i] && image_paths[i][0]) {
+			int rc = tool_context_authorize_path(
+				tctx, TOOL_PATH_READ, image_paths[i],
+				resolved_images[i], sizeof(resolved_images[i]));
+			if (rc < 0) {
+				cJSON_Delete(root);
+				if (rc == -ENOENT)
+					*result_json = strdup(
+						"{\"error\":\"reference image not found\"}");
+				else
+					*result_json = strdup(
+						"{\"error\":\"read path outside workspace: permission denied\"}");
+				return rc;
+			}
+			image_paths_to_send[i] = resolved_images[i];
+		}
+	}
+
+	for (int i = 0; i < num_videos; i++) {
+		video_paths_to_send[i] = video_paths[i];
+		if (tctx && video_paths[i] && video_paths[i][0] &&
+		    !is_http_url(video_paths[i])) {
+			int rc = tool_context_authorize_path(
+				tctx, TOOL_PATH_READ, video_paths[i],
+				resolved_videos[i], sizeof(resolved_videos[i]));
+			if (rc < 0) {
+				cJSON_Delete(root);
+				if (rc == -ENOENT)
+					*result_json = strdup(
+						"{\"error\":\"reference video not found\"}");
+				else
+					*result_json = strdup(
+						"{\"error\":\"read path outside workspace: permission denied\"}");
+				return rc;
+			}
+			video_paths_to_send[i] = resolved_videos[i];
+		}
+	}
+
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	struct video_result vid_res = {0};
 	int rc = video_gen_create(g_vid_llm, prompt,
-				  num_images > 0 ? image_paths : NULL,
+				  num_images > 0 ? image_paths_to_send : NULL,
 				  num_images,
-				  num_videos > 0 ? video_paths : NULL,
+				  num_videos > 0 ? video_paths_to_send : NULL,
 				  num_videos,
 				  duration, output_dir, &vid_res);
 	cJSON_Delete(root);

@@ -8,7 +8,10 @@ extern "C" {
 #include "agent/tool.h"
 #include "models/llm.h"
 
-int img_edit_init(struct tool_registry *reg, struct model *llm);
+struct tool_context;
+
+int img_edit_init(struct tool_registry *reg, struct model *llm,
+		  struct tool_context *tctx);
 
 #ifdef __cplusplus
 }

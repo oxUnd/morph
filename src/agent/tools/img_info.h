@@ -7,7 +7,9 @@ extern "C" {
 
 #include "agent/tool.h"
 
-int img_info_init(struct tool_registry *reg);
+struct tool_context;
+
+int img_info_init(struct tool_registry *reg, struct tool_context *tctx);
 
 #ifdef __cplusplus
 }

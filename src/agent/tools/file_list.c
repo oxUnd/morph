@@ -44,34 +44,24 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	}
 
 	char resolved_path[PATH_MAX];
-	char *expanded = file_expand_path(dir_path);
-	if (expanded) {
-		if (expanded[0] == '/') {
-			strncpy(resolved_path, expanded, sizeof(resolved_path) - 1);
-			resolved_path[sizeof(resolved_path) - 1] = '\0';
-		} else {
-			const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
-			if (wd && *wd)
-				snprintf(resolved_path, sizeof(resolved_path),
-					 "%s/%s", wd, expanded);
+	if (tctx) {
+		int rc = tool_context_authorize_path(tctx, TOOL_PATH_LIST,
+						     dir_path, resolved_path,
+						     sizeof(resolved_path));
+		if (rc < 0) {
+			cJSON_Delete(root);
+			if (rc == -ENOENT)
+				*result_json = strdup(
+					"{\"error\":\"directory not found\"}");
 			else
-				strncpy(resolved_path, expanded,
-					sizeof(resolved_path) - 1);
+				*result_json = strdup(
+					"{\"error\":\"list path outside workspace: permission denied\"}");
+			return rc;
 		}
-		free(expanded);
-	} else if (dir_path[0] == '/' || dir_path[0] == '~') {
+	} else {
 		strncpy(resolved_path, dir_path, sizeof(resolved_path) - 1);
 		resolved_path[sizeof(resolved_path) - 1] = '\0';
-	} else {
-		const char *wd = tctx ? tool_context_workdir(tctx) : NULL;
-		if (wd && *wd)
-			snprintf(resolved_path, sizeof(resolved_path),
-				 "%s/%s", wd, dir_path);
-		else
-			strncpy(resolved_path, dir_path,
-				sizeof(resolved_path) - 1);
 	}
-	resolved_path[sizeof(resolved_path) - 1] = '\0';
 
 	DIR *d = opendir(resolved_path);
 	if (!d) {

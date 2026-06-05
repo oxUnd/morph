@@ -101,8 +101,28 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		return -EINVAL;
 	}
 
+	char resolved_input[PATH_MAX];
+	if (tctx) {
+		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
+						     file_path, resolved_input,
+						     sizeof(resolved_input));
+		if (rc < 0) {
+			cJSON_Delete(root);
+			if (rc == -ENOENT)
+				*result_json = strdup(
+					"{\"error\":\"failed to load image\"}");
+			else
+				*result_json = strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}");
+			return rc;
+		}
+	} else {
+		strncpy(resolved_input, file_path, sizeof(resolved_input) - 1);
+		resolved_input[sizeof(resolved_input) - 1] = '\0';
+	}
+
 	int w = 0, h = 0, ch = 0;
-	unsigned char *data = stbi_load(file_path, &w, &h, &ch, 0);
+	unsigned char *data = stbi_load(resolved_input, &w, &h, &ch, 0);
 	if (!data) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to load image\"}");
@@ -111,14 +131,21 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 
 	char final_path[PATH_MAX];
 	if (out_path_in && *out_path_in) {
-		if (tctx && tool_context_check_write_path(tctx, out_path_in) < 0) {
-			cJSON_Delete(root);
-			*result_json = strdup(
-				"{\"error\":\"write path outside output directory: permission denied\"}");
-			MORPH_RETURN(-EPERM);
+		if (tctx) {
+			int rc = tool_context_authorize_path(
+				tctx, TOOL_PATH_WRITE, out_path_in,
+				final_path, sizeof(final_path));
+			if (rc < 0) {
+				stbi_image_free(data);
+				cJSON_Delete(root);
+				*result_json = strdup(
+					"{\"error\":\"write path outside output directory: permission denied\"}");
+				return rc;
+			}
+		} else {
+			strncpy(final_path, out_path_in, sizeof(final_path) - 1);
+			final_path[sizeof(final_path) - 1] = '\0';
 		}
-		strncpy(final_path, out_path_in, sizeof(final_path) - 1);
-		final_path[sizeof(final_path) - 1] = '\0';
 	} else {
 		const char *odir = tctx ? tool_context_output_dir(tctx) : NULL;
 		char *out_dir;

@@ -6,7 +6,9 @@
 #include "agent/tools/img_resize.h"
 #include "agent/tools/img_convert.h"
 #include "agent/tool.h"
+#include "agent/tool_context.h"
 #include "render/image.h"
+#include "util/file.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -123,7 +125,7 @@ TEST_F(ImgGenToolTest, ToolNotFound) {
 }
 
 TEST_F(ImgGenToolTest, EditRegister) {
-	int rc = img_edit_init(&reg, NULL);
+	int rc = img_edit_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&reg, "img_edit");
 	ASSERT_NE(e, nullptr);
@@ -131,7 +133,7 @@ TEST_F(ImgGenToolTest, EditRegister) {
 }
 
 TEST_F(ImgGenToolTest, EditMissingArgs) {
-	img_edit_init(&reg, NULL);
+	img_edit_init(&reg, NULL, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_edit", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -140,7 +142,7 @@ TEST_F(ImgGenToolTest, EditMissingArgs) {
 }
 
 TEST_F(ImgGenToolTest, InfoRegister) {
-	int rc = img_info_init(&reg);
+	int rc = img_info_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&reg, "img_info");
 	ASSERT_NE(e, nullptr);
@@ -148,7 +150,7 @@ TEST_F(ImgGenToolTest, InfoRegister) {
 }
 
 TEST_F(ImgGenToolTest, InfoMissingPath) {
-	img_info_init(&reg);
+	img_info_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_info", "{}", &result);
 	EXPECT_NE(rc, 0);
@@ -157,12 +159,36 @@ TEST_F(ImgGenToolTest, InfoMissingPath) {
 }
 
 TEST_F(ImgGenToolTest, InfoInvalidFile) {
-	img_info_init(&reg);
+	img_info_init(&reg, NULL);
 	char *result = NULL;
 	int rc = tool_exec(&reg, "img_info", "{\"file_path\":\"/nonexistent.png\"}", &result);
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result, nullptr);
 	free(result);
+}
+
+TEST_F(ImgGenToolTest, InfoDeniesSymlinkEscape) {
+	const char *work = "/tmp/morph_img_work";
+	const char *outside = "/tmp/morph_img_outside.png";
+	const char *link_path = "/tmp/morph_img_work/link.png";
+	file_ensure_dir(work);
+	ASSERT_EQ(create_test_png(outside), 0);
+	std::remove(link_path);
+	ASSERT_EQ(symlink(outside, link_path), 0);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	ASSERT_NE(tctx, nullptr);
+	img_info_init(&reg, tctx);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_info",
+		"{\"file_path\":\"link.png\"}", &result);
+	EXPECT_EQ(rc, -EPERM);
+	ASSERT_NE(result, nullptr);
+	EXPECT_TRUE(strstr(result, "permission denied") != NULL);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(link_path);
+	std::remove(outside);
+	rmdir(work);
 }
 
 TEST_F(ImgGenToolTest, ResizeRegister) {
@@ -193,6 +219,28 @@ TEST_F(ImgGenToolTest, ResizeInvalidFile) {
 	free(result);
 }
 
+TEST_F(ImgGenToolTest, ResizeDeniesOutsideInput) {
+	const char *work = "/tmp/morph_img_work";
+	const char *outside = "/tmp/morph_img_outside.png";
+	file_ensure_dir(work);
+	ASSERT_EQ(create_test_png(outside), 0);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	ASSERT_NE(tctx, nullptr);
+	img_resize_init(&reg, tctx);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_resize",
+		"{\"file_path\":\"/tmp/morph_img_outside.png\","
+		"\"width\":4,\"height\":4}",
+		&result);
+	EXPECT_EQ(rc, -EPERM);
+	ASSERT_NE(result, nullptr);
+	EXPECT_TRUE(strstr(result, "permission denied") != NULL);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(outside);
+	rmdir(work);
+}
+
 TEST_F(ImgGenToolTest, ConvertRegister) {
 	int rc = img_convert_init(&reg, NULL);
 	EXPECT_EQ(rc, 0);
@@ -219,6 +267,28 @@ TEST_F(ImgGenToolTest, ConvertUnsupportedFormat) {
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result, nullptr);
 	free(result);
+}
+
+TEST_F(ImgGenToolTest, ConvertDeniesOutsideInputBeforeOutput) {
+	const char *work = "/tmp/morph_img_work";
+	const char *outside = "/tmp/morph_img_outside.png";
+	file_ensure_dir(work);
+	ASSERT_EQ(create_test_png(outside), 0);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	ASSERT_NE(tctx, nullptr);
+	img_convert_init(&reg, tctx);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_convert",
+		"{\"file_path\":\"/tmp/morph_img_outside.png\","
+		"\"format\":\"jpg\"}",
+		&result);
+	EXPECT_EQ(rc, -EPERM);
+	ASSERT_NE(result, nullptr);
+	EXPECT_TRUE(strstr(result, "permission denied") != NULL);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(outside);
+	rmdir(work);
 }
 
 TEST(ImageDetectFmt, Png) {

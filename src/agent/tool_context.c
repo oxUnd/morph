@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/stat.h>
 
 static const char *skip_ws(const char *s)
 {
@@ -117,6 +118,118 @@ static void resolve_into(char *dst, size_t dst_size, const char *src)
 	}
 }
 
+static const char *path_op_name(enum tool_path_op op)
+{
+	switch (op) {
+	case TOOL_PATH_READ:
+		return "read";
+	case TOOL_PATH_LIST:
+		return "list";
+	case TOOL_PATH_WRITE:
+		return "write";
+	}
+	return "path";
+}
+
+static int path_op_is_read(enum tool_path_op op)
+{
+	return op == TOOL_PATH_READ || op == TOOL_PATH_LIST;
+}
+
+static int resolve_user_path(struct tool_context *tctx,
+			     enum tool_path_op op,
+			     const char *path,
+			     char *resolved,
+			     size_t resolved_size)
+{
+	char candidate[PATH_MAX];
+	const char *base;
+	char *expanded;
+	char *rp;
+
+	if (!tctx || !path || !resolved || resolved_size == 0)
+		MORPH_RETURN(-EINVAL);
+
+	expanded = file_expand_path(path);
+	if (!expanded)
+		MORPH_RETURN(-ENOMEM);
+
+	if (expanded[0] == '/') {
+		snprintf(candidate, sizeof(candidate), "%s", expanded);
+	} else {
+		base = path_op_is_read(op) ? tctx->workdir : tctx->output_dir;
+		if (base && *base)
+			snprintf(candidate, sizeof(candidate), "%s/%s",
+				 base, expanded);
+		else
+			snprintf(candidate, sizeof(candidate), "%s", expanded);
+	}
+	free(expanded);
+
+	rp = file_resolve_path(candidate);
+	if (!rp)
+		MORPH_RETURN(-ENOENT);
+	snprintf(resolved, resolved_size, "%s", rp);
+	free(rp);
+	return 0;
+}
+
+static void add_allowed_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
+			    int *count, const char *dir)
+{
+	char *resolved;
+	const char *to_store;
+
+	if (!dirs || !count || !dir)
+		return;
+	if (*count >= TOOL_CONTEXT_ALLOW_MAX)
+		return;
+	resolved = file_resolve_path(dir);
+	to_store = resolved ? resolved : dir;
+	for (int i = 0; i < *count; i++) {
+		if (strcmp(dirs[i], to_store) == 0) {
+			free(resolved);
+			return;
+		}
+	}
+	strncpy(dirs[*count], to_store, TOOL_CONTEXT_ALLOW_PATH_MAX - 1);
+	dirs[*count][TOOL_CONTEXT_ALLOW_PATH_MAX - 1] = '\0';
+	(*count)++;
+	free(resolved);
+}
+
+static void add_parent_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
+			   int *count, const char *path)
+{
+	char buf[PATH_MAX];
+	char *slash;
+
+	if (!path)
+		return;
+	snprintf(buf, sizeof(buf), "%s", path);
+	slash = strrchr(buf, '/');
+	if (!slash)
+		return;
+	if (slash == buf)
+		*(slash + 1) = '\0';
+	else
+		*slash = '\0';
+	add_allowed_dir(dirs, count, buf);
+}
+
+static int path_exists_for_read(enum tool_path_op op, const char *path)
+{
+	struct stat st;
+
+	if (!path_op_is_read(op))
+		return 1;
+	if (stat(path, &st) != 0)
+		return 0;
+	if (op == TOOL_PATH_LIST && !S_ISDIR(st.st_mode))
+		return 0;
+	return 1;
+}
+
 struct tool_context *tool_context_create(const char *workdir,
 					 const char *output_dir)
 {
@@ -125,8 +238,11 @@ struct tool_context *tool_context_create(const char *workdir,
 		return NULL;
 	resolve_into(tctx->workdir, sizeof(tctx->workdir), workdir);
 	resolve_into(tctx->output_dir, sizeof(tctx->output_dir), output_dir);
+	tctx->path_approval_fn = NULL;
+	tctx->path_approval_user_data = NULL;
 	tctx->approval_fn = NULL;
 	tctx->approval_user_data = NULL;
+	tctx->read_allowed_dirs_count = 0;
 	tctx->allowed_dirs_count = 0;
 	tctx->command_approval_fn = NULL;
 	tctx->command_approval_user_data = NULL;
@@ -156,54 +272,104 @@ const char *tool_context_output_dir(const struct tool_context *tctx)
 
 void tool_context_add_allowed_dir(struct tool_context *tctx, const char *dir)
 {
-	if (!tctx || !dir)
+	if (!tctx)
 		return;
-	if (tctx->allowed_dirs_count >= TOOL_CONTEXT_ALLOW_MAX)
+	add_allowed_dir(tctx->allowed_dirs, &tctx->allowed_dirs_count, dir);
+}
+
+void tool_context_add_read_allowed_dir(struct tool_context *tctx,
+				       const char *dir)
+{
+	if (!tctx)
 		return;
-	char *resolved = file_resolve_path(dir);
-	const char *to_store = resolved ? resolved : dir;
-	for (int i = 0; i < tctx->allowed_dirs_count; i++) {
-		if (strcmp(tctx->allowed_dirs[i], to_store) == 0) {
-			free(resolved);
-			return;
+	add_allowed_dir(tctx->read_allowed_dirs,
+			&tctx->read_allowed_dirs_count, dir);
+}
+
+void tool_context_set_path_approval(struct tool_context *tctx,
+				    tool_path_approval_fn fn,
+				    void *user_data)
+{
+	if (!tctx)
+		return;
+	tctx->path_approval_fn = fn;
+	tctx->path_approval_user_data = user_data;
+}
+
+int tool_context_authorize_path(struct tool_context *tctx,
+				enum tool_path_op op, const char *path,
+				char *resolved, size_t resolved_size)
+{
+	char path_buf[PATH_MAX];
+	const char *root;
+	char (*allow_dirs)[TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int *allow_count;
+	int rc;
+
+	if (!tctx || !path)
+		MORPH_RETURN(-EINVAL);
+	if (!resolved || resolved_size == 0) {
+		resolved = path_buf;
+		resolved_size = sizeof(path_buf);
+	}
+
+	rc = resolve_user_path(tctx, op, path, resolved, resolved_size);
+	if (rc < 0)
+		return rc;
+
+	if (path_op_is_read(op) && !path_exists_for_read(op, resolved))
+		MORPH_RETURN(-ENOENT);
+
+	root = path_op_is_read(op) ? tctx->workdir : tctx->output_dir;
+	allow_dirs = path_op_is_read(op) ? tctx->read_allowed_dirs
+					  : tctx->allowed_dirs;
+	allow_count = path_op_is_read(op) ? &tctx->read_allowed_dirs_count
+					   : &tctx->allowed_dirs_count;
+
+	if (root && *root && path_is_within(resolved, root))
+		return 0;
+	for (int i = 0; i < *allow_count; i++) {
+		if (path_is_within(resolved, allow_dirs[i]))
+			return 0;
+	}
+
+	if (tctx->path_approval_fn) {
+		enum tool_path_verdict v = tctx->path_approval_fn(
+			op, resolved, root, tctx->path_approval_user_data);
+		if (v == TOOL_PATH_ALLOW)
+			return 0;
+		if (v == TOOL_PATH_ALWAYS) {
+			add_parent_dir(allow_dirs, allow_count, resolved);
+			return 0;
+		}
+	} else if (op == TOOL_PATH_WRITE && tctx->approval_fn) {
+		enum write_verdict v = tctx->approval_fn(
+			resolved, tctx->output_dir, tctx->approval_user_data);
+		if (v == WRITE_ALLOW)
+			return 0;
+		if (v == WRITE_ALWAYS) {
+			add_parent_dir(tctx->allowed_dirs,
+				       &tctx->allowed_dirs_count,
+				       resolved);
+			return 0;
 		}
 	}
-	strncpy(tctx->allowed_dirs[tctx->allowed_dirs_count],
-		to_store, TOOL_CONTEXT_ALLOW_PATH_MAX - 1);
-	tctx->allowed_dirs_count++;
-	free(resolved);
+
+	log_warn("%s path denied (outside root): %s",
+		 path_op_name(op), resolved);
+	MORPH_RETURN(-EPERM);
+}
+
+int tool_context_check_read_path(struct tool_context *tctx, const char *path)
+{
+	return tool_context_authorize_path(tctx, TOOL_PATH_READ, path,
+					   NULL, 0);
 }
 
 int tool_context_check_write_path(struct tool_context *tctx, const char *path)
 {
-	if (!tctx || !path)
-		MORPH_RETURN(-EINVAL);
-	if (path_is_within(path, tctx->output_dir))
-		return 0;
-	for (int i = 0; i < tctx->allowed_dirs_count; i++) {
-		if (path_is_within(path, tctx->allowed_dirs[i]))
-			return 0;
-	}
-	if (tctx->approval_fn) {
-		enum write_verdict v = tctx->approval_fn(
-			path, tctx->output_dir, tctx->approval_user_data);
-		if (v == WRITE_ALLOW)
-			return 0;
-		if (v == WRITE_ALWAYS) {
-			char *resolved = file_resolve_path(path);
-			if (resolved) {
-				char *slash = strrchr(resolved, '/');
-				if (slash && slash != resolved) {
-					*slash = '\0';
-					tool_context_add_allowed_dir(tctx, resolved);
-				}
-			}
-			free(resolved);
-			return 0;
-		}
-	}
-	log_warn("write path denied (outside output_dir): %s", path);
-	MORPH_RETURN(-EPERM);
+	return tool_context_authorize_path(tctx, TOOL_PATH_WRITE, path,
+					   NULL, 0);
 }
 
 void tool_context_set_command_approval(struct tool_context *tctx,

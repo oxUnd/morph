@@ -1,6 +1,14 @@
 #include <gtest/gtest.h>
 #include "agent/tool.h"
+#include "agent/tool_context.h"
+#include "agent/tools/file_read.h"
+#include "agent/tools/file_list.h"
+#include "agent/tools/file_info.h"
+#include "util/file.h"
 #include <string.h>
+#include <cstdio>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int mock_tool_exec(const char *args_json, char **result_json, void *user_data)
 {
@@ -180,4 +188,89 @@ TEST_F(ToolTest, CleanupIdempotent) {
 		      val, (tool_user_data_destroy_fn)free);
 	tool_registry_cleanup(&reg);
 	tool_registry_cleanup(&reg);
+}
+
+TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
+	const char *work = "/tmp/morph_tool_work";
+	const char *path = "/tmp/morph_tool_work/read.txt";
+	file_ensure_dir(work);
+	file_write_all(path, "hello\n", 6);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(file_read_init(&reg, tctx), 0);
+	char *result = nullptr;
+	int rc = tool_exec(&reg, "file_read",
+			   "{\"file_path\":\"read.txt\"}", &result);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(result, nullptr);
+	EXPECT_NE(strstr(result, "hello"), nullptr);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(path);
+	rmdir(work);
+}
+
+TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
+	const char *work = "/tmp/morph_tool_work";
+	const char *secret = "/tmp/morph_tool_secret.txt";
+	const char *link_path = "/tmp/morph_tool_work/link.txt";
+	file_ensure_dir(work);
+	file_write_all(secret, "secret\n", 7);
+	std::remove(link_path);
+	ASSERT_EQ(symlink(secret, link_path), 0);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(file_read_init(&reg, tctx), 0);
+	char *result = nullptr;
+	int rc = tool_exec(&reg, "file_read",
+			   "{\"file_path\":\"link.txt\"}", &result);
+	EXPECT_EQ(rc, -EPERM);
+	ASSERT_NE(result, nullptr);
+	EXPECT_NE(strstr(result, "permission denied"), nullptr);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(link_path);
+	std::remove(secret);
+	rmdir(work);
+}
+
+TEST_F(ToolTest, FileListDeniesParentTraversal) {
+	const char *work = "/tmp/morph_tool_work";
+	const char *outside = "/tmp/morph_tool_outside";
+	file_ensure_dir(work);
+	file_ensure_dir(outside);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(file_list_init(&reg, tctx), 0);
+	char *result = nullptr;
+	int rc = tool_exec(&reg, "file_list",
+			   "{\"dir_path\":\"../morph_tool_outside\"}",
+			   &result);
+	EXPECT_EQ(rc, -EPERM);
+	ASSERT_NE(result, nullptr);
+	EXPECT_NE(strstr(result, "permission denied"), nullptr);
+	free(result);
+	tool_context_destroy(tctx);
+	rmdir(outside);
+	rmdir(work);
+}
+
+TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
+	const char *work = "/tmp/morph_tool_work";
+	const char *path = "/tmp/morph_tool_work/info.txt";
+	file_ensure_dir(work);
+	file_write_all(path, "info", 4);
+	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(file_info_init(&reg, tctx), 0);
+	char *result = nullptr;
+	int rc = tool_exec(&reg, "file_info",
+			   "{\"file_path\":\"info.txt\"}", &result);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(result, nullptr);
+	EXPECT_NE(strstr(result, "\"type\":\"file\""), nullptr);
+	free(result);
+	tool_context_destroy(tctx);
+	std::remove(path);
+	rmdir(work);
 }

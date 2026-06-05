@@ -159,11 +159,11 @@ static void bridge_init_once(void)
 			img_key ? img_key : "");
 		if (img_m) {
 			img_gen_init(&g_tools, img_m, g_tctx);
-			img_edit_init(&g_tools, g_llm);
+			img_edit_init(&g_tools, g_llm, g_tctx);
 		}
 	}
 
-	img_info_init(&g_tools);
+	img_info_init(&g_tools, g_tctx);
 	img_resize_init(&g_tools, g_tctx);
 	img_convert_init(&g_tools, g_tctx);
 

@@ -1919,6 +1919,10 @@ static void cli_img_annotate_resume(void *user_data)
 static enum write_verdict write_approval_callback(const char *path,
 						   const char *output_dir,
 						   void *user_data);
+static enum tool_path_verdict path_approval_callback(enum tool_path_op op,
+						     const char *path,
+						     const char *root,
+						     void *user_data);
 
 static int cli_init_tools(struct cli_context *ctx)
 {
@@ -1930,6 +1934,7 @@ static int cli_init_tools(struct cli_context *ctx)
 		log_err("failed to create tool context");
 		return -ENOMEM;
 	}
+	tool_context_set_path_approval(ctx->tctx, path_approval_callback, ctx);
 	ctx->tctx->approval_fn = write_approval_callback;
 	ctx->tctx->approval_user_data = ctx;
 
@@ -1942,10 +1947,10 @@ static int cli_init_tools(struct cli_context *ctx)
 	img_gen_init(&ctx->tools, ctx->img_llm, ctx->tctx);
 	log_info("registered img_gen tool");
 
-	img_edit_init(&ctx->tools, ctx->llm);
+	img_edit_init(&ctx->tools, ctx->llm, ctx->tctx);
 	log_info("registered img_edit tool");
 
-	img_info_init(&ctx->tools);
+	img_info_init(&ctx->tools, ctx->tctx);
 	log_info("registered img_info tool");
 
 	file_read_init(&ctx->tools, ctx->tctx);
@@ -2050,7 +2055,7 @@ static int cli_init_tools(struct cli_context *ctx)
 	log_info("registered ask_user tool");
 
 	img_annotate_init(&ctx->tools, cli_img_annotate_pause,
-			  cli_img_annotate_resume, ctx);
+			  cli_img_annotate_resume, ctx, ctx->tctx);
 	log_info("registered img_annotate tool");
 
 	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++) {
@@ -3444,6 +3449,73 @@ static enum command_verdict command_approval_callback(const char *command,
 	if (v == 1)
 		return COMMAND_ALLOW;
 	return COMMAND_DENY;
+}
+
+static const char *path_op_label(enum tool_path_op op)
+{
+	switch (op) {
+	case TOOL_PATH_READ:
+		return "Read Path Approval";
+	case TOOL_PATH_LIST:
+		return "List Path Approval";
+	case TOOL_PATH_WRITE:
+		return "Write Path Approval";
+	}
+	return "Path Approval";
+}
+
+static const char *path_op_subject(enum tool_path_op op)
+{
+	switch (op) {
+	case TOOL_PATH_READ:
+		return "read_path";
+	case TOOL_PATH_LIST:
+		return "list_path";
+	case TOOL_PATH_WRITE:
+		return "write_path";
+	}
+	return "path";
+}
+
+static const char *path_op_root_label(enum tool_path_op op)
+{
+	switch (op) {
+	case TOOL_PATH_READ:
+	case TOOL_PATH_LIST:
+		return "Workspace";
+	case TOOL_PATH_WRITE:
+		return "Output dir";
+	}
+	return "Root";
+}
+
+static enum tool_path_verdict path_approval_callback(enum tool_path_op op,
+						     const char *path,
+						     const char *root,
+						     void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	if (!ctx)
+		return TOOL_PATH_DENY;
+
+	spin_pause(&ctx->spin);
+
+	printf("\r\033[K");
+	printf(ANSI_BOLD ANSI_YELLOW "⚠ %s" ANSI_RESET "\n",
+	       path_op_label(op));
+	printf("  Path:  " ANSI_BOLD "%s" ANSI_RESET "\n",
+	       path ? path : "");
+	printf("  " ANSI_DIM "%s: %s" ANSI_RESET "\n",
+	       path_op_root_label(op), root ? root : "");
+	printf("  " ANSI_DIM "'always' will trust this directory "
+	       "for the rest of the session." ANSI_RESET "\n");
+
+	int v = prompt_yna(path_op_subject(op));
+	if (v == 2)
+		return TOOL_PATH_ALWAYS;
+	if (v == 1)
+		return TOOL_PATH_ALLOW;
+	return TOOL_PATH_DENY;
 }
 
 static enum write_verdict write_approval_callback(const char *path,

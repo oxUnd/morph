@@ -3,6 +3,7 @@
 #include "handlers.h"
 #include "../session_store.h"
 #include "../auth.h"
+#include "../security.h"
 
 #include <errno.h>
 #include <stdio.h>

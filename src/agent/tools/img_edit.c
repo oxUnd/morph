@@ -1,4 +1,5 @@
 #include "img_edit.h"
+#include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/base64.h"
 #include "util/error.h"
@@ -8,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 #include "util/error.h"
 
 static struct model *g_llm;
@@ -26,7 +28,7 @@ static const char *mime_type(const char *path)
 
 static int img_edit_exec(const char *args_json, char **result_json, void *user_data)
 {
-	(void)user_data;
+	struct tool_context *tctx = user_data;
 	if (!result_json) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -47,13 +49,33 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 		return -EINVAL;
 	}
 
+	char resolved_path[PATH_MAX];
+	if (tctx) {
+		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
+						     file_path, resolved_path,
+						     sizeof(resolved_path));
+		if (rc < 0) {
+			cJSON_Delete(root);
+			if (rc == -ENOENT)
+				*result_json = strdup(
+					"{\"error\":\"failed to read image\"}");
+			else
+				*result_json = strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}");
+			return rc;
+		}
+	} else {
+		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
+		resolved_path[sizeof(resolved_path) - 1] = '\0';
+	}
+
 	if (!g_llm || !g_llm->api_key[0]) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"no LLM configured\"}");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
-	char *b64 = base64_encode_file(file_path);
+	char *b64 = base64_encode_file(resolved_path);
 	if (!b64) {
 		cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"failed to read image\"}");
@@ -138,12 +160,13 @@ static int img_edit_exec(const char *args_json, char **result_json, void *user_d
 	return 0;
 }
 
-int img_edit_init(struct tool_registry *reg, struct model *llm)
+int img_edit_init(struct tool_registry *reg, struct model *llm,
+		  struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
 	g_llm = llm;
 	return tool_register(reg, "img_edit",
 		"Analyze or answer questions about an image. Provide file_path and prompt describing what to look for.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file to analyze\"},\"prompt\":{\"type\":\"string\",\"description\":\"What to look for or ask about the image\"}},\"required\":[\"file_path\",\"prompt\"]}",
-		img_edit_exec, NULL, NULL);
+		img_edit_exec, tctx, NULL);
 }
