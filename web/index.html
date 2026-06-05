@@ -6,6 +6,8 @@
 <title>Morph</title>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/glightbox/dist/css/glightbox.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/glightbox/dist/js/glightbox.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:system-ui,-apple-system,Helvetica,sans-serif;color:#222;background:#fff;height:100dvh}
@@ -56,8 +58,8 @@ body{font-family:system-ui,-apple-system,Helvetica,sans-serif;color:#222;backgro
 .msg-assistant .c table{border-collapse:collapse;margin:.5em 0;font-size:.85rem}
 .msg-assistant .c th,.msg-assistant .c td{border:1px solid #e0e0e0;padding:.25rem .5rem;text-align:left}
 .msg-assistant .c th{background:#f5f5f5}
-.msg-assistant .c img{max-width:100%;border-radius:6px;margin:.4em 0}
-.msg-assistant .c video{max-width:100%;border-radius:6px;margin:.4em 0}
+.msg-assistant .c img,.msg-artifact img{max-width:100%;max-height:280px;border-radius:6px;margin:.4em 0;cursor:zoom-in}
+.msg-assistant .c video,.msg-artifact video{max-width:100%;max-height:280px;border-radius:6px;margin:.4em 0;cursor:zoom-in;pointer-events:none}
 .msg-assistant .copy{font-size:.72rem;color:#ccc;cursor:pointer;border:none;background:none;padding:.1rem .3rem;border-radius:3px;float:right;margin-top:.2rem;opacity:0;transition:opacity .12s}
 .msg-assistant:hover .copy{opacity:1}
 .msg-assistant .copy:hover{color:#2563eb;background:#f0f4ff}
@@ -86,8 +88,6 @@ body{font-family:system-ui,-apple-system,Helvetica,sans-serif;color:#222;backgro
 .msg-error{border-left:3px solid #d53d3d;padding:.3rem .7rem;margin:.15rem 0;font-size:.85rem;color:#b91c1c;background:#fff5f5}
 .msg-artifact{border-left:3px solid #16a34a;padding:.3rem .7rem;margin:.15rem 0;font-size:.85rem}
 .msg-artifact .label{font-weight:500;color:#16a34a;font-size:.78rem;margin-bottom:.2rem}
-.msg-artifact img{max-width:100%;border-radius:4px}
-.msg-artifact video{max-width:100%;border-radius:4px}
 .msg-artifact a{color:#2563eb;font-size:.8rem}
 .turn-hr{border:none;border-top:1px solid #eee;margin:.35rem 0}
 #inputbar{display:flex;align-items:flex-end;gap:.5rem;padding:.55rem 1rem;border-top:1px solid #e0e0e0;flex-shrink:0}
@@ -131,6 +131,7 @@ body{font-family:system-ui,-apple-system,Helvetica,sans-serif;color:#222;backgro
 <script>
 var sid = null, thoughtEl = null, turnCount = 0, sessions = [], isBusy = false;
 var sseCtrl = null;
+var gl = null;
 var markedOk = typeof marked !== 'undefined' && typeof marked.parse === 'function';
 var purifyOk = typeof DOMPurify !== 'undefined';
 
@@ -234,6 +235,8 @@ function showChat() {
   document.getElementById('userLabel').textContent = username();
   btn.disabled = true;
   inp.disabled = true;
+  if (!gl && typeof GLightbox !== 'undefined')
+    gl = GLightbox({ selector: '.glightbox' });
   loadSessions().then(function() {
     if (sessions.length > 0 && !sid) {
       var firstId = sessions[0].id;
@@ -407,13 +410,15 @@ function loadBlob(url, cb) {
 function addArtifact(p) {
   var el;
   if (p.kind === 'image') {
-    el = addMsg('msg-artifact', '<div class="label">Image</div><img data-src="' + esc(p.url) + '" alt="' + esc(p.filename) + '" loading="lazy" />');
-    var img = el.querySelector('img');
-    loadBlob(p.url, function(u) { img.src = u; });
+    el = addMsg('msg-artifact', '<div class="label">Image</div><a class="glightbox" data-gallery="sid"><img data-src="' + esc(p.url) + '" alt="' + esc(p.filename) + '" loading="lazy" /></a>');
+    var a = el.querySelector('a');
+    var img = a.querySelector('img');
+    loadBlob(p.url, function(u) { img.src = u; a.href = u; if (gl) gl.reload(); });
   } else if (p.kind === 'video') {
-    el = addMsg('msg-artifact', '<div class="label">Video</div><video data-src="' + esc(p.url) + '" controls preload="metadata"></video>');
-    var vid = el.querySelector('video');
-    loadBlob(p.url, function(u) { vid.src = u; });
+    el = addMsg('msg-artifact', '<div class="label">Video</div><a class="glightbox" data-type="video" data-gallery="sid"><video data-src="' + esc(p.url) + '" controls preload="metadata" style="pointer-events:none"></video></a>');
+    var a = el.querySelector('a');
+    var vid = a.querySelector('video');
+    loadBlob(p.url, function(u) { vid.src = u; a.href = u; if (gl) gl.reload(); });
   } else {
     el = addMsg('msg-artifact', '<div class="label">File</div><a data-href="' + esc(p.url) + '" download="' + esc(p.filename) + '">' + esc(p.filename) + '</a>');
     var a = el.querySelector('a');
@@ -424,15 +429,30 @@ function addArtifact(p) {
   }
 }
 
-function loadEmbeddedArtifacts(root) {
+function loadEmbeddedArtifacts(root, cb) {
   var nodes = root.querySelectorAll('img[data-src],video[data-src]');
+  var pending = 0;
   for (var i = 0; i < nodes.length; i++) {
     (function(n) {
+      var tag = n.tagName.toLowerCase();
       var url = n.getAttribute('data-src');
       if (!url) return;
-      loadBlob(url, function(u) { n.src = u; });
+      if (tag === 'img' || tag === 'video') {
+        var a = document.createElement('a');
+        a.className = 'glightbox';
+        if (tag === 'video') a.setAttribute('data-type', 'video');
+        a.setAttribute('data-gallery', 'sid');
+        n.parentNode.insertBefore(a, n);
+        a.appendChild(n);
+        pending++;
+        loadBlob(url, function(u) { n.src = u; a.href = u; pending--; done(); });
+      } else {
+        loadBlob(url, function(u) { n.src = u; });
+      }
     })(nodes[i]);
   }
+  function done() { if (pending <= 0) { if (gl) gl.reload(); if (cb) cb(); } }
+  if (pending === 0) done();
 }
 
 /* ---- session mgmt ---- */

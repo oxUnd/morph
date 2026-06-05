@@ -369,24 +369,35 @@ static void html_attr_escape(const char *src, char *dst, size_t dst_size)
 }
 
 static int append_artifact_tag(char **buf, size_t *len, size_t *cap,
-			       const struct turn_artifact *a)
+			       const struct turn_artifact *a,
+			       const char *session_id)
 {
-	char tag[1024];
+	char tag[1400];
 	char filename[512];
 	char url[256];
+	char gallery_id[64];
 
 	if (!a)
 		return -EINVAL;
 	html_attr_escape(a->filename, filename, sizeof(filename));
 	html_attr_escape(a->url, url, sizeof(url));
 	if (strcmp(a->kind, "image") == 0) {
+		snprintf(gallery_id, sizeof(gallery_id), "s%s",
+			 session_id ? session_id : "0");
 		snprintf(tag, sizeof(tag),
-			 "<img data-src=\"%s\" alt=\"%s\" loading=\"lazy\">",
-			 url, filename);
+			 "<a class=\"glightbox\" data-gallery=\"%s\""
+			 " href=\"%s\">"
+			 "<img data-src=\"%s\" alt=\"%s\" loading=\"lazy\">"
+			 "</a>",
+			 gallery_id, url, url, filename);
 	} else {
 		snprintf(tag, sizeof(tag),
-			 "<video data-src=\"%s\" controls preload=\"metadata\"></video>",
-			 url);
+			 "<a class=\"glightbox\" data-type=\"video\""
+			 " href=\"%s\">"
+			 "<video data-src=\"%s\" controls preload=\"metadata\""
+			 " style=\"pointer-events:none\">"
+			 "</video></a>",
+			 url, url);
 	}
 	return append_str(buf, len, cap, tag);
 }
@@ -423,7 +434,8 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 			if (start) {
 				append_mem(&out, &len, &cap, text,
 					   (size_t)(start - text));
-				append_artifact_tag(&out, &len, &cap, a);
+				append_artifact_tag(&out, &len, &cap, a,
+						    j->session_id);
 				append_str(&out, &len, &cap,
 					   start + strlen(generated_path));
 				return out ? out : strdup(text);
@@ -464,7 +476,7 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 			append_mem(&out, &len, &cap, start, raw_len);
 			continue;
 		}
-		append_artifact_tag(&out, &len, &cap, a);
+		append_artifact_tag(&out, &len, &cap, a, j->session_id);
 		if (strlen(token) < raw_len)
 			append_mem(&out, &len, &cap, start + strlen(token),
 				   raw_len - strlen(token));
