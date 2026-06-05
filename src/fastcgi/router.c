@@ -26,6 +26,8 @@ static const route_t ROUTES[] = {
     { "GET",  "/api/health",                       handle_health,         0, 1 },
     { "POST", "/api/install",                      handle_install,        0, 1 },
     { "POST", "/api/signup",                       handle_signup,         0, 0 },
+    { "POST", "/api/login",                        handle_login,          0, 0 },
+    { "POST", "/api/logout",                       handle_logout,         1, 0 },
     { "GET",  "/api/me/quota",                     handle_me_quota,       1, 0 },
 
     /* sessions */

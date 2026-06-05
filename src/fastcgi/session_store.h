@@ -120,4 +120,14 @@ int  canvas_add_node(struct session_store *s, const char *session_id,
 int  canvas_patch_node(struct session_store *s, const char *session_id,
 		       const char *node_id, const char *patch_json);
 
+/* login tokens (/tmp file-backed) */
+int  login_token_create(const char *user_id, const char *username,
+			const char *role, int ttl_hours,
+			char out_token[64]);
+int  login_token_verify(const char *token,
+			char out_user_id[64],
+			char out_username[64],
+			char out_role[24]);
+void login_token_revoke(const char *token);
+
 #endif

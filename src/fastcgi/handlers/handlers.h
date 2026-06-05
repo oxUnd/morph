@@ -10,6 +10,8 @@ void handle_health(request_t *r);
 /* users / setup */
 void handle_install(request_t *r);
 void handle_signup(request_t *r);
+void handle_login(request_t *r);
+void handle_logout(request_t *r);
 void handle_me_quota(request_t *r);
 
 /* sessions */

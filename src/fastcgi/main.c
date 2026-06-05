@@ -147,7 +147,6 @@ int main(int argc, char **argv) {
 	if (n_workers < 1) n_workers = 1;
 	if (n_workers > 64) n_workers = 64;
 
-	const char *secret    = getenv("MORPH_FCGI_SECRET");
 	const char *trust_hdr = getenv("MORPH_FCGI_TRUST_HDR");
 
 	if (configure_trust_param(trust_hdr) < 0) {
@@ -165,7 +164,7 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "session_store_open(%s) failed\n", db_path);
 		return 3;
 	}
-	auth_init(secret, trust_hdr);
+	auth_init(trust_hdr);
 	install_signals();
 
 	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n",

@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "handlers.h"
 #include "../session_store.h"
+#include "../auth.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -180,4 +181,56 @@ void handle_me_quota(request_t *r)
 	}
 	reply_200_json(r, json);
 	free(json);
+}
+
+void handle_login(request_t *r)
+{
+	char username_buf[128] = {0};
+	char password_buf[256] = {0};
+	struct fcgi_user user = {0};
+	char token[64] = {0};
+	cJSON *obj = NULL;
+	char *json = NULL;
+	int64_t expires;
+	int rc;
+
+	if (!fcgi_basic_decode(r->auth_hdr, username_buf, sizeof(username_buf),
+			       password_buf, sizeof(password_buf))) {
+		reply_401(r);
+		return;
+	}
+	if (!store_verify_user(r->store, username_buf, password_buf, &user)) {
+		reply_401(r);
+		return;
+	}
+
+	rc = login_token_create(user.user_id, user.username, user.role, 24, token);
+	if (rc != 0) {
+		reply_500(r, "token create failed");
+		return;
+	}
+
+	expires = (int64_t)time(NULL) + 24 * 3600;
+	auth_token_created(token, user.user_id, user.username, user.role, expires);
+	obj = cJSON_CreateObject();
+	if (!obj) { reply_500(r, "oom"); return; }
+	cJSON_AddStringToObject(obj, "token", token);
+	cJSON_AddStringToObject(obj, "user_id", user.user_id);
+	cJSON_AddStringToObject(obj, "username", user.username);
+	cJSON_AddStringToObject(obj, "role", user.role);
+	cJSON_AddNumberToObject(obj, "expires_at", (double)expires);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
+	if (!json) { reply_500(r, "oom"); return; }
+	reply_200_json(r, json);
+	free(json);
+}
+
+void handle_logout(request_t *r)
+{
+	if (r->auth_hdr && strncmp(r->auth_hdr, "Bearer ", 7) == 0) {
+		auth_token_revoked(r->auth_hdr + 7);
+		login_token_revoke(r->auth_hdr + 7);
+	}
+	reply_204(r);
 }
