@@ -424,6 +424,17 @@ function addArtifact(p) {
   }
 }
 
+function loadEmbeddedArtifacts(root) {
+  var nodes = root.querySelectorAll('img[data-src],video[data-src]');
+  for (var i = 0; i < nodes.length; i++) {
+    (function(n) {
+      var url = n.getAttribute('data-src');
+      if (!url) return;
+      loadBlob(url, function(u) { n.src = u; });
+    })(nodes[i]);
+  }
+}
+
 /* ---- session mgmt ---- */
 function populateSel(selId) {
   while (sel.options.length > 0) sel.remove(0);
@@ -586,6 +597,7 @@ function dispatchSSE(eventType, data) {
     try {
       var html = markedOk ? marked.parse(txt, { breaks: true, gfm: true }) : esc(txt).replace(/\n/g, '<br>');
       c.innerHTML = purifyOk ? DOMPurify.sanitize(html) : html;
+      loadEmbeddedArtifacts(c);
     } catch (e) { c.textContent = txt; }
     el.querySelector('.copy').addEventListener('click', function() {
       var t = el.querySelector('.c');
