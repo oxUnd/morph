@@ -79,7 +79,7 @@ configured header is the only accepted identity source.
 | POST   | /api/sessions                                 | `{name, model}` → `{id}`    |
 | GET    | /api/sessions                                 | sessions owned by user      |
 | GET    | /api/sessions/:id                             |                             |
-| DELETE | /api/sessions/:id                             | MVP: ack only               |
+| DELETE | /api/sessions/:id                             | 409 if turn in progress     |
 | POST   | /api/sessions/:id/turns                       | `{prompt}` → 202 + SSE      |
 | GET    | /api/sessions/:id/events                      | SSE, honours Last-Event-ID  |
 | POST   | /api/sessions/:id/actions                     | `{type, payload}`           |

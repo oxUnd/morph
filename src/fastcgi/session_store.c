@@ -747,6 +747,80 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 	return 0;
 }
 
+int store_delete_session(struct session_store *s, const char *session_id,
+			const char *user_id)
+{
+	static const char *chk_owner =
+		"SELECT 1 FROM fcgi_session_owner"
+		" WHERE session_id=? AND user_id=?";
+	static const char *chk_turns =
+		"SELECT COUNT(*) FROM fcgi_running_turns WHERE session_id=?";
+	static const char *del_tables[] = {
+		"DELETE FROM fcgi_session_owner WHERE session_id=?",
+		"DELETE FROM fcgi_events WHERE session_id=?",
+		"DELETE FROM fcgi_actions WHERE session_id=?",
+		"DELETE FROM fcgi_canvas_nodes WHERE session_id=?",
+		"DELETE FROM fcgi_artifacts WHERE session_id=?",
+		"DELETE FROM fcgi_running_turns WHERE session_id=?",
+		NULL
+	};
+	sqlite3_stmt *st = NULL;
+	struct session sess;
+	int rc;
+
+	if (!s || !session_id || !user_id)
+		MORPH_RETURN(-EINVAL);
+
+	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+
+	if (sqlite3_prepare_v2(s->db.handle, chk_owner, -1,
+			       &st, NULL) != SQLITE_OK)
+		goto fail;
+	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id,    -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_ROW) {
+		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		MORPH_RETURN(-ENOENT);
+	}
+
+	if (sqlite3_prepare_v2(s->db.handle, chk_turns, -1,
+			       &st, NULL) != SQLITE_OK)
+		goto fail;
+	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(st);
+	int running = (rc == SQLITE_ROW) ? sqlite3_column_int(st, 0) : 0;
+	sqlite3_finalize(st);
+	if (running > 0) {
+		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		MORPH_RETURN(-EAGAIN);
+	}
+
+	for (int i = 0; del_tables[i]; i++) {
+		if (sqlite3_prepare_v2(s->db.handle, del_tables[i], -1,
+				       &st, NULL) != SQLITE_OK)
+			goto fail;
+		sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(st);
+		sqlite3_finalize(st);
+		if (rc != SQLITE_DONE)
+			goto fail;
+	}
+
+	if (session_get_by_display_id(&s->db, session_id, &sess) != 0)
+		goto fail;
+	if (session_delete(&s->db, sess.id) != 0)
+		goto fail;
+
+	sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL);
+	return 0;
+
+fail:
+	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+	MORPH_RETURN(-EIO);
+}
+
 int events_publish(struct session_store *s, const char *session_id,
 		   const char *type, const char *payload) {
 	const char *sql = "INSERT INTO fcgi_events(session_id,type,payload,ts) VALUES(?,?,?,?)";

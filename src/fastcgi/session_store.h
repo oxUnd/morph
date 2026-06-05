@@ -71,6 +71,8 @@ int  store_session_owned_by(struct session_store *s, const char *session_id,
 			    const char *user_id);
 int  store_list_sessions_json(struct session_store *s, const char *user_id,
 			      char **out_json);
+int  store_delete_session(struct session_store *s, const char *session_id,
+			  const char *user_id);
 
 /* users / setup */
 int  store_setup_required(struct session_store *s);
