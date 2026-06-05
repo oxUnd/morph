@@ -40,6 +40,25 @@ struct action_record {
 	int64_t ts;
 };
 
+struct artifact_record {
+	char id[64];
+	char user_id[64];
+	char session_id[64];
+	char kind[16];
+	char mime[64];
+	char filename[128];
+	char relative_path[512];
+	int64_t size_bytes;
+	char status[16];
+	int64_t created_at;
+};
+
+struct fcgi_user {
+	char user_id[64];
+	char username[64];
+	char role[24];
+};
+
 /* lifecycle */
 struct session_store *session_store_open(const char *db_path);
 void                  session_store_close(struct session_store *s);
@@ -52,6 +71,30 @@ int  store_session_owned_by(struct session_store *s, const char *session_id,
 			    const char *user_id);
 int  store_list_sessions_json(struct session_store *s, const char *user_id,
 			      char **out_json);
+
+/* users / setup */
+int  store_setup_required(struct session_store *s);
+int  store_create_user(struct session_store *s, const char *username,
+		       const char *password, const char *role,
+		       char out_user_id[64]);
+int  store_verify_user(struct session_store *s, const char *username,
+		       const char *password, struct fcgi_user *out);
+int  store_user_quota_json(struct session_store *s, const char *user_id,
+			   char **out_json);
+int  store_quota_begin_turn(struct session_store *s, const char *user_id,
+			    const char *session_id, char out_turn_id[64]);
+void store_quota_end_turn(struct session_store *s, const char *turn_id);
+
+/* artifacts */
+int  store_artifact_register(struct session_store *s, const char *user_id,
+			     const char *session_id, const char *kind,
+			     const char *mime, const char *filename,
+			     const char *relative_path, int64_t size_bytes,
+			     char out_artifact_id[64]);
+int  store_artifact_get(struct session_store *s, const char *artifact_id,
+			const char *user_id, struct artifact_record *out);
+int  store_artifact_list_json(struct session_store *s, const char *user_id,
+			      const char *session_id, char **out_json);
 
 /* events */
 int  events_publish(struct session_store *s, const char *session_id,

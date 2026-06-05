@@ -43,6 +43,8 @@ static const char *status_text(int code) {
 	case 401: return "401 Unauthorized";
 	case 403: return "403 Forbidden";
 	case 404: return "404 Not Found";
+	case 409: return "409 Conflict";
+	case 429: return "429 Too Many Requests";
 	case 500: return "500 Internal Server Error";
 	default:  return "500 Internal Server Error";
 	}

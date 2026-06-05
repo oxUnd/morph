@@ -52,6 +52,13 @@ static struct tool_context *g_tctx    = NULL;
 
 static void bridge_init_once(void);
 
+const char *fcgi_artifact_output_dir(void)
+{
+	pthread_once(&g_once, bridge_init_once);
+	return g_config.general.output_dir[0]
+		? g_config.general.output_dir : "/var/lib/morph/output";
+}
+
 int react_memory_options_for_session(struct memory_options *out)
 {
 	if (!out)

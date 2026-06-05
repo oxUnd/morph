@@ -109,6 +109,8 @@ static void populate_request(request_t *r, FCGX_Request *req) {
 	r->content_length = clen ? atoi(clen) : 0;
 	r->store = g_store;
 	snprintf(r->user_id, sizeof(r->user_id), "anonymous");
+	snprintf(r->username, sizeof(r->username), "anonymous");
+	snprintf(r->role, sizeof(r->role), "anonymous");
 	/* strip query from path */
 	if (r->path) {
 		char *q = strchr((char *)r->path, '?');
@@ -148,11 +150,6 @@ int main(int argc, char **argv) {
 	const char *secret    = getenv("MORPH_FCGI_SECRET");
 	const char *trust_hdr = getenv("MORPH_FCGI_TRUST_HDR");
 
-	if ((!secret || !*secret) && (!trust_hdr || !*trust_hdr)) {
-		fprintf(stderr, "morph-fastcgi: MORPH_FCGI_SECRET or "
-			"MORPH_FCGI_TRUST_HDR is required\n");
-		return 4;
-	}
 	if (configure_trust_param(trust_hdr) < 0) {
 		fprintf(stderr, "morph-fastcgi: invalid MORPH_FCGI_TRUST_HDR\n");
 		return 4;

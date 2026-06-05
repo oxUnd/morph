@@ -34,6 +34,7 @@ endif()
 
 set(FCGI_SOURCES
     fcgi_io.c
+    security.c
     session_store.c
     auth.c
     router.c
@@ -42,10 +43,12 @@ set(FCGI_SOURCES
     agent_bridge.c
     main.c
     handlers/health.c
+    handlers/users.c
     handlers/sessions.c
     handlers/turns.c
     handlers/canvas.c
     handlers/actions.c
+    handlers/artifacts.c
     handlers/events.c)
 
 add_executable(morph-fastcgi ${FCGI_SOURCES})
@@ -63,6 +66,8 @@ set(_MORPH_LIBS
     morph-skill
     morph-mcp
     morph-tools
+    morph-ext
+    morph-ipc
     morph-models
     morph-session
     morph-http

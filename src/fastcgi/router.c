@@ -17,32 +17,41 @@ typedef struct {
     const char *pattern;   /* e.g. /api/sessions/:id/turns */
     handler_fn  fn;
     int         needs_auth;
+    int         allowed_during_setup;
 } route_t;
 
 /* ------------ routing table ------------ */
 static const route_t ROUTES[] = {
     /* health */
-    { "GET",  "/api/health",                       handle_health,         0 },
+    { "GET",  "/api/health",                       handle_health,         0, 1 },
+    { "POST", "/api/install",                      handle_install,        0, 1 },
+    { "POST", "/api/signup",                       handle_signup,         0, 0 },
+    { "GET",  "/api/me/quota",                     handle_me_quota,       1, 0 },
 
     /* sessions */
-    { "POST", "/api/sessions",                     handle_create_session, 1 },
-    { "GET",  "/api/sessions",                     handle_list_sessions,  1 },
-    { "GET",  "/api/sessions/:id",                 handle_get_session,    1 },
-    { "DELETE","/api/sessions/:id",                handle_delete_session, 1 },
+    { "POST", "/api/sessions",                     handle_create_session, 1, 0 },
+    { "GET",  "/api/sessions",                     handle_list_sessions,  1, 0 },
+    { "GET",  "/api/sessions/:id",                 handle_get_session,    1, 0 },
+    { "DELETE","/api/sessions/:id",                handle_delete_session, 1, 0 },
 
     /* turns (one ReAct round) */
-    { "POST", "/api/sessions/:id/turns",           handle_post_turn,      1 },
+    { "POST", "/api/sessions/:id/turns",           handle_post_turn,      1, 0 },
 
     /* canvas */
-    { "GET",  "/api/sessions/:id/canvas",          handle_get_canvas,     1 },
-    { "POST", "/api/sessions/:id/canvas/nodes",    handle_add_canvas_node,1 },
-    { "PATCH","/api/sessions/:id/canvas/nodes/:node", handle_patch_canvas_node, 1 },
+    { "GET",  "/api/sessions/:id/canvas",          handle_get_canvas,     1, 0 },
+    { "POST", "/api/sessions/:id/canvas/nodes",    handle_add_canvas_node,1, 0 },
+    { "PATCH","/api/sessions/:id/canvas/nodes/:node", handle_patch_canvas_node, 1, 0 },
 
     /* actions (Web → Agent) */
-    { "POST", "/api/sessions/:id/actions",         handle_post_action,    1 },
+    { "POST", "/api/sessions/:id/actions",         handle_post_action,    1, 0 },
 
     /* events (Agent → Web, SSE) */
-    { "GET",  "/api/sessions/:id/events",          handle_sse,            1 },
+    { "GET",  "/api/sessions/:id/events",          handle_sse,            1, 0 },
+
+    /* artifacts */
+    { "GET",  "/api/sessions/:id/artifacts",       handle_list_artifacts, 1, 0 },
+    { "GET",  "/api/artifacts/:artifact/meta",     handle_artifact_meta,  1, 0 },
+    { "GET",  "/api/artifacts/:artifact",          handle_get_artifact,   1, 0 },
 };
 
 #define N_ROUTES (sizeof(ROUTES) / sizeof(ROUTES[0]))
@@ -100,6 +109,10 @@ void router_dispatch(request_t *r) {
         if (strcmp(rt->method, r->method) != 0) continue;
         if (!match_pattern(rt->pattern, r->path, r)) continue;
 
+        if (!rt->allowed_during_setup && store_setup_required(r->store)) {
+            reply_json(r, 403, "{\"error\":\"setup_required\"}");
+            return;
+        }
         if (rt->needs_auth && !auth_check(r)) { reply_401(r); return; }
         rt->fn(r);
         return;

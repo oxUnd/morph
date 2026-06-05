@@ -33,6 +33,8 @@ typedef struct request_s {
 	int               n_params;
 
 	char             user_id[64];
+	char             username[64];
+	char             role[24];
 
 	struct session_store *store;
 } request_t;

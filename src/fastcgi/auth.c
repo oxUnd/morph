@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "security.h"
+
 static char g_secret[256] = {0};
 static char g_trust_hdr[64] = {0};
 
@@ -26,7 +28,24 @@ static int eq_ct(const char *a, const char *b) {
 int auth_check(request_t *r) {
 	if (g_trust_hdr[0] && r->trust_user && r->trust_user[0]) {
 		snprintf(r->user_id, sizeof(r->user_id), "%s", r->trust_user);
+		snprintf(r->username, sizeof(r->username), "%s", r->trust_user);
+		snprintf(r->role, sizeof(r->role), "user");
 		return 1;
+	}
+	{
+		char username[128];
+		char password[256];
+		struct fcgi_user user = {0};
+		if (fcgi_basic_decode(r->auth_hdr, username, sizeof(username),
+				      password, sizeof(password)) &&
+		    store_verify_user(r->store, username, password, &user)) {
+			snprintf(r->user_id, sizeof(r->user_id), "%s",
+				 user.user_id);
+			snprintf(r->username, sizeof(r->username), "%s",
+				 user.username);
+			snprintf(r->role, sizeof(r->role), "%s", user.role);
+			return 1;
+		}
 	}
 	if (g_secret[0]) {
 		if (!r->auth_hdr) return 0;
@@ -34,6 +53,8 @@ int auth_check(request_t *r) {
 		const char *tok = r->auth_hdr + 7;
 		if (!eq_ct(tok, g_secret)) return 0;
 		snprintf(r->user_id, sizeof(r->user_id), "shared");
+		snprintf(r->username, sizeof(r->username), "shared");
+		snprintf(r->role, sizeof(r->role), "admin");
 		return 1;
 	}
 	return 0;

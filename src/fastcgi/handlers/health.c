@@ -4,9 +4,10 @@
 #include <time.h>
 
 void handle_health(request_t *r) {
-	char buf[128];
+	char buf[192];
 	snprintf(buf, sizeof(buf),
-		 "{\"status\":\"ok\",\"ts\":%lld}",
+		 "{\"status\":\"ok\",\"setup_required\":%s,\"ts\":%lld}",
+		 store_setup_required(r->store) ? "true" : "false",
 		 (long long)time(NULL));
 	reply_200_json(r, buf);
 }

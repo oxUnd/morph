@@ -11,6 +11,8 @@
 
 #include "session.h"
 #include "util/error.h"
+#include "security.h"
+#include "cJSON.h"
 
 struct event_subscriber {
 	char     session_id[64];
@@ -56,7 +58,80 @@ static const char *SCHEMA =
 "CREATE TABLE IF NOT EXISTS fcgi_session_owner ("
 "  session_id TEXT PRIMARY KEY,"
 "  user_id TEXT NOT NULL"
-");";
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_users ("
+"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  user_id TEXT NOT NULL UNIQUE,"
+"  username TEXT NOT NULL UNIQUE,"
+"  password_hash TEXT NOT NULL,"
+"  role TEXT NOT NULL DEFAULT 'user',"
+"  disabled INTEGER NOT NULL DEFAULT 0,"
+"  created_at INTEGER NOT NULL,"
+"  updated_at INTEGER NOT NULL"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_quota_profiles ("
+"  name TEXT PRIMARY KEY,"
+"  daily_turns INTEGER NOT NULL DEFAULT 100,"
+"  daily_images INTEGER NOT NULL DEFAULT 20,"
+"  daily_videos INTEGER NOT NULL DEFAULT 5,"
+"  storage_bytes INTEGER NOT NULL DEFAULT 1073741824,"
+"  max_concurrent_turns INTEGER NOT NULL DEFAULT 1"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_user_quota ("
+"  user_id TEXT PRIMARY KEY,"
+"  profile TEXT NOT NULL DEFAULT 'free'"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_usage_daily ("
+"  user_id TEXT NOT NULL,"
+"  day TEXT NOT NULL,"
+"  turns INTEGER NOT NULL DEFAULT 0,"
+"  images INTEGER NOT NULL DEFAULT 0,"
+"  videos INTEGER NOT NULL DEFAULT 0,"
+"  PRIMARY KEY(user_id, day)"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_usage_storage ("
+"  user_id TEXT PRIMARY KEY,"
+"  used_bytes INTEGER NOT NULL DEFAULT 0"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_running_turns ("
+"  id TEXT PRIMARY KEY,"
+"  user_id TEXT NOT NULL,"
+"  session_id TEXT NOT NULL,"
+"  started_at INTEGER NOT NULL,"
+"  heartbeat_at INTEGER NOT NULL"
+");"
+"CREATE TABLE IF NOT EXISTS fcgi_artifacts ("
+"  id TEXT PRIMARY KEY,"
+"  user_id TEXT NOT NULL,"
+"  session_id TEXT NOT NULL,"
+"  kind TEXT NOT NULL,"
+"  mime TEXT NOT NULL,"
+"  filename TEXT NOT NULL,"
+"  relative_path TEXT NOT NULL,"
+"  size_bytes INTEGER NOT NULL DEFAULT 0,"
+"  status TEXT NOT NULL DEFAULT 'ready',"
+"  created_at INTEGER NOT NULL,"
+"  expires_at INTEGER"
+");"
+"CREATE INDEX IF NOT EXISTS idx_artifacts_user_session "
+"  ON fcgi_artifacts(user_id, session_id);";
+
+static int init_default_quota_profiles(sqlite3 *db)
+{
+	const char *sql =
+		"INSERT OR IGNORE INTO fcgi_quota_profiles"
+		"(name,daily_turns,daily_images,daily_videos,"
+		"storage_bytes,max_concurrent_turns) VALUES"
+		"('admin',-1,-1,-1,-1,4),"
+		"('free',50,10,2,1073741824,1)";
+	char *err = NULL;
+	if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
+		fprintf(stderr, "fcgi quota profiles: %s\n", err ? err : "?");
+		sqlite3_free(err);
+		MORPH_RETURN(-EIO);
+	}
+	return 0;
+}
 
 struct session_store *session_store_open(const char *db_path) {
 	struct session_store *s = calloc(1, sizeof(*s));
@@ -69,6 +144,11 @@ struct session_store *session_store_open(const char *db_path) {
 	if (sqlite3_exec(s->db.handle, SCHEMA, NULL, NULL, &err) != SQLITE_OK) {
 		fprintf(stderr, "fcgi schema: %s\n", err ? err : "?");
 		sqlite3_free(err);
+		db_close(&s->db);
+		free(s);
+		return NULL;
+	}
+	if (init_default_quota_profiles(s->db.handle) != 0) {
 		db_close(&s->db);
 		free(s);
 		return NULL;
@@ -92,6 +172,498 @@ void session_store_close(struct session_store *s) {
 }
 
 static int64_t now_unix(void) { return (int64_t)time(NULL); }
+
+static int username_valid(const char *username)
+{
+	size_t len;
+
+	if (!username)
+		return 0;
+	len = strlen(username);
+	if (len < 3 || len > 63)
+		return 0;
+	for (size_t i = 0; i < len; i++) {
+		char c = username[i];
+		if (!((c >= 'a' && c <= 'z') ||
+		      (c >= 'A' && c <= 'Z') ||
+		      (c >= '0' && c <= '9') ||
+		      c == '_' || c == '-' || c == '.')) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+int store_setup_required(struct session_store *s)
+{
+	const char *sql =
+		"SELECT COUNT(*) FROM fcgi_users WHERE disabled=0";
+	sqlite3_stmt *st = NULL;
+	int count = 0;
+
+	if (!s || sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return 1;
+	if (sqlite3_step(st) == SQLITE_ROW)
+		count = sqlite3_column_int(st, 0);
+	sqlite3_finalize(st);
+	return count == 0;
+}
+
+int store_create_user(struct session_store *s, const char *username,
+		      const char *password, const char *role,
+		      char out_user_id[64])
+{
+	char user_id[64];
+	char hash[192];
+	const char *profile;
+	const char *sql =
+		"INSERT INTO fcgi_users"
+		"(user_id,username,password_hash,role,created_at,updated_at)"
+		" VALUES(?,?,?,?,?,?)";
+	sqlite3_stmt *st = NULL;
+	int64_t now = now_unix();
+	int rc;
+
+	if (!s || !username_valid(username) || !password || strlen(password) < 8)
+		MORPH_RETURN(-EINVAL);
+	rc = fcgi_random_id("usr_", user_id, sizeof(user_id));
+	if (rc < 0)
+		return rc;
+	rc = fcgi_password_hash(password, hash, sizeof(hash));
+	if (rc < 0)
+		return rc;
+
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, username, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 3, hash, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 4, role ? role : "user", -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(st, 5, now);
+	sqlite3_bind_int64(st, 6, now);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc == SQLITE_CONSTRAINT)
+		MORPH_RETURN(-EEXIST);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(-EIO);
+
+	profile = role && strcmp(role, "admin") == 0 ? "admin" : "free";
+	sql = "INSERT OR REPLACE INTO fcgi_user_quota(user_id,profile)"
+	      " VALUES(?,?)";
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, profile, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(-EIO);
+
+	sql = "INSERT OR IGNORE INTO fcgi_usage_storage(user_id,used_bytes)"
+	      " VALUES(?,0)";
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+		sqlite3_step(st);
+		sqlite3_finalize(st);
+	}
+	if (out_user_id)
+		snprintf(out_user_id, 64, "%s", user_id);
+	return 0;
+}
+
+int store_verify_user(struct session_store *s, const char *username,
+		      const char *password, struct fcgi_user *out)
+{
+	const char *sql =
+		"SELECT user_id,username,password_hash,role FROM fcgi_users "
+		"WHERE username=? AND disabled=0";
+	sqlite3_stmt *st = NULL;
+	const char *hash;
+	int ok = 0;
+
+	if (!s || !username || !password)
+		return 0;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		return 0;
+	sqlite3_bind_text(st, 1, username, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		hash = (const char *)sqlite3_column_text(st, 2);
+		if (hash && fcgi_password_verify(password, hash)) {
+			if (out) {
+				const char *uid =
+					(const char *)sqlite3_column_text(st, 0);
+				const char *uname =
+					(const char *)sqlite3_column_text(st, 1);
+				const char *role =
+					(const char *)sqlite3_column_text(st, 3);
+				snprintf(out->user_id, sizeof(out->user_id),
+					 "%s", uid ? uid : "");
+				snprintf(out->username, sizeof(out->username),
+					 "%s", uname ? uname : "");
+				snprintf(out->role, sizeof(out->role),
+					 "%s", role ? role : "user");
+			}
+			ok = 1;
+		}
+	}
+	sqlite3_finalize(st);
+	return ok;
+}
+
+static void add_limit_obj(cJSON *parent, const char *name, int used, int limit)
+{
+	cJSON *obj = cJSON_CreateObject();
+	cJSON_AddNumberToObject(obj, "used", used);
+	cJSON_AddNumberToObject(obj, "limit", limit);
+	cJSON_AddItemToObject(parent, name, obj);
+}
+
+int store_user_quota_json(struct session_store *s, const char *user_id,
+			  char **out_json)
+{
+	const char *sql =
+		"SELECT q.profile,p.daily_turns,p.daily_images,p.daily_videos,"
+		"p.storage_bytes,p.max_concurrent_turns,"
+		"COALESCE(d.turns,0),COALESCE(d.images,0),"
+		"COALESCE(d.videos,0),COALESCE(st.used_bytes,0) "
+		"FROM fcgi_user_quota q "
+		"JOIN fcgi_quota_profiles p ON p.name=q.profile "
+		"LEFT JOIN fcgi_usage_daily d ON d.user_id=q.user_id "
+		" AND d.day=date('now') "
+		"LEFT JOIN fcgi_usage_storage st ON st.user_id=q.user_id "
+		"WHERE q.user_id=?";
+	sqlite3_stmt *stmt = NULL;
+	cJSON *root = NULL;
+	cJSON *daily = NULL;
+	cJSON *storage = NULL;
+	cJSON *conc = NULL;
+	char *json = NULL;
+
+	if (!s || !user_id || !out_json)
+		MORPH_RETURN(-EINVAL);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &stmt, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(stmt, 1, user_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) != SQLITE_ROW) {
+		sqlite3_finalize(stmt);
+		MORPH_RETURN(-ENOENT);
+	}
+
+	root = cJSON_CreateObject();
+	daily = cJSON_CreateObject();
+	storage = cJSON_CreateObject();
+	conc = cJSON_CreateObject();
+	if (!root || !daily || !storage || !conc) {
+		cJSON_Delete(root);
+		sqlite3_finalize(stmt);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON_AddStringToObject(root, "profile",
+		(const char *)sqlite3_column_text(stmt, 0));
+	add_limit_obj(daily, "turns", sqlite3_column_int(stmt, 6),
+		      sqlite3_column_int(stmt, 1));
+	add_limit_obj(daily, "images", sqlite3_column_int(stmt, 7),
+		      sqlite3_column_int(stmt, 2));
+	add_limit_obj(daily, "videos", sqlite3_column_int(stmt, 8),
+		      sqlite3_column_int(stmt, 3));
+	cJSON_AddItemToObject(root, "daily", daily);
+	cJSON_AddNumberToObject(storage, "used_bytes",
+				(double)sqlite3_column_int64(stmt, 9));
+	cJSON_AddNumberToObject(storage, "limit_bytes",
+				(double)sqlite3_column_int64(stmt, 4));
+	cJSON_AddItemToObject(root, "storage", storage);
+	cJSON_AddNumberToObject(conc, "used", 0);
+	cJSON_AddNumberToObject(conc, "limit", sqlite3_column_int(stmt, 5));
+	cJSON_AddItemToObject(root, "concurrent_turns", conc);
+
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	sqlite3_finalize(stmt);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	*out_json = json;
+	return 0;
+}
+
+int store_quota_begin_turn(struct session_store *s, const char *user_id,
+			   const char *session_id, char out_turn_id[64])
+{
+	const char *qsql =
+		"SELECT p.daily_turns,p.max_concurrent_turns,"
+		"COALESCE(d.turns,0),"
+		"(SELECT COUNT(*) FROM fcgi_running_turns WHERE user_id=?) "
+		"FROM fcgi_user_quota q "
+		"JOIN fcgi_quota_profiles p ON p.name=q.profile "
+		"LEFT JOIN fcgi_usage_daily d ON d.user_id=q.user_id "
+		" AND d.day=date('now') WHERE q.user_id=?";
+	const char *usql =
+		"INSERT INTO fcgi_usage_daily(user_id,day,turns)"
+		" VALUES(?,date('now'),1) "
+		"ON CONFLICT(user_id,day) DO UPDATE SET turns=turns+1";
+	const char *isql =
+		"INSERT INTO fcgi_running_turns"
+		"(id,user_id,session_id,started_at,heartbeat_at)"
+		" VALUES(?,?,?,?,?)";
+	sqlite3_stmt *st = NULL;
+	char turn_id[64];
+	int daily_limit;
+	int concurrent_limit;
+	int used_turns;
+	int running;
+	int rc;
+	int64_t now = now_unix();
+
+	if (!s || !user_id || !session_id)
+		MORPH_RETURN(-EINVAL);
+	rc = fcgi_random_id("turn_", turn_id, sizeof(turn_id));
+	if (rc < 0)
+		return rc;
+
+	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+	if (sqlite3_prepare_v2(s->db.handle, qsql, -1, &st, NULL) != SQLITE_OK)
+		goto fail;
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) != SQLITE_ROW) {
+		sqlite3_finalize(st);
+		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		MORPH_RETURN(-ENOENT);
+	}
+	daily_limit = sqlite3_column_int(st, 0);
+	concurrent_limit = sqlite3_column_int(st, 1);
+	used_turns = sqlite3_column_int(st, 2);
+	running = sqlite3_column_int(st, 3);
+	sqlite3_finalize(st);
+
+	if (daily_limit >= 0 && used_turns >= daily_limit) {
+		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		MORPH_RETURN(-EDQUOT);
+	}
+	if (concurrent_limit >= 0 && running >= concurrent_limit) {
+		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+		MORPH_RETURN(-EAGAIN);
+	}
+
+	if (sqlite3_prepare_v2(s->db.handle, usql, -1, &st, NULL) != SQLITE_OK)
+		goto fail;
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE)
+		goto fail;
+
+	if (sqlite3_prepare_v2(s->db.handle, isql, -1, &st, NULL) != SQLITE_OK)
+		goto fail;
+	sqlite3_bind_text(st, 1, turn_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(st, 4, now);
+	sqlite3_bind_int64(st, 5, now);
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE)
+		goto fail;
+
+	sqlite3_exec(s->db.handle, "COMMIT", NULL, NULL, NULL);
+	if (out_turn_id)
+		snprintf(out_turn_id, 64, "%s", turn_id);
+	return 0;
+
+fail:
+	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
+	MORPH_RETURN(-EIO);
+}
+
+void store_quota_end_turn(struct session_store *s, const char *turn_id)
+{
+	const char *sql = "DELETE FROM fcgi_running_turns WHERE id=?";
+	sqlite3_stmt *st = NULL;
+
+	if (!s || !turn_id || !*turn_id)
+		return;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, turn_id, -1, SQLITE_TRANSIENT);
+		sqlite3_step(st);
+		sqlite3_finalize(st);
+	}
+}
+
+static char *artifact_json_array(sqlite3_stmt *st)
+{
+	cJSON *root = cJSON_CreateObject();
+	cJSON *items = cJSON_CreateArray();
+	char *json;
+
+	if (!root || !items) {
+		cJSON_Delete(root);
+		return NULL;
+	}
+	cJSON_AddItemToObject(root, "items", items);
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		cJSON *obj = cJSON_CreateObject();
+		const char *id = (const char *)sqlite3_column_text(st, 0);
+		char url[128];
+		if (!obj) {
+			cJSON_Delete(root);
+			return NULL;
+		}
+		snprintf(url, sizeof(url), "/api/artifacts/%s", id ? id : "");
+		cJSON_AddStringToObject(obj, "id", id ? id : "");
+		cJSON_AddStringToObject(obj, "session_id",
+			(const char *)sqlite3_column_text(st, 1));
+		cJSON_AddStringToObject(obj, "kind",
+			(const char *)sqlite3_column_text(st, 2));
+		cJSON_AddStringToObject(obj, "mime",
+			(const char *)sqlite3_column_text(st, 3));
+		cJSON_AddStringToObject(obj, "filename",
+			(const char *)sqlite3_column_text(st, 4));
+		cJSON_AddNumberToObject(obj, "size_bytes",
+			(double)sqlite3_column_int64(st, 5));
+		cJSON_AddStringToObject(obj, "status",
+			(const char *)sqlite3_column_text(st, 6));
+		cJSON_AddNumberToObject(obj, "created_at",
+			(double)sqlite3_column_int64(st, 7));
+		cJSON_AddStringToObject(obj, "url", url);
+		cJSON_AddItemToArray(items, obj);
+	}
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	return json;
+}
+
+int store_artifact_register(struct session_store *s, const char *user_id,
+			    const char *session_id, const char *kind,
+			    const char *mime, const char *filename,
+			    const char *relative_path, int64_t size_bytes,
+			    char out_artifact_id[64])
+{
+	const char *sql =
+		"INSERT INTO fcgi_artifacts"
+		"(id,user_id,session_id,kind,mime,filename,relative_path,"
+		"size_bytes,status,created_at)"
+		" VALUES(?,?,?,?,?,?,?,?, 'ready', ?)";
+	sqlite3_stmt *st = NULL;
+	char id[64];
+	int rc;
+
+	if (!s || !user_id || !session_id || !kind || !mime ||
+	    !filename || !relative_path)
+		MORPH_RETURN(-EINVAL);
+	rc = fcgi_random_id("art_", id, sizeof(id));
+	if (rc < 0)
+		return rc;
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 4, kind, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 5, mime, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 6, filename, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 7, relative_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(st, 8, size_bytes);
+	sqlite3_bind_int64(st, 9, now_unix());
+	rc = sqlite3_step(st);
+	sqlite3_finalize(st);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(-EIO);
+
+	sql = "INSERT INTO fcgi_usage_storage(user_id,used_bytes)"
+	      " VALUES(?,?) "
+	      "ON CONFLICT(user_id) DO UPDATE SET "
+	      "used_bytes=used_bytes+excluded.used_bytes";
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(st, 2, size_bytes);
+		sqlite3_step(st);
+		sqlite3_finalize(st);
+	}
+	if (strcmp(kind, "image") == 0 || strcmp(kind, "video") == 0) {
+		const char *col = strcmp(kind, "image") == 0 ? "images" : "videos";
+		char usage_sql[256];
+		snprintf(usage_sql, sizeof(usage_sql),
+			"INSERT INTO fcgi_usage_daily(user_id,day,%s)"
+			" VALUES(?,date('now'),1) "
+			"ON CONFLICT(user_id,day) DO UPDATE SET %s=%s+1",
+			col, col, col);
+		if (sqlite3_prepare_v2(s->db.handle, usage_sql, -1,
+				       &st, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+			sqlite3_step(st);
+			sqlite3_finalize(st);
+		}
+	}
+	if (out_artifact_id)
+		snprintf(out_artifact_id, 64, "%s", id);
+	return 0;
+}
+
+int store_artifact_get(struct session_store *s, const char *artifact_id,
+		       const char *user_id, struct artifact_record *out)
+{
+	const char *sql =
+		"SELECT id,user_id,session_id,kind,mime,filename,"
+		"relative_path,size_bytes,status,created_at "
+		"FROM fcgi_artifacts WHERE id=? AND user_id=?";
+	sqlite3_stmt *st = NULL;
+	int found = 0;
+
+	if (!s || !artifact_id || !user_id || !out)
+		MORPH_RETURN(-EINVAL);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(st, 1, artifact_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		memset(out, 0, sizeof(*out));
+		snprintf(out->id, sizeof(out->id), "%s",
+			(const char *)sqlite3_column_text(st, 0));
+		snprintf(out->user_id, sizeof(out->user_id), "%s",
+			(const char *)sqlite3_column_text(st, 1));
+		snprintf(out->session_id, sizeof(out->session_id), "%s",
+			(const char *)sqlite3_column_text(st, 2));
+		snprintf(out->kind, sizeof(out->kind), "%s",
+			(const char *)sqlite3_column_text(st, 3));
+		snprintf(out->mime, sizeof(out->mime), "%s",
+			(const char *)sqlite3_column_text(st, 4));
+		snprintf(out->filename, sizeof(out->filename), "%s",
+			(const char *)sqlite3_column_text(st, 5));
+		snprintf(out->relative_path, sizeof(out->relative_path), "%s",
+			(const char *)sqlite3_column_text(st, 6));
+		out->size_bytes = sqlite3_column_int64(st, 7);
+		snprintf(out->status, sizeof(out->status), "%s",
+			(const char *)sqlite3_column_text(st, 8));
+		out->created_at = sqlite3_column_int64(st, 9);
+		found = 1;
+	}
+	sqlite3_finalize(st);
+	return found ? 0 : -ENOENT;
+}
+
+int store_artifact_list_json(struct session_store *s, const char *user_id,
+			     const char *session_id, char **out_json)
+{
+	const char *sql =
+		"SELECT id,session_id,kind,mime,filename,size_bytes,status,"
+		"created_at FROM fcgi_artifacts "
+		"WHERE user_id=? AND session_id=? ORDER BY created_at DESC";
+	sqlite3_stmt *st = NULL;
+	char *json;
+
+	if (!s || !user_id || !session_id || !out_json)
+		MORPH_RETURN(-EINVAL);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
+		MORPH_RETURN(-EIO);
+	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 2, session_id, -1, SQLITE_TRANSIENT);
+	json = artifact_json_array(st);
+	sqlite3_finalize(st);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	*out_json = json;
+	return 0;
+}
 
 int store_create_session(struct session_store *s, const char *user_id,
 			 const char *name, const char *model,

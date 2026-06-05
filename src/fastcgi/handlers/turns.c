@@ -18,9 +18,11 @@
 #include "session.h"
 
 #include <pthread.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "cJSON.h"
 
@@ -41,15 +43,139 @@ react_context_destroy(struct react_context *ctx);
 
 __attribute__((weak)) int
 react_memory_options_for_session(struct memory_options *out);
+
+__attribute__((weak)) const char *fcgi_artifact_output_dir(void);
 /* -------------------------------------------------------- */
 
 struct turn_job {
 	struct session_store *store;
 	char  session_id[64];
 	char  user_id[64];
+	char  turn_id[64];
 	char *input;
 	char  last_tool[128];
 };
+
+static const char *bridge_output_dir(void)
+{
+	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
+
+	if (env && *env)
+		return env;
+	if (fcgi_artifact_output_dir)
+		return fcgi_artifact_output_dir();
+	return "/var/lib/morph/output";
+}
+
+static const char *artifact_mime(const char *kind, const char *path)
+{
+	const char *dot = strrchr(path, '.');
+
+	if (strcmp(kind, "image") == 0) {
+		if (dot && strcmp(dot, ".jpg") == 0)
+			return "image/jpeg";
+		if (dot && strcmp(dot, ".jpeg") == 0)
+			return "image/jpeg";
+		if (dot && strcmp(dot, ".webp") == 0)
+			return "image/webp";
+		return "image/png";
+	}
+	if (dot && strcmp(dot, ".webm") == 0)
+		return "video/webm";
+	return "video/mp4";
+}
+
+static int relative_under_root(const char *root, const char *path,
+			       char rel[512])
+{
+	char root_real[PATH_MAX];
+	char file_real[PATH_MAX];
+	size_t root_len;
+
+	if (!realpath(root, root_real))
+		return 0;
+	if (!realpath(path, file_real))
+		return 0;
+	root_len = strlen(root_real);
+	if (strncmp(root_real, file_real, root_len) != 0)
+		return 0;
+	if (file_real[root_len] != '/' && file_real[root_len] != '\0')
+		return 0;
+	snprintf(rel, 512, "%s",
+		 file_real[root_len] == '/' ? file_real + root_len + 1 : "");
+	return rel[0] != '\0';
+}
+
+static void maybe_publish_artifact(struct turn_job *j, const char *payload)
+{
+	const char *prefix = NULL;
+	const char *kind = NULL;
+	const char *start;
+	const char *end;
+	char path[PATH_MAX];
+	char rel[512];
+	char artifact_id[64];
+	const char *filename;
+	struct stat st;
+	const char *mime;
+	char url[128];
+	cJSON *obj;
+	char *json;
+
+	if (!payload)
+		return;
+	if (strncmp(payload, "image generated:", 16) == 0) {
+		prefix = "image generated:";
+		kind = "image";
+	} else if (strncmp(payload, "video generated:", 16) == 0) {
+		prefix = "video generated:";
+		kind = "video";
+	} else {
+		return;
+	}
+
+	start = payload + strlen(prefix);
+	while (*start == ' ' || *start == '\t')
+		start++;
+	end = strstr(start, " (");
+	if (!end)
+		end = start + strlen(start);
+	while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+		end--;
+	if (end <= start || (size_t)(end - start) >= sizeof(path))
+		return;
+	snprintf(path, sizeof(path), "%.*s", (int)(end - start), start);
+	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+		return;
+	if (!relative_under_root(bridge_output_dir(), path, rel))
+		return;
+
+	filename = strrchr(path, '/');
+	filename = filename ? filename + 1 : path;
+	mime = artifact_mime(kind, path);
+	if (store_artifact_register(j->store, j->user_id, j->session_id,
+				    kind, mime, filename, rel, st.st_size,
+				    artifact_id) != 0) {
+		return;
+	}
+
+	obj = cJSON_CreateObject();
+	if (!obj)
+		return;
+	cJSON_AddStringToObject(obj, "id", artifact_id);
+	cJSON_AddStringToObject(obj, "kind", kind);
+	cJSON_AddStringToObject(obj, "mime", mime);
+	cJSON_AddStringToObject(obj, "filename", filename);
+	cJSON_AddNumberToObject(obj, "size_bytes", (double)st.st_size);
+	snprintf(url, sizeof(url), "/api/artifacts/%s", artifact_id);
+	cJSON_AddStringToObject(obj, "url", url);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
+	if (!json)
+		return;
+	events_publish(j->store, j->session_id, "artifact_ready", json);
+	free(json);
+}
 
 static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u) {
 	struct turn_job *j = (struct turn_job *)u;
@@ -95,6 +221,7 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	case 2: /* REACT_STEP_OBSERVATION -> tool_result */
 		event_sink_tool_result(j->store, j->session_id,
 				       j->last_tool, payload_json);
+		maybe_publish_artifact(j, payload_json);
 		j->last_tool[0] = '\0';
 		return 0;
 
@@ -152,8 +279,19 @@ static void *turn_thread(void *arg) {
 		free(memory_ctx);
 	}
 
-	events_publish(j->store, j->session_id, "turn_start",
-		       "{\"phase\":\"begin\"}");
+	{
+		cJSON *start = cJSON_CreateObject();
+		char *json = NULL;
+		if (start) {
+			cJSON_AddStringToObject(start, "phase", "begin");
+			cJSON_AddStringToObject(start, "turn_id", j->turn_id);
+			json = cJSON_PrintUnformatted(start);
+			cJSON_Delete(start);
+		}
+		events_publish(j->store, j->session_id, "turn_start",
+			       json ? json : "{\"phase\":\"begin\"}");
+		free(json);
+	}
 	react_run(rctx, j->input ? j->input : "", bridge_cb, j);
 
 	if (sess.id > 0) {
@@ -209,6 +347,7 @@ static void *turn_thread(void *arg) {
 
 	if (react_context_destroy) react_context_destroy(rctx);
 out:
+	store_quota_end_turn(j->store, j->turn_id);
 	free(j->input);
 	free(j);
 	return NULL;
@@ -233,10 +372,38 @@ void handle_post_turn(request_t *r) {
 	j->store = r->store;
 	snprintf(j->session_id, sizeof(j->session_id), "%s", sid);
 	snprintf(j->user_id,    sizeof(j->user_id),    "%s", r->user_id);
+	{
+		int qrc = store_quota_begin_turn(r->store, r->user_id, sid,
+						 j->turn_id);
+		if (qrc == -EDQUOT) {
+			free(j); cJSON_Delete(root); free(body);
+			reply_json(r, 429,
+				"{\"error\":\"quota_exceeded\","
+				"\"resource\":\"turns\"}");
+			return;
+		}
+		if (qrc == -EAGAIN) {
+			free(j); cJSON_Delete(root); free(body);
+			reply_json(r, 429,
+				"{\"error\":\"quota_exceeded\","
+				"\"resource\":\"concurrent_turns\"}");
+			return;
+		}
+		if (qrc != 0) {
+			free(j); cJSON_Delete(root); free(body);
+			reply_500(r, "quota failed"); return;
+		}
+	}
 	j->input = strdup(input);
+	if (!j->input) {
+		store_quota_end_turn(r->store, j->turn_id);
+		free(j); cJSON_Delete(root); free(body);
+		reply_500(r, "oom"); return;
+	}
 
 	pthread_t tid;
 	if (pthread_create(&tid, NULL, turn_thread, j) != 0) {
+		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "thread spawn"); return;
 	}
