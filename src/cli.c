@@ -2955,6 +2955,134 @@ static int output_handle_action(struct cli_context *ctx, const char *content)
 	return 0;
 }
 
+static char *trim_plan_line(char *line)
+{
+	char *end;
+
+	while (*line == ' ' || *line == '\t' || *line == '\r')
+		line++;
+
+	end = line + strlen(line);
+	while (end > line &&
+	       (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) {
+		end--;
+	}
+	*end = '\0';
+	return line;
+}
+
+static int render_plan_title(const char *line, int *printed)
+{
+	const char *start;
+	const char *end;
+
+	if (strncmp(line, "Plan \"", 6) != 0)
+		return 0;
+
+	start = line + 6;
+	end = strrchr(start, '"');
+	if (!end || end <= start)
+		return 0;
+
+	if (*printed)
+		printf("\n");
+	printf(ANSI_BOLD "Plan:" ANSI_RESET " %.*s\n",
+	       (int)(end - start), start);
+	*printed = 1;
+	return 1;
+}
+
+static int render_plan_step(char *line, int *step_started)
+{
+	char mark;
+	char *rest;
+	char *active;
+
+	if (line[0] != '[' || line[1] == '\0' || line[2] != ']')
+		return 0;
+
+	mark = line[1];
+	rest = line + 3;
+	while (*rest == ' ' || *rest == '\t')
+		rest++;
+	if (!*rest)
+		return 0;
+
+	active = strstr(rest, " <-- active");
+	if (active)
+		*active = '\0';
+
+	if (!*step_started) {
+		printf("\n");
+		*step_started = 1;
+	}
+
+	if (mark == ' ')
+		printf("    %s\n", rest);
+	else
+		printf("  %c %s\n", mark, rest);
+	return 1;
+}
+
+static int render_plan_observation(const char *content)
+{
+	char *copy;
+	char *saveptr = NULL;
+	char *line;
+	int printed = 0;
+	int step_started = 0;
+	int consumed = 0;
+
+	if (!content || !*content)
+		return 0;
+
+	copy = strdup(content);
+	if (!copy)
+		return 0;
+
+	line = strtok_r(copy, "\n", &saveptr);
+	while (line) {
+		char *trimmed = trim_plan_line(line);
+
+		if (trimmed[0] == '\0' ||
+		    strcmp(trimmed, "Plan created.") == 0 ||
+		    strncmp(trimmed, "Plan created (", 14) == 0 ||
+		    strncmp(trimmed, "Step ", 5) == 0) {
+			line = strtok_r(NULL, "\n", &saveptr);
+			continue;
+		}
+
+		if (render_plan_title(trimmed, &printed)) {
+			step_started = 0;
+			consumed = 1;
+		} else if (strncmp(trimmed, "Goal:", 5) == 0 && printed) {
+			printf(ANSI_BOLD "Goal:" ANSI_RESET "%s\n",
+			       trimmed + 5);
+			consumed = 1;
+		} else if (strstr(trimmed, "step(s)") && printed) {
+			consumed = 1;
+		} else if (render_plan_step(trimmed, &step_started)) {
+			consumed = 1;
+		}
+
+		line = strtok_r(NULL, "\n", &saveptr);
+	}
+
+	free(copy);
+	return consumed;
+}
+
+static void print_tool_observation(const char *content)
+{
+	size_t len = strlen(content);
+
+	if (len > 2000) {
+		printf("%.1997s...\n", content);
+	} else {
+		printf("%s\n", content);
+	}
+}
+
 /*
  * Handle OBSERVATION step: stop spinner with appropriate status.
  * ctx - CLI context.
@@ -2988,12 +3116,8 @@ static int output_handle_observation(struct cli_context *ctx, const char *conten
 	    && strncmp(content, "image generated:", 15) != 0
 	    && strncmp(content, "video generated:", 16) != 0) {
 		printf("\n");
-		size_t len = strlen(content);
-		if (len > 2000) {
-			printf("%.1997s...\n", content);
-		} else {
-			printf("%s\n", content);
-		}
+		if (!render_plan_observation(content))
+			print_tool_observation(content);
 		fflush(stdout);
 	}
 	return 0;
