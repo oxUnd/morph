@@ -19,20 +19,69 @@ src/fastcgi/
 ├── README.md
 ├── main.c              # FCGX_Init + worker pool + signal handling
 ├── router.{c,h}        # /pattern/:id dispatcher (no regex)
-├── auth.{c,h}          # Bearer + X-Remote-User
+├── auth.{c,h}          # session token + Basic Auth + X-Remote-User
+├── security.{c,h}      # PBKDF2-SHA256, random ID, constant-time compare
 ├── fcgi_io.{c,h}       # request_t, JSON & SSE helpers
-├── session_store.{c,h} # SQLite WAL multi-session backend
+├── session_store.{c,h} # SQLite WAL multi-session backend + login tokens
 ├── event_sink.{c,h}    # convenience wrappers around events_publish
 ├── action_pump.{c,h}   # drain-with-wait for Web → Agent commands
+├── agent_bridge.c      # strong symbols for react integration
 └── handlers/
     ├── handlers.h
     ├── health.c        # GET  /api/health
+    ├── users.c         # POST /api/install, /api/signup, /api/login, /api/logout
     ├── sessions.c      # CRUD /api/sessions
     ├── turns.c         # POST /api/sessions/:id/turns
     ├── canvas.c        # GET/POST/PATCH /api/sessions/:id/canvas/...
     ├── actions.c       # POST /api/sessions/:id/actions
-    └── events.c        # GET  /api/sessions/:id/events  (SSE)
+    ├── events.c        # GET  /api/sessions/:id/events  (SSE)
+    └── artifacts.c     # GET  /api/sessions/:id/artifacts, /api/artifacts/:id
 ```
+
+---
+
+## Authentication
+
+morph-fastcgi supports three authentication modes, tried in order:
+
+### 1. Trusted proxy header (highest priority)
+
+Set `MORPH_FCGI_TRUST_HDR` to the HTTP header name your reverse proxy
+injects (e.g. `X-Remote-User`).  The header value becomes the identity.
+
+> Only use behind a trusted proxy that strips client-supplied identity
+> headers.  A misconfigured proxy allows identity spoofing.
+
+### 2. Session token (recommended for web UI)
+
+Login via `POST /api/login` with HTTP Basic Auth → receive a random
+Bearer token → use `Authorization: Bearer <token>` for all subsequent
+requests.
+
+Tokens are stored as individual files under `/tmp/morph-sess/` (like PHP
+sessions) with a 24-hour TTL.  An in-memory hash cache avoids file I/O
+on every request; the cache is kept in sync on login/logout.
+
+Flow:
+```
+1. POST /api/login  (Basic Auth) → {token, user_id, username, role, expires_at}
+2. All requests: Authorization: Bearer <token>
+3. POST /api/logout → token revoked (file deleted + cache cleared)
+```
+
+### 3. HTTP Basic Auth (fallback)
+
+If no trust-header or Bearer token matches, Basic Auth is tried against
+the `fcgi_users` table with PBKDF2-SHA256 password verification.
+
+This is used internally by `POST /api/login` and during initial setup
+(`POST /api/install`).
+
+### First-run setup
+
+When no users exist (`GET /api/health` returns `setup_required: true`),
+only `POST /api/install` and `GET /api/health` are accessible.  The
+install endpoint creates the initial admin user.
 
 ---
 
@@ -56,51 +105,88 @@ The binary lands at `build/src/fastcgi/morph-fastcgi`.
 export MORPH_FCGI_LISTEN="unix:/run/morph-fastcgi.sock"
 export MORPH_FCGI_DB="/var/lib/morph/morph.db"
 export MORPH_FCGI_WORKERS=8
-# At least one authentication mode is required (both => trust-header wins):
-export MORPH_FCGI_SECRET="my-bearer-secret"
-# Use only behind a trusted proxy that removes client-supplied identity headers:
+# Optional: trust a proxy-injected identity header
 export MORPH_FCGI_TRUST_HDR="X-Remote-User"
+# Optional: override artifact output directory
+export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
 ./build/src/fastcgi/morph-fastcgi
 ```
 
 `MORPH_FCGI_LISTEN` accepts `unix:/path/sock`, `:9000`, or `127.0.0.1:9000`.
-The process refuses to start unless `MORPH_FCGI_SECRET` or
-`MORPH_FCGI_TRUST_HDR` is set. When trust-header authentication is used, the
-configured header is the only accepted identity source.
 
 ---
 
 ## API surface
 
-| Method | Path                                          | Notes                       |
-| ------ | --------------------------------------------- | --------------------------- |
-| GET    | /api/health                                   | liveness                    |
-| POST   | /api/sessions                                 | `{name, model}` → `{id}`    |
-| GET    | /api/sessions                                 | sessions owned by user      |
-| GET    | /api/sessions/:id                             |                             |
-| DELETE | /api/sessions/:id                             | 409 if turn in progress     |
-| POST   | /api/sessions/:id/turns                       | `{prompt}` → 202 + SSE      |
-| GET    | /api/sessions/:id/events                      | SSE, honours Last-Event-ID  |
-| POST   | /api/sessions/:id/actions                     | `{type, payload}`           |
-| GET    | /api/sessions/:id/canvas                      |                             |
-| POST   | /api/sessions/:id/canvas/nodes                |                             |
-| PATCH  | /api/sessions/:id/canvas/nodes/:node          |                             |
+| Method | Path                                          | Notes                          |
+| ------ | --------------------------------------------- | ------------------------------ |
+| GET    | /api/health                                   | liveness, `{setup_required}`   |
+| POST   | /api/install                                  | create admin (setup only)      |
+| POST   | /api/signup                                   | create user (if enabled)       |
+| POST   | /api/login                                    | Basic Auth → Bearer token      |
+| POST   | /api/logout                                   | revoke current token           |
+| GET    | /api/me/quota                                 | current user quota             |
+| POST   | /api/sessions                                 | `{name, model}` → `{id}`       |
+| GET    | /api/sessions                                 | sessions owned by user         |
+| GET    | /api/sessions/:id                             |                                |
+| DELETE | /api/sessions/:id                             | 409 if turn in progress        |
+| POST   | /api/sessions/:id/turns                       | `{prompt}` → 202 + SSE         |
+| GET    | /api/sessions/:id/events                      | SSE, honours Last-Event-ID     |
+| POST   | /api/sessions/:id/actions                     | `{type, payload}`              |
+| GET    | /api/sessions/:id/canvas                      |                                |
+| POST   | /api/sessions/:id/canvas/nodes                |                                |
+| PATCH  | /api/sessions/:id/canvas/nodes/:node          |                                |
+| GET    | /api/sessions/:id/artifacts                   | list artifacts for session     |
+| GET    | /api/artifacts/:artifact/meta                 | artifact metadata              |
+| GET    | /api/artifacts/:artifact                      | download artifact binary       |
 
 SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
-`tool_result`, `reflection`, `final`, `turn_end`, `canvas_node_added`,
-`canvas_node_patched`, `error`.
+`tool_result`, `reflection`, `final`, `turn_end`, `artifact_ready`,
+`canvas_node_added`, `canvas_node_patched`, `error`.
+
+---
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
+| `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
+| `MORPH_FCGI_WORKERS` | `8` | Worker threads (1–64) |
+| `MORPH_FCGI_TRUST_HDR` | _(none)_ | Trusted proxy identity header |
+| `MORPH_FCGI_OUTPUT_DIR` | _(from config)_ | Override artifact output directory |
+| `MORPH_FCGI_ALLOW_SIGNUP` | _(none)_ | Set to `1` to enable public signup |
+| `MORPH_FCGI_SIGNUP_CODE` | _(none)_ | Optional invite code for signup |
 
 ---
 
 ## Deployment
 
-Examples in `deploy/`:
+Examples in `web/deploy/`:
 
 - `nginx.conf`         — fastcgi_pass + a separate location block for SSE
-                          with `fastcgi_buffering off`, `fastcgi_read_timeout 1h`
+                          with `fastcgi_buffering off`, `fastcgi_read_timeout 1h`;
+                          passes `HTTP_AUTHORIZATION` to FastCGI
 - `morph-fastcgi.service` — hardened systemd unit
 - `Dockerfile`         — multi-stage debian:bookworm-slim build
+
+### Docker quick start
+
+```bash
+docker build -t morph-fastcgi -f web/deploy/Dockerfile .
+
+docker run -d --name morph -p 8080:80 \
+  -v ~/.morph/config.toml:/var/lib/morph/.morph/config.toml:ro \
+  -v ~/.morph/output:/var/lib/morph/.morph/output \
+  -v ~/.morph/log:/var/lib/morph/.morph/log \
+  -e HOME=/var/lib/morph \
+  -e MORPH_FCGI_OUTPUT_DIR=/var/lib/morph/.morph/output \
+  morph-fastcgi
+```
+
+The config must have `output_dir = "~/.morph/output"` so the path resolves
+correctly inside the container (`HOME=/var/lib/morph`).
 
 ---
 
