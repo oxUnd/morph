@@ -3,6 +3,7 @@
 #include "handlers.h"
 #include "../session_store.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,10 +59,17 @@ void handle_get_session(request_t *r) {
 	reply_200_json(r, buf);
 }
 
-/* DELETE /api/sessions/:id  (MVP: stub — leave row, just ack) */
+/* DELETE /api/sessions/:id */
 void handle_delete_session(request_t *r) {
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
+	int rc = store_delete_session(r->store, sid, r->user_id);
+	if (rc == -EAGAIN) {
+		reply_json(r, 409,
+			   "{\"error\":\"turn_in_progress\"}");
+		return;
+	}
+	if (rc != 0) { reply_500(r, "delete failed"); return; }
 	reply_204(r);
 }
