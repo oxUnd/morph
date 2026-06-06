@@ -47,6 +47,10 @@ int video_gen_create(struct model *self, const char *prompt,
 		num_images = 0;
 	if (num_videos < 0)
 		num_videos = 0;
+	/* TODO: Seedance 1.0 fast only supports 1 reference image (first_frame).
+	 * Re-enable multi-image when the API supports it. */
+	if (num_images > 1)
+		num_images = 1;
 	memset(result, 0, sizeof(*result));
 
 	struct arena *arena = arena_create(8192);
