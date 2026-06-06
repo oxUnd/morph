@@ -422,3 +422,95 @@ TEST(ImageRender, KittyPngProtocol) {
 	unsetenv("KITTY_WINDOW_ID");
 	remove(path);
 }
+
+TEST(ImageGenExtContentType, Png) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "png");
+}
+
+TEST(ImageGenExtContentType, Jpeg) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "jpg");
+}
+
+TEST(ImageGenExtContentType, Webp) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "webp");
+}
+
+TEST(ImageGenExtContentType, Gif) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/gif\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "gif");
+}
+
+TEST(ImageGenExtContentType, Bmp) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/bmp\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "bmp");
+}
+
+TEST(ImageGenExtContentType, CaseInsensitive) {
+	const char *headers = "HTTP/1.1 200 OK\r\nCONTENT-TYPE: IMAGE/JPEG\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "jpg");
+}
+
+TEST(ImageGenExtContentType, WithCharset) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: image/png; charset=utf-8\r\n\r\n";
+	EXPECT_STREQ(image_gen_ext_from_content_type(headers), "png");
+}
+
+TEST(ImageGenExtContentType, UnknownType) {
+	const char *headers = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n";
+	EXPECT_EQ(image_gen_ext_from_content_type(headers), nullptr);
+}
+
+TEST(ImageGenExtContentType, NullHeaders) {
+	EXPECT_EQ(image_gen_ext_from_content_type(NULL), nullptr);
+}
+
+TEST(ImageGenExtContentType, EmptyHeaders) {
+	EXPECT_EQ(image_gen_ext_from_content_type(""), nullptr);
+}
+
+TEST(ImageGenExtMagic, Png) {
+	unsigned char png[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+	EXPECT_STREQ(image_gen_ext_from_magic(png, sizeof(png)), "png");
+}
+
+TEST(ImageGenExtMagic, Jpeg) {
+	unsigned char jpg[] = {0xFF, 0xD8, 0xFF, 0xE0};
+	EXPECT_STREQ(image_gen_ext_from_magic(jpg, sizeof(jpg)), "jpg");
+}
+
+TEST(ImageGenExtMagic, Webp) {
+	unsigned char webp[] = {0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50};
+	EXPECT_STREQ(image_gen_ext_from_magic(webp, sizeof(webp)), "webp");
+}
+
+TEST(ImageGenExtMagic, Gif87a) {
+	unsigned char gif[] = {0x47, 0x49, 0x46, 0x38, 0x37, 0x61};
+	EXPECT_STREQ(image_gen_ext_from_magic(gif, sizeof(gif)), "gif");
+}
+
+TEST(ImageGenExtMagic, Gif89a) {
+	unsigned char gif[] = {0x47, 0x49, 0x46, 0x38, 0x39, 0x61};
+	EXPECT_STREQ(image_gen_ext_from_magic(gif, sizeof(gif)), "gif");
+}
+
+TEST(ImageGenExtMagic, Bmp) {
+	unsigned char bmp[] = {0x42, 0x4D, 0x00, 0x00};
+	EXPECT_STREQ(image_gen_ext_from_magic(bmp, sizeof(bmp)), "bmp");
+}
+
+TEST(ImageGenExtMagic, UnknownDefaultsToPng) {
+	unsigned char unknown[] = {0x00, 0x01, 0x02, 0x03};
+	EXPECT_STREQ(image_gen_ext_from_magic(unknown, sizeof(unknown)), "png");
+}
+
+TEST(ImageGenExtMagic, NullData) {
+	EXPECT_STREQ(image_gen_ext_from_magic(NULL, 0), "png");
+}
+
+TEST(ImageGenExtMagic, ShortBuffer) {
+	unsigned char buf[] = {0x89};
+	EXPECT_STREQ(image_gen_ext_from_magic(buf, 1), "png");
+}

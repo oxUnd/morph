@@ -17,7 +17,43 @@
 
 #include "stb_image.h"
 
-static int download_url(const char *url, const char *out_path)
+const char *image_gen_ext_from_content_type(const char *headers)
+{
+	if (!headers) return NULL;
+	const char *p = headers;
+	while ((p = strcasestr(p, "content-type:")) != NULL) {
+		p += 13;
+		while (*p == ' ') p++;
+		if (strncasecmp(p, "image/png", 9) == 0) return "png";
+		if (strncasecmp(p, "image/jpeg", 10) == 0) return "jpg";
+		if (strncasecmp(p, "image/webp", 10) == 0) return "webp";
+		if (strncasecmp(p, "image/gif", 9) == 0) return "gif";
+		if (strncasecmp(p, "image/bmp", 9) == 0) return "bmp";
+	}
+	return NULL;
+}
+
+const char *image_gen_ext_from_magic(const unsigned char *data, size_t len)
+{
+	if (!data || len < 2) return "png";
+	if (len >= 8 && data[0] == 0x89 && data[1] == 'P' &&
+	    data[2] == 'N' && data[3] == 'G')
+		return "png";
+	if (data[0] == 0xFF && data[1] == 0xD8)
+		return "jpg";
+	if (len >= 12 && memcmp(data, "RIFF", 4) == 0 &&
+	    memcmp(data + 8, "WEBP", 4) == 0)
+		return "webp";
+	if (len >= 6 && (memcmp(data, "GIF87a", 6) == 0 ||
+			 memcmp(data, "GIF89a", 6) == 0))
+		return "gif";
+	if (len >= 2 && data[0] == 'B' && data[1] == 'M')
+		return "bmp";
+	return "png";
+}
+
+static int download_url(const char *url, const char *out_dir,
+			char *out_path, size_t out_cap)
 {
 	struct http_response resp = {0};
 	int rc = http_get(url, &resp);
@@ -30,21 +66,15 @@ static int download_url(const char *url, const char *out_path)
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
+	const char *ext = image_gen_ext_from_content_type(resp.headers);
+	if (!ext)
+		ext = image_gen_ext_from_magic((const unsigned char *)resp.body,
+					       resp.body_len);
+	snprintf(out_path, out_cap, "%s/img_%lld.%s",
+		 out_dir, (long long)time(NULL), ext);
 	rc = file_write_all(out_path, resp.body, resp.body_len);
 	http_response_free(&resp);
 	return rc;
-}
-
-static const char *mime_by_ext(const char *path)
-{
-	const char *e = strrchr(path, '.');
-	if (!e) return "image/png";
-	if (strcasecmp(e, ".png") == 0) return "image/png";
-	if (strcasecmp(e, ".jpg") == 0 || strcasecmp(e, ".jpeg") == 0) return "image/jpeg";
-	if (strcasecmp(e, ".gif") == 0) return "image/gif";
-	if (strcasecmp(e, ".webp") == 0) return "image/webp";
-	if (strcasecmp(e, ".bmp") == 0) return "image/bmp";
-	return "image/png";
 }
 
 static const char *style_prefix(const char *style)
@@ -170,11 +200,8 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		out_dir = file_expand_path("~/.morph/output");
 	file_ensure_dir(out_dir);
 	char out_path[PATH_MAX];
-	snprintf(out_path, sizeof(out_path), "%s/img_%lld.png",
-		 out_dir, (long long)time(NULL));
+	rc = download_url(result->url, out_dir, out_path, sizeof(out_path));
 	free(out_dir);
-
-	rc = download_url(result->url, out_path);
 	if (rc < 0) {
 		cJSON_Delete(root);
 		return rc;
