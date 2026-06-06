@@ -61,7 +61,9 @@ int video_gen_create(struct model *self, const char *prompt,
 	int poll_timeout = 600;
 
 	if (!api_base[0]) {
-		log_err("video_gen: no api_base configured");
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: no api_base configured");
+		log_err("%s", result->error_msg);
 		arena_destroy(arena);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -123,8 +125,9 @@ int video_gen_create(struct model *self, const char *prompt,
 		char *data_uri = arena_alloc(arena, uri_len);
 		if (data_uri) {
 			snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
-			cJSON *img_item = cJSON_CreateObject();
+cJSON *img_item = cJSON_CreateObject();
 			cJSON_AddStringToObject(img_item, "type", "image_url");
+			cJSON_AddStringToObject(img_item, "role", "first_frame");
 			cJSON *url_obj = cJSON_CreateObject();
 			cJSON_AddStringToObject(url_obj, "url", data_uri);
 			cJSON_AddItemToObject(img_item, "image_url", url_obj);
@@ -180,8 +183,9 @@ int video_gen_create(struct model *self, const char *prompt,
 		}
 
 		if (url_to_send) {
-			cJSON *vid_item = cJSON_CreateObject();
+cJSON *vid_item = cJSON_CreateObject();
 			cJSON_AddStringToObject(vid_item, "type", "video_url");
+			cJSON_AddStringToObject(vid_item, "role", "reference_video");
 			cJSON *url_obj = cJSON_CreateObject();
 			cJSON_AddStringToObject(url_obj, "url", url_to_send);
 			cJSON_AddItemToObject(vid_item, "video_url", url_obj);
@@ -192,7 +196,6 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	if (duration > 0)
 		cJSON_AddNumberToObject(body_json, "duration", duration);
-	cJSON_AddNumberToObject(body_json, "n", 1);
 
 	size_t body_cap = 8192;
 	char *body_str = arena_alloc(arena, body_cap);
@@ -221,7 +224,9 @@ int video_gen_create(struct model *self, const char *prompt,
 	arena_reset(arena);
 
 	if (rc < 0) {
-		log_err("video_gen: submit request failed");
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: submit request failed (curl error %d)", rc);
+		log_err("%s", result->error_msg);
 		arena_destroy(arena);
 		return rc;
 	}
@@ -256,14 +261,19 @@ int video_gen_create(struct model *self, const char *prompt,
 				resp.body);
 		}
 	} else {
-		log_err("video_gen: submit HTTP %d, body:\n%s",
-			resp.status_code,
-			resp.body ? resp.body : "(empty)");
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: submit HTTP %d, body: %s",
+			 resp.status_code,
+			 resp.body ? resp.body : "(empty)");
+		log_err("%s", result->error_msg);
 	}
 	http_response_free(&resp);
 
 	if (!task_id[0]) {
-		log_err("video_gen: no task id in submit response");
+		if (!result->error_msg[0])
+			snprintf(result->error_msg, sizeof(result->error_msg),
+				 "video_gen: no task id in submit response");
+		log_err("%s", result->error_msg);
 		arena_destroy(arena);
 		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
@@ -279,8 +289,8 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	char query_url[640];
 	snprintf(query_url, sizeof(query_url),
-		 "%s/contents/generations/tasks?id=%s&model=%s",
-		 api_base, task_id, model_id);
+		 "%s/contents/generations/tasks/%s",
+		 api_base, task_id);
 
 	time_t deadline = time(NULL) + poll_timeout;
 	while (time(NULL) < deadline) {
@@ -305,46 +315,42 @@ int video_gen_create(struct model *self, const char *prompt,
 			continue;
 		}
 
-		cJSON *items = cJSON_GetObjectItem(qroot, "items");
-		cJSON *first = cJSON_IsArray(items) && cJSON_GetArraySize(items) > 0
-			       ? cJSON_GetArrayItem(items, 0) : NULL;
+		cJSON *status_item = cJSON_GetObjectItem(qroot, "status");
+		const char *st = cJSON_IsString(status_item)
+				 ? status_item->valuestring : "";
 
-		if (first) {
-			cJSON *status_item = cJSON_GetObjectItem(first, "status");
-			const char *st = cJSON_IsString(status_item)
-					 ? status_item->valuestring : "";
-
-			if (strcmp(st, "succeeded") == 0 ||
-			    strcmp(st, "completed") == 0) {
-				cJSON *vcontent = cJSON_GetObjectItem(first, "content");
-				if (cJSON_IsObject(vcontent)) {
-					cJSON *vurl = cJSON_GetObjectItem(vcontent, "video_url");
-					if (cJSON_IsString(vurl) && vurl->valuestring)
-						strncpy(video_url, vurl->valuestring,
-							sizeof(video_url) - 1);
-				}
-				cJSON_Delete(qroot);
-				http_response_free(&qresp);
-				break;
+		if (strcmp(st, "succeeded") == 0 ||
+		    strcmp(st, "completed") == 0) {
+			cJSON *vcontent = cJSON_GetObjectItem(qroot, "content");
+			if (cJSON_IsObject(vcontent)) {
+				cJSON *vurl = cJSON_GetObjectItem(vcontent, "video_url");
+				if (cJSON_IsString(vurl) && vurl->valuestring)
+					strncpy(video_url, vurl->valuestring,
+						sizeof(video_url) - 1);
 			}
-
-			if (strcmp(st, "failed") == 0) {
-				cJSON *err_obj = cJSON_GetObjectItem(first, "error");
-				const char *err_code = cJSON_IsObject(err_obj)
-						       ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "code")) : "";
-				const char *err_msg = cJSON_IsObject(err_obj)
-						      ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "message")) : "";
-				log_err("video_gen: task %s failed: %s %s",
-					task_id, err_code, err_msg);
-				log_dbg("video_gen: poll response body:\n%s", qresp.body);
-				cJSON_Delete(qroot);
-				http_response_free(&qresp);
-				arena_destroy(arena);
-				MORPH_RETURN(MORPH_ERR_API);
-			}
-
-			log_info("video_gen: task %s status=%s", task_id, st);
+			cJSON_Delete(qroot);
+			http_response_free(&qresp);
+			break;
 		}
+
+		if (strcmp(st, "failed") == 0) {
+			cJSON *err_obj = cJSON_GetObjectItem(qroot, "error");
+			const char *err_code = cJSON_IsObject(err_obj)
+					       ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "code")) : "";
+			const char *err_msg = cJSON_IsObject(err_obj)
+					      ? cJSON_GetStringValue(cJSON_GetObjectItem(err_obj, "message")) : "";
+			snprintf(result->error_msg, sizeof(result->error_msg),
+				 "video_gen: task %s failed: %s %s",
+				 task_id, err_code, err_msg);
+			log_err("%s", result->error_msg);
+			log_dbg("video_gen: poll response body:\n%s", qresp.body);
+			cJSON_Delete(qroot);
+			http_response_free(&qresp);
+			arena_destroy(arena);
+			MORPH_RETURN(MORPH_ERR_API);
+		}
+
+		log_info("video_gen: task %s status=%s", task_id, st);
 
 		cJSON_Delete(qroot);
 		http_response_free(&qresp);
@@ -353,7 +359,9 @@ int video_gen_create(struct model *self, const char *prompt,
 	arena_destroy(arena);
 
 	if (!video_url[0]) {
-		log_err("video_gen: timed out for task: %s", task_id);
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: timed out for task: %s", task_id);
+		log_err("%s", result->error_msg);
 		return -ETIMEDOUT;
 	}
 

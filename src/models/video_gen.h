@@ -12,6 +12,7 @@ struct model;
 struct video_result {
 	char path[PATH_MAX];
 	char url[PATH_MAX];
+	char error_msg[1024];
 	int duration_seconds;
 	int status;
 };

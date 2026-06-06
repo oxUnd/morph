@@ -3,6 +3,7 @@
 #include "models/video_gen.h"
 #include "render/video.h"
 #include "util/log.h"
+#include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -143,7 +144,22 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 	cJSON_Delete(root);
 
 	if (rc < 0) {
-		*result_json = strdup("{\"error\":\"video generation failed\"}");
+		if (vid_res.error_msg[0]) {
+			char *buf = malloc(strlen(vid_res.error_msg) + 64);
+			if (buf) {
+				snprintf(buf, strlen(vid_res.error_msg) + 64,
+					 "{\"error\":\"%s\"}", vid_res.error_msg);
+				*result_json = buf;
+			} else {
+				*result_json = strdup("{\"error\":\"video generation failed\"}");
+			}
+		} else {
+			char err_buf[256];
+			snprintf(err_buf, sizeof(err_buf),
+				 "{\"error\":\"video generation failed: %s\"}",
+				 morph_strerror(rc));
+			*result_json = strdup(err_buf);
+		}
 		return rc;
 	}
 

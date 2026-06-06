@@ -26,10 +26,17 @@ find_package(CURL REQUIRED)
 
 include(FetchContent)
 
-FetchContent_Declare(
-	md4c
-	URL      https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz
-)
+if(EXISTS "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz")
+	FetchContent_Declare(
+		md4c
+		URL "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz"
+	)
+else()
+	FetchContent_Declare(
+		md4c
+		URL      https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz
+	)
+endif()
 FetchContent_MakeAvailable(md4c)
 
 configure_file(
