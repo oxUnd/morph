@@ -2,6 +2,7 @@
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -14,32 +15,14 @@
 #define MAX_LINE_LENGTH 65536
 #define MAX_CONTENT_SIZE (10 * 1024 * 1024)
 
-struct line_buffer {
-	char *data;
-	size_t len;
-	size_t cap;
-};
-
-static int buf_append(struct line_buffer *b, const char *s, size_t n)
+static int buf_append(morph_buf_t *b, const char *s, size_t n)
 {
-	if (!n) return 0;
-	if (b->len + n + 1 > b->cap) {
-		size_t new_cap = b->cap ? b->cap * 2 : 65536;
-		while (b->len + n + 1 > new_cap)
-			new_cap *= 2;
-		if (new_cap > MAX_CONTENT_SIZE)
-			new_cap = MAX_CONTENT_SIZE;
-		if (b->len + n + 1 > new_cap)
-			MORPH_RETURN(-EFBIG);
-		char *tmp = realloc(b->data, new_cap);
-		if (!tmp) MORPH_RETURN(-ENOMEM);
-		b->data = tmp;
-		b->cap = new_cap;
-	}
-	memcpy(b->data + b->len, s, n);
-	b->len += n;
-	b->data[b->len] = '\0';
-	return 0;
+	if (!n)
+		return 0;
+	if (b->len >= MAX_CONTENT_SIZE ||
+	    n > MAX_CONTENT_SIZE - b->len - 1)
+		MORPH_RETURN(-EFBIG);
+	return morph_buf_append(b, s, n);
 }
 
 static int is_binary(const char *data, size_t len)
@@ -171,7 +154,14 @@ static int file_read_exec(const char *args_json, char **result_json, void *user_
 		return 0;
 	}
 
-	struct line_buffer buf = {0};
+	morph_buf_t buf;
+	int buf_ok = morph_buf_init(&buf, 65536);
+	if (buf_ok != 0) {
+		cJSON_Delete(out);
+		free(data);
+		cJSON_Delete(root);
+		MORPH_RETURN(buf_ok);
+	}
 	long line_idx = 0;
 	const char *p = data;
 	int truncated = 0;
@@ -211,13 +201,14 @@ static int file_read_exec(const char *args_json, char **result_json, void *user_
 			break;
 	}
 
-	cJSON_AddStringToObject(out, "content", buf.data ? buf.data : "");
+	const char *content_str = morph_buf_cstr(&buf);
+	cJSON_AddStringToObject(out, "content", content_str ? content_str : "");
 	cJSON_AddNumberToObject(out, "returned_lines", returned);
 	cJSON_AddBoolToObject(out, "truncated", truncated);
 
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
-	free(buf.data);
+	morph_buf_cleanup(&buf);
 	free(data);
 	cJSON_Delete(root);
 	*result_json = str;

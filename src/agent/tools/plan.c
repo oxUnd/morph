@@ -4,6 +4,7 @@
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,27 +84,9 @@ static char *format_plan(struct plan *p)
 	return strdup(buf);
 }
 
-struct decompose_ctx {
-	char *result;
-	size_t len;
-	size_t cap;
-};
-
 static int decompose_stream_cb(const char *token, void *user_data)
 {
-	struct decompose_ctx *ctx = user_data;
-	size_t tlen = strlen(token);
-	if (ctx->len + tlen + 1 >= ctx->cap) {
-		ctx->cap = (ctx->len + tlen + 1) * 2 + 4096;
-		char *new_r = realloc(ctx->result, ctx->cap);
-		if (!new_r)
-			return -ENOMEM;
-		ctx->result = new_r;
-	}
-	memcpy(ctx->result + ctx->len, token, tlen);
-	ctx->len += tlen;
-	ctx->result[ctx->len] = '\0';
-	return 0;
+	return morph_buf_append_cb(token, user_data);
 }
 
 static int parse_steps_from_text(const char *text, const char **descs,
@@ -192,29 +175,28 @@ static int auto_decompose(const char *goal, const char **step_descs,
 	const char *sys = "You are a task planner. Break goals into numbered steps. "
 			  "Output ONLY the numbered list, no preamble.";
 
-	struct decompose_ctx ctx = {
-		.result = malloc(8192),
-		.len = 0,
-		.cap = 8192,
-	};
-	if (!ctx.result) {
+	morph_buf_t buf;
+	int rc2 = morph_buf_init(&buf, 8192);
+	if (rc2 != 0) {
 		arena_destroy(arena);
-		return -ENOMEM;
+		return rc2;
 	}
-	ctx.result[0] = '\0';
 
 	const char *messages[] = { prompt };
 	int status = g_llm->chat(g_llm, arena, sys, messages, 1,
-				 decompose_stream_cb, &ctx);
+				 decompose_stream_cb, &buf);
 	arena_destroy(arena);
 
-	if (status < 0 || !ctx.result[0]) {
-		free(ctx.result);
+	if (status < 0 || buf.len == 0) {
+		morph_buf_cleanup(&buf);
 		MORPH_RETURN(MORPH_ERR_LLM);
 	}
 
-	int count = parse_steps_from_text(ctx.result, step_descs, max_steps);
-	free(ctx.result);
+	char *text = morph_buf_detach(&buf);
+	if (!text)
+		MORPH_RETURN(-ENOMEM);
+	int count = parse_steps_from_text(text, step_descs, max_steps);
+	free(text);
 	return count;
 }
 

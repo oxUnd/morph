@@ -7,6 +7,7 @@
 #include "http/client.h"
 #include "util/log.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/utf8.h"
 #include "util/error.h"
 #include <errno.h>
@@ -135,12 +136,6 @@ int react_set_action_drain(struct react_context *ctx,
 	ctx->action_drain_user_data = user;
 	return 0;
 }
-
-struct collect_data {
-	char *buf;
-	size_t len;
-	size_t cap;
-};
 
 /*
  * Per-tool async execution state.
@@ -312,22 +307,6 @@ static void *async_tool_exec(void *arg)
 	return NULL;
 }
 
-static int collect_cb(const char *token, void *user_data)
-{
-	struct collect_data *cd = user_data;
-	size_t tlen = strlen(token);
-	if (cd->len + tlen + 1 >= cd->cap) {
-		cd->cap = (cd->len + tlen + 1) * 2;
-		char *new_b = realloc(cd->buf, cd->cap);
-		if (!new_b) return -ENOMEM;
-		cd->buf = new_b;
-	}
-	memcpy(cd->buf + cd->len, token, tlen);
-	cd->len += tlen;
-	cd->buf[cd->len] = '\0';
-	return 0;
-}
-
 static int summarize_cb(const char *text, void *user_data, char **out)
 {
 	struct react_context *ctx = user_data;
@@ -341,17 +320,23 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 		"preserving all file paths, generated outputs, errors, "
 		"and key decisions made. Use 2-4 sentences.";
 	const char *msgs[] = { text };
-	struct collect_data cd = { .buf = malloc(8192), .len = 0, .cap = 8192 };
-	if (!cd.buf) return -ENOMEM;
-	cd.buf[0] = '\0';
-	int rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, collect_cb, &cd);
-	if (rc < 0) {
-		free(cd.buf);
+	morph_buf_t b;
+	int rc = morph_buf_init(&b, 8192);
+	if (rc != 0) {
 		*out = strdup(text);
 		return *out ? 0 : -ENOMEM;
 	}
-	*out = strdup(cd.buf);
-	free(cd.buf);
+	rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, morph_buf_append_cb, &b);
+	if (rc < 0) {
+		morph_buf_cleanup(&b);
+		*out = strdup(text);
+		return *out ? 0 : -ENOMEM;
+	}
+	*out = morph_buf_detach(&b);
+	if (!*out) {
+		*out = strdup(text);
+		return *out ? 0 : -ENOMEM;
+	}
 	return 0;
 }
 

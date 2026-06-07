@@ -1,7 +1,7 @@
 #include "mcp/mcp.h"
 #include "cJSON.h"
 #include "util/log.h"
-#include "util/error.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include <curl/curl.h>
 #include <errno.h>
@@ -16,24 +16,13 @@ int mcp_parse_result(const char *resp_json, char **out_result);
 
 /* ----- curl write callback ----- */
 
-struct http_response_ctx {
-	char *data;
-	size_t size;
-};
-
 static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 {
-	struct http_response_ctx *ctx = (struct http_response_ctx *)userdata;
+	morph_buf_t *buf = (morph_buf_t *)userdata;
 	size_t total = size * nmemb;
 
-	char *new_data = realloc(ctx->data, ctx->size + total + 1);
-	if (!new_data)
+	if (morph_buf_append(buf, (const char *)ptr, total) != 0)
 		return 0;
-
-	ctx->data = new_data;
-	memcpy(ctx->data + ctx->size, ptr, total);
-	ctx->size += total;
-	ctx->data[ctx->size] = '\0';
 	return total;
 }
 
@@ -77,7 +66,10 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	if (!curl)
 		return -EINVAL;
 
-	struct http_response_ctx resp_ctx = { .data = NULL, .size = 0 };
+	morph_buf_t resp_ctx;
+	int ctx_rc = morph_buf_init(&resp_ctx, 4096);
+	if (ctx_rc != 0)
+		return ctx_rc;
 
 	curl_easy_setopt(curl, CURLOPT_URL, client->config.http_url);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
@@ -117,7 +109,7 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 
 	if (res != CURLE_OK) {
 		log_err("mcp http: request failed: %s", curl_easy_strerror(res));
-		free(resp_ctx.data);
+		morph_buf_cleanup(&resp_ctx);
 		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
 
@@ -126,20 +118,20 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 
 	if (http_code == 404 || http_code == 405) {
 		log_err("mcp http: server returned %ld", http_code);
-		free(resp_ctx.data);
+		morph_buf_cleanup(&resp_ctx);
 		return -ENOTSUP;
 	}
 
 	if (http_code >= 400) {
 		log_err("mcp http: HTTP error %ld", http_code);
-		free(resp_ctx.data);
+		morph_buf_cleanup(&resp_ctx);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
 	if (out_response)
-		*out_response = resp_ctx.data;
+		*out_response = morph_buf_detach(&resp_ctx);
 	else
-		free(resp_ctx.data);
+		morph_buf_cleanup(&resp_ctx);
 
 	return 0;
 }

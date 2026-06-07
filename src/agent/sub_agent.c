@@ -7,6 +7,7 @@
 #include "http/client.h"
 #include "util/log.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/utf8.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -527,38 +528,29 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 		*result = cJSON_PrintUnformatted(arr);
 		cJSON_Delete(arr);
 	} else if (merge == SUB_AGENT_MERGE_SYNTHESIZE) {
-		size_t buf_sz = 4096;
-		char *combined = malloc(buf_sz);
-		size_t len = 0;
-		if (!combined) {
+		morph_buf_t combined_buf;
+		int buf_rc = morph_buf_init(&combined_buf, 4096);
+		if (buf_rc != 0) {
 			for (int i = 0; i < n; i++)
 				free(workers[i].result);
 			free(workers);
 			free(threads);
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN(buf_rc);
 		}
-		combined[0] = '\0';
 		for (int i = 0; i < n; i++) {
 			const char *r = workers[i].result
 				? workers[i].result : "(no result)";
-			size_t rlen = strlen(r);
-			size_t need = len + rlen + 64;
-			while (need >= buf_sz) {
-				buf_sz *= 2;
-				char *nb = realloc(combined, buf_sz);
-				if (!nb) {
-					free(combined);
-					for (int j = 0; j < n; j++)
-						free(workers[j].result);
-					free(workers);
-					free(threads);
-					MORPH_RETURN(-ENOMEM);
-				}
-				combined = nb;
+			buf_rc = morph_buf_printf(&combined_buf,
+						  "--- Task %d: %s ---\n%s\n\n",
+						  i + 1, tasks[i], r);
+			if (buf_rc != 0) {
+				morph_buf_cleanup(&combined_buf);
+				for (int j = 0; j < n; j++)
+					free(workers[j].result);
+				free(workers);
+				free(threads);
+				MORPH_RETURN(buf_rc);
 			}
-			len += (size_t)snprintf(combined + len, buf_sz - len,
-						"--- Task %d: %s ---\n%s\n\n",
-						i + 1, tasks[i], r);
 		}
 		struct model *llm = entry->llm;
 		if (llm && llm->chat && llm->api_key[0]) {
@@ -572,68 +564,48 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 					"preserves all key findings, data, "
 					"and insights. Do not lose any "
 					"important information.";
-				const char *msgs[] = { combined };
-				struct collect_data {
-					char *buf;
-					size_t len;
-					size_t cap;
-				} cd = {
-					.buf = malloc(8192),
-					.len = 0,
-					.cap = 8192
-				};
-				if (cd.buf) {
-					cd.buf[0] = '\0';
+				const char *msgs[] = { combined_buf.data };
+				morph_buf_t syn_buf;
+				if (morph_buf_init(&syn_buf, 8192) == 0) {
 					int src = llm->chat(llm, arena, sys,
 							    msgs, 1,
-							    NULL, NULL);
-					if (src == 0) {
-						/* chat without streaming
-						 * returns content via
-						 * response; use combined
-						 * as fallback
-						 */
+							    morph_buf_append_cb,
+							    &syn_buf);
+					if (src == 0 && syn_buf.len > 0) {
+						morph_buf_cleanup(&combined_buf);
+						combined_buf = syn_buf;
+					} else {
+						morph_buf_cleanup(&syn_buf);
 					}
-					free(cd.buf);
 				}
 				arena_destroy(arena);
 			}
 		}
-		*result = combined;
+		*result = morph_buf_detach(&combined_buf);
 	} else {
-		size_t buf_sz = 4096;
-		char *combined = malloc(buf_sz);
-		size_t len = 0;
-		if (!combined) {
+		morph_buf_t combined_buf;
+		int buf_rc = morph_buf_init(&combined_buf, 4096);
+		if (buf_rc != 0) {
 			for (int i = 0; i < n; i++)
 				free(workers[i].result);
 			free(workers);
 			free(threads);
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN(buf_rc);
 		}
-		combined[0] = '\0';
 		for (int i = 0; i < n; i++) {
 			const char *r = workers[i].result
 				? workers[i].result : "(no result)";
-			size_t rlen = strlen(r);
-			size_t need = len + rlen + 32;
-			while (need >= buf_sz) {
-				buf_sz *= 2;
-				char *nb = realloc(combined, buf_sz);
-				if (!nb) {
-					free(combined);
-					for (int j = 0; j < n; j++)
-						free(workers[j].result);
-					free(workers);
-					free(threads);
-					MORPH_RETURN(-ENOMEM);
-				}
-				combined = nb;
+			buf_rc = morph_buf_printf(&combined_buf, "%s\n", r);
+			if (buf_rc != 0) {
+				morph_buf_cleanup(&combined_buf);
+				for (int j = 0; j < n; j++)
+					free(workers[j].result);
+				free(workers);
+				free(threads);
+				MORPH_RETURN(buf_rc);
 			}
-			len += (size_t)snprintf(combined + len, buf_sz - len,
-						"%s\n", r);
 		}
-		*result = combined;
+		*result = morph_buf_detach(&combined_buf);
 	}
 	for (int i = 0; i < n; i++)
 		free(workers[i].result);

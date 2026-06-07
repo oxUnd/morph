@@ -2,6 +2,7 @@
 #include "agent/tool_context.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "cJSON.h"
 
@@ -276,22 +277,31 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	close(pipefd[1]);
 
 	{
-		char *buf = NULL;
-		size_t buf_len = 0;
-		size_t buf_cap = 0;
+		morph_buf_t buf;
+		int buf_init_rc = morph_buf_init(&buf, 4096);
+
+		if (buf_init_rc != 0) {
+			close(pipefd[0]);
+			waitpid(pid, &status, 0);
+			if (g_resume_fn)
+				g_resume_fn(g_cb_user_data);
+			free(editor_path);
+			for (i = 0; i < npaths; i++)
+				free(paths[i]);
+			*result_json = strdup(
+				"{\"error\":\"out of memory "
+				"reading editor output\"}");
+			MORPH_RETURN(-ENOMEM);
+		}
+
 		char tmp[4096];
 		ssize_t n;
 
 		while ((n = read(pipefd[0], tmp, sizeof(tmp))) > 0) {
-			if (buf_len + (size_t)n + 1 > buf_cap) {
-				size_t new_cap = buf_cap ? buf_cap * 2 : 4096;
-				char *new_buf;
-
-				while (new_cap < buf_len + (size_t)n + 1)
-					new_cap *= 2;
-				new_buf = realloc(buf, new_cap);
-				if (!new_buf) {
-					free(buf);
+			if (buf.len + (size_t)n + 1 > buf.cap) {
+				int grow_rc = morph_buf_reserve(&buf, (size_t)n + 1);
+				if (grow_rc != 0) {
+					morph_buf_cleanup(&buf);
 					close(pipefd[0]);
 					waitpid(pid, &status, 0);
 					if (g_resume_fn)
@@ -304,23 +314,19 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 						"reading editor output\"}");
 					MORPH_RETURN(-ENOMEM);
 				}
-				buf = new_buf;
-				buf_cap = new_cap;
 			}
-			memcpy(buf + buf_len, tmp, (size_t)n);
-			buf_len += (size_t)n;
+			memcpy(buf.data + buf.len, tmp, (size_t)n);
+			buf.len += (size_t)n;
 		}
 		close(pipefd[0]);
+		buf.data[buf.len] = '\0';
 
-		if (buf) {
-			buf[buf_len] = '\0';
-			/*
-			 * Strip trailing newlines — morph-editor
-			 * appends \n via fprintf + editor_dump_on_quit.
-			 */
-			while (buf_len > 0 && buf[buf_len - 1] == '\n')
-				buf[--buf_len] = '\0';
-		}
+		/*
+		 * Strip trailing newlines — morph-editor
+		 * appends \n via fprintf + editor_dump_on_quit.
+		 */
+		while (buf.len > 0 && buf.data[buf.len - 1] == '\n')
+			buf.data[--buf.len] = '\0';
 
 		/*
 		 * Reap the child process.
@@ -333,13 +339,13 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		if (g_resume_fn)
 			g_resume_fn(g_cb_user_data);
 
-		if (!buf || buf_len == 0) {
+		if (buf.len == 0) {
 			/*
 			 * Editor exited without producing output
 			 * (e.g. user quit before annotating, or
 			 * image failed to load).
 			 */
-			free(buf);
+			morph_buf_cleanup(&buf);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
@@ -365,7 +371,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		 * it in an error envelope.
 		 */
 		{
-			cJSON *root = cJSON_Parse(buf);
+			cJSON *root = cJSON_Parse(buf.data);
 
 			if (root) {
 				/*
@@ -560,7 +566,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				{
 					char *out = cJSON_PrintUnformatted(root);
 					cJSON_Delete(root);
-					free(buf);
+					morph_buf_cleanup(&buf);
 					*result_json = out;
 				}
 				free(editor_path);
@@ -581,10 +587,10 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			cJSON_AddStringToObject(out, "error",
 						"editor output was not "
 						"valid JSON");
-			cJSON_AddStringToObject(out, "raw_output", buf);
+			cJSON_AddStringToObject(out, "raw_output", buf.data);
 			tmp_str = cJSON_PrintUnformatted(out);
 			cJSON_Delete(out);
-			free(buf);
+			morph_buf_cleanup(&buf);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);

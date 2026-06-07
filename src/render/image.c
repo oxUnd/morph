@@ -1,4 +1,5 @@
 #include "image.h"
+#include "util/buf.h"
 #include "util/log.h"
 #include "util/base64.h"
 #include "util/error.h"
@@ -66,9 +67,7 @@ static void write_all(int fd, const char *buf, size_t len)
 
 /* stb_image_write callback: append bytes into a growing buffer. */
 struct png_sink {
-	unsigned char *buf;
-	size_t len;
-	size_t cap;
+	morph_buf_t buf;
 	int oom;
 };
 
@@ -76,17 +75,8 @@ static void png_sink_write(void *ctx, void *data, int size)
 {
 	struct png_sink *s = ctx;
 	if (s->oom || size <= 0) return;
-	size_t need = s->len + (size_t)size;
-	if (need > s->cap) {
-		size_t ncap = s->cap ? s->cap * 2 : 4096;
-		while (ncap < need) ncap *= 2;
-		unsigned char *nb = realloc(s->buf, ncap);
-		if (!nb) { s->oom = 1; return; }
-		s->buf = nb;
-		s->cap = ncap;
-	}
-	memcpy(s->buf + s->len, data, (size_t)size);
-	s->len += (size_t)size;
+	if (morph_buf_append(&s->buf, data, (size_t)size) != 0)
+		s->oom = 1;
 }
 
 /*
@@ -148,17 +138,22 @@ static int load_as_png(const char *path, unsigned char **out_data,
 		return -EIO;
 	}
 
-	struct png_sink sink = {0};
+	struct png_sink sink;
+	sink.oom = 0;
+	if (morph_buf_init(&sink.buf, 4096) != 0) {
+		stbi_image_free(pixels);
+		MORPH_RETURN(-ENOMEM);
+	}
 	int wrote = stbi_write_png_to_func(png_sink_write, &sink,
 					   w, h, 4, pixels, w * 4);
 	stbi_image_free(pixels);
-	if (!wrote || sink.oom || sink.len == 0) {
-		free(sink.buf);
-		return -ENOMEM;
+	if (!wrote || sink.oom || sink.buf.len == 0) {
+		morph_buf_cleanup(&sink.buf);
+		MORPH_RETURN(-ENOMEM);
 	}
 
-	*out_data = sink.buf;
-	*out_len = sink.len;
+	*out_len = sink.buf.len;
+	*out_data = (unsigned char *)morph_buf_detach(&sink.buf);
 	*out_fmt = 100;
 	return 0;
 }

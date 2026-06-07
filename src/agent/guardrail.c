@@ -3,6 +3,7 @@
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "ipc/jsonrpc.h"
 #include "cJSON.h"
@@ -305,26 +306,9 @@ struct guardrail_rule *guardrail_rule_lookup(struct guardrail_config *cfg,
 
 /* ── LLM-based rule backend ── */
 
-struct llm_collect {
-	char *buf;
-	size_t len;
-	size_t cap;
-};
-
 static int llm_collect_cb(const char *token, void *user_data)
 {
-	struct llm_collect *c = (struct llm_collect *)user_data;
-	size_t tlen = strlen(token);
-	if (c->len + tlen + 1 >= c->cap) {
-		c->cap = (c->len + tlen + 1) * 2;
-		char *nb = (char *)realloc(c->buf, c->cap);
-		if (!nb) return -ENOMEM;
-		c->buf = nb;
-	}
-	memcpy(c->buf + c->len, token, tlen);
-	c->len += tlen;
-	c->buf[c->len] = '\0';
-	return 0;
+	return morph_buf_append_cb(token, user_data);
 }
 
 static enum guardrail_verdict
@@ -359,25 +343,24 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		"Do not include any other text.",
 		rule->description, check_text);
 
-	struct llm_collect collect = {NULL, 0, 0};
-	collect.buf = (char *)malloc(4096);
-	if (!collect.buf) return GUARDRAIL_PASS;
-	collect.cap = 4096;
-	collect.buf[0] = '\0';
+	morph_buf_t collect;
+	if (morph_buf_init(&collect, 4096) != 0)
+		return GUARDRAIL_PASS;
 
 	const char *msgs[1] = { prompt };
 	int status = cfg->llm->chat(cfg->llm, ctx->arena, NULL,
 				    msgs, 1,
 				    llm_collect_cb, &collect);
-	if (status < 0 || !collect.buf || !collect.buf[0]) {
+	if (status < 0 || collect.len == 0) {
 		log_warn("guardrail: LLM call failed for rule '%s', defaulting PASS",
 			 rule->name);
-		free(collect.buf);
+		morph_buf_cleanup(&collect);
 		return GUARDRAIL_PASS;
 	}
 
-	cJSON *root = cJSON_Parse(collect.buf);
-	free(collect.buf);
+	char *result_str = morph_buf_detach(&collect);
+	cJSON *root = cJSON_Parse(result_str);
+	free(result_str);
 	if (!root) {
 		log_warn("guardrail: LLM response not JSON for rule '%s', defaulting PASS",
 			 rule->name);
@@ -497,23 +480,25 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 
 static char *read_fd_all(int fd)
 {
-	size_t cap = 4096;
-	size_t len = 0;
-	char *buf = (char *)malloc(cap);
-	if (!buf) return NULL;
+	morph_buf_t buf;
+	if (morph_buf_init(&buf, 4096) != 0)
+		return NULL;
 	for (;;) {
-		ssize_t n = read(fd, buf + len, cap - len - 1);
-		if (n <= 0) break;
-		len += (size_t)n;
-		if (len + 1 >= cap) {
-			cap *= 2;
-			char *nb = (char *)realloc(buf, cap);
-			if (!nb) { free(buf); return NULL; }
-			buf = nb;
+		if (buf.len >= buf.cap - 1) {
+			int rc = morph_buf_reserve(&buf, buf.cap);
+			if (rc != 0) {
+				morph_buf_cleanup(&buf);
+				return NULL;
+			}
 		}
+		ssize_t n = read(fd, buf.data + buf.len,
+				 buf.cap - buf.len - 1);
+		if (n <= 0)
+			break;
+		buf.len += (size_t)n;
 	}
-	buf[len] = '\0';
-	return buf;
+	buf.data[buf.len] = '\0';
+	return morph_buf_detach(&buf);
 }
 
 static enum guardrail_verdict

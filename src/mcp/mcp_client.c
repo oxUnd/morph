@@ -1,6 +1,7 @@
 #include "mcp/mcp.h"
 #include "cJSON.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
@@ -369,9 +370,8 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	/* Extract text content */
 	cJSON *content = cJSON_GetObjectItem(obj, "content");
 	if (content && cJSON_IsArray(content)) {
-		char *combined = NULL;
-		size_t combined_cap = 0;
-		size_t offset = 0;
+		morph_buf_t combined_buf;
+		int buf_ok = morph_buf_init(&combined_buf, 256);
 
 		for (int i = 0; i < cJSON_GetArraySize(content); i++) {
 			cJSON *item = cJSON_GetArrayItem(content, i);
@@ -386,38 +386,25 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 					text_to_add = "[image content]";
 				}
 
-				if (text_to_add) {
-					size_t text_len = strlen(text_to_add);
-					size_t need = offset + (offset > 0 ? 1 : 0) + text_len + 1;
-					if (need > combined_cap) {
-						combined_cap = need < MCP_JSON_BUF_MAX ? MCP_JSON_BUF_MAX : need;
-						char *new_combined = realloc(combined, combined_cap);
-						if (!new_combined) {
-							free(combined);
-							combined = NULL;
-							break;
-						}
-						combined = new_combined;
-					}
-					if (combined) {
-						if (offset > 0)
-							combined[offset++] = '\n';
-						memcpy(combined + offset, text_to_add, text_len);
-						offset += text_len;
-						combined[offset] = '\0';
-					}
+				if (text_to_add && buf_ok == 0) {
+					if (combined_buf.len > 0)
+						buf_ok = morph_buf_putc(&combined_buf, '\n');
+					if (buf_ok == 0)
+						buf_ok = morph_buf_puts(&combined_buf, text_to_add);
 				}
 			}
 		}
 
-		if (combined) {
+		if (buf_ok == 0 && combined_buf.len > 0) {
 			cJSON *resp = cJSON_CreateObject();
-			cJSON_AddStringToObject(resp, "content", combined);
+			cJSON_AddStringToObject(resp, "content",
+						combined_buf.data);
 			cJSON_AddBoolToObject(resp, "isError", tool_error);
 			*out_result_json = cJSON_PrintUnformatted(resp);
 			cJSON_Delete(resp);
-			free(combined);
+			morph_buf_cleanup(&combined_buf);
 		} else {
+			morph_buf_cleanup(&combined_buf);
 			*out_result_json = strdup("{\"error\":\"out of memory\",\"isError\":true}");
 		}
 	} else {

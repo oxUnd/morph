@@ -8,6 +8,9 @@ add_library(morph-util STATIC
 	spin.c
 	error.c
 	bpe.c
+	str.c
+	buf.c
+	array.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 	${CMAKE_SOURCE_DIR}/vendor/re.c
 )

@@ -2,6 +2,7 @@
 #include "agent/tool_context.h"
 #include "sandbox.h"
 #include "util/log.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -101,36 +102,17 @@ static int contains_blocked_command(const char *cmd)
 	return 0;
 }
 
-struct buf {
-	char *data;
-	size_t len;
-	size_t cap;
-};
-
-static int buf_append(struct buf *b, const char *s, size_t n)
+static int buf_append(morph_buf_t *b, const char *s, size_t n)
 {
 	if (b->len >= BASH_EXEC_MAX_OUTPUT)
 		return 0;
 	if (b->len + n > BASH_EXEC_MAX_OUTPUT)
 		n = BASH_EXEC_MAX_OUTPUT - b->len;
-	if (b->len + n + 1 > b->cap) {
-		size_t nc = b->cap ? b->cap * 2 : 4096;
-		while (b->len + n + 1 > nc)
-			nc *= 2;
-		char *p = realloc(b->data, nc);
-		if (!p)
-			return -ENOMEM;
-		b->data = p;
-		b->cap = nc;
-	}
-	memcpy(b->data + b->len, s, n);
-	b->len += n;
-	b->data[b->len] = '\0';
-	return 0;
+	return morph_buf_append(b, s, n);
 }
 
 static int read_pipes_with_timeout(int out_fd, int err_fd,
-				   struct buf *out_buf, struct buf *err_buf,
+				   morph_buf_t *out_buf, morph_buf_t *err_buf,
 				   int timeout_seconds, int *timed_out)
 {
 	int max_fd = (out_fd > err_fd) ? out_fd : err_fd;
@@ -373,8 +355,21 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	close(out_pipe[1]);
 	close(err_pipe[1]);
 
-	struct buf out_buf = {0};
-	struct buf err_buf = {0};
+	morph_buf_t out_buf;
+	morph_buf_t err_buf;
+	int buf_rc = morph_buf_init(&out_buf, 4096);
+	if (buf_rc == 0)
+		buf_rc = morph_buf_init(&err_buf, 4096);
+	if (buf_rc != 0) {
+		morph_buf_cleanup(&out_buf);
+		close(out_pipe[0]);
+		close(err_pipe[0]);
+		if (root)
+			cJSON_Delete(root);
+		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		return buf_rc;
+	}
+
 	int timed_out = 0;
 	read_pipes_with_timeout(out_pipe[0], err_pipe[0],
 				&out_buf, &err_buf, timeout, &timed_out);
@@ -415,8 +410,8 @@ static int bash_exec_run(const char *args_json, char **result_json,
 
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
-	free(out_buf.data);
-	free(err_buf.data);
+	morph_buf_cleanup(&out_buf);
+	morph_buf_cleanup(&err_buf);
 	if (root)
 		cJSON_Delete(root);
 

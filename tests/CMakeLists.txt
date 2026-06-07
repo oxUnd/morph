@@ -23,6 +23,7 @@ set(TEST_SOURCES
 	test_markdown.cpp
 	test_bash_exec.cpp
 	test_spin.cpp
+	test_util_containers.cpp
 	test_render.cpp
 	test_mcp.cpp
 	test_ask_user.cpp

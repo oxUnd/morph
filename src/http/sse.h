@@ -6,13 +6,12 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include "util/buf.h"
 
 typedef int (*sse_event_cb)(const char *event, const char *data, void *user_data);
 
 struct sse_parser {
-	char *buf;
-	size_t buf_len;
-	size_t buf_cap;
+	morph_buf_t buf;
 	sse_event_cb cb;
 	void *user_data;
 };

@@ -1,7 +1,9 @@
 #include "session.h"
+#include "util/array.h"
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,41 +221,41 @@ int session_list(struct db *db, struct session **out, int *count,
 	if (limit > 0)
 		sqlite3_bind_int(stmt, bind_idx, limit);
 
-	int cap = 16;
-	int n = 0;
-	struct session *list = malloc(sizeof(*list) * (size_t)cap);
-	if (!list) {
+	morph_array_t arr;
+	int rc_arr;
+
+	rc_arr = morph_array_init(&arr, 16, sizeof(struct session));
+	if (rc_arr < 0) {
 		sqlite3_finalize(stmt);
-		return -ENOMEM;
+		return rc_arr;
 	}
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (n >= cap) {
-			cap *= 2;
-			struct session *tmp = realloc(list, sizeof(*list) * (size_t)cap);
-			if (!tmp) {
-				free(list);
-				sqlite3_finalize(stmt);
-				return -ENOMEM;
-			}
-			list = tmp;
+		struct session *s = morph_array_push(&arr);
+		if (!s) {
+			morph_array_cleanup(&arr);
+			sqlite3_finalize(stmt);
+			return -ENOMEM;
 		}
-		memset(&list[n], 0, sizeof(list[n]));
-		list[n].id = sqlite3_column_int64(stmt, 0);
+		memset(s, 0, sizeof(*s));
+		s->id = sqlite3_column_int64(stmt, 0);
 		const char *d = (const char *)sqlite3_column_text(stmt, 1);
-		if (d) strncpy(list[n].display_id, d, sizeof(list[n].display_id) - 1);
-		strncpy(list[n].name, (const char *)sqlite3_column_text(stmt, 2),
-			sizeof(list[n].name) - 1);
+		if (d) strncpy(s->display_id, d, sizeof(s->display_id) - 1);
+		strncpy(s->name, (const char *)sqlite3_column_text(stmt, 2),
+			sizeof(s->name) - 1);
 		const char *m = (const char *)sqlite3_column_text(stmt, 3);
 		if (m)
-			strncpy(list[n].model, m, sizeof(list[n].model) - 1);
-		list[n].created_at = sqlite3_column_int64(stmt, 4);
-		list[n].updated_at = sqlite3_column_int64(stmt, 5);
-		list[n].token_used = sqlite3_column_int64(stmt, 6);
-		n++;
+			strncpy(s->model, m, sizeof(s->model) - 1);
+		s->created_at = sqlite3_column_int64(stmt, 4);
+		s->updated_at = sqlite3_column_int64(stmt, 5);
+		s->token_used = sqlite3_column_int64(stmt, 6);
 	}
 	sqlite3_finalize(stmt);
-	*out = list;
-	*count = n;
+	if (arr.nelts > INT_MAX) {
+		morph_array_cleanup(&arr);
+		return -EOVERFLOW;
+	}
+	*out = arr.elts;
+	*count = (int)arr.nelts;
 	return 0;
 }
 

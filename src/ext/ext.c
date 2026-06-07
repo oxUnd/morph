@@ -1,6 +1,7 @@
 #include "ext.h"
 #include "loader.h"
 #include "util/log.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "manifest.h"
 #include "ipc/jsonrpc.h"
@@ -13,7 +14,6 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <dlfcn.h>
-#include "util/error.h"
 
 int ext_load(struct ext *ex, const char *dir_path)
 {
@@ -97,37 +97,36 @@ void ext_user_data_destroy(void *user_data)
 
 static int read_fd(int fd, char **out, size_t *out_len)
 {
-	size_t cap = 8192;
-	size_t len = 0;
-	char *buf = malloc(cap);
-	if (!buf)
-		return -ENOMEM;
+	morph_buf_t buf;
+	int rc = morph_buf_init(&buf, 8192);
+	if (rc != 0)
+		return rc;
 
 	while (1) {
-		if (len + 4096 > cap) {
-			cap *= 2;
-			char *new_buf = realloc(buf, cap);
-			if (!new_buf) {
-				free(buf);
+		if (buf.len + 4096 > buf.cap) {
+			int grow_rc = morph_buf_reserve(&buf, buf.cap);
+			if (grow_rc != 0) {
+				morph_buf_cleanup(&buf);
 				return -ENOMEM;
 			}
-			buf = new_buf;
 		}
-		ssize_t n = read(fd, buf + len, cap - len - 1);
+		ssize_t n = read(fd, buf.data + buf.len,
+				 buf.cap - buf.len - 1);
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			free(buf);
+			morph_buf_cleanup(&buf);
 			return -EIO;
 		}
 		if (n == 0)
 			break;
-		len += (size_t)n;
+		buf.len += (size_t)n;
 	}
-	buf[len] = '\0';
-	*out = buf;
+	buf.data[buf.len] = '\0';
+	size_t save_len = buf.len;
+	*out = morph_buf_detach(&buf);
 	if (out_len)
-		*out_len = len;
+		*out_len = save_len;
 	return 0;
 }
 

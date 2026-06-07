@@ -4,6 +4,7 @@
 #include "util/error.h"
 #include <errno.h>
 #include <curl/curl.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -94,10 +95,28 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
 	size_t total = size * nmemb;
-	char *new_body = realloc(resp->body, resp->body_len + total + 1);
-	if (!new_body)
+	size_t needed;
+
+	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
-	resp->body = new_body;
+	if (resp->body_len > SIZE_MAX - total - 1)
+		return 0;
+	needed = resp->body_len + total + 1;
+	if (needed > resp->body_cap) {
+		size_t new_cap = resp->body_cap ? resp->body_cap * 2 : 65536;
+		while (new_cap < needed) {
+			if (new_cap > SIZE_MAX / 2) {
+				new_cap = needed;
+				break;
+			}
+			new_cap *= 2;
+		}
+		char *new_body = realloc(resp->body, new_cap);
+		if (!new_body)
+			return 0;
+		resp->body = new_body;
+		resp->body_cap = new_cap;
+	}
 	memcpy(resp->body + resp->body_len, ptr, total);
 	resp->body_len += total;
 	resp->body[resp->body_len] = '\0';
@@ -108,13 +127,31 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
 	size_t total = size * nmemb;
-	size_t old_len = resp->headers ? strlen(resp->headers) : 0;
-	char *new_headers = realloc(resp->headers, old_len + total + 1);
-	if (!new_headers)
-		return total;
-	resp->headers = new_headers;
-	memcpy(resp->headers + old_len, ptr, total);
-	resp->headers[old_len + total] = '\0';
+	size_t needed;
+
+	if (size != 0 && nmemb > SIZE_MAX / size)
+		return 0;
+	if (resp->headers_len > SIZE_MAX - total - 1)
+		return 0;
+	needed = resp->headers_len + total + 1;
+	if (needed > resp->headers_cap) {
+		size_t new_cap = resp->headers_cap ? resp->headers_cap * 2 : 4096;
+		while (new_cap < needed) {
+			if (new_cap > SIZE_MAX / 2) {
+				new_cap = needed;
+				break;
+			}
+			new_cap *= 2;
+		}
+		char *new_headers = realloc(resp->headers, new_cap);
+		if (!new_headers)
+			return total;
+		resp->headers = new_headers;
+		resp->headers_cap = new_cap;
+	}
+	memcpy(resp->headers + resp->headers_len, ptr, total);
+	resp->headers_len += total;
+	resp->headers[resp->headers_len] = '\0';
 	return total;
 }
 

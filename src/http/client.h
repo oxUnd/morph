@@ -14,7 +14,10 @@ struct http_response {
 	int status_code;
 	char *body;
 	size_t body_len;
+	size_t body_cap;
 	char *headers;
+	size_t headers_len;
+	size_t headers_cap;
 };
 
 struct http_request {

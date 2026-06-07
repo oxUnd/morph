@@ -1,6 +1,7 @@
 #include "agent/memory.h"
 #include "models/llm.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/log.h"
 #include "util/utf8.h"
 #include "cJSON.h"
@@ -264,70 +265,29 @@ static int memory_extract_after_raw(const char *text, const char *needle,
 	return out[0] != '\0';
 }
 
-/* Append a formatted chunk into a growable buffer with an upper bound.
- *   - Starts with a small allocation and doubles up to max_len + 1.
- *   - Once the buffer is full, *len is pinned to max_len so subsequent
- *     calls become no-ops instead of overwriting earlier content. */
-static int memory_appendf(char **buf, size_t *cap, size_t *len,
-			  size_t max_len, const char *fmt, ...)
+static int memory_appendf(morph_buf_t *b, size_t max_len,
+			  const char *fmt, ...)
 {
 	va_list args;
-	int needed;
-	size_t cap_limit;
+	int rc;
 
-	if (!buf || !cap || !len || !fmt)
+	if (!b || !fmt)
 		return -EINVAL;
 	if (max_len == 0)
 		max_len = MEMORY_APPEND_INIT_CAP;
-	cap_limit = max_len + 1;
-	if (*len >= max_len)
+	if (b->len >= max_len)
 		return 0;
-
-	if (*buf == NULL || *cap == 0) {
-		size_t init = MEMORY_APPEND_INIT_CAP;
-		if (init > cap_limit)
-			init = cap_limit;
-		*buf = (char *)calloc(init, 1);
-		if (!*buf)
-			return -ENOMEM;
-		*cap = init;
-	}
 
 	va_start(args, fmt);
-	needed = vsnprintf(*buf + *len, *cap - *len, fmt, args);
+	rc = morph_buf_vprintf(b, fmt, args);
 	va_end(args);
-	if (needed < 0)
-		return -EINVAL;
+	if (rc < 0)
+		return rc;
 
-	if ((size_t)needed >= *cap - *len && *cap < cap_limit) {
-		size_t new_cap = *cap;
-		while (new_cap < *len + (size_t)needed + 1 &&
-		       new_cap < cap_limit) {
-			size_t doubled = new_cap * 2;
-			new_cap = doubled > cap_limit ? cap_limit : doubled;
-		}
-		if (new_cap > *cap) {
-			char *tmp = (char *)realloc(*buf, new_cap);
-			if (!tmp)
-				return -ENOMEM;
-			*buf = tmp;
-			*cap = new_cap;
-			va_start(args, fmt);
-			needed = vsnprintf(*buf + *len, *cap - *len, fmt, args);
-			va_end(args);
-			if (needed < 0)
-				return -EINVAL;
-		}
+	if (b->len > max_len) {
+		b->len = max_len;
+		b->data[max_len] = '\0';
 	}
-
-	if ((size_t)needed >= *cap - *len) {
-		/* vsnprintf truncated because we hit the hard cap. Pin len to
-		 * max_len so further appends short-circuit. */
-		*len = max_len;
-		(*buf)[max_len] = '\0';
-		return 0;
-	}
-	*len += (size_t)needed;
 	return 0;
 }
 
@@ -544,18 +504,22 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 		"SELECT key_name, value_text FROM memory_facts "
 		"WHERE session_id=? AND is_current=1 "
 		"ORDER BY updated_at DESC";
-	char *profile = NULL;
-	size_t cap = 0;
-	size_t len = 0;
+	morph_buf_t profile;
 	int rc;
 	int64_t now = memory_now_unix();
 
 	if (!db || !db->handle)
 		return -EINVAL;
 
+	rc = morph_buf_init(&profile, MEMORY_APPEND_INIT_CAP);
+	if (rc != 0)
+		return rc;
+
 	rc = sqlite3_prepare_v2(db->handle, select_sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
+	if (rc != SQLITE_OK) {
+		morph_buf_cleanup(&profile);
 		return -EIO;
+	}
 	sqlite3_bind_int64(stmt, 1, session_id);
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -576,15 +540,10 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 			label = "Current goal";
 		else if (strcmp(key_name, "location") == 0)
 			label = "Location";
-		memory_appendf(&profile, &cap, &len, 16384, "- %s: %s\n",
+		memory_appendf(&profile, 16384, "- %s: %s\n",
 			       label, value_text);
 	}
 	sqlite3_finalize(stmt);
-
-	if (!profile)
-		profile = strdup("");
-	if (!profile)
-		return -ENOMEM;
 
 	{
 		const char *upsert_sql =
@@ -594,15 +553,15 @@ static int memory_refresh_profile(struct db *db, int64_t session_id)
 			"profile_text=excluded.profile_text, updated_at=excluded.updated_at";
 		rc = sqlite3_prepare_v2(db->handle, upsert_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK) {
-			free(profile);
+			morph_buf_cleanup(&profile);
 			return -EIO;
 		}
 		sqlite3_bind_int64(stmt, 1, session_id);
-		sqlite3_bind_text(stmt, 2, profile, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 2, profile.data, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_int64(stmt, 3, now);
 		rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
-		free(profile);
+		morph_buf_cleanup(&profile);
 		return rc == SQLITE_DONE ? 0 : -EIO;
 	}
 }
@@ -987,9 +946,7 @@ char *memory_build_context(struct db *db, int64_t session_id,
 			   const struct memory_options *opts)
 {
 	sqlite3_stmt *stmt = NULL;
-	char *buf = NULL;
-	size_t cap = 0;
-	size_t len = 0;
+	morph_buf_t buf;
 	int max_chars;
 	int max_facts;
 	int max_episodes;
@@ -1000,6 +957,9 @@ char *memory_build_context(struct db *db, int64_t session_id,
 	int appended = 0;
 
 	if (!db || !db->handle || !opts || !opts->enabled)
+		return NULL;
+
+	if (morph_buf_init(&buf, MEMORY_APPEND_INIT_CAP) != 0)
 		return NULL;
 
 	max_chars = opts->max_context_chars > 0 ? opts->max_context_chars : 3000;
@@ -1015,7 +975,7 @@ char *memory_build_context(struct db *db, int64_t session_id,
 #define MEMORY_ENSURE_INTRO()						\
 	do {								\
 		if (!appended)						\
-			memory_appendf(&buf, &cap, &len,		\
+			memory_appendf(&buf,		\
 				       (size_t)max_chars,		\
 				       "Persistent memory for this session. " \
 				       "Newer current facts win over older facts. " \
@@ -1033,7 +993,7 @@ char *memory_build_context(struct db *db, int64_t session_id,
 					(const char *)sqlite3_column_text(stmt, 0);
 				if (profile && *profile) {
 					MEMORY_ENSURE_INTRO();
-					memory_appendf(&buf, &cap, &len, (size_t)max_chars,
+					memory_appendf(&buf, (size_t)max_chars,
 						       "\nProfile\n%s", profile);
 					appended = 1;
 				}
@@ -1062,11 +1022,11 @@ char *memory_build_context(struct db *db, int64_t session_id,
 					continue;
 				if (count == 0) {
 					MEMORY_ENSURE_INTRO();
-					memory_appendf(&buf, &cap, &len,
+					memory_appendf(&buf,
 						       (size_t)max_chars,
 						       "\nCurrent facts\n");
 				}
-				memory_appendf(&buf, &cap, &len, (size_t)max_chars,
+				memory_appendf(&buf, (size_t)max_chars,
 					       "- %s: %s\n", key_name, value_text);
 				count++;
 				appended = 1;
@@ -1094,11 +1054,11 @@ char *memory_build_context(struct db *db, int64_t session_id,
 					continue;
 				if (count == 0) {
 					MEMORY_ENSURE_INTRO();
-					memory_appendf(&buf, &cap, &len,
+					memory_appendf(&buf,
 						       (size_t)max_chars,
 						       "\nStanding rules\n");
 				}
-				memory_appendf(&buf, &cap, &len, (size_t)max_chars,
+				memory_appendf(&buf, (size_t)max_chars,
 					       "- %s (evidence=%d)\n",
 					       rule_text, evidence);
 				count++;
@@ -1125,11 +1085,11 @@ char *memory_build_context(struct db *db, int64_t session_id,
 					continue;
 				if (count == 0) {
 					MEMORY_ENSURE_INTRO();
-					memory_appendf(&buf, &cap, &len,
+					memory_appendf(&buf,
 						       (size_t)max_chars,
 						       "\nRelevant episodes\n");
 				}
-				memory_appendf(&buf, &cap, &len, (size_t)max_chars,
+				memory_appendf(&buf, (size_t)max_chars,
 					       "- %s\n", summary);
 				count++;
 				appended = 1;
@@ -1161,11 +1121,11 @@ char *memory_build_context(struct db *db, int64_t session_id,
 					continue;
 				if (count == 0) {
 					MEMORY_ENSURE_INTRO();
-					memory_appendf(&buf, &cap, &len,
+					memory_appendf(&buf,
 						       (size_t)max_chars,
 						       "\nRecent changes\n");
 				}
-				memory_appendf(&buf, &cap, &len, (size_t)max_chars,
+				memory_appendf(&buf, (size_t)max_chars,
 					       "- %s: %s -> %s (changed_at=%lld)\n",
 					       key_name, old_value,
 					       new_value ? new_value : "(unset)",
@@ -1180,10 +1140,10 @@ char *memory_build_context(struct db *db, int64_t session_id,
 #undef MEMORY_ENSURE_INTRO
 
 	if (!appended) {
-		free(buf);
+		morph_buf_cleanup(&buf);
 		return NULL;
 	}
-	return buf;
+	return morph_buf_detach(&buf);
 }
 
 /* --- /mem 树形渲染辅助 ------------------------------------------------ */
@@ -1202,8 +1162,8 @@ static int memory_count_rows(struct db *db, const char *sql,
 	return n;
 }
 
-static void memory_emit_profile_body(char **buf, size_t *cap, size_t *len,
-				     const char *vbar, const char *body)
+static void memory_emit_profile_body(morph_buf_t *b, const char *vbar,
+				     const char *body)
 {
 	const char *p = body;
 	int first = 1;
@@ -1214,11 +1174,11 @@ static void memory_emit_profile_body(char **buf, size_t *cap, size_t *len,
 		size_t n = nl ? (size_t)(nl - p) : strlen(p);
 		if (n > 0) {
 			if (first)
-				memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+				memory_appendf(b, MEMORY_RENDER_CAP,
 					       "%s└── %.*s\n",
 					       vbar, (int)n, p);
 			else
-				memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+				memory_appendf(b, MEMORY_RENDER_CAP,
 					       "%s    %.*s\n",
 					       vbar, (int)n, p);
 			first = 0;
@@ -1240,7 +1200,7 @@ static void memory_emit_profile_body(char **buf, size_t *cap, size_t *len,
  * outer tree structure (│   /     guides) never gets broken by the
  * inner content.
  */
-static void memory_emit_wrapped(char **buf, size_t *cap, size_t *len,
+static void memory_emit_wrapped(morph_buf_t *b,
 				const char *prefix_first,
 				const char *prefix_cont,
 				const char *label,
@@ -1277,19 +1237,17 @@ static void memory_emit_wrapped(char **buf, size_t *cap, size_t *len,
 
 		if (line == 0) {
 			if (label && *label)
-				memory_appendf(buf, cap, len,
-					       MEMORY_RENDER_CAP,
+				memory_appendf(b, MEMORY_RENDER_CAP,
 					       "%s%s: %.*s\n",
 					       prefix_first, label,
 					       (int)take, p);
 			else
-				memory_appendf(buf, cap, len,
-					       MEMORY_RENDER_CAP,
+				memory_appendf(b, MEMORY_RENDER_CAP,
 					       "%s%.*s\n",
 					       prefix_first,
 					       (int)take, p);
 		} else {
-			memory_appendf(buf, cap, len, MEMORY_RENDER_CAP,
+			memory_appendf(b, MEMORY_RENDER_CAP,
 				       "%s%.*s\n",
 				       prefix_cont, (int)take, p);
 		}
@@ -1419,9 +1377,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 			    int max_episodes)
 {
 	sqlite3_stmt *stmt = NULL;
-	char *buf = NULL;
-	size_t cap = 0;
-	size_t len = 0;
+	morph_buf_t buf;
 	/*
 	 * max_episodes is a soft cap: <= 0 means "render everything".
 	 * The /mem command intentionally passes 0 to show the full record.
@@ -1438,6 +1394,9 @@ char *memory_render_session(struct db *db, int64_t session_id,
 	int sections_seen = 0;
 
 	if (!db || !db->handle)
+		return NULL;
+
+	if (morph_buf_init(&buf, MEMORY_APPEND_INIT_CAP) != 0)
 		return NULL;
 
 	/* Detect section presence and counts up-front so we know which
@@ -1477,10 +1436,12 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		(n_episodes > 0 ? 1 : 0) +
 		(n_changes > 0 ? 1 : 0);
 
-	if (sections_total == 0)
+	if (sections_total == 0) {
+		morph_buf_cleanup(&buf);
 		return strdup("No long-term memory stored for this session.");
+	}
 
-	memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP, "memory\n");
+	memory_appendf(&buf, MEMORY_RENDER_CAP, "memory\n");
 
 	/* Profile */
 	if (has_profile) {
@@ -1488,7 +1449,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		int last = (sections_seen == sections_total);
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar   = last ? "    " : "│   ";
-		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+		memory_appendf(&buf, MEMORY_RENDER_CAP,
 			       "%s Profile\n", branch);
 		if (sqlite3_prepare_v2(db->handle,
 			"SELECT profile_text FROM memory_profiles "
@@ -1498,7 +1459,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 			if (sqlite3_step(stmt) == SQLITE_ROW) {
 				const char *p = (const char *)
 					sqlite3_column_text(stmt, 0);
-				memory_emit_profile_body(&buf, &cap, &len,
+				memory_emit_profile_body(&buf,
 							 vbar, p);
 			}
 			sqlite3_finalize(stmt);
@@ -1512,7 +1473,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar   = last ? "    " : "│   ";
 		int idx = 0;
-		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+		memory_appendf(&buf, MEMORY_RENDER_CAP,
 			       "%s Current facts (%d)\n", branch, n_facts);
 		if (sqlite3_prepare_v2(db->handle,
 			"SELECT key_name, value_text, category, importance "
@@ -1534,7 +1495,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 				if (!key_name || !value_text)
 					continue;
 				cb = (idx == n_facts - 1) ? "└──" : "├──";
-				memory_appendf(&buf, &cap, &len,
+				memory_appendf(&buf,
 					       MEMORY_RENDER_CAP,
 					       "%s%s [%s|imp=%.2f] %s: %s\n",
 					       vbar, cb,
@@ -1555,7 +1516,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar   = last ? "    " : "│   ";
 		int idx = 0;
-		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+		memory_appendf(&buf, MEMORY_RENDER_CAP,
 			       "%s Standing rules (%d)\n", branch, n_rules);
 		if (sqlite3_prepare_v2(db->handle,
 			"SELECT rule_text, evidence_count "
@@ -1572,7 +1533,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 				if (!rule_text)
 					continue;
 				cb = (idx == n_rules - 1) ? "└──" : "├──";
-				memory_appendf(&buf, &cap, &len,
+				memory_appendf(&buf,
 					       MEMORY_RENDER_CAP,
 					       "%s%s %s (evidence=%d)\n",
 					       vbar, cb, rule_text, evidence);
@@ -1589,7 +1550,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		const char *branch = last ? "└──" : "├──";
 		const char *vbar   = last ? "    " : "│   ";
 		int idx = 0;
-		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+		memory_appendf(&buf, MEMORY_RENDER_CAP,
 			       "%s Recent episodes (%d/%d)\n",
 			       branch, n_episodes, n_episodes_total);
 		if (sqlite3_prepare_v2(db->handle,
@@ -1639,7 +1600,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 				/* Episode header is short and structured: just
 				 * the importance/timestamp + outcome flag. */
 				memory_parse_episode(summary, &ev);
-				memory_appendf(&buf, &cap, &len,
+				memory_appendf(&buf,
 					       MEMORY_RENDER_CAP,
 					       "%s%s [imp=%.2f t=%lld]%s%s\n",
 					       vbar, cb,
@@ -1672,36 +1633,36 @@ char *memory_render_session(struct db *db, int64_t session_id,
 
 				if (ev.has_task) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"task", ev.task, 200);
 				}
 				if (ev.has_tools) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"tools", ev.tools, 200);
 				} else if (tools_col && *tools_col) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"tools", tools_col, 200);
 				}
 				if (decisions && *decisions) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"decisions", decisions, 200);
 				}
 				if (artifacts && *artifacts) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"artifacts", artifacts, 200);
 				}
 				if (ev.has_result) {
 					MEMORY_PFX(++sub_idx == total_subs);
-					memory_emit_wrapped(&buf, &cap, &len,
+					memory_emit_wrapped(&buf,
 						prefix_first, prefix_cont,
 						"result", ev.result, 200);
 				}
@@ -1717,7 +1678,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 	if (n_changes > 0) {
 		const char *vbar = "    ";
 		int idx = 0;
-		memory_appendf(&buf, &cap, &len, MEMORY_RENDER_CAP,
+		memory_appendf(&buf, MEMORY_RENDER_CAP,
 			       "└── Recent changes (%d)\n", n_changes);
 		if (sqlite3_prepare_v2(db->handle,
 			"SELECT old.key_name, old.value_text, "
@@ -1742,7 +1703,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 				if (!key_name || !old_value)
 					continue;
 				cb = (idx == n_changes - 1) ? "└──" : "├──";
-				memory_appendf(&buf, &cap, &len,
+				memory_appendf(&buf,
 					       MEMORY_RENDER_CAP,
 					       "%s%s %s: %s -> %s (t=%lld)\n",
 					       vbar, cb,
@@ -1756,7 +1717,7 @@ char *memory_render_session(struct db *db, int64_t session_id,
 		}
 	}
 
-	return buf;
+	return morph_buf_detach(&buf);
 }
 
 int memory_clear(struct db *db, int64_t session_id,
@@ -2001,34 +1962,6 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id,
 	return worst;
 }
 
-struct memory_llm_buf {
-	char *data;
-	size_t len;
-	size_t cap;
-};
-
-static int memory_llm_stream_cb(const char *token, void *user_data)
-{
-	struct memory_llm_buf *buf = (struct memory_llm_buf *)user_data;
-	size_t tlen;
-
-	if (!token)
-		return 0;
-	tlen = strlen(token);
-	if (buf->len + tlen + 1 >= buf->cap) {
-		size_t new_cap = (buf->len + tlen + 1) * 2;
-		char *tmp = (char *)realloc(buf->data, new_cap);
-		if (!tmp)
-			return -ENOMEM;
-		buf->data = tmp;
-		buf->cap = new_cap;
-	}
-	memcpy(buf->data + buf->len, token, tlen);
-	buf->len += tlen;
-	buf->data[buf->len] = '\0';
-	return 0;
-}
-
 static char *memory_llm_extract_json(const char *user_input,
 				     const char *assistant_output,
 				     const char *tool_names,
@@ -2039,7 +1972,7 @@ static char *memory_llm_extract_json(const char *user_input,
 	char *prompt;
 	size_t prompt_cap;
 	const char *messages[1];
-	struct memory_llm_buf buf = {0};
+	morph_buf_t buf;
 	int rc;
 
 	if (!llm || !llm->chat || !llm->api_key[0] || !user_input)
@@ -2068,28 +2001,26 @@ static char *memory_llm_extract_json(const char *user_input,
 		return NULL;
 	}
 
-	buf.cap = 4096;
-	buf.data = (char *)malloc(buf.cap);
-	if (!buf.data) {
+	rc = morph_buf_init(&buf, 4096);
+	if (rc != 0) {
 		arena_destroy(arena);
 		free(prompt);
 		return NULL;
 	}
-	buf.data[0] = '\0';
 
 	messages[0] = prompt;
 	rc = llm->chat(llm, arena, MEMORY_LLM_SYSTEM, messages, 1,
-		       memory_llm_stream_cb, &buf);
+		       morph_buf_append_cb, &buf);
 	arena_destroy(arena);
 	free(prompt);
 
 	if (rc != 0 || buf.len == 0) {
 		log_dbg("memory: LLM extraction failed (rc=%d, len=%zu)",
 			rc, buf.len);
-		free(buf.data);
+		morph_buf_cleanup(&buf);
 		return NULL;
 	}
-	return buf.data;
+	return morph_buf_detach(&buf);
 }
 
 static int memory_capture_llm_path(struct db *db, int64_t session_id,

@@ -25,6 +25,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "util/buf.h"
+
 #include "cJSON.h"
 
 /* ------------ optional deep hook (weak link) ------------ */
@@ -280,54 +282,6 @@ static void trim_candidate_path(char *path)
 	}
 }
 
-static int append_str(char **buf, size_t *len, size_t *cap, const char *s)
-{
-	size_t slen;
-	char *tmp;
-
-	if (!buf || !len || !cap || !s)
-		return -EINVAL;
-	slen = strlen(s);
-	if (*len + slen + 1 > *cap) {
-		size_t ncap = *cap ? *cap : 256;
-		while (*len + slen + 1 > ncap)
-			ncap *= 2;
-		tmp = realloc(*buf, ncap);
-		if (!tmp)
-			return -ENOMEM;
-		*buf = tmp;
-		*cap = ncap;
-	}
-	memcpy(*buf + *len, s, slen);
-	*len += slen;
-	(*buf)[*len] = '\0';
-	return 0;
-}
-
-static int append_mem(char **buf, size_t *len, size_t *cap,
-		      const char *s, size_t slen)
-{
-	char *tmp;
-
-	if (!buf || !len || !cap || (!s && slen > 0))
-		return -EINVAL;
-	if (*len + slen + 1 > *cap) {
-		size_t ncap = *cap ? *cap : 256;
-		while (*len + slen + 1 > ncap)
-			ncap *= 2;
-		tmp = realloc(*buf, ncap);
-		if (!tmp)
-			return -ENOMEM;
-		*buf = tmp;
-		*cap = ncap;
-	}
-	if (slen > 0)
-		memcpy(*buf + *len, s, slen);
-	*len += slen;
-	(*buf)[*len] = '\0';
-	return 0;
-}
-
 static void html_attr_escape(const char *src, char *dst, size_t dst_size)
 {
 	size_t pos = 0;
@@ -368,8 +322,7 @@ static void html_attr_escape(const char *src, char *dst, size_t dst_size)
 	dst[pos] = '\0';
 }
 
-static int append_artifact_tag(char **buf, size_t *len, size_t *cap,
-			       const struct turn_artifact *a)
+static int append_artifact_tag(morph_buf_t *buf, const struct turn_artifact *a)
 {
 	char tag[1400];
 	char filename[512];
@@ -392,7 +345,7 @@ static int append_artifact_tag(char **buf, size_t *len, size_t *cap,
 			 "></video></a>",
 			 url, url);
 	}
-	return append_str(buf, len, cap, tag);
+	return morph_buf_puts(buf, tag);
 }
 
 static int candidate_path(const char *token, char out[PATH_MAX])
@@ -410,13 +363,13 @@ static int candidate_path(const char *token, char out[PATH_MAX])
 static char *render_media_refs(struct turn_job *j, const char *text)
 {
 	const char *p;
-	char *out = NULL;
-	size_t len = 0;
-	size_t cap = 0;
+	morph_buf_t out;
 	char generated_path[PATH_MAX];
 	const char *generated_kind = NULL;
 
 	if (!text)
+		return strdup("");
+	if (morph_buf_init(&out, 256) < 0)
 		return strdup("");
 	if (artifact_from_generated_text(text, generated_path,
 					 &generated_kind)) {
@@ -425,12 +378,12 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 		if (a) {
 			const char *start = strstr(text, generated_path);
 			if (start) {
-				append_mem(&out, &len, &cap, text,
-					   (size_t)(start - text));
-				append_artifact_tag(&out, &len, &cap, a);
-				append_str(&out, &len, &cap,
-					   start + strlen(generated_path));
-				return out ? out : strdup(text);
+				morph_buf_append(&out, text,
+						 (size_t)(start - text));
+				append_artifact_tag(&out, a);
+				morph_buf_puts(&out,
+					       start + strlen(generated_path));
+				return morph_buf_detach(&out);
 			}
 		}
 	}
@@ -448,7 +401,7 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 		while (*p && !path_char((unsigned char)*p))
 			p++;
 		if (p > start)
-			append_mem(&out, &len, &cap, start, (size_t)(p - start));
+			morph_buf_append(&out, start, (size_t)(p - start));
 		start = p;
 		while (*p && path_char((unsigned char)*p))
 			p++;
@@ -460,43 +413,47 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 		trim_candidate_path(token);
 		kind = artifact_kind_for_path(token);
 		if (!kind || !candidate_path(token, path)) {
-			append_mem(&out, &len, &cap, start, raw_len);
+			morph_buf_append(&out, start, raw_len);
 			continue;
 		}
 		a = turn_artifact_get(j, path, kind);
 		if (!a) {
-			append_mem(&out, &len, &cap, start, raw_len);
+			morph_buf_append(&out, start, raw_len);
 			continue;
 		}
-		append_artifact_tag(&out, &len, &cap, a);
+		append_artifact_tag(&out, a);
 		if (strlen(token) < raw_len)
-			append_mem(&out, &len, &cap, start + strlen(token),
-				   raw_len - strlen(token));
+			morph_buf_append(&out, start + strlen(token),
+					 raw_len - strlen(token));
 	}
-	return out ? out : strdup(text);
+	if (out.len == 0) {
+		morph_buf_cleanup(&out);
+		return strdup(text);
+	}
+	return morph_buf_detach(&out);
 }
 
 static char *render_artifact_summary(struct turn_job *j)
 {
-	char *out = NULL;
-	size_t len = 0;
-	size_t cap = 0;
+	morph_buf_t out;
 	char line[256];
 
 	if (!j || j->artifacts_count <= 0)
 		return NULL;
-	append_str(&out, &len, &cap,
+	if (morph_buf_init(&out, 256) < 0)
+		return NULL;
+	morph_buf_puts(&out,
 		   "Generation stopped after reaching the iteration limit, "
 		   "but these artifacts were created:\n\n");
 	for (int i = 0; i < j->artifacts_count; i++) {
 		struct turn_artifact *a = &j->artifacts[i];
 		snprintf(line, sizeof(line), "%d. `%s`\n\n", i + 1,
 			 a->path);
-		append_str(&out, &len, &cap, line);
-		append_artifact_tag(&out, &len, &cap, a);
-		append_str(&out, &len, &cap, "\n\n");
+		morph_buf_puts(&out, line);
+		append_artifact_tag(&out, a);
+		morph_buf_puts(&out, "\n\n");
 	}
-	return out;
+	return morph_buf_detach(&out);
 }
 
 static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u) {

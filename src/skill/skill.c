@@ -2,6 +2,7 @@
 #include "skill_parse.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include <errno.h>
 #include <stdio.h>
@@ -197,40 +198,30 @@ char *skill_build_activated_instructions(struct skill_registry *reg)
 	if (!reg)
 		return NULL;
 
-	size_t cap = 8192;
-	size_t len = 0;
-	char *buf = malloc(cap);
-	if (!buf)
+	morph_buf_t buf;
+	int rc = morph_buf_init(&buf, 8192);
+	if (rc != 0)
 		return NULL;
-	buf[0] = '\0';
 
 	for (int i = 0; i < reg->count; i++) {
 		struct skill_entry *e = &reg->entries[i];
 		if (!e->activated || !e->body || !e->body[0])
 			continue;
-
-		size_t needed = 128 + strlen(e->fm.name) + strlen(e->skill_dir) + strlen(e->body);
-		while (len + needed + 1 >= cap) {
-			cap *= 2;
-			char *nb = realloc(buf, cap);
-			if (!nb) {
-				free(buf);
-				return NULL;
-			}
-			buf = nb;
+		rc = morph_buf_printf(&buf,
+				      "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
+				      e->fm.name, e->skill_dir, e->body);
+		if (rc != 0) {
+			morph_buf_cleanup(&buf);
+			return NULL;
 		}
-
-		len += (size_t)snprintf(buf + len, cap - len,
-					"<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
-					e->fm.name, e->skill_dir, e->body);
 	}
 
-	if (len == 0) {
-		free(buf);
+	if (buf.len == 0) {
+		morph_buf_cleanup(&buf);
 		return NULL;
 	}
 
-	return buf;
+	return morph_buf_detach(&buf);
 }
 
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)

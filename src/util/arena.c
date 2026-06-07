@@ -2,10 +2,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #define ARENA_ALIGN sizeof(void *)
 #define ARENA_DEFAULT_SIZE (64 * 1024)
 #define ARENA_LARGE_RATIO 2
+#define ARENA_MAX_FAILED 4
 
 static struct arena *arena_new_region(size_t cap)
 {
@@ -19,7 +21,9 @@ static struct arena *arena_new_region(size_t cap)
 	}
 	a->cap = cap;
 	a->used = 0;
+	a->failed = 0;
 	a->next = NULL;
+	a->current = NULL;
 	a->large = NULL;
 	a->cleanup = NULL;
 	return a;
@@ -72,6 +76,8 @@ void arena_destroy(struct arena *a)
 {
 	struct arena *cur = a;
 
+	if (!a)
+		return;
 	arena_cleanup_run(a);
 	arena_free_large(a);
 	while (cur) {
@@ -121,41 +127,55 @@ static void *arena_alloc_large(struct arena *a, size_t size, size_t align)
 
 void *arena_alloc_aligned(struct arena *a, size_t size, size_t align)
 {
+	struct arena *cur;
+
 	if (!a || size == 0)
 		return NULL;
 
 	if (align == 0)
 		align = ARENA_ALIGN;
 
-	size_t aligned_used = align_up(a->used, align);
-	size_t new_used = aligned_used + size;
+	cur = a->current ? a->current : a;
+	while (cur) {
+		size_t aligned_used = align_up(cur->used, align);
+		size_t new_used = aligned_used + size;
 
-	if (new_used <= a->cap) {
-		void *ptr = a->buf + aligned_used;
-		a->used = new_used;
+		if (new_used <= cur->cap && new_used >= cur->used) {
+			void *ptr = cur->buf + aligned_used;
+			cur->used = new_used;
+			cur->failed = 0;
+			a->current = cur;
+			memset(ptr, 0, size);
+			return ptr;
+		}
+		cur->failed++;
+		if (cur->failed > ARENA_MAX_FAILED)
+			a->current = cur->next;
+		cur = cur->next;
+	}
+
+	if (align > a->cap || size > a->cap - align)
+		return arena_alloc_large(a, size, align);
+
+	if (size > a->cap / ARENA_LARGE_RATIO)
+		return arena_alloc_large(a, size, align);
+
+	{
+		struct arena *region = arena_new_region(a->cap);
+		size_t aligned_used;
+		void *ptr;
+
+		if (!region)
+			return NULL;
+		region->next = a->next;
+		a->next = region;
+
+		aligned_used = align_up(0, align);
+		ptr = region->buf + aligned_used;
+		region->used = aligned_used + size;
 		memset(ptr, 0, size);
 		return ptr;
 	}
-
-	if (size + align > a->cap) {
-		return arena_alloc_large(a, size, align);
-	}
-
-	if (size > a->cap / ARENA_LARGE_RATIO) {
-		return arena_alloc_large(a, size, align);
-	}
-
-	struct arena *region = arena_new_region(a->cap);
-	if (!region)
-		return NULL;
-	region->next = a->next;
-	a->next = region;
-
-	aligned_used = align_up(0, align);
-	void *ptr = region->buf + aligned_used;
-	region->used = aligned_used + size;
-	memset(ptr, 0, size);
-	return ptr;
 }
 
 void *arena_alloc(struct arena *a, size_t size)
@@ -180,14 +200,19 @@ void arena_reset(struct arena *a)
 	}
 	a->next = NULL;
 	a->used = 0;
+	a->failed = 0;
+	a->current = NULL;
 }
 
 char *arena_strdup(struct arena *a, const char *s)
 {
+	size_t len;
+	char *dst;
+
 	if (!s)
 		return NULL;
-	size_t len = strlen(s) + 1;
-	char *dst = arena_alloc(a, len);
+	len = strlen(s) + 1;
+	dst = arena_alloc(a, len);
 	if (dst)
 		memcpy(dst, s, len);
 	return dst;

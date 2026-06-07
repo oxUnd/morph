@@ -1,39 +1,8 @@
 #include "latex_unicode.h"
+#include "util/buf.h"
 #include <string.h>
-#include <stdlib.h>
 #include <stdint.h>
 #include <errno.h>
-
-struct ltx_out {
-	char *buf;
-	size_t len;
-	size_t cap;
-};
-
-static void ltx_out_ch(struct ltx_out *o, char c)
-{
-	if (!o->buf)
-		return;
-	if (o->len + 1 < o->cap)
-		o->buf[o->len++] = c;
-}
-
-static void ltx_out_n(struct ltx_out *o, const char *s, size_t n)
-{
-	if (!o->buf || !n)
-		return;
-	size_t space = o->cap > 0 && o->len < o->cap ? o->cap - o->len - 1 : 0;
-	size_t w = n < space ? n : space;
-	if (w > 0) {
-		memcpy(o->buf + o->len, s, w);
-		o->len += w;
-	}
-}
-
-static void ltx_out_s(struct ltx_out *o, const char *s)
-{
-	ltx_out_n(o, s, strlen(s));
-}
 
 /* ---------------- command table ---------------- */
 
@@ -603,7 +572,7 @@ static const char *font_lookup(char ch, const struct font_map *m, size_t cnt,
 	return NULL;
 }
 
-static void render_font_group(const char *s, size_t len, struct ltx_out *o,
+static void render_font_group(const char *s, size_t len, morph_buf_t *o,
 			      const struct font_map *m, size_t cnt)
 {
 	for (size_t i = 0; i < len; ) {
@@ -613,19 +582,19 @@ static void render_font_group(const char *s, size_t len, struct ltx_out *o,
 		if (c < 0x80) {
 			u = font_lookup((char)c, m, cnt, &olen);
 			if (u) {
-				ltx_out_n(o, u, olen);
+				morph_buf_append(o, u, olen);
 			} else {
-				ltx_out_ch(o, (char)c);
+				morph_buf_putc(o, (char)c);
 			}
 			i++;
 		} else if ((c & 0xe0) == 0xc0) {
-			ltx_out_n(o, s + i, 2);
+			morph_buf_append(o, s + i, 2);
 			i += 2;
 		} else if ((c & 0xf0) == 0xe0) {
-			ltx_out_n(o, s + i, 3);
+			morph_buf_append(o, s + i, 3);
 			i += 3;
 		} else if ((c & 0xf8) == 0xf0) {
-			ltx_out_n(o, s + i, 4);
+			morph_buf_append(o, s + i, 4);
 			i += 4;
 		} else {
 			i++;
@@ -679,42 +648,42 @@ static size_t brace_content(const char *s, size_t len,
 
 /* ---------------- superscript / subscript render ---------------- */
 
-static int render_sup_char(char c, struct ltx_out *o)
+static int render_sup_char(char c, morph_buf_t *o)
 {
 	if (c >= '0' && c <= '9') {
-		ltx_out_n(o, sup_d[(unsigned)(c - '0')], sup_dl[(unsigned)(c - '0')]);
+		morph_buf_append(o, sup_d[(unsigned)(c - '0')], sup_dl[(unsigned)(c - '0')]);
 		return 1;
 	}
-	if (c == '+') { ltx_out_s(o, "\xe2\x81\xba"); return 1; }
-	if (c == '-') { ltx_out_s(o, "\xe2\x81\xbb"); return 1; }
-	if (c == '=') { ltx_out_s(o, "\xe2\x81\xbc"); return 1; }
-	if (c == '(') { ltx_out_s(o, "\xe2\x81\xbd"); return 1; }
-	if (c == ')') { ltx_out_s(o, "\xe2\x81\xbe"); return 1; }
-	if (c == 'n') { ltx_out_s(o, "\xe2\x81\xbf"); return 1; }
-	if (c == 'i') { ltx_out_s(o, "\xe2\x81\xb1"); return 1; }
+	if (c == '+') { morph_buf_puts(o, "\xe2\x81\xba"); return 1; }
+	if (c == '-') { morph_buf_puts(o, "\xe2\x81\xbb"); return 1; }
+	if (c == '=') { morph_buf_puts(o, "\xe2\x81\xbc"); return 1; }
+	if (c == '(') { morph_buf_puts(o, "\xe2\x81\xbd"); return 1; }
+	if (c == ')') { morph_buf_puts(o, "\xe2\x81\xbe"); return 1; }
+	if (c == 'n') { morph_buf_puts(o, "\xe2\x81\xbf"); return 1; }
+	if (c == 'i') { morph_buf_puts(o, "\xe2\x81\xb1"); return 1; }
 	for (size_t k = 0; k < SUP_L_SIZE; k++) {
 		if (sup_l[k].ch == c) {
-			ltx_out_n(o, sup_l[k].uni, sup_l[k].ulen);
+			morph_buf_append(o, sup_l[k].uni, sup_l[k].ulen);
 			return 1;
 		}
 	}
 	return 0;
 }
 
-static int render_sub_char(char c, struct ltx_out *o)
+static int render_sub_char(char c, morph_buf_t *o)
 {
 	if (c >= '0' && c <= '9') {
-		ltx_out_n(o, sub_d[(unsigned)(c - '0')], sub_dl[(unsigned)(c - '0')]);
+		morph_buf_append(o, sub_d[(unsigned)(c - '0')], sub_dl[(unsigned)(c - '0')]);
 		return 1;
 	}
-	if (c == '+') { ltx_out_s(o, "\xe2\x82\x8a"); return 1; }
-	if (c == '-') { ltx_out_s(o, "\xe2\x82\x8b"); return 1; }
-	if (c == '=') { ltx_out_s(o, "\xe2\x82\x8c"); return 1; }
-	if (c == '(') { ltx_out_s(o, "\xe2\x82\x8d"); return 1; }
-	if (c == ')') { ltx_out_s(o, "\xe2\x82\x8e"); return 1; }
+	if (c == '+') { morph_buf_puts(o, "\xe2\x82\x8a"); return 1; }
+	if (c == '-') { morph_buf_puts(o, "\xe2\x82\x8b"); return 1; }
+	if (c == '=') { morph_buf_puts(o, "\xe2\x82\x8c"); return 1; }
+	if (c == '(') { morph_buf_puts(o, "\xe2\x82\x8d"); return 1; }
+	if (c == ')') { morph_buf_puts(o, "\xe2\x82\x8e"); return 1; }
 	for (size_t k = 0; k < SUB_L_SIZE; k++) {
 		if (sub_l[k].ch == c) {
-			ltx_out_n(o, sub_l[k].uni, sub_l[k].ulen);
+			morph_buf_append(o, sub_l[k].uni, sub_l[k].ulen);
 			return 1;
 		}
 	}
@@ -722,9 +691,9 @@ static int render_sub_char(char c, struct ltx_out *o)
 }
 
 /* forward decl */
-static size_t render_expr(const char *s, size_t len, struct ltx_out *o);
+static size_t render_expr(const char *s, size_t len, morph_buf_t *o);
 
-static size_t render_sup(struct ltx_out *o, const char *s, size_t len)
+static size_t render_sup(morph_buf_t *o, const char *s, size_t len)
 {
 	if (len == 0)
 		return 0;
@@ -745,26 +714,26 @@ static size_t render_sup(struct ltx_out *o, const char *s, size_t len)
 			else if ((unsigned char)c[0] >= 0xc0) cp_len = 2;
 			if (cp_len <= cl) {
 				/* no unicode sup for most BMP, fallback */
-				ltx_out_ch(o, '^');
-				ltx_out_n(o, c, cl);
+				morph_buf_putc(o, '^');
+				morph_buf_append(o, c, cl);
 				return skip;
 			}
 		}
 		/* multi-char: fallback ^(expr) */
-		ltx_out_ch(o, '^');
-		ltx_out_ch(o, '(');
+		morph_buf_putc(o, '^');
+		morph_buf_putc(o, '(');
 		render_expr(c, cl, o);
-		ltx_out_ch(o, ')');
+		morph_buf_putc(o, ')');
 		return skip;
 	}
 	if (render_sup_char(s[0], o))
 		return 1;
-	ltx_out_ch(o, '^');
-	ltx_out_ch(o, s[0]);
+	morph_buf_putc(o, '^');
+	morph_buf_putc(o, s[0]);
 	return 1;
 }
 
-static size_t render_sub(struct ltx_out *o, const char *s, size_t len)
+static size_t render_sub(morph_buf_t *o, const char *s, size_t len)
 {
 	if (len == 0)
 		return 0;
@@ -776,16 +745,16 @@ static size_t render_sub(struct ltx_out *o, const char *s, size_t len)
 			return 0;
 		if (cl == 1 && render_sub_char(c[0], o))
 			return skip;
-		ltx_out_ch(o, '_');
-		ltx_out_ch(o, '(');
+		morph_buf_putc(o, '_');
+		morph_buf_putc(o, '(');
 		render_expr(c, cl, o);
-		ltx_out_ch(o, ')');
+		morph_buf_putc(o, ')');
 		return skip;
 	}
 	if (render_sub_char(s[0], o))
 		return 1;
-	ltx_out_ch(o, '_');
-	ltx_out_ch(o, s[0]);
+	morph_buf_putc(o, '_');
+	morph_buf_putc(o, s[0]);
 	return 1;
 }
 
@@ -811,7 +780,7 @@ static const struct latex_cmd *find_cmd(const char *name, size_t nlen)
 
 /* ---------------- render a \command ---------------- */
 
-static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
+static size_t render_cmd(const char *s, size_t len, morph_buf_t *o)
 {
 	if (len < 1)
 		return 0;
@@ -819,14 +788,14 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 	/* single-char escapes: \, \; \! \  */
 	if (len == 1) {
 		switch (s[0]) {
-		case ',': ltx_out_ch(o, ' '); return 1;
-		case ':': ltx_out_ch(o, ' '); return 1;
-		case ';': ltx_out_ch(o, ' '); return 1;
+		case ',': morph_buf_putc(o, ' '); return 1;
+		case ':': morph_buf_putc(o, ' '); return 1;
+		case ';': morph_buf_putc(o, ' '); return 1;
 		case '!': return 1;
-		case ' ': ltx_out_ch(o, ' '); return 1;
+		case ' ': morph_buf_putc(o, ' '); return 1;
 		default:
-			ltx_out_ch(o, '\\');
-			ltx_out_ch(o, s[0]);
+			morph_buf_putc(o, '\\');
+			morph_buf_putc(o, s[0]);
 			return 1;
 		}
 	}
@@ -839,8 +808,8 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 
 	if (nlen == 0) {
 		/* non-alpha after backslash */
-		ltx_out_ch(o, '\\');
-		ltx_out_ch(o, s[0]);
+		morph_buf_putc(o, '\\');
+		morph_buf_putc(o, s[0]);
 		return 1;
 	}
 
@@ -849,8 +818,8 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 
 	if (!cmd) {
 		/* unrecognized command: pass through */
-		ltx_out_ch(o, '\\');
-		ltx_out_n(o, s, nlen);
+		morph_buf_putc(o, '\\');
+		morph_buf_append(o, s, nlen);
 		return consumed;
 	}
 
@@ -912,9 +881,9 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 					if (d >= '0' && d <= '9')
 						render_sup_char(d, o);
 					else
-						ltx_out_ch(o, d);
+						morph_buf_putc(o, d);
 				}
-				ltx_out_s(o, "\xe2\x88\x9a"); /* √ */
+				morph_buf_puts(o, "\xe2\x88\x9a"); /* √ */
 				const char *c; size_t cl;
 				consumed = ei + 1;
 				consumed += brace_content(s + consumed,
@@ -925,7 +894,7 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 			}
 		}
 		/* no optional arg */
-		ltx_out_s(o, "\xe2\x88\x9a"); /* √ */
+		morph_buf_puts(o, "\xe2\x88\x9a"); /* √ */
 		const char *c; size_t cl;
 		size_t bg = brace_content(s + nlen, len - nlen, &c, &cl);
 		consumed += bg;
@@ -958,7 +927,7 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 		consumed += bg;
 		render_expr(c, cl, o);
 		if (combining && combining[0])
-			ltx_out_s(o, combining);
+			morph_buf_puts(o, combining);
 		return consumed;
 	}
 
@@ -974,13 +943,13 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 			size_t bg = brace_content(s + nlen, rest, &c, &cl);
 			consumed += bg;
 			render_expr(c, cl, o);
-			ltx_out_n(o, cmd->uni, cmd->ulen);
+			morph_buf_append(o, cmd->uni, cmd->ulen);
 			return consumed;
 		}
 		if (rest > 0) {
 			/* single char argument */
 			render_expr(s + nlen, 1, o);
-			ltx_out_n(o, cmd->uni, cmd->ulen);
+			morph_buf_append(o, cmd->uni, cmd->ulen);
 			consumed += 1;
 			return consumed;
 		}
@@ -999,20 +968,20 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 
 		if (nlen == 5 && memcmp(s, "binom", 5) == 0) {
 			/* C(a,b) */
-			ltx_out_s(o, "C(");
+			morph_buf_puts(o, "C(");
 			render_expr(a, al, o);
-			ltx_out_ch(o, ',');
+			morph_buf_putc(o, ',');
 			render_expr(b, bl, o);
-			ltx_out_ch(o, ')');
+			morph_buf_putc(o, ')');
 		} else if (nlen == 4 && memcmp(s, "root", 4) == 0) {
 			/* \root{a}{b} = b√a style, rare */
 			render_expr(b, bl, o);
-			ltx_out_s(o, "\xe2\x88\x9a");
+			morph_buf_puts(o, "\xe2\x88\x9a");
 			render_expr(a, al, o);
 		} else {
 			/* frac-style: a/b */
 			render_expr(a, al, o);
-			ltx_out_ch(o, '/');
+			morph_buf_putc(o, '/');
 			render_expr(b, bl, o);
 		}
 		return consumed;
@@ -1026,7 +995,7 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 		consumed += bg;
 		if (cmd->ulen > 0) {
 			render_expr(c, cl, o);
-			ltx_out_n(o, cmd->uni, cmd->ulen);
+			morph_buf_append(o, cmd->uni, cmd->ulen);
 		} else {
 			render_expr(c, cl, o);
 		}
@@ -1035,14 +1004,14 @@ static size_t render_cmd(const char *s, size_t len, struct ltx_out *o)
 
 	/* arity 0: simple substitution */
 	if (cmd->ulen > 0)
-		ltx_out_n(o, cmd->uni, cmd->ulen);
+		morph_buf_append(o, cmd->uni, cmd->ulen);
 
 	return consumed;
 }
 
 /* ---------------- main expression renderer ---------------- */
 
-static size_t render_expr(const char *s, size_t len, struct ltx_out *o)
+static size_t render_expr(const char *s, size_t len, morph_buf_t *o)
 {
 	size_t i = 0;
 	while (i < len) {
@@ -1095,7 +1064,7 @@ static size_t render_expr(const char *s, size_t len, struct ltx_out *o)
 
 		if (c == '&') {
 			/* alignment tab in matrix -> space */
-			ltx_out_ch(o, ' ');
+			morph_buf_putc(o, ' ');
 			i++;
 			continue;
 		}
@@ -1107,7 +1076,7 @@ static size_t render_expr(const char *s, size_t len, struct ltx_out *o)
 			else if ((c & 0xf0) == 0xe0) b = 3;
 			else if ((c & 0xf8) == 0xf0) b = 4;
 			if (i + b <= len) {
-				ltx_out_n(o, s + i, b);
+				morph_buf_append(o, s + i, b);
 				i += b;
 			} else {
 				i++;
@@ -1116,7 +1085,7 @@ static size_t render_expr(const char *s, size_t len, struct ltx_out *o)
 		}
 
 		/* plain ASCII */
-		ltx_out_ch(o, (char)c);
+		morph_buf_putc(o, (char)c);
 		i++;
 	}
 	return i;
@@ -1127,25 +1096,25 @@ static size_t render_expr(const char *s, size_t len, struct ltx_out *o)
 int latex_to_unicode(const char *latex, size_t len,
 		     char *out, size_t out_cap, int flags)
 {
-	struct ltx_out o;
-	o.buf = out;
-	o.cap = out_cap;
-	o.len = 0;
-
-	if (out_cap > 0)
-		out[0] = '\0';
+	morph_buf_t buf;
+	int rc;
 
 	if (!latex || len == 0 || !out || out_cap == 0)
 		return -EINVAL;
 
 	(void)flags;
 
-	render_expr(latex, len, &o);
+	rc = morph_buf_init(&buf, len + 64);
+	if (rc != 0)
+		return rc;
 
-	if (o.len < o.cap)
-		o.buf[o.len] = '\0';
-	else if (o.cap > 0)
-		o.buf[o.cap - 1] = '\0';
+	render_expr(latex, len, &buf);
 
-	return (int)o.len;
+	size_t copy_len = buf.len < out_cap ? buf.len : out_cap - 1;
+	memcpy(out, buf.data, copy_len);
+	out[copy_len] = '\0';
+
+	int result = (int)buf.len;
+	morph_buf_cleanup(&buf);
+	return result;
 }

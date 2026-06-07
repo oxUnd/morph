@@ -1,5 +1,6 @@
 #include "skill_parse.h"
 #include "util/log.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
 #include <errno.h>
@@ -49,13 +50,6 @@ static int get_indent(const char *line)
 		line++;
 	}
 	return indent;
-}
-
-static void strip_trailing_newlines(char *s)
-{
-	size_t len = strlen(s);
-	while (len > 0 && (s[len - 1] == '\n' || s[len - 1] == '\r'))
-		s[--len] = '\0';
 }
 
 static void strip_quotes(const char *src, char *dst, size_t dst_size)
@@ -132,8 +126,11 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 
 	char *line = copy;
 	char *current_key = NULL;
-	char *block_value = NULL;
-	size_t block_cap = 0;
+	morph_buf_t bv;
+	if (morph_buf_init(&bv, 256) != 0) {
+		free(copy);
+		return;
+	}
 	int in_metadata = 0;
 	int in_block_scalar = 0;
 	int block_indent = 0;
@@ -146,16 +143,16 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 		if (in_block_scalar && current_key) {
 			int indent = get_indent(line);
 			if (line[0] != '\0' && !is_blank_line(line) && indent <= block_indent) {
-				if (block_value) {
-					strip_trailing_newlines(block_value);
+				if (bv.len > 0) {
+					while (bv.len > 0 && (bv.data[bv.len - 1] == '\n' || bv.data[bv.len - 1] == '\r'))
+						bv.len--;
+					bv.data[bv.len] = '\0';
 					if (strcmp(current_key, "metadata") != 0)
-						parse_yaml_scalar(current_key, block_value, fm);
+						parse_yaml_scalar(current_key, bv.data, fm);
 				}
 				free(current_key);
 				current_key = NULL;
-				free(block_value);
-				block_value = NULL;
-				block_cap = 0;
+				morph_buf_reset(&bv);
 				in_block_scalar = 0;
 				in_metadata = 0;
 			} else {
@@ -163,34 +160,19 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 				while (*content == ' ' || *content == '\t')
 					content++;
 				if (*content == '\0') {
-					size_t vlen = block_value ? strlen(block_value) : 0;
-					if (vlen + 2 >= block_cap) {
-						block_cap = (vlen + 2) * 2;
-						char *nb = realloc(block_value, block_cap);
-						if (!nb) goto next_line;
-						block_value = nb;
-					}
-					block_value[vlen] = '\n';
-					block_value[vlen + 1] = '\0';
+					if (morph_buf_putc(&bv, '\n') != 0)
+						goto next_line;
 					goto next_line;
 				}
 				if (in_metadata) {
 					parse_metadata_line(content, fm);
 					goto next_line;
 				}
-				size_t clen = strlen(content);
-				size_t vlen = block_value ? strlen(block_value) : 0;
-				if (vlen + clen + 2 >= block_cap) {
-					block_cap = (vlen + clen + 2) * 2;
-					char *nb = realloc(block_value, block_cap);
-					if (!nb) goto next_line;
-					block_value = nb;
-				}
-				if (vlen > 0) {
-					block_value[vlen] = '\n';
-					vlen++;
-				}
-				memcpy(block_value + vlen, content, clen + 1);
+				if (bv.len > 0)
+					if (morph_buf_putc(&bv, '\n') != 0)
+						goto next_line;
+				if (morph_buf_puts(&bv, content) != 0)
+					goto next_line;
 				goto next_line;
 			}
 		}
@@ -235,11 +217,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			current_key = key;
 			in_block_scalar = 1;
 			block_indent = indent;
-			if (block_value) {
-				free(block_value);
-				block_value = NULL;
-				block_cap = 0;
-			}
+			morph_buf_reset(&bv);
 			in_metadata = (strcmp(key, "metadata") == 0);
 			goto next_line;
 		}
@@ -250,11 +228,7 @@ static void parse_yaml_block(const char *yaml, size_t yaml_len,
 			current_key = key;
 			in_block_scalar = 1;
 			block_indent = indent;
-			if (block_value) {
-				free(block_value);
-				block_value = NULL;
-				block_cap = 0;
-			}
+			morph_buf_reset(&bv);
 			in_metadata = (strcmp(key, "metadata") == 0);
 			goto next_line;
 		}
@@ -296,15 +270,17 @@ next_line:
 			break;
 	}
 
-	if (in_block_scalar && current_key && block_value) {
-		strip_trailing_newlines(block_value);
+	if (in_block_scalar && current_key && bv.len > 0) {
+		while (bv.len > 0 && (bv.data[bv.len - 1] == '\n' || bv.data[bv.len - 1] == '\r'))
+			bv.len--;
+		bv.data[bv.len] = '\0';
 		if (strcmp(current_key, "metadata") != 0)
-			parse_yaml_scalar(current_key, block_value, fm);
+			parse_yaml_scalar(current_key, bv.data, fm);
 		free(current_key);
-		free(block_value);
+		morph_buf_cleanup(&bv);
 	} else {
 		free(current_key);
-		free(block_value);
+		morph_buf_cleanup(&bv);
 	}
 
 	free(copy);
@@ -392,14 +368,12 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
-	size_t yaml_cap = 4096;
-	size_t yaml_len = 0;
-	char *yaml_buf = malloc(yaml_cap);
-	if (!yaml_buf) {
+	morph_buf_t yaml_buf;
+	int yaml_rc = morph_buf_init(&yaml_buf, 4096);
+	if (yaml_rc != 0) {
 		fclose(f);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN(yaml_rc);
 	}
-	yaml_buf[0] = '\0';
 
 	int found_closing = 0;
 	while (fgets(line, sizeof(line), f)) {
@@ -412,31 +386,23 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 			break;
 		}
 
-		if (yaml_len + llen + 2 >= yaml_cap) {
-			yaml_cap = (yaml_cap + llen + 2) * 2;
-			char *nb = realloc(yaml_buf, yaml_cap);
-			if (!nb) {
-				free(yaml_buf);
-				fclose(f);
-				MORPH_RETURN(-ENOMEM);
-			}
-			yaml_buf = nb;
+		if (morph_buf_append(&yaml_buf, line, (size_t)llen) != 0 ||
+		    morph_buf_putc(&yaml_buf, '\n') != 0) {
+			morph_buf_cleanup(&yaml_buf);
+			fclose(f);
+			MORPH_RETURN(-ENOMEM);
 		}
-		memcpy(yaml_buf + yaml_len, line, llen);
-		yaml_len += llen;
-		yaml_buf[yaml_len++] = '\n';
-		yaml_buf[yaml_len] = '\0';
 	}
 
 	fclose(f);
 
 	if (!found_closing) {
-		free(yaml_buf);
+		morph_buf_cleanup(&yaml_buf);
 		log_warn("skill_parse_frontmatter: no closing --- in %s", path);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
-	parse_yaml_block(yaml_buf, yaml_len, fm);
-	free(yaml_buf);
+	parse_yaml_block(yaml_buf.data, yaml_buf.len, fm);
+	morph_buf_cleanup(&yaml_buf);
 	return 0;
 }

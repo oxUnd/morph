@@ -4,6 +4,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
 #include "http/sse.h"
@@ -12,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include "util/error.h"
 
 static char *escape_json_string(struct arena *arena, const char *s)
 {
@@ -74,44 +74,46 @@ static int build_messages_json(struct arena *arena,
 				const char **messages, int n,
 				char **out_json)
 {
-	size_t cap = 8192;
-	size_t len = 0;
-	char *buf = arena_alloc(arena, cap);
-	if (!buf)
-		return -ENOMEM;
+	morph_buf_t buf;
+	int rc = morph_buf_init_arena(&buf, arena, 8192);
+	if (rc != 0)
+		return rc;
 
-	len += snprintf(buf + len, cap - len, "[");
+	rc = morph_buf_putc(&buf, '[');
+	if (rc != 0)
+		return rc;
 	int first = 1;
 
 	if (system_prompt && *system_prompt) {
 		char *esc = escape_json_string(arena, system_prompt);
 		if (!esc) { return -ENOMEM; }
-		len += snprintf(buf + len, cap - len,
+		rc = morph_buf_printf(&buf,
 				"{\"role\":\"system\",\"content\":\"%s\"}", esc);
+		if (rc != 0)
+			return rc;
 		first = 0;
 	}
 
 	for (int i = 0; i < n; i++) {
-		if (!first)
-			len += snprintf(buf + len, cap - len, ",");
+		if (!first) {
+			rc = morph_buf_putc(&buf, ',');
+			if (rc != 0)
+				return rc;
+		}
 		const char *role = (i % 2 == 0) ? "user" : "assistant";
 		char *esc = escape_json_string(arena, messages[i]);
 		if (!esc) { return -ENOMEM; }
-		size_t needed = len + strlen(esc) + 64;
-		if (needed > cap) {
-			cap = needed * 2;
-			char *new_buf = arena_alloc(arena, cap);
-			if (!new_buf) { return -ENOMEM; }
-			memcpy(new_buf, buf, len);
-			buf = new_buf;
-		}
-		len += snprintf(buf + len, cap - len,
+		rc = morph_buf_printf(&buf,
 				"{\"role\":\"%s\",\"content\":\"%s\"}",
 				role, esc);
+		if (rc != 0)
+			return rc;
 		first = 0;
 	}
-	len += snprintf(buf + len, cap - len, "]");
-	*out_json = buf;
+	rc = morph_buf_putc(&buf, ']');
+	if (rc != 0)
+		return rc;
+	*out_json = buf.data;
 	return 0;
 }
 
@@ -119,9 +121,7 @@ struct llm_stream_ctx {
 	sse_callback user_cb;
 	void *user_data;
 	struct arena *arena;
-	char *accumulated;
-	size_t acc_len;
-	size_t acc_cap;
+	morph_buf_t accumulated;
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	int tool_call_cap;
@@ -133,11 +133,8 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 	ctx->user_cb = cb;
 	ctx->user_data = user_data;
 	ctx->arena = arena;
-	ctx->acc_cap = 8192;
-	ctx->accumulated = arena_alloc(arena, ctx->acc_cap);
-	ctx->acc_len = 0;
-	if (ctx->accumulated)
-		ctx->accumulated[0] = '\0';
+	if (morph_buf_init_arena(&ctx->accumulated, arena, 8192) != 0)
+		memset(&ctx->accumulated, 0, sizeof(ctx->accumulated));
 	ctx->tool_calls = NULL;
 	ctx->tool_call_count = 0;
 	ctx->tool_call_cap = 0;
@@ -145,19 +142,7 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 
 static void llm_stream_append(struct llm_stream_ctx *ctx, const char *text)
 {
-	size_t tlen = strlen(text);
-	if (ctx->acc_len + tlen + 1 > ctx->acc_cap) {
-		size_t new_cap = (ctx->acc_len + tlen + 1) * 2;
-		char *new_acc = arena_alloc(ctx->arena, new_cap);
-		if (!new_acc)
-			return;
-		memcpy(new_acc, ctx->accumulated, ctx->acc_len);
-		ctx->accumulated = new_acc;
-		ctx->acc_cap = new_cap;
-	}
-	memcpy(ctx->accumulated + ctx->acc_len, text, tlen);
-	ctx->acc_len += tlen;
-	ctx->accumulated[ctx->acc_len] = '\0';
+	(void)morph_buf_puts(&ctx->accumulated, text);
 }
 
 static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
@@ -178,11 +163,6 @@ static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
 	if (index >= ctx->tool_call_count)
 		ctx->tool_call_count = index + 1;
 	return &ctx->tool_calls[index];
-}
-
-static void llm_stream_free(struct llm_stream_ctx *ctx)
-{
-	(void)ctx;
 }
 
 static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
@@ -319,9 +299,7 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 struct llm_http_ctx {
 	struct sse_parser *parser;
 	struct arena *arena;
-	char *error_buf;
-	size_t error_len;
-	size_t error_cap;
+	morph_buf_t error_buf;
 };
 
 static int llm_http_cb(const char *data, size_t len, void *ud)
@@ -332,29 +310,7 @@ static int llm_http_cb(const char *data, size_t len, void *ud)
 		if (rc != 0)
 			return rc;
 	}
-	if (hctx->error_buf && hctx->arena) {
-		size_t needed = hctx->error_len + len + 1;
-		if (needed > hctx->error_cap && hctx->error_cap < 65536) {
-			size_t new_cap = needed * 2;
-			if (new_cap > 65536)
-				new_cap = 65536;
-			if (needed > new_cap)
-				return 0;
-			char *new_buf = arena_alloc(hctx->arena, new_cap);
-			if (!new_buf)
-				return 0;
-			if (hctx->error_len > 0)
-				memcpy(new_buf, hctx->error_buf,
-				       hctx->error_len);
-			hctx->error_buf = new_buf;
-			hctx->error_cap = new_cap;
-		}
-		if (needed <= hctx->error_cap) {
-			memcpy(hctx->error_buf + hctx->error_len, data, len);
-			hctx->error_len += len;
-			hctx->error_buf[hctx->error_len] = '\0';
-		}
-	}
+	(void)morph_buf_append(&hctx->error_buf, data, len);
 	return 0;
 }
 
@@ -423,9 +379,8 @@ static int llm_chat(struct model *self, struct arena *arena,
 	struct llm_http_ctx hctx;
 	hctx.parser = &parser;
 	hctx.arena = arena;
-	hctx.error_buf = arena_alloc(arena, 4096);
-	hctx.error_len = 0;
-	hctx.error_cap = hctx.error_buf ? 4096 : 0;
+	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
+		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
 
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
@@ -450,8 +405,8 @@ static int llm_chat(struct model *self, struct arena *arena,
 	}
 	if (status >= 400) {
 		const char *detail = NULL;
-		if (hctx.error_buf && hctx.error_len > 0)
-			detail = llm_extract_error(hctx.error_buf, arena);
+		if (hctx.error_buf.len > 0)
+			detail = llm_extract_error(hctx.error_buf.data, arena);
 		if (detail)
 			log_err("llm_chat: API returned HTTP %d: %s",
 				status, detail);
@@ -648,9 +603,8 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	struct llm_http_ctx hctx;
 	hctx.parser = &parser;
 	hctx.arena = arena;
-	hctx.error_buf = arena_alloc(arena, 4096);
-	hctx.error_len = 0;
-	hctx.error_cap = hctx.error_buf ? 4096 : 0;
+	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
+		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
 
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
@@ -675,8 +629,8 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	}
 	if (status >= 400) {
 		const char *detail = NULL;
-		if (hctx.error_buf && hctx.error_len > 0)
-			detail = llm_extract_error(hctx.error_buf, arena);
+		if (hctx.error_buf.len > 0)
+			detail = llm_extract_error(hctx.error_buf.data, arena);
 		if (detail) {
 			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
 				status, detail);
@@ -688,8 +642,8 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
-	if (ctx.accumulated && *ctx.accumulated)
-		response->content = ctx.accumulated;
+	if (ctx.accumulated.len > 0)
+		response->content = ctx.accumulated.data;
 	else {
 		response->content = NULL;
 	}

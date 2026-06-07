@@ -29,8 +29,8 @@ protected:
 };
 
 TEST_F(SseTest, Init) {
-	EXPECT_EQ(parser.buf, nullptr);
-	EXPECT_EQ(parser.buf_len, 0);
+	EXPECT_NE(parser.buf.data, nullptr);
+	EXPECT_EQ(parser.buf.len, 0);
 }
 
 TEST_F(SseTest, SingleDataEvent) {

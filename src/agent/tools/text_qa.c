@@ -1,6 +1,7 @@
 #include "text_qa.h"
 #include "util/log.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "models/llm.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -84,27 +85,9 @@ static char *extract_param(const char *args_json, const char *param)
 	return result;
 }
 
-struct text_qa_stream_ctx {
-	char *response;
-	size_t len;
-	size_t cap;
-};
-
 static int text_qa_stream_cb(const char *token, void *user_data)
 {
-	struct text_qa_stream_ctx *ctx = user_data;
-	size_t tlen = strlen(token);
-	if (ctx->len + tlen + 1 >= ctx->cap) {
-		ctx->cap = (ctx->len + tlen + 1) * 2;
-		char *new_resp = realloc(ctx->response, ctx->cap);
-		if (!new_resp)
-			return -ENOMEM;
-		ctx->response = new_resp;
-	}
-	memcpy(ctx->response + ctx->len, token, tlen);
-	ctx->len += tlen;
-	ctx->response[ctx->len] = '\0';
-	return 0;
+	return morph_buf_append_cb(token, user_data);
 }
 
 static int text_qa_exec(const char *args_json, char **result_json, void *user_data)
@@ -148,29 +131,32 @@ static int text_qa_exec(const char *args_json, char **result_json, void *user_da
 	}
 
 	const char *messages[] = { qa_prompt };
-	struct text_qa_stream_ctx ctx = {
-		.response = malloc(8192),
-		.len = 0,
-		.cap = 8192,
-	};
-	if (!ctx.response) {
+	morph_buf_t buf;
+	int rc = morph_buf_init(&buf, 8192);
+	if (rc != 0) {
 		arena_destroy(arena);
 		free(prompt);
-		return -ENOMEM;
+		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		return rc;
 	}
-	ctx.response[0] = '\0';
 
 	int status = g_qa_llm->chat(g_qa_llm, arena, NULL, messages, 1,
-				    text_qa_stream_cb, &ctx);
+				    text_qa_stream_cb, &buf);
 	if (status < 0) {
-		free(ctx.response);
+		morph_buf_cleanup(&buf);
 		arena_destroy(arena);
 		free(prompt);
 		*result_json = strdup("{\"error\":\"LLM call failed\"}");
 		return status;
 	}
 
-	*result_json = ctx.response;
+	*result_json = morph_buf_detach(&buf);
+	if (!*result_json) {
+		arena_destroy(arena);
+		free(prompt);
+		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		return -ENOMEM;
+	}
 	arena_destroy(arena);
 	free(prompt);
 	return 0;

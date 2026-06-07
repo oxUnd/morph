@@ -1,6 +1,7 @@
 #include "cli.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "util/spin.h"
 #include "util/arena.h"
@@ -2733,12 +2734,10 @@ static char *wrap_bare_media_paths(const char *content)
 	if (!content || !*content)
 		return NULL;
 
-	size_t len = strlen(content);
-	size_t cap = len * 3 + 1;
-	char *out = malloc(cap);
-	if (!out)
+	morph_buf_t out;
+	int buf_ok = morph_buf_init(&out, 4096);
+	if (buf_ok != 0)
 		return NULL;
-	size_t olen = 0;
 
 	const char *p = content;
 	while (*p) {
@@ -2746,8 +2745,8 @@ static char *wrap_bare_media_paths(const char *content)
 			const char *close = strchr(p + 2, ')');
 			if (close) {
 				size_t chunk = (size_t)(close - p) + 1;
-				memcpy(out + olen, p, chunk);
-				olen += chunk;
+				if (morph_buf_append(&out, p, chunk) != 0)
+					goto fail;
 				p = close + 1;
 				continue;
 			}
@@ -2756,8 +2755,8 @@ static char *wrap_bare_media_paths(const char *content)
 			const char *close = strchr(p + 1, ')');
 			if (close) {
 				size_t chunk = (size_t)(close - p) + 1;
-				memcpy(out + olen, p, chunk);
-				olen += chunk;
+				if (morph_buf_append(&out, p, chunk) != 0)
+					goto fail;
 				p = close + 1;
 				continue;
 			}
@@ -2776,14 +2775,15 @@ static char *wrap_bare_media_paths(const char *content)
 		}
 
 		if (!path_start) {
-			out[olen++] = *p++;
+			if (morph_buf_putc(&out, *p++) != 0)
+				goto fail;
 			continue;
 		}
 
 		if (path_start > p) {
 			size_t pre = (size_t)(path_start - p);
-			memcpy(out + olen, p, pre);
-			olen += pre;
+			if (morph_buf_append(&out, p, pre) != 0)
+				goto fail;
 		}
 
 		const char *path_end = path_start;
@@ -2806,29 +2806,22 @@ static char *wrap_bare_media_paths(const char *content)
 				prefix = "[video](";
 				suffix = ")";
 			}
-			size_t plen = strlen(prefix);
-			size_t slen = strlen(suffix);
-			while (olen + plen + path_len + slen + 1 >= cap) {
-				cap *= 2;
-				char *nb = realloc(out, cap);
-				if (!nb) { free(out); return NULL; }
-				out = nb;
-			}
-			memcpy(out + olen, prefix, plen);
-			olen += plen;
-			memcpy(out + olen, path_start, path_len);
-			olen += path_len;
-			memcpy(out + olen, suffix, slen);
-			olen += slen;
+			if (morph_buf_puts(&out, prefix) != 0 ||
+			    morph_buf_append(&out, path_start, path_len) != 0 ||
+			    morph_buf_puts(&out, suffix) != 0)
+				goto fail;
 		} else {
-			memcpy(out + olen, path_start, path_len);
-			olen += path_len;
+			if (morph_buf_append(&out, path_start, path_len) != 0)
+				goto fail;
 		}
 		p = path_end;
 	}
 
-	out[olen] = '\0';
-	return out;
+	return morph_buf_detach(&out);
+
+fail:
+	morph_buf_cleanup(&out);
+	return NULL;
 }
 
 static void media_callback(const char *type, const char *path, void *user)

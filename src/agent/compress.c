@@ -1,6 +1,7 @@
 #include "compress.h"
 #include "agent/tokenizer.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -195,11 +196,10 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	struct message_list *cur = *head;
 	struct message_list *split = NULL;
 	int idx = 0;
-	size_t text_cap = 8192;
-	size_t text_len = 0;
-	char *text = malloc(text_cap);
-	if (!text) return -ENOMEM;
-	text[0] = '\0';
+	morph_buf_t text_buf;
+	int text_ok = morph_buf_init(&text_buf, 8192);
+	if (text_ok != 0)
+		return text_ok;
 
 	while (cur && idx < to_summarize) {
 		if (is_system_role(cur) || cur->compressed) {
@@ -208,29 +208,24 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 			cur = cur->next;
 			continue;
 		}
-		size_t needed = strlen(cur->content) + 32;
-		if (text_len + needed > text_cap) {
-			while (text_cap < text_len + needed)
-				text_cap *= 2;
-			char *new_t = realloc(text, text_cap);
-			if (!new_t) { free(text); return -ENOMEM; }
-			text = new_t;
+		if (morph_buf_printf(&text_buf, "[%s]: %s\n",
+				     cur->role, cur->content) != 0) {
+			morph_buf_cleanup(&text_buf);
+			MORPH_RETURN(-ENOMEM);
 		}
-		text_len += snprintf(text + text_len, text_cap - text_len,
-				     "[%s]: %s\n", cur->role, cur->content);
 		split = cur;
 		idx++;
 		cur = cur->next;
 	}
 
-	if (text_len == 0) {
-		free(text);
+	if (text_buf.len == 0) {
+		morph_buf_cleanup(&text_buf);
 		return 0;
 	}
 
 	char *summary = NULL;
-	int rc = fn(text, fn_user, &summary);
-	free(text);
+	int rc = fn(morph_buf_cstr(&text_buf), fn_user, &summary);
+	morph_buf_cleanup(&text_buf);
 	if (rc < 0 || !summary)
 		return rc;
 

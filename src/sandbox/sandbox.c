@@ -1,4 +1,5 @@
 #include "sandbox.h"
+#include "util/array.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdio.h>
@@ -682,46 +683,16 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 #define SECCOMP_ARCH_NR AUDIT_ARCH_X86_64
 #endif
 
-struct filter_builder {
-	struct sock_filter *insns;
-	size_t count;
-	size_t cap;
-};
-
-static int fb_init(struct filter_builder *fb, size_t initial_cap)
+static int fb_append(morph_array_t *fb, struct sock_filter insn)
 {
-	fb->insns = calloc(initial_cap, sizeof(struct sock_filter));
-	if (!fb->insns)
+	struct sock_filter *slot = morph_array_push(fb);
+	if (!slot)
 		return -ENOMEM;
-	fb->count = 0;
-	fb->cap = initial_cap;
+	*slot = insn;
 	return 0;
 }
 
-static void fb_free(struct filter_builder *fb)
-{
-	free(fb->insns);
-	fb->insns = NULL;
-	fb->count = 0;
-	fb->cap = 0;
-}
-
-static int fb_append(struct filter_builder *fb, struct sock_filter insn)
-{
-	if (fb->count >= fb->cap) {
-		size_t new_cap = fb->cap * 2;
-		struct sock_filter *new_insns =
-			realloc(fb->insns, new_cap * sizeof(*new_insns));
-		if (!new_insns)
-			return -ENOMEM;
-		fb->insns = new_insns;
-		fb->cap = new_cap;
-	}
-	fb->insns[fb->count++] = insn;
-	return 0;
-}
-
-static int fb_allow(struct filter_builder *fb, int nr)
+static int fb_allow(morph_array_t *fb, int nr)
 {
 	int rc;
 	rc = fb_append(fb, (struct sock_filter)BPF_JUMP(
@@ -735,10 +706,10 @@ static int fb_allow(struct filter_builder *fb, int nr)
 
 int sandbox_apply_seccomp(unsigned int permissions)
 {
-	struct filter_builder fb;
+	morph_array_t fb;
 	int rc;
 
-	rc = fb_init(&fb, 128);
+	rc = morph_array_init(&fb, 128, sizeof(struct sock_filter));
 	if (rc < 0)
 		return rc;
 
@@ -1203,8 +1174,8 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	}
 
 	struct sock_fprog prog;
-	prog.len = (unsigned short)fb.count;
-	prog.filter = fb.insns;
+	prog.len = (unsigned short)fb.nelts;
+	prog.filter = fb.elts;
 
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
 		log_err("sandbox: SECCOMP_MODE_FILTER failed: %s",
@@ -1214,12 +1185,12 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	}
 
 	log_info("sandbox: seccomp-bpf filter installed (%zu instructions, "
-		 "perms=0x%x)", fb.count, permissions);
-	fb_free(&fb);
+		 "perms=0x%x)", fb.nelts, permissions);
+	morph_array_cleanup(&fb);
 	return 0;
 
 fail:
-	fb_free(&fb);
+	morph_array_cleanup(&fb);
 	return rc;
 }
 

@@ -12,6 +12,7 @@
 #include <sqlite3.h>
 
 #include "session.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "security.h"
 #include "cJSON.h"
@@ -708,10 +709,13 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 
-	size_t cap = 1024, len = 0;
-	char *buf = malloc(cap);
-	if (!buf) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
-	len += (size_t)snprintf(buf + len, cap - len, "{\"items\":[");
+	morph_buf_t buf;
+	if (morph_buf_init(&buf, 1024) < 0) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+	if (morph_buf_puts(&buf, "{\"items\":[") != 0) {
+		morph_buf_cleanup(&buf);
+		sqlite3_finalize(st);
+		MORPH_RETURN(-ENOMEM);
+	}
 
 	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
@@ -721,29 +725,24 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 		int64_t ca = sqlite3_column_int64(st, 3);
 		int64_t ua = sqlite3_column_int64(st, 4);
 
-		while (cap - len < 512) {
-			cap *= 2;
-			char *tmp = realloc(buf, cap);
-			if (!tmp) { free(buf); sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
-			buf = tmp;
-		}
-		len += (size_t)snprintf(buf + len, cap - len,
+		if (morph_buf_printf(&buf,
 			"%s{\"id\":\"%s\",\"name\":\"%s\",\"model\":\"%s\","
 			"\"created_at\":%lld,\"updated_at\":%lld}",
 			first ? "" : ",",
 			id ? id : "", name ? name : "", model ? model : "",
-			(long long)ca, (long long)ua);
+			(long long)ca, (long long)ua) != 0) {
+			morph_buf_cleanup(&buf);
+			sqlite3_finalize(st);
+			MORPH_RETURN(-ENOMEM);
+		}
 		first = 0;
 	}
 	sqlite3_finalize(st);
-	while (cap - len < 4) {
-		cap *= 2;
-		char *tmp = realloc(buf, cap);
-		if (!tmp) { free(buf); MORPH_RETURN(-ENOMEM); }
-		buf = tmp;
+	if (morph_buf_puts(&buf, "]}") != 0) {
+		morph_buf_cleanup(&buf);
+		MORPH_RETURN(-ENOMEM);
 	}
-	len += (size_t)snprintf(buf + len, cap - len, "]}");
-	*out_json = buf;
+	*out_json = morph_buf_detach(&buf);
 	return 0;
 }
 
@@ -967,18 +966,15 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
-	size_t cap = 2048, len = 0;
-	char *buf = malloc(cap);
-	if (!buf) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
-	len += (size_t)snprintf(buf + len, cap - len, "{\"nodes\":[");
+	morph_buf_t buf;
+	if (morph_buf_init(&buf, 2048) < 0) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+	if (morph_buf_puts(&buf, "{\"nodes\":[") != 0) {
+		morph_buf_cleanup(&buf);
+		sqlite3_finalize(st);
+		MORPH_RETURN(-ENOMEM);
+	}
 	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
-		while (cap - len < 1024) {
-			cap *= 2;
-			char *tmp = realloc(buf, cap);
-			if (!tmp) { free(buf); sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
-			buf = tmp;
-		}
 		const char *id     = (const char *)sqlite3_column_text(st, 0);
 		const char *parent = (const char *)sqlite3_column_text(st, 1);
 		const char *kind   = (const char *)sqlite3_column_text(st, 2);
@@ -989,7 +985,7 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 		const char *cref = (const char *)sqlite3_column_text(st, 7);
 		const char *meta = (const char *)sqlite3_column_text(st, 8);
 		int64_t up = sqlite3_column_int64(st, 9);
-		len += (size_t)snprintf(buf + len, cap - len,
+		if (morph_buf_printf(&buf,
 			"%s{\"id\":\"%s\",\"parent\":%s%s%s,\"kind\":\"%s\","
 			"\"x\":%g,\"y\":%g,\"w\":%g,\"h\":%g,"
 			"\"content_ref\":%s%s%s,\"meta\":%s,\"updated_at\":%lld}",
@@ -1000,18 +996,19 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 			x, y, w, h,
 			cref ? "\"" : "", cref ? cref : "null", cref ? "\"" : "",
 			meta && *meta ? meta : "null",
-			(long long)up);
+			(long long)up) != 0) {
+			morph_buf_cleanup(&buf);
+			sqlite3_finalize(st);
+			MORPH_RETURN(-ENOMEM);
+		}
 		first = 0;
 	}
 	sqlite3_finalize(st);
-	while (cap - len < 4) {
-		cap *= 2;
-		char *tmp = realloc(buf, cap);
-		if (!tmp) { free(buf); MORPH_RETURN(-ENOMEM); }
-		buf = tmp;
+	if (morph_buf_puts(&buf, "]}") != 0) {
+		morph_buf_cleanup(&buf);
+		MORPH_RETURN(-ENOMEM);
 	}
-	len += (size_t)snprintf(buf + len, cap - len, "]}");
-	*out_json = buf;
+	*out_json = morph_buf_detach(&buf);
 	return 0;
 }
 

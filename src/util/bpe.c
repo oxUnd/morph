@@ -1,4 +1,5 @@
 #include "bpe.h"
+#include "buf.h"
 #include "log.h"
 #include "utf8.h"
 #include <errno.h>
@@ -17,7 +18,7 @@
 #define RANK_DELETED  (-2)
 
 struct ht_entry {
-	const unsigned char *key;
+	uint32_t key_off;
 	uint16_t key_len;
 	int32_t rank;
 };
@@ -27,9 +28,7 @@ struct bpe_encoder {
 	uint32_t ht_cap;
 	uint32_t ht_mask;
 	uint32_t ht_count;
-	unsigned char *key_pool;
-	uint32_t key_pool_len;
-	uint32_t key_pool_cap;
+	morph_buf_t key_pool;
 	enum bpe_encoding encoding;
 };
 
@@ -51,21 +50,23 @@ static uint32_t ht_next_cap(uint32_t min_slots)
 	return cap;
 }
 
-static void ht_insert(struct bpe_encoder *enc,
-		      const unsigned char *key, uint16_t key_len, int32_t rank)
+static void ht_insert(struct bpe_encoder *enc, uint32_t key_off,
+		      uint16_t key_len, int32_t rank)
 {
+	const unsigned char *key = (unsigned char *)enc->key_pool.data + key_off;
 	uint32_t idx = fnv1a(key, key_len) & enc->ht_mask;
 	for (;;) {
 		struct ht_entry *e = &enc->ht[idx];
 		if (e->rank == RANK_EMPTY || e->rank == RANK_DELETED) {
-			e->key = key;
+			e->key_off = key_off;
 			e->key_len = key_len;
 			e->rank = rank;
 			enc->ht_count++;
 			return;
 		}
 		if (e->key_len == key_len &&
-		    memcmp(e->key, key, key_len) == 0) {
+		    memcmp((unsigned char *)enc->key_pool.data + e->key_off,
+			   key, key_len) == 0) {
 			e->rank = rank;
 			return;
 		}
@@ -83,7 +84,8 @@ static int32_t ht_lookup(const struct bpe_encoder *enc,
 			return RANK_EMPTY;
 		if (e->rank != RANK_DELETED &&
 		    e->key_len == key_len &&
-		    memcmp(e->key, key, key_len) == 0)
+		    memcmp((unsigned char *)enc->key_pool.data + e->key_off,
+			   key, key_len) == 0)
 			return e->rank;
 		idx = (idx + 1) & enc->ht_mask;
 	}
@@ -178,25 +180,17 @@ static int load_vocab(struct bpe_encoder *enc, const char *path)
 		if (rank_val < 0)
 			continue;
 
-		if (enc->key_pool_len + decoded_len > enc->key_pool_cap) {
-			uint32_t new_cap = enc->key_pool_cap;
-			if (new_cap == 0) new_cap = 1024 * 1024;
-			while (new_cap < enc->key_pool_len + decoded_len)
-				new_cap *= 2;
-			unsigned char *new_pool = realloc(enc->key_pool, new_cap);
-			if (!new_pool) {
-				fclose(fp);
-				return -ENOMEM;
-			}
-			enc->key_pool = new_pool;
-			enc->key_pool_cap = new_cap;
+		if (enc->key_pool.len > UINT32_MAX - decoded_len) {
+			fclose(fp);
+			return -EOVERFLOW;
+		}
+		if (morph_buf_append(&enc->key_pool, (const char *)decoded,
+				     decoded_len) < 0) {
+			fclose(fp);
+			return -ENOMEM;
 		}
 
-		uint32_t offset = enc->key_pool_len;
-		memcpy(enc->key_pool + offset, decoded, decoded_len);
-		enc->key_pool_len += (uint32_t)decoded_len;
-
-		ht_insert(enc, enc->key_pool + offset,
+		ht_insert(enc, (uint32_t)(enc->key_pool.len - decoded_len),
 			  (uint16_t)decoded_len, (int32_t)rank_val);
 		count++;
 	}
@@ -1077,10 +1071,15 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 	for (uint32_t i = 0; i < enc->ht_cap; i++)
 		enc->ht[i].rank = RANK_EMPTY;
 
+	if (morph_buf_init(&enc->key_pool, 1024 * 1024) < 0) {
+		free(enc->ht);
+		free(enc);
+		return NULL;
+	}
 	int rc = load_vocab(enc, found_path);
 	if (rc < 0) {
 		free(enc->ht);
-		free(enc->key_pool);
+		morph_buf_cleanup(&enc->key_pool);
 		free(enc);
 		return NULL;
 	}
@@ -1092,7 +1091,7 @@ void bpe_encoder_destroy(struct bpe_encoder *enc)
 {
 	if (!enc) return;
 	free(enc->ht);
-	free(enc->key_pool);
+	morph_buf_cleanup(&enc->key_pool);
 	free(enc);
 }
 
