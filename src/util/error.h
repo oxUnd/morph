@@ -28,6 +28,9 @@ enum morph_error {
 };
 
 const char *morph_strerror(morph_err_t err);
+const char *morph_errname(morph_err_t err);
+int morph_err_is_errno(morph_err_t err);
+int morph_err_is_domain(morph_err_t err);
 
 #ifdef DEBUG
 #include "log.h"
@@ -52,6 +55,22 @@ const char *morph_strerror(morph_err_t err);
 #define MORPH_RETURN(code) return (code)
 #define MORPH_SET_ERR(var, code) ((var) = (code))
 #endif
+
+#define MORPH_RETURN_ERRNO()                                            \
+	do {                                                            \
+		int _err_ = errno;                                      \
+		if (_err_ == 0)                                        \
+			_err_ = EIO;                                   \
+		MORPH_RETURN(-_err_);                                  \
+	} while (0)
+
+#define MORPH_SET_ERRNO(var)                                            \
+	do {                                                            \
+		int _err_ = errno;                                      \
+		if (_err_ == 0)                                        \
+			_err_ = EIO;                                   \
+		MORPH_SET_ERR((var), -_err_);                          \
+	} while (0)
 
 #ifdef __cplusplus
 }

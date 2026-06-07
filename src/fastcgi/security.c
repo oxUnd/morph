@@ -243,7 +243,7 @@ static int random_bytes(unsigned char *buf, size_t len)
 #else
 	int fd = open("/dev/urandom", O_RDONLY);
 	if (fd < 0)
-		MORPH_RETURN(-errno);
+		MORPH_RETURN_ERRNO();
 	size_t off = 0;
 	while (off < len) {
 		ssize_t rd = read(fd, buf + off, len - off);

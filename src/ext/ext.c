@@ -148,25 +148,28 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		if (pipe(stdin_pipe) < 0) {
 			log_err("ext_run: pipe failed");
-			MORPH_RETURN(-errno);
+			MORPH_RETURN_ERRNO();
 		}
 		if (pipe(stdout_pipe) < 0) {
+			int err = errno;
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			log_err("ext_run: pipe failed");
-			MORPH_RETURN(-errno);
+			MORPH_RETURN(-err);
 		}
 		if (pipe(stderr_pipe) < 0) {
+			int err = errno;
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
 			log_err("ext_run: pipe failed");
-			MORPH_RETURN(-errno);
+			MORPH_RETURN(-err);
 		}
 
 		pid_t pid = fork();
 		if (pid < 0) {
+			int err = errno;
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
@@ -174,7 +177,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stderr_pipe[0]);
 			close(stderr_pipe[1]);
 			log_err("ext_run: fork failed");
-			MORPH_RETURN(-errno);
+			MORPH_RETURN(-err);
 		}
 
 		if (pid == 0) {

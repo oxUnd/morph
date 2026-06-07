@@ -1,5 +1,6 @@
 #include "file.h"
 #include "array.h"
+#include "error.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ int file_write_all(const char *path, const char *data, size_t len)
 {
 	FILE *f = fopen(path, "wb");
 	if (!f)
-		return -errno;
+		MORPH_RETURN_ERRNO();
 	if (len > 0 && fwrite(data, 1, len, f) != len) {
 		fclose(f);
 		return -EIO;
@@ -58,12 +59,12 @@ int file_ensure_dir(const char *path)
 		if (*p == '/') {
 			*p = '\0';
 			if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-				return -errno;
+				MORPH_RETURN_ERRNO();
 			*p = '/';
 		}
 	}
 	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-		return -errno;
+		MORPH_RETURN_ERRNO();
 	return 0;
 }
 

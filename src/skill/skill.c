@@ -66,8 +66,9 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 
 	DIR *dir = opendir(expanded);
 	if (!dir) {
+		int err = errno;
 		free(expanded);
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 
 	int discovered = 0;

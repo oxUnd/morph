@@ -4,6 +4,7 @@ find_package(Threads REQUIRED)
 
 set(TEST_SOURCES
 	test_arena.cpp
+	test_error.cpp
 	test_log.cpp
 	test_file.cpp
 	test_database.cpp

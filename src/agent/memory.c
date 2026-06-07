@@ -2284,9 +2284,10 @@ static int memory_async_ensure_worker(void)
 	pthread_mutex_lock(&g_async_lock);
 	if (!g_async_running) {
 		g_async_stop = 0;
-		if (pthread_create(&g_async_thread, NULL,
-				   memory_async_worker, NULL) != 0)
-			rc = -errno;
+		int err = pthread_create(&g_async_thread, NULL,
+					 memory_async_worker, NULL);
+		if (err != 0)
+			rc = -err;
 		else
 			g_async_running = 1;
 	}

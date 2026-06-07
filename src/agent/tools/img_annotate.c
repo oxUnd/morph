@@ -202,12 +202,13 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	}
 
 	if (pipe(pipefd) < 0) {
+		int err = errno;
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
 		*result_json = strdup(
 			"{\"error\":\"pipe() failed\"}");
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 
 	if (g_pause_fn)
@@ -218,6 +219,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 
 	pid = fork();
 	if (pid < 0) {
+		int err = errno;
 		close(pipefd[0]);
 		close(pipefd[1]);
 		if (g_resume_fn)
@@ -227,7 +229,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			free(paths[i]);
 		*result_json = strdup(
 			"{\"error\":\"fork() failed\"}");
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 
 	if (pid == 0) {
@@ -595,7 +597,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
 			*result_json = tmp_str;
-			MORPH_RETURN(-MORPH_ERR_PARSE);
+			MORPH_RETURN(MORPH_ERR_PARSE);
 		}
 	}
 

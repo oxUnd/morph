@@ -1,5 +1,6 @@
 #include "bpe.h"
 #include "buf.h"
+#include "error.h"
 #include "log.h"
 #include "utf8.h"
 #include <errno.h>
@@ -146,8 +147,9 @@ static int load_vocab(struct bpe_encoder *enc, const char *path)
 {
 	FILE *fp = fopen(path, "r");
 	if (!fp) {
-		log_err("bpe: cannot open vocab: %s: %s", path, strerror(errno));
-		return -errno;
+		int err = errno;
+		log_err("bpe: cannot open vocab: %s: %s", path, strerror(err));
+		MORPH_RETURN(-err);
 	}
 
 	char line[1024];

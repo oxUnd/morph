@@ -1,5 +1,6 @@
 #include "mcp/mcp.h"
 #include "cJSON.h"
+#include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdio.h>
@@ -148,17 +149,25 @@ int mcp_stdio_connect(struct mcp_client *client)
 		return -EINVAL;
 
 	int to_child[2], from_child[2];
-	if (pipe(to_child) < 0 || pipe(from_child) < 0) {
+	if (pipe(to_child) < 0) {
 		log_err("mcp stdio: pipe failed: %s", strerror(errno));
-		return -errno;
+		MORPH_RETURN_ERRNO();
+	}
+	if (pipe(from_child) < 0) {
+		int err = errno;
+		log_err("mcp stdio: pipe failed: %s", strerror(err));
+		close(to_child[0]);
+		close(to_child[1]);
+		MORPH_RETURN(-err);
 	}
 
 	pid_t pid = fork();
 	if (pid < 0) {
-		log_err("mcp stdio: fork failed: %s", strerror(errno));
+		int err = errno;
+		log_err("mcp stdio: fork failed: %s", strerror(err));
 		close(to_child[0]); close(to_child[1]);
 		close(from_child[0]); close(from_child[1]);
-		return -errno;
+		MORPH_RETURN(-err);
 	}
 
 	if (pid == 0) {

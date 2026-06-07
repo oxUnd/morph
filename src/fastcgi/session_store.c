@@ -1065,7 +1065,7 @@ static int ensure_sess_dir(void)
 	if (stat(SESS_DIR, &st) == 0 && S_ISDIR(st.st_mode))
 		return 0;
 	if (mkdir(SESS_DIR, 0700) != 0 && errno != EEXIST)
-		MORPH_RETURN(-errno);
+		MORPH_RETURN_ERRNO();
 	return 0;
 }
 
@@ -1099,7 +1099,11 @@ int login_token_create(const char *user_id, const char *username,
 
 	snprintf(path, sizeof(path), "%s/%s.json", SESS_DIR, token);
 	fp = fopen(path, "wx");
-	if (!fp) { free(json); MORPH_RETURN(-errno); }
+	if (!fp) {
+		int err = errno;
+		free(json);
+		MORPH_RETURN(-err);
+	}
 	fwrite(json, 1, strlen(json), fp);
 	fclose(fp);
 	free(json);

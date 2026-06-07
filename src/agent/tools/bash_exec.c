@@ -143,7 +143,7 @@ static int read_pipes_with_timeout(int out_fd, int err_fd,
 		if (rc < 0) {
 			if (errno == EINTR)
 				continue;
-			MORPH_RETURN(-errno);
+			MORPH_RETURN_ERRNO();
 		}
 		if (rc == 0) {
 			*timed_out = 1;
@@ -256,18 +256,20 @@ static int bash_exec_run(const char *args_json, char **result_json,
 
 	int out_pipe[2], err_pipe[2];
 	if (pipe(out_pipe) < 0) {
+		int err = errno;
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"pipe() failed\"}");
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 	if (pipe(err_pipe) < 0) {
+		int err = errno;
 		close(out_pipe[0]);
 		close(out_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"pipe() failed\"}");
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 
 	log_info("bash_exec: running '%s' (cwd=%s, timeout=%ds)",
@@ -275,12 +277,13 @@ static int bash_exec_run(const char *args_json, char **result_json,
 
 	pid_t pid = fork();
 	if (pid < 0) {
+		int err = errno;
 		close(out_pipe[0]); close(out_pipe[1]);
 		close(err_pipe[0]); close(err_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
 		*result_json = strdup("{\"error\":\"fork() failed\"}");
-		MORPH_RETURN(-errno);
+		MORPH_RETURN(-err);
 	}
 
 	if (pid == 0) {

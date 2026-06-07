@@ -1,5 +1,6 @@
 #include "sandbox.h"
 #include "util/array.h"
+#include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdio.h>
@@ -287,9 +288,10 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			log_err("sandbox: landlock not supported by kernel");
 			return -ENOSYS;
 		}
+		int err = errno;
 		log_err("sandbox: landlock probe failed: %s",
-			strerror(errno));
-		return -errno;
+			strerror(err));
+		MORPH_RETURN(-err);
 	}
 	close(probe_fd);
 
@@ -352,9 +354,10 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 
 	int ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0) {
+		int err = errno;
 		log_err("sandbox: landlock create_ruleset failed: %s",
-			 strerror(errno));
-		return -errno;
+			 strerror(err));
+		MORPH_RETURN(-err);
 	}
 
 	/*
@@ -435,17 +438,19 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	 * here first since landlock comes before seccomp in sandbox_enter().
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+		int err = errno;
 		log_err("sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s",
-			 strerror(errno));
+			 strerror(err));
 		close(ruleset_fd);
-		return -errno;
+		MORPH_RETURN(-err);
 	}
 
 	if (ll_restrict_self(ruleset_fd) < 0) {
+		int err = errno;
 		log_err("sandbox: landlock: restrict_self failed: %s",
-			 strerror(errno));
+			 strerror(err));
 		close(ruleset_fd);
-		return -errno;
+		MORPH_RETURN(-err);
 	}
 
 	close(ruleset_fd);
@@ -1167,9 +1172,10 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	 * sandbox_apply_fs (landlock). Setting it again is harmless.
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+		int err = errno;
 		log_err("sandbox: PR_SET_NO_NEW_PRIVS failed: %s",
-			strerror(errno));
-		rc = -errno;
+			strerror(err));
+		rc = -err;
 		goto fail;
 	}
 
@@ -1178,9 +1184,10 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	prog.filter = fb.elts;
 
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
+		int err = errno;
 		log_err("sandbox: SECCOMP_MODE_FILTER failed: %s",
-			strerror(errno));
-		rc = -errno;
+			strerror(err));
+		rc = -err;
 		goto fail;
 	}
 

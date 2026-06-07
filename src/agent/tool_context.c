@@ -395,7 +395,7 @@ int tool_context_allow_command_scope(struct tool_context *tctx, const char *path
 		stored = "*";
 	} else {
 		if (!realpath(path, resolved))
-			MORPH_RETURN(-errno);
+			MORPH_RETURN_ERRNO();
 		stored = resolved;
 	}
 	for (int i = 0; i < tctx->exec_allowed_dirs_count; i++) {

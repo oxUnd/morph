@@ -1,4 +1,5 @@
 #include "video.h"
+#include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -36,9 +37,10 @@ int video_play(const char *path, const char *mpv_args)
 
 	pid_t pid = fork();
 	if (pid < 0) {
+		int err = errno;
 		log_err("video_play: fork failed");
 		free(buf);
-		return -errno;
+		MORPH_RETURN(-err);
 	}
 
 	if (pid == 0) {
