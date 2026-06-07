@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "image_gen.h"
 #include "models/llm.h"
 #include "util/log.h"
@@ -12,6 +13,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -213,7 +215,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	if (img) {
 		result->width = w;
 		result->height = h;
-		free(img);
+		stbi_image_free(img);
 	}
 	log_dbg("image generated: %s (%dx%d)", out_path, result->width, result->height);
 	cJSON_Delete(root);

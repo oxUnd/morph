@@ -65,6 +65,7 @@ struct turn_job {
 		int64_t size_bytes;
 	} artifacts[32];
 	int artifacts_count;
+	int final_sent;
 };
 
 static const char *bridge_output_dir(void)
@@ -164,6 +165,7 @@ static struct turn_artifact *turn_artifact_get(struct turn_job *j,
 	struct stat st;
 	const char *filename;
 	struct turn_artifact *a;
+	char artifact_id[64];
 
 	if (!j || !path || !kind)
 		return NULL;
@@ -196,15 +198,17 @@ static struct turn_artifact *turn_artifact_get(struct turn_job *j,
 	snprintf(a->path, sizeof(a->path), "%s", real);
 	snprintf(a->kind, sizeof(a->kind), "%s", kind);
 	snprintf(a->mime, sizeof(a->mime), "%s", artifact_mime(kind, real));
-	snprintf(a->filename, sizeof(a->filename), "%s", filename);
+	snprintf(a->filename, sizeof(a->filename), "%.*s",
+		 (int)sizeof(a->filename) - 1, filename);
 	a->size_bytes = st.st_size;
 	if (store_artifact_register(j->store, j->user_id, j->session_id,
 				    a->kind, a->mime, a->filename, rel,
-				    st.st_size, a->id) != 0) {
+				    st.st_size, artifact_id) != 0) {
 		memset(a, 0, sizeof(*a));
 		return NULL;
 	}
-	snprintf(a->url, sizeof(a->url), "/api/artifacts/%s", a->id);
+	snprintf(a->id, sizeof(a->id), "%s", artifact_id);
+	snprintf(a->url, sizeof(a->url), "/api/artifacts/%s", artifact_id);
 	j->artifacts_count++;
 	artifact_publish_ready(j, a);
 	return a;
@@ -365,34 +369,27 @@ static void html_attr_escape(const char *src, char *dst, size_t dst_size)
 }
 
 static int append_artifact_tag(char **buf, size_t *len, size_t *cap,
-			       const struct turn_artifact *a,
-			       const char *session_id)
+			       const struct turn_artifact *a)
 {
 	char tag[1400];
 	char filename[512];
 	char url[256];
-	char gallery_id[64];
 
 	if (!a)
 		return -EINVAL;
 	html_attr_escape(a->filename, filename, sizeof(filename));
 	html_attr_escape(a->url, url, sizeof(url));
 	if (strcmp(a->kind, "image") == 0) {
-		snprintf(gallery_id, sizeof(gallery_id), "s%s",
-			 session_id ? session_id : "0");
 		snprintf(tag, sizeof(tag),
-			 "<a class=\"glightbox\" data-gallery=\"%s\""
-			 " href=\"%s\">"
+			 "<a href=\"%s\">"
 			 "<img data-src=\"%s\" alt=\"%s\" loading=\"lazy\">"
 			 "</a>",
-			 gallery_id, url, url, filename);
+			 url, url, filename);
 	} else {
 		snprintf(tag, sizeof(tag),
-			 "<a class=\"glightbox\" data-type=\"video\""
-			 " href=\"%s\">"
+			 "<a href=\"%s\">"
 			 "<video data-src=\"%s\" controls preload=\"metadata\""
-			 " style=\"pointer-events:none\">"
-			 "</video></a>",
+			 "></video></a>",
 			 url, url);
 	}
 	return append_str(buf, len, cap, tag);
@@ -430,8 +427,7 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 			if (start) {
 				append_mem(&out, &len, &cap, text,
 					   (size_t)(start - text));
-				append_artifact_tag(&out, &len, &cap, a,
-						    j->session_id);
+				append_artifact_tag(&out, &len, &cap, a);
 				append_str(&out, &len, &cap,
 					   start + strlen(generated_path));
 				return out ? out : strdup(text);
@@ -472,12 +468,35 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 			append_mem(&out, &len, &cap, start, raw_len);
 			continue;
 		}
-		append_artifact_tag(&out, &len, &cap, a, j->session_id);
+		append_artifact_tag(&out, &len, &cap, a);
 		if (strlen(token) < raw_len)
 			append_mem(&out, &len, &cap, start + strlen(token),
 				   raw_len - strlen(token));
 	}
 	return out ? out : strdup(text);
+}
+
+static char *render_artifact_summary(struct turn_job *j)
+{
+	char *out = NULL;
+	size_t len = 0;
+	size_t cap = 0;
+	char line[256];
+
+	if (!j || j->artifacts_count <= 0)
+		return NULL;
+	append_str(&out, &len, &cap,
+		   "Generation stopped after reaching the iteration limit, "
+		   "but these artifacts were created:\n\n");
+	for (int i = 0; i < j->artifacts_count; i++) {
+		struct turn_artifact *a = &j->artifacts[i];
+		snprintf(line, sizeof(line), "%d. `%s`\n\n", i + 1,
+			 a->path);
+		append_str(&out, &len, &cap, line);
+		append_artifact_tag(&out, &len, &cap, a);
+		append_str(&out, &len, &cap, "\n\n");
+	}
+	return out;
 }
 
 static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u) {
@@ -487,6 +506,8 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 
 	switch (step_type) {
 	case 0: /* REACT_STEP_THOUGHT */
+		if (!*payload_json)
+			return 0;
 		event_sink_thought(j->store, j->session_id, payload_json);
 		return 0;
 
@@ -529,6 +550,8 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 		return 0;
 
 	case 3: /* REACT_STEP_REFLECTION — piggyback on thought schema */
+		if (!*payload_json)
+			return 0;
 		event_sink_thought(j->store, j->session_id, payload_json);
 		return 0;
 
@@ -537,6 +560,7 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 		char *rendered = render_media_refs(j, payload_json);
 		event_sink_final(j->store, j->session_id,
 				 rendered ? rendered : payload_json);
+		j->final_sent = 1;
 		free(rendered);
 		return 0;
 	}
@@ -601,6 +625,16 @@ static void *turn_thread(void *arg) {
 		free(json);
 	}
 	react_run(rctx, j->input ? j->input : "", bridge_cb, j);
+	if (!j->final_sent) {
+		char *fallback = render_artifact_summary(j);
+		if (!fallback && rctx->final_answer)
+			fallback = render_media_refs(j, rctx->final_answer);
+		if (fallback && *fallback) {
+			event_sink_final(j->store, j->session_id, fallback);
+			j->final_sent = 1;
+		}
+		free(fallback);
+	}
 
 	if (sess.id > 0) {
 		cJSON *arr = cJSON_CreateArray();

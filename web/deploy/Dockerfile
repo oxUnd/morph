@@ -29,7 +29,7 @@ RUN sed -i 's|deb.debian.org|mirrors.huaweicloud.com|g; s|security.debian.org|mi
     libfcgi0ldbl libsqlite3-0 libcurl4 libssl3 ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --home /home/morph --shell /usr/sbin/nologin morph \
- && mkdir -p /home/morph/.morph /var/lib/morph /var/lib/morph/log /var/www/morph /var/lib/nginx \
+ && mkdir -p /home/morph/.morph /var/lib/morph /var/lib/morph/log /var/lib/morph/output /var/www/morph /var/lib/nginx \
  && chown -R morph:morph /home/morph /var/lib/morph /var/lib/nginx /var/log/nginx
 
 COPY --from=build /src/build/src/fastcgi/morph-fastcgi /usr/local/bin/morph-fastcgi

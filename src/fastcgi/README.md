@@ -176,15 +176,20 @@ Examples in `web/deploy/`:
 ### Docker quick start
 
 ```bash
+# Build
 docker build -t morph-fastcgi -f web/deploy/Dockerfile .
 
-docker run -d --name morph -p 8080:80 \
+# Run (port 9000 → container 80)
+docker run -d --name morph -p 9000:80 \
   -v ~/.morph/config.toml:/home/morph/.morph/config.toml:ro \
   -v ~/.morph/skills:/home/morph/.morph/skills:ro \
   -v ~/.morph/exts:/home/morph/.morph/exts:ro \
   -v ~/.morph/output:/var/lib/morph/output \
   -v ~/.morph/log:/var/lib/morph/log \
   morph-fastcgi
+
+# Ensure the container user (uid 999) can write to output and log dirs
+chmod 777 ~/.morph/output ~/.morph/log
 ```
 
 Environment variables `MORPH_FCGI_CONFIG`, `MORPH_FCGI_OUTPUT_DIR`, and
