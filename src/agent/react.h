@@ -97,8 +97,8 @@ struct react_context {
 	int tool_fail_count;
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;
-	struct arena *arena;
-	struct arena *session;
+	struct arena *turn_arena;
+	struct arena *session_arena;
 	char *system_prompt;
 	char *memory_context;
 	struct skill_registry *skills;

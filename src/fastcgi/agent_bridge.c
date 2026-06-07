@@ -385,7 +385,7 @@ react_context_create_for_session(struct session_store *store,
 	while (cur) {
 		if (cur->role[0] && cur->content) {
 			struct message_list *ml = msg_list_create(
-				ctx->session, cur->role, cur->content, cur->token_count);
+				ctx->session_arena, cur->role, cur->content, cur->token_count);
 			if (ml) {
 				ml->compressed = cur->compressed;
 				msg_list_append(&ctx->messages, ml);

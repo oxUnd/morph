@@ -84,3 +84,56 @@ TEST_F(ArenaTest, CreateDefault) {
 	ASSERT_NE(a2, nullptr);
 	arena_destroy(a2);
 }
+
+static void cleanup_inc(void *data)
+{
+	int *value = static_cast<int *>(data);
+	(*value)++;
+}
+
+TEST_F(ArenaTest, CleanupRunsOnReset) {
+	int calls = 0;
+	struct arena_cleanup *cleanup = arena_cleanup_add(a, 0);
+	ASSERT_NE(cleanup, nullptr);
+	cleanup->handler = cleanup_inc;
+	cleanup->data = &calls;
+
+	arena_reset(a);
+	EXPECT_EQ(calls, 1);
+	EXPECT_EQ(a->cleanup, nullptr);
+}
+
+TEST_F(ArenaTest, CleanupRunsOnDestroy) {
+	struct arena *a2 = arena_create(1024);
+	ASSERT_NE(a2, nullptr);
+	int calls = 0;
+	struct arena_cleanup *cleanup = arena_cleanup_add(a2, 0);
+	ASSERT_NE(cleanup, nullptr);
+	cleanup->handler = cleanup_inc;
+	cleanup->data = &calls;
+
+	arena_destroy(a2);
+	EXPECT_EQ(calls, 1);
+}
+
+TEST_F(ArenaTest, CleanupDataAllocatedFromArena) {
+	struct arena_cleanup *cleanup = arena_cleanup_add(a, sizeof(int));
+	ASSERT_NE(cleanup, nullptr);
+	ASSERT_NE(cleanup->data, nullptr);
+	int *value = static_cast<int *>(cleanup->data);
+	*value = 41;
+	cleanup->handler = cleanup_inc;
+
+	arena_cleanup_run(a);
+	EXPECT_EQ(*value, 42);
+	EXPECT_EQ(a->cleanup, nullptr);
+}
+
+TEST_F(ArenaTest, LargeAllocTrackedSeparately) {
+	void *p = arena_alloc(a, 2048);
+	ASSERT_NE(p, nullptr);
+	ASSERT_NE(a->large, nullptr);
+	arena_reset(a);
+	EXPECT_EQ(a->large, nullptr);
+	EXPECT_EQ(a->used, (size_t)0);
+}

@@ -1,9 +1,11 @@
 #include "arena.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define ARENA_ALIGN sizeof(void *)
 #define ARENA_DEFAULT_SIZE (64 * 1024)
+#define ARENA_LARGE_RATIO 2
 
 static struct arena *arena_new_region(size_t cap)
 {
@@ -18,6 +20,8 @@ static struct arena *arena_new_region(size_t cap)
 	a->cap = cap;
 	a->used = 0;
 	a->next = NULL;
+	a->large = NULL;
+	a->cleanup = NULL;
 	return a;
 }
 
@@ -28,9 +32,48 @@ struct arena *arena_create(size_t cap)
 	return arena_new_region(cap);
 }
 
+static void arena_free_large(struct arena *a)
+{
+	struct arena_large *large;
+
+	if (!a)
+		return;
+
+	large = a->large;
+	while (large) {
+		struct arena_large *next = large->next;
+
+		free(large->ptr);
+		free(large);
+		large = next;
+	}
+	a->large = NULL;
+}
+
+void arena_cleanup_run(struct arena *a)
+{
+	struct arena_cleanup *cleanup;
+
+	if (!a)
+		return;
+
+	cleanup = a->cleanup;
+	while (cleanup) {
+		struct arena_cleanup *next = cleanup->next;
+
+		if (cleanup->handler)
+			cleanup->handler(cleanup->data);
+		cleanup = next;
+	}
+	a->cleanup = NULL;
+}
+
 void arena_destroy(struct arena *a)
 {
 	struct arena *cur = a;
+
+	arena_cleanup_run(a);
+	arena_free_large(a);
 	while (cur) {
 		struct arena *next = cur->next;
 		free(cur->buf);
@@ -44,10 +87,45 @@ static size_t align_up(size_t v, size_t align)
 	return (v + align - 1) & ~(align - 1);
 }
 
+static void *arena_alloc_large(struct arena *a, size_t size, size_t align)
+{
+	struct arena_large *large;
+	void *ptr;
+	size_t total;
+	uintptr_t aligned;
+
+	if (align == 0)
+		align = ARENA_ALIGN;
+
+	if (size > SIZE_MAX - align + 1)
+		return NULL;
+	total = size + align - 1;
+	ptr = malloc(total);
+	if (!ptr)
+		return NULL;
+
+	large = malloc(sizeof(*large));
+	if (!large) {
+		free(ptr);
+		return NULL;
+	}
+
+	aligned = (uintptr_t)ptr;
+	aligned = (uintptr_t)align_up((size_t)aligned, align);
+	large->ptr = ptr;
+	large->next = a->large;
+	a->large = large;
+	memset((void *)aligned, 0, size);
+	return (void *)aligned;
+}
+
 void *arena_alloc_aligned(struct arena *a, size_t size, size_t align)
 {
 	if (!a || size == 0)
 		return NULL;
+
+	if (align == 0)
+		align = ARENA_ALIGN;
 
 	size_t aligned_used = align_up(a->used, align);
 	size_t new_used = aligned_used + size;
@@ -60,16 +138,11 @@ void *arena_alloc_aligned(struct arena *a, size_t size, size_t align)
 	}
 
 	if (size + align > a->cap) {
-		struct arena *region = arena_new_region(align_up(size, ARENA_ALIGN) + align);
-		if (!region)
-			return NULL;
-		size_t region_aligned = align_up(0, align);
-		void *ptr = region->buf + region_aligned;
-		region->used = region_aligned + size;
-		region->next = a->next;
-		a->next = region;
-		memset(ptr, 0, size);
-		return ptr;
+		return arena_alloc_large(a, size, align);
+	}
+
+	if (size > a->cap / ARENA_LARGE_RATIO) {
+		return arena_alloc_large(a, size, align);
 	}
 
 	struct arena *region = arena_new_region(a->cap);
@@ -92,9 +165,13 @@ void *arena_alloc(struct arena *a, size_t size)
 
 void arena_reset(struct arena *a)
 {
+	struct arena *cur;
+
 	if (!a)
 		return;
-	struct arena *cur = a->next;
+	arena_cleanup_run(a);
+	arena_free_large(a);
+	cur = a->next;
 	while (cur) {
 		struct arena *next = cur->next;
 		free(cur->buf);
@@ -114,4 +191,24 @@ char *arena_strdup(struct arena *a, const char *s)
 	if (dst)
 		memcpy(dst, s, len);
 	return dst;
+}
+
+struct arena_cleanup *arena_cleanup_add(struct arena *a, size_t size)
+{
+	struct arena_cleanup *cleanup;
+
+	if (!a)
+		return NULL;
+
+	cleanup = arena_alloc(a, sizeof(*cleanup));
+	if (!cleanup)
+		return NULL;
+	if (size > 0) {
+		cleanup->data = arena_alloc(a, size);
+		if (!cleanup->data)
+			return NULL;
+	}
+	cleanup->next = a->cleanup;
+	a->cleanup = cleanup;
+	return cleanup;
 }

@@ -344,7 +344,7 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	struct collect_data cd = { .buf = malloc(8192), .len = 0, .cap = 8192 };
 	if (!cd.buf) return -ENOMEM;
 	cd.buf[0] = '\0';
-	int rc = llm->chat(llm, ctx->arena, sys, msgs, 1, collect_cb, &cd);
+	int rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, collect_cb, &cd);
 	if (rc < 0) {
 		free(cd.buf);
 		*out = strdup(text);
@@ -400,8 +400,14 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->guardrail_retry_count = 0;
 	ctx->state = REACT_STATE_INIT;
 	ctx->cancelled = 0;
-	ctx->arena = arena_create(0);
-	ctx->session = arena_create(0);
+	ctx->turn_arena = arena_create(0);
+	ctx->session_arena = arena_create(0);
+	if (!ctx->turn_arena || !ctx->session_arena) {
+		arena_destroy(ctx->turn_arena);
+		arena_destroy(ctx->session_arena);
+		free(ctx);
+		return NULL;
+	}
 	if (cfg)
 		ctx->compress = *cfg;
 	ctx->compress.summarize = summarize_cb;
@@ -433,9 +439,9 @@ void react_context_destroy(struct react_context *ctx)
 	free(ctx->system_prompt);
 	free(ctx->memory_context);
 	free(ctx->workdir);
-	arena_destroy(ctx->arena);
-	if (ctx->session)
-		arena_destroy(ctx->session);
+	arena_destroy(ctx->turn_arena);
+	if (ctx->session_arena)
+		arena_destroy(ctx->session_arena);
 	free(ctx);
 }
 
@@ -831,17 +837,17 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 				 "tool error: '%s' execution denied by user",
 				 tool_name);
 			size_t at_len = strlen(tool_name) + strlen(tool_args) + 4;
-			char *action_text = arena_alloc(ctx->arena, at_len);
+			char *action_text = arena_alloc(ctx->turn_arena, at_len);
 			if (action_text)
 				snprintf(action_text, at_len,
 					 "%s(%s)", tool_name, tool_args);
 			struct react_step *action = react_step_create(
-				ctx->arena, REACT_STEP_ACTION,
+				ctx->turn_arena, REACT_STEP_ACTION,
 				action_text ? action_text : "",
 				tool_name, tool_args, tc->id);
 			add_step(ctx, action);
 			struct react_step *obs = react_step_create(
-				ctx->arena, REACT_STEP_OBSERVATION,
+				ctx->turn_arena, REACT_STEP_OBSERVATION,
 				deny_msg, NULL, NULL, NULL);
 			add_step(ctx, obs);
 		}
@@ -874,8 +880,8 @@ static int react_track_tool_failure(struct react_context *ctx,
 		    strcmp(tool_args, ctx->tool_fail_args) == 0) {
 			ctx->tool_fail_count++;
 		} else {
-			ctx->tool_fail_name = arena_strdup(ctx->arena, tool_name);
-			ctx->tool_fail_args = arena_strdup(ctx->arena, tool_args);
+			ctx->tool_fail_name = arena_strdup(ctx->turn_arena, tool_name);
+			ctx->tool_fail_args = arena_strdup(ctx->turn_arena, tool_args);
 			ctx->tool_fail_count = 1;
 		}
 	} else {
@@ -892,7 +898,7 @@ static int react_track_tool_failure(struct react_context *ctx,
 	snprintf(fail_msg, sizeof(fail_msg),
 		 "Tool '%s' repeatedly failed. Please try a different approach.",
 		 fail_name);
-	struct react_step *final_step = react_step_create(ctx->arena,
+	struct react_step *final_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_FINAL, fail_msg, NULL, NULL, NULL);
 	add_step(ctx, final_step);
 	free(ctx->final_answer);
@@ -938,7 +944,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 		.proposed_answer = proposed,
 		.steps = ctx->steps,
 		.empty_round_count = ctx->empty_round_count,
-		.arena = ctx->arena,
+		.arena = ctx->turn_arena,
 	};
 	struct guardrail_result gr = guardrail_run_hook(
 		&ctx->guardrail, GUARDRAIL_HOOK_OUTPUT, &eval);
@@ -953,18 +959,18 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 		 gr.reason, ctx->guardrail_retry_count,
 		 ctx->guardrail.max_retries);
 
-	struct react_step *refl_step = react_step_create(ctx->arena,
+	struct react_step *refl_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_REFLECTION, gr.reason, NULL, NULL, NULL);
 	add_step(ctx, refl_step);
 	if (cb)
 		cb(REACT_STEP_REFLECTION, gr.reason, user_data);
 
-	if (messages_ensure_cap(msgs, msg_cap, *msg_count, 2, ctx->arena) < 0)
+	if (messages_ensure_cap(msgs, msg_cap, *msg_count, 2, ctx->turn_arena) < 0)
 		return -ENOMEM;
 
 	struct chat_message *asst_msg = &(*msgs)[*msg_count];
-	asst_msg->role = arena_strdup(ctx->arena, "assistant");
-	asst_msg->content = arena_strdup(ctx->arena, proposed);
+	asst_msg->role = arena_strdup(ctx->turn_arena, "assistant");
+	asst_msg->content = arena_strdup(ctx->turn_arena, proposed);
 	asst_msg->tool_call_id = NULL;
 	asst_msg->tool_calls = NULL;
 	asst_msg->tool_call_count = 0;
@@ -976,27 +982,27 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 		: "Try again using the available tools.";
 
 	size_t rev_cap = strlen(gr.reason) + strlen(action) + 64;
-	char *rev_msg = arena_alloc(ctx->arena, rev_cap);
+	char *rev_msg = arena_alloc(ctx->turn_arena, rev_cap);
 	if (rev_msg) {
 		snprintf(rev_msg, rev_cap,
 			 "Quality check failed: %s\n%s",
 			 gr.reason, action);
 	}
 	struct chat_message *user_msg = &(*msgs)[*msg_count];
-	user_msg->role = arena_strdup(ctx->arena, "user");
+	user_msg->role = arena_strdup(ctx->turn_arena, "user");
 	user_msg->content = rev_msg ? rev_msg :
-		arena_strdup(ctx->arena,
+		arena_strdup(ctx->turn_arena,
 			     "Please revise your answer using the available tools.");
 	user_msg->tool_call_id = NULL;
 	user_msg->tool_calls = NULL;
 	user_msg->tool_call_count = 0;
 	(*msg_count)++;
-	struct message_list *ml_asst = msg_list_create(ctx->session, "assistant", proposed,
+	struct message_list *ml_asst = msg_list_create(ctx->session_arena, "assistant", proposed,
 		tokenizer_count(ctx->tokenizer, proposed));
 	msg_list_append(&ctx->messages, ml_asst);
 	const char *rev_text = rev_msg ? rev_msg :
 		"Please revise your answer using the available tools.";
-	struct message_list *ml_user = msg_list_create(ctx->session, "user",
+	struct message_list *ml_user = msg_list_create(ctx->session_arena, "user",
 		rev_text, tokenizer_count(ctx->tokenizer, rev_text));
 	msg_list_append(&ctx->messages, ml_user);
 	return 1;
@@ -1022,14 +1028,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 	if (!ctx || !user_input)
 		return -EINVAL;
 	react_reset(ctx);
-	arena_reset(ctx->arena);
+	arena_reset(ctx->turn_arena);
 	ctx->state = REACT_STATE_THINKING;
 
 	if (ctx->guardrail.enabled) {
 		struct guardrail_eval_ctx eval = {
 			.user_input = user_input,
 			.steps = NULL,
-			.arena = ctx->arena,
+			.arena = ctx->turn_arena,
 		};
 		struct guardrail_result gr = guardrail_run_hook(
 			&ctx->guardrail, GUARDRAIL_HOOK_INPUT, &eval);
@@ -1041,7 +1047,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			char msg[1024];
 			snprintf(msg, sizeof(msg),
 				 "Input rejected: %s\n%s", gr.reason, action);
-			struct react_step *refl = react_step_create(ctx->arena,
+			struct react_step *refl = react_step_create(ctx->turn_arena,
 				REACT_STEP_REFLECTION, msg, NULL, NULL, NULL);
 			add_step(ctx, refl);
 			free(ctx->final_answer);
@@ -1051,14 +1057,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 	}
 
-	struct message_list *msg = msg_list_create(ctx->session, "user", user_input,
+	struct message_list *msg = msg_list_create(ctx->session_arena, "user", user_input,
 						  tokenizer_count(ctx->tokenizer, user_input));
 	msg_list_append(&ctx->messages, msg);
 
 	struct model *llm = (struct model *)ctx->llm_model;
 
 	if (!llm || !llm->api_key[0]) {
-		struct react_step *thought = react_step_create(ctx->arena,
+		struct react_step *thought = react_step_create(ctx->turn_arena,
 			REACT_STEP_THOUGHT, "Processing user input...", NULL, NULL, NULL);
 		add_step(ctx, thought);
 		if (cb)
@@ -1067,7 +1073,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		free(ctx->final_answer);
 		ctx->final_answer = strdup(user_input);
 
-		struct react_step *final_step = react_step_create(ctx->arena,
+		struct react_step *final_step = react_step_create(ctx->turn_arena,
 			REACT_STEP_FINAL, user_input, NULL, NULL, NULL);
 		add_step(ctx, final_step);
 		if (cb)
@@ -1077,7 +1083,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		return 0;
 	}
 
-	char *system_prompt = build_system_prompt(ctx, ctx->arena);
+	char *system_prompt = build_system_prompt(ctx, ctx->turn_arena);
 	if (!system_prompt) {
 		log_err("react_run: failed to build system prompt");
 		ctx->state = REACT_STATE_ABORT;
@@ -1088,7 +1094,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int active_tool_count = has_tools ? count_active_tools(ctx->tools) : 0;
 	struct tool_desc *active_tools = NULL;
 	if (active_tool_count > 0) {
-		active_tools = arena_alloc(ctx->arena, (size_t)active_tool_count * sizeof(*active_tools));
+		active_tools = arena_alloc(ctx->turn_arena, (size_t)active_tool_count * sizeof(*active_tools));
 		if (!active_tools) {
 			ctx->state = REACT_STATE_ABORT;
 			return -ENOMEM;
@@ -1098,7 +1104,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	int msg_cap = 64;
 	int msg_count = 0;
-	struct chat_message *messages = arena_alloc(ctx->arena, (size_t)msg_cap * sizeof(*messages));
+	struct chat_message *messages = arena_alloc(ctx->turn_arena, (size_t)msg_cap * sizeof(*messages));
 	if (!messages) {
 		ctx->state = REACT_STATE_ABORT;
 		return -ENOMEM;
@@ -1107,12 +1113,12 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	struct message_list *hist = ctx->messages;
 	while (hist) {
-		if (messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->arena) < 0) {
+		if (messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->turn_arena) < 0) {
 			ctx->state = REACT_STATE_ABORT;
 			return -ENOMEM;
 		}
-		messages[msg_count].role = arena_strdup(ctx->arena, hist->role);
-		messages[msg_count].content = hist->content ? arena_strdup(ctx->arena, hist->content) : arena_strdup(ctx->arena, "");
+		messages[msg_count].role = arena_strdup(ctx->turn_arena, hist->role);
+		messages[msg_count].content = hist->content ? arena_strdup(ctx->turn_arena, hist->content) : arena_strdup(ctx->turn_arena, "");
 		messages[msg_count].tool_call_id = NULL;
 		messages[msg_count].tool_calls = NULL;
 		messages[msg_count].tool_call_count = 0;
@@ -1157,7 +1163,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				ctx->compress.max_history_rounds,
 				ctx->compress.summarize,
 				ctx->compress.summarize_user_data,
-				ctx->session,
+				ctx->session_arena,
 				&cr);
 			log_info("auto-compress: detected+removed %d, summarized %d messages (%d -> %d tokens)",
 				 cr.messages_removed, cr.messages_summarized,
@@ -1174,8 +1180,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 			.user_cb = cb,
 			.user_data = user_data,
 			.cancelled = &ctx->cancelled,
-			.arena = ctx->arena,
-			.accumulated = arena_alloc(ctx->arena, 8192),
+			.arena = ctx->turn_arena,
+			.accumulated = arena_alloc(ctx->turn_arena, 8192),
 			.acc_len = 0,
 			.acc_cap = 8192,
 		};
@@ -1187,7 +1193,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		int status;
 
 		if (llm->chat_with_tools) {
-			status = llm->chat_with_tools(llm, ctx->arena, system_prompt,
+			status = llm->chat_with_tools(llm, ctx->turn_arena, system_prompt,
 						      messages, msg_count,
 						      active_tools, active_tool_count,
 						      &response,
@@ -1196,7 +1202,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			int hist_n = 0;
 			struct message_list *h = ctx->messages;
 			while (h) { hist_n++; h = h->next; }
-			const char **hist_msgs = arena_alloc(ctx->arena, (size_t)hist_n * sizeof(*hist_msgs));
+			const char **hist_msgs = arena_alloc(ctx->turn_arena, (size_t)hist_n * sizeof(*hist_msgs));
 			if (!hist_msgs && hist_n > 0) {
 				chat_response_free(&response);
 				ctx->state = REACT_STATE_ABORT;
@@ -1209,13 +1215,13 @@ int react_run(struct react_context *ctx, const char *user_input,
 					h = h->next;
 				}
 			}
-			status = llm->chat(llm, ctx->arena, system_prompt,
+			status = llm->chat(llm, ctx->turn_arena, system_prompt,
 					   hist_msgs, hist_n,
 					   react_stream_cb, &sd);
 			if (status >= 0 && sd.accumulated) {
 				response.content = sd.accumulated;
 				sd.accumulated = NULL;
-				response.arena = ctx->arena;
+				response.arena = ctx->turn_arena;
 			}
 		}
 
@@ -1227,7 +1233,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 		if (ctx->cancelled) {
 			log_info("react_run: cancelled during LLM call");
-			struct react_step *obs = react_step_create(ctx->arena,
+			struct react_step *obs = react_step_create(ctx->turn_arena,
 				REACT_STEP_OBSERVATION,
 				"LLM call interrupted by user", NULL, NULL, NULL);
 			add_step(ctx, obs);
@@ -1245,7 +1251,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			const char *err_content = "LLM call failed";
 			if (response.content && *response.content)
 				err_content = response.content;
-			struct react_step *err = react_step_create(ctx->arena,
+			struct react_step *err = react_step_create(ctx->turn_arena,
 				REACT_STEP_OBSERVATION, err_content, NULL, NULL, NULL);
 			add_step(ctx, err);
 			if (cb)
@@ -1265,7 +1271,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				 "LLM call timed out (took %lds, limit %ds)",
 				 (long)(llm_end - llm_start),
 				 ctx->step_timeout_seconds);
-			struct react_step *obs = react_step_create(ctx->arena,
+			struct react_step *obs = react_step_create(ctx->turn_arena,
 				REACT_STEP_OBSERVATION, timeout_msg, NULL, NULL, NULL);
 			add_step(ctx, obs);
 			if (cb)
@@ -1280,23 +1286,23 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 
 		if (response.content && *response.content) {
-			struct react_step *thought = react_step_create(ctx->arena,
+			struct react_step *thought = react_step_create(ctx->turn_arena,
 				REACT_STEP_THOUGHT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
 		}
 
 		if (response.tool_call_count > 0 && has_tools) {
-			if (messages_ensure_cap(&messages, &msg_cap, msg_count, 1 + response.tool_call_count, ctx->arena) < 0) {
+			if (messages_ensure_cap(&messages, &msg_cap, msg_count, 1 + response.tool_call_count, ctx->turn_arena) < 0) {
 				chat_response_free(&response);
 				ctx->state = REACT_STATE_ABORT;
 				break;
 			}
 
 			struct chat_message *asst_msg = &messages[msg_count];
-			asst_msg->role = arena_strdup(ctx->arena, "assistant");
+			asst_msg->role = arena_strdup(ctx->turn_arena, "assistant");
 			asst_msg->content = (response.content && *response.content)
-					     ? arena_strdup(ctx->arena, response.content) : NULL;
-			asst_msg->tool_calls = arena_alloc(ctx->arena, (size_t)response.tool_call_count * sizeof(*asst_msg->tool_calls));
+					     ? arena_strdup(ctx->turn_arena, response.content) : NULL;
+			asst_msg->tool_calls = arena_alloc(ctx->turn_arena, (size_t)response.tool_call_count * sizeof(*asst_msg->tool_calls));
 			if (!asst_msg->tool_calls) {
 				chat_response_free(&response);
 				ctx->state = REACT_STATE_ABORT;
@@ -1312,16 +1318,16 @@ int react_run(struct react_context *ctx, const char *user_input,
 				asst_msg->tool_calls[j].name[sizeof(asst_msg->tool_calls[j].name) - 1] = '\0';
 				asst_msg->tool_calls[j].arguments =
 					response.tool_calls[j].arguments
-					? arena_strdup(ctx->arena, response.tool_calls[j].arguments) : arena_strdup(ctx->arena, "");
+					? arena_strdup(ctx->turn_arena, response.tool_calls[j].arguments) : arena_strdup(ctx->turn_arena, "");
 			}
 			msg_count++;
 
 			ctx->state = REACT_STATE_ACTING;
 
 			int num_tools = response.tool_call_count;
-			pthread_t *threads = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(pthread_t));
-			struct async_tool_call **calls = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(*calls));
-			int *hitl_denied = arena_alloc(ctx->arena, (size_t)num_tools * sizeof(int));
+			pthread_t *threads = arena_alloc(ctx->turn_arena, (size_t)num_tools * sizeof(pthread_t));
+			struct async_tool_call **calls = arena_alloc(ctx->turn_arena, (size_t)num_tools * sizeof(*calls));
+			int *hitl_denied = arena_alloc(ctx->turn_arena, (size_t)num_tools * sizeof(int));
 			if (!threads || !calls || !hitl_denied) {
 				chat_response_free(&response);
 				ctx->state = REACT_STATE_ABORT;
@@ -1341,10 +1347,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 				const char *tool_args = tc->arguments ? tc->arguments : "{}";
 
 				size_t at_len = strlen(tool_name) + strlen(tool_args) + 4;
-				char *action_text = arena_alloc(ctx->arena, at_len);
+				char *action_text = arena_alloc(ctx->turn_arena, at_len);
 				if (action_text)
 					snprintf(action_text, at_len, "%s(%s)", tool_name, tool_args);
-				struct react_step *action = react_step_create(ctx->arena,
+				struct react_step *action = react_step_create(ctx->turn_arena,
 					REACT_STEP_ACTION, action_text ? action_text : "",
 					tool_name, tool_args, tc->id);
 				add_step(ctx, action);
@@ -1370,8 +1376,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 			for (int i = 0; i < num_tools; i++) {
 				if (hitl_denied[i]) {
 					struct tool_call *tc = &response.tool_calls[i];
-					messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->arena);
-					append_tool_message(messages, &msg_count, "tool error: execution denied by user", tc->id, ctx->arena);
+					messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->turn_arena);
+					append_tool_message(messages, &msg_count, "tool error: execution denied by user", tc->id, ctx->turn_arena);
 					continue;
 				}
 
@@ -1389,7 +1395,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					/* Ownership transferred to detached worker; do not
 					 * touch calls[i] anymore. */
 					calls[i] = NULL;
-					struct react_step *obs = react_step_create(ctx->arena,
+					struct react_step *obs = react_step_create(ctx->turn_arena,
 						REACT_STEP_OBSERVATION,
 						"Tool execution cancelled by user",
 						NULL, NULL, NULL);
@@ -1437,7 +1443,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 						.tool_args = call->tool_args,
 						.tool_result = obs_text,
 						.steps = ctx->steps,
-						.arena = ctx->arena,
+						.arena = ctx->turn_arena,
 					};
 					struct guardrail_result ggr = guardrail_run_hook(
 						&ctx->guardrail, GUARDRAIL_HOOK_TOOL_OUTPUT, &geval);
@@ -1450,9 +1456,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 						char guard_obs[1024];
 						snprintf(guard_obs, sizeof(guard_obs),
 							 "guardrail: %s\n%s", ggr.reason, gaction);
-						obs_text = arena_strdup(ctx->arena, guard_obs);
+						obs_text = arena_strdup(ctx->turn_arena, guard_obs);
 						struct react_step *grefl = react_step_create(
-							ctx->arena,
+							ctx->turn_arena,
 							REACT_STEP_REFLECTION, ggr.reason,
 							NULL, NULL, NULL);
 						add_step(ctx, grefl);
@@ -1461,14 +1467,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 					}
 				}
 
-				struct react_step *obs = react_step_create(ctx->arena,
+				struct react_step *obs = react_step_create(ctx->turn_arena,
 					REACT_STEP_OBSERVATION, obs_text, NULL, NULL, NULL);
 				add_step(ctx, obs);
 				if (cb)
 					cb(REACT_STEP_OBSERVATION, obs_text, user_data);
 
-				messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->arena);
-				append_tool_message(messages, &msg_count, obs_text, call->tool_call_id, ctx->arena);
+				messages_ensure_cap(&messages, &msg_cap, msg_count, 1, ctx->turn_arena);
+				append_tool_message(messages, &msg_count, obs_text, call->tool_call_id, ctx->turn_arena);
 
 				free(result);
 			}
@@ -1517,7 +1523,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				continue;
 			}
 
-			struct react_step *final_step = react_step_create(ctx->arena,
+			struct react_step *final_step = react_step_create(ctx->turn_arena,
 				REACT_STEP_FINAL, proposed, NULL, NULL, NULL);
 			add_step(ctx, final_step);
 			free(ctx->final_answer);
@@ -1557,7 +1563,7 @@ done:
 
 	if (ctx->state == REACT_STATE_DONE && ctx->steps) {
 		const char *answer = ctx->final_answer ? ctx->final_answer : "(no answer)";
-		struct message_list *asst = msg_list_create(ctx->session, "assistant",
+		struct message_list *asst = msg_list_create(ctx->session_arena, "assistant",
 			answer,
 			tokenizer_count(ctx->tokenizer, answer));
 		msg_list_append(&ctx->messages, asst);

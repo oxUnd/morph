@@ -89,11 +89,12 @@ static void session_load_history(struct cli_context *ctx)
 		return;
 	msg_list_destroy(ctx->react->messages);
 	ctx->react->messages = NULL;
+	arena_reset(ctx->react->session_arena);
 	int count = 0;
 	struct message *list = message_list(&ctx->database, ctx->current_session.id, &count);
 	struct message *cur = list;
 	while (cur) {
-		struct message_list *m = msg_list_create(ctx->react->session, cur->role, cur->content,
+		struct message_list *m = msg_list_create(ctx->react->session_arena, cur->role, cur->content,
 							  cur->token_count);
 		if (m) {
 			m->compressed = cur->compressed;
