@@ -37,6 +37,7 @@ TEST_F(SseTest, SingleDataEvent) {
 	const char *data = "data: hello\n\n";
 	sse_parser_feed(&parser, data, strlen(data));
 	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
 	EXPECT_EQ(last_data, "hello");
 }
 
@@ -50,7 +51,73 @@ TEST_F(SseTest, MultipleDataEvents) {
 TEST_F(SseTest, EventField) {
 	const char *data = "event: message\ndata: payload\n\n";
 	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "payload");
+}
+
+TEST_F(SseTest, FieldValuesMayOmitSpaceAfterColon) {
+	const char *data = "event:message\ndata:payload\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "payload");
+}
+
+TEST_F(SseTest, IgnoresIdRetryAndCommentFields) {
+	const char *data = ": keepalive\nid: 42\nretry:1000\ndata: payload\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "payload");
+	EXPECT_STREQ(parser.id.data, "42");
+	EXPECT_EQ(parser.retry_ms, 1000);
+}
+
+TEST_F(SseTest, CombinesMultilineData) {
+	const char *data = "data: hello\ndata: world\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "hello\nworld");
+}
+
+TEST_F(SseTest, DispatchesEachCompleteEvent) {
+	const char *data = "data: a\n\ndata: b\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
 	EXPECT_EQ(event_count, 2);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "b");
+}
+
+TEST_F(SseTest, EventNameResetsAfterDispatch) {
+	const char *data = "event: custom\ndata: first\n\ndata: second\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 2);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "second");
+}
+
+TEST_F(SseTest, EmptyDataEventDispatches) {
+	const char *data = "data:\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_event, "message");
+	EXPECT_EQ(last_data, "");
+}
+
+TEST_F(SseTest, InvalidRetryIsIgnored) {
+	const char *data = "retry: nope\nretry: -1\nretry: +100\nretry: 250\n\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 0);
+	EXPECT_EQ(parser.retry_ms, 250);
+}
+
+TEST_F(SseTest, HandlesCrLfLineEndings) {
+	const char *data = "data: payload\r\n\r\n";
+	sse_parser_feed(&parser, data, strlen(data));
+	EXPECT_EQ(event_count, 1);
+	EXPECT_EQ(last_data, "payload");
 }
 
 TEST_F(SseTest, FragmentedInput) {
