@@ -26,47 +26,44 @@ static char *escape_json_string(struct arena *arena, const char *s)
 	size_t clean_len = utf8_sanitize_into(clean, s, len);
 	clean[clean_len] = '\0';
 
-	size_t cap = clean_len * 2 + 1;
-	char *out = arena_alloc(arena, cap);
-	if (!out) {
+	morph_buf_t out;
+	int rc = morph_buf_init_arena(&out, arena, clean_len + 1);
+	if (rc != 0)
 		return NULL;
-	}
-	size_t j = 0;
 	for (size_t i = 0; i < clean_len; i++) {
-		if (j + 8 >= cap) {
-			cap *= 2;
-			char *new_out = arena_alloc(arena, cap);
-			if (!new_out) {
-				return NULL;
-			}
-			memcpy(new_out, out, j);
-			out = new_out;
-		}
 		unsigned char c = (unsigned char)clean[i];
 		if (c < 0x20) {
 			switch (c) {
-			case '\n': out[j++] = '\\'; out[j++] = 'n'; break;
-			case '\r': out[j++] = '\\'; out[j++] = 'r'; break;
-			case '\t': out[j++] = '\\'; out[j++] = 't'; break;
-			case '\b': out[j++] = '\\'; out[j++] = 'b'; break;
-			case '\f': out[j++] = '\\'; out[j++] = 'f'; break;
+			case '\n':
+				rc = morph_buf_puts(&out, "\\n");
+				break;
+			case '\r':
+				rc = morph_buf_puts(&out, "\\r");
+				break;
+			case '\t':
+				rc = morph_buf_puts(&out, "\\t");
+				break;
+			case '\b':
+				rc = morph_buf_puts(&out, "\\b");
+				break;
+			case '\f':
+				rc = morph_buf_puts(&out, "\\f");
+				break;
 			default:
-				j += (size_t)snprintf(out + j, cap - j,
-						      "\\u%04x", c);
+				rc = morph_buf_printf(&out, "\\u%04x", c);
 				break;
 			}
 		} else if (c == '"') {
-			out[j++] = '\\';
-			out[j++] = '"';
+			rc = morph_buf_puts(&out, "\\\"");
 		} else if (c == '\\') {
-			out[j++] = '\\';
-			out[j++] = '\\';
+			rc = morph_buf_puts(&out, "\\\\");
 		} else {
-			out[j++] = (char)c;
+			rc = morph_buf_putc(&out, (char)c);
 		}
+		if (rc != 0)
+			return NULL;
 	}
-	out[j] = '\0';
-	return out;
+	return out.data;
 }
 
 static int build_messages_json(struct arena *arena,

@@ -1,5 +1,6 @@
 #include "mcp/mcp.h"
 #include "cJSON.h"
+#include "http/sse.h"
 #include "util/log.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -24,37 +25,6 @@ static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata
 	if (morph_buf_append(buf, (const char *)ptr, total) != 0)
 		return 0;
 	return total;
-}
-
-/* ----- SSE parser ----- */
-
-struct sse_parser {
-	char buf[MCP_JSON_BUF_MAX];
-	size_t pos;
-};
-
-static void sse_parser_init(struct sse_parser *p)
-{
-	p->pos = 0;
-	p->buf[0] = '\0';
-}
-
-static char *sse_parser_feed(struct sse_parser *p, const char *data, size_t len)
-{
-	for (size_t i = 0; i < len; i++) {
-		if (data[i] == '\n') {
-			if (p->pos > 0) {
-				p->buf[p->pos] = '\0';
-				char *msg = strdup(p->buf);
-				p->pos = 0;
-				return msg;
-			}
-		} else if (data[i] != '\r') {
-			if (p->pos < sizeof(p->buf) - 1)
-				p->buf[p->pos++] = data[i];
-		}
-	}
-	return NULL;
 }
 
 /* ----- HTTP POST helper ----- */
@@ -136,27 +106,59 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	return 0;
 }
 
-/* Strip SSE envelope: extract JSON from "event: message\ndata: <json>\n" */
+struct mcp_sse_extract {
+	morph_buf_t data;
+	int seen_data;
+};
+
+static int mcp_sse_extract_cb(const char *event, const char *data,
+			      void *user_data)
+{
+	struct mcp_sse_extract *ctx = user_data;
+	int rc;
+
+	if (!ctx || !data)
+		return 0;
+	if (!event || strcmp(event, "data") != 0)
+		return 0;
+	if (ctx->seen_data) {
+		rc = morph_buf_putc(&ctx->data, '\n');
+		if (rc != 0)
+			return rc;
+	}
+	rc = morph_buf_puts(&ctx->data, data);
+	if (rc != 0)
+		return rc;
+	ctx->seen_data = 1;
+	return 0;
+}
+
+/* Strip SSE envelope and return the concatenated data payload. */
 static char *mcp_http_extract_sse_json(const char *raw, size_t len)
 {
-	/* Look for "data: " prefix */
-	const char *data_prefix = "data: ";
-	const char *data_start = strstr(raw, data_prefix);
-	if (!data_start)
-		return NULL;
-	data_start += strlen(data_prefix);
+	struct mcp_sse_extract ctx;
+	struct sse_parser parser;
+	char *json = NULL;
+	int rc;
 
-	/* Find end of line (first \n or \r after data) */
-	const char *end = data_start;
-	while ((size_t)(end - raw) < len && *end != '\n' && *end != '\r')
-		end++;
-
-	size_t json_len = (size_t)(end - data_start);
-	char *json = malloc(json_len + 1);
-	if (!json)
+	if (!raw || len == 0)
 		return NULL;
-	memcpy(json, data_start, json_len);
-	json[json_len] = '\0';
+
+	rc = morph_buf_init(&ctx.data, 1024);
+	if (rc != 0)
+		return NULL;
+	ctx.seen_data = 0;
+
+	sse_parser_init(&parser, mcp_sse_extract_cb, &ctx);
+	rc = sse_parser_feed(&parser, raw, len);
+	if (rc == 0)
+		rc = sse_parser_feed(&parser, "\n", 1);
+	sse_parser_free(&parser);
+
+	if (rc == 0 && ctx.seen_data)
+		json = morph_buf_detach(&ctx.data);
+	else
+		morph_buf_cleanup(&ctx.data);
 	return json;
 }
 

@@ -9,4 +9,4 @@ target_include_directories(morph-mcp PUBLIC
 	${CMAKE_SOURCE_DIR}/vendor
 )
 target_compile_definitions(morph-mcp PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(morph-mcp PUBLIC morph-util ${CURL_LIBRARIES})
+target_link_libraries(morph-mcp PUBLIC morph-util morph-http ${CURL_LIBRARIES})

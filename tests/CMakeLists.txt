@@ -11,6 +11,7 @@ set(TEST_SOURCES
 	test_session.cpp
 	test_memory.cpp
 	test_tool.cpp
+	test_plan.cpp
 	test_context.cpp
 	test_tokenizer.cpp
 	test_text_gen.cpp

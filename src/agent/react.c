@@ -528,10 +528,9 @@ static void add_step(struct react_context *ctx, struct react_step *step)
 
 static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 {
-	size_t cap = 8192;
-	size_t len = 0;
-	char *buf = arena_alloc(arena, cap);
-	if (!buf)
+	morph_buf_t buf;
+	int rc = morph_buf_init_arena(&buf, arena, 8192);
+	if (rc != 0)
 		return NULL;
 
 	char time_buf[128];
@@ -543,122 +542,89 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			 "%Y-%m-%d %A %H:%M:%S %Z", &tm_local);
 	}
 
-	len += snprintf(buf + len, cap - len,
-		MORPH_SYSTEM_PROMPT, time_buf, ctx->max_iterations);
+	rc = morph_buf_printf(&buf, MORPH_SYSTEM_PROMPT, time_buf,
+			      ctx->max_iterations);
+	if (rc != 0)
+		return NULL;
 
 	if (ctx->workdir && *ctx->workdir) {
-		while (len + 256 >= cap) {
-			cap *= 2;
-			char *nb = arena_alloc(arena, cap);
-			if (!nb) return NULL;
-			memcpy(nb, buf, len);
-			buf = nb;
-		}
-		len += snprintf(buf + len, cap - len,
-			"\nWorking directory: %s\n", ctx->workdir);
+		rc = morph_buf_printf(&buf, "\nWorking directory: %s\n",
+				      ctx->workdir);
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->system_prompt) {
-		size_t sp_len = strlen(ctx->system_prompt);
-		while (len + sp_len + 2 >= cap) {
-			cap *= 2;
-			char *nb = arena_alloc(arena, cap);
-			if (!nb) return NULL;
-			memcpy(nb, buf, len);
-			buf = nb;
-		}
-		len += snprintf(buf + len, cap - len, "%s\n", ctx->system_prompt);
+		rc = morph_buf_printf(&buf, "%s\n", ctx->system_prompt);
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->memory_context && ctx->memory_context[0]) {
-		size_t mp_len = strlen(ctx->memory_context);
-		while (len + mp_len + 3 >= cap) {
-			cap *= 2;
-			char *nb = arena_alloc(arena, cap);
-			if (!nb) return NULL;
-			memcpy(nb, buf, len);
-			buf = nb;
-		}
-		len += snprintf(buf + len, cap - len, "\n%s\n",
-				ctx->memory_context);
+		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_context);
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->skills && ctx->skills->count > 0) {
-		len += snprintf(buf + len, cap - len,
-			"\nAvailable skills:\n");
+		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
+		if (rc != 0)
+			return NULL;
 		for (int i = 0; i < ctx->skills->count; i++) {
 			if (!ctx->skills->entries[i].enabled)
 				continue;
-			while (len + 256 >= cap) {
-				cap *= 2;
-				char *nb = arena_alloc(arena, cap);
-				if (!nb) return NULL;
-				memcpy(nb, buf, len);
-				buf = nb;
-			}
-			len += snprintf(buf + len, cap - len, "- %s: %s\n",
-				ctx->skills->entries[i].fm.name,
-				ctx->skills->entries[i].fm.description);
+			rc = morph_buf_printf(&buf, "- %s: %s\n",
+					      ctx->skills->entries[i].fm.name,
+					      ctx->skills->entries[i].fm.description);
+			if (rc != 0)
+				return NULL;
 		}
-		len += snprintf(buf + len, cap - len,
+		rc = morph_buf_puts(&buf,
 			"\nWhen a skill matches the task, call activate_skill "
 			"with the skill name to load its full instructions.\n");
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->sub_agent_info && ctx->sub_agent_info_count > 0) {
-		while (len + 512 >= cap) {
-			cap *= 2;
-			char *nb = arena_alloc(arena, cap);
-			if (!nb) return NULL;
-			memcpy(nb, buf, len);
-			buf = nb;
-		}
-		len += snprintf(buf + len, cap - len,
-			"\nAvailable sub-agents:\n");
+		rc = morph_buf_puts(&buf, "\nAvailable sub-agents:\n");
+		if (rc != 0)
+			return NULL;
 		for (int i = 0; i < ctx->sub_agent_info_count; i++) {
-			while (len + 256 >= cap) {
-				cap *= 2;
-				char *nb = arena_alloc(arena, cap);
-				if (!nb) return NULL;
-				memcpy(nb, buf, len);
-				buf = nb;
-			}
-			len += snprintf(buf + len, cap - len,
-				"- agent_%s: %s\n",
-				ctx->sub_agent_info[i].name,
-				ctx->sub_agent_info[i].description);
+			rc = morph_buf_printf(&buf, "- agent_%s: %s\n",
+					      ctx->sub_agent_info[i].name,
+					      ctx->sub_agent_info[i].description);
+			if (rc != 0)
+				return NULL;
 		}
-		len += snprintf(buf + len, cap - len,
+		rc = morph_buf_puts(&buf,
 			"\nTo delegate a task, call agent_<name> with a task "
 			"description. For parallel execution, use fanout. "
 			"For async delegation, use delegate + agent_status.\n");
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->ask_user_fn) {
-		len += snprintf(buf + len, cap - len,
+		rc = morph_buf_puts(&buf,
 			"\nYou have the ask_user tool. Use it ONLY for genuine "
 			"ambiguity or irreversible decisions. Prefer acting on "
 			"reasonable assumptions rather than blocking for input.\n");
+		if (rc != 0)
+			return NULL;
 	}
 
 	if (ctx->skills) {
 		char *active = skill_build_activated_instructions(ctx->skills);
 		if (active) {
-			size_t alen = strlen(active);
-			while (len + alen + 1 >= cap) {
-				cap *= 2;
-				char *nb = arena_alloc(arena, cap);
-				if (!nb) { free(active); return NULL; }
-				memcpy(nb, buf, len);
-				buf = nb;
-			}
-			memcpy(buf + len, active, alen + 1);
-			len += alen;
+			rc = morph_buf_puts(&buf, active);
 			free(active);
+			if (rc != 0)
+				return NULL;
 		}
 	}
 
-	return buf;
+	return buf.data;
 }
 
 struct react_stream_data {

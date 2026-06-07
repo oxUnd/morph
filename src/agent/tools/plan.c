@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include "util/error.h"
 
 static struct plan_registry *g_plans;
@@ -20,8 +21,10 @@ static char *format_plan(struct plan *p)
 	if (!p)
 		return strdup("(no plan)");
 
-	char buf[4096];
-	size_t pos = 0;
+	morph_buf_t buf;
+	int rc = morph_buf_init(&buf, 4096);
+	if (rc != 0)
+		return NULL;
 
 	int all_done = 1;
 	for (int j = 0; j < p->step_count; j++) {
@@ -33,26 +36,23 @@ static char *format_plan(struct plan *p)
 		}
 	}
 
-	int rc = snprintf(buf + pos, sizeof(buf) - pos,
-		"Plan \"%s\"", p->name);
-	if (rc > 0 && (size_t)rc < sizeof(buf) - pos)
-		pos += (size_t)rc;
+	rc = morph_buf_printf(&buf, "Plan \"%s\"", p->name);
+	if (rc != 0)
+		goto fail;
 
 	if (p->goal[0]) {
-		rc = snprintf(buf + pos, sizeof(buf) - pos,
-			"\n  Goal: %s", p->goal);
-		if (rc > 0 && (size_t)rc < sizeof(buf) - pos)
-			pos += (size_t)rc;
+		rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
+		if (rc != 0)
+			goto fail;
 	}
 
-	rc = snprintf(buf + pos, sizeof(buf) - pos,
-		"\n  %d step(s)", p->step_count);
-	if (rc > 0 && (size_t)rc < sizeof(buf) - pos)
-		pos += (size_t)rc;
+	rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
+	if (rc != 0)
+		goto fail;
 	if (all_done) {
-		rc = snprintf(buf + pos, sizeof(buf) - pos, " [completed]");
-		if (rc > 0 && (size_t)rc < sizeof(buf) - pos)
-			pos += (size_t)rc;
+		rc = morph_buf_puts(&buf, " [completed]");
+		if (rc != 0)
+			goto fail;
 	}
 
 	for (int i = 0; i < p->step_count; i++) {
@@ -71,17 +71,126 @@ static char *format_plan(struct plan *p)
 		const char *marker = (i == p->active_step && p->active_step >= 0)
 				   ? " <-- active" : "";
 
-		rc = snprintf(buf + pos, sizeof(buf) - pos,
-			"\n  [%s] %d. %s%s",
-			icon, p->steps[i].id,
-			p->steps[i].description, marker);
-		if (rc > 0 && (size_t)rc < sizeof(buf) - pos)
-			pos += (size_t)rc;
-		else
-			break;
+		rc = morph_buf_printf(&buf, "\n  [%s] %d. %s%s",
+				      icon, p->steps[i].id,
+				      p->steps[i].description, marker);
+		if (rc != 0)
+			goto fail;
 	}
 
-	return strdup(buf);
+	return morph_buf_detach(&buf);
+
+fail:
+	morph_buf_cleanup(&buf);
+	return NULL;
+}
+
+static const char *plan_status_icon(const char *status)
+{
+	if (!status)
+		return " ";
+	if (strcmp(status, "completed") == 0)
+		return "x";
+	if (strcmp(status, "in_progress") == 0)
+		return ">";
+	if (strcmp(status, "failed") == 0)
+		return "!";
+	if (strcmp(status, "skipped") == 0)
+		return "-";
+	return " ";
+}
+
+static char *format_plans(struct plan_registry *reg)
+{
+	if (!reg || reg->count == 0)
+		return strdup("No plans yet. Use plan create to start one.");
+
+	morph_buf_t buf;
+	int rc = morph_buf_init(&buf, 4096);
+	if (rc != 0)
+		return NULL;
+
+	for (int i = 0; i < reg->count; i++) {
+		struct plan *p = &reg->plans[i];
+		int all_done = 1;
+
+		for (int j = 0; j < p->step_count; j++) {
+			if (strcmp(p->steps[j].status, "completed") != 0 &&
+			    strcmp(p->steps[j].status, "failed") != 0 &&
+			    strcmp(p->steps[j].status, "skipped") != 0) {
+				all_done = 0;
+				break;
+			}
+		}
+
+		rc = morph_buf_printf(&buf, "%sPlan \"%s\"",
+				      i > 0 ? "\n" : "", p->name);
+		if (rc != 0)
+			goto fail;
+		if (p->goal[0]) {
+			rc = morph_buf_printf(&buf, "\n  Goal: %s", p->goal);
+			if (rc != 0)
+				goto fail;
+		}
+		rc = morph_buf_printf(&buf, "\n  %d step(s)", p->step_count);
+		if (rc != 0)
+			goto fail;
+		if (all_done) {
+			rc = morph_buf_puts(&buf, " [all completed]");
+			if (rc != 0)
+				goto fail;
+		}
+
+		for (int j = 0; j < p->step_count; j++) {
+			struct plan_step *s = &p->steps[j];
+			const char *icon = plan_status_icon(s->status);
+			const char *marker = (j == p->active_step &&
+					      p->active_step >= 0)
+					   ? " <-- active" : "";
+
+			rc = morph_buf_printf(&buf, "\n  [%s] %d. %s%s",
+					      icon, s->id,
+					      s->description, marker);
+			if (rc != 0)
+				goto fail;
+		}
+	}
+
+	return morph_buf_detach(&buf);
+
+fail:
+	morph_buf_cleanup(&buf);
+	return NULL;
+}
+
+static int set_resultf(char **result_json, const char *fmt, ...)
+	__attribute__((format(printf, 2, 3)));
+
+static int set_resultf(char **result_json, const char *fmt, ...)
+{
+	morph_buf_t buf;
+	va_list ap;
+	int rc;
+
+	if (!result_json || !fmt)
+		return -EINVAL;
+
+	rc = morph_buf_init(&buf, 1024);
+	if (rc != 0)
+		return rc;
+
+	va_start(ap, fmt);
+	rc = morph_buf_vprintf(&buf, fmt, ap);
+	va_end(ap);
+	if (rc != 0) {
+		morph_buf_cleanup(&buf);
+		return rc;
+	}
+
+	*result_json = morph_buf_detach(&buf);
+	if (!*result_json)
+		return -ENOMEM;
+	return 0;
 }
 
 static int decompose_stream_cb(const char *token, void *user_data)
@@ -229,7 +338,6 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 	}
 
 	const char *command = cmd->valuestring;
-	char out_buf[8192];
 	int rc = 0;
 
 	if (strcmp(command, "create") == 0) {
@@ -312,16 +420,19 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 		}
 
 		if (auto_decomposed) {
-			snprintf(out_buf, sizeof(out_buf),
+			rc = set_resultf(result_json,
 				"Plan created (auto-decomposed from goal).\n%s",
 				formatted);
 			free_step_descs(step_descs, step_count);
 		} else {
-			snprintf(out_buf, sizeof(out_buf),
-				"Plan created.\n%s", formatted);
+			rc = set_resultf(result_json, "Plan created.\n%s",
+					 formatted);
 		}
-		*result_json = strdup(out_buf);
 		free(formatted);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 		log_info("plan: created '%s' with %d steps%s",
 			 p->name, p->step_count,
 			 auto_decomposed ? " (auto)" : "");
@@ -366,12 +477,14 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 		struct plan *p = plan_find(g_plans, plan_name);
 		char *formatted = p ? format_plan(p) : NULL;
 
-		snprintf(out_buf, sizeof(out_buf),
-			"Step %d marked as '%s'.\n%s",
-			step_id, status,
-			formatted ? formatted : "");
-		*result_json = strdup(out_buf);
+		rc = set_resultf(result_json, "Step %d marked as '%s'.\n%s",
+				 step_id, status,
+				 formatted ? formatted : "");
 		free(formatted);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 		log_info("plan: updated '%s' step %d -> %s",
 			 plan_name, step_id, status);
 
@@ -382,48 +495,43 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			struct plan *p = plan_find(g_plans,
 						   plan_item->valuestring);
 			if (!p) {
-				snprintf(out_buf, sizeof(out_buf),
+				rc = set_resultf(result_json,
 					"Plan \"%s\" not found.",
 					plan_item->valuestring);
 			} else {
 				char *formatted = format_plan(p);
-				snprintf(out_buf, sizeof(out_buf), "%s",
+				rc = set_resultf(result_json, "%s",
 					formatted ? formatted : "(empty)");
 				free(formatted);
 			}
 		} else {
-			char fmt[4096];
-			rc = plan_get_formatted(g_plans, fmt, sizeof(fmt));
-			if (rc < 0) {
-				cJSON_Delete(root);
-				*result_json = strdup(
-					"{\"error\":\"plan formatting failed\"}");
-				MORPH_RETURN(rc);
-			}
-			snprintf(out_buf, sizeof(out_buf), "%s", fmt);
+			char *formatted = format_plans(g_plans);
+			rc = set_resultf(result_json, "%s",
+					 formatted ? formatted : "(empty)");
+			free(formatted);
 		}
-		*result_json = strdup(out_buf);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 
 	} else if (strcmp(command, "list") == 0) {
-		char fmt[4096];
-		rc = plan_get_formatted(g_plans, fmt, sizeof(fmt));
-		if (rc < 0) {
+		char *formatted = format_plans(g_plans);
+		rc = set_resultf(result_json, "%s",
+				 formatted ? formatted : "(empty)");
+		free(formatted);
+		if (rc != 0) {
 			cJSON_Delete(root);
-			*result_json = strdup(
-				"{\"error\":\"plan formatting failed\"}");
-			MORPH_RETURN(rc);
+			return rc;
 		}
-		snprintf(out_buf, sizeof(out_buf), "%s", fmt);
-		*result_json = strdup(out_buf);
 
 	} else {
-		snprintf(out_buf, sizeof(out_buf),
+		rc = set_resultf(result_json,
 			"{\"error\":\"unknown command '%s'. "
 			"Commands: create, update, get, list\"}",
 			command);
-		*result_json = strdup(out_buf);
 		cJSON_Delete(root);
-		return -EINVAL;
+		return rc != 0 ? rc : -EINVAL;
 	}
 
 	cJSON_Delete(root);

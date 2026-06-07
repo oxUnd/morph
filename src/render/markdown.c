@@ -1,6 +1,8 @@
 #include "markdown.h"
 #include "highlight.h"
 #include "latex_unicode.h"
+#include "util/array.h"
+#include "util/buf.h"
 #include "util/utf8.h"
 #include "md4c.h"
 #include <stdio.h>
@@ -8,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -42,15 +45,12 @@ struct table_row {
 struct table_state {
 	unsigned col_count;
 	MD_ALIGN *align;
-	struct table_row *rows;
-	unsigned row_count;
-	unsigned row_cap;
+	morph_array_t rows;
 	int in_head;
 	unsigned head_row_count;
 	/* current cell being built */
-	char *cell_raw;
-	size_t cell_raw_len;
-	size_t cell_raw_cap;
+	morph_buf_t cell_raw;
+	int cell_active;
 };
 
 /* ---------------- terminal width ---------------- */
@@ -104,9 +104,7 @@ struct ansi_ctx {
 	struct sbuf link_href;
 	char code_lang[32];
 	size_t code_lang_len;
-	char *code_raw;
-	size_t code_raw_len;
-	size_t code_raw_cap;
+	morph_buf_t code_raw;
 	int in_code_block;
 	int latex_display;
 	struct collected_media media[64];
@@ -117,21 +115,8 @@ struct ansi_ctx {
  * whether we are currently rendering a table cell. */
 static void out_append_n(struct ansi_ctx *ctx, const char *src, size_t n)
 {
-	if (ctx->table && ctx->table->cell_raw) {
-		struct table_state *t = ctx->table;
-		if (t->cell_raw_len + n + 1 > t->cell_raw_cap) {
-			size_t new_cap = t->cell_raw_cap ? t->cell_raw_cap * 2 : 64;
-			while (new_cap < t->cell_raw_len + n + 1)
-				new_cap *= 2;
-			char *nb = realloc(t->cell_raw, new_cap);
-			if (!nb)
-				return;
-			t->cell_raw = nb;
-			t->cell_raw_cap = new_cap;
-		}
-		memcpy(t->cell_raw + t->cell_raw_len, src, n);
-		t->cell_raw_len += n;
-		t->cell_raw[t->cell_raw_len] = '\0';
+	if (ctx->table && ctx->table->cell_active) {
+		morph_buf_append(&ctx->table->cell_raw, src, n);
 		return;
 	}
 	sbuf_append_n(&ctx->out, src, n);
@@ -140,6 +125,13 @@ static void out_append_n(struct ansi_ctx *ctx, const char *src, size_t n)
 static void out_append(struct ansi_ctx *ctx, const char *str)
 {
 	out_append_n(ctx, str, strlen(str));
+}
+
+static struct table_row *table_rows(struct table_state *t)
+{
+	if (!t)
+		return NULL;
+	return (struct table_row *)t->rows.elts;
 }
 
 /* Re-apply currently-active inline styles after an ANSI_RESET. Used when we
@@ -234,7 +226,8 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		ensure_blank_line(ctx);
 		ctx->code_depth++;
 		ctx->in_code_block = 1;
-		ctx->code_raw_len = 0;
+		morph_buf_cleanup(&ctx->code_raw);
+		morph_buf_init(&ctx->code_raw, 256);
 		if (c->lang.text && c->lang.size > 0) {
 			size_t n = c->lang.size < 31 ? c->lang.size : 31;
 			memcpy(ctx->code_lang, c->lang.text, n);
@@ -358,6 +351,12 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		t->col_count = td->col_count;
 		t->head_row_count = td->head_row_count;
 		t->align = calloc(td->col_count, sizeof(MD_ALIGN));
+		if (!t->align ||
+		    morph_array_init(&t->rows, 4, sizeof(struct table_row)) != 0) {
+			free(t->align);
+			free(t);
+			return 0;
+		}
 		ctx->table = t;
 		break;
 	}
@@ -373,17 +372,15 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		struct table_state *t = ctx->table;
 		if (!t)
 			break;
-		if (t->row_count == t->row_cap) {
-			size_t new_cap = t->row_cap ? t->row_cap * 2 : 4;
-			struct table_row *nr = realloc(t->rows, new_cap * sizeof(*nr));
-			if (!nr)
-				break;
-			t->rows = nr;
-			t->row_cap = (unsigned)new_cap;
+		struct table_row *row = morph_array_push(&t->rows);
+		if (!row)
+			break;
+		memset(row, 0, sizeof(*row));
+		row->cells = calloc(t->col_count, sizeof(struct table_cell));
+		if (!row->cells) {
+			morph_array_pop(&t->rows);
+			break;
 		}
-		t->rows[t->row_count].cells = calloc(t->col_count, sizeof(struct table_cell));
-		t->rows[t->row_count].cell_count = 0;
-		t->row_count++;
 		break;
 	}
 	case MD_BLOCK_TH:
@@ -392,14 +389,14 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		if (!t)
 			break;
 		struct MD_BLOCK_TD_DETAIL *cd = detail;
-		struct table_row *row = &t->rows[t->row_count - 1];
+		if (t->rows.nelts == 0)
+			break;
+		struct table_row *row = &table_rows(t)[t->rows.nelts - 1];
 		if (row->cell_count < t->col_count && t->in_head)
 			t->align[row->cell_count] = cd->align;
-		t->cell_raw = malloc(64);
-		t->cell_raw_cap = 64;
-		t->cell_raw_len = 0;
-		if (t->cell_raw)
-			t->cell_raw[0] = '\0';
+		morph_buf_cleanup(&t->cell_raw);
+		if (morph_buf_init(&t->cell_raw, 64) == 0)
+			t->cell_active = 1;
 		break;
 	}
 	default:
@@ -444,22 +441,22 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 					     size_t max_cols,
 					     unsigned *out_count)
 {
+	morph_array_t lines;
+
 	*out_count = 0;
 	if (max_cols == 0)
 		max_cols = 1;
 
-	unsigned cap = (unsigned)(plain_len + 1);
+	size_t cap = plain_len + 1;
 	if (cap < 4)
 		cap = 4;
-	struct wrapped_line *lines = calloc(cap, sizeof(struct wrapped_line));
-	if (!lines)
+	if (morph_array_init(&lines, cap, sizeof(struct wrapped_line)) != 0)
 		return NULL;
 
 	size_t ri = 0;
 	size_t pi = 0;
 	size_t line_start = 0;
 	size_t line_vis = 0;
-	size_t line_count = 0;
 
 	/* Track last break opportunity (after a space or CJK character) */
 	size_t break_ri = 0;
@@ -503,30 +500,18 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 				seg_vis = line_vis;
 			}
 
-			if (line_count >= cap) {
-				cap *= 2;
-				struct wrapped_line *nl = realloc(lines, cap * sizeof(struct wrapped_line));
-				if (!nl) {
-					for (unsigned k = 0; k < line_count; k++)
-						free(lines[k].raw);
-					free(lines);
-					return NULL;
-				}
-				lines = nl;
-			}
+			struct wrapped_line *line = morph_array_push(&lines);
+			if (!line)
+				goto fail;
+			memset(line, 0, sizeof(*line));
 			size_t seg_len = seg_ri - line_start;
-			lines[line_count].raw = malloc(seg_len + 1);
-			if (!lines[line_count].raw) {
-				for (unsigned k = 0; k < line_count; k++)
-					free(lines[k].raw);
-				free(lines);
-				return NULL;
-			}
-			memcpy(lines[line_count].raw, raw + line_start, seg_len);
-			lines[line_count].raw[seg_len] = '\0';
-			lines[line_count].raw_len = seg_len;
-			lines[line_count].vis_width = seg_vis;
-			line_count++;
+			line->raw = malloc(seg_len + 1);
+			if (!line->raw)
+				goto fail;
+			memcpy(line->raw, raw + line_start, seg_len);
+			line->raw[seg_len] = '\0';
+			line->raw_len = seg_len;
+			line->vis_width = seg_vis;
 
 			line_start = seg_ri;
 			line_vis = 0;
@@ -579,35 +564,42 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 	}
 
 	/* Flush remaining content as the last sub-line */
-	if (ri > line_start || line_count == 0) {
-		if (line_count >= cap) {
-			cap *= 2;
-			struct wrapped_line *nl = realloc(lines, cap * sizeof(struct wrapped_line));
-			if (!nl) {
-				for (unsigned k = 0; k < line_count; k++)
-					free(lines[k].raw);
-				free(lines);
-				return NULL;
-			}
-			lines = nl;
-		}
+	if (ri > line_start || lines.nelts == 0) {
+		struct wrapped_line *line = morph_array_push(&lines);
+		if (!line)
+			goto fail;
+		memset(line, 0, sizeof(*line));
 		size_t seg_len = ri - line_start;
-		lines[line_count].raw = malloc(seg_len + 1);
-		if (!lines[line_count].raw) {
-			for (unsigned k = 0; k < line_count; k++)
-				free(lines[k].raw);
-			free(lines);
-			return NULL;
-		}
-		memcpy(lines[line_count].raw, raw + line_start, seg_len);
-		lines[line_count].raw[seg_len] = '\0';
-		lines[line_count].raw_len = seg_len;
-		lines[line_count].vis_width = line_vis;
-		line_count++;
+		line->raw = malloc(seg_len + 1);
+		if (!line->raw)
+			goto fail;
+		memcpy(line->raw, raw + line_start, seg_len);
+		line->raw[seg_len] = '\0';
+		line->raw_len = seg_len;
+		line->vis_width = line_vis;
 	}
 
-	*out_count = (unsigned)line_count;
-	return lines;
+	if (lines.nelts > UINT_MAX)
+		goto fail;
+	*out_count = (unsigned)lines.nelts;
+	{
+		struct wrapped_line *ret = lines.elts;
+		lines.elts = NULL;
+		lines.nelts = 0;
+		lines.cap = 0;
+		lines.size = 0;
+		lines.heap_alloc = 0;
+		return ret;
+	}
+
+fail:
+	{
+		struct wrapped_line *items = lines.elts;
+		for (size_t k = 0; k < lines.nelts; k++)
+			free(items[k].raw);
+		morph_array_cleanup(&lines);
+		return NULL;
+	}
 }
 
 static void free_wrapped_lines(struct wrapped_line *lines, unsigned count)
@@ -728,15 +720,16 @@ static void distribute_col_widths(size_t *col_w, unsigned col_count,
 
 static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 {
-	if (!t || t->col_count == 0 || t->row_count == 0)
+	if (!t || t->col_count == 0 || t->rows.nelts == 0)
 		return;
 
 	size_t *col_w = calloc(t->col_count, sizeof(size_t));
 	if (!col_w)
 		return;
+	struct table_row *rows = table_rows(t);
 
-	for (unsigned r = 0; r < t->row_count; r++) {
-		struct table_row *row = &t->rows[r];
+	for (size_t r = 0; r < t->rows.nelts; r++) {
+		struct table_row *row = &rows[r];
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
 			size_t w = utf8_visible_len(row->cells[c].plain);
 			if (w > col_w[c])
@@ -750,8 +743,9 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 			      ctx->term_width);
 
 	/* Wrap each cell content to its constrained column width */
-	unsigned **wrap_counts = calloc(t->row_count, sizeof(unsigned *));
-	struct wrapped_line ***wrap_lines = calloc(t->row_count, sizeof(struct wrapped_line **));
+	unsigned **wrap_counts = calloc(t->rows.nelts, sizeof(unsigned *));
+	struct wrapped_line ***wrap_lines =
+		calloc(t->rows.nelts, sizeof(struct wrapped_line **));
 	if (!wrap_counts || !wrap_lines) {
 		free(col_w);
 		free(wrap_counts);
@@ -759,8 +753,8 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 		return;
 	}
 
-	for (unsigned r = 0; r < t->row_count; r++) {
-		struct table_row *row = &t->rows[r];
+	for (size_t r = 0; r < t->rows.nelts; r++) {
+		struct table_row *row = &rows[r];
 		wrap_counts[r] = calloc(t->col_count, sizeof(unsigned));
 		wrap_lines[r] = calloc(t->col_count, sizeof(struct wrapped_line *));
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
@@ -771,8 +765,8 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 		}
 	}
 
-	for (unsigned r = 0; r < t->row_count; r++) {
-		struct table_row *row = &t->rows[r];
+	for (size_t r = 0; r < t->rows.nelts; r++) {
+		struct table_row *row = &rows[r];
 		/* Find max number of wrapped lines for this data row */
 		unsigned max_lines = 1;
 		for (unsigned c = 0; c < t->col_count; c++) {
@@ -857,9 +851,10 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 	}
 
 	/* Free wrapped lines */
-	for (unsigned r = 0; r < t->row_count; r++) {
+	for (size_t r = 0; r < t->rows.nelts; r++) {
 		if (wrap_lines[r]) {
-			for (unsigned c = 0; c < t->col_count && c < t->rows[r].cell_count; c++) {
+			for (unsigned c = 0; c < t->col_count &&
+			     c < rows[r].cell_count; c++) {
 				if (wrap_lines[r][c])
 					free_wrapped_lines(wrap_lines[r][c],
 							   wrap_counts ? wrap_counts[r][c] : 0);
@@ -879,16 +874,17 @@ static void free_table(struct table_state *t)
 {
 	if (!t)
 		return;
-	for (unsigned r = 0; r < t->row_count; r++) {
-		for (unsigned c = 0; c < t->rows[r].cell_count; c++) {
-			free(t->rows[r].cells[c].raw);
-			free(t->rows[r].cells[c].plain);
+	struct table_row *rows = table_rows(t);
+	for (size_t r = 0; r < t->rows.nelts; r++) {
+		for (unsigned c = 0; c < rows[r].cell_count; c++) {
+			free(rows[r].cells[c].raw);
+			free(rows[r].cells[c].plain);
 		}
-		free(t->rows[r].cells);
+		free(rows[r].cells);
 	}
-	free(t->rows);
+	morph_array_cleanup(&t->rows);
 	free(t->align);
-	free(t->cell_raw);
+	morph_buf_cleanup(&t->cell_raw);
 	free(t);
 }
 
@@ -911,11 +907,13 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		char hlbuf[16384];
 		sbuf_init(&hl, hlbuf, sizeof(hlbuf));
 		highlight_code(ctx->code_lang, ctx->code_lang_len,
-			       ctx->code_raw, ctx->code_raw_len,
+			       ctx->code_raw.data ? ctx->code_raw.data : "",
+			       ctx->code_raw.len,
 			       &hl, NULL, NULL);
 		/* emit highlighted code with line prefix handling */
-		const char *htext = hl.buf ? hl.buf : ctx->code_raw;
-		size_t hlen = hl.buf ? hl.len : ctx->code_raw_len;
+		const char *htext = hl.buf ? hl.buf :
+				    (ctx->code_raw.data ? ctx->code_raw.data : "");
+		size_t hlen = hl.buf ? hl.len : ctx->code_raw.len;
 		size_t start = 0;
 		for (size_t j = 0; j < hlen; j++) {
 			if (htext[j] == '\n') {
@@ -927,10 +925,7 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		}
 		if (start < hlen)
 			out_append_n(ctx, htext + start, hlen - start);
-		free(ctx->code_raw);
-		ctx->code_raw = NULL;
-		ctx->code_raw_cap = 0;
-		ctx->code_raw_len = 0;
+		morph_buf_cleanup(&ctx->code_raw);
 		out_append(ctx, ANSI_RESET);
 		newline_with_prefix(ctx);
 		out_append(ctx, ANSI_DIM);
@@ -964,22 +959,30 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 	case MD_BLOCK_TH:
 	case MD_BLOCK_TD: {
 		struct table_state *t = ctx->table;
-		if (!t || !t->cell_raw)
+		if (!t || !t->cell_active)
 			break;
-		struct table_row *row = &t->rows[t->row_count - 1];
+		if (t->rows.nelts == 0)
+			break;
+		struct table_row *row = &table_rows(t)[t->rows.nelts - 1];
 		if (row->cell_count < t->col_count) {
 			struct table_cell *cell = &row->cells[row->cell_count];
-			cell->raw = t->cell_raw;
-			cell->raw_len = t->cell_raw_len;
+			cell->raw_len = t->cell_raw.len;
+			cell->raw = morph_buf_detach(&t->cell_raw);
+			if (!cell->raw) {
+				cell->raw = strdup("");
+				cell->raw_len = 0;
+			}
+			if (!cell->raw) {
+				t->cell_active = 0;
+				break;
+			}
 			cell->plain_len = strip_ansi(cell->raw, cell->raw_len,
 						     &cell->plain);
 			row->cell_count++;
 		} else {
-			free(t->cell_raw);
+			morph_buf_cleanup(&t->cell_raw);
 		}
-		t->cell_raw = NULL;
-		t->cell_raw_len = 0;
-		t->cell_raw_cap = 0;
+		t->cell_active = 0;
 		break;
 	}
 	case MD_BLOCK_TR:
@@ -1233,21 +1236,7 @@ static int text_callback(MD_TEXTTYPE type, const MD_CHAR *text,
 	}
 	case MD_TEXT_CODE: {
 		if (ctx->in_code_block) {
-			/* buffer code for highlighting */
-			size_t need = ctx->code_raw_len + size + 1;
-			if (need > ctx->code_raw_cap) {
-				size_t nc = ctx->code_raw_cap ? ctx->code_raw_cap * 2 : 256;
-				while (nc < need)
-					nc *= 2;
-				char *nb = realloc(ctx->code_raw, nc);
-				if (!nb)
-					return 0;
-				ctx->code_raw = nb;
-				ctx->code_raw_cap = nc;
-			}
-			memcpy(ctx->code_raw + ctx->code_raw_len, text, size);
-			ctx->code_raw_len += size;
-			ctx->code_raw[ctx->code_raw_len] = '\0';
+			morph_buf_append(&ctx->code_raw, text, size);
 		} else if (ctx->code_depth > 0 && ctx->table == NULL) {
 			MD_SIZE start = 0;
 			for (MD_SIZE i = 0; i < size; i++) {
@@ -1355,11 +1344,10 @@ static int line_has_pipe(const char *line, size_t len)
 static char *md_normalize(const char *md)
 {
 	size_t len = strlen(md);
-	size_t cap = len * 2 + 1;
-	char *out = malloc(cap);
-	if (!out)
+	morph_buf_t out;
+	int rc = morph_buf_init(&out, len + 1);
+	if (rc != 0)
 		return NULL;
-	size_t olen = 0;
 
 	const char *p = md;
 	int in_code_fence = 0;
@@ -1420,25 +1408,14 @@ static char *md_normalize(const char *md)
 			}
 
 			if (need_blank_before_pending) {
-				if (olen + 1 >= cap) {
-					cap *= 2;
-					char *nb = realloc(out, cap);
-					if (!nb) { free(out); free(pending); return NULL; }
-					out = nb;
-				}
-				out[olen++] = '\n';
+				rc = morph_buf_putc(&out, '\n');
+				if (rc != 0) { free(pending); goto fail; }
 			}
 
-			size_t need = pending_len + 1;
-			while (olen + need >= cap) {
-				cap *= 2;
-				char *nb = realloc(out, cap);
-				if (!nb) { free(out); free(pending); return NULL; }
-				out = nb;
-			}
-			memcpy(out + olen, pending, pending_len);
-			olen += pending_len;
-			out[olen++] = '\n';
+			rc = morph_buf_append(&out, pending, pending_len);
+			if (rc != 0) { free(pending); goto fail; }
+			rc = morph_buf_putc(&out, '\n');
+			if (rc != 0) { free(pending); goto fail; }
 
 			prev_was_blank = pending_blank;
 			free(pending);
@@ -1446,18 +1423,13 @@ static char *md_normalize(const char *md)
 		}
 
 		if (is_blank) {
-			if (olen + 1 >= cap) {
-				cap *= 2;
-				char *nb = realloc(out, cap);
-				if (!nb) { free(out); free(pending); return NULL; }
-				out = nb;
-			}
-			out[olen++] = '\n';
+			rc = morph_buf_putc(&out, '\n');
+			if (rc != 0) { free(pending); goto fail; }
 			prev_was_blank = 1;
 		} else {
 			pending_len = line_len;
 			pending = malloc(pending_len + 1);
-			if (!pending) { free(out); return NULL; }
+			if (!pending) goto fail;
 
 			size_t wi = 0;
 			for (size_t i = 0; i < line_len; ) {
@@ -1495,21 +1467,18 @@ static char *md_normalize(const char *md)
 	}
 
 	if (pending) {
-		size_t need = pending_len + 1;
-		while (olen + need >= cap) {
-			cap *= 2;
-			char *nb = realloc(out, cap);
-			if (!nb) { free(out); free(pending); return NULL; }
-			out = nb;
-		}
-		memcpy(out + olen, pending, pending_len);
-		olen += pending_len;
-		out[olen++] = '\n';
+		rc = morph_buf_append(&out, pending, pending_len);
+		if (rc != 0) { free(pending); goto fail; }
+		rc = morph_buf_putc(&out, '\n');
+		if (rc != 0) { free(pending); goto fail; }
 		free(pending);
 	}
 
-	out[olen] = '\0';
-	return out;
+	return morph_buf_detach(&out);
+
+fail:
+	morph_buf_cleanup(&out);
+	return NULL;
 }
 
 /* ---------------- public API ---------------- */
@@ -1543,7 +1512,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 
 	free(norm);
 	free(ctx.link_href.buf);
-	free(ctx.code_raw);
+	morph_buf_cleanup(&ctx.code_raw);
 	if (ctx.table)
 		free_table(ctx.table);
 	free_media(&ctx);
@@ -1577,6 +1546,7 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 
 	free(norm);
 	free(ctx->link_href.buf);
+	morph_buf_cleanup(&ctx->code_raw);
 	if (ctx->table)
 		free_table(ctx->table);
 }

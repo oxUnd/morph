@@ -1,4 +1,5 @@
 #include "file.h"
+#include "array.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,55 +91,82 @@ char *file_expand_path(const char *path)
 	return strdup(path);
 }
 
-int file_list_dirs(const char *dir, char ***out_names, int *out_count)
+static int file_list_entries(const char *dir, int want_dir,
+			     char ***out_names, int *out_count)
 {
 	if (!dir || !out_names || !out_count)
 		return -EINVAL;
 	DIR *d = opendir(dir);
 	if (!d)
 		return -ENOENT;
-	int cap = 16;
-	int n = 0;
-	char **list = malloc(sizeof(char *) * (size_t)cap);
-	if (!list) {
+
+	morph_array_t list;
+	int rc = morph_array_init(&list, 16, sizeof(char *));
+	if (rc != 0) {
 		closedir(d);
-		return -ENOMEM;
+		return rc;
 	}
+
 	struct dirent *entry;
 	while ((entry = readdir(d)) != NULL) {
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+		if (want_dir &&
+		    (strcmp(entry->d_name, ".") == 0 ||
+		     strcmp(entry->d_name, "..") == 0))
 			continue;
+		if (!want_dir && entry->d_name[0] == '.')
+			continue;
+
 		char full[PATH_MAX];
 		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
 		struct stat st;
-		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
+		if (stat(full, &st) != 0)
 			continue;
-		if (n >= cap) {
-			cap *= 2;
-			char **new_list = realloc(list, sizeof(char *) * (size_t)cap);
-			if (!new_list) {
-				for (int i = 0; i < n; i++)
-					free(list[i]);
-				free(list);
-				closedir(d);
-				return -ENOMEM;
-			}
-			list = new_list;
-		}
-		list[n] = strdup(entry->d_name);
-		if (!list[n]) {
-			for (int i = 0; i < n; i++)
-				free(list[i]);
-			free(list);
+		if (want_dir && !S_ISDIR(st.st_mode))
+			continue;
+		if (!want_dir && !S_ISREG(st.st_mode))
+			continue;
+
+		char **slot = morph_array_push(&list);
+		if (!slot) {
+			char **names = list.elts;
+			for (size_t i = 0; i < list.nelts; i++)
+				free(names[i]);
+			morph_array_cleanup(&list);
 			closedir(d);
 			return -ENOMEM;
 		}
-		n++;
+		*slot = strdup(entry->d_name);
+		if (!*slot) {
+			char **names = list.elts;
+			for (size_t i = 0; i + 1 < list.nelts; i++)
+				free(names[i]);
+			morph_array_cleanup(&list);
+			closedir(d);
+			return -ENOMEM;
+		}
+		if (list.nelts > (size_t)INT_MAX) {
+			char **names = list.elts;
+			for (size_t i = 0; i < list.nelts; i++)
+				free(names[i]);
+			morph_array_cleanup(&list);
+			closedir(d);
+			return -EOVERFLOW;
+		}
 	}
 	closedir(d);
-	*out_names = list;
-	*out_count = n;
+	*out_names = list.elts;
+	*out_count = (int)list.nelts;
+	list.elts = NULL;
+	list.nelts = 0;
+	list.cap = 0;
+	list.size = 0;
+	list.heap_alloc = 0;
 	return 0;
+}
+
+int file_list_dirs(const char *dir, char ***out_names, int *out_count)
+{
+	return file_list_entries(dir, 1, out_names, out_count);
 }
 
 static int name_cmp(const void *a, const void *b)
@@ -148,53 +176,10 @@ static int name_cmp(const void *a, const void *b)
 
 int file_list_files(const char *dir, char ***out_names, int *out_count)
 {
-	if (!dir || !out_names || !out_count)
-		return -EINVAL;
-	DIR *d = opendir(dir);
-	if (!d)
-		return -ENOENT;
-	int cap = 16;
-	int n = 0;
-	char **list = malloc(sizeof(char *) * (size_t)cap);
-	if (!list) {
-		closedir(d);
-		return -ENOMEM;
-	}
-	struct dirent *entry;
-	while ((entry = readdir(d)) != NULL) {
-		if (entry->d_name[0] == '.')
-			continue;
-		char full[PATH_MAX];
-		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
-		struct stat st;
-		if (stat(full, &st) != 0 || !S_ISREG(st.st_mode))
-			continue;
-		if (n >= cap) {
-			cap *= 2;
-			char **new_list = realloc(list, sizeof(char *) * (size_t)cap);
-			if (!new_list) {
-				for (int i = 0; i < n; i++)
-					free(list[i]);
-				free(list);
-				closedir(d);
-				return -ENOMEM;
-			}
-			list = new_list;
-		}
-		list[n] = strdup(entry->d_name);
-		if (!list[n]) {
-			for (int i = 0; i < n; i++)
-				free(list[i]);
-			free(list);
-			closedir(d);
-			return -ENOMEM;
-		}
-		n++;
-	}
-	closedir(d);
-	qsort(list, (size_t)n, sizeof(char *), name_cmp);
-	*out_names = list;
-	*out_count = n;
+	int rc = file_list_entries(dir, 0, out_names, out_count);
+	if (rc != 0)
+		return rc;
+	qsort(*out_names, (size_t)*out_count, sizeof(char *), name_cmp);
 	return 0;
 }
 
