@@ -1,5 +1,6 @@
 #include "latex_unicode.h"
 #include "util/buf.h"
+#include "util/utf8.h"
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
@@ -587,15 +588,10 @@ static void render_font_group(const char *s, size_t len, morph_buf_t *o,
 				morph_buf_putc(o, (char)c);
 			}
 			i++;
-		} else if ((c & 0xe0) == 0xc0) {
-			morph_buf_append(o, s + i, 2);
-			i += 2;
-		} else if ((c & 0xf0) == 0xe0) {
-			morph_buf_append(o, s + i, 3);
-			i += 3;
-		} else if ((c & 0xf8) == 0xf0) {
-			morph_buf_append(o, s + i, 4);
-			i += 4;
+		} else if (c >= 0x80) {
+			size_t b = utf8_next_codepoint_len(s + i, len - i);
+			morph_buf_append(o, s + i, b);
+			i += b;
 		} else {
 			i++;
 		}
@@ -706,19 +702,6 @@ static size_t render_sup(morph_buf_t *o, const char *s, size_t len)
 		/* single char in braces: try unicode */
 		if (cl == 1 && render_sup_char(c[0], o))
 			return skip;
-		if (cl == 1 && (unsigned char)c[0] >= 0x80) {
-			/* multi-byte single codepoint */
-			size_t cp_len = 1;
-			if ((unsigned char)c[0] >= 0xf0) cp_len = 4;
-			else if ((unsigned char)c[0] >= 0xe0) cp_len = 3;
-			else if ((unsigned char)c[0] >= 0xc0) cp_len = 2;
-			if (cp_len <= cl) {
-				/* no unicode sup for most BMP, fallback */
-				morph_buf_putc(o, '^');
-				morph_buf_append(o, c, cl);
-				return skip;
-			}
-		}
 		/* multi-char: fallback ^(expr) */
 		morph_buf_putc(o, '^');
 		morph_buf_putc(o, '(');
@@ -729,8 +712,13 @@ static size_t render_sup(morph_buf_t *o, const char *s, size_t len)
 	if (render_sup_char(s[0], o))
 		return 1;
 	morph_buf_putc(o, '^');
-	morph_buf_putc(o, s[0]);
-	return 1;
+	{
+		size_t b = utf8_next_codepoint_len(s, len);
+		if (b == 0)
+			b = 1;
+		morph_buf_append(o, s, b);
+		return b;
+	}
 }
 
 static size_t render_sub(morph_buf_t *o, const char *s, size_t len)
@@ -754,8 +742,13 @@ static size_t render_sub(morph_buf_t *o, const char *s, size_t len)
 	if (render_sub_char(s[0], o))
 		return 1;
 	morph_buf_putc(o, '_');
-	morph_buf_putc(o, s[0]);
-	return 1;
+	{
+		size_t b = utf8_next_codepoint_len(s, len);
+		if (b == 0)
+			b = 1;
+		morph_buf_append(o, s, b);
+		return b;
+	}
 }
 
 /* ---------------- command lookup (binary search) ---------------- */
@@ -948,9 +941,12 @@ static size_t render_cmd(const char *s, size_t len, morph_buf_t *o)
 		}
 		if (rest > 0) {
 			/* single char argument */
-			render_expr(s + nlen, 1, o);
+			size_t arg_len = utf8_next_codepoint_len(s + nlen, rest);
+			if (arg_len == 0)
+				arg_len = 1;
+			render_expr(s + nlen, arg_len, o);
 			morph_buf_append(o, cmd->uni, cmd->ulen);
-			consumed += 1;
+			consumed += arg_len;
 			return consumed;
 		}
 	}
@@ -1071,10 +1067,7 @@ static size_t render_expr(const char *s, size_t len, morph_buf_t *o)
 
 		/* multi-byte UTF-8 pass-through */
 		if (c >= 0x80) {
-			size_t b = 1;
-			if ((c & 0xe0) == 0xc0) b = 2;
-			else if ((c & 0xf0) == 0xe0) b = 3;
-			else if ((c & 0xf8) == 0xf0) b = 4;
+			size_t b = utf8_next_codepoint_len(s + i, len - i);
 			if (i + b <= len) {
 				morph_buf_append(o, s + i, b);
 				i += b;

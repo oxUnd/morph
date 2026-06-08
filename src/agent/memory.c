@@ -51,18 +51,17 @@ static int64_t memory_now_unix(void)
 	return (int64_t)time(NULL);
 }
 
-/* CJK punctuation we treat as a hard stop when extracting a value out of
- * free-form user text. Encoded as raw UTF-8 byte sequences to avoid
- * -Wmultichar issues with literal CJK chars. */
-static int memory_stop_len(const unsigned char *p)
+static int memory_stop_len(const char *p)
 {
-	if (p[0] == 0xe3 && p[1] == 0x80 &&
-	    (p[2] == 0x81 || p[2] == 0x82))
-		return 3;
-	if (p[0] == 0xef && p[1] == 0xbc &&
-	    (p[2] == 0x8c || p[2] == 0x81 ||
-	     p[2] == 0x9f || p[2] == 0x9b))
-		return 3;
+	unsigned cp;
+	size_t len;
+
+	if (!p || !*p)
+		return 0;
+	if (!utf8_decode_codepoint(p, strlen(p), &cp, &len))
+		return 0;
+	if (utf8_is_cjk_sentence_punct(cp))
+		return (int)len;
 	return 0;
 }
 
@@ -144,7 +143,7 @@ static char *memory_snippet(const char *text, size_t max_len)
 	 * codepoint mid-stream — otherwise CJK input gets chopped to
 	 * something like "蓬松\xE2" which renders as "蓬松�".
 	 */
-	safe = utf8_safe_len(text, max_len);
+	safe = utf8_clamp_bytes(text, max_len);
 	out = strndup(text, safe);
 	if (!out)
 		return NULL;
@@ -198,7 +197,7 @@ static size_t memory_scan_value(const char *start, size_t out_sz)
 	while (start[len] && len + 1 < out_sz) {
 		if (memory_is_ascii_stop(start[len]))
 			break;
-		if (memory_stop_len((const unsigned char *)(start + len)) > 0)
+		if (memory_stop_len(start + len) > 0)
 			break;
 		len++;
 	}
@@ -1231,7 +1230,7 @@ static void memory_emit_wrapped(morph_buf_t *b,
 			p = nl ? nl + 1 : p + strlen(p);
 			continue;
 		}
-		take = logical > wrap ? utf8_safe_len(p, wrap) : logical;
+		take = logical > wrap ? utf8_clamp_bytes(p, wrap) : logical;
 		if (take == 0)
 			take = logical;
 
@@ -1290,7 +1289,7 @@ static void memory_copy_field(char *dst, size_t cap, const char *src,
 			    src[take - 1] == '\n'))
 		take--;
 	/* Snap to UTF-8 boundary. */
-	take = utf8_safe_len(src, take);
+	take = utf8_clamp_bytes(src, take);
 	memcpy(dst, src, take);
 	dst[take] = '\0';
 	utf8_sanitize_inplace(dst);

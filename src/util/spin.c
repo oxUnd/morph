@@ -101,21 +101,9 @@ static size_t get_term_width(void)
 
 static void spin_copy_sanitized(char *dst, size_t dst_cap, const char *src)
 {
-	size_t src_len;
-	size_t clean_len;
-
 	if (!dst || dst_cap == 0)
 		return;
-	if (!src) {
-		dst[0] = '\0';
-		return;
-	}
-
-	src_len = strlen(src);
-	if (src_len >= dst_cap)
-		src_len = utf8_safe_len(src, dst_cap - 1);
-	clean_len = utf8_sanitize_into(dst, src, src_len);
-	dst[clean_len] = '\0';
+	(void)utf8_copy_sanitized_clamped(dst, dst_cap, src, dst_cap - 1);
 }
 
 void spin_render(struct spin_context *ctx)
@@ -142,15 +130,15 @@ void spin_render(struct spin_context *ctx)
 	fprintf(ctx->output, "\r\033[K");
 
 	if (is_final) {
-		size_t prefix_w = utf8_visible_len_ansi(prefix);
+		size_t prefix_w = utf8_display_width_ansi(prefix);
 		size_t elapsed_w = elapsed[0]
-			? utf8_visible_len(elapsed) + 3 /* " (Xs)" */ : 0;
+			? utf8_display_width(elapsed) + 3 /* " (Xs)" */ : 0;
 		size_t fixed = prefix_w + 1; /* prefix + space */
 		size_t avail = budget > fixed ? budget - fixed : 0;
 		size_t msg_budget = avail > elapsed_w
 			? avail - elapsed_w : avail;
 		char msg_buf[1024];
-		size_t msg_vis = utf8_copy_vis(msg_buf, sizeof(msg_buf),
+		size_t msg_vis = utf8_copy_display_width(msg_buf, sizeof(msg_buf),
 					       ctx->message, msg_budget);
 		fprintf(ctx->output, "%s %s", prefix, msg_buf);
 		vis_width = fixed + msg_vis;
@@ -159,16 +147,16 @@ void spin_render(struct spin_context *ctx)
 			vis_width += elapsed_w;
 		}
 	} else {
-		size_t frame_w = utf8_visible_len(frame);
+		size_t frame_w = utf8_display_width(frame);
 		size_t elapsed_w = elapsed[0]
-			? utf8_visible_len(elapsed) + 1 /* leading space */
+			? utf8_display_width(elapsed) + 1 /* leading space */
 			: 0;
 		size_t fixed = frame_w + 1; /* frame + space */
 		size_t avail = budget > fixed ? budget - fixed : 0;
 		size_t msg_budget = avail > elapsed_w
 			? avail - elapsed_w : avail;
 		char msg_buf[1024];
-		size_t msg_vis = utf8_copy_vis(msg_buf, sizeof(msg_buf),
+		size_t msg_vis = utf8_copy_display_width(msg_buf, sizeof(msg_buf),
 					       ctx->message, msg_budget);
 		fprintf(ctx->output, "%s %s", frame, msg_buf);
 		vis_width = fixed + msg_vis;
@@ -186,11 +174,11 @@ void spin_render(struct spin_context *ctx)
 				size_t sub_max = remaining - arrow_w;
 				if (sub_max > 60)
 					sub_max = 60;
-				size_t sub_vis = utf8_visible_len(ctx->submessage);
+				size_t sub_vis = utf8_display_width(ctx->submessage);
 				char sub_buf[1024];
 				size_t copied_vis;
 				if (sub_vis <= sub_max) {
-					copied_vis = utf8_copy_vis(
+					copied_vis = utf8_copy_display_width(
 						sub_buf, sizeof(sub_buf),
 						ctx->submessage, sub_max);
 				} else {
@@ -201,9 +189,9 @@ void spin_render(struct spin_context *ctx)
 						% (scroll_range + 8);
 					if (offset > scroll_range)
 						offset = scroll_range;
-					const char *start = utf8_skip_columns(
+					const char *start = utf8_advance_display_width(
 						ctx->submessage, offset);
-					copied_vis = utf8_copy_vis(
+					copied_vis = utf8_copy_display_width(
 						sub_buf, sizeof(sub_buf),
 						start, sub_max);
 				}
@@ -373,14 +361,14 @@ void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char
 	 * either, even if `message` is longer than the terminal width. */
 	size_t term_w = get_term_width();
 	size_t budget = term_w > 1 ? term_w - 1 : 79;
-	size_t prefix_w = utf8_visible_len_ansi(prefix);
+	size_t prefix_w = utf8_display_width_ansi(prefix);
 	size_t elapsed_w = elapsed[0]
-		? utf8_visible_len(elapsed) + 3 /* " (Xs)" */ : 0;
+		? utf8_display_width(elapsed) + 3 /* " (Xs)" */ : 0;
 	size_t fixed = prefix_w + 1;
 	size_t avail = budget > fixed ? budget - fixed : 0;
 	size_t msg_budget = avail > elapsed_w ? avail - elapsed_w : avail;
 	char msg_buf[1024];
-	size_t msg_vis = utf8_copy_vis(msg_buf, sizeof(msg_buf),
+	size_t msg_vis = utf8_copy_display_width(msg_buf, sizeof(msg_buf),
 				       ctx->message, msg_budget);
 
 	fprintf(ctx->output, "%s %s", prefix, msg_buf);

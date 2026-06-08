@@ -409,26 +409,15 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
  * Returns the byte length of the plain text. */
 static size_t strip_ansi(const char *src, size_t len, char **out_plain)
 {
-	char *plain = malloc(len + 1);
+	size_t out_len = 0;
+	char *plain = utf8_strip_ansi_dup(src, len, &out_len);
 	if (!plain) {
-		*out_plain = NULL;
+		if (out_plain)
+			*out_plain = NULL;
 		return 0;
 	}
-	size_t j = 0;
-	for (size_t i = 0; i < len; ) {
-		if (src[i] == '\033' && i + 1 < len && src[i + 1] == '[') {
-			i += 2;
-			while (i < len && !((src[i] >= 'A' && src[i] <= 'Z') ||
-					    (src[i] >= 'a' && src[i] <= 'z')))
-				i++;
-			if (i < len) i++;
-			continue;
-		}
-		plain[j++] = src[i++];
-	}
-	plain[j] = '\0';
 	*out_plain = plain;
-	return j;
+	return out_len;
 }
 
 
@@ -475,11 +464,12 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			continue;
 		}
 
-		utf8_int32_t cp_raw;
-		size_t char_bytes = (size_t)utf8codepointcalcsize(plain + pi);
-		utf8codepoint(plain + pi, &cp_raw);
-		unsigned cp = (unsigned)cp_raw;
-		size_t char_cols = (size_t)utf8_cp_width(cp);
+		unsigned cp;
+		size_t char_bytes;
+		if (!utf8_decode_codepoint(plain + pi, plain_len - pi, &cp,
+				 &char_bytes))
+			break;
+		size_t char_cols = (size_t)utf8_codepoint_width(cp);
 		int is_cjk = utf8_is_cjk_cp(cp);
 		int is_space = ((unsigned char)plain[pi] == ' ');
 
@@ -522,10 +512,13 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			/* Skip leading spaces on new line */
 			while (ri < raw_len && pi < plain_len &&
 			       (unsigned char)plain[pi] == ' ') {
-				utf8_int32_t skip_cp_raw;
-				size_t skip_bytes = (size_t)utf8codepointcalcsize(plain + pi);
-				utf8codepoint(plain + pi, &skip_cp_raw);
-				char_cols = (size_t)utf8_cp_width((unsigned)skip_cp_raw);
+				unsigned skip_cp;
+				size_t skip_bytes;
+
+				if (!utf8_decode_codepoint(plain + pi, plain_len - pi,
+						 &skip_cp, &skip_bytes))
+					break;
+				char_cols = (size_t)utf8_codepoint_width(skip_cp);
 				ri += skip_bytes;
 				pi += skip_bytes;
 				line_start = ri;
@@ -533,11 +526,11 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 			/* Recalculate current character after skip */
 			if (ri >= raw_len)
 				break;
-			utf8_int32_t cp2_raw;
-			char_bytes = (size_t)utf8codepointcalcsize(plain + pi);
-			utf8codepoint(plain + pi, &cp2_raw);
-			unsigned cp2 = (unsigned)cp2_raw;
-			char_cols = (size_t)utf8_cp_width(cp2);
+			unsigned cp2;
+			if (!utf8_decode_codepoint(plain + pi, plain_len - pi, &cp2,
+					 &char_bytes))
+				break;
+			char_cols = (size_t)utf8_codepoint_width(cp2);
 			is_cjk = utf8_is_cjk_cp(cp2);
 			is_space = 0;
 			line_vis = 0;
@@ -731,7 +724,7 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 	for (size_t r = 0; r < t->rows.nelts; r++) {
 		struct table_row *row = &rows[r];
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
-			size_t w = utf8_visible_len(row->cells[c].plain);
+			size_t w = utf8_display_width(row->cells[c].plain);
 			if (w > col_w[c])
 				col_w[c] = w;
 		}
@@ -1277,6 +1270,14 @@ static void free_media(struct ansi_ctx *ctx)
 
 /* ---------------- markdown pre-normalization ---------------- */
 
+static int md_decode_cp(const char *s, size_t len, size_t off,
+			unsigned *cp, size_t *cp_len)
+{
+	if (!s || off >= len || !cp || !cp_len)
+		return 0;
+	return utf8_decode_codepoint(s + off, len - off, cp, cp_len);
+}
+
 static int is_table_sep_line(const char *line, size_t len)
 {
 	int has_pipe = 0;
@@ -1284,6 +1285,9 @@ static int is_table_sep_line(const char *line, size_t len)
 	size_t i = 0;
 	while (i < len) {
 		unsigned char c = (unsigned char)line[i];
+		unsigned cp;
+		size_t cp_len;
+
 		if (c == '|') {
 			has_pipe = 1;
 			i++;
@@ -1292,17 +1296,15 @@ static int is_table_sep_line(const char *line, size_t len)
 			i++;
 		} else if (c == ':' || c == ' ' || c == '\t') {
 			i++;
-		} else if (c == 0xef && i + 2 < len) {
-			unsigned char b1 = (unsigned char)line[i + 1];
-			unsigned char b2 = (unsigned char)line[i + 2];
-			if (b1 == 0xbd && b2 == 0x9c) {
+		} else if (md_decode_cp(line, len, i, &cp, &cp_len)) {
+			if (utf8_is_fullwidth_pipe_cp(cp)) {
 				has_pipe = 1;
-				i += 3;
-			} else if (b1 == 0xbc && b2 == 0x8d) {
+				i += cp_len;
+			} else if (utf8_is_fullwidth_dash_cp(cp)) {
 				has_dash = 1;
-				i += 3;
-			} else if (b1 == 0xbc && b2 == 0x9a) {
-				i += 3;
+				i += cp_len;
+			} else if (utf8_is_fullwidth_colon_cp(cp)) {
+				i += cp_len;
 			} else {
 				return 0;
 			}
@@ -1318,22 +1320,15 @@ static int line_has_pipe(const char *line, size_t len)
 	size_t i = 0;
 	while (i < len) {
 		unsigned char c = (unsigned char)line[i];
+		unsigned cp;
+		size_t cp_len;
+
 		if (c == '|')
 			return 1;
-		if (c == 0xef && i + 2 < len) {
-			unsigned char b1 = (unsigned char)line[i + 1];
-			unsigned char b2 = (unsigned char)line[i + 2];
-			if (b1 == 0xbd && b2 == 0x9c)
+		if (md_decode_cp(line, len, i, &cp, &cp_len)) {
+			if (utf8_is_fullwidth_pipe_cp(cp))
 				return 1;
-			i += 3;
-		} else if (c < 0x80) {
-			i++;
-		} else if ((c & 0xE0) == 0xC0) {
-			i += 2;
-		} else if ((c & 0xF0) == 0xE0) {
-			i += 3;
-		} else if ((c & 0xF8) == 0xF0) {
-			i += 4;
+			i += cp_len;
 		} else {
 			i++;
 		}
@@ -1433,24 +1428,24 @@ static char *md_normalize(const char *md)
 
 			size_t wi = 0;
 			for (size_t i = 0; i < line_len; ) {
-				unsigned char c = (unsigned char)p[i];
-				if (c == 0xef && i + 2 < line_len) {
-					unsigned char b1 = (unsigned char)p[i + 1];
-					unsigned char b2 = (unsigned char)p[i + 2];
-					if (b1 == 0xbd && b2 == 0x9c) {
+				unsigned cp;
+				size_t cp_len;
+
+				if (md_decode_cp(p, line_len, i, &cp, &cp_len)) {
+					if (utf8_is_fullwidth_pipe_cp(cp)) {
 						pending[wi++] = '|';
-						i += 3;
+						i += cp_len;
 						continue;
 					}
 					if (is_table_sep_line(p, line_len)) {
-						if (b1 == 0xbc && b2 == 0x8d) {
+						if (utf8_is_fullwidth_dash_cp(cp)) {
 							pending[wi++] = '-';
-							i += 3;
+							i += cp_len;
 							continue;
 						}
-						if (b1 == 0xbc && b2 == 0x9a) {
+						if (utf8_is_fullwidth_colon_cp(cp)) {
 							pending[wi++] = ':';
-							i += 3;
+							i += cp_len;
 							continue;
 						}
 					}

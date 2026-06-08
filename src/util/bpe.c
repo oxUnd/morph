@@ -230,27 +230,13 @@ static enum uc_class classify_cp(uint32_t cp)
 		return UC_OTHER;
 	}
 
-	if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
-	    (cp >= 0x3400 && cp <= 0x4DBF) ||
-	    (cp >= 0xF900 && cp <= 0xFAFF) ||
-	    (cp >= 0x20000 && cp <= 0x2A6DF) ||
-	    (cp >= 0x2A700 && cp <= 0x2B73F) ||
-	    (cp >= 0x2B740 && cp <= 0x2B81F) ||
-	    (cp >= 0x2B820 && cp <= 0x2CEAF) ||
-	    (cp >= 0x2CEB0 && cp <= 0x2EBEF) ||
-	    (cp >= 0x30000 && cp <= 0x3134F) ||
-	    (cp >= 0x2E80 && cp <= 0x2EFF) ||
-	    (cp >= 0x2F00 && cp <= 0x2FDF) ||
-	    (cp >= 0x3100 && cp <= 0x312F) ||
-	    (cp >= 0xFF00 && cp <= 0xFFEF))
+	if (utf8_is_cjk_cp(cp))
 		return UC_OTHER_LETTER;
-	if (cp >= 0x3040 && cp <= 0x309F)
+	if (utf8_is_hiragana_cp(cp))
 		return UC_OTHER_LETTER;
-	if (cp >= 0x30A0 && cp <= 0x30FF)
+	if (utf8_is_katakana_cp(cp))
 		return UC_OTHER_LETTER;
-	if ((cp >= 0xAC00 && cp <= 0xD7AF) ||
-	    (cp >= 0x1100 && cp <= 0x11FF) ||
-	    (cp >= 0x3130 && cp <= 0x318F))
+	if (utf8_is_hangul_cp(cp))
 		return UC_OTHER_LETTER;
 	if ((cp >= 0x00C0 && cp <= 0x00D6) ||
 	    (cp >= 0x00D8 && cp <= 0x00DE) ||
@@ -273,20 +259,12 @@ static enum uc_class classify_cp(uint32_t cp)
 	    (cp >= 0x0966 && cp <= 0x096F) ||
 	    (cp >= 0xFF10 && cp <= 0xFF19))
 		return UC_NUMBER;
-	if (cp == 0x00A0 || cp == 0x1680 || cp == 0x3000 ||
-	    (cp >= 0x2000 && cp <= 0x200A) ||
-	    cp == 0x2028 || cp == 0x2029 || cp == 0x202F ||
-	    cp == 0x205F)
+	if (utf8_is_unicode_space_cp(cp))
 		return UC_SPACE;
 	return UC_OTHER;
 }
 
 static int is_letter(enum uc_class c)
-{
-	return c == UC_UPPER || c == UC_LOWER || c == UC_OTHER_LETTER;
-}
-
-static int is_letter_or_mark(enum uc_class c)
 {
 	return c == UC_UPPER || c == UC_LOWER || c == UC_OTHER_LETTER;
 }
@@ -325,24 +303,34 @@ struct piece_iter {
 static uint32_t iter_peek(const struct piece_iter *it)
 {
 	if (it->pos >= it->len) return (uint32_t)-1;
-	utf8_int32_t cp;
-	utf8codepoint((const char *)it->text + it->pos, &cp);
-	return (uint32_t)cp;
+	unsigned cp;
+	size_t cp_len;
+	if (!utf8_decode_codepoint((const char *)it->text + it->pos,
+			 it->len - it->pos, &cp, &cp_len))
+		return it->text[it->pos];
+	return cp;
 }
 
 static uint32_t iter_next(struct piece_iter *it)
 {
 	if (it->pos >= it->len) return (uint32_t)-1;
-	utf8_int32_t cp;
-	const char *next = utf8codepoint((const char *)it->text + it->pos, &cp);
-	it->pos = (size_t)(next - (const char *)it->text);
-	return (uint32_t)cp;
+	unsigned cp;
+	size_t cp_len;
+	if (!utf8_decode_codepoint((const char *)it->text + it->pos,
+			 it->len - it->pos, &cp, &cp_len)) {
+		cp = it->text[it->pos];
+		it->pos++;
+		return cp;
+	}
+	it->pos += cp_len;
+	return cp;
 }
 
 static size_t iter_cp_bytes(const struct piece_iter *it)
 {
 	if (it->pos >= it->len) return 0;
-	return (size_t)utf8codepointcalcsize((const char *)it->text + it->pos);
+	return utf8_next_codepoint_len((const char *)it->text + it->pos,
+			     it->len - it->pos);
 }
 
 static int is_contraction_suffix(const unsigned char *text, size_t len,
@@ -576,18 +564,20 @@ try_digits:
 				size_t ws_end = start;
 				size_t ws_cp_count = 0;
 				while (ws_end < it.len) {
-					utf8_int32_t pcp;
-					const char *nxt =
-						utf8codepoint(
-							(const char *)it.text + ws_end,
-							&pcp);
-					enum uc_class pc = classify_cp(
-						(uint32_t)pcp);
+					unsigned pcp;
+					size_t cp_len;
+					enum uc_class pc;
+
+					if (!utf8_decode_codepoint(
+						(const char *)it.text + ws_end,
+						it.len - ws_end, &pcp,
+						&cp_len))
+						break;
+					pc = classify_cp(pcp);
 					if (pc != UC_SPACE &&
 					    pc != UC_NEWLINE)
 						break;
-					ws_end = (size_t)(nxt -
-						(const char *)it.text);
+					ws_end += cp_len;
 					ws_cp_count++;
 				}
 
@@ -603,15 +593,10 @@ try_digits:
 					 * last ws char becomes a prefix
 					 * for the next word.
 					 */
-					size_t back = ws_end;
-					const unsigned char *bp =
-						it.text + back;
-					while (back > start &&
-					       (bp[-1] & 0xC0) == 0x80)
-						back--;
-					if (back > start)
-						back--;
-					it.pos = back;
+					it.pos = (size_t)(utf8_prev_codepoint(
+						(const char *)it.text + start,
+						(const char *)it.text + ws_end) -
+						(const char *)it.text);
 				} else {
 					/* Alt 8: single whitespace char */
 					iter_next(&it);
@@ -844,15 +829,19 @@ static int split_o200k(const char *text, size_t text_len,
 			{
 				size_t ws_end = it.pos;
 				while (ws_end < it.len) {
-					utf8_int32_t pcp;
-					const char *nxt =
-						utf8codepoint(
-							(const char *)it.text + ws_end,
-							&pcp);
-					enum uc_class pc = classify_cp((uint32_t)pcp);
+					unsigned pcp;
+					size_t cp_len;
+					enum uc_class pc;
+
+					if (!utf8_decode_codepoint(
+						(const char *)it.text + ws_end,
+						it.len - ws_end, &pcp,
+						&cp_len))
+						break;
+					pc = classify_cp(pcp);
 					if (pc != UC_SPACE && pc != UC_NEWLINE)
 						break;
-					ws_end = (size_t)(nxt - (const char *)it.text);
+					ws_end += cp_len;
 				}
 				if (ws_end >= it.len) {
 					it.pos = ws_end;
@@ -1029,7 +1018,6 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 		NULL, NULL, NULL
 	};
 	char home_path[PATH_MAX];
-	char vendor_path[PATH_MAX];
 
 	const char *home = getenv("HOME");
 	if (home) {

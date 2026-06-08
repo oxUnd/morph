@@ -63,39 +63,26 @@ static enum char_class classify_utf8(const unsigned char **p)
 		return CHAR_ASCII_PUNCT;
 	}
 
-	utf8_int32_t cp_raw;
-	const char *next = utf8codepoint((const char *)*p, &cp_raw);
-	unsigned cp = (unsigned)cp_raw;
-	*p = (const unsigned char *)next;
+	unsigned cp;
+	size_t cp_len;
+
+	if (!utf8_decode_codepoint((const char *)*p, strlen((const char *)*p),
+			 &cp, &cp_len)) {
+		(*p)++;
+		return CHAR_OTHER;
+	}
+	*p += cp_len;
 
 	if (cp == 0)
 		return CHAR_OTHER;
 
-	/* CJK Unified Ideographs */
-	if ((cp >= 0x4E00 && cp <= 0x9FFF) ||
-	    (cp >= 0x3400 && cp <= 0x4DBF))
-		return CHAR_CJK_IDEOGRAPH;
-	/* CJK Compatibility Ideographs */
-	if (cp >= 0xF900 && cp <= 0xFAFF)
-		return CHAR_CJK_IDEOGRAPH;
-	/* CJK Unified Ideographs Extension A-I */
-	if ((cp >= 0x20000 && cp <= 0x2A6DF) ||
-	    (cp >= 0x2A700 && cp <= 0x2B73F) ||
-	    (cp >= 0x2B740 && cp <= 0x2B81F) ||
-	    (cp >= 0x2B820 && cp <= 0x2CEAF) ||
-	    (cp >= 0x2CEB0 && cp <= 0x2EBEF) ||
-	    (cp >= 0x30000 && cp <= 0x3134F))
+	if (utf8_is_cjk_cp(cp))
 		return CHAR_CJK_IDEOGRAPH_EXT;
-	/* Hiragana */
-	if (cp >= 0x3040 && cp <= 0x309F)
+	if (utf8_is_hiragana_cp(cp))
 		return CHAR_HIRAGANA;
-	/* Katakana */
-	if (cp >= 0x30A0 && cp <= 0x30FF)
+	if (utf8_is_katakana_cp(cp))
 		return CHAR_KATAKANA;
-	/* Hangul Syllables */
-	if ((cp >= 0xAC00 && cp <= 0xD7AF) ||
-	    (cp >= 0x1100 && cp <= 0x11FF) ||
-	    (cp >= 0x3130 && cp <= 0x318F))
+	if (utf8_is_hangul_cp(cp))
 		return CHAR_HANGUL;
 	/* Emoji and symbols */
 	if ((cp >= 0x1F600 && cp <= 0x1F64F) ||
@@ -111,18 +98,8 @@ static enum char_class classify_utf8(const unsigned char **p)
 	    (cp >= 0x1F0A0 && cp <= 0x1F0FF) ||
 	    cp == 0x200D || cp == 0xFE0F)
 		return CHAR_EMOJI_OTHER;
-	/* Latin Extended */
-	if ((cp >= 0x00C0 && cp <= 0x024F) ||
-	    (cp >= 0x1E00 && cp <= 0x1EFF))
+	if (utf8_is_latin_extended_cp(cp))
 		return CHAR_LATIN_EXTENDED;
-	/* Fullwidth forms */
-	if (cp >= 0xFF00 && cp <= 0xFFEF)
-		return CHAR_CJK_IDEOGRAPH;
-	/* CJK radicals / bopomofo */
-	if ((cp >= 0x2E80 && cp <= 0x2EFF) ||
-	    (cp >= 0x2F00 && cp <= 0x2FDF) ||
-	    (cp >= 0x3100 && cp <= 0x312F))
-		return CHAR_CJK_IDEOGRAPH;
 
 	return CHAR_OTHER;
 }

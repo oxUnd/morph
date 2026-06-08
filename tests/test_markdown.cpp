@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "render/markdown.h"
+#include "util/utf8.h"
 #include <string.h>
 #include <stdlib.h>
 #include <sstream>
@@ -697,34 +698,10 @@ TEST(MarkdownRender, TableWrapCJKContent)
 	EXPECT_TRUE(plain.find("\xe5\xa4\xaa") != std::string::npos);
 }
 
-static size_t count_visible_cols(const std::string &s)
-{
-	size_t cols = 0;
-	for (size_t i = 0; i < s.size(); ) {
-		unsigned char c = (unsigned char)s[i];
-		if (c < 0x80) { cols++; i++; }
-		else if ((c & 0xE0) == 0xC0) { cols++; i += 2; }
-		else if ((c & 0xF0) == 0xE0) { cols += 2; i += 3; }
-		else if ((c & 0xF8) == 0xF0) { cols += 2; i += 4; }
-		else { cols++; i++; }
-	}
-	return cols;
-}
-
 static size_t count_segment_width(const std::string &line, size_t start, size_t end)
 {
 	std::string seg = line.substr(start, end - start);
-	size_t w = 0;
-	for (size_t i = 0; i < seg.size(); ) {
-		unsigned char c = (unsigned char)seg[i];
-		if (c == ' ') { w++; i++; }
-		else if (c < 0x80) { w++; i++; }
-		else if ((c & 0xE0) == 0xC0) { w++; i += 2; }
-		else if ((c & 0xF0) == 0xE0) { w += 2; i += 3; }
-		else if ((c & 0xF8) == 0xF0) { w += 2; i += 4; }
-		else { w++; i++; }
-	}
-	return w;
+	return utf8_display_width(seg.c_str());
 }
 
 TEST(MarkdownRender, TableCJKAlignment)

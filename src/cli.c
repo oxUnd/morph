@@ -41,6 +41,7 @@
 #include "stb_image.h"
 #include "cJSON.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,9 +80,6 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 static const char *default_db_path = "~/.morph/data.db";
 static const char *default_config_path = "~/.morph/config.toml";
 
-/* Remove invalid UTF-8 byte sequences in-place.
- * Valid sequences are kept; invalid bytes are simply removed.
- * This ensures the string is always safe for libedit / readline rendering. */
 /* Load stored messages from DB into react context.
  * Clears any existing in-memory messages first. */
 static void session_load_history(struct cli_context *ctx)
@@ -141,10 +139,15 @@ static void cli_refresh_memory_context(struct cli_context *ctx,
 
 static void print_padded(const char *s, int target_width)
 {
+	size_t width;
+	int dw;
+	int pad;
+
 	if (!s) s = "";
-	int dw = utf8_display_width(s);
+	width = utf8_display_width(s);
+	dw = width > (size_t)INT_MAX ? INT_MAX : (int)width;
 	fputs(s, stdout);
-	int pad = target_width - dw;
+	pad = target_width - dw;
 	for (int i = 0; i < pad; i++)
 		putchar(' ');
 }
@@ -2876,11 +2879,9 @@ static int output_handle_thought(struct cli_context *ctx, const char *content)
 		const char *preview = last_nl ? last_nl + 1 : ctx->stream_buf;
 		while (*preview == ' ' || *preview == '\t')
 			preview++;
-		size_t plen = strlen(preview);
-		if (plen > 60)
-			preview = preview + plen - 60;
+		preview = utf8_suffix_display_width(preview, 60);
 		char sub[128];
-		snprintf(sub, sizeof(sub), "%.60s", preview);
+		utf8_copy_display_width(sub, sizeof(sub), preview, 60);
 		spin_set_sub(&ctx->spin, sub);
 	} else if (!ctx->streaming) {
 		if (!ctx->spin.running) {
@@ -3375,15 +3376,9 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
 		char display_args[512];
-		strncpy(display_args, tool_args, sizeof(display_args) - 1);
-		display_args[sizeof(display_args) - 1] = '\0';
-		size_t alen = strlen(display_args);
-		if (alen > 200) {
-			display_args[197] = '.';
-			display_args[198] = '.';
-			display_args[199] = '.';
-			display_args[200] = '\0';
-		}
+		utf8_copy_sanitized_display_width(display_args,
+						  sizeof(display_args),
+						  tool_args, 200);
 		printf("  Args: " ANSI_DIM "%s" ANSI_RESET "\n", display_args);
 	}
 
@@ -3470,15 +3465,9 @@ static enum tool_operation_verdict operation_approval_callback(
 		const char *command = op->action;
 		if (command) {
 			char display[512];
-			strncpy(display, command, sizeof(display) - 1);
-			display[sizeof(display) - 1] = '\0';
-			size_t alen = strlen(display);
-			if (alen > 380) {
-				display[377] = '.';
-				display[378] = '.';
-				display[379] = '.';
-				display[380] = '\0';
-			}
+			utf8_copy_sanitized_display_width(display,
+							  sizeof(display),
+							  command, 380);
 			printf("  Cmd:  " ANSI_BOLD "%s" ANSI_RESET "\n",
 			       display);
 		}
@@ -3530,7 +3519,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		size_t len = strlen(input);
 		size_t max_bytes = sizeof(title) - 4;
 		if (len > max_bytes) {
-			size_t chop = utf8_truncate(input, max_bytes);
+			size_t chop = utf8_clamp_bytes(input, max_bytes);
 			memcpy(title, input, chop);
 			title[chop] = '\0';
 			strcat(title, "...");

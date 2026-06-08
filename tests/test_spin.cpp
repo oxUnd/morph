@@ -89,14 +89,7 @@ TEST(SpinSetSub, Utf8TruncationSafe)
 	EXPECT_LT(len, sizeof(ctx.submessage));
 	EXPECT_GT(len, 0u);
 
-	const char *p = ctx.submessage + len;
-	while (p > ctx.submessage && (*p & 0xC0) == 0x80)
-		p--;
-	if (p > ctx.submessage) {
-		unsigned char c = (unsigned char)*p;
-		bool valid_start = (c & 0xC0) != 0x80;
-		EXPECT_TRUE(valid_start);
-	}
+	EXPECT_EQ(utf8nvalid(ctx.submessage, len), nullptr);
 
 	spin_destroy(&ctx);
 	fclose(devnull);
@@ -148,6 +141,40 @@ TEST(SpinUpdate, InvalidUtf8IsSanitized)
 	fclose(devnull);
 }
 
+TEST(Utf8Util, TailColumnsKeepsWholeCodepoints)
+{
+	const char *s = "ab\xe4\xb8\xad" "cd";
+	const char *tail = utf8_suffix_display_width(s, 4);
+
+	EXPECT_STREQ(tail, "\xe4\xb8\xad" "cd");
+	EXPECT_EQ(utf8_display_width(tail), 4u);
+}
+
+TEST(Utf8Util, CopySanitizedDisplayWidthDropsInvalidBytes)
+{
+	char out[16];
+	const char invalid[] = "ab\xe4\xb8""X\xff""cd";
+
+	size_t width = utf8_copy_sanitized_display_width(out, sizeof(out),
+							 invalid, 5);
+
+	EXPECT_STREQ(out, "abXcd");
+	EXPECT_EQ(width, 5u);
+	EXPECT_EQ(utf8valid(out), nullptr);
+}
+
+TEST(Utf8Util, StripAnsiHandlesCsiAndOsc)
+{
+	const char input[] =
+		"\033[31m\xe7\xba\xa2\033[0mX\033]0;title\aY";
+	char out[32];
+
+	size_t len = utf8_strip_ansi(out, input, strlen(input));
+
+	EXPECT_STREQ(out, "\xe7\xba\xa2XY");
+	EXPECT_EQ(len, strlen(out));
+}
+
 TEST(SpinRender, ChineseMarqueeFramesAreValidUtf8)
 {
 	char *buf = nullptr;
@@ -179,15 +206,15 @@ TEST(SpinRender, ChineseMarqueeFramesAreValidUtf8)
 	free(buf);
 }
 
-TEST(Utf8SkipColumns, DoesNotSplitWideCharacters)
+TEST(Utf8AdvanceDisplayWidth, DoesNotSplitWideCharacters)
 {
 	const char *s = "A\xe4\xb8\xad""B";
 
-	EXPECT_EQ(utf8_skip_columns(s, 0), s);
-	EXPECT_EQ(utf8_skip_columns(s, 1), s + 1);
-	EXPECT_EQ(utf8_skip_columns(s, 2), s + 1);
-	EXPECT_EQ(utf8_skip_columns(s, 3), s + 4);
-	EXPECT_EQ(utf8_skip_columns(s, 4), s + 5);
+	EXPECT_EQ(utf8_advance_display_width(s, 0), s);
+	EXPECT_EQ(utf8_advance_display_width(s, 1), s + 1);
+	EXPECT_EQ(utf8_advance_display_width(s, 2), s + 1);
+	EXPECT_EQ(utf8_advance_display_width(s, 3), s + 4);
+	EXPECT_EQ(utf8_advance_display_width(s, 4), s + 5);
 }
 
 TEST(SpinSetSub, ExactBufferSize)
