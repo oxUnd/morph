@@ -1,5 +1,5 @@
 ---
-name: creation
+name: morph-creation
 description: Creative visual production. Activate when the user wants to generate an image (e.g. "generate a cyberpunk city skyline", "create a character portrait", "design a product mockup", "paint a watercolor landscape") or generate a video (e.g. "create a cinematic sunset timelapse", "make a product showcase animation", "generate a slow-motion ocean wave clip", "produce a character walk cycle"). Also covers visual storytelling, world building, character design, art direction, and motion design.
 ---
 
