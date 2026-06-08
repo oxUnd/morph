@@ -47,89 +47,98 @@ TEST_F(TextGenTest, BothToolsRegistered) {
 
 TEST_F(TextGenTest, ExecMissingPrompt) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "error") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "error") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecNullArgs) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", NULL, &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecEmptyArgs) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", "", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecMalformedJson) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", "not json at all", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
+	ASSERT_NE(result.text.data, nullptr);
 	/* Should still detect missing prompt even from malformed JSON */
-	EXPECT_TRUE(strstr(result, "error") != NULL);
-	free(result);
+	EXPECT_TRUE(strstr(result.text.data, "error") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecMissingPrompt) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "error") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "error") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecNullArgs) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa", NULL, &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecEmptyArgs) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa", "", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecWithPromptOnlyNoLLM) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", "{\"prompt\":\"hello\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecWithPromptOnlyNoLLM) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa", "{\"prompt\":\"test\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecVeryLongPromptArg) {
@@ -141,63 +150,69 @@ TEST_F(TextGenTest, ExecVeryLongPromptArg) {
 		pos += snprintf(long_json + pos, sizeof(long_json) - pos, "test%d ", i);
 	snprintf(long_json + pos, sizeof(long_json) - pos, "\"}");
 
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen", long_json, &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecPromptWithSpecialChars) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen",
 		"{\"prompt\":\"hello\\nworld\\ttab\\\"quote\\u0041\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ExecPromptWithUnicode) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_gen",
 		"{\"prompt\":\"你好世界こんにちは\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecWithContext) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa",
 		"{\"prompt\":\"summarize\",\"context\":\"long text here\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, QaExecWithEmptyContext) {
 	text_qa_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "text_qa",
 		"{\"prompt\":\"test\",\"context\":\"\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_TRUE(strstr(result, "no LLM") != NULL);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "no LLM") != NULL);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(TextGenTest, ToolNotFound) {
 	text_gen_init(&reg, NULL);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent_tool", "{}", &result);
 	EXPECT_NE(rc, 0);
-	EXPECT_EQ(result, nullptr);
+	EXPECT_EQ(result.text.data, nullptr);
 }
 
 TEST_F(TextGenTest, NullResultPtr) {

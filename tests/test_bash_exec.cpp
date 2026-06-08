@@ -25,10 +25,11 @@ protected:
 static std::string exec_raw(struct tool_registry &reg, const char *args_json,
 			    int &rc)
 {
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	rc = tool_exec(&reg, "bash_exec", args_json, &result);
-	std::string s(result ? result : "");
-	free(result);
+	std::string s(result.text.data ? result.text.data : "");
+	tool_result_cleanup(&result);
 	return s;
 }
 
@@ -871,10 +872,11 @@ TEST_F(BashExecTest, CommandFieldInResult)
 TEST_F(BashExecTest, ToolNotFound)
 {
 	bash_exec_init(&reg, tctx);
-	char *result = NULL;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent_tool", "{}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(BashExecTest, BlockedDnf)

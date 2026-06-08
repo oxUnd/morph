@@ -8,14 +8,14 @@
 
 static struct skill_registry *g_skills;
 
-static int skill_activate_exec(const char *args_json, char **result_json,
+static int skill_activate_exec(const char *args_json, struct tool_result *result,
 			       void *user_data)
 {
 	(void)user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 	if (!g_skills) {
-		*result_json = strdup("{\"error\":\"skill system not initialized\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
 	}
 
@@ -33,9 +33,9 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 	}
 
 	if (name[0] == '\0') {
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing or empty 'name' parameter. "
-			"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}");
+			"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -44,7 +44,7 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' not found\"}", name);
-		*result_json = strdup(err);
+		(void)tool_result_take_text(result, strdup(err));
 		return -ENOENT;
 	}
 
@@ -52,7 +52,7 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' is disabled\"}", name);
-		*result_json = strdup(err);
+		(void)tool_result_take_text(result, strdup(err));
 		return -EACCES;
 	}
 
@@ -61,7 +61,7 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 		snprintf(msg, sizeof(msg),
 			 "Skill '%s' is already active. Its instructions are in context.",
 			 name);
-		*result_json = strdup(msg);
+		(void)tool_result_take_text(result, strdup(msg));
 		return 0;
 	}
 
@@ -71,28 +71,28 @@ static int skill_activate_exec(const char *args_json, char **result_json,
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to activate skill '%s' (code %d)\"}",
 			 name, rc);
-		*result_json = strdup(err);
+		(void)tool_result_take_text(result, strdup(err));
 		return rc;
 	}
 
 	if (!skill->body || !skill->body[0]) {
-		*result_json = strdup(
-			"Skill activated but contains no instructions.");
+		(void)tool_result_take_text(result, strdup(
+			"Skill activated but contains no instructions."));
 		return 0;
 	}
 
 	size_t body_len = strlen(skill->body);
 	size_t dir_len = strlen(skill->skill_dir);
 	size_t result_len = 128 + strlen(name) + dir_len + body_len + 16;
-	char *result = malloc(result_len);
-	if (!result) {
-		*result_json = strdup("{\"error\":\"out of memory\"}");
+	char *msg = malloc(result_len);
+	if (!msg) {
+		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
-	snprintf(result, result_len,
+	snprintf(msg, result_len,
 		 "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>",
 		 name, skill->skill_dir, skill->body);
-	*result_json = result;
+	(void)tool_result_take_text(result, msg);
 
 	log_info("skill_activate: '%s' activated (%zu bytes of instructions)",
 		 name, body_len);

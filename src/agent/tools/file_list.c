@@ -22,14 +22,14 @@ static int name_cmp(const void *a, const void *b)
 	return strcmp(sa, sb);
 }
 
-static int file_list_exec(const char *args_json, char **result_json, void *user_data)
+static int file_list_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json) return -EINVAL;
+	if (!result) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -37,9 +37,9 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	const char *dir_path = cJSON_IsString(dp) ? dp->valuestring : NULL;
 	if (!dir_path) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'dir_path' parameter. "
-			"Usage: file_list({\\\"dir_path\\\": \\\"path/to/dir\\\"})\"}");
+			"Usage: file_list({\\\"dir_path\\\": \\\"path/to/dir\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -51,11 +51,11 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"directory not found\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"directory not found\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"list path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"list path outside workspace: permission denied\"}"));
 			return rc;
 		}
 	} else {
@@ -66,7 +66,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	DIR *d = opendir(resolved_path);
 	if (!d) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"directory not found\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"directory not found\"}"));
 		return -ENOENT;
 	}
 
@@ -108,7 +108,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		cJSON_Delete(dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		*result_json = strdup("{\"error\":\"out of memory\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
 	for (int i = 0; i < dirc; i++)
@@ -125,7 +125,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		cJSON_Delete(sorted_dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		*result_json = strdup("{\"error\":\"out of memory\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
 	for (int i = 0; i < filec; i++)
@@ -150,7 +150,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	*result_json = str;
+	(void)tool_result_take_text(result, str);
 	return 0;
 }
 

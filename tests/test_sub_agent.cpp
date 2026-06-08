@@ -171,10 +171,10 @@ static struct model *create_mock_llm(const char *response)
 
 /* ---- mock tool ---- */
 
-static int sa_test_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int sa_test_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json; (void)user_data;
-	*result_json = strdup("{\"result\":\"sub_agent_test\"}");
+	(void)tool_result_take_text(result, strdup("{\"result\":\"sub_agent_test\"}"));
 	return 0;
 }
 
@@ -770,6 +770,7 @@ TEST_F(SubAgentTest, CheckStatusInvalidId) {
 	char *result = nullptr;
 	int rc = sub_agent_check_status(rt, "sa_999", &status, &result);
 	EXPECT_EQ(rc, -ENOENT);
+	free(result);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -856,6 +857,7 @@ TEST_F(SubAgentTest, FanoutNullTasks) {
 				   SUB_AGENT_MERGE_RAW, &result), -EINVAL);
 	EXPECT_EQ(sub_agent_fanout(rt, "a", nullptr, 0,
 				   SUB_AGENT_MERGE_RAW, &result), -EINVAL);
+	free(result);
 	sub_agent_runtime_destroy(rt);
 }
 

@@ -329,9 +329,9 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 /* ----- MCP tools/call ----- */
 
 int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
-		  const char *args_json, char **out_result_json)
+		  const char *args_json, struct tool_result *out_result)
 {
-	if (!client || !name || !out_result_json)
+	if (!client || !name || !out_result)
 		return -EINVAL;
 
 	char params_buf[MCP_JSON_BUF_MAX];
@@ -351,12 +351,13 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
-			*out_result_json = strdup("{\"error\":\"empty response\",\"isError\":true}");
+			(void)tool_result_take_text(out_result, strdup("{\"error\":\"empty response\",\"isError\":true}"));
 			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
-		*out_result_json = malloc(256);
-		snprintf(*out_result_json, 256,
-			 "{\"error\":\"MCP call failed\",\"code\":%d,\"isError\":true}", rc);
+		(void)tool_result_printf(out_result,
+					 "{\"error\":\"MCP call failed\","
+					 "\"code\":%d,\"isError\":true}",
+					 rc);
 		free(result);
 		return rc;
 	}
@@ -365,7 +366,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: tools/call response parse error");
-		*out_result_json = strdup("{\"error\":\"response parse error\",\"isError\":true}");
+		(void)tool_result_take_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
 		free(result);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
@@ -406,15 +407,15 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 			cJSON_AddStringToObject(resp, "content",
 						combined_buf.data);
 			cJSON_AddBoolToObject(resp, "isError", tool_error);
-			*out_result_json = cJSON_PrintUnformatted(resp);
+			(void)tool_result_take_json(out_result, cJSON_PrintUnformatted(resp));
 			cJSON_Delete(resp);
 			morph_buf_cleanup(&combined_buf);
 		} else {
 			morph_buf_cleanup(&combined_buf);
-			*out_result_json = strdup("{\"error\":\"out of memory\",\"isError\":true}");
+			(void)tool_result_take_text(out_result, strdup("{\"error\":\"out of memory\",\"isError\":true}"));
 		}
 	} else {
-		*out_result_json = mcp_strdup_result(arena, result);
+		(void)tool_result_take_text(out_result, mcp_strdup_result(arena, result));
 	}
 
 	cJSON_Delete(obj);
@@ -500,7 +501,8 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 
 /* ----- MCP resources/read ----- */
 
-int mcp_read_resource(struct mcp_client *client, struct arena *arena, const char *uri, char **out_content)
+int mcp_read_resource(struct mcp_client *client, struct arena *arena,
+		      const char *uri, struct tool_result *out_content)
 {
 	if (!client || !uri || !out_content)
 		return -EINVAL;
@@ -562,9 +564,9 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena, const char
 			}
 		}
 
-		*out_content = mcp_strdup_result(arena, combined);
+		(void)tool_result_take_text(out_content, mcp_strdup_result(arena, combined));
 	} else {
-		*out_content = mcp_strdup_result(arena, result);
+		(void)tool_result_take_text(out_content, mcp_strdup_result(arena, result));
 	}
 
 	cJSON_Delete(obj);
@@ -652,7 +654,7 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 /* ----- MCP prompts/get ----- */
 
 int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
-		   const char *args_json, char **out_result)
+		   const char *args_json, struct tool_result *out_result)
 {
 	if (!client || !name || !out_result)
 		return -EINVAL;
@@ -681,7 +683,7 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
-	*out_result = mcp_strdup_result(arena, result);
+	(void)tool_result_take_text(out_result, mcp_strdup_result(arena, result));
 	free(result);
 	return 0;
 }
@@ -693,7 +695,7 @@ struct mcp_tool_binding {
 	char mcp_tool_name[MCP_NAME_MAX];
 };
 
-static int mcp_tool_exec(const char *args_json, char **result_json, void *user_data)
+static int mcp_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct mcp_tool_binding *binding = (struct mcp_tool_binding *)user_data;
 	if (!binding || !binding->client)
@@ -701,15 +703,15 @@ static int mcp_tool_exec(const char *args_json, char **result_json, void *user_d
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		*result_json = malloc(256);
-		snprintf(*result_json, 256,
-			 "{\"error\":\"MCP server '%s' not connected\",\"code\":%d}",
-			 binding->client->config.name, rc);
+		(void)tool_result_printf(result,
+					 "{\"error\":\"MCP server '%s' not "
+					 "connected\",\"code\":%d}",
+					 binding->client->config.name, rc);
 		return rc;
 	}
 
 	return mcp_call_tool(binding->client, NULL, binding->mcp_tool_name,
-			     args_json, result_json);
+			     args_json, result);
 }
 
 int mcp_register_server_tools(struct mcp_client *client,
@@ -781,7 +783,7 @@ struct mcp_resource_binding {
 	char uri[MCP_URI_MAX];
 };
 
-static int mcp_resource_exec(const char *args_json, char **result_json, void *user_data)
+static int mcp_resource_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct mcp_resource_binding *binding = (struct mcp_resource_binding *)user_data;
 	if (!binding || !binding->client)
@@ -789,15 +791,15 @@ static int mcp_resource_exec(const char *args_json, char **result_json, void *us
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		*result_json = malloc(256);
-		snprintf(*result_json, 256,
-			 "{\"error\":\"MCP server '%s' not connected\",\"code\":%d}",
-			 binding->client->config.name, rc);
+		(void)tool_result_printf(result,
+					 "{\"error\":\"MCP server '%s' not "
+					 "connected\",\"code\":%d}",
+					 binding->client->config.name, rc);
 		return rc;
 	}
 
 	(void)args_json;
-	return mcp_read_resource(binding->client, NULL, binding->uri, result_json);
+	return mcp_read_resource(binding->client, NULL, binding->uri, result);
 }
 
 int mcp_register_server_resources(struct mcp_client *client,
@@ -872,7 +874,7 @@ struct mcp_prompt_binding {
 	char mcp_prompt_name[MCP_NAME_MAX];
 };
 
-static int mcp_prompt_exec(const char *args_json, char **result_json, void *user_data)
+static int mcp_prompt_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct mcp_prompt_binding *binding = (struct mcp_prompt_binding *)user_data;
 	if (!binding || !binding->client)
@@ -880,15 +882,15 @@ static int mcp_prompt_exec(const char *args_json, char **result_json, void *user
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		*result_json = malloc(256);
-		snprintf(*result_json, 256,
-			 "{\"error\":\"MCP server '%s' not connected\",\"code\":%d}",
-			 binding->client->config.name, rc);
+		(void)tool_result_printf(result,
+					 "{\"error\":\"MCP server '%s' not "
+					 "connected\",\"code\":%d}",
+					 binding->client->config.name, rc);
 		return rc;
 	}
 
 	return mcp_get_prompt(binding->client, NULL, binding->mcp_prompt_name,
-			      args_json, result_json);
+			      args_json, result);
 }
 
 int mcp_register_server_prompts(struct mcp_client *client,

@@ -13,10 +13,10 @@
 
 static struct model *g_img_llm;
 
-static int img_gen_exec(const char *args_json, char **result_json, void *user_data)
+static int img_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -36,9 +36,9 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	}
 	if (!prompt) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
-			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}");
+			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -53,7 +53,7 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		}
 		if (!valid) {
 			cJSON_Delete(root);
-			*result_json = strdup("{\"error\":\"invalid size, use WIDTHxHEIGHT (e.g. 2048x2048), 2k, 3k, or 4k\"}");
+			(void)tool_result_take_text(result, strdup("{\"error\":\"invalid size, use WIDTHxHEIGHT (e.g. 2048x2048), 2k, 3k, or 4k\"}"));
 			return -EINVAL;
 		}
 	}
@@ -68,11 +68,11 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"reference image not found\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"reference image not found\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
 		ref_to_send = resolved_ref;
@@ -84,7 +84,7 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 	cJSON_Delete(root);
 
 	if (rc < 0) {
-		*result_json = strdup("{\"error\":\"image generation failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"image generation failed\"}"));
 		return rc;
 	}
 
@@ -94,7 +94,7 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		return -ENOMEM;
 	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
-	*result_json = msg;
+	(void)tool_result_take_text(result, msg);
 	log_dbg("img_gen: %s", msg);
 
 	return 0;

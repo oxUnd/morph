@@ -22,10 +22,10 @@ static int is_http_url(const char *s)
 		     strncmp(s, "https://", 8) == 0);
 }
 
-static int vid_gen_exec(const char *args_json, char **result_json, void *user_data)
+static int vid_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
@@ -79,11 +79,11 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 
 	if (!prompt) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: vid_gen({\\\"prompt\\\": \\\"a flying drone\\\", "
 			"\\\"reference_images\\\": [\\\"img1.jpg\\\", \\\"img2.png\\\"], "
-			"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"]})\"}");
+			"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"]})\"}"));
 		return -EINVAL;
 	}
 
@@ -101,11 +101,11 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 			if (rc < 0) {
 				cJSON_Delete(root);
 				if (rc == -ENOENT)
-					*result_json = strdup(
-						"{\"error\":\"reference image not found\"}");
+					(void)tool_result_take_text(result, strdup(
+						"{\"error\":\"reference image not found\"}"));
 				else
-					*result_json = strdup(
-						"{\"error\":\"read path outside workspace: permission denied\"}");
+					(void)tool_result_take_text(result, strdup(
+						"{\"error\":\"read path outside workspace: permission denied\"}"));
 				return rc;
 			}
 			image_paths_to_send[i] = resolved_images[i];
@@ -122,11 +122,11 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 			if (rc < 0) {
 				cJSON_Delete(root);
 				if (rc == -ENOENT)
-					*result_json = strdup(
-						"{\"error\":\"reference video not found\"}");
+					(void)tool_result_take_text(result, strdup(
+						"{\"error\":\"reference video not found\"}"));
 				else
-					*result_json = strdup(
-						"{\"error\":\"read path outside workspace: permission denied\"}");
+					(void)tool_result_take_text(result, strdup(
+						"{\"error\":\"read path outside workspace: permission denied\"}"));
 				return rc;
 			}
 			video_paths_to_send[i] = resolved_videos[i];
@@ -149,16 +149,16 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 			if (buf) {
 				snprintf(buf, strlen(vid_res.error_msg) + 64,
 					 "{\"error\":\"%s\"}", vid_res.error_msg);
-				*result_json = buf;
+				(void)tool_result_take_text(result, buf);
 			} else {
-				*result_json = strdup("{\"error\":\"video generation failed\"}");
+				(void)tool_result_take_text(result, strdup("{\"error\":\"video generation failed\"}"));
 			}
 		} else {
 			char err_buf[256];
 			snprintf(err_buf, sizeof(err_buf),
 				 "{\"error\":\"video generation failed: %s\"}",
 				 morph_strerror(rc));
-			*result_json = strdup(err_buf);
+			(void)tool_result_take_text(result, strdup(err_buf));
 		}
 		return rc;
 	}
@@ -169,7 +169,7 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 		return -ENOMEM;
 	snprintf(msg, msg_len, "video generated: %s (%ds)",
 		 vid_res.path, vid_res.duration_seconds);
-	*result_json = msg;
+	(void)tool_result_take_text(result, msg);
 	log_dbg("vid_gen: %s", msg);
 
 	return 0;

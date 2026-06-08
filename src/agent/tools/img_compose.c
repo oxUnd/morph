@@ -172,22 +172,22 @@ static int compute_main_index(cJSON *arrows)
 	return main_idx;
 }
 
-static int img_compose_exec(const char *args_json, char **result_json,
+static int img_compose_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!g_img_llm || !g_img_llm->api_key[0]) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"no image model configured\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -195,7 +195,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 	cJSON *ann = get_annotation(root, &owned);
 	if (!ann) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing or invalid annotation\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return -EINVAL;
 	}
 
@@ -218,10 +218,10 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"img_compose needs arrows (arrow + label = "
 			"cross-image fusion). For bbox region generation use "
-			"img_inpaint.\"}");
+			"img_inpaint.\"}"));
 		return -EINVAL;
 	}
 
@@ -230,8 +230,8 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"could not determine target image from arrows\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"could not determine target image from arrows\"}"));
 		return -EINVAL;
 	}
 
@@ -240,7 +240,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"no path for target image\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"no path for target image\"}"));
 		return -EINVAL;
 	}
 
@@ -253,9 +253,9 @@ static int img_compose_exec(const char *args_json, char **result_json,
 			if (owned)
 				cJSON_Delete(owned);
 			cJSON_Delete(root);
-			*result_json = strdup(
+			(void)tool_result_take_text(result, strdup(
 				"{\"error\":\"cannot read target image "
-				"(outside workspace?)\"}");
+				"(outside workspace?)\"}"));
 			return rc;
 		}
 	} else {
@@ -269,7 +269,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to load target image\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load target image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -377,8 +377,8 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"no arrows could be applied to the target image\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"no arrows could be applied to the target image\"}"));
 		return -EINVAL;
 	}
 
@@ -392,7 +392,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to resolve output dir\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to resolve output dir\"}"));
 		return -ENOMEM;
 	}
 	file_ensure_dir(out_dir);
@@ -407,7 +407,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to write draft composite\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write draft composite\"}"));
 		return -EIO;
 	}
 
@@ -465,7 +465,7 @@ static int img_compose_exec(const char *args_json, char **result_json,
 		cJSON_Delete(owned);
 	cJSON_Delete(root);
 
-	*result_json = out_str ? out_str : strdup("{\"error\":\"oom\"}");
+	(void)tool_result_take_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
 	return rc < 0 ? rc : 0;
 }
 

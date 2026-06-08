@@ -106,22 +106,22 @@ static struct inpaint_img *img_state_for(morph_array_t *arr, int idx)
 	return it;
 }
 
-static int img_inpaint_exec(const char *args_json, char **result_json,
+static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!g_img_llm || !g_img_llm->api_key[0]) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"no image model configured\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -129,7 +129,7 @@ static int img_inpaint_exec(const char *args_json, char **result_json,
 	cJSON *ann = get_annotation(root, &owned);
 	if (!ann) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"missing or invalid annotation\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return -EINVAL;
 	}
 
@@ -151,9 +151,9 @@ static int img_inpaint_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"img_inpaint needs at least one bbox with a "
-			"label. For arrow-based cross-image fusion use img_compose.\"}");
+			"label. For arrow-based cross-image fusion use img_compose.\"}"));
 		return -EINVAL;
 	}
 
@@ -165,7 +165,7 @@ static int img_inpaint_exec(const char *args_json, char **result_json,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"oom\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
 
@@ -312,7 +312,7 @@ static int img_inpaint_exec(const char *args_json, char **result_json,
 		cJSON_Delete(owned);
 	cJSON_Delete(root);
 
-	*result_json = out_str ? out_str : strdup("{\"error\":\"oom\"}");
+	(void)tool_result_take_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
 	return hard_error && produced == 0 ? -EIO : 0;
 }
 

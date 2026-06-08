@@ -62,16 +62,16 @@ static int write_by_format(const char *path, const char *fmt, int w, int h,
 	return 0;
 }
 
-static int img_convert_exec(const char *args_json, char **result_json, void *user_data)
+static int img_convert_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	struct tool_context *tctx = user_data;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -87,17 +87,17 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 
 	if (!file_path || !fmt_in) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'file_path' or 'format' parameter. "
 			"Usage: img_convert({\\\"file_path\\\": \\\"img.png\\\", "
-			"\\\"format\\\": \\\"jpg\\\"})\"}");
+			"\\\"format\\\": \\\"jpg\\\"})\"}"));
 		return -EINVAL;
 	}
 
 	char nfmt[8];
 	if (normalize_format(fmt_in, nfmt, sizeof(nfmt)) < 0) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}"));
 		return -EINVAL;
 	}
 
@@ -109,11 +109,11 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"failed to load image\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"failed to load image\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
 	} else {
@@ -125,7 +125,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 	unsigned char *data = stbi_load(resolved_input, &w, &h, &ch, 0);
 	if (!data) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to load image\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -138,8 +138,8 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 			if (rc < 0) {
 				stbi_image_free(data);
 				cJSON_Delete(root);
-				*result_json = strdup(
-					"{\"error\":\"write path outside output directory: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"write path outside output directory: permission denied\"}"));
 				return rc;
 			}
 		} else {
@@ -156,7 +156,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		if (!out_dir) {
 			stbi_image_free(data);
 			cJSON_Delete(root);
-			*result_json = strdup("{\"error\":\"failed to expand output path\"}");
+			(void)tool_result_take_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
 			return -ENOMEM;
 		}
 		file_ensure_dir(out_dir);
@@ -171,7 +171,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 
 	if (!wrc) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to write output\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write output\"}"));
 		return -EIO;
 	}
 
@@ -183,7 +183,7 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 	}
 	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)",
 		 final_path, nfmt, w, h);
-	*result_json = msg;
+	(void)tool_result_take_text(result, msg);
 	log_dbg("img_convert: %s", msg);
 
 	cJSON_Delete(root);

@@ -23,14 +23,14 @@ static const char *file_type_str(mode_t mode)
 	return "other";
 }
 
-static int file_info_exec(const char *args_json, char **result_json, void *user_data)
+static int file_info_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json) return -EINVAL;
+	if (!result) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -38,9 +38,9 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}");
+			"Usage: file_info({\\\"file_path\\\": \\\"path/to/file\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -52,11 +52,11 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"path does not exist\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"path does not exist\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
 	} else {
@@ -67,7 +67,7 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 	struct stat st;
 	if (stat(resolved_path, &st) != 0) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"path does not exist\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"path does not exist\"}"));
 		return -ENOENT;
 	}
 
@@ -101,7 +101,7 @@ static int file_info_exec(const char *args_json, char **result_json, void *user_
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	*result_json = str;
+	(void)tool_result_take_text(result, str);
 	return 0;
 }
 

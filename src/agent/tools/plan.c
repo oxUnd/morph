@@ -163,16 +163,16 @@ fail:
 	return NULL;
 }
 
-static int set_resultf(char **result_json, const char *fmt, ...)
+static int set_resultf(struct tool_result *result, const char *fmt, ...)
 	__attribute__((format(printf, 2, 3)));
 
-static int set_resultf(char **result_json, const char *fmt, ...)
+static int set_resultf(struct tool_result *result, const char *fmt, ...)
 {
 	morph_buf_t buf;
 	va_list ap;
 	int rc;
 
-	if (!result_json || !fmt)
+	if (!result || !fmt)
 		return -EINVAL;
 
 	rc = morph_buf_init(&buf, 1024);
@@ -187,8 +187,8 @@ static int set_resultf(char **result_json, const char *fmt, ...)
 		return rc;
 	}
 
-	*result_json = morph_buf_detach(&buf);
-	if (!*result_json)
+	(void)tool_result_take_text(result, morph_buf_detach(&buf));
+	if (!result->text.data)
 		return -ENOMEM;
 	return 0;
 }
@@ -315,25 +315,25 @@ static void free_step_descs(const char **descs, int count)
 		free((void *)descs[i]);
 }
 
-static int plan_tool_exec(const char *args_json, char **result_json,
+static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			  void *user_data)
 {
 	(void)user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	cJSON *cmd = cJSON_GetObjectItem(root, "command");
 	if (!cJSON_IsString(cmd)) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'command' parameter. "
-			"Commands: create, update, get, list\"}");
+			"Commands: create, update, get, list\"}"));
 		return -EINVAL;
 	}
 
@@ -347,8 +347,8 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 
 		if (!cJSON_IsString(name_item) || !name_item->valuestring) {
 			cJSON_Delete(root);
-			*result_json = strdup(
-				"{\"error\":\"create requires 'name' (string)\"}");
+			(void)tool_result_take_text(result, strdup(
+				"{\"error\":\"create requires 'name' (string)\"}"));
 			return -EINVAL;
 		}
 
@@ -377,8 +377,8 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
 				cJSON_Delete(root);
-				*result_json = strdup(
-					"{\"error\":\"auto-decompose failed\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"auto-decompose failed\"}"));
 				MORPH_RETURN(rc);
 			}
 			if (rc > 0) {
@@ -391,9 +391,9 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 
 		if (step_count == 0) {
 			cJSON_Delete(root);
-			*result_json = strdup(
+			(void)tool_result_take_text(result, strdup(
 				"{\"error\":\"create requires 'steps' (array of strings) "
-				"or a 'goal' string to auto-decompose\"}");
+				"or a 'goal' string to auto-decompose\"}"));
 			return -EINVAL;
 		}
 
@@ -404,9 +404,9 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
 			cJSON_Delete(root);
-			*result_json = strdup(
+			(void)tool_result_take_text(result, strdup(
 				"{\"error\":\"failed to create plan "
-				"(max 8 plans, max 32 steps each)\"}");
+				"(max 8 plans, max 32 steps each)\"}"));
 			return -ENOSPC;
 		}
 
@@ -415,17 +415,17 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
 			cJSON_Delete(root);
-			*result_json = strdup("{\"error\":\"out of memory\"}");
+			(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
 			return -ENOMEM;
 		}
 
 		if (auto_decomposed) {
-			rc = set_resultf(result_json,
+			rc = set_resultf(result,
 				"Plan created (auto-decomposed from goal).\n%s",
 				formatted);
 			free_step_descs(step_descs, step_count);
 		} else {
-			rc = set_resultf(result_json, "Plan created.\n%s",
+			rc = set_resultf(result, "Plan created.\n%s",
 					 formatted);
 		}
 		free(formatted);
@@ -451,11 +451,11 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 
 		if (!plan_name || step_id < 0 || !status) {
 			cJSON_Delete(root);
-			*result_json = strdup(
+			(void)tool_result_take_text(result, strdup(
 				"{\"error\":\"update requires 'plan' (string), "
 				"'step_id' (int), and 'status' (string). "
 				"Status: pending, in_progress, completed, "
-				"failed, skipped\"}");
+				"failed, skipped\"}"));
 			return -EINVAL;
 		}
 
@@ -469,7 +469,7 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 				msg = "invalid parameters";
 			snprintf(err, sizeof(err),
 				"{\"error\":\"%s\"}", msg);
-			*result_json = strdup(err);
+			(void)tool_result_take_text(result, strdup(err));
 			cJSON_Delete(root);
 			return rc;
 		}
@@ -477,7 +477,7 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 		struct plan *p = plan_find(g_plans, plan_name);
 		char *formatted = p ? format_plan(p) : NULL;
 
-		rc = set_resultf(result_json, "Step %d marked as '%s'.\n%s",
+		rc = set_resultf(result, "Step %d marked as '%s'.\n%s",
 				 step_id, status,
 				 formatted ? formatted : "");
 		free(formatted);
@@ -495,18 +495,18 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 			struct plan *p = plan_find(g_plans,
 						   plan_item->valuestring);
 			if (!p) {
-				rc = set_resultf(result_json,
+				rc = set_resultf(result,
 					"Plan \"%s\" not found.",
 					plan_item->valuestring);
 			} else {
 				char *formatted = format_plan(p);
-				rc = set_resultf(result_json, "%s",
+				rc = set_resultf(result, "%s",
 					formatted ? formatted : "(empty)");
 				free(formatted);
 			}
 		} else {
 			char *formatted = format_plans(g_plans);
-			rc = set_resultf(result_json, "%s",
+			rc = set_resultf(result, "%s",
 					 formatted ? formatted : "(empty)");
 			free(formatted);
 		}
@@ -517,7 +517,7 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 
 	} else if (strcmp(command, "list") == 0) {
 		char *formatted = format_plans(g_plans);
-		rc = set_resultf(result_json, "%s",
+		rc = set_resultf(result, "%s",
 				 formatted ? formatted : "(empty)");
 		free(formatted);
 		if (rc != 0) {
@@ -526,7 +526,7 @@ static int plan_tool_exec(const char *args_json, char **result_json,
 		}
 
 	} else {
-		rc = set_resultf(result_json,
+		rc = set_resultf(result,
 			"{\"error\":\"unknown command '%s'. "
 			"Commands: create, update, get, list\"}",
 			command);

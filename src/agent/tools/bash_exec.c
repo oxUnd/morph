@@ -173,11 +173,11 @@ static int read_pipes_with_timeout(int out_fd, int err_fd,
 	return 0;
 }
 
-static int bash_exec_run(const char *args_json, char **result_json,
+static int bash_exec_run(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
@@ -199,9 +199,9 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	if (!command || !*command) {
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'command' parameter. "
-			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}");
+			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -209,11 +209,11 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		log_warn("bash_exec: blocked dangerous command: %s", command);
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"command blocked for safety. "
 			"Destructive operations (rm, mv, cp, chmod, curl, ssh, "
 			"kill, package managers, etc.) are not allowed. "
-			"Use read-only alternatives instead.\"}");
+			"Use read-only alternatives instead.\"}"));
 		return -EPERM;
 	}
 
@@ -231,14 +231,14 @@ static int bash_exec_run(const char *args_json, char **result_json,
 			if (root)
 				cJSON_Delete(root);
 			if (rc == -EACCES)
-				*result_json = strdup(
+				(void)tool_result_take_text(result, strdup(
 					"{\"error\":\"command execution denied "
-					"by user\"}");
+					"by user\"}"));
 			else
-				*result_json = strdup(
+				(void)tool_result_take_text(result, strdup(
 					"{\"error\":\"command or cwd is not "
 					"allowed by policy and no interactive "
-					"approval is available\"}");
+					"approval is available\"}"));
 			return -EPERM;
 		}
 	}
@@ -259,7 +259,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		int err = errno;
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"pipe() failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"pipe() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 	if (pipe(err_pipe) < 0) {
@@ -268,7 +268,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		close(out_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"pipe() failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"pipe() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -282,7 +282,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		close(err_pipe[0]); close(err_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"fork() failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"fork() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -369,7 +369,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 		close(err_pipe[0]);
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"buffer allocation failed\"}"));
 		return buf_rc;
 	}
 
@@ -418,7 +418,7 @@ static int bash_exec_run(const char *args_json, char **result_json,
 	if (root)
 		cJSON_Delete(root);
 
-	*result_json = str ? str : strdup("{}");
+	(void)tool_result_take_text(result, str ? str : strdup("{}"));
 	return 0;
 }
 

@@ -22,23 +22,23 @@ static const char *fmt_name(const char *path)
 	return "unknown";
 }
 
-static int img_info_exec(const char *args_json, char **result_json, void *user_data)
+static int img_info_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result_json) return -EINVAL;
+	if (!result) return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 	cJSON *f = cJSON_GetObjectItem(root, "file_path");
 	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}");
+			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -50,11 +50,11 @@ static int img_info_exec(const char *args_json, char **result_json, void *user_d
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"not a valid image\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"not a valid image\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
 	} else {
@@ -65,7 +65,7 @@ static int img_info_exec(const char *args_json, char **result_json, void *user_d
 	int w = 0, h = 0, ch = 0;
 	if (!stbi_info(resolved_path, &w, &h, &ch)) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"not a valid image\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"not a valid image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -78,7 +78,7 @@ static int img_info_exec(const char *args_json, char **result_json, void *user_d
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	*result_json = str;
+	(void)tool_result_take_text(result, str);
 	return 0;
 }
 

@@ -130,21 +130,21 @@ int mcp_ensure_connected(struct mcp_client *client);
 int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 		   struct mcp_tool_desc **out_tools, int *out_count);
 int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *name,
-		  const char *args_json, char **out_result_json);
+		  const char *args_json, struct tool_result *out_result);
 
 /* ----- Resources ----- */
 
 int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 		       struct mcp_resource_desc **out_res, int *out_count);
 int mcp_read_resource(struct mcp_client *client, struct arena *arena,
-		      const char *uri, char **out_content);
+		      const char *uri, struct tool_result *out_content);
 
 /* ----- Prompts ----- */
 
 int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 		     struct mcp_prompt_desc **out_prompts, int *out_count);
 int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *name,
-		   const char *args_json, char **out_result);
+		   const char *args_json, struct tool_result *out_result);
 
 /* ----- Utilities ----- */
 

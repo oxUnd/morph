@@ -260,7 +260,8 @@ static void *async_tool_exec(void *arg)
 		pthread_mutex_unlock(&call->mutex);
 		notify_done = 1;
 	} else {
-		char *res = NULL;
+		struct tool_result res;
+		tool_result_init(&res);
 		int rc = tool_exec(call->tools, call->tool_name,
 				   call->tool_args, &res);
 
@@ -269,7 +270,7 @@ static void *async_tool_exec(void *arg)
 		if (was_cancelled) {
 			call->completed = 1;
 		} else if (rc < 0) {
-			const char *raw = res ? res : "unknown error";
+			const char *raw = res.text.data ? res.text.data : "unknown error";
 			size_t need = strlen(raw) + 64;
 			char *buf = malloc(need);
 			if (buf)
@@ -279,14 +280,14 @@ static void *async_tool_exec(void *arg)
 			call->rc = rc;
 			call->completed = 1;
 		} else {
-			const char *raw = res ? res : "(no output)";
+			const char *raw = res.text.data ? res.text.data : "(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
 			call->rc = 0;
 			call->completed = 1;
 		}
 		pthread_mutex_unlock(&call->mutex);
 
-		free(res);
+		tool_result_cleanup(&res);
 		notify_done = !was_cancelled;
 	}
 

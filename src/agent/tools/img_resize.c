@@ -45,16 +45,16 @@ static int write_by_ext(const char *path, const char *ext, int w, int h, int ch,
 	return stbi_write_png(path, w, h, ch, data, w * ch);
 }
 
-static int img_resize_exec(const char *args_json, char **result_json, void *user_data)
+static int img_resize_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	struct tool_context *tctx = user_data;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		*result_json = strdup("{\"error\":\"invalid JSON\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -70,10 +70,10 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 
 	if (!file_path || (target_w <= 0 && target_h <= 0)) {
 		cJSON_Delete(root);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
 			"Usage: img_resize({\\\"file_path\\\": \\\"img.png\\\", "
-			"\\\"width\\\": 800, \\\"height\\\": 600})\"}");
+			"\\\"width\\\": 800, \\\"height\\\": 600})\"}"));
 		return -EINVAL;
 	}
 
@@ -85,11 +85,11 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				*result_json = strdup(
-					"{\"error\":\"failed to load image\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"failed to load image\"}"));
 			else
-				*result_json = strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
 	} else {
@@ -101,7 +101,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	unsigned char *src = stbi_load(resolved_input, &src_w, &src_h, &src_ch, 0);
 	if (!src) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to load image\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -119,7 +119,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	if (!dst) {
 		stbi_image_free(src);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"oom\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
 
@@ -129,7 +129,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		stbi_image_free(src);
 		free(dst);
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"resize failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"resize failed\"}"));
 		MORPH_RETURN(MORPH_ERR_PROCESSING);
 	}
 	stbi_image_free(src);
@@ -143,8 +143,8 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 			if (rc < 0) {
 				free(dst);
 				cJSON_Delete(root);
-				*result_json = strdup(
-					"{\"error\":\"write path outside output directory: permission denied\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"write path outside output directory: permission denied\"}"));
 				return rc;
 			}
 		} else {
@@ -162,7 +162,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 			stbi_image_free(dst);
 			stbi_image_free(src);
 			cJSON_Delete(root);
-			*result_json = strdup("{\"error\":\"failed to expand output path\"}");
+			(void)tool_result_take_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
 			return -ENOMEM;
 		}
 		file_ensure_dir(out_dir);
@@ -179,7 +179,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 
 	if (!wrc) {
 		cJSON_Delete(root);
-		*result_json = strdup("{\"error\":\"failed to write output\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write output\"}"));
 		return -EIO;
 	}
 
@@ -191,7 +191,7 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 	}
 	snprintf(msg, msg_len, "image resized: %s (%dx%d)",
 		 final_path, target_w, target_h);
-	*result_json = msg;
+	(void)tool_result_take_text(result, msg);
 	log_dbg("img_resize: %s", msg);
 
 	cJSON_Delete(root);

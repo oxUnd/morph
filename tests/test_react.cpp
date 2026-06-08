@@ -27,29 +27,29 @@ static int global_sse_write_adapter(const char *data, size_t len, void *user_dat
 
 /* ---- mock tools ---- */
 
-static int test_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int test_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
 	(void)user_data;
-	*result_json = strdup("{\"result\":\"test\"}");
+	(void)tool_result_take_text(result, strdup("{\"result\":\"test\"}"));
 	return 0;
 }
 
-static int failing_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int failing_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
 	(void)user_data;
-	*result_json = strdup("tool failed");
+	(void)tool_result_take_text(result, strdup("tool failed"));
 	return -EIO;
 }
 
-static int call_count_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int call_count_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	int *count = (int *)user_data;
 	(*count)++;
 	char buf[128];
 	snprintf(buf, sizeof(buf), "{\"calls\":%d}", *count);
-	*result_json = strdup(buf);
+	(void)tool_result_take_text(result, strdup(buf));
 	return 0;
 }
 
@@ -1617,11 +1617,11 @@ TEST_F(MockLlmTest, ActionNoToolsRegistered) {
 	react_context_destroy(ctx);
 }
 
-static int null_result_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int null_result_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
 	(void)user_data;
-	*result_json = NULL;
+	tool_result_clear(result);
 	return 0;
 }
 
@@ -1690,12 +1690,12 @@ TEST_F(MockLlmTest, ThoughtOnly) {
 /* Cancellation during tool execution            */
 /* ============================================= */
 
-static int self_cancel_tool_fn(const char *args_json, char **result_json, void *user_data)
+static int self_cancel_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
 	struct react_context *ctx = (struct react_context *)user_data;
 	ctx->cancelled = 1;
-	*result_json = strdup("{\"cancelled\":true}");
+	(void)tool_result_take_text(result, strdup("{\"cancelled\":true}"));
 	return 0;
 }
 

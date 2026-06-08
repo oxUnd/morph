@@ -62,7 +62,7 @@ static char *find_editor_binary(void)
 	return strdup("");
 }
 
-static int img_annotate_exec(const char *args_json, char **result_json,
+static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			     void *user_data)
 {
 	char *paths[MAX_IMAGES] = {NULL};
@@ -75,15 +75,15 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	int i;
 	struct tool_context *tctx = user_data;
 
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	if (!args_json || !*args_json) {
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing arguments. "
 			"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
 			"or img_annotate({\\\"paths\\\": "
-			"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
+			"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
 		MORPH_RETURN(-EINVAL);
 	}
 
@@ -91,8 +91,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		cJSON *root = cJSON_Parse(args_json);
 
 		if (!root) {
-			*result_json = strdup(
-				"{\"error\":\"invalid JSON arguments\"}");
+			(void)tool_result_take_text(result, strdup(
+				"{\"error\":\"invalid JSON arguments\"}"));
 			MORPH_RETURN(-EINVAL);
 		}
 
@@ -105,8 +105,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			int sz = cJSON_GetArraySize(arr);
 			if (sz <= 0) {
 				cJSON_Delete(root);
-				*result_json = strdup(
-					"{\"error\":\"'paths' array is empty\"}");
+				(void)tool_result_take_text(result, strdup(
+					"{\"error\":\"'paths' array is empty\"}"));
 				MORPH_RETURN(-EINVAL);
 			}
 			if (sz > MAX_IMAGES) {
@@ -115,7 +115,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				snprintf(err, sizeof(err),
 					 "{\"error\":\"too many images "
 					 "(max %d)\"}", MAX_IMAGES);
-				*result_json = strdup(err);
+				(void)tool_result_take_text(result, strdup(err));
 				MORPH_RETURN(-EINVAL);
 			}
 			for (i = 0; i < sz; i++) {
@@ -126,9 +126,9 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 					cJSON_Delete(root);
 					for (int j = 0; j < npaths; j++)
 						free(paths[j]);
-					*result_json = strdup(
+					(void)tool_result_take_text(result, strdup(
 						"{\"error\":\"'paths' contains "
-						"invalid entry\"}");
+						"invalid entry\"}"));
 					MORPH_RETURN(-EINVAL);
 				}
 				paths[npaths++] = strdup(item->valuestring);
@@ -138,13 +138,13 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			if (!cJSON_IsString(p) || !p->valuestring ||
 			    !p->valuestring[0]) {
 				cJSON_Delete(root);
-				*result_json = strdup(
+				(void)tool_result_take_text(result, strdup(
 					"{\"error\":\"missing 'path' or "
 					"'paths' parameter. "
 					"Usage: img_annotate({\\\"path\\\": "
 					"\\\"image.jpg\\\"}) or "
 					"img_annotate({\\\"paths\\\": "
-					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}");
+					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
 				MORPH_RETURN(-EINVAL);
 			}
 			paths[npaths++] = strdup(p->valuestring);
@@ -167,7 +167,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 				else
 					snprintf(err, sizeof(err),
 						 "{\"error\":\"read path outside workspace: permission denied\"}");
-				*result_json = strdup(err);
+				(void)tool_result_take_text(result, strdup(err));
 				for (int j = 0; j < npaths; j++)
 					free(paths[j]);
 				return rc;
@@ -184,7 +184,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			snprintf(err, sizeof(err),
 				 "{\"error\":\"image file not found: %s\"}",
 				 paths[i]);
-			*result_json = strdup(err);
+			(void)tool_result_take_text(result, strdup(err));
 			for (int j = 0; j < npaths; j++)
 				free(paths[j]);
 			MORPH_RETURN(-ENOENT);
@@ -195,9 +195,9 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 	if (!editor_path) {
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"could not locate morph-editor binary. "
-			"Set MORPH_EDITOR env var or install morph-editor.\"}");
+			"Set MORPH_EDITOR env var or install morph-editor.\"}"));
 		MORPH_RETURN(-ENOENT);
 	}
 
@@ -206,8 +206,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		*result_json = strdup(
-			"{\"error\":\"pipe() failed\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"pipe() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -227,8 +227,8 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
-		*result_json = strdup(
-			"{\"error\":\"fork() failed\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"fork() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -290,9 +290,9 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			*result_json = strdup(
+			(void)tool_result_take_text(result, strdup(
 				"{\"error\":\"out of memory "
-				"reading editor output\"}");
+				"reading editor output\"}"));
 			MORPH_RETURN(-ENOMEM);
 		}
 
@@ -311,9 +311,9 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 					free(editor_path);
 					for (i = 0; i < npaths; i++)
 						free(paths[i]);
-					*result_json = strdup(
+					(void)tool_result_take_text(result, strdup(
 						"{\"error\":\"out of memory "
-						"reading editor output\"}");
+						"reading editor output\"}"));
 					MORPH_RETURN(-ENOMEM);
 				}
 			}
@@ -357,11 +357,11 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 					 "{\"error\":\"morph-editor exited "
 					 "with code %d\"}",
 					 WEXITSTATUS(status));
-				*result_json = strdup(err);
+				(void)tool_result_take_text(result, strdup(err));
 				MORPH_RETURN(-EIO);
 			}
-			*result_json = strdup(
-				"{\"images\":[],\"bboxes\":[],\"arrows\":[]}");
+			(void)tool_result_take_text(result, strdup(
+				"{\"images\":[],\"bboxes\":[],\"arrows\":[]}"));
 			return 0;
 		}
 
@@ -569,7 +569,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 					char *out = cJSON_PrintUnformatted(root);
 					cJSON_Delete(root);
 					morph_buf_cleanup(&buf);
-					*result_json = out;
+					(void)tool_result_take_text(result, out);
 				}
 				free(editor_path);
 				for (i = 0; i < npaths; i++)
@@ -596,7 +596,7 @@ static int img_annotate_exec(const char *args_json, char **result_json,
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
-			*result_json = tmp_str;
+			(void)tool_result_take_text(result, tmp_str);
 			MORPH_RETURN(MORPH_ERR_PARSE);
 		}
 	}

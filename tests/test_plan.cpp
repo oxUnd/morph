@@ -31,13 +31,14 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	}
 	args += "]}";
 
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&tools, "plan", args.c_str(), &result), 0);
-	ASSERT_NE(result, nullptr);
+	ASSERT_NE(result.text.data, nullptr);
 
-	EXPECT_GT(strlen(result), 8192u);
-	EXPECT_NE(std::string(result).find("32. step-32"), std::string::npos);
+	EXPECT_GT(strlen(result.text.data), 8192u);
+	EXPECT_NE(std::string(result.text.data).find("32. step-32"), std::string::npos);
 
-	free(result);
+	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
 }

@@ -10,18 +10,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int mock_tool_exec(const char *args_json, char **result_json, void *user_data)
+static int mock_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
 	(void)user_data;
-	*result_json = strdup("{\"status\":\"ok\"}");
+	(void)tool_result_take_text(result, strdup("{\"status\":\"ok\"}"));
 	return 0;
 }
 
-static int error_tool_exec(const char *args_json, char **result_json, void *user_data)
+static int error_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json;
-	(void)result_json;
+	(void)result;
 	(void)user_data;
 	return -EIO;
 }
@@ -77,24 +77,29 @@ TEST_F(ToolTest, LookupNotFound) {
 
 TEST_F(ToolTest, ExecTool) {
 	tool_register(&reg, "exec_test", "Exec test", nullptr, mock_tool_exec, nullptr, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "exec_test", "{}", &result);
 	EXPECT_EQ(rc, 0);
-	EXPECT_NE(result, nullptr);
-	free(result);
+	EXPECT_NE(result.text.data, nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(ToolTest, ExecNotFound) {
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent", "{}", &result);
 	EXPECT_NE(rc, 0);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(ToolTest, ExecError) {
 	tool_register(&reg, "error_tool", "Error tool", nullptr, error_tool_exec, nullptr, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "error_tool", "{}", &result);
 	EXPECT_NE(rc, 0);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(ToolTest, NullParams) {
@@ -208,13 +213,14 @@ TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
 	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "file_read",
 			   "{\"file_path\":\"read.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "hello"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "hello"), nullptr);
+	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(path);
 	rmdir(work);
@@ -231,13 +237,14 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "file_read",
 			   "{\"file_path\":\"link.txt\"}", &result);
 	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "permission denied"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
+	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(link_path);
 	std::remove(secret);
@@ -252,14 +259,15 @@ TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "file_list",
 			   "{\"dir_path\":\"../morph_tool_outside\"}",
 			   &result);
 	EXPECT_EQ(rc, -EPERM);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "permission denied"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "permission denied"), nullptr);
+	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	rmdir(outside);
 	rmdir(work);
@@ -273,13 +281,14 @@ TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_info_init(&reg, tctx), 0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg, "file_info",
 			   "{\"file_path\":\"info.txt\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "\"type\":\"file\""), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "\"type\":\"file\""), nullptr);
+	tool_result_cleanup(&result);
 	tool_context_destroy(tctx);
 	std::remove(path);
 	rmdir(work);

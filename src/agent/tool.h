@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <errno.h>
+#include "util/str.h"
 #include "util/strmap.h"
 
 #define TOOL_NAME_MAX 512
@@ -23,7 +24,28 @@ struct tool_desc {
 	char args_spec[TOOL_ARGS_SPEC_MAX];
 };
 
-typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
+struct tool_result {
+	morph_str_t text;
+	char *owned;
+	int is_json;
+};
+
+void tool_result_init(struct tool_result *result);
+void tool_result_cleanup(struct tool_result *result);
+void tool_result_clear(struct tool_result *result);
+int tool_result_take_text(struct tool_result *result, char *data);
+int tool_result_take_json(struct tool_result *result, char *data);
+int tool_result_set_text(struct tool_result *result, const char *data);
+int tool_result_set_textn(struct tool_result *result, const char *data,
+			  size_t len);
+int tool_result_set_json(struct tool_result *result, const char *data);
+int tool_result_printf(struct tool_result *result, const char *fmt, ...);
+int tool_result_json_error(struct tool_result *result, const char *message);
+int tool_result_json_errorf(struct tool_result *result, const char *fmt, ...);
+
+typedef int (*tool_exec_fn)(const char *args_json,
+			    struct tool_result *result,
+			    void *user_data);
 typedef void (*tool_user_data_destroy_fn)(void *user_data);
 
 struct tool_entry {
@@ -50,7 +72,7 @@ int tool_register(struct tool_registry *reg, const char *name, const char *desc,
 		  tool_user_data_destroy_fn user_data_destroy);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
-	      const char *args_json, char **result_json);
+	      const char *args_json, struct tool_result *result);
 void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);

@@ -278,12 +278,16 @@ static const int num_commands = (int)(sizeof(commands) / sizeof(commands[0]));
 
 /* ---- ext_run wrapper ---- */
 
-static int ext_run_wrapper(const char *args_json, char **result_json, void *user_data)
+static int ext_run_wrapper(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct ext *ex = user_data;
 	if (!ex)
 		return -EINVAL;
-	return ext_run(ex, args_json, result_json);
+	char *out = NULL;
+	int rc = ext_run(ex, args_json, &out);
+	if (out)
+		(void)tool_result_take_text(result, out);
+	return rc;
 }
 
 static const struct cmd_entry *cmd_lookup(const char *name)

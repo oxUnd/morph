@@ -273,6 +273,7 @@ TEST_F(McpJsonRpcTest, ParseResultInvalidJson) {
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
 	EXPECT_EQ(rc, MORPH_ERR_PARSE);
+	free(result);
 }
 
 TEST_F(McpJsonRpcTest, ParseResultNullOut) {
@@ -285,6 +286,7 @@ TEST_F(McpJsonRpcTest, ParseResultNullInput) {
 	char *result = nullptr;
 	int rc = mcp_parse_result(nullptr, &result);
 	EXPECT_EQ(rc, MORPH_ERR_PARSE);
+	free(result);
 }
 
 /* ----- Null parameter validation ----- */
@@ -336,14 +338,16 @@ TEST_F(McpNullParamTest, ListToolsNullOutCount) {
 
 TEST_F(McpNullParamTest, CallToolNullClient) {
 	struct arena *arena = arena_create(0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	EXPECT_EQ(mcp_call_tool(nullptr, arena, "tool", "{}", &result), -EINVAL);
 	arena_destroy(arena);
 }
 
 TEST_F(McpNullParamTest, CallToolNullName) {
 	struct arena *arena = arena_create(0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	EXPECT_EQ(mcp_call_tool(&client, arena, nullptr, "{}", &result), -EINVAL);
 	arena_destroy(arena);
 }
@@ -370,15 +374,19 @@ TEST_F(McpNullParamTest, ListResourcesNullArena) {
 
 TEST_F(McpNullParamTest, ReadResourceNullClient) {
 	struct arena *arena = arena_create(0);
-	char *content = nullptr;
+	struct tool_result content;
+	tool_result_init(&content);
 	EXPECT_EQ(mcp_read_resource(nullptr, arena, "uri://x", &content), -EINVAL);
+	tool_result_cleanup(&content);
 	arena_destroy(arena);
 }
 
 TEST_F(McpNullParamTest, ReadResourceNullUri) {
 	struct arena *arena = arena_create(0);
-	char *content = nullptr;
+	struct tool_result content;
+	tool_result_init(&content);
 	EXPECT_EQ(mcp_read_resource(&client, arena, nullptr, &content), -EINVAL);
+	tool_result_cleanup(&content);
 	arena_destroy(arena);
 }
 
@@ -404,14 +412,16 @@ TEST_F(McpNullParamTest, ListPromptsNullArena) {
 
 TEST_F(McpNullParamTest, GetPromptNullClient) {
 	struct arena *arena = arena_create(0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	EXPECT_EQ(mcp_get_prompt(nullptr, arena, "prompt", "{}", &result), -EINVAL);
 	arena_destroy(arena);
 }
 
 TEST_F(McpNullParamTest, GetPromptNullName) {
 	struct arena *arena = arena_create(0);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	EXPECT_EQ(mcp_get_prompt(&client, arena, nullptr, "{}", &result), -EINVAL);
 	arena_destroy(arena);
 }

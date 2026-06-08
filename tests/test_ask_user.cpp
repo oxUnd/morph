@@ -87,83 +87,91 @@ TEST_F(AskUserToolTest, NullCallback) {
 
 TEST_F(AskUserToolTest, QuestionOnly) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"What is your name?\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_STREQ(result, "mock answer");
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_STREQ(result.text.data, "mock answer");
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, QuestionWithChoices) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"Pick one\","
 			   "\"choices\":[\"red\",\"green\",\"blue\"]}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_STREQ(result, "red");
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_STREQ(result.text.data, "red");
 	EXPECT_EQ(g_last_choices_count, 3);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, MissingQuestion) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", "{}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "missing"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "missing"), nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, EmptyQuestion) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"\"}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, CallbackError) {
 	ask_user_init(&tools, mock_ask_user_error_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_NE(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "error"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "error"), nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, EmptyAnswer) {
 	ask_user_init(&tools, mock_ask_user_empty_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "no input"), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "no input"), nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, NullArgsJson) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", nullptr, &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, MalformedJson) {
 	ask_user_init(&tools, mock_ask_user_cb, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", "not json", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, NoCallback) {
@@ -175,18 +183,20 @@ TEST_F(AskUserToolTest, NoCallback) {
 		"\"question\":{\"type\":\"string\"}"
 		"},\"required\":[\"question\"]}",
 		nullptr, nullptr, nullptr);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&reg2, "ask_user",
 			   "{\"question\":\"test\"}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg2);
 }
 
 TEST_F(AskUserToolTest, ToolNotFound) {
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
 			   "{\"question\":\"test\"}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }

@@ -92,23 +92,23 @@ static int text_gen_stream_cb(const char *token, void *user_data)
 	return morph_buf_append_cb(token, user_data);
 }
 
-static int text_gen_exec(const char *args_json, char **result_json, void *user_data)
+static int text_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 
 	char *prompt = extract_prompt(args_json);
 	if (!prompt || !*prompt) {
 		free(prompt);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing or empty 'prompt' parameter. "
-			"Usage: text_gen({\\\"prompt\\\": \\\"tell me a story\\\"})\"}");
+			"Usage: text_gen({\\\"prompt\\\": \\\"tell me a story\\\"})\"}"));
 		return -EINVAL;
 	}
 
 	if (!g_llm || !g_llm->api_key[0]) {
-		*result_json = strdup("{\"error\":\"no LLM model configured\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"no LLM model configured\"}"));
 		free(prompt);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -116,7 +116,7 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 	struct arena *arena = arena_create(64 * 1024);
 	if (!arena) {
 		free(prompt);
-		*result_json = strdup("{\"error\":\"memory allocation failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"memory allocation failed\"}"));
 		return -ENOMEM;
 	}
 
@@ -126,7 +126,7 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 	if (rc != 0) {
 		arena_destroy(arena);
 		free(prompt);
-		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"buffer allocation failed\"}"));
 		return rc;
 	}
 
@@ -136,15 +136,15 @@ static int text_gen_exec(const char *args_json, char **result_json, void *user_d
 		morph_buf_cleanup(&buf);
 		arena_destroy(arena);
 		free(prompt);
-		*result_json = strdup("{\"error\":\"LLM call failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"LLM call failed\"}"));
 		return status;
 	}
 
-	*result_json = morph_buf_detach(&buf);
-	if (!*result_json) {
+	(void)tool_result_take_text(result, morph_buf_detach(&buf));
+	if (!result->text.data) {
 		arena_destroy(arena);
 		free(prompt);
-		*result_json = strdup("{\"error\":\"buffer allocation failed\"}");
+		(void)tool_result_take_text(result, strdup("{\"error\":\"buffer allocation failed\"}"));
 		return -ENOMEM;
 	}
 	arena_destroy(arena);

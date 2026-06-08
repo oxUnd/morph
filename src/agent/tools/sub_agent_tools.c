@@ -6,11 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int agent_sync_exec(const char *args_json, char **result_json,
+static int agent_sync_exec(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
 	struct sub_agent_tool_binding *bind = user_data;
-	if (!bind || !result_json)
+	if (!bind || !result)
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
@@ -24,16 +24,16 @@ static int agent_sync_exec(const char *args_json, char **result_json,
 	if (!task) {
 		if (root)
 			cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"missing 'task' parameter\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"missing 'task' parameter\"}"));
 		return -EINVAL;
 	}
 	struct sub_agent_entry *entry = sub_agent_find(bind->rt,
 						       bind->agent_name);
 	if (!entry) {
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"sub-agent not found\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"sub-agent not found\"}"));
 		return -ENOENT;
 	}
 	char *sub_result = NULL;
@@ -60,7 +60,7 @@ static int agent_sync_exec(const char *args_json, char **result_json,
 					: morph_strerror(rc));
 		free(sub_result);
 	}
-	*result_json = cJSON_PrintUnformatted(out);
+	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -108,11 +108,11 @@ int sub_agent_sync_init(struct tool_registry *reg,
 	return 0;
 }
 
-static int delegate_exec(const char *args_json, char **result_json,
+static int delegate_exec(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
 	struct sub_agent_runtime *rt = user_data;
-	if (!rt || !result_json)
+	if (!rt || !result)
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
@@ -129,8 +129,8 @@ static int delegate_exec(const char *args_json, char **result_json,
 	}
 	if (!agent || !task) {
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"missing 'agent' or 'task' parameter\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"missing 'agent' or 'task' parameter\"}"));
 		return -EINVAL;
 	}
 	char *task_id = NULL;
@@ -145,7 +145,7 @@ static int delegate_exec(const char *args_json, char **result_json,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(task_id);
-	*result_json = cJSON_PrintUnformatted(out);
+	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -166,11 +166,11 @@ int sub_agent_delegate_init(struct tool_registry *reg,
 		delegate_exec, rt, NULL);
 }
 
-static int agent_status_exec(const char *args_json, char **result_json,
+static int agent_status_exec(const char *args_json, struct tool_result *result,
 			     void *user_data)
 {
 	struct sub_agent_runtime *rt = user_data;
-	if (!rt || !result_json)
+	if (!rt || !result)
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
@@ -183,8 +183,8 @@ static int agent_status_exec(const char *args_json, char **result_json,
 	}
 	if (!task_id) {
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"missing 'task_id' parameter\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"missing 'task_id' parameter\"}"));
 		return -EINVAL;
 	}
 	enum sub_agent_task_status status = SUB_AGENT_PENDING;
@@ -215,7 +215,7 @@ static int agent_status_exec(const char *args_json, char **result_json,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(res);
-	*result_json = cJSON_PrintUnformatted(out);
+	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -234,11 +234,11 @@ int sub_agent_status_init(struct tool_registry *reg,
 		agent_status_exec, rt, NULL);
 }
 
-static int fanout_exec(const char *args_json, char **result_json,
+static int fanout_exec(const char *args_json, struct tool_result *result,
 		       void *user_data)
 {
 	struct sub_agent_runtime *rt = user_data;
-	if (!rt || !result_json)
+	if (!rt || !result)
 		return -EINVAL;
 	if (!args_json)
 		args_json = "{}";
@@ -257,8 +257,8 @@ static int fanout_exec(const char *args_json, char **result_json,
 	}
 	if (!agent || !tasks_arr || !cJSON_IsArray(tasks_arr)) {
 		cJSON_Delete(root);
-		*result_json = strdup(
-			"{\"error\":\"missing 'agent' or 'tasks' parameter\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"missing 'agent' or 'tasks' parameter\"}"));
 		return -EINVAL;
 	}
 	int n = cJSON_GetArraySize(tasks_arr);
@@ -279,31 +279,31 @@ static int fanout_exec(const char *args_json, char **result_json,
 		else if (strcmp(merge_str, "raw") == 0)
 			merge = SUB_AGENT_MERGE_RAW;
 	}
-	char *result = NULL;
-	int rc = sub_agent_fanout(rt, agent, tasks, n, merge, &result);
+	char *fanout_result = NULL;
+	int rc = sub_agent_fanout(rt, agent, tasks, n, merge, &fanout_result);
 	free(tasks);
 	cJSON_Delete(root);
-	if (rc == 0 && result) {
-		cJSON *parsed = cJSON_Parse(result);
+	if (rc == 0 && fanout_result) {
+		cJSON *parsed = cJSON_Parse(fanout_result);
 		if (parsed) {
 			cJSON *out = cJSON_CreateObject();
 			cJSON_AddStringToObject(out, "status", "completed");
 			cJSON_AddItemToObject(out, "result", parsed);
-			*result_json = cJSON_PrintUnformatted(out);
+			(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
 			cJSON_Delete(out);
-			free(result);
+			free(fanout_result);
 		} else {
-			*result_json = result;
+			(void)tool_result_take_text(result, fanout_result);
 		}
 	} else {
 		cJSON *out = cJSON_CreateObject();
 		cJSON_AddStringToObject(out, "status", "failed");
 		cJSON_AddStringToObject(out, "error",
-					result ? result
+					fanout_result ? fanout_result
 					: morph_strerror(rc));
-		*result_json = cJSON_PrintUnformatted(out);
+		(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
 		cJSON_Delete(out);
-		free(result);
+		free(fanout_result);
 	}
 	return rc;
 }

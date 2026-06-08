@@ -363,14 +363,15 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	skill_discover(&skills, tmpdir);
 	skill_activate_init(&tools, &skills);
 
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "activate_skill",
 			   "{\"name\":\"review\"}", &result);
 	EXPECT_EQ(rc, 0);
-	ASSERT_NE(result, nullptr);
-	EXPECT_NE(strstr(result, "<skill name=\"review\" dir=\""), nullptr);
-	EXPECT_NE(strstr(result, "Check bugs."), nullptr);
-	free(result);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "<skill name=\"review\" dir=\""), nullptr);
+	EXPECT_NE(strstr(result.text.data, "Check bugs."), nullptr);
+	tool_result_cleanup(&result);
 
 	unlink(md_path);
 	rmdir(skill_dir);
@@ -379,19 +380,21 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 
 TEST_F(SkillActivateToolTest, ActivateNotFound) {
 	skill_activate_init(&tools, &skills);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "activate_skill",
 			   "{\"name\":\"nonexistent\"}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(SkillActivateToolTest, ActivateMissingName) {
 	skill_activate_init(&tools, &skills);
-	char *result = nullptr;
+	struct tool_result result;
+	tool_result_init(&result);
 	int rc = tool_exec(&tools, "activate_skill", "{}", &result);
 	EXPECT_NE(rc, 0);
-	free(result);
+	tool_result_cleanup(&result);
 }
 
 class SkillParseFrontmatterTest : public ::testing::Test {

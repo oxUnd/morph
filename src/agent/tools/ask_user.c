@@ -10,15 +10,15 @@
 static ask_user_callback_fn g_ask_user_cb;
 static void *g_ask_user_data;
 
-static int ask_user_exec(const char *args_json, char **result_json,
+static int ask_user_exec(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
 	(void)user_data;
-	if (!result_json)
+	if (!result)
 		return -EINVAL;
 	if (!g_ask_user_cb) {
-		*result_json = strdup(
-			"{\"error\":\"ask_user callback not configured\"}");
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"ask_user callback not configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -61,9 +61,9 @@ static int ask_user_exec(const char *args_json, char **result_json,
 	if (question[0] == '\0') {
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		*result_json = strdup(
+		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing or empty 'question' parameter. "
-			"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}");
+			"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}"));
 		return -EINVAL;
 	}
 
@@ -80,18 +80,18 @@ static int ask_user_exec(const char *args_json, char **result_json,
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to get user response (code %d)\"}",
 			 rc);
-		*result_json = strdup(err);
+		(void)tool_result_take_text(result, strdup(err));
 		return rc;
 	}
 
 	if (!answer || !answer[0]) {
 		free(answer);
-		*result_json = strdup(
-			"User provided no input. Proceed with your best judgment.");
+		(void)tool_result_take_text(result, strdup(
+			"User provided no input. Proceed with your best judgment."));
 		return 0;
 	}
 
-	*result_json = answer;
+	(void)tool_result_take_text(result, answer);
 	log_info("ask_user: question='%s' answer='%s'", question, answer);
 	return 0;
 }
