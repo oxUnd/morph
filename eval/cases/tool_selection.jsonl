@@ -2,10 +2,6 @@
 {"id":"ts_002","prompt":"Generate an image of a cat sitting on a windowsill","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"cat"}}],"category":"image"}
 {"id":"ts_003","prompt":"画一张动漫风格的少女头像","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"少女"}}],"category":"image"}
 {"id":"ts_004","prompt":"Create a realistic landscape photo of mountains at dawn","expected_tools":[{"name":"img_gen","args_contains":{"prompt":"mountains"}}],"category":"image"}
-{"id":"ts_005","prompt":"这张图片 /tmp/photo.jpg 里有什么内容？","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/tmp/photo.jpg"}}],"category":"image"}
-{"id":"ts_006","prompt":"What is in this image: /home/user/pic.png","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/home/user/pic.png"}}],"category":"image"}
-{"id":"ts_007","prompt":"分析图片 /tmp/test.bmp 的内容","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/tmp/test.bmp"}}],"category":"image"}
-{"id":"ts_008","prompt":"Describe what you see in /data/photo.jpg","expected_tools":[{"name":"img_edit","args_contains":{"file_path":"/data/photo.jpg"}}],"category":"image"}
 {"id":"ts_009","prompt":"获取图片 /tmp/output.png 的尺寸和格式信息","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/tmp/output.png"}}],"category":"image"}
 {"id":"ts_010","prompt":"Get metadata for image /home/user/photo.jpg","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/home/user/photo.jpg"}}],"category":"image"}
 {"id":"ts_011","prompt":"图片 /tmp/img.png 的分辨率是多少","expected_tools":[{"name":"img_info","args_contains":{"file_path":"/tmp/img.png"}}],"category":"image"}

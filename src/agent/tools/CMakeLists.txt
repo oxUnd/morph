@@ -2,10 +2,11 @@ add_library(morph-tools STATIC
 	text_gen.c
 	text_qa.c
 	img_gen.c
-	img_edit.c
 	img_info.c
 	img_resize.c
 	img_convert.c
+	img_inpaint.c
+	img_compose.c
 	vid_gen.c
 	file_read.c
 	file_list.c
@@ -19,7 +20,7 @@ add_library(morph-tools STATIC
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
-set_source_files_properties(img_resize.c img_convert.c PROPERTIES
+set_source_files_properties(img_resize.c img_convert.c img_inpaint.c img_compose.c PROPERTIES
 	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion -Wno-shadow -Wno-unused-but-set-variable -Wno-unused-function -Wno-double-promotion -Wno-cast-qual -Wno-missing-field-initializers"
 )
 

@@ -162,9 +162,10 @@ guardrail_max_empty_rounds = 2
 # ext_entry = "/path/to/guardrail-script"
 # action_text = "Revise your answer to pass the custom check."
 # Disable specific tools by name. Supported tool names:
-# text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert,
-# vid_gen, file_read, file_list, file_info, bash_exec
-# disabled_tools = ["vid_gen", "img_edit"]
+# text_gen, text_qa, img_gen, img_inpaint, img_compose, img_info,
+# img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
+# file_info, bash_exec
+# disabled_tools = ["vid_gen", "img_resize"]
 
 # ── Human-in-the-Loop (HITL) ──────────────────
 # When enabled, the agent asks for user confirmation before executing
@@ -174,7 +175,7 @@ hitl_enabled = false
 # List of tool names requiring explicit approval.
 # If empty and hitl_enabled is true, ALL tools require approval
 # (except read-only tools when hitl_auto_approve_readonly is true).
-# hitl_tools = ["bash_exec", "img_edit", "vid_gen"]
+# hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
 # Automatically approve read-only tools (file_read, file_list,
 # file_info, img_info, text_qa) without prompting.
 hitl_auto_approve_readonly = true

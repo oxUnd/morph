@@ -22,7 +22,8 @@ static int is_creative_tool(const char *name)
 {
 	if (!name) return 0;
 	static const char *creative[] = {
-		"img_gen", "img_edit", "img_resize", "img_convert",
+		"img_gen", "img_inpaint", "img_compose",
+		"img_resize", "img_convert",
 		"vid_gen", "text_gen", NULL
 	};
 	for (const char **t = creative; *t; t++)

@@ -14,7 +14,7 @@
 ## Architecture Overview
 - **ReAct loop**: Thought → Action → Observation → Guardrail → Final. Core in `src/agent/react.c`. Uses OpenAI Function Calling (not text parsing).
 - **3 model backends**: `llm` (text chat), `image_gen`, `video_gen` — each configured independently in config.toml.
-- **Tools**: 15 built-in tools under `src/agent/tools/`: text_gen, text_qa, img_gen, img_edit, img_info, img_resize, img_convert, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate, plan.
+- **Tools**: built-in tools under `src/agent/tools/`: text_gen, text_qa, img_gen, img_inpaint, img_compose, img_info, img_resize, img_convert, img_annotate, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate, plan (plus sub-agent tools: delegate, agent_status, fanout, and ask_user). img_inpaint = bbox+label region generation (deterministic %-coordinate i2i instruction); img_compose = arrow+label cross-image fusion (local pre-composite + i2i harmonize). Both consume the img_annotate JSON verbatim.
 - **Plan subsystem**: structured multi-step planning with status tracking. Code in `src/agent/plan.c`. Registered as `plan` tool.
 - **MCP**: Model Context Protocol client (stdio + Streamable HTTP). Discovers and auto-registers remote tools/resources/prompts as morph tools. Code in `src/mcp/`. Config via `[[mcp.servers]]` in config.toml.
 - **Skills**: hot-loadable instruction packs (`SKILL.md` with YAML frontmatter). Discovery from `~/.morph/skills/` and `~/.agents/skills/`. Code in `src/skill/`. Examples in `skills/`.
@@ -79,6 +79,16 @@ All UTF-8 operations must use the shared API in `src/util/utf8.h` — **never** 
 
 **Width table**: `utf8_cp_width` uses `cli.c`'s comprehensive table (0x1100–0x3FFFD CJK ranges + 0x1F000–0x1FAFF emoji ranges + zero-width combining marks). All former per-file CJK tables have been consolidated here.
 
+## Core Data Structures
+Shared foundational containers live in `src/util/` (linked via `morph-util`). **Prefer these over hand-rolled equivalents.** Do not reimplement growable buffers, dynamic arrays, or hash maps.
+
+- **Arena** (`arena.h`) — bump-pointer allocator for scope-lived data. `arena_create`/`arena_destroy`, `arena_alloc` (zero-filled, aligned), `arena_alloc_aligned`, `arena_strdup`, `arena_reset` (reuse). Core structs (`react_context`, etc.) hold a `struct arena *`; allocate internal data from it instead of per-object `malloc`/`free`.
+- **`morph_buf_t`** (`buf.h`) — growable byte/string builder. `morph_buf_init` (heap) / `morph_buf_init_arena`, `morph_buf_append`/`puts`/`putc`/`printf`/`vprintf`, `morph_buf_cstr` (NUL-terminated view), `morph_buf_str` (`morph_str_t`), `morph_buf_detach` (take ownership), `morph_buf_cleanup`. Use this for any variable-length string assembly — **never** fixed `char[N]` + `snprintf` accumulation.
+- **`morph_array_t`** (`array.h`) — generic dynamic array (element size set at init). `morph_array_init` (heap, `MORPH_ARRAY_INIT_CAP` default) / `morph_array_init_arena`, `morph_array_push`/`push_n`/`pop`/`get`/`reserve`/`clear`, `morph_array_foreach(ptr, arr, type)`, `morph_array_cleanup`. Use instead of fixed-capacity C arrays when the count is unbounded. Note: `push` may realloc — don't hold element pointers across pushes.
+- **`morph_strmap_t`** (`strmap.h`) — open-addressing string→`void *` hash map. `morph_strmap_init`/`cleanup`/`clear`, `morph_strmap_set`/`get`/`contains`/`remove`/`len`. Use for string-keyed lookups (e.g. tool registries).
+- **`morph_str_t`** (`str.h`) — `{len, const char *}` string view (often arena-backed). `morph_strdup`/`strndup`, `morph_strcmp`/`strcasecmp`/`strncmp`, `morph_str_to_c`, `morph_str_chr`/`rchr`/`trim`, `MORPH_STRLIT`. Use for non-owning slices; cJSON values and most APIs still pass plain `const char *`.
+- **`struct morph_queue`** (`queue.h`) — intrusive doubly-linked list (embed the field in your struct; recover with `morph_queue_data`). Macro-based: `morph_queue_init`, `insert_head`/`insert_tail`, `remove`, `foreach`/`foreach_safe`, plus `sort`/`split`/`middle` helpers. No typedef, header-only.
+
 ## Dependencies
 - **Required**: SQLite3, libcurl, CMake ≥ 3.20
 - **Fetched by CMake**: md4c (v0.5.3 via FetchContent), GoogleTest (v1.14.0 via FetchContent)
@@ -129,7 +139,7 @@ These differ from typical C defaults and must be followed:
   - `strncpy` must use `sizeof(dst) - 1`, never magic numbers like `63`
 - **Error codes**: negative errno (`-EINVAL`, `-ENOMEM`) or `MORPH_ERR_*` from `src/util/error.h`; use `MORPH_RETURN(code)` instead of bare `return code;` for all error returns
 - **Cleanup**: `goto out;` pattern, no early returns with leak
-- **Memory**: `xmalloc`/`xfree` wrappers — failure aborts, no NULL checks needed
+- **Memory**: Arena (`arena_alloc`/`arena_strdup`) for scope-lived data; `morph_buf`/`morph_array` for growable strings/arrays (see Core Data Structures); raw `malloc`/`free` with NULL checks + `goto out` cleanup for short-lived buffers
 - **Multi-statement macros**: wrapped in `do { } while (0)`
 - **Naming**: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`
 - **Warnings**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` — CI must pass with 0 warnings

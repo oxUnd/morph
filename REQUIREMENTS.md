@@ -699,7 +699,7 @@ bash_exec_allowed_cwds = []
 
 # Human-in-the-Loop (HITL)
 hitl_enabled = false
-# hitl_tools = ["bash_exec", "img_edit", "vid_gen"]
+# hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
 hitl_auto_approve_readonly = true
 
 [context]
@@ -859,8 +859,10 @@ morph/
 │   │       ├── text_qa.h
 │   │       ├── img_gen.c
 │   │       ├── img_gen.h
-│   │       ├── img_edit.c
-│   │       ├── img_edit.h
+│   │       ├── img_inpaint.c
+│   │       ├── img_inpaint.h
+│   │       ├── img_compose.c
+│   │       ├── img_compose.h
 │   │       ├── img_info.c
 │   │       ├── img_info.h
 │   │       ├── img_resize.c
@@ -1037,7 +1039,7 @@ morph/
 - `arena_reset` 释放溢出 region 并重置主 region，允许复用同一 arena 实例
 - 所有核心结构体（`react_context`、`chat_response` 等）持有 `struct arena *`，内部字符串与动态数据均从 arena 分配
 
-**与 `xmalloc`/`xfree` 的关系**：仅 arena 内部的 region 创建/销毁使用 `malloc`/`free`；业务代码全部通过 `arena_alloc`/`arena_strdup` 分配，禁止业务层直接调用 `malloc`/`free`。
+**与裸 `malloc`/`free` 的关系**：仅 arena 内部的 region 创建/销毁、以及少量短生命周期缓冲使用 `malloc`/`free`；业务代码优先通过 `arena_alloc`/`arena_strdup`，或下述 `morph_buf`/`morph_array` 等基础容器分配，避免散落的手动内存管理。
 
 ```c
 struct arena {
@@ -1056,6 +1058,60 @@ char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制
 ```
 
 > **KPI 关联**：Arena 批量释放保证 Valgrind `0 definitely lost`（§3）；单次 `arena_destroy` 代替 N 次 `free`，降低空闲内存碎片，支撑「空闲常驻 < 15MB」指标。
+
+#### 6.9.0a 基础数据结构（`src/util/`）
+
+所有共享的基础容器统一收敛在 `src/util/`（随 `morph-util` 链接），**业务代码必须复用，禁止重复造轮子**（自行实现可变缓冲、动态数组、哈希表等）。
+
+| 结构 | 头文件 | 用途 | 关键 API |
+|------|--------|------|----------|
+| `struct arena` | `arena.h` | scope 级线性分配器 | `arena_create`/`arena_destroy`/`arena_alloc`/`arena_alloc_aligned`/`arena_strdup`/`arena_reset` |
+| `morph_buf_t` | `buf.h` | 可增长字节/字符串构造器 | `morph_buf_init`(堆)/`morph_buf_init_arena`、`append`/`puts`/`putc`/`printf`/`vprintf`、`morph_buf_cstr`/`morph_buf_str`/`morph_buf_detach`、`morph_buf_cleanup` |
+| `morph_array_t` | `array.h` | 泛型动态数组（init 指定元素大小） | `morph_array_init`(堆)/`morph_array_init_arena`、`push`/`push_n`/`pop`/`get`/`reserve`/`clear`、`morph_array_foreach`、`morph_array_cleanup` |
+| `morph_strmap_t` | `strmap.h` | 开放寻址 string→`void *` 哈希表 | `morph_strmap_init`/`cleanup`/`clear`、`set`/`get`/`contains`/`remove`/`len` |
+| `morph_str_t` | `str.h` | `{len, const char *}` 字符串视图（常 arena 背书） | `morph_strdup`/`strndup`、`morph_strcmp`/`strcasecmp`/`strncmp`、`morph_str_to_c`、`morph_str_chr`/`rchr`/`trim`、`MORPH_STRLIT` |
+| `struct morph_queue` | `queue.h` | 侵入式双向链表（宏 + header-only，无 typedef） | `morph_queue_init`、`insert_head`/`insert_tail`、`remove`、`foreach`/`foreach_safe`、`morph_queue_data`、`sort`/`split`/`middle` |
+
+**使用约定**：
+- 变长字符串拼接一律用 `morph_buf`，**不得**用固定 `char[N]` + `snprintf` 累加。
+- 数量不固定的集合用 `morph_array`，**不得**用固定容量 C 数组兜底（注意 `push` 可能触发 realloc，勿跨 push 持有元素指针）。
+- 字符串为 key 的查找用 `morph_strmap`（如工具注册表）；整数 key 直接用 `morph_array` 下标或线性查找。
+- `morph_str_t` 用于非拥有切片；cJSON 取值与多数 API 仍传普通 `const char *`。
+
+```c
+/* buf.h —— 可增长字符串构造 */
+typedef struct {
+	char         *data;
+	size_t        len;
+	size_t        cap;
+	int           heap_alloc;
+	int           failed;
+	struct arena *arena;
+} morph_buf_t;
+
+/* array.h —— 泛型动态数组 */
+typedef struct {
+	void   *elts;
+	size_t  nelts;
+	size_t  cap;
+	size_t  size;		/* 元素字节大小 */
+	int     heap_alloc;
+} morph_array_t;
+
+/* strmap.h —— string -> void* 哈希表 */
+typedef struct {
+	struct morph_strmap_entry *entries;
+	size_t count;
+	size_t cap;
+	size_t deleted;
+} morph_strmap_t;
+
+/* str.h —— 字符串视图 */
+typedef struct {
+	size_t      len;
+	const char *data;
+} morph_str_t;
+```
 
 #### 6.9.1 ReAct 循环
 
@@ -1343,7 +1399,8 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | text_gen | 文字内容生成 | prompt, style, length | LLM | 内置 | 否 |
 | text_qa | 文字问答/改写 | prompt, context | LLM | 内置 | 是 |
 | img_gen | 图片生成 | prompt, style, size, reference_image | DALL-E / SD / Volcengine | 内置 | 否 |
-| img_edit | 图片编辑/理解 | prompt, file_path | GPT-4o Vision | 内置 | 否 |
+| img_inpaint | 区域生成(bbox+label) | annotation, prompt | 图像模型 i2i (确定性百分比指令) | 内置 | 否 |
+| img_compose | 跨图融合(arrow+label) | annotation, prompt | 本地预合成 + 图像模型 i2i | 内置 | 否 |
 | img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 | 否 |
 | img_convert | 图片格式转换 | file_path, format | stb_image + stb_image_write | 内置 | 否 |
 | img_info | 图片信息 | file_path | stb_image | 内置 | 是 |

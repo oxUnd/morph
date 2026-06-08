@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
 #include "models/image_gen.h"
 #include "agent/tools/img_gen.h"
-#include "agent/tools/img_edit.h"
+#include "agent/tools/img_inpaint.h"
+#include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
 #include "agent/tools/img_resize.h"
 #include "agent/tools/img_convert.h"
@@ -127,20 +128,39 @@ TEST_F(ImgGenToolTest, ToolNotFound) {
 	EXPECT_NE(rc, 0);
 }
 
-TEST_F(ImgGenToolTest, EditRegister) {
-	int rc = img_edit_init(&reg, NULL, NULL);
+TEST_F(ImgGenToolTest, InpaintRegister) {
+	int rc = img_inpaint_init(&reg, NULL, NULL);
 	EXPECT_EQ(rc, 0);
-	struct tool_entry *e = tool_lookup(&reg, "img_edit");
+	struct tool_entry *e = tool_lookup(&reg, "img_inpaint");
 	ASSERT_NE(e, nullptr);
-	EXPECT_STREQ(e->desc.name, "img_edit");
+	EXPECT_STREQ(e->desc.name, "img_inpaint");
 }
 
-TEST_F(ImgGenToolTest, EditMissingArgs) {
-	img_edit_init(&reg, NULL, NULL);
+TEST_F(ImgGenToolTest, InpaintExecBadJson) {
+	img_inpaint_init(&reg, NULL, NULL);
 	char *result = NULL;
-	int rc = tool_exec(&reg, "img_edit", "{}", &result);
+	int rc = tool_exec(&reg, "img_inpaint", "not json", &result);
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result, nullptr);
+	EXPECT_TRUE(strstr(result, "error") != NULL);
+	free(result);
+}
+
+TEST_F(ImgGenToolTest, ComposeRegister) {
+	int rc = img_compose_init(&reg, NULL, NULL);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_compose");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_compose");
+}
+
+TEST_F(ImgGenToolTest, ComposeExecBadJson) {
+	img_compose_init(&reg, NULL, NULL);
+	char *result = NULL;
+	int rc = tool_exec(&reg, "img_compose", "not json", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result, nullptr);
+	EXPECT_TRUE(strstr(result, "error") != NULL);
 	free(result);
 }
 

@@ -19,7 +19,8 @@
 #include "agent/tools/text_gen.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
-#include "agent/tools/img_edit.h"
+#include "agent/tools/img_inpaint.h"
+#include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
 #include "agent/tools/img_resize.h"
 #include "agent/tools/img_convert.h"
@@ -173,7 +174,8 @@ static void bridge_init_once(void)
 			img_key ? img_key : "");
 		if (img_m) {
 			img_gen_init(&g_tools, img_m, g_tctx);
-			img_edit_init(&g_tools, g_llm, g_tctx);
+			img_inpaint_init(&g_tools, img_m, g_tctx);
+			img_compose_init(&g_tools, img_m, g_tctx);
 		}
 	}
 
