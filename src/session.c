@@ -16,7 +16,10 @@ static void generate_display_id(char *buf, size_t size)
 	arc4random_buf(raw, sizeof(raw));
 #else
 	static int seeded = 0;
-	if (!seeded) { srand((unsigned)(time(NULL) ^ (uintptr_t)buf)); seeded = 1; }
+	if (!seeded) {
+		srand((unsigned)((uint64_t)time(NULL) ^ (uintptr_t)buf));
+		seeded = 1;
+	}
 	for (size_t i = 0; i < sizeof(raw); i++) raw[i] = (unsigned char)(rand() & 0xFF);
 #endif
 	snprintf(buf, size, "%08x",

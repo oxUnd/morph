@@ -88,12 +88,14 @@ static int img_gen_exec(const char *args_json, char **result_json, void *user_da
 		return rc;
 	}
 
-	char error[256];
-	snprintf(error, sizeof(error),
-		 "image generated: %s (%dx%d)",
+	size_t msg_len = strlen(img_res.path) + 64;
+	char *msg = malloc(msg_len);
+	if (!msg)
+		return -ENOMEM;
+	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
-	*result_json = strdup(error);
-	log_dbg("img_gen: %s", error);
+	*result_json = msg;
+	log_dbg("img_gen: %s", msg);
 
 	return 0;
 }

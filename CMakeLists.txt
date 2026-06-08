@@ -6,7 +6,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(CMAKE_C_FLAGS "-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-gnu-zero-variadic-macro-arguments")
 set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
 set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
 
@@ -30,14 +29,25 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz")
 	FetchContent_Declare(
 		md4c
 		URL "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz"
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 	)
 else()
 	FetchContent_Declare(
 		md4c
 		URL      https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 	)
 endif()
 FetchContent_MakeAvailable(md4c)
+
+add_compile_options(
+	$<$<COMPILE_LANGUAGE:C>:-Wall>
+	$<$<COMPILE_LANGUAGE:C>:-Wextra>
+	$<$<COMPILE_LANGUAGE:C>:-Wpedantic>
+	$<$<COMPILE_LANGUAGE:C>:-Wshadow>
+	$<$<COMPILE_LANGUAGE:C>:-Wconversion>
+	$<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-gnu-zero-variadic-macro-arguments>
+)
 
 configure_file(
 	${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
@@ -54,6 +64,7 @@ if(BUILD_TESTS)
 		googletest
 		GIT_REPOSITORY https://github.com/google/googletest.git
 		GIT_TAG        v1.14.0
+		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 	)
 	FetchContent_MakeAvailable(googletest)
 	add_subdirectory(tests)

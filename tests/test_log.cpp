@@ -5,24 +5,29 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 class LogTest : public ::testing::Test {
 protected:
 	void SetUp() override {
-		tmpfile = std::tmpnam(nullptr);
-		log_init(tmpfile, LOG_DEBUG);
+		char tmpl[] = "/tmp/morph_log_test_XXXXXX";
+		int fd = mkstemp(tmpl);
+		ASSERT_NE(fd, -1);
+		close(fd);
+		tmpfile = tmpl;
+		log_init(tmpfile.c_str(), LOG_DEBUG);
 	}
 	void TearDown() override {
 		log_shutdown();
-		if (tmpfile) {
-			std::remove(tmpfile);
-			tmpfile = nullptr;
+		if (!tmpfile.empty()) {
+			std::remove(tmpfile.c_str());
+			tmpfile.clear();
 		}
 	}
 
 	std::vector<std::string> read_lines() {
 		std::vector<std::string> lines;
-		if (!tmpfile) return lines;
+		if (tmpfile.empty()) return lines;
 		std::ifstream f(tmpfile);
 		std::string line;
 		while (std::getline(f, line))
@@ -61,12 +66,12 @@ protected:
 		return rest == msg;
 	}
 
-	char *tmpfile = nullptr;
+	std::string tmpfile;
 };
 
 TEST_F(LogTest, InitShutdown) {
 	EXPECT_NO_FATAL_FAILURE(log_shutdown());
-	log_init(tmpfile, LOG_INFO);
+	log_init(tmpfile.c_str(), LOG_INFO);
 }
 
 TEST_F(LogTest, WriteAll) {
@@ -133,11 +138,11 @@ TEST_F(LogTest, MultipleWritesCount) {
 TEST_F(LogTest, FflushBeforeShutdown) {
 	log_shutdown();
 
-	auto fp = std::fopen(tmpfile, "w");
+	auto fp = std::fopen(tmpfile.c_str(), "w");
 	ASSERT_TRUE(fp);
 	std::fclose(fp);
 
-	log_init(tmpfile, LOG_INFO);
+	log_init(tmpfile.c_str(), LOG_INFO);
 	log_info("before any close");
 
 	auto lines = read_lines();

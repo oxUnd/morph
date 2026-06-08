@@ -995,7 +995,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			const char *action = (gr.triggered_rule &&
 					      gr.triggered_rule->action_text[0])
 				? gr.triggered_rule->action_text : "";
-			char msg[1024];
+			char msg[2048];
 			snprintf(msg, sizeof(msg),
 				 "Input rejected: %s\n%s", gr.reason, action);
 			struct react_step *refl = react_step_create(ctx->turn_arena,
@@ -1404,7 +1404,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 								       ggr.triggered_rule->action_text[0])
 							? ggr.triggered_rule->action_text
 							: "Verify tool parameters and try again.";
-						char guard_obs[1024];
+						char guard_obs[2048];
 						snprintf(guard_obs, sizeof(guard_obs),
 							 "guardrail: %s\n%s", ggr.reason, gaction);
 						obs_text = arena_strdup(ctx->turn_arena, guard_obs);

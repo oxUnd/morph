@@ -30,3 +30,7 @@ target_link_libraries(morph-util PUBLIC m)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/re.c PROPERTIES
 	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion"
 )
+
+set_source_files_properties(image_util.c PROPERTIES
+	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion"
+)

@@ -30,7 +30,7 @@ char *image_encode_base64(const char *path, int max_dim)
 		if (rw < 1) rw = 1;
 		if (rh < 1) rh = 1;
 
-		resized = malloc((size_t)rw * rh * 4);
+		resized = malloc((size_t)rw * (size_t)rh * 4);
 		if (!resized) {
 			stbi_image_free(pixels);
 			return NULL;

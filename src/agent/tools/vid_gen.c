@@ -163,11 +163,14 @@ static int vid_gen_exec(const char *args_json, char **result_json, void *user_da
 		return rc;
 	}
 
-	char error[512];
-	snprintf(error, sizeof(error),
-		 "video generated: %s (%ds)", vid_res.path, vid_res.duration_seconds);
-	*result_json = strdup(error);
-	log_dbg("vid_gen: %s", error);
+	size_t msg_len = strlen(vid_res.path) + 64;
+	char *msg = malloc(msg_len);
+	if (!msg)
+		return -ENOMEM;
+	snprintf(msg, msg_len, "video generated: %s (%ds)",
+		 vid_res.path, vid_res.duration_seconds);
+	*result_json = msg;
+	log_dbg("vid_gen: %s", msg);
 
 	return 0;
 }

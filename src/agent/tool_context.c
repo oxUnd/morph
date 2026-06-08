@@ -177,11 +177,20 @@ static int resolve_user_path(struct tool_context *tctx,
 		snprintf(candidate, sizeof(candidate), "%s", expanded);
 	} else {
 		base = path_op_is_read(op) ? tctx->workdir : tctx->output_dir;
-		if (base && *base)
-			snprintf(candidate, sizeof(candidate), "%s/%s",
-				 base, expanded);
-		else
+		if (base && *base) {
+			size_t base_len = strlen(base);
+			size_t expanded_len = strlen(expanded);
+			if (base_len + 1 + expanded_len >= sizeof(candidate)) {
+				free(expanded);
+				MORPH_RETURN(-ENAMETOOLONG);
+			}
+			memcpy(candidate, base, base_len);
+			candidate[base_len] = '/';
+			memcpy(candidate + base_len + 1, expanded,
+			       expanded_len + 1);
+		} else {
 			snprintf(candidate, sizeof(candidate), "%s", expanded);
+		}
 	}
 	free(expanded);
 

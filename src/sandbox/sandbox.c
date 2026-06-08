@@ -700,8 +700,10 @@ static int fb_append(morph_array_t *fb, struct sock_filter insn)
 static int fb_allow(morph_array_t *fb, int nr)
 {
 	int rc;
+	if (nr < 0)
+		return -EINVAL;
 	rc = fb_append(fb, (struct sock_filter)BPF_JUMP(
-		BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1));
+		BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)nr, 0, 1));
 	if (rc < 0)
 		return rc;
 	rc = fb_append(fb, (struct sock_filter)BPF_STMT(

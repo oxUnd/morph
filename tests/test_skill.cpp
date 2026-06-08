@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -147,7 +148,7 @@ protected:
 		char skill_dir[512];
 		snprintf(skill_dir, sizeof(skill_dir), "%s/%s", tmpdir, dir_name);
 		mkdir(skill_dir, 0755);
-		char md_path[512];
+		char md_path[PATH_MAX];
 		snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
@@ -158,7 +159,7 @@ protected:
 	void remove_skill(const char *dir_name) {
 		char skill_dir[512];
 		snprintf(skill_dir, sizeof(skill_dir), "%s/%s", tmpdir, dir_name);
-		char md_path[512];
+		char md_path[PATH_MAX];
 		snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
 		unlink(md_path);
 		rmdir(skill_dir);
@@ -284,7 +285,7 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 	char skill_dir2[512];
 	snprintf(skill_dir2, sizeof(skill_dir2), "%s/dup-name-2", tmpdir);
 	mkdir(skill_dir2, 0755);
-	char md_path[512];
+	char md_path[PATH_MAX];
 	snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir2);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);
@@ -345,7 +346,7 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	char skill_dir[512];
 	snprintf(skill_dir, sizeof(skill_dir), "%s/review", tmpdir);
 	mkdir(skill_dir, 0755);
-	char md_path[512];
+	char md_path[PATH_MAX];
 	snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);

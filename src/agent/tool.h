@@ -8,8 +8,8 @@ extern "C" {
 #include <errno.h>
 #include "util/strmap.h"
 
-#define TOOL_NAME_MAX 64
-#define TOOL_DESC_MAX 512
+#define TOOL_NAME_MAX 512
+#define TOOL_DESC_MAX 8192
 #define TOOL_ARGS_SPEC_MAX 1024
 #define TOOL_MAX_ENTRIES 64
 #define TOOL_DISABLED_MAX 32

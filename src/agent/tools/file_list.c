@@ -82,7 +82,7 @@ static int file_list_exec(const char *args_json, char **result_json, void *user_
 		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
 			continue;
 
-		char full[PATH_MAX];
+		char full[PATH_MAX + NAME_MAX + 2];
 		snprintf(full, sizeof(full), "%s/%s", resolved_path, entry->d_name);
 		struct stat st;
 		int is_dir = 0;

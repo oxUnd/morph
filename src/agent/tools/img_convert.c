@@ -175,12 +175,16 @@ static int img_convert_exec(const char *args_json, char **result_json, void *use
 		return -EIO;
 	}
 
-	char buf[1280];
-	snprintf(buf, sizeof(buf),
-		 "image converted: %s (%s, %dx%d)",
+	size_t msg_len = strlen(final_path) + strlen(nfmt) + 64;
+	char *msg = malloc(msg_len);
+	if (!msg) {
+		cJSON_Delete(root);
+		return -ENOMEM;
+	}
+	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)",
 		 final_path, nfmt, w, h);
-	*result_json = strdup(buf);
-	log_dbg("img_convert: %s", buf);
+	*result_json = msg;
+	log_dbg("img_convert: %s", msg);
 
 	cJSON_Delete(root);
 	return 0;

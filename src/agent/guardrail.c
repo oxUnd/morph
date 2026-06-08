@@ -430,8 +430,9 @@ int guardrail_ext_so_load(struct guardrail_rule *rule)
 			rule->ext_entry, dlerror());
 		return MORPH_ERR_LOAD;
 	}
-	guardrail_ext_check_fn fn =
-		(guardrail_ext_check_fn)dlsym(handle, "guardrail_check");
+	void *sym = dlsym(handle, "guardrail_check");
+	guardrail_ext_check_fn fn = NULL;
+	memcpy(&fn, &sym, sizeof(fn));
 	if (!fn) {
 		log_err("guardrail: no 'guardrail_check' symbol in %s",
 			rule->ext_entry);

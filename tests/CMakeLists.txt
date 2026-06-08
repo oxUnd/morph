@@ -68,7 +68,7 @@ target_link_libraries(morph-tests PRIVATE
 	morph-skill
 	morph-mcp
 	GTest::gtest_main
-	SQLite::SQLite3
+	SQLite3::SQLite3
 	CURL::libcurl
 	 Threads::Threads
 )

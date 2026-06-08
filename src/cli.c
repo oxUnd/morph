@@ -312,9 +312,9 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)ctx;
 	const char *topic = cmd_arg(argc, argv, 1);
+	char full[64];
 	if (topic) {
 		if (topic[0] != '/') {
-			char full[64];
 			snprintf(full, sizeof(full), "/%s", topic);
 			topic = full;
 		}
@@ -1284,6 +1284,9 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv)
 {
+	(void)ctx;
+	(void)argc;
+	(void)argv;
 	printf("use /save [format] instead\n");
 	return 0;
 }
@@ -2087,7 +2090,7 @@ static int cli_init_exts(struct cli_context *ctx)
 	int ext_count = 0;
 	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) == 0) {
 		for (int i = 0; i < ext_count; i++) {
-			char ed_path[PATH_MAX];
+			char ed_path[PATH_MAX + NAME_MAX + 2];
 			snprintf(ed_path, sizeof(ed_path), "%s/%s", exts_dir, ext_dirs[i]);
 			struct ext ex;
 			int rc = ext_load(&ex, ed_path);
@@ -2124,7 +2127,7 @@ static int cli_init_exts(struct cli_context *ctx)
 						if (r) {
 							r->ext_type =
 								GUARDRAIL_EXT_SO;
-							char full[PATH_MAX];
+							char full[PATH_MAX + NAME_MAX + 130];
 							snprintf(full,
 								 sizeof(full),
 								 "%s/%s",
@@ -2145,7 +2148,7 @@ static int cli_init_exts(struct cli_context *ctx)
 						if (r) {
 							r->ext_type =
 								GUARDRAIL_EXT_EXEC;
-							char full[PATH_MAX];
+							char full[PATH_MAX + NAME_MAX + 130];
 							snprintf(full,
 								 sizeof(full),
 								 "%s/%s",
@@ -2634,8 +2637,8 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 		close(saved_stdout);
 	}
 	clock_gettime(CLOCK_MONOTONIC, &ts_end);
-	double elapsed = (ts_end.tv_sec - ts_start.tv_sec)
-			 + (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
+	double elapsed = (double)(ts_end.tv_sec - ts_start.tv_sec)
+			 + (double)(ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
 	if (ctx->trace_json)
 		emit_trace_json(ctx, elapsed);
 	signal(SIGINT, SIG_DFL);

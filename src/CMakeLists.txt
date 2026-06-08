@@ -15,7 +15,7 @@ set(MORPH_LIBS
 	morph-session
 	morph-skill
 	morph-mcp
-	SQLite::SQLite3
+	SQLite3::SQLite3
 	CURL::libcurl
 )
 
@@ -28,9 +28,13 @@ target_include_directories(morph-toml PUBLIC
 target_compile_options(morph-toml PRIVATE
 	-Wno-implicit-function-declaration
 	-Wno-implicit-int
+	-Wno-conversion
 	-Wno-sign-conversion
 	-Wno-shorten-64-to-32
 	-Wno-empty-body
+	-Wno-misleading-indentation
+	-Wno-unused-function
+	-Wno-unused-variable
 )
 set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/toml.c PROPERTIES
 	COMPILE_FLAGS "-include ${CMAKE_CURRENT_SOURCE_DIR}/vendor_toml_compat.h"

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 class SessionTest : public ::testing::Test {
 protected:
@@ -168,16 +169,14 @@ TEST_F(SessionTest, AutoRenameNewSession) {
 	const char *input = "画一只猫";
 	if (!auto_named && input[0] != '/') {
 		char title[48];
-		size_t len = strlen(input);
 		size_t max_len = sizeof(title) - 4;
-		if (len > max_len) {
-			memcpy(title, input, max_len);
-			title[max_len] = '\0';
-			strcat(title, "...");
-		} else {
-			memcpy(title, input, len);
-			title[len] = '\0';
+		std::string title_str(input);
+		if (title_str.size() > max_len) {
+			title_str.resize(max_len);
+			title_str += "...";
 		}
+		ASSERT_LT(title_str.size(), sizeof(title));
+		memcpy(title, title_str.c_str(), title_str.size() + 1);
 		session_rename(&db, s.id, title);
 		strncpy(s.name, title, sizeof(s.name) - 1);
 		auto_named = 1;
@@ -201,16 +200,14 @@ TEST_F(SessionTest, AutoRenameExistingSession) {
 	const char *input = "画一只猫";
 	if (!auto_named && input[0] != '/') {
 		char title[48];
-		size_t len = strlen(input);
 		size_t max_len = sizeof(title) - 4;
-		if (len > max_len) {
-			memcpy(title, input, max_len);
-			title[max_len] = '\0';
-			strcat(title, "...");
-		} else {
-			memcpy(title, input, len);
-			title[len] = '\0';
+		std::string title_str(input);
+		if (title_str.size() > max_len) {
+			title_str.resize(max_len);
+			title_str += "...";
 		}
+		ASSERT_LT(title_str.size(), sizeof(title));
+		memcpy(title, title_str.c_str(), title_str.size() + 1);
 		session_rename(&db, s.id, title);
 		strncpy(s.name, title, sizeof(s.name) - 1);
 		auto_named = 1;

@@ -33,7 +33,7 @@ static void *g_cb_user_data;
 static char *find_editor_binary(void)
 {
 	const char *env;
-	char buf[PATH_MAX];
+	char buf[PATH_MAX + 64];
 	char cwd[PATH_MAX];
 
 	env = getenv("MORPH_EDITOR");

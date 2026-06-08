@@ -33,17 +33,21 @@ int ext_load_so(struct ext *ex, const char *path)
 	typedef int (*run_fn)(const char *, char **);
 	const char *sym_name = ex->manifest.entry;
 
-	run_fn fn = (run_fn)dlsym(handle, "ext_run");
+	void *sym = dlsym(handle, "ext_run");
+	run_fn fn = NULL;
+	memcpy(&fn, &sym, sizeof(fn));
 	if (!fn) {
 		const char *slash = strrchr(sym_name, '/');
 		const char *basename = slash ? slash + 1 : sym_name;
 		char sym_buf[256];
 		snprintf(sym_buf, sizeof(sym_buf), "%s_run", basename);
-		fn = (run_fn)dlsym(handle, sym_buf);
+		sym = dlsym(handle, sym_buf);
+		memcpy(&fn, &sym, sizeof(fn));
 	}
 
 	if (!fn) {
-		fn = (run_fn)dlsym(handle, sym_name);
+		sym = dlsym(handle, sym_name);
+		memcpy(&fn, &sym, sizeof(fn));
 	}
 
 	if (!fn) {

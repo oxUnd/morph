@@ -183,11 +183,16 @@ static int img_resize_exec(const char *args_json, char **result_json, void *user
 		return -EIO;
 	}
 
-	char buf[1280];
-	snprintf(buf, sizeof(buf),
-		 "image resized: %s (%dx%d)", final_path, target_w, target_h);
-	*result_json = strdup(buf);
-	log_dbg("img_resize: %s", buf);
+	size_t msg_len = strlen(final_path) + 64;
+	char *msg = malloc(msg_len);
+	if (!msg) {
+		cJSON_Delete(root);
+		return -ENOMEM;
+	}
+	snprintf(msg, msg_len, "image resized: %s (%dx%d)",
+		 final_path, target_w, target_h);
+	*result_json = msg;
+	log_dbg("img_resize: %s", msg);
 
 	cJSON_Delete(root);
 	return 0;

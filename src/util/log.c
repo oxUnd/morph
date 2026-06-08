@@ -48,7 +48,7 @@ static void rotate_log(void)
 	if (pos < MAX_LOG_FILE_SIZE)
 		return;
 
-	char old_path[PATH_MAX + 4];
+	char old_path[PATH_MAX + 16];
 	snprintf(old_path, sizeof(old_path), "%s.old", log_state.path);
 	fclose(log_state.file);
 	rename(log_state.path, old_path);
@@ -59,10 +59,10 @@ static void rotate_log(void)
 		return;
 	}
 
-	char backup[520];
+	char backup[PATH_MAX + 16];
 	snprintf(backup, sizeof(backup), "%s.1", log_state.path);
 	for (int i = MAX_LOG_FILES; i > 1; i--) {
-		char from[520], to[520];
+		char from[PATH_MAX + 16], to[PATH_MAX + 16];
 		snprintf(from, sizeof(from), "%s.%d", log_state.path, i - 1);
 		snprintf(to, sizeof(to), "%s.%d", log_state.path, i);
 		rename(from, to);
