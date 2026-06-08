@@ -9,6 +9,7 @@ add_library(morph-util STATIC
 	error.c
 	bpe.c
 	str.c
+	strmap.c
 	buf.c
 	array.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c

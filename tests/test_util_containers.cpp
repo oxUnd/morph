@@ -5,6 +5,7 @@
 #include "util/buf.h"
 #include "util/queue.h"
 #include "util/str.h"
+#include "util/strmap.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -82,6 +83,125 @@ TEST(UtilArray, RejectsOverflowCapacities)
 	a.nelts = SIZE_MAX - 1;
 	EXPECT_EQ(morph_array_push_n(&a, 2), nullptr);
 	morph_array_cleanup(&a);
+}
+
+TEST(UtilStrmap, SetGetUpdateAndContains)
+{
+	morph_strmap_t m;
+	int one = 1;
+	int two = 2;
+	int three = 3;
+
+	ASSERT_EQ(morph_strmap_init(&m, 2), 0);
+	EXPECT_EQ(morph_strmap_len(&m), 0u);
+
+	ASSERT_EQ(morph_strmap_set(&m, "alpha", &one), 0);
+	ASSERT_EQ(morph_strmap_set(&m, "beta", &two), 0);
+	EXPECT_EQ(morph_strmap_len(&m), 2u);
+	EXPECT_EQ(morph_strmap_get(&m, "alpha"), &one);
+	EXPECT_EQ(morph_strmap_get(&m, "beta"), &two);
+	EXPECT_EQ(morph_strmap_get(&m, "missing"), nullptr);
+	EXPECT_TRUE(morph_strmap_contains(&m, "alpha"));
+	EXPECT_FALSE(morph_strmap_contains(&m, "missing"));
+
+	ASSERT_EQ(morph_strmap_set(&m, "alpha", &three), 0);
+	EXPECT_EQ(morph_strmap_len(&m), 2u);
+	EXPECT_EQ(morph_strmap_get(&m, "alpha"), &three);
+
+	morph_strmap_cleanup(&m);
+}
+
+TEST(UtilStrmap, OwnsCopiedKeys)
+{
+	morph_strmap_t m;
+	int value = 7;
+	char key[] = "mutable";
+
+	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
+	ASSERT_EQ(morph_strmap_set(&m, key, &value), 0);
+	strcpy(key, "changed");
+
+	EXPECT_EQ(morph_strmap_get(&m, "mutable"), &value);
+	EXPECT_EQ(morph_strmap_get(&m, "changed"), nullptr);
+
+	morph_strmap_cleanup(&m);
+}
+
+TEST(UtilStrmap, RemoveAndReuseDeletedSlots)
+{
+	morph_strmap_t m;
+	int values[32];
+
+	ASSERT_EQ(morph_strmap_init(&m, 4), 0);
+	for (int i = 0; i < 16; i++) {
+		char key[16];
+		snprintf(key, sizeof(key), "k%d", i);
+		values[i] = i;
+		ASSERT_EQ(morph_strmap_set(&m, key, &values[i]), 0);
+	}
+	EXPECT_EQ(morph_strmap_len(&m), 16u);
+
+	EXPECT_EQ(morph_strmap_remove(&m, "k3"), 1);
+	EXPECT_EQ(morph_strmap_remove(&m, "k7"), 1);
+	EXPECT_EQ(morph_strmap_remove(&m, "missing"), 0);
+	EXPECT_FALSE(morph_strmap_contains(&m, "k3"));
+	EXPECT_EQ(morph_strmap_len(&m), 14u);
+
+	values[20] = 20;
+	ASSERT_EQ(morph_strmap_set(&m, "new", &values[20]), 0);
+	EXPECT_EQ(morph_strmap_get(&m, "new"), &values[20]);
+	EXPECT_EQ(morph_strmap_len(&m), 15u);
+
+	morph_strmap_cleanup(&m);
+}
+
+TEST(UtilStrmap, NullValueIsStillContained)
+{
+	morph_strmap_t m;
+
+	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
+	ASSERT_EQ(morph_strmap_set(&m, "nil", nullptr), 0);
+
+	EXPECT_EQ(morph_strmap_get(&m, "nil"), nullptr);
+	EXPECT_TRUE(morph_strmap_contains(&m, "nil"));
+
+	morph_strmap_cleanup(&m);
+}
+
+TEST(UtilStrmap, ClearKeepsMapReusable)
+{
+	morph_strmap_t m;
+	int value = 42;
+
+	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
+	ASSERT_EQ(morph_strmap_set(&m, "a", &value), 0);
+	ASSERT_EQ(morph_strmap_set(&m, "b", &value), 0);
+	morph_strmap_clear(&m);
+
+	EXPECT_EQ(morph_strmap_len(&m), 0u);
+	EXPECT_FALSE(morph_strmap_contains(&m, "a"));
+	ASSERT_EQ(morph_strmap_set(&m, "c", &value), 0);
+	EXPECT_EQ(morph_strmap_get(&m, "c"), &value);
+
+	morph_strmap_cleanup(&m);
+}
+
+TEST(UtilStrmap, RejectsInvalidArguments)
+{
+	morph_strmap_t m;
+	int value = 1;
+
+	EXPECT_EQ(morph_strmap_init(nullptr, 0), -EINVAL);
+	ASSERT_EQ(morph_strmap_init(&m, 0), 0);
+
+	EXPECT_EQ(morph_strmap_set(nullptr, "a", &value), -EINVAL);
+	EXPECT_EQ(morph_strmap_set(&m, nullptr, &value), -EINVAL);
+	EXPECT_EQ(morph_strmap_get(nullptr, "a"), nullptr);
+	EXPECT_EQ(morph_strmap_get(&m, nullptr), nullptr);
+	EXPECT_FALSE(morph_strmap_contains(nullptr, "a"));
+	EXPECT_EQ(morph_strmap_remove(nullptr, "a"), 0);
+
+	morph_strmap_cleanup(&m);
 }
 
 TEST(UtilBuf, AppendPrintfCstrAndTruncate)
