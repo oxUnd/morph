@@ -30,6 +30,7 @@ class ToolTest : public ::testing::Test {
 protected:
 	struct tool_registry reg;
 	void SetUp() override { tool_registry_init(&reg); }
+	void TearDown() override { tool_registry_cleanup(&reg); }
 };
 
 TEST_F(ToolTest, Init) {
@@ -44,6 +45,7 @@ TEST_F(ToolTest, RegisterAndLookup) {
 	struct tool_entry *e = tool_lookup(&reg, "test_tool");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "test_tool");
+	EXPECT_EQ(morph_strmap_get(&reg.by_name, "test_tool"), e);
 }
 
 TEST_F(ToolTest, RegisterMultiple) {
@@ -58,6 +60,14 @@ TEST_F(ToolTest, DuplicateName) {
 	EXPECT_EQ(rc1, 0);
 	int rc2 = tool_register(&reg, "dup", "Second", nullptr, mock_tool_exec, nullptr, nullptr);
 	EXPECT_NE(rc2, 0);
+}
+
+TEST_F(ToolTest, DisableUsesNameIndex) {
+	EXPECT_EQ(tool_disable(&reg, "blocked"), 0);
+	EXPECT_TRUE(tool_is_disabled(&reg, "blocked"));
+	EXPECT_TRUE(morph_strmap_contains(&reg.disabled_by_name, "blocked"));
+	EXPECT_EQ(tool_disable(&reg, "blocked"), 0);
+	EXPECT_EQ(reg.disabled_count, 1);
 }
 
 TEST_F(ToolTest, LookupNotFound) {

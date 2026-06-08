@@ -74,6 +74,7 @@ TEST_F(McpRegistryTest, GetExistingServer) {
 	ASSERT_NE(client, nullptr);
 	EXPECT_STREQ(client->config.name, "find-me");
 	EXPECT_EQ(client->config.transport, MCP_TRANSPORT_STDIO);
+	EXPECT_EQ(morph_strmap_get(&reg.by_name, "find-me"), client);
 }
 
 TEST_F(McpRegistryTest, GetNonexistentServer) {

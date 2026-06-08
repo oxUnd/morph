@@ -11,6 +11,7 @@ extern "C" {
 #include <sys/types.h>
 
 #include "util/arena.h"
+#include "util/strmap.h"
 #include "agent/tool.h"
 
 #define MCP_PROTOCOL_VERSION   "2025-06-18"
@@ -103,6 +104,7 @@ struct mcp_client {
 struct mcp_registry {
 	struct mcp_client *servers[MCP_MAX_SERVERS];
 	int count;
+	morph_strmap_t by_name;
 };
 
 /* ----- Registry ----- */

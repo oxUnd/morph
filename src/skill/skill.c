@@ -16,6 +16,7 @@ void skill_registry_init(struct skill_registry *reg)
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	(void)morph_strmap_init(&reg->by_name, SKILL_MAX_ENTRIES);
 }
 
 void skill_registry_cleanup(struct skill_registry *reg)
@@ -28,10 +29,18 @@ void skill_registry_cleanup(struct skill_registry *reg)
 		reg->entries[i].body_loaded = 0;
 	}
 	reg->count = 0;
+	morph_strmap_cleanup(&reg->by_name);
 }
 
 static int find_skill(struct skill_registry *reg, const char *name)
 {
+	struct skill_entry *e;
+
+	if (!reg || !name)
+		return -1;
+	e = (struct skill_entry *)morph_strmap_get(&reg->by_name, name);
+	if (e)
+		return (int)(e - reg->entries);
 	for (int i = 0; i < reg->count; i++) {
 		if (strcmp(reg->entries[i].fm.name, name) == 0)
 			return i;
@@ -136,6 +145,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		e->body = NULL;
 		e->body_loaded = 0;
 
+		(void)morph_strmap_set(&reg->by_name, e->fm.name, e);
 		reg->count++;
 		discovered++;
 		log_info("skill_discover: found '%s'", fm.name);

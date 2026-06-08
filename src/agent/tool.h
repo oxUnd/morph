@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <errno.h>
+#include "util/strmap.h"
 
 #define TOOL_NAME_MAX 64
 #define TOOL_DESC_MAX 512
@@ -38,6 +39,8 @@ struct tool_registry {
 	int count;
 	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
 	int disabled_count;
+	morph_strmap_t by_name;
+	morph_strmap_t disabled_by_name;
 };
 
 void tool_registry_init(struct tool_registry *reg);

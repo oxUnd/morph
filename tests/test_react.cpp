@@ -470,6 +470,7 @@ protected:
 	void TearDown() override {
 		tokenizer_destroy(tok);
 		arena_destroy(ar);
+		tool_registry_cleanup(&tools);
 	}
 };
 
@@ -495,6 +496,7 @@ protected:
 	void TearDown() override {
 		if (llm) model_destroy(llm);
 		tokenizer_destroy(tok);
+		tool_registry_cleanup(&tools);
 	}
 	void setup_llm_with_response(const char *response) {
 		llm = create_mock_llm(response);

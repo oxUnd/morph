@@ -8,11 +8,17 @@ void tool_registry_init(struct tool_registry *reg)
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	(void)morph_strmap_init(&reg->by_name, TOOL_MAX_ENTRIES);
+	(void)morph_strmap_init(&reg->disabled_by_name, TOOL_DISABLED_MAX);
 }
 
 void tool_registry_cleanup(struct tool_registry *reg)
 {
 	tool_entry_cleanup_user_data(reg);
+	if (!reg)
+		return;
+	morph_strmap_cleanup(&reg->by_name);
+	morph_strmap_cleanup(&reg->disabled_by_name);
 }
 
 void tool_entry_cleanup_user_data(struct tool_registry *reg)
@@ -29,6 +35,13 @@ void tool_entry_cleanup_user_data(struct tool_registry *reg)
 
 static int find_tool(struct tool_registry *reg, const char *name)
 {
+	struct tool_entry *e;
+
+	if (!reg || !name)
+		return -1;
+	e = (struct tool_entry *)morph_strmap_get(&reg->by_name, name);
+	if (e)
+		return (int)(e - reg->entries);
 	for (int i = 0; i < reg->count; i++) {
 		if (strcmp(reg->entries[i].desc.name, name) == 0)
 			return i;
@@ -55,6 +68,7 @@ int tool_register(struct tool_registry *reg, const char *name, const char *desc,
 	e->exec = exec;
 	e->user_data = user_data;
 	e->user_data_destroy = user_data_destroy;
+	(void)morph_strmap_set(&reg->by_name, e->desc.name, e);
 	reg->count++;
 	log_dbg("tool registered: %s", name);
 	return 0;
@@ -92,6 +106,9 @@ int tool_disable(struct tool_registry *reg, const char *name)
 	if (tool_is_disabled(reg, name))
 		return 0;
 	strncpy(reg->disabled[reg->disabled_count], name, TOOL_NAME_MAX - 1);
+	(void)morph_strmap_set(&reg->disabled_by_name,
+			       reg->disabled[reg->disabled_count],
+			       reg->disabled[reg->disabled_count]);
 	reg->disabled_count++;
 	log_info("tool disabled: %s", name);
 	return 0;
@@ -101,6 +118,8 @@ int tool_is_disabled(struct tool_registry *reg, const char *name)
 {
 	if (!reg || !name)
 		return 0;
+	if (morph_strmap_contains(&reg->disabled_by_name, name))
+		return 1;
 	for (int i = 0; i < reg->disabled_count; i++) {
 		if (strcmp(reg->disabled[i], name) == 0)
 			return 1;

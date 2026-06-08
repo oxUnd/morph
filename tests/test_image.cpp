@@ -96,6 +96,9 @@ protected:
 	void SetUp() override {
 		tool_registry_init(&reg);
 	}
+	void TearDown() override {
+		tool_registry_cleanup(&reg);
+	}
 };
 
 TEST_F(ImgGenToolTest, RegisterTool) {

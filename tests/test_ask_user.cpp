@@ -65,6 +65,7 @@ protected:
 		g_last_choices_count = 0;
 	}
 	void TearDown() override {
+		tool_registry_cleanup(&tools);
 	}
 };
 
@@ -179,6 +180,7 @@ TEST_F(AskUserToolTest, NoCallback) {
 			   "{\"question\":\"test\"}", &result);
 	EXPECT_NE(rc, 0);
 	free(result);
+	tool_registry_cleanup(&reg2);
 }
 
 TEST_F(AskUserToolTest, ToolNotFound) {

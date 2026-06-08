@@ -96,6 +96,7 @@ void mcp_registry_init(struct mcp_registry *reg)
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	(void)morph_strmap_init(&reg->by_name, MCP_MAX_SERVERS);
 }
 
 int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg)
@@ -105,10 +106,8 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	if (reg->count >= MCP_MAX_SERVERS)
 		return -ENOSPC;
 
-	for (int i = 0; i < reg->count; i++) {
-		if (strcmp(reg->servers[i]->config.name, cfg->name) == 0)
-			return -EEXIST;
-	}
+	if (mcp_registry_get(reg, cfg->name))
+		return -EEXIST;
 
 	struct mcp_client *client = calloc(1, sizeof(*client));
 	if (!client)
@@ -123,6 +122,7 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	pthread_mutex_init(&client->lock, NULL);
 
 	reg->servers[reg->count] = client;
+	(void)morph_strmap_set(&reg->by_name, client->config.name, client);
 	reg->count++;
 
 	log_info("mcp: registered server '%s' (transport=%s)",
@@ -133,8 +133,13 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 
 struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name)
 {
+	struct mcp_client *client;
+
 	if (!reg || !name)
 		return NULL;
+	client = (struct mcp_client *)morph_strmap_get(&reg->by_name, name);
+	if (client)
+		return client;
 	for (int i = 0; i < reg->count; i++) {
 		if (strcmp(reg->servers[i]->config.name, name) == 0)
 			return reg->servers[i];
@@ -159,6 +164,7 @@ void mcp_registry_cleanup(struct mcp_registry *reg)
 		}
 	}
 	reg->count = 0;
+	morph_strmap_cleanup(&reg->by_name);
 }
 
 /* ----- Lifecycle dispatch ----- */

@@ -209,6 +209,7 @@ TEST_F(SkillRegistryTest, Lookup) {
 	struct skill_entry *e = skill_lookup(&reg, "find-me");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->fm.name, "find-me");
+	EXPECT_EQ(morph_strmap_get(&reg.by_name, "find-me"), e);
 	EXPECT_EQ(skill_lookup(&reg, "not-here"), nullptr);
 	remove_skill("find-me");
 }
@@ -320,6 +321,7 @@ protected:
 	}
 	void TearDown() override {
 		skill_registry_cleanup(&skills);
+		tool_registry_cleanup(&tools);
 	}
 };
 

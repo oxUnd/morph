@@ -7,6 +7,7 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
+#include "util/strmap.h"
 
 #define SKILL_NAME_MAX 65
 #define SKILL_DESC_MAX 1025
@@ -44,6 +45,7 @@ struct skill_entry {
 struct skill_registry {
 	struct skill_entry entries[SKILL_MAX_ENTRIES];
 	int count;
+	morph_strmap_t by_name;
 };
 
 void skill_registry_init(struct skill_registry *reg);
