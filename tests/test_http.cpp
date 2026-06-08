@@ -41,3 +41,85 @@ TEST_F(HttpTest, DoubleInit) {
 	EXPECT_NO_FATAL_FAILURE(http_init());
 	EXPECT_NO_FATAL_FAILURE(http_init());
 }
+
+/* ----- http_session tests ----- */
+
+class HttpSessionTest : public ::testing::Test {
+protected:
+	struct http_session session;
+
+	void SetUp() override {
+		http_init();
+		memset(&session, 0, sizeof(session));
+	}
+
+	void TearDown() override {
+		http_session_cleanup(&session);
+		http_cleanup();
+	}
+};
+
+TEST_F(HttpSessionTest, InitCleanup) {
+	EXPECT_EQ(http_session_init(&session), 0);
+	EXPECT_NE(session.curl, nullptr);
+	EXPECT_EQ(session.initialized, 1);
+	http_session_cleanup(&session);
+	EXPECT_EQ(session.curl, nullptr);
+	EXPECT_EQ(session.initialized, 0);
+}
+
+TEST_F(HttpSessionTest, InitNull) {
+	EXPECT_NE(http_session_init(nullptr), 0);
+}
+
+TEST_F(HttpSessionTest, CleanupNull) {
+	EXPECT_NO_FATAL_FAILURE(http_session_cleanup(nullptr));
+}
+
+TEST_F(HttpSessionTest, ResetClearsBuffers) {
+	ASSERT_EQ(http_session_init(&session), 0);
+	morph_buf_puts(&session.resp_body, "hello");
+	morph_buf_puts(&session.resp_headers, "X-Test: hi\r\n");
+	session.status_code = 200;
+	http_session_reset(&session);
+	EXPECT_EQ(session.resp_body.len, 0);
+	EXPECT_EQ(session.resp_headers.len, 0);
+	EXPECT_EQ(session.status_code, 0);
+}
+
+TEST_F(HttpSessionTest, PostInvalidUrl) {
+	ASSERT_EQ(http_session_init(&session), 0);
+	int rc = http_session_post(&session, "http://127.0.0.1:1/nonexistent",
+				   "{}", 2, "application/json", nullptr, 0, 5);
+	EXPECT_NE(rc, 0);
+}
+
+TEST_F(HttpSessionTest, PostNullUrl) {
+	ASSERT_EQ(http_session_init(&session), 0);
+	EXPECT_NE(http_session_post(&session, nullptr, "{}", 2,
+				    "application/json", nullptr, 0, 30), 0);
+}
+
+TEST_F(HttpSessionTest, SessionNullArgs) {
+	EXPECT_NE(http_session_post(nullptr, "http://localhost/", "{}", 2,
+				    "application/json", nullptr, 0, 30), 0);
+}
+
+TEST_F(HttpSessionTest, BodyAndStatus) {
+	ASSERT_EQ(http_session_init(&session), 0);
+	const char *body = http_session_body(&session, nullptr);
+	ASSERT_NE(body, nullptr);
+	EXPECT_EQ(body[0], '\0');
+	EXPECT_EQ(http_session_status(&session), 0);
+	EXPECT_EQ(http_session_status(nullptr), 0);
+}
+
+/* ----- http_response with morph_buf_t ----- */
+
+TEST_F(HttpTest, ResponseFreeWithMorphBuf) {
+	struct http_response resp;
+	memset(&resp, 0, sizeof(resp));
+	EXPECT_EQ(resp.body.data, nullptr);
+	EXPECT_EQ(resp.headers.data, nullptr);
+	EXPECT_NO_FATAL_FAILURE(http_response_free(&resp));
+}

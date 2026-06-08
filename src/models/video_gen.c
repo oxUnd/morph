@@ -30,7 +30,7 @@ static int download_url(const char *url, const char *out_path)
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
-	rc = file_write_all(out_path, resp.body, resp.body_len);
+	rc = file_write_all(out_path, resp.body.data, resp.body.len);
 	http_response_free(&resp);
 	return rc;
 }
@@ -239,10 +239,10 @@ cJSON *vid_item = cJSON_CreateObject();
 	char task_status[32] = {0};
 	char video_url[2048] = {0};
 
-	if (resp.status_code == 200 && resp.body) {
+	if (resp.status_code == 200 && resp.body.data) {
 		log_dbg("video_gen: submit response (%d):\n%s",
-			resp.status_code, resp.body);
-		cJSON *root = cJSON_Parse(resp.body);
+			resp.status_code, resp.body.data);
+		cJSON *root = cJSON_Parse(resp.body.data);
 		if (root) {
 			cJSON *id_item = cJSON_GetObjectItem(root, "id");
 			if (cJSON_IsString(id_item) && id_item->valuestring)
@@ -262,13 +262,13 @@ cJSON *vid_item = cJSON_CreateObject();
 			cJSON_Delete(root);
 		} else {
 			log_err("video_gen: failed to parse submit response: %s",
-				resp.body);
+				resp.body.data);
 		}
 	} else {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit HTTP %d, body: %s",
 			 resp.status_code,
-			 resp.body ? resp.body : "(empty)");
+			 resp.body.data ? resp.body.data : "(empty)");
 		log_err("%s", result->error_msg);
 	}
 	http_response_free(&resp);
@@ -308,12 +308,12 @@ cJSON *vid_item = cJSON_CreateObject();
 			continue;
 		}
 
-		if (qresp.status_code != 200 || !qresp.body) {
+		if (qresp.status_code != 200 || !qresp.body.data) {
 			http_response_free(&qresp);
 			continue;
 		}
 
-		cJSON *qroot = cJSON_Parse(qresp.body);
+		cJSON *qroot = cJSON_Parse(qresp.body.data);
 		if (!qroot) {
 			http_response_free(&qresp);
 			continue;
@@ -347,7 +347,7 @@ cJSON *vid_item = cJSON_CreateObject();
 				 "video_gen: task %s failed: %s %s",
 				 task_id, err_code, err_msg);
 			log_err("%s", result->error_msg);
-			log_dbg("video_gen: poll response body:\n%s", qresp.body);
+			log_dbg("video_gen: poll response body:\n%s", qresp.body.data);
 			cJSON_Delete(qroot);
 			http_response_free(&qresp);
 			arena_destroy(arena);

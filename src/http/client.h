@@ -7,17 +7,18 @@ extern "C" {
 
 #include <stddef.h>
 #include <signal.h>
+#include "util/buf.h"
 
 typedef int (*http_callback)(const char *data, size_t len, void *user_data);
 
+#ifndef CURL_TYPES_H
+typedef void CURL;
+#endif
+
 struct http_response {
 	int status_code;
-	char *body;
-	size_t body_len;
-	size_t body_cap;
-	char *headers;
-	size_t headers_len;
-	size_t headers_cap;
+	morph_buf_t body;
+	morph_buf_t headers;
 };
 
 struct http_request {
@@ -28,6 +29,14 @@ struct http_request {
 	const char **headers;
 	int header_count;
 	int timeout_seconds;
+};
+
+struct http_session {
+	CURL *curl;
+	morph_buf_t resp_body;
+	morph_buf_t resp_headers;
+	long status_code;
+	int initialized;
 };
 
 int http_init(void);
@@ -51,6 +60,20 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			     int extra_header_count, long timeout_seconds,
 			     http_callback cb, void *user_data);
 void http_response_free(struct http_response *resp);
+
+/* ---- HTTP Session (persistent curl handle) ---- */
+
+int http_session_init(struct http_session *s);
+void http_session_cleanup(struct http_session *s);
+void http_session_reset(struct http_session *s);
+int http_session_post(struct http_session *s, const char *url,
+		      const char *body, size_t body_len,
+		      const char *content_type,
+		      const char **extra_headers, int extra_header_count,
+		      long timeout_seconds);
+const char *http_session_body(struct http_session *s, size_t *len);
+long http_session_status(struct http_session *s);
+char *http_session_header_get(struct http_session *s, const char *name);
 
 #ifdef __cplusplus
 }

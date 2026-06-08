@@ -103,31 +103,15 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
 	size_t total = size * nmemb;
-	size_t needed;
 
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
-	if (resp->body_len > SIZE_MAX - total - 1)
-		return 0;
-	needed = resp->body_len + total + 1;
-	if (needed > resp->body_cap) {
-		size_t new_cap = resp->body_cap ? resp->body_cap * 2 : 65536;
-		while (new_cap < needed) {
-			if (new_cap > SIZE_MAX / 2) {
-				new_cap = needed;
-				break;
-			}
-			new_cap *= 2;
-		}
-		char *new_body = realloc(resp->body, new_cap);
-		if (!new_body)
+	if (resp->body.cap == 0) {
+		if (morph_buf_init(&resp->body, 65536) != 0)
 			return 0;
-		resp->body = new_body;
-		resp->body_cap = new_cap;
 	}
-	memcpy(resp->body + resp->body_len, ptr, total);
-	resp->body_len += total;
-	resp->body[resp->body_len] = '\0';
+	if (morph_buf_append(&resp->body, (const char *)ptr, total) != 0)
+		return 0;
 	return total;
 }
 
@@ -135,31 +119,15 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct http_response *resp = data;
 	size_t total = size * nmemb;
-	size_t needed;
 
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
-	if (resp->headers_len > SIZE_MAX - total - 1)
-		return 0;
-	needed = resp->headers_len + total + 1;
-	if (needed > resp->headers_cap) {
-		size_t new_cap = resp->headers_cap ? resp->headers_cap * 2 : 4096;
-		while (new_cap < needed) {
-			if (new_cap > SIZE_MAX / 2) {
-				new_cap = needed;
-				break;
-			}
-			new_cap *= 2;
-		}
-		char *new_headers = realloc(resp->headers, new_cap);
-		if (!new_headers)
+	if (resp->headers.cap == 0) {
+		if (morph_buf_init(&resp->headers, 4096) != 0)
 			return 0;
-		resp->headers = new_headers;
-		resp->headers_cap = new_cap;
 	}
-	memcpy(resp->headers + resp->headers_len, ptr, total);
-	resp->headers_len += total;
-	resp->headers[resp->headers_len] = '\0';
+	if (morph_buf_append(&resp->headers, (const char *)ptr, total) != 0)
+		return 0;
 	return total;
 }
 
@@ -464,7 +432,182 @@ void http_response_free(struct http_response *resp)
 {
 	if (!resp)
 		return;
-	free(resp->body);
-	free(resp->headers);
+	morph_buf_cleanup(&resp->body);
+	morph_buf_cleanup(&resp->headers);
 	memset(resp, 0, sizeof(*resp));
+}
+
+/* ---- HTTP Session ---- */
+
+static size_t session_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
+{
+	struct http_session *s = data;
+	size_t total = size * nmemb;
+
+	if (morph_buf_append(&s->resp_body, (const char *)ptr, total) != 0)
+		return 0;
+	return total;
+}
+
+static size_t session_header_cb(void *ptr, size_t size, size_t nmemb, void *data)
+{
+	struct http_session *s = data;
+	size_t total = size * nmemb;
+
+	if (morph_buf_append(&s->resp_headers, (const char *)ptr, total) != 0)
+		return 0;
+	return total;
+}
+
+int http_session_init(struct http_session *s)
+{
+	if (!s)
+		return -EINVAL;
+	if (!http_initialized) {
+		int rc = http_init();
+		if (rc != 0)
+			return rc;
+	}
+	memset(s, 0, sizeof(*s));
+	s->curl = curl_easy_init();
+	if (!s->curl)
+		MORPH_RETURN(-ENOMEM);
+	morph_buf_init(&s->resp_body, 4096);
+	morph_buf_init(&s->resp_headers, 2048);
+	s->status_code = 0;
+	s->initialized = 1;
+	return 0;
+}
+
+void http_session_cleanup(struct http_session *s)
+{
+	if (!s)
+		return;
+	if (s->curl) {
+		curl_easy_cleanup(s->curl);
+		s->curl = NULL;
+	}
+	morph_buf_cleanup(&s->resp_body);
+	morph_buf_cleanup(&s->resp_headers);
+	s->initialized = 0;
+}
+
+void http_session_reset(struct http_session *s)
+{
+	if (!s)
+		return;
+	morph_buf_reset(&s->resp_body);
+	morph_buf_reset(&s->resp_headers);
+	s->status_code = 0;
+}
+
+int http_session_post(struct http_session *s, const char *url,
+		      const char *body, size_t body_len,
+		      const char *content_type,
+		      const char **extra_headers, int extra_header_count,
+		      long timeout_seconds)
+{
+	struct curl_slist *headers = NULL;
+	CURLcode curl_rc;
+	long status = 0;
+	int rc;
+
+	if (!s || !s->curl || !url)
+		return -EINVAL;
+
+	http_session_reset(s);
+
+	curl_easy_setopt(s->curl, CURLOPT_PROXY, "");
+
+	rc = append_content_type_header(&headers, content_type);
+	if (rc != 0)
+		goto out;
+	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+	if (rc != 0)
+		goto out;
+	if (headers)
+		curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, headers);
+
+	curl_easy_setopt(s->curl, CURLOPT_URL, url);
+	curl_easy_setopt(s->curl, CURLOPT_POST, 1L);
+	curl_easy_setopt(s->curl, CURLOPT_POSTFIELDS, body ? body : "");
+	curl_easy_setopt(s->curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+	curl_easy_setopt(s->curl, CURLOPT_WRITEFUNCTION, session_write_cb);
+	curl_easy_setopt(s->curl, CURLOPT_WRITEDATA, s);
+	curl_easy_setopt(s->curl, CURLOPT_HEADERFUNCTION, session_header_cb);
+	curl_easy_setopt(s->curl, CURLOPT_HEADERDATA, s);
+	curl_easy_setopt(s->curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 30L);
+	curl_easy_setopt(s->curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	curl_set_debug(s->curl);
+
+	curl_rc = curl_easy_perform(s->curl);
+	if (curl_rc != CURLE_OK) {
+		log_err("http session: request failed: %s", curl_easy_strerror(curl_rc));
+		rc = MORPH_ERR_NETWORK;
+		goto out;
+	}
+	curl_easy_getinfo(s->curl, CURLINFO_RESPONSE_CODE, &status);
+	s->status_code = status;
+	rc = 0;
+
+out:
+	if (headers)
+		curl_slist_free_all(headers);
+	return rc;
+}
+
+const char *http_session_body(struct http_session *s, size_t *len)
+{
+	if (!s)
+		return NULL;
+	if (len)
+		*len = s->resp_body.len;
+	return morph_buf_cstr(&s->resp_body);
+}
+
+long http_session_status(struct http_session *s)
+{
+	if (!s)
+		return 0;
+	return s->status_code;
+}
+
+char *http_session_header_get(struct http_session *s, const char *name)
+{
+	if (!s || !name)
+		return NULL;
+	const char *hdrs = morph_buf_cstr(&s->resp_headers);
+	if (!hdrs)
+		return NULL;
+	size_t name_len = strlen(name);
+	const char *p = hdrs;
+	while (*p) {
+		const char *eol = strstr(p, "\r\n");
+		if (!eol)
+			eol = p + strlen(p);
+		size_t line_len = (size_t)(eol - p);
+		if (line_len > name_len + 1) {
+			size_t i;
+			for (i = 0; i < name_len; i++) {
+				char c = (p[i] >= 'A' && p[i] <= 'Z') ? (p[i] + 32) : p[i];
+				char n = (name[i] >= 'A' && name[i] <= 'Z') ? (name[i] + 32) : name[i];
+				if (c != n)
+					break;
+			}
+			if (i == name_len && p[name_len] == ':') {
+				const char *val = p + name_len + 1;
+				while (*val == ' ')
+					val++;
+				size_t val_end = (size_t)(eol - val);
+				char *result = malloc(val_end + 1);
+				if (!result)
+					return NULL;
+				memcpy(result, val, val_end);
+				result[val_end] = '\0';
+				return result;
+			}
+		}
+		p = (*eol == '\0') ? eol : eol + 2;
+	}
+	return NULL;
 }

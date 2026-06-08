@@ -709,8 +709,8 @@ static int llm_generate(struct model *self, const char *prompt,
 	}
 
 	rc = 0;
-	if (out_path && resp.body)
-		rc = file_write_all(out_path, resp.body, resp.body_len);
+	if (out_path && resp.body.data)
+		rc = file_write_all(out_path, resp.body.data, resp.body.len);
 
 	http_response_free(&resp);
 	return rc;

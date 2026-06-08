@@ -10,6 +10,7 @@ extern "C" {
 #include <pthread.h>
 #include <sys/types.h>
 
+#include "http/client.h"
 #include "util/arena.h"
 #include "util/strmap.h"
 #include "agent/tool.h"
@@ -92,7 +93,7 @@ struct mcp_client {
 	int stdin_fd;
 	int stdout_fd;
 	/* http transport state */
-	void *curl_handle;
+	struct http_session session;
 	char session_id[128];
 	/* JSON-RPC id counter */
 	int next_req_id;
@@ -149,6 +150,7 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 /* ----- Utilities ----- */
 
 int mcp_ping(struct mcp_client *client);
+char *mcp_http_extract_sse_json(const char *raw, size_t len);
 
 /* ----- morph tool registry integration ----- */
 

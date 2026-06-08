@@ -68,13 +68,13 @@ static int download_url(const char *url, const char *out_dir,
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
-	const char *ext = image_gen_ext_from_content_type(resp.headers);
+	const char *ext = image_gen_ext_from_content_type(morph_buf_cstr(&resp.headers));
 	if (!ext)
-		ext = image_gen_ext_from_magic((const unsigned char *)resp.body,
-					       resp.body_len);
+		ext = image_gen_ext_from_magic((const unsigned char *)resp.body.data,
+					       resp.body.len);
 	snprintf(out_path, out_cap, "%s/img_%lld.%s",
 		 out_dir, (long long)time(NULL), ext);
-	rc = file_write_all(out_path, resp.body, resp.body_len);
+	rc = file_write_all(out_path, resp.body.data, resp.body.len);
 	http_response_free(&resp);
 	return rc;
 }
@@ -168,12 +168,12 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 
 	if (resp.status_code != 200) {
 		log_err("image_gen: API returned HTTP %d: %s",
-			resp.status_code, resp.body ? resp.body : "");
+			resp.status_code, resp.body.data ? resp.body.data : "");
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
-	cJSON *root = cJSON_Parse(resp.body);
+	cJSON *root = cJSON_Parse(resp.body.data);
 	http_response_free(&resp);
 	if (!root) {
 		log_err("image_gen: failed to parse response");

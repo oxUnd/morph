@@ -1186,8 +1186,8 @@ TEST_F(MockServerTest, HttpGetSuccess) {
 	int rc4 = http_get(url4, &resp3);
 	EXPECT_EQ(rc4, 0);
 	EXPECT_EQ(resp3.status_code, 200);
-	EXPECT_NE(resp3.body, nullptr);
-	EXPECT_TRUE(resp3.body && strstr(resp3.body, "ok"));
+	EXPECT_NE(resp3.body.data, nullptr);
+	EXPECT_TRUE(resp3.body.data && strstr(resp3.body.data, "ok"));
 	http_response_free(&resp3);
 	mock_server_stop(&srv);
 }
@@ -1204,8 +1204,8 @@ TEST_F(MockServerTest, HttpPostSuccess) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(resp.status_code, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
-	EXPECT_NE(resp.body, nullptr);
-	EXPECT_TRUE(resp.body && strstr(resp.body, "posted"));
+	EXPECT_NE(resp.body.data, nullptr);
+	EXPECT_TRUE(resp.body.data && strstr(resp.body.data, "posted"));
 	http_response_free(&resp);
 	mock_server_stop(&srv);
 }
@@ -1231,8 +1231,8 @@ TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
 	START_MOCK_OR_SKIP(&srv);
 	struct http_response resp = {0};
 	resp.status_code = 999;
-	resp.body_len = 123;
-	resp.headers_len = 456;
+	resp.body.len = 123;
+	resp.headers.len = 456;
 	const char *headers[] = { "X-Morph-Test: yes" };
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/headers", srv.port);
@@ -1242,7 +1242,7 @@ TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
 	EXPECT_EQ(resp.status_code, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
 	EXPECT_NE(strstr(srv.last_request, "X-Morph-Test: yes"), nullptr);
-	EXPECT_GT(resp.body_len, 0u);
+	EXPECT_GT(resp.body.len, 0u);
 	http_response_free(&resp);
 	mock_server_stop(&srv);
 }

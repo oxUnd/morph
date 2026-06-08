@@ -591,3 +591,79 @@ class McpStrdupTest : public ::testing::Test {};
 TEST_F(McpStrdupTest, StrdupResultNullInput) {
 	EXPECT_EQ(mcp_parse_result(nullptr, nullptr), MORPH_ERR_PARSE);
 }
+
+/* ----- SSE JSON extraction from MCP HTTP responses ----- */
+
+class McpSseExtractTest : public ::testing::Test {};
+
+TEST_F(McpSseExtractTest, BareJsonObjectReturnsNull) {
+	const char *raw = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	EXPECT_EQ(json, nullptr) << "Plain JSON (no SSE envelope) returns NULL; caller falls back to raw";
+}
+
+TEST_F(McpSseExtractTest, SseWithEventMessage) {
+	const char *raw = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\"}}\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	ASSERT_NE(json, nullptr) << "SSE with 'event: message' must extract data";
+	EXPECT_NE(strstr(json, "protocolVersion"), nullptr);
+	free(json);
+}
+
+TEST_F(McpSseExtractTest, SseDataOnlyNoEvent) {
+	const char *raw = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	ASSERT_NE(json, nullptr);
+	EXPECT_NE(strstr(json, "tools"), nullptr);
+	free(json);
+}
+
+TEST_F(McpSseExtractTest, SseMultilineData) {
+	const char *raw = "data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":1}\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	ASSERT_NE(json, nullptr);
+	EXPECT_NE(strstr(json, "jsonrpc"), nullptr);
+	free(json);
+}
+
+TEST_F(McpSseExtractTest, SseWithCustomEvent) {
+	const char *raw = "event: ping\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1}\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	ASSERT_NE(json, nullptr) << "Custom event types must also extract data";
+	EXPECT_NE(strstr(json, "jsonrpc"), nullptr);
+	free(json);
+}
+
+TEST_F(McpSseExtractTest, NullInput) {
+	char *json = mcp_http_extract_sse_json(nullptr, 0);
+	EXPECT_EQ(json, nullptr);
+}
+
+TEST_F(McpSseExtractTest, EmptyInput) {
+	char *json = mcp_http_extract_sse_json("", 0);
+	EXPECT_EQ(json, nullptr);
+}
+
+TEST_F(McpSseExtractTest, SseEventOnlyNoData) {
+	const char *raw = "event: message\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	EXPECT_EQ(json, nullptr) << "No data line means no extraction";
+}
+
+TEST_F(McpSseExtractTest, ParseFullMcpInitializeResponse) {
+	const char *raw = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{\"listChanged\":true},\"prompts\":{\"listChanged\":true},\"resources\":{\"listChanged\":true}},\"serverInfo\":{\"name\":\"exa-search-server\",\"version\":\"3.2.1\"}}}\r\n\r\n";
+	char *json = mcp_http_extract_sse_json(raw, strlen(raw));
+	ASSERT_NE(json, nullptr);
+	char *result = nullptr;
+	int rc = mcp_parse_result(json, &result);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(result, nullptr);
+	cJSON *obj = cJSON_Parse(result);
+	ASSERT_NE(obj, nullptr);
+	cJSON *pv = cJSON_GetObjectItem(obj, "protocolVersion");
+	ASSERT_NE(pv, nullptr);
+	EXPECT_STREQ(pv->valuestring, "2025-06-18");
+	cJSON_Delete(obj);
+	free(result);
+	free(json);
+}
