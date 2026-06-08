@@ -28,6 +28,8 @@ size_t utf8_visible_len_ansi(const char *s);
 
 const char *utf8_skip_forward(const char *s, size_t chars);
 
+const char *utf8_skip_columns(const char *s, size_t cols);
+
 size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src,
 		      size_t max_vis);
 

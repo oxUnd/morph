@@ -210,6 +210,25 @@ const char *utf8_skip_forward(const char *s, size_t chars)
 	return s;
 }
 
+const char *utf8_skip_columns(const char *s, size_t cols)
+{
+	size_t vis = 0;
+
+	if (!s)
+		return NULL;
+	while (*s && vis < cols) {
+		utf8_int32_t cp;
+		const char *next = utf8codepoint(s, &cp);
+		size_t w = (size_t)utf8_cp_width((unsigned)cp);
+
+		if (vis + w > cols)
+			break;
+		vis += w;
+		s = next;
+	}
+	return s;
+}
+
 size_t utf8_copy_vis(char *dst, size_t dst_cap, const char *src, size_t max_vis)
 {
 	size_t written = 0;

@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include "util/spin.h"
+#include "util/utf8.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 TEST(SpinInit, InitDestroy)
 {
@@ -112,6 +114,80 @@ TEST(SpinSetSub, Utf8MixedContent)
 
 	spin_destroy(&ctx);
 	fclose(devnull);
+}
+
+TEST(SpinSetSub, InvalidUtf8IsSanitized)
+{
+	FILE *devnull = fopen("/dev/null", "w");
+	ASSERT_NE(devnull, nullptr);
+	struct spin_context ctx;
+	spin_init(&ctx, devnull);
+
+	const char invalid[] = "abc\xe4\xb8""def\xff""ghi";
+	spin_set_sub(&ctx, invalid);
+	EXPECT_EQ(utf8valid(ctx.submessage), nullptr);
+	EXPECT_STREQ(ctx.submessage, "abcdefghi");
+
+	spin_destroy(&ctx);
+	fclose(devnull);
+}
+
+TEST(SpinUpdate, InvalidUtf8IsSanitized)
+{
+	FILE *devnull = fopen("/dev/null", "w");
+	ASSERT_NE(devnull, nullptr);
+	struct spin_context ctx;
+	spin_init(&ctx, devnull);
+
+	spin_start(&ctx, SPIN_STATE_THINKING, "Initial");
+	spin_update(&ctx, "hello\xe4\xb8""world");
+	EXPECT_EQ(utf8valid(ctx.message), nullptr);
+	EXPECT_STREQ(ctx.message, "helloworld");
+	spin_stop(&ctx, SPIN_STATE_COMPLETE, "Done");
+	spin_destroy(&ctx);
+	fclose(devnull);
+}
+
+TEST(SpinRender, ChineseMarqueeFramesAreValidUtf8)
+{
+	char *buf = nullptr;
+	size_t len = 0;
+	FILE *mem = open_memstream(&buf, &len);
+	ASSERT_NE(mem, nullptr);
+
+	struct spin_context ctx;
+	spin_init(&ctx, mem);
+	ctx.running = 1;
+	ctx.active = 1;
+	ctx.state = SPIN_STATE_THINKING;
+	ctx.start_time = time(NULL);
+	spin_update(&ctx, "执行工具");
+	spin_set_sub(&ctx,
+		     "正在读取中文文件内容并进行摘要处理，"
+		     "这是一段很长的中英混排 marquee text");
+
+	for (int i = 0; i < 80; i++) {
+		ctx.frame = i;
+		spin_render(&ctx);
+		fflush(mem);
+		ASSERT_EQ(utf8valid(buf), nullptr) << "invalid frame " << i;
+	}
+
+	ctx.running = 0;
+	spin_destroy(&ctx);
+	fclose(mem);
+	free(buf);
+}
+
+TEST(Utf8SkipColumns, DoesNotSplitWideCharacters)
+{
+	const char *s = "A\xe4\xb8\xad""B";
+
+	EXPECT_EQ(utf8_skip_columns(s, 0), s);
+	EXPECT_EQ(utf8_skip_columns(s, 1), s + 1);
+	EXPECT_EQ(utf8_skip_columns(s, 2), s + 1);
+	EXPECT_EQ(utf8_skip_columns(s, 3), s + 4);
+	EXPECT_EQ(utf8_skip_columns(s, 4), s + 5);
 }
 
 TEST(SpinSetSub, ExactBufferSize)

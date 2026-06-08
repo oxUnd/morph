@@ -99,6 +99,25 @@ static size_t get_term_width(void)
 	return 80;
 }
 
+static void spin_copy_sanitized(char *dst, size_t dst_cap, const char *src)
+{
+	size_t src_len;
+	size_t clean_len;
+
+	if (!dst || dst_cap == 0)
+		return;
+	if (!src) {
+		dst[0] = '\0';
+		return;
+	}
+
+	src_len = strlen(src);
+	if (src_len >= dst_cap)
+		src_len = utf8_safe_len(src, dst_cap - 1);
+	clean_len = utf8_sanitize_into(dst, src, src_len);
+	dst[clean_len] = '\0';
+}
+
 void spin_render(struct spin_context *ctx)
 {
 	if (!ctx || !ctx->running) return;
@@ -182,7 +201,7 @@ void spin_render(struct spin_context *ctx)
 						% (scroll_range + 8);
 					if (offset > scroll_range)
 						offset = scroll_range;
-					const char *start = utf8_skip_forward(
+					const char *start = utf8_skip_columns(
 						ctx->submessage, offset);
 					copied_vis = utf8_copy_vis(
 						sub_buf, sizeof(sub_buf),
@@ -271,11 +290,11 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 	ctx->submessage[0] = '\0';
 
 	if (message) {
-		strncpy(ctx->message, message, sizeof(ctx->message) - 1);
-		ctx->message[sizeof(ctx->message) - 1] = '\0';
+		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
+				    message);
 	} else {
-		strncpy(ctx->message, state_text(state), sizeof(ctx->message) - 1);
-		ctx->message[sizeof(ctx->message) - 1] = '\0';
+		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
+				    state_text(state));
 	}
 
 	ctx->frame = 0;
@@ -295,8 +314,8 @@ void spin_update(struct spin_context *ctx, const char *message)
 	if (!ctx) return;
 	pthread_mutex_lock(&ctx->mutex);
 	if (message && ctx->running) {
-		strncpy(ctx->message, message, sizeof(ctx->message) - 1);
-		ctx->message[sizeof(ctx->message) - 1] = '\0';
+		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
+				    message);
 	}
 	ctx->last_update = time(NULL);
 	pthread_mutex_unlock(&ctx->mutex);
@@ -307,20 +326,8 @@ void spin_set_sub(struct spin_context *ctx, const char *submessage)
 	if (!ctx) return;
 	pthread_mutex_lock(&ctx->mutex);
 	if (submessage) {
-		size_t len = strlen(submessage);
-		size_t max = sizeof(ctx->submessage) - 1;
-		const char *src = submessage;
-		size_t src_len = len;
-		if (len > max) {
-			src = submessage + len - max;
-			src_len = max;
-			while (src_len > 0 && (*src & 0xC0) == 0x80) {
-				src++;
-				src_len--;
-			}
-		}
-		memcpy(ctx->submessage, src, src_len);
-		ctx->submessage[src_len] = '\0';
+		spin_copy_sanitized(ctx->submessage, sizeof(ctx->submessage),
+				    submessage);
 	} else {
 		ctx->submessage[0] = '\0';
 	}
@@ -343,11 +350,11 @@ void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char
 	ctx->state = final_state;
 
 	if (message) {
-		strncpy(ctx->message, message, sizeof(ctx->message) - 1);
-		ctx->message[sizeof(ctx->message) - 1] = '\0';
+		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
+				    message);
 	} else {
-		strncpy(ctx->message, state_text(final_state), sizeof(ctx->message) - 1);
-		ctx->message[sizeof(ctx->message) - 1] = '\0';
+		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
+				    state_text(final_state));
 	}
 
 	pthread_mutex_unlock(&ctx->mutex);
