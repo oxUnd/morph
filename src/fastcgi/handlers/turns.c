@@ -456,7 +456,8 @@ static char *render_artifact_summary(struct turn_job *j)
 	return morph_buf_detach(&out);
 }
 
-static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u) {
+static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u)
+{
 	struct turn_job *j = (struct turn_job *)u;
 	if (!payload_json)
 		payload_json = "";
@@ -530,7 +531,8 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	return 0;
 }
 
-static void *turn_thread(void *arg) {
+static void *turn_thread(void *arg)
+{
 	struct turn_job *j = (struct turn_job *)arg;
 	struct memory_options mem_opts = {
 		.enabled = 1,
@@ -657,7 +659,8 @@ out:
 	return NULL;
 }
 
-void handle_post_turn(request_t *r) {
+void handle_post_turn(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }

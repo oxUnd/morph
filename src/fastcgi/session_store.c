@@ -136,7 +136,8 @@ static int init_default_quota_profiles(sqlite3 *db)
 	return 0;
 }
 
-struct session_store *session_store_open(const char *db_path) {
+struct session_store *session_store_open(const char *db_path)
+{
 	struct session_store *s = calloc(1, sizeof(*s));
 	if (!s) return NULL;
 
@@ -162,7 +163,8 @@ struct session_store *session_store_open(const char *db_path) {
 	return s;
 }
 
-void session_store_close(struct session_store *s) {
+void session_store_close(struct session_store *s)
+{
 	if (!s) return;
 	pthread_mutex_lock(&s->mu);
 	struct event_subscriber *p = s->subs;
@@ -174,7 +176,10 @@ void session_store_close(struct session_store *s) {
 	free(s);
 }
 
-static int64_t now_unix(void) { return (int64_t)time(NULL); }
+static int64_t now_unix(void)
+{
+	return (int64_t)time(NULL);
+}
 
 static int username_valid(const char *username)
 {
@@ -938,7 +943,8 @@ int actions_drain_one(struct session_store *s, const char *session_id,
 	return got;
 }
 
-void actions_signal(struct session_store *s, const char *session_id) {
+void actions_signal(struct session_store *s, const char *session_id)
+{
 	(void)session_id;
 	pthread_mutex_lock(&s->mu);
 	pthread_cond_broadcast(&s->cv);
@@ -1012,7 +1018,8 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 	return 0;
 }
 
-static void mk_node_id(char out[40]) {
+static void mk_node_id(char out[40])
+{
 	int64_t t = now_unix();
 	snprintf(out, 40, "n_%llx_%x",
 		 (long long)t, (unsigned)(rand() & 0xffffff));

@@ -17,7 +17,8 @@
 #define SSE_HEARTBEAT_SEC   15
 #define SSE_MAX_LIFETIME    3600
 
-void handle_sse(request_t *r) {
+void handle_sse(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }

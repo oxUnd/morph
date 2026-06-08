@@ -95,22 +95,22 @@ void config_set_defaults(struct config *cfg)
 #define CFG_STR(tab, key, buf) do { \
 	toml_datum_t _d = toml_string_in(tab, key); \
 	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
-} while(0)
+} while (0)
 
 #define CFG_INT(tab, key, var) do { \
 	toml_datum_t _d = toml_int_in(tab, key); \
 	if (_d.ok) var = (int)_d.u.i; \
-} while(0)
+} while (0)
 
 #define CFG_BOOL(tab, key, var) do { \
 	toml_datum_t _d = toml_bool_in(tab, key); \
 	if (_d.ok) var = (int)_d.u.b; \
-} while(0)
+} while (0)
 
 #define CFG_DBL(tab, key, var) do { \
 	toml_datum_t _d = toml_double_in(tab, key); \
 	if (_d.ok) var = _d.u.d; \
-} while(0)
+} while (0)
 
 static toml_table_t *table_path(toml_table_t *root, const char *path)
 {

@@ -13,7 +13,8 @@
 
 #include "cJSON.h"
 
-void handle_post_action(request_t *r) {
+void handle_post_action(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }

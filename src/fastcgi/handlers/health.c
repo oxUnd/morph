@@ -3,7 +3,8 @@
 #include <stdio.h>
 #include <time.h>
 
-void handle_health(request_t *r) {
+void handle_health(request_t *r)
+{
 	char buf[192];
 	snprintf(buf, sizeof(buf),
 		 "{\"status\":\"ok\",\"setup_required\":%s,\"ts\":%lld}",

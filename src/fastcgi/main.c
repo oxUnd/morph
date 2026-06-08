@@ -34,12 +34,14 @@ static struct session_store *g_store = NULL;
 static volatile sig_atomic_t g_shutdown = 0;
 static char g_trust_param[96] = {0};
 
-static const char *getenv_or(const char *k, const char *fallback) {
+static const char *getenv_or(const char *k, const char *fallback)
+{
 	const char *v = getenv(k);
 	return (v && *v) ? v : fallback;
 }
 
-static int open_listen(const char *spec) {
+static int open_listen(const char *spec)
+{
 	/* libfcgi accepts ":port" / "host:port" / "/path/to/sock" */
 	int backlog = 128;
 	int fd = FCGX_OpenSocket(spec, backlog);
@@ -77,13 +79,15 @@ static int configure_trust_param(const char *header)
 	return 0;
 }
 
-static void on_signal(int sig) {
+static void on_signal(int sig)
+{
 	(void)sig;
 	g_shutdown = 1;
 	FCGX_ShutdownPending();
 }
 
-static void install_signals(void) {
+static void install_signals(void)
+{
 	struct sigaction sa = {0};
 	sa.sa_handler = on_signal;
 	sigemptyset(&sa.sa_mask);
@@ -93,7 +97,8 @@ static void install_signals(void) {
 }
 
 /* ---- per-thread accept loop ---- */
-static void populate_request(request_t *r, FCGX_Request *req) {
+static void populate_request(request_t *r, FCGX_Request *req)
+{
 	memset(r, 0, sizeof(*r));
 	r->fcgx       = req;
 	r->method     = FCGX_GetParam("REQUEST_METHOD",   req->envp);
@@ -118,7 +123,8 @@ static void populate_request(request_t *r, FCGX_Request *req) {
 	}
 }
 
-static void *worker_main(void *arg) {
+static void *worker_main(void *arg)
+{
 	(void)arg;
 	FCGX_Request req;
 	if (FCGX_InitRequest(&req, g_listen_fd, 0) != 0) return NULL;
@@ -136,7 +142,8 @@ static void *worker_main(void *arg) {
 	return NULL;
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
 	(void)argc; (void)argv;
 
 	const char *listen_spec = getenv_or("MORPH_FCGI_LISTEN",

@@ -7,7 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void handle_get_canvas(request_t *r) {
+void handle_get_canvas(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
@@ -20,7 +21,8 @@ void handle_get_canvas(request_t *r) {
 	free(json);
 }
 
-void handle_add_canvas_node(request_t *r) {
+void handle_add_canvas_node(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
@@ -43,7 +45,8 @@ void handle_add_canvas_node(request_t *r) {
 	reply_201_json(r, out);
 }
 
-void handle_patch_canvas_node(request_t *r) {
+void handle_patch_canvas_node(request_t *r)
+{
 	const char *sid  = path_param(r, "id");
 	const char *node = path_param(r, "node");
 	if (!sid || !node) { reply_400(r, "missing id"); return; }

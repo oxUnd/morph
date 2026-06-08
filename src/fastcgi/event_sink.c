@@ -13,7 +13,8 @@ static void publish_obj(struct session_store *s, const char *sid,
 	cJSON_Delete(root);
 }
 
-void event_sink_thought(struct session_store *s, const char *sid, const char *text) {
+void event_sink_thought(struct session_store *s, const char *sid, const char *text)
+{
 	cJSON *o = cJSON_CreateObject();
 	cJSON_AddStringToObject(o, "text", text ? text : "");
 	publish_obj(s, sid, "thought", o);
@@ -42,13 +43,15 @@ void event_sink_tool_result(struct session_store *s, const char *sid,
 	publish_obj(s, sid, "tool_result", o);
 }
 
-void event_sink_final(struct session_store *s, const char *sid, const char *text) {
+void event_sink_final(struct session_store *s, const char *sid, const char *text)
+{
 	cJSON *o = cJSON_CreateObject();
 	cJSON_AddStringToObject(o, "text", text ? text : "");
 	publish_obj(s, sid, "final", o);
 }
 
-void event_sink_error(struct session_store *s, const char *sid, const char *msg) {
+void event_sink_error(struct session_store *s, const char *sid, const char *msg)
+{
 	cJSON *o = cJSON_CreateObject();
 	cJSON_AddStringToObject(o, "message", msg ? msg : "unknown error");
 	publish_obj(s, sid, "error", o);

@@ -88,12 +88,14 @@ static void cache_del(const char *tok)
 
 /* ---- public API ---- */
 
-void auth_init(const char *trust_header) {
+void auth_init(const char *trust_header)
+{
 	memset(g_trust_hdr, 0, sizeof(g_trust_hdr));
 	if (trust_header) snprintf(g_trust_hdr, sizeof(g_trust_hdr), "%s", trust_header);
 }
 
-int auth_check(request_t *r) {
+int auth_check(request_t *r)
+{
 	if (g_trust_hdr[0] && r->trust_user && r->trust_user[0]) {
 		snprintf(r->user_id, sizeof(r->user_id), "%s", r->trust_user);
 		snprintf(r->username, sizeof(r->username), "%s", r->trust_user);

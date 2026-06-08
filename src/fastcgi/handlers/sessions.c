@@ -13,7 +13,8 @@
 /* POST /api/sessions
  * { "name": "...", "model": "..." }
  */
-void handle_create_session(request_t *r) {
+void handle_create_session(request_t *r)
+{
 	char *body = NULL; size_t blen = 0;
 	if (fcgi_read_body(r, &body, &blen) != 0) { reply_400(r, "body too large"); return; }
 
@@ -40,7 +41,8 @@ void handle_create_session(request_t *r) {
 }
 
 /* GET /api/sessions  → list owned by current user */
-void handle_list_sessions(request_t *r) {
+void handle_list_sessions(request_t *r)
+{
 	char *json = NULL;
 	if (store_list_sessions_json(r->store, r->user_id, &json) != 0) {
 		reply_500(r, "list failed"); return;
@@ -50,7 +52,8 @@ void handle_list_sessions(request_t *r) {
 }
 
 /* GET /api/sessions/:id */
-void handle_get_session(request_t *r) {
+void handle_get_session(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }
@@ -60,7 +63,8 @@ void handle_get_session(request_t *r) {
 }
 
 /* DELETE /api/sessions/:id */
-void handle_delete_session(request_t *r) {
+void handle_delete_session(request_t *r)
+{
 	const char *sid = path_param(r, "id");
 	if (!sid) { reply_400(r, "missing id"); return; }
 	if (!store_session_owned_by(r->store, sid, r->user_id)) { reply_403(r); return; }

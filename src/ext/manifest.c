@@ -58,17 +58,17 @@ int manifest_parse(const char *toml_data, struct ext_manifest *out)
 #define MGET_STR(key, buf) do { \
 	toml_datum_t _d = toml_string_in(tbl, key); \
 	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
-} while(0)
+} while (0)
 
 #define MGET_INT(key, var) do { \
 	toml_datum_t _d = toml_int_in(tbl, key); \
 	if (_d.ok) var = (int)_d.u.i; \
-} while(0)
+} while (0)
 
 #define MGET_UINT(key, var) do { \
 	toml_datum_t _d = toml_int_in(tbl, key); \
 	if (_d.ok) var = (unsigned int)_d.u.i; \
-} while(0)
+} while (0)
 
 	MGET_STR("name", out->name);
 	MGET_STR("version", out->version);
@@ -132,17 +132,17 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 #define MFGET_STR(key, buf) do { \
 	toml_datum_t _d = toml_string_in(tbl, key); \
 	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
-} while(0)
+} while (0)
 
 #define MFGET_INT(key, var) do { \
 	toml_datum_t _d = toml_int_in(tbl, key); \
 	if (_d.ok) var = (int)_d.u.i; \
-} while(0)
+} while (0)
 
 #define MFGET_UINT(key, var) do { \
 	toml_datum_t _d = toml_int_in(tbl, key); \
 	if (_d.ok) var = (unsigned int)_d.u.i; \
-} while(0)
+} while (0)
 
 	MFGET_STR("name", out->name);
 	MFGET_STR("version", out->version);
