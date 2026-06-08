@@ -14,6 +14,7 @@
 #include "session.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/file.h"
 #include "security.h"
 #include "cJSON.h"
 
@@ -1104,7 +1105,11 @@ int login_token_create(const char *user_id, const char *username,
 	cJSON_Delete(obj);
 	if (!json) MORPH_RETURN(-ENOMEM);
 
-	snprintf(path, sizeof(path), "%s/%s.json", SESS_DIR, token);
+	if (file_path_join_append(path, sizeof(path), SESS_DIR, token,
+				  ".json") != 0) {
+		free(json);
+		MORPH_RETURN(-ENAMETOOLONG);
+	}
 	fp = fopen(path, "wx");
 	if (!fp) {
 		int err = errno;
@@ -1135,7 +1140,9 @@ int login_token_verify(const char *token,
 
 	if (!token || !*token) return 0;
 	if (strchr(token, '/') || strstr(token, "..")) return 0;
-	snprintf(path, sizeof(path), "%s/%s.json", SESS_DIR, token);
+	if (file_path_join_append(path, sizeof(path), SESS_DIR, token,
+				  ".json") != 0)
+		return 0;
 
 	fp = fopen(path, "r");
 	if (!fp) return 0;
@@ -1171,6 +1178,8 @@ void login_token_revoke(const char *token)
 	char path[PATH_MAX];
 	if (!token || !*token) return;
 	if (strchr(token, '/') || strstr(token, "..")) return;
-	snprintf(path, sizeof(path), "%s/%s.json", SESS_DIR, token);
+	if (file_path_join_append(path, sizeof(path), SESS_DIR, token,
+				  ".json") != 0)
+		return;
 	unlink(path);
 }

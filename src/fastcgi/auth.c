@@ -8,6 +8,7 @@
 
 #include "security.h"
 #include "session_store.h"
+#include "util/file.h"
 
 static char g_trust_hdr[64] = {0};
 
@@ -136,7 +137,10 @@ int auth_check(request_t *r)
 		if (login_token_verify(tok, uid, uname, urole)) {
 			/* re-read file to get expires_at for caching */
 			char path[512];
-			snprintf(path, sizeof(path), "/tmp/morph-sess/%s.json", tok);
+			if (file_path_join_append(path, sizeof(path),
+						  "/tmp/morph-sess", tok,
+						  ".json") != 0)
+				return 1;
 			FILE *fp = fopen(path, "r");
 			if (fp) {
 				char buf[1024];

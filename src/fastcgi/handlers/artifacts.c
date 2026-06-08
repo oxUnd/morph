@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
+#include "util/file.h"
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir(void);
 
@@ -31,8 +32,7 @@ static int path_within_root(const char *root, const char *rel,
 
 	if (!root || !rel || rel[0] == '/' || strstr(rel, ".."))
 		return 0;
-	if (snprintf(joined, sizeof(joined), "%s/%s", root, rel) >=
-	    (int)sizeof(joined))
+	if (file_path_join(joined, sizeof(joined), root, rel) != 0)
 		return 0;
 	if (!realpath(root, root_real))
 		return 0;

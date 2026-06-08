@@ -3,6 +3,7 @@
 #include "error.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -92,6 +93,153 @@ char *file_expand_path(const char *path)
 	return strdup(path);
 }
 
+int file_path_is_absolute(const char *path)
+{
+	return path && path[0] == '/';
+}
+
+int file_path_full(char *dst, size_t dst_size,
+		   const char *prefix, const char *path)
+{
+	if (!dst || dst_size == 0 || !path)
+		MORPH_RETURN(-EINVAL);
+
+	if (file_path_is_absolute(path)) {
+		size_t len = strlen(path);
+		if (len + 1 > dst_size)
+			MORPH_RETURN(-ENAMETOOLONG);
+		memcpy(dst, path, len + 1);
+		return 0;
+	}
+
+	if (!prefix)
+		MORPH_RETURN(-EINVAL);
+	return file_path_join(dst, dst_size, prefix, path);
+}
+
+char *file_path_full_alloc(const char *prefix, const char *path)
+{
+	if (!path)
+		return NULL;
+	if (file_path_is_absolute(path))
+		return strdup(path);
+	return file_path_join_alloc(prefix, path);
+}
+
+int file_path_join(char *dst, size_t dst_size,
+		   const char *dir, const char *name)
+{
+	if (!dst || dst_size == 0 || !dir || !name)
+		MORPH_RETURN(-EINVAL);
+
+	size_t dir_len = strlen(dir);
+	size_t name_len = strlen(name);
+	int need_sep = dir_len > 0 && dir[dir_len - 1] != '/' &&
+		name_len > 0 && name[0] != '/';
+	int skip_sep = dir_len > 0 && dir[dir_len - 1] == '/' &&
+		name_len > 0 && name[0] == '/';
+	size_t name_off = skip_sep ? 1u : 0u;
+	size_t out_name_len = name_len - name_off;
+	if (dir_len > SIZE_MAX - (need_sep ? 1u : 0u) ||
+	    dir_len + (need_sep ? 1u : 0u) > SIZE_MAX - out_name_len)
+		MORPH_RETURN(-ENAMETOOLONG);
+	size_t total = dir_len + (need_sep ? 1u : 0u) + out_name_len;
+
+	if (total == SIZE_MAX)
+		MORPH_RETURN(-ENAMETOOLONG);
+	if (total + 1 > dst_size)
+		MORPH_RETURN(-ENAMETOOLONG);
+
+	memcpy(dst, dir, dir_len);
+	size_t pos = dir_len;
+	if (need_sep)
+		dst[pos++] = '/';
+	if (out_name_len > 0) {
+		memcpy(dst + pos, name + name_off, out_name_len);
+		pos += out_name_len;
+	}
+	dst[pos] = '\0';
+	return 0;
+}
+
+char *file_path_join_alloc(const char *dir, const char *name)
+{
+	if (!dir || !name)
+		return NULL;
+
+	size_t dir_len = strlen(dir);
+	size_t name_len = strlen(name);
+	int need_sep = dir_len > 0 && dir[dir_len - 1] != '/' &&
+		name_len > 0 && name[0] != '/';
+	int skip_sep = dir_len > 0 && dir[dir_len - 1] == '/' &&
+		name_len > 0 && name[0] == '/';
+	size_t name_off = skip_sep ? 1u : 0u;
+	size_t out_name_len = name_len - name_off;
+	if (dir_len > SIZE_MAX - (need_sep ? 1u : 0u) ||
+	    dir_len + (need_sep ? 1u : 0u) > SIZE_MAX - out_name_len)
+		return NULL;
+	size_t total = dir_len + (need_sep ? 1u : 0u) + out_name_len;
+	if (total == SIZE_MAX)
+		return NULL;
+
+	char *result = malloc(total + 1);
+	if (!result)
+		return NULL;
+	if (file_path_join(result, total + 1, dir, name) != 0) {
+		free(result);
+		return NULL;
+	}
+	return result;
+}
+
+int file_path_append(char *dst, size_t dst_size, const char *suffix)
+{
+	if (!dst || dst_size == 0 || !suffix)
+		MORPH_RETURN(-EINVAL);
+
+	size_t len = strlen(dst);
+	size_t suffix_len = strlen(suffix);
+	if (len > SIZE_MAX - suffix_len)
+		MORPH_RETURN(-ENAMETOOLONG);
+	size_t total = len + suffix_len;
+	if (total == SIZE_MAX || total + 1 > dst_size)
+		MORPH_RETURN(-ENAMETOOLONG);
+
+	memcpy(dst + len, suffix, suffix_len + 1);
+	return 0;
+}
+
+char *file_path_append_alloc(const char *path, const char *suffix)
+{
+	if (!path || !suffix)
+		return NULL;
+
+	size_t len = strlen(path);
+	size_t suffix_len = strlen(suffix);
+	if (len > SIZE_MAX - suffix_len)
+		return NULL;
+	size_t total = len + suffix_len;
+	if (total == SIZE_MAX)
+		return NULL;
+
+	char *result = malloc(total + 1);
+	if (!result)
+		return NULL;
+	memcpy(result, path, len);
+	memcpy(result + len, suffix, suffix_len + 1);
+	return result;
+}
+
+int file_path_join_append(char *dst, size_t dst_size,
+			  const char *dir, const char *name,
+			  const char *suffix)
+{
+	int rc = file_path_join(dst, dst_size, dir, name);
+	if (rc < 0)
+		return rc;
+	return file_path_append(dst, dst_size, suffix);
+}
+
 static int file_list_entries(const char *dir, int want_dir,
 			     char ***out_names, int *out_count)
 {
@@ -117,8 +265,9 @@ static int file_list_entries(const char *dir, int want_dir,
 		if (!want_dir && entry->d_name[0] == '.')
 			continue;
 
-		char full[PATH_MAX];
-		snprintf(full, sizeof(full), "%s/%s", dir, entry->d_name);
+		char full[PATH_MAX + NAME_MAX + 2];
+		if (file_path_join(full, sizeof(full), dir, entry->d_name) != 0)
+			continue;
 		struct stat st;
 		if (stat(full, &st) != 0)
 			continue;
@@ -214,13 +363,8 @@ char *file_resolve_path(const char *path)
 		char dir_resolved[PATH_MAX];
 		if (realpath(tmp, dir_resolved)) {
 			free(expanded);
-			size_t dlen = strlen(dir_resolved);
-			size_t flen = strlen(slash + 1);
-			char *result = malloc(dlen + 1 + flen + 1);
-			if (!result)
-				return NULL;
-			snprintf(result, dlen + 1 + flen + 1,
-				 "%s/%s", dir_resolved, slash + 1);
+			char *result = file_path_join_alloc(dir_resolved,
+							    slash + 1);
 			return result;
 		}
 	}

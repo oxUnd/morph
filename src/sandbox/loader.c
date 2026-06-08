@@ -2,6 +2,7 @@
 #include "ext.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/file.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,8 +15,10 @@ int ext_load_so(struct ext *ex, const char *path)
 		return -EINVAL;
 
 	char full_path[PATH_MAX];
-	snprintf(full_path, sizeof(full_path), "%s/%s", path,
-		 ex->manifest.entry);
+	int rc = file_path_join(full_path, sizeof(full_path), path,
+				ex->manifest.entry);
+	if (rc < 0)
+		return rc;
 
 	struct stat st;
 	if (stat(full_path, &st) != 0) {
@@ -71,8 +74,10 @@ int ext_load_exec(struct ext *ex, const char *path)
 		return -EINVAL;
 
 	char full_path[PATH_MAX];
-	snprintf(full_path, sizeof(full_path), "%s/%s", path,
-		 ex->manifest.entry);
+	int rc = file_path_join(full_path, sizeof(full_path), path,
+				ex->manifest.entry);
+	if (rc < 0)
+		return rc;
 
 	struct stat st;
 	if (stat(full_path, &st) != 0) {

@@ -3,6 +3,7 @@
 #include "skill/skill_parse.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tool.h"
+#include "util/file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -146,10 +147,12 @@ protected:
 	void create_skill(const char *dir_name, const char *name,
 			  const char *description, const char *body_text) {
 		char skill_dir[512];
-		snprintf(skill_dir, sizeof(skill_dir), "%s/%s", tmpdir, dir_name);
+		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
+					 tmpdir, dir_name), 0);
 		mkdir(skill_dir, 0755);
 		char md_path[PATH_MAX];
-		snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
+		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+					 skill_dir, "SKILL.md"), 0);
 		FILE *f = fopen(md_path, "w");
 		ASSERT_NE(f, nullptr);
 		fprintf(f, "---\nname: %s\ndescription: %s\n---\n%s\n",
@@ -158,9 +161,11 @@ protected:
 	}
 	void remove_skill(const char *dir_name) {
 		char skill_dir[512];
-		snprintf(skill_dir, sizeof(skill_dir), "%s/%s", tmpdir, dir_name);
+		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
+					 tmpdir, dir_name), 0);
 		char md_path[PATH_MAX];
-		snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
+		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+					 skill_dir, "SKILL.md"), 0);
 		unlink(md_path);
 		rmdir(skill_dir);
 	}
@@ -286,7 +291,8 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 	snprintf(skill_dir2, sizeof(skill_dir2), "%s/dup-name-2", tmpdir);
 	mkdir(skill_dir2, 0755);
 	char md_path[PATH_MAX];
-	snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir2);
+	ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+				 skill_dir2, "SKILL.md"), 0);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);
 	fprintf(f, "---\nname: dup-name\ndescription: Second.\n---\nB\n");
@@ -347,7 +353,8 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	snprintf(skill_dir, sizeof(skill_dir), "%s/review", tmpdir);
 	mkdir(skill_dir, 0755);
 	char md_path[PATH_MAX];
-	snprintf(md_path, sizeof(md_path), "%s/SKILL.md", skill_dir);
+	ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+				 skill_dir, "SKILL.md"), 0);
 	FILE *f = fopen(md_path, "w");
 	ASSERT_NE(f, nullptr);
 	fprintf(f, "---\nname: review\ndescription: Review code.\n---\n# Review\nCheck bugs.\n");

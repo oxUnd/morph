@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "util/file.h"
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
@@ -68,6 +69,69 @@ TEST_F(FileTest, ExpandPathNotHome) {
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/absolute/path");
 	free(expanded);
+}
+
+TEST_F(FileTest, PathJoinBasic) {
+	char path[128];
+	int rc = file_path_join(path, sizeof(path), "/tmp/morph", "file.txt");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/tmp/morph/file.txt");
+}
+
+TEST_F(FileTest, PathJoinAvoidsDoubleSlash) {
+	char path[128];
+	int rc = file_path_join(path, sizeof(path), "/tmp/morph/", "/file.txt");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/tmp/morph/file.txt");
+}
+
+TEST_F(FileTest, PathJoinTooLong) {
+	char path[8];
+	int rc = file_path_join(path, sizeof(path), "/tmp/morph", "file.txt");
+	EXPECT_EQ(rc, -ENAMETOOLONG);
+}
+
+TEST_F(FileTest, PathJoinAlloc) {
+	char *path = file_path_join_alloc("/tmp/morph", "file.txt");
+	ASSERT_NE(path, nullptr);
+	EXPECT_STREQ(path, "/tmp/morph/file.txt");
+	free(path);
+}
+
+TEST_F(FileTest, PathFullKeepsAbsolute) {
+	char path[128];
+	int rc = file_path_full(path, sizeof(path), "/tmp/base", "/var/file.txt");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/var/file.txt");
+}
+
+TEST_F(FileTest, PathFullJoinsRelative) {
+	char path[128];
+	int rc = file_path_full(path, sizeof(path), "/tmp/base", "file.txt");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/tmp/base/file.txt");
+}
+
+TEST_F(FileTest, PathAppendSuffix) {
+	char path[128] = "/tmp/morph/session";
+	int rc = file_path_append(path, sizeof(path), ".json");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/tmp/morph/session.json");
+}
+
+TEST_F(FileTest, PathJoinAppendSuffix) {
+	char path[128];
+	int rc = file_path_join_append(path, sizeof(path),
+				       "/tmp/morph", "session", ".json");
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ(path, "/tmp/morph/session.json");
+}
+
+TEST_F(FileTest, PathAppendAlloc) {
+	char *path = file_path_append_alloc("/tmp/morph/session", ".json");
+	ASSERT_NE(path, nullptr);
+	EXPECT_STREQ(path, "/tmp/morph/session.json");
+	free(path);
 }
 
 TEST_F(FileTest, WriteEmpty) {

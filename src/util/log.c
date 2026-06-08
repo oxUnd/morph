@@ -1,4 +1,5 @@
 #include "log.h"
+#include "file.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -49,7 +50,9 @@ static void rotate_log(void)
 		return;
 
 	char old_path[PATH_MAX + 16];
-	snprintf(old_path, sizeof(old_path), "%s.old", log_state.path);
+	snprintf(old_path, sizeof(old_path), "%s", log_state.path);
+	if (file_path_append(old_path, sizeof(old_path), ".old") != 0)
+		return;
 	fclose(log_state.file);
 	rename(log_state.path, old_path);
 
@@ -60,11 +63,20 @@ static void rotate_log(void)
 	}
 
 	char backup[PATH_MAX + 16];
-	snprintf(backup, sizeof(backup), "%s.1", log_state.path);
+	snprintf(backup, sizeof(backup), "%s", log_state.path);
+	if (file_path_append(backup, sizeof(backup), ".1") != 0)
+		return;
 	for (int i = MAX_LOG_FILES; i > 1; i--) {
 		char from[PATH_MAX + 16], to[PATH_MAX + 16];
-		snprintf(from, sizeof(from), "%s.%d", log_state.path, i - 1);
-		snprintf(to, sizeof(to), "%s.%d", log_state.path, i);
+		snprintf(from, sizeof(from), "%s", log_state.path);
+		snprintf(to, sizeof(to), "%s", log_state.path);
+		char suffix[16];
+		snprintf(suffix, sizeof(suffix), ".%d", i - 1);
+		if (file_path_append(from, sizeof(from), suffix) != 0)
+			continue;
+		snprintf(suffix, sizeof(suffix), ".%d", i);
+		if (file_path_append(to, sizeof(to), suffix) != 0)
+			continue;
 		rename(from, to);
 	}
 	rename(old_path, backup);

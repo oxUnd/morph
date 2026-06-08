@@ -87,24 +87,18 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		char subdir[SKILL_PATH_MAX];
-		if (strlen(expanded) + 1 + strlen(ent->d_name) >=
-		    sizeof(subdir))
+		if (file_path_join(subdir, sizeof(subdir),
+				   expanded, ent->d_name) != 0)
 			continue;
-		snprintf(subdir, sizeof(subdir), "%s/%s", expanded, ent->d_name);
 
 		struct stat sub_st;
 		if (stat(subdir, &sub_st) != 0 || !S_ISDIR(sub_st.st_mode))
 			continue;
 
 		char skill_md_path[SKILL_PATH_MAX];
-		size_t subdir_len = strlen(subdir);
-		const char skill_md_suffix[] = "/SKILL.md";
-		size_t suffix_len = sizeof(skill_md_suffix) - 1;
-		if (subdir_len + suffix_len >= sizeof(skill_md_path))
+		if (file_path_join(skill_md_path, sizeof(skill_md_path),
+				   subdir, "SKILL.md") != 0)
 			continue;
-		memcpy(skill_md_path, subdir, subdir_len);
-		memcpy(skill_md_path + subdir_len, skill_md_suffix,
-		       suffix_len + 1);
 
 		if (stat(skill_md_path, &sub_st) != 0) {
 			log_dbg("skill_discover: no SKILL.md in %s", subdir);

@@ -248,8 +248,9 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 		return;
 	for (int i = 0; i < ext_count; i++) {
 		char ed_path[PATH_MAX];
-		snprintf(ed_path, sizeof(ed_path), "%s/%s",
-			 exts_dir, ext_dirs[i]);
+		if (file_path_join(ed_path, sizeof(ed_path),
+				   exts_dir, ext_dirs[i]) != 0)
+			continue;
 		struct ext ex;
 		int rc = ext_load(&ex, ed_path);
 		if (rc != 0 || !ex.enabled
@@ -277,8 +278,10 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_SO;
 				char full[PATH_MAX];
-				snprintf(full, sizeof(full), "%s/%s",
-					 ed_path, ex.manifest.entry);
+				if (file_path_join(full, sizeof(full),
+						   ed_path, ex.manifest.entry)
+				    != 0)
+					continue;
 				strncpy(r->ext_entry, full,
 					sizeof(r->ext_entry) - 1);
 				guardrail_ext_so_load(r);
@@ -289,8 +292,10 @@ static void bridge_discover_guardrail_exts(struct guardrail_config *gcfg)
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_EXEC;
 				char full[PATH_MAX];
-				snprintf(full, sizeof(full), "%s/%s",
-					 ed_path, ex.manifest.entry);
+				if (file_path_join(full, sizeof(full),
+						   ed_path, ex.manifest.entry)
+				    != 0)
+					continue;
 				strncpy(r->ext_entry, full,
 					sizeof(r->ext_entry) - 1);
 			}

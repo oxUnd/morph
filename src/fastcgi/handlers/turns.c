@@ -356,7 +356,8 @@ static int candidate_path(const char *token, char out[PATH_MAX])
 		snprintf(out, PATH_MAX, "%s", token);
 		return 1;
 	}
-	snprintf(out, PATH_MAX, "%s/%s", bridge_output_dir(), token);
+	if (file_path_join(out, PATH_MAX, bridge_output_dir(), token) != 0)
+		return 0;
 	return 1;
 }
 
@@ -436,7 +437,6 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 static char *render_artifact_summary(struct turn_job *j)
 {
 	morph_buf_t out;
-	char line[256];
 
 	if (!j || j->artifacts_count <= 0)
 		return NULL;
@@ -447,9 +447,7 @@ static char *render_artifact_summary(struct turn_job *j)
 		   "but these artifacts were created:\n\n");
 	for (int i = 0; i < j->artifacts_count; i++) {
 		struct turn_artifact *a = &j->artifacts[i];
-		snprintf(line, sizeof(line), "%d. `%s`\n\n", i + 1,
-			 a->path);
-		morph_buf_puts(&out, line);
+		morph_buf_printf(&out, "%d. `%s`\n\n", i + 1, a->path);
 		append_artifact_tag(&out, a);
 		morph_buf_puts(&out, "\n\n");
 	}

@@ -1,6 +1,7 @@
 #include "bpe.h"
 #include "buf.h"
 #include "error.h"
+#include "file.h"
 #include "log.h"
 #include "utf8.h"
 #include <errno.h>
@@ -1032,7 +1033,9 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 	const char *found_path = NULL;
 	for (int i = 0; i < 4; i++) {
 		if (!search_dirs[i] || !search_dirs[i][0]) continue;
-		snprintf(path, sizeof(path), "%s/%s", search_dirs[i], filename);
+		if (file_path_join(path, sizeof(path),
+				   search_dirs[i], filename) != 0)
+			continue;
 		FILE *fp = fopen(path, "r");
 		if (fp) {
 			fclose(fp);
