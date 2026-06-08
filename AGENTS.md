@@ -87,7 +87,7 @@ Shared foundational containers live in `src/util/` (linked via `morph-util`). **
 - **`morph_array_t`** (`array.h`) — generic dynamic array (element size set at init). `morph_array_init` (heap, `MORPH_ARRAY_INIT_CAP` default) / `morph_array_init_arena`, `morph_array_push`/`push_n`/`pop`/`get`/`reserve`/`clear`, `morph_array_foreach(ptr, arr, type)`, `morph_array_cleanup`. Use instead of fixed-capacity C arrays when the count is unbounded. Note: `push` may realloc — don't hold element pointers across pushes.
 - **`morph_strmap_t`** (`strmap.h`) — open-addressing string→`void *` hash map. `morph_strmap_init`/`cleanup`/`clear`, `morph_strmap_set`/`get`/`contains`/`remove`/`len`. Use for string-keyed lookups (e.g. tool registries).
 - **`morph_str_t`** (`str.h`) — `{len, const char *}` string view (often arena-backed). `morph_strdup`/`strndup`, `morph_strcmp`/`strcasecmp`/`strncmp`, `morph_str_to_c`, `morph_str_chr`/`rchr`/`trim`, `MORPH_STRLIT`. Use for non-owning slices; cJSON values and most APIs still pass plain `const char *`.
-- **`struct morph_queue`** (`queue.h`) — intrusive doubly-linked list (embed the field in your struct; recover with `morph_queue_data`). Macro-based: `morph_queue_init`, `insert_head`/`insert_tail`, `remove`, `foreach`/`foreach_safe`, plus `sort`/`split`/`middle` helpers. No typedef, header-only.
+- **`morph_queue_t`** (`queue.h`, `typedef struct morph_queue`) — intrusive doubly-linked list (embed the field in your struct; recover with `morph_queue_data`). Macro-based: `morph_queue_init`, `insert_head`/`insert_tail`, `remove`, `foreach`/`foreach_safe`, plus `sort`/`split`/`middle` helpers. Header-only.
 
 ## Dependencies
 - **Required**: SQLite3, libcurl, CMake ≥ 3.20

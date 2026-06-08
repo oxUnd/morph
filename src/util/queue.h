@@ -12,6 +12,8 @@ struct morph_queue {
 	struct morph_queue *next;
 };
 
+typedef struct morph_queue morph_queue_t;
+
 #define morph_queue_init(q)             \
 	do {                                \
 		(q)->prev = (q);                \

@@ -1070,7 +1070,7 @@ char *arena_strdup(struct arena *a, const char *s);		/* arena 内字符串复制
 | `morph_array_t` | `array.h` | 泛型动态数组（init 指定元素大小） | `morph_array_init`(堆)/`morph_array_init_arena`、`push`/`push_n`/`pop`/`get`/`reserve`/`clear`、`morph_array_foreach`、`morph_array_cleanup` |
 | `morph_strmap_t` | `strmap.h` | 开放寻址 string→`void *` 哈希表 | `morph_strmap_init`/`cleanup`/`clear`、`set`/`get`/`contains`/`remove`/`len` |
 | `morph_str_t` | `str.h` | `{len, const char *}` 字符串视图（常 arena 背书） | `morph_strdup`/`strndup`、`morph_strcmp`/`strcasecmp`/`strncmp`、`morph_str_to_c`、`morph_str_chr`/`rchr`/`trim`、`MORPH_STRLIT` |
-| `struct morph_queue` | `queue.h` | 侵入式双向链表（宏 + header-only，无 typedef） | `morph_queue_init`、`insert_head`/`insert_tail`、`remove`、`foreach`/`foreach_safe`、`morph_queue_data`、`sort`/`split`/`middle` |
+| `morph_queue_t` | `queue.h` | 侵入式双向链表（`typedef struct morph_queue`，宏 + header-only） | `morph_queue_init`、`insert_head`/`insert_tail`、`remove`、`foreach`/`foreach_safe`、`morph_queue_data`、`sort`/`split`/`middle` |
 
 **使用约定**：
 - 变长字符串拼接一律用 `morph_buf`，**不得**用固定 `char[N]` + `snprintf` 累加。
