@@ -1,9 +1,9 @@
 #include "client.h"
-#include "sse.h"
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
 #include <curl/curl.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,9 +26,11 @@ static int curl_debug_cb(CURL *handle, curl_infotype type,
 
 static void curl_set_debug(CURL *curl)
 {
-	curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-	curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+	if (getenv("MORPH_DEBUG")) {
+		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+		curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
+	}
 }
 
 void http_set_cancel_flag(volatile sig_atomic_t *flag)
@@ -75,9 +77,15 @@ static int sse_map_curl_error(CURLcode rc)
 
 int http_init(void)
 {
+	CURLcode rc;
+
 	if (http_initialized)
 		return 0;
-	curl_global_init(CURL_GLOBAL_DEFAULT);
+	rc = curl_global_init(CURL_GLOBAL_DEFAULT);
+	if (rc != CURLE_OK) {
+		log_err("curl_global_init failed: %s", curl_easy_strerror(rc));
+		MORPH_RETURN(MORPH_ERR_NETWORK);
+	}
 	http_initialized = 1;
 	log_info("http client initialized");
 	return 0;
@@ -145,7 +153,7 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 		}
 		char *new_headers = realloc(resp->headers, new_cap);
 		if (!new_headers)
-			return total;
+			return 0;
 		resp->headers = new_headers;
 		resp->headers_cap = new_cap;
 	}
@@ -155,22 +163,76 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *data)
 	return total;
 }
 
+static int append_header(struct curl_slist **headers, const char *header)
+{
+	struct curl_slist *new_headers;
+
+	if (!headers || !header)
+		MORPH_RETURN(-EINVAL);
+	new_headers = curl_slist_append(*headers, header);
+	if (!new_headers)
+		MORPH_RETURN(-ENOMEM);
+	*headers = new_headers;
+	return 0;
+}
+
+static int append_content_type_header(struct curl_slist **headers,
+				      const char *content_type)
+{
+	char ct[256];
+
+	if (!content_type)
+		return 0;
+	snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
+	return append_header(headers, ct);
+}
+
+static int append_extra_headers(struct curl_slist **headers,
+				const char **extra_headers,
+				int extra_header_count)
+{
+	int rc;
+
+	for (int i = 0; i < extra_header_count; i++) {
+		if (extra_headers && extra_headers[i]) {
+			rc = append_header(headers, extra_headers[i]);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	return 0;
+}
+
 static int do_request(const char *url, const char *method, const char *body,
 		      size_t body_len, const char *content_type,
-		      struct http_response *resp, int timeout)
+		      const char **extra_headers, int extra_header_count,
+		      struct http_response *resp, long timeout)
 {
+	CURLcode curl_rc;
+	struct curl_slist *headers = NULL;
+	long status = 0;
+	int is_post;
+	int rc;
+	CURL *curl;
+
 	if (!http_initialized)
-		http_init();
-	CURL *curl = curl_easy_init();
+		rc = http_init();
+	else
+		rc = 0;
+	if (rc != 0)
+		return rc;
+
+	curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+
 	curl_easy_setopt(curl, CURLOPT_PROXY, "");
-	struct curl_slist *headers = NULL;
-	if (content_type) {
-		char ct[256];
-		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
-		headers = curl_slist_append(headers, ct);
-	}
+	rc = append_content_type_header(&headers, content_type);
+	if (rc != 0)
+		goto out;
+	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+	if (rc != 0)
+		goto out;
 	if (headers)
 		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
@@ -181,23 +243,36 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);
 	curl_set_debug(curl);
-	if (body && body_len > 0) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
+
+	is_post = method && strcmp(method, "POST") == 0;
+	if (is_post) {
+		curl_easy_setopt(curl, CURLOPT_POST, 1L);
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
+		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+				 (curl_off_t)body_len);
+	} else if (method && strcmp(method, "GET") != 0) {
+		curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+		if (body) {
+			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+					 (curl_off_t)body_len);
+		}
 	}
-	CURLcode rc = curl_easy_perform(curl);
-	if (headers)
-		curl_slist_free_all(headers);
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		log_err("http request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+
+	curl_rc = curl_easy_perform(curl);
+	if (curl_rc != CURLE_OK) {
+		log_err("http request failed: %s", curl_easy_strerror(curl_rc));
+		rc = MORPH_ERR_NETWORK;
+		goto out;
 	}
-	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
 	resp->status_code = (int)status;
+
+out:
+	if (headers)
+		curl_slist_free_all(headers);
 	curl_easy_cleanup(curl);
-	return 0;
+	return rc;
 }
 
 int http_get(const char *url, struct http_response *resp)
@@ -205,7 +280,7 @@ int http_get(const char *url, struct http_response *resp)
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "GET", NULL, 0, NULL, resp, 30);
+	return do_request(url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
 }
 
 int http_get_ex(const char *url, const char **extra_headers,
@@ -214,40 +289,8 @@ int http_get_ex(const char *url, const char **extra_headers,
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	if (!http_initialized)
-		http_init();
-	CURL *curl = curl_easy_init();
-	if (!curl)
-		MORPH_RETURN(-ENOMEM);
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
-	struct curl_slist *headers = NULL;
-	for (int i = 0; i < extra_header_count; i++) {
-		if (extra_headers && extra_headers[i])
-			headers = curl_slist_append(headers, extra_headers[i]);
-	}
-	if (headers)
-		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_set_debug(curl);
-	CURLcode rc = curl_easy_perform(curl);
-	if (headers)
-		curl_slist_free_all(headers);
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		log_err("http request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
-	}
-	long status = 0;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-	resp->status_code = (int)status;
-	curl_easy_cleanup(curl);
-	return 0;
+	return do_request(url, "GET", NULL, 0, NULL, extra_headers,
+			  extra_header_count, resp, 30L);
 }
 
 int http_post(const char *url, const char *body, size_t body_len,
@@ -256,7 +299,8 @@ int http_post(const char *url, const char *body, size_t body_len,
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "POST", body, body_len, content_type, resp, 60);
+	return do_request(url, "POST", body, body_len, content_type, NULL, 0,
+			  resp, 60L);
 }
 
 int http_post_ex(const char *url, const char *body, size_t body_len,
@@ -265,191 +309,143 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 {
 	if (!url || !resp)
 		return -EINVAL;
-	if (!http_initialized)
-		http_init();
-	CURL *curl = curl_easy_init();
-	if (!curl)
-		MORPH_RETURN(-ENOMEM);
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
-	struct curl_slist *headers = NULL;
-	if (content_type) {
-		char ct[256];
-		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
-		headers = curl_slist_append(headers, ct);
-	}
-	for (int i = 0; i < extra_header_count; i++) {
-		if (extra_headers && extra_headers[i])
-			headers = curl_slist_append(headers, extra_headers[i]);
-	}
-	if (headers)
-		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_set_debug(curl);
-	if (body && body_len > 0) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
-	}
-	CURLcode rc = curl_easy_perform(curl);
-	if (headers)
-		curl_slist_free_all(headers);
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		log_err("http_post_ex request failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
-	}
-	long status = 0;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-	resp->status_code = (int)status;
-	curl_easy_cleanup(curl);
-	return 0;
+	memset(resp, 0, sizeof(*resp));
+	return do_request(url, "POST", body, body_len, content_type,
+			  extra_headers, extra_header_count, resp, 60L);
 }
 
 struct sse_write_data {
 	http_callback cb;
 	void *user_data;
-	struct sse_parser parser;
+	int callback_rc;
 };
 
 static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct sse_write_data *swd = data;
-	size_t total = size * nmemb;
+	size_t total;
+
+	if (size != 0 && nmemb > SIZE_MAX / size)
+		return 0;
+	total = size * nmemb;
 	log_dbg("sse_write_cb: received %zu bytes", total);
 	if (http_cancelled())
 		return 0;
-	sse_parser_feed(&swd->parser, (const char *)ptr, total);
 	if (swd->cb) {
 		int rc = swd->cb((const char *)ptr, total, swd->user_data);
-		if (rc != 0 || http_cancelled())
+		if (rc != 0) {
+			swd->callback_rc = rc;
+			return 0;
+		}
+		if (http_cancelled())
 			return 0;
 	}
 	return total;
 }
 
-int http_post_sse(const char *url, const char *body, size_t body_len,
-		   const char *content_type, http_callback cb, void *user_data)
+static int do_sse_request(const char *url, const char *body, size_t body_len,
+			  const char *content_type,
+			  const char **extra_headers, int extra_header_count,
+			  long total_timeout, long idle_timeout,
+			  http_callback cb, void *user_data)
 {
+	struct curl_slist *headers = NULL;
+	char ct[256];
+	struct sse_write_data swd;
+	CURLcode curl_rc;
+	long status = 0;
+	int rc;
+	CURL *curl;
+
 	if (!url || !cb)
 		return -EINVAL;
 	if (!http_initialized)
-		http_init();
+		rc = http_init();
+	else
+		rc = 0;
+	if (rc != 0)
+		return rc;
 
-	CURL *curl = curl_easy_init();
+	curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
 	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 
-	struct curl_slist *headers = NULL;
-	char ct[256];
-	if (content_type) {
-		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
-	} else {
-		snprintf(ct, sizeof(ct), "Content-Type: application/json");
-	}
-	headers = curl_slist_append(headers, ct);
-	headers = curl_slist_append(headers, "Accept: text/event-stream");
+	snprintf(ct, sizeof(ct), "Content-Type: %s",
+		 content_type ? content_type : "application/json");
+	rc = append_header(&headers, ct);
+	if (rc != 0)
+		goto out;
+	rc = append_header(&headers, "Accept: text/event-stream");
+	if (rc != 0)
+		goto out;
+	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+	if (rc != 0)
+		goto out;
 
-	struct sse_write_data swd;
 	swd.cb = cb;
 	swd.user_data = user_data;
-	sse_parser_init(&swd.parser, NULL, NULL);
+	swd.callback_rc = 0;
 
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, total_timeout);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+	if (idle_timeout > 0) {
+		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, idle_timeout);
+		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+	}
 	curl_set_debug(curl);
 	sse_apply_cancel_opts(curl);
 
-	if (body && body_len > 0) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
+	curl_easy_setopt(curl, CURLOPT_POST, 1L);
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
+	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+
+	curl_rc = curl_easy_perform(curl);
+
+	if (swd.callback_rc != 0) {
+		rc = swd.callback_rc;
+		goto out;
+	}
+	if (curl_rc != CURLE_OK) {
+		if (http_cancelled())
+			rc = -ECANCELED;
+		else if (idle_timeout > 0 && curl_rc == CURLE_OPERATION_TIMEDOUT) {
+			log_warn("http sse: connection stalled (no data for %lds)",
+				 idle_timeout);
+			rc = -ETIMEDOUT;
+		} else {
+			rc = sse_map_curl_error(curl_rc);
+		}
+		goto out;
 	}
 
-	CURLcode rc = curl_easy_perform(curl);
-	curl_slist_free_all(headers);
-	sse_parser_free(&swd.parser);
-
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		return sse_map_curl_error(rc);
-	}
-
-	long status = 0;
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	rc = (int)status;
+
+out:
+	if (headers)
+		curl_slist_free_all(headers);
 	curl_easy_cleanup(curl);
-	return (int)status;
+	return rc;
+}
+
+int http_post_sse(const char *url, const char *body, size_t body_len,
+		   const char *content_type, http_callback cb, void *user_data)
+{
+	return do_sse_request(url, body, body_len, content_type, NULL, 0,
+			      300L, 0L, cb, user_data);
 }
 
 int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 		     const char *content_type, const char **extra_headers,
 		     int extra_header_count, http_callback cb, void *user_data)
 {
-	if (!url || !cb)
-		return -EINVAL;
-	if (!http_initialized)
-		http_init();
-
-	CURL *curl = curl_easy_init();
-	if (!curl)
-		MORPH_RETURN(-ENOMEM);
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
-
-	struct curl_slist *headers = NULL;
-	char ct[256];
-	if (content_type) {
-		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
-	} else {
-		snprintf(ct, sizeof(ct), "Content-Type: application/json");
-	}
-	headers = curl_slist_append(headers, ct);
-	headers = curl_slist_append(headers, "Accept: text/event-stream");
-
-	for (int i = 0; i < extra_header_count; i++) {
-		if (extra_headers && extra_headers[i])
-			headers = curl_slist_append(headers, extra_headers[i]);
-	}
-
-	struct sse_write_data swd;
-	swd.cb = cb;
-	swd.user_data = user_data;
-	sse_parser_init(&swd.parser, NULL, NULL);
-
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_set_debug(curl);
-	sse_apply_cancel_opts(curl);
-
-	if (body && body_len > 0) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
-	}
-
-	CURLcode rc = curl_easy_perform(curl);
-	curl_slist_free_all(headers);
-	sse_parser_free(&swd.parser);
-
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		return sse_map_curl_error(rc);
-	}
-
-	long status = 0;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-	curl_easy_cleanup(curl);
-	return (int)status;
+	return do_sse_request(url, body, body_len, content_type, extra_headers,
+			      extra_header_count, 300L, 0L, cb, user_data);
 }
 
 int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
@@ -457,70 +453,11 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			     int extra_header_count, long timeout_seconds,
 			     http_callback cb, void *user_data)
 {
-	if (!url || !cb)
-		return -EINVAL;
-	if (!http_initialized)
-		http_init();
-	CURL *curl = curl_easy_init();
-	if (!curl)
-		MORPH_RETURN(-ENOMEM);
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
+	long idle_timeout = timeout_seconds > 0 ? timeout_seconds : 300L;
 
-	struct curl_slist *headers = NULL;
-	char ct[256];
-	if (content_type) {
-		snprintf(ct, sizeof(ct), "Content-Type: %s", content_type);
-	} else {
-		snprintf(ct, sizeof(ct), "Content-Type: application/json");
-	}
-	headers = curl_slist_append(headers, ct);
-	headers = curl_slist_append(headers, "Accept: text/event-stream");
-
-	for (int i = 0; i < extra_header_count; i++) {
-		if (extra_headers && extra_headers[i])
-			headers = curl_slist_append(headers, extra_headers[i]);
-	}
-
-	struct sse_write_data swd;
-	swd.cb = cb;
-	swd.user_data = user_data;
-	sse_parser_init(&swd.parser, NULL, NULL);
-
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, timeout_seconds > 0 ? timeout_seconds : 300L);
-	curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-	curl_set_debug(curl);
-	sse_apply_cancel_opts(curl);
-
-	if (body && body_len > 0) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body_len);
-	}
-
-	CURLcode rc = curl_easy_perform(curl);
-	curl_slist_free_all(headers);
-	sse_parser_free(&swd.parser);
-
-	if (rc != CURLE_OK) {
-		curl_easy_cleanup(curl);
-		if (http_cancelled())
-			return -ECANCELED;
-		if (rc == CURLE_OPERATION_TIMEDOUT) {
-			log_warn("http_post_sse_ex_timeout: connection stalled (no data for %lds)", timeout_seconds);
-			return -ETIMEDOUT;
-		}
-		return sse_map_curl_error(rc);
-	}
-
-	long status = 0;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-	curl_easy_cleanup(curl);
-	return (int)status;
+	return do_sse_request(url, body, body_len, content_type, extra_headers,
+			      extra_header_count, 600L, idle_timeout, cb,
+			      user_data);
 }
 
 void http_response_free(struct http_response *resp)

@@ -1021,10 +1021,13 @@ struct mock_server {
 	int port;
 	int server_fd;
 	pthread_t thread;
+	int thread_started;
 	volatile int running;
 	const char *response_body;
 	int response_status;
 	int request_count;
+	char request_method[16];
+	char last_request[8192];
 };
 
 static void *mock_http_server_thread(void *arg)
@@ -1046,6 +1049,8 @@ static void *mock_http_server_thread(void *arg)
 		}
 		buf[n] = '\0';
 		srv->request_count++;
+		snprintf(srv->last_request, sizeof(srv->last_request), "%s", buf);
+		sscanf(buf, "%15s", srv->request_method);
 		int is_sse = (strstr(buf, "Accept: text/event-stream") != NULL ||
 			      strstr(buf, "text/event-stream") != NULL);
 		if (srv->response_body && is_sse) {
@@ -1096,7 +1101,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	memset(srv, 0, sizeof(*srv));
 	srv->response_body = saved_body;
 	srv->response_status = saved_status;
-	srv->running = 1;
+	srv->server_fd = -1;
 	srv->server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (srv->server_fd < 0)
 		return -1;
@@ -1109,16 +1114,25 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	addr.sin_port = htons(suggested_port);
 	if (bind(srv->server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
 		close(srv->server_fd);
+		srv->server_fd = -1;
 		return -1;
 	}
 	if (listen(srv->server_fd, 5) < 0) {
 		close(srv->server_fd);
+		srv->server_fd = -1;
 		return -1;
 	}
 	socklen_t addr_len = sizeof(addr);
 	getsockname(srv->server_fd, (struct sockaddr *)&addr, &addr_len);
 	srv->port = ntohs(addr.sin_port);
-	pthread_create(&srv->thread, nullptr, mock_http_server_thread, srv);
+	srv->running = 1;
+	if (pthread_create(&srv->thread, nullptr, mock_http_server_thread, srv) != 0) {
+		srv->running = 0;
+		close(srv->server_fd);
+		srv->server_fd = -1;
+		return -1;
+	}
+	srv->thread_started = 1;
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	return 0;
 }
@@ -1126,9 +1140,15 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 static void mock_server_stop(struct mock_server *srv)
 {
 	srv->running = 0;
-	shutdown(srv->server_fd, SHUT_RDWR);
-	close(srv->server_fd);
-	pthread_join(srv->thread, nullptr);
+	if (srv->server_fd >= 0) {
+		shutdown(srv->server_fd, SHUT_RDWR);
+		close(srv->server_fd);
+		srv->server_fd = -1;
+	}
+	if (srv->thread_started) {
+		pthread_join(srv->thread, nullptr);
+		srv->thread_started = 0;
+	}
 }
 
 /* ---- Integration tests with mock server ---- */
@@ -1138,22 +1158,26 @@ protected:
 	struct mock_server srv;
 	void SetUp() override {
 		memset(&srv, 0, sizeof(srv));
+		srv.server_fd = -1;
 		http_init();
 	}
 	void TearDown() override {
-		if (srv.running) {
-			srv.running = 0;
-			close(srv.server_fd);
-			pthread_join(srv.thread, nullptr);
-		}
+		if (srv.running || srv.thread_started || srv.server_fd >= 0)
+			mock_server_stop(&srv);
 		http_cleanup();
 	}
 };
 
+#define START_MOCK_OR_SKIP(srv)						\
+	do {								\
+		if (mock_server_start((srv), 0) != 0)			\
+			GTEST_SKIP() << "local HTTP mock server unavailable";	\
+	} while (0)
+
 TEST_F(MockServerTest, HttpGetSuccess) {
 	srv.response_body = "{\"status\":\"ok\"}";
 	srv.response_status = 200;
-	ASSERT_EQ(mock_server_start(&srv, 0), 0);
+	START_MOCK_OR_SKIP(&srv);
 	struct http_response resp3 = {0};
 	char url4[256];
 	snprintf(url4, sizeof(url4), "http://127.0.0.1:%d/test", srv.port);
@@ -1169,7 +1193,7 @@ TEST_F(MockServerTest, HttpGetSuccess) {
 TEST_F(MockServerTest, HttpPostSuccess) {
 	srv.response_body = "{\"result\":\"posted\"}";
 	srv.response_status = 200;
-	ASSERT_EQ(mock_server_start(&srv, 0), 0);
+	START_MOCK_OR_SKIP(&srv);
 	struct http_response resp = {0};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
@@ -1177,8 +1201,46 @@ TEST_F(MockServerTest, HttpPostSuccess) {
 			   "application/json", &resp);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(resp.status_code, 200);
+	EXPECT_STREQ(srv.request_method, "POST");
 	EXPECT_NE(resp.body, nullptr);
 	EXPECT_TRUE(resp.body && strstr(resp.body, "posted"));
+	http_response_free(&resp);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, HttpPostEmptyBodyUsesPost) {
+	srv.response_body = "{\"result\":\"posted\"}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	struct http_response resp = {0};
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/empty", srv.port);
+	int rc = http_post(url, "", 0, "application/json", &resp);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(resp.status_code, 200);
+	EXPECT_STREQ(srv.request_method, "POST");
+	http_response_free(&resp);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
+	srv.response_body = "{\"result\":\"posted\"}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	struct http_response resp = {0};
+	resp.status_code = 999;
+	resp.body_len = 123;
+	resp.headers_len = 456;
+	const char *headers[] = { "X-Morph-Test: yes" };
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/headers", srv.port);
+	int rc = http_post_ex(url, "{}", 2, "application/json",
+			      headers, 1, &resp);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(resp.status_code, 200);
+	EXPECT_STREQ(srv.request_method, "POST");
+	EXPECT_NE(strstr(srv.last_request, "X-Morph-Test: yes"), nullptr);
+	EXPECT_GT(resp.body_len, 0u);
 	http_response_free(&resp);
 	mock_server_stop(&srv);
 }
@@ -1186,7 +1248,7 @@ TEST_F(MockServerTest, HttpPostSuccess) {
 TEST_F(MockServerTest, SSEStreamingResponse) {
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
 	srv.response_status = 200;
-	ASSERT_EQ(mock_server_start(&srv, 0), 0);
+	START_MOCK_OR_SKIP(&srv);
 	struct sse_test_info info = {0, ""};
 	auto sse_cb = [](const char *event, const char *data, void *ud) -> int {
 		auto *i = (struct sse_test_info *)ud;
@@ -1203,6 +1265,7 @@ TEST_F(MockServerTest, SSEStreamingResponse) {
 				   global_sse_write_adapter, &parser);
 	EXPECT_EQ(rc, 200);
 	EXPECT_GT(info.count, 0);
+	EXPECT_STREQ(srv.request_method, "POST");
 	sse_parser_free(&parser);
 	mock_server_stop(&srv);
 }
@@ -1210,7 +1273,7 @@ TEST_F(MockServerTest, SSEStreamingResponse) {
 TEST_F(MockServerTest, SSEWithTimeout) {
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
 	srv.response_status = 200;
-	ASSERT_EQ(mock_server_start(&srv, 0), 0);
+	START_MOCK_OR_SKIP(&srv);
 	struct sse_parser parser2;
 	sse_parser_init(&parser2, nullptr, nullptr);
 	char url3[256];
@@ -1219,7 +1282,27 @@ TEST_F(MockServerTest, SSEWithTimeout) {
 					   "application/json", nullptr, 0, 30,
 					   global_sse_write_adapter, &parser2);
 	EXPECT_EQ(rc3, 200);
+	EXPECT_STREQ(srv.request_method, "POST");
 	sse_parser_free(&parser2);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, SSECallbackErrorPropagates) {
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	auto failing_cb = [](const char *data, size_t len, void *ud) -> int {
+		(void)data;
+		(void)len;
+		(void)ud;
+		return -EIO;
+	};
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
+	int rc = http_post_sse_ex(url, "{}", 2,
+				  "application/json", nullptr, 0,
+				  failing_cb, nullptr);
+	EXPECT_EQ(rc, -EIO);
 	mock_server_stop(&srv);
 }
 
