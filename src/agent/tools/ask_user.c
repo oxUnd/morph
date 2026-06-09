@@ -7,16 +7,24 @@
 #include <string.h>
 #include "util/error.h"
 
-static ask_user_callback_fn g_ask_user_cb;
-static void *g_ask_user_data;
+struct ask_user_context {
+	ask_user_callback_fn cb;
+	void *user_data;
+};
+
+static void ask_user_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 static int ask_user_exec(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
-	(void)user_data;
+	struct ask_user_context *ctx = user_data;
+
 	if (!result)
 		return -EINVAL;
-	if (!g_ask_user_cb) {
+	if (!ctx || !ctx->cb) {
 		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"ask_user callback not configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -68,8 +76,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	}
 
 	char *answer = NULL;
-	int rc = g_ask_user_cb(question, choices, choices_count, &answer,
-			       g_ask_user_data);
+	int rc = ctx->cb(question, choices, choices_count, &answer,
+			 ctx->user_data);
 
 	for (int i = 0; i < choices_count; i++)
 		free(choice_copies[i]);
@@ -101,9 +109,14 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 {
 	if (!reg || !cb)
 		return -EINVAL;
-	g_ask_user_cb = cb;
-	g_ask_user_data = user_data;
-	return tool_register(reg, "ask_user",
+
+	struct ask_user_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->cb = cb;
+	ctx->user_data = user_data;
+
+	int rc = tool_register(reg, "ask_user",
 		"Ask the user a question and wait for their response. "
 		"Use when: the request is ambiguous with multiple valid "
 		"interpretations; you need a decision between mutually "
@@ -123,5 +136,8 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 		"\"description\":\"Optional list of choices for the user "
 		"to pick from\"}"
 		"},\"required\":[\"question\"]}",
-		ask_user_exec, NULL, NULL);
+		ask_user_exec, ctx, ask_user_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

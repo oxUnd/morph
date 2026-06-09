@@ -56,6 +56,21 @@ static int mock_ask_user_empty_cb(const char *question,
 	return 0;
 }
 
+static int mock_ask_user_data_cb(const char *question,
+				 const char *const *choices,
+				 int choices_count,
+				 char **answer,
+				 void *user_data)
+{
+	(void)question;
+	(void)choices;
+	(void)choices_count;
+	if (!answer || !user_data)
+		return -EINVAL;
+	*answer = strdup((const char *)user_data);
+	return *answer ? 0 : -ENOMEM;
+}
+
 class AskUserToolTest : public ::testing::Test {
 protected:
 	struct tool_registry tools;
@@ -154,6 +169,33 @@ TEST_F(AskUserToolTest, EmptyAnswer) {
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "no input"), nullptr);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
+	struct tool_registry other;
+	tool_registry_init(&other);
+	ask_user_init(&tools, mock_ask_user_data_cb, (void *)"first");
+	ask_user_init(&other, mock_ask_user_data_cb, (void *)"second");
+
+	struct tool_result result1;
+	struct tool_result result2;
+	tool_result_init(&result1);
+	tool_result_init(&result2);
+
+	int rc1 = tool_exec(&tools, "ask_user",
+			    "{\"question\":\"hello?\"}", &result1);
+	int rc2 = tool_exec(&other, "ask_user",
+			    "{\"question\":\"hello?\"}", &result2);
+	EXPECT_EQ(rc1, 0);
+	EXPECT_EQ(rc2, 0);
+	ASSERT_NE(result1.text.data, nullptr);
+	ASSERT_NE(result2.text.data, nullptr);
+	EXPECT_STREQ(result1.text.data, "first");
+	EXPECT_STREQ(result2.text.data, "second");
+
+	tool_result_cleanup(&result1);
+	tool_result_cleanup(&result2);
+	tool_registry_cleanup(&other);
 }
 
 TEST_F(AskUserToolTest, NullArgsJson) {

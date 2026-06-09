@@ -13,8 +13,15 @@
 #include <stdarg.h>
 #include "util/error.h"
 
-static struct plan_registry *g_plans;
-static struct model *g_llm;
+struct plan_tool_context {
+	struct plan_registry *plans;
+	struct model *llm;
+};
+
+static void plan_tool_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 static char *format_plan(struct plan *p)
 {
@@ -261,12 +268,12 @@ static int parse_steps_from_text(const char *text, const char **descs,
 	return count;
 }
 
-static int auto_decompose(const char *goal, const char **step_descs,
-			  int max_steps)
+static int auto_decompose(struct model *llm, const char *goal,
+			  const char **step_descs, int max_steps)
 {
 	if (!goal || !step_descs || max_steps <= 0)
 		return -EINVAL;
-	if (!g_llm || !g_llm->chat || !g_llm->api_key[0])
+	if (!llm || !llm->chat || !llm->api_key[0])
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 
 	char prompt[2048];
@@ -292,8 +299,8 @@ static int auto_decompose(const char *goal, const char **step_descs,
 	}
 
 	const char *messages[] = { prompt };
-	int status = g_llm->chat(g_llm, arena, sys, messages, 1,
-				 decompose_stream_cb, &buf);
+	int status = llm->chat(llm, arena, sys, messages, 1,
+			       decompose_stream_cb, &buf);
 	arena_destroy(arena);
 
 	if (status < 0 || buf.len == 0) {
@@ -318,9 +325,12 @@ static void free_step_descs(const char **descs, int count)
 static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			  void *user_data)
 {
-	(void)user_data;
+	struct plan_tool_context *ctx = user_data;
+
 	if (!result)
 		return -EINVAL;
+	if (!ctx || !ctx->plans)
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
@@ -373,7 +383,8 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			/* Auto-decompose goal into steps using LLM */
 			const char *tmp_descs[PLAN_MAX_STEPS];
 			memset(tmp_descs, 0, sizeof(tmp_descs));
-			rc = auto_decompose(goal, tmp_descs, PLAN_MAX_STEPS);
+			rc = auto_decompose(ctx->llm, goal, tmp_descs,
+					    PLAN_MAX_STEPS);
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
 				cJSON_Delete(root);
@@ -397,7 +408,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			return -EINVAL;
 		}
 
-		struct plan *p = plan_create(g_plans, name_item->valuestring,
+		struct plan *p = plan_create(ctx->plans, name_item->valuestring,
 			goal, step_descs, step_count);
 
 		if (!p) {
@@ -459,7 +470,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			return -EINVAL;
 		}
 
-		rc = plan_update_step(g_plans, plan_name, step_id, status);
+		rc = plan_update_step(ctx->plans, plan_name, step_id, status);
 		if (rc < 0) {
 			char err[256];
 			const char *msg;
@@ -474,7 +485,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			return rc;
 		}
 
-		struct plan *p = plan_find(g_plans, plan_name);
+		struct plan *p = plan_find(ctx->plans, plan_name);
 		char *formatted = p ? format_plan(p) : NULL;
 
 		rc = set_resultf(result, "Step %d marked as '%s'.\n%s",
@@ -492,7 +503,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 		cJSON *plan_item = cJSON_GetObjectItem(root, "plan");
 
 		if (cJSON_IsString(plan_item) && plan_item->valuestring) {
-			struct plan *p = plan_find(g_plans,
+			struct plan *p = plan_find(ctx->plans,
 						   plan_item->valuestring);
 			if (!p) {
 				rc = set_resultf(result,
@@ -505,7 +516,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 				free(formatted);
 			}
 		} else {
-			char *formatted = format_plans(g_plans);
+			char *formatted = format_plans(ctx->plans);
 			rc = set_resultf(result, "%s",
 					 formatted ? formatted : "(empty)");
 			free(formatted);
@@ -516,7 +527,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 		}
 
 	} else if (strcmp(command, "list") == 0) {
-		char *formatted = format_plans(g_plans);
+		char *formatted = format_plans(ctx->plans);
 		rc = set_resultf(result, "%s",
 				 formatted ? formatted : "(empty)");
 		free(formatted);
@@ -543,9 +554,14 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 {
 	if (!reg || !plans)
 		return -EINVAL;
-	g_plans = plans;
-	g_llm = llm;
-	return tool_register(reg, "plan",
+
+	struct plan_tool_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->plans = plans;
+	ctx->llm = llm;
+
+	int rc = tool_register(reg, "plan",
 		"Create and manage multi-step plans. "
 		"Commands: create (name, goal, steps), "
 		"update (plan, step_id, status), get (plan), list. "
@@ -562,5 +578,8 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
 		"\"status\":{\"type\":\"string\",\"description\":\"New status (for update): pending, in_progress, completed, failed, skipped\"}"
 		"},\"required\":[\"command\"]}",
-		plan_tool_exec, NULL, NULL);
+		plan_tool_exec, ctx, plan_tool_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

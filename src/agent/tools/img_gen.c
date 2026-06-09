@@ -11,11 +11,21 @@
 #include <stdio.h>
 #include <limits.h>
 
-static struct model *g_img_llm;
+struct img_gen_context {
+	struct model *image_llm;
+	struct tool_context *tctx;
+};
+
+static void img_gen_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 static int img_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	struct tool_context *tctx = user_data;
+	struct img_gen_context *ctx = user_data;
+	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
+
 	if (!result)
 		return -EINVAL;
 
@@ -79,7 +89,8 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	}
 
 	struct image_result img_res = {0};
-	int rc = image_gen_create(g_img_llm, prompt, style, size, ref_to_send,
+	int rc = image_gen_create(ctx ? ctx->image_llm : NULL,
+				  prompt, style, size, ref_to_send,
 				  output_dir, &img_res);
 	cJSON_Delete(root);
 
@@ -105,10 +116,19 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 {
 	if (!reg)
 		return -EINVAL;
-	g_img_llm = image_llm;
-	return tool_register(reg, "img_gen",
+
+	struct img_gen_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->image_llm = image_llm;
+	ctx->tctx = tctx;
+
+	int rc = tool_register(reg, "img_gen",
 		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size (must be WIDTHxHEIGHT like '2048x2048' or '2k'/'3k'/'4k'), optional reference_image (file path to a reference image)."
 		"size must be greater than 2k.",
 		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT (e.g. 2048x2048, 2k, 3k, or 4k)\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
-		img_gen_exec, tctx, NULL);
+		img_gen_exec, ctx, img_gen_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

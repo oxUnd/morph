@@ -6,15 +6,14 @@
 #include <string.h>
 #include "util/error.h"
 
-static struct skill_registry *g_skills;
-
 static int skill_activate_exec(const char *args_json, struct tool_result *result,
 			       void *user_data)
 {
-	(void)user_data;
+	struct skill_registry *skills = user_data;
+
 	if (!result)
 		return -EINVAL;
-	if (!g_skills) {
+	if (!skills) {
 		(void)tool_result_take_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
 	}
@@ -39,7 +38,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		return -EINVAL;
 	}
 
-	struct skill_entry *skill = skill_lookup(g_skills, name);
+	struct skill_entry *skill = skill_lookup(skills, name);
 	if (!skill) {
 		char err[256];
 		snprintf(err, sizeof(err),
@@ -103,12 +102,11 @@ int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills
 {
 	if (!reg || !skills)
 		return -EINVAL;
-	g_skills = skills;
 	return tool_register(reg, "activate_skill",
 		"Activate a skill by name to load its specialized instructions into context. "
 		"Use when a task matches a skill's description.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"name\":{\"type\":\"string\",\"description\":\"The skill name to activate\"}"
 		"},\"required\":[\"name\"]}",
-		skill_activate_exec, NULL, NULL);
+		skill_activate_exec, skills, NULL);
 }

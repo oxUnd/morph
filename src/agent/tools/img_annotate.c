@@ -17,9 +17,17 @@
 
 #define MAX_IMAGES 32
 
-static img_annotate_pause_fn g_pause_fn;
-static img_annotate_resume_fn g_resume_fn;
-static void *g_cb_user_data;
+struct img_annotate_context {
+	img_annotate_pause_fn pause_fn;
+	img_annotate_resume_fn resume_fn;
+	void *cb_user_data;
+	struct tool_context *tctx;
+};
+
+static void img_annotate_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 /*
  * Probe for the morph-editor binary. Search order:
@@ -73,7 +81,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	int status;
 	int rc = 0;
 	int i;
-	struct tool_context *tctx = user_data;
+	struct img_annotate_context *ctx = user_data;
+	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
 		return -EINVAL;
@@ -211,8 +220,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		MORPH_RETURN(-err);
 	}
 
-	if (g_pause_fn)
-		g_pause_fn(g_cb_user_data);
+	if (ctx && ctx->pause_fn)
+		ctx->pause_fn(ctx->cb_user_data);
 
 	fflush(stdout);
 	fflush(stderr);
@@ -222,8 +231,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		int err = errno;
 		close(pipefd[0]);
 		close(pipefd[1]);
-		if (g_resume_fn)
-			g_resume_fn(g_cb_user_data);
+		if (ctx && ctx->resume_fn)
+			ctx->resume_fn(ctx->cb_user_data);
 		free(editor_path);
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
@@ -285,8 +294,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		if (buf_init_rc != 0) {
 			close(pipefd[0]);
 			waitpid(pid, &status, 0);
-			if (g_resume_fn)
-				g_resume_fn(g_cb_user_data);
+			if (ctx && ctx->resume_fn)
+				ctx->resume_fn(ctx->cb_user_data);
 			free(editor_path);
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
@@ -306,8 +315,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					morph_buf_cleanup(&buf);
 					close(pipefd[0]);
 					waitpid(pid, &status, 0);
-					if (g_resume_fn)
-						g_resume_fn(g_cb_user_data);
+					if (ctx && ctx->resume_fn)
+						ctx->resume_fn(ctx->cb_user_data);
 					free(editor_path);
 					for (i = 0; i < npaths; i++)
 						free(paths[i]);
@@ -338,8 +347,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				break;
 		}
 
-		if (g_resume_fn)
-			g_resume_fn(g_cb_user_data);
+		if (ctx && ctx->resume_fn)
+			ctx->resume_fn(ctx->cb_user_data);
 
 		if (buf.len == 0) {
 			/*
@@ -613,11 +622,15 @@ int img_annotate_init(struct tool_registry *reg,
 	if (!reg)
 		return -EINVAL;
 
-	g_pause_fn = pause_fn;
-	g_resume_fn = resume_fn;
-	g_cb_user_data = user_data;
+	struct img_annotate_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->pause_fn = pause_fn;
+	ctx->resume_fn = resume_fn;
+	ctx->cb_user_data = user_data;
+	ctx->tctx = tctx;
 
-	return tool_register(reg, "img_annotate",
+	int rc = tool_register(reg, "img_annotate",
 		"Open one or more images in the interactive terminal "
 		"image editor (morph-editor) for manual annotation. "
 		"Supports two annotation types: "
@@ -667,5 +680,8 @@ int img_annotate_init(struct tool_registry *reg,
 		"annotate together (use either 'path' or 'paths', "
 		"not both)\"}"
 		"},\"required\":[]}",
-		img_annotate_exec, tctx, NULL);
+		img_annotate_exec, ctx, img_annotate_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

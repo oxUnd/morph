@@ -17,7 +17,15 @@
 #include <limits.h>
 #include <time.h>
 
-static struct model *g_img_llm;
+struct img_compose_context {
+	struct model *image_llm;
+	struct tool_context *tctx;
+};
+
+static void img_compose_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 static cJSON *get_annotation(cJSON *root, cJSON **owned)
 {
@@ -175,7 +183,9 @@ static int compute_main_index(cJSON *arrows)
 static int img_compose_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
-	struct tool_context *tctx = user_data;
+	struct img_compose_context *ctx = user_data;
+	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
+
 	if (!result)
 		return -EINVAL;
 
@@ -185,7 +195,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 
-	if (!g_img_llm || !g_img_llm->api_key[0]) {
+	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
 		cJSON_Delete(root);
 		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -438,8 +448,8 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		morph_buf_printf(&pb, " Additional direction: %s", user_prompt);
 
 	struct image_result r = {0};
-	int rc = image_gen_create(g_img_llm, morph_buf_cstr(&pb), style, size,
-				  draft_path, odir_in, &r);
+	int rc = image_gen_create(ctx->image_llm, morph_buf_cstr(&pb), style,
+				  size, draft_path, odir_in, &r);
 	morph_buf_cleanup(&lb);
 	morph_buf_cleanup(&pb);
 
@@ -474,8 +484,14 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 {
 	if (!reg)
 		return -EINVAL;
-	g_img_llm = image_llm;
-	return tool_register(reg, "img_compose",
+
+	struct img_compose_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->image_llm = image_llm;
+	ctx->tctx = tctx;
+
+	int rc = tool_register(reg, "img_compose",
 		"Composite/fuse objects across images following annotation "
 		"arrows. An arrow + label means \"blend the object at the arrow "
 		"source into the target location the arrow points to\". Pass the "
@@ -495,5 +511,8 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
 		"size (WIDTHxHEIGHT, 2k, 3k, or 4k)\"}},"
 		"\"required\":[\"annotation\"]}",
-		img_compose_exec, tctx, NULL);
+		img_compose_exec, ctx, img_compose_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

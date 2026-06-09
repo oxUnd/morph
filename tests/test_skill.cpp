@@ -330,6 +330,31 @@ protected:
 		skill_registry_cleanup(&skills);
 		tool_registry_cleanup(&tools);
 	}
+	void create_skill_file(const char *root_dir, const char *dir_name,
+			       const char *name, const char *body) {
+		char skill_dir[PATH_MAX];
+		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
+					 root_dir, dir_name), 0);
+		mkdir(skill_dir, 0755);
+		char md_path[PATH_MAX];
+		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+					 skill_dir, "SKILL.md"), 0);
+		FILE *f = fopen(md_path, "w");
+		ASSERT_NE(f, nullptr);
+		fprintf(f, "---\nname: %s\ndescription: Test skill.\n---\n%s\n",
+			name, body);
+		fclose(f);
+	}
+	void remove_skill_file(const char *root_dir, const char *dir_name) {
+		char skill_dir[PATH_MAX];
+		ASSERT_EQ(file_path_join(skill_dir, sizeof(skill_dir),
+					 root_dir, dir_name), 0);
+		char md_path[PATH_MAX];
+		ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
+					 skill_dir, "SKILL.md"), 0);
+		unlink(md_path);
+		rmdir(skill_dir);
+	}
 };
 
 TEST_F(SkillActivateToolTest, RegisterTool) {
@@ -349,16 +374,7 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	char tmpdir[256];
 	snprintf(tmpdir, sizeof(tmpdir), "/tmp/morph_skill_tool_test_%d", getpid());
 	mkdir(tmpdir, 0755);
-	char skill_dir[512];
-	snprintf(skill_dir, sizeof(skill_dir), "%s/review", tmpdir);
-	mkdir(skill_dir, 0755);
-	char md_path[PATH_MAX];
-	ASSERT_EQ(file_path_join(md_path, sizeof(md_path),
-				 skill_dir, "SKILL.md"), 0);
-	FILE *f = fopen(md_path, "w");
-	ASSERT_NE(f, nullptr);
-	fprintf(f, "---\nname: review\ndescription: Review code.\n---\n# Review\nCheck bugs.\n");
-	fclose(f);
+	create_skill_file(tmpdir, "review", "review", "# Review\nCheck bugs.");
 
 	skill_discover(&skills, tmpdir);
 	skill_activate_init(&tools, &skills);
@@ -373,9 +389,54 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 	EXPECT_NE(strstr(result.text.data, "Check bugs."), nullptr);
 	tool_result_cleanup(&result);
 
-	unlink(md_path);
-	rmdir(skill_dir);
+	remove_skill_file(tmpdir, "review");
 	rmdir(tmpdir);
+}
+
+TEST_F(SkillActivateToolTest, RegistryScopedSkillRegistry) {
+	struct tool_registry other_tools;
+	struct skill_registry other_skills;
+	char tmpdir1[256];
+	char tmpdir2[256];
+
+	tool_registry_init(&other_tools);
+	skill_registry_init(&other_skills);
+	snprintf(tmpdir1, sizeof(tmpdir1),
+		 "/tmp/morph_skill_tool_scope_a_%d", getpid());
+	snprintf(tmpdir2, sizeof(tmpdir2),
+		 "/tmp/morph_skill_tool_scope_b_%d", getpid());
+	mkdir(tmpdir1, 0755);
+	mkdir(tmpdir2, 0755);
+	create_skill_file(tmpdir1, "first", "first", "First body.");
+	create_skill_file(tmpdir2, "second", "second", "Second body.");
+
+	skill_discover(&skills, tmpdir1);
+	skill_discover(&other_skills, tmpdir2);
+	ASSERT_EQ(skill_activate_init(&tools, &skills), 0);
+	ASSERT_EQ(skill_activate_init(&other_tools, &other_skills), 0);
+
+	struct tool_result result1;
+	struct tool_result result2;
+	tool_result_init(&result1);
+	tool_result_init(&result2);
+
+	EXPECT_EQ(tool_exec(&tools, "activate_skill",
+		"{\"name\":\"first\"}", &result1), 0);
+	EXPECT_EQ(tool_exec(&other_tools, "activate_skill",
+		"{\"name\":\"second\"}", &result2), 0);
+	ASSERT_NE(result1.text.data, nullptr);
+	ASSERT_NE(result2.text.data, nullptr);
+	EXPECT_NE(strstr(result1.text.data, "First body."), nullptr);
+	EXPECT_NE(strstr(result2.text.data, "Second body."), nullptr);
+
+	tool_result_cleanup(&result1);
+	tool_result_cleanup(&result2);
+	remove_skill_file(tmpdir1, "first");
+	remove_skill_file(tmpdir2, "second");
+	rmdir(tmpdir1);
+	rmdir(tmpdir2);
+	skill_registry_cleanup(&other_skills);
+	tool_registry_cleanup(&other_tools);
 }
 
 TEST_F(SkillActivateToolTest, ActivateNotFound) {

@@ -42,3 +42,54 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
 }
+
+TEST(PlanTool, RegistryScopedPlanRegistry)
+{
+	struct tool_registry tools1;
+	struct tool_registry tools2;
+	struct plan_registry plans1;
+	struct plan_registry plans2;
+
+	tool_registry_init(&tools1);
+	tool_registry_init(&tools2);
+	plan_registry_init(&plans1);
+	plan_registry_init(&plans2);
+	ASSERT_EQ(plan_tool_init(&tools1, &plans1, nullptr), 0);
+	ASSERT_EQ(plan_tool_init(&tools2, &plans2, nullptr), 0);
+
+	struct tool_result result1;
+	struct tool_result result2;
+	tool_result_init(&result1);
+	tool_result_init(&result2);
+
+	ASSERT_EQ(tool_exec(&tools1, "plan",
+		"{\"command\":\"create\",\"name\":\"first\","
+		"\"steps\":[\"one\"]}", &result1), 0);
+	ASSERT_EQ(tool_exec(&tools2, "plan",
+		"{\"command\":\"create\",\"name\":\"second\","
+		"\"steps\":[\"two\"]}", &result2), 0);
+
+	tool_result_clear(&result1);
+	tool_result_clear(&result2);
+
+	ASSERT_EQ(tool_exec(&tools1, "plan",
+		"{\"command\":\"list\"}", &result1), 0);
+	ASSERT_EQ(tool_exec(&tools2, "plan",
+		"{\"command\":\"list\"}", &result2), 0);
+
+	ASSERT_NE(result1.text.data, nullptr);
+	ASSERT_NE(result2.text.data, nullptr);
+	EXPECT_NE(std::string(result1.text.data).find("first"),
+		  std::string::npos);
+	EXPECT_EQ(std::string(result1.text.data).find("second"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result2.text.data).find("second"),
+		  std::string::npos);
+	EXPECT_EQ(std::string(result2.text.data).find("first"),
+		  std::string::npos);
+
+	tool_result_cleanup(&result1);
+	tool_result_cleanup(&result2);
+	tool_registry_cleanup(&tools1);
+	tool_registry_cleanup(&tools2);
+}

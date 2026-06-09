@@ -14,7 +14,15 @@
 #define MAX_REF_IMAGES 16
 #define MAX_REF_VIDEOS 8
 
-static struct model *g_vid_llm;
+struct vid_gen_context {
+	struct model *video_llm;
+	struct tool_context *tctx;
+};
+
+static void vid_gen_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 static int is_http_url(const char *s)
 {
@@ -24,7 +32,9 @@ static int is_http_url(const char *s)
 
 static int vid_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	struct tool_context *tctx = user_data;
+	struct vid_gen_context *ctx = user_data;
+	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
+
 	if (!result)
 		return -EINVAL;
 
@@ -135,7 +145,7 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	struct video_result vid_res = {0};
-	int rc = video_gen_create(g_vid_llm, prompt,
+	int rc = video_gen_create(ctx ? ctx->video_llm : NULL, prompt,
 				  num_images > 0 ? image_paths_to_send : NULL,
 				  num_images,
 				  num_videos > 0 ? video_paths_to_send : NULL,
@@ -180,8 +190,14 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 {
 	if (!reg)
 		return -EINVAL;
-	g_vid_llm = video_llm;
-	return tool_register(reg, "vid_gen",
+
+	struct vid_gen_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->video_llm = video_llm;
+	ctx->tctx = tctx;
+
+	int rc = tool_register(reg, "vid_gen",
 		"Generate a video from a text prompt with optional reference images and/or reference videos. "
 		"IMPORTANT: Always pass ALL reference assets in a single call via the reference_images / reference_videos arrays. "
 		"Never call vid_gen multiple times for the same video. "
@@ -195,5 +211,8 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		"\"reference_videos\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of local file paths or http(s) URLs to reference videos for vid2vid. Pass ALL videos in one array, not one at a time. Videos are labeled video#1, video#2, etc. in order\"},"
 		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration in seconds\"}"
 		"},\"required\":[\"prompt\"]}",
-		vid_gen_exec, tctx, NULL);
+		vid_gen_exec, ctx, vid_gen_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

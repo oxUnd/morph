@@ -14,7 +14,15 @@
 #include <stdio.h>
 #include <limits.h>
 
-static struct model *g_img_llm;
+struct img_inpaint_context {
+	struct model *image_llm;
+	struct tool_context *tctx;
+};
+
+static void img_inpaint_context_destroy(void *user_data)
+{
+	free(user_data);
+}
 
 /* Per-source-image running state while bboxes are applied serially. */
 struct inpaint_img {
@@ -109,7 +117,9 @@ static struct inpaint_img *img_state_for(morph_array_t *arr, int idx)
 static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
-	struct tool_context *tctx = user_data;
+	struct img_inpaint_context *ctx = user_data;
+	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
+
 	if (!result)
 		return -EINVAL;
 
@@ -119,7 +129,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 
-	if (!g_img_llm || !g_img_llm->api_key[0]) {
+	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
 		cJSON_Delete(root);
 		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -267,9 +277,9 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 					 user_prompt);
 
 		struct image_result r = {0};
-		int rc = image_gen_create(g_img_llm, morph_buf_cstr(&pb), style,
-					  size, st_img->current_ref, output_dir,
-					  &r);
+		int rc = image_gen_create(ctx->image_llm,
+					  morph_buf_cstr(&pb), style, size,
+					  st_img->current_ref, output_dir, &r);
 		morph_buf_cleanup(&pb);
 		if (rc < 0) {
 			snprintf(err_msg, sizeof(err_msg),
@@ -321,8 +331,14 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 {
 	if (!reg)
 		return -EINVAL;
-	g_img_llm = image_llm;
-	return tool_register(reg, "img_inpaint",
+
+	struct img_inpaint_context *ctx = malloc(sizeof(*ctx));
+	if (!ctx)
+		return -ENOMEM;
+	ctx->image_llm = image_llm;
+	ctx->tctx = tctx;
+
+	int rc = tool_register(reg, "img_inpaint",
 		"Regenerate labeled regions of an image. A bbox + label means "
 		"\"generate this content inside this box\". Pass the img_annotate "
 		"output (images[] + bboxes[]) verbatim; for each box the tool "
@@ -341,5 +357,8 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
 		"size (WIDTHxHEIGHT, 2k, 3k, or 4k)\"}},"
 		"\"required\":[\"annotation\"]}",
-		img_inpaint_exec, tctx, NULL);
+		img_inpaint_exec, ctx, img_inpaint_context_destroy);
+	if (rc != 0)
+		free(ctx);
+	return rc;
 }

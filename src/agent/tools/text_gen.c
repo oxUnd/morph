@@ -8,8 +8,6 @@
 #include <string.h>
 #include "util/error.h"
 
-static struct model *g_llm;
-
 static char *extract_prompt(const char *args_json)
 {
 	if (!args_json || !*args_json)
@@ -94,7 +92,8 @@ static int text_gen_stream_cb(const char *token, void *user_data)
 
 static int text_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	(void)user_data;
+	struct model *llm = user_data;
+
 	if (!result)
 		return -EINVAL;
 
@@ -107,7 +106,7 @@ static int text_gen_exec(const char *args_json, struct tool_result *result, void
 		return -EINVAL;
 	}
 
-	if (!g_llm || !g_llm->api_key[0]) {
+	if (!llm || !llm->api_key[0]) {
 		(void)tool_result_take_text(result, strdup("{\"error\":\"no LLM model configured\"}"));
 		free(prompt);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -130,8 +129,8 @@ static int text_gen_exec(const char *args_json, struct tool_result *result, void
 		return rc;
 	}
 
-	int status = g_llm->chat(g_llm, arena, NULL, messages, 1,
-				 text_gen_stream_cb, &buf);
+	int status = llm->chat(llm, arena, NULL, messages, 1,
+			       text_gen_stream_cb, &buf);
 	if (status < 0) {
 		morph_buf_cleanup(&buf);
 		arena_destroy(arena);
@@ -156,9 +155,8 @@ int text_gen_init(struct tool_registry *reg, struct model *llm)
 {
 	if (!reg)
 		return -EINVAL;
-	g_llm = llm;
 	return tool_register(reg, "text_gen",
 		"Generate text content based on a prompt",
 		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"The text prompt to generate content from\"},\"style\":{\"type\":\"string\",\"description\":\"Writing style (e.g. formal, casual, creative)\"},\"length\":{\"type\":\"string\",\"description\":\"Desired length (e.g. short, medium, long)\"}},\"required\":[\"prompt\"]}",
-		text_gen_exec, NULL, NULL);
+		text_gen_exec, llm, NULL);
 }

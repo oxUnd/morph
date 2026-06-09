@@ -225,7 +225,6 @@ static void bridge_init_once(void)
 
 	plan_registry_init(&g_plans);
 	plan_tool_init(&g_tools, &g_plans, g_llm);
-	ask_user_init(&g_tools, NULL, NULL);
 
 	log_info("fcgi-bridge: registered %d tools", g_tools.count);
 }
