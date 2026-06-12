@@ -1,5 +1,6 @@
 add_library(morph-ext STATIC
 	ext.c
+	install.c
 	manifest.c
 )
 

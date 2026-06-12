@@ -33,6 +33,7 @@
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "agent/memory.h"
+#include "ext/install.h"
 #include "config.h"
 #include "models/image_gen.h"
 #include "models/video_gen.h"
@@ -1208,7 +1209,33 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "install") == 0) {
-		CMD_ERROR("ext install not yet implemented (M4)");
+		const char *source = cmd_arg(argc, argv, 2);
+		int yes = 0;
+		for (int i = 3; i < argc; i++) {
+			if (strcmp(argv[i], "--yes") == 0 ||
+			    strcmp(argv[i], "-y") == 0)
+				yes = 1;
+		}
+		if (!source) {
+			CMD_ERROR("usage: /ext install <github-source-or-tree-url> [--yes]");
+			return -EINVAL;
+		}
+		struct ext_install_options opts;
+		memset(&opts, 0, sizeof(opts));
+		opts.install_dir = ctx->config.ext.dir[0] ?
+			ctx->config.ext.dir : "~/.morph/exts";
+		opts.yes = yes;
+		opts.in = stdin;
+		opts.out = stdout;
+		struct ext_install_result res;
+		int rc = ext_install_source(source, &opts, &res);
+		if (rc < 0) {
+			CMD_ERROR("ext install failed: %s", morph_strerror(rc));
+			return rc;
+		}
+		CMD_OK("installed ext %s to %s", res.name, res.path);
+		if (res.resolved_ref[0])
+			printf("  resolved_ref: %s\n", res.resolved_ref);
 		return 0;
 	}
 	if (sub && strcmp(sub, "remove") == 0) {
@@ -2083,7 +2110,9 @@ static int cli_init_tools(struct cli_context *ctx)
 static int cli_init_exts(struct cli_context *ctx)
 {
 	char exts_dir[PATH_MAX] = {0};
-	char *exts_home = file_expand_path("~/.morph/exts");
+	const char *configured = ctx->config.ext.dir[0] ?
+		ctx->config.ext.dir : "~/.morph/exts";
+	char *exts_home = file_expand_path(configured);
 	if (exts_home) {
 		strncpy(exts_dir, exts_home, sizeof(exts_dir) - 1);
 		free(exts_home);
@@ -2096,6 +2125,8 @@ static int cli_init_exts(struct cli_context *ctx)
 	int ext_count = 0;
 	if (file_list_dirs(exts_dir, &ext_dirs, &ext_count) == 0) {
 		for (int i = 0; i < ext_count; i++) {
+			if (ext_dirs[i][0] == '.')
+				continue;
 			char ed_path[PATH_MAX + NAME_MAX + 2];
 			if (file_path_join(ed_path, sizeof(ed_path),
 					   exts_dir, ext_dirs[i]) != 0)
@@ -2103,6 +2134,13 @@ static int cli_init_exts(struct cli_context *ctx)
 			struct ext ex;
 			int rc = ext_load(&ex, ed_path);
 			if (rc == 0 && ex.enabled) {
+				if (!ext_manifest_supports_front(&ex.manifest,
+								 "cli")) {
+					log_info("skipping ext %s: unsupported front cli",
+						 ex.manifest.name);
+					ext_unload(&ex);
+					continue;
+				}
 				if (ex.manifest.purpose == EXT_PURPOSE_GUARDRAIL) {
 					enum guardrail_hook gh =
 						GUARDRAIL_HOOK_OUTPUT;

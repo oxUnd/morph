@@ -344,7 +344,7 @@ saved 5 messages
 | `/video <path>` | `/vid` | 注入视频 | `/vid ./clip.mp4` |
 | `/ext list` | `/x list` | 已注册工具列表 | — |
 | `/ext info <name>` | — | 工具详情 | `/ext info text_gen` |
-| `/ext install <path>` | — | 本地路径安装（stub） | — |
+| `/ext install <source>` | — | GitHub Ext 安装 | `/ext install github:owner/repo[@ref][//subdir]` |
 | `/ext enable <name>` | — | 启用（stub） | — |
 | `/ext disable <name>` | — | 禁用（stub） | — |
 | `/ext remove <name>` | — | 卸载（stub） | — |
@@ -364,7 +364,7 @@ saved 5 messages
 | `/clear` | `/cl` | 清屏 | — |
 
 > **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
-> **stub 标注**：`/ext install/enable/disable/remove` 当前为 stub 实现，打印 "not yet implemented"。
+> **stub 标注**：`/ext enable/disable/remove` 当前为 stub 实现，打印 "not yet implemented"。
 
 ---
 

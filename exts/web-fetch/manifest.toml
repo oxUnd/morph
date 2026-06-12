@@ -4,9 +4,14 @@ description = "Fetch content from a URL. Supports JS rendering for dynamic pages
 author = "morph"
 type = "exec"
 entry = "web-fetch.sh"
+fronts = ["cli"]
+categories = ["browser", "web"]
 permissions = 7
 max_memory_mb = 4096
 max_cpu_seconds = 60
 max_open_files = 4096
 allowed_env = ["NODE_PATH", "XDG_RUNTIME_DIR", "DISPLAY", "LD_LIBRARY_PATH", "CHROMIUM_PATH", "SNAP", "SNAP_VERSION", "SNAP_INSTANCE_NAME", "SNAP_DATA", "SNAP_COMMON"]
 args_schema = "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"description\":\"The URL to fetch content from\"},\"format\":{\"type\":\"string\",\"enum\":[\"markdown\",\"text\",\"html\"],\"description\":\"Output format (default: markdown)\"},\"timeout\":{\"type\":\"integer\",\"description\":\"Timeout in seconds (max 120)\"},\"render_js\":{\"type\":\"boolean\",\"description\":\"Enable JS rendering with headless browser for dynamic pages (default: false)\"},\"js_wait_ms\":{\"type\":\"integer\",\"description\":\"Wait time in ms after page load for JS rendering (default: 2000, max: 10000)\"}},\"required\":[\"url\"]}"
+
+[build]
+command = "npm install --production --silent && npx playwright install chromium"

@@ -2,7 +2,7 @@
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ ! -d "$DIR/node_modules" ]; then
-	npm install --production --silent --prefix "$DIR" 2>/dev/null
+	echo "web-fetch dependencies are missing; run the extension build step first" >&2
+	exit 1
 fi
-npx playwright install chromium 2>/dev/null
 exec node --experimental-strip-types "$DIR/web-fetch.ts"

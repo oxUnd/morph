@@ -27,8 +27,12 @@ int ext_load(struct ext *ex, const char *dir_path)
 
 	struct stat st;
 	if (stat(manifest_path, &st) != 0) {
-		log_err("ext manifest not found: %s", manifest_path);
-		return -ENOENT;
+		snprintf(manifest_path, sizeof(manifest_path),
+			 "%s/morph-ext.toml", dir_path);
+		if (stat(manifest_path, &st) != 0) {
+			log_err("ext manifest not found in: %s", dir_path);
+			return -ENOENT;
+		}
 	}
 
 	int rc = manifest_parse_file(manifest_path, &ex->manifest);
@@ -74,15 +78,43 @@ int ext_unload(struct ext *ex)
 		dlclose(ex->dl_handle);
 		ex->dl_handle = NULL;
 	}
-	free(ex->manifest.args_schema);
-	free(ex->manifest.output_schema);
-	for (int i = 0; i < ex->manifest.allowed_paths_count; i++)
-		free(ex->manifest.allowed_paths[i]);
-	free(ex->manifest.allowed_paths);
-	for (int i = 0; i < ex->manifest.allowed_env_count; i++)
-		free(ex->manifest.allowed_env[i]);
-	free(ex->manifest.allowed_env);
+	ext_manifest_cleanup(&ex->manifest);
 	memset(ex, 0, sizeof(*ex));
+	return 0;
+}
+
+void ext_manifest_cleanup(struct ext_manifest *m)
+{
+	if (!m)
+		return;
+	free(m->args_schema);
+	free(m->output_schema);
+	for (int i = 0; i < m->fronts_count; i++)
+		free(m->fronts[i]);
+	free(m->fronts);
+	for (int i = 0; i < m->categories_count; i++)
+		free(m->categories[i]);
+	free(m->categories);
+	for (int i = 0; i < m->allowed_paths_count; i++)
+		free(m->allowed_paths[i]);
+	free(m->allowed_paths);
+	for (int i = 0; i < m->allowed_env_count; i++)
+		free(m->allowed_env[i]);
+	free(m->allowed_env);
+	memset(m, 0, sizeof(*m));
+}
+
+int ext_manifest_supports_front(const struct ext_manifest *m,
+				const char *front)
+{
+	if (!m || !front || !front[0])
+		return 0;
+	if (m->fronts_count == 0)
+		return 1;
+	for (int i = 0; i < m->fronts_count; i++) {
+		if (m->fronts[i] && strcmp(m->fronts[i], front) == 0)
+			return 1;
+	}
 	return 0;
 }
 

@@ -53,6 +53,45 @@ Optional flags:
 - `-c <path>`: specify a config file
 - `-s <name>`: specify a session name
 
+## Extensions
+
+Extensions are installed under `[ext].dir` from `config.toml`, which defaults to
+`~/.morph/exts`.
+
+Install from GitHub:
+
+```bash
+/ext install github:owner/repo
+/ext install github:owner/repo@v1.2.0
+/ext install github:owner/repo//exts/foo
+/ext install github:owner/repo@v1.2.0//exts/foo
+/ext install https://github.com/owner/repo/tree/main/exts/foo
+```
+
+The source format is `github:<owner>/<repo>[@ref][//subdir]`. `ref` may be a
+tag, branch, or commit. Monorepo installs use `subdir` as the extension package
+root. GitHub tree URLs are also accepted for the common
+`https://github.com/<owner>/<repo>/tree/<ref>/<subdir>` form.
+
+An extension package contains `manifest.toml` or `morph-ext.toml`:
+
+```toml
+name = "demo-native"
+version = "0.1.0"
+description = "Native demo extension"
+type = "exec"
+entry = "bin/demo-native"
+fronts = ["cli"]
+categories = ["dev"]
+
+[build]
+command = "make build"
+```
+
+`[build]` is optional. If present, morph asks before running the command unless
+`--yes` is passed. After download or build, `entry` must exist inside the
+package directory; no separate output list is configured.
+
 ## Layout
 
 ```

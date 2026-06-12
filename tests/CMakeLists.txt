@@ -32,6 +32,7 @@ set(TEST_SOURCES
 	test_sandbox.cpp
 	test_tool_context.cpp
 	test_sub_agent.cpp
+	test_ext.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
@@ -50,6 +51,10 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/render
 	${CMAKE_SOURCE_DIR}/src/skill
 	${CMAKE_SOURCE_DIR}/src/mcp
+)
+
+target_compile_definitions(morph-tests PRIVATE
+	MORPH_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 target_link_libraries(morph-tests PRIVATE
