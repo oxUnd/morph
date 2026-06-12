@@ -12,6 +12,9 @@ void tool_result_init(struct tool_result *result)
 	result->text = (morph_str_t)MORPH_STR_NULL;
 	result->owned = NULL;
 	result->is_json = 0;
+	result->data = NULL;
+	result->ui = NULL;
+	result->artifacts = NULL;
 }
 
 void tool_result_clear(struct tool_result *result)
@@ -19,6 +22,9 @@ void tool_result_clear(struct tool_result *result)
 	if (!result)
 		return;
 	free(result->owned);
+	cJSON_Delete(result->data);
+	cJSON_Delete(result->ui);
+	cJSON_Delete(result->artifacts);
 	tool_result_init(result);
 }
 
@@ -186,6 +192,38 @@ int tool_result_json_errorf(struct tool_result *result, const char *fmt, ...)
 	rc = tool_result_json_error(result, morph_buf_cstr(&msg));
 	morph_buf_cleanup(&msg);
 	return rc;
+}
+
+static int tool_result_take_json_field(cJSON **slot, cJSON *value)
+{
+	if (!slot)
+		return -EINVAL;
+	if (!value)
+		return -ENOMEM;
+	cJSON_Delete(*slot);
+	*slot = value;
+	return 0;
+}
+
+int tool_result_take_data(struct tool_result *result, cJSON *data)
+{
+	if (!result)
+		return -EINVAL;
+	return tool_result_take_json_field(&result->data, data);
+}
+
+int tool_result_take_ui(struct tool_result *result, cJSON *ui)
+{
+	if (!result)
+		return -EINVAL;
+	return tool_result_take_json_field(&result->ui, ui);
+}
+
+int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts)
+{
+	if (!result)
+		return -EINVAL;
+	return tool_result_take_json_field(&result->artifacts, artifacts);
 }
 
 void tool_registry_init(struct tool_registry *reg)

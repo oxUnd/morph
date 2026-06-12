@@ -170,6 +170,155 @@ fail:
 	return NULL;
 }
 
+static int plan_all_done(struct plan *p)
+{
+	if (!p)
+		return 0;
+	for (int i = 0; i < p->step_count; i++) {
+		if (strcmp(p->steps[i].status, "completed") != 0 &&
+		    strcmp(p->steps[i].status, "failed") != 0 &&
+		    strcmp(p->steps[i].status, "skipped") != 0)
+			return 0;
+	}
+	return 1;
+}
+
+static cJSON *plan_to_json(struct plan *p)
+{
+	if (!p)
+		return NULL;
+
+	cJSON *obj = cJSON_CreateObject();
+	if (!obj)
+		return NULL;
+
+	cJSON *steps = cJSON_CreateArray();
+	if (!steps)
+		goto fail;
+
+	if (!cJSON_AddStringToObject(obj, "name", p->name) ||
+	    !cJSON_AddStringToObject(obj, "goal", p->goal) ||
+	    !cJSON_AddNumberToObject(obj, "step_count", p->step_count) ||
+	    !cJSON_AddNumberToObject(obj, "active_step", p->active_step) ||
+	    !cJSON_AddBoolToObject(obj, "all_done", plan_all_done(p)))
+		goto fail;
+
+	for (int i = 0; i < p->step_count; i++) {
+		struct plan_step *s = &p->steps[i];
+		cJSON *step = cJSON_CreateObject();
+		if (!step)
+			goto fail;
+		if (!cJSON_AddNumberToObject(step, "id", s->id) ||
+		    !cJSON_AddStringToObject(step, "description",
+					     s->description) ||
+		    !cJSON_AddStringToObject(step, "status", s->status) ||
+		    !cJSON_AddBoolToObject(step, "active",
+					   i == p->active_step &&
+					   p->active_step >= 0)) {
+			cJSON_Delete(step);
+			goto fail;
+		}
+		cJSON_AddItemToArray(steps, step);
+	}
+
+	cJSON_AddItemToObject(obj, "steps", steps);
+	return obj;
+
+fail:
+	cJSON_Delete(steps);
+	cJSON_Delete(obj);
+	return NULL;
+}
+
+static cJSON *plan_registry_to_json(struct plan_registry *reg,
+				    const char *command,
+				    const char *selected_plan)
+{
+	cJSON *root = cJSON_CreateObject();
+	if (!root)
+		return NULL;
+
+	cJSON *plans = cJSON_CreateArray();
+	if (!plans)
+		goto fail;
+
+	if (!cJSON_AddStringToObject(root, "kind", "plan_state") ||
+	    !cJSON_AddStringToObject(root, "command",
+				     command ? command : "") ||
+	    !cJSON_AddNumberToObject(root, "count",
+				     reg ? reg->count : 0))
+		goto fail;
+
+	if (selected_plan &&
+	    !cJSON_AddStringToObject(root, "selected_plan", selected_plan))
+		goto fail;
+
+	if (reg) {
+		for (int i = 0; i < reg->count; i++) {
+			cJSON *item = plan_to_json(&reg->plans[i]);
+			if (!item)
+				goto fail;
+			cJSON_AddItemToArray(plans, item);
+		}
+	}
+
+	cJSON_AddItemToObject(root, "plans", plans);
+	return root;
+
+fail:
+	cJSON_Delete(plans);
+	cJSON_Delete(root);
+	return NULL;
+}
+
+static cJSON *plan_ui_to_json(cJSON *data)
+{
+	cJSON *ui = cJSON_CreateObject();
+	if (!ui)
+		return NULL;
+
+	if (!cJSON_AddStringToObject(ui, "component", "plan") ||
+	    !cJSON_AddStringToObject(ui, "version", "1"))
+		goto fail;
+
+	cJSON *copy = cJSON_Duplicate(data, 1);
+	if (!copy)
+		goto fail;
+	cJSON_AddItemToObject(ui, "data", copy);
+	return ui;
+
+fail:
+	cJSON_Delete(ui);
+	return NULL;
+}
+
+static int attach_plan_state(struct tool_result *result,
+			     struct plan_registry *reg,
+			     const char *command,
+			     const char *selected_plan)
+{
+	cJSON *data = plan_registry_to_json(reg, command, selected_plan);
+	if (!data)
+		return -ENOMEM;
+
+	cJSON *ui = plan_ui_to_json(data);
+	if (!ui) {
+		cJSON_Delete(data);
+		return -ENOMEM;
+	}
+
+	int rc = tool_result_take_data(result, data);
+	if (rc != 0) {
+		cJSON_Delete(ui);
+		return rc;
+	}
+
+	rc = tool_result_take_ui(result, ui);
+	if (rc != 0)
+		return rc;
+	return 0;
+}
+
 static int set_resultf(struct tool_result *result, const char *fmt, ...)
 	__attribute__((format(printf, 2, 3)));
 
@@ -444,6 +593,11 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
+		rc = attach_plan_state(result, ctx->plans, command, p->name);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 		log_info("plan: created '%s' with %d steps%s",
 			 p->name, p->step_count,
 			 auto_decomposed ? " (auto)" : "");
@@ -496,6 +650,11 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
+		rc = attach_plan_state(result, ctx->plans, command, plan_name);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 		log_info("plan: updated '%s' step %d -> %s",
 			 plan_name, step_id, status);
 
@@ -525,12 +684,24 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
+		rc = attach_plan_state(result, ctx->plans, command,
+				       cJSON_IsString(plan_item)
+				       ? plan_item->valuestring : NULL);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
 
 	} else if (strcmp(command, "list") == 0) {
 		char *formatted = format_plans(ctx->plans);
 		rc = set_resultf(result, "%s",
 				 formatted ? formatted : "(empty)");
 		free(formatted);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
+		rc = attach_plan_state(result, ctx->plans, command, NULL);
 		if (rc != 0) {
 			cJSON_Delete(root);
 			return rc;

@@ -17,6 +17,94 @@ static void ask_user_context_destroy(void *user_data)
 	free(user_data);
 }
 
+static cJSON *ask_user_data_to_json(const char *question,
+				    const char *const *choices,
+				    int choices_count,
+				    const char *answer,
+				    int no_input)
+{
+	cJSON *root = cJSON_CreateObject();
+	if (!root)
+		return NULL;
+
+	cJSON *choices_json = cJSON_CreateArray();
+	if (!choices_json)
+		goto fail;
+
+	if (!cJSON_AddStringToObject(root, "kind", "ask_user_response") ||
+	    !cJSON_AddStringToObject(root, "question",
+				     question ? question : "") ||
+	    !cJSON_AddStringToObject(root, "answer", answer ? answer : "") ||
+	    !cJSON_AddBoolToObject(root, "no_input", no_input))
+		goto fail;
+
+	for (int i = 0; i < choices_count; i++) {
+		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
+		if (!choice)
+			goto fail;
+		cJSON_AddItemToArray(choices_json, choice);
+	}
+
+	cJSON_AddItemToObject(root, "choices", choices_json);
+	return root;
+
+fail:
+	cJSON_Delete(choices_json);
+	cJSON_Delete(root);
+	return NULL;
+}
+
+static cJSON *ask_user_ui_to_json(cJSON *data)
+{
+	cJSON *ui = cJSON_CreateObject();
+	if (!ui)
+		return NULL;
+
+	if (!cJSON_AddStringToObject(ui, "component", "ask_user") ||
+	    !cJSON_AddStringToObject(ui, "version", "1"))
+		goto fail;
+
+	cJSON *copy = cJSON_Duplicate(data, 1);
+	if (!copy)
+		goto fail;
+	cJSON_AddItemToObject(ui, "data", copy);
+	return ui;
+
+fail:
+	cJSON_Delete(ui);
+	return NULL;
+}
+
+static int attach_ask_user_result(struct tool_result *result,
+				  const char *question,
+				  const char *const *choices,
+				  int choices_count,
+				  const char *answer,
+				  int no_input)
+{
+	cJSON *data = ask_user_data_to_json(question, choices, choices_count,
+					    answer, no_input);
+	if (!data)
+		return -ENOMEM;
+
+	cJSON *ui = ask_user_ui_to_json(data);
+	if (!ui) {
+		cJSON_Delete(data);
+		return -ENOMEM;
+	}
+
+	int rc = tool_result_take_data(result, data);
+	if (rc != 0) {
+		cJSON_Delete(ui);
+		return rc;
+	}
+
+	rc = tool_result_take_ui(result, ui);
+	if (rc != 0)
+		return rc;
+	return 0;
+}
+
 static int ask_user_exec(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
@@ -79,11 +167,10 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	int rc = ctx->cb(question, choices, choices_count, &answer,
 			 ctx->user_data);
 
-	for (int i = 0; i < choices_count; i++)
-		free(choice_copies[i]);
-
 	if (rc < 0) {
 		free(answer);
+		for (int i = 0; i < choices_count; i++)
+			free(choice_copies[i]);
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to get user response (code %d)\"}",
@@ -96,11 +183,19 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		free(answer);
 		(void)tool_result_take_text(result, strdup(
 			"User provided no input. Proceed with your best judgment."));
+		(void)attach_ask_user_result(result, question, choices,
+					     choices_count, "", 1);
+		for (int i = 0; i < choices_count; i++)
+			free(choice_copies[i]);
 		return 0;
 	}
 
 	(void)tool_result_take_text(result, answer);
+	(void)attach_ask_user_result(result, question, choices, choices_count,
+				     result->text.data, 0);
 	log_info("ask_user: question='%s' answer='%s'", question, answer);
+	for (int i = 0; i < choices_count; i++)
+		free(choice_copies[i]);
 	return 0;
 }
 

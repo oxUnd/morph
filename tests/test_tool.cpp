@@ -102,6 +102,31 @@ TEST_F(ToolTest, ExecError) {
 	tool_result_cleanup(&result);
 }
 
+TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared) {
+	struct tool_result result;
+	tool_result_init(&result);
+
+	cJSON *data = cJSON_CreateObject();
+	ASSERT_NE(data, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(data, "kind", "test"), nullptr);
+
+	cJSON *ui = cJSON_CreateObject();
+	ASSERT_NE(ui, nullptr);
+	ASSERT_NE(cJSON_AddStringToObject(ui, "component", "test"), nullptr);
+
+	ASSERT_EQ(tool_result_take_data(&result, data), 0);
+	ASSERT_EQ(tool_result_take_ui(&result, ui), 0);
+	ASSERT_NE(result.data, nullptr);
+	ASSERT_NE(result.ui, nullptr);
+
+	tool_result_clear(&result);
+	EXPECT_EQ(result.data, nullptr);
+	EXPECT_EQ(result.ui, nullptr);
+	EXPECT_EQ(result.artifacts, nullptr);
+
+	tool_result_cleanup(&result);
+}
+
 TEST_F(ToolTest, NullParams) {
 	EXPECT_NE(tool_register(nullptr, "x", "x", nullptr, mock_tool_exec, nullptr, nullptr), 0);
 	EXPECT_NE(tool_register(&reg, nullptr, "x", nullptr, mock_tool_exec, nullptr, nullptr), 0);

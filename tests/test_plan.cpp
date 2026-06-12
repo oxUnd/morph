@@ -35,9 +35,21 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&tools, "plan", args.c_str(), &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
+	ASSERT_NE(result.data, nullptr);
+	ASSERT_NE(result.ui, nullptr);
 
 	EXPECT_GT(strlen(result.text.data), 8192u);
 	EXPECT_NE(std::string(result.text.data).find("32. step-32"), std::string::npos);
+	cJSON *plans_json = cJSON_GetObjectItem(result.data, "plans");
+	ASSERT_TRUE(cJSON_IsArray(plans_json));
+	cJSON *first_plan = cJSON_GetArrayItem(plans_json, 0);
+	ASSERT_NE(first_plan, nullptr);
+	cJSON *steps_json = cJSON_GetObjectItem(first_plan, "steps");
+	ASSERT_TRUE(cJSON_IsArray(steps_json));
+	EXPECT_EQ(cJSON_GetArraySize(steps_json), PLAN_MAX_STEPS);
+	cJSON *component = cJSON_GetObjectItem(result.ui, "component");
+	ASSERT_TRUE(cJSON_IsString(component));
+	EXPECT_STREQ(component->valuestring, "plan");
 
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
@@ -79,6 +91,8 @@ TEST(PlanTool, RegistryScopedPlanRegistry)
 
 	ASSERT_NE(result1.text.data, nullptr);
 	ASSERT_NE(result2.text.data, nullptr);
+	ASSERT_NE(result1.data, nullptr);
+	ASSERT_NE(result2.data, nullptr);
 	EXPECT_NE(std::string(result1.text.data).find("first"),
 		  std::string::npos);
 	EXPECT_EQ(std::string(result1.text.data).find("second"),

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <errno.h>
+#include "cJSON.h"
 #include "util/str.h"
 #include "util/strmap.h"
 
@@ -28,6 +29,9 @@ struct tool_result {
 	morph_str_t text;
 	char *owned;
 	int is_json;
+	cJSON *data;
+	cJSON *ui;
+	cJSON *artifacts;
 };
 
 void tool_result_init(struct tool_result *result);
@@ -42,6 +46,9 @@ int tool_result_set_json(struct tool_result *result, const char *data);
 int tool_result_printf(struct tool_result *result, const char *fmt, ...);
 int tool_result_json_error(struct tool_result *result, const char *message);
 int tool_result_json_errorf(struct tool_result *result, const char *fmt, ...);
+int tool_result_take_data(struct tool_result *result, cJSON *data);
+int tool_result_take_ui(struct tool_result *result, cJSON *ui);
+int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts);
 
 typedef int (*tool_exec_fn)(const char *args_json,
 			    struct tool_result *result,

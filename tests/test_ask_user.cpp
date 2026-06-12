@@ -109,6 +109,14 @@ TEST_F(AskUserToolTest, QuestionOnly) {
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_STREQ(result.text.data, "mock answer");
+	ASSERT_NE(result.data, nullptr);
+	ASSERT_NE(result.ui, nullptr);
+	cJSON *kind = cJSON_GetObjectItem(result.data, "kind");
+	ASSERT_TRUE(cJSON_IsString(kind));
+	EXPECT_STREQ(kind->valuestring, "ask_user_response");
+	cJSON *answer = cJSON_GetObjectItem(result.data, "answer");
+	ASSERT_TRUE(cJSON_IsString(answer));
+	EXPECT_STREQ(answer->valuestring, "mock answer");
 	tool_result_cleanup(&result);
 }
 
@@ -123,6 +131,13 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_STREQ(result.text.data, "red");
 	EXPECT_EQ(g_last_choices_count, 3);
+	ASSERT_NE(result.data, nullptr);
+	cJSON *choices = cJSON_GetObjectItem(result.data, "choices");
+	ASSERT_TRUE(cJSON_IsArray(choices));
+	EXPECT_EQ(cJSON_GetArraySize(choices), 3);
+	cJSON *first = cJSON_GetArrayItem(choices, 0);
+	ASSERT_TRUE(cJSON_IsString(first));
+	EXPECT_STREQ(first->valuestring, "red");
 	tool_result_cleanup(&result);
 }
 
@@ -168,6 +183,10 @@ TEST_F(AskUserToolTest, EmptyAnswer) {
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "no input"), nullptr);
+	ASSERT_NE(result.data, nullptr);
+	cJSON *no_input = cJSON_GetObjectItem(result.data, "no_input");
+	ASSERT_TRUE(cJSON_IsBool(no_input));
+	EXPECT_TRUE(cJSON_IsTrue(no_input));
 	tool_result_cleanup(&result);
 }
 
