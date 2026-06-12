@@ -20,6 +20,9 @@
 #include <signal.h>
 
 #define TIMEOUT_SEC 30
+#define LOCATE_PI 3.14159265358979323846
+#define LOCATE_A 6378245.0
+#define LOCATE_EE 0.00669342162296594323
 
 /* ----------------------------------------------------------------- */
 /*  Tiny JSON helpers (no external deps)                             */
@@ -38,20 +41,75 @@ static int json_get_int(const char *s, const char *key, int *val)
 	return 0;
 }
 
-#if !defined(__APPLE__)
-static int json_get_double(const char *s, const char *key, double *val)
+/* ----------------------------------------------------------------- */
+/*  Coordinate system conversions                                    */
+/* ----------------------------------------------------------------- */
+
+static int coord_in_china(double lat, double lon)
 {
-	char pat[64];
-	snprintf(pat, sizeof(pat), "\"%s\"", key);
-	const char *p = strstr(s, pat);
-	if (!p) return -1;
-	p = strchr(p + strlen(key) + 2, ':');
-	if (!p) return -1;
-	while (*p && *p != '-' && *p != '.' && (*p < '0' || *p > '9')) p++;
-	*val = strtod(p, NULL);
-	return 0;
+	return lon >= 72.004 && lon <= 137.8347 &&
+	       lat >= 0.8293 && lat <= 55.8271;
 }
-#endif
+
+static double transform_lat(double x, double y)
+{
+	double ret;
+
+	ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y +
+	      0.1 * x * y + 0.2 * sqrt(fabs(x));
+	ret += (20.0 * sin(6.0 * x * LOCATE_PI) +
+		20.0 * sin(2.0 * x * LOCATE_PI)) * 2.0 / 3.0;
+	ret += (20.0 * sin(y * LOCATE_PI) +
+		40.0 * sin(y / 3.0 * LOCATE_PI)) * 2.0 / 3.0;
+	ret += (160.0 * sin(y / 12.0 * LOCATE_PI) +
+		320.0 * sin(y * LOCATE_PI / 30.0)) * 2.0 / 3.0;
+	return ret;
+}
+
+static double transform_lon(double x, double y)
+{
+	double ret;
+
+	ret = 300.0 + x + 2.0 * y + 0.1 * x * x +
+	      0.1 * x * y + 0.1 * sqrt(fabs(x));
+	ret += (20.0 * sin(6.0 * x * LOCATE_PI) +
+		20.0 * sin(2.0 * x * LOCATE_PI)) * 2.0 / 3.0;
+	ret += (20.0 * sin(x * LOCATE_PI) +
+		40.0 * sin(x / 3.0 * LOCATE_PI)) * 2.0 / 3.0;
+	ret += (150.0 * sin(x / 12.0 * LOCATE_PI) +
+		300.0 * sin(x / 30.0 * LOCATE_PI)) * 2.0 / 3.0;
+	return ret;
+}
+
+static void wgs84_to_gcj02(double lat, double lon,
+			   double *out_lat, double *out_lon)
+{
+	double dlat;
+	double dlon;
+	double radlat;
+	double magic;
+	double sqrtmagic;
+
+	if (!coord_in_china(lat, lon)) {
+		*out_lat = lat;
+		*out_lon = lon;
+		return;
+	}
+
+	dlat = transform_lat(lon - 105.0, lat - 35.0);
+	dlon = transform_lon(lon - 105.0, lat - 35.0);
+	radlat = lat / 180.0 * LOCATE_PI;
+	magic = sin(radlat);
+	magic = 1.0 - LOCATE_EE * magic * magic;
+	sqrtmagic = sqrt(magic);
+	dlat = (dlat * 180.0) /
+	       ((LOCATE_A * (1.0 - LOCATE_EE)) /
+		(magic * sqrtmagic) * LOCATE_PI);
+	dlon = (dlon * 180.0) /
+	       (LOCATE_A / sqrtmagic * cos(radlat) * LOCATE_PI);
+	*out_lat = lat + dlat;
+	*out_lon = lon + dlon;
+}
 
 /* ----------------------------------------------------------------- */
 /*  Platform: macOS  --  CoreLocation                                */
@@ -423,22 +481,59 @@ static int get_location(double *lat, double *lon,
 static char *build_result(int id, double lat, double lon,
 			  double acc, double alt, const char *ts)
 {
-	char *buf = malloc(512);
+	double out_lat;
+	double out_lon;
+	double gcj_lat;
+	double gcj_lon;
+	int in_china;
+	char *buf = malloc(1024);
+
 	if (!buf) return NULL;
-	snprintf(buf, 512,
+	wgs84_to_gcj02(lat, lon, &gcj_lat, &gcj_lon);
+	in_china = coord_in_china(lat, lon);
+	out_lat = in_china ? gcj_lat : lat;
+	out_lon = in_china ? gcj_lon : lon;
+
+	snprintf(buf, 1024,
 		"{"
 		"\"jsonrpc\":\"2.0\","
 		"\"id\":%d,"
 		"\"result\":{"
 		"\"latitude\":%.6f,"
 		"\"longitude\":%.6f,"
+		"\"region\":\"%s\","
 		"\"accuracy_m\":%.1f,"
 		"\"altitude\":%.1f,"
 		"\"timestamp\":\"%s\""
 		"}"
 		"}",
-		id, lat, lon, acc, alt, ts ? ts : "");
+		id, out_lat, out_lon, in_china ? "CN" : "GLOBAL", acc, alt,
+		ts ? ts : "");
 	return buf;
+}
+
+static void print_plain_result(double lat, double lon,
+			       double acc, double alt, const char *ts)
+{
+	double out_lat;
+	double out_lon;
+	double gcj_lat;
+	double gcj_lon;
+	int in_china;
+
+	wgs84_to_gcj02(lat, lon, &gcj_lat, &gcj_lon);
+	in_china = coord_in_china(lat, lon);
+	out_lat = in_china ? gcj_lat : lat;
+	out_lon = in_china ? gcj_lon : lon;
+
+	printf("{\"latitude\":%.6f,"
+	       "\"longitude\":%.6f,"
+	       "\"region\":\"%s\","
+	       "\"accuracy_m\":%.1f,"
+	       "\"altitude\":%.1f,"
+	       "\"timestamp\":\"%s\"}\n",
+	       out_lat, out_lon, in_china ? "CN" : "GLOBAL", acc, alt,
+	       ts ? ts : "");
 }
 
 static char *build_error(int id, const char *msg)
@@ -467,8 +562,8 @@ int main(int argc, char **argv)
 		       "Get current geographic coordinates.\n"
 		       "\n"
 		       "CLI mode (stdin is TTY):\n"
-		       "  prints JSON with latitude, longitude, accuracy_m,\n"
-		       "  altitude, and timestamp to stdout.\n"
+		       "  prints JSON with latitude, longitude, region,\n"
+		       "  accuracy_m, altitude, and timestamp to stdout.\n"
 		       "\n"
 		       "Ext mode (stdin is pipe):\n"
 		       "  reads a JSON-RPC 2.0 request from stdin and\n"
@@ -549,12 +644,7 @@ int main(int argc, char **argv)
 		}
 	} else {
 		if (rc == 0) {
-			printf("{\"latitude\":%.6f,"
-			       "\"longitude\":%.6f,"
-			       "\"accuracy_m\":%.1f,"
-			       "\"altitude\":%.1f,"
-			       "\"timestamp\":\"%s\"}\n",
-			       lat, lon, acc, alt, timestamp);
+			print_plain_result(lat, lon, acc, alt, timestamp);
 		} else {
 			fprintf(stderr, "Error: %s\n", strerror(-rc));
 #if defined(__APPLE__)

@@ -6,7 +6,7 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 	# macOS: compile as Obj-C, link CoreLocation
 	CFLAGS  += -x objective-c
-	LIBS     = -framework Foundation -framework CoreLocation
+	LIBS     = -framework Foundation -framework CoreLocation -lm
 	# .app bundle paths
 	APP_BUNDLE = Locate.app
 	APP_BINARY = $(APP_BUNDLE)/Contents/MacOS/$(TARGET)
@@ -29,7 +29,7 @@ $(TARGET): locate.c
 
 else
 	# Linux: compile plain C, link sd-bus for GeoClue2 D-Bus
-	LIBS = -lsystemd
+	LIBS = -lsystemd -lm
 
 $(TARGET): locate.c
 	$(CC) $(CFLAGS) -o $@ locate.c $(LIBS)
