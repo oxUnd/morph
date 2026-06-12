@@ -24,12 +24,42 @@ static int curl_debug_cb(CURL *handle, curl_infotype type,
 	return 0;
 }
 
-static void curl_set_debug(CURL *curl)
+static void curl_apply_common_opts(CURL *curl, char *errbuf)
 {
+#ifdef __ANDROID__
+	const char *ca_file;
+	const char *ca_dir;
+#endif
+
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+	if (errbuf) {
+		errbuf[0] = '\0';
+		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+	}
+#ifdef __ANDROID__
+	ca_file = getenv("CURL_CA_BUNDLE");
+	if (!ca_file || !*ca_file)
+		ca_file = getenv("SSL_CERT_FILE");
+	if (ca_file && *ca_file)
+		curl_easy_setopt(curl, CURLOPT_CAINFO, ca_file);
+	ca_dir = getenv("SSL_CERT_DIR");
+	if (ca_dir && *ca_dir)
+		curl_easy_setopt(curl, CURLOPT_CAPATH, ca_dir);
+#endif
 	if (getenv("MORPH_DEBUG")) {
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 		curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
+	}
+}
+
+static void curl_log_error(const char *what, CURLcode rc, const char *errbuf)
+{
+	if (errbuf && *errbuf) {
+		log_err("%s failed: curl=%d %s (%s)", what, (int)rc,
+			curl_easy_strerror(rc), errbuf);
+	} else {
+		log_err("%s failed: curl=%d %s", what, (int)rc,
+			curl_easy_strerror(rc));
 	}
 }
 
@@ -61,7 +91,7 @@ static void sse_apply_cancel_opts(CURL *curl)
 	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 }
 
-static int sse_map_curl_error(CURLcode rc)
+static int sse_map_curl_error(CURLcode rc, const char *errbuf)
 {
 	if (rc == CURLE_OK)
 		return 0;
@@ -71,7 +101,7 @@ static int sse_map_curl_error(CURLcode rc)
 		log_info("http: request cancelled by user");
 		return -ECANCELED;
 	}
-	log_err("sse request failed: %s", curl_easy_strerror(rc));
+	curl_log_error("sse request", rc, errbuf);
 	return MORPH_ERR_NETWORK;
 }
 
@@ -178,6 +208,7 @@ static int do_request(const char *url, const char *method, const char *body,
 {
 	CURLcode curl_rc;
 	struct curl_slist *headers = NULL;
+	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int is_post;
 	int rc;
@@ -210,7 +241,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);
-	curl_set_debug(curl);
+	curl_apply_common_opts(curl, errbuf);
 
 	is_post = method && strcmp(method, "POST") == 0;
 	if (is_post) {
@@ -229,7 +260,7 @@ static int do_request(const char *url, const char *method, const char *body,
 
 	curl_rc = curl_easy_perform(curl);
 	if (curl_rc != CURLE_OK) {
-		log_err("http request failed: %s", curl_easy_strerror(curl_rc));
+		curl_log_error("http request", curl_rc, errbuf);
 		rc = MORPH_ERR_NETWORK;
 		goto out;
 	}
@@ -321,6 +352,7 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	char ct[256];
 	struct sse_write_data swd;
 	CURLcode curl_rc;
+	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int rc;
 	CURL *curl;
@@ -365,7 +397,7 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, idle_timeout);
 		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
 	}
-	curl_set_debug(curl);
+	curl_apply_common_opts(curl, errbuf);
 	sse_apply_cancel_opts(curl);
 
 	curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -386,7 +418,7 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 				 idle_timeout);
 			rc = -ETIMEDOUT;
 		} else {
-			rc = sse_map_curl_error(curl_rc);
+			rc = sse_map_curl_error(curl_rc, errbuf);
 		}
 		goto out;
 	}
@@ -509,6 +541,7 @@ int http_session_post(struct http_session *s, const char *url,
 {
 	struct curl_slist *headers = NULL;
 	CURLcode curl_rc;
+	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
 	int rc;
 
@@ -538,11 +571,11 @@ int http_session_post(struct http_session *s, const char *url,
 	curl_easy_setopt(s->curl, CURLOPT_HEADERDATA, s);
 	curl_easy_setopt(s->curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 30L);
 	curl_easy_setopt(s->curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_set_debug(s->curl);
+	curl_apply_common_opts(s->curl, errbuf);
 
 	curl_rc = curl_easy_perform(s->curl);
 	if (curl_rc != CURLE_OK) {
-		log_err("http session: request failed: %s", curl_easy_strerror(curl_rc));
+		curl_log_error("http session request", curl_rc, errbuf);
 		rc = MORPH_ERR_NETWORK;
 		goto out;
 	}
