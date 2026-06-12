@@ -1,0 +1,11 @@
+name = "locate"
+version = "1.0.0"
+description = "Get current geographic coordinates using platform-native location services. On macOS uses CoreLocation for GPS-precision; on Linux falls back to IP geolocation. Returns latitude, longitude, accuracy, altitude, and timestamp."
+author = "morph"
+type = "exec"
+entry = "locate"
+permissions = 5
+max_memory_mb = 64
+max_cpu_seconds = 30
+args_schema = "{\"type\":\"object\",\"properties\":{}}"
+output_schema = "{\"type\":\"object\",\"properties\":{\"latitude\":{\"type\":\"number\"},\"longitude\":{\"type\":\"number\"},\"accuracy_m\":{\"type\":\"number\"},\"altitude\":{\"type\":\"number\"},\"timestamp\":{\"type\":\"string\"}}}"
