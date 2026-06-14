@@ -240,6 +240,8 @@ static void *async_tool_exec(void *arg)
 	if (!call)
 		return NULL;
 
+	http_set_cancel_flag(&call->cancelled);
+
 	char action_buf[512];
 	snprintf(action_buf, sizeof(action_buf), "Executing %s...", call->tool_name);
 	if (call->output_cb)
@@ -290,6 +292,8 @@ static void *async_tool_exec(void *arg)
 		tool_result_cleanup(&res);
 		notify_done = !was_cancelled;
 	}
+
+	http_set_cancel_flag(NULL);
 
 	if (notify_done) {
 		char done_buf[512];
