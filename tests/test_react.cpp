@@ -9,6 +9,7 @@
 #include "config.h"
 #include <string.h>
 #include <signal.h>
+#include <cstdlib>
 #include <thread>
 #include <chrono>
 #include <sstream>
@@ -2355,6 +2356,100 @@ TEST(Guardrail, BuiltinRulesAutoRegistered) {
 	EXPECT_EQ(ctx->guardrail.rule_count, 5);
 	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "empty_answer"), nullptr);
 	react_context_destroy(ctx);
+}
+
+static std::string build_agent_ui_tags_so()
+{
+	std::string src = std::string(MORPH_TEST_SOURCE_DIR) +
+		"/exts/guardrail-agent-ui-tags/agent_ui_tags.c";
+	std::string out = "/tmp/morph_agent_ui_tags_" +
+		std::to_string((long long)getpid()) + ".so";
+	std::string cmd = "cc -shared -fPIC -o " + out + " " + src;
+	int status = system(cmd.c_str());
+	if (status != 0)
+		return "";
+	return out;
+}
+
+static void register_agent_ui_tags_ext(struct guardrail_config *cfg,
+				       const std::string &so_path)
+{
+	guardrail_rule_register(cfg, "guardrail-agent-ui-tags",
+		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_EXT, NULL,
+		"Validate supported Agent UI tags.", so_path.c_str(),
+		"Regenerate using only supported Agent UI tags.");
+	struct guardrail_rule *rule = guardrail_rule_lookup(cfg, "guardrail-agent-ui-tags");
+	ASSERT_NE(rule, nullptr);
+	rule->ext_type = GUARDRAIL_EXT_SO;
+	ASSERT_EQ(guardrail_ext_so_load(rule), 0);
+}
+
+TEST(Guardrail, AgentUiTagsExtSupportedTagsPass) {
+	std::string so = build_agent_ui_tags_so();
+	ASSERT_FALSE(so.empty());
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	register_agent_ui_tags_ext(&cfg, so);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer =
+		"<m:vocab word=\"access\" lang=\"en-US\">获取</m:vocab>\n"
+		"<m:sentence lang=\"en-US\">I can access it.</m:sentence>\n"
+		"<m:button label=\"继续\" action=\"practice.next\" />";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
+	arena_destroy(a);
+	unlink(so.c_str());
+}
+
+TEST(Guardrail, AgentUiTagsExtUnsupportedTagFails) {
+	std::string so = build_agent_ui_tags_so();
+	ASSERT_FALSE(so.empty());
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	register_agent_ui_tags_ext(&cfg, so);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer =
+		"<m:ask_user question=\"认识 access 吗?\" />\n"
+		"<m:vocab word=\"access\">获取</m:vocab>";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(r.triggered_rule, nullptr);
+	EXPECT_STREQ(r.triggered_rule->name, "guardrail-agent-ui-tags");
+	EXPECT_NE(strstr(r.reason, "ask_user"), nullptr);
+	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
+	arena_destroy(a);
+	unlink(so.c_str());
+}
+
+TEST(Guardrail, AgentUiTagsExtUnknownTagFails) {
+	std::string so = build_agent_ui_tags_so();
+	ASSERT_FALSE(so.empty());
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	register_agent_ui_tags_ext(&cfg, so);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "Choose: <m:quiz id=\"q1\">...</m:quiz>";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(r.triggered_rule, nullptr);
+	EXPECT_STREQ(r.triggered_rule->name, "guardrail-agent-ui-tags");
+	EXPECT_NE(strstr(r.reason, "quiz"), nullptr);
+	guardrail_ext_so_unload(guardrail_rule_lookup(&cfg, "guardrail-agent-ui-tags"));
+	arena_destroy(a);
+	unlink(so.c_str());
 }
 
 static enum guardrail_verdict mock_so_check_fn(

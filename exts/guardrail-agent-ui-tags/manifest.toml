@@ -1,0 +1,19 @@
+name = "guardrail-agent-ui-tags"
+version = "1.0.0"
+description = "Validate Agent UI card tags for mobile frontends and reject unsupported m:* tags."
+author = "morph"
+purpose = "guardrail"
+type = "so"
+entry = "agent_ui_tags.so"
+fronts = ["android", "ios"]
+categories = ["guardrail", "agent-ui", "mobile"]
+hook = "output"
+action_text = "Regenerate the response using only supported Agent UI tags: m:speak, m:vocab, m:sentence, m:button, m:navigate, m:highlight, and m:copy. Do not output <m:ask_user> or any ask_user-like XML tag. If you need user input, call the ask_user tool; otherwise ask in plain Markdown."
+permissions = 0
+max_memory_mb = 16
+max_cpu_seconds = 2
+args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Assistant output to validate\"}}}"
+output_schema = "string"
+
+[build]
+command = "make"

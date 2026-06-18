@@ -114,6 +114,7 @@ TEST(ExtManifestTest, MissingFrontsMeansAllFronts)
 TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 {
 	const std::vector<std::string> dirs = {
+		"exts/guardrail-agent-ui-tags",
 		"exts/demo-translate",
 		"exts/demo-upper",
 		"exts/demo-guardrail-pii",
