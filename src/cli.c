@@ -1639,27 +1639,37 @@ static int cmd_dispatch(struct cli_context *ctx, const char *input)
 
 struct auto_connect_work {
 	struct mcp_client *client;
-	struct tool_registry *tools;
 	int result;
 	int done;
+	int detached;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;
 };
+
+static void auto_connect_work_destroy(struct auto_connect_work *w)
+{
+	if (!w)
+		return;
+	pthread_mutex_destroy(&w->lock);
+	pthread_cond_destroy(&w->cond);
+	free(w);
+}
 
 static void *auto_connect_thread(void *arg)
 {
 	struct auto_connect_work *w = arg;
 	int rc = mcp_ensure_connected(w->client);
-	if (rc == 0) {
-		mcp_register_server_tools(w->client, w->tools);
-		mcp_register_server_resources(w->client, w->tools);
-		mcp_register_server_prompts(w->client, w->tools);
-	}
+	int detached;
+
 	pthread_mutex_lock(&w->lock);
 	w->result = rc;
 	w->done = 1;
+	detached = w->detached;
 	pthread_cond_signal(&w->cond);
 	pthread_mutex_unlock(&w->lock);
+
+	if (detached)
+		auto_connect_work_destroy(w);
 	return NULL;
 }
 
@@ -2288,42 +2298,63 @@ static int cli_init_mcp(struct cli_context *ctx)
 			 mc->config.name,
 			 timeout > 0 ? " (timeout enabled)" : "");
 		if (timeout > 0) {
-			struct auto_connect_work w;
-			w.client = mc;
-			w.tools = &ctx->tools;
-			w.result = -1;
-			w.done = 0;
-			pthread_mutex_init(&w.lock, NULL);
-			pthread_cond_init(&w.cond, NULL);
+			struct auto_connect_work *w = calloc(1, sizeof(*w));
+			if (!w) {
+				log_warn("mcp: auto-connect allocation failed for '%s'",
+					 mc->config.name);
+				continue;
+			}
+			w->client = mc;
+			w->result = -1;
+			pthread_mutex_init(&w->lock, NULL);
+			pthread_cond_init(&w->cond, NULL);
 			pthread_t tid;
 			int terr = pthread_create(&tid, NULL,
-						  auto_connect_thread, &w);
+						  auto_connect_thread, w);
 			if (terr != 0) {
-				pthread_mutex_destroy(&w.lock);
-				pthread_cond_destroy(&w.cond);
+				auto_connect_work_destroy(w);
 				log_warn("mcp: auto-connect thread failed for '%s'",
 					 mc->config.name);
 				continue;
 			}
 			struct timespec ts;
+			int wait_rc = 0;
+			int done;
+			int result;
+
 			clock_gettime(CLOCK_REALTIME, &ts);
 			ts.tv_sec += timeout;
-			pthread_mutex_lock(&w.lock);
-			while (!w.done)
-				pthread_cond_timedwait(&w.cond, &w.lock, &ts);
-			pthread_mutex_unlock(&w.lock);
-			pthread_join(tid, NULL);
-			pthread_mutex_destroy(&w.lock);
-			pthread_cond_destroy(&w.cond);
-			if (w.done && w.result == 0)
-				log_info("mcp: auto-connected '%s'",
-					 mc->config.name);
-			else if (w.done)
-				log_warn("mcp: auto-connect failed for '%s': %d",
-					 mc->config.name, w.result);
-			else
+			pthread_mutex_lock(&w->lock);
+			while (!w->done && wait_rc != ETIMEDOUT)
+				wait_rc = pthread_cond_timedwait(&w->cond,
+								 &w->lock,
+								 &ts);
+			done = w->done;
+			result = w->result;
+			if (!done) {
+				w->detached = 1;
+				pthread_detach(tid);
+			}
+			pthread_mutex_unlock(&w->lock);
+
+			if (!done) {
 				log_warn("mcp: auto-connect timed out for '%s'",
 					 mc->config.name);
+				continue;
+			}
+
+			pthread_join(tid, NULL);
+			auto_connect_work_destroy(w);
+			if (result == 0) {
+				mcp_register_server_tools(mc, &ctx->tools);
+				mcp_register_server_resources(mc, &ctx->tools);
+				mcp_register_server_prompts(mc, &ctx->tools);
+				log_info("mcp: auto-connected '%s'",
+					 mc->config.name);
+			} else {
+				log_warn("mcp: auto-connect failed for '%s': %d",
+					 mc->config.name, result);
+			}
 		} else {
 			int rc3 = mcp_ensure_connected(mc);
 			if (rc3 == 0) {
