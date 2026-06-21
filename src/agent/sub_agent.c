@@ -82,6 +82,51 @@ void sub_agent_runtime_destroy(struct sub_agent_runtime *rt)
 	free(rt);
 }
 
+int sub_agent_runtime_set_event_callback(struct sub_agent_runtime *rt,
+					 morph_event_cb cb, void *user)
+{
+	if (!rt)
+		return -EINVAL;
+	rt->event_cb = cb;
+	rt->event_user_data = user;
+	return 0;
+}
+
+static int sub_agent_emit_background_event(struct sub_agent_runtime *rt,
+					   const char *name,
+					   const char *phase,
+					   const char *message,
+					   const char *agent,
+					   const char *task_id,
+					   const char *task,
+					   int error_code)
+{
+	cJSON *data;
+	int rc;
+
+	if (!rt || !rt->event_cb)
+		return 0;
+	data = cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "task", "sub_agent");
+	cJSON_AddStringToObject(data, "agent", agent ? agent : "");
+	if (task_id)
+		cJSON_AddStringToObject(data, "task_id", task_id);
+	if (task)
+		cJSON_AddStringToObject(data, "description", task);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	rc = morph_event_emit_simple(rt->event_cb, rt->event_user_data,
+				     MORPH_EVENT_BACKGROUND, name, phase,
+				     message, data);
+	cJSON_Delete(data);
+	return rc;
+}
+
 static char *load_file_contents(const char *path)
 {
 	if (!path || !*path)
@@ -213,6 +258,7 @@ sub_agent_create_context(struct sub_agent_runtime *rt,
 		return NULL;
 	}
 	child->llm_model = entry->llm;
+	react_set_event_callback(child, rt->event_cb, rt->event_user_data);
 	child->max_iterations = entry->cfg.max_iterations;
 	child->sub_agent_depth = rt->depth + 1;
 	if (entry->system_prompt) {
@@ -231,10 +277,18 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
 	if (rt->depth >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
 	rt->depth++;
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent started",
+					entry->cfg.name, NULL, task, 0);
 	struct react_context *child =
 		sub_agent_create_context(rt, entry, task);
 	if (!child) {
 		rt->depth--;
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent failed",
+						entry->cfg.name, NULL,
+						task, -ENOMEM);
 		MORPH_RETURN(-ENOMEM);
 	}
 	int64_t start = now_ms();
@@ -279,6 +333,13 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
 	tool_registry_cleanup(child_tools);
 	free(child_tools);
 	rt->depth--;
+	sub_agent_emit_background_event(rt,
+					rc == 0 ? "background.completed" :
+					"background.failed",
+					rc == 0 ? "end" : "failed",
+					rc == 0 ? "sub-agent completed" :
+					"sub-agent failed",
+					entry->cfg.name, NULL, task, rc);
 	return rc;
 }
 
@@ -297,6 +358,11 @@ static void *delegate_thread_fn(void *arg)
 	pthread_mutex_lock(&task->mutex);
 	task->status = SUB_AGENT_RUNNING;
 	pthread_mutex_unlock(&task->mutex);
+	sub_agent_emit_background_event(rt, "background.progress",
+					"progress",
+					"sub-agent delegate running",
+					da->entry->cfg.name, task->id,
+					task->task_description, 0);
 
 	rt->depth++;
 	struct react_context *child =
@@ -309,6 +375,12 @@ static void *delegate_thread_fn(void *arg)
 		task->result = strdup("failed to create sub-agent context");
 		pthread_mutex_unlock(&task->mutex);
 		rt->depth--;
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent delegate failed",
+						da->entry->cfg.name, task->id,
+						task->task_description,
+						-ENOMEM);
 		free(da);
 		return NULL;
 	}
@@ -343,6 +415,17 @@ static void *delegate_thread_fn(void *arg)
 		task->result = strdup(morph_strerror(rc));
 	}
 	pthread_mutex_unlock(&task->mutex);
+	sub_agent_emit_background_event(rt,
+					task->status == SUB_AGENT_COMPLETED ?
+					"background.completed" :
+					"background.failed",
+					task->status == SUB_AGENT_COMPLETED ?
+					"end" : "failed",
+					task->status == SUB_AGENT_COMPLETED ?
+					"sub-agent delegate completed" :
+					"sub-agent delegate failed",
+					da->entry->cfg.name, task->id,
+					task->task_description, rc);
 
 	{
 		struct sub_agent_trace_event ev = {0};
@@ -382,10 +465,18 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 	t->agent_index = (int)(entry - rt->entries);
 	t->task_description = strdup(task);
 	t->status = SUB_AGENT_PENDING;
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent delegate started",
+					entry->cfg.name, t->id, task, 0);
 	struct delegate_thread_arg *da = calloc(1, sizeof(*da));
 	if (!da) {
 		pthread_mutex_destroy(&t->mutex);
 		free(t->task_description);
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent delegate failed",
+						entry->cfg.name, t->id, task,
+						-ENOMEM);
 		MORPH_RETURN(-ENOMEM);
 	}
 	da->rt = rt;
@@ -396,6 +487,11 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 		pthread_mutex_destroy(&t->mutex);
 		free(t->task_description);
 		free(da);
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent delegate failed",
+						entry->cfg.name, t->id, task,
+						-rc);
 		MORPH_RETURN(-rc);
 	}
 	rt->task_count++;
@@ -476,6 +572,9 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 	struct sub_agent_entry *entry = sub_agent_find(rt, agent_name);
 	if (!entry)
 		MORPH_RETURN(-ENOENT);
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent fanout started",
+					entry->cfg.name, NULL, agent_name, 0);
 	int n = task_count > SUB_AGENT_TASK_MAX
 		? SUB_AGENT_TASK_MAX : task_count;
 	struct fanout_worker_arg *workers = calloc((size_t)n,
@@ -484,6 +583,11 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 	if (!workers || !threads) {
 		free(workers);
 		free(threads);
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent fanout failed",
+						entry->cfg.name, NULL,
+						agent_name, -ENOMEM);
 		MORPH_RETURN(-ENOMEM);
 	}
 	rt->depth++;
@@ -510,6 +614,12 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 			free(workers[i].result);
 		free(workers);
 		free(threads);
+		sub_agent_emit_background_event(rt, "background.failed",
+						"failed",
+						"sub-agent fanout failed",
+						entry->cfg.name, NULL,
+						agent_name,
+						first_err ? first_err : -EIO);
 		MORPH_RETURN(first_err ? first_err : -EIO);
 	}
 	if (merge == SUB_AGENT_MERGE_RAW) {
@@ -611,6 +721,9 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 		free(workers[i].result);
 	free(workers);
 	free(threads);
+	sub_agent_emit_background_event(rt, "background.completed", "end",
+					"sub-agent fanout completed",
+					entry->cfg.name, NULL, agent_name, 0);
 	return 0;
 }
 

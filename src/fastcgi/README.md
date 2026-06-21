@@ -145,6 +145,10 @@ SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
 `tool_result`, `reflection`, `final`, `turn_end`, `artifact_ready`,
 `canvas_node_added`, `canvas_node_patched`, `error`.
 
+Turn execution is driven by the shared structured event system documented in
+`docs/event-system.md`. FastCGI maps `react.*`, `tool.*`, and `artifact.ready`
+events to the SSE names above for compatibility with existing GUI clients.
+
 ---
 
 ## Environment variables

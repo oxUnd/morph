@@ -74,6 +74,7 @@ set(_MORPH_LIBS
     morph-toml
     morph-config
     morph-db
+    morph-event
     morph-util)
 
 foreach(_lib ${_MORPH_LIBS})

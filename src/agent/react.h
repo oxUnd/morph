@@ -10,6 +10,7 @@ extern "C" {
 #include "agent/context.h"
 #include "agent/guardrail.h"
 #include "agent/tools/ask_user.h"
+#include "event/event.h"
 #include "skill/skill.h"
 
 enum react_step_type {
@@ -105,6 +106,8 @@ struct react_context {
 	char *workdir;
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;
+	morph_event_cb event_cb;
+	void *event_user_data;
 	int sub_agent_depth;
 	struct {
 		char name[64];
@@ -146,6 +149,8 @@ void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);
 
 int react_set_action_drain(struct react_context *ctx,
 			   react_action_drain_fn fn, void *user);
+int react_set_event_callback(struct react_context *ctx,
+			     morph_event_cb cb, void *user);
 
 struct react_step *react_step_create(struct arena *arena,
 				     enum react_step_type type,

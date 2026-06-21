@@ -54,6 +54,16 @@ static int call_count_tool_fn(const char *args_json, struct tool_result *result,
 	return 0;
 }
 
+static int artifact_tool_fn(const char *args_json, struct tool_result *result,
+			    void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	(void)tool_result_take_text(result,
+		strdup("{\"output_path\":\"/tmp/morph-event-test.png\"}"));
+	return 0;
+}
+
 /* ---- mock LLM helpers ---- */
 
 struct mock_collect_data {
@@ -806,6 +816,82 @@ TEST_F(MockLlmTest, ActionThenFinal) {
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_TRUE(strstr(ctx->final_answer, "answer is here") != nullptr);
+	react_context_destroy(ctx);
+}
+
+static bool event_recorder_has_name(struct morph_event_recorder *rec,
+				    const char *name)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
+		if (matched)
+			return true;
+	}
+	return false;
+}
+
+TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
+	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
+		"Thought: Tool done.\nFinal: The answer is here."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb, &rec));
+
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.begin"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.delta"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.action"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.call"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.running"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.end"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
+	tool_register(&tools, "artifact_tool", "Returns artifact", "{}",
+		      artifact_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: Creating artifact.\nAction: artifact_tool({})\n",
+		"Thought: Done.\nFinal: Artifact is ready."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "make an artifact", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "artifact.ready"));
+
+	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
 }
 

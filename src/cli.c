@@ -65,6 +65,24 @@ static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data);
 
+static int cli_emit_startup_event(struct cli_context *ctx,
+				  const char *name, const char *phase,
+				  const char *message, const char *component,
+				  int error_code);
+static int cli_emit_background_event(struct cli_context *ctx,
+				     const char *name, const char *phase,
+				     const char *message, const char *task,
+				     int count, int error_code);
+static int cli_emit_mcp_event(struct cli_context *ctx,
+			      const char *name, const char *phase,
+			      const char *message, const char *server,
+			      enum mcp_transport_type transport,
+			      int auto_connect, int timeout_seconds,
+			      int tools, int resources, int prompts,
+			      int error_code);
+static int cli_discover_mcp_server(struct cli_context *ctx,
+				   struct mcp_client *mc, int auto_connect,
+				   int timeout_seconds);
 
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
@@ -1420,10 +1438,17 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 	rc = scheduled_task_run_due(&ctx->database, (int64_t)time(NULL), 50,
 				    &ran);
 	if (rc == 0 && ran > 0) {
-		printf(ANSI_DIM "[tasks] processed %d due task%s; "
-		       "check /inbox" ANSI_RESET "\n",
-		       ran, ran == 1 ? "" : "s");
+		cli_emit_background_event(ctx, "background.completed", "end",
+					  "due tasks processed",
+					  "scheduled_tasks", ran, 0);
+		if (ctx->event_mode != CLI_EVENTS_JSON)
+			printf(ANSI_DIM "[tasks] processed %d due task%s; "
+			       "check /inbox" ANSI_RESET "\n",
+			       ran, ran == 1 ? "" : "s");
 	} else if (rc != 0) {
+		cli_emit_background_event(ctx, "background.failed", "failed",
+					  "due task processing failed",
+					  "scheduled_tasks", -1, rc);
 		log_warn("failed to process due tasks: %s", morph_strerror(rc));
 	}
 }
@@ -1509,12 +1534,22 @@ static int cli_scheduler_start(struct cli_context *ctx)
 
 	if (!ctx || ctx->scheduler_started)
 		return 0;
+	cli_emit_background_event(ctx, "background.started", "begin",
+				  "task scheduler starting",
+				  "task_scheduler", -1, 0);
 	rc = pthread_mutex_init(&ctx->scheduler_lock, NULL);
-	if (rc != 0)
+	if (rc != 0) {
+		cli_emit_background_event(ctx, "background.failed", "failed",
+					  "task scheduler failed",
+					  "task_scheduler", -1, -rc);
 		return -rc;
+	}
 	rc = pthread_cond_init(&ctx->scheduler_cond, NULL);
 	if (rc != 0) {
 		pthread_mutex_destroy(&ctx->scheduler_lock);
+		cli_emit_background_event(ctx, "background.failed", "failed",
+					  "task scheduler failed",
+					  "task_scheduler", -1, -rc);
 		return -rc;
 	}
 	ctx->scheduler_stop = 0;
@@ -1523,9 +1558,15 @@ static int cli_scheduler_start(struct cli_context *ctx)
 	if (rc != 0) {
 		pthread_cond_destroy(&ctx->scheduler_cond);
 		pthread_mutex_destroy(&ctx->scheduler_lock);
+		cli_emit_background_event(ctx, "background.failed", "failed",
+					  "task scheduler failed",
+					  "task_scheduler", -1, -rc);
 		return -rc;
 	}
 	ctx->scheduler_started = 1;
+	cli_emit_background_event(ctx, "background.ready", "ready",
+				  "task scheduler ready",
+				  "task_scheduler", -1, 0);
 	return 0;
 }
 
@@ -1533,6 +1574,9 @@ static void cli_scheduler_stop(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->scheduler_started)
 		return;
+	cli_emit_background_event(ctx, "background.stopping", "begin",
+				  "task scheduler stopping",
+				  "task_scheduler", -1, 0);
 	pthread_mutex_lock(&ctx->scheduler_lock);
 	ctx->scheduler_stop = 1;
 	pthread_cond_signal(&ctx->scheduler_cond);
@@ -1542,6 +1586,9 @@ static void cli_scheduler_stop(struct cli_context *ctx)
 	pthread_mutex_destroy(&ctx->scheduler_lock);
 	ctx->scheduler_started = 0;
 	ctx->scheduler_stop = 0;
+	cli_emit_background_event(ctx, "background.completed", "end",
+				  "task scheduler stopped",
+				  "task_scheduler", -1, 0);
 }
 
 static int cmd_image(struct cli_context *ctx, int argc, char **argv)
@@ -1996,14 +2043,28 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			CMD_OK("MCP server '%s' already connected", name);
 			return 0;
 		}
+		cli_emit_mcp_event(ctx, "mcp.connecting", "begin",
+				   "manual MCP connect started", name,
+				   mc->config.transport, 0,
+				   mc->config.connect_timeout,
+				   -1, -1, -1, 0);
 		int rc = mcp_ensure_connected(mc);
 		if (rc < 0) {
+			cli_emit_mcp_event(ctx, "mcp.failed", "failed",
+					   "manual MCP connect failed", name,
+					   mc->config.transport, 0,
+					   mc->config.connect_timeout,
+					   -1, -1, -1, rc);
 			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
-		mcp_register_server_tools(mc, &ctx->tools);
-		mcp_register_server_resources(mc, &ctx->tools);
-		mcp_register_server_prompts(mc, &ctx->tools);
+		cli_emit_mcp_event(ctx, "mcp.connected", "end",
+				   "manual MCP connect completed", name,
+				   mc->config.transport, 0,
+				   mc->config.connect_timeout,
+				   -1, -1, -1, 0);
+		cli_discover_mcp_server(ctx, mc, 0,
+					mc->config.connect_timeout);
 		CMD_OK("MCP server '%s' connected", name);
 		return 0;
 	}
@@ -2020,6 +2081,11 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			return -ENOENT;
 		}
 		mcp_disconnect(mc);
+		cli_emit_mcp_event(ctx, "mcp.disconnected", "end",
+				   "MCP server disconnected", name,
+				   mc->config.transport, 0,
+				   mc->config.connect_timeout,
+				   -1, -1, -1, 0);
 		CMD_OK("MCP server '%s' disconnected", name);
 		return 0;
 	}
@@ -2089,6 +2155,187 @@ static int cli_ask_user_callback(const char *question,
 				  int choices_count,
 				  char **answer,
 				  void *user_data);
+
+static int cli_event_callback(const struct morph_event *ev, void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	const char *prefix = NULL;
+
+	if (!ctx || !ev || ctx->event_mode == CLI_EVENTS_NONE)
+		return 0;
+
+	if (ctx->event_mode == CLI_EVENTS_JSON) {
+		char *json = morph_event_to_json_string(ev);
+		if (!json)
+			return -ENOMEM;
+		printf("%s\n", json);
+		fflush(stdout);
+		free(json);
+		return 0;
+	}
+
+	if (ev->type == MORPH_EVENT_STARTUP)
+		prefix = "startup";
+	else if (ev->type == MORPH_EVENT_MCP)
+		prefix = "mcp";
+	else if (ev->type == MORPH_EVENT_BACKGROUND)
+		prefix = "background";
+	else if (ev->type == MORPH_EVENT_ARTIFACT)
+		prefix = "artifact";
+
+	if (prefix) {
+		printf("[%s] %s\n", prefix,
+		       ev->message ? ev->message : ev->name);
+		fflush(stdout);
+	}
+	return 0;
+}
+
+static int cli_emit_event_simple(struct cli_context *ctx,
+				 enum morph_event_type type,
+				 const char *name, const char *phase,
+				 const char *message, cJSON *data)
+{
+	if (!ctx)
+		return -EINVAL;
+	return morph_event_emit_simple(ctx->event_cb, ctx->event_user_data,
+				       type, name, phase, message, data);
+}
+
+static int cli_emit_startup_event(struct cli_context *ctx,
+				  const char *name, const char *phase,
+				  const char *message, const char *component,
+				  int error_code)
+{
+	cJSON *data = cJSON_CreateObject();
+	int rc;
+
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "component", component ? component : "");
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	rc = cli_emit_event_simple(ctx, MORPH_EVENT_STARTUP, name, phase,
+				   message, data);
+	cJSON_Delete(data);
+	return rc;
+}
+
+static int cli_emit_background_event(struct cli_context *ctx,
+				     const char *name, const char *phase,
+				     const char *message, const char *task,
+				     int count, int error_code)
+{
+	cJSON *data = cJSON_CreateObject();
+	int rc;
+
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "task", task ? task : "");
+	if (count >= 0)
+		cJSON_AddNumberToObject(data, "count", count);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	rc = cli_emit_event_simple(ctx, MORPH_EVENT_BACKGROUND, name, phase,
+				   message, data);
+	cJSON_Delete(data);
+	return rc;
+}
+
+static const char *mcp_transport_name(enum mcp_transport_type transport)
+{
+	return transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
+}
+
+static int cli_emit_mcp_event(struct cli_context *ctx,
+			      const char *name, const char *phase,
+			      const char *message, const char *server,
+			      enum mcp_transport_type transport,
+			      int auto_connect, int timeout_seconds,
+			      int tools, int resources, int prompts,
+			      int error_code)
+{
+	cJSON *data = cJSON_CreateObject();
+	int rc;
+
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "server", server ? server : "");
+	cJSON_AddStringToObject(data, "transport",
+				mcp_transport_name(transport));
+	cJSON_AddBoolToObject(data, "auto_connect", auto_connect ? 1 : 0);
+	if (timeout_seconds > 0)
+		cJSON_AddNumberToObject(data, "timeout_seconds",
+					timeout_seconds);
+	if (tools >= 0)
+		cJSON_AddNumberToObject(data, "tools", tools);
+	if (resources >= 0)
+		cJSON_AddNumberToObject(data, "resources", resources);
+	if (prompts >= 0)
+		cJSON_AddNumberToObject(data, "prompts", prompts);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	rc = cli_emit_event_simple(ctx, MORPH_EVENT_MCP, name, phase,
+				   message, data);
+	cJSON_Delete(data);
+	return rc;
+}
+
+static int cli_discover_mcp_server(struct cli_context *ctx,
+				   struct mcp_client *mc, int auto_connect,
+				   int timeout_seconds)
+{
+	int tools;
+	int resources;
+	int prompts;
+	int rc = 0;
+	char msg[256];
+
+	snprintf(msg, sizeof(msg), "%s discovering capabilities",
+		 mc->config.name);
+	cli_emit_mcp_event(ctx, "mcp.discovering", "begin", msg,
+			   mc->config.name, mc->config.transport, auto_connect,
+			   timeout_seconds, -1, -1, -1, 0);
+
+	tools = mcp_register_server_tools(mc, &ctx->tools);
+	if (tools < 0)
+		rc = tools;
+	resources = mcp_register_server_resources(mc, &ctx->tools);
+	if (resources < 0 && rc == 0)
+		rc = resources;
+	prompts = mcp_register_server_prompts(mc, &ctx->tools);
+	if (prompts < 0 && rc == 0)
+		rc = prompts;
+
+	if (rc < 0) {
+		snprintf(msg, sizeof(msg), "%s discovery failed: %s",
+			 mc->config.name, morph_strerror(rc));
+		cli_emit_mcp_event(ctx, "mcp.failed", "failed", msg,
+				   mc->config.name, mc->config.transport,
+				   auto_connect, timeout_seconds,
+				   tools < 0 ? -1 : tools,
+				   resources < 0 ? -1 : resources,
+				   prompts < 0 ? -1 : prompts, rc);
+		return rc;
+	}
+
+	snprintf(msg, sizeof(msg),
+		 "%s ready (%d tools, %d resources, %d prompts)",
+		 mc->config.name, tools, resources, prompts);
+	cli_emit_mcp_event(ctx, "mcp.ready", "ready", msg,
+			   mc->config.name, mc->config.transport, auto_connect,
+			   timeout_seconds, tools, resources, prompts, 0);
+	return 0;
+}
 
 /*
  * Load configuration from TOML file and set defaults.
@@ -2169,6 +2416,8 @@ static int cli_init_models(struct cli_context *ctx)
 		db_close(&ctx->database);
 		return -ENOMEM;
 	}
+	react_set_event_callback(ctx->react, ctx->event_cb,
+				 ctx->event_user_data);
 	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
@@ -2701,22 +2950,60 @@ static int cli_init_mcp(struct cli_context *ctx)
 
 		int rc = mcp_registry_add(&ctx->mcp, &scfg);
 		if (rc == 0) {
+			char msg[256];
+
+			snprintf(msg, sizeof(msg), "%s registered%s",
+				 scfg.name,
+				 scfg.auto_connect ? " (auto_connect)" : "");
 			log_info("mcp: registered server '%s'%s", scfg.name,
 				 scfg.auto_connect ? " (auto_connect)" : "");
+			cli_emit_mcp_event(ctx, "mcp.registered",
+					   "begin", msg, scfg.name,
+					   scfg.transport, scfg.auto_connect,
+					   scfg.connect_timeout, -1, -1, -1, 0);
 		}
 	}
 
 	for (int i = 0; i < ctx->mcp.count; i++) {
 		struct mcp_client *mc = ctx->mcp.servers[i];
-		if (!mc->config.auto_connect)
+		if (!mc->config.auto_connect) {
+			char msg[256];
+
+			snprintf(msg, sizeof(msg), "%s skipped (lazy connect)",
+				 mc->config.name);
+			cli_emit_mcp_event(ctx, "mcp.skipped", "skipped",
+					   msg, mc->config.name,
+					   mc->config.transport, 0,
+					   mc->config.connect_timeout,
+					   -1, -1, -1, 0);
 			continue;
+		}
 		int timeout = mc->config.connect_timeout;
+		char connecting_msg[256];
+
+		snprintf(connecting_msg, sizeof(connecting_msg),
+			 "%s connecting%s", mc->config.name,
+			 timeout > 0 ? " (timeout enabled)" : "");
 		log_info("mcp: auto-connecting '%s'%s...",
 			 mc->config.name,
 			 timeout > 0 ? " (timeout enabled)" : "");
+		cli_emit_mcp_event(ctx, "mcp.connecting", "begin",
+				   connecting_msg, mc->config.name,
+				   mc->config.transport, 1, timeout,
+				   -1, -1, -1, 0);
 		if (timeout > 0) {
 			struct auto_connect_work *w = calloc(1, sizeof(*w));
 			if (!w) {
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+					 "%s auto-connect allocation failed",
+					 mc->config.name);
+				cli_emit_mcp_event(ctx, "mcp.failed", "failed",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1,
+						   -ENOMEM);
 				log_warn("mcp: auto-connect allocation failed for '%s'",
 					 mc->config.name);
 				continue;
@@ -2729,7 +3016,17 @@ static int cli_init_mcp(struct cli_context *ctx)
 			int terr = pthread_create(&tid, NULL,
 						  auto_connect_thread, w);
 			if (terr != 0) {
+				char msg[256];
+
 				auto_connect_work_destroy(w);
+				snprintf(msg, sizeof(msg),
+					 "%s auto-connect thread failed",
+					 mc->config.name);
+				cli_emit_mcp_event(ctx, "mcp.failed", "failed",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1,
+						   -terr);
 				log_warn("mcp: auto-connect thread failed for '%s'",
 					 mc->config.name);
 				continue;
@@ -2755,6 +3052,16 @@ static int cli_init_mcp(struct cli_context *ctx)
 			pthread_mutex_unlock(&w->lock);
 
 			if (!done) {
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+					 "%s still starting after %ds; continuing",
+					 mc->config.name, timeout);
+				cli_emit_mcp_event(ctx, "mcp.timeout", "timeout",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1,
+						   -ETIMEDOUT);
 				log_warn("mcp: auto-connect timed out for '%s'",
 					 mc->config.name);
 				continue;
@@ -2763,24 +3070,58 @@ static int cli_init_mcp(struct cli_context *ctx)
 			pthread_join(tid, NULL);
 			auto_connect_work_destroy(w);
 			if (result == 0) {
-				mcp_register_server_tools(mc, &ctx->tools);
-				mcp_register_server_resources(mc, &ctx->tools);
-				mcp_register_server_prompts(mc, &ctx->tools);
+				char msg[256];
+
+				snprintf(msg, sizeof(msg), "%s connected",
+					 mc->config.name);
+				cli_emit_mcp_event(ctx, "mcp.connected", "end",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1, 0);
+				cli_discover_mcp_server(ctx, mc, 1, timeout);
 				log_info("mcp: auto-connected '%s'",
 					 mc->config.name);
 			} else {
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+					 "%s auto-connect failed: %s",
+					 mc->config.name,
+					 morph_strerror(result));
+				cli_emit_mcp_event(ctx, "mcp.failed", "failed",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1,
+						   result);
 				log_warn("mcp: auto-connect failed for '%s': %d",
 					 mc->config.name, result);
 			}
 		} else {
 			int rc3 = mcp_ensure_connected(mc);
 			if (rc3 == 0) {
-				mcp_register_server_tools(mc, &ctx->tools);
-				mcp_register_server_resources(mc, &ctx->tools);
-				mcp_register_server_prompts(mc, &ctx->tools);
+				char msg[256];
+
+				snprintf(msg, sizeof(msg), "%s connected",
+					 mc->config.name);
+				cli_emit_mcp_event(ctx, "mcp.connected", "end",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1, 0);
+				cli_discover_mcp_server(ctx, mc, 1, timeout);
 				log_info("mcp: auto-connected '%s'",
 					 mc->config.name);
 			} else {
+				char msg[256];
+
+				snprintf(msg, sizeof(msg),
+					 "%s auto-connect failed: %s",
+					 mc->config.name,
+					 morph_strerror(rc3));
+				cli_emit_mcp_event(ctx, "mcp.failed", "failed",
+						   msg, mc->config.name,
+						   mc->config.transport, 1,
+						   timeout, -1, -1, -1,
+						   rc3);
 				log_warn("mcp: auto-connect failed for '%s': %d",
 					 mc->config.name, rc3);
 			}
@@ -2805,6 +3146,8 @@ static int cli_init_sub_agents(struct cli_context *ctx)
 		log_err("failed to create sub-agent runtime");
 		return -ENOMEM;
 	}
+	sub_agent_runtime_set_event_callback(ctx->sub_agents, ctx->event_cb,
+					     ctx->event_user_data);
 	int rc = sub_agent_runtime_load_config(
 		ctx->sub_agents, &ctx->config.sub_agents);
 	if (rc < 0) {
@@ -2853,17 +3196,32 @@ static int cli_init_sub_agents(struct cli_context *ctx)
  * Returns 0 on success, negative errno on failure.
  */
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir)
+	     const char *workdir, enum cli_event_mode event_mode)
 {
 	if (!ctx)
 		return -EINVAL;
 	memset(ctx, 0, sizeof(*ctx));
+	ctx->event_mode = event_mode;
+	ctx->event_cb = cli_event_callback;
+	ctx->event_user_data = ctx;
 
 	int rc;
 
+	cli_emit_startup_event(ctx, "startup.begin", "begin",
+			       "startup started", "cli", 0);
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "loading config", "config", 0);
 	rc = cli_init_config(ctx, config_path);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "config failed",
+				       "config", rc);
+		cli_emit_startup_event(ctx, "startup.failed", "failed",
+				       "startup failed", "cli", rc);
 		return rc;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "config ready", "config", 0);
 
 	if (workdir && *workdir) {
 		char *resolved = file_resolve_path(workdir);
@@ -2893,29 +3251,78 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 			strncpy(ctx->workdir, ".", 2);
 	}
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "opening database", "database", 0);
 	rc = cli_init_database(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "database failed",
+				       "database", rc);
+		cli_emit_startup_event(ctx, "startup.failed", "failed",
+				       "startup failed", "cli", rc);
 		return rc;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "database ready", "database", 0);
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "initializing models", "models", 0);
 	rc = cli_init_models(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "models failed",
+				       "models", rc);
 		goto fail;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "models ready", "models", 0);
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "registering tools", "tools", 0);
 	rc = cli_init_tools(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "tools failed",
+				       "tools", rc);
 		goto fail;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "tools ready", "tools", 0);
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "loading extensions", "extensions", 0);
 	rc = cli_init_exts(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "extensions failed",
+				       "extensions", rc);
 		goto fail;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "extensions ready", "extensions", 0);
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "initializing MCP", "mcp", 0);
 	rc = cli_init_mcp(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "MCP failed", "mcp", rc);
 		goto fail;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "MCP ready", "mcp", 0);
 
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "initializing sub-agents", "sub_agents", 0);
 	rc = cli_init_sub_agents(ctx);
-	if (rc < 0)
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "sub-agents failed",
+				       "sub_agents", rc);
 		goto fail;
+	}
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "sub-agents ready", "sub_agents", 0);
 
 	rc = session_create(&ctx->database, ctx->current_session.name,
 			    ctx->config.models.text.model, &ctx->current_session);
@@ -2947,9 +3354,13 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	spin_init(&ctx->spin, stdout);
 	spin_set_cancel_flag(&ctx->spin, &react_sigint_flag);
 
+	cli_emit_startup_event(ctx, "startup.ready", "ready",
+			       "startup ready", "cli", 0);
 	return 0;
 
 fail:
+	cli_emit_startup_event(ctx, "startup.failed", "failed",
+			       "startup failed", "cli", rc);
 	cli_shutdown(ctx);
 	return rc;
 }
@@ -4045,8 +4456,10 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->session_auto_named = 1;
 	}
 
-	printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET "\n", input);
-	fflush(stdout);
+	if (ctx->event_mode != CLI_EVENTS_JSON) {
+		printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET "\n", input);
+		fflush(stdout);
+	}
 
 	sigint_received = 0;
 	if (ctx->react)
@@ -4054,7 +4467,9 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	cli_refresh_memory_context(ctx, effective_input);
 
-	react_run(ctx->react, effective_input, output_callback, ctx);
+	react_run(ctx->react, effective_input,
+		  ctx->event_mode == CLI_EVENTS_JSON ? NULL : output_callback,
+		  ctx);
 
 	if (ctx->spin.running) {
 		if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
@@ -4066,7 +4481,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		printf("\n");
 	}
 
-	if (ctx->react && ctx->react->state == REACT_STATE_ABORT) {
+	if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
+	    ctx->event_mode != CLI_EVENTS_JSON) {
 		printf(ANSI_YELLOW "[aborted] ReAct loop cancelled or timed out." ANSI_RESET "\n");
 	}
 
@@ -4114,6 +4530,9 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		 * returns immediately. The LLM extraction path is the
 		 * slow one (1-3s blocking HTTP); offloading it keeps the
 		 * REPL responsive. */
+		cli_emit_background_event(ctx, "background.started", "begin",
+					  "memory consolidation queued",
+					  "memory_consolidation", -1, 0);
 		int async_rc = memory_consolidate_turn_async(
 			&ctx->database, ctx->current_session.id,
 			effective_input, ctx->react->final_answer,
@@ -4121,13 +4540,38 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 			ctx->react->state == REACT_STATE_DONE,
 			&mem_opts);
 		if (async_rc != 0) {
-			memory_consolidate_turn(&ctx->database,
-						ctx->current_session.id,
-						effective_input,
-						ctx->react->final_answer,
-						ctx->react->steps,
-						ctx->react->state == REACT_STATE_DONE,
-						&mem_opts);
+			int mem_rc;
+
+			cli_emit_background_event(ctx, "background.progress",
+						  "progress",
+						  "memory consolidation running inline",
+						  "memory_consolidation",
+						  -1, async_rc);
+			mem_rc = memory_consolidate_turn(
+				&ctx->database,
+				ctx->current_session.id,
+				effective_input,
+				ctx->react->final_answer,
+				ctx->react->steps,
+				ctx->react->state == REACT_STATE_DONE,
+				&mem_opts);
+			cli_emit_background_event(ctx,
+						  mem_rc == 0 ?
+						  "background.completed" :
+						  "background.failed",
+						  mem_rc == 0 ? "end" :
+						  "failed",
+						  mem_rc == 0 ?
+						  "memory consolidation completed" :
+						  "memory consolidation failed",
+						  "memory_consolidation",
+						  -1, mem_rc);
+		} else {
+			cli_emit_background_event(ctx, "background.ready",
+						  "ready",
+						  "memory consolidation queued",
+						  "memory_consolidation",
+						  -1, 0);
 		}
 	}
 	ctx->streaming = 0;
@@ -4146,13 +4590,22 @@ void cli_shutdown(struct cli_context *ctx)
 	/* Drain the memory async worker before tearing down the db so
 	 * any in-flight consolidation job finishes against a live file. */
 	wait_for_memory = memory_async_pending();
-	if (wait_for_memory) {
+	if (wait_for_memory)
+		cli_emit_background_event(ctx, "background.progress",
+					  "progress",
+					  "waiting for memory consolidation",
+					  "memory_consolidation", -1, 0);
+	if (wait_for_memory && ctx->event_mode != CLI_EVENTS_JSON) {
 		printf(ANSI_DIM
 		       "Saving memory summary before exit, please wait..."
 		       ANSI_RESET "\n");
 		fflush(stdout);
 	}
 	memory_async_shutdown();
+	if (wait_for_memory)
+		cli_emit_background_event(ctx, "background.completed", "end",
+					  "memory consolidation drained",
+					  "memory_consolidation", -1, 0);
 	cli_scheduler_stop(ctx);
 	if (ctx->react) {
 		free(ctx->react->sub_agent_info);

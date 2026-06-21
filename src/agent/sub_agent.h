@@ -64,6 +64,8 @@ struct sub_agent_runtime {
 	struct model *default_llm;
 	struct tokenizer *tokenizer;
 	struct compress_config *compress;
+	morph_event_cb event_cb;
+	void *event_user_data;
 	int depth;
 	char trace_file[PATH_MAX];
 };
@@ -75,6 +77,9 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 			 struct compress_config *compress);
 
 void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
+
+int sub_agent_runtime_set_event_callback(struct sub_agent_runtime *rt,
+					 morph_event_cb cb, void *user);
 
 int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 				  struct config_sub_agents *cfg);

@@ -215,6 +215,7 @@ int main(int argc, char *argv[])
 	const char *one_shot_prompt = NULL;
 	int trace_json = 0;
 	int show_version = 0;
+	enum cli_event_mode event_mode = CLI_EVENTS_NONE;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
 			config_path = argv[++i];
@@ -230,10 +231,38 @@ int main(int argc, char *argv[])
 			one_shot_prompt = argv[++i];
 		else if (strcmp(argv[i], "--trace-json") == 0)
 			trace_json = 1;
+		else if (strcmp(argv[i], "--events") == 0 && i + 1 < argc) {
+			const char *mode = argv[++i];
+			if (strcmp(mode, "human") == 0)
+				event_mode = CLI_EVENTS_HUMAN;
+			else if (strcmp(mode, "json") == 0)
+				event_mode = CLI_EVENTS_JSON;
+			else if (strcmp(mode, "none") == 0)
+				event_mode = CLI_EVENTS_NONE;
+			else {
+				fprintf(stderr,
+					"invalid --events mode: %s\n", mode);
+				return 2;
+			}
+		} else if (strncmp(argv[i], "--events=", 9) == 0) {
+			const char *mode = argv[i] + 9;
+			if (strcmp(mode, "human") == 0)
+				event_mode = CLI_EVENTS_HUMAN;
+			else if (strcmp(mode, "json") == 0)
+				event_mode = CLI_EVENTS_JSON;
+			else if (strcmp(mode, "none") == 0)
+				event_mode = CLI_EVENTS_NONE;
+			else {
+				fprintf(stderr,
+					"invalid --events mode: %s\n", mode);
+				return 2;
+			}
+		}
 		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
 			show_version = 1;
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			printf("Usage: morph [-c config_path] [-w workdir] [-p prompt] [-v] [--trace-json]\n");
+			printf("Usage: morph [-c config_path] [-w workdir] [-p prompt] [-v] [--trace-json] [--events human|json|none]\n");
+			printf("  --events  Event progress output mode (default: none)\n");
 			return 0;
 		}
 	}
@@ -249,7 +278,7 @@ int main(int argc, char *argv[])
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
 	struct cli_context ctx;
-	int rc = cli_init(&ctx, config_path, workdir);
+	int rc = cli_init(&ctx, config_path, workdir, event_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %d", rc);
 		return 1;

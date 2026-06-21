@@ -738,6 +738,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		return rc;
 	}
 
+	int registered = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_tool_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
@@ -771,11 +772,12 @@ int mcp_register_server_tools(struct mcp_client *client,
 			free(binding);
 		} else {
 			log_info("mcp: registered tool '%s' -> '%s'", tools[i].name, tool_name);
+			registered++;
 		}
 	}
 
 	arena_destroy(arena);
-	return 0;
+	return registered;
 }
 
 struct mcp_resource_binding {
@@ -826,6 +828,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 		return rc;
 	}
 
+	int registered = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_resource_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
@@ -862,11 +865,12 @@ int mcp_register_server_resources(struct mcp_client *client,
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
 			log_info("mcp: registered resource '%s' -> '%s'", res[i].name, tool_name);
+			registered++;
 		}
 	}
 
 	arena_destroy(arena);
-	return 0;
+	return registered;
 }
 
 struct mcp_prompt_binding {
@@ -917,6 +921,7 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		return rc;
 	}
 
+	int registered = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_prompt_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
@@ -952,9 +957,10 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
 			log_info("mcp: registered prompt '%s' -> '%s'", prompts[i].name, tool_name);
+			registered++;
 		}
 	}
 
 	arena_destroy(arena);
-	return 0;
+	return registered;
 }

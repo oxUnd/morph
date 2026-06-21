@@ -15,11 +15,13 @@
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "agent/memory.h"
+#include "event/event.h"
 #include "session.h"
 #include "util/file.h"
 
 #include <pthread.h>
 #include <limits.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +45,10 @@ react_run(struct react_context *ctx, const char *user_input,
 
 __attribute__((weak)) void
 react_context_destroy(struct react_context *ctx);
+
+__attribute__((weak)) int
+react_set_event_callback(struct react_context *ctx,
+			 morph_event_cb cb, void *user);
 
 __attribute__((weak)) int
 react_memory_options_for_session(struct memory_options *out);
@@ -529,6 +535,110 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	return 0;
 }
 
+static char *event_data_string(cJSON *data, const char *key)
+{
+	cJSON *item;
+
+	if (!data || !key)
+		return NULL;
+	item = cJSON_GetObjectItem(data, key);
+	if (!item)
+		return NULL;
+	if (cJSON_IsString(item))
+		return strdup(item->valuestring ? item->valuestring : "");
+	return cJSON_PrintUnformatted(item);
+}
+
+static int bridge_event_cb(const struct morph_event *ev, void *u)
+{
+	struct turn_job *j = (struct turn_job *)u;
+	cJSON *data;
+
+	if (!j || !ev)
+		return -EINVAL;
+	data = ev->data;
+
+	if (strcmp(ev->name, "react.thought.delta") == 0) {
+		char *text = event_data_string(data, "text");
+		if (text && *text)
+			event_sink_thought(j->store, j->session_id, text);
+		free(text);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "react.reflection") == 0) {
+		char *text = event_data_string(data, "text");
+		if (text && *text)
+			event_sink_thought(j->store, j->session_id, text);
+		free(text);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "tool.call") == 0) {
+		char *tool = event_data_string(data, "tool");
+		char *args = event_data_string(data, "args");
+		event_sink_tool_call(j->store, j->session_id,
+				     tool ? tool : "", args ? args : "{}");
+		if (tool)
+			snprintf(j->last_tool, sizeof(j->last_tool),
+				 "%s", tool);
+		free(tool);
+		free(args);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "tool.result") == 0 ||
+	    strcmp(ev->name, "tool.failed") == 0) {
+		char *tool = event_data_string(data, "tool");
+		char *result = event_data_string(data, "result");
+		event_sink_tool_result(j->store, j->session_id,
+				       tool ? tool : j->last_tool,
+				       result ? result : "");
+		if (result)
+			maybe_publish_artifact(j, result);
+		j->last_tool[0] = '\0';
+		free(tool);
+		free(result);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "artifact.ready") == 0) {
+		char *kind = event_data_string(data, "kind");
+		char *path = event_data_string(data, "path");
+		struct turn_artifact *artifact;
+
+		artifact = turn_artifact_get(j, path ? path : "",
+					     kind ? kind : "file");
+		if (artifact)
+			artifact_publish_ready(j, artifact);
+		free(kind);
+		free(path);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "react.final") == 0) {
+		char *text = event_data_string(data, "text");
+		char *rendered = render_media_refs(j, text ? text : "");
+		event_sink_final(j->store, j->session_id,
+				 rendered ? rendered : (text ? text : ""));
+		j->final_sent = 1;
+		free(rendered);
+		free(text);
+		return 0;
+	}
+
+	if (strcmp(ev->name, "react.failed") == 0 ||
+	    strcmp(ev->name, "react.cancelled") == 0) {
+		char *text = event_data_string(data, "text");
+		if (text && *text)
+			event_sink_error(j->store, j->session_id, text);
+		free(text);
+		return 0;
+	}
+
+	return 0;
+}
+
 static void *turn_thread(void *arg)
 {
 	struct turn_job *j = (struct turn_job *)arg;
@@ -581,7 +691,12 @@ static void *turn_thread(void *arg)
 			       json ? json : "{\"phase\":\"begin\"}");
 		free(json);
 	}
-	react_run(rctx, j->input ? j->input : "", bridge_cb, j);
+	if (react_set_event_callback) {
+		react_set_event_callback(rctx, bridge_event_cb, j);
+		react_run(rctx, j->input ? j->input : "", NULL, j);
+	} else {
+		react_run(rctx, j->input ? j->input : "", bridge_cb, j);
+	}
 	if (!j->final_sent) {
 		char *fallback = render_artifact_summary(j);
 		if (!fallback && rctx->final_answer)

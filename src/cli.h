@@ -8,11 +8,18 @@
 #include "agent/plan.h"
 #include "agent/tool_context.h"
 #include "agent/sub_agent.h"
+#include "event/event.h"
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "util/spin.h"
 #include "mcp/mcp.h"
 #include <pthread.h>
+
+enum cli_event_mode {
+	CLI_EVENTS_HUMAN,
+	CLI_EVENTS_JSON,
+	CLI_EVENTS_NONE,
+};
 
 struct cli_context {
 	struct config config;
@@ -39,6 +46,9 @@ struct cli_context {
 	char stream_buf[BUFSIZ];
 	size_t stream_buf_len;
 	int trace_json;
+	enum cli_event_mode event_mode;
+	morph_event_cb event_cb;
+	void *event_user_data;
 	pthread_t scheduler_thread;
 	pthread_mutex_t scheduler_lock;
 	pthread_cond_t scheduler_cond;
@@ -47,7 +57,7 @@ struct cli_context {
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir);
+	     const char *workdir, enum cli_event_mode event_mode);
 void cli_run(struct cli_context *ctx);
 void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);

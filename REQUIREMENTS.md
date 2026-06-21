@@ -163,6 +163,16 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 | 全链路 | Thought: 选题 → Action: text_gen → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
 | 子代理委派 | Thought: 需要专业翻译 → Action: agent_delegate(translate-agent, task) → Obs: 翻译结果 → Final |
 
+### 4.7.1 统一事件系统
+
+Morph 需要一套 CLI、FastCGI、GUI、Android 和测试共同消费的结构化事件系统。
+ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错误都必须通过同一
+事件语义表达；CLI 的人类可读输出只是 renderer，不能作为 GUI/Android 的协议。
+
+详细设计与迁移清单见 `docs/event-system.md`。实现时必须复用 `src/util/` 下的
+`morph_buf_t`、`morph_array_t`、`morph_str_t`、`morph_strmap_t` 等基础数据结构，
+不得重新实现动态数组、字符串缓冲、hash map 或 UTF-8 处理逻辑。
+
 ### 4.8 Ext 沙箱系统
 
 | 功能 | 描述 | 优先级 |
