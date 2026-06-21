@@ -56,10 +56,25 @@ struct notification {
 	char delivery_status[SCHEDULED_TASK_TYPE_MAX];
 };
 
+struct scheduled_task_action_result {
+	int completed;
+	char *body;
+	char *error;
+	int retry_after_seconds;
+};
+
+typedef int (*scheduled_task_runner_fn)(
+	const struct scheduled_task *task,
+	struct scheduled_task_action_result *result,
+	void *user_data);
+
 int scheduled_task_create(struct db *db,
 			  const struct scheduled_task_input *input,
 			  struct scheduled_task *out);
 int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out);
+int scheduled_task_update(struct db *db, int64_t id,
+			  const struct scheduled_task_input *input,
+			  struct scheduled_task *out);
 int scheduled_task_list(struct db *db, const char *status, int limit,
 			struct scheduled_task **out, int *count);
 int scheduled_task_list_due(struct db *db, int64_t now, int limit,
@@ -72,6 +87,15 @@ int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran);
 int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
 				   struct notification **notifications,
 				   int *count);
+int scheduled_task_run_due_collect_with_runner(
+	struct db *db, int64_t now, int limit,
+	scheduled_task_runner_fn runner, void *runner_user_data,
+	struct notification **notifications, int *count);
+int scheduled_task_run_due_with_runner(struct db *db, int64_t now, int limit,
+				       scheduled_task_runner_fn runner,
+				       void *runner_user_data, int *ran);
+void scheduled_task_action_result_cleanup(
+	struct scheduled_task_action_result *result);
 void scheduled_task_cleanup(struct scheduled_task *task);
 void scheduled_task_free_list(struct scheduled_task *tasks, int count);
 

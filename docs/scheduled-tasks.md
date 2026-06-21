@@ -180,6 +180,7 @@ CLI:
 ```text
 /tasks list [status]
 /tasks add <unix_time|+seconds> <title>
+/tasks update <id> <unix_time|+seconds> <title>
 /tasks cancel <id>
 /tasks run [limit]
 /inbox list [limit]
@@ -190,21 +191,43 @@ Agent tool:
 
 ```text
 tasks({
-  "op": "create" | "list" | "cancel" | "run_due" | "inbox" | "mark_read",
+  "op": "create" | "update" | "list" | "cancel" | "run_due" | "inbox" | "mark_read",
   ...
 })
 ```
 
-The tool requires explicit Unix seconds for `next_run_at`. Natural-language date
-parsing remains the responsibility of the model or a future parser layer.
+The tool accepts absolute Unix seconds in `next_run_at`. For relative requests
+like "in 5 minutes", use `delay_seconds`; the delay is anchored to the start of
+the current user turn, not the later moment when the model finishes thinking and
+calls the tool. Natural-language date parsing beyond relative seconds remains
+the responsibility of the model or a future parser layer.
+
+For `action` and `watch` tasks, `payload_json` must describe the tool to run:
+
+```json
+{"tool":"tool_name","args":{"key":"value"}}
+```
+
+`args_json` may be used instead of `args` when the caller already has a JSON
+string.
 
 Current runner behavior:
 
 - `reminder`: creates an inbox notification when due.
 - repeating reminder: creates the notification and reschedules using
   `interval_seconds`.
-- `action` / `watch`: persist correctly but currently fail with an inbox warning
-  when due unless a specific runner is added.
+- `action`: runs the configured tool once. Success creates an inbox
+  notification and marks the task completed. Failure follows retry policy when
+  `max_attempts` and `interval_seconds` are set; otherwise it creates a warning
+  notification and marks the task failed.
+- `watch`: runs the configured tool repeatedly. A JSON result with
+  `completed: true`, `done: true`, `ready: true`, or `status` equal to
+  `completed`, `success`, `ready`, or `passed` completes the task. Otherwise it
+  reschedules using `retry_after_seconds` from the tool result, then
+  `interval_seconds`, then a 60 second fallback. Timeout and max-attempt policy
+  produce warning notifications and terminal statuses.
+- Due tasks are claimed by changing `pending` / `waiting` to `running` before
+  execution, so multiple schedulers do not process the same row concurrently.
 
 The interactive CLI starts a lightweight background scheduler. It opens its own
 SQLite connection, checks due tasks roughly once per second, writes due

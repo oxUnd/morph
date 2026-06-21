@@ -121,6 +121,54 @@ static int notification_get(struct db *db, int64_t id,
 	MORPH_RETURN(-ENOENT);
 }
 
+static int str_in_set(const char *s, const char *const *values, int count)
+{
+	if (!s || !*s)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		if (strcmp(s, values[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int scheduled_task_validate_input(
+	const struct scheduled_task_input *input)
+{
+	static const char *const kinds[] = { "reminder", "action", "watch" };
+	static const char *const triggers[] = {
+		"once", "interval", "cron", "event"
+	};
+
+	if (!input || !input->title || !input->kind ||
+	    !input->trigger_type || !input->action_type)
+		MORPH_RETURN(-EINVAL);
+	if (!input->title[0] || !input->kind[0] ||
+	    !input->trigger_type[0] || !input->action_type[0])
+		MORPH_RETURN(-EINVAL);
+	if (strlen(input->title) >= SCHEDULED_TASK_TEXT_MAX ||
+	    strlen(input->kind) >= SCHEDULED_TASK_TYPE_MAX ||
+	    strlen(input->trigger_type) >= SCHEDULED_TASK_TYPE_MAX ||
+	    strlen(input->action_type) >= SCHEDULED_TASK_TYPE_MAX)
+		MORPH_RETURN(-ENAMETOOLONG);
+	if (!str_in_set(input->kind, kinds, (int)(sizeof(kinds) /
+	    sizeof(kinds[0]))))
+		MORPH_RETURN(-EINVAL);
+	if (!str_in_set(input->trigger_type, triggers,
+	    (int)(sizeof(triggers) / sizeof(triggers[0]))))
+		MORPH_RETURN(-EINVAL);
+	if (input->next_run_at < 0 || input->interval_seconds < 0 ||
+	    input->timeout_at < 0 || input->max_attempts < 0)
+		MORPH_RETURN(-EINVAL);
+	if (strcmp(input->trigger_type, "interval") == 0 &&
+	    input->interval_seconds <= 0)
+		MORPH_RETURN(-EINVAL);
+	if ((strcmp(input->kind, "action") == 0 ||
+	     strcmp(input->kind, "watch") == 0) && !input->payload_json)
+		MORPH_RETURN(-EINVAL);
+	return 0;
+}
+
 static int task_list_query(struct db *db, const char *sql, const char *status,
 			   int64_t now, int limit, struct scheduled_task **out,
 			   int *count)
@@ -199,12 +247,11 @@ int scheduled_task_create(struct db *db,
 		"policy_json,notify_json,last_error,created_at,updated_at)"
 		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
-	if (!db || !db->handle || !input || !input->title || !input->kind ||
-	    !input->trigger_type || !input->action_type)
+	if (!db || !db->handle)
 		MORPH_RETURN(-EINVAL);
-	if (input->next_run_at < 0 || input->interval_seconds < 0 ||
-	    input->timeout_at < 0 || input->max_attempts < 0)
-		MORPH_RETURN(-EINVAL);
+	rc = scheduled_task_validate_input(input);
+	if (rc != 0)
+		return rc;
 
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
@@ -280,6 +327,65 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 	if (rc != SQLITE_DONE)
 		MORPH_RETURN(MORPH_ERR_DB);
 	MORPH_RETURN(-ENOENT);
+}
+
+int scheduled_task_update(struct db *db, int64_t id,
+			  const struct scheduled_task_input *input,
+			  struct scheduled_task *out)
+{
+	sqlite3_stmt *stmt = NULL;
+	int64_t now;
+	int rc;
+	const char *sql =
+		"UPDATE scheduled_tasks SET title=?,kind=?,status='pending',"
+		"trigger_type=?,"
+		"next_run_at=?,interval_seconds=?,timeout_at=?,max_attempts=?,"
+		"action_type=?,payload_json=?,policy_json=?,notify_json=?,"
+		"attempts=0,last_error=NULL,updated_at=? WHERE id=?";
+
+	if (!db || !db->handle || id <= 0)
+		MORPH_RETURN(-EINVAL);
+	rc = scheduled_task_validate_input(input);
+	if (rc != 0)
+		return rc;
+	now = (int64_t)time(NULL);
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_text(stmt, 1, input->title, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 2, input->kind, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, input->trigger_type, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 4, input->next_run_at);
+	sqlite3_bind_int(stmt, 5, input->interval_seconds);
+	sqlite3_bind_int64(stmt, 6, input->timeout_at);
+	sqlite3_bind_int(stmt, 7, input->max_attempts);
+	sqlite3_bind_text(stmt, 8, input->action_type, -1, SQLITE_TRANSIENT);
+	if (input->payload_json)
+		sqlite3_bind_text(stmt, 9, input->payload_json, -1,
+				  SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(stmt, 9);
+	if (input->policy_json)
+		sqlite3_bind_text(stmt, 10, input->policy_json, -1,
+				  SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(stmt, 10);
+	if (input->notify_json)
+		sqlite3_bind_text(stmt, 11, input->notify_json, -1,
+				  SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(stmt, 11);
+	sqlite3_bind_int64(stmt, 12, now);
+	sqlite3_bind_int64(stmt, 13, id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	if (sqlite3_changes(db->handle) == 0)
+		MORPH_RETURN(-ENOENT);
+	if (out)
+		return scheduled_task_get(db, id, out);
+	return 0;
 }
 
 int scheduled_task_list(struct db *db, const char *status, int limit,
@@ -398,6 +504,62 @@ static char *task_payload_message(const struct scheduled_task *task)
 	return out;
 }
 
+static int task_claim_due(struct db *db, const struct scheduled_task *task)
+{
+	sqlite3_stmt *stmt = NULL;
+	int64_t now;
+	int rc;
+	const char *sql =
+		"UPDATE scheduled_tasks SET status='running',updated_at=? "
+		"WHERE id=? AND status IN ('pending','waiting')";
+
+	if (!db || !db->handle || !task)
+		MORPH_RETURN(-EINVAL);
+	now = (int64_t)time(NULL);
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, now);
+	sqlite3_bind_int64(stmt, 2, task->id);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return sqlite3_changes(db->handle) > 0 ? 1 : 0;
+}
+
+static const char *task_delivery_status(const struct scheduled_task *task)
+{
+	cJSON *root;
+	cJSON *targets;
+	cJSON *target;
+	int has_inbox = 0;
+	int has_session = 0;
+
+	if (!task || !task->notify_json)
+		return "inbox";
+	root = cJSON_Parse(task->notify_json);
+	if (!root)
+		return "inbox";
+	targets = cJSON_GetObjectItem(root, "targets");
+	if (cJSON_IsArray(targets)) {
+		cJSON_ArrayForEach(target, targets) {
+			if (!cJSON_IsString(target) || !target->valuestring)
+				continue;
+			if (strcmp(target->valuestring, "inbox") == 0)
+				has_inbox = 1;
+			else if (strcmp(target->valuestring, "session") == 0)
+				has_session = 1;
+		}
+	}
+	cJSON_Delete(root);
+	if (has_inbox && has_session)
+		return "inbox+session";
+	if (has_session)
+		return "session";
+	return "inbox";
+}
+
 static int task_finish_or_reschedule(struct db *db,
 				     const struct scheduled_task *task,
 				     int64_t now)
@@ -436,11 +598,147 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 		MORPH_RETURN(-ENOMEM);
 
 	rc = notification_create(db, task->id, "info", task->title, body,
-				 "inbox", notification);
+				 task_delivery_status(task), notification);
 	free(body);
 	if (rc != 0)
 		return rc;
 	return task_finish_or_reschedule(db, task, now);
+}
+
+static int action_should_retry(const struct scheduled_task *task, int attempts)
+{
+	if (!task)
+		return 0;
+	if (task->max_attempts <= 0)
+		return 0;
+	if (attempts >= task->max_attempts)
+		return 0;
+	return task->interval_seconds > 0;
+}
+
+static int task_retry_after(const struct scheduled_task *task,
+			    const struct scheduled_task_action_result *result)
+{
+	if (result && result->retry_after_seconds > 0)
+		return result->retry_after_seconds;
+	if (task && task->interval_seconds > 0)
+		return task->interval_seconds;
+	return 60;
+}
+
+static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
+			       struct notification *notification);
+
+static int run_due_action(struct db *db, const struct scheduled_task *task,
+			  int64_t now, scheduled_task_runner_fn runner,
+			  void *runner_user_data,
+			  struct notification *notification)
+{
+	struct scheduled_task_action_result result;
+	const char *body;
+	const char *level;
+	const char *status;
+	const char *last_error = NULL;
+	int attempts;
+	int64_t next_run_at = 0;
+	int rc;
+	int nrc;
+
+	if (!db || !task || !notification)
+		MORPH_RETURN(-EINVAL);
+	if (!runner)
+		return run_due_unsupported(db, task, notification);
+
+	memset(&result, 0, sizeof(result));
+	rc = runner(task, &result, runner_user_data);
+	attempts = task->attempts + 1;
+	if (rc == 0) {
+		level = "info";
+		status = "completed";
+		body = result.body ? result.body : "Task completed.";
+	} else if (task->timeout_at > 0 && now >= task->timeout_at) {
+		level = "warning";
+		status = "timed_out";
+		body = result.error ? result.error : "Task timed out.";
+		last_error = body;
+	} else if (action_should_retry(task, attempts)) {
+		level = "warning";
+		status = "waiting";
+		body = result.error ? result.error : morph_strerror(rc);
+		last_error = body;
+		next_run_at = now + task_retry_after(task, &result);
+	} else {
+		level = "warning";
+		status = "failed";
+		body = result.error ? result.error : morph_strerror(rc);
+		last_error = body;
+	}
+
+	nrc = notification_create(db, task->id, level, task->title, body,
+				  task_delivery_status(task), notification);
+	if (nrc == 0)
+		nrc = scheduled_task_update_run(db, task->id, status,
+						next_run_at, attempts,
+						last_error);
+	scheduled_task_action_result_cleanup(&result);
+	return nrc;
+}
+
+static int run_due_watch(struct db *db, const struct scheduled_task *task,
+			 int64_t now, scheduled_task_runner_fn runner,
+			 void *runner_user_data,
+			 struct notification *notification)
+{
+	struct scheduled_task_action_result result;
+	const char *body;
+	const char *level;
+	const char *status;
+	const char *last_error = NULL;
+	int attempts;
+	int64_t next_run_at = 0;
+	int rc;
+	int nrc;
+
+	if (!db || !task || !notification)
+		MORPH_RETURN(-EINVAL);
+	if (!runner)
+		return run_due_unsupported(db, task, notification);
+
+	memset(&result, 0, sizeof(result));
+	rc = runner(task, &result, runner_user_data);
+	attempts = task->attempts + 1;
+	if (rc == 0 && result.completed) {
+		level = "info";
+		status = "completed";
+		body = result.body ? result.body : "Watch condition completed.";
+	} else if (task->timeout_at > 0 && now >= task->timeout_at) {
+		level = "warning";
+		status = "timed_out";
+		body = result.error ? result.error : "Watch task timed out.";
+		last_error = body;
+	} else if (task->max_attempts > 0 && attempts >= task->max_attempts) {
+		level = "warning";
+		status = rc == 0 ? "timed_out" : "failed";
+		body = rc == 0 ? "Watch condition did not complete." :
+			(result.error ? result.error : morph_strerror(rc));
+		last_error = body;
+	} else {
+		level = "info";
+		status = "waiting";
+		body = result.body ? result.body : "Watch condition not met.";
+		last_error = rc == 0 ? NULL :
+			(result.error ? result.error : morph_strerror(rc));
+		next_run_at = now + task_retry_after(task, &result);
+	}
+
+	nrc = notification_create(db, task->id, level, task->title, body,
+				  task_delivery_status(task), notification);
+	if (nrc == 0)
+		nrc = scheduled_task_update_run(db, task->id, status,
+						next_run_at, attempts,
+						last_error);
+	scheduled_task_action_result_cleanup(&result);
+	return nrc;
 }
 
 static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
@@ -456,7 +754,7 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 		 "Task kind '%s' is due but no runner is registered.",
 		 task->kind);
 	rc = notification_create(db, task->id, "warning", task->title, body,
-				 "inbox", notification);
+				 task_delivery_status(task), notification);
 	if (rc != 0)
 		return rc;
 	attempts = task->attempts + 1;
@@ -464,9 +762,10 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 					 "no runner registered for task kind");
 }
 
-int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
-				   struct notification **notifications,
-				   int *count)
+int scheduled_task_run_due_collect_with_runner(
+	struct db *db, int64_t now, int limit,
+	scheduled_task_runner_fn runner, void *runner_user_data,
+	struct notification **notifications, int *count)
 {
 	struct scheduled_task *tasks = NULL;
 	morph_array_t arr;
@@ -489,6 +788,15 @@ int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
 
 	for (int i = 0; i < task_count; i++) {
 		struct notification *notification;
+		int claimed;
+
+		claimed = task_claim_due(db, &tasks[i]);
+		if (claimed < 0) {
+			rc = claimed;
+			goto out_fail;
+		}
+		if (claimed == 0)
+			continue;
 
 		notification = morph_array_push(&arr);
 		if (!notification) {
@@ -498,6 +806,12 @@ int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
 		if (strcmp(tasks[i].kind, "reminder") == 0)
 			rc = run_due_reminder(db, &tasks[i], now,
 					      notification);
+		else if (strcmp(tasks[i].kind, "action") == 0)
+			rc = run_due_action(db, &tasks[i], now, runner,
+					    runner_user_data, notification);
+		else if (strcmp(tasks[i].kind, "watch") == 0)
+			rc = run_due_watch(db, &tasks[i], now, runner,
+					   runner_user_data, notification);
 		else
 			rc = run_due_unsupported(db, &tasks[i],
 						 notification);
@@ -520,20 +834,47 @@ out_fail:
 	MORPH_RETURN(rc);
 }
 
-int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran)
+int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
+				   struct notification **notifications,
+				   int *count)
+{
+	return scheduled_task_run_due_collect_with_runner(
+		db, now, limit, NULL, NULL, notifications, count);
+}
+
+int scheduled_task_run_due_with_runner(struct db *db, int64_t now, int limit,
+				       scheduled_task_runner_fn runner,
+				       void *runner_user_data, int *ran)
 {
 	struct notification *notifications = NULL;
 	int count = 0;
 	int rc;
 
-	rc = scheduled_task_run_due_collect(db, now, limit, &notifications,
-					    &count);
+	rc = scheduled_task_run_due_collect_with_runner(
+		db, now, limit, runner, runner_user_data, &notifications,
+		&count);
 	if (rc != 0)
 		return rc;
 	if (ran)
 		*ran = count;
 	notification_free_list(notifications, count);
 	return 0;
+}
+
+int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran)
+{
+	return scheduled_task_run_due_with_runner(db, now, limit, NULL, NULL,
+						 ran);
+}
+
+void scheduled_task_action_result_cleanup(
+	struct scheduled_task_action_result *result)
+{
+	if (!result)
+		return;
+	free(result->body);
+	free(result->error);
+	memset(result, 0, sizeof(*result));
 }
 
 void scheduled_task_cleanup(struct scheduled_task *task)
