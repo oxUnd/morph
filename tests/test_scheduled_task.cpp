@@ -85,6 +85,27 @@ TEST_F(ScheduledTaskTest, ListDueTasks) {
 	scheduled_task_free_list(tasks, count);
 }
 
+TEST_F(ScheduledTaskTest, ListTasksByStatus) {
+	struct scheduled_task_input input = {};
+	struct scheduled_task task = {};
+	struct scheduled_task *tasks = nullptr;
+	int count = 0;
+
+	input.title = "Filter task";
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.next_run_at = 10;
+	input.action_type = "reminder";
+	ASSERT_EQ(scheduled_task_create(&db, &input, &task), 0);
+	ASSERT_EQ(scheduled_task_cancel(&db, task.id), 0);
+
+	ASSERT_EQ(scheduled_task_list(&db, "cancelled", 10, &tasks, &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(tasks[0].status, "cancelled");
+	scheduled_task_free_list(tasks, count);
+	scheduled_task_cleanup(&task);
+}
+
 TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task task = {};
@@ -144,4 +165,53 @@ TEST_F(ScheduledTaskTest, NotificationInboxUnreadFlow) {
 	ASSERT_EQ(notification_list_unread(&db, 10, &notifications, &count), 0);
 	EXPECT_EQ(count, 0);
 	notification_free_list(notifications, count);
+}
+
+TEST_F(ScheduledTaskTest, RunDueReminderCreatesInboxNotification) {
+	struct scheduled_task_input input = {};
+	struct notification *notifications = nullptr;
+	int count = 0;
+	int ran = 0;
+
+	input.title = "Pick up coffee";
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.next_run_at = 10;
+	input.action_type = "reminder";
+	input.payload_json = "{\"message\":\"Coffee is ready.\"}";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+
+	ASSERT_EQ(scheduled_task_run_due(&db, 20, 10, &ran), 0);
+	EXPECT_EQ(ran, 1);
+
+	ASSERT_EQ(notification_list_unread(&db, 10, &notifications, &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(notifications[0].title, "Pick up coffee");
+	ASSERT_NE(notifications[0].body, nullptr);
+	EXPECT_STREQ(notifications[0].body, "Coffee is ready.");
+	notification_free_list(notifications, count);
+}
+
+TEST_F(ScheduledTaskTest, RunDueRepeatingReminderReschedules) {
+	struct scheduled_task_input input = {};
+	struct scheduled_task *tasks = nullptr;
+	int count = 0;
+	int ran = 0;
+
+	input.title = "Recurring reminder";
+	input.kind = "reminder";
+	input.trigger_type = "interval";
+	input.next_run_at = 10;
+	input.interval_seconds = 60;
+	input.max_attempts = 3;
+	input.action_type = "reminder";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+
+	ASSERT_EQ(scheduled_task_run_due(&db, 20, 10, &ran), 0);
+	EXPECT_EQ(ran, 1);
+	ASSERT_EQ(scheduled_task_list(&db, "waiting", 10, &tasks, &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_EQ(tasks[0].next_run_at, 80);
+	EXPECT_EQ(tasks[0].attempts, 1);
+	scheduled_task_free_list(tasks, count);
 }

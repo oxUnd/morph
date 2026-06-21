@@ -30,8 +30,10 @@
 #include "agent/tool_context.h"
 #include "agent/tools/plan.h"
 #include "agent/tools/sub_agent_tools.h"
+#include "agent/tools/scheduled_tasks.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
+#include "db/scheduled_task.h"
 #include "agent/memory.h"
 #include "ext/install.h"
 #include "config.h"
@@ -213,6 +215,8 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv);
 static int cmd_skill(struct cli_context *ctx, int argc, char **argv);
 static int cmd_mcp(struct cli_context *ctx, int argc, char **argv);
 static int cmd_memory(struct cli_context *ctx, int argc, char **argv);
+static int cmd_tasks(struct cli_context *ctx, int argc, char **argv);
+static int cmd_inbox(struct cli_context *ctx, int argc, char **argv);
 static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv);
 static int cmd_clear(struct cli_context *ctx, int argc, char **argv);
 
@@ -268,6 +272,9 @@ static const struct cmd_entry commands[] = {
 	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
 	{ "/memory",  cmd_memory,  "Show or clear long-term memory",    "/memory [show|clear] [all|facts|episodes|procedures]" },
 	{ "/mem",     cmd_memory,  "Alias for /memory",                 "/mem [show|clear] [all|facts|episodes|procedures]" },
+	{ "/tasks",   cmd_tasks,   "Manage scheduled tasks",            "/tasks [list|add|cancel|run]" },
+	{ "/todo",    cmd_tasks,   "Alias for /tasks",                  "/todo [list|add|cancel|run]" },
+	{ "/inbox",   cmd_inbox,   "Show task notifications",           "/inbox [list|read]" },
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
 	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
@@ -1131,6 +1138,292 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 
 	CMD_ERROR("usage: /memory [show|clear] [all|facts|episodes|procedures]");
 	return -EINVAL;
+}
+
+static int parse_task_time_arg(const char *arg, int64_t *out)
+{
+	char *end = NULL;
+	long long val;
+
+	if (!arg || !out || !arg[0])
+		return -EINVAL;
+	if (arg[0] == '+') {
+		val = strtoll(arg + 1, &end, 10);
+		if (!end || *end != '\0' || val < 0)
+			return -EINVAL;
+		*out = (int64_t)time(NULL) + (int64_t)val;
+		return 0;
+	}
+	val = strtoll(arg, &end, 10);
+	if (!end || *end != '\0' || val < 0)
+		return -EINVAL;
+	*out = (int64_t)val;
+	return 0;
+}
+
+static const char *task_join_title(int argc, char **argv, int start)
+{
+	static char title[512];
+	size_t used = 0;
+
+	title[0] = '\0';
+	for (int i = start; i < argc; i++) {
+		size_t n = strlen(argv[i]);
+		if (used > 0 && used + 1 < sizeof(title))
+			title[used++] = ' ';
+		if (used + n >= sizeof(title))
+			n = sizeof(title) - used - 1;
+		memcpy(title + used, argv[i], n);
+		used += n;
+		title[used] = '\0';
+		if (used + 1 >= sizeof(title))
+			break;
+	}
+	return title;
+}
+
+static void print_task_row(const struct scheduled_task *task)
+{
+	char due[32];
+
+	if (!task)
+		return;
+	if (task->next_run_at > 0)
+		snprintf(due, sizeof(due), "%lld",
+			 (long long)task->next_run_at);
+	else
+		snprintf(due, sizeof(due), "-");
+	printf("%4lld  %-9s %-9s next=%-12s attempts=%d  %s\n",
+	       (long long)task->id, task->kind, task->status, due,
+	       task->attempts, task->title);
+}
+
+static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
+{
+	struct scheduled_task_input input;
+	struct scheduled_task task;
+	cJSON *payload = NULL;
+	char *payload_json = NULL;
+	const char *title;
+	int64_t next_run_at;
+	int rc;
+
+	if (argc < 4) {
+		CMD_ERROR("usage: /tasks add <unix_time|+seconds> <title>");
+		return -EINVAL;
+	}
+	rc = parse_task_time_arg(argv[2], &next_run_at);
+	if (rc != 0) {
+		CMD_ERROR("invalid time: %s", argv[2]);
+		return rc;
+	}
+	title = task_join_title(argc, argv, 3);
+	if (!title[0]) {
+		CMD_ERROR("missing task title");
+		return -EINVAL;
+	}
+
+	payload = cJSON_CreateObject();
+	if (!payload)
+		return -ENOMEM;
+	cJSON_AddStringToObject(payload, "message", title);
+	payload_json = cJSON_PrintUnformatted(payload);
+	cJSON_Delete(payload);
+	if (!payload_json)
+		return -ENOMEM;
+
+	memset(&input, 0, sizeof(input));
+	input.title = title;
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.next_run_at = next_run_at;
+	input.action_type = "reminder";
+	input.payload_json = payload_json;
+	input.notify_json = "{\"targets\":[\"inbox\"]}";
+	rc = scheduled_task_create(&ctx->database, &input, &task);
+	free(payload_json);
+	if (rc != 0) {
+		CMD_ERROR("failed to create task: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_OK("task created: #%lld", (long long)task.id);
+	scheduled_task_cleanup(&task);
+	return 0;
+}
+
+static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
+{
+	struct scheduled_task *tasks = NULL;
+	int count = 0;
+	const char *status = NULL;
+	int rc;
+
+	if (argc > 2)
+		status = argv[2];
+	rc = scheduled_task_list(&ctx->database, status, 50, &tasks, &count);
+	if (rc != 0) {
+		CMD_ERROR("failed to list tasks: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_HEADER("scheduled tasks");
+	if (count == 0) {
+		printf("No tasks.\n");
+	} else {
+		for (int i = 0; i < count; i++)
+			print_task_row(&tasks[i]);
+	}
+	scheduled_task_free_list(tasks, count);
+	return 0;
+}
+
+static int cmd_tasks_cancel(struct cli_context *ctx, int argc, char **argv)
+{
+	char *end = NULL;
+	long long id;
+	int rc;
+
+	if (argc < 3) {
+		CMD_ERROR("usage: /tasks cancel <id>");
+		return -EINVAL;
+	}
+	id = strtoll(argv[2], &end, 10);
+	if (!end || *end != '\0' || id <= 0) {
+		CMD_ERROR("invalid task id: %s", argv[2]);
+		return -EINVAL;
+	}
+	rc = scheduled_task_cancel(&ctx->database, (int64_t)id);
+	if (rc != 0) {
+		CMD_ERROR("failed to cancel task: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_OK("task cancelled: #%lld", id);
+	return 0;
+}
+
+static int cmd_tasks_run(struct cli_context *ctx, int argc, char **argv)
+{
+	int ran = 0;
+	int limit = 50;
+	int rc;
+
+	if (argc > 2)
+		limit = atoi(argv[2]);
+	rc = scheduled_task_run_due(&ctx->database, (int64_t)time(NULL),
+				    limit, &ran);
+	if (rc != 0) {
+		CMD_ERROR("failed to run due tasks: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_OK("processed due tasks: %d", ran);
+	return 0;
+}
+
+static int cmd_tasks(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *sub = argc > 1 ? argv[1] : "list";
+
+	if (strcmp(sub, "add") == 0)
+		return cmd_tasks_add(ctx, argc, argv);
+	if (strcmp(sub, "list") == 0 || strcmp(sub, "ls") == 0)
+		return cmd_tasks_list(ctx, argc, argv);
+	if (strcmp(sub, "cancel") == 0 || strcmp(sub, "rm") == 0)
+		return cmd_tasks_cancel(ctx, argc, argv);
+	if (strcmp(sub, "run") == 0 || strcmp(sub, "due") == 0)
+		return cmd_tasks_run(ctx, argc, argv);
+
+	CMD_ERROR("usage: /tasks [list [status]|add <unix_time|+seconds> <title>|cancel <id>|run [limit]]");
+	return -EINVAL;
+}
+
+static void print_notification_row(const struct notification *notification)
+{
+	if (!notification)
+		return;
+	printf("%4lld  %-7s %s\n      %s\n",
+	       (long long)notification->id, notification->level,
+	       notification->title,
+	       notification->body ? notification->body : "");
+}
+
+static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
+{
+	struct notification *notifications = NULL;
+	int count = 0;
+	int limit = 20;
+	int rc;
+
+	if (argc > 2)
+		limit = atoi(argv[2]);
+	rc = notification_list_unread(&ctx->database, limit, &notifications,
+				      &count);
+	if (rc != 0) {
+		CMD_ERROR("failed to list inbox: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_HEADER("inbox");
+	if (count == 0) {
+		printf("No unread notifications.\n");
+	} else {
+		for (int i = 0; i < count; i++)
+			print_notification_row(&notifications[i]);
+	}
+	notification_free_list(notifications, count);
+	return 0;
+}
+
+static int cmd_inbox_read(struct cli_context *ctx, int argc, char **argv)
+{
+	char *end = NULL;
+	long long id;
+	int rc;
+
+	if (argc < 3) {
+		CMD_ERROR("usage: /inbox read <id>");
+		return -EINVAL;
+	}
+	id = strtoll(argv[2], &end, 10);
+	if (!end || *end != '\0' || id <= 0) {
+		CMD_ERROR("invalid notification id: %s", argv[2]);
+		return -EINVAL;
+	}
+	rc = notification_mark_read(&ctx->database, (int64_t)id, 0);
+	if (rc != 0) {
+		CMD_ERROR("failed to mark notification read: %s",
+			  morph_strerror(rc));
+		return rc;
+	}
+	CMD_OK("notification marked read: #%lld", id);
+	return 0;
+}
+
+static int cmd_inbox(struct cli_context *ctx, int argc, char **argv)
+{
+	const char *sub = argc > 1 ? argv[1] : "list";
+
+	if (strcmp(sub, "list") == 0 || strcmp(sub, "ls") == 0)
+		return cmd_inbox_list(ctx, argc, argv);
+	if (strcmp(sub, "read") == 0)
+		return cmd_inbox_read(ctx, argc, argv);
+	CMD_ERROR("usage: /inbox [list [limit]|read <id>]");
+	return -EINVAL;
+}
+
+static void cli_process_due_tasks(struct cli_context *ctx)
+{
+	int ran = 0;
+	int rc;
+
+	if (!ctx || !ctx->database.handle)
+		return;
+	rc = scheduled_task_run_due(&ctx->database, (int64_t)time(NULL), 50,
+				    &ran);
+	if (rc == 0 && ran > 0) {
+		printf(ANSI_DIM "[tasks] processed %d due task%s; "
+		       "check /inbox" ANSI_RESET "\n",
+		       ran, ran == 1 ? "" : "s");
+	} else if (rc != 0) {
+		log_warn("failed to process due tasks: %s", morph_strerror(rc));
+	}
 }
 
 static int cmd_image(struct cli_context *ctx, int argc, char **argv)
@@ -2097,6 +2390,12 @@ static int cli_init_tools(struct cli_context *ctx)
 	ctx->react->ask_user_fn = cli_ask_user_callback;
 	ctx->react->ask_user_data = ctx;
 	log_info("registered ask_user tool");
+
+	rc = scheduled_tasks_tool_init(&ctx->tools, &ctx->database);
+	if (rc < 0)
+		log_err("failed to register tasks tool: %s", morph_strerror(rc));
+	else
+		log_info("registered tasks tool");
 
 	img_annotate_init(&ctx->tools, cli_img_annotate_pause,
 			  cli_img_annotate_resume, ctx, ctx->tctx);
@@ -3588,8 +3887,13 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	if (!ctx || !input)
 		return -EINVAL;
 
-	if (input[0] == '/')
-		return cmd_dispatch(ctx, input);
+	cli_process_due_tasks(ctx);
+
+	if (input[0] == '/') {
+		int rc = cmd_dispatch(ctx, input);
+		cli_process_due_tasks(ctx);
+		return rc;
+	}
 
 	char input_buf[8192];
 	const char *effective_input = input;
@@ -3707,6 +4011,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		}
 	}
 	ctx->streaming = 0;
+	cli_process_due_tasks(ctx);
 	return 0;
 }
 

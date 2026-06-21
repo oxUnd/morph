@@ -60,12 +60,15 @@ int scheduled_task_create(struct db *db,
 			  const struct scheduled_task_input *input,
 			  struct scheduled_task *out);
 int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out);
+int scheduled_task_list(struct db *db, const char *status, int limit,
+			struct scheduled_task **out, int *count);
 int scheduled_task_list_due(struct db *db, int64_t now, int limit,
 			    struct scheduled_task **out, int *count);
 int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 			      int64_t next_run_at, int attempts,
 			      const char *last_error);
 int scheduled_task_cancel(struct db *db, int64_t id);
+int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran);
 void scheduled_task_cleanup(struct scheduled_task *task);
 void scheduled_task_free_list(struct scheduled_task *tasks, int count);
 

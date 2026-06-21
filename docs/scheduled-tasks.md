@@ -172,3 +172,41 @@ create task
 Start with a storage and API layer. Then add a CLI command or tool that creates a
 manual reminder/watch task using explicit parameters. After the persistence
 model is stable, wire the ReAct loop to create tasks from user intent.
+
+## Implemented Surface
+
+CLI:
+
+```text
+/tasks list [status]
+/tasks add <unix_time|+seconds> <title>
+/tasks cancel <id>
+/tasks run [limit]
+/inbox list [limit]
+/inbox read <id>
+```
+
+Agent tool:
+
+```text
+tasks({
+  "op": "create" | "list" | "cancel" | "run_due" | "inbox" | "mark_read",
+  ...
+})
+```
+
+The tool requires explicit Unix seconds for `next_run_at`. Natural-language date
+parsing remains the responsibility of the model or a future parser layer.
+
+Current runner behavior:
+
+- `reminder`: creates an inbox notification when due.
+- repeating reminder: creates the notification and reschedules using
+  `interval_seconds`.
+- `action` / `watch`: persist correctly but currently fail with an inbox warning
+  when due unless a specific runner is added.
+
+The CLI also runs due-task processing opportunistically before and after command
+handling. This means reminders are delivered when Morph starts or when the user
+continues using the CLI, without requiring a dedicated daemon. A daemon can later
+call the same due runner for always-on delivery.
