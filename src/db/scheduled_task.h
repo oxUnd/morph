@@ -69,6 +69,9 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 			      const char *last_error);
 int scheduled_task_cancel(struct db *db, int64_t id);
 int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran);
+int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
+				   struct notification **notifications,
+				   int *count);
 void scheduled_task_cleanup(struct scheduled_task *task);
 void scheduled_task_free_list(struct scheduled_task *tasks, int count);
 

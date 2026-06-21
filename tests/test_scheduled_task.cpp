@@ -192,6 +192,28 @@ TEST_F(ScheduledTaskTest, RunDueReminderCreatesInboxNotification) {
 	notification_free_list(notifications, count);
 }
 
+TEST_F(ScheduledTaskTest, RunDueCollectReturnsCreatedNotification) {
+	struct scheduled_task_input input = {};
+	struct notification *notifications = nullptr;
+	int count = 0;
+
+	input.title = "Say hello";
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.next_run_at = 10;
+	input.action_type = "reminder";
+	input.payload_json = "{\"message\":\"hello\"}";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+
+	ASSERT_EQ(scheduled_task_run_due_collect(&db, 20, 10, &notifications,
+						 &count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(notifications[0].title, "Say hello");
+	ASSERT_NE(notifications[0].body, nullptr);
+	EXPECT_STREQ(notifications[0].body, "hello");
+	notification_free_list(notifications, count);
+}
+
 TEST_F(ScheduledTaskTest, RunDueRepeatingReminderReschedules) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task *tasks = nullptr;

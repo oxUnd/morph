@@ -1415,6 +1415,8 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 
 	if (!ctx || !ctx->database.handle)
 		return;
+	if (ctx->scheduler_started)
+		return;
 	rc = scheduled_task_run_due(&ctx->database, (int64_t)time(NULL), 50,
 				    &ran);
 	if (rc == 0 && ran > 0) {
@@ -1424,6 +1426,122 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 	} else if (rc != 0) {
 		log_warn("failed to process due tasks: %s", morph_strerror(rc));
 	}
+}
+
+static void cli_print_task_notification(const struct notification *notification)
+{
+	if (!notification)
+		return;
+	flockfile(stdout);
+	printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " %s\n",
+	       notification->title);
+	if (notification->body && notification->body[0])
+		printf("%s\n", notification->body);
+	printf(ANSI_DIM "stored in /inbox as #%lld" ANSI_RESET "\n",
+	       (long long)notification->id);
+	fflush(stdout);
+	funlockfile(stdout);
+}
+
+static void *cli_scheduler_main(void *arg)
+{
+	struct cli_context *ctx = arg;
+	struct db scheduler_db;
+	int opened = 0;
+
+	memset(&scheduler_db, 0, sizeof(scheduler_db));
+	if (!ctx || !ctx->database.path[0])
+		return NULL;
+	if (db_open(&scheduler_db, ctx->database.path) == 0 &&
+	    db_init_schema(&scheduler_db) == 0) {
+		opened = 1;
+	} else {
+		log_warn("task scheduler failed to open database");
+	}
+
+	while (opened) {
+		struct notification *notifications = NULL;
+		int count = 0;
+		int rc;
+
+		pthread_mutex_lock(&ctx->scheduler_lock);
+		if (ctx->scheduler_stop) {
+			pthread_mutex_unlock(&ctx->scheduler_lock);
+			break;
+		}
+		pthread_mutex_unlock(&ctx->scheduler_lock);
+
+		rc = scheduled_task_run_due_collect(
+			&scheduler_db, (int64_t)time(NULL), 50,
+			&notifications, &count);
+		if (rc == 0) {
+			for (int i = 0; i < count; i++)
+				cli_print_task_notification(&notifications[i]);
+			notification_free_list(notifications, count);
+		} else {
+			log_warn("task scheduler failed: %s", morph_strerror(rc));
+		}
+
+		pthread_mutex_lock(&ctx->scheduler_lock);
+		if (!ctx->scheduler_stop) {
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_sec += 1;
+			(void)pthread_cond_timedwait(&ctx->scheduler_cond,
+						     &ctx->scheduler_lock,
+						     &ts);
+		}
+		if (ctx->scheduler_stop) {
+			pthread_mutex_unlock(&ctx->scheduler_lock);
+			break;
+		}
+		pthread_mutex_unlock(&ctx->scheduler_lock);
+	}
+
+	if (opened)
+		db_close(&scheduler_db);
+	return NULL;
+}
+
+static int cli_scheduler_start(struct cli_context *ctx)
+{
+	int rc;
+
+	if (!ctx || ctx->scheduler_started)
+		return 0;
+	rc = pthread_mutex_init(&ctx->scheduler_lock, NULL);
+	if (rc != 0)
+		return -rc;
+	rc = pthread_cond_init(&ctx->scheduler_cond, NULL);
+	if (rc != 0) {
+		pthread_mutex_destroy(&ctx->scheduler_lock);
+		return -rc;
+	}
+	ctx->scheduler_stop = 0;
+	rc = pthread_create(&ctx->scheduler_thread, NULL,
+			    cli_scheduler_main, ctx);
+	if (rc != 0) {
+		pthread_cond_destroy(&ctx->scheduler_cond);
+		pthread_mutex_destroy(&ctx->scheduler_lock);
+		return -rc;
+	}
+	ctx->scheduler_started = 1;
+	return 0;
+}
+
+static void cli_scheduler_stop(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->scheduler_started)
+		return;
+	pthread_mutex_lock(&ctx->scheduler_lock);
+	ctx->scheduler_stop = 1;
+	pthread_cond_signal(&ctx->scheduler_cond);
+	pthread_mutex_unlock(&ctx->scheduler_lock);
+	pthread_join(ctx->scheduler_thread, NULL);
+	pthread_cond_destroy(&ctx->scheduler_cond);
+	pthread_mutex_destroy(&ctx->scheduler_lock);
+	ctx->scheduler_started = 0;
+	ctx->scheduler_stop = 0;
 }
 
 static int cmd_image(struct cli_context *ctx, int argc, char **argv)
@@ -3030,6 +3148,8 @@ void cli_run(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	if (cli_scheduler_start(ctx) != 0)
+		log_warn("failed to start task scheduler");
 	printf("morph v" MORPH_VERSION "  |  " ANSI_DIM "/help 查看命令" ANSI_RESET "\n\n");
 	char line[8192];
 
@@ -4033,6 +4153,7 @@ void cli_shutdown(struct cli_context *ctx)
 		fflush(stdout);
 	}
 	memory_async_shutdown();
+	cli_scheduler_stop(ctx);
 	if (ctx->react) {
 		free(ctx->react->sub_agent_info);
 		ctx->react->sub_agent_info = NULL;

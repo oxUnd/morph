@@ -94,6 +94,33 @@ static int notification_from_stmt(sqlite3_stmt *stmt,
 	return 0;
 }
 
+static int notification_get(struct db *db, int64_t id,
+			    struct notification *notification)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+	const char *sql =
+		"SELECT id,task_id,level,title,body,created_at,read_at,"
+		"delivery_status FROM notifications WHERE id=?";
+
+	if (!db || !db->handle || id <= 0 || !notification)
+		MORPH_RETURN(-EINVAL);
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, id);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		rc = notification_from_stmt(stmt, notification);
+		sqlite3_finalize(stmt);
+		return rc;
+	}
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	MORPH_RETURN(-ENOENT);
+}
+
 static int task_list_query(struct db *db, const char *sql, const char *status,
 			   int64_t now, int limit, struct scheduled_task **out,
 			   int *count)
@@ -397,7 +424,7 @@ static int task_finish_or_reschedule(struct db *db,
 }
 
 static int run_due_reminder(struct db *db, const struct scheduled_task *task,
-			    int64_t now)
+			    int64_t now, struct notification *notification)
 {
 	char *body;
 	int rc;
@@ -409,14 +436,15 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 		MORPH_RETURN(-ENOMEM);
 
 	rc = notification_create(db, task->id, "info", task->title, body,
-				 "inbox", NULL);
+				 "inbox", notification);
 	free(body);
 	if (rc != 0)
 		return rc;
 	return task_finish_or_reschedule(db, task, now);
 }
 
-static int run_due_unsupported(struct db *db, const struct scheduled_task *task)
+static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
+			       struct notification *notification)
 {
 	char body[SCHEDULED_TASK_TEXT_MAX];
 	int attempts;
@@ -428,7 +456,7 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task)
 		 "Task kind '%s' is due but no runner is registered.",
 		 task->kind);
 	rc = notification_create(db, task->id, "warning", task->title, body,
-				 "inbox", NULL);
+				 "inbox", notification);
 	if (rc != 0)
 		return rc;
 	attempts = task->attempts + 1;
@@ -436,32 +464,76 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task)
 					 "no runner registered for task kind");
 }
 
-int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran)
+int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
+				   struct notification **notifications,
+				   int *count)
 {
 	struct scheduled_task *tasks = NULL;
+	morph_array_t arr;
+	int arr_ready = 0;
+	int task_count = 0;
+	int rc;
+
+	if (!db || !db->handle || now < 0 || !notifications || !count)
+		MORPH_RETURN(-EINVAL);
+	*notifications = NULL;
+	*count = 0;
+	rc = morph_array_init(&arr, 4, sizeof(struct notification));
+	if (rc < 0)
+		return rc;
+	arr_ready = 1;
+
+	rc = scheduled_task_list_due(db, now, limit, &tasks, &task_count);
+	if (rc != 0)
+		goto out_fail;
+
+	for (int i = 0; i < task_count; i++) {
+		struct notification *notification;
+
+		notification = morph_array_push(&arr);
+		if (!notification) {
+			rc = -ENOMEM;
+			goto out_fail;
+		}
+		if (strcmp(tasks[i].kind, "reminder") == 0)
+			rc = run_due_reminder(db, &tasks[i], now,
+					      notification);
+		else
+			rc = run_due_unsupported(db, &tasks[i],
+						 notification);
+		if (rc != 0)
+			goto out_fail;
+	}
+	scheduled_task_free_list(tasks, task_count);
+	if (arr.nelts > INT_MAX) {
+		notification_free_list(arr.elts, (int)arr.nelts);
+		MORPH_RETURN(-EOVERFLOW);
+	}
+	*notifications = arr.elts;
+	*count = (int)arr.nelts;
+	return 0;
+
+out_fail:
+	scheduled_task_free_list(tasks, task_count);
+	if (arr_ready)
+		notification_free_list(arr.elts, (int)arr.nelts);
+	MORPH_RETURN(rc);
+}
+
+int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran)
+{
+	struct notification *notifications = NULL;
 	int count = 0;
 	int rc;
 
-	if (!db || !db->handle || now < 0)
-		MORPH_RETURN(-EINVAL);
-	if (ran)
-		*ran = 0;
-	rc = scheduled_task_list_due(db, now, limit, &tasks, &count);
+	rc = scheduled_task_run_due_collect(db, now, limit, &notifications,
+					    &count);
 	if (rc != 0)
 		return rc;
-
-	for (int i = 0; i < count; i++) {
-		if (strcmp(tasks[i].kind, "reminder") == 0)
-			rc = run_due_reminder(db, &tasks[i], now);
-		else
-			rc = run_due_unsupported(db, &tasks[i]);
-		if (rc != 0)
-			break;
-		if (ran)
-			(*ran)++;
-	}
-	scheduled_task_free_list(tasks, count);
-	return rc;
+	if (ran)
+		*ran = count;
+	notification_free_list(notifications, count);
+	return 0;
 }
 
 void scheduled_task_cleanup(struct scheduled_task *task)
@@ -517,18 +589,9 @@ int notification_create(struct db *db, int64_t task_id, const char *level,
 	if (rc != SQLITE_DONE)
 		MORPH_RETURN(MORPH_ERR_DB);
 
-	if (out) {
-		struct notification *list = NULL;
-		int count = 0;
-
-		rc = notification_list_unread(db, 1, &list, &count);
-		if (rc != 0)
-			return rc;
-		if (count == 1) {
-			*out = list[0];
-			free(list);
-		}
-	}
+	if (out)
+		return notification_get(db, sqlite3_last_insert_rowid(db->handle),
+					out);
 	return 0;
 }
 

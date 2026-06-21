@@ -206,7 +206,12 @@ Current runner behavior:
 - `action` / `watch`: persist correctly but currently fail with an inbox warning
   when due unless a specific runner is added.
 
-The CLI also runs due-task processing opportunistically before and after command
-handling. This means reminders are delivered when Morph starts or when the user
-continues using the CLI, without requiring a dedicated daemon. A daemon can later
-call the same due runner for always-on delivery.
+The interactive CLI starts a lightweight background scheduler. It opens its own
+SQLite connection, checks due tasks roughly once per second, writes due
+notifications to the inbox, and prints them to the active terminal. For example,
+if the user creates a reminder for 30 seconds from now and then waits at the
+prompt, the reminder is printed when it becomes due.
+
+One-shot CLI commands still run due-task processing opportunistically before and
+after command handling. A daemon can later call the same due runner for always-on
+delivery outside the CLI.

@@ -12,6 +12,7 @@
 #include "skill/skill.h"
 #include "util/spin.h"
 #include "mcp/mcp.h"
+#include <pthread.h>
 
 struct cli_context {
 	struct config config;
@@ -38,6 +39,11 @@ struct cli_context {
 	char stream_buf[BUFSIZ];
 	size_t stream_buf_len;
 	int trace_json;
+	pthread_t scheduler_thread;
+	pthread_mutex_t scheduler_lock;
+	pthread_cond_t scheduler_cond;
+	int scheduler_started;
+	int scheduler_stop;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,
