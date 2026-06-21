@@ -284,6 +284,13 @@ dir = ""
 # url           = "https://api.example.com/mcp"
 # auth_token_env = "MCP_REMOTE_TOKEN"
 #
+# Some non-standard MCP servers require the token in the URL. In that case,
+# keep the secret in auth_token_env and place ${auth_token} where it belongs.
+# The token is URL-encoded before substitution and will not also be sent as a
+# Bearer header.
+# url           = "https://api.example.com/mcp?api_key=${auth_token}"
+# auth_token_env = "MCP_REMOTE_TOKEN"
+#
 # Example: Web Search, use exa.ai
 # connect_timeout = 30
 

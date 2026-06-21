@@ -13,6 +13,7 @@ char *mcp_build_request(int id, const char *method, const char *params_json);
 int mcp_parse_result(const char *resp_json, char **out_result);
 
 #define MCP_HTTP_TIMEOUT_S 30
+#define MCP_AUTH_TOKEN_PLACEHOLDER "${auth_token}"
 
 struct mcp_sse_extract {
 	morph_buf_t data;
@@ -68,6 +69,182 @@ char *mcp_http_extract_sse_json(const char *raw, size_t len)
 	return json;
 }
 
+int mcp_http_url_uses_auth_token(const char *url)
+{
+	return url && strstr(url, MCP_AUTH_TOKEN_PLACEHOLDER) != NULL;
+}
+
+static int mcp_http_url_encode_append(morph_buf_t *buf, const char *src)
+{
+	static const char hex[] = "0123456789ABCDEF";
+
+	if (!buf || !src)
+		MORPH_RETURN(-EINVAL);
+
+	while (*src) {
+		unsigned char ch = (unsigned char)*src;
+
+		if ((ch >= 'A' && ch <= 'Z') ||
+		    (ch >= 'a' && ch <= 'z') ||
+		    (ch >= '0' && ch <= '9') ||
+		    ch == '-' || ch == '.' || ch == '_' || ch == '~') {
+			int rc = morph_buf_putc(buf, (char)ch);
+			if (rc < 0)
+				return rc;
+		} else {
+			int rc = morph_buf_putc(buf, '%');
+			if (rc < 0)
+				return rc;
+			rc = morph_buf_putc(buf, hex[ch >> 4]);
+			if (rc < 0)
+				return rc;
+			rc = morph_buf_putc(buf, hex[ch & 0x0f]);
+			if (rc < 0)
+				return rc;
+		}
+		src++;
+	}
+
+	return 0;
+}
+
+int mcp_http_build_request_url(const struct mcp_server_config *cfg,
+			       char **out_url)
+{
+	const char *url;
+	const char *token;
+	const char *p;
+	const char *match;
+	morph_buf_t buf;
+	size_t placeholder_len = strlen(MCP_AUTH_TOKEN_PLACEHOLDER);
+	int rc;
+
+	if (!cfg || !out_url)
+		MORPH_RETURN(-EINVAL);
+	*out_url = NULL;
+
+	url = cfg->http_url;
+	if (!url || !url[0])
+		MORPH_RETURN(-EINVAL);
+
+	if (!mcp_http_url_uses_auth_token(url)) {
+		*out_url = strdup(url);
+		if (!*out_url)
+			MORPH_RETURN(-ENOMEM);
+		return 0;
+	}
+
+	if (!cfg->http_auth_token_env[0]) {
+		log_err("mcp http: URL uses %s but auth_token_env is not set",
+			MCP_AUTH_TOKEN_PLACEHOLDER);
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	}
+
+	token = getenv(cfg->http_auth_token_env);
+	if (!token || !token[0]) {
+		log_err("mcp http: URL uses %s but env var '%s' is not set",
+			MCP_AUTH_TOKEN_PLACEHOLDER, cfg->http_auth_token_env);
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	}
+
+	rc = morph_buf_init(&buf, strlen(url) + strlen(token));
+	if (rc < 0)
+		return rc;
+
+	p = url;
+	while ((match = strstr(p, MCP_AUTH_TOKEN_PLACEHOLDER)) != NULL) {
+		rc = morph_buf_append(&buf, p, (size_t)(match - p));
+		if (rc < 0)
+			goto out;
+		rc = mcp_http_url_encode_append(&buf, token);
+		if (rc < 0)
+			goto out;
+		p = match + placeholder_len;
+	}
+	rc = morph_buf_puts(&buf, p);
+	if (rc < 0)
+		goto out;
+
+	*out_url = morph_buf_detach(&buf);
+	if (!*out_url)
+		rc = -ENOMEM;
+
+out:
+	if (rc < 0)
+		morph_buf_cleanup(&buf);
+	return rc;
+}
+
+static int mcp_http_redact_query_value(morph_buf_t *buf, const char *start,
+				       const char *end)
+{
+	const char *eq = memchr(start, '=', (size_t)(end - start));
+	int rc;
+
+	if (!eq)
+		return morph_buf_append(buf, start, (size_t)(end - start));
+
+	rc = morph_buf_append(buf, start, (size_t)(eq - start + 1));
+	if (rc < 0)
+		return rc;
+	if (eq + 1 < end)
+		return morph_buf_puts(buf, "***");
+	return 0;
+}
+
+static char *mcp_http_redact_url_for_log(const char *url)
+{
+	const char *q;
+	const char *p;
+	morph_buf_t buf;
+	int rc;
+
+	if (!url)
+		return NULL;
+
+	q = strchr(url, '?');
+	if (!q)
+		return strdup(url);
+
+	rc = morph_buf_init(&buf, strlen(url));
+	if (rc < 0)
+		return NULL;
+
+	rc = morph_buf_append(&buf, url, (size_t)(q - url + 1));
+	if (rc < 0)
+		goto out;
+
+	p = q + 1;
+	while (*p && *p != '#') {
+		const char *end = p;
+
+		while (*end && *end != '&' && *end != '#')
+			end++;
+		rc = mcp_http_redact_query_value(&buf, p, end);
+		if (rc < 0)
+			goto out;
+		if (*end == '&') {
+			rc = morph_buf_putc(&buf, '&');
+			if (rc < 0)
+				goto out;
+			p = end + 1;
+		} else {
+			p = end;
+		}
+	}
+	if (*p == '#') {
+		rc = morph_buf_puts(&buf, p);
+		if (rc < 0)
+			goto out;
+	}
+
+	return morph_buf_detach(&buf);
+
+out:
+	morph_buf_cleanup(&buf);
+	return NULL;
+}
+
 static int mcp_http_do_post(struct mcp_client *client, const char *body,
 			    const char **extra_hdrs, int extra_count,
 			    long timeout)
@@ -77,6 +254,9 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	char ver_hdr[128];
 	char auth_hdr[512];
 	char sess_hdr[256];
+	char *request_url = NULL;
+	int url_auth;
+	int rc;
 
 	hdrs[nhdrs++] = "Accept: application/json, text/event-stream";
 
@@ -85,7 +265,8 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 		 ? client->negotiated_version : MCP_PROTOCOL_VERSION);
 	hdrs[nhdrs++] = ver_hdr;
 
-	if (client->config.http_auth_token_env[0]) {
+	url_auth = mcp_http_url_uses_auth_token(client->config.http_url);
+	if (client->config.http_auth_token_env[0] && !url_auth) {
 		const char *token_env = getenv(client->config.http_auth_token_env);
 		if (token_env) {
 			snprintf(auth_hdr, sizeof(auth_hdr),
@@ -103,19 +284,28 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	for (int i = 0; i < extra_count && nhdrs < 8; i++)
 		hdrs[nhdrs++] = extra_hdrs[i];
 
-	return http_session_post(&client->session, client->config.http_url,
-				body, strlen(body), "application/json",
-				hdrs, nhdrs, timeout);
+	rc = mcp_http_build_request_url(&client->config, &request_url);
+	if (rc < 0)
+		return rc;
+
+	rc = http_session_post(&client->session, request_url,
+			       body, strlen(body), "application/json",
+			       hdrs, nhdrs, timeout);
+	free(request_url);
+	return rc;
 }
 
 /* ---- Public HTTP transport functions ---- */
 
 int mcp_http_connect(struct mcp_client *client)
 {
+	char *log_url;
+	int rc;
+
 	if (!client || !client->config.http_url[0])
 		return -EINVAL;
 
-	int rc = http_session_init(&client->session);
+	rc = http_session_init(&client->session);
 	if (rc < 0) {
 		log_err("mcp http: session init failed: %s", morph_strerror(rc));
 		return rc;
@@ -123,8 +313,10 @@ int mcp_http_connect(struct mcp_client *client)
 
 	client->session_id[0] = '\0';
 
+	log_url = mcp_http_redact_url_for_log(client->config.http_url);
 	log_info("mcp http: connecting to '%s' at %s",
-		 client->config.name, client->config.http_url);
+		 client->config.name, log_url ? log_url : client->config.http_url);
+	free(log_url);
 	return 0;
 }
 

@@ -3,6 +3,7 @@
 #include "util/error.h"
 #include "cJSON.h"
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern "C" {
@@ -666,4 +667,69 @@ TEST_F(McpSseExtractTest, ParseFullMcpInitializeResponse) {
 	cJSON_Delete(obj);
 	free(result);
 	free(json);
+}
+
+/* ----- MCP HTTP auth token URL substitution ----- */
+
+class McpHttpAuthUrlTest : public ::testing::Test {
+protected:
+	void TearDown() override {
+		unsetenv("MORPH_TEST_MCP_TOKEN");
+	}
+};
+
+TEST_F(McpHttpAuthUrlTest, DetectsAuthTokenPlaceholder) {
+	EXPECT_EQ(mcp_http_url_uses_auth_token("https://x/mcp"), 0);
+	EXPECT_NE(mcp_http_url_uses_auth_token(
+		"https://x/mcp?api_key=${auth_token}"), 0);
+}
+
+TEST_F(McpHttpAuthUrlTest, BuildsUrlWithEncodedAuthToken) {
+	struct mcp_server_config cfg;
+	char *url = nullptr;
+
+	memset(&cfg, 0, sizeof(cfg));
+	strncpy(cfg.http_url,
+		"https://api.example.com/mcp?key=${auth_token}&mode=test",
+		sizeof(cfg.http_url) - 1);
+	strncpy(cfg.http_auth_token_env, "MORPH_TEST_MCP_TOKEN",
+		sizeof(cfg.http_auth_token_env) - 1);
+	setenv("MORPH_TEST_MCP_TOKEN", "a b+c/=:?", 1);
+
+	int rc = mcp_http_build_request_url(&cfg, &url);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(url, nullptr);
+	EXPECT_STREQ(url,
+		     "https://api.example.com/mcp?key=a%20b%2Bc%2F%3D%3A%3F&mode=test");
+	free(url);
+}
+
+TEST_F(McpHttpAuthUrlTest, BuildsPlainUrlWithoutTokenEnv) {
+	struct mcp_server_config cfg;
+	char *url = nullptr;
+
+	memset(&cfg, 0, sizeof(cfg));
+	strncpy(cfg.http_url, "https://api.example.com/mcp",
+		sizeof(cfg.http_url) - 1);
+
+	int rc = mcp_http_build_request_url(&cfg, &url);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(url, nullptr);
+	EXPECT_STREQ(url, "https://api.example.com/mcp");
+	free(url);
+}
+
+TEST_F(McpHttpAuthUrlTest, MissingTokenEnvFailsWhenPlaceholderIsUsed) {
+	struct mcp_server_config cfg;
+	char *url = nullptr;
+
+	memset(&cfg, 0, sizeof(cfg));
+	strncpy(cfg.http_url, "https://api.example.com/mcp?key=${auth_token}",
+		sizeof(cfg.http_url) - 1);
+	strncpy(cfg.http_auth_token_env, "MORPH_TEST_MCP_TOKEN",
+		sizeof(cfg.http_auth_token_env) - 1);
+
+	int rc = mcp_http_build_request_url(&cfg, &url);
+	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
+	EXPECT_EQ(url, nullptr);
 }
