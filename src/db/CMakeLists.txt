@@ -1,5 +1,6 @@
 add_library(morph-db STATIC
 	database.c
+	scheduled_task.c
 )
 
 target_include_directories(morph-db PUBLIC

@@ -113,6 +113,41 @@ static const char *schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
 	"ON memory_procedures(session_id, updated_at);";
 
+static const char *scheduled_schema_sql =
+	"CREATE TABLE IF NOT EXISTS scheduled_tasks ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"title TEXT NOT NULL,"
+	"kind TEXT NOT NULL,"
+	"status TEXT NOT NULL,"
+	"trigger_type TEXT NOT NULL,"
+	"next_run_at INTEGER NOT NULL,"
+	"interval_seconds INTEGER NOT NULL DEFAULT 0,"
+	"timeout_at INTEGER NOT NULL DEFAULT 0,"
+	"attempts INTEGER NOT NULL DEFAULT 0,"
+	"max_attempts INTEGER NOT NULL DEFAULT 0,"
+	"action_type TEXT NOT NULL,"
+	"payload_json TEXT,"
+	"policy_json TEXT,"
+	"notify_json TEXT,"
+	"last_error TEXT,"
+	"created_at INTEGER NOT NULL,"
+	"updated_at INTEGER NOT NULL);"
+
+	"CREATE TABLE IF NOT EXISTS notifications ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"task_id INTEGER REFERENCES scheduled_tasks(id) ON DELETE SET NULL,"
+	"level TEXT NOT NULL,"
+	"title TEXT NOT NULL,"
+	"body TEXT NOT NULL,"
+	"created_at INTEGER NOT NULL,"
+	"read_at INTEGER NOT NULL DEFAULT 0,"
+	"delivery_status TEXT NOT NULL);"
+
+	"CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due "
+	"ON scheduled_tasks(status, next_run_at);"
+	"CREATE INDEX IF NOT EXISTS idx_notifications_unread "
+	"ON notifications(read_at, created_at);";
+
 int db_open(struct db *db, const char *path)
 {
 	if (!db || !path)
@@ -229,6 +264,9 @@ int db_init_schema(struct db *db)
 	if (!db || !db->handle)
 		return -EINVAL;
 	int rc = db_exec(db, schema_sql);
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db, scheduled_schema_sql);
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_display_id(db);

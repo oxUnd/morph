@@ -8,6 +8,7 @@ set(TEST_SOURCES
 	test_log.cpp
 	test_file.cpp
 	test_database.cpp
+	test_scheduled_task.cpp
 	test_config.cpp
 	test_session.cpp
 	test_memory.cpp
