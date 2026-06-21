@@ -35,6 +35,7 @@ set(TEST_SOURCES
 	test_sub_agent.cpp
 	test_ext.cpp
 	test_event.cpp
+	test_agent_ui.cpp
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
@@ -54,6 +55,7 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/skill
 	${CMAKE_SOURCE_DIR}/src/mcp
 	${CMAKE_SOURCE_DIR}/src/event
+	${CMAKE_SOURCE_DIR}/src/agent_ui
 )
 
 target_compile_definitions(morph-tests PRIVATE
@@ -76,6 +78,7 @@ target_link_libraries(morph-tests PRIVATE
 	morph-skill
 	morph-mcp
 	morph-event
+	morph-agent-ui
 	GTest::gtest_main
 	SQLite3::SQLite3
 	CURL::libcurl

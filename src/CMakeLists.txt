@@ -16,6 +16,7 @@ set(MORPH_LIBS
 	morph-skill
 	morph-mcp
 	morph-event
+	morph-agent-ui
 	SQLite3::SQLite3
 	CURL::libcurl
 )
@@ -71,6 +72,7 @@ add_subdirectory(http)
 add_subdirectory(db)
 add_subdirectory(util)
 add_subdirectory(event)
+add_subdirectory(agent_ui)
 
 if(BUILD_FASTCGI)
     add_subdirectory(fastcgi)
@@ -84,7 +86,7 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event)
+target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui)
 
 add_executable(morph ${MORPH_SOURCES})
 set_target_properties(morph PROPERTIES
