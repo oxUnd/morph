@@ -157,6 +157,16 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 	if (cJSON_IsString(sz))
 		size = sz->valuestring;
 
+	if (image_gen_validate_size(size) < 0) {
+		if (owned)
+			cJSON_Delete(owned);
+		cJSON_Delete(root);
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
+			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
+		return -EINVAL;
+	}
+
 	if (!cJSON_IsArray(bboxes) || cJSON_GetArraySize(bboxes) == 0) {
 		if (owned)
 			cJSON_Delete(owned);
@@ -355,7 +365,8 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 		"creative direction applied to every region\"},"
 		"\"style\":{\"type\":\"string\",\"description\":\"Optional style\"},"
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
-		"size (WIDTHxHEIGHT, 2k, 3k, or 4k)\"}},"
+		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
+		"4096x4096 inclusive, or 2k, 3k, 4k\"}},"
 		"\"required\":[\"annotation\"]}",
 		img_inpaint_exec, ctx, img_inpaint_context_destroy);
 	if (rc != 0)

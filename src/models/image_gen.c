@@ -16,6 +16,7 @@
 #include <strings.h>
 #include <stdio.h>
 #include <time.h>
+#include <limits.h>
 
 #include "stb_image.h"
 
@@ -94,6 +95,44 @@ static const char *style_prefix(const char *style)
 	return "";
 }
 
+int image_gen_validate_size(const char *size)
+{
+	const long long min_pixels = 2560LL * 1440LL;
+	const long long max_pixels = 4096LL * 4096LL;
+	char *end = NULL;
+	long width;
+	long height;
+	long long pixels;
+
+	if (!size || !*size)
+		return 0;
+
+	if (strcmp(size, "2k") == 0 || strcmp(size, "3k") == 0 ||
+	    strcmp(size, "4k") == 0)
+		return 0;
+
+	errno = 0;
+	width = strtol(size, &end, 10);
+	if (errno != 0 || end == size || !end || *end != 'x')
+		MORPH_RETURN(-EINVAL);
+	if (width <= 0 || width > INT_MAX)
+		MORPH_RETURN(-EINVAL);
+
+	size = end + 1;
+	errno = 0;
+	height = strtol(size, &end, 10);
+	if (errno != 0 || end == size || !end || *end != '\0')
+		MORPH_RETURN(-EINVAL);
+	if (height <= 0 || height > INT_MAX)
+		MORPH_RETURN(-EINVAL);
+
+	pixels = (long long)width * (long long)height;
+	if (pixels < min_pixels || pixels > max_pixels)
+		MORPH_RETURN(-EINVAL);
+
+	return 0;
+}
+
 int image_gen_create(struct model *self, const char *prompt, const char *style,
 		     const char *size, const char *image_path,
 		     const char *output_dir,
@@ -102,6 +141,9 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	if (!prompt || !result)
 		return -EINVAL;
 	memset(result, 0, sizeof(*result));
+
+	if (image_gen_validate_size(size) < 0)
+		MORPH_RETURN(-EINVAL);
 
 	struct arena *arena = arena_create(8192);
 	if (!arena)

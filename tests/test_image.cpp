@@ -46,6 +46,31 @@ TEST(ImageGen, NullResult) {
 	EXPECT_NE(rc, 0);
 }
 
+TEST(ImageGen, ValidateSizeAllowsAliasesAndBounds) {
+	EXPECT_EQ(image_gen_validate_size(NULL), 0);
+	EXPECT_EQ(image_gen_validate_size("2k"), 0);
+	EXPECT_EQ(image_gen_validate_size("3k"), 0);
+	EXPECT_EQ(image_gen_validate_size("4k"), 0);
+	EXPECT_EQ(image_gen_validate_size("2560x1440"), 0);
+	EXPECT_EQ(image_gen_validate_size("2048x2048"), 0);
+	EXPECT_EQ(image_gen_validate_size("4096x4096"), 0);
+}
+
+TEST(ImageGen, ValidateSizeRejectsOutsidePixelRange) {
+	EXPECT_NE(image_gen_validate_size("1920x1080"), 0);
+	EXPECT_NE(image_gen_validate_size("4097x4096"), 0);
+	EXPECT_NE(image_gen_validate_size("4096x4097"), 0);
+	EXPECT_NE(image_gen_validate_size("1024x1024"), 0);
+}
+
+TEST(ImageGen, ValidateSizeRejectsMalformedValues) {
+	EXPECT_NE(image_gen_validate_size("2560X1440"), 0);
+	EXPECT_NE(image_gen_validate_size("2560x1440px"), 0);
+	EXPECT_NE(image_gen_validate_size("0x4096"), 0);
+	EXPECT_NE(image_gen_validate_size("-1x4096"), 0);
+	EXPECT_NE(image_gen_validate_size("5k"), 0);
+}
+
 TEST(ImageRender, NullPath) {
 	int rc = image_render_terminal(NULL);
 	EXPECT_NE(rc, 0);
@@ -128,6 +153,18 @@ TEST_F(ImgGenToolTest, ToolNotFound) {
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "nonexistent", "{}", &result);
 	EXPECT_NE(rc, 0);
+}
+
+TEST_F(ImgGenToolTest, ExecInvalidSize) {
+	img_gen_init(&reg, NULL, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"a cat\",\"size\":\"1920x1080\"}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "invalid size"), nullptr);
+	tool_result_cleanup(&result);
 }
 
 TEST_F(ImgGenToolTest, InpaintRegister) {

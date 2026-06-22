@@ -52,20 +52,12 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		return -EINVAL;
 	}
 
-	if (size) {
-		int valid = 0;
-		if (strcmp(size, "2k") == 0 || strcmp(size, "3k") == 0 || strcmp(size, "4k") == 0)
-			valid = 1;
-		else {
-			int w, h;
-			if (sscanf(size, "%dx%d", &w, &h) == 2)
-				valid = 1;
-		}
-		if (!valid) {
-			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup("{\"error\":\"invalid size, use WIDTHxHEIGHT (e.g. 2048x2048), 2k, 3k, or 4k\"}"));
-			return -EINVAL;
-		}
+	if (image_gen_validate_size(size) < 0) {
+		cJSON_Delete(root);
+		(void)tool_result_take_text(result, strdup(
+			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
+			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
+		return -EINVAL;
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
@@ -124,9 +116,8 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->tctx = tctx;
 
 	int rc = tool_register(reg, "img_gen",
-		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size (must be WIDTHxHEIGHT like '2048x2048' or '2k'/'3k'/'4k'), optional reference_image (file path to a reference image)."
-		"size must be greater than 2k.",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT (e.g. 2048x2048, 2k, 3k, or 4k)\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
+		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/3k/4k.",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 3k, 4k\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
 		img_gen_exec, ctx, img_gen_context_destroy);
 	if (rc != 0)
 		free(ctx);
