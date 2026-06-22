@@ -150,6 +150,8 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 /* ----- Utilities ----- */
 
 int mcp_ping(struct mcp_client *client);
+int mcp_test_connection(const struct mcp_server_config *cfg,
+			char *message, size_t message_cap);
 char *mcp_http_extract_sse_json(const char *raw, size_t len);
 int mcp_http_url_uses_auth_token(const char *url);
 int mcp_http_build_request_url(const struct mcp_server_config *cfg,

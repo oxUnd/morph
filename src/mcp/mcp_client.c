@@ -5,6 +5,7 @@
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -242,6 +243,59 @@ int mcp_ping(struct mcp_client *client)
 	char *result = NULL;
 	int rc = mcp_http_request(client, "ping", NULL, &result);
 	free(result);
+	return rc;
+}
+
+static void mcp_test_message(char *message, size_t message_cap,
+			     const char *fmt, ...)
+{
+	va_list ap;
+
+	if (!message || message_cap == 0)
+		return;
+	va_start(ap, fmt);
+	vsnprintf(message, message_cap, fmt, ap);
+	va_end(ap);
+}
+
+int mcp_test_connection(const struct mcp_server_config *cfg,
+			char *message, size_t message_cap)
+{
+	struct mcp_registry reg;
+	struct mcp_client *client;
+	int rc;
+
+	if (!cfg || !cfg->name[0]) {
+		mcp_test_message(message, message_cap, "invalid server config");
+		MORPH_RETURN(-EINVAL);
+	}
+
+	mcp_registry_init(&reg);
+	rc = mcp_registry_add(&reg, cfg);
+	if (rc < 0) {
+		mcp_test_message(message, message_cap, "%s", morph_strerror(rc));
+		mcp_registry_cleanup(&reg);
+		return rc;
+	}
+
+	client = mcp_registry_get(&reg, cfg->name);
+	rc = mcp_ensure_connected(client);
+	if (rc == 0) {
+		if (client && client->server_name[0]) {
+			mcp_test_message(message, message_cap, "Connected to %s",
+					 client->server_name);
+		} else {
+			mcp_test_message(message, message_cap, "Connected");
+		}
+	} else if (cfg->transport == MCP_TRANSPORT_STREAMABLE_HTTP &&
+		   client && http_session_status(&client->session) >= 400) {
+		mcp_test_message(message, message_cap, "HTTP %ld",
+				 http_session_status(&client->session));
+	} else {
+		mcp_test_message(message, message_cap, "%s", morph_strerror(rc));
+	}
+
+	mcp_registry_cleanup(&reg);
 	return rc;
 }
 
