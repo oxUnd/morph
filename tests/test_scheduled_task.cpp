@@ -48,26 +48,6 @@ static int watch_runner(const struct scheduled_task *task,
 	return 0;
 }
 
-static int ready_tool_exec(const char *args_json, struct tool_result *result,
-			   void *user_data)
-{
-	(void)args_json;
-	(void)user_data;
-	(void)tool_result_take_json(result,
-		strdup("{\"status\":\"ready\",\"value\":42}"));
-	return 0;
-}
-
-static int waiting_tool_exec(const char *args_json, struct tool_result *result,
-			     void *user_data)
-{
-	(void)args_json;
-	(void)user_data;
-	(void)tool_result_take_json(result,
-		strdup("{\"ready\":false,\"retry_after_seconds\":7}"));
-	return 0;
-}
-
 class ScheduledTaskTest : public ::testing::Test {
 protected:
 	struct db db;
@@ -495,13 +475,12 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	int64_t id;
 	const char *args =
 		"{\"op\":\"create\",\"title\":\"anchored reminder\","
-		"\"kind\":\"reminder\",\"trigger_type\":\"once\","
-		"\"delay_seconds\":30,\"action_type\":\"reminder\","
-		"\"payload_json\":\"{\\\"message\\\":\\\"hi\\\"}\"}";
+		"\"kind\":\"agent\",\"trigger_type\":\"once\","
+		"\"delay_seconds\":30,\"prompt\":\"say hi\"}";
 
 	tool_registry_init(&reg);
 	tool_result_init(&result);
-	ASSERT_EQ(scheduled_tasks_tool_init(&reg, &db, &reg), 0);
+	ASSERT_EQ(scheduled_tasks_tool_init(&reg, &db), 0);
 	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);
 	ASSERT_EQ(tool_exec(&reg, "tasks", args, &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
@@ -513,44 +492,35 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	cJSON_Delete(root);
 	ASSERT_EQ(scheduled_task_get(&db, id, &task), 0);
 	EXPECT_EQ(task.next_run_at, 1030);
+	ASSERT_NE(task.payload_json, nullptr);
+	EXPECT_NE(strstr(task.payload_json, "\"prompt\":\"say hi\""), nullptr);
 	scheduled_task_cleanup(&task);
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg);
 }
 
-TEST_F(ScheduledTaskTest, ToolRunnerExecutesPayloadTool) {
-	struct tool_registry reg;
-	struct scheduled_task task = {};
-	struct scheduled_task_action_result result = {};
+TEST_F(ScheduledTaskTest, RunDueAgentUsesRunnerAndReschedules) {
+	struct scheduled_task_input input = {};
+	struct scheduled_task *tasks = nullptr;
+	int count = 0;
+	int ran = 0;
 
-	tool_registry_init(&reg);
-	ASSERT_EQ(tool_register(&reg, "ready_tool", "ready", "{}",
-				ready_tool_exec, nullptr, nullptr), 0);
-	ASSERT_NE(tool_lookup(&reg, "ready_tool"), nullptr);
-	task.payload_json = strdup("{\"tool\":\"ready_tool\",\"args\":{\"x\":1}}");
-	ASSERT_EQ(scheduled_tasks_tool_runner(&task, &result, &reg), 0);
-	EXPECT_EQ(result.completed, 1);
-	ASSERT_NE(result.body, nullptr);
-	EXPECT_NE(strstr(result.body, "\"value\":42"), nullptr);
-	scheduled_task_action_result_cleanup(&result);
-	scheduled_task_cleanup(&task);
-	tool_registry_cleanup(&reg);
-}
+	input.title = "Search news";
+	input.kind = "agent";
+	input.trigger_type = "interval";
+	input.next_run_at = 10;
+	input.interval_seconds = 30;
+	input.action_type = "agent_run";
+	input.payload_json = "{\"prompt\":\"search news\"}";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
 
-TEST_F(ScheduledTaskTest, ToolRunnerReadsRetryAfter) {
-	struct tool_registry reg;
-	struct scheduled_task task = {};
-	struct scheduled_task_action_result result = {};
-
-	tool_registry_init(&reg);
-	ASSERT_EQ(tool_register(&reg, "waiting_tool", "waiting", "{}",
-				waiting_tool_exec, nullptr, nullptr), 0);
-	ASSERT_NE(tool_lookup(&reg, "waiting_tool"), nullptr);
-	task.payload_json = strdup("{\"tool\":\"waiting_tool\",\"args\":{}}");
-	ASSERT_EQ(scheduled_tasks_tool_runner(&task, &result, &reg), 0);
-	EXPECT_EQ(result.completed, 0);
-	EXPECT_EQ(result.retry_after_seconds, 7);
-	scheduled_task_action_result_cleanup(&result);
-	scheduled_task_cleanup(&task);
-	tool_registry_cleanup(&reg);
+	ASSERT_EQ(scheduled_task_run_due_with_runner(&db, 20, 10,
+		successful_runner, nullptr, &ran), 0);
+	EXPECT_EQ(ran, 1);
+	ASSERT_EQ(scheduled_task_list(&db, "waiting", 10, &tasks, &count),
+		  0);
+	ASSERT_EQ(count, 1);
+	EXPECT_EQ(tasks[0].next_run_at, 50);
+	EXPECT_EQ(tasks[0].attempts, 1);
+	scheduled_task_free_list(tasks, count);
 }

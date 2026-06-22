@@ -9,7 +9,6 @@
 
 struct scheduled_tasks_tool_context {
 	struct db *db;
-	struct tool_registry *actions;
 	int64_t time_anchor;
 };
 
@@ -35,6 +34,8 @@ static char *json_error(const char *message)
 static void add_task_json(cJSON *arr, const struct scheduled_task *task)
 {
 	cJSON *obj;
+	cJSON *payload;
+	cJSON *prompt;
 
 	if (!arr || !task)
 		return;
@@ -52,7 +53,13 @@ static void add_task_json(cJSON *arr, const struct scheduled_task *task)
 	cJSON_AddNumberToObject(obj, "timeout_at", (double)task->timeout_at);
 	cJSON_AddNumberToObject(obj, "attempts", task->attempts);
 	cJSON_AddNumberToObject(obj, "max_attempts", task->max_attempts);
-	cJSON_AddStringToObject(obj, "action_type", task->action_type);
+	cJSON_AddStringToObject(obj, "schedule",
+				task->interval_seconds > 0 ? "interval" : "once");
+	payload = task->payload_json ? cJSON_Parse(task->payload_json) : NULL;
+	prompt = payload ? cJSON_GetObjectItem(payload, "prompt") : NULL;
+	if (cJSON_IsString(prompt))
+		cJSON_AddStringToObject(obj, "prompt", prompt->valuestring);
+	cJSON_Delete(payload);
 	if (task->last_error[0])
 		cJSON_AddStringToObject(obj, "last_error", task->last_error);
 	cJSON_AddItemToArray(arr, obj);
@@ -128,19 +135,23 @@ static char *notifications_to_json(struct notification *notifications,
 }
 
 static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
-			     int64_t time_anchor)
+			     int64_t time_anchor, char **owned_payload_json)
 {
 	cJSON *item;
+	cJSON *payload = NULL;
+	char *payload_json = NULL;
 	int has_next_run_at = 0;
+	int rc = 0;
 
-	if (!root || !input)
+	if (!root || !input || !owned_payload_json)
 		MORPH_RETURN(-EINVAL);
 	memset(input, 0, sizeof(*input));
+	*owned_payload_json = NULL;
 	item = cJSON_GetObjectItem(root, "title");
 	if (cJSON_IsString(item))
 		input->title = item->valuestring;
 	item = cJSON_GetObjectItem(root, "kind");
-	input->kind = cJSON_IsString(item) ? item->valuestring : "reminder";
+	input->kind = cJSON_IsString(item) ? item->valuestring : "agent";
 	item = cJSON_GetObjectItem(root, "trigger_type");
 	input->trigger_type = cJSON_IsString(item) ? item->valuestring : "once";
 	item = cJSON_GetObjectItem(root, "next_run_at");
@@ -169,11 +180,20 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	item = cJSON_GetObjectItem(root, "max_attempts");
 	if (cJSON_IsNumber(item))
 		input->max_attempts = (int)item->valuedouble;
-	item = cJSON_GetObjectItem(root, "action_type");
-	input->action_type = cJSON_IsString(item) ? item->valuestring : "reminder";
-	item = cJSON_GetObjectItem(root, "payload_json");
-	if (cJSON_IsString(item))
-		input->payload_json = item->valuestring;
+	input->action_type = "agent_run";
+	item = cJSON_GetObjectItem(root, "prompt");
+	if (cJSON_IsString(item) && item->valuestring[0]) {
+		payload = cJSON_CreateObject();
+		if (!payload)
+			MORPH_RETURN(-ENOMEM);
+		cJSON_AddStringToObject(payload, "prompt", item->valuestring);
+		payload_json = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
+		if (!payload_json)
+			MORPH_RETURN(-ENOMEM);
+		input->payload_json = payload_json;
+		*owned_payload_json = payload_json;
+	}
 	item = cJSON_GetObjectItem(root, "policy_json");
 	if (cJSON_IsString(item))
 		input->policy_json = item->valuestring;
@@ -181,9 +201,10 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (cJSON_IsString(item))
 		input->notify_json = item->valuestring;
 
-	if (!input->title || !has_next_run_at || input->next_run_at < 0)
-		MORPH_RETURN(-EINVAL);
-	return 0;
+	if (!input->title || !has_next_run_at || input->next_run_at < 0 ||
+	    !input->payload_json)
+		rc = -EINVAL;
+	return rc;
 }
 
 static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
@@ -193,13 +214,18 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 	struct scheduled_task task;
 	cJSON *out;
 	cJSON *arr;
+	char *owned_payload_json = NULL;
 	char *json;
 	int rc;
 
-	rc = bind_create_input(root, &input, ctx->time_anchor);
-	if (rc != 0)
+	rc = bind_create_input(root, &input, ctx->time_anchor,
+			       &owned_payload_json);
+	if (rc != 0) {
+		free(owned_payload_json);
 		return json_error("missing or invalid task create fields");
+	}
 	rc = scheduled_task_create(ctx->db, &input, &task);
+	free(owned_payload_json);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 
@@ -231,17 +257,22 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 	cJSON *id_item;
 	cJSON *out;
 	cJSON *arr;
+	char *owned_payload_json = NULL;
 	char *json;
 	int rc;
 
 	id_item = cJSON_GetObjectItem(root, "id");
 	if (!cJSON_IsNumber(id_item))
 		return json_error("missing task id");
-	rc = bind_create_input(root, &input, ctx->time_anchor);
-	if (rc != 0)
+	rc = bind_create_input(root, &input, ctx->time_anchor,
+			       &owned_payload_json);
+	if (rc != 0) {
+		free(owned_payload_json);
 		return json_error("missing or invalid task update fields");
+	}
 	rc = scheduled_task_update(ctx->db, (int64_t)id_item->valuedouble,
 				   &input, &task);
+	free(owned_payload_json);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 	out = cJSON_CreateObject();
@@ -303,159 +334,9 @@ static char *tasks_tool_cancel(struct db *db, cJSON *root)
 static char *tasks_tool_run_due(struct scheduled_tasks_tool_context *ctx,
 				cJSON *root)
 {
-	cJSON *item;
-	int64_t now = (int64_t)time(NULL);
-	int limit = 20;
-	int ran = 0;
-	cJSON *out;
-	char *json;
-	int rc;
-
-	item = cJSON_GetObjectItem(root, "now");
-	if (cJSON_IsNumber(item))
-		now = (int64_t)item->valuedouble;
-	item = cJSON_GetObjectItem(root, "limit");
-	if (cJSON_IsNumber(item))
-		limit = (int)item->valuedouble;
-	rc = scheduled_task_run_due_with_runner(
-		ctx->db, now, limit, scheduled_tasks_tool_runner,
-		ctx->actions, &ran);
-	if (rc != 0)
-		return json_error(morph_strerror(rc));
-	out = cJSON_CreateObject();
-	if (!out)
-		return json_error("out of memory");
-	cJSON_AddNumberToObject(out, "ran", ran);
-	json = cJSON_PrintUnformatted(out);
-	cJSON_Delete(out);
-	return json ? json : json_error("out of memory");
-}
-
-static char *payload_args_json(cJSON *payload)
-{
-	cJSON *args_json;
-	cJSON *args;
-
-	if (!payload)
-		return strdup("{}");
-	args_json = cJSON_GetObjectItem(payload, "args_json");
-	if (cJSON_IsString(args_json) && args_json->valuestring)
-		return strdup(args_json->valuestring);
-	args = cJSON_GetObjectItem(payload, "args");
-	if (args)
-		return cJSON_PrintUnformatted(args);
-	return strdup("{}");
-}
-
-static int result_completed_from_json(const char *text,
-				      int *completed,
-				      int *retry_after_seconds)
-{
-	cJSON *root;
-	cJSON *item;
-	const char *status;
-
-	if (completed)
-		*completed = 0;
-	if (retry_after_seconds)
-		*retry_after_seconds = 0;
-	if (!text)
-		return 0;
-	root = cJSON_Parse(text);
-	if (!root)
-		return 0;
-	item = cJSON_GetObjectItem(root, "completed");
-	if (!cJSON_IsBool(item))
-		item = cJSON_GetObjectItem(root, "done");
-	if (!cJSON_IsBool(item))
-		item = cJSON_GetObjectItem(root, "ready");
-	if (cJSON_IsBool(item) && cJSON_IsTrue(item) && completed)
-		*completed = 1;
-	item = cJSON_GetObjectItem(root, "status");
-	status = cJSON_IsString(item) ? item->valuestring : NULL;
-	if (status && completed &&
-	    (strcmp(status, "completed") == 0 ||
-	     strcmp(status, "success") == 0 ||
-	     strcmp(status, "ready") == 0 ||
-	     strcmp(status, "passed") == 0))
-		*completed = 1;
-	item = cJSON_GetObjectItem(root, "retry_after_seconds");
-	if (cJSON_IsNumber(item) && retry_after_seconds)
-		*retry_after_seconds = (int)item->valuedouble;
-	cJSON_Delete(root);
-	return 0;
-}
-
-int scheduled_tasks_tool_runner(const struct scheduled_task *task,
-				struct scheduled_task_action_result *result,
-				void *user_data)
-{
-	struct tool_registry *actions = user_data;
-	struct tool_result tool_result;
-	cJSON *payload;
-	cJSON *tool_item;
-	const char *tool_name;
-	char *tool_name_copy;
-	char *args_json;
-	int rc;
-
-	if (!task || !result || !actions)
-		MORPH_RETURN(-EINVAL);
-	if (!task->payload_json)
-		MORPH_RETURN(-EINVAL);
-	payload = cJSON_Parse(task->payload_json);
-	if (!payload)
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	tool_item = cJSON_GetObjectItem(payload, "tool");
-	if (!cJSON_IsString(tool_item))
-		tool_item = cJSON_GetObjectItem(payload, "tool_name");
-	tool_name = cJSON_IsString(tool_item) ? tool_item->valuestring : NULL;
-	if (!tool_name || !*tool_name) {
-		cJSON_Delete(payload);
-		MORPH_RETURN(-EINVAL);
-	}
-	if (strcmp(tool_name, "tasks") == 0 ||
-	    strcmp(tool_name, "ask_user") == 0) {
-		cJSON_Delete(payload);
-		result->error = strdup("scheduled task cannot run interactive "
-				       "or recursive tool");
-		MORPH_RETURN(-EPERM);
-	}
-	tool_name_copy = strdup(tool_name);
-	if (!tool_name_copy) {
-		cJSON_Delete(payload);
-		MORPH_RETURN(-ENOMEM);
-	}
-	args_json = payload_args_json(payload);
-	cJSON_Delete(payload);
-	if (!args_json) {
-		free(tool_name_copy);
-		MORPH_RETURN(-ENOMEM);
-	}
-	tool_result_init(&tool_result);
-	rc = tool_exec(actions, tool_name_copy, args_json, &tool_result);
-	free(tool_name_copy);
-	free(args_json);
-	if (rc == 0) {
-		result->body = strdup(tool_result.text.data ?
-				      tool_result.text.data : "");
-		if (!result->body) {
-			tool_result_cleanup(&tool_result);
-			MORPH_RETURN(-ENOMEM);
-		}
-		result_completed_from_json(tool_result.text.data,
-					   &result->completed,
-					   &result->retry_after_seconds);
-	} else {
-		const char *text = tool_result.text.data;
-		result->error = strdup(text && *text ? text : morph_strerror(rc));
-		if (!result->error) {
-			tool_result_cleanup(&tool_result);
-			MORPH_RETURN(-ENOMEM);
-		}
-	}
-	tool_result_cleanup(&tool_result);
-	return rc;
+	(void)ctx;
+	(void)root;
+	return json_error("run_due is scheduler-only for agent tasks");
 }
 
 static char *tasks_tool_inbox(struct db *db, cJSON *root)
@@ -533,8 +414,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	return 0;
 }
 
-int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db,
-			      struct tool_registry *actions)
+int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db)
 {
 	struct scheduled_tasks_tool_context *ctx;
 	int rc;
@@ -545,28 +425,27 @@ int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db,
 	if (!ctx)
 		MORPH_RETURN(-ENOMEM);
 	ctx->db = db;
-	ctx->actions = actions ? actions : reg;
 	ctx->time_anchor = (int64_t)time(NULL);
 	rc = tool_register(reg, "tasks",
 		"Create and manage persistent scheduled tasks and the inbox. "
 		"Use next_run_at for absolute Unix seconds, or delay_seconds "
 		"for relative delays anchored at the current user turn start. "
+		"Tasks run by asking the agent to complete the supplied prompt. "
 		"Supported ops: "
-		"create, update, list, cancel, run_due, inbox, mark_read.",
+		"create, update, list, cancel, inbox, mark_read.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"list\","
-		"\"update\",\"cancel\",\"run_due\",\"inbox\",\"mark_read\"]},"
+		"\"update\",\"cancel\",\"inbox\",\"mark_read\"]},"
 		"\"id\":{\"type\":\"integer\",\"description\":\"Task or notification id\"},"
 		"\"title\":{\"type\":\"string\"},"
-		"\"kind\":{\"type\":\"string\",\"enum\":[\"reminder\",\"action\",\"watch\"]},"
-		"\"trigger_type\":{\"type\":\"string\",\"enum\":[\"once\",\"interval\",\"cron\",\"event\"]},"
+		"\"kind\":{\"type\":\"string\",\"enum\":[\"agent\"]},"
+		"\"trigger_type\":{\"type\":\"string\",\"enum\":[\"once\",\"interval\"]},"
 		"\"next_run_at\":{\"type\":\"integer\",\"description\":\"Unix seconds UTC\"},"
 		"\"delay_seconds\":{\"type\":\"integer\",\"description\":\"Relative seconds from current turn start\"},"
 		"\"interval_seconds\":{\"type\":\"integer\"},"
 		"\"timeout_at\":{\"type\":\"integer\"},"
 		"\"max_attempts\":{\"type\":\"integer\"},"
-		"\"action_type\":{\"type\":\"string\"},"
-		"\"payload_json\":{\"type\":\"string\"},"
+		"\"prompt\":{\"type\":\"string\",\"description\":\"Agent task prompt to run when due\"},"
 		"\"policy_json\":{\"type\":\"string\"},"
 		"\"notify_json\":{\"type\":\"string\"},"
 		"\"status\":{\"type\":\"string\"},"

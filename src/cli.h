@@ -50,6 +50,8 @@ struct cli_context {
 	morph_event_cb event_cb;
 	void *event_user_data;
 	pthread_t scheduler_thread;
+	pthread_mutex_t react_lock;
+	int react_lock_ready;
 	pthread_mutex_t scheduler_lock;
 	pthread_cond_t scheduler_cond;
 	int scheduler_started;

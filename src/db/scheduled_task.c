@@ -135,7 +135,9 @@ static int str_in_set(const char *s, const char *const *values, int count)
 static int scheduled_task_validate_input(
 	const struct scheduled_task_input *input)
 {
-	static const char *const kinds[] = { "reminder", "action", "watch" };
+	static const char *const kinds[] = {
+		"agent", "reminder", "action", "watch"
+	};
 	static const char *const triggers[] = {
 		"once", "interval", "cron", "event"
 	};
@@ -163,7 +165,8 @@ static int scheduled_task_validate_input(
 	if (strcmp(input->trigger_type, "interval") == 0 &&
 	    input->interval_seconds <= 0)
 		MORPH_RETURN(-EINVAL);
-	if ((strcmp(input->kind, "action") == 0 ||
+	if ((strcmp(input->kind, "agent") == 0 ||
+	     strcmp(input->kind, "action") == 0 ||
 	     strcmp(input->kind, "watch") == 0) && !input->payload_json)
 		MORPH_RETURN(-EINVAL);
 	return 0;
@@ -629,6 +632,72 @@ static int task_retry_after(const struct scheduled_task *task,
 static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 			       struct notification *notification);
 
+static int run_due_agent(struct db *db, const struct scheduled_task *task,
+			 int64_t now, scheduled_task_runner_fn runner,
+			 void *runner_user_data,
+			 struct notification *notification)
+{
+	struct scheduled_task_action_result result;
+	const char *body;
+	const char *level;
+	const char *status;
+	const char *last_error = NULL;
+	int attempts;
+	int64_t next_run_at = 0;
+	int rc;
+	int nrc;
+
+	if (!db || !task || !notification)
+		MORPH_RETURN(-EINVAL);
+	if (!runner)
+		return run_due_unsupported(db, task, notification);
+
+	memset(&result, 0, sizeof(result));
+	rc = runner(task, &result, runner_user_data);
+	attempts = task->attempts + 1;
+	if (rc == 0) {
+		level = "info";
+		body = result.body ? result.body : "Task completed.";
+		if (strcmp(task->trigger_type, "interval") == 0 &&
+		    task->interval_seconds > 0) {
+			status = "waiting";
+			next_run_at = now + task->interval_seconds;
+		} else {
+			status = "completed";
+		}
+	} else if (task->timeout_at > 0 && now >= task->timeout_at) {
+		level = "warning";
+		status = "timed_out";
+		body = result.error ? result.error : "Task timed out.";
+		last_error = body;
+	} else if (task->max_attempts > 0 && attempts >= task->max_attempts) {
+		level = "warning";
+		status = "failed";
+		body = result.error ? result.error : morph_strerror(rc);
+		last_error = body;
+	} else if (task->interval_seconds > 0) {
+		level = "warning";
+		status = "waiting";
+		body = result.error ? result.error : morph_strerror(rc);
+		last_error = body;
+		next_run_at = now + task_retry_after(task, &result);
+	} else {
+		level = "warning";
+		status = "failed";
+		body = result.error ? result.error : morph_strerror(rc);
+		last_error = body;
+	}
+
+	nrc = notification_create(db, task->id, level, task->title, body,
+				  task_delivery_status(task), notification);
+	if (nrc == 0)
+		nrc = scheduled_task_update_run(db, task->id, status,
+						next_run_at, attempts,
+						last_error);
+	scheduled_task_action_result_cleanup(&result);
+	return nrc;
+}
+
 static int run_due_action(struct db *db, const struct scheduled_task *task,
 			  int64_t now, scheduled_task_runner_fn runner,
 			  void *runner_user_data,
@@ -803,7 +872,10 @@ int scheduled_task_run_due_collect_with_runner(
 			rc = -ENOMEM;
 			goto out_fail;
 		}
-		if (strcmp(tasks[i].kind, "reminder") == 0)
+		if (strcmp(tasks[i].kind, "agent") == 0)
+			rc = run_due_agent(db, &tasks[i], now, runner,
+					   runner_user_data, notification);
+		else if (strcmp(tasks[i].kind, "reminder") == 0)
 			rc = run_due_reminder(db, &tasks[i], now,
 					      notification);
 		else if (strcmp(tasks[i].kind, "action") == 0)

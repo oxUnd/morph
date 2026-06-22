@@ -73,6 +73,10 @@ static int cli_emit_background_event(struct cli_context *ctx,
 				     const char *name, const char *phase,
 				     const char *message, const char *task,
 				     int count, int error_code);
+static int cli_scheduled_task_runner(const struct scheduled_task *task,
+				     struct scheduled_task_action_result *result,
+				     void *user_data);
+static void notification_time_string(int64_t ts, char *buf, size_t buf_len);
 static int cli_emit_mcp_event(struct cli_context *ctx,
 			      const char *name, const char *phase,
 			      const char *message, const char *server,
@@ -83,6 +87,11 @@ static int cli_emit_mcp_event(struct cli_context *ctx,
 static int cli_discover_mcp_server(struct cli_context *ctx,
 				   struct mcp_client *mc, int auto_connect,
 				   int timeout_seconds);
+static int markdown_table_cell(morph_buf_t *buf, const char *text);
+static int append_task_table_row(morph_buf_t *buf,
+				 const struct scheduled_task *task);
+static int append_task_show_markdown(morph_buf_t *buf,
+				     const struct scheduled_task *task);
 
 #define ANSI_BOLD   "\033[1m"
 #define ANSI_DIM    "\033[2m"
@@ -290,8 +299,8 @@ static const struct cmd_entry commands[] = {
 	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
 	{ "/memory",  cmd_memory,  "Show or clear long-term memory",    "/memory [show|clear] [all|facts|episodes|procedures]" },
 	{ "/mem",     cmd_memory,  "Alias for /memory",                 "/mem [show|clear] [all|facts|episodes|procedures]" },
-	{ "/tasks",   cmd_tasks,   "Manage scheduled tasks",            "/tasks [list|add|update|cancel|run]" },
-	{ "/todo",    cmd_tasks,   "Alias for /tasks",                  "/todo [list|add|update|cancel|run]" },
+	{ "/tasks",   cmd_tasks,   "Manage scheduled tasks",            "/tasks [list|show|add|every|update|cancel|run]" },
+	{ "/todo",    cmd_tasks,   "Alias for /tasks",                  "/todo [list|show|add|every|update|cancel|run]" },
 	{ "/inbox",   cmd_inbox,   "Show task notifications",           "/inbox [list|read]" },
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                  "/r <file_path>" },
@@ -1204,22 +1213,6 @@ fail:
 	return NULL;
 }
 
-static void print_task_row(const struct scheduled_task *task)
-{
-	char due[32];
-
-	if (!task)
-		return;
-	if (task->next_run_at > 0)
-		snprintf(due, sizeof(due), "%lld",
-			 (long long)task->next_run_at);
-	else
-		snprintf(due, sizeof(due), "-");
-	printf("%4lld  %-9s %-9s next=%-12s attempts=%d  %s\n",
-	       (long long)task->id, task->kind, task->status, due,
-	       task->attempts, task->title);
-}
-
 static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
@@ -1251,7 +1244,7 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 		free(title);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(payload, "message", title);
+	cJSON_AddStringToObject(payload, "prompt", title);
 	payload_json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!payload_json) {
@@ -1261,10 +1254,10 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 
 	memset(&input, 0, sizeof(input));
 	input.title = title;
-	input.kind = "reminder";
+	input.kind = "agent";
 	input.trigger_type = "once";
 	input.next_run_at = next_run_at;
-	input.action_type = "reminder";
+	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
 	rc = scheduled_task_create(&ctx->database, &input, &task);
@@ -1275,6 +1268,66 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 		return rc;
 	}
 	CMD_OK("task created: #%lld", (long long)task.id);
+	scheduled_task_cleanup(&task);
+	return 0;
+}
+
+static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
+{
+	struct scheduled_task_input input;
+	struct scheduled_task task;
+	cJSON *payload = NULL;
+	char *payload_json = NULL;
+	char *title = NULL;
+	char *end = NULL;
+	long interval;
+	int rc;
+
+	if (argc < 4) {
+		CMD_ERROR("usage: /tasks every <seconds> <prompt>");
+		return -EINVAL;
+	}
+	interval = strtol(argv[2], &end, 10);
+	if (!end || *end != '\0' || interval <= 0 || interval > INT_MAX) {
+		CMD_ERROR("invalid interval seconds: %s", argv[2]);
+		return -EINVAL;
+	}
+	title = task_join_title(argc, argv, 3);
+	if (!title || !title[0]) {
+		free(title);
+		CMD_ERROR("missing task prompt");
+		return -EINVAL;
+	}
+	payload = cJSON_CreateObject();
+	if (!payload) {
+		free(title);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(payload, "prompt", title);
+	payload_json = cJSON_PrintUnformatted(payload);
+	cJSON_Delete(payload);
+	if (!payload_json) {
+		free(title);
+		return -ENOMEM;
+	}
+
+	memset(&input, 0, sizeof(input));
+	input.title = title;
+	input.kind = "agent";
+	input.trigger_type = "interval";
+	input.next_run_at = (int64_t)time(NULL) + interval;
+	input.interval_seconds = (int)interval;
+	input.action_type = "agent_run";
+	input.payload_json = payload_json;
+	input.notify_json = "{\"targets\":[\"inbox\"]}";
+	rc = scheduled_task_create(&ctx->database, &input, &task);
+	free(payload_json);
+	free(title);
+	if (rc != 0) {
+		CMD_ERROR("failed to create task: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_OK("recurring task created: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
 }
@@ -1316,7 +1369,7 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 		free(title);
 		return -ENOMEM;
 	}
-	cJSON_AddStringToObject(payload, "message", title);
+	cJSON_AddStringToObject(payload, "prompt", title);
 	payload_json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!payload_json) {
@@ -1325,10 +1378,10 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 	}
 	memset(&input, 0, sizeof(input));
 	input.title = title;
-	input.kind = "reminder";
+	input.kind = "agent";
 	input.trigger_type = "once";
 	input.next_run_at = next_run_at;
-	input.action_type = "reminder";
+	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
 	rc = scheduled_task_update(&ctx->database, (int64_t)id, &input,
@@ -1347,6 +1400,8 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task *tasks = NULL;
+	morph_buf_t md;
+	int md_ready = 0;
 	int count = 0;
 	const char *status = NULL;
 	int rc;
@@ -1362,11 +1417,62 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 	if (count == 0) {
 		printf("No tasks.\n");
 	} else {
-		for (int i = 0; i < count; i++)
-			print_task_row(&tasks[i]);
+		rc = morph_buf_init(&md, 2048);
+		if (rc != 0)
+			goto out;
+		md_ready = 1;
+		rc = morph_buf_puts(&md,
+			"| ID | Status | Schedule | Next run | Attempts | Task |\n"
+			"|---:|---|---|---|---|---|\n");
+		for (int i = 0; rc == 0 && i < count; i++)
+			rc = append_task_table_row(&md, &tasks[i]);
+		if (rc == 0)
+			markdown_render_ansi(morph_buf_cstr(&md));
 	}
+out:
+	if (md_ready)
+		morph_buf_cleanup(&md);
 	scheduled_task_free_list(tasks, count);
-	return 0;
+	return rc;
+}
+
+static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
+{
+	struct scheduled_task task;
+	morph_buf_t md;
+	char *end = NULL;
+	long long id;
+	int md_ready = 0;
+	int rc;
+
+	if (argc < 3) {
+		CMD_ERROR("usage: /tasks show <id>");
+		return -EINVAL;
+	}
+	id = strtoll(argv[2], &end, 10);
+	if (!end || *end != '\0' || id <= 0) {
+		CMD_ERROR("invalid task id: %s", argv[2]);
+		return -EINVAL;
+	}
+	memset(&task, 0, sizeof(task));
+	rc = scheduled_task_get(&ctx->database, (int64_t)id, &task);
+	if (rc != 0) {
+		CMD_ERROR("failed to load task: %s", morph_strerror(rc));
+		return rc;
+	}
+	CMD_HEADER("task");
+	rc = morph_buf_init(&md, 2048);
+	if (rc != 0)
+		goto out;
+	md_ready = 1;
+	rc = append_task_show_markdown(&md, &task);
+	if (rc == 0)
+		markdown_render_ansi(morph_buf_cstr(&md));
+out:
+	if (md_ready)
+		morph_buf_cleanup(&md);
+	scheduled_task_cleanup(&task);
+	return rc;
 }
 
 static int cmd_tasks_cancel(struct cli_context *ctx, int argc, char **argv)
@@ -1403,7 +1509,7 @@ static int cmd_tasks_run(struct cli_context *ctx, int argc, char **argv)
 		limit = atoi(argv[2]);
 	rc = scheduled_task_run_due_with_runner(
 		&ctx->database, (int64_t)time(NULL), limit,
-		scheduled_tasks_tool_runner, &ctx->tools, &ran);
+		cli_scheduled_task_runner, ctx, &ran);
 	if (rc != 0) {
 		CMD_ERROR("failed to run due tasks: %s", morph_strerror(rc));
 		return rc;
@@ -1418,16 +1524,20 @@ static int cmd_tasks(struct cli_context *ctx, int argc, char **argv)
 
 	if (strcmp(sub, "add") == 0)
 		return cmd_tasks_add(ctx, argc, argv);
+	if (strcmp(sub, "every") == 0)
+		return cmd_tasks_every(ctx, argc, argv);
 	if (strcmp(sub, "update") == 0 || strcmp(sub, "edit") == 0)
 		return cmd_tasks_update(ctx, argc, argv);
 	if (strcmp(sub, "list") == 0 || strcmp(sub, "ls") == 0)
 		return cmd_tasks_list(ctx, argc, argv);
+	if (strcmp(sub, "show") == 0 || strcmp(sub, "info") == 0)
+		return cmd_tasks_show(ctx, argc, argv);
 	if (strcmp(sub, "cancel") == 0 || strcmp(sub, "rm") == 0)
 		return cmd_tasks_cancel(ctx, argc, argv);
 	if (strcmp(sub, "run") == 0 || strcmp(sub, "due") == 0)
 		return cmd_tasks_run(ctx, argc, argv);
 
-	CMD_ERROR("usage: /tasks [list [status]|add <unix_time|+seconds> <title>|update <id> <unix_time|+seconds> <title>|cancel <id>|run [limit]]");
+	CMD_ERROR("usage: /tasks [list [status]|show <id>|add <unix_time|+seconds> <prompt>|every <seconds> <prompt>|update <id> <unix_time|+seconds> <prompt>|cancel <id>|run [limit]]");
 	return -EINVAL;
 }
 
@@ -1480,6 +1590,176 @@ static int markdown_table_cell(morph_buf_t *buf, const char *text)
 			return rc;
 	}
 	return 0;
+}
+
+static const char *task_prompt_from_payload(cJSON **payload,
+					    const struct scheduled_task *task)
+{
+	cJSON *prompt_json;
+
+	if (!payload || !task)
+		return "";
+	*payload = task->payload_json ? cJSON_Parse(task->payload_json) : NULL;
+	prompt_json = *payload ? cJSON_GetObjectItem(*payload, "prompt") : NULL;
+	if (cJSON_IsString(prompt_json) && prompt_json->valuestring[0])
+		return prompt_json->valuestring;
+	return task->title[0] ? task->title : "";
+}
+
+static int append_markdown_indented_block(morph_buf_t *buf, const char *text)
+{
+	const char *s = text ? text : "";
+	int line_start = 1;
+	int rc = 0;
+
+	for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+		if (line_start) {
+			rc = morph_buf_puts(buf, "    ");
+			if (rc != 0)
+				return rc;
+			line_start = 0;
+		}
+		if (*p == '\r')
+			continue;
+		rc = morph_buf_putc(buf, (char)*p);
+		if (rc != 0)
+			return rc;
+		if (*p == '\n')
+			line_start = 1;
+	}
+	if (line_start)
+		rc = morph_buf_puts(buf, "    ");
+	if (rc == 0)
+		rc = morph_buf_putc(buf, '\n');
+	return rc;
+}
+
+static int append_task_table_row(morph_buf_t *buf,
+				 const struct scheduled_task *task)
+{
+	char due[32];
+	char attempts[32];
+	char schedule[32];
+	cJSON *payload = NULL;
+	const char *prompt;
+	int rc;
+
+	if (!buf || !task)
+		MORPH_RETURN(-EINVAL);
+	notification_time_string(task->next_run_at, due, sizeof(due));
+	if (task->max_attempts > 0)
+		snprintf(attempts, sizeof(attempts), "%d/%d",
+			 task->attempts, task->max_attempts);
+	else
+		snprintf(attempts, sizeof(attempts), "%d/∞", task->attempts);
+	if (task->interval_seconds > 0)
+		snprintf(schedule, sizeof(schedule), "every %ds",
+			 task->interval_seconds);
+	else
+		snprintf(schedule, sizeof(schedule), "once");
+	prompt = task_prompt_from_payload(&payload, task);
+	rc = morph_buf_printf(buf, "| %lld | ", (long long)task->id);
+	if (rc == 0)
+		rc = markdown_table_cell(buf, task->status);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " | ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, schedule);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " | ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, due);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " | ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, attempts);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " | ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, prompt);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " |\n");
+	cJSON_Delete(payload);
+	return rc;
+}
+
+static int append_task_detail_row(morph_buf_t *buf, const char *field,
+				  const char *value)
+{
+	int rc;
+
+	rc = morph_buf_puts(buf, "| ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, field);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " | ");
+	if (rc == 0)
+		rc = markdown_table_cell(buf, value);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, " |\n");
+	return rc;
+}
+
+static int append_task_show_markdown(morph_buf_t *buf,
+				     const struct scheduled_task *task)
+{
+	char id[32];
+	char due[32];
+	char created[32];
+	char updated[32];
+	char attempts[32];
+	char schedule[32];
+	cJSON *payload = NULL;
+	const char *prompt;
+	int rc;
+
+	if (!buf || !task)
+		MORPH_RETURN(-EINVAL);
+	notification_time_string(task->next_run_at, due, sizeof(due));
+	notification_time_string(task->created_at, created, sizeof(created));
+	notification_time_string(task->updated_at, updated, sizeof(updated));
+	snprintf(id, sizeof(id), "%lld", (long long)task->id);
+	if (task->max_attempts > 0)
+		snprintf(attempts, sizeof(attempts), "%d/%d",
+			 task->attempts, task->max_attempts);
+	else
+		snprintf(attempts, sizeof(attempts), "%d/∞", task->attempts);
+	if (task->interval_seconds > 0)
+		snprintf(schedule, sizeof(schedule), "every %d seconds",
+			 task->interval_seconds);
+	else
+		snprintf(schedule, sizeof(schedule), "once");
+	prompt = task_prompt_from_payload(&payload, task);
+	rc = morph_buf_printf(buf, "## Task #%lld\n\n",
+			      (long long)task->id);
+	if (rc == 0)
+		rc = morph_buf_puts(buf,
+			"| Field | Value |\n"
+			"|---|---|\n");
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "ID", id);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Title", task->title);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Status", task->status);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Schedule", schedule);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Next run", due);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Attempts", attempts);
+	if (rc == 0 && task->last_error[0])
+		rc = append_task_detail_row(buf, "Last error", task->last_error);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Created", created);
+	if (rc == 0)
+		rc = append_task_detail_row(buf, "Updated", updated);
+	if (rc == 0)
+		rc = morph_buf_puts(buf, "\n### Prompt\n\n");
+	if (rc == 0)
+		rc = append_markdown_indented_block(buf, prompt);
+	cJSON_Delete(payload);
+	return rc;
 }
 
 static int append_notification_table_row(morph_buf_t *buf,
@@ -1608,7 +1888,7 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 		return;
 	rc = scheduled_task_run_due_with_runner(
 		&ctx->database, (int64_t)time(NULL), 50,
-		scheduled_tasks_tool_runner, &ctx->tools, &ran);
+		cli_scheduled_task_runner, ctx, &ran);
 	if (rc == 0 && ran > 0) {
 		cli_emit_background_event(ctx, "background.completed", "end",
 					  "due tasks processed",
@@ -1623,6 +1903,79 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 					  "scheduled_tasks", -1, rc);
 		log_warn("failed to process due tasks: %s", morph_strerror(rc));
 	}
+}
+
+static char *scheduled_task_prompt(const struct scheduled_task *task)
+{
+	cJSON *payload;
+	cJSON *prompt;
+	char *out = NULL;
+
+	if (!task || !task->payload_json)
+		return NULL;
+	payload = cJSON_Parse(task->payload_json);
+	if (!payload)
+		return NULL;
+	prompt = cJSON_GetObjectItem(payload, "prompt");
+	if (cJSON_IsString(prompt) && prompt->valuestring)
+		out = strdup(prompt->valuestring);
+	cJSON_Delete(payload);
+	return out;
+}
+
+static int cli_scheduled_task_runner(const struct scheduled_task *task,
+				     struct scheduled_task_action_result *result,
+				     void *user_data)
+{
+	struct cli_context *ctx = user_data;
+	morph_buf_t prompt;
+	char *task_prompt;
+	const char *answer;
+	int prompt_ready = 0;
+	int rc;
+
+	if (!ctx || !ctx->react || !task || !result)
+		MORPH_RETURN(-EINVAL);
+	task_prompt = scheduled_task_prompt(task);
+	if (!task_prompt)
+		MORPH_RETURN(-EINVAL);
+	rc = morph_buf_init(&prompt, 1024);
+	if (rc != 0) {
+		free(task_prompt);
+		return rc;
+	}
+	prompt_ready = 1;
+	rc = morph_buf_printf(&prompt,
+		"Run this scheduled task now.\n\n"
+		"Task title: %s\n\n"
+		"Task prompt:\n%s\n\n"
+		"Return the result to the user as a concise notification. "
+		"Do not ask follow-up questions; if required information is "
+		"missing, explain what is missing and what should be changed "
+		"on the task.",
+		task->title, task_prompt);
+	free(task_prompt);
+	if (rc != 0)
+		goto out;
+
+	pthread_mutex_lock(&ctx->react_lock);
+	rc = react_run(ctx->react, morph_buf_cstr(&prompt), NULL, NULL);
+	answer = ctx->react->final_answer ? ctx->react->final_answer : "";
+	if (rc == 0) {
+		result->body = strdup(answer);
+		if (!result->body)
+			rc = -ENOMEM;
+	} else {
+		result->error = strdup(answer[0] ? answer : morph_strerror(rc));
+		if (!result->error)
+			rc = -ENOMEM;
+	}
+	pthread_mutex_unlock(&ctx->react_lock);
+
+out:
+	if (prompt_ready)
+		morph_buf_cleanup(&prompt);
+	return rc;
 }
 
 static void cli_redisplay_prompt(struct cli_context *ctx)
@@ -1688,7 +2041,7 @@ static void *cli_scheduler_main(void *arg)
 
 		rc = scheduled_task_run_due_collect_with_runner(
 			&scheduler_db, (int64_t)time(NULL), 50,
-			scheduled_tasks_tool_runner, &ctx->tools,
+			cli_scheduled_task_runner, ctx,
 			&notifications, &count);
 		if (rc == 0) {
 			for (int i = 0; i < count; i++)
@@ -2950,8 +3303,7 @@ static int cli_init_tools(struct cli_context *ctx)
 	ctx->react->ask_user_data = ctx;
 	log_info("registered ask_user tool");
 
-	rc = scheduled_tasks_tool_init(&ctx->tools, &ctx->database,
-				       &ctx->tools);
+	rc = scheduled_tasks_tool_init(&ctx->tools, &ctx->database);
 	if (rc < 0)
 		log_err("failed to register tasks tool: %s", morph_strerror(rc));
 	else
@@ -3399,6 +3751,10 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	ctx->event_user_data = ctx;
 
 	int rc;
+	rc = pthread_mutex_init(&ctx->react_lock, NULL);
+	if (rc != 0)
+		return -rc;
+	ctx->react_lock_ready = 1;
 
 	cli_emit_startup_event(ctx, "startup.begin", "begin",
 			       "startup started", "cli", 0);
@@ -3411,6 +3767,8 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 				       "config", rc);
 		cli_emit_startup_event(ctx, "startup.failed", "failed",
 				       "startup failed", "cli", rc);
+		pthread_mutex_destroy(&ctx->react_lock);
+		ctx->react_lock_ready = 0;
 		return rc;
 	}
 	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
@@ -3453,6 +3811,8 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 				       "database", rc);
 		cli_emit_startup_event(ctx, "startup.failed", "failed",
 				       "startup failed", "cli", rc);
+		pthread_mutex_destroy(&ctx->react_lock);
+		ctx->react_lock_ready = 0;
 		return rc;
 	}
 	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
@@ -4660,6 +5020,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 
 	sigint_received = 0;
+	pthread_mutex_lock(&ctx->react_lock);
 	if (ctx->react)
 		react_cancel(ctx->react);
 
@@ -4773,6 +5134,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		}
 	}
 	ctx->streaming = 0;
+	pthread_mutex_unlock(&ctx->react_lock);
 	cli_process_due_tasks(ctx);
 	return 0;
 }
@@ -4827,6 +5189,10 @@ void cli_shutdown(struct cli_context *ctx)
 	if (ctx->sub_agents) {
 		sub_agent_runtime_destroy(ctx->sub_agents);
 		ctx->sub_agents = NULL;
+	}
+	if (ctx->react_lock_ready) {
+		pthread_mutex_destroy(&ctx->react_lock);
+		ctx->react_lock_ready = 0;
 	}
 	skill_registry_cleanup(ctx->skills);
 	free(ctx->skills);
