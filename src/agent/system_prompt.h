@@ -65,6 +65,8 @@
 "- Reference every file you produce so the user can open it:\n" \
 "    images  ![image](/abs/path.png)\n" \
 "    videos  [video](/abs/path.mp4)\n" \
+"- Format web URLs as Markdown links. Use [url](url) when no better label is\n" \
+"  available; do not leave bare http(s) URLs in final answers.\n" \
 "- Be concise. Lead with the result, then only the context that helps.\n" \
 "  Skip filler and restating the obvious.\n" \
 "- If something failed or was assumed, say so plainly.\n" \

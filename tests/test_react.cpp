@@ -1817,6 +1817,34 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, SystemPromptRequiresMarkdownLinksForUrls) {
+	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	react_run(ctx, "hello", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->system_prompt, nullptr);
+	EXPECT_NE(strstr(cd->system_prompt,
+			 "Format web URLs as Markdown links"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt,
+			 "do not leave bare http(s) URLs in final answers"),
+		  nullptr);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, MemoryContextAppearsInPrompt) {
 	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
 	cd->resp = "Final: answer";
