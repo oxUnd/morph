@@ -108,4 +108,4 @@ exts/       Example exts (manifest.toml + entry script)
 vendor/     Third-party libraries (cJSON, stb_image, toml)
 ```
 
-See [AGENTS.md](AGENTS.md) for conventions and [REQUIREMENTS.md](REQUIREMENTS.md) for the full spec.
+See [AGENTS.md](AGENTS.md) for conventions and [REQUIREMENTS.md](docs/REQUIREMENTS.md) for the full spec.
