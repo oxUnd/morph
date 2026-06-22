@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "database.h"
+#include "event/event.h"
 #include <stdint.h>
 
 #define SCHEDULED_TASK_TEXT_MAX 256
@@ -68,13 +69,24 @@ typedef int (*scheduled_task_runner_fn)(
 	struct scheduled_task_action_result *result,
 	void *user_data);
 
+struct scheduled_task_event_sink {
+	morph_event_cb cb;
+	void *user_data;
+};
+
 int scheduled_task_create(struct db *db,
 			  const struct scheduled_task_input *input,
 			  struct scheduled_task *out);
+int scheduled_task_create_with_events(
+	struct db *db, const struct scheduled_task_input *input,
+	struct scheduled_task *out, const struct scheduled_task_event_sink *events);
 int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out);
 int scheduled_task_update(struct db *db, int64_t id,
 			  const struct scheduled_task_input *input,
 			  struct scheduled_task *out);
+int scheduled_task_update_with_events(
+	struct db *db, int64_t id, const struct scheduled_task_input *input,
+	struct scheduled_task *out, const struct scheduled_task_event_sink *events);
 int scheduled_task_list(struct db *db, const char *status, int limit,
 			struct scheduled_task **out, int *count);
 int scheduled_task_list_due(struct db *db, int64_t now, int limit,
@@ -83,6 +95,8 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 			      int64_t next_run_at, int attempts,
 			      const char *last_error);
 int scheduled_task_cancel(struct db *db, int64_t id);
+int scheduled_task_cancel_with_events(
+	struct db *db, int64_t id, const struct scheduled_task_event_sink *events);
 int scheduled_task_run_due(struct db *db, int64_t now, int limit, int *ran);
 int scheduled_task_run_due_collect(struct db *db, int64_t now, int limit,
 				   struct notification **notifications,
@@ -91,9 +105,18 @@ int scheduled_task_run_due_collect_with_runner(
 	struct db *db, int64_t now, int limit,
 	scheduled_task_runner_fn runner, void *runner_user_data,
 	struct notification **notifications, int *count);
+int scheduled_task_run_due_collect_with_runner_events(
+	struct db *db, int64_t now, int limit,
+	scheduled_task_runner_fn runner, void *runner_user_data,
+	struct notification **notifications, int *count,
+	const struct scheduled_task_event_sink *events);
 int scheduled_task_run_due_with_runner(struct db *db, int64_t now, int limit,
 				       scheduled_task_runner_fn runner,
 				       void *runner_user_data, int *ran);
+int scheduled_task_run_due_with_runner_events(
+	struct db *db, int64_t now, int limit, scheduled_task_runner_fn runner,
+	void *runner_user_data, int *ran,
+	const struct scheduled_task_event_sink *events);
 void scheduled_task_action_result_cleanup(
 	struct scheduled_task_action_result *result);
 void scheduled_task_cleanup(struct scheduled_task *task);

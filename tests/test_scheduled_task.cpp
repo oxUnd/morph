@@ -3,6 +3,8 @@
 #include "db/scheduled_task.h"
 #include "agent/tool.h"
 #include "agent/tools/scheduled_tasks.h"
+#include "event/event.h"
+#include "cJSON.h"
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -46,6 +48,26 @@ static int watch_runner(const struct scheduled_task *task,
 		result->retry_after_seconds = 5;
 	}
 	return 0;
+}
+
+static cJSON *event_at(struct morph_event_recorder *rec, size_t index)
+{
+	const char *json = morph_event_recorder_get(rec, index);
+
+	if (!json)
+		return nullptr;
+	return cJSON_Parse(json);
+}
+
+static void expect_event_name(struct morph_event_recorder *rec, size_t index,
+			      const char *name)
+{
+	cJSON *root = event_at(rec, index);
+
+	ASSERT_NE(root, nullptr);
+	ASSERT_TRUE(cJSON_IsString(cJSON_GetObjectItem(root, "name")));
+	EXPECT_STREQ(name, cJSON_GetObjectItem(root, "name")->valuestring);
+	cJSON_Delete(root);
 }
 
 class ScheduledTaskTest : public ::testing::Test {
@@ -100,6 +122,60 @@ TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 	EXPECT_STREQ(task.payload_json, "{\"order_id\":\"coffee-1\"}");
 
 	scheduled_task_cleanup(&task);
+}
+
+TEST_F(ScheduledTaskTest, CreateUpdateCancelEmitTaskEvents) {
+	struct morph_event_recorder rec;
+	struct scheduled_task_event_sink events;
+	struct scheduled_task_input input = {};
+	struct scheduled_task task = {};
+	cJSON *root;
+	cJSON *data;
+	int64_t id;
+
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	events.cb = morph_event_recorder_cb;
+	events.user_data = &rec;
+
+	input.title = "Check coffee";
+	input.kind = "agent";
+	input.trigger_type = "once";
+	input.next_run_at = 100;
+	input.action_type = "agent_run";
+	input.payload_json = "{\"prompt\":\"check coffee\"}";
+	ASSERT_EQ(scheduled_task_create_with_events(&db, &input, &task,
+						    &events), 0);
+	id = task.id;
+	scheduled_task_cleanup(&task);
+
+	input.title = "Check tea";
+	input.next_run_at = 200;
+	input.payload_json = "{\"prompt\":\"check tea\"}";
+	ASSERT_EQ(scheduled_task_update_with_events(&db, id, &input, &task,
+						    &events), 0);
+	scheduled_task_cleanup(&task);
+	ASSERT_EQ(scheduled_task_cancel_with_events(&db, id, &events), 0);
+
+	ASSERT_EQ(morph_event_recorder_count(&rec), 3u);
+	expect_event_name(&rec, 0, "task.created");
+	expect_event_name(&rec, 1, "task.updated");
+	expect_event_name(&rec, 2, "task.cancelled");
+
+	root = event_at(&rec, 2);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ("task", cJSON_GetObjectItem(root, "type")->valuestring);
+	EXPECT_STREQ("cancelled",
+		     cJSON_GetObjectItem(root, "phase")->valuestring);
+	data = cJSON_GetObjectItem(root, "data");
+	ASSERT_TRUE(cJSON_IsObject(data));
+	EXPECT_EQ(id, (int64_t)cJSON_GetObjectItem(data, "task_id")->valuedouble);
+	EXPECT_STREQ("cancelled",
+		     cJSON_GetObjectItem(data, "status")->valuestring);
+	EXPECT_EQ(-ECANCELED, cJSON_GetObjectItem(data, "error_code")->valueint);
+	EXPECT_STREQ("cancelled",
+		     cJSON_GetObjectItem(data, "reason")->valuestring);
+	cJSON_Delete(root);
+	morph_event_recorder_cleanup(&rec);
 }
 
 TEST_F(ScheduledTaskTest, RejectsInvalidTaskFields) {
@@ -499,6 +575,31 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 	tool_registry_cleanup(&reg);
 }
 
+TEST_F(ScheduledTaskTest, ToolCreateEmitsTaskCreatedEvent) {
+	struct tool_registry reg;
+	struct tool_result result;
+	struct morph_event_recorder rec;
+	struct scheduled_task_event_sink events;
+	const char *args =
+		"{\"op\":\"create\",\"title\":\"evented task\","
+		"\"kind\":\"agent\",\"trigger_type\":\"once\","
+		"\"delay_seconds\":30,\"prompt\":\"say hi\"}";
+
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	events.cb = morph_event_recorder_cb;
+	events.user_data = &rec;
+	tool_registry_init(&reg);
+	tool_result_init(&result);
+	ASSERT_EQ(scheduled_tasks_tool_init_events(&reg, &db, &events), 0);
+	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);
+	ASSERT_EQ(tool_exec(&reg, "tasks", args, &result), 0);
+	ASSERT_EQ(morph_event_recorder_count(&rec), 1u);
+	expect_event_name(&rec, 0, "task.created");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&reg);
+	morph_event_recorder_cleanup(&rec);
+}
+
 TEST_F(ScheduledTaskTest, RunDueAgentUsesRunnerAndReschedules) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task *tasks = nullptr;
@@ -523,4 +624,94 @@ TEST_F(ScheduledTaskTest, RunDueAgentUsesRunnerAndReschedules) {
 	EXPECT_EQ(tasks[0].next_run_at, 50);
 	EXPECT_EQ(tasks[0].attempts, 1);
 	scheduled_task_free_list(tasks, count);
+}
+
+TEST_F(ScheduledTaskTest, RunDueEmitsTaskLifecycleEvents) {
+	struct morph_event_recorder rec;
+	struct scheduled_task_event_sink events;
+	struct scheduled_task_input input = {};
+	cJSON *root;
+	cJSON *data;
+	int ran = 0;
+
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	events.cb = morph_event_recorder_cb;
+	events.user_data = &rec;
+
+	input.title = "Search news";
+	input.kind = "agent";
+	input.trigger_type = "interval";
+	input.next_run_at = 10;
+	input.interval_seconds = 30;
+	input.action_type = "agent_run";
+	input.payload_json = "{\"prompt\":\"search news\"}";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+
+	ASSERT_EQ(scheduled_task_run_due_with_runner_events(
+		&db, 20, 10, successful_runner, nullptr, &ran, &events), 0);
+	EXPECT_EQ(ran, 1);
+	ASSERT_EQ(morph_event_recorder_count(&rec), 4u);
+	expect_event_name(&rec, 0, "task.claimed");
+	expect_event_name(&rec, 1, "task.started");
+	expect_event_name(&rec, 2, "task.notification");
+	expect_event_name(&rec, 3, "task.rescheduled");
+
+	root = event_at(&rec, 3);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ("task", cJSON_GetObjectItem(root, "type")->valuestring);
+	EXPECT_STREQ("ready", cJSON_GetObjectItem(root, "phase")->valuestring);
+	data = cJSON_GetObjectItem(root, "data");
+	ASSERT_TRUE(cJSON_IsObject(data));
+	EXPECT_STREQ("waiting", cJSON_GetObjectItem(data, "status")->valuestring);
+	EXPECT_STREQ("interval", cJSON_GetObjectItem(data, "reason")->valuestring);
+	EXPECT_EQ(50, (int64_t)cJSON_GetObjectItem(data, "next_run_at")->valuedouble);
+	EXPECT_EQ(1, cJSON_GetObjectItem(data, "attempts")->valueint);
+	ASSERT_TRUE(cJSON_IsNumber(cJSON_GetObjectItem(data, "notification_id")));
+	cJSON_Delete(root);
+	morph_event_recorder_cleanup(&rec);
+}
+
+TEST_F(ScheduledTaskTest, RunDueMaxAttemptsEmitsReasonAndErrorCode) {
+	struct morph_event_recorder rec;
+	struct scheduled_task_event_sink events;
+	struct scheduled_task_input input = {};
+	cJSON *root;
+	cJSON *data;
+	int ran = 0;
+
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	events.cb = morph_event_recorder_cb;
+	events.user_data = &rec;
+
+	input.title = "Fail once";
+	input.kind = "agent";
+	input.trigger_type = "once";
+	input.next_run_at = 10;
+	input.max_attempts = 1;
+	input.action_type = "agent_run";
+	input.payload_json = "{\"prompt\":\"fail\"}";
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+
+	ASSERT_EQ(scheduled_task_run_due_with_runner_events(
+		&db, 20, 10, failing_runner, nullptr, &ran, &events), 0);
+	EXPECT_EQ(ran, 1);
+	ASSERT_EQ(morph_event_recorder_count(&rec), 4u);
+	expect_event_name(&rec, 0, "task.claimed");
+	expect_event_name(&rec, 1, "task.started");
+	expect_event_name(&rec, 2, "task.notification");
+	expect_event_name(&rec, 3, "task.max_attempts_reached");
+
+	root = event_at(&rec, 3);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ("failed", cJSON_GetObjectItem(root, "phase")->valuestring);
+	data = cJSON_GetObjectItem(root, "data");
+	ASSERT_TRUE(cJSON_IsObject(data));
+	EXPECT_STREQ("failed", cJSON_GetObjectItem(data, "status")->valuestring);
+	EXPECT_STREQ("max_attempts",
+		     cJSON_GetObjectItem(data, "reason")->valuestring);
+	EXPECT_EQ(-EIO, cJSON_GetObjectItem(data, "error_code")->valueint);
+	EXPECT_EQ(1, cJSON_GetObjectItem(data, "attempts")->valueint);
+	EXPECT_EQ(1, cJSON_GetObjectItem(data, "max_attempts")->valueint);
+	cJSON_Delete(root);
+	morph_event_recorder_cleanup(&rec);
 }

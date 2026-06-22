@@ -56,6 +56,8 @@ const char *morph_errname(morph_err_t err)
 	case MORPH_ERR_SANDBOX:         return "MORPH_ERR_SANDBOX";
 	case MORPH_ERR_LOAD:            return "MORPH_ERR_LOAD";
 	case MORPH_ERR_LLM:             return "MORPH_ERR_LLM";
+	case MORPH_ERR_REACT_MAX_ITERATIONS:
+		return "MORPH_ERR_REACT_MAX_ITERATIONS";
 	default:
 		return "MORPH_ERR_UNKNOWN";
 	}
@@ -76,6 +78,8 @@ const char *morph_strerror(morph_err_t err)
 	case MORPH_ERR_SANDBOX:         return "sandbox violation";
 	case MORPH_ERR_LOAD:            return "load error";
 	case MORPH_ERR_LLM:             return "LLM error";
+	case MORPH_ERR_REACT_MAX_ITERATIONS:
+		return "maximum ReAct iterations reached";
 	default:
 		if (morph_err_is_errno(err))
 			return strerror(-err);

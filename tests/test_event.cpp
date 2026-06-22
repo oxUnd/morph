@@ -11,6 +11,7 @@ TEST(EventTest, TypeName)
 	EXPECT_STREQ("react", morph_event_type_name(MORPH_EVENT_REACT));
 	EXPECT_STREQ("tool", morph_event_type_name(MORPH_EVENT_TOOL));
 	EXPECT_STREQ("mcp", morph_event_type_name(MORPH_EVENT_MCP));
+	EXPECT_STREQ("task", morph_event_type_name(MORPH_EVENT_TASK));
 	EXPECT_STREQ("unknown", morph_event_type_name((enum morph_event_type)99));
 }
 

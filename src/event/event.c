@@ -20,6 +20,8 @@ const char *morph_event_type_name(enum morph_event_type type)
 		return "artifact";
 	case MORPH_EVENT_BACKGROUND:
 		return "background";
+	case MORPH_EVENT_TASK:
+		return "task";
 	case MORPH_EVENT_ERROR:
 		return "error";
 	default:

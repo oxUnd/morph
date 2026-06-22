@@ -628,7 +628,9 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	}
 
 	if (strcmp(ev->name, "react.failed") == 0 ||
-	    strcmp(ev->name, "react.cancelled") == 0) {
+	    strcmp(ev->name, "react.cancelled") == 0 ||
+	    strcmp(ev->name, "react.timed_out") == 0 ||
+	    strcmp(ev->name, "react.max_iterations") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
 			event_sink_error(j->store, j->session_id, text);

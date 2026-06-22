@@ -133,6 +133,8 @@ react.reflection
 react.final
 react.turn.end
 react.cancelled
+react.timed_out
+react.max_iterations
 react.failed
 ```
 
@@ -170,6 +172,22 @@ background.ready
 background.stopping
 background.completed
 background.failed
+```
+
+Tasks:
+
+```text
+task.created
+task.updated
+task.cancelled
+task.claimed
+task.started
+task.notification
+task.completed
+task.rescheduled
+task.failed
+task.timed_out
+task.max_attempts_reached
 ```
 
 ## Common Phases
@@ -219,6 +237,32 @@ Tool event payload:
 }
 ```
 
+Task event payload:
+
+```json
+{
+  "task_id": 8,
+  "title": "Hourly AI news",
+  "kind": "agent",
+  "trigger_type": "interval",
+  "status": "waiting",
+  "next_run_at": 1782117600,
+  "attempts": 2,
+  "max_attempts": 0,
+  "interval_seconds": 3600,
+  "reason": "interval",
+  "error_code": -5,
+  "notification_id": 42,
+  "notification_level": "warning",
+  "notification_title": "Hourly AI news",
+  "notification_body": "The search failed because ..."
+}
+```
+
+`reason` is the machine-readable outcome subtype. Current values include
+`completed`, `interval`, `retry`, `timeout`, `max_attempts`, `runner_error`,
+`condition_not_met`, `no_runner`, and `cancelled`.
+
 ReAct event payload:
 
 ```json
@@ -226,9 +270,20 @@ ReAct event payload:
   "turn_id": "optional-stable-id",
   "iteration": 2,
   "text": "partial or final text",
-  "state": "thinking"
+  "state": "thinking",
+  "outcome": "timeout",
+  "reason": "step_timeout",
+  "error_code": -110,
+  "error": "Operation timed out"
 }
 ```
+
+Terminal ReAct events (`react.turn.end`, `react.cancelled`,
+`react.timed_out`, `react.max_iterations`, and `react.failed`) include
+`outcome`. Failed terminal events also include `reason`, `error_code`, and
+`error`. Stable outcomes are `success`, `cancelled`, `timeout`,
+`max_iterations`, `llm_error`, `tool_error`, `guardrail_denied`, and
+`internal_error`.
 
 HITL event payload:
 

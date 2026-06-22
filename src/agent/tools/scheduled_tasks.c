@@ -10,6 +10,7 @@
 struct scheduled_tasks_tool_context {
 	struct db *db;
 	int64_t time_anchor;
+	struct scheduled_task_event_sink events;
 };
 
 static void scheduled_tasks_tool_context_destroy(void *user_data)
@@ -224,7 +225,8 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 		free(owned_payload_json);
 		return json_error("missing or invalid task create fields");
 	}
-	rc = scheduled_task_create(ctx->db, &input, &task);
+	rc = scheduled_task_create_with_events(ctx->db, &input, &task,
+					       &ctx->events);
 	free(owned_payload_json);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
@@ -270,8 +272,9 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 		free(owned_payload_json);
 		return json_error("missing or invalid task update fields");
 	}
-	rc = scheduled_task_update(ctx->db, (int64_t)id_item->valuedouble,
-				   &input, &task);
+	rc = scheduled_task_update_with_events(ctx->db,
+					       (int64_t)id_item->valuedouble,
+					       &input, &task, &ctx->events);
 	free(owned_payload_json);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
@@ -318,14 +321,17 @@ static char *tasks_tool_list(struct db *db, cJSON *root)
 	return out ? out : json_error("out of memory");
 }
 
-static char *tasks_tool_cancel(struct db *db, cJSON *root)
+static char *tasks_tool_cancel(struct scheduled_tasks_tool_context *ctx,
+			       cJSON *root)
 {
 	cJSON *item = cJSON_GetObjectItem(root, "id");
 	int rc;
 
 	if (!cJSON_IsNumber(item))
 		return json_error("missing task id");
-	rc = scheduled_task_cancel(db, (int64_t)item->valuedouble);
+	rc = scheduled_task_cancel_with_events(ctx->db,
+					       (int64_t)item->valuedouble,
+					       &ctx->events);
 	if (rc != 0)
 		return json_error(morph_strerror(rc));
 	return strdup("{\"status\":\"cancelled\"}");
@@ -399,7 +405,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	else if (strcmp(op, "list") == 0)
 		out = tasks_tool_list(ctx->db, root);
 	else if (strcmp(op, "cancel") == 0)
-		out = tasks_tool_cancel(ctx->db, root);
+		out = tasks_tool_cancel(ctx, root);
 	else if (strcmp(op, "run_due") == 0)
 		out = tasks_tool_run_due(ctx, root);
 	else if (strcmp(op, "inbox") == 0)
@@ -414,7 +420,9 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	return 0;
 }
 
-int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db)
+int scheduled_tasks_tool_init_events(
+	struct tool_registry *reg, struct db *db,
+	const struct scheduled_task_event_sink *events)
 {
 	struct scheduled_tasks_tool_context *ctx;
 	int rc;
@@ -426,6 +434,8 @@ int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db)
 		MORPH_RETURN(-ENOMEM);
 	ctx->db = db;
 	ctx->time_anchor = (int64_t)time(NULL);
+	if (events)
+		ctx->events = *events;
 	rc = tool_register(reg, "tasks",
 		"Create and manage persistent scheduled tasks and the inbox. "
 		"Use next_run_at for absolute Unix seconds, or delay_seconds "
@@ -457,6 +467,11 @@ int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db)
 	if (rc != 0)
 		free(ctx);
 	return rc;
+}
+
+int scheduled_tasks_tool_init(struct tool_registry *reg, struct db *db)
+{
+	return scheduled_tasks_tool_init_events(reg, db, NULL);
 }
 
 int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,

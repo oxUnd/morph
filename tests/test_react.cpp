@@ -7,6 +7,7 @@
 #include "http/client.h"
 #include "http/sse.h"
 #include "config.h"
+#include "util/error.h"
 #include <string.h>
 #include <signal.h>
 #include <cstdlib>
@@ -95,6 +96,7 @@ struct mock_llm_data {
 	int call_count;
 	int fail_after;
 	int should_fail;
+	int sleep_ms;
 };
 
 static int mock_llm_chat(struct model *self, struct arena *arena,
@@ -112,6 +114,9 @@ static int mock_llm_chat(struct model *self, struct arena *arena,
 		return -EIO;
 	if (data->fail_after > 0 && data->call_count > data->fail_after)
 		return -EIO;
+	if (data->sleep_ms > 0)
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(data->sleep_ms));
 	if (cb && data->response)
 		cb(data->response, user_data);
 	return 200;
@@ -132,6 +137,9 @@ static int mock_llm_streaming_chat(struct model *self, struct arena *arena,
 		return -EIO;
 	if (data->fail_after > 0 && data->call_count > data->fail_after)
 		return -EIO;
+	if (data->sleep_ms > 0)
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(data->sleep_ms));
 	if (cb && data->response) {
 		const char *r = data->response;
 		size_t len = strlen(r);
@@ -290,6 +298,7 @@ static struct model *create_mock_llm(const char *response)
 	data->call_count = 0;
 	data->fail_after = 0;
 	data->should_fail = 0;
+	data->sleep_ms = 0;
 	m->handle = data;
 	return m;
 }
@@ -461,6 +470,105 @@ static struct model *create_multi_mock_llm(const char **responses, int count)
 	return m;
 }
 
+struct slot_mock_data {
+	int call_count;
+	int last_msg_count;
+};
+
+static int slot_mock_chat(struct model *self, struct arena *arena,
+			  const char *system_prompt,
+			  const char **messages, int n,
+			  sse_callback cb, void *user_data)
+{
+	(void)self;
+	(void)arena;
+	(void)system_prompt;
+	(void)messages;
+	(void)n;
+	(void)cb;
+	(void)user_data;
+	return 200;
+}
+
+static int slot_mock_chat_with_tools(struct model *self, struct arena *arena,
+				     const char *system_prompt,
+				     struct chat_message *messages,
+				     int msg_count,
+				     struct tool_desc *tools, int tool_count,
+				     struct chat_response *response,
+				     sse_callback thought_cb, void *thought_ud)
+{
+	struct slot_mock_data *d = (struct slot_mock_data *)self->handle;
+
+	(void)arena;
+	(void)system_prompt;
+	(void)messages;
+	(void)tools;
+	(void)tool_count;
+	memset(response, 0, sizeof(*response));
+	d->last_msg_count = msg_count;
+	d->call_count++;
+	if (d->call_count == 1) {
+		if (thought_cb)
+			thought_cb("run two tools", thought_ud);
+		response->content = strdup("run two tools");
+		response->tool_call_count = 2;
+		response->tool_calls = (struct tool_call *)calloc(
+			2, sizeof(*response->tool_calls));
+		if (!response->tool_calls)
+			return -ENOMEM;
+		snprintf(response->tool_calls[0].id,
+			 sizeof(response->tool_calls[0].id), "slot_call_0");
+		strncpy(response->tool_calls[0].name, "slot_a",
+			sizeof(response->tool_calls[0].name) - 1);
+		response->tool_calls[0].arguments = strdup("{\"n\":1}");
+		snprintf(response->tool_calls[1].id,
+			 sizeof(response->tool_calls[1].id), "slot_call_1");
+		strncpy(response->tool_calls[1].name, "slot_b",
+			sizeof(response->tool_calls[1].name) - 1);
+		response->tool_calls[1].arguments = strdup("{\"n\":2}");
+		return 200;
+	}
+	response->content = strdup("done with both tools");
+	if (thought_cb)
+		thought_cb(response->content, thought_ud);
+	return 200;
+}
+
+static void slot_mock_destroy(struct model *self)
+{
+	if (!self)
+		return;
+	free(self->handle);
+	free(self);
+}
+
+static struct model *create_slot_mock_llm(struct slot_mock_data **out)
+{
+	struct model *m = (struct model *)calloc(1, sizeof(*m));
+	struct slot_mock_data *d;
+
+	if (!m)
+		return NULL;
+	d = (struct slot_mock_data *)calloc(1, sizeof(*d));
+	if (!d) {
+		free(m);
+		return NULL;
+	}
+	strncpy(m->provider, "mock", sizeof(m->provider) - 1);
+	strncpy(m->model_id, "slot-mock", sizeof(m->model_id) - 1);
+	strncpy(m->api_key, "mock-key", sizeof(m->api_key) - 1);
+	m->context_limit = 128000;
+	m->timeout_seconds = 60;
+	m->chat = slot_mock_chat;
+	m->chat_with_tools = slot_mock_chat_with_tools;
+	m->destroy = slot_mock_destroy;
+	m->handle = d;
+	if (out)
+		*out = d;
+	return m;
+}
+
 /* ---- basic fixture ---- */
 
 class ReactTest : public ::testing::Test {
@@ -527,6 +635,8 @@ TEST_F(ReactTest, CreateDestroy) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_INIT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_NONE);
+	EXPECT_EQ(ctx->last_error_code, 0);
 	EXPECT_EQ(ctx->max_iterations, 10);
 	react_context_destroy(ctx);
 }
@@ -545,6 +655,8 @@ TEST_F(ReactTest, Reset) {
 	ctx->state = REACT_STATE_THINKING;
 	react_reset(ctx);
 	EXPECT_EQ(ctx->state, REACT_STATE_INIT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_NONE);
+	EXPECT_EQ(ctx->last_error_code, 0);
 	EXPECT_EQ(ctx->steps, nullptr);
 	EXPECT_EQ(ctx->step_count, 0);
 	EXPECT_EQ(ctx->cancelled, 0);
@@ -607,6 +719,23 @@ TEST_F(ReactTest, StateNames) {
 	EXPECT_STREQ(react_state_name(REACT_STATE_TOOL_FAIL), "TOOL_FAIL");
 	EXPECT_STREQ(react_state_name(REACT_STATE_ACTING), "ACTING");
 	EXPECT_STREQ(react_state_name(REACT_STATE_OBSERVING), "OBSERVING");
+}
+
+TEST_F(ReactTest, OutcomeNames) {
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_NONE), "none");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_SUCCESS), "success");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_CANCELLED), "cancelled");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_TIMEOUT), "timeout");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_MAX_ITERATIONS),
+		     "max_iterations");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_LLM_ERROR),
+		     "llm_error");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_TOOL_ERROR),
+		     "tool_error");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_GUARDRAIL_DENIED),
+		     "guardrail_denied");
+	EXPECT_STREQ(react_outcome_name(REACT_OUTCOME_INTERNAL_ERROR),
+		     "internal_error");
 }
 
 TEST_F(ReactTest, DestroyNull) {
@@ -837,6 +966,49 @@ static bool event_recorder_has_name(struct morph_event_recorder *rec,
 	return false;
 }
 
+static int event_recorder_count_name(struct morph_event_recorder *rec,
+				     const char *name)
+{
+	int count = 0;
+
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		if (cJSON_IsString(name_item) &&
+		    strcmp(name_item->valuestring, name) == 0)
+			count++;
+		cJSON_Delete(root);
+	}
+	return count;
+}
+
+static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
+				       const char *name,
+				       const char *outcome)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *outcome_item = data ?
+			cJSON_GetObjectItem(data, "outcome") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0 &&
+			cJSON_IsString(outcome_item) &&
+			strcmp(outcome_item->valuestring, outcome) == 0;
+		cJSON_Delete(root);
+		if (matched)
+			return true;
+	}
+	return false;
+}
+
 TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
@@ -863,6 +1035,8 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.end"));
+	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
+					       "success"));
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
@@ -892,6 +1066,73 @@ TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
 	EXPECT_TRUE(event_recorder_has_name(&rec, "artifact.ready"));
 
 	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, MultipleToolCallsUseSlotArray) {
+	int slot_a_count = 0;
+	int slot_b_count = 0;
+	struct slot_mock_data *slot_data = nullptr;
+
+	tool_register(&tools, "slot_a", "Slot A", "{}",
+		      call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register(&tools, "slot_b", "Slot B", "{}",
+		      call_count_tool_fn, &slot_b_count, nullptr);
+	llm = create_slot_mock_llm(&slot_data);
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "run both", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_EQ(slot_a_count, 1);
+	EXPECT_EQ(slot_b_count, 1);
+	ASSERT_NE(slot_data, nullptr);
+	EXPECT_EQ(slot_data->call_count, 2);
+	EXPECT_EQ(event_recorder_count_name(&rec, "tool.result"), 2);
+	EXPECT_EQ(event_recorder_count_name(&rec, "tool.running"), 2);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "both tools"), nullptr);
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
+	struct slot_mock_data *slot_data = nullptr;
+	llm = create_slot_mock_llm(&slot_data);
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 1;
+
+	for (int i = 0; i < 70; i++) {
+		char content[64];
+		snprintf(content, sizeof(content), "history %d", i);
+		msg_list_append(&ctx->messages,
+				msg_list_create(ctx->session_arena,
+						i % 2 == 0 ? "user" :
+						"assistant",
+						content, 1));
+	}
+
+	int rc = react_run(ctx, "final prompt", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(slot_data, nullptr);
+	EXPECT_EQ(slot_data->last_msg_count, 71);
+
 	react_context_destroy(ctx);
 }
 
@@ -930,8 +1171,11 @@ TEST_F(MockLlmTest, ActionNeverFinal) {
 	ctx->llm_model = llm;
 	ctx->max_iterations = 3;
 	int rc = react_run(ctx, "never final", nullptr, nullptr);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, MORPH_ERR_REACT_MAX_ITERATIONS);
 	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_MAX_ITERATIONS);
+	EXPECT_EQ(ctx->last_error_code, MORPH_ERR_REACT_MAX_ITERATIONS);
+	EXPECT_STREQ(ctx->outcome_reason, "max_iterations");
 	react_context_destroy(ctx);
 }
 
@@ -963,8 +1207,39 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "trigger LLM failure", nullptr, nullptr);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, -EIO);
 	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_LLM_ERROR);
+	EXPECT_EQ(ctx->last_error_code, -EIO);
+	EXPECT_STREQ(ctx->outcome_reason, "llm_error");
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, StepTimeoutReturnsDistinctOutcome) {
+	setup_llm_with_response("Final: too slow");
+	ASSERT_NE(llm_data, nullptr);
+	llm_data->sleep_ms = 1100;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->step_timeout_seconds = 1;
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "slow response", nullptr, nullptr);
+	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_TIMEOUT);
+	EXPECT_EQ(ctx->last_error_code, -ETIMEDOUT);
+	EXPECT_STREQ(ctx->outcome_reason, "step_timeout");
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.timed_out"));
+	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
+					       "timeout"));
+
+	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
 }
 
@@ -1798,8 +2073,11 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 		      self_cancel_tool_fn, ctx, nullptr);
 	ctx->max_iterations = 5;
 	int rc = react_run(ctx, "cancel me", nullptr, nullptr);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, -ECANCELED);
 	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_CANCELLED);
+	EXPECT_EQ(ctx->last_error_code, -ECANCELED);
+	EXPECT_STREQ(ctx->outcome_reason, "user_cancelled");
 	react_context_destroy(ctx);
 }
 

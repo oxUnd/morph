@@ -1213,6 +1213,16 @@ fail:
 	return NULL;
 }
 
+static struct scheduled_task_event_sink cli_task_event_sink(
+	struct cli_context *ctx)
+{
+	struct scheduled_task_event_sink events;
+
+	events.cb = ctx ? ctx->event_cb : NULL;
+	events.user_data = ctx ? ctx->event_user_data : NULL;
+	return events;
+}
+
 static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
@@ -1260,7 +1270,9 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	rc = scheduled_task_create(&ctx->database, &input, &task);
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_create_with_events(&ctx->database, &input, &task,
+					       &events);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -1320,7 +1332,9 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	rc = scheduled_task_create(&ctx->database, &input, &task);
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_create_with_events(&ctx->database, &input, &task,
+					       &events);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -1384,8 +1398,9 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	rc = scheduled_task_update(&ctx->database, (int64_t)id, &input,
-				   &task);
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_update_with_events(&ctx->database, (int64_t)id,
+					       &input, &task, &events);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -1490,7 +1505,9 @@ static int cmd_tasks_cancel(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("invalid task id: %s", argv[2]);
 		return -EINVAL;
 	}
-	rc = scheduled_task_cancel(&ctx->database, (int64_t)id);
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_cancel_with_events(&ctx->database, (int64_t)id,
+					       &events);
 	if (rc != 0) {
 		CMD_ERROR("failed to cancel task: %s", morph_strerror(rc));
 		return rc;
@@ -1507,9 +1524,10 @@ static int cmd_tasks_run(struct cli_context *ctx, int argc, char **argv)
 
 	if (argc > 2)
 		limit = atoi(argv[2]);
-	rc = scheduled_task_run_due_with_runner(
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_run_due_with_runner_events(
 		&ctx->database, (int64_t)time(NULL), limit,
-		cli_scheduled_task_runner, ctx, &ran);
+		cli_scheduled_task_runner, ctx, &ran, &events);
 	if (rc != 0) {
 		CMD_ERROR("failed to run due tasks: %s", morph_strerror(rc));
 		return rc;
@@ -1886,9 +1904,10 @@ static void cli_process_due_tasks(struct cli_context *ctx)
 		return;
 	if (ctx->scheduler_started)
 		return;
-	rc = scheduled_task_run_due_with_runner(
+	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
+	rc = scheduled_task_run_due_with_runner_events(
 		&ctx->database, (int64_t)time(NULL), 50,
-		cli_scheduled_task_runner, ctx, &ran);
+		cli_scheduled_task_runner, ctx, &ran, &events);
 	if (rc == 0 && ran > 0) {
 		cli_emit_background_event(ctx, "background.completed", "end",
 					  "due tasks processed",
@@ -2039,10 +2058,12 @@ static void *cli_scheduler_main(void *arg)
 		}
 		pthread_mutex_unlock(&ctx->scheduler_lock);
 
-		rc = scheduled_task_run_due_collect_with_runner(
+		struct scheduled_task_event_sink events =
+			cli_task_event_sink(ctx);
+		rc = scheduled_task_run_due_collect_with_runner_events(
 			&scheduler_db, (int64_t)time(NULL), 50,
 			cli_scheduled_task_runner, ctx,
-			&notifications, &count);
+			&notifications, &count, &events);
 		if (rc == 0) {
 			for (int i = 0; i < count; i++)
 				cli_print_task_notification(ctx,
@@ -2725,6 +2746,8 @@ static int cli_event_callback(const struct morph_event *ev, void *user_data)
 		prefix = "mcp";
 	else if (ev->type == MORPH_EVENT_BACKGROUND)
 		prefix = "background";
+	else if (ev->type == MORPH_EVENT_TASK)
+		prefix = "task";
 	else if (ev->type == MORPH_EVENT_ARTIFACT)
 		prefix = "artifact";
 
@@ -3303,7 +3326,9 @@ static int cli_init_tools(struct cli_context *ctx)
 	ctx->react->ask_user_data = ctx;
 	log_info("registered ask_user tool");
 
-	rc = scheduled_tasks_tool_init(&ctx->tools, &ctx->database);
+	struct scheduled_task_event_sink task_events = cli_task_event_sink(ctx);
+	rc = scheduled_tasks_tool_init_events(&ctx->tools, &ctx->database,
+					      &task_events);
 	if (rc < 0)
 		log_err("failed to register tasks tool: %s", morph_strerror(rc));
 	else
@@ -4045,6 +4070,17 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 					ctx->react->final_answer);
 	else
 		cJSON_AddStringToObject(root, "final_answer", "");
+	cJSON_AddStringToObject(root, "outcome",
+				react_outcome_name(ctx->react->outcome));
+	if (ctx->react->last_error_code < 0) {
+		cJSON_AddNumberToObject(root, "error_code",
+					ctx->react->last_error_code);
+		cJSON_AddStringToObject(root, "error",
+					morph_strerror(ctx->react->last_error_code));
+	}
+	if (ctx->react->outcome_reason[0])
+		cJSON_AddStringToObject(root, "reason",
+					ctx->react->outcome_reason);
 	cJSON *steps = cJSON_CreateArray();
 	struct react_step *cur = ctx->react->steps;
 	while (cur) {
@@ -5026,14 +5062,22 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	cli_refresh_memory_context(ctx, effective_input);
 
-	react_run(ctx->react, effective_input,
-		  ctx->event_mode == CLI_EVENTS_JSON ? NULL : output_callback,
-		  ctx);
+	int react_rc = react_run(ctx->react, effective_input,
+				 ctx->event_mode == CLI_EVENTS_JSON ?
+				 NULL : output_callback, ctx);
 
 	if (ctx->spin.running) {
-		if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
-		    ctx->react->cancelled) {
+		if (ctx->react &&
+		    ctx->react->outcome == REACT_OUTCOME_CANCELLED) {
 			spin_stop(&ctx->spin, SPIN_STATE_ABORT, "Cancelled");
+		} else if (ctx->react &&
+			   ctx->react->outcome == REACT_OUTCOME_TIMEOUT) {
+			spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Timed out");
+		} else if (ctx->react &&
+			   ctx->react->outcome ==
+			   REACT_OUTCOME_MAX_ITERATIONS) {
+			spin_stop(&ctx->spin, SPIN_STATE_ERROR,
+				  "Max iterations reached");
 		} else {
 			spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Error");
 		}
@@ -5042,7 +5086,15 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 	if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
 	    ctx->event_mode != CLI_EVENTS_JSON) {
-		printf(ANSI_YELLOW "[aborted] ReAct loop cancelled or timed out." ANSI_RESET "\n");
+		const char *outcome = react_outcome_name(ctx->react->outcome);
+		const char *error = react_rc < 0 ? morph_strerror(react_rc) :
+			"aborted";
+		printf(ANSI_YELLOW "[%s] %s" ANSI_RESET,
+		       outcome, error);
+		if (ctx->react->outcome_reason[0])
+			printf(ANSI_DIM " (%s)" ANSI_RESET,
+			       ctx->react->outcome_reason);
+		printf("\n");
 	}
 
 	/* Persist trace to DB */

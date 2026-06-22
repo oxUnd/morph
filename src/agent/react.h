@@ -33,6 +33,18 @@ enum react_state {
 	REACT_STATE_TOOL_FAIL,
 };
 
+enum react_outcome {
+	REACT_OUTCOME_NONE,
+	REACT_OUTCOME_SUCCESS,
+	REACT_OUTCOME_CANCELLED,
+	REACT_OUTCOME_TIMEOUT,
+	REACT_OUTCOME_MAX_ITERATIONS,
+	REACT_OUTCOME_LLM_ERROR,
+	REACT_OUTCOME_TOOL_ERROR,
+	REACT_OUTCOME_GUARDRAIL_DENIED,
+	REACT_OUTCOME_INTERNAL_ERROR,
+};
+
 struct react_step {
 	enum react_step_type type;
 	char *content;
@@ -93,6 +105,9 @@ struct react_context {
 	void *llm_model;
 	char *final_answer;
 	enum react_state state;
+	enum react_outcome outcome;
+	int last_error_code;
+	char outcome_reason[64];
 	char *tool_fail_name;
 	char *tool_fail_args;
 	int tool_fail_count;
@@ -163,6 +178,7 @@ void react_step_destroy(struct react_step *step);
 
 const char *react_step_type_name(enum react_step_type type);
 const char *react_state_name(enum react_state state);
+const char *react_outcome_name(enum react_outcome outcome);
 
 #ifdef __cplusplus
 }

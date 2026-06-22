@@ -511,6 +511,54 @@ CLI：
 - 这不是 agent tool 能调用的操作。
 - 只处理 `next_run_at <= now` 的任务。
 
+## Task Events
+
+Tasks 已接入统一 event system，事件类型为 `task`。
+
+CRUD 事件：
+
+```text
+task.created
+task.updated
+task.cancelled
+```
+
+执行事件：
+
+```text
+task.claimed
+task.started
+task.notification
+task.completed
+task.rescheduled
+task.failed
+task.timed_out
+task.max_attempts_reached
+```
+
+所有 task event 都包含机器可读 payload：
+
+```json
+{
+  "task_id": 8,
+  "title": "Hourly AI news",
+  "kind": "agent",
+  "trigger_type": "interval",
+  "status": "waiting",
+  "next_run_at": 1782117600,
+  "attempts": 2,
+  "max_attempts": 0,
+  "reason": "interval",
+  "error_code": -5,
+  "notification_id": 42
+}
+```
+
+CLI 的 `/tasks add`、`/tasks every`、`/tasks update`、`/tasks cancel`、
+`/tasks run`，以及 agent 调用 `tasks` tool 的 create/update/cancel 都会通过
+core event sink 发 task events。Android/iOS 仍需在后续适配中把 task events 接到
+现有系统通知/UI 刷新逻辑。
+
 ## 当前限制
 
 - 后台 agent runner 复用 CLI 的 `react_context`，通过 `react_lock` 串行化。它能工作，
@@ -522,6 +570,8 @@ CLI：
 - 没有 task-local state，例如 `last_result`、`state_json`、`last_success_at`。
 - 没有 cron 表达式；每日/每周任务暂时用 `next_run_at + interval_seconds` 表达。
 - 没有 session-scoped/global-scoped 的明确区分；当前任务存储在 Morph SQLite 中。
+- Android/iOS 仍然使用 task notification callback；后续应改为消费 `task.notification`
+  和 task terminal events。
 
 ## 建议的下一步
 
