@@ -1278,6 +1278,41 @@ TEST_F(MockLlmTest, CancelDuringRun) {
 	react_context_destroy(ctx);
 }
 
+static int drain_cancel_once(void *user_data, struct react_action *out,
+			     int block)
+{
+	int *count = (int *)user_data;
+
+	(void)block;
+	if (*count > 0)
+		return 0;
+	(*count)++;
+	out->type = "cancel";
+	out->payload_json = NULL;
+	return 1;
+}
+
+TEST_F(MockLlmTest, ActionDrainCancelBeforeLlmCall) {
+	setup_llm_with_response("Final: should not be called");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int drain_count = 0;
+	ASSERT_EQ(react_set_action_drain(ctx, drain_cancel_once,
+					 &drain_count), 0);
+
+	int rc = react_run(ctx, "cancel through drain", nullptr, nullptr);
+	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_CANCELLED);
+	EXPECT_EQ(llm_data->call_count, 0);
+	EXPECT_EQ(drain_count, 1);
+
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, ModelTimeoutField) {
 	llm = create_mock_llm("Final: test");
 	ASSERT_NE(llm, nullptr);
@@ -2271,6 +2306,132 @@ TEST_F(MockLlmTest, GuardrailCancelDuringRetry) {
 	react_context_destroy(ctx);
 }
 
+static enum guardrail_verdict reject_blocked_input(
+	const struct guardrail_eval_ctx *ctx, char *reason, size_t cap)
+{
+	if (ctx->user_input && strstr(ctx->user_input, "blocked")) {
+		snprintf(reason, cap, "blocked input");
+		return GUARDRAIL_FAIL;
+	}
+	return GUARDRAIL_PASS;
+}
+
+static enum guardrail_verdict reject_bad_answer(
+	const struct guardrail_eval_ctx *ctx, char *reason, size_t cap)
+{
+	if (ctx->proposed_answer && strstr(ctx->proposed_answer, "bad")) {
+		snprintf(reason, cap, "bad answer");
+		return GUARDRAIL_FAIL;
+	}
+	return GUARDRAIL_PASS;
+}
+
+static enum guardrail_verdict reject_tool_output(
+	const struct guardrail_eval_ctx *ctx, char *reason, size_t cap)
+{
+	if (ctx->tool_result && strstr(ctx->tool_result, "test")) {
+		snprintf(reason, cap, "tool output rejected");
+		return GUARDRAIL_FAIL;
+	}
+	return GUARDRAIL_PASS;
+}
+
+TEST_F(MockLlmTest, InputGuardrailRejectsBeforeLlmCall) {
+	setup_llm_with_response("Final: should not be called");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	ASSERT_EQ(guardrail_rule_register(&ctx->guardrail, "reject_blocked",
+		GUARDRAIL_HOOK_INPUT, GUARDRAIL_RULE_C, reject_blocked_input,
+		NULL, NULL, "Use a different request."), 0);
+
+	int rc = react_run(ctx, "this is blocked", nullptr, nullptr);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
+	EXPECT_EQ(llm_data->call_count, 0);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "blocked input"), nullptr);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, OutputGuardrailRetriesAndFinalizes) {
+	const char *responses[] = {
+		"Final: bad answer",
+		"Final: good answer"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	ASSERT_EQ(guardrail_rule_register(&ctx->guardrail, "reject_bad",
+		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C, reject_bad_answer,
+		NULL, NULL, "Try again."), 0);
+
+	int rc = react_run(ctx, "answer carefully", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(data->call_count, 2);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "good answer"), nullptr);
+	bool saw_reflection = false;
+	for (struct react_step *s = ctx->steps; s; s = s->next) {
+		if (s->type == REACT_STEP_REFLECTION &&
+		    s->content && strstr(s->content, "bad answer"))
+			saw_reflection = true;
+	}
+	EXPECT_TRUE(saw_reflection);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ToolOutputGuardrailRewritesObservation) {
+	tool_register(&tools, "test_tool", "A test tool", "{}",
+		      test_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: use tool.\nAction: test_tool({})\n",
+		"Final: done after guarded observation"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	ASSERT_EQ(guardrail_rule_register(&ctx->guardrail, "reject_tool",
+		GUARDRAIL_HOOK_TOOL_OUTPUT, GUARDRAIL_RULE_C,
+		reject_tool_output, NULL, NULL,
+		"Inspect the tool output."), 0);
+
+	int rc = react_run(ctx, "guard tool output", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	bool saw_guarded_observation = false;
+	bool saw_reflection = false;
+	for (struct react_step *s = ctx->steps; s; s = s->next) {
+		if (s->type == REACT_STEP_OBSERVATION &&
+		    s->content && strstr(s->content,
+					"guardrail: tool output rejected"))
+			saw_guarded_observation = true;
+		if (s->type == REACT_STEP_REFLECTION &&
+		    s->content && strstr(s->content, "tool output rejected"))
+			saw_reflection = true;
+	}
+	EXPECT_TRUE(saw_guarded_observation);
+	EXPECT_TRUE(saw_reflection);
+
+	react_context_destroy(ctx);
+}
+
 /* ---- HITL (Human-in-the-Loop) tests ---- */
 
 static int hitl_deny_count = 0;
@@ -2480,6 +2641,59 @@ TEST(HitlTest, DenyCallbackPreventsExecution) {
 	EXPECT_EQ(v2, HITL_APPROVE);
 	EXPECT_EQ(hitl_deny_count, 2);
 	react_context_destroy(ctx);
+}
+
+TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
+	struct tool_registry reg;
+	struct tokenizer *tok = tokenizer_create("gpt-4o", 128000);
+	struct compress_config ccfg = {0};
+	int dangerous_count = 0;
+	const char *responses[] = {
+		"Thought: try dangerous.\nAction: dangerous_tool({})\n",
+		"Final: denied and done"
+	};
+	struct model *llm = create_multi_mock_llm(responses, 2);
+	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
+
+	tool_registry_init(&reg);
+	tool_register(&reg, "dangerous_tool", "desc", "{}",
+		      call_count_tool_fn, &dangerous_count, NULL);
+	ccfg.max_context_tokens = 128000;
+	ccfg.max_history_rounds = 6;
+	ccfg.summarize_threshold_ratio = 0.8;
+	ccfg.compress_target_ratio = 0.5;
+	struct react_context *ctx = react_context_create(&reg, tok, &ccfg,
+							NULL);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	ctx->hitl.enabled = 1;
+	ctx->hitl.auto_approve_readonly = 0;
+	ctx->hitl.tools_count = 0;
+	ctx->hitl.approval_cb = hitl_deny_callback;
+	hitl_deny_count = 0;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "run dangerous", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_EQ(dangerous_count, 0);
+	EXPECT_EQ(hitl_deny_count, 1);
+	EXPECT_EQ(data->call_count, 2);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "hitl.request"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "hitl.denied"));
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "denied and done"), nullptr);
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+	model_destroy(llm);
+	tokenizer_destroy(tok);
+	tool_registry_cleanup(&reg);
 }
 
 TEST(HitlTest, AlwaysCallbackAutoApproves) {
