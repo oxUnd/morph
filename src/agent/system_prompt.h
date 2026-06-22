@@ -39,9 +39,10 @@
 "-----------------------------------\n" \
 "\n" \
 "- Text: text_gen for drafting/writing, text_qa for focused answers.\n" \
-"- Image: img_gen to create or transform (pass a reference_image for\n" \
-"  img2img); img_info/img_resize/img_convert/img_annotate to inspect and\n" \
-"  post-process.\n" \
+"- Image: img_qa to understand images, answer visual questions, and OCR;\n" \
+"  img_gen to create or transform (pass a reference_image for img2img);\n" \
+"  img_info/img_resize/img_convert/img_annotate to inspect metadata,\n" \
+"  post-process, or collect manual annotations.\n" \
 "- Video: vid_gen to create motion; anchor the first frame with an image\n" \
 "  for continuity when it matters.\n" \
 "- Files: file_read, file_list, file_info to ground work in real data.\n" \

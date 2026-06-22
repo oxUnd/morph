@@ -2,6 +2,7 @@ add_library(morph-tools STATIC
 	text_gen.c
 	text_qa.c
 	img_gen.c
+	img_qa.c
 	img_info.c
 	img_resize.c
 	img_convert.c

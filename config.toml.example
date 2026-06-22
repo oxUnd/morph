@@ -162,7 +162,7 @@ guardrail_max_empty_rounds = 2
 # ext_entry = "/path/to/guardrail-script"
 # action_text = "Revise your answer to pass the custom check."
 # Disable specific tools by name. Supported tool names:
-# text_gen, text_qa, img_gen, img_inpaint, img_compose, img_info,
+# text_gen, text_qa, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
 # file_info, bash_exec
 # disabled_tools = ["vid_gen", "img_resize"]

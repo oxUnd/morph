@@ -6,6 +6,7 @@
 #include "util/arena.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/image_util.h"
 #include "http/client.h"
 #include "http/sse.h"
 #include "cJSON.h"
@@ -415,6 +416,160 @@ static int llm_chat(struct model *self, struct arena *arena,
 	return status;
 }
 
+static int add_system_message(cJSON *messages, const char *system_prompt)
+{
+	if (!messages || !system_prompt || !*system_prompt)
+		return 0;
+	cJSON *msg = cJSON_CreateObject();
+	if (!msg)
+		return -ENOMEM;
+	cJSON_AddStringToObject(msg, "role", "system");
+	cJSON_AddStringToObject(msg, "content", system_prompt);
+	cJSON_AddItemToArray(messages, msg);
+	return 0;
+}
+
+static int llm_chat_with_image(struct model *self, struct arena *arena,
+			       const char *system_prompt,
+			       const char *prompt,
+			       const char *image_path,
+			       sse_callback cb, void *user_data)
+{
+	if (!self || !self->api_key[0]) {
+		log_err("llm_chat_with_image: no API key configured");
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	}
+	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
+		return -EINVAL;
+
+	char *b64 = image_encode_base64(image_path, 2048);
+	if (!b64) {
+		log_err("llm_chat_with_image: failed to encode image: %s",
+			image_path);
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	}
+
+	cJSON *root = cJSON_CreateObject();
+	cJSON *messages = cJSON_CreateArray();
+	if (!root || !messages) {
+		cJSON_Delete(root);
+		cJSON_Delete(messages);
+		free(b64);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(root, "model", self->model_id);
+	cJSON_AddItemToObject(root, "messages", messages);
+	if (add_system_message(messages, system_prompt) < 0) {
+		cJSON_Delete(root);
+		free(b64);
+		return -ENOMEM;
+	}
+
+	cJSON *user = cJSON_CreateObject();
+	cJSON *content = cJSON_CreateArray();
+	cJSON *text = cJSON_CreateObject();
+	cJSON *image = cJSON_CreateObject();
+	cJSON *image_url = cJSON_CreateObject();
+	if (!user || !content || !text || !image || !image_url) {
+		cJSON_Delete(user);
+		cJSON_Delete(content);
+		cJSON_Delete(text);
+		cJSON_Delete(image);
+		cJSON_Delete(image_url);
+		cJSON_Delete(root);
+		free(b64);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(user, "role", "user");
+	cJSON_AddItemToObject(user, "content", content);
+	cJSON_AddStringToObject(text, "type", "text");
+	cJSON_AddStringToObject(text, "text", prompt);
+	cJSON_AddItemToArray(content, text);
+
+	size_t uri_len = strlen("data:image/png;base64,") + strlen(b64) + 1;
+	char *data_uri = arena_alloc(arena, uri_len);
+	if (!data_uri) {
+		cJSON_Delete(root);
+		free(b64);
+		return -ENOMEM;
+	}
+	snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
+	free(b64);
+
+	cJSON_AddStringToObject(image, "type", "image_url");
+	cJSON_AddStringToObject(image_url, "url", data_uri);
+	cJSON_AddItemToObject(image, "image_url", image_url);
+	cJSON_AddItemToArray(content, image);
+	cJSON_AddItemToArray(messages, user);
+	cJSON_AddBoolToObject(root, "stream", 1);
+	cJSON_AddNumberToObject(root, "max_tokens",
+				self->max_tokens > 0 ? self->max_tokens : 4096);
+
+	size_t body_cap = 8192 + uri_len + strlen(prompt);
+	char *body = arena_alloc(arena, body_cap);
+	while (body && !cJSON_PrintPreallocated(root, body,
+						(int)body_cap, 0)) {
+		body_cap *= 2;
+		body = arena_alloc(arena, body_cap);
+	}
+	cJSON_Delete(root);
+	if (!body)
+		return -ENOMEM;
+
+	size_t body_len = strlen(body);
+	size_t clean_len = utf8_sanitize_into(body, body, body_len);
+	body[clean_len] = '\0';
+
+	struct llm_stream_ctx ctx;
+	llm_stream_init(&ctx, arena, cb, user_data);
+
+	struct sse_parser parser;
+	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
+
+	struct llm_http_ctx hctx;
+	hctx.parser = &parser;
+	hctx.arena = arena;
+	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
+		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
+
+	char url[512];
+	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
+
+	char auth_header[512];
+	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s",
+		 self->api_key);
+	const char *extra_headers[] = { auth_header };
+
+	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
+	log_dbg("llm_chat_with_image: sending SSE request to %s", url);
+	int status = http_post_sse_ex_timeout(url, body, strlen(body),
+					      "application/json",
+					      extra_headers, 1, timeout,
+					      llm_http_cb, &hctx);
+	log_dbg("llm_chat_with_image: SSE request done, status=%d", status);
+
+	sse_parser_free(&parser);
+
+	if (status < 0) {
+		log_err("llm_chat_with_image: SSE request failed: %d", status);
+		return status;
+	}
+	if (status >= 400) {
+		const char *detail = NULL;
+		if (hctx.error_buf.len > 0)
+			detail = llm_extract_error(hctx.error_buf.data, arena);
+		if (detail)
+			log_err("llm_chat_with_image: API returned HTTP %d: %s",
+				status, detail);
+		else
+			log_err("llm_chat_with_image: API returned HTTP %d",
+				status);
+		MORPH_RETURN(MORPH_ERR_API);
+	}
+
+	return status;
+}
+
 static cJSON *build_structured_messages_cjson(const char *system_prompt,
 					       struct chat_message *messages,
 					       int msg_count)
@@ -741,6 +896,7 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	m->timeout_seconds = 0;
 	m->chat = llm_chat;
 	m->chat_with_tools = llm_chat_with_tools;
+	m->chat_with_image = llm_chat_with_image;
 	m->generate = llm_generate;
 	m->destroy = llm_destroy;
 	return m;

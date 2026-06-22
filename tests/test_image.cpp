@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "models/image_gen.h"
 #include "agent/tools/img_gen.h"
+#include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
 #include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
@@ -14,6 +15,27 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+
+static char g_fake_img_qa_prompt[256];
+static char g_fake_img_qa_path[512];
+
+static int fake_chat_with_image(struct model *self, struct arena *arena,
+				const char *system_prompt,
+				const char *prompt,
+				const char *image_path,
+				sse_callback cb, void *user_data)
+{
+	(void)self;
+	(void)arena;
+	(void)system_prompt;
+	snprintf(g_fake_img_qa_prompt, sizeof(g_fake_img_qa_prompt), "%s",
+		 prompt ? prompt : "");
+	snprintf(g_fake_img_qa_path, sizeof(g_fake_img_qa_path), "%s",
+		 image_path ? image_path : "");
+	if (cb)
+		return cb("fake image answer", user_data);
+	return 0;
+}
 
 static int create_test_png(const char *path) {
 	unsigned char buf[] = {
@@ -256,6 +278,70 @@ TEST_F(ImgGenToolTest, InfoDeniesSymlinkEscape) {
 	std::remove(link_path);
 	std::remove(outside);
 	rmdir(work);
+}
+
+TEST_F(ImgGenToolTest, QaRegister) {
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image;
+	int rc = img_qa_init(&reg, &fake, NULL);
+	EXPECT_EQ(rc, 0);
+	struct tool_entry *e = tool_lookup(&reg, "img_qa");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.name, "img_qa");
+}
+
+TEST_F(ImgGenToolTest, QaMissingPath) {
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image;
+	img_qa_init(&reg, &fake, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_qa", "{}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "file_path") != NULL);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, QaRequiresConfiguredLlm) {
+	struct model fake = {};
+	fake.chat_with_image = fake_chat_with_image;
+	img_qa_init(&reg, &fake, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_qa",
+			   "{\"file_path\":\"/tmp/nonexistent.png\"}",
+			   &result);
+	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "multimodal") != NULL);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
+	const char *path = "/tmp/morph_img_qa.png";
+	ASSERT_EQ(create_test_png(path), 0);
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image;
+	g_fake_img_qa_prompt[0] = '\0';
+	g_fake_img_qa_path[0] = '\0';
+	img_qa_init(&reg, &fake, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_qa",
+			   "{\"file_path\":\"/tmp/morph_img_qa.png\","
+			   "\"prompt\":\"OCR this\"}",
+			   &result);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_STREQ(result.text.data, "fake image answer");
+	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
+	EXPECT_STREQ(g_fake_img_qa_path, path);
+	tool_result_cleanup(&result);
+	std::remove(path);
 }
 
 TEST_F(ImgGenToolTest, ResizeRegister) {

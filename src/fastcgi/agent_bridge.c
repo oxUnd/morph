@@ -19,6 +19,7 @@
 #include "agent/tools/text_gen.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
+#include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
 #include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
@@ -160,6 +161,7 @@ static void bridge_init_once(void)
 
 	text_gen_init(&g_tools, g_llm);
 	text_qa_init(&g_tools, g_llm);
+	img_qa_init(&g_tools, g_llm, g_tctx);
 
 	/* Image generation model */
 	{

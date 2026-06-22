@@ -54,6 +54,11 @@ struct model {
 			       struct tool_desc *tools, int tool_count,
 			       struct chat_response *response,
 			       sse_callback thought_cb, void *thought_ud);
+	int (*chat_with_image)(struct model *self, struct arena *arena,
+			       const char *system_prompt,
+			       const char *prompt,
+			       const char *image_path,
+			       sse_callback cb, void *user_data);
 	int (*generate)(struct model *self, const char *prompt, const char *out_path);
 	void (*destroy)(struct model *self);
 };

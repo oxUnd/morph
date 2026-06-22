@@ -12,6 +12,7 @@
 #include "ext/ext.h"
 #include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
+#include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
 #include "agent/tools/img_compose.h"
 #include "agent/tools/img_info.h"
@@ -3214,6 +3215,9 @@ static int cli_init_tools(struct cli_context *ctx)
 
 	text_qa_init(&ctx->tools, ctx->llm);
 	log_info("registered text_qa tool");
+
+	img_qa_init(&ctx->tools, ctx->llm, ctx->tctx);
+	log_info("registered img_qa tool");
 
 	img_gen_init(&ctx->tools, ctx->img_llm, ctx->tctx);
 	log_info("registered img_gen tool");
