@@ -272,6 +272,22 @@ TEST(MarkdownRender, InlineCode)
 	EXPECT_TRUE(plain.find("code") != std::string::npos);
 }
 
+TEST(MarkdownRender, InlineLatexMathWithCjkText)
+{
+	const char *md = "formula $\\boldsymbol{\\mu}\xef\xbc\x8c"
+		"\xe5\x8d\x8f\xe6\x96\xb9\xe5\xb7\xae"
+		"\xe7\x9f\xa9\xe9\x98\xb5\\Sigma$\xef\xbc\x9a";
+	std::string out = render(md);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("\xce\xbc") != std::string::npos) << plain;
+	EXPECT_TRUE(plain.find("\xce\xa3") != std::string::npos);
+	EXPECT_TRUE(plain.find("\xe5\x8d\x8f\xe6\x96\xb9\xe5\xb7\xae") !=
+		    std::string::npos);
+	EXPECT_TRUE(plain.find("\\boldsymbol") == std::string::npos);
+	EXPECT_TRUE(plain.find("\\Sigma") == std::string::npos);
+	EXPECT_TRUE(plain.find("$") == std::string::npos);
+}
+
 TEST(MarkdownRender, Strikethrough)
 {
 	std::string out = render("~~deleted~~");

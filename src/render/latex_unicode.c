@@ -71,6 +71,8 @@ CMD("blacklozenge","\xe2\xa7\xab",0),
 CMD("blacksquare","\xe2\x96\xa0",0),
 CMD("blacktriangle","\xe2\x96\xb2",0),
 CMD("blacktriangledown","\xe2\x96\xbc",0),
+CMD("bm","",1),
+CMD("boldsymbol","",1),
 CMD("bot","\xe2\x8a\xa5",0), CMD("bowtie","\xe2\x8b\x88",0),
 CMD("boxdot","\xe2\x8a\xa1",0),
 CMD("boxminus","\xe2\x8a\x9f",0),
@@ -607,7 +609,8 @@ static size_t skip_brace(const char *s, size_t len)
 	size_t i = 1;
 	int depth = 1;
 	while (i < len && depth > 0) {
-		if (s[i] == '\\' && i + 1 < len) {
+		if (s[i] == '\\' && i + 1 < len &&
+		    (s[i + 1] == '{' || s[i + 1] == '}')) {
 			i += 2;
 			continue;
 		}
@@ -629,7 +632,8 @@ static size_t brace_content(const char *s, size_t len,
 	size_t i = 1;
 	int depth = 1;
 	while (i < len && depth > 0) {
-		if (s[i] == '\\' && i + 1 < len) {
+		if (s[i] == '\\' && i + 1 < len &&
+		    (s[i + 1] == '{' || s[i + 1] == '}')) {
 			i += 2;
 			continue;
 		}
@@ -755,18 +759,10 @@ static size_t render_sub(morph_buf_t *o, const char *s, size_t len)
 
 static const struct latex_cmd *find_cmd(const char *name, size_t nlen)
 {
-	/* bsearch needs the key to be comparable; we use a wrapper */
-	for (size_t lo = 0, hi = CMD_TABLE_SIZE; lo < hi; ) {
-		size_t mid = lo + (hi - lo) / 2;
-		int r = strncmp(name, cmd_table[mid].name,
-			 nlen > cmd_table[mid].nlen ?
-			 nlen : cmd_table[mid].nlen);
-		if (r == 0 && nlen == cmd_table[mid].nlen)
-			return &cmd_table[mid];
-		if (r < 0 || (r == 0 && nlen < cmd_table[mid].nlen))
-			hi = mid;
-		else
-			lo = mid + 1;
+	for (size_t i = 0; i < CMD_TABLE_SIZE; i++) {
+		if (nlen == cmd_table[i].nlen &&
+		    strncmp(name, cmd_table[i].name, nlen) == 0)
+			return &cmd_table[i];
 	}
 	return NULL;
 }
@@ -856,6 +852,14 @@ static size_t render_cmd(const char *s, size_t len, morph_buf_t *o)
 		brace_content(s + nlen, len - nlen, &c, &cl);
 		/* render as-is for these fonts (no distinct unicode range
 		 * that most terminals support) */
+		render_expr(c, cl, o);
+		return consumed;
+	}
+	if ((cmd->nlen == 2 && memcmp(cmd->name, "bm", 2) == 0) ||
+	    (cmd->nlen == 10 && memcmp(cmd->name, "boldsymbol", 10) == 0)) {
+		consumed += skip_brace(s + nlen, len - nlen);
+		const char *c; size_t cl;
+		brace_content(s + nlen, len - nlen, &c, &cl);
 		render_expr(c, cl, o);
 		return consumed;
 	}
