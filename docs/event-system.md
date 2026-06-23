@@ -127,6 +127,7 @@ ReAct:
 react.turn.begin
 react.thought.delta
 react.thought.end
+react.reasoning.delta
 react.action
 react.observation
 react.reflection

@@ -10,6 +10,7 @@
 struct scheduled_tasks_tool_context {
 	struct db *db;
 	int64_t time_anchor;
+	int64_t source_session_id;
 	struct scheduled_task_event_sink events;
 };
 
@@ -44,6 +45,10 @@ static void add_task_json(cJSON *arr, const struct scheduled_task *task)
 	if (!obj)
 		return;
 	cJSON_AddNumberToObject(obj, "id", (double)task->id);
+	cJSON_AddNumberToObject(obj, "source_session_id",
+				(double)task->source_session_id);
+	cJSON_AddNumberToObject(obj, "latest_session_id",
+				(double)task->latest_session_id);
 	cJSON_AddStringToObject(obj, "title", task->title);
 	cJSON_AddStringToObject(obj, "kind", task->kind);
 	cJSON_AddStringToObject(obj, "status", task->status);
@@ -101,6 +106,8 @@ static void add_notification_json(cJSON *arr,
 		return;
 	cJSON_AddNumberToObject(obj, "id", (double)notification->id);
 	cJSON_AddNumberToObject(obj, "task_id", (double)notification->task_id);
+	cJSON_AddNumberToObject(obj, "session_id",
+				(double)notification->session_id);
 	cJSON_AddStringToObject(obj, "level", notification->level);
 	cJSON_AddStringToObject(obj, "title", notification->title);
 	cJSON_AddStringToObject(obj, "body", notification->body);
@@ -147,6 +154,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (!root || !input || !owned_payload_json)
 		MORPH_RETURN(-EINVAL);
 	memset(input, 0, sizeof(*input));
+	input->source_session_id = 0;
 	*owned_payload_json = NULL;
 	item = cJSON_GetObjectItem(root, "title");
 	if (cJSON_IsString(item))
@@ -225,6 +233,7 @@ static char *tasks_tool_create(struct scheduled_tasks_tool_context *ctx,
 		free(owned_payload_json);
 		return json_error("missing or invalid task create fields");
 	}
+	input.source_session_id = ctx->source_session_id;
 	rc = scheduled_task_create_with_events(ctx->db, &input, &task,
 					       &ctx->events);
 	free(owned_payload_json);
@@ -272,6 +281,7 @@ static char *tasks_tool_update(struct scheduled_tasks_tool_context *ctx,
 		free(owned_payload_json);
 		return json_error("missing or invalid task update fields");
 	}
+	input.source_session_id = ctx->source_session_id;
 	rc = scheduled_task_update_with_events(ctx->db,
 					       (int64_t)id_item->valuedouble,
 					       &input, &task, &ctx->events);
@@ -487,5 +497,21 @@ int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,
 		MORPH_RETURN(-ENOENT);
 	ctx = entry->user_data;
 	ctx->time_anchor = time_anchor > 0 ? time_anchor : (int64_t)time(NULL);
+	return 0;
+}
+
+int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
+					    int64_t session_id)
+{
+	struct tool_entry *entry;
+	struct scheduled_tasks_tool_context *ctx;
+
+	if (!reg)
+		MORPH_RETURN(-EINVAL);
+	entry = tool_lookup(reg, "tasks");
+	if (!entry || !entry->user_data)
+		MORPH_RETURN(-ENOENT);
+	ctx = entry->user_data;
+	ctx->source_session_id = session_id > 0 ? session_id : 0;
 	return 0;
 }

@@ -13,6 +13,7 @@ extern "C" {
 #define SCHEDULED_TASK_TYPE_MAX 32
 
 struct scheduled_task_input {
+	int64_t source_session_id;
 	const char *title;
 	const char *kind;
 	const char *trigger_type;
@@ -28,6 +29,8 @@ struct scheduled_task_input {
 
 struct scheduled_task {
 	int64_t id;
+	int64_t source_session_id;
+	int64_t latest_session_id;
 	char title[SCHEDULED_TASK_TEXT_MAX];
 	char kind[SCHEDULED_TASK_TYPE_MAX];
 	char status[SCHEDULED_TASK_TYPE_MAX];
@@ -49,6 +52,7 @@ struct scheduled_task {
 struct notification {
 	int64_t id;
 	int64_t task_id;
+	int64_t session_id;
 	char level[SCHEDULED_TASK_TYPE_MAX];
 	char title[SCHEDULED_TASK_TEXT_MAX];
 	char *body;
@@ -58,6 +62,7 @@ struct notification {
 };
 
 struct scheduled_task_action_result {
+	int64_t session_id;
 	int completed;
 	char *body;
 	char *error;
@@ -93,6 +98,7 @@ int scheduled_task_list_due(struct db *db, int64_t now, int limit,
 			    struct scheduled_task **out, int *count);
 int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 			      int64_t next_run_at, int attempts,
+			      int64_t latest_session_id,
 			      const char *last_error);
 int scheduled_task_cancel(struct db *db, int64_t id);
 int scheduled_task_cancel_with_events(
@@ -126,6 +132,11 @@ int notification_create(struct db *db, int64_t task_id, const char *level,
 			const char *title, const char *body,
 			const char *delivery_status,
 			struct notification *out);
+int notification_create_for_session(struct db *db, int64_t task_id,
+				    int64_t session_id, const char *level,
+				    const char *title, const char *body,
+				    const char *delivery_status,
+				    struct notification *out);
 int notification_list_unread(struct db *db, int limit,
 			     struct notification **out, int *count);
 int notification_mark_read(struct db *db, int64_t id, int64_t read_at);

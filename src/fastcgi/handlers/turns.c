@@ -530,8 +530,7 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	case REACT_STEP_REASONING:
 		if (!*payload_json)
 			return 0;
-		events_publish(j->store, j->session_id, "reasoning",
-			       payload_json);
+		event_sink_reasoning(j->store, j->session_id, payload_json);
 		return 0;
 
 	default:
@@ -576,8 +575,7 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "react.reasoning.delta") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
-			events_publish(j->store, j->session_id, "reasoning",
-				       text);
+			event_sink_reasoning(j->store, j->session_id, text);
 		free(text);
 		return 0;
 	}

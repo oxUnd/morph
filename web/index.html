@@ -589,6 +589,9 @@ function dispatchSSE(eventType, data) {
   case 'thought':
     if (p.text) appendThought(p.text);
     break;
+  case 'reasoning':
+    if (p.text) appendThought(p.text);
+    break;
   case 'tool_call':
     addTool(p.tool || '?', p.args || {});
     break;

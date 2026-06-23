@@ -116,6 +116,8 @@ static const char *schema_sql =
 static const char *scheduled_schema_sql =
 	"CREATE TABLE IF NOT EXISTS scheduled_tasks ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,"
+	"latest_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,"
 	"title TEXT NOT NULL,"
 	"kind TEXT NOT NULL,"
 	"status TEXT NOT NULL,"
@@ -136,6 +138,7 @@ static const char *scheduled_schema_sql =
 	"CREATE TABLE IF NOT EXISTS notifications ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"task_id INTEGER REFERENCES scheduled_tasks(id) ON DELETE SET NULL,"
+	"session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,"
 	"level TEXT NOT NULL,"
 	"title TEXT NOT NULL,"
 	"body TEXT NOT NULL,"
@@ -259,6 +262,17 @@ static int db_migrate_memory_columns(struct db *db)
 	return 0;
 }
 
+static int db_migrate_scheduled_task_columns(struct db *db)
+{
+	db_add_column_if_missing(db, "scheduled_tasks", "source_session_id",
+				 "INTEGER REFERENCES sessions(id) ON DELETE SET NULL");
+	db_add_column_if_missing(db, "scheduled_tasks", "latest_session_id",
+				 "INTEGER REFERENCES sessions(id) ON DELETE SET NULL");
+	db_add_column_if_missing(db, "notifications", "session_id",
+				 "INTEGER REFERENCES sessions(id) ON DELETE SET NULL");
+	return 0;
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
@@ -270,6 +284,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_display_id(db);
+	if (rc != 0)
+		return rc;
+	rc = db_migrate_scheduled_task_columns(db);
 	if (rc != 0)
 		return rc;
 	return db_migrate_memory_columns(db);

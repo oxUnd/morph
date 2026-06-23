@@ -1266,6 +1266,7 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	memset(&input, 0, sizeof(input));
+	input.source_session_id = ctx->current_session.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "once";
@@ -1327,6 +1328,7 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	memset(&input, 0, sizeof(input));
+	input.source_session_id = ctx->current_session.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "interval";
@@ -1394,6 +1396,7 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 		return -ENOMEM;
 	}
 	memset(&input, 0, sizeof(input));
+	input.source_session_id = ctx->current_session.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "once";
@@ -1945,15 +1948,71 @@ static char *scheduled_task_prompt(const struct scheduled_task *task)
 	return out;
 }
 
+static int cli_save_react_trace(struct cli_context *ctx, int64_t session_id)
+{
+	cJSON *arr;
+	char *json;
+	struct react_step *cur;
+	int round_no;
+	int aborted;
+	int rc = 0;
+
+	if (!ctx || !ctx->react || !ctx->react->steps || session_id <= 0)
+		return 0;
+	arr = cJSON_CreateArray();
+	if (!arr)
+		MORPH_RETURN(-ENOMEM);
+	cur = ctx->react->steps;
+	while (cur) {
+		cJSON *obj = cJSON_CreateObject();
+		if (!obj) {
+			rc = -ENOMEM;
+			goto out;
+		}
+		cJSON_AddStringToObject(obj, "type",
+					react_step_type_name(cur->type));
+		if (cur->content)
+			cJSON_AddStringToObject(obj, "content", cur->content);
+		if (cur->tool_name)
+			cJSON_AddStringToObject(obj, "tool_name",
+						cur->tool_name);
+		if (cur->tool_args)
+			cJSON_AddStringToObject(obj, "tool_args",
+						cur->tool_args);
+		if (cur->tool_call_id)
+			cJSON_AddStringToObject(obj, "tool_call_id",
+						cur->tool_call_id);
+		cJSON_AddItemToArray(arr, obj);
+		cur = cur->next;
+	}
+	json = cJSON_PrintUnformatted(arr);
+	if (!json) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	round_no = trace_get_next_round_no(&ctx->database, session_id);
+	aborted = ctx->react->state == REACT_STATE_ABORT ? 1 : 0;
+	rc = trace_save(&ctx->database, session_id, round_no, json, aborted);
+	free(json);
+
+out:
+	cJSON_Delete(arr);
+	return rc;
+}
+
 static int cli_scheduled_task_runner(const struct scheduled_task *task,
 				     struct scheduled_task_action_result *result,
 				     void *user_data)
 {
 	struct cli_context *ctx = user_data;
+	struct session previous_session;
+	struct session run_session;
 	morph_buf_t prompt;
+	char session_name[256];
 	char *task_prompt;
 	const char *answer;
 	int prompt_ready = 0;
+	int locked = 0;
 	int rc;
 
 	if (!ctx || !ctx->react || !task || !result)
@@ -1981,8 +2040,21 @@ static int cli_scheduled_task_runner(const struct scheduled_task *task,
 		goto out;
 
 	pthread_mutex_lock(&ctx->react_lock);
+	locked = 1;
+	previous_session = ctx->current_session;
+	snprintf(session_name, sizeof(session_name), "Task #%lld: %.220s",
+		 (long long)task->id, task->title);
+	rc = session_create(&ctx->database, session_name,
+			    ctx->config.models.text.model, &run_session);
+	if (rc != 0)
+		goto restore;
+	session_ensure_display_id(&ctx->database, &run_session);
+	ctx->current_session = run_session;
+	session_load_history(ctx);
+
 	rc = react_run(ctx->react, morph_buf_cstr(&prompt), NULL, NULL);
 	answer = ctx->react->final_answer ? ctx->react->final_answer : "";
+	result->session_id = run_session.id;
 	if (rc == 0) {
 		result->body = strdup(answer);
 		if (!result->body)
@@ -1992,9 +2064,33 @@ static int cli_scheduled_task_runner(const struct scheduled_task *task,
 		if (!result->error)
 			rc = -ENOMEM;
 	}
+	(void)cli_save_react_trace(ctx, run_session.id);
+	{
+		int user_tokens = tokenizer_count(ctx->tokenizer,
+						  morph_buf_cstr(&prompt));
+		message_add(&ctx->database, run_session.id, "user",
+			    morph_buf_cstr(&prompt), user_tokens);
+		session_update_tokens(&ctx->database, run_session.id,
+				      user_tokens);
+		if (answer) {
+			int asst_tokens = tokenizer_count(ctx->tokenizer,
+							  answer);
+			message_add(&ctx->database, run_session.id, "assistant",
+				    answer, asst_tokens);
+			session_update_tokens(&ctx->database, run_session.id,
+					      asst_tokens);
+		}
+	}
+
+restore:
+	ctx->current_session = previous_session;
+	session_load_history(ctx);
 	pthread_mutex_unlock(&ctx->react_lock);
+	locked = 0;
 
 out:
+	if (locked)
+		pthread_mutex_unlock(&ctx->react_lock);
 	if (prompt_ready)
 		morph_buf_cleanup(&prompt);
 	return rc;
@@ -5027,6 +5123,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	command_started_at = (int64_t)time(NULL);
 	(void)scheduled_tasks_tool_set_time_anchor(&ctx->tools,
 						   command_started_at);
+	(void)scheduled_tasks_tool_set_source_session(&ctx->tools,
+						      ctx->current_session.id);
 
 	cli_process_due_tasks(ctx);
 

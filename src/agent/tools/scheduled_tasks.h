@@ -15,6 +15,8 @@ int scheduled_tasks_tool_init_events(
 	const struct scheduled_task_event_sink *events);
 int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,
 					 int64_t time_anchor);
+int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
+					    int64_t session_id);
 
 #ifdef __cplusplus
 }

@@ -20,6 +20,13 @@ void event_sink_thought(struct session_store *s, const char *sid, const char *te
 	publish_obj(s, sid, "thought", o);
 }
 
+void event_sink_reasoning(struct session_store *s, const char *sid, const char *text)
+{
+	cJSON *o = cJSON_CreateObject();
+	cJSON_AddStringToObject(o, "text", text ? text : "");
+	publish_obj(s, sid, "reasoning", o);
+}
+
 void event_sink_tool_call(struct session_store *s, const char *sid,
 			  const char *tool, const char *args_json) {
 	cJSON *o = cJSON_CreateObject();

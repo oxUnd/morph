@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "db/database.h"
 #include "db/scheduled_task.h"
+#include "session.h"
 #include "agent/tool.h"
 #include "agent/tools/scheduled_tasks.h"
 #include "event/event.h"
@@ -121,6 +122,46 @@ TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 	ASSERT_NE(task.payload_json, nullptr);
 	EXPECT_STREQ(task.payload_json, "{\"order_id\":\"coffee-1\"}");
 
+	scheduled_task_cleanup(&task);
+}
+
+TEST_F(ScheduledTaskTest, TaskAndNotificationTrackSessions) {
+	struct scheduled_task_input input = {};
+	struct scheduled_task task = {};
+	struct scheduled_task fetched = {};
+	struct notification notification = {};
+	struct session source = {};
+	struct session run = {};
+
+	ASSERT_EQ(session_create(&db, "source", "gpt-4o", &source), 0);
+	ASSERT_EQ(session_create(&db, "run", "gpt-4o", &run), 0);
+
+	input.source_session_id = source.id;
+	input.title = "Check coffee";
+	input.kind = "agent";
+	input.trigger_type = "once";
+	input.next_run_at = 100;
+	input.action_type = "agent_run";
+	input.payload_json = "{\"prompt\":\"check coffee\"}";
+
+	ASSERT_EQ(scheduled_task_create(&db, &input, &task), 0);
+	EXPECT_EQ(task.source_session_id, source.id);
+	EXPECT_EQ(task.latest_session_id, 0);
+
+	ASSERT_EQ(scheduled_task_update_run(&db, task.id, "completed", 0, 1,
+					    run.id, nullptr), 0);
+	ASSERT_EQ(scheduled_task_get(&db, task.id, &fetched), 0);
+	EXPECT_EQ(fetched.source_session_id, source.id);
+	EXPECT_EQ(fetched.latest_session_id, run.id);
+
+	ASSERT_EQ(notification_create_for_session(&db, task.id, run.id, "info",
+						  "Coffee", "Ready", "inbox",
+						  &notification), 0);
+	EXPECT_EQ(notification.task_id, task.id);
+	EXPECT_EQ(notification.session_id, run.id);
+
+	notification_cleanup(&notification);
+	scheduled_task_cleanup(&fetched);
 	scheduled_task_cleanup(&task);
 }
 
@@ -293,7 +334,7 @@ TEST_F(ScheduledTaskTest, UpdateAndCancelTask) {
 	ASSERT_EQ(scheduled_task_create(&db, &input, &task), 0);
 
 	ASSERT_EQ(scheduled_task_update_run(&db, task.id, "waiting", 70, 1,
-					    "still preparing"), 0);
+					    0, "still preparing"), 0);
 	ASSERT_EQ(scheduled_task_get(&db, task.id, &fetched), 0);
 	EXPECT_STREQ(fetched.status, "waiting");
 	EXPECT_EQ(fetched.next_run_at, 70);
