@@ -11,6 +11,14 @@ struct arena;
 
 typedef int (*sse_callback)(const char *token, void *user_data);
 
+enum llm_stream_kind {
+	LLM_STREAM_CONTENT,
+	LLM_STREAM_REASONING,
+};
+
+typedef int (*llm_stream_callback)(enum llm_stream_kind kind,
+				   const char *token, void *user_data);
+
 struct tool_desc;
 
 struct tool_call {
@@ -54,6 +62,13 @@ struct model {
 			       struct tool_desc *tools, int tool_count,
 			       struct chat_response *response,
 			       sse_callback thought_cb, void *thought_ud);
+	int (*chat_with_tools_stream)(struct model *self, struct arena *arena,
+				      const char *system_prompt,
+				      struct chat_message *messages, int msg_count,
+				      struct tool_desc *tools, int tool_count,
+				      struct chat_response *response,
+				      llm_stream_callback stream_cb,
+				      void *stream_ud);
 	int (*chat_with_image)(struct model *self, struct arena *arena,
 			       const char *system_prompt,
 			       const char *prompt,

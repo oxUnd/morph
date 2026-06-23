@@ -696,6 +696,7 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 		case REACT_STEP_OBSERVATION:	color = ANSI_DIM; break;
 		case REACT_STEP_REFLECTION:	color = ANSI_CYAN; break;
 		case REACT_STEP_FINAL:		color = ANSI_GREEN; break;
+		case REACT_STEP_REASONING:	color = ANSI_DIM; break;
 		default:			color = ""; break;
 		}
 		printf("  %d. %s[%s]%s", step, color, react_step_type_name(cur->type), ANSI_RESET);
@@ -735,6 +736,7 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 		else if (strcmp(type_name, "Observation") == 0)	type = REACT_STEP_OBSERVATION;
 		else if (strcmp(type_name, "Reflection") == 0)	type = REACT_STEP_REFLECTION;
 		else if (strcmp(type_name, "Final") == 0)	type = REACT_STEP_FINAL;
+		else if (strcmp(type_name, "Reasoning") == 0)	type = REACT_STEP_REASONING;
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
@@ -4394,6 +4396,7 @@ static int output_handle_thought(struct cli_context *ctx, const char *content)
 		char sub[128];
 		utf8_copy_display_width(sub, sizeof(sub), preview, 60);
 		spin_set_sub(&ctx->spin, sub);
+		spin_render(&ctx->spin);
 	} else if (!ctx->streaming) {
 		if (!ctx->spin.running) {
 			spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
@@ -4401,8 +4404,15 @@ static int output_handle_thought(struct cli_context *ctx, const char *content)
 		ctx->streaming = 1;
 		ctx->stream_buf[0] = '\0';
 		ctx->stream_buf_len = 0;
+		spin_set_sub(&ctx->spin, "waiting for model stream...");
+		spin_render(&ctx->spin);
 	}
 	return 0;
+}
+
+static int output_handle_reasoning(struct cli_context *ctx, const char *content)
+{
+	return output_handle_thought(ctx, content);
 }
 
 /*
@@ -4706,6 +4716,8 @@ static int output_callback(enum react_step_type type, const char *content,
 		return output_handle_reflection(ctx, content);
 	case REACT_STEP_FINAL:
 		return output_handle_final(ctx, content);
+	case REACT_STEP_REASONING:
+		return output_handle_reasoning(ctx, content);
 	}
 	return 0;
 }

@@ -117,6 +117,7 @@ static int build_messages_json(struct arena *arena,
 
 struct llm_stream_ctx {
 	sse_callback user_cb;
+	llm_stream_callback stream_cb;
 	void *user_data;
 	struct arena *arena;
 	morph_buf_t accumulated;
@@ -129,6 +130,7 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 			     sse_callback cb, void *user_data)
 {
 	ctx->user_cb = cb;
+	ctx->stream_cb = NULL;
 	ctx->user_data = user_data;
 	ctx->arena = arena;
 	if (morph_buf_init_arena(&ctx->accumulated, arena, 8192) != 0)
@@ -138,9 +140,29 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 	ctx->tool_call_cap = 0;
 }
 
+static void llm_stream_init_typed(struct llm_stream_ctx *ctx,
+				   struct arena *arena,
+				   llm_stream_callback cb, void *user_data)
+{
+	llm_stream_init(ctx, arena, NULL, user_data);
+	ctx->stream_cb = cb;
+}
+
 static void llm_stream_append(struct llm_stream_ctx *ctx, const char *text)
 {
 	(void)morph_buf_puts(&ctx->accumulated, text);
+}
+
+static int llm_stream_emit(struct llm_stream_ctx *ctx,
+			   enum llm_stream_kind kind, const char *text)
+{
+	if (!ctx || !text || !*text)
+		return 0;
+	if (ctx->stream_cb)
+		return ctx->stream_cb(kind, text, ctx->user_data);
+	if (kind == LLM_STREAM_CONTENT && ctx->user_cb)
+		return ctx->user_cb(text, ctx->user_data);
+	return 0;
 }
 
 static struct tool_call *llm_stream_ensure_tool_call(struct llm_stream_ctx *ctx,
@@ -238,12 +260,21 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	cJSON *content = cJSON_GetObjectItem(delta, "content");
 	if (cJSON_IsString(content) && content->valuestring) {
 		llm_stream_append(ctx, content->valuestring);
-		if (ctx->user_cb) {
-			int rc = ctx->user_cb(content->valuestring, ctx->user_data);
-			if (rc != 0) {
-				cJSON_Delete(root);
-				return rc;
-			}
+		int rc = llm_stream_emit(ctx, LLM_STREAM_CONTENT,
+					  content->valuestring);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
+	}
+
+	cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
+	if (cJSON_IsString(reasoning) && reasoning->valuestring) {
+		int rc = llm_stream_emit(ctx, LLM_STREAM_REASONING,
+					  reasoning->valuestring);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			return rc;
 		}
 	}
 
@@ -694,12 +725,15 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 	return arr;
 }
 
-static int llm_chat_with_tools(struct model *self, struct arena *arena,
-			       const char *system_prompt,
-			       struct chat_message *messages, int msg_count,
-			       struct tool_desc *tools, int tool_count,
-			       struct chat_response *response,
-			       sse_callback thought_cb, void *thought_ud)
+static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
+				    const char *system_prompt,
+				    struct chat_message *messages,
+				    int msg_count,
+				    struct tool_desc *tools, int tool_count,
+				    struct chat_response *response,
+				    sse_callback thought_cb,
+				    llm_stream_callback stream_cb,
+				    void *stream_ud)
 {
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_tools: no API key configured");
@@ -747,7 +781,10 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	body[clean_len] = '\0';
 
 	struct llm_stream_ctx ctx;
-	llm_stream_init(&ctx, arena, thought_cb, thought_ud);
+	if (stream_cb)
+		llm_stream_init_typed(&ctx, arena, stream_cb, stream_ud);
+	else
+		llm_stream_init(&ctx, arena, thought_cb, stream_ud);
 
 	struct sse_parser parser;
 	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
@@ -803,6 +840,32 @@ static int llm_chat_with_tools(struct model *self, struct arena *arena,
 	llm_stream_transfer_tool_calls(&ctx, response);
 
 	return status;
+}
+
+static int llm_chat_with_tools(struct model *self, struct arena *arena,
+			       const char *system_prompt,
+			       struct chat_message *messages, int msg_count,
+			       struct tool_desc *tools, int tool_count,
+			       struct chat_response *response,
+			       sse_callback thought_cb, void *thought_ud)
+{
+	return llm_chat_with_tools_impl(self, arena, system_prompt, messages,
+					msg_count, tools, tool_count,
+					response, thought_cb, NULL, thought_ud);
+}
+
+static int llm_chat_with_tools_stream(struct model *self, struct arena *arena,
+				      const char *system_prompt,
+				      struct chat_message *messages,
+				      int msg_count,
+				      struct tool_desc *tools, int tool_count,
+				      struct chat_response *response,
+				      llm_stream_callback stream_cb,
+				      void *stream_ud)
+{
+	return llm_chat_with_tools_impl(self, arena, system_prompt, messages,
+					msg_count, tools, tool_count,
+					response, NULL, stream_cb, stream_ud);
 }
 
 static int llm_generate(struct model *self, const char *prompt,
@@ -896,6 +959,7 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	m->timeout_seconds = 0;
 	m->chat = llm_chat;
 	m->chat_with_tools = llm_chat_with_tools;
+	m->chat_with_tools_stream = llm_chat_with_tools_stream;
 	m->chat_with_image = llm_chat_with_image;
 	m->generate = llm_generate;
 	m->destroy = llm_destroy;

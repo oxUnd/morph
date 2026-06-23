@@ -19,6 +19,7 @@ enum react_step_type {
 	REACT_STEP_OBSERVATION,
 	REACT_STEP_REFLECTION,
 	REACT_STEP_FINAL,
+	REACT_STEP_REASONING,
 };
 
 enum react_state {

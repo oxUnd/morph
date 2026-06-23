@@ -1686,6 +1686,56 @@ TEST_F(MockServerTest, SSEWithTimeout) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n"
+		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+
+	struct chat_message msg = {
+		(char *)"user",
+		(char *)"hello",
+		NULL,
+		NULL,
+		0,
+	};
+	struct chat_response response;
+	std::string streamed;
+
+	int rc = model->chat_with_tools_stream(
+		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		[](enum llm_stream_kind kind, const char *token, void *ud) -> int {
+			auto *out = static_cast<std::string *>(ud);
+			if (kind == LLM_STREAM_REASONING)
+				out->append("R:");
+			else
+				out->append("C:");
+			if (token)
+				out->append(token);
+			return 0;
+		},
+		&streamed);
+	EXPECT_EQ(rc, 200);
+	EXPECT_EQ(streamed, "R:thinkC:answer");
+	ASSERT_NE(response.content, nullptr);
+	EXPECT_STREQ(response.content, "answer");
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, SSECallbackErrorPropagates) {
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
 	srv.response_status = 200;

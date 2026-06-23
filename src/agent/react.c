@@ -745,6 +745,7 @@ const char *react_step_type_name(enum react_step_type type)
 	case REACT_STEP_OBSERVATION:	return "Observation";
 	case REACT_STEP_REFLECTION:	return "Reflection";
 	case REACT_STEP_FINAL:		return "Final";
+	case REACT_STEP_REASONING:	return "Reasoning";
 	default:			return "Unknown";
 	}
 }
@@ -1091,6 +1092,30 @@ static int react_stream_cb(const char *token, void *user_data)
 			      "react.thought.delta", "delta",
 			      NULL, token);
 	return 0;
+}
+
+static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
+				 void *user_data)
+{
+	struct react_stream_data *sd = user_data;
+
+	if (kind == LLM_STREAM_REASONING) {
+		if (react_sigint_flag) {
+			if (sd->cancelled)
+				*sd->cancelled = 1;
+			react_sigint_flag = 0;
+		}
+		if (sd->cancelled && *sd->cancelled)
+			return -EINTR;
+		if (sd->user_cb)
+			sd->user_cb(REACT_STEP_REASONING, token,
+				    sd->user_data);
+		react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
+				      "react.reasoning.delta", "delta",
+				      NULL, token);
+		return 0;
+	}
+	return react_stream_cb(token, user_data);
 }
 
 static int count_active_tools(struct tool_registry *reg)
@@ -1563,7 +1588,12 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		sd.accumulated[0] = '\0';
 
 	*llm_start = time(NULL);
-	if (llm->chat_with_tools) {
+	if (llm->chat_with_tools_stream) {
+		status = llm->chat_with_tools_stream(
+			llm, ctx->turn_arena, system_prompt, messages,
+			msg_count, active_tools, active_tool_count, response,
+			react_typed_stream_cb, &sd);
+	} else if (llm->chat_with_tools) {
 		status = llm->chat_with_tools(llm, ctx->turn_arena,
 					      system_prompt, messages, msg_count,
 					      active_tools, active_tool_count,
