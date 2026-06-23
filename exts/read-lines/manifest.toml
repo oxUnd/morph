@@ -1,0 +1,17 @@
+name = "read_lines"
+version = "1.0.0"
+description = "Read a bounded range of lines from a large text file"
+author = "morph"
+type = "so"
+entry = "read_lines.so"
+fronts = ["cli"]
+categories = ["file", "text", "skill"]
+permissions = 0
+max_memory_mb = 32
+max_cpu_seconds = 5
+max_open_files = 32
+args_schema = "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute path to a text file\"},\"start_line\":{\"type\":\"integer\",\"minimum\":1,\"description\":\"1-based line number to start reading from\"},\"line_count\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000,\"description\":\"Number of complete lines to read\"},\"include_line_numbers\":{\"type\":\"boolean\",\"description\":\"Prefix each returned line with its source line number\"},\"max_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":262144,\"description\":\"Maximum content bytes to return; defaults to 65536\"}},\"required\":[\"path\",\"start_line\",\"line_count\"]}"
+output_schema = "object"
+
+[build]
+command = "make"
