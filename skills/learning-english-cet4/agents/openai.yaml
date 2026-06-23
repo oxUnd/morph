@@ -1,0 +1,7 @@
+interface:
+  display_name: "CET-4 三次背词"
+  short_description: "按随机、起点或难度分层背 CET-4"
+  default_prompt: "Use $learning-english-cet4 to start an interactive 10-word CET-4 review. Pick a suitable batch from the user's intent: random, explicit start line, continuation, or easy/medium/hard/very-hard difficulty. Use 会/模糊/不会 choices, and on Morph Android/iOS or other Agent UI-capable clients reveal answers with Agent UI tags for vocab cards, pronunciation, examples, and continue buttons."
+
+policy:
+  allow_implicit_invocation: true
