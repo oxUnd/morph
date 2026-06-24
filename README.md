@@ -4,6 +4,8 @@
 
 A terminal-native multimodal AI agent written in pure C. Orchestrates text, image, and video generation and understanding through a ReAct loop.
 
+中文系统介绍: [docs/introduction.zh-CN.md](docs/introduction.zh-CN.md)
+
 ## Features
 
 - **Multimodal in one place**: text chat, image generation/editing, and video generation under a single entry point
