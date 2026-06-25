@@ -12,6 +12,7 @@ extern "C" {
 #include "agent/tools/ask_user.h"
 #include "event/event.h"
 #include "skill/skill.h"
+#include "util/cancel.h"
 
 enum react_step_type {
 	REACT_STEP_THOUGHT,
@@ -114,6 +115,7 @@ struct react_context {
 	int tool_fail_count;
 	int empty_round_count;
 	volatile sig_atomic_t cancelled;
+	struct morph_cancel_token cancel_token;
 	struct arena *turn_arena;
 	struct arena *session_arena;
 	char *system_prompt;

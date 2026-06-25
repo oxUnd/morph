@@ -80,6 +80,21 @@ TEST_F(DatabaseTest, SchemaTables) {
 	EXPECT_GE(tables, 6);
 }
 
+TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
+	int rc = db_open(&db, db_path);
+	EXPECT_EQ(rc, 0);
+	rc = db_init_schema(&db);
+	EXPECT_EQ(rc, 0);
+	sqlite3_stmt *stmt;
+	rc = sqlite3_prepare_v2(db.handle,
+		"SELECT name FROM schema_migrations WHERE version=1",
+		-1, &stmt, nullptr);
+	EXPECT_EQ(rc, SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "baseline");
+	sqlite3_finalize(stmt);
+}
+
 TEST_F(DatabaseTest, ForeignKeysEnabled) {
 	int rc = db_open(&db, db_path);
 	EXPECT_EQ(rc, 0);

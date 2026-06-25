@@ -2,25 +2,6 @@ set(MORPH_SOURCES
 	main.c
 )
 
-set(MORPH_LIBS
-	morph-util
-	morph-db
-	morph-http
-	morph-agent
-	morph-models
-	morph-ext
-	morph-ipc
-	morph-tools
-	morph-config
-	morph-session
-	morph-skill
-	morph-mcp
-	morph-event
-	morph-agent-ui
-	SQLite3::SQLite3
-	CURL::libcurl
-)
-
 add_library(morph-toml STATIC
 	${CMAKE_SOURCE_DIR}/vendor/toml.c
 )
@@ -96,7 +77,7 @@ target_include_directories(morph PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph ${MORPH_LIBS} morph-cli)
+target_link_libraries(morph PRIVATE morph-cli)
 
 find_path(READLINE_INCLUDE_DIR readline/readline.h
 	/opt/homebrew/opt/readline/include
@@ -110,7 +91,7 @@ find_library(READLINE_LIBRARY readline
 )
 if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
 	target_include_directories(morph PRIVATE ${READLINE_INCLUDE_DIR})
-	target_link_libraries(morph ${READLINE_LIBRARY})
+	target_link_libraries(morph PRIVATE ${READLINE_LIBRARY})
 	add_compile_definitions(HAVE_READLINE=1)
 	message(STATUS "readline found: ${READLINE_LIBRARY}")
 else()

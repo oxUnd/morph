@@ -15,103 +15,90 @@
 #include <string.h>
 #include <stdio.h>
 
-static char *escape_json_string(struct arena *arena, const char *s)
+static char *json_print_arena(struct arena *arena, cJSON *root)
 {
-	if (!s)
-		return arena_strdup(arena, "");
-	size_t len = strlen(s);
+	char *heap;
+	char *out;
 
-	char *clean = arena_alloc(arena, len + 1);
-	if (!clean)
+	if (!arena || !root)
 		return NULL;
-	size_t clean_len = utf8_sanitize_into(clean, s, len);
-	clean[clean_len] = '\0';
-
-	morph_buf_t out;
-	int rc = morph_buf_init_arena(&out, arena, clean_len + 1);
-	if (rc != 0)
+	heap = cJSON_PrintUnformatted(root);
+	if (!heap)
 		return NULL;
-	for (size_t i = 0; i < clean_len; i++) {
-		unsigned char c = (unsigned char)clean[i];
-		if (c < 0x20) {
-			switch (c) {
-			case '\n':
-				rc = morph_buf_puts(&out, "\\n");
-				break;
-			case '\r':
-				rc = morph_buf_puts(&out, "\\r");
-				break;
-			case '\t':
-				rc = morph_buf_puts(&out, "\\t");
-				break;
-			case '\b':
-				rc = morph_buf_puts(&out, "\\b");
-				break;
-			case '\f':
-				rc = morph_buf_puts(&out, "\\f");
-				break;
-			default:
-				rc = morph_buf_printf(&out, "\\u%04x", c);
-				break;
-			}
-		} else if (c == '"') {
-			rc = morph_buf_puts(&out, "\\\"");
-		} else if (c == '\\') {
-			rc = morph_buf_puts(&out, "\\\\");
-		} else {
-			rc = morph_buf_putc(&out, (char)c);
-		}
-		if (rc != 0)
-			return NULL;
-	}
-	return out.data;
+	out = arena_strdup(arena, heap);
+	free(heap);
+	return out;
 }
 
-static int build_messages_json(struct arena *arena,
-				const char *system_prompt,
-				const char **messages, int n,
-				char **out_json)
+static cJSON *build_simple_messages_cjson(const char *system_prompt,
+					  const char **messages, int n)
 {
-	morph_buf_t buf;
-	int rc = morph_buf_init_arena(&buf, arena, 8192);
-	if (rc != 0)
-		return rc;
+	cJSON *arr;
 
-	rc = morph_buf_putc(&buf, '[');
-	if (rc != 0)
-		return rc;
-	int first = 1;
+	arr = cJSON_CreateArray();
+	if (!arr)
+		return NULL;
 
 	if (system_prompt && *system_prompt) {
-		char *esc = escape_json_string(arena, system_prompt);
-		if (!esc) { return -ENOMEM; }
-		rc = morph_buf_printf(&buf,
-				"{\"role\":\"system\",\"content\":\"%s\"}", esc);
-		if (rc != 0)
-			return rc;
-		first = 0;
+		cJSON *msg = cJSON_CreateObject();
+		if (!msg) {
+			cJSON_Delete(arr);
+			return NULL;
+		}
+		cJSON_AddStringToObject(msg, "role", "system");
+		cJSON_AddStringToObject(msg, "content", system_prompt);
+		cJSON_AddItemToArray(arr, msg);
 	}
 
 	for (int i = 0; i < n; i++) {
-		if (!first) {
-			rc = morph_buf_putc(&buf, ',');
-			if (rc != 0)
-				return rc;
-		}
 		const char *role = (i % 2 == 0) ? "user" : "assistant";
-		char *esc = escape_json_string(arena, messages[i]);
-		if (!esc) { return -ENOMEM; }
-		rc = morph_buf_printf(&buf,
-				"{\"role\":\"%s\",\"content\":\"%s\"}",
-				role, esc);
-		if (rc != 0)
-			return rc;
-		first = 0;
+		cJSON *msg = cJSON_CreateObject();
+		if (!msg) {
+			cJSON_Delete(arr);
+			return NULL;
+		}
+		cJSON_AddStringToObject(msg, "role", role);
+		cJSON_AddStringToObject(msg, "content",
+					messages && messages[i] ?
+					messages[i] : "");
+		cJSON_AddItemToArray(arr, msg);
 	}
-	rc = morph_buf_putc(&buf, ']');
-	if (rc != 0)
-		return rc;
-	*out_json = buf.data;
+	return arr;
+}
+
+static int build_chat_body_json(struct arena *arena, const char *model_id,
+				const char *system_prompt,
+				const char **messages, int n,
+				int max_tokens, int stream,
+				char **out_body, size_t *out_body_len)
+{
+	cJSON *root;
+	cJSON *msgs;
+	char *body;
+
+	if (!arena || !model_id || !out_body || !out_body_len)
+		return -EINVAL;
+	*out_body = NULL;
+	*out_body_len = 0;
+	root = cJSON_CreateObject();
+	msgs = build_simple_messages_cjson(system_prompt, messages, n);
+	if (!root || !msgs) {
+		cJSON_Delete(root);
+		cJSON_Delete(msgs);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(root, "model", model_id);
+	cJSON_AddItemToObject(root, "messages", msgs);
+	if (stream)
+		cJSON_AddBoolToObject(root, "stream", 1);
+	cJSON_AddNumberToObject(root, "max_tokens",
+				max_tokens > 0 ? max_tokens : 4096);
+	body = json_print_arena(arena, root);
+	cJSON_Delete(root);
+	if (!body)
+		return -ENOMEM;
+	*out_body = body;
+	*out_body_len = strlen(body);
 	return 0;
 }
 
@@ -373,31 +360,17 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
 
-	char *msgs_json = NULL;
-	int rc = build_messages_json(arena, system_prompt, messages, n, &msgs_json);
+	char *body = NULL;
+	size_t body_len = 0;
+	int rc = build_chat_body_json(arena, self->model_id, system_prompt,
+				      messages, n, self->max_tokens, 1,
+				      &body, &body_len);
 	if (rc < 0)
 		return rc;
 
-	size_t body_cap = strlen(msgs_json) + 512;
-	char *body = arena_alloc(arena, body_cap);
-	if (!body) {
-		return -ENOMEM;
-	}
-
-	int body_len = snprintf(body, body_cap,
-		"{\"model\":\"%s\","
-		"\"messages\":%s,"
-		"\"stream\":true,"
-		"\"max_tokens\":%d}",
-		self->model_id, msgs_json,
-		self->max_tokens > 0 ? self->max_tokens : 4096);
-
-	if (body_len < 0 || (size_t)body_len >= body_cap) {
-		return -EIO;
-	}
-
-	size_t clean_len = utf8_sanitize_into(body, body, (size_t)body_len);
+	size_t clean_len = utf8_sanitize_into(body, body, body_len);
 	body[clean_len] = '\0';
+	body_len = clean_len;
 
 	struct llm_stream_ctx ctx;
 	llm_stream_init(&ctx, arena, cb, user_data);
@@ -420,7 +393,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
-	int status = http_post_sse_ex_timeout(url, body, (size_t)body_len,
+	int status = http_post_sse_ex_timeout(url, body, body_len,
 				       "application/json",
 				       extra_headers, 1, timeout,
 				       llm_http_cb, &hctx);
@@ -879,30 +852,13 @@ static int llm_generate(struct model *self, const char *prompt,
 		return -ENOMEM;
 
 	const char *messages[] = { prompt };
-	char *msgs_json = NULL;
-	int rc = build_messages_json(arena, NULL, messages, 1, &msgs_json);
+	char *body = NULL;
+	size_t body_len = 0;
+	int rc = build_chat_body_json(arena, self->model_id, NULL, messages, 1,
+				      self->max_tokens, 0, &body, &body_len);
 	if (rc < 0) {
 		arena_destroy(arena);
 		return rc;
-	}
-
-	size_t body_cap = strlen(msgs_json) + 256;
-	char *body = arena_alloc(arena, body_cap);
-	if (!body) {
-		arena_destroy(arena);
-		return -ENOMEM;
-	}
-
-	int body_len = snprintf(body, body_cap,
-		"{\"model\":\"%s\","
-		"\"messages\":%s,"
-		"\"max_tokens\":%d}",
-		self->model_id, msgs_json,
-		self->max_tokens > 0 ? self->max_tokens : 4096);
-
-	if (body_len < 0 || (size_t)body_len >= body_cap) {
-		arena_destroy(arena);
-		return -EIO;
 	}
 
 	struct http_response resp = {0};
@@ -911,7 +867,7 @@ static int llm_generate(struct model *self, const char *prompt,
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };
-	rc = http_post_ex(url, body, (size_t)body_len,
+	rc = http_post_ex(url, body, body_len,
 			  "application/json", extra_headers, 1, &resp);
 	arena_destroy(arena);
 

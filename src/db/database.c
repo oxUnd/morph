@@ -7,6 +7,11 @@
 #include <stdlib.h>
 
 static const char *schema_sql =
+	"CREATE TABLE IF NOT EXISTS schema_migrations ("
+	"version INTEGER PRIMARY KEY,"
+	"name TEXT NOT NULL,"
+	"applied_at INTEGER NOT NULL);"
+
 	"CREATE TABLE IF NOT EXISTS sessions ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"display_id TEXT UNIQUE,"
@@ -113,6 +118,10 @@ static const char *schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
 	"ON memory_procedures(session_id, updated_at);";
 
+static const char *schema_baseline_sql =
+	"INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) "
+	"VALUES(1,'baseline',strftime('%s','now'));";
+
 static const char *scheduled_schema_sql =
 	"CREATE TABLE IF NOT EXISTS scheduled_tasks ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -188,7 +197,7 @@ int db_exec(struct db *db, const char *sql)
 	if (rc != SQLITE_OK) {
 		log_err("db exec error: %s", err);
 		sqlite3_free(err);
-		return -rc;
+		MORPH_RETURN(MORPH_ERR_DB);
 	}
 	return 0;
 }
@@ -289,5 +298,8 @@ int db_init_schema(struct db *db)
 	rc = db_migrate_scheduled_task_columns(db);
 	if (rc != 0)
 		return rc;
-	return db_migrate_memory_columns(db);
+	rc = db_migrate_memory_columns(db);
+	if (rc != 0)
+		return rc;
+	return db_exec(db, schema_baseline_sql);
 }

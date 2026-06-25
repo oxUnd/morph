@@ -10,6 +10,7 @@
 
 static int http_initialized = 0;
 static __thread volatile sig_atomic_t *http_cancel_flag = NULL;
+static __thread struct morph_cancel_token *http_cancel_token = NULL;
 
 static int curl_debug_cb(CURL *handle, curl_infotype type,
 			 char *data, size_t size, void *userp)
@@ -68,8 +69,15 @@ void http_set_cancel_flag(volatile sig_atomic_t *flag)
 	http_cancel_flag = flag;
 }
 
+void http_set_cancel_token(struct morph_cancel_token *token)
+{
+	http_cancel_token = token;
+}
+
 static int http_cancelled(void)
 {
+	if (morph_cancel_token_is_cancelled(http_cancel_token))
+		return 1;
 	return http_cancel_flag && *http_cancel_flag;
 }
 

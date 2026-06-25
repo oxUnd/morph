@@ -36,6 +36,8 @@ set(TEST_SOURCES
 	test_ext.cpp
 	test_event.cpp
 	test_agent_ui.cpp
+	test_fastcgi_security.cpp
+	${CMAKE_SOURCE_DIR}/src/fastcgi/security.c
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
@@ -56,6 +58,7 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/mcp
 	${CMAKE_SOURCE_DIR}/src/event
 	${CMAKE_SOURCE_DIR}/src/agent_ui
+	${CMAKE_SOURCE_DIR}/src/fastcgi
 )
 
 target_compile_definitions(morph-tests PRIVATE
@@ -63,26 +66,8 @@ target_compile_definitions(morph-tests PRIVATE
 )
 
 target_link_libraries(morph-tests PRIVATE
-	morph-util
-	morph-db
-	morph-agent
-	morph-http
-	morph-sandbox
-	morph-ext
-	morph-ipc
-	morph-models
-	morph-render
-	morph-config
-	morph-session
-	morph-tools
-	morph-skill
-	morph-mcp
-	morph-event
-	morph-agent-ui
+	morph-cli
 	GTest::gtest_main
-	SQLite3::SQLite3
-	CURL::libcurl
-	 Threads::Threads
 )
 
 gtest_discover_tests(morph-tests)

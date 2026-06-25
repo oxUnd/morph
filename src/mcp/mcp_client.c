@@ -79,7 +79,7 @@ int mcp_parse_result(const char *resp_json, char **out_result)
 		if (out_result)
 			*out_result = strdup(resp_json);
 		cJSON_Delete(obj);
-		return code ? code : -1;
+		return MORPH_ERR_PROTOCOL;
 	}
 
 	cJSON *result = cJSON_GetObjectItem(obj, "result");

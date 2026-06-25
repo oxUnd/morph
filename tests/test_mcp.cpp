@@ -256,8 +256,7 @@ TEST_F(McpJsonRpcTest, ParseResultError) {
 	const char *resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"}}";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_NE(rc, 0);
-	EXPECT_EQ(rc, -32600);
+	EXPECT_EQ(rc, MORPH_ERR_PROTOCOL);
 	free(result);
 }
 
@@ -265,7 +264,7 @@ TEST_F(McpJsonRpcTest, ParseResultErrorWithoutCode) {
 	const char *resp = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"unknown\"}}";
 	char *result = nullptr;
 	int rc = mcp_parse_result(resp, &result);
-	EXPECT_EQ(rc, -1);
+	EXPECT_EQ(rc, MORPH_ERR_PROTOCOL);
 	free(result);
 }
 

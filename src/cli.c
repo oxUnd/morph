@@ -186,10 +186,11 @@ static void print_padded(const char *s, int target_width)
 
 /* ---- arg/argv helpers ---- */
 
-static int argv_split(const char *input, char **argv, int max_args)
+static int cli_argv_split(const char *input, char **argv, int max_args)
 {
 	int argc = 0;
-	if (!input || max_args < 1)
+
+	if (!input || !argv || max_args < 1)
 		return 0;
 	while (*input && argc < max_args - 1) {
 		while (*input && isspace((unsigned char)*input))
@@ -215,7 +216,7 @@ static int argv_split(const char *input, char **argv, int max_args)
 	return argc;
 }
 
-static const char *cmd_arg(int argc, char **argv, int idx)
+static const char *cli_cmd_arg(int argc, char **argv, int idx)
 {
 	return (idx >= 0 && idx < argc) ? argv[idx] : NULL;
 }
@@ -351,7 +352,7 @@ static int cmd_quit(struct cli_context *ctx, int argc, char **argv)
 static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)ctx;
-	const char *topic = cmd_arg(argc, argv, 1);
+	const char *topic = cli_cmd_arg(argc, argv, 1);
 	char full[64];
 	if (topic) {
 		if (topic[0] != '/') {
@@ -409,7 +410,7 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 {
 	char name_buf[256];
-	const char *name = cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg(argc, argv, 1);
 	int auto_named = 0;
 	if (!name) {
 		auto_named = 1;
@@ -435,7 +436,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *name = cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR("usage: /switch <name|id|^N>");
 		return -EINVAL;
@@ -575,7 +576,7 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *new_name = cmd_arg(argc, argv, 1);
+	const char *new_name = cli_cmd_arg(argc, argv, 1);
 	if (!new_name) {
 		CMD_ERROR("usage: /rename <new_name>");
 		return -EINVAL;
@@ -595,7 +596,7 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *name = cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
 		CMD_ERROR("usage: /delete <name|id>");
 		return -EINVAL;
@@ -666,7 +667,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_model(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *name = cmd_arg(argc, argv, 1);
+	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (name) {
 		strncpy(ctx->current_session.model, name,
 			sizeof(ctx->current_session.model) - 1);
@@ -911,7 +912,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *fmt = cmd_arg(argc, argv, 1);
+	const char *fmt = cli_cmd_arg(argc, argv, 1);
 	if (!fmt)
 		fmt = "md";
 	int count = 0;
@@ -1131,7 +1132,7 @@ static int memory_parse_scope(const char *name, enum memory_clear_scope *scope)
 
 static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *sub = cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "show") == 0 || strcmp(sub, "view") == 0) {
 		/*
@@ -1150,7 +1151,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 
 	if (strcmp(sub, "clear") == 0) {
 		enum memory_clear_scope scope = MEMORY_CLEAR_ALL;
-		const char *target = cmd_arg(argc, argv, 2);
+		const char *target = cli_cmd_arg(argc, argv, 2);
 		if (memory_parse_scope(target, &scope) != 0) {
 			CMD_ERROR("usage: /memory clear [all|facts|episodes|procedures]");
 			return -EINVAL;
@@ -2258,7 +2259,7 @@ static void cli_scheduler_stop(struct cli_context *ctx)
 
 static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *path = cmd_arg(argc, argv, 1);
+	const char *path = cli_cmd_arg(argc, argv, 1);
 	if (!path) {
 		CMD_ERROR("usage: /image <file_path>");
 		return -EINVAL;
@@ -2302,7 +2303,7 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *sub = cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
 		CMD_HEADER("registered tools (%d)", ctx->tools.count);
 		for (int i = 0; i < ctx->tools.count; i++) {
@@ -2315,7 +2316,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "info") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /ext info <name>");
 			return -EINVAL;
@@ -2332,7 +2333,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "install") == 0) {
-		const char *source = cmd_arg(argc, argv, 2);
+		const char *source = cli_cmd_arg(argc, argv, 2);
 		int yes = 0;
 		for (int i = 3; i < argc; i++) {
 			if (strcmp(argv[i], "--yes") == 0 ||
@@ -2387,7 +2388,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *path = cmd_arg(argc, argv, 1);
+	const char *path = cli_cmd_arg(argc, argv, 1);
 	if (!path) {
 		CMD_ERROR("usage: /render <file_path>");
 		return -EINVAL;
@@ -2457,7 +2458,7 @@ static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *sub = cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
 		CMD_HEADER("available skills (%d)", ctx->skills->count);
 		for (int i = 0; i < ctx->skills->count; i++) {
@@ -2473,7 +2474,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "info") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /skill info <name>");
 			return -EINVAL;
@@ -2500,7 +2501,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	if (sub && strcmp(sub, "activate") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /skill activate <name>");
 			return -EINVAL;
@@ -2520,7 +2521,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		return rc < 0 ? rc : 0;
 	}
 	if (sub && strcmp(sub, "deactivate") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /skill deactivate <name>");
 			return -EINVAL;
@@ -2549,7 +2550,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 {
-	const char *sub = cmd_arg(argc, argv, 1);
+	const char *sub = cli_cmd_arg(argc, argv, 1);
 
 	if (!sub || strcmp(sub, "list") == 0 || strcmp(sub, "status") == 0) {
 		CMD_HEADER("MCP servers (%d)", ctx->mcp.count);
@@ -2582,7 +2583,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	if (strcmp(sub, "tools") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /mcp tools <server_name>");
 			return -EINVAL;
@@ -2619,7 +2620,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	if (strcmp(sub, "resources") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /mcp resources <server_name>");
 			return -EINVAL;
@@ -2657,7 +2658,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	if (strcmp(sub, "prompts") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /mcp prompts <server_name>");
 			return -EINVAL;
@@ -2694,7 +2695,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	if (strcmp(sub, "connect") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /mcp connect <server_name>");
 			return -EINVAL;
@@ -2735,7 +2736,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	if (strcmp(sub, "disconnect") == 0) {
-		const char *name = cmd_arg(argc, argv, 2);
+		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
 			CMD_ERROR("usage: /mcp disconnect <server_name>");
 			return -EINVAL;
@@ -2764,7 +2765,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 static int cmd_dispatch(struct cli_context *ctx, const char *input)
 {
 	char *argv[32];
-	int argc = argv_split(input, argv, 32);
+	int argc = cli_argv_split(input, argv, 32);
 	if (argc < 1)
 		return -EINVAL;
 

@@ -23,14 +23,17 @@
 volatile sig_atomic_t react_sigint_flag = 0;
 
 #define REACT_ACTIVE_MAX 16
+
 static struct react_context *react_active_stack[REACT_ACTIVE_MAX];
 static int react_active_count_val = 0;
 static pthread_mutex_t react_active_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int react_active_count(void)
 {
+	int c;
+
 	pthread_mutex_lock(&react_active_mutex);
-	int c = react_active_count_val;
+	c = react_active_count_val;
 	pthread_mutex_unlock(&react_active_mutex);
 	return c;
 }
@@ -48,7 +51,8 @@ void react_active_pop(struct react_context *ctx)
 	pthread_mutex_lock(&react_active_mutex);
 	for (int i = react_active_count_val - 1; i >= 0; i--) {
 		if (react_active_stack[i] == ctx) {
-			react_active_stack[i] = react_active_stack[react_active_count_val - 1];
+			react_active_stack[i] =
+				react_active_stack[react_active_count_val - 1];
 			react_active_count_val--;
 			break;
 		}
@@ -59,8 +63,10 @@ void react_active_pop(struct react_context *ctx)
 void react_cancel_active(void)
 {
 	pthread_mutex_lock(&react_active_mutex);
-	for (int i = 0; i < react_active_count_val; i++)
+	for (int i = 0; i < react_active_count_val; i++) {
 		react_active_stack[i]->cancelled = 1;
+		morph_cancel_token_cancel(&react_active_stack[i]->cancel_token);
+	}
 	pthread_mutex_unlock(&react_active_mutex);
 	react_sigint_flag = 1;
 }
@@ -520,6 +526,7 @@ struct async_tool_call {
 	volatile sig_atomic_t completed;
 	volatile sig_atomic_t cancelled;
 	volatile sig_atomic_t detached;
+	struct morph_cancel_token cancel_token;
 	pthread_mutex_t mutex;
 };
 
@@ -550,6 +557,7 @@ async_tool_call_create(struct tool_registry *tools,
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
 	call->output_cb = output_cb;
 	call->output_user_data = output_user_data;
+	morph_cancel_token_reset(&call->cancel_token);
 	if (!call->tool_name || !call->tool_args || !call->tool_call_id) {
 		free(call->tool_name);
 		free(call->tool_args);
@@ -620,6 +628,7 @@ static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 
 	pthread_mutex_lock(&call->mutex);
 	call->cancelled = 1;
+	morph_cancel_token_cancel(&call->cancel_token);
 	call->detached = 1;
 	pthread_mutex_unlock(&call->mutex);
 	pthread_detach(thread);
@@ -633,6 +642,7 @@ static void *async_tool_exec(void *arg)
 		return NULL;
 
 	http_set_cancel_flag(&call->cancelled);
+	http_set_cancel_token(&call->cancel_token);
 
 	char action_buf[512];
 	snprintf(action_buf, sizeof(action_buf), "Executing %s...", call->tool_name);
@@ -686,6 +696,7 @@ static void *async_tool_exec(void *arg)
 	}
 
 	http_set_cancel_flag(NULL);
+	http_set_cancel_token(NULL);
 
 	if (notify_done) {
 		char done_buf[512];
@@ -805,6 +816,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->last_error_code = 0;
 	ctx->outcome_reason[0] = '\0';
 	ctx->cancelled = 0;
+	morph_cancel_token_reset(&ctx->cancel_token);
 	ctx->turn_arena = arena_create(0);
 	ctx->session_arena = arena_create(0);
 	if (!ctx->turn_arena || !ctx->session_arena) {
@@ -874,12 +886,15 @@ void react_reset(struct react_context *ctx)
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
 	ctx->cancelled = 0;
+	morph_cancel_token_reset(&ctx->cancel_token);
 }
 
 void react_cancel(struct react_context *ctx)
 {
-	if (ctx)
+	if (ctx) {
 		ctx->cancelled = 1;
+		morph_cancel_token_cancel(&ctx->cancel_token);
+	}
 }
 
 int react_set_memory_context(struct react_context *ctx,
@@ -1822,6 +1837,8 @@ static void react_cancel_remaining_tool_calls(struct react_tool_slot *slots,
 		if (slots[j].call && slots[j].thread_started) {
 			pthread_mutex_lock(&slots[j].call->mutex);
 			slots[j].call->cancelled = 1;
+			morph_cancel_token_cancel(
+				&slots[j].call->cancel_token);
 			slots[j].call->detached = 1;
 			pthread_mutex_unlock(&slots[j].call->mutex);
 			pthread_detach(slots[j].thread);
@@ -1839,6 +1856,8 @@ static void react_cleanup_tool_calls(struct react_tool_slot *slots, int count)
 		if (!slots[i].call->completed && slots[i].thread_started) {
 			pthread_mutex_lock(&slots[i].call->mutex);
 			slots[i].call->cancelled = 1;
+			morph_cancel_token_cancel(
+				&slots[i].call->cancel_token);
 			slots[i].call->detached = 1;
 			pthread_mutex_unlock(&slots[i].call->mutex);
 			pthread_detach(slots[i].thread);
@@ -1990,6 +2009,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 		if (ctx->cancelled) {
 			pthread_mutex_lock(&slots[i].call->mutex);
 			slots[i].call->cancelled = 1;
+			morph_cancel_token_cancel(&slots[i].call->cancel_token);
 			pthread_mutex_unlock(&slots[i].call->mutex);
 		}
 
@@ -2057,6 +2077,7 @@ static int react_poll_cancel(struct react_context *ctx, int iteration)
 {
 	if (react_sigint_flag) {
 		ctx->cancelled = 1;
+		morph_cancel_token_cancel(&ctx->cancel_token);
 		react_sigint_flag = 0;
 	}
 
@@ -2064,8 +2085,10 @@ static int react_poll_cancel(struct react_context *ctx, int iteration)
 		struct react_action act;
 		int got = ctx->action_drain_fn(ctx->action_drain_user_data,
 					       &act, 0);
-		if (got > 0 && strcmp(act.type, "cancel") == 0)
+		if (got > 0 && strcmp(act.type, "cancel") == 0) {
 			ctx->cancelled = 1;
+			morph_cancel_token_cancel(&ctx->cancel_token);
+		}
 	}
 
 	if (!ctx->cancelled)
@@ -2159,6 +2182,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		return -EINVAL;
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);
+	morph_cancel_token_reset(&ctx->cancel_token);
 	react_set_state(ctx, REACT_STATE_THINKING);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
@@ -2209,6 +2233,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	react_active_push(ctx);
 	http_set_cancel_flag(&ctx->cancelled);
+	http_set_cancel_token(&ctx->cancel_token);
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		if (react_poll_cancel(ctx, iteration))
@@ -2237,6 +2262,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		if (react_sigint_flag) {
 			ctx->cancelled = 1;
+			morph_cancel_token_cancel(&ctx->cancel_token);
 			react_sigint_flag = 0;
 		}
 		if (react_handle_llm_cancelled(ctx, &response) ||
@@ -2315,6 +2341,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	}
 
 	http_set_cancel_flag(NULL);
+	http_set_cancel_token(NULL);
 	react_active_pop(ctx);
 
 	react_complete_max_iterations(ctx);

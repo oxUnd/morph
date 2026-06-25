@@ -6,6 +6,7 @@ add_library(morph-util STATIC
 	image_util.c
 	utf8.c
 	spin.c
+	cancel.c
 	error.c
 	bpe.c
 	str.c

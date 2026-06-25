@@ -42,6 +42,16 @@ TEST_F(HttpTest, DoubleInit) {
 	EXPECT_NO_FATAL_FAILURE(http_init());
 }
 
+TEST(CancelTokenTest, ResetCancelAndQuery) {
+	struct morph_cancel_token token;
+	morph_cancel_token_reset(&token);
+	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 0);
+	morph_cancel_token_cancel(&token);
+	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 1);
+	morph_cancel_token_reset(&token);
+	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 0);
+}
+
 /* ----- http_session tests ----- */
 
 class HttpSessionTest : public ::testing::Test {

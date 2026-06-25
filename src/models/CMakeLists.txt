@@ -1,5 +1,5 @@
 add_library(morph-models STATIC
-	llm.c
+	llm/llm.c
 	image_gen.c
 	video_gen.c
 )
