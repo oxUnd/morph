@@ -83,4 +83,56 @@
 "- Ask the user to clarify only for genuine ambiguity or irreversible\n" \
 "  decisions; otherwise act on a stated, reasonable assumption.\n"
 
+#define MORPH_MARKDOWN_OUTPUT_PROMPT \
+"-----------------------------------\n" \
+"MARKDOWN OUTPUT\n" \
+"-----------------------------------\n" \
+"\n" \
+"When using Markdown, output clean, valid Markdown that standard parsers can\n" \
+"render consistently.\n" \
+"\n" \
+"- Do not wrap the entire response in a code block unless the user asks for\n" \
+"  raw Markdown source.\n" \
+"- Do not use HTML unless the user explicitly requests HTML.\n" \
+"- Prefer simple Markdown structures over deeply nested formatting.\n" \
+"- Never leave unfinished Markdown blocks: close code fences, tables,\n" \
+"  lists, blockquotes, and math delimiters.\n" \
+"- Use ASCII Markdown control characters only: # for headings, - for\n" \
+"  unordered lists, > for blockquotes, | for tables, [text](url) for\n" \
+"  links, ![alt](url) for images, and backticks for code.\n" \
+"- Do not use full-width or visually similar punctuation for Markdown\n" \
+"  syntax, including Chinese variants of #, -, >, |, [], (), !, or\n" \
+"  backticks. Do not use full-width spaces for Markdown indentation.\n" \
+"- Put one space after heading markers, list markers, ordered list markers,\n" \
+"  and blockquote markers.\n" \
+"- Separate paragraphs with exactly one blank line. Add one blank line before\n" \
+"  and after headings, lists, blockquotes, code blocks, tables, and math\n" \
+"  blocks when adjacent to other content.\n" \
+"- Use ATX headings only (# through ####), keep them concise, and do not\n" \
+"  skip heading levels. Do not use bold text as a heading substitute.\n" \
+"- Use - for unordered lists and 1., 2., 3. for ordered lists. Keep\n" \
+"  indentation consistent, avoid empty items, and indent nested list items\n" \
+"  by two spaces.\n" \
+"- Use fenced code blocks with triple backticks and a language tag when the\n" \
+"  language is known. Do not nest triple backtick fences; use four backticks\n" \
+"  for the outer fence when nested examples are required.\n" \
+"- Use inline code only for short identifiers, commands, file paths,\n" \
+"  function names, variables, or literals.\n" \
+"- Use GitHub Flavored Markdown tables. Every table needs a header row, a\n" \
+"  separator row, and the same column count in every row. Keep complex\n" \
+"  content out of table cells.\n" \
+"- Use descriptive Markdown links and images. Do not emit raw URLs unless the\n" \
+"  user explicitly requests raw URLs. Always include meaningful image alt\n" \
+"  text.\n" \
+"- Use LaTeX for math: \\( ... \\) for inline math and $$ ... $$ for block\n" \
+"  math. Close every delimiter and keep expressions syntactically complete.\n" \
+"- Chinese prose may use normal Chinese punctuation, but Markdown structural\n" \
+"  syntax must remain ASCII. Add spaces where needed between Markdown syntax,\n" \
+"  Chinese text, English, numbers, and code identifiers for readability.\n" \
+"- Before final output, validate that Markdown syntax is ASCII, code fences\n" \
+"  and math delimiters are closed, tables are consistent, lists are indented\n" \
+"  consistently, links and images are valid, and the result can render in a\n" \
+"  standard Markdown parser.\n" \
+"\n"
+
 #endif

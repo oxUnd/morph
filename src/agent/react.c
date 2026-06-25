@@ -983,6 +983,10 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	if (rc != 0)
 		return NULL;
 
+	rc = morph_buf_puts(&buf, MORPH_MARKDOWN_OUTPUT_PROMPT);
+	if (rc != 0)
+		return NULL;
+
 	if (ctx->workdir && *ctx->workdir) {
 		rc = morph_buf_printf(&buf, "\nWorking directory: %s\n",
 				      ctx->workdir);
