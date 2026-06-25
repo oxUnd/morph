@@ -598,6 +598,38 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 	return 0;
 }
 
+int scheduled_task_recover_stale_running(struct db *db, int64_t now,
+					 int stale_after_seconds,
+					 int *recovered)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+	int64_t cutoff;
+	const char *sql =
+		"UPDATE scheduled_tasks SET status='waiting',next_run_at=?,"
+		"last_error='Recovered after interrupted background execution',"
+		"updated_at=? WHERE status='running' AND updated_at <= ?";
+
+	if (!db || !db->handle || now < 0 || stale_after_seconds < 0)
+		MORPH_RETURN(-EINVAL);
+	cutoff = now - stale_after_seconds;
+	if (cutoff < 0)
+		cutoff = 0;
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, now);
+	sqlite3_bind_int64(stmt, 2, now);
+	sqlite3_bind_int64(stmt, 3, cutoff);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	if (recovered)
+		*recovered = sqlite3_changes(db->handle);
+	return 0;
+}
+
 int scheduled_task_cancel_with_events(
 	struct db *db, int64_t id, const struct scheduled_task_event_sink *events)
 {

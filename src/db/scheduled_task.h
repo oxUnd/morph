@@ -100,6 +100,9 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 			      int64_t next_run_at, int attempts,
 			      int64_t latest_session_id,
 			      const char *last_error);
+int scheduled_task_recover_stale_running(struct db *db, int64_t now,
+					 int stale_after_seconds,
+					 int *recovered);
 int scheduled_task_cancel(struct db *db, int64_t id);
 int scheduled_task_cancel_with_events(
 	struct db *db, int64_t id, const struct scheduled_task_event_sink *events);
