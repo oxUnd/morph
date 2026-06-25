@@ -67,3 +67,4 @@ _deps/
 Testing
 fronts
 opencode.json
+vendor/mathjax-c

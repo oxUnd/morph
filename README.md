@@ -17,9 +17,10 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 
 ## Build
 
-Requirements: CMake ≥ 3.16, SQLite3, libcurl. Optional: readline.
+Requirements: CMake ≥ 3.16, SQLite3, libcurl. Optional: readline., [mathjax-c](oxUnd/mathjax-c)
 
 ```bash
+git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
 cmake -S . -B build
 cmake --build build
 ```
