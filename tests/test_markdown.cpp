@@ -27,6 +27,16 @@ static bool contains(const std::string &haystack, const char *needle)
 	return haystack.find(needle) != std::string::npos;
 }
 
+static int parse_graphics_param(const std::string &s, const char *name)
+{
+	std::string key = std::string(name) + "=";
+	size_t pos = s.find(key);
+	if (pos == std::string::npos)
+		return -1;
+	pos += key.size();
+	return atoi(s.c_str() + pos);
+}
+
 static std::string strip_ansi(const std::string &s)
 {
 	std::string out;
@@ -306,11 +316,141 @@ TEST(MarkdownRender, TallInlineLatexMathPromotesToBlock)
         std::string out = render("latex $\\frac{a}{b}$ end");
         EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
         EXPECT_NE(out.find('\n'), std::string::npos);
+        bool text_centered_on_formula_row = false;
+        std::stringstream ss(out);
+        std::string line;
+        while (std::getline(ss, line)) {
+                if (line.find("latex ") != std::string::npos &&
+                    line.find(" end") != std::string::npos) {
+                        text_centered_on_formula_row = true;
+                        break;
+                }
+        }
+        EXPECT_TRUE(text_centered_on_formula_row);
 
         std::string plain = strip_ansi(out);
         EXPECT_TRUE(plain.find("latex ") != std::string::npos);
         EXPECT_TRUE(plain.find(" end") != std::string::npos);
         EXPECT_TRUE(plain.find("\\frac") == std::string::npos);
+}
+
+TEST(MarkdownRender, TableInlineLatexMathRendersInCell)
+{
+	const char *md =
+		"| Formula | Meaning |\n"
+		"|---------|---------|\n"
+		"| $x+y$ | sum |";
+	std::string out = render(md);
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_TRUE(contains(out, "C=1") || contains(out, "U=1"));
+	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Formula") != std::string::npos);
+	EXPECT_TRUE(plain.find("sum") != std::string::npos);
+	EXPECT_TRUE(plain.find("$x+y$") == std::string::npos);
+}
+
+TEST(MarkdownRender, TableTallLatexMathRendersMultilineCell)
+{
+	const char *md =
+		"| Formula | Meaning |\n"
+		"|---------|---------|\n"
+		"| $\\frac{a}{b}$ | ratio |";
+	std::string out = render(md);
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_TRUE(contains(out, "C=1") || contains(out, "U=1"));
+	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
+	EXPECT_NE(out.find('\n'), std::string::npos);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Formula") != std::string::npos);
+	EXPECT_TRUE(plain.find("ratio") != std::string::npos);
+	EXPECT_TRUE(plain.find("\\frac") == std::string::npos);
+}
+
+TEST(MarkdownRender, KittyPlaceholderLatexMath)
+{
+	const char *old = getenv("MORPH_MARKDOWN_KITTY_PLACEHOLDER");
+	char *saved = old ? strdup(old) : nullptr;
+	setenv("MORPH_MARKDOWN_KITTY_PLACEHOLDER", "1", 1);
+
+	std::string out = render("latex $x$ end");
+	EXPECT_TRUE(contains(out, "U=1"));
+	EXPECT_TRUE(contains(out, "q=2"));
+	EXPECT_TRUE(contains(out, "\xf4\x8e\xbb\xae"));
+	EXPECT_TRUE(contains(out, "\xcc\x85"));
+
+	if (saved) {
+		setenv("MORPH_MARKDOWN_KITTY_PLACEHOLDER", saved, 1);
+		free(saved);
+	} else {
+		unsetenv("MORPH_MARKDOWN_KITTY_PLACEHOLDER");
+	}
+}
+
+TEST(MarkdownRender, LatexInlineScaleControlsRenderedSize)
+{
+	const char *old = getenv("MORPH_MATH_INLINE_SCALE");
+	const char *old_max = getenv("MORPH_MATH_INLINE_MAX_SIZE");
+	char *saved = old ? strdup(old) : nullptr;
+	char *saved_max = old_max ? strdup(old_max) : nullptr;
+
+	unsetenv("MORPH_MATH_INLINE_MAX_SIZE");
+	setenv("MORPH_MATH_INLINE_SCALE", "0.80", 1);
+	std::string small = render("latex $x$");
+	setenv("MORPH_MATH_INLINE_SCALE", "1.40", 1);
+	std::string large = render("latex $x$");
+	setenv("MORPH_MATH_INLINE_SCALE", "4.00", 1);
+	std::string huge = render("latex $x$");
+	setenv("MORPH_MATH_INLINE_MAX_SIZE", "20", 1);
+	std::string capped = render("latex $x$");
+
+	EXPECT_GT(parse_graphics_param(large, "s"),
+		  parse_graphics_param(small, "s"));
+	EXPECT_GE(parse_graphics_param(large, "v"),
+		  parse_graphics_param(small, "v"));
+	EXPECT_GT(parse_graphics_param(huge, "s"),
+		  parse_graphics_param(large, "s"));
+	EXPECT_LT(parse_graphics_param(capped, "s"),
+		  parse_graphics_param(huge, "s"));
+
+	if (saved) {
+		setenv("MORPH_MATH_INLINE_SCALE", saved, 1);
+		free(saved);
+	} else {
+		unsetenv("MORPH_MATH_INLINE_SCALE");
+	}
+	if (saved_max) {
+		setenv("MORPH_MATH_INLINE_MAX_SIZE", saved_max, 1);
+		free(saved_max);
+	} else {
+		unsetenv("MORPH_MATH_INLINE_MAX_SIZE");
+	}
+}
+
+TEST(MarkdownRender, DisplayLatexMathRendersAsBlock)
+{
+	std::string out = render("before\n\n$$\\sum_i x_i$$\n\nafter");
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_NE(out.find('\n'), std::string::npos);
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("before") != std::string::npos);
+	EXPECT_TRUE(plain.find("after") != std::string::npos);
+	EXPECT_TRUE(plain.find("\\sum") == std::string::npos);
+}
+
+TEST(MarkdownRender, TableDisplayLatexMathRendersInCell)
+{
+	const char *md =
+		"| Formula | Meaning |\n"
+		"|---------|---------|\n"
+		"| $$\\sum_i x_i$$ | total |";
+	std::string out = render(md);
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
+	std::string plain = strip_ansi(out);
+	EXPECT_TRUE(plain.find("Formula") != std::string::npos);
+	EXPECT_TRUE(plain.find("total") != std::string::npos);
+	EXPECT_TRUE(plain.find("\\sum") == std::string::npos);
 }
 
 TEST(MarkdownRender, Strikethrough)

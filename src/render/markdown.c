@@ -32,13 +32,58 @@
 #define MATHJAX_BG_COLOR 0x00000000u
 #define MATHJAX_FALLBACK_CELL_WIDTH_PX 8u
 #define MATHJAX_FALLBACK_CELL_HEIGHT_PX 18u
-#define MATHJAX_INLINE_MIN_SIZE 14.0
-#define MATHJAX_INLINE_MAX_SIZE 22.0
+#define MATHJAX_INLINE_DEFAULT_SCALE 1.08
+#define MATHJAX_INLINE_MIN_SIZE 15.0
+#define MATHJAX_DISPLAY_DEFAULT_SCALE 1.60
 #define MATHJAX_DISPLAY_MIN_SIZE 24.0
-#define MATHJAX_DISPLAY_MAX_SIZE 44.0
+#define KITTY_PLACEHOLDER_CP 0x10EEEEu
+#define KITTY_MAX_DIACRITIC_NUM 296u
+#define FORMULA_MARKER "\x1fMF:"
+#define FORMULA_MARKER_LEN 4u
 
 /* ---------------- text buffer ---------------- */
 /* sbuf is defined in highlight.h */
+
+static const unsigned int kitty_num_to_diacritic[] = {
+	0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F,
+	0x0346, 0x034A, 0x034B, 0x034C, 0x0350, 0x0351, 0x0352, 0x0357,
+	0x035B, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
+	0x036A, 0x036B, 0x036C, 0x036D, 0x036E, 0x036F, 0x0483, 0x0484,
+	0x0485, 0x0486, 0x0487, 0x0592, 0x0593, 0x0594, 0x0595, 0x0597,
+	0x0598, 0x0599, 0x059C, 0x059D, 0x059E, 0x059F, 0x05A0, 0x05A1,
+	0x05A8, 0x05A9, 0x05AB, 0x05AC, 0x05AF, 0x05C4, 0x0610, 0x0611,
+	0x0612, 0x0613, 0x0614, 0x0615, 0x0616, 0x0617, 0x0657, 0x0658,
+	0x0659, 0x065A, 0x065B, 0x065D, 0x065E, 0x06D6, 0x06D7, 0x06D8,
+	0x06D9, 0x06DA, 0x06DB, 0x06DC, 0x06DF, 0x06E0, 0x06E1, 0x06E2,
+	0x06E4, 0x06E7, 0x06E8, 0x06EB, 0x06EC, 0x0730, 0x0732, 0x0733,
+	0x0735, 0x0736, 0x073A, 0x073D, 0x073F, 0x0740, 0x0741, 0x0743,
+	0x0745, 0x0747, 0x0749, 0x074A, 0x07EB, 0x07EC, 0x07ED, 0x07EE,
+	0x07EF, 0x07F0, 0x07F1, 0x07F3, 0x0816, 0x0817, 0x0818, 0x0819,
+	0x081B, 0x081C, 0x081D, 0x081E, 0x081F, 0x0820, 0x0821, 0x0822,
+	0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082A, 0x082B, 0x082C,
+	0x082D, 0x0951, 0x0953, 0x0954, 0x0F82, 0x0F83, 0x0F86, 0x0F87,
+	0x135D, 0x135E, 0x135F, 0x17DD, 0x193A, 0x1A17, 0x1A75, 0x1A76,
+	0x1A77, 0x1A78, 0x1A79, 0x1A7A, 0x1A7B, 0x1A7C, 0x1B6B, 0x1B6D,
+	0x1B6E, 0x1B6F, 0x1B70, 0x1B71, 0x1B72, 0x1B73, 0x1CD0, 0x1CD1,
+	0x1CD2, 0x1CDA, 0x1CDB, 0x1CE0, 0x1DC0, 0x1DC1, 0x1DC3, 0x1DC4,
+	0x1DC5, 0x1DC6, 0x1DC7, 0x1DC8, 0x1DC9, 0x1DCB, 0x1DCC, 0x1DD1,
+	0x1DD2, 0x1DD3, 0x1DD4, 0x1DD5, 0x1DD6, 0x1DD7, 0x1DD8, 0x1DD9,
+	0x1DDA, 0x1DDB, 0x1DDC, 0x1DDD, 0x1DDE, 0x1DDF, 0x1DE0, 0x1DE1,
+	0x1DE2, 0x1DE3, 0x1DE4, 0x1DE5, 0x1DE6, 0x1DFE, 0x20D0, 0x20D1,
+	0x20D4, 0x20D5, 0x20D6, 0x20D7, 0x20DB, 0x20DC, 0x20E1, 0x20E7,
+	0x20E9, 0x20F0, 0x2CEF, 0x2CF0, 0x2CF1, 0x2DE0, 0x2DE1, 0x2DE2,
+	0x2DE3, 0x2DE4, 0x2DE5, 0x2DE6, 0x2DE7, 0x2DE8, 0x2DE9, 0x2DEA,
+	0x2DEB, 0x2DEC, 0x2DED, 0x2DEE, 0x2DEF, 0x2DF0, 0x2DF1, 0x2DF2,
+	0x2DF3, 0x2DF4, 0x2DF5, 0x2DF6, 0x2DF7, 0x2DF8, 0x2DF9, 0x2DFA,
+	0x2DFB, 0x2DFC, 0x2DFD, 0x2DFE, 0x2DFF, 0xA66F, 0xA67C, 0xA67D,
+	0xA6F0, 0xA6F1, 0xA8E0, 0xA8E1, 0xA8E2, 0xA8E3, 0xA8E4, 0xA8E5,
+	0xA8E6, 0xA8E7, 0xA8E8, 0xA8E9, 0xA8EA, 0xA8EB, 0xA8EC, 0xA8ED,
+	0xA8EE, 0xA8EF, 0xA8F0, 0xA8F1, 0xAAB0, 0xAAB2, 0xAAB3, 0xAAB7,
+	0xAAB8, 0xAABE, 0xAABF, 0xAAC1, 0xFE20, 0xFE21, 0xFE22, 0xFE23,
+	0xFE24, 0xFE25, 0xFE26, 0x10A0F, 0x10A38, 0x1D185, 0x1D186,
+	0x1D187, 0x1D188, 0x1D189, 0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD,
+	0x1D242, 0x1D243, 0x1D244,
+};
 
 /* ---------------- table buffering ---------------- */
 struct table_cell {
@@ -110,13 +155,86 @@ static void get_term_cell_size(unsigned int *out_w, unsigned int *out_h)
                 *out_h = cell_h > 0 ? cell_h : MATHJAX_FALLBACK_CELL_HEIGHT_PX;
 }
 
-static double clamp_double(double v, double lo, double hi)
+static int env_truthy(const char *v)
 {
-        if (v < lo)
-                return lo;
-        if (v > hi)
-                return hi;
-        return v;
+	if (!v || !*v)
+		return 0;
+	return strcmp(v, "1") == 0 || strcmp(v, "true") == 0 ||
+	       strcmp(v, "TRUE") == 0 || strcmp(v, "yes") == 0 ||
+	       strcmp(v, "YES") == 0 || strcmp(v, "on") == 0 ||
+	       strcmp(v, "ON") == 0;
+}
+
+static int env_falsey(const char *v)
+{
+	if (!v || !*v)
+		return 0;
+	return strcmp(v, "0") == 0 || strcmp(v, "false") == 0 ||
+	       strcmp(v, "FALSE") == 0 || strcmp(v, "no") == 0 ||
+	       strcmp(v, "NO") == 0 || strcmp(v, "off") == 0 ||
+	       strcmp(v, "OFF") == 0;
+}
+
+static double env_double_or(const char *name, double fallback)
+{
+	const char *v = getenv(name);
+	char *end = NULL;
+	double d;
+
+	if (!v || !*v)
+		return fallback;
+
+	d = strtod(v, &end);
+	if (end == v || d <= 0.0 || d > 8.0)
+		return fallback;
+	return d;
+}
+
+static double env_positive_double_or_zero(const char *name)
+{
+	const char *v = getenv(name);
+	char *end = NULL;
+	double d;
+
+	if (!v || !*v)
+		return 0.0;
+
+	d = strtod(v, &end);
+	if (end == v || d <= 0.0)
+		return 0.0;
+	return d;
+}
+
+static double mathjax_font_size_from_cell(unsigned int cell_h,
+					  double default_scale,
+					  double min_size,
+					  const char *scale_env,
+					  const char *max_env)
+{
+	double scale = env_double_or(scale_env, default_scale);
+	double size = (double)cell_h * scale;
+	double max_size = env_positive_double_or_zero(max_env);
+
+	if (size < min_size)
+		size = min_size;
+	if (max_size > 0.0 && size > max_size)
+		size = max_size;
+	return size;
+}
+
+static int detect_kitty_placeholders(void)
+{
+	const char *force = getenv("MORPH_MARKDOWN_KITTY_PLACEHOLDER");
+	const char *term;
+
+	if (env_truthy(force))
+		return 1;
+	if (env_falsey(force))
+		return 0;
+	if (getenv("KITTY_WINDOW_ID"))
+		return 1;
+	term = getenv("TERM");
+	return term && strstr(term, "kitty");
 }
 
 /* ---------------- line wrapping ---------------- */
@@ -130,6 +248,17 @@ struct wrapped_line {
 struct collected_media {
 	char *type;
 	char *path;
+};
+
+struct formula_atom {
+	unsigned int id;
+	char *transfer;
+	size_t transfer_len;
+	unsigned int cols;
+	unsigned int rows;
+	unsigned int image_id;
+	int use_placeholder;
+	int emitted;
 };
 
 struct ansi_ctx {
@@ -156,6 +285,13 @@ struct ansi_ctx {
 	morph_buf_t code_raw;
 	int in_code_block;
 	int latex_display;
+	int use_kitty_placeholders;
+	unsigned int next_image_id;
+	unsigned int next_formula_id;
+	morph_array_t formulas;
+	int formulas_init;
+	int inline_active;
+	morph_buf_t inline_raw;
 	struct collected_media media[64];
 	int media_count;
 };
@@ -166,6 +302,10 @@ static void out_append_n(struct ansi_ctx *ctx, const char *src, size_t n)
 {
 	if (ctx->table && ctx->table->cell_active) {
 		morph_buf_append(&ctx->table->cell_raw, src, n);
+		return;
+	}
+	if (ctx->inline_active) {
+		morph_buf_append(&ctx->inline_raw, src, n);
 		return;
 	}
 	sbuf_append_n(&ctx->out, src, n);
@@ -182,6 +322,16 @@ static struct table_row *table_rows(struct table_state *t)
 		return NULL;
 	return (struct table_row *)t->rows.elts;
 }
+
+static void render_inline_layout(struct ansi_ctx *ctx, const char *raw,
+				 size_t raw_len, size_t max_cols,
+				 int to_table_cell, morph_buf_t *cell_out);
+static int inline_raw_has_formula(const char *raw, size_t raw_len);
+static size_t inline_raw_natural_width(struct ansi_ctx *ctx, const char *raw,
+				       size_t raw_len);
+static void append_utf8_cp(struct ansi_ctx *ctx, unsigned int cp);
+static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
+				size_t len, int display);
 
 /* Re-apply currently-active inline styles after an ANSI_RESET. Used when we
  * leave a span but still are inside other spans (e.g. **bold _italic_** when
@@ -306,6 +456,11 @@ static int enter_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		}
 		if (ctx->quote_depth > 0)
 			start_content_line(ctx);
+		if (!ctx->table || !ctx->table->cell_active) {
+			morph_buf_cleanup(&ctx->inline_raw);
+			if (morph_buf_init(&ctx->inline_raw, 128) == 0)
+				ctx->inline_active = 1;
+		}
 		break;
 	case MD_BLOCK_QUOTE:
 		ensure_blank_line(ctx);
@@ -469,6 +624,75 @@ static size_t strip_ansi(const char *src, size_t len, char **out_plain)
 	return out_len;
 }
 
+static size_t terminal_escape_end(const char *src, size_t len, size_t i)
+{
+	if (!src || i >= len || (unsigned char)src[i] != 0x1b ||
+	    i + 1 >= len)
+		return i;
+
+	if (src[i + 1] == '[') {
+		i += 2;
+		while (i < len && !((src[i] >= 'A' && src[i] <= 'Z') ||
+		       (src[i] >= 'a' && src[i] <= 'z')))
+			i++;
+		if (i < len)
+			i++;
+		return i;
+	}
+
+	if (src[i + 1] == ']' || src[i + 1] == '_') {
+		char terminator = src[i + 1] == ']' ? '\a' : '\0';
+		i += 2;
+		while (i < len) {
+			if (terminator && src[i] == terminator) {
+				i++;
+				break;
+			}
+			if (src[i] == '\033' && i + 1 < len &&
+			    src[i + 1] == '\\') {
+				i += 2;
+				break;
+			}
+			i++;
+		}
+		return i;
+	}
+
+	return i + 2;
+}
+
+static size_t plain_max_line_width(const char *plain)
+{
+	size_t max_w = 0;
+	size_t cur_w = 0;
+	size_t len;
+	size_t i = 0;
+
+	if (!plain)
+		return 0;
+
+	len = strlen(plain);
+	while (i < len) {
+		unsigned cp;
+		size_t cp_len;
+
+		if (plain[i] == '\n') {
+			if (cur_w > max_w)
+				max_w = cur_w;
+			cur_w = 0;
+			i++;
+			continue;
+		}
+
+		if (!utf8_decode_codepoint(plain + i, len - i, &cp, &cp_len))
+			break;
+		cur_w += (size_t)utf8_codepoint_width(cp);
+		i += cp_len;
+	}
+	if (cur_w > max_w)
+		max_w = cur_w;
+	return max_w;
+}
 
 /* Wrap a single cell's raw (ANSI-decorated) content to fit within max_cols
  * visible columns. Produces an array of wrapped_line structs. Sets
@@ -502,14 +726,39 @@ static struct wrapped_line *wrap_cell_content(const char *raw, size_t raw_len,
 	size_t break_vis = 0;
 
 	while (ri < raw_len) {
-		if ((unsigned char)raw[ri] == 0x1b && ri + 1 < raw_len && raw[ri + 1] == '[') {
-			size_t end = ri + 2;
-			while (end < raw_len && !((raw[end] >= 'A' && raw[end] <= 'Z') ||
-						  (raw[end] >= 'a' && raw[end] <= 'z')))
-				end++;
-			if (end < raw_len)
-				end++;
-			ri = end;
+		if ((unsigned char)raw[ri] == 0x1b) {
+			size_t end = terminal_escape_end(raw, raw_len, ri);
+			if (end > ri) {
+				ri = end;
+				continue;
+			}
+		}
+
+		if (pi < plain_len && plain[pi] == '\n') {
+			struct wrapped_line *line = morph_array_push(&lines);
+			size_t seg_len;
+
+			if (!line)
+				goto fail;
+			memset(line, 0, sizeof(*line));
+			seg_len = ri > line_start ? ri - line_start : 0;
+			line->raw = malloc(seg_len + 1);
+			if (!line->raw)
+				goto fail;
+			if (seg_len > 0)
+				memcpy(line->raw, raw + line_start, seg_len);
+			line->raw[seg_len] = '\0';
+			line->raw_len = seg_len;
+			line->vis_width = line_vis;
+
+			if (ri < raw_len && raw[ri] == '\n')
+				ri++;
+			pi++;
+			line_start = ri;
+			line_vis = 0;
+			break_ri = line_start;
+			break_pi = pi;
+			break_vis = 0;
 			continue;
 		}
 
@@ -653,6 +902,220 @@ static void free_wrapped_lines(struct wrapped_line *lines, unsigned count)
 	free(lines);
 }
 
+static struct wrapped_line *split_buf_lines(char *data, size_t len,
+					    unsigned *out_count)
+{
+	morph_array_t lines;
+	size_t start = 0;
+
+	*out_count = 0;
+	if (morph_array_init(&lines, 4, sizeof(struct wrapped_line)) != 0) {
+		free(data);
+		return NULL;
+	}
+
+	for (size_t i = 0; i <= len; i++) {
+		if (i == len || data[i] == '\n') {
+			struct wrapped_line *line;
+			size_t seg_len = i - start;
+			char *plain = NULL;
+			size_t plain_len;
+
+			if (i == len && seg_len == 0 && lines.nelts > 0)
+				break;
+			line = morph_array_push(&lines);
+			if (!line)
+				goto fail;
+			memset(line, 0, sizeof(*line));
+			line->raw = malloc(seg_len + 1);
+			if (!line->raw)
+				goto fail;
+			if (seg_len > 0)
+				memcpy(line->raw, data + start, seg_len);
+			line->raw[seg_len] = '\0';
+			line->raw_len = seg_len;
+			plain_len = strip_ansi(line->raw, line->raw_len, &plain);
+			(void)plain_len;
+			line->vis_width = plain ? utf8_display_width(plain) : 0;
+			free(plain);
+			start = i + 1;
+		}
+	}
+
+	if (lines.nelts > UINT_MAX)
+		goto fail;
+	free(data);
+	*out_count = (unsigned)lines.nelts;
+	{
+		struct wrapped_line *ret = lines.elts;
+		lines.elts = NULL;
+		lines.nelts = 0;
+		lines.cap = 0;
+		lines.size = 0;
+		lines.heap_alloc = 0;
+		return ret;
+	}
+
+fail:
+	{
+		struct wrapped_line *items = lines.elts;
+		for (size_t k = 0; k < lines.nelts; k++)
+			free(items[k].raw);
+		morph_array_cleanup(&lines);
+		free(data);
+		return NULL;
+	}
+}
+
+static struct wrapped_line *layout_cell_content(struct ansi_ctx *ctx,
+						const char *raw,
+						size_t raw_len,
+						size_t max_cols,
+						unsigned *out_count)
+{
+	morph_buf_t out;
+	char *data;
+	size_t len;
+
+	*out_count = 0;
+	if (morph_buf_init(&out, raw_len + 64) != 0)
+		return NULL;
+	render_inline_layout(ctx, raw, raw_len, max_cols, 1, &out);
+	len = out.len;
+	data = morph_buf_detach(&out);
+	return split_buf_lines(data, len, out_count);
+}
+
+static int table_math_delim_at(const char *raw, size_t raw_len, size_t pos,
+			       int *display, size_t *delim_len)
+{
+	if (!raw || pos >= raw_len || raw[pos] != '$')
+		return 0;
+	if (pos + 1 < raw_len && raw[pos + 1] == '$') {
+		if (display)
+			*display = 1;
+		if (delim_len)
+			*delim_len = 2;
+		return 1;
+	}
+	if (display)
+		*display = 0;
+	if (delim_len)
+		*delim_len = 1;
+	return 1;
+}
+
+static int table_find_math_end(const char *raw, size_t raw_len,
+			       size_t content_start, size_t delim_len,
+			       size_t *content_end, size_t *after_end)
+{
+	size_t i = content_start;
+
+	while (i < raw_len) {
+		if (raw[i] == '\\' && i + 1 < raw_len) {
+			i += 2;
+			continue;
+		}
+		if ((unsigned char)raw[i] == 0x1b) {
+			size_t end = terminal_escape_end(raw, raw_len, i);
+			i = end > i ? end : i + 1;
+			continue;
+		}
+		if (raw[i] == '$') {
+			if (delim_len == 2) {
+				if (i + 1 < raw_len && raw[i + 1] == '$') {
+					if (content_end)
+						*content_end = i;
+					if (after_end)
+						*after_end = i + 2;
+					return 1;
+				}
+			} else {
+				if (content_end)
+					*content_end = i;
+				if (after_end)
+					*after_end = i + 1;
+				return 1;
+			}
+		}
+		i++;
+	}
+	return 0;
+}
+
+static void process_table_cell_math(struct ansi_ctx *ctx, morph_buf_t *cell)
+{
+	char *raw;
+	size_t raw_len;
+	size_t seg_start = 0;
+	size_t i = 0;
+	int in_code = 0;
+
+	if (!ctx || !cell || !cell->data || !memchr(cell->data, '$', cell->len))
+		return;
+
+	raw_len = cell->len;
+	raw = morph_buf_detach(cell);
+	if (!raw)
+		return;
+	if (morph_buf_init(cell, raw_len + 64) != 0) {
+		free(raw);
+		return;
+	}
+
+	while (i < raw_len) {
+		if ((unsigned char)raw[i] == 0x1b) {
+			size_t end = terminal_escape_end(raw, raw_len, i);
+
+			if (i + 5 <= raw_len &&
+			    memcmp(raw + i, ANSI_CYAN, 5) == 0)
+				in_code = 1;
+			else if (i + 4 <= raw_len &&
+				 memcmp(raw + i, ANSI_RESET, 4) == 0)
+				in_code = 0;
+			i = end > i ? end : i + 1;
+			continue;
+		}
+
+		if (!in_code && raw[i] == '$') {
+			int display;
+			size_t delim_len;
+			size_t content_start;
+			size_t content_end;
+			size_t after_end;
+
+			if (table_math_delim_at(raw, raw_len, i, &display,
+						&delim_len)) {
+				content_start = i + delim_len;
+				if (table_find_math_end(raw, raw_len,
+							content_start,
+							delim_len,
+							&content_end,
+							&after_end) &&
+				    content_end > content_start) {
+					out_append_n(ctx, raw + seg_start,
+						     i - seg_start);
+					if (render_mathjax_kitty(ctx,
+							raw + content_start,
+							content_end -
+							content_start,
+							display) != 0) {
+						out_append_n(ctx, raw + i,
+							     after_end - i);
+					}
+					i = after_end;
+					seg_start = i;
+					continue;
+				}
+			}
+		}
+		i++;
+	}
+
+	out_append_n(ctx, raw + seg_start, raw_len - seg_start);
+	free(raw);
+}
+
 /* Calculate column widths constrained to terminal width using water-filling.
  *
  * Water-filling: iteratively raise a "water level" = remaining_space /
@@ -773,7 +1236,16 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 	for (size_t r = 0; r < t->rows.nelts; r++) {
 		struct table_row *row = &rows[r];
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
-			size_t w = utf8_display_width(row->cells[c].plain);
+			size_t w;
+
+			if (inline_raw_has_formula(row->cells[c].raw,
+						   row->cells[c].raw_len)) {
+				w = inline_raw_natural_width(ctx,
+					row->cells[c].raw,
+					row->cells[c].raw_len);
+			} else {
+				w = plain_max_line_width(row->cells[c].plain);
+			}
 			if (w > col_w[c])
 				col_w[c] = w;
 		}
@@ -800,10 +1272,20 @@ static void render_table(struct ansi_ctx *ctx, struct table_state *t)
 		wrap_counts[r] = calloc(t->col_count, sizeof(unsigned));
 		wrap_lines[r] = calloc(t->col_count, sizeof(struct wrapped_line *));
 		for (unsigned c = 0; c < row->cell_count && c < t->col_count; c++) {
-			wrap_lines[r][c] = wrap_cell_content(
-				row->cells[c].raw, row->cells[c].raw_len,
-				row->cells[c].plain, row->cells[c].plain_len,
-				col_w[c], &wrap_counts[r][c]);
+			if (inline_raw_has_formula(row->cells[c].raw,
+						   row->cells[c].raw_len)) {
+				wrap_lines[r][c] = layout_cell_content(
+					ctx, row->cells[c].raw,
+					row->cells[c].raw_len, col_w[c],
+					&wrap_counts[r][c]);
+			} else {
+				wrap_lines[r][c] = wrap_cell_content(
+					row->cells[c].raw,
+					row->cells[c].raw_len,
+					row->cells[c].plain,
+					row->cells[c].plain_len,
+					col_w[c], &wrap_counts[r][c]);
+			}
 		}
 	}
 
@@ -982,6 +1464,17 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		ctx->last_block_was_visible = 1;
 		break;
 	case MD_BLOCK_P:
+		if (ctx->inline_active) {
+			ctx->inline_active = 0;
+			render_inline_layout(ctx,
+					     ctx->inline_raw.data ?
+					     ctx->inline_raw.data : "",
+					     ctx->inline_raw.len,
+					     ctx->term_width > 0 ?
+					     (size_t)ctx->term_width : 80,
+					     0, NULL);
+			morph_buf_cleanup(&ctx->inline_raw);
+		}
 		ctx->last_block_was_visible = 1;
 		break;
 	case MD_BLOCK_QUOTE:
@@ -1008,6 +1501,7 @@ static int leave_block(MD_BLOCKTYPE type, void *detail, void *userdata)
 		struct table_row *row = &table_rows(t)[t->rows.nelts - 1];
 		if (row->cell_count < t->col_count) {
 			struct table_cell *cell = &row->cells[row->cell_count];
+			process_table_cell_math(ctx, &t->cell_raw);
 			cell->raw_len = t->cell_raw.len;
 			cell->raw = morph_buf_detach(&t->cell_raw);
 			if (!cell->raw) {
@@ -1145,6 +1639,158 @@ static void append_mathjax_b64(struct ansi_ctx *ctx, const uint32_t *pixels,
         }
 }
 
+static unsigned char mathjax_pixel_byte_raw(const uint32_t *pixels,
+					    size_t offset)
+{
+	return mathjax_pixel_byte(pixels, offset);
+}
+
+static int append_mathjax_b64_buf(morph_buf_t *out, const uint32_t *pixels,
+				  size_t offset, size_t len)
+{
+	size_t i = 0;
+	char enc[4];
+
+	while (i < len) {
+		unsigned int a = mathjax_pixel_byte_raw(pixels, offset + i);
+		unsigned int b = 0;
+		unsigned int c = 0;
+		size_t rem = len - i;
+
+		i++;
+		if (rem > 1) {
+			b = mathjax_pixel_byte_raw(pixels, offset + i);
+			i++;
+		}
+		if (rem > 2) {
+			c = mathjax_pixel_byte_raw(pixels, offset + i);
+			i++;
+		}
+
+		enc[0] = mathjax_b64[(a >> 2) & 0x3fu];
+		enc[1] = mathjax_b64[((a & 0x03u) << 4) |
+				      ((b >> 4) & 0x0fu)];
+		enc[2] = rem > 1 ? mathjax_b64[((b & 0x0fu) << 2) |
+						((c >> 6) & 0x03u)] : '=';
+		enc[3] = rem > 2 ? mathjax_b64[c & 0x3fu] : '=';
+		if (morph_buf_append(out, enc, sizeof(enc)) != 0)
+			return -ENOMEM;
+	}
+	return 0;
+}
+
+static struct formula_atom *formula_lookup(struct ansi_ctx *ctx,
+					   unsigned int id)
+{
+	if (!ctx || !ctx->formulas_init)
+		return NULL;
+	struct formula_atom *items = ctx->formulas.elts;
+	for (size_t i = 0; i < ctx->formulas.nelts; i++) {
+		if (items[i].id == id)
+			return &items[i];
+	}
+	return NULL;
+}
+
+static void free_formulas(struct ansi_ctx *ctx)
+{
+	if (!ctx || !ctx->formulas_init)
+		return;
+	struct formula_atom *items = ctx->formulas.elts;
+	for (size_t i = 0; i < ctx->formulas.nelts; i++)
+		free(items[i].transfer);
+	morph_array_cleanup(&ctx->formulas);
+	ctx->formulas_init = 0;
+}
+
+static void append_formula_marker(struct ansi_ctx *ctx, unsigned int id)
+{
+	char marker[32];
+	int n = snprintf(marker, sizeof(marker), FORMULA_MARKER "%u\x1f", id);
+
+	if (n > 0 && (size_t)n < sizeof(marker))
+		out_append_n(ctx, marker, (size_t)n);
+}
+
+static int store_formula_atom(struct ansi_ctx *ctx, char *transfer,
+			      size_t transfer_len, unsigned int cols,
+			      unsigned int rows, unsigned int image_id,
+			      int use_placeholder, unsigned int *out_id)
+{
+	struct formula_atom *atom;
+
+	if (!ctx || !transfer || !out_id)
+		return -EINVAL;
+	if (!ctx->formulas_init) {
+		if (morph_array_init(&ctx->formulas, 8,
+				     sizeof(struct formula_atom)) != 0)
+			return -ENOMEM;
+		ctx->formulas_init = 1;
+	}
+
+	atom = morph_array_push(&ctx->formulas);
+	if (!atom)
+		return -ENOMEM;
+	memset(atom, 0, sizeof(*atom));
+	atom->id = ++ctx->next_formula_id;
+	if (atom->id == 0)
+		atom->id = ++ctx->next_formula_id;
+	atom->transfer = transfer;
+	atom->transfer_len = transfer_len;
+	atom->cols = cols;
+	atom->rows = rows;
+	atom->image_id = image_id;
+	atom->use_placeholder = use_placeholder;
+	*out_id = atom->id;
+	return 0;
+}
+
+static char *build_formula_transfer(const uint32_t *pixels, size_t bytes,
+				    unsigned int width, unsigned int height,
+				    unsigned int cols, unsigned int rows,
+				    unsigned int image_id, int use_placeholder,
+				    size_t *out_len)
+{
+	morph_buf_t out;
+	size_t offset = 0;
+	const size_t chunk_size = 3000;
+
+	if (morph_buf_init(&out, 4096) != 0)
+		return NULL;
+
+	while (offset < bytes) {
+		size_t remaining = bytes - offset;
+		size_t n = remaining < chunk_size ? remaining : chunk_size;
+		int more = offset + n < bytes ? 1 : 0;
+		int rc;
+
+		if (offset == 0) {
+			if (use_placeholder) {
+				rc = morph_buf_printf(&out,
+					"\033_Ga=T,f=32,s=%u,v=%u,i=%u,U=1,c=%u,r=%u,q=2,m=%d;",
+					width, height, image_id, cols, rows, more);
+			} else {
+				rc = morph_buf_printf(&out,
+					"\033_Ga=T,f=32,s=%u,v=%u,c=%u,r=%u,C=1,z=0,m=%d;",
+					width, height, cols, rows, more);
+			}
+		} else {
+			rc = morph_buf_printf(&out, "\033_Gm=%d;", more);
+		}
+		if (rc != 0 ||
+		    append_mathjax_b64_buf(&out, pixels, offset, n) != 0 ||
+		    morph_buf_puts(&out, "\033\\") != 0) {
+			morph_buf_cleanup(&out);
+			return NULL;
+		}
+		offset += n;
+	}
+
+	if (out_len)
+		*out_len = out.len;
+	return morph_buf_detach(&out);
+}
+
 static unsigned int mathjax_cell_count(unsigned int pixels, unsigned int cell_px)
 {
         unsigned int cells;
@@ -1155,15 +1801,522 @@ static unsigned int mathjax_cell_count(unsigned int pixels, unsigned int cell_px
         return cells > 0 ? cells : 1;
 }
 
+static void append_spaces(struct ansi_ctx *ctx, unsigned int count)
+{
+        for (unsigned int i = 0; i < count; i++)
+                out_append(ctx, " ");
+}
+
+static void append_mathjax_cursor_advance(struct ansi_ctx *ctx,
+					  unsigned int cols,
+					  unsigned int rows,
+					  int display);
+
+static void append_utf8_cp(struct ansi_ctx *ctx, unsigned int cp)
+{
+	char tmp[8];
+	utf8_int8_t *end;
+	size_t n;
+
+	memset(tmp, 0, sizeof(tmp));
+	end = utf8catcodepoint((utf8_int8_t *)tmp, (utf8_int32_t)cp,
+			       sizeof(tmp));
+	if (!end)
+		return;
+	n = (size_t)((char *)end - tmp);
+	if (n > 0 && n < sizeof(tmp))
+		out_append_n(ctx, tmp, n);
+}
+
+static int kitty_placeholder_supported(unsigned int cols, unsigned int rows,
+				       unsigned int image_id)
+{
+	return cols > 0 && rows > 0 &&
+	       cols <= KITTY_MAX_DIACRITIC_NUM + 1u &&
+	       rows <= KITTY_MAX_DIACRITIC_NUM + 1u &&
+	       image_id > 0 && image_id <= 0xffffffu;
+}
+
+static void append_kitty_placeholder_cell(struct ansi_ctx *ctx,
+					  unsigned int row,
+					  unsigned int col)
+{
+	append_utf8_cp(ctx, KITTY_PLACEHOLDER_CP);
+	append_utf8_cp(ctx, kitty_num_to_diacritic[row]);
+	append_utf8_cp(ctx, kitty_num_to_diacritic[col]);
+}
+
+static void append_kitty_placeholder_grid(struct ansi_ctx *ctx,
+					  unsigned int image_id,
+					  unsigned int cols,
+					  unsigned int rows,
+					  int display)
+{
+	char sgr[64];
+	int n;
+	unsigned int r = (image_id >> 16) & 0xffu;
+	unsigned int g = (image_id >> 8) & 0xffu;
+	unsigned int b = image_id & 0xffu;
+
+	n = snprintf(sgr, sizeof(sgr), "\033[38;2;%u;%u;%um", r, g, b);
+	if (n < 0 || (size_t)n >= sizeof(sgr)) {
+		append_mathjax_cursor_advance(ctx, cols, rows, display);
+		return;
+	}
+	out_append_n(ctx, sgr, (size_t)n);
+	for (unsigned int y = 0; y < rows; y++) {
+		if (y > 0)
+			out_append_n(ctx, sgr, (size_t)n);
+		for (unsigned int x = 0; x < cols; x++)
+			append_kitty_placeholder_cell(ctx, y, x);
+		if (display && y + 1 < rows) {
+			if (ctx->table && ctx->table->cell_active)
+				out_append(ctx, "\n");
+			else {
+				out_append(ctx, "\033[39m");
+				newline_with_prefix(ctx);
+			}
+		}
+	}
+	out_append(ctx, "\033[39m");
+	if (display) {
+		if (ctx->table && ctx->table->cell_active)
+			out_append(ctx, "\n");
+		else
+			newline_with_prefix(ctx);
+	}
+}
+
+struct inline_run {
+	int is_formula;
+	const char *raw;
+	size_t raw_len;
+	struct formula_atom *atom;
+	size_t cols;
+	unsigned int rows;
+	unsigned int baseline;
+};
+
+static void layout_append(struct ansi_ctx *ctx, int to_table_cell,
+			  morph_buf_t *cell_out, const char *src, size_t len)
+{
+	if (to_table_cell && cell_out) {
+		morph_buf_append(cell_out, src, len);
+		return;
+	}
+	out_append_n(ctx, src, len);
+}
+
+static void layout_append_cstr(struct ansi_ctx *ctx, int to_table_cell,
+			       morph_buf_t *cell_out, const char *src)
+{
+	layout_append(ctx, to_table_cell, cell_out, src, strlen(src));
+}
+
+static void layout_newline(struct ansi_ctx *ctx, int to_table_cell,
+			   morph_buf_t *cell_out)
+{
+	if (to_table_cell) {
+		layout_append_cstr(ctx, to_table_cell, cell_out, "\n");
+		return;
+	}
+	newline_with_prefix(ctx);
+}
+
+static void layout_append_spaces(struct ansi_ctx *ctx, int to_table_cell,
+				 morph_buf_t *cell_out, size_t count)
+{
+	for (size_t i = 0; i < count; i++)
+		layout_append_cstr(ctx, to_table_cell, cell_out, " ");
+}
+
+static void layout_append_utf8_cp(struct ansi_ctx *ctx, int to_table_cell,
+				  morph_buf_t *cell_out, unsigned int cp)
+{
+	char tmp[8];
+	utf8_int8_t *end;
+	size_t n;
+
+	memset(tmp, 0, sizeof(tmp));
+	end = utf8catcodepoint((utf8_int8_t *)tmp, (utf8_int32_t)cp,
+			       sizeof(tmp));
+	if (!end)
+		return;
+	n = (size_t)((char *)end - tmp);
+	if (n > 0 && n < sizeof(tmp))
+		layout_append(ctx, to_table_cell, cell_out, tmp, n);
+}
+
+static void layout_append_kitty_placeholder_cell(struct ansi_ctx *ctx,
+						 int to_table_cell,
+						 morph_buf_t *cell_out,
+						 unsigned int row,
+						 unsigned int col)
+{
+	layout_append_utf8_cp(ctx, to_table_cell, cell_out,
+			      KITTY_PLACEHOLDER_CP);
+	layout_append_utf8_cp(ctx, to_table_cell, cell_out,
+			      kitty_num_to_diacritic[row]);
+	layout_append_utf8_cp(ctx, to_table_cell, cell_out,
+			      kitty_num_to_diacritic[col]);
+}
+
+static int parse_formula_marker(const char *raw, size_t raw_len, size_t pos,
+				unsigned int *out_id, size_t *out_end)
+{
+	unsigned int id = 0;
+	size_t i;
+	int saw_digit = 0;
+
+	if (!raw || pos + FORMULA_MARKER_LEN >= raw_len)
+		return 0;
+	if (memcmp(raw + pos, FORMULA_MARKER, FORMULA_MARKER_LEN) != 0)
+		return 0;
+
+	i = pos + FORMULA_MARKER_LEN;
+	while (i < raw_len && raw[i] >= '0' && raw[i] <= '9') {
+		id = id * 10u + (unsigned int)(raw[i] - '0');
+		saw_digit = 1;
+		i++;
+	}
+	if (!saw_digit || i >= raw_len || raw[i] != '\x1f')
+		return 0;
+
+	if (out_id)
+		*out_id = id;
+	if (out_end)
+		*out_end = i + 1;
+	return 1;
+}
+
+static int inline_raw_has_formula(const char *raw, size_t raw_len)
+{
+	size_t i = 0;
+
+	while (i < raw_len) {
+		if (raw[i] == FORMULA_MARKER[0] &&
+		    parse_formula_marker(raw, raw_len, i, NULL, NULL))
+			return 1;
+		i++;
+	}
+	return 0;
+}
+
+static size_t inline_text_width(const char *raw, size_t raw_len)
+{
+	char *plain = NULL;
+	size_t width = 0;
+
+	strip_ansi(raw, raw_len, &plain);
+	if (plain) {
+		width = utf8_display_width(plain);
+		free(plain);
+	}
+	return width;
+}
+
+static size_t inline_raw_natural_width(struct ansi_ctx *ctx, const char *raw,
+				       size_t raw_len)
+{
+	size_t max_w = 0;
+	size_t cur_w = 0;
+	size_t seg_start = 0;
+	size_t i = 0;
+
+	while (i < raw_len) {
+		unsigned int id;
+		size_t end;
+
+		if (raw[i] == '\n') {
+			cur_w += inline_text_width(raw + seg_start,
+						   i - seg_start);
+			if (cur_w > max_w)
+				max_w = cur_w;
+			cur_w = 0;
+			i++;
+			seg_start = i;
+			continue;
+		}
+
+		if (parse_formula_marker(raw, raw_len, i, &id, &end)) {
+			struct formula_atom *atom;
+
+			cur_w += inline_text_width(raw + seg_start,
+						   i - seg_start);
+			atom = formula_lookup(ctx, id);
+			if (atom)
+				cur_w += atom->cols;
+			i = end;
+			seg_start = i;
+			continue;
+		}
+		i++;
+	}
+
+	cur_w += inline_text_width(raw + seg_start, raw_len - seg_start);
+	if (cur_w > max_w)
+		max_w = cur_w;
+	return max_w;
+}
+
+static int inline_push_run(morph_array_t *line, struct inline_run *run)
+{
+	struct inline_run *slot = morph_array_push(line);
+
+	if (!slot)
+		return -ENOMEM;
+	*slot = *run;
+	return 0;
+}
+
+static void inline_emit_formula_row(struct ansi_ctx *ctx,
+				    struct formula_atom *atom,
+				    unsigned int row,
+				    int to_table_cell,
+				    morph_buf_t *cell_out)
+{
+	char sgr[64];
+	int n;
+
+	if (!atom)
+		return;
+
+	if (!atom->emitted) {
+		layout_append(ctx, to_table_cell, cell_out, atom->transfer,
+			      atom->transfer_len);
+		atom->emitted = 1;
+	}
+
+	if (!atom->use_placeholder) {
+		layout_append_spaces(ctx, to_table_cell, cell_out, atom->cols);
+		return;
+	}
+
+	n = snprintf(sgr, sizeof(sgr), "\033[38;2;%u;%u;%um",
+		     (atom->image_id >> 16) & 0xffu,
+		     (atom->image_id >> 8) & 0xffu,
+		     atom->image_id & 0xffu);
+	if (n < 0 || (size_t)n >= sizeof(sgr)) {
+		layout_append_spaces(ctx, to_table_cell, cell_out, atom->cols);
+		return;
+	}
+
+	layout_append(ctx, to_table_cell, cell_out, sgr, (size_t)n);
+	for (unsigned int col = 0; col < atom->cols; col++)
+		layout_append_kitty_placeholder_cell(ctx, to_table_cell,
+						     cell_out, row, col);
+	layout_append_cstr(ctx, to_table_cell, cell_out, "\033[39m");
+}
+
+static void inline_flush_line(struct ansi_ctx *ctx, morph_array_t *line,
+			      int to_table_cell, morph_buf_t *cell_out)
+{
+	struct inline_run *runs = line->elts;
+	unsigned int baseline = 0;
+	unsigned int descent = 0;
+	unsigned int height;
+
+	if (line->nelts == 0)
+		return;
+
+	for (size_t i = 0; i < line->nelts; i++) {
+		unsigned int run_descent;
+
+		if (runs[i].baseline > baseline)
+			baseline = runs[i].baseline;
+		run_descent = runs[i].rows > runs[i].baseline ?
+			      runs[i].rows - runs[i].baseline - 1u : 0u;
+		if (run_descent > descent)
+			descent = run_descent;
+	}
+	height = baseline + 1u + descent;
+
+	for (unsigned int y = 0; y < height; y++) {
+		if (y > 0)
+			layout_newline(ctx, to_table_cell, cell_out);
+		for (size_t i = 0; i < line->nelts; i++) {
+			unsigned int run_y = baseline - runs[i].baseline;
+
+			if (!runs[i].is_formula) {
+				if (y == run_y) {
+					layout_append(ctx, to_table_cell,
+						      cell_out, runs[i].raw,
+						      runs[i].raw_len);
+				} else {
+					layout_append_spaces(ctx, to_table_cell,
+							     cell_out,
+							     runs[i].cols);
+				}
+				continue;
+			}
+
+			if (y >= run_y && y < run_y + runs[i].rows) {
+				inline_emit_formula_row(ctx, runs[i].atom,
+							y - run_y,
+							to_table_cell,
+							cell_out);
+			} else {
+				layout_append_spaces(ctx, to_table_cell,
+						     cell_out, runs[i].cols);
+			}
+		}
+	}
+
+	morph_array_clear(line);
+}
+
+static void inline_add_run(struct ansi_ctx *ctx, morph_array_t *line,
+			   struct inline_run *run, size_t *line_cols,
+			   size_t max_cols, int to_table_cell,
+			   morph_buf_t *cell_out, int *emitted_any)
+{
+	if (max_cols == 0)
+		max_cols = 1;
+	if (run->cols > 0 && *line_cols > 0 &&
+	    *line_cols + run->cols > max_cols) {
+		inline_flush_line(ctx, line, to_table_cell, cell_out);
+		layout_newline(ctx, to_table_cell, cell_out);
+		*line_cols = 0;
+		*emitted_any = 1;
+	}
+	if (inline_push_run(line, run) != 0)
+		return;
+	*line_cols += run->cols;
+}
+
+static void render_inline_layout(struct ansi_ctx *ctx, const char *raw,
+				 size_t raw_len, size_t max_cols,
+				 int to_table_cell, morph_buf_t *cell_out)
+{
+	morph_array_t line;
+	size_t seg_start = 0;
+	size_t line_cols = 0;
+	size_t i = 0;
+	int emitted_any = 0;
+
+	if (!inline_raw_has_formula(raw, raw_len)) {
+		layout_append(ctx, to_table_cell, cell_out, raw, raw_len);
+		return;
+	}
+
+	if (morph_array_init(&line, 8, sizeof(struct inline_run)) != 0) {
+		layout_append(ctx, to_table_cell, cell_out, raw, raw_len);
+		return;
+	}
+
+	while (i < raw_len) {
+		unsigned int id;
+		size_t end;
+
+		if (raw[i] == '\n') {
+			struct inline_run run;
+			size_t seg_len = i - seg_start;
+
+			if (seg_len > 0) {
+				memset(&run, 0, sizeof(run));
+				run.raw = raw + seg_start;
+				run.raw_len = seg_len;
+				run.cols = inline_text_width(run.raw,
+							     run.raw_len);
+				run.rows = 1;
+				run.baseline = 0;
+				inline_add_run(ctx, &line, &run, &line_cols,
+					       max_cols, to_table_cell,
+					       cell_out, &emitted_any);
+			}
+			inline_flush_line(ctx, &line, to_table_cell, cell_out);
+			layout_newline(ctx, to_table_cell, cell_out);
+			emitted_any = 1;
+			line_cols = 0;
+			i++;
+			seg_start = i;
+			continue;
+		}
+
+		if (parse_formula_marker(raw, raw_len, i, &id, &end)) {
+			struct formula_atom *atom;
+			struct inline_run run;
+			size_t seg_len = i - seg_start;
+
+			if (seg_len > 0) {
+				memset(&run, 0, sizeof(run));
+				run.raw = raw + seg_start;
+				run.raw_len = seg_len;
+				run.cols = inline_text_width(run.raw,
+							     run.raw_len);
+				run.rows = 1;
+				run.baseline = 0;
+				inline_add_run(ctx, &line, &run, &line_cols,
+					       max_cols, to_table_cell,
+					       cell_out, &emitted_any);
+			}
+
+			atom = formula_lookup(ctx, id);
+			if (atom) {
+				memset(&run, 0, sizeof(run));
+				run.is_formula = 1;
+				run.atom = atom;
+				run.cols = atom->cols;
+				run.rows = atom->rows > 0 ? atom->rows : 1;
+				run.baseline = run.rows / 2u;
+				inline_add_run(ctx, &line, &run, &line_cols,
+					       max_cols, to_table_cell,
+					       cell_out, &emitted_any);
+			}
+			i = end;
+			seg_start = i;
+			continue;
+		}
+		i++;
+	}
+
+	if (seg_start < raw_len) {
+		struct inline_run run;
+
+		memset(&run, 0, sizeof(run));
+		run.raw = raw + seg_start;
+		run.raw_len = raw_len - seg_start;
+		run.cols = inline_text_width(run.raw, run.raw_len);
+		run.rows = 1;
+		run.baseline = 0;
+		inline_add_run(ctx, &line, &run, &line_cols, max_cols,
+			       to_table_cell, cell_out, &emitted_any);
+	}
+
+	if (line.nelts > 0)
+		inline_flush_line(ctx, &line, to_table_cell, cell_out);
+	else if (!emitted_any)
+		layout_append(ctx, to_table_cell, cell_out, raw, raw_len);
+
+	morph_array_cleanup(&line);
+}
+
 static void append_mathjax_cursor_advance(struct ansi_ctx *ctx,
                                           unsigned int cols,
                                           unsigned int rows,
                                           int display)
 {
-        (void)ctx;
-        (void)cols;
-        (void)rows;
-        (void)display;
+        if (!ctx || cols == 0 || rows == 0)
+                return;
+
+        if (!display) {
+                append_spaces(ctx, cols);
+                return;
+        }
+
+        for (unsigned int r = 0; r < rows; r++) {
+                append_spaces(ctx, cols);
+                if (r + 1 < rows) {
+                        if (ctx->table && ctx->table->cell_active)
+                                out_append(ctx, "\n");
+                        else
+                                newline_with_prefix(ctx);
+                }
+        }
+        if (ctx->table && ctx->table->cell_active)
+                out_append(ctx, "\n");
+        else
+                newline_with_prefix(ctx);
 }
 
 static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
@@ -1183,6 +2336,9 @@ static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
         unsigned int rows;
         unsigned int cell_w;
         unsigned int cell_h;
+        unsigned int image_id = 0;
+        int use_placeholder = 0;
+        int collecting_inline;
         int block_layout = display;
         int rc = -1;
 
@@ -1200,13 +2356,17 @@ static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
         memset(&opts, 0, sizeof(opts));
         opts.font_path = MORPH_MATHJAX_FONT_PATH;
         if (display) {
-                opts.font_size = clamp_double((double)cell_h * 1.6,
-                                              MATHJAX_DISPLAY_MIN_SIZE,
-                                              MATHJAX_DISPLAY_MAX_SIZE);
+                opts.font_size = mathjax_font_size_from_cell(
+                        cell_h, MATHJAX_DISPLAY_DEFAULT_SCALE,
+                        MATHJAX_DISPLAY_MIN_SIZE,
+                        "MORPH_MATH_DISPLAY_SCALE",
+                        "MORPH_MATH_DISPLAY_MAX_SIZE");
         } else {
-                opts.font_size = clamp_double((double)cell_h * 0.95,
-                                              MATHJAX_INLINE_MIN_SIZE,
-                                              MATHJAX_INLINE_MAX_SIZE);
+                opts.font_size = mathjax_font_size_from_cell(
+                        cell_h, MATHJAX_INLINE_DEFAULT_SCALE,
+                        MATHJAX_INLINE_MIN_SIZE,
+                        "MORPH_MATH_INLINE_SCALE",
+                        "MORPH_MATH_INLINE_MAX_SIZE");
         }
         opts.fg_color = MATHJAX_FG_COLOR;
         opts.bg_color = MATHJAX_BG_COLOR;
@@ -1229,13 +2389,47 @@ static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
         rows = mathjax_cell_count(height, cell_h);
         if (!display && rows > 1)
                 block_layout = 1;
+        if (ctx->use_kitty_placeholders) {
+                image_id = ctx->next_image_id++;
+                if (ctx->next_image_id == 0 || ctx->next_image_id > 0xffffffu)
+                        ctx->next_image_id = 1;
+                use_placeholder =
+                        kitty_placeholder_supported(cols, rows, image_id);
+        }
 
         bytes = (size_t)width * height * 4;
         if (!pixels || bytes == 0)
                 goto out;
 
-        if (block_layout)
-                out_append(ctx, "\n");
+        collecting_inline = ctx->inline_active ||
+                             (ctx->table && ctx->table->cell_active);
+        if (collecting_inline) {
+                char *transfer;
+                size_t transfer_len = 0;
+                unsigned int formula_id;
+
+                transfer = build_formula_transfer(pixels, bytes, width,
+                                height, cols, rows, image_id,
+                                use_placeholder, &transfer_len);
+                if (!transfer)
+                        goto out;
+                if (store_formula_atom(ctx, transfer, transfer_len, cols,
+                                rows, image_id, use_placeholder,
+                                &formula_id) != 0) {
+                        free(transfer);
+                        goto out;
+                }
+                append_formula_marker(ctx, formula_id);
+                rc = 0;
+                goto out;
+        }
+
+        if (block_layout) {
+                if (ctx->table && ctx->table->cell_active)
+                        out_append(ctx, "\n");
+                else
+                        newline_with_prefix(ctx);
+        }
 
         while (offset < bytes) {
                 size_t remaining = bytes - offset;
@@ -1244,10 +2438,17 @@ static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
                 int header_len;
 
                 if (offset == 0) {
-                        header_len = snprintf(header, sizeof(header),
-                                "\033_Ga=T,f=32,s=%u,v=%u,c=%u,r=%u,m=%d;",
-                                width, height, cols, rows,
-                                offset + n < bytes ? 1 : 0);
+                        if (use_placeholder) {
+                                header_len = snprintf(header, sizeof(header),
+                                        "\033_Ga=T,f=32,s=%u,v=%u,i=%u,U=1,c=%u,r=%u,q=2,m=%d;",
+                                        width, height, image_id, cols, rows,
+                                        offset + n < bytes ? 1 : 0);
+                        } else {
+                                header_len = snprintf(header, sizeof(header),
+                                        "\033_Ga=T,f=32,s=%u,v=%u,c=%u,r=%u,C=1,z=0,m=%d;",
+                                        width, height, cols, rows,
+                                        offset + n < bytes ? 1 : 0);
+                        }
                 } else {
                         header_len = snprintf(header, sizeof(header),
                                 "\033_Gm=%d;", offset + n < bytes ? 1 : 0);
@@ -1262,7 +2463,11 @@ static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
                 offset += n;
         }
 
-        append_mathjax_cursor_advance(ctx, cols, rows, block_layout);
+        if (use_placeholder)
+                append_kitty_placeholder_grid(ctx, image_id, cols, rows,
+                                              block_layout);
+        else
+                append_mathjax_cursor_advance(ctx, cols, rows, block_layout);
         rc = 0;
 
 out:
@@ -1709,6 +2914,8 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
 	ctx.term_width = get_term_width();
+	ctx.use_kitty_placeholders = detect_kitty_placeholders();
+	ctx.next_image_id = 1;
 
 	MD_PARSER parser = {0};
 	parser.abi_version = 0;
@@ -1727,6 +2934,8 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	free(norm);
 	free(ctx.link_href.buf);
 	morph_buf_cleanup(&ctx.code_raw);
+	morph_buf_cleanup(&ctx.inline_raw);
+	free_formulas(&ctx);
 	if (ctx.table)
 		free_table(ctx.table);
 	free_media(&ctx);
@@ -1761,6 +2970,8 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	free(norm);
 	free(ctx->link_href.buf);
 	morph_buf_cleanup(&ctx->code_raw);
+	morph_buf_cleanup(&ctx->inline_raw);
+	free_formulas(ctx);
 	if (ctx->table)
 		free_table(ctx->table);
 }
@@ -1778,6 +2989,8 @@ void markdown_render_ansi(const char *md)
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
 	ctx.term_width = get_term_width();
+	ctx.use_kitty_placeholders = detect_kitty_placeholders();
+	ctx.next_image_id = 1;
 
 	render_ansi_impl(md, &ctx);
 
@@ -1802,6 +3015,8 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
 	ctx.term_width = get_term_width();
+	ctx.use_kitty_placeholders = detect_kitty_placeholders();
+	ctx.next_image_id = 1;
 
 	render_ansi_impl(md, &ctx);
 

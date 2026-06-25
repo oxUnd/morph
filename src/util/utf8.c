@@ -460,6 +460,18 @@ size_t utf8_strip_ansi(char *dst, const char *src, size_t src_len)
 osc_done:
 			continue;
 		}
+		if (c == 0x1B && i + 1 < src_len && src[i + 1] == '_') {
+			i += 2;
+			while (i < src_len) {
+				if (src[i] == '\033' && i + 1 < src_len &&
+				    src[i + 1] == '\\') {
+					i += 2;
+					break;
+				}
+				i++;
+			}
+			continue;
+		}
 		if (c == 0x1B && i + 1 < src_len) {
 			i += 2;
 			continue;
