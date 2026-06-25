@@ -323,7 +323,7 @@ saved 5 messages
 | Thought 流式预览 | Spinner submessage 滚动显示最近 token | 超长自动滚动，最多 80 列可见 |
 | 耗时 | 阶段完成后显示 `(Ns)` 或 `(Nm Ns)` | 紧跟状态前缀 |
 | Guardrail | 直接打印 `[Guardrail]` 标签行 | 粗体青色 |
-| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 + 代码高亮 + LaTeX Unicode | 颜色 / 粗体 / 代码块 / 语法高亮 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
+| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 + 代码高亮 + MathJax-C/Kitty LaTeX | 颜色 / 粗体 / 代码块 / 语法高亮 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
 | 图片 | 终端协议优先级：**kitty > iterm2 > sixel > 文件路径回退** | 自动探测 |
 | 视频 | fork+exec mpv | 失败回退到打印路径 |
 | 链接 | OSC 8 超链接 | 不支持时降级为纯 URL |
@@ -497,7 +497,7 @@ LLM 调用前:
 | TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
 | Markdown | md4c v0.5.3 | ✓ | CMake FetchContent 拉取，非 vendor/ 嵌入 |
 | 代码高亮 | 自实现 ANSI 语法高亮 | ✓ | `src/render/highlight.c` |
-| LaTeX 渲染 | 自实现 LaTeX→Unicode | ✓ | `src/render/latex_unicode.c` |
+| LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | `vendor/mathjax-c` |
 | 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
 | 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
 | Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
@@ -832,8 +832,6 @@ morph/
 │   │   ├── markdown.h
 │   │   ├── highlight.c
 │   │   ├── highlight.h
-│   │   ├── latex_unicode.c
-│   │   ├── latex_unicode.h
 │   │   ├── image.c
 │   │   ├── image.h
 │   │   ├── video.c

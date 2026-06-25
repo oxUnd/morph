@@ -279,13 +279,38 @@ TEST(MarkdownRender, InlineLatexMathWithCjkText)
 		"\xe7\x9f\xa9\xe9\x98\xb5\\Sigma$\xef\xbc\x9a";
 	std::string out = render(md);
 	std::string plain = strip_ansi(out);
-	EXPECT_TRUE(plain.find("\xce\xbc") != std::string::npos) << plain;
-	EXPECT_TRUE(plain.find("\xce\xa3") != std::string::npos);
-	EXPECT_TRUE(plain.find("\xe5\x8d\x8f\xe6\x96\xb9\xe5\xb7\xae") !=
-		    std::string::npos);
+        EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+        EXPECT_TRUE(plain.find("formula") != std::string::npos);
+        EXPECT_TRUE(plain.find("\xef\xbc\x9a") != std::string::npos);
 	EXPECT_TRUE(plain.find("\\boldsymbol") == std::string::npos);
 	EXPECT_TRUE(plain.find("\\Sigma") == std::string::npos);
 	EXPECT_TRUE(plain.find("$") == std::string::npos);
+}
+
+TEST(MarkdownRender, SimpleInlineLatexMathStaysInline)
+{
+        std::string out = render("latex $xx$ end");
+        EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+        EXPECT_TRUE(contains(out, ",c="));
+        EXPECT_TRUE(contains(out, ",r="));
+        EXPECT_EQ(out.find('\n'), std::string::npos);
+
+        std::string plain = strip_ansi(out);
+        EXPECT_TRUE(plain.find("latex ") != std::string::npos);
+        EXPECT_TRUE(plain.find(" end") != std::string::npos);
+        EXPECT_TRUE(plain.find("$xx$") == std::string::npos);
+}
+
+TEST(MarkdownRender, TallInlineLatexMathPromotesToBlock)
+{
+        std::string out = render("latex $\\frac{a}{b}$ end");
+        EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+        EXPECT_NE(out.find('\n'), std::string::npos);
+
+        std::string plain = strip_ansi(out);
+        EXPECT_TRUE(plain.find("latex ") != std::string::npos);
+        EXPECT_TRUE(plain.find(" end") != std::string::npos);
+        EXPECT_TRUE(plain.find("\\frac") == std::string::npos);
 }
 
 TEST(MarkdownRender, Strikethrough)

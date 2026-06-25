@@ -1,10 +1,11 @@
 #include "markdown.h"
 #include "highlight.h"
-#include "latex_unicode.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/utf8.h"
+#include "mathjax.h"
 #include "md4c.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,16 @@
 #define ANSI_MAGENTA   "\033[35m"
 #define ANSI_CYAN      "\033[36m"
 #define ANSI_GRAY      "\033[90m"
+
+#define MATHJAX_DPI 72
+#define MATHJAX_FG_COLOR 0x00FFFFFFu
+#define MATHJAX_BG_COLOR 0x00000000u
+#define MATHJAX_FALLBACK_CELL_WIDTH_PX 8u
+#define MATHJAX_FALLBACK_CELL_HEIGHT_PX 18u
+#define MATHJAX_INLINE_MIN_SIZE 14.0
+#define MATHJAX_INLINE_MAX_SIZE 22.0
+#define MATHJAX_DISPLAY_MIN_SIZE 24.0
+#define MATHJAX_DISPLAY_MAX_SIZE 44.0
 
 /* ---------------- text buffer ---------------- */
 /* sbuf is defined in highlight.h */
@@ -68,6 +79,44 @@ static int get_term_width(void)
 			return v;
 	}
 	return 80;
+}
+
+static void get_term_cell_size(unsigned int *out_w, unsigned int *out_h)
+{
+        struct winsize ws;
+        unsigned int cell_w = MATHJAX_FALLBACK_CELL_WIDTH_PX;
+        unsigned int cell_h = MATHJAX_FALLBACK_CELL_HEIGHT_PX;
+
+        memset(&ws, 0, sizeof(ws));
+        if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 ||
+             ws.ws_col == 0 || ws.ws_row == 0 ||
+             ws.ws_xpixel == 0 || ws.ws_ypixel == 0) &&
+            (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != 0 ||
+             ws.ws_col == 0 || ws.ws_row == 0 ||
+             ws.ws_xpixel == 0 || ws.ws_ypixel == 0)) {
+                if (out_w)
+                        *out_w = cell_w;
+                if (out_h)
+                        *out_h = cell_h;
+                return;
+        }
+
+        cell_w = ((unsigned int)ws.ws_xpixel + ws.ws_col - 1u) / ws.ws_col;
+        cell_h = ((unsigned int)ws.ws_ypixel + ws.ws_row - 1u) / ws.ws_row;
+
+        if (out_w)
+                *out_w = cell_w > 0 ? cell_w : MATHJAX_FALLBACK_CELL_WIDTH_PX;
+        if (out_h)
+                *out_h = cell_h > 0 ? cell_h : MATHJAX_FALLBACK_CELL_HEIGHT_PX;
+}
+
+static double clamp_double(double v, double lo, double hi)
+{
+        if (v < lo)
+                return lo;
+        if (v > hi)
+                return hi;
+        return v;
 }
 
 /* ---------------- line wrapping ---------------- */
@@ -1045,6 +1094,186 @@ static void append_attr(struct ansi_ctx *ctx, const MD_ATTRIBUTE *attr)
 	out_append_n(ctx, attr->text, attr->size);
 }
 
+static const char mathjax_b64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static unsigned char mathjax_pixel_byte(const uint32_t *pixels, size_t offset)
+{
+        uint32_t p = pixels[offset / 4];
+
+        switch (offset % 4) {
+        case 0:
+                return (unsigned char)((p >> 24) & 0xffu);
+        case 1:
+                return (unsigned char)((p >> 16) & 0xffu);
+        case 2:
+                return (unsigned char)((p >> 8) & 0xffu);
+        default:
+                return (unsigned char)(p & 0xffu);
+        }
+}
+
+static void append_mathjax_b64(struct ansi_ctx *ctx, const uint32_t *pixels,
+                               size_t offset, size_t len)
+{
+        size_t i = 0;
+        char out[4];
+
+        while (i < len) {
+                unsigned int a = mathjax_pixel_byte(pixels, offset + i);
+                unsigned int b = 0;
+                unsigned int c = 0;
+                size_t rem = len - i;
+
+                i++;
+                if (rem > 1) {
+                        b = mathjax_pixel_byte(pixels, offset + i);
+                        i++;
+                }
+                if (rem > 2) {
+                        c = mathjax_pixel_byte(pixels, offset + i);
+                        i++;
+                }
+
+                out[0] = mathjax_b64[(a >> 2) & 0x3fu];
+                out[1] = mathjax_b64[((a & 0x03u) << 4) |
+                                      ((b >> 4) & 0x0fu)];
+                out[2] = rem > 1 ? mathjax_b64[((b & 0x0fu) << 2) |
+                                                ((c >> 6) & 0x03u)] : '=';
+                out[3] = rem > 2 ? mathjax_b64[c & 0x3fu] : '=';
+                out_append_n(ctx, out, sizeof(out));
+        }
+}
+
+static unsigned int mathjax_cell_count(unsigned int pixels, unsigned int cell_px)
+{
+        unsigned int cells;
+
+        if (cell_px == 0)
+                return 1;
+        cells = (pixels + cell_px - 1) / cell_px;
+        return cells > 0 ? cells : 1;
+}
+
+static void append_mathjax_cursor_advance(struct ansi_ctx *ctx,
+                                          unsigned int cols,
+                                          unsigned int rows,
+                                          int display)
+{
+        (void)ctx;
+        (void)cols;
+        (void)rows;
+        (void)display;
+}
+
+static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
+                                size_t len, int display)
+{
+        mjx_opts opts;
+        mjx_ctx *mjx = NULL;
+        mjx_buf *buf = NULL;
+        const uint32_t *pixels;
+        char *expr = NULL;
+        size_t bytes;
+        size_t offset = 0;
+        const size_t chunk_size = 3000;
+        unsigned int width;
+        unsigned int height;
+        unsigned int cols;
+        unsigned int rows;
+        unsigned int cell_w;
+        unsigned int cell_h;
+        int block_layout = display;
+        int rc = -1;
+
+        if (!ctx || !latex || len == 0)
+                return -1;
+
+        expr = malloc(len + 1);
+        if (!expr)
+                return -1;
+        memcpy(expr, latex, len);
+        expr[len] = '\0';
+
+        get_term_cell_size(&cell_w, &cell_h);
+
+        memset(&opts, 0, sizeof(opts));
+        opts.font_path = MORPH_MATHJAX_FONT_PATH;
+        if (display) {
+                opts.font_size = clamp_double((double)cell_h * 1.6,
+                                              MATHJAX_DISPLAY_MIN_SIZE,
+                                              MATHJAX_DISPLAY_MAX_SIZE);
+        } else {
+                opts.font_size = clamp_double((double)cell_h * 0.95,
+                                              MATHJAX_INLINE_MIN_SIZE,
+                                              MATHJAX_INLINE_MAX_SIZE);
+        }
+        opts.fg_color = MATHJAX_FG_COLOR;
+        opts.bg_color = MATHJAX_BG_COLOR;
+        opts.dpi = MATHJAX_DPI;
+
+        mjx = mjx_init(&opts);
+        if (!mjx)
+                goto out;
+
+        buf = mjx_render_latex(mjx, expr,
+                        display ? MJX_STYLE_DISPLAY : MJX_STYLE_INLINE);
+        if (!buf)
+                goto out;
+
+        pixels = mjx_buf_pixels(buf);
+        width = mjx_buf_width(buf);
+        height = mjx_buf_height(buf);
+
+        cols = mathjax_cell_count(width, cell_w);
+        rows = mathjax_cell_count(height, cell_h);
+        if (!display && rows > 1)
+                block_layout = 1;
+
+        bytes = (size_t)width * height * 4;
+        if (!pixels || bytes == 0)
+                goto out;
+
+        if (block_layout)
+                out_append(ctx, "\n");
+
+        while (offset < bytes) {
+                size_t remaining = bytes - offset;
+                size_t n = remaining < chunk_size ? remaining : chunk_size;
+                char header[96];
+                int header_len;
+
+                if (offset == 0) {
+                        header_len = snprintf(header, sizeof(header),
+                                "\033_Ga=T,f=32,s=%u,v=%u,c=%u,r=%u,m=%d;",
+                                width, height, cols, rows,
+                                offset + n < bytes ? 1 : 0);
+                } else {
+                        header_len = snprintf(header, sizeof(header),
+                                "\033_Gm=%d;", offset + n < bytes ? 1 : 0);
+                }
+                if (header_len < 0 ||
+                    (size_t)header_len >= sizeof(header))
+                        goto out;
+
+                out_append_n(ctx, header, (size_t)header_len);
+                append_mathjax_b64(ctx, pixels, offset, n);
+                out_append(ctx, "\033\\");
+                offset += n;
+        }
+
+        append_mathjax_cursor_advance(ctx, cols, rows, block_layout);
+        rc = 0;
+
+out:
+        if (buf)
+                mjx_buf_free(buf);
+        if (mjx)
+                mjx_free(mjx);
+        free(expr);
+        return rc;
+}
+
 static int enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 {
 	struct ansi_ctx *ctx = userdata;
@@ -1212,19 +1441,9 @@ static int text_callback(MD_TEXTTYPE type, const MD_CHAR *text,
 		out_append_n(ctx, text, size);
 		return 0;
 	case MD_TEXT_LATEXMATH: {
-		char ubuf[4096];
-		int flags = ctx->latex_display ? LATEX_DISPLAY : LATEX_INLINE;
-		int ulen = latex_to_unicode(text, size, ubuf,
-					    sizeof(ubuf), flags);
-		out_append(ctx, ANSI_CYAN);
-		if (ctx->latex_display)
-			out_append(ctx, " ");
-		if (ulen > 0)
-			out_append_n(ctx, ubuf, (size_t)ulen);
-		else
+                if (render_mathjax_kitty(ctx, text, size,
+                                         ctx->latex_display) != 0)
 			out_append_n(ctx, text, size);
-		if (ctx->latex_display)
-			out_append(ctx, " ");
 		break;
 	}
 	case MD_TEXT_CODE: {

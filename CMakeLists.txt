@@ -22,6 +22,9 @@ endif()
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(CURL REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FREETYPE REQUIRED freetype2)
+pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 
 include(FetchContent)
 
@@ -39,6 +42,56 @@ else()
 	)
 endif()
 FetchContent_MakeAvailable(md4c)
+
+add_library(mathjax STATIC
+        vendor/mathjax-c/src/api.c
+        vendor/mathjax-c/src/ast/node.c
+        vendor/mathjax-c/src/ast/factory.c
+        vendor/mathjax-c/src/ast/visitor.c
+        vendor/mathjax-c/src/font/font.c
+        vendor/mathjax-c/src/font/metrics.c
+        vendor/mathjax-c/src/font/stix_data.c
+        vendor/mathjax-c/src/render/bitmap.c
+        vendor/mathjax-c/src/render/draw.c
+        vendor/mathjax-c/src/kitty/kitty.c
+        vendor/mathjax-c/src/layout/box.c
+        vendor/mathjax-c/src/layout/math.c
+        vendor/mathjax-c/src/layout/scripts.c
+        vendor/mathjax-c/src/layout/fractions.c
+        vendor/mathjax-c/src/layout/radicals.c
+        vendor/mathjax-c/src/layout/matrix.c
+        vendor/mathjax-c/src/layout/spacing.c
+        vendor/mathjax-c/src/parser/lexer.c
+        vendor/mathjax-c/src/parser/parser.c
+        vendor/mathjax-c/src/parser/macros.c
+        vendor/mathjax-c/src/parser/symbols.c
+        vendor/mathjax-c/src/parser/environments.c
+)
+target_include_directories(mathjax PUBLIC
+        ${CMAKE_SOURCE_DIR}/vendor/mathjax-c/include
+        ${CMAKE_SOURCE_DIR}/vendor/mathjax-c/src/third_party
+        ${FREETYPE_INCLUDE_DIRS}
+        ${HARFBUZZ_INCLUDE_DIRS}
+)
+target_link_directories(mathjax PUBLIC
+        ${FREETYPE_LIBRARY_DIRS}
+        ${HARFBUZZ_LIBRARY_DIRS}
+)
+target_link_libraries(mathjax PUBLIC
+        ${FREETYPE_LIBRARIES}
+        ${HARFBUZZ_LIBRARIES}
+        m
+)
+if(APPLE)
+        find_library(CORE_TEXT CoreText)
+        find_library(CORE_GRAPHICS CoreGraphics)
+        if(CORE_TEXT AND CORE_GRAPHICS)
+                target_link_libraries(mathjax PRIVATE
+                        ${CORE_TEXT}
+                        ${CORE_GRAPHICS}
+                )
+        endif()
+endif()
 
 add_compile_options(
 	$<$<COMPILE_LANGUAGE:C>:-Wall>
