@@ -2694,14 +2694,6 @@ static void free_media(struct ansi_ctx *ctx)
 
 /* ---------------- markdown pre-normalization ---------------- */
 
-static int md_decode_cp(const char *s, size_t len, size_t off,
-			unsigned *cp, size_t *cp_len)
-{
-	if (!s || off >= len || !cp || !cp_len)
-		return 0;
-	return utf8_decode_codepoint(s + off, len - off, cp, cp_len);
-}
-
 static int is_table_sep_line(const char *line, size_t len)
 {
 	int has_pipe = 0;
@@ -2709,8 +2701,6 @@ static int is_table_sep_line(const char *line, size_t len)
 	size_t i = 0;
 	while (i < len) {
 		unsigned char c = (unsigned char)line[i];
-		unsigned cp;
-		size_t cp_len;
 
 		if (c == '|') {
 			has_pipe = 1;
@@ -2720,18 +2710,6 @@ static int is_table_sep_line(const char *line, size_t len)
 			i++;
 		} else if (c == ':' || c == ' ' || c == '\t') {
 			i++;
-		} else if (md_decode_cp(line, len, i, &cp, &cp_len)) {
-			if (utf8_is_fullwidth_pipe_cp(cp)) {
-				has_pipe = 1;
-				i += cp_len;
-			} else if (utf8_is_fullwidth_dash_cp(cp)) {
-				has_dash = 1;
-				i += cp_len;
-			} else if (utf8_is_fullwidth_colon_cp(cp)) {
-				i += cp_len;
-			} else {
-				return 0;
-			}
 		} else {
 			return 0;
 		}
@@ -2743,19 +2721,9 @@ static int line_has_pipe(const char *line, size_t len)
 {
 	size_t i = 0;
 	while (i < len) {
-		unsigned char c = (unsigned char)line[i];
-		unsigned cp;
-		size_t cp_len;
-
-		if (c == '|')
+		if (line[i] == '|')
 			return 1;
-		if (md_decode_cp(line, len, i, &cp, &cp_len)) {
-			if (utf8_is_fullwidth_pipe_cp(cp))
-				return 1;
-			i += cp_len;
-		} else {
-			i++;
-		}
+		i++;
 	}
 	return 0;
 }
@@ -2849,36 +2817,8 @@ static char *md_normalize(const char *md)
 			pending_len = line_len;
 			pending = malloc(pending_len + 1);
 			if (!pending) goto fail;
-
-			size_t wi = 0;
-			for (size_t i = 0; i < line_len; ) {
-				unsigned cp;
-				size_t cp_len;
-
-				if (md_decode_cp(p, line_len, i, &cp, &cp_len)) {
-					if (utf8_is_fullwidth_pipe_cp(cp)) {
-						pending[wi++] = '|';
-						i += cp_len;
-						continue;
-					}
-					if (is_table_sep_line(p, line_len)) {
-						if (utf8_is_fullwidth_dash_cp(cp)) {
-							pending[wi++] = '-';
-							i += cp_len;
-							continue;
-						}
-						if (utf8_is_fullwidth_colon_cp(cp)) {
-							pending[wi++] = ':';
-							i += cp_len;
-							continue;
-						}
-					}
-				}
-				pending[wi++] = p[i];
-				i++;
-			}
-			pending_len = wi;
-			pending[wi] = '\0';
+			memcpy(pending, p, pending_len);
+			pending[pending_len] = '\0';
 			pending_blank = 0;
 		}
 

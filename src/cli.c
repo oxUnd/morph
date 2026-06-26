@@ -43,6 +43,7 @@
 #include "render/markdown.h"
 #include "render/image.h"
 #include "render/video.h"
+#include "agent_ui/agent_ui.h"
 #include "stb_image.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -61,6 +62,10 @@
 #endif
 
 static void media_callback(const char *type, const char *path, void *user);
+static void cli_markdown_render_ansi(const char *md);
+static void cli_markdown_render_ansi_with_media(const char *md,
+						markdown_media_cb cb,
+						void *user);
 
 static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
@@ -656,7 +661,9 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 				   (strcmp(role, "assistant") == 0) ? "AI" : role;
 		printf(ANSI_DIM "[%s]" ANSI_RESET " ", label);
 		if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
-			markdown_render_ansi_with_media(cur->content, media_callback, NULL);
+			cli_markdown_render_ansi_with_media(cur->content,
+							    media_callback,
+							    NULL);
 		else
 			printf("%s\n", cur->content ? cur->content : "(empty)");
 		cur = cur->next;
@@ -1449,7 +1456,7 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 		for (int i = 0; rc == 0 && i < count; i++)
 			rc = append_task_table_row(&md, &tasks[i]);
 		if (rc == 0)
-			markdown_render_ansi(morph_buf_cstr(&md));
+			cli_markdown_render_ansi(morph_buf_cstr(&md));
 	}
 out:
 	if (md_ready)
@@ -1489,7 +1496,7 @@ static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
 	md_ready = 1;
 	rc = append_task_show_markdown(&md, &task);
 	if (rc == 0)
-		markdown_render_ansi(morph_buf_cstr(&md));
+		cli_markdown_render_ansi(morph_buf_cstr(&md));
 out:
 	if (md_ready)
 		morph_buf_cleanup(&md);
@@ -1856,7 +1863,7 @@ static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
 			rc = append_notification_table_row(&md,
 							   &notifications[i]);
 		if (rc == 0)
-			markdown_render_ansi(morph_buf_cstr(&md));
+			cli_markdown_render_ansi(morph_buf_cstr(&md));
 	}
 out:
 	if (md_ready)
@@ -2430,7 +2437,7 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 			free(expanded);
 			return -EIO;
 		}
-		markdown_render_ansi(text);
+		cli_markdown_render_ansi(text);
 		free(text);
 	}
 	free(expanded);
@@ -4449,6 +4456,34 @@ static void media_callback(const char *type, const char *path, void *user)
 	}
 }
 
+static void cli_markdown_render_ansi(const char *md)
+{
+	char *normalized;
+
+	if (!md) {
+		markdown_render_ansi(NULL);
+		return;
+	}
+	normalized = agent_ui_normalize_markdown(md);
+	markdown_render_ansi(normalized ? normalized : md);
+	free(normalized);
+}
+
+static void cli_markdown_render_ansi_with_media(const char *md,
+						markdown_media_cb cb,
+						void *user)
+{
+	char *normalized;
+
+	if (!md) {
+		markdown_render_ansi_with_media(NULL, cb, user);
+		return;
+	}
+	normalized = agent_ui_normalize_markdown(md);
+	markdown_render_ansi_with_media(normalized ? normalized : md, cb, user);
+	free(normalized);
+}
+
 
 /* ---- output_callback helpers ---- */
 
@@ -4777,8 +4812,8 @@ static int output_handle_final(struct cli_context *ctx, const char *content)
 	}
 	if (content && *content) {
 		char *wrapped = wrap_bare_media_paths(content);
-		markdown_render_ansi_with_media(wrapped ? wrapped : content,
-						media_callback, ctx);
+		cli_markdown_render_ansi_with_media(wrapped ? wrapped : content,
+						    media_callback, ctx);
 		free(wrapped);
 	} else {
 		printf("\n");

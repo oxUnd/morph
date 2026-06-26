@@ -968,33 +968,6 @@ TEST(MarkdownRender, TableMixedCJKAsciiAlignment)
 	EXPECT_TRUE(plain.find("\xe5\xb1\xa4") != std::string::npos);
 }
 
-TEST(MarkdownRender, TableFullwidthPipe)
-{
-	const char *md =
-		"\xef\xbd\x9c A \xef\xbd\x9c B \xef\xbd\x9c\n"
-		"\xef\xbd\x9c --- \xef\xbd\x9c --- \xef\xbd\x9c\n"
-		"\xef\xbd\x9c 1 \xef\xbd\x9c 2 \xef\xbd\x9c";
-	std::string out = render(md);
-	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
-	EXPECT_TRUE(contains(out, "\xe2\x94\x9c"));
-	std::string plain = strip_ansi(out);
-	EXPECT_TRUE(plain.find("A") != std::string::npos);
-	EXPECT_TRUE(plain.find("B") != std::string::npos);
-}
-
-TEST(MarkdownRender, TableFullwidthPipeCJK)
-{
-	const char *md =
-		"\xef\xbd\x9c \xe7\x94\xa8Python \xef\xbd\x9c \xe7\x94\xa8Zerolang \xef\xbd\x9c\n"
-		"\xef\xbd\x9c --- \xef\xbd\x9c --- \xef\xbd\x9c\n"
-		"\xef\xbd\x9c AI\xe5\x86\x99\xe4\xbb\xa3\xe7\xa0\x81 \xef\xbd\x9c \xe8\x87\xaa\xe5\x8a\xa8\xe4\xbf\xae\xe5\xa4\x8d \xef\xbd\x9c";
-	std::string out = render(md);
-	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
-	std::string plain = strip_ansi(out);
-	EXPECT_TRUE(plain.find("Python") != std::string::npos);
-	EXPECT_TRUE(plain.find("Zerolang") != std::string::npos);
-}
-
 TEST(MarkdownRender, TableNoBlankLineBefore)
 {
 	const char *md =
@@ -1022,19 +995,6 @@ TEST(MarkdownRender, TableNoBlankLineBeforeCJK)
 	std::string plain = strip_ansi(out);
 	EXPECT_TRUE(plain.find("Python") != std::string::npos);
 	EXPECT_TRUE(plain.find("Zerolang") != std::string::npos);
-}
-
-TEST(MarkdownRender, TableFullwidthDashInSeparator)
-{
-	const char *md =
-		"| A | B |\n"
-		"| \xef\xbc\x8d\xef\xbc\x8d\xef\xbc\x8d | \xef\xbc\x8d\xef\xbc\x8d\xef\xbc\x8d |\n"
-		"| 1 | 2 |";
-	std::string out = render(md);
-	EXPECT_TRUE(contains(out, "\xe2\x94\x82"));
-	std::string plain = strip_ansi(out);
-	EXPECT_TRUE(plain.find("A") != std::string::npos);
-	EXPECT_TRUE(plain.find("1") != std::string::npos);
 }
 
 TEST(MarkdownRender, TableInCodeBlockNotAffected)
