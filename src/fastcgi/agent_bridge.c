@@ -64,6 +64,12 @@ const char *fcgi_artifact_output_dir(void)
 		? g_config.general.output_dir : "/var/lib/morph/output";
 }
 
+const struct config *fcgi_bridge_config(void)
+{
+	pthread_once(&g_once, bridge_init_once);
+	return &g_config;
+}
+
 int react_memory_options_for_session(struct memory_options *out)
 {
 	if (!out)

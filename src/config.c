@@ -54,6 +54,15 @@ void config_set_defaults(struct config *cfg)
 	cfg->models.video.poll_interval_seconds = 5;
 	cfg->models.video.poll_timeout_seconds = 600;
 
+	cfg->credits.daily_limit = -1;
+	strncpy(cfg->credits.currency, "USD",
+		sizeof(cfg->credits.currency) - 1);
+	cfg->credits.cost_to_credit_coef = 1000.0;
+	cfg->credits.input_token_credit_coef = 0.0;
+	cfg->credits.output_token_credit_coef = 0.0;
+	cfg->credits.image_unit_credit_coef = 0.0;
+	cfg->credits.video_second_credit_coef = 0.0;
+
 	cfg->react.max_iterations = 10;
 	cfg->react.step_timeout_seconds = 330;
 	cfg->react.tool_max_retries = 3;
@@ -152,6 +161,53 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);
 }
 
+static void load_credit_price(toml_table_t *t, struct config_credit_price *p)
+{
+	if (!t || !p)
+		return;
+	CFG_STR(t, "provider", p->provider);
+	CFG_STR(t, "model", p->model);
+	CFG_STR(t, "kind", p->kind);
+	CFG_DBL(t, "input_per_million", p->input_per_million);
+	CFG_DBL(t, "output_per_million", p->output_per_million);
+	CFG_DBL(t, "image_unit_per_million", p->image_unit_per_million);
+	CFG_DBL(t, "video_second_per_million", p->video_second_per_million);
+}
+
+static void load_credits_config(toml_table_t *root, struct config_credits *cfg)
+{
+	toml_table_t *credits = table_path(root, "credits");
+	toml_array_t *prices;
+
+	if (!credits || !cfg)
+		return;
+	CFG_INT(credits, "daily_limit", cfg->daily_limit);
+	CFG_STR(credits, "currency", cfg->currency);
+	CFG_DBL(credits, "cost_to_credit_coef", cfg->cost_to_credit_coef);
+	CFG_DBL(credits, "input_token_credit_coef",
+		cfg->input_token_credit_coef);
+	CFG_DBL(credits, "output_token_credit_coef",
+		cfg->output_token_credit_coef);
+	CFG_DBL(credits, "image_unit_credit_coef",
+		cfg->image_unit_credit_coef);
+	CFG_DBL(credits, "video_second_credit_coef",
+		cfg->video_second_credit_coef);
+
+	prices = toml_array_in(credits, "prices");
+	if (prices) {
+		int count = toml_array_nelem(prices);
+		if (count > CREDIT_PRICE_MAX)
+			count = CREDIT_PRICE_MAX;
+		for (int i = 0; i < count; i++) {
+			toml_table_t *pt = toml_table_at(prices, i);
+			if (!pt)
+				continue;
+			load_credit_price(pt, &cfg->prices[cfg->price_count]);
+			cfg->price_count++;
+		}
+	}
+}
+
 static void expand_path_field(char *buf, size_t len)
 {
 	if (!buf[0])
@@ -211,6 +267,7 @@ int config_load(struct config *cfg, const char *path)
 	load_model_entry(model_tbl, "text", &cfg->models.text);
 	load_model_entry(model_tbl, "image", &cfg->models.image);
 	load_model_entry(model_tbl, "video", &cfg->models.video);
+	load_credits_config(tbl, &cfg->credits);
 
 	toml_table_t *react = table_path(tbl, "react");
 	if (react) {
@@ -568,6 +625,10 @@ void config_print(const struct config *cfg)
 	log_info("  [model.text] provider=%s model=%s api_base=%s",
 		 cfg->models.text.provider, cfg->models.text.model,
 		 cfg->models.text.api_base);
+	log_info("  [credits] daily_limit=%d currency=%s cost_coef=%.3f prices=%d",
+		 cfg->credits.daily_limit, cfg->credits.currency,
+		 cfg->credits.cost_to_credit_coef,
+		 cfg->credits.price_count);
 	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
 		 cfg->react.max_iterations, cfg->react.step_timeout_seconds,
 		 cfg->react.tool_max_retries,

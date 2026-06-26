@@ -70,6 +70,7 @@ set(_MORPH_LIBS
     morph-ipc
     morph-models
     morph-session
+    morph-credits
     morph-http
     morph-toml
     morph-config

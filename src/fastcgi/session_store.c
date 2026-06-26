@@ -117,6 +117,27 @@ static const char *SCHEMA =
 "  created_at INTEGER NOT NULL,"
 "  expires_at INTEGER"
 ");"
+"CREATE TABLE IF NOT EXISTS credit_events ("
+"  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  user_id TEXT,"
+"  session_id TEXT,"
+"  kind TEXT NOT NULL,"
+"  provider TEXT,"
+"  model TEXT,"
+"  input_tokens INTEGER NOT NULL DEFAULT 0,"
+"  output_tokens INTEGER NOT NULL DEFAULT 0,"
+"  image_units INTEGER NOT NULL DEFAULT 0,"
+"  video_seconds INTEGER NOT NULL DEFAULT 0,"
+"  estimated_cost REAL NOT NULL DEFAULT 0,"
+"  currency TEXT NOT NULL DEFAULT 'USD',"
+"  credits INTEGER NOT NULL DEFAULT 0,"
+"  metadata_json TEXT,"
+"  created_at INTEGER NOT NULL"
+");"
+"CREATE INDEX IF NOT EXISTS idx_credit_events_user_day "
+"  ON credit_events(user_id, created_at);"
+"CREATE INDEX IF NOT EXISTS idx_credit_events_session "
+"  ON credit_events(session_id, created_at);"
 "CREATE INDEX IF NOT EXISTS idx_artifacts_user_session "
 "  ON fcgi_artifacts(user_id, session_id);";
 
@@ -347,6 +368,7 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 	cJSON *daily = NULL;
 	cJSON *storage = NULL;
 	cJSON *conc = NULL;
+	cJSON *credits = NULL;
 	char *json = NULL;
 
 	if (!s || !user_id || !out_json)
@@ -363,8 +385,13 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 	daily = cJSON_CreateObject();
 	storage = cJSON_CreateObject();
 	conc = cJSON_CreateObject();
-	if (!root || !daily || !storage || !conc) {
+	credits = cJSON_CreateObject();
+	if (!root || !daily || !storage || !conc || !credits) {
 		cJSON_Delete(root);
+		cJSON_Delete(daily);
+		cJSON_Delete(storage);
+		cJSON_Delete(conc);
+		cJSON_Delete(credits);
 		sqlite3_finalize(stmt);
 		MORPH_RETURN(-ENOMEM);
 	}
@@ -385,6 +412,35 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 	cJSON_AddNumberToObject(conc, "used", 0);
 	cJSON_AddNumberToObject(conc, "limit", sqlite3_column_int(stmt, 5));
 	cJSON_AddItemToObject(root, "concurrent_turns", conc);
+	{
+		const char *csql =
+			"SELECT COALESCE(SUM(credits),0),"
+			"COALESCE(SUM(estimated_cost),0),COUNT(*),"
+			"COALESCE(MAX(currency),'USD') "
+			"FROM credit_events WHERE user_id=? "
+			"AND created_at >= strftime('%s','now','start of day')";
+		sqlite3_stmt *cst = NULL;
+		if (sqlite3_prepare_v2(s->db.handle, csql, -1,
+				       &cst, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(cst, 1, user_id, -1,
+					  SQLITE_TRANSIENT);
+			if (sqlite3_step(cst) == SQLITE_ROW) {
+				cJSON_AddNumberToObject(credits, "used_today",
+					(double)sqlite3_column_int64(cst, 0));
+				cJSON_AddNumberToObject(credits,
+					"estimated_cost_today",
+					sqlite3_column_double(cst, 1));
+				cJSON_AddNumberToObject(credits, "events_today",
+					sqlite3_column_int(cst, 2));
+				cJSON_AddStringToObject(credits, "currency",
+					(const char *)sqlite3_column_text(cst, 3));
+			}
+			sqlite3_finalize(cst);
+		}
+		cJSON_AddNumberToObject(credits, "daily_limit", -1);
+		cJSON_AddBoolToObject(credits, "over_limit", 0);
+		cJSON_AddItemToObject(root, "credits", credits);
+	}
 
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);

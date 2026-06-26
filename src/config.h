@@ -38,6 +38,31 @@ struct config_models {
 	struct config_model_entry video;
 };
 
+#define CREDIT_PRICE_MAX 32
+#define CREDIT_KIND_MAX 32
+
+struct config_credit_price {
+	char provider[64];
+	char model[128];
+	char kind[CREDIT_KIND_MAX];
+	double input_per_million;
+	double output_per_million;
+	double image_unit_per_million;
+	double video_second_per_million;
+};
+
+struct config_credits {
+	int daily_limit;
+	char currency[8];
+	double cost_to_credit_coef;
+	double input_token_credit_coef;
+	double output_token_credit_coef;
+	double image_unit_credit_coef;
+	double video_second_credit_coef;
+	struct config_credit_price prices[CREDIT_PRICE_MAX];
+	int price_count;
+};
+
 #define DISABLED_TOOLS_MAX 32
 #define DISABLED_TOOL_NAME_MAX 64
 #define HITL_TOOLS_MAX 32
@@ -202,6 +227,7 @@ struct config_sub_agents {
 struct config {
 	struct config_general general;
 	struct config_models models;
+	struct config_credits credits;
 	struct config_react react;
 	struct config_context context;
 	struct config_memory memory;

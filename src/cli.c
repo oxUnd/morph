@@ -35,6 +35,7 @@
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "db/scheduled_task.h"
+#include "credits.h"
 #include "agent/memory.h"
 #include "ext/install.h"
 #include "config.h"
@@ -240,6 +241,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv);
 static int cmd_model(struct cli_context *ctx, int argc, char **argv);
 static int cmd_trace(struct cli_context *ctx, int argc, char **argv);
 static int cmd_context(struct cli_context *ctx, int argc, char **argv);
+static int cmd_credits(struct cli_context *ctx, int argc, char **argv);
 static int cmd_compress(struct cli_context *ctx, int argc, char **argv);
 static int cmd_save(struct cli_context *ctx, int argc, char **argv);
 static int cmd_config(struct cli_context *ctx, int argc, char **argv);
@@ -290,6 +292,7 @@ static const struct cmd_entry commands[] = {
 	{ "/t",       cmd_trace,   "Alias for /trace",                   "/t [--from-db]" },
 	{ "/context", cmd_context, "Show token usage and context info", "/context" },
 	{ "/ctx",     cmd_context, "Alias for /context",                 "/ctx" },
+	{ "/credits", cmd_credits, "Show credit usage and estimated cost", "/credits" },
 	{ "/compress",cmd_compress,"Manually compress context window",  "/compress" },
 	{ "/cp",      cmd_compress,"Alias for /compress",                "/cp" },
 	{ "/save",    cmd_save,    "Export session to a file",          "/save [format]" },
@@ -815,6 +818,130 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
+static void cli_credit_session_key(struct cli_context *ctx, char *buf,
+				   size_t size)
+{
+	if (!ctx || !buf || size == 0)
+		return;
+	if (ctx->current_session.display_id[0]) {
+		snprintf(buf, size, "%s", ctx->current_session.display_id);
+		return;
+	}
+	snprintf(buf, size, "%lld", (long long)ctx->current_session.id);
+}
+
+static int cmd_credits(struct cli_context *ctx, int argc, char **argv)
+{
+	struct credit_summary today;
+	struct credit_summary session;
+	char sid[64];
+	int rc;
+
+	(void)argc;
+	(void)argv;
+	cli_credit_session_key(ctx, sid, sizeof(sid));
+	rc = credit_summary_today(&ctx->database, "local", &today);
+	if (rc != 0)
+		return rc;
+	rc = credit_summary_session(&ctx->database, sid, &session);
+	if (rc != 0)
+		return rc;
+
+	printf("credits: %lld",
+	       (long long)today.credits);
+	if (ctx->config.credits.daily_limit >= 0) {
+		printf(" / %d today", ctx->config.credits.daily_limit);
+		if (today.credits > ctx->config.credits.daily_limit)
+			printf(" " ANSI_YELLOW "(over limit)" ANSI_RESET);
+	} else {
+		printf(" today");
+	}
+	printf(" | est. cost: %.6f %s | session: %lld credits",
+	       today.estimated_cost,
+	       ctx->config.credits.currency,
+	       (long long)session.credits);
+	if (session.event_count == 0)
+		printf(" | no events");
+	printf("\n");
+	return 0;
+}
+
+static void cli_record_chat_credits(struct cli_context *ctx, int user_tokens,
+				    int asst_tokens)
+{
+	struct credit_event event;
+	struct credit_charge charge;
+	struct credit_summary today;
+	char sid[64];
+	int rc;
+
+	if (!ctx)
+		return;
+	cli_credit_session_key(ctx, sid, sizeof(sid));
+	memset(&event, 0, sizeof(event));
+	event.user_id = "local";
+	event.session_id = sid;
+	event.kind = "chat_text";
+	event.provider = ctx->config.models.text.provider;
+	event.model = ctx->current_session.model[0] ?
+		ctx->current_session.model : ctx->config.models.text.model;
+	event.input_tokens = user_tokens;
+	event.output_tokens = asst_tokens;
+	rc = credit_record_event(&ctx->database, &ctx->config.credits,
+				 &event, &charge);
+	if (rc != 0)
+		return;
+	if (ctx->config.credits.daily_limit < 0 || ctx->event_mode == CLI_EVENTS_JSON)
+		return;
+	rc = credit_summary_today(&ctx->database, "local", &today);
+	if (rc == 0 && today.credits > ctx->config.credits.daily_limit) {
+		printf(ANSI_YELLOW
+		       "credits warning: %lld / %d today"
+		       ANSI_RESET "\n",
+		       (long long)today.credits,
+		       ctx->config.credits.daily_limit);
+	}
+}
+
+static void cli_record_media_credits(struct cli_context *ctx, const char *kind,
+				     int64_t image_units,
+				     int64_t video_seconds,
+				     const char *provider,
+				     const char *model,
+				     const char *metadata_json)
+{
+	struct credit_event event;
+	struct credit_summary today;
+	char sid[64];
+	int rc;
+
+	if (!ctx || !kind)
+		return;
+	cli_credit_session_key(ctx, sid, sizeof(sid));
+	memset(&event, 0, sizeof(event));
+	event.user_id = "local";
+	event.session_id = sid;
+	event.kind = kind;
+	event.provider = provider;
+	event.model = model;
+	event.image_units = image_units;
+	event.video_seconds = video_seconds;
+	event.metadata_json = metadata_json;
+	rc = credit_record_event(&ctx->database, &ctx->config.credits,
+				 &event, NULL);
+	if (rc != 0 || ctx->config.credits.daily_limit < 0 ||
+	    ctx->event_mode == CLI_EVENTS_JSON)
+		return;
+	rc = credit_summary_today(&ctx->database, "local", &today);
+	if (rc == 0 && today.credits > ctx->config.credits.daily_limit) {
+		printf(ANSI_YELLOW
+		       "credits warning: %lld / %d today"
+		       ANSI_RESET "\n",
+		       (long long)today.credits,
+		       ctx->config.credits.daily_limit);
+	}
+}
+
 static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)argc;
@@ -977,6 +1104,20 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  api_base = %s\n", ctx->config.models.video.api_base);
 	printf("  context_limit = %d\n",
 	       ctx->config.models.video.context_limit);
+	printf(ANSI_BOLD "[credits]" ANSI_RESET "\n");
+	printf("  daily_limit = %d\n", ctx->config.credits.daily_limit);
+	printf("  currency = %s\n", ctx->config.credits.currency);
+	printf("  cost_to_credit_coef = %.3f\n",
+	       ctx->config.credits.cost_to_credit_coef);
+	printf("  input_token_credit_coef = %.6f\n",
+	       ctx->config.credits.input_token_credit_coef);
+	printf("  output_token_credit_coef = %.6f\n",
+	       ctx->config.credits.output_token_credit_coef);
+	printf("  image_unit_credit_coef = %.6f\n",
+	       ctx->config.credits.image_unit_credit_coef);
+	printf("  video_second_credit_coef = %.6f\n",
+	       ctx->config.credits.video_second_credit_coef);
+	printf("  prices = %d\n", ctx->config.credits.price_count);
 	printf(ANSI_BOLD "[react]" ANSI_RESET "\n");
 	printf("  max_iterations = %d\n", ctx->config.react.max_iterations);
 	printf("  step_timeout = %d\n",
@@ -2284,6 +2425,10 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
+	cli_record_media_credits(ctx, "image_input",
+				 credit_image_units_from_size(w, h), 0,
+				 ctx->config.models.image.provider,
+				 ctx->config.models.image.model, NULL);
 	image_render_terminal(expanded);
 	CMD_OK("image loaded: %s (%dx%d, %d channels)", expanded, w, h, ch);
 	free(expanded);
@@ -2304,6 +2449,10 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("failed to play video: %s", argv[1]);
 		return -EIO;
 	}
+	cli_record_media_credits(ctx, "video_input", 0, 1,
+				 ctx->config.models.video.provider,
+				 ctx->config.models.video.model,
+				 "{\"estimated\":true}");
 	CMD_OK("video loaded: %s", argv[1]);
 	return 0;
 }
@@ -5276,15 +5425,18 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	}
 
 	int user_tokens = tokenizer_count(ctx->tokenizer, effective_input);
+	int asst_tokens = 0;
 	message_add(&ctx->database, ctx->current_session.id, "user",
 		    effective_input, user_tokens);
 	session_update_tokens(&ctx->database, ctx->current_session.id, user_tokens);
 	if (ctx->react && ctx->react->final_answer) {
-		int asst_tokens = tokenizer_count(ctx->tokenizer, ctx->react->final_answer);
+		asst_tokens = tokenizer_count(ctx->tokenizer,
+					      ctx->react->final_answer);
 		message_add(&ctx->database, ctx->current_session.id, "assistant",
 			    ctx->react->final_answer, asst_tokens);
 		session_update_tokens(&ctx->database, ctx->current_session.id, asst_tokens);
 	}
+	cli_record_chat_credits(ctx, user_tokens, asst_tokens);
 	if (ctx->react) {
 		struct memory_options mem_opts = cli_memory_options(ctx);
 		/* Run consolidation on a background worker so the prompt

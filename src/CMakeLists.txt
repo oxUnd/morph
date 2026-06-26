@@ -41,6 +41,15 @@ target_include_directories(morph-session PUBLIC
 )
 target_link_libraries(morph-session PUBLIC morph-util morph-db)
 
+add_library(morph-credits STATIC
+	credits.c
+)
+target_include_directories(morph-credits PUBLIC
+	${CMAKE_CURRENT_SOURCE_DIR}
+	${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config)
+
 add_subdirectory(render)
 add_subdirectory(agent)
 add_subdirectory(sandbox)
@@ -67,7 +76,7 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui)
+target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-credits morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui)
 
 add_executable(morph ${MORPH_SOURCES})
 set_target_properties(morph PROPERTIES

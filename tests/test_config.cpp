@@ -34,6 +34,10 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
+	EXPECT_EQ(cfg.credits.daily_limit, -1);
+	EXPECT_STREQ(cfg.credits.currency, "USD");
+	EXPECT_DOUBLE_EQ(cfg.credits.cost_to_credit_coef, 1000.0);
+	EXPECT_EQ(cfg.credits.price_count, 0);
 }
 
 TEST_F(ConfigTest, LoadFromFile) {
@@ -83,6 +87,44 @@ TEST_F(ConfigTest, LoadNonexistent) {
 	int rc = config_load(&cfg, "/tmp/nonexistent_config_xyz.toml");
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "default");
+}
+
+TEST_F(ConfigTest, LoadCreditsConfig) {
+	const char *toml = R"(
+[credits]
+daily_limit = 100
+currency = "CNY"
+cost_to_credit_coef = 7.5
+input_token_credit_coef = 0.01
+output_token_credit_coef = 0.02
+image_unit_credit_coef = 3.0
+video_second_credit_coef = 4.0
+
+[[credits.prices]]
+provider = "openai"
+model = "gpt-test"
+kind = "chat_text"
+input_per_million = 2.0
+output_per_million = 10.0
+)";
+	file_write_all(config_path, toml, strlen(toml));
+
+	struct config cfg;
+	int rc = config_load(&cfg, config_path);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(cfg.credits.daily_limit, 100);
+	EXPECT_STREQ(cfg.credits.currency, "CNY");
+	EXPECT_DOUBLE_EQ(cfg.credits.cost_to_credit_coef, 7.5);
+	EXPECT_DOUBLE_EQ(cfg.credits.input_token_credit_coef, 0.01);
+	EXPECT_DOUBLE_EQ(cfg.credits.output_token_credit_coef, 0.02);
+	EXPECT_DOUBLE_EQ(cfg.credits.image_unit_credit_coef, 3.0);
+	EXPECT_DOUBLE_EQ(cfg.credits.video_second_credit_coef, 4.0);
+	ASSERT_EQ(cfg.credits.price_count, 1);
+	EXPECT_STREQ(cfg.credits.prices[0].provider, "openai");
+	EXPECT_STREQ(cfg.credits.prices[0].model, "gpt-test");
+	EXPECT_STREQ(cfg.credits.prices[0].kind, "chat_text");
+	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].input_per_million, 2.0);
+	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].output_per_million, 10.0);
 }
 
 TEST_F(ConfigTest, LoadNull) {

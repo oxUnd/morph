@@ -16,6 +16,8 @@
 #include "agent/tokenizer.h"
 #include "agent/memory.h"
 #include "event/event.h"
+#include "config.h"
+#include "credits.h"
 #include "session.h"
 #include "util/file.h"
 
@@ -54,6 +56,7 @@ __attribute__((weak)) int
 react_memory_options_for_session(struct memory_options *out);
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir(void);
+__attribute__((weak)) const struct config *fcgi_bridge_config(void);
 /* -------------------------------------------------------- */
 
 struct turn_job {
@@ -75,6 +78,63 @@ struct turn_job {
 	int artifacts_count;
 	int final_sent;
 };
+
+static void publish_credit_warning(struct turn_job *j,
+				   const struct config *cfg)
+{
+	struct credit_summary today;
+	cJSON *obj = NULL;
+	char *json = NULL;
+
+	if (!j || !cfg || cfg->credits.daily_limit < 0)
+		return;
+	if (credit_summary_today(&j->store->db, j->user_id, &today) != 0)
+		return;
+	if (today.credits <= cfg->credits.daily_limit)
+		return;
+
+	obj = cJSON_CreateObject();
+	if (!obj)
+		return;
+	cJSON_AddNumberToObject(obj, "used_today", (double)today.credits);
+	cJSON_AddNumberToObject(obj, "daily_limit",
+				cfg->credits.daily_limit);
+	cJSON_AddStringToObject(obj, "currency",
+				cfg->credits.currency);
+	cJSON_AddNumberToObject(obj, "estimated_cost_today",
+				today.estimated_cost);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
+	events_publish(j->store, j->session_id, "credits_warning",
+		       json ? json : "{}");
+	free(json);
+}
+
+static void record_turn_credits(struct turn_job *j, struct session *sess,
+				int user_tokens, int asst_tokens)
+{
+	const struct config *cfg;
+	struct credit_event event;
+	const char *model;
+
+	if (!j || !sess || !fcgi_bridge_config)
+		return;
+	cfg = fcgi_bridge_config();
+	if (!cfg)
+		return;
+	model = sess->model[0] ? sess->model : cfg->models.text.model;
+	memset(&event, 0, sizeof(event));
+	event.user_id = j->user_id;
+	event.session_id = j->session_id;
+	event.kind = "chat_text";
+	event.provider = cfg->models.text.provider;
+	event.model = model;
+	event.input_tokens = user_tokens;
+	event.output_tokens = asst_tokens;
+	if (credit_record_event(&j->store->db, &cfg->credits,
+				&event, NULL) == 0)
+		publish_credit_warning(j, cfg);
+}
 
 static const char *bridge_output_dir(void)
 {
@@ -725,6 +785,8 @@ static void *turn_thread(void *arg)
 	}
 
 	if (sess.id > 0) {
+		int user_tokens = 0;
+		int asst_tokens = 0;
 		cJSON *arr = cJSON_CreateArray();
 		struct react_step *cur = rctx->steps;
 		while (cur) {
@@ -754,7 +816,7 @@ static void *turn_thread(void *arg)
 		cJSON_Delete(arr);
 
 		if (j->input && *j->input) {
-			int user_tokens = tokenizer_count(rctx->tokenizer, j->input);
+			user_tokens = tokenizer_count(rctx->tokenizer, j->input);
 			message_add(&j->store->db, sess.id, "user", j->input,
 				    user_tokens);
 			session_update_tokens(&j->store->db, sess.id, user_tokens);
@@ -764,13 +826,13 @@ static void *turn_thread(void *arg)
 				render_media_refs(j, rctx->final_answer);
 			const char *answer =
 				rendered ? rendered : rctx->final_answer;
-			int asst_tokens =
-				tokenizer_count(rctx->tokenizer, answer);
+			asst_tokens = tokenizer_count(rctx->tokenizer, answer);
 			message_add(&j->store->db, sess.id, "assistant", answer,
 				    asst_tokens);
 			session_update_tokens(&j->store->db, sess.id, asst_tokens);
 			free(rendered);
 		}
+		record_turn_credits(j, &sess, user_tokens, asst_tokens);
 		memory_consolidate_turn_async(&j->store->db, sess.id,
 					      j->input,
 					      rctx->final_answer, rctx->steps,
