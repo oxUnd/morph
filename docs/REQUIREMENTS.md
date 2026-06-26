@@ -346,6 +346,7 @@ saved 5 messages
 | `/model [name]` | `/m` | 查看/切换当前模型 | `/m gpt-4o` |
 | `/trace [--from-db]` | `/t` | 当前轮次 ReAct 轨迹 | `/t --from-db` |
 | `/context` | `/ctx` | token 用量与上下文信息 | — |
+| `/credits` | — | 查看积分用量与预估成本 | — |
 | `/compress` | `/cp` | 手动触发压缩 | — |
 | `/save [format]` | — | 导出会话（md/json/txt） | `/save md` |
 | `/export <fmt>` | — | `/save` 别名 | — |

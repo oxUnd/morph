@@ -98,6 +98,7 @@ test_help_list() {
 	assert_contains "2: /help shows /q[uit]" "$out" "/q"
 	assert_contains "2: /help shows /new" "$out" "/n"
 	assert_contains "2: /help shows /ext" "$out" "/x"
+	assert_contains "2: /help shows /credits" "$out" "/credits"
 }
 
 test_help_detail() {
