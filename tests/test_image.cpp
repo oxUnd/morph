@@ -11,6 +11,8 @@
 #include "agent/tool_context.h"
 #include "render/image.h"
 #include "util/file.h"
+#include "util/image_util.h"
+#include "stb_image_write.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -57,6 +59,22 @@ static int create_test_png(const char *path) {
 	return (written == sizeof(buf)) ? 0 : -1;
 }
 
+static int create_solid_png(const char *path, int w, int h)
+{
+	unsigned char *pixels = (unsigned char *)calloc((size_t)w * (size_t)h * 4, 1);
+	if (!pixels)
+		return -1;
+	for (int i = 0; i < w * h; i++) {
+		pixels[i * 4 + 0] = 0x40;
+		pixels[i * 4 + 1] = 0x80;
+		pixels[i * 4 + 2] = 0xC0;
+		pixels[i * 4 + 3] = 0xFF;
+	}
+	int rc = stbi_write_png(path, w, h, 4, pixels, w * 4) ? 0 : -1;
+	free(pixels);
+	return rc;
+}
+
 TEST(ImageGen, InvalidPrompt) {
 	struct image_result result;
 	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, NULL, &result);
@@ -91,6 +109,50 @@ TEST(ImageGen, ValidateSizeRejectsMalformedValues) {
 	EXPECT_NE(image_gen_validate_size("0x4096"), 0);
 	EXPECT_NE(image_gen_validate_size("-1x4096"), 0);
 	EXPECT_NE(image_gen_validate_size("5k"), 0);
+}
+
+TEST(ImageGen, NormalizeReferenceSizeKeepsInRangeDimensions) {
+	int w = 0;
+	int h = 0;
+	ASSERT_EQ(image_gen_normalize_reference_size(2048, 2048, &w, &h), 0);
+	EXPECT_EQ(w, 2048);
+	EXPECT_EQ(h, 2048);
+}
+
+TEST(ImageGen, NormalizeReferenceSizeUpscalesSmallImages) {
+	int w = 0;
+	int h = 0;
+	ASSERT_EQ(image_gen_normalize_reference_size(1024, 1024, &w, &h), 0);
+	EXPECT_EQ(w, 1920);
+	EXPECT_EQ(h, 1920);
+	EXPECT_EQ(image_gen_validate_size("1920x1920"), 0);
+}
+
+TEST(ImageGen, NormalizeReferenceSizeDownscalesLargeImages) {
+	int w = 0;
+	int h = 0;
+	ASSERT_EQ(image_gen_normalize_reference_size(8000, 4000, &w, &h), 0);
+	long long pixels = (long long)w * (long long)h;
+	EXPECT_GE(pixels, 2560LL * 1440LL);
+	EXPECT_LE(pixels, 4096LL * 4096LL);
+	EXPECT_NEAR((double)w / (double)h, 2.0, 0.01);
+}
+
+TEST(ImageGen, ProbeAndResizeFileExact) {
+	const char *path = "/tmp/morph_image_resize_exact.png";
+	ASSERT_EQ(create_solid_png(path, 8, 8), 0);
+
+	int w = 0;
+	int h = 0;
+	ASSERT_EQ(image_probe_size(path, &w, &h), 0);
+	EXPECT_EQ(w, 8);
+	EXPECT_EQ(h, 8);
+
+	ASSERT_EQ(image_resize_file_exact(path, 37, 19), 0);
+	ASSERT_EQ(image_probe_size(path, &w, &h), 0);
+	EXPECT_EQ(w, 37);
+	EXPECT_EQ(h, 19);
+	remove(path);
 }
 
 TEST(ImageRender, NullPath) {

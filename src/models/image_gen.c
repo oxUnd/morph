@@ -7,7 +7,6 @@
 #include "util/image_util.h"
 #include "util/arena.h"
 #include "util/error.h"
-#include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -133,6 +132,35 @@ int image_gen_validate_size(const char *size)
 	return 0;
 }
 
+static int image_gen_parse_size_dims(const char *size, int *width, int *height)
+{
+	char *end = NULL;
+	long w;
+	long h;
+
+	if (!size || !*size || !width || !height)
+		MORPH_RETURN(-EINVAL);
+
+	errno = 0;
+	w = strtol(size, &end, 10);
+	if (errno != 0 || end == size || !end || *end != 'x')
+		MORPH_RETURN(-EINVAL);
+	if (w <= 0 || w > INT_MAX)
+		MORPH_RETURN(-EINVAL);
+
+	size = end + 1;
+	errno = 0;
+	h = strtol(size, &end, 10);
+	if (errno != 0 || end == size || !end || *end != '\0')
+		MORPH_RETURN(-EINVAL);
+	if (h <= 0 || h > INT_MAX)
+		MORPH_RETURN(-EINVAL);
+
+	*width = (int)w;
+	*height = (int)h;
+	return 0;
+}
+
 int image_gen_create(struct model *self, const char *prompt, const char *style,
 		     const char *size, const char *image_path,
 		     const char *output_dir,
@@ -148,6 +176,24 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	struct arena *arena = arena_create(8192);
 	if (!arena)
 		return -ENOMEM;
+
+	char auto_size[64];
+	int target_w = 0;
+	int target_h = 0;
+	if (size && *size && strchr(size, 'x')) {
+		(void)image_gen_parse_size_dims(size, &target_w, &target_h);
+	} else if (image_path && image_path[0]) {
+		int src_w = 0;
+		int src_h = 0;
+		if (image_probe_size(image_path, &src_w, &src_h) == 0 &&
+		    image_gen_normalize_reference_size(src_w, src_h,
+						       &target_w,
+						       &target_h) == 0 &&
+		    image_gen_format_size(auto_size, sizeof(auto_size),
+					  target_w, target_h) == 0) {
+			size = auto_size;
+		}
+	}
 
 	const char *api_base = self ? self->api_base : "https://api.openai.com/v1";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
@@ -258,6 +304,16 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		result->width = w;
 		result->height = h;
 		stbi_image_free(img);
+	}
+	if (target_w > 0 && target_h > 0 &&
+	    (result->width != target_w || result->height != target_h)) {
+		rc = image_resize_file_exact(out_path, target_w, target_h);
+		if (rc < 0) {
+			cJSON_Delete(root);
+			return rc;
+		}
+		result->width = target_w;
+		result->height = target_h;
 	}
 	log_dbg("image generated: %s (%dx%d)", out_path, result->width, result->height);
 	cJSON_Delete(root);

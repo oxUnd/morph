@@ -42,7 +42,10 @@
 "- Image: img_qa to understand images, answer visual questions, and OCR;\n" \
 "  img_gen to create or transform (pass a reference_image for img2img);\n" \
 "  img_info/img_resize/img_convert/img_annotate to inspect metadata,\n" \
-"  post-process, or collect manual annotations.\n" \
+"  post-process, or collect manual annotations. Before img_gen with a\n" \
+"  reference_image, use img_info to get dimensions and pass size as\n" \
+"  WIDTHxHEIGHT unless the user requested a different size; if outside\n" \
+"  the supported range, preserve aspect ratio and scale into range.\n" \
 "- Video: vid_gen to create motion; anchor the first frame with an image\n" \
 "  for continuity when it matters.\n" \
 "- Files: file_read, file_list, file_info to ground work in real data.\n" \

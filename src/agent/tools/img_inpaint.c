@@ -5,6 +5,7 @@
 #include "util/error.h"
 #include "util/buf.h"
 #include "util/array.h"
+#include "util/image_util.h"
 #include "cJSON.h"
 #include "stb_image.h"
 
@@ -286,9 +287,24 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 			morph_buf_printf(&pb, " Additional direction: %s",
 					 user_prompt);
 
+		char auto_size[64];
+		const char *size_to_send = size;
+		if ((!size || !*size) && W > 0 && H > 0) {
+			int out_w = 0;
+			int out_h = 0;
+			if (image_gen_normalize_reference_size(W, H,
+							       &out_w,
+							       &out_h) == 0 &&
+			    image_gen_format_size(auto_size, sizeof(auto_size),
+						  out_w, out_h) == 0) {
+				size_to_send = auto_size;
+			}
+		}
+
 		struct image_result r = {0};
 		int rc = image_gen_create(ctx->image_llm,
-					  morph_buf_cstr(&pb), style, size,
+					  morph_buf_cstr(&pb), style,
+					  size_to_send,
 					  st_img->current_ref, output_dir, &r);
 		morph_buf_cleanup(&pb);
 		if (rc < 0) {
@@ -366,7 +382,8 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 		"\"style\":{\"type\":\"string\",\"description\":\"Optional style\"},"
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
 		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
-		"4096x4096 inclusive, or 2k, 3k, 4k\"}},"
+		"4096x4096 inclusive, or 2k, 3k, 4k. If omitted, the source "
+		"image aspect ratio is preserved and scaled into range.\"}},"
 		"\"required\":[\"annotation\"]}",
 		img_inpaint_exec, ctx, img_inpaint_context_destroy);
 	if (rc != 0)

@@ -4,6 +4,7 @@
 #include "render/image.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/image_util.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -63,6 +64,8 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	char resolved_ref[PATH_MAX];
 	const char *ref_to_send = ref_img;
+	char auto_size[64];
+	const char *size_to_send = size;
 	if (ref_img && *ref_img && tctx) {
 		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
 						     ref_img, resolved_ref,
@@ -79,10 +82,23 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		}
 		ref_to_send = resolved_ref;
 	}
+	if ((!size || !*size) && ref_to_send && *ref_to_send) {
+		int src_w = 0;
+		int src_h = 0;
+		int out_w = 0;
+		int out_h = 0;
+		if (image_probe_size(ref_to_send, &src_w, &src_h) == 0 &&
+		    image_gen_normalize_reference_size(src_w, src_h,
+						       &out_w, &out_h) == 0 &&
+		    image_gen_format_size(auto_size, sizeof(auto_size),
+					  out_w, out_h) == 0) {
+			size_to_send = auto_size;
+		}
+	}
 
 	struct image_result img_res = {0};
 	int rc = image_gen_create(ctx ? ctx->image_llm : NULL,
-				  prompt, style, size, ref_to_send,
+				  prompt, style, size_to_send, ref_to_send,
 				  output_dir, &img_res);
 	cJSON_Delete(root);
 
@@ -116,8 +132,8 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->tctx = tctx;
 
 	int rc = tool_register(reg, "img_gen",
-		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/3k/4k.",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 3k, 4k\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
+		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/3k/4k. When reference_image is used and the user did not request a different size, inspect the image and pass its WIDTHxHEIGHT; if it is outside the supported pixel range, preserve aspect ratio and scale it into range.",
+		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 3k, 4k. With reference_image, default to the reference image aspect ratio scaled into this range unless the user explicitly requested a size.\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
 		img_gen_exec, ctx, img_gen_context_destroy);
 	if (rc != 0)
 		free(ctx);
