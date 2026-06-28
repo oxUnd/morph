@@ -472,6 +472,7 @@ static int react_emit_hitl_event(struct react_context *ctx,
 				 const char *name, const char *phase,
 				 const char *message, const char *tool,
 				 const char *args_json,
+				 const char *tool_call_id,
 				 const char *verdict)
 {
 	cJSON *data;
@@ -484,6 +485,8 @@ static int react_emit_hitl_event(struct react_context *ctx,
 	if (!data)
 		return -ENOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
+	cJSON_AddStringToObject(data, "tool_call_id",
+				tool_call_id ? tool_call_id : "");
 	args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
 	if (!args)
 		args = cJSON_CreateObject();
@@ -1220,19 +1223,20 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 			continue;
 		react_emit_hitl_event(ctx, "hitl.request", "begin",
 				      "approval requested", tool_name,
-				      tool_args, NULL);
+				      tool_args, tc->id, NULL);
 		enum hitl_verdict v = ctx->hitl.approval_cb(
 			tool_name, tool_args, ctx->hitl.approval_user_data);
 		if (v == HITL_ALWAYS) {
 			hitl_add_auto_approved(&ctx->hitl, tool_name);
 			react_emit_hitl_event(ctx, "hitl.always", "end",
 					      "approval persisted",
-					      tool_name, tool_args, "always");
+					      tool_name, tool_args, tc->id,
+					      "always");
 		} else if (v == HITL_DENY) {
 			slots[i].hitl_denied = 1;
 			react_emit_hitl_event(ctx, "hitl.denied", "failed",
 					      "approval denied", tool_name,
-					      tool_args, "denied");
+					      tool_args, tc->id, "denied");
 			char deny_msg[512];
 			snprintf(deny_msg, sizeof(deny_msg),
 				 "tool error: '%s' execution denied by user",
@@ -1258,7 +1262,7 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 		} else {
 			react_emit_hitl_event(ctx, "hitl.approved", "end",
 					      "approval granted", tool_name,
-					      tool_args, "approved");
+					      tool_args, tc->id, "approved");
 		}
 	}
 }
