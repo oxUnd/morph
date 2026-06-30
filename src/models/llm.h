@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "http/client.h"
+#include <stdint.h>
 
 struct arena;
 
@@ -27,6 +28,29 @@ struct tool_call {
 	char *arguments;
 };
 
+struct model_usage {
+	char provider[32];
+	char model[128];
+	char kind[32];
+	char response_id[128];
+	char system_fingerprint[128];
+	char finish_reason[64];
+	char usage_source[32];
+	int64_t created;
+	int64_t input_tokens;
+	int64_t output_tokens;
+	int64_t total_tokens;
+	int64_t cached_tokens;
+	int64_t reasoning_tokens;
+	int64_t audio_tokens;
+	int64_t image_tokens;
+	int64_t image_units;
+	int64_t video_seconds;
+};
+
+typedef void (*model_usage_callback)(const struct model_usage *usage,
+				     void *user_data);
+
 struct chat_message {
 	char *role;
 	char *content;
@@ -39,6 +63,7 @@ struct chat_response {
 	char *content;
 	struct tool_call *tool_calls;
 	int tool_call_count;
+	struct model_usage usage;
 	struct arena *arena;
 };
 
@@ -81,6 +106,10 @@ struct model {
 struct model *model_llm_create(const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 void model_destroy(struct model *m);
+void model_set_usage_callback(model_usage_callback cb);
+void model_set_usage_user_data(void *user_data);
+void *model_get_usage_user_data(void);
+void model_report_usage(const struct model_usage *usage);
 
 void chat_response_free(struct chat_response *resp);
 void chat_message_cleanup(struct chat_message *msg, struct arena *arena);

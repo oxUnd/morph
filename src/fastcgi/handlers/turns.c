@@ -16,6 +16,7 @@
 #include "agent/tokenizer.h"
 #include "agent/memory.h"
 #include "event/event.h"
+#include "models/llm.h"
 #include "config.h"
 #include "credits.h"
 #include "session.h"
@@ -79,6 +80,8 @@ struct turn_job {
 	int final_sent;
 };
 
+static __thread struct turn_job *current_usage_job;
+
 static void publish_credit_warning(struct turn_job *j,
 				   const struct config *cfg)
 {
@@ -110,30 +113,87 @@ static void publish_credit_warning(struct turn_job *j,
 	free(json);
 }
 
-static void record_turn_credits(struct turn_job *j, struct session *sess,
-				int user_tokens, int asst_tokens)
+static char *model_usage_metadata_json(const struct model_usage *usage)
 {
+	cJSON *obj;
+	char *json;
+
+	if (!usage)
+		return NULL;
+	obj = cJSON_CreateObject();
+	if (!obj)
+		return NULL;
+	if (usage->response_id[0])
+		cJSON_AddStringToObject(obj, "response_id",
+					usage->response_id);
+	if (usage->model[0])
+		cJSON_AddStringToObject(obj, "actual_model", usage->model);
+	if (usage->finish_reason[0])
+		cJSON_AddStringToObject(obj, "finish_reason",
+					usage->finish_reason);
+	if (usage->system_fingerprint[0])
+		cJSON_AddStringToObject(obj, "system_fingerprint",
+					usage->system_fingerprint);
+	if (usage->usage_source[0])
+		cJSON_AddStringToObject(obj, "usage_source",
+					usage->usage_source);
+	if (usage->created > 0)
+		cJSON_AddNumberToObject(obj, "created",
+					(double)usage->created);
+	if (usage->total_tokens > 0)
+		cJSON_AddNumberToObject(obj, "total_tokens",
+					(double)usage->total_tokens);
+	if (usage->cached_tokens > 0)
+		cJSON_AddNumberToObject(obj, "cached_tokens",
+					(double)usage->cached_tokens);
+	if (usage->reasoning_tokens > 0)
+		cJSON_AddNumberToObject(obj, "reasoning_tokens",
+					(double)usage->reasoning_tokens);
+	if (usage->audio_tokens > 0)
+		cJSON_AddNumberToObject(obj, "audio_tokens",
+					(double)usage->audio_tokens);
+	if (usage->image_tokens > 0)
+		cJSON_AddNumberToObject(obj, "image_tokens",
+					(double)usage->image_tokens);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
+	return json;
+}
+
+static void record_model_usage(const struct model_usage *usage,
+			       void *user_data)
+{
+	struct turn_job *j = user_data ? user_data : current_usage_job;
 	const struct config *cfg;
 	struct credit_event event;
-	const char *model;
+	char *metadata;
 
-	if (!j || !sess || !fcgi_bridge_config)
+	if (!j || !usage || !fcgi_bridge_config)
+		return;
+	if (usage->input_tokens <= 0 && usage->output_tokens <= 0 &&
+	    usage->image_units <= 0 && usage->video_seconds <= 0)
 		return;
 	cfg = fcgi_bridge_config();
 	if (!cfg)
 		return;
-	model = sess->model[0] ? sess->model : cfg->models.text.model;
+	metadata = model_usage_metadata_json(usage);
 	memset(&event, 0, sizeof(event));
 	event.user_id = j->user_id;
 	event.session_id = j->session_id;
-	event.kind = "chat_text";
-	event.provider = cfg->models.text.provider;
-	event.model = model;
-	event.input_tokens = user_tokens;
-	event.output_tokens = asst_tokens;
+	event.kind = usage->kind[0] ? usage->kind : "model_text";
+	event.provider = usage->provider[0] ? usage->provider :
+		cfg->models.text.provider;
+	event.model = usage->model[0] ? usage->model :
+		cfg->models.text.model;
+	event.input_tokens = usage->input_tokens;
+	event.output_tokens = usage->output_tokens;
+	event.image_units = usage->image_units;
+	event.video_seconds = usage->video_seconds;
+	event.metadata_json = metadata;
 	if (credit_record_event(&j->store->db, &cfg->credits,
 				&event, NULL) == 0)
 		publish_credit_warning(j, cfg);
+	free(metadata);
 }
 
 static const char *bridge_output_dir(void)
@@ -730,6 +790,10 @@ static void *turn_thread(void *arg)
 	};
 	struct session sess = {0};
 
+	current_usage_job = j;
+	model_set_usage_callback(record_model_usage);
+	model_set_usage_user_data(j);
+
 	if (!react_context_create_for_session || !react_run) {
 		events_publish(j->store, j->session_id, "error",
 			"{\"message\":\"react integration not linked; "
@@ -832,7 +896,6 @@ static void *turn_thread(void *arg)
 			session_update_tokens(&j->store->db, sess.id, asst_tokens);
 			free(rendered);
 		}
-		record_turn_credits(j, &sess, user_tokens, asst_tokens);
 		memory_consolidate_turn_async(&j->store->db, sess.id,
 					      j->input,
 					      rctx->final_answer, rctx->steps,
@@ -844,6 +907,8 @@ static void *turn_thread(void *arg)
 
 	if (react_context_destroy) react_context_destroy(rctx);
 out:
+	model_set_usage_user_data(NULL);
+	current_usage_job = NULL;
 	store_quota_end_turn(j->store, j->turn_id);
 	free(j->input);
 	free(j);

@@ -530,6 +530,7 @@ struct async_tool_call {
 	volatile sig_atomic_t cancelled;
 	volatile sig_atomic_t detached;
 	struct morph_cancel_token cancel_token;
+	void *usage_user_data;
 	pthread_mutex_t mutex;
 };
 
@@ -560,6 +561,7 @@ async_tool_call_create(struct tool_registry *tools,
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
 	call->output_cb = output_cb;
 	call->output_user_data = output_user_data;
+	call->usage_user_data = model_get_usage_user_data();
 	morph_cancel_token_reset(&call->cancel_token);
 	if (!call->tool_name || !call->tool_args || !call->tool_call_id) {
 		free(call->tool_name);
@@ -668,9 +670,15 @@ static void *async_tool_exec(void *arg)
 		notify_done = 1;
 	} else {
 		struct tool_result res;
+		void *prev_usage_user_data;
+		int rc;
+
 		tool_result_init(&res);
-		int rc = tool_exec(call->tools, call->tool_name,
-				   call->tool_args, &res);
+		prev_usage_user_data = model_get_usage_user_data();
+		model_set_usage_user_data(call->usage_user_data);
+		rc = tool_exec(call->tools, call->tool_name,
+			       call->tool_args, &res);
+		model_set_usage_user_data(prev_usage_user_data);
 
 		pthread_mutex_lock(&call->mutex);
 		int was_cancelled = call->cancelled;

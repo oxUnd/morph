@@ -82,7 +82,7 @@ video_second_credit_coef = 0.0
 # [[credits.prices]]
 # provider = "openai"
 # model = "gpt-4o"
-# kind = "chat_text"
+# kind = "model_text"
 # input_per_million = 0.0
 # output_per_million = 0.0
 
@@ -92,26 +92,26 @@ video_second_credit_coef = 0.0
 [[credits.prices]]
 provider = "volcengine"
 model = "doubao-seed-2-0-lite"
-kind = "chat_text"
+kind = "model_text"
 input_per_million = 1.8
 output_per_million = 10.8
 
 [[credits.prices]]
 provider = "volcengine"
 model = "doubao-seedream-5-0-lite"
-kind = "image_gen"
+kind = "model_image"
 image_unit_per_million = 220000.0
 
 [[credits.prices]]
 provider = "volcengine"
 model = "doubao-seedream-4-5"
-kind = "image_gen"
+kind = "model_image"
 image_unit_per_million = 250000.0
 
 [[credits.prices]]
 provider = "volcengine"
 model = "doubao-seedance-1-0-pro-fast-251015"
-kind = "video_gen"
+kind = "model_video"
 input_per_million = 4.2
 output_per_million = 2.1
 

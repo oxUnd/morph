@@ -67,6 +67,7 @@ static void cli_markdown_render_ansi(const char *md);
 static void cli_markdown_render_ansi_with_media(const char *md,
 						markdown_media_cb cb,
 						void *user);
+static struct cli_context *g_cli_usage_ctx;
 
 static enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
@@ -866,32 +867,88 @@ static int cmd_credits(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static void cli_record_chat_credits(struct cli_context *ctx, int user_tokens,
-				    int asst_tokens)
+static char *cli_model_usage_metadata(const struct model_usage *usage)
 {
+	cJSON *obj;
+	char *json;
+
+	if (!usage)
+		return NULL;
+	obj = cJSON_CreateObject();
+	if (!obj)
+		return NULL;
+	if (usage->response_id[0])
+		cJSON_AddStringToObject(obj, "response_id",
+					usage->response_id);
+	if (usage->model[0])
+		cJSON_AddStringToObject(obj, "actual_model", usage->model);
+	if (usage->finish_reason[0])
+		cJSON_AddStringToObject(obj, "finish_reason",
+					usage->finish_reason);
+	if (usage->system_fingerprint[0])
+		cJSON_AddStringToObject(obj, "system_fingerprint",
+					usage->system_fingerprint);
+	if (usage->usage_source[0])
+		cJSON_AddStringToObject(obj, "usage_source",
+					usage->usage_source);
+	if (usage->created > 0)
+		cJSON_AddNumberToObject(obj, "created",
+					(double)usage->created);
+	if (usage->total_tokens > 0)
+		cJSON_AddNumberToObject(obj, "total_tokens",
+					(double)usage->total_tokens);
+	if (usage->cached_tokens > 0)
+		cJSON_AddNumberToObject(obj, "cached_tokens",
+					(double)usage->cached_tokens);
+	if (usage->reasoning_tokens > 0)
+		cJSON_AddNumberToObject(obj, "reasoning_tokens",
+					(double)usage->reasoning_tokens);
+	if (usage->audio_tokens > 0)
+		cJSON_AddNumberToObject(obj, "audio_tokens",
+					(double)usage->audio_tokens);
+	if (usage->image_tokens > 0)
+		cJSON_AddNumberToObject(obj, "image_tokens",
+					(double)usage->image_tokens);
+	json = cJSON_PrintUnformatted(obj);
+	cJSON_Delete(obj);
+	return json;
+}
+
+static void cli_record_model_usage(const struct model_usage *usage,
+				   void *user_data)
+{
+	struct cli_context *ctx = user_data ? user_data : g_cli_usage_ctx;
 	struct credit_event event;
-	struct credit_charge charge;
 	struct credit_summary today;
 	char sid[64];
+	char *metadata;
 	int rc;
 
-	if (!ctx)
+	if (!ctx || !usage)
+		return;
+	if (usage->input_tokens <= 0 && usage->output_tokens <= 0 &&
+	    usage->image_units <= 0 && usage->video_seconds <= 0)
 		return;
 	cli_credit_session_key(ctx, sid, sizeof(sid));
+	metadata = cli_model_usage_metadata(usage);
 	memset(&event, 0, sizeof(event));
 	event.user_id = "local";
 	event.session_id = sid;
-	event.kind = "chat_text";
-	event.provider = ctx->config.models.text.provider;
-	event.model = ctx->current_session.model[0] ?
-		ctx->current_session.model : ctx->config.models.text.model;
-	event.input_tokens = user_tokens;
-	event.output_tokens = asst_tokens;
+	event.kind = usage->kind[0] ? usage->kind : "model_text";
+	event.provider = usage->provider[0] ? usage->provider :
+		ctx->config.models.text.provider;
+	event.model = usage->model[0] ? usage->model :
+		ctx->config.models.text.model;
+	event.input_tokens = usage->input_tokens;
+	event.output_tokens = usage->output_tokens;
+	event.image_units = usage->image_units;
+	event.video_seconds = usage->video_seconds;
+	event.metadata_json = metadata;
 	rc = credit_record_event(&ctx->database, &ctx->config.credits,
-				 &event, &charge);
-	if (rc != 0)
-		return;
-	if (ctx->config.credits.daily_limit < 0 || ctx->event_mode == CLI_EVENTS_JSON)
+				 &event, NULL);
+	free(metadata);
+	if (rc != 0 || ctx->config.credits.daily_limit < 0 ||
+	    ctx->event_mode == CLI_EVENTS_JSON)
 		return;
 	rc = credit_summary_today(&ctx->database, "local", &today);
 	if (rc == 0 && today.credits > ctx->config.credits.daily_limit) {
@@ -3347,6 +3404,9 @@ static int cli_init_models(struct cli_context *ctx)
 		api_key ? api_key : "");
 	ctx->llm = llm;
 	ctx->react->llm_model = llm;
+	g_cli_usage_ctx = ctx;
+	model_set_usage_callback(cli_record_model_usage);
+	model_set_usage_user_data(ctx);
 	if (llm) {
 		llm->timeout_seconds = ctx->config.models.text.timeout_seconds;
 		if (ctx->config.models.text.max_tokens > 0)
@@ -5436,7 +5496,6 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 			    ctx->react->final_answer, asst_tokens);
 		session_update_tokens(&ctx->database, ctx->current_session.id, asst_tokens);
 	}
-	cli_record_chat_credits(ctx, user_tokens, asst_tokens);
 	if (ctx->react) {
 		struct memory_options mem_opts = cli_memory_options(ctx);
 		/* Run consolidation on a background worker so the prompt

@@ -36,12 +36,12 @@ TEST_F(CreditsTest, CalculatesFromConfiguredPrice) {
 	snprintf(cfg.credits.prices[0].model,
 		 sizeof(cfg.credits.prices[0].model), "gpt-test");
 	snprintf(cfg.credits.prices[0].kind,
-		 sizeof(cfg.credits.prices[0].kind), "chat_text");
+		 sizeof(cfg.credits.prices[0].kind), "model_text");
 	cfg.credits.prices[0].input_per_million = 2.0;
 	cfg.credits.prices[0].output_per_million = 10.0;
 
 	memset(&event, 0, sizeof(event));
-	event.kind = "chat_text";
+	event.kind = "model_text";
 	event.provider = "openai";
 	event.model = "gpt-test";
 	event.input_tokens = 1000000;
@@ -63,7 +63,7 @@ TEST_F(CreditsTest, FallsBackToDirectCoefficients) {
 	cfg.credits.output_token_credit_coef = 0.02;
 
 	memset(&event, 0, sizeof(event));
-	event.kind = "chat_text";
+	event.kind = "model_text";
 	event.provider = "missing";
 	event.model = "missing";
 	event.input_tokens = 10;
@@ -90,11 +90,11 @@ TEST_F(CreditsTest, CalculatesVolcengineImagePerImagePrice) {
 		 sizeof(cfg.credits.prices[0].model),
 		 "doubao-seedream-5-0-lite");
 	snprintf(cfg.credits.prices[0].kind,
-		 sizeof(cfg.credits.prices[0].kind), "image_gen");
+		 sizeof(cfg.credits.prices[0].kind), "model_image");
 	cfg.credits.prices[0].image_unit_per_million = 220000.0;
 
 	memset(&event, 0, sizeof(event));
-	event.kind = "image_gen";
+	event.kind = "model_image";
 	event.provider = "volcengine";
 	event.model = "doubao-seedream-5-0-lite";
 	event.image_units = 1;
@@ -120,12 +120,12 @@ TEST_F(CreditsTest, CalculatesDoubaoSeedLiteBasePriceCeiling) {
 		 sizeof(cfg.credits.prices[0].model),
 		 "doubao-seed-2-0-lite");
 	snprintf(cfg.credits.prices[0].kind,
-		 sizeof(cfg.credits.prices[0].kind), "chat_text");
+		 sizeof(cfg.credits.prices[0].kind), "model_text");
 	cfg.credits.prices[0].input_per_million = 1.8;
 	cfg.credits.prices[0].output_per_million = 10.8;
 
 	memset(&event, 0, sizeof(event));
-	event.kind = "chat_text";
+	event.kind = "model_text";
 	event.provider = "volcengine";
 	event.model = "doubao-seed-2-0-lite";
 	event.input_tokens = 1000;
@@ -152,12 +152,12 @@ TEST_F(CreditsTest, CalculatesVolcengineVideoTokenPrice) {
 		 sizeof(cfg.credits.prices[0].model),
 		 "doubao-seedance-1-0-pro-fast-251015");
 	snprintf(cfg.credits.prices[0].kind,
-		 sizeof(cfg.credits.prices[0].kind), "video_gen");
+		 sizeof(cfg.credits.prices[0].kind), "model_video");
 	cfg.credits.prices[0].input_per_million = 4.2;
 	cfg.credits.prices[0].output_per_million = 2.1;
 
 	memset(&event, 0, sizeof(event));
-	event.kind = "video_gen";
+	event.kind = "model_video";
 	event.provider = "volcengine";
 	event.model = "doubao-seedance-1-0-pro-fast-251015";
 	event.input_tokens = 1000;
@@ -184,7 +184,7 @@ TEST_F(CreditsTest, RecordsAndSummarizesEvents) {
 	memset(&event, 0, sizeof(event));
 	event.user_id = "local";
 	event.session_id = "sess";
-	event.kind = "chat_text";
+	event.kind = "model_text";
 	event.provider = "openai";
 	event.model = "gpt-test";
 	event.input_tokens = 7;

@@ -161,6 +161,36 @@ static int image_gen_parse_size_dims(const char *size, int *width, int *height)
 	return 0;
 }
 
+static int64_t image_units_from_dims(int width, int height)
+{
+	int64_t pixels;
+
+	if (width <= 0 || height <= 0)
+		return 1;
+	pixels = (int64_t)width * (int64_t)height;
+	return (pixels + 999999) / 1000000;
+}
+
+static void image_report_usage(struct model *self, const char *model_id,
+			       cJSON *root, const struct image_result *result)
+{
+	struct model_usage usage;
+	cJSON *created;
+
+	memset(&usage, 0, sizeof(usage));
+	snprintf(usage.provider, sizeof(usage.provider), "%s",
+		 self ? self->provider : "openai");
+	snprintf(usage.model, sizeof(usage.model), "%s", model_id);
+	snprintf(usage.kind, sizeof(usage.kind), "model_image");
+	snprintf(usage.usage_source, sizeof(usage.usage_source), "estimated");
+	usage.image_units = result ?
+		image_units_from_dims(result->width, result->height) : 1;
+	created = cJSON_GetObjectItem(root, "created");
+	if (cJSON_IsNumber(created))
+		usage.created = (int64_t)created->valuedouble;
+	model_report_usage(&usage);
+}
+
 int image_gen_create(struct model *self, const char *prompt, const char *style,
 		     const char *size, const char *image_path,
 		     const char *output_dir,
@@ -316,6 +346,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		result->height = target_h;
 	}
 	log_dbg("image generated: %s (%dx%d)", out_path, result->width, result->height);
+	image_report_usage(self, model_id, root, result);
 	cJSON_Delete(root);
 	return 0;
 }

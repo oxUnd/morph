@@ -15,6 +15,45 @@
 #include <string.h>
 #include <stdio.h>
 
+static model_usage_callback g_usage_cb;
+static __thread void *g_usage_user_data;
+
+void model_set_usage_callback(model_usage_callback cb)
+{
+	g_usage_cb = cb;
+}
+
+void model_set_usage_user_data(void *user_data)
+{
+	g_usage_user_data = user_data;
+}
+
+void *model_get_usage_user_data(void)
+{
+	return g_usage_user_data;
+}
+
+void model_report_usage(const struct model_usage *usage)
+{
+	if (g_usage_cb && usage)
+		g_usage_cb(usage, g_usage_user_data);
+}
+
+static int64_t estimate_tokens_from_bytes(size_t bytes)
+{
+	if (bytes == 0)
+		return 0;
+	return (int64_t)((bytes + 3) / 4);
+}
+
+static void usage_strncpy(char *dst, size_t dst_cap, const char *src)
+{
+	if (!dst || dst_cap == 0 || !src)
+		return;
+	strncpy(dst, src, dst_cap - 1);
+	dst[dst_cap - 1] = '\0';
+}
+
 static char *json_print_arena(struct arena *arena, cJSON *root)
 {
 	char *heap;
@@ -91,6 +130,13 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 	cJSON_AddItemToObject(root, "messages", msgs);
 	if (stream)
 		cJSON_AddBoolToObject(root, "stream", 1);
+	if (stream) {
+		cJSON *opts = cJSON_CreateObject();
+		if (opts) {
+			cJSON_AddBoolToObject(opts, "include_usage", 1);
+			cJSON_AddItemToObject(root, "stream_options", opts);
+		}
+	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens > 0 ? max_tokens : 4096);
 	body = json_print_arena(arena, root);
@@ -111,6 +157,7 @@ struct llm_stream_ctx {
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	int tool_call_cap;
+	struct model_usage usage;
 };
 
 static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
@@ -125,6 +172,7 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 	ctx->tool_calls = NULL;
 	ctx->tool_call_count = 0;
 	ctx->tool_call_cap = 0;
+	memset(&ctx->usage, 0, sizeof(ctx->usage));
 }
 
 static void llm_stream_init_typed(struct llm_stream_ctx *ctx,
@@ -198,6 +246,144 @@ static void llm_stream_transfer_tool_calls(struct llm_stream_ctx *ctx,
 	}
 }
 
+static void llm_usage_finalize(struct model *self, struct llm_stream_ctx *ctx,
+			       size_t request_bytes)
+{
+	if (!self || !ctx)
+		return;
+	if (!ctx->usage.provider[0])
+		usage_strncpy(ctx->usage.provider,
+			      sizeof(ctx->usage.provider), self->provider);
+	if (!ctx->usage.model[0])
+		usage_strncpy(ctx->usage.model, sizeof(ctx->usage.model),
+			      self->model_id);
+	if (!ctx->usage.kind[0])
+		usage_strncpy(ctx->usage.kind, sizeof(ctx->usage.kind),
+			      "model_text");
+	if (!ctx->usage.usage_source[0]) {
+		ctx->usage.input_tokens = estimate_tokens_from_bytes(request_bytes);
+		ctx->usage.output_tokens =
+			estimate_tokens_from_bytes(ctx->accumulated.len);
+		ctx->usage.total_tokens = ctx->usage.input_tokens +
+			ctx->usage.output_tokens;
+		usage_strncpy(ctx->usage.usage_source,
+			      sizeof(ctx->usage.usage_source), "estimated");
+	}
+	if (ctx->usage.total_tokens == 0)
+		ctx->usage.total_tokens = ctx->usage.input_tokens +
+			ctx->usage.output_tokens;
+}
+
+static void llm_usage_report(struct model *self, struct llm_stream_ctx *ctx,
+			     size_t request_bytes)
+{
+	if (!ctx)
+		return;
+	llm_usage_finalize(self, ctx, request_bytes);
+	model_report_usage(&ctx->usage);
+}
+
+static int64_t json_i64(cJSON *obj, const char *name)
+{
+	cJSON *item;
+
+	if (!obj || !name)
+		return 0;
+	item = cJSON_GetObjectItem(obj, name);
+	if (!cJSON_IsNumber(item))
+		return 0;
+	return (int64_t)item->valuedouble;
+}
+
+static void llm_usage_parse_details(struct model_usage *usage,
+				    cJSON *usage_obj)
+{
+	cJSON *prompt_details;
+	cJSON *completion_details;
+
+	if (!usage || !usage_obj)
+		return;
+	prompt_details = cJSON_GetObjectItem(usage_obj,
+					     "prompt_tokens_details");
+	if (!prompt_details)
+		prompt_details = cJSON_GetObjectItem(usage_obj,
+						     "input_tokens_details");
+	usage->cached_tokens += json_i64(prompt_details, "cached_tokens");
+	usage->audio_tokens += json_i64(prompt_details, "audio_tokens");
+	usage->image_tokens += json_i64(prompt_details, "image_tokens");
+
+	completion_details = cJSON_GetObjectItem(usage_obj,
+						 "completion_tokens_details");
+	if (!completion_details)
+		completion_details = cJSON_GetObjectItem(usage_obj,
+							 "output_tokens_details");
+	usage->reasoning_tokens += json_i64(completion_details,
+					    "reasoning_tokens");
+	usage->audio_tokens += json_i64(completion_details, "audio_tokens");
+}
+
+static void llm_stream_parse_metadata(struct llm_stream_ctx *ctx, cJSON *root)
+{
+	cJSON *item;
+
+	if (!ctx || !root)
+		return;
+	item = cJSON_GetObjectItem(root, "id");
+	if (cJSON_IsString(item) && item->valuestring &&
+	    !ctx->usage.response_id[0])
+		usage_strncpy(ctx->usage.response_id,
+			      sizeof(ctx->usage.response_id),
+			      item->valuestring);
+	item = cJSON_GetObjectItem(root, "model");
+	if (cJSON_IsString(item) && item->valuestring && !ctx->usage.model[0])
+		usage_strncpy(ctx->usage.model, sizeof(ctx->usage.model),
+			      item->valuestring);
+	item = cJSON_GetObjectItem(root, "system_fingerprint");
+	if (cJSON_IsString(item) && item->valuestring &&
+	    !ctx->usage.system_fingerprint[0])
+		usage_strncpy(ctx->usage.system_fingerprint,
+			      sizeof(ctx->usage.system_fingerprint),
+			      item->valuestring);
+	item = cJSON_GetObjectItem(root, "created");
+	if (cJSON_IsNumber(item) && ctx->usage.created == 0)
+		ctx->usage.created = (int64_t)item->valuedouble;
+}
+
+static void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
+{
+	cJSON *usage_obj;
+
+	if (!ctx || !root)
+		return;
+	usage_obj = cJSON_GetObjectItem(root, "usage");
+	if (!cJSON_IsObject(usage_obj))
+		return;
+	ctx->usage.input_tokens = json_i64(usage_obj, "prompt_tokens");
+	if (ctx->usage.input_tokens == 0)
+		ctx->usage.input_tokens = json_i64(usage_obj, "input_tokens");
+	ctx->usage.output_tokens = json_i64(usage_obj, "completion_tokens");
+	if (ctx->usage.output_tokens == 0)
+		ctx->usage.output_tokens = json_i64(usage_obj, "output_tokens");
+	ctx->usage.total_tokens = json_i64(usage_obj, "total_tokens");
+	llm_usage_parse_details(&ctx->usage, usage_obj);
+	usage_strncpy(ctx->usage.usage_source,
+		      sizeof(ctx->usage.usage_source), "provider");
+}
+
+static void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx,
+					   cJSON *choice)
+{
+	cJSON *finish;
+
+	if (!ctx || !choice)
+		return;
+	finish = cJSON_GetObjectItem(choice, "finish_reason");
+	if (cJSON_IsString(finish) && finish->valuestring)
+		usage_strncpy(ctx->usage.finish_reason,
+			      sizeof(ctx->usage.finish_reason),
+			      finish->valuestring);
+}
+
 static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 {
 	struct llm_stream_ctx *ctx = ud;
@@ -214,6 +400,9 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 	if (!root)
 		return 0;
 
+	llm_stream_parse_metadata(ctx, root);
+	llm_stream_parse_usage(ctx, root);
+
 	cJSON *choices = cJSON_GetObjectItem(root, "choices");
 	if (!cJSON_IsArray(choices)) {
 		cJSON_Delete(root);
@@ -225,6 +414,7 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 		cJSON_Delete(root);
 		return 0;
 	}
+	llm_stream_parse_finish_reason(ctx, first);
 
 	cJSON *delta = cJSON_GetObjectItem(first, "delta");
 	if (!delta) {
@@ -417,6 +607,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
+	llm_usage_report(self, &ctx, body_len);
 	return status;
 }
 
@@ -506,6 +697,13 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	cJSON_AddItemToArray(content, image);
 	cJSON_AddItemToArray(messages, user);
 	cJSON_AddBoolToObject(root, "stream", 1);
+	{
+		cJSON *opts = cJSON_CreateObject();
+		if (opts) {
+			cJSON_AddBoolToObject(opts, "include_usage", 1);
+			cJSON_AddItemToObject(root, "stream_options", opts);
+		}
+	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				self->max_tokens > 0 ? self->max_tokens : 4096);
 
@@ -523,6 +721,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	size_t body_len = strlen(body);
 	size_t clean_len = utf8_sanitize_into(body, body, body_len);
 	body[clean_len] = '\0';
+	body_len = clean_len;
 
 	struct llm_stream_ctx ctx;
 	llm_stream_init(&ctx, arena, cb, user_data);
@@ -546,7 +745,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 
 	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	log_dbg("llm_chat_with_image: sending SSE request to %s", url);
-	int status = http_post_sse_ex_timeout(url, body, strlen(body),
+	int status = http_post_sse_ex_timeout(url, body, body_len,
 					      "application/json",
 					      extra_headers, 1, timeout,
 					      llm_http_cb, &hctx);
@@ -571,6 +770,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
+	llm_usage_report(self, &ctx, body_len);
 	return status;
 }
 
@@ -735,6 +935,13 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	}
 
 	cJSON_AddBoolToObject(root, "stream", 1);
+	{
+		cJSON *opts = cJSON_CreateObject();
+		if (opts) {
+			cJSON_AddBoolToObject(opts, "include_usage", 1);
+			cJSON_AddItemToObject(root, "stream_options", opts);
+		}
+	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				self->max_tokens > 0 ? self->max_tokens : 4096);
 
@@ -811,6 +1018,9 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	}
 
 	llm_stream_transfer_tool_calls(&ctx, response);
+	llm_usage_finalize(self, &ctx, strlen(body));
+	response->usage = ctx.usage;
+	model_report_usage(&response->usage);
 
 	return status;
 }

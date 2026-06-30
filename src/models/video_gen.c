@@ -35,6 +35,26 @@ static int download_url(const char *url, const char *out_path)
 	return rc;
 }
 
+static void video_report_usage(struct model *self, const char *model_id,
+			       const char *task_id,
+			       const struct video_result *result)
+{
+	struct model_usage usage;
+
+	memset(&usage, 0, sizeof(usage));
+	snprintf(usage.provider, sizeof(usage.provider), "%s",
+		 self ? self->provider : "volcengine");
+	snprintf(usage.model, sizeof(usage.model), "%s", model_id);
+	snprintf(usage.kind, sizeof(usage.kind), "model_video");
+	snprintf(usage.usage_source, sizeof(usage.usage_source), "estimated");
+	if (task_id && task_id[0])
+		snprintf(usage.response_id, sizeof(usage.response_id),
+			 "%s", task_id);
+	usage.video_seconds = result && result->duration_seconds > 0 ?
+		result->duration_seconds : 1;
+	model_report_usage(&usage);
+}
+
 int video_gen_create(struct model *self, const char *prompt,
 		    const char **image_paths, int num_images,
 		    const char **video_paths, int num_videos,
@@ -392,5 +412,6 @@ download:
 	result->status = 1;
 
 	log_dbg("video generated: %s (%ds)", out_path, result->duration_seconds);
+	video_report_usage(self, model_id, task_id, result);
 	return 0;
 }

@@ -103,7 +103,7 @@ video_second_credit_coef = 4.0
 [[credits.prices]]
 provider = "openai"
 model = "gpt-test"
-kind = "chat_text"
+kind = "model_text"
 input_per_million = 2.0
 output_per_million = 10.0
 )";
@@ -122,7 +122,7 @@ output_per_million = 10.0
 	ASSERT_EQ(cfg.credits.price_count, 1);
 	EXPECT_STREQ(cfg.credits.prices[0].provider, "openai");
 	EXPECT_STREQ(cfg.credits.prices[0].model, "gpt-test");
-	EXPECT_STREQ(cfg.credits.prices[0].kind, "chat_text");
+	EXPECT_STREQ(cfg.credits.prices[0].kind, "model_text");
 	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].input_per_million, 2.0);
 	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].output_per_million, 10.0);
 }
