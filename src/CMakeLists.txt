@@ -69,7 +69,21 @@ if(BUILD_FASTCGI)
 endif()
 
 add_library(morph-cli STATIC
-	cli.c
+	cli/core.c
+	cli/events.c
+	cli/init.c
+	cli/output.c
+	cli/run.c
+	cli/scheduler.c
+	cli/commands/ext.c
+	cli/commands/mcp.c
+	cli/commands/media.c
+	cli/commands/memory.c
+	cli/commands/registry.c
+	cli/commands/runtime.c
+	cli/commands/session.c
+	cli/commands/skill.c
+	cli/commands/tasks.c
 )
 target_include_directories(morph-cli PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}

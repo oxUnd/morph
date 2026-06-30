@@ -1,4 +1,4 @@
-#include "cli.h"
+#include "cli/cli.h"
 #include "config.h"
 #include "skill/skill.h"
 #include "util/log.h"

@@ -351,12 +351,12 @@ Core event module:
 
 CLI:
 
-- `src/cli.h`: event callback/mode fields in `struct cli_context`
-- `src/cli.c`: startup init path
-- `src/cli.c`: MCP init and `/mcp` command events
-- `src/cli.c`: JSON and human event renderers
-- `src/cli.c`: one-shot command path emits structured events
-- `src/cli.c`: task scheduler and memory consolidation background events
+- `src/cli/cli.h`: event callback/mode fields in `struct cli_context`
+- `src/cli/init.c`: startup init path
+- `src/cli/init.c` and `src/cli/commands/mcp.c`: MCP init and `/mcp` command events
+- `src/cli/events.c`: JSON and human event renderers
+- `src/cli/core.c`: one-shot command path emits structured events
+- `src/cli/scheduler.c` and `src/cli/core.c`: task scheduler and memory consolidation background events
 - `src/main.c`: CLI flags and startup event mode wiring
 
 ReAct:
@@ -379,7 +379,7 @@ Tools and artifacts:
 MCP:
 
 - `src/mcp/mcp_client.c`: register functions return structured counts
-- `src/cli.c`: registered, skipped, connecting, connected, discovering,
+- `src/cli/events.c`, `src/cli/init.c`, and `src/cli/commands/mcp.c`: registered, skipped, connecting, connected, discovering,
   ready, timeout, failed, and disconnected events
 
 FastCGI:
@@ -398,7 +398,7 @@ Sub-agents/background work:
 
 Memory/compression:
 
-- `src/cli.c`: background memory consolidation status is surfaced
+- `src/cli/core.c`: background memory consolidation status is surfaced
 - compression remains a ReAct internal operation and is visible through the
   enclosing turn events
 
