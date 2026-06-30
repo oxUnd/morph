@@ -1783,6 +1783,23 @@ struct capt_prompt_data {
 	const char *resp;
 };
 
+static void capt_store_structured_messages(struct capt_prompt_data *d,
+					   struct chat_message *messages,
+					   int msg_count)
+{
+	std::ostringstream os;
+
+	if (!d)
+		return;
+	for (int i = 0; i < msg_count; i++) {
+		os << (messages[i].role ? messages[i].role : "") << ":"
+		   << (messages[i].content ? messages[i].content : "")
+		   << "\n";
+	}
+	free(d->prompt);
+	d->prompt = strdup(os.str().c_str());
+}
+
 static int capt_prompt_chat(struct model *self, struct arena *arena,
 			    const char *system_prompt,
 			    const char **messages, int n,
@@ -1815,6 +1832,7 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->system_prompt);
 	d->system_prompt = system_prompt ? strdup(system_prompt) : nullptr;
+	capt_store_structured_messages(d, messages, msg_count);
 
 	memset(response, 0, sizeof(*response));
 	const char *content = d->resp ? d->resp : "";
@@ -2027,6 +2045,24 @@ static int test_compress_cb(const char *text, void *user_data, char **out)
 	return *out ? 0 : -ENOMEM;
 }
 
+struct compress_probe {
+	int calls;
+	std::string summarized_text;
+};
+
+static int test_compress_probe_cb(const char *text, void *user_data,
+				  char **out)
+{
+	struct compress_probe *probe = (struct compress_probe *)user_data;
+
+	if (probe) {
+		probe->calls++;
+		probe->summarized_text = text ? text : "";
+	}
+	*out = strdup("[COMPRESSED SUMMARY]");
+	return *out ? 0 : -ENOMEM;
+}
+
 TEST_F(MockLlmTest, CompressTriggerInReact) {
 	cfg.max_context_tokens = 6;
 	cfg.summarize_threshold_ratio = 0.5;
@@ -2046,6 +2082,51 @@ TEST_F(MockLlmTest, CompressTriggerInReact) {
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 
 	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, CompressBeforePreparingLlmMessages) {
+	cfg.max_context_tokens = 12;
+	cfg.summarize_threshold_ratio = 0.5;
+	cfg.max_history_rounds = 1;
+
+	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	ASSERT_NE(cd, nullptr);
+	cd->resp = "Final: ok";
+	struct model *capt = (struct model *)calloc(1, sizeof(*capt));
+	ASSERT_NE(capt, nullptr);
+	strncpy(capt->provider, "mock", sizeof(capt->provider) - 1);
+	strncpy(capt->model_id, "mock-model", sizeof(capt->model_id) - 1);
+	strncpy(capt->api_key, "mock-key", sizeof(capt->api_key) - 1);
+	capt->chat = capt_prompt_chat;
+	capt->chat_with_tools = capt_prompt_chat_with_tools;
+	capt->destroy = capt_prompt_destroy;
+	capt->handle = cd;
+	llm = capt;
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	struct compress_probe probe = {0, ""};
+	ctx->compress.summarize = test_compress_probe_cb;
+	ctx->compress.summarize_user_data = &probe;
+
+	ASSERT_EQ(react_run(ctx,
+		"first turn has enough repeated words to exceed the tiny test context",
+		nullptr, nullptr), 0);
+	ASSERT_EQ(probe.calls, 0);
+
+	ASSERT_EQ(react_run(ctx, "second turn should trigger compression",
+			    nullptr, nullptr), 0);
+	EXPECT_GE(probe.calls, 1);
+	ASSERT_NE(cd->prompt, nullptr);
+	EXPECT_NE(strstr(cd->prompt, "[COMPRESSED SUMMARY]"), nullptr);
+	EXPECT_NE(strstr(ctx->messages->content, "[COMPRESSED SUMMARY]"),
+		  nullptr);
+	EXPECT_NE(probe.summarized_text.find("first turn"), std::string::npos);
+
+	react_context_destroy(ctx);
+	model_destroy(llm);
+	llm = nullptr;
 }
 
 TEST_F(MockLlmTest, CompressPreservesAfterFlow) {

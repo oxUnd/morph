@@ -2235,6 +2235,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 		MORPH_RETURN(react_finish(ctx));
 	}
 
+	react_maybe_compress_context(ctx);
+
 	morph_array_t messages;
 	int messages_ready = 0;
 
@@ -2256,7 +2258,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 
 		react_set_state(ctx, REACT_STATE_THINKING);
-		react_maybe_compress_context(ctx);
 
 		if (cb)
 			cb(REACT_STEP_THOUGHT, "", user_data);
