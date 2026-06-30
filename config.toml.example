@@ -79,6 +79,9 @@ image_unit_credit_coef = 0.0
 video_second_credit_coef = 0.0
 
 # Configure model prices in cost per 1,000,000 units.
+# provider/model/kind must match the model usage event exactly. For
+# Volcengine Ark endpoints, use the endpoint/model id configured under
+# [model.text], [model.image], or [model.video].
 # [[credits.prices]]
 # provider = "openai"
 # model = "gpt-4o"
