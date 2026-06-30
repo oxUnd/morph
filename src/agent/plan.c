@@ -1,7 +1,9 @@
 #include "plan.h"
-#include <string.h>
+#include "util/id.h"
+
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 void plan_registry_init(struct plan_registry *reg)
 {
@@ -19,6 +21,33 @@ static struct plan *plan_find_by_name(struct plan_registry *reg, const char *nam
 			return &reg->plans[i];
 	}
 	return NULL;
+}
+
+struct plan *plan_find_by_id(struct plan_registry *reg, const char *id)
+{
+	if (!reg || !id)
+		return NULL;
+	for (int i = 0; i < reg->count; i++) {
+		if (strcmp(reg->plans[i].id, id) == 0)
+			return &reg->plans[i];
+	}
+	return NULL;
+}
+
+static int plan_generate_id(struct plan_registry *reg, char *id, size_t size)
+{
+	int rc;
+
+	if (!reg || !id || size < PLAN_ID_MAX)
+		return -EINVAL;
+	for (int tries = 0; tries < 16; tries++) {
+		rc = morph_random_id("pln_", id, size);
+		if (rc < 0)
+			return rc;
+		if (!plan_find_by_id(reg, id))
+			return 0;
+	}
+	return -EEXIST;
 }
 
 static int append_str(char *buf, size_t buf_size, size_t *pos, const char *fmt, ...)
@@ -58,6 +87,8 @@ struct plan *plan_create(struct plan_registry *reg, const char *name,
 
 	struct plan *p = &reg->plans[reg->count];
 	memset(p, 0, sizeof(*p));
+	if (plan_generate_id(reg, p->id, sizeof(p->id)) != 0)
+		return NULL;
 	strncpy(p->name, name, sizeof(p->name) - 1);
 	if (goal)
 		strncpy(p->goal, goal, sizeof(p->goal) - 1);
@@ -86,15 +117,11 @@ struct plan *plan_find(struct plan_registry *reg, const char *name)
 	return plan_find_by_name(reg, name);
 }
 
-int plan_update_step(struct plan_registry *reg, const char *plan_name,
-		     int step_id, const char *status)
+static int plan_update_step_ptr(struct plan *p, int step_id,
+				const char *status)
 {
-	if (!reg || !plan_name || !status)
+	if (!p || !status)
 		return -EINVAL;
-
-	struct plan *p = plan_find_by_name(reg, plan_name);
-	if (!p)
-		return -ENOENT;
 
 	int idx = -1;
 	for (int i = 0; i < p->step_count; i++) {
@@ -134,6 +161,32 @@ int plan_update_step(struct plan_registry *reg, const char *plan_name,
 	return 0;
 }
 
+int plan_update_step(struct plan_registry *reg, const char *plan_name,
+		     int step_id, const char *status)
+{
+	struct plan *p;
+
+	if (!reg || !plan_name || !status)
+		return -EINVAL;
+	p = plan_find_by_name(reg, plan_name);
+	if (!p)
+		return -ENOENT;
+	return plan_update_step_ptr(p, step_id, status);
+}
+
+int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
+			   int step_id, const char *status)
+{
+	struct plan *p;
+
+	if (!reg || !plan_id || !status)
+		return -EINVAL;
+	p = plan_find_by_id(reg, plan_id);
+	if (!p)
+		return -ENOENT;
+	return plan_update_step_ptr(p, step_id, status);
+}
+
 static const char *status_icon(const char *status)
 {
 	if (!status)
@@ -171,7 +224,8 @@ int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size)
 		}
 
 		if ((rc = append_str(buf, buf_size, &pos,
-			"%sPlan \"%s\"", pos > 0 ? "\n" : "", p->name)) < 0)
+			"%sPlan \"%s\" [%s]", pos > 0 ? "\n" : "",
+			p->name, p->id)) < 0)
 			goto out;
 		if (p->goal[0]) {
 			if ((rc = append_str(buf, buf_size, &pos,

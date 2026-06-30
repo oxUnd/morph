@@ -43,7 +43,7 @@ static char *format_plan(struct plan *p)
 		}
 	}
 
-	rc = morph_buf_printf(&buf, "Plan \"%s\"", p->name);
+	rc = morph_buf_printf(&buf, "Plan \"%s\" [%s]", p->name, p->id);
 	if (rc != 0)
 		goto fail;
 
@@ -130,8 +130,9 @@ static char *format_plans(struct plan_registry *reg)
 			}
 		}
 
-		rc = morph_buf_printf(&buf, "%sPlan \"%s\"",
-				      i > 0 ? "\n" : "", p->name);
+		rc = morph_buf_printf(&buf, "%sPlan \"%s\" [%s]",
+				      i > 0 ? "\n" : "", p->name,
+				      p->id);
 		if (rc != 0)
 			goto fail;
 		if (p->goal[0]) {
@@ -196,7 +197,8 @@ static cJSON *plan_to_json(struct plan *p)
 	if (!steps)
 		goto fail;
 
-	if (!cJSON_AddStringToObject(obj, "name", p->name) ||
+	if (!cJSON_AddStringToObject(obj, "id", p->id) ||
+	    !cJSON_AddStringToObject(obj, "name", p->name) ||
 	    !cJSON_AddStringToObject(obj, "goal", p->goal) ||
 	    !cJSON_AddNumberToObject(obj, "step_count", p->step_count) ||
 	    !cJSON_AddNumberToObject(obj, "active_step", p->active_step) ||
@@ -232,6 +234,7 @@ fail:
 
 static cJSON *plan_registry_to_json(struct plan_registry *reg,
 				    const char *command,
+				    const char *selected_plan_id,
 				    const char *selected_plan)
 {
 	cJSON *root = cJSON_CreateObject();
@@ -247,6 +250,11 @@ static cJSON *plan_registry_to_json(struct plan_registry *reg,
 				     command ? command : "") ||
 	    !cJSON_AddNumberToObject(root, "count",
 				     reg ? reg->count : 0))
+		goto fail;
+
+	if (selected_plan_id &&
+	    !cJSON_AddStringToObject(root, "selected_plan_id",
+				     selected_plan_id))
 		goto fail;
 
 	if (selected_plan &&
@@ -295,9 +303,11 @@ fail:
 static int attach_plan_state(struct tool_result *result,
 			     struct plan_registry *reg,
 			     const char *command,
+			     const char *selected_plan_id,
 			     const char *selected_plan)
 {
-	cJSON *data = plan_registry_to_json(reg, command, selected_plan);
+	cJSON *data = plan_registry_to_json(reg, command, selected_plan_id,
+					    selected_plan);
 	if (!data)
 		return -ENOMEM;
 
@@ -593,7 +603,8 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
-		rc = attach_plan_state(result, ctx->plans, command, p->name);
+		rc = attach_plan_state(result, ctx->plans, command, p->id,
+				       p->name);
 		if (rc != 0) {
 			cJSON_Delete(root);
 			return rc;
@@ -603,10 +614,13 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			 auto_decomposed ? " (auto)" : "");
 
 	} else if (strcmp(command, "update") == 0) {
+		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
 		cJSON *plan_item = cJSON_GetObjectItem(root, "plan");
 		cJSON *step_id_item = cJSON_GetObjectItem(root, "step_id");
 		cJSON *status_item = cJSON_GetObjectItem(root, "status");
 
+		const char *plan_id = cJSON_IsString(plan_id_item)
+				     ? plan_id_item->valuestring : NULL;
 		const char *plan_name = cJSON_IsString(plan_item)
 				       ? plan_item->valuestring : NULL;
 		int step_id = cJSON_IsNumber(step_id_item)
@@ -614,17 +628,20 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 		const char *status = cJSON_IsString(status_item)
 				    ? status_item->valuestring : NULL;
 
-		if (!plan_name || step_id < 0 || !status) {
+		if ((!plan_id && !plan_name) || step_id < 0 || !status) {
 			cJSON_Delete(root);
 			(void)tool_result_take_text(result, strdup(
-				"{\"error\":\"update requires 'plan' (string), "
+				"{\"error\":\"update requires 'plan_id' or 'plan', "
 				"'step_id' (int), and 'status' (string). "
 				"Status: pending, in_progress, completed, "
 				"failed, skipped\"}"));
 			return -EINVAL;
 		}
 
-		rc = plan_update_step(ctx->plans, plan_name, step_id, status);
+		rc = plan_id ? plan_update_step_by_id(ctx->plans, plan_id,
+						      step_id, status) :
+			       plan_update_step(ctx->plans, plan_name,
+						step_id, status);
 		if (rc < 0) {
 			char err[256];
 			const char *msg;
@@ -639,7 +656,9 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			return rc;
 		}
 
-		struct plan *p = plan_find(ctx->plans, plan_name);
+		struct plan *p = plan_id ? plan_find_by_id(ctx->plans,
+							   plan_id) :
+					   plan_find(ctx->plans, plan_name);
 		char *formatted = p ? format_plan(p) : NULL;
 
 		rc = set_resultf(result, "Step %d marked as '%s'.\n%s",
@@ -650,23 +669,33 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
-		rc = attach_plan_state(result, ctx->plans, command, plan_name);
+		rc = attach_plan_state(result, ctx->plans, command,
+				       p ? p->id : plan_id,
+				       p ? p->name : plan_name);
 		if (rc != 0) {
 			cJSON_Delete(root);
 			return rc;
 		}
 		log_info("plan: updated '%s' step %d -> %s",
-			 plan_name, step_id, status);
+			 p ? p->id : (plan_id ? plan_id : plan_name),
+			 step_id, status);
 
 	} else if (strcmp(command, "get") == 0) {
+		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");
 		cJSON *plan_item = cJSON_GetObjectItem(root, "plan");
+		const char *plan_id = cJSON_IsString(plan_id_item)
+				     ? plan_id_item->valuestring : NULL;
 
-		if (cJSON_IsString(plan_item) && plan_item->valuestring) {
-			struct plan *p = plan_find(ctx->plans,
-						   plan_item->valuestring);
+		if (plan_id || (cJSON_IsString(plan_item) &&
+		    plan_item->valuestring)) {
+			struct plan *p = plan_id ? plan_find_by_id(ctx->plans,
+								   plan_id) :
+						   plan_find(ctx->plans,
+							     plan_item->valuestring);
 			if (!p) {
 				rc = set_resultf(result,
 					"Plan \"%s\" not found.",
+					plan_id ? plan_id :
 					plan_item->valuestring);
 			} else {
 				char *formatted = format_plan(p);
@@ -685,6 +714,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			return rc;
 		}
 		rc = attach_plan_state(result, ctx->plans, command,
+				       plan_id,
 				       cJSON_IsString(plan_item)
 				       ? plan_item->valuestring : NULL);
 		if (rc != 0) {
@@ -701,7 +731,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return rc;
 		}
-		rc = attach_plan_state(result, ctx->plans, command, NULL);
+		rc = attach_plan_state(result, ctx->plans, command, NULL, NULL);
 		if (rc != 0) {
 			cJSON_Delete(root);
 			return rc;
@@ -735,7 +765,8 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	int rc = tool_register(reg, "plan",
 		"Create and manage multi-step plans. "
 		"Commands: create (name, goal, steps), "
-		"update (plan, step_id, status), get (plan), list. "
+		"update (plan_id or plan, step_id, status), "
+		"get (plan_id or plan), list. "
 		"If 'goal' is provided without 'steps', the plan is "
 		"auto-decomposed into steps using AI.",
 		"{\"type\":\"object\",\"properties\":{"
@@ -745,6 +776,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		"\"goal\":{\"type\":\"string\",\"description\":\"Plan goal/objective. If steps not provided, auto-decomposed into steps\"},"
 		"\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
 		"\"description\":\"Array of step descriptions (optional if goal provided)\"},"
+		"\"plan_id\":{\"type\":\"string\",\"description\":\"Stable plan id to act on (preferred for update/get)\"},"
 		"\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for update/get)\"},"
 		"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
 		"\"status\":{\"type\":\"string\",\"description\":\"New status (for update): pending, in_progress, completed, failed, skipped\"}"

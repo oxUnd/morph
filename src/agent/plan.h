@@ -9,6 +9,7 @@ extern "C" {
 #include <stddef.h>
 
 #define PLAN_NAME_MAX 64
+#define PLAN_ID_MAX 40
 #define PLAN_GOAL_MAX 512
 #define PLAN_STEP_DESC_MAX 256
 #define PLAN_MAX_STEPS 32
@@ -22,6 +23,7 @@ struct plan_step {
 };
 
 struct plan {
+	char id[PLAN_ID_MAX];
 	char name[PLAN_NAME_MAX];
 	char goal[PLAN_GOAL_MAX];
 	struct plan_step steps[PLAN_MAX_STEPS];
@@ -41,9 +43,12 @@ struct plan *plan_create(struct plan_registry *reg, const char *name,
 			 int step_count);
 
 struct plan *plan_find(struct plan_registry *reg, const char *name);
+struct plan *plan_find_by_id(struct plan_registry *reg, const char *id);
 
 int plan_update_step(struct plan_registry *reg, const char *plan_name,
 		     int step_id, const char *status);
+int plan_update_step_by_id(struct plan_registry *reg, const char *plan_id,
+			   int step_id, const char *status);
 
 int plan_get_formatted(struct plan_registry *reg, char *buf, size_t buf_size);
 
