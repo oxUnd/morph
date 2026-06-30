@@ -3053,6 +3053,56 @@ static int cli_event_callback(const struct morph_event *ev, void *user_data)
 		return 0;
 	}
 
+	if (ev->type == MORPH_EVENT_HITL &&
+	    ev->name && strcmp(ev->name, "auth.required") == 0) {
+		cJSON *data = ev->data;
+		cJSON *backend = data ? cJSON_GetObjectItem(data, "backend") : NULL;
+		cJSON *provider = data ? cJSON_GetObjectItem(data, "provider") : NULL;
+		cJSON *model = data ? cJSON_GetObjectItem(data, "model") : NULL;
+		cJSON *env_name = data ? cJSON_GetObjectItem(data, "env_name") : NULL;
+		cJSON *tool = data ? cJSON_GetObjectItem(data, "tool") : NULL;
+		const char *backend_s = cJSON_IsString(backend) ?
+			backend->valuestring : "";
+		const char *provider_s = cJSON_IsString(provider) ?
+			provider->valuestring : "";
+		const char *model_s = cJSON_IsString(model) ?
+			model->valuestring : "";
+		const char *env_s = cJSON_IsString(env_name) ?
+			env_name->valuestring : "";
+		const char *tool_s = cJSON_IsString(tool) ?
+			tool->valuestring : "";
+
+		if (!env_s[0]) {
+			if (strcmp(backend_s, "image") == 0)
+				env_s = ctx->config.models.image.api_key_env;
+			else if (strcmp(backend_s, "video") == 0)
+				env_s = ctx->config.models.video.api_key_env;
+			else
+				env_s = ctx->config.models.text.api_key_env;
+		}
+		printf(ANSI_BOLD ANSI_YELLOW "auth required: " ANSI_RESET);
+		if (tool_s[0])
+			printf("%s tool %s", backend_s, tool_s);
+		else if (provider_s[0] || model_s[0])
+			printf("%s model %s%s%s", backend_s,
+			       provider_s, provider_s[0] && model_s[0] ? "/" : "",
+			       model_s);
+		else
+			printf("%s model", backend_s[0] ? backend_s : "configured");
+		printf(" is missing an API key.\n");
+		if (env_s[0]) {
+			printf("Edit %s or export %s, then retry.\n",
+			       ctx->config_path[0] ? ctx->config_path :
+			       default_config_path, env_s);
+		} else {
+			printf("Edit %s, then retry.\n",
+			       ctx->config_path[0] ? ctx->config_path :
+			       default_config_path);
+		}
+		fflush(stdout);
+		return 0;
+	}
+
 	if (ev->type == MORPH_EVENT_STARTUP)
 		prefix = "startup";
 	else if (ev->type == MORPH_EVENT_MCP)
@@ -3231,7 +3281,14 @@ static int cli_init_config(struct cli_context *ctx, const char *config_path)
 	if (!config_path)
 		config_path = default_config_path;
 	char *expanded = file_expand_path(config_path);
-	if (file_exists(expanded))
+	if (expanded) {
+		snprintf(ctx->config_path, sizeof(ctx->config_path),
+			 "%s", expanded);
+	} else {
+		snprintf(ctx->config_path, sizeof(ctx->config_path),
+			 "%s", config_path);
+	}
+	if (expanded && file_exists(expanded))
 		config_load(&ctx->config, expanded);
 	free(expanded);
 	return 0;

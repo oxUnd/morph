@@ -36,6 +36,7 @@ struct cli_context {
 	struct mcp_registry mcp;
 	struct tool_context *tctx;
 	struct sub_agent_runtime *sub_agents;
+	char config_path[PATH_MAX];
 	char workdir[PATH_MAX];
 	int running;
 	int streaming;
