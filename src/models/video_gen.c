@@ -84,6 +84,14 @@ int video_gen_create(struct model *self, const char *prompt,
 	int poll_interval = 5;
 	int poll_timeout = 600;
 
+	if (!api_key[0]) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: no api_key configured");
+		log_err("%s", result->error_msg);
+		arena_destroy(arena);
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	}
+
 	if (!api_base[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_base configured");

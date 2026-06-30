@@ -230,6 +230,9 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	const char *model_id = (self && self->model_id[0]) ? self->model_id : "dall-e-3";
 	const char *img_size = size ? size : "2048x2048";
 
+	if (!api_key[0])
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+
 	char url[512];
 	snprintf(url, sizeof(url), "%s/images/generations", api_base);
 
