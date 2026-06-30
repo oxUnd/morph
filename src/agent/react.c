@@ -11,12 +11,12 @@
 #include "util/array.h"
 #include "util/utf8.h"
 #include "util/error.h"
+#include "util/id.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
-#include <time.h>
 #include <signal.h>
 #include <pthread.h>
 
@@ -154,6 +154,26 @@ int react_set_event_callback(struct react_context *ctx,
 	return 0;
 }
 
+int react_set_turn_id(struct react_context *ctx, const char *turn_id)
+{
+	if (!ctx)
+		return -EINVAL;
+	ctx->turn_id[0] = '\0';
+	ctx->turn_id_user_set = 0;
+	if (!turn_id || !*turn_id)
+		return 0;
+	snprintf(ctx->turn_id, sizeof(ctx->turn_id), "%s", turn_id);
+	ctx->turn_id_user_set = 1;
+	return 0;
+}
+
+const char *react_get_turn_id(const struct react_context *ctx)
+{
+	if (!ctx || !ctx->turn_id[0])
+		return NULL;
+	return ctx->turn_id;
+}
+
 static int react_events_enabled(struct react_context *ctx)
 {
 	return ctx && ctx->event_cb;
@@ -164,10 +184,17 @@ static int react_emit_event(struct react_context *ctx,
 			    const char *phase, const char *message,
 			    cJSON *data)
 {
+	struct morph_event ev;
+
 	if (!ctx || !ctx->event_cb)
 		return 0;
-	return morph_event_emit_simple(ctx->event_cb, ctx->event_user_data,
-				       type, name, phase, message, data);
+	ev.type = type;
+	ev.name = name;
+	ev.phase = phase;
+	ev.message = message;
+	ev.data = data;
+	ev.turn_id = ctx->turn_id[0] ? ctx->turn_id : NULL;
+	return morph_event_emit(ctx->event_cb, ctx->event_user_data, &ev);
 }
 
 static int react_emit_text_event(struct react_context *ctx,
@@ -187,6 +214,54 @@ static int react_emit_text_event(struct react_context *ctx,
 	rc = react_emit_event(ctx, type, name, phase, message, data);
 	cJSON_Delete(data);
 	return rc;
+}
+
+static int react_emit_auth_required(struct react_context *ctx,
+				    const char *backend,
+				    const char *provider,
+				    const char *model,
+				    const char *tool,
+				    const char *reason)
+{
+	cJSON *data;
+	int rc;
+
+	if (!react_events_enabled(ctx))
+		return 0;
+	data = cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "kind", "auth_required");
+	cJSON_AddStringToObject(data, "backend", backend ? backend : "");
+	cJSON_AddStringToObject(data, "provider", provider ? provider : "");
+	cJSON_AddStringToObject(data, "model", model ? model : "");
+	cJSON_AddStringToObject(data, "env_name", "");
+	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
+	cJSON_AddStringToObject(data, "reason",
+				reason ? reason : "missing_api_key");
+	cJSON_AddBoolToObject(data, "retryable", 1);
+	rc = react_emit_event(ctx, MORPH_EVENT_HITL, "auth.required",
+			      "blocked", "authentication required", data);
+	cJSON_Delete(data);
+	return rc;
+}
+
+static const char *react_auth_backend_for_tool(const char *tool)
+{
+	if (!tool)
+		return NULL;
+	if (strcmp(tool, "text_gen") == 0 ||
+	    strcmp(tool, "text_qa") == 0 ||
+	    strcmp(tool, "img_qa") == 0 ||
+	    strcmp(tool, "plan") == 0)
+		return "text";
+	if (strcmp(tool, "img_gen") == 0 ||
+	    strcmp(tool, "img_inpaint") == 0 ||
+	    strcmp(tool, "img_compose") == 0)
+		return "image";
+	if (strcmp(tool, "vid_gen") == 0)
+		return "video";
+	return NULL;
 }
 
 static void react_set_state(struct react_context *ctx, enum react_state state)
@@ -293,6 +368,15 @@ static int react_finish(struct react_context *ctx)
 				 ctx->final_answer ? ctx->final_answer : "");
 	react_emit_outcome_event(ctx, "react.turn.end", phase, message,
 				 ctx->final_answer ? ctx->final_answer : "");
+	return rc;
+}
+
+static int react_finish_run(struct react_context *ctx)
+{
+	int rc = react_finish(ctx);
+
+	if (ctx)
+		ctx->turn_id_user_set = 0;
 	return rc;
 }
 
@@ -603,6 +687,14 @@ static int react_tool_call_finish(struct react_context *ctx,
 {
 	if (!call)
 		return 0;
+	if (rc == MORPH_ERR_NOT_CONFIGURED) {
+		const char *backend = react_auth_backend_for_tool(call->tool_name);
+
+		if (backend)
+			react_emit_auth_required(ctx, backend, "", "",
+						 call->tool_name,
+						 "missing_api_key");
+	}
 	return react_emit_tool_event(ctx,
 				     rc < 0 ? "tool.failed" : "tool.result",
 				     rc < 0 ? "failed" : "end",
@@ -1473,33 +1565,6 @@ static int react_check_input_guardrail(struct react_context *ctx,
 	return 1;
 }
 
-static void react_run_without_llm(struct react_context *ctx,
-				  const char *user_input,
-				  react_output_cb cb, void *user_data)
-{
-	struct react_step *thought;
-	struct react_step *final_step;
-
-	thought = react_step_create(ctx->turn_arena, REACT_STEP_THOUGHT,
-				    "Processing user input...",
-				    NULL, NULL, NULL);
-	add_step(ctx, thought);
-	if (cb)
-		cb(REACT_STEP_THOUGHT, "Processing user input...", user_data);
-
-	free(ctx->final_answer);
-	ctx->final_answer = strdup(user_input);
-
-	final_step = react_step_create(ctx->turn_arena, REACT_STEP_FINAL,
-				       user_input, NULL, NULL, NULL);
-	add_step(ctx, final_step);
-	if (cb)
-		cb(REACT_STEP_FINAL, user_input, user_data);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
-			      "end", "final answer", user_input);
-	react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
-}
-
 static int react_prepare_active_tools(struct react_context *ctx,
 				      struct tool_desc **active_tools,
 				      int *active_tool_count)
@@ -2196,15 +2261,22 @@ int react_run(struct react_context *ctx, const char *user_input,
 {
 	if (!ctx || !user_input)
 		return -EINVAL;
+	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);
+	if (!use_user_turn_id) {
+		int id_rc = morph_random_id("turn_", ctx->turn_id,
+					    sizeof(ctx->turn_id));
+		if (id_rc != 0)
+			return id_rc;
+	}
 	morph_cancel_token_reset(&ctx->cancel_token);
 	react_set_state(ctx, REACT_STATE_THINKING);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
 
 	if (react_check_input_guardrail(ctx, user_input) > 0)
-		MORPH_RETURN(react_finish(ctx));
+		MORPH_RETURN(react_finish_run(ctx));
 
 	struct message_list *msg = msg_list_create(ctx->session_arena, "user", user_input,
 						  tokenizer_count(ctx->tokenizer, user_input));
@@ -2213,8 +2285,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 	struct model *llm = (struct model *)ctx->llm_model;
 
 	if (!llm || !llm->api_key[0]) {
-		react_run_without_llm(ctx, user_input, cb, user_data);
-		MORPH_RETURN(react_finish(ctx));
+		(void)cb;
+		(void)user_data;
+		react_emit_auth_required(ctx, "text",
+					 llm ? llm->provider : "",
+					 llm ? llm->model_id : "",
+					 "", "missing_api_key");
+		react_set_result(ctx, REACT_OUTCOME_LLM_ERROR,
+				 MORPH_ERR_NOT_CONFIGURED, "missing_api_key");
+		MORPH_RETURN(react_finish_run(ctx));
 	}
 
 	char *system_prompt = build_system_prompt(ctx, ctx->turn_arena);
@@ -2222,7 +2301,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		log_err("react_run: failed to build system prompt");
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 				  "internal_error");
-		MORPH_RETURN(react_finish(ctx));
+		MORPH_RETURN(react_finish_run(ctx));
 	}
 
 	struct tool_desc *active_tools = NULL;
@@ -2232,7 +2311,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				       &active_tool_count) < 0) {
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 				 -ENOMEM, "internal_error");
-		MORPH_RETURN(react_finish(ctx));
+		MORPH_RETURN(react_finish_run(ctx));
 	}
 
 	react_maybe_compress_context(ctx);
@@ -2245,7 +2324,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		morph_array_cleanup(&messages);
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 				  "internal_error");
-		MORPH_RETURN(react_finish(ctx));
+		MORPH_RETURN(react_finish_run(ctx));
 	}
 	messages_ready = 1;
 
@@ -2366,5 +2445,5 @@ int react_run(struct react_context *ctx, const char *user_input,
 	if (messages_ready)
 		morph_array_cleanup(&messages);
 
-	MORPH_RETURN(react_finish(ctx));
+	MORPH_RETURN(react_finish_run(ctx));
 }

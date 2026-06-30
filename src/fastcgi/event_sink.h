@@ -11,4 +11,19 @@ void event_sink_tool_result(struct session_store *s, const char *sid, const char
 void event_sink_final      (struct session_store *s, const char *sid, const char *text);
 void event_sink_error      (struct session_store *s, const char *sid, const char *msg);
 
+void event_sink_thought_turn(struct session_store *s, const char *sid,
+			     const char *turn_id, const char *text);
+void event_sink_reasoning_turn(struct session_store *s, const char *sid,
+			       const char *turn_id, const char *text);
+void event_sink_tool_call_turn(struct session_store *s, const char *sid,
+			       const char *turn_id, const char *tool,
+			       const char *args_json);
+void event_sink_tool_result_turn(struct session_store *s, const char *sid,
+				 const char *turn_id, const char *tool,
+				 const char *result_json);
+void event_sink_final_turn(struct session_store *s, const char *sid,
+			   const char *turn_id, const char *text);
+void event_sink_error_turn(struct session_store *s, const char *sid,
+			   const char *turn_id, const char *msg);
+
 #endif

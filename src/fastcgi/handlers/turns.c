@@ -54,6 +54,9 @@ react_set_event_callback(struct react_context *ctx,
 			 morph_event_cb cb, void *user);
 
 __attribute__((weak)) int
+react_set_turn_id(struct react_context *ctx, const char *turn_id);
+
+__attribute__((weak)) int
 react_memory_options_for_session(struct memory_options *out);
 
 __attribute__((weak)) const char *fcgi_artifact_output_dir(void);
@@ -106,6 +109,7 @@ static void publish_credit_warning(struct turn_job *j,
 				cfg->credits.currency);
 	cJSON_AddNumberToObject(obj, "estimated_cost_today",
 				today.estimated_cost);
+	cJSON_AddStringToObject(obj, "turn_id", j->turn_id);
 	json = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
 	events_publish(j->store, j->session_id, "credits_warning",
@@ -275,6 +279,7 @@ static void artifact_publish_ready(struct turn_job *j,
 	cJSON_AddStringToObject(obj, "filename", a->filename);
 	cJSON_AddNumberToObject(obj, "size_bytes", (double)a->size_bytes);
 	cJSON_AddStringToObject(obj, "url", a->url);
+	cJSON_AddStringToObject(obj, "turn_id", j->turn_id);
 	json = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
 	if (!json)
@@ -590,7 +595,8 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	case 0: /* REACT_STEP_THOUGHT */
 		if (!*payload_json)
 			return 0;
-		event_sink_thought(j->store, j->session_id, payload_json);
+		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
+					payload_json);
 		return 0;
 
 	case 1: { /* REACT_STEP_ACTION -> tool_call */
@@ -619,14 +625,15 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 			 (int)args_len, args_start);
 
 		snprintf(j->last_tool, sizeof(j->last_tool), "%s", tool_name);
-		event_sink_tool_call(j->store, j->session_id,
-				     tool_name, args_json);
+		event_sink_tool_call_turn(j->store, j->session_id,
+					  j->turn_id, tool_name, args_json);
 		return 0;
 	}
 
 	case 2: /* REACT_STEP_OBSERVATION -> tool_result */
-		event_sink_tool_result(j->store, j->session_id,
-				       j->last_tool, payload_json);
+		event_sink_tool_result_turn(j->store, j->session_id,
+					    j->turn_id, j->last_tool,
+					    payload_json);
 		maybe_publish_artifact(j, payload_json);
 		j->last_tool[0] = '\0';
 		return 0;
@@ -634,14 +641,15 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	case 3: /* REACT_STEP_REFLECTION — piggyback on thought schema */
 		if (!*payload_json)
 			return 0;
-		event_sink_thought(j->store, j->session_id, payload_json);
+		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
+					payload_json);
 		return 0;
 
 	case 4: /* REACT_STEP_FINAL */
 	{
 		char *rendered = render_media_refs(j, payload_json);
-		event_sink_final(j->store, j->session_id,
-				 rendered ? rendered : payload_json);
+		event_sink_final_turn(j->store, j->session_id, j->turn_id,
+				      rendered ? rendered : payload_json);
 		j->final_sent = 1;
 		free(rendered);
 		return 0;
@@ -650,7 +658,8 @@ static int bridge_cb(enum react_step_type step_type, const char *payload_json, v
 	case REACT_STEP_REASONING:
 		if (!*payload_json)
 			return 0;
-		event_sink_reasoning(j->store, j->session_id, payload_json);
+		event_sink_reasoning_turn(j->store, j->session_id, j->turn_id,
+					  payload_json);
 		return 0;
 
 	default:
@@ -679,15 +688,41 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 {
 	struct turn_job *j = (struct turn_job *)u;
 	cJSON *data;
+	const char *turn_id;
 
 	if (!j || !ev)
 		return -EINVAL;
 	data = ev->data;
+	turn_id = ev->turn_id ? ev->turn_id : j->turn_id;
+
+	if (strcmp(ev->name, "auth.required") == 0) {
+		cJSON *root = cJSON_CreateObject();
+		cJSON *copy = data ? cJSON_Duplicate(data, 1) : NULL;
+		char *txt;
+
+		if (!root)
+			return -ENOMEM;
+		cJSON_AddStringToObject(root, "turn_id", turn_id ? turn_id : "");
+		if (!copy)
+			copy = cJSON_CreateObject();
+		if (!copy) {
+			cJSON_Delete(root);
+			return -ENOMEM;
+		}
+		cJSON_AddItemToObject(root, "data", copy);
+		txt = cJSON_PrintUnformatted(root);
+		events_publish(j->store, j->session_id, "auth_required",
+			       txt ? txt : "{}");
+		free(txt);
+		cJSON_Delete(root);
+		return 0;
+	}
 
 	if (strcmp(ev->name, "react.thought.delta") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
-			event_sink_thought(j->store, j->session_id, text);
+			event_sink_thought_turn(j->store, j->session_id,
+						turn_id, text);
 		free(text);
 		return 0;
 	}
@@ -695,7 +730,8 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "react.reasoning.delta") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
-			event_sink_reasoning(j->store, j->session_id, text);
+			event_sink_reasoning_turn(j->store, j->session_id,
+						  turn_id, text);
 		free(text);
 		return 0;
 	}
@@ -703,7 +739,8 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "react.reflection") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
-			event_sink_thought(j->store, j->session_id, text);
+			event_sink_thought_turn(j->store, j->session_id,
+						turn_id, text);
 		free(text);
 		return 0;
 	}
@@ -711,8 +748,9 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "tool.call") == 0) {
 		char *tool = event_data_string(data, "tool");
 		char *args = event_data_string(data, "args");
-		event_sink_tool_call(j->store, j->session_id,
-				     tool ? tool : "", args ? args : "{}");
+		event_sink_tool_call_turn(j->store, j->session_id,
+					  turn_id, tool ? tool : "",
+					  args ? args : "{}");
 		if (tool)
 			snprintf(j->last_tool, sizeof(j->last_tool),
 				 "%s", tool);
@@ -725,9 +763,9 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	    strcmp(ev->name, "tool.failed") == 0) {
 		char *tool = event_data_string(data, "tool");
 		char *result = event_data_string(data, "result");
-		event_sink_tool_result(j->store, j->session_id,
-				       tool ? tool : j->last_tool,
-				       result ? result : "");
+		event_sink_tool_result_turn(j->store, j->session_id,
+					    turn_id, tool ? tool : j->last_tool,
+					    result ? result : "");
 		if (result)
 			maybe_publish_artifact(j, result);
 		j->last_tool[0] = '\0';
@@ -753,8 +791,8 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "react.final") == 0) {
 		char *text = event_data_string(data, "text");
 		char *rendered = render_media_refs(j, text ? text : "");
-		event_sink_final(j->store, j->session_id,
-				 rendered ? rendered : (text ? text : ""));
+		event_sink_final_turn(j->store, j->session_id, turn_id,
+				      rendered ? rendered : (text ? text : ""));
 		j->final_sent = 1;
 		free(rendered);
 		free(text);
@@ -767,7 +805,8 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	    strcmp(ev->name, "react.max_iterations") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
-			event_sink_error(j->store, j->session_id, text);
+			event_sink_error_turn(j->store, j->session_id,
+					      turn_id, text);
 		free(text);
 		return 0;
 	}
@@ -795,19 +834,40 @@ static void *turn_thread(void *arg)
 	model_set_usage_user_data(j);
 
 	if (!react_context_create_for_session || !react_run) {
+		cJSON *err = cJSON_CreateObject();
+		char *json = NULL;
+		if (err) {
+			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
+			cJSON_AddStringToObject(err, "message",
+				"react integration not linked; see fastcgi/PATCHES.md §3");
+			json = cJSON_PrintUnformatted(err);
+			cJSON_Delete(err);
+		}
 		events_publish(j->store, j->session_id, "error",
-			"{\"message\":\"react integration not linked; "
-			"see fastcgi/PATCHES.md §3\"}");
+			       json ? json : "{\"message\":\"react integration not linked\"}");
+		free(json);
 		goto out;
 	}
 
 	struct react_context *rctx =
 		react_context_create_for_session(j->store, j->session_id, j->user_id);
 	if (!rctx) {
+		cJSON *err = cJSON_CreateObject();
+		char *json = NULL;
+		if (err) {
+			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
+			cJSON_AddStringToObject(err, "message",
+				"react_context_create_for_session failed");
+			json = cJSON_PrintUnformatted(err);
+			cJSON_Delete(err);
+		}
 		events_publish(j->store, j->session_id, "error",
-			"{\"message\":\"react_context_create_for_session failed\"}");
+			       json ? json : "{\"message\":\"react_context_create_for_session failed\"}");
+		free(json);
 		goto out;
 	}
+	if (react_set_turn_id)
+		react_set_turn_id(rctx, j->turn_id);
 
 	if (react_memory_options_for_session)
 		react_memory_options_for_session(&mem_opts);
@@ -842,7 +902,8 @@ static void *turn_thread(void *arg)
 		if (!fallback && rctx->final_answer)
 			fallback = render_media_refs(j, rctx->final_answer);
 		if (fallback && *fallback) {
-			event_sink_final(j->store, j->session_id, fallback);
+			event_sink_final_turn(j->store, j->session_id,
+					      j->turn_id, fallback);
 			j->final_sent = 1;
 		}
 		free(fallback);
@@ -902,8 +963,19 @@ static void *turn_thread(void *arg)
 					      rctx->state == REACT_STATE_DONE,
 					      &mem_opts);
 	}
-	events_publish(j->store, j->session_id, "turn_end",
-		       "{\"phase\":\"done\"}");
+	{
+		cJSON *end = cJSON_CreateObject();
+		char *json = NULL;
+		if (end) {
+			cJSON_AddStringToObject(end, "phase", "done");
+			cJSON_AddStringToObject(end, "turn_id", j->turn_id);
+			json = cJSON_PrintUnformatted(end);
+			cJSON_Delete(end);
+		}
+		events_publish(j->store, j->session_id, "turn_end",
+			       json ? json : "{\"phase\":\"done\"}");
+		free(json);
+	}
 
 	if (react_context_destroy) react_context_destroy(rctx);
 out:

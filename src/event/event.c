@@ -58,6 +58,11 @@ int morph_event_to_json_object(const struct morph_event *ev, cJSON **out)
 		cJSON_Delete(root);
 		return -ENOMEM;
 	}
+	if (ev->turn_id &&
+	    !cJSON_AddStringToObject(root, "turn_id", ev->turn_id)) {
+		cJSON_Delete(root);
+		return -ENOMEM;
+	}
 	if (ev->data) {
 		data_copy = cJSON_Duplicate(ev->data, 1);
 		if (!data_copy) {
@@ -112,6 +117,7 @@ int morph_event_emit_simple(morph_event_cb cb, void *user_data,
 	ev.phase = phase;
 	ev.message = message;
 	ev.data = data;
+	ev.turn_id = NULL;
 	return morph_event_emit(cb, user_data, &ev);
 }
 

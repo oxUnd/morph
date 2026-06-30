@@ -45,6 +45,17 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 	return -EIO;
 }
 
+static int not_configured_tool_fn(const char *args_json,
+				  struct tool_result *result,
+				  void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	(void)tool_result_take_text(result,
+				    strdup("{\"error\":\"missing api key\"}"));
+	return MORPH_ERR_NOT_CONFIGURED;
+}
+
 static int call_count_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	int *count = (int *)user_data;
@@ -790,8 +801,12 @@ TEST_F(ReactTest, RunWithCallback) {
 	};
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
+	struct model *m = create_mock_llm("Thought: ok\nFinal: done");
+	ASSERT_NE(m, nullptr);
+	ctx->llm_model = m;
 	react_run(ctx, "test input", cb, nullptr);
 	react_context_destroy(ctx);
+	model_destroy(m);
 	EXPECT_GT(callback_count, 0);
 }
 
@@ -1009,6 +1024,89 @@ static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
 	return false;
 }
 
+static bool event_recorder_has_auth_required(struct morph_event_recorder *rec,
+					     const char *backend,
+					     const char *tool)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *type_item = cJSON_GetObjectItem(root, "type");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *kind_item = data ?
+			cJSON_GetObjectItem(data, "kind") : nullptr;
+		cJSON *backend_item = data ?
+			cJSON_GetObjectItem(data, "backend") : nullptr;
+		cJSON *tool_item = data ?
+			cJSON_GetObjectItem(data, "tool") : nullptr;
+		cJSON *retryable = data ?
+			cJSON_GetObjectItem(data, "retryable") : nullptr;
+		bool matched = cJSON_IsString(type_item) &&
+			strcmp(type_item->valuestring, "hitl") == 0 &&
+			cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, "auth.required") == 0 &&
+			cJSON_IsString(kind_item) &&
+			strcmp(kind_item->valuestring, "auth_required") == 0 &&
+			cJSON_IsString(backend_item) &&
+			strcmp(backend_item->valuestring, backend) == 0 &&
+			cJSON_IsString(tool_item) &&
+			strcmp(tool_item->valuestring, tool) == 0 &&
+			cJSON_IsTrue(retryable);
+		cJSON_Delete(root);
+		if (matched)
+			return true;
+	}
+	return false;
+}
+
+static std::string event_recorder_turn_id(struct morph_event_recorder *rec,
+					  const char *name)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *turn_id = cJSON_GetObjectItem(root, "turn_id");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0 &&
+			cJSON_IsString(turn_id);
+		std::string out = matched ? turn_id->valuestring : "";
+		cJSON_Delete(root);
+		if (matched)
+			return out;
+	}
+	return "";
+}
+
+static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
+					      const char *turn_id)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *type = cJSON_GetObjectItem(root, "type");
+		cJSON *id = cJSON_GetObjectItem(root, "turn_id");
+		bool checked = cJSON_IsString(type) &&
+			(strcmp(type->valuestring, "react") == 0 ||
+			 strcmp(type->valuestring, "tool") == 0 ||
+			 strcmp(type->valuestring, "artifact") == 0 ||
+			 strcmp(type->valuestring, "hitl") == 0);
+		bool ok = !checked || (cJSON_IsString(id) &&
+			strcmp(id->valuestring, turn_id) == 0);
+		cJSON_Delete(root);
+		if (!ok)
+			return false;
+	}
+	return true;
+}
+
 TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
@@ -1037,6 +1135,87 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.end"));
 	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
 					       "success"));
+	std::string turn_id = event_recorder_turn_id(&rec, "react.turn.begin");
+	ASSERT_FALSE(turn_id.empty());
+	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, turn_id.c_str()));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, UsesInjectedTurnIdForEvents) {
+	const char *responses[] = {
+		"Thought: Done.\nFinal: Injected turn."
+	};
+	llm = create_multi_mock_llm(responses, 1);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb, &rec));
+	ASSERT_EQ(0, react_set_turn_id(ctx, "turn_external"));
+
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_STREQ("turn_external", react_get_turn_id(ctx));
+	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, "turn_external"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, EmitsAuthRequiredWhenLlmKeyMissing) {
+	llm = create_mock_llm("Thought: Done.\nFinal: no key");
+	ASSERT_NE(llm, nullptr);
+	llm->api_key[0] = '\0';
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_LLM_ERROR);
+	EXPECT_TRUE(event_recorder_has_auth_required(&rec, "text", ""));
+	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
+					       "llm_error"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
+	tool_register(&tools, "text_gen", "Needs key", "{}",
+		      not_configured_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: Need tool.\nAction: text_gen({})\n",
+		"Thought: Tool failed.\nFinal: cannot continue."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(event_recorder_has_auth_required(&rec, "text",
+						     "text_gen"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.failed"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);

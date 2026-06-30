@@ -8,6 +8,7 @@ add_library(morph-util STATIC
 	spin.c
 	cancel.c
 	error.c
+	id.c
 	bpe.c
 	str.c
 	strmap.c

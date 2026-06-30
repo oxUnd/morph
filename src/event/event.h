@@ -27,6 +27,7 @@ struct morph_event {
 	const char *phase;
 	const char *message;
 	cJSON *data;
+	const char *turn_id;
 };
 
 typedef int (*morph_event_cb)(const struct morph_event *ev, void *user_data);

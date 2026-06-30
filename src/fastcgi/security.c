@@ -2,18 +2,12 @@
 #define _GNU_SOURCE
 #include "security.h"
 #include "util/error.h"
+#include "util/id.h"
 
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-
-#ifndef __APPLE__
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 #define SHA256_BLOCK_SIZE 64
 #define SHA256_DIGEST_SIZE 32
@@ -235,34 +229,6 @@ static void pbkdf2_sha256(const char *password, const unsigned char *salt,
 	}
 }
 
-static int random_bytes(unsigned char *buf, size_t len)
-{
-#ifdef __APPLE__
-	arc4random_buf(buf, len);
-	return 0;
-#else
-	int fd = open("/dev/urandom", O_RDONLY);
-	if (fd < 0)
-		MORPH_RETURN_ERRNO();
-	size_t off = 0;
-	while (off < len) {
-		ssize_t rd = read(fd, buf + off, len - off);
-		if (rd < 0) {
-			int err = errno;
-			close(fd);
-			MORPH_RETURN(-err);
-		}
-		if (rd == 0) {
-			close(fd);
-			MORPH_RETURN(-EIO);
-		}
-		off += (size_t)rd;
-	}
-	close(fd);
-	return 0;
-#endif
-}
-
 static void hex_encode(const unsigned char *data, size_t len, char *out)
 {
 	static const char h[] = "0123456789abcdef";
@@ -300,19 +266,7 @@ static int hex_decode(const char *hex, unsigned char *out, size_t out_len)
 
 int fcgi_random_id(const char *prefix, char *out, size_t out_size)
 {
-	unsigned char raw[16];
-	char hex[sizeof(raw) * 2 + 1];
-	int rc;
-
-	if (!prefix || !out)
-		MORPH_RETURN(-EINVAL);
-	rc = random_bytes(raw, sizeof(raw));
-	if (rc < 0)
-		return rc;
-	hex_encode(raw, sizeof(raw), hex);
-	if (snprintf(out, out_size, "%s%s", prefix, hex) >= (int)out_size)
-		MORPH_RETURN(-ENOSPC);
-	return 0;
+	return morph_random_id(prefix, out, out_size);
 }
 
 int fcgi_password_hash(const char *password, char *out, size_t out_size)
@@ -325,7 +279,7 @@ int fcgi_password_hash(const char *password, char *out, size_t out_size)
 
 	if (!password || !out || !*password)
 		MORPH_RETURN(-EINVAL);
-	rc = random_bytes(salt, sizeof(salt));
+	rc = morph_random_bytes(salt, sizeof(salt));
 	if (rc < 0)
 		return rc;
 	pbkdf2_sha256(password, salt, sizeof(salt), PWD_ITERATIONS,

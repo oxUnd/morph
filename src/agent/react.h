@@ -132,6 +132,8 @@ struct react_context {
 		char description[256];
 	} *sub_agent_info;
 	int sub_agent_info_count;
+	char turn_id[64];
+	int turn_id_user_set;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,
@@ -169,6 +171,8 @@ int react_set_action_drain(struct react_context *ctx,
 			   react_action_drain_fn fn, void *user);
 int react_set_event_callback(struct react_context *ctx,
 			     morph_event_cb cb, void *user);
+int react_set_turn_id(struct react_context *ctx, const char *turn_id);
+const char *react_get_turn_id(const struct react_context *ctx);
 
 struct react_step *react_step_create(struct arena *arena,
 				     enum react_step_type type,

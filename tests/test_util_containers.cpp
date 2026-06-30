@@ -3,6 +3,7 @@
 #include "util/arena.h"
 #include "util/array.h"
 #include "util/buf.h"
+#include "util/id.h"
 #include "util/queue.h"
 #include "util/str.h"
 #include "util/strmap.h"
@@ -12,6 +13,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+
+static bool is_lower_hex_string(const char *s)
+{
+	if (!s)
+		return false;
+	for (const char *p = s; *p; p++) {
+		if ((*p < '0' || *p > '9') && (*p < 'a' || *p > 'f'))
+			return false;
+	}
+	return true;
+}
+
+TEST(UtilId, RandomIdUsesPrefixAndHex)
+{
+	char id[64];
+
+	ASSERT_EQ(morph_random_id("turn_", id, sizeof(id)), 0);
+	EXPECT_EQ(strncmp(id, "turn_", 5), 0);
+	EXPECT_EQ(strlen(id), 37u);
+	EXPECT_TRUE(is_lower_hex_string(id + 5));
+}
+
+TEST(UtilId, RejectsInvalidArgsAndSmallBuffer)
+{
+	char id[8];
+
+	EXPECT_EQ(morph_random_id(nullptr, id, sizeof(id)), -EINVAL);
+	EXPECT_EQ(morph_random_id("turn_", nullptr, 64), -EINVAL);
+	EXPECT_EQ(morph_random_id("turn_", id, sizeof(id)), -ENOSPC);
+}
 
 TEST(UtilArray, PushGetPopAndClear)
 {

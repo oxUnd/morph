@@ -11,6 +11,7 @@ TEST(EventTest, TypeName)
 	EXPECT_STREQ("react", morph_event_type_name(MORPH_EVENT_REACT));
 	EXPECT_STREQ("tool", morph_event_type_name(MORPH_EVENT_TOOL));
 	EXPECT_STREQ("mcp", morph_event_type_name(MORPH_EVENT_MCP));
+	EXPECT_STREQ("hitl", morph_event_type_name(MORPH_EVENT_HITL));
 	EXPECT_STREQ("task", morph_event_type_name(MORPH_EVENT_TASK));
 	EXPECT_STREQ("unknown", morph_event_type_name((enum morph_event_type)99));
 }
@@ -28,6 +29,7 @@ TEST(EventTest, SerializesStructuredPayload)
 		"ready",
 		"MCP server ready",
 		data,
+		"turn_test",
 	};
 
 	char *json = morph_event_to_json_string(&ev);
@@ -40,6 +42,8 @@ TEST(EventTest, SerializesStructuredPayload)
 	EXPECT_STREQ("ready", cJSON_GetObjectItem(root, "phase")->valuestring);
 	EXPECT_STREQ("MCP server ready",
 		     cJSON_GetObjectItem(root, "message")->valuestring);
+	EXPECT_STREQ("turn_test",
+		     cJSON_GetObjectItem(root, "turn_id")->valuestring);
 	cJSON *payload = cJSON_GetObjectItem(root, "data");
 	ASSERT_TRUE(cJSON_IsObject(payload));
 	EXPECT_STREQ("filesystem",
