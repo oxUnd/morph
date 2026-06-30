@@ -11,6 +11,7 @@
 #include "http/sse.h"
 #include "cJSON.h"
 #include <errno.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -52,6 +53,23 @@ static void usage_strncpy(char *dst, size_t dst_cap, const char *src)
 		return;
 	strncpy(dst, src, dst_cap - 1);
 	dst[dst_cap - 1] = '\0';
+}
+
+static void model_clear_last_error(struct model *self)
+{
+	if (self)
+		self->last_error[0] = '\0';
+}
+
+static void model_set_last_error(struct model *self, const char *fmt, ...)
+{
+	va_list ap;
+
+	if (!self || !fmt)
+		return;
+	va_start(ap, fmt);
+	vsnprintf(self->last_error, sizeof(self->last_error), fmt, ap);
+	va_end(ap);
 }
 
 static char *json_print_arena(struct arena *arena, cJSON *root)
@@ -630,6 +648,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 			       const char *image_path,
 			       sse_callback cb, void *user_data)
 {
+	model_clear_last_error(self);
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_image: no API key configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -641,6 +660,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!b64) {
 		log_err("llm_chat_with_image: failed to encode image: %s",
 			image_path);
+		model_set_last_error(self, "failed to read or encode image: %s",
+				     image_path);
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -755,18 +776,24 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 
 	if (status < 0) {
 		log_err("llm_chat_with_image: SSE request failed: %d", status);
+		model_set_last_error(self, "HTTP/SSE request failed: %s",
+				     morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
 		const char *detail = NULL;
 		if (hctx.error_buf.len > 0)
 			detail = llm_extract_error(hctx.error_buf.data, arena);
-		if (detail)
+		if (detail) {
 			log_err("llm_chat_with_image: API returned HTTP %d: %s",
 				status, detail);
-		else
+			model_set_last_error(self, "HTTP %d: %s", status, detail);
+		} else {
 			log_err("llm_chat_with_image: API returned HTTP %d",
 				status);
+			model_set_last_error(self, "HTTP %d from %s", status,
+					     self->api_base);
+		}
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 

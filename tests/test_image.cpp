@@ -11,6 +11,7 @@
 #include "agent/tool_context.h"
 #include "render/image.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "util/image_util.h"
 #include "stb_image_write.h"
 #include <string.h>
@@ -37,6 +38,23 @@ static int fake_chat_with_image(struct model *self, struct arena *arena,
 	if (cb)
 		return cb("fake image answer", user_data);
 	return 0;
+}
+
+static int fake_chat_with_image_fail(struct model *self, struct arena *arena,
+				     const char *system_prompt,
+				     const char *prompt,
+				     const char *image_path,
+				     sse_callback cb, void *user_data)
+{
+	(void)arena;
+	(void)system_prompt;
+	(void)prompt;
+	(void)image_path;
+	(void)cb;
+	(void)user_data;
+	snprintf(self->last_error, sizeof(self->last_error),
+		 "HTTP 400: model does not support image input");
+	return MORPH_ERR_API;
 }
 
 static int create_test_png(const char *path) {
@@ -402,6 +420,28 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	EXPECT_STREQ(result.text.data, "fake image answer");
 	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
 	EXPECT_STREQ(g_fake_img_qa_path, path);
+	tool_result_cleanup(&result);
+	std::remove(path);
+}
+
+TEST_F(ImgGenToolTest, QaReturnsProviderFailureDetail) {
+	const char *path = "/tmp/morph_img_qa_fail.png";
+	ASSERT_EQ(create_test_png(path), 0);
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image_fail;
+	img_qa_init(&reg, &fake, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_qa",
+			   "{\"file_path\":\"/tmp/morph_img_qa_fail.png\","
+			   "\"prompt\":\"What is this?\"}",
+			   &result);
+	EXPECT_EQ(rc, MORPH_ERR_API);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_TRUE(strstr(result.text.data, "image QA LLM call failed") != NULL);
+	EXPECT_TRUE(strstr(result.text.data, "model does not support image input") != NULL);
+	EXPECT_TRUE(strstr(result.text.data, "[model.text]") != NULL);
 	tool_result_cleanup(&result);
 	std::remove(path);
 }

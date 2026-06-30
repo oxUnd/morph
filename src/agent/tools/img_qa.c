@@ -26,6 +26,35 @@ static int img_qa_stream_cb(const char *token, void *user_data)
 	return morph_buf_append_cb(token, user_data);
 }
 
+static int img_qa_take_call_error(struct tool_result *result,
+				  struct model *llm)
+{
+	cJSON *root;
+	char *json;
+	int rc;
+
+	if (!result)
+		MORPH_RETURN(-EINVAL);
+	root = cJSON_CreateObject();
+	if (!root)
+		MORPH_RETURN(-ENOMEM);
+	cJSON_AddStringToObject(root, "error", "image QA LLM call failed");
+	if (llm && llm->last_error[0])
+		cJSON_AddStringToObject(root, "detail", llm->last_error);
+	cJSON_AddStringToObject(root, "hint",
+		"img_qa uses [model.text]; configure it to a vision-capable "
+		"chat model. img_gen uses [model.image], so image generation "
+		"can work while image QA fails.");
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	rc = tool_result_take_text(result, json);
+	if (rc < 0)
+		free(json);
+	return rc;
+}
+
 static int img_qa_exec(const char *args_json, struct tool_result *result,
 		       void *user_data)
 {
@@ -117,8 +146,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		prompt, resolved_path, img_qa_stream_cb, &buf);
 	if (rc < 0) {
 		morph_buf_cleanup(&buf);
-		(void)tool_result_take_text(result,
-			strdup("{\"error\":\"image QA LLM call failed\"}"));
+		(void)img_qa_take_call_error(result, llm);
 		goto out;
 	}
 

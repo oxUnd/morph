@@ -73,6 +73,7 @@ struct model {
 	char api_base[256];
 	char api_key[256];
 	char model_id[128];
+	char last_error[512];
 	int context_limit;
 	int max_tokens;
 	long timeout_seconds;

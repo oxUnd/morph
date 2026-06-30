@@ -13,9 +13,11 @@ log_level = "info"
 log_file = "~/.morph/log/agent.log"
 
 # ──────────────────────────────────────────────
-# Text (chat) model
+# Text / vision chat model
 # ──────────────────────────────────────────────
 [model.text]
+# Used by the ReAct loop, text_qa, and img_qa. img_qa requires a
+# vision-capable chat model here; [model.image] is only for image generation.
 provider    = "openai"
 model       = "gpt-4o"
 api_base    = "https://api.openai.com/v1"
