@@ -11,9 +11,7 @@
 #include "util/utf8.h"
 #include "agent/tokenizer.h"
 #include "agent/compress.h"
-#include "agent/tools/text_gen.h"
 #include "ext/ext.h"
-#include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
@@ -35,6 +33,7 @@
 #include "agent/tools/plan.h"
 #include "agent/tools/sub_agent_tools.h"
 #include "agent/tools/scheduled_tasks.h"
+#include "agent/tools/runtime_query.h"
 #include "mcp/mcp.h"
 #include "db/database.h"
 #include "db/scheduled_task.h"
@@ -92,6 +91,7 @@ void print_padded(const char *s, int target_width);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
 void cli_credit_session_key(struct cli_context *ctx, char *buf, size_t size);
+void cli_update_tool_runtime_context(struct cli_context *ctx);
 void cli_set_usage_context(struct cli_context *ctx);
 void cli_record_model_usage(const struct model_usage *usage, void *user_data);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,

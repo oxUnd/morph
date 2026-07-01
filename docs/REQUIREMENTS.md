@@ -158,9 +158,9 @@ Agent 基于 ReAct 模式自主规划跨模态任务，用户无需手动指定�
 
 | 场景 | ReAct 轨迹示例 |
 |------|----------------|
-| 文图联动 | Thought: 生成文案 → Action: text_gen → Obs: 文案 → Thought: 配图 → Action: img_gen → Final: 文案+配图 |
+| 文图联动 | Thought: 直接生成文案 → Thought: 配图 → Action: img_gen → Final: 文案+配图 |
 | 图视联动 | Thought: 图片变视频 → Action: vid_gen(image) → Final: 视频文件 |
-| 全链路 | Thought: 选题 → Action: text_gen → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
+| 全链路 | Thought: 选题并生成文案 → Thought: 配图 → Action: img_gen → Thought: 动态化 → Action: vid_gen → Final: 完整作品 |
 | 子代理委派 | Thought: 需要专业翻译 → Action: agent_delegate(translate-agent, task) → Obs: 翻译结果 → Final |
 
 ### 4.7.1 统一事件系统
@@ -270,8 +270,7 @@ morph v0.3  |  /help 查看命令
 
 [abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
 ⠋ Thinking → 赛博朋克短视频脚本...
--> text_gen → prompt="赛博朋克短视频脚本"
-OK Done (3s)
+OK Script drafted by the language model (3s)
 ⠋ Thinking → 根据第二幕生成配图...
 -> img_gen → prompt="赛博朋克街道夜景，霓虹灯", style="realistic"
 OK Image generated (8s)
@@ -286,13 +285,11 @@ OK Video generated (25s)
 context: 4321 / 128000 tokens (3.4%) | messages: 5
 [abc1] $ /trace
 --- ReAct trace (赛博朋克短视频)
-  1. [Thought] 用户需要脚本+配图+视频。先写脚本。
-  2. [Action] text_gen(prompt="赛博朋克短视频脚本") (tool: text_gen)
-  3. [Observation] 霓虹灯在雨幕中闪烁……
-  4. [Thought] 根据第二幕生成配图。
-  5. [Action] img_gen(prompt="赛博朋克街道夜景") (tool: img_gen)
-  6. [Observation] image generated: ~/.morph/output/img_20260512_01.png
-  7. [Thought] 将配图扩展为 5s 视频。
+  1. [Thought] 用户需要脚本+配图+视频。先由语言模型写脚本。
+  2. [Thought] 根据第二幕生成配图。
+  3. [Action] img_gen(prompt="赛博朋克街道夜景") (tool: img_gen)
+  4. [Observation] image generated: ~/.morph/output/img_20260512_01.png
+  5. [Thought] 将配图扩展为 5s 视频。
   8. [Action] vid_gen(image="img_20260512_01.png") (tool: vid_gen)
   9. [Observation] video generated: ~/.morph/output/vid_20260512_01.mp4
   10. [Guardrail] No tools called but output expected
@@ -354,7 +351,7 @@ saved 5 messages
 | `/image <path>` | `/img` | 注入图片 | `/img ./photo.jpg` |
 | `/video <path>` | `/vid` | 注入视频 | `/vid ./clip.mp4` |
 | `/ext list` | `/x list` | 已注册工具列表 | — |
-| `/ext info <name>` | — | 工具详情 | `/ext info text_gen` |
+| `/ext info <name>` | — | 工具详情 | `/ext info demo-translate` |
 | `/ext install <source>` | — | GitHub Ext 安装 | `/ext install github:owner/repo[@ref][//subdir]` |
 | `/ext enable <name>` | — | 启用（stub） | — |
 | `/ext disable <name>` | — | 禁用（stub） | — |
@@ -769,7 +766,7 @@ default_max_cpu_seconds = 30
 # system_prompt_file = "~/.morph/prompts/translate.md"
 # model = "gpt-4o"
 # max_iterations = 5
-# allowed_tools = ["text_gen", "text_qa"]
+# allowed_tools = ["file_read", "bash_exec"]
 # disabled_tools = []
 # context_policy = "task_only"
 # merge_strategy = "raw"
@@ -862,10 +859,8 @@ morph/
 │   │   ├── system_prompt.h
 │   │   └── tools/
 │   │       ├── CMakeLists.txt
-│   │       ├── text_gen.c
-│   │       ├── text_gen.h
-│   │       ├── text_qa.c
-│   │       ├── text_qa.h
+│   │       ├── runtime_query.c
+│   │       ├── runtime_query.h
 │   │       ├── img_gen.c
 │   │       ├── img_gen.h
 │   │       ├── img_inpaint.c
@@ -1016,7 +1011,7 @@ morph/
     ├── test_tokenizer.cpp
     ├── test_session.cpp
     ├── test_http.cpp
-    ├── test_text_gen.cpp
+    ├── test_runtime_query.cpp
     ├── test_image.cpp
     ├── test_compress.cpp
     ├── test_react.cpp
@@ -1405,8 +1400,8 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 
 | 工具名 | 功能 | 参数 | 对应模型 | 类型 | 只读 |
 |--------|------|------|---------|------|------|
-| text_gen | 文字内容生成 | prompt, style, length | LLM | 内置 | 否 |
-| text_qa | 文字问答/改写 | prompt, context | LLM | 内置 | 是 |
+| credits | 查询积分用量、限制和总积分 | — | SQLite | 内置 | 是 |
+| memory | 按 scope/type 查询长期记忆 | scope, type, max_episodes | SQLite | 内置 | 是 |
 | img_gen | 图片生成 | prompt, style, size, reference_image | DALL-E / SD / Volcengine | 内置 | 否 |
 | img_inpaint | 区域生成(bbox+label) | annotation, prompt | 图像模型 i2i (确定性百分比指令) | 内置 | 否 |
 | img_compose | 跨图融合(arrow+label) | annotation, prompt | 本地预合成 + 图像模型 i2i | 内置 | 否 |
@@ -2228,7 +2223,7 @@ name: code-review
 description: Code review and analysis
 license: MIT
 compatibility: morph>=0.1
-allowed_tools: text_gen,text_qa,file_read
+allowed_tools: file_read,bash_exec,memory
 metadata:
   author: morph-team
   version: "1.0"
@@ -2327,7 +2322,6 @@ ReAct 过程中不逐行打印 Thought/Action/Observation，而是通过 Spinner
 
 ```
 ⠋ Thinking → 流式预览文本... 3s
--> text_gen → prompt="..." 1s
 OK Done (3s)
 ERR Tool execution failed (1s)
 ```
@@ -2475,7 +2469,7 @@ enum morph_error {
 | `test_tokenizer.cpp` | Token 计数 |
 | `test_session.cpp` | 会话管理 |
 | `test_http.cpp` | HTTP 客户端 |
-| `test_text_gen.cpp` | 文字生成工具 |
+| `test_runtime_query.cpp` | credits/memory 查询工具 |
 | `test_image.cpp` | 图片处理 |
 | `test_compress.cpp` | 上下文压缩 |
 | `test_react.cpp` | ReAct 循环 |

@@ -1,6 +1,4 @@
 add_library(morph-tools STATIC
-	text_gen.c
-	text_qa.c
 	img_gen.c
 	img_qa.c
 	img_info.c
@@ -19,6 +17,7 @@ add_library(morph-tools STATIC
 	img_annotate.c
 	sub_agent_tools.c
 	scheduled_tasks.c
+	runtime_query.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
@@ -32,4 +31,4 @@ target_include_directories(morph-tools PUBLIC
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/models
 )
-target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util morph-skill morph-sandbox morph-db)
+target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util morph-skill morph-sandbox morph-db morph-credits morph-session)

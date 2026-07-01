@@ -15,15 +15,15 @@
 {"id":"ts_019","prompt":"Create a video of a cat playing with a ball","expected_tools":[{"name":"vid_gen","args_contains":{"prompt":"cat"}}],"category":"video"}
 {"id":"ts_020","prompt":"用图片 /tmp/img1.jpg 和 /tmp/img2.jpg 生成视频","expected_tools":[{"name":"vid_gen","args_contains":{"reference_images":"/tmp/img1.jpg"}}],"category":"video"}
 {"id":"ts_021","prompt":"Generate a 10-second video of ocean waves","expected_tools":[{"name":"vid_gen","args_contains":{"prompt":"ocean"}}],"category":"video"}
-{"id":"ts_022","prompt":"写一首关于秋天的诗","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"秋天"}}],"category":"text"}
-{"id":"ts_023","prompt":"Write a formal email declining a meeting invitation","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"email"}}],"category":"text"}
-{"id":"ts_024","prompt":"用轻松的风格写一段产品介绍","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"产品"}}],"category":"text"}
-{"id":"ts_025","prompt":"Generate a creative short story about time travel","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"time travel"}}],"category":"text"}
-{"id":"ts_026","prompt":"写一篇长文介绍人工智能的发展历史","expected_tools":[{"name":"text_gen","args_contains":{"prompt":"人工智能"}}],"category":"text"}
-{"id":"ts_027","prompt":"什么是量子计算？","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"量子计算"}}],"category":"text"}
-{"id":"ts_028","prompt":"How does photosynthesis work?","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"photosynthesis"}}],"category":"text"}
-{"id":"ts_029","prompt":"解释一下相对论的基本原理","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"相对论"}}],"category":"text"}
-{"id":"ts_030","prompt":"What are the advantages of Rust over C++?","expected_tools":[{"name":"text_qa","args_contains":{"prompt":"Rust"}}],"category":"text"}
+{"id":"ts_022","prompt":"写一首关于秋天的诗","expected_tools":[],"category":"text"}
+{"id":"ts_023","prompt":"Write a formal email declining a meeting invitation","expected_tools":[],"category":"text"}
+{"id":"ts_024","prompt":"用轻松的风格写一段产品介绍","expected_tools":[],"category":"text"}
+{"id":"ts_025","prompt":"Generate a creative short story about time travel","expected_tools":[],"category":"text"}
+{"id":"ts_026","prompt":"写一篇长文介绍人工智能的发展历史","expected_tools":[],"category":"text"}
+{"id":"ts_027","prompt":"什么是量子计算？","expected_tools":[],"category":"text"}
+{"id":"ts_028","prompt":"How does photosynthesis work?","expected_tools":[],"category":"text"}
+{"id":"ts_029","prompt":"解释一下相对论的基本原理","expected_tools":[],"category":"text"}
+{"id":"ts_030","prompt":"What are the advantages of Rust over C++?","expected_tools":[],"category":"text"}
 {"id":"ts_031","prompt":"读取 /etc/hosts 文件的内容","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/etc/hosts"}}],"category":"file"}
 {"id":"ts_032","prompt":"Read the contents of /home/user/notes.txt","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/home/user/notes.txt"}}],"category":"file"}
 {"id":"ts_033","prompt":"查看 /var/log/syslog 的前 50 行","expected_tools":[{"name":"file_read","args_contains":{"file_path":"/var/log/syslog","limit":50}}],"category":"file"}

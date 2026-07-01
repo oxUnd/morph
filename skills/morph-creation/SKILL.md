@@ -42,7 +42,7 @@ Schemas come from the function-calling interface; this is the creative guidance 
 - **img_compose** — Cross-image fusion from arrows. Feed it the img_annotate output verbatim; it pre-composites the source object's pixels onto the target at the arrow's destination, then harmonizes lighting/perspective/edges via the image model.
 - **img_info** — Read dimensions/format/channels to verify size and plan post-processing.
 - **img_resize / img_convert** — Hit the exact final dimensions and format the user needs.
-- **text_gen** — Write world lore, character sheets, and style bibles that steer later image/video generation.
+- For world lore, character sheets, and style bibles that steer later image/video generation, use the language model directly.
 
 ## BEFORE FINISHING
 

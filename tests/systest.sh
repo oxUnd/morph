@@ -200,7 +200,7 @@ test_config_alias() {
 test_ext_list() {
 	out=$(run_morph "/ext list
 /quit")
-	assert_contains "17: /ext list shows text_gen" "$out" "text_gen"
+	assert_contains "17: /ext list shows credits" "$out" "credits"
 	assert_contains "17: /ext list shows translate" "$out" "translate"
 	assert_contains "17: /ext list shows upper" "$out" "upper"
 }

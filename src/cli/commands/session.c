@@ -20,6 +20,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
 		session_load_history(ctx);
+		cli_update_tool_runtime_context(ctx);
 		ctx->session_auto_named = !auto_named;
 		CMD_OK("created and switched to session: %s [%s]", name,
 		       ctx->current_session.display_id);
@@ -85,6 +86,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
 		session_load_history(ctx);
+		cli_update_tool_runtime_context(ctx);
 		ctx->session_auto_named = 1;
 		CMD_OK("switched to session: %s", ctx->current_session.name);
 	} else {

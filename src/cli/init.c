@@ -324,7 +324,7 @@ static int cli_init_models(struct cli_context *ctx)
 
 /*
  * Register all built-in tools and configure tool flags.
- * Includes text_gen, text_qa, img_*, vid_*, file_*, bash_exec,
+ * Includes img_*, vid_*, file_*, bash_exec, runtime query,
  * skill, plan, and ask_user tools.
  * ctx - CLI context with models and react context initialized.
  *
@@ -359,11 +359,8 @@ static int cli_init_tools(struct cli_context *ctx)
 	tool_context_set_operation_approval(ctx->tctx,
 					    operation_approval_callback, ctx);
 
-	text_gen_init(&ctx->tools, ctx->llm);
-	log_info("registered text_gen tool");
-
-	text_qa_init(&ctx->tools, ctx->llm);
-	log_info("registered text_qa tool");
+	runtime_query_tools_init(&ctx->tools);
+	log_info("registered runtime query tools");
 
 	img_qa_init(&ctx->tools, ctx->llm, ctx->tctx);
 	log_info("registered img_qa tool");
@@ -418,7 +415,7 @@ static int cli_init_tools(struct cli_context *ctx)
 	{
 		static const char *readonly_tools[] = {
 			"file_read", "file_list", "file_info",
-			"img_info", "text_qa",
+			"img_info", "credits", "memory",
 			"ask_user", "activate_skill", "plan",
 			"agent_status",
 			NULL
@@ -1077,6 +1074,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	}
 
 	session_ensure_display_id(&ctx->database, &ctx->current_session);
+	cli_update_tool_runtime_context(ctx);
 
 	ctx->running = 1;
 	ctx->streaming = 0;

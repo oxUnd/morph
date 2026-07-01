@@ -3,6 +3,7 @@
 #include "tokenizer.h"
 #include "compress.h"
 #include "system_prompt.h"
+#include "tool_runtime.h"
 #include "models/llm.h"
 #include "http/client.h"
 #include "util/log.h"
@@ -174,6 +175,19 @@ const char *react_get_turn_id(const struct react_context *ctx)
 	return ctx->turn_id;
 }
 
+int react_set_tool_runtime_context(
+	struct react_context *ctx,
+	const struct tool_runtime_context *runtime)
+{
+	if (!ctx)
+		return -EINVAL;
+	if (runtime)
+		ctx->tool_runtime = *runtime;
+	else
+		memset(&ctx->tool_runtime, 0, sizeof(ctx->tool_runtime));
+	return 0;
+}
+
 static int react_events_enabled(struct react_context *ctx)
 {
 	return ctx && ctx->event_cb;
@@ -250,9 +264,7 @@ static const char *react_auth_backend_for_tool(const char *tool)
 {
 	if (!tool)
 		return NULL;
-	if (strcmp(tool, "text_gen") == 0 ||
-	    strcmp(tool, "text_qa") == 0 ||
-	    strcmp(tool, "img_qa") == 0 ||
+	if (strcmp(tool, "img_qa") == 0 ||
 	    strcmp(tool, "plan") == 0)
 		return "text";
 	if (strcmp(tool, "img_gen") == 0 ||
@@ -768,8 +780,10 @@ static void *async_tool_exec(void *arg)
 		tool_result_init(&res);
 		prev_usage_user_data = model_get_usage_user_data();
 		model_set_usage_user_data(call->usage_user_data);
+		tool_runtime_set_current(&call->react->tool_runtime);
 		rc = tool_exec(call->tools, call->tool_name,
 			       call->tool_args, &res);
+		tool_runtime_set_current(NULL);
 		model_set_usage_user_data(prev_usage_user_data);
 
 		pthread_mutex_lock(&call->mutex);

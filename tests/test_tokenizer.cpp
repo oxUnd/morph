@@ -199,7 +199,7 @@ TEST_F(TokenizerTest, ReActPromptEstimation) {
 	/* Real-world ReAct prompt - should be reasonable */
 	const char *prompt = "Thought: The user wants a cyberpunk short video script. "
 		"I should generate a script first.\n"
-		"Action: text_gen({\"prompt\": \"赛博朋克短视频脚本\", \"style\": \"creative\"})\n"
+		"Action: test_tool({\"prompt\": \"赛博朋克短视频脚本\", \"style\": \"creative\"})\n"
 		"Observation: Generated script about neon lights in rain...\n"
 		"Final: Here is your cyberpunk short video script.";
 	int count = tokenizer_count(tok, prompt);

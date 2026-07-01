@@ -100,8 +100,11 @@ package directory; no separate output list is configured.
 ```
 src/
   agent/    ReAct loop, context compression, tool dispatch
+  agent/tools/
+            Built-in tools (credits, memory, img_gen, vid_gen, ...)
+  persistence/
+            Persistent stores for memory and credit queries
   models/   LLM / image / video backends
-  tools/    Built-in tools (text_gen, img_gen, vid_gen, ...)
   skill/    Skill discovery, parsing, and activation
   ext/      Ext loading and management
   sandbox/  Sandboxed ext execution

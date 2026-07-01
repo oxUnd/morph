@@ -295,7 +295,7 @@ TEST_F(SubAgentTest, LoadConfigWithAllowedTools) {
 	struct config_sub_agents sa_cfg = {};
 	strncpy(sa_cfg.entries[0].name, "minimal",
 		sizeof(sa_cfg.entries[0].name) - 1);
-	strncpy(sa_cfg.entries[0].allowed_tools[0], "text_gen",
+	strncpy(sa_cfg.entries[0].allowed_tools[0], "test_tool",
 		sizeof(sa_cfg.entries[0].allowed_tools[0]) - 1);
 	strncpy(sa_cfg.entries[0].allowed_tools[1], "file_read",
 		sizeof(sa_cfg.entries[0].allowed_tools[1]) - 1);
@@ -304,7 +304,7 @@ TEST_F(SubAgentTest, LoadConfigWithAllowedTools) {
 	int rc = sub_agent_runtime_load_config(rt, &sa_cfg);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(rt->entries[0].cfg.allowed_tools_count, 2);
-	EXPECT_STREQ(rt->entries[0].cfg.allowed_tools[0], "text_gen");
+	EXPECT_STREQ(rt->entries[0].cfg.allowed_tools[0], "test_tool");
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -359,7 +359,7 @@ TEST_F(SubAgentTest, ConfigTomlSubAgentsWithTools) {
 [[agent.sub_agents]]
 name = "safe_agent"
 description = "Safe agent"
-allowed_tools = ["text_gen", "file_read"]
+allowed_tools = ["test_tool", "file_read"]
 disabled_tools = ["bash_exec"]
 )";
 	write_config(toml);
@@ -367,7 +367,7 @@ disabled_tools = ["bash_exec"]
 	int rc = config_load(&cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.entries[0].allowed_tools_count, 2);
-	EXPECT_STREQ(cfg.sub_agents.entries[0].allowed_tools[0], "text_gen");
+	EXPECT_STREQ(cfg.sub_agents.entries[0].allowed_tools[0], "test_tool");
 	EXPECT_EQ(cfg.sub_agents.entries[0].disabled_tools_count, 1);
 	EXPECT_STREQ(cfg.sub_agents.entries[0].disabled_tools[0], "bash_exec");
 }
@@ -478,7 +478,7 @@ TEST_F(SubAgentTest, FindNullName) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	tool_register(&tools, "file_read", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
@@ -497,7 +497,7 @@ TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
 		rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
 	EXPECT_GE(child->count, 2);
-	EXPECT_NE(tool_lookup(child, "text_gen"), nullptr);
+	EXPECT_NE(tool_lookup(child, "test_tool"), nullptr);
 	EXPECT_NE(tool_lookup(child, "file_read"), nullptr);
 	EXPECT_EQ(tool_lookup(child, "delegate"), nullptr);
 	EXPECT_EQ(tool_lookup(child, "agent_status"), nullptr);
@@ -507,7 +507,7 @@ TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	tool_register(&tools, "file_read", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
@@ -518,7 +518,7 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 	struct config_sub_agents sa_cfg = {};
 	strncpy(sa_cfg.entries[0].name, "restricted",
 		sizeof(sa_cfg.entries[0].name) - 1);
-	strncpy(sa_cfg.entries[0].allowed_tools[0], "text_gen",
+	strncpy(sa_cfg.entries[0].allowed_tools[0], "test_tool",
 		sizeof(sa_cfg.entries[0].allowed_tools[0]) - 1);
 	sa_cfg.entries[0].allowed_tools_count = 1;
 	sa_cfg.count = 1;
@@ -527,7 +527,7 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 		rt, &rt->entries[0]);
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->count, 1);
-	EXPECT_NE(tool_lookup(child, "text_gen"), nullptr);
+	EXPECT_NE(tool_lookup(child, "test_tool"), nullptr);
 	EXPECT_EQ(tool_lookup(child, "file_read"), nullptr);
 	tool_registry_cleanup(child);
 	free(child);
@@ -535,7 +535,7 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	tool_register(&tools, "bash_exec", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
@@ -635,7 +635,7 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, InvokeSyncWithMockLlm) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -711,7 +711,7 @@ TEST_F(SubAgentTest, InvokeSyncLlmFailure) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, DelegateAndCheckStatus) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -779,7 +779,7 @@ TEST_F(SubAgentTest, CheckStatusInvalidId) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, FanoutRaw) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -804,7 +804,7 @@ TEST_F(SubAgentTest, FanoutRaw) {
 }
 
 TEST_F(SubAgentTest, FanoutConcat) {
-	tool_register(&tools, "text_gen", "desc", "{}",
+	tool_register(&tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);

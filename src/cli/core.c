@@ -89,6 +89,24 @@ void cli_credit_session_key(struct cli_context *ctx, char *buf,
 	snprintf(buf, size, "%lld", (long long)ctx->current_session.id);
 }
 
+void cli_update_tool_runtime_context(struct cli_context *ctx)
+{
+	struct tool_runtime_context rt;
+
+	if (!ctx || !ctx->react)
+		return;
+	memset(&rt, 0, sizeof(rt));
+	rt.db = &ctx->database;
+	rt.config = &ctx->config;
+	rt.user_id = "local";
+	rt.credit_session_id = ctx->current_session.display_id[0]
+		? ctx->current_session.display_id
+		: ctx->current_session.name;
+	rt.memory_session_id = ctx->current_session.id;
+	rt.restrict_memory_to_user = 0;
+	react_set_tool_runtime_context(ctx->react, &rt);
+}
+
 void cli_set_usage_context(struct cli_context *ctx)
 {
 	g_cli_usage_ctx = ctx;
