@@ -356,19 +356,31 @@ int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens)
 int message_add(struct db *db, int64_t session_id, const char *role,
 		const char *content, int token_count)
 {
+	return message_add_with_turn_id(db, session_id, role, content,
+					token_count, NULL);
+}
+
+int message_add_with_turn_id(struct db *db, int64_t session_id,
+			     const char *role, const char *content,
+			     int token_count, const char *turn_id)
+{
 	if (!db || !db->handle || !role || !content)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "INSERT INTO messages(session_id,role,content,token_count,compressed,created_at)"
-			  " VALUES(?,?,?,?,0,?)";
+	const char *sql = "INSERT INTO messages(session_id,role,content,turn_id,token_count,compressed,created_at)"
+			  " VALUES(?,?,?,?,?,0,?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		MORPH_RETURN(MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, role, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, content, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 4, token_count);
-	sqlite3_bind_int64(stmt, 5, (int64_t)time(NULL));
+	if (turn_id && turn_id[0])
+		sqlite3_bind_text(stmt, 4, turn_id, -1, SQLITE_TRANSIENT);
+	else
+		sqlite3_bind_null(stmt, 4);
+	sqlite3_bind_int(stmt, 5, token_count);
+	sqlite3_bind_int64(stmt, 6, (int64_t)time(NULL));
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
@@ -396,7 +408,7 @@ struct message *message_list(struct db *db, int64_t session_id, int *count)
 	if (!db || !db->handle || !count)
 		return NULL;
 	sqlite3_stmt *stmt;
-	const char *sql = "SELECT id,session_id,role,content,token_count,compressed,created_at"
+	const char *sql = "SELECT id,session_id,role,content,turn_id,token_count,compressed,created_at"
 			  " FROM messages WHERE session_id=? ORDER BY created_at ASC";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
@@ -416,9 +428,10 @@ struct message *message_list(struct db *db, int64_t session_id, int *count)
 		strncpy(m->role, (const char *)sqlite3_column_text(stmt, 2),
 			sizeof(m->role) - 1);
 		{ const char *_ct = (const char *)sqlite3_column_text(stmt, 3); m->content = _ct ? strdup(_ct) : strdup(""); }
-		m->token_count = sqlite3_column_int(stmt, 4);
-		m->compressed = sqlite3_column_int(stmt, 5);
-		m->created_at = sqlite3_column_int64(stmt, 6);
+		{ const char *_tid = (const char *)sqlite3_column_text(stmt, 4); m->turn_id = _tid ? strdup(_tid) : NULL; }
+		m->token_count = sqlite3_column_int(stmt, 5);
+		m->compressed = sqlite3_column_int(stmt, 6);
+		m->created_at = sqlite3_column_int64(stmt, 7);
 		cur->next = m;
 		cur = m;
 		n++;
@@ -434,6 +447,7 @@ void message_free_list(struct message *head)
 	while (cur) {
 		struct message *next = cur->next;
 		free(cur->content);
+		free(cur->turn_id);
 		free(cur);
 		cur = next;
 	}

@@ -942,8 +942,9 @@ static void *turn_thread(void *arg)
 
 		if (j->input && *j->input) {
 			user_tokens = tokenizer_count(rctx->tokenizer, j->input);
-			message_add(&j->store->db, sess.id, "user", j->input,
-				    user_tokens);
+			message_add_with_turn_id(&j->store->db, sess.id, "user",
+						 j->input, user_tokens,
+						 j->turn_id);
 			session_update_tokens(&j->store->db, sess.id, user_tokens);
 		}
 		if (rctx->final_answer && *rctx->final_answer) {
@@ -952,8 +953,9 @@ static void *turn_thread(void *arg)
 			const char *answer =
 				rendered ? rendered : rctx->final_answer;
 			asst_tokens = tokenizer_count(rctx->tokenizer, answer);
-			message_add(&j->store->db, sess.id, "assistant", answer,
-				    asst_tokens);
+			message_add_with_turn_id(&j->store->db, sess.id,
+						 "assistant", answer,
+						 asst_tokens, j->turn_id);
 			session_update_tokens(&j->store->db, sess.id, asst_tokens);
 			free(rendered);
 		}

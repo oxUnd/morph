@@ -95,6 +95,27 @@ TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 	sqlite3_finalize(stmt);
 }
 
+TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {
+	int rc = db_open(&db, db_path);
+	EXPECT_EQ(rc, 0);
+	rc = db_init_schema(&db);
+	EXPECT_EQ(rc, 0);
+	sqlite3_stmt *stmt;
+	rc = sqlite3_prepare_v2(db.handle, "PRAGMA table_info(messages)", -1,
+				&stmt, nullptr);
+	EXPECT_EQ(rc, SQLITE_OK);
+	int found = 0;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *name = (const char *)sqlite3_column_text(stmt, 1);
+		if (name && strcmp(name, "turn_id") == 0) {
+			found = 1;
+			break;
+		}
+	}
+	sqlite3_finalize(stmt);
+	EXPECT_EQ(found, 1);
+}
+
 TEST_F(DatabaseTest, ForeignKeysEnabled) {
 	int rc = db_open(&db, db_path);
 	EXPECT_EQ(rc, 0);

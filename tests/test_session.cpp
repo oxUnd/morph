@@ -133,6 +133,20 @@ TEST_F(SessionTest, AddMessage) {
 	EXPECT_EQ(rc, 0);
 }
 
+TEST_F(SessionTest, AddMessageWithTurnId) {
+	struct session s;
+	session_create(&db, "msg_turn_test", "gpt-4o", &s);
+	int rc = message_add_with_turn_id(&db, s.id, "user", "hello world",
+					  3, "turn_test");
+	EXPECT_EQ(rc, 0);
+	int count = 0;
+	struct message *msgs = message_list(&db, s.id, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(msgs, nullptr);
+	EXPECT_STREQ(msgs->turn_id, "turn_test");
+	message_free_list(msgs);
+}
+
 TEST_F(SessionTest, ListMessages) {
 	struct session s;
 	session_create(&db, "msg_list", "gpt-4o", &s);
@@ -143,6 +157,7 @@ TEST_F(SessionTest, ListMessages) {
 	EXPECT_EQ(count, 2);
 	EXPECT_STREQ(msgs->role, "user");
 	EXPECT_STREQ(msgs->content, "hello");
+	EXPECT_EQ(msgs->turn_id, nullptr);
 	message_free_list(msgs);
 }
 

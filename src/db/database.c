@@ -26,6 +26,7 @@ static const char *schema_sql =
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
 	"role TEXT NOT NULL,"
 	"content TEXT NOT NULL,"
+	"turn_id TEXT,"
 	"token_count INTEGER NOT NULL,"
 	"compressed INTEGER DEFAULT 0,"
 	"created_at INTEGER NOT NULL);"
@@ -293,6 +294,12 @@ static int db_migrate_memory_columns(struct db *db)
 	return 0;
 }
 
+static int db_migrate_message_columns(struct db *db)
+{
+	db_add_column_if_missing(db, "messages", "turn_id", "TEXT");
+	return 0;
+}
+
 static int db_migrate_scheduled_task_columns(struct db *db)
 {
 	db_add_column_if_missing(db, "scheduled_tasks", "source_session_id",
@@ -321,6 +328,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_memory_columns(db);
+	if (rc != 0)
+		return rc;
+	rc = db_migrate_message_columns(db);
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, credit_schema_sql);

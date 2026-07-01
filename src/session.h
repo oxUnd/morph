@@ -24,6 +24,7 @@ struct message {
 	int64_t session_id;
 	char role[32];
 	char *content;
+	char *turn_id;
 	int token_count;
 	int compressed;
 	int64_t created_at;
@@ -54,6 +55,9 @@ int session_ensure_display_id(struct db *db, struct session *s);
 
 int message_add(struct db *db, int64_t session_id, const char *role,
 		const char *content, int token_count);
+int message_add_with_turn_id(struct db *db, int64_t session_id,
+			     const char *role, const char *content,
+			     int token_count, const char *turn_id);
 int message_delete(struct db *db, int64_t message_id);
 struct message *message_list(struct db *db, int64_t session_id, int *count);
 void message_free_list(struct message *head);
