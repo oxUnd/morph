@@ -937,11 +937,13 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 {
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_tools: no API key configured");
+		model_set_last_error(self, "no API key configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!response)
 		return -EINVAL;
 
+	model_clear_last_error(self);
 	memset(response, 0, sizeof(*response));
 	response->arena = arena;
 
@@ -1021,6 +1023,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 
 	if (status < 0) {
 		log_err("llm_chat_with_tools: SSE request failed: %d", status);
+		model_set_last_error(self, "HTTP/SSE request failed: %s",
+				     morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
@@ -1030,10 +1034,12 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		if (detail) {
 			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
 				status, detail);
+			model_set_last_error(self, "HTTP %d: %s", status, detail);
 			response->content = (char *)detail;
 		} else {
 			log_err("llm_chat_with_tools: API returned HTTP %d",
 				status);
+			model_set_last_error(self, "HTTP %d from %s", status, url);
 		}
 		MORPH_RETURN(MORPH_ERR_API);
 	}

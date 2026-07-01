@@ -164,7 +164,9 @@ int runtime_query_tools_init(struct tool_registry *reg)
 		MORPH_RETURN(-EINVAL);
 	rc = tool_register(reg, "credits",
 			   "Query current credit usage, limits, and totals.",
-			   "{}", credits_exec, NULL, NULL);
+			   "{\"type\":\"object\",\"properties\":{},"
+			   "\"additionalProperties\":false}",
+			   credits_exec, NULL, NULL);
 	if (rc != 0)
 		return rc;
 	e = tool_lookup(reg, "credits");
@@ -173,8 +175,11 @@ int runtime_query_tools_init(struct tool_registry *reg)
 
 	rc = tool_register(reg, "memory",
 		"Query long-term memory by type and scope.",
-		"{\"type\":\"all|profile|facts|procedures|episodes|changes\","
-		"\"scope\":\"all|session\",\"max_episodes\":0}",
+		"{\"type\":\"object\",\"properties\":{"
+		"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\",\"facts\",\"procedures\",\"episodes\",\"changes\"]},"
+		"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\"]},"
+		"\"max_episodes\":{\"type\":\"integer\",\"minimum\":0}"
+		"},\"additionalProperties\":false}",
 		memory_exec, NULL, NULL);
 	if (rc != 0)
 		return rc;

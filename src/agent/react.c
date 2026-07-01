@@ -1788,7 +1788,7 @@ static int react_handle_llm_error(struct react_context *ctx,
 		cb(REACT_STEP_OBSERVATION, err_content, user_data);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
 			      "failed", "LLM call failed", err_content);
-	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, "llm_error");
+	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, err_content);
 	return 1;
 }
 
