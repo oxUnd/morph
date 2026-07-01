@@ -16,8 +16,6 @@
 #include "agent/tokenizer.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "agent/tools/text_gen.h"
-#include "agent/tools/text_qa.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
@@ -32,6 +30,7 @@
 #include "agent/tools/vid_gen.h"
 #include "agent/tools/plan.h"
 #include "agent/tools/ask_user.h"
+#include "agent/tools/runtime_query.h"
 #include "ext/ext.h"
 #include "ext/manifest.h"
 #include "models/llm.h"
@@ -53,6 +52,17 @@ static struct plan_registry g_plans;
 static struct tool_context *g_tctx    = NULL;
 
 static void bridge_init_once(void);
+
+static int bridge_memory_session_visible(const char *display_id,
+					 const char *user_id,
+					 void *user_data)
+{
+	struct session_store *store = user_data;
+
+	if (!store || !display_id || !user_id)
+		return 0;
+	return store_session_owned_by(store, display_id, user_id);
+}
 
 const char *fcgi_artifact_output_dir(void)
 {
@@ -165,8 +175,7 @@ static void bridge_init_once(void)
 	if (!g_tctx)
 		fprintf(stderr, "fcgi-bridge: tool_context_create failed\n");
 
-	text_gen_init(&g_tools, g_llm);
-	text_qa_init(&g_tools, g_llm);
+	runtime_query_tools_init(&g_tools);
 	img_qa_init(&g_tools, g_llm, g_tctx);
 
 	/* Image generation model */
@@ -319,7 +328,6 @@ react_context_create_for_session(struct session_store *store,
 				 const char *session_id,
 				 const char *user_id)
 {
-	(void)user_id;
 	pthread_once(&g_once, bridge_init_once);
 
 	struct guardrail_config gcfg = {
@@ -390,6 +398,20 @@ react_context_create_for_session(struct session_store *store,
 		fprintf(stderr, "fcgi-bridge: session %s not found\n",
 			session_id);
 		return ctx;  /* return bare context — no history */
+	}
+	{
+		struct tool_runtime_context rt;
+
+		memset(&rt, 0, sizeof(rt));
+		rt.db = &store->db;
+		rt.config = &g_config;
+		rt.user_id = user_id;
+		rt.credit_session_id = session_id;
+		rt.memory_session_id = sess.id;
+		rt.restrict_memory_to_user = 1;
+		rt.memory_visible_fn = bridge_memory_session_visible;
+		rt.memory_visible_user_data = store;
+		react_set_tool_runtime_context(ctx, &rt);
 	}
 
 	/* Replay message history into react's message_list */

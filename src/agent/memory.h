@@ -7,6 +7,7 @@ extern "C" {
 
 #include "db/database.h"
 #include "agent/react.h"
+#include "persistence/memory_store.h"
 
 struct model;
 
@@ -39,6 +40,9 @@ char *memory_build_context(struct db *db, int64_t session_id,
 
 char *memory_render_session(struct db *db, int64_t session_id,
 			    int max_episodes);
+
+char *memory_query_render(struct db *db, int64_t current_session_id,
+			  const struct memory_query_options *opts);
 
 int memory_consolidate_turn(struct db *db, int64_t session_id,
 			    const char *user_input,

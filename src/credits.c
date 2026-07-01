@@ -1,37 +1,12 @@
 #include "credits.h"
+#include "persistence/credit_store.h"
 #include "util/error.h"
 #include <errno.h>
-#include <sqlite3.h>
 #include <string.h>
-#include <time.h>
-
-static const char *credit_schema_sql =
-	"CREATE TABLE IF NOT EXISTS credit_events ("
-	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
-	"user_id TEXT,"
-	"session_id TEXT,"
-	"kind TEXT NOT NULL,"
-	"provider TEXT,"
-	"model TEXT,"
-	"input_tokens INTEGER NOT NULL DEFAULT 0,"
-	"output_tokens INTEGER NOT NULL DEFAULT 0,"
-	"image_units INTEGER NOT NULL DEFAULT 0,"
-	"video_seconds INTEGER NOT NULL DEFAULT 0,"
-	"estimated_cost REAL NOT NULL DEFAULT 0,"
-	"currency TEXT NOT NULL DEFAULT 'USD',"
-	"credits INTEGER NOT NULL DEFAULT 0,"
-	"metadata_json TEXT,"
-	"created_at INTEGER NOT NULL);"
-	"CREATE INDEX IF NOT EXISTS idx_credit_events_user_day "
-	"ON credit_events(user_id, created_at);"
-	"CREATE INDEX IF NOT EXISTS idx_credit_events_session "
-	"ON credit_events(session_id, created_at);";
 
 int credit_init_schema(struct db *db)
 {
-	if (!db || !db->handle)
-		MORPH_RETURN(-EINVAL);
-	return db_exec(db, credit_schema_sql);
+	return credit_store_init_schema(db);
 }
 
 static const struct config_credit_price *
@@ -111,14 +86,8 @@ int credit_record_event(struct db *db, const struct config_credits *cfg,
 			const struct credit_event *event,
 			struct credit_charge *out)
 {
-	const char *sql =
-		"INSERT INTO credit_events"
-		"(user_id,session_id,kind,provider,model,input_tokens,"
-		"output_tokens,image_units,video_seconds,estimated_cost,"
-		"currency,credits,metadata_json,created_at)"
-		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
-	sqlite3_stmt *stmt = NULL;
 	struct credit_charge charge;
+	struct credit_store_event store_event;
 	int rc;
 
 	if (!db || !db->handle || !cfg || !event || !event->kind)
@@ -128,78 +97,81 @@ int credit_record_event(struct db *db, const struct config_credits *cfg,
 	if (rc != 0)
 		return rc;
 
-	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
-	sqlite3_bind_text(stmt, 1, event->user_id, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 2, event->session_id, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, event->kind, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, event->provider, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, event->model, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 6, event->input_tokens);
-	sqlite3_bind_int64(stmt, 7, event->output_tokens);
-	sqlite3_bind_int64(stmt, 8, event->image_units);
-	sqlite3_bind_int64(stmt, 9, event->video_seconds);
-	sqlite3_bind_double(stmt, 10, charge.estimated_cost);
-	sqlite3_bind_text(stmt, 11, cfg->currency, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 12, charge.credits);
-	sqlite3_bind_text(stmt, 13, event->metadata_json, -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 14, (int64_t)time(NULL));
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+	memset(&store_event, 0, sizeof(store_event));
+	store_event.user_id = event->user_id;
+	store_event.session_id = event->session_id;
+	store_event.kind = event->kind;
+	store_event.provider = event->provider;
+	store_event.model = event->model;
+	store_event.input_tokens = event->input_tokens;
+	store_event.output_tokens = event->output_tokens;
+	store_event.image_units = event->image_units;
+	store_event.video_seconds = event->video_seconds;
+	store_event.estimated_cost = charge.estimated_cost;
+	store_event.currency = cfg->currency;
+	store_event.credits = charge.credits;
+	store_event.metadata_json = event->metadata_json;
+	rc = credit_store_record_event(db, &store_event);
+	if (rc != 0)
+		return rc;
 	if (out)
 		*out = charge;
 	return 0;
 }
 
+static void credit_summary_from_store(
+	struct credit_summary *out, const struct credit_store_summary *in)
+{
+	out->credits = in->credits;
+	out->estimated_cost = in->estimated_cost;
+	out->event_count = in->event_count;
+}
+
 int credit_summary_today(struct db *db, const char *user_id,
 			 struct credit_summary *out)
 {
-	const char *sql =
-		"SELECT COALESCE(SUM(credits),0),"
-		"COALESCE(SUM(estimated_cost),0),COUNT(*) "
-		"FROM credit_events WHERE user_id=? "
-		"AND created_at >= strftime('%s','now','start of day')";
-	sqlite3_stmt *stmt = NULL;
+	struct credit_store_summary summary;
+	int rc;
 
 	if (!db || !db->handle || !user_id || !out)
 		MORPH_RETURN(-EINVAL);
 	memset(out, 0, sizeof(*out));
-	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
-	sqlite3_bind_text(stmt, 1, user_id, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		out->credits = sqlite3_column_int64(stmt, 0);
-		out->estimated_cost = sqlite3_column_double(stmt, 1);
-		out->event_count = sqlite3_column_int(stmt, 2);
-	}
-	sqlite3_finalize(stmt);
+	rc = credit_store_summary_today(db, user_id, &summary);
+	if (rc != 0)
+		return rc;
+	credit_summary_from_store(out, &summary);
+	return 0;
+}
+
+int credit_summary_total(struct db *db, const char *user_id,
+			 struct credit_summary *out)
+{
+	struct credit_store_summary summary;
+	int rc;
+
+	if (!db || !db->handle || !user_id || !out)
+		MORPH_RETURN(-EINVAL);
+	memset(out, 0, sizeof(*out));
+	rc = credit_store_summary_total(db, user_id, &summary);
+	if (rc != 0)
+		return rc;
+	credit_summary_from_store(out, &summary);
 	return 0;
 }
 
 int credit_summary_session(struct db *db, const char *session_id,
 			   struct credit_summary *out)
 {
-	const char *sql =
-		"SELECT COALESCE(SUM(credits),0),"
-		"COALESCE(SUM(estimated_cost),0),COUNT(*) "
-		"FROM credit_events WHERE session_id=?";
-	sqlite3_stmt *stmt = NULL;
+	struct credit_store_summary summary;
+	int rc;
 
 	if (!db || !db->handle || !session_id || !out)
 		MORPH_RETURN(-EINVAL);
 	memset(out, 0, sizeof(*out));
-	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
-	sqlite3_bind_text(stmt, 1, session_id, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		out->credits = sqlite3_column_int64(stmt, 0);
-		out->estimated_cost = sqlite3_column_double(stmt, 1);
-		out->event_count = sqlite3_column_int(stmt, 2);
-	}
-	sqlite3_finalize(stmt);
+	rc = credit_store_summary_session(db, session_id, &summary);
+	if (rc != 0)
+		return rc;
+	credit_summary_from_store(out, &summary);
 	return 0;
 }
 

@@ -7,6 +7,7 @@ extern "C" {
 
 #include <signal.h>
 #include "agent/tool.h"
+#include "agent/tool_runtime.h"
 #include "agent/context.h"
 #include "agent/guardrail.h"
 #include "agent/tools/ask_user.h"
@@ -134,6 +135,7 @@ struct react_context {
 	int sub_agent_info_count;
 	char turn_id[64];
 	int turn_id_user_set;
+	struct tool_runtime_context tool_runtime;
 };
 
 typedef int (*react_output_cb)(enum react_step_type type,
@@ -173,6 +175,9 @@ int react_set_event_callback(struct react_context *ctx,
 			     morph_event_cb cb, void *user);
 int react_set_turn_id(struct react_context *ctx, const char *turn_id);
 const char *react_get_turn_id(const struct react_context *ctx);
+int react_set_tool_runtime_context(
+	struct react_context *ctx,
+	const struct tool_runtime_context *runtime);
 
 struct react_step *react_step_create(struct arena *arena,
 				     enum react_step_type type,

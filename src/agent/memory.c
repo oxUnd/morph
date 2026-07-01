@@ -1,5 +1,6 @@
 #include "agent/memory.h"
 #include "models/llm.h"
+#include "session.h"
 #include "util/arena.h"
 #include "util/buf.h"
 #include "util/log.h"
@@ -924,22 +925,6 @@ static int memory_query_needs_procedure(const char *query)
 	       strstr(query, "风格") != NULL;
 }
 
-static int memory_exec_delete(struct db *db, const char *sql, int64_t session_id)
-{
-	sqlite3_stmt *stmt = NULL;
-	int rc;
-
-	if (!db || !db->handle || !sql)
-		return -EINVAL;
-	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
-	if (rc != SQLITE_OK)
-		return -EIO;
-	sqlite3_bind_int64(stmt, 1, session_id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE ? 0 : -EIO;
-}
-
 char *memory_build_context(struct db *db, int64_t session_id,
 			   const char *query,
 			   const struct memory_options *opts)
@@ -1719,55 +1704,28 @@ char *memory_render_session(struct db *db, int64_t session_id,
 	return morph_buf_detach(&buf);
 }
 
+char *memory_query_render(struct db *db, int64_t current_session_id,
+			  const struct memory_query_options *opts)
+{
+	return memory_store_query_render(db, current_session_id, opts,
+					 memory_render_session);
+}
+
 int memory_clear(struct db *db, int64_t session_id,
 		 enum memory_clear_scope scope)
 {
-	int rc = 0;
-
 	if (!db || !db->handle)
 		return -EINVAL;
 
 	switch (scope) {
 	case MEMORY_CLEAR_ALL:
-		rc = memory_exec_delete(db,
-					"DELETE FROM memory_profiles WHERE session_id=?",
-					session_id);
-		if (rc != 0)
-			return rc;
-		rc = memory_exec_delete(db,
-					"DELETE FROM memory_facts WHERE session_id=?",
-					session_id);
-		if (rc != 0)
-			return rc;
-		rc = memory_exec_delete(db,
-					"DELETE FROM memory_episodes WHERE session_id=?",
-					session_id);
-		if (rc != 0)
-			return rc;
-		return memory_exec_delete(
-			db,
-			"DELETE FROM memory_procedures WHERE session_id=?",
-			session_id);
+		return memory_store_clear_all(db, session_id);
 	case MEMORY_CLEAR_FACTS:
-		rc = memory_exec_delete(db,
-					"DELETE FROM memory_profiles WHERE session_id=?",
-					session_id);
-		if (rc != 0)
-			return rc;
-		return memory_exec_delete(
-			db,
-			"DELETE FROM memory_facts WHERE session_id=?",
-			session_id);
+		return memory_store_clear_facts(db, session_id);
 	case MEMORY_CLEAR_EPISODES:
-		return memory_exec_delete(
-			db,
-			"DELETE FROM memory_episodes WHERE session_id=?",
-			session_id);
+		return memory_store_clear_episodes(db, session_id);
 	case MEMORY_CLEAR_PROCEDURES:
-		return memory_exec_delete(
-			db,
-			"DELETE FROM memory_procedures WHERE session_id=?",
-			session_id);
+		return memory_store_clear_procedures(db, session_id);
 	default:
 		return -EINVAL;
 	}

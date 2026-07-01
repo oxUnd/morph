@@ -43,6 +43,8 @@ int credit_record_event(struct db *db, const struct config_credits *cfg,
 			struct credit_charge *out);
 int credit_summary_today(struct db *db, const char *user_id,
 			 struct credit_summary *out);
+int credit_summary_total(struct db *db, const char *user_id,
+			 struct credit_summary *out);
 int credit_summary_session(struct db *db, const char *session_id,
 			   struct credit_summary *out);
 int credit_image_units_from_size(int width, int height);

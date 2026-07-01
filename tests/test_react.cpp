@@ -707,10 +707,10 @@ TEST_F(ReactTest, CreateStep) {
 TEST_F(ReactTest, CreateStepWithTool) {
 	struct arena *arena = arena_create(1024);
 	struct react_step *s = react_step_create(arena, REACT_STEP_ACTION, "calling tool",
-						 "text_gen", "{\"prompt\":\"hi\"}", nullptr);
+						 "test_tool", "{\"prompt\":\"hi\"}", nullptr);
 	ASSERT_NE(s, nullptr);
 	EXPECT_EQ(s->type, REACT_STEP_ACTION);
-	EXPECT_STREQ(s->tool_name, "text_gen");
+	EXPECT_STREQ(s->tool_name, "test_tool");
 	EXPECT_STREQ(s->tool_args, "{\"prompt\":\"hi\"}");
 	arena_destroy(arena);
 }
@@ -762,14 +762,14 @@ TEST_F(ReactTest, StepDestroyNull) {
 }
 
 TEST_F(ReactTest, ToolRegistryIntegration) {
-	tool_register(&tools, "text_gen", "Generate text",
+	tool_register(&tools, "test_tool", "Generate text",
 		      "{\"type\":\"object\"}", test_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->tools->count, 1);
-	struct tool_entry *e = tool_lookup(ctx->tools, "text_gen");
+	struct tool_entry *e = tool_lookup(ctx->tools, "test_tool");
 	ASSERT_NE(e, nullptr);
-	EXPECT_STREQ(e->desc.name, "text_gen");
+	EXPECT_STREQ(e->desc.name, "test_tool");
 	react_context_destroy(ctx);
 }
 
@@ -1192,10 +1192,10 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenLlmKeyMissing) {
 }
 
 TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
-	tool_register(&tools, "text_gen", "Needs key", "{}",
+	tool_register(&tools, "img_qa", "Needs key", "{}",
 		      not_configured_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
-		"Thought: Need tool.\nAction: text_gen({})\n",
+		"Thought: Need tool.\nAction: img_qa({})\n",
 		"Thought: Tool failed.\nFinal: cannot continue."
 	};
 	llm = create_multi_mock_llm(responses, 2);
@@ -1213,7 +1213,7 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
 	int rc = react_run(ctx, "do it", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_TRUE(event_recorder_has_auth_required(&rec, "text",
-						     "text_gen"));
+						     "img_qa"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.failed"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 

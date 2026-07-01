@@ -214,7 +214,7 @@ guardrail_max_empty_rounds = 2
 # ext_entry = "/path/to/guardrail-script"
 # action_text = "Revise your answer to pass the custom check."
 # Disable specific tools by name. Supported tool names:
-# text_gen, text_qa, img_gen, img_qa, img_inpaint, img_compose, img_info,
+# credits, memory, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
 # file_info, bash_exec
 # disabled_tools = ["vid_gen", "img_resize"]
@@ -229,7 +229,7 @@ hitl_enabled = false
 # (except read-only tools when hitl_auto_approve_readonly is true).
 # hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
 # Automatically approve read-only tools (file_read, file_list,
-# file_info, img_info, text_qa) without prompting.
+# file_info, img_info, credits, memory) without prompting.
 hitl_auto_approve_readonly = true
 
 [context]
@@ -365,7 +365,7 @@ dir = ""
 # description = "Deep research and information gathering agent"
 # system_prompt_file = "~/.morph/prompts/researcher.md"
 # max_iterations = 5
-# allowed_tools = ["text_gen", "text_qa", "file_read"]
+# allowed_tools = ["credits", "memory", "file_read"]
 # context_policy = "task_only"        # full | summary | task_only
 # merge_strategy = "synthesize"       # synthesize | concat | raw (for fanout)
 # output_schema = '{"type":"object","properties":{"findings":{"type":"string"},"sources":{"type":"array","items":{"type":"string"}}},"required":["findings"]}'
@@ -376,6 +376,6 @@ dir = ""
 # description = "Code review specialist that checks for bugs and style issues"
 # system_prompt_file = "~/.morph/prompts/reviewer.md"
 # max_iterations = 3
-# allowed_tools = ["file_read", "file_list", "file_info", "text_gen"]
+# allowed_tools = ["file_read", "file_list", "file_info", "credits"]
 # disabled_tools = ["bash_exec"]
 # context_policy = "task_only"

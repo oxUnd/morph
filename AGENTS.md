@@ -14,7 +14,7 @@
 ## Architecture Overview
 - **ReAct loop**: Thought → Action → Observation → Guardrail → Final. Core in `src/agent/react.c`. Uses OpenAI Function Calling (not text parsing).
 - **3 model backends**: `llm` (text chat), `image_gen`, `video_gen` — each configured independently in config.toml.
-- **Tools**: built-in tools under `src/agent/tools/`: text_gen, text_qa, img_gen, img_inpaint, img_compose, img_info, img_resize, img_convert, img_annotate, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate, plan (plus sub-agent tools: delegate, agent_status, fanout, and ask_user). img_inpaint = bbox+label region generation (deterministic %-coordinate i2i instruction); img_compose = arrow+label cross-image fusion (local pre-composite + i2i harmonize). Both consume the img_annotate JSON verbatim.
+- **Tools**: built-in tools under `src/agent/tools/`: credits, memory, img_gen, img_inpaint, img_compose, img_info, img_resize, img_convert, img_annotate, vid_gen, file_read, file_list, file_info, bash_exec, skill_activate, plan (plus sub-agent tools: delegate, agent_status, fanout, and ask_user). Text generation and QA are handled directly by the language model. img_inpaint = bbox+label region generation (deterministic %-coordinate i2i instruction); img_compose = arrow+label cross-image fusion (local pre-composite + i2i harmonize). Both consume the img_annotate JSON verbatim.
 - **Plan subsystem**: structured multi-step planning with status tracking. Code in `src/agent/plan.c`. Registered as `plan` tool.
 - **MCP**: Model Context Protocol client (stdio + Streamable HTTP). Discovers and auto-registers remote tools/resources/prompts as morph tools. Code in `src/mcp/`. Config via `[[mcp.servers]]` in config.toml.
 - **Skills**: hot-loadable instruction packs (`SKILL.md` with YAML frontmatter). Discovery from `~/.morph/skills/` and `~/.agents/skills/`. Code in `src/skill/`. Examples in `skills/`.
@@ -30,10 +30,11 @@ morph-toml (vendor/toml.c — compiled with -include vendor_toml_compat.h to sup
   ↓
 morph-util (arena, log, file, cJSON, base64, utf8, spin) ← base lib, cJSON compiled in
   ↓
-morph-db (SQLite) ──→ morph-session
+morph-db (SQLite) ──→ morph-session ──→ morph-persistence
+morph-persistence (memory/credit stores) ──→ morph-credits
 morph-http (client, SSE: libcurl) ──→ morph-models (llm, image_gen, video_gen)
   ↓
-morph-agent (react, context, compress, tokenizer, tool, plan) ← links Threads
+morph-agent (react, context, compress, tokenizer, tool, plan) ← links morph-persistence, Threads
   ↓
 morph-tools ← links morph-agent, morph-models, morph-http, morph-util, morph-skill, morph-sandbox
   ↓

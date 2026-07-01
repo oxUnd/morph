@@ -48,7 +48,7 @@ target_include_directories(morph-credits PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config)
+target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config morph-persistence)
 
 add_subdirectory(render)
 add_subdirectory(agent)
@@ -60,6 +60,7 @@ add_subdirectory(ipc)
 add_subdirectory(models)
 add_subdirectory(http)
 add_subdirectory(db)
+add_subdirectory(persistence)
 add_subdirectory(util)
 add_subdirectory(event)
 add_subdirectory(agent_ui)

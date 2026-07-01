@@ -13,11 +13,11 @@ set(TEST_SOURCES
 	test_credits.cpp
 	test_session.cpp
 	test_memory.cpp
+	test_runtime_query.cpp
 	test_tool.cpp
 	test_plan.cpp
 	test_context.cpp
 	test_tokenizer.cpp
-	test_text_gen.cpp
 	test_compress.cpp
 	test_react.cpp
 	test_sse.cpp
