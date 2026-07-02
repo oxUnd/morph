@@ -203,6 +203,55 @@ static void test_base64_and_authorization(void)
 	cleanup_registry(&reg, tctx);
 }
 
+static void test_patch(void)
+{
+	struct tool_registry reg;
+	struct tool_context *tctx;
+	struct tool_result result;
+	char *data;
+
+	file_ensure_dir("/tmp/morph_fw_work");
+	file_ensure_dir("/tmp/morph_fw_out");
+	setup_registry(&reg, &tctx, "/tmp/morph_fw_work", "/tmp/morph_fw_out");
+	tool_result_init(&result);
+
+	run_tool(&reg,
+		 "{\"op\":\"overwrite\",\"path\":\"patch.txt\","
+		 "\"content\":\"hello brave world\"}",
+		 &result);
+	expect_true(result_ok(&result), "patch setup succeeds");
+
+	run_tool(&reg,
+		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":6,"
+		 "\"length\":5,\"content\":\"small\"}",
+		 &result);
+	expect_true(result_ok(&result), "patch replace succeeds");
+	data = read_file("/tmp/morph_fw_out/patch.txt");
+	expect_true(data && strcmp(data, "hello small world") == 0,
+		    "patch replace content");
+	free(data);
+
+	run_tool(&reg,
+		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":11,"
+		 "\"length\":0,\"content\":\" blue\"}",
+		 &result);
+	expect_true(result_ok(&result), "patch insert succeeds");
+	data = read_file("/tmp/morph_fw_out/patch.txt");
+	expect_true(data && strcmp(data, "hello small blue world") == 0,
+		    "patch insert content");
+	free(data);
+
+	run_tool(&reg,
+		 "{\"op\":\"patch\",\"path\":\"patch.txt\",\"offset\":100,"
+		 "\"length\":1,\"content\":\"bad\"}",
+		 &result);
+	expect_true(!result_ok(&result) && result_code(&result) == -ERANGE,
+		    "patch out of range fails");
+
+	tool_result_cleanup(&result);
+	cleanup_registry(&reg, tctx);
+}
+
 int main(void)
 {
 	(void)system("rm -rf /tmp/morph_fw_work /tmp/morph_fw_out "
@@ -210,6 +259,7 @@ int main(void)
 	test_write_overwrite_append();
 	test_mkdir_copy_rename_delete();
 	test_base64_and_authorization();
+	test_patch();
 	(void)system("rm -rf /tmp/morph_fw_work /tmp/morph_fw_out "
 		     "/tmp/morph_fw_denied.txt");
 	if (failures) {

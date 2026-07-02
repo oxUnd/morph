@@ -19,6 +19,7 @@
 
 #define FILE_WRITE_MAX_CONTENT (10 * 1024 * 1024)
 #define FILE_WRITE_COPY_BUFSIZ BUFSIZ
+#define FILE_WRITE_JSON_INT_MAX 9007199254740991.0
 
 struct file_write_context {
 	struct tool_context *tctx;
@@ -74,6 +75,34 @@ static int json_bool(cJSON *root, const char *name, int default_value)
 	if (cJSON_IsBool(item))
 		return cJSON_IsTrue(item) ? 1 : 0;
 	return default_value;
+}
+
+static int json_off_t(cJSON *root, const char *name, int required,
+		      off_t default_value, off_t *out)
+{
+	cJSON *item;
+	double value;
+	off_t converted;
+
+	if (!root || !name || !out)
+		MORPH_RETURN(-EINVAL);
+	item = cJSON_GetObjectItem(root, name);
+	if (!item) {
+		if (required)
+			MORPH_RETURN(-EINVAL);
+		*out = default_value;
+		return 0;
+	}
+	if (!cJSON_IsNumber(item))
+		MORPH_RETURN(-EINVAL);
+	value = item->valuedouble;
+	if (value < 0 || value > FILE_WRITE_JSON_INT_MAX)
+		MORPH_RETURN(-EINVAL);
+	converted = (off_t)value;
+	if ((double)converted != value)
+		MORPH_RETURN(-EINVAL);
+	*out = converted;
+	return 0;
 }
 
 static int path_parent(char *dst, size_t dst_size, const char *path)
@@ -366,6 +395,113 @@ static int append_file(const char *path, const unsigned char *data, size_t len)
 	return rc;
 }
 
+static int copy_range_fd(int in_fd, int out_fd, off_t len,
+			 size_t *bytes_written)
+{
+	unsigned char buf[FILE_WRITE_COPY_BUFSIZ];
+	off_t remaining;
+
+	if (!bytes_written || len < 0)
+		MORPH_RETURN(-EINVAL);
+	remaining = len;
+	while (remaining > 0) {
+		ssize_t n;
+		size_t want;
+		int rc;
+
+		want = sizeof(buf);
+		if (remaining < (off_t)want)
+			want = (size_t)remaining;
+		n = read(in_fd, buf, want);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			MORPH_RETURN_ERRNO();
+		}
+		if (n == 0)
+			MORPH_RETURN(-EIO);
+		rc = write_full_fd(out_fd, buf, (size_t)n);
+		if (rc < 0)
+			return rc;
+		remaining -= (off_t)n;
+		*bytes_written += (size_t)n;
+	}
+	return 0;
+}
+
+static int atomic_patch_file(const char *path, off_t offset, off_t old_len,
+			     const unsigned char *data, size_t len,
+			     off_t *file_size_before, off_t *file_size_after)
+{
+	char dir[PATH_MAX];
+	char tmp[PATH_MAX];
+	struct stat st;
+	int in_fd;
+	int out_fd;
+	int rc;
+	size_t bytes_written;
+
+	if (!path || offset < 0 || old_len < 0 || !file_size_before ||
+	    !file_size_after)
+		MORPH_RETURN(-EINVAL);
+	if (lstat(path, &st) != 0)
+		MORPH_RETURN_ERRNO();
+	if (!S_ISREG(st.st_mode))
+		MORPH_RETURN(-EINVAL);
+	if (offset > st.st_size || old_len > st.st_size - offset)
+		MORPH_RETURN(-ERANGE);
+	if (st.st_size - old_len > LLONG_MAX - (off_t)len)
+		MORPH_RETURN(-EFBIG);
+
+	rc = path_parent(dir, sizeof(dir), path);
+	if (rc < 0)
+		return rc;
+	rc = snprintf(tmp, sizeof(tmp), "%s/.morph-patch-%ld-%lld.tmp",
+		      dir, (long)getpid(), (long long)time(NULL));
+	if (rc < 0 || (size_t)rc >= sizeof(tmp))
+		MORPH_RETURN(-ENAMETOOLONG);
+
+	in_fd = open(path, O_RDONLY);
+	if (in_fd < 0)
+		MORPH_RETURN_ERRNO();
+	out_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (out_fd < 0) {
+		rc = -errno;
+		close(in_fd);
+		return rc;
+	}
+
+	bytes_written = 0;
+	rc = copy_range_fd(in_fd, out_fd, offset, &bytes_written);
+	if (rc == 0)
+		rc = write_full_fd(out_fd, data, len);
+	if (rc == 0)
+		bytes_written += len;
+	if (rc == 0 && lseek(in_fd, offset + old_len, SEEK_SET) < 0)
+		rc = -errno;
+	if (rc == 0)
+		rc = copy_range_fd(in_fd, out_fd, st.st_size - offset - old_len,
+				   &bytes_written);
+	if (rc == 0 && fsync(out_fd) != 0)
+		rc = -errno;
+	if (close(out_fd) != 0 && rc == 0)
+		rc = -errno;
+	if (close(in_fd) != 0 && rc == 0)
+		rc = -errno;
+	if (rc < 0) {
+		(void)unlink(tmp);
+		return rc;
+	}
+	if (rename(tmp, path) != 0) {
+		rc = -errno;
+		(void)unlink(tmp);
+		return rc;
+	}
+	*file_size_before = st.st_size;
+	*file_size_after = st.st_size - old_len + (off_t)len;
+	return 0;
+}
+
 static int copy_file(const char *src, const char *dst, int overwrite,
 		     size_t *bytes_written)
 {
@@ -536,6 +672,66 @@ static int op_mkdir(struct file_write_context *ctx, cJSON *root,
 	return rc;
 }
 
+static int op_patch(struct file_write_context *ctx, cJSON *root,
+		    struct tool_result *result)
+{
+	const char *path;
+	const char *content;
+	const char *encoding;
+	char resolved[PATH_MAX];
+	struct decoded_content decoded;
+	off_t offset;
+	off_t old_len;
+	off_t file_size_before;
+	off_t file_size_after;
+	int rc;
+	cJSON *out;
+
+	path = json_string(root, "path");
+	content = json_string(root, "content");
+	encoding = json_string(root, "encoding");
+	memset(&decoded, 0, sizeof(decoded));
+	rc = authorize_path(ctx ? ctx->tctx : NULL, TOOL_PATH_WRITE, path,
+			    resolved, sizeof(resolved));
+	if (rc < 0)
+		return json_error_result(result, rc, "write path denied");
+	rc = json_off_t(root, "offset", 1, 0, &offset);
+	if (rc < 0)
+		return json_error_result(result, rc, "invalid offset");
+	rc = json_off_t(root, "length", 0, 0, &old_len);
+	if (rc < 0)
+		return json_error_result(result, rc, "invalid length");
+	rc = decode_content(content, encoding, &decoded);
+	if (rc < 0)
+		return json_error_result(result, rc, "invalid content");
+
+	rc = atomic_patch_file(resolved, offset, old_len, decoded.data,
+			       decoded.len, &file_size_before,
+			       &file_size_after);
+	if (rc < 0) {
+		free(decoded.data);
+		return json_error_result(result, rc, "patch failed");
+	}
+
+	out = cJSON_CreateObject();
+	if (!out) {
+		free(decoded.data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	add_success(out, "patch", path, resolved, NULL, NULL);
+	cJSON_AddNumberToObject(out, "offset", (double)offset);
+	cJSON_AddNumberToObject(out, "length", (double)old_len);
+	cJSON_AddNumberToObject(out, "bytes_written", (double)decoded.len);
+	cJSON_AddNumberToObject(out, "file_size_before",
+				(double)file_size_before);
+	cJSON_AddNumberToObject(out, "file_size_after",
+				(double)file_size_after);
+	rc = json_result(result, out);
+	cJSON_Delete(out);
+	free(decoded.data);
+	return rc;
+}
+
 static int op_copy(struct file_write_context *ctx, cJSON *root,
 		   struct tool_result *result, int create_parent_dirs)
 {
@@ -702,6 +898,8 @@ static int file_write_exec(const char *args_json, struct tool_result *result,
 	if (strcmp(op, "write") == 0 || strcmp(op, "overwrite") == 0 ||
 	    strcmp(op, "append") == 0) {
 		rc = op_write_like(ctx, root, result, op, create_parent_dirs);
+	} else if (strcmp(op, "patch") == 0) {
+		rc = op_patch(ctx, root, result);
 	} else if (strcmp(op, "mkdir") == 0) {
 		rc = op_mkdir(ctx, root, result);
 	} else if (strcmp(op, "copy") == 0) {
@@ -723,12 +921,17 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 	const char *schema =
 		"{\"type\":\"object\",\"properties\":{"
 		"\"op\":{\"type\":\"string\",\"enum\":[\"write\",\"overwrite\","
-		"\"append\",\"mkdir\",\"rename\",\"copy\",\"delete\"]},"
+		"\"append\",\"patch\",\"mkdir\",\"rename\",\"copy\",\"delete\"]},"
 		"\"path\":{\"type\":\"string\"},"
 		"\"dst_path\":{\"type\":\"string\"},"
-		"\"content\":{\"type\":\"string\"},"
+		"\"content\":{\"type\":\"string\","
+		"\"description\":\"For write, overwrite, append, and patch. Decoded content is limited to 10 MiB per call.\"},"
 		"\"encoding\":{\"type\":\"string\",\"enum\":[\"utf8\",\"base64\"],"
 		"\"default\":\"utf8\"},"
+		"\"offset\":{\"type\":\"number\",\"minimum\":0,"
+		"\"description\":\"Byte offset for patch in an existing regular file.\"},"
+		"\"length\":{\"type\":\"number\",\"minimum\":0,\"default\":0,"
+		"\"description\":\"Byte count to replace for patch; 0 inserts content.\"},"
 		"\"create_parent_dirs\":{\"type\":\"boolean\",\"default\":true},"
 		"\"overwrite\":{\"type\":\"boolean\",\"default\":false}},"
 		"\"required\":[\"op\",\"path\"]}";
@@ -740,7 +943,9 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 		MORPH_RETURN(-ENOMEM);
 	ctx->tctx = tctx;
 	return tool_register(reg, "file_write",
-		"Create, overwrite, append, mkdir, rename, copy, or delete files. "
+		"Create, overwrite, append, patch, mkdir, rename, copy, or delete files. "
+		"Decoded content for write/overwrite/append/patch is limited to 10 MiB per call; "
+		"larger files can be built with repeated append or copied/patch-read streamingly. "
 		"Relative write paths resolve under output_dir; outside paths require approval.",
 		schema, file_write_exec, ctx, free);
 }

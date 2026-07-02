@@ -9,12 +9,13 @@ Current implementation is complete for file-level operations:
 - `write`
 - `overwrite`
 - `append`
+- `patch`
 - `mkdir`
 - `copy`
 - `rename`
 - `delete`
 
-Current implementation deliberately does not include line/range patching,
+Current implementation deliberately does not include line-number patching,
 recursive delete, chmod/chown, xattr/ACL preservation, symlink mutation, or
 metadata preservation.
 
@@ -45,6 +46,8 @@ Arguments:
   "dst_path": "notes/new.txt",
   "content": "hello\n",
   "encoding": "utf8",
+  "offset": 0,
+  "length": 5,
   "create_parent_dirs": true,
   "overwrite": false
 }
@@ -55,8 +58,11 @@ Fields:
 - `op`: required operation name.
 - `path`: required source or target path.
 - `dst_path`: required for `copy` and `rename`.
-- `content`: required for `write`, `overwrite`, and `append`.
+- `content`: required for `write`, `overwrite`, `append`, and `patch`.
+  Decoded content is capped at 10 MiB per call.
 - `encoding`: `utf8` or `base64`; defaults to `utf8`.
+- `offset`: byte offset for `patch`.
+- `length`: byte count to replace for `patch`; defaults to 0.
 - `create_parent_dirs`: creates destination parents when true; defaults to true.
 - `overwrite`: allows destination replacement for `copy` and `rename`.
 
@@ -69,6 +75,9 @@ Failure returns `ok: false`, `code`, and `error`.
 - `overwrite`: writes to a same-directory temp file, `fsync`s it, closes it, then
   renames it over the target.
 - `append`: opens the target with `O_APPEND`, creating it if needed.
+- `patch`: streams an existing regular file through a same-directory temp file,
+  replacing `length` bytes at `offset` with decoded `content`, then renames the
+  temp file over the target.
 - `mkdir`: creates the requested directory and parents; repeated calls are
   accepted.
 - `copy`: copies only regular files from read-authorized `path` to
@@ -79,6 +88,11 @@ Failure returns `ok: false`, `code`, and `error`.
   `rmdir`.
 
 Decoded `content` is capped at 10 MiB per call.
+This cap applies to `write`, `overwrite`, `append`, and the replacement content
+for `patch`. Larger files can be built with repeated `append` calls, while
+`copy` and the existing-file portion of `patch` are streamed and are primarily
+limited by filesystem capacity, platform file offsets, path authorization, and
+available disk space.
 
 ## Authorization Model
 
@@ -106,7 +120,7 @@ The v1 safety boundaries are intentional:
 - No chmod/chown.
 - No ACL, xattr, owner, timestamp, or mode preservation.
 - No shell command execution.
-- No text patch operations.
+- No line-number patch operations.
 
 The implementation uses resolved paths from `tool_context` and rejects special
 files for `copy`, `rename`, and `delete`.
@@ -150,6 +164,7 @@ Covered scenarios:
 - delete regular file
 - delete empty directory
 - write base64-decoded bytes
+- byte-range patch replace, insert, and out-of-range rejection
 - deny write outside `output_dir` without approval
 
 The tests intentionally stay inside the ext directory and are not added to the
@@ -159,7 +174,7 @@ core `tests/` target.
 
 Future versions may add:
 
-- line/range patch operations for text editing
+- line-number patch operations for text editing
 - non-empty directory copy with explicit recursive opt-in
 - non-empty directory delete with explicit recursive opt-in
 - file metadata preservation
