@@ -15,11 +15,13 @@
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "agent/memory.h"
+#include "agent/turn.h"
 #include "event/event.h"
 #include "models/llm.h"
 #include "config.h"
 #include "credits.h"
 #include "session.h"
+#include "util/error.h"
 #include "util/file.h"
 
 #include <pthread.h>
@@ -565,6 +567,11 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 	return morph_buf_detach(&out);
 }
 
+static char *turn_render_assistant_for_store(const char *text, void *user_data)
+{
+	return render_media_refs((struct turn_job *)user_data, text);
+}
+
 static char *render_artifact_summary(struct turn_job *j)
 {
 	morph_buf_t out;
@@ -866,104 +873,92 @@ static void *turn_thread(void *arg)
 		free(json);
 		goto out;
 	}
-	if (react_set_turn_id)
-		react_set_turn_id(rctx, j->turn_id);
-
 	if (react_memory_options_for_session)
 		react_memory_options_for_session(&mem_opts);
 	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
-		char *memory_ctx = memory_build_context(&j->store->db, sess.id,
-							j->input, &mem_opts);
-		react_set_memory_context(rctx, memory_ctx);
-		free(memory_ctx);
-	}
+		struct agent_session_runtime runtime;
+		struct agent_turn_input input;
+		struct agent_turn turn;
+		int begin_rc;
 
-	{
-		cJSON *start = cJSON_CreateObject();
-		char *json = NULL;
-		if (start) {
-			cJSON_AddStringToObject(start, "phase", "begin");
-			cJSON_AddStringToObject(start, "turn_id", j->turn_id);
-			json = cJSON_PrintUnformatted(start);
-			cJSON_Delete(start);
-		}
-		events_publish(j->store, j->session_id, "turn_start",
-			       json ? json : "{\"phase\":\"begin\"}");
-		free(json);
-	}
-	if (react_set_event_callback) {
-		react_set_event_callback(rctx, bridge_event_cb, j);
-		react_run(rctx, j->input ? j->input : "", NULL, j);
-	} else {
-		react_run(rctx, j->input ? j->input : "", bridge_cb, j);
-	}
-	if (!j->final_sent) {
-		char *fallback = render_artifact_summary(j);
-		if (!fallback && rctx->final_answer)
-			fallback = render_media_refs(j, rctx->final_answer);
-		if (fallback && *fallback) {
-			event_sink_final_turn(j->store, j->session_id,
-					      j->turn_id, fallback);
-			j->final_sent = 1;
-		}
-		free(fallback);
-	}
+		memset(&runtime, 0, sizeof(runtime));
+		runtime.db = &j->store->db;
+		runtime.session_id = sess.id;
+		runtime.react = rctx;
+		runtime.memory_options = &mem_opts;
+		runtime.render_assistant = turn_render_assistant_for_store;
+		runtime.render_user_data = j;
+		runtime.flags = AGENT_TURN_DEFAULT_FLAGS;
+		memset(&input, 0, sizeof(input));
+		input.model_input = j->input ? j->input : "";
+		input.turn_id = j->turn_id;
+		begin_rc = agent_turn_begin(&turn, &runtime, &input);
+		if (begin_rc != 0) {
+			cJSON *err = cJSON_CreateObject();
+			char *json = NULL;
 
-	if (sess.id > 0) {
-		int user_tokens = 0;
-		int asst_tokens = 0;
-		cJSON *arr = cJSON_CreateArray();
-		struct react_step *cur = rctx->steps;
-		while (cur) {
-			cJSON *obj = cJSON_CreateObject();
-			cJSON_AddStringToObject(obj, "type",
-						react_step_type_name(cur->type));
-			if (cur->content)
-				cJSON_AddStringToObject(obj, "content", cur->content);
-			if (cur->tool_name)
-				cJSON_AddStringToObject(obj, "tool_name", cur->tool_name);
-			if (cur->tool_args)
-				cJSON_AddStringToObject(obj, "tool_args", cur->tool_args);
-			if (cur->tool_call_id)
-				cJSON_AddStringToObject(obj, "tool_call_id",
-							cur->tool_call_id);
-			cJSON_AddItemToArray(arr, obj);
-			cur = cur->next;
+			if (err) {
+				cJSON_AddStringToObject(err, "turn_id",
+							j->turn_id);
+				cJSON_AddStringToObject(err, "message",
+					morph_strerror(begin_rc));
+				json = cJSON_PrintUnformatted(err);
+				cJSON_Delete(err);
+			}
+			events_publish(j->store, j->session_id, "error",
+				       json ? json :
+				       "{\"message\":\"turn begin failed\"}");
+			free(json);
+			goto out_destroy;
 		}
+
 		{
-			char *json = cJSON_PrintUnformatted(arr);
-			int round_no = trace_get_next_round_no(&j->store->db, sess.id);
-			int aborted = (rctx->state == REACT_STATE_ABORT) ? 1 : 0;
-			trace_save(&j->store->db, sess.id, round_no,
-				   json ? json : "[]", aborted);
+			cJSON *start = cJSON_CreateObject();
+			char *json = NULL;
+			if (start) {
+				cJSON_AddStringToObject(start, "phase", "begin");
+				cJSON_AddStringToObject(start, "turn_id", j->turn_id);
+				json = cJSON_PrintUnformatted(start);
+				cJSON_Delete(start);
+			}
+			events_publish(j->store, j->session_id, "turn_start",
+				       json ? json : "{\"phase\":\"begin\"}");
 			free(json);
 		}
-		cJSON_Delete(arr);
+		if (react_set_event_callback) {
+			react_set_event_callback(rctx, bridge_event_cb, j);
+			react_run(rctx, input.model_input, NULL, j);
+		} else {
+			react_run(rctx, input.model_input, bridge_cb, j);
+		}
+		if (!j->final_sent) {
+			char *fallback = render_artifact_summary(j);
+			if (!fallback && rctx->final_answer)
+				fallback = render_media_refs(j, rctx->final_answer);
+			if (fallback && *fallback) {
+				event_sink_final_turn(j->store, j->session_id,
+						      j->turn_id, fallback);
+				j->final_sent = 1;
+			}
+			free(fallback);
+		}
 
-		if (j->input && *j->input) {
-			user_tokens = tokenizer_count(rctx->tokenizer, j->input);
-			message_add_with_turn_id(&j->store->db, sess.id, "user",
-						 j->input, user_tokens,
-						 j->turn_id);
-			session_update_tokens(&j->store->db, sess.id, user_tokens);
+		agent_turn_finish(&turn, NULL);
+	} else {
+		cJSON *err = cJSON_CreateObject();
+		char *json = NULL;
+
+		if (err) {
+			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
+			cJSON_AddStringToObject(err, "message",
+						"session not found");
+			json = cJSON_PrintUnformatted(err);
+			cJSON_Delete(err);
 		}
-		if (rctx->final_answer && *rctx->final_answer) {
-			char *rendered =
-				render_media_refs(j, rctx->final_answer);
-			const char *answer =
-				rendered ? rendered : rctx->final_answer;
-			asst_tokens = tokenizer_count(rctx->tokenizer, answer);
-			message_add_with_turn_id(&j->store->db, sess.id,
-						 "assistant", answer,
-						 asst_tokens, j->turn_id);
-			session_update_tokens(&j->store->db, sess.id, asst_tokens);
-			free(rendered);
-		}
-		memory_consolidate_turn_async(&j->store->db, sess.id,
-					      j->input,
-					      rctx->final_answer, rctx->steps,
-					      rctx->state == REACT_STATE_DONE,
-					      &mem_opts);
+		events_publish(j->store, j->session_id, "error",
+			       json ? json : "{\"message\":\"session not found\"}");
+		free(json);
+		goto out_destroy;
 	}
 	{
 		cJSON *end = cJSON_CreateObject();
@@ -979,6 +974,7 @@ static void *turn_thread(void *arg)
 		free(json);
 	}
 
+out_destroy:
 	if (react_context_destroy) react_context_destroy(rctx);
 out:
 	model_set_usage_user_data(NULL);

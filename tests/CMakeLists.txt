@@ -20,6 +20,7 @@ set(TEST_SOURCES
 	test_tokenizer.cpp
 	test_compress.cpp
 	test_react.cpp
+	test_agent_turn.cpp
 	test_sse.cpp
 	test_http.cpp
 	test_image.cpp

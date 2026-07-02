@@ -414,22 +414,5 @@ react_context_create_for_session(struct session_store *store,
 		react_set_tool_runtime_context(ctx, &rt);
 	}
 
-	/* Replay message history into react's message_list */
-	int msg_count = 0;
-	struct message *msgs = message_list(&store->db, sess.id, &msg_count);
-	struct message *cur  = msgs;
-	while (cur) {
-		if (cur->role[0] && cur->content) {
-			struct message_list *ml = msg_list_create(
-				ctx->session_arena, cur->role, cur->content, cur->token_count);
-			if (ml) {
-				ml->compressed = cur->compressed;
-				msg_list_append(&ctx->messages, ml);
-			}
-		}
-		cur = cur->next;
-	}
-	message_free_list(msgs);
-
 	return ctx;
 }

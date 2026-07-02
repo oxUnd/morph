@@ -5,28 +5,30 @@ const char *default_db_path = "~/.morph/data.db";
 const char *default_config_path = "~/.morph/config.toml";
 static struct cli_context *g_cli_usage_ctx;
 
+static int cli_turn_background_cb(void *user_data, const char *name,
+				  const char *phase, const char *message,
+				  const char *task, int count,
+				  int error_code)
+{
+	struct cli_context *ctx = user_data;
+
+	return cli_emit_background_event(ctx, name, phase, message, task,
+					 count, error_code);
+}
+
 /* Load stored messages from DB into react context.
  * Clears any existing in-memory messages first. */
 void session_load_history(struct cli_context *ctx)
 {
+	struct agent_session_runtime runtime;
+
 	if (!ctx || !ctx->react)
 		return;
-	msg_list_destroy(ctx->react->messages);
-	ctx->react->messages = NULL;
-	arena_reset(ctx->react->session_arena);
-	int count = 0;
-	struct message *list = message_list(&ctx->database, ctx->current_session.id, &count);
-	struct message *cur = list;
-	while (cur) {
-		struct message_list *m = msg_list_create(ctx->react->session_arena, cur->role, cur->content,
-							  cur->token_count);
-		if (m) {
-			m->compressed = cur->compressed;
-			msg_list_append(&ctx->react->messages, m);
-		}
-		cur = cur->next;
-	}
-	message_free_list(list);
+	memset(&runtime, 0, sizeof(runtime));
+	runtime.db = &ctx->database;
+	runtime.session_id = ctx->current_session.id;
+	runtime.react = ctx->react;
+	agent_session_load_history(&runtime);
 }
 
 struct memory_options cli_memory_options(const struct cli_context *ctx)
@@ -45,21 +47,6 @@ struct memory_options cli_memory_options(const struct cli_context *ctx)
 	opts.max_procedures = ctx->config.memory.max_procedures;
 	opts.max_context_chars = ctx->config.memory.max_context_chars;
 	return opts;
-}
-
-void cli_refresh_memory_context(struct cli_context *ctx,
-				       const char *query)
-{
-	struct memory_options opts;
-	char *memory_ctx;
-
-	if (!ctx || !ctx->react)
-		return;
-	opts = cli_memory_options(ctx);
-	memory_ctx = memory_build_context(&ctx->database, ctx->current_session.id,
-					  query, &opts);
-	react_set_memory_context(ctx->react, memory_ctx);
-	free(memory_ctx);
 }
 
 void print_padded(const char *s, int target_width)
@@ -303,7 +290,28 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	if (ctx->react)
 		react_cancel(ctx->react);
 
-	cli_refresh_memory_context(ctx, effective_input);
+	struct memory_options mem_opts = cli_memory_options(ctx);
+	struct agent_session_runtime runtime;
+	struct agent_turn turn;
+	struct agent_turn_input turn_input;
+
+	memset(&runtime, 0, sizeof(runtime));
+	runtime.db = &ctx->database;
+	runtime.session_id = ctx->current_session.id;
+	runtime.react = ctx->react;
+	runtime.memory_options = &mem_opts;
+	runtime.background_cb = cli_turn_background_cb;
+	runtime.background_user_data = ctx;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS |
+		AGENT_TURN_SAVE_EMPTY_USER |
+		AGENT_TURN_SAVE_EMPTY_ASSISTANT;
+	memset(&turn_input, 0, sizeof(turn_input));
+	turn_input.model_input = effective_input;
+	int turn_rc = agent_turn_begin(&turn, &runtime, &turn_input);
+	if (turn_rc != 0) {
+		pthread_mutex_unlock(&ctx->react_lock);
+		return turn_rc;
+	}
 
 	int react_rc = react_run(ctx->react, effective_input,
 				 ctx->event_mode == CLI_EVENTS_JSON ?
@@ -340,96 +348,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		printf("\n");
 	}
 
-	/* Persist trace to DB */
-	if (ctx->react && ctx->react->steps) {
-		cJSON *arr = cJSON_CreateArray();
-		struct react_step *cur = ctx->react->steps;
-		while (cur) {
-			cJSON *obj = cJSON_CreateObject();
-			cJSON_AddStringToObject(obj, "type", react_step_type_name(cur->type));
-			if (cur->content)
-				cJSON_AddStringToObject(obj, "content", cur->content);
-			if (cur->tool_name)
-				cJSON_AddStringToObject(obj, "tool_name", cur->tool_name);
-			if (cur->tool_args)
-				cJSON_AddStringToObject(obj, "tool_args", cur->tool_args);
-			if (cur->tool_call_id)
-				cJSON_AddStringToObject(obj, "tool_call_id", cur->tool_call_id);
-			cJSON_AddItemToArray(arr, obj);
-			cur = cur->next;
-		}
-		char *json = cJSON_PrintUnformatted(arr);
-		int round_no = trace_get_next_round_no(&ctx->database,
-						       ctx->current_session.id);
-		int aborted = (ctx->react->state == REACT_STATE_ABORT) ? 1 : 0;
-		trace_save(&ctx->database, ctx->current_session.id,
-			   round_no, json, aborted);
-		free(json);
-		cJSON_Delete(arr);
-	}
-
-	int user_tokens = tokenizer_count(ctx->tokenizer, effective_input);
-	int asst_tokens = 0;
-	message_add(&ctx->database, ctx->current_session.id, "user",
-		    effective_input, user_tokens);
-	session_update_tokens(&ctx->database, ctx->current_session.id, user_tokens);
-	if (ctx->react && ctx->react->final_answer) {
-		asst_tokens = tokenizer_count(ctx->tokenizer,
-					      ctx->react->final_answer);
-		message_add(&ctx->database, ctx->current_session.id, "assistant",
-			    ctx->react->final_answer, asst_tokens);
-		session_update_tokens(&ctx->database, ctx->current_session.id, asst_tokens);
-	}
-	if (ctx->react) {
-		struct memory_options mem_opts = cli_memory_options(ctx);
-		/* Run consolidation on a background worker so the prompt
-		 * returns immediately. The LLM extraction path is the
-		 * slow one (1-3s blocking HTTP); offloading it keeps the
-		 * REPL responsive. */
-		cli_emit_background_event(ctx, "background.started", "begin",
-					  "memory consolidation queued",
-					  "memory_consolidation", -1, 0);
-		int async_rc = memory_consolidate_turn_async(
-			&ctx->database, ctx->current_session.id,
-			effective_input, ctx->react->final_answer,
-			ctx->react->steps,
-			ctx->react->state == REACT_STATE_DONE,
-			&mem_opts);
-		if (async_rc != 0) {
-			int mem_rc;
-
-			cli_emit_background_event(ctx, "background.progress",
-						  "progress",
-						  "memory consolidation running inline",
-						  "memory_consolidation",
-						  -1, async_rc);
-			mem_rc = memory_consolidate_turn(
-				&ctx->database,
-				ctx->current_session.id,
-				effective_input,
-				ctx->react->final_answer,
-				ctx->react->steps,
-				ctx->react->state == REACT_STATE_DONE,
-				&mem_opts);
-			cli_emit_background_event(ctx,
-						  mem_rc == 0 ?
-						  "background.completed" :
-						  "background.failed",
-						  mem_rc == 0 ? "end" :
-						  "failed",
-						  mem_rc == 0 ?
-						  "memory consolidation completed" :
-						  "memory consolidation failed",
-						  "memory_consolidation",
-						  -1, mem_rc);
-		} else {
-			cli_emit_background_event(ctx, "background.ready",
-						  "ready",
-						  "memory consolidation queued",
-						  "memory_consolidation",
-						  -1, 0);
-		}
-	}
+	agent_turn_finish(&turn, NULL);
 	ctx->streaming = 0;
 	pthread_mutex_unlock(&ctx->react_lock);
 	cli_process_due_tasks(ctx);

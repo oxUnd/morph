@@ -1,5 +1,6 @@
 add_library(morph-agent STATIC
 	react.c
+	turn.c
 	context.c
 	compress.c
 	tokenizer.c
@@ -16,6 +17,6 @@ target_include_directories(morph-agent PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )
-target_link_libraries(morph-agent PUBLIC morph-util morph-db morph-persistence morph-models morph-http morph-event Threads::Threads)
+target_link_libraries(morph-agent PUBLIC morph-util morph-db morph-session morph-persistence morph-models morph-http morph-event Threads::Threads)
 
 add_subdirectory(tools)

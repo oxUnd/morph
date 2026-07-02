@@ -56,58 +56,6 @@ static char *scheduled_task_prompt(const struct scheduled_task *task)
 	return out;
 }
 
-int cli_save_react_trace(struct cli_context *ctx, int64_t session_id)
-{
-	cJSON *arr;
-	char *json;
-	struct react_step *cur;
-	int round_no;
-	int aborted;
-	int rc = 0;
-
-	if (!ctx || !ctx->react || !ctx->react->steps || session_id <= 0)
-		return 0;
-	arr = cJSON_CreateArray();
-	if (!arr)
-		MORPH_RETURN(-ENOMEM);
-	cur = ctx->react->steps;
-	while (cur) {
-		cJSON *obj = cJSON_CreateObject();
-		if (!obj) {
-			rc = -ENOMEM;
-			goto out;
-		}
-		cJSON_AddStringToObject(obj, "type",
-					react_step_type_name(cur->type));
-		if (cur->content)
-			cJSON_AddStringToObject(obj, "content", cur->content);
-		if (cur->tool_name)
-			cJSON_AddStringToObject(obj, "tool_name",
-						cur->tool_name);
-		if (cur->tool_args)
-			cJSON_AddStringToObject(obj, "tool_args",
-						cur->tool_args);
-		if (cur->tool_call_id)
-			cJSON_AddStringToObject(obj, "tool_call_id",
-						cur->tool_call_id);
-		cJSON_AddItemToArray(arr, obj);
-		cur = cur->next;
-	}
-	json = cJSON_PrintUnformatted(arr);
-	if (!json) {
-		rc = -ENOMEM;
-		goto out;
-	}
-	round_no = trace_get_next_round_no(&ctx->database, session_id);
-	aborted = ctx->react->state == REACT_STATE_ABORT ? 1 : 0;
-	rc = trace_save(&ctx->database, session_id, round_no, json, aborted);
-	free(json);
-
-out:
-	cJSON_Delete(arr);
-	return rc;
-}
-
 int cli_scheduled_task_runner(const struct scheduled_task *task,
 				     struct scheduled_task_action_result *result,
 				     void *user_data)
@@ -119,6 +67,10 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 	char session_name[256];
 	char *task_prompt;
 	const char *answer;
+	struct memory_options mem_opts;
+	struct agent_session_runtime runtime;
+	struct agent_turn turn;
+	struct agent_turn_input turn_input;
 	int prompt_ready = 0;
 	int locked = 0;
 	int rc;
@@ -158,7 +110,18 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 		goto restore;
 	session_ensure_display_id(&ctx->database, &run_session);
 	ctx->current_session = run_session;
-	session_load_history(ctx);
+	mem_opts = cli_memory_options(ctx);
+	memset(&runtime, 0, sizeof(runtime));
+	runtime.db = &ctx->database;
+	runtime.session_id = run_session.id;
+	runtime.react = ctx->react;
+	runtime.memory_options = &mem_opts;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS;
+	memset(&turn_input, 0, sizeof(turn_input));
+	turn_input.model_input = morph_buf_cstr(&prompt);
+	rc = agent_turn_begin(&turn, &runtime, &turn_input);
+	if (rc != 0)
+		goto restore;
 
 	rc = react_run(ctx->react, morph_buf_cstr(&prompt), NULL, NULL);
 	answer = ctx->react->final_answer ? ctx->react->final_answer : "";
@@ -172,23 +135,7 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 		if (!result->error)
 			rc = -ENOMEM;
 	}
-	(void)cli_save_react_trace(ctx, run_session.id);
-	{
-		int user_tokens = tokenizer_count(ctx->tokenizer,
-						  morph_buf_cstr(&prompt));
-		message_add(&ctx->database, run_session.id, "user",
-			    morph_buf_cstr(&prompt), user_tokens);
-		session_update_tokens(&ctx->database, run_session.id,
-				      user_tokens);
-		if (answer) {
-			int asst_tokens = tokenizer_count(ctx->tokenizer,
-							  answer);
-			message_add(&ctx->database, run_session.id, "assistant",
-				    answer, asst_tokens);
-			session_update_tokens(&ctx->database, run_session.id,
-					      asst_tokens);
-		}
-	}
+	agent_turn_finish(&turn, NULL);
 
 restore:
 	ctx->current_session = previous_session;

@@ -39,6 +39,7 @@
 #include "db/scheduled_task.h"
 #include "credits.h"
 #include "agent/memory.h"
+#include "agent/turn.h"
 #include "ext/install.h"
 #include "config.h"
 #include "models/image_gen.h"
@@ -86,7 +87,6 @@ extern volatile sig_atomic_t cli_sigint_received;
 
 void session_load_history(struct cli_context *ctx);
 struct memory_options cli_memory_options(const struct cli_context *ctx);
-void cli_refresh_memory_context(struct cli_context *ctx, const char *query);
 void print_padded(const char *s, int target_width);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
@@ -123,7 +123,6 @@ int cli_event_callback(const struct morph_event *ev, void *user_data);
 
 struct scheduled_task_event_sink cli_task_event_sink(struct cli_context *ctx);
 void cli_process_due_tasks(struct cli_context *ctx);
-int cli_save_react_trace(struct cli_context *ctx, int64_t session_id);
 int cli_scheduled_task_runner(const struct scheduled_task *task,
 			      struct scheduled_task_action_result *result,
 			      void *user_data);
