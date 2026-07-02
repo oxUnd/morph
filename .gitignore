@@ -1,6 +1,7 @@
 # Build
 build/
 build-asan/
+build-fcgi/
 cmake-build-*/
 out/
 
