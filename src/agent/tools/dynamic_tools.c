@@ -45,6 +45,12 @@ struct dynamic_tools_context {
 	char session_id[128];
 };
 
+static const char *runner_path(void)
+{
+	const char *path = getenv("MORPH_JS_RUNNER_PATH");
+	return (path && *path) ? path : MORPH_JS_RUNNER_PATH;
+}
+
 static const struct config_dynamic_tool_profile *
 active_profile(const struct config_dynamic_tools *cfg)
 {
@@ -347,7 +353,8 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdout_pipe[1]);
 		close(stderr_pipe[1]);
 		(void)set_child_env(dt);
-		execl(MORPH_JS_RUNNER_PATH, MORPH_JS_RUNNER_PATH,
+		const char *runner = runner_path();
+		execl(runner, runner,
 		      dt->source_path, (char *)NULL);
 		execlp("morph-js-runner", "morph-js-runner",
 		       dt->source_path, (char *)NULL);
@@ -564,7 +571,8 @@ static int check_js_source(const char *source_path)
 	if (pid < 0)
 		MORPH_RETURN_ERRNO();
 	if (pid == 0) {
-		execl(MORPH_JS_RUNNER_PATH, MORPH_JS_RUNNER_PATH, "--check",
+		const char *runner = runner_path();
+		execl(runner, runner, "--check",
 		      source_path, (char *)NULL);
 		execlp("morph-js-runner", "morph-js-runner", "--check",
 		       source_path, (char *)NULL);
