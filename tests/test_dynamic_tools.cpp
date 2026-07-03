@@ -34,6 +34,14 @@ static std::string json_escape(const std::string &s)
 	return out;
 }
 
+static int static_tool_exec(const char *args_json, struct tool_result *result,
+			    void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	return tool_result_set_json(result, "{\"static\":true}");
+}
+
 struct DynamicToolsTest : public ::testing::Test {
 	std::string root;
 	struct config cfg;
@@ -107,6 +115,71 @@ TEST_F(DynamicToolsTest, CreateAndCallSessionTool)
 	ASSERT_TRUE(cJSON_IsString(text));
 	EXPECT_STREQ(text->valuestring, "HELLO");
 	cJSON_Delete(root_json);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string first =
+		"function run(args) {"
+		"  return { value: 1 };"
+		"}";
+	std::string second =
+		"function run(args) {"
+		"  return { value: 2 };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("replace_me", first).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"registered\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("replace_me", second).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"updated\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "replace_me", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":2"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
+{
+	ASSERT_EQ(tool_register(&reg, "static_tool", "static", "{}",
+				static_tool_exec, nullptr, nullptr), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function run(args) { return { static: false }; }";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("static_tool", source).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("already exists"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "static_tool", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"static\":true"),
+		  std::string::npos);
 	tool_result_cleanup(&result);
 }
 

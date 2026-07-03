@@ -473,14 +473,40 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 static int register_dynamic_tool(struct tool_registry *reg,
 				 struct dynamic_tool *dt)
 {
+	struct tool_entry *existing;
 	int rc;
 
 	if (!reg || !dt)
 		return -EINVAL;
+	existing = tool_lookup(reg, dt->name);
+	if (existing) {
+		if (!(existing->flags & TOOL_FLAG_DYNAMIC))
+			return -EEXIST;
+		if (existing->user_data && existing->user_data_destroy)
+			existing->user_data_destroy(existing->user_data);
+		memset(&existing->desc, 0, sizeof(existing->desc));
+		strncpy(existing->desc.name, dt->name,
+			sizeof(existing->desc.name) - 1);
+		strncpy(existing->desc.desc, dt->description,
+			sizeof(existing->desc.desc) - 1);
+		strncpy(existing->desc.args_spec, dt->args_schema,
+			sizeof(existing->desc.args_spec) - 1);
+		existing->exec = dynamic_tool_exec;
+		existing->user_data = dt;
+		existing->user_data_destroy = dynamic_tool_destroy;
+		existing->flags |= TOOL_FLAG_DYNAMIC;
+		log_dbg("dynamic tool replaced: %s", dt->name);
+		return 1;
+	}
 	rc = tool_register(reg, dt->name, dt->description, dt->args_schema,
 			   dynamic_tool_exec, dt, dynamic_tool_destroy);
 	if (rc < 0)
 		return rc;
+	{
+		struct tool_entry *entry = tool_lookup(reg, dt->name);
+		if (entry)
+			entry->flags |= TOOL_FLAG_DYNAMIC;
+	}
 	return 0;
 }
 
@@ -562,15 +588,28 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 	return rc;
 }
 
-static int check_js_source(const char *source_path)
+static int check_js_source(const char *source_path,
+			   char **error_out)
 {
 	pid_t pid;
+	int output_pipe[2] = {-1, -1};
 	int status = 0;
 
-	pid = fork();
-	if (pid < 0)
+	if (error_out)
+		*error_out = NULL;
+	if (pipe(output_pipe) < 0)
 		MORPH_RETURN_ERRNO();
+	pid = fork();
+	if (pid < 0) {
+		close(output_pipe[0]);
+		close(output_pipe[1]);
+		MORPH_RETURN_ERRNO();
+	}
 	if (pid == 0) {
+		close(output_pipe[0]);
+		dup2(output_pipe[1], STDOUT_FILENO);
+		dup2(output_pipe[1], STDERR_FILENO);
+		close(output_pipe[1]);
 		const char *runner = runner_path();
 		execl(runner, runner, "--check",
 		      source_path, (char *)NULL);
@@ -578,6 +617,28 @@ static int check_js_source(const char *source_path)
 		       source_path, (char *)NULL);
 		_exit(127);
 	}
+	close(output_pipe[1]);
+	if (error_out) {
+		morph_buf_t err;
+		char tmp[512];
+		if (morph_buf_init(&err, 512) == 0) {
+			for (;;) {
+				ssize_t n = read(output_pipe[0], tmp, sizeof(tmp));
+				if (n < 0 && errno == EINTR)
+					continue;
+				if (n <= 0)
+					break;
+				(void)morph_buf_append(&err, tmp, (size_t)n);
+				if (err.len >= 2048)
+					break;
+			}
+			if (err.len > 0)
+				*error_out = morph_buf_detach(&err);
+			else
+				morph_buf_cleanup(&err);
+		}
+	}
+	close(output_pipe[0]);
 	if (waitpid(pid, &status, 0) < 0)
 		MORPH_RETURN_ERRNO();
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
@@ -652,7 +713,8 @@ static int load_tool_from_dir(struct tool_registry *reg,
 	parse_caps(cJSON_GetObjectItem(meta, "capabilities"), dt,
 		   active_profile(cfg));
 	cJSON_Delete(meta);
-	if (tool_lookup(reg, dt->name)) {
+	if (tool_lookup(reg, dt->name) &&
+	    !(tool_lookup(reg, dt->name)->flags & TOOL_FLAG_DYNAMIC)) {
 		free(dt);
 		return -EEXIST;
 	}
@@ -682,6 +744,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	cJSON *desc_item;
 	cJSON *source_item;
 	char *schema = NULL;
+	char *check_error = NULL;
 	struct dynamic_tool *dt = NULL;
 	int rc;
 
@@ -707,9 +770,14 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		return tool_result_json_error(result, "source_js too large");
 	}
-	if (tool_lookup(ctx->reg, name_item->valuestring)) {
-		cJSON_Delete(root);
-		return tool_result_json_error(result, "tool name already exists");
+	{
+		struct tool_entry *existing =
+			tool_lookup(ctx->reg, name_item->valuestring);
+		if (existing && !(existing->flags & TOOL_FLAG_DYNAMIC)) {
+			cJSON_Delete(root);
+			return tool_result_json_error(result,
+						      "tool name already exists");
+		}
 	}
 	if (ctx->cfg->create_requires_approval && ctx->tctx) {
 		struct tool_operation op;
@@ -767,18 +835,30 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	if (rc == 0)
 		rc = write_tool_files(dt, source_item->valuestring);
 	if (rc == 0)
-		rc = check_js_source(dt->source_path);
+		rc = check_js_source(dt->source_path, &check_error);
+	if (rc == 0 && check_error) {
+		free(check_error);
+		check_error = NULL;
+	}
 	if (rc == 0)
 		rc = register_dynamic_tool(ctx->reg, dt);
 	cJSON_Delete(root);
 	if (rc < 0) {
 		free(dt);
+		if (check_error) {
+			int out_rc = tool_result_json_errorf(result,
+				"failed to create dynamic tool: %s: %s",
+				morph_strerror(rc), check_error);
+			free(check_error);
+			return out_rc;
+		}
 		return tool_result_json_errorf(result,
 			"failed to create dynamic tool: %s", morph_strerror(rc));
 	}
 	return tool_result_printf(result,
-				  "{\"name\":\"%s\",\"status\":\"registered\"}",
-				  dt->name);
+				  "{\"name\":\"%s\",\"status\":\"%s\"}",
+				  dt->name,
+				  rc > 0 ? "updated" : "registered");
 }
 
 static int copy_file(const char *src, const char *dst)

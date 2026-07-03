@@ -18,6 +18,7 @@ extern "C" {
 
 #define TOOL_FLAG_READONLY 0x01
 #define TOOL_FLAG_INTERNAL_APPROVAL 0x02
+#define TOOL_FLAG_DYNAMIC 0x04
 
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
