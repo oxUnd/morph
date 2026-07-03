@@ -1,4 +1,5 @@
 #include "quickjs.h"
+#include "runner_api.h"
 #include "cJSON.h"
 #include "util/file.h"
 #include "util/buf.h"
@@ -14,7 +15,7 @@ struct runner_state {
 	time_t deadline;
 };
 
-static int has_cap(const char *cap)
+int runner_has_cap(const char *cap)
 {
 	const char *caps;
 	size_t cap_len;
@@ -42,7 +43,7 @@ static int has_cap(const char *cap)
 	return 0;
 }
 
-static int list_allows(const char *env_name, const char *value)
+int runner_list_allows(const char *env_name, const char *value)
 {
 	const char *list;
 	size_t value_len;
@@ -77,7 +78,7 @@ static int list_allows(const char *env_name, const char *value)
 	return 0;
 }
 
-static JSValue throw_cap(JSContext *ctx, const char *cap)
+JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 {
 	return JS_ThrowTypeError(ctx, "dynamic tool capability denied: %s",
 				 cap ? cap : "unknown");
@@ -93,12 +94,12 @@ static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val,
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "readText(path) requires path");
-	if (!has_cap("fs_read"))
-		return throw_cap(ctx, "fs_read");
+	if (!runner_has_cap("fs_read"))
+		return runner_throw_cap(ctx, "fs_read");
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!list_allows("MORPH_DYNAMIC_ALLOWED_READ", path)) {
+	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_READ", path)) {
 		JS_FreeCString(ctx, path);
 		return JS_ThrowTypeError(ctx, "read path denied");
 	}
@@ -123,12 +124,12 @@ static JSValue js_fs_write_text(JSContext *ctx, JSValueConst this_val,
 	if (argc < 2)
 		return JS_ThrowTypeError(ctx,
 					 "writeText(path, text) requires two args");
-	if (!has_cap("fs_write"))
-		return throw_cap(ctx, "fs_write");
+	if (!runner_has_cap("fs_write"))
+		return runner_throw_cap(ctx, "fs_write");
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!list_allows("MORPH_DYNAMIC_ALLOWED_WRITE", path)) {
+	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_WRITE", path)) {
 		JS_FreeCString(ctx, path);
 		return JS_ThrowTypeError(ctx, "write path denied");
 	}
@@ -183,12 +184,12 @@ static JSValue js_exec(JSContext *ctx, JSValueConst this_val,
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "exec(command) requires command");
-	if (!has_cap("shell") && !has_cap("process"))
-		return throw_cap(ctx, "shell");
+	if (!runner_has_cap("shell") && !runner_has_cap("process"))
+		return runner_throw_cap(ctx, "shell");
 	cmd = JS_ToCString(ctx, argv[0]);
 	if (!cmd)
 		return JS_EXCEPTION;
-	if (!list_allows("MORPH_DYNAMIC_ALLOWED_COMMANDS", cmd)) {
+	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_COMMANDS", cmd)) {
 		JS_FreeCString(ctx, cmd);
 		return JS_ThrowTypeError(ctx, "command denied");
 	}
@@ -242,12 +243,12 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst this_val,
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "fetch(url) requires url");
-	if (!has_cap("network"))
-		return throw_cap(ctx, "network");
+	if (!runner_has_cap("network"))
+		return runner_throw_cap(ctx, "network");
 	url = JS_ToCString(ctx, argv[0]);
 	if (!url)
 		return JS_EXCEPTION;
-	if (!list_allows("MORPH_DYNAMIC_ALLOWED_NETWORK", url)) {
+	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_NETWORK", url)) {
 		JS_FreeCString(ctx, url);
 		return JS_ThrowTypeError(ctx, "network target denied");
 	}
@@ -445,8 +446,8 @@ static JSValue js_env_get(JSContext *ctx, JSValueConst this_val,
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "env.get(name) requires name");
-	if (!has_cap("env"))
-		return throw_cap(ctx, "env");
+	if (!runner_has_cap("env"))
+		return runner_throw_cap(ctx, "env");
 	name = JS_ToCString(ctx, argv[0]);
 	if (!name)
 		return JS_EXCEPTION;
@@ -462,8 +463,8 @@ static JSValue js_tool_call(JSContext *ctx, JSValueConst this_val,
 	(void)this_val;
 	(void)argc;
 	(void)argv;
-	if (!has_cap("mcp") && !has_cap("model"))
-		return throw_cap(ctx, "mcp");
+	if (!runner_has_cap("mcp") && !runner_has_cap("model"))
+		return runner_throw_cap(ctx, "mcp");
 	return JS_ThrowTypeError(ctx, "morph.tool.call is not available yet");
 }
 
@@ -493,6 +494,7 @@ static void install_morph_api(JSContext *ctx)
 	JS_SetPropertyStr(ctx, morph, "fetch",
 			  JS_NewCFunction(ctx, js_fetch, "fetch", 1));
 	JS_SetPropertyStr(ctx, global, "morph", morph);
+	install_media_api(ctx);
 	JS_FreeValue(ctx, global);
 }
 
@@ -715,12 +717,17 @@ int main(int argc, char **argv)
 	timeout = 30;
 	if (getenv("MORPH_DYNAMIC_TIMEOUT"))
 		timeout = atoi(getenv("MORPH_DYNAMIC_TIMEOUT"));
+	if (js_media_init() < 0) {
+		fprintf(stderr, "failed to initialize media bindings\n");
+		return 1;
+	}
 	memset(&state, 0, sizeof(state));
 	if (timeout > 0)
 		state.deadline = time(NULL) + timeout;
 	rt = JS_NewRuntime();
 	if (!rt) {
 		fprintf(stderr, "failed to create QuickJS runtime\n");
+		js_media_shutdown();
 		return 1;
 	}
 	JS_SetInterruptHandler(rt, interrupt_handler, &state);
@@ -728,11 +735,13 @@ int main(int argc, char **argv)
 	if (!ctx) {
 		JS_FreeRuntime(rt);
 		fprintf(stderr, "failed to create QuickJS context\n");
+		js_media_shutdown();
 		return 1;
 	}
 	install_morph_api(ctx);
 	rc = check_only ? check_script(ctx, script) : run_script(ctx, script);
 	JS_FreeContext(ctx);
 	JS_FreeRuntime(rt);
+	js_media_shutdown();
 	return rc == 0 ? 0 : 1;
 }

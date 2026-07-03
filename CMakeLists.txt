@@ -25,6 +25,9 @@ find_package(CURL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FREETYPE REQUIRED freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
+pkg_check_modules(VIPS REQUIRED vips)
+pkg_check_modules(CAIRO REQUIRED cairo)
+pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
 
 include(FetchContent)
 
@@ -53,6 +56,16 @@ FetchContent_Declare(
 	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_Populate(quickjs)
+
+FetchContent_Declare(
+	wasm3
+	URL https://github.com/wasm3/wasm3/archive/refs/tags/v0.5.0.tar.gz
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_Populate(wasm3)
+set(BUILD_WASI "none" CACHE STRING "Wasm3 WASI implementation" FORCE)
+add_subdirectory(${wasm3_SOURCE_DIR}/source ${wasm3_BINARY_DIR}/source
+	EXCLUDE_FROM_ALL)
 
 add_library(quickjs STATIC
 	${quickjs_SOURCE_DIR}/quickjs.c

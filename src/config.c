@@ -119,13 +119,13 @@ void config_set_defaults(struct config *cfg)
 	{
 		static const char *const caps[] = {
 			"fs_read", "fs_write", "network", "process",
-			"env", "mcp", "model", "shell"
+			"env", "mcp", "model", "shell", "image", "wasm"
 		};
-		for (int i = 0; i < 8; i++) {
+		for (int i = 0; i < 10; i++) {
 			strncpy(cfg->dynamic_tools.local.default_capabilities[i],
 				caps[i], DYNAMIC_TOOL_CAP_LEN_MAX - 1);
 		}
-		cfg->dynamic_tools.local.default_capabilities_count = 8;
+		cfg->dynamic_tools.local.default_capabilities_count = 10;
 		strncpy(cfg->dynamic_tools.local.allowed_read_paths[0], "*",
 			DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
 		strncpy(cfg->dynamic_tools.local.allowed_write_paths[0], "*",

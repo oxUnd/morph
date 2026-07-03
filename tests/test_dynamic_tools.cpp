@@ -241,3 +241,131 @@ TEST_F(DynamicToolsTest, PromoteLoadsInNewRegistry)
 	tool_registry_cleanup(&reg2);
 	tool_context_destroy(tctx2);
 }
+
+TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const { createCanvas } = require('canvas');"
+		"async function run(args) {"
+		"  const canvas = createCanvas(64, 32);"
+		"  const ctx = canvas.getContext('2d');"
+		"  ctx.fillStyle = '#ffffff';"
+		"  ctx.fillRect(0, 0, 64, 32);"
+		"  ctx.fillStyle = '#111111';"
+		"  ctx.fillText(args.text, 8, 20);"
+		"  canvas.toFile(args.output);"
+		"  return { output: args.output };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("canvas_make", source,
+					"[\"image\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string output = root + "/canvas.png";
+	std::string call = "{\"text\":\"ok\",\"output\":\"" + output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "canvas_make", call.c_str(), &result), 0);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, SharpApiResizesImage)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const { createCanvas } = require('canvas');"
+		"const sharp = require('sharp');"
+		"async function run(args) {"
+		"  const canvas = createCanvas(64, 32);"
+		"  canvas.toFile(args.input);"
+		"  await sharp(args.input).resize(16).png().toFile(args.output);"
+		"  const meta = await sharp(args.output).metadata();"
+		"  return { width: meta.width, height: meta.height };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("sharp_resize", source,
+					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string input = root + "/sharp_input.png";
+	std::string output = root + "/sharp_output.png";
+	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
+		output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "sharp_resize", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"width\":16"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, WebAssemblyApiCallsExport)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"async function run(args) {"
+		"  const bytes = new Uint8Array(["
+		"    0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,"
+		"    127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,"
+		"    1,7,0,32,0,32,1,106,11]);"
+		"  const mod = await WebAssembly.instantiate(bytes.buffer, {});"
+		"  return { value: mod.instance.exports.add(args.a, args.b) };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("wasm_add", source,
+					"[\"wasm\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "wasm_add", "{\"a\":20,\"b\":22}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":42"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ServerProfileDeniesImageCapability)
+{
+	strncpy(cfg.dynamic_tools.mode, "server",
+		sizeof(cfg.dynamic_tools.mode) - 1);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const { createCanvas } = require('canvas');"
+		"function run(args) {"
+		"  const canvas = createCanvas(8, 8);"
+		"  canvas.toFile(args.output);"
+		"  return { ok: true };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("canvas_denied", source,
+					"[\"image\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string output = root + "/denied.png";
+	std::string call = "{\"output\":\"" + output + "\"}";
+	tool_result_init(&result);
+	EXPECT_NE(tool_exec(&reg, "canvas_denied", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("capability denied"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}

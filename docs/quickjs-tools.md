@@ -28,6 +28,8 @@
 
 - 已将 QuickJS 作为内置依赖构建。
 - 新增 `morph-js-runner` 子进程执行 JS 工具。
+- runner 的图像能力依赖系统 `pkg-config` 包：`vips`、`cairo`、
+  `pangocairo`；WASM 能力通过内嵌 Wasm3 静态库提供。
 - runner 通过 stdin/stdout 接收和返回 JSON-RPC。
 - runner 支持：
   - 普通 `function run(args)`。
@@ -77,6 +79,9 @@ morph.fs.writeText(path, text)
 morph.env.get(name)
 morph.exec(command)
 morph.fetch(url)
+require("sharp")
+require("canvas")
+WebAssembly.instantiate(bytes, imports)
 ```
 
 `morph.fetch(url)` 返回 Response-like 对象：
@@ -104,6 +109,59 @@ async function run(args) {
 - `indexOf()`
 - `toString()`
 
+### Popular API shims
+
+为了让模型按常见 JavaScript 生态写法创建工具，runner 提供了两个
+白名单 `require()` 模块和一个浏览器风格全局对象。
+
+```js
+const sharp = require("sharp");
+
+async function run(args) {
+	await sharp(args.input)
+		.resize(512)
+		.png()
+		.toFile(args.output);
+	return { output: args.output };
+}
+```
+
+`sharp` 是 libvips-backed 的常用子集，支持 `metadata()`、
+`resize()`、`extract()`、`rotate()`、`blur()`、`sharpen()`、
+`grayscale()` / `greyscale()`、`flatten()`、`png()`、`jpeg()`、
+`jpg()`、`webp()`、`toFile()` 和 `toBuffer()`。
+
+```js
+const { createCanvas } = require("canvas");
+
+async function run(args) {
+	const canvas = createCanvas(256, 128);
+	const ctx = canvas.getContext("2d");
+	ctx.fillStyle = "#ffffff";
+	ctx.fillRect(0, 0, 256, 128);
+	ctx.fillStyle = "#111111";
+	ctx.fillText(args.text, 20, 70);
+	canvas.toFile(args.output);
+	return { output: args.output };
+}
+```
+
+`canvas` 是 Node-like 2D 子集，支持 `createCanvas()`、`loadImage()`、
+`getContext("2d")`、基础路径/矩形/文字绘制、`toFile()` 和
+`toBuffer()`。
+
+```js
+async function run(args) {
+	const bytes = new Uint8Array(args.bytes).buffer;
+	const mod = await WebAssembly.instantiate(bytes, {});
+	return { value: mod.instance.exports.add(args.a, args.b) };
+}
+```
+
+`WebAssembly` 由 Wasm3 执行，当前覆盖 `Module`、`Instance`、
+`Memory`、`compile()` 和 `instantiate()` 的常用路径；不包含 WASI、
+streaming compile、threads、SIMD 或完整浏览器宿主对象。
+
 ### 能力和权限模型
 
 能力项：
@@ -116,6 +174,8 @@ async function run(args) {
 - `mcp`
 - `model`
 - `shell`
+- `image`
+- `wasm`
 
 实际能力取交集：
 
@@ -129,6 +189,9 @@ async function run(args) {
 - `fs_write` 受 `allowed_write_paths` 控制。
 - `shell` / `process` 受 `allowed_commands` 控制。
 - `network` 受 `allowed_network` 控制。
+- `sharp` / `canvas` / `loadImage` 需要 `image`；读写图片路径仍同时受
+  `fs_read` / `fs_write` 和对应 allowlist 控制。
+- `WebAssembly` 需要 `wasm`。
 - `create_requires_approval` 会通过 `tool_context_check_operation()` 审批创建动作。
 - `promote_requires_approval` 会通过 `tool_context_check_operation()` 审批持久化动作。
 
@@ -155,7 +218,7 @@ default_max_output_bytes = 1048576
 
 ```toml
 [dynamic_tools.local]
-default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell"]
+default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell", "image", "wasm"]
 allowed_read_paths = ["*"]
 allowed_write_paths = ["*"]
 allowed_commands = ["*"]
@@ -205,6 +268,10 @@ allowed_network = []
 - `tool_create` 创建 JS 工具后可立即调用。
 - server profile 默认拒绝文件读取能力。
 - `tool_promote` 后新 registry 能自动加载持久工具。
+- `require("canvas")` 可创建并写出 PNG。
+- `require("sharp")` 可 resize 图片并读取 metadata。
+- `WebAssembly.instantiate()` 可调用导出函数。
+- server profile 默认拒绝 `image` 能力。
 
 当前已有人工/CLI 验证：
 
@@ -218,6 +285,8 @@ allowed_network = []
 
 - `morph.tool.call()` 当前只是占位 API，会返回 `morph.tool.call is not available yet`。
 - 动态工具调用其他 morph 工具的安全模型尚未完成。
+- `sharp`、`canvas` 和 `WebAssembly` 当前是常用子集，不是 npm 包或浏览器
+  运行时的完整兼容实现。
 - “动态工具不能绕过 disabled tools”还没有完整链路，因为跨工具调用尚未开放。
 - `morph.fetch()` 当前通过 `curl` 子进程实现，状态码目前按成功固定为 `200`，失败由 `curl -f` 转为异常。
 - runner 内部 `RUNNER_MAX_CAPTURE` 仍是固定 `1MB`，父进程的 `default_max_output_bytes` 已生效，但 host API 内部抓取上限还未配置化。

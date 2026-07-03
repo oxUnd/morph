@@ -301,7 +301,7 @@ default_timeout_seconds = 30
 default_max_output_bytes = 1048576
 
 [dynamic_tools.local]
-default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell"]
+default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell", "image", "wasm"]
 allowed_read_paths = ["*"]
 allowed_write_paths = ["*"]
 allowed_commands = ["*"]
