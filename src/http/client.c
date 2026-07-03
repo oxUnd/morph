@@ -616,6 +616,7 @@ int http_session_post(struct http_session *s, const char *url,
 	rc = 0;
 
 out:
+	curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, NULL);
 	if (headers)
 		curl_slist_free_all(headers);
 	return rc;

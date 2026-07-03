@@ -1824,6 +1824,34 @@ TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, HttpSessionPostReusesHandleWithHeaders) {
+	srv.response_body = "{\"result\":\"posted\"}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	struct http_session session;
+	ASSERT_EQ(http_session_init(&session), 0);
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/session",
+		 srv.port);
+	const char *headers1[] = { "X-Morph-Session-Test: one" };
+	int rc = http_session_post(&session, url, "{\"n\":1}", 7,
+				   "application/json", headers1, 1, 5);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(http_session_status(&session), 200);
+	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: one"),
+		  nullptr);
+
+	const char *headers2[] = { "X-Morph-Session-Test: two" };
+	rc = http_session_post(&session, url, "{\"n\":2}", 7,
+			       "application/json", headers2, 1, 5);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(http_session_status(&session), 200);
+	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: two"),
+		  nullptr);
+	http_session_cleanup(&session);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, SSEStreamingResponse) {
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
 	srv.response_status = 200;
