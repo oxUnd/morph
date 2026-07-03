@@ -161,6 +161,29 @@ TEST_F(SessionTest, ListMessages) {
 	message_free_list(msgs);
 }
 
+TEST_F(SessionTest, ListMessagesUsesStableOrderForSameTimestamp) {
+	struct session s;
+	session_create(&db, "msg_list_same_time", "gpt-4o", &s);
+	message_add(&db, s.id, "user", "first", 1);
+	message_add(&db, s.id, "assistant", "second", 1);
+	message_add(&db, s.id, "user", "third", 1);
+
+	ASSERT_EQ(sqlite3_exec(db.handle,
+		"UPDATE messages SET created_at=12345", NULL, NULL, NULL),
+		SQLITE_OK);
+
+	int count = 0;
+	struct message *msgs = message_list(&db, s.id, &count);
+	ASSERT_EQ(count, 3);
+	ASSERT_NE(msgs, nullptr);
+	ASSERT_NE(msgs->next, nullptr);
+	ASSERT_NE(msgs->next->next, nullptr);
+	EXPECT_STREQ(msgs->content, "first");
+	EXPECT_STREQ(msgs->next->content, "second");
+	EXPECT_STREQ(msgs->next->next->content, "third");
+	message_free_list(msgs);
+}
+
 TEST_F(SessionTest, MessageCount) {
 	struct session s;
 	session_create(&db, "msg_count", "gpt-4o", &s);

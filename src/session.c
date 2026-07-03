@@ -409,7 +409,8 @@ struct message *message_list(struct db *db, int64_t session_id, int *count)
 		return NULL;
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT id,session_id,role,content,turn_id,token_count,compressed,created_at"
-			  " FROM messages WHERE session_id=? ORDER BY created_at ASC";
+			  " FROM messages WHERE session_id=?"
+			  " ORDER BY created_at ASC, id ASC";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
 		*count = 0;
