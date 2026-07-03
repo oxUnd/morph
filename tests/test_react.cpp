@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <sstream>
+#include <atomic>
 
 struct sse_test_info {
 	int count;
@@ -2466,6 +2467,25 @@ static int self_cancel_tool_fn(const char *args_json, struct tool_result *result
 	return 0;
 }
 
+struct slow_signal_tool_state {
+	std::atomic<int> entered;
+	std::atomic<int> finished;
+};
+
+static int slow_signal_tool_fn(const char *args_json, struct tool_result *result,
+			       void *user_data)
+{
+	(void)args_json;
+	struct slow_signal_tool_state *state =
+		(struct slow_signal_tool_state *)user_data;
+
+	state->entered.store(1);
+	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+	state->finished.store(1);
+	(void)tool_result_take_text(result, strdup("{\"done\":true}"));
+	return 0;
+}
+
 TEST_F(MockLlmTest, CancelDuringToolExecution) {
 	const char *responses[] = {
 		"Thought: run self-cancel tool.\nAction: self_cancel({})\n",
@@ -2484,6 +2504,52 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 	EXPECT_EQ(ctx->last_error_code, -ECANCELED);
 	EXPECT_STREQ(ctx->outcome_reason, "user_cancelled");
 	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
+	const char *responses[] = {
+		"Thought: run slow tool.\nAction: slow_signal({})\n",
+	};
+	struct slow_signal_tool_state state;
+	state.entered.store(0);
+	state.finished.store(0);
+	llm = create_multi_mock_llm(responses, 1);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	tool_register(&tools, "slow_signal", "Slow tool", "{}",
+		      slow_signal_tool_fn, &state, nullptr);
+
+	std::thread interrupter([&state]() {
+		for (int i = 0; i < 50 && !state.entered.load(); i++)
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(10));
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		react_sigint_flag = 1;
+		http_cancel_from_signal();
+	});
+
+	auto start = std::chrono::steady_clock::now();
+	int rc = react_run(ctx, "cancel slow tool", nullptr, nullptr);
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	interrupter.join();
+
+	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_CANCELLED);
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+			  elapsed).count(),
+		  1000);
+
+	for (int i = 0; i < 200 && !state.finished.load(); i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	EXPECT_TRUE(state.finished.load());
+
+	react_context_destroy(ctx);
+	http_clear_signal_cancel();
+	react_sigint_flag = 0;
 }
 
 /* ============================================= */

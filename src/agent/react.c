@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
@@ -628,6 +629,7 @@ struct async_tool_call {
 	struct morph_cancel_token cancel_token;
 	void *usage_user_data;
 	pthread_mutex_t mutex;
+	pthread_cond_t cond;
 };
 
 struct react_tool_slot {
@@ -650,6 +652,7 @@ async_tool_call_create(struct tool_registry *tools,
 	if (!call)
 		return NULL;
 	pthread_mutex_init(&call->mutex, NULL);
+	pthread_cond_init(&call->cond, NULL);
 	call->tools = tools;
 	call->react = react;
 	call->tool_name = strdup(tool_name ? tool_name : "");
@@ -663,6 +666,7 @@ async_tool_call_create(struct tool_registry *tools,
 		free(call->tool_name);
 		free(call->tool_args);
 		free(call->tool_call_id);
+		pthread_cond_destroy(&call->cond);
 		pthread_mutex_destroy(&call->mutex);
 		free(call);
 		return NULL;
@@ -674,6 +678,7 @@ static void async_tool_call_destroy(struct async_tool_call *call)
 {
 	if (!call)
 		return;
+	pthread_cond_destroy(&call->cond);
 	pthread_mutex_destroy(&call->mutex);
 	free(call->tool_name);
 	free(call->tool_args);
@@ -730,12 +735,27 @@ static int react_tool_call_finish(struct react_context *ctx,
 static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 			    struct async_tool_call *call)
 {
-	if (!cancelled || !*cancelled) {
+	struct timespec ts;
+
+	pthread_mutex_lock(&call->mutex);
+	while (!call->completed && !(cancelled && *cancelled) &&
+	       !react_sigint_flag) {
+		clock_gettime(CLOCK_REALTIME, &ts);
+		ts.tv_nsec += 100 * 1000 * 1000;
+		if (ts.tv_nsec >= 1000 * 1000 * 1000) {
+			ts.tv_sec++;
+			ts.tv_nsec -= 1000 * 1000 * 1000;
+		}
+		pthread_cond_timedwait(&call->cond, &call->mutex, &ts);
+	}
+	if (!call->completed && react_sigint_flag && cancelled)
+		*cancelled = 1;
+	if (call->completed || !cancelled || !*cancelled) {
+		pthread_mutex_unlock(&call->mutex);
 		pthread_join(thread, NULL);
 		return 0;
 	}
 
-	pthread_mutex_lock(&call->mutex);
 	call->cancelled = 1;
 	morph_cancel_token_cancel(&call->cancel_token);
 	call->detached = 1;
@@ -770,6 +790,7 @@ static void *async_tool_exec(void *arg)
 		call->result = strdup(disabled_msg);
 		call->rc = -EPERM;
 		call->completed = 1;
+		pthread_cond_broadcast(&call->cond);
 		pthread_mutex_unlock(&call->mutex);
 		notify_done = 1;
 	} else {
@@ -790,6 +811,7 @@ static void *async_tool_exec(void *arg)
 		int was_cancelled = call->cancelled;
 		if (was_cancelled) {
 			call->completed = 1;
+			pthread_cond_broadcast(&call->cond);
 		} else if (rc < 0) {
 			const char *raw = res.text.data ? res.text.data : "unknown error";
 			size_t need = strlen(raw) + 64;
@@ -800,11 +822,13 @@ static void *async_tool_exec(void *arg)
 			call->result = buf;
 			call->rc = rc;
 			call->completed = 1;
+			pthread_cond_broadcast(&call->cond);
 		} else {
 			const char *raw = res.text.data ? res.text.data : "(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
 			call->rc = 0;
 			call->completed = 1;
+			pthread_cond_broadcast(&call->cond);
 		}
 		pthread_mutex_unlock(&call->mutex);
 
@@ -2285,6 +2309,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			return id_rc;
 	}
 	morph_cancel_token_reset(&ctx->cancel_token);
+	http_clear_signal_cancel();
 	react_set_state(ctx, REACT_STATE_THINKING);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
@@ -2454,6 +2479,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	http_set_cancel_flag(NULL);
 	http_set_cancel_token(NULL);
+	http_clear_signal_cancel();
 	react_active_pop(ctx);
 
 	react_complete_max_iterations(ctx);

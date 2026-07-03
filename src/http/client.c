@@ -11,6 +11,7 @@
 static int http_initialized = 0;
 static __thread volatile sig_atomic_t *http_cancel_flag = NULL;
 static __thread struct morph_cancel_token *http_cancel_token = NULL;
+static volatile sig_atomic_t http_signal_cancelled = 0;
 
 static int curl_debug_cb(CURL *handle, curl_infotype type,
 			 char *data, size_t size, void *userp)
@@ -74,8 +75,20 @@ void http_set_cancel_token(struct morph_cancel_token *token)
 	http_cancel_token = token;
 }
 
+void http_cancel_from_signal(void)
+{
+	http_signal_cancelled = 1;
+}
+
+void http_clear_signal_cancel(void)
+{
+	http_signal_cancelled = 0;
+}
+
 static int http_cancelled(void)
 {
+	if (http_signal_cancelled)
+		return 1;
 	if (morph_cancel_token_is_cancelled(http_cancel_token))
 		return 1;
 	return http_cancel_flag && *http_cancel_flag;
@@ -250,6 +263,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);
 	curl_apply_common_opts(curl, errbuf);
+	sse_apply_cancel_opts(curl);
 
 	is_post = method && strcmp(method, "POST") == 0;
 	if (is_post) {
@@ -268,8 +282,12 @@ static int do_request(const char *url, const char *method, const char *body,
 
 	curl_rc = curl_easy_perform(curl);
 	if (curl_rc != CURLE_OK) {
-		curl_log_error("http request", curl_rc, errbuf);
-		rc = MORPH_ERR_NETWORK;
+		if (http_cancelled()) {
+			rc = -ECANCELED;
+		} else {
+			curl_log_error("http request", curl_rc, errbuf);
+			rc = MORPH_ERR_NETWORK;
+		}
 		goto out;
 	}
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -580,11 +598,17 @@ int http_session_post(struct http_session *s, const char *url,
 	curl_easy_setopt(s->curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 30L);
 	curl_easy_setopt(s->curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_apply_common_opts(s->curl, errbuf);
+	sse_apply_cancel_opts(s->curl);
 
 	curl_rc = curl_easy_perform(s->curl);
 	if (curl_rc != CURLE_OK) {
-		curl_log_error("http session request", curl_rc, errbuf);
-		rc = MORPH_ERR_NETWORK;
+		if (http_cancelled()) {
+			rc = -ECANCELED;
+		} else {
+			curl_log_error("http session request", curl_rc,
+				       errbuf);
+			rc = MORPH_ERR_NETWORK;
+		}
 		goto out;
 	}
 	curl_easy_getinfo(s->curl, CURLINFO_RESPONSE_CODE, &status);

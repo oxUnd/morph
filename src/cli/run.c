@@ -1,5 +1,6 @@
 #include "cli/internal.h"
 #include "cli/commands/registry.h"
+#include "http/client.h"
 
 /* ---- sigint ---- */
 
@@ -9,7 +10,7 @@ static void sigint_handler(int sig)
 {
 	(void)sig;
 	react_sigint_flag = 1;
-	react_cancel_active();
+	http_cancel_from_signal();
 	cli_sigint_received = 1;
 	if (write(STDOUT_FILENO, "\n", 1) < 0) {
 		/* ignore */
