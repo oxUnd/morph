@@ -309,6 +309,97 @@ TEST_F(DynamicToolsTest, SharpApiResizesImage)
 	tool_result_cleanup(&result);
 }
 
+TEST_F(DynamicToolsTest, SharpApiLoadsBufferAndCompositesImage)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const { createCanvas } = require('canvas');"
+		"const sharp = require('sharp');"
+		"function bytes(str) {"
+		"  const out = new Uint8Array(str.length);"
+		"  for (let i = 0; i < str.length; i++)"
+		"    out[i] = str.charCodeAt(i);"
+		"  return out;"
+		"}"
+		"async function run(args) {"
+		"  const canvas = createCanvas(16, 16);"
+		"  const ctx = canvas.getContext('2d');"
+		"  ctx.fillStyle = '#ff0000';"
+		"  ctx.fillRect(0, 0, 16, 16);"
+		"  canvas.toFile(args.input);"
+		"  const svg = '<svg width=\"80\" height=\"48\" "
+		"xmlns=\"http://www.w3.org/2000/svg\">"
+		"<rect width=\"80\" height=\"48\" fill=\"white\"/>"
+		"</svg>';"
+		"  const encoded = await sharp(bytes(svg))"
+		"    .composite([{ input: args.input, left: 10, top: 8 }])"
+		"    .png().toBuffer();"
+		"  await sharp(encoded).rotate(-3).toFile(args.output);"
+		"  const meta = await sharp(args.output).metadata();"
+		"  return { ok: meta.width > 80 && meta.height > 48 };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("sharp_composite", source,
+					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string input = root + "/sharp_overlay.png";
+	std::string output = root + "/sharp_composite.png";
+	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
+		output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "sharp_composite", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"ok\":true"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, SharpApiExtendsImageWithBackground)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const { createCanvas } = require('canvas');"
+		"const sharp = require('sharp');"
+		"async function run(args) {"
+		"  const canvas = createCanvas(20, 10);"
+		"  canvas.toFile(args.input);"
+		"  await sharp(args.input).extend({"
+		"    top: 3, bottom: 7, left: 5, right: 11,"
+		"    background: { r: 255, g: 255, b: 255, alpha: 1 }"
+		"  }).png().toFile(args.output);"
+		"  const meta = await sharp(args.output).metadata();"
+		"  return { width: meta.width, height: meta.height };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("sharp_extend", source,
+					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string input = root + "/sharp_extend_input.png";
+	std::string output = root + "/sharp_extend_output.png";
+	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
+		output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "sharp_extend", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"width\":36"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("\"height\":20"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
 TEST_F(DynamicToolsTest, WebAssemblyApiCallsExport)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);

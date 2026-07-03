@@ -179,6 +179,158 @@ static JSValue new_sharp_object(JSContext *ctx, VipsImage *image,
 	return obj;
 }
 
+static JSValue throw_vips_error(JSContext *ctx, const char *prefix)
+{
+	const char *detail = vips_error_buffer();
+	JSValue err;
+
+	if (detail && *detail)
+		err = JS_ThrowInternalError(ctx, "%s: %s", prefix, detail);
+	else
+		err = JS_ThrowInternalError(ctx, "%s", prefix);
+	vips_error_clear();
+	return err;
+}
+
+static uint8_t *js_buffer_bytes(JSContext *ctx, JSValueConst value,
+				size_t *len)
+{
+	JSValue buffer;
+	JSValue offset_val;
+	JSValue length_val;
+	uint64_t offset = 0;
+	uint64_t byte_length = 0;
+	size_t buffer_len = 0;
+	uint8_t *bytes;
+
+	if (!len)
+		return NULL;
+	*len = 0;
+	if (!JS_IsObject(value))
+		return NULL;
+	buffer = JS_GetPropertyStr(ctx, value, "buffer");
+	if (!JS_IsUndefined(buffer)) {
+		offset_val = JS_GetPropertyStr(ctx, value, "byteOffset");
+		length_val = JS_GetPropertyStr(ctx, value, "byteLength");
+		(void)JS_ToIndex(ctx, &offset, offset_val);
+		(void)JS_ToIndex(ctx, &byte_length, length_val);
+		JS_FreeValue(ctx, offset_val);
+		JS_FreeValue(ctx, length_val);
+		bytes = JS_GetArrayBuffer(ctx, &buffer_len, buffer);
+		JS_FreeValue(ctx, buffer);
+		if (!bytes)
+			return NULL;
+		if (offset > buffer_len || byte_length > buffer_len - offset) {
+			JS_ThrowRangeError(ctx, "typed array range is invalid");
+			return NULL;
+		}
+		*len = (size_t)byte_length;
+		return bytes + (size_t)offset;
+	}
+	JS_FreeValue(ctx, buffer);
+	bytes = JS_GetArrayBuffer(ctx, &buffer_len, value);
+	if (!bytes)
+		return NULL;
+	*len = buffer_len;
+	return bytes;
+}
+
+static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
+{
+	const char *path;
+	uint8_t *bytes;
+	size_t len;
+	VipsImage *image;
+
+	if (JS_IsString(value)) {
+		path = JS_ToCString(ctx, value);
+		if (!path)
+			return NULL;
+		if (!path_allowed(ctx, path, 0)) {
+			JS_FreeCString(ctx, path);
+			return NULL;
+		}
+		image = vips_image_new_from_file(path, "access",
+						 VIPS_ACCESS_SEQUENTIAL,
+						 NULL);
+		JS_FreeCString(ctx, path);
+		if (!image)
+			(void)throw_vips_error(ctx, "failed to load image");
+		return image;
+	}
+	bytes = js_buffer_bytes(ctx, value, &len);
+	if (!bytes) {
+		if (!JS_IsObject(value))
+			JS_ThrowTypeError(ctx,
+					  "sharp(input) requires a path string, "
+					  "ArrayBuffer, or typed array");
+		return NULL;
+	}
+	image = vips_image_new_from_buffer(bytes, len, "", "access",
+					   VIPS_ACCESS_SEQUENTIAL, NULL);
+	if (!image)
+		(void)throw_vips_error(ctx, "failed to load image buffer");
+	return image;
+}
+
+static int parse_js_color(JSContext *ctx, JSValueConst value,
+			  double color[4])
+{
+	const char *s;
+	unsigned int rv;
+	unsigned int gv;
+	unsigned int bv;
+
+	if (!color)
+		return -EINVAL;
+	color[0] = 0.0;
+	color[1] = 0.0;
+	color[2] = 0.0;
+	color[3] = 255.0;
+	if (JS_IsString(value)) {
+		s = JS_ToCString(ctx, value);
+		if (!s)
+			return -EINVAL;
+		if (strcmp(s, "white") == 0) {
+			color[0] = 255.0;
+			color[1] = 255.0;
+			color[2] = 255.0;
+		} else if (strcmp(s, "black") == 0) {
+			color[0] = 0.0;
+			color[1] = 0.0;
+			color[2] = 0.0;
+		} else if (s[0] == '#' && strlen(s) == 7 &&
+			   sscanf(s + 1, "%02x%02x%02x", &rv, &gv, &bv) == 3) {
+			color[0] = (double)rv;
+			color[1] = (double)gv;
+			color[2] = (double)bv;
+		}
+		JS_FreeCString(ctx, s);
+		return 0;
+	}
+	if (JS_IsObject(value)) {
+		JSValue v;
+
+		v = JS_GetPropertyStr(ctx, value, "r");
+		(void)JS_ToFloat64(ctx, &color[0], v);
+		JS_FreeValue(ctx, v);
+		v = JS_GetPropertyStr(ctx, value, "g");
+		(void)JS_ToFloat64(ctx, &color[1], v);
+		JS_FreeValue(ctx, v);
+		v = JS_GetPropertyStr(ctx, value, "b");
+		(void)JS_ToFloat64(ctx, &color[2], v);
+		JS_FreeValue(ctx, v);
+		v = JS_GetPropertyStr(ctx, value, "alpha");
+		if (!JS_IsUndefined(v))
+			(void)JS_ToFloat64(ctx, &color[3], v);
+		JS_FreeValue(ctx, v);
+		if (color[3] <= 1.0)
+			color[3] *= 255.0;
+		return 0;
+	}
+	return 0;
+}
+
 static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 {
 	struct canvas *canvas;
@@ -227,7 +379,6 @@ fail:
 static JSValue js_sharp_call(JSContext *ctx, JSValueConst this_val,
 			     int argc, JSValueConst *argv)
 {
-	const char *path;
 	VipsImage *image;
 
 	(void)this_val;
@@ -235,18 +386,9 @@ static JSValue js_sharp_call(JSContext *ctx, JSValueConst this_val,
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "sharp(input) requires input");
-	path = JS_ToCString(ctx, argv[0]);
-	if (!path)
-		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 0)) {
-		JS_FreeCString(ctx, path);
-		return JS_EXCEPTION;
-	}
-	image = vips_image_new_from_file(path, "access", VIPS_ACCESS_SEQUENTIAL,
-					 NULL);
-	JS_FreeCString(ctx, path);
+	image = sharp_load_input(ctx, argv[0]);
 	if (!image)
-		return JS_ThrowInternalError(ctx, "failed to load image");
+		return JS_EXCEPTION;
 	return new_sharp_object(ctx, image, ".png");
 }
 
@@ -373,18 +515,74 @@ static JSValue js_sharp_extract(JSContext *ctx, JSValueConst this_val,
 	return sharp_replace(ctx, this_val, next);
 }
 
+static JSValue js_sharp_extend(JSContext *ctx, JSValueConst this_val,
+			       int argc, JSValueConst *argv)
+{
+	struct sharp_image *img = sharp_this(ctx, this_val);
+	VipsImage *next = NULL;
+	JSValue v;
+	int32_t top = 0;
+	int32_t bottom = 0;
+	int32_t left = 0;
+	int32_t right = 0;
+	int width;
+	int height;
+	double background[4];
+	VipsArrayDouble *background_array;
+
+	if (!img)
+		return JS_EXCEPTION;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "extend(options)");
+	v = JS_GetPropertyStr(ctx, argv[0], "top");
+	(void)JS_ToInt32(ctx, &top, v);
+	JS_FreeValue(ctx, v);
+	v = JS_GetPropertyStr(ctx, argv[0], "bottom");
+	(void)JS_ToInt32(ctx, &bottom, v);
+	JS_FreeValue(ctx, v);
+	v = JS_GetPropertyStr(ctx, argv[0], "left");
+	(void)JS_ToInt32(ctx, &left, v);
+	JS_FreeValue(ctx, v);
+	v = JS_GetPropertyStr(ctx, argv[0], "right");
+	(void)JS_ToInt32(ctx, &right, v);
+	JS_FreeValue(ctx, v);
+	if (top < 0 || bottom < 0 || left < 0 || right < 0)
+		return JS_ThrowRangeError(ctx, "invalid extend size");
+	width = vips_image_get_width(img->image) + left + right;
+	height = vips_image_get_height(img->image) + top + bottom;
+	v = JS_GetPropertyStr(ctx, argv[0], "background");
+	(void)parse_js_color(ctx, v, background);
+	JS_FreeValue(ctx, v);
+	background_array = vips_array_double_new(background, 4);
+	if (!background_array)
+		return JS_ThrowOutOfMemory(ctx);
+	if (vips_embed(img->image, &next, left, top, width, height,
+		       "extend", VIPS_EXTEND_BACKGROUND, "background",
+		       background_array, NULL) != 0) {
+		VipsArea *area = (VipsArea *)background_array;
+		vips_area_unref(area);
+		return throw_vips_error(ctx, "failed to extend image");
+	}
+	{
+		VipsArea *area = (VipsArea *)background_array;
+		vips_area_unref(area);
+	}
+	return sharp_replace(ctx, this_val, next);
+}
+
 static JSValue js_sharp_rotate(JSContext *ctx, JSValueConst this_val,
 			       int argc, JSValueConst *argv)
 {
 	struct sharp_image *img = sharp_this(ctx, this_val);
 	VipsImage *next = NULL;
-	int32_t angle = 90;
+	double raw_angle = 90.0;
+	int angle;
 
 	if (!img)
 		return JS_EXCEPTION;
 	if (argc > 0)
-		(void)JS_ToInt32(ctx, &angle, argv[0]);
-	angle = ((angle % 360) + 360) % 360;
+		(void)JS_ToFloat64(ctx, &raw_angle, argv[0]);
+	angle = ((int)raw_angle % 360 + 360) % 360;
 	if (angle == 0)
 		return JS_DupValue(ctx, this_val);
 	if (angle == 90)
@@ -393,8 +591,9 @@ static JSValue js_sharp_rotate(JSContext *ctx, JSValueConst this_val,
 		(void)vips_rot(img->image, &next, VIPS_ANGLE_D180, NULL);
 	else if (angle == 270)
 		(void)vips_rot(img->image, &next, VIPS_ANGLE_D270, NULL);
-	else
-		return JS_ThrowRangeError(ctx, "rotate supports 0/90/180/270");
+	else if (vips_similarity(img->image, &next, "angle", raw_angle,
+				 NULL) != 0)
+		return throw_vips_error(ctx, "failed to rotate image");
 	return sharp_replace(ctx, this_val, next);
 }
 
@@ -460,6 +659,78 @@ static JSValue js_sharp_flatten(JSContext *ctx, JSValueConst this_val,
 	if (vips_flatten(img->image, &next, NULL) != 0)
 		next = NULL;
 	return sharp_replace(ctx, this_val, next);
+}
+
+static JSValue js_sharp_composite(JSContext *ctx, JSValueConst this_val,
+				  int argc, JSValueConst *argv)
+{
+	struct sharp_image *img = sharp_this(ctx, this_val);
+	JSValue len_val;
+	uint32_t len = 0;
+
+	if (!img)
+		return JS_EXCEPTION;
+	if (argc < 1 || !JS_IsArray(ctx, argv[0]))
+		return JS_ThrowTypeError(ctx, "composite(overlays)");
+	len_val = JS_GetPropertyStr(ctx, argv[0], "length");
+	if (JS_ToUint32(ctx, &len, len_val) < 0) {
+		JS_FreeValue(ctx, len_val);
+		return JS_EXCEPTION;
+	}
+	JS_FreeValue(ctx, len_val);
+	for (uint32_t i = 0; i < len; i++) {
+		JSValue item = JS_UNDEFINED;
+		JSValue input = JS_UNDEFINED;
+		JSValue left_val = JS_UNDEFINED;
+		JSValue top_val = JS_UNDEFINED;
+		struct sharp_image *overlay_sharp;
+		VipsImage *overlay = NULL;
+		VipsImage *next = NULL;
+		int32_t left = 0;
+		int32_t top = 0;
+
+		item = JS_GetPropertyUint32(ctx, argv[0], i);
+		if (JS_IsException(item))
+			return item;
+		if (!JS_IsObject(item)) {
+			JS_FreeValue(ctx, item);
+			return JS_ThrowTypeError(ctx,
+						 "composite overlay must be object");
+		}
+		input = JS_GetPropertyStr(ctx, item, "input");
+		if (JS_IsUndefined(input)) {
+			JS_FreeValue(ctx, input);
+			JS_FreeValue(ctx, item);
+			return JS_ThrowTypeError(ctx,
+						 "composite overlay requires input");
+		}
+		left_val = JS_GetPropertyStr(ctx, item, "left");
+		top_val = JS_GetPropertyStr(ctx, item, "top");
+		(void)JS_ToInt32(ctx, &left, left_val);
+		(void)JS_ToInt32(ctx, &top, top_val);
+		JS_FreeValue(ctx, left_val);
+		JS_FreeValue(ctx, top_val);
+		overlay_sharp = JS_GetOpaque(input, sharp_class_id);
+		if (overlay_sharp && overlay_sharp->image)
+			overlay = g_object_ref(overlay_sharp->image);
+		else
+			overlay = sharp_load_input(ctx, input);
+		JS_FreeValue(ctx, input);
+		JS_FreeValue(ctx, item);
+		if (!overlay)
+			return JS_EXCEPTION;
+		if (vips_composite2(img->image, overlay, &next,
+				    VIPS_BLEND_MODE_OVER, "x", left, "y",
+				    top, NULL) != 0) {
+			g_object_unref(overlay);
+			return throw_vips_error(ctx, "failed to composite image");
+		}
+		g_object_unref(overlay);
+		if (img->image)
+			g_object_unref(img->image);
+		img->image = next;
+	}
+	return JS_DupValue(ctx, this_val);
 }
 
 static JSValue js_sharp_format(JSContext *ctx, JSValueConst this_val,
@@ -1219,12 +1490,14 @@ static const JSCFunctionListEntry sharp_proto_funcs[] = {
 	JS_CFUNC_DEF("metadata", 0, js_sharp_metadata),
 	JS_CFUNC_DEF("resize", 2, js_sharp_resize),
 	JS_CFUNC_DEF("extract", 1, js_sharp_extract),
+	JS_CFUNC_DEF("extend", 1, js_sharp_extend),
 	JS_CFUNC_DEF("rotate", 1, js_sharp_rotate),
 	JS_CFUNC_DEF("blur", 1, js_sharp_blur),
 	JS_CFUNC_DEF("sharpen", 0, js_sharp_sharpen),
 	JS_CFUNC_DEF("grayscale", 0, js_sharp_grayscale),
 	JS_CFUNC_DEF("greyscale", 0, js_sharp_grayscale),
 	JS_CFUNC_DEF("flatten", 0, js_sharp_flatten),
+	JS_CFUNC_DEF("composite", 1, js_sharp_composite),
 	JS_CFUNC_MAGIC_DEF("png", 0, js_sharp_format, 0),
 	JS_CFUNC_MAGIC_DEF("jpeg", 0, js_sharp_format, 1),
 	JS_CFUNC_MAGIC_DEF("jpg", 0, js_sharp_format, 1),
