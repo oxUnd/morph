@@ -982,6 +982,45 @@ int dynamic_tools_load_persistent(struct tool_registry *reg,
 	return 0;
 }
 
+static const char *TOOL_CREATE_DESCRIPTION =
+	"Create or update a dynamic JavaScript tool for this agent session. "
+	"The source_js runs in embedded QuickJS. It must define global function "
+	"run(args) or async function run(args), and return a JSON-serializable "
+	"value. This is not Node.js: no node: imports, fs/http/https/"
+	"child_process modules, process, Buffer, __dirname, or npm packages. "
+	"A tiny require() shim supports only popular built-ins: "
+	"require(\"sharp\") for libvips-backed image processing and "
+	"require(\"canvas\") for 2D drawing. The sharp shim is a safe subset, "
+	"not npm sharp. Allowed sharp inputs: file path strings, ArrayBuffer, "
+	"and typed arrays such as Uint8Array. Allowed sharp methods: "
+	"metadata(), resize(width[, height]) or resize({width,height}), "
+	"extract({left,top,width,height}), extend({top,bottom,left,right,"
+	"background}), rotate([angle]), blur([sigma]), sharpen(), grayscale()/"
+	"greyscale(), flatten(), composite([{input,left,top}]), png(), jpeg(), "
+	"jpg(), webp(), toFile(path), and toBuffer(). Do not use unsupported "
+	"npm sharp APIs: trim(), raw(), ensureAlpha(), removeAlpha(), "
+	"modulate(), tint(), normalize(), linear(), withMetadata(), clone(), "
+	"stats(), flip(), flop(), affine(), resize fit/position/gravity "
+	"options, composite gravity/blend/tile/opacity/density options, "
+	"flatten({background}), format quality/compression options, or "
+	"Buffer.from(). Use Uint8Array/TextEncoder-style byte arrays instead "
+	"of Buffer. Example image tool: const sharp = require(\"sharp\"); "
+	"async function run(args) { await sharp(args.input).resize(512).png()"
+	".toFile(args.output); return { output: args.output }; }. Example "
+	"canvas tool: const { createCanvas } = require(\"canvas\"); async "
+	"function run(args) { const c = createCanvas(256, 128); const ctx = "
+	"c.getContext(\"2d\"); ctx.fillStyle = \"#ffffff\"; ctx.fillRect(0, "
+	"0, 256, 128); ctx.fillStyle = \"#111111\"; ctx.fillText(args.text, "
+	"20, 70); c.toFile(args.output); return { output: args.output }; }. "
+	"Example wasm: const mod = await WebAssembly.instantiate(bytes, {}); "
+	"const n = mod.instance.exports.add(1, 2). Available host APIs: "
+	"morph.fs.readText(path), morph.fs.writeText(path, text), "
+	"morph.env.get(name), morph.exec(command), morph.fetch(url). Request "
+	"capabilities when using host APIs: fs_read, fs_write, env, "
+	"shell/process, network, image, wasm. If a dynamic tool with the same "
+	"name already exists, tool_create updates it; non-dynamic tools cannot "
+	"be overwritten.";
+
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg,
 		       const char *session_id)
@@ -1001,8 +1040,7 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->cfg = cfg;
 	strncpy(ctx->session_id, session_id ? session_id : "default",
 		sizeof(ctx->session_id) - 1);
-	rc = tool_register(reg, "tool_create",
-			   "Create or update a dynamic JavaScript tool for this agent session. The source_js runs in embedded QuickJS. It must define global function run(args) or async function run(args), and return a JSON-serializable value. This is not Node.js: no node: imports, fs/http/https/child_process modules, process, Buffer, __dirname, or npm packages. A tiny require() shim supports only popular built-ins: require(\"sharp\") for libvips-backed image processing and require(\"canvas\") for 2D drawing. Example image tool: const sharp = require(\"sharp\"); async function run(args) { await sharp(args.input).resize(512).png().toFile(args.output); return { output: args.output }; }. Example canvas tool: const { createCanvas } = require(\"canvas\"); async function run(args) { const c = createCanvas(256, 128); const ctx = c.getContext(\"2d\"); ctx.fillStyle = \"#ffffff\"; ctx.fillRect(0, 0, 256, 128); ctx.fillStyle = \"#111111\"; ctx.fillText(args.text, 20, 70); c.toFile(args.output); return { output: args.output }; }. Example wasm: const mod = await WebAssembly.instantiate(bytes, {}); const n = mod.instance.exports.add(1, 2). Available host APIs: morph.fs.readText(path), morph.fs.writeText(path, text), morph.env.get(name), morph.exec(command), morph.fetch(url). Request capabilities when using host APIs: fs_read, fs_write, env, shell/process, network, image, wasm. If a dynamic tool with the same name already exists, tool_create updates it; non-dynamic tools cannot be overwritten.",
+	rc = tool_register(reg, "tool_create", TOOL_CREATE_DESCRIPTION,
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"},\"capabilities\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Optional host capabilities: fs_read, fs_write, network, process, env, mcp, model, shell, image, wasm.\"}},\"required\":[\"name\",\"source_js\"]}",
 			   tool_create_exec, ctx, dynamic_tools_context_destroy);
 	if (rc < 0) {

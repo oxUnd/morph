@@ -126,10 +126,34 @@ async function run(args) {
 }
 ```
 
-`sharp` 是 libvips-backed 的常用子集，支持 `metadata()`、
-`resize()`、`extract()`、`rotate()`、`blur()`、`sharpen()`、
-`grayscale()` / `greyscale()`、`flatten()`、`png()`、`jpeg()`、
-`jpg()`、`webp()`、`toFile()` 和 `toBuffer()`。
+`sharp` 是 libvips-backed 的安全子集，不是 npm sharp。支持的输入只有：
+
+- 文件路径字符串
+- `ArrayBuffer`
+- `Uint8Array` 等 typed array
+
+支持的 `sharp` 方法：
+
+- `metadata()`
+- `resize(width[, height])` / `resize({ width, height })`
+- `extract({ left, top, width, height })`
+- `extend({ top, bottom, left, right, background })`
+- `rotate([angle])`
+- `blur([sigma])`
+- `sharpen()`
+- `grayscale()` / `greyscale()`
+- `flatten()`
+- `composite([{ input, left, top }])`
+- `png()` / `jpeg()` / `jpg()` / `webp()`
+- `toFile(path)` / `toBuffer()`
+
+不要在动态工具里生成这些 npm sharp 写法：`trim()`、`raw()`、
+`ensureAlpha()`、`removeAlpha()`、`modulate()`、`tint()`、`normalize()`、
+`linear()`、`withMetadata()`、`clone()`、`stats()`、`flip()`、`flop()`、
+`affine()`、`resize` 的 `fit` / `position` / `gravity` 选项、`composite`
+的 `gravity` / `blend` / `tile` / `opacity` / `density` 选项、
+`flatten({ background })`、输出格式的 `quality` / `compression` 选项，
+以及 `Buffer.from()`。需要字节输入时用 `Uint8Array` 或 `ArrayBuffer`。
 
 ```js
 const { createCanvas } = require("canvas");
@@ -286,7 +310,7 @@ allowed_network = []
 - `morph.tool.call()` 当前只是占位 API，会返回 `morph.tool.call is not available yet`。
 - 动态工具调用其他 morph 工具的安全模型尚未完成。
 - `sharp`、`canvas` 和 `WebAssembly` 当前是常用子集，不是 npm 包或浏览器
-  运行时的完整兼容实现。
+  运行时的完整兼容实现；模型提示里已明确限制不要生成未支持 API。
 - “动态工具不能绕过 disabled tools”还没有完整链路，因为跨工具调用尚未开放。
 - `morph.fetch()` 当前通过 `curl` 子进程实现，状态码目前按成功固定为 `200`，失败由 `curl -f` 转为异常。
 - runner 内部 `RUNNER_MAX_CAPTURE` 仍是固定 `1MB`，父进程的 `default_max_output_bytes` 已生效，但 host API 内部抓取上限还未配置化。
