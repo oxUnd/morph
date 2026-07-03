@@ -14,6 +14,7 @@ set(TEST_SOURCES
 	test_session.cpp
 	test_memory.cpp
 	test_runtime_query.cpp
+	test_dynamic_tools.cpp
 	test_tool.cpp
 	test_plan.cpp
 	test_context.cpp

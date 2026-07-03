@@ -1788,7 +1788,7 @@ static int react_handle_llm_error(struct react_context *ctx,
 		cb(REACT_STEP_OBSERVATION, err_content, user_data);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
 			      "failed", "LLM call failed", err_content);
-	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, err_content);
+	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, "llm_error");
 	return 1;
 }
 
@@ -2321,12 +2321,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 	struct tool_desc *active_tools = NULL;
 	int active_tool_count = 0;
 	int has_tools = ctx->tools && ctx->tools->count > 0;
-	if (react_prepare_active_tools(ctx, &active_tools,
-				       &active_tool_count) < 0) {
-		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
-				 -ENOMEM, "internal_error");
-		MORPH_RETURN(react_finish_run(ctx));
-	}
 
 	react_maybe_compress_context(ctx);
 
@@ -2359,6 +2353,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 		time_t llm_start = 0;
 		time_t llm_end = 0;
 		int status;
+
+		if (react_prepare_active_tools(ctx, &active_tools,
+					       &active_tool_count) < 0) {
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					 -ENOMEM, "internal_error");
+			break;
+		}
+		has_tools = active_tool_count > 0;
 
 		status = react_chat_once(ctx, llm, system_prompt,
 					 (struct chat_message *)messages.elts,

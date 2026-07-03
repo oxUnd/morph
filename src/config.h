@@ -188,6 +188,41 @@ struct config_mcp {
 	int server_count;
 };
 
+#define DYNAMIC_TOOL_CAP_MAX 16
+#define DYNAMIC_TOOL_CAP_LEN_MAX 32
+#define DYNAMIC_TOOL_ALLOW_MAX 32
+#define DYNAMIC_TOOL_ALLOW_LEN_MAX PATH_MAX
+
+struct config_dynamic_tool_profile {
+	char default_capabilities[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX];
+	int default_capabilities_count;
+	char allowed_read_paths[DYNAMIC_TOOL_ALLOW_MAX][DYNAMIC_TOOL_ALLOW_LEN_MAX];
+	int allowed_read_paths_count;
+	char allowed_write_paths[DYNAMIC_TOOL_ALLOW_MAX][DYNAMIC_TOOL_ALLOW_LEN_MAX];
+	int allowed_write_paths_count;
+	char allowed_commands[DYNAMIC_TOOL_ALLOW_MAX][DYNAMIC_TOOL_ALLOW_LEN_MAX];
+	int allowed_commands_count;
+	char allowed_network[DYNAMIC_TOOL_ALLOW_MAX][DYNAMIC_TOOL_ALLOW_LEN_MAX];
+	int allowed_network_count;
+};
+
+struct config_dynamic_tools {
+	int enabled;
+	char runtime[16];
+	char mode[16];
+	int mode_explicit;
+	char session_dir[PATH_MAX];
+	char persistent_dir[PATH_MAX];
+	char default_lifetime[16];
+	int create_requires_approval;
+	int promote_requires_approval;
+	int max_source_bytes;
+	int default_timeout_seconds;
+	int default_max_output_bytes;
+	struct config_dynamic_tool_profile local;
+	struct config_dynamic_tool_profile server;
+};
+
 #define SUB_AGENT_MAX 16
 #define SUB_AGENT_NAME_MAX 64
 #define SUB_AGENT_TOOL_MAX 32
@@ -236,6 +271,7 @@ struct config {
 	struct config_prompt prompt;
 	struct config_skill skill;
 	struct config_mcp mcp;
+	struct config_dynamic_tools dynamic_tools;
 	struct config_sub_agents sub_agents;
 };
 

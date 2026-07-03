@@ -28,6 +28,10 @@ pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 
 include(FetchContent)
 
+if(POLICY CMP0169)
+	cmake_policy(SET CMP0169 OLD)
+endif()
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz")
 	FetchContent_Declare(
 		md4c
@@ -42,6 +46,42 @@ else()
 	)
 endif()
 FetchContent_MakeAvailable(md4c)
+
+FetchContent_Declare(
+	quickjs
+	URL https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_Populate(quickjs)
+
+add_library(quickjs STATIC
+	${quickjs_SOURCE_DIR}/quickjs.c
+	${quickjs_SOURCE_DIR}/libregexp.c
+	${quickjs_SOURCE_DIR}/libunicode.c
+	${quickjs_SOURCE_DIR}/cutils.c
+	${quickjs_SOURCE_DIR}/quickjs-libc.c
+	${quickjs_SOURCE_DIR}/dtoa.c
+)
+target_include_directories(quickjs PUBLIC
+	${quickjs_SOURCE_DIR}
+)
+target_compile_definitions(quickjs PRIVATE
+	_GNU_SOURCE
+	CONFIG_VERSION="2026-06-04"
+)
+target_compile_options(quickjs PRIVATE
+	-Wno-conversion
+	-Wno-sign-conversion
+	-Wno-shadow
+	-Wno-unused-parameter
+	-Wno-unused-function
+	-Wno-implicit-fallthrough
+	-Wno-pedantic
+)
+target_link_libraries(quickjs PUBLIC m pthread)
+if(NOT APPLE)
+	target_link_libraries(quickjs PUBLIC dl)
+endif()
 
 add_library(mathjax STATIC
         vendor/mathjax-c/src/api.c

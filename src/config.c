@@ -99,6 +99,46 @@ void config_set_defaults(struct config *cfg)
 		sizeof(cfg->ext.dir) - 1);
 	cfg->ext.default_max_memory_mb = 128;
 	cfg->ext.default_max_cpu_seconds = 30;
+
+	cfg->dynamic_tools.enabled = 1;
+	strncpy(cfg->dynamic_tools.runtime, "quickjs",
+		sizeof(cfg->dynamic_tools.runtime) - 1);
+	strncpy(cfg->dynamic_tools.mode, "local",
+		sizeof(cfg->dynamic_tools.mode) - 1);
+	strncpy(cfg->dynamic_tools.session_dir, "~/.morph/runtime/tools",
+		sizeof(cfg->dynamic_tools.session_dir) - 1);
+	strncpy(cfg->dynamic_tools.persistent_dir, "~/.morph/tools",
+		sizeof(cfg->dynamic_tools.persistent_dir) - 1);
+	strncpy(cfg->dynamic_tools.default_lifetime, "session",
+		sizeof(cfg->dynamic_tools.default_lifetime) - 1);
+	cfg->dynamic_tools.create_requires_approval = 0;
+	cfg->dynamic_tools.promote_requires_approval = 1;
+	cfg->dynamic_tools.max_source_bytes = 262144;
+	cfg->dynamic_tools.default_timeout_seconds = 30;
+	cfg->dynamic_tools.default_max_output_bytes = 1048576;
+	{
+		static const char *const caps[] = {
+			"fs_read", "fs_write", "network", "process",
+			"env", "mcp", "model", "shell"
+		};
+		for (int i = 0; i < 8; i++) {
+			strncpy(cfg->dynamic_tools.local.default_capabilities[i],
+				caps[i], DYNAMIC_TOOL_CAP_LEN_MAX - 1);
+		}
+		cfg->dynamic_tools.local.default_capabilities_count = 8;
+		strncpy(cfg->dynamic_tools.local.allowed_read_paths[0], "*",
+			DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+		strncpy(cfg->dynamic_tools.local.allowed_write_paths[0], "*",
+			DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+		strncpy(cfg->dynamic_tools.local.allowed_commands[0], "*",
+			DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+		strncpy(cfg->dynamic_tools.local.allowed_network[0], "*",
+			DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+		cfg->dynamic_tools.local.allowed_read_paths_count = 1;
+		cfg->dynamic_tools.local.allowed_write_paths_count = 1;
+		cfg->dynamic_tools.local.allowed_commands_count = 1;
+		cfg->dynamic_tools.local.allowed_network_count = 1;
+	}
 }
 
 #define CFG_STR(tab, key, buf) do { \
@@ -208,6 +248,84 @@ static void load_credits_config(toml_table_t *root, struct config_credits *cfg)
 	}
 }
 
+static void load_string_array(toml_table_t *tbl, const char *key,
+			      char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
+			      int *out_count, int max_count, size_t value_len)
+{
+	toml_array_t *arr;
+	int count;
+
+	if (!tbl || !key || !values || !out_count)
+		return;
+	arr = toml_array_in(tbl, key);
+	if (!arr)
+		return;
+	count = 0;
+	for (; count < max_count; count++) {
+		toml_datum_t val = toml_string_at(arr, count);
+		if (!val.ok)
+			break;
+		strncpy(values[count], val.u.s, value_len - 1);
+		values[count][value_len - 1] = '\0';
+		free(val.u.s);
+	}
+	*out_count = count;
+}
+
+static void load_cap_array(toml_table_t *tbl, const char *key,
+			   char values[][DYNAMIC_TOOL_CAP_LEN_MAX],
+			   int *out_count)
+{
+	toml_array_t *arr;
+	int count;
+
+	if (!tbl || !key || !values || !out_count)
+		return;
+	arr = toml_array_in(tbl, key);
+	if (!arr)
+		return;
+	count = 0;
+	for (; count < DYNAMIC_TOOL_CAP_MAX; count++) {
+		toml_datum_t val = toml_string_at(arr, count);
+		if (!val.ok)
+			break;
+		strncpy(values[count], val.u.s, DYNAMIC_TOOL_CAP_LEN_MAX - 1);
+		values[count][DYNAMIC_TOOL_CAP_LEN_MAX - 1] = '\0';
+		free(val.u.s);
+	}
+	*out_count = count;
+}
+
+static void load_dynamic_profile(toml_table_t *tbl,
+				 struct config_dynamic_tool_profile *profile)
+{
+	if (!tbl || !profile)
+		return;
+	load_cap_array(tbl, "default_capabilities",
+		       profile->default_capabilities,
+		       &profile->default_capabilities_count);
+	load_string_array(tbl, "allowed_read_paths",
+			  profile->allowed_read_paths,
+			  &profile->allowed_read_paths_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
+			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
+	load_string_array(tbl, "allowed_write_paths",
+			  profile->allowed_write_paths,
+			  &profile->allowed_write_paths_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
+			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
+	load_string_array(tbl, "allowed_commands",
+			  profile->allowed_commands,
+			  &profile->allowed_commands_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
+			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
+	load_string_array(tbl, "allowed_network",
+			  profile->allowed_network,
+			  &profile->allowed_network_count,
+			  DYNAMIC_TOOL_ALLOW_MAX,
+			  DYNAMIC_TOOL_ALLOW_LEN_MAX);
+}
+
 static void expand_path_field(char *buf, size_t len)
 {
 	if (!buf[0])
@@ -225,6 +343,10 @@ static void config_expand_paths(struct config *cfg)
 	expand_path_field(cfg->general.output_dir, sizeof(cfg->general.output_dir));
 	expand_path_field(cfg->general.log_file, sizeof(cfg->general.log_file));
 	expand_path_field(cfg->ext.dir, sizeof(cfg->ext.dir));
+	expand_path_field(cfg->dynamic_tools.session_dir,
+			  sizeof(cfg->dynamic_tools.session_dir));
+	expand_path_field(cfg->dynamic_tools.persistent_dir,
+			  sizeof(cfg->dynamic_tools.persistent_dir));
 	expand_path_field(cfg->skill.dir, sizeof(cfg->skill.dir));
 	expand_path_field(cfg->prompt.system_prompt_file, sizeof(cfg->prompt.system_prompt_file));
 	expand_path_field(cfg->prompt.system_prompt_dir, sizeof(cfg->prompt.system_prompt_dir));
@@ -412,6 +534,39 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(ext, "dir", cfg->ext.dir);
 		CFG_INT(ext, "default_max_memory_mb", cfg->ext.default_max_memory_mb);
 		CFG_INT(ext, "default_max_cpu_seconds", cfg->ext.default_max_cpu_seconds);
+	}
+
+	toml_table_t *dynamic = table_path(tbl, "dynamic_tools");
+	if (dynamic) {
+		toml_datum_t mode;
+		CFG_BOOL(dynamic, "enabled", cfg->dynamic_tools.enabled);
+		CFG_STR(dynamic, "runtime", cfg->dynamic_tools.runtime);
+		mode = toml_string_in(dynamic, "mode");
+		if (mode.ok) {
+			strncpy(cfg->dynamic_tools.mode, mode.u.s,
+				sizeof(cfg->dynamic_tools.mode) - 1);
+			cfg->dynamic_tools.mode_explicit = 1;
+			free(mode.u.s);
+		}
+		CFG_STR(dynamic, "session_dir", cfg->dynamic_tools.session_dir);
+		CFG_STR(dynamic, "persistent_dir",
+			cfg->dynamic_tools.persistent_dir);
+		CFG_STR(dynamic, "default_lifetime",
+			cfg->dynamic_tools.default_lifetime);
+		CFG_BOOL(dynamic, "create_requires_approval",
+			 cfg->dynamic_tools.create_requires_approval);
+		CFG_BOOL(dynamic, "promote_requires_approval",
+			 cfg->dynamic_tools.promote_requires_approval);
+		CFG_INT(dynamic, "max_source_bytes",
+			cfg->dynamic_tools.max_source_bytes);
+		CFG_INT(dynamic, "default_timeout_seconds",
+			cfg->dynamic_tools.default_timeout_seconds);
+		CFG_INT(dynamic, "default_max_output_bytes",
+			cfg->dynamic_tools.default_max_output_bytes);
+		load_dynamic_profile(toml_table_in(dynamic, "local"),
+				     &cfg->dynamic_tools.local);
+		load_dynamic_profile(toml_table_in(dynamic, "server"),
+				     &cfg->dynamic_tools.server);
 	}
 
 	toml_table_t *prompt = table_path(tbl, "prompt");

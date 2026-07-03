@@ -285,6 +285,35 @@ dir = "~/.morph/exts"
 default_max_memory_mb   = 128
 default_max_cpu_seconds = 30
 
+[dynamic_tools]
+# Agent-created JavaScript tools powered by the built-in QuickJS runner.
+enabled = true
+runtime = "quickjs"
+# CLI defaults to local. FastCGI/server defaults to server unless this is set.
+mode = "local"              # local | server
+session_dir = "~/.morph/runtime/tools"
+persistent_dir = "~/.morph/tools"
+default_lifetime = "session"
+create_requires_approval = false
+promote_requires_approval = true
+max_source_bytes = 262144
+default_timeout_seconds = 30
+default_max_output_bytes = 1048576
+
+[dynamic_tools.local]
+default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell"]
+allowed_read_paths = ["*"]
+allowed_write_paths = ["*"]
+allowed_commands = ["*"]
+allowed_network = ["*"]
+
+[dynamic_tools.server]
+default_capabilities = []
+allowed_read_paths = []
+allowed_write_paths = []
+allowed_commands = []
+allowed_network = []
+
 [prompt]
 # Optional: path to a plain-text file containing additional system prompt
 # content appended after the default ReAct system prompt header.

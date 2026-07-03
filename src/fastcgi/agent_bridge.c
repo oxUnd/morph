@@ -31,6 +31,7 @@
 #include "agent/tools/plan.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tools/runtime_query.h"
+#include "agent/tools/dynamic_tools.h"
 #include "ext/ext.h"
 #include "ext/manifest.h"
 #include "models/llm.h"
@@ -113,6 +114,10 @@ static void bridge_init_once(void)
 				 "%s/.morph/config.toml", home);
 			config_load(&g_config, path);
 		}
+	}
+	if (!g_config.dynamic_tools.mode_explicit) {
+		strncpy(g_config.dynamic_tools.mode, "server",
+			sizeof(g_config.dynamic_tools.mode) - 1);
 	}
 
 	/* Environment variable overrides (take precedence over config) */
@@ -242,6 +247,10 @@ static void bridge_init_once(void)
 
 	plan_registry_init(&g_plans);
 	plan_tool_init(&g_tools, &g_plans, g_llm);
+	(void)dynamic_tools_init(&g_tools, g_tctx,
+				 &g_config.dynamic_tools, "fastcgi");
+	for (int i = 0; i < g_config.react.disabled_tools_count; i++)
+		tool_disable(&g_tools, g_config.react.disabled_tools[i]);
 
 	log_info("fcgi-bridge: registered %d tools", g_tools.count);
 }

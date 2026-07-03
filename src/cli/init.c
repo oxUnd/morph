@@ -1,5 +1,6 @@
 #include "cli/internal.h"
 #include "cli/commands/registry.h"
+#include "agent/tools/dynamic_tools.h"
 
 static int ext_run_wrapper(const char *args_json, struct tool_result *result, void *user_data)
 {
@@ -1029,6 +1030,24 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	}
 	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
 			       "extensions ready", "extensions", 0);
+
+	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
+			       "loading dynamic tools", "dynamic_tools", 0);
+	rc = dynamic_tools_init(&ctx->tools, ctx->tctx,
+				&ctx->config.dynamic_tools,
+				ctx->current_session.display_id[0]
+					? ctx->current_session.display_id
+					: ctx->current_session.name);
+	if (rc < 0) {
+		cli_emit_startup_event(ctx, "startup.component.failed",
+				       "failed", "dynamic tools failed",
+				       "dynamic_tools", rc);
+		goto fail;
+	}
+	for (int i = 0; i < ctx->config.react.disabled_tools_count; i++)
+		tool_disable(&ctx->tools, ctx->config.react.disabled_tools[i]);
+	cli_emit_startup_event(ctx, "startup.component.ready", "ready",
+			       "dynamic tools ready", "dynamic_tools", 0);
 
 	cli_emit_startup_event(ctx, "startup.component.begin", "begin",
 			       "initializing MCP", "mcp", 0);
