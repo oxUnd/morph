@@ -139,6 +139,111 @@ TEST_F(DynamicToolsTest, ToolCreateUsesUpdatedSessionDirectory)
 	EXPECT_FALSE(file_exists(old.c_str()));
 }
 
+TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function run(args) {"
+		"  return { value: args.value + 1 };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("session_reload", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&reg);
+
+	struct tool_registry reg2;
+	struct tool_context *tctx2 = tool_context_create(root.c_str(),
+							 root.c_str());
+
+	tool_registry_init(&reg2);
+	ASSERT_NE(tctx2, nullptr);
+	ASSERT_EQ(dynamic_tools_init(&reg2, tctx2, &cfg.dynamic_tools,
+				     "sess"), 0);
+	EXPECT_NE(tool_lookup(&reg2, "session_reload"), nullptr);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg2, "session_reload", "{\"value\":41}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":42"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&reg2);
+	tool_context_destroy(tctx2);
+	tool_registry_init(&reg);
+}
+
+TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
+{
+	std::string dir = root + "/session/sess_later/later_tool";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	const char *meta_json =
+		"{\"name\":\"later_tool\","
+		"\"description\":\"later session tool\","
+		"\"args_schema\":{\"type\":\"object\"}}";
+	const char *source =
+		"function run(args) {"
+		"  return { text: String(args.text).toUpperCase() };"
+		"}";
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools,
+				     "default"), 0);
+	EXPECT_EQ(tool_lookup(&reg, "later_tool"), nullptr);
+	ASSERT_EQ(dynamic_tools_set_session_id(&reg, "sess_later"), 0);
+	ASSERT_NE(tool_lookup(&reg, "later_tool"), nullptr);
+
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "later_tool", "{\"text\":\"hello\"}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"text\":\"HELLO\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
+{
+	std::string dir = root + "/session/default/default_tool";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	const char *meta_json =
+		"{\"name\":\"default_tool\","
+		"\"description\":\"default session tool\","
+		"\"args_schema\":{\"type\":\"object\"}}";
+	const char *source =
+		"function run(args) { return { ok: true }; }";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, ""),
+		  0);
+	EXPECT_EQ(tool_lookup(&reg, "default_tool"), nullptr);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("empty_session_tool", source).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find(
+			  "create_tool_dir"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_FALSE(file_exists((root +
+		"/session/default/empty_session_tool/tool.js").c_str()));
+}
+
 TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);

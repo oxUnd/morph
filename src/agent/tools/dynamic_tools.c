@@ -48,6 +48,11 @@ struct dynamic_tools_context {
 	char session_id[128];
 };
 
+static int dynamic_tools_load_session(struct tool_registry *reg,
+				      struct tool_context *tctx,
+				      const struct config_dynamic_tools *cfg,
+				      const char *session_id);
+
 static const char *runner_path(void)
 {
 	const char *path = getenv("MORPH_JS_RUNNER_PATH");
@@ -893,9 +898,10 @@ static int create_context_dir(const struct dynamic_tools_context *ctx,
 	char session_root[PATH_MAX];
 	int rc;
 
+	if (!ctx || !ctx->session_id[0])
+		return -EINVAL;
 	rc = file_path_join(session_root, sizeof(session_root),
-			    ctx->cfg->session_dir,
-			    ctx->session_id[0] ? ctx->session_id : "default");
+			    ctx->cfg->session_dir, ctx->session_id);
 	if (rc < 0)
 		return rc;
 	return file_path_join(dir, dir_size, session_root, name);
@@ -1219,6 +1225,7 @@ int dynamic_tools_set_session_id(struct tool_registry *reg,
 {
 	struct tool_entry *entry;
 	struct dynamic_tools_context *ctx;
+	int rc;
 
 	if (!reg)
 		return -EINVAL;
@@ -1229,34 +1236,65 @@ int dynamic_tools_set_session_id(struct tool_registry *reg,
 	if (!ctx)
 		return -EINVAL;
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
-		 session_id && *session_id ? session_id : "default");
+		 session_id ? session_id : "");
+	if (!ctx->session_id[0])
+		return 0;
+	rc = dynamic_tools_load_session(reg, ctx->tctx, ctx->cfg,
+					ctx->session_id);
+	return rc < 0 ? rc : 0;
+}
+
+static int dynamic_tools_load_from_root(struct tool_registry *reg,
+					struct tool_context *tctx,
+					const struct config_dynamic_tools *cfg,
+					const char *root)
+{
+	char **dirs = NULL;
+	int count = 0;
+
+	if (!reg || !cfg || !cfg->enabled || !root)
+		return 0;
+	if (!file_exists(root))
+		return 0;
+	if (file_list_dirs(root, &dirs, &count) != 0)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		char path[PATH_MAX];
+		if (dirs[i][0] == '.')
+			continue;
+		if (file_path_join(path, sizeof(path), root, dirs[i]) != 0)
+			continue;
+		(void)load_tool_from_dir(reg, tctx, cfg, path);
+	}
+	file_free_list(dirs, count);
 	return 0;
+}
+
+static int dynamic_tools_load_session(struct tool_registry *reg,
+				      struct tool_context *tctx,
+				      const struct config_dynamic_tools *cfg,
+				      const char *session_id)
+{
+	char session_root[PATH_MAX];
+	int rc;
+
+	if (!cfg || !cfg->enabled || !session_id || !*session_id)
+		return 0;
+	rc = file_path_join(session_root, sizeof(session_root),
+			    cfg->session_dir, session_id);
+	if (rc < 0)
+		return rc;
+	return dynamic_tools_load_from_root(reg, tctx, cfg, session_root);
 }
 
 int dynamic_tools_load_persistent(struct tool_registry *reg,
 				  struct tool_context *tctx,
 				  const struct config_dynamic_tools *cfg)
 {
-	char **dirs = NULL;
-	int count = 0;
-
-	if (!reg || !cfg || !cfg->enabled)
+	if (!cfg)
 		return 0;
-	if (!file_exists(cfg->persistent_dir))
-		return 0;
-	if (file_list_dirs(cfg->persistent_dir, &dirs, &count) != 0)
-		return 0;
-	for (int i = 0; i < count; i++) {
-		char path[PATH_MAX];
-		if (dirs[i][0] == '.')
-			continue;
-		if (file_path_join(path, sizeof(path),
-				   cfg->persistent_dir, dirs[i]) != 0)
-			continue;
-		(void)load_tool_from_dir(reg, tctx, cfg, path);
-	}
-	file_free_list(dirs, count);
-	return 0;
+	return dynamic_tools_load_from_root(reg, tctx, cfg,
+					    cfg->persistent_dir);
 }
 
 static const char *TOOL_CREATE_DESCRIPTION =
@@ -1319,7 +1357,7 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->tctx = tctx;
 	ctx->cfg = cfg;
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
-		 session_id && *session_id ? session_id : "default");
+		 session_id ? session_id : "");
 	rc = tool_register(reg, "tool_create", TOOL_CREATE_DESCRIPTION,
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"}},\"required\":[\"name\",\"source_js\"]}",
 			   tool_create_exec, ctx, dynamic_tools_context_destroy);
@@ -1333,5 +1371,8 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 			   tool_promote_exec, ctx, NULL);
 	if (rc < 0)
 		return rc;
-	return dynamic_tools_load_persistent(reg, tctx, cfg);
+	rc = dynamic_tools_load_persistent(reg, tctx, cfg);
+	if (rc < 0)
+		return rc;
+	return dynamic_tools_load_session(reg, tctx, cfg, ctx->session_id);
 }
