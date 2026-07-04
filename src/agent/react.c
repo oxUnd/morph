@@ -1966,12 +1966,21 @@ static void react_start_tool_calls(struct react_context *ctx,
 					 -EAGAIN, "tool_thread_failed");
 			break;
 		}
+		slots[i].thread_started = 1;
+	}
+
+	for (int i = 0; i < response->tool_call_count; i++) {
+		struct tool_call *tc;
+
+		if (slots[i].hitl_denied || !slots[i].call ||
+		    !slots[i].thread_started)
+			continue;
+		tc = &response->tool_calls[i];
 		react_tool_call_running(ctx, tc);
 		pthread_mutex_lock(&slots[i].call->mutex);
 		slots[i].call->start_released = 1;
 		pthread_cond_broadcast(&slots[i].call->cond);
 		pthread_mutex_unlock(&slots[i].call->mutex);
-		slots[i].thread_started = 1;
 	}
 }
 

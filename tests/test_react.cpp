@@ -1019,6 +1019,29 @@ static int event_recorder_index_name(struct morph_event_recorder *rec,
 	return -1;
 }
 
+static int event_recorder_nth_index_name(struct morph_event_recorder *rec,
+					 const char *name, int nth)
+{
+	int seen = 0;
+
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
+		if (!matched)
+			continue;
+		if (seen == nth)
+			return (int)i;
+		seen++;
+	}
+	return -1;
+}
+
 static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
 				       const char *name,
 				       const char *outcome)
@@ -1302,6 +1325,8 @@ TEST_F(MockLlmTest, MultipleToolCallsUseSlotArray) {
 	EXPECT_EQ(slot_data->call_count, 2);
 	EXPECT_EQ(event_recorder_count_name(&rec, "tool.result"), 2);
 	EXPECT_EQ(event_recorder_count_name(&rec, "tool.running"), 2);
+	EXPECT_LT(event_recorder_nth_index_name(&rec, "tool.call", 1),
+		  event_recorder_nth_index_name(&rec, "tool.running", 0));
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_NE(strstr(ctx->final_answer, "both tools"), nullptr);
 
