@@ -638,13 +638,17 @@ int cli_ask_user_callback(const char *question,
  */
 static int prompt_yna(const char *subject)
 {
+	static pthread_mutex_t prompt_lock = PTHREAD_MUTEX_INITIALIZER;
+	int v;
+
+	pthread_mutex_lock(&prompt_lock);
 #ifdef HAVE_READLINE
 	char *rl_input = readline("  [y]es / [n]o / [a]lways: ");
 	if (!rl_input) {
 		printf("\n");
+		pthread_mutex_unlock(&prompt_lock);
 		return 0;
 	}
-	int v;
 	if (rl_input[0] == 'a' || rl_input[0] == 'A')
 		v = 2;
 	else if (rl_input[0] == 'y' || rl_input[0] == 'Y')
@@ -661,16 +665,17 @@ static int prompt_yna(const char *subject)
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf("\n");
+		pthread_mutex_unlock(&prompt_lock);
 		return 0;
 	}
 	if (!fgets(buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf("\n");
+		pthread_mutex_unlock(&prompt_lock);
 		return 0;
 	}
 	fclose(tty);
 
-	int v;
 	if (buf[0] == 'a' || buf[0] == 'A')
 		v = 2;
 	else if (buf[0] == 'y' || buf[0] == 'Y')
@@ -688,6 +693,7 @@ static int prompt_yna(const char *subject)
 		       subject ? subject : "");
 
 	fflush(stdout);
+	pthread_mutex_unlock(&prompt_lock);
 	return v;
 }
 

@@ -191,7 +191,9 @@ int db_open(struct db *db, const char *path)
 		return -EINVAL;
 	memset(db, 0, sizeof(*db));
 	strncpy(db->path, path, sizeof(db->path) - 1);
-	int rc = sqlite3_open(path, &db->handle);
+	int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+		SQLITE_OPEN_FULLMUTEX;
+	int rc = sqlite3_open_v2(path, &db->handle, flags, NULL);
 	if (rc != SQLITE_OK) {
 		log_err("failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
 		sqlite3_close(db->handle);

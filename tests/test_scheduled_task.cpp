@@ -7,8 +7,10 @@
 #include "event/event.h"
 #include "cJSON.h"
 #include <climits>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <pthread.h>
 #include <unistd.h>
 
 static int successful_runner(const struct scheduled_task *task,
@@ -90,6 +92,59 @@ protected:
 		std::remove(db_path);
 	}
 };
+
+struct inbox_reader_args {
+	struct db *db;
+	std::atomic<int> *failed;
+};
+
+static void *inbox_reader_thread(void *arg)
+{
+	struct inbox_reader_args *args =
+		static_cast<struct inbox_reader_args *>(arg);
+
+	for (int i = 0; i < 100; i++) {
+		struct notification *notifications = nullptr;
+		int count = 0;
+		int rc = notification_list_unread(args->db, 50,
+						  &notifications, &count);
+		if (rc != 0)
+			args->failed->store(1);
+		notification_free_list(notifications, count);
+	}
+	return nullptr;
+}
+
+TEST_F(ScheduledTaskTest, ConcurrentNotificationInboxAccess) {
+	const int thread_count = 4;
+	pthread_t threads[thread_count];
+	std::atomic<int> failed{0};
+	struct inbox_reader_args args = {&db, &failed};
+
+	for (int i = 0; i < thread_count; i++) {
+		ASSERT_EQ(pthread_create(&threads[i], nullptr,
+					 inbox_reader_thread, &args), 0);
+	}
+
+	for (int i = 0; i < 100; i++) {
+		int rc = notification_create(&db, 0, "info", "title", "body",
+					     "inbox", nullptr);
+		if (rc != 0)
+			failed.store(1);
+	}
+
+	for (int i = 0; i < thread_count; i++)
+		ASSERT_EQ(pthread_join(threads[i], nullptr), 0);
+
+	struct notification *notifications = nullptr;
+	int count = 0;
+
+	ASSERT_EQ(notification_list_unread(&db, 200, &notifications, &count),
+		  0);
+	EXPECT_GT(count, 0);
+	notification_free_list(notifications, count);
+	EXPECT_EQ(failed.load(), 0);
+}
 
 TEST_F(ScheduledTaskTest, CreateAndGetTask) {
 	struct scheduled_task_input input = {};
