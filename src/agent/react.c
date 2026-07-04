@@ -301,6 +301,16 @@ static void react_set_result(struct react_context *ctx,
 	}
 }
 
+static void react_set_error_detail(struct react_context *ctx,
+				   const char *detail)
+{
+	if (!ctx)
+		return;
+	free(ctx->last_error_detail);
+	ctx->last_error_detail = detail && *detail ?
+		utf8_dup_clamped(detail, 8192) : NULL;
+}
+
 static int react_emit_outcome_event(struct react_context *ctx,
 				    const char *name, const char *phase,
 				    const char *message, const char *text)
@@ -319,6 +329,9 @@ static int react_emit_outcome_event(struct react_context *ctx,
 						   REACT_OUTCOME_NONE));
 	if (ctx && ctx->outcome_reason[0])
 		cJSON_AddStringToObject(data, "reason", ctx->outcome_reason);
+	if (ctx && ctx->last_error_detail)
+		cJSON_AddStringToObject(data, "detail",
+					ctx->last_error_detail);
 	if (ctx && ctx->last_error_code < 0) {
 		cJSON_AddNumberToObject(data, "error_code",
 					ctx->last_error_code);
@@ -994,6 +1007,7 @@ void react_context_destroy(struct react_context *ctx)
 		return;
 	react_reset(ctx);
 	free(ctx->final_answer);
+	free(ctx->last_error_detail);
 	free(ctx->system_prompt);
 	free(ctx->memory_context);
 	free(ctx->workdir);
@@ -1019,6 +1033,8 @@ void react_reset(struct react_context *ctx)
 	ctx->outcome = REACT_OUTCOME_NONE;
 	ctx->last_error_code = 0;
 	ctx->outcome_reason[0] = '\0';
+	free(ctx->last_error_detail);
+	ctx->last_error_detail = NULL;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
 	ctx->tool_fail_name = NULL;
@@ -2145,6 +2161,12 @@ static int react_join_tool_calls(struct react_context *ctx,
 		react_set_state(ctx, REACT_STATE_OBSERVING);
 		call = slots[i].call;
 		react_collect_tool_result(call, &rc, &result);
+		obs_text = result ? result : "";
+		if (rc < 0) {
+			react_set_error_detail(ctx, obs_text);
+			react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR, rc,
+					 call->tool_name);
+		}
 
 		if (react_track_tool_failure(ctx, call->tool_name,
 					     call->tool_args, rc, cb,
@@ -2162,7 +2184,6 @@ static int react_join_tool_calls(struct react_context *ctx,
 			return 1;
 		}
 
-		obs_text = result ? result : "";
 		react_tool_call_finish(ctx, call, obs_text, rc);
 		if (rc >= 0)
 			react_emit_artifacts_from_text(ctx, obs_text,

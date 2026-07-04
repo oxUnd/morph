@@ -552,11 +552,33 @@ static void print_error_response(int id, const char *message)
 static void print_exception(JSContext *ctx, int id)
 {
 	JSValue exception = JS_GetException(ctx);
+	JSValue stack = JS_UNDEFINED;
 	const char *msg = JS_ToCString(ctx, exception);
+	const char *stack_str = NULL;
+	morph_buf_t buf;
 
-	print_error_response(id, msg ? msg : "JavaScript exception");
+	stack = JS_GetPropertyStr(ctx, exception, "stack");
+	if (!JS_IsUndefined(stack) && !JS_IsNull(stack))
+		stack_str = JS_ToCString(ctx, stack);
+	if (morph_buf_init(&buf, 512) == 0) {
+		if (morph_buf_puts(&buf, msg ? msg :
+				   "JavaScript exception") == 0 &&
+		    stack_str && *stack_str &&
+		    morph_buf_puts(&buf, "\nStack:\n") == 0 &&
+		    morph_buf_puts(&buf, stack_str) == 0)
+			print_error_response(id, morph_buf_cstr(&buf));
+		else
+			print_error_response(id, msg ? msg :
+					     "JavaScript exception");
+		morph_buf_cleanup(&buf);
+	} else {
+		print_error_response(id, msg ? msg : "JavaScript exception");
+	}
+	if (stack_str)
+		JS_FreeCString(ctx, stack_str);
 	if (msg)
 		JS_FreeCString(ctx, msg);
+	JS_FreeValue(ctx, stack);
 	JS_FreeValue(ctx, exception);
 }
 
@@ -565,6 +587,9 @@ static int check_script(JSContext *ctx, const char *path)
 	char *source;
 	size_t len;
 	JSValue val;
+	JSValue global = JS_UNDEFINED;
+	JSValue fn = JS_UNDEFINED;
+	int rc = 0;
 
 	source = file_read_all(path, &len);
 	if (!source)
@@ -576,7 +601,17 @@ static int check_script(JSContext *ctx, const char *path)
 		return -EINVAL;
 	}
 	JS_FreeValue(ctx, val);
-	return 0;
+	global = JS_GetGlobalObject(ctx);
+	fn = JS_GetPropertyStr(ctx, global, "run");
+	if (!JS_IsFunction(ctx, fn)) {
+		print_error_response(1,
+			"script must define global run(args). Example: "
+			"async function run(args) { return { ok: true }; }");
+		rc = -EINVAL;
+	}
+	JS_FreeValue(ctx, fn);
+	JS_FreeValue(ctx, global);
+	return rc;
 }
 
 static int run_script(JSContext *ctx, const char *path)

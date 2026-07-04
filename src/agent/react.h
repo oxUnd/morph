@@ -111,6 +111,7 @@ struct react_context {
 	enum react_outcome outcome;
 	int last_error_code;
 	char outcome_reason[64];
+	char *last_error_detail;
 	char *tool_fail_name;
 	char *tool_fail_args;
 	int tool_fail_count;

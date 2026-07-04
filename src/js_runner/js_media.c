@@ -3,6 +3,7 @@
 #include "util/file.h"
 #include <cairo.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +11,13 @@
 #include <string.h>
 #include <vips/vips.h>
 #include "wasm3.h"
+
+#ifdef __ANDROID__
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#endif
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 #define WASM_STACK_SIZE (64 * 1024)
 #define WASM_MAX_EXPORTS 128
@@ -57,6 +65,10 @@ static JSClassID image_data_class_id;
 static JSClassID wasm_module_class_id;
 static JSClassID wasm_instance_class_id;
 static int classes_inited;
+
+static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
+					int width, int height);
+static int write_image_stb(const char *path, VipsImage *image);
 
 static int require_image(JSContext *ctx)
 {
@@ -253,6 +265,17 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 		image = vips_image_new_from_file(path, "access",
 						 VIPS_ACCESS_SEQUENTIAL,
 						 NULL);
+		if (!image) {
+			int width = 0;
+			int height = 0;
+			int channels = 0;
+			unsigned char *pixels;
+
+			vips_error_clear();
+			pixels = stbi_load(path, &width, &height, &channels, 4);
+			image = image_from_stb_pixels(ctx, pixels, width,
+						      height);
+		}
 		JS_FreeCString(ctx, path);
 		if (!image)
 			(void)throw_vips_error(ctx, "failed to load image");
@@ -268,9 +291,113 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 	}
 	image = vips_image_new_from_buffer(bytes, len, "", "access",
 					   VIPS_ACCESS_SEQUENTIAL, NULL);
+	if (!image && len <= (size_t)INT_MAX) {
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+		unsigned char *pixels;
+
+		vips_error_clear();
+		pixels = stbi_load_from_memory(bytes, (int)len, &width,
+					       &height, &channels, 4);
+		image = image_from_stb_pixels(ctx, pixels, width, height);
+	}
 	if (!image)
 		(void)throw_vips_error(ctx, "failed to load image buffer");
 	return image;
+}
+
+static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
+					int width, int height)
+{
+	VipsImage *image;
+	size_t len;
+
+	if (!pixels)
+		return NULL;
+	if (width <= 0 || height <= 0) {
+		stbi_image_free(pixels);
+		return NULL;
+	}
+	len = (size_t)width * (size_t)height * 4U;
+	image = vips_image_new_from_memory_copy(pixels, len, width, height,
+						4, VIPS_FORMAT_UCHAR);
+	stbi_image_free(pixels);
+	if (!image)
+		(void)throw_vips_error(ctx, "failed to create image from pixels");
+	return image;
+}
+
+static int path_ext_is(const char *path, const char *ext)
+{
+	const char *dot;
+
+	if (!path || !ext)
+		return 0;
+	dot = strrchr(path, '.');
+	if (!dot)
+		return 0;
+	while (*dot && *ext) {
+		char a = *dot;
+		char b = *ext;
+
+		if (a >= 'A' && a <= 'Z')
+			a = (char)(a - 'A' + 'a');
+		if (b >= 'A' && b <= 'Z')
+			b = (char)(b - 'A' + 'a');
+		if (a != b)
+			return 0;
+		dot++;
+		ext++;
+	}
+	return *dot == '\0' && *ext == '\0';
+}
+
+static int write_image_stb(const char *path, VipsImage *image)
+{
+	void *mem;
+	size_t len;
+	int width;
+	int height;
+	int bands;
+	int ok = 0;
+
+	if (!path || !image)
+		return -EINVAL;
+	width = vips_image_get_width(image);
+	height = vips_image_get_height(image);
+	bands = vips_image_get_bands(image);
+	if (width <= 0 || height <= 0 || bands <= 0 || bands > 4)
+		return -EINVAL;
+	mem = vips_image_write_to_memory(image, &len);
+	if (!mem)
+		return -EIO;
+	if (path_ext_is(path, ".jpg") || path_ext_is(path, ".jpeg")) {
+		if (bands == 4) {
+			unsigned char *src = mem;
+			unsigned char *rgb;
+			size_t pixels = (size_t)width * (size_t)height;
+
+			rgb = malloc(pixels * 3U);
+			if (rgb) {
+				for (size_t i = 0; i < pixels; i++) {
+					rgb[i * 3U] = src[i * 4U];
+					rgb[i * 3U + 1U] = src[i * 4U + 1U];
+					rgb[i * 3U + 2U] = src[i * 4U + 2U];
+				}
+				ok = stbi_write_jpg(path, width, height, 3,
+						    rgb, 90);
+				free(rgb);
+			}
+		} else {
+			ok = stbi_write_jpg(path, width, height, bands, mem, 90);
+		}
+	} else {
+		ok = stbi_write_png(path, width, height, bands, mem,
+				    width * bands);
+	}
+	g_free(mem);
+	return ok ? 0 : -EIO;
 }
 
 static int parse_js_color(JSContext *ctx, JSValueConst value,
@@ -331,6 +458,105 @@ static int parse_js_color(JSContext *ctx, JSValueConst value,
 	return 0;
 }
 
+static unsigned char clamp_color(double value)
+{
+	if (value <= 0.0)
+		return 0;
+	if (value >= 255.0)
+		return 255;
+	return (unsigned char)(value + 0.5);
+}
+
+static VipsImage *sharp_create_input(JSContext *ctx, JSValueConst create)
+{
+	JSValue v = JS_UNDEFINED;
+	VipsImage *image = NULL;
+	unsigned char *data = NULL;
+	double color[4];
+	size_t pixels;
+	size_t len;
+	int32_t width = 0;
+	int32_t height = 0;
+	int32_t channels = 4;
+	unsigned char r;
+	unsigned char g;
+	unsigned char b;
+	unsigned char a;
+
+	if (!JS_IsObject(create)) {
+		JS_ThrowTypeError(ctx,
+			"sharp({create}) requires create to be an object with "
+			"width, height, optional channels, and background");
+		return NULL;
+	}
+	v = JS_GetPropertyStr(ctx, create, "width");
+	(void)JS_ToInt32(ctx, &width, v);
+	JS_FreeValue(ctx, v);
+	v = JS_GetPropertyStr(ctx, create, "height");
+	(void)JS_ToInt32(ctx, &height, v);
+	JS_FreeValue(ctx, v);
+	v = JS_GetPropertyStr(ctx, create, "channels");
+	if (!JS_IsUndefined(v))
+		(void)JS_ToInt32(ctx, &channels, v);
+	JS_FreeValue(ctx, v);
+	if (width <= 0 || height <= 0 || width > 32768 || height > 32768) {
+		(void)JS_ThrowRangeError(ctx,
+			"sharp({create}) invalid size: width and height must "
+			"be positive integers up to 32768");
+		return NULL;
+	}
+	if (channels < 1 || channels > 4) {
+		(void)JS_ThrowRangeError(ctx,
+			"sharp({create}) invalid channels: expected 1, 2, 3, "
+			"or 4");
+		return NULL;
+	}
+	v = JS_GetPropertyStr(ctx, create, "background");
+	(void)parse_js_color(ctx, v, color);
+	JS_FreeValue(ctx, v);
+	r = clamp_color(color[0]);
+	g = clamp_color(color[1]);
+	b = clamp_color(color[2]);
+	a = clamp_color(color[3]);
+	pixels = (size_t)width * (size_t)height;
+	if (pixels > SIZE_MAX / (size_t)channels) {
+		(void)JS_ThrowRangeError(ctx, "sharp({create}) image too large");
+		return NULL;
+	}
+	len = pixels * (size_t)channels;
+	data = malloc(len);
+	if (!data) {
+		(void)JS_ThrowOutOfMemory(ctx);
+		return NULL;
+	}
+	for (size_t i = 0; i < pixels; i++) {
+		size_t off = i * (size_t)channels;
+		if (channels == 1) {
+			data[off] = (unsigned char)(((int)r + (int)g +
+						     (int)b) / 3);
+		} else if (channels == 2) {
+			data[off] = (unsigned char)(((int)r + (int)g +
+						     (int)b) / 3);
+			data[off + 1] = a;
+		} else if (channels == 3) {
+			data[off] = r;
+			data[off + 1] = g;
+			data[off + 2] = b;
+		} else {
+			data[off] = r;
+			data[off + 1] = g;
+			data[off + 2] = b;
+			data[off + 3] = a;
+		}
+	}
+	image = vips_image_new_from_memory_copy(data, len, width, height,
+						channels, VIPS_FORMAT_UCHAR);
+	free(data);
+	if (!image)
+		(void)throw_vips_error(ctx, "failed to create image");
+	return image;
+}
+
 static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 {
 	struct canvas *canvas;
@@ -380,12 +606,24 @@ static JSValue js_sharp_call(JSContext *ctx, JSValueConst this_val,
 			     int argc, JSValueConst *argv)
 {
 	VipsImage *image;
+	JSValue create = JS_UNDEFINED;
 
 	(void)this_val;
 	if (!require_image(ctx))
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "sharp(input) requires input");
+	if (JS_IsObject(argv[0])) {
+		create = JS_GetPropertyStr(ctx, argv[0], "create");
+		if (!JS_IsUndefined(create)) {
+			image = sharp_create_input(ctx, create);
+			JS_FreeValue(ctx, create);
+			if (!image)
+				return JS_EXCEPTION;
+			return new_sharp_object(ctx, image, ".png");
+		}
+		JS_FreeValue(ctx, create);
+	}
 	image = sharp_load_input(ctx, argv[0]);
 	if (!image)
 		return JS_EXCEPTION;
@@ -770,6 +1008,10 @@ static JSValue js_sharp_to_file(JSContext *ctx, JSValueConst this_val,
 		return JS_EXCEPTION;
 	}
 	rc = vips_image_write_to_file(img->image, path, NULL);
+	if (rc != 0) {
+		vips_error_clear();
+		rc = write_image_stb(path, img->image);
+	}
 	JS_FreeCString(ctx, path);
 	if (rc != 0)
 		return JS_ThrowInternalError(ctx, "failed to write image");

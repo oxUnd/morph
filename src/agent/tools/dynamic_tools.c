@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,10 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#endif
 
 #ifndef MORPH_JS_RUNNER_PATH
 #define MORPH_JS_RUNNER_PATH "morph-js-runner"
@@ -48,7 +53,41 @@ struct dynamic_tools_context {
 static const char *runner_path(void)
 {
 	const char *path = getenv("MORPH_JS_RUNNER_PATH");
-	return (path && *path) ? path : MORPH_JS_RUNNER_PATH;
+	if (path && *path)
+		return path;
+#ifdef __ANDROID__
+	{
+		static char android_runner[PATH_MAX];
+		Dl_info info;
+		const char *slash;
+		size_t dir_len;
+
+		if (android_runner[0])
+			return android_runner;
+		memset(&info, 0, sizeof(info));
+		if (dladdr((void *)(uintptr_t)runner_path, &info) != 0 &&
+		    info.dli_fname && *info.dli_fname) {
+			slash = strrchr(info.dli_fname, '/');
+			if (slash) {
+				dir_len = (size_t)(slash - info.dli_fname);
+				if (dir_len > 0 && dir_len < sizeof(android_runner)) {
+					memcpy(android_runner, info.dli_fname,
+					       dir_len);
+					android_runner[dir_len] = '\0';
+					if (snprintf(android_runner + dir_len,
+						sizeof(android_runner) - dir_len,
+						"/libmorph-js-runner.so") <
+					    (int)(sizeof(android_runner) -
+					    dir_len)) {
+						return android_runner;
+					}
+					android_runner[0] = '\0';
+				}
+			}
+		}
+	}
+#endif
+	return MORPH_JS_RUNNER_PATH;
 }
 
 static const struct config_dynamic_tool_profile *
@@ -547,6 +586,111 @@ static char *schema_to_string(cJSON *item)
 	return cJSON_PrintUnformatted(item);
 }
 
+static const char *json_type_name(cJSON *item)
+{
+	if (!item)
+		return "missing";
+	if (cJSON_IsString(item))
+		return "string";
+	if (cJSON_IsObject(item))
+		return "object";
+	if (cJSON_IsArray(item))
+		return "array";
+	if (cJSON_IsNumber(item))
+		return "number";
+	if (cJSON_IsBool(item))
+		return "boolean";
+	if (cJSON_IsNull(item))
+		return "null";
+	return "unknown";
+}
+
+static int append_tool_create_arg_error(morph_buf_t *buf,
+					const char *field,
+					const char *expected,
+					cJSON *actual)
+{
+	return morph_buf_printf(buf, "- %s: expected %s, got %s\n",
+				field, expected, json_type_name(actual));
+}
+
+static int validate_tool_create_args(cJSON *root, cJSON *name_item,
+				     cJSON *source_item,
+				     morph_buf_t *err)
+{
+	const char *name;
+	int rc;
+
+	if (!root || !cJSON_IsObject(root)) {
+		return morph_buf_puts(err,
+			"tool_create arguments must be a JSON object with "
+			"name, source_js, optional description, args_schema, "
+			"and capabilities.\n");
+	}
+	rc = 0;
+	if (!cJSON_IsString(name_item) || !name_item->valuestring) {
+		rc = append_tool_create_arg_error(err, "name",
+			"non-empty string matching ^[a-z0-9_]+$", name_item);
+	} else if (!valid_tool_name(name_item->valuestring)) {
+		rc = morph_buf_printf(err,
+			"- name: invalid value \"%s\"; use only lowercase "
+			"letters, digits, and underscore\n",
+			name_item->valuestring);
+	}
+	name = cJSON_IsString(name_item) ? name_item->valuestring : "";
+	(void)name;
+	if (rc != 0)
+		return rc;
+	if (!cJSON_IsString(source_item) || !source_item->valuestring) {
+		return append_tool_create_arg_error(err, "source_js",
+			"JavaScript source string defining global run(args)",
+			source_item);
+	}
+	return 0;
+}
+
+static char *format_check_error(const char *source_path, const char *output)
+{
+	morph_buf_t buf;
+
+	if (morph_buf_init(&buf, 1024) != 0)
+		return NULL;
+	if (morph_buf_printf(&buf,
+		"tool_create failed\n"
+		"stage: check_js\n"
+		"rc: -22\n"
+		"code: EINVAL\n"
+		"detail: JavaScript validation failed for %s.\n\n"
+		"Runner output:\n%s\n\n"
+		"next_action: Fix the source_js and call tool_create again. The script "
+		"must parse, must define global run(args), and run(args) "
+		"must return a JSON-serializable value.",
+		source_path ? source_path : DYN_TOOL_SOURCE_FILE,
+		output && *output ? output : "(runner produced no output)") != 0) {
+		morph_buf_cleanup(&buf);
+		return NULL;
+	}
+	return morph_buf_detach(&buf);
+}
+
+static int tool_create_fail(struct tool_result *result, const char *stage,
+			    int rc, const char *detail)
+{
+	return tool_result_json_errorf(result,
+		"tool_create failed\n"
+		"stage: %s\n"
+		"rc: %d\n"
+		"code: %s\n"
+		"detail: %s\n"
+		"next_action: Fix the field or source for this stage and "
+		"call tool_create again.",
+		stage ? stage : "unknown",
+		rc,
+		morph_strerror(rc),
+		detail && *detail ? detail : "No additional diagnostic was "
+		"provided by this stage.");
+}
+
 static int write_tool_files(struct dynamic_tool *dt, const char *source)
 {
 	cJSON *meta = NULL;
@@ -606,6 +750,7 @@ static int check_js_source(const char *source_path,
 		MORPH_RETURN_ERRNO();
 	}
 	if (pid == 0) {
+		int first_errno;
 		close(output_pipe[0]);
 		dup2(output_pipe[1], STDOUT_FILENO);
 		dup2(output_pipe[1], STDERR_FILENO);
@@ -613,8 +758,15 @@ static int check_js_source(const char *source_path,
 		const char *runner = runner_path();
 		execl(runner, runner, "--check",
 		      source_path, (char *)NULL);
+		first_errno = errno;
 		execlp("morph-js-runner", "morph-js-runner", "--check",
 		       source_path, (char *)NULL);
+		fprintf(stderr,
+			"failed to exec morph-js-runner. runner=%s "
+			"source=%s direct_errno=%s fallback_errno=%s\n",
+			runner ? runner : "(null)",
+			source_path ? source_path : "(null)",
+			strerror(first_errno), strerror(errno));
 		_exit(127);
 	}
 	close(output_pipe[1]);
@@ -628,9 +780,12 @@ static int check_js_source(const char *source_path,
 					continue;
 				if (n <= 0)
 					break;
-				(void)morph_buf_append(&err, tmp, (size_t)n);
-				if (err.len >= 2048)
-					break;
+				if (err.len < 8192) {
+					size_t keep = (size_t)n;
+					if (err.len + keep > 8192)
+						keep = 8192 - err.len;
+					(void)morph_buf_append(&err, tmp, keep);
+				}
 			}
 			if (err.len > 0)
 				*error_out = morph_buf_detach(&err);
@@ -641,8 +796,41 @@ static int check_js_source(const char *source_path,
 	close(output_pipe[0]);
 	if (waitpid(pid, &status, 0) < 0)
 		MORPH_RETURN_ERRNO();
-	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		if (error_out && !*error_out) {
+			morph_buf_t err;
+			if (morph_buf_init(&err, 256) == 0) {
+				if (WIFEXITED(status)) {
+					(void)morph_buf_printf(&err,
+						"morph-js-runner --check failed "
+						"without output. runner=%s "
+						"source=%s exit_status=%d",
+						runner_path(),
+						source_path ? source_path :
+						"(null)",
+						WEXITSTATUS(status));
+				} else if (WIFSIGNALED(status)) {
+					(void)morph_buf_printf(&err,
+						"morph-js-runner --check was "
+						"terminated by signal %d. "
+						"runner=%s source=%s",
+						WTERMSIG(status), runner_path(),
+						source_path ? source_path :
+						"(null)");
+				} else {
+					(void)morph_buf_printf(&err,
+						"morph-js-runner --check failed "
+						"without output. runner=%s "
+						"source=%s status=%d",
+						runner_path(),
+						source_path ? source_path :
+						"(null)", status);
+				}
+				*error_out = morph_buf_detach(&err);
+			}
+		}
 		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -746,39 +934,95 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	char *schema = NULL;
 	char *check_error = NULL;
 	struct dynamic_tool *dt = NULL;
+	const char *stage = "init";
 	int rc;
 
 	if (!ctx || !result)
 		return -EINVAL;
 	if (!ctx->cfg || !ctx->cfg->enabled)
 		return tool_result_json_error(result, "dynamic tools disabled");
+	stage = "parse_args";
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root)
-		return tool_result_json_error(result, "invalid JSON");
+		return tool_create_fail(result, stage, -EINVAL,
+					"tool_create arguments are not valid "
+					"JSON.");
 	name_item = cJSON_GetObjectItem(root, "name");
 	desc_item = cJSON_GetObjectItem(root, "description");
 	source_item = cJSON_GetObjectItem(root, "source_js");
-	if (!cJSON_IsString(name_item) || !name_item->valuestring ||
-	    !valid_tool_name(name_item->valuestring) ||
-	    !cJSON_IsString(source_item) || !source_item->valuestring) {
-		cJSON_Delete(root);
-		return tool_result_json_error(
-			result, "tool_create requires valid name and source_js");
+	{
+		morph_buf_t arg_err;
+		if (morph_buf_init(&arg_err, 512) != 0) {
+			cJSON_Delete(root);
+			return tool_create_fail(result, stage, -ENOMEM,
+						"failed to allocate argument "
+						"diagnostic buffer");
+		}
+		rc = validate_tool_create_args(root, name_item, source_item,
+					       &arg_err);
+		if (rc != 0 || arg_err.len > 0) {
+			morph_buf_t detail;
+			int out_rc;
+			if (morph_buf_init(&detail, 768) != 0) {
+				morph_buf_cleanup(&arg_err);
+				cJSON_Delete(root);
+				return tool_create_fail(result, stage, -ENOMEM,
+					"failed to allocate argument detail "
+					"buffer");
+			}
+			(void)morph_buf_printf(&detail,
+				"%s\n"
+				"Expected shape: {\"name\":\"my_tool\","
+				"\"description\":\"...\","
+				"\"args_schema\":{\"type\":\"object\","
+				"\"properties\":{}},"
+				"\"source_js\":\"async function run(args) { "
+				"return { ok: true }; }\"}",
+				morph_buf_cstr(&arg_err));
+			out_rc = tool_create_fail(result, stage, -EINVAL,
+						  morph_buf_cstr(&detail));
+			morph_buf_cleanup(&detail);
+			morph_buf_cleanup(&arg_err);
+			cJSON_Delete(root);
+			return out_rc;
+		}
+		morph_buf_cleanup(&arg_err);
 	}
+	stage = "validate_source_size";
 	if ((int)strlen(source_item->valuestring) >
 	    ctx->cfg->max_source_bytes) {
+		int len = (int)strlen(source_item->valuestring);
+		int max_len = ctx->cfg->max_source_bytes;
+		morph_buf_t detail;
+		int out_rc;
+		if (morph_buf_init(&detail, 128) != 0) {
+			cJSON_Delete(root);
+			return tool_create_fail(result, stage, -ENOMEM,
+						"failed to allocate source size "
+						"diagnostic buffer");
+		}
+		(void)morph_buf_printf(&detail,
+			"source_js too large: got %d bytes, maximum is %d "
+			"bytes. Split the logic or remove embedded data.",
+			len, max_len);
+		out_rc = tool_create_fail(result, stage, -EFBIG,
+					  morph_buf_cstr(&detail));
+		morph_buf_cleanup(&detail);
 		cJSON_Delete(root);
-		return tool_result_json_error(result, "source_js too large");
+		return out_rc;
 	}
+	stage = "check_name_conflict";
 	{
 		struct tool_entry *existing =
 			tool_lookup(ctx->reg, name_item->valuestring);
 		if (existing && !(existing->flags & TOOL_FLAG_DYNAMIC)) {
 			cJSON_Delete(root);
-			return tool_result_json_error(result,
-						      "tool name already exists");
+			return tool_create_fail(result, stage, -EEXIST,
+						"tool name already exists and is "
+						"not a dynamic tool");
 		}
 	}
+	stage = "approval";
 	if (ctx->cfg->create_requires_approval && ctx->tctx) {
 		struct tool_operation op;
 		memset(&op, 0, sizeof(op));
@@ -790,29 +1034,51 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		rc = tool_context_check_operation(ctx->tctx, &op);
 		if (rc < 0) {
 			cJSON_Delete(root);
-			return tool_result_json_error(result,
-				"dynamic tool creation denied");
+			return tool_create_fail(result, stage, rc,
+						"dynamic tool creation denied");
 		}
 	}
+	stage = "validate_args_schema";
 	schema = schema_to_string(cJSON_GetObjectItem(root, "args_schema"));
 	if (!schema) {
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return tool_create_fail(result, stage, -ENOMEM,
+					"failed to serialize args_schema");
 	}
 	{
 		cJSON *schema_root = cJSON_Parse(schema);
 		if (!schema_root) {
+			const char *pos = cJSON_GetErrorPtr();
+			morph_buf_t detail;
+			int out_rc;
+			if (morph_buf_init(&detail, 256) != 0) {
+				free(schema);
+				cJSON_Delete(root);
+				return tool_create_fail(result, stage, -ENOMEM,
+					"failed to allocate args_schema "
+					"diagnostic buffer");
+			}
+			(void)morph_buf_printf(&detail,
+				"invalid args_schema JSON near: %.80s\n"
+				"args_schema must be a JSON Schema object or a "
+				"string containing valid JSON Schema.",
+				pos ? pos : "(unknown)");
+			out_rc = tool_create_fail(result, stage, -EINVAL,
+						  morph_buf_cstr(&detail));
+			morph_buf_cleanup(&detail);
 			free(schema);
 			cJSON_Delete(root);
-			return tool_result_json_error(result, "invalid args_schema");
+			return out_rc;
 		}
 		cJSON_Delete(schema_root);
 	}
+	stage = "allocate_tool";
 	dt = calloc(1, sizeof(*dt));
 	if (!dt) {
 		free(schema);
 		cJSON_Delete(root);
-		return -ENOMEM;
+		return tool_create_fail(result, stage, -ENOMEM,
+					"failed to allocate dynamic tool");
 	}
 	strncpy(dt->name, name_item->valuestring, sizeof(dt->name) - 1);
 	if (cJSON_IsString(desc_item) && desc_item->valuestring)
@@ -825,35 +1091,54 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	free(schema);
 	dt->cfg = ctx->cfg;
 	dt->tctx = ctx->tctx;
+	stage = "create_tool_dir";
 	rc = create_context_dir(ctx, dt->name, dt->dir, sizeof(dt->dir));
-	if (rc == 0)
+	if (rc == 0) {
+		stage = "build_source_path";
 		rc = file_path_join(dt->source_path, sizeof(dt->source_path),
 				    dt->dir, DYN_TOOL_SOURCE_FILE);
-	if (rc == 0)
+	}
+	if (rc == 0) {
+		stage = "parse_capabilities";
 		rc = parse_caps(cJSON_GetObjectItem(root, "capabilities"), dt,
 				active_profile(ctx->cfg));
-	if (rc == 0)
+	}
+	if (rc == 0) {
+		stage = "write_tool_files";
 		rc = write_tool_files(dt, source_item->valuestring);
-	if (rc == 0)
+	}
+	if (rc == 0) {
+		stage = "check_js";
 		rc = check_js_source(dt->source_path, &check_error);
+	}
 	if (rc == 0 && check_error) {
 		free(check_error);
 		check_error = NULL;
 	}
-	if (rc == 0)
+	if (rc == 0) {
+		stage = "register_tool";
 		rc = register_dynamic_tool(ctx->reg, dt);
+	}
 	cJSON_Delete(root);
 	if (rc < 0) {
-		free(dt);
 		if (check_error) {
-			int out_rc = tool_result_json_errorf(result,
-				"failed to create dynamic tool: %s: %s",
-				morph_strerror(rc), check_error);
+			char *formatted = format_check_error(dt ? dt->source_path :
+							     NULL, check_error);
+			int out_rc;
+			free(dt);
+			if (formatted) {
+				out_rc = tool_result_json_error(result,
+								formatted);
+				free(formatted);
+			} else {
+				out_rc = tool_create_fail(result, stage, rc,
+							  check_error);
+			}
 			free(check_error);
 			return out_rc;
 		}
-		return tool_result_json_errorf(result,
-			"failed to create dynamic tool: %s", morph_strerror(rc));
+		free(dt);
+		return tool_create_fail(result, stage, rc, NULL);
 	}
 	return tool_result_printf(result,
 				  "{\"name\":\"%s\",\"status\":\"%s\"}",
@@ -991,8 +1276,10 @@ static const char *TOOL_CREATE_DESCRIPTION =
 	"A tiny require() shim supports only popular built-ins: "
 	"require(\"sharp\") for libvips-backed image processing and "
 	"require(\"canvas\") for 2D drawing. The sharp shim is a safe subset, "
-	"not npm sharp. Allowed sharp inputs: file path strings, ArrayBuffer, "
-	"and typed arrays such as Uint8Array. Allowed sharp methods: "
+	"not full npm sharp. Allowed sharp inputs: file path strings, "
+	"ArrayBuffer, typed arrays such as Uint8Array, and the common blank "
+	"image form sharp({create:{width,height,channels,background}}). "
+	"Allowed sharp methods: "
 	"metadata(), resize(width[, height]) or resize({width,height}), "
 	"extract({left,top,width,height}), extend({top,bottom,left,right,"
 	"background}), rotate([angle]), blur([sigma]), sharpen(), grayscale()/"
@@ -1002,7 +1289,7 @@ static const char *TOOL_CREATE_DESCRIPTION =
 	"modulate(), tint(), normalize(), linear(), withMetadata(), clone(), "
 	"stats(), flip(), flop(), affine(), resize fit/position/gravity "
 	"options, composite gravity/blend/tile/opacity/density options, "
-	"flatten({background}), format quality/compression options, or "
+	"raw(), flatten({background}), format quality/compression options, or "
 	"Buffer.from(). Use Uint8Array/TextEncoder-style byte arrays instead "
 	"of Buffer. Example image tool: const sharp = require(\"sharp\"); "
 	"async function run(args) { await sharp(args.input).resize(512).png()"
