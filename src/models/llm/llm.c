@@ -16,6 +16,8 @@
 #include <string.h>
 #include <stdio.h>
 
+#define LLM_IMAGE_QA_MAX_DIM 360
+
 static model_usage_callback g_usage_cb;
 static __thread void *g_usage_user_data;
 
@@ -656,7 +658,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
 		return -EINVAL;
 
-	char *b64 = image_encode_base64(image_path, 2048);
+	char *b64 = image_encode_base64(image_path, LLM_IMAGE_QA_MAX_DIM);
 	if (!b64) {
 		log_err("llm_chat_with_image: failed to encode image: %s",
 			image_path);

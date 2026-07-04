@@ -180,8 +180,9 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 	int rc = tool_register(reg, "img_qa",
 		"Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
-		"visual comparison, and content analysis. Provide file_path "
-		"and prompt.",
+		"visual comparison, and content analysis. Before upload, the "
+		"image is compressed within 360p while preserving aspect ratio. "
+		"Provide file_path and prompt.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"file_path\":{\"type\":\"string\","
 		"\"description\":\"Path to the image file\"},"
