@@ -35,6 +35,16 @@ static char *mcp_strdup_result(struct arena *arena, const char *s)
 	return strdup(s);
 }
 
+static int mcp_next_request_id(struct mcp_client *client)
+{
+	int req_id;
+
+	pthread_mutex_lock(&client->lock);
+	req_id = client->next_req_id++;
+	pthread_mutex_unlock(&client->lock);
+	return req_id;
+}
+
 /* ----- Shared JSON-RPC helpers ----- */
 
 char *mcp_build_request(int id, const char *method, const char *params_json)
@@ -308,10 +318,11 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 		return -EINVAL;
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "tools/list", NULL, &result);
 	} else {
 		rc = mcp_http_request(client, "tools/list", NULL, &result);
@@ -394,10 +405,11 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		 name, args_json ? args_json : "{}");
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "tools/call", params_buf, &result);
 	} else {
 		rc = mcp_http_request(client, "tools/call", params_buf, &result);
@@ -486,10 +498,11 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 		return -EINVAL;
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "resources/list", NULL, &result);
 	} else {
 		rc = mcp_http_request(client, "resources/list", NULL, &result);
@@ -566,10 +579,11 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 		 "{\"uri\":\"%s\"}", uri);
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "resources/read", params_buf, &result);
 	} else {
 		rc = mcp_http_request(client, "resources/read", params_buf, &result);
@@ -637,10 +651,11 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 		return -EINVAL;
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "prompts/list", NULL, &result);
 	} else {
 		rc = mcp_http_request(client, "prompts/list", NULL, &result);
@@ -723,10 +738,11 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 	}
 
 	char *result = NULL;
-	int req_id = client->next_req_id++;
+	int req_id;
 	int rc;
 
 	if (client->config.transport == MCP_TRANSPORT_STDIO) {
+		req_id = mcp_next_request_id(client);
 		rc = mcp_stdio_request(client, req_id, "prompts/get", params_buf, &result);
 	} else {
 		rc = mcp_http_request(client, "prompts/get", params_buf, &result);

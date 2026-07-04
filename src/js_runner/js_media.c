@@ -818,6 +818,8 @@ static JSValue js_sharp_extend(JSContext *ctx, JSValueConst this_val,
 	int32_t right = 0;
 	int width;
 	int height;
+	int bands;
+	int background_len;
 	double background[4];
 	VipsArrayDouble *background_array;
 
@@ -841,10 +843,15 @@ static JSValue js_sharp_extend(JSContext *ctx, JSValueConst this_val,
 		return JS_ThrowRangeError(ctx, "invalid extend size");
 	width = vips_image_get_width(img->image) + left + right;
 	height = vips_image_get_height(img->image) + top + bottom;
+	bands = vips_image_get_bands(img->image);
+	if (vips_image_hasalpha(img->image))
+		background_len = 4;
+	else
+		background_len = bands == 1 ? 1 : 3;
 	v = JS_GetPropertyStr(ctx, argv[0], "background");
 	(void)parse_js_color(ctx, v, background);
 	JS_FreeValue(ctx, v);
-	background_array = vips_array_double_new(background, 4);
+	background_array = vips_array_double_new(background, background_len);
 	if (!background_array)
 		return JS_ThrowOutOfMemory(ctx);
 	if (vips_embed(img->image, &next, left, top, width, height,

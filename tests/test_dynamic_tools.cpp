@@ -118,6 +118,30 @@ TEST_F(DynamicToolsTest, CreateAndCallSessionTool)
 	tool_result_cleanup(&result);
 }
 
+TEST_F(DynamicToolsTest, ToolCreateUsesUpdatedSessionDirectory)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools,
+				     "default"), 0);
+	ASSERT_EQ(dynamic_tools_set_session_id(&reg, "sess_1234abcd"), 0);
+	std::string source =
+		"function run(args) {"
+		"  return { ok: true };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("session_scoped", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string expected = root +
+		"/session/sess_1234abcd/session_scoped/tool.js";
+	std::string old = root + "/session/default/session_scoped/tool.js";
+	EXPECT_TRUE(file_exists(expected.c_str()));
+	EXPECT_FALSE(file_exists(old.c_str()));
+}
+
 TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);

@@ -88,6 +88,37 @@ static char **cmd_completion(const char *text, int start, int end)
 
 /* ---- cli_run_once ---- */
 
+static int cli_prepare_one_shot_session(struct cli_context *ctx)
+{
+	char name[256];
+	struct session s;
+	time_t now;
+	int rc = -EEXIST;
+
+	if (!ctx)
+		return -EINVAL;
+	now = time(NULL);
+	for (int i = 0; i < 100 && rc == -EEXIST; i++) {
+		if (i == 0) {
+			snprintf(name, sizeof(name), "one_shot_%lld",
+				 (long long)now);
+		} else {
+			snprintf(name, sizeof(name), "one_shot_%lld_%d",
+				 (long long)now, i);
+		}
+		rc = session_create(&ctx->database, name,
+				    ctx->config.models.text.model, &s);
+	}
+	if (rc != 0)
+		return rc;
+	ctx->current_session = s;
+	utf8_sanitize_inplace(ctx->current_session.name);
+	session_load_history(ctx);
+	cli_update_tool_runtime_context(ctx);
+	ctx->session_auto_named = 0;
+	return 0;
+}
+
 static void emit_trace_json(struct cli_context *ctx, double elapsed)
 {
 	if (!ctx->react)
@@ -148,8 +179,25 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 
 void cli_run_once(struct cli_context *ctx, const char *prompt)
 {
+	int rc;
+
 	if (!ctx || !prompt)
 		return;
+	rc = cli_prepare_one_shot_session(ctx);
+	if (rc != 0) {
+		log_err("failed to create one-shot session: %s",
+			morph_strerror(rc));
+		if (rc == MORPH_ERR_DB && ctx->database.handle) {
+			fprintf(stderr,
+				"failed to create one-shot session: %s: %s\n",
+				morph_strerror(rc),
+				sqlite3_errmsg(ctx->database.handle));
+		} else {
+			fprintf(stderr, "failed to create one-shot session: %s\n",
+				morph_strerror(rc));
+		}
+		return;
+	}
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = sigint_handler;

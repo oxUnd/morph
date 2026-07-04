@@ -120,3 +120,49 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 	EXPECT_NE(strstr(trace, "\"type\":\"Final\""), nullptr);
 	free(trace);
 }
+
+TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
+{
+	struct agent_session_runtime runtime;
+	memset(&runtime, 0, sizeof(runtime));
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
+		~AGENT_TURN_ASYNC_MEMORY &
+		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+
+	struct agent_turn_input input;
+	memset(&input, 0, sizeof(input));
+	input.model_input = "failing prompt";
+
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+
+	struct react_step *step =
+		static_cast<struct react_step *>(calloc(1, sizeof(*step)));
+	ASSERT_NE(step, nullptr);
+	step->type = REACT_STEP_OBSERVATION;
+	step->content = strdup("tool error");
+	ASSERT_NE(step->content, nullptr);
+	react->steps = step;
+	react->final_answer = strdup("tool error");
+	ASSERT_NE(react->final_answer, nullptr);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_MAX_ITERATIONS;
+
+	struct agent_turn_result result;
+	ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
+	EXPECT_TRUE(result.trace_saved);
+	EXPECT_TRUE(result.user_saved);
+	EXPECT_TRUE(result.assistant_saved);
+	EXPECT_FALSE(result.memory_queued);
+	EXPECT_FALSE(result.memory_ran_inline);
+
+	char *rendered = memory_render_session(&db, sess.id, 0);
+	ASSERT_NE(rendered, nullptr);
+	EXPECT_NE(strstr(rendered,
+			 "No long-term memory stored for this session."),
+		  nullptr);
+	free(rendered);
+}

@@ -1,5 +1,6 @@
 #include "cli/internal.h"
 #include "cli/commands/registry.h"
+#include "agent/tools/dynamic_tools.h"
 
 const char *default_db_path = "~/.morph/data.db";
 const char *default_config_path = "~/.morph/config.toml";
@@ -79,6 +80,7 @@ void cli_credit_session_key(struct cli_context *ctx, char *buf,
 void cli_update_tool_runtime_context(struct cli_context *ctx)
 {
 	struct tool_runtime_context rt;
+	const char *session_id;
 
 	if (!ctx || !ctx->react)
 		return;
@@ -86,12 +88,14 @@ void cli_update_tool_runtime_context(struct cli_context *ctx)
 	rt.db = &ctx->database;
 	rt.config = &ctx->config;
 	rt.user_id = "local";
-	rt.credit_session_id = ctx->current_session.display_id[0]
+	session_id = ctx->current_session.display_id[0]
 		? ctx->current_session.display_id
 		: ctx->current_session.name;
+	rt.credit_session_id = session_id;
 	rt.memory_session_id = ctx->current_session.id;
 	rt.restrict_memory_to_user = 0;
 	react_set_tool_runtime_context(ctx->react, &rt);
+	(void)dynamic_tools_set_session_id(&ctx->tools, session_id);
 }
 
 void cli_set_usage_context(struct cli_context *ctx)

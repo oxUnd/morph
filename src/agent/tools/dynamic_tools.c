@@ -1274,6 +1274,25 @@ static void dynamic_tools_context_destroy(void *user_data)
 	free(user_data);
 }
 
+int dynamic_tools_set_session_id(struct tool_registry *reg,
+				 const char *session_id)
+{
+	struct tool_entry *entry;
+	struct dynamic_tools_context *ctx;
+
+	if (!reg)
+		return -EINVAL;
+	entry = tool_lookup(reg, "tool_create");
+	if (!entry)
+		return 0;
+	ctx = entry->user_data;
+	if (!ctx)
+		return -EINVAL;
+	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
+		 session_id && *session_id ? session_id : "default");
+	return 0;
+}
+
 int dynamic_tools_load_persistent(struct tool_registry *reg,
 				  struct tool_context *tctx,
 				  const struct config_dynamic_tools *cfg)
@@ -1359,8 +1378,8 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->reg = reg;
 	ctx->tctx = tctx;
 	ctx->cfg = cfg;
-	strncpy(ctx->session_id, session_id ? session_id : "default",
-		sizeof(ctx->session_id) - 1);
+	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
+		 session_id && *session_id ? session_id : "default");
 	rc = tool_register(reg, "tool_create", TOOL_CREATE_DESCRIPTION,
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"},\"capabilities\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Optional host capabilities: fs_read, fs_write, network, process, env, mcp, model, shell, image, wasm.\"}},\"required\":[\"name\",\"source_js\"]}",
 			   tool_create_exec, ctx, dynamic_tools_context_destroy);

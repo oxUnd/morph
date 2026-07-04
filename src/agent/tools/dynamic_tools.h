@@ -12,6 +12,8 @@ extern "C" {
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg,
 		       const char *session_id);
+int dynamic_tools_set_session_id(struct tool_registry *reg,
+				 const char *session_id);
 int dynamic_tools_load_persistent(struct tool_registry *reg,
 				  struct tool_context *tctx,
 				  const struct config_dynamic_tools *cfg);

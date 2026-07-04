@@ -431,44 +431,60 @@ int mcp_http_initialize(struct mcp_client *client)
 int mcp_http_request(struct mcp_client *client, const char *method,
 		     const char *params_json, char **out_result)
 {
+	const char *resp_raw;
+	char *resp_json;
+	char *raw_copy;
+	char *req;
+	long http_code;
+	int rc;
+
 	if (!client || !client->session.initialized)
 		return -EINVAL;
 
-	char *req = mcp_build_request(client->next_req_id++, method, params_json);
-	if (!req)
+	pthread_mutex_lock(&client->lock);
+	req = mcp_build_request(client->next_req_id++, method, params_json);
+	if (!req) {
+		pthread_mutex_unlock(&client->lock);
 		return -ENOMEM;
+	}
 
-	int rc = mcp_http_do_post(client, req, NULL, 0, MCP_HTTP_TIMEOUT_S);
+	rc = mcp_http_do_post(client, req, NULL, 0, MCP_HTTP_TIMEOUT_S);
 	free(req);
 
 	if (rc < 0) {
 		log_err("mcp http: request '%s' failed: %s", method, morph_strerror(rc));
+		pthread_mutex_unlock(&client->lock);
 		return rc;
 	}
 
-	long http_code = http_session_status(&client->session);
+	http_code = http_session_status(&client->session);
 	if (http_code >= 400) {
 		log_err("mcp http: request '%s' HTTP error %ld", method, http_code);
+		pthread_mutex_unlock(&client->lock);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
-	const char *resp_raw = http_session_body(&client->session, NULL);
+	resp_raw = http_session_body(&client->session, NULL);
 	if (!resp_raw) {
 		log_err("mcp http: request '%s' returned empty body", method);
+		pthread_mutex_unlock(&client->lock);
 		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
 
-	char *resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
+	resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
 	if (resp_json) {
 		rc = mcp_parse_result(resp_json, out_result);
 		free(resp_json);
 	} else {
-		char *raw_copy = strdup(resp_raw);
-		if (!raw_copy)
+		raw_copy = strdup(resp_raw);
+		if (!raw_copy) {
+			pthread_mutex_unlock(&client->lock);
 			MORPH_RETURN(-ENOMEM);
+		}
 		rc = mcp_parse_result(raw_copy, out_result);
 		free(raw_copy);
 	}
+	pthread_mutex_unlock(&client->lock);
 	return rc;
 }
 

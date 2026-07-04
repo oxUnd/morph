@@ -315,8 +315,15 @@ static int turn_consolidate_memory(struct agent_turn *turn,
 				   const char *assistant_output)
 {
 	int rc;
+	int success;
 
 	if (!(turn_flags(&turn->runtime) & AGENT_TURN_CONSOLIDATE_MEMORY))
+		return 0;
+	success = turn->runtime.react &&
+		turn->runtime.react->state == REACT_STATE_DONE &&
+		(turn->runtime.react->outcome == REACT_OUTCOME_SUCCESS ||
+		 turn->runtime.react->outcome == REACT_OUTCOME_NONE);
+	if (!success)
 		return 0;
 
 	if (turn_flags(&turn->runtime) & AGENT_TURN_ASYNC_MEMORY) {
