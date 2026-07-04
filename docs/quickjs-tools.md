@@ -157,6 +157,7 @@ async function run(args) {
 	ctx.fillStyle = "#ffffff";
 	ctx.fillRect(0, 0, 256, 128);
 	ctx.fillStyle = "#111111";
+	ctx.font = "24px sans-serif";
 	ctx.fillText(args.text, 20, 70);
 	morph.canvas.toFile({ canvas, output: args.output });
 	return { output: args.output };
@@ -165,7 +166,11 @@ async function run(args) {
 
 `morph.canvas` 是 Cairo-backed 2D 子集。支持 `create()`、`loadImage()`、
 `getContext("2d")`、基础路径/矩形/文字绘制、`drawImage()`、`toFile()`
-和 `toBuffer()`。
+和 `toBuffer()`。文字绘制使用 PangoCairo，`ctx.font` 默认是
+`"10px sans-serif"`，支持常见写法如 `"16px sans-serif"`、
+`"bold 24px Arial"`、`"italic 18px serif"` 和
+`"bold italic 32px sans-serif"`。当前未实现完整浏览器 Canvas 文本 API，
+如 `measureText`、`textAlign` 和 `textBaseline`。
 
 ```js
 async function run(args) {

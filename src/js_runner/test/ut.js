@@ -27,6 +27,7 @@ async function run(args) {
 	const frameJpg = out + "/frame.jpg";
 	const chainPng = out + "/chain.png";
 	const readbackPng = out + "/readback.png";
+	const fontPng = out + "/font.png";
 
 	await test("morph.fs.writeText/readText", async function () {
 		morph.fs.writeText(textPath, "hello morph");
@@ -81,6 +82,33 @@ async function run(args) {
 		ctx.strokeText("x", 54, 22);
 		morph.canvas.toFile({ canvas, output: canvasPng });
 		canvas.toFile(canvasJpg);
+	});
+
+	await test("morph.canvas font affects text rendering", async function () {
+		const small = morph.canvas.create({ width: 180, height: 80 });
+		const smallCtx = small.getContext("2d");
+		assert(smallCtx.font === "10px sans-serif",
+			"default font mismatch");
+		smallCtx.fillStyle = "#ffffff";
+		smallCtx.fillRect(0, 0, 180, 80);
+		smallCtx.fillStyle = "#111111";
+		smallCtx.font = "10px sans-serif";
+		smallCtx.fillText("MMMM", 8, 60);
+		const smallBytes = morph.canvas.toBuffer({ canvas: small });
+
+		const large = morph.canvas.create({ width: 180, height: 80 });
+		const largeCtx = large.getContext("2d");
+		largeCtx.fillStyle = "#ffffff";
+		largeCtx.fillRect(0, 0, 180, 80);
+		largeCtx.fillStyle = "#111111";
+		largeCtx.font = "bold italic 48px sans-serif";
+		assert(largeCtx.font === "bold italic 48px sans-serif",
+			"font property mismatch");
+		largeCtx.fillText("MMMM", 8, 60);
+		const largeBytes = morph.canvas.toBuffer({ canvas: large });
+		assert(largeBytes.byteLength > smallBytes.byteLength,
+			"large font did not affect text output");
+		large.toFile(fontPng);
 	});
 
 	await test("morph.canvas.toBuffer/loadImage/drawImage", async function () {

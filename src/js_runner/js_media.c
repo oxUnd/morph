@@ -2,9 +2,11 @@
 #include "util/buf.h"
 #include "util/file.h"
 #include <cairo.h>
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
+#include <pango/pangocairo.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +60,8 @@ struct wasm_instance {
 	char exports[WASM_MAX_EXPORTS][64];
 	int export_count;
 };
+
+#define CANVAS_DEFAULT_FONT "10px sans-serif"
 
 static JSClassID sharp_class_id;
 static JSClassID canvas_class_id;
@@ -801,6 +805,8 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	JS_SetOpaque(obj, canvas);
 	JS_SetPropertyStr(ctx, obj, "width", JS_NewInt32(ctx, width));
 	JS_SetPropertyStr(ctx, obj, "height", JS_NewInt32(ctx, height));
+	JS_SetPropertyStr(ctx, obj, "font",
+			  JS_NewString(ctx, CANVAS_DEFAULT_FONT));
 	return obj;
 fail_value:
 	canvas_finalizer(JS_GetRuntime(ctx), obj);
@@ -1488,10 +1494,178 @@ static JSValue canvas_arc(JSContext *ctx, JSValueConst this_val,
 	return JS_UNDEFINED;
 }
 
+static char *trim_space(char *s)
+{
+	char *end;
+
+	if (!s)
+		return NULL;
+	while (*s && isspace((unsigned char)*s))
+		s++;
+	end = s + strlen(s);
+	while (end > s && isspace((unsigned char)end[-1]))
+		end--;
+	*end = '\0';
+	return s;
+}
+
+static void strip_matching_quotes(char *s)
+{
+	size_t len;
+
+	if (!s)
+		return;
+	len = strlen(s);
+	if (len < 2)
+		return;
+	if ((s[0] == '\'' && s[len - 1] == '\'') ||
+	    (s[0] == '"' && s[len - 1] == '"')) {
+		memmove(s, s + 1, len - 2);
+		s[len - 2] = '\0';
+	}
+}
+
+static void canvas_set_font_family(PangoFontDescription *desc, char *family)
+{
+	char *comma;
+
+	family = trim_space(family);
+	if (!family || !*family) {
+		pango_font_description_set_family(desc, "Sans");
+		return;
+	}
+	comma = strchr(family, ',');
+	if (comma)
+		*comma = '\0';
+	family = trim_space(family);
+	strip_matching_quotes(family);
+	if (strcmp(family, "sans-serif") == 0)
+		pango_font_description_set_family(desc, "Sans");
+	else if (strcmp(family, "serif") == 0)
+		pango_font_description_set_family(desc, "Serif");
+	else if (strcmp(family, "monospace") == 0)
+		pango_font_description_set_family(desc, "Monospace");
+	else if (*family)
+		pango_font_description_set_family(desc, family);
+	else
+		pango_font_description_set_family(desc, "Sans");
+}
+
+static void canvas_parse_font_prefix(PangoFontDescription *desc, char *prefix)
+{
+	char *token;
+	char *saveptr = NULL;
+
+	for (token = strtok_r(prefix, " \t\r\n", &saveptr); token;
+	     token = strtok_r(NULL, " \t\r\n", &saveptr)) {
+		if (strcmp(token, "italic") == 0)
+			pango_font_description_set_style(desc,
+							 PANGO_STYLE_ITALIC);
+		else if (strcmp(token, "oblique") == 0)
+			pango_font_description_set_style(desc,
+							 PANGO_STYLE_OBLIQUE);
+		else if (strcmp(token, "bold") == 0)
+			pango_font_description_set_weight(desc,
+							  PANGO_WEIGHT_BOLD);
+		else if (strcmp(token, "normal") == 0)
+			continue;
+		else if (isdigit((unsigned char)token[0])) {
+			int weight = atoi(token);
+
+			if (weight >= 100 && weight <= 900)
+				pango_font_description_set_weight(desc,
+					(PangoWeight)weight);
+		}
+	}
+}
+
+static int canvas_parse_font_string(const char *font,
+				    PangoFontDescription *desc)
+{
+	char *copy;
+	char *px;
+	char *size_start;
+	char *family;
+	double size;
+
+	if (!font || !desc)
+		return -EINVAL;
+	copy = strdup(font);
+	if (!copy)
+		return -ENOMEM;
+	px = strstr(copy, "px");
+	if (!px) {
+		free(copy);
+		return -EINVAL;
+	}
+	size_start = px;
+	while (size_start > copy) {
+		char c = size_start[-1];
+
+		if (!isdigit((unsigned char)c) && c != '.')
+			break;
+		size_start--;
+	}
+	if (size_start == px) {
+		free(copy);
+		return -EINVAL;
+	}
+	size = strtod(size_start, NULL);
+	if (size <= 0.0 || size > 4096.0) {
+		free(copy);
+		return -EINVAL;
+	}
+	*size_start = '\0';
+	family = px + 2;
+	if (*family == '/') {
+		while (*family && !isspace((unsigned char)*family))
+			family++;
+	}
+	pango_font_description_set_absolute_size(desc, size * PANGO_SCALE);
+	canvas_parse_font_prefix(desc, copy);
+	canvas_set_font_family(desc, family);
+	free(copy);
+	return 0;
+}
+
+static PangoFontDescription *canvas_get_font_description(JSContext *ctx,
+							JSValueConst this_val)
+{
+	PangoFontDescription *desc;
+	JSValue val;
+	const char *font;
+
+	desc = pango_font_description_new();
+	if (!desc)
+		return NULL;
+	val = JS_GetPropertyStr(ctx, this_val, "font");
+	font = JS_ToCString(ctx, val);
+	if (!font || canvas_parse_font_string(font, desc) != 0) {
+		pango_font_description_set_family(desc, "Sans");
+		pango_font_description_set_absolute_size(desc,
+							 10.0 * PANGO_SCALE);
+	}
+	if (font)
+		JS_FreeCString(ctx, font);
+	JS_FreeValue(ctx, val);
+	return desc;
+}
+
+static void canvas_move_to_text_baseline(cairo_t *cr, PangoLayout *layout,
+					 double x, double y)
+{
+	int baseline;
+
+	baseline = pango_layout_get_baseline(layout);
+	cairo_move_to(cr, x, y - (double)baseline / (double)PANGO_SCALE);
+}
+
 static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 			   int argc, JSValueConst *argv, int magic)
 {
 	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	PangoFontDescription *font_desc;
+	PangoLayout *layout;
 	const char *text;
 	double x;
 	double y;
@@ -1508,15 +1682,32 @@ static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 		JS_FreeCString(ctx, text);
 		return JS_EXCEPTION;
 	}
-	cairo_move_to(canvas->cr, x, y);
+	font_desc = canvas_get_font_description(ctx, this_val);
+	if (!font_desc) {
+		JS_FreeCString(ctx, text);
+		return JS_ThrowOutOfMemory(ctx);
+	}
+	layout = pango_cairo_create_layout(canvas->cr);
+	if (!layout) {
+		pango_font_description_free(font_desc);
+		JS_FreeCString(ctx, text);
+		return JS_ThrowOutOfMemory(ctx);
+	}
+	pango_layout_set_font_description(layout, font_desc);
+	pango_layout_set_text(layout, text, -1);
+	pango_cairo_update_layout(canvas->cr, layout);
 	if (magic == 1) {
 		canvas_set_source(ctx, this_val, "fillStyle");
-		cairo_show_text(canvas->cr, text);
+		canvas_move_to_text_baseline(canvas->cr, layout, x, y);
+		pango_cairo_show_layout(canvas->cr, layout);
 	} else {
 		canvas_set_source(ctx, this_val, "strokeStyle");
-		cairo_text_path(canvas->cr, text);
+		canvas_move_to_text_baseline(canvas->cr, layout, x, y);
+		pango_cairo_layout_path(canvas->cr, layout);
 		cairo_stroke(canvas->cr);
 	}
+	g_object_unref(layout);
+	pango_font_description_free(font_desc);
 	JS_FreeCString(ctx, text);
 	return JS_UNDEFINED;
 }
