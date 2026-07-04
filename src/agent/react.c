@@ -639,6 +639,7 @@ struct async_tool_call {
 	volatile sig_atomic_t completed;
 	volatile sig_atomic_t cancelled;
 	volatile sig_atomic_t detached;
+	volatile sig_atomic_t start_released;
 	struct morph_cancel_token cancel_token;
 	void *usage_user_data;
 	pthread_mutex_t mutex;
@@ -782,6 +783,11 @@ static void *async_tool_exec(void *arg)
 	struct async_tool_call *call = (struct async_tool_call *)arg;
 	if (!call)
 		return NULL;
+
+	pthread_mutex_lock(&call->mutex);
+	while (!call->start_released && !call->cancelled)
+		pthread_cond_wait(&call->cond, &call->mutex);
+	pthread_mutex_unlock(&call->mutex);
 
 	http_set_cancel_flag(&call->cancelled);
 	http_set_cancel_token(&call->cancel_token);
@@ -1951,7 +1957,6 @@ static void react_start_tool_calls(struct react_context *ctx,
 			break;
 		}
 
-		react_tool_call_running(ctx, tc);
 		if (pthread_create(&slots[i].thread, NULL, async_tool_exec,
 				   slots[i].call) != 0) {
 			react_tool_call_thread_failed(ctx, tc, -EAGAIN);
@@ -1961,6 +1966,11 @@ static void react_start_tool_calls(struct react_context *ctx,
 					 -EAGAIN, "tool_thread_failed");
 			break;
 		}
+		react_tool_call_running(ctx, tc);
+		pthread_mutex_lock(&slots[i].call->mutex);
+		slots[i].call->start_released = 1;
+		pthread_cond_broadcast(&slots[i].call->cond);
+		pthread_mutex_unlock(&slots[i].call->mutex);
 		slots[i].thread_started = 1;
 	}
 }

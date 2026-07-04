@@ -1001,6 +1001,24 @@ static int event_recorder_count_name(struct morph_event_recorder *rec,
 	return count;
 }
 
+static int event_recorder_index_name(struct morph_event_recorder *rec,
+				     const char *name)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		cJSON_Delete(root);
+		if (matched)
+			return (int)i;
+	}
+	return -1;
+}
+
 static bool event_recorder_has_outcome(struct morph_event_recorder *rec,
 				       const char *name,
 				       const char *outcome)
@@ -1134,6 +1152,10 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.end"));
+	EXPECT_LT(event_recorder_index_name(&rec, "tool.call"),
+		  event_recorder_index_name(&rec, "tool.running"));
+	EXPECT_LT(event_recorder_index_name(&rec, "tool.running"),
+		  event_recorder_index_name(&rec, "tool.result"));
 	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
 					       "success"));
 	std::string turn_id = event_recorder_turn_id(&rec, "react.turn.begin");
