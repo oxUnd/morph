@@ -614,11 +614,35 @@ static int append_tool_create_arg_error(morph_buf_t *buf,
 				field, expected, json_type_name(actual));
 }
 
+static const char *forbidden_source_token(const char *source)
+{
+	static const char *tokens[] = {
+		"require(",
+		"require (",
+		"Buffer",
+		"process",
+		"child_process",
+		"node:",
+		"__dirname",
+		"__filename",
+		NULL
+	};
+
+	if (!source)
+		return NULL;
+	for (int i = 0; tokens[i]; i++) {
+		if (strstr(source, tokens[i]))
+			return tokens[i];
+	}
+	return NULL;
+}
+
 static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 				     cJSON *source_item,
 				     morph_buf_t *err)
 {
 	const char *name;
+	const char *token;
 	int rc;
 
 	if (!root || !cJSON_IsObject(root)) {
@@ -645,6 +669,15 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 		return append_tool_create_arg_error(err, "source_js",
 			"JavaScript source string defining global run(args)",
 			source_item);
+	}
+	token = forbidden_source_token(source_item->valuestring);
+	if (token) {
+		return morph_buf_printf(err,
+			"- source_js: forbidden token \"%s\"; dynamic tools "
+			"run in QuickJS, not Node.js. Use morph.image, "
+			"morph.canvas, morph.fs, morph.fetch, and morph.env "
+			"instead.\n",
+			token);
 	}
 	return 0;
 }
@@ -1272,33 +1305,34 @@ static const char *TOOL_CREATE_DESCRIPTION =
 	"The source_js runs in embedded QuickJS. It must define global function "
 	"run(args) or async function run(args), and return a JSON-serializable "
 	"value. This is not Node.js: no node: imports, fs/http/https/"
-	"child_process modules, process, Buffer, __dirname, or npm packages. "
-	"A tiny require() shim supports only popular built-ins: "
-	"require(\"sharp\") for libvips-backed image processing and "
-	"require(\"canvas\") for 2D drawing. The sharp shim is a safe subset, "
-	"not full npm sharp. Allowed sharp inputs: file path strings, "
-	"ArrayBuffer, typed arrays such as Uint8Array, and the common blank "
-	"image form sharp({create:{width,height,channels,background}}). "
-	"Allowed sharp methods: "
-	"metadata(), resize(width[, height]) or resize({width,height}), "
-	"extract({left,top,width,height}), extend({top,bottom,left,right,"
-	"background}), rotate([angle]), blur([sigma]), sharpen(), grayscale()/"
-	"greyscale(), flatten(), composite([{input,left,top}]), png(), jpeg(), "
-	"jpg(), webp(), toFile(path), and toBuffer(). Do not use unsupported "
-	"npm sharp APIs: trim(), raw(), ensureAlpha(), removeAlpha(), "
-	"modulate(), tint(), normalize(), linear(), withMetadata(), clone(), "
-	"stats(), flip(), flop(), affine(), resize fit/position/gravity "
-	"options, composite gravity/blend/tile/opacity/density options, "
-	"raw(), flatten({background}), format quality/compression options, or "
-	"Buffer.from(). Use Uint8Array/TextEncoder-style byte arrays instead "
-	"of Buffer. Example image tool: const sharp = require(\"sharp\"); "
-	"async function run(args) { await sharp(args.input).resize(512).png()"
-	".toFile(args.output); return { output: args.output }; }. Example "
-	"canvas tool: const { createCanvas } = require(\"canvas\"); async "
-	"function run(args) { const c = createCanvas(256, 128); const ctx = "
-	"c.getContext(\"2d\"); ctx.fillStyle = \"#ffffff\"; ctx.fillRect(0, "
-	"0, 256, 128); ctx.fillStyle = \"#111111\"; ctx.fillText(args.text, "
-	"20, 70); c.toFile(args.output); return { output: args.output }; }. "
+	"child_process modules, process, Buffer, __dirname, require(), or npm "
+	"packages. Use only the bounded morph host APIs. Image APIs: "
+	"morph.image.metadata({input}), morph.image.resize({input,output,width,"
+	"height}), morph.image.crop/extract({input,output,left,top,width,"
+	"height}), morph.image.extend({input,output,top,bottom,left,right,"
+	"background}), morph.image.rotate({input,output,angle}), "
+	"morph.image.compose({input,output,overlays:[{input,left,top}]}), "
+	"morph.image.convert({input,output}), morph.image.frame({input,output,"
+	"style,caption,padding}), and morph.image.open(input) for the same "
+	"finite image handle methods: metadata, resize, extract, extend, "
+	"rotate, blur, sharpen, grayscale/greyscale, flatten, composite, png, "
+	"jpeg/jpg, webp, toFile, toBuffer. Canvas APIs: "
+	"morph.canvas.create({width,height}), morph.canvas.loadImage({input}), "
+	"morph.canvas.toFile({canvas,output}), morph.canvas.toBuffer({canvas}); "
+	"canvas handles support getContext(\"2d\"), fillRect, strokeRect, "
+	"rect, beginPath, fill, stroke, save, restore, moveTo, lineTo, "
+	"translate, arc, fillText, strokeText, drawImage, toFile, toBuffer. "
+	"Binary files use morph.fs.readFile(path) and morph.fs.writeFile(path, "
+	"ArrayBufferOrUint8Array); text files use morph.fs.readText and "
+	"morph.fs.writeText. Example image tool: async function run(args) { "
+	"await morph.image.resize({input: args.input, output: args.output, "
+	"width: 512}); return { output: args.output }; }. Example canvas tool: "
+	"async function run(args) { const c = morph.canvas.create({width: 256, "
+	"height: 128}); const ctx = c.getContext(\"2d\"); ctx.fillStyle = "
+	"\"#ffffff\"; ctx.fillRect(0, 0, 256, 128); ctx.fillStyle = "
+	"\"#111111\"; ctx.fillText(args.text, 20, 70); "
+	"morph.canvas.toFile({canvas: c, output: args.output}); return { "
+	"output: args.output }; }. "
 	"Example wasm: const mod = await WebAssembly.instantiate(bytes, {}); "
 	"const n = mod.instance.exports.add(1, 2). Available host APIs: "
 	"morph.fs.readText(path), morph.fs.writeText(path, text), "

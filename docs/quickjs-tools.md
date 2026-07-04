@@ -76,13 +76,30 @@ JS 工具当前可用 Host API：
 ```js
 morph.fs.readText(path)
 morph.fs.writeText(path, text)
+morph.fs.readFile(path)
+morph.fs.writeFile(path, bytesOrText)
+morph.image.metadata({ input })
+morph.image.resize({ input, output, width, height })
+morph.image.crop({ input, output, left, top, width, height })
+morph.image.extend({ input, output, top, bottom, left, right, background })
+morph.image.rotate({ input, output, angle })
+morph.image.compose({ input, output, overlays })
+morph.image.convert({ input, output })
+morph.image.frame({ input, output, style, caption, padding })
+morph.canvas.create({ width, height })
+morph.canvas.loadImage({ input })
+morph.canvas.toFile({ canvas, output })
+morph.canvas.toBuffer({ canvas })
 morph.env.get(name)
 morph.exec(command)
 morph.fetch(url)
-require("sharp")
-require("canvas")
 WebAssembly.instantiate(bytes, imports)
 ```
+
+动态工具不是 Node.js。不要使用 `require()`、`Buffer`、`process`、
+`node:` 模块、`fs`/`http`/`https`/`child_process`、`__dirname`、
+`__filename` 或 npm 包。图片能力统一走 `morph.image`，画布能力统一走
+`morph.canvas`。
 
 `morph.fetch(url)` 返回 Response-like 对象：
 
@@ -109,70 +126,47 @@ async function run(args) {
 - `indexOf()`
 - `toString()`
 
-### Popular API shims
-
-为了让模型按常见 JavaScript 生态写法创建工具，runner 提供了两个
-白名单 `require()` 模块和一个浏览器风格全局对象。
+### Image And Canvas APIs
 
 ```js
-const sharp = require("sharp");
-
 async function run(args) {
-	await sharp(args.input)
-		.resize(512)
-		.png()
-		.toFile(args.output);
+	await morph.image.resize({
+		input: args.input,
+		output: args.output,
+		width: 512
+	});
 	return { output: args.output };
 }
 ```
 
-`sharp` 是 libvips-backed 的安全子集，不是 npm sharp。支持的输入只有：
+`morph.image` 是 libvips-backed 的安全子集。常用入口：
 
-- 文件路径字符串
-- `ArrayBuffer`
-- `Uint8Array` 等 typed array
-
-支持的 `sharp` 方法：
-
-- `metadata()`
-- `resize(width[, height])` / `resize({ width, height })`
-- `extract({ left, top, width, height })`
-- `extend({ top, bottom, left, right, background })`
-- `rotate([angle])`
-- `blur([sigma])`
-- `sharpen()`
-- `grayscale()` / `greyscale()`
-- `flatten()`
-- `composite([{ input, left, top }])`
-- `png()` / `jpeg()` / `jpg()` / `webp()`
-- `toFile(path)` / `toBuffer()`
-
-不要在动态工具里生成这些 npm sharp 写法：`trim()`、`raw()`、
-`ensureAlpha()`、`removeAlpha()`、`modulate()`、`tint()`、`normalize()`、
-`linear()`、`withMetadata()`、`clone()`、`stats()`、`flip()`、`flop()`、
-`affine()`、`resize` 的 `fit` / `position` / `gravity` 选项、`composite`
-的 `gravity` / `blend` / `tile` / `opacity` / `density` 选项、
-`flatten({ background })`、输出格式的 `quality` / `compression` 选项，
-以及 `Buffer.from()`。需要字节输入时用 `Uint8Array` 或 `ArrayBuffer`。
+- `metadata({ input })`
+- `resize({ input, output, width, height })`
+- `crop()` / `extract()`
+- `extend()`
+- `rotate()`
+- `compose({ input, output, overlays: [{ input, left, top }] })`
+- `convert({ input, output })`
+- `frame({ input, output, style, caption, padding })`
+- `open(input)`：返回图片 handle，可继续调用有限的链式方法。
 
 ```js
-const { createCanvas } = require("canvas");
-
 async function run(args) {
-	const canvas = createCanvas(256, 128);
+	const canvas = morph.canvas.create({ width: 256, height: 128 });
 	const ctx = canvas.getContext("2d");
 	ctx.fillStyle = "#ffffff";
 	ctx.fillRect(0, 0, 256, 128);
 	ctx.fillStyle = "#111111";
 	ctx.fillText(args.text, 20, 70);
-	canvas.toFile(args.output);
+	morph.canvas.toFile({ canvas, output: args.output });
 	return { output: args.output };
 }
 ```
 
-`canvas` 是 Node-like 2D 子集，支持 `createCanvas()`、`loadImage()`、
-`getContext("2d")`、基础路径/矩形/文字绘制、`toFile()` 和
-`toBuffer()`。
+`morph.canvas` 是 Cairo-backed 2D 子集。支持 `create()`、`loadImage()`、
+`getContext("2d")`、基础路径/矩形/文字绘制、`drawImage()`、`toFile()`
+和 `toBuffer()`。
 
 ```js
 async function run(args) {
@@ -292,8 +286,9 @@ allowed_network = []
 - `tool_create` 创建 JS 工具后可立即调用。
 - server profile 默认拒绝文件读取能力。
 - `tool_promote` 后新 registry 能自动加载持久工具。
-- `require("canvas")` 可创建并写出 PNG。
-- `require("sharp")` 可 resize 图片并读取 metadata。
+- `morph.canvas` 可创建画布并写出图片。
+- `morph.image` 可 resize、compose、extend、frame 图片并读取 metadata。
+- `tool_create` 会拒绝 `require()` / Node 风格 source_js。
 - `WebAssembly.instantiate()` 可调用导出函数。
 - server profile 默认拒绝 `image` 能力。
 

@@ -246,15 +246,14 @@ TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
-		"const { createCanvas } = require('canvas');"
 		"async function run(args) {"
-		"  const canvas = createCanvas(64, 32);"
+		"  const canvas = morph.canvas.create({ width: 64, height: 32 });"
 		"  const ctx = canvas.getContext('2d');"
 		"  ctx.fillStyle = '#ffffff';"
 		"  ctx.fillRect(0, 0, 64, 32);"
 		"  ctx.fillStyle = '#111111';"
 		"  ctx.fillText(args.text, 8, 20);"
-		"  canvas.toFile(args.output);"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.output });"
 		"  return { output: args.output };"
 		"}";
 	struct tool_result result;
@@ -274,24 +273,24 @@ TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(DynamicToolsTest, SharpApiResizesImage)
+TEST_F(DynamicToolsTest, ImageApiResizesImage)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
-		"const { createCanvas } = require('canvas');"
-		"const sharp = require('sharp');"
 		"async function run(args) {"
-		"  const canvas = createCanvas(64, 32);"
-		"  canvas.toFile(args.input);"
-		"  await sharp(args.input).resize(16).png().toFile(args.output);"
-		"  const meta = await sharp(args.output).metadata();"
+		"  const canvas = morph.canvas.create({ width: 64, height: 32 });"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.input });"
+		"  await morph.image.resize({"
+		"    input: args.input, output: args.output, width: 16"
+		"  });"
+		"  const meta = await morph.image.metadata({ input: args.output });"
 		"  return { width: meta.width, height: meta.height };"
 		"}";
 	struct tool_result result;
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("sharp_resize", source,
+			    create_args("image_resize", source,
 					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
@@ -301,7 +300,7 @@ TEST_F(DynamicToolsTest, SharpApiResizesImage)
 	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
 		output + "\"}";
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "sharp_resize", call.c_str(), &result), 0);
+	ASSERT_EQ(tool_exec(&reg, "image_resize", call.c_str(), &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("\"width\":16"),
 		  std::string::npos);
@@ -309,78 +308,88 @@ TEST_F(DynamicToolsTest, SharpApiResizesImage)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(DynamicToolsTest, SharpApiLoadsBufferAndCompositesImage)
+TEST_F(DynamicToolsTest, ImageApiLoadsAndCompositesImage)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
-		"const { createCanvas } = require('canvas');"
-		"const sharp = require('sharp');"
-		"function bytes(str) {"
-		"  const out = new Uint8Array(str.length);"
-		"  for (let i = 0; i < str.length; i++)"
-		"    out[i] = str.charCodeAt(i);"
-		"  return out;"
-		"}"
 		"async function run(args) {"
-		"  const canvas = createCanvas(16, 16);"
+		"  const canvas = morph.canvas.create({ width: 16, height: 16 });"
 		"  const ctx = canvas.getContext('2d');"
 		"  ctx.fillStyle = '#ff0000';"
 		"  ctx.fillRect(0, 0, 16, 16);"
-		"  canvas.toFile(args.input);"
-		"  const svg = '<svg width=\"80\" height=\"48\" "
-		"xmlns=\"http://www.w3.org/2000/svg\">"
-		"<rect width=\"80\" height=\"48\" fill=\"white\"/>"
-		"</svg>';"
-		"  const encoded = await sharp(bytes(svg))"
-		"    .composite([{ input: args.input, left: 10, top: 8 }])"
-		"    .png().toBuffer();"
-		"  await sharp(encoded).rotate(-3).toFile(args.output);"
-		"  const meta = await sharp(args.output).metadata();"
-		"  return { ok: meta.width > 80 && meta.height > 48 };"
-		"}";
-	struct tool_result result;
-
-	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("sharp_composite", source,
-					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
-			    &result), 0);
-	tool_result_cleanup(&result);
-
-	std::string input = root + "/sharp_overlay.png";
-	std::string output = root + "/sharp_composite.png";
-	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
-		output + "\"}";
-	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "sharp_composite", call.c_str(), &result), 0);
-	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(std::string(result.text.data).find("\"ok\":true"),
-		  std::string::npos);
-	EXPECT_TRUE(file_exists(output.c_str()));
-	tool_result_cleanup(&result);
-}
-
-TEST_F(DynamicToolsTest, SharpApiExtendsImageWithBackground)
-{
-	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
-	std::string source =
-		"const { createCanvas } = require('canvas');"
-		"const sharp = require('sharp');"
-		"async function run(args) {"
-		"  const canvas = createCanvas(20, 10);"
-		"  canvas.toFile(args.input);"
-		"  await sharp(args.input).extend({"
-		"    top: 3, bottom: 7, left: 5, right: 11,"
-		"    background: { r: 255, g: 255, b: 255, alpha: 1 }"
-		"  }).png().toFile(args.output);"
-		"  const meta = await sharp(args.output).metadata();"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.input });"
+		"  await morph.image.compose({"
+		"    input: args.base, output: args.output,"
+		"    overlays: [{ input: args.input, left: 10, top: 8 }]"
+		"  });"
+		"  const meta = await morph.image.metadata({ input: args.output });"
 		"  return { width: meta.width, height: meta.height };"
 		"}";
 	struct tool_result result;
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("sharp_extend", source,
+			    create_args("image_composite", source,
+					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string input = root + "/sharp_overlay.png";
+	std::string base = root + "/sharp_base.png";
+	std::string output = root + "/sharp_composite.png";
+	std::string make_base =
+		"async function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 80, height: 48 });"
+		"  const ctx = canvas.getContext('2d');"
+		"  ctx.fillStyle = '#ffffff';"
+		"  ctx.fillRect(0, 0, 80, 48);"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.output });"
+		"  return { output: args.output };"
+		"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("image_base", make_base,
+					"[\"image\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "image_base",
+			    ("{\"output\":\"" + base + "\"}").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	std::string call = "{\"input\":\"" + input + "\",\"base\":\"" +
+		base + "\",\"output\":\"" + output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "image_composite", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"width\":80"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("\"height\":48"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ImageApiExtendsImageWithBackground)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"async function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 20, height: 10 });"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.input });"
+		"  await morph.image.extend({"
+		"    input: args.input, output: args.output,"
+		"    top: 3, bottom: 7, left: 5, right: 11,"
+		"    background: { r: 255, g: 255, b: 255, alpha: 1 }"
+		"  });"
+		"  const meta = await morph.image.metadata({ input: args.output });"
+		"  return { width: meta.width, height: meta.height };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("image_extend", source,
 					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
@@ -390,13 +399,72 @@ TEST_F(DynamicToolsTest, SharpApiExtendsImageWithBackground)
 	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
 		output + "\"}";
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "sharp_extend", call.c_str(), &result), 0);
+	ASSERT_EQ(tool_exec(&reg, "image_extend", call.c_str(), &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("\"width\":36"),
 		  std::string::npos);
 	EXPECT_NE(std::string(result.text.data).find("\"height\":20"),
 		  std::string::npos);
 	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ImageApiFramesImage)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"async function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 40, height: 24 });"
+		"  const ctx = canvas.getContext('2d');"
+		"  ctx.fillStyle = '#4477cc';"
+		"  ctx.fillRect(0, 0, 40, 24);"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.input });"
+		"  const out = await morph.image.frame({"
+		"    input: args.input, output: args.output, style: 'neon',"
+		"    caption: 'demo', padding: 12"
+		"  });"
+		"  return { width: out.width, height: out.height };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("image_frame", source,
+					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string input = root + "/frame_input.jpg";
+	std::string output = root + "/frame_output.jpg";
+	std::string call = "{\"input\":\"" + input + "\",\"output\":\"" +
+		output + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "image_frame", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"width\":64"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("\"height\":60"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists(output.c_str()));
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolCreateRejectsRequire)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"const sharp = require('sharp');"
+		"function run(args) { return { ok: true }; }";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("bad_require", source,
+					"[\"image\"]").c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("forbidden token"),
+		  std::string::npos);
 	tool_result_cleanup(&result);
 }
 
@@ -436,10 +504,9 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesImageCapability)
 		sizeof(cfg.dynamic_tools.mode) - 1);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
-		"const { createCanvas } = require('canvas');"
 		"function run(args) {"
-		"  const canvas = createCanvas(8, 8);"
-		"  canvas.toFile(args.output);"
+		"  const canvas = morph.canvas.create({ width: 8, height: 8 });"
+		"  morph.canvas.toFile({ canvas: canvas, output: args.output });"
 		"  return { ok: true };"
 		"}";
 	struct tool_result result;

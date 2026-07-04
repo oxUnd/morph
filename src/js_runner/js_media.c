@@ -69,6 +69,12 @@ static int classes_inited;
 static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
 					int width, int height);
 static int write_image_stb(const char *path, VipsImage *image);
+static int write_surface_image_file(cairo_surface_t *surface,
+				    const char *path);
+static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val,
+			       int argc, JSValueConst *argv);
+static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
+				     int argc, JSValueConst *argv);
 
 static int require_image(JSContext *ctx)
 {
@@ -188,6 +194,10 @@ static JSValue new_sharp_object(JSContext *ctx, VipsImage *image,
 		return obj;
 	}
 	JS_SetOpaque(obj, img);
+	JS_SetPropertyStr(ctx, obj, "width",
+			  JS_NewInt32(ctx, vips_image_get_width(image)));
+	JS_SetPropertyStr(ctx, obj, "height",
+			  JS_NewInt32(ctx, vips_image_get_height(image)));
 	return obj;
 }
 
@@ -400,6 +410,47 @@ static int write_image_stb(const char *path, VipsImage *image)
 	return ok ? 0 : -EIO;
 }
 
+static cairo_status_t png_buf_write(void *closure, const unsigned char *data,
+				    unsigned int length)
+{
+	morph_buf_t *buf = closure;
+
+	return morph_buf_append(buf, (const char *)data, length) == 0 ?
+		CAIRO_STATUS_SUCCESS : CAIRO_STATUS_WRITE_ERROR;
+}
+
+static int write_surface_image_file(cairo_surface_t *surface,
+				    const char *path)
+{
+	morph_buf_t buf;
+	VipsImage *image = NULL;
+	cairo_status_t status;
+	int rc = 0;
+
+	if (!surface || !path)
+		return -EINVAL;
+	if (morph_buf_init(&buf, 8192) != 0)
+		return -ENOMEM;
+	cairo_surface_flush(surface);
+	status = cairo_surface_write_to_png_stream(surface, png_buf_write, &buf);
+	if (status != CAIRO_STATUS_SUCCESS) {
+		rc = -EIO;
+		goto out;
+	}
+	image = vips_image_new_from_buffer(buf.data, buf.len, "", "access",
+					   VIPS_ACCESS_SEQUENTIAL, NULL);
+	if (!image) {
+		rc = -EIO;
+		goto out;
+	}
+	rc = write_image_stb(path, image);
+out:
+	if (image)
+		g_object_unref(image);
+	morph_buf_cleanup(&buf);
+	return rc;
+}
+
 static int parse_js_color(JSContext *ctx, JSValueConst value,
 			  double color[4])
 {
@@ -588,6 +639,8 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	if (JS_IsException(obj))
 		goto fail_value;
 	JS_SetOpaque(obj, canvas);
+	JS_SetPropertyStr(ctx, obj, "width", JS_NewInt32(ctx, width));
+	JS_SetPropertyStr(ctx, obj, "height", JS_NewInt32(ctx, height));
 	return obj;
 fail_value:
 	canvas_finalizer(JS_GetRuntime(ctx), obj);
@@ -1048,7 +1101,7 @@ static JSValue js_create_canvas(JSContext *ctx, JSValueConst this_val,
 	if (!require_image(ctx))
 		return JS_EXCEPTION;
 	if (argc < 2)
-		return JS_ThrowTypeError(ctx, "createCanvas(width, height)");
+		return JS_ThrowTypeError(ctx, "morph.canvas.create(width, height)");
 	if (JS_ToInt32(ctx, &width, argv[0]) < 0 ||
 	    JS_ToInt32(ctx, &height, argv[1]) < 0)
 		return JS_EXCEPTION;
@@ -1291,12 +1344,125 @@ static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 	return JS_UNDEFINED;
 }
 
+struct png_read_state {
+	const unsigned char *data;
+	size_t len;
+	size_t pos;
+};
+
+static cairo_status_t png_buf_read(void *closure, unsigned char *data,
+				   unsigned int length)
+{
+	struct png_read_state *state = closure;
+	size_t available;
+
+	if (!state || !data)
+		return CAIRO_STATUS_READ_ERROR;
+	available = state->len - state->pos;
+	if ((size_t)length > available)
+		return CAIRO_STATUS_READ_ERROR;
+	memcpy(data, state->data + state->pos, length);
+	state->pos += length;
+	return CAIRO_STATUS_SUCCESS;
+}
+
+static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
+{
+	struct png_read_state state;
+	cairo_surface_t *surface;
+	void *buf = NULL;
+	size_t len = 0;
+
+	if (!img || !img->image)
+		return NULL;
+	if (vips_image_write_to_buffer(img->image, ".png", &buf, &len,
+				       NULL) != 0)
+		return NULL;
+	memset(&state, 0, sizeof(state));
+	state.data = buf;
+	state.len = len;
+	surface = cairo_image_surface_create_from_png_stream(png_buf_read,
+							    &state);
+	g_free(buf);
+	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surface);
+		return NULL;
+	}
+	return surface;
+}
+
+static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val,
+				 int argc, JSValueConst *argv)
+{
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *src_canvas;
+	struct sharp_image *src_sharp;
+	cairo_surface_t *surface = NULL;
+	int destroy_surface = 0;
+	double dx;
+	double dy;
+	double dw;
+	double dh;
+	int sw;
+	int sh;
+
+	if (!canvas)
+		return JS_EXCEPTION;
+	if (argc < 3)
+		return JS_ThrowTypeError(ctx, "drawImage(image, x, y[, w, h])");
+	src_canvas = JS_GetOpaque(argv[0], canvas_class_id);
+	src_sharp = JS_GetOpaque(argv[0], sharp_class_id);
+	if (src_canvas) {
+		surface = src_canvas->surface;
+		sw = src_canvas->width;
+		sh = src_canvas->height;
+	} else if (src_sharp) {
+		surface = surface_from_sharp(src_sharp);
+		if (!surface)
+			return JS_ThrowInternalError(ctx, "failed to decode image");
+		destroy_surface = 1;
+		sw = cairo_image_surface_get_width(surface);
+		sh = cairo_image_surface_get_height(surface);
+	} else {
+		return JS_ThrowTypeError(ctx, "drawImage source must be image");
+	}
+	if (JS_ToFloat64(ctx, &dx, argv[1]) < 0 ||
+	    JS_ToFloat64(ctx, &dy, argv[2]) < 0) {
+		if (destroy_surface)
+			cairo_surface_destroy(surface);
+		return JS_EXCEPTION;
+	}
+	dw = (double)sw;
+	dh = (double)sh;
+	if (argc >= 5 &&
+	    (JS_ToFloat64(ctx, &dw, argv[3]) < 0 ||
+	     JS_ToFloat64(ctx, &dh, argv[4]) < 0)) {
+		if (destroy_surface)
+			cairo_surface_destroy(surface);
+		return JS_EXCEPTION;
+	}
+	if (dw <= 0.0 || dh <= 0.0 || sw <= 0 || sh <= 0) {
+		if (destroy_surface)
+			cairo_surface_destroy(surface);
+		return JS_ThrowRangeError(ctx, "invalid drawImage size");
+	}
+	cairo_save(canvas->cr);
+	cairo_translate(canvas->cr, dx, dy);
+	cairo_scale(canvas->cr, dw / (double)sw, dh / (double)sh);
+	cairo_set_source_surface(canvas->cr, surface, 0.0, 0.0);
+	cairo_paint(canvas->cr);
+	cairo_restore(canvas->cr);
+	if (destroy_surface)
+		cairo_surface_destroy(surface);
+	return JS_UNDEFINED;
+}
+
 static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 			      int argc, JSValueConst *argv)
 {
 	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
 	const char *path;
-	cairo_status_t status;
+	int rc;
 
 	if (!canvas)
 		return JS_EXCEPTION;
@@ -1309,21 +1475,12 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 		JS_FreeCString(ctx, path);
 		return JS_EXCEPTION;
 	}
-	cairo_surface_flush(canvas->surface);
-	status = cairo_surface_write_to_png(canvas->surface, path);
+	rc = write_surface_image_file(canvas->surface, path);
 	JS_FreeCString(ctx, path);
-	if (status != CAIRO_STATUS_SUCCESS)
-		return JS_ThrowInternalError(ctx, "failed to write canvas");
+	if (rc < 0)
+		return JS_ThrowInternalError(ctx, "failed to write canvas: %s",
+					     strerror(-rc));
 	return JS_UNDEFINED;
-}
-
-static cairo_status_t png_buf_write(void *closure, const unsigned char *data,
-				    unsigned int length)
-{
-	morph_buf_t *buf = closure;
-
-	return morph_buf_append(buf, (const char *)data, length) == 0 ?
-		CAIRO_STATUS_SUCCESS : CAIRO_STATUS_WRITE_ERROR;
 }
 
 static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val,
@@ -1352,6 +1509,76 @@ static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val,
 	return out;
 }
 
+static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val,
+			       int argc, JSValueConst *argv)
+{
+	const char *path;
+	char *data;
+	size_t len;
+	JSValue out;
+
+	(void)this_val;
+	if (argc < 1)
+		return JS_ThrowTypeError(ctx, "readFile(path)");
+	path = JS_ToCString(ctx, argv[0]);
+	if (!path)
+		return JS_EXCEPTION;
+	if (!path_allowed(ctx, path, 0)) {
+		JS_FreeCString(ctx, path);
+		return JS_EXCEPTION;
+	}
+	data = file_read_all(path, &len);
+	JS_FreeCString(ctx, path);
+	if (!data)
+		return JS_ThrowInternalError(ctx, "failed to read file");
+	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)data, len);
+	free(data);
+	return out;
+}
+
+static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
+				     int argc, JSValueConst *argv)
+{
+	const char *path;
+	const char *text;
+	uint8_t *bytes;
+	size_t len = 0;
+	int rc;
+
+	(void)this_val;
+	if (argc < 2)
+		return JS_ThrowTypeError(ctx, "writeFileSync(path, data)");
+	path = JS_ToCString(ctx, argv[0]);
+	if (!path)
+		return JS_EXCEPTION;
+	if (!path_allowed(ctx, path, 1)) {
+		JS_FreeCString(ctx, path);
+		return JS_EXCEPTION;
+	}
+	bytes = js_buffer_bytes(ctx, argv[1], &len);
+	if (bytes) {
+		rc = file_write_all(path, (const char *)bytes, len);
+		JS_FreeCString(ctx, path);
+		if (rc < 0)
+			return JS_ThrowInternalError(ctx,
+						     "failed to write file: %s",
+						     strerror(-rc));
+		return JS_UNDEFINED;
+	}
+	text = JS_ToCStringLen(ctx, &len, argv[1]);
+	if (!text) {
+		JS_FreeCString(ctx, path);
+		return JS_EXCEPTION;
+	}
+	rc = file_write_all(path, text, len);
+	JS_FreeCString(ctx, text);
+	JS_FreeCString(ctx, path);
+	if (rc < 0)
+		return JS_ThrowInternalError(ctx, "failed to write file: %s",
+					     strerror(-rc));
+	return JS_UNDEFINED;
+}
+
 static JSValue js_load_image(JSContext *ctx, JSValueConst this_val,
 			     int argc, JSValueConst *argv)
 {
@@ -1372,6 +1599,446 @@ static JSValue js_load_image(JSContext *ctx, JSValueConst this_val,
 	}
 	out = js_sharp_call(ctx, JS_UNDEFINED, 1, argv);
 	JS_FreeCString(ctx, path);
+	return out;
+}
+
+static JSValue get_arg_or_prop(JSContext *ctx, JSValueConst value,
+			       const char *name)
+{
+	if (JS_IsObject(value)) {
+		JSValue prop = JS_GetPropertyStr(ctx, value, name);
+
+		if (!JS_IsUndefined(prop))
+			return prop;
+		JS_FreeValue(ctx, prop);
+	}
+	return JS_DupValue(ctx, value);
+}
+
+static int object_int_prop(JSContext *ctx, JSValueConst object,
+			   const char *name, int32_t def, int32_t *out)
+{
+	JSValue value;
+
+	if (!out)
+		return -EINVAL;
+	*out = def;
+	if (!JS_IsObject(object))
+		return 0;
+	value = JS_GetPropertyStr(ctx, object, name);
+	if (JS_IsUndefined(value) || JS_IsNull(value)) {
+		JS_FreeValue(ctx, value);
+		return 0;
+	}
+	if (JS_ToInt32(ctx, out, value) < 0) {
+		JS_FreeValue(ctx, value);
+		return -EINVAL;
+	}
+	JS_FreeValue(ctx, value);
+	return 0;
+}
+
+static const char *object_string_prop(JSContext *ctx, JSValueConst object,
+				      const char *name)
+{
+	JSValue value;
+	const char *out;
+
+	if (!JS_IsObject(object))
+		return NULL;
+	value = JS_GetPropertyStr(ctx, object, name);
+	if (JS_IsUndefined(value) || JS_IsNull(value)) {
+		JS_FreeValue(ctx, value);
+		return NULL;
+	}
+	out = JS_ToCString(ctx, value);
+	JS_FreeValue(ctx, value);
+	return out;
+}
+
+static JSValue js_image_open(JSContext *ctx, JSValueConst this_val,
+			     int argc, JSValueConst *argv)
+{
+	JSValue input;
+	JSValue out;
+
+	(void)this_val;
+	if (argc < 1)
+		return JS_ThrowTypeError(ctx, "morph.image.open(input)");
+	input = get_arg_or_prop(ctx, argv[0], "input");
+	if (JS_IsUndefined(input))
+		return JS_ThrowTypeError(ctx, "morph.image.open requires input");
+	out = js_sharp_call(ctx, JS_UNDEFINED, 1, &input);
+	JS_FreeValue(ctx, input);
+	return out;
+}
+
+static JSValue js_image_create(JSContext *ctx, JSValueConst this_val,
+			       int argc, JSValueConst *argv)
+{
+	JSValue outer;
+	JSValue create;
+	JSValue out;
+
+	(void)this_val;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.create(options)");
+	outer = JS_NewObject(ctx);
+	create = JS_DupValue(ctx, argv[0]);
+	JS_SetPropertyStr(ctx, outer, "create", create);
+	out = js_sharp_call(ctx, JS_UNDEFINED, 1, &outer);
+	JS_FreeValue(ctx, outer);
+	return out;
+}
+
+static JSValue js_image_metadata_fn(JSContext *ctx, JSValueConst this_val,
+				    int argc, JSValueConst *argv)
+{
+	JSValue image;
+	JSValue out;
+
+	(void)this_val;
+	image = js_image_open(ctx, JS_UNDEFINED, argc, argv);
+	if (JS_IsException(image))
+		return image;
+	out = js_sharp_metadata(ctx, image, 0, NULL);
+	JS_FreeValue(ctx, image);
+	return out;
+}
+
+static JSValue image_transform_save(JSContext *ctx, JSValueConst options,
+				    JSValue (*fn)(JSContext *, JSValueConst,
+						  int, JSValueConst *),
+				    int argc, JSValueConst *argv)
+{
+	JSValue image;
+	JSValue result;
+	JSValue output;
+	JSValue out = JS_UNDEFINED;
+
+	image = js_image_open(ctx, JS_UNDEFINED, 1, &options);
+	if (JS_IsException(image))
+		return image;
+	result = fn(ctx, image, argc, argv);
+	if (JS_IsException(result)) {
+		JS_FreeValue(ctx, image);
+		return result;
+	}
+	JS_FreeValue(ctx, result);
+	output = JS_GetPropertyStr(ctx, options, "output");
+	if (!JS_IsUndefined(output) && !JS_IsNull(output)) {
+		result = js_sharp_to_file(ctx, image, 1, &output);
+		JS_FreeValue(ctx, output);
+		if (JS_IsException(result)) {
+			JS_FreeValue(ctx, image);
+			return result;
+		}
+		JS_FreeValue(ctx, result);
+		out = js_sharp_metadata(ctx, image, 0, NULL);
+	} else {
+		out = JS_DupValue(ctx, image);
+		JS_FreeValue(ctx, output);
+	}
+	JS_FreeValue(ctx, image);
+	return out;
+}
+
+static JSValue js_image_resize_fn(JSContext *ctx, JSValueConst this_val,
+				  int argc, JSValueConst *argv)
+{
+	JSValue args[2] = { JS_UNDEFINED, JS_UNDEFINED };
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.resize(options)");
+	args[0] = JS_GetPropertyStr(ctx, argv[0], "width");
+	args[1] = JS_GetPropertyStr(ctx, argv[0], "height");
+	out = image_transform_save(ctx, argv[0], js_sharp_resize, 2, args);
+	JS_FreeValue(ctx, args[0]);
+	JS_FreeValue(ctx, args[1]);
+	return out;
+}
+
+static JSValue js_image_crop_fn(JSContext *ctx, JSValueConst this_val,
+				int argc, JSValueConst *argv)
+{
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.crop(options)");
+	return image_transform_save(ctx, argv[0], js_sharp_extract, 1, argv);
+}
+
+static JSValue js_image_extend_fn(JSContext *ctx, JSValueConst this_val,
+				  int argc, JSValueConst *argv)
+{
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.extend(options)");
+	return image_transform_save(ctx, argv[0], js_sharp_extend, 1, argv);
+}
+
+static JSValue js_image_rotate_fn(JSContext *ctx, JSValueConst this_val,
+				  int argc, JSValueConst *argv)
+{
+	JSValue angle;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.rotate(options)");
+	angle = JS_GetPropertyStr(ctx, argv[0], "angle");
+	out = image_transform_save(ctx, argv[0], js_sharp_rotate, 1, &angle);
+	JS_FreeValue(ctx, angle);
+	return out;
+}
+
+static JSValue js_image_compose_fn(JSContext *ctx, JSValueConst this_val,
+				   int argc, JSValueConst *argv)
+{
+	JSValue overlays;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.compose(options)");
+	overlays = JS_GetPropertyStr(ctx, argv[0], "overlays");
+	out = image_transform_save(ctx, argv[0], js_sharp_composite, 1,
+				   &overlays);
+	JS_FreeValue(ctx, overlays);
+	return out;
+}
+
+static JSValue js_image_convert_fn(JSContext *ctx, JSValueConst this_val,
+				   int argc, JSValueConst *argv)
+{
+	JSValue image;
+	JSValue output;
+	JSValue result;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.convert(options)");
+	image = js_image_open(ctx, JS_UNDEFINED, 1, argv);
+	if (JS_IsException(image))
+		return image;
+	output = JS_GetPropertyStr(ctx, argv[0], "output");
+	result = js_sharp_to_file(ctx, image, 1, &output);
+	JS_FreeValue(ctx, output);
+	if (JS_IsException(result)) {
+		JS_FreeValue(ctx, image);
+		return result;
+	}
+	JS_FreeValue(ctx, result);
+	out = js_sharp_metadata(ctx, image, 0, NULL);
+	JS_FreeValue(ctx, image);
+	return out;
+}
+
+static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
+				 int argc, JSValueConst *argv)
+{
+	JSValue input_val;
+	VipsImage *image = NULL;
+	struct sharp_image tmp;
+	cairo_surface_t *src = NULL;
+	cairo_surface_t *surface = NULL;
+	cairo_t *cr = NULL;
+	const char *output;
+	const char *style;
+	const char *caption;
+	int32_t pad = 48;
+	int width;
+	int height;
+	int frame_w;
+	int frame_h;
+	int rc = 0;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (!require_image(ctx))
+		return JS_EXCEPTION;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.image.frame(options)");
+	output = object_string_prop(ctx, argv[0], "output");
+	if (!output)
+		return JS_ThrowTypeError(ctx, "morph.image.frame requires output");
+	if (!path_allowed(ctx, output, 1)) {
+		JS_FreeCString(ctx, output);
+		return JS_EXCEPTION;
+	}
+	input_val = get_arg_or_prop(ctx, argv[0], "input");
+	image = sharp_load_input(ctx, input_val);
+	JS_FreeValue(ctx, input_val);
+	if (!image) {
+		JS_FreeCString(ctx, output);
+		return JS_EXCEPTION;
+	}
+	memset(&tmp, 0, sizeof(tmp));
+	tmp.image = image;
+	src = surface_from_sharp(&tmp);
+	if (!src) {
+		g_object_unref(image);
+		JS_FreeCString(ctx, output);
+		return JS_ThrowInternalError(ctx, "failed to decode image");
+	}
+	style = object_string_prop(ctx, argv[0], "style");
+	caption = object_string_prop(ctx, argv[0], "caption");
+	(void)object_int_prop(ctx, argv[0], "padding", pad, &pad);
+	if (pad < 8)
+		pad = 8;
+	width = cairo_image_surface_get_width(src);
+	height = cairo_image_surface_get_height(src);
+	frame_w = width + pad * 2;
+	frame_h = height + pad * 2;
+	if (caption && *caption)
+		frame_h += pad;
+	surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, frame_w,
+					     frame_h);
+	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+		rc = -EIO;
+		goto out_fail;
+	}
+	cr = cairo_create(surface);
+	if (style && strcmp(style, "neon") == 0)
+		cairo_set_source_rgb(cr, 0.02, 0.02, 0.04);
+	else if (style && strcmp(style, "kraft") == 0)
+		cairo_set_source_rgb(cr, 0.82, 0.70, 0.52);
+	else if (style && strcmp(style, "dark") == 0)
+		cairo_set_source_rgb(cr, 0.08, 0.08, 0.09);
+	else
+		cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+	cairo_paint(cr);
+	cairo_set_source_surface(cr, src, pad, pad);
+	cairo_paint(cr);
+	if (style && strcmp(style, "neon") == 0) {
+		cairo_set_line_width(cr, 8.0);
+		cairo_set_source_rgb(cr, 0.0, 0.95, 1.0);
+		cairo_rectangle(cr, pad / 2.0, pad / 2.0,
+				frame_w - pad, frame_h - pad);
+		cairo_stroke(cr);
+		cairo_set_line_width(cr, 3.0);
+		cairo_set_source_rgb(cr, 1.0, 0.1, 0.75);
+		cairo_rectangle(cr, pad * 0.7, pad * 0.7,
+				frame_w - pad * 1.4, frame_h - pad * 1.4);
+		cairo_stroke(cr);
+	}
+	if (caption && *caption) {
+		cairo_select_font_face(cr, "Helvetica",
+				       CAIRO_FONT_SLANT_NORMAL,
+				       CAIRO_FONT_WEIGHT_NORMAL);
+		cairo_set_font_size(cr, (double)pad * 0.45);
+		if (style && strcmp(style, "dark") == 0)
+			cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+		else
+			cairo_set_source_rgb(cr, 0.12, 0.12, 0.12);
+		cairo_move_to(cr, pad, height + pad * 1.65);
+		cairo_show_text(cr, caption);
+	}
+	rc = write_surface_image_file(surface, output);
+out_fail:
+	if (cr)
+		cairo_destroy(cr);
+	if (surface)
+		cairo_surface_destroy(surface);
+	cairo_surface_destroy(src);
+	if (style)
+		JS_FreeCString(ctx, style);
+	if (caption)
+		JS_FreeCString(ctx, caption);
+	g_object_unref(image);
+	if (rc < 0) {
+		JS_FreeCString(ctx, output);
+		return JS_ThrowInternalError(ctx, "failed to write frame: %s",
+					     strerror(-rc));
+	}
+	out = JS_NewObject(ctx);
+	JS_SetPropertyStr(ctx, out, "output", JS_NewString(ctx, output));
+	JS_SetPropertyStr(ctx, out, "width", JS_NewInt32(ctx, frame_w));
+	JS_SetPropertyStr(ctx, out, "height", JS_NewInt32(ctx, frame_h));
+	JS_FreeCString(ctx, output);
+	return out;
+}
+
+static JSValue js_canvas_create_fn(JSContext *ctx, JSValueConst this_val,
+				   int argc, JSValueConst *argv)
+{
+	JSValue args[2];
+	JSValue out;
+
+	(void)this_val;
+	if (argc < 1)
+		return JS_ThrowTypeError(ctx, "morph.canvas.create(options)");
+	if (JS_IsObject(argv[0])) {
+		args[0] = JS_GetPropertyStr(ctx, argv[0], "width");
+		args[1] = JS_GetPropertyStr(ctx, argv[0], "height");
+	} else if (argc >= 2) {
+		args[0] = JS_DupValue(ctx, argv[0]);
+		args[1] = JS_DupValue(ctx, argv[1]);
+	} else {
+		return JS_ThrowTypeError(ctx, "morph.canvas.create(options)");
+	}
+	out = js_create_canvas(ctx, JS_UNDEFINED, 2, args);
+	JS_FreeValue(ctx, args[0]);
+	JS_FreeValue(ctx, args[1]);
+	return out;
+}
+
+static JSValue js_canvas_load_image_fn(JSContext *ctx, JSValueConst this_val,
+				       int argc, JSValueConst *argv)
+{
+	JSValue input;
+	JSValue out;
+
+	(void)this_val;
+	if (argc < 1)
+		return JS_ThrowTypeError(ctx, "morph.canvas.loadImage(input)");
+	input = get_arg_or_prop(ctx, argv[0], "input");
+	out = js_load_image(ctx, JS_UNDEFINED, 1, &input);
+	JS_FreeValue(ctx, input);
+	return out;
+}
+
+static JSValue js_canvas_to_file_fn(JSContext *ctx, JSValueConst this_val,
+				    int argc, JSValueConst *argv)
+{
+	JSValue canvas;
+	JSValue output;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.canvas.toFile(options)");
+	canvas = JS_GetPropertyStr(ctx, argv[0], "canvas");
+	output = JS_GetPropertyStr(ctx, argv[0], "output");
+	out = canvas_to_file(ctx, canvas, 1, &output);
+	JS_FreeValue(ctx, canvas);
+	JS_FreeValue(ctx, output);
+	return out;
+}
+
+static JSValue js_canvas_to_buffer_fn(JSContext *ctx, JSValueConst this_val,
+				      int argc, JSValueConst *argv)
+{
+	JSValue canvas;
+	JSValue out;
+
+	(void)this_val;
+	(void)argc;
+	if (argc < 1 || !JS_IsObject(argv[0]))
+		return JS_ThrowTypeError(ctx, "morph.canvas.toBuffer(options)");
+	canvas = JS_GetPropertyStr(ctx, argv[0], "canvas");
+	out = canvas_to_buffer(ctx, canvas, 0, NULL);
+	JS_FreeValue(ctx, canvas);
 	return out;
 }
 
@@ -1725,9 +2392,6 @@ static JSValue js_wasm_memory_ctor(JSContext *ctx, JSValueConst new_target,
 	return obj;
 }
 
-static JSValue js_require(JSContext *ctx, JSValueConst this_val,
-			  int argc, JSValueConst *argv);
-
 static const JSCFunctionListEntry sharp_proto_funcs[] = {
 	JS_CFUNC_DEF("metadata", 0, js_sharp_metadata),
 	JS_CFUNC_DEF("resize", 2, js_sharp_resize),
@@ -1764,8 +2428,30 @@ static const JSCFunctionListEntry canvas_proto_funcs[] = {
 	JS_CFUNC_DEF("arc", 5, canvas_arc),
 	JS_CFUNC_MAGIC_DEF("fillText", 3, canvas_text, 1),
 	JS_CFUNC_MAGIC_DEF("strokeText", 3, canvas_text, 2),
+	JS_CFUNC_DEF("drawImage", 5, canvas_draw_image),
 	JS_CFUNC_DEF("toFile", 1, canvas_to_file),
 	JS_CFUNC_DEF("toBuffer", 1, canvas_to_buffer),
+};
+
+static const JSCFunctionListEntry image_funcs[] = {
+	JS_CFUNC_DEF("open", 1, js_image_open),
+	JS_CFUNC_DEF("create", 1, js_image_create),
+	JS_CFUNC_DEF("metadata", 1, js_image_metadata_fn),
+	JS_CFUNC_DEF("resize", 1, js_image_resize_fn),
+	JS_CFUNC_DEF("crop", 1, js_image_crop_fn),
+	JS_CFUNC_DEF("extract", 1, js_image_crop_fn),
+	JS_CFUNC_DEF("extend", 1, js_image_extend_fn),
+	JS_CFUNC_DEF("rotate", 1, js_image_rotate_fn),
+	JS_CFUNC_DEF("compose", 1, js_image_compose_fn),
+	JS_CFUNC_DEF("convert", 1, js_image_convert_fn),
+	JS_CFUNC_DEF("frame", 1, js_image_frame_fn),
+};
+
+static const JSCFunctionListEntry canvas_funcs[] = {
+	JS_CFUNC_DEF("create", 1, js_canvas_create_fn),
+	JS_CFUNC_DEF("loadImage", 1, js_canvas_load_image_fn),
+	JS_CFUNC_DEF("toFile", 1, js_canvas_to_file_fn),
+	JS_CFUNC_DEF("toBuffer", 1, js_canvas_to_buffer_fn),
 };
 
 static void install_classes(JSContext *ctx)
@@ -1814,35 +2500,15 @@ static void install_classes(JSContext *ctx)
 	JS_SetClassProto(ctx, canvas_class_id, proto);
 }
 
-static JSValue js_require(JSContext *ctx, JSValueConst this_val,
-			  int argc, JSValueConst *argv)
+static JSValue js_require_disabled(JSContext *ctx, JSValueConst this_val,
+				   int argc, JSValueConst *argv)
 {
-	const char *name;
-	JSValue out;
-
 	(void)this_val;
-	if (argc < 1)
-		return JS_ThrowTypeError(ctx, "require(name)");
-	name = JS_ToCString(ctx, argv[0]);
-	if (!name)
-		return JS_EXCEPTION;
-	if (strcmp(name, "sharp") == 0) {
-		out = JS_NewCFunction(ctx, js_sharp_call, "sharp", 1);
-	} else if (strcmp(name, "canvas") == 0) {
-		out = JS_NewObject(ctx);
-		JS_SetPropertyStr(ctx, out, "createCanvas",
-				  JS_NewCFunction(ctx, js_create_canvas,
-						  "createCanvas", 2));
-		JS_SetPropertyStr(ctx, out, "loadImage",
-				  JS_NewCFunction(ctx, js_load_image,
-						  "loadImage", 1));
-	} else {
-		JS_FreeCString(ctx, name);
-		return JS_ThrowTypeError(ctx,
-					 "unsupported require() module");
-	}
-	JS_FreeCString(ctx, name);
-	return out;
+	(void)argc;
+	(void)argv;
+	return JS_ThrowTypeError(ctx,
+		"require() is disabled in dynamic tools; use morph.image, "
+		"morph.canvas, and morph.fs");
 }
 
 int js_media_init(void)
@@ -1861,6 +2527,10 @@ void install_media_api(JSContext *ctx)
 {
 	JSValue global;
 	JSValue wasm;
+	JSValue morph;
+	JSValue fs;
+	JSValue image;
+	JSValue canvas;
 	JSValue module_ctor;
 	JSValue instance_ctor;
 	JSValue memory_ctor;
@@ -1868,14 +2538,34 @@ void install_media_api(JSContext *ctx)
 	install_classes(ctx);
 	global = JS_GetGlobalObject(ctx);
 	JS_SetPropertyStr(ctx, global, "require",
-			  JS_NewCFunction(ctx, js_require, "require", 1));
-	JS_SetPropertyStr(ctx, global, "sharp",
-			  JS_NewCFunction(ctx, js_sharp_call, "sharp", 1));
-	JS_SetPropertyStr(ctx, global, "createCanvas",
-			  JS_NewCFunction(ctx, js_create_canvas,
-					  "createCanvas", 2));
-	JS_SetPropertyStr(ctx, global, "loadImage",
-			  JS_NewCFunction(ctx, js_load_image, "loadImage", 1));
+			  JS_NewCFunction(ctx, js_require_disabled,
+					  "require", 1));
+	morph = JS_GetPropertyStr(ctx, global, "morph");
+	if (JS_IsUndefined(morph) || JS_IsNull(morph)) {
+		JS_FreeValue(ctx, morph);
+		morph = JS_NewObject(ctx);
+		JS_SetPropertyStr(ctx, global, "morph", JS_DupValue(ctx, morph));
+	}
+	fs = JS_GetPropertyStr(ctx, morph, "fs");
+	if (JS_IsUndefined(fs) || JS_IsNull(fs)) {
+		JS_FreeValue(ctx, fs);
+		fs = JS_NewObject(ctx);
+		JS_SetPropertyStr(ctx, morph, "fs", JS_DupValue(ctx, fs));
+	}
+	JS_SetPropertyStr(ctx, fs, "readFile",
+			  JS_NewCFunction(ctx, js_fs_read_file, "readFile", 1));
+	JS_SetPropertyStr(ctx, fs, "writeFile",
+			  JS_NewCFunction(ctx, js_fs_write_file_sync,
+					  "writeFile", 2));
+	image = JS_NewObject(ctx);
+	JS_SetPropertyFunctionList(ctx, image, image_funcs,
+				   sizeof(image_funcs) / sizeof(image_funcs[0]));
+	canvas = JS_NewObject(ctx);
+	JS_SetPropertyFunctionList(ctx, canvas, canvas_funcs,
+				   sizeof(canvas_funcs) /
+				   sizeof(canvas_funcs[0]));
+	JS_SetPropertyStr(ctx, morph, "image", image);
+	JS_SetPropertyStr(ctx, morph, "canvas", canvas);
 	wasm = JS_NewObject(ctx);
 	module_ctor = JS_NewCFunction2(ctx, js_wasm_module_ctor, "Module", 1,
 				       JS_CFUNC_constructor, 0);
@@ -1893,5 +2583,7 @@ void install_media_api(JSContext *ctx)
 			  JS_NewCFunction(ctx, js_wasm_instantiate,
 					  "instantiate", 2));
 	JS_SetPropertyStr(ctx, global, "WebAssembly", wasm);
+	JS_FreeValue(ctx, fs);
+	JS_FreeValue(ctx, morph);
 	JS_FreeValue(ctx, global);
 }
