@@ -68,6 +68,7 @@ static int classes_inited;
 
 static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
 					int width, int height);
+static VipsImage *image_set_interpretation(VipsImage *image);
 static int write_image_stb(const char *path, VipsImage *image);
 static int write_surface_image_file(cairo_surface_t *surface,
 				    const char *path);
@@ -272,6 +273,22 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 			JS_FreeCString(ctx, path);
 			return NULL;
 		}
+#ifdef __ANDROID__
+		{
+			int width = 0;
+			int height = 0;
+			int channels = 0;
+			unsigned char *pixels;
+
+			pixels = stbi_load(path, &width, &height, &channels, 4);
+			image = image_from_stb_pixels(ctx, pixels, width,
+						      height);
+			if (image) {
+				JS_FreeCString(ctx, path);
+				return image;
+			}
+		}
+#endif
 		image = vips_image_new_from_file(path, "access",
 						 VIPS_ACCESS_SEQUENTIAL,
 						 NULL);
@@ -299,6 +316,20 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 					  "ArrayBuffer, or typed array");
 		return NULL;
 	}
+#ifdef __ANDROID__
+	if (len <= (size_t)INT_MAX) {
+		int width = 0;
+		int height = 0;
+		int channels = 0;
+		unsigned char *pixels;
+
+		pixels = stbi_load_from_memory(bytes, (int)len, &width,
+					       &height, &channels, 4);
+		image = image_from_stb_pixels(ctx, pixels, width, height);
+		if (image)
+			return image;
+	}
+#endif
 	image = vips_image_new_from_buffer(bytes, len, "", "access",
 					   VIPS_ACCESS_SEQUENTIAL, NULL);
 	if (!image && len <= (size_t)INT_MAX) {
@@ -335,7 +366,27 @@ static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
 	stbi_image_free(pixels);
 	if (!image)
 		(void)throw_vips_error(ctx, "failed to create image from pixels");
+	image = image_set_interpretation(image);
 	return image;
+}
+
+static VipsImage *image_set_interpretation(VipsImage *image)
+{
+	VipsImage *out = NULL;
+	VipsInterpretation interpretation;
+	int bands;
+
+	if (!image)
+		return NULL;
+	bands = vips_image_get_bands(image);
+	interpretation = bands == 1 ? VIPS_INTERPRETATION_B_W :
+		VIPS_INTERPRETATION_sRGB;
+	if (vips_copy(image, &out, "interpretation", interpretation, NULL) != 0) {
+		vips_error_clear();
+		return image;
+	}
+	g_object_unref(image);
+	return out;
 }
 
 static int path_ext_is(const char *path, const char *ext)
@@ -410,6 +461,79 @@ static int write_image_stb(const char *path, VipsImage *image)
 	return ok ? 0 : -EIO;
 }
 
+static void stb_buf_write(void *context, void *data, int size)
+{
+	morph_buf_t *buf = context;
+
+	if (!buf || !data || size <= 0)
+		return;
+	(void)morph_buf_append(buf, data, (size_t)size);
+}
+
+static int write_image_stb_buffer(const char *format, VipsImage *image,
+				  void **out, size_t *out_len)
+{
+	morph_buf_t buf;
+	void *mem;
+	size_t len;
+	int width;
+	int height;
+	int bands;
+	int ok = 0;
+
+	if (!format || !image || !out || !out_len)
+		return -EINVAL;
+	*out = NULL;
+	*out_len = 0;
+	width = vips_image_get_width(image);
+	height = vips_image_get_height(image);
+	bands = vips_image_get_bands(image);
+	if (width <= 0 || height <= 0 || bands <= 0 || bands > 4)
+		return -EINVAL;
+	mem = vips_image_write_to_memory(image, &len);
+	if (!mem)
+		return -EIO;
+	if (morph_buf_init(&buf, 8192) != 0) {
+		g_free(mem);
+		return -ENOMEM;
+	}
+	if (strcmp(format, ".jpg") == 0 || strcmp(format, ".jpeg") == 0) {
+		if (bands == 4) {
+			unsigned char *src = mem;
+			unsigned char *rgb;
+			size_t pixels = (size_t)width * (size_t)height;
+
+			rgb = malloc(pixels * 3U);
+			if (rgb) {
+				for (size_t i = 0; i < pixels; i++) {
+					rgb[i * 3U] = src[i * 4U];
+					rgb[i * 3U + 1U] = src[i * 4U + 1U];
+					rgb[i * 3U + 2U] = src[i * 4U + 2U];
+				}
+				ok = stbi_write_jpg_to_func(stb_buf_write, &buf,
+							    width, height, 3,
+							    rgb, 90);
+				free(rgb);
+			}
+		} else {
+			ok = stbi_write_jpg_to_func(stb_buf_write, &buf,
+						    width, height, bands,
+						    mem, 90);
+		}
+	} else if (strcmp(format, ".png") == 0) {
+		ok = stbi_write_png_to_func(stb_buf_write, &buf, width,
+					    height, bands, mem, width * bands);
+	}
+	g_free(mem);
+	if (!ok) {
+		morph_buf_cleanup(&buf);
+		return -EIO;
+	}
+	*out = buf.data;
+	*out_len = buf.len;
+	return 0;
+}
+
 static cairo_status_t png_buf_write(void *closure, const unsigned char *data,
 				    unsigned int length)
 {
@@ -422,33 +546,68 @@ static cairo_status_t png_buf_write(void *closure, const unsigned char *data,
 static int write_surface_image_file(cairo_surface_t *surface,
 				    const char *path)
 {
-	morph_buf_t buf;
-	VipsImage *image = NULL;
-	cairo_status_t status;
-	int rc = 0;
+	unsigned char *src;
+	unsigned char *out;
+	int width;
+	int height;
+	int stride;
+	int channels;
+	int ok;
 
 	if (!surface || !path)
 		return -EINVAL;
-	if (morph_buf_init(&buf, 8192) != 0)
-		return -ENOMEM;
+	if (cairo_image_surface_get_format(surface) != CAIRO_FORMAT_ARGB32)
+		return -EINVAL;
 	cairo_surface_flush(surface);
-	status = cairo_surface_write_to_png_stream(surface, png_buf_write, &buf);
-	if (status != CAIRO_STATUS_SUCCESS) {
-		rc = -EIO;
-		goto out;
+	src = cairo_image_surface_get_data(surface);
+	width = cairo_image_surface_get_width(surface);
+	height = cairo_image_surface_get_height(surface);
+	stride = cairo_image_surface_get_stride(surface);
+	if (!src || width <= 0 || height <= 0 || stride <= 0)
+		return -EINVAL;
+	channels = (path_ext_is(path, ".jpg") || path_ext_is(path, ".jpeg")) ?
+		3 : 4;
+	out = malloc((size_t)width * (size_t)height * (size_t)channels);
+	if (!out)
+		return -ENOMEM;
+	for (int y = 0; y < height; y++) {
+		unsigned char *row = src + (size_t)y * (size_t)stride;
+		unsigned char *dst = out +
+			(size_t)y * (size_t)width * (size_t)channels;
+
+		for (int x = 0; x < width; x++) {
+			unsigned char b = row[x * 4 + 0];
+			unsigned char g = row[x * 4 + 1];
+			unsigned char r = row[x * 4 + 2];
+			unsigned char a = row[x * 4 + 3];
+
+			if (a > 0 && a < 255) {
+				unsigned int ur = ((unsigned int)r * 255U +
+						   (unsigned int)a / 2U) /
+					(unsigned int)a;
+				unsigned int ug = ((unsigned int)g * 255U +
+						   (unsigned int)a / 2U) /
+					(unsigned int)a;
+				unsigned int ub = ((unsigned int)b * 255U +
+						   (unsigned int)a / 2U) /
+					(unsigned int)a;
+				r = (unsigned char)(ur > 255U ? 255U : ur);
+				g = (unsigned char)(ug > 255U ? 255U : ug);
+				b = (unsigned char)(ub > 255U ? 255U : ub);
+			}
+			dst[x * channels + 0] = r;
+			dst[x * channels + 1] = g;
+			dst[x * channels + 2] = b;
+			if (channels == 4)
+				dst[x * channels + 3] = a;
+		}
 	}
-	image = vips_image_new_from_buffer(buf.data, buf.len, "", "access",
-					   VIPS_ACCESS_SEQUENTIAL, NULL);
-	if (!image) {
-		rc = -EIO;
-		goto out;
-	}
-	rc = write_image_stb(path, image);
-out:
-	if (image)
-		g_object_unref(image);
-	morph_buf_cleanup(&buf);
-	return rc;
+	if (channels == 3)
+		ok = stbi_write_jpg(path, width, height, 3, out, 90);
+	else
+		ok = stbi_write_png(path, width, height, 4, out, width * 4);
+	free(out);
+	return ok ? 0 : -EIO;
 }
 
 static int parse_js_color(JSContext *ctx, JSValueConst value,
@@ -605,6 +764,7 @@ static VipsImage *sharp_create_input(JSContext *ctx, JSValueConst create)
 	free(data);
 	if (!image)
 		(void)throw_vips_error(ctx, "failed to create image");
+	image = image_set_interpretation(image);
 	return image;
 }
 
@@ -844,7 +1004,7 @@ static JSValue js_sharp_extend(JSContext *ctx, JSValueConst this_val,
 	width = vips_image_get_width(img->image) + left + right;
 	height = vips_image_get_height(img->image) + top + bottom;
 	bands = vips_image_get_bands(img->image);
-	if (vips_image_hasalpha(img->image))
+	if (bands >= 4)
 		background_len = 4;
 	else
 		background_len = bands == 1 ? 1 : 3;
@@ -1090,9 +1250,19 @@ static JSValue js_sharp_to_buffer(JSContext *ctx, JSValueConst this_val,
 	(void)argv;
 	if (!img)
 		return JS_EXCEPTION;
+	if ((strcmp(img->format, ".png") == 0 ||
+	     strcmp(img->format, ".jpg") == 0 ||
+	     strcmp(img->format, ".jpeg") == 0) &&
+	    write_image_stb_buffer(img->format, img->image, &buf, &len) == 0) {
+		out = JS_NewArrayBufferCopy(ctx, buf, len);
+		free(buf);
+		return out;
+	}
 	if (vips_image_write_to_buffer(img->image, img->format, &buf, &len,
-				       NULL) != 0)
+				       NULL) != 0) {
+		vips_error_clear();
 		return JS_ThrowInternalError(ctx, "failed to encode image");
+	}
 	out = JS_NewArrayBufferCopy(ctx, buf, len);
 	g_free(buf);
 	return out;
@@ -1351,48 +1521,115 @@ static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 	return JS_UNDEFINED;
 }
 
-struct png_read_state {
-	const unsigned char *data;
-	size_t len;
-	size_t pos;
-};
-
-static cairo_status_t png_buf_read(void *closure, unsigned char *data,
-				   unsigned int length)
-{
-	struct png_read_state *state = closure;
-	size_t available;
-
-	if (!state || !data)
-		return CAIRO_STATUS_READ_ERROR;
-	available = state->len - state->pos;
-	if ((size_t)length > available)
-		return CAIRO_STATUS_READ_ERROR;
-	memcpy(data, state->data + state->pos, length);
-	state->pos += length;
-	return CAIRO_STATUS_SUCCESS;
-}
+static cairo_user_data_key_t surface_pixels_key;
 
 static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 {
-	struct png_read_state state;
 	cairo_surface_t *surface;
-	void *buf = NULL;
+	VipsImage *image;
+	VipsImage *cast = NULL;
+	void *pixels = NULL;
+	unsigned char *data = NULL;
 	size_t len = 0;
+	size_t needed;
+	int width;
+	int height;
+	int bands;
+	int stride;
 
 	if (!img || !img->image)
 		return NULL;
-	if (vips_image_write_to_buffer(img->image, ".png", &buf, &len,
-				       NULL) != 0)
+	image = img->image;
+	if (vips_image_get_format(image) != VIPS_FORMAT_UCHAR) {
+		if (vips_cast(image, &cast, VIPS_FORMAT_UCHAR, NULL) != 0)
+			return NULL;
+		image = cast;
+	}
+	width = vips_image_get_width(image);
+	height = vips_image_get_height(image);
+	bands = vips_image_get_bands(image);
+	if (width <= 0 || height <= 0 || bands <= 0) {
+		if (cast)
+			g_object_unref(cast);
 		return NULL;
-	memset(&state, 0, sizeof(state));
-	state.data = buf;
-	state.len = len;
-	surface = cairo_image_surface_create_from_png_stream(png_buf_read,
-							    &state);
-	g_free(buf);
+	}
+	stride = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, width);
+	if (stride <= 0) {
+		if (cast)
+			g_object_unref(cast);
+		return NULL;
+	}
+	pixels = vips_image_write_to_memory(image, &len);
+	if (!pixels) {
+		if (cast)
+			g_object_unref(cast);
+		return NULL;
+	}
+	needed = (size_t)width * (size_t)height * (size_t)bands;
+	if (len < needed) {
+		g_free(pixels);
+		if (cast)
+			g_object_unref(cast);
+		return NULL;
+	}
+	data = calloc((size_t)stride, (size_t)height);
+	if (!data) {
+		g_free(pixels);
+		if (cast)
+			g_object_unref(cast);
+		return NULL;
+	}
+	for (int y = 0; y < height; y++) {
+		const unsigned char *src = (const unsigned char *)pixels +
+			(size_t)y * (size_t)width * (size_t)bands;
+		unsigned char *dst = data + (size_t)y * (size_t)stride;
+
+		for (int x = 0; x < width; x++) {
+			unsigned char r;
+			unsigned char g;
+			unsigned char b;
+			unsigned char a = 255;
+			unsigned int pr;
+			unsigned int pg;
+			unsigned int pb;
+
+			if (bands == 1) {
+				r = g = b = src[0];
+			} else if (bands == 2) {
+				r = g = b = src[0];
+				a = src[1];
+			} else {
+				r = src[0];
+				g = src[1];
+				b = src[2];
+				if (bands >= 4)
+					a = src[3];
+			}
+			pr = ((unsigned int)r * (unsigned int)a + 127U) / 255U;
+			pg = ((unsigned int)g * (unsigned int)a + 127U) / 255U;
+			pb = ((unsigned int)b * (unsigned int)a + 127U) / 255U;
+			dst[x * 4 + 0] = (unsigned char)pb;
+			dst[x * 4 + 1] = (unsigned char)pg;
+			dst[x * 4 + 2] = (unsigned char)pr;
+			dst[x * 4 + 3] = a;
+			src += bands;
+		}
+	}
+	g_free(pixels);
+	if (cast)
+		g_object_unref(cast);
+	surface = cairo_image_surface_create_for_data(data,
+						      CAIRO_FORMAT_ARGB32,
+						      width, height, stride);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(surface);
+		free(data);
+		return NULL;
+	}
+	if (cairo_surface_set_user_data(surface, &surface_pixels_key, data,
+					free) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surface);
+		free(data);
 		return NULL;
 	}
 	return surface;

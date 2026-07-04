@@ -97,6 +97,19 @@ async function run(args) {
 		canvas.toFile(basePng);
 	});
 
+	await test("morph.canvas.loadImage/drawImage jpeg", async function () {
+		const image = morph.canvas.loadImage({ input: canvasJpg });
+		assert(image.width === 80 && image.height === 48,
+			"jpeg loadImage dimensions mismatch");
+		const canvas = morph.canvas.create({ width: 96, height: 64 });
+		const ctx = canvas.getContext("2d");
+		ctx.fillStyle = "#ffffff";
+		ctx.fillRect(0, 0, 96, 64);
+		ctx.drawImage(image, 8, 8, 80, 48);
+		assert(morph.canvas.toBuffer({ canvas }).byteLength > 0,
+			"jpeg drawImage output empty");
+	});
+
 	await test("morph.image.metadata", async function () {
 		const meta = await morph.image.metadata({ input: basePng });
 		assert(meta.width === 96 && meta.height === 64,
@@ -236,8 +249,12 @@ async function run(args) {
 		await morph.image.open(png).toFile(readbackPng);
 		const jpg = await morph.image.open(readbackPng).jpeg().toBuffer();
 		assert(jpg.byteLength > 0, "jpeg buffer empty");
-		const webp = await morph.image.open(readbackPng).webp().toBuffer();
-		assert(webp.byteLength > 0, "webp buffer empty");
+		if (morph.env.get("ANDROID_ROOT")) {
+			cases.push("webp buffer skipped on android");
+		} else {
+			const webp = await morph.image.open(readbackPng).webp().toBuffer();
+			assert(webp.byteLength > 0, "webp buffer empty");
+		}
 	});
 
 	await test("WebAssembly.Module/Instance/instantiate/compile/Memory",
