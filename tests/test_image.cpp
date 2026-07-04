@@ -447,7 +447,7 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
 	EXPECT_STREQ(g_fake_img_qa_path, path);
 	EXPECT_EQ(g_fake_img_qa_max_tokens, 1024);
-	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 60);
+	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 120);
 	EXPECT_EQ(g_fake_img_qa_max_dim, 360);
 	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
 	bool saw_stream = false;

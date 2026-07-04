@@ -124,7 +124,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		rc = opts.max_tokens;
 		goto out;
 	}
-	opts.timeout_seconds = img_qa_int_arg(root, "timeout_seconds", 60,
+	opts.timeout_seconds = img_qa_int_arg(root, "timeout_seconds", 120,
 					     5, 300, result);
 	if (opts.timeout_seconds < 0) {
 		rc = (int)opts.timeout_seconds;
@@ -228,7 +228,7 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		"visual comparison, and content analysis. Before upload, the "
 		"image is compressed within max_dim while preserving aspect "
 		"ratio. Provide file_path and prompt. Optional max_tokens "
-		"(default 1024), timeout_seconds (default 60), and max_dim "
+		"(default 1024), timeout_seconds (default 120), and max_dim "
 		"(default 360).",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"file_path\":{\"type\":\"string\","
@@ -239,7 +239,7 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		"\"max_tokens\":{\"type\":\"integer\","
 		"\"description\":\"Maximum output tokens (default 1024)\"},"
 		"\"timeout_seconds\":{\"type\":\"integer\","
-		"\"description\":\"Hard request timeout in seconds (default 60)\"},"
+		"\"description\":\"Hard request timeout in seconds (default 120)\"},"
 		"\"max_dim\":{\"type\":\"integer\","
 		"\"description\":\"Maximum image side sent to model (default 360)\"}},"
 		"\"required\":[\"file_path\"]}",
