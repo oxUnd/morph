@@ -1,4 +1,5 @@
 #include "sub_agent.h"
+#include "tool_runtime.h"
 #include "guardrail.h"
 #include "tokenizer.h"
 #include "compress.h"
@@ -677,10 +678,14 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 				const char *msgs[] = { combined_buf.data };
 				morph_buf_t syn_buf;
 				if (morph_buf_init(&syn_buf, 8192) == 0) {
+					struct tool_runtime_stream_sink stream;
+					stream.tool = "fanout";
+					stream.kind = "text";
+					stream.buf = &syn_buf;
 					int src = llm->chat(llm, arena, sys,
-							    msgs, 1,
-							    morph_buf_append_cb,
-							    &syn_buf);
+							    msgs, 1, NULL,
+							    tool_runtime_stream_to_buf_cb,
+							    &stream);
 					if (src == 0 && syn_buf.len > 0) {
 						morph_buf_cleanup(&combined_buf);
 						combined_buf = syn_buf;
@@ -762,7 +767,7 @@ int sub_agent_apply_output_schema(const char *text,
 	int rc = llm->chat(llm, arena,
 		"You are a structured data extraction engine. "
 		"Return ONLY valid JSON.",
-		msgs, 1, NULL, NULL);
+		msgs, 1, NULL, NULL, NULL);
 	arena_destroy(arena);
 	if (rc < 0 || !response[0]) {
 		free(response);

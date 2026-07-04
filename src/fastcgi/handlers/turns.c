@@ -694,6 +694,20 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 		return 0;
 	}
 
+	if (strcmp(ev->name, "tool.stream.delta") == 0) {
+		char *tool = event_data_string(data, "tool");
+		char *kind = event_data_string(data, "kind");
+		char *text = event_data_string(data, "text");
+		event_sink_tool_stream_turn(j->store, j->session_id, turn_id,
+					    tool ? tool : j->last_tool,
+					    kind ? kind : "text",
+					    text ? text : "");
+		free(tool);
+		free(kind);
+		free(text);
+		return 0;
+	}
+
 	if (strcmp(ev->name, "react.observation") == 0) {
 		cJSON *artifacts = cJSON_GetObjectItem(data, "artifacts");
 		cJSON *item;

@@ -68,6 +68,26 @@ int cli_event_callback(const struct morph_event *ev, void *user_data)
 		return 0;
 	}
 
+	if (ev->type == MORPH_EVENT_TOOL && ev->name &&
+	    strcmp(ev->name, "tool.stream.delta") == 0) {
+		cJSON *data = ev->data;
+		cJSON *kind = data ? cJSON_GetObjectItem(data, "kind") : NULL;
+		cJSON *text = data ? cJSON_GetObjectItem(data, "text") : NULL;
+		const char *kind_s = cJSON_IsString(kind) ?
+			kind->valuestring : "text";
+		const char *text_s = cJSON_IsString(text) ?
+			text->valuestring : "";
+
+		if (strcmp(kind_s, "text") == 0 && text_s[0]) {
+			printf("%s", text_s);
+			fflush(stdout);
+		} else if (strcmp(kind_s, "status") == 0 && text_s[0]) {
+			printf("\n[tool] %s\n", text_s);
+			fflush(stdout);
+		}
+		return 0;
+	}
+
 	if (ev->type == MORPH_EVENT_STARTUP)
 		prefix = "startup";
 	else if (ev->type == MORPH_EVENT_MCP)

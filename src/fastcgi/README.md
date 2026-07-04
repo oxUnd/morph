@@ -142,7 +142,7 @@ export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 | GET    | /api/artifacts/:artifact                      | download artifact binary       |
 
 SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
-`tool_result`, `reflection`, `final`, `turn_end`, `artifact_ready`,
+`tool_stream`, `tool_result`, `reflection`, `final`, `turn_end`, `artifact_ready`,
 `canvas_node_added`, `canvas_node_patched`, `error`.
 
 Turn execution is driven by the shared structured event system documented in

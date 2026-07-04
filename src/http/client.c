@@ -479,10 +479,11 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			     int extra_header_count, long timeout_seconds,
 			     http_callback cb, void *user_data)
 {
-	long idle_timeout = timeout_seconds > 0 ? timeout_seconds : 300L;
+	long total_timeout = timeout_seconds > 0 ? timeout_seconds : 300L;
+	long idle_timeout = total_timeout;
 
 	return do_sse_request(url, body, body_len, content_type, extra_headers,
-			      extra_header_count, 600L, idle_timeout, cb,
+			      extra_header_count, total_timeout, idle_timeout, cb,
 			      user_data);
 }
 

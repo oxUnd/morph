@@ -67,6 +67,17 @@ struct chat_response {
 	struct arena *arena;
 };
 
+struct model_chat_options {
+	int max_tokens;
+	long timeout_seconds;
+};
+
+struct model_image_chat_options {
+	int max_tokens;
+	long timeout_seconds;
+	int max_dim;
+};
+
 struct model {
 	char name[64];
 	char provider[32];
@@ -81,6 +92,7 @@ struct model {
 	int (*chat)(struct model *self, struct arena *arena,
 		    const char *system_prompt,
 		    const char **messages, int n,
+		    const struct model_chat_options *opts,
 		    sse_callback cb, void *user_data);
 	int (*chat_with_tools)(struct model *self, struct arena *arena,
 			       const char *system_prompt,
@@ -99,6 +111,7 @@ struct model {
 			       const char *system_prompt,
 			       const char *prompt,
 			       const char *image_path,
+			       const struct model_image_chat_options *opts,
 			       sse_callback cb, void *user_data);
 	int (*generate)(struct model *self, const char *prompt, const char *out_path);
 	void (*destroy)(struct model *self);

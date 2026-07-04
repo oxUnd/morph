@@ -59,9 +59,11 @@ static char *strcasestr_local(const char *haystack, const char *needle)
 static int mock_llm_chat(struct model *self, struct arena *arena,
 			  const char *system_prompt,
 			  const char **messages, int n,
+			  const struct model_chat_options *opts,
 			  sse_callback cb, void *user_data)
 {
 	(void)arena; (void)system_prompt; (void)messages; (void)n;
+	(void)opts;
 	struct mock_llm_data *data = (struct mock_llm_data *)self->handle;
 	data->call_count++;
 	if (data->should_fail) return -EIO;
@@ -86,7 +88,7 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 	cd.cap = 8192;
 	cd.buf[0] = '\0';
 
-	int status = self->chat(self, arena, nullptr, nullptr, 0,
+	int status = self->chat(self, arena, nullptr, nullptr, 0, nullptr,
 				mock_collect_cb, &cd);
 	if (status < 0) { free(cd.buf); return status; }
 

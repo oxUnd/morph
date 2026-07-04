@@ -86,6 +86,18 @@ void event_sink_tool_result_turn(struct session_store *s, const char *sid,
 	publish_obj(s, sid, "tool_result", o);
 }
 
+void event_sink_tool_stream_turn(struct session_store *s, const char *sid,
+				 const char *turn_id, const char *tool,
+				 const char *kind, const char *text)
+{
+	cJSON *o = cJSON_CreateObject();
+	add_turn_id(o, turn_id);
+	cJSON_AddStringToObject(o, "tool", tool ? tool : "");
+	cJSON_AddStringToObject(o, "kind", kind ? kind : "text");
+	cJSON_AddStringToObject(o, "text", text ? text : "");
+	publish_obj(s, sid, "tool_stream", o);
+}
+
 void event_sink_final(struct session_store *s, const char *sid, const char *text)
 {
 	event_sink_final_turn(s, sid, NULL, text);

@@ -561,19 +561,29 @@ static const char *llm_extract_error(const char *raw, struct arena *arena)
 static int llm_chat(struct model *self, struct arena *arena,
 		    const char *system_prompt,
 		    const char **messages, int n,
+		    const struct model_chat_options *opts,
 		    sse_callback cb, void *user_data)
 {
+	int max_tokens;
+	long timeout;
+
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat: no API key configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
+	max_tokens = opts && opts->max_tokens > 0
+		? opts->max_tokens
+		: self->max_tokens;
+	timeout = opts && opts->timeout_seconds > 0
+		? opts->timeout_seconds
+		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
 
 	char *body = NULL;
 	size_t body_len = 0;
 	int rc = build_chat_body_json(arena, self->model_id, system_prompt,
-				      messages, n, self->max_tokens, 1,
+				      messages, n, max_tokens, 1,
 				      &body, &body_len);
 	if (rc < 0)
 		return rc;
@@ -601,7 +611,6 @@ static int llm_chat(struct model *self, struct arena *arena,
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };
 
-	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	int status = http_post_sse_ex_timeout(url, body, body_len,
 				       "application/json",
@@ -648,8 +657,13 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 			       const char *system_prompt,
 			       const char *prompt,
 			       const char *image_path,
+			       const struct model_image_chat_options *opts,
 			       sse_callback cb, void *user_data)
 {
+	int max_tokens;
+	int max_dim;
+	long timeout;
+
 	model_clear_last_error(self);
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_image: no API key configured");
@@ -658,7 +672,15 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
 		return -EINVAL;
 
-	char *b64 = image_encode_base64(image_path, LLM_IMAGE_QA_MAX_DIM);
+	max_tokens = opts && opts->max_tokens > 0
+		? opts->max_tokens
+		: (self->max_tokens > 0 ? self->max_tokens : 4096);
+	max_dim = opts && opts->max_dim > 0 ? opts->max_dim : LLM_IMAGE_QA_MAX_DIM;
+	timeout = opts && opts->timeout_seconds > 0
+		? opts->timeout_seconds
+		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
+
+	char *b64 = image_encode_base64(image_path, max_dim);
 	if (!b64) {
 		log_err("llm_chat_with_image: failed to encode image: %s",
 			image_path);
@@ -721,14 +743,15 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	cJSON_AddItemToArray(messages, user);
 	cJSON_AddBoolToObject(root, "stream", 1);
 	{
-		cJSON *opts = cJSON_CreateObject();
-		if (opts) {
-			cJSON_AddBoolToObject(opts, "include_usage", 1);
-			cJSON_AddItemToObject(root, "stream_options", opts);
+		cJSON *stream_opts = cJSON_CreateObject();
+		if (stream_opts) {
+			cJSON_AddBoolToObject(stream_opts, "include_usage", 1);
+			cJSON_AddItemToObject(root, "stream_options",
+					      stream_opts);
 		}
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
-				self->max_tokens > 0 ? self->max_tokens : 4096);
+				max_tokens);
 
 	size_t body_cap = 8192 + uri_len + strlen(prompt);
 	char *body = arena_alloc(arena, body_cap);
@@ -766,8 +789,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		 self->api_key);
 	const char *extra_headers[] = { auth_header };
 
-	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
-	log_dbg("llm_chat_with_image: sending SSE request to %s", url);
+	log_dbg("llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, max_dim=%d, body=%zu",
+		url, timeout, max_tokens, max_dim, body_len);
 	int status = http_post_sse_ex_timeout(url, body, body_len,
 					      "application/json",
 					      extra_headers, 1, timeout,

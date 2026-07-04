@@ -21,6 +21,9 @@ void event_sink_tool_call_turn(struct session_store *s, const char *sid,
 void event_sink_tool_result_turn(struct session_store *s, const char *sid,
 				 const char *turn_id, const char *tool,
 				 const char *result_json);
+void event_sink_tool_stream_turn(struct session_store *s, const char *sid,
+				 const char *turn_id, const char *tool,
+				 const char *kind, const char *text);
 void event_sink_final_turn(struct session_store *s, const char *sid,
 			   const char *turn_id, const char *text);
 void event_sink_error_turn(struct session_store *s, const char *sid,

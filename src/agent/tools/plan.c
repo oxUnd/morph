@@ -1,6 +1,7 @@
 #include "plan.h"
 #include "agent/tool.h"
 #include "agent/plan.h"
+#include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/arena.h"
@@ -359,11 +360,6 @@ static int set_resultf(struct tool_result *result, const char *fmt, ...)
 	return 0;
 }
 
-static int decompose_stream_cb(const char *token, void *user_data)
-{
-	return morph_buf_append_cb(token, user_data);
-}
-
 static int parse_steps_from_text(const char *text, const char **descs,
 				 int max_steps)
 {
@@ -451,6 +447,7 @@ static int auto_decompose(struct model *llm, const char *goal,
 			  "Output ONLY the numbered list, no preamble.";
 
 	morph_buf_t buf;
+	struct tool_runtime_stream_sink stream;
 	int rc2 = morph_buf_init(&buf, 8192);
 	if (rc2 != 0) {
 		arena_destroy(arena);
@@ -458,8 +455,11 @@ static int auto_decompose(struct model *llm, const char *goal,
 	}
 
 	const char *messages[] = { prompt };
-	int status = llm->chat(llm, arena, sys, messages, 1,
-			       decompose_stream_cb, &buf);
+	stream.tool = "plan";
+	stream.kind = "text";
+	stream.buf = &buf;
+	int status = llm->chat(llm, arena, sys, messages, 1, NULL,
+			       tool_runtime_stream_to_buf_cb, &stream);
 	arena_destroy(arena);
 
 	if (status < 0 || buf.len == 0) {

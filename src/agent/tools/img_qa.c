@@ -1,6 +1,7 @@
 #include "img_qa.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
+#include "agent/tool_runtime.h"
 #include "models/llm.h"
 #include "util/arena.h"
 #include "util/buf.h"
@@ -21,9 +22,27 @@ static void img_qa_context_destroy(void *user_data)
 	free(user_data);
 }
 
-static int img_qa_stream_cb(const char *token, void *user_data)
+static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
+			  int min, int max, struct tool_result *result)
 {
-	return morph_buf_append_cb(token, user_data);
+	cJSON *item;
+	int value;
+
+	item = cJSON_GetObjectItem(root, name);
+	if (!item)
+		return fallback;
+	if (!cJSON_IsNumber(item)) {
+		(void)tool_result_json_errorf(result,
+			"'%s' must be an integer", name);
+		return -EINVAL;
+	}
+	value = item->valueint;
+	if (value < min || value > max) {
+		(void)tool_result_json_errorf(result,
+			"'%s' must be between %d and %d", name, min, max);
+		return -EINVAL;
+	}
+	return value;
 }
 
 static int img_qa_take_call_error(struct tool_result *result,
@@ -65,6 +84,8 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	cJSON *root = NULL;
 	struct arena *arena = NULL;
 	morph_buf_t buf;
+	struct tool_runtime_stream_sink stream;
+	struct model_image_chat_options opts;
 	char resolved_path[PATH_MAX];
 	const char *prompt;
 	const char *file_path;
@@ -97,6 +118,24 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	prompt = cJSON_IsString(pr) && pr->valuestring && pr->valuestring[0]
 		? pr->valuestring : "Analyze this image.";
+	opts.max_tokens = img_qa_int_arg(root, "max_tokens", 1024, 1, 4096,
+					 result);
+	if (opts.max_tokens < 0) {
+		rc = opts.max_tokens;
+		goto out;
+	}
+	opts.timeout_seconds = img_qa_int_arg(root, "timeout_seconds", 60,
+					     5, 300, result);
+	if (opts.timeout_seconds < 0) {
+		rc = (int)opts.timeout_seconds;
+		goto out;
+	}
+	opts.max_dim = img_qa_int_arg(root, "max_dim", 360, 128, 1024,
+				      result);
+	if (opts.max_dim < 0) {
+		rc = opts.max_dim;
+		goto out;
+	}
 	if (!file_path || !*file_path) {
 		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
@@ -138,12 +177,18 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 
+	stream.buf = &buf;
+	stream.tool = "img_qa";
+	stream.kind = "text";
+	(void)tool_runtime_emit_stream("img_qa", "status",
+				       "sending image question to model");
 	rc = llm->chat_with_image(
 		llm, arena,
 		"You answer questions about the provided image. "
 		"Use only visual evidence from the image. If the task asks for "
 		"OCR, transcribe visible text and say when text is unclear.",
-		prompt, resolved_path, img_qa_stream_cb, &buf);
+		prompt, resolved_path, &opts, tool_runtime_stream_to_buf_cb,
+		&stream);
 	if (rc < 0) {
 		morph_buf_cleanup(&buf);
 		(void)img_qa_take_call_error(result, llm);
@@ -181,14 +226,22 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		"Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
 		"visual comparison, and content analysis. Before upload, the "
-		"image is compressed within 360p while preserving aspect ratio. "
-		"Provide file_path and prompt.",
+		"image is compressed within max_dim while preserving aspect "
+		"ratio. Provide file_path and prompt. Optional max_tokens "
+		"(default 1024), timeout_seconds (default 60), and max_dim "
+		"(default 360).",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"file_path\":{\"type\":\"string\","
 		"\"description\":\"Path to the image file\"},"
 		"\"prompt\":{\"type\":\"string\","
 		"\"description\":\"Question or instruction for image analysis, "
-		"such as OCR or scene description\"}},"
+		"such as OCR or scene description\"},"
+		"\"max_tokens\":{\"type\":\"integer\","
+		"\"description\":\"Maximum output tokens (default 1024)\"},"
+		"\"timeout_seconds\":{\"type\":\"integer\","
+		"\"description\":\"Hard request timeout in seconds (default 60)\"},"
+		"\"max_dim\":{\"type\":\"integer\","
+		"\"description\":\"Maximum image side sent to model (default 360)\"}},"
 		"\"required\":[\"file_path\"]}",
 		img_qa_exec, ctx, img_qa_context_destroy);
 	if (rc < 0)

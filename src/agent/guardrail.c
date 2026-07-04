@@ -287,7 +287,7 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 
 	const char *msgs[1] = { prompt };
 	int status = cfg->llm->chat(cfg->llm, ctx->arena, NULL,
-				    msgs, 1,
+				    msgs, 1, NULL,
 				    llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
 		log_warn("guardrail: LLM call failed for rule '%s', defaulting PASS",

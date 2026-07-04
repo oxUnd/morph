@@ -835,13 +835,19 @@ static void *async_tool_exec(void *arg)
 		notify_done = 1;
 	} else {
 		struct tool_result res;
+		struct tool_runtime_context runtime;
 		void *prev_usage_user_data;
 		int rc;
 
 		tool_result_init(&res);
 		prev_usage_user_data = model_get_usage_user_data();
 		model_set_usage_user_data(call->usage_user_data);
-		tool_runtime_set_current(&call->react->tool_runtime);
+		runtime = call->react->tool_runtime;
+		runtime.event_cb = call->react->event_cb;
+		runtime.event_user_data = call->react->event_user_data;
+		runtime.turn_id = call->react->turn_id[0]
+			? call->react->turn_id : NULL;
+		tool_runtime_set_current(&runtime);
 		rc = tool_exec(call->tools, call->tool_name,
 			       call->tool_args, &res);
 		tool_runtime_set_current(NULL);
@@ -921,7 +927,8 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 		*out = strdup(text);
 		return *out ? 0 : -ENOMEM;
 	}
-	rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, morph_buf_append_cb, &b);
+	rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, NULL,
+		       morph_buf_append_cb, &b);
 	if (rc < 0) {
 		morph_buf_cleanup(&b);
 		*out = strdup(text);
@@ -1811,7 +1818,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			}
 		}
 		status = llm->chat(llm, ctx->turn_arena, system_prompt,
-				   hist_msgs, hist_n, react_stream_cb, &sd);
+				   hist_msgs, hist_n, NULL, react_stream_cb,
+				   &sd);
 		if (status >= 0 && sd.accumulated) {
 			response->content = sd.accumulated;
 			sd.accumulated = NULL;

@@ -1966,7 +1966,7 @@ static char *memory_llm_extract_json(const char *user_input,
 	}
 
 	messages[0] = prompt;
-	rc = llm->chat(llm, arena, MEMORY_LLM_SYSTEM, messages, 1,
+	rc = llm->chat(llm, arena, MEMORY_LLM_SYSTEM, messages, 1, NULL,
 		       morph_buf_append_cb, &buf);
 	arena_destroy(arena);
 	free(prompt);

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
 #include "agent/tool.h"
+#include "agent/tool_runtime.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "util/arena.h"
@@ -35,6 +36,17 @@ static int test_tool_fn(const char *args_json, struct tool_result *result, void 
 	(void)args_json;
 	(void)user_data;
 	(void)tool_result_take_text(result, strdup("{\"result\":\"test\"}"));
+	return 0;
+}
+
+static int streaming_tool_fn(const char *args_json, struct tool_result *result,
+			     void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	(void)tool_runtime_emit_stream("stream_tool", "text", "alpha ");
+	(void)tool_runtime_emit_stream("stream_tool", "text", "beta");
+	(void)tool_result_take_text(result, strdup("{\"result\":\"done\"}"));
 	return 0;
 }
 
@@ -116,12 +128,14 @@ struct mock_llm_data {
 static int mock_llm_chat(struct model *self, struct arena *arena,
 			  const char *system_prompt,
 			  const char **messages, int n,
+			  const struct model_chat_options *opts,
 			  sse_callback cb, void *user_data)
 {
 	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
+	(void)opts;
 	struct mock_llm_data *data = (struct mock_llm_data *)self->handle;
 	data->call_count++;
 	if (data->should_fail)
@@ -139,12 +153,14 @@ static int mock_llm_chat(struct model *self, struct arena *arena,
 static int mock_llm_streaming_chat(struct model *self, struct arena *arena,
 				    const char *system_prompt,
 				    const char **messages, int n,
+				    const struct model_chat_options *opts,
 				    sse_callback cb, void *user_data)
 {
 	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
+	(void)opts;
 	struct mock_llm_data *data = (struct mock_llm_data *)self->handle;
 	data->call_count++;
 	if (data->should_fail)
@@ -201,7 +217,8 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 	cd.cap = 8192;
 	cd.buf[0] = '\0';
 
-	int status = self->chat(self, arena, nullptr, nullptr, 0, mock_collect_cb, &cd);
+	int status = self->chat(self, arena, nullptr, nullptr, 0, nullptr,
+				mock_collect_cb, &cd);
 	if (status < 0) {
 		free(cd.buf);
 		return status;
@@ -336,12 +353,14 @@ struct multi_mock_data {
 static int multi_mock_chat(struct model *self, struct arena *arena,
 			   const char *system_prompt,
 			   const char **messages, int n,
+			   const struct model_chat_options *opts,
 			   sse_callback cb, void *user_data)
 {
 	(void)arena;
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
+	(void)opts;
 	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
 	int idx = data->call_count;
 	data->call_count++;
@@ -492,6 +511,7 @@ struct slot_mock_data {
 static int slot_mock_chat(struct model *self, struct arena *arena,
 			  const char *system_prompt,
 			  const char **messages, int n,
+			  const struct model_chat_options *opts,
 			  sse_callback cb, void *user_data)
 {
 	(void)self;
@@ -499,6 +519,7 @@ static int slot_mock_chat(struct model *self, struct arena *arena,
 	(void)system_prompt;
 	(void)messages;
 	(void)n;
+	(void)opts;
 	(void)cb;
 	(void)user_data;
 	return 200;
@@ -1250,6 +1271,37 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 		  event_recorder_index_name(&rec, "tool.result"));
 	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
 					       "success"));
+	std::string turn_id = event_recorder_turn_id(&rec, "react.turn.begin");
+	ASSERT_FALSE(turn_id.empty());
+	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, turn_id.c_str()));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, EmitsToolStreamEventsFromToolThread) {
+	tool_register(&tools, "stream_tool", "Streams from tool", "{}",
+		      streaming_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: Using streaming tool.\nAction: stream_tool({})\n",
+		"Thought: Tool done.\nFinal: Streamed."
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "do it", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(event_recorder_count_name(&rec, "tool.stream.delta"), 2);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
 	std::string turn_id = event_recorder_turn_id(&rec, "react.turn.begin");
 	ASSERT_FALSE(turn_id.empty());
 	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, turn_id.c_str()));
@@ -2152,10 +2204,12 @@ static void capt_store_structured_messages(struct capt_prompt_data *d,
 static int capt_prompt_chat(struct model *self, struct arena *arena,
 			    const char *system_prompt,
 			    const char **messages, int n,
+			    const struct model_chat_options *opts,
 			    sse_callback cb, void *user_data)
 {
 	(void)arena;
 	(void)user_data;
+	(void)opts;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->prompt);
 	d->prompt = (n > 0 && messages[0]) ? strdup(messages[0]) : nullptr;

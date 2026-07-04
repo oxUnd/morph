@@ -9,6 +9,8 @@
 #include "agent/tools/img_convert.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
+#include "agent/tool_runtime.h"
+#include "event/event.h"
 #include "render/image.h"
 #include "util/file.h"
 #include "util/error.h"
@@ -21,11 +23,15 @@
 
 static char g_fake_img_qa_prompt[256];
 static char g_fake_img_qa_path[512];
+static int g_fake_img_qa_max_tokens;
+static long g_fake_img_qa_timeout_seconds;
+static int g_fake_img_qa_max_dim;
 
 static int fake_chat_with_image(struct model *self, struct arena *arena,
 				const char *system_prompt,
 				const char *prompt,
 				const char *image_path,
+				const struct model_image_chat_options *opts,
 				sse_callback cb, void *user_data)
 {
 	(void)self;
@@ -35,8 +41,15 @@ static int fake_chat_with_image(struct model *self, struct arena *arena,
 		 prompt ? prompt : "");
 	snprintf(g_fake_img_qa_path, sizeof(g_fake_img_qa_path), "%s",
 		 image_path ? image_path : "");
-	if (cb)
-		return cb("fake image answer", user_data);
+	g_fake_img_qa_max_tokens = opts ? opts->max_tokens : 0;
+	g_fake_img_qa_timeout_seconds = opts ? opts->timeout_seconds : 0;
+	g_fake_img_qa_max_dim = opts ? opts->max_dim : 0;
+	if (cb) {
+		int rc = cb("fake ", user_data);
+		if (rc != 0)
+			return rc;
+		return cb("image answer", user_data);
+	}
 	return 0;
 }
 
@@ -44,12 +57,14 @@ static int fake_chat_with_image_fail(struct model *self, struct arena *arena,
 				     const char *system_prompt,
 				     const char *prompt,
 				     const char *image_path,
+				     const struct model_image_chat_options *opts,
 				     sse_callback cb, void *user_data)
 {
 	(void)arena;
 	(void)system_prompt;
 	(void)prompt;
 	(void)image_path;
+	(void)opts;
 	(void)cb;
 	(void)user_data;
 	snprintf(self->last_error, sizeof(self->last_error),
@@ -408,18 +423,67 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	fake.chat_with_image = fake_chat_with_image;
 	g_fake_img_qa_prompt[0] = '\0';
 	g_fake_img_qa_path[0] = '\0';
+	g_fake_img_qa_max_tokens = 0;
+	g_fake_img_qa_timeout_seconds = 0;
+	g_fake_img_qa_max_dim = 0;
 	img_qa_init(&reg, &fake, NULL);
+	struct morph_event_recorder rec;
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	struct tool_runtime_context rt = {};
+	rt.event_cb = morph_event_recorder_cb;
+	rt.event_user_data = &rec;
+	rt.turn_id = "turn_img_qa";
+	tool_runtime_set_current(&rt);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "img_qa",
 			   "{\"file_path\":\"/tmp/morph_img_qa.png\","
 			   "\"prompt\":\"OCR this\"}",
 			   &result);
+	tool_runtime_set_current(NULL);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_STREQ(result.text.data, "fake image answer");
 	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
 	EXPECT_STREQ(g_fake_img_qa_path, path);
+	EXPECT_EQ(g_fake_img_qa_max_tokens, 1024);
+	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 60);
+	EXPECT_EQ(g_fake_img_qa_max_dim, 360);
+	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
+	bool saw_stream = false;
+	for (size_t i = 0; i < morph_event_recorder_count(&rec); i++) {
+		const char *json = morph_event_recorder_get(&rec, i);
+		if (json && strstr(json, "\"name\":\"tool.stream.delta\"") &&
+		    strstr(json, "\"turn_id\":\"turn_img_qa\""))
+			saw_stream = true;
+	}
+	EXPECT_TRUE(saw_stream);
+	tool_result_cleanup(&result);
+	morph_event_recorder_cleanup(&rec);
+	std::remove(path);
+}
+
+TEST_F(ImgGenToolTest, QaPassesExplicitOptions) {
+	const char *path = "/tmp/morph_img_qa_opts.png";
+	ASSERT_EQ(create_test_png(path), 0);
+	struct model fake = {};
+	fake.api_key[0] = 'x';
+	fake.chat_with_image = fake_chat_with_image;
+	g_fake_img_qa_max_tokens = 0;
+	g_fake_img_qa_timeout_seconds = 0;
+	g_fake_img_qa_max_dim = 0;
+	img_qa_init(&reg, &fake, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_qa",
+			   "{\"file_path\":\"/tmp/morph_img_qa_opts.png\","
+			   "\"max_tokens\":77,\"timeout_seconds\":12,"
+			   "\"max_dim\":512}",
+			   &result);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(g_fake_img_qa_max_tokens, 77);
+	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 12);
+	EXPECT_EQ(g_fake_img_qa_max_dim, 512);
 	tool_result_cleanup(&result);
 	std::remove(path);
 }
