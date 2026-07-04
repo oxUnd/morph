@@ -35,6 +35,15 @@ TEST(UtilId, RandomIdUsesPrefixAndHex)
 	EXPECT_TRUE(is_lower_hex_string(id + 5));
 }
 
+TEST(UtilId, RandomIdNbytesControlsHexLength)
+{
+	char id[16];
+
+	ASSERT_EQ(morph_random_id_nbytes("", 4, id, sizeof(id)), 0);
+	EXPECT_EQ(strlen(id), 8u);
+	EXPECT_TRUE(is_lower_hex_string(id));
+}
+
 TEST(UtilId, RejectsInvalidArgsAndSmallBuffer)
 {
 	char id[8];
@@ -42,6 +51,8 @@ TEST(UtilId, RejectsInvalidArgsAndSmallBuffer)
 	EXPECT_EQ(morph_random_id(nullptr, id, sizeof(id)), -EINVAL);
 	EXPECT_EQ(morph_random_id("turn_", nullptr, 64), -EINVAL);
 	EXPECT_EQ(morph_random_id("turn_", id, sizeof(id)), -ENOSPC);
+	EXPECT_EQ(morph_random_id_nbytes("", 0, id, sizeof(id)), -EINVAL);
+	EXPECT_EQ(morph_random_id_nbytes("", 17, id, sizeof(id)), -EINVAL);
 }
 
 TEST(UtilArray, PushGetPopAndClear)

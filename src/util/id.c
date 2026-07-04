@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define MORPH_RANDOM_ID_BYTES_MAX 16
+
 #ifdef __APPLE__
 #include <stdlib.h>
 #else
@@ -59,19 +61,28 @@ static void hex_encode(const unsigned char *data, size_t len, char *out)
 	out[len * 2] = '\0';
 }
 
-int morph_random_id(const char *prefix, char *out, size_t out_size)
+int morph_random_id_nbytes(const char *prefix, size_t random_bytes,
+			   char *out, size_t out_size)
 {
-	unsigned char raw[16];
+	unsigned char raw[MORPH_RANDOM_ID_BYTES_MAX];
 	char hex[sizeof(raw) * 2 + 1];
 	int rc;
 
 	if (!prefix || !out)
 		MORPH_RETURN(-EINVAL);
-	rc = morph_random_bytes(raw, sizeof(raw));
+	if (random_bytes == 0 || random_bytes > sizeof(raw))
+		MORPH_RETURN(-EINVAL);
+	rc = morph_random_bytes(raw, random_bytes);
 	if (rc < 0)
 		return rc;
-	hex_encode(raw, sizeof(raw), hex);
+	hex_encode(raw, random_bytes, hex);
 	if (snprintf(out, out_size, "%s%s", prefix, hex) >= (int)out_size)
 		MORPH_RETURN(-ENOSPC);
 	return 0;
+}
+
+int morph_random_id(const char *prefix, char *out, size_t out_size)
+{
+	return morph_random_id_nbytes(prefix, MORPH_RANDOM_ID_BYTES_MAX,
+				      out, out_size);
 }

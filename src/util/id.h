@@ -8,6 +8,8 @@ extern "C" {
 #endif
 
 int morph_random_bytes(unsigned char *buf, size_t len);
+int morph_random_id_nbytes(const char *prefix, size_t random_bytes,
+			   char *out, size_t out_size);
 int morph_random_id(const char *prefix, char *out, size_t out_size);
 
 #ifdef __cplusplus

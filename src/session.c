@@ -1,5 +1,6 @@
 #include "session.h"
 #include "util/array.h"
+#include "util/id.h"
 #include "util/log.h"
 #include "util/error.h"
 #include <errno.h>
@@ -9,22 +10,12 @@
 #include <string.h>
 #include <time.h>
 
-static void generate_display_id(char *buf, size_t size)
+#define SESSION_DISPLAY_ID_RANDOM_BYTES 4
+
+static int generate_display_id(char *buf, size_t size)
 {
-	unsigned char raw[4];
-#ifdef __APPLE__
-	arc4random_buf(raw, sizeof(raw));
-#else
-	static int seeded = 0;
-	if (!seeded) {
-		srand((unsigned)((uint64_t)time(NULL) ^ (uintptr_t)buf));
-		seeded = 1;
-	}
-	for (size_t i = 0; i < sizeof(raw); i++) raw[i] = (unsigned char)(rand() & 0xFF);
-#endif
-	snprintf(buf, size, "%08x",
-		 (unsigned)(((unsigned)raw[0] << 24) | ((unsigned)raw[1] << 16)
-			  | ((unsigned)raw[2] << 8) | (unsigned)raw[3]));
+	return morph_random_id_nbytes("", SESSION_DISPLAY_ID_RANDOM_BYTES,
+				      buf, size);
 }
 
 int session_create(struct db *db, const char *name, const char *model,
@@ -34,9 +25,11 @@ int session_create(struct db *db, const char *name, const char *model,
 		return -EINVAL;
 	int64_t now = (int64_t)time(NULL);
 	char display_id[16];
-	generate_display_id(display_id, sizeof(display_id));
+	int id_rc = generate_display_id(display_id, sizeof(display_id));
+	if (id_rc < 0)
+		return id_rc;
 
-		char name_buf[256];
+	char name_buf[256];
 	char model_buf[64];
 	name_buf[0] = '\0';
 	model_buf[0] = '\0';
@@ -53,8 +46,12 @@ int session_create(struct db *db, const char *name, const char *model,
 	int rc;
 	int retries = 3;
 	do {
-		if (retries < 3) /* regenerate on retry */
-			generate_display_id(display_id, sizeof(display_id));
+		if (retries < 3) {
+			id_rc = generate_display_id(display_id,
+						    sizeof(display_id));
+			if (id_rc < 0)
+				return id_rc;
+		}
 		rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
 			MORPH_RETURN(MORPH_ERR_DB);
@@ -527,7 +524,9 @@ int session_ensure_display_id(struct db *db, struct session *s)
 	if (s->display_id[0])
 		return 0;
 	char id_str[16];
-	generate_display_id(id_str, sizeof(id_str));
+	int id_rc = generate_display_id(id_str, sizeof(id_str));
+	if (id_rc < 0)
+		return id_rc;
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE sessions SET display_id=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
