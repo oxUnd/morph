@@ -114,6 +114,8 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
 	(void)tool_result_take_text(result, msg);
+	(void)tool_result_add_image(result, img_res.path, img_res.width,
+				    img_res.height);
 	log_dbg("img_gen: %s", msg);
 
 	return 0;

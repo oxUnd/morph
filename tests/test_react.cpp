@@ -73,7 +73,9 @@ static int artifact_tool_fn(const char *args_json, struct tool_result *result,
 	(void)args_json;
 	(void)user_data;
 	(void)tool_result_take_text(result,
-		strdup("{\"output_path\":\"/tmp/morph-event-test.png\"}"));
+		strdup("{\"message\":\"artifact ready\"}"));
+	(void)tool_result_add_image(result, "/tmp/morph-event-test.png",
+				    640, 480);
 	return 0;
 }
 
@@ -796,7 +798,9 @@ TEST_F(ReactTest, NullContext) {
 TEST_F(ReactTest, RunWithCallback) {
 	static int callback_count = 0;
 	callback_count = 0;
-	auto cb = [](enum react_step_type type, const char *content, void *ud) -> int {
+	auto cb = [](const struct react_output_event *event, void *ud) -> int {
+		(void)event;
+		(void)ud;
 		callback_count++;
 		return 0;
 	};
@@ -809,6 +813,47 @@ TEST_F(ReactTest, RunWithCallback) {
 	react_context_destroy(ctx);
 	model_destroy(m);
 	EXPECT_GT(callback_count, 0);
+}
+
+TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
+	tool_register(&tools, "test_tool", "A test tool", "{}",
+		      test_tool_fn, nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: use tool.\nAction: test_tool({\"prompt\":\"hi\"})\n",
+		"Final: done"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct callback_state {
+		int saw_action_start;
+		int saw_observation_done;
+	} state = {0, 0};
+	auto cb = [](const struct react_output_event *event, void *ud) -> int {
+		struct callback_state *state = (struct callback_state *)ud;
+		if (event->type == REACT_STEP_ACTION &&
+		    event->status == REACT_OUTPUT_STARTED &&
+		    event->tool_name &&
+		    strcmp(event->tool_name, "test_tool") == 0 &&
+		    event->tool_args &&
+		    strcmp(event->tool_args, "{\"prompt\":\"hi\"}") == 0) {
+			state->saw_action_start = 1;
+		}
+		if (event->type == REACT_STEP_OBSERVATION &&
+		    event->status == REACT_OUTPUT_COMPLETED &&
+		    event->error_code == 0) {
+			state->saw_observation_done = 1;
+		}
+		return 0;
+	};
+
+	EXPECT_EQ(react_run(ctx, "use tool", cb, &state), 0);
+	EXPECT_EQ(state.saw_action_start, 1);
+	EXPECT_EQ(state.saw_observation_done, 1);
+	react_context_destroy(ctx);
 }
 
 TEST_F(ReactTest, MaxIterationsAbort) {
@@ -866,7 +911,8 @@ TEST_F(MockLlmTest, LlmActionToolCall) {
 	ctx2->llm_model = llm;
 	ctx2->max_iterations = 5;
 	int cb_count = 0;
-	auto cb = [](enum react_step_type type, const char *content, void *ud) -> int {
+	auto cb = [](const struct react_output_event *event, void *ud) -> int {
+		(void)event;
 		int *n = (int *)ud;
 		(*n)++;
 		return 0;
@@ -1017,6 +1063,29 @@ static int event_recorder_index_name(struct morph_event_recorder *rec,
 			return (int)i;
 	}
 	return -1;
+}
+
+static bool event_recorder_observation_has_artifacts(
+	struct morph_event_recorder *rec)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *artifacts = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "artifacts") : NULL;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, "react.observation") == 0 &&
+			cJSON_IsArray(artifacts) &&
+			cJSON_GetArraySize(artifacts) > 0;
+		cJSON_Delete(root);
+		if (matched)
+			return true;
+	}
+	return false;
 }
 
 static int event_recorder_nth_index_name(struct morph_event_recorder *rec,
@@ -1289,6 +1358,7 @@ TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
 	int rc = react_run(ctx, "make an artifact", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_TRUE(event_recorder_has_name(&rec, "artifact.ready"));
+	EXPECT_TRUE(event_recorder_observation_has_artifacts(&rec));
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
@@ -3316,6 +3386,68 @@ TEST(Guardrail, EmptyAnswerPass) {
 	ctx.arena = a;
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, CreativeNoMediaIgnoresTextFileReferences) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct react_step action;
+	struct react_step obs;
+	memset(&action, 0, sizeof(action));
+	memset(&obs, 0, sizeof(obs));
+	action.type = REACT_STEP_ACTION;
+	action.tool_name = (char *)"img_gen";
+	action.next = &obs;
+	obs.type = REACT_STEP_OBSERVATION;
+	obs.error_code = 0;
+	obs.content = (char *)"image generated: /tmp/looks-real.png";
+
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "done";
+	ctx.steps = &action;
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(r.triggered_rule, nullptr);
+	EXPECT_STREQ(r.triggered_rule->name, "creative_no_media");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, CreativeFileMissingUsesStructuredArtifactsOnly) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.tool_name = "img_gen";
+	ctx.tool_result = "image generated: /tmp/missing-from-text.png";
+	ctx.tool_error_code = 0;
+	ctx.arena = a;
+	auto pass = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_TOOL_OUTPUT, &ctx);
+	EXPECT_EQ(pass.verdict, GUARDRAIL_PASS);
+
+	struct tool_artifact_list artifacts;
+	memset(&artifacts, 0, sizeof(artifacts));
+	artifacts.count = 1;
+	artifacts.items[0].kind = TOOL_ARTIFACT_IMAGE;
+	snprintf(artifacts.items[0].path, sizeof(artifacts.items[0].path),
+		 "/tmp/morph_missing_structured_artifact.png");
+	ctx.tool_artifacts = &artifacts;
+	auto fail = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_TOOL_OUTPUT, &ctx);
+	EXPECT_EQ(fail.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(fail.triggered_rule, nullptr);
+	EXPECT_STREQ(fail.triggered_rule->name, "creative_file_missing");
 	arena_destroy(a);
 }
 

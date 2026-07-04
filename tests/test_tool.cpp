@@ -116,13 +116,18 @@ TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared) {
 
 	ASSERT_EQ(tool_result_take_data(&result, data), 0);
 	ASSERT_EQ(tool_result_take_ui(&result, ui), 0);
+	ASSERT_EQ(tool_result_add_image(&result, "/tmp/out.png", 320, 240), 0);
 	ASSERT_NE(result.data, nullptr);
 	ASSERT_NE(result.ui, nullptr);
+	ASSERT_EQ(result.artifacts.count, 1);
+	EXPECT_STREQ(result.artifacts.items[0].path, "/tmp/out.png");
+	EXPECT_EQ(result.artifacts.items[0].kind, TOOL_ARTIFACT_IMAGE);
+	EXPECT_EQ(result.artifacts.items[0].width, 320);
 
 	tool_result_clear(&result);
 	EXPECT_EQ(result.data, nullptr);
 	EXPECT_EQ(result.ui, nullptr);
-	EXPECT_EQ(result.artifacts, nullptr);
+	EXPECT_EQ(result.artifacts.count, 0);
 
 	tool_result_cleanup(&result);
 }

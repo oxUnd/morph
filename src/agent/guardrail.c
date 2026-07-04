@@ -31,75 +31,11 @@ static int is_creative_tool(const char *name)
 	return 0;
 }
 
-static int obs_is_error(const char *content)
-{
-	if (!content) return 1;
-	return (strncmp(content, "tool error:", 11) == 0 ||
-		strncmp(content, "error:", 6) == 0 ||
-		strncmp(content, "failed:", 7) == 0);
-}
-
-static int obs_has_file_ref(const char *content)
-{
-	if (!content) return 0;
-	return (strstr(content, ".png") != NULL ||
-		strstr(content, ".jpg") != NULL ||
-		strstr(content, ".jpeg") != NULL ||
-		strstr(content, ".gif") != NULL ||
-		strstr(content, ".webp") != NULL ||
-		strstr(content, ".mp4") != NULL ||
-		strstr(content, "saved:") != NULL ||
-		strstr(content, "generated:") != NULL ||
-		strstr(content, "~/.morph/output/") != NULL);
-}
-
-static int extract_file_path(const char *content,
-			     char *path_out, size_t path_cap)
-{
-	if (!content) return 0;
-	const char *marker = strstr(content, "generated: ");
-	if (marker) {
-		marker += 11;
-		const char *end = strchr(marker, ' ');
-		if (!end) end = marker + strlen(marker);
-		size_t len = (size_t)(end - marker);
-		if (len > 0 && marker[len - 1] == ')') {
-			const char *paren = NULL;
-			for (size_t k = len; k > 0; k--) {
-				if (marker[k - 1] == '(') {
-					paren = &marker[k - 1];
-					break;
-				}
-			}
-			if (paren && paren > marker)
-				len = (size_t)(paren - marker - 1);
-		}
-		if (len > 0 && len < path_cap) {
-			memcpy(path_out, marker, len);
-			path_out[len] = '\0';
-			return 1;
-		}
-	}
-	const char *morph_out = strstr(content, "~/.morph/output/");
-	if (morph_out) {
-		size_t i = 0;
-		while (morph_out[i] && morph_out[i] != ' ' &&
-		       morph_out[i] != '(' && i < path_cap - 1) {
-			path_out[i] = morph_out[i];
-			i++;
-		}
-		path_out[i] = '\0';
-		return i > 0 ? 1 : 0;
-	}
-	return 0;
-}
-
 struct tool_outcome {
 	char name[64];
 	int succeeded;
 	int is_creative;
 	int has_file_output;
-	const char *obs_content;
 };
 
 static int build_tool_outcomes(const struct react_step *steps,
@@ -117,19 +53,15 @@ static int build_tool_outcomes(const struct react_step *steps,
 			o->is_creative = is_creative_tool(cur->tool_name);
 			o->succeeded = 0;
 			o->has_file_output = 0;
-			o->obs_content = NULL;
 			const struct react_step *obs = obs_cursor;
 			while (obs) {
 				if (obs->type == REACT_STEP_OBSERVATION) {
-					if (obs->error_code < 0 ||
-					    obs_is_error(obs->content)) {
+					if (obs->error_code < 0) {
 						o->succeeded = 0;
 					} else {
 						o->succeeded = 1;
-						o->obs_content = obs->content;
-						if (obs->content)
-							o->has_file_output =
-								obs_has_file_ref(obs->content);
+						if (obs->artifacts.count > 0)
+							o->has_file_output = 1;
 					}
 					break;
 				}
@@ -233,16 +165,20 @@ gr_creative_file_missing(const struct guardrail_eval_ctx *ctx,
 {
 	if (!ctx->tool_name || !is_creative_tool(ctx->tool_name))
 		return GUARDRAIL_PASS;
-	if (!ctx->tool_result || obs_is_error(ctx->tool_result))
+	if (ctx->tool_error_code < 0)
 		return GUARDRAIL_PASS;
-	char path[PATH_MAX];
-	if (extract_file_path(ctx->tool_result, path, sizeof(path))
-	    && !file_exists(path)) {
-		snprintf(reason_out, reason_cap,
-			 "Creative tool '%s' reported output '%s' "
-			 "but the file does not exist on disk.",
-			 ctx->tool_name, path);
-		return GUARDRAIL_FAIL;
+	if (!ctx->tool_artifacts)
+		return GUARDRAIL_PASS;
+	for (int i = 0; i < ctx->tool_artifacts->count; i++) {
+		const struct tool_artifact *artifact =
+			&ctx->tool_artifacts->items[i];
+		if (artifact->path[0] && !file_exists(artifact->path)) {
+			snprintf(reason_out, reason_cap,
+				 "Creative tool '%s' reported output '%s' "
+				 "but the file does not exist on disk.",
+				 ctx->tool_name, artifact->path);
+			return GUARDRAIL_FAIL;
+		}
 	}
 	return GUARDRAIL_PASS;
 }

@@ -2137,6 +2137,7 @@ static struct react_step *memory_steps_dup(const struct react_step *src)
 		}
 		node->type = cur->type;
 		node->error_code = cur->error_code;
+		node->artifacts = cur->artifacts;
 		if (cur->content) {
 			node->content = strdup(cur->content);
 			if (!node->content)

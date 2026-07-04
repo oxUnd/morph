@@ -191,6 +191,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	snprintf(msg, msg_len, "image resized: %s (%dx%d)",
 		 final_path, target_w, target_h);
 	(void)tool_result_take_text(result, msg);
+	(void)tool_result_add_image(result, final_path, target_w, target_h);
 	log_dbg("img_resize: %s", msg);
 
 	cJSON_Delete(root);

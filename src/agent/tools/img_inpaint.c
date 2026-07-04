@@ -341,6 +341,13 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error", err_msg);
 
 	int produced = cJSON_GetArraySize(results);
+	cJSON *it_json = NULL;
+	cJSON_ArrayForEach(it_json, results) {
+		cJSON *path = cJSON_GetObjectItem(it_json, "output_path");
+		if (cJSON_IsString(path) && path->valuestring)
+			(void)tool_result_add_image(result, path->valuestring,
+						    0, 0);
+	}
 	char *out_str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	morph_array_cleanup(&imgs);

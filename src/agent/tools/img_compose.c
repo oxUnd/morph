@@ -482,9 +482,12 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error",
 			"harmonization failed; rough draft saved");
 		cJSON_AddStringToObject(out, "draft_path", draft_path);
+		(void)tool_result_add_image(result, draft_path, 0, 0);
 	} else {
 		cJSON_AddStringToObject(out, "output_path", r.path);
 		cJSON_AddStringToObject(out, "draft_path", draft_path);
+		(void)tool_result_add_image(result, r.path, r.width, r.height);
+		(void)tool_result_add_image(result, draft_path, 0, 0);
 		cJSON_AddNumberToObject(out, "fused", fused);
 		cJSON_AddItemToObject(out, "elements", labels);
 		labels = NULL;

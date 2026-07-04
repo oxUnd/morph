@@ -28,12 +28,15 @@ enum guardrail_hook {
 #define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
 
 struct react_step;
+struct tool_artifact_list;
 
 struct guardrail_eval_ctx {
 	const char *user_input;
 	const char *tool_name;
 	const char *tool_args;
 	const char *tool_result;
+	int tool_error_code;
+	const struct tool_artifact_list *tool_artifacts;
 	const char *proposed_answer;
 	const void *steps;
 	int empty_round_count;

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <errno.h>
+#include <limits.h>
 #include "cJSON.h"
 #include "util/str.h"
 #include "util/strmap.h"
@@ -19,6 +20,31 @@ extern "C" {
 #define TOOL_FLAG_READONLY 0x01
 #define TOOL_FLAG_INTERNAL_APPROVAL 0x02
 #define TOOL_FLAG_DYNAMIC 0x04
+#define TOOL_ARTIFACT_MAX 32
+#define TOOL_ARTIFACT_LABEL_MAX 128
+#define TOOL_ARTIFACT_MIME_MAX 128
+
+enum tool_artifact_kind {
+	TOOL_ARTIFACT_FILE,
+	TOOL_ARTIFACT_IMAGE,
+	TOOL_ARTIFACT_VIDEO,
+};
+
+struct tool_artifact {
+	enum tool_artifact_kind kind;
+	char path[PATH_MAX];
+	char mime[TOOL_ARTIFACT_MIME_MAX];
+	char label[TOOL_ARTIFACT_LABEL_MAX];
+	int width;
+	int height;
+	int duration_seconds;
+	long long size_bytes;
+};
+
+struct tool_artifact_list {
+	struct tool_artifact items[TOOL_ARTIFACT_MAX];
+	int count;
+};
 
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
@@ -32,7 +58,7 @@ struct tool_result {
 	int is_json;
 	cJSON *data;
 	cJSON *ui;
-	cJSON *artifacts;
+	struct tool_artifact_list artifacts;
 };
 
 void tool_result_init(struct tool_result *result);
@@ -50,6 +76,16 @@ int tool_result_json_errorf(struct tool_result *result, const char *fmt, ...);
 int tool_result_take_data(struct tool_result *result, cJSON *data);
 int tool_result_take_ui(struct tool_result *result, cJSON *ui);
 int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts);
+const char *tool_artifact_kind_name(enum tool_artifact_kind kind);
+enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind);
+int tool_result_add_artifact(struct tool_result *result,
+			     enum tool_artifact_kind kind,
+			     const char *path);
+int tool_result_add_image(struct tool_result *result, const char *path,
+			  int width, int height);
+int tool_result_add_video(struct tool_result *result, const char *path,
+			  int duration_seconds);
+cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts);
 
 typedef int (*tool_exec_fn)(const char *args_json,
 			    struct tool_result *result,

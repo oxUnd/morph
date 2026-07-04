@@ -184,6 +184,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)",
 		 final_path, nfmt, w, h);
 	(void)tool_result_take_text(result, msg);
+	(void)tool_result_add_image(result, final_path, w, h);
 	log_dbg("img_convert: %s", msg);
 
 	cJSON_Delete(root);

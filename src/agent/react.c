@@ -231,6 +231,85 @@ static int react_emit_text_event(struct react_context *ctx,
 	return rc;
 }
 
+static int react_output_emit(react_output_cb cb, void *user_data,
+			     enum react_step_type type,
+			     enum react_output_status status,
+			     const char *text,
+			     const char *tool_name,
+			     const char *tool_args,
+			     const char *tool_call_id,
+			     int error_code,
+			     const struct tool_artifact_list *artifacts,
+			     const cJSON *data, const cJSON *ui)
+{
+	struct react_output_event ev;
+
+	if (!cb)
+		return 0;
+	memset(&ev, 0, sizeof(ev));
+	ev.type = type;
+	ev.status = status;
+	ev.text = text;
+	ev.tool_name = tool_name;
+	ev.tool_args = tool_args;
+	ev.tool_call_id = tool_call_id;
+	ev.error_code = error_code;
+	ev.artifacts = artifacts;
+	ev.data = data;
+	ev.ui = ui;
+	return cb(&ev, user_data);
+}
+
+static int react_emit_observation_event(struct react_context *ctx,
+					const char *text,
+					const char *tool,
+					int error_code,
+					const struct tool_artifact_list *artifacts,
+					const cJSON *result_data,
+					const cJSON *result_ui)
+{
+	cJSON *data;
+	cJSON *artifact_json = NULL;
+	cJSON *data_copy = NULL;
+	cJSON *ui_copy = NULL;
+	int rc;
+
+	if (!react_events_enabled(ctx))
+		return 0;
+	data = cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "text", text ? text : "");
+	if (tool)
+		cJSON_AddStringToObject(data, "tool", tool);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	if (artifacts && artifacts->count > 0) {
+		artifact_json = tool_artifact_list_to_json(artifacts);
+		if (artifact_json)
+			cJSON_AddItemToObject(data, "artifacts",
+					      artifact_json);
+	}
+	if (result_data) {
+		data_copy = cJSON_Duplicate(result_data, 1);
+		if (data_copy)
+			cJSON_AddItemToObject(data, "data", data_copy);
+	}
+	if (result_ui) {
+		ui_copy = cJSON_Duplicate(result_ui, 1);
+		if (ui_copy)
+			cJSON_AddItemToObject(data, "ui", ui_copy);
+	}
+	rc = react_emit_event(ctx, MORPH_EVENT_REACT, "react.observation",
+			      error_code < 0 ? "failed" : "end",
+			      "tool observation", data);
+	cJSON_Delete(data);
+	return rc;
+}
+
 static int react_emit_auth_required(struct react_context *ctx,
 				    const char *backend,
 				    const char *provider,
@@ -501,80 +580,17 @@ static int react_emit_artifact_event(struct react_context *ctx,
 	return rc;
 }
 
-static void react_emit_artifacts_from_json(struct react_context *ctx,
-					   cJSON *root, const char *source)
-{
-	cJSON *item;
-	cJSON *results;
-
-	if (!root)
-		return;
-	item = cJSON_GetObjectItem(root, "output_path");
-	if (cJSON_IsString(item) && item->valuestring)
-		react_emit_artifact_event(ctx, "image", item->valuestring,
-					  source);
-	item = cJSON_GetObjectItem(root, "draft_path");
-	if (cJSON_IsString(item) && item->valuestring)
-		react_emit_artifact_event(ctx, "image", item->valuestring,
-					  source);
-	results = cJSON_GetObjectItem(root, "results");
-	if (!cJSON_IsArray(results))
-		return;
-	cJSON_ArrayForEach(item, results) {
-		cJSON *path = cJSON_GetObjectItem(item, "output_path");
-		if (cJSON_IsString(path) && path->valuestring)
-			react_emit_artifact_event(ctx, "image",
-						  path->valuestring, source);
-	}
-}
-
-static void react_emit_artifacts_from_text(struct react_context *ctx,
-					   const char *text,
+static void react_emit_artifacts_from_list(struct react_context *ctx,
+					   const struct tool_artifact_list *artifacts,
 					   const char *source)
 {
-	cJSON *root;
-	const char *prefix;
-	const char *path;
-	const char *end;
-	char *copy;
-	size_t len;
-
-	if (!ctx || !text || !*text)
+	if (!ctx || !artifacts)
 		return;
-	root = cJSON_Parse(text);
-	if (root) {
-		react_emit_artifacts_from_json(ctx, root, source);
-		cJSON_Delete(root);
-		return;
-	}
-
-	prefix = "image generated: ";
-	if (strncmp(text, prefix, strlen(prefix)) == 0) {
-		path = text + strlen(prefix);
-		end = strchr(path, ' ');
-		len = end ? (size_t)(end - path) : strlen(path);
-		copy = malloc(len + 1);
-		if (!copy)
-			return;
-		memcpy(copy, path, len);
-		copy[len] = '\0';
-		react_emit_artifact_event(ctx, "image", copy, source);
-		free(copy);
-		return;
-	}
-
-	prefix = "video generated: ";
-	if (strncmp(text, prefix, strlen(prefix)) == 0) {
-		path = text + strlen(prefix);
-		end = strchr(path, ' ');
-		len = end ? (size_t)(end - path) : strlen(path);
-		copy = malloc(len + 1);
-		if (!copy)
-			return;
-		memcpy(copy, path, len);
-		copy[len] = '\0';
-		react_emit_artifact_event(ctx, "video", copy, source);
-		free(copy);
+	for (int i = 0; i < artifacts->count; i++) {
+		const struct tool_artifact *artifact = &artifacts->items[i];
+		react_emit_artifact_event(ctx,
+					  tool_artifact_kind_name(artifact->kind),
+					  artifact->path, source);
 	}
 }
 
@@ -633,6 +649,9 @@ struct async_tool_call {
 	char *tool_args;
 	char *tool_call_id;
 	char *result;
+	cJSON *data;
+	cJSON *ui;
+	struct tool_artifact_list artifacts;
 	int rc;
 	react_output_cb output_cb;
 	void *output_user_data;
@@ -698,6 +717,8 @@ static void async_tool_call_destroy(struct async_tool_call *call)
 	free(call->tool_args);
 	free(call->tool_call_id);
 	free(call->result);
+	cJSON_Delete(call->data);
+	cJSON_Delete(call->ui);
 	free(call);
 }
 
@@ -792,10 +813,10 @@ static void *async_tool_exec(void *arg)
 	http_set_cancel_flag(&call->cancelled);
 	http_set_cancel_token(&call->cancel_token);
 
-	char action_buf[512];
-	snprintf(action_buf, sizeof(action_buf), "Executing %s...", call->tool_name);
-	if (call->output_cb)
-		call->output_cb(REACT_STEP_ACTION, action_buf, call->output_user_data);
+	react_output_emit(call->output_cb, call->output_user_data,
+			  REACT_STEP_ACTION, REACT_OUTPUT_STARTED, NULL,
+			  call->tool_name, call->tool_args,
+			  call->tool_call_id, 0, NULL, NULL, NULL);
 
 	int notify_done = 0;
 
@@ -845,6 +866,11 @@ static void *async_tool_exec(void *arg)
 		} else {
 			const char *raw = res.text.data ? res.text.data : "(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
+			call->data = res.data;
+			call->ui = res.ui;
+			res.data = NULL;
+			res.ui = NULL;
+			call->artifacts = res.artifacts;
 			call->rc = 0;
 			call->completed = 1;
 			pthread_cond_broadcast(&call->cond);
@@ -859,12 +885,13 @@ static void *async_tool_exec(void *arg)
 	http_set_cancel_token(NULL);
 
 	if (notify_done) {
-		char done_buf[512];
-		snprintf(done_buf, sizeof(done_buf),
-			 "%s completed", call->tool_name);
-		if (call->output_cb)
-			call->output_cb(REACT_STEP_ACTION, done_buf,
-					call->output_user_data);
+		enum react_output_status status = call->rc < 0 ?
+			REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED;
+		react_output_emit(call->output_cb, call->output_user_data,
+				  REACT_STEP_ACTION, status,
+				  NULL, call->tool_name, call->tool_args,
+				  call->tool_call_id, call->rc, NULL,
+				  NULL, NULL);
 	}
 
 	pthread_mutex_lock(&call->mutex);
@@ -1269,8 +1296,9 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
-	if (sd->user_cb)
-		sd->user_cb(REACT_STEP_THOUGHT, token, sd->user_data);
+	react_output_emit(sd->user_cb, sd->user_data, REACT_STEP_THOUGHT,
+			  REACT_OUTPUT_DELTA, token, NULL, NULL, NULL, 0,
+			  NULL, NULL, NULL);
 	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
 			      "react.thought.delta", "delta",
 			      NULL, token);
@@ -1290,9 +1318,10 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 		}
 		if (sd->cancelled && *sd->cancelled)
 			return -EINTR;
-		if (sd->user_cb)
-			sd->user_cb(REACT_STEP_REASONING, token,
-				    sd->user_data);
+		react_output_emit(sd->user_cb, sd->user_data,
+				  REACT_STEP_REASONING, REACT_OUTPUT_DELTA,
+				  token, NULL, NULL, NULL, 0, NULL,
+				  NULL, NULL);
 		react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
 				      "react.reasoning.delta", "delta",
 				      NULL, token);
@@ -1478,8 +1507,9 @@ static int react_track_tool_failure(struct react_context *ctx,
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(fail_msg);
 	react_set_state(ctx, REACT_STATE_DONE);
-	if (cb)
-		cb(REACT_STEP_FINAL, fail_msg, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_FINAL,
+			  REACT_OUTPUT_COMPLETED, fail_msg, NULL, NULL,
+			  NULL, 0, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
 			      "end", "final answer", fail_msg);
 	ctx->tool_fail_name = NULL;
@@ -1541,8 +1571,9 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	struct react_step *refl_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_REFLECTION, gr.reason, NULL, NULL, NULL);
 	add_step(ctx, refl_step);
-	if (cb)
-		cb(REACT_STEP_REFLECTION, gr.reason, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_REFLECTION,
+			  REACT_OUTPUT_FAILED, gr.reason, NULL, NULL,
+			  NULL, 0, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.reflection",
 			      "failed", "guardrail reflection", gr.reason);
 
@@ -1831,8 +1862,9 @@ static int react_handle_llm_error(struct react_context *ctx,
 	err = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				err_content, NULL, NULL, NULL);
 	add_step(ctx, err);
-	if (cb)
-		cb(REACT_STEP_OBSERVATION, err_content, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
+			  REACT_OUTPUT_FAILED, err_content, NULL, NULL,
+			  NULL, status, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
 			      "failed", "LLM call failed", err_content);
 	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, "llm_error");
@@ -1861,8 +1893,9 @@ static int react_handle_llm_timeout(struct react_context *ctx,
 	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				timeout_msg, NULL, NULL, NULL);
 	add_step(ctx, obs);
-	if (cb)
-		cb(REACT_STEP_OBSERVATION, timeout_msg, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
+			  REACT_OUTPUT_TIMEOUT, timeout_msg, NULL, NULL,
+			  NULL, -ETIMEDOUT, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
 			      "timeout", "LLM call timed out", timeout_msg);
 	free(ctx->final_answer);
@@ -1941,9 +1974,10 @@ static void react_start_tool_calls(struct react_context *ctx,
 					   action_text ? action_text : "",
 					   tool_name, tool_args, tc->id);
 		add_step(ctx, action);
-		if (cb)
-			cb(REACT_STEP_ACTION, action_text ? action_text : "",
-			   user_data);
+		react_output_emit(cb, user_data, REACT_STEP_ACTION,
+				  REACT_OUTPUT_STARTED,
+				  action_text ? action_text : "", tool_name,
+				  tool_args, tc->id, 0, NULL, NULL, NULL);
 		react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.action",
 				      "begin", "tool action",
 				      action_text ? action_text : "");
@@ -2052,18 +2086,31 @@ static void react_record_tool_cancelled(struct react_context *ctx)
 }
 
 static void react_collect_tool_result(struct async_tool_call *call,
-				      int *rc, char **result)
+				      int *rc, char **result,
+				      struct tool_artifact_list *artifacts,
+				      cJSON **data, cJSON **ui)
 {
 	pthread_mutex_lock(&call->mutex);
 	*rc = call->rc;
 	*result = call->result;
+	if (artifacts)
+		*artifacts = call->artifacts;
+	if (data)
+		*data = call->data;
+	if (ui)
+		*ui = call->ui;
 	call->result = NULL;
+	call->data = NULL;
+	call->ui = NULL;
+	memset(&call->artifacts, 0, sizeof(call->artifacts));
 	pthread_mutex_unlock(&call->mutex);
 }
 
 static const char *react_apply_tool_output_guardrail(
 	struct react_context *ctx, struct async_tool_call *call,
-	const char *obs_text, react_output_cb cb, void *user_data)
+	const char *obs_text, int rc,
+	const struct tool_artifact_list *artifacts,
+	react_output_cb cb, void *user_data)
 {
 	struct guardrail_eval_ctx geval;
 	struct guardrail_result ggr;
@@ -2078,6 +2125,8 @@ static const char *react_apply_tool_output_guardrail(
 	geval.tool_name = call->tool_name;
 	geval.tool_args = call->tool_args;
 	geval.tool_result = obs_text;
+	geval.tool_error_code = rc;
+	geval.tool_artifacts = artifacts;
 	geval.steps = ctx->steps;
 	geval.arena = ctx->turn_arena;
 	ggr = guardrail_run_hook(&ctx->guardrail, GUARDRAIL_HOOK_TOOL_OUTPUT,
@@ -2095,8 +2144,10 @@ static const char *react_apply_tool_output_guardrail(
 	grefl = react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
 				  ggr.reason, NULL, NULL, NULL);
 	add_step(ctx, grefl);
-	if (cb)
-		cb(REACT_STEP_REFLECTION, ggr.reason, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_REFLECTION,
+			  REACT_OUTPUT_FAILED, ggr.reason, call->tool_name,
+			  call->tool_args, call->tool_call_id, 0, NULL,
+			  NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT,
 			      "react.reflection", "failed",
 			      "guardrail reflection", ggr.reason);
@@ -2106,6 +2157,8 @@ static const char *react_apply_tool_output_guardrail(
 static int react_record_tool_observation(struct react_context *ctx,
 					 struct async_tool_call *call,
 					 const char *obs_text, int rc,
+					 const struct tool_artifact_list *artifacts,
+					 const cJSON *data, const cJSON *ui,
 					 morph_array_t *messages,
 					 react_output_cb cb, void *user_data)
 {
@@ -2113,15 +2166,18 @@ static int react_record_tool_observation(struct react_context *ctx,
 
 	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				obs_text, NULL, NULL, NULL);
-	if (obs)
+	if (obs) {
 		obs->error_code = rc;
+		if (artifacts)
+			obs->artifacts = *artifacts;
+	}
 	add_step(ctx, obs);
-	if (cb)
-		cb(REACT_STEP_OBSERVATION, obs_text, user_data);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT,
-			      "react.observation",
-			      rc < 0 ? "failed" : "end",
-			      "tool observation", obs_text);
+	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
+			  rc < 0 ? REACT_OUTPUT_FAILED : REACT_OUTPUT_COMPLETED,
+			  obs_text, call->tool_name, call->tool_args,
+			  call->tool_call_id, rc, artifacts, data, ui);
+	react_emit_observation_event(ctx, obs_text, call->tool_name, rc,
+				     artifacts, data, ui);
 
 	return react_append_tool_message(messages, obs_text,
 					 call->tool_call_id, ctx->turn_arena);
@@ -2147,6 +2203,9 @@ static int react_join_tool_calls(struct react_context *ctx,
 		int rc;
 		char *result;
 		const char *obs_text;
+		struct tool_artifact_list artifacts = {0};
+		cJSON *data = NULL;
+		cJSON *ui = NULL;
 
 		if (slots[i].hitl_denied) {
 			struct tool_call *tc = &response->tool_calls[i];
@@ -2182,7 +2241,8 @@ static int react_join_tool_calls(struct react_context *ctx,
 
 		react_set_state(ctx, REACT_STATE_OBSERVING);
 		call = slots[i].call;
-		react_collect_tool_result(call, &rc, &result);
+		react_collect_tool_result(call, &rc, &result, &artifacts,
+					  &data, &ui);
 		obs_text = result ? result : "";
 		if (rc < 0)
 			react_set_error_detail(ctx, obs_text);
@@ -2200,28 +2260,36 @@ static int react_join_tool_calls(struct react_context *ctx,
 				}
 			}
 			free(result);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
 			return 1;
 		}
 
 		react_tool_call_finish(ctx, call, obs_text, rc);
 		if (rc >= 0)
-			react_emit_artifacts_from_text(ctx, obs_text,
+			react_emit_artifacts_from_list(ctx, &artifacts,
 						       call->tool_name);
 
 		obs_text = react_apply_tool_output_guardrail(ctx, call,
-							     obs_text, cb,
+							     obs_text, rc,
+							     &artifacts, cb,
 							     user_data);
 		if (!obs_text)
 			obs_text = "";
 		if (react_record_tool_observation(ctx, call, obs_text, rc,
+						  &artifacts, data, ui,
 						  messages,
 						  cb, user_data) < 0) {
 			free(result);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
 			return 1;
 		}
 		free(result);
+		cJSON_Delete(data);
+		cJSON_Delete(ui);
 	}
 
 	react_cleanup_tool_calls(slots, num_tools);
@@ -2312,8 +2380,9 @@ static int react_handle_final_response(struct react_context *ctx,
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(proposed);
 	react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
-	if (cb)
-		cb(REACT_STEP_FINAL, proposed, user_data);
+	react_output_emit(cb, user_data, REACT_STEP_FINAL,
+			  REACT_OUTPUT_COMPLETED, proposed, NULL, NULL,
+			  NULL, 0, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
 			      "end", "final answer", proposed);
 	return 1;
@@ -2411,8 +2480,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 		react_set_state(ctx, REACT_STATE_THINKING);
 
-		if (cb)
-			cb(REACT_STEP_THOUGHT, "", user_data);
+		react_output_emit(cb, user_data, REACT_STEP_THOUGHT,
+				  REACT_OUTPUT_STARTED, "", NULL, NULL,
+				  NULL, 0, NULL, NULL, NULL);
 
 		struct chat_response response = {0};
 		time_t llm_start = 0;

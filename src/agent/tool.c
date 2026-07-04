@@ -14,7 +14,7 @@ void tool_result_init(struct tool_result *result)
 	result->is_json = 0;
 	result->data = NULL;
 	result->ui = NULL;
-	result->artifacts = NULL;
+	memset(&result->artifacts, 0, sizeof(result->artifacts));
 }
 
 void tool_result_clear(struct tool_result *result)
@@ -24,7 +24,6 @@ void tool_result_clear(struct tool_result *result)
 	free(result->owned);
 	cJSON_Delete(result->data);
 	cJSON_Delete(result->ui);
-	cJSON_Delete(result->artifacts);
 	tool_result_init(result);
 }
 
@@ -219,11 +218,143 @@ int tool_result_take_ui(struct tool_result *result, cJSON *ui)
 	return tool_result_take_json_field(&result->ui, ui);
 }
 
+const char *tool_artifact_kind_name(enum tool_artifact_kind kind)
+{
+	switch (kind) {
+	case TOOL_ARTIFACT_IMAGE:
+		return "image";
+	case TOOL_ARTIFACT_VIDEO:
+		return "video";
+	case TOOL_ARTIFACT_FILE:
+	default:
+		return "file";
+	}
+}
+
+enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind)
+{
+	if (kind && strcmp(kind, "image") == 0)
+		return TOOL_ARTIFACT_IMAGE;
+	if (kind && strcmp(kind, "video") == 0)
+		return TOOL_ARTIFACT_VIDEO;
+	return TOOL_ARTIFACT_FILE;
+}
+
+int tool_result_add_artifact(struct tool_result *result,
+			     enum tool_artifact_kind kind,
+			     const char *path)
+{
+	struct tool_artifact *artifact;
+
+	if (!result || !path || !*path)
+		return -EINVAL;
+	if (result->artifacts.count >= TOOL_ARTIFACT_MAX)
+		return -ENOSPC;
+	artifact = &result->artifacts.items[result->artifacts.count++];
+	memset(artifact, 0, sizeof(*artifact));
+	artifact->kind = kind;
+	strncpy(artifact->path, path, sizeof(artifact->path) - 1);
+	return 0;
+}
+
+int tool_result_add_image(struct tool_result *result, const char *path,
+			  int width, int height)
+{
+	int rc = tool_result_add_artifact(result, TOOL_ARTIFACT_IMAGE, path);
+	if (rc < 0)
+		return rc;
+	struct tool_artifact *artifact =
+		&result->artifacts.items[result->artifacts.count - 1];
+	artifact->width = width;
+	artifact->height = height;
+	return 0;
+}
+
+int tool_result_add_video(struct tool_result *result, const char *path,
+			  int duration_seconds)
+{
+	int rc = tool_result_add_artifact(result, TOOL_ARTIFACT_VIDEO, path);
+	if (rc < 0)
+		return rc;
+	struct tool_artifact *artifact =
+		&result->artifacts.items[result->artifacts.count - 1];
+	artifact->duration_seconds = duration_seconds;
+	return 0;
+}
+
+cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts)
+{
+	cJSON *arr;
+
+	arr = cJSON_CreateArray();
+	if (!arr)
+		return NULL;
+	if (!artifacts)
+		return arr;
+	for (int i = 0; i < artifacts->count; i++) {
+		const struct tool_artifact *artifact = &artifacts->items[i];
+		cJSON *obj = cJSON_CreateObject();
+		if (!obj) {
+			cJSON_Delete(arr);
+			return NULL;
+		}
+		cJSON_AddStringToObject(obj, "kind",
+					tool_artifact_kind_name(artifact->kind));
+		cJSON_AddStringToObject(obj, "path", artifact->path);
+		if (artifact->mime[0])
+			cJSON_AddStringToObject(obj, "mime", artifact->mime);
+		if (artifact->label[0])
+			cJSON_AddStringToObject(obj, "label", artifact->label);
+		if (artifact->width > 0)
+			cJSON_AddNumberToObject(obj, "width", artifact->width);
+		if (artifact->height > 0)
+			cJSON_AddNumberToObject(obj, "height", artifact->height);
+		if (artifact->duration_seconds > 0)
+			cJSON_AddNumberToObject(obj, "duration_seconds",
+						artifact->duration_seconds);
+		if (artifact->size_bytes > 0)
+			cJSON_AddNumberToObject(obj, "size_bytes",
+						(double)artifact->size_bytes);
+		cJSON_AddItemToArray(arr, obj);
+	}
+	return arr;
+}
+
 int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts)
 {
+	cJSON *item;
+
 	if (!result)
 		return -EINVAL;
-	return tool_result_take_json_field(&result->artifacts, artifacts);
+	if (!artifacts)
+		return -ENOMEM;
+	memset(&result->artifacts, 0, sizeof(result->artifacts));
+	if (cJSON_IsArray(artifacts)) {
+		cJSON_ArrayForEach(item, artifacts) {
+			cJSON *kind = cJSON_GetObjectItem(item, "kind");
+			cJSON *path = cJSON_GetObjectItem(item, "path");
+			if (!cJSON_IsString(path))
+				path = cJSON_GetObjectItem(item, "output_path");
+			if (cJSON_IsString(path) && path->valuestring) {
+				(void)tool_result_add_artifact(result,
+					tool_artifact_kind_from_string(
+						cJSON_GetStringValue(kind)),
+					path->valuestring);
+			}
+		}
+	} else if (cJSON_IsObject(artifacts)) {
+		cJSON *kind = cJSON_GetObjectItem(artifacts, "kind");
+		cJSON *path = cJSON_GetObjectItem(artifacts, "path");
+		if (!cJSON_IsString(path))
+			path = cJSON_GetObjectItem(artifacts, "output_path");
+		if (cJSON_IsString(path) && path->valuestring)
+			(void)tool_result_add_artifact(result,
+				tool_artifact_kind_from_string(
+					cJSON_GetStringValue(kind)),
+				path->valuestring);
+	}
+	cJSON_Delete(artifacts);
+	return 0;
 }
 
 void tool_registry_init(struct tool_registry *reg)

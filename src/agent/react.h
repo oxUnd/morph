@@ -51,11 +51,35 @@ enum react_outcome {
 struct react_step {
 	enum react_step_type type;
 	int error_code;
+	struct tool_artifact_list artifacts;
 	char *content;
 	char *tool_name;
 	char *tool_args;
 	char *tool_call_id;
 	struct react_step *next;
+};
+
+enum react_output_status {
+	REACT_OUTPUT_NONE,
+	REACT_OUTPUT_DELTA,
+	REACT_OUTPUT_STARTED,
+	REACT_OUTPUT_COMPLETED,
+	REACT_OUTPUT_FAILED,
+	REACT_OUTPUT_CANCELLED,
+	REACT_OUTPUT_TIMEOUT,
+};
+
+struct react_output_event {
+	enum react_step_type type;
+	enum react_output_status status;
+	const char *text;
+	const char *tool_name;
+	const char *tool_args;
+	const char *tool_call_id;
+	int error_code;
+	const struct tool_artifact_list *artifacts;
+	const cJSON *data;
+	const cJSON *ui;
 };
 
 #define HITL_TOOLS_MAX 32
@@ -140,8 +164,8 @@ struct react_context {
 	struct tool_runtime_context tool_runtime;
 };
 
-typedef int (*react_output_cb)(enum react_step_type type,
-			       const char *content, void *user_data);
+typedef int (*react_output_cb)(const struct react_output_event *event,
+			       void *user_data);
 
 struct session_store;
 

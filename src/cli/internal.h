@@ -134,8 +134,7 @@ void cli_markdown_render_ansi(const char *md);
 void cli_markdown_render_ansi_with_media(const char *md,
 					 markdown_media_cb cb,
 					 void *user);
-int output_callback(enum react_step_type type, const char *content,
-		    void *user_data);
+int output_callback(const struct react_output_event *event, void *user_data);
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,

@@ -1,9 +1,9 @@
 /* turns.c — POST /api/sessions/:id/turns
  *
  * Spawns a worker thread that drives one ReAct round.  The thread uses the
- * existing public `react_run(ctx, input, cb, user)` callback API to bridge
- * react_step events into the FastCGI event store.  Web clients see the
- * stream via the SSE endpoint.
+ * existing public `react_run(ctx, input, cb, user)` structured callback API
+ * to bridge react_step events into the FastCGI event store.  Web clients see
+ * the stream via the SSE endpoint.
  *
  * Deep integration (cancellation, action injection) is optional and gated
  * on the weak symbol `react_context_create_for_session` — see PATCHES.md.
@@ -45,8 +45,7 @@ react_context_create_for_session(struct session_store *store,
 
 __attribute__((weak)) int
 react_run(struct react_context *ctx, const char *user_input,
-	  int (*cb)(enum react_step_type step_type, const char *payload, void *u),
-	  void *u);
+	  react_output_cb cb, void *u);
 
 __attribute__((weak)) void
 react_context_destroy(struct react_context *ctx);
@@ -349,52 +348,6 @@ static struct turn_artifact *turn_artifact_get(struct turn_job *j,
 	return a;
 }
 
-static int artifact_from_generated_text(const char *payload, char path[PATH_MAX],
-					const char **kind_out)
-{
-	const char *prefix = NULL;
-	const char *kind = NULL;
-	const char *start;
-	const char *end;
-
-	if (!payload)
-		return 0;
-	if (strncmp(payload, "image generated:", 16) == 0) {
-		prefix = "image generated:";
-		kind = "image";
-	} else if (strncmp(payload, "video generated:", 16) == 0) {
-		prefix = "video generated:";
-		kind = "video";
-	} else {
-		return 0;
-	}
-
-	start = payload + strlen(prefix);
-	while (*start == ' ' || *start == '\t')
-		start++;
-	end = strstr(start, " (");
-	if (!end)
-		end = start + strlen(start);
-	while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
-		end--;
-	if (end <= start || (size_t)(end - start) >= PATH_MAX)
-		return 0;
-	snprintf(path, PATH_MAX, "%.*s", (int)(end - start), start);
-	if (kind_out)
-		*kind_out = kind;
-	return 1;
-}
-
-static void maybe_publish_artifact(struct turn_job *j, const char *payload)
-{
-	char path[PATH_MAX];
-	const char *kind = NULL;
-
-	if (!artifact_from_generated_text(payload, path, &kind))
-		return;
-	(void)turn_artifact_get(j, path, kind);
-}
-
 static int path_char(int c)
 {
 	return c > 32 && c != '"' && c != '\'' && c != '<' && c != '>' &&
@@ -498,29 +451,11 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 {
 	const char *p;
 	morph_buf_t out;
-	char generated_path[PATH_MAX];
-	const char *generated_kind = NULL;
 
 	if (!text)
 		return strdup("");
 	if (morph_buf_init(&out, 256) < 0)
 		return strdup("");
-	if (artifact_from_generated_text(text, generated_path,
-					 &generated_kind)) {
-		struct turn_artifact *a =
-			turn_artifact_get(j, generated_path, generated_kind);
-		if (a) {
-			const char *start = strstr(text, generated_path);
-			if (start) {
-				morph_buf_append(&out, text,
-						 (size_t)(start - text));
-				append_artifact_tag(&out, a);
-				morph_buf_puts(&out,
-					       start + strlen(generated_path));
-				return morph_buf_detach(&out);
-			}
-		}
-	}
 
 	p = text;
 	while (*p) {
@@ -592,86 +527,66 @@ static char *render_artifact_summary(struct turn_job *j)
 	return morph_buf_detach(&out);
 }
 
-static int bridge_cb(enum react_step_type step_type, const char *payload_json, void *u)
+static int bridge_cb(const struct react_output_event *event, void *u)
 {
 	struct turn_job *j = (struct turn_job *)u;
-	if (!payload_json)
-		payload_json = "";
+	const char *text = event && event->text ? event->text : "";
 
-	switch (step_type) {
-	case 0: /* REACT_STEP_THOUGHT */
-		if (!*payload_json)
+	if (!event)
+		return 0;
+
+	switch (event->type) {
+	case REACT_STEP_THOUGHT:
+		if (!*text)
 			return 0;
 		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
-					payload_json);
+					text);
 		return 0;
 
-	case 1: { /* REACT_STEP_ACTION -> tool_call */
-		/* skip status messages like "Executing img_gen..." / "img_gen completed" */
-		const char *paren = strchr(payload_json, '(');
-		if (!paren) break;
-
-		size_t name_len = (size_t)(paren - payload_json);
-		if (name_len < 1 || name_len > 120) break;
-
-		char tool_name[128];
-		snprintf(tool_name, sizeof(tool_name), "%.*s",
-			 (int)name_len, payload_json);
-
-		/* extract args between ( and the trailing ) */
-		const char *args_start = paren + 1;
-		const char *end = payload_json + strlen(payload_json);
-		if (end > args_start && end[-1] == ')')
-			end--;
-
-		size_t args_len = (size_t)(end - args_start);
-		if (args_len > 4096) args_len = 4096;
-
-		char args_json[4100];
-		snprintf(args_json, sizeof(args_json), "%.*s",
-			 (int)args_len, args_start);
-
-		snprintf(j->last_tool, sizeof(j->last_tool), "%s", tool_name);
+	case REACT_STEP_ACTION:
+		if (event->status != REACT_OUTPUT_STARTED ||
+		    !event->tool_name || !*event->tool_name)
+			return 0;
+		snprintf(j->last_tool, sizeof(j->last_tool), "%s",
+			 event->tool_name);
 		event_sink_tool_call_turn(j->store, j->session_id,
-					  j->turn_id, tool_name, args_json);
+					  j->turn_id, event->tool_name,
+					  event->tool_args ?
+					  event->tool_args : "{}");
 		return 0;
-	}
 
-	case 2: /* REACT_STEP_OBSERVATION -> tool_result */
+	case REACT_STEP_OBSERVATION:
 		event_sink_tool_result_turn(j->store, j->session_id,
 					    j->turn_id, j->last_tool,
-					    payload_json);
-		maybe_publish_artifact(j, payload_json);
+					    text);
 		j->last_tool[0] = '\0';
 		return 0;
 
-	case 3: /* REACT_STEP_REFLECTION — piggyback on thought schema */
-		if (!*payload_json)
+	case REACT_STEP_REFLECTION:
+		if (!*text)
 			return 0;
 		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
-					payload_json);
+					text);
 		return 0;
 
-	case 4: /* REACT_STEP_FINAL */
+	case REACT_STEP_FINAL:
 	{
-		char *rendered = render_media_refs(j, payload_json);
+		char *rendered = render_media_refs(j, text);
 		event_sink_final_turn(j->store, j->session_id, j->turn_id,
-				      rendered ? rendered : payload_json);
+				      rendered ? rendered : text);
 		j->final_sent = 1;
 		free(rendered);
 		return 0;
 	}
 
 	case REACT_STEP_REASONING:
-		if (!*payload_json)
+		if (!*text)
 			return 0;
 		event_sink_reasoning_turn(j->store, j->session_id, j->turn_id,
-					  payload_json);
+					  text);
 		return 0;
 
 	default:
-		events_publish(j->store, j->session_id, "step",
-			       payload_json);
 		return 0;
 	}
 	return 0;
@@ -773,23 +688,37 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 		event_sink_tool_result_turn(j->store, j->session_id,
 					    turn_id, tool ? tool : j->last_tool,
 					    result ? result : "");
-		if (result)
-			maybe_publish_artifact(j, result);
 		j->last_tool[0] = '\0';
 		free(tool);
 		free(result);
 		return 0;
 	}
 
+	if (strcmp(ev->name, "react.observation") == 0) {
+		cJSON *artifacts = cJSON_GetObjectItem(data, "artifacts");
+		cJSON *item;
+		if (cJSON_IsArray(artifacts)) {
+			cJSON_ArrayForEach(item, artifacts) {
+				cJSON *kind = cJSON_GetObjectItem(item, "kind");
+				cJSON *path = cJSON_GetObjectItem(item, "path");
+				if (cJSON_IsString(path) && path->valuestring) {
+					(void)turn_artifact_get(j,
+						path->valuestring,
+						cJSON_GetStringValue(kind) ?
+						cJSON_GetStringValue(kind) :
+						"file");
+				}
+			}
+		}
+		return 0;
+	}
+
 	if (strcmp(ev->name, "artifact.ready") == 0) {
 		char *kind = event_data_string(data, "kind");
 		char *path = event_data_string(data, "path");
-		struct turn_artifact *artifact;
 
-		artifact = turn_artifact_get(j, path ? path : "",
-					     kind ? kind : "file");
-		if (artifact)
-			artifact_publish_ready(j, artifact);
+		(void)turn_artifact_get(j, path ? path : "",
+					kind ? kind : "file");
 		free(kind);
 		free(path);
 		return 0;

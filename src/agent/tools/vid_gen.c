@@ -180,6 +180,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	snprintf(msg, msg_len, "video generated: %s (%ds)",
 		 vid_res.path, vid_res.duration_seconds);
 	(void)tool_result_take_text(result, msg);
+	(void)tool_result_add_video(result, vid_res.path,
+				    vid_res.duration_seconds);
 	log_dbg("vid_gen: %s", msg);
 
 	return 0;

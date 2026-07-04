@@ -230,164 +230,124 @@ static int output_handle_reasoning(struct cli_context *ctx, const char *content)
  *
  * Returns 0 always.
  */
-static int output_handle_action(struct cli_context *ctx, const char *content)
+static int output_handle_action(struct cli_context *ctx,
+				const struct react_output_event *event)
 {
+	const char *tool_name;
+
 	if (ctx->streaming) {
 		spin_set_sub(&ctx->spin, NULL);
 		ctx->streaming = 0;
 	}
-	if (content && strncmp(content, "Executing ", 10) == 0) {
-		if (ctx->spin.running) {
-			char msg[256];
-			snprintf(msg, sizeof(msg), "Running %s", content + 10);
-			spin_update(&ctx->spin, msg);
-		}
+	if (!event)
 		return 0;
-	}
-	if (content && strstr(content, " completed")) {
+
+	if (event->status != REACT_OUTPUT_STARTED)
 		return 0;
+
+	tool_name = event->tool_name && *event->tool_name ?
+		event->tool_name : "Executing";
+	ctx->last_tool_was_plan = (strcmp(tool_name, "plan") == 0);
+	if (!ctx->spin.running) {
+		spin_start(&ctx->spin, SPIN_STATE_EXECUTING, tool_name);
+	} else {
+		spin_update(&ctx->spin, tool_name);
 	}
-	{
-		char tool_name[64] = {0};
-		if (content) {
-			const char *paren = strchr(content, '(');
-			if (paren) {
-				size_t nlen = (size_t)(paren - content);
-				if (nlen >= sizeof(tool_name)) nlen = sizeof(tool_name) - 1;
-				memcpy(tool_name, content, nlen);
-				tool_name[nlen] = '\0';
-			} else {
-				snprintf(tool_name, sizeof(tool_name), "%s", content);
-			}
-		}
-		ctx->last_tool_was_plan = (strcmp(tool_name, "plan") == 0);
-		if (!ctx->spin.running) {
-			spin_start(&ctx->spin, SPIN_STATE_EXECUTING,
-				   tool_name[0] ? tool_name : "Executing");
-		} else {
-			spin_update(&ctx->spin, tool_name[0] ? tool_name : "Executing");
-		}
-		if (content)
-			spin_set_sub(&ctx->spin, content);
-	}
+	if (event->tool_args && *event->tool_args)
+		spin_set_sub(&ctx->spin, event->tool_args);
 	return 0;
 }
 
-static char *trim_plan_line(char *line)
+static char plan_status_mark(const char *status)
 {
-	char *end;
-
-	while (*line == ' ' || *line == '\t' || *line == '\r')
-		line++;
-
-	end = line + strlen(line);
-	while (end > line &&
-	       (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) {
-		end--;
-	}
-	*end = '\0';
-	return line;
+	if (!status)
+		return ' ';
+	if (strcmp(status, "completed") == 0)
+		return 'x';
+	if (strcmp(status, "in_progress") == 0)
+		return '>';
+	if (strcmp(status, "failed") == 0)
+		return '!';
+	if (strcmp(status, "skipped") == 0)
+		return '-';
+	return ' ';
 }
 
-static int render_plan_title(const char *line, int *printed)
+static int render_plan_data(const cJSON *data)
 {
-	const char *start;
-	const char *end;
-
-	if (strncmp(line, "Plan \"", 6) != 0)
-		return 0;
-
-	start = line + 6;
-	end = strrchr(start, '"');
-	if (!end || end <= start)
-		return 0;
-
-	if (*printed)
-		printf("\n");
-	printf(ANSI_BOLD "Plan:" ANSI_RESET " %.*s\n",
-	       (int)(end - start), start);
-	*printed = 1;
-	return 1;
-}
-
-static int render_plan_step(char *line, int *step_started)
-{
-	char mark;
-	char *rest;
-	char *active;
-
-	if (line[0] != '[' || line[1] == '\0' || line[2] != ']')
-		return 0;
-
-	mark = line[1];
-	rest = line + 3;
-	while (*rest == ' ' || *rest == '\t')
-		rest++;
-	if (!*rest)
-		return 0;
-
-	active = strstr(rest, " <-- active");
-	if (active)
-		*active = '\0';
-
-	if (!*step_started) {
-		printf("\n");
-		*step_started = 1;
-	}
-
-	if (mark == ' ')
-		printf("    %s\n", rest);
-	else
-		printf("  %c %s\n", mark, rest);
-	return 1;
-}
-
-static int render_plan_observation(const char *content)
-{
-	char *copy;
-	char *saveptr = NULL;
-	char *line;
+	const cJSON *plans;
+	const cJSON *plan;
 	int printed = 0;
-	int step_started = 0;
-	int consumed = 0;
 
-	if (!content || !*content)
+	if (!cJSON_IsObject(data))
+		return 0;
+	plans = cJSON_GetObjectItemCaseSensitive((cJSON *)data, "plans");
+	if (!cJSON_IsArray(plans))
 		return 0;
 
-	copy = strdup(content);
-	if (!copy)
-		return 0;
+	cJSON_ArrayForEach(plan, plans) {
+		const cJSON *name;
+		const cJSON *goal;
+		const cJSON *steps;
+		const cJSON *step;
+		int step_printed = 0;
 
-	line = strtok_r(copy, "\n", &saveptr);
-	while (line) {
-		char *trimmed = trim_plan_line(line);
-
-		if (trimmed[0] == '\0' ||
-		    strcmp(trimmed, "Plan created.") == 0 ||
-		    strncmp(trimmed, "Plan created (", 14) == 0 ||
-		    strncmp(trimmed, "Step ", 5) == 0) {
-			line = strtok_r(NULL, "\n", &saveptr);
+		if (!cJSON_IsObject(plan))
 			continue;
+		name = cJSON_GetObjectItemCaseSensitive((cJSON *)plan, "name");
+		goal = cJSON_GetObjectItemCaseSensitive((cJSON *)plan, "goal");
+		steps = cJSON_GetObjectItemCaseSensitive((cJSON *)plan, "steps");
+
+		if (printed)
+			printf("\n");
+		printf(ANSI_BOLD "Plan:" ANSI_RESET " %s\n",
+		       cJSON_GetStringValue((cJSON *)name) ?
+		       cJSON_GetStringValue((cJSON *)name) : "(unnamed)");
+		printed = 1;
+
+		if (cJSON_GetStringValue((cJSON *)goal) &&
+		    *cJSON_GetStringValue((cJSON *)goal)) {
+			printf(ANSI_BOLD "Goal:" ANSI_RESET " %s\n",
+			       cJSON_GetStringValue((cJSON *)goal));
 		}
 
-		if (render_plan_title(trimmed, &printed)) {
-			step_started = 0;
-			consumed = 1;
-		} else if (strncmp(trimmed, "Goal:", 5) == 0 && printed) {
-			printf(ANSI_BOLD "Goal:" ANSI_RESET "%s\n",
-			       trimmed + 5);
-			consumed = 1;
-		} else if (strstr(trimmed, "step(s)") && printed) {
-			consumed = 1;
-		} else if (render_plan_step(trimmed, &step_started)) {
-			consumed = 1;
-		}
+		if (!cJSON_IsArray(steps))
+			continue;
+		cJSON_ArrayForEach(step, steps) {
+			const cJSON *desc;
+			const cJSON *status;
+			const cJSON *active;
+			char mark;
 
-		line = strtok_r(NULL, "\n", &saveptr);
+			if (!cJSON_IsObject(step))
+				continue;
+			desc = cJSON_GetObjectItemCaseSensitive((cJSON *)step,
+								"description");
+			status = cJSON_GetObjectItemCaseSensitive((cJSON *)step,
+								  "status");
+			active = cJSON_GetObjectItemCaseSensitive((cJSON *)step,
+								  "active");
+			if (!cJSON_GetStringValue((cJSON *)desc))
+				continue;
+			if (!step_printed) {
+				printf("\n");
+				step_printed = 1;
+			}
+			mark = plan_status_mark(
+				cJSON_GetStringValue((cJSON *)status));
+			if (cJSON_IsTrue(active))
+				printf("  %c %s " ANSI_DIM "(active)"
+				       ANSI_RESET "\n", mark,
+				       cJSON_GetStringValue((cJSON *)desc));
+			else if (mark == ' ')
+				printf("    %s\n",
+				       cJSON_GetStringValue((cJSON *)desc));
+			else
+				printf("  %c %s\n", mark,
+				       cJSON_GetStringValue((cJSON *)desc));
+		}
 	}
-
-	free(copy);
-	return consumed;
+	return printed;
 }
 
 static void print_tool_observation(const char *content)
@@ -408,21 +368,31 @@ static void print_tool_observation(const char *content)
  *
  * Returns 0 always.
  */
-static int output_handle_observation(struct cli_context *ctx, const char *content)
+static int output_handle_observation(struct cli_context *ctx,
+				     const struct react_output_event *event)
 {
+	const char *content = event && event->text ? event->text : "";
+
 	if (ctx->streaming) {
 		spin_set_sub(&ctx->spin, NULL);
 		ctx->streaming = 0;
 	}
 	if (ctx->spin.running) {
 		char msg[128] = {0};
-		if (content && strncmp(content, "tool error:", 11) == 0) {
+		if (event && (event->error_code < 0 ||
+			      event->status == REACT_OUTPUT_FAILED)) {
 			snprintf(msg, sizeof(msg), "Tool execution failed");
 			spin_stop(&ctx->spin, SPIN_STATE_ERROR, msg);
-		} else if (content && strncmp(content, "image generated:", 15) == 0) {
+		} else if (event && event->artifacts &&
+			   event->artifacts->count > 0 &&
+			   event->artifacts->items[0].kind ==
+			   TOOL_ARTIFACT_IMAGE) {
 			snprintf(msg, sizeof(msg), "Image generated");
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-		} else if (content && strncmp(content, "video generated:", 16) == 0) {
+		} else if (event && event->artifacts &&
+			   event->artifacts->count > 0 &&
+			   event->artifacts->items[0].kind ==
+			   TOOL_ARTIFACT_VIDEO) {
 			snprintf(msg, sizeof(msg), "Video generated");
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 		} else {
@@ -430,11 +400,9 @@ static int output_handle_observation(struct cli_context *ctx, const char *conten
 			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
 		}
 	}
-	if (ctx->last_tool_was_plan && content && *content
-	    && strncmp(content, "image generated:", 15) != 0
-	    && strncmp(content, "video generated:", 16) != 0) {
+	if (ctx->last_tool_was_plan && content && *content) {
 		printf("\n");
-		if (!render_plan_observation(content))
+		if (!render_plan_data(event ? event->data : NULL))
 			print_tool_observation(content);
 		fflush(stdout);
 	}
@@ -502,24 +470,26 @@ static int output_handle_final(struct cli_context *ctx, const char *content)
 
 /*
  * ReAct output callback: dispatch step-type events to per-type handlers.
- * type - Step type (THOUGHT, ACTION, OBSERVATION, REFLECTION, FINAL).
- * content - Step content string.
+ * event - Structured ReAct output event.
  * user_data - Pointer to cli_context.
  *
  * Returns 0 always.
  */
-int output_callback(enum react_step_type type, const char *content,
-			   void *user_data)
+int output_callback(const struct react_output_event *event, void *user_data)
 {
 	struct cli_context *ctx = user_data;
+	const char *content = event && event->text ? event->text : "";
 
-	switch (type) {
+	if (!event)
+		return 0;
+
+	switch (event->type) {
 	case REACT_STEP_THOUGHT:
 		return output_handle_thought(ctx, content);
 	case REACT_STEP_ACTION:
-		return output_handle_action(ctx, content);
+		return output_handle_action(ctx, event);
 	case REACT_STEP_OBSERVATION:
-		return output_handle_observation(ctx, content);
+		return output_handle_observation(ctx, event);
 	case REACT_STEP_REFLECTION:
 		return output_handle_reflection(ctx, content);
 	case REACT_STEP_FINAL:
