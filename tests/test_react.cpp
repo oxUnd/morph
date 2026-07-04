@@ -1426,6 +1426,30 @@ TEST_F(MockLlmTest, ToolFailThenFinal) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, MaxIterationsDoesNotUseToolErrorAsFinal) {
+	tool_register(&tools, "fail_tool", "Fails always", "{}",
+		      failing_tool_fn, nullptr, nullptr);
+	setup_llm_with_response("Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 1;
+	int rc = react_run(ctx, "call tool", nullptr, nullptr);
+	EXPECT_EQ(rc, MORPH_ERR_REACT_MAX_ITERATIONS);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_MAX_ITERATIONS);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_EQ(strstr(ctx->final_answer, "tool error:"), nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "Maximum iterations reached"),
+		  nullptr);
+	struct react_step *obs = ctx->steps;
+	while (obs && obs->type != REACT_STEP_OBSERVATION)
+		obs = obs->next;
+	ASSERT_NE(obs, nullptr);
+	EXPECT_LT(obs->error_code, 0);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	llm = create_mock_llm("should not matter");
 	llm_data = (struct mock_llm_data *)llm->handle;

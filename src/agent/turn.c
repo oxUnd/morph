@@ -206,6 +206,9 @@ static int turn_save_trace(struct agent_turn *turn)
 			cJSON_Delete(arr);
 			MORPH_RETURN(-ENOMEM);
 		}
+		if (cur->error_code < 0)
+			cJSON_AddNumberToObject(obj, "error_code",
+						cur->error_code);
 		cJSON_AddItemToArray(arr, obj);
 		cur = cur->next;
 	}

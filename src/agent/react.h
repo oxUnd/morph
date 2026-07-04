@@ -50,6 +50,7 @@ enum react_outcome {
 
 struct react_step {
 	enum react_step_type type;
+	int error_code;
 	char *content;
 	char *tool_name;
 	char *tool_args;

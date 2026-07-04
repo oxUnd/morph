@@ -1088,6 +1088,7 @@ struct react_step *react_step_create(struct arena *arena,
 	if (!s)
 		return NULL;
 	s->type = type;
+	s->error_code = 0;
 	s->content = content ? arena_strdup(arena, content) : NULL;
 	s->tool_name = tool_name ? arena_strdup(arena, tool_name) : NULL;
 	s->tool_args = tool_args ? arena_strdup(arena, tool_args) : NULL;
@@ -1693,7 +1694,7 @@ static void react_complete_max_iterations(struct react_context *ctx)
 				last_obs = cur;
 			cur = cur->next;
 		}
-		if (last_obs && last_obs->content) {
+		if (last_obs && last_obs->content && last_obs->error_code >= 0) {
 			ctx->final_answer = strdup(last_obs->content);
 		} else {
 			ctx->final_answer = strdup(
@@ -2112,6 +2113,8 @@ static int react_record_tool_observation(struct react_context *ctx,
 
 	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				obs_text, NULL, NULL, NULL);
+	if (obs)
+		obs->error_code = rc;
 	add_step(ctx, obs);
 	if (cb)
 		cb(REACT_STEP_OBSERVATION, obs_text, user_data);
@@ -2181,11 +2184,8 @@ static int react_join_tool_calls(struct react_context *ctx,
 		call = slots[i].call;
 		react_collect_tool_result(call, &rc, &result);
 		obs_text = result ? result : "";
-		if (rc < 0) {
+		if (rc < 0)
 			react_set_error_detail(ctx, obs_text);
-			react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR, rc,
-					 call->tool_name);
-		}
 
 		if (react_track_tool_failure(ctx, call->tool_name,
 					     call->tool_args, rc, cb,

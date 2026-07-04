@@ -121,7 +121,8 @@ static int build_tool_outcomes(const struct react_step *steps,
 			const struct react_step *obs = obs_cursor;
 			while (obs) {
 				if (obs->type == REACT_STEP_OBSERVATION) {
-					if (obs_is_error(obs->content)) {
+					if (obs->error_code < 0 ||
+					    obs_is_error(obs->content)) {
 						o->succeeded = 0;
 					} else {
 						o->succeeded = 1;
