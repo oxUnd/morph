@@ -298,6 +298,31 @@ TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	rmdir(work);
 }
 
+TEST_F(ToolTest, FileListAllowsOutputDir) {
+	const char *work = "/tmp/morph_tool_work";
+	const char *out = "/tmp/morph_tool_out";
+	const char *artifact = "/tmp/morph_tool_out/artifact.txt";
+	file_ensure_dir(work);
+	file_ensure_dir(out);
+	file_write_all(artifact, "artifact", 8);
+	struct tool_context *tctx = tool_context_create(work, out);
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(file_list_init(&reg, tctx), 0);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "file_list",
+			   "{\"dir_path\":\"/tmp/morph_tool_out\"}",
+			   &result);
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "artifact.txt"), nullptr);
+	tool_result_cleanup(&result);
+	tool_context_destroy(tctx);
+	std::remove(artifact);
+	rmdir(out);
+	rmdir(work);
+}
+
 TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	const char *work = "/tmp/morph_tool_work";
 	const char *path = "/tmp/morph_tool_work/info.txt";

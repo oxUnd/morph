@@ -39,6 +39,12 @@ static int check_read_path(struct tool_context *tctx, const char *path)
 					   NULL, 0);
 }
 
+static int check_list_path(struct tool_context *tctx, const char *path)
+{
+	return tool_context_authorize_path(tctx, TOOL_PATH_LIST, path,
+					   NULL, 0);
+}
+
 TEST_F(ToolContextTest, CreateDestroy) {
 	struct tool_context *tctx = tool_context_create("/tmp/test_workdir", "/tmp/test_output");
 	ASSERT_NE(tctx, nullptr);
@@ -254,6 +260,25 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalDeny) {
 	rmdir(work);
 }
 
+TEST_F(ToolContextTest, AuthorizeReadListWithinOutputDir) {
+	const char *work = "/tmp/morph_tctx_work";
+	const char *out = "/tmp/morph_tctx_out";
+	const char *artifact = "/tmp/morph_tctx_out/artifact.txt";
+	file_ensure_dir(work);
+	file_ensure_dir(out);
+	file_write_all(artifact, "artifact", 8);
+	struct tool_context *tctx = tool_context_create(work, out);
+	ASSERT_NE(tctx, nullptr);
+	EXPECT_EQ(tctx->read_allowed_dirs_count, 1);
+	tool_context_set_operation_approval(tctx, op_deny, NULL);
+	EXPECT_EQ(check_read_path(tctx, artifact), 0);
+	EXPECT_EQ(check_list_path(tctx, out), 0);
+	tool_context_destroy(tctx);
+	std::remove(artifact);
+	rmdir(out);
+	rmdir(work);
+}
+
 TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysAddsDir) {
 	const char *work = "/tmp/morph_tctx_work";
 	const char *dir = "/tmp/morph_tctx_external";
@@ -269,7 +294,7 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysAddsDir) {
 	tool_context_set_operation_approval(tctx, op_always, NULL);
 	EXPECT_EQ(check_read_path(tctx, one), 0);
 	EXPECT_EQ(op_always_calls, 1);
-	EXPECT_EQ(tctx->read_allowed_dirs_count, 1);
+	EXPECT_EQ(tctx->read_allowed_dirs_count, 2);
 	EXPECT_EQ(check_read_path(tctx, two), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	tool_context_destroy(tctx);

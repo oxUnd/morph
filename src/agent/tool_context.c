@@ -258,6 +258,13 @@ struct tool_context *tool_context_create(const char *workdir,
 	tctx->operation_approval_user_data = NULL;
 	tctx->read_allowed_dirs_count = 0;
 	tctx->write_allowed_dirs_count = 0;
+	if (tctx->output_dir[0] &&
+	    !(tctx->workdir[0] && path_is_within(tctx->output_dir,
+						 tctx->workdir))) {
+		add_allowed_dir(tctx->read_allowed_dirs,
+				&tctx->read_allowed_dirs_count,
+				tctx->output_dir);
+	}
 	tctx->allowed_commands_count = 0;
 	tctx->exec_allowed_dirs_count = 0;
 	return tctx;
