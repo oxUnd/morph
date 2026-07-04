@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 #include "render/markdown.h"
 #include "util/utf8.h"
+#include "stb_image_write.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <sstream>
 #include <vector>
 #include <string>
@@ -25,6 +27,19 @@ static std::string render(const char *md)
 static bool contains(const std::string &haystack, const char *needle)
 {
 	return haystack.find(needle) != std::string::npos;
+}
+
+static int create_markdown_test_png(const char *path)
+{
+	unsigned char pixels[8 * 8 * 4];
+
+	for (size_t i = 0; i < sizeof(pixels); i += 4) {
+		pixels[i + 0] = 0x40;
+		pixels[i + 1] = 0x80;
+		pixels[i + 2] = 0xC0;
+		pixels[i + 3] = 0xFF;
+	}
+	return stbi_write_png(path, 8, 8, 4, pixels, 8 * 4) ? 0 : -1;
 }
 
 static int parse_graphics_param(const std::string &s, const char *name)
@@ -739,13 +754,11 @@ TEST(MarkdownMedia, NullInput)
 	EXPECT_EQ(col.entries.size(), 0u);
 }
 
-TEST(MarkdownMedia, ImageCollected)
+TEST(MarkdownMedia, ImageNotCollected)
 {
 	media_collector col;
 	markdown_render_ansi_with_media("![alt](photo.png)", test_media_cb, &col);
-	ASSERT_EQ(col.entries.size(), 1u);
-	EXPECT_EQ(col.entries[0].type, "image");
-	EXPECT_EQ(col.entries[0].path, "photo.png");
+	EXPECT_EQ(col.entries.size(), 0u);
 }
 
 TEST(MarkdownMedia, VideoFromImageSyntax)
@@ -777,18 +790,16 @@ TEST(MarkdownMedia, MultipleImages)
 {
 	media_collector col;
 	markdown_render_ansi_with_media("![a](1.png) and ![b](2.jpg)", test_media_cb, &col);
-	EXPECT_EQ(col.entries.size(), 2u);
-	EXPECT_EQ(col.entries[0].type, "image");
-	EXPECT_EQ(col.entries[1].type, "image");
+	EXPECT_EQ(col.entries.size(), 0u);
 }
 
 TEST(MarkdownMedia, MixedImageAndVideo)
 {
 	media_collector col;
 	markdown_render_ansi_with_media("![pic](img.png)\n\n![vid](out.webm)", test_media_cb, &col);
-	ASSERT_EQ(col.entries.size(), 2u);
-	EXPECT_EQ(col.entries[0].type, "image");
-	EXPECT_EQ(col.entries[1].type, "video");
+	ASSERT_EQ(col.entries.size(), 1u);
+	EXPECT_EQ(col.entries[0].type, "video");
+	EXPECT_EQ(col.entries[0].path, "out.webm");
 }
 
 TEST(MarkdownMedia, VideoExtensions)
@@ -806,13 +817,11 @@ TEST(MarkdownMedia, VideoExtensions)
 	}
 }
 
-TEST(MarkdownMedia, FileURIStripped)
+TEST(MarkdownMedia, ImageFileURINotCollected)
 {
 	media_collector col;
 	markdown_render_ansi_with_media("![img](file:///tmp/photo.png)", test_media_cb, &col);
-	ASSERT_EQ(col.entries.size(), 1u);
-	EXPECT_EQ(col.entries[0].type, "image");
-	EXPECT_EQ(col.entries[0].path, "/tmp/photo.png");
+	EXPECT_EQ(col.entries.size(), 0u);
 }
 
 TEST(MarkdownMedia, VideoFromLinkWithVideoExt)
@@ -827,9 +836,61 @@ TEST(MarkdownMedia, ImageInParagraph)
 {
 	media_collector col;
 	markdown_render_ansi_with_media("Here is a picture:\n\n![cat](cat.png)", test_media_cb, &col);
-	ASSERT_EQ(col.entries.size(), 1u);
-	EXPECT_EQ(col.entries[0].type, "image");
-	EXPECT_EQ(col.entries[0].path, "cat.png");
+	EXPECT_EQ(col.entries.size(), 0u);
+}
+
+TEST(MarkdownMedia, ImageInListNotCollected)
+{
+	media_collector col;
+	markdown_render_ansi_with_media("- before ![cat](cat.png) after",
+				       test_media_cb, &col);
+	EXPECT_EQ(col.entries.size(), 0u);
+}
+
+TEST(MarkdownMedia, ImageInTableNotCollected)
+{
+	media_collector col;
+	const char *md = "| A | B |\n|---|---|\n| ![cat](cat.png) | text |";
+	markdown_render_ansi_with_media(md, test_media_cb, &col);
+	EXPECT_EQ(col.entries.size(), 0u);
+}
+
+TEST(MarkdownMedia, ImageInListRendersInlineKitty)
+{
+	const char *path = "/tmp/morph_markdown_inline_image.png";
+	const char *old_kitty = getenv("KITTY_WINDOW_ID");
+	std::string old_value = old_kitty ? old_kitty : "";
+	ASSERT_EQ(create_markdown_test_png(path), 0);
+	setenv("KITTY_WINDOW_ID", "1", 1);
+	std::string md = std::string("- before ![cat](") + path + ") after";
+	std::string out = render(md.c_str());
+	if (old_kitty)
+		setenv("KITTY_WINDOW_ID", old_value.c_str(), 1);
+	else
+		unsetenv("KITTY_WINDOW_ID");
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_TRUE(contains(out, "c="));
+	EXPECT_TRUE(contains(out, "r="));
+	std::remove(path);
+}
+
+TEST(MarkdownMedia, ImageInTableRendersInlineKitty)
+{
+	const char *path = "/tmp/morph_markdown_table_image.png";
+	const char *old_kitty = getenv("KITTY_WINDOW_ID");
+	std::string old_value = old_kitty ? old_kitty : "";
+	ASSERT_EQ(create_markdown_test_png(path), 0);
+	setenv("KITTY_WINDOW_ID", "1", 1);
+	std::string md = std::string("| A | B |\n|---|---|\n| ![cat](") +
+			 path + ") | text |";
+	std::string out = render(md.c_str());
+	if (old_kitty)
+		setenv("KITTY_WINDOW_ID", old_value.c_str(), 1);
+	else
+		unsetenv("KITTY_WINDOW_ID");
+	EXPECT_TRUE(contains(out, "\033_Ga=T,f=32"));
+	EXPECT_TRUE(contains(out, "│"));
+	std::remove(path);
 }
 
 TEST(MarkdownMedia, NoMediaInPlainMarkdown)

@@ -1,6 +1,7 @@
 #include "markdown.h"
 #include "highlight.h"
 #include "util/array.h"
+#include "util/base64.h"
 #include "util/buf.h"
 #include "util/utf8.h"
 #include "mathjax.h"
@@ -12,6 +13,8 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <limits.h>
+
+#include "stb_image.h"
 
 #define ANSI_RESET     "\033[0m"
 #define ANSI_BOLD      "\033[1m"
@@ -40,6 +43,9 @@
 #define KITTY_MAX_DIACRITIC_NUM 296u
 #define FORMULA_MARKER "\x1fMF:"
 #define FORMULA_MARKER_LEN 4u
+#define MARKDOWN_IMAGE_MAX_COLS 40u
+#define MARKDOWN_IMAGE_TABLE_MAX_COLS 24u
+#define MARKDOWN_IMAGE_MAX_ROWS 24u
 
 /* ---------------- text buffer ---------------- */
 /* sbuf is defined in highlight.h */
@@ -292,6 +298,8 @@ struct ansi_ctx {
 	int formulas_init;
 	int inline_active;
 	morph_buf_t inline_raw;
+	int img_span_depth;
+	morph_buf_t img_alt;
 	struct collected_media media[64];
 	int media_count;
 };
@@ -332,6 +340,27 @@ static size_t inline_raw_natural_width(struct ansi_ctx *ctx, const char *raw,
 static void append_utf8_cp(struct ansi_ctx *ctx, unsigned int cp);
 static int render_mathjax_kitty(struct ansi_ctx *ctx, const char *latex,
 				size_t len, int display);
+static int render_markdown_image(struct ansi_ctx *ctx, const char *src,
+				 size_t src_len, const char *alt,
+				 size_t alt_len);
+static unsigned int mathjax_cell_count(unsigned int pixels,
+				       unsigned int cell_px);
+static int kitty_placeholder_supported(unsigned int cols, unsigned int rows,
+				       unsigned int image_id);
+static void append_kitty_placeholder_grid(struct ansi_ctx *ctx,
+					  unsigned int image_id,
+					  unsigned int cols,
+					  unsigned int rows,
+					  int display);
+static void append_mathjax_cursor_advance(struct ansi_ctx *ctx,
+					  unsigned int cols,
+					  unsigned int rows,
+					  int display);
+static int store_formula_atom(struct ansi_ctx *ctx, char *transfer,
+			      size_t transfer_len, unsigned int cols,
+			      unsigned int rows, unsigned int image_id,
+			      int use_placeholder, unsigned int *out_id);
+static void append_formula_marker(struct ansi_ctx *ctx, unsigned int id);
 
 /* Re-apply currently-active inline styles after an ANSI_RESET. Used when we
  * leave a span but still are inside other spans (e.g. **bold _italic_** when
@@ -1580,14 +1609,264 @@ static void collect_media(struct ansi_ctx *ctx, const char *src, size_t src_len,
 	ctx->media_count++;
 }
 
-/* ---------------- span handlers ---------------- */
-static void append_attr(struct ansi_ctx *ctx, const MD_ATTRIBUTE *attr)
+static char *dup_media_path(const char *src, size_t src_len)
 {
-	if (!attr || !attr->text)
-		return;
-	out_append_n(ctx, attr->text, attr->size);
+	const char *s = src;
+	size_t slen = src_len;
+	char *path;
+
+	if (!s || slen == 0)
+		return NULL;
+	if (slen > 7 && strncmp(s, "file://", 7) == 0) {
+		s += 7;
+		slen -= 7;
+	}
+	path = malloc(slen + 1);
+	if (!path)
+		return NULL;
+	memcpy(path, s, slen);
+	path[slen] = '\0';
+	return path;
 }
 
+static unsigned int clamp_markdown_image_cols(struct ansi_ctx *ctx,
+					      unsigned int natural_cols)
+{
+	unsigned int max_cols = MARKDOWN_IMAGE_MAX_COLS;
+	unsigned int term_cols;
+
+	if (!ctx)
+		return natural_cols > max_cols ? max_cols : natural_cols;
+	if (ctx->table && ctx->table->cell_active)
+		max_cols = MARKDOWN_IMAGE_TABLE_MAX_COLS;
+	term_cols = ctx->term_width > 0 ? (unsigned int)ctx->term_width : 80u;
+	if (ctx->list_depth > 0 && term_cols > (unsigned int)ctx->list_depth * 4u)
+		term_cols -= (unsigned int)ctx->list_depth * 4u;
+	if (term_cols > 0) {
+		unsigned int by_term = term_cols * 2u / 3u;
+		if (by_term < 8u)
+			by_term = term_cols;
+		if (by_term > 0 && by_term < max_cols)
+			max_cols = by_term;
+	}
+	if (max_cols < 1u)
+		max_cols = 1u;
+	if (natural_cols < 1u)
+		natural_cols = 1u;
+	return natural_cols > max_cols ? max_cols : natural_cols;
+}
+
+static void markdown_image_display_size(struct ansi_ctx *ctx,
+					unsigned int width,
+					unsigned int height,
+					unsigned int *out_cols,
+					unsigned int *out_rows)
+{
+	unsigned int cell_w;
+	unsigned int cell_h;
+	unsigned int natural_cols;
+	unsigned int cols;
+	unsigned int rows;
+
+	get_term_cell_size(&cell_w, &cell_h);
+	natural_cols = mathjax_cell_count(width, cell_w);
+	cols = clamp_markdown_image_cols(ctx, natural_cols);
+	if (width == 0 || height == 0 || cell_h == 0)
+		rows = 1;
+	else {
+		double px_h = ((double)height * (double)cols *
+			       (double)cell_w) / (double)width;
+		rows = (unsigned int)((px_h + (double)cell_h - 1.0) /
+				      (double)cell_h);
+	}
+	if (rows < 1u)
+		rows = 1u;
+	while (rows > MARKDOWN_IMAGE_MAX_ROWS && cols > 1u) {
+		cols--;
+		if (width == 0 || height == 0 || cell_h == 0)
+			rows = 1;
+		else {
+			double px_h = ((double)height * (double)cols *
+				       (double)cell_w) / (double)width;
+			rows = (unsigned int)((px_h + (double)cell_h - 1.0) /
+					      (double)cell_h);
+		}
+		if (rows < 1u)
+			rows = 1u;
+	}
+	*out_cols = cols;
+	*out_rows = rows;
+}
+
+static int append_b64_string_buf(morph_buf_t *out, const char *b64,
+				 size_t offset, size_t len)
+{
+	if (!out || !b64)
+		return -EINVAL;
+	if (morph_buf_append(out, b64 + offset, len) != 0)
+		return -ENOMEM;
+	return 0;
+}
+
+static char *build_image_transfer(const unsigned char *pixels, size_t bytes,
+				  unsigned int width, unsigned int height,
+				  unsigned int cols, unsigned int rows,
+				  unsigned int image_id, int use_placeholder,
+				  size_t *out_len)
+{
+	morph_buf_t out;
+	char *b64;
+	size_t b64_len;
+	size_t offset = 0;
+	const size_t chunk_size = 4096;
+
+	if (!pixels || bytes == 0)
+		return NULL;
+	b64 = base64_encode(pixels, bytes);
+	if (!b64)
+		return NULL;
+	b64_len = strlen(b64);
+	if (morph_buf_init(&out, b64_len + 256) != 0) {
+		free(b64);
+		return NULL;
+	}
+
+	while (offset < b64_len) {
+		size_t remaining = b64_len - offset;
+		size_t n = remaining < chunk_size ? remaining : chunk_size;
+		int more = offset + n < b64_len ? 1 : 0;
+		int rc;
+
+		if (offset == 0) {
+			if (use_placeholder) {
+				rc = morph_buf_printf(&out,
+					"\033_Ga=T,f=32,s=%u,v=%u,i=%u,U=1,c=%u,r=%u,q=2,m=%d;",
+					width, height, image_id, cols, rows, more);
+			} else {
+				rc = morph_buf_printf(&out,
+					"\033_Ga=T,f=32,s=%u,v=%u,c=%u,r=%u,C=1,z=0,m=%d;",
+					width, height, cols, rows, more);
+			}
+		} else {
+			rc = morph_buf_printf(&out, "\033_Gm=%d;", more);
+		}
+		if (rc != 0 ||
+		    append_b64_string_buf(&out, b64, offset, n) != 0 ||
+		    morph_buf_puts(&out, "\033\\") != 0) {
+			morph_buf_cleanup(&out);
+			free(b64);
+			return NULL;
+		}
+		offset += n;
+	}
+
+	free(b64);
+	if (out_len)
+		*out_len = out.len;
+	return morph_buf_detach(&out);
+}
+
+static void render_image_fallback(struct ansi_ctx *ctx, const char *src,
+				  size_t src_len, const char *alt,
+				  size_t alt_len)
+{
+	out_append(ctx, ANSI_DIM);
+	out_append(ctx, "[image");
+	if (alt && alt_len > 0) {
+		out_append(ctx, ": ");
+		out_append_n(ctx, alt, alt_len);
+	}
+	out_append(ctx, "]");
+	if (src && src_len > 0) {
+		out_append(ctx, "(");
+		out_append_n(ctx, src, src_len);
+		out_append(ctx, ")");
+	}
+	out_append(ctx, ANSI_RESET);
+	reapply_inline(ctx);
+}
+
+static int render_markdown_image(struct ansi_ctx *ctx, const char *src,
+				 size_t src_len, const char *alt,
+				 size_t alt_len)
+{
+	char *path;
+	unsigned char *pixels = NULL;
+	char *transfer = NULL;
+	size_t transfer_len = 0;
+	int w = 0;
+	int h = 0;
+	int ch = 0;
+	unsigned int cols;
+	unsigned int rows;
+	unsigned int image_id = 0;
+	unsigned int atom_id = 0;
+	int use_placeholder = 0;
+	int collecting_inline;
+	size_t bytes;
+
+	if (!ctx || !src || src_len == 0)
+		return -EINVAL;
+	if (!ctx->use_kitty_placeholders && !getenv("KITTY_WINDOW_ID")) {
+		render_image_fallback(ctx, src, src_len, alt, alt_len);
+		return 0;
+	}
+	path = dup_media_path(src, src_len);
+	if (!path) {
+		render_image_fallback(ctx, src, src_len, alt, alt_len);
+		return -ENOMEM;
+	}
+	pixels = stbi_load(path, &w, &h, &ch, 4);
+	if (!pixels || w <= 0 || h <= 0) {
+		free(path);
+		if (pixels)
+			stbi_image_free(pixels);
+		render_image_fallback(ctx, src, src_len, alt, alt_len);
+		return -EIO;
+	}
+
+	markdown_image_display_size(ctx, (unsigned int)w, (unsigned int)h,
+				    &cols, &rows);
+	image_id = ctx->next_image_id++;
+	if (ctx->next_image_id == 0 || ctx->next_image_id > 0xffffffu)
+		ctx->next_image_id = 1;
+	use_placeholder = kitty_placeholder_supported(cols, rows, image_id);
+	bytes = (size_t)w * (size_t)h * 4u;
+	transfer = build_image_transfer(pixels, bytes, (unsigned int)w,
+					(unsigned int)h, cols, rows,
+					image_id, use_placeholder,
+					&transfer_len);
+	stbi_image_free(pixels);
+	free(path);
+	if (!transfer) {
+		render_image_fallback(ctx, src, src_len, alt, alt_len);
+		return -ENOMEM;
+	}
+
+	collecting_inline = ctx->inline_active ||
+			     (ctx->table && ctx->table->cell_active);
+	if (collecting_inline) {
+		if (store_formula_atom(ctx, transfer, transfer_len, cols, rows,
+				       image_id, use_placeholder,
+				       &atom_id) != 0) {
+			free(transfer);
+			render_image_fallback(ctx, src, src_len, alt, alt_len);
+			return -ENOMEM;
+		}
+		append_formula_marker(ctx, atom_id);
+		return 0;
+	}
+
+	out_append_n(ctx, transfer, transfer_len);
+	free(transfer);
+	if (use_placeholder)
+		append_kitty_placeholder_grid(ctx, image_id, cols, rows, 1);
+	else
+		append_mathjax_cursor_advance(ctx, cols, rows, 1);
+	return 0;
+}
+
+/* ---------------- span handlers ---------------- */
 static const char mathjax_b64[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -2524,10 +2803,10 @@ static int enter_span(MD_SPANTYPE type, void *detail, void *userdata)
 		break;
 	}
 	case MD_SPAN_IMG: {
-		struct MD_SPAN_IMG_DETAIL *im = detail;
-		out_append(ctx, ANSI_DIM);
-		out_append(ctx, "[image: ");
-		(void)im;
+		(void)detail;
+		ctx->img_span_depth++;
+		morph_buf_cleanup(&ctx->img_alt);
+		(void)morph_buf_init(&ctx->img_alt, 64);
 		break;
 	}
 	case MD_SPAN_LATEXMATH:
@@ -2599,14 +2878,32 @@ static int leave_span(MD_SPANTYPE type, void *detail, void *userdata)
 		break;
 	case MD_SPAN_IMG: {
 		struct MD_SPAN_IMG_DETAIL *im = detail;
-		out_append(ctx, "]");
 		if (im && im->src.text && im->src.size > 0) {
-			out_append(ctx, "(");
-			append_attr(ctx, &im->src);
-			out_append(ctx, ")");
-			collect_media(ctx, im->src.text, im->src.size, "image");
+			char *media_path = dup_media_path(im->src.text,
+							  im->src.size);
+			int is_video = media_path ?
+				is_video_ext(media_path, strlen(media_path)) : 0;
+			free(media_path);
+			if (is_video) {
+				render_image_fallback(ctx, im->src.text,
+						      im->src.size,
+						      ctx->img_alt.data,
+						      ctx->img_alt.len);
+				collect_media(ctx, im->src.text,
+					      im->src.size, "video");
+			} else {
+				(void)render_markdown_image(ctx, im->src.text,
+							    im->src.size,
+							    ctx->img_alt.data,
+							    ctx->img_alt.len);
+			}
+		} else {
+			render_image_fallback(ctx, NULL, 0, ctx->img_alt.data,
+					      ctx->img_alt.len);
 		}
-		out_append(ctx, ANSI_RESET);
+		if (ctx->img_span_depth > 0)
+			ctx->img_span_depth--;
+		morph_buf_cleanup(&ctx->img_alt);
 		reapply_inline(ctx);
 		break;
 	}
@@ -2630,6 +2927,13 @@ static int text_callback(MD_TEXTTYPE type, const MD_CHAR *text,
 			 MD_SIZE size, void *userdata)
 {
 	struct ansi_ctx *ctx = userdata;
+
+	if (ctx->img_span_depth > 0) {
+		if (text && size > 0)
+			(void)morph_buf_append(&ctx->img_alt, text, size);
+		return 0;
+	}
+
 	switch (type) {
 	case MD_TEXT_NULLCHAR:
 		out_append(ctx, "\xEF\xBF\xBD"); /* U+FFFD */
@@ -2875,6 +3179,7 @@ size_t markdown_render_ansi_to_buf(const char *md, char *buf, size_t buf_len)
 	free(ctx.link_href.buf);
 	morph_buf_cleanup(&ctx.code_raw);
 	morph_buf_cleanup(&ctx.inline_raw);
+	morph_buf_cleanup(&ctx.img_alt);
 	free_formulas(&ctx);
 	if (ctx.table)
 		free_table(ctx.table);
@@ -2911,6 +3216,7 @@ static void render_ansi_impl(const char *md, struct ansi_ctx *ctx)
 	free(ctx->link_href.buf);
 	morph_buf_cleanup(&ctx->code_raw);
 	morph_buf_cleanup(&ctx->inline_raw);
+	morph_buf_cleanup(&ctx->img_alt);
 	free_formulas(ctx);
 	if (ctx->table)
 		free_table(ctx->table);
