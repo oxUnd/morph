@@ -77,16 +77,13 @@ struct DynamicToolsTest : public ::testing::Test {
 	}
 
 	std::string create_args(const std::string &name,
-				const std::string &source,
-				const std::string &caps = "")
+				const std::string &source)
 	{
 		std::string args =
 			"{\"name\":\"" + name + "\","
 			"\"description\":\"test dynamic tool\","
 			"\"args_schema\":{\"type\":\"object\"},"
 			"\"source_js\":\"" + json_escape(source) + "\"";
-		if (!caps.empty())
-			args += ",\"capabilities\":" + caps;
 		args += "}";
 		return args;
 	}
@@ -218,8 +215,7 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesFileReadByDefault)
 		"function run(args) {"
 		"  return morph.fs.readText(args.path);"
 		"}";
-	std::string args = create_args("read_secret", source,
-				       "[\"fs_read\"]");
+	std::string args = create_args("read_secret", source);
 	struct tool_result result;
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create", args.c_str(), &result), 0);
@@ -230,6 +226,77 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesFileReadByDefault)
 	EXPECT_NE(tool_exec(&reg, "read_secret", call.c_str(), &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("capability denied"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string file = root + "/note.txt";
+	ASSERT_EQ(file_write_all(file.c_str(), "secret", 6), 0);
+	std::string source =
+		"function run(args) {"
+		"  return { text: morph.fs.readText(args.path) };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("read_profile", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	{
+		std::string meta_path =
+			root + "/session/sess/read_profile/tool.json";
+		size_t meta_len = 0;
+		char *meta = file_read_all(meta_path.c_str(), &meta_len);
+
+		ASSERT_NE(meta, nullptr);
+		(void)meta_len;
+		EXPECT_EQ(strstr(meta, "capabilities"), nullptr);
+		free(meta);
+	}
+
+	std::string call = "{\"path\":\"" + file + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "read_profile", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"text\":\"secret\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, PersistentToolIgnoresStoredCapabilities)
+{
+	std::string dir = root + "/persistent/old_caps";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	std::string file = root + "/old_note.txt";
+	const char *meta_json =
+		"{\"name\":\"old_caps\","
+		"\"description\":\"old tool\","
+		"\"args_schema\":{\"type\":\"object\"},"
+		"\"capabilities\":[\"image\"]}";
+	const char *source =
+		"function run(args) {"
+		"  return { text: morph.fs.readText(args.path) };"
+		"}";
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(file_write_all(file.c_str(), "loaded", 6), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
+		  0);
+
+	std::string call = "{\"path\":\"" + file + "\"}";
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "old_caps", call.c_str(), &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"text\":\"loaded\""),
 		  std::string::npos);
 	tool_result_cleanup(&result);
 }
@@ -284,8 +351,7 @@ TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("canvas_make", source,
-					"[\"image\",\"fs_write\"]").c_str(),
+			    create_args("canvas_make", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -314,8 +380,7 @@ TEST_F(DynamicToolsTest, ImageApiResizesImage)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("image_resize", source,
-					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    create_args("image_resize", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -353,8 +418,7 @@ TEST_F(DynamicToolsTest, ImageApiLoadsAndCompositesImage)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("image_composite", source,
-					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    create_args("image_composite", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -372,8 +436,7 @@ TEST_F(DynamicToolsTest, ImageApiLoadsAndCompositesImage)
 		"}";
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("image_base", make_base,
-					"[\"image\",\"fs_write\"]").c_str(),
+			    create_args("image_base", make_base).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
@@ -413,8 +476,7 @@ TEST_F(DynamicToolsTest, ImageApiExtendsImageWithBackground)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("image_extend", source,
-					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    create_args("image_extend", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -453,8 +515,7 @@ TEST_F(DynamicToolsTest, ImageApiFramesImage)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("image_frame", source,
-					"[\"image\",\"fs_read\",\"fs_write\"]").c_str(),
+			    create_args("image_frame", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -483,8 +544,7 @@ TEST_F(DynamicToolsTest, ToolCreateRejectsRequire)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("bad_require", source,
-					"[\"image\"]").c_str(),
+			    create_args("bad_require", source).c_str(),
 			    &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("forbidden token"),
@@ -508,8 +568,7 @@ TEST_F(DynamicToolsTest, WebAssemblyApiCallsExport)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("wasm_add", source,
-					"[\"wasm\"]").c_str(),
+			    create_args("wasm_add", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 
@@ -537,8 +596,7 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesImageCapability)
 
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("canvas_denied", source,
-					"[\"image\",\"fs_write\"]").c_str(),
+			    create_args("canvas_denied", source).c_str(),
 			    &result), 0);
 	tool_result_cleanup(&result);
 

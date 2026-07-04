@@ -45,7 +45,6 @@
   - `description`
   - `args_schema`
   - `source_js`
-  - 可选 `capabilities`
 - 创建成功后立即注册到当前 `tool_registry`。
 - 保存到会话目录：`~/.morph/runtime/tools/<session_id>/<tool_name>/`。
 - 禁止覆盖已有工具名，包括内置工具、ext 工具、MCP 工具和已有动态工具。
@@ -195,11 +194,8 @@ streaming compile、threads、SIMD 或完整浏览器宿主对象。
 - `image`
 - `wasm`
 
-实际能力取交集：
-
-- 动态工具声明的 `capabilities`。
-- 当前 profile 允许的 `default_capabilities`。
-- 路径、命令、网络 allowlist。
+实际能力由当前 profile 的 `default_capabilities` 决定，模型创建工具
+时不声明权限。路径、命令、网络访问再继续受对应 allowlist 约束。
 
 当前实现中：
 
@@ -277,7 +273,6 @@ allowed_network = []
 - `name`
 - `description`
 - `args_schema`
-- `capabilities`
 
 ## 已有测试覆盖
 

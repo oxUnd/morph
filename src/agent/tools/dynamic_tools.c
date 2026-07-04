@@ -37,8 +37,6 @@ struct dynamic_tool {
 	char args_schema[TOOL_ARGS_SPEC_MAX];
 	char source_path[PATH_MAX];
 	char dir[PATH_MAX];
-	char capabilities[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX];
-	int capabilities_count;
 	const struct config_dynamic_tools *cfg;
 	struct tool_context *tctx;
 };
@@ -161,18 +159,6 @@ static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
 	return morph_buf_detach(&buf);
 }
 
-static int cap_in_profile(const struct config_dynamic_tool_profile *profile,
-			  const char *cap)
-{
-	if (!profile || !cap)
-		return 0;
-	for (int i = 0; i < profile->default_capabilities_count; i++) {
-		if (strcmp(profile->default_capabilities[i], cap) == 0)
-			return 1;
-	}
-	return 0;
-}
-
 static int effective_caps(struct dynamic_tool *dt,
 			  char out[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX],
 			  int *out_count)
@@ -185,11 +171,9 @@ static int effective_caps(struct dynamic_tool *dt,
 	profile = active_profile(dt->cfg);
 	if (!profile)
 		return -EINVAL;
-	for (int i = 0; i < dt->capabilities_count &&
+	for (int i = 0; i < profile->default_capabilities_count &&
 	     count < DYNAMIC_TOOL_CAP_MAX; i++) {
-		if (!cap_in_profile(profile, dt->capabilities[i]))
-			continue;
-		strncpy(out[count], dt->capabilities[i],
+		strncpy(out[count], profile->default_capabilities[i],
 			DYNAMIC_TOOL_CAP_LEN_MAX - 1);
 		count++;
 	}
@@ -549,34 +533,6 @@ static int register_dynamic_tool(struct tool_registry *reg,
 	return 0;
 }
 
-static int parse_caps(cJSON *arr, struct dynamic_tool *dt,
-		      const struct config_dynamic_tool_profile *profile)
-{
-	if (!dt || !profile)
-		return -EINVAL;
-	dt->capabilities_count = 0;
-	if (cJSON_IsArray(arr)) {
-		cJSON *item;
-		cJSON_ArrayForEach(item, arr) {
-			if (!cJSON_IsString(item) || !item->valuestring)
-				continue;
-			if (dt->capabilities_count >= DYNAMIC_TOOL_CAP_MAX)
-				break;
-			strncpy(dt->capabilities[dt->capabilities_count],
-				item->valuestring, DYNAMIC_TOOL_CAP_LEN_MAX - 1);
-			dt->capabilities_count++;
-		}
-		return 0;
-	}
-	for (int i = 0; i < profile->default_capabilities_count &&
-	     i < DYNAMIC_TOOL_CAP_MAX; i++) {
-		strncpy(dt->capabilities[i], profile->default_capabilities[i],
-			DYNAMIC_TOOL_CAP_LEN_MAX - 1);
-		dt->capabilities_count++;
-	}
-	return 0;
-}
-
 static char *schema_to_string(cJSON *item)
 {
 	if (!item)
@@ -648,8 +604,8 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 	if (!root || !cJSON_IsObject(root)) {
 		return morph_buf_puts(err,
 			"tool_create arguments must be a JSON object with "
-			"name, source_js, optional description, args_schema, "
-			"and capabilities.\n");
+			"name, source_js, optional description, and "
+			"args_schema.\n");
 	}
 	rc = 0;
 	if (!cJSON_IsString(name_item) || !name_item->valuestring) {
@@ -727,7 +683,6 @@ static int tool_create_fail(struct tool_result *result, const char *stage,
 static int write_tool_files(struct dynamic_tool *dt, const char *source)
 {
 	cJSON *meta = NULL;
-	cJSON *caps = NULL;
 	char *meta_json = NULL;
 	char meta_path[PATH_MAX];
 	int rc;
@@ -748,14 +703,6 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 	cJSON_AddStringToObject(meta, "name", dt->name);
 	cJSON_AddStringToObject(meta, "description", dt->description);
 	cJSON_AddStringToObject(meta, "args_schema", dt->args_schema);
-	caps = cJSON_AddArrayToObject(meta, "capabilities");
-	if (!caps) {
-		cJSON_Delete(meta);
-		return -ENOMEM;
-	}
-	for (int i = 0; i < dt->capabilities_count; i++)
-		cJSON_AddItemToArray(caps,
-				     cJSON_CreateString(dt->capabilities[i]));
 	meta_json = cJSON_PrintUnformatted(meta);
 	cJSON_Delete(meta);
 	if (!meta_json)
@@ -931,8 +878,6 @@ static int load_tool_from_dir(struct tool_registry *reg,
 	strncpy(dt->dir, dir, sizeof(dt->dir) - 1);
 	dt->cfg = cfg;
 	dt->tctx = tctx;
-	parse_caps(cJSON_GetObjectItem(meta, "capabilities"), dt,
-		   active_profile(cfg));
 	cJSON_Delete(meta);
 	if (tool_lookup(reg, dt->name) &&
 	    !(tool_lookup(reg, dt->name)->flags & TOOL_FLAG_DYNAMIC)) {
@@ -1130,11 +1075,6 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		stage = "build_source_path";
 		rc = file_path_join(dt->source_path, sizeof(dt->source_path),
 				    dt->dir, DYN_TOOL_SOURCE_FILE);
-	}
-	if (rc == 0) {
-		stage = "parse_capabilities";
-		rc = parse_caps(cJSON_GetObjectItem(root, "capabilities"), dt,
-				active_profile(ctx->cfg));
 	}
 	if (rc == 0) {
 		stage = "write_tool_files";
@@ -1355,11 +1295,11 @@ static const char *TOOL_CREATE_DESCRIPTION =
 	"Example wasm: const mod = await WebAssembly.instantiate(bytes, {}); "
 	"const n = mod.instance.exports.add(1, 2). Available host APIs: "
 	"morph.fs.readText(path), morph.fs.writeText(path, text), "
-	"morph.env.get(name), morph.exec(command), morph.fetch(url). Request "
-	"capabilities when using host APIs: fs_read, fs_write, env, "
-	"shell/process, network, image, wasm. If a dynamic tool with the same "
-	"name already exists, tool_create updates it; non-dynamic tools cannot "
-	"be overwritten.";
+	"morph.env.get(name), morph.exec(command), morph.fetch(url). Host API "
+	"capabilities are controlled by the active dynamic_tools profile, not "
+	"by tool_create arguments. If a dynamic tool with the same name already "
+	"exists, tool_create updates it; non-dynamic tools cannot be "
+	"overwritten.";
 
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg,
@@ -1381,7 +1321,7 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
 		 session_id && *session_id ? session_id : "default");
 	rc = tool_register(reg, "tool_create", TOOL_CREATE_DESCRIPTION,
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"},\"capabilities\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Optional host capabilities: fs_read, fs_write, network, process, env, mcp, model, shell, image, wasm.\"}},\"required\":[\"name\",\"source_js\"]}",
+			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"}},\"required\":[\"name\",\"source_js\"]}",
 			   tool_create_exec, ctx, dynamic_tools_context_destroy);
 	if (rc < 0) {
 		free(ctx);
