@@ -366,25 +366,31 @@ function appendThought(text) {
 function closeThought() { thoughtEl = null; }
 
 /* ---- tool call ---- */
-function addTool(name, args) {
+function toolDomId(id) {
+  return id ? String(id) : '';
+}
+function addTool(name, args, id) {
   closeThought();
   var argsStr = typeof args === 'object' ? JSON.stringify(args) : String(args);
   var preview = argsStr.length > 60 ? argsStr.slice(0, 60) + '\u2026' : argsStr;
   var el = addMsg('msg-tool', '<div class="hd"><span class="arrow">\u25b8</span><span class="name">' + esc(name) + '</span><span class="args-preview">' + esc(preview) + '</span></div><div class="bd"><pre class="args">' + esc(argsStr) + '</pre></div>');
+  el.dataset.toolCallId = toolDomId(id);
   el.querySelector('.hd').addEventListener('click', function() { el.classList.toggle('expanded'); });
   return el;
 }
-function appendResult(name, result) {
+function appendToolData(name, id, className, label, value) {
   var els = chat.querySelectorAll('.msg-tool');
+  var wanted = toolDomId(id);
   for (var i = els.length - 1; i >= 0; i--) {
     var n = els[i].querySelector('.name');
-    if (n && n.textContent === name) {
+    var idOk = wanted ? els[i].dataset.toolCallId === wanted : true;
+    if (idOk && n && n.textContent === name) {
       var bd = els[i].querySelector('.bd');
       if (bd) {
-        var rl = bd.querySelector('.result-label');
-        if (!rl) { rl = document.createElement('div'); rl.className = 'result-label'; rl.textContent = 'Result:'; bd.appendChild(rl); }
-        var pre = document.createElement('pre'); pre.className = 'result';
-        var txt = typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
+        var rl = bd.querySelector('.' + className + '-label');
+        if (!rl) { rl = document.createElement('div'); rl.className = 'result-label ' + className + '-label'; rl.textContent = label; bd.appendChild(rl); }
+        var pre = document.createElement('pre'); pre.className = className;
+        var txt = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
         pre.textContent = txt;
         bd.appendChild(pre);
       }
@@ -392,6 +398,12 @@ function appendResult(name, result) {
     }
   }
   scrollDown();
+}
+function appendResult(name, result, id) {
+  appendToolData(name, id, 'result', 'Result:', result);
+}
+function appendToolStream(name, text, id) {
+  appendToolData(name, id, 'stream', 'Output:', text);
 }
 
 /* ---- artifact ---- */
@@ -593,10 +605,13 @@ function dispatchSSE(eventType, data) {
     if (p.text) appendThought(p.text);
     break;
   case 'tool_call':
-    addTool(p.tool || '?', p.args || {});
+    addTool(p.tool || '?', p.args || {}, p.tool_call_id);
+    break;
+  case 'tool_stream':
+    appendToolStream(p.tool || '?', p.text || '', p.tool_call_id);
     break;
   case 'tool_result':
-    appendResult(p.tool || '?', p.result);
+    appendResult(p.tool || '?', p.result, p.tool_call_id);
     break;
   case 'reflection':
     closeThought();

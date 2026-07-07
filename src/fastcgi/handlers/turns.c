@@ -71,6 +71,7 @@ struct turn_job {
 	char  turn_id[64];
 	char *input;
 	char  last_tool[128];
+	char  last_tool_call_id[128];
 	struct turn_artifact {
 		char path[PATH_MAX];
 		char id[64];
@@ -549,17 +550,23 @@ static int bridge_cb(const struct react_output_event *event, void *u)
 			return 0;
 		snprintf(j->last_tool, sizeof(j->last_tool), "%s",
 			 event->tool_name);
+		snprintf(j->last_tool_call_id, sizeof(j->last_tool_call_id),
+			 "%s", event->tool_call_id ? event->tool_call_id : "");
 		event_sink_tool_call_turn(j->store, j->session_id,
 					  j->turn_id, event->tool_name,
 					  event->tool_args ?
-					  event->tool_args : "{}");
+					  event->tool_args : "{}",
+					  event->tool_call_id);
 		return 0;
 
 	case REACT_STEP_OBSERVATION:
 		event_sink_tool_result_turn(j->store, j->session_id,
 					    j->turn_id, j->last_tool,
-					    text);
+					    text, event->tool_call_id ?
+					    event->tool_call_id :
+					    j->last_tool_call_id);
 		j->last_tool[0] = '\0';
+		j->last_tool_call_id[0] = '\0';
 		return 0;
 
 	case REACT_STEP_REFLECTION:
@@ -670,14 +677,21 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	if (strcmp(ev->name, "tool.call") == 0) {
 		char *tool = event_data_string(data, "tool");
 		char *args = event_data_string(data, "args");
+		char *tool_call_id = event_data_string(data, "tool_call_id");
 		event_sink_tool_call_turn(j->store, j->session_id,
 					  turn_id, tool ? tool : "",
-					  args ? args : "{}");
-		if (tool)
+					  args ? args : "{}",
+					  tool_call_id);
+		if (tool) {
 			snprintf(j->last_tool, sizeof(j->last_tool),
 				 "%s", tool);
+			snprintf(j->last_tool_call_id,
+				 sizeof(j->last_tool_call_id), "%s",
+				 tool_call_id ? tool_call_id : "");
+		}
 		free(tool);
 		free(args);
+		free(tool_call_id);
 		return 0;
 	}
 
@@ -685,12 +699,17 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	    strcmp(ev->name, "tool.failed") == 0) {
 		char *tool = event_data_string(data, "tool");
 		char *result = event_data_string(data, "result");
+		char *tool_call_id = event_data_string(data, "tool_call_id");
 		event_sink_tool_result_turn(j->store, j->session_id,
 					    turn_id, tool ? tool : j->last_tool,
-					    result ? result : "");
+					    result ? result : "",
+					    tool_call_id ? tool_call_id :
+					    j->last_tool_call_id);
 		j->last_tool[0] = '\0';
+		j->last_tool_call_id[0] = '\0';
 		free(tool);
 		free(result);
+		free(tool_call_id);
 		return 0;
 	}
 
@@ -698,13 +717,17 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 		char *tool = event_data_string(data, "tool");
 		char *kind = event_data_string(data, "kind");
 		char *text = event_data_string(data, "text");
+		char *tool_call_id = event_data_string(data, "tool_call_id");
 		event_sink_tool_stream_turn(j->store, j->session_id, turn_id,
 					    tool ? tool : j->last_tool,
 					    kind ? kind : "text",
-					    text ? text : "");
+					    text ? text : "",
+					    tool_call_id ? tool_call_id :
+					    j->last_tool_call_id);
 		free(tool);
 		free(kind);
 		free(text);
+		free(tool_call_id);
 		return 0;
 	}
 

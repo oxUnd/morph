@@ -19,6 +19,12 @@ static void add_turn_id(cJSON *o, const char *turn_id)
 		cJSON_AddStringToObject(o, "turn_id", turn_id);
 }
 
+static void add_tool_call_id(cJSON *o, const char *tool_call_id)
+{
+	if (tool_call_id && *tool_call_id)
+		cJSON_AddStringToObject(o, "tool_call_id", tool_call_id);
+}
+
 void event_sink_thought(struct session_store *s, const char *sid, const char *text)
 {
 	event_sink_thought_turn(s, sid, NULL, text);
@@ -49,15 +55,17 @@ void event_sink_reasoning_turn(struct session_store *s, const char *sid,
 
 void event_sink_tool_call(struct session_store *s, const char *sid,
 			  const char *tool, const char *args_json) {
-	event_sink_tool_call_turn(s, sid, NULL, tool, args_json);
+	event_sink_tool_call_turn(s, sid, NULL, tool, args_json, NULL);
 }
 
 void event_sink_tool_call_turn(struct session_store *s, const char *sid,
 			       const char *turn_id, const char *tool,
-			       const char *args_json)
+			       const char *args_json,
+			       const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
+	add_tool_call_id(o, tool_call_id);
 	cJSON_AddStringToObject(o, "tool", tool ? tool : "");
 	cJSON *args = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!args) args = cJSON_CreateObject();
@@ -67,15 +75,17 @@ void event_sink_tool_call_turn(struct session_store *s, const char *sid,
 
 void event_sink_tool_result(struct session_store *s, const char *sid,
 			    const char *tool, const char *result_json) {
-	event_sink_tool_result_turn(s, sid, NULL, tool, result_json);
+	event_sink_tool_result_turn(s, sid, NULL, tool, result_json, NULL);
 }
 
 void event_sink_tool_result_turn(struct session_store *s, const char *sid,
 				 const char *turn_id, const char *tool,
-				 const char *result_json)
+				 const char *result_json,
+				 const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
+	add_tool_call_id(o, tool_call_id);
 	cJSON_AddStringToObject(o, "tool", tool ? tool : "");
 	cJSON *res = result_json ? cJSON_Parse(result_json) : NULL;
 	if (!res) {
@@ -88,10 +98,12 @@ void event_sink_tool_result_turn(struct session_store *s, const char *sid,
 
 void event_sink_tool_stream_turn(struct session_store *s, const char *sid,
 				 const char *turn_id, const char *tool,
-				 const char *kind, const char *text)
+				 const char *kind, const char *text,
+				 const char *tool_call_id)
 {
 	cJSON *o = cJSON_CreateObject();
 	add_turn_id(o, turn_id);
+	add_tool_call_id(o, tool_call_id);
 	cJSON_AddStringToObject(o, "tool", tool ? tool : "");
 	cJSON_AddStringToObject(o, "kind", kind ? kind : "text");
 	cJSON_AddStringToObject(o, "text", text ? text : "");
