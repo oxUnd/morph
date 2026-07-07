@@ -27,6 +27,7 @@ struct tool_runtime_context {
 	morph_event_cb event_cb;
 	void *event_user_data;
 	const char *turn_id;
+	const char *tool_call_id;
 };
 
 struct tool_runtime_stream_sink {

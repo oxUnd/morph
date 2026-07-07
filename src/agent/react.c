@@ -533,7 +533,7 @@ static int react_tool_call_begin(struct react_context *ctx,
 	return react_emit_tool_event(ctx, "tool.call", "begin",
 				     "calling tool", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
-				     tc->id, NULL, 0);
+				     tc->tool_call_id, NULL, 0);
 }
 
 static int react_tool_call_running(struct react_context *ctx,
@@ -544,7 +544,7 @@ static int react_tool_call_running(struct react_context *ctx,
 	return react_emit_tool_event(ctx, "tool.running", "begin",
 				     "tool running", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
-				     tc->id, NULL, 0);
+				     tc->tool_call_id, NULL, 0);
 }
 
 static int react_tool_call_thread_failed(struct react_context *ctx,
@@ -555,7 +555,7 @@ static int react_tool_call_thread_failed(struct react_context *ctx,
 	return react_emit_tool_event(ctx, "tool.failed", "failed",
 				     "tool thread failed", tc->name,
 				     tc->arguments ? tc->arguments : "{}",
-				     tc->id, NULL, rc);
+				     tc->tool_call_id, NULL, rc);
 }
 
 static int react_emit_artifact_event(struct react_context *ctx,
@@ -648,6 +648,7 @@ struct async_tool_call {
 	char *tool_name;
 	char *tool_args;
 	char *tool_call_id;
+	char *provider_tool_call_id;
 	char *result;
 	cJSON *data;
 	cJSON *ui;
@@ -678,6 +679,7 @@ async_tool_call_create(struct tool_registry *tools,
 		       const char *tool_name,
 		       const char *tool_args,
 		       const char *tool_call_id,
+		       const char *provider_tool_call_id,
 		       react_output_cb output_cb,
 		       void *output_user_data)
 {
@@ -691,14 +693,18 @@ async_tool_call_create(struct tool_registry *tools,
 	call->tool_name = strdup(tool_name ? tool_name : "");
 	call->tool_args = strdup(tool_args ? tool_args : "{}");
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
+	call->provider_tool_call_id = strdup(provider_tool_call_id ?
+					     provider_tool_call_id : "");
 	call->output_cb = output_cb;
 	call->output_user_data = output_user_data;
 	call->usage_user_data = model_get_usage_user_data();
 	morph_cancel_token_reset(&call->cancel_token);
-	if (!call->tool_name || !call->tool_args || !call->tool_call_id) {
+	if (!call->tool_name || !call->tool_args || !call->tool_call_id ||
+	    !call->provider_tool_call_id) {
 		free(call->tool_name);
 		free(call->tool_args);
 		free(call->tool_call_id);
+		free(call->provider_tool_call_id);
 		pthread_cond_destroy(&call->cond);
 		pthread_mutex_destroy(&call->mutex);
 		free(call);
@@ -716,6 +722,7 @@ static void async_tool_call_destroy(struct async_tool_call *call)
 	free(call->tool_name);
 	free(call->tool_args);
 	free(call->tool_call_id);
+	free(call->provider_tool_call_id);
 	free(call->result);
 	cJSON_Delete(call->data);
 	cJSON_Delete(call->ui);
@@ -847,6 +854,7 @@ static void *async_tool_exec(void *arg)
 		runtime.event_user_data = call->react->event_user_data;
 		runtime.turn_id = call->react->turn_id[0]
 			? call->react->turn_id : NULL;
+		runtime.tool_call_id = call->tool_call_id;
 		tool_runtime_set_current(&runtime);
 		rc = tool_exec(call->tools, call->tool_name,
 			       call->tool_args, &res);
@@ -1388,6 +1396,29 @@ static int react_append_tool_message(morph_array_t *messages,
 	return 0;
 }
 
+static int react_prepare_tool_call_ids(struct chat_response *response)
+{
+	if (!response)
+		return -EINVAL;
+	for (int i = 0; i < response->tool_call_count; i++) {
+		struct tool_call *tc = &response->tool_calls[i];
+		int rc;
+
+		if (!tc->id[0]) {
+			rc = morph_random_id("pc_", tc->id, sizeof(tc->id));
+			if (rc < 0)
+				return rc;
+		}
+		if (!tc->tool_call_id[0]) {
+			rc = morph_random_id("tc_", tc->tool_call_id,
+					     sizeof(tc->tool_call_id));
+			if (rc < 0)
+				return rc;
+		}
+	}
+	return 0;
+}
+
 /*
  * Check HITL approval for each tool call in a response.
  *
@@ -1420,20 +1451,22 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 			continue;
 		react_emit_hitl_event(ctx, "hitl.request", "begin",
 				      "approval requested", tool_name,
-				      tool_args, tc->id, NULL);
+				      tool_args, tc->tool_call_id, NULL);
 		enum hitl_verdict v = ctx->hitl.approval_cb(
 			tool_name, tool_args, ctx->hitl.approval_user_data);
 		if (v == HITL_ALWAYS) {
 			hitl_add_auto_approved(&ctx->hitl, tool_name);
 			react_emit_hitl_event(ctx, "hitl.always", "end",
 					      "approval persisted",
-					      tool_name, tool_args, tc->id,
+					      tool_name, tool_args,
+					      tc->tool_call_id,
 					      "always");
 		} else if (v == HITL_DENY) {
 			slots[i].hitl_denied = 1;
 			react_emit_hitl_event(ctx, "hitl.denied", "failed",
 					      "approval denied", tool_name,
-					      tool_args, tc->id, "denied");
+					      tool_args, tc->tool_call_id,
+					      "denied");
 			char deny_msg[512];
 			snprintf(deny_msg, sizeof(deny_msg),
 				 "tool error: '%s' execution denied by user",
@@ -1446,7 +1479,7 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 			struct react_step *action = react_step_create(
 				ctx->turn_arena, REACT_STEP_ACTION,
 				action_text ? action_text : "",
-				tool_name, tool_args, tc->id);
+				tool_name, tool_args, tc->tool_call_id);
 			add_step(ctx, action);
 			struct react_step *obs = react_step_create(
 				ctx->turn_arena, REACT_STEP_OBSERVATION,
@@ -1459,7 +1492,8 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 		} else {
 			react_emit_hitl_event(ctx, "hitl.approved", "end",
 					      "approval granted", tool_name,
-					      tool_args, tc->id, "approved");
+					      tool_args, tc->tool_call_id,
+					      "approved");
 		}
 	}
 }
@@ -1980,12 +2014,14 @@ static void react_start_tool_calls(struct react_context *ctx,
 				 tool_name, tool_args);
 		action = react_step_create(ctx->turn_arena, REACT_STEP_ACTION,
 					   action_text ? action_text : "",
-					   tool_name, tool_args, tc->id);
+					   tool_name, tool_args,
+					   tc->tool_call_id);
 		add_step(ctx, action);
 		react_output_emit(cb, user_data, REACT_STEP_ACTION,
 				  REACT_OUTPUT_STARTED,
 				  action_text ? action_text : "", tool_name,
-				  tool_args, tc->id, 0, NULL, NULL, NULL);
+				  tool_args, tc->tool_call_id, 0, NULL,
+				  NULL, NULL);
 		react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.action",
 				      "begin", "tool action",
 				      action_text ? action_text : "");
@@ -1993,6 +2029,7 @@ static void react_start_tool_calls(struct react_context *ctx,
 
 		slots[i].call = async_tool_call_create(ctx->tools, ctx,
 						       tool_name, tool_args,
+						       tc->tool_call_id,
 						       tc->id, cb, user_data);
 		if (!slots[i].call) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
@@ -2188,7 +2225,8 @@ static int react_record_tool_observation(struct react_context *ctx,
 				     artifacts, data, ui);
 
 	return react_append_tool_message(messages, obs_text,
-					 call->tool_call_id, ctx->turn_arena);
+					 call->provider_tool_call_id,
+					 ctx->turn_arena);
 }
 
 static int react_poll_cancel(struct react_context *ctx, int iteration);
@@ -2542,7 +2580,16 @@ int react_run(struct react_context *ctx, const char *user_input,
 			int num_tools = response.tool_call_count;
 			morph_array_t tool_slots;
 			struct react_tool_slot *slots;
+			int id_rc;
 
+			id_rc = react_prepare_tool_call_ids(&response);
+			if (id_rc < 0) {
+				chat_response_free(&response);
+				react_set_result(ctx,
+						  REACT_OUTCOME_INTERNAL_ERROR,
+						  id_rc, "internal_error");
+				break;
+			}
 			if (react_append_assistant_tool_call_message(
 				ctx, &messages, &response) < 0) {
 				chat_response_free(&response);

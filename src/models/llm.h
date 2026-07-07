@@ -24,6 +24,7 @@ struct tool_desc;
 
 struct tool_call {
 	char id[128];
+	char tool_call_id[128];
 	char name[64];
 	char *arguments;
 };

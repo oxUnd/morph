@@ -506,6 +506,10 @@ static struct model *create_multi_mock_llm(const char **responses, int count)
 struct slot_mock_data {
 	int call_count;
 	int last_msg_count;
+	int duplicate_provider_ids;
+	int empty_provider_ids;
+	char assistant_tool_call_ids[2][128];
+	char tool_message_ids[2][128];
 };
 
 static int slot_mock_chat(struct model *self, struct arena *arena,
@@ -537,7 +541,6 @@ static int slot_mock_chat_with_tools(struct model *self, struct arena *arena,
 
 	(void)arena;
 	(void)system_prompt;
-	(void)messages;
 	(void)tools;
 	(void)tool_count;
 	memset(response, 0, sizeof(*response));
@@ -552,17 +555,43 @@ static int slot_mock_chat_with_tools(struct model *self, struct arena *arena,
 			2, sizeof(*response->tool_calls));
 		if (!response->tool_calls)
 			return -ENOMEM;
-		snprintf(response->tool_calls[0].id,
-			 sizeof(response->tool_calls[0].id), "slot_call_0");
+		if (!d->empty_provider_ids) {
+			snprintf(response->tool_calls[0].id,
+				 sizeof(response->tool_calls[0].id), "%s",
+				 d->duplicate_provider_ids ?
+				 "slot_call_dup" : "slot_call_0");
+		}
 		strncpy(response->tool_calls[0].name, "slot_a",
 			sizeof(response->tool_calls[0].name) - 1);
 		response->tool_calls[0].arguments = strdup("{\"n\":1}");
-		snprintf(response->tool_calls[1].id,
-			 sizeof(response->tool_calls[1].id), "slot_call_1");
+		if (!d->empty_provider_ids) {
+			snprintf(response->tool_calls[1].id,
+				 sizeof(response->tool_calls[1].id), "%s",
+				 d->duplicate_provider_ids ?
+				 "slot_call_dup" : "slot_call_1");
+		}
 		strncpy(response->tool_calls[1].name, "slot_b",
 			sizeof(response->tool_calls[1].name) - 1);
 		response->tool_calls[1].arguments = strdup("{\"n\":2}");
 		return 200;
+	}
+	for (int i = 0; i < msg_count; i++) {
+		if (messages[i].tool_calls && messages[i].tool_call_count >= 2) {
+			snprintf(d->assistant_tool_call_ids[0],
+				 sizeof(d->assistant_tool_call_ids[0]), "%s",
+				 messages[i].tool_calls[0].id);
+			snprintf(d->assistant_tool_call_ids[1],
+				 sizeof(d->assistant_tool_call_ids[1]), "%s",
+				 messages[i].tool_calls[1].id);
+		}
+		if (messages[i].tool_call_id) {
+			int out = d->tool_message_ids[0][0] ? 1 : 0;
+			if (out < 2) {
+				snprintf(d->tool_message_ids[out],
+					 sizeof(d->tool_message_ids[out]), "%s",
+					 messages[i].tool_call_id);
+			}
+		}
 	}
 	response->content = strdup("done with both tools");
 	if (thought_cb)
@@ -1215,6 +1244,34 @@ static std::string event_recorder_turn_id(struct morph_event_recorder *rec,
 	return "";
 }
 
+static std::string event_recorder_tool_call_id(
+	struct morph_event_recorder *rec, const char *name, int nth)
+{
+	int seen = 0;
+
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *tool_call_id = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "tool_call_id") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		std::string out = matched && seen == nth &&
+			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : "";
+		cJSON_Delete(root);
+		if (!matched)
+			continue;
+		if (seen == nth)
+			return out;
+		seen++;
+	}
+	return "";
+}
+
 static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 					      const char *turn_id)
 {
@@ -1302,6 +1359,15 @@ TEST_F(MockLlmTest, EmitsToolStreamEventsFromToolThread) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(event_recorder_count_name(&rec, "tool.stream.delta"), 2);
 	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
+	std::string tool_call_id =
+		event_recorder_tool_call_id(&rec, "tool.call", 0);
+	ASSERT_FALSE(tool_call_id.empty());
+	EXPECT_EQ(event_recorder_tool_call_id(&rec, "tool.stream.delta", 0),
+		  tool_call_id);
+	EXPECT_EQ(event_recorder_tool_call_id(&rec, "tool.stream.delta", 1),
+		  tool_call_id);
+	EXPECT_EQ(event_recorder_tool_call_id(&rec, "tool.result", 0),
+		  tool_call_id);
 	std::string turn_id = event_recorder_turn_id(&rec, "react.turn.begin");
 	ASSERT_FALSE(turn_id.empty());
 	EXPECT_TRUE(event_recorder_all_turn_ids_match(&rec, turn_id.c_str()));
@@ -1447,10 +1513,112 @@ TEST_F(MockLlmTest, MultipleToolCallsUseSlotArray) {
 	EXPECT_EQ(slot_data->call_count, 2);
 	EXPECT_EQ(event_recorder_count_name(&rec, "tool.result"), 2);
 	EXPECT_EQ(event_recorder_count_name(&rec, "tool.running"), 2);
+	{
+		std::string id0 = event_recorder_tool_call_id(&rec, "tool.call", 0);
+		std::string id1 = event_recorder_tool_call_id(&rec, "tool.call", 1);
+		ASSERT_FALSE(id0.empty());
+		ASSERT_FALSE(id1.empty());
+		EXPECT_NE(id0, id1);
+		EXPECT_EQ(id0.rfind("tc_", 0), 0u);
+		EXPECT_EQ(id1.rfind("tc_", 0), 0u);
+	}
+	EXPECT_STREQ(slot_data->assistant_tool_call_ids[0], "slot_call_0");
+	EXPECT_STREQ(slot_data->assistant_tool_call_ids[1], "slot_call_1");
+	EXPECT_STREQ(slot_data->tool_message_ids[0], "slot_call_0");
+	EXPECT_STREQ(slot_data->tool_message_ids[1], "slot_call_1");
 	EXPECT_LT(event_recorder_nth_index_name(&rec, "tool.call", 1),
 		  event_recorder_nth_index_name(&rec, "tool.running", 0));
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_NE(strstr(ctx->final_answer, "both tools"), nullptr);
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, LocalToolCallIdsSurviveDuplicateProviderIds) {
+	int slot_a_count = 0;
+	int slot_b_count = 0;
+	struct slot_mock_data *slot_data = nullptr;
+
+	tool_register(&tools, "slot_a", "Slot A", "{}",
+		      call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register(&tools, "slot_b", "Slot B", "{}",
+		      call_count_tool_fn, &slot_b_count, nullptr);
+	llm = create_slot_mock_llm(&slot_data);
+	ASSERT_NE(llm, nullptr);
+	ASSERT_NE(slot_data, nullptr);
+	slot_data->duplicate_provider_ids = 1;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "run both", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	std::string id0 = event_recorder_tool_call_id(&rec, "tool.call", 0);
+	std::string id1 = event_recorder_tool_call_id(&rec, "tool.call", 1);
+	ASSERT_FALSE(id0.empty());
+	ASSERT_FALSE(id1.empty());
+	EXPECT_NE(id0, id1);
+	EXPECT_EQ(id0.rfind("tc_", 0), 0u);
+	EXPECT_EQ(id1.rfind("tc_", 0), 0u);
+	EXPECT_STREQ(slot_data->assistant_tool_call_ids[0], "slot_call_dup");
+	EXPECT_STREQ(slot_data->assistant_tool_call_ids[1], "slot_call_dup");
+	EXPECT_STREQ(slot_data->tool_message_ids[0], "slot_call_dup");
+	EXPECT_STREQ(slot_data->tool_message_ids[1], "slot_call_dup");
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, MissingProviderIdsGetProtocolFallbacks) {
+	int slot_a_count = 0;
+	int slot_b_count = 0;
+	struct slot_mock_data *slot_data = nullptr;
+
+	tool_register(&tools, "slot_a", "Slot A", "{}",
+		      call_count_tool_fn, &slot_a_count, nullptr);
+	tool_register(&tools, "slot_b", "Slot B", "{}",
+		      call_count_tool_fn, &slot_b_count, nullptr);
+	llm = create_slot_mock_llm(&slot_data);
+	ASSERT_NE(llm, nullptr);
+	ASSERT_NE(slot_data, nullptr);
+	slot_data->empty_provider_ids = 1;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
+					      &rec));
+
+	int rc = react_run(ctx, "run both", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	std::string local0 = event_recorder_tool_call_id(&rec, "tool.call", 0);
+	std::string local1 = event_recorder_tool_call_id(&rec, "tool.call", 1);
+	ASSERT_FALSE(local0.empty());
+	ASSERT_FALSE(local1.empty());
+	EXPECT_NE(local0, local1);
+	EXPECT_EQ(local0.rfind("tc_", 0), 0u);
+	EXPECT_EQ(local1.rfind("tc_", 0), 0u);
+	std::string provider0 = slot_data->assistant_tool_call_ids[0];
+	std::string provider1 = slot_data->assistant_tool_call_ids[1];
+	ASSERT_FALSE(provider0.empty());
+	ASSERT_FALSE(provider1.empty());
+	EXPECT_NE(provider0, provider1);
+	EXPECT_EQ(provider0.rfind("pc_", 0), 0u);
+	EXPECT_EQ(provider1.rfind("pc_", 0), 0u);
+	EXPECT_EQ(provider0, slot_data->tool_message_ids[0]);
+	EXPECT_EQ(provider1, slot_data->tool_message_ids[1]);
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);

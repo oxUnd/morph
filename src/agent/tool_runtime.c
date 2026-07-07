@@ -38,6 +38,8 @@ int tool_runtime_emit_stream(const char *tool, const char *kind,
 	if (!data)
 		return -ENOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
+	cJSON_AddStringToObject(data, "tool_call_id",
+				ctx->tool_call_id ? ctx->tool_call_id : "");
 	cJSON_AddStringToObject(data, "kind", kind ? kind : "text");
 	cJSON_AddStringToObject(data, "text", text);
 
