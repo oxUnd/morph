@@ -222,7 +222,7 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		return -ENOMEM;
 	ctx->llm = llm;
 	ctx->tctx = tctx;
-	int rc = tool_register(reg, "img_qa",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_qa",
 		"Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
 		"visual comparison, and content analysis. Before upload, the "

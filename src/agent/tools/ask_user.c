@@ -211,7 +211,7 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 	ctx->cb = cb;
 	ctx->user_data = user_data;
 
-	int rc = tool_register(reg, "ask_user",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "ask_user",
 		"Ask the user a question and wait for their response. "
 		"Use when: the request is ambiguous with multiple valid "
 		"interpretations; you need a decision between mutually "

@@ -195,7 +195,7 @@ int img_convert_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, "img_convert",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_convert",
 		"Convert an image to another format (png/jpg/bmp/tga). "
 		"Provide file_path, format, optional output_path and quality (jpg only).",
 		"{\"type\":\"object\",\"properties\":"

@@ -285,7 +285,7 @@ TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
 
 TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
 {
-	ASSERT_EQ(tool_register(&reg, "static_tool", "static", "{}",
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &reg, "static_tool", "static", "{}",
 				static_tool_exec, nullptr, nullptr), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
@@ -436,6 +436,198 @@ TEST_F(DynamicToolsTest, PromoteLoadsInNewRegistry)
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg2);
 	tool_context_destroy(tctx2);
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteRemovesSessionTool)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function run(args) { return { value: 1 }; }";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("delete_session", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	struct tool_entry *entry = tool_lookup(&reg, "delete_session");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_SESSION);
+	std::string dir = root + "/session/sess/delete_session";
+	ASSERT_TRUE(file_exists(dir.c_str()));
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"delete_session\"}", &result), 0);
+	tool_result_cleanup(&result);
+	EXPECT_EQ(tool_lookup(&reg, "delete_session"), nullptr);
+	EXPECT_FALSE(file_exists(dir.c_str()));
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function run(args) { return { value: 2 }; }";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("delete_persistent", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_promote",
+			    "{\"name\":\"delete_persistent\"}", &result), 0);
+	tool_result_cleanup(&result);
+	struct tool_entry *entry = tool_lookup(&reg, "delete_persistent");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
+	std::string dir = root + "/persistent/delete_persistent";
+	ASSERT_TRUE(file_exists(dir.c_str()));
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"delete_persistent\"}", &result), 0);
+	tool_result_cleanup(&result);
+	EXPECT_EQ(tool_lookup(&reg, "delete_persistent"), nullptr);
+	EXPECT_FALSE(file_exists(dir.c_str()));
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
+{
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &reg, "static_tool",
+				"static", "{}", static_tool_exec, nullptr,
+				nullptr), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"static_tool\"}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("only delete dynamic"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_NE(tool_lookup(&reg, "static_tool"), nullptr);
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
+{
+	std::string dir = root + "/persistent/shadowed_tool";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	const char *meta_json =
+		"{\"name\":\"shadowed_tool\","
+		"\"description\":\"persistent shadowed tool\","
+		"\"args_schema\":{\"type\":\"object\"}}";
+	const char *persistent_source =
+		"function run(args) { return { value: 10 }; }";
+	std::string session_source =
+		"function run(args) { return { value: 20 }; }";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), persistent_source,
+				 strlen(persistent_source)), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
+		  0);
+	struct tool_entry *entry = tool_lookup(&reg, "shadowed_tool");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("shadowed_tool",
+					session_source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+	entry = tool_lookup(&reg, "shadowed_tool");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_SESSION);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"shadowed_tool\"}", &result), 0);
+	tool_result_cleanup(&result);
+	entry = tool_lookup(&reg, "shadowed_tool");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(entry->origin, TOOL_ORIGIN_DYNAMIC_PERSISTENT);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "shadowed_tool", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":10"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_FALSE(file_exists((root +
+		"/session/sess/shadowed_tool").c_str()));
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
+{
+	std::string dir = root + "/persistent/wrong_dir";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	const char *meta_json =
+		"{\"name\":\"mismatch_tool\","
+		"\"description\":\"mismatch\","
+		"\"args_schema\":{\"type\":\"object\"}}";
+	const char *source =
+		"function run(args) { return { ok: true }; }";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
+		  0);
+	ASSERT_NE(tool_lookup(&reg, "mismatch_tool"), nullptr);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"mismatch_tool\"}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_TRUE(file_exists(dir.c_str()));
+	EXPECT_NE(tool_lookup(&reg, "mismatch_tool"), nullptr);
+}
+
+TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
+{
+	std::string dir = root + "/session/sess/wrong_session_dir";
+	std::string meta = dir + "/tool.json";
+	std::string js = dir + "/tool.js";
+	const char *meta_json =
+		"{\"name\":\"session_mismatch\","
+		"\"description\":\"mismatch\","
+		"\"args_schema\":{\"type\":\"object\"}}";
+	const char *source =
+		"function run(args) { return { ok: true }; }";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(meta.c_str(), meta_json, strlen(meta_json)),
+		  0);
+	ASSERT_EQ(file_write_all(js.c_str(), source, strlen(source)), 0);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"),
+		  0);
+	ASSERT_NE(tool_lookup(&reg, "session_mismatch"), nullptr);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_delete",
+			    "{\"name\":\"session_mismatch\"}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	EXPECT_TRUE(file_exists(dir.c_str()));
+	EXPECT_NE(tool_lookup(&reg, "session_mismatch"), nullptr);
 }
 
 TEST_F(DynamicToolsTest, CanvasApiCreatesImage)

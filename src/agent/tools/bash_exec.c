@@ -426,7 +426,7 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	int rc = tool_register(reg, "bash_exec",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "bash_exec",
 		"Execute a shell command in a restricted sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "

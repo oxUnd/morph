@@ -162,7 +162,7 @@ int runtime_query_tools_init(struct tool_registry *reg)
 
 	if (!reg)
 		MORPH_RETURN(-EINVAL);
-	rc = tool_register(reg, "credits",
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "credits",
 			   "Query current credit usage, limits, and totals.",
 			   "{\"type\":\"object\",\"properties\":{},"
 			   "\"additionalProperties\":false}",
@@ -173,7 +173,7 @@ int runtime_query_tools_init(struct tool_registry *reg)
 	if (e)
 		e->flags |= TOOL_FLAG_READONLY;
 
-	rc = tool_register(reg, "memory",
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "memory",
 		"Query long-term memory by type and scope.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\",\"facts\",\"procedures\",\"episodes\",\"changes\"]},"

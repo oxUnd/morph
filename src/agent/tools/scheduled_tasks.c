@@ -446,7 +446,7 @@ int scheduled_tasks_tool_init_events(
 	ctx->time_anchor = (int64_t)time(NULL);
 	if (events)
 		ctx->events = *events;
-	rc = tool_register(reg, "tasks",
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tasks",
 		"Create and manage persistent scheduled tasks and the inbox. "
 		"Use next_run_at for absolute Unix seconds, or delay_seconds "
 		"for relative delays anchored at the current user turn start. "

@@ -834,7 +834,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		if (!schema || !schema[0])
 			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
 
-		rc = tool_register(reg, tool_name, tools[i].description,
+		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, tools[i].description,
 				   schema, mcp_tool_exec, binding,
 				   (tool_user_data_destroy_fn)free);
 		if (rc < 0) {
@@ -923,7 +923,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 		snprintf(desc_buf, sizeof(desc_buf), "Read MCP resource: %s (%s)",
 			 res[i].name, res[i].uri);
 
-		rc = tool_register(reg, tool_name, desc_buf,
+		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, desc_buf,
 				   "{\"type\":\"object\",\"additionalProperties\":false}",
 				   mcp_resource_exec, binding,
 				   (tool_user_data_destroy_fn)free);
@@ -1016,7 +1016,7 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		if (!schema || !schema[0])
 			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
 
-		rc = tool_register(reg, tool_name, prompts[i].description,
+		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, prompts[i].description,
 				   schema, mcp_prompt_exec, binding,
 				   (tool_user_data_destroy_fn)free);
 		if (rc < 0) {

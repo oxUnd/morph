@@ -480,13 +480,13 @@ TEST_F(SubAgentTest, FindNullName) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "file_read", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "delegate", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "delegate", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "agent_status", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "agent_status", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -509,11 +509,11 @@ TEST_F(SubAgentTest, BuildRegistryNoAllowedTools) {
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "file_read", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "file_read", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "bash_exec", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "bash_exec", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -537,9 +537,9 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 }
 
 TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
-	tool_register(&tools, "bash_exec", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "bash_exec", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -637,7 +637,7 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, InvokeSyncWithMockLlm) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -713,7 +713,7 @@ TEST_F(SubAgentTest, InvokeSyncLlmFailure) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, DelegateAndCheckStatus) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -781,7 +781,7 @@ TEST_F(SubAgentTest, CheckStatusInvalidId) {
 /* ====================================================== */
 
 TEST_F(SubAgentTest, FanoutRaw) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
@@ -806,7 +806,7 @@ TEST_F(SubAgentTest, FanoutRaw) {
 }
 
 TEST_F(SubAgentTest, FanoutConcat) {
-	tool_register(&tools, "test_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);

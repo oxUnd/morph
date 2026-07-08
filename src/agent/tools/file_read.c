@@ -218,7 +218,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 int file_read_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(reg, "file_read",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "file_read",
 		"Read a text file's content. Provide file_path, optional offset (line number, 0-indexed, to start from), and limit/max_lines (max lines to return, default 1000). Binary files return a short hex preview instead.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the text file to read\"},\"offset\":{\"type\":\"integer\",\"description\":\"Line number to start from (0-indexed)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return\"},\"max_lines\":{\"type\":\"integer\",\"description\":\"Max lines to return (alternative to limit)\"}},\"required\":[\"file_path\"]}",
 		file_read_exec, tctx, NULL);

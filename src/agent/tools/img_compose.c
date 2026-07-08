@@ -518,7 +518,7 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, "img_compose",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_compose",
 		"Composite/fuse objects across images following annotation "
 		"arrows. An arrow + label means \"blend the object at the arrow "
 		"source into the target location the arrow points to\". Pass the "

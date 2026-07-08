@@ -615,7 +615,7 @@ static int cli_init_exts(struct cli_context *ctx)
 				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
 				if (ex_ptr) {
 					memcpy(ex_ptr, &ex, sizeof(ex));
-					tool_register(&ctx->tools, ex.manifest.name,
+					tool_register(TOOL_ORIGIN_EXT, &ctx->tools, ex.manifest.name,
 						      ex.manifest.description,
 						      ex.manifest.args_schema ?
 						      ex.manifest.args_schema : "",

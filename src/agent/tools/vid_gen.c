@@ -199,7 +199,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 	ctx->video_llm = video_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, "vid_gen",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "vid_gen",
 		"Generate a video from a text prompt with optional reference images and/or reference videos. "
 		"IMPORTANT: Always pass ALL reference assets in a single call via the reference_images / reference_videos arrays. "
 		"Never call vid_gen multiple times for the same video. "

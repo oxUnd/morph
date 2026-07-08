@@ -47,7 +47,7 @@
   - `source_js`
 - 创建成功后立即注册到当前 `tool_registry`。
 - 保存到会话目录：`~/.morph/runtime/tools/<session_id>/<tool_name>/`。
-- 禁止覆盖已有工具名，包括内置工具、ext 工具、MCP 工具和已有动态工具。
+- 禁止覆盖内置工具、ext 工具和 MCP 工具；同名动态工具会被更新。
 - 会校验：
   - 工具名格式。
   - `args_schema` JSON。
@@ -60,6 +60,13 @@
 - 保存到：`~/.morph/tools/<tool_name>/`。
 - 后续启动 morph 时会自动加载持久动态工具。
 
+新增内置工具 `tool_delete`：
+
+- 删除当前 registry 中的动态工具。
+- session 动态工具会删除会话工具目录。
+- persistent 动态工具会删除持久工具目录。
+- 不允许删除内置工具、ext 工具和 MCP 工具。
+
 ### ReAct 集成
 
 - CLI 初始化时注册动态工具系统。
@@ -67,6 +74,7 @@
 - FastCGI/server 形态如果没有显式配置 `dynamic_tools.mode`，默认强制使用 `server`。
 - ReAct 每轮 LLM 调用前重新收集 active tools。
 - 因此 `tool_create` 刚创建的新工具能在同一次任务后续步骤中被模型直接调用。
+- 模型收到的工具描述带来源前缀，例如 `[system built-in]`、`[dynamic session]`、`[dynamic persistent]`、`[mcp]`、`[ext]`。
 
 ### Host API
 
@@ -284,6 +292,7 @@ allowed_network = []
 当前已有单元测试：
 
 - `tool_create` 创建 JS 工具后可立即调用。
+- `tool_delete` 可卸载 session / persistent 动态工具，并拒绝删除非动态工具。
 - server profile 默认拒绝文件读取能力。
 - `tool_promote` 后新 registry 能自动加载持久工具。
 - `morph.canvas` 可创建画布并写出图片。

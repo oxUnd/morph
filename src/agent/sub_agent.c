@@ -215,7 +215,7 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 				continue;
 			if (tool_is_disabled(rt->parent_tools, pe->desc.name))
 				continue;
-			tool_register(child, pe->desc.name, pe->desc.desc,
+			tool_register(pe->origin, child, pe->desc.name, pe->desc.desc,
 				      pe->desc.args_spec, pe->exec,
 				      pe->user_data, NULL);
 		}
@@ -226,7 +226,7 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 							   tname);
 			if (!pe)
 				continue;
-			tool_register(child, pe->desc.name, pe->desc.desc,
+			tool_register(pe->origin, child, pe->desc.name, pe->desc.desc,
 				      pe->desc.args_spec, pe->exec,
 				      pe->user_data, NULL);
 		}

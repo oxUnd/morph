@@ -815,7 +815,7 @@ TEST_F(ReactTest, StepDestroyNull) {
 }
 
 TEST_F(ReactTest, ToolRegistryIntegration) {
-	tool_register(&tools, "test_tool", "Generate text",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Generate text",
 		      "{\"type\":\"object\"}", test_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -866,7 +866,7 @@ TEST_F(ReactTest, RunWithCallback) {
 }
 
 TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
-	tool_register(&tools, "test_tool", "A test tool", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
 		      test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: use tool.\nAction: test_tool({\"prompt\":\"hi\"})\n",
@@ -917,7 +917,7 @@ TEST_F(ReactTest, MaxIterationsAbort) {
 }
 
 TEST_F(ReactTest, ToolFailThresholdThree) {
-	tool_register(&tools, "failing_tool", "Always fails",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "failing_tool", "Always fails",
 		      "{}", failing_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -954,7 +954,7 @@ TEST_F(MockLlmTest, LlmThoughtAndFinal) {
 }
 
 TEST_F(MockLlmTest, LlmActionToolCall) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: Using test tool.\nAction: test_tool({\"prompt\":\"hi\"})\n\nFinal: Done.");
 	struct react_context *ctx2 = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx2, nullptr);
@@ -986,7 +986,7 @@ TEST_F(MockLlmTest, LlmStreamingFinal) {
 
 TEST_F(MockLlmTest, LlmToolFailRetries) {
 	int call_count = 0;
-	tool_register(&tools, "fail_tool", "Fails every time", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
 		      failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: try fail_tool.\nAction: fail_tool({\"q\":\"test\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1001,7 +1001,7 @@ TEST_F(MockLlmTest, LlmToolFailRetries) {
 }
 
 TEST_F(MockLlmTest, LlmToolFailMaxRetries) {
-	tool_register(&tools, "fail_tool", "Fails every time", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails every time", "{}",
 		      failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: try again.\nAction: fail_tool({\"q\":\"test\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1027,7 +1027,7 @@ TEST_F(MockLlmTest, LlmCallCount) {
 }
 
 TEST_F(MockLlmTest, LlmMultiStepCallCount) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	setup_llm_with_response(
 		"Thought: Step 1.\nAction: test_tool({\"prompt\":\"hi\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1042,7 +1042,7 @@ TEST_F(MockLlmTest, LlmMultiStepCallCount) {
 /* ---- Multi-response termination tests ---- */
 
 TEST_F(MockLlmTest, ActionThenFinal) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Tool done.\nFinal: The answer is here."
@@ -1297,7 +1297,7 @@ static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 }
 
 TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using tool.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Tool done.\nFinal: The answer is here."
@@ -1337,7 +1337,7 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 }
 
 TEST_F(MockLlmTest, EmitsToolStreamEventsFromToolThread) {
-	tool_register(&tools, "stream_tool", "Streams from tool", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "stream_tool", "Streams from tool", "{}",
 		      streaming_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Using streaming tool.\nAction: stream_tool({})\n",
@@ -1425,7 +1425,7 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenLlmKeyMissing) {
 }
 
 TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
-	tool_register(&tools, "img_qa", "Needs key", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "img_qa", "Needs key", "{}",
 		      not_configured_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Need tool.\nAction: img_qa({})\n",
@@ -1455,7 +1455,7 @@ TEST_F(MockLlmTest, EmitsAuthRequiredWhenToolKeyMissing) {
 }
 
 TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
-	tool_register(&tools, "artifact_tool", "Returns artifact", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "artifact_tool", "Returns artifact", "{}",
 		      artifact_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Creating artifact.\nAction: artifact_tool({})\n",
@@ -1487,9 +1487,9 @@ TEST_F(MockLlmTest, MultipleToolCallsUseSlotArray) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(&tools, "slot_a", "Slot A", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
 		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(&tools, "slot_b", "Slot B", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
 		      call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
@@ -1540,9 +1540,9 @@ TEST_F(MockLlmTest, LocalToolCallIdsSurviveDuplicateProviderIds) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(&tools, "slot_a", "Slot A", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
 		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(&tools, "slot_b", "Slot B", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
 		      call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
@@ -1582,9 +1582,9 @@ TEST_F(MockLlmTest, MissingProviderIdsGetProtocolFallbacks) {
 	int slot_b_count = 0;
 	struct slot_mock_data *slot_data = nullptr;
 
-	tool_register(&tools, "slot_a", "Slot A", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "Slot A", "{}",
 		      call_count_tool_fn, &slot_a_count, nullptr);
-	tool_register(&tools, "slot_b", "Slot B", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Slot B", "{}",
 		      call_count_tool_fn, &slot_b_count, nullptr);
 	llm = create_slot_mock_llm(&slot_data);
 	ASSERT_NE(llm, nullptr);
@@ -1654,7 +1654,7 @@ TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 }
 
 TEST_F(MockLlmTest, ActionActionThenFinal) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
@@ -1674,7 +1674,7 @@ TEST_F(MockLlmTest, ActionActionThenFinal) {
 }
 
 TEST_F(MockLlmTest, ActionNeverFinal) {
-	tool_register(&tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Step 1.\nAction: test_tool({\"p\":\"1\"})\n",
 		"Thought: Step 2.\nAction: test_tool({\"p\":\"2\"})\n",
@@ -1697,7 +1697,7 @@ TEST_F(MockLlmTest, ActionNeverFinal) {
 }
 
 TEST_F(MockLlmTest, ToolFailThenFinal) {
-	tool_register(&tools, "fail_tool", "Fails always", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
 		      failing_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})\n",
@@ -1717,7 +1717,7 @@ TEST_F(MockLlmTest, ToolFailThenFinal) {
 }
 
 TEST_F(MockLlmTest, MaxIterationsDoesNotUseToolErrorAsFinal) {
-	tool_register(&tools, "fail_tool", "Fails always", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fail_tool", "Fails always", "{}",
 		      failing_tool_fn, nullptr, nullptr);
 	setup_llm_with_response("Thought: Try failing tool.\nAction: fail_tool({\"q\":\"x\"})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1866,7 +1866,7 @@ TEST_F(MockLlmTest, ModelTimeoutField) {
 
 TEST_F(MockLlmTest, ConfigurableMaxIterations) {
 	setup_llm_with_response("Thought: looping.\nAction: test_tool({})");
-	tool_register(&tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
@@ -1881,7 +1881,7 @@ TEST_F(MockLlmTest, ConfigurableMaxIterations) {
 
 TEST_F(MockLlmTest, ToolCallCount) {
 	int call_count = 0;
-	tool_register(&tools, "counter", "Counts calls", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts calls", "{}",
 		      call_count_tool_fn, &call_count, nullptr);
 	setup_llm_with_response("Thought: call counter.\nAction: counter({})");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -2349,7 +2349,9 @@ TEST_F(MockLlmTest, SystemPromptNoCrash) {
 struct capt_prompt_data {
 	char *prompt;
 	char *system_prompt;
+	char *tool_descs;
 	const char *resp;
+	int tool_count;
 };
 
 static void capt_store_structured_messages(struct capt_prompt_data *d,
@@ -2398,11 +2400,19 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	(void)arena;
 	(void)messages;
 	(void)msg_count;
-	(void)tools;
-	(void)tool_count;
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->system_prompt);
 	d->system_prompt = system_prompt ? strdup(system_prompt) : nullptr;
+	free(d->tool_descs);
+	d->tool_descs = nullptr;
+	d->tool_count = tool_count;
+	if (tools && tool_count > 0) {
+		std::ostringstream os;
+		for (int i = 0; i < tool_count; i++) {
+			os << tools[i].name << ":" << tools[i].desc << "\n";
+		}
+		d->tool_descs = strdup(os.str().c_str());
+	}
 	capt_store_structured_messages(d, messages, msg_count);
 
 	memset(response, 0, sizeof(*response));
@@ -2425,6 +2435,7 @@ static void capt_prompt_destroy(struct model *self)
 	struct capt_prompt_data *d = (struct capt_prompt_data *)self->handle;
 	free(d->prompt);
 	free(d->system_prompt);
+	free(d->tool_descs);
 	free(d);
 	free(self);
 }
@@ -2480,6 +2491,49 @@ TEST_F(MockLlmTest, SystemPromptRequiresMarkdownLinksForUrls) {
 			 "Format web URLs as Markdown links"), nullptr);
 	EXPECT_NE(strstr(cd->system_prompt,
 			 "do not leave bare http(s) URLs in final answers"),
+		  nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ToolDescriptionsIncludeOriginPrefixes) {
+	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "builtin_tool",
+				"builtin desc", "{}", test_tool_fn, nullptr,
+				nullptr), 0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_DYNAMIC_SESSION, &tools,
+				"session_tool", "session desc", "{}",
+				test_tool_fn, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_DYNAMIC_PERSISTENT, &tools,
+				"persistent_tool", "persistent desc", "{}",
+				test_tool_fn, nullptr, nullptr), 0);
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							 nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	react_run(ctx, "hello", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->tool_descs, nullptr);
+	EXPECT_NE(strstr(cd->tool_descs,
+			 "builtin_tool:[system built-in] builtin desc"),
+		  nullptr);
+	EXPECT_NE(strstr(cd->tool_descs,
+			 "session_tool:[dynamic session] session desc"),
+		  nullptr);
+	EXPECT_NE(strstr(cd->tool_descs,
+			 "persistent_tool:[dynamic persistent] persistent desc"),
 		  nullptr);
 	react_context_destroy(ctx);
 }
@@ -2727,7 +2781,7 @@ TEST_F(MockLlmTest, CompressPreservesAfterFlow) {
 /* ============================================= */
 
 TEST_F(MockLlmTest, ActionToolNotFound) {
-	tool_register(&tools, "good_tool", "Works", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "good_tool", "Works", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: try bad tool.\nAction: bad_tool({\"x\":1})\n",
 		"Thought: it failed.\nFinal: tool not available"
@@ -2746,7 +2800,7 @@ TEST_F(MockLlmTest, ActionToolNotFound) {
 }
 
 TEST_F(MockLlmTest, ActionInvalidFormat) {
-	tool_register(&tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "Test", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: bad format.\nAction: test_tool({\"x\")\n",
 		"Thought: adjusting.\nFinal: recovered"
@@ -2785,7 +2839,7 @@ static int null_result_tool_fn(const char *args_json, struct tool_result *result
 }
 
 TEST_F(MockLlmTest, ToolNullResult) {
-	tool_register(&tools, "null_tool", "Returns null result", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "null_tool", "Returns null result", "{}",
 		      null_result_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: calling null tool.\nAction: null_tool({})\n",
@@ -2885,7 +2939,7 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
-	tool_register(&tools, "self_cancel", "Cancels context", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "self_cancel", "Cancels context", "{}",
 		      self_cancel_tool_fn, ctx, nullptr);
 	ctx->max_iterations = 5;
 	int rc = react_run(ctx, "cancel me", nullptr, nullptr);
@@ -2910,7 +2964,7 @@ TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->max_iterations = 5;
-	tool_register(&tools, "slow_signal", "Slow tool", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slow_signal", "Slow tool", "{}",
 		      slow_signal_tool_fn, &state, nullptr);
 
 	std::thread interrupter([&state]() {
@@ -2953,7 +3007,7 @@ TEST_F(MockLlmTest, StepLinkedListTraversal) {
 		"Thought: step 2.\nFinal: done after two steps"
 	};
 	int call_count = 0;
-	tool_register(&tools, "counter", "Counts", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "counter", "Counts", "{}",
 		      call_count_tool_fn, &call_count, nullptr);
 	llm = create_multi_mock_llm(responses, 2);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -3221,7 +3275,7 @@ TEST_F(MockLlmTest, OutputGuardrailRetriesAndFinalizes) {
 }
 
 TEST_F(MockLlmTest, ToolOutputGuardrailRewritesObservation) {
-	tool_register(&tools, "test_tool", "A test tool", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
 		      test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
 		"Thought: use tool.\nAction: test_tool({})\n",
@@ -3299,7 +3353,7 @@ static enum hitl_verdict hitl_approve_all_callback(const char *tool_name,
 TEST(HitlTest, NeedsApprovalDisabled) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -3312,7 +3366,7 @@ TEST(HitlTest, NeedsApprovalDisabled) {
 TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -3327,8 +3381,8 @@ TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 TEST(HitlTest, NeedsApprovalSpecificTool) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -3344,8 +3398,8 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
 		      NULL);
 	struct tool_entry *e = tool_lookup(&reg, "bash_exec");
 	ASSERT_NE(e, nullptr);
@@ -3366,7 +3420,7 @@ TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 TEST(HitlTest, NeedsApprovalAutoApproved) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -3382,7 +3436,7 @@ TEST(HitlTest, NeedsApprovalAutoApproved) {
 TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_READONLY;
@@ -3400,7 +3454,7 @@ TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 TEST(HitlTest, NeedsApprovalReadonlyNoAutoApprove) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_READONLY;
@@ -3438,7 +3492,7 @@ TEST(HitlTest, ConfigDefaultsDisabled) {
 TEST(HitlTest, ToolIsReadonly) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 0);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
@@ -3450,8 +3504,8 @@ TEST(HitlTest, ToolIsReadonly) {
 TEST(HitlTest, DenyCallbackPreventsExecution) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
-	tool_register(&reg, "safe_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "safe_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -3483,7 +3537,7 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
 
 	tool_registry_init(&reg);
-	tool_register(&reg, "dangerous_tool", "desc", "{}",
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
 		      call_count_tool_fn, &dangerous_count, NULL);
 	ccfg.max_context_tokens = 128000;
 	ccfg.max_history_rounds = 6;
@@ -3526,7 +3580,7 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 TEST(HitlTest, AlwaysCallbackAutoApproves) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(&reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);

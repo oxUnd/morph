@@ -238,7 +238,7 @@ TEST_F(AskUserToolTest, MalformedJson) {
 TEST_F(AskUserToolTest, NoCallback) {
 	struct tool_registry reg2;
 	tool_registry_init(&reg2);
-	tool_register(&reg2, "ask_user",
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg2, "ask_user",
 		"Ask the user a question.",
 		"{\"type\":\"object\",\"properties\":{"
 		"\"question\":{\"type\":\"string\"}"

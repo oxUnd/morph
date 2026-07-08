@@ -10,10 +10,12 @@
 #include <limits.h>
 #include <signal.h>
 #include <stdint.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -39,6 +41,7 @@ struct dynamic_tool {
 	char dir[PATH_MAX];
 	const struct config_dynamic_tools *cfg;
 	struct tool_context *tctx;
+	enum tool_origin origin;
 };
 
 struct dynamic_tools_context {
@@ -52,6 +55,11 @@ static int dynamic_tools_load_session(struct tool_registry *reg,
 				      struct tool_context *tctx,
 				      const struct config_dynamic_tools *cfg,
 				      const char *session_id);
+static int load_tool_from_dir(struct tool_registry *reg,
+			      struct tool_context *tctx,
+			      const struct config_dynamic_tools *cfg,
+			      const char *dir,
+			      enum tool_origin origin);
 
 static const char *runner_path(void)
 {
@@ -522,11 +530,12 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		existing->exec = dynamic_tool_exec;
 		existing->user_data = dt;
 		existing->user_data_destroy = dynamic_tool_destroy;
+		existing->origin = dt->origin;
 		existing->flags |= TOOL_FLAG_DYNAMIC;
 		log_dbg("dynamic tool replaced: %s", dt->name);
 		return 1;
 	}
-	rc = tool_register(reg, dt->name, dt->description, dt->args_schema,
+	rc = tool_register(dt->origin, reg, dt->name, dt->description, dt->args_schema,
 			   dynamic_tool_exec, dt, dynamic_tool_destroy);
 	if (rc < 0)
 		return rc;
@@ -822,7 +831,8 @@ static int check_js_source(const char *source_path,
 static int load_tool_from_dir(struct tool_registry *reg,
 			      struct tool_context *tctx,
 			      const struct config_dynamic_tools *cfg,
-			      const char *dir)
+			      const char *dir,
+			      enum tool_origin origin)
 {
 	char meta_path[PATH_MAX];
 	char source_path[PATH_MAX];
@@ -883,6 +893,7 @@ static int load_tool_from_dir(struct tool_registry *reg,
 	strncpy(dt->dir, dir, sizeof(dt->dir) - 1);
 	dt->cfg = cfg;
 	dt->tctx = tctx;
+	dt->origin = origin;
 	cJSON_Delete(meta);
 	if (tool_lookup(reg, dt->name) &&
 	    !(tool_lookup(reg, dt->name)->flags & TOOL_FLAG_DYNAMIC)) {
@@ -1075,6 +1086,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	free(schema);
 	dt->cfg = ctx->cfg;
 	dt->tctx = ctx->tctx;
+	dt->origin = TOOL_ORIGIN_DYNAMIC_SESSION;
 	stage = "create_tool_dir";
 	rc = create_context_dir(ctx, dt->name, dt->dir, sizeof(dt->dir));
 	if (rc == 0) {
@@ -1137,6 +1149,89 @@ static int copy_file(const char *src, const char *dst)
 	rc = file_write_all(dst, data, len);
 	free(data);
 	return rc;
+}
+
+static int remove_tree(const char *path)
+{
+	struct stat st;
+	DIR *dir;
+	struct dirent *ent;
+
+	if (!path || !*path)
+		return -EINVAL;
+	if (lstat(path, &st) != 0)
+		return -errno;
+	if (!S_ISDIR(st.st_mode)) {
+		if (unlink(path) != 0)
+			return -errno;
+		return 0;
+	}
+	dir = opendir(path);
+	if (!dir)
+		return -errno;
+	while ((ent = readdir(dir)) != NULL) {
+		char child[PATH_MAX];
+		int rc;
+
+		if (strcmp(ent->d_name, ".") == 0 ||
+		    strcmp(ent->d_name, "..") == 0)
+			continue;
+		rc = file_path_join(child, sizeof(child), path, ent->d_name);
+		if (rc < 0) {
+			closedir(dir);
+			return rc;
+		}
+		rc = remove_tree(child);
+		if (rc < 0) {
+			closedir(dir);
+			return rc;
+		}
+	}
+	closedir(dir);
+	if (rmdir(path) != 0)
+		return -errno;
+	return 0;
+}
+
+static int dynamic_tool_delete_path_allowed(
+	const struct dynamic_tools_context *ctx,
+	enum tool_origin origin,
+	const char *name,
+	const char *dir)
+{
+	char expected[PATH_MAX];
+	char session_root[PATH_MAX];
+	char *resolved_dir = NULL;
+	char *resolved_expected = NULL;
+	int rc;
+	int allowed;
+
+	if (!ctx || !ctx->cfg || !name || !dir)
+		return 0;
+	if (origin == TOOL_ORIGIN_DYNAMIC_SESSION) {
+		if (!ctx->session_id[0])
+			return 0;
+		rc = file_path_join(session_root, sizeof(session_root),
+				    ctx->cfg->session_dir, ctx->session_id);
+		if (rc < 0)
+			return 0;
+		rc = file_path_join(expected, sizeof(expected),
+				    session_root, name);
+	} else if (origin == TOOL_ORIGIN_DYNAMIC_PERSISTENT) {
+		rc = file_path_join(expected, sizeof(expected),
+				    ctx->cfg->persistent_dir, name);
+	} else {
+		return 0;
+	}
+	if (rc < 0)
+		return 0;
+	resolved_dir = file_resolve_path(dir);
+	resolved_expected = file_resolve_path(expected);
+	allowed = resolved_dir && resolved_expected &&
+		strcmp(resolved_dir, resolved_expected) == 0;
+	free(resolved_dir);
+	free(resolved_expected);
+	return allowed;
 }
 
 static int tool_promote_exec(const char *args_json, struct tool_result *result,
@@ -1206,12 +1301,114 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 		rc = copy_file(src_meta, dst_meta);
 	if (rc == 0)
 		rc = copy_file(src_js, dst_js);
+	if (rc == 0)
+		rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, dst_dir,
+					TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 	cJSON_Delete(root);
 	if (rc < 0)
 		return tool_result_json_errorf(result,
 			"failed to promote dynamic tool: %s", morph_strerror(rc));
 	return tool_result_printf(result,
 				  "{\"name\":\"%s\",\"status\":\"promoted\"}",
+				  name);
+}
+
+static int tool_delete_exec(const char *args_json, struct tool_result *result,
+			    void *user_data)
+{
+	struct dynamic_tools_context *ctx = user_data;
+	struct tool_entry *entry;
+	struct dynamic_tool *dt;
+	enum tool_origin origin;
+	cJSON *root;
+	cJSON *name_item;
+	char name[TOOL_NAME_MAX];
+	char dir[PATH_MAX];
+	int rc;
+
+	if (!ctx || !result)
+		return -EINVAL;
+	root = args_json ? cJSON_Parse(args_json) : NULL;
+	if (!root)
+		return tool_result_json_error(result, "invalid JSON");
+	name_item = cJSON_GetObjectItem(root, "name");
+	if (!cJSON_IsString(name_item) ||
+	    !valid_tool_name(name_item->valuestring)) {
+		cJSON_Delete(root);
+		return tool_result_json_error(result,
+					      "tool_delete requires valid name");
+	}
+	strncpy(name, name_item->valuestring, sizeof(name) - 1);
+	name[sizeof(name) - 1] = '\0';
+	entry = tool_lookup(ctx->reg, name);
+	if (!entry) {
+		cJSON_Delete(root);
+		return tool_result_json_error(result, "dynamic tool not found");
+	}
+	if (!(entry->flags & TOOL_FLAG_DYNAMIC) ||
+	    (entry->origin != TOOL_ORIGIN_DYNAMIC_SESSION &&
+	     entry->origin != TOOL_ORIGIN_DYNAMIC_PERSISTENT)) {
+		cJSON_Delete(root);
+		return tool_result_json_error(result,
+					      "tool_delete can only delete dynamic tools");
+	}
+	dt = entry->user_data;
+	if (!dt || !dt->dir[0]) {
+		cJSON_Delete(root);
+		return tool_result_json_error(result,
+					      "dynamic tool metadata missing");
+	}
+	origin = entry->origin;
+	strncpy(dir, dt->dir, sizeof(dir) - 1);
+	dir[sizeof(dir) - 1] = '\0';
+	if (ctx->cfg->promote_requires_approval && ctx->tctx) {
+		struct tool_operation op;
+		memset(&op, 0, sizeof(op));
+		op.kind = TOOL_OP_EXTERNAL_SEND;
+		op.tool_name = "tool_delete";
+		op.action = "delete dynamic tool";
+		op.target = name;
+		op.details_json = args_json;
+		rc = tool_context_check_operation(ctx->tctx, &op);
+		if (rc < 0) {
+			cJSON_Delete(root);
+			return tool_result_json_error(result,
+				"dynamic tool deletion denied");
+		}
+	}
+	if (!dynamic_tool_delete_path_allowed(ctx, origin, name, dir)) {
+		cJSON_Delete(root);
+		return tool_result_json_error(result,
+			"dynamic tool deletion refused: path is outside the expected dynamic tools directory");
+	}
+	rc = remove_tree(dir);
+	if (rc == -ENOENT)
+		rc = 0;
+	if (rc == 0)
+		rc = tool_unregister(ctx->reg, name);
+	if (rc == 0 && origin == TOOL_ORIGIN_DYNAMIC_SESSION) {
+		char persistent_dir[PATH_MAX];
+		int load_rc;
+
+		load_rc = file_path_join(persistent_dir,
+					 sizeof(persistent_dir),
+					 ctx->cfg->persistent_dir, name);
+		if (load_rc == 0 && file_exists(persistent_dir)) {
+			load_rc = load_tool_from_dir(
+				ctx->reg, ctx->tctx, ctx->cfg, persistent_dir,
+				TOOL_ORIGIN_DYNAMIC_PERSISTENT);
+			if (load_rc < 0)
+				rc = load_rc;
+		} else if (load_rc < 0) {
+			rc = load_rc;
+		}
+	}
+	cJSON_Delete(root);
+	if (rc < 0)
+		return tool_result_json_errorf(result,
+			"failed to delete dynamic tool: %s", morph_strerror(rc));
+	return tool_result_printf(result,
+				  "{\"name\":\"%s\",\"status\":\"deleted\"}",
 				  name);
 }
 
@@ -1247,7 +1444,8 @@ int dynamic_tools_set_session_id(struct tool_registry *reg,
 static int dynamic_tools_load_from_root(struct tool_registry *reg,
 					struct tool_context *tctx,
 					const struct config_dynamic_tools *cfg,
-					const char *root)
+					const char *root,
+					enum tool_origin origin)
 {
 	char **dirs = NULL;
 	int count = 0;
@@ -1264,7 +1462,7 @@ static int dynamic_tools_load_from_root(struct tool_registry *reg,
 			continue;
 		if (file_path_join(path, sizeof(path), root, dirs[i]) != 0)
 			continue;
-		(void)load_tool_from_dir(reg, tctx, cfg, path);
+		(void)load_tool_from_dir(reg, tctx, cfg, path, origin);
 	}
 	file_free_list(dirs, count);
 	return 0;
@@ -1284,7 +1482,8 @@ static int dynamic_tools_load_session(struct tool_registry *reg,
 			    cfg->session_dir, session_id);
 	if (rc < 0)
 		return rc;
-	return dynamic_tools_load_from_root(reg, tctx, cfg, session_root);
+	return dynamic_tools_load_from_root(reg, tctx, cfg, session_root,
+					    TOOL_ORIGIN_DYNAMIC_SESSION);
 }
 
 int dynamic_tools_load_persistent(struct tool_registry *reg,
@@ -1294,7 +1493,8 @@ int dynamic_tools_load_persistent(struct tool_registry *reg,
 	if (!cfg)
 		return 0;
 	return dynamic_tools_load_from_root(reg, tctx, cfg,
-					    cfg->persistent_dir);
+					    cfg->persistent_dir,
+					    TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 }
 
 static const char *TOOL_CREATE_DESCRIPTION =
@@ -1358,17 +1558,23 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->cfg = cfg;
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
 		 session_id ? session_id : "");
-	rc = tool_register(reg, "tool_create", TOOL_CREATE_DESCRIPTION,
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_create", TOOL_CREATE_DESCRIPTION,
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"}},\"required\":[\"name\",\"source_js\"]}",
 			   tool_create_exec, ctx, dynamic_tools_context_destroy);
 	if (rc < 0) {
 		free(ctx);
 		return rc;
 	}
-	rc = tool_register(reg, "tool_promote",
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_promote",
 			   "Promote a session dynamic tool into the persistent dynamic tool directory.",
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
 			   tool_promote_exec, ctx, NULL);
+	if (rc < 0)
+		return rc;
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_delete",
+			   "Delete a dynamic tool. Session tools are removed from the current session directory; persistent dynamic tools are removed from the persistent dynamic tool directory. Built-in, MCP, and ext tools cannot be deleted.",
+			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
+			   tool_delete_exec, ctx, NULL);
 	if (rc < 0)
 		return rc;
 	rc = dynamic_tools_load_persistent(reg, tctx, cfg);

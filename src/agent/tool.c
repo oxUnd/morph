@@ -387,6 +387,24 @@ void tool_entry_cleanup_user_data(struct tool_registry *reg)
 	}
 }
 
+const char *tool_origin_name(enum tool_origin origin)
+{
+	switch (origin) {
+	case TOOL_ORIGIN_BUILTIN:
+		return "system built-in";
+	case TOOL_ORIGIN_DYNAMIC_SESSION:
+		return "dynamic session";
+	case TOOL_ORIGIN_DYNAMIC_PERSISTENT:
+		return "dynamic persistent";
+	case TOOL_ORIGIN_MCP:
+		return "mcp";
+	case TOOL_ORIGIN_EXT:
+		return "ext";
+	default:
+		return "unknown";
+	}
+}
+
 static int find_tool(struct tool_registry *reg, const char *name)
 {
 	struct tool_entry *e;
@@ -403,7 +421,44 @@ static int find_tool(struct tool_registry *reg, const char *name)
 	return -1;
 }
 
-int tool_register(struct tool_registry *reg, const char *name, const char *desc,
+static void rebuild_tool_name_index(struct tool_registry *reg)
+{
+	if (!reg)
+		return;
+	morph_strmap_clear(&reg->by_name);
+	for (int i = 0; i < reg->count; i++)
+		(void)morph_strmap_set(&reg->by_name,
+				       reg->entries[i].desc.name,
+				       &reg->entries[i]);
+}
+
+static void tool_enable_remove_disabled(struct tool_registry *reg,
+					const char *name)
+{
+	if (!reg || !name)
+		return;
+	for (int i = 0; i < reg->disabled_count; i++) {
+		if (strcmp(reg->disabled[i], name) != 0)
+			continue;
+		for (int j = i; j < reg->disabled_count - 1; j++) {
+			memcpy(reg->disabled[j], reg->disabled[j + 1],
+			       sizeof(reg->disabled[j]));
+		}
+		memset(reg->disabled[reg->disabled_count - 1], 0,
+		       sizeof(reg->disabled[reg->disabled_count - 1]));
+		reg->disabled_count--;
+		morph_strmap_clear(&reg->disabled_by_name);
+		for (int j = 0; j < reg->disabled_count; j++) {
+			(void)morph_strmap_set(&reg->disabled_by_name,
+					       reg->disabled[j],
+					       reg->disabled[j]);
+		}
+		return;
+	}
+}
+
+int tool_register(enum tool_origin origin, struct tool_registry *reg,
+		  const char *name, const char *desc,
 		  const char *args_spec, tool_exec_fn exec, void *user_data,
 		  tool_user_data_destroy_fn user_data_destroy)
 {
@@ -422,9 +477,34 @@ int tool_register(struct tool_registry *reg, const char *name, const char *desc,
 	e->exec = exec;
 	e->user_data = user_data;
 	e->user_data_destroy = user_data_destroy;
+	e->origin = origin;
 	(void)morph_strmap_set(&reg->by_name, e->desc.name, e);
 	reg->count++;
 	log_dbg("tool registered: %s", name);
+	return 0;
+}
+
+int tool_unregister(struct tool_registry *reg, const char *name)
+{
+	int idx;
+
+	if (!reg || !name)
+		return -EINVAL;
+	idx = find_tool(reg, name);
+	if (idx < 0)
+		return -ENOENT;
+	if (reg->entries[idx].user_data &&
+	    reg->entries[idx].user_data_destroy) {
+		reg->entries[idx].user_data_destroy(reg->entries[idx].user_data);
+	}
+	for (int i = idx; i < reg->count - 1; i++)
+		reg->entries[i] = reg->entries[i + 1];
+	memset(&reg->entries[reg->count - 1], 0,
+	       sizeof(reg->entries[reg->count - 1]));
+	reg->count--;
+	rebuild_tool_name_index(reg);
+	tool_enable_remove_disabled(reg, name);
+	log_dbg("tool unregistered: %s", name);
 	return 0;
 }
 

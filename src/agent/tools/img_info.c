@@ -85,7 +85,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 int img_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(reg, "img_info",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_info",
 		"Get image metadata (dimensions, format, color channels). Provide file_path.",
 		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"}},\"required\":[\"file_path\"]}",
 		img_info_exec, tctx, NULL);

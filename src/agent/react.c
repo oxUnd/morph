@@ -1362,6 +1362,10 @@ static void collect_active_tools(struct tool_registry *reg,
 	for (int i = 0; i < reg->count && idx < max_count; i++) {
 		if (!tool_is_disabled(reg, reg->entries[i].desc.name)) {
 			out[idx] = reg->entries[i].desc;
+			snprintf(out[idx].desc, sizeof(out[idx].desc),
+				 "[%s] %s",
+				 tool_origin_name(reg->entries[i].origin),
+				 reg->entries[i].desc.desc);
 			idx++;
 		}
 	}

@@ -762,7 +762,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	ctx->plans = plans;
 	ctx->llm = llm;
 
-	int rc = tool_register(reg, "plan",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "plan",
 		"Create and manage multi-step plans. "
 		"Commands: create (name, goal, steps), "
 		"update (plan_id or plan, step_id, status), "

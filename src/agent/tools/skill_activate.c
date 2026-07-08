@@ -102,7 +102,7 @@ int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills
 {
 	if (!reg || !skills)
 		return -EINVAL;
-	return tool_register(reg, "activate_skill",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "activate_skill",
 		"Activate a skill by name to load its specialized instructions into context. "
 		"Use when a task matches a skill's description.",
 		"{\"type\":\"object\",\"properties\":{"

@@ -96,7 +96,7 @@ int sub_agent_sync_init(struct tool_registry *reg,
 			 ":{\"task\":{\"type\":\"string\","
 			 "\"description\":\"The task to delegate\"}},"
 			 "\"required\":[\"task\"]}");
-		int rc = tool_register(reg, name, desc, args,
+		int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, name, desc, args,
 				       agent_sync_exec, bind,
 				       binding_destroy);
 		if (rc < 0) {
@@ -155,7 +155,7 @@ int sub_agent_delegate_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, "delegate",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "delegate",
 		"Start a sub-agent asynchronously and return a task ID",
 		"{\"type\":\"object\",\"properties\""
 		":{\"agent\":{\"type\":\"string\","
@@ -225,7 +225,7 @@ int sub_agent_status_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, "agent_status",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "agent_status",
 		"Check the status of an asynchronously running sub-agent",
 		"{\"type\":\"object\",\"properties\""
 		":{\"task_id\":{\"type\":\"string\","
@@ -313,7 +313,7 @@ int sub_agent_fanout_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, "fanout",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "fanout",
 		"Run multiple tasks in parallel using a sub-agent and merge results",
 		"{\"type\":\"object\",\"properties\""
 		":{\"agent\":{\"type\":\"string\","

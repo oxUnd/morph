@@ -202,7 +202,7 @@ int img_resize_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, "img_resize",
+	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_resize",
 		"Resize an image to the given width/height. "
 		"Provide file_path, width, height, optional output_path. "
 		"If only one of width/height is given, the other is computed "

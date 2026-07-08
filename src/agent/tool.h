@@ -24,6 +24,14 @@ extern "C" {
 #define TOOL_ARTIFACT_LABEL_MAX 128
 #define TOOL_ARTIFACT_MIME_MAX 128
 
+enum tool_origin {
+	TOOL_ORIGIN_BUILTIN,
+	TOOL_ORIGIN_DYNAMIC_SESSION,
+	TOOL_ORIGIN_DYNAMIC_PERSISTENT,
+	TOOL_ORIGIN_MCP,
+	TOOL_ORIGIN_EXT,
+};
+
 enum tool_artifact_kind {
 	TOOL_ARTIFACT_FILE,
 	TOOL_ARTIFACT_IMAGE,
@@ -97,6 +105,7 @@ struct tool_entry {
 	tool_exec_fn exec;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
+	enum tool_origin origin;
 	unsigned int flags;
 };
 
@@ -111,9 +120,12 @@ struct tool_registry {
 
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
-int tool_register(struct tool_registry *reg, const char *name, const char *desc,
+const char *tool_origin_name(enum tool_origin origin);
+int tool_register(enum tool_origin origin, struct tool_registry *reg,
+		  const char *name, const char *desc,
 		  const char *args_spec, tool_exec_fn exec, void *user_data,
 		  tool_user_data_destroy_fn user_data_destroy);
+int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, struct tool_result *result);

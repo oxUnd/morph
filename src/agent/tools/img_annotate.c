@@ -630,7 +630,7 @@ int img_annotate_init(struct tool_registry *reg,
 	ctx->cb_user_data = user_data;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, "img_annotate",
+	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_annotate",
 		"Open one or more images in the interactive terminal "
 		"image editor (morph-editor) for manual annotation. "
 		"Supports two annotation types: "
