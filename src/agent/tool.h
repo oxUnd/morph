@@ -107,6 +107,7 @@ struct tool_entry {
 	tool_user_data_destroy_fn user_data_destroy;
 	enum tool_origin origin;
 	unsigned int flags;
+	int timeout_seconds;
 };
 
 struct tool_registry {
@@ -129,6 +130,9 @@ int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, struct tool_result *result);
+int tool_set_timeout(struct tool_registry *reg, const char *name,
+		     int timeout_seconds);
+int tool_timeout_seconds(struct tool_registry *reg, const char *name);
 void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);

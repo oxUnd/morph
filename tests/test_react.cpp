@@ -58,6 +58,16 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 	return -EIO;
 }
 
+static int slow_tool_fn(const char *args_json, struct tool_result *result,
+			void *user_data)
+{
+	(void)args_json;
+	(void)user_data;
+	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+	(void)tool_result_take_text(result, strdup("{\"result\":\"late\"}"));
+	return 0;
+}
+
 static int not_configured_tool_fn(const char *args_json,
 				  struct tool_result *result,
 				  void *user_data)
@@ -705,10 +715,10 @@ TEST_F(ReactTest, CreateDestroy) {
 	react_context_destroy(ctx);
 }
 
-TEST_F(ReactTest, DefaultTimeoutAndRetries) {
+TEST_F(ReactTest, DefaultToolTimeoutAndRetries) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
-	EXPECT_EQ(ctx->step_timeout_seconds, 330);
+	EXPECT_EQ(ctx->tool_timeout_seconds, 300);
 	EXPECT_EQ(ctx->tool_max_retries, 3);
 	react_context_destroy(ctx);
 }
@@ -1756,34 +1766,6 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, StepTimeoutReturnsDistinctOutcome) {
-	setup_llm_with_response("Final: too slow");
-	ASSERT_NE(llm_data, nullptr);
-	llm_data->sleep_ms = 1100;
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
-							nullptr);
-	ASSERT_NE(ctx, nullptr);
-	ctx->llm_model = llm;
-	ctx->step_timeout_seconds = 1;
-	struct morph_event_recorder rec;
-	ASSERT_EQ(0, morph_event_recorder_init(&rec));
-	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb,
-					      &rec));
-
-	int rc = react_run(ctx, "slow response", nullptr, nullptr);
-	EXPECT_EQ(rc, -ETIMEDOUT);
-	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
-	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_TIMEOUT);
-	EXPECT_EQ(ctx->last_error_code, -ETIMEDOUT);
-	EXPECT_STREQ(ctx->outcome_reason, "step_timeout");
-	EXPECT_TRUE(event_recorder_has_name(&rec, "react.timed_out"));
-	EXPECT_TRUE(event_recorder_has_outcome(&rec, "react.turn.end",
-					       "timeout"));
-
-	morph_event_recorder_cleanup(&rec);
-	react_context_destroy(ctx);
-}
-
 TEST_F(MockLlmTest, StepCountAfterFinal) {
 	setup_llm_with_response("Final: quick answer");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1890,6 +1872,34 @@ TEST_F(MockLlmTest, ToolCallCount) {
 	ctx->max_iterations = 5;
 	react_run(ctx, "count calls", nullptr, nullptr);
 	EXPECT_GE(call_count, 1);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, GlobalToolTimeoutLetsLoopContinue) {
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slow_tool",
+				"Slow tool", "{}", slow_tool_fn, nullptr,
+				nullptr), 0);
+	const char *responses[] = {
+		"Thought: call slow.\nAction: slow_tool({})",
+		"Final: done after timeout"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->tool_timeout_seconds = 1;
+	auto start = std::chrono::steady_clock::now();
+	int rc = react_run(ctx, "run slow tool", nullptr, nullptr);
+	auto elapsed = std::chrono::steady_clock::now() - start;
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "done after timeout"), nullptr);
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
+			  elapsed).count(), 2000);
 	react_context_destroy(ctx);
 }
 

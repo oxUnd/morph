@@ -119,7 +119,7 @@ struct react_context {
 	struct react_step *steps;
 	int step_count;
 	int max_iterations;
-	int step_timeout_seconds;
+	int tool_timeout_seconds;
 	int tool_max_retries;
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;

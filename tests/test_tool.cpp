@@ -102,6 +102,18 @@ TEST_F(ToolTest, ExecError) {
 	tool_result_cleanup(&result);
 }
 
+TEST_F(ToolTest, TimeoutCanBeConfiguredPerTool) {
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &reg, "timed_tool",
+				"Timed tool", nullptr, mock_tool_exec, nullptr,
+				nullptr), 0);
+	EXPECT_EQ(tool_timeout_seconds(&reg, "timed_tool"), 0);
+	EXPECT_EQ(tool_set_timeout(&reg, "timed_tool", 42), 0);
+	EXPECT_EQ(tool_timeout_seconds(&reg, "timed_tool"), 42);
+	EXPECT_EQ(tool_set_timeout(&reg, "timed_tool", 0), 0);
+	EXPECT_EQ(tool_timeout_seconds(&reg, "timed_tool"), 0);
+	EXPECT_NE(tool_set_timeout(&reg, "missing", 42), 0);
+}
+
 TEST_F(ToolTest, StructuredResultFieldsAreOwnedAndCleared) {
 	struct tool_result result;
 	tool_result_init(&result);

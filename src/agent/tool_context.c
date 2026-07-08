@@ -267,6 +267,7 @@ struct tool_context *tool_context_create(const char *workdir,
 	}
 	tctx->allowed_commands_count = 0;
 	tctx->exec_allowed_dirs_count = 0;
+	tctx->default_timeout_seconds = 0;
 	return tctx;
 }
 
@@ -287,6 +288,20 @@ const char *tool_context_output_dir(const struct tool_context *tctx)
 	if (!tctx)
 		return NULL;
 	return tctx->output_dir;
+}
+
+void tool_context_set_default_timeout(struct tool_context *tctx, int seconds)
+{
+	if (!tctx)
+		return;
+	tctx->default_timeout_seconds = seconds > 0 ? seconds : 0;
+}
+
+int tool_context_default_timeout(const struct tool_context *tctx)
+{
+	if (!tctx)
+		return 0;
+	return tctx->default_timeout_seconds;
 }
 
 void tool_context_add_read_allowed_dir(struct tool_context *tctx,

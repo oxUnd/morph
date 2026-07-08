@@ -531,6 +531,32 @@ int tool_exec(struct tool_registry *reg, const char *name,
 	return e->exec(args_json, result, e->user_data);
 }
 
+int tool_set_timeout(struct tool_registry *reg, const char *name,
+		     int timeout_seconds)
+{
+	struct tool_entry *e;
+
+	if (!reg || !name)
+		return -EINVAL;
+	e = tool_lookup(reg, name);
+	if (!e)
+		return -ENOENT;
+	e->timeout_seconds = timeout_seconds > 0 ? timeout_seconds : 0;
+	return 0;
+}
+
+int tool_timeout_seconds(struct tool_registry *reg, const char *name)
+{
+	struct tool_entry *e;
+
+	if (!reg || !name)
+		return 0;
+	e = tool_lookup(reg, name);
+	if (!e)
+		return 0;
+	return e->timeout_seconds;
+}
+
 int tool_disable(struct tool_registry *reg, const char *name)
 {
 	if (!reg || !name)

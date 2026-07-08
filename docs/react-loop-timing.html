@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morph ReAct Loop Timing</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --ink: #15202b;
+      --muted: #627181;
+      --line: #c8d0d9;
+      --blue: #2563eb;
+      --green: #059669;
+      --orange: #d97706;
+      --red: #dc2626;
+      --purple: #7c3aed;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 18px;
+      color: var(--muted);
+    }
+    .frame {
+      background: var(--panel);
+      border: 1px solid #dce2e8;
+      border-radius: 8px;
+      overflow-x: auto;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    }
+    svg {
+      display: block;
+      min-width: 1180px;
+      height: auto;
+    }
+    .lane-label {
+      font-weight: 700;
+      fill: var(--ink);
+    }
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+    .note {
+      font-size: 12px;
+      fill: var(--ink);
+    }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .box {
+      fill: #f8fafc;
+      stroke: var(--line);
+      stroke-width: 1;
+      rx: 6;
+    }
+    .timeout {
+      fill: #fff7ed;
+      stroke: var(--orange);
+    }
+    .fail {
+      fill: #fef2f2;
+      stroke: var(--red);
+    }
+    .ok {
+      fill: #ecfdf5;
+      stroke: var(--green);
+    }
+    .call {
+      fill: #eff6ff;
+      stroke: var(--blue);
+    }
+    .guard {
+      fill: #f5f3ff;
+      stroke: var(--purple);
+    }
+    .lifeline {
+      stroke: #d4dbe4;
+      stroke-width: 1;
+      stroke-dasharray: 6 6;
+    }
+    .msg {
+      stroke: #334155;
+      stroke-width: 1.4;
+      marker-end: url(#arrow);
+    }
+    .return {
+      stroke: #64748b;
+      stroke-width: 1.2;
+      stroke-dasharray: 5 5;
+      marker-end: url(#arrow-muted);
+    }
+    .bar {
+      stroke-width: 8;
+      stroke-linecap: round;
+    }
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px 18px;
+      margin-top: 14px;
+      color: var(--muted);
+    }
+    .legend b {
+      color: var(--ink);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Morph ReAct Loop Timing</h1>
+  <p>Based on the current code path in <code>react_run()</code>, <code>llm.c</code>, and <code>http/client.c</code>.</p>
+
+  <div class="frame">
+    <svg viewBox="0 0 1280 1040" role="img" aria-label="Morph ReAct loop timing sequence diagram">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"></path>
+        </marker>
+        <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"></path>
+        </marker>
+      </defs>
+
+      <rect x="0" y="0" width="1280" height="1040" fill="#ffffff"></rect>
+
+      <!-- Lane headers -->
+      <g>
+        <rect class="box" x="40" y="34" width="150" height="46"></rect>
+        <text class="lane-label" x="115" y="62" text-anchor="middle">User/UI</text>
+
+        <rect class="box" x="245" y="34" width="170" height="46"></rect>
+        <text class="lane-label" x="330" y="62" text-anchor="middle">react_run()</text>
+
+        <rect class="box" x="480" y="34" width="170" height="46"></rect>
+        <text class="lane-label" x="565" y="62" text-anchor="middle">LLM model</text>
+
+        <rect class="box" x="715" y="34" width="170" height="46"></rect>
+        <text class="lane-label" x="800" y="62" text-anchor="middle">HTTP/SSE</text>
+
+        <rect class="box" x="950" y="34" width="170" height="46"></rect>
+        <text class="lane-label" x="1035" y="62" text-anchor="middle">Tools</text>
+
+        <rect class="box" x="1145" y="34" width="95" height="46"></rect>
+        <text class="lane-label" x="1192" y="62" text-anchor="middle">Guardrail</text>
+      </g>
+
+      <!-- Lifelines -->
+      <line class="lifeline" x1="115" y1="80" x2="115" y2="965"></line>
+      <line class="lifeline" x1="330" y1="80" x2="330" y2="965"></line>
+      <line class="lifeline" x1="565" y1="80" x2="565" y2="965"></line>
+      <line class="lifeline" x1="800" y1="80" x2="800" y2="965"></line>
+      <line class="lifeline" x1="1035" y1="80" x2="1035" y2="965"></line>
+      <line class="lifeline" x1="1192" y1="80" x2="1192" y2="965"></line>
+
+      <!-- Setup phase -->
+      <line class="msg" x1="115" y1="118" x2="330" y2="118"></line>
+      <text class="note" x="132" y="109">prompt</text>
+
+      <rect class="box" x="220" y="142" width="220" height="86"></rect>
+      <text class="note" x="235" y="166">reset turn state</text>
+      <text class="note" x="235" y="186">append user message</text>
+      <text class="note" x="235" y="206">build system prompt</text>
+
+      <rect class="box" x="220" y="246" width="220" height="72"></rect>
+      <text class="note" x="235" y="270">maybe compress context</text>
+      <text class="small" x="235" y="292">before loop iteration starts</text>
+
+      <!-- Iteration loop bracket -->
+      <rect x="190" y="340" width="1010" height="498" fill="none" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="8 6" rx="8"></rect>
+      <text class="lane-label" x="205" y="332">for iteration in max_iterations</text>
+
+      <!-- LLM request -->
+      <rect class="call" x="230" y="364" width="200" height="84"></rect>
+      <text class="note" x="245" y="389">react_chat_once()</text>
+      <text class="small" x="245" y="411">start model request</text>
+      <text class="small" x="245" y="431">stream callbacks emit text</text>
+
+      <line class="msg" x1="330" y1="470" x2="565" y2="470"></line>
+      <text class="note mono" x="360" y="460">chat_with_tools_stream()</text>
+
+      <line class="msg" x1="565" y1="508" x2="800" y2="508"></line>
+      <text class="note mono" x="592" y="498">http_post_sse_ex_timeout()</text>
+
+      <rect class="timeout" x="674" y="532" width="252" height="116"></rect>
+      <text class="note" x="692" y="556">SSE request timers</text>
+      <text class="small mono" x="692" y="581">CURLOPT_TIMEOUT = 0</text>
+      <text class="small mono" x="692" y="603">LOW_SPEED_TIME = text timeout</text>
+      <text class="small mono" x="692" y="625">default/current idle: 300s</text>
+
+      <line class="return" x1="800" y1="672" x2="565" y2="672"></line>
+      <text class="note" x="614" y="662">HTTP status, tokens, tool calls</text>
+
+      <line class="return" x1="565" y1="706" x2="330" y2="706"></line>
+      <text class="small" x="380" y="696">chat_response returned</text>
+
+      <rect class="ok" x="220" y="730" width="220" height="84"></rect>
+      <text class="note" x="235" y="754">no ReAct step timeout</text>
+      <text class="small" x="235" y="777">model requests use SSE idle</text>
+      <text class="small" x="235" y="797">tools use tool timeout</text>
+
+      <!-- Branches after LLM -->
+      <rect class="ok" x="220" y="866" width="250" height="80"></rect>
+      <text class="note" x="238" y="890">Branch A: final answer</text>
+      <text class="small" x="238" y="912">output guardrail may retry</text>
+      <text class="small" x="238" y="932">otherwise set SUCCESS</text>
+
+      <rect class="call" x="515" y="866" width="310" height="80"></rect>
+      <text class="note" x="533" y="890">Branch B: tool calls</text>
+      <text class="small" x="533" y="912">start all tool threads, then join</text>
+      <text class="small" x="533" y="932">global timeout with tool override</text>
+
+      <rect class="fail" x="870" y="866" width="270" height="80"></rect>
+      <text class="note" x="888" y="890">Branch C: timeout/error/cancel</text>
+      <text class="small" x="888" y="912">finish run with terminal outcome</text>
+      <text class="small" x="888" y="932">no next iteration</text>
+
+      <!-- Tool branch details -->
+      <line class="msg" x1="670" y1="970" x2="1035" y2="970"></line>
+      <text class="note" x="742" y="960">parallel tool execution</text>
+
+      <rect class="box" x="900" y="780" width="270" height="70"></rect>
+      <text class="note" x="918" y="804">tool timers</text>
+      <text class="small mono" x="918" y="826">react.tool_timeout_seconds: 300s</text>
+      <text class="small mono" x="918" y="844">tool args/config can override</text>
+
+      <line class="return" x1="1035" y1="1000" x2="330" y2="1000"></line>
+      <text class="note" x="548" y="990">observations appended to messages</text>
+
+      <line class="msg" x1="330" y1="1018" x2="1192" y2="1018"></line>
+      <text class="small" x="516" y="1010">tool output guardrail, if enabled</text>
+
+      <!-- Timing bars -->
+      <line class="bar" x1="565" y1="526" x2="800" y2="526" stroke="#2563eb"></line>
+      <text class="small mono" x="566" y="548">text model request has no curl total timeout</text>
+
+      <line class="bar" x1="725" y1="652" x2="875" y2="652" stroke="#d97706"></line>
+      <text class="small mono" x="690" y="676">SSE no-data stall timeout: 300s</text>
+
+      <line class="bar" x1="330" y1="820" x2="565" y2="820" stroke="#7c3aed"></line>
+      <text class="small mono" x="365" y="843">No post-LLM elapsed timeout check</text>
+
+      <!-- Important notes -->
+      <rect class="guard" x="470" y="146" width="690" height="146"></rect>
+      <text class="lane-label" x="492" y="172">Current timing semantics</text>
+      <text class="note" x="492" y="198">1. model.text.timeout_seconds controls SSE idle/no-data timeout.</text>
+      <text class="note" x="492" y="222">2. HTTP/SSE timeout enforcement is delegated to curl options.</text>
+      <text class="note" x="492" y="246">3. ReAct no longer has a step-level timeout.</text>
+      <text class="note" x="492" y="270">4. Tools use react.tool_timeout_seconds unless a tool-specific value overrides it.</text>
+    </svg>
+  </div>
+
+  <div class="legend">
+    <div><b>Text idle timeout:</b> `[model.text].timeout_seconds`, now 300s in desktop and Android defaults.</div>
+    <div><b>SSE total timeout:</b> disabled at curl level; active streams are not cut off by wall-clock duration.</div>
+    <div><b>React step timeout:</b> removed; ReAct does not apply a wall-clock timeout to the whole step.</div>
+    <div><b>Tool timeout:</b> `[react].tool_timeout_seconds`, with per-tool config and `timeout_seconds` call arguments taking precedence.</div>
+  </div>
+</main>
+</body>
+</html>

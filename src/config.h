@@ -95,7 +95,7 @@ struct config_guardrail_ext_rule {
 
 struct config_react {
 	int max_iterations;
-	int step_timeout_seconds;
+	int tool_timeout_seconds;
 	int tool_max_retries;
 	int guardrail_enabled;
 	int guardrail_max_retries;

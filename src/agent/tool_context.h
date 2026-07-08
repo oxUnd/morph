@@ -59,6 +59,7 @@ struct tool_context {
 	int allowed_commands_count;
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
+	int default_timeout_seconds;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -66,6 +67,8 @@ struct tool_context *tool_context_create(const char *workdir,
 void tool_context_destroy(struct tool_context *tctx);
 const char *tool_context_workdir(const struct tool_context *tctx);
 const char *tool_context_output_dir(const struct tool_context *tctx);
+void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
+int tool_context_default_timeout(const struct tool_context *tctx);
 int tool_context_authorize_path(struct tool_context *tctx,
 				enum tool_path_op op, const char *path,
 				char *resolved, size_t resolved_size);

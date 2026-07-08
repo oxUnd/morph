@@ -186,6 +186,9 @@ static void bridge_init_once(void)
 				     g_config.general.output_dir);
 	if (!g_tctx)
 		fprintf(stderr, "fcgi-bridge: tool_context_create failed\n");
+	else
+		tool_context_set_default_timeout(
+			g_tctx, g_config.react.tool_timeout_seconds);
 
 	runtime_query_tools_init(&g_tools);
 	img_qa_init(&g_tools, g_llm, g_tctx);
@@ -228,6 +231,8 @@ static void bridge_init_once(void)
 				g_tctx,
 				g_config.react.bash_exec_allowed_cwds[i]);
 		bash_exec_init(&g_tools, g_tctx);
+		tool_set_timeout(&g_tools, "bash_exec",
+				 g_config.react.bash_exec_default_timeout);
 		log_info("fcgi-bridge: bash_exec explicitly enabled");
 	} else {
 		log_info("fcgi-bridge: bash_exec disabled by default");
@@ -366,7 +371,7 @@ react_context_create_for_session(struct session_store *store,
 		return NULL;
 
 	ctx->max_iterations       = g_config.react.max_iterations;
-	ctx->step_timeout_seconds = g_config.react.step_timeout_seconds;
+	ctx->tool_timeout_seconds = g_config.react.tool_timeout_seconds;
 	ctx->tool_max_retries     = g_config.react.tool_max_retries;
 	ctx->llm_model            = g_llm;
 	bash_exec_set_default_timeout(g_config.react.bash_exec_default_timeout);

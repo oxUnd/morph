@@ -434,7 +434,7 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 
 1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
 2. 步数达到 `max_iterations`（默认 10，可配置） → 返回最后一次 Observation 并标记 `aborted`
-3. 单步耗时超过 `step_timeout_seconds`（默认 330s） → 中断该工具调用，生成失败 Observation 回灌
+3. 工具耗时超过 `tool_timeout_seconds` 或工具自己的覆盖值 → 取消该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
 5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
 
@@ -673,7 +673,7 @@ poll_timeout_seconds = 600
 
 [react]
 max_iterations = 10
-step_timeout_seconds = 330
+tool_timeout_seconds = 300
 tool_max_retries = 3
 guardrail_enabled = true
 guardrail_max_retries = 1
@@ -774,7 +774,7 @@ default_max_cpu_seconds = 30
 ```
 
 > **默认值说明**：
-> - `step_timeout_seconds` 默认 330（含 LLM 调用 + 工具执行）
+> - `tool_timeout_seconds` 默认 300（工具调用默认墙钟时间；工具参数或专用配置可覆盖）
 > - `guardrail_enabled` 默认 true
 > - `guardrail_max_retries` 默认 1
 > - `timeout_seconds`（text model）默认 300
@@ -1188,12 +1188,12 @@ typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 				     int timeout_sec);
 
 /* ReAct 循环上下文 */
-struct react_context {
-	struct react_step *steps;
-	int step_count;
-	int max_iterations;
-	int step_timeout_seconds;
-	int tool_max_retries;
+	struct react_context {
+		struct react_step *steps;
+		int step_count;
+		int max_iterations;
+		int tool_timeout_seconds;
+		int tool_max_retries;
 	struct guardrail_config guardrail;
 	int guardrail_retry_count;
 	struct hitl_config hitl;

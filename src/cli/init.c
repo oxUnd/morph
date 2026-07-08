@@ -137,7 +137,7 @@ static int cli_init_models(struct cli_context *ctx)
 	}
 	react_set_event_callback(ctx->react, ctx->event_cb,
 				 ctx->event_user_data);
-	ctx->react->step_timeout_seconds = ctx->config.react.step_timeout_seconds;
+	ctx->react->tool_timeout_seconds = ctx->config.react.tool_timeout_seconds;
 	ctx->react->tool_max_retries = ctx->config.react.tool_max_retries;
 	ctx->react->max_iterations = ctx->config.react.max_iterations;
 	bash_exec_set_default_timeout(ctx->config.react.bash_exec_default_timeout);
@@ -359,6 +359,8 @@ static int cli_init_tools(struct cli_context *ctx)
 	}
 	tool_context_set_operation_approval(ctx->tctx,
 					    operation_approval_callback, ctx);
+	tool_context_set_default_timeout(ctx->tctx,
+					 ctx->config.react.tool_timeout_seconds);
 
 	runtime_query_tools_init(&ctx->tools);
 	log_info("registered runtime query tools");
@@ -399,6 +401,8 @@ static int cli_init_tools(struct cli_context *ctx)
 				ctx->tctx,
 				ctx->config.react.bash_exec_allowed_cwds[i]);
 		bash_exec_init(&ctx->tools, ctx->tctx);
+		tool_set_timeout(&ctx->tools, "bash_exec",
+				 ctx->config.react.bash_exec_default_timeout);
 		log_info("registered bash_exec tool (explicitly enabled)");
 	} else {
 		log_info("bash_exec tool disabled by default");

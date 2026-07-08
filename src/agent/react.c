@@ -772,16 +772,22 @@ static int react_tool_call_finish(struct react_context *ctx,
  * thread. Caller must NOT touch `call` afterwards; the worker will free
  * it itself when it exits.
  *
- * Returns 0 if joined normally, -ECANCELED if detached.
+ * Returns 0 if joined normally, -ECANCELED if cancelled, or -ETIMEDOUT if
+ * the tool deadline expires.
  */
 static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
-			    struct async_tool_call *call)
+			    struct async_tool_call *call, int timeout_seconds)
 {
 	struct timespec ts;
+	time_t deadline;
+
+	deadline = timeout_seconds > 0 ? time(NULL) + timeout_seconds : 0;
 
 	pthread_mutex_lock(&call->mutex);
 	while (!call->completed && !(cancelled && *cancelled) &&
 	       !react_sigint_flag) {
+		if (deadline > 0 && time(NULL) >= deadline)
+			break;
 		clock_gettime(CLOCK_REALTIME, &ts);
 		ts.tv_nsec += 100 * 1000 * 1000;
 		if (ts.tv_nsec >= 1000 * 1000 * 1000) {
@@ -793,6 +799,15 @@ static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 	if (!call->completed && react_sigint_flag && cancelled)
 		*cancelled = 1;
 	if (call->completed || !cancelled || !*cancelled) {
+		if (!call->completed && deadline > 0 &&
+		    time(NULL) >= deadline) {
+			call->cancelled = 1;
+			morph_cancel_token_cancel(&call->cancel_token);
+			call->detached = 1;
+			pthread_mutex_unlock(&call->mutex);
+			pthread_detach(thread);
+			return -ETIMEDOUT;
+		}
 		pthread_mutex_unlock(&call->mutex);
 		pthread_join(thread, NULL);
 		return 0;
@@ -804,6 +819,29 @@ static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 	pthread_mutex_unlock(&call->mutex);
 	pthread_detach(thread);
 	return -ECANCELED;
+}
+
+static int react_tool_call_timeout(struct react_context *ctx,
+				   const struct tool_call *tc)
+{
+	int timeout;
+	cJSON *root;
+	cJSON *arg_timeout;
+
+	timeout = tool_timeout_seconds(ctx->tools, tc->name);
+	if (timeout <= 0)
+		timeout = ctx->tool_timeout_seconds;
+	if (!tc->arguments)
+		return timeout;
+
+	root = cJSON_Parse(tc->arguments);
+	if (!root)
+		return timeout;
+	arg_timeout = cJSON_GetObjectItem(root, "timeout_seconds");
+	if (cJSON_IsNumber(arg_timeout) && arg_timeout->valuedouble > 0)
+		timeout = (int)arg_timeout->valuedouble;
+	cJSON_Delete(root);
+	return timeout;
 }
 
 static void *async_tool_exec(void *arg)
@@ -1009,7 +1047,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->tools = tools;
 	ctx->tokenizer = tok;
 	ctx->max_iterations = 10;
-	ctx->step_timeout_seconds = 330;
+	ctx->tool_timeout_seconds = 300;
 	ctx->tool_max_retries = 3;
 	ctx->empty_round_count = 0;
 	ctx->guardrail_retry_count = 0;
@@ -1802,8 +1840,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			   struct tool_desc *active_tools,
 			   int active_tool_count,
 			   react_output_cb cb, void *user_data,
-			   struct chat_response *response,
-			   time_t *llm_start, time_t *llm_end)
+			   struct chat_response *response)
 {
 	struct react_stream_data sd;
 	int status;
@@ -1820,7 +1857,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	if (sd.accumulated)
 		sd.accumulated[0] = '\0';
 
-	*llm_start = time(NULL);
 	if (llm->chat_with_tools_stream) {
 		status = llm->chat_with_tools_stream(
 			llm, ctx->turn_arena, system_prompt, messages,
@@ -1845,7 +1881,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		if (!hist_msgs && hist_n > 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
-			*llm_end = time(NULL);
 			return -ENOMEM;
 		}
 		if (hist_msgs) {
@@ -1864,7 +1899,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			response->arena = ctx->turn_arena;
 		}
 	}
-	*llm_end = time(NULL);
 	return status;
 }
 
@@ -1914,41 +1948,6 @@ static int react_handle_llm_error(struct react_context *ctx,
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
 			      "failed", "LLM call failed", err_content);
 	react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status, "llm_error");
-	return 1;
-}
-
-static int react_handle_llm_timeout(struct react_context *ctx,
-				    struct chat_response *response,
-				    time_t llm_start, time_t llm_end,
-				    react_output_cb cb, void *user_data)
-{
-	long elapsed;
-	char timeout_msg[256];
-	struct react_step *obs;
-
-	if (ctx->step_timeout_seconds <= 0 ||
-	    (llm_end - llm_start) < ctx->step_timeout_seconds)
-		return 0;
-
-	elapsed = (long)(llm_end - llm_start);
-	log_warn("react_run: LLM call exceeded step timeout (%lds >= %ds)",
-		 elapsed, ctx->step_timeout_seconds);
-	snprintf(timeout_msg, sizeof(timeout_msg),
-		 "LLM call timed out (took %lds, limit %ds)",
-		 elapsed, ctx->step_timeout_seconds);
-	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
-				timeout_msg, NULL, NULL, NULL);
-	add_step(ctx, obs);
-	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
-			  REACT_OUTPUT_TIMEOUT, timeout_msg, NULL, NULL,
-			  NULL, -ETIMEDOUT, NULL, NULL, NULL);
-	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.observation",
-			      "timeout", "LLM call timed out", timeout_msg);
-	free(ctx->final_answer);
-	ctx->final_answer = strdup(response->content && *response->content ?
-				   response->content : timeout_msg);
-	react_set_result(ctx, REACT_OUTCOME_TIMEOUT, -ETIMEDOUT,
-			 "step_timeout");
 	return 1;
 }
 
@@ -2279,8 +2278,29 @@ static int react_join_tool_calls(struct react_context *ctx,
 			pthread_mutex_unlock(&slots[i].call->mutex);
 		}
 
-		if (join_tool_thread(slots[i].thread, &ctx->cancelled,
-				     slots[i].call) != 0) {
+		rc = join_tool_thread(slots[i].thread, &ctx->cancelled,
+				      slots[i].call,
+				      react_tool_call_timeout(
+					      ctx, &response->tool_calls[i]));
+		if (rc == -ETIMEDOUT) {
+			char timeout_msg[256];
+			struct tool_call *tc = &response->tool_calls[i];
+
+			snprintf(timeout_msg, sizeof(timeout_msg),
+				 "tool error: '%s' timed out after %ds",
+				 tc->name, react_tool_call_timeout(ctx, tc));
+			react_emit_tool_event(ctx, "tool.failed", "timeout",
+					      "tool timed out", tc->name,
+					      tc->arguments ? tc->arguments : "{}",
+					      tc->tool_call_id, timeout_msg,
+					      -ETIMEDOUT);
+			react_append_tool_message(messages, timeout_msg, tc->id,
+						  ctx->turn_arena);
+			slots[i].call = NULL;
+			slots[i].thread_started = 0;
+			continue;
+		}
+		if (rc != 0) {
 			react_tool_call_cancelled(ctx, slots[i].call);
 			slots[i].call = NULL;
 			slots[i].thread_started = 0;
@@ -2535,8 +2555,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 				  NULL, 0, NULL, NULL, NULL);
 
 		struct chat_response response = {0};
-		time_t llm_start = 0;
-		time_t llm_end = 0;
 		int status;
 
 		if (react_prepare_active_tools(ctx, &active_tools,
@@ -2551,7 +2569,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 					 (struct chat_message *)messages.elts,
 					 (int)messages.nelts, active_tools,
 					 active_tool_count, cb, user_data,
-					 &response, &llm_start, &llm_end);
+					 &response);
 		if (ctx->outcome != REACT_OUTCOME_NONE) {
 			chat_response_free(&response);
 			break;
@@ -2564,9 +2582,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 		if (react_handle_llm_cancelled(ctx, &response) ||
 		    react_handle_llm_error(ctx, &response, status, cb,
-					   user_data) ||
-		    react_handle_llm_timeout(ctx, &response, llm_start,
-					     llm_end, cb, user_data)) {
+					   user_data)) {
 			chat_response_free(&response);
 			break;
 		}

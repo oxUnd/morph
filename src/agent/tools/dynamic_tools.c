@@ -531,6 +531,10 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		existing->user_data = dt;
 		existing->user_data_destroy = dynamic_tool_destroy;
 		existing->origin = dt->origin;
+		existing->timeout_seconds =
+			dt->cfg->default_timeout_seconds > 0
+			? dt->cfg->default_timeout_seconds
+			: tool_context_default_timeout(dt->tctx);
 		existing->flags |= TOOL_FLAG_DYNAMIC;
 		log_dbg("dynamic tool replaced: %s", dt->name);
 		return 1;
@@ -541,8 +545,13 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		return rc;
 	{
 		struct tool_entry *entry = tool_lookup(reg, dt->name);
-		if (entry)
+		if (entry) {
 			entry->flags |= TOOL_FLAG_DYNAMIC;
+			entry->timeout_seconds =
+				dt->cfg->default_timeout_seconds > 0
+				? dt->cfg->default_timeout_seconds
+				: tool_context_default_timeout(dt->tctx);
+		}
 	}
 	return 0;
 }

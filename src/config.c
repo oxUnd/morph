@@ -64,7 +64,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->credits.video_second_credit_coef = 0.0;
 
 	cfg->react.max_iterations = 10;
-	cfg->react.step_timeout_seconds = 330;
+	cfg->react.tool_timeout_seconds = 300;
 	cfg->react.tool_max_retries = 3;
 	cfg->react.guardrail_enabled = 1;
 	cfg->react.guardrail_max_retries = 1;
@@ -394,7 +394,7 @@ int config_load(struct config *cfg, const char *path)
 	toml_table_t *react = table_path(tbl, "react");
 	if (react) {
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
-		CFG_INT(react, "step_timeout_seconds", cfg->react.step_timeout_seconds);
+		CFG_INT(react, "tool_timeout_seconds", cfg->react.tool_timeout_seconds);
 		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
 		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
@@ -784,8 +784,8 @@ void config_print(const struct config *cfg)
 		 cfg->credits.daily_limit, cfg->credits.currency,
 		 cfg->credits.cost_to_credit_coef,
 		 cfg->credits.price_count);
-	log_info("  [react] max_iterations=%d step_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
-		 cfg->react.max_iterations, cfg->react.step_timeout_seconds,
+	log_info("  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
+		 cfg->react.max_iterations, cfg->react.tool_timeout_seconds,
 		 cfg->react.tool_max_retries,
 		 cfg->react.guardrail_enabled, cfg->react.guardrail_max_retries,
 		 cfg->react.guardrail_max_empty_rounds,

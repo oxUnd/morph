@@ -390,8 +390,8 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  prices = %d\n", ctx->config.credits.price_count);
 	printf(ANSI_BOLD "[react]" ANSI_RESET "\n");
 	printf("  max_iterations = %d\n", ctx->config.react.max_iterations);
-	printf("  step_timeout = %d\n",
-	       ctx->config.react.step_timeout_seconds);
+	printf("  tool_timeout = %d\n",
+	       ctx->config.react.tool_timeout_seconds);
 	printf("  tool_max_retries = %d\n", ctx->config.react.tool_max_retries);
 	printf("  guardrail_enabled = %d\n",
 	       ctx->config.react.guardrail_enabled);

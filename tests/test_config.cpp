@@ -25,7 +25,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
-	EXPECT_EQ(cfg.react.step_timeout_seconds, 330);
+	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
 	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
@@ -53,7 +53,7 @@ context_limit = 200000
 
 [react]
 max_iterations = 5
-step_timeout_seconds = 30
+tool_timeout_seconds = 45
 bash_exec_enabled = true
 bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
 bash_exec_allowed_cwds = ["/tmp"]
@@ -72,7 +72,7 @@ keep_recent_rounds = 10
 	EXPECT_STREQ(cfg.models.text.model, "deepseek-chat");
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
 	EXPECT_EQ(cfg.react.max_iterations, 5);
-	EXPECT_EQ(cfg.react.step_timeout_seconds, 30);
+	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
 	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 2);
 	EXPECT_STREQ(cfg.react.bash_exec_allowed_commands[0],

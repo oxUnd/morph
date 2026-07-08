@@ -140,8 +140,8 @@ static void print_version(const char *config_path)
 	       cfg.models.video.provider,
 	       cfg.models.video.model[0] ? cfg.models.video.model : "-");
 	printf("  " ICON_REACT " " ANSI_BOLD ANSI_GREEN "React"
-	       ANSI_RESET "      %d iters, %ds timeout\n",
-	       cfg.react.max_iterations, cfg.react.step_timeout_seconds);
+	       ANSI_RESET "      %d iters, %ds tool timeout\n",
+	       cfg.react.max_iterations, cfg.react.tool_timeout_seconds);
 	printf("  " ICON_MEMORY " " ANSI_BOLD ANSI_GREEN "Memory"
 	       ANSI_RESET "     " ANSI_YELLOW "%s" ANSI_RESET
 	       " (%d facts, %d episodes)\n",

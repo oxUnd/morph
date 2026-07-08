@@ -246,5 +246,7 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		img_qa_exec, ctx, img_qa_context_destroy);
 	if (rc < 0)
 		free(ctx);
+	else
+		tool_set_timeout(reg, "img_qa", 120);
 	return rc;
 }

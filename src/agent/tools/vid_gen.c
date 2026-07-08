@@ -216,5 +216,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		vid_gen_exec, ctx, vid_gen_context_destroy);
 	if (rc != 0)
 		free(ctx);
+	else
+		tool_set_timeout(reg, "vid_gen", 600);
 	return rc;
 }

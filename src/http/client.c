@@ -7,10 +7,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define HTTP_SSE_DEFAULT_TIMEOUT_SECONDS 300L
-#define HTTP_SSE_IDLE_TIMEOUT_SECONDS 120L
 #define HTTP_CONNECT_TIMEOUT_SECONDS 10L
 
 static int http_initialized = 0;
@@ -376,7 +374,7 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 static int do_sse_request(const char *url, const char *body, size_t body_len,
 			  const char *content_type,
 			  const char **extra_headers, int extra_header_count,
-			  long total_timeout, long idle_timeout,
+			  long idle_timeout,
 			  http_callback cb, void *user_data)
 {
 	struct curl_slist *headers = NULL;
@@ -385,9 +383,6 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
-	time_t started_at;
-	time_t ended_at;
-	long elapsed;
 	int rc;
 	CURL *curl;
 
@@ -425,7 +420,7 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, total_timeout);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
 			 HTTP_CONNECT_TIMEOUT_SECONDS);
 	if (idle_timeout > 0) {
@@ -439,12 +434,9 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
 
-	log_dbg("http sse: request timeout=%lds, idle_timeout=%lds",
-		total_timeout, idle_timeout);
-	started_at = time(NULL);
+	log_dbg("http sse: request timeout disabled, idle_timeout=%lds",
+		idle_timeout);
 	curl_rc = curl_easy_perform(curl);
-	ended_at = time(NULL);
-	elapsed = (long)(ended_at - started_at);
 
 	if (swd.callback_rc != 0) {
 		rc = swd.callback_rc;
@@ -453,16 +445,9 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled())
 			rc = -ECANCELED;
-		else if (curl_rc == CURLE_OPERATION_TIMEDOUT &&
-			 total_timeout > 0 && elapsed >= total_timeout) {
-			log_warn("http sse: request timed out after %lds "
-				 "(limit %lds)", elapsed, total_timeout);
-			rc = -ETIMEDOUT;
-		} else if (idle_timeout > 0 &&
-			   curl_rc == CURLE_OPERATION_TIMEDOUT) {
-			log_warn("http sse: connection stalled after %lds "
-				 "without data (idle limit %lds)",
-				 elapsed, idle_timeout);
+		else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
+			log_warn("http sse: curl idle timeout "
+				 "(idle_timeout=%lds)", idle_timeout);
 			rc = -ETIMEDOUT;
 		} else {
 			rc = sse_map_curl_error(curl_rc, errbuf);
@@ -484,8 +469,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 		   const char *content_type, http_callback cb, void *user_data)
 {
 	return do_sse_request(url, body, body_len, content_type, NULL, 0,
-			      HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, 0L, cb,
-			      user_data);
+			      HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, cb, user_data);
 }
 
 int http_post_sse_ex(const char *url, const char *body, size_t body_len,
@@ -494,7 +478,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 {
 	return do_sse_request(url, body, body_len, content_type, extra_headers,
 			      extra_header_count, HTTP_SSE_DEFAULT_TIMEOUT_SECONDS,
-			      0L, cb, user_data);
+			      cb, user_data);
 }
 
 int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
@@ -502,13 +486,11 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			     int extra_header_count, long timeout_seconds,
 			     http_callback cb, void *user_data)
 {
-	long total_timeout = timeout_seconds > 0 ? timeout_seconds :
+	long idle_timeout = timeout_seconds > 0 ? timeout_seconds :
 		HTTP_SSE_DEFAULT_TIMEOUT_SECONDS;
-	long idle_timeout = HTTP_SSE_IDLE_TIMEOUT_SECONDS;
 
 	return do_sse_request(url, body, body_len, content_type, extra_headers,
-			      extra_header_count, total_timeout, idle_timeout, cb,
-			      user_data);
+			      extra_header_count, idle_timeout, cb, user_data);
 }
 
 void http_response_free(struct http_response *resp)
