@@ -168,6 +168,13 @@ static void bridge_init_once(void)
 
 	if (!g_llm)
 		fprintf(stderr, "fcgi-bridge: model_llm_create failed\n");
+	if (g_llm) {
+		g_llm->timeout_seconds = g_config.models.text.timeout_seconds;
+		if (g_config.models.text.max_tokens > 0)
+			g_llm->max_tokens = g_config.models.text.max_tokens;
+		if (g_config.models.text.context_limit > 0)
+			g_llm->context_limit = g_config.models.text.context_limit;
+	}
 
 	/* Wire chat LLM into memory subsystem for cold-path extraction. */
 	memory_set_llm(g_llm);
