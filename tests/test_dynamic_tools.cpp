@@ -42,6 +42,19 @@ static int static_tool_exec(const char *args_json, struct tool_result *result,
 	return tool_result_set_json(result, "{\"static\":true}");
 }
 
+static std::string json_string_field(const char *json, const char *field)
+{
+	cJSON *root = cJSON_Parse(json);
+	if (!root)
+		return "";
+	cJSON *item = cJSON_GetObjectItem(root, field);
+	std::string out;
+	if (cJSON_IsString(item) && item->valuestring)
+		out = item->valuestring;
+	cJSON_Delete(root);
+	return out;
+}
+
 struct DynamicToolsTest : public ::testing::Test {
 	std::string root;
 	struct config cfg;
@@ -281,6 +294,121 @@ TEST_F(DynamicToolsTest, ToolCreateUpdatesExistingDynamicTool)
 	EXPECT_NE(std::string(result.text.data).find("\"value\":2"),
 		  std::string::npos);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolHistoryDiffAndRollbackUpdatedTool)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string first =
+		"function run(args) {"
+		"  return { value: 1 };"
+		"}";
+	std::string second =
+		"function run(args) {"
+		"  return { value: 2 };"
+		"}";
+	struct tool_result result;
+	std::string checkpoint_id;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("versioned_tool", first).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("versioned_tool", second).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	checkpoint_id = json_string_field(result.text.data, "checkpoint_id");
+	EXPECT_EQ(checkpoint_id, "0002");
+	EXPECT_NE(std::string(result.text.data).find("\"old_hash\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_history",
+			    "{\"name\":\"versioned_tool\"}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"id\":\"0002\""),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("\"before_state\":\"present\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_diff",
+			    "{\"name\":\"versioned_tool\",\"checkpoint_id\":\"0002\"}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("--- a/tool.js"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("-function run(args)"),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("+function run(args)"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_rollback",
+			    "{\"name\":\"versioned_tool\",\"checkpoint_id\":\"0002\"}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"rolled_back\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "versioned_tool", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"value\":1"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_history",
+			    "{\"name\":\"versioned_tool\"}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_EQ(std::string(result.text.data).find("\"id\":\"0002\""),
+		  std::string::npos);
+	EXPECT_NE(std::string(result.text.data).find("\"id\":\"0001\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, ToolRollbackCreationRemovesSessionTool)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function run(args) {"
+		"  return { value: 7 };"
+		"}";
+	struct tool_result result;
+	std::string dir = root + "/session/sess/new_then_undo";
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("new_then_undo", source).c_str(),
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"checkpoint_id\":\"0001\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+	ASSERT_NE(tool_lookup(&reg, "new_then_undo"), nullptr);
+	ASSERT_TRUE(file_exists(dir.c_str()));
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_rollback",
+			    "{\"name\":\"new_then_undo\",\"checkpoint_id\":\"0001\"}",
+			    &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"state\":\"absent\""),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+
+	EXPECT_EQ(tool_lookup(&reg, "new_then_undo"), nullptr);
+	EXPECT_FALSE(file_exists(dir.c_str()));
 }
 
 TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)

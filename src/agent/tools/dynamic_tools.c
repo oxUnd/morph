@@ -31,7 +31,10 @@
 
 #define DYN_TOOL_META_FILE "tool.json"
 #define DYN_TOOL_SOURCE_FILE "tool.js"
+#define DYN_TOOL_HISTORY_DIR ".history"
+#define DYN_TOOL_CHECKPOINT_META_FILE "checkpoint.json"
 #define DYN_TOOL_OUTPUT_LIMIT (1024 * 1024)
+#define DYN_TOOL_HISTORY_LIMIT 20
 
 struct dynamic_tool {
 	char name[TOOL_NAME_MAX];
@@ -60,6 +63,18 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			      const struct config_dynamic_tools *cfg,
 			      const char *dir,
 			      enum tool_origin origin);
+static int remove_tree(const char *path);
+static int copy_file(const char *src, const char *dst);
+
+struct tool_checkpoint {
+	char id[16];
+	char name[TOOL_NAME_MAX];
+	char before_state[16];
+	char origin[32];
+	char old_hash[32];
+	char new_hash[32];
+	long created_at;
+};
 
 static const char *runner_path(void)
 {
@@ -735,6 +750,391 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 	return rc;
 }
 
+static int tool_file_paths(const char *dir, char *meta_path, size_t meta_size,
+			   char *source_path, size_t source_size)
+{
+	int rc;
+
+	if (!dir)
+		return -EINVAL;
+	rc = file_path_join(meta_path, meta_size, dir, DYN_TOOL_META_FILE);
+	if (rc < 0)
+		return rc;
+	return file_path_join(source_path, source_size, dir,
+			      DYN_TOOL_SOURCE_FILE);
+}
+
+static int history_dir_path(const char *tool_dir, char *path, size_t path_size)
+{
+	return file_path_join(path, path_size, tool_dir, DYN_TOOL_HISTORY_DIR);
+}
+
+static int checkpoint_dir_path(const char *tool_dir, const char *checkpoint_id,
+			       char *path, size_t path_size)
+{
+	char history[PATH_MAX];
+	int rc;
+
+	rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc < 0)
+		return rc;
+	return file_path_join(path, path_size, history, checkpoint_id);
+}
+
+static uint64_t fnv1a64(const char *data, size_t len)
+{
+	uint64_t hash = 1469598103934665603ULL;
+
+	for (size_t i = 0; i < len; i++) {
+		hash ^= (unsigned char)data[i];
+		hash *= 1099511628211ULL;
+	}
+	return hash;
+}
+
+static void hash_text(const char *data, size_t len, char out[32])
+{
+	snprintf(out, 32, "%016llx",
+		 (unsigned long long)fnv1a64(data ? data : "", len));
+}
+
+static const char *origin_name(enum tool_origin origin)
+{
+	if (origin == TOOL_ORIGIN_DYNAMIC_SESSION)
+		return "session";
+	if (origin == TOOL_ORIGIN_DYNAMIC_PERSISTENT)
+		return "persistent";
+	return "unknown";
+}
+
+static int checkpoint_id_value(const char *id)
+{
+	int value = 0;
+
+	if (!id || !*id)
+		return -1;
+	for (const char *p = id; *p; p++) {
+		if (*p < '0' || *p > '9')
+			return -1;
+		value = value * 10 + (*p - '0');
+	}
+	return value;
+}
+
+static int latest_checkpoint_id(const char *tool_dir, char *id, size_t id_size)
+{
+	char history[PATH_MAX];
+	char **dirs = NULL;
+	int count = 0;
+	int max_id = -1;
+	int rc;
+
+	if (!id || id_size == 0)
+		return -EINVAL;
+	id[0] = '\0';
+	rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc < 0)
+		return rc;
+	if (!file_exists(history))
+		return -ENOENT;
+	if (file_list_dirs(history, &dirs, &count) != 0)
+		return -ENOENT;
+	for (int i = 0; i < count; i++) {
+		int value = checkpoint_id_value(dirs[i]);
+		if (value > max_id)
+			max_id = value;
+	}
+	file_free_list(dirs, count);
+	if (max_id < 0)
+		return -ENOENT;
+	if (snprintf(id, id_size, "%04d", max_id) >= (int)id_size)
+		return -ENAMETOOLONG;
+	return 0;
+}
+
+static int next_checkpoint_id(const char *tool_dir, char *id, size_t id_size)
+{
+	char latest[16];
+	int rc;
+	int value = 0;
+
+	rc = latest_checkpoint_id(tool_dir, latest, sizeof(latest));
+	if (rc == 0)
+		value = checkpoint_id_value(latest);
+	else if (rc != -ENOENT)
+		return rc;
+	value++;
+	if (snprintf(id, id_size, "%04d", value) >= (int)id_size)
+		return -ENAMETOOLONG;
+	return 0;
+}
+
+static int write_checkpoint_meta(const char *checkpoint_dir,
+				 const struct tool_checkpoint *cp)
+{
+	char path[PATH_MAX];
+	cJSON *root;
+	char *json;
+	int rc;
+
+	rc = file_path_join(path, sizeof(path), checkpoint_dir,
+			    DYN_TOOL_CHECKPOINT_META_FILE);
+	if (rc < 0)
+		return rc;
+	root = cJSON_CreateObject();
+	if (!root)
+		return -ENOMEM;
+	cJSON_AddStringToObject(root, "id", cp->id);
+	cJSON_AddStringToObject(root, "name", cp->name);
+	cJSON_AddStringToObject(root, "before_state", cp->before_state);
+	cJSON_AddStringToObject(root, "origin", cp->origin);
+	cJSON_AddStringToObject(root, "old_hash", cp->old_hash);
+	cJSON_AddStringToObject(root, "new_hash", cp->new_hash);
+	cJSON_AddNumberToObject(root, "created_at", (double)cp->created_at);
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		return -ENOMEM;
+	rc = file_write_all(path, json, strlen(json));
+	free(json);
+	return rc;
+}
+
+static int read_checkpoint_meta(const char *checkpoint_dir,
+				struct tool_checkpoint *cp)
+{
+	char path[PATH_MAX];
+	char *json;
+	cJSON *root;
+	cJSON *item;
+	int rc;
+
+	if (!cp)
+		return -EINVAL;
+	memset(cp, 0, sizeof(*cp));
+	rc = file_path_join(path, sizeof(path), checkpoint_dir,
+			    DYN_TOOL_CHECKPOINT_META_FILE);
+	if (rc < 0)
+		return rc;
+	json = file_read_all(path, NULL);
+	if (!json)
+		return -ENOENT;
+	root = cJSON_Parse(json);
+	free(json);
+	if (!root)
+		return -EINVAL;
+	item = cJSON_GetObjectItem(root, "id");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->id, item->valuestring, sizeof(cp->id) - 1);
+	item = cJSON_GetObjectItem(root, "name");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->name, item->valuestring, sizeof(cp->name) - 1);
+	item = cJSON_GetObjectItem(root, "before_state");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->before_state, item->valuestring,
+			sizeof(cp->before_state) - 1);
+	item = cJSON_GetObjectItem(root, "origin");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->origin, item->valuestring, sizeof(cp->origin) - 1);
+	item = cJSON_GetObjectItem(root, "old_hash");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->old_hash, item->valuestring,
+			sizeof(cp->old_hash) - 1);
+	item = cJSON_GetObjectItem(root, "new_hash");
+	if (cJSON_IsString(item) && item->valuestring)
+		strncpy(cp->new_hash, item->valuestring,
+			sizeof(cp->new_hash) - 1);
+	item = cJSON_GetObjectItem(root, "created_at");
+	if (cJSON_IsNumber(item))
+		cp->created_at = (long)item->valuedouble;
+	cJSON_Delete(root);
+	if (!cp->id[0] || !cp->name[0] || !cp->before_state[0])
+		return -EINVAL;
+	return 0;
+}
+
+static int remove_checkpoint_ids_from(const char *tool_dir, int min_id)
+{
+	char history[PATH_MAX];
+	char **dirs = NULL;
+	int count = 0;
+	int rc;
+
+	rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc < 0)
+		return rc;
+	if (!file_exists(history))
+		return 0;
+	if (file_list_dirs(history, &dirs, &count) != 0)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		int value = checkpoint_id_value(dirs[i]);
+		char path[PATH_MAX];
+
+		if (value < min_id)
+			continue;
+		if (file_path_join(path, sizeof(path), history, dirs[i]) != 0)
+			continue;
+		(void)remove_tree(path);
+	}
+	file_free_list(dirs, count);
+	return 0;
+}
+
+static int prune_checkpoint_history(const char *tool_dir)
+{
+	char history[PATH_MAX];
+	char **dirs = NULL;
+	int count = 0;
+	int rc;
+
+	rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc < 0)
+		return rc;
+	if (!file_exists(history))
+		return 0;
+	if (file_list_dirs(history, &dirs, &count) != 0)
+		return 0;
+	while (count > DYN_TOOL_HISTORY_LIMIT) {
+		int min_idx = -1;
+		int min_id = INT_MAX;
+
+		for (int i = 0; i < count; i++) {
+			int value = checkpoint_id_value(dirs[i]);
+			if (value >= 0 && value < min_id) {
+				min_id = value;
+				min_idx = i;
+			}
+		}
+		if (min_idx < 0)
+			break;
+		{
+			char path[PATH_MAX];
+			if (file_path_join(path, sizeof(path), history,
+					   dirs[min_idx]) == 0)
+				(void)remove_tree(path);
+		}
+		free(dirs[min_idx]);
+		for (int i = min_idx; i < count - 1; i++)
+			dirs[i] = dirs[i + 1];
+		count--;
+	}
+	file_free_list(dirs, count);
+	return 0;
+}
+
+static int create_tool_checkpoint(const char *tool_dir,
+				  const struct tool_entry *existing,
+				  const char *name,
+				  struct tool_checkpoint *cp,
+				  char *checkpoint_dir,
+				  size_t checkpoint_dir_size)
+{
+	char history[PATH_MAX];
+	char id[16];
+	char old_meta[PATH_MAX];
+	char old_source[PATH_MAX];
+	char cp_meta[PATH_MAX];
+	char cp_source[PATH_MAX];
+	struct dynamic_tool *old_dt = NULL;
+	char *source = NULL;
+	size_t source_len = 0;
+	int rc;
+
+	if (!tool_dir || !name || !cp || !checkpoint_dir)
+		return -EINVAL;
+	memset(cp, 0, sizeof(*cp));
+	rc = file_ensure_dir(tool_dir);
+	if (rc < 0)
+		return rc;
+	rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc == 0)
+		rc = file_ensure_dir(history);
+	if (rc == 0)
+		rc = next_checkpoint_id(tool_dir, id, sizeof(id));
+	if (rc == 0)
+		rc = checkpoint_dir_path(tool_dir, id, checkpoint_dir,
+					 checkpoint_dir_size);
+	if (rc == 0)
+		rc = file_ensure_dir(checkpoint_dir);
+	if (rc < 0)
+		return rc;
+	strncpy(cp->id, id, sizeof(cp->id) - 1);
+	strncpy(cp->name, name, sizeof(cp->name) - 1);
+	strncpy(cp->before_state, "absent", sizeof(cp->before_state) - 1);
+	strncpy(cp->origin, "none", sizeof(cp->origin) - 1);
+	strncpy(cp->old_hash, "absent", sizeof(cp->old_hash) - 1);
+	cp->created_at = (long)time(NULL);
+	if (existing && (existing->flags & TOOL_FLAG_DYNAMIC) &&
+	    existing->user_data) {
+		old_dt = existing->user_data;
+		strncpy(cp->before_state, "present",
+			sizeof(cp->before_state) - 1);
+		strncpy(cp->origin, origin_name(existing->origin),
+			sizeof(cp->origin) - 1);
+		rc = tool_file_paths(old_dt->dir, old_meta, sizeof(old_meta),
+				     old_source, sizeof(old_source));
+		if (rc == 0)
+			rc = tool_file_paths(checkpoint_dir, cp_meta,
+					     sizeof(cp_meta), cp_source,
+					     sizeof(cp_source));
+		if (rc == 0)
+			rc = copy_file(old_meta, cp_meta);
+		if (rc == 0)
+			rc = copy_file(old_source, cp_source);
+		if (rc == 0) {
+			source = file_read_all(old_source, &source_len);
+			if (!source)
+				rc = -ENOENT;
+		}
+		if (rc == 0) {
+			hash_text(source, source_len, cp->old_hash);
+			free(source);
+			source = NULL;
+		}
+	}
+	if (rc == 0)
+		rc = write_checkpoint_meta(checkpoint_dir, cp);
+	if (source)
+		free(source);
+	if (rc < 0)
+		(void)remove_tree(checkpoint_dir);
+	return rc;
+}
+
+static int restore_tool_checkpoint(const char *tool_dir,
+				   const char *checkpoint_dir,
+				   const struct tool_checkpoint *cp)
+{
+	char old_meta[PATH_MAX];
+	char old_source[PATH_MAX];
+	char dst_meta[PATH_MAX];
+	char dst_source[PATH_MAX];
+	int rc;
+
+	if (!tool_dir || !checkpoint_dir || !cp)
+		return -EINVAL;
+	if (strcmp(cp->before_state, "absent") == 0) {
+		if (file_exists(tool_dir))
+			return remove_tree(tool_dir);
+		return 0;
+	}
+	if (strcmp(cp->before_state, "present") != 0)
+		return -EINVAL;
+	rc = file_ensure_dir(tool_dir);
+	if (rc == 0)
+		rc = tool_file_paths(checkpoint_dir, old_meta, sizeof(old_meta),
+				     old_source, sizeof(old_source));
+	if (rc == 0)
+		rc = tool_file_paths(tool_dir, dst_meta, sizeof(dst_meta),
+				     dst_source, sizeof(dst_source));
+	if (rc == 0)
+		rc = copy_file(old_meta, dst_meta);
+	if (rc == 0)
+		rc = copy_file(old_source, dst_source);
+	return rc;
+}
+
 static int check_js_source(const char *source_path,
 			   char **error_out)
 {
@@ -938,6 +1338,12 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	char *schema = NULL;
 	char *check_error = NULL;
 	struct dynamic_tool *dt = NULL;
+	struct tool_entry *existing = NULL;
+	struct tool_checkpoint checkpoint;
+	char checkpoint_dir[PATH_MAX];
+	char new_hash[32];
+	int checkpoint_created = 0;
+	int register_rc = 0;
 	const char *stage = "init";
 	int rc;
 
@@ -1017,8 +1423,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	}
 	stage = "check_name_conflict";
 	{
-		struct tool_entry *existing =
-			tool_lookup(ctx->reg, name_item->valuestring);
+		existing = tool_lookup(ctx->reg, name_item->valuestring);
 		if (existing && !(existing->flags & TOOL_FLAG_DYNAMIC)) {
 			cJSON_Delete(root);
 			return tool_create_fail(result, stage, -EEXIST,
@@ -1026,6 +1431,8 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 						"not a dynamic tool");
 		}
 	}
+	hash_text(source_item->valuestring, strlen(source_item->valuestring),
+		  new_hash);
 	stage = "approval";
 	if (ctx->cfg->create_requires_approval && ctx->tctx) {
 		struct tool_operation op;
@@ -1104,6 +1511,17 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 				    dt->dir, DYN_TOOL_SOURCE_FILE);
 	}
 	if (rc == 0) {
+		stage = "create_checkpoint";
+		rc = create_tool_checkpoint(dt->dir, existing, dt->name,
+					    &checkpoint, checkpoint_dir,
+					    sizeof(checkpoint_dir));
+		if (rc == 0) {
+			strncpy(checkpoint.new_hash, new_hash,
+				sizeof(checkpoint.new_hash) - 1);
+			checkpoint_created = 1;
+		}
+	}
+	if (rc == 0) {
 		stage = "write_tool_files";
 		rc = write_tool_files(dt, source_item->valuestring);
 	}
@@ -1118,9 +1536,27 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	if (rc == 0) {
 		stage = "register_tool";
 		rc = register_dynamic_tool(ctx->reg, dt);
+		register_rc = rc;
+	}
+	if (rc == 0 && checkpoint_created) {
+		int meta_rc;
+
+		stage = "update_checkpoint";
+		meta_rc = write_checkpoint_meta(checkpoint_dir, &checkpoint);
+		if (meta_rc == 0)
+			meta_rc = prune_checkpoint_history(dt->dir);
+		if (meta_rc < 0)
+			log_warn("failed to update dynamic tool checkpoint: %s",
+				 morph_strerror(meta_rc));
 	}
 	cJSON_Delete(root);
 	if (rc < 0) {
+		if (checkpoint_created) {
+			(void)restore_tool_checkpoint(dt ? dt->dir : NULL,
+						      checkpoint_dir,
+						      &checkpoint);
+			(void)remove_tree(checkpoint_dir);
+		}
 		if (check_error) {
 			char *formatted = format_check_error(dt ? dt->source_path :
 							     NULL, check_error);
@@ -1141,9 +1577,16 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		return tool_create_fail(result, stage, rc, NULL);
 	}
 	return tool_result_printf(result,
-				  "{\"name\":\"%s\",\"status\":\"%s\"}",
+				  "{\"name\":\"%s\",\"status\":\"%s\","
+				  "\"checkpoint_id\":\"%s\","
+				  "\"diff_available\":true,"
+				  "\"old_hash\":\"%s\","
+				  "\"new_hash\":\"%s\"}",
 				  dt->name,
-				  rc > 0 ? "updated" : "registered");
+				  register_rc > 0 ? "updated" : "registered",
+				  checkpoint.id,
+				  checkpoint.old_hash,
+				  new_hash);
 }
 
 static int copy_file(const char *src, const char *dst)
@@ -1421,6 +1864,415 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 				  name);
 }
 
+static int parse_tool_name_arg(const char *args_json, const char *tool_name,
+			       cJSON **root_out, char name[TOOL_NAME_MAX])
+{
+	cJSON *root;
+	cJSON *name_item;
+
+	if (!root_out || !name)
+		return -EINVAL;
+	*root_out = NULL;
+	root = args_json ? cJSON_Parse(args_json) : NULL;
+	if (!root)
+		return -EINVAL;
+	name_item = cJSON_GetObjectItem(root, "name");
+	if (!cJSON_IsString(name_item) ||
+	    !valid_tool_name(name_item->valuestring)) {
+		cJSON_Delete(root);
+		return -EINVAL;
+	}
+	strncpy(name, name_item->valuestring, TOOL_NAME_MAX - 1);
+	name[TOOL_NAME_MAX - 1] = '\0';
+	*root_out = root;
+	(void)tool_name;
+	return 0;
+}
+
+static int result_take_cjson(struct tool_result *result, cJSON *root)
+{
+	char *json;
+
+	if (!root)
+		return -ENOMEM;
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		return -ENOMEM;
+	return tool_result_take_json(result, json);
+}
+
+static int tool_history_exec(const char *args_json, struct tool_result *result,
+			     void *user_data)
+{
+	struct dynamic_tools_context *ctx = user_data;
+	cJSON *args = NULL;
+	cJSON *limit_item;
+	cJSON *out;
+	cJSON *items;
+	char name[TOOL_NAME_MAX];
+	char tool_dir[PATH_MAX];
+	char history[PATH_MAX];
+	char **dirs = NULL;
+	int count = 0;
+	int limit = 20;
+	int rc;
+
+	if (!ctx || !result)
+		return -EINVAL;
+	rc = parse_tool_name_arg(args_json, "tool_history", &args, name);
+	if (rc < 0)
+		return tool_result_json_error(result,
+					      "tool_history requires valid name");
+	limit_item = cJSON_GetObjectItem(args, "limit");
+	if (cJSON_IsNumber(limit_item) && limit_item->valueint > 0)
+		limit = limit_item->valueint;
+	cJSON_Delete(args);
+	rc = create_context_dir(ctx, name, tool_dir, sizeof(tool_dir));
+	if (rc == 0)
+		rc = history_dir_path(tool_dir, history, sizeof(history));
+	if (rc < 0)
+		return tool_result_json_errorf(result,
+			"failed to read tool history: %s", morph_strerror(rc));
+	out = cJSON_CreateObject();
+	items = cJSON_CreateArray();
+	if (!out || !items) {
+		cJSON_Delete(out);
+		cJSON_Delete(items);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(out, "name", name);
+	cJSON_AddItemToObject(out, "checkpoints", items);
+	if (file_exists(history) && file_list_dirs(history, &dirs, &count) == 0) {
+		int emitted = 0;
+
+		while (emitted < limit) {
+			int max_idx = -1;
+			int max_id = -1;
+
+			for (int i = 0; i < count; i++) {
+				int value = checkpoint_id_value(dirs[i]);
+				if (value > max_id) {
+					max_id = value;
+					max_idx = i;
+				}
+			}
+			if (max_idx < 0)
+				break;
+			{
+				char cp_dir[PATH_MAX];
+				struct tool_checkpoint cp;
+				cJSON *item;
+
+				if (file_path_join(cp_dir, sizeof(cp_dir),
+						   history, dirs[max_idx]) == 0 &&
+				    read_checkpoint_meta(cp_dir, &cp) == 0) {
+					item = cJSON_CreateObject();
+					if (!item) {
+						file_free_list(dirs, count);
+						cJSON_Delete(out);
+						return -ENOMEM;
+					}
+					cJSON_AddStringToObject(item, "id", cp.id);
+					cJSON_AddStringToObject(item,
+						"before_state", cp.before_state);
+					cJSON_AddStringToObject(item, "origin",
+								cp.origin);
+					cJSON_AddStringToObject(item, "old_hash",
+								cp.old_hash);
+					cJSON_AddStringToObject(item, "new_hash",
+								cp.new_hash);
+					cJSON_AddNumberToObject(item,
+						"created_at", (double)cp.created_at);
+					cJSON_AddItemToArray(items, item);
+					emitted++;
+				}
+			}
+			dirs[max_idx][0] = '\0';
+		}
+		file_free_list(dirs, count);
+	}
+	return result_take_cjson(result, out);
+}
+
+static char *read_optional_file(const char *path)
+{
+	if (!path || !file_exists(path))
+		return strdup("");
+	return file_read_all(path, NULL);
+}
+
+static int append_whole_file_diff(morph_buf_t *buf, const char *label,
+				  const char *old_text, const char *new_text)
+{
+	const char *old_ptr = old_text ? old_text : "";
+	const char *new_ptr = new_text ? new_text : "";
+	int old_lines = 0;
+	int new_lines = 0;
+	int rc;
+
+	if (strcmp(old_ptr, new_ptr) == 0)
+		return 0;
+	for (const char *p = old_ptr; *p; p++)
+		if (*p == '\n')
+			old_lines++;
+	if (*old_ptr)
+		old_lines++;
+	for (const char *p = new_ptr; *p; p++)
+		if (*p == '\n')
+			new_lines++;
+	if (*new_ptr)
+		new_lines++;
+	rc = morph_buf_printf(buf, "--- a/%s\n+++ b/%s\n@@ -1,%d +1,%d @@\n",
+			      label, label, old_lines, new_lines);
+	if (rc != 0)
+		return rc;
+	for (const char *p = old_ptr; *p;) {
+		const char *eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) + 1 : strlen(p);
+
+		rc = morph_buf_putc(buf, '-');
+		if (rc == 0)
+			rc = morph_buf_append(buf, p, len);
+		if (rc != 0)
+			return rc;
+		if (!eol)
+			rc = morph_buf_putc(buf, '\n');
+		if (rc != 0)
+			return rc;
+		p += len;
+	}
+	for (const char *p = new_ptr; *p;) {
+		const char *eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) + 1 : strlen(p);
+
+		rc = morph_buf_putc(buf, '+');
+		if (rc == 0)
+			rc = morph_buf_append(buf, p, len);
+		if (rc != 0)
+			return rc;
+		if (!eol)
+			rc = morph_buf_putc(buf, '\n');
+		if (rc != 0)
+			return rc;
+		p += len;
+	}
+	return 0;
+}
+
+static int tool_diff_exec(const char *args_json, struct tool_result *result,
+			  void *user_data)
+{
+	struct dynamic_tools_context *ctx = user_data;
+	struct tool_entry *entry;
+	struct dynamic_tool *dt;
+	struct tool_checkpoint cp;
+	cJSON *args = NULL;
+	cJSON *id_item;
+	cJSON *out;
+	char name[TOOL_NAME_MAX];
+	char cp_id[16];
+	char cp_dir[PATH_MAX];
+	char old_meta_path[PATH_MAX];
+	char old_source_path[PATH_MAX];
+	char new_meta_path[PATH_MAX];
+	char new_source_path[PATH_MAX];
+	char *old_meta = NULL;
+	char *old_source = NULL;
+	char *new_meta = NULL;
+	char *new_source = NULL;
+	morph_buf_t diff;
+	int rc;
+
+	if (!ctx || !result)
+		return -EINVAL;
+	rc = parse_tool_name_arg(args_json, "tool_diff", &args, name);
+	if (rc < 0)
+		return tool_result_json_error(result,
+					      "tool_diff requires valid name");
+	id_item = cJSON_GetObjectItem(args, "checkpoint_id");
+	if (cJSON_IsString(id_item) && id_item->valuestring &&
+	    strcmp(id_item->valuestring, "latest") != 0) {
+		strncpy(cp_id, id_item->valuestring, sizeof(cp_id) - 1);
+		cp_id[sizeof(cp_id) - 1] = '\0';
+	} else {
+		char tool_dir[PATH_MAX];
+		rc = create_context_dir(ctx, name, tool_dir, sizeof(tool_dir));
+		if (rc == 0)
+			rc = latest_checkpoint_id(tool_dir, cp_id, sizeof(cp_id));
+		if (rc < 0) {
+			cJSON_Delete(args);
+			return tool_result_json_error(result,
+						      "checkpoint not found");
+		}
+	}
+	cJSON_Delete(args);
+	entry = tool_lookup(ctx->reg, name);
+	if (!entry || !(entry->flags & TOOL_FLAG_DYNAMIC) || !entry->user_data)
+		return tool_result_json_error(result, "dynamic tool not found");
+	dt = entry->user_data;
+	rc = checkpoint_dir_path(dt->dir, cp_id, cp_dir, sizeof(cp_dir));
+	if (rc == 0)
+		rc = read_checkpoint_meta(cp_dir, &cp);
+	if (rc == 0)
+		rc = tool_file_paths(cp_dir, old_meta_path, sizeof(old_meta_path),
+				     old_source_path, sizeof(old_source_path));
+	if (rc == 0)
+		rc = tool_file_paths(dt->dir, new_meta_path, sizeof(new_meta_path),
+				     new_source_path, sizeof(new_source_path));
+	if (rc < 0)
+		return tool_result_json_error(result, "checkpoint not found");
+	old_meta = read_optional_file(old_meta_path);
+	old_source = read_optional_file(old_source_path);
+	new_meta = read_optional_file(new_meta_path);
+	new_source = read_optional_file(new_source_path);
+	if (!old_meta || !old_source || !new_meta || !new_source) {
+		free(old_meta);
+		free(old_source);
+		free(new_meta);
+		free(new_source);
+		return -ENOMEM;
+	}
+	rc = morph_buf_init(&diff, 4096);
+	if (rc == 0)
+		rc = append_whole_file_diff(&diff, DYN_TOOL_META_FILE, old_meta,
+					    new_meta);
+	if (rc == 0)
+		rc = append_whole_file_diff(&diff, DYN_TOOL_SOURCE_FILE,
+					    old_source, new_source);
+	free(old_meta);
+	free(old_source);
+	free(new_meta);
+	free(new_source);
+	if (rc != 0) {
+		morph_buf_cleanup(&diff);
+		return rc;
+	}
+	out = cJSON_CreateObject();
+	if (!out) {
+		morph_buf_cleanup(&diff);
+		return -ENOMEM;
+	}
+	cJSON_AddStringToObject(out, "name", name);
+	cJSON_AddStringToObject(out, "checkpoint_id", cp.id);
+	cJSON_AddStringToObject(out, "before_state", cp.before_state);
+	cJSON_AddStringToObject(out, "diff", morph_buf_cstr(&diff));
+	morph_buf_cleanup(&diff);
+	return result_take_cjson(result, out);
+}
+
+static int reload_persistent_if_present(struct dynamic_tools_context *ctx,
+					const char *name)
+{
+	char persistent_dir[PATH_MAX];
+	int rc;
+
+	rc = file_path_join(persistent_dir, sizeof(persistent_dir),
+			    ctx->cfg->persistent_dir, name);
+	if (rc < 0)
+		return rc;
+	if (!file_exists(persistent_dir))
+		return 0;
+	rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, persistent_dir,
+				TOOL_ORIGIN_DYNAMIC_PERSISTENT);
+	return rc < 0 ? rc : 0;
+}
+
+static int tool_rollback_exec(const char *args_json, struct tool_result *result,
+			      void *user_data)
+{
+	struct dynamic_tools_context *ctx = user_data;
+	struct tool_entry *entry;
+	struct dynamic_tool *dt;
+	struct tool_checkpoint cp;
+	cJSON *args = NULL;
+	cJSON *id_item;
+	char name[TOOL_NAME_MAX];
+	char cp_id[16];
+	char tool_dir[PATH_MAX];
+	char cp_dir[PATH_MAX];
+	char source_path[PATH_MAX];
+	char *check_error = NULL;
+	int rc;
+
+	if (!ctx || !result)
+		return -EINVAL;
+	rc = parse_tool_name_arg(args_json, "tool_rollback", &args, name);
+	if (rc < 0)
+		return tool_result_json_error(result,
+					      "tool_rollback requires valid name");
+	id_item = cJSON_GetObjectItem(args, "checkpoint_id");
+	if (cJSON_IsString(id_item) && id_item->valuestring &&
+	    strcmp(id_item->valuestring, "latest") != 0) {
+		strncpy(cp_id, id_item->valuestring, sizeof(cp_id) - 1);
+		cp_id[sizeof(cp_id) - 1] = '\0';
+	} else {
+		rc = create_context_dir(ctx, name, tool_dir, sizeof(tool_dir));
+		if (rc == 0)
+			rc = latest_checkpoint_id(tool_dir, cp_id, sizeof(cp_id));
+		if (rc < 0) {
+			cJSON_Delete(args);
+			return tool_result_json_error(result,
+						      "checkpoint not found");
+		}
+	}
+	cJSON_Delete(args);
+	entry = tool_lookup(ctx->reg, name);
+	if (!entry || !(entry->flags & TOOL_FLAG_DYNAMIC) || !entry->user_data)
+		return tool_result_json_error(result, "dynamic tool not found");
+	dt = entry->user_data;
+	strncpy(tool_dir, dt->dir, sizeof(tool_dir) - 1);
+	tool_dir[sizeof(tool_dir) - 1] = '\0';
+	rc = checkpoint_dir_path(tool_dir, cp_id, cp_dir, sizeof(cp_dir));
+	if (rc == 0)
+		rc = read_checkpoint_meta(cp_dir, &cp);
+	if (rc < 0)
+		return tool_result_json_error(result, "checkpoint not found");
+	rc = restore_tool_checkpoint(tool_dir, cp_dir, &cp);
+	if (rc < 0)
+		return tool_result_json_errorf(result,
+			"failed to restore checkpoint: %s", morph_strerror(rc));
+	if (strcmp(cp.before_state, "absent") == 0) {
+		rc = tool_unregister(ctx->reg, name);
+		if (rc == -ENOENT)
+			rc = 0;
+		if (rc == 0)
+			rc = reload_persistent_if_present(ctx, name);
+		if (rc < 0)
+			return tool_result_json_errorf(result,
+				"failed to unregister rolled back tool: %s",
+				morph_strerror(rc));
+		return tool_result_printf(result,
+			"{\"name\":\"%s\",\"status\":\"rolled_back\","
+			"\"checkpoint_id\":\"%s\",\"state\":\"absent\"}",
+			name, cp.id);
+	}
+	rc = file_path_join(source_path, sizeof(source_path), tool_dir,
+			    DYN_TOOL_SOURCE_FILE);
+	if (rc == 0)
+		rc = check_js_source(source_path, &check_error);
+	if (rc < 0) {
+		int out_rc;
+		out_rc = tool_result_json_errorf(result,
+			"restored checkpoint failed validation: %s",
+			check_error ? check_error : morph_strerror(rc));
+		free(check_error);
+		return out_rc;
+	}
+	free(check_error);
+	rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, tool_dir,
+				TOOL_ORIGIN_DYNAMIC_SESSION);
+	if (rc < 0)
+		return tool_result_json_errorf(result,
+			"failed to register rolled back tool: %s",
+			morph_strerror(rc));
+	(void)remove_checkpoint_ids_from(tool_dir, checkpoint_id_value(cp.id));
+	return tool_result_printf(result,
+		"{\"name\":\"%s\",\"status\":\"rolled_back\","
+		"\"checkpoint_id\":\"%s\",\"state\":\"present\"}",
+		name, cp.id);
+}
+
 static void dynamic_tools_context_destroy(void *user_data)
 {
 	free(user_data);
@@ -1546,7 +2398,9 @@ static const char *TOOL_CREATE_DESCRIPTION =
 	"capabilities are controlled by the active dynamic_tools profile, not "
 	"by tool_create arguments. If a dynamic tool with the same name already "
 	"exists, tool_create updates it; non-dynamic tools cannot be "
-	"overwritten.";
+	"overwritten. Every successful create/update records a checkpoint; use "
+	"tool_history, tool_diff, and tool_rollback to inspect or rewind dynamic "
+	"tool changes.";
 
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg,
@@ -1584,6 +2438,24 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 			   "Delete a dynamic tool. Session tools are removed from the current session directory; persistent dynamic tools are removed from the persistent dynamic tool directory. Built-in, MCP, and ext tools cannot be deleted.",
 			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
 			   tool_delete_exec, ctx, NULL);
+	if (rc < 0)
+		return rc;
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_history",
+			   "List checkpoints recorded for a session dynamic tool.",
+			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
+			   tool_history_exec, ctx, NULL);
+	if (rc < 0)
+		return rc;
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_diff",
+			   "Show a unified diff between a dynamic tool checkpoint and the current tool files.",
+			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}",
+			   tool_diff_exec, ctx, NULL);
+	if (rc < 0)
+		return rc;
+	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_rollback",
+			   "Roll back a session dynamic tool to a checkpoint. Rolling back a creation removes the tool.",
+			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}",
+			   tool_rollback_exec, ctx, NULL);
 	if (rc < 0)
 		return rc;
 	rc = dynamic_tools_load_persistent(reg, tctx, cfg);

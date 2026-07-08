@@ -48,11 +48,20 @@
 - 创建成功后立即注册到当前 `tool_registry`。
 - 保存到会话目录：`~/.morph/runtime/tools/<session_id>/<tool_name>/`。
 - 禁止覆盖内置工具、ext 工具和 MCP 工具；同名动态工具会被更新。
+- 每次成功创建/更新都会记录 checkpoint，返回 `checkpoint_id`、`old_hash` 和 `new_hash`。
 - 会校验：
   - 工具名格式。
   - `args_schema` JSON。
   - JS 源码大小。
   - JS 源码可被 QuickJS 解析。
+
+新增内置工具 `tool_history` / `tool_diff` / `tool_rollback`：
+
+- `tool_history` 列出当前 session 动态工具的 checkpoints。
+- `tool_diff` 返回某个 checkpoint 与当前工具文件之间的 unified diff。
+- `tool_rollback` 回滚到某个 checkpoint。
+- 回滚创建操作会删除该 session 动态工具；如果同名 persistent 工具存在，则恢复 persistent 版本。
+- 回滚更新操作会恢复旧 `tool.json` / `tool.js`，重新校验并注册工具。
 
 新增内置工具 `tool_promote`：
 
@@ -292,6 +301,7 @@ allowed_network = []
 当前已有单元测试：
 
 - `tool_create` 创建 JS 工具后可立即调用。
+- `tool_history` / `tool_diff` / `tool_rollback` 可查看和回滚动态工具创建/更新。
 - `tool_delete` 可卸载 session / persistent 动态工具，并拒绝删除非动态工具。
 - server profile 默认拒绝文件读取能力。
 - `tool_promote` 后新 registry 能自动加载持久工具。
