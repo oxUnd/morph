@@ -42,8 +42,6 @@ static const char *blocked_commands[] = {
 	"systemctl", "service",
 	"launchctl",
 	"kill", "killall", "pkill",
-	"apt", "apt-get", "yum", "dnf", "brew", "pip", "pip3", "npm", "gem", "cargo",
-	"curl", "wget",
 	"ssh", "scp", "sftp", "rsync",
 	"mount", "umount",
 	"fdisk", "parted", "diskutil",
@@ -211,8 +209,8 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 		(void)tool_result_take_text(result, strdup(
 			"{\"error\":\"command blocked for safety. "
-			"Destructive operations (rm, mv, cp, chmod, curl, ssh, "
-			"kill, package managers, etc.) are not allowed. "
+			"Destructive operations (rm, mv, cp, chmod, ssh, "
+			"kill, etc.) are not allowed. "
 			"Use read-only alternatives instead.\"}"));
 		return -EPERM;
 	}
@@ -435,8 +433,9 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"Commands matching the configured allowlist run silently; "
 		"anything else triggers an interactive approval prompt to the user "
 		"(yes/no/always). DANGEROUS commands are blocked unconditionally: "
-		"rm, mv, cp, chmod, curl, wget, ssh, kill, package managers, "
-		"and other destructive operations. "
+		"rm, mv, cp, chmod, ssh, kill, and other destructive operations. "
+		"Network/download commands and package manager commands require "
+		"approval unless explicitly allowlisted. "
 		"Args: command (required), cwd (optional working dir), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "

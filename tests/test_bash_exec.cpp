@@ -267,22 +267,6 @@ TEST_F(BashExecTest, BlockedChown)
 	EXPECT_EQ(rc, -EPERM);
 }
 
-TEST_F(BashExecTest, BlockedCurl)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "curl http://example.com", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedWget)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "wget http://example.com", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
 TEST_F(BashExecTest, BlockedSsh)
 {
 	bash_exec_init(&reg, tctx);
@@ -320,70 +304,6 @@ TEST_F(BashExecTest, BlockedPkill)
 	bash_exec_init(&reg, tctx);
 	int rc;
 	exec_command(reg, tctx, "pkill -f process", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedApt)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "apt install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedAptGet)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "apt-get install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedYum)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "yum install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedBrew)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "brew install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedPip)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "pip install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedNpm)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "npm install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedCargo)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "cargo install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedGem)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "gem install foo", rc);
 	EXPECT_EQ(rc, -EPERM);
 }
 
@@ -879,22 +799,6 @@ TEST_F(BashExecTest, ToolNotFound)
 	tool_result_cleanup(&result);
 }
 
-TEST_F(BashExecTest, BlockedDnf)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "dnf install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
-TEST_F(BashExecTest, BlockedPip3)
-{
-	bash_exec_init(&reg, tctx);
-	int rc;
-	exec_command(reg, tctx, "pip3 install foo", rc);
-	EXPECT_EQ(rc, -EPERM);
-}
-
 TEST_F(BashExecTest, BlockedSftp)
 {
 	bash_exec_init(&reg, tctx);
@@ -1253,6 +1157,68 @@ TEST_F(BashExecTest, ApprovalCallbackDenies)
 	EXPECT_EQ(rc, -EPERM);
 	EXPECT_EQ(state.calls, 1);
 	EXPECT_TRUE(result.find("denied") != std::string::npos);
+}
+
+TEST_F(BashExecTest, PackageManagerRequiresApproval)
+{
+	bash_exec_init(&reg, tctx);
+	int rc;
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"npm --version\",\"timeout_seconds\":5}",
+		rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_EQ(result.find("blocked"), std::string::npos);
+	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
+		    result.find("interactive approval") != std::string::npos);
+}
+
+TEST_F(BashExecTest, PackageManagerRunsAfterApproval)
+{
+	bash_exec_init(&reg, tctx);
+	ApprovalState state{0, TOOL_OP_ALLOW, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
+	int rc;
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"npm --version\",\"timeout_seconds\":5}",
+		rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_EQ(state.last_command, "npm --version");
+	EXPECT_EQ(get_json_field(result, "command"), "npm --version");
+	EXPECT_NE(get_json_int(result, "exit_code"), -999);
+}
+
+TEST_F(BashExecTest, NetworkToolRequiresApproval)
+{
+	bash_exec_init(&reg, tctx);
+	int rc;
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"curl --version\",\"timeout_seconds\":5}",
+		rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_EQ(result.find("blocked"), std::string::npos);
+	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
+		    result.find("interactive approval") != std::string::npos);
+}
+
+TEST_F(BashExecTest, NetworkToolRunsAfterApproval)
+{
+	bash_exec_init(&reg, tctx);
+	ApprovalState state{0, TOOL_OP_ALLOW, "", ""};
+	tool_context_set_operation_approval(tctx, approval_stub, &state);
+	int rc;
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"curl --version\",\"timeout_seconds\":5}",
+		rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_EQ(state.last_command, "curl --version");
+	EXPECT_EQ(get_json_field(result, "command"), "curl --version");
+	EXPECT_NE(get_json_int(result, "exit_code"), -999);
 }
 
 TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
