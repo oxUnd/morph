@@ -2,6 +2,10 @@
 #include "cli/commands/registry.h"
 #include "agent/tools/dynamic_tools.h"
 
+#ifndef MORPH_BUILTIN_SKILLS_DIR
+#define MORPH_BUILTIN_SKILLS_DIR ""
+#endif
+
 static int ext_run_wrapper(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct ext *ex = user_data;
@@ -389,6 +393,9 @@ static int cli_init_tools(struct cli_context *ctx)
 	file_info_init(&ctx->tools, ctx->tctx);
 	log_info("registered file_info tool");
 
+	config_write_init(&ctx->tools, ctx->tctx, ctx->config_path);
+	log_info("registered config_write tool");
+
 	if (ctx->config.react.bash_exec_enabled) {
 		for (int i = 0;
 		     i < ctx->config.react.bash_exec_allowed_commands_count; i++)
@@ -460,6 +467,14 @@ static int cli_init_tools(struct cli_context *ctx)
 				file_ensure_dir(agents_skills);
 			skill_discover(ctx->skills, agents_skills);
 			free(agents_skills);
+		}
+	}
+	if (MORPH_BUILTIN_SKILLS_DIR[0]) {
+		char *builtin_skills = file_expand_path(MORPH_BUILTIN_SKILLS_DIR);
+		if (builtin_skills) {
+			if (file_exists(builtin_skills))
+				skill_discover(ctx->skills, builtin_skills);
+			free(builtin_skills);
 		}
 	}
 

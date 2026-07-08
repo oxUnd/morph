@@ -195,6 +195,17 @@ TEST_F(SkillRegistryTest, DiscoverMultiple) {
 	remove_skill("skill-b");
 }
 
+TEST_F(SkillRegistryTest, BuiltinMorphUsageSkillExists) {
+	struct skill_registry builtin;
+	skill_registry_init(&builtin);
+	int rc = skill_discover(&builtin, MORPH_TEST_SOURCE_DIR "/skills");
+	ASSERT_GE(rc, 0);
+	struct skill_entry *e = skill_lookup(&builtin, "morph-usage");
+	ASSERT_NE(e, nullptr);
+	EXPECT_NE(strstr(e->fm.description, "configure"), nullptr);
+	skill_registry_cleanup(&builtin);
+}
+
 TEST_F(SkillRegistryTest, DiscoverNoSkillMd) {
 	char nodir[512];
 	snprintf(nodir, sizeof(nodir), "%s/no-skill", tmpdir);

@@ -10,6 +10,7 @@ set(TEST_SOURCES
 	test_database.cpp
 	test_scheduled_task.cpp
 	test_config.cpp
+	test_config_write.cpp
 	test_credits.cpp
 	test_session.cpp
 	test_memory.cpp

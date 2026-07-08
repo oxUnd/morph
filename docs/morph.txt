@@ -1,0 +1,372 @@
+*morph.txt*	Morph user manual
+
+Morph Manual						*morph*
+
+Morph is a terminal-native multimodal AI agent.  It can chat, read files,
+generate or inspect images, generate video, call local tools, load skills, and
+connect to MCP servers.
+
+Use this manual when answering questions about how to use or configure Morph.
+Read the relevant tag section first, then answer with concrete commands or
+config snippets.
+
+==============================================================================
+CONTENTS						*morph-contents*
+
+	*morph-quickstart*	First run
+	*morph-config*		Configuration file
+	*morph-models*		Text, image, and video models
+	*morph-cli*		Interactive CLI commands
+	*morph-tools*		Built-in tools and permissions
+	*morph-skills*		Skills
+	*morph-mcp*		MCP servers
+	*morph-exts*		Extensions
+	*morph-memory*		Memory, context, and credits
+	*morph-config-write*	Letting Morph edit config
+	*morph-troubleshooting*	Common problems
+
+==============================================================================
+QUICKSTART						*morph-quickstart*
+
+Build from source:
+
+	cmake -S . -B build
+	cmake --build build
+
+Create the default config:
+
+	mkdir -p ~/.morph
+	cp config.toml.example ~/.morph/config.toml
+
+Set the API key required by the configured provider:
+
+	export OPENAI_API_KEY=sk-...
+
+Run Morph:
+
+	./build/morph
+
+Useful flags:
+
+	-c <path>	Use another config file.
+	-s <name>	Start or switch to a named session.
+
+Inside Morph, type /help to list commands and /quit to exit.
+
+==============================================================================
+CONFIGURATION						*morph-config*
+
+The default config path is:
+
+	~/.morph/config.toml
+
+Create it from:
+
+	config.toml.example
+
+Important sections:
+
+	[general]	Output directory, log path, default session.
+	[model.text]	Chat model used by the ReAct loop and image QA.
+	[model.image]	Image generation/editing model.
+	[model.video]	Video generation model.
+	[react]		Tool loop, guardrails, HITL, and shell settings.
+	[context]	Context compression settings.
+	[memory]	Persistent memory settings.
+	[prompt]	Extra system prompt file or prompt directory.
+	[skill]		Custom skill directory.
+	[[mcp.servers]]	MCP server definitions.
+
+API keys should normally be referenced through api_key_env, not written
+directly into the config:
+
+	api_key_env = "OPENAI_API_KEY"
+
+Then set the environment variable before launch.
+
+==============================================================================
+MODELS							*morph-models*
+
+Morph has three independent model backends:
+
+	[model.text]	Chat, planning, tool selection, text answers, img_qa.
+	[model.image]	img_gen, img_inpaint, img_compose.
+	[model.video]	vid_gen.
+
+OpenAI-compatible text example:
+
+	[model.text]
+	provider = "openai"
+	model = "gpt-4o"
+	api_base = "https://api.openai.com/v1"
+	api_key_env = "OPENAI_API_KEY"
+	context_limit = 128000
+	max_tokens = 4096
+
+DeepSeek example:
+
+	[model.text]
+	provider = "deepseek"
+	model = "deepseek-chat"
+	api_base = "https://api.deepseek.com/v1"
+	api_key_env = "DEEPSEEK_API_KEY"
+
+Volcengine Ark example:
+
+	[model.text]
+	provider = "volcengine"
+	model = "ep-xxxxxxxx"
+	api_base = "https://ark.cn-beijing.volces.com/api/v3"
+	api_key_env = "VOLCENGINE_API_KEY"
+
+If image or video generation fails with "not configured", check the matching
+[model.image] or [model.video] section and its API key environment variable.
+
+==============================================================================
+CLI COMMANDS						*morph-cli*
+
+Common interactive commands:
+
+	/help [command]	List commands or show one command.
+	/quit		Exit.
+	/new [name]	Create a new session.
+	/list		List sessions.
+	/switch <name>	Switch session.
+	/rename <name>	Rename current session.
+	/delete <name>	Delete a session.
+	/model [name]	Show or change the text model for the session.
+	/config		Print loaded configuration.
+	/trace		Show the latest ReAct trace.
+	/context	Show token context usage.
+	/compress	Compress old conversation context.
+	/credits	Show estimated credit usage.
+	/memory show	Show remembered facts and procedures.
+	/skill list	List skills.
+	/skill info <name>
+	/skill activate <name>
+	/mcp list	List MCP servers.
+	/mcp connect <name>
+	/mcp tools <name>
+	/ext list	List extension tools.
+	/image <path>	Render an image in the terminal.
+	/video <path>	Render a video.
+	/render <path>	Render supported media.
+
+Use /help /command for exact usage.
+
+==============================================================================
+TOOLS AND PERMISSIONS					*morph-tools*
+
+Built-in read-only tools include:
+
+	file_read	File preview.
+	file_list	Directory listing.
+	file_info	File metadata.
+	img_info	Image metadata.
+	credits		Credit usage.
+	memory		Memory inspection.
+
+Creative and processing tools include:
+
+	img_qa		Answer questions about an image.
+	img_gen		Create or transform images.
+	img_annotate	Ask the user to mark an image.
+	img_inpaint	Edit labeled bounding boxes.
+	img_compose	Blend labeled objects between images.
+	img_resize	Resize images.
+	img_convert	Convert image formats.
+	vid_gen		Generate video.
+
+bash_exec is disabled by default because it permits model-initiated process
+execution.  Enable it only when needed:
+
+	[react]
+	bash_exec_enabled = true
+
+Allowed command and cwd patterns can be configured with:
+
+	bash_exec_allowed_commands = ["cmake", "ctest", "git"]
+	bash_exec_allowed_cwds = ["/absolute/path/to/project"]
+
+Human-in-the-loop approval:
+
+	[react]
+	hitl_enabled = true
+	hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
+	hitl_auto_approve_readonly = true
+
+When HITL is enabled, Morph asks before selected tool calls.
+
+==============================================================================
+SKILLS							*morph-skills*
+
+Skills are instruction packs with a SKILL.md file.  They teach Morph a
+specialized workflow.
+
+Default discovery paths:
+
+	~/.morph/skills/
+	~/.agents/skills/
+
+Custom path:
+
+	[skill]
+	dir = "/path/to/skills"
+
+Commands:
+
+	/skill list
+	/skill info <name>
+	/skill activate <name>
+	/skill deactivate <name>
+
+If a task matches a skill, Morph can activate it automatically through the
+activate_skill tool.  Activation loads the full SKILL.md instructions into the
+current context.
+
+==============================================================================
+MCP							*morph-mcp*
+
+Morph can connect to Model Context Protocol servers by stdio or HTTP.
+
+Stdio filesystem example:
+
+	[[mcp.servers]]
+	name = "filesystem"
+	transport = "stdio"
+	command = "npx"
+	args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+	auto_connect = true
+	connect_timeout = 30
+
+HTTP example:
+
+	[[mcp.servers]]
+	name = "remote-api"
+	transport = "http"
+	url = "https://api.example.com/mcp"
+	auth_token_env = "MCP_REMOTE_TOKEN"
+
+Commands:
+
+	/mcp list
+	/mcp connect <server>
+	/mcp disconnect <server>
+	/mcp tools <server>
+	/mcp resources <server>
+	/mcp prompts <server>
+
+If tools do not appear, confirm the server starts, auth env vars are set, and
+connect_timeout is long enough for the server.
+
+==============================================================================
+EXTENSIONS						*morph-exts*
+
+Extensions are local tool packages under:
+
+	~/.morph/exts
+
+or the directory configured by:
+
+	[ext]
+	dir = "~/.morph/exts"
+
+Install from GitHub:
+
+	/ext install github:owner/repo
+	/ext install github:owner/repo@v1.2.0
+	/ext install github:owner/repo//exts/foo
+
+List installed extension tools:
+
+	/ext list
+	/ext info <name>
+
+Extensions declare their entrypoint and permissions in manifest.toml.
+
+==============================================================================
+MEMORY, CONTEXT, CREDITS				*morph-memory*
+
+Memory can store user facts, procedures, and episode summaries:
+
+	[memory]
+	enabled = true
+	max_facts = 6
+	max_context_chars = 3000
+
+Inspect it:
+
+	/memory show
+
+Context compression protects long sessions:
+
+	[context]
+	summarize_threshold_ratio = 0.8
+	compress_target_ratio = 0.5
+	keep_recent_rounds = 6
+
+Inspect current usage:
+
+	/context
+
+Manually compress:
+
+	/compress
+
+Credits track estimated usage and optional warning limits:
+
+	/credits
+
+==============================================================================
+CONFIG WRITES						*morph-config-write*
+
+Morph can help write its config when the user explicitly asks and approves.
+
+Safe workflow:
+
+	1. Read the current config or config.toml.example.
+	2. Explain the exact change.
+	3. Ask for user approval.
+	4. Write only the active Morph config file.
+	5. Validate the TOML.
+	6. Tell the user to restart Morph if the setting is startup-only.
+
+Do not put API key values into config unless the user explicitly provides that
+secret and insists.  Prefer api_key_env and tell the user to export the env var.
+
+==============================================================================
+TROUBLESHOOTING					*morph-troubleshooting*
+
+"no API key configured"
+
+	Check api_key_env in the matching model section and export that env var
+	before starting Morph.
+
+"no image model configured"
+
+	Check [model.image], provider, model, api_base, and api_key_env.
+
+"no multimodal LLM configured"
+
+	img_qa uses [model.text].  Choose a vision-capable text model.
+
+"bash_exec tool disabled"
+
+	Set bash_exec_enabled = true under [react], then restart Morph.
+
+"skill not found"
+
+	Check /skill list.  Confirm the skill has SKILL.md and a description in
+	frontmatter.  Confirm [skill].dir if using a custom directory.
+
+"MCP server has no tools"
+
+	Run /mcp connect <name>, then /mcp tools <name>.  Check command, args,
+	env, auth_token_env, and connect_timeout.
+
+"config changes did not take effect"
+
+	Restart Morph.  Most config values are loaded at startup.
+
+==============================================================================
+ vim:tw=78:ts=8:noet:ft=help

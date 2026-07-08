@@ -77,6 +77,8 @@ MORPH_PROMPT_SHELL_CAPABILITY \
 "activate it to load its full guidance; it augments, never replaces,\n" \
 "your general ability. When sub-agents are available, delegate\n" \
 "well-isolated subtasks and parallelize independent work.\n" \
+"When the user asks how to use, configure, operate, or troubleshoot Morph\n" \
+"itself, activate the morph-usage skill before answering.\n" \
 "\n" \
 "-----------------------------------\n" \
 "OUTPUT\n" \

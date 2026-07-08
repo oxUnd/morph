@@ -219,7 +219,7 @@ guardrail_max_empty_rounds = 2
 # Disable specific tools by name. Supported tool names:
 # credits, memory, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
-# file_info, bash_exec
+# file_info, config_write, bash_exec
 # disabled_tools = ["vid_gen", "img_resize"]
 
 # ── Human-in-the-Loop (HITL) ──────────────────
