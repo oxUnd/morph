@@ -163,30 +163,76 @@ void cli_markdown_render_ansi_with_media(const char *md,
 
 /* ---- output_callback helpers ---- */
 
-/*
- * Handle THOUGHT step: update spinner with streaming thought content.
- * ctx - CLI context.
- * content - Thought content fragment (may be NULL or empty).
- *
- * Returns 0 always.
- */
-static int output_handle_thought(struct cli_context *ctx, const char *content)
+static const char *output_label(enum react_step_type type)
+{
+	switch (type) {
+	case REACT_STEP_THOUGHT:
+		return "thought";
+	case REACT_STEP_REASONING:
+		return "reasoning";
+	case REACT_STEP_OBSERVATION:
+		return "observation";
+	case REACT_STEP_ACTION:
+		return "tool";
+	case REACT_STEP_REFLECTION:
+		return "guardrail";
+	case REACT_STEP_FINAL:
+		return "final";
+	}
+	return "output";
+}
+
+static void print_labeled_text(const char *label, const char *content)
+{
+	char *display;
+
+	if (!content || !*content)
+		return;
+	display = utf8_dup_clamped(content, 2000);
+	if (!display)
+		return;
+	if (strchr(display, '\n')) {
+		printf(ANSI_DIM "%s:" ANSI_RESET "\n%s\n", label, display);
+	} else {
+		printf(ANSI_DIM "%s:" ANSI_RESET " %s\n", label, display);
+	}
+	free(display);
+	fflush(stdout);
+}
+
+static void output_flush_stream(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->streaming)
+		return;
+	if (ctx->stream_buf_len > 0)
+		print_labeled_text(output_label(ctx->stream_type),
+				   ctx->stream_buf);
+	ctx->streaming = 0;
+	ctx->stream_buf[0] = '\0';
+	ctx->stream_buf_len = 0;
+}
+
+static int output_handle_stream(struct cli_context *ctx,
+				enum react_step_type type,
+				const char *content)
 {
 	if (content && *content) {
-		if (!ctx->streaming) {
+		if (!ctx->streaming || ctx->stream_type != type) {
+			output_flush_stream(ctx);
 			ctx->streaming = 1;
+			ctx->stream_type = type;
 			ctx->stream_buf[0] = '\0';
 			ctx->stream_buf_len = 0;
-			if (!ctx->spin.running) {
-				spin_start(&ctx->spin, SPIN_STATE_THINKING,
-					   "Thinking");
-			}
 		}
 		size_t clen = strlen(content);
 		size_t avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
 		if (clen > avail) {
 			size_t keep = sizeof(ctx->stream_buf) / 2;
-			memmove(ctx->stream_buf, ctx->stream_buf + ctx->stream_buf_len - keep, keep);
+			if (keep > ctx->stream_buf_len)
+				keep = ctx->stream_buf_len;
+			memmove(ctx->stream_buf,
+				ctx->stream_buf + ctx->stream_buf_len - keep,
+				keep);
 			ctx->stream_buf_len = keep;
 			avail = sizeof(ctx->stream_buf) - ctx->stream_buf_len - 1;
 		}
@@ -195,50 +241,32 @@ static int output_handle_thought(struct cli_context *ctx, const char *content)
 		memcpy(ctx->stream_buf + ctx->stream_buf_len, content, clen);
 		ctx->stream_buf_len += clen;
 		ctx->stream_buf[ctx->stream_buf_len] = '\0';
-
-		const char *last_nl = strrchr(ctx->stream_buf, '\n');
-		const char *preview = last_nl ? last_nl + 1 : ctx->stream_buf;
-		while (*preview == ' ' || *preview == '\t')
-			preview++;
-		preview = utf8_suffix_display_width(preview, 60);
-		char sub[128];
-		utf8_copy_display_width(sub, sizeof(sub), preview, 60);
-		spin_set_sub(&ctx->spin, sub);
-		spin_render(&ctx->spin);
 	} else if (!ctx->streaming) {
-		if (!ctx->spin.running) {
-			spin_start(&ctx->spin, SPIN_STATE_THINKING, "Thinking");
-		}
 		ctx->streaming = 1;
+		ctx->stream_type = type;
 		ctx->stream_buf[0] = '\0';
 		ctx->stream_buf_len = 0;
-		spin_set_sub(&ctx->spin, "waiting for model stream...");
-		spin_render(&ctx->spin);
 	}
 	return 0;
 }
 
-static int output_handle_reasoning(struct cli_context *ctx, const char *content)
+static int output_handle_thought(struct cli_context *ctx, const char *content)
 {
-	return output_handle_thought(ctx, content);
+	return output_handle_stream(ctx, REACT_STEP_THOUGHT, content);
 }
 
-/*
- * Handle ACTION step: show tool execution spinner.
- * ctx - CLI context.
- * content - Action description, typically "tool_name(args)".
- *
- * Returns 0 always.
- */
+static int output_handle_reasoning(struct cli_context *ctx, const char *content)
+{
+	return output_handle_stream(ctx, REACT_STEP_REASONING, content);
+}
+
 static int output_handle_action(struct cli_context *ctx,
 				const struct react_output_event *event)
 {
 	const char *tool_name;
+	char display_args[512];
 
-	if (ctx->streaming) {
-		spin_set_sub(&ctx->spin, NULL);
-		ctx->streaming = 0;
-	}
+	output_flush_stream(ctx);
 	if (!event)
 		return 0;
 
@@ -248,13 +276,17 @@ static int output_handle_action(struct cli_context *ctx,
 	tool_name = event->tool_name && *event->tool_name ?
 		event->tool_name : "Executing";
 	ctx->last_tool_was_plan = (strcmp(tool_name, "plan") == 0);
-	if (!ctx->spin.running) {
-		spin_start(&ctx->spin, SPIN_STATE_EXECUTING, tool_name);
-	} else {
-		spin_update(&ctx->spin, tool_name);
+	printf(ANSI_DIM "tool:" ANSI_RESET " " ANSI_BOLD "%s" ANSI_RESET,
+	       tool_name);
+	if (event->tool_args && *event->tool_args &&
+	    strcmp(event->tool_args, "{}") != 0) {
+		utf8_copy_sanitized_display_width(display_args,
+						  sizeof(display_args),
+						  event->tool_args, 180);
+		printf(" " ANSI_DIM "%s" ANSI_RESET, display_args);
 	}
-	if (event->tool_args && *event->tool_args)
-		spin_set_sub(&ctx->spin, event->tool_args);
+	printf("\n");
+	fflush(stdout);
 	return 0;
 }
 
@@ -373,38 +405,14 @@ static int output_handle_observation(struct cli_context *ctx,
 {
 	const char *content = event && event->text ? event->text : "";
 
-	if (ctx->streaming) {
-		spin_set_sub(&ctx->spin, NULL);
-		ctx->streaming = 0;
-	}
-	if (ctx->spin.running) {
-		char msg[128] = {0};
-		if (event && (event->error_code < 0 ||
-			      event->status == REACT_OUTPUT_FAILED)) {
-			snprintf(msg, sizeof(msg), "Tool execution failed");
-			spin_stop(&ctx->spin, SPIN_STATE_ERROR, msg);
-		} else if (event && event->artifacts &&
-			   event->artifacts->count > 0 &&
-			   event->artifacts->items[0].kind ==
-			   TOOL_ARTIFACT_IMAGE) {
-			snprintf(msg, sizeof(msg), "Image generated");
-			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-		} else if (event && event->artifacts &&
-			   event->artifacts->count > 0 &&
-			   event->artifacts->items[0].kind ==
-			   TOOL_ARTIFACT_VIDEO) {
-			snprintf(msg, sizeof(msg), "Video generated");
-			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-		} else {
-			snprintf(msg, sizeof(msg), "Done");
-			spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-		}
-	}
+	output_flush_stream(ctx);
 	if (ctx->last_tool_was_plan && content && *content) {
-		printf("\n");
+		printf(ANSI_DIM "observation:" ANSI_RESET "\n");
 		if (!render_plan_data(event ? event->data : NULL))
 			print_tool_observation(content);
 		fflush(stdout);
+	} else if (content && *content) {
+		print_labeled_text("observation", content);
 	}
 	return 0;
 }
@@ -418,16 +426,10 @@ static int output_handle_observation(struct cli_context *ctx,
  */
 static int output_handle_reflection(struct cli_context *ctx, const char *content)
 {
-	if (ctx->streaming) {
-		spin_set_sub(&ctx->spin, NULL);
-		ctx->streaming = 0;
-	}
-	spin_pause(&ctx->spin);
-	printf("\r\033[K");
+	output_flush_stream(ctx);
 	printf(ANSI_BOLD ANSI_CYAN "🛡 Guardrail" ANSI_RESET " %s\n",
 	       content ? content : "");
 	fflush(stdout);
-	spin_resume(&ctx->spin);
 	return 0;
 }
 
@@ -440,20 +442,7 @@ static int output_handle_reflection(struct cli_context *ctx, const char *content
  */
 static int output_handle_final(struct cli_context *ctx, const char *content)
 {
-	if (ctx->streaming) {
-		spin_set_sub(&ctx->spin, NULL);
-		ctx->streaming = 0;
-	}
-	if (ctx->spin.running) {
-		char msg[128];
-		if (content && *content) {
-			snprintf(msg, sizeof(msg), "Done");
-		} else {
-			snprintf(msg, sizeof(msg), "No output");
-		}
-		spin_stop(&ctx->spin, SPIN_STATE_COMPLETE, msg);
-		printf("\n");
-	}
+	output_flush_stream(ctx);
 	if (content && *content) {
 		char *wrapped = wrap_bare_media_paths(content);
 		cli_markdown_render_ansi_with_media(wrapped ? wrapped : content,
@@ -511,9 +500,6 @@ int cli_ask_user_callback(const char *question,
 	if (!ctx || !answer)
 		return -EINVAL;
 
-	spin_pause(&ctx->spin);
-
-	printf("\r\033[K");
 	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
 
 	char prompt[64];
@@ -541,7 +527,6 @@ int cli_ask_user_callback(const char *question,
 		}
 		if (!input) {
 			printf("\n");
-			spin_resume(&ctx->spin);
 			*answer = strdup("");
 			return -EIO;
 		}
@@ -565,14 +550,12 @@ int cli_ask_user_callback(const char *question,
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf("\n");
-		spin_resume(&ctx->spin);
 		*answer = strdup("");
 		return -ENOTTY;
 	}
 	if (!fgets(buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf("\n");
-		spin_resume(&ctx->spin);
 		*answer = strdup("");
 		return -EIO;
 	}
@@ -591,7 +574,6 @@ int cli_ask_user_callback(const char *question,
 	}
 #endif
 
-	spin_resume(&ctx->spin);
 	return 0;
 }
 
@@ -675,9 +657,6 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	if (!ctx)
 		return HITL_DENY;
 
-	spin_pause(&ctx->spin);
-
-	printf("\r\033[K");
 	printf(ANSI_BOLD ANSI_YELLOW "⚠ Approval Required" ANSI_RESET "\n");
 	printf("  Tool: " ANSI_BOLD "%s" ANSI_RESET "\n", tool_name);
 
@@ -760,9 +739,6 @@ enum tool_operation_verdict operation_approval_callback(
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
 
-	spin_pause(&ctx->spin);
-
-	printf("\r\033[K");
 	printf(ANSI_BOLD ANSI_YELLOW "⚠ %s" ANSI_RESET "\n",
 	       operation_label(op->kind));
 	if (op->tool_name && *op->tool_name)

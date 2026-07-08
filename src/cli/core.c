@@ -1,10 +1,98 @@
 #include "cli/internal.h"
 #include "cli/commands/registry.h"
 #include "agent/tools/dynamic_tools.h"
+#include <stdarg.h>
 
 const char *default_db_path = "~/.morph/data.db";
 const char *default_config_path = "~/.morph/config.toml";
 static struct cli_context *g_cli_usage_ctx;
+static int g_cli_color_enabled = 1;
+
+void cli_set_color_enabled(int enabled)
+{
+	g_cli_color_enabled = enabled ? 1 : 0;
+}
+
+int cli_color_enabled(void)
+{
+	return g_cli_color_enabled;
+}
+
+static size_t cli_strip_ansi_into(char *dst, size_t dst_size,
+				  const char *src)
+{
+	size_t out = 0;
+	const unsigned char *p = (const unsigned char *)src;
+
+	if (!src)
+		return 0;
+	while (*p) {
+		if (*p == 0x1b) {
+			p++;
+			if (*p == '[') {
+				p++;
+				while (*p && (*p < 0x40 || *p > 0x7e))
+					p++;
+				if (*p)
+					p++;
+				continue;
+			}
+			if (*p)
+				p++;
+			continue;
+		}
+		if (dst && dst_size > 0 && out + 1 < dst_size)
+			dst[out] = (char)*p;
+		out++;
+		p++;
+	}
+	if (dst && dst_size > 0) {
+		size_t term = out < dst_size ? out : dst_size - 1;
+		dst[term] = '\0';
+	}
+	return out;
+}
+
+int cli_printf(const char *fmt, ...)
+{
+	va_list ap;
+	int n;
+
+	if (g_cli_color_enabled) {
+		va_start(ap, fmt);
+		n = vfprintf(stdout, fmt, ap);
+		va_end(ap);
+		return n;
+	}
+
+	va_start(ap, fmt);
+	va_list ap_size;
+	va_copy(ap_size, ap);
+	n = vsnprintf(NULL, 0, fmt, ap_size);
+	va_end(ap_size);
+	if (n < 0) {
+		va_end(ap);
+		return n;
+	}
+	char *buf = malloc((size_t)n + 1);
+	if (!buf) {
+		va_end(ap);
+		return -1;
+	}
+	vsnprintf(buf, (size_t)n + 1, fmt, ap);
+	va_end(ap);
+	size_t stripped_len = cli_strip_ansi_into(NULL, 0, buf);
+	char *stripped = malloc(stripped_len + 1);
+	if (!stripped) {
+		free(buf);
+		return -1;
+	}
+	cli_strip_ansi_into(stripped, stripped_len + 1, buf);
+	free(buf);
+	fputs(stripped, stdout);
+	free(stripped);
+	return n;
+}
 
 static int cli_turn_background_cb(void *user_data, const char *name,
 				  const char *phase, const char *message,
@@ -320,24 +408,6 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	int react_rc = react_run(ctx->react, effective_input,
 				 ctx->event_mode == CLI_EVENTS_JSON ?
 				 NULL : output_callback, ctx);
-
-	if (ctx->spin.running) {
-		if (ctx->react &&
-		    ctx->react->outcome == REACT_OUTCOME_CANCELLED) {
-			spin_stop(&ctx->spin, SPIN_STATE_ABORT, "Cancelled");
-		} else if (ctx->react &&
-			   ctx->react->outcome == REACT_OUTCOME_TIMEOUT) {
-			spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Timed out");
-		} else if (ctx->react &&
-			   ctx->react->outcome ==
-			   REACT_OUTCOME_MAX_ITERATIONS) {
-			spin_stop(&ctx->spin, SPIN_STATE_ERROR,
-				  "Max iterations reached");
-		} else {
-			spin_stop(&ctx->spin, SPIN_STATE_ERROR, "Error");
-		}
-		printf("\n");
-	}
 
 	if (ctx->react && ctx->react->state == REACT_STATE_ABORT &&
 	    ctx->event_mode != CLI_EVENTS_JSON) {

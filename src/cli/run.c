@@ -256,8 +256,13 @@ void cli_run(struct cli_context *ctx)
 	rl_attempted_completion_function = cmd_completion;
 	while (ctx->running) {
 		char prompt[512];
-		snprintf(prompt, sizeof(prompt), ANSI_GREEN "[%s]" ANSI_RESET " $ ",
-			 ctx->current_session.display_id);
+		if (cli_color_enabled())
+			snprintf(prompt, sizeof(prompt),
+				 ANSI_GREEN "[%s]" ANSI_RESET " $ ",
+				 ctx->current_session.display_id);
+		else
+			snprintf(prompt, sizeof(prompt), "[%s] $ ",
+				 ctx->current_session.display_id);
 		cli_sigint_received = 0;
 		char *input = readline(prompt);
 		if (!input) {

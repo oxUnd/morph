@@ -159,9 +159,11 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 		int is_current = (list[i].id == ctx->current_session.id);
 		const char *model = is_current ? ctx->config.models.text.model : list[i].model;
 		printf("  ");
-		if (is_current) fputs(ANSI_GREEN, stdout);
+		if (is_current && cli_color_enabled())
+			fputs(ANSI_GREEN, stdout);
 		print_padded(list[i].display_id, 10);
-		if (is_current) fputs(ANSI_RESET, stdout);
+		if (is_current && cli_color_enabled())
+			fputs(ANSI_RESET, stdout);
 		putchar(' ');
 		print_padded(list[i].name, 45); putchar(' ');
 		print_padded(model, 30); putchar(' ');

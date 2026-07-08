@@ -337,18 +337,14 @@ static int cli_init_models(struct cli_context *ctx)
  */
 static void cli_img_annotate_pause(void *user_data)
 {
-	struct cli_context *ctx = user_data;
-	if (ctx)
-		spin_pause(&ctx->spin);
+	(void)user_data;
+	fflush(stdout);
 }
 
 static void cli_img_annotate_resume(void *user_data)
 {
-	struct cli_context *ctx = user_data;
-	if (ctx) {
-		fflush(stdout);
-		spin_resume(&ctx->spin);
-	}
+	(void)user_data;
+	fflush(stdout);
 }
 
 static int cli_init_tools(struct cli_context *ctx)
@@ -1118,9 +1114,6 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	ctx->streaming = 0;
 	ctx->image_path[0] = '\0';
 	log_info("cli initialized");
-
-	spin_init(&ctx->spin, stdout);
-	spin_set_cancel_flag(&ctx->spin, &react_sigint_flag);
 
 	cli_emit_startup_event(ctx, "startup.ready", "ready",
 			       "startup ready", "cli", 0);

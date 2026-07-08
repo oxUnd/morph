@@ -6,7 +6,6 @@
 #include "util/file.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "util/spin.h"
 #include "util/arena.h"
 #include "util/utf8.h"
 #include "agent/tokenizer.h"
@@ -146,5 +145,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 					 void *user_data);
 enum tool_operation_verdict operation_approval_callback(
 	const struct tool_operation *op, void *user_data);
+
+#define printf cli_printf
 
 #endif

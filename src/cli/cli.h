@@ -11,9 +11,9 @@
 #include "event/event.h"
 #include "models/llm.h"
 #include "skill/skill.h"
-#include "util/spin.h"
 #include "mcp/mcp.h"
 #include <pthread.h>
+#include <stdio.h>
 
 enum cli_event_mode {
 	CLI_EVENTS_HUMAN,
@@ -43,9 +43,9 @@ struct cli_context {
 	int session_auto_named;
 	int last_tool_was_plan;
 	char image_path[PATH_MAX];
-	struct spin_context spin;
 	char stream_buf[BUFSIZ];
 	size_t stream_buf_len;
+	enum react_step_type stream_type;
 	int trace_json;
 	enum cli_event_mode event_mode;
 	morph_event_cb event_cb;
@@ -66,5 +66,8 @@ void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);
 int cli_handle_command(struct cli_context *ctx, const char *input);
 void cli_print_help(void);
+void cli_set_color_enabled(int enabled);
+int cli_color_enabled(void);
+int cli_printf(const char *fmt, ...);
 
 #endif

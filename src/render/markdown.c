@@ -47,6 +47,58 @@
 #define MARKDOWN_IMAGE_TABLE_MAX_COLS 24u
 #define MARKDOWN_IMAGE_MAX_ROWS 24u
 
+static int markdown_color_enabled = 1;
+
+void markdown_set_color_enabled(int enabled)
+{
+	markdown_color_enabled = enabled ? 1 : 0;
+}
+
+static size_t strip_ansi_into(char *dst, size_t dst_size, const char *src)
+{
+	size_t out = 0;
+	const unsigned char *p = (const unsigned char *)src;
+
+	if (!src)
+		return 0;
+	while (*p) {
+		if (*p == 0x1b) {
+			p++;
+			if (*p == '[') {
+				p++;
+				while (*p && (*p < 0x40 || *p > 0x7e))
+					p++;
+				if (*p)
+					p++;
+				continue;
+			}
+			if (*p)
+				p++;
+			continue;
+		}
+		if (dst && dst_size > 0 && out + 1 < dst_size)
+			dst[out] = (char)*p;
+		out++;
+		p++;
+	}
+	if (dst && dst_size > 0) {
+		size_t term = out < dst_size ? out : dst_size - 1;
+		dst[term] = '\0';
+	}
+	return out;
+}
+
+static char *strip_ansi_dup(const char *src)
+{
+	size_t len = strip_ansi_into(NULL, 0, src);
+	char *out = malloc(len + 1);
+
+	if (!out)
+		return NULL;
+	strip_ansi_into(out, len + 1, src);
+	return out;
+}
+
 /* ---------------- text buffer ---------------- */
 /* sbuf is defined in highlight.h */
 
@@ -3242,7 +3294,13 @@ void markdown_render_ansi(const char *md)
 
 	if (ctx.out.len < ctx.out.cap)
 		buf[ctx.out.len] = '\0';
-	printf("%s\n", buf);
+	if (markdown_color_enabled) {
+		printf("%s\n", buf);
+	} else {
+		char *plain = strip_ansi_dup(buf);
+		printf("%s\n", plain ? plain : buf);
+		free(plain);
+	}
 	fflush(stdout);
 	free(buf);
 	free_media(&ctx);
@@ -3268,7 +3326,13 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 
 	if (ctx.out.len < ctx.out.cap)
 		buf[ctx.out.len] = '\0';
-	printf("%s\n", buf);
+	if (markdown_color_enabled) {
+		printf("%s\n", buf);
+	} else {
+		char *plain = strip_ansi_dup(buf);
+		printf("%s\n", plain ? plain : buf);
+		free(plain);
+	}
 	fflush(stdout);
 	free(buf);
 

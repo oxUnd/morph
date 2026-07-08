@@ -1,5 +1,6 @@
 #include "cli/cli.h"
 #include "config.h"
+#include "render/markdown.h"
 #include "skill/skill.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -17,6 +18,8 @@
 #define ANSI_YELLOW "\033[33m"
 #define ANSI_CYAN   "\033[36m"
 #define ANSI_RESET  "\033[0m"
+
+#define printf cli_printf
 
 #define ICON_VERSION "\uea66"
 #define ICON_OS      "\uea7a"
@@ -215,6 +218,8 @@ int main(int argc, char *argv[])
 	const char *one_shot_prompt = NULL;
 	int trace_json = 0;
 	int show_version = 0;
+	int show_help = 0;
+	int no_color = 0;
 	enum cli_event_mode event_mode = CLI_EVENTS_NONE;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -231,6 +236,8 @@ int main(int argc, char *argv[])
 			one_shot_prompt = argv[++i];
 		else if (strcmp(argv[i], "--trace-json") == 0)
 			trace_json = 1;
+		else if (strcmp(argv[i], "--no-color") == 0)
+			no_color = 1;
 		else if (strcmp(argv[i], "--events") == 0 && i + 1 < argc) {
 			const char *mode = argv[++i];
 			if (strcmp(mode, "human") == 0)
@@ -260,11 +267,18 @@ int main(int argc, char *argv[])
 		}
 		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
 			show_version = 1;
-		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			printf("Usage: morph [-c config_path] [-w workdir] [-p prompt] [-v] [--trace-json] [--events human|json|none]\n");
-			printf("  --events  Event progress output mode (default: none)\n");
-			return 0;
-		}
+		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
+			show_help = 1;
+	}
+	cli_set_color_enabled(!no_color);
+	markdown_set_color_enabled(!no_color);
+	if (show_help) {
+		printf("Usage: morph [-c config_path] [-w workdir] "
+		       "[-p prompt] [-v] [--trace-json] [--no-color] "
+		       "[--events human|json|none]\n");
+		printf("  --events  Event progress output mode (default: none)\n");
+		printf("  --no-color  Disable ANSI color output\n");
+		return 0;
 	}
 	if (show_version) {
 		print_version(config_path);

@@ -129,6 +129,19 @@ TEST(MarkdownRender, HeadingH1)
 	EXPECT_TRUE(plain.find("# Title") != std::string::npos);
 }
 
+TEST(MarkdownRender, RenderNoColorStripsAnsi)
+{
+	markdown_set_color_enabled(0);
+	testing::internal::CaptureStdout();
+	markdown_render_ansi("# Title\n\n**bold**");
+	std::string out = testing::internal::GetCapturedStdout();
+	markdown_set_color_enabled(1);
+
+	EXPECT_EQ(out.find("\033"), std::string::npos);
+	EXPECT_NE(out.find("# Title"), std::string::npos);
+	EXPECT_NE(out.find("bold"), std::string::npos);
+}
+
 TEST(MarkdownRender, HeadingH2)
 {
 	std::string out = render("## Section");
