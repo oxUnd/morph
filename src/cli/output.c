@@ -443,6 +443,7 @@ static int output_handle_reflection(struct cli_context *ctx, const char *content
 static int output_handle_final(struct cli_context *ctx, const char *content)
 {
 	output_flush_stream(ctx);
+	printf(ANSI_DIM "final:" ANSI_RESET "\n");
 	if (content && *content) {
 		char *wrapped = wrap_bare_media_paths(content);
 		cli_markdown_render_ansi_with_media(wrapped ? wrapped : content,
