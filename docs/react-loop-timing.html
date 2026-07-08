@@ -130,7 +130,7 @@
   <p>Based on the current code path in <code>react_run()</code>, <code>llm.c</code>, and <code>http/client.c</code>.</p>
 
   <div class="frame">
-    <svg viewBox="0 0 1280 1040" role="img" aria-label="Morph ReAct loop timing sequence diagram">
+    <svg viewBox="0 0 1280 1460" role="img" aria-label="Morph ReAct loop timing sequence diagram">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"></path>
@@ -140,7 +140,7 @@
         </marker>
       </defs>
 
-      <rect x="0" y="0" width="1280" height="1040" fill="#ffffff"></rect>
+      <rect x="0" y="0" width="1280" height="1460" fill="#ffffff"></rect>
 
       <!-- Lane headers -->
       <g>
@@ -164,12 +164,12 @@
       </g>
 
       <!-- Lifelines -->
-      <line class="lifeline" x1="115" y1="80" x2="115" y2="965"></line>
-      <line class="lifeline" x1="330" y1="80" x2="330" y2="965"></line>
-      <line class="lifeline" x1="565" y1="80" x2="565" y2="965"></line>
-      <line class="lifeline" x1="800" y1="80" x2="800" y2="965"></line>
-      <line class="lifeline" x1="1035" y1="80" x2="1035" y2="965"></line>
-      <line class="lifeline" x1="1192" y1="80" x2="1192" y2="965"></line>
+      <line class="lifeline" x1="115" y1="80" x2="115" y2="1425"></line>
+      <line class="lifeline" x1="330" y1="80" x2="330" y2="1425"></line>
+      <line class="lifeline" x1="565" y1="80" x2="565" y2="1425"></line>
+      <line class="lifeline" x1="800" y1="80" x2="800" y2="1425"></line>
+      <line class="lifeline" x1="1035" y1="80" x2="1035" y2="1425"></line>
+      <line class="lifeline" x1="1192" y1="80" x2="1192" y2="1425"></line>
 
       <!-- Setup phase -->
       <line class="msg" x1="115" y1="118" x2="330" y2="118"></line>
@@ -184,87 +184,90 @@
       <text class="note" x="235" y="270">maybe compress context</text>
       <text class="small" x="235" y="292">before loop iteration starts</text>
 
-      <!-- Iteration loop bracket -->
-      <rect x="190" y="340" width="1010" height="498" fill="none" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="8 6" rx="8"></rect>
-      <text class="lane-label" x="205" y="332">for iteration in max_iterations</text>
-
-      <!-- LLM request -->
-      <rect class="call" x="230" y="364" width="200" height="84"></rect>
-      <text class="note" x="245" y="389">react_chat_once()</text>
-      <text class="small" x="245" y="411">start model request</text>
-      <text class="small" x="245" y="431">stream callbacks emit text</text>
-
-      <line class="msg" x1="330" y1="470" x2="565" y2="470"></line>
-      <text class="note mono" x="360" y="460">chat_with_tools_stream()</text>
-
-      <line class="msg" x1="565" y1="508" x2="800" y2="508"></line>
-      <text class="note mono" x="592" y="498">http_post_sse_ex_timeout()</text>
-
-      <rect class="timeout" x="674" y="532" width="252" height="116"></rect>
-      <text class="note" x="692" y="556">SSE request timers</text>
-      <text class="small mono" x="692" y="581">CURLOPT_TIMEOUT = 0</text>
-      <text class="small mono" x="692" y="603">LOW_SPEED_TIME = text timeout</text>
-      <text class="small mono" x="692" y="625">default/current idle: 300s</text>
-
-      <line class="return" x1="800" y1="672" x2="565" y2="672"></line>
-      <text class="note" x="614" y="662">HTTP status, tokens, tool calls</text>
-
-      <line class="return" x1="565" y1="706" x2="330" y2="706"></line>
-      <text class="small" x="380" y="696">chat_response returned</text>
-
-      <rect class="ok" x="220" y="730" width="220" height="84"></rect>
-      <text class="note" x="235" y="754">no ReAct step timeout</text>
-      <text class="small" x="235" y="777">model requests use SSE idle</text>
-      <text class="small" x="235" y="797">tools use tool timeout</text>
-
-      <!-- Branches after LLM -->
-      <rect class="ok" x="220" y="866" width="250" height="80"></rect>
-      <text class="note" x="238" y="890">Branch A: final answer</text>
-      <text class="small" x="238" y="912">output guardrail may retry</text>
-      <text class="small" x="238" y="932">otherwise set SUCCESS</text>
-
-      <rect class="call" x="515" y="866" width="310" height="80"></rect>
-      <text class="note" x="533" y="890">Branch B: tool calls</text>
-      <text class="small" x="533" y="912">start all tool threads, then join</text>
-      <text class="small" x="533" y="932">global timeout with tool override</text>
-
-      <rect class="fail" x="870" y="866" width="270" height="80"></rect>
-      <text class="note" x="888" y="890">Branch C: timeout/error/cancel</text>
-      <text class="small" x="888" y="912">finish run with terminal outcome</text>
-      <text class="small" x="888" y="932">no next iteration</text>
-
-      <!-- Tool branch details -->
-      <line class="msg" x1="670" y1="970" x2="1035" y2="970"></line>
-      <text class="note" x="742" y="960">parallel tool execution</text>
-
-      <rect class="box" x="900" y="780" width="270" height="70"></rect>
-      <text class="note" x="918" y="804">tool timers</text>
-      <text class="small mono" x="918" y="826">react.tool_timeout_seconds: 300s</text>
-      <text class="small mono" x="918" y="844">tool args/config can override</text>
-
-      <line class="return" x1="1035" y1="1000" x2="330" y2="1000"></line>
-      <text class="note" x="548" y="990">observations appended to messages</text>
-
-      <line class="msg" x1="330" y1="1018" x2="1192" y2="1018"></line>
-      <text class="small" x="516" y="1010">tool output guardrail, if enabled</text>
-
-      <!-- Timing bars -->
-      <line class="bar" x1="565" y1="526" x2="800" y2="526" stroke="#2563eb"></line>
-      <text class="small mono" x="566" y="548">text model request has no curl total timeout</text>
-
-      <line class="bar" x1="725" y1="652" x2="875" y2="652" stroke="#d97706"></line>
-      <text class="small mono" x="690" y="676">SSE no-data stall timeout: 300s</text>
-
-      <line class="bar" x1="330" y1="820" x2="565" y2="820" stroke="#7c3aed"></line>
-      <text class="small mono" x="365" y="843">No post-LLM elapsed timeout check</text>
-
       <!-- Important notes -->
-      <rect class="guard" x="470" y="146" width="690" height="146"></rect>
+      <rect class="guard" x="470" y="146" width="690" height="170"></rect>
       <text class="lane-label" x="492" y="172">Current timing semantics</text>
       <text class="note" x="492" y="198">1. model.text.timeout_seconds controls SSE idle/no-data timeout.</text>
       <text class="note" x="492" y="222">2. HTTP/SSE timeout enforcement is delegated to curl options.</text>
       <text class="note" x="492" y="246">3. ReAct no longer has a step-level timeout.</text>
       <text class="note" x="492" y="270">4. Tools use react.tool_timeout_seconds unless a tool-specific value overrides it.</text>
+      <text class="note" x="492" y="294">5. Example tool path: img_gen → img_qa → vid_gen across tool observations.</text>
+
+      <!-- Iteration loop bracket -->
+      <rect x="190" y="340" width="1010" height="1030" fill="none" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="8 6" rx="8"></rect>
+      <text class="lane-label" x="205" y="332">for iteration in max_iterations</text>
+
+      <!-- Common LLM/SSE timing -->
+      <rect class="call" x="230" y="364" width="200" height="78"></rect>
+      <text class="note" x="245" y="388">react_chat_once()</text>
+      <text class="small" x="245" y="410">stream callbacks emit text</text>
+      <text class="small" x="245" y="430">no ReAct step timeout</text>
+
+      <line class="msg" x1="330" y1="468" x2="565" y2="468"></line>
+      <text class="note mono" x="360" y="458">chat_with_tools_stream()</text>
+
+      <line class="msg" x1="565" y1="510" x2="800" y2="510"></line>
+      <text class="note mono" x="592" y="500">http_post_sse_ex_timeout()</text>
+
+      <rect class="timeout" x="668" y="540" width="282" height="120"></rect>
+      <text class="note" x="688" y="564">SSE request timers</text>
+      <text class="small mono" x="688" y="588">CURLOPT_TIMEOUT = 0</text>
+      <text class="small mono" x="688" y="612">LOW_SPEED_TIME = text timeout</text>
+      <text class="small mono" x="688" y="636">default/current idle: 300s</text>
+
+      <line class="bar" x1="565" y1="532" x2="800" y2="532" stroke="#2563eb"></line>
+      <text class="small mono" x="535" y="687">text model request has no curl total timeout; idle/no-data timeout is 300s</text>
+
+      <line class="return" x1="800" y1="708" x2="565" y2="708"></line>
+      <text class="note" x="612" y="698">HTTP status, tokens, tool calls</text>
+
+      <line class="return" x1="565" y1="744" x2="330" y2="744"></line>
+      <text class="small" x="382" y="734">chat_response returned</text>
+
+      <!-- Tool timeout rule -->
+      <rect class="box" x="865" y="720" width="330" height="78"></rect>
+      <text class="note" x="884" y="744">tool timeout precedence</text>
+      <text class="small mono" x="884" y="766">call args timeout_seconds → tool config</text>
+      <text class="small mono" x="884" y="786">→ react.tool_timeout_seconds (300s)</text>
+
+      <!-- Iteration N: img_gen -->
+      <rect class="call" x="215" y="830" width="960" height="138"></rect>
+      <text class="lane-label" x="235" y="858">Iteration N: assistant requests img_gen</text>
+      <line class="msg" x1="330" y1="884" x2="1035" y2="884"></line>
+      <text class="note mono" x="548" y="874">tool call: img_gen({prompt, reference_image?})</text>
+      <rect class="call" x="850" y="902" width="330" height="52"></rect>
+      <text class="note mono" x="870" y="925">img_gen</text>
+      <text class="small" x="870" y="944">image model call; default tool timeout 300s</text>
+      <line class="return" x1="1035" y1="982" x2="330" y2="982"></line>
+      <text class="note" x="505" y="972">Observation: generated image path/artifact</text>
+
+      <!-- Iteration N+1: img_qa -->
+      <rect class="call" x="215" y="1010" width="960" height="138"></rect>
+      <text class="lane-label" x="235" y="1038">Iteration N+1: LLM sees image observation and requests img_qa</text>
+      <line class="msg" x1="330" y1="1064" x2="565" y2="1064"></line>
+      <text class="small mono" x="360" y="1054">next model request includes image Observation</text>
+      <line class="msg" x1="330" y1="1094" x2="1035" y2="1094"></line>
+      <text class="note mono" x="564" y="1084">tool call: img_qa({file_path, prompt})</text>
+      <rect class="call" x="850" y="1112" width="330" height="52"></rect>
+      <text class="note mono" x="870" y="1135">img_qa</text>
+      <text class="small" x="870" y="1154">multimodal LLM request; registered timeout 120s</text>
+      <line class="return" x1="1035" y1="1174" x2="330" y2="1174"></line>
+      <text class="note" x="510" y="1164">Observation: image analysis result</text>
+
+      <!-- Iteration N+2: vid_gen -->
+      <rect class="call" x="215" y="1202" width="960" height="138"></rect>
+      <text class="lane-label" x="235" y="1230">Iteration N+2: LLM uses prior Observations and requests vid_gen</text>
+      <line class="msg" x1="330" y1="1256" x2="1035" y2="1256"></line>
+      <text class="note mono" x="542" y="1246">tool call: vid_gen({prompt, reference_images})</text>
+      <rect class="call" x="850" y="1274" width="330" height="52"></rect>
+      <text class="note mono" x="870" y="1297">vid_gen</text>
+      <text class="small" x="870" y="1316">submit + poll; registered timeout 600s</text>
+      <line class="return" x1="1035" y1="1350" x2="330" y2="1350"></line>
+      <text class="note" x="510" y="1340">Observation: generated video path/artifact</text>
+
+      <!-- Final answer branch -->
+      <line class="msg" x1="330" y1="1390" x2="1192" y2="1390"></line>
+      <text class="small" x="520" y="1380">later final answer goes through output guardrail, if enabled</text>
     </svg>
   </div>
 
