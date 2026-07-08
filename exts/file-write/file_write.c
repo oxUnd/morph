@@ -942,7 +942,7 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 	if (!ctx)
 		MORPH_RETURN(-ENOMEM);
 	ctx->tctx = tctx;
-	return tool_register(reg, "file_write",
+	return tool_register(TOOL_ORIGIN_EXT, reg, "file_write",
 		"Create, overwrite, append, patch, mkdir, rename, copy, or delete files. "
 		"Decoded content for write/overwrite/append/patch is limited to 10 MiB per call; "
 		"larger files can be built with repeated append or copied/patch-read streamingly. "
