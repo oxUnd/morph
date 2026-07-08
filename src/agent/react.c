@@ -858,11 +858,6 @@ static void *async_tool_exec(void *arg)
 	http_set_cancel_flag(&call->cancelled);
 	http_set_cancel_token(&call->cancel_token);
 
-	react_output_emit(call->output_cb, call->output_user_data,
-			  REACT_STEP_ACTION, REACT_OUTPUT_STARTED, NULL,
-			  call->tool_name, call->tool_args,
-			  call->tool_call_id, 0, NULL, NULL, NULL);
-
 	int notify_done = 0;
 
 	if (tool_is_disabled(call->tools, call->tool_name)) {
@@ -2232,6 +2227,34 @@ static int react_record_tool_observation(struct react_context *ctx,
 					 ctx->turn_arena);
 }
 
+static int react_record_tool_timeout(struct react_context *ctx,
+				     const struct tool_call *tc,
+				     const char *timeout_msg,
+				     morph_array_t *messages,
+				     react_output_cb cb, void *user_data)
+{
+	struct react_step *obs;
+	const char *args;
+
+	args = tc->arguments ? tc->arguments : "{}";
+	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
+				timeout_msg, tc->name, args, tc->tool_call_id);
+	if (obs)
+		obs->error_code = -ETIMEDOUT;
+	add_step(ctx, obs);
+	react_output_emit(cb, user_data, REACT_STEP_ACTION,
+			  REACT_OUTPUT_TIMEOUT, timeout_msg, tc->name, args,
+			  tc->tool_call_id, -ETIMEDOUT, NULL, NULL, NULL);
+	react_output_emit(cb, user_data, REACT_STEP_OBSERVATION,
+			  REACT_OUTPUT_FAILED, timeout_msg, tc->name, args,
+			  tc->tool_call_id, -ETIMEDOUT, NULL, NULL, NULL);
+	react_emit_observation_event(ctx, timeout_msg, tc->name, -ETIMEDOUT,
+				     NULL, NULL, NULL);
+
+	return react_append_tool_message(messages, timeout_msg, tc->id,
+					 ctx->turn_arena);
+}
+
 static int react_poll_cancel(struct react_context *ctx, int iteration);
 
 static int react_join_tool_calls(struct react_context *ctx,
@@ -2294,8 +2317,14 @@ static int react_join_tool_calls(struct react_context *ctx,
 					      tc->arguments ? tc->arguments : "{}",
 					      tc->tool_call_id, timeout_msg,
 					      -ETIMEDOUT);
-			react_append_tool_message(messages, timeout_msg, tc->id,
-						  ctx->turn_arena);
+			if (react_record_tool_timeout(ctx, tc, timeout_msg,
+						      messages, cb,
+						      user_data) < 0) {
+				react_set_result(ctx,
+						 REACT_OUTCOME_INTERNAL_ERROR,
+						 -ENOMEM, "internal_error");
+				return 1;
+			}
 			slots[i].call = NULL;
 			slots[i].thread_started = 0;
 			continue;

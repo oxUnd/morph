@@ -889,7 +889,7 @@ TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
 	ctx->llm_model = llm;
 
 	struct callback_state {
-		int saw_action_start;
+		int action_start_count;
 		int saw_observation_done;
 	} state = {0, 0};
 	auto cb = [](const struct react_output_event *event, void *ud) -> int {
@@ -900,7 +900,7 @@ TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
 		    strcmp(event->tool_name, "test_tool") == 0 &&
 		    event->tool_args &&
 		    strcmp(event->tool_args, "{\"prompt\":\"hi\"}") == 0) {
-			state->saw_action_start = 1;
+			state->action_start_count++;
 		}
 		if (event->type == REACT_STEP_OBSERVATION &&
 		    event->status == REACT_OUTPUT_COMPLETED &&
@@ -911,7 +911,7 @@ TEST_F(MockLlmTest, CallbackReceivesStructuredToolStatus) {
 	};
 
 	EXPECT_EQ(react_run(ctx, "use tool", cb, &state), 0);
-	EXPECT_EQ(state.saw_action_start, 1);
+	EXPECT_EQ(state.action_start_count, 1);
 	EXPECT_EQ(state.saw_observation_done, 1);
 	react_context_destroy(ctx);
 }
@@ -1890,14 +1890,42 @@ TEST_F(MockLlmTest, GlobalToolTimeoutLetsLoopContinue) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	ctx->tool_timeout_seconds = 1;
+	struct callback_state {
+		int action_timeout_count;
+		int observation_failed_count;
+	} state = {0, 0};
+	auto cb = [](const struct react_output_event *event, void *ud) -> int {
+		struct callback_state *state = (struct callback_state *)ud;
+		if (event->type == REACT_STEP_ACTION &&
+		    event->status == REACT_OUTPUT_TIMEOUT &&
+		    event->error_code == -ETIMEDOUT &&
+		    event->tool_name &&
+		    strcmp(event->tool_name, "slow_tool") == 0 &&
+		    event->text &&
+		    strstr(event->text, "timed out")) {
+			state->action_timeout_count++;
+		}
+		if (event->type == REACT_STEP_OBSERVATION &&
+		    event->status == REACT_OUTPUT_FAILED &&
+		    event->error_code == -ETIMEDOUT &&
+		    event->tool_name &&
+		    strcmp(event->tool_name, "slow_tool") == 0 &&
+		    event->text &&
+		    strstr(event->text, "timed out")) {
+			state->observation_failed_count++;
+		}
+		return 0;
+	};
 	auto start = std::chrono::steady_clock::now();
-	int rc = react_run(ctx, "run slow tool", nullptr, nullptr);
+	int rc = react_run(ctx, "run slow tool", cb, &state);
 	auto elapsed = std::chrono::steady_clock::now() - start;
 
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_NE(strstr(ctx->final_answer, "done after timeout"), nullptr);
+	EXPECT_EQ(state.action_timeout_count, 1);
+	EXPECT_EQ(state.observation_failed_count, 1);
 	EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(
 			  elapsed).count(), 2000);
 	react_context_destroy(ctx);
