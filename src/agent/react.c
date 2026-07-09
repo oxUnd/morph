@@ -1317,10 +1317,25 @@ struct react_stream_data {
 	size_t acc_cap;
 };
 
+static const char *react_preview_final_delta(const char *token)
+{
+	if (!token)
+		return "";
+
+	if (strncmp(token, "Final:", 6) == 0)
+		return token + 6;
+	if (strncmp(token, "Final answer:", 13) == 0)
+		return token + 13;
+	if (strncmp(token, "Final Answer:", 13) == 0)
+		return token + 13;
+	return token;
+}
+
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
 	size_t tlen = strlen(token);
+	const char *final_delta;
 	if (sd->acc_len + tlen + 1 >= sd->acc_cap) {
 		size_t new_cap = (sd->acc_len + tlen + 1) * 2;
 		char *new_acc = arena_alloc(sd->arena, new_cap);
@@ -1347,6 +1362,12 @@ static int react_stream_cb(const char *token, void *user_data)
 	react_output_emit(sd->user_cb, sd->user_data, REACT_STEP_THOUGHT,
 			  REACT_OUTPUT_DELTA, token, NULL, NULL, NULL, 0,
 			  NULL, NULL, NULL);
+	final_delta = react_preview_final_delta(token);
+	if (final_delta && *final_delta) {
+		react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
+				      "react.final.delta", "delta",
+				      NULL, final_delta);
+	}
 	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
 			      "react.thought.delta", "delta",
 			      NULL, token);
