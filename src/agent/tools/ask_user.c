@@ -93,16 +93,10 @@ static int attach_ask_user_result(struct tool_result *result,
 		return -ENOMEM;
 	}
 
-	int rc = tool_result_take_data(result, data);
-	if (rc != 0) {
-		cJSON_Delete(ui);
-		return rc;
-	}
-
-	rc = tool_result_take_ui(result, ui);
-	if (rc != 0)
-		return rc;
-	return 0;
+	tool_result_clear(result);
+	result->data = data;
+	result->ui = ui;
+	return tool_result_finalize(result);
 }
 
 static int ask_user_exec(const char *args_json, struct tool_result *result,
@@ -113,7 +107,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		return -EINVAL;
 	if (!ctx || !ctx->cb) {
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"ask_user callback not configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -157,7 +151,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (question[0] == '\0') {
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing or empty 'question' parameter. "
 			"Usage: ask_user({\\\"question\\\": \\\"...\\\"})\"}"));
 		return -EINVAL;
@@ -175,13 +169,13 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to get user response (code %d)\"}",
 			 rc);
-		(void)tool_result_take_text(result, strdup(err));
+		(void)tool_result_success_json_text(result, strdup(err));
 		return rc;
 	}
 
 	if (!answer || !answer[0]) {
 		free(answer);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"User provided no input. Proceed with your best judgment."));
 		(void)attach_ask_user_result(result, question, choices,
 					     choices_count, "", 1);
@@ -190,10 +184,10 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		return 0;
 	}
 
-	(void)tool_result_take_text(result, answer);
 	(void)attach_ask_user_result(result, question, choices, choices_count,
-				     result->text.data, 0);
+				     answer, 0);
 	log_info("ask_user: question='%s' answer='%s'", question, answer);
+	free(answer);
 	for (int i = 0; i < choices_count; i++)
 		free(choice_copies[i]);
 	return 0;
@@ -211,8 +205,7 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 	ctx->cb = cb;
 	ctx->user_data = user_data;
 
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "ask_user",
-		"Ask the user a question and wait for their response. "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "ask_user", .description = "Ask the user a question and wait for their response. "
 		"Use when: the request is ambiguous with multiple valid "
 		"interpretations; you need a decision between mutually "
 		"exclusive approaches; an action is irreversible or "
@@ -222,16 +215,14 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 		"you already have enough context. If unsure, proceed with "
 		"your best judgment and state your assumption. "
 		"When presenting options, use 'choices' for structured "
-		"selection.",
-		"{\"type\":\"object\",\"properties\":{"
+		"selection.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"question\":{\"type\":\"string\","
 		"\"description\":\"The question to ask the user\"},"
 		"\"choices\":{\"type\":\"array\","
 		"\"items\":{\"type\":\"string\"},"
 		"\"description\":\"Optional list of choices for the user "
 		"to pick from\"}"
-		"},\"required\":[\"question\"]}",
-		ask_user_exec, ctx, ask_user_context_destroy);
+		"},\"required\":[\"question\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = ask_user_exec, .user_data = ctx, .user_data_destroy = ask_user_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

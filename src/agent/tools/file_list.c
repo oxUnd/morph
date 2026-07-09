@@ -29,7 +29,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -37,7 +37,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	const char *dir_path = cJSON_IsString(dp) ? dp->valuestring : NULL;
 	if (!dir_path) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'dir_path' parameter. "
 			"Usage: file_list({\\\"dir_path\\\": \\\"path/to/dir\\\"})\"}"));
 		return -EINVAL;
@@ -51,10 +51,10 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"directory not found\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"list path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -66,7 +66,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	DIR *d = opendir(resolved_path);
 	if (!d) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"directory not found\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"directory not found\"}"));
 		return -ENOENT;
 	}
 
@@ -108,7 +108,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
 	for (int i = 0; i < dirc; i++)
@@ -125,7 +125,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(sorted_dirs);
 		cJSON_Delete(files);
 		cJSON_Delete(entries);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
 	for (int i = 0; i < filec; i++)
@@ -150,15 +150,12 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	(void)tool_result_take_text(result, str);
+	(void)tool_result_success_json_text(result, str);
 	return 0;
 }
 
 int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "file_list",
-		"List files and directories in a directory. Provide dir_path. Returns sorted entries with name and type (file/dir).",
-		"{\"type\":\"object\",\"properties\":{\"dir_path\":{\"type\":\"string\",\"description\":\"Path to the directory to list\"}},\"required\":[\"dir_path\"]}",
-		file_list_exec, tctx, NULL);
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "file_list", .description = "List files and directories in a directory. Provide dir_path. Returns sorted entries with name and type (file/dir).", .input_schema = "{\"type\":\"object\",\"properties\":{\"dir_path\":{\"type\":\"string\",\"description\":\"Path to the directory to list\"}},\"required\":[\"dir_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = file_list_exec, .user_data = tctx, .user_data_destroy = NULL });
 }

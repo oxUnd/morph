@@ -197,7 +197,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	if (!command || !*command) {
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'command' parameter. "
 			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}"));
 		return -EINVAL;
@@ -207,7 +207,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		log_warn("bash_exec: blocked dangerous command: %s", command);
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"command blocked for safety. "
 			"Destructive operations (rm, mv, cp, chmod, ssh, "
 			"kill, etc.) are not allowed. "
@@ -229,11 +229,11 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			if (root)
 				cJSON_Delete(root);
 			if (rc == -EACCES)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"command execution denied "
 					"by user\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"command or cwd is not "
 					"allowed by policy and no interactive "
 					"approval is available\"}"));
@@ -257,7 +257,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		int err = errno;
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"pipe() failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"pipe() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 	if (pipe(err_pipe) < 0) {
@@ -266,7 +266,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		close(out_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"pipe() failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"pipe() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -280,7 +280,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		close(err_pipe[0]); close(err_pipe[1]);
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"fork() failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"fork() failed\"}"));
 		MORPH_RETURN(-err);
 	}
 
@@ -367,7 +367,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		close(err_pipe[0]);
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"buffer allocation failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"buffer allocation failed\"}"));
 		return buf_rc;
 	}
 
@@ -416,7 +416,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	if (root)
 		cJSON_Delete(root);
 
-	(void)tool_result_take_text(result, str ? str : strdup("{}"));
+	(void)tool_result_success_json_text(result, str ? str : strdup("{}"));
 	return 0;
 }
 
@@ -424,8 +424,7 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "bash_exec",
-		"Execute a shell command in a restricted sandboxed subprocess. "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "bash_exec", .description = "Execute a shell command in a restricted sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
 		"Network and non-essential inherited environment variables are unavailable. "
@@ -439,13 +438,11 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"Args: command (required), cwd (optional working dir), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "
-		"use 30 for quick queries.",
-		"{\"type\":\"object\",\"properties\":{"
+		"use 30 for quick queries.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":\"shell command to execute via /bin/sh -c\"},"
 		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
 		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime in seconds (default 60; use 120-300 for builds/tests/git)\"}"
-		"},\"required\":[\"command\"]}",
-		bash_exec_run, tctx, NULL);
+		"},\"required\":[\"command\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = bash_exec_run, .user_data = tctx, .user_data_destroy = NULL });
 	if (rc == 0) {
 		struct tool_entry *e = tool_lookup(reg, "bash_exec");
 		if (e)

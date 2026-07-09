@@ -360,7 +360,7 @@ test_upper_registered() {
 test_upper_args() {
 	out=$(run_morph "/ext info upper
 /quit")
-	assert_contains "42: upper args_spec has text" "$out" "text"
+	assert_contains "42: upper input_schema has text" "$out" "text"
 }
 
 # ---- J. webfetch ----

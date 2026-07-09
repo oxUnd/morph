@@ -39,7 +39,7 @@ static int json_result(struct tool_result *result, cJSON *obj)
 	s = cJSON_PrintUnformatted(obj);
 	if (!s)
 		MORPH_RETURN(-ENOMEM);
-	return tool_result_take_json(result, s);
+	return tool_result_success_json_text(result, s);
 }
 
 static int json_error_result(struct tool_result *result, int code,
@@ -942,12 +942,20 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 	if (!ctx)
 		MORPH_RETURN(-ENOMEM);
 	ctx->tctx = tctx;
-	return tool_register(TOOL_ORIGIN_EXT, reg, "file_write",
-		"Create, overwrite, append, patch, mkdir, rename, copy, or delete files. "
-		"Decoded content for write/overwrite/append/patch is limited to 10 MiB per call; "
-		"larger files can be built with repeated append or copied/patch-read streamingly. "
-		"Relative write paths resolve under output_dir; outside paths require approval.",
-		schema, file_write_exec, ctx, free);
+	return tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_EXT,
+		.name = "file_write",
+		.description =
+			"Create, overwrite, append, patch, mkdir, rename, copy, or delete files. "
+			"Decoded content for write/overwrite/append/patch is limited to 10 MiB per call; "
+			"larger files can be built with repeated append or copied/patch-read streamingly. "
+			"Relative write paths resolve under output_dir; outside paths require approval.",
+		.input_schema = schema,
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = file_write_exec,
+		.user_data = ctx,
+		.user_data_destroy = free,
+	});
 }
 
 int ext_run(const char *args_json, char **result_json)

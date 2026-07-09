@@ -12,8 +12,8 @@ action_text = "Regenerate the response using only supported Agent UI tags: m:spe
 permissions = 0
 max_memory_mb = 16
 max_cpu_seconds = 2
-args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Assistant output to validate\"}}}"
-output_schema = "string"
+input_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Assistant output to validate\"}}}"
+output_schema = "{\"type\":\"object\",\"properties\":{}}"
 
 [build]
 command = "make"

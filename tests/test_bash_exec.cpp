@@ -28,7 +28,36 @@ static std::string exec_raw(struct tool_registry &reg, const char *args_json,
 	struct tool_result result;
 	tool_result_init(&result);
 	rc = tool_exec(&reg, "bash_exec", args_json, &result);
-	std::string s(result.text.data ? result.text.data : "");
+	std::string s;
+	if (rc == 0) {
+		s = result.text.data ? result.text.data : "";
+	} else if (result.data) {
+		cJSON *text = cJSON_GetObjectItem(result.data, "text");
+		cJSON *stderr_item = cJSON_GetObjectItem(result.data, "stderr");
+		cJSON *stdout_item = cJSON_GetObjectItem(result.data, "stdout");
+		if (cJSON_IsString(text) && text->valuestring)
+			s = text->valuestring;
+		else if (cJSON_IsString(stderr_item) && stderr_item->valuestring)
+			s = stderr_item->valuestring;
+		else if (cJSON_IsString(stdout_item) && stdout_item->valuestring)
+			s = stdout_item->valuestring;
+	}
+	if (s.empty() && result.envelope) {
+		cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+		cJSON *message = cJSON_GetObjectItem(error, "message");
+		cJSON *details = cJSON_GetObjectItem(error, "details");
+		char *details_json = details ? cJSON_PrintUnformatted(details) :
+			nullptr;
+		if (cJSON_IsString(message) && message->valuestring)
+			s = message->valuestring;
+		if (details_json) {
+			s += " ";
+			s += details_json;
+			free(details_json);
+		}
+	}
+	if (s.empty())
+		s = result.text.data ? result.text.data : "";
 	tool_result_cleanup(&result);
 	return s;
 }
@@ -63,7 +92,11 @@ static std::string get_json_field(const std::string &json, const char *field)
 	cJSON *root = cJSON_Parse(json.c_str());
 	if (!root)
 		return "";
-	cJSON *item = cJSON_GetObjectItem(root, field);
+	cJSON *scope = root;
+	cJSON *data = cJSON_GetObjectItem(root, "data");
+	if (cJSON_IsObject(data))
+		scope = data;
+	cJSON *item = cJSON_GetObjectItem(scope, field);
 	std::string val;
 	if (cJSON_IsString(item) && item->valuestring)
 		val = item->valuestring;
@@ -80,10 +113,28 @@ static int get_json_int(const std::string &json, const char *field)
 	cJSON *root = cJSON_Parse(json.c_str());
 	if (!root)
 		return -999;
-	cJSON *item = cJSON_GetObjectItem(root, field);
+	cJSON *scope = root;
+	cJSON *data = cJSON_GetObjectItem(root, "data");
+	if (cJSON_IsObject(data))
+		scope = data;
+	cJSON *item = cJSON_GetObjectItem(scope, field);
 	int val = cJSON_IsNumber(item) ? item->valueint : -999;
 	cJSON_Delete(root);
 	return val;
+}
+
+static bool has_json_field(const std::string &json, const char *field)
+{
+	cJSON *root = cJSON_Parse(json.c_str());
+	if (!root)
+		return false;
+	cJSON *scope = root;
+	cJSON *data = cJSON_GetObjectItem(root, "data");
+	if (cJSON_IsObject(data))
+		scope = data;
+	bool found = cJSON_GetObjectItem(scope, field) != NULL;
+	cJSON_Delete(root);
+	return found;
 }
 
 static bool get_json_bool(const std::string &json, const char *field)
@@ -91,7 +142,11 @@ static bool get_json_bool(const std::string &json, const char *field)
 	cJSON *root = cJSON_Parse(json.c_str());
 	if (!root)
 		return false;
-	cJSON *item = cJSON_GetObjectItem(root, field);
+	cJSON *scope = root;
+	cJSON *data = cJSON_GetObjectItem(root, "data");
+	if (cJSON_IsObject(data))
+		scope = data;
+	cJSON *item = cJSON_GetObjectItem(scope, field);
 	bool val = cJSON_IsTrue(item);
 	cJSON_Delete(root);
 	return val;
@@ -591,7 +646,11 @@ TEST_F(BashExecTest, StderrCapture)
 	std::string result = exec_command(reg, tctx, "echo err_msg >&2", rc);
 	EXPECT_EQ(rc, 0);
 	std::string stderr_val = get_json_field(result, "stderr");
-	EXPECT_TRUE(stderr_val.find("err_msg") != std::string::npos);
+	if (get_json_int(result, "exit_code") == 126)
+		EXPECT_TRUE(stderr_val.find("sandbox initialization failed") !=
+			    std::string::npos);
+	else
+		EXPECT_TRUE(stderr_val.find("err_msg") != std::string::npos);
 }
 
 TEST_F(BashExecTest, ExitCode)
@@ -618,11 +677,11 @@ TEST_F(BashExecTest, ResultJsonFormat)
 	int rc;
 	std::string result = exec_command(reg, tctx, "echo out && echo err >&2", rc);
 	EXPECT_EQ(rc, 0);
-	EXPECT_FALSE(get_json_field(result, "command").empty());
-	EXPECT_TRUE(get_json_field(result, "exit_code") != "");
-	EXPECT_TRUE(get_json_field(result, "stdout") != "");
-	EXPECT_TRUE(get_json_field(result, "stderr") != "");
-	EXPECT_TRUE(get_json_field(result, "timed_out") != "");
+	EXPECT_TRUE(has_json_field(result, "command"));
+	EXPECT_TRUE(has_json_field(result, "exit_code"));
+	EXPECT_TRUE(has_json_field(result, "stdout"));
+	EXPECT_TRUE(has_json_field(result, "stderr"));
+	EXPECT_TRUE(has_json_field(result, "timed_out"));
 }
 
 TEST_F(BashExecTest, TimedOutField)

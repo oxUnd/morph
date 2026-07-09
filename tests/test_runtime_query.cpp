@@ -85,7 +85,7 @@ TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(&tools, "credits", "{}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
-	cJSON *root = cJSON_Parse(result.text.data);
+	cJSON *root = result.data;
 	ASSERT_NE(root, nullptr);
 	cJSON *today = cJSON_GetObjectItem(root, "today");
 	cJSON *session = cJSON_GetObjectItem(root, "session");
@@ -97,7 +97,6 @@ TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
 	EXPECT_EQ(cJSON_GetObjectItem(session, "credits")->valueint, 7);
 	EXPECT_EQ(cJSON_GetObjectItem(total, "credits")->valueint, 7);
 	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(root, "over_daily_limit")));
-	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 }
 

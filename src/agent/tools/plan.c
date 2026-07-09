@@ -283,6 +283,9 @@ fail:
 static cJSON *plan_ui_to_json(cJSON *data)
 {
 	cJSON *ui = cJSON_CreateObject();
+	cJSON *summary = NULL;
+	cJSON *item;
+
 	if (!ui)
 		return NULL;
 
@@ -290,13 +293,42 @@ static cJSON *plan_ui_to_json(cJSON *data)
 	    !cJSON_AddStringToObject(ui, "version", "1"))
 		goto fail;
 
-	cJSON *copy = cJSON_Duplicate(data, 1);
-	if (!copy)
+	summary = cJSON_CreateObject();
+	if (!summary)
 		goto fail;
-	cJSON_AddItemToObject(ui, "data", copy);
+	if (data) {
+		item = cJSON_GetObjectItem(data, "kind");
+		if (cJSON_IsString(item) &&
+		    !cJSON_AddStringToObject(summary, "kind",
+					     item->valuestring))
+			goto fail;
+		item = cJSON_GetObjectItem(data, "command");
+		if (cJSON_IsString(item) &&
+		    !cJSON_AddStringToObject(summary, "command",
+					     item->valuestring))
+			goto fail;
+		item = cJSON_GetObjectItem(data, "count");
+		if (cJSON_IsNumber(item) &&
+		    !cJSON_AddNumberToObject(summary, "count",
+					     item->valuedouble))
+			goto fail;
+		item = cJSON_GetObjectItem(data, "selected_plan_id");
+		if (cJSON_IsString(item) &&
+		    !cJSON_AddStringToObject(summary, "selected_plan_id",
+					     item->valuestring))
+			goto fail;
+		item = cJSON_GetObjectItem(data, "selected_plan");
+		if (cJSON_IsString(item) &&
+		    !cJSON_AddStringToObject(summary, "selected_plan",
+					     item->valuestring))
+			goto fail;
+	}
+	cJSON_AddItemToObject(ui, "data", summary);
+	summary = NULL;
 	return ui;
 
 fail:
+	cJSON_Delete(summary);
 	cJSON_Delete(ui);
 	return NULL;
 }
@@ -318,16 +350,10 @@ static int attach_plan_state(struct tool_result *result,
 		return -ENOMEM;
 	}
 
-	int rc = tool_result_take_data(result, data);
-	if (rc != 0) {
-		cJSON_Delete(ui);
-		return rc;
-	}
-
-	rc = tool_result_take_ui(result, ui);
-	if (rc != 0)
-		return rc;
-	return 0;
+	tool_result_clear(result);
+	result->data = data;
+	result->ui = ui;
+	return tool_result_finalize(result);
 }
 
 static int set_resultf(struct tool_result *result, const char *fmt, ...)
@@ -354,10 +380,7 @@ static int set_resultf(struct tool_result *result, const char *fmt, ...)
 		return rc;
 	}
 
-	(void)tool_result_take_text(result, morph_buf_detach(&buf));
-	if (!result->text.data)
-		return -ENOMEM;
-	return 0;
+	return tool_result_success_json_text(result, morph_buf_detach(&buf));
 }
 
 static int parse_steps_from_text(const char *text, const char **descs,
@@ -493,14 +516,14 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	cJSON *cmd = cJSON_GetObjectItem(root, "command");
 	if (!cJSON_IsString(cmd)) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'command' parameter. "
 			"Commands: create, update, get, list\"}"));
 		return -EINVAL;
@@ -516,7 +539,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 
 		if (!cJSON_IsString(name_item) || !name_item->valuestring) {
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup(
+			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"create requires 'name' (string)\"}"));
 			return -EINVAL;
 		}
@@ -547,7 +570,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
 				cJSON_Delete(root);
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"auto-decompose failed\"}"));
 				MORPH_RETURN(rc);
 			}
@@ -561,7 +584,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 
 		if (step_count == 0) {
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup(
+			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"create requires 'steps' (array of strings) "
 				"or a 'goal' string to auto-decompose\"}"));
 			return -EINVAL;
@@ -574,7 +597,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup(
+			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"failed to create plan "
 				"(max 8 plans, max 32 steps each)\"}"));
 			return -ENOSPC;
@@ -585,7 +608,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 			if (auto_decomposed)
 				free_step_descs(step_descs, step_count);
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
+			(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
 			return -ENOMEM;
 		}
 
@@ -630,7 +653,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 
 		if ((!plan_id && !plan_name) || step_id < 0 || !status) {
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup(
+			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"update requires 'plan_id' or 'plan', "
 				"'step_id' (int), and 'status' (string). "
 				"Status: pending, in_progress, completed, "
@@ -651,7 +674,7 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 				msg = "invalid parameters";
 			snprintf(err, sizeof(err),
 				"{\"error\":\"%s\"}", msg);
-			(void)tool_result_take_text(result, strdup(err));
+			(void)tool_result_success_json_text(result, strdup(err));
 			cJSON_Delete(root);
 			return rc;
 		}
@@ -762,14 +785,12 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	ctx->plans = plans;
 	ctx->llm = llm;
 
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "plan",
-		"Create and manage multi-step plans. "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "plan", .description = "Create and manage multi-step plans. "
 		"Commands: create (name, goal, steps), "
 		"update (plan_id or plan, step_id, status), "
 		"get (plan_id or plan), list. "
 		"If 'goal' is provided without 'steps', the plan is "
-		"auto-decomposed into steps using AI.",
-		"{\"type\":\"object\",\"properties\":{"
+		"auto-decomposed into steps using AI.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":\"create|update|get|list\","
 		"\"enum\":[\"create\",\"update\",\"get\",\"list\"]},"
 		"\"name\":{\"type\":\"string\",\"description\":\"Plan name (for create)\"},"
@@ -780,8 +801,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		"\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for update/get)\"},"
 		"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
 		"\"status\":{\"type\":\"string\",\"description\":\"New status (for update): pending, in_progress, completed, failed, skipped\"}"
-		"},\"required\":[\"command\"]}",
-		plan_tool_exec, ctx, plan_tool_context_destroy);
+		"},\"required\":[\"command\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = plan_tool_exec, .user_data = ctx, .user_data_destroy = plan_tool_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

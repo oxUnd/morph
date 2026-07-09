@@ -24,7 +24,7 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 	if (!task) {
 		if (root)
 			cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'task' parameter\"}"));
 		return -EINVAL;
 	}
@@ -32,7 +32,7 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 						       bind->agent_name);
 	if (!entry) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"sub-agent not found\"}"));
 		return -ENOENT;
 	}
@@ -60,7 +60,7 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 					: morph_strerror(rc));
 		free(sub_result);
 	}
-	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
+	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -90,15 +90,24 @@ int sub_agent_sync_init(struct tool_registry *reg,
 			 "Delegate a task to the %s sub-agent. %s",
 			 rt->entries[i].cfg.name,
 			 rt->entries[i].cfg.description);
-		char args[TOOL_ARGS_SPEC_MAX];
-		snprintf(args, sizeof(args),
-			 "{\"type\":\"object\",\"properties\""
-			 ":{\"task\":{\"type\":\"string\","
-			 "\"description\":\"The task to delegate\"}},"
-			 "\"required\":[\"task\"]}");
-		int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, name, desc, args,
-				       agent_sync_exec, bind,
-				       binding_destroy);
+			char args[TOOL_SCHEMA_MAX];
+			snprintf(args, sizeof(args),
+				 "{\"type\":\"object\",\"properties\""
+				 ":{\"task\":{\"type\":\"string\","
+				 "\"description\":\"The task to delegate\"}},"
+				 "\"required\":[\"task\"],"
+				 "\"additionalProperties\":false}");
+			struct tool_spec spec = {
+				.origin = TOOL_ORIGIN_BUILTIN,
+				.name = name,
+				.description = desc,
+				.input_schema = args,
+				.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+				.exec = agent_sync_exec,
+				.user_data = bind,
+				.user_data_destroy = binding_destroy,
+			};
+			int rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			free(bind);
 			return rc;
@@ -129,7 +138,7 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!agent || !task) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'agent' or 'task' parameter\"}"));
 		return -EINVAL;
 	}
@@ -145,7 +154,7 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(task_id);
-	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
+	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -155,15 +164,12 @@ int sub_agent_delegate_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "delegate",
-		"Start a sub-agent asynchronously and return a task ID",
-		"{\"type\":\"object\",\"properties\""
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "delegate", .description = "Start a sub-agent asynchronously and return a task ID", .input_schema = "{\"type\":\"object\",\"properties\""
 		":{\"agent\":{\"type\":\"string\","
 		"\"description\":\"Name of the sub-agent to invoke\"},"
 		"\"task\":{\"type\":\"string\","
 		"\"description\":\"The task description\"}},"
-		"\"required\":[\"agent\",\"task\"]}",
-		delegate_exec, rt, NULL);
+		"\"required\":[\"agent\",\"task\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = delegate_exec, .user_data = rt, .user_data_destroy = NULL });
 }
 
 static int agent_status_exec(const char *args_json, struct tool_result *result,
@@ -183,7 +189,7 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!task_id) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'task_id' parameter\"}"));
 		return -EINVAL;
 	}
@@ -215,7 +221,7 @@ static int agent_status_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error", morph_strerror(rc));
 	}
 	free(res);
-	(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
+	(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
 	cJSON_Delete(out);
 	return rc;
 }
@@ -225,13 +231,10 @@ int sub_agent_status_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "agent_status",
-		"Check the status of an asynchronously running sub-agent",
-		"{\"type\":\"object\",\"properties\""
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "agent_status", .description = "Check the status of an asynchronously running sub-agent", .input_schema = "{\"type\":\"object\",\"properties\""
 		":{\"task_id\":{\"type\":\"string\","
 		"\"description\":\"The task ID returned by delegate\"}},"
-		"\"required\":[\"task_id\"]}",
-		agent_status_exec, rt, NULL);
+		"\"required\":[\"task_id\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = agent_status_exec, .user_data = rt, .user_data_destroy = NULL });
 }
 
 static int fanout_exec(const char *args_json, struct tool_result *result,
@@ -257,7 +260,7 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 	}
 	if (!agent || !tasks_arr || !cJSON_IsArray(tasks_arr)) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'agent' or 'tasks' parameter\"}"));
 		return -EINVAL;
 	}
@@ -289,11 +292,11 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 			cJSON *out = cJSON_CreateObject();
 			cJSON_AddStringToObject(out, "status", "completed");
 			cJSON_AddItemToObject(out, "result", parsed);
-			(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
+			(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
 			cJSON_Delete(out);
 			free(fanout_result);
 		} else {
-			(void)tool_result_take_text(result, fanout_result);
+			(void)tool_result_success_json_text(result, fanout_result);
 		}
 	} else {
 		cJSON *out = cJSON_CreateObject();
@@ -301,7 +304,7 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 		cJSON_AddStringToObject(out, "error",
 					fanout_result ? fanout_result
 					: morph_strerror(rc));
-		(void)tool_result_take_json(result, cJSON_PrintUnformatted(out));
+		(void)tool_result_success_json_text(result, cJSON_PrintUnformatted(out));
 		cJSON_Delete(out);
 		free(fanout_result);
 	}
@@ -313,9 +316,7 @@ int sub_agent_fanout_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "fanout",
-		"Run multiple tasks in parallel using a sub-agent and merge results",
-		"{\"type\":\"object\",\"properties\""
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "fanout", .description = "Run multiple tasks in parallel using a sub-agent and merge results", .input_schema = "{\"type\":\"object\",\"properties\""
 		":{\"agent\":{\"type\":\"string\","
 		"\"description\":\"Name of the sub-agent\"},"
 		"\"tasks\":{\"type\":\"array\",\"items\""
@@ -325,8 +326,7 @@ int sub_agent_fanout_init(struct tool_registry *reg,
 		"\"enum\":[\"synthesize\",\"concat\",\"raw\"],"
 		"\"description\":\"How to merge results "
 		"(default: synthesize)\"}},"
-		"\"required\":[\"agent\",\"tasks\"]}",
-		fanout_exec, rt, NULL);
+		"\"required\":[\"agent\",\"tasks\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = fanout_exec, .user_data = rt, .user_data_destroy = NULL });
 }
 
 void sub_agent_tools_register_all(struct tool_registry *reg,

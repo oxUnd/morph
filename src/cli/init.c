@@ -14,7 +14,7 @@ static int ext_run_wrapper(const char *args_json, struct tool_result *result, vo
 	char *out = NULL;
 	int rc = ext_run(ex, args_json, &out);
 	if (out)
-		(void)tool_result_take_text(result, out);
+		(void)tool_result_success_json_text(result, out);
 	return rc;
 }
 struct auto_connect_work {
@@ -630,12 +630,17 @@ static int cli_init_exts(struct cli_context *ctx)
 				struct ext *ex_ptr = malloc(sizeof(*ex_ptr));
 				if (ex_ptr) {
 					memcpy(ex_ptr, &ex, sizeof(ex));
-					tool_register(TOOL_ORIGIN_EXT, &ctx->tools, ex.manifest.name,
-						      ex.manifest.description,
-						      ex.manifest.args_schema ?
-						      ex.manifest.args_schema : "",
-						      ext_run_wrapper, ex_ptr,
-						      ext_user_data_destroy);
+					struct tool_spec spec = {
+						.origin = TOOL_ORIGIN_EXT,
+						.name = ex.manifest.name,
+						.description = ex.manifest.description,
+						.input_schema = ex.manifest.input_schema,
+						.output_schema = ex.manifest.output_schema,
+						.exec = ext_run_wrapper,
+						.user_data = ex_ptr,
+						.user_data_destroy = ext_user_data_destroy,
+					};
+					(void)tool_register(&ctx->tools, &spec);
 					log_info("registered ext: %s", ex.manifest.name);
 				}
 			} else {

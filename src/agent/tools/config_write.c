@@ -201,13 +201,13 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		MORPH_RETURN(-EINVAL);
 	if (!ctx || !ctx->config_path[0]) {
-		(void)tool_result_json_error(result,
+		(void)tool_result_error(result, "tool_failed",
 					     "config_write is not configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 	root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_json_error(result, "invalid JSON");
+		(void)tool_result_error(result, "tool_failed", "invalid JSON");
 		MORPH_RETURN(-EINVAL);
 	}
 	cJSON *path_item = cJSON_GetObjectItem(root, "path");
@@ -218,12 +218,12 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 		path_item->valuestring : ctx->config_path;
 	reason = cJSON_IsString(reason_item) ? reason_item->valuestring : "";
 	if (!reason[0]) {
-		rc = tool_result_json_error(result, "missing 'reason' parameter");
+		rc = tool_result_error(result, "tool_failed", "missing 'reason' parameter");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
 	if (!path_equal_config(path, ctx->config_path)) {
-		rc = tool_result_json_error(result,
+		rc = tool_result_error(result, "tool_failed",
 			"config_write can only write the active Morph config file");
 		rc = rc != 0 ? rc : -EACCES;
 		goto out;
@@ -235,7 +235,7 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 	}
 	if (cJSON_IsString(content_item) && content_item->valuestring) {
 		if (strlen(content_item->valuestring) > CONFIG_WRITE_MAX_SIZE) {
-			rc = tool_result_json_error(result, "content too large");
+			rc = tool_result_error(result, "tool_failed", "content too large");
 			rc = rc != 0 ? rc : -EFBIG;
 			goto out;
 		}
@@ -248,24 +248,24 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 		old_content = file_read_all(target_expanded, NULL);
 		rc = build_content_from_patches(old_content, patches, &new_content);
 		if (rc < 0) {
-			(void)tool_result_json_error(result,
+			(void)tool_result_error(result, "tool_failed",
 				"invalid patches; use section/key/value entries");
 			goto out;
 		}
 		if (strlen(new_content) > CONFIG_WRITE_MAX_SIZE) {
-			rc = tool_result_json_error(result, "content too large");
+			rc = tool_result_error(result, "tool_failed", "content too large");
 			rc = rc != 0 ? rc : -EFBIG;
 			goto out;
 		}
 	} else {
-		rc = tool_result_json_error(result,
+		rc = tool_result_error(result, "tool_failed",
 			"provide either 'content' or 'patches'");
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
 	rc = validate_toml_content(new_content, errbuf, sizeof(errbuf));
 	if (rc < 0) {
-		(void)tool_result_json_errorf(result,
+		(void)tool_result_errorf(result, "tool_failed",
 					      "invalid TOML: %s", errbuf);
 		goto out;
 	}
@@ -280,7 +280,7 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 		};
 		rc = tool_context_check_operation(ctx->tctx, &op);
 		if (rc < 0) {
-			(void)tool_result_json_error(result,
+			(void)tool_result_error(result, "tool_failed",
 				"config write denied or not approved");
 			goto out;
 		}
@@ -305,7 +305,7 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 			"configuration written; restart Morph to reload startup settings");
 		out_str = cJSON_PrintUnformatted(out_json);
 		cJSON_Delete(out_json);
-		(void)tool_result_take_json(result, out_str);
+		(void)tool_result_success_json_text(result, out_str);
 	}
 
 out:
@@ -329,13 +329,11 @@ int config_write_init(struct tool_registry *reg, struct tool_context *tctx,
 		MORPH_RETURN(-ENOMEM);
 	ctx->tctx = tctx;
 	strncpy(ctx->config_path, config_path, sizeof(ctx->config_path) - 1);
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "config_write",
-		"Write the active Morph config file after user approval and TOML validation. "
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "config_write", .description = "Write the active Morph config file after user approval and TOML validation. "
 		"Use only when the user asks to change Morph configuration. "
 		"Prefer api_key_env over writing API key values. "
 		"Args: path (optional, must be the active config path), reason (required), "
-		"content (complete TOML) or patches (array of section/key/value entries).",
-		"{\"type\":\"object\",\"properties\":{"
+		"content (complete TOML) or patches (array of section/key/value entries).", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"path\":{\"type\":\"string\",\"description\":\"Optional config path; must match the active Morph config\"},"
 		"\"reason\":{\"type\":\"string\",\"description\":\"Human-readable reason shown for approval\"},"
 		"\"content\":{\"type\":\"string\",\"description\":\"Complete TOML content to write\"},"
@@ -345,8 +343,7 @@ int config_write_init(struct tool_registry *reg, struct tool_context *tctx,
 		"\"key\":{\"type\":\"string\"},"
 		"\"value\":{}"
 		"},\"required\":[\"section\",\"key\",\"value\"]}}"
-		"},\"required\":[\"reason\"]}",
-		config_write_exec, ctx, config_write_context_destroy);
+		"},\"required\":[\"reason\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = config_write_exec, .user_data = ctx, .user_data_destroy = config_write_context_destroy });
 	if (rc < 0) {
 		free(ctx);
 		return rc;

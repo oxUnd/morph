@@ -192,13 +192,13 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -206,7 +206,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 	cJSON *ann = get_annotation(root, &owned);
 	if (!ann) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return -EINVAL;
 	}
 
@@ -229,7 +229,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
 			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
 		return -EINVAL;
@@ -239,7 +239,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"img_compose needs arrows (arrow + label = "
 			"cross-image fusion). For bbox region generation use "
 			"img_inpaint.\"}"));
@@ -251,7 +251,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"could not determine target image from arrows\"}"));
 		return -EINVAL;
 	}
@@ -261,7 +261,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"no path for target image\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"no path for target image\"}"));
 		return -EINVAL;
 	}
 
@@ -274,7 +274,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 			if (owned)
 				cJSON_Delete(owned);
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup(
+			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"cannot read target image "
 				"(outside workspace?)\"}"));
 			return rc;
@@ -290,7 +290,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load target image\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load target image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -398,7 +398,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"no arrows could be applied to the target image\"}"));
 		return -EINVAL;
 	}
@@ -413,7 +413,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to resolve output dir\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to resolve output dir\"}"));
 		return -ENOMEM;
 	}
 	file_ensure_dir(out_dir);
@@ -428,7 +428,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write draft composite\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to write draft composite\"}"));
 		return -EIO;
 	}
 
@@ -502,7 +502,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		cJSON_Delete(owned);
 	cJSON_Delete(root);
 
-	(void)tool_result_take_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
+	(void)tool_result_success_json_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
 	return rc < 0 ? rc : 0;
 }
 
@@ -518,16 +518,14 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_compose",
-		"Composite/fuse objects across images following annotation "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_compose", .description = "Composite/fuse objects across images following annotation "
 		"arrows. An arrow + label means \"blend the object at the arrow "
 		"source into the target location the arrow points to\". Pass the "
 		"img_annotate output (images[], bboxes[], arrows[]) verbatim. "
 		"The tool pre-composites the source pixels onto the target at "
 		"each arrow's destination (using the source bbox the arrow "
 		"starts from), then harmonizes the result via the image model. "
-		"Use img_inpaint instead for bbox-only region generation.",
-		"{\"type\":\"object\",\"properties\":{"
+		"Use img_inpaint instead for bbox-only region generation.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"annotation\":{\"type\":\"object\",\"description\":\"The full "
 		"JSON returned by img_annotate, containing images[] (path, "
 		"width, height), bboxes[] and arrows[] (from/to with "
@@ -539,8 +537,7 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
 		"4096x4096 inclusive, or 2k, 3k, 4k. If omitted, the target "
 		"image aspect ratio is preserved and scaled into range.\"}},"
-		"\"required\":[\"annotation\"]}",
-		img_compose_exec, ctx, img_compose_context_destroy);
+		"\"required\":[\"annotation\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_compose_exec, .user_data = ctx, .user_data_destroy = img_compose_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

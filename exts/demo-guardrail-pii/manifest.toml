@@ -12,8 +12,8 @@ action_text = "Do not include personal identifiable information (SSN, credit car
 permissions = 0
 max_memory_mb = 16
 max_cpu_seconds = 2
-args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to check for PII\"}}}"
-output_schema = "string"
+input_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to check for PII\"}}}"
+output_schema = "{\"type\":\"object\",\"properties\":{}}"
 
 [build]
 command = "make"

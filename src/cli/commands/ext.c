@@ -8,7 +8,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		for (int i = 0; i < ctx->tools.count; i++) {
 			printf("  %-15s %s\n",
 			       ctx->tools.entries[i].desc.name,
-			       ctx->tools.entries[i].desc.desc);
+			       ctx->tools.entries[i].desc.description);
 		}
 		if (ctx->tools.count == 0)
 			printf("  (none)\n");
@@ -26,9 +26,13 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 			return -ENOENT;
 		}
 		printf("  %-15s %s\n", "Name", e->desc.name);
-		printf("  %-15s %s\n", "Description", e->desc.desc);
-		if (e->desc.args_spec[0])
-			printf("  %-15s %s\n", "Args spec", e->desc.args_spec);
+		printf("  %-15s %s\n", "Description", e->desc.description);
+		if (e->desc.input_schema[0])
+			printf("  %-15s %s\n", "Input schema",
+			       e->desc.input_schema);
+		if (e->desc.output_schema[0])
+			printf("  %-15s %s\n", "Output schema",
+			       e->desc.output_schema);
 		return 0;
 	}
 	if (sub && strcmp(sub, "install") == 0) {
@@ -78,7 +82,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 	for (int i = 0; i < ctx->tools.count; i++) {
 		printf("  %-15s %s\n",
 		       ctx->tools.entries[i].desc.name,
-		       ctx->tools.entries[i].desc.desc);
+		       ctx->tools.entries[i].desc.description);
 	}
 	if (ctx->tools.count == 0)
 		printf("  (none)\n");

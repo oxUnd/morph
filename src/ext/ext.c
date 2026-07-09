@@ -60,10 +60,15 @@ int ext_load(struct ext *ex, const char *dir_path)
 	}
 
 	snprintf(ex->tool_desc.name, sizeof(ex->tool_desc.name), "%s", ex->manifest.name);
-	snprintf(ex->tool_desc.desc, sizeof(ex->tool_desc.desc), "%s", ex->manifest.description);
-	if (ex->manifest.args_schema)
-		snprintf(ex->tool_desc.args_spec, sizeof(ex->tool_desc.args_spec),
-			 "%s", ex->manifest.args_schema);
+	snprintf(ex->tool_desc.description, sizeof(ex->tool_desc.description), "%s", ex->manifest.description);
+	if (!ex->manifest.input_schema || !ex->manifest.output_schema)
+		return -EINVAL;
+	if (ex->manifest.input_schema)
+		snprintf(ex->tool_desc.input_schema, sizeof(ex->tool_desc.input_schema),
+			 "%s", ex->manifest.input_schema);
+	if (ex->manifest.output_schema)
+		snprintf(ex->tool_desc.output_schema, sizeof(ex->tool_desc.output_schema),
+			 "%s", ex->manifest.output_schema);
 
 	ex->enabled = 1;
 	return 0;
@@ -87,7 +92,7 @@ void ext_manifest_cleanup(struct ext_manifest *m)
 {
 	if (!m)
 		return;
-	free(m->args_schema);
+	free(m->input_schema);
 	free(m->output_schema);
 	for (int i = 0; i < m->fronts_count; i++)
 		free(m->fronts[i]);

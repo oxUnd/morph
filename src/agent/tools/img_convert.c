@@ -71,7 +71,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -87,7 +87,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	if (!file_path || !fmt_in) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' or 'format' parameter. "
 			"Usage: img_convert({\\\"file_path\\\": \\\"img.png\\\", "
 			"\\\"format\\\": \\\"jpg\\\"})\"}"));
@@ -97,7 +97,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	char nfmt[8];
 	if (normalize_format(fmt_in, nfmt, sizeof(nfmt)) < 0) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"unsupported format (use png/jpg/bmp/tga)\"}"));
 		return -EINVAL;
 	}
 
@@ -109,10 +109,10 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"failed to load image\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -125,7 +125,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	unsigned char *data = stbi_load(resolved_input, &w, &h, &ch, 0);
 	if (!data) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load image\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -138,7 +138,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 			if (rc < 0) {
 				stbi_image_free(data);
 				cJSON_Delete(root);
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"write path outside output directory: permission denied\"}"));
 				return rc;
 			}
@@ -156,7 +156,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 		if (!out_dir) {
 			stbi_image_free(data);
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
+			(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
 			return -ENOMEM;
 		}
 		file_ensure_dir(out_dir);
@@ -171,7 +171,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 
 	if (!wrc) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write output\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to write output\"}"));
 		return -EIO;
 	}
 
@@ -183,7 +183,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	}
 	snprintf(msg, msg_len, "image converted: %s (%s, %dx%d)",
 		 final_path, nfmt, w, h);
-	(void)tool_result_take_text(result, msg);
+	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_image(result, final_path, w, h);
 	log_dbg("img_convert: %s", msg);
 
@@ -195,13 +195,10 @@ int img_convert_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_convert",
-		"Convert an image to another format (png/jpg/bmp/tga). "
-		"Provide file_path, format, optional output_path and quality (jpg only).",
-		"{\"type\":\"object\",\"properties\":"
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_convert", .description = "Convert an image to another format (png/jpg/bmp/tga). "
+		"Provide file_path, format, optional output_path and quality (jpg only).", .input_schema = "{\"type\":\"object\",\"properties\":"
 		"{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},"
 		"\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",\"tga\"],\"description\":\"Target image format\"},"
 		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"},"
-		"\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality (1-100, optional)\"}},\"required\":[\"file_path\",\"format\"]}",
-		img_convert_exec, tctx, NULL);
+		"\"quality\":{\"type\":\"integer\",\"description\":\"JPEG quality (1-100, optional)\"}},\"required\":[\"file_path\",\"format\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_convert_exec, .user_data = tctx, .user_data_destroy = NULL });
 }

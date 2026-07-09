@@ -39,7 +39,7 @@ static int static_tool_exec(const char *args_json, struct tool_result *result,
 {
 	(void)args_json;
 	(void)user_data;
-	return tool_result_set_json(result, "{\"static\":true}");
+	return tool_result_success_json_text(result, strdup("{\"static\":true}"));
 }
 
 static std::string json_string_field(const char *json, const char *field)
@@ -95,7 +95,9 @@ struct DynamicToolsTest : public ::testing::Test {
 		std::string args =
 			"{\"name\":\"" + name + "\","
 			"\"description\":\"test dynamic tool\","
-			"\"args_schema\":{\"type\":\"object\"},"
+			"\"input_schema\":{\"type\":\"object\",\"properties\":{},"
+			"\"additionalProperties\":false},"
+			"\"output_schema\":{\"type\":\"object\",\"properties\":{}},"
 			"\"source_js\":\"" + json_escape(source) + "\"";
 		args += "}";
 		return args;
@@ -197,7 +199,7 @@ TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
 	const char *meta_json =
 		"{\"name\":\"later_tool\","
 		"\"description\":\"later session tool\","
-		"\"args_schema\":{\"type\":\"object\"}}";
+		"\"input_schema\":{\"type\":\"object\"}}";
 	const char *source =
 		"function run(args) {"
 		"  return { text: String(args.text).toUpperCase() };"
@@ -231,7 +233,7 @@ TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
 	const char *meta_json =
 		"{\"name\":\"default_tool\","
 		"\"description\":\"default session tool\","
-		"\"args_schema\":{\"type\":\"object\"}}";
+		"\"input_schema\":{\"type\":\"object\"}}";
 	const char *source =
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;
@@ -413,8 +415,15 @@ TEST_F(DynamicToolsTest, ToolRollbackCreationRemovesSessionTool)
 
 TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
 {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &reg, "static_tool", "static", "{}",
-				static_tool_exec, nullptr, nullptr), 0);
+	struct tool_spec static_spec = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "static_tool",
+		.description = "static",
+		.input_schema = TOOL_EMPTY_INPUT_SCHEMA,
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = static_tool_exec,
+	};
+	ASSERT_EQ(tool_register(&reg, &static_spec), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	std::string source =
 		"function run(args) { return { static: false }; }";
@@ -509,7 +518,7 @@ TEST_F(DynamicToolsTest, PersistentToolIgnoresStoredCapabilities)
 	const char *meta_json =
 		"{\"name\":\"old_caps\","
 		"\"description\":\"old tool\","
-		"\"args_schema\":{\"type\":\"object\"},"
+		"\"input_schema\":{\"type\":\"object\"},"
 		"\"capabilities\":[\"image\"]}";
 	const char *source =
 		"function run(args) {"
@@ -624,9 +633,15 @@ TEST_F(DynamicToolsTest, ToolDeleteRemovesPersistentTool)
 
 TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
 {
-	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &reg, "static_tool",
-				"static", "{}", static_tool_exec, nullptr,
-				nullptr), 0);
+	struct tool_spec static_spec = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "static_tool",
+		.description = "static",
+		.input_schema = TOOL_EMPTY_INPUT_SCHEMA,
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = static_tool_exec,
+	};
+	ASSERT_EQ(tool_register(&reg, &static_spec), 0);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 	struct tool_result result;
 
@@ -648,7 +663,7 @@ TEST_F(DynamicToolsTest, ToolDeleteSessionReloadsShadowedPersistentTool)
 	const char *meta_json =
 		"{\"name\":\"shadowed_tool\","
 		"\"description\":\"persistent shadowed tool\","
-		"\"args_schema\":{\"type\":\"object\"}}";
+		"\"input_schema\":{\"type\":\"object\"}}";
 	const char *persistent_source =
 		"function run(args) { return { value: 10 }; }";
 	std::string session_source =
@@ -702,7 +717,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
 	const char *meta_json =
 		"{\"name\":\"mismatch_tool\","
 		"\"description\":\"mismatch\","
-		"\"args_schema\":{\"type\":\"object\"}}";
+		"\"input_schema\":{\"type\":\"object\"}}";
 	const char *source =
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;
@@ -734,7 +749,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
 	const char *meta_json =
 		"{\"name\":\"session_mismatch\","
 		"\"description\":\"mismatch\","
-		"\"args_schema\":{\"type\":\"object\"}}";
+		"\"input_schema\":{\"type\":\"object\"}}";
 	const char *source =
 		"function run(args) { return { ok: true }; }";
 	struct tool_result result;

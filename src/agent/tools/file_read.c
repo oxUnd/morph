@@ -42,7 +42,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -50,7 +50,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
 			"Usage: file_read({\\\"file_path\\\": \\\"path/to/file\\\"})\"}"));
 		return -EINVAL;
@@ -77,10 +77,10 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"file not found or cannot be read\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -95,7 +95,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 
 	if (!data) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"file not found or cannot be read\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"file not found or cannot be read\"}"));
 		return -ENOENT;
 	}
 
@@ -124,7 +124,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(out);
 		free(data);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, str);
+		(void)tool_result_success_json_text(result, str);
 		return 0;
 	}
 
@@ -150,7 +150,7 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 		cJSON_Delete(out);
 		free(data);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, str);
+		(void)tool_result_success_json_text(result, str);
 		return 0;
 	}
 
@@ -211,15 +211,12 @@ static int file_read_exec(const char *args_json, struct tool_result *result, voi
 	morph_buf_cleanup(&buf);
 	free(data);
 	cJSON_Delete(root);
-	(void)tool_result_take_text(result, str);
+	(void)tool_result_success_json_text(result, str);
 	return 0;
 }
 
 int file_read_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "file_read",
-		"Read a text file's content. Provide file_path, optional offset (line number, 0-indexed, to start from), and limit/max_lines (max lines to return, default 1000). Binary files return a short hex preview instead.",
-		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the text file to read\"},\"offset\":{\"type\":\"integer\",\"description\":\"Line number to start from (0-indexed)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return\"},\"max_lines\":{\"type\":\"integer\",\"description\":\"Max lines to return (alternative to limit)\"}},\"required\":[\"file_path\"]}",
-		file_read_exec, tctx, NULL);
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "file_read", .description = "Read a text file's content. Provide file_path, optional offset (line number, 0-indexed, to start from), and limit/max_lines (max lines to return, default 1000). Binary files return a short hex preview instead.", .input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the text file to read\"},\"offset\":{\"type\":\"integer\",\"description\":\"Line number to start from (0-indexed)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return\"},\"max_lines\":{\"type\":\"integer\",\"description\":\"Max lines to return (alternative to limit)\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = file_read_exec, .user_data = tctx, .user_data_destroy = NULL });
 }

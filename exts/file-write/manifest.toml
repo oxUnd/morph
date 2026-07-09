@@ -10,8 +10,8 @@ permissions = 0
 max_memory_mb = 32
 max_cpu_seconds = 10
 max_open_files = 32
-args_schema = "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"write\",\"overwrite\",\"append\",\"mkdir\",\"rename\",\"copy\",\"delete\"]},\"path\":{\"type\":\"string\"},\"dst_path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"encoding\":{\"type\":\"string\",\"enum\":[\"utf8\",\"base64\"],\"default\":\"utf8\"},\"create_parent_dirs\":{\"type\":\"boolean\",\"default\":true},\"overwrite\":{\"type\":\"boolean\",\"default\":false}},\"required\":[\"op\",\"path\"]}"
-output_schema = "object"
+input_schema = "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"write\",\"overwrite\",\"append\",\"mkdir\",\"rename\",\"copy\",\"delete\"]},\"path\":{\"type\":\"string\"},\"dst_path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"encoding\":{\"type\":\"string\",\"enum\":[\"utf8\",\"base64\"],\"default\":\"utf8\"},\"create_parent_dirs\":{\"type\":\"boolean\",\"default\":true},\"overwrite\":{\"type\":\"boolean\",\"default\":false}},\"required\":[\"op\",\"path\"]}"
+output_schema = "{\"type\":\"object\",\"properties\":{}}"
 
 [build]
 command = "make"

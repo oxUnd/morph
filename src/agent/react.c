@@ -917,12 +917,13 @@ static void *async_tool_exec(void *arg)
 			call->completed = 1;
 			pthread_cond_broadcast(&call->cond);
 		} else {
-			const char *raw = res.text.data ? res.text.data : "(no output)";
+			const char *raw = res.text.data ? res.text.data :
+				"(no output)";
 			call->result = utf8_dup_clamped(raw, 256 * 1024);
-			call->data = res.data;
-			call->ui = res.ui;
-			res.data = NULL;
-			res.ui = NULL;
+			call->data = res.data ? cJSON_Duplicate(res.data, 1) :
+				NULL;
+			call->ui = res.ui ? cJSON_Duplicate(res.ui, 1) :
+				NULL;
 			call->artifacts = res.artifacts;
 			call->rc = 0;
 			call->completed = 1;
@@ -1422,10 +1423,10 @@ static void collect_active_tools(struct tool_registry *reg,
 	for (int i = 0; i < reg->count && idx < max_count; i++) {
 		if (!tool_is_disabled(reg, reg->entries[i].desc.name)) {
 			out[idx] = reg->entries[i].desc;
-			snprintf(out[idx].desc, sizeof(out[idx].desc),
+			snprintf(out[idx].description, sizeof(out[idx].description),
 				 "[%s] %s",
 				 tool_origin_name(reg->entries[i].origin),
-				 reg->entries[i].desc.desc);
+				 reg->entries[i].desc.description);
 			idx++;
 		}
 	}

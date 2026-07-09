@@ -932,11 +932,11 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 
 		cJSON *func = cJSON_CreateObject();
 		cJSON_AddStringToObject(func, "name", tools[i].name);
-		cJSON_AddStringToObject(func, "description", tools[i].desc);
+		cJSON_AddStringToObject(func, "description", tools[i].description);
 
 		cJSON *params = NULL;
-		if (tools[i].args_spec[0])
-			params = cJSON_Parse(tools[i].args_spec);
+		if (tools[i].input_schema[0])
+			params = cJSON_Parse(tools[i].input_schema);
 		params = normalize_params_to_schema(params);
 		if (params)
 			cJSON_AddItemToObject(func, "parameters", params);

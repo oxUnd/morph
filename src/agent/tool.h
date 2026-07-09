@@ -13,7 +13,7 @@ extern "C" {
 
 #define TOOL_NAME_MAX 512
 #define TOOL_DESC_MAX 8192
-#define TOOL_ARGS_SPEC_MAX 1024
+#define TOOL_SCHEMA_MAX 8192
 #define TOOL_MAX_ENTRIES 64
 #define TOOL_DISABLED_MAX 32
 
@@ -23,6 +23,8 @@ extern "C" {
 #define TOOL_ARTIFACT_MAX 32
 #define TOOL_ARTIFACT_LABEL_MAX 128
 #define TOOL_ARTIFACT_MIME_MAX 128
+#define TOOL_EMPTY_INPUT_SCHEMA "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
+#define TOOL_OBJECT_OUTPUT_SCHEMA "{\"type\":\"object\",\"properties\":{}}"
 
 enum tool_origin {
 	TOOL_ORIGIN_BUILTIN,
@@ -56,34 +58,36 @@ struct tool_artifact_list {
 
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
-	char desc[TOOL_DESC_MAX];
-	char args_spec[TOOL_ARGS_SPEC_MAX];
+	char description[TOOL_DESC_MAX];
+	char input_schema[TOOL_SCHEMA_MAX];
+	char output_schema[TOOL_SCHEMA_MAX];
 };
 
 struct tool_result {
+	cJSON *envelope;
 	morph_str_t text;
 	char *owned;
-	int is_json;
 	cJSON *data;
 	cJSON *ui;
+	cJSON *meta;
 	struct tool_artifact_list artifacts;
 };
 
 void tool_result_init(struct tool_result *result);
 void tool_result_cleanup(struct tool_result *result);
 void tool_result_clear(struct tool_result *result);
-int tool_result_take_text(struct tool_result *result, char *data);
-int tool_result_take_json(struct tool_result *result, char *data);
-int tool_result_set_text(struct tool_result *result, const char *data);
-int tool_result_set_textn(struct tool_result *result, const char *data,
-			  size_t len);
-int tool_result_set_json(struct tool_result *result, const char *data);
-int tool_result_printf(struct tool_result *result, const char *fmt, ...);
-int tool_result_json_error(struct tool_result *result, const char *message);
-int tool_result_json_errorf(struct tool_result *result, const char *fmt, ...);
-int tool_result_take_data(struct tool_result *result, cJSON *data);
-int tool_result_take_ui(struct tool_result *result, cJSON *ui);
-int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts);
+int tool_result_success(struct tool_result *result, cJSON *data);
+int tool_result_success_text(struct tool_result *result, const char *text);
+int tool_result_successf(struct tool_result *result, const char *fmt, ...)
+	__attribute__((format(printf, 2, 3)));
+int tool_result_success_json_text(struct tool_result *result, char *json);
+int tool_result_error(struct tool_result *result, const char *code,
+		      const char *message);
+int tool_result_errorf(struct tool_result *result, const char *code,
+		       const char *fmt, ...);
+int tool_result_set_ui(struct tool_result *result, cJSON *ui);
+int tool_result_set_meta(struct tool_result *result, cJSON *meta);
+int tool_result_finalize(struct tool_result *result);
 const char *tool_artifact_kind_name(enum tool_artifact_kind kind);
 enum tool_artifact_kind tool_artifact_kind_from_string(const char *kind);
 int tool_result_add_artifact(struct tool_result *result,
@@ -99,6 +103,19 @@ typedef int (*tool_exec_fn)(const char *args_json,
 			    struct tool_result *result,
 			    void *user_data);
 typedef void (*tool_user_data_destroy_fn)(void *user_data);
+
+struct tool_spec {
+	enum tool_origin origin;
+	const char *name;
+	const char *description;
+	const char *input_schema;
+	const char *output_schema;
+	tool_exec_fn exec;
+	void *user_data;
+	tool_user_data_destroy_fn user_data_destroy;
+	unsigned int flags;
+	int timeout_seconds;
+};
 
 struct tool_entry {
 	struct tool_desc desc;
@@ -122,10 +139,7 @@ struct tool_registry {
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
-int tool_register(enum tool_origin origin, struct tool_registry *reg,
-		  const char *name, const char *desc,
-		  const char *args_spec, tool_exec_fn exec, void *user_data,
-		  tool_user_data_destroy_fn user_data_destroy);
+int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
 int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,

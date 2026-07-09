@@ -29,14 +29,14 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 	cJSON *f = cJSON_GetObjectItem(root, "file_path");
 	const char *file_path = cJSON_IsString(f) ? f->valuestring : NULL;
 	if (!file_path) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
 			"Usage: img_info({\\\"file_path\\\": \\\"img.png\\\"})\"}"));
 		return -EINVAL;
@@ -50,10 +50,10 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"not a valid image\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -65,7 +65,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	int w = 0, h = 0, ch = 0;
 	if (!stbi_info(resolved_path, &w, &h, &ch)) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"not a valid image\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"not a valid image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -78,15 +78,12 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
 	cJSON_Delete(root);
-	(void)tool_result_take_text(result, str);
+	(void)tool_result_success_json_text(result, str);
 	return 0;
 }
 
 int img_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_info",
-		"Get image metadata (dimensions, format, color channels). Provide file_path.",
-		"{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"}},\"required\":[\"file_path\"]}",
-		img_info_exec, tctx, NULL);
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_info", .description = "Get image metadata (dimensions, format, color channels). Provide file_path.", .input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_info_exec, .user_data = tctx, .user_data_destroy = NULL });
 }

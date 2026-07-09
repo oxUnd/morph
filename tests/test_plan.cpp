@@ -74,7 +74,6 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	ASSERT_NE(result.ui, nullptr);
 
 	EXPECT_GT(strlen(result.text.data), 8192u);
-	EXPECT_NE(std::string(result.text.data).find("32. step-32"), std::string::npos);
 	cJSON *plans_json = cJSON_GetObjectItem(result.data, "plans");
 	ASSERT_TRUE(cJSON_IsArray(plans_json));
 	cJSON *first_plan = cJSON_GetArrayItem(plans_json, 0);
@@ -86,6 +85,12 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	cJSON *steps_json = cJSON_GetObjectItem(first_plan, "steps");
 	ASSERT_TRUE(cJSON_IsArray(steps_json));
 	EXPECT_EQ(cJSON_GetArraySize(steps_json), PLAN_MAX_STEPS);
+	cJSON *last_step = cJSON_GetArrayItem(steps_json, PLAN_MAX_STEPS - 1);
+	ASSERT_NE(last_step, nullptr);
+	cJSON *last_desc = cJSON_GetObjectItem(last_step, "description");
+	ASSERT_TRUE(cJSON_IsString(last_desc));
+	EXPECT_NE(std::string(last_desc->valuestring).find("step-32"),
+		  std::string::npos);
 	cJSON *component = cJSON_GetObjectItem(result.ui, "component");
 	ASSERT_TRUE(cJSON_IsString(component));
 	EXPECT_STREQ(component->valuestring, "plan");

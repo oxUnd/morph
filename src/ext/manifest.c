@@ -37,6 +37,37 @@ static enum ext_purpose parse_purpose(const char *s)
 	return EXT_PURPOSE_TOOL;
 }
 
+static char *schema_default_input(void)
+{
+	return strdup("{\"type\":\"object\",\"properties\":{},"
+		      "\"additionalProperties\":false}");
+}
+
+static char *schema_default_output(void)
+{
+	return strdup("{\"type\":\"object\",\"properties\":{}}");
+}
+
+static char *normalize_manifest_schema(char *schema, int is_output)
+{
+	char *out;
+
+	if (!schema || !*schema) {
+		free(schema);
+		return is_output ? schema_default_output() :
+			schema_default_input();
+	}
+	if (strcmp(schema, "object") == 0 || strcmp(schema, "string") == 0) {
+		free(schema);
+		return schema_default_output();
+	}
+	if (schema[0] == '{')
+		return schema;
+	out = schema_default_output();
+	free(schema);
+	return out;
+}
+
 static int manifest_parse_table(toml_table_t *tbl, struct ext_manifest *out)
 {
 	if (!tbl || !out)
@@ -81,11 +112,19 @@ static int manifest_parse_table(toml_table_t *tbl, struct ext_manifest *out)
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
 	MGET_INT("max_open_files", out->max_open_files);
 
-	toml_datum_t as = toml_string_in(tbl, "args_schema");
-	if (as.ok) out->args_schema = as.u.s; else as.u.s = NULL;
+	toml_datum_t is = toml_string_in(tbl, "input_schema");
+	if (!is.ok)
+		is = toml_string_in(tbl, "args_schema");
+	if (is.ok)
+		out->input_schema = normalize_manifest_schema(is.u.s, 0);
+	else
+		out->input_schema = schema_default_input();
 
 	toml_datum_t os = toml_string_in(tbl, "output_schema");
-	if (os.ok) out->output_schema = os.u.s; else os.u.s = NULL;
+	if (os.ok)
+		out->output_schema = normalize_manifest_schema(os.u.s, 1);
+	else
+		out->output_schema = schema_default_output();
 
 	toml_array_t *fronts = toml_array_in(tbl, "fronts");
 	parse_string_list(fronts, &out->fronts, &out->fronts_count);

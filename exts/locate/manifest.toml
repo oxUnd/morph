@@ -9,7 +9,7 @@ categories = ["system"]
 permissions = 5
 max_memory_mb = 64
 max_cpu_seconds = 30
-args_schema = "{\"type\":\"object\",\"properties\":{}}"
+input_schema = "{\"type\":\"object\",\"properties\":{}}"
 output_schema = "{\"type\":\"object\",\"properties\":{\"latitude\":{\"type\":\"number\"},\"longitude\":{\"type\":\"number\"},\"region\":{\"type\":\"string\"},\"accuracy_m\":{\"type\":\"number\"},\"altitude\":{\"type\":\"number\"},\"timestamp\":{\"type\":\"string\"}}}"
 
 [build]

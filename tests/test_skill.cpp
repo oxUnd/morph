@@ -396,8 +396,12 @@ TEST_F(SkillActivateToolTest, ActivateViaTool) {
 			   "{\"name\":\"review\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "<skill name=\"review\" dir=\""), nullptr);
-	EXPECT_NE(strstr(result.text.data, "Check bugs."), nullptr);
+	ASSERT_NE(result.data, nullptr);
+	cJSON *text = cJSON_GetObjectItem(result.data, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_NE(strstr(text->valuestring, "<skill name=\"review\" dir=\""),
+		  nullptr);
+	EXPECT_NE(strstr(text->valuestring, "Check bugs."), nullptr);
 	tool_result_cleanup(&result);
 
 	remove_skill_file(tmpdir, "review");

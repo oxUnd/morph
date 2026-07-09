@@ -126,13 +126,13 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
 	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"no image model configured\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"no image model configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -140,7 +140,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 	cJSON *ann = get_annotation(root, &owned);
 	if (!ann) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"missing or invalid annotation\"}"));
 		return -EINVAL;
 	}
 
@@ -162,7 +162,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
 			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
 		return -EINVAL;
@@ -172,7 +172,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"img_inpaint needs at least one bbox with a "
 			"label. For arrow-based cross-image fusion use img_compose.\"}"));
 		return -EINVAL;
@@ -186,7 +186,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"oom\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
 
@@ -355,7 +355,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		cJSON_Delete(owned);
 	cJSON_Delete(root);
 
-	(void)tool_result_take_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
+	(void)tool_result_success_json_text(result, out_str ? out_str : strdup("{\"error\":\"oom\"}"));
 	return hard_error && produced == 0 ? -EIO : 0;
 }
 
@@ -371,15 +371,13 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_inpaint",
-		"Regenerate labeled regions of an image. A bbox + label means "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_inpaint", .description = "Regenerate labeled regions of an image. A bbox + label means "
 		"\"generate this content inside this box\". Pass the img_annotate "
 		"output (images[] + bboxes[]) verbatim; for each box the tool "
 		"deterministically builds a precise percentage-coordinate "
 		"instruction and edits the image via the image model, keeping "
 		"the rest unchanged. Use img_compose instead when the annotation "
-		"has arrows (cross-image fusion).",
-		"{\"type\":\"object\",\"properties\":{"
+		"has arrows (cross-image fusion).", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"annotation\":{\"type\":\"object\",\"description\":\"The full "
 		"JSON returned by img_annotate, containing images[] (with path, "
 		"width, height) and bboxes[] (with image_index, x, y, w, h, "
@@ -391,8 +389,7 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
 		"4096x4096 inclusive, or 2k, 3k, 4k. If omitted, the source "
 		"image aspect ratio is preserved and scaled into range.\"}},"
-		"\"required\":[\"annotation\"]}",
-		img_inpaint_exec, ctx, img_inpaint_context_destroy);
+		"\"required\":[\"annotation\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_inpaint_exec, .user_data = ctx, .user_data_destroy = img_inpaint_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

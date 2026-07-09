@@ -443,7 +443,12 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	tool_runtime_set_current(NULL);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_STREQ(result.text.data, "fake image answer");
+	ASSERT_NE(result.data, nullptr);
+	{
+		cJSON *text = cJSON_GetObjectItem(result.data, "text");
+		ASSERT_TRUE(cJSON_IsString(text));
+		EXPECT_STREQ(text->valuestring, "fake image answer");
+	}
 	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
 	EXPECT_STREQ(g_fake_img_qa_path, path);
 	EXPECT_EQ(g_fake_img_qa_max_tokens, 1024);

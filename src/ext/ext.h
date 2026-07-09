@@ -37,7 +37,7 @@ struct ext_manifest {
 	int max_memory_mb;
 	int max_cpu_seconds;
 	int max_open_files;
-	char *args_schema;
+	char *input_schema;
 	char *output_schema;
 };
 

@@ -9,5 +9,5 @@ categories = ["text"]
 permissions = 4
 max_memory_mb = 64
 max_cpu_seconds = 10
-args_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"target_lang\":{\"type\":\"string\"}}}"
-output_schema = "string"
+input_schema = "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"target_lang\":{\"type\":\"string\"}}}"
+output_schema = "{\"type\":\"object\",\"properties\":{}}"

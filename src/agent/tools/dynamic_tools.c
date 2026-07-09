@@ -39,7 +39,8 @@
 struct dynamic_tool {
 	char name[TOOL_NAME_MAX];
 	char description[TOOL_DESC_MAX];
-	char args_schema[TOOL_ARGS_SPEC_MAX];
+	char input_schema[TOOL_SCHEMA_MAX];
+	char output_schema[TOOL_SCHEMA_MAX];
 	char source_path[PATH_MAX];
 	char dir[PATH_MAX];
 	const struct config_dynamic_tools *cfg;
@@ -427,7 +428,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdout_pipe[0]);
 		close(stderr_pipe[0]);
 		waitpid(pid, NULL, 0);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "failed to build dynamic tool request");
 	}
 	{
@@ -467,7 +468,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		waitpid(pid, &status, 0);
 		morph_buf_cleanup(&out);
 		morph_buf_cleanup(&err);
-		(void)tool_result_json_error(result, "dynamic tool timed out");
+		(void)tool_result_error(result, "tool_failed", "dynamic tool timed out");
 		return -ETIMEDOUT;
 	}
 	waitpid(pid, &status, 0);
@@ -482,7 +483,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 	if (WIFSIGNALED(status)) {
 		morph_buf_cleanup(&out);
 		morph_buf_cleanup(&err);
-		(void)tool_result_json_error(result,
+		(void)tool_result_error(result, "tool_failed",
 					     "dynamic tool process terminated");
 		return -EIO;
 	}
@@ -498,7 +499,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		free(raw);
 		if (prc < 0) {
 			morph_buf_cleanup(&err);
-			(void)tool_result_json_error(result,
+			(void)tool_result_error(result, "tool_failed",
 						     "invalid dynamic tool response");
 			return prc;
 		}
@@ -508,10 +509,10 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 				 jr.error_message ? jr.error_message : "unknown");
 			jsonrpc_response_free(&jr);
 			morph_buf_cleanup(&err);
-			(void)tool_result_json_error(result, msg);
+			(void)tool_result_error(result, "tool_failed", msg);
 			return -EIO;
 		}
-		rc = tool_result_take_json(result,
+		rc = tool_result_success_json_text(result,
 					   jr.result_json ? jr.result_json :
 					   strdup("null"));
 		jr.result_json = NULL;
@@ -538,10 +539,12 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		memset(&existing->desc, 0, sizeof(existing->desc));
 		strncpy(existing->desc.name, dt->name,
 			sizeof(existing->desc.name) - 1);
-		strncpy(existing->desc.desc, dt->description,
-			sizeof(existing->desc.desc) - 1);
-		strncpy(existing->desc.args_spec, dt->args_schema,
-			sizeof(existing->desc.args_spec) - 1);
+			strncpy(existing->desc.description, dt->description,
+				sizeof(existing->desc.description) - 1);
+			strncpy(existing->desc.input_schema, dt->input_schema,
+				sizeof(existing->desc.input_schema) - 1);
+			strncpy(existing->desc.output_schema, dt->output_schema,
+				sizeof(existing->desc.output_schema) - 1);
 		existing->exec = dynamic_tool_exec;
 		existing->user_data = dt;
 		existing->user_data_destroy = dynamic_tool_destroy;
@@ -554,8 +557,21 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		log_dbg("dynamic tool replaced: %s", dt->name);
 		return 1;
 	}
-	rc = tool_register(dt->origin, reg, dt->name, dt->description, dt->args_schema,
-			   dynamic_tool_exec, dt, dynamic_tool_destroy);
+		struct tool_spec spec = {
+			.origin = dt->origin,
+			.name = dt->name,
+			.description = dt->description,
+			.input_schema = dt->input_schema,
+			.output_schema = dt->output_schema,
+			.exec = dynamic_tool_exec,
+			.user_data = dt,
+			.user_data_destroy = dynamic_tool_destroy,
+			.flags = TOOL_FLAG_DYNAMIC,
+			.timeout_seconds = dt->cfg->default_timeout_seconds > 0
+				? dt->cfg->default_timeout_seconds
+				: tool_context_default_timeout(dt->tctx),
+		};
+		rc = tool_register(reg, &spec);
 	if (rc < 0)
 		return rc;
 	{
@@ -641,9 +657,9 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 
 	if (!root || !cJSON_IsObject(root)) {
 		return morph_buf_puts(err,
-			"tool_create arguments must be a JSON object with "
-			"name, source_js, optional description, and "
-			"args_schema.\n");
+				"tool_create arguments must be a JSON object with "
+				"name, source_js, optional description, and "
+				"input_schema/output_schema.\n");
 	}
 	rc = 0;
 	if (!cJSON_IsString(name_item) || !name_item->valuestring) {
@@ -659,11 +675,21 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 	(void)name;
 	if (rc != 0)
 		return rc;
-	if (!cJSON_IsString(source_item) || !source_item->valuestring) {
-		return append_tool_create_arg_error(err, "source_js",
-			"JavaScript source string defining global run(args)",
-			source_item);
-	}
+		if (!cJSON_IsString(source_item) || !source_item->valuestring) {
+			return append_tool_create_arg_error(err, "source_js",
+				"JavaScript source string defining global run(args)",
+				source_item);
+		}
+		if (!cJSON_GetObjectItem(root, "input_schema")) {
+			return append_tool_create_arg_error(err, "input_schema",
+				"JSON Schema object for input arguments",
+				NULL);
+		}
+		if (!cJSON_GetObjectItem(root, "output_schema")) {
+			return append_tool_create_arg_error(err, "output_schema",
+				"JSON Schema object for result data",
+				NULL);
+		}
 	token = forbidden_source_token(source_item->valuestring);
 	if (token) {
 		return morph_buf_printf(err,
@@ -703,7 +729,7 @@ static char *format_check_error(const char *source_path, const char *output)
 static int tool_create_fail(struct tool_result *result, const char *stage,
 			    int rc, const char *detail)
 {
-	return tool_result_json_errorf(result,
+	return tool_result_errorf(result, "tool_failed",
 		"tool_create failed\n"
 		"stage: %s\n"
 		"rc: %d\n"
@@ -740,7 +766,8 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 		return -ENOMEM;
 	cJSON_AddStringToObject(meta, "name", dt->name);
 	cJSON_AddStringToObject(meta, "description", dt->description);
-	cJSON_AddStringToObject(meta, "args_schema", dt->args_schema);
+	cJSON_AddStringToObject(meta, "input_schema", dt->input_schema);
+	cJSON_AddStringToObject(meta, "output_schema", dt->output_schema);
 	meta_json = cJSON_PrintUnformatted(meta);
 	cJSON_Delete(meta);
 	if (!meta_json)
@@ -1276,9 +1303,10 @@ static int load_tool_from_dir(struct tool_registry *reg,
 		return -ENOMEM;
 	}
 	{
-		cJSON *name = cJSON_GetObjectItem(meta, "name");
-		cJSON *desc = cJSON_GetObjectItem(meta, "description");
-		cJSON *args = cJSON_GetObjectItem(meta, "args_schema");
+			cJSON *name = cJSON_GetObjectItem(meta, "name");
+			cJSON *desc = cJSON_GetObjectItem(meta, "description");
+			cJSON *args = cJSON_GetObjectItem(meta, "input_schema");
+			cJSON *output = cJSON_GetObjectItem(meta, "output_schema");
 		if (!cJSON_IsString(name) || !name->valuestring ||
 		    !valid_tool_name(name->valuestring)) {
 			cJSON_Delete(meta);
@@ -1286,18 +1314,37 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			return -EINVAL;
 		}
 		strncpy(dt->name, name->valuestring, sizeof(dt->name) - 1);
-		if (cJSON_IsString(desc) && desc->valuestring)
-			strncpy(dt->description, desc->valuestring,
-				sizeof(dt->description) - 1);
-		schema = schema_to_string(args);
-		if (!schema) {
-			cJSON_Delete(meta);
-			free(dt);
-			return -ENOMEM;
+			if (cJSON_IsString(desc) && desc->valuestring)
+				strncpy(dt->description, desc->valuestring,
+					sizeof(dt->description) - 1);
+			if (!args || (cJSON_IsObject(args) &&
+			    !cJSON_GetObjectItem(args, "properties"))) {
+				schema = strdup(TOOL_EMPTY_INPUT_SCHEMA);
+			} else {
+				schema = schema_to_string(args);
+			}
+			if (!schema) {
+				cJSON_Delete(meta);
+				free(dt);
+				return -ENOMEM;
+			}
+			strncpy(dt->input_schema, schema,
+				sizeof(dt->input_schema) - 1);
+			free(schema);
+			if (!output) {
+				schema = strdup(TOOL_OBJECT_OUTPUT_SCHEMA);
+			} else {
+				schema = schema_to_string(output);
+			}
+			if (!schema) {
+				cJSON_Delete(meta);
+				free(dt);
+				return -ENOMEM;
+			}
+			strncpy(dt->output_schema, schema,
+				sizeof(dt->output_schema) - 1);
+			free(schema);
 		}
-		strncpy(dt->args_schema, schema, sizeof(dt->args_schema) - 1);
-		free(schema);
-	}
 	strncpy(dt->source_path, source_path, sizeof(dt->source_path) - 1);
 	strncpy(dt->dir, dir, sizeof(dt->dir) - 1);
 	dt->cfg = cfg;
@@ -1336,6 +1383,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	cJSON *desc_item;
 	cJSON *source_item;
 	char *schema = NULL;
+	char *output_schema = NULL;
 	char *check_error = NULL;
 	struct dynamic_tool *dt = NULL;
 	struct tool_entry *existing = NULL;
@@ -1350,7 +1398,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	if (!ctx || !result)
 		return -EINVAL;
 	if (!ctx->cfg || !ctx->cfg->enabled)
-		return tool_result_json_error(result, "dynamic tools disabled");
+		return tool_result_error(result, "tool_failed", "dynamic tools disabled");
 	stage = "parse_args";
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root)
@@ -1380,14 +1428,16 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 					"failed to allocate argument detail "
 					"buffer");
 			}
-			(void)morph_buf_printf(&detail,
-				"%s\n"
-				"Expected shape: {\"name\":\"my_tool\","
-				"\"description\":\"...\","
-				"\"args_schema\":{\"type\":\"object\","
-				"\"properties\":{}},"
-				"\"source_js\":\"async function run(args) { "
-				"return { ok: true }; }\"}",
+				(void)morph_buf_printf(&detail,
+					"%s\n"
+					"Expected shape: {\"name\":\"my_tool\","
+					"\"description\":\"...\","
+					"\"input_schema\":{\"type\":\"object\","
+					"\"properties\":{}},"
+					"\"output_schema\":{\"type\":\"object\","
+					"\"properties\":{}},"
+					"\"source_js\":\"async function run(args) { "
+					"return { value: true }; }\"}",
 				morph_buf_cstr(&arg_err));
 			out_rc = tool_create_fail(result, stage, -EINVAL,
 						  morph_buf_cstr(&detail));
@@ -1449,15 +1499,15 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 						"dynamic tool creation denied");
 		}
 	}
-	stage = "validate_args_schema";
-	schema = schema_to_string(cJSON_GetObjectItem(root, "args_schema"));
+	stage = "validate_input_schema";
+	schema = schema_to_string(cJSON_GetObjectItem(root, "input_schema"));
 	if (!schema) {
 		cJSON_Delete(root);
 		return tool_create_fail(result, stage, -ENOMEM,
-					"failed to serialize args_schema");
+					"failed to serialize input_schema");
 	}
-	{
-		cJSON *schema_root = cJSON_Parse(schema);
+		{
+			cJSON *schema_root = cJSON_Parse(schema);
 		if (!schema_root) {
 			const char *pos = cJSON_GetErrorPtr();
 			morph_buf_t detail;
@@ -1466,12 +1516,12 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 				free(schema);
 				cJSON_Delete(root);
 				return tool_create_fail(result, stage, -ENOMEM,
-					"failed to allocate args_schema "
+					"failed to allocate input_schema "
 					"diagnostic buffer");
 			}
 			(void)morph_buf_printf(&detail,
-				"invalid args_schema JSON near: %.80s\n"
-				"args_schema must be a JSON Schema object or a "
+				"invalid input_schema JSON near: %.80s\n"
+				"input_schema must be a JSON Schema object or a "
 				"string containing valid JSON Schema.",
 				pos ? pos : "(unknown)");
 			out_rc = tool_create_fail(result, stage, -EINVAL,
@@ -1481,12 +1531,33 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(root);
 			return out_rc;
 		}
+			cJSON_Delete(schema_root);
+		}
+	stage = "validate_output_schema";
+	output_schema = schema_to_string(cJSON_GetObjectItem(root,
+							     "output_schema"));
+	if (!output_schema) {
+		free(schema);
+		cJSON_Delete(root);
+		return tool_create_fail(result, stage, -ENOMEM,
+					"failed to serialize output_schema");
+	}
+	{
+		cJSON *schema_root = cJSON_Parse(output_schema);
+		if (!schema_root) {
+			free(schema);
+			free(output_schema);
+			cJSON_Delete(root);
+			return tool_create_fail(result, stage, -EINVAL,
+						"invalid output_schema JSON");
+		}
 		cJSON_Delete(schema_root);
 	}
 	stage = "allocate_tool";
 	dt = calloc(1, sizeof(*dt));
 	if (!dt) {
 		free(schema);
+		free(output_schema);
 		cJSON_Delete(root);
 		return tool_create_fail(result, stage, -ENOMEM,
 					"failed to allocate dynamic tool");
@@ -1498,8 +1569,10 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 	else
 		snprintf(dt->description, sizeof(dt->description),
 			 "Dynamic JS tool %s", dt->name);
-	strncpy(dt->args_schema, schema, sizeof(dt->args_schema) - 1);
+	strncpy(dt->input_schema, schema, sizeof(dt->input_schema) - 1);
 	free(schema);
+	strncpy(dt->output_schema, output_schema, sizeof(dt->output_schema) - 1);
+	free(output_schema);
 	dt->cfg = ctx->cfg;
 	dt->tctx = ctx->tctx;
 	dt->origin = TOOL_ORIGIN_DYNAMIC_SESSION;
@@ -1563,7 +1636,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 			int out_rc;
 			free(dt);
 			if (formatted) {
-				out_rc = tool_result_json_error(result,
+				out_rc = tool_result_error(result, "tool_failed",
 								formatted);
 				free(formatted);
 			} else {
@@ -1576,7 +1649,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		free(dt);
 		return tool_create_fail(result, stage, rc, NULL);
 	}
-	return tool_result_printf(result,
+	return tool_result_successf(result,
 				  "{\"name\":\"%s\",\"status\":\"%s\","
 				  "\"checkpoint_id\":\"%s\","
 				  "\"diff_available\":true,"
@@ -1705,11 +1778,11 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root)
-		return tool_result_json_error(result, "invalid JSON");
+		return tool_result_error(result, "tool_failed", "invalid JSON");
 	name_item = cJSON_GetObjectItem(root, "name");
 	if (!cJSON_IsString(name_item) || !valid_tool_name(name_item->valuestring)) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_promote requires valid name");
 	}
 	strncpy(name, name_item->valuestring, sizeof(name) - 1);
@@ -1725,7 +1798,7 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 		rc = tool_context_check_operation(ctx->tctx, &op);
 		if (rc < 0) {
 			cJSON_Delete(root);
-			return tool_result_json_error(result,
+			return tool_result_error(result, "tool_failed",
 				"dynamic tool promotion denied");
 		}
 	}
@@ -1758,9 +1831,9 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 					TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 	cJSON_Delete(root);
 	if (rc < 0)
-		return tool_result_json_errorf(result,
+		return tool_result_errorf(result, "tool_failed",
 			"failed to promote dynamic tool: %s", morph_strerror(rc));
-	return tool_result_printf(result,
+	return tool_result_successf(result,
 				  "{\"name\":\"%s\",\"status\":\"promoted\"}",
 				  name);
 }
@@ -1782,12 +1855,12 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root)
-		return tool_result_json_error(result, "invalid JSON");
+		return tool_result_error(result, "tool_failed", "invalid JSON");
 	name_item = cJSON_GetObjectItem(root, "name");
 	if (!cJSON_IsString(name_item) ||
 	    !valid_tool_name(name_item->valuestring)) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_delete requires valid name");
 	}
 	strncpy(name, name_item->valuestring, sizeof(name) - 1);
@@ -1795,19 +1868,19 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 	entry = tool_lookup(ctx->reg, name);
 	if (!entry) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result, "dynamic tool not found");
+		return tool_result_error(result, "tool_failed", "dynamic tool not found");
 	}
 	if (!(entry->flags & TOOL_FLAG_DYNAMIC) ||
 	    (entry->origin != TOOL_ORIGIN_DYNAMIC_SESSION &&
 	     entry->origin != TOOL_ORIGIN_DYNAMIC_PERSISTENT)) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_delete can only delete dynamic tools");
 	}
 	dt = entry->user_data;
 	if (!dt || !dt->dir[0]) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "dynamic tool metadata missing");
 	}
 	origin = entry->origin;
@@ -1824,13 +1897,13 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 		rc = tool_context_check_operation(ctx->tctx, &op);
 		if (rc < 0) {
 			cJSON_Delete(root);
-			return tool_result_json_error(result,
+			return tool_result_error(result, "tool_failed",
 				"dynamic tool deletion denied");
 		}
 	}
 	if (!dynamic_tool_delete_path_allowed(ctx, origin, name, dir)) {
 		cJSON_Delete(root);
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 			"dynamic tool deletion refused: path is outside the expected dynamic tools directory");
 	}
 	rc = remove_tree(dir);
@@ -1857,9 +1930,9 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 	}
 	cJSON_Delete(root);
 	if (rc < 0)
-		return tool_result_json_errorf(result,
+		return tool_result_errorf(result, "tool_failed",
 			"failed to delete dynamic tool: %s", morph_strerror(rc));
-	return tool_result_printf(result,
+	return tool_result_successf(result,
 				  "{\"name\":\"%s\",\"status\":\"deleted\"}",
 				  name);
 }
@@ -1899,7 +1972,7 @@ static int result_take_cjson(struct tool_result *result, cJSON *root)
 	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
-	return tool_result_take_json(result, json);
+	return tool_result_success_json_text(result, json);
 }
 
 static int tool_history_exec(const char *args_json, struct tool_result *result,
@@ -1922,7 +1995,7 @@ static int tool_history_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	rc = parse_tool_name_arg(args_json, "tool_history", &args, name);
 	if (rc < 0)
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_history requires valid name");
 	limit_item = cJSON_GetObjectItem(args, "limit");
 	if (cJSON_IsNumber(limit_item) && limit_item->valueint > 0)
@@ -1932,7 +2005,7 @@ static int tool_history_exec(const char *args_json, struct tool_result *result,
 	if (rc == 0)
 		rc = history_dir_path(tool_dir, history, sizeof(history));
 	if (rc < 0)
-		return tool_result_json_errorf(result,
+		return tool_result_errorf(result, "tool_failed",
 			"failed to read tool history: %s", morph_strerror(rc));
 	out = cJSON_CreateObject();
 	items = cJSON_CreateArray();
@@ -2088,7 +2161,7 @@ static int tool_diff_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	rc = parse_tool_name_arg(args_json, "tool_diff", &args, name);
 	if (rc < 0)
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_diff requires valid name");
 	id_item = cJSON_GetObjectItem(args, "checkpoint_id");
 	if (cJSON_IsString(id_item) && id_item->valuestring &&
@@ -2102,14 +2175,14 @@ static int tool_diff_exec(const char *args_json, struct tool_result *result,
 			rc = latest_checkpoint_id(tool_dir, cp_id, sizeof(cp_id));
 		if (rc < 0) {
 			cJSON_Delete(args);
-			return tool_result_json_error(result,
+			return tool_result_error(result, "tool_failed",
 						      "checkpoint not found");
 		}
 	}
 	cJSON_Delete(args);
 	entry = tool_lookup(ctx->reg, name);
 	if (!entry || !(entry->flags & TOOL_FLAG_DYNAMIC) || !entry->user_data)
-		return tool_result_json_error(result, "dynamic tool not found");
+		return tool_result_error(result, "tool_failed", "dynamic tool not found");
 	dt = entry->user_data;
 	rc = checkpoint_dir_path(dt->dir, cp_id, cp_dir, sizeof(cp_dir));
 	if (rc == 0)
@@ -2121,7 +2194,7 @@ static int tool_diff_exec(const char *args_json, struct tool_result *result,
 		rc = tool_file_paths(dt->dir, new_meta_path, sizeof(new_meta_path),
 				     new_source_path, sizeof(new_source_path));
 	if (rc < 0)
-		return tool_result_json_error(result, "checkpoint not found");
+		return tool_result_error(result, "tool_failed", "checkpoint not found");
 	old_meta = read_optional_file(old_meta_path);
 	old_source = read_optional_file(old_source_path);
 	new_meta = read_optional_file(new_meta_path);
@@ -2199,7 +2272,7 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	rc = parse_tool_name_arg(args_json, "tool_rollback", &args, name);
 	if (rc < 0)
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "tool_rollback requires valid name");
 	id_item = cJSON_GetObjectItem(args, "checkpoint_id");
 	if (cJSON_IsString(id_item) && id_item->valuestring &&
@@ -2212,14 +2285,14 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 			rc = latest_checkpoint_id(tool_dir, cp_id, sizeof(cp_id));
 		if (rc < 0) {
 			cJSON_Delete(args);
-			return tool_result_json_error(result,
+			return tool_result_error(result, "tool_failed",
 						      "checkpoint not found");
 		}
 	}
 	cJSON_Delete(args);
 	entry = tool_lookup(ctx->reg, name);
 	if (!entry || !(entry->flags & TOOL_FLAG_DYNAMIC) || !entry->user_data)
-		return tool_result_json_error(result, "dynamic tool not found");
+		return tool_result_error(result, "tool_failed", "dynamic tool not found");
 	dt = entry->user_data;
 	strncpy(tool_dir, dt->dir, sizeof(tool_dir) - 1);
 	tool_dir[sizeof(tool_dir) - 1] = '\0';
@@ -2227,10 +2300,10 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 	if (rc == 0)
 		rc = read_checkpoint_meta(cp_dir, &cp);
 	if (rc < 0)
-		return tool_result_json_error(result, "checkpoint not found");
+		return tool_result_error(result, "tool_failed", "checkpoint not found");
 	rc = restore_tool_checkpoint(tool_dir, cp_dir, &cp);
 	if (rc < 0)
-		return tool_result_json_errorf(result,
+		return tool_result_errorf(result, "tool_failed",
 			"failed to restore checkpoint: %s", morph_strerror(rc));
 	if (strcmp(cp.before_state, "absent") == 0) {
 		rc = tool_unregister(ctx->reg, name);
@@ -2239,10 +2312,10 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 		if (rc == 0)
 			rc = reload_persistent_if_present(ctx, name);
 		if (rc < 0)
-			return tool_result_json_errorf(result,
+			return tool_result_errorf(result, "tool_failed",
 				"failed to unregister rolled back tool: %s",
 				morph_strerror(rc));
-		return tool_result_printf(result,
+		return tool_result_successf(result,
 			"{\"name\":\"%s\",\"status\":\"rolled_back\","
 			"\"checkpoint_id\":\"%s\",\"state\":\"absent\"}",
 			name, cp.id);
@@ -2253,7 +2326,7 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 		rc = check_js_source(source_path, &check_error);
 	if (rc < 0) {
 		int out_rc;
-		out_rc = tool_result_json_errorf(result,
+		out_rc = tool_result_errorf(result, "tool_failed",
 			"restored checkpoint failed validation: %s",
 			check_error ? check_error : morph_strerror(rc));
 		free(check_error);
@@ -2263,11 +2336,11 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 	rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, tool_dir,
 				TOOL_ORIGIN_DYNAMIC_SESSION);
 	if (rc < 0)
-		return tool_result_json_errorf(result,
+		return tool_result_errorf(result, "tool_failed",
 			"failed to register rolled back tool: %s",
 			morph_strerror(rc));
 	(void)remove_checkpoint_ids_from(tool_dir, checkpoint_id_value(cp.id));
-	return tool_result_printf(result,
+	return tool_result_successf(result,
 		"{\"name\":\"%s\",\"status\":\"rolled_back\","
 		"\"checkpoint_id\":\"%s\",\"state\":\"present\"}",
 		name, cp.id);
@@ -2421,41 +2494,33 @@ int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 	ctx->cfg = cfg;
 	snprintf(ctx->session_id, sizeof(ctx->session_id), "%s",
 		 session_id ? session_id : "");
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_create", TOOL_CREATE_DESCRIPTION,
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"args_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"}},\"required\":[\"name\",\"source_js\"]}",
-			   tool_create_exec, ctx, dynamic_tools_context_destroy);
+	rc = tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "tool_create",
+		.description = TOOL_CREATE_DESCRIPTION,
+		.input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"New tool name: lowercase letters, digits, underscore only.\"},\"description\":{\"type\":\"string\",\"description\":\"Short model-facing description of what the new tool does.\"},\"input_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's arguments.\"},\"output_schema\":{\"type\":[\"object\",\"string\"],\"description\":\"JSON Schema for the new tool's result data.\"},\"source_js\":{\"type\":\"string\",\"description\":\"JavaScript code defining global run(args).\"}},\"required\":[\"name\",\"input_schema\",\"output_schema\",\"source_js\"],\"additionalProperties\":false}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = tool_create_exec,
+		.user_data = ctx,
+		.user_data_destroy = dynamic_tools_context_destroy,
+	});
 	if (rc < 0) {
 		free(ctx);
 		return rc;
 	}
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_promote",
-			   "Promote a session dynamic tool into the persistent dynamic tool directory.",
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
-			   tool_promote_exec, ctx, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tool_promote", .description = "Promote a session dynamic tool into the persistent dynamic tool directory.", .input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = tool_promote_exec, .user_data = ctx, .user_data_destroy = NULL });
 	if (rc < 0)
 		return rc;
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_delete",
-			   "Delete a dynamic tool. Session tools are removed from the current session directory; persistent dynamic tools are removed from the persistent dynamic tool directory. Built-in, MCP, and ext tools cannot be deleted.",
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}",
-			   tool_delete_exec, ctx, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tool_delete", .description = "Delete a dynamic tool. Session tools are removed from the current session directory; persistent dynamic tools are removed from the persistent dynamic tool directory. Built-in, MCP, and ext tools cannot be deleted.", .input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = tool_delete_exec, .user_data = ctx, .user_data_destroy = NULL });
 	if (rc < 0)
 		return rc;
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_history",
-			   "List checkpoints recorded for a session dynamic tool.",
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"name\"]}",
-			   tool_history_exec, ctx, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tool_history", .description = "List checkpoints recorded for a session dynamic tool.", .input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = tool_history_exec, .user_data = ctx, .user_data_destroy = NULL });
 	if (rc < 0)
 		return rc;
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_diff",
-			   "Show a unified diff between a dynamic tool checkpoint and the current tool files.",
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}",
-			   tool_diff_exec, ctx, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tool_diff", .description = "Show a unified diff between a dynamic tool checkpoint and the current tool files.", .input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = tool_diff_exec, .user_data = ctx, .user_data_destroy = NULL });
 	if (rc < 0)
 		return rc;
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tool_rollback",
-			   "Roll back a session dynamic tool to a checkpoint. Rolling back a creation removes the tool.",
-			   "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}",
-			   tool_rollback_exec, ctx, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tool_rollback", .description = "Roll back a session dynamic tool to a checkpoint. Rolling back a creation removes the tool.", .input_schema = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"checkpoint_id\":{\"type\":\"string\",\"description\":\"Checkpoint id or latest.\"}},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = tool_rollback_exec, .user_data = ctx, .user_data_destroy = NULL });
 	if (rc < 0)
 		return rc;
 	rc = dynamic_tools_load_persistent(reg, tctx, cfg);

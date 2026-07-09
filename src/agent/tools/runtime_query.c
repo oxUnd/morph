@@ -39,7 +39,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	(void)user_data;
 	if (!rt || !rt->db || !rt->config || !rt->user_id ||
 	    !rt->credit_session_id)
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "runtime context is unavailable");
 
 	rc = credit_summary_today(rt->db, rt->user_id, &today);
@@ -69,7 +69,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	cJSON_Delete(root);
 	if (!json)
 		MORPH_RETURN(-ENOMEM);
-	return tool_result_take_json(result, json);
+	return tool_result_success_json_text(result, json);
 }
 
 static enum memory_query_type parse_memory_type(const char *s)
@@ -128,7 +128,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 
 	(void)user_data;
 	if (!rt || !rt->db)
-		return tool_result_json_error(result,
+		return tool_result_error(result, "tool_failed",
 					      "runtime context is unavailable");
 	parse_memory_query(args_json, &q);
 	if (rt->restrict_memory_to_user) {
@@ -152,7 +152,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	free(text);
 	if (!json)
 		MORPH_RETURN(-ENOMEM);
-	return tool_result_take_json(result, json);
+	return tool_result_success_json_text(result, json);
 }
 
 int runtime_query_tools_init(struct tool_registry *reg)
@@ -162,25 +162,19 @@ int runtime_query_tools_init(struct tool_registry *reg)
 
 	if (!reg)
 		MORPH_RETURN(-EINVAL);
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "credits",
-			   "Query current credit usage, limits, and totals.",
-			   "{\"type\":\"object\",\"properties\":{},"
-			   "\"additionalProperties\":false}",
-			   credits_exec, NULL, NULL);
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "credits", .description = "Query current credit usage, limits, and totals.", .input_schema = "{\"type\":\"object\",\"properties\":{},"
+			   "\"additionalProperties\":false}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = credits_exec, .user_data = NULL, .user_data_destroy = NULL });
 	if (rc != 0)
 		return rc;
 	e = tool_lookup(reg, "credits");
 	if (e)
 		e->flags |= TOOL_FLAG_READONLY;
 
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "memory",
-		"Query long-term memory by type and scope.",
-		"{\"type\":\"object\",\"properties\":{"
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "memory", .description = "Query long-term memory by type and scope.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\",\"facts\",\"procedures\",\"episodes\",\"changes\"]},"
 		"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\"]},"
 		"\"max_episodes\":{\"type\":\"integer\",\"minimum\":0}"
-		"},\"additionalProperties\":false}",
-		memory_exec, NULL, NULL);
+		"},\"additionalProperties\":false}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = memory_exec, .user_data = NULL, .user_data_destroy = NULL });
 	if (rc != 0)
 		return rc;
 	e = tool_lookup(reg, "memory");

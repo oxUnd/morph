@@ -176,8 +176,29 @@ static struct model *create_mock_llm(const char *response)
 static int sa_test_tool_fn(const char *args_json, struct tool_result *result, void *user_data)
 {
 	(void)args_json; (void)user_data;
-	(void)tool_result_take_text(result, strdup("{\"result\":\"sub_agent_test\"}"));
+	(void)tool_result_success_json_text(result, strdup("{\"result\":\"sub_agent_test\"}"));
 	return 0;
+}
+
+static int tool_register(enum tool_origin origin, struct tool_registry *reg,
+			 const char *name, const char *description,
+			 const char *input_schema, tool_exec_fn exec,
+			 void *user_data,
+			 tool_user_data_destroy_fn user_data_destroy)
+{
+	struct tool_spec spec = {};
+	spec.origin = origin;
+	spec.name = name;
+	spec.description = description;
+	if (!input_schema || strcmp(input_schema, "{}") == 0)
+		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	else
+		spec.input_schema = input_schema;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = exec;
+	spec.user_data = user_data;
+	spec.user_data_destroy = user_data_destroy;
+	return ::tool_register(reg, &spec);
 }
 
 /* ---- fixture ---- */
@@ -588,9 +609,10 @@ TEST_F(SubAgentTest, CreateContextBasic) {
 	EXPECT_EQ(child->llm_model, llm);
 	EXPECT_EQ(child->max_iterations, 3);
 	EXPECT_EQ(child->sub_agent_depth, 1);
+	struct tool_registry *child_tools = child->tools;
 	react_context_destroy(child);
-	tool_registry_cleanup(child->tools);
-	free(child->tools);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -607,9 +629,10 @@ TEST_F(SubAgentTest, CreateContextSystemPrompt) {
 	ASSERT_NE(child, nullptr);
 	ASSERT_NE(child->system_prompt, nullptr);
 	EXPECT_STREQ(child->system_prompt, "You are a specialist.");
+	struct tool_registry *child_tools = child->tools;
 	react_context_destroy(child);
-	tool_registry_cleanup(child->tools);
-	free(child->tools);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -626,9 +649,10 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 		rt, &rt->entries[0], "nested task");
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->sub_agent_depth, 2);
+	struct tool_registry *child_tools = child->tools;
 	react_context_destroy(child);
-	tool_registry_cleanup(child->tools);
-	free(child->tools);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
 	sub_agent_runtime_destroy(rt);
 }
 

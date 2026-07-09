@@ -35,7 +35,7 @@ static int test_tool_fn(const char *args_json, struct tool_result *result, void 
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_take_text(result, strdup("{\"result\":\"test\"}"));
+	(void)tool_result_success_json_text(result, strdup("{\"result\":\"test\"}"));
 	return 0;
 }
 
@@ -46,7 +46,7 @@ static int streaming_tool_fn(const char *args_json, struct tool_result *result,
 	(void)user_data;
 	(void)tool_runtime_emit_stream("stream_tool", "text", "alpha ");
 	(void)tool_runtime_emit_stream("stream_tool", "text", "beta");
-	(void)tool_result_take_text(result, strdup("{\"result\":\"done\"}"));
+	(void)tool_result_success_json_text(result, strdup("{\"result\":\"done\"}"));
 	return 0;
 }
 
@@ -54,7 +54,7 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_take_text(result, strdup("tool failed"));
+	(void)tool_result_success_json_text(result, strdup("tool failed"));
 	return -EIO;
 }
 
@@ -64,7 +64,7 @@ static int slow_tool_fn(const char *args_json, struct tool_result *result,
 	(void)args_json;
 	(void)user_data;
 	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
-	(void)tool_result_take_text(result, strdup("{\"result\":\"late\"}"));
+	(void)tool_result_success_json_text(result, strdup("{\"result\":\"late\"}"));
 	return 0;
 }
 
@@ -74,7 +74,7 @@ static int not_configured_tool_fn(const char *args_json,
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_take_text(result,
+	(void)tool_result_success_json_text(result,
 				    strdup("{\"error\":\"missing api key\"}"));
 	return MORPH_ERR_NOT_CONFIGURED;
 }
@@ -85,7 +85,7 @@ static int call_count_tool_fn(const char *args_json, struct tool_result *result,
 	(*count)++;
 	char buf[128];
 	snprintf(buf, sizeof(buf), "{\"calls\":%d}", *count);
-	(void)tool_result_take_text(result, strdup(buf));
+	(void)tool_result_success_json_text(result, strdup(buf));
 	return 0;
 }
 
@@ -94,11 +94,33 @@ static int artifact_tool_fn(const char *args_json, struct tool_result *result,
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_result_take_text(result,
+	(void)tool_result_success_json_text(result,
 		strdup("{\"message\":\"artifact ready\"}"));
 	(void)tool_result_add_image(result, "/tmp/morph-event-test.png",
 				    640, 480);
 	return 0;
+}
+
+static int tool_register(enum tool_origin origin, struct tool_registry *reg,
+			 const char *name, const char *description,
+			 const char *input_schema, tool_exec_fn exec,
+			 void *user_data,
+			 tool_user_data_destroy_fn user_data_destroy)
+{
+	struct tool_spec spec = {};
+	spec.origin = origin;
+	spec.name = name;
+	spec.description = description;
+	if (!input_schema || strcmp(input_schema, "{}") == 0 ||
+	    strcmp(input_schema, "{\"type\":\"object\"}") == 0)
+		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	else
+		spec.input_schema = input_schema;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = exec;
+	spec.user_data = user_data;
+	spec.user_data_destroy = user_data_destroy;
+	return ::tool_register(reg, &spec);
 }
 
 /* ---- mock LLM helpers ---- */
@@ -2447,7 +2469,7 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	if (tools && tool_count > 0) {
 		std::ostringstream os;
 		for (int i = 0; i < tool_count; i++) {
-			os << tools[i].name << ":" << tools[i].desc << "\n";
+			os << tools[i].name << ":" << tools[i].description << "\n";
 		}
 		d->tool_descs = strdup(os.str().c_str());
 	}
@@ -2627,7 +2649,7 @@ TEST_F(MockLlmTest, SystemPromptIncludesMarkdownOutputRules) {
 			 "Do not wrap the entire response in a code block"),
 		  nullptr);
 	EXPECT_NE(strstr(cd->system_prompt,
-			 "Use GitHub Flavored Markdown tables"), nullptr);
+			 "Do not use Markdown tables on mobile clients"), nullptr);
 	EXPECT_NE(strstr(cd->system_prompt,
 			 "Chinese prose may use normal Chinese punctuation"),
 		  nullptr);
@@ -2972,7 +2994,7 @@ static int self_cancel_tool_fn(const char *args_json, struct tool_result *result
 	(void)args_json;
 	struct react_context *ctx = (struct react_context *)user_data;
 	ctx->cancelled = 1;
-	(void)tool_result_take_text(result, strdup("{\"cancelled\":true}"));
+	(void)tool_result_success_json_text(result, strdup("{\"cancelled\":true}"));
 	return 0;
 }
 
@@ -2991,7 +3013,7 @@ static int slow_signal_tool_fn(const char *args_json, struct tool_result *result
 	state->entered.store(1);
 	std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 	state->finished.store(1);
-	(void)tool_result_take_text(result, strdup("{\"done\":true}"));
+	(void)tool_result_success_json_text(result, strdup("{\"done\":true}"));
 	return 0;
 }
 

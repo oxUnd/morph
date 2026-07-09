@@ -47,7 +47,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	}
 	if (!prompt) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}"));
 		return -EINVAL;
@@ -55,7 +55,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	if (image_gen_validate_size(size) < 0) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
 			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
 		return -EINVAL;
@@ -73,10 +73,10 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"reference image not found\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -103,7 +103,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	cJSON_Delete(root);
 
 	if (rc < 0) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"image generation failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"image generation failed\"}"));
 		return rc;
 	}
 
@@ -113,7 +113,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		return -ENOMEM;
 	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
-	(void)tool_result_take_text(result, msg);
+	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_image(result, img_res.path, img_res.width,
 				    img_res.height);
 	log_dbg("img_gen: %s", msg);
@@ -133,10 +133,7 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_gen",
-		"Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/3k/4k. When reference_image is used and the user did not request a different size, inspect the image and pass its WIDTHxHEIGHT; if it is outside the supported pixel range, preserve aspect ratio and scale it into range.",
-		"{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 3k, 4k. With reference_image, default to the reference image aspect ratio scaled into this range unless the user explicitly requested a size.\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}",
-		img_gen_exec, ctx, img_gen_context_destroy);
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_gen", .description = "Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/3k/4k. When reference_image is used and the user did not request a different size, inspect the image and pass its WIDTHxHEIGHT; if it is outside the supported pixel range, preserve aspect ratio and scale it into range.", .input_schema = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 3k, 4k. With reference_image, default to the reference image aspect ratio scaled into this range unless the user explicitly requested a size.\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_gen_exec, .user_data = ctx, .user_data_destroy = img_gen_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

@@ -417,10 +417,10 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
-			(void)tool_result_take_text(out_result, strdup("{\"error\":\"empty response\",\"isError\":true}"));
+			(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"empty response\",\"isError\":true}"));
 			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
-		(void)tool_result_printf(out_result,
+		(void)tool_result_successf(out_result,
 					 "{\"error\":\"MCP call failed\","
 					 "\"code\":%d,\"isError\":true}",
 					 rc);
@@ -432,7 +432,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: tools/call response parse error");
-		(void)tool_result_take_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
+		(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
 		free(result);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
@@ -444,6 +444,8 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	cJSON *content = cJSON_GetObjectItem(obj, "content");
 	if (content && cJSON_IsArray(content)) {
 		morph_buf_t combined_buf;
+		cJSON *resp = NULL;
+		char *printed;
 		int buf_ok = morph_buf_init(&combined_buf, 256);
 
 		for (int i = 0; i < cJSON_GetArraySize(content); i++) {
@@ -469,19 +471,52 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		}
 
 		if (buf_ok == 0 && combined_buf.len > 0) {
-			cJSON *resp = cJSON_CreateObject();
-			cJSON_AddStringToObject(resp, "content",
-						combined_buf.data);
-			cJSON_AddBoolToObject(resp, "isError", tool_error);
-			(void)tool_result_take_json(out_result, cJSON_PrintUnformatted(resp));
+			resp = cJSON_CreateObject();
+			if (!resp)
+				goto mcp_tool_oom;
+			if (tool_error &&
+			    !cJSON_AddStringToObject(resp, "error",
+						     combined_buf.data))
+				goto mcp_tool_oom_resp;
+			if (!cJSON_AddStringToObject(resp, "content",
+						     combined_buf.data))
+				goto mcp_tool_oom_resp;
+			if (!cJSON_AddBoolToObject(resp, "isError", tool_error))
+				goto mcp_tool_oom_resp;
+			printed = cJSON_PrintUnformatted(resp);
+			if (!printed)
+				goto mcp_tool_oom_resp;
+			(void)tool_result_success_json_text(out_result, printed);
 			cJSON_Delete(resp);
 			morph_buf_cleanup(&combined_buf);
 		} else {
 			morph_buf_cleanup(&combined_buf);
-			(void)tool_result_take_text(out_result, strdup("{\"error\":\"out of memory\",\"isError\":true}"));
+			(void)tool_result_success_json_text(out_result,
+				strdup("{\"error\":\"out of memory\","
+				       "\"isError\":true}"));
 		}
+		goto mcp_tool_done;
+
+mcp_tool_oom_resp:
+		cJSON_Delete(resp);
+mcp_tool_oom:
+		morph_buf_cleanup(&combined_buf);
+		(void)tool_result_success_json_text(out_result,
+			strdup("{\"error\":\"out of memory\","
+			       "\"isError\":true}"));
+mcp_tool_done:
+		;
 	} else {
-		(void)tool_result_take_text(out_result, mcp_strdup_result(arena, result));
+		if (tool_error && cJSON_IsObject(obj) &&
+		    !cJSON_GetObjectItem(obj, "error")) {
+			cJSON_AddStringToObject(obj, "error",
+						"MCP tool returned isError");
+			(void)tool_result_success_json_text(out_result,
+				cJSON_PrintUnformatted(obj));
+		} else {
+			(void)tool_result_success_json_text(out_result,
+				mcp_strdup_result(arena, result));
+		}
 	}
 
 	cJSON_Delete(obj);
@@ -632,9 +667,9 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 			}
 		}
 
-		(void)tool_result_take_text(out_content, mcp_strdup_result(arena, combined));
+		(void)tool_result_success_json_text(out_content, mcp_strdup_result(arena, combined));
 	} else {
-		(void)tool_result_take_text(out_content, mcp_strdup_result(arena, result));
+		(void)tool_result_success_json_text(out_content, mcp_strdup_result(arena, result));
 	}
 
 	cJSON_Delete(obj);
@@ -753,7 +788,7 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 		return rc ? rc : MORPH_ERR_PROTOCOL;
 	}
 
-	(void)tool_result_take_text(out_result, mcp_strdup_result(arena, result));
+	(void)tool_result_success_json_text(out_result, mcp_strdup_result(arena, result));
 	free(result);
 	return 0;
 }
@@ -773,7 +808,7 @@ static int mcp_tool_exec(const char *args_json, struct tool_result *result, void
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_printf(result,
+		(void)tool_result_successf(result,
 					 "{\"error\":\"MCP server '%s' not "
 					 "connected\",\"code\":%d}",
 					 binding->client->config.name, rc);
@@ -832,11 +867,19 @@ int mcp_register_server_tools(struct mcp_client *client,
 
 		const char *schema = tools[i].input_schema;
 		if (!schema || !schema[0])
-			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
+			schema = TOOL_EMPTY_INPUT_SCHEMA;
 
-		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, tools[i].description,
-				   schema, mcp_tool_exec, binding,
-				   (tool_user_data_destroy_fn)free);
+		struct tool_spec spec = {
+			.origin = TOOL_ORIGIN_MCP,
+			.name = tool_name,
+			.description = tools[i].description,
+			.input_schema = schema,
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = mcp_tool_exec,
+			.user_data = binding,
+			.user_data_destroy = (tool_user_data_destroy_fn)free,
+		};
+		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register tool '%s' (rc=%d)", tool_name, rc);
 			free(binding);
@@ -863,7 +906,7 @@ static int mcp_resource_exec(const char *args_json, struct tool_result *result, 
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_printf(result,
+		(void)tool_result_successf(result,
 					 "{\"error\":\"MCP server '%s' not "
 					 "connected\",\"code\":%d}",
 					 binding->client->config.name, rc);
@@ -923,10 +966,18 @@ int mcp_register_server_resources(struct mcp_client *client,
 		snprintf(desc_buf, sizeof(desc_buf), "Read MCP resource: %s (%s)",
 			 res[i].name, res[i].uri);
 
-		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, desc_buf,
-				   "{\"type\":\"object\",\"additionalProperties\":false}",
-				   mcp_resource_exec, binding,
-				   (tool_user_data_destroy_fn)free);
+		struct tool_spec spec = {
+			.origin = TOOL_ORIGIN_MCP,
+			.name = tool_name,
+			.description = desc_buf,
+			.input_schema = TOOL_EMPTY_INPUT_SCHEMA,
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = mcp_resource_exec,
+			.user_data = binding,
+			.user_data_destroy = (tool_user_data_destroy_fn)free,
+			.flags = TOOL_FLAG_READONLY,
+		};
+		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register resource '%s' (rc=%d)", tool_name, rc);
 			free(binding);
@@ -956,7 +1007,7 @@ static int mcp_prompt_exec(const char *args_json, struct tool_result *result, vo
 
 	int rc = mcp_ensure_connected(binding->client);
 	if (rc < 0) {
-		(void)tool_result_printf(result,
+		(void)tool_result_successf(result,
 					 "{\"error\":\"MCP server '%s' not "
 					 "connected\",\"code\":%d}",
 					 binding->client->config.name, rc);
@@ -1014,11 +1065,19 @@ int mcp_register_server_prompts(struct mcp_client *client,
 
 		const char *schema = prompts[i].arguments_schema;
 		if (!schema || !schema[0])
-			schema = "{\"type\":\"object\",\"additionalProperties\":false}";
+			schema = TOOL_EMPTY_INPUT_SCHEMA;
 
-		rc = tool_register(TOOL_ORIGIN_MCP, reg, tool_name, prompts[i].description,
-				   schema, mcp_prompt_exec, binding,
-				   (tool_user_data_destroy_fn)free);
+		struct tool_spec spec = {
+			.origin = TOOL_ORIGIN_MCP,
+			.name = tool_name,
+			.description = prompts[i].description,
+			.input_schema = schema,
+			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+			.exec = mcp_prompt_exec,
+			.user_data = binding,
+			.user_data_destroy = (tool_user_data_destroy_fn)free,
+		};
+		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register prompt '%s' (rc=%d)", tool_name, rc);
 			free(binding);

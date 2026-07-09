@@ -402,7 +402,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 		MORPH_RETURN(-EINVAL);
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root) {
-		(void)tool_result_take_text(result, json_error("invalid JSON"));
+		(void)tool_result_success_json_text(result, json_error("invalid JSON"));
 		return 0;
 	}
 	op_item = cJSON_GetObjectItem(root, "op");
@@ -426,7 +426,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 		out = json_error("unknown tasks op");
 
 	cJSON_Delete(root);
-	(void)tool_result_take_text(result, out ? out : json_error("oom"));
+	(void)tool_result_success_json_text(result, out ? out : json_error("oom"));
 	return 0;
 }
 
@@ -446,14 +446,12 @@ int scheduled_tasks_tool_init_events(
 	ctx->time_anchor = (int64_t)time(NULL);
 	if (events)
 		ctx->events = *events;
-	rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "tasks",
-		"Create and manage persistent scheduled tasks and the inbox. "
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "tasks", .description = "Create and manage persistent scheduled tasks and the inbox. "
 		"Use next_run_at for absolute Unix seconds, or delay_seconds "
 		"for relative delays anchored at the current user turn start. "
 		"Tasks run by asking the agent to complete the supplied prompt. "
 		"Supported ops: "
-		"create, update, list, cancel, inbox, mark_read.",
-		"{\"type\":\"object\",\"properties\":{"
+		"create, update, list, cancel, inbox, mark_read.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"op\":{\"type\":\"string\",\"enum\":[\"create\",\"list\","
 		"\"update\",\"cancel\",\"inbox\",\"mark_read\"]},"
 		"\"id\":{\"type\":\"integer\",\"description\":\"Task or notification id\"},"
@@ -471,9 +469,7 @@ int scheduled_tasks_tool_init_events(
 		"\"status\":{\"type\":\"string\"},"
 		"\"limit\":{\"type\":\"integer\"},"
 		"\"now\":{\"type\":\"integer\"}"
-		"},\"required\":[\"op\"]}",
-		scheduled_tasks_tool_run, ctx,
-		scheduled_tasks_tool_context_destroy);
+		"},\"required\":[\"op\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = scheduled_tasks_tool_run, .user_data = ctx, .user_data_destroy = scheduled_tasks_tool_context_destroy });
 	if (rc != 0)
 		free(ctx);
 	return rc;

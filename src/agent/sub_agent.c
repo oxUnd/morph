@@ -215,9 +215,18 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 				continue;
 			if (tool_is_disabled(rt->parent_tools, pe->desc.name))
 				continue;
-			tool_register(pe->origin, child, pe->desc.name, pe->desc.desc,
-				      pe->desc.args_spec, pe->exec,
-				      pe->user_data, NULL);
+			struct tool_spec spec = {
+				.origin = pe->origin,
+				.name = pe->desc.name,
+				.description = pe->desc.description,
+				.input_schema = pe->desc.input_schema,
+				.output_schema = pe->desc.output_schema,
+				.exec = pe->exec,
+				.user_data = pe->user_data,
+				.flags = pe->flags,
+				.timeout_seconds = pe->timeout_seconds,
+			};
+			(void)tool_register(child, &spec);
 		}
 	} else {
 		for (int i = 0; i < entry->cfg.allowed_tools_count; i++) {
@@ -226,9 +235,18 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 							   tname);
 			if (!pe)
 				continue;
-			tool_register(pe->origin, child, pe->desc.name, pe->desc.desc,
-				      pe->desc.args_spec, pe->exec,
-				      pe->user_data, NULL);
+			struct tool_spec spec = {
+				.origin = pe->origin,
+				.name = pe->desc.name,
+				.description = pe->desc.description,
+				.input_schema = pe->desc.input_schema,
+				.output_schema = pe->desc.output_schema,
+				.exec = pe->exec,
+				.user_data = pe->user_data,
+				.flags = pe->flags,
+				.timeout_seconds = pe->timeout_seconds,
+			};
+			(void)tool_register(child, &spec);
 		}
 	}
 	for (int i = 0; i < entry->cfg.disabled_tools_count; i++)

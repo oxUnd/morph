@@ -14,7 +14,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	if (!result)
 		return -EINVAL;
 	if (!skills) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
 	}
 
@@ -32,7 +32,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	}
 
 	if (name[0] == '\0') {
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing or empty 'name' parameter. "
 			"Usage: activate_skill({\\\"name\\\": \\\"skill-name\\\"})\"}"));
 		return -EINVAL;
@@ -43,7 +43,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' not found\"}", name);
-		(void)tool_result_take_text(result, strdup(err));
+		(void)tool_result_success_json_text(result, strdup(err));
 		return -ENOENT;
 	}
 
@@ -51,7 +51,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		char err[256];
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"skill '%s' is disabled\"}", name);
-		(void)tool_result_take_text(result, strdup(err));
+		(void)tool_result_success_json_text(result, strdup(err));
 		return -EACCES;
 	}
 
@@ -60,7 +60,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		snprintf(msg, sizeof(msg),
 			 "Skill '%s' is already active. Its instructions are in context.",
 			 name);
-		(void)tool_result_take_text(result, strdup(msg));
+		(void)tool_result_success_json_text(result, strdup(msg));
 		return 0;
 	}
 
@@ -70,12 +70,12 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		snprintf(err, sizeof(err),
 			 "{\"error\":\"failed to activate skill '%s' (code %d)\"}",
 			 name, rc);
-		(void)tool_result_take_text(result, strdup(err));
+		(void)tool_result_success_json_text(result, strdup(err));
 		return rc;
 	}
 
 	if (!skill->body || !skill->body[0]) {
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"Skill activated but contains no instructions."));
 		return 0;
 	}
@@ -85,13 +85,13 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	size_t result_len = 128 + strlen(name) + dir_len + body_len + 16;
 	char *msg = malloc(result_len);
 	if (!msg) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"out of memory\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
 		return -ENOMEM;
 	}
 	snprintf(msg, result_len,
 		 "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>",
 		 name, skill->skill_dir, skill->body);
-	(void)tool_result_take_text(result, msg);
+	(void)tool_result_success_json_text(result, msg);
 
 	log_info("skill_activate: '%s' activated (%zu bytes of instructions)",
 		 name, body_len);
@@ -102,11 +102,8 @@ int skill_activate_init(struct tool_registry *reg, struct skill_registry *skills
 {
 	if (!reg || !skills)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "activate_skill",
-		"Activate a skill by name to load its specialized instructions into context. "
-		"Use when a task matches a skill's description.",
-		"{\"type\":\"object\",\"properties\":{"
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "activate_skill", .description = "Activate a skill by name to load its specialized instructions into context. "
+		"Use when a task matches a skill's description.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"name\":{\"type\":\"string\",\"description\":\"The skill name to activate\"}"
-		"},\"required\":[\"name\"]}",
-		skill_activate_exec, skills, NULL);
+		"},\"required\":[\"name\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = skill_activate_exec, .user_data = skills, .user_data_destroy = NULL });
 }

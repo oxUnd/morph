@@ -53,7 +53,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result, strdup("{\"error\":\"invalid JSON\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
 
@@ -69,7 +69,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	if (!file_path || (target_w <= 0 && target_h <= 0)) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' or 'width'/'height' parameter. "
 			"Usage: img_resize({\\\"file_path\\\": \\\"img.png\\\", "
 			"\\\"width\\\": 800, \\\"height\\\": 600})\"}"));
@@ -84,10 +84,10 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 		if (rc < 0) {
 			cJSON_Delete(root);
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"failed to load image\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			return rc;
 		}
@@ -100,7 +100,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	unsigned char *src = stbi_load(resolved_input, &src_w, &src_h, &src_ch, 0);
 	if (!src) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to load image\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 
@@ -118,7 +118,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	if (!dst) {
 		stbi_image_free(src);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"oom\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"oom\"}"));
 		return -ENOMEM;
 	}
 
@@ -128,7 +128,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 		stbi_image_free(src);
 		free(dst);
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"resize failed\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"resize failed\"}"));
 		MORPH_RETURN(MORPH_ERR_PROCESSING);
 	}
 	stbi_image_free(src);
@@ -142,7 +142,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 			if (rc < 0) {
 				free(dst);
 				cJSON_Delete(root);
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"write path outside output directory: permission denied\"}"));
 				return rc;
 			}
@@ -161,7 +161,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 			stbi_image_free(dst);
 			stbi_image_free(src);
 			cJSON_Delete(root);
-			(void)tool_result_take_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
+			(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to expand output path\"}"));
 			return -ENOMEM;
 		}
 		file_ensure_dir(out_dir);
@@ -178,7 +178,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 
 	if (!wrc) {
 		cJSON_Delete(root);
-		(void)tool_result_take_text(result, strdup("{\"error\":\"failed to write output\"}"));
+		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to write output\"}"));
 		return -EIO;
 	}
 
@@ -190,7 +190,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	}
 	snprintf(msg, msg_len, "image resized: %s (%dx%d)",
 		 final_path, target_w, target_h);
-	(void)tool_result_take_text(result, msg);
+	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_image(result, final_path, target_w, target_h);
 	log_dbg("img_resize: %s", msg);
 
@@ -202,15 +202,12 @@ int img_resize_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_resize",
-		"Resize an image to the given width/height. "
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_resize", .description = "Resize an image to the given width/height. "
 		"Provide file_path, width, height, optional output_path. "
 		"If only one of width/height is given, the other is computed "
-		"to preserve aspect ratio.",
-		"{\"type\":\"object\",\"properties\":"
+		"to preserve aspect ratio.", .input_schema = "{\"type\":\"object\",\"properties\":"
 		"{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},"
 		"\"width\":{\"type\":\"integer\",\"description\":\"Target width in pixels\"},"
 		"\"height\":{\"type\":\"integer\",\"description\":\"Target height in pixels\"},"
-		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"}},\"required\":[\"file_path\"]}",
-		img_resize_exec, tctx, NULL);
+		"\"output_path\":{\"type\":\"string\",\"description\":\"Output file path (optional)\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_resize_exec, .user_data = tctx, .user_data_destroy = NULL });
 }

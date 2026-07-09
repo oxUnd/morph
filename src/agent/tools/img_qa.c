@@ -32,13 +32,13 @@ static int img_qa_int_arg(cJSON *root, const char *name, int fallback,
 	if (!item)
 		return fallback;
 	if (!cJSON_IsNumber(item)) {
-		(void)tool_result_json_errorf(result,
+		(void)tool_result_errorf(result, "tool_failed",
 			"'%s' must be an integer", name);
 		return -EINVAL;
 	}
 	value = item->valueint;
 	if (value < min || value > max) {
-		(void)tool_result_json_errorf(result,
+		(void)tool_result_errorf(result, "tool_failed",
 			"'%s' must be between %d and %d", name, min, max);
 		return -EINVAL;
 	}
@@ -68,7 +68,7 @@ static int img_qa_take_call_error(struct tool_result *result,
 	cJSON_Delete(root);
 	if (!json)
 		MORPH_RETURN(-ENOMEM);
-	rc = tool_result_take_text(result, json);
+	rc = tool_result_success_json_text(result, json);
 	if (rc < 0)
 		free(json);
 	return rc;
@@ -96,19 +96,19 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	if (!result)
 		return -EINVAL;
 	if (!llm || !llm->api_key[0]) {
-		(void)tool_result_take_text(result,
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"no multimodal LLM configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!llm->chat_with_image) {
-		(void)tool_result_take_text(result,
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"LLM does not support image input\"}"));
 		return -ENOSYS;
 	}
 
 	root = cJSON_Parse(args_json);
 	if (!root) {
-		(void)tool_result_take_text(result,
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"invalid JSON\"}"));
 		return -EINVAL;
 	}
@@ -137,7 +137,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 	if (!file_path || !*file_path) {
-		(void)tool_result_take_text(result, strdup(
+		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'file_path' parameter. "
 			"Usage: img_qa({\\\"file_path\\\": \\\"img.png\\\", "
 			"\\\"prompt\\\": \\\"What is in this image?\\\"})\"}"));
@@ -151,10 +151,10 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 						 sizeof(resolved_path));
 		if (rc < 0) {
 			if (rc == -ENOENT)
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"image file not found\"}"));
 			else
-				(void)tool_result_take_text(result, strdup(
+				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"read path outside workspace: permission denied\"}"));
 			goto out;
 		}
@@ -166,13 +166,13 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	arena = arena_create(128 * 1024);
 	if (!arena) {
 		rc = -ENOMEM;
-		(void)tool_result_take_text(result,
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"memory allocation failed\"}"));
 		goto out;
 	}
 	rc = morph_buf_init(&buf, 8192);
 	if (rc != 0) {
-		(void)tool_result_take_text(result,
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"buffer allocation failed\"}"));
 		goto out;
 	}
@@ -195,12 +195,10 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 
-	(void)tool_result_take_text(result, morph_buf_detach(&buf));
-	if (!result->text.data) {
-		rc = -ENOMEM;
-		(void)tool_result_take_text(result,
+	rc = tool_result_success_json_text(result, morph_buf_detach(&buf));
+	if (rc < 0)
+		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"buffer allocation failed\"}"));
-	}
 
 out:
 	if (buf.data)
@@ -222,15 +220,13 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		return -ENOMEM;
 	ctx->llm = llm;
 	ctx->tctx = tctx;
-	int rc = tool_register(TOOL_ORIGIN_BUILTIN, reg, "img_qa",
-		"Answer questions about an image using the multimodal LLM. "
+	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_qa", .description = "Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
 		"visual comparison, and content analysis. Before upload, the "
 		"image is compressed within max_dim while preserving aspect "
 		"ratio. Provide file_path and prompt. Optional max_tokens "
 		"(default 1024), timeout_seconds (default 120), and max_dim "
-		"(default 360).",
-		"{\"type\":\"object\",\"properties\":{"
+		"(default 360).", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"file_path\":{\"type\":\"string\","
 		"\"description\":\"Path to the image file\"},"
 		"\"prompt\":{\"type\":\"string\","
@@ -242,8 +238,7 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		"\"description\":\"Hard request timeout in seconds (default 120)\"},"
 		"\"max_dim\":{\"type\":\"integer\","
 		"\"description\":\"Maximum image side sent to model (default 360)\"}},"
-		"\"required\":[\"file_path\"]}",
-		img_qa_exec, ctx, img_qa_context_destroy);
+		"\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_qa_exec, .user_data = ctx, .user_data_destroy = img_qa_context_destroy });
 	if (rc < 0)
 		free(ctx);
 	else

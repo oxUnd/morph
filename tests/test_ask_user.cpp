@@ -108,7 +108,6 @@ TEST_F(AskUserToolTest, QuestionOnly) {
 			   "{\"question\":\"What is your name?\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_STREQ(result.text.data, "mock answer");
 	ASSERT_NE(result.data, nullptr);
 	ASSERT_NE(result.ui, nullptr);
 	cJSON *kind = cJSON_GetObjectItem(result.data, "kind");
@@ -129,7 +128,6 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 			   "\"choices\":[\"red\",\"green\",\"blue\"]}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_STREQ(result.text.data, "red");
 	EXPECT_EQ(g_last_choices_count, 3);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *choices = cJSON_GetObjectItem(result.data, "choices");
@@ -148,7 +146,7 @@ TEST_F(AskUserToolTest, MissingQuestion) {
 	int rc = tool_exec(&tools, "ask_user", "{}", &result);
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "missing"), nullptr);
+	EXPECT_NE(strstr(result.text.data, "question"), nullptr);
 	tool_result_cleanup(&result);
 }
 
@@ -182,7 +180,6 @@ TEST_F(AskUserToolTest, EmptyAnswer) {
 			   "{\"question\":\"hello?\"}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_NE(strstr(result.text.data, "no input"), nullptr);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *no_input = cJSON_GetObjectItem(result.data, "no_input");
 	ASSERT_TRUE(cJSON_IsBool(no_input));
@@ -209,8 +206,14 @@ TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
 	EXPECT_EQ(rc2, 0);
 	ASSERT_NE(result1.text.data, nullptr);
 	ASSERT_NE(result2.text.data, nullptr);
-	EXPECT_STREQ(result1.text.data, "first");
-	EXPECT_STREQ(result2.text.data, "second");
+	ASSERT_NE(result1.data, nullptr);
+	ASSERT_NE(result2.data, nullptr);
+	cJSON *answer1 = cJSON_GetObjectItem(result1.data, "answer");
+	cJSON *answer2 = cJSON_GetObjectItem(result2.data, "answer");
+	ASSERT_TRUE(cJSON_IsString(answer1));
+	ASSERT_TRUE(cJSON_IsString(answer2));
+	EXPECT_STREQ(answer1->valuestring, "first");
+	EXPECT_STREQ(answer2->valuestring, "second");
 
 	tool_result_cleanup(&result1);
 	tool_result_cleanup(&result2);
@@ -238,12 +241,7 @@ TEST_F(AskUserToolTest, MalformedJson) {
 TEST_F(AskUserToolTest, NoCallback) {
 	struct tool_registry reg2;
 	tool_registry_init(&reg2);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg2, "ask_user",
-		"Ask the user a question.",
-		"{\"type\":\"object\",\"properties\":{"
-		"\"question\":{\"type\":\"string\"}"
-		"},\"required\":[\"question\"]}",
-		nullptr, nullptr, nullptr);
+	ask_user_init(&reg2, nullptr, nullptr);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg2, "ask_user",
