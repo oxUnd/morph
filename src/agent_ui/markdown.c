@@ -284,6 +284,30 @@ static int line_is_math_block(const char *line, size_t len)
 	return i + 1 < len && line[i] == '$' && line[i + 1] == '$';
 }
 
+static int line_is_horizontal_rule(const char *line, size_t len)
+{
+	size_t i = skip_indent(line, len);
+	char marker;
+	int count = 0;
+
+	if (i >= len || (line[i] != '-' && line[i] != '*' && line[i] != '_'))
+		return 0;
+	marker = line[i];
+	while (i < len) {
+		if (line[i] == marker) {
+			count++;
+			i++;
+			continue;
+		}
+		if (line[i] == ' ' || line[i] == '\t') {
+			i++;
+			continue;
+		}
+		return 0;
+	}
+	return count >= 3;
+}
+
 static enum markdown_line_kind classify_line(const char *line, size_t len,
 					     int is_fence)
 {
@@ -384,6 +408,17 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 			}
 			goto out;
 		}
+	}
+	if (!was_in_fence && line_is_horizontal_rule(line, len)) {
+		if (out->len > 0 && !*previous_blank) {
+			if (morph_buf_putc(out, '\n') < 0) {
+				rc = -1;
+				goto out;
+			}
+		}
+		*previous_blank = 1;
+		*prev_kind = MD_LINE_BLANK;
+		goto out;
 	}
 	kind = classify_line(line, len, is_fence);
 

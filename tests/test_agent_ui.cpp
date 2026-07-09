@@ -219,6 +219,31 @@ TEST(TestAgentUI, NormalizesCommonMarkdownDeviations)
 	EXPECT_NE(normalized.find("\n```\n"), std::string::npos);
 }
 
+TEST(TestAgentUI, RemovesMarkdownHorizontalRules)
+{
+	char *out = agent_ui_normalize_markdown(
+		"Intro\n\n---\n\nDetails\n  * * *  \nMore\n___\nEnd");
+	ASSERT_NE(out, nullptr);
+	std::string normalized(out);
+	free(out);
+
+	EXPECT_EQ(normalized.find("---"), std::string::npos);
+	EXPECT_EQ(normalized.find("* * *"), std::string::npos);
+	EXPECT_EQ(normalized.find("___"), std::string::npos);
+	EXPECT_NE(normalized.find("Intro\n\nDetails\n\nMore\n\nEnd"),
+		  std::string::npos);
+}
+
+TEST(TestAgentUI, KeepsHorizontalRuleTextInsideFences)
+{
+	char *out = agent_ui_normalize_markdown("```md\n---\n```\nAfter");
+	ASSERT_NE(out, nullptr);
+	std::string normalized(out);
+	free(out);
+
+	EXPECT_NE(normalized.find("```md\n---\n```"), std::string::npos);
+}
+
 TEST(TestAgentUI, NormalizesMarkdownWithoutBreakingLists)
 {
 	char *out = agent_ui_normalize_markdown(
