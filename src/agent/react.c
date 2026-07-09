@@ -362,6 +362,12 @@ static void react_set_state(struct react_context *ctx, enum react_state state)
 		ctx->state = state;
 }
 
+static int react_emit_thinking_event(struct react_context *ctx)
+{
+	return react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.thinking",
+				     "begin", "Thinking...", "");
+}
+
 static void react_set_result(struct react_context *ctx,
 			     enum react_outcome outcome,
 			     int error_code, const char *reason)
@@ -2599,6 +2605,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 
 		react_set_state(ctx, REACT_STATE_THINKING);
+		react_emit_thinking_event(ctx);
 
 		react_output_emit(cb, user_data, REACT_STEP_THOUGHT,
 				  REACT_OUTPUT_STARTED, "", NULL, NULL,
