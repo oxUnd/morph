@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
-> **文档版本**: v0.5
-> **状态**: Updated — 同步代码实际行为（v0.3.0），新增 MCP / 记忆 / 子代理 / 可插拔 Guardrail / FastCGI / BPE Tokenizer
+> **文档版本**: v0.6
+> **状态**: Updated — 同步代码实际行为（v0.3.6），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_write / QuickJS+Wasm3 运行时
 
 ## 0. 术语与缩写
 
@@ -9,14 +9,16 @@
 |------|------|
 | Agent | 本产品运行实体，封装 ReAct 循环、工具与会话 |
 | ReAct | Reasoning + Acting，LLM 输出 Thought/Action，运行时回填 Observation 的循环 |
-| Tool | Agent 可调用的能力单元，包含**内置工具**与**Ext**两类 |
+| Tool | Agent 可调用的能力单元，包含**内置工具**、动态工具、MCP 工具与 Ext |
 | Ext | 用户/社区编写的可热插拔扩展，以 `.so` 或可执行文件形态存在，运行在沙箱中 |
+| Dynamic Tool | Agent 在运行时创建或更新的 QuickJS JavaScript 工具，可为会话级或持久级 |
 | Session | 一段连续对话的上下文集合，持久化在 SQLite |
 | Context Window | 单次 LLM 调用送入的 token 总量 |
 | MVP | Minimum Viable Product，M1 里程碑交付物 |
 | MCP | Model Context Protocol，标准化的远程工具/资源/提示词发现协议 |
 | Sub-agent | 可配置的子代理，拥有独立系统提示、模型和工具限制 |
 | Memory | 长期记忆系统，跨会话保留事实、经历和程序性知识 |
+| Task | 稍后或周期性执行的 Agent 任务，结果写入通知 inbox |
 
 ---
 
@@ -37,6 +39,8 @@
 6. **MCP 集成**：通过 Model Context Protocol 接入远程工具生态
 7. **子代理编排**：可配置专用子代理处理特定领域任务
 8. **长期记忆**：跨会话记忆事实、经历和行为模式
+9. **运行时扩展**：Agent 可通过 QuickJS 动态创建、回滚、提升和删除工具
+10. **后台任务**：一次性或周期性任务到期后重新进入 ReAct loop 执行
 
 ### 1.4 非目标（Non-Goals）
 - 不提供原生 GUI（可选 FastCGI 前端用于 Web API 集成，见 §4.13）
@@ -257,6 +261,34 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 
 > **定位**：FastCGI 前端是可选的 HTTP API 层，用于将 morph agent 集成到 Web 系统。不提供原生 GUI，Web UI 由外部前端实现。
 
+### 4.14 动态 JS 工具
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| QuickJS Runner | `morph-js-runner` 子进程执行 `run(args)` / `async run(args)` | P0 |
+| 工具创建 | `tool_create` 创建或更新会话级动态工具 | P0 |
+| 持久工具 | `tool_promote` 将会话工具提升到 `~/.morph/tools/` | P0 |
+| 历史与回滚 | `tool_history` / `tool_diff` / `tool_rollback` 管理 checkpoint | P0 |
+| 删除工具 | `tool_delete` 删除会话或持久动态工具 | P0 |
+| Host API | 提供 fs / image / canvas / fetch / env / exec / WASM 等受配置约束的能力 | P0 |
+| 配置 Profile | local 默认开放，server 默认收紧，可按能力、路径、命令和网络配置 | P0 |
+
+> 详细运行时语义见 `docs/quickjs-tools.md`。动态工具不是 Node.js 环境，不提供
+> `require()`、`Buffer`、`process`、npm 包或 Node 内置模块。
+
+### 4.15 定时任务与通知
+
+| 功能 | 描述 | 优先级 |
+|------|------|--------|
+| 一次性任务 | `/tasks add <unix_time|+seconds> <prompt>` | P0 |
+| 周期任务 | `/tasks every <seconds> <prompt>` | P0 |
+| 任务管理 | list / show / update / cancel / run | P0 |
+| Inbox | `/inbox list` / `/inbox read` 查看任务结果通知 | P0 |
+| SQLite 持久化 | `scheduled_tasks` 与 `notifications` 表 | P0 |
+| ReAct 执行 | 到期任务以后台输入重新进入 `react_run()`，由 Agent 决定工具调用 | P0 |
+
+> 当前不做独立 daemon、桌面通知、邮件/IM/webhook 投递或自然语言日期解析器。
+
 ---
 
 ## 5. CLI 交互设计
@@ -266,7 +298,7 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 ```text
 $ morph
 
-morph v0.3  |  /help 查看命令
+morph v0.3.6  |  /help 查看命令
 
 [abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
 ⠋ Thinking → 赛博朋克短视频脚本...
@@ -369,6 +401,14 @@ saved 5 messages
 | `/mcp disconnect <server>` | — | 断开 MCP 服务器 | — |
 | `/memory show` | `/mem show` | 查看当前会话记忆 | — |
 | `/memory clear [scope]` | `/mem clear` | 清除记忆（all/facts/episodes/procedures） | `/mem clear facts` |
+| `/tasks list [status]` | — | 查看定时任务 | `/tasks list pending` |
+| `/tasks add <time> <prompt>` | — | 创建一次性任务 | `/tasks add +300 五分钟后提醒我休息` |
+| `/tasks every <seconds> <prompt>` | — | 创建周期任务 | `/tasks every 3600 总结当前项目状态` |
+| `/tasks update <id> <time> <prompt>` | — | 更新任务 | `/tasks update 1 +600 检查构建` |
+| `/tasks cancel <id>` | — | 取消任务 | `/tasks cancel 1` |
+| `/tasks run [limit]` | — | 手动触发 due task 处理 | `/tasks run 3` |
+| `/inbox list [limit]` | — | 查看通知列表 | `/inbox list 10` |
+| `/inbox read <id>` | — | 读取通知 | `/inbox read 1` |
 | `/clear` | `/cl` | 清屏 | — |
 
 > **提示符格式**：`[display_id] $ `，其中 `display_id` 为 4 字符短标识，在创建会话时自动生成，便于快速引用。
@@ -403,8 +443,17 @@ saved 5 messages
 │  ├──────────────────────────────────────┤   │
 │  │ Plan（多步计划管理）                 │   │
 │  ├──────────────────────────────────────┤   │
+│  │ Tasks（定时任务 + 通知 inbox）        │   │
+│  ├──────────────────────────────────────┤   │
+│  │ Dynamic Tools（QuickJS + Host API）  │   │
+│  ├──────────────────────────────────────┤   │
 │  │ Ext Sandbox（seccomp/rlimit/ns）  │   │
 │  └──────────────────────────────────────┘   │
+└────────────────┬────────────────────────────┘
+                 │
+┌────────────────▼────────────────────────────┐
+│  统一事件系统                                │
+│  startup / react / tool / mcp / hitl / artifact / background / error │
 └────────────────┬────────────────────────────┘
                  │
 ┌────────────────▼────────────────────────────┐
@@ -433,10 +482,10 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 #### 6.2.2 终止条件（必须全部实现）
 
 1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
-2. 步数达到 `max_iterations`（默认 10，可配置） → 返回最后一次 Observation 并标记 `aborted`
+2. 步数达到 `max_iterations`（示例配置默认 15，可配置） → 返回最后一次 Observation 并标记 `aborted`
 3. 工具耗时超过 `tool_timeout_seconds` 或工具自己的覆盖值 → 取消该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
-5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（最多 `guardrail_max_retries` 次，默认 1）
+5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（示例配置 `guardrail_max_retries = 2`）
 
 #### 6.2.3 工具失败处理
 
@@ -488,15 +537,16 @@ LLM 调用前:
 |------|------|------|------|
 | 构建系统 | CMake ≥ 3.20 | ✓ | 跨平台 + FetchContent |
 | 编译器 | GCC ≥ 10 / Clang ≥ 14，C11 | ✓ | — |
-| CLI 输入 | readline（GNU）/ editline（BSD） | ✓ | macOS 默认 editline |
+| CLI 输入 | readline（GNU）/ editline（BSD） | 可选 | 找不到时回退 `fgets` |
 | HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
 | JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
 | TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
 | Markdown | md4c v0.5.3 | ✓ | CMake FetchContent 拉取，非 vendor/ 嵌入 |
 | 代码高亮 | 自实现 ANSI 语法高亮 | ✓ | `src/render/highlight.c` |
-| LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | `vendor/mathjax-c` |
+| LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | 依赖 freetype2 / harfbuzz |
 | 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
+| 动态工具图片处理 | libvips + cairo + pangocairo | ✓ | QuickJS Host API 的 image/canvas 能力 |
 | 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
 | Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
 | UTF-8 | sheredom/utf8.h + 项目扩展 | ✓ | vendored header-only + `src/util/utf8.c` |
@@ -505,6 +555,8 @@ LLM 调用前:
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
 | 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |
 | 沙箱（macOS） | sandbox-exec（系统命令） | ✓ | 子进程方式（P2，未实现） |
+| 动态 JS 工具 | QuickJS 2026-06-04 | ✓ | CMake FetchContent，构建 `morph-js-runner` |
+| WASM Host API | wasm3 v0.5.0 | ✓ | CMake FetchContent，供动态 JS 工具使用 |
 | 视频播放 | fork+exec `mpv`（系统二进制） | ✓ | 用户指定 |
 | 抽帧（可选） | ffmpeg（系统二进制） | 可选 | 视频理解本地 fallback |
 | 日志 | 自实现（stderr + rotating file） | ✓ | 见 §9 |
@@ -525,6 +577,12 @@ LLM 调用前:
 ### 6.6 数据持久化（SQLite Schema）
 
 ```sql
+CREATE TABLE schema_migrations (
+	version     INTEGER PRIMARY KEY,
+	name        TEXT NOT NULL,
+	applied_at  INTEGER NOT NULL
+);
+
 CREATE TABLE sessions (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
 	name        TEXT UNIQUE NOT NULL,
@@ -540,6 +598,7 @@ CREATE TABLE messages (
 	session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	role        TEXT NOT NULL,
 	content     TEXT NOT NULL,
+	turn_id     TEXT,
 	token_count INTEGER NOT NULL,
 	compressed  INTEGER DEFAULT 0,
 	created_at  INTEGER NOT NULL
@@ -585,7 +644,7 @@ CREATE TABLE outputs (
 
 CREATE TABLE memory_profiles (
 	session_id  INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-	profile_text TEXT,
+	profile_text TEXT NOT NULL DEFAULT '',
 	updated_at  INTEGER NOT NULL
 );
 
@@ -596,10 +655,10 @@ CREATE TABLE memory_facts (
 	value_text  TEXT NOT NULL,
 	source_text TEXT,
 	confidence  REAL DEFAULT 1.0,
-	category    TEXT,
+	category    TEXT DEFAULT 'general',
 	importance  REAL DEFAULT 0.5,
-	is_current  INTEGER DEFAULT 1,
-	valid_from  INTEGER,
+	is_current  INTEGER NOT NULL DEFAULT 1,
+	valid_from  INTEGER NOT NULL,
 	valid_to    INTEGER,
 	superseded_by INTEGER,
 	created_at  INTEGER NOT NULL,
@@ -612,7 +671,7 @@ CREATE TABLE memory_episodes (
 	task_type    TEXT,
 	summary_text TEXT NOT NULL,
 	outcome_text TEXT,
-	success      INTEGER,
+	success      INTEGER NOT NULL DEFAULT 1,
 	entities     TEXT,
 	key_decisions TEXT,
 	artifacts    TEXT,
@@ -626,17 +685,74 @@ CREATE TABLE memory_procedures (
 	session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	rule_text    TEXT NOT NULL,
 	trigger_text TEXT,
-	evidence_count INTEGER DEFAULT 1,
+	evidence_count INTEGER NOT NULL DEFAULT 1,
 	updated_at   INTEGER NOT NULL,
 	UNIQUE(session_id, rule_text)
 );
 
+CREATE TABLE scheduled_tasks (
+	id                INTEGER PRIMARY KEY AUTOINCREMENT,
+	source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+	latest_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+	title             TEXT NOT NULL,
+	kind              TEXT NOT NULL,
+	status            TEXT NOT NULL,
+	trigger_type      TEXT NOT NULL,
+	next_run_at       INTEGER NOT NULL,
+	interval_seconds  INTEGER NOT NULL DEFAULT 0,
+	timeout_at        INTEGER NOT NULL DEFAULT 0,
+	attempts          INTEGER NOT NULL DEFAULT 0,
+	max_attempts      INTEGER NOT NULL DEFAULT 0,
+	action_type       TEXT NOT NULL,
+	payload_json      TEXT,
+	policy_json       TEXT,
+	notify_json       TEXT,
+	last_error        TEXT,
+	created_at        INTEGER NOT NULL,
+	updated_at        INTEGER NOT NULL
+);
+
+CREATE TABLE notifications (
+	id              INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id         INTEGER REFERENCES scheduled_tasks(id) ON DELETE SET NULL,
+	session_id      INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+	level           TEXT NOT NULL,
+	title           TEXT NOT NULL,
+	body            TEXT NOT NULL,
+	created_at      INTEGER NOT NULL,
+	read_at         INTEGER NOT NULL DEFAULT 0,
+	delivery_status TEXT NOT NULL
+);
+
+CREATE TABLE credit_events (
+	id             INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id        TEXT,
+	session_id     TEXT,
+	kind           TEXT NOT NULL,
+	provider       TEXT,
+	model          TEXT,
+	input_tokens   INTEGER NOT NULL DEFAULT 0,
+	output_tokens  INTEGER NOT NULL DEFAULT 0,
+	image_units    INTEGER NOT NULL DEFAULT 0,
+	video_seconds  INTEGER NOT NULL DEFAULT 0,
+	estimated_cost REAL NOT NULL DEFAULT 0,
+	currency       TEXT NOT NULL DEFAULT 'USD',
+	credits        INTEGER NOT NULL DEFAULT 0,
+	metadata_json  TEXT,
+	created_at     INTEGER NOT NULL
+);
+
 CREATE INDEX idx_messages_session  ON messages(session_id, created_at);
+CREATE INDEX idx_messages_session_order ON messages(session_id, created_at, id);
 CREATE INDEX idx_traces_session    ON react_traces(session_id, round_no);
 CREATE INDEX idx_outputs_session   ON outputs(session_id, created_at);
-CREATE INDEX idx_memory_facts_session_key ON memory_facts(session_id, key_name);
+CREATE INDEX idx_memory_facts_session_key ON memory_facts(session_id, key_name, is_current, updated_at);
 CREATE INDEX idx_memory_episodes_session  ON memory_episodes(session_id, created_at);
-CREATE INDEX idx_memory_procedures_session ON memory_procedures(session_id);
+CREATE INDEX idx_memory_procedures_session ON memory_procedures(session_id, updated_at);
+CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks(status, next_run_at);
+CREATE INDEX idx_notifications_unread ON notifications(read_at, created_at);
+CREATE INDEX idx_credit_events_user_day ON credit_events(user_id, created_at);
+CREATE INDEX idx_credit_events_session ON credit_events(session_id, created_at);
 ```
 
 ### 6.7 配置文件 Schema
@@ -660,23 +776,34 @@ max_tokens = 4096
 timeout_seconds = 300
 
 [model.image]
-provider = "openai"
-model = "dall-e-3"
-api_key_env = "OPENAI_API_KEY"
+provider = "volcengine"
+model = "doubao-seedream-5-0-260128"
+api_base = "https://ark.cn-beijing.volces.com/api/v3"
+api_key_env = "VOLCENGINE_API_KEY"
 
 [model.video]
 provider = "volcengine"
-model = "doubao-seedream"
+model = ""
+api_base = "https://ark.cn-beijing.volces.com/api/v3"
 api_key_env = "VOLCENGINE_API_KEY"
 poll_interval_seconds = 5
 poll_timeout_seconds = 600
 
+[credits]
+daily_limit = -1
+currency = "CNY"
+cost_to_credit_coef = 1000.0
+input_token_credit_coef = 0.0
+output_token_credit_coef = 0.0
+image_unit_credit_coef = 0.0
+video_second_credit_coef = 0.0
+
 [react]
-max_iterations = 10
+max_iterations = 15
 tool_timeout_seconds = 300
 tool_max_retries = 3
-guardrail_enabled = true
-guardrail_max_retries = 1
+guardrail_enabled = false
+guardrail_max_retries = 2
 guardrail_max_empty_rounds = 2
 disabled_tools = []
 
@@ -720,26 +847,53 @@ enabled = true
 hot_path_enabled = true
 cold_path_enabled = true
 llm_extract_enabled = true
-max_facts = 100
-max_episodes = 50
-max_procedures = 30
-max_context_chars = 4000
+max_facts = 6
+max_episodes = 4
+max_procedures = 4
+max_context_chars = 3000
 
 [render]
 prefer_image_protocol = "auto"
 mpv_args = "--really-quiet"
 
-[skill]
-dir = "~/.morph/skills"
+[ext]
+dir = "~/.morph/exts"
+default_max_memory_mb = 128
+default_max_cpu_seconds = 30
+
+[dynamic_tools]
+enabled = true
+runtime = "quickjs"
+mode = "local"              # local | server
+session_dir = "~/.morph/runtime/tools"
+persistent_dir = "~/.morph/tools"
+default_lifetime = "session"
+create_requires_approval = false
+promote_requires_approval = true
+max_source_bytes = 262144
+default_timeout_seconds = 30
+default_max_output_bytes = 1048576
+
+[dynamic_tools.local]
+default_capabilities = ["fs_read", "fs_write", "network", "process", "env", "mcp", "model", "shell", "image", "wasm"]
+allowed_read_paths = ["*"]
+allowed_write_paths = ["*"]
+allowed_commands = ["*"]
+allowed_network = ["*"]
+
+[dynamic_tools.server]
+default_capabilities = []
+allowed_read_paths = []
+allowed_write_paths = []
+allowed_commands = []
+allowed_network = []
 
 [prompt]
 system_prompt_file = ""
 system_prompt_dir = ""
 
-[ext]
-dir = "~/.morph/exts"
-default_max_memory_mb = 128
-default_max_cpu_seconds = 30
+[skill]
+dir = ""
 
 # MCP 服务器配置
 # [[mcp.servers]]
@@ -775,8 +929,8 @@ default_max_cpu_seconds = 30
 
 > **默认值说明**：
 > - `tool_timeout_seconds` 默认 300（工具调用默认墙钟时间；工具参数或专用配置可覆盖）
-> - `guardrail_enabled` 默认 true
-> - `guardrail_max_retries` 默认 1
+> - `guardrail_enabled` 示例配置默认 false；开启后才执行输出质量 guardrail
+> - `guardrail_max_retries` 默认 2
 > - `timeout_seconds`（text model）默认 300
 > - video provider 默认 volcengine
 
@@ -786,247 +940,69 @@ default_max_cpu_seconds = 30
 
 ```
 morph/
-├── CMakeLists.txt
+├── CMakeLists.txt              # 顶层构建，FetchContent: md4c / googletest / QuickJS / wasm3
 ├── README.md
-├── REQUIREMENTS.md
+├── docs/
+│   ├── REQUIREMENTS.md
+│   ├── event-system.md
+│   ├── quickjs-tools.md
+│   └── scheduled-tasks.md
 ├── AGENTS.md
 ├── config.toml.example
-├── exts/
-│   ├── demo-upper/
-│   │   ├── manifest.toml
-│   │   ├── upper.c
-│   │   └── README.md
-│   ├── demo-translate/
-│   │   ├── manifest.toml
-│   │   ├── translate.sh
-│   │   └── README.md
-│   ├── demo-guardrail-pii/
-│   │   ├── manifest.toml
-│   │   ├── pii_check.c
-│   │   └── README.md
-│   └── web-fetch/
-│       ├── manifest.toml
-│       ├── web-fetch.ts
-│       ├── web-fetch.sh
-│       └── package.json
-├── skills/
-│   └── code-review/
-│       └── SKILL.md
+├── exts/                       # 示例 Ext：demo-upper / demo-translate / file-write / guardrail 等
+├── skills/                     # 示例 Skill：morph-creation / morph-usage 等
 ├── misc/
 │   └── demo.png
 ├── src/
 │   ├── CMakeLists.txt
 │   ├── main.c
-│   ├── cli.c
-│   ├── cli.h
 │   ├── config.c
 │   ├── config.h
 │   ├── session.c
 │   ├── session.h
 │   ├── vendor_toml_compat.h
+│   ├── cli/                    # CLI core/init/run/output/events + commands/*
+│   ├── event/                  # 统一事件系统
 │   ├── render/
-│   │   ├── CMakeLists.txt
-│   │   ├── markdown.c
-│   │   ├── markdown.h
-│   │   ├── highlight.c
-│   │   ├── highlight.h
-│   │   ├── image.c
-│   │   ├── image.h
-│   │   ├── video.c
-│   │   └── video.h
+│   │   ├── markdown.c / highlight.c / image.c / video.c
 │   ├── agent/
-│   │   ├── CMakeLists.txt
-│   │   ├── react.c
-│   │   ├── react.h
-│   │   ├── context.c
-│   │   ├── context.h
-│   │   ├── compress.c
-│   │   ├── compress.h
-│   │   ├── tokenizer.c
-│   │   ├── tokenizer.h
-│   │   ├── tool.c
-│   │   ├── tool.h
-│   │   ├── tool_context.c
-│   │   ├── tool_context.h
-│   │   ├── guardrail.c
-│   │   ├── guardrail.h
-│   │   ├── plan.c
-│   │   ├── plan.h
-│   │   ├── memory.c
-│   │   ├── memory.h
-│   │   ├── sub_agent.c
-│   │   ├── sub_agent.h
+│   │   ├── react.c / context.c / compress.c / tokenizer.c
+│   │   ├── tool.c / tool_context.c / tool_runtime.c
+│   │   ├── guardrail.c / plan.c / memory.c / sub_agent.c / turn.c
 │   │   ├── system_prompt.h
 │   │   └── tools/
-│   │       ├── CMakeLists.txt
-│   │       ├── runtime_query.c
-│   │       ├── runtime_query.h
-│   │       ├── img_gen.c
-│   │       ├── img_gen.h
-│   │       ├── img_inpaint.c
-│   │       ├── img_inpaint.h
-│   │       ├── img_compose.c
-│   │       ├── img_compose.h
-│   │       ├── img_info.c
-│   │       ├── img_info.h
-│   │       ├── img_resize.c
-│   │       ├── img_resize.h
-│   │       ├── img_convert.c
-│   │       ├── img_convert.h
-│   │       ├── img_annotate.c
-│   │       ├── img_annotate.h
-│   │       ├── vid_gen.c
-│   │       ├── vid_gen.h
-│   │       ├── file_read.c
-│   │       ├── file_read.h
-│   │       ├── file_list.c
-│   │       ├── file_list.h
-│   │       ├── file_info.c
-│   │       ├── file_info.h
-│   │       ├── bash_exec.c
-│   │       ├── bash_exec.h
-│   │       ├── skill_activate.c
-│   │       ├── skill_activate.h
-│   │       ├── plan.c
-│   │       ├── plan.h
-│   │       ├── ask_user.c
-│   │       ├── ask_user.h
-│   │       ├── sub_agent_tools.c
-│   │       └── sub_agent_tools.h
-│   ├── skill/
-│   │   ├── CMakeLists.txt
-│   │   ├── skill.c
-│   │   ├── skill.h
-│   │   ├── skill_parse.c
-│   │   └── skill_parse.h
-│   ├── sandbox/
-│   │   ├── CMakeLists.txt
-│   │   ├── sandbox.c
-│   │   ├── sandbox.h
-│   │   ├── loader.c
-│   │   └── loader.h
-│   ├── ext/
-│   │   ├── CMakeLists.txt
-│   │   ├── ext.c
-│   │   ├── ext.h
-│   │   ├── manifest.c
-│   │   └── manifest.h
-│   ├── ipc/
-│   │   ├── CMakeLists.txt
-│   │   ├── jsonrpc.c
-│   │   └── jsonrpc.h
-│   ├── mcp/
-│   │   ├── CMakeLists.txt
-│   │   ├── mcp.h
-│   │   ├── mcp_client.c
-│   │   ├── mcp_http.c
-│   │   └── mcp_stdio.c
-│   ├── models/
-│   │   ├── CMakeLists.txt
-│   │   ├── llm.c
-│   │   ├── llm.h
-│   │   ├── image_gen.c
-│   │   ├── image_gen.h
-│   │   ├── video_gen.c
-│   │   └── video_gen.h
-│   ├── http/
-│   │   ├── CMakeLists.txt
-│   │   ├── client.c
-│   │   ├── client.h
-│   │   ├── sse.c
-│   │   └── sse.h
-│   ├── db/
-│   │   ├── CMakeLists.txt
-│   │   ├── database.c
-│   │   └── database.h
-│   ├── fastcgi/
-│   │   ├── CMakeLists.txt
-│   │   ├── README.md
-│   │   ├── PATCHES.md
-│   │   ├── main.c
-│   │   ├── router.c
-│   │   ├── router.h
-│   │   ├── session_store.c
-│   │   ├── session_store.h
-│   │   ├── auth.c
-│   │   ├── auth.h
-│   │   ├── fcgi_io.c
-│   │   ├── fcgi_io.h
-│   │   ├── event_sink.c
-│   │   ├── event_sink.h
-│   │   ├── action_pump.c
-│   │   ├── action_pump.h
-│   │   ├── agent_bridge.c
-│   │   └── handlers/
-│   │       ├── handlers.h
-│   │       ├── health.c
-│   │       ├── sessions.c
-│   │       ├── turns.c
-│   │       ├── canvas.c
-│   │       ├── actions.c
-│   │       └── events.c
+│   │       ├── img_gen.c / img_qa.c / img_inpaint.c / img_compose.c
+│   │       ├── img_info.c / img_resize.c / img_convert.c / img_annotate.c
+│   │       ├── vid_gen.c / file_read.c / file_list.c / file_info.c
+│   │       ├── config_write.c / bash_exec.c / skill_activate.c / plan.c
+│   │       ├── ask_user.c / sub_agent_tools.c / scheduled_tasks.c
+│   │       └── runtime_query.c / dynamic_tools.c
+│   ├── skill/                  # Skill 发现、解析、激活
+│   ├── sandbox/                # seccomp/rlimit sandbox + loader
+│   ├── ext/                    # Ext manifest、加载、安装
+│   ├── ipc/                    # JSON-RPC
+│   ├── mcp/                    # MCP stdio + Streamable HTTP
+│   ├── models/                 # llm / image_gen / video_gen
+│   ├── http/                   # libcurl client + SSE
+│   ├── db/                     # SQLite schema + scheduled_task
+│   ├── persistence/            # memory_store / credit_store
+│   ├── credits/                # credit accounting
+│   ├── fastcgi/                # 可选 HTTP API 前端
+│   ├── agent_ui/               # Agent UI tags / markdown
+│   ├── js_runner/              # QuickJS 动态工具 runner
 │   └── util/
-│       ├── CMakeLists.txt
-│       ├── arena.c
-│       ├── arena.h
-│       ├── file.c
-│       ├── file.h
-│       ├── log.c
-│       ├── log.h
-│       ├── spin.c
-│       ├── spin.h
-│       ├── utf8.c
-│       ├── utf8.h
-│       ├── base64.c
-│       ├── base64.h
-│       ├── image_util.c
-│       ├── image_util.h
-│       ├── error.c
-│       ├── error.h
-│       ├── bpe.c
-│       └── bpe.h
+│       ├── arena / buf / array / str / strmap / queue / utf8 / error
+│       └── file / log / spin / base64 / image_util / bpe / id / cancel
 ├── vendor/
-│   ├── cJSON.c
-│   ├── cJSON.h
-│   ├── toml.c
-│   ├── toml.h
-│   ├── stb_image.h
-│   ├── stb_image_write.h
-│   ├── stb_image_resize2.h
-│   ├── sheredom_utf8.h
+│   ├── cJSON.c/h, toml.c/h, stb_image*.h, sheredom_utf8.h, re.c/h
+│   ├── mathjax-c/
 │   └── tiktoken/
 │       ├── cl100k_base.tiktoken
 │       └── o200k_base.tiktoken
 └── tests/
-    ├── CMakeLists.txt
-    ├── test_arena.cpp
-    ├── test_log.cpp
-    ├── test_spin.cpp
-    ├── test_sse.cpp
-    ├── test_database.cpp
-    ├── test_tool.cpp
-    ├── test_context.cpp
-    ├── test_config.cpp
-    ├── test_file.cpp
-    ├── test_tokenizer.cpp
-    ├── test_session.cpp
-    ├── test_http.cpp
-    ├── test_runtime_query.cpp
-    ├── test_image.cpp
-    ├── test_compress.cpp
-    ├── test_react.cpp
-    ├── test_markdown.cpp
-    ├── test_skill.cpp
-    ├── test_bash_exec.cpp
-    ├── test_render.cpp
-    ├── test_memory.cpp
-    ├── test_mcp.cpp
-    ├── test_ask_user.cpp
-    ├── test_sandbox.cpp
-    ├── test_tool_context.cpp
-    ├── test_sub_agent.cpp
+    ├── test_*.cpp             # GoogleTest 单元/集成测试
     ├── systest.sh
-    └── test_ext_demo.c
+    └── test_ext_demo.c        # 示例源文件，不进入 CMake test build
 ```
 
 ### 6.9 关键接口设计
@@ -1286,29 +1262,67 @@ const char *react_state_name(enum react_state state);
 #### 6.9.2 工具系统
 
 ```c
-#define TOOL_NAME_MAX 64
-#define TOOL_DESC_MAX 512
-#define TOOL_ARGS_SPEC_MAX 1024
+#define TOOL_NAME_MAX 512
+#define TOOL_DESC_MAX 8192
+#define TOOL_SCHEMA_MAX 8192
 #define TOOL_MAX_ENTRIES 64
 #define TOOL_DISABLED_MAX 32
 
 #define TOOL_FLAG_READONLY 0x01
+#define TOOL_FLAG_INTERNAL_APPROVAL 0x02
+#define TOOL_FLAG_DYNAMIC 0x04
+
+enum tool_origin {
+	TOOL_ORIGIN_BUILTIN,
+	TOOL_ORIGIN_DYNAMIC_SESSION,
+	TOOL_ORIGIN_DYNAMIC_PERSISTENT,
+	TOOL_ORIGIN_MCP,
+	TOOL_ORIGIN_EXT,
+};
 
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
-	char desc[TOOL_DESC_MAX];
-	char args_spec[TOOL_ARGS_SPEC_MAX];
+	char description[TOOL_DESC_MAX];
+	char input_schema[TOOL_SCHEMA_MAX];
+	char output_schema[TOOL_SCHEMA_MAX];
 };
 
-typedef int (*tool_exec_fn)(const char *args_json, char **result_json, void *user_data);
+struct tool_result {
+	cJSON *envelope;
+	morph_str_t text;
+	char *owned;
+	cJSON *data;
+	cJSON *ui;
+	cJSON *meta;
+	struct tool_artifact_list artifacts;
+};
+
+typedef int (*tool_exec_fn)(const char *args_json,
+			    struct tool_result *result,
+			    void *user_data);
 typedef void (*tool_user_data_destroy_fn)(void *user_data);
+
+struct tool_spec {
+	enum tool_origin origin;
+	const char *name;
+	const char *description;
+	const char *input_schema;
+	const char *output_schema;
+	tool_exec_fn exec;
+	void *user_data;
+	tool_user_data_destroy_fn user_data_destroy;
+	unsigned int flags;
+	int timeout_seconds;
+};
 
 struct tool_entry {
 	struct tool_desc desc;
 	tool_exec_fn exec;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
-	unsigned int flags;		/* TOOL_FLAG_READONLY 等 */
+	enum tool_origin origin;
+	unsigned int flags;
+	int timeout_seconds;
 };
 
 struct tool_registry {
@@ -1316,20 +1330,27 @@ struct tool_registry {
 	int count;
 	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
 	int disabled_count;
+	morph_strmap_t by_name;
+	morph_strmap_t disabled_by_name;
 };
 
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
-int tool_register(struct tool_registry *reg, const char *name, const char *desc,
-		  const char *args_spec, tool_exec_fn exec, void *user_data,
-		  tool_user_data_destroy_fn user_data_destroy);
+const char *tool_origin_name(enum tool_origin origin);
+int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
+int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
 int tool_exec(struct tool_registry *reg, const char *name,
-	      const char *args_json, char **result_json);
+	      const char *args_json, struct tool_result *result);
+int tool_set_timeout(struct tool_registry *reg, const char *name,
+		     int timeout_seconds);
+int tool_timeout_seconds(struct tool_registry *reg, const char *name);
 void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(struct tool_registry *reg, const char *name);
 int tool_is_readonly(struct tool_registry *reg, const char *name);
+int tool_has_flag(struct tool_registry *reg, const char *name,
+		  unsigned int flag);
 ```
 
 #### 6.9.3 模型接口
@@ -1339,12 +1360,37 @@ struct arena;
 
 typedef int (*sse_callback)(const char *token, void *user_data);
 
+enum llm_stream_kind {
+	LLM_STREAM_CONTENT,
+	LLM_STREAM_REASONING,
+};
+
+typedef int (*llm_stream_callback)(enum llm_stream_kind kind,
+				   const char *token, void *user_data);
+
 struct tool_desc;
 
 struct tool_call {
 	char id[128];
+	char tool_call_id[128];
 	char name[64];
 	char *arguments;
+};
+
+struct model_usage {
+	char provider[32];
+	char model[128];
+	char kind[32];
+	char response_id[128];
+	char finish_reason[64];
+	int64_t input_tokens;
+	int64_t output_tokens;
+	int64_t total_tokens;
+	int64_t cached_tokens;
+	int64_t reasoning_tokens;
+	int64_t image_tokens;
+	int64_t image_units;
+	int64_t video_seconds;
 };
 
 struct chat_message {
@@ -1359,7 +1405,19 @@ struct chat_response {
 	char *content;
 	struct tool_call *tool_calls;
 	int tool_call_count;
+	struct model_usage usage;
 	struct arena *arena;
+};
+
+struct model_chat_options {
+	int max_tokens;
+	long timeout_seconds;
+};
+
+struct model_image_chat_options {
+	int max_tokens;
+	long timeout_seconds;
+	int max_dim;
 };
 
 struct model {
@@ -1368,6 +1426,7 @@ struct model {
 	char api_base[256];
 	char api_key[256];
 	char model_id[128];
+	char last_error[512];
 	int context_limit;
 	int max_tokens;		/* 单次响应最大生成 token 数 */
 	long timeout_seconds;
@@ -1375,6 +1434,7 @@ struct model {
 	int (*chat)(struct model *self, struct arena *arena,
 		    const char *system_prompt,
 		    const char **messages, int n,
+		    const struct model_chat_options *opts,
 		    sse_callback cb, void *user_data);
 	int (*chat_with_tools)(struct model *self, struct arena *arena,
 			       const char *system_prompt,
@@ -1382,6 +1442,19 @@ struct model {
 			       struct tool_desc *tools, int tool_count,
 			       struct chat_response *response,
 			       sse_callback thought_cb, void *thought_ud);
+	int (*chat_with_tools_stream)(struct model *self, struct arena *arena,
+				      const char *system_prompt,
+				      struct chat_message *messages, int msg_count,
+				      struct tool_desc *tools, int tool_count,
+				      struct chat_response *response,
+				      llm_stream_callback stream_cb,
+				      void *stream_ud);
+	int (*chat_with_image)(struct model *self, struct arena *arena,
+			       const char *system_prompt,
+			       const char *prompt,
+			       const char *image_path,
+			       const struct model_image_chat_options *opts,
+			       sse_callback cb, void *user_data);
 	int (*generate)(struct model *self, const char *prompt,
 			const char *out_path);
 	void (*destroy)(struct model *self);
@@ -1403,6 +1476,7 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | credits | 查询积分用量、限制和总积分 | — | SQLite | 内置 | 是 |
 | memory | 按 scope/type 查询长期记忆 | scope, type, max_episodes | SQLite | 内置 | 是 |
 | img_gen | 图片生成 | prompt, style, size, reference_image | DALL-E / SD / Volcengine | 内置 | 否 |
+| img_qa | 图片问答/理解 | file_path, question, max_tokens, max_dim | 多模态 LLM（`[model.text]`） | 内置 | 是 |
 | img_inpaint | 区域生成(bbox+label) | annotation, prompt | 图像模型 i2i (确定性百分比指令) | 内置 | 否 |
 | img_compose | 跨图融合(arrow+label) | annotation, prompt | 本地预合成 + 图像模型 i2i | 内置 | 否 |
 | img_resize | 图片缩放 | file_path, width, height | stb_image_resize2 | 内置 | 否 |
@@ -1413,10 +1487,19 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 | 是 |
 | file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
 | file_info | 文件元数据 | path | 本地 | 内置 | 是 |
+| config_write | 经审批和 TOML 校验后写入当前配置文件 | patch/append, reason | 本地 | 内置 | 否 |
 | bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
 | plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
 | ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
 | skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
+| scheduled_tasks | 创建/管理定时 Agent 任务 | action, time, prompt | SQLite + ReAct | 内置 | 否 |
+| runtime_query | 查询运行时信息/上下文 | query | 本地 | 内置 | 是 |
+| tool_create | 创建或更新 QuickJS 动态工具 | name, description, args_schema, source_js | QuickJS | 动态工具管理 | 否 |
+| tool_promote | 提升会话动态工具为持久工具 | name | 本地 | 动态工具管理 | 否 |
+| tool_delete | 删除动态工具 | name | 本地 | 动态工具管理 | 否 |
+| tool_history | 查询动态工具 checkpoint | name, limit | 本地 | 动态工具管理 | 是 |
+| tool_diff | 查看 checkpoint 与当前版本差异 | name, checkpoint_id | 本地 | 动态工具管理 | 是 |
+| tool_rollback | 回滚动态工具 checkpoint | name, checkpoint_id | 本地 | 动态工具管理 | 否 |
 | agent_delegate | 异步委派子代理任务 | agent_name, task | 本地 | 子代理 | 否 |
 | agent_status | 查询子任务状态 | task_id | 本地 | 子代理 | 是 |
 | agent_sync | 同步调用子代理 | agent_name, task | 本地 | 子代理 | 否 |
@@ -1523,6 +1606,11 @@ struct ext_manifest {
 	char type[16];			/* "so" 或 "exec" */
 	enum ext_purpose purpose;
 	char entry[128];		/* exec 可执行文件名; so 符号名 */
+	char **fronts;
+	int fronts_count;
+	char **categories;
+	int categories_count;
+	char build_command[512];
 	char hook[32];			/* Guardrail hook 点 */
 	char action_text[512];		/* Guardrail 失败时的修正指导 */
 	unsigned int permissions;
@@ -1533,7 +1621,7 @@ struct ext_manifest {
 	int max_memory_mb;
 	int max_cpu_seconds;
 	int max_open_files;
-	char *args_schema;
+	char *input_schema;
 	char *output_schema;
 };
 
@@ -1551,6 +1639,9 @@ int ext_load(struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
 int ext_run(struct ext *ex, const char *args_json, char **result_json);
 void ext_user_data_destroy(void *user_data);
+void ext_manifest_cleanup(struct ext_manifest *m);
+int ext_manifest_supports_front(const struct ext_manifest *m,
+				const char *front);
 ```
 
 #### 6.9.7 Ext ↔ 主进程 IPC
@@ -2465,6 +2556,15 @@ enum morph_error {
 | `test_tool.cpp` | 工具注册表 |
 | `test_context.cpp` | 上下文管理 |
 | `test_config.cpp` | 配置解析 |
+| `test_config_write.cpp` | 配置写入工具 |
+| `test_credits.cpp` | 积分计费 |
+| `test_error.cpp` | 错误码与错误文本 |
+| `test_event.cpp` | 统一事件系统 |
+| `test_agent_turn.cpp` | Agent turn 封装 |
+| `test_agent_ui.cpp` | Agent UI 标签与 Markdown |
+| `test_dynamic_tools.cpp` | QuickJS 动态工具 |
+| `test_ext.cpp` | Ext 解析、加载与安装 |
+| `test_fastcgi_security.cpp` | FastCGI 安全检查 |
 | `test_file.cpp` | 文件工具 |
 | `test_tokenizer.cpp` | Token 计数 |
 | `test_session.cpp` | 会话管理 |
@@ -2483,6 +2583,9 @@ enum morph_error {
 | `test_sandbox.cpp` | 沙箱机制 |
 | `test_tool_context.cpp` | 工具执行上下文 |
 | `test_sub_agent.cpp` | 子代理系统 |
+| `test_plan.cpp` | Plan 子系统 |
+| `test_scheduled_task.cpp` | 定时任务与通知 |
+| `test_util_containers.cpp` | `morph_buf` / `morph_array` / `morph_strmap` 等基础容器 |
 | `systest.sh` | 端到端系统测试 |
 | `test_ext_demo.c` | Ext demo（未纳入 CMake 构建） |
 
@@ -2520,12 +2623,12 @@ enum morph_error {
 |--------|------|--------|------|
 | **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
 | **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
-| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.0） |
-| M4 / V0.4 | W11–W13 | Ext 沙箱完善（seccomp+rlimit+landlock）+ install/enable/disable + macOS sandbox-exec | 进行中 |
+| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.6） |
+| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS sandbox-exec | 进行中 |
 | M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | 待开始 |
 | M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | 待开始 |
 
-> **M3 提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端（新增需求）。
+> **M3/M4 已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具。
 
 ---
 
