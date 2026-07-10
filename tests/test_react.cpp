@@ -9,6 +9,7 @@
 #include "http/sse.h"
 #include "config.h"
 #include "util/error.h"
+#include "util/utf8.h"
 #include <string.h>
 #include <signal.h>
 #include <cstdlib>
@@ -370,6 +371,57 @@ static struct model *create_mock_streaming_llm(const char *response)
 {
 	struct model *m = create_mock_llm(response);
 	m->chat = mock_llm_streaming_chat;
+	return m;
+}
+
+struct direct_stream_data {
+	const char **chunks;
+	int chunk_count;
+	const char *content;
+};
+
+static int direct_stream_chat_with_tools(struct model *self,
+					 struct arena *arena,
+					 const char *system_prompt,
+					 struct chat_message *messages,
+					 int msg_count,
+					 struct tool_desc *tools,
+					 int tool_count,
+					 struct chat_response *response,
+					 llm_stream_callback stream_cb,
+					 void *stream_ud)
+{
+	(void)arena;
+	(void)system_prompt;
+	(void)messages;
+	(void)msg_count;
+	(void)tools;
+	(void)tool_count;
+	struct direct_stream_data *data =
+		(struct direct_stream_data *)self->handle;
+	for (int i = 0; i < data->chunk_count; i++) {
+		int rc = stream_cb(LLM_STREAM_CONTENT, data->chunks[i], stream_ud);
+		if (rc != 0)
+			return rc;
+	}
+	memset(response, 0, sizeof(*response));
+	response->content = strdup(data->content);
+	return 200;
+}
+
+static struct model *create_direct_stream_llm(const char **chunks,
+					      int chunk_count,
+					      const char *content)
+{
+	struct model *m = create_mock_llm(content);
+	m->chat_with_tools_stream = direct_stream_chat_with_tools;
+	struct direct_stream_data *data =
+		(struct direct_stream_data *)calloc(1, sizeof(*data));
+	data->chunks = chunks;
+	data->chunk_count = chunk_count;
+	data->content = content;
+	free(m->handle);
+	m->handle = data;
 	return m;
 }
 
@@ -1328,6 +1380,89 @@ static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 	return true;
 }
 
+static bool event_recorder_named_text_valid_utf8(struct morph_event_recorder *rec,
+						 const char *name)
+{
+	bool seen = false;
+
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		if (utf8valid(json) != nullptr)
+			return false;
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			return false;
+		cJSON *name_item = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *text = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "text") : nullptr;
+		bool matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		if (matched) {
+			seen = true;
+			if (cJSON_IsString(text) &&
+			    utf8valid(text->valuestring) != nullptr) {
+				cJSON_Delete(root);
+				return false;
+			}
+		}
+		cJSON_Delete(root);
+	}
+	return seen;
+}
+
+TEST_F(MockLlmTest, StreamsFinalDeltaAfterFinalSectionMarker) {
+	const char *chunks[] = {
+		"Thought: reviewing the answer\nFi",
+		"nal: streamed answer"
+	};
+	llm = create_direct_stream_llm(chunks, 2, "streamed answer");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb, &rec));
+
+	int rc = react_run(ctx, "stream final", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.delta"));
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 1);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, StreamingDeltasDoNotSplitUtf8Codepoints) {
+	const char *chunks[] = {
+		"Thought: \xE5\x8D",
+		"\x95词释义\nFi",
+		"nal: 答案是\xE8\x8B",
+		"\xB9果"
+	};
+	llm = create_direct_stream_llm(chunks, 4, "答案是苹果");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb, &rec));
+
+	int rc = react_run(ctx, "stream utf8", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
+							"react.thought.delta"));
+	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
+							"react.final.delta"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *responses[] = {
@@ -1354,6 +1489,7 @@ TEST_F(MockLlmTest, EmitsStructuredToolEvents) {
 	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.result"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.turn.end"));
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
 	EXPECT_LT(event_recorder_index_name(&rec, "tool.call"),
 		  event_recorder_index_name(&rec, "tool.running"));
 	EXPECT_LT(event_recorder_index_name(&rec, "tool.running"),

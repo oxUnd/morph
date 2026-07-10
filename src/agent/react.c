@@ -1322,27 +1322,203 @@ struct react_stream_data {
 	char *accumulated;
 	size_t acc_len;
 	size_t acc_cap;
+	size_t emitted_len;
+	int in_final;
 };
 
-static const char *react_preview_final_delta(const char *token)
+static int react_final_marker_len(const char *p)
 {
-	if (!token)
-		return "";
+	if (strncmp(p, "Final:", 6) == 0)
+		return 6;
+	if (strncmp(p, "Final answer:", 13) == 0)
+		return 13;
+	if (strncmp(p, "Final Answer:", 13) == 0)
+		return 13;
+	return 0;
+}
 
-	if (strncmp(token, "Final:", 6) == 0)
-		return token + 6;
-	if (strncmp(token, "Final answer:", 13) == 0)
-		return token + 13;
-	if (strncmp(token, "Final Answer:", 13) == 0)
-		return token + 13;
-	return token;
+static int react_is_line_start(const char *base, const char *p)
+{
+	if (p == base)
+		return 1;
+	return p > base && (p[-1] == '\n' || p[-1] == '\r');
+}
+
+static const char *react_find_final_marker(const char *base, const char *from,
+					   int *marker_len)
+{
+	const char *p = from;
+
+	while (p && *p) {
+		const char *line = p;
+		while (*line == ' ' || *line == '\t')
+			line++;
+		if (react_is_line_start(base, p)) {
+			int len = react_final_marker_len(line);
+			if (len > 0) {
+				*marker_len = (int)(line - p) + len;
+				return p;
+			}
+		}
+		p = strchr(p, '\n');
+		if (p)
+			p++;
+	}
+	return NULL;
+}
+
+static int react_emit_thought_delta(struct react_stream_data *sd,
+				    const char *text, size_t len)
+{
+	char *delta;
+
+	if (len == 0)
+		return 0;
+	delta = arena_alloc(sd->arena, len + 1);
+	if (!delta)
+		return -ENOMEM;
+	memcpy(delta, text, len);
+	delta[len] = '\0';
+	react_output_emit(sd->user_cb, sd->user_data, REACT_STEP_THOUGHT,
+			  REACT_OUTPUT_DELTA, delta, NULL, NULL, NULL, 0,
+			  NULL, NULL, NULL);
+	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
+			      "react.thought.delta", "delta", NULL, delta);
+	return 0;
+}
+
+static int react_emit_final_delta(struct react_stream_data *sd,
+				  const char *text, size_t len)
+{
+	char *delta;
+
+	while (len > 0 && (*text == ' ' || *text == '\t')) {
+		text++;
+		len--;
+	}
+	if (len == 0)
+		return 0;
+	delta = arena_alloc(sd->arena, len + 1);
+	if (!delta)
+		return -ENOMEM;
+	memcpy(delta, text, len);
+	delta[len] = '\0';
+	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
+			      "react.final.delta", "delta", NULL, delta);
+	return 0;
+}
+
+static size_t react_utf8_safe_len(const char *text, size_t len)
+{
+	while (len > 0 && utf8nvalid(text, len) != NULL)
+		len--;
+	return len;
+}
+
+static int react_stream_parse_emit(struct react_stream_data *sd)
+{
+	const size_t holdback = 16;
+	const char *base = sd->accumulated;
+	const char *start = base + sd->emitted_len;
+	size_t available;
+
+	if (!base || sd->acc_len <= sd->emitted_len)
+		return 0;
+
+	available = sd->acc_len - sd->emitted_len;
+	if (sd->in_final) {
+		size_t safe = react_utf8_safe_len(start, available);
+		int rc;
+		if (safe == 0)
+			return 0;
+		rc = react_emit_final_delta(sd, start, safe);
+		if (rc == 0)
+			sd->emitted_len += safe;
+		return rc;
+	}
+
+	{
+		int marker_len = 0;
+		const char *marker = react_find_final_marker(base, start,
+							     &marker_len);
+		if (marker) {
+			int rc = react_emit_thought_delta(sd, start,
+							  (size_t)(marker - start));
+			if (rc != 0)
+				return rc;
+			sd->in_final = 1;
+			sd->emitted_len = (size_t)((marker - base) + marker_len);
+			return react_stream_parse_emit(sd);
+		}
+	}
+
+	if (available <= holdback)
+		return 0;
+	available -= holdback;
+	available = react_utf8_safe_len(start, available);
+	if (available == 0)
+		return 0;
+	{
+		int rc = react_emit_thought_delta(sd, start, available);
+		if (rc == 0)
+			sd->emitted_len += available;
+		return rc;
+	}
+}
+
+static int react_stream_flush(struct react_stream_data *sd)
+{
+	const char *base = sd->accumulated;
+	const char *start;
+	size_t available;
+
+	if (!base || sd->acc_len <= sd->emitted_len)
+		return 0;
+
+	start = base + sd->emitted_len;
+	available = sd->acc_len - sd->emitted_len;
+	if (sd->in_final) {
+		size_t safe = react_utf8_safe_len(start, available);
+		int rc;
+		if (safe == 0)
+			return 0;
+		rc = react_emit_final_delta(sd, start, safe);
+		if (rc == 0)
+			sd->emitted_len += safe;
+		return rc;
+	}
+
+	{
+		int marker_len = 0;
+		const char *marker = react_find_final_marker(base, start,
+							     &marker_len);
+		if (marker) {
+			int rc = react_emit_thought_delta(sd, start,
+							  (size_t)(marker - start));
+			if (rc != 0)
+				return rc;
+			sd->in_final = 1;
+			sd->emitted_len = (size_t)((marker - base) + marker_len);
+			return react_stream_flush(sd);
+		}
+	}
+
+	{
+		size_t safe = react_utf8_safe_len(start, available);
+		int rc;
+		if (safe == 0)
+			return 0;
+		rc = react_emit_thought_delta(sd, start, safe);
+		if (rc == 0)
+			sd->emitted_len += safe;
+		return rc;
+	}
 }
 
 static int react_stream_cb(const char *token, void *user_data)
 {
 	struct react_stream_data *sd = user_data;
 	size_t tlen = strlen(token);
-	const char *final_delta;
 	if (sd->acc_len + tlen + 1 >= sd->acc_cap) {
 		size_t new_cap = (sd->acc_len + tlen + 1) * 2;
 		char *new_acc = arena_alloc(sd->arena, new_cap);
@@ -1366,19 +1542,7 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
-	react_output_emit(sd->user_cb, sd->user_data, REACT_STEP_THOUGHT,
-			  REACT_OUTPUT_DELTA, token, NULL, NULL, NULL, 0,
-			  NULL, NULL, NULL);
-	final_delta = react_preview_final_delta(token);
-	if (final_delta && *final_delta) {
-		react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-				      "react.final.delta", "delta",
-				      NULL, final_delta);
-	}
-	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-			      "react.thought.delta", "delta",
-			      NULL, token);
-	return 0;
+	return react_stream_parse_emit(sd);
 }
 
 static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
@@ -1921,6 +2085,11 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			sd.accumulated = NULL;
 			response->arena = ctx->turn_arena;
 		}
+	}
+	if (status >= 0) {
+		int flush_rc = react_stream_flush(&sd);
+		if (flush_rc != 0)
+			return flush_rc;
 	}
 	return status;
 }
