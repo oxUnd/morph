@@ -4,8 +4,8 @@
 #include "util/file.h"
 #include "util/log.h"
 #include "blake3.h"
-#include <uv.h>
 #include <sqlite3.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -117,6 +117,16 @@ static int hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
 	return 0;
 }
 
+static int sync_has_remote_backend(const struct morph_sync_config *cfg)
+{
+	return cfg && cfg->remote_backend &&
+		cfg->remote_backend->stat &&
+		cfg->remote_backend->list &&
+		cfg->remote_backend->copy_from_local &&
+		cfg->remote_backend->copy_to_local &&
+		cfg->remote_backend->delete_file;
+}
+
 static int path_has_suffix(const char *path, const char *suffix)
 {
 	size_t plen;
@@ -175,7 +185,7 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 {
 	struct sync_pair *pair;
 	struct sync_file *file;
-	uv_fs_t req;
+	struct stat st;
 	int rc;
 
 	if (should_skip_rel(rel))
@@ -193,28 +203,60 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 	rc = sync_path_join(file->full, sizeof(file->full), root, rel);
 	if (rc != 0)
 		return rc;
-	rc = uv_fs_stat(NULL, &req, file->full, NULL);
-	if (rc < 0) {
-		uv_fs_req_cleanup(&req);
+	rc = stat(file->full, &st);
+	if (rc != 0) {
 		MORPH_RETURN(-ENOENT);
 	}
 	file->exists = 1;
-	file->size = (int64_t)req.statbuf.st_size;
-	file->mtime = (int64_t)req.statbuf.st_mtim.tv_sec;
-	uv_fs_req_cleanup(&req);
+	file->size = (int64_t)st.st_size;
+	file->mtime = (int64_t)st.st_mtime;
 	return hash_file(file->full, file->hash);
+}
+
+static int add_remote_backend_file(morph_array_t *pairs,
+				   const struct morph_sync_config *cfg,
+				   const char *rel)
+{
+	struct morph_sync_backend_stat st;
+	struct sync_pair *pair;
+	struct sync_file *file;
+	int rc;
+
+	if (should_skip_rel(rel))
+		return 0;
+	memset(&st, 0, sizeof(st));
+	rc = cfg->remote_backend->stat(cfg->remote_backend->user_data, rel, &st);
+	if (rc != 0)
+		return rc;
+	if (!st.exists || st.is_dir)
+		return 0;
+	pair = find_pair(pairs, rel);
+	if (!pair) {
+		pair = morph_array_push(pairs);
+		if (!pair)
+			MORPH_RETURN(-ENOMEM);
+		memset(pair, 0, sizeof(*pair));
+		strncpy(pair->path, rel, sizeof(pair->path) - 1);
+	}
+	file = &pair->remote;
+	strncpy(file->path, rel, sizeof(file->path) - 1);
+	strncpy(file->full, rel, sizeof(file->full) - 1);
+	file->exists = 1;
+	file->size = st.size;
+	file->mtime = st.mtime;
+	strncpy(file->hash, st.hash, sizeof(file->hash) - 1);
+	return 0;
 }
 
 static int refresh_file(struct sync_file *file)
 {
-	uv_fs_t req;
+	struct stat st;
 	int rc;
 
 	if (!file || !file->full[0])
 		MORPH_RETURN(-EINVAL);
-	rc = uv_fs_stat(NULL, &req, file->full, NULL);
-	if (rc < 0) {
-		uv_fs_req_cleanup(&req);
+	rc = stat(file->full, &st);
+	if (rc != 0) {
 		file->exists = 0;
 		file->hash[0] = '\0';
 		file->size = 0;
@@ -222,83 +264,189 @@ static int refresh_file(struct sync_file *file)
 		return 0;
 	}
 	file->exists = 1;
-	file->size = (int64_t)req.statbuf.st_size;
-	file->mtime = (int64_t)req.statbuf.st_mtim.tv_sec;
-	uv_fs_req_cleanup(&req);
+	file->size = (int64_t)st.st_size;
+	file->mtime = (int64_t)st.st_mtime;
 	return hash_file(file->full, file->hash);
+}
+
+static int refresh_remote_backend_file(const struct morph_sync_config *cfg,
+				       struct sync_file *file)
+{
+	struct morph_sync_backend_stat st;
+	int rc;
+
+	if (!cfg || !file || !file->path[0])
+		MORPH_RETURN(-EINVAL);
+	memset(&st, 0, sizeof(st));
+	rc = cfg->remote_backend->stat(cfg->remote_backend->user_data,
+				       file->path, &st);
+	if (rc != 0)
+		return rc;
+	if (!st.exists || st.is_dir) {
+		file->exists = 0;
+		file->hash[0] = '\0';
+		file->size = 0;
+		file->mtime = 0;
+		return 0;
+	}
+	file->exists = 1;
+	file->size = st.size;
+	file->mtime = st.mtime;
+	strncpy(file->hash, st.hash, sizeof(file->hash) - 1);
+	return 0;
+}
+
+struct remote_scan_ctx {
+	morph_array_t *pairs;
+	const struct morph_sync_config *cfg;
+	char rel_dir[PATH_MAX];
+	int rc;
+};
+
+static int scan_remote_backend_dir(morph_array_t *pairs,
+				   const struct morph_sync_config *cfg,
+				   const char *rel_dir);
+
+static int remote_scan_list_cb(const char *name, int is_dir, void *user_data)
+{
+	struct remote_scan_ctx *ctx = user_data;
+	char child_rel[PATH_MAX];
+	int rc;
+
+	if (!ctx || ctx->rc != 0 || !name || !name[0])
+		return ctx ? ctx->rc : -EINVAL;
+	if (ctx->rel_dir[0]) {
+		rc = file_path_join(child_rel, sizeof(child_rel),
+				    ctx->rel_dir, name);
+	} else {
+		strncpy(child_rel, name, sizeof(child_rel) - 1);
+		child_rel[sizeof(child_rel) - 1] = '\0';
+		rc = 0;
+	}
+	if (rc != 0 || should_skip_rel(child_rel))
+		return 0;
+	if (is_dir)
+		rc = scan_remote_backend_dir(ctx->pairs, ctx->cfg, child_rel);
+	else
+		rc = add_remote_backend_file(ctx->pairs, ctx->cfg, child_rel);
+	if (rc != 0)
+		ctx->rc = rc;
+	return 0;
 }
 
 static int scan_dir(morph_array_t *pairs, const char *root, const char *rel_dir,
 		    int remote_side)
 {
 	char full[PATH_MAX];
-	uv_fs_t req;
-	uv_dirent_t ent;
+	DIR *dir;
+	struct dirent *ent;
 	int rc;
 
 	rc = sync_path_join(full, sizeof(full), root, rel_dir);
 	if (rc != 0)
 		return rc;
-	rc = uv_fs_scandir(NULL, &req, full, 0, NULL);
-	if (rc == UV_ENOENT) {
-		uv_fs_req_cleanup(&req);
+	dir = opendir(full);
+	if (!dir && errno == ENOENT)
 		return 0;
-	}
-	if (rc < 0) {
-		uv_fs_req_cleanup(&req);
+	if (!dir)
 		MORPH_RETURN(-EIO);
-	}
-	while (uv_fs_scandir_next(&req, &ent) != UV_EOF) {
+	while ((ent = readdir(dir)) != NULL) {
 		char child_rel[PATH_MAX];
+		char child_full[PATH_MAX];
+		struct stat st;
+		if (strcmp(ent->d_name, ".") == 0 ||
+		    strcmp(ent->d_name, "..") == 0)
+			continue;
 		if (rel_dir[0]) {
 			rc = file_path_join(child_rel, sizeof(child_rel),
-					    rel_dir, ent.name);
+					    rel_dir, ent->d_name);
 		} else {
-			strncpy(child_rel, ent.name, sizeof(child_rel) - 1);
+			strncpy(child_rel, ent->d_name, sizeof(child_rel) - 1);
 			child_rel[sizeof(child_rel) - 1] = '\0';
 			rc = 0;
 		}
 		if (rc != 0 || should_skip_rel(child_rel))
 			continue;
-		if (ent.type == UV_DIRENT_DIR) {
+		rc = sync_path_join(child_full, sizeof(child_full),
+				    root, child_rel);
+		if (rc != 0)
+			break;
+		if (stat(child_full, &st) != 0)
+			continue;
+		if (S_ISDIR(st.st_mode)) {
 			rc = scan_dir(pairs, root, child_rel, remote_side);
 			if (rc != 0)
 				break;
-		} else if (ent.type == UV_DIRENT_FILE ||
-			   ent.type == UV_DIRENT_UNKNOWN) {
+		} else if (S_ISREG(st.st_mode)) {
 			rc = add_file(pairs, root, child_rel, remote_side);
 			if (rc != 0)
 				break;
 		}
 	}
-	uv_fs_req_cleanup(&req);
+	closedir(dir);
 	return rc;
+}
+
+static int scan_remote_backend_dir(morph_array_t *pairs,
+				   const struct morph_sync_config *cfg,
+				   const char *rel_dir)
+{
+	struct remote_scan_ctx ctx;
+	int rc;
+
+	if (!cfg || !cfg->remote_backend || !cfg->remote_backend->list)
+		MORPH_RETURN(-EINVAL);
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.pairs = pairs;
+	ctx.cfg = cfg;
+	if (rel_dir)
+		strncpy(ctx.rel_dir, rel_dir, sizeof(ctx.rel_dir) - 1);
+	rc = cfg->remote_backend->list(cfg->remote_backend->user_data,
+				       rel_dir ? rel_dir : "",
+				       remote_scan_list_cb, &ctx);
+	if (rc != 0)
+		return rc;
+	return ctx.rc;
+}
+
+static int scan_remote_backend_include(morph_array_t *pairs,
+				       const struct morph_sync_config *cfg,
+				       const char *include)
+{
+	struct morph_sync_backend_stat st;
+	int rc;
+
+	if (!include || !include[0])
+		return 0;
+	memset(&st, 0, sizeof(st));
+	rc = cfg->remote_backend->stat(cfg->remote_backend->user_data,
+				       include, &st);
+	if (rc != 0)
+		return rc;
+	if (!st.exists)
+		return 0;
+	if (st.is_dir)
+		return scan_remote_backend_dir(pairs, cfg, include);
+	return add_remote_backend_file(pairs, cfg, include);
 }
 
 static int scan_include(morph_array_t *pairs, const char *root,
 			const char *include, int remote_side)
 {
 	char full[PATH_MAX];
-	uv_fs_t req;
+	struct stat st;
 	int rc;
 
 	rc = sync_path_join(full, sizeof(full), root, include);
 	if (rc != 0)
 		return rc;
-	rc = uv_fs_stat(NULL, &req, full, NULL);
-	if (rc == UV_ENOENT) {
-		uv_fs_req_cleanup(&req);
+	rc = stat(full, &st);
+	if (rc != 0 && errno == ENOENT)
 		return 0;
-	}
-	if (rc < 0) {
-		uv_fs_req_cleanup(&req);
+	if (rc != 0)
 		return 0;
-	}
-	if (S_ISDIR(req.statbuf.st_mode)) {
-		uv_fs_req_cleanup(&req);
+	if (S_ISDIR(st.st_mode))
 		return scan_dir(pairs, root, include, remote_side);
-	}
-	uv_fs_req_cleanup(&req);
 	return add_file(pairs, root, include, remote_side);
 }
 
@@ -308,8 +456,13 @@ static int scan_side(morph_array_t *pairs, const char *root,
 	if (!root || !root[0])
 		MORPH_RETURN(-EINVAL);
 	for (int i = 0; i < cfg->include_count; i++) {
-		int rc = scan_include(pairs, root, cfg->include[i],
-				      remote_side);
+		int rc;
+		if (remote_side && sync_has_remote_backend(cfg))
+			rc = scan_remote_backend_include(pairs, cfg,
+							 cfg->include[i]);
+		else
+			rc = scan_include(pairs, root, cfg->include[i],
+					  remote_side);
 		if (rc != 0)
 			return rc;
 	}
@@ -597,12 +750,33 @@ fail:
 
 static int copy_file_plain(const char *src, const char *dst)
 {
-	uv_fs_t req;
-	int rc;
+	FILE *in;
+	FILE *out;
+	char buf[BUFSIZ];
+	size_t n;
 
-	rc = uv_fs_copyfile(NULL, &req, src, dst, 0, NULL);
-	uv_fs_req_cleanup(&req);
-	if (rc < 0)
+	in = fopen(src, "rb");
+	if (!in)
+		MORPH_RETURN_ERRNO();
+	out = fopen(dst, "wb");
+	if (!out) {
+		fclose(in);
+		MORPH_RETURN_ERRNO();
+	}
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+		if (fwrite(buf, 1, n, out) != n) {
+			fclose(in);
+			fclose(out);
+			MORPH_RETURN(-EIO);
+		}
+	}
+	if (ferror(in) || fflush(out) != 0) {
+		fclose(in);
+		fclose(out);
+		MORPH_RETURN(-EIO);
+	}
+	fclose(in);
+	if (fclose(out) != 0)
 		MORPH_RETURN(-EIO);
 	return 0;
 }
@@ -613,7 +787,6 @@ static int copy_atomic(const struct morph_sync_config *cfg, const char *src,
 	char meta[PATH_MAX];
 	char staging_dir[PATH_MAX];
 	char staging[PATH_MAX];
-	uv_fs_t req;
 	int rc;
 
 	rc = sync_path_join(meta, sizeof(meta), cfg->sync_dir, SYNC_META_DIR);
@@ -640,11 +813,81 @@ static int copy_atomic(const struct morph_sync_config *cfg, const char *src,
 	rc = ensure_parent_dir(dst);
 	if (rc != 0)
 		return rc;
-	rc = uv_fs_rename(NULL, &req, staging, dst, NULL);
-	uv_fs_req_cleanup(&req);
-	if (rc < 0)
-		MORPH_RETURN(-EIO);
+	if (rename(staging, dst) != 0)
+		MORPH_RETURN_ERRNO();
 	return 0;
+}
+
+static int copy_local_to_remote(const struct morph_sync_config *cfg,
+				const char *local_path, const char *remote_rel,
+				int sqlite_source)
+{
+	if (!sync_has_remote_backend(cfg))
+		MORPH_RETURN(-EINVAL);
+	return cfg->remote_backend->copy_from_local(
+		cfg->remote_backend->user_data, local_path, remote_rel,
+		sqlite_source);
+}
+
+static int copy_remote_to_local_atomic(const struct morph_sync_config *cfg,
+				       const char *remote_rel,
+				       const char *local_path)
+{
+	char meta[PATH_MAX];
+	char staging_dir[PATH_MAX];
+	char staging[PATH_MAX];
+	int rc;
+
+	if (!sync_has_remote_backend(cfg))
+		MORPH_RETURN(-EINVAL);
+	rc = sync_path_join(meta, sizeof(meta), cfg->sync_dir, SYNC_META_DIR);
+	if (rc != 0)
+		return rc;
+	rc = sync_path_join(staging_dir, sizeof(staging_dir), meta,
+			    SYNC_STAGING);
+	if (rc != 0)
+		return rc;
+	rc = file_ensure_dir(staging_dir);
+	if (rc != 0)
+		return rc;
+	snprintf(staging, sizeof(staging), "%s/%lld-%u.tmp", staging_dir,
+		 (long long)time(NULL), (unsigned)getpid());
+	rc = cfg->remote_backend->copy_to_local(
+		cfg->remote_backend->user_data, remote_rel, staging);
+	if (rc != 0)
+		return rc;
+	rc = ensure_parent_dir(local_path);
+	if (rc != 0)
+		return rc;
+	if (rename(staging, local_path) != 0)
+		MORPH_RETURN_ERRNO();
+	return 0;
+}
+
+static int sync_copy_to_remote(const struct morph_sync_config *cfg,
+			       const char *local_path, const char *remote_path,
+			       const char *rel, int sqlite_source)
+{
+	if (sync_has_remote_backend(cfg))
+		return copy_local_to_remote(cfg, local_path, rel, sqlite_source);
+	return copy_atomic(cfg, local_path, remote_path, rel, sqlite_source);
+}
+
+static int sync_copy_from_remote(const struct morph_sync_config *cfg,
+				 const char *remote_path, const char *local_path,
+				 const char *rel)
+{
+	if (sync_has_remote_backend(cfg))
+		return copy_remote_to_local_atomic(cfg, rel, local_path);
+	return copy_atomic(cfg, remote_path, local_path, rel, 0);
+}
+
+static int sync_refresh_remote(const struct morph_sync_config *cfg,
+			       struct sync_file *file)
+{
+	if (sync_has_remote_backend(cfg))
+		return refresh_remote_backend_file(cfg, file);
+	return refresh_file(file);
 }
 
 static void sanitize_rel(char *dst, size_t size, const char *rel)
@@ -665,7 +908,6 @@ static int move_to_trash(sqlite3 *db, const struct morph_sync_config *cfg,
 	char trash_dir[PATH_MAX];
 	char safe[PATH_MAX];
 	char trash[PATH_MAX];
-	uv_fs_t req;
 	int rc;
 
 	if (!file_exists(path))
@@ -685,10 +927,46 @@ static int move_to_trash(sqlite3 *db, const struct morph_sync_config *cfg,
 	rc = copy_file_plain(path, trash);
 	if (rc != 0)
 		return rc;
-	rc = uv_fs_unlink(NULL, &req, path, NULL);
-	uv_fs_req_cleanup(&req);
-	if (rc < 0)
-		MORPH_RETURN(-EIO);
+	if (unlink(path) != 0)
+		MORPH_RETURN_ERRNO();
+	rc = manifest_trash(db, rel, trash);
+	if (rc != 0)
+		return rc;
+	return manifest_tombstone(db, rel);
+}
+
+static int move_remote_to_trash(sqlite3 *db,
+				const struct morph_sync_config *cfg,
+				const char *rel)
+{
+	char meta[PATH_MAX];
+	char trash_dir[PATH_MAX];
+	char safe[PATH_MAX];
+	char trash[PATH_MAX];
+	int rc;
+
+	if (!sync_has_remote_backend(cfg))
+		MORPH_RETURN(-EINVAL);
+	rc = sync_path_join(meta, sizeof(meta), cfg->sync_dir, SYNC_META_DIR);
+	if (rc != 0)
+		return rc;
+	rc = sync_path_join(trash_dir, sizeof(trash_dir), meta, SYNC_TRASH);
+	if (rc != 0)
+		return rc;
+	rc = file_ensure_dir(trash_dir);
+	if (rc != 0)
+		return rc;
+	sanitize_rel(safe, sizeof(safe), rel);
+	snprintf(trash, sizeof(trash), "%s/%lld-%u-%s", trash_dir,
+		 (long long)time(NULL), (unsigned)getpid(), safe);
+	rc = cfg->remote_backend->copy_to_local(
+		cfg->remote_backend->user_data, rel, trash);
+	if (rc != 0)
+		return rc;
+	rc = cfg->remote_backend->delete_file(
+		cfg->remote_backend->user_data, rel);
+	if (rc != 0)
+		return rc;
 	rc = manifest_trash(db, rel, trash);
 	if (rc != 0)
 		return rc;
@@ -715,7 +993,8 @@ static int create_conflict(sqlite3 *db, const struct morph_sync_config *cfg,
 				    local_conflict);
 		if (rc != 0)
 			return rc;
-		rc = copy_atomic(cfg, pair->remote.full, dst, pair->path, 0);
+		rc = sync_copy_from_remote(cfg, pair->remote.full, dst,
+					   pair->path);
 		if (rc != 0)
 			return rc;
 	}
@@ -730,7 +1009,8 @@ static int create_conflict(sqlite3 *db, const struct morph_sync_config *cfg,
 				    remote_conflict);
 		if (rc != 0)
 			return rc;
-		rc = copy_atomic(cfg, pair->local.full, dst, pair->path, 1);
+		rc = sync_copy_to_remote(cfg, pair->local.full, dst,
+					 remote_conflict, 1);
 		if (rc != 0)
 			return rc;
 	}
@@ -753,11 +1033,23 @@ static int update_pair_paths(struct sync_pair *pair,
 		if (rc != 0)
 			return rc;
 	}
+	if (!pair->local.path[0])
+		strncpy(pair->local.path, pair->path,
+			sizeof(pair->local.path) - 1);
+	if (!pair->remote.path[0])
+		strncpy(pair->remote.path, pair->path,
+			sizeof(pair->remote.path) - 1);
 	if (!pair->remote.full[0]) {
-		rc = sync_path_join(pair->remote.full, sizeof(pair->remote.full),
-				    data_root, pair->path);
-		if (rc != 0)
-			return rc;
+		if (sync_has_remote_backend(cfg)) {
+			strncpy(pair->remote.full, pair->path,
+				sizeof(pair->remote.full) - 1);
+		} else {
+			rc = sync_path_join(pair->remote.full,
+					    sizeof(pair->remote.full),
+					    data_root, pair->path);
+			if (rc != 0)
+				return rc;
+		}
 	}
 	return 0;
 }
@@ -799,13 +1091,13 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 				return manifest_put(db, pair, 0);
 			}
 			if (!pair->remote.exists || local_changed) {
-				rc = copy_atomic(cfg, pair->local.full,
-						 pair->remote.full,
-						 pair->path, 1);
+				rc = sync_copy_to_remote(cfg, pair->local.full,
+							 pair->remote.full,
+							 pair->path, 1);
 				if (rc != 0)
 					return rc;
 				status->copied++;
-				rc = refresh_file(&pair->remote);
+				rc = sync_refresh_remote(cfg, &pair->remote);
 				if (rc != 0)
 					return rc;
 				return manifest_put(db, pair, 0);
@@ -833,19 +1125,21 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 			return manifest_put(db, pair, 0);
 		}
 		if (local_changed) {
-			rc = copy_atomic(cfg, pair->local.full,
-					 pair->remote.full, pair->path, 1);
+			rc = sync_copy_to_remote(cfg, pair->local.full,
+						 pair->remote.full,
+						 pair->path, 1);
 			if (rc != 0)
 				return rc;
 			status->copied++;
-			rc = refresh_file(&pair->remote);
+			rc = sync_refresh_remote(cfg, &pair->remote);
 			if (rc != 0)
 				return rc;
 			return manifest_put(db, pair, 0);
 		}
 		if (remote_changed) {
-			rc = copy_atomic(cfg, pair->remote.full,
-					 pair->local.full, pair->path, 0);
+			rc = sync_copy_from_remote(cfg, pair->remote.full,
+						   pair->local.full,
+						   pair->path);
 			if (rc != 0)
 				return rc;
 			status->copied++;
@@ -874,12 +1168,12 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 				return rc;
 			return manifest_put(db, pair, 0);
 		}
-		rc = copy_atomic(cfg, pair->local.full, pair->remote.full,
-				 pair->path, 1);
+		rc = sync_copy_to_remote(cfg, pair->local.full,
+					 pair->remote.full, pair->path, 1);
 		if (rc != 0)
 			return rc;
 		status->copied++;
-		rc = refresh_file(&pair->remote);
+		rc = sync_refresh_remote(cfg, &pair->remote);
 		if (rc != 0)
 			return rc;
 		return manifest_put(db, pair, 0);
@@ -887,7 +1181,11 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 
 	if (!pair->local.exists && pair->remote.exists) {
 		if (old.local_exists && local_changed && !remote_changed) {
-			rc = move_to_trash(db, cfg, pair->remote.full, pair->path);
+			if (sync_has_remote_backend(cfg))
+				rc = move_remote_to_trash(db, cfg, pair->path);
+			else
+				rc = move_to_trash(db, cfg, pair->remote.full,
+						   pair->path);
 			if (rc != 0)
 				return rc;
 			status->deleted++;
@@ -902,8 +1200,8 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 				return rc;
 			return manifest_put(db, pair, 0);
 		}
-		rc = copy_atomic(cfg, pair->remote.full, pair->local.full,
-				 pair->path, 0);
+		rc = sync_copy_from_remote(cfg, pair->remote.full,
+					   pair->local.full, pair->path);
 		if (rc != 0)
 			return rc;
 		status->copied++;
@@ -985,9 +1283,7 @@ static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
 		sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
 		const char *path = (const char *)sqlite3_column_text(stmt, 1);
 		if (path && file_exists(path)) {
-			uv_fs_t req;
-			(void)uv_fs_unlink(NULL, &req, path, NULL);
-			uv_fs_req_cleanup(&req);
+			(void)unlink(path);
 		}
 		{
 			sqlite3_stmt *del = NULL;

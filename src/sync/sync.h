@@ -14,6 +14,31 @@ extern "C" {
 #define MORPH_SYNC_HASH_LEN 65
 #define MORPH_SYNC_STATUS_TEXT_MAX 256
 
+struct morph_sync_backend_stat {
+	int exists;
+	int is_dir;
+	int64_t size;
+	int64_t mtime;
+	char hash[MORPH_SYNC_HASH_LEN];
+};
+
+typedef int (*morph_sync_backend_list_cb)(const char *name, int is_dir,
+					  void *user_data);
+
+struct morph_sync_backend {
+	void *user_data;
+	int (*stat)(void *user_data, const char *rel,
+		    struct morph_sync_backend_stat *st);
+	int (*list)(void *user_data, const char *rel_dir,
+		    morph_sync_backend_list_cb cb, void *cb_data);
+	int (*copy_from_local)(void *user_data, const char *local_path,
+			       const char *remote_rel, int sqlite_source);
+	int (*copy_to_local)(void *user_data, const char *remote_rel,
+			     const char *local_path);
+	int (*delete_file)(void *user_data, const char *remote_rel);
+	int (*ensure_dir)(void *user_data, const char *remote_rel_dir);
+};
+
 struct morph_sync_config {
 	int enabled;
 	char source_dir[PATH_MAX];
@@ -22,6 +47,7 @@ struct morph_sync_config {
 	int retention_days;
 	char include[MORPH_SYNC_INCLUDE_MAX][MORPH_SYNC_INCLUDE_LEN_MAX];
 	int include_count;
+	const struct morph_sync_backend *remote_backend;
 };
 
 struct morph_sync_status {
