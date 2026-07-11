@@ -158,6 +158,18 @@ struct config_skill {
 	char dir[PATH_MAX];
 };
 
+#define SYNC_INCLUDE_MAX 16
+#define SYNC_INCLUDE_LEN_MAX PATH_MAX
+
+struct config_sync {
+	int enabled;
+	char dir[PATH_MAX];
+	int interval_seconds;
+	int retention_days;
+	char include[SYNC_INCLUDE_MAX][SYNC_INCLUDE_LEN_MAX];
+	int include_count;
+};
+
 #define MCP_SERVER_MAX 32
 #define MCP_SERVER_NAME_MAX 64
 #define MCP_CMD_ARGS_MAX 32
@@ -270,6 +282,7 @@ struct config {
 	struct config_ext ext;
 	struct config_prompt prompt;
 	struct config_skill skill;
+	struct config_sync sync;
 	struct config_mcp mcp;
 	struct config_dynamic_tools dynamic_tools;
 	struct config_sub_agents sub_agents;

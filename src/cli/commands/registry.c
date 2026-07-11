@@ -169,5 +169,8 @@ int cli_commands_init(void)
 	rc = cli_register_skill_commands();
 	if (rc != 0)
 		return rc;
+	rc = cli_register_sync_commands();
+	if (rc != 0)
+		return rc;
 	return cli_register_mcp_commands();
 }

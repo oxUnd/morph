@@ -27,6 +27,7 @@ set(TEST_SOURCES
 	test_http.cpp
 	test_image.cpp
 	test_skill.cpp
+	test_sync.cpp
 	test_markdown.cpp
 	test_bash_exec.cpp
 	test_spin.cpp

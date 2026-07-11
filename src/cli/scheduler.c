@@ -1,5 +1,74 @@
 #include "cli/internal.h"
 
+int cli_build_sync_config(struct cli_context *ctx, struct morph_sync_config *cfg)
+{
+	char source[PATH_MAX];
+	char *expanded;
+	char *slash;
+
+	if (!ctx || !cfg)
+		MORPH_RETURN(-EINVAL);
+	memset(cfg, 0, sizeof(*cfg));
+	cfg->enabled = ctx->config.sync.enabled;
+	cfg->interval_seconds = ctx->config.sync.interval_seconds;
+	cfg->retention_days = ctx->config.sync.retention_days;
+	strncpy(cfg->sync_dir, ctx->config.sync.dir,
+		sizeof(cfg->sync_dir) - 1);
+	expanded = file_expand_path(default_config_path);
+	if (expanded) {
+		strncpy(source, expanded, sizeof(source) - 1);
+		source[sizeof(source) - 1] = '\0';
+		free(expanded);
+	} else {
+		strncpy(source, ctx->config_path, sizeof(source) - 1);
+		source[sizeof(source) - 1] = '\0';
+	}
+	slash = strrchr(source, '/');
+	if (slash)
+		*slash = '\0';
+	else
+		strncpy(source, ".", sizeof(source) - 1);
+	strncpy(cfg->source_dir, source, sizeof(cfg->source_dir) - 1);
+	cfg->include_count = ctx->config.sync.include_count;
+	if (cfg->include_count > MORPH_SYNC_INCLUDE_MAX)
+		cfg->include_count = MORPH_SYNC_INCLUDE_MAX;
+	for (int i = 0; i < cfg->include_count; i++) {
+		strncpy(cfg->include[i], ctx->config.sync.include[i],
+			MORPH_SYNC_INCLUDE_LEN_MAX - 1);
+	}
+	return 0;
+}
+
+int cli_sync_start(struct cli_context *ctx)
+{
+	struct morph_sync_config cfg;
+	int rc;
+
+	if (!ctx || ctx->sync_started)
+		return 0;
+	if (!ctx->config.sync.enabled)
+		return 0;
+	if (!ctx->config.sync.dir[0]) {
+		log_warn("sync enabled without sync.dir");
+		return -EINVAL;
+	}
+	rc = cli_build_sync_config(ctx, &cfg);
+	if (rc != 0)
+		return rc;
+	rc = morph_sync_start(&ctx->sync_worker, &cfg);
+	if (rc == 0)
+		ctx->sync_started = 1;
+	return rc;
+}
+
+void cli_sync_stop(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->sync_started)
+		return;
+	morph_sync_stop(&ctx->sync_worker);
+	ctx->sync_started = 0;
+}
+
 struct scheduled_task_event_sink cli_task_event_sink(
 	struct cli_context *ctx)
 {

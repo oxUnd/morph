@@ -276,6 +276,16 @@ max_procedures = 4
 # context window.
 max_context_chars = 3000
 
+[sync]
+# Periodically merge critical files under ~/.morph with a user-chosen
+# local sync directory. Deletions are soft-deleted into trash, and
+# conflicting edits are kept as conflict copies.
+enabled = false
+dir = ""
+interval_seconds = 300
+retention_days = 30
+include = ["config.toml", "data.db", "skills", "tools", "exts", "output"]
+
 [render]
 # Image display: auto / kitty / sixel / iterm
 prefer_image_protocol = "auto"

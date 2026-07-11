@@ -38,6 +38,12 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.credits.currency, "USD");
 	EXPECT_DOUBLE_EQ(cfg.credits.cost_to_credit_coef, 1000.0);
 	EXPECT_EQ(cfg.credits.price_count, 0);
+	EXPECT_EQ(cfg.sync.enabled, 0);
+	EXPECT_EQ(cfg.sync.interval_seconds, 300);
+	EXPECT_EQ(cfg.sync.retention_days, 30);
+	ASSERT_EQ(cfg.sync.include_count, 6);
+	EXPECT_STREQ(cfg.sync.include[0], "config.toml");
+	EXPECT_STREQ(cfg.sync.include[1], "data.db");
 }
 
 TEST_F(ConfigTest, LoadFromFile) {
@@ -60,6 +66,13 @@ bash_exec_allowed_cwds = ["/tmp"]
 
 [context]
 keep_recent_rounds = 10
+
+[sync]
+enabled = true
+dir = "/tmp/morph-sync"
+interval_seconds = 60
+retention_days = 14
+include = ["config.toml", "output"]
 )";
 	file_write_all(config_path, toml, strlen(toml));
 
@@ -80,6 +93,12 @@ keep_recent_rounds = 10
 	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 1);
 	EXPECT_STREQ(cfg.react.bash_exec_allowed_cwds[0], "/tmp");
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
+	EXPECT_EQ(cfg.sync.enabled, 1);
+	EXPECT_STREQ(cfg.sync.dir, "/tmp/morph-sync");
+	EXPECT_EQ(cfg.sync.interval_seconds, 60);
+	EXPECT_EQ(cfg.sync.retention_days, 14);
+	ASSERT_EQ(cfg.sync.include_count, 2);
+	EXPECT_STREQ(cfg.sync.include[1], "output");
 }
 
 TEST_F(ConfigTest, LoadNonexistent) {

@@ -12,6 +12,7 @@
 #include "models/llm.h"
 #include "skill/skill.h"
 #include "mcp/mcp.h"
+#include "sync/sync.h"
 #include <pthread.h>
 #include <stdio.h>
 
@@ -57,6 +58,8 @@ struct cli_context {
 	pthread_cond_t scheduler_cond;
 	int scheduler_started;
 	int scheduler_stop;
+	struct morph_sync_worker sync_worker;
+	int sync_started;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,

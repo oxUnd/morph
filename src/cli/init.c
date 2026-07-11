@@ -1115,6 +1115,10 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	session_ensure_display_id(&ctx->database, &ctx->current_session);
 	cli_update_tool_runtime_context(ctx);
 
+	rc = cli_sync_start(ctx);
+	if (rc < 0)
+		log_warn("failed to start sync worker: %s", morph_strerror(rc));
+
 	ctx->running = 1;
 	ctx->streaming = 0;
 	ctx->image_path[0] = '\0';

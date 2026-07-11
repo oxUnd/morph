@@ -457,6 +457,7 @@ void cli_shutdown(struct cli_context *ctx)
 					  "memory consolidation drained",
 					  "memory_consolidation", -1, 0);
 	cli_scheduler_stop(ctx);
+	cli_sync_stop(ctx);
 	if (ctx->react) {
 		free(ctx->react->sub_agent_info);
 		ctx->react->sub_agent_info = NULL;

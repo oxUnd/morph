@@ -26,5 +26,6 @@ int cli_register_media_commands(void);
 int cli_register_ext_commands(void);
 int cli_register_skill_commands(void);
 int cli_register_mcp_commands(void);
+int cli_register_sync_commands(void);
 
 #endif

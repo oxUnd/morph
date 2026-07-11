@@ -139,6 +139,21 @@ void config_set_defaults(struct config *cfg)
 		cfg->dynamic_tools.local.allowed_commands_count = 1;
 		cfg->dynamic_tools.local.allowed_network_count = 1;
 	}
+
+	cfg->sync.enabled = 0;
+	cfg->sync.interval_seconds = 300;
+	cfg->sync.retention_days = 30;
+	{
+		static const char *const includes[] = {
+			"config.toml", "data.db", "skills", "tools",
+			"exts", "output"
+		};
+		for (int i = 0; i < 6; i++) {
+			strncpy(cfg->sync.include[i], includes[i],
+				SYNC_INCLUDE_LEN_MAX - 1);
+		}
+		cfg->sync.include_count = 6;
+	}
 }
 
 #define CFG_STR(tab, key, buf) do { \
@@ -350,6 +365,7 @@ static void config_expand_paths(struct config *cfg)
 	expand_path_field(cfg->skill.dir, sizeof(cfg->skill.dir));
 	expand_path_field(cfg->prompt.system_prompt_file, sizeof(cfg->prompt.system_prompt_file));
 	expand_path_field(cfg->prompt.system_prompt_dir, sizeof(cfg->prompt.system_prompt_dir));
+	expand_path_field(cfg->sync.dir, sizeof(cfg->sync.dir));
 	for (int i = 0; i < cfg->mcp.server_count; i++) {
 		struct config_mcp_server *s = &cfg->mcp.servers[i];
 		expand_path_field(s->command, sizeof(s->command));
@@ -578,6 +594,17 @@ int config_load(struct config *cfg, const char *path)
 	toml_table_t *skill = table_path(tbl, "skill");
 	if (skill) {
 		CFG_STR(skill, "dir", cfg->skill.dir);
+	}
+
+	toml_table_t *sync = table_path(tbl, "sync");
+	if (sync) {
+		CFG_BOOL(sync, "enabled", cfg->sync.enabled);
+		CFG_STR(sync, "dir", cfg->sync.dir);
+		CFG_INT(sync, "interval_seconds", cfg->sync.interval_seconds);
+		CFG_INT(sync, "retention_days", cfg->sync.retention_days);
+		load_string_array(sync, "include", cfg->sync.include,
+				  &cfg->sync.include_count,
+				  SYNC_INCLUDE_MAX, SYNC_INCLUDE_LEN_MAX);
 	}
 
 	toml_table_t *mcp_tbl = table_path(tbl, "mcp");

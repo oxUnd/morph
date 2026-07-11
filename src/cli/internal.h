@@ -128,6 +128,10 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 			      void *user_data);
 int cli_scheduler_start(struct cli_context *ctx);
 void cli_scheduler_stop(struct cli_context *ctx);
+int cli_build_sync_config(struct cli_context *ctx,
+			  struct morph_sync_config *cfg);
+int cli_sync_start(struct cli_context *ctx);
+void cli_sync_stop(struct cli_context *ctx);
 
 void media_callback(const char *type, const char *path, void *user);
 void cli_markdown_render_ansi(const char *md);
