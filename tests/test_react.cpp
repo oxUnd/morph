@@ -9,6 +9,7 @@
 #include "http/sse.h"
 #include "config.h"
 #include "util/error.h"
+#include "util/file.h"
 #include "util/utf8.h"
 #include <string.h>
 #include <signal.h>
@@ -3830,12 +3831,13 @@ TEST(Guardrail, RegisterBuiltinRules) {
 	cfg.max_retries = 1;
 	cfg.max_empty_rounds = 2;
 	guardrail_register_builtin_rules(&cfg);
-	EXPECT_EQ(cfg.rule_count, 5);
+	EXPECT_EQ(cfg.rule_count, 6);
 	EXPECT_NE(guardrail_rule_lookup(&cfg, "empty_answer"), nullptr);
 	EXPECT_NE(guardrail_rule_lookup(&cfg, "consecutive_empty"), nullptr);
 	EXPECT_NE(guardrail_rule_lookup(&cfg, "tools_all_failed"), nullptr);
 	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_no_media"), nullptr);
 	EXPECT_NE(guardrail_rule_lookup(&cfg, "creative_file_missing"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&cfg, "final_local_file_missing"), nullptr);
 }
 
 TEST(Guardrail, RuleEnableDisable) {
@@ -3949,6 +3951,105 @@ TEST(Guardrail, CreativeFileMissingUsesStructuredArtifactsOnly) {
 	arena_destroy(a);
 }
 
+TEST(Guardrail, FinalLocalFileMissingFailsForFileUrl) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer =
+		"done [artifact](file:///tmp/morph_missing_final_file.txt)";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(r.triggered_rule, nullptr);
+	EXPECT_STREQ(r.triggered_rule->name, "final_local_file_missing");
+	EXPECT_NE(strstr(r.reason, "Referenced local file does not exist"),
+		  nullptr);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, FinalLocalFileMissingFailsForAbsolutePath) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer =
+		"done ![image](/tmp/morph_missing_final_image.png)";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(r.triggered_rule, nullptr);
+	EXPECT_STREQ(r.triggered_rule->name, "final_local_file_missing");
+	arena_destroy(a);
+}
+
+TEST(Guardrail, FinalLocalFileMissingPassesForExistingFile) {
+	const char *path = "/tmp/morph_existing_final_file.txt";
+	ASSERT_EQ(file_write_all(path, "ok", 2), 0);
+
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "done [artifact](/tmp/morph_existing_final_file.txt)";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	std::remove(path);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, FinalLocalFileMissingIgnoresNonLocalLinks) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer =
+		"[site](https://example.com) [mail](mailto:a@example.com) "
+		"[anchor](#section) [data](data:text/plain,hello)";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
+TEST(Guardrail, FinalLocalFileMissingIgnoresPlainTextPaths) {
+	struct guardrail_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.enabled = 1;
+	cfg.max_retries = 1;
+	cfg.max_empty_rounds = 2;
+	guardrail_register_builtin_rules(&cfg);
+	struct arena *a = arena_create(4096);
+	struct guardrail_eval_ctx ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.proposed_answer = "The file is /tmp/morph_missing_bare_path.txt";
+	ctx.arena = a;
+	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
+	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
+	arena_destroy(a);
+}
+
 TEST(Guardrail, CustomCRule) {
 	struct guardrail_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
@@ -3964,7 +4065,7 @@ TEST(Guardrail, CustomCRule) {
 	};
 	guardrail_rule_register(&cfg, "no_forbidden", GUARDRAIL_HOOK_INPUT,
 		GUARDRAIL_RULE_C, my_check, NULL, NULL, "Do not use forbidden words.");
-	EXPECT_EQ(cfg.rule_count, 6);
+	EXPECT_EQ(cfg.rule_count, 7);
 	struct arena *a = arena_create(4096);
 	struct guardrail_eval_ctx ctx;
 	memset(&ctx, 0, sizeof(ctx));
@@ -4096,8 +4197,9 @@ TEST(Guardrail, BuiltinRulesAutoRegistered) {
 	struct compress_config ccfg = {0};
 	struct react_context *ctx = react_context_create(nullptr, nullptr, &ccfg, &gcfg);
 	ASSERT_NE(ctx, nullptr);
-	EXPECT_EQ(ctx->guardrail.rule_count, 5);
+	EXPECT_EQ(ctx->guardrail.rule_count, 6);
 	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "empty_answer"), nullptr);
+	EXPECT_NE(guardrail_rule_lookup(&ctx->guardrail, "final_local_file_missing"), nullptr);
 	react_context_destroy(ctx);
 }
 

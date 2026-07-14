@@ -7,6 +7,7 @@
 #include "util/error.h"
 #include "ipc/jsonrpc.h"
 #include "cJSON.h"
+#include "re.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,6 +181,162 @@ gr_creative_file_missing(const struct guardrail_eval_ctx *ctx,
 			return GUARDRAIL_FAIL;
 		}
 	}
+	return GUARDRAIL_PASS;
+}
+
+static int markdown_url_has_scheme(const char *url)
+{
+	const unsigned char *p;
+
+	if (!url || !*url)
+		return 0;
+
+	for (p = (const unsigned char *)url; *p; p++) {
+		if (*p == ':')
+			return p != (const unsigned char *)url;
+		if (*p == '/' || *p == '?' || *p == '#')
+			return 0;
+		if (!((*p >= 'A' && *p <= 'Z') ||
+		      (*p >= 'a' && *p <= 'z') ||
+		      (*p >= '0' && *p <= '9') ||
+		      *p == '+' || *p == '-' || *p == '.'))
+			return 0;
+	}
+	return 0;
+}
+
+static int markdown_url_is_local(const char *url)
+{
+	if (!url || !*url)
+		return 0;
+	if (url[0] == '#')
+		return 0;
+	if (strncmp(url, "//", 2) == 0)
+		return 0;
+	if (strncmp(url, "file://", 7) == 0)
+		return 1;
+	if (markdown_url_has_scheme(url))
+		return 0;
+	return 1;
+}
+
+static char *markdown_local_path_from_url(const char *url)
+{
+	const char *path;
+
+	if (!url)
+		return NULL;
+
+	path = url;
+	if (strncmp(path, "file://", 7) == 0)
+		path += 7;
+
+	if (path[0] == '~')
+		return file_expand_path(path);
+	return strdup(path);
+}
+
+static char *markdown_link_target_dup(const char *start, size_t len)
+{
+	const char *p = start;
+	const char *end = start + len;
+	const char *target_start;
+	const char *target_end;
+	char *target;
+	size_t target_len;
+
+	while (p < end && (*p == ' ' || *p == '\t' ||
+			  *p == '\r' || *p == '\n'))
+		p++;
+	while (end > p && (end[-1] == ' ' || end[-1] == '\t' ||
+			   end[-1] == '\r' || end[-1] == '\n'))
+		end--;
+
+	if (p >= end)
+		return NULL;
+
+	if (*p == '<') {
+		p++;
+		target_start = p;
+		while (p < end && *p != '>')
+			p++;
+		target_end = p;
+	} else {
+		target_start = p;
+		while (p < end && *p != ' ' && *p != '\t' &&
+		       *p != '\r' && *p != '\n')
+			p++;
+		target_end = p;
+	}
+
+	if (target_end <= target_start)
+		return NULL;
+
+	target_len = (size_t)(target_end - target_start);
+	target = malloc(target_len + 1);
+	if (!target)
+		return NULL;
+	memcpy(target, target_start, target_len);
+	target[target_len] = '\0';
+	return target;
+}
+
+static enum guardrail_verdict
+gr_final_local_file_missing(const struct guardrail_eval_ctx *ctx,
+			    char *reason_out, size_t reason_cap)
+{
+	const char *scan;
+	const char *answer;
+	int match_len;
+
+	answer = ctx->proposed_answer;
+	if (!answer || !*answer)
+		return GUARDRAIL_PASS;
+
+	scan = answer;
+	while (*scan) {
+		int idx = re_match("\\]\\(", scan, &match_len);
+		const char *url_start;
+		const char *url_end;
+		char *url;
+		char *path;
+
+		if (idx < 0)
+			break;
+
+		url_start = scan + idx + match_len;
+		url_end = strchr(url_start, ')');
+		if (!url_end)
+			break;
+
+		url = markdown_link_target_dup(url_start,
+					       (size_t)(url_end - url_start));
+		if (!url) {
+			scan = url_end + 1;
+			continue;
+		}
+
+		if (!markdown_url_is_local(url)) {
+			free(url);
+			scan = url_end + 1;
+			continue;
+		}
+
+		path = markdown_local_path_from_url(url);
+		if (path && !file_exists(path)) {
+			snprintf(reason_out, reason_cap,
+				 "Referenced local file does not exist: %s",
+				 path);
+			free(path);
+			free(url);
+			return GUARDRAIL_FAIL;
+		}
+
+		free(path);
+		free(url);
+		scan = url_end + 1;
+	}
+
 	return GUARDRAIL_PASS;
 }
 
@@ -622,6 +779,11 @@ void guardrail_register_builtin_rules(struct guardrail_config *cfg)
 		"The creative tool reported an output file but it does "
 		"not exist. The generation may have failed silently. "
 		"Try calling the tool again.");
+
+	guardrail_rule_register(cfg, "final_local_file_missing",
+		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
+		gr_final_local_file_missing, NULL, NULL,
+		"Regenerate the file or reference a local file that exists.");
 }
 
 void guardrail_set_llm(struct guardrail_config *cfg, struct model *llm)
