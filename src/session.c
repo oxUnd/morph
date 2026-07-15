@@ -289,9 +289,12 @@ int session_rename(struct db *db, int64_t id, const char *new_name)
 	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
 	sqlite3_bind_int64(stmt, 3, id);
 	rc = sqlite3_step(stmt);
+	int changed = sqlite3_changes(db->handle);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
 		MORPH_RETURN(MORPH_ERR_DB);
+	if (changed <= 0)
+		MORPH_RETURN(-ENOENT);
 	return 0;
 }
 
