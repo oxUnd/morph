@@ -1412,12 +1412,36 @@ static bool event_recorder_named_text_valid_utf8(struct morph_event_recorder *re
 	return seen;
 }
 
-TEST_F(MockLlmTest, StreamsFinalDeltaAfterFinalSectionMarker) {
+static std::string event_recorder_join_text(struct morph_event_recorder *rec,
+					    const char *expected_name)
+{
+	std::string out;
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		if (!root)
+			continue;
+		cJSON *name = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *text = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "text") : nullptr;
+		if (cJSON_IsString(name) && cJSON_IsString(text) &&
+		    strcmp(name->valuestring, expected_name) == 0)
+			out += text->valuestring;
+		cJSON_Delete(root);
+	}
+	return out;
+}
+
+TEST_F(MockLlmTest, StreamsNativeContentAsFinalDeltaWithoutFinalMarker) {
 	const char *chunks[] = {
-		"Thought: reviewing the answer\nFi",
-		"nal: streamed answer"
+		"# ",
+		"Title\n\nword",
+		" between",
+		" words"
 	};
-	llm = create_direct_stream_llm(chunks, 2, "streamed answer");
+	llm = create_direct_stream_llm(chunks, 4,
+				       "# Title\n\nword between words");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
@@ -1428,8 +1452,10 @@ TEST_F(MockLlmTest, StreamsFinalDeltaAfterFinalSectionMarker) {
 
 	int rc = react_run(ctx, "stream final", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.delta"));
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 1);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 4);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.final.delta"),
+		  "# Title\n\nword between words");
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
@@ -1454,8 +1480,6 @@ TEST_F(MockLlmTest, StreamingDeltasDoNotSplitUtf8Codepoints) {
 
 	int rc = react_run(ctx, "stream utf8", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
-							"react.thought.delta"));
 	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
 							"react.final.delta"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));

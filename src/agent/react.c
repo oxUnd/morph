@@ -1324,6 +1324,7 @@ struct react_stream_data {
 	size_t acc_cap;
 	size_t emitted_len;
 	int in_final;
+	int skip_legacy_final_separator;
 };
 
 static int react_final_marker_len(const char *p)
@@ -1392,10 +1393,13 @@ static int react_emit_final_delta(struct react_stream_data *sd,
 {
 	char *delta;
 
-	while (len > 0 && (*text == ' ' || *text == '\t')) {
+	while (sd->skip_legacy_final_separator && len > 0 &&
+	       (*text == ' ' || *text == '\t')) {
 		text++;
 		len--;
 	}
+	if (len > 0)
+		sd->skip_legacy_final_separator = 0;
 	if (len == 0)
 		return 0;
 	delta = arena_alloc(sd->arena, len + 1);
@@ -1447,6 +1451,7 @@ static int react_stream_parse_emit(struct react_stream_data *sd)
 			if (rc != 0)
 				return rc;
 			sd->in_final = 1;
+			sd->skip_legacy_final_separator = 1;
 			sd->emitted_len = (size_t)((marker - base) + marker_len);
 			return react_stream_parse_emit(sd);
 		}
@@ -1498,6 +1503,7 @@ static int react_stream_flush(struct react_stream_data *sd)
 			if (rc != 0)
 				return rc;
 			sd->in_final = 1;
+			sd->skip_legacy_final_separator = 1;
 			sd->emitted_len = (size_t)((marker - base) + marker_len);
 			return react_stream_flush(sd);
 		}
@@ -1566,6 +1572,17 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 				      "react.reasoning.delta", "delta",
 				      NULL, token);
 		return 0;
+	}
+	if (kind == LLM_STREAM_CONTENT) {
+		/*
+		 * Structured chat-completions streams already separate answer
+		 * text from native tool_calls and reasoning_content. Treat
+		 * content as the answer channel instead of falling back to the
+		 * legacy ReAct "Final:" text marker parser.
+		 */
+		sd->in_final = 1;
+		sd->skip_legacy_final_separator = 0;
+		return react_stream_cb(token, user_data);
 	}
 	return react_stream_cb(token, user_data);
 }
@@ -2814,7 +2831,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 		}
 
-		if (response.content && *response.content) {
+		if (response.tool_call_count > 0 &&
+		    response.content && *response.content) {
 			struct react_step *thought = react_step_create(ctx->turn_arena,
 				REACT_STEP_THOUGHT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
