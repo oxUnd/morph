@@ -16,6 +16,8 @@
 #include <pthread.h>
 #include <stdio.h>
 
+#define CLI_PLAN_SESSION_CACHE_MAX 32
+
 enum cli_event_mode {
 	CLI_EVENTS_HUMAN,
 	CLI_EVENTS_JSON,
@@ -28,6 +30,11 @@ struct cli_context {
 	struct session current_session;
 	struct tool_registry tools;
 	struct plan_registry plans;
+	struct {
+		int64_t session_id;
+		struct plan_registry registry;
+	} plan_sessions[CLI_PLAN_SESSION_CACHE_MAX];
+	int64_t active_plan_session_id;
 	struct skill_registry *skills;
 	struct react_context *react;
 	struct tokenizer *tokenizer;

@@ -186,6 +186,100 @@ void cli_update_tool_runtime_context(struct cli_context *ctx)
 	(void)dynamic_tools_set_session_id(&ctx->tools, session_id);
 }
 
+static int cli_plan_session_slot(struct cli_context *ctx, int64_t session_id)
+{
+	if (!ctx || session_id <= 0)
+		return -1;
+	for (int i = 0; i < CLI_PLAN_SESSION_CACHE_MAX; i++) {
+		if (ctx->plan_sessions[i].session_id == session_id)
+			return i;
+	}
+	return -1;
+}
+
+static int cli_plan_session_alloc_slot(struct cli_context *ctx,
+				       int64_t session_id)
+{
+	int fallback = -1;
+
+	if (!ctx || session_id <= 0)
+		return -1;
+	for (int i = 0; i < CLI_PLAN_SESSION_CACHE_MAX; i++) {
+		if (ctx->plan_sessions[i].session_id == 0) {
+			ctx->plan_sessions[i].session_id = session_id;
+			plan_registry_init(&ctx->plan_sessions[i].registry);
+			return i;
+		}
+		if (fallback < 0 &&
+		    ctx->plan_sessions[i].session_id != ctx->active_plan_session_id)
+			fallback = i;
+	}
+	if (fallback < 0)
+		fallback = 0;
+	ctx->plan_sessions[fallback].session_id = session_id;
+	plan_registry_init(&ctx->plan_sessions[fallback].registry);
+	return fallback;
+}
+
+static void cli_save_active_plan_session(struct cli_context *ctx)
+{
+	int slot;
+
+	if (!ctx || ctx->active_plan_session_id <= 0)
+		return;
+	slot = cli_plan_session_slot(ctx, ctx->active_plan_session_id);
+	if (slot < 0)
+		slot = cli_plan_session_alloc_slot(ctx, ctx->active_plan_session_id);
+	if (slot >= 0)
+		ctx->plan_sessions[slot].registry = ctx->plans;
+}
+
+void cli_select_plan_session(struct cli_context *ctx)
+{
+	int64_t session_id;
+	int slot;
+
+	if (!ctx)
+		return;
+	session_id = ctx->current_session.id;
+	if (session_id <= 0) {
+		plan_registry_init(&ctx->plans);
+		ctx->active_plan_session_id = 0;
+		return;
+	}
+	if (ctx->active_plan_session_id == session_id)
+		return;
+
+	cli_save_active_plan_session(ctx);
+	slot = cli_plan_session_slot(ctx, session_id);
+	if (slot >= 0) {
+		ctx->plans = ctx->plan_sessions[slot].registry;
+	} else {
+		plan_registry_init(&ctx->plans);
+		slot = cli_plan_session_alloc_slot(ctx, session_id);
+		if (slot >= 0)
+			ctx->plan_sessions[slot].registry = ctx->plans;
+	}
+	ctx->active_plan_session_id = session_id;
+}
+
+void cli_forget_plan_session(struct cli_context *ctx, int64_t session_id)
+{
+	int slot;
+
+	if (!ctx || session_id <= 0)
+		return;
+	if (ctx->active_plan_session_id == session_id) {
+		plan_registry_init(&ctx->plans);
+		ctx->active_plan_session_id = 0;
+	}
+	slot = cli_plan_session_slot(ctx, session_id);
+	if (slot >= 0) {
+		ctx->plan_sessions[slot].session_id = 0;
+		plan_registry_init(&ctx->plan_sessions[slot].registry);
+	}
+}
+
 void cli_set_usage_context(struct cli_context *ctx)
 {
 	g_cli_usage_ctx = ctx;
@@ -329,6 +423,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	if (!ctx || !input)
 		return -EINVAL;
 	command_started_at = (int64_t)time(NULL);
+	cli_select_plan_session(ctx);
 	(void)scheduled_tasks_tool_set_time_anchor(&ctx->tools,
 						   command_started_at);
 	(void)scheduled_tasks_tool_set_source_session(&ctx->tools,

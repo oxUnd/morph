@@ -1113,6 +1113,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	}
 
 	session_ensure_display_id(&ctx->database, &ctx->current_session);
+	cli_select_plan_session(ctx);
 	cli_update_tool_runtime_context(ctx);
 
 	rc = cli_sync_start(ctx);

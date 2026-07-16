@@ -19,6 +19,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
+		cli_select_plan_session(ctx);
 		session_load_history(ctx);
 		cli_update_tool_runtime_context(ctx);
 		ctx->session_auto_named = !auto_named;
@@ -85,6 +86,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	if (rc == 0) {
 		ctx->current_session = s;
 		utf8_sanitize_inplace(ctx->current_session.name);
+		cli_select_plan_session(ctx);
 		session_load_history(ctx);
 		cli_update_tool_runtime_context(ctx);
 		ctx->session_auto_named = 1;
@@ -220,10 +222,12 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 		return -EINVAL;
 	}
 	int rc = session_delete(&ctx->database, id);
-	if (rc == 0)
+	if (rc == 0) {
+		cli_forget_plan_session(ctx, id);
 		CMD_OK("deleted session: %s", name);
-	else
+	} else {
 		CMD_ERROR("failed to delete session");
+	}
 	return rc;
 }
 

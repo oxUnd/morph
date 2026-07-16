@@ -179,6 +179,7 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 		goto restore;
 	session_ensure_display_id(&ctx->database, &run_session);
 	ctx->current_session = run_session;
+	cli_select_plan_session(ctx);
 	mem_opts = cli_memory_options(ctx);
 	memset(&runtime, 0, sizeof(runtime));
 	runtime.db = &ctx->database;
@@ -208,6 +209,7 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 
 restore:
 	ctx->current_session = previous_session;
+	cli_select_plan_session(ctx);
 	session_load_history(ctx);
 	pthread_mutex_unlock(&ctx->react_lock);
 	locked = 0;
