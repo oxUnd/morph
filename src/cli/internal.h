@@ -144,7 +144,11 @@ int output_callback(const struct react_output_event *event, void *user_data);
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,
-			  char **answer,
+			  const char *selection_mode,
+			  int min_choices,
+			  int max_choices,
+			  char ***answers,
+			  int *answers_count,
 			  void *user_data);
 enum hitl_verdict hitl_approval_callback(const char *tool_name,
 					 const char *tool_args,

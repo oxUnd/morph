@@ -20,7 +20,11 @@ static void ask_user_context_destroy(void *user_data)
 static cJSON *ask_user_data_to_json(const char *question,
 				    const char *const *choices,
 				    int choices_count,
-				    const char *answer,
+				    const char *selection_mode,
+				    int min_choices,
+				    int max_choices,
+				    char *const *answers,
+				    int answers_count,
 				    int no_input)
 {
 	cJSON *root = cJSON_CreateObject();
@@ -28,13 +32,20 @@ static cJSON *ask_user_data_to_json(const char *question,
 		return NULL;
 
 	cJSON *choices_json = cJSON_CreateArray();
+	cJSON *answers_json = NULL;
 	if (!choices_json)
+		goto fail;
+	answers_json = cJSON_CreateArray();
+	if (!answers_json)
 		goto fail;
 
 	if (!cJSON_AddStringToObject(root, "kind", "ask_user_response") ||
 	    !cJSON_AddStringToObject(root, "question",
 				     question ? question : "") ||
-	    !cJSON_AddStringToObject(root, "answer", answer ? answer : "") ||
+	    !cJSON_AddStringToObject(root, "selection_mode",
+				     selection_mode ? selection_mode : "single") ||
+	    !cJSON_AddNumberToObject(root, "min_choices", min_choices) ||
+	    !cJSON_AddNumberToObject(root, "max_choices", max_choices) ||
 	    !cJSON_AddBoolToObject(root, "no_input", no_input))
 		goto fail;
 
@@ -45,10 +56,19 @@ static cJSON *ask_user_data_to_json(const char *question,
 		cJSON_AddItemToArray(choices_json, choice);
 	}
 
+	for (int i = 0; i < answers_count; i++) {
+		cJSON *answer = cJSON_CreateString(answers[i] ? answers[i] : "");
+		if (!answer)
+			goto fail;
+		cJSON_AddItemToArray(answers_json, answer);
+	}
+
 	cJSON_AddItemToObject(root, "choices", choices_json);
+	cJSON_AddItemToObject(root, "answers", answers_json);
 	return root;
 
 fail:
+	cJSON_Delete(answers_json);
 	cJSON_Delete(choices_json);
 	cJSON_Delete(root);
 	return NULL;
@@ -79,11 +99,17 @@ static int attach_ask_user_result(struct tool_result *result,
 				  const char *question,
 				  const char *const *choices,
 				  int choices_count,
-				  const char *answer,
+				  const char *selection_mode,
+				  int min_choices,
+				  int max_choices,
+				  char *const *answers,
+				  int answers_count,
 				  int no_input)
 {
 	cJSON *data = ask_user_data_to_json(question, choices, choices_count,
-					    answer, no_input);
+					    selection_mode, min_choices,
+					    max_choices, answers, answers_count,
+					    no_input);
 	if (!data)
 		return -ENOMEM;
 
@@ -113,6 +139,9 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	}
 
 	char question[1024] = {0};
+	char selection_mode[16] = "single";
+	int min_choices = 0;
+	int max_choices = 0;
 	const char *choices[64] = {NULL};
 	int choices_count = 0;
 	char *choice_copies[64] = {NULL};
@@ -124,6 +153,20 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 			if (cJSON_IsString(q) && q->valuestring)
 				strncpy(question, q->valuestring,
 					sizeof(question) - 1);
+
+			cJSON *mode = cJSON_GetObjectItem(root, "selection_mode");
+			if (cJSON_IsString(mode) && mode->valuestring &&
+			    strcmp(mode->valuestring, "multi") == 0)
+				strncpy(selection_mode, "multi",
+					sizeof(selection_mode) - 1);
+
+			cJSON *min = cJSON_GetObjectItem(root, "min_choices");
+			if (cJSON_IsNumber(min) && min->valueint > 0)
+				min_choices = min->valueint;
+
+			cJSON *max = cJSON_GetObjectItem(root, "max_choices");
+			if (cJSON_IsNumber(max) && max->valueint > 0)
+				max_choices = max->valueint;
 
 			cJSON *ch = cJSON_GetObjectItem(root, "choices");
 			if (cJSON_IsArray(ch)) {
@@ -148,6 +191,20 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		}
 	}
 
+	if (strcmp(selection_mode, "multi") == 0) {
+		if (min_choices <= 0)
+			min_choices = choices_count > 0 ? 1 : 0;
+		if (min_choices > choices_count)
+			min_choices = choices_count;
+		if (max_choices > choices_count)
+			max_choices = choices_count;
+		if (max_choices > 0 && max_choices < min_choices)
+			max_choices = min_choices;
+	} else {
+		min_choices = choices_count > 0 ? 1 : 0;
+		max_choices = choices_count > 0 ? 1 : 0;
+	}
+
 	if (question[0] == '\0') {
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
@@ -157,12 +214,18 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 
-	char *answer = NULL;
-	int rc = ctx->cb(question, choices, choices_count, &answer,
+	char **answers = NULL;
+	int answers_count = 0;
+	int rc = ctx->cb(question, choices, choices_count, selection_mode,
+			 min_choices, max_choices, &answers, &answers_count,
 			 ctx->user_data);
 
 	if (rc < 0) {
-		free(answer);
+		if (answers) {
+			for (int i = 0; i < answers_count; i++)
+				free(answers[i]);
+			free(answers);
+		}
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
 		char err[256];
@@ -173,21 +236,40 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		return rc;
 	}
 
-	if (!answer || !answer[0]) {
-		free(answer);
+	if (answers) {
+		int write = 0;
+		for (int read = 0; read < answers_count; read++) {
+			if (answers[read] && answers[read][0]) {
+				answers[write++] = answers[read];
+			} else {
+				free(answers[read]);
+			}
+		}
+		answers_count = write;
+	}
+
+	if (!answers || answers_count <= 0) {
+		if (answers)
+			free(answers);
 		(void)tool_result_success_json_text(result, strdup(
 			"User provided no input. Proceed with your best judgment."));
 		(void)attach_ask_user_result(result, question, choices,
-					     choices_count, "", 1);
+					     choices_count, selection_mode,
+					     min_choices, max_choices,
+					     NULL, 0, 1);
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
 		return 0;
 	}
 
 	(void)attach_ask_user_result(result, question, choices, choices_count,
-				     answer, 0);
-	log_info("ask_user: question='%s' answer='%s'", question, answer);
-	free(answer);
+				     selection_mode, min_choices, max_choices,
+				     answers, answers_count, 0);
+	log_info("ask_user: question='%s' answers_count=%d", question,
+		 answers_count);
+	for (int i = 0; i < answers_count; i++)
+		free(answers[i]);
+	free(answers);
 	for (int i = 0; i < choices_count; i++)
 		free(choice_copies[i]);
 	return 0;
@@ -215,13 +297,24 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 		"you already have enough context. If unsure, proceed with "
 		"your best judgment and state your assumption. "
 		"When presenting options, use 'choices' for structured "
-		"selection.", .input_schema = "{\"type\":\"object\",\"properties\":{"
+		"selection. Use selection_mode='multi' only when the user may "
+		"select more than one choice.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"question\":{\"type\":\"string\","
 		"\"description\":\"The question to ask the user\"},"
 		"\"choices\":{\"type\":\"array\","
 		"\"items\":{\"type\":\"string\"},"
 		"\"description\":\"Optional list of choices for the user "
-		"to pick from\"}"
+		"to pick from\"},"
+		"\"selection_mode\":{\"type\":\"string\","
+		"\"enum\":[\"single\",\"multi\"],"
+		"\"description\":\"Whether the user should pick one choice "
+		"or multiple choices. Defaults to single.\"},"
+		"\"min_choices\":{\"type\":\"integer\","
+		"\"description\":\"Minimum number of choices required for "
+		"multi-select.\"},"
+		"\"max_choices\":{\"type\":\"integer\","
+		"\"description\":\"Maximum number of choices allowed for "
+		"multi-select.\"}"
 		"},\"required\":[\"question\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = ask_user_exec, .user_data = ctx, .user_data_destroy = ask_user_context_destroy });
 	if (rc != 0)
 		free(ctx);

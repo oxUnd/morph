@@ -491,25 +491,105 @@ int output_callback(const struct react_output_event *event, void *user_data)
 }
 
 
+static int cli_set_ask_user_answers(char ***answers,
+				    int *answers_count,
+				    const char *const *values,
+				    int values_count)
+{
+	if (!answers || !answers_count)
+		return -EINVAL;
+	*answers = NULL;
+	*answers_count = 0;
+	if (values_count <= 0)
+		return 0;
+
+	char **out = calloc((size_t)values_count, sizeof(char *));
+	if (!out)
+		return -ENOMEM;
+	for (int i = 0; i < values_count; i++) {
+		out[i] = strdup(values[i] ? values[i] : "");
+		if (!out[i]) {
+			for (int j = 0; j < i; j++)
+				free(out[j]);
+			free(out);
+			return -ENOMEM;
+		}
+	}
+	*answers = out;
+	*answers_count = values_count;
+	return 0;
+}
+
+static int cli_parse_multi_choice_answer(char *input,
+					 const char *const *choices,
+					 int choices_count,
+					 int min_choices,
+					 int max_choices,
+					 char ***answers,
+					 int *answers_count)
+{
+	int selected[64] = {0};
+	int selected_count = 0;
+	char *save = NULL;
+
+	for (char *tok = strtok_r(input, ", ", &save); tok;
+	     tok = strtok_r(NULL, ", ", &save)) {
+		int n = atoi(tok);
+		if (n < 1 || n > choices_count)
+			continue;
+		if (!selected[n - 1]) {
+			selected[n - 1] = 1;
+			selected_count++;
+		}
+	}
+
+	if (selected_count < min_choices ||
+	    (max_choices > 0 && selected_count > max_choices))
+		return cli_set_ask_user_answers(answers, answers_count, NULL, 0);
+
+	const char *values[64] = {0};
+	int count = 0;
+	for (int i = 0; i < choices_count; i++) {
+		if (selected[i])
+			values[count++] = choices[i];
+	}
+	return cli_set_ask_user_answers(answers, answers_count, values, count);
+}
+
 int cli_ask_user_callback(const char *question,
-				  const char *const *choices,
-				  int choices_count,
-				  char **answer,
-				  void *user_data)
+			  const char *const *choices,
+			  int choices_count,
+			  const char *selection_mode,
+			  int min_choices,
+			  int max_choices,
+			  char ***answers,
+			  int *answers_count,
+			  void *user_data)
 {
 	struct cli_context *ctx = user_data;
-	if (!ctx || !answer)
+	int multi = selection_mode && strcmp(selection_mode, "multi") == 0;
+	if (!ctx || !answers || !answers_count)
 		return -EINVAL;
 
 	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
 
-	char prompt[64];
+	char prompt[128];
 	if (choices && choices_count > 0) {
 		for (int i = 0; i < choices_count; i++)
 			printf("  %d. %s\n", i + 1, choices[i]);
-		snprintf(prompt, sizeof(prompt),
-			 "  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
-			 choices_count);
+		if (multi && max_choices > 0) {
+			snprintf(prompt, sizeof(prompt),
+				 "  [" ANSI_GREEN "1-%d, comma separated; %d-%d choices" ANSI_RESET "]: ",
+				 choices_count, min_choices, max_choices);
+		} else if (multi) {
+			snprintf(prompt, sizeof(prompt),
+				 "  [" ANSI_GREEN "1-%d, comma separated; min %d" ANSI_RESET "]: ",
+				 choices_count, min_choices);
+		} else {
+			snprintf(prompt, sizeof(prompt),
+				 "  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
+				 choices_count);
+		}
 	} else {
 		snprintf(prompt, sizeof(prompt), "  > ");
 	}
@@ -528,22 +608,32 @@ int cli_ask_user_callback(const char *question,
 		}
 		if (!input) {
 			printf("\n");
-			*answer = strdup("");
 			return -EIO;
 		}
 		if (input[0] != '\0')
 			add_history(input);
 		if (choices && choices_count > 0) {
+			if (multi) {
+				int rc = cli_parse_multi_choice_answer(
+					input, choices, choices_count,
+					min_choices, max_choices,
+					answers, answers_count);
+				free(input);
+				return rc;
+			}
 			int n = atoi(input);
 			if (n >= 1 && n <= choices_count) {
-				*answer = strdup(choices[n - 1]);
+				const char *values[] = { choices[n - 1] };
 				free(input);
-			} else {
-				*answer = input;
+				return cli_set_ask_user_answers(
+					answers, answers_count, values, 1);
 			}
-		} else {
-			*answer = input;
 		}
+		const char *values[] = { input };
+		int rc = cli_set_ask_user_answers(answers, answers_count,
+						  values, 1);
+		free(input);
+		return rc;
 	}
 #else
 	fflush(stdout);
@@ -551,13 +641,11 @@ int cli_ask_user_callback(const char *question,
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf("\n");
-		*answer = strdup("");
 		return -ENOTTY;
 	}
 	if (!fgets(buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf("\n");
-		*answer = strdup("");
 		return -EIO;
 	}
 	fclose(tty);
@@ -565,17 +653,21 @@ int cli_ask_user_callback(const char *question,
 	buf[strcspn(buf, "\n")] = '\0';
 
 	if (choices && choices_count > 0) {
+		if (multi)
+			return cli_parse_multi_choice_answer(
+				buf, choices, choices_count, min_choices,
+				max_choices, answers, answers_count);
 		int n = atoi(buf);
-		if (n >= 1 && n <= choices_count)
-			*answer = strdup(choices[n - 1]);
-		else
-			*answer = strdup(buf);
-	} else {
-		*answer = strdup(buf);
+		if (n >= 1 && n <= choices_count) {
+			const char *values[] = { choices[n - 1] };
+			return cli_set_ask_user_answers(answers, answers_count,
+							values, 1);
+		}
 	}
-#endif
 
-	return 0;
+	const char *values[] = { buf };
+	return cli_set_ask_user_answers(answers, answers_count, values, 1);
+#endif
 }
 
 /*
