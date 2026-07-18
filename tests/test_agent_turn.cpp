@@ -85,8 +85,12 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 	ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
 	ASSERT_EQ(agent_turn_finish(&turn, nullptr), -EALREADY);
 	EXPECT_TRUE(result.trace_saved);
+	EXPECT_EQ(result.trace_rc, 0);
 	EXPECT_TRUE(result.user_saved);
 	EXPECT_TRUE(result.assistant_saved);
+	EXPECT_EQ(result.user_rc, 0);
+	EXPECT_EQ(result.assistant_rc, 0);
+	EXPECT_EQ(result.message_persistence_rc, 0);
 	EXPECT_GT(result.user_tokens, 0);
 	EXPECT_GT(result.assistant_tokens, 0);
 
@@ -119,6 +123,46 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 	EXPECT_EQ(aborted, 0);
 	EXPECT_NE(strstr(trace, "\"type\":\"Final\""), nullptr);
 	free(trace);
+}
+
+TEST_F(AgentTurnTest, FinishRollsBackMessagesWhenAssistantPersistenceFails)
+{
+	ASSERT_EQ(db_exec(&db,
+		"CREATE TRIGGER reject_assistant_message "
+		"BEFORE INSERT ON messages WHEN NEW.role = 'assistant' "
+		"BEGIN SELECT RAISE(ABORT, 'reject assistant'); END;"), 0);
+
+	struct agent_session_runtime runtime;
+	memset(&runtime, 0, sizeof(runtime));
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
+		~AGENT_TURN_SAVE_TRACE &
+		~AGENT_TURN_CONSOLIDATE_MEMORY &
+		~AGENT_TURN_ASYNC_MEMORY &
+		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+
+	struct agent_turn_input input;
+	memset(&input, 0, sizeof(input));
+	input.model_input = "remember this";
+
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	react->final_answer = strdup("answer");
+	ASSERT_NE(react->final_answer, nullptr);
+	react->state = REACT_STATE_DONE;
+
+	struct agent_turn_result result;
+	EXPECT_LT(agent_turn_finish(&turn, &result), 0);
+	EXPECT_LT(result.message_persistence_rc, 0);
+	EXPECT_FALSE(result.user_saved);
+	EXPECT_FALSE(result.assistant_saved);
+
+	int count = 0;
+	struct message *messages = message_list(&db, sess.id, &count);
+	EXPECT_EQ(messages, nullptr);
+	EXPECT_EQ(count, 0);
 }
 
 TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)

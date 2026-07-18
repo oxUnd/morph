@@ -34,6 +34,7 @@ struct config_model_entry {
 
 struct config_models {
 	struct config_model_entry text;
+	struct config_model_entry vision;
 	struct config_model_entry image;
 	struct config_model_entry video;
 };

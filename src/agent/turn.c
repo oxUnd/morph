@@ -407,25 +407,47 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 
 	if (flags & AGENT_TURN_SAVE_TRACE) {
 		step_rc = turn_save_trace(turn);
+		local_result.trace_rc = step_rc;
 		if (step_rc == 0)
 			local_result.trace_saved =
 				turn->runtime.react->steps ? 1 : 0;
-		turn_set_first_error(&rc, step_rc);
 	}
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
-		step_rc = turn_persist_user(turn, &local_result);
-		turn_set_first_error(&rc, step_rc);
-
-		step_rc = turn_persist_assistant(
-			turn, &local_result, &assistant_for_memory);
-		turn_set_first_error(&rc, step_rc);
+		step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+		if (step_rc == 0) {
+			step_rc = turn_persist_user(turn, &local_result);
+			local_result.user_rc = step_rc;
+		}
+		if (step_rc == 0) {
+			step_rc = turn_persist_assistant(
+				turn, &local_result, &assistant_for_memory);
+			local_result.assistant_rc = step_rc;
+		}
+		if (step_rc == 0)
+			step_rc = db_exec(turn->runtime.db, "COMMIT;");
+		if (step_rc != 0) {
+			(void)db_exec(turn->runtime.db, "ROLLBACK;");
+			local_result.user_saved = 0;
+			local_result.assistant_saved = 0;
+			local_result.user_tokens = 0;
+			local_result.assistant_tokens = 0;
+			free(assistant_for_memory);
+			assistant_for_memory = NULL;
+			if (local_result.user_rc == 0)
+				local_result.user_rc = step_rc;
+			if (local_result.assistant_rc == 0)
+				local_result.assistant_rc = step_rc;
+			local_result.message_persistence_rc = step_rc;
+			turn_set_first_error(&rc, step_rc);
+		}
 	}
 
 	memory_answer = assistant_for_memory ?
 		assistant_for_memory : turn->runtime.react->final_answer;
 	step_rc = turn_consolidate_memory(turn, &local_result, memory_answer);
-	turn_set_first_error(&rc, step_rc);
+	if (step_rc != 0 && local_result.memory_rc == 0)
+		local_result.memory_rc = step_rc;
 
 	free(assistant_for_memory);
 	turn->finished = 1;

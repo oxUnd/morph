@@ -13,11 +13,11 @@ log_level = "info"
 log_file = "~/.morph/log/agent.log"
 
 # ──────────────────────────────────────────────
-# Text / vision chat model
+# Text chat model
 # ──────────────────────────────────────────────
 [model.text]
-# Used by the ReAct loop, text_qa, and img_qa. img_qa requires a
-# vision-capable chat model here; [model.image] is only for image generation.
+# Used by the ReAct loop and text Q&A. [model.image] is only for image
+# generation; configure [model.vision] separately to enable img_qa.
 provider    = "openai"
 model       = "gpt-4o"
 api_base    = "https://api.openai.com/v1"
@@ -41,6 +41,20 @@ timeout_seconds  = 300
 # model       = "deepseek-chat"
 # api_base    = "https://api.deepseek.com/v1"
 # api_key_env = "DEEPSEEK_API_KEY"
+
+# ──────────────────────────────────────────────
+# Optional vision chat model
+# ──────────────────────────────────────────────
+# Used only by img_qa for image understanding, OCR, and visual comparison.
+# Leave this section absent or empty to keep img_qa unavailable. Do not point
+# it at a text-only model such as DeepSeek V4.
+# [model.vision]
+# provider    = "openai"
+# model       = "gpt-4o"
+# api_base    = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+# max_tokens  = 4096
+# timeout_seconds = 300
 
 # ──────────────────────────────────────────────
 # Image generation model

@@ -61,7 +61,7 @@ static int img_qa_take_call_error(struct tool_result *result,
 	if (llm && llm->last_error[0])
 		cJSON_AddStringToObject(root, "detail", llm->last_error);
 	cJSON_AddStringToObject(root, "hint",
-		"img_qa uses [model.text]; configure it to a vision-capable "
+		"img_qa uses [model.vision]; configure it to a vision-capable "
 		"chat model. img_gen uses [model.image], so image generation "
 		"can work while image QA fails.");
 	json = cJSON_PrintUnformatted(root);

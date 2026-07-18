@@ -362,6 +362,12 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  max_tokens = %d\n", ctx->config.models.text.max_tokens);
 	printf("  timeout_seconds = %d\n",
 	       ctx->config.models.text.timeout_seconds);
+	printf(ANSI_BOLD "[model.vision]" ANSI_RESET "\n");
+	printf("  provider = %s\n", ctx->config.models.vision.provider);
+	printf("  model = %s\n", ctx->config.models.vision.model);
+	printf("  api_base = %s\n", ctx->config.models.vision.api_base);
+	printf("  context_limit = %d\n",
+	       ctx->config.models.vision.context_limit);
 	printf(ANSI_BOLD "[model.image]" ANSI_RESET "\n");
 	printf("  provider = %s\n", ctx->config.models.image.provider);
 	printf("  model = %s\n", ctx->config.models.image.model);

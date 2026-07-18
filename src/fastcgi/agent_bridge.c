@@ -48,6 +48,7 @@ static pthread_once_t  g_once    = PTHREAD_ONCE_INIT;
 static struct config   g_config;
 static struct tokenizer *g_tokenizer = NULL;
 static struct model      *g_llm       = NULL;
+static struct model      *g_vision_llm = NULL;
 static struct tool_registry g_tools;
 static struct plan_registry g_plans;
 static struct tool_context *g_tctx    = NULL;
@@ -191,7 +192,32 @@ static void bridge_init_once(void)
 			g_tctx, g_config.react.tool_timeout_seconds);
 
 	runtime_query_tools_init(&g_tools);
-	img_qa_init(&g_tools, g_llm, g_tctx);
+	{
+		if (g_config.models.vision.api_key_env[0] &&
+		    !g_config.models.vision.api_key[0]) {
+			const char *env = getenv(g_config.models.vision.api_key_env);
+			if (env)
+				snprintf(g_config.models.vision.api_key,
+					 sizeof(g_config.models.vision.api_key), "%s", env);
+		}
+		g_vision_llm = model_llm_create(
+			g_config.models.vision.provider,
+			g_config.models.vision.model,
+			g_config.models.vision.api_base,
+			g_config.models.vision.api_key);
+		if (g_vision_llm) {
+			g_vision_llm->timeout_seconds =
+				g_config.models.vision.timeout_seconds;
+			if (g_config.models.vision.max_tokens > 0)
+				g_vision_llm->max_tokens =
+					g_config.models.vision.max_tokens;
+			if (g_config.models.vision.context_limit > 0)
+				g_vision_llm->context_limit =
+					g_config.models.vision.context_limit;
+			if (g_config.models.vision.model[0])
+				img_qa_init(&g_tools, g_vision_llm, g_tctx);
+		}
+	}
 
 	/* Image generation model */
 	{

@@ -133,6 +133,11 @@ static void print_version(const char *config_path)
 	       ANSI_RESET "        " ANSI_YELLOW "%s" ANSI_RESET
 	       " / %s\n",
 	       cfg.models.text.provider, cfg.models.text.model);
+	printf("  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Vision"
+	       ANSI_RESET "     " ANSI_YELLOW "%s" ANSI_RESET
+	       " / %s\n",
+	       cfg.models.vision.provider[0] ? cfg.models.vision.provider : "-",
+	       cfg.models.vision.model[0] ? cfg.models.vision.model : "-");
 	printf("  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Image"
 	       ANSI_RESET "      " ANSI_YELLOW "%s" ANSI_RESET
 	       " / %s\n",

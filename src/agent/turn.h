@@ -68,8 +68,12 @@ struct agent_turn_result {
 	int history_loaded;
 	int memory_context_built;
 	int trace_saved;
+	int trace_rc;
 	int user_saved;
 	int assistant_saved;
+	int user_rc;
+	int assistant_rc;
+	int message_persistence_rc;
 	int user_tokens;
 	int assistant_tokens;
 	int memory_queued;

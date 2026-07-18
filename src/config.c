@@ -34,6 +34,9 @@ void config_set_defaults(struct config *cfg)
 	cfg->models.text.max_tokens = 4096;
 	cfg->models.text.timeout_seconds = 300;
 
+	/* [model.vision] is optional and intentionally has no fallback. */
+	cfg->models.vision.timeout_seconds = 300;
+
 	strncpy(cfg->models.image.provider, "openai",
 		sizeof(cfg->models.image.provider) - 1);
 	strncpy(cfg->models.image.model, "dall-e-3",
@@ -433,6 +436,7 @@ int config_load(struct config *cfg, const char *path)
 
 	toml_table_t *model_tbl = table_path(tbl, "model");
 	load_model_entry(model_tbl, "text", &cfg->models.text);
+	load_model_entry(model_tbl, "vision", &cfg->models.vision);
 	load_model_entry(model_tbl, "image", &cfg->models.image);
 	load_model_entry(model_tbl, "video", &cfg->models.video);
 	load_credits_config(tbl, &cfg->credits);
@@ -838,6 +842,9 @@ void config_print(const struct config *cfg)
 	log_info("  [model.text] provider=%s model=%s api_base=%s",
 		 cfg->models.text.provider, cfg->models.text.model,
 		 cfg->models.text.api_base);
+	log_info("  [model.vision] provider=%s model=%s api_base=%s",
+		 cfg->models.vision.provider, cfg->models.vision.model,
+		 cfg->models.vision.api_base);
 	log_info("  [credits] daily_limit=%d currency=%s cost_coef=%.3f prices=%d",
 		 cfg->credits.daily_limit, cfg->credits.currency,
 		 cfg->credits.cost_to_credit_coef,

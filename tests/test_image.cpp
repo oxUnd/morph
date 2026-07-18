@@ -510,7 +510,7 @@ TEST_F(ImgGenToolTest, QaReturnsProviderFailureDetail) {
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_TRUE(strstr(result.text.data, "image QA LLM call failed") != NULL);
 	EXPECT_TRUE(strstr(result.text.data, "model does not support image input") != NULL);
-	EXPECT_TRUE(strstr(result.text.data, "[model.text]") != NULL);
+	EXPECT_TRUE(strstr(result.text.data, "[model.vision]") != NULL);
 	tool_result_cleanup(&result);
 	std::remove(path);
 }

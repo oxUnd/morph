@@ -202,6 +202,8 @@ int db_open(struct db *db, const char *path)
 	}
 	sqlite3_exec(db->handle, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+	/* Multiple frontends and background workers may write this WAL database. */
+	sqlite3_busy_timeout(db->handle, 5000);
 	log_info("database opened: %s", path);
 	return 0;
 }

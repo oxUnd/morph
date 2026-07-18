@@ -568,6 +568,8 @@ void cli_shutdown(struct cli_context *ctx)
 	}
 	if (ctx->llm)
 		model_destroy(ctx->llm);
+	if (ctx->vision_llm)
+		model_destroy(ctx->vision_llm);
 	if (ctx->img_llm)
 		model_destroy(ctx->img_llm);
 	if (ctx->vid_llm)

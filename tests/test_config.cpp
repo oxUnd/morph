@@ -23,6 +23,8 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.models.text.provider, "openai");
 	EXPECT_STREQ(cfg.models.text.model, "gpt-4o");
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
+	EXPECT_STREQ(cfg.models.vision.model, "");
+	EXPECT_EQ(cfg.models.vision.timeout_seconds, 300);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
@@ -71,6 +73,13 @@ provider = "deepseek"
 model = "deepseek-chat"
 context_limit = 200000
 
+[model.vision]
+provider = "openai"
+model = "gpt-4o"
+api_base = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+max_tokens = 2048
+
 [react]
 max_iterations = 5
 tool_timeout_seconds = 45
@@ -98,6 +107,9 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.models.text.provider, "deepseek");
 	EXPECT_STREQ(cfg.models.text.model, "deepseek-chat");
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
+	EXPECT_STREQ(cfg.models.vision.provider, "openai");
+	EXPECT_STREQ(cfg.models.vision.model, "gpt-4o");
+	EXPECT_EQ(cfg.models.vision.max_tokens, 2048);
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);

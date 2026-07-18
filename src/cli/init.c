@@ -298,6 +298,27 @@ static int cli_init_models(struct cli_context *ctx)
 		guardrail_rule_disable(&ctx->react->guardrail,
 			ctx->config.react.guardrail_disabled_rules[i]);
 
+	const char *vision_api_key = NULL;
+	if (ctx->config.models.vision.api_key[0])
+		vision_api_key = ctx->config.models.vision.api_key;
+	else
+		vision_api_key = getenv(ctx->config.models.vision.api_key_env);
+	ctx->vision_llm = model_llm_create(
+		ctx->config.models.vision.provider,
+		ctx->config.models.vision.model,
+		ctx->config.models.vision.api_base,
+		vision_api_key ? vision_api_key : "");
+	if (ctx->vision_llm) {
+		ctx->vision_llm->timeout_seconds =
+			ctx->config.models.vision.timeout_seconds;
+		if (ctx->config.models.vision.max_tokens > 0)
+			ctx->vision_llm->max_tokens =
+				ctx->config.models.vision.max_tokens;
+		if (ctx->config.models.vision.context_limit > 0)
+			ctx->vision_llm->context_limit =
+				ctx->config.models.vision.context_limit;
+	}
+
 	const char *img_api_key = NULL;
 	if (ctx->config.models.image.api_key[0])
 		img_api_key = ctx->config.models.image.api_key;
@@ -365,8 +386,12 @@ static int cli_init_tools(struct cli_context *ctx)
 	runtime_query_tools_init(&ctx->tools);
 	log_info("registered runtime query tools");
 
-	img_qa_init(&ctx->tools, ctx->llm, ctx->tctx);
-	log_info("registered img_qa tool");
+	if (ctx->config.models.vision.model[0] && ctx->vision_llm) {
+		img_qa_init(&ctx->tools, ctx->vision_llm, ctx->tctx);
+		log_info("registered img_qa tool");
+	} else {
+		log_info("img_qa unavailable: [model.vision] is not configured");
+	}
 
 	img_gen_init(&ctx->tools, ctx->img_llm, ctx->tctx);
 	log_info("registered img_gen tool");
