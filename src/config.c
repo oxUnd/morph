@@ -145,14 +145,14 @@ void config_set_defaults(struct config *cfg)
 	cfg->sync.retention_days = 30;
 	{
 		static const char *const includes[] = {
-			"config.toml", "data.db", "skills", "tools",
-			"exts", "output"
+			"config.toml", "data.db", "skills", "tools", "exts", "output",
+			"ui-history.db"
 		};
-		for (int i = 0; i < 6; i++) {
+		for (int i = 0; i < 7; i++) {
 			strncpy(cfg->sync.include[i], includes[i],
 				SYNC_INCLUDE_LEN_MAX - 1);
 		}
-		cfg->sync.include_count = 6;
+		cfg->sync.include_count = 7;
 	}
 }
 
@@ -285,6 +285,36 @@ static void load_string_array(toml_table_t *tbl, const char *key,
 		free(val.u.s);
 	}
 	*out_count = count;
+}
+
+static void migrate_legacy_sync_includes(struct config *cfg)
+{
+	static const char *const legacy[] = {
+		"config.toml", "data.db", "skills", "tools", "exts", "output"
+	};
+	static const char *const incorrect_default[] = {
+		"config.toml", "data.db", "skills", "tools", "exts", "output",
+		".morph/ui-history.db"
+	};
+
+	if (!cfg)
+		return;
+	if (cfg->sync.include_count == 6) {
+		for (int i = 0; i < 6; i++) {
+			if (strcmp(cfg->sync.include[i], legacy[i]) != 0)
+				return;
+		}
+	} else if (cfg->sync.include_count == 7) {
+		for (int i = 0; i < 7; i++) {
+			if (strcmp(cfg->sync.include[i], incorrect_default[i]) != 0)
+				return;
+		}
+	} else {
+		return;
+	}
+	strncpy(cfg->sync.include[6], "ui-history.db",
+		SYNC_INCLUDE_LEN_MAX - 1);
+	cfg->sync.include_count = 7;
 }
 
 static void load_cap_array(toml_table_t *tbl, const char *key,
@@ -605,6 +635,7 @@ int config_load(struct config *cfg, const char *path)
 		load_string_array(sync, "include", cfg->sync.include,
 				  &cfg->sync.include_count,
 				  SYNC_INCLUDE_MAX, SYNC_INCLUDE_LEN_MAX);
+		migrate_legacy_sync_includes(cfg);
 	}
 
 	toml_table_t *mcp_tbl = table_path(tbl, "mcp");

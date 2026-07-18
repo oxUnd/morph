@@ -41,9 +41,23 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.sync.enabled, 0);
 	EXPECT_EQ(cfg.sync.interval_seconds, 300);
 	EXPECT_EQ(cfg.sync.retention_days, 30);
-	ASSERT_EQ(cfg.sync.include_count, 6);
+	ASSERT_EQ(cfg.sync.include_count, 7);
 	EXPECT_STREQ(cfg.sync.include[0], "config.toml");
 	EXPECT_STREQ(cfg.sync.include[1], "data.db");
+	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
+}
+
+TEST_F(ConfigTest, MigratesLegacyDefaultSyncIncludes) {
+	const char *toml = R"(
+[sync]
+include = ["config.toml", "data.db", "skills", "tools", "exts", "output"]
+)";
+	file_write_all(config_path, toml, strlen(toml));
+
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	ASSERT_EQ(cfg.sync.include_count, 7);
+	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
 }
 
 TEST_F(ConfigTest, LoadFromFile) {
