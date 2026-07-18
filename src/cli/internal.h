@@ -85,17 +85,9 @@ extern const char *default_db_path;
 extern const char *default_config_path;
 extern volatile sig_atomic_t cli_sigint_received;
 
-void session_load_history(struct cli_context *ctx);
-struct memory_options cli_memory_options(const struct cli_context *ctx);
 void print_padded(const char *s, int target_width);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
-void cli_credit_session_key(struct cli_context *ctx, char *buf, size_t size);
-void cli_update_tool_runtime_context(struct cli_context *ctx);
-void cli_select_plan_session(struct cli_context *ctx);
-void cli_forget_plan_session(struct cli_context *ctx, int64_t session_id);
-void cli_set_usage_context(struct cli_context *ctx);
-void cli_record_model_usage(const struct model_usage *usage, void *user_data);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      int64_t image_units,
 				      int64_t video_seconds,
@@ -111,6 +103,9 @@ int cli_emit_background_event(struct cli_context *ctx,
 			      const char *name, const char *phase,
 			      const char *message, const char *task,
 			      int count, int error_code);
+int cli_turn_background_cb(void *user_data, const char *name,
+			   const char *phase, const char *message,
+			   const char *task, int count, int error_code);
 int cli_emit_mcp_event(struct cli_context *ctx,
 		       const char *name, const char *phase,
 		       const char *message, const char *server,
@@ -119,7 +114,8 @@ int cli_emit_mcp_event(struct cli_context *ctx,
 		       int tools, int resources, int prompts,
 		       int error_code);
 int cli_discover_mcp_server(struct cli_context *ctx,
-			    struct mcp_client *mc, int auto_connect,
+			    const char *server,
+			    enum mcp_transport_type transport, int auto_connect,
 			    int timeout_seconds);
 int cli_event_callback(const struct morph_event *ev, void *user_data);
 
@@ -129,11 +125,7 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 			      struct scheduled_task_action_result *result,
 			      void *user_data);
 int cli_scheduler_start(struct cli_context *ctx);
-void cli_scheduler_stop(struct cli_context *ctx);
-int cli_build_sync_config(struct cli_context *ctx,
-			  struct morph_sync_config *cfg);
 int cli_sync_start(struct cli_context *ctx);
-void cli_sync_stop(struct cli_context *ctx);
 
 void media_callback(const char *type, const char *path, void *user);
 void cli_markdown_render_ansi(const char *md);

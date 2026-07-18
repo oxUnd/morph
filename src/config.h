@@ -66,6 +66,8 @@ struct config_credits {
 
 #define DISABLED_TOOLS_MAX 32
 #define DISABLED_TOOL_NAME_MAX 64
+#define READONLY_TOOLS_MAX 32
+#define READONLY_TOOL_NAME_MAX 64
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
 #define BASH_EXEC_ALLOW_MAX 32
@@ -110,6 +112,8 @@ struct config_react {
 	char guardrail_llm_model[128];
 	char disabled_tools[DISABLED_TOOLS_MAX][DISABLED_TOOL_NAME_MAX];
 	int disabled_tools_count;
+	char readonly_tools[READONLY_TOOLS_MAX][READONLY_TOOL_NAME_MAX];
+	int readonly_tools_count;
 	int hitl_enabled;
 	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int hitl_tools_count;

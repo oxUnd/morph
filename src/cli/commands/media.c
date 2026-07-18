@@ -20,10 +20,11 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
+	const struct config *config = runtime_config_get(ctx->runtime);
 	cli_record_media_credits(ctx, "image_input",
 				 credit_image_units_from_size(w, h), 0,
-				 ctx->config.models.image.provider,
-				 ctx->config.models.image.model, NULL);
+				 config->models.image.provider,
+				 config->models.image.model, NULL);
 	image_render_terminal(expanded);
 	CMD_OK("image loaded: %s (%dx%d, %d channels)", expanded, w, h, ch);
 	free(expanded);
@@ -40,13 +41,14 @@ static int cmd_video(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("file not found: %s", argv[1]);
 		return -ENOENT;
 	}
-	if (video_play(argv[1], ctx->config.render.mpv_args) != 0) {
+	const struct config *config = runtime_config_get(ctx->runtime);
+	if (video_play(argv[1], config->render.mpv_args) != 0) {
 		CMD_ERROR("failed to play video: %s", argv[1]);
 		return -EIO;
 	}
 	cli_record_media_credits(ctx, "video_input", 0, 1,
-				 ctx->config.models.video.provider,
-				 ctx->config.models.video.model,
+				 config->models.video.provider,
+				 config->models.video.model,
 				 "{\"estimated\":true}");
 	CMD_OK("video loaded: %s", argv[1]);
 	return 0;
@@ -69,7 +71,8 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 	if (ext && (strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
 		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
-		if (video_play(expanded, ctx->config.render.mpv_args) != 0) {
+		const struct config *config = runtime_config_get(ctx->runtime);
+		if (video_play(expanded, config->render.mpv_args) != 0) {
 			CMD_ERROR("failed to play video: %s", expanded);
 			free(expanded);
 			return -EIO;

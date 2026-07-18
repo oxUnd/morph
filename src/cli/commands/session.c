@@ -14,17 +14,11 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 		name = name_buf;
 	}
 	struct session s;
-	int rc = session_create(&ctx->database, name,
-				ctx->config.models.text.model, &s);
+	int rc = runtime_session_create_and_select(ctx->runtime, name, &s);
 	if (rc == 0) {
-		ctx->current_session = s;
-		utf8_sanitize_inplace(ctx->current_session.name);
-		cli_select_plan_session(ctx);
-		session_load_history(ctx);
-		cli_update_tool_runtime_context(ctx);
 		ctx->session_auto_named = !auto_named;
 		CMD_OK("created and switched to session: %s [%s]", name,
-		       ctx->current_session.display_id);
+		       s.display_id);
 	} else {
 		CMD_ERROR("failed to create session: %s", name);
 	}
@@ -56,10 +50,15 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		}
 		struct session *list;
 		int count = 0;
-		session_list(&ctx->database, &list, &count, 0, NULL);
+		rc = runtime_session_list_query(ctx->runtime, &list, &count, 0,
+						NULL);
+		if (rc != 0)
+			return rc;
+		struct session current;
+		(void)runtime_session_current(ctx->runtime, &current);
 		int picked = 0;
 		for (int i = 0; i < count; i++) {
-			if (list[i].id == ctx->current_session.id)
+			if (list[i].id == current.id)
 				continue;
 			picked++;
 			if (picked == idx) {
@@ -68,36 +67,22 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 				break;
 			}
 		}
-		free(list);
+		runtime_session_list_free(list);
 	} else {
-		rc = session_get_by_name(&ctx->database, name, &s);
-		if (rc < 0)
-			rc = session_get_by_display_id(&ctx->database, name, &s);
-		if (rc < 0) {
-			char *end;
-			errno = 0;
-			long id = strtol(name, &end, 10);
-			if (*end == '\0' && errno == 0)
-				rc = session_get_by_id(&ctx->database,
-						       (int64_t)id, &s);
-		}
+		rc = runtime_session_find_ref(ctx->runtime, name, &s);
 	}
 
 	if (rc == 0) {
-		ctx->current_session = s;
-		utf8_sanitize_inplace(ctx->current_session.name);
-		cli_select_plan_session(ctx);
-		session_load_history(ctx);
-		cli_update_tool_runtime_context(ctx);
+		rc = runtime_session_select_existing(ctx->runtime, s.id, &s);
+		if (rc != 0)
+			return rc;
 		ctx->session_auto_named = 1;
-		CMD_OK("switched to session: %s", ctx->current_session.name);
+		CMD_OK("switched to session: %s", s.name);
 	} else {
 		CMD_ERROR("session not found: %s", name);
 	}
 	return rc;
 }
-
-#define SESSION_LIST_DEFAULT 20
 
 static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 {
@@ -116,9 +101,15 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 
 	struct session *list;
 	int count = 0;
-	session_list(&ctx->database, &list, &count, limit, filter);
+	int rc = runtime_session_list_query(ctx->runtime, &list, &count, limit,
+					    filter);
+	if (rc != 0)
+		return rc;
 
-	int total = session_count(&ctx->database);
+	int total = runtime_session_count_all(ctx->runtime);
+	struct session current;
+	(void)runtime_session_current(ctx->runtime, &current);
+	const struct config *config = runtime_config_get(ctx->runtime);
 
 	if (filter && filter[0]) {
 		if (limit > 0 && count < total)
@@ -158,8 +149,8 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	print_padded("---", 30); putchar(' ');
 	printf("---\n");
 	for (int i = 0; i < count; i++) {
-		int is_current = (list[i].id == ctx->current_session.id);
-		const char *model = is_current ? ctx->config.models.text.model : list[i].model;
+		int is_current = (list[i].id == current.id);
+		const char *model = is_current ? config->models.text.model : list[i].model;
 		printf("  ");
 		if (is_current && cli_color_enabled())
 			fputs(ANSI_GREEN, stdout);
@@ -171,7 +162,7 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 		print_padded(model, 30); putchar(' ');
 		printf("%lld\n", (long long)list[i].token_used);
 	}
-	free(list);
+	runtime_session_list_free(list);
 	return 0;
 }
 
@@ -182,12 +173,10 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("usage: /rename <new_name>");
 		return -EINVAL;
 	}
-	int rc = session_rename(&ctx->database, ctx->current_session.id, new_name);
+	int64_t current_id;
+	(void)runtime_session_current_id(ctx->runtime, &current_id);
+	int rc = runtime_session_rename_and_update(ctx->runtime, current_id, new_name);
 	if (rc == 0) {
-		strncpy(ctx->current_session.name, new_name,
-			sizeof(ctx->current_session.name) - 1);
-		ctx->current_session.name[sizeof(ctx->current_session.name) - 1] = '\0';
-		utf8_sanitize_inplace(ctx->current_session.name);
 		CMD_OK("session renamed to: %s", new_name);
 	} else {
 		CMD_ERROR("failed to rename session");
@@ -204,7 +193,7 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 	}
 	int64_t id = -1;
 	struct session s;
-	if (session_get_by_name(&ctx->database, name, &s) == 0)
+	if (runtime_session_find_ref(ctx->runtime, name, &s) == 0)
 		id = s.id;
 	else {
 		char *end;
@@ -217,13 +206,14 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("session not found: %s", name);
 		return -ENOENT;
 	}
-	if (id == ctx->current_session.id) {
+	int64_t current_id;
+	(void)runtime_session_current_id(ctx->runtime, &current_id);
+	if (id == current_id) {
 		CMD_ERROR("cannot delete current session, switch first");
 		return -EINVAL;
 	}
-	int rc = session_delete(&ctx->database, id);
+	int rc = runtime_session_delete_and_update(ctx->runtime, id);
 	if (rc == 0) {
-		cli_forget_plan_session(ctx, id);
 		CMD_OK("deleted session: %s", name);
 	} else {
 		CMD_ERROR("failed to delete session");
@@ -244,11 +234,10 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	if (n <= 0)
 		n = 20;
 	int count = 0;
-	struct message *msgs = message_list(&ctx->database,
-					     ctx->current_session.id, &count);
+	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
 	int skip = show_all ? 0 : (count - show);
-	CMD_HEADER("%s (showing %s %d of %d)", ctx->current_session.name,
+	CMD_HEADER("%s (showing %s %d of %d)", runtime_session_current_name(ctx->runtime),
 		   show_all ? "all" : "last", show, count);
 	struct message *cur = msgs;
 	for (int i = 0; i < skip && cur; i++)
@@ -266,7 +255,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			printf("%s\n", cur->content ? cur->content : "(empty)");
 		cur = cur->next;
 	}
-	message_free_list(msgs);
+	runtime_session_messages_free(msgs);
 	return 0;
 }
 

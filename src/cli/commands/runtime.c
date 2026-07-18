@@ -36,19 +36,15 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 static int cmd_model(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
+	struct session current;
 	if (name) {
-		strncpy(ctx->current_session.model, name,
-			sizeof(ctx->current_session.model) - 1);
-		ctx->current_session.model[sizeof(ctx->current_session.model) - 1] = '\0';
-		session_update_model(&ctx->database, ctx->current_session.id, name);
-		if (ctx->llm) {
-			strncpy(ctx->llm->model_id, name,
-				sizeof(ctx->llm->model_id) - 1);
-			ctx->llm->model_id[sizeof(ctx->llm->model_id) - 1] = '\0';
-		}
+		int rc = runtime_session_set_model(ctx->runtime, name);
+		if (rc != 0)
+			return rc;
 		CMD_OK("model switched to: %s", name);
 	} else {
-		printf("current model: %s\n", ctx->current_session.model);
+		(void)runtime_session_current(ctx->runtime, &current);
+		printf("current model: %s\n", current.model);
 	}
 	return 0;
 }
@@ -79,6 +75,23 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 	}
 	printf(ANSI_DIM "state: %s, steps: %d" ANSI_RESET "\n",
 	       state_name ? state_name : "n/a", count);
+}
+
+static void print_runtime_trace(const struct runtime_turn_status *status)
+{
+	for (int i = 0; status && i < status->step_count; i++) {
+		const struct runtime_trace_step *step = &status->steps[i];
+		printf("  %d. [%s]", i + 1, react_step_type_name(step->type));
+		if (step->content)
+			printf(" %s", step->content);
+		if (step->tool_name)
+			printf(ANSI_DIM " (tool: %s)" ANSI_RESET,
+			       step->tool_name);
+		printf("\n");
+	}
+	printf(ANSI_DIM "state: %s, steps: %d" ANSI_RESET "\n",
+	       status ? react_state_name(status->state) : "n/a",
+	       status ? status->step_count : 0);
 }
 
 static struct react_step *json_to_react_steps(struct arena *arena, const char *json, int *out_count)
@@ -146,8 +159,8 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (from_db) {
 		int round_no = 0, aborted = 0;
-		char *json = trace_load_latest(&ctx->database, ctx->current_session.id,
-					      &round_no, &aborted);
+		char *json = runtime_trace_load_latest_current(ctx->runtime,
+						       &round_no, &aborted);
 		if (!json) {
 			printf("no traces saved in DB for this session\n");
 			return 0;
@@ -166,13 +179,17 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 		free(json);
 		return 0;
 	}
-	if (!ctx->react || !ctx->react->steps) {
+	struct runtime_turn_status status;
+	struct session current;
+	if (runtime_turn_status_get(ctx->runtime, &status) != 0 ||
+	    status.step_count == 0) {
 		printf("no ReAct trace for current turn\n");
 		return 0;
 	}
-	CMD_HEADER("ReAct trace (%s)", ctx->current_session.name);
-	print_trace_steps(ctx->react->steps, ctx->react->step_count,
-			  react_state_name(ctx->react->state));
+	(void)runtime_session_current(ctx->runtime, &current);
+	CMD_HEADER("ReAct trace (%s)", current.name);
+	print_runtime_trace(&status);
+	runtime_turn_status_cleanup(&status);
 	return 0;
 }
 
@@ -180,31 +197,29 @@ static int cmd_credits(struct cli_context *ctx, int argc, char **argv)
 {
 	struct credit_summary today;
 	struct credit_summary session;
-	char sid[64];
 	int rc;
 
 	(void)argc;
 	(void)argv;
-	cli_credit_session_key(ctx, sid, sizeof(sid));
-	rc = credit_summary_today(&ctx->database, "local", &today);
+	rc = runtime_credit_summary_today_get(ctx->runtime, &today);
 	if (rc != 0)
 		return rc;
-	rc = credit_summary_session(&ctx->database, sid, &session);
+	rc = runtime_credit_summary_current_get(ctx->runtime, &session);
 	if (rc != 0)
 		return rc;
 
 	printf("credits: %lld",
 	       (long long)today.credits);
-	if (ctx->config.credits.daily_limit >= 0) {
-		printf(" / %d today", ctx->config.credits.daily_limit);
-		if (today.credits > ctx->config.credits.daily_limit)
+	if ((*runtime_config_get(ctx->runtime)).credits.daily_limit >= 0) {
+		printf(" / %d today", (*runtime_config_get(ctx->runtime)).credits.daily_limit);
+		if (today.credits > (*runtime_config_get(ctx->runtime)).credits.daily_limit)
 			printf(" " ANSI_YELLOW "(over limit)" ANSI_RESET);
 	} else {
 		printf(" today");
 	}
 	printf(" | est. cost: %.6f %s | session: %lld credits",
 	       today.estimated_cost,
-	       ctx->config.credits.currency,
+	       (*runtime_config_get(ctx->runtime)).credits.currency,
 	       (long long)session.credits);
 	if (session.event_count == 0)
 		printf(" | no events");
@@ -216,17 +231,11 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
-	int msg_count = message_count(&ctx->database, ctx->current_session.id);
+	int msg_count = 0;
 	int total_tokens = 0;
-	int limit = ctx->tokenizer ? ctx->tokenizer->context_limit : 0;
-	struct message *msgs = message_list(&ctx->database,
-					    ctx->current_session.id, &msg_count);
-	struct message *cur = msgs;
-	while (cur) {
-		total_tokens += cur->token_count;
-		cur = cur->next;
-	}
-	message_free_list(msgs);
+	int limit = 0;
+	(void)runtime_session_context_stats(ctx->runtime, &msg_count,
+					&total_tokens, &limit);
 	double pct = limit > 0 ? (double)total_tokens / limit * 100.0 : 0.0;
 	printf("context: %s%d / %d tokens (%.1f%%)%s | messages: %d\n",
 	       pct >= 80.0 ? ANSI_YELLOW : "",
@@ -238,79 +247,21 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 
 static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 {
+	int trace_removed = 0;
+	int window_removed = 0;
+	int kept = 0;
+	int rc;
+
 	(void)argc;
 	(void)argv;
-	int count = 0;
-	struct message *msgs = message_list(&ctx->database,
-					    ctx->current_session.id, &count);
-	if (!msgs || count == 0) {
-		printf("no messages to compress\n");
-		message_free_list(msgs);
-		return 0;
-	}
-	int keep = ctx->config.context.keep_recent_rounds * 2;
-	if (count <= keep) {
-		CMD_OK("only %d messages, no compression needed (keep %d)", count, keep);
-		message_free_list(msgs);
-		return 0;
-	}
-
-	/* Build an in-memory list mirroring DB rows so we can apply the
-	 * layered compression fallback (REQUIREMENTS §6.3): react_trace →
-	 * sliding_window. Track which DB ids survive; everything else is
-	 * deleted from the DB. */
-	struct message_list *head = NULL;
-	struct arena *cmp_arena = arena_create(0);
-	int *ids = calloc((size_t)count, sizeof(*ids));
-	if (!cmp_arena || !ids) {
-		message_free_list(msgs);
-		if (cmp_arena) arena_destroy(cmp_arena);
-		free(ids);
-		return -ENOMEM;
-	}
-	int n_ids = 0;
-	for (struct message *m = msgs; m; m = m->next) {
-		struct message_list *node = msg_list_create(cmp_arena, m->role, m->content,
-							    m->token_count);
-		if (!node)
-			continue;
-		node->compressed = m->compressed;
-		msg_list_append(&head, node);
-		ids[n_ids++] = (int)m->id;
-	}
-	message_free_list(msgs);
-
-	struct compress_result trace_res = {0};
-	(void)compress_react_trace(&head, &trace_res);
-	struct compress_result win_res = {0};
-	int rc = compress_sliding_window(&head,
-		ctx->config.context.keep_recent_rounds, &win_res);
+	rc = runtime_session_compress(ctx->runtime, &trace_removed,
+					      &window_removed, &kept);
 	if (rc < 0) {
-		arena_destroy(cmp_arena);
-		free(ids);
 		CMD_ERROR("compression failed: %s", morph_strerror(rc));
 		return rc;
 	}
-
-	/* Compute survivors by walking remaining list and matching content
-	 * with the original DB rows (preserving order).  Entries from the
-	 * tail of `ids` correspond to the last messages, which sliding_window
-	 * keeps; we delete the prefix that was dropped. */
-	int kept = msg_list_count(head);
-	int removed = count - kept;
-	for (int i = 0; i < removed; i++) {
-		/* Best-effort: delete by id; keep going on failure. */
-		(void)message_delete(&ctx->database, ids[i]);
-	}
-	msg_list_destroy(head);
-	arena_destroy(cmp_arena);
-	free(ids);
-
-	/* Refresh in-memory react context from DB. */
-	session_load_history(ctx);
-
 	CMD_OK("compressed: react_trace removed %d, sliding_window removed %d, kept %d",
-	       trace_res.messages_removed, win_res.messages_removed, kept);
+	       trace_removed, window_removed, kept);
 	return 0;
 }
 
@@ -320,16 +271,17 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 	if (!fmt)
 		fmt = "md";
 	int count = 0;
-	struct message *msgs = message_list(&ctx->database,
-					     ctx->current_session.id, &count);
+	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
+	struct session current;
+	(void)runtime_session_current(ctx->runtime, &current);
 	char filename[PATH_MAX];
 	snprintf(filename, sizeof(filename), "%s_%lld.%s",
-		 ctx->current_session.name,
+		 current.name,
 		 (long long)time(NULL), fmt);
 	CMD_HEADER("saving session to %s", filename);
 	FILE *f = fopen(filename, "w");
 	if (f) {
-		fprintf(f, "# Session: %s\n\n", ctx->current_session.name);
+		fprintf(f, "# Session: %s\n\n", current.name);
 		struct message *cur = msgs;
 		while (cur) {
 			fprintf(f, "**%s**: %s\n\n", cur->role,
@@ -341,7 +293,7 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 	} else {
 		CMD_ERROR("failed to open file for writing");
 	}
-	message_free_list(msgs);
+	runtime_session_messages_free(msgs);
 	return 0;
 }
 
@@ -350,156 +302,162 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	(void)argc;
 	(void)argv;
 	printf(ANSI_BOLD "[general]" ANSI_RESET "\n");
-	printf("  default_session = %s\n", ctx->config.general.default_session);
-	printf("  output_dir = %s\n", ctx->config.general.output_dir);
-	printf("  log_level = %s\n", ctx->config.general.log_level);
-	printf("  log_file = %s\n", ctx->config.general.log_file);
+	printf("  default_session = %s\n", (*runtime_config_get(ctx->runtime)).general.default_session);
+	printf("  output_dir = %s\n", (*runtime_config_get(ctx->runtime)).general.output_dir);
+	printf("  log_level = %s\n", (*runtime_config_get(ctx->runtime)).general.log_level);
+	printf("  log_file = %s\n", (*runtime_config_get(ctx->runtime)).general.log_file);
 	printf(ANSI_BOLD "[model.text]" ANSI_RESET "\n");
-	printf("  provider = %s\n", ctx->config.models.text.provider);
-	printf("  model = %s\n", ctx->config.models.text.model);
-	printf("  api_base = %s\n", ctx->config.models.text.api_base);
-	printf("  context_limit = %d\n", ctx->config.models.text.context_limit);
-	printf("  max_tokens = %d\n", ctx->config.models.text.max_tokens);
+	printf("  provider = %s\n", (*runtime_config_get(ctx->runtime)).models.text.provider);
+	printf("  model = %s\n", (*runtime_config_get(ctx->runtime)).models.text.model);
+	printf("  api_base = %s\n", (*runtime_config_get(ctx->runtime)).models.text.api_base);
+	printf("  context_limit = %d\n", (*runtime_config_get(ctx->runtime)).models.text.context_limit);
+	printf("  max_tokens = %d\n", (*runtime_config_get(ctx->runtime)).models.text.max_tokens);
 	printf("  timeout_seconds = %d\n",
-	       ctx->config.models.text.timeout_seconds);
+	       (*runtime_config_get(ctx->runtime)).models.text.timeout_seconds);
 	printf(ANSI_BOLD "[model.vision]" ANSI_RESET "\n");
-	printf("  provider = %s\n", ctx->config.models.vision.provider);
-	printf("  model = %s\n", ctx->config.models.vision.model);
-	printf("  api_base = %s\n", ctx->config.models.vision.api_base);
+	printf("  provider = %s\n", (*runtime_config_get(ctx->runtime)).models.vision.provider);
+	printf("  model = %s\n", (*runtime_config_get(ctx->runtime)).models.vision.model);
+	printf("  api_base = %s\n", (*runtime_config_get(ctx->runtime)).models.vision.api_base);
 	printf("  context_limit = %d\n",
-	       ctx->config.models.vision.context_limit);
+	       (*runtime_config_get(ctx->runtime)).models.vision.context_limit);
 	printf(ANSI_BOLD "[model.image]" ANSI_RESET "\n");
-	printf("  provider = %s\n", ctx->config.models.image.provider);
-	printf("  model = %s\n", ctx->config.models.image.model);
-	printf("  api_base = %s\n", ctx->config.models.image.api_base);
+	printf("  provider = %s\n", (*runtime_config_get(ctx->runtime)).models.image.provider);
+	printf("  model = %s\n", (*runtime_config_get(ctx->runtime)).models.image.model);
+	printf("  api_base = %s\n", (*runtime_config_get(ctx->runtime)).models.image.api_base);
 	printf("  context_limit = %d\n",
-	       ctx->config.models.image.context_limit);
+	       (*runtime_config_get(ctx->runtime)).models.image.context_limit);
 	printf(ANSI_BOLD "[model.video]" ANSI_RESET "\n");
-	printf("  provider = %s\n", ctx->config.models.video.provider);
-	printf("  model = %s\n", ctx->config.models.video.model);
-	printf("  api_base = %s\n", ctx->config.models.video.api_base);
+	printf("  provider = %s\n", (*runtime_config_get(ctx->runtime)).models.video.provider);
+	printf("  model = %s\n", (*runtime_config_get(ctx->runtime)).models.video.model);
+	printf("  api_base = %s\n", (*runtime_config_get(ctx->runtime)).models.video.api_base);
 	printf("  context_limit = %d\n",
-	       ctx->config.models.video.context_limit);
+	       (*runtime_config_get(ctx->runtime)).models.video.context_limit);
 	printf(ANSI_BOLD "[credits]" ANSI_RESET "\n");
-	printf("  daily_limit = %d\n", ctx->config.credits.daily_limit);
-	printf("  currency = %s\n", ctx->config.credits.currency);
+	printf("  daily_limit = %d\n", (*runtime_config_get(ctx->runtime)).credits.daily_limit);
+	printf("  currency = %s\n", (*runtime_config_get(ctx->runtime)).credits.currency);
 	printf("  cost_to_credit_coef = %.3f\n",
-	       ctx->config.credits.cost_to_credit_coef);
+	       (*runtime_config_get(ctx->runtime)).credits.cost_to_credit_coef);
 	printf("  input_token_credit_coef = %.6f\n",
-	       ctx->config.credits.input_token_credit_coef);
+	       (*runtime_config_get(ctx->runtime)).credits.input_token_credit_coef);
 	printf("  output_token_credit_coef = %.6f\n",
-	       ctx->config.credits.output_token_credit_coef);
+	       (*runtime_config_get(ctx->runtime)).credits.output_token_credit_coef);
 	printf("  image_unit_credit_coef = %.6f\n",
-	       ctx->config.credits.image_unit_credit_coef);
+	       (*runtime_config_get(ctx->runtime)).credits.image_unit_credit_coef);
 	printf("  video_second_credit_coef = %.6f\n",
-	       ctx->config.credits.video_second_credit_coef);
-	printf("  prices = %d\n", ctx->config.credits.price_count);
+	       (*runtime_config_get(ctx->runtime)).credits.video_second_credit_coef);
+	printf("  prices = %d\n", (*runtime_config_get(ctx->runtime)).credits.price_count);
 	printf(ANSI_BOLD "[react]" ANSI_RESET "\n");
-	printf("  max_iterations = %d\n", ctx->config.react.max_iterations);
+	printf("  max_iterations = %d\n", (*runtime_config_get(ctx->runtime)).react.max_iterations);
 	printf("  tool_timeout = %d\n",
-	       ctx->config.react.tool_timeout_seconds);
-	printf("  tool_max_retries = %d\n", ctx->config.react.tool_max_retries);
+	       (*runtime_config_get(ctx->runtime)).react.tool_timeout_seconds);
+	printf("  tool_max_retries = %d\n", (*runtime_config_get(ctx->runtime)).react.tool_max_retries);
 	printf("  guardrail_enabled = %d\n",
-	       ctx->config.react.guardrail_enabled);
+	       (*runtime_config_get(ctx->runtime)).react.guardrail_enabled);
 	printf("  guardrail_max_retries = %d\n",
-	       ctx->config.react.guardrail_max_retries);
+	       (*runtime_config_get(ctx->runtime)).react.guardrail_max_retries);
 	printf("  guardrail_max_empty_rounds = %d\n",
-	       ctx->config.react.guardrail_max_empty_rounds);
+	       (*runtime_config_get(ctx->runtime)).react.guardrail_max_empty_rounds);
 	printf("  guardrail_llm_model = %s\n",
-	       ctx->config.react.guardrail_llm_model);
-	printf("  hitl_enabled = %d\n", ctx->config.react.hitl_enabled);
+	       (*runtime_config_get(ctx->runtime)).react.guardrail_llm_model);
+	printf("  hitl_enabled = %d\n", (*runtime_config_get(ctx->runtime)).react.hitl_enabled);
 	printf("  hitl_auto_approve_readonly = %d\n",
-	       ctx->config.react.hitl_auto_approve_readonly);
+	       (*runtime_config_get(ctx->runtime)).react.hitl_auto_approve_readonly);
 	printf("  bash_exec_enabled = %d\n",
-	       ctx->config.react.bash_exec_enabled);
+	       (*runtime_config_get(ctx->runtime)).react.bash_exec_enabled);
 	printf("  bash_exec_default_timeout = %d\n",
-	       ctx->config.react.bash_exec_default_timeout);
-	if (ctx->config.react.disabled_tools_count > 0) {
+	       (*runtime_config_get(ctx->runtime)).react.bash_exec_default_timeout);
+	if ((*runtime_config_get(ctx->runtime)).react.disabled_tools_count > 0) {
 		printf("  disabled_tools =");
-		for (int i = 0; i < ctx->config.react.disabled_tools_count; i++)
-			printf(" %s", ctx->config.react.disabled_tools[i]);
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react.disabled_tools[i]);
 		printf("\n");
 	}
-	if (ctx->config.react.hitl_tools_count > 0) {
+	if ((*runtime_config_get(ctx->runtime)).react.hitl_tools_count > 0) {
 		printf("  hitl_tools =");
-		for (int i = 0; i < ctx->config.react.hitl_tools_count; i++)
-			printf(" %s", ctx->config.react.hitl_tools[i]);
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.hitl_tools_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react.hitl_tools[i]);
 		printf("\n");
 	}
 	{
 		int ro = 0, rw = 0;
-		for (int i = 0; i < ctx->tools.count; i++)
-			if (ctx->tools.entries[i].flags & TOOL_FLAG_READONLY)
+		int tool_count = runtime_tool_count(ctx->runtime);
+		struct tool_desc tool;
+		unsigned flags;
+		for (int i = 0; i < tool_count; i++)
+			if (runtime_tool_flags(ctx->runtime, i, &flags) == 0 &&
+			    (flags & TOOL_FLAG_READONLY))
 				ro++;
 			else
 				rw++;
 		printf(ANSI_BOLD "[tools]" ANSI_RESET " %d registered"
 		       " (" ANSI_GREEN "%d readonly" ANSI_RESET ", %d read-write)\n",
-		       ctx->tools.count, ro, rw);
+		       tool_count, ro, rw);
 		printf("  readonly:");
-		for (int i = 0; i < ctx->tools.count; i++)
-			if (ctx->tools.entries[i].flags & TOOL_FLAG_READONLY)
-				printf(" %s", ctx->tools.entries[i].desc.name);
+		for (int i = 0; i < tool_count; i++)
+			if (runtime_tool_info(ctx->runtime, i, &tool) == 0 &&
+			    runtime_tool_flags(ctx->runtime, i, &flags) == 0 &&
+			    (flags & TOOL_FLAG_READONLY))
+				printf(" %s", tool.name);
 		printf("\n");
 	}
-	if (ctx->config.react.bash_exec_allowed_commands_count > 0) {
+	if ((*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands_count > 0) {
 		printf("  bash_exec_allowed_commands =");
 		for (int i = 0;
-		     i < ctx->config.react.bash_exec_allowed_commands_count;
+		     i < (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands_count;
 		     i++)
 			printf(" %s",
-			       ctx->config.react.bash_exec_allowed_commands[i]);
+			       (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands[i]);
 		printf("\n");
 	}
-	if (ctx->config.react.bash_exec_allowed_cwds_count > 0) {
+	if ((*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds_count > 0) {
 		printf("  bash_exec_allowed_cwds =");
 		for (int i = 0;
-		     i < ctx->config.react.bash_exec_allowed_cwds_count; i++)
+		     i < (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds_count; i++)
 			printf(" %s",
-			       ctx->config.react.bash_exec_allowed_cwds[i]);
+			       (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds[i]);
 		printf("\n");
 	}
 	printf(ANSI_BOLD "[context]" ANSI_RESET "\n");
 	printf("  threshold = %.1f\n",
-	       ctx->config.context.summarize_threshold_ratio);
+	       (*runtime_config_get(ctx->runtime)).context.summarize_threshold_ratio);
 	printf("  target = %.1f\n",
-	       ctx->config.context.compress_target_ratio);
+	       (*runtime_config_get(ctx->runtime)).context.compress_target_ratio);
 	printf("  keep_rounds = %d\n",
-	       ctx->config.context.keep_recent_rounds);
+	       (*runtime_config_get(ctx->runtime)).context.keep_recent_rounds);
 	printf(ANSI_BOLD "[memory]" ANSI_RESET "\n");
-	printf("  enabled = %d\n", ctx->config.memory.enabled);
+	printf("  enabled = %d\n", (*runtime_config_get(ctx->runtime)).memory.enabled);
 	printf("  hot_path_enabled = %d\n",
-	       ctx->config.memory.hot_path_enabled);
+	       (*runtime_config_get(ctx->runtime)).memory.hot_path_enabled);
 	printf("  cold_path_enabled = %d\n",
-	       ctx->config.memory.cold_path_enabled);
+	       (*runtime_config_get(ctx->runtime)).memory.cold_path_enabled);
 	printf("  llm_extract_enabled = %d\n",
-	       ctx->config.memory.llm_extract_enabled);
-	printf("  max_facts = %d\n", ctx->config.memory.max_facts);
-	printf("  max_episodes = %d\n", ctx->config.memory.max_episodes);
-	printf("  max_procedures = %d\n", ctx->config.memory.max_procedures);
+	       (*runtime_config_get(ctx->runtime)).memory.llm_extract_enabled);
+	printf("  max_facts = %d\n", (*runtime_config_get(ctx->runtime)).memory.max_facts);
+	printf("  max_episodes = %d\n", (*runtime_config_get(ctx->runtime)).memory.max_episodes);
+	printf("  max_procedures = %d\n", (*runtime_config_get(ctx->runtime)).memory.max_procedures);
 	printf("  max_context_chars = %d\n",
-	       ctx->config.memory.max_context_chars);
+	       (*runtime_config_get(ctx->runtime)).memory.max_context_chars);
 	printf(ANSI_BOLD "[render]" ANSI_RESET "\n");
 	printf("  prefer_image_protocol = %s\n",
-	       ctx->config.render.prefer_image_protocol);
-	printf("  mpv_args = %s\n", ctx->config.render.mpv_args);
+	       (*runtime_config_get(ctx->runtime)).render.prefer_image_protocol);
+	printf("  mpv_args = %s\n", (*runtime_config_get(ctx->runtime)).render.mpv_args);
 	printf(ANSI_BOLD "[ext]" ANSI_RESET "\n");
-	printf("  dir = %s\n", ctx->config.ext.dir);
+	printf("  dir = %s\n", (*runtime_config_get(ctx->runtime)).ext.dir);
 	printf("  default_max_memory_mb = %d\n",
-	       ctx->config.ext.default_max_memory_mb);
+	       (*runtime_config_get(ctx->runtime)).ext.default_max_memory_mb);
 	printf("  default_max_cpu_seconds = %d\n",
-	       ctx->config.ext.default_max_cpu_seconds);
+	       (*runtime_config_get(ctx->runtime)).ext.default_max_cpu_seconds);
 	printf(ANSI_BOLD "[prompt]" ANSI_RESET "\n");
 	printf("  system_prompt_file = %s\n",
-	       ctx->config.prompt.system_prompt_file);
+	       (*runtime_config_get(ctx->runtime)).prompt.system_prompt_file);
 	printf("  system_prompt_dir = %s\n",
-	       ctx->config.prompt.system_prompt_dir);
+	       (*runtime_config_get(ctx->runtime)).prompt.system_prompt_dir);
 	printf(ANSI_BOLD "[skill]" ANSI_RESET "\n");
-	printf("  dir = %s\n", ctx->config.skill.dir);
+	printf("  dir = %s\n", (*runtime_config_get(ctx->runtime)).skill.dir);
 	printf(ANSI_BOLD "[mcp]" ANSI_RESET "\n");
-	printf("  server_count = %d\n", ctx->config.mcp.server_count);
-	for (int i = 0; i < ctx->config.mcp.server_count; i++) {
-		struct config_mcp_server *s = &ctx->config.mcp.servers[i];
+	printf("  server_count = %d\n", (*runtime_config_get(ctx->runtime)).mcp.server_count);
+	for (int i = 0; i < (*runtime_config_get(ctx->runtime)).mcp.server_count; i++) {
+		const struct config_mcp_server *s = &(*runtime_config_get(ctx->runtime)).mcp.servers[i];
 		printf("  [[mcp.servers.%d]]\n", i);
 		printf("    name = %s\n", s->name);
 		printf("    transport = %s\n", s->transport);

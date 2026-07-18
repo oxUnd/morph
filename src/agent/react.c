@@ -2669,15 +2669,96 @@ static void react_maybe_compress_context(struct react_context *ctx)
 	(void)rc;
 }
 
+static char *react_trimmed_legacy_text(struct arena *arena,
+				       const char *start, size_t len,
+				       int strip_thought_prefix)
+{
+	const char *end;
+	char *out;
+
+	if (!arena || !start)
+		return NULL;
+	while (len > 0 && isspace((unsigned char)*start)) {
+		start++;
+		len--;
+	}
+	if (strip_thought_prefix && len >= 8 &&
+	    strncasecmp(start, "Thought:", 8) == 0) {
+		start += 8;
+		len -= 8;
+		while (len > 0 && (*start == ' ' || *start == '\t')) {
+			start++;
+			len--;
+		}
+	}
+	end = start + len;
+	while (end > start && isspace((unsigned char)end[-1]))
+		end--;
+	len = (size_t)(end - start);
+	out = arena_alloc(arena, len + 1);
+	if (!out)
+		return NULL;
+	memcpy(out, start, len);
+	out[len] = '\0';
+	return out;
+}
+
+static void react_split_legacy_final(struct react_context *ctx,
+				     const char *proposed,
+				     const char **thought_out,
+				     const char **final_out)
+{
+	int marker_len = 0;
+	const char *marker;
+	const char *final_start;
+
+	if (thought_out)
+		*thought_out = NULL;
+	if (final_out)
+		*final_out = proposed;
+	if (!ctx || !proposed)
+		return;
+	marker = react_find_final_marker(proposed, proposed, &marker_len);
+	if (!marker)
+		return;
+	if (thought_out && marker > proposed) {
+		*thought_out = react_trimmed_legacy_text(ctx->turn_arena,
+							 proposed,
+							 (size_t)(marker -
+								  proposed),
+							 1);
+		if (*thought_out && !**thought_out)
+			*thought_out = NULL;
+	}
+	final_start = marker + marker_len;
+	while (*final_start == ' ' || *final_start == '\t')
+		final_start++;
+	if (final_out)
+		*final_out = final_start;
+}
+
 static int react_handle_final_response(struct react_context *ctx,
 				       const char *proposed,
 				       morph_array_t *messages,
 				       react_output_cb cb, void *user_data)
 {
 	struct react_step *final_step;
+	const char *thought = NULL;
+	const char *final_text = proposed;
 	int gr;
 
-	gr = react_handle_guardrail_retry(ctx, proposed, messages, cb,
+	react_split_legacy_final(ctx, proposed, &thought, &final_text);
+	if (thought) {
+		struct react_step *thought_step =
+			react_step_create(ctx->turn_arena, REACT_STEP_THOUGHT,
+					  thought, NULL, NULL, NULL);
+		add_step(ctx, thought_step);
+		react_emit_text_event(ctx, MORPH_EVENT_REACT,
+				      "react.thought.end", "end",
+				      NULL, thought);
+	}
+
+	gr = react_handle_guardrail_retry(ctx, final_text, messages, cb,
 					  user_data);
 	if (gr < 0) {
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, gr,
@@ -2688,16 +2769,16 @@ static int react_handle_final_response(struct react_context *ctx,
 		return 0;
 
 	final_step = react_step_create(ctx->turn_arena, REACT_STEP_FINAL,
-				       proposed, NULL, NULL, NULL);
+				       final_text, NULL, NULL, NULL);
 	add_step(ctx, final_step);
 	free(ctx->final_answer);
-	ctx->final_answer = strdup(proposed);
+	ctx->final_answer = strdup(final_text);
 	react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
 	react_output_emit(cb, user_data, REACT_STEP_FINAL,
-			  REACT_OUTPUT_COMPLETED, proposed, NULL, NULL,
+			  REACT_OUTPUT_COMPLETED, final_text, NULL, NULL,
 			  NULL, 0, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
-			      "end", "final answer", proposed);
+			      "end", "final answer", final_text);
 	return 1;
 }
 

@@ -55,6 +55,7 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
 	struct scheduled_task task;
+	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
@@ -91,7 +92,8 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	memset(&input, 0, sizeof(input));
-	input.source_session_id = ctx->current_session.id;
+	(void)runtime_session_current(ctx->runtime, &current);
+	input.source_session_id = current.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "once";
@@ -99,9 +101,7 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
-	rc = scheduled_task_create_with_events(&ctx->database, &input, &task,
-					       &events);
+	rc = runtime_task_create(ctx->runtime, &input, &task);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -117,6 +117,7 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
 	struct scheduled_task task;
+	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
@@ -153,7 +154,8 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	}
 
 	memset(&input, 0, sizeof(input));
-	input.source_session_id = ctx->current_session.id;
+	(void)runtime_session_current(ctx->runtime, &current);
+	input.source_session_id = current.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "interval";
@@ -162,9 +164,7 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
-	rc = scheduled_task_create_with_events(&ctx->database, &input, &task,
-					       &events);
+	rc = runtime_task_create(ctx->runtime, &input, &task);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -180,6 +180,7 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task_input input;
 	struct scheduled_task task;
+	struct session current;
 	cJSON *payload = NULL;
 	char *payload_json = NULL;
 	char *title = NULL;
@@ -221,7 +222,8 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 		return -ENOMEM;
 	}
 	memset(&input, 0, sizeof(input));
-	input.source_session_id = ctx->current_session.id;
+	(void)runtime_session_current(ctx->runtime, &current);
+	input.source_session_id = current.id;
 	input.title = title;
 	input.kind = "agent";
 	input.trigger_type = "once";
@@ -229,9 +231,7 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 	input.action_type = "agent_run";
 	input.payload_json = payload_json;
 	input.notify_json = "{\"targets\":[\"inbox\"]}";
-	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
-	rc = scheduled_task_update_with_events(&ctx->database, (int64_t)id,
-					       &input, &task, &events);
+	rc = runtime_task_update(ctx->runtime, (int64_t)id, &input, &task);
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
@@ -254,7 +254,7 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 
 	if (argc > 2)
 		status = argv[2];
-	rc = scheduled_task_list(&ctx->database, status, 50, &tasks, &count);
+	rc = runtime_task_list(ctx->runtime, status, 50, &tasks, &count);
 	if (rc != 0) {
 		CMD_ERROR("failed to list tasks: %s", morph_strerror(rc));
 		return rc;
@@ -301,7 +301,7 @@ static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
 		return -EINVAL;
 	}
 	memset(&task, 0, sizeof(task));
-	rc = scheduled_task_get(&ctx->database, (int64_t)id, &task);
+	rc = runtime_task_get(ctx->runtime, (int64_t)id, &task);
 	if (rc != 0) {
 		CMD_ERROR("failed to load task: %s", morph_strerror(rc));
 		return rc;
@@ -336,9 +336,7 @@ static int cmd_tasks_cancel(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("invalid task id: %s", argv[2]);
 		return -EINVAL;
 	}
-	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
-	rc = scheduled_task_cancel_with_events(&ctx->database, (int64_t)id,
-					       &events);
+	rc = runtime_task_cancel(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
 		CMD_ERROR("failed to cancel task: %s", morph_strerror(rc));
 		return rc;
@@ -355,10 +353,12 @@ static int cmd_tasks_run(struct cli_context *ctx, int argc, char **argv)
 
 	if (argc > 2)
 		limit = atoi(argv[2]);
-	struct scheduled_task_event_sink events = cli_task_event_sink(ctx);
-	rc = scheduled_task_run_due_with_runner_events(
-		&ctx->database, (int64_t)time(NULL), limit,
-		cli_scheduled_task_runner, ctx, &ran, &events);
+	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, limit,
+		cli_scheduled_task_runner, ctx, NULL, NULL);
+	if (rc >= 0) {
+		ran = rc;
+		rc = 0;
+	}
 	if (rc != 0) {
 		CMD_ERROR("failed to run due tasks: %s", morph_strerror(rc));
 		return rc;
@@ -659,8 +659,8 @@ static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
 
 	if (argc > 2)
 		limit = atoi(argv[2]);
-	rc = notification_list_unread(&ctx->database, limit, &notifications,
-				      &count);
+	rc = runtime_notification_list(ctx->runtime, limit, &notifications,
+				       &count);
 	if (rc != 0) {
 		CMD_ERROR("failed to list inbox: %s", morph_strerror(rc));
 		return rc;
@@ -704,7 +704,7 @@ static int cmd_inbox_read(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("invalid notification id: %s", argv[2]);
 		return -EINVAL;
 	}
-	rc = notification_mark_read(&ctx->database, (int64_t)id, 0);
+	rc = runtime_notification_mark_read(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
 		CMD_ERROR("failed to mark notification read: %s",
 			  morph_strerror(rc));

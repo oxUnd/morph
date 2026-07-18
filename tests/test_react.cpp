@@ -232,6 +232,30 @@ static char *strcasestr_local(const char *haystack, const char *needle)
 	return nullptr;
 }
 
+static void mock_emit_legacy_thought(const char *buf, char *final_pos,
+				     sse_callback thought_cb, void *thought_ud)
+{
+	if (!buf || !final_pos || !thought_cb || final_pos <= buf)
+		return;
+	size_t len = (size_t)(final_pos - buf);
+	char *thought = (char *)malloc(len + 1);
+	if (!thought)
+		return;
+	memcpy(thought, buf, len);
+	thought[len] = '\0';
+	while (len > 0 && isspace((unsigned char)thought[len - 1]))
+		thought[--len] = '\0';
+	char *t = thought;
+	if (strncasecmp(t, "Thought:", 8) == 0) {
+		t += 8;
+		while (*t == ' ')
+			t++;
+	}
+	if (*t)
+		thought_cb(t, thought_ud);
+	free(thought);
+}
+
 static int mock_chat_with_tools(struct model *self, struct arena *arena,
 				const char *system_prompt,
 				struct chat_message *messages, int msg_count,
@@ -315,9 +339,8 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 		const char *content = cd.buf;
 		char *final_pos = strcasestr_local(cd.buf, "Final:");
 		if (final_pos) {
-			final_pos += 6;
-			while (*final_pos == ' ') final_pos++;
-			content = final_pos;
+			mock_emit_legacy_thought(cd.buf, final_pos,
+						 thought_cb, thought_ud);
 		} else {
 			char *thought_pos = strcasestr_local(cd.buf, "Thought:");
 			if (thought_pos) {
@@ -327,7 +350,8 @@ static int mock_chat_with_tools(struct model *self, struct arena *arena,
 			}
 		}
 		response->content = strdup(content);
-		if (thought_cb && response->content && *response->content)
+		if (!final_pos && thought_cb && response->content &&
+		    *response->content)
 			thought_cb(response->content, thought_ud);
 	}
 
@@ -542,13 +566,12 @@ static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 	} else {
 		const char *content = cd.buf;
 		char *final_pos = strcasestr_local(cd.buf, "Final:");
-		if (final_pos) {
-			final_pos += 6;
-			while (*final_pos == ' ') final_pos++;
-			content = final_pos;
-		}
+		if (final_pos)
+			mock_emit_legacy_thought(cd.buf, final_pos,
+						 thought_cb, thought_ud);
 		response->content = strdup(content);
-		if (thought_cb && response->content && *response->content)
+		if (!final_pos && thought_cb && response->content &&
+		    *response->content)
 			thought_cb(response->content, thought_ud);
 	}
 

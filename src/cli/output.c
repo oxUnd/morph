@@ -126,8 +126,8 @@ void media_callback(const char *type, const char *path, void *user)
 		image_render_terminal(path);
 	} else if (strcmp(type, "video") == 0) {
 		struct cli_context *ctx = (struct cli_context *)user;
-		const char *mpv = (ctx && ctx->config.render.mpv_args[0])
-				  ? ctx->config.render.mpv_args : NULL;
+		const char *mpv = (ctx && (*runtime_config_get(ctx->runtime)).render.mpv_args[0])
+				  ? (*runtime_config_get(ctx->runtime)).render.mpv_args : NULL;
 		video_play(path, mpv);
 	}
 }

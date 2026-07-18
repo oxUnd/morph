@@ -86,6 +86,7 @@ endforeach()
 
 target_link_libraries(morph-fastcgi PRIVATE
     ${FCGI_LIBRARIES}
+    morph-runtime
     pthread
     sqlite3
     m)

@@ -1,0 +1,24 @@
+set(MORPH_RUNTIME_SOURCE_NAMES
+	bootstrap.c
+	cancel.c
+	context.c
+	context_owner.c
+	engine.c
+	execute.c
+	extensions.c
+	lock.c
+	lifecycle.c
+	mcp.c
+	mcp_service.c
+	registry_service.c
+	scheduler.c
+	services.c
+	session_service.c
+	task_service.c
+	task_controller.c
+	session.c
+	sync.c
+	task_worker.c
+	turn_scope.c
+	usage.c
+)

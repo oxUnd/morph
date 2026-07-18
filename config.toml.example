@@ -236,6 +236,15 @@ guardrail_max_empty_rounds = 2
 # file_info, config_write, bash_exec
 # disabled_tools = ["vid_gen", "img_resize"]
 
+# Tools treated as read-only for HITL auto-approval and runtime reporting.
+# Fronts should not hardcode this list; override it here when tool policy changes.
+readonly_tools = [
+  "file_read", "file_list", "file_info", "read_lines",
+  "img_info", "credits", "memory",
+  "ask_user", "activate_skill", "plan",
+  "agent_status"
+]
+
 # ── Human-in-the-Loop (HITL) ──────────────────
 # When enabled, the agent asks for user confirmation before executing
 # certain tools. The user can approve (y), deny (n), or always-approve
@@ -245,8 +254,7 @@ hitl_enabled = false
 # If empty and hitl_enabled is true, ALL tools require approval
 # (except read-only tools when hitl_auto_approve_readonly is true).
 # hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
-# Automatically approve read-only tools (file_read, file_list,
-# file_info, img_info, credits, memory) without prompting.
+# Automatically approve tools listed in readonly_tools without prompting.
 hitl_auto_approve_readonly = true
 
 [context]

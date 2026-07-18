@@ -1,9 +1,8 @@
 /* turns.c — POST /api/sessions/:id/turns
  *
- * Spawns a worker thread that drives one ReAct round.  The thread uses the
- * existing public `react_run(ctx, input, cb, user)` structured callback API
- * to bridge react_step events into the FastCGI event store.  Web clients see
- * the stream via the SSE endpoint.
+ * Spawns a worker thread that drives one ReAct round through the shared
+ * runtime layer and bridges ReAct events into
+ * the FastCGI event store.  Web clients see the stream via the SSE endpoint.
  *
  * Deep integration (cancellation, action injection) is optional and gated
  * on the weak symbol `react_context_create_for_session` — see PATCHES.md.
@@ -17,6 +16,7 @@
 #include "agent/memory.h"
 #include "agent/turn.h"
 #include "event/event.h"
+#include "runtime/runtime.h"
 #include "models/llm.h"
 #include "config.h"
 #include "credits.h"
@@ -42,10 +42,6 @@ __attribute__((weak)) struct react_context *
 react_context_create_for_session(struct session_store *store,
 				 const char *session_id,
 				 const char *user_id);
-
-__attribute__((weak)) int
-react_run(struct react_context *ctx, const char *user_input,
-	  react_output_cb cb, void *u);
 
 __attribute__((weak)) void
 react_context_destroy(struct react_context *ctx);
@@ -806,7 +802,7 @@ static void *turn_thread(void *arg)
 	model_set_usage_callback(record_model_usage);
 	model_set_usage_user_data(j);
 
-	if (!react_context_create_for_session || !react_run) {
+	if (!react_context_create_for_session) {
 		cJSON *err = cJSON_CreateObject();
 		char *json = NULL;
 		if (err) {
@@ -842,41 +838,27 @@ static void *turn_thread(void *arg)
 	if (react_memory_options_for_session)
 		react_memory_options_for_session(&mem_opts);
 	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
-		struct agent_session_runtime runtime;
-		struct agent_turn_input input;
-		struct agent_turn turn;
-		int begin_rc;
+		struct runtime_engine engine;
+		struct runtime_request request;
+		struct runtime_result result;
+		int run_rc;
 
-		memset(&runtime, 0, sizeof(runtime));
-		runtime.db = &j->store->db;
-		runtime.session_id = sess.id;
-		runtime.react = rctx;
-		runtime.memory_options = &mem_opts;
-		runtime.render_assistant = turn_render_assistant_for_store;
-		runtime.render_user_data = j;
-		runtime.flags = AGENT_TURN_DEFAULT_FLAGS;
-		memset(&input, 0, sizeof(input));
-		input.model_input = j->input ? j->input : "";
-		input.turn_id = j->turn_id;
-		begin_rc = agent_turn_begin(&turn, &runtime, &input);
-		if (begin_rc != 0) {
-			cJSON *err = cJSON_CreateObject();
-			char *json = NULL;
-
-			if (err) {
-				cJSON_AddStringToObject(err, "turn_id",
-							j->turn_id);
-				cJSON_AddStringToObject(err, "message",
-					morph_strerror(begin_rc));
-				json = cJSON_PrintUnformatted(err);
-				cJSON_Delete(err);
-			}
-			events_publish(j->store, j->session_id, "error",
-				       json ? json :
-				       "{\"message\":\"turn begin failed\"}");
-			free(json);
-			goto out_destroy;
-		}
+		memset(&engine, 0, sizeof(engine));
+		runtime_engine_configure(&engine, &j->store->db, rctx, NULL);
+		memset(&request, 0, sizeof(request));
+		request.session_id = sess.id;
+		request.model_input = j->input ? j->input : "";
+		request.turn_id = j->turn_id;
+		request.memory_options = &mem_opts;
+		request.render_assistant = turn_render_assistant_for_store;
+		request.render_user_data = j;
+		request.usage_user_data = j;
+		request.bind_usage_user_data = 1;
+		request.event_cb = react_set_event_callback ? bridge_event_cb : NULL;
+		request.event_user_data = j;
+		request.output_cb = react_set_event_callback ? NULL : bridge_cb;
+		request.output_user_data = j;
+		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 
 		{
 			cJSON *start = cJSON_CreateObject();
@@ -891,11 +873,25 @@ static void *turn_thread(void *arg)
 				       json ? json : "{\"phase\":\"begin\"}");
 			free(json);
 		}
-		if (react_set_event_callback) {
-			react_set_event_callback(rctx, bridge_event_cb, j);
-			react_run(rctx, input.model_input, NULL, j);
-		} else {
-			react_run(rctx, input.model_input, bridge_cb, j);
+
+		run_rc = runtime_execute(&engine, &request, &result);
+		if (run_rc != 0) {
+			cJSON *err = cJSON_CreateObject();
+			char *json = NULL;
+
+			if (err) {
+				cJSON_AddStringToObject(err, "turn_id",
+							j->turn_id);
+				cJSON_AddStringToObject(err, "message",
+					morph_strerror(run_rc));
+				json = cJSON_PrintUnformatted(err);
+				cJSON_Delete(err);
+			}
+			events_publish(j->store, j->session_id, "error",
+				       json ? json :
+				       "{\"message\":\"turn failed\"}");
+			free(json);
+			goto out_destroy;
 		}
 		if (!j->final_sent) {
 			char *fallback = render_artifact_summary(j);
@@ -908,8 +904,6 @@ static void *turn_thread(void *arg)
 			}
 			free(fallback);
 		}
-
-		agent_turn_finish(&turn, NULL);
 	} else {
 		cJSON *err = cJSON_CreateObject();
 		char *json = NULL;

@@ -1,0 +1,340 @@
+#include "runtime/runtime_internal.h"
+
+#include "runtime/bootstrap.h"
+#include "runtime/mcp.h"
+#include "runtime/session.h"
+#include "runtime/turn_scope.h"
+#include "runtime/usage.h"
+#include "runtime/extensions.h"
+#include "util/error.h"
+#include "util/file.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static int runtime_load_config(struct runtime *runtime)
+{
+	struct runtime_context *ctx = &runtime->context;
+	char *expanded = NULL;
+
+	config_set_defaults(&ctx->config);
+	if (!runtime->options.config_path || !runtime->options.config_path[0])
+		return 0;
+	expanded = file_expand_path(runtime->options.config_path);
+	if (!expanded)
+		return -ENOMEM;
+	strncpy(ctx->config_path, expanded, sizeof(ctx->config_path) - 1);
+	if (file_exists(expanded))
+		(void)config_load(&ctx->config, expanded);
+	free(expanded);
+	return 0;
+}
+
+static int runtime_open_database(struct runtime *runtime)
+{
+	struct runtime_context *ctx = &runtime->context;
+	char *expanded;
+	char *dir;
+	int rc;
+
+	if (!runtime->options.db_path || !runtime->options.db_path[0])
+		return -EINVAL;
+	expanded = file_expand_path(runtime->options.db_path);
+	if (!expanded)
+		return -ENOMEM;
+	dir = file_expand_path("~/.morph");
+	if (dir) {
+		(void)file_ensure_dir(dir);
+		free(dir);
+	}
+	rc = db_open(&ctx->database, expanded);
+	free(expanded);
+	if (rc != 0)
+		return rc;
+	return db_init_schema(&ctx->database);
+}
+
+static void runtime_set_workdir(struct runtime *runtime)
+{
+	struct runtime_context *ctx = &runtime->context;
+	char *resolved;
+
+	if (runtime->options.workdir && runtime->options.workdir[0]) {
+		resolved = file_resolve_path(runtime->options.workdir);
+		if (!resolved)
+			resolved = file_expand_path(runtime->options.workdir);
+		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
+			sizeof(ctx->workdir) - 1);
+		strncpy(ctx->config.general.output_dir, ctx->workdir,
+			sizeof(ctx->config.general.output_dir) - 1);
+		free(resolved);
+		return;
+	}
+	if (!getcwd(ctx->workdir, sizeof(ctx->workdir)))
+		strncpy(ctx->workdir, ".", sizeof(ctx->workdir) - 1);
+}
+
+static int runtime_start_components(struct runtime *runtime)
+{
+	struct runtime_context *ctx = &runtime->context;
+	struct runtime_models models;
+	struct runtime_bootstrap_profile profile;
+	const char *session_name;
+	int rc;
+
+	memset(&models, 0, sizeof(models));
+	memset(&profile, 0, sizeof(profile));
+	profile.config = &ctx->config;
+	profile.tools = &ctx->tools;
+	profile.models = &models;
+	profile.workdir = ctx->workdir;
+	profile.event_cb = runtime->options.event_cb;
+	profile.event_user_data = runtime->options.event_user_data;
+	profile.usage_cb = runtime_record_usage;
+	profile.usage_user_data = runtime;
+	profile.hitl_cb = runtime->options.hitl_cb;
+	profile.hitl_user_data = runtime->options.hitl_user_data;
+	rc = runtime_bootstrap_models(&profile);
+	if (rc != 0)
+		return rc;
+	runtime_context_update_models(ctx, &models);
+	if (runtime->options.after_models_cb) {
+		rc = runtime->options.after_models_cb(ctx->react,
+					      runtime->options.after_models_user_data);
+		if (rc != 0)
+			return rc;
+	}
+
+	ctx->skills = runtime->options.allocate_skill_registry
+		? NULL : &ctx->skill_storage;
+	memset(&profile, 0, sizeof(profile));
+	profile.config = &ctx->config;
+	profile.db = &ctx->database;
+	profile.tools = &ctx->tools;
+	profile.tool_context = &ctx->tctx;
+	profile.skills = &ctx->skills;
+	profile.plans = &ctx->plans;
+	profile.models = &models;
+	profile.workdir = ctx->workdir;
+	profile.config_path = ctx->config_path;
+	profile.ask_user_cb = runtime->options.ask_user_cb;
+	profile.ask_user_user_data = runtime->options.ask_user_user_data;
+	profile.operation_approval_cb = runtime->options.operation_approval_cb;
+	profile.operation_approval_user_data =
+		runtime->options.operation_approval_user_data;
+	profile.platform_tools_cb = runtime->options.platform_tools_cb;
+	profile.platform_tools_user_data = runtime->options.platform_tools_user_data;
+	profile.task_events = runtime->options.task_events;
+	profile.img_annotate_pause_cb = runtime->options.img_annotate_pause_cb;
+	profile.img_annotate_resume_cb = runtime->options.img_annotate_resume_cb;
+	profile.img_annotate_user_data = runtime->options.img_annotate_user_data;
+	profile.enable_bash = runtime->options.enable_bash;
+	profile.enable_config_write = runtime->options.enable_config_write;
+	profile.enable_img_annotate = runtime->options.enable_img_annotate;
+	profile.enable_shell_exts = runtime->options.enable_shell_exts;
+	profile.allocate_skill_registry = runtime->options.allocate_skill_registry;
+	rc = runtime_bootstrap_tools(&profile);
+	if (rc != 0)
+		return rc;
+	if (runtime->options.enable_shell_exts) {
+		rc = runtime_extensions_load(ctx, runtime->options.front_name);
+		if (rc != 0)
+			return rc;
+	}
+
+	if (runtime->options.enable_sub_agents) {
+		memset(&profile, 0, sizeof(profile));
+		profile.config = &ctx->config;
+		profile.tools = &ctx->tools;
+		profile.models = &models;
+		profile.event_cb = runtime->options.event_cb;
+		profile.event_user_data = runtime->options.event_user_data;
+		profile.enable_sub_agents = 1;
+		rc = runtime_bootstrap_sub_agents(&profile, &ctx->sub_agents);
+		if (rc != 0)
+			return rc;
+	}
+
+	(void)runtime_mcp_init_from_config(&ctx->mcp, &ctx->config.mcp,
+					   &ctx->tools,
+					   runtime->options.auto_connect_mcp);
+	runtime_context_configure_engine(ctx);
+	ctx->memory_options = runtime_memory_options_from_config(&ctx->config);
+	ctx->engine.memory_options = &ctx->memory_options;
+	ctx->engine.prepare_turn = runtime_prepare_turn;
+	ctx->engine.finish_turn = runtime_finish_turn;
+	ctx->engine.user_data = runtime;
+	ctx->engine.background_cb = runtime->options.background_cb;
+	ctx->engine.background_user_data = runtime->options.background_user_data;
+
+	session_name = runtime->options.default_session;
+	if (!session_name || !session_name[0])
+		session_name = ctx->config.general.default_session;
+	if (runtime->options.restore_recent_session) {
+		struct session *sessions = NULL;
+		int count = 0;
+		rc = session_list(&ctx->database, &sessions, &count, 1, NULL);
+		if (rc == 0 && count > 0) {
+			ctx->current_session = sessions[0];
+			free(sessions);
+			(void)session_update_model(&ctx->database,
+				ctx->current_session.id, ctx->config.models.text.model);
+		} else {
+			free(sessions);
+			rc = runtime_session_get_or_create(&ctx->engine, session_name,
+				ctx->config.models.text.model, &ctx->current_session, NULL);
+			if (rc != 0)
+				return rc;
+		}
+	} else {
+		rc = runtime_session_get_or_create(&ctx->engine, session_name,
+			ctx->config.models.text.model, &ctx->current_session, NULL);
+		if (rc != 0)
+			return rc;
+	}
+	(void)session_ensure_display_id(&ctx->database, &ctx->current_session);
+	runtime_context_select_plan_session(ctx, ctx->current_session.id);
+	(void)runtime_context_update_tool_runtime_context(ctx,
+						ctx->current_session.id);
+	{
+		char session_id[32];
+		struct runtime_models dynamic_models = runtime_context_models(ctx);
+
+		snprintf(session_id, sizeof(session_id), "%lld",
+			 (long long)ctx->current_session.id);
+		memset(&profile, 0, sizeof(profile));
+		profile.config = &ctx->config;
+		profile.tools = &ctx->tools;
+		profile.tool_context = &ctx->tctx;
+		profile.models = &dynamic_models;
+		(void)runtime_bootstrap_dynamic_tools(&profile, session_id);
+	}
+	runtime_session_load_history(&ctx->engine, ctx->current_session.id);
+	return 0;
+}
+
+int runtime_open(const struct runtime_options *options, struct runtime **out)
+{
+	struct runtime *runtime;
+	int rc;
+
+	if (!options || !out || !options->db_path)
+		return -EINVAL;
+	*out = NULL;
+	runtime = calloc(1, sizeof(*runtime));
+	if (!runtime)
+		return -ENOMEM;
+	runtime->options = *options;
+	if (options->task_events) {
+		runtime->task_events = *options->task_events;
+		runtime->options.task_events = &runtime->task_events;
+	}
+	runtime_context_init_empty(&runtime->context);
+	rc = runtime_context_init_lock(&runtime->context);
+	if (rc == 0)
+		rc = runtime_load_config(runtime);
+	if (rc == 0)
+		runtime_set_workdir(runtime);
+	if (rc == 0)
+		rc = runtime_open_database(runtime);
+	if (rc == 0)
+		rc = runtime_start_components(runtime);
+	if (rc != 0) {
+		runtime_close(runtime);
+		return rc;
+	}
+	*out = runtime;
+	return 0;
+}
+
+void runtime_close(struct runtime *runtime)
+{
+	struct runtime_shutdown_resources cleanup;
+
+	if (!runtime)
+		return;
+	runtime_task_worker_stop(&runtime->task_worker);
+	runtime_sync_stop_instance(runtime);
+	if (runtime->context.execution_lock_ready)
+		pthread_mutex_lock(&runtime->context.execution_lock);
+	cleanup = runtime_context_shutdown_resources(&runtime->context, 1, 1,
+						       runtime->options.allocate_skill_registry);
+	runtime_bootstrap_cleanup(&cleanup);
+	if (runtime->context.execution_lock_ready)
+		pthread_mutex_unlock(&runtime->context.execution_lock);
+	runtime_context_cleanup_lock(&runtime->context);
+	free(runtime);
+}
+
+int runtime_execute_turn(struct runtime *runtime,
+			 const struct runtime_request *request,
+			 struct runtime_result *result)
+
+{
+	struct runtime_request effective;
+
+	if (!runtime)
+		return -EINVAL;
+	if (!request)
+		return -EINVAL;
+	effective = *request;
+	if (effective.session_id <= 0)
+		effective.session_id = runtime->context.current_session.id;
+	if (!effective.memory_options)
+		effective.memory_options = &runtime->context.memory_options;
+	return runtime_execute(&runtime->context.engine, &effective, result);
+}
+
+void runtime_cancel_turn(struct runtime *runtime)
+{
+	if (runtime)
+		runtime_cancel(&runtime->context.engine);
+}
+
+void runtime_record_usage(const struct model_usage *usage, void *user_data)
+{
+	struct runtime *runtime = user_data;
+	char session_id[64];
+
+	if (!runtime || !usage || !runtime_model_usage_is_billable(usage))
+		return;
+	runtime_context_credit_session_key(&runtime->context, session_id,
+					   sizeof(session_id));
+	(void)runtime_record_model_usage(&runtime->context.database,
+				       &runtime->context.config, session_id, usage);
+	if (runtime->options.usage_observer)
+		runtime->options.usage_observer(usage,
+						runtime->options.usage_observer_user_data);
+}
+
+int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
+{
+	return runtime_context_prepare_turn(&((struct runtime *)user_data)->context,
+				    request, user_data);
+}
+
+void runtime_finish_turn(void *user_data, const struct runtime_request *request,
+			 const struct runtime_result *result)
+{
+	(void)request;
+	(void)result;
+	runtime_context_finish_turn(&((struct runtime *)user_data)->context);
+}
+
+const struct config *runtime_config_get(const struct runtime *runtime)
+{
+	return runtime ? &runtime->context.config : NULL;
+}
+
+const char *runtime_workdir_get(const struct runtime *runtime)
+{
+	return runtime ? runtime->context.workdir : NULL;
+}
+
+const char *runtime_config_path_get(const struct runtime *runtime)
+{
+	return runtime ? runtime->context.config_path : NULL;
+}

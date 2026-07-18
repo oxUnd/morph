@@ -12,11 +12,11 @@ each is small and additive.
 
 ---
 
-## §1 — react.h: emit step events through a callback
+## §1 — runtime: execute turns through the shared runtime
 
 Already present in upstream.  No change needed.  The FastCGI bridge uses
-the existing `react_run(ctx, input, cb, user)` four-arg form to map step
-types onto event-store entries.
+`runtime_execute()` so persistence, ReAct execution, cancellation state,
+and event bridging follow the same lifecycle as CLI and Android.
 
 ---
 

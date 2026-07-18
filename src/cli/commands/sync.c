@@ -1,19 +1,4 @@
 #include "cli/commands/registry.h"
-#include <sqlite3.h>
-
-static int sync_manifest_path(struct cli_context *ctx, char *path, size_t size)
-{
-	char meta[PATH_MAX];
-	int rc;
-
-	if (!ctx || !path || size == 0)
-		MORPH_RETURN(-EINVAL);
-	rc = file_path_join(meta, sizeof(meta), ctx->config.sync.dir,
-			    ".morph-sync");
-	if (rc != 0)
-		return rc;
-	return file_path_join(path, size, meta, "manifest.db");
-}
 
 static void print_sync_status(const struct morph_sync_status *st)
 {
@@ -33,31 +18,19 @@ static int sync_cmd_status(struct cli_context *ctx)
 	struct morph_sync_status st;
 	int rc;
 
-	if (ctx->sync_started) {
-		rc = morph_sync_worker_status(&ctx->sync_worker, &st);
-		if (rc != 0)
-			return rc;
-	} else {
-		memset(&st, 0, sizeof(st));
-	}
+	rc = runtime_sync_status_instance(ctx->runtime, &st);
+	if (rc != 0)
+		return rc;
 	print_sync_status(&st);
 	return 0;
 }
 
 static int sync_cmd_now(struct cli_context *ctx)
 {
-	struct morph_sync_config cfg;
 	struct morph_sync_status st;
 	int rc;
 
-	rc = cli_build_sync_config(ctx, &cfg);
-	if (rc != 0)
-		return rc;
-	if (!cfg.sync_dir[0]) {
-		CMD_ERROR("sync.dir is not configured");
-		return -EINVAL;
-	}
-	rc = morph_sync_once(&cfg, &st);
+	rc = runtime_sync_now_instance(ctx->runtime, NULL, NULL, &st);
 	print_sync_status(&st);
 	if (rc == 0)
 		CMD_OK("sync completed");
@@ -68,39 +41,28 @@ static int sync_cmd_now(struct cli_context *ctx)
 
 static int sync_cmd_conflicts(struct cli_context *ctx)
 {
-	char path[PATH_MAX];
-	sqlite3 *db = NULL;
-	sqlite3_stmt *stmt = NULL;
+	struct runtime_sync_conflict *items = NULL;
+	int count = 0;
 	int rc;
 
-	rc = sync_manifest_path(ctx, path, sizeof(path));
-	if (rc != 0)
-		return rc;
-	if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+	rc = runtime_sync_conflicts(ctx->runtime, &items, &count);
+	if (rc == -ENOENT) {
 		CMD_ERROR("sync manifest not found");
 		return -ENOENT;
 	}
-	rc = sqlite3_prepare_v2(db,
-		"SELECT id,path,created_at FROM conflicts ORDER BY id DESC",
-		-1, &stmt, NULL);
-	if (rc != SQLITE_OK) {
-		sqlite3_close(db);
-		MORPH_RETURN(MORPH_ERR_DB);
-	}
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	if (rc != 0)
+		return rc;
+	for (int i = 0; i < count; i++) {
 		printf("#%lld %s %lld\n",
-		       (long long)sqlite3_column_int64(stmt, 0),
-		       (const char *)sqlite3_column_text(stmt, 1),
-		       (long long)sqlite3_column_int64(stmt, 2));
+		       (long long)items[i].id, items[i].path,
+		       (long long)items[i].created_at);
 	}
-	sqlite3_finalize(stmt);
-	sqlite3_close(db);
+	runtime_sync_conflicts_free(items);
 	return 0;
 }
 
 static int sync_cmd_restore(struct cli_context *ctx, const char *id)
 {
-	struct morph_sync_config cfg;
 	int64_t trash_id;
 	int rc;
 
@@ -109,10 +71,7 @@ static int sync_cmd_restore(struct cli_context *ctx, const char *id)
 		return -EINVAL;
 	}
 	trash_id = atoll(id);
-	rc = cli_build_sync_config(ctx, &cfg);
-	if (rc != 0)
-		return rc;
-	rc = morph_sync_restore_trash(&cfg, trash_id);
+	rc = runtime_sync_restore(ctx->runtime, trash_id);
 	if (rc == 0)
 		CMD_OK("restored trash entry %s", id);
 	else

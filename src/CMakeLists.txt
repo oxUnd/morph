@@ -66,6 +66,7 @@ add_subdirectory(util)
 add_subdirectory(event)
 add_subdirectory(agent_ui)
 add_subdirectory(sync)
+add_subdirectory(runtime)
 
 if(BUILD_FASTCGI)
     add_subdirectory(fastcgi)
@@ -97,7 +98,7 @@ target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_compile_definitions(morph-cli PRIVATE
 	MORPH_BUILTIN_SKILLS_DIR="${CMAKE_SOURCE_DIR}/skills"
 )
-target_link_libraries(morph-cli PUBLIC morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-credits morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui morph-sync)
+target_link_libraries(morph-cli PUBLIC morph-runtime morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-credits morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui morph-sync)
 
 add_executable(morph ${MORPH_SOURCES})
 set_target_properties(morph PROPERTIES

@@ -2087,8 +2087,8 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
  *
  * Lifecycle:
  *   The worker is started lazily on the first async submission and is
- *   torn down by memory_async_shutdown() (CLI calls this just before
- *   db_close so all in-flight jobs flush first).
+ *   torn down by memory_async_shutdown() from the owning runtime before
+ *   db_close, so all in-flight jobs flush first.
  * ---------------------------------------------------------------------- */
 
 struct memory_job {

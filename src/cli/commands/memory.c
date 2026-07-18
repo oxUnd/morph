@@ -50,9 +50,8 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		 * gives the user the full picture; max_episodes is only
 		 * a hint for the React-loop context window.
 		 */
-		char *rendered = memory_render_session(
-			&ctx->database, ctx->current_session.id, 0);
-		CMD_HEADER("memory (%s)", ctx->current_session.name);
+		char *rendered = runtime_memory_render_current(ctx->runtime, 0);
+		CMD_HEADER("memory (%s)", runtime_session_current_name(ctx->runtime));
 		printf("%s\n", rendered ? rendered :
 		       "No long-term memory stored for this session.");
 		free(rendered);
@@ -66,14 +65,12 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR("usage: /memory clear [all|facts|episodes|procedures]");
 			return -EINVAL;
 		}
-		if (memory_clear(&ctx->database, ctx->current_session.id, scope) != 0) {
+		if (runtime_memory_clear_current(ctx->runtime, scope) != 0) {
 			CMD_ERROR("failed to clear memory");
 			return -EIO;
 		}
-		if (ctx->react)
-			react_set_memory_context(ctx->react, NULL);
 		CMD_OK("cleared %s memory for session: %s",
-		       memory_scope_display(scope), ctx->current_session.name);
+		       memory_scope_display(scope), runtime_session_current_name(ctx->runtime));
 		return 0;
 	}
 

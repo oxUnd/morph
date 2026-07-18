@@ -39,11 +39,11 @@ int cli_event_callback(const struct morph_event *ev, void *user_data)
 
 		if (!env_s[0]) {
 			if (strcmp(backend_s, "image") == 0)
-				env_s = ctx->config.models.image.api_key_env;
+				env_s = (*runtime_config_get(ctx->runtime)).models.image.api_key_env;
 			else if (strcmp(backend_s, "video") == 0)
-				env_s = ctx->config.models.video.api_key_env;
+				env_s = (*runtime_config_get(ctx->runtime)).models.video.api_key_env;
 			else
-				env_s = ctx->config.models.text.api_key_env;
+				env_s = (*runtime_config_get(ctx->runtime)).models.text.api_key_env;
 		}
 		printf(ANSI_BOLD ANSI_YELLOW "auth required: " ANSI_RESET);
 		if (tool_s[0])
@@ -57,11 +57,11 @@ int cli_event_callback(const struct morph_event *ev, void *user_data)
 		printf(" is missing an API key.\n");
 		if (env_s[0]) {
 			printf("Edit %s or export %s, then retry.\n",
-			       ctx->config_path[0] ? ctx->config_path :
+			       runtime_config_path_get(ctx->runtime)[0] ? runtime_config_path_get(ctx->runtime) :
 			       default_config_path, env_s);
 		} else {
 			printf("Edit %s, then retry.\n",
-			       ctx->config_path[0] ? ctx->config_path :
+			       runtime_config_path_get(ctx->runtime)[0] ? runtime_config_path_get(ctx->runtime) :
 			       default_config_path);
 		}
 		fflush(stdout);
@@ -207,7 +207,9 @@ int cli_emit_mcp_event(struct cli_context *ctx,
 }
 
 int cli_discover_mcp_server(struct cli_context *ctx,
-				   struct mcp_client *mc, int auto_connect,
+				   const char *server,
+				   enum mcp_transport_type transport,
+				   int auto_connect,
 				   int timeout_seconds)
 {
 	int tools;
@@ -217,26 +219,19 @@ int cli_discover_mcp_server(struct cli_context *ctx,
 	char msg[256];
 
 	snprintf(msg, sizeof(msg), "%s discovering capabilities",
-		 mc->config.name);
+		 server);
 	cli_emit_mcp_event(ctx, "mcp.discovering", "begin", msg,
-			   mc->config.name, mc->config.transport, auto_connect,
+			   server, transport, auto_connect,
 			   timeout_seconds, -1, -1, -1, 0);
 
-	tools = mcp_register_server_tools(mc, &ctx->tools);
-	if (tools < 0)
-		rc = tools;
-	resources = mcp_register_server_resources(mc, &ctx->tools);
-	if (resources < 0 && rc == 0)
-		rc = resources;
-	prompts = mcp_register_server_prompts(mc, &ctx->tools);
-	if (prompts < 0 && rc == 0)
-		rc = prompts;
+	rc = runtime_mcp_discover(ctx->runtime, server,
+				  &tools, &resources, &prompts);
 
 	if (rc < 0) {
 		snprintf(msg, sizeof(msg), "%s discovery failed: %s",
-			 mc->config.name, morph_strerror(rc));
+			 server, morph_strerror(rc));
 		cli_emit_mcp_event(ctx, "mcp.failed", "failed", msg,
-				   mc->config.name, mc->config.transport,
+				   server, transport,
 				   auto_connect, timeout_seconds,
 				   tools < 0 ? -1 : tools,
 				   resources < 0 ? -1 : resources,
@@ -246,9 +241,9 @@ int cli_discover_mcp_server(struct cli_context *ctx,
 
 	snprintf(msg, sizeof(msg),
 		 "%s ready (%d tools, %d resources, %d prompts)",
-		 mc->config.name, tools, resources, prompts);
+		 server, tools, resources, prompts);
 	cli_emit_mcp_event(ctx, "mcp.ready", "ready", msg,
-			   mc->config.name, mc->config.transport, auto_connect,
+			   server, transport, auto_connect,
 			   timeout_seconds, tools, resources, prompts, 0);
 	return 0;
 }

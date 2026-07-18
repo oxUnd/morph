@@ -76,6 +76,20 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.hitl_enabled = 0;
 	cfg->react.hitl_tools_count = 0;
 	cfg->react.hitl_auto_approve_readonly = 1;
+	{
+		static const char *const readonly_tools[] = {
+			"file_read", "file_list", "file_info",
+			"read_lines",
+			"img_info", "credits", "memory",
+			"ask_user", "activate_skill", "plan",
+			"agent_status"
+		};
+		for (int i = 0; i < 11; i++) {
+			strncpy(cfg->react.readonly_tools[i], readonly_tools[i],
+				READONLY_TOOL_NAME_MAX - 1);
+		}
+		cfg->react.readonly_tools_count = 11;
+	}
 
 	cfg->react.bash_exec_enabled = 0;
 	cfg->react.bash_exec_default_timeout = 60;
@@ -509,6 +523,19 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.disabled_tools_count = count;
 		}
+		toml_array_t *rt = toml_array_in(react, "readonly_tools");
+		if (rt) {
+			int count = 0;
+			for (; count < READONLY_TOOLS_MAX; count++) {
+				toml_datum_t val = toml_string_at(rt, count);
+				if (!val.ok)
+					break;
+				strncpy(cfg->react.readonly_tools[count], val.u.s,
+					READONLY_TOOL_NAME_MAX - 1);
+				free(val.u.s);
+			}
+			cfg->react.readonly_tools_count = count;
+		}
 		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
 		CFG_BOOL(react, "bash_exec_enabled", cfg->react.bash_exec_enabled);
@@ -849,12 +876,13 @@ void config_print(const struct config *cfg)
 		 cfg->credits.daily_limit, cfg->credits.currency,
 		 cfg->credits.cost_to_credit_coef,
 		 cfg->credits.price_count);
-	log_info("  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
+	log_info("  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d readonly=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
 		 cfg->react.max_iterations, cfg->react.tool_timeout_seconds,
 		 cfg->react.tool_max_retries,
 		 cfg->react.guardrail_enabled, cfg->react.guardrail_max_retries,
 		 cfg->react.guardrail_max_empty_rounds,
 		 cfg->react.disabled_tools_count,
+		 cfg->react.readonly_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
 	log_info("    bash_exec_enabled: %d timeout: %d",
@@ -865,6 +893,8 @@ void config_print(const struct config *cfg)
 		 cfg->react.bash_exec_allowed_cwds_count);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
+	for (int i = 0; i < cfg->react.readonly_tools_count; i++)
+		log_info("    readonly_tool: %s", cfg->react.readonly_tools[i]);
 	for (int i = 0; i < cfg->react.hitl_tools_count; i++)
 		log_info("    hitl_tool: %s", cfg->react.hitl_tools[i]);
 	log_info("  [context] threshold=%.1f target=%.1f keep=%d",

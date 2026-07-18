@@ -4,13 +4,15 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
-		CMD_HEADER("registered tools (%d)", ctx->tools.count);
-		for (int i = 0; i < ctx->tools.count; i++) {
+		int count = runtime_tool_count(ctx->runtime);
+		CMD_HEADER("registered tools (%d)", count);
+		for (int i = 0; i < count; i++) {
+			struct tool_desc desc;
+			(void)runtime_tool_info(ctx->runtime, i, &desc);
 			printf("  %-15s %s\n",
-			       ctx->tools.entries[i].desc.name,
-			       ctx->tools.entries[i].desc.description);
+			       desc.name, desc.description);
 		}
-		if (ctx->tools.count == 0)
+		if (count == 0)
 			printf("  (none)\n");
 		return 0;
 	}
@@ -20,19 +22,19 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR("usage: /ext info <name>");
 			return -EINVAL;
 		}
-		struct tool_entry *e = tool_lookup(&ctx->tools, name);
-		if (!e) {
+		struct tool_desc desc;
+		if (runtime_tool_find(ctx->runtime, name, &desc) != 0) {
 			CMD_ERROR("tool not found: %s", name);
 			return -ENOENT;
 		}
-		printf("  %-15s %s\n", "Name", e->desc.name);
-		printf("  %-15s %s\n", "Description", e->desc.description);
-		if (e->desc.input_schema[0])
+		printf("  %-15s %s\n", "Name", desc.name);
+		printf("  %-15s %s\n", "Description", desc.description);
+		if (desc.input_schema[0])
 			printf("  %-15s %s\n", "Input schema",
-			       e->desc.input_schema);
-		if (e->desc.output_schema[0])
+			       desc.input_schema);
+		if (desc.output_schema[0])
 			printf("  %-15s %s\n", "Output schema",
-			       e->desc.output_schema);
+			       desc.output_schema);
 		return 0;
 	}
 	if (sub && strcmp(sub, "install") == 0) {
@@ -49,8 +51,8 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		}
 		struct ext_install_options opts;
 		memset(&opts, 0, sizeof(opts));
-		opts.install_dir = ctx->config.ext.dir[0] ?
-			ctx->config.ext.dir : "~/.morph/exts";
+		const struct config *config = runtime_config_get(ctx->runtime);
+		opts.install_dir = config->ext.dir[0] ? config->ext.dir : "~/.morph/exts";
 		opts.yes = yes;
 		opts.in = stdin;
 		opts.out = stdout;
@@ -78,13 +80,15 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		return 0;
 	}
 	/* /ext alone → show tools */
-	CMD_HEADER("registered tools (%d)", ctx->tools.count);
-	for (int i = 0; i < ctx->tools.count; i++) {
+	int count = runtime_tool_count(ctx->runtime);
+	CMD_HEADER("registered tools (%d)", count);
+	for (int i = 0; i < count; i++) {
+		struct tool_desc desc;
+		(void)runtime_tool_info(ctx->runtime, i, &desc);
 		printf("  %-15s %s\n",
-		       ctx->tools.entries[i].desc.name,
-		       ctx->tools.entries[i].desc.description);
+		       desc.name, desc.description);
 	}
-	if (ctx->tools.count == 0)
+	if (count == 0)
 		printf("  (none)\n");
 	return 0;
 }

@@ -38,7 +38,8 @@ static char *session_completion_generator(const char *text, int state)
 		len = (int)strlen(text);
 		if (!g_comp_ctx)
 			return NULL;
-		session_list(&g_comp_ctx->database, &slist, &scount, 0, NULL);
+		(void)runtime_session_list_query(g_comp_ctx->runtime, &slist,
+						 &scount, 0, NULL);
 	}
 
 	while (idx < scount) {
@@ -106,25 +107,22 @@ static int cli_prepare_one_shot_session(struct cli_context *ctx)
 			snprintf(name, sizeof(name), "one_shot_%lld_%d",
 				 (long long)now, i);
 		}
-		rc = session_create(&ctx->database, name,
-				    ctx->config.models.text.model, &s);
+		rc = runtime_session_create_and_select(ctx->runtime, name, &s);
 	}
 	if (rc != 0)
 		return rc;
-	ctx->current_session = s;
-	utf8_sanitize_inplace(ctx->current_session.name);
-	session_load_history(ctx);
-	cli_update_tool_runtime_context(ctx);
+	utf8_sanitize_inplace(s.name);
 	ctx->session_auto_named = 0;
 	return 0;
 }
 
 static void emit_trace_json(struct cli_context *ctx, double elapsed)
 {
-	if (!ctx->react)
+	struct runtime_turn_status status;
+	if (runtime_turn_status_get(ctx->runtime, &status) != 0)
 		return;
 	cJSON *root = cJSON_CreateObject();
-	switch (ctx->react->state) {
+	switch (status.state) {
 	case REACT_STATE_DONE:
 		cJSON_AddStringToObject(root, "state", "done");
 		break;
@@ -138,25 +136,25 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 		cJSON_AddStringToObject(root, "state", "unknown");
 		break;
 	}
-	if (ctx->react->final_answer)
+	if (status.final_answer)
 		cJSON_AddStringToObject(root, "final_answer",
-					ctx->react->final_answer);
+					status.final_answer);
 	else
 		cJSON_AddStringToObject(root, "final_answer", "");
 	cJSON_AddStringToObject(root, "outcome",
-				react_outcome_name(ctx->react->outcome));
-	if (ctx->react->last_error_code < 0) {
+				react_outcome_name(status.outcome));
+	if (status.last_error_code < 0) {
 		cJSON_AddNumberToObject(root, "error_code",
-					ctx->react->last_error_code);
+					status.last_error_code);
 		cJSON_AddStringToObject(root, "error",
-					morph_strerror(ctx->react->last_error_code));
+					morph_strerror(status.last_error_code));
 	}
-	if (ctx->react->outcome_reason[0])
+	if (status.outcome_reason && status.outcome_reason[0])
 		cJSON_AddStringToObject(root, "reason",
-					ctx->react->outcome_reason);
+					status.outcome_reason);
 	cJSON *steps = cJSON_CreateArray();
-	struct react_step *cur = ctx->react->steps;
-	while (cur) {
+	for (int i = 0; i < status.step_count; i++) {
+		struct runtime_trace_step *cur = &status.steps[i];
 		cJSON *s = cJSON_CreateObject();
 		cJSON_AddStringToObject(s, "type",
 					react_step_type_name(cur->type));
@@ -167,7 +165,6 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 		if (cur->tool_args)
 			cJSON_AddStringToObject(s, "tool_args", cur->tool_args);
 		cJSON_AddItemToArray(steps, s);
-		cur = cur->next;
 	}
 	cJSON_AddItemToObject(root, "steps", steps);
 	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
@@ -175,6 +172,7 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 	printf("%s\n", json);
 	free(json);
 	cJSON_Delete(root);
+	runtime_turn_status_cleanup(&status);
 }
 
 void cli_run_once(struct cli_context *ctx, const char *prompt)
@@ -187,15 +185,8 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 	if (rc != 0) {
 		log_err("failed to create one-shot session: %s",
 			morph_strerror(rc));
-		if (rc == MORPH_ERR_DB && ctx->database.handle) {
-			fprintf(stderr,
-				"failed to create one-shot session: %s: %s\n",
-				morph_strerror(rc),
-				sqlite3_errmsg(ctx->database.handle));
-		} else {
-			fprintf(stderr, "failed to create one-shot session: %s\n",
-				morph_strerror(rc));
-		}
+		fprintf(stderr, "failed to create one-shot session: %s\n",
+			morph_strerror(rc));
 		return;
 	}
 	struct sigaction sa;
@@ -207,8 +198,7 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 	struct timespec ts_start, ts_end;
 	clock_gettime(CLOCK_MONOTONIC, &ts_start);
 	cli_sigint_received = 0;
-	if (ctx->react)
-		react_cancel(ctx->react);
+	runtime_cancel_turn(ctx->runtime);
 	/*
 	 * In trace-json mode, redirect stdout to stderr so that
 	 * only the JSON trace appears on stdout for machine parsing.
@@ -256,13 +246,15 @@ void cli_run(struct cli_context *ctx)
 	rl_attempted_completion_function = cmd_completion;
 	while (ctx->running) {
 		char prompt[512];
+		struct session current;
+		(void)runtime_session_current(ctx->runtime, &current);
 		if (cli_color_enabled())
 			snprintf(prompt, sizeof(prompt),
 				 ANSI_GREEN "[%s]" ANSI_RESET " $ ",
-				 ctx->current_session.display_id);
+				 current.display_id);
 		else
 			snprintf(prompt, sizeof(prompt), "[%s] $ ",
-				 ctx->current_session.display_id);
+				 current.display_id);
 		cli_sigint_received = 0;
 		char *input = readline(prompt);
 		if (!input) {
@@ -286,7 +278,9 @@ void cli_run(struct cli_context *ctx)
 	}
 #else
 	while (ctx->running) {
-		printf(ANSI_GREEN "[%s]" ANSI_RESET " $ ", ctx->current_session.display_id);
+		struct session current;
+		(void)runtime_session_current(ctx->runtime, &current);
+		printf(ANSI_GREEN "[%s]" ANSI_RESET " $ ", current.display_id);
 		fflush(stdout);
 		cli_sigint_received = 0;
 		if (!fgets(line, sizeof(line), stdin)) {
