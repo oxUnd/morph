@@ -32,7 +32,7 @@ RUN sed -i 's|deb.debian.org|mirrors.huaweicloud.com|g; s|security.debian.org|mi
  && mkdir -p /home/morph/.morph /var/lib/morph /var/lib/morph/log /var/lib/morph/output /var/www/morph /var/lib/nginx \
  && chown -R morph:morph /home/morph /var/lib/morph /var/lib/nginx /var/log/nginx
 
-COPY --from=build /src/build/src/fastcgi/morph-fastcgi /usr/local/bin/morph-fastcgi
+COPY --from=build /src/build/src/sapi/fastcgi/morph-fastcgi /usr/local/bin/morph-fastcgi
 COPY web/index.html /var/www/morph/index.html
 COPY web/deploy/nginx.conf /etc/nginx/sites-available/morph
 

@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 #define CLI_COMMAND_MAX 128
 

@@ -1,4 +1,4 @@
-#include "cli/internal.h"
+#include "sapi/cli/internal.h"
 
 int cli_sync_start(struct cli_context *ctx)
 {

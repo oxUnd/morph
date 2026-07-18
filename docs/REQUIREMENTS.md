@@ -987,7 +987,9 @@ morph/
 │   ├── db/                     # SQLite schema + scheduled_task
 │   ├── persistence/            # memory_store / credit_store
 │   ├── credits/                # credit accounting
-│   ├── fastcgi/                # 可选 HTTP API 前端
+│   ├── sapi/                   # 面向宿主的服务 API
+│   │   ├── cli/                # CLI 前端及 main 入口
+│   │   └── fastcgi/            # 可选 HTTP API 前端
 │   ├── agent_ui/               # Agent UI tags / markdown
 │   ├── js_runner/              # QuickJS 动态工具 runner
 │   └── util/

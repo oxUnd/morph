@@ -1,4 +1,4 @@
-#include "cli/internal.h"
+#include "sapi/cli/internal.h"
 
 /* ---- output_callback ---- */
 

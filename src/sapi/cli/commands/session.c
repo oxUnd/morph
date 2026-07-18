@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 #define SESSION_LIST_DEFAULT 20
 

@@ -1,7 +1,3 @@
-set(MORPH_SOURCES
-	main.c
-)
-
 add_library(morph-toml STATIC
 	${CMAKE_SOURCE_DIR}/vendor/toml.c
 )
@@ -67,64 +63,4 @@ add_subdirectory(event)
 add_subdirectory(agent_ui)
 add_subdirectory(sync)
 add_subdirectory(runtime)
-
-if(BUILD_FASTCGI)
-    add_subdirectory(fastcgi)
-endif()
-
-add_library(morph-cli STATIC
-	cli/core.c
-	cli/events.c
-	cli/init.c
-	cli/output.c
-	cli/run.c
-	cli/scheduler.c
-	cli/commands/ext.c
-	cli/commands/mcp.c
-	cli/commands/media.c
-	cli/commands/memory.c
-	cli/commands/registry.c
-	cli/commands/runtime.c
-	cli/commands/session.c
-	cli/commands/skill.c
-	cli/commands/sync.c
-	cli/commands/tasks.c
-)
-target_include_directories(morph-cli PUBLIC
-	${CMAKE_CURRENT_SOURCE_DIR}
-	${CMAKE_SOURCE_DIR}/src
-)
-target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_compile_definitions(morph-cli PRIVATE
-	MORPH_BUILTIN_SKILLS_DIR="${CMAKE_SOURCE_DIR}/skills"
-)
-target_link_libraries(morph-cli PUBLIC morph-runtime morph-util morph-db morph-agent morph-http morph-models morph-config morph-session morph-credits morph-render morph-skill morph-tools morph-ext morph-mcp morph-ipc morph-sandbox morph-event morph-agent-ui morph-sync)
-
-add_executable(morph ${MORPH_SOURCES})
-set_target_properties(morph PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-)
-target_include_directories(morph PRIVATE
-	${CMAKE_CURRENT_SOURCE_DIR}
-	${CMAKE_SOURCE_DIR}/src
-)
-target_link_libraries(morph PRIVATE morph-cli)
-
-find_path(READLINE_INCLUDE_DIR readline/readline.h
-	/opt/homebrew/opt/readline/include
-	/usr/local/opt/readline/include
-	/usr/include
-)
-find_library(READLINE_LIBRARY readline
-	/opt/homebrew/opt/readline/lib
-	/usr/local/opt/readline/lib
-	/usr/lib
-)
-if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
-	target_include_directories(morph PRIVATE ${READLINE_INCLUDE_DIR})
-	target_link_libraries(morph PRIVATE ${READLINE_LIBRARY})
-	add_compile_definitions(HAVE_READLINE=1)
-	message(STATUS "readline found: ${READLINE_LIBRARY}")
-else()
-	message(STATUS "readline not found, using fgets")
-endif()
+add_subdirectory(sapi)

@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 static int parse_task_time_arg(const char *arg, int64_t *out)
 {

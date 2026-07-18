@@ -808,7 +808,7 @@ static void *turn_thread(void *arg)
 		if (err) {
 			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
 			cJSON_AddStringToObject(err, "message",
-				"react integration not linked; see fastcgi/PATCHES.md §3");
+				"react integration not linked; see sapi/fastcgi/PATCHES.md §3");
 			json = cJSON_PrintUnformatted(err);
 			cJSON_Delete(err);
 		}

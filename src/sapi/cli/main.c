@@ -1,4 +1,4 @@
-#include "cli/cli.h"
+#include "sapi/cli/cli.h"
 #include "config.h"
 #include "render/markdown.h"
 #include "skill/skill.h"

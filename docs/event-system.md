@@ -351,13 +351,13 @@ Core event module:
 
 CLI:
 
-- `src/cli/cli.h`: event callback/mode fields in `struct cli_context`
-- `src/cli/init.c`: startup init path
-- `src/cli/init.c` and `src/cli/commands/mcp.c`: MCP init and `/mcp` command events
-- `src/cli/events.c`: JSON and human event renderers
-- `src/cli/core.c`: one-shot command path emits structured events
-- `src/cli/scheduler.c` and `src/cli/core.c`: task scheduler and memory consolidation background events
-- `src/main.c`: CLI flags and startup event mode wiring
+- `src/sapi/cli/cli.h`: event callback/mode fields in `struct cli_context`
+- `src/sapi/cli/init.c`: startup init path
+- `src/sapi/cli/init.c` and `src/sapi/cli/commands/mcp.c`: MCP init and `/mcp` command events
+- `src/sapi/cli/events.c`: JSON and human event renderers
+- `src/sapi/cli/core.c`: one-shot command path emits structured events
+- `src/sapi/cli/scheduler.c` and `src/sapi/cli/core.c`: task scheduler and memory consolidation background events
+- `src/sapi/cli/main.c`: CLI flags and startup event mode wiring
 
 ReAct:
 
@@ -379,15 +379,15 @@ Tools and artifacts:
 MCP:
 
 - `src/mcp/mcp_client.c`: register functions return structured counts
-- `src/cli/events.c`, `src/cli/init.c`, and `src/cli/commands/mcp.c`: registered, skipped, connecting, connected, discovering,
+- `src/sapi/cli/events.c`, `src/sapi/cli/init.c`, and `src/sapi/cli/commands/mcp.c`: registered, skipped, connecting, connected, discovering,
   ready, timeout, failed, and disconnected events
 
 FastCGI:
 
-- `src/fastcgi/handlers/turns.c`: consumes unified React/tool/artifact events
+- `src/sapi/fastcgi/handlers/turns.c`: consumes unified React/tool/artifact events
   and maps them to existing SSE records
-- `src/fastcgi/handlers/events.c`: SSE output compatibility
-- `src/fastcgi/README.md`: update event type documentation
+- `src/sapi/fastcgi/handlers/events.c`: SSE output compatibility
+- `src/sapi/fastcgi/README.md`: update event type documentation
 
 Sub-agents/background work:
 
@@ -398,7 +398,7 @@ Sub-agents/background work:
 
 Memory/compression:
 
-- `src/cli/core.c`: background memory consolidation status is surfaced
+- `src/sapi/cli/core.c`: background memory consolidation status is surfaced
 - compression remains a ReAct internal operation and is visible through the
   enclosing turn events
 

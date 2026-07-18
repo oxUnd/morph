@@ -13,7 +13,7 @@ without bringing an HTTP stack into the core binary.
 ## Layout
 
 ```
-src/fastcgi/
+src/sapi/fastcgi/
 ├── CMakeLists.txt
 ├── PATCHES.md          # optional agent-side hooks (additive)
 ├── README.md
@@ -95,7 +95,7 @@ cmake -S . -B build -DBUILD_FASTCGI=ON
 cmake --build build -j
 ```
 
-The binary lands at `build/src/fastcgi/morph-fastcgi`.
+The binary lands at `build/src/sapi/fastcgi/morph-fastcgi`.
 
 ---
 
@@ -110,7 +110,7 @@ export MORPH_FCGI_TRUST_HDR="X-Remote-User"
 # Optional: override artifact output directory
 export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
-./build/src/fastcgi/morph-fastcgi
+./build/src/sapi/fastcgi/morph-fastcgi
 ```
 
 `MORPH_FCGI_LISTEN` accepts `unix:/path/sock`, `:9000`, or `127.0.0.1:9000`.

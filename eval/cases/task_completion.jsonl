@@ -23,7 +23,7 @@
 {"id":"tc_023","prompt":"运行 `df -h` 检查磁盘使用情况，然后告诉我是否还有足够空间","expected_tools_sequence":["bash_exec"],"expected_answer_contains":[],"category":"system","difficulty":"medium"}
 {"id":"tc_024","prompt":"查看 /tmp 目录下的文件，然后读取其中最大的文件的内容","expected_tools_sequence":["file_list","file_info","file_read"],"expected_answer_contains":[],"category":"file_ops","difficulty":"hard"}
 {"id":"tc_025","prompt":"找到项目中的所有 .c 文件，统计总共有多少行代码","expected_tools_sequence":["bash_exec"],"expected_answer_contains":[],"category":"system","difficulty":"hard"}
-{"id":"tc_026","prompt":"读取 src/main.c 的内容，解释这个程序做什么，然后写一个简短的总结","expected_tools_sequence":["file_read"],"expected_answer_contains":["main"],"category":"file_ops","difficulty":"hard"}
+{"id":"tc_026","prompt":"读取 src/sapi/cli/main.c 的内容，解释这个程序做什么，然后写一个简短的总结","expected_tools_sequence":["file_read"],"expected_answer_contains":["main"],"category":"file_ops","difficulty":"hard"}
 {"id":"tc_027","prompt":"检查当前系统的 CPU 和内存使用情况，然后给出优化建议","expected_tools_sequence":["bash_exec","bash_exec"],"expected_answer_contains":[],"category":"system","difficulty":"hard"}
 {"id":"tc_028","prompt":"读取 README.md 和 CMakeLists.txt，然后总结这个项目的架构","expected_tools_sequence":["file_read","file_read"],"expected_answer_contains":[],"category":"file_ops","difficulty":"hard"}
 {"id":"tc_029","prompt":"创建一个开发计划，包含代码审查、测试、部署三个步骤，然后标记第一步为进行中","expected_tools_sequence":["plan","plan"],"expected_answer_contains":["plan"],"category":"planning","difficulty":"hard"}

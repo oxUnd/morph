@@ -47,7 +47,7 @@ set(TEST_SOURCES
 	test_event.cpp
 	test_agent_ui.cpp
 	test_fastcgi_security.cpp
-	${CMAKE_SOURCE_DIR}/src/fastcgi/security.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/security.c
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
@@ -68,7 +68,7 @@ target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src/mcp
 	${CMAKE_SOURCE_DIR}/src/event
 	${CMAKE_SOURCE_DIR}/src/agent_ui
-	${CMAKE_SOURCE_DIR}/src/fastcgi
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi
 )
 
 target_compile_definitions(morph-tests PRIVATE

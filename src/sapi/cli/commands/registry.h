@@ -1,7 +1,7 @@
 #ifndef CLI_COMMAND_REGISTRY_H
 #define CLI_COMMAND_REGISTRY_H
 
-#include "cli/internal.h"
+#include "sapi/cli/internal.h"
 
 struct cli_command {
 	const char *name;

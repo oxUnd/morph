@@ -45,7 +45,7 @@ morph-render (markdown via md4c, image, video)
 morph-config (TOML-based) ──→ morph-cli (main CLI lib)
 morph-ipc (jsonrpc)
 ```
-Entrypoint: `src/main.c` → initializes logging, HTTP, config, then runs CLI via `cli_run()`.
+Entrypoint: `src/sapi/cli/main.c` → initializes logging, HTTP, config, then runs CLI via `cli_run()`.
 
 ## Vendor
 Bundled in `vendor/`: cJSON.c/h, stb_image.h, stb_image_write.h, stb_image_resize2.h, toml.c/h, sheredom_utf8.h. Compiled as part of the project, **not** fetched separately.

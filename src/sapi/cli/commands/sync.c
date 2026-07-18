@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 static void print_sync_status(const struct morph_sync_status *st)
 {

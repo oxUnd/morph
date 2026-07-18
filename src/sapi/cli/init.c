@@ -1,5 +1,5 @@
-#include "cli/internal.h"
-#include "cli/commands/registry.h"
+#include "sapi/cli/internal.h"
+#include "sapi/cli/commands/registry.h"
 
 static void cli_img_annotate_pause(void *user_data)
 {

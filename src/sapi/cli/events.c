@@ -1,4 +1,4 @@
-#include "cli/internal.h"
+#include "sapi/cli/internal.h"
 
 int cli_event_callback(const struct morph_event *ev, void *user_data)
 {

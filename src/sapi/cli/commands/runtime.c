@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 static int cmd_quit(struct cli_context *ctx, int argc, char **argv)
 {

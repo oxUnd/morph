@@ -1,4 +1,4 @@
-#include "cli/commands/registry.h"
+#include "sapi/cli/commands/registry.h"
 
 static const char *memory_scope_display(enum memory_clear_scope scope)
 {

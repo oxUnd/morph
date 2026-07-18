@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "fastcgi/security.h"
+#include "sapi/fastcgi/security.h"
 #include <cstring>
 
 TEST(FastcgiSecurityTest, VerifiesKnownPbkdf2Sha256Vector) {

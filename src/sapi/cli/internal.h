@@ -1,7 +1,7 @@
 #ifndef CLI_INTERNAL_H
 #define CLI_INTERNAL_H
 
-#include "cli/cli.h"
+#include "sapi/cli/cli.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/buf.h"
