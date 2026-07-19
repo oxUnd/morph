@@ -6,6 +6,7 @@
 #include "runtime/turn_scope.h"
 #include "runtime/usage.h"
 #include "runtime/extensions.h"
+#include "runtime/output.h"
 #include "util/error.h"
 #include "util/file.h"
 
@@ -337,4 +338,10 @@ const char *runtime_workdir_get(const struct runtime *runtime)
 const char *runtime_config_path_get(const struct runtime *runtime)
 {
 	return runtime ? runtime->context.config_path : NULL;
+}
+
+char *runtime_output_get_json(struct runtime *runtime, const char *path)
+{
+	return runtime ? runtime_output_get_json_by_path(
+		&runtime->context.database, path) : NULL;
 }

@@ -1,8 +1,39 @@
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
+#include "runtime/output.h"
+#include "util/log.h"
 
 #include <errno.h>
 #include <string.h>
+
+struct runtime_output_forwarder {
+	const struct runtime_request *request;
+	struct runtime_engine *engine;
+};
+
+static int runtime_output_forward(const struct react_output_event *event,
+				  void *user_data)
+{
+	struct runtime_output_forwarder *forwarder = user_data;
+	struct runtime_output_context output;
+	int rc;
+
+	memset(&output, 0, sizeof(output));
+	output.db = forwarder->engine->db;
+	output.config = forwarder->engine->config;
+	output.session_id = forwarder->request->session_id;
+	output.request_prompt = forwarder->request->stored_user_input;
+	output.turn_id = forwarder->engine->react->turn_id;
+	output.event_cb = forwarder->engine->react->event_cb;
+	output.event_user_data = forwarder->engine->react->event_user_data;
+	rc = runtime_output_record_event(&output, event);
+	if (rc != 0)
+		log_warn("failed to record generation output: %d", rc);
+	if (forwarder->request->output_cb)
+		return forwarder->request->output_cb(
+			event, forwarder->request->output_user_data);
+	return 0;
+}
 
 int runtime_execute(struct runtime_engine *engine,
 		    const struct runtime_request *request,
@@ -23,6 +54,7 @@ int runtime_execute(struct runtime_engine *engine,
 	int ask_user_bound = 0;
 	int rc;
 	int finish_rc;
+	struct runtime_output_forwarder output_forwarder;
 
 	if (!engine || !engine->db || !engine->react || !request ||
 	    request->session_id <= 0 || !request->model_input || !result)
@@ -84,9 +116,12 @@ int runtime_execute(struct runtime_engine *engine,
 			.stored_user_input = request->stored_user_input,
 			.turn_id = request->turn_id,
 		});
-	if (rc == 0)
+	if (rc == 0) {
+		output_forwarder.request = request;
+		output_forwarder.engine = engine;
 		rc = react_run(engine->react, request->model_input,
-			       request->output_cb, request->output_user_data);
+			       runtime_output_forward, &output_forwarder);
+	}
 	if (turn.begun) {
 		finish_rc = agent_turn_finish(&turn, &result->turn);
 		result->persistence_rc = finish_rc;

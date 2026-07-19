@@ -51,6 +51,7 @@ int cli_scheduled_task_runner(const struct scheduled_task *task,
 	memset(&request, 0, sizeof(request));
 	request.session_id = session.id;
 	request.model_input = morph_buf_cstr(&prompt);
+	request.stored_user_input = request.model_input;
 	request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 	rc = runtime_execute_turn(ctx->runtime, &request, &turn);
 	result->session_id = session.id;

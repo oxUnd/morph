@@ -20,6 +20,7 @@ set(TEST_SOURCES
 	test_runtime_internal.cpp
 	test_runtime_sync.cpp
 	test_runtime_execute.cpp
+	test_runtime_output.cpp
 	test_dynamic_tools.cpp
 	test_tool.cpp
 	test_plan.cpp

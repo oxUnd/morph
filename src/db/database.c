@@ -63,6 +63,17 @@ static const char *schema_sql =
 	"path TEXT NOT NULL,"
 	"prompt TEXT,"
 	"model TEXT,"
+	"request_prompt TEXT,"
+	"provider TEXT,"
+	"tool_name TEXT,"
+	"tool_call_id TEXT,"
+	"turn_id TEXT,"
+	"recipe_json TEXT,"
+	"mime TEXT,"
+	"width INTEGER NOT NULL DEFAULT 0,"
+	"height INTEGER NOT NULL DEFAULT 0,"
+	"duration_seconds INTEGER NOT NULL DEFAULT 0,"
+	"size_bytes INTEGER NOT NULL DEFAULT 0,"
 	"created_at INTEGER NOT NULL);"
 
 	"CREATE TABLE IF NOT EXISTS memory_profiles ("
@@ -306,6 +317,27 @@ static int db_migrate_message_columns(struct db *db)
 	return 0;
 }
 
+static int db_migrate_output_columns(struct db *db)
+{
+	db_add_column_if_missing(db, "outputs", "request_prompt", "TEXT");
+	db_add_column_if_missing(db, "outputs", "provider", "TEXT");
+	db_add_column_if_missing(db, "outputs", "tool_name", "TEXT");
+	db_add_column_if_missing(db, "outputs", "tool_call_id", "TEXT");
+	db_add_column_if_missing(db, "outputs", "turn_id", "TEXT");
+	db_add_column_if_missing(db, "outputs", "recipe_json", "TEXT");
+	db_add_column_if_missing(db, "outputs", "mime", "TEXT");
+	db_add_column_if_missing(db, "outputs", "width",
+				 "INTEGER NOT NULL DEFAULT 0");
+	db_add_column_if_missing(db, "outputs", "height",
+				 "INTEGER NOT NULL DEFAULT 0");
+	db_add_column_if_missing(db, "outputs", "duration_seconds",
+				 "INTEGER NOT NULL DEFAULT 0");
+	db_add_column_if_missing(db, "outputs", "size_bytes",
+				 "INTEGER NOT NULL DEFAULT 0");
+	return db_exec(db, "CREATE INDEX IF NOT EXISTS idx_outputs_path "
+			      "ON outputs(path, id DESC)");
+}
+
 static int db_migrate_scheduled_task_columns(struct db *db)
 {
 	db_add_column_if_missing(db, "scheduled_tasks", "source_session_id",
@@ -337,6 +369,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_migrate_message_columns(db);
+	if (rc != 0)
+		return rc;
+	rc = db_migrate_output_columns(db);
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, credit_schema_sql);

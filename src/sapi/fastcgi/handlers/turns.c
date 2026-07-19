@@ -845,9 +845,11 @@ static void *turn_thread(void *arg)
 
 		memset(&engine, 0, sizeof(engine));
 		runtime_engine_configure(&engine, &j->store->db, rctx, NULL);
+		engine.config = fcgi_bridge_config ? fcgi_bridge_config() : NULL;
 		memset(&request, 0, sizeof(request));
 		request.session_id = sess.id;
 		request.model_input = j->input ? j->input : "";
+		request.stored_user_input = request.model_input;
 		request.turn_id = j->turn_id;
 		request.memory_options = &mem_opts;
 		request.render_assistant = turn_render_assistant_for_store;

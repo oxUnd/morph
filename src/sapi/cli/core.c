@@ -189,6 +189,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_request request = {
 		.session_id = current.id,
 		.model_input = effective_input,
+		.stored_user_input = input,
 		.output_cb = ctx->event_mode == CLI_EVENTS_JSON ? NULL : output_callback,
 		.output_user_data = ctx,
 		.turn_flags = AGENT_TURN_DEFAULT_FLAGS |

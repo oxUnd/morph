@@ -119,6 +119,7 @@ int runtime_add_mcp_server(struct runtime *runtime,
 const struct config *runtime_config_get(const struct runtime *runtime);
 const char *runtime_workdir_get(const struct runtime *runtime);
 const char *runtime_config_path_get(const struct runtime *runtime);
+char *runtime_output_get_json(struct runtime *runtime, const char *path);
 
 
 #ifdef __cplusplus

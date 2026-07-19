@@ -22,6 +22,7 @@ typedef void (*runtime_finish_turn_fn)(void *user_data,
 struct runtime_engine {
 	struct db *db;
 	struct react_context *react;
+	const struct config *config;
 	const struct memory_options *memory_options;
 	agent_turn_background_cb background_cb;
 	void *background_user_data;
