@@ -7,6 +7,45 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+int config_validate_text(const char *text, struct config_validation_error *error)
+{
+	toml_table_t *table;
+	char errbuf[256] = {0};
+	char *copy;
+	int line = 0;
+
+	if (error)
+		memset(error, 0, sizeof(*error));
+	if (!text) {
+		if (error)
+			strncpy(error->message, "config text is null",
+				sizeof(error->message) - 1);
+		return -EINVAL;
+	}
+	copy = strdup(text);
+	if (!copy) {
+		if (error)
+			strncpy(error->message, "out of memory",
+				sizeof(error->message) - 1);
+		return -ENOMEM;
+	}
+	table = toml_parse(copy, errbuf, sizeof(errbuf));
+	free(copy);
+	if (table) {
+		toml_free(table);
+		return 0;
+	}
+	if (sscanf(errbuf, "line %d:", &line) != 1)
+		line = 0;
+	if (error) {
+		error->line = line;
+		error->column = 0;
+		strncpy(error->message, errbuf[0] ? errbuf : "invalid TOML",
+			sizeof(error->message) - 1);
+	}
+	return -EINVAL;
+}
+
 void config_set_defaults(struct config *cfg)
 {
 	if (!cfg)

@@ -293,8 +293,15 @@ struct config {
 	struct config_sub_agents sub_agents;
 };
 
+struct config_validation_error {
+	int line;
+	int column;
+	char message[256];
+};
+
 int config_load(struct config *cfg, const char *path);
 int config_load_sub_agents(struct config *cfg, const char *path);
+int config_validate_text(const char *text, struct config_validation_error *error);
 void config_set_defaults(struct config *cfg);
 void config_print(const struct config *cfg);
 

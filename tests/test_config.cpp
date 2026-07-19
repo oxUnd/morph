@@ -3,6 +3,7 @@
 #include "util/file.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 class ConfigTest : public ::testing::Test {
 protected:
@@ -247,4 +248,22 @@ args = ["-y", "other-server"]
 	EXPECT_EQ(cfg.mcp.servers[0].connect_timeout, 30);
 	EXPECT_EQ(cfg.mcp.servers[1].auto_connect, 0);
 	EXPECT_EQ(cfg.mcp.servers[1].connect_timeout, 0);
+}
+
+TEST(ConfigValidationTest, ValidatesTextWithoutLoadingRuntime)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text("[general]\nlog_level = \"info\"\n", &error), 0);
+	EXPECT_EQ(error.line, 0);
+	EXPECT_STREQ(error.message, "");
+}
+
+TEST(ConfigValidationTest, ReportsTomlLine)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_LT(config_validate_text("[general]\nlog_level = \"unterminated\n", &error), 0);
+	EXPECT_EQ(error.line, 2);
+	EXPECT_NE(std::string(error.message).find("line 2"), std::string::npos);
 }
