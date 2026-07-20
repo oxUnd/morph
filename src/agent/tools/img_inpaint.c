@@ -164,7 +164,7 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
-			"pixels between 2560x1440 and 4096x4096, or 2k, 3k, 4k\"}"));
+			"pixels between 2560x1440 and 4096x4096, or 2k, 4k\"}"));
 		return -EINVAL;
 	}
 
@@ -387,7 +387,7 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 		"\"style\":{\"type\":\"string\",\"description\":\"Optional style\"},"
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
 		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
-		"4096x4096 inclusive, or 2k, 3k, 4k. If omitted, the source "
+		"4096x4096 inclusive, or 2k, 4k. If omitted, the source "
 		"image aspect ratio is preserved and scaled into range.\"}},"
 		"\"required\":[\"annotation\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_inpaint_exec, .user_data = ctx, .user_data_destroy = img_inpaint_context_destroy });
 	if (rc != 0)

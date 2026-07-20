@@ -106,8 +106,7 @@ int image_gen_validate_size(const char *size)
 	if (!size || !*size)
 		return 0;
 
-	if (strcmp(size, "2k") == 0 || strcmp(size, "3k") == 0 ||
-	    strcmp(size, "4k") == 0)
+	if (strcmp(size, "2k") == 0 || strcmp(size, "4k") == 0)
 		return 0;
 
 	errno = 0;

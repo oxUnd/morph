@@ -122,7 +122,6 @@ TEST(ImageGen, NullResult) {
 TEST(ImageGen, ValidateSizeAllowsAliasesAndBounds) {
 	EXPECT_EQ(image_gen_validate_size(NULL), 0);
 	EXPECT_EQ(image_gen_validate_size("2k"), 0);
-	EXPECT_EQ(image_gen_validate_size("3k"), 0);
 	EXPECT_EQ(image_gen_validate_size("4k"), 0);
 	EXPECT_EQ(image_gen_validate_size("2560x1440"), 0);
 	EXPECT_EQ(image_gen_validate_size("2048x2048"), 0);
@@ -142,6 +141,7 @@ TEST(ImageGen, ValidateSizeRejectsMalformedValues) {
 	EXPECT_NE(image_gen_validate_size("0x4096"), 0);
 	EXPECT_NE(image_gen_validate_size("-1x4096"), 0);
 	EXPECT_NE(image_gen_validate_size("5k"), 0);
+	EXPECT_NE(image_gen_validate_size("3k"), 0);
 }
 
 TEST(ImageGen, NormalizeReferenceSizeKeepsInRangeDimensions) {
