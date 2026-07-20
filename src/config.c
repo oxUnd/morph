@@ -2,10 +2,226 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "toml.h"
+#include "cJSON.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+
+static cJSON *config_raw_json(toml_raw_t raw, const char **kind)
+{
+	char *str = NULL;
+	int boolean;
+	int64_t integer;
+	double number;
+
+	if (raw && (*raw == '\'' || *raw == '"') && toml_rtos(raw, &str) == 0) {
+		cJSON *item = cJSON_CreateString(str);
+		free(str);
+		*kind = "string";
+		return item;
+	}
+	if (toml_rtob(raw, &boolean) == 0) {
+		*kind = "bool";
+		return cJSON_CreateBool(boolean);
+	}
+	if (toml_rtoi(raw, &integer) == 0) {
+		*kind = "int";
+		return cJSON_CreateNumber((double)integer);
+	}
+	if (toml_rtod(raw, &number) == 0) {
+		*kind = "double";
+		return cJSON_CreateNumber(number);
+	}
+	*kind = "timestamp";
+	return cJSON_CreateString(raw ? raw : "");
+}
+
+static cJSON *config_array_json(const toml_array_t *array)
+{
+	cJSON *result = cJSON_CreateArray();
+	int count = toml_array_nelem(array);
+
+	if (!result)
+		return NULL;
+	for (int i = 0; i < count; i++) {
+		toml_raw_t raw = toml_raw_at(array, i);
+		cJSON *item = NULL;
+		if (raw) {
+			const char *kind;
+			item = config_raw_json(raw, &kind);
+		} else if (toml_array_at(array, i)) {
+			item = config_array_json(toml_array_at(array, i));
+		}
+		if (!item)
+			item = cJSON_CreateNull();
+		cJSON_AddItemToArray(result, item);
+	}
+	return result;
+}
+
+static char *config_identity_value(const toml_table_t *table, const char *key)
+{
+	toml_raw_t raw = toml_raw_in(table, key);
+	char *value = NULL;
+	if (!raw || toml_rtos(raw, &value) != 0)
+		return NULL;
+	return value;
+}
+
+static int config_table_identity(const char *path, const toml_table_t *table,
+				 int index, char *out, size_t out_size,
+				 int *stable)
+{
+	char *name = NULL, *provider = NULL, *model = NULL, *kind = NULL;
+
+	*stable = 1;
+	if (strcmp(path, "mcp.servers") == 0) {
+		name = config_identity_value(table, "name");
+		if (name)
+			snprintf(out, out_size, "name=%s", name);
+		free(name);
+		if (out[0])
+			return 0;
+	} else if (strcmp(path, "credits.prices") == 0) {
+		provider = config_identity_value(table, "provider");
+		model = config_identity_value(table, "model");
+		kind = config_identity_value(table, "kind");
+		if (provider && model && kind)
+			snprintf(out, out_size, "provider=%s,model=%s,kind=%s",
+				 provider, model, kind);
+		free(provider);
+		free(model);
+		free(kind);
+		if (out[0])
+			return 0;
+	}
+	*stable = 0;
+	snprintf(out, out_size, "index=%d", index);
+	return 0;
+}
+
+static int config_add_entry(cJSON *entries, const char *path,
+			    const char *kind, cJSON *value, int stable)
+{
+	cJSON *entry = cJSON_CreateObject();
+	if (!entry || !value ||
+	    !cJSON_AddStringToObject(entry, "path", path) ||
+	    !cJSON_AddStringToObject(entry, "kind", kind) ||
+	    !cJSON_AddBoolToObject(entry, "stable", stable)) {
+		cJSON_Delete(entry);
+		cJSON_Delete(value);
+		return -ENOMEM;
+	}
+	cJSON_AddItemToObject(entry, "value", value);
+	cJSON_AddItemToArray(entries, entry);
+	return 0;
+}
+
+static int config_describe_table(const toml_table_t *table, const char *prefix,
+				 cJSON *entries, int stable)
+{
+	for (int i = 0;; i++) {
+		const char *key = toml_key_in(table, i);
+		char path[1024];
+		toml_raw_t raw;
+		toml_array_t *array;
+		toml_table_t *child;
+		int rc;
+
+		if (!key)
+			break;
+		snprintf(path, sizeof(path), "%s%s%s", prefix,
+			 prefix[0] ? "." : "", key);
+		raw = toml_raw_in(table, key);
+		if (raw) {
+			const char *kind;
+			cJSON *value = config_raw_json(raw, &kind);
+			rc = config_add_entry(entries, path, kind, value, stable);
+			if (rc != 0)
+				return rc;
+			continue;
+		}
+		array = toml_array_in(table, key);
+		if (array) {
+			if (toml_array_kind(array) == 't') {
+				for (int j = 0; j < toml_array_nelem(array); j++) {
+					toml_table_t *item = toml_table_at(array, j);
+					char identity[512] = {0};
+					char item_path[1536];
+					int item_stable;
+					if (!item)
+						continue;
+					config_table_identity(path, item, j, identity,
+							      sizeof(identity), &item_stable);
+					snprintf(item_path, sizeof(item_path), "%s[%s]",
+						 path, identity);
+					rc = config_describe_table(item, item_path, entries,
+							   stable && item_stable);
+					if (rc != 0)
+						return rc;
+				}
+			} else {
+				rc = config_add_entry(entries, path, "array",
+						      config_array_json(array), stable);
+				if (rc != 0)
+					return rc;
+			}
+			continue;
+		}
+		child = toml_table_in(table, key);
+		if (child) {
+			rc = config_describe_table(child, path, entries, stable);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	return 0;
+}
+
+char *config_describe_text(const char *text, struct config_validation_error *error)
+{
+	toml_table_t *table;
+	cJSON *root = NULL, *entries = NULL;
+	char errbuf[256] = {0};
+	char *copy, *json = NULL;
+	int line = 0, rc;
+
+	if (error)
+		memset(error, 0, sizeof(*error));
+	if (!text)
+		return NULL;
+	copy = strdup(text);
+	if (!copy)
+		return NULL;
+	table = toml_parse(copy, errbuf, sizeof(errbuf));
+	free(copy);
+	if (!table) {
+		if (sscanf(errbuf, "line %d:", &line) != 1)
+			line = 0;
+		if (error) {
+			error->line = line;
+			strncpy(error->message, errbuf[0] ? errbuf : "invalid TOML",
+				sizeof(error->message) - 1);
+		}
+		return NULL;
+	}
+	root = cJSON_CreateObject();
+	entries = cJSON_CreateArray();
+	if (!root || !entries) {
+		cJSON_Delete(root);
+		cJSON_Delete(entries);
+		toml_free(table);
+		return NULL;
+	}
+	cJSON_AddItemToObject(root, "entries", entries);
+	rc = config_describe_table(table, "", entries, 1);
+	if (rc == 0)
+		json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	toml_free(table);
+	return json;
+}
 
 int config_validate_text(const char *text, struct config_validation_error *error)
 {

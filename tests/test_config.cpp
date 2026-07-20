@@ -267,3 +267,50 @@ TEST(ConfigValidationTest, ReportsTomlLine)
 	EXPECT_EQ(error.line, 2);
 	EXPECT_NE(std::string(error.message).find("line 2"), std::string::npos);
 }
+
+TEST(ConfigValidationTest, DescribesStableSemanticPaths)
+{
+	const char *text = R"(
+[model.text]
+model = "gpt-test"
+max_tokens = 42
+features = ["vision", "tools"]
+
+[[mcp.servers]]
+name = "github"
+transport = "http"
+url = "https://example.test/mcp"
+
+[[credits.prices]]
+provider = "openai"
+model = "gpt-test"
+kind = "model_text"
+input_per_million = 1.25
+)";
+	struct config_validation_error error = {};
+	char *json = config_describe_text(text, &error);
+
+	ASSERT_NE(json, nullptr);
+	std::string result(json);
+	free(json);
+	EXPECT_NE(result.find("model.text.model"), std::string::npos);
+	EXPECT_NE(result.find("\"path\":\"model.text.max_tokens\",\"kind\":\"int\",\"stable\":true,\"value\":42"), std::string::npos)
+		<< result;
+	EXPECT_NE(result.find("model.text.features"), std::string::npos);
+	EXPECT_NE(result.find("mcp.servers[name=github].url"), std::string::npos);
+	EXPECT_NE(result.find("credits.prices[provider=openai,model=gpt-test,kind=model_text].input_per_million"), std::string::npos);
+	EXPECT_NE(result.find("\"stable\":true"), std::string::npos);
+}
+
+TEST(ConfigValidationTest, ReportsUnstableUnknownArrayTables)
+{
+	const char *text = "[[custom.items]]\nvalue = 1\n";
+	struct config_validation_error error = {};
+	char *json = config_describe_text(text, &error);
+
+	ASSERT_NE(json, nullptr);
+	std::string result(json);
+	free(json);
+	EXPECT_NE(result.find("custom.items[index=0].value"), std::string::npos);
+	EXPECT_NE(result.find("\"stable\":false"), std::string::npos);
+}

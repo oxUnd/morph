@@ -302,6 +302,8 @@ struct config_validation_error {
 int config_load(struct config *cfg, const char *path);
 int config_load_sub_agents(struct config *cfg, const char *path);
 int config_validate_text(const char *text, struct config_validation_error *error);
+/* Returns a malloc-owned semantic inventory as JSON; the caller must free it. */
+char *config_describe_text(const char *text, struct config_validation_error *error);
 void config_set_defaults(struct config *cfg);
 void config_print(const struct config *cfg);
 
