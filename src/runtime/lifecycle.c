@@ -69,8 +69,9 @@ static void runtime_set_workdir(struct runtime *runtime)
 			resolved = file_expand_path(runtime->options.workdir);
 		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
 			sizeof(ctx->workdir) - 1);
-		strncpy(ctx->config.general.output_dir, ctx->workdir,
-			sizeof(ctx->config.general.output_dir) - 1);
+		(void)file_path_join(ctx->config.general.output_dir,
+				     sizeof(ctx->config.general.output_dir),
+				     ctx->workdir, "output");
 		free(resolved);
 		return;
 	}

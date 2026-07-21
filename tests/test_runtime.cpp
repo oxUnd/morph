@@ -109,11 +109,65 @@ TEST_F(RuntimeLifecycleTest, ReportsConfiguredPathsAndRejectsInvalidDatabase)
 	ASSERT_NE(realpath(directory, resolved), nullptr);
 	EXPECT_STREQ(runtime_workdir_get(instance), resolved);
 	EXPECT_NE(runtime_config_get(instance), nullptr);
+	std::string expected_output = std::string(resolved) + "/output";
+	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
+		     expected_output.c_str());
 	runtime_close(instance);
 	instance = nullptr;
 	options.db_path = "/definitely/missing/morph/data.db";
 	EXPECT_NE(runtime_open(&options, &instance), 0);
 	EXPECT_EQ(instance, nullptr);
+}
+
+TEST_F(RuntimeLifecycleTest, KeepsConfiguredOutputWithoutExplicitWorkdir)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	std::string config_path = std::string(directory) + "/config.toml";
+	std::string configured_output = std::string(directory) + "/configured-output";
+	FILE *config = std::fopen(config_path.c_str(), "w");
+	ASSERT_NE(config, nullptr);
+	std::fprintf(config, "[general]\noutput_dir = \"%s\"\n",
+		     configured_output.c_str());
+	ASSERT_EQ(std::fclose(config), 0);
+
+	options.config_path = config_path.c_str();
+	options.db_path = database;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_NE(runtime_config_get(instance), nullptr);
+	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
+		     configured_output.c_str());
+	runtime_close(instance);
+	instance = nullptr;
+	std::remove(config_path.c_str());
+}
+
+TEST_F(RuntimeLifecycleTest, WorkdirOverridesConfiguredOutputWithOutputChild)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	std::string config_path = std::string(directory) + "/config.toml";
+	FILE *config = std::fopen(config_path.c_str(), "w");
+	ASSERT_NE(config, nullptr);
+	std::fprintf(config,
+		     "[general]\noutput_dir = \"/tmp/ignored-output\"\n");
+	ASSERT_EQ(std::fclose(config), 0);
+
+	options.config_path = config_path.c_str();
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	char resolved[PATH_MAX];
+	ASSERT_NE(realpath(directory, resolved), nullptr);
+	std::string expected_output = std::string(resolved) + "/output";
+	ASSERT_NE(runtime_config_get(instance), nullptr);
+	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
+		     expected_output.c_str());
+	runtime_close(instance);
+	instance = nullptr;
+	std::remove(config_path.c_str());
 }
 
 TEST_F(RuntimeLifecycleTest, RestoresMostRecentSession)
