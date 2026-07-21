@@ -496,6 +496,12 @@ static void load_credit_price(toml_table_t *t, struct config_credit_price *p)
 	CFG_STR(t, "model", p->model);
 	CFG_STR(t, "kind", p->kind);
 	CFG_DBL(t, "input_per_million", p->input_per_million);
+	toml_datum_t cached_input =
+		toml_double_in(t, "cached_input_per_million");
+	if (cached_input.ok) {
+		p->cached_input_per_million = cached_input.u.d;
+		p->cached_input_price_configured = 1;
+	}
 	CFG_DBL(t, "output_per_million", p->output_per_million);
 	CFG_DBL(t, "image_unit_per_million", p->image_unit_per_million);
 	CFG_DBL(t, "video_second_per_million", p->video_second_per_million);

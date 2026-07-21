@@ -46,6 +46,8 @@ int credit_calculate(const struct config_credits *cfg,
 		     struct credit_charge *out)
 {
 	const struct config_credit_price *price;
+	int64_t cached_tokens;
+	int64_t uncached_input_tokens;
 	double cost = 0.0;
 	double direct = 0.0;
 	double credits = 0.0;
@@ -56,8 +58,22 @@ int credit_calculate(const struct config_credits *cfg,
 	memset(out, 0, sizeof(*out));
 	price = credit_find_price(cfg, event);
 	if (price) {
-		cost += ((double)event->input_tokens *
-			 price->input_per_million) / 1000000.0;
+		cached_tokens = event->cached_tokens;
+		if (cached_tokens < 0)
+			cached_tokens = 0;
+		if (cached_tokens > event->input_tokens)
+			cached_tokens = event->input_tokens > 0 ?
+				event->input_tokens : 0;
+		uncached_input_tokens = event->input_tokens - cached_tokens;
+		if (price->cached_input_price_configured) {
+			cost += ((double)uncached_input_tokens *
+				 price->input_per_million) / 1000000.0;
+			cost += ((double)cached_tokens *
+				 price->cached_input_per_million) / 1000000.0;
+		} else {
+			cost += ((double)event->input_tokens *
+				 price->input_per_million) / 1000000.0;
+		}
 		cost += ((double)event->output_tokens *
 			 price->output_per_million) / 1000000.0;
 		cost += ((double)event->image_units *
@@ -76,7 +92,7 @@ int credit_calculate(const struct config_credits *cfg,
 	direct += (double)event->video_seconds *
 		cfg->video_second_credit_coef;
 
-	credits = cost > 0.0 ? cost * cfg->cost_to_credit_coef : direct;
+	credits = price ? cost * cfg->cost_to_credit_coef : direct;
 	out->estimated_cost = cost;
 	out->credits = credit_ceil_nonnegative(credits);
 	return 0;

@@ -188,6 +188,7 @@ static void record_model_usage(const struct model_usage *usage,
 	event.model = usage->model[0] ? usage->model :
 		cfg->models.text.model;
 	event.input_tokens = usage->input_tokens;
+	event.cached_tokens = usage->cached_tokens;
 	event.output_tokens = usage->output_tokens;
 	event.image_units = usage->image_units;
 	event.video_seconds = usage->video_seconds;

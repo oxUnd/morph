@@ -151,6 +151,7 @@ provider = "openai"
 model = "gpt-test"
 kind = "model_text"
 input_per_million = 2.0
+cached_input_per_million = 0.0
 output_per_million = 10.0
 )";
 	file_write_all(config_path, toml, strlen(toml));
@@ -170,6 +171,8 @@ output_per_million = 10.0
 	EXPECT_STREQ(cfg.credits.prices[0].model, "gpt-test");
 	EXPECT_STREQ(cfg.credits.prices[0].kind, "model_text");
 	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].input_per_million, 2.0);
+	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].cached_input_per_million, 0.0);
+	EXPECT_EQ(cfg.credits.prices[0].cached_input_price_configured, 1);
 	EXPECT_DOUBLE_EQ(cfg.credits.prices[0].output_per_million, 10.0);
 }
 
@@ -286,6 +289,7 @@ provider = "openai"
 model = "gpt-test"
 kind = "model_text"
 input_per_million = 1.25
+cached_input_per_million = 0.25
 )";
 	struct config_validation_error error = {};
 	char *json = config_describe_text(text, &error);
@@ -299,6 +303,7 @@ input_per_million = 1.25
 	EXPECT_NE(result.find("model.text.features"), std::string::npos);
 	EXPECT_NE(result.find("mcp.servers[name=github].url"), std::string::npos);
 	EXPECT_NE(result.find("credits.prices[provider=openai,model=gpt-test,kind=model_text].input_per_million"), std::string::npos);
+	EXPECT_NE(result.find("credits.prices[provider=openai,model=gpt-test,kind=model_text].cached_input_per_million"), std::string::npos);
 	EXPECT_NE(result.find("\"stable\":true"), std::string::npos);
 }
 

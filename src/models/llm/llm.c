@@ -319,16 +319,28 @@ static void llm_usage_parse_details(struct model_usage *usage,
 				    cJSON *usage_obj)
 {
 	cJSON *prompt_details;
+	cJSON *input_details;
 	cJSON *completion_details;
+	int64_t cached_tokens;
+	int64_t candidate;
 
 	if (!usage || !usage_obj)
 		return;
 	prompt_details = cJSON_GetObjectItem(usage_obj,
 					     "prompt_tokens_details");
+	input_details = cJSON_GetObjectItem(usage_obj,
+					    "input_tokens_details");
+	cached_tokens = json_i64(usage_obj, "cached_tokens");
+	candidate = json_i64(prompt_details, "cached_tokens");
+	if (candidate > cached_tokens)
+		cached_tokens = candidate;
+	candidate = json_i64(input_details, "cached_tokens");
+	if (candidate > cached_tokens)
+		cached_tokens = candidate;
+	if (cached_tokens > usage->cached_tokens)
+		usage->cached_tokens = cached_tokens;
 	if (!prompt_details)
-		prompt_details = cJSON_GetObjectItem(usage_obj,
-						     "input_tokens_details");
-	usage->cached_tokens += json_i64(prompt_details, "cached_tokens");
+		prompt_details = input_details;
 	usage->audio_tokens += json_i64(prompt_details, "audio_tokens");
 	usage->image_tokens += json_i64(prompt_details, "image_tokens");
 

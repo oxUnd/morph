@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "credits.h"
 #include "runtime/context.h"
 #include "runtime/scheduler.h"
 #include "runtime/turn_scope.h"
@@ -9,7 +10,9 @@ extern "C" {
 }
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <unistd.h>
 
 TEST(RuntimeInternalTest, MemoryOptionsMirrorConfiguration)
 {
@@ -95,6 +98,48 @@ TEST(RuntimeInternalTest, UsageClassificationAndMetadataAreStable)
 	EXPECT_NE(std::strstr(metadata, "response-1"), nullptr);
 	EXPECT_NE(std::strstr(metadata, "cached_tokens"), nullptr);
 	std::free(metadata);
+}
+
+TEST(RuntimeInternalTest, RecordModelUsageAppliesCachedInputPrice)
+{
+	char db_path[256];
+	std::snprintf(db_path, sizeof(db_path),
+		      "/tmp/morph_runtime_cached_usage_%d.db", getpid());
+	std::remove(db_path);
+	struct db db{};
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+
+	struct config config{};
+	config_set_defaults(&config);
+	config.credits.cost_to_credit_coef = 1000.0;
+	config.credits.price_count = 1;
+	std::strncpy(config.credits.prices[0].provider, "moonshot",
+		     sizeof(config.credits.prices[0].provider) - 1);
+	std::strncpy(config.credits.prices[0].model, "kimi-k3",
+		     sizeof(config.credits.prices[0].model) - 1);
+	std::strncpy(config.credits.prices[0].kind, "model_text",
+		     sizeof(config.credits.prices[0].kind) - 1);
+	config.credits.prices[0].input_per_million = 20.0;
+	config.credits.prices[0].cached_input_per_million = 2.0;
+	config.credits.prices[0].cached_input_price_configured = 1;
+
+	struct model_usage usage{};
+	std::strncpy(usage.provider, "moonshot", sizeof(usage.provider) - 1);
+	std::strncpy(usage.model, "kimi-k3", sizeof(usage.model) - 1);
+	std::strncpy(usage.kind, "model_text", sizeof(usage.kind) - 1);
+	usage.input_tokens = 1000000;
+	usage.cached_tokens = 800000;
+	ASSERT_EQ(runtime_record_model_usage(&db, &config, "cached-session",
+					     &usage), 0);
+
+	struct credit_summary summary{};
+	ASSERT_EQ(credit_summary_session(&db, "cached-session", &summary), 0);
+	EXPECT_DOUBLE_EQ(summary.estimated_cost, 5.6);
+	EXPECT_EQ(summary.credits, 5600);
+
+	db_close(&db);
+	std::remove(db_path);
 }
 
 TEST(RuntimeInternalTest, UsageBindingRestoresPreviousValue)

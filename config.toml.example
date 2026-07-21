@@ -104,6 +104,7 @@ video_second_credit_coef = 0.0
 # model = "gpt-4o"
 # kind = "model_text"
 # input_per_million = 0.0
+# cached_input_per_million = 0.0  # Optional; falls back to input price.
 # output_per_million = 0.0
 
 # Volcengine prices from the model console. Unit conversion:

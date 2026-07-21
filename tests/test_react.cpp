@@ -2549,6 +2549,76 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, LlmParsesKimiTopLevelCachedTokens) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"answer\"},"
+		"\"finish_reason\":\"stop\"}],\"usage\":{"
+		"\"prompt_tokens\":100,\"completion_tokens\":10,"
+		"\"total_tokens\":110,\"cached_tokens\":80}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("moonshot", "kimi-k3",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
+					&response, NULL, NULL);
+	EXPECT_EQ(rc, 200);
+	EXPECT_EQ(response.usage.input_tokens, 100);
+	EXPECT_EQ(response.usage.cached_tokens, 80);
+	EXPECT_EQ(response.usage.output_tokens, 10);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
+	srv.response_body =
+		"{\"choices\":[],\"usage\":{\"prompt_tokens\":100,"
+		"\"cached_tokens\":60,\"prompt_tokens_details\":{"
+		"\"cached_tokens\":70},\"input_tokens_details\":{"
+		"\"cached_tokens\":80}}}\n\n"
+		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}],"
+		"\"usage\":{\"prompt_tokens\":100,"
+		"\"prompt_tokens_details\":{\"cached_tokens\":80}}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("openai", "gpt-test",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
+					&response, NULL, NULL);
+	EXPECT_EQ(rc, 200);
+	EXPECT_EQ(response.usage.input_tokens, 100);
+	EXPECT_EQ(response.usage.cached_tokens, 80);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, SSECallbackErrorPropagates) {
 	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"test\"}}]}";
 	srv.response_status = 200;

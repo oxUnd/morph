@@ -47,6 +47,8 @@ struct config_credit_price {
 	char model[128];
 	char kind[CREDIT_KIND_MAX];
 	double input_per_million;
+	double cached_input_per_million;
+	int cached_input_price_configured;
 	double output_per_million;
 	double image_unit_per_million;
 	double video_second_per_million;

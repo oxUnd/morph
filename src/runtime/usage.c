@@ -96,6 +96,7 @@ int runtime_record_model_usage(struct db *db,
 	event.model = usage->model[0] ? usage->model :
 		config->models.text.model;
 	event.input_tokens = usage->input_tokens;
+	event.cached_tokens = usage->cached_tokens;
 	event.output_tokens = usage->output_tokens;
 	event.image_units = usage->image_units;
 	event.video_seconds = usage->video_seconds;

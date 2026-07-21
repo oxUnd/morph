@@ -16,6 +16,7 @@ struct credit_event {
 	const char *provider;
 	const char *model;
 	int64_t input_tokens;
+	int64_t cached_tokens;
 	int64_t output_tokens;
 	int64_t image_units;
 	int64_t video_seconds;

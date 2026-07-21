@@ -53,6 +53,96 @@ TEST_F(CreditsTest, CalculatesFromConfiguredPrice) {
 	EXPECT_EQ(charge.price_configured, 1);
 }
 
+TEST_F(CreditsTest, CalculatesCachedInputAtConfiguredDiscount) {
+	struct config cfg;
+	struct credit_event event;
+	struct credit_charge charge;
+
+	config_set_defaults(&cfg);
+	cfg.credits.cost_to_credit_coef = 1000.0;
+	cfg.credits.price_count = 1;
+	snprintf(cfg.credits.prices[0].provider,
+		 sizeof(cfg.credits.prices[0].provider), "moonshot");
+	snprintf(cfg.credits.prices[0].model,
+		 sizeof(cfg.credits.prices[0].model), "kimi-k3");
+	snprintf(cfg.credits.prices[0].kind,
+		 sizeof(cfg.credits.prices[0].kind), "model_text");
+	cfg.credits.prices[0].input_per_million = 20.0;
+	cfg.credits.prices[0].cached_input_per_million = 2.0;
+	cfg.credits.prices[0].cached_input_price_configured = 1;
+	cfg.credits.prices[0].output_per_million = 100.0;
+
+	memset(&event, 0, sizeof(event));
+	event.kind = "model_text";
+	event.provider = "moonshot";
+	event.model = "kimi-k3";
+	event.input_tokens = 1000000;
+	event.cached_tokens = 800000;
+	event.output_tokens = 100000;
+
+	ASSERT_EQ(credit_calculate(&cfg.credits, &event, &charge), 0);
+	EXPECT_DOUBLE_EQ(charge.estimated_cost, 15.6);
+	EXPECT_EQ(charge.credits, 15600);
+}
+
+TEST_F(CreditsTest, CachedInputUsesRegularPriceWhenDiscountIsMissing) {
+	struct config cfg;
+	struct credit_event event;
+	struct credit_charge charge;
+
+	config_set_defaults(&cfg);
+	cfg.credits.cost_to_credit_coef = 1000.0;
+	cfg.credits.price_count = 1;
+	snprintf(cfg.credits.prices[0].provider,
+		 sizeof(cfg.credits.prices[0].provider), "openai");
+	snprintf(cfg.credits.prices[0].model,
+		 sizeof(cfg.credits.prices[0].model), "gpt-test");
+	cfg.credits.prices[0].input_per_million = 20.0;
+
+	memset(&event, 0, sizeof(event));
+	event.provider = "openai";
+	event.model = "gpt-test";
+	event.input_tokens = 1000000;
+	event.cached_tokens = 800000;
+
+	ASSERT_EQ(credit_calculate(&cfg.credits, &event, &charge), 0);
+	EXPECT_DOUBLE_EQ(charge.estimated_cost, 20.0);
+	EXPECT_EQ(charge.credits, 20000);
+}
+
+TEST_F(CreditsTest, ClampsInvalidCachedTokenCountsAndSupportsFreeCache) {
+	struct config cfg;
+	struct credit_event event;
+	struct credit_charge charge;
+
+	config_set_defaults(&cfg);
+	cfg.credits.cost_to_credit_coef = 1000.0;
+	cfg.credits.input_token_credit_coef = 5.0;
+	cfg.credits.price_count = 1;
+	snprintf(cfg.credits.prices[0].provider,
+		 sizeof(cfg.credits.prices[0].provider), "openai");
+	snprintf(cfg.credits.prices[0].model,
+		 sizeof(cfg.credits.prices[0].model), "gpt-test");
+	cfg.credits.prices[0].input_per_million = 20.0;
+	cfg.credits.prices[0].cached_input_per_million = 0.0;
+	cfg.credits.prices[0].cached_input_price_configured = 1;
+
+	memset(&event, 0, sizeof(event));
+	event.provider = "openai";
+	event.model = "gpt-test";
+	event.input_tokens = 1000000;
+	event.cached_tokens = 2000000;
+
+	ASSERT_EQ(credit_calculate(&cfg.credits, &event, &charge), 0);
+	EXPECT_DOUBLE_EQ(charge.estimated_cost, 0.0);
+	EXPECT_EQ(charge.credits, 0);
+
+	event.cached_tokens = -1;
+	ASSERT_EQ(credit_calculate(&cfg.credits, &event, &charge), 0);
+	EXPECT_DOUBLE_EQ(charge.estimated_cost, 20.0);
+	EXPECT_EQ(charge.credits, 20000);
+}
+
 TEST_F(CreditsTest, FallsBackToDirectCoefficients) {
 	struct config cfg;
 	struct credit_event event;
