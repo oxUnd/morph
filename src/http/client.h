@@ -46,6 +46,7 @@ void http_set_cancel_flag(volatile sig_atomic_t *flag);
 void http_set_cancel_token(struct morph_cancel_token *token);
 void http_cancel_from_signal(void);
 void http_clear_signal_cancel(void);
+int http_wait_cancelable(unsigned int milliseconds);
 int http_get(const char *url, struct http_response *resp);
 int http_get_ex(const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp);

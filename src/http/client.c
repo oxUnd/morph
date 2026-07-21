@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define HTTP_SSE_DEFAULT_TIMEOUT_SECONDS 300L
 #define HTTP_CONNECT_TIMEOUT_SECONDS 10L
@@ -95,6 +96,29 @@ static int http_cancelled(void)
 	if (morph_cancel_token_is_cancelled(http_cancel_token))
 		return 1;
 	return http_cancel_flag && *http_cancel_flag;
+}
+
+int http_wait_cancelable(unsigned int milliseconds)
+{
+	const unsigned int slice_ms = 100;
+	unsigned int waited = 0;
+
+	while (waited < milliseconds) {
+		struct timespec delay;
+		unsigned int current = milliseconds - waited;
+		if (current > slice_ms)
+			current = slice_ms;
+		if (http_cancelled())
+			return -ECANCELED;
+		delay.tv_sec = current / 1000;
+		delay.tv_nsec = (long)(current % 1000) * 1000000L;
+		while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
+			if (http_cancelled())
+				return -ECANCELED;
+		}
+		waited += current;
+	}
+	return http_cancelled() ? -ECANCELED : 0;
 }
 
 static int sse_xferinfo_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,

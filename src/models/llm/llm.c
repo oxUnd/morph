@@ -177,6 +177,7 @@ struct llm_stream_ctx {
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	int tool_call_cap;
+	int emitted;
 	struct model_usage usage;
 };
 
@@ -192,6 +193,7 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 	ctx->tool_calls = NULL;
 	ctx->tool_call_count = 0;
 	ctx->tool_call_cap = 0;
+	ctx->emitted = 0;
 	memset(&ctx->usage, 0, sizeof(ctx->usage));
 }
 
@@ -213,6 +215,7 @@ static int llm_stream_emit(struct llm_stream_ctx *ctx,
 {
 	if (!ctx || !text || !*text)
 		return 0;
+	ctx->emitted = 1;
 	if (ctx->stream_cb)
 		return ctx->stream_cb(kind, text, ctx->user_data);
 	if (kind == LLM_STREAM_CONTENT && ctx->user_cb)
@@ -570,6 +573,92 @@ static const char *llm_extract_error(const char *raw, struct arena *arena)
 	return msg;
 }
 
+static int llm_retryable_status(int status)
+{
+	return status == 408 || status == 429 || status == 500 ||
+	       status == 502 || status == 503 || status == 504;
+}
+
+static int llm_stream_started(const struct llm_stream_ctx *ctx)
+{
+	return ctx->emitted || ctx->accumulated.len > 0 ||
+	       ctx->tool_call_count > 0;
+}
+
+static int llm_retry_delay_seconds(int retry_index)
+{
+	int seconds = 1 << (retry_index > 3 ? 3 : retry_index);
+	return seconds > 8 ? 8 : seconds;
+}
+
+static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
+				   const char *operation, const char *url,
+				   const char *body, size_t body_len,
+				   const char **headers, long timeout,
+				   sse_callback cb,
+				   llm_stream_callback stream_cb,
+				   void *user_data,
+				   struct llm_stream_ctx *result,
+				   const char **error_detail)
+{
+	int retries = self->retry_count;
+	if (retries < 0)
+		retries = 0;
+	else if (retries > 10)
+		retries = 10;
+	if (error_detail)
+		*error_detail = NULL;
+
+	for (int attempt = 0; ; attempt++) {
+		struct llm_stream_ctx ctx;
+		if (stream_cb)
+			llm_stream_init_typed(&ctx, arena, stream_cb, user_data);
+		else
+			llm_stream_init(&ctx, arena, cb, user_data);
+
+		struct sse_parser parser;
+		sse_parser_init(&parser, llm_sse_event_cb, &ctx);
+		struct llm_http_ctx hctx = {
+			.parser = &parser,
+			.arena = arena,
+		};
+		if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
+			memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
+
+		int status = http_post_sse_ex_timeout(url, body, body_len,
+						      "application/json",
+						      headers, 1, timeout,
+						      llm_http_cb, &hctx);
+		sse_parser_free(&parser);
+
+		const char *detail = NULL;
+		if (status >= 400 && hctx.error_buf.len > 0)
+			detail = llm_extract_error(hctx.error_buf.data, arena);
+		if (error_detail)
+			*error_detail = detail;
+
+		if (status >= 400 && llm_retryable_status(status) &&
+		    !llm_stream_started(&ctx) && attempt < retries) {
+			int delay = llm_retry_delay_seconds(attempt);
+			if (detail)
+				log_warn("%s: HTTP %d (%s), retry %d/%d in %ds",
+					 operation, status, detail, attempt + 1,
+					 retries, delay);
+			else
+				log_warn("%s: HTTP %d, retry %d/%d in %ds",
+					 operation, status, attempt + 1,
+					 retries, delay);
+			int wait_rc = http_wait_cancelable((unsigned int)delay * 1000);
+			if (wait_rc < 0)
+				return wait_rc;
+			continue;
+		}
+
+		*result = ctx;
+		return status;
+	}
+}
+
 static int llm_chat(struct model *self, struct arena *arena,
 		    const char *system_prompt,
 		    const char **messages, int n,
@@ -604,18 +693,6 @@ static int llm_chat(struct model *self, struct arena *arena,
 	body[clean_len] = '\0';
 	body_len = clean_len;
 
-	struct llm_stream_ctx ctx;
-	llm_stream_init(&ctx, arena, cb, user_data);
-
-	struct sse_parser parser;
-	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
-
-	struct llm_http_ctx hctx;
-	hctx.parser = &parser;
-	hctx.arena = arena;
-	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
-		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
-
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
@@ -624,22 +701,19 @@ static int llm_chat(struct model *self, struct arena *arena,
 	const char *extra_headers[] = { auth_header };
 
 	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
-	int status = http_post_sse_ex_timeout(url, body, body_len,
-				       "application/json",
-				       extra_headers, 1, timeout,
-				       llm_http_cb, &hctx);
+	struct llm_stream_ctx ctx;
+	const char *detail = NULL;
+	int status = llm_post_sse_with_retry(self, arena, "llm_chat", url,
+					     body, body_len, extra_headers,
+					     timeout, cb, NULL, user_data,
+					     &ctx, &detail);
 	log_dbg("llm_chat: SSE request done, status=%d", status);
-
-	sse_parser_free(&parser);
 
 	if (status < 0) {
 		log_err("llm_chat: SSE request failed: %d", status);
 		return status;
 	}
 	if (status >= 400) {
-		const char *detail = NULL;
-		if (hctx.error_buf.len > 0)
-			detail = llm_extract_error(hctx.error_buf.data, arena);
 		if (detail)
 			log_err("llm_chat: API returned HTTP %d: %s",
 				status, detail);
@@ -781,18 +855,6 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	body[clean_len] = '\0';
 	body_len = clean_len;
 
-	struct llm_stream_ctx ctx;
-	llm_stream_init(&ctx, arena, cb, user_data);
-
-	struct sse_parser parser;
-	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
-
-	struct llm_http_ctx hctx;
-	hctx.parser = &parser;
-	hctx.arena = arena;
-	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
-		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
-
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
@@ -803,13 +865,14 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 
 	log_dbg("llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, max_dim=%d, body=%zu",
 		url, timeout, max_tokens, max_dim, body_len);
-	int status = http_post_sse_ex_timeout(url, body, body_len,
-					      "application/json",
-					      extra_headers, 1, timeout,
-					      llm_http_cb, &hctx);
+	struct llm_stream_ctx ctx;
+	const char *detail = NULL;
+	int status = llm_post_sse_with_retry(self, arena,
+					     "llm_chat_with_image", url,
+					     body, body_len, extra_headers,
+					     timeout, cb, NULL, user_data,
+					     &ctx, &detail);
 	log_dbg("llm_chat_with_image: SSE request done, status=%d", status);
-
-	sse_parser_free(&parser);
 
 	if (status < 0) {
 		log_err("llm_chat_with_image: SSE request failed: %d", status);
@@ -818,9 +881,6 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		return status;
 	}
 	if (status >= 400) {
-		const char *detail = NULL;
-		if (hctx.error_buf.len > 0)
-			detail = llm_extract_error(hctx.error_buf.data, arena);
 		if (detail) {
 			log_err("llm_chat_with_image: API returned HTTP %d: %s",
 				status, detail);
@@ -1026,21 +1086,6 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	size_t clean_len = utf8_sanitize_into(body, body, body_len);
 	body[clean_len] = '\0';
 
-	struct llm_stream_ctx ctx;
-	if (stream_cb)
-		llm_stream_init_typed(&ctx, arena, stream_cb, stream_ud);
-	else
-		llm_stream_init(&ctx, arena, thought_cb, stream_ud);
-
-	struct sse_parser parser;
-	sse_parser_init(&parser, llm_sse_event_cb, &ctx);
-
-	struct llm_http_ctx hctx;
-	hctx.parser = &parser;
-	hctx.arena = arena;
-	if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
-		memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
-
 	char url[512];
 	snprintf(url, sizeof(url), "%s/chat/completions", self->api_base);
 
@@ -1050,13 +1095,14 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 
 	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	log_dbg("llm_chat_with_tools: sending SSE request to %s", url);
-	int status = http_post_sse_ex_timeout(url, body, strlen(body),
-				       "application/json",
-				       extra_headers, 1, timeout,
-				       llm_http_cb, &hctx);
+	struct llm_stream_ctx ctx;
+	const char *detail = NULL;
+	int status = llm_post_sse_with_retry(self, arena,
+					     "llm_chat_with_tools", url,
+					     body, strlen(body), extra_headers,
+					     timeout, thought_cb, stream_cb,
+					     stream_ud, &ctx, &detail);
 	log_dbg("llm_chat_with_tools: SSE request done, status=%d", status);
-
-	sse_parser_free(&parser);
 
 	if (status < 0) {
 		log_err("llm_chat_with_tools: SSE request failed: %d", status);
@@ -1065,9 +1111,6 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		return status;
 	}
 	if (status >= 400) {
-		const char *detail = NULL;
-		if (hctx.error_buf.len > 0)
-			detail = llm_extract_error(hctx.error_buf.data, arena);
 		if (detail) {
 			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
 				status, detail);
@@ -1193,6 +1236,7 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	m->context_limit = 128000;
 	m->max_tokens = 4096;
 	m->timeout_seconds = 0;
+	m->retry_count = 3;
 	m->chat = llm_chat;
 	m->chat_with_tools = llm_chat_with_tools;
 	m->chat_with_tools_stream = llm_chat_with_tools_stream;

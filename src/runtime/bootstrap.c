@@ -54,6 +54,7 @@ static void runtime_configure_model(struct model *model,
 	if (!model || !cfg)
 		return;
 	model->timeout_seconds = cfg->timeout_seconds;
+	model->retry_count = cfg->retry_count;
 	if (cfg->max_tokens > 0)
 		model->max_tokens = cfg->max_tokens;
 	if (cfg->context_limit > 0)

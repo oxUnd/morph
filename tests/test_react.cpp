@@ -2209,6 +2209,10 @@ struct mock_server {
 	volatile int running;
 	const char *response_body;
 	int response_status;
+	const char *transient_error_body;
+	int transient_error_status;
+	int transient_failures;
+	int transient_sse_body;
 	int request_count;
 	char request_method[16];
 	char last_request[8192];
@@ -2237,7 +2241,36 @@ static void *mock_http_server_thread(void *arg)
 		sscanf(buf, "%15s", srv->request_method);
 		int is_sse = (strstr(buf, "Accept: text/event-stream") != NULL ||
 			      strstr(buf, "text/event-stream") != NULL);
-		if (srv->response_body && is_sse) {
+		int transient = srv->request_count <= srv->transient_failures;
+		if (transient) {
+			const char *data = srv->transient_error_body
+				? srv->transient_error_body : "{}";
+			if (srv->transient_sse_body) {
+				char header[512];
+				int hlen = snprintf(header, sizeof(header),
+					"HTTP/1.1 %d Error\r\n"
+					"Content-Type: text/event-stream\r\n"
+					"Connection: close\r\n\r\n",
+					srv->transient_error_status);
+				send(client_fd, header, hlen, 0);
+				char event_buf[2048];
+				int elen = snprintf(event_buf, sizeof(event_buf),
+					"data: %s\n\n", data);
+				send(client_fd, event_buf, elen, 0);
+			} else {
+				int body_len = strlen(data);
+				char header[512];
+				int hlen = snprintf(header, sizeof(header),
+					"HTTP/1.1 %d Error\r\n"
+					"Content-Type: application/json\r\n"
+					"Content-Length: %d\r\n"
+					"Connection: close\r\n\r\n",
+					srv->transient_error_status, body_len);
+				send(client_fd, header, hlen, 0);
+				send(client_fd, data, body_len, 0);
+			}
+		} else if (srv->response_body && is_sse &&
+			   (srv->response_status == 0 || srv->response_status == 200)) {
 			const char *data = srv->response_body;
 			char header[512];
 			int hlen = snprintf(header, sizeof(header),
@@ -2282,9 +2315,17 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 {
 	const char *saved_body = srv->response_body;
 	int saved_status = srv->response_status;
+	const char *saved_transient_body = srv->transient_error_body;
+	int saved_transient_status = srv->transient_error_status;
+	int saved_transient_failures = srv->transient_failures;
+	int saved_transient_sse_body = srv->transient_sse_body;
 	memset(srv, 0, sizeof(*srv));
 	srv->response_body = saved_body;
 	srv->response_status = saved_status;
+	srv->transient_error_body = saved_transient_body;
+	srv->transient_error_status = saved_transient_status;
+	srv->transient_failures = saved_transient_failures;
+	srv->transient_sse_body = saved_transient_sse_body;
 	srv->server_fd = -1;
 	srv->server_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (srv->server_fd < 0)
@@ -2543,6 +2584,150 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	EXPECT_EQ(streamed, "R:thinkC:answer");
 	ASSERT_NE(response.content, nullptr);
 	EXPECT_STREQ(response.content, "answer");
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmRetriesTransientHttpErrorsBeforeStreaming) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}";
+	srv.response_status = 200;
+	srv.transient_error_body =
+		"{\"error\":{\"message\":\"engine overloaded\"}}";
+	srv.transient_error_status = 429;
+	srv.transient_failures = 2;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	EXPECT_EQ(model->retry_count, 3);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+	std::string streamed;
+
+	int rc = model->chat_with_tools(
+		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		[](const char *token, void *ud) -> int {
+			static_cast<std::string *>(ud)->append(token ? token : "");
+			return 0;
+		}, &streamed);
+	EXPECT_EQ(rc, 200);
+	EXPECT_EQ(srv.request_count, 3);
+	EXPECT_EQ(streamed, "recovered");
+	ASSERT_NE(response.content, nullptr);
+	EXPECT_STREQ(response.content, "recovered");
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmStopsAfterConfiguredRetriesAndKeepsLastError) {
+	srv.response_body = "{}";
+	srv.response_status = 200;
+	srv.transient_error_body =
+		"{\"error\":{\"message\":\"engine overloaded\"}}";
+	srv.transient_error_status = 503;
+	srv.transient_failures = 10;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	model->retry_count = 1;
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1,
+					NULL, 0, &response, NULL, NULL);
+	EXPECT_EQ(rc, MORPH_ERR_API);
+	EXPECT_EQ(srv.request_count, 2);
+	EXPECT_NE(strstr(model->last_error, "HTTP 503"), nullptr);
+	EXPECT_NE(strstr(model->last_error, "engine overloaded"), nullptr);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmDoesNotRetryNonTransientHttpErrors) {
+	srv.response_body = "{\"error\":{\"message\":\"bad request\"}}";
+	srv.response_status = 400;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc = model->chat_with_tools(model, arena, NULL, &msg, 1,
+					NULL, 0, &response, NULL, NULL);
+	EXPECT_EQ(rc, MORPH_ERR_API);
+	EXPECT_EQ(srv.request_count, 1);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmDoesNotRetryAfterStreamContentWasEmitted) {
+	srv.response_body = "{}";
+	srv.response_status = 200;
+	srv.transient_error_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}";
+	srv.transient_error_status = 429;
+	srv.transient_failures = 10;
+	srv.transient_sse_body = 1;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+	std::string streamed;
+
+	int rc = model->chat_with_tools(
+		model, arena, NULL, &msg, 1, NULL, 0, &response,
+		[](const char *token, void *ud) -> int {
+			static_cast<std::string *>(ud)->append(token ? token : "");
+			return 0;
+		}, &streamed);
+	EXPECT_EQ(rc, MORPH_ERR_API);
+	EXPECT_EQ(srv.request_count, 1);
+	EXPECT_EQ(streamed, "partial");
 
 	arena_destroy(arena);
 	model_destroy(model);

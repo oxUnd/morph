@@ -28,6 +28,7 @@ struct config_model_entry {
 	int context_limit;
 	int max_tokens;
 	int timeout_seconds;
+	int retry_count;
 	int poll_interval_seconds;
 	int poll_timeout_seconds;
 };

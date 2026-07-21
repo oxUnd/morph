@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 #include "http/client.h"
+#include <cerrno>
+#include <chrono>
+#include <thread>
 
 class HttpTest : public ::testing::Test {
 protected:
@@ -50,6 +53,22 @@ TEST(CancelTokenTest, ResetCancelAndQuery) {
 	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 1);
 	morph_cancel_token_reset(&token);
 	EXPECT_EQ(morph_cancel_token_is_cancelled(&token), 0);
+}
+
+TEST(CancelTokenTest, RetryWaitStopsWhenCancelled) {
+	struct morph_cancel_token token;
+	morph_cancel_token_reset(&token);
+	http_set_cancel_token(&token);
+	std::thread canceller([&token]() {
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		morph_cancel_token_cancel(&token);
+	});
+	auto started = std::chrono::steady_clock::now();
+	EXPECT_EQ(http_wait_cancelable(5000), -ECANCELED);
+	auto elapsed = std::chrono::steady_clock::now() - started;
+	EXPECT_LT(elapsed, std::chrono::seconds(1));
+	canceller.join();
+	http_set_cancel_token(nullptr);
 }
 
 /* ----- http_session tests ----- */

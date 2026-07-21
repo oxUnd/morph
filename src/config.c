@@ -288,9 +288,11 @@ void config_set_defaults(struct config *cfg)
 	cfg->models.text.context_limit = 128000;
 	cfg->models.text.max_tokens = 4096;
 	cfg->models.text.timeout_seconds = 300;
+	cfg->models.text.retry_count = 3;
 
 	/* [model.vision] is optional and intentionally has no fallback. */
 	cfg->models.vision.timeout_seconds = 300;
+	cfg->models.vision.retry_count = 3;
 
 	strncpy(cfg->models.image.provider, "openai",
 		sizeof(cfg->models.image.provider) - 1);
@@ -484,6 +486,11 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	CFG_INT(t, "context_limit", e->context_limit);
 	CFG_INT(t, "max_tokens", e->max_tokens);
 	CFG_INT(t, "timeout_seconds", e->timeout_seconds);
+	CFG_INT(t, "retry_count", e->retry_count);
+	if (e->retry_count < 0)
+		e->retry_count = 0;
+	else if (e->retry_count > 10)
+		e->retry_count = 10;
 	CFG_INT(t, "poll_interval_seconds", e->poll_interval_seconds);
 	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);
 }

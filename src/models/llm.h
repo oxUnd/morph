@@ -89,6 +89,7 @@ struct model {
 	int context_limit;
 	int max_tokens;
 	long timeout_seconds;
+	int retry_count;
 	void *handle;
 	int (*chat)(struct model *self, struct arena *arena,
 		    const char *system_prompt,

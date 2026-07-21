@@ -27,6 +27,8 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.models.vision.model, "");
 	EXPECT_EQ(cfg.models.vision.timeout_seconds, 300);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
+	EXPECT_EQ(cfg.models.text.retry_count, 3);
+	EXPECT_EQ(cfg.models.vision.retry_count, 3);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
@@ -73,6 +75,7 @@ log_level = "debug"
 provider = "deepseek"
 model = "deepseek-chat"
 context_limit = 200000
+retry_count = 7
 
 [model.vision]
 provider = "openai"
@@ -80,6 +83,7 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 max_tokens = 2048
+retry_count = 99
 
 [react]
 max_iterations = 5
@@ -108,9 +112,11 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.models.text.provider, "deepseek");
 	EXPECT_STREQ(cfg.models.text.model, "deepseek-chat");
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
+	EXPECT_EQ(cfg.models.text.retry_count, 7);
 	EXPECT_STREQ(cfg.models.vision.provider, "openai");
 	EXPECT_STREQ(cfg.models.vision.model, "gpt-4o");
 	EXPECT_EQ(cfg.models.vision.max_tokens, 2048);
+	EXPECT_EQ(cfg.models.vision.retry_count, 10);
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
