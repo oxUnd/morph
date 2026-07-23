@@ -69,6 +69,22 @@ TEST_F(ToolTest, RegisterAndLookup) {
 	EXPECT_EQ(morph_strmap_get(&reg.by_name, "test_tool"), e);
 }
 
+TEST_F(ToolTest, RegisterStoresOptionalTitle) {
+	struct tool_spec spec = {};
+	spec.origin = TOOL_ORIGIN_MCP;
+	spec.name = "mcp_test";
+	spec.title = "Friendly MCP title";
+	spec.description = "A titled tool";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = mock_tool_exec;
+
+	ASSERT_EQ(tool_register(&reg, &spec), 0);
+	struct tool_entry *e = tool_lookup(&reg, "mcp_test");
+	ASSERT_NE(e, nullptr);
+	EXPECT_STREQ(e->desc.title, "Friendly MCP title");
+}
+
 TEST_F(ToolTest, RegisterMultiple) {
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool1", "First", nullptr, mock_tool_exec, nullptr, nullptr);
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "tool2", "Second", nullptr, mock_tool_exec, nullptr, nullptr);

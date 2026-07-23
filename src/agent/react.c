@@ -508,6 +508,12 @@ static int react_emit_tool_event(struct react_context *ctx,
 	if (!data)
 		return -ENOMEM;
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
+	if (ctx->tools && tool) {
+		struct tool_entry *entry = tool_lookup(ctx->tools, tool);
+		if (entry && entry->desc.title[0])
+			cJSON_AddStringToObject(data, "toolTitle",
+						entry->desc.title);
+	}
 	cJSON_AddStringToObject(data, "tool_call_id",
 				tool_call_id ? tool_call_id : "");
 	args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;

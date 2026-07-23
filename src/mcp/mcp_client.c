@@ -872,6 +872,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		struct tool_spec spec = {
 			.origin = TOOL_ORIGIN_MCP,
 			.name = tool_name,
+			.title = tools[i].title,
 			.description = tools[i].description,
 			.input_schema = schema,
 			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,

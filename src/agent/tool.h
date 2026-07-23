@@ -58,6 +58,7 @@ struct tool_artifact_list {
 
 struct tool_desc {
 	char name[TOOL_NAME_MAX];
+	char title[TOOL_NAME_MAX];
 	char description[TOOL_DESC_MAX];
 	char input_schema[TOOL_SCHEMA_MAX];
 	char output_schema[TOOL_SCHEMA_MAX];
@@ -107,6 +108,7 @@ typedef void (*tool_user_data_destroy_fn)(void *user_data);
 struct tool_spec {
 	enum tool_origin origin;
 	const char *name;
+	const char *title;
 	const char *description;
 	const char *input_schema;
 	const char *output_schema;

@@ -717,6 +717,8 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 	struct tool_entry *e = &reg->entries[reg->count];
 	memset(e, 0, sizeof(*e));
 	strncpy(e->desc.name, spec->name, sizeof(e->desc.name) - 1);
+	strncpy(e->desc.title, spec->title ? spec->title : "",
+		sizeof(e->desc.title) - 1);
 	strncpy(e->desc.description, spec->description ? spec->description : "",
 		sizeof(e->desc.description) - 1);
 	strncpy(e->desc.input_schema, spec->input_schema,
