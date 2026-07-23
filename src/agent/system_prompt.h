@@ -56,7 +56,8 @@ MORPH_PROMPT_TOOL_SURFACE \
 "CAPABILITIES\n" \
 "-----------------------------------\n" \
 "\n" \
-"- Runtime: credits to inspect credit usage; memory to inspect memory.\n" \
+"- Runtime: credits for usage; memory only for explicit user requests to\n" \
+"  inspect stored memory, never to recover ordinary task context.\n" \
 "- Image: img_qa to understand images, answer visual questions, and OCR;\n" \
 "  img_gen to create or transform (pass a reference_image for img2img);\n" \
 "  img_info/img_resize/img_convert/img_annotate to inspect metadata,\n" \

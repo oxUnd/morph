@@ -10,6 +10,21 @@
 #include <cstring>
 #include <unistd.h>
 
+static int CountOccurrences(const char *text, const char *needle)
+{
+	int count = 0;
+	size_t needle_len;
+
+	if (!text || !needle || !*needle)
+		return 0;
+	needle_len = std::strlen(needle);
+	while ((text = std::strstr(text, needle)) != nullptr) {
+		count++;
+		text += needle_len;
+	}
+	return count;
+}
+
 class RuntimeQueryTest : public ::testing::Test {
 protected:
 	struct db db;
@@ -59,6 +74,18 @@ TEST_F(RuntimeQueryTest, RegistersReadOnlyTools)
 	ASSERT_NE(memory_tool, nullptr);
 	EXPECT_TRUE((credits->flags & TOOL_FLAG_READONLY) != 0);
 	EXPECT_TRUE((memory_tool->flags & TOOL_FLAG_READONLY) != 0);
+	EXPECT_NE(std::strstr(memory_tool->desc.description,
+			      "only when the user explicitly asks"),
+		  nullptr);
+
+	cJSON *schema = cJSON_Parse(memory_tool->desc.input_schema);
+	ASSERT_NE(schema, nullptr);
+	cJSON *required = cJSON_GetObjectItem(schema, "required");
+	ASSERT_TRUE(cJSON_IsArray(required));
+	ASSERT_EQ(cJSON_GetArraySize(required), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(required, 0)->valuestring, "type");
+	EXPECT_STREQ(cJSON_GetArrayItem(required, 1)->valuestring, "scope");
+	cJSON_Delete(schema);
 }
 
 TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
@@ -168,15 +195,89 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 		  0);
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&tools, "memory", "{\"scope\":\"all\"}", &result),
+	ASSERT_EQ(tool_exec(&tools, "memory", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	cJSON *root = cJSON_Parse(result.text.data);
+	ASSERT_NE(root, nullptr);
+	cJSON *scope = cJSON_GetObjectItem(root, "scope");
+	cJSON *text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(scope));
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_STREQ(scope->valuestring, "session");
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_one"), nullptr);
+	EXPECT_EQ(std::strstr(text->valuestring, "runtime_memory_two"), nullptr);
+	cJSON_Delete(root);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&tools, "memory",
+			    "{\"scope\":\"all\",\"type\":\"all\"}", &result),
 		  0);
 	ASSERT_NE(result.text.data, nullptr);
+	root = cJSON_Parse(result.text.data);
+	ASSERT_NE(root, nullptr);
+	text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_one"), nullptr);
+	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_two"), nullptr);
+	cJSON_Delete(root);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
+{
+	struct session s;
+	struct tool_result result;
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"INSERT INTO memory_episodes"
+		"(session_id,summary_text,created_at) VALUES(?,?,?)";
+
+	ASSERT_EQ(session_create(&db, "runtime_memory_limit", "gpt-test", &s),
+		  0);
+	ASSERT_EQ(session_ensure_display_id(&db, &s), 0);
+	SetRuntime(s);
+	cfg.memory.max_episodes = 2;
+
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle, sql, -1, &stmt, nullptr),
+		  SQLITE_OK);
+	for (int i = 1; i <= 3; i++) {
+		char summary[32];
+
+		std::snprintf(summary, sizeof(summary), "episode-%d", i);
+		sqlite3_bind_int64(stmt, 1, s.id);
+		sqlite3_bind_text(stmt, 2, summary, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 3, i);
+		ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+		ASSERT_EQ(sqlite3_reset(stmt), SQLITE_OK);
+		ASSERT_EQ(sqlite3_clear_bindings(stmt), SQLITE_OK);
+	}
+	sqlite3_finalize(stmt);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&tools, "memory",
+			    "{\"scope\":\"session\",\"type\":\"episodes\"}",
+			    &result), 0);
 	cJSON *root = cJSON_Parse(result.text.data);
 	ASSERT_NE(root, nullptr);
 	cJSON *text = cJSON_GetObjectItem(root, "text");
 	ASSERT_TRUE(cJSON_IsString(text));
-	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_one"), nullptr);
-	EXPECT_NE(std::strstr(text->valuestring, "runtime_memory_two"), nullptr);
+	EXPECT_EQ(CountOccurrences(text->valuestring, "episode-"), 2);
+	cJSON_Delete(root);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(
+			  &tools, "memory",
+			  "{\"scope\":\"session\",\"type\":\"episodes\","
+			  "\"max_episodes\":1}",
+			  &result),
+		  0);
+	root = cJSON_Parse(result.text.data);
+	ASSERT_NE(root, nullptr);
+	text = cJSON_GetObjectItem(root, "text");
+	ASSERT_TRUE(cJSON_IsString(text));
+	EXPECT_EQ(CountOccurrences(text->valuestring, "episode-"), 1);
 	cJSON_Delete(root);
 	tool_result_cleanup(&result);
 }

@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MEMORY_QUERY_DEFAULT_MAX_EPISODES 4
+
 static void summary_to_json(cJSON *parent, const char *name,
 			    const struct credit_summary *s)
 {
@@ -90,6 +92,7 @@ static enum memory_query_type parse_memory_type(const char *s)
 }
 
 static void parse_memory_query(const char *args_json,
+			       const struct config *config,
 			       struct memory_query_options *q)
 {
 	cJSON *root;
@@ -97,8 +100,11 @@ static void parse_memory_query(const char *args_json,
 
 	memset(q, 0, sizeof(*q));
 	q->type = MEMORY_QUERY_ALL;
-	q->scope_all = 1;
-	q->max_episodes = 0;
+	q->scope_all = 0;
+	q->max_episodes =
+		config && config->memory.max_episodes > 0
+			? config->memory.max_episodes
+			: MEMORY_QUERY_DEFAULT_MAX_EPISODES;
 	if (!args_json || !*args_json)
 		return;
 	root = cJSON_Parse(args_json);
@@ -109,8 +115,8 @@ static void parse_memory_query(const char *args_json,
 		q->type = parse_memory_type(cJSON_GetStringValue(item));
 	item = cJSON_GetObjectItemCaseSensitive(root, "scope");
 	if (cJSON_IsString(item) &&
-	    strcmp(cJSON_GetStringValue(item), "session") == 0)
-		q->scope_all = 0;
+	    strcmp(cJSON_GetStringValue(item), "all") == 0)
+		q->scope_all = 1;
 	item = cJSON_GetObjectItemCaseSensitive(root, "max_episodes");
 	if (cJSON_IsNumber(item) && item->valueint > 0)
 		q->max_episodes = item->valueint;
@@ -130,7 +136,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	if (!rt || !rt->db)
 		return tool_result_error(result, "tool_failed",
 					      "runtime context is unavailable");
-	parse_memory_query(args_json, &q);
+	parse_memory_query(args_json, rt->config, &q);
 	if (rt->restrict_memory_to_user) {
 		q.user_id = rt->user_id;
 		q.visible_fn = rt->memory_visible_fn;
@@ -170,11 +176,11 @@ int runtime_query_tools_init(struct tool_registry *reg)
 	if (e)
 		e->flags |= TOOL_FLAG_READONLY;
 
-	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "memory", .description = "Query long-term memory by type and scope.", .input_schema = "{\"type\":\"object\",\"properties\":{"
+	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "memory", .description = "Inspect, list, verify, or summarize stored long-term memory only when the user explicitly asks about their memory. Do not call this tool to recover context for ordinary tasks: relevant memory is already injected by the agent. Use scope=all only when the user explicitly asks for all, complete, or cross-session memory; otherwise use scope=session.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"type\":{\"type\":\"string\",\"enum\":[\"all\",\"profile\",\"facts\",\"procedures\",\"episodes\",\"changes\"]},"
 		"\"scope\":{\"type\":\"string\",\"enum\":[\"all\",\"session\"]},"
-		"\"max_episodes\":{\"type\":\"integer\",\"minimum\":0}"
-		"},\"additionalProperties\":false}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = memory_exec, .user_data = NULL, .user_data_destroy = NULL });
+		"\"max_episodes\":{\"type\":\"integer\",\"minimum\":1}"
+		"},\"required\":[\"type\",\"scope\"],\"additionalProperties\":false}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = memory_exec, .user_data = NULL, .user_data_destroy = NULL });
 	if (rc != 0)
 		return rc;
 	e = tool_lookup(reg, "memory");
