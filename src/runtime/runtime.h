@@ -41,10 +41,6 @@ typedef void (*runtime_usage_observer_fn)(const struct model_usage *usage,
 	void *user_data);
 typedef int (*runtime_after_models_fn)(struct react_context *react,
 	void *user_data);
-typedef int (*runtime_background_fn)(void *user_data, const char *name,
-	const char *phase, const char *message, const char *task, int count,
-	int error_code);
-
 struct runtime_options {
 	const char *config_path;
 	const char *db_path;
@@ -65,8 +61,6 @@ struct runtime_options {
 	void *platform_tools_user_data;
 	runtime_after_models_fn after_models_cb;
 	void *after_models_user_data;
-	runtime_background_fn background_cb;
-	void *background_user_data;
 	struct scheduled_task_event_sink *task_events;
 	img_annotate_pause_fn img_annotate_pause_cb;
 	img_annotate_resume_fn img_annotate_resume_cb;

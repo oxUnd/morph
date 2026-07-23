@@ -7,15 +7,6 @@ int cli_sync_start(struct cli_context *ctx)
 	return runtime_sync_start_instance(ctx->runtime, NULL, NULL);
 }
 
-struct scheduled_task_event_sink cli_task_event_sink(struct cli_context *ctx)
-{
-	struct scheduled_task_event_sink sink = {
-		.cb = ctx ? ctx->event_cb : NULL,
-		.user_data = ctx ? ctx->event_user_data : NULL,
-	};
-	return sink;
-}
-
 int cli_scheduled_task_runner(const struct scheduled_task *task,
 			      struct scheduled_task_action_result *result,
 			      void *user_data)

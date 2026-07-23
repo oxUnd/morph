@@ -93,16 +93,6 @@ int cli_printf(const char *fmt, ...)
 	return n;
 }
 
-int cli_turn_background_cb(void *user_data, const char *name,
-			   const char *phase, const char *message,
-			   const char *task, int count, int error_code)
-{
-	struct cli_context *ctx = user_data;
-
-	return cli_emit_background_event(ctx, name, phase, message, task,
-					 count, error_code);
-}
-
 void print_padded(const char *s, int target_width)
 {
 	size_t width;

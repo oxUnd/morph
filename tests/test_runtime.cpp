@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 extern "C" {
+#include "event/event.h"
 #include "runtime/runtime.h"
 }
 
@@ -61,6 +62,58 @@ TEST_F(RuntimeLifecycleTest, OwnsSessionAndServices)
 	EXPECT_GE(count, 2);
 	runtime_session_list_free(sessions);
 	runtime_close(instance);
+}
+
+TEST_F(RuntimeLifecycleTest, EmitsStartupProgress)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	morph_event_recorder recorder{};
+	std::string config_path = std::string(directory) + "/config.toml";
+	FILE *config = std::fopen(config_path.c_str(), "w");
+
+	ASSERT_NE(config, nullptr);
+	std::fprintf(config,
+		     "[mcp]\n"
+		     "[[mcp.servers]]\n"
+		     "name = \"broken-test\"\n"
+		     "transport = \"http\"\n"
+		     "url = \"\"\n"
+		     "auto_connect = true\n");
+	ASSERT_EQ(std::fclose(config), 0);
+	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+	options.config_path = config_path.c_str();
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	options.auto_connect_mcp = 1;
+	options.event_cb = morph_event_recorder_cb;
+	options.event_user_data = &recorder;
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+
+	std::string events;
+	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
+		events += morph_event_recorder_get(&recorder, i);
+		events += "\n";
+	}
+	EXPECT_NE(events.find("\"name\":\"startup.begin\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.config\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.database\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.models\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.tools\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.mcp\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.session\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"startup.ready\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"mcp.connecting\""), std::string::npos);
+	EXPECT_NE(events.find("\"name\":\"mcp.failed\""), std::string::npos);
+	EXPECT_NE(events.find("\"server\":\"broken-test\""),
+		  std::string::npos);
+	EXPECT_NE(events.find("\"message\":\"Connecting to broken-test\""),
+		  std::string::npos);
+
+	runtime_close(instance);
+	morph_event_recorder_cleanup(&recorder);
+	std::remove(config_path.c_str());
 }
 
 TEST_F(RuntimeLifecycleTest, RejectsInvalidOpenArguments)

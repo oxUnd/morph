@@ -1,4 +1,5 @@
 #include "runtime/services.h"
+#include "runtime/mcp.h"
 #include "runtime/runtime_internal.h"
 #include "util/arena.h"
 
@@ -61,7 +62,9 @@ int runtime_mcp_find(const struct runtime *runtime, const char *name,
 int runtime_mcp_connect(struct runtime *runtime, const char *name)
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
-	return client ? mcp_ensure_connected(client) : -ENOENT;
+	return client ? runtime_mcp_client_connect(
+		client, runtime->options.event_cb,
+		runtime->options.event_user_data) : -ENOENT;
 }
 
 int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
@@ -69,8 +72,9 @@ int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	if (!client)
 		return -ENOENT;
-	mcp_disconnect(client);
-	return 0;
+	return runtime_mcp_client_disconnect(
+		client, runtime->options.event_cb,
+		runtime->options.event_user_data);
 }
 
 static int runtime_mcp_copy_list(void **out, int count, const void *items,
@@ -166,14 +170,11 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 	int p;
 	if (!client)
 		return -ENOENT;
-	t = mcp_register_server_tools(client, &runtime->context.tools);
-	r = mcp_register_server_resources(client, &runtime->context.tools);
-	p = mcp_register_server_prompts(client, &runtime->context.tools);
-	if (tools)
-		*tools = t;
-	if (resources)
-		*resources = r;
-	if (prompts)
-		*prompts = p;
-	return t < 0 ? t : (r < 0 ? r : (p < 0 ? p : 0));
+	return runtime_mcp_client_discover(
+		client, &runtime->context.tools,
+		runtime->options.event_cb,
+		runtime->options.event_user_data,
+		tools ? tools : &t,
+		resources ? resources : &r,
+		prompts ? prompts : &p);
 }

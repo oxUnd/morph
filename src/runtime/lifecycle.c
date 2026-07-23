@@ -7,6 +7,7 @@
 #include "runtime/usage.h"
 #include "runtime/extensions.h"
 #include "runtime/output.h"
+#include "event/event.h"
 #include "util/error.h"
 #include "util/file.h"
 
@@ -15,6 +16,53 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+static void runtime_emit_startup(struct runtime *runtime, const char *name,
+				 const char *phase, const char *message)
+{
+	(void)morph_event_emit_simple(runtime->options.event_cb,
+				     runtime->options.event_user_data,
+				     MORPH_EVENT_STARTUP, name, phase,
+				     message, NULL);
+}
+
+static int runtime_emit_background(void *user_data, const char *name,
+				   const char *phase, const char *message,
+				   const char *task, int count,
+				   int error_code)
+{
+	struct runtime *runtime = user_data;
+	morph_event_cb cb;
+	void *event_user_data;
+	cJSON *data;
+	int rc;
+
+	if (!runtime)
+		return -EINVAL;
+	cb = runtime->context.react ? runtime->context.react->event_cb :
+		runtime->options.event_cb;
+	event_user_data = runtime->context.react ?
+		runtime->context.react->event_user_data :
+		runtime->options.event_user_data;
+	if (!cb)
+		return 0;
+	data = cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_AddStringToObject(data, "task", task ? task : "");
+	if (count >= 0)
+		cJSON_AddNumberToObject(data, "count", count);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	rc = morph_event_emit_simple(cb, event_user_data,
+				     MORPH_EVENT_BACKGROUND, name, phase,
+				     message, data);
+	cJSON_Delete(data);
+	return rc;
+}
 
 static int runtime_load_config(struct runtime *runtime)
 {
@@ -89,6 +137,8 @@ static int runtime_start_components(struct runtime *runtime)
 
 	memset(&models, 0, sizeof(models));
 	memset(&profile, 0, sizeof(profile));
+	runtime_emit_startup(runtime, "startup.models", "begin",
+			     "Preparing models...");
 	profile.config = &ctx->config;
 	profile.tools = &ctx->tools;
 	profile.models = &models;
@@ -138,6 +188,8 @@ static int runtime_start_components(struct runtime *runtime)
 	profile.enable_img_annotate = runtime->options.enable_img_annotate;
 	profile.enable_shell_exts = runtime->options.enable_shell_exts;
 	profile.allocate_skill_registry = runtime->options.allocate_skill_registry;
+	runtime_emit_startup(runtime, "startup.tools", "begin",
+			     "Loading tools and skills...");
 	rc = runtime_bootstrap_tools(&profile);
 	if (rc != 0)
 		return rc;
@@ -160,21 +212,29 @@ static int runtime_start_components(struct runtime *runtime)
 			return rc;
 	}
 
+	runtime_emit_startup(runtime, "startup.mcp", "begin",
+			     "Connecting services...");
 	(void)runtime_mcp_init_from_config(&ctx->mcp, &ctx->config.mcp,
 					   &ctx->tools,
-					   runtime->options.auto_connect_mcp);
+					   runtime->options.auto_connect_mcp,
+					   runtime->options.event_cb,
+					   runtime->options.event_user_data);
+	runtime_emit_startup(runtime, "startup.mcp", "end",
+			     "Services connected");
 	runtime_context_configure_engine(ctx);
 	ctx->memory_options = runtime_memory_options_from_config(&ctx->config);
 	ctx->engine.memory_options = &ctx->memory_options;
 	ctx->engine.prepare_turn = runtime_prepare_turn;
 	ctx->engine.finish_turn = runtime_finish_turn;
 	ctx->engine.user_data = runtime;
-	ctx->engine.background_cb = runtime->options.background_cb;
-	ctx->engine.background_user_data = runtime->options.background_user_data;
+	ctx->engine.background_cb = runtime_emit_background;
+	ctx->engine.background_user_data = runtime;
 
 	session_name = runtime->options.default_session;
 	if (!session_name || !session_name[0])
 		session_name = ctx->config.general.default_session;
+	runtime_emit_startup(runtime, "startup.session", "begin",
+			     "Restoring your session...");
 	if (runtime->options.restore_recent_session) {
 		struct session *sessions = NULL;
 		int count = 0;
@@ -233,21 +293,36 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	if (options->task_events) {
 		runtime->task_events = *options->task_events;
 		runtime->options.task_events = &runtime->task_events;
+	} else if (options->event_cb) {
+		runtime->task_events.cb = options->event_cb;
+		runtime->task_events.user_data = options->event_user_data;
+		runtime->options.task_events = &runtime->task_events;
 	}
 	runtime_context_init_empty(&runtime->context);
+	runtime_emit_startup(runtime, "startup.begin", "begin",
+			     "Morph startup started");
+	runtime_emit_startup(runtime, "startup.config", "begin",
+			     "Reading configuration...");
 	rc = runtime_context_init_lock(&runtime->context);
 	if (rc == 0)
 		rc = runtime_load_config(runtime);
 	if (rc == 0)
 		runtime_set_workdir(runtime);
-	if (rc == 0)
+	if (rc == 0) {
+		runtime_emit_startup(runtime, "startup.database", "begin",
+				     "Opening workspace...");
 		rc = runtime_open_database(runtime);
+	}
 	if (rc == 0)
 		rc = runtime_start_components(runtime);
 	if (rc != 0) {
+		runtime_emit_startup(runtime, "startup.failed", "failed",
+				     "Morph could not start");
 		runtime_close(runtime);
 		return rc;
 	}
+	runtime_emit_startup(runtime, "startup.ready", "ready",
+			     "Morph is ready");
 	*out = runtime;
 	return 0;
 }

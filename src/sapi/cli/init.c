@@ -38,7 +38,6 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	     const char *workdir, enum cli_event_mode event_mode)
 {
 	struct runtime_options options;
-	struct scheduled_task_event_sink task_events;
 	int rc;
 
 	if (!ctx)
@@ -48,11 +47,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	ctx->event_cb = cli_event_callback;
 	ctx->event_user_data = ctx;
 	(void)cli_commands_init();
-	cli_emit_startup_event(ctx, "startup.begin", "begin",
-			       "startup started", "cli", 0);
-
 	memset(&options, 0, sizeof(options));
-	task_events = cli_task_event_sink(ctx);
 	options.config_path = config_path ? config_path : default_config_path;
 	options.db_path = default_db_path;
 	options.workdir = workdir;
@@ -67,9 +62,6 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.ask_user_user_data = ctx;
 	options.operation_approval_cb = operation_approval_callback;
 	options.operation_approval_user_data = ctx;
-	options.background_cb = cli_turn_background_cb;
-	options.background_user_data = ctx;
-	options.task_events = &task_events;
 	options.img_annotate_pause_cb = cli_img_annotate_pause;
 	options.img_annotate_resume_cb = cli_img_annotate_resume;
 	options.img_annotate_user_data = ctx;
@@ -81,11 +73,8 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
 	rc = runtime_open(&options, &ctx->runtime);
-	if (rc != 0) {
-		cli_emit_startup_event(ctx, "startup.failed", "failed",
-				       "startup failed", "cli", rc);
+	if (rc != 0)
 		return rc;
-	}
 
 	ctx->session_auto_named = 0;
 	ctx->running = 1;
@@ -94,7 +83,5 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	rc = cli_sync_start(ctx);
 	if (rc != 0)
 		log_warn("failed to start sync worker: %s", morph_strerror(rc));
-	cli_emit_startup_event(ctx, "startup.ready", "ready",
-			       "startup ready", "cli", 0);
 	return 0;
 }

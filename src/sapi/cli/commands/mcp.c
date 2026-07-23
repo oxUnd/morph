@@ -118,28 +118,21 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			CMD_OK("MCP server '%s' already connected", name);
 			return 0;
 		}
-		cli_emit_mcp_event(ctx, "mcp.connecting", "begin",
-				   "manual MCP connect started", name,
-				   info.config.transport, 0,
-				   info.config.connect_timeout,
-				   -1, -1, -1, 0);
 		int rc = runtime_mcp_connect(ctx->runtime, name);
 		if (rc < 0) {
-			cli_emit_mcp_event(ctx, "mcp.failed", "failed",
-					   "manual MCP connect failed", name,
-					   info.config.transport, 0,
-					   info.config.connect_timeout,
-					   -1, -1, -1, rc);
 			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
 			return rc;
 		}
-		cli_emit_mcp_event(ctx, "mcp.connected", "end",
-				   "manual MCP connect completed", name,
-				   info.config.transport, 0,
-				   info.config.connect_timeout,
-				   -1, -1, -1, 0);
-		cli_discover_mcp_server(ctx, name, info.config.transport, 0,
-					info.config.connect_timeout);
+		int tools;
+		int resources;
+		int prompts;
+		rc = runtime_mcp_discover(ctx->runtime, name, &tools,
+					  &resources, &prompts);
+		if (rc < 0) {
+			CMD_ERROR("failed to discover '%s': %s", name,
+				  morph_strerror(rc));
+			return rc;
+		}
 		CMD_OK("MCP server '%s' connected", name);
 		return 0;
 	}
@@ -155,17 +148,18 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR("MCP server not found: %s", name);
 			return -ENOENT;
 		}
-		runtime_mcp_disconnect(ctx->runtime, name);
-		cli_emit_mcp_event(ctx, "mcp.disconnected", "end",
-				   "MCP server disconnected", name,
-				   info.config.transport, 0,
-				   info.config.connect_timeout,
-				   -1, -1, -1, 0);
+		int rc = runtime_mcp_disconnect(ctx->runtime, name);
+		if (rc < 0) {
+			CMD_ERROR("failed to disconnect '%s': %s", name,
+				  morph_strerror(rc));
+			return rc;
+		}
 		CMD_OK("MCP server '%s' disconnected", name);
 		return 0;
 	}
 
-	CMD_ERROR("unknown MCP subcommand: %s. Try: list, tools, resources, prompts, connect, disconnect", sub);
+	CMD_ERROR("unknown MCP subcommand: %s. Try: list, tools, resources, "
+		  "prompts, connect, disconnect", sub);
 	return -EINVAL;
 }
 

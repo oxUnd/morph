@@ -1,10 +1,93 @@
 #include "runtime/mcp.h"
 
+#include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
 
 #include <errno.h>
 #include <string.h>
+
+static const char *runtime_mcp_transport_name(
+	enum mcp_transport_type transport)
+{
+	return transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
+}
+
+static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
+			     const char *name, const char *phase,
+			     const char *message,
+			     const struct mcp_server_config *server,
+			     int tools, int resources, int prompts,
+			     int error_code)
+{
+	cJSON *data;
+	morph_buf_t message_buf;
+	const char *effective_message = message;
+
+	if (!cb || !server)
+		return;
+	memset(&message_buf, 0, sizeof(message_buf));
+	if (morph_buf_init(&message_buf, 128) == 0) {
+		if (strcmp(name, "mcp.connecting") == 0)
+			(void)morph_buf_printf(&message_buf, "Connecting to %s",
+					       server->name);
+		else if (strcmp(name, "mcp.connected") == 0)
+			(void)morph_buf_printf(&message_buf, "%s connected",
+					       server->name);
+		else if (strcmp(name, "mcp.discovering") == 0)
+			(void)morph_buf_printf(&message_buf,
+					       "Discovering %s capabilities",
+					       server->name);
+		else if (strcmp(name, "mcp.ready") == 0) {
+			if (tools >= 0 || resources >= 0 || prompts >= 0)
+				(void)morph_buf_printf(
+					&message_buf,
+					"%s ready (%d tools, %d resources, "
+					"%d prompts)",
+					server->name, tools, resources, prompts);
+			else
+				(void)morph_buf_printf(&message_buf, "%s ready",
+						       server->name);
+		}
+		else if (strcmp(name, "mcp.failed") == 0)
+			(void)morph_buf_printf(&message_buf, "%s failed: %s",
+					       server->name,
+					       morph_strerror(error_code));
+		else if (strcmp(name, "mcp.disconnected") == 0)
+			(void)morph_buf_printf(&message_buf, "%s disconnected",
+					       server->name);
+		if (message_buf.len > 0)
+			effective_message = morph_buf_cstr(&message_buf);
+	}
+	data = cJSON_CreateObject();
+	if (!data) {
+		morph_buf_cleanup(&message_buf);
+		return;
+	}
+	cJSON_AddStringToObject(data, "server", server->name);
+	cJSON_AddStringToObject(data, "transport",
+				runtime_mcp_transport_name(server->transport));
+	cJSON_AddBoolToObject(data, "auto_connect",
+			      server->auto_connect ? 1 : 0);
+	if (server->connect_timeout > 0)
+		cJSON_AddNumberToObject(data, "timeout_seconds",
+					server->connect_timeout);
+	if (tools >= 0)
+		cJSON_AddNumberToObject(data, "tools", tools);
+	if (resources >= 0)
+		cJSON_AddNumberToObject(data, "resources", resources);
+	if (prompts >= 0)
+		cJSON_AddNumberToObject(data, "prompts", prompts);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+					morph_strerror(error_code));
+	}
+	(void)morph_event_emit_simple(cb, user_data, MORPH_EVENT_MCP,
+				     name, phase, effective_message, data);
+	cJSON_Delete(data);
+	morph_buf_cleanup(&message_buf);
+}
 
 int runtime_mcp_server_config_from_config(const struct config_mcp_server *config,
 					  struct mcp_server_config *out)
@@ -67,10 +150,89 @@ int runtime_mcp_register_configured(struct mcp_registry *registry,
 	return 0;
 }
 
+int runtime_mcp_client_connect(struct mcp_client *client,
+			       morph_event_cb event_cb,
+			       void *event_user_data)
+{
+	int rc;
+
+	if (!client)
+		MORPH_RETURN(-EINVAL);
+	runtime_mcp_emit(event_cb, event_user_data, "mcp.connecting",
+			 "begin", "Connecting MCP server", &client->config,
+			 -1, -1, -1, 0);
+	rc = mcp_ensure_connected(client);
+	if (rc != 0) {
+		runtime_mcp_emit(event_cb, event_user_data, "mcp.failed",
+				 "failed", "MCP server unavailable",
+				 &client->config, -1, -1, -1, rc);
+		return rc;
+	}
+	runtime_mcp_emit(event_cb, event_user_data, "mcp.connected",
+			 "end", "MCP server connected", &client->config,
+			 -1, -1, -1, 0);
+	return 0;
+}
+
+int runtime_mcp_client_disconnect(struct mcp_client *client,
+				  morph_event_cb event_cb,
+				  void *event_user_data)
+{
+	if (!client)
+		MORPH_RETURN(-EINVAL);
+	mcp_disconnect(client);
+	runtime_mcp_emit(event_cb, event_user_data, "mcp.disconnected",
+			 "end", "MCP server disconnected", &client->config,
+			 -1, -1, -1, 0);
+	return 0;
+}
+
+int runtime_mcp_client_discover(struct mcp_client *client,
+				struct tool_registry *tools,
+				morph_event_cb event_cb,
+				void *event_user_data,
+				int *tools_count,
+				int *resources_count,
+				int *prompts_count)
+{
+	int t = -1;
+	int r = -1;
+	int p = -1;
+	int rc;
+
+	if (!client || !tools)
+		MORPH_RETURN(-EINVAL);
+	runtime_mcp_emit(event_cb, event_user_data, "mcp.discovering",
+			 "begin", "Discovering MCP capabilities",
+			 &client->config, -1, -1, -1, 0);
+	t = mcp_register_server_tools(client, tools);
+	r = mcp_register_server_resources(client, tools);
+	p = mcp_register_server_prompts(client, tools);
+	if (tools_count)
+		*tools_count = t;
+	if (resources_count)
+		*resources_count = r;
+	if (prompts_count)
+		*prompts_count = p;
+	rc = t < 0 ? t : (r < 0 ? r : (p < 0 ? p : 0));
+	if (rc < 0) {
+		runtime_mcp_emit(event_cb, event_user_data, "mcp.failed",
+				 "failed", "MCP discovery failed",
+				 &client->config, t, r, p, rc);
+		return rc;
+	}
+	runtime_mcp_emit(event_cb, event_user_data, "mcp.ready",
+			 "ready", "MCP server ready", &client->config,
+			 t, r, p, 0);
+	return 0;
+}
+
 int runtime_mcp_init_from_config(struct mcp_registry *registry,
 				 const struct config_mcp *config,
 				 struct tool_registry *tools,
-				 int connect_configured)
+				 int connect_configured,
+				 morph_event_cb event_cb,
+				 void *event_user_data)
 {
 	int rc;
 
@@ -99,16 +261,25 @@ int runtime_mcp_init_from_config(struct mcp_registry *registry,
 		client = mcp_registry_get(registry, server.name);
 		if (!client)
 			continue;
-		rc = mcp_ensure_connected(client);
+		rc = runtime_mcp_client_connect(client, event_cb,
+						event_user_data);
 		if (rc != 0) {
 			log_warn("runtime: mcp connect failed for '%s': %s",
 				 server.name, morph_strerror(rc));
 			continue;
 		}
 		if (tools) {
-			mcp_register_server_tools(client, tools);
-			mcp_register_server_resources(client, tools);
-			mcp_register_server_prompts(client, tools);
+			rc = runtime_mcp_client_discover(
+				client, tools, event_cb, event_user_data,
+				NULL, NULL, NULL);
+			if (rc != 0)
+				log_warn("runtime: mcp discovery failed for "
+					 "'%s': %s", server.name,
+					 morph_strerror(rc));
+		} else {
+			runtime_mcp_emit(event_cb, event_user_data, "mcp.ready",
+					 "ready", "MCP server ready", &server,
+					 -1, -1, -1, 0);
 		}
 		log_info("runtime: mcp auto-connected '%s'", server.name);
 	}

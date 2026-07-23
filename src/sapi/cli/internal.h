@@ -95,31 +95,8 @@ void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      const char *model,
 				      const char *metadata_json);
 
-int cli_emit_startup_event(struct cli_context *ctx,
-			   const char *name, const char *phase,
-			   const char *message, const char *component,
-			   int error_code);
-int cli_emit_background_event(struct cli_context *ctx,
-			      const char *name, const char *phase,
-			      const char *message, const char *task,
-			      int count, int error_code);
-int cli_turn_background_cb(void *user_data, const char *name,
-			   const char *phase, const char *message,
-			   const char *task, int count, int error_code);
-int cli_emit_mcp_event(struct cli_context *ctx,
-		       const char *name, const char *phase,
-		       const char *message, const char *server,
-		       enum mcp_transport_type transport,
-		       int auto_connect, int timeout_seconds,
-		       int tools, int resources, int prompts,
-		       int error_code);
-int cli_discover_mcp_server(struct cli_context *ctx,
-			    const char *server,
-			    enum mcp_transport_type transport, int auto_connect,
-			    int timeout_seconds);
 int cli_event_callback(const struct morph_event *ev, void *user_data);
 
-struct scheduled_task_event_sink cli_task_event_sink(struct cli_context *ctx);
 void cli_process_due_tasks(struct cli_context *ctx);
 int cli_scheduled_task_runner(const struct scheduled_task *task,
 			      struct scheduled_task_action_result *result,
