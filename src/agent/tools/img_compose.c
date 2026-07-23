@@ -225,13 +225,12 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 	if (cJSON_IsString(sz))
 		size = sz->valuestring;
 
-	if (image_gen_validate_size(size) < 0) {
+	if (image_gen_validate_size_for_model(ctx->image_llm, size) < 0) {
 		if (owned)
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
-			"pixels between 2560x1440 and 4096x4096, or 2k, 4k\"}"));
+			"{\"error\":\"invalid size for the configured image model\"}"));
 		return -EINVAL;
 	}
 
@@ -458,22 +457,9 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 	if (user_prompt && user_prompt[0])
 		morph_buf_printf(&pb, " Additional direction: %s", user_prompt);
 
-	char auto_size[64];
-	const char *size_to_send = size;
-	if ((!size || !*size) && cw > 0 && ch > 0) {
-		int out_w = 0;
-		int out_h = 0;
-		if (image_gen_normalize_reference_size(cw, ch,
-						       &out_w, &out_h) == 0 &&
-		    image_gen_format_size(auto_size, sizeof(auto_size),
-					  out_w, out_h) == 0) {
-			size_to_send = auto_size;
-		}
-	}
-
 	struct image_result r = {0};
 	int rc = image_gen_create(ctx->image_llm, morph_buf_cstr(&pb), style,
-				  size_to_send, draft_path, odir_in, &r);
+				  size, draft_path, odir_in, &r);
 	morph_buf_cleanup(&lb);
 	morph_buf_cleanup(&pb);
 
@@ -534,9 +520,8 @@ int img_compose_init(struct tool_registry *reg, struct model *image_llm,
 		"creative direction for the blend\"},"
 		"\"style\":{\"type\":\"string\",\"description\":\"Optional style\"},"
 		"\"size\":{\"type\":\"string\",\"description\":\"Optional output "
-		"size: WIDTHxHEIGHT with total pixels between 2560x1440 and "
-		"4096x4096 inclusive, or 2k, 4k. If omitted, the target "
-		"image aspect ratio is preserved and scaled into range.\"}},"
+		"size: auto, 2k, 4k, or WIDTHxHEIGHT supported by the "
+		"configured image model. If omitted, the adapter selects it.\"}},"
 		"\"required\":[\"annotation\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_compose_exec, .user_data = ctx, .user_data_destroy = img_compose_context_destroy });
 	if (rc != 0)
 		free(ctx);

@@ -53,19 +53,19 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		return -EINVAL;
 	}
 
-	if (image_gen_validate_size(size) < 0) {
+	if ((ctx && ctx->image_llm
+	     ? image_gen_validate_size_for_model(ctx->image_llm, size)
+	     : image_gen_validate_size(size)) < 0) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"invalid size: use WIDTHxHEIGHT with total "
-			"pixels between 2560x1440 and 4096x4096, or 2k, 4k\"}"));
+			"{\"error\":\"invalid size for the configured image model; "
+			"use auto, 2k, 4k, or a supported WIDTHxHEIGHT\"}"));
 		return -EINVAL;
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	char resolved_ref[PATH_MAX];
 	const char *ref_to_send = ref_img;
-	char auto_size[64];
-	const char *size_to_send = size;
 	if (ref_img && *ref_img && tctx) {
 		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
 						     ref_img, resolved_ref,
@@ -82,28 +82,23 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		}
 		ref_to_send = resolved_ref;
 	}
-	if ((!size || !*size) && ref_to_send && *ref_to_send) {
-		int src_w = 0;
-		int src_h = 0;
-		int out_w = 0;
-		int out_h = 0;
-		if (image_probe_size(ref_to_send, &src_w, &src_h) == 0 &&
-		    image_gen_normalize_reference_size(src_w, src_h,
-						       &out_w, &out_h) == 0 &&
-		    image_gen_format_size(auto_size, sizeof(auto_size),
-					  out_w, out_h) == 0) {
-			size_to_send = auto_size;
-		}
-	}
 
 	struct image_result img_res = {0};
 	int rc = image_gen_create(ctx ? ctx->image_llm : NULL,
-				  prompt, style, size_to_send, ref_to_send,
+				  prompt, style, size, ref_to_send,
 				  output_dir, &img_res);
 	cJSON_Delete(root);
 
 	if (rc < 0) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"image generation failed\"}"));
+		if (ctx && ctx->image_llm &&
+		    ctx->image_llm->last_error[0])
+			(void)tool_result_successf(
+				result, "image generation failed: %s",
+				ctx->image_llm->last_error);
+		else
+			(void)tool_result_success_json_text(
+				result,
+				strdup("{\"error\":\"image generation failed\"}"));
 		return rc;
 	}
 
@@ -124,16 +119,45 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 		 struct tool_context *tctx)
 {
-	if (!reg)
-		return -EINVAL;
+	struct tool_spec spec = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "img_gen",
+		.description =
+			"Generate an image from a text prompt, with optional "
+			"reference_image for editing. The configured image adapter "
+			"handles provider-specific generation, editing, output, and "
+			"size rules. Provide prompt, optional style, and optional "
+			"size as auto, 2k, 4k, or WIDTHxHEIGHT.",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"prompt\":{\"type\":\"string\",\"description\":"
+			"\"Text description of the image to generate\"},"
+			"\"style\":{\"type\":\"string\",\"description\":"
+			"\"Image style (e.g. realistic, anime, oil_painting)\"},"
+			"\"size\":{\"type\":\"string\",\"description\":"
+			"\"Image size supported by the configured model: auto, "
+			"2k, 4k, or WIDTHxHEIGHT\"},"
+			"\"reference_image\":{\"type\":\"string\","
+			"\"description\":\"File path to a reference image for "
+			"editing\"}},\"required\":[\"prompt\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = img_gen_exec,
+		.user_data_destroy = img_gen_context_destroy,
+	};
+	struct img_gen_context *ctx;
+	int rc;
 
-	struct img_gen_context *ctx = malloc(sizeof(*ctx));
+	if (!reg)
+		MORPH_RETURN(-EINVAL);
+
+	ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		return -ENOMEM;
+		MORPH_RETURN(-ENOMEM);
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
+	spec.user_data = ctx;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_gen", .description = "Generate an image from a text prompt, with optional reference_image for img2img. Provide prompt, optional style, optional size. size must be WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k/4k. When reference_image is used and the user did not request a different size, inspect the image and pass its WIDTHxHEIGHT; if it is outside the supported pixel range, preserve aspect ratio and scale it into range.", .input_schema = "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the image to generate\"},\"style\":{\"type\":\"string\",\"description\":\"Image style (e.g. realistic, anime, oil_painting)\"},\"size\":{\"type\":\"string\",\"description\":\"Image size: WIDTHxHEIGHT with total pixels between 2560x1440 and 4096x4096 inclusive, or 2k, 4k. With reference_image, default to the reference image aspect ratio scaled into this range unless the user explicitly requested a size.\"},\"reference_image\":{\"type\":\"string\",\"description\":\"File path to a reference image for img2img\"}},\"required\":[\"prompt\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_gen_exec, .user_data = ctx, .user_data_destroy = img_gen_context_destroy });
+	rc = tool_register(reg, &spec);
 	if (rc != 0)
 		free(ctx);
 	return rc;

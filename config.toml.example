@@ -63,9 +63,12 @@ retry_count      = 3
 # Image generation model
 # ──────────────────────────────────────────────
 [model.image]
-# ── OpenAI DALL-E ─────────────────────────────
+# Optional wire-protocol adapter. When omitted, inferred from provider.
+# Supported: openai-images, volcengine-images
+# adapter     = "openai-images"
+# ── OpenAI Images (GPT Image 2 or DALL-E) ─────
 # provider    = "openai"
-# model       = "dall-e-3"
+# model       = "gpt-image-2"
 # api_base    = "https://api.openai.com/v1"
 # api_key_env = "OPENAI_API_KEY"
 

@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "models/image_gen.h"
+#include "models/image_provider.h"
+#include "models/llm.h"
 #include "agent/tools/img_gen.h"
 #include "agent/tools/img_qa.h"
 #include "agent/tools/img_inpaint.h"
@@ -15,6 +17,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "util/image_util.h"
+#include "util/base64.h"
 #include "stb_image_write.h"
 #include <string.h>
 #include <stdlib.h>
@@ -142,6 +145,102 @@ TEST(ImageGen, ValidateSizeRejectsMalformedValues) {
 	EXPECT_NE(image_gen_validate_size("-1x4096"), 0);
 	EXPECT_NE(image_gen_validate_size("5k"), 0);
 	EXPECT_NE(image_gen_validate_size("3k"), 0);
+}
+
+TEST(ImageGen, InfersAndOverridesImageAdapters) {
+	struct model image_model = {};
+
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	EXPECT_STREQ(image_gen_adapter_name(&image_model), "openai-images");
+	EXPECT_TRUE(image_gen_adapter_supported("openai", ""));
+	EXPECT_TRUE(image_gen_adapter_supported("custom", "openai-images"));
+
+	snprintf(image_model.adapter, sizeof(image_model.adapter),
+		 "volcengine-images");
+	EXPECT_STREQ(image_gen_adapter_name(&image_model),
+		     "volcengine-images");
+	EXPECT_FALSE(image_gen_adapter_supported("custom", ""));
+	EXPECT_FALSE(image_gen_adapter_supported("openai", "unknown-images"));
+}
+
+TEST(ImageGen, ValidatesGptImageSizes) {
+	struct model image_model = {};
+
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	snprintf(image_model.model_id, sizeof(image_model.model_id),
+		 "gpt-image-2");
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model, NULL), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model, "auto"), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model, "2k"), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model, "4k"), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model,
+						    "1024x1024"), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model,
+						    "3840x2160"), 0);
+	EXPECT_NE(image_gen_validate_size_for_model(&image_model,
+						    "4096x4096"), 0);
+	EXPECT_NE(image_gen_validate_size_for_model(&image_model,
+						    "1025x1024"), 0);
+	EXPECT_NE(image_gen_validate_size_for_model(&image_model,
+						    "3840x1024"), 0);
+}
+
+TEST(ImageGen, KeepsDalleSizeProfile) {
+	struct model image_model = {};
+
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	snprintf(image_model.model_id, sizeof(image_model.model_id), "dall-e-3");
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model,
+						    "1024x1024"), 0);
+	EXPECT_EQ(image_gen_validate_size_for_model(&image_model,
+						    "1792x1024"), 0);
+	EXPECT_NE(image_gen_validate_size_for_model(&image_model,
+						    "2048x2048"), 0);
+}
+
+TEST(ImageGen, ParsesUrlAndBase64Responses) {
+	struct image_payload payload = {};
+	const char *url_json =
+		"{\"data\":[{\"url\":\"https://example.com/a.png\"}]}";
+	const char *b64_json =
+		"{\"data\":[{\"b64_json\":\"aGVsbG8=\"}],"
+		"\"output_format\":\"webp\","
+		"\"usage\":{\"input_tokens\":2,\"output_tokens\":3,"
+		"\"total_tokens\":5}}";
+
+	ASSERT_EQ(image_provider_parse_response(NULL, url_json, &payload), 0);
+	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_URL);
+	EXPECT_STREQ(payload.data, "https://example.com/a.png");
+	image_payload_cleanup(&payload);
+
+	ASSERT_EQ(image_provider_parse_response(NULL, b64_json, &payload), 0);
+	EXPECT_EQ(payload.kind, IMAGE_PAYLOAD_BASE64);
+	EXPECT_STREQ(payload.data, "aGVsbG8=");
+	EXPECT_STREQ(payload.output_format, "webp");
+	EXPECT_TRUE(payload.has_usage);
+	EXPECT_EQ(payload.usage.total_tokens, 5);
+	image_payload_cleanup(&payload);
+}
+
+TEST(ImageGen, RejectsMalformedImageResponses) {
+	struct image_payload payload = {};
+
+	EXPECT_NE(image_provider_parse_response(NULL, "{}", &payload), 0);
+	EXPECT_NE(image_provider_parse_response(
+			  NULL, "{\"data\":[{}]}", &payload), 0);
+	EXPECT_NE(image_provider_parse_response(NULL, "not json", &payload), 0);
+}
+
+TEST(ImageGen, DecodesBase64Payloads) {
+	size_t decoded_len = 0;
+	unsigned char *decoded = base64_decode("aGVsbG8=", &decoded_len);
+
+	ASSERT_NE(decoded, nullptr);
+	ASSERT_EQ(decoded_len, 5);
+	EXPECT_EQ(memcmp(decoded, "hello", decoded_len), 0);
+	free(decoded);
+	EXPECT_EQ(base64_decode("bad", &decoded_len), nullptr);
+	EXPECT_EQ(decoded_len, 0);
 }
 
 TEST(ImageGen, NormalizeReferenceSizeKeepsInRangeDimensions) {

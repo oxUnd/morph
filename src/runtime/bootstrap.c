@@ -53,6 +53,9 @@ static void runtime_configure_model(struct model *model,
 {
 	if (!model || !cfg)
 		return;
+	if (cfg->adapter[0])
+		strncpy(model->adapter, cfg->adapter,
+			sizeof(model->adapter) - 1);
 	model->timeout_seconds = cfg->timeout_seconds;
 	model->retry_count = cfg->retry_count;
 	if (cfg->max_tokens > 0)
@@ -232,6 +235,15 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		return -EINVAL;
 	config = profile->config;
 	models = profile->models;
+	if (config->models.image.model[0] &&
+	    !image_gen_adapter_supported(config->models.image.provider,
+					 config->models.image.adapter)) {
+		log_err("unsupported image adapter '%s' for provider '%s'",
+			config->models.image.adapter[0]
+				? config->models.image.adapter : "(auto)",
+			config->models.image.provider);
+		MORPH_RETURN(-EINVAL);
+	}
 	memset(models, 0, sizeof(*models));
 	tool_registry_init(profile->tools);
 	models->tokenizer = tokenizer_create(config->models.text.model,

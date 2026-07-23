@@ -82,6 +82,7 @@ struct model_image_chat_options {
 struct model {
 	char name[64];
 	char provider[32];
+	char adapter[64];
 	char api_base[256];
 	char api_key[256];
 	char model_id[128];

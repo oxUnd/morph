@@ -777,6 +777,7 @@ timeout_seconds = 300
 
 [model.image]
 provider = "volcengine"
+adapter = "volcengine-images" # 可选；省略时根据 provider 推断
 model = "doubao-seedream-5-0-260128"
 api_base = "https://ark.cn-beijing.volces.com/api/v3"
 api_key_env = "VOLCENGINE_API_KEY"

@@ -479,6 +479,7 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	if (!t)
 		return;
 	CFG_STR(t, "provider", e->provider);
+	CFG_STR(t, "adapter", e->adapter);
 	CFG_STR(t, "model", e->model);
 	CFG_STR(t, "api_base", e->api_base);
 	CFG_STR(t, "api_key_env", e->api_key_env);

@@ -32,6 +32,18 @@ struct http_request {
 	int timeout_seconds;
 };
 
+enum http_multipart_kind {
+	HTTP_MULTIPART_TEXT,
+	HTTP_MULTIPART_FILE,
+};
+
+struct http_multipart_part {
+	enum http_multipart_kind kind;
+	const char *name;
+	const char *value;
+	const char *content_type;
+};
+
 struct http_session {
 	CURL *curl;
 	morph_buf_t resp_body;
@@ -55,6 +67,15 @@ int http_post(const char *url, const char *body, size_t body_len,
 int http_post_ex(const char *url, const char *body, size_t body_len,
 		 const char *content_type, const char **extra_headers,
 		 int extra_header_count, struct http_response *resp);
+int http_post_ex_timeout(const char *url, const char *body, size_t body_len,
+			 const char *content_type,
+			 const char **extra_headers, int extra_header_count,
+			 long timeout_seconds, struct http_response *resp);
+int http_post_multipart_ex(const char *url,
+			   const struct http_multipart_part *parts,
+			   int part_count, const char **extra_headers,
+			   int extra_header_count, long timeout_seconds,
+			   struct http_response *resp);
 int http_post_sse(const char *url, const char *body, size_t body_len,
 		  const char *content_type, http_callback cb, void *user_data);
 int http_post_sse_ex(const char *url, const char *body, size_t body_len,

@@ -9,6 +9,7 @@ extern "C" {
 
 char *base64_encode(const unsigned char *data, size_t data_len);
 char *base64_encode_file(const char *path);
+unsigned char *base64_decode(const char *text, size_t *out_len);
 
 #ifdef __cplusplus
 }

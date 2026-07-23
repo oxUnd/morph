@@ -85,6 +85,11 @@ api_key_env = "OPENAI_API_KEY"
 max_tokens = 2048
 retry_count = 99
 
+[model.image]
+provider = "openai"
+adapter = "openai-images"
+model = "gpt-image-2"
+
 [react]
 max_iterations = 5
 tool_timeout_seconds = 45
@@ -117,6 +122,9 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.models.vision.model, "gpt-4o");
 	EXPECT_EQ(cfg.models.vision.max_tokens, 2048);
 	EXPECT_EQ(cfg.models.vision.retry_count, 10);
+	EXPECT_STREQ(cfg.models.image.provider, "openai");
+	EXPECT_STREQ(cfg.models.image.adapter, "openai-images");
+	EXPECT_STREQ(cfg.models.image.model, "gpt-image-2");
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);

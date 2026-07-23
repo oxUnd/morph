@@ -1,6 +1,8 @@
 add_library(morph-models STATIC
 	llm/llm.c
 	image_gen.c
+	image_openai.c
+	image_volcengine.c
 	video_gen.c
 )
 

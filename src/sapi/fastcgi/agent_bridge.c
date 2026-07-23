@@ -231,6 +231,10 @@ static void bridge_init_once(void)
 				? g_config.models.image.api_base : NULL,
 			img_key ? img_key : "");
 		if (img_m) {
+			if (g_config.models.image.adapter[0])
+				strncpy(img_m->adapter,
+					g_config.models.image.adapter,
+					sizeof(img_m->adapter) - 1);
 			img_gen_init(&g_tools, img_m, g_tctx);
 			img_inpaint_init(&g_tools, img_m, g_tctx);
 			img_compose_init(&g_tools, img_m, g_tctx);

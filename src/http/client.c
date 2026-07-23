@@ -330,7 +330,7 @@ out:
 int http_get(const char *url, struct http_response *resp)
 {
 	if (!url || !resp)
-		return -EINVAL;
+		MORPH_RETURN(-EINVAL);
 	memset(resp, 0, sizeof(*resp));
 	return do_request(url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
 }
@@ -364,6 +364,123 @@ int http_post_ex(const char *url, const char *body, size_t body_len,
 	memset(resp, 0, sizeof(*resp));
 	return do_request(url, "POST", body, body_len, content_type,
 			  extra_headers, extra_header_count, resp, 60L);
+}
+
+int http_post_ex_timeout(const char *url, const char *body, size_t body_len,
+			 const char *content_type,
+			 const char **extra_headers, int extra_header_count,
+			 long timeout_seconds, struct http_response *resp)
+{
+	if (!url || !resp)
+		MORPH_RETURN(-EINVAL);
+	memset(resp, 0, sizeof(*resp));
+	return do_request(url, "POST", body, body_len, content_type,
+			  extra_headers, extra_header_count, resp,
+			  timeout_seconds > 0 ? timeout_seconds : 60L);
+}
+
+int http_post_multipart_ex(const char *url,
+			   const struct http_multipart_part *parts,
+			   int part_count, const char **extra_headers,
+			   int extra_header_count, long timeout_seconds,
+			   struct http_response *resp)
+{
+	struct curl_slist *headers = NULL;
+	curl_mime *mime = NULL;
+	CURL *curl = NULL;
+	CURLcode curl_rc;
+	char errbuf[CURL_ERROR_SIZE];
+	long status = 0;
+	int rc = 0;
+
+	if (!url || !parts || part_count <= 0 || !resp)
+		MORPH_RETURN(-EINVAL);
+	memset(resp, 0, sizeof(*resp));
+	if (!http_initialized) {
+		rc = http_init();
+		if (rc != 0)
+			return rc;
+	}
+	curl = curl_easy_init();
+	if (!curl)
+		MORPH_RETURN(-ENOMEM);
+	mime = curl_mime_init(curl);
+	if (!mime) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	for (int i = 0; i < part_count; i++) {
+		curl_mimepart *part;
+
+		if (!parts[i].name || !parts[i].value) {
+			rc = -EINVAL;
+			goto out;
+		}
+		part = curl_mime_addpart(mime);
+		if (!part) {
+			rc = -ENOMEM;
+			goto out;
+		}
+		if (curl_mime_name(part, parts[i].name) != CURLE_OK) {
+			rc = -ENOMEM;
+			goto out;
+		}
+		if (parts[i].kind == HTTP_MULTIPART_FILE) {
+			if (curl_mime_filedata(part, parts[i].value) != CURLE_OK) {
+				rc = -EINVAL;
+				goto out;
+			}
+		} else if (curl_mime_data(part, parts[i].value,
+					 CURL_ZERO_TERMINATED) != CURLE_OK) {
+			rc = -ENOMEM;
+			goto out;
+		}
+		if (parts[i].content_type &&
+		    curl_mime_type(part, parts[i].content_type) != CURLE_OK) {
+			rc = -EINVAL;
+			goto out;
+		}
+	}
+	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
+	if (rc != 0)
+		goto out;
+	curl_easy_setopt(curl, CURLOPT_PROXY, "");
+	curl_easy_setopt(curl, CURLOPT_URL, url);
+	curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+	if (headers)
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
+	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT,
+			 timeout_seconds > 0 ? timeout_seconds : 60L);
+	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
+			 HTTP_CONNECT_TIMEOUT_SECONDS);
+	curl_apply_common_opts(curl, errbuf);
+	sse_apply_cancel_opts(curl);
+
+	curl_rc = curl_easy_perform(curl);
+	if (curl_rc != CURLE_OK) {
+		if (http_cancelled())
+			rc = -ECANCELED;
+		else {
+			curl_log_error("http multipart request", curl_rc, errbuf);
+			rc = MORPH_ERR_NETWORK;
+		}
+		goto out;
+	}
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+	resp->status_code = (int)status;
+
+out:
+	if (headers)
+		curl_slist_free_all(headers);
+	if (mime)
+		curl_mime_free(mime);
+	if (curl)
+		curl_easy_cleanup(curl);
+	return rc;
 }
 
 struct sse_write_data {

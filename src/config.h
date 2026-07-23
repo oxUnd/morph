@@ -21,6 +21,7 @@ struct config_general {
 
 struct config_model_entry {
 	char provider[64];
+	char adapter[64];
 	char model[128];
 	char api_base[256];
 	char api_key_env[64];

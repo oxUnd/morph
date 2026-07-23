@@ -1,11 +1,13 @@
 #define _GNU_SOURCE
 #include "image_gen.h"
+#include "image_provider.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/base64.h"
 #include "util/image_util.h"
 #include "util/arena.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
@@ -131,35 +133,6 @@ int image_gen_validate_size(const char *size)
 	return 0;
 }
 
-static int image_gen_parse_size_dims(const char *size, int *width, int *height)
-{
-	char *end = NULL;
-	long w;
-	long h;
-
-	if (!size || !*size || !width || !height)
-		MORPH_RETURN(-EINVAL);
-
-	errno = 0;
-	w = strtol(size, &end, 10);
-	if (errno != 0 || end == size || !end || *end != 'x')
-		MORPH_RETURN(-EINVAL);
-	if (w <= 0 || w > INT_MAX)
-		MORPH_RETURN(-EINVAL);
-
-	size = end + 1;
-	errno = 0;
-	h = strtol(size, &end, 10);
-	if (errno != 0 || end == size || !end || *end != '\0')
-		MORPH_RETURN(-EINVAL);
-	if (h <= 0 || h > INT_MAX)
-		MORPH_RETURN(-EINVAL);
-
-	*width = (int)w;
-	*height = (int)h;
-	return 0;
-}
-
 static int64_t image_units_from_dims(int width, int height)
 {
 	int64_t pixels;
@@ -170,24 +143,230 @@ static int64_t image_units_from_dims(int width, int height)
 	return (pixels + 999999) / 1000000;
 }
 
-static void image_report_usage(struct model *self, const char *model_id,
-			       cJSON *root, const struct image_result *result)
+static void image_report_usage(struct model *self,
+			       const struct image_payload *payload,
+			       const struct image_result *result)
 {
 	struct model_usage usage;
-	cJSON *created;
 
-	memset(&usage, 0, sizeof(usage));
+	if (payload && payload->has_usage)
+		usage = payload->usage;
+	else
+		memset(&usage, 0, sizeof(usage));
 	snprintf(usage.provider, sizeof(usage.provider), "%s",
 		 self ? self->provider : "openai");
-	snprintf(usage.model, sizeof(usage.model), "%s", model_id);
+	snprintf(usage.model, sizeof(usage.model), "%s",
+		 self ? self->model_id : "");
 	snprintf(usage.kind, sizeof(usage.kind), "model_image");
-	snprintf(usage.usage_source, sizeof(usage.usage_source), "estimated");
+	if (!usage.usage_source[0])
+		snprintf(usage.usage_source, sizeof(usage.usage_source),
+			 "estimated");
 	usage.image_units = result ?
 		image_units_from_dims(result->width, result->height) : 1;
-	created = cJSON_GetObjectItem(root, "created");
-	if (cJSON_IsNumber(created))
-		usage.created = (int64_t)created->valuedouble;
 	model_report_usage(&usage);
+}
+
+static const struct image_provider_ops *image_provider_resolve(
+	const struct model *model)
+{
+	const char *name;
+
+	if (!model)
+		return NULL;
+	name = model->adapter[0] ? model->adapter : model->provider;
+	if (strcmp(name, "openai-images") == 0 ||
+	    (!model->adapter[0] && strcmp(name, "openai") == 0))
+		return image_openai_provider();
+	if (strcmp(name, "volcengine-images") == 0 ||
+	    (!model->adapter[0] && strcmp(name, "volcengine") == 0))
+		return image_volcengine_provider();
+	return NULL;
+}
+
+int image_gen_adapter_supported(const char *provider, const char *adapter)
+{
+	const char *name;
+
+	if (!provider)
+		return 0;
+	name = adapter && adapter[0] ? adapter : provider;
+	if (strcmp(name, "openai-images") == 0 ||
+	    strcmp(name, "volcengine-images") == 0)
+		return 1;
+	if ((!adapter || !adapter[0]) &&
+	    (strcmp(name, "openai") == 0 ||
+	     strcmp(name, "volcengine") == 0))
+		return 1;
+	return 0;
+}
+
+const char *image_gen_adapter_name(const struct model *model)
+{
+	const struct image_provider_ops *ops = image_provider_resolve(model);
+
+	return ops ? ops->name : NULL;
+}
+
+int image_gen_validate_size_for_model(const struct model *model,
+				      const char *size)
+{
+	const struct image_provider_ops *ops = image_provider_resolve(model);
+	char normalized[64];
+
+	if (!ops)
+		MORPH_RETURN(-ENOTSUP);
+	return ops->normalize_size(model, size, normalized,
+				   sizeof(normalized));
+}
+
+void image_payload_cleanup(struct image_payload *payload)
+{
+	if (!payload)
+		return;
+	free(payload->data);
+	memset(payload, 0, sizeof(*payload));
+}
+
+int image_provider_parse_response(struct model *model,
+				  const char *response_json,
+				  struct image_payload *payload)
+{
+	cJSON *root = NULL;
+	cJSON *data;
+	cJSON *first;
+	cJSON *value;
+	cJSON *usage;
+
+	if (!response_json || !payload)
+		MORPH_RETURN(-EINVAL);
+	memset(payload, 0, sizeof(*payload));
+	root = cJSON_Parse(response_json);
+	if (!root)
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	data = cJSON_GetObjectItem(root, "data");
+	if (!cJSON_IsArray(data) || cJSON_GetArraySize(data) == 0) {
+		cJSON_Delete(root);
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	}
+	first = cJSON_GetArrayItem(data, 0);
+	value = cJSON_GetObjectItem(first, "b64_json");
+	if (cJSON_IsString(value) && value->valuestring) {
+		payload->kind = IMAGE_PAYLOAD_BASE64;
+		payload->data = strdup(value->valuestring);
+		if (!payload->data) {
+			cJSON_Delete(root);
+			MORPH_RETURN(-ENOMEM);
+		}
+	} else {
+		value = cJSON_GetObjectItem(first, "url");
+		if (cJSON_IsString(value) && value->valuestring) {
+			payload->kind = IMAGE_PAYLOAD_URL;
+			payload->data = strdup(value->valuestring);
+			if (!payload->data) {
+				cJSON_Delete(root);
+				MORPH_RETURN(-ENOMEM);
+			}
+		}
+	}
+	if (!payload->data) {
+		cJSON_Delete(root);
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	}
+	value = cJSON_GetObjectItem(root, "output_format");
+	snprintf(payload->output_format, sizeof(payload->output_format), "%s",
+		 cJSON_IsString(value) && value->valuestring
+			 ? value->valuestring : "png");
+	value = cJSON_GetObjectItem(root, "created");
+	if (cJSON_IsNumber(value))
+		payload->usage.created = (int64_t)value->valuedouble;
+	usage = cJSON_GetObjectItem(root, "usage");
+	if (cJSON_IsObject(usage)) {
+		value = cJSON_GetObjectItem(usage, "input_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.input_tokens =
+				(int64_t)value->valuedouble;
+		value = cJSON_GetObjectItem(usage, "output_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.output_tokens =
+				(int64_t)value->valuedouble;
+		value = cJSON_GetObjectItem(usage, "total_tokens");
+		if (cJSON_IsNumber(value))
+			payload->usage.total_tokens =
+				(int64_t)value->valuedouble;
+		snprintf(payload->usage.usage_source,
+			 sizeof(payload->usage.usage_source), "api");
+		payload->has_usage = 1;
+	}
+	cJSON_Delete(root);
+	(void)model;
+	return 0;
+}
+
+static int image_materialize(const struct image_payload *payload,
+			     const char *output_dir,
+			     struct image_result *result)
+{
+	unsigned char *decoded = NULL;
+	char *out_dir = NULL;
+	char out_path[PATH_MAX];
+	const char *ext;
+	size_t decoded_len = 0;
+	int rc;
+
+	if (!payload || !payload->data || !result)
+		MORPH_RETURN(-EINVAL);
+	out_dir = file_expand_path(output_dir && output_dir[0]
+				   ? output_dir : "~/.morph/output");
+	if (!out_dir)
+		MORPH_RETURN(-ENOMEM);
+	rc = file_ensure_dir(out_dir);
+	if (rc != 0)
+		goto out;
+	if (payload->kind == IMAGE_PAYLOAD_URL) {
+		snprintf(result->url, sizeof(result->url), "%s",
+			 payload->data);
+		rc = download_url(payload->data, out_dir, out_path,
+				  sizeof(out_path));
+		if (rc != 0)
+			goto out;
+	} else {
+		decoded = base64_decode(payload->data, &decoded_len);
+		if (!decoded || decoded_len == 0) {
+			rc = MORPH_ERR_PARSE;
+			goto out;
+		}
+		if (strcmp(payload->output_format, "jpeg") == 0 ||
+		    strcmp(payload->output_format, "jpg") == 0) {
+			ext = "jpg";
+		} else if (strcmp(payload->output_format, "webp") == 0) {
+			ext = "webp";
+		} else if (strcmp(payload->output_format, "png") == 0) {
+			ext = "png";
+		} else {
+			ext = image_gen_ext_from_magic(decoded, decoded_len);
+		}
+		snprintf(out_path, sizeof(out_path), "%s/img_%lld.%s",
+			 out_dir, (long long)time(NULL), ext);
+		rc = file_write_all(out_path, (const char *)decoded,
+				    decoded_len);
+		if (rc != 0)
+			goto out;
+	}
+	snprintf(result->path, sizeof(result->path), "%s", out_path);
+	{
+		int channels = 0;
+		unsigned char *image = stbi_load(
+			out_path, &result->width, &result->height,
+			&channels, 0);
+		if (image)
+			stbi_image_free(image);
+	}
+	rc = 0;
+
+out:
+	free(decoded);
+	free(out_dir);
+	return rc;
 }
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
@@ -195,160 +374,67 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		     const char *output_dir,
 		     struct image_result *result)
 {
+	const struct image_provider_ops *ops;
+	struct image_capabilities caps;
+	struct image_payload payload;
+	struct image_request request;
+	morph_buf_t prompt_buf;
+	const char *references[1];
+	char normalized_size[64];
+	int rc;
+
 	if (!prompt || !result)
-		return -EINVAL;
-	memset(result, 0, sizeof(*result));
-
-	if (image_gen_validate_size(size) < 0)
 		MORPH_RETURN(-EINVAL);
-
-	struct arena *arena = arena_create(8192);
-	if (!arena)
-		return -ENOMEM;
-
-	char auto_size[64];
-	int target_w = 0;
-	int target_h = 0;
-	if (size && *size && strchr(size, 'x')) {
-		(void)image_gen_parse_size_dims(size, &target_w, &target_h);
-	} else if (image_path && image_path[0]) {
-		int src_w = 0;
-		int src_h = 0;
-		if (image_probe_size(image_path, &src_w, &src_h) == 0 &&
-		    image_gen_normalize_reference_size(src_w, src_h,
-						       &target_w,
-						       &target_h) == 0 &&
-		    image_gen_format_size(auto_size, sizeof(auto_size),
-					  target_w, target_h) == 0) {
-			size = auto_size;
-		}
-	}
-
-	const char *api_base = self ? self->api_base : "https://api.openai.com/v1";
-	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
-	const char *model_id = (self && self->model_id[0]) ? self->model_id : "dall-e-3";
-	const char *img_size = size ? size : "2048x2048";
-
-	if (!api_key[0])
+	memset(result, 0, sizeof(*result));
+	memset(&payload, 0, sizeof(payload));
+	if (!self || !self->api_key[0])
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
-
-	char url[512];
-	snprintf(url, sizeof(url), "%s/images/generations", api_base);
-
-	char enhanced_prompt[4096];
-	const char *prefix = style_prefix(style);
-	snprintf(enhanced_prompt, sizeof(enhanced_prompt), "%s%s", prefix, prompt);
-
-	cJSON *body_json = cJSON_CreateObject();
-	cJSON_AddStringToObject(body_json, "model", model_id);
-	cJSON_AddStringToObject(body_json, "prompt", enhanced_prompt);
-	cJSON_AddNumberToObject(body_json, "n", 1);
-	cJSON_AddStringToObject(body_json, "size", img_size);
-	cJSON_AddStringToObject(body_json, "response_format", "url");
-
+	ops = image_provider_resolve(self);
+	if (!ops) {
+		snprintf(self->last_error, sizeof(self->last_error),
+			 "unsupported image adapter for provider '%s'",
+			 self->provider);
+		MORPH_RETURN(-ENOTSUP);
+	}
+	rc = ops->normalize_size(self, size, normalized_size,
+				 sizeof(normalized_size));
+	if (rc != 0)
+		return rc;
+	rc = ops->capabilities(self, &caps);
+	if (rc != 0)
+		return rc;
+	if (image_path && image_path[0] && !caps.supports_edit) {
+		snprintf(self->last_error, sizeof(self->last_error),
+			 "image adapter '%s' does not support reference edits "
+			 "for model '%s'", ops->name, self->model_id);
+		MORPH_RETURN(-ENOTSUP);
+	}
+	if (morph_buf_init(&prompt_buf, strlen(prompt) + 64) != 0)
+		MORPH_RETURN(-ENOMEM);
+	rc = morph_buf_puts(&prompt_buf, style_prefix(style));
+	if (rc == 0)
+		rc = morph_buf_puts(&prompt_buf, prompt);
+	if (rc != 0) {
+		morph_buf_cleanup(&prompt_buf);
+		return rc;
+	}
+	memset(&request, 0, sizeof(request));
+	request.prompt = morph_buf_cstr(&prompt_buf);
+	request.size = normalized_size;
 	if (image_path && image_path[0]) {
-		char *b64 = image_encode_base64(image_path, 2048);
-		if (b64) {
-			size_t uri_len = 22 + strlen(b64) + 1;
-			char *data_uri = arena_alloc(arena, uri_len);
-			if (data_uri) {
-				snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
-				cJSON_AddStringToObject(body_json, "image", data_uri);
-			}
-			free(b64);
-		}
+		references[0] = image_path;
+		request.reference_images = references;
+		request.reference_image_count = 1;
 	}
-
-	size_t body_cap = 8192;
-	char *body_str = arena_alloc(arena, body_cap);
-	while (body_str && !cJSON_PrintPreallocated(body_json, body_str, (int)body_cap, 0)) {
-		body_cap *= 2;
-		body_str = arena_alloc(arena, body_cap);
-	}
-	cJSON_Delete(body_json);
-
-	if (!body_str) {
-		arena_destroy(arena);
-		return -ENOMEM;
-	}
-
-	char auth_header[512];
-	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", api_key);
-	const char *hdrs[] = { auth_header };
-
-	struct http_response resp = {0};
-	int rc = http_post_ex(url, body_str, strlen(body_str),
-			      "application/json", hdrs, 1, &resp);
-	arena_destroy(arena);
-
-	if (rc < 0) {
-		log_err("image_gen: HTTP request failed");
+	rc = ops->execute(self, &request, &payload);
+	morph_buf_cleanup(&prompt_buf);
+	if (rc != 0) {
+		image_payload_cleanup(&payload);
 		return rc;
 	}
-
-	if (resp.status_code != 200) {
-		log_err("image_gen: API returned HTTP %d: %s",
-			resp.status_code, resp.body.data ? resp.body.data : "");
-		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
-	}
-
-	cJSON *root = cJSON_Parse(resp.body.data);
-	http_response_free(&resp);
-	if (!root) {
-		log_err("image_gen: failed to parse response");
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	}
-
-	cJSON *data_arr = cJSON_GetObjectItem(root, "data");
-	if (!cJSON_IsArray(data_arr) || cJSON_GetArraySize(data_arr) == 0) {
-		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
-	}
-
-	cJSON *first = cJSON_GetArrayItem(data_arr, 0);
-	cJSON *img_url = cJSON_GetObjectItem(first, "url");
-	if (!cJSON_IsString(img_url) || !img_url->valuestring) {
-		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
-	}
-
-	strncpy(result->url, img_url->valuestring, sizeof(result->url) - 1);
-
-	char *out_dir;
-	if (output_dir && output_dir[0])
-		out_dir = file_expand_path(output_dir);
-	else
-		out_dir = file_expand_path("~/.morph/output");
-	file_ensure_dir(out_dir);
-	char out_path[PATH_MAX];
-	rc = download_url(result->url, out_dir, out_path, sizeof(out_path));
-	free(out_dir);
-	if (rc < 0) {
-		cJSON_Delete(root);
-		return rc;
-	}
-	strncpy(result->path, out_path, sizeof(result->path) - 1);
-
-	int w = 0, h = 0, ch = 0;
-	unsigned char *img = stbi_load(out_path, &w, &h, &ch, 0);
-	if (img) {
-		result->width = w;
-		result->height = h;
-		stbi_image_free(img);
-	}
-	if (target_w > 0 && target_h > 0 &&
-	    (result->width != target_w || result->height != target_h)) {
-		rc = image_resize_file_exact(out_path, target_w, target_h);
-		if (rc < 0) {
-			cJSON_Delete(root);
-			return rc;
-		}
-		result->width = target_w;
-		result->height = target_h;
-	}
-	log_dbg("image generated: %s (%dx%d)", out_path, result->width, result->height);
-	image_report_usage(self, model_id, root, result);
-	cJSON_Delete(root);
-	return 0;
+	rc = image_materialize(&payload, output_dir, result);
+	if (rc == 0)
+		image_report_usage(self, &payload, result);
+	image_payload_cleanup(&payload);
+	return rc;
 }

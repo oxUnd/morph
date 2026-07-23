@@ -119,6 +119,21 @@ Volcengine Ark example:
 	api_base = "https://ark.cn-beijing.volces.com/api/v3"
 	api_key_env = "VOLCENGINE_API_KEY"
 
+OpenAI image example:
+
+	[model.image]
+	provider = "openai"
+	model = "gpt-image-2"
+	api_base = "https://api.openai.com/v1"
+	api_key_env = "OPENAI_API_KEY"
+
+Image models use a protocol adapter because generation, editing, output
+encoding, and size rules differ by provider. Morph infers openai-images from
+provider = "openai" and volcengine-images from provider = "volcengine". For a
+custom provider name, select one explicitly:
+
+	adapter = "openai-images"
+
 If image or video generation fails with "not configured", check the matching
 [model.image] or [model.video] section and its API key environment variable.
 

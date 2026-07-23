@@ -59,12 +59,10 @@ MORPH_PROMPT_TOOL_SURFACE \
 "- Runtime: credits for usage; memory only for explicit user requests to\n" \
 "  inspect stored memory, never to recover ordinary task context.\n" \
 "- Image: img_qa to understand images, answer visual questions, and OCR;\n" \
-"  img_gen to create or transform (pass a reference_image for img2img);\n" \
-"  img_info/img_resize/img_convert/img_annotate to inspect metadata,\n" \
-"  post-process, or collect manual annotations. Before img_gen with a\n" \
-"  reference_image, use img_info to get dimensions and pass size as\n" \
-"  WIDTHxHEIGHT unless the user requested a different size; if outside\n" \
-"  the supported range, preserve aspect ratio and scale into range.\n" \
+"  img_gen creates or edits using a reference_image; its configured\n" \
+"  adapter handles provider-specific formats and size rules.\n" \
+"  img_info/img_resize/img_convert/img_annotate inspect metadata,\n" \
+"  post-process, or collect manual annotations.\n" \
 "- Video: vid_gen to create motion; anchor the first frame with an image\n" \
 "  for continuity when it matters.\n" \
 "- Files: file_read, file_list, file_info to ground work in real data.\n" \
