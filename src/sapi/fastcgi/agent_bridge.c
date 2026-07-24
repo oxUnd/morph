@@ -235,6 +235,8 @@ static void bridge_init_once(void)
 				strncpy(img_m->adapter,
 					g_config.models.image.adapter,
 					sizeof(img_m->adapter) - 1);
+			img_m->timeout_seconds =
+				g_config.models.image.timeout_seconds;
 			img_gen_init(&g_tools, img_m, g_tctx);
 			img_inpaint_init(&g_tools, img_m, g_tctx);
 			img_compose_init(&g_tools, img_m, g_tctx);

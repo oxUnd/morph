@@ -302,6 +302,7 @@ void config_set_defaults(struct config *cfg)
 		sizeof(cfg->models.image.api_base) - 1);
 	strncpy(cfg->models.image.api_key_env, "OPENAI_API_KEY",
 		sizeof(cfg->models.image.api_key_env) - 1);
+	cfg->models.image.timeout_seconds = 290;
 
 	strncpy(cfg->models.video.provider, "volcengine",
 		sizeof(cfg->models.video.provider) - 1);

@@ -27,6 +27,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.models.vision.model, "");
 	EXPECT_EQ(cfg.models.vision.timeout_seconds, 300);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
+	EXPECT_EQ(cfg.models.image.timeout_seconds, 290);
 	EXPECT_EQ(cfg.models.text.retry_count, 3);
 	EXPECT_EQ(cfg.models.vision.retry_count, 3);
 	EXPECT_EQ(cfg.react.max_iterations, 10);

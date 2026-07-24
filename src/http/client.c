@@ -311,6 +311,9 @@ static int do_request(const char *url, const char *method, const char *body,
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled()) {
 			rc = -ECANCELED;
+		} else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
+			curl_log_error("http request", curl_rc, errbuf);
+			rc = -ETIMEDOUT;
 		} else {
 			curl_log_error("http request", curl_rc, errbuf);
 			rc = MORPH_ERR_NETWORK;
@@ -376,7 +379,7 @@ int http_post_ex_timeout(const char *url, const char *body, size_t body_len,
 	memset(resp, 0, sizeof(*resp));
 	return do_request(url, "POST", body, body_len, content_type,
 			  extra_headers, extra_header_count, resp,
-			  timeout_seconds > 0 ? timeout_seconds : 60L);
+			  timeout_seconds);
 }
 
 int http_post_multipart_ex(const char *url,
@@ -453,8 +456,7 @@ int http_post_multipart_ex(const char *url,
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT,
-			 timeout_seconds > 0 ? timeout_seconds : 60L);
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
 			 HTTP_CONNECT_TIMEOUT_SECONDS);
 	curl_apply_common_opts(curl, errbuf);
@@ -464,7 +466,10 @@ int http_post_multipart_ex(const char *url,
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled())
 			rc = -ECANCELED;
-		else {
+		else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
+			curl_log_error("http multipart request", curl_rc, errbuf);
+			rc = -ETIMEDOUT;
+		} else {
 			curl_log_error("http multipart request", curl_rc, errbuf);
 			rc = MORPH_ERR_NETWORK;
 		}

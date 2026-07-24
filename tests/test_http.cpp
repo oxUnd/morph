@@ -2,7 +2,10 @@
 #include "http/client.h"
 #include <cerrno>
 #include <chrono>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <thread>
+#include <unistd.h>
 
 class HttpTest : public ::testing::Test {
 protected:
@@ -38,6 +41,41 @@ TEST_F(HttpTest, GetNullUrl) {
 TEST_F(HttpTest, PostNullUrl) {
 	struct http_response resp;
 	EXPECT_NE(http_post(nullptr, "", 0, "", &resp), 0);
+}
+
+TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
+	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+	ASSERT_GE(server_fd, 0);
+	struct sockaddr_in addr = {};
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	addr.sin_port = 0;
+	ASSERT_EQ(bind(server_fd, reinterpret_cast<struct sockaddr *>(&addr),
+		       sizeof(addr)), 0);
+	socklen_t addr_len = sizeof(addr);
+	ASSERT_EQ(getsockname(server_fd,
+			      reinterpret_cast<struct sockaddr *>(&addr),
+			      &addr_len), 0);
+	ASSERT_EQ(listen(server_fd, 1), 0);
+
+	std::thread server([server_fd]() {
+		int client_fd = accept(server_fd, nullptr, nullptr);
+		if (client_fd >= 0) {
+			std::this_thread::sleep_for(std::chrono::seconds(2));
+			close(client_fd);
+		}
+		close(server_fd);
+	});
+	char url[128];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
+		 static_cast<unsigned>(ntohs(addr.sin_port)));
+	struct http_response resp = {};
+	int rc = http_post_ex_timeout(url, "{}", 2, "application/json",
+				      nullptr, 0, 1, &resp);
+
+	EXPECT_EQ(rc, -ETIMEDOUT);
+	http_response_free(&resp);
+	server.join();
 }
 
 TEST_F(HttpTest, DoubleInit) {
