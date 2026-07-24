@@ -288,7 +288,7 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_apply_common_opts(curl, errbuf);
 	sse_apply_cancel_opts(curl);
 
