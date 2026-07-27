@@ -111,6 +111,73 @@ async function run(args) {
 		large.toFile(fontPng);
 	});
 
+	await test("morph.canvas text alignment and baseline", async function () {
+		function renderText(align, baseline, stroke) {
+			const canvas = morph.canvas.create({ width: 180, height: 100 });
+			const ctx = canvas.getContext("2d");
+			ctx.font = "32px sans-serif";
+			ctx.fillStyle = "#111111";
+			ctx.strokeStyle = "#111111";
+			ctx.textAlign = align;
+			ctx.textBaseline = baseline;
+			if (stroke)
+				ctx.strokeText("Align", 90, 50);
+			else
+				ctx.fillText("Align", 90, 50);
+			return new Uint8Array(morph.canvas.toBuffer({ canvas }));
+		}
+
+		function buffersEqual(a, b) {
+			if (a.length !== b.length)
+				return false;
+			for (let i = 0; i < a.length; i++) {
+				if (a[i] !== b[i])
+					return false;
+			}
+			return true;
+		}
+
+		const defaults = morph.canvas.create({ width: 10, height: 10 })
+			.getContext("2d");
+		assert(defaults.textAlign === "start",
+			"default textAlign mismatch");
+		assert(defaults.textBaseline === "alphabetic",
+			"default textBaseline mismatch");
+
+		const left = renderText("left", "alphabetic", false);
+		const start = renderText("start", "alphabetic", false);
+		const center = renderText("center", "alphabetic", false);
+		const right = renderText("right", "alphabetic", false);
+		const end = renderText("end", "alphabetic", false);
+		assert(buffersEqual(left, start), "start should use LTR left");
+		assert(buffersEqual(right, end), "end should use LTR right");
+		assert(!buffersEqual(left, center) &&
+			!buffersEqual(center, right),
+			"textAlign did not affect fillText");
+
+		const top = renderText("center", "top", false);
+		const hanging = renderText("center", "hanging", false);
+		const middle = renderText("center", "middle", false);
+		const alphabetic = renderText("center", "alphabetic", false);
+		const ideographic = renderText("center", "ideographic", false);
+		const bottom = renderText("center", "bottom", false);
+		assert(!buffersEqual(top, hanging) &&
+			!buffersEqual(hanging, middle) &&
+			!buffersEqual(middle, alphabetic) &&
+			!buffersEqual(alphabetic, ideographic) &&
+			!buffersEqual(ideographic, bottom),
+			"textBaseline values did not affect fillText");
+
+		const strokeLeft = renderText("left", "top", true);
+		const strokeRight = renderText("right", "bottom", true);
+		assert(!buffersEqual(strokeLeft, strokeRight),
+			"text alignment did not affect strokeText");
+
+		const invalid = renderText("invalid", "invalid", false);
+		assert(buffersEqual(invalid, start),
+			"invalid text positioning should use defaults");
+	});
+
 	await test("morph.canvas.toBuffer/loadImage/drawImage", async function () {
 		const image = morph.canvas.loadImage({ input: canvasPng });
 		assert(image.width === 80 && image.height === 48,

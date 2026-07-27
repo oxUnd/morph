@@ -898,6 +898,72 @@ TEST_F(DynamicToolsTest, CanvasApiCreatesImage)
 	tool_result_cleanup(&result);
 }
 
+TEST_F(DynamicToolsTest, CanvasTextPositioningAffectsRendering)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source =
+		"function equal(a, b) {"
+		"  a = new Uint8Array(a); b = new Uint8Array(b);"
+		"  if (a.length !== b.length) return false;"
+		"  for (let i = 0; i < a.length; i++)"
+		"    if (a[i] !== b[i]) return false;"
+		"  return true;"
+		"}"
+		"let sequence = 0;"
+		"function render(dir, align, baseline, stroke) {"
+		"  const c = morph.canvas.create({ width: 180, height: 100 });"
+		"  const ctx = c.getContext('2d');"
+		"  ctx.font = '32px sans-serif';"
+		"  ctx.fillStyle = '#111111'; ctx.strokeStyle = '#111111';"
+		"  ctx.textAlign = align; ctx.textBaseline = baseline;"
+		"  if (stroke) ctx.strokeText('Align', 90, 50);"
+		"  else ctx.fillText('Align', 90, 50);"
+		"  const path = dir + '/canvas-text-' + sequence++ + '.png';"
+		"  c.toFile(path);"
+		"  return morph.fs.readFile(path);"
+		"}"
+		"async function run(args) {"
+		"  const defaults = morph.canvas.create({ width: 10, height: 10 })"
+		"    .getContext('2d');"
+		"  if (defaults.textAlign !== 'start' ||"
+		"      defaults.textBaseline !== 'alphabetic')"
+		"    throw new Error('canvas text defaults mismatch');"
+		"  const left = render(args.dir, 'left', 'alphabetic', false);"
+		"  const start = render(args.dir, 'start', 'alphabetic', false);"
+		"  const center = render(args.dir, 'center', 'alphabetic', false);"
+		"  const right = render(args.dir, 'right', 'alphabetic', false);"
+		"  const end = render(args.dir, 'end', 'alphabetic', false);"
+		"  if (!equal(left, start) || !equal(right, end) ||"
+		"      equal(left, center) || equal(center, right))"
+		"    throw new Error('textAlign did not affect fillText');"
+		"  const top = render(args.dir, 'center', 'top', false);"
+		"  const middle = render(args.dir, 'center', 'middle', false);"
+		"  const bottom = render(args.dir, 'center', 'bottom', false);"
+		"  if (equal(top, middle) || equal(middle, bottom))"
+		"    throw new Error('textBaseline did not affect fillText');"
+		"  if (equal(render(args.dir, 'left', 'top', true),"
+		"            render(args.dir, 'right', 'bottom', true)))"
+		"    throw new Error('text positioning did not affect strokeText');"
+		"  return { ok: true };"
+		"}";
+	struct tool_result result;
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("canvas_text_position", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	std::string call = "{\"dir\":\"" + json_escape(root) + "\"}";
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "canvas_text_position", call.c_str(), &result),
+		  0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"ok\":true"),
+		  std::string::npos);
+	tool_result_cleanup(&result);
+}
+
 TEST_F(DynamicToolsTest, ImageApiResizesImage)
 {
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);

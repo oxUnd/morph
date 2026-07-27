@@ -179,7 +179,9 @@ async function run(args) {
 	ctx.fillRect(0, 0, 256, 128);
 	ctx.fillStyle = "#111111";
 	ctx.font = "24px sans-serif";
-	ctx.fillText(args.text, 20, 70);
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(args.text, 128, 64);
 	morph.canvas.toFile({ canvas, output: args.output });
 	return { output: args.output };
 }
@@ -190,8 +192,12 @@ async function run(args) {
 和 `toBuffer()`。文字绘制使用 PangoCairo，`ctx.font` 默认是
 `"10px sans-serif"`，支持常见写法如 `"16px sans-serif"`、
 `"bold 24px Arial"`、`"italic 18px serif"` 和
-`"bold italic 32px sans-serif"`。当前未实现完整浏览器 Canvas 文本 API，
-如 `measureText`、`textAlign` 和 `textBaseline`。
+`"bold italic 32px sans-serif"`。`ctx.textAlign` 支持 `left`、`right`、
+`center`、`start`、`end`，其中 `start` 和 `end` 当前按从左到右的方向
+处理。`ctx.textBaseline` 支持 `top`、`hanging`、`middle`、`alphabetic`、
+`ideographic` 和 `bottom`；Pango 未直接提供的 hanging/ideographic
+基线使用布局度量近似。当前仍未实现完整浏览器 Canvas 文本 API，如
+`measureText`。
 
 ```js
 async function run(args) {

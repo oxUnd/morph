@@ -62,6 +62,8 @@ struct wasm_instance {
 };
 
 #define CANVAS_DEFAULT_FONT "10px sans-serif"
+#define CANVAS_DEFAULT_TEXT_ALIGN "start"
+#define CANVAS_DEFAULT_TEXT_BASELINE "alphabetic"
 
 static JSClassID sharp_class_id;
 static JSClassID canvas_class_id;
@@ -791,6 +793,10 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	JS_SetPropertyStr(ctx, obj, "height", JS_NewInt32(ctx, height));
 	JS_SetPropertyStr(ctx, obj, "font",
 			  JS_NewString(ctx, CANVAS_DEFAULT_FONT));
+	JS_SetPropertyStr(ctx, obj, "textAlign",
+			  JS_NewString(ctx, CANVAS_DEFAULT_TEXT_ALIGN));
+	JS_SetPropertyStr(ctx, obj, "textBaseline",
+			  JS_NewString(ctx, CANVAS_DEFAULT_TEXT_BASELINE));
 	return obj;
 fail_value:
 	canvas_finalizer(JS_GetRuntime(ctx), obj);
@@ -1636,13 +1642,134 @@ static PangoFontDescription *canvas_get_font_description(JSContext *ctx,
 	return desc;
 }
 
-static void canvas_move_to_text_baseline(cairo_t *cr, PangoLayout *layout,
-					 double x, double y)
-{
-	int baseline;
+enum canvas_text_align {
+	CANVAS_TEXT_ALIGN_LEFT,
+	CANVAS_TEXT_ALIGN_CENTER,
+	CANVAS_TEXT_ALIGN_RIGHT,
+};
 
-	baseline = pango_layout_get_baseline(layout);
-	cairo_move_to(cr, x, y - (double)baseline / (double)PANGO_SCALE);
+enum canvas_text_baseline {
+	CANVAS_TEXT_BASELINE_TOP,
+	CANVAS_TEXT_BASELINE_HANGING,
+	CANVAS_TEXT_BASELINE_MIDDLE,
+	CANVAS_TEXT_BASELINE_ALPHABETIC,
+	CANVAS_TEXT_BASELINE_IDEOGRAPHIC,
+	CANVAS_TEXT_BASELINE_BOTTOM,
+};
+
+static enum canvas_text_align canvas_get_text_align(JSContext *ctx,
+						     JSValueConst this_val)
+{
+	JSValue val;
+	const char *align;
+	enum canvas_text_align out = CANVAS_TEXT_ALIGN_LEFT;
+
+	val = JS_GetPropertyStr(ctx, this_val, "textAlign");
+	align = JS_ToCString(ctx, val);
+	if (align) {
+		if (strcmp(align, "center") == 0)
+			out = CANVAS_TEXT_ALIGN_CENTER;
+		else if (strcmp(align, "right") == 0 ||
+			 strcmp(align, "end") == 0)
+			out = CANVAS_TEXT_ALIGN_RIGHT;
+	}
+	if (align)
+		JS_FreeCString(ctx, align);
+	JS_FreeValue(ctx, val);
+	return out;
+}
+
+static enum canvas_text_baseline
+canvas_get_text_baseline(JSContext *ctx, JSValueConst this_val)
+{
+	JSValue val;
+	const char *baseline;
+	enum canvas_text_baseline out = CANVAS_TEXT_BASELINE_ALPHABETIC;
+
+	val = JS_GetPropertyStr(ctx, this_val, "textBaseline");
+	baseline = JS_ToCString(ctx, val);
+	if (baseline) {
+		if (strcmp(baseline, "top") == 0)
+			out = CANVAS_TEXT_BASELINE_TOP;
+		else if (strcmp(baseline, "hanging") == 0)
+			out = CANVAS_TEXT_BASELINE_HANGING;
+		else if (strcmp(baseline, "middle") == 0)
+			out = CANVAS_TEXT_BASELINE_MIDDLE;
+		else if (strcmp(baseline, "ideographic") == 0)
+			out = CANVAS_TEXT_BASELINE_IDEOGRAPHIC;
+		else if (strcmp(baseline, "bottom") == 0)
+			out = CANVAS_TEXT_BASELINE_BOTTOM;
+	}
+	if (baseline)
+		JS_FreeCString(ctx, baseline);
+	JS_FreeValue(ctx, val);
+	return out;
+}
+
+static void canvas_move_to_text(JSContext *ctx, JSValueConst this_val,
+				cairo_t *cr, PangoLayout *layout,
+				double x, double y)
+{
+	PangoRectangle logical;
+	enum canvas_text_align align;
+	enum canvas_text_baseline text_baseline;
+	double left;
+	double top;
+	double width;
+	double height;
+	double baseline;
+	double bottom;
+	double draw_x;
+	double draw_y;
+	double anchor_y;
+
+	pango_layout_get_extents(layout, NULL, &logical);
+	left = (double)logical.x / (double)PANGO_SCALE;
+	top = (double)logical.y / (double)PANGO_SCALE;
+	width = (double)logical.width / (double)PANGO_SCALE;
+	height = (double)logical.height / (double)PANGO_SCALE;
+	baseline = (double)pango_layout_get_baseline(layout) /
+		   (double)PANGO_SCALE;
+	bottom = top + height;
+
+	align = canvas_get_text_align(ctx, this_val);
+	switch (align) {
+	case CANVAS_TEXT_ALIGN_CENTER:
+		draw_x = x - left - width / 2.0;
+		break;
+	case CANVAS_TEXT_ALIGN_RIGHT:
+		draw_x = x - left - width;
+		break;
+	case CANVAS_TEXT_ALIGN_LEFT:
+	default:
+		draw_x = x - left;
+		break;
+	}
+
+	text_baseline = canvas_get_text_baseline(ctx, this_val);
+	switch (text_baseline) {
+	case CANVAS_TEXT_BASELINE_TOP:
+		anchor_y = top;
+		break;
+	case CANVAS_TEXT_BASELINE_HANGING:
+		anchor_y = top + (baseline - top) * 0.2;
+		break;
+	case CANVAS_TEXT_BASELINE_MIDDLE:
+		anchor_y = top + height / 2.0;
+		break;
+	case CANVAS_TEXT_BASELINE_IDEOGRAPHIC:
+		anchor_y = baseline + (bottom - baseline) * 0.5;
+		break;
+	case CANVAS_TEXT_BASELINE_BOTTOM:
+		anchor_y = bottom;
+		break;
+	case CANVAS_TEXT_BASELINE_ALPHABETIC:
+	default:
+		anchor_y = baseline;
+		break;
+	}
+	draw_y = y - anchor_y;
+	cairo_move_to(cr, draw_x, draw_y);
 }
 
 static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
@@ -1683,11 +1810,11 @@ static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 	pango_cairo_update_layout(canvas->cr, layout);
 	if (magic == 1) {
 		canvas_set_source(ctx, this_val, "fillStyle");
-		canvas_move_to_text_baseline(canvas->cr, layout, x, y);
+		canvas_move_to_text(ctx, this_val, canvas->cr, layout, x, y);
 		pango_cairo_show_layout(canvas->cr, layout);
 	} else {
 		canvas_set_source(ctx, this_val, "strokeStyle");
-		canvas_move_to_text_baseline(canvas->cr, layout, x, y);
+		canvas_move_to_text(ctx, this_val, canvas->cr, layout, x, y);
 		pango_cairo_layout_path(canvas->cr, layout);
 		cairo_stroke(canvas->cr);
 	}
