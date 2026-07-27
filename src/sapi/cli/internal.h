@@ -126,7 +126,7 @@ void cli_markdown_render_ansi_with_media_indented(const char *md,
 						  void *user);
 int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 			       int kind);
-void cli_markdown_stream_reset(struct cli_context *ctx, int clear_output);
+void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output);
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,

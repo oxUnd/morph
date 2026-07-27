@@ -256,13 +256,19 @@ static void presentation_print_stream(struct cli_context *ctx)
 {
 	const char *content;
 	const char *label;
+	int already_streamed;
 
 	if (!ctx || ctx->event_stream_kind == CLI_STREAM_NONE)
 		return;
-	cli_markdown_stream_reset(ctx, 1);
+	already_streamed = ctx->markdown_stream_visible &&
+		ctx->markdown_stream_kind == ctx->event_stream_kind;
+	if (already_streamed)
+		cli_markdown_stream_reset(ctx, 1);
 	presentation_clear_status(ctx);
 	content = morph_buf_cstr(&ctx->event_stream);
 	if (!content || !content[0])
+		goto reset;
+	if (already_streamed)
 		goto reset;
 	label = ctx->event_stream_kind == CLI_STREAM_REASONING ?
 		"reasoning" : "thought";
@@ -508,10 +514,8 @@ static void presentation_final(struct cli_context *ctx,
 			       const struct morph_event *ev)
 {
 	const char *text = event_string(ev, "text");
-	const char *stream_text = morph_buf_cstr(&ctx->markdown_stream_text);
-	char *streamed = stream_text && stream_text[0] ?
-		strdup(stream_text) : NULL;
-	int had_stream = ctx->markdown_stream_visible;
+	int had_stream = ctx->markdown_stream_visible &&
+		ctx->markdown_stream_kind == CLI_STREAM_FINAL;
 
 	presentation_clear_status(ctx);
 	if (ctx->event_stream_kind == CLI_STREAM_THOUGHT &&
@@ -527,16 +531,14 @@ static void presentation_final(struct cli_context *ctx,
 	} else {
 		if (!had_stream)
 			printf("\n");
-		if (streamed || (text && text[0])) {
+		if (!had_stream && text && text[0]) {
 			cli_markdown_render_ansi_with_media_indented(
-				streamed ? streamed : text,
-				2, media_callback, ctx);
-		} else {
+				text, 2, media_callback, ctx);
+		} else if (!had_stream) {
 			printf("\n");
 		}
 		printf("\n");
 	}
-	free(streamed);
 	ctx->final_rendered = 1;
 }
 

@@ -93,15 +93,14 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 			       int kind)
 {
 	int rc;
-	int end_rc;
-	int frame_started;
 
 	if (!ctx || !delta || !delta[0])
 		return 0;
 	if (ctx->markdown_stream && ctx->markdown_stream_kind != kind)
 		cli_markdown_stream_reset(ctx, 1);
 	if (!ctx->markdown_stream) {
-		ctx->markdown_stream = cli_markdown_create(2u, 1, NULL, NULL);
+		ctx->markdown_stream = cli_markdown_create(
+			2u, 1, media_callback, ctx);
 		if (!ctx->markdown_stream)
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
@@ -114,30 +113,17 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 				   strlen(delta), 0);
 	if (rc != 0)
 		return rc;
-	rc = morph_md_kitty_begin_frame(ctx->markdown_stream);
-	frame_started = rc == 0;
-	if (rc == 0)
-		rc = morph_md_kitty_clear(ctx->markdown_stream);
-	if (rc == 0)
-		rc = morph_md_kitty_render(ctx->markdown_stream);
-	end_rc = frame_started ?
-		morph_md_kitty_end_frame(ctx->markdown_stream) : rc;
-	return rc == 0 ? end_rc : rc;
+	return morph_md_kitty_render(ctx->markdown_stream);
 }
 
-void cli_markdown_stream_reset(struct cli_context *ctx, int clear_output)
+void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output)
 {
-	int frame_started;
-
 	if (!ctx)
 		return;
-	if (clear_output && ctx->markdown_stream) {
-		frame_started =
-			morph_md_kitty_begin_frame(ctx->markdown_stream) == 0;
-		if (frame_started) {
-			(void)morph_md_kitty_clear(ctx->markdown_stream);
-			(void)morph_md_kitty_end_frame(ctx->markdown_stream);
-		}
+	if (finish_output && ctx->markdown_stream) {
+		if (morph_md_kitty_append(
+			    ctx->markdown_stream, NULL, 0u, 1) == 0)
+			(void)morph_md_kitty_render(ctx->markdown_stream);
 	}
 	morph_md_kitty_destroy(ctx->markdown_stream);
 	ctx->markdown_stream = NULL;
