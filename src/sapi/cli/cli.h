@@ -3,32 +3,38 @@
 
 #include "config.h"
 #include "runtime/runtime.h"
+#include "util/buf.h"
+#include "util/strmap.h"
 #include <stdio.h>
 
-enum cli_event_mode {
-	CLI_EVENTS_HUMAN,
-	CLI_EVENTS_JSON,
-	CLI_EVENTS_NONE,
+enum cli_presentation_mode {
+	CLI_PRESENT_INTERACTIVE,
+	CLI_PRESENT_ONCE_PLAIN,
+	CLI_PRESENT_EVENTS_JSON,
 };
 
 struct cli_context {
 	struct runtime *runtime;
+	enum cli_presentation_mode presentation_mode;
 	int running;
-	int streaming;
 	int session_auto_named;
-	int last_tool_was_plan;
+	int presentation_ready;
+	int turn_active;
+	int event_stream_kind;
+	int event_stream_has_delta;
+	int event_stream_complete;
+	int final_rendered;
+	int status_visible;
 	char image_path[PATH_MAX];
-	char stream_buf[BUFSIZ];
-	size_t stream_buf_len;
-	enum react_step_type stream_type;
+	morph_buf_t event_stream;
+	morph_strmap_t rendered_artifacts;
 	int trace_json;
-	enum cli_event_mode event_mode;
 	morph_event_cb event_cb;
 	void *event_user_data;
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir, enum cli_event_mode event_mode);
+	     const char *workdir, enum cli_presentation_mode mode);
 void cli_run(struct cli_context *ctx);
 void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);

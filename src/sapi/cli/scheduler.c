@@ -64,7 +64,8 @@ static void cli_task_notification(const struct notification *notification,
 	struct cli_context *ctx = user_data;
 	if (!notification)
 		return;
-	if (ctx && ctx->event_mode != CLI_EVENTS_JSON) {
+	if (ctx &&
+	    ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
 		flockfile(stdout);
 		printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " %s\n",
 		       notification->title);

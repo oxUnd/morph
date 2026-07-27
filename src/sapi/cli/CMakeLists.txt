@@ -2,7 +2,9 @@ add_library(morph-cli STATIC
 	core.c
 	events.c
 	init.c
+	once.c
 	output.c
+	presentation.c
 	run.c
 	scheduler.c
 	commands/ext.c
@@ -67,7 +69,7 @@ find_library(READLINE_LIBRARY readline
 if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
 	target_include_directories(morph-cli PRIVATE ${READLINE_INCLUDE_DIR})
 	target_compile_definitions(morph-cli PRIVATE HAVE_READLINE=1)
-	target_link_libraries(morph PRIVATE ${READLINE_LIBRARY})
+	target_link_libraries(morph-cli PUBLIC ${READLINE_LIBRARY})
 	message(STATUS "readline found: ${READLINE_LIBRARY}")
 else()
 	message(STATUS "readline not found, using fgets")

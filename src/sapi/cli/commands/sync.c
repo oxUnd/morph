@@ -103,5 +103,7 @@ int cli_register_sync_commands(void)
 	};
 
 	return cli_command_register_many(cmds,
-		(int)(sizeof(cmds) / sizeof(cmds[0])));
+					 (int)(sizeof(cmds) /
+					 sizeof(cmds[0])),
+					 "Sync");
 }

@@ -225,7 +225,7 @@ int main(int argc, char *argv[])
 	int show_version = 0;
 	int show_help = 0;
 	int no_color = 0;
-	enum cli_event_mode event_mode = CLI_EVENTS_NONE;
+	int events_json = 0;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
 			config_path = argv[++i];
@@ -243,30 +243,32 @@ int main(int argc, char *argv[])
 			trace_json = 1;
 		else if (strcmp(argv[i], "--no-color") == 0)
 			no_color = 1;
-		else if (strcmp(argv[i], "--events") == 0 && i + 1 < argc) {
-			const char *mode = argv[++i];
-			if (strcmp(mode, "human") == 0)
-				event_mode = CLI_EVENTS_HUMAN;
-			else if (strcmp(mode, "json") == 0)
-				event_mode = CLI_EVENTS_JSON;
-			else if (strcmp(mode, "none") == 0)
-				event_mode = CLI_EVENTS_NONE;
-			else {
+		else if (strcmp(argv[i], "--events") == 0) {
+			const char *mode;
+
+			if (i + 1 >= argc) {
 				fprintf(stderr,
-					"invalid --events mode: %s\n", mode);
+					"missing value for --events "
+					"(expected json)\n");
+				return 2;
+			}
+			mode = argv[++i];
+			if (strcmp(mode, "json") == 0) {
+				events_json = 1;
+			} else {
+				fprintf(stderr,
+					"invalid --events mode: %s "
+					"(expected json)\n", mode);
 				return 2;
 			}
 		} else if (strncmp(argv[i], "--events=", 9) == 0) {
 			const char *mode = argv[i] + 9;
-			if (strcmp(mode, "human") == 0)
-				event_mode = CLI_EVENTS_HUMAN;
-			else if (strcmp(mode, "json") == 0)
-				event_mode = CLI_EVENTS_JSON;
-			else if (strcmp(mode, "none") == 0)
-				event_mode = CLI_EVENTS_NONE;
-			else {
+			if (strcmp(mode, "json") == 0) {
+				events_json = 1;
+			} else {
 				fprintf(stderr,
-					"invalid --events mode: %s\n", mode);
+					"invalid --events mode: %s "
+					"(expected json)\n", mode);
 				return 2;
 			}
 		}
@@ -275,13 +277,20 @@ int main(int argc, char *argv[])
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
 			show_help = 1;
 	}
+	enum cli_presentation_mode presentation_mode =
+		events_json ? CLI_PRESENT_EVENTS_JSON :
+		(one_shot_prompt ? CLI_PRESENT_ONCE_PLAIN :
+		 CLI_PRESENT_INTERACTIVE);
+	if (one_shot_prompt || events_json)
+		no_color = 1;
 	cli_set_color_enabled(!no_color);
 	markdown_set_color_enabled(!no_color);
 	if (show_help) {
 		printf("Usage: morph [-c config_path] [-w workdir] "
 		       "[-p prompt] [-v] [--trace-json] [--no-color] "
-		       "[--events human|json|none]\n");
-		printf("  --events  Event progress output mode (default: none)\n");
+		       "[--events json]\n");
+		printf("  -p, --prompt  Run once with plain-text progress\n");
+		printf("  --events json  Emit raw events as NDJSON\n");
 		printf("  --no-color  Disable ANSI color output\n");
 		return 0;
 	}
@@ -297,7 +306,7 @@ int main(int argc, char *argv[])
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
 	struct cli_context ctx;
-	int rc = cli_init(&ctx, config_path, workdir, event_mode);
+	int rc = cli_init(&ctx, config_path, workdir, presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %d", rc);
 		return 1;

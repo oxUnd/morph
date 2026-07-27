@@ -278,5 +278,7 @@ static const struct cli_command session_commands[] = {
 int cli_register_session_commands(void)
 {
 	return cli_command_register_many(session_commands,
-		(int)(sizeof(session_commands) / sizeof(session_commands[0])));
+					 (int)(sizeof(session_commands) /
+					 sizeof(session_commands[0])),
+					 "Sessions");
 }

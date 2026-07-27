@@ -106,5 +106,7 @@ static const struct cli_command skill_commands[] = {
 int cli_register_skill_commands(void)
 {
 	return cli_command_register_many(skill_commands,
-		(int)(sizeof(skill_commands) / sizeof(skill_commands[0])));
+					 (int)(sizeof(skill_commands) /
+					 sizeof(skill_commands[0])),
+					 "Skills");
 }

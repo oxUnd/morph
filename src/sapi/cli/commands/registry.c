@@ -3,6 +3,7 @@
 #define CLI_COMMAND_MAX 128
 
 static struct cli_command commands[CLI_COMMAND_MAX];
+static const char *command_categories[CLI_COMMAND_MAX];
 static int num_commands;
 
 void cli_command_registry_clear(void)
@@ -10,14 +11,17 @@ void cli_command_registry_clear(void)
 	num_commands = 0;
 }
 
-int cli_command_register_many(const struct cli_command *entries, int count)
+int cli_command_register_many(const struct cli_command *entries, int count,
+			      const char *category)
 {
 	if (!entries || count < 0)
 		MORPH_RETURN(-EINVAL);
 	if (num_commands + count > CLI_COMMAND_MAX)
 		MORPH_RETURN(-ENOSPC);
-	for (int i = 0; i < count; i++)
+	for (int i = 0; i < count; i++) {
 		commands[num_commands++] = entries[i];
+		command_categories[num_commands - 1] = category;
+	}
 	return 0;
 }
 
@@ -91,7 +95,9 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 
 void cli_print_help(void)
 {
-	printf(ANSI_BOLD "morph commands:" ANSI_RESET "\n");
+	const char *category = NULL;
+
+	printf("\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
 	for (int i = 0; i < num_commands; i++) {
 		const char *desc = commands[i].desc;
 		int alias_end = i;
@@ -118,11 +124,19 @@ void cli_print_help(void)
 		} else {
 			snprintf(display, sizeof(display), "%s", pri);
 		}
+		if (!category || !command_categories[i] ||
+		    strcmp(category, command_categories[i]) != 0) {
+			category = command_categories[i];
+			printf("\n" ANSI_DIM "%s" ANSI_RESET "\n",
+			       category ? category : "Other");
+		}
 		printf("  ");
-		print_padded(display, 24);
+		print_padded(display, 22);
 		printf("%s\n", desc);
 		i = alias_end;
 	}
+	printf("\n" ANSI_DIM "Use /help <command> for details."
+	       ANSI_RESET "\n");
 }
 
 char *cli_command_completion_generator(const char *text, int state)

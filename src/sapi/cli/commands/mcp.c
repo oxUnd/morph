@@ -171,5 +171,7 @@ static const struct cli_command mcp_commands[] = {
 int cli_register_mcp_commands(void)
 {
 	return cli_command_register_many(mcp_commands,
-		(int)(sizeof(mcp_commands) / sizeof(mcp_commands[0])));
+					 (int)(sizeof(mcp_commands) /
+					 sizeof(mcp_commands[0])),
+					 "MCP");
 }

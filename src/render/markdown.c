@@ -3306,7 +3306,30 @@ void markdown_render_ansi(const char *md)
 	free_media(&ctx);
 }
 
-void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void *user)
+static void print_ansi_indented(const char *buf, unsigned int indent)
+{
+	const char *line = buf;
+
+	if (!buf)
+		return;
+	while (line) {
+		const char *end = strchr(line, '\n');
+		size_t len = end ? (size_t)(end - line) : strlen(line);
+
+		if (len > 0) {
+			for (unsigned int i = 0; i < indent; i++)
+				putchar(' ');
+			fwrite(line, 1, len, stdout);
+		}
+		putchar('\n');
+		line = end ? end + 1 : NULL;
+	}
+}
+
+static void markdown_render_ansi_with_media_impl(const char *md,
+						  unsigned int indent,
+						  markdown_media_cb cb,
+						  void *user)
 {
 	if (!md || !cb)
 		return;
@@ -3319,6 +3342,9 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 	struct ansi_ctx ctx = {0};
 	sbuf_init(&ctx.out, buf, buf_len);
 	ctx.term_width = get_term_width();
+	if (ctx.term_width > 0 &&
+	    indent < (unsigned int)ctx.term_width)
+		ctx.term_width -= (int)indent;
 	ctx.use_kitty_placeholders = detect_kitty_placeholders();
 	ctx.next_image_id = 1;
 
@@ -3327,10 +3353,10 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 	if (ctx.out.len < ctx.out.cap)
 		buf[ctx.out.len] = '\0';
 	if (markdown_color_enabled) {
-		printf("%s\n", buf);
+		print_ansi_indented(buf, indent);
 	} else {
 		char *plain = strip_ansi_dup(buf);
-		printf("%s\n", plain ? plain : buf);
+		print_ansi_indented(plain ? plain : buf, indent);
 		free(plain);
 	}
 	fflush(stdout);
@@ -3340,4 +3366,18 @@ void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb, void 
 		cb(ctx.media[i].type, ctx.media[i].path, user);
 	}
 	free_media(&ctx);
+}
+
+void markdown_render_ansi_with_media(const char *md, markdown_media_cb cb,
+				     void *user)
+{
+	markdown_render_ansi_with_media_impl(md, 0, cb, user);
+}
+
+void markdown_render_ansi_with_media_indented(const char *md,
+					      unsigned int indent,
+					      markdown_media_cb cb,
+					      void *user)
+{
+	markdown_render_ansi_with_media_impl(md, indent, cb, user);
 }

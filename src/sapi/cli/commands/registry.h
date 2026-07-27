@@ -10,7 +10,8 @@ struct cli_command {
 	const char *usage;
 };
 
-int cli_command_register_many(const struct cli_command *entries, int count);
+int cli_command_register_many(const struct cli_command *entries, int count,
+			      const char *category);
 void cli_command_registry_clear(void);
 const struct cli_command *cli_command_find(const char *name);
 int cli_command_dispatch(struct cli_context *ctx, const char *input);

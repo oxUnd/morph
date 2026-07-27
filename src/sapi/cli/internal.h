@@ -75,15 +75,18 @@
 #define ANSI_RESET  "\033[0m"
 
 #define CMD_HEADER(fmt, ...) \
-	printf(ANSI_BOLD ANSI_CYAN "--- " fmt ANSI_RESET "\n", ##__VA_ARGS__)
+	printf("\n" ANSI_BOLD ANSI_CYAN "• " fmt ANSI_RESET "\n", \
+	       ##__VA_ARGS__)
 #define CMD_ERROR(fmt, ...) \
-	printf(ANSI_BOLD ANSI_RED "error: " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+	printf(ANSI_BOLD ANSI_RED "• Error  " ANSI_RESET fmt "\n", \
+	       ##__VA_ARGS__)
 #define CMD_OK(fmt, ...) \
-	printf(ANSI_GREEN fmt ANSI_RESET "\n", ##__VA_ARGS__)
+	printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 
 extern const char *default_db_path;
 extern const char *default_config_path;
 extern volatile sig_atomic_t cli_sigint_received;
+void cli_sigint_handler(int sig);
 
 void print_padded(const char *s, int target_width);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
@@ -96,6 +99,12 @@ void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      const char *metadata_json);
 
 int cli_event_callback(const struct morph_event *ev, void *user_data);
+int cli_presentation_init(struct cli_context *ctx);
+void cli_presentation_reset(struct cli_context *ctx);
+void cli_presentation_finish(struct cli_context *ctx);
+void cli_presentation_cleanup(struct cli_context *ctx);
+int cli_presentation_event(struct cli_context *ctx,
+			   const struct morph_event *ev);
 
 void cli_process_due_tasks(struct cli_context *ctx);
 int cli_scheduled_task_runner(const struct scheduled_task *task,
@@ -109,7 +118,10 @@ void cli_markdown_render_ansi(const char *md);
 void cli_markdown_render_ansi_with_media(const char *md,
 					 markdown_media_cb cb,
 					 void *user);
-int output_callback(const struct react_output_event *event, void *user_data);
+void cli_markdown_render_ansi_with_media_indented(const char *md,
+						  unsigned int indent,
+						  markdown_media_cb cb,
+						  void *user);
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,

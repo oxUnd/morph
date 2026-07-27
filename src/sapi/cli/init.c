@@ -21,7 +21,8 @@ static void cli_usage_observer(const struct model_usage *usage,
 	const struct config *config;
 
 	(void)usage;
-	if (!ctx || !ctx->runtime || ctx->event_mode == CLI_EVENTS_JSON)
+	if (!ctx || !ctx->runtime ||
+	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	config = runtime_config_get(ctx->runtime);
 	if (!config || config->credits.daily_limit < 0)
@@ -35,7 +36,7 @@ static void cli_usage_observer(const struct model_usage *usage,
 }
 
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir, enum cli_event_mode event_mode)
+	     const char *workdir, enum cli_presentation_mode mode)
 {
 	struct runtime_options options;
 	int rc;
@@ -43,9 +44,12 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	if (!ctx)
 		return -EINVAL;
 	memset(ctx, 0, sizeof(*ctx));
-	ctx->event_mode = event_mode;
+	ctx->presentation_mode = mode;
 	ctx->event_cb = cli_event_callback;
 	ctx->event_user_data = ctx;
+	rc = cli_presentation_init(ctx);
+	if (rc != 0)
+		return rc;
 	(void)cli_commands_init();
 	memset(&options, 0, sizeof(options));
 	options.config_path = config_path ? config_path : default_config_path;
@@ -73,12 +77,14 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
 	rc = runtime_open(&options, &ctx->runtime);
-	if (rc != 0)
+	if (rc != 0) {
+		cli_presentation_cleanup(ctx);
 		return rc;
+	}
 
 	ctx->session_auto_named = 0;
 	ctx->running = 1;
-	ctx->streaming = 0;
+	ctx->presentation_ready = 1;
 	ctx->image_path[0] = '\0';
 	rc = cli_sync_start(ctx);
 	if (rc != 0)

@@ -87,5 +87,7 @@ static const struct cli_command memory_commands[] = {
 int cli_register_memory_commands(void)
 {
 	return cli_command_register_many(memory_commands,
-		(int)(sizeof(memory_commands) / sizeof(memory_commands[0])));
+					 (int)(sizeof(memory_commands) /
+					 sizeof(memory_commands[0])),
+					 "Memory");
 }

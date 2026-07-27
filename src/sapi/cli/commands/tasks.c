@@ -736,5 +736,7 @@ static const struct cli_command task_commands[] = {
 int cli_register_task_commands(void)
 {
 	return cli_command_register_many(task_commands,
-		(int)(sizeof(task_commands) / sizeof(task_commands[0])));
+					 (int)(sizeof(task_commands) /
+					 sizeof(task_commands[0])),
+					 "Automation");
 }

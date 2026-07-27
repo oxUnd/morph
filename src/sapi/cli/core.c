@@ -168,20 +168,17 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->session_auto_named = 1;
 	}
 
-	if (ctx->event_mode != CLI_EVENTS_JSON) {
-		printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET "\n", input);
-		fflush(stdout);
-	}
-
 	cli_sigint_received = 0;
+	cli_presentation_reset(ctx);
+	ctx->turn_active = 1;
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	struct runtime_request request = {
 		.session_id = current.id,
 		.model_input = effective_input,
 		.stored_user_input = input,
-		.output_cb = ctx->event_mode == CLI_EVENTS_JSON ? NULL : output_callback,
-		.output_user_data = ctx,
+		.output_cb = NULL,
+		.output_user_data = NULL,
 		.turn_flags = AGENT_TURN_DEFAULT_FLAGS |
 			AGENT_TURN_SAVE_EMPTY_USER |
 			AGENT_TURN_SAVE_EMPTY_ASSISTANT,
@@ -189,27 +186,18 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request,
 					    &runtime_result);
+	cli_presentation_finish(ctx);
+	ctx->turn_active = 0;
+	if (react_rc < 0 && !ctx->final_rendered &&
+	    ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
+		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
+			printf("error: %s\n", morph_strerror(react_rc));
+		else
+			CMD_ERROR("%s", morph_strerror(react_rc));
+	}
 	if (react_rc == -EBUSY)
 		return react_rc;
 
-	struct runtime_turn_status status;
-	int have_status = runtime_turn_status_get(ctx->runtime, &status) == 0;
-	if (have_status && status.state == REACT_STATE_ABORT &&
-	    ctx->event_mode != CLI_EVENTS_JSON) {
-		const char *outcome = react_outcome_name(status.outcome);
-		const char *error = react_rc < 0 ? morph_strerror(react_rc) :
-			"aborted";
-		printf(ANSI_YELLOW "[%s] %s" ANSI_RESET,
-		       outcome, error);
-		if (status.outcome_reason && status.outcome_reason[0])
-			printf(ANSI_DIM " (%s)" ANSI_RESET,
-			       status.outcome_reason);
-		printf("\n");
-	}
-	if (have_status)
-		runtime_turn_status_cleanup(&status);
-
-	ctx->streaming = 0;
 	cli_process_due_tasks(ctx);
 	return react_rc;
 }
@@ -222,5 +210,6 @@ void cli_shutdown(struct cli_context *ctx)
 		return;
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
+	cli_presentation_cleanup(ctx);
 	log_info("cli shutdown complete");
 }

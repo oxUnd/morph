@@ -118,5 +118,7 @@ static const struct cli_command media_commands[] = {
 int cli_register_media_commands(void)
 {
 	return cli_command_register_many(media_commands,
-		(int)(sizeof(media_commands) / sizeof(media_commands[0])));
+					 (int)(sizeof(media_commands) /
+					 sizeof(media_commands[0])),
+					 "Media");
 }

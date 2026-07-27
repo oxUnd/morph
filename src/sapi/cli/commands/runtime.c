@@ -520,5 +520,7 @@ static const struct cli_command runtime_commands[] = {
 int cli_register_runtime_commands(void)
 {
 	return cli_command_register_many(runtime_commands,
-		(int)(sizeof(runtime_commands) / sizeof(runtime_commands[0])));
+					 (int)(sizeof(runtime_commands) /
+					 sizeof(runtime_commands[0])),
+					 "Core");
 }

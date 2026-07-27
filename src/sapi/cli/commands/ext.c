@@ -102,5 +102,7 @@ static const struct cli_command ext_commands[] = {
 int cli_register_ext_commands(void)
 {
 	return cli_command_register_many(ext_commands,
-		(int)(sizeof(ext_commands) / sizeof(ext_commands[0])));
+					 (int)(sizeof(ext_commands) /
+					 sizeof(ext_commands[0])),
+					 "Extensions");
 }
