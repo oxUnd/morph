@@ -1331,7 +1331,7 @@ struct react_stream_data {
 	size_t emitted_len;
 	int in_final;
 	int skip_legacy_final_separator;
-	int defer_typed_content;
+	int provisional_typed_content;
 };
 
 static int react_final_marker_len(const char *p)
@@ -1437,6 +1437,17 @@ static int react_stream_parse_emit(struct react_stream_data *sd)
 		return 0;
 
 	available = sd->acc_len - sd->emitted_len;
+	if (sd->provisional_typed_content) {
+		size_t safe = react_utf8_safe_len(start, available);
+		int rc;
+
+		if (safe == 0)
+			return 0;
+		rc = react_emit_thought_delta(sd, start, safe);
+		if (rc == 0)
+			sd->emitted_len += safe;
+		return rc;
+	}
 	if (sd->in_final) {
 		size_t safe = react_utf8_safe_len(start, available);
 		int rc;
@@ -1489,6 +1500,17 @@ static int react_stream_flush(struct react_stream_data *sd)
 
 	start = base + sd->emitted_len;
 	available = sd->acc_len - sd->emitted_len;
+	if (sd->provisional_typed_content) {
+		size_t safe = react_utf8_safe_len(start, available);
+		int rc;
+
+		if (safe == 0)
+			return 0;
+		rc = react_emit_thought_delta(sd, start, safe);
+		if (rc == 0)
+			sd->emitted_len += safe;
+		return rc;
+	}
 	if (sd->in_final) {
 		size_t safe = react_utf8_safe_len(start, available);
 		int rc;
@@ -1555,8 +1577,6 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
-	if (sd->defer_typed_content)
-		return 0;
 	return react_stream_parse_emit(sd);
 }
 
@@ -1584,11 +1604,13 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 	}
 	if (kind == LLM_STREAM_CONTENT) {
 		/*
-		 * A structured content stream can still accompany native tool
-		 * calls. Defer its UI classification until the completed
-		 * response tells us whether the content is Thought or Final.
+		 * Structured content can still accompany native tool calls, and
+		 * the response does not reveal that until streaming completes.
+		 * Stream it provisionally as Thought for low latency. A response
+		 * with tools keeps that classification; a response without tools
+		 * is promoted by the terminal Final event.
 		 */
-		sd->defer_typed_content = 1;
+		sd->provisional_typed_content = 1;
 		return react_stream_cb(token, user_data);
 	}
 	return react_stream_cb(token, user_data);
@@ -2111,25 +2133,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		}
 	}
 	if (status >= 0) {
-		int flush_rc;
-
-		if (sd.defer_typed_content && response->tool_call_count > 0) {
-			size_t available = sd.acc_len - sd.emitted_len;
-
-			flush_rc = available > 0
-				? react_emit_thought_delta(
-					&sd, sd.accumulated + sd.emitted_len,
-					available)
-				: 0;
-			if (flush_rc == 0)
-				sd.emitted_len += available;
-		} else {
-			if (sd.defer_typed_content) {
-				sd.in_final = 1;
-				sd.skip_legacy_final_separator = 0;
-			}
-			flush_rc = react_stream_flush(&sd);
-		}
+		int flush_rc = react_stream_flush(&sd);
 		if (flush_rc != 0)
 			return flush_rc;
 	}

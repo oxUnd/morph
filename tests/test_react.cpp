@@ -1491,7 +1491,7 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 	return out;
 }
 
-TEST_F(MockLlmTest, EmitsNativeContentAsFinalDeltaWithoutFinalMarker) {
+TEST_F(MockLlmTest, StreamsNativeContentAsProvisionalThoughtUntilFinal) {
 	const char *chunks[] = {
 		"# ",
 		"Title\n\nword",
@@ -1510,17 +1510,19 @@ TEST_F(MockLlmTest, EmitsNativeContentAsFinalDeltaWithoutFinalMarker) {
 
 	int rc = react_run(ctx, "stream final", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 1);
-	EXPECT_EQ(event_recorder_join_text(&rec, "react.final.delta"),
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 4);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.thought.delta"),
 		  "# Title\n\nword between words");
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
+	EXPECT_LT(event_recorder_index_name(&rec, "react.thought.delta"),
+		  event_recorder_index_name(&rec, "react.final"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, ClassifiesNativeContentWithToolCallsAsThought) {
+TEST_F(MockLlmTest, StreamsNativeContentBeforeToolsAndPromotesLastResponse) {
 	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
 		      "A test tool", "{}", test_tool_fn, nullptr, nullptr);
 	const char *chunks[] = {"I will ", "inspect first."};
@@ -1539,8 +1541,9 @@ TEST_F(MockLlmTest, ClassifiesNativeContentWithToolCallsAsThought) {
 	int rc = react_run(ctx, "inspect", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(event_recorder_join_text(&rec, "react.thought.delta"),
-		  "I will inspect first.");
-	EXPECT_EQ(event_recorder_join_text(&rec, "react.final.delta"), "Done.");
+		  "I will inspect first.Done.");
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 3);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
 	EXPECT_LT(event_recorder_index_name(&rec, "react.thought.delta"),
 		  event_recorder_index_name(&rec, "tool.call"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.end"));
@@ -1569,7 +1572,8 @@ TEST_F(MockLlmTest, StreamingDeltasDoNotSplitUtf8Codepoints) {
 	int rc = react_run(ctx, "stream utf8", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
-							"react.final.delta"));
+							"react.thought.delta"));
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
