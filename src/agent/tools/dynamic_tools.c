@@ -188,6 +188,49 @@ static char *join_allow(const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
 	return morph_buf_detach(&buf);
 }
 
+static char *join_path_allow(
+	const char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
+	int count, const char *root)
+{
+	morph_buf_t buf;
+	int first = 1;
+
+	if (morph_buf_init(&buf, 128) != 0)
+		return NULL;
+	for (int i = 0; i < count; i++) {
+		char *candidate;
+		char *resolved;
+		int rc;
+
+		if (!values[i][0])
+			continue;
+		if (strcmp(values[i], "*") == 0) {
+			rc = append_list(&buf, values[i], &first);
+		} else {
+			candidate = file_path_is_absolute(values[i])
+				? strdup(values[i])
+				: file_path_full_alloc(root, values[i]);
+			if (!candidate) {
+				morph_buf_cleanup(&buf);
+				return NULL;
+			}
+			resolved = file_resolve_path(candidate);
+			free(candidate);
+			if (!resolved) {
+				morph_buf_cleanup(&buf);
+				return NULL;
+			}
+			rc = append_list(&buf, resolved, &first);
+			free(resolved);
+		}
+		if (rc != 0) {
+			morph_buf_cleanup(&buf);
+			return NULL;
+		}
+	}
+	return morph_buf_detach(&buf);
+}
+
 static int effective_caps(struct dynamic_tool *dt,
 			  char out[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX],
 			  int *out_count)
@@ -301,6 +344,8 @@ static void dynamic_tool_destroy(void *user_data)
 static int set_child_env(struct dynamic_tool *dt)
 {
 	const struct config_dynamic_tool_profile *profile;
+	const char *workdir;
+	const char *output_dir;
 	char caps[DYNAMIC_TOOL_CAP_MAX][DYNAMIC_TOOL_CAP_LEN_MAX];
 	int caps_count = 0;
 	char *cap_str;
@@ -311,15 +356,23 @@ static int set_child_env(struct dynamic_tool *dt)
 	char timeout_buf[32];
 	int rc;
 
+	if (!dt || !dt->tctx)
+		return -EINVAL;
+	workdir = tool_context_workdir(dt->tctx);
+	output_dir = tool_context_output_dir(dt->tctx);
+	if (!workdir || !*workdir || !output_dir || !*output_dir)
+		return -EINVAL;
 	profile = active_profile(dt->cfg);
 	rc = effective_caps(dt, caps, &caps_count);
 	if (rc < 0)
 		return rc;
 	cap_str = join_caps(caps, caps_count);
-	read_str = join_allow(profile->allowed_read_paths,
-			      profile->allowed_read_paths_count);
-	write_str = join_allow(profile->allowed_write_paths,
-			       profile->allowed_write_paths_count);
+	read_str = join_path_allow(profile->allowed_read_paths,
+				   profile->allowed_read_paths_count,
+				   workdir);
+	write_str = join_path_allow(profile->allowed_write_paths,
+				    profile->allowed_write_paths_count,
+				    output_dir);
 	command_str = join_allow(profile->allowed_commands,
 				 profile->allowed_commands_count);
 	network_str = join_allow(profile->allowed_network,
@@ -336,18 +389,22 @@ static int set_child_env(struct dynamic_tool *dt)
 	snprintf(timeout_buf, sizeof(timeout_buf), "%d",
 		 dt->cfg->default_timeout_seconds > 0
 		 ? dt->cfg->default_timeout_seconds : 30);
-	setenv("MORPH_DYNAMIC_CAPS", cap_str, 1);
-	setenv("MORPH_DYNAMIC_ALLOWED_READ", read_str, 1);
-	setenv("MORPH_DYNAMIC_ALLOWED_WRITE", write_str, 1);
-	setenv("MORPH_DYNAMIC_ALLOWED_COMMANDS", command_str, 1);
-	setenv("MORPH_DYNAMIC_ALLOWED_NETWORK", network_str, 1);
-	setenv("MORPH_DYNAMIC_TIMEOUT", timeout_buf, 1);
+	rc = 0;
+	if (setenv("MORPH_DYNAMIC_CAPS", cap_str, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_ALLOWED_READ", read_str, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_ALLOWED_WRITE", write_str, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_ALLOWED_COMMANDS", command_str, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_ALLOWED_NETWORK", network_str, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_TIMEOUT", timeout_buf, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_WORKDIR", workdir, 1) != 0 ||
+	    setenv("MORPH_DYNAMIC_OUTPUT_DIR", output_dir, 1) != 0)
+		rc = -errno;
 	free(cap_str);
 	free(read_str);
 	free(write_str);
 	free(command_str);
 	free(network_str);
-	return 0;
+	return rc;
 }
 
 static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
@@ -395,6 +452,8 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		MORPH_RETURN(-e);
 	}
 	if (pid == 0) {
+		const char *workdir;
+
 		close(stdin_pipe[1]);
 		close(stdout_pipe[0]);
 		close(stderr_pipe[0]);
@@ -404,7 +463,18 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdin_pipe[0]);
 		close(stdout_pipe[1]);
 		close(stderr_pipe[1]);
-		(void)set_child_env(dt);
+		rc = set_child_env(dt);
+		if (rc < 0) {
+			fprintf(stderr,
+				"dynamic tool path context is unavailable\n");
+			_exit(126);
+		}
+		workdir = tool_context_workdir(dt->tctx);
+		if (chdir(workdir) != 0) {
+			fprintf(stderr, "dynamic tool chdir(%s) failed: %s\n",
+				workdir, strerror(errno));
+			_exit(126);
+		}
 		const char *runner = runner_path();
 		execl(runner, runner,
 		      dt->source_path, (char *)NULL);
@@ -485,6 +555,19 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		morph_buf_cleanup(&err);
 		(void)tool_result_error(result, "tool_failed",
 					     "dynamic tool process terminated");
+		return -EIO;
+	}
+	if (WIFEXITED(status) && WEXITSTATUS(status) != 0 && out.len == 0) {
+		char msg[1024];
+
+		snprintf(msg, sizeof(msg),
+			 "dynamic tool process exited with status %d%s%s",
+			 WEXITSTATUS(status),
+			 err.len > 0 ? ": " : "",
+			 err.len > 0 ? morph_buf_cstr(&err) : "");
+		morph_buf_cleanup(&out);
+		morph_buf_cleanup(&err);
+		(void)tool_result_error(result, "tool_failed", msg);
 		return -EIO;
 	}
 	{

@@ -509,6 +509,101 @@ TEST_F(DynamicToolsTest, ToolUsesProfileCapabilitiesWithoutArgs)
 	tool_result_cleanup(&result);
 }
 
+TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
+{
+	std::string workdir = root + "/work";
+	std::string output_dir = root + "/configured-output";
+	std::string input = workdir + "/input.txt";
+	std::string output = output_dir + "/result.txt";
+	std::string source =
+		"function run(args) {"
+		"  const text = morph.fs.readText('input.txt');"
+		"  morph.fs.writeText('result.txt', text + '-written');"
+		"  return { text: text, cwd: morph.exec('pwd').trim() };"
+		"}";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(workdir.c_str()), 0);
+	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
+	ASSERT_EQ(file_write_all(input.c_str(), "from-workdir", 12), 0);
+	tool_context_destroy(tctx);
+	tctx = tool_context_create(workdir.c_str(), output_dir.c_str());
+	ASSERT_NE(tctx, nullptr);
+	strncpy(cfg.dynamic_tools.local.allowed_read_paths[0],
+		workdir.c_str(), DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+	strncpy(cfg.dynamic_tools.local.allowed_write_paths[0],
+		output_dir.c_str(), DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("relative_fs", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "relative_fs", "{}", &result), 0)
+		<< (result.text.data ? result.text.data : "(no result)");
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_EQ(json_string_field(result.text.data, "text"), "from-workdir");
+	EXPECT_EQ(json_string_field(result.text.data, "cwd"),
+		  tool_context_workdir(tctx));
+	EXPECT_TRUE(file_exists(output.c_str()));
+	EXPECT_FALSE(file_exists((workdir + "/result.txt").c_str()));
+	{
+		size_t len = 0;
+		char *written = file_read_all(output.c_str(), &len);
+
+		ASSERT_NE(written, nullptr);
+		EXPECT_EQ(std::string(written, len), "from-workdir-written");
+		free(written);
+	}
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, RelativeMediaPathsUseToolContextRoots)
+{
+	std::string workdir = root + "/media-work";
+	std::string output_dir = workdir + "/output";
+	std::string source =
+		"async function run(args) {"
+		"  const canvas = morph.canvas.create({ width: 24, height: 12 });"
+		"  morph.canvas.toFile({ canvas: canvas, output: 'source.png' });"
+		"  await morph.image.resize({"
+		"    input: 'output/source.png',"
+		"    output: 'resized.png',"
+		"    width: 12"
+		"  });"
+		"  return await morph.image.metadata({"
+		"    input: 'output/resized.png'"
+		"  });"
+		"}";
+	struct tool_result result;
+
+	ASSERT_EQ(file_ensure_dir(workdir.c_str()), 0);
+	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
+	tool_context_destroy(tctx);
+	tctx = tool_context_create(workdir.c_str(), output_dir.c_str());
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("relative_media", source).c_str(),
+			    &result), 0);
+	tool_result_cleanup(&result);
+
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "relative_media", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"width\":12"),
+		  std::string::npos);
+	EXPECT_TRUE(file_exists((output_dir + "/source.png").c_str()));
+	EXPECT_TRUE(file_exists((output_dir + "/resized.png").c_str()));
+	EXPECT_FALSE(file_exists((workdir + "/source.png").c_str()));
+	tool_result_cleanup(&result);
+}
+
 TEST_F(DynamicToolsTest, PersistentToolIgnoresStoredCapabilities)
 {
 	std::string dir = root + "/persistent/old_caps";

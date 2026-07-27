@@ -6,6 +6,7 @@
 int runner_has_cap(const char *cap);
 int runner_list_allows(const char *env_name, const char *value);
 JSValue runner_throw_cap(JSContext *ctx, const char *cap);
+char *runner_authorize_path(JSContext *ctx, const char *path, int write);
 
 int js_media_init(void);
 void js_media_shutdown(void);

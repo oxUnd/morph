@@ -112,6 +112,10 @@ morph.fetch(url)
 WebAssembly.instantiate(bytes, imports)
 ```
 
+动态工具中的相对读取路径以 runtime workdir 为基准，相对写入路径以
+runtime 已解析的 output_dir 为基准；`morph.exec()` 在 workdir 中执行。
+绝对路径保持不变，并在规范化后接受对应 allowlist 检查。
+
 动态工具不是 Node.js。不要使用 `require()`、`Buffer`、`process`、
 `node:` 模块、`fs`/`http`/`https`/`child_process`、`__dirname`、
 `__filename` 或 npm 包。图片能力统一走 `morph.image`，画布能力统一走

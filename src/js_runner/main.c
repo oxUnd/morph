@@ -84,27 +84,78 @@ JSValue runner_throw_cap(JSContext *ctx, const char *cap)
 				 cap ? cap : "unknown");
 }
 
+char *runner_authorize_path(JSContext *ctx, const char *path, int write)
+{
+	const char *cap = write ? "fs_write" : "fs_read";
+	const char *allow_env = write ? "MORPH_DYNAMIC_ALLOWED_WRITE" :
+		"MORPH_DYNAMIC_ALLOWED_READ";
+	const char *root_env = write ? "MORPH_DYNAMIC_OUTPUT_DIR" :
+		"MORPH_DYNAMIC_WORKDIR";
+	const char *root;
+	char *candidate;
+	char *resolved;
+
+	if (!runner_has_cap(cap)) {
+		runner_throw_cap(ctx, cap);
+		return NULL;
+	}
+	if (!path || !*path) {
+		JS_ThrowTypeError(ctx, "%s path is empty",
+				  write ? "write" : "read");
+		return NULL;
+	}
+	if (file_path_is_absolute(path)) {
+		candidate = strdup(path);
+	} else {
+		root = getenv(root_env);
+		if (!root || !*root) {
+			JS_ThrowInternalError(ctx,
+				"dynamic tool %s directory is unavailable",
+				write ? "output" : "work");
+			return NULL;
+		}
+		candidate = file_path_full_alloc(root, path);
+	}
+	if (!candidate) {
+		JS_ThrowOutOfMemory(ctx);
+		return NULL;
+	}
+	resolved = file_resolve_path(candidate);
+	free(candidate);
+	if (!resolved) {
+		JS_ThrowInternalError(ctx, "failed to resolve %s path",
+				      write ? "write" : "read");
+		return NULL;
+	}
+	if (!runner_list_allows(allow_env, resolved)) {
+		free(resolved);
+		JS_ThrowTypeError(ctx, "%s path denied",
+				  write ? "write" : "read");
+		return NULL;
+	}
+	return resolved;
+}
+
 static JSValue js_fs_read_text(JSContext *ctx, JSValueConst this_val,
 			       int argc, JSValueConst *argv)
 {
 	const char *path;
+	char *resolved;
 	char *data;
 	size_t len;
 
 	(void)this_val;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "readText(path) requires path");
-	if (!runner_has_cap("fs_read"))
-		return runner_throw_cap(ctx, "fs_read");
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_READ", path)) {
-		JS_FreeCString(ctx, path);
-		return JS_ThrowTypeError(ctx, "read path denied");
-	}
-	data = file_read_all(path, &len);
+	resolved = runner_authorize_path(ctx, path, 0);
 	JS_FreeCString(ctx, path);
+	if (!resolved)
+		return JS_EXCEPTION;
+	data = file_read_all(resolved, &len);
+	free(resolved);
 	if (!data)
 		return JS_ThrowInternalError(ctx, "failed to read file");
 	JSValue out = JS_NewStringLen(ctx, data, len);
@@ -116,6 +167,7 @@ static JSValue js_fs_write_text(JSContext *ctx, JSValueConst this_val,
 				int argc, JSValueConst *argv)
 {
 	const char *path;
+	char *resolved;
 	const char *text;
 	size_t len;
 	int rc;
@@ -124,23 +176,21 @@ static JSValue js_fs_write_text(JSContext *ctx, JSValueConst this_val,
 	if (argc < 2)
 		return JS_ThrowTypeError(ctx,
 					 "writeText(path, text) requires two args");
-	if (!runner_has_cap("fs_write"))
-		return runner_throw_cap(ctx, "fs_write");
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!runner_list_allows("MORPH_DYNAMIC_ALLOWED_WRITE", path)) {
-		JS_FreeCString(ctx, path);
-		return JS_ThrowTypeError(ctx, "write path denied");
-	}
+	resolved = runner_authorize_path(ctx, path, 1);
+	JS_FreeCString(ctx, path);
+	if (!resolved)
+		return JS_EXCEPTION;
 	text = JS_ToCStringLen(ctx, &len, argv[1]);
 	if (!text) {
-		JS_FreeCString(ctx, path);
+		free(resolved);
 		return JS_EXCEPTION;
 	}
-	rc = file_write_all(path, text, len);
+	rc = file_write_all(resolved, text, len);
+	free(resolved);
 	JS_FreeCString(ctx, text);
-	JS_FreeCString(ctx, path);
 	if (rc < 0)
 		return JS_ThrowInternalError(ctx, "failed to write file");
 	return JS_NewBool(ctx, 1);

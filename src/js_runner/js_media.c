@@ -99,23 +99,6 @@ static int require_wasm(JSContext *ctx)
 	return 1;
 }
 
-static int path_allowed(JSContext *ctx, const char *path, int write)
-{
-	const char *cap = write ? "fs_write" : "fs_read";
-	const char *env = write ? "MORPH_DYNAMIC_ALLOWED_WRITE" :
-		"MORPH_DYNAMIC_ALLOWED_READ";
-
-	if (!runner_has_cap(cap)) {
-		runner_throw_cap(ctx, cap);
-		return 0;
-	}
-	if (!runner_list_allows(env, path)) {
-		JS_ThrowTypeError(ctx, "%s path denied", write ? "write" : "read");
-		return 0;
-	}
-	return 1;
-}
-
 static void sharp_finalizer(JSRuntime *rt, JSValue val)
 {
 	struct sharp_image *img = JS_GetOpaque(val, sharp_class_id);
@@ -265,6 +248,7 @@ static uint8_t *js_buffer_bytes(JSContext *ctx, JSValueConst value,
 static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 {
 	const char *path;
+	char *resolved;
 	uint8_t *bytes;
 	size_t len;
 	VipsImage *image;
@@ -273,10 +257,10 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 		path = JS_ToCString(ctx, value);
 		if (!path)
 			return NULL;
-		if (!path_allowed(ctx, path, 0)) {
-			JS_FreeCString(ctx, path);
+		resolved = runner_authorize_path(ctx, path, 0);
+		JS_FreeCString(ctx, path);
+		if (!resolved)
 			return NULL;
-		}
 #ifdef __ANDROID__
 		{
 			int width = 0;
@@ -284,16 +268,16 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 			int channels = 0;
 			unsigned char *pixels;
 
-			pixels = stbi_load(path, &width, &height, &channels, 4);
+			pixels = stbi_load(resolved, &width, &height, &channels, 4);
 			image = image_from_stb_pixels(ctx, pixels, width,
 						      height);
 			if (image) {
-				JS_FreeCString(ctx, path);
+				free(resolved);
 				return image;
 			}
 		}
 #endif
-		image = vips_image_new_from_file(path, "access",
+		image = vips_image_new_from_file(resolved, "access",
 						 VIPS_ACCESS_SEQUENTIAL,
 						 NULL);
 		if (!image) {
@@ -303,11 +287,11 @@ static VipsImage *sharp_load_input(JSContext *ctx, JSValueConst value)
 			unsigned char *pixels;
 
 			vips_error_clear();
-			pixels = stbi_load(path, &width, &height, &channels, 4);
+			pixels = stbi_load(resolved, &width, &height, &channels, 4);
 			image = image_from_stb_pixels(ctx, pixels, width,
 						      height);
 		}
-		JS_FreeCString(ctx, path);
+		free(resolved);
 		if (!image)
 			(void)throw_vips_error(ctx, "failed to load image");
 		return image;
@@ -1220,6 +1204,7 @@ static JSValue js_sharp_to_file(JSContext *ctx, JSValueConst this_val,
 {
 	struct sharp_image *img = sharp_this(ctx, this_val);
 	const char *path;
+	char *resolved;
 	int rc;
 
 	if (!img)
@@ -1229,16 +1214,16 @@ static JSValue js_sharp_to_file(JSContext *ctx, JSValueConst this_val,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 1)) {
-		JS_FreeCString(ctx, path);
+	resolved = runner_authorize_path(ctx, path, 1);
+	JS_FreeCString(ctx, path);
+	if (!resolved)
 		return JS_EXCEPTION;
-	}
-	rc = vips_image_write_to_file(img->image, path, NULL);
+	rc = vips_image_write_to_file(img->image, resolved, NULL);
 	if (rc != 0) {
 		vips_error_clear();
-		rc = write_image_stb(path, img->image);
+		rc = write_image_stb(resolved, img->image);
 	}
-	JS_FreeCString(ctx, path);
+	free(resolved);
 	if (rc != 0)
 		return JS_ThrowInternalError(ctx, "failed to write image");
 	return JS_NewObject(ctx);
@@ -1897,6 +1882,7 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 {
 	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
 	const char *path;
+	char *resolved;
 	int rc;
 
 	if (!canvas)
@@ -1906,12 +1892,12 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 1)) {
-		JS_FreeCString(ctx, path);
-		return JS_EXCEPTION;
-	}
-	rc = write_surface_image_file(canvas->surface, path);
+	resolved = runner_authorize_path(ctx, path, 1);
 	JS_FreeCString(ctx, path);
+	if (!resolved)
+		return JS_EXCEPTION;
+	rc = write_surface_image_file(canvas->surface, resolved);
+	free(resolved);
 	if (rc < 0)
 		return JS_ThrowInternalError(ctx, "failed to write canvas: %s",
 					     strerror(-rc));
@@ -1948,6 +1934,7 @@ static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val,
 			       int argc, JSValueConst *argv)
 {
 	const char *path;
+	char *resolved;
 	char *data;
 	size_t len;
 	JSValue out;
@@ -1958,12 +1945,12 @@ static JSValue js_fs_read_file(JSContext *ctx, JSValueConst this_val,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 0)) {
-		JS_FreeCString(ctx, path);
-		return JS_EXCEPTION;
-	}
-	data = file_read_all(path, &len);
+	resolved = runner_authorize_path(ctx, path, 0);
 	JS_FreeCString(ctx, path);
+	if (!resolved)
+		return JS_EXCEPTION;
+	data = file_read_all(resolved, &len);
+	free(resolved);
 	if (!data)
 		return JS_ThrowInternalError(ctx, "failed to read file");
 	out = JS_NewArrayBufferCopy(ctx, (const uint8_t *)data, len);
@@ -1975,6 +1962,7 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
 				     int argc, JSValueConst *argv)
 {
 	const char *path;
+	char *resolved;
 	const char *text;
 	uint8_t *bytes;
 	size_t len = 0;
@@ -1986,14 +1974,14 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
 	path = JS_ToCString(ctx, argv[0]);
 	if (!path)
 		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 1)) {
-		JS_FreeCString(ctx, path);
+	resolved = runner_authorize_path(ctx, path, 1);
+	JS_FreeCString(ctx, path);
+	if (!resolved)
 		return JS_EXCEPTION;
-	}
 	bytes = js_buffer_bytes(ctx, argv[1], &len);
 	if (bytes) {
-		rc = file_write_all(path, (const char *)bytes, len);
-		JS_FreeCString(ctx, path);
+		rc = file_write_all(resolved, (const char *)bytes, len);
+		free(resolved);
 		if (rc < 0)
 			return JS_ThrowInternalError(ctx,
 						     "failed to write file: %s",
@@ -2002,12 +1990,12 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
 	}
 	text = JS_ToCStringLen(ctx, &len, argv[1]);
 	if (!text) {
-		JS_FreeCString(ctx, path);
+		free(resolved);
 		return JS_EXCEPTION;
 	}
-	rc = file_write_all(path, text, len);
+	rc = file_write_all(resolved, text, len);
+	free(resolved);
 	JS_FreeCString(ctx, text);
-	JS_FreeCString(ctx, path);
 	if (rc < 0)
 		return JS_ThrowInternalError(ctx, "failed to write file: %s",
 					     strerror(-rc));
@@ -2017,24 +2005,12 @@ static JSValue js_fs_write_file_sync(JSContext *ctx, JSValueConst this_val,
 static JSValue js_load_image(JSContext *ctx, JSValueConst this_val,
 			     int argc, JSValueConst *argv)
 {
-	const char *path;
-	JSValue out;
-
 	(void)this_val;
 	if (!require_image(ctx))
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "loadImage(path)");
-	path = JS_ToCString(ctx, argv[0]);
-	if (!path)
-		return JS_EXCEPTION;
-	if (!path_allowed(ctx, path, 0)) {
-		JS_FreeCString(ctx, path);
-		return JS_EXCEPTION;
-	}
-	out = js_sharp_call(ctx, JS_UNDEFINED, 1, argv);
-	JS_FreeCString(ctx, path);
-	return out;
+	return js_sharp_call(ctx, JS_UNDEFINED, 1, argv);
 }
 
 static JSValue get_arg_or_prop(JSContext *ctx, JSValueConst value,
@@ -2287,6 +2263,7 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
 	cairo_surface_t *surface = NULL;
 	cairo_t *cr = NULL;
 	const char *output;
+	char *resolved_output;
 	const char *style;
 	const char *caption;
 	int32_t pad = 48;
@@ -2306,7 +2283,8 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
 	output = object_string_prop(ctx, argv[0], "output");
 	if (!output)
 		return JS_ThrowTypeError(ctx, "morph.image.frame requires output");
-	if (!path_allowed(ctx, output, 1)) {
+	resolved_output = runner_authorize_path(ctx, output, 1);
+	if (!resolved_output) {
 		JS_FreeCString(ctx, output);
 		return JS_EXCEPTION;
 	}
@@ -2314,6 +2292,7 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
 	image = sharp_load_input(ctx, input_val);
 	JS_FreeValue(ctx, input_val);
 	if (!image) {
+		free(resolved_output);
 		JS_FreeCString(ctx, output);
 		return JS_EXCEPTION;
 	}
@@ -2322,6 +2301,7 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
 	src = surface_from_sharp(&tmp);
 	if (!src) {
 		g_object_unref(image);
+		free(resolved_output);
 		JS_FreeCString(ctx, output);
 		return JS_ThrowInternalError(ctx, "failed to decode image");
 	}
@@ -2378,7 +2358,7 @@ static JSValue js_image_frame_fn(JSContext *ctx, JSValueConst this_val,
 		cairo_move_to(cr, pad, height + pad * 1.65);
 		cairo_show_text(cr, caption);
 	}
-	rc = write_surface_image_file(surface, output);
+	rc = write_surface_image_file(surface, resolved_output);
 out_fail:
 	if (cr)
 		cairo_destroy(cr);
@@ -2391,6 +2371,7 @@ out_fail:
 		JS_FreeCString(ctx, caption);
 	g_object_unref(image);
 	if (rc < 0) {
+		free(resolved_output);
 		JS_FreeCString(ctx, output);
 		return JS_ThrowInternalError(ctx, "failed to write frame: %s",
 					     strerror(-rc));
@@ -2399,6 +2380,7 @@ out_fail:
 	JS_SetPropertyStr(ctx, out, "output", JS_NewString(ctx, output));
 	JS_SetPropertyStr(ctx, out, "width", JS_NewInt32(ctx, frame_w));
 	JS_SetPropertyStr(ctx, out, "height", JS_NewInt32(ctx, frame_h));
+	free(resolved_output);
 	JS_FreeCString(ctx, output);
 	return out;
 }
