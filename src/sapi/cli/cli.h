@@ -25,6 +25,7 @@ struct cli_context {
 	int event_stream_kind;
 	int event_stream_has_delta;
 	int event_stream_complete;
+	int event_stream_visible;
 	int final_rendered;
 	int status_visible;
 	int markdown_stream_kind;

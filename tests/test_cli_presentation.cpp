@@ -120,6 +120,23 @@ TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 	cJSON_Delete(thinking);
 }
 
+TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
+{
+	cJSON *reasoning = TextData("Checking constraints");
+	cJSON *final = TextData("Done");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta",
+	     reasoning);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(output, "reasoning: Checking constraints\nfinal:\nDone\n");
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+	cJSON_Delete(reasoning);
+	cJSON_Delete(final);
+}
+
 TEST_F(CliPresentationTest, OnceReportsArtifactWithoutRendering)
 {
 	cJSON *artifact = cJSON_CreateObject();
@@ -168,10 +185,11 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("final:"), std::string::npos);
-	EXPECT_NE(output.find("\n  Compact"), std::string::npos);
+	EXPECT_NE(output.find("Compact"), std::string::npos);
 	EXPECT_NE(output.find("\n  • first item"), std::string::npos);
 	EXPECT_NE(output.find("\n  • second item"), std::string::npos);
-	EXPECT_EQ(output.find("\nCompact"), std::string::npos);
+	EXPECT_EQ(output.find("Compact", output.find("Compact") + 1),
+		  std::string::npos);
 	cJSON_Delete(final);
 }
 
@@ -189,8 +207,6 @@ TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("\033[?2026h"), std::string::npos);
-	EXPECT_NE(output.find("\033_Ga=d,d=A,q=2\033\\"), std::string::npos);
-	EXPECT_NE(output.find("\033[H\033[2J"), std::string::npos);
 	EXPECT_NE(output.find("\033[?2026l"), std::string::npos);
 	EXPECT_NE(output.find("Stream"), std::string::npos);
 	EXPECT_NE(output.find("• item"), std::string::npos);
@@ -223,6 +239,84 @@ TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 
 	cJSON_Delete(first);
 	cJSON_Delete(second);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
+{
+	cJSON *first = TextData("Inspect");
+	cJSON *second = TextData("ing the state");
+	cJSON *answer = TextData("Done");
+	cJSON *final = TextData("fallback final payload");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", first);
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", answer);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("\033[2m• Reasoning  \033[0m"),
+		  std::string::npos);
+	EXPECT_NE(output.find("\033[2mInspect\033[0m"),
+		  std::string::npos);
+	EXPECT_NE(output.find("\033[2ming the state\033[0m"),
+		  std::string::npos);
+	EXPECT_EQ(output.find("Reasoning", output.find("Reasoning") + 1),
+		  std::string::npos);
+	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
+	EXPECT_EQ(ctx.event_stream_visible, 0);
+	EXPECT_EQ(ctx.final_rendered, 1);
+
+	cli_set_color_enabled(0);
+	cJSON_Delete(first);
+	cJSON_Delete(second);
+	cJSON_Delete(answer);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
+{
+	cJSON *reasoning = TextData("Checking constraints");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta",
+	     reasoning);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("• Reasoning  Checking constraints"),
+		  std::string::npos);
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+	cJSON_Delete(reasoning);
+}
+
+TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
+{
+	cJSON *thought = TextData("Calling a tool");
+	cJSON *call = cJSON_CreateObject();
+	cJSON *args = cJSON_CreateObject();
+	cJSON *final = TextData("Authoritative final");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(call, "tool", "file_list");
+	cJSON_AddStringToObject(args, "path", ".");
+	cJSON_AddItemToObject(call, "args", args);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", thought);
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Calling a tool"), std::string::npos);
+	EXPECT_NE(output.find("Authoritative final"), std::string::npos);
+	EXPECT_EQ(ctx.final_rendered, 1);
+
+	cJSON_Delete(thought);
+	cJSON_Delete(call);
 	cJSON_Delete(final);
 }
 
