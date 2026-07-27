@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include "render/image.h"
 #include "render/video.h"
-#include "render/markdown.h"
 #include "util/file.h"
 #include <stdlib.h>
 #include <string.h>
@@ -129,72 +128,6 @@ TEST(RenderImage, NonexistentFile) {
 	remove("/tmp/morph_test_no_such_file.png");
 }
 
-/* ---- render command: markdown rendering ---- */
-
-TEST(RenderMarkdown, SimpleHeading) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("# Hello World");
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("Hello World"), std::string::npos);
-}
-
-TEST(RenderMarkdown, Paragraph) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("This is a paragraph.");
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("paragraph"), std::string::npos);
-}
-
-TEST(RenderMarkdown, CodeBlock) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("```c\nint main() { return 0; }\n```");
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("main"), std::string::npos);
-}
-
-TEST(RenderMarkdown, NullInput) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi(NULL);
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_TRUE(out.empty() || out == "\n");
-}
-
-TEST(RenderMarkdown, EmptyString) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("");
-	std::string out = testing::internal::GetCapturedStdout();
-}
-
-TEST(RenderMarkdown, BoldText) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("This is **bold** text");
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("bold"), std::string::npos);
-}
-
-TEST(RenderMarkdown, LinkText) {
-	testing::internal::CaptureStdout();
-	markdown_render_ansi("[click here](https://example.com)");
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("click here"), std::string::npos);
-}
-
-TEST(RenderMarkdown, ReadFileAndRender) {
-	const char *path = "/tmp/morph_test_render_md.md";
-	ASSERT_EQ(create_test_text(path, "# Test Heading\n\nSome **bold** text.\n"), 0);
-	size_t len = 0;
-	char *text = file_read_all(path, &len);
-	ASSERT_NE(text, nullptr);
-	EXPECT_GT(len, 0u);
-	testing::internal::CaptureStdout();
-	markdown_render_ansi(text);
-	std::string out = testing::internal::GetCapturedStdout();
-	EXPECT_NE(out.find("Test Heading"), std::string::npos);
-	EXPECT_NE(out.find("bold"), std::string::npos);
-	free(text);
-	remove(path);
-}
-
 /* ---- render command: video rendering (null/empty path) ---- */
 
 TEST(RenderVideo, NullPath) {
@@ -216,33 +149,4 @@ TEST(RenderPath, AbsolutePath) {
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_STREQ(expanded, "/tmp/test.txt");
 	free(expanded);
-}
-
-/* ---- render command: markdown with media callback ---- */
-
-TEST(RenderMarkdown, MediaCallbackImage) {
-	int image_called = 0;
-	std::string collected_type;
-	std::string collected_path;
-
-	auto cb = [](const char *type, const char *path, void *user) {
-		auto *data = static_cast<int*>(user);
-		*data = 1;
-	};
-
-	markdown_render_ansi_with_media("![alt](photo.png)", NULL, &image_called);
-}
-
-/* ---- render command: buffer rendering ---- */
-
-TEST(RenderMarkdown, BufferRendering) {
-	char buf[256];
-	size_t n = markdown_render_ansi_to_buf("# Hello", buf, sizeof(buf));
-	EXPECT_GT(n, 0u);
-	EXPECT_NE(strstr(buf, "Hello"), nullptr);
-}
-
-TEST(RenderMarkdown, BufferTooSmall) {
-	char buf[4];
-	size_t n = markdown_render_ansi_to_buf("# Hello", buf, sizeof(buf));
 }

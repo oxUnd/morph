@@ -13,6 +13,8 @@ enum cli_presentation_mode {
 	CLI_PRESENT_EVENTS_JSON,
 };
 
+struct morph_md_kitty;
+
 struct cli_context {
 	struct runtime *runtime;
 	enum cli_presentation_mode presentation_mode;
@@ -25,9 +27,13 @@ struct cli_context {
 	int event_stream_complete;
 	int final_rendered;
 	int status_visible;
+	int markdown_stream_kind;
+	int markdown_stream_visible;
 	char image_path[PATH_MAX];
 	morph_buf_t event_stream;
+	morph_buf_t markdown_stream_text;
 	morph_strmap_t rendered_artifacts;
+	struct morph_md_kitty *markdown_stream;
 	int trace_json;
 	morph_event_cb event_cb;
 	void *event_user_data;

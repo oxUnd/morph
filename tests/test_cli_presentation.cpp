@@ -3,7 +3,6 @@
 extern "C" {
 #include "sapi/cli/cli.h"
 #include "event/event.h"
-#include "render/markdown.h"
 
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
@@ -21,7 +20,6 @@ protected:
 	void SetUp() override
 	{
 		cli_set_color_enabled(0);
-		markdown_set_color_enabled(0);
 		ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
@@ -32,7 +30,6 @@ protected:
 	{
 		cli_presentation_cleanup(&ctx);
 		cli_set_color_enabled(1);
-		markdown_set_color_enabled(1);
 	}
 
 	void Emit(enum morph_event_type type, const char *name,
@@ -171,10 +168,61 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("final:"), std::string::npos);
-	EXPECT_NE(output.find("\n  # Compact"), std::string::npos);
+	EXPECT_NE(output.find("\n  Compact"), std::string::npos);
 	EXPECT_NE(output.find("\n  • first item"), std::string::npos);
 	EXPECT_NE(output.find("\n  • second item"), std::string::npos);
-	EXPECT_EQ(output.find("\n# Compact"), std::string::npos);
+	EXPECT_EQ(output.find("\nCompact"), std::string::npos);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
+{
+	cJSON *first = TextData("# Stream");
+	cJSON *second = TextData("ed\n\n- item");
+	cJSON *final = TextData("fallback final payload");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", first);
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("\033[?2026h"), std::string::npos);
+	EXPECT_NE(output.find("\033_Ga=d,d=A,q=2\033\\"), std::string::npos);
+	EXPECT_NE(output.find("\033[H\033[2J"), std::string::npos);
+	EXPECT_NE(output.find("\033[?2026l"), std::string::npos);
+	EXPECT_NE(output.find("Stream"), std::string::npos);
+	EXPECT_NE(output.find("• item"), std::string::npos);
+	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
+	EXPECT_EQ(ctx.markdown_stream, nullptr);
+	EXPECT_EQ(ctx.final_rendered, 1);
+
+	cJSON_Delete(first);
+	cJSON_Delete(second);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
+{
+	cJSON *first = TextData("# Native");
+	cJSON *second = TextData(" stream");
+	cJSON *final = TextData("fallback final payload");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", first);
+	Emit(MORPH_EVENT_REACT, "react.thought.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Native stream"), std::string::npos);
+	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
+	EXPECT_EQ(ctx.markdown_stream, nullptr);
+	EXPECT_EQ(ctx.final_rendered, 1);
+
+	cJSON_Delete(first);
+	cJSON_Delete(second);
 	cJSON_Delete(final);
 }
 

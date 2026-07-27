@@ -36,6 +36,7 @@ target_link_libraries(morph-cli PUBLIC
 	morph-session
 	morph-credits
 	morph-render
+	MorphMarkdown::Kitty
 	morph-skill
 	morph-tools
 	morph-ext
@@ -45,6 +46,9 @@ target_link_libraries(morph-cli PUBLIC
 	morph-event
 	morph-agent-ui
 	morph-sync
+)
+target_compile_definitions(morph-cli PRIVATE
+	MORPH_MARKDOWN_FONT_PATH="${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf"
 )
 
 add_executable(morph main.c)

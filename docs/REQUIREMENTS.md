@@ -352,7 +352,7 @@ saved 5 messages
 | Thought 流式预览 | Spinner submessage 滚动显示最近 token | 超长自动滚动，最多 80 列可见 |
 | 耗时 | 阶段完成后显示 `(Ns)` 或 `(Nm Ns)` | 紧跟状态前缀 |
 | Guardrail | 直接打印 `[Guardrail]` 标签行 | 粗体青色 |
-| 文字（Final） | 自实现 Markdown→ANSI（基于 md4c）+ 媒体内联回调 + 代码高亮 + MathJax-C/Kitty LaTeX | 颜色 / 粗体 / 代码块 / 语法高亮 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
+| 文字（Final） | MorphMarkdown Kitty SDK + 媒体回调 | 颜色 / 粗体 / 代码块 / 数学公式；Markdown 中的 `![image](path)` / `![video](path)` 自动触发渲染 |
 | 图片 | 终端协议优先级：**kitty > iterm2 > sixel > 文件路径回退** | 自动探测 |
 | 视频 | fork+exec mpv | 失败回退到打印路径 |
 | 链接 | OSC 8 超链接 | 不支持时降级为纯 URL |
@@ -542,8 +542,8 @@ LLM 调用前:
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
 | JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
 | TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
-| Markdown | md4c v0.5.3 | ✓ | CMake FetchContent 拉取，非 vendor/ 嵌入 |
-| 代码高亮 | 自实现 ANSI 语法高亮 | ✓ | `src/render/highlight.c` |
+| Markdown | cmark-gfm 0.29.0.gfm.13 | ✓ | 由 `fronts/morph-markdown` FetchContent 拉取 |
+| Markdown 渲染 | MorphMarkdown Kitty SDK | ✓ | `fronts/morph-markdown/sdk/kitty/morph-markdown/` |
 | LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | 依赖 freetype2 / harfbuzz |
 | 图片解码/编码/缩放 | stb_image / stb_image_write / stb_image_resize2 | ✓ | 单头文件（vendor/） |
 | 动态工具图片处理 | libvips + cairo + pangocairo | ✓ | QuickJS Host API 的 image/canvas 能力 |
@@ -2471,7 +2471,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 | `REACT_STEP_ACTION` | `spin_update(EXECUTING, tool_name)` + `spin_set_sub(tool_args)` |
 | `REACT_STEP_OBSERVATION` | `spin_stop(COMPLETE/ERROR, 结果摘要)` |
 | `REACT_STEP_REFLECTION` | 直接打印 `[Guardrail]` 行（验证失败原因） |
-| `REACT_STEP_FINAL` | `spin_stop(COMPLETE)` + `markdown_render_ansi_with_media()` |
+| `REACT_STEP_FINAL` | `cli_markdown_render_ansi_with_media()`（MorphMarkdown Kitty SDK） |
 
 ### 6.12 C 编码规范
 

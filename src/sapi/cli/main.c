@@ -1,6 +1,5 @@
 #include "sapi/cli/cli.h"
 #include "config.h"
-#include "render/markdown.h"
 #include "skill/skill.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -284,7 +283,6 @@ int main(int argc, char *argv[])
 	if (one_shot_prompt || events_json)
 		no_color = 1;
 	cli_set_color_enabled(!no_color);
-	markdown_set_color_enabled(!no_color);
 	if (show_help) {
 		printf("Usage: morph [-c config_path] [-w workdir] "
 		       "[-p prompt] [-v] [--trace-json] [--no-color] "

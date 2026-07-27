@@ -1,5 +1,151 @@
 #include "sapi/cli/internal.h"
 
+static int cli_markdown_write(const char *bytes, size_t len, void *user)
+{
+	size_t i;
+
+	(void)user;
+	if (!bytes || len == 0)
+		return 0;
+	if (cli_color_enabled())
+		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
+	for (i = 0u; i < len;) {
+		if ((unsigned char)bytes[i] == 0x1bu &&
+		    i + 1u < len && bytes[i + 1u] == '[') {
+			size_t end = i + 2u;
+
+			while (end < len &&
+			       ((unsigned char)bytes[end] < 0x40u ||
+				(unsigned char)bytes[end] > 0x7eu))
+				end++;
+			if (end < len && bytes[end] == 'm') {
+				i = end + 1u;
+				continue;
+			}
+		}
+		if (fputc((unsigned char)bytes[i], stdout) == EOF)
+			return -EIO;
+		i++;
+	}
+	return 0;
+}
+
+static int cli_terminal_supports_kitty(void)
+{
+	const char *term;
+
+	if (getenv("KITTY_WINDOW_ID"))
+		return 1;
+	term = getenv("TERM");
+	return term && strstr(term, "kitty");
+}
+
+static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
+						   int enable_math,
+						   cli_markdown_media_cb cb,
+						   void *user)
+{
+	struct morph_md_kitty_options options;
+
+	memset(&options, 0, sizeof(options));
+	options.font_path = MORPH_MARKDOWN_FONT_PATH;
+	options.features = MORPH_MD_FEATURE_GFM;
+	if (enable_math && cli_color_enabled() &&
+	    cli_terminal_supports_kitty())
+		options.features |= MORPH_MD_FEATURE_MATH;
+	options.write = cli_markdown_write;
+	options.media = cb;
+	options.media_user_data = user;
+	options.terminal_fd = STDOUT_FILENO;
+	options.content_padding_left_columns = indent;
+	return morph_md_kitty_create(&options);
+}
+
+static void cli_markdown_render(const char *md, unsigned int indent,
+				cli_markdown_media_cb cb, void *user)
+{
+	struct morph_md_kitty *renderer;
+	char *normalized;
+	const char *content;
+	int rc;
+
+	if (!md)
+		return;
+	normalized = agent_ui_normalize_markdown(md);
+	content = normalized ? normalized : md;
+	renderer = cli_markdown_create(indent, 1, cb, user);
+	if (!renderer) {
+		log_warn("failed to initialize Kitty Markdown renderer");
+		goto out;
+	}
+	rc = morph_md_kitty_append(renderer, content, strlen(content), 1);
+	if (rc == 0)
+		rc = morph_md_kitty_render(renderer);
+	if (rc != 0)
+		log_warn("Kitty Markdown rendering failed");
+	morph_md_kitty_destroy(renderer);
+	fflush(stdout);
+out:
+	free(normalized);
+}
+
+int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
+			       int kind)
+{
+	int rc;
+	int end_rc;
+	int frame_started;
+
+	if (!ctx || !delta || !delta[0])
+		return 0;
+	if (ctx->markdown_stream && ctx->markdown_stream_kind != kind)
+		cli_markdown_stream_reset(ctx, 1);
+	if (!ctx->markdown_stream) {
+		ctx->markdown_stream = cli_markdown_create(2u, 1, NULL, NULL);
+		if (!ctx->markdown_stream)
+			MORPH_RETURN(-ENOMEM);
+		ctx->markdown_stream_kind = kind;
+		ctx->markdown_stream_visible = 1;
+	}
+	rc = morph_buf_puts(&ctx->markdown_stream_text, delta);
+	if (rc != 0)
+		return rc;
+	rc = morph_md_kitty_append(ctx->markdown_stream, delta,
+				   strlen(delta), 0);
+	if (rc != 0)
+		return rc;
+	rc = morph_md_kitty_begin_frame(ctx->markdown_stream);
+	frame_started = rc == 0;
+	if (rc == 0)
+		rc = morph_md_kitty_clear(ctx->markdown_stream);
+	if (rc == 0)
+		rc = morph_md_kitty_render(ctx->markdown_stream);
+	end_rc = frame_started ?
+		morph_md_kitty_end_frame(ctx->markdown_stream) : rc;
+	return rc == 0 ? end_rc : rc;
+}
+
+void cli_markdown_stream_reset(struct cli_context *ctx, int clear_output)
+{
+	int frame_started;
+
+	if (!ctx)
+		return;
+	if (clear_output && ctx->markdown_stream) {
+		frame_started =
+			morph_md_kitty_begin_frame(ctx->markdown_stream) == 0;
+		if (frame_started) {
+			(void)morph_md_kitty_clear(ctx->markdown_stream);
+			(void)morph_md_kitty_end_frame(ctx->markdown_stream);
+		}
+	}
+	morph_md_kitty_destroy(ctx->markdown_stream);
+	ctx->markdown_stream = NULL;
+	ctx->markdown_stream_kind = 0;
+	ctx->markdown_stream_visible = 0;
+	morph_buf_reset(&ctx->markdown_stream_text);
+}
+
 void media_callback(const char *type, const char *path, void *user)
 {
 	struct cli_context *ctx = (struct cli_context *)user;
@@ -21,47 +167,22 @@ void media_callback(const char *type, const char *path, void *user)
 
 void cli_markdown_render_ansi(const char *md)
 {
-	char *normalized;
-
-	if (!md) {
-		markdown_render_ansi(NULL);
-		return;
-	}
-	normalized = agent_ui_normalize_markdown(md);
-	markdown_render_ansi(normalized ? normalized : md);
-	free(normalized);
+	cli_markdown_render(md, 0u, NULL, NULL);
 }
 
 void cli_markdown_render_ansi_with_media(const char *md,
-						markdown_media_cb cb,
+						cli_markdown_media_cb cb,
 						void *user)
 {
-	char *normalized;
-
-	if (!md) {
-		markdown_render_ansi_with_media(NULL, cb, user);
-		return;
-	}
-	normalized = agent_ui_normalize_markdown(md);
-	markdown_render_ansi_with_media(normalized ? normalized : md, cb, user);
-	free(normalized);
+	cli_markdown_render(md, 0u, cb, user);
 }
 
 void cli_markdown_render_ansi_with_media_indented(const char *md,
 						  unsigned int indent,
-						  markdown_media_cb cb,
+						  cli_markdown_media_cb cb,
 						  void *user)
 {
-	char *normalized;
-
-	if (!md) {
-		markdown_render_ansi_with_media_indented(NULL, indent, cb, user);
-		return;
-	}
-	normalized = agent_ui_normalize_markdown(md);
-	markdown_render_ansi_with_media_indented(
-		normalized ? normalized : md, indent, cb, user);
-	free(normalized);
+	cli_markdown_render(md, indent, cb, user);
 }
 
 static int cli_set_ask_user_answers(char ***answers,

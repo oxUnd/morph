@@ -3,6 +3,7 @@
 #define CLI_STREAM_NONE      0
 #define CLI_STREAM_THOUGHT   1
 #define CLI_STREAM_REASONING 2
+#define CLI_STREAM_FINAL     3
 #define CLI_EVENT_TEXT_MAX   2000
 #define CLI_EVENT_ARGS_MAX   180
 #define CLI_TREE_VALUE_MAX   160
@@ -258,6 +259,7 @@ static void presentation_print_stream(struct cli_context *ctx)
 
 	if (!ctx || ctx->event_stream_kind == CLI_STREAM_NONE)
 		return;
+	cli_markdown_stream_reset(ctx, 1);
 	presentation_clear_status(ctx);
 	content = morph_buf_cstr(&ctx->event_stream);
 	if (!content || !content[0])
@@ -281,6 +283,7 @@ static void presentation_discard_stream(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	cli_markdown_stream_reset(ctx, 1);
 	morph_buf_reset(&ctx->event_stream);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
 	ctx->event_stream_has_delta = 0;
@@ -505,6 +508,10 @@ static void presentation_final(struct cli_context *ctx,
 			       const struct morph_event *ev)
 {
 	const char *text = event_string(ev, "text");
+	const char *stream_text = morph_buf_cstr(&ctx->markdown_stream_text);
+	char *streamed = stream_text && stream_text[0] ?
+		strdup(stream_text) : NULL;
+	int had_stream = ctx->markdown_stream_visible;
 
 	presentation_clear_status(ctx);
 	if (ctx->event_stream_kind == CLI_STREAM_THOUGHT &&
@@ -512,20 +519,24 @@ static void presentation_final(struct cli_context *ctx,
 		presentation_discard_stream(ctx);
 	else
 		presentation_print_stream(ctx);
+	cli_markdown_stream_reset(ctx, 1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("final:\n");
 		if (text && text[0])
 			printf("%s\n", text);
 	} else {
-		printf("\n");
-		if (text && text[0]) {
+		if (!had_stream)
+			printf("\n");
+		if (streamed || (text && text[0])) {
 			cli_markdown_render_ansi_with_media_indented(
-				text, 2, media_callback, ctx);
+				streamed ? streamed : text,
+				2, media_callback, ctx);
 		} else {
 			printf("\n");
 		}
 		printf("\n");
 	}
+	free(streamed);
 	ctx->final_rendered = 1;
 }
 
@@ -540,6 +551,7 @@ static void presentation_turn_end(struct cli_context *ctx,
 		return;
 	if (ctx->final_rendered)
 		return;
+	cli_markdown_stream_reset(ctx, 1);
 	presentation_clear_status(ctx);
 	presentation_print_stream(ctx);
 	error = event_string(ev, "error");
@@ -662,9 +674,15 @@ int cli_presentation_init(struct cli_context *ctx)
 	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
 	if (rc != 0)
 		return rc;
+	rc = morph_buf_init(&ctx->markdown_stream_text, BUFSIZ);
+	if (rc != 0) {
+		morph_buf_cleanup(&ctx->event_stream);
+		return rc;
+	}
 	rc = morph_strmap_init(&ctx->rendered_artifacts,
 			       MORPH_STRMAP_INIT_CAP);
 	if (rc != 0) {
+		morph_buf_cleanup(&ctx->markdown_stream_text);
 		morph_buf_cleanup(&ctx->event_stream);
 		return rc;
 	}
@@ -677,6 +695,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 		return;
 	morph_buf_reset(&ctx->event_stream);
 	morph_strmap_clear(&ctx->rendered_artifacts);
+	cli_markdown_stream_reset(ctx, 1);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
@@ -694,6 +713,8 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	if (!ctx)
 		return;
 	presentation_clear_status(ctx);
+	cli_markdown_stream_reset(ctx, 0);
+	morph_buf_cleanup(&ctx->markdown_stream_text);
 	morph_buf_cleanup(&ctx->event_stream);
 	morph_strmap_cleanup(&ctx->rendered_artifacts);
 }
@@ -735,15 +756,33 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_status(ctx, "Thinking…");
 			return 0;
 		}
-		if (strcmp(ev->name, "react.thought.delta") == 0)
-			return presentation_append_stream(
+		if (strcmp(ev->name, "react.thought.delta") == 0) {
+			int rc = presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 1, 0);
+
+			if (rc == 0 &&
+			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+				presentation_clear_status(ctx);
+				rc = cli_markdown_stream_append(
+					ctx, text, CLI_STREAM_THOUGHT);
+			}
+			return rc;
+		}
 		if (strcmp(ev->name, "react.thought.end") == 0)
 			return presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 0, 1);
 		if (strcmp(ev->name, "react.reasoning.delta") == 0)
 			return presentation_append_stream(
 				ctx, CLI_STREAM_REASONING, text, 1, 0);
+		if (strcmp(ev->name, "react.final.delta") == 0) {
+			if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+				return 0;
+			presentation_clear_status(ctx);
+			if (ctx->markdown_stream_kind == CLI_STREAM_THOUGHT)
+				presentation_print_stream(ctx);
+			return cli_markdown_stream_append(
+				ctx, text, CLI_STREAM_FINAL);
+		}
 		if (strcmp(ev->name, "react.observation") == 0) {
 			presentation_observation(ctx, ev);
 			return 0;

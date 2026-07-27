@@ -36,21 +36,6 @@ if(POLICY CMP0169)
 	cmake_policy(SET CMP0169 OLD)
 endif()
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz")
-	FetchContent_Declare(
-		md4c
-		URL "${CMAKE_SOURCE_DIR}/_deps/md4c-0.5.3.tar.gz"
-		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-	)
-else()
-	FetchContent_Declare(
-		md4c
-		URL      https://github.com/mity/md4c/archive/refs/tags/release-0.5.3.tar.gz
-		DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-	)
-endif()
-FetchContent_MakeAvailable(md4c)
-
 FetchContent_Declare(
 	quickjs
 	URL https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz
@@ -169,6 +154,11 @@ if(APPLE)
                 )
         endif()
 endif()
+
+set(MORPH_MARKDOWN_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "" FORCE)
+set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
+set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
+add_subdirectory(fronts/morph-markdown)
 
 add_compile_options(
 	$<$<COMPILE_LANGUAGE:C>:-Wall>

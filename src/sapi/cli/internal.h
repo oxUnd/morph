@@ -44,7 +44,7 @@
 #include "config.h"
 #include "models/image_gen.h"
 #include "models/video_gen.h"
-#include "render/markdown.h"
+#include "morph_markdown_kitty.h"
 #include "render/image.h"
 #include "render/video.h"
 #include "agent_ui/agent_ui.h"
@@ -115,13 +115,18 @@ int cli_sync_start(struct cli_context *ctx);
 
 void media_callback(const char *type, const char *path, void *user);
 void cli_markdown_render_ansi(const char *md);
+typedef void (*cli_markdown_media_cb)(const char *type, const char *path,
+				      void *user);
 void cli_markdown_render_ansi_with_media(const char *md,
-					 markdown_media_cb cb,
+					 cli_markdown_media_cb cb,
 					 void *user);
 void cli_markdown_render_ansi_with_media_indented(const char *md,
 						  unsigned int indent,
-						  markdown_media_cb cb,
+						  cli_markdown_media_cb cb,
 						  void *user);
+int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
+			       int kind);
+void cli_markdown_stream_reset(struct cli_context *ctx, int clear_output);
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,
