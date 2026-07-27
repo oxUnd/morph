@@ -403,6 +403,9 @@ struct direct_stream_data {
 	const char **chunks;
 	int chunk_count;
 	const char *content;
+	const char *final_content;
+	int tool_on_first_call;
+	int call_count;
 };
 
 static int direct_stream_chat_with_tools(struct model *self,
@@ -424,13 +427,32 @@ static int direct_stream_chat_with_tools(struct model *self,
 	(void)tool_count;
 	struct direct_stream_data *data =
 		(struct direct_stream_data *)self->handle;
+	memset(response, 0, sizeof(*response));
+	data->call_count++;
+	if (data->tool_on_first_call && data->call_count > 1) {
+		int rc = stream_cb(LLM_STREAM_CONTENT, data->final_content,
+				   stream_ud);
+		if (rc != 0)
+			return rc;
+		response->content = strdup(data->final_content);
+		return 200;
+	}
 	for (int i = 0; i < data->chunk_count; i++) {
 		int rc = stream_cb(LLM_STREAM_CONTENT, data->chunks[i], stream_ud);
 		if (rc != 0)
 			return rc;
 	}
-	memset(response, 0, sizeof(*response));
 	response->content = strdup(data->content);
+	if (data->tool_on_first_call) {
+		response->tool_calls =
+			(struct tool_call *)calloc(1, sizeof(*response->tool_calls));
+		response->tool_call_count = 1;
+		strncpy(response->tool_calls[0].name, "test_tool",
+			sizeof(response->tool_calls[0].name) - 1);
+		snprintf(response->tool_calls[0].id,
+			 sizeof(response->tool_calls[0].id), "typed_call_1");
+		response->tool_calls[0].arguments = strdup("{}");
+	}
 	return 200;
 }
 
@@ -447,6 +469,19 @@ static struct model *create_direct_stream_llm(const char **chunks,
 	data->content = content;
 	free(m->handle);
 	m->handle = data;
+	return m;
+}
+
+static struct model *create_direct_stream_tool_llm(const char **chunks,
+						    int chunk_count,
+						    const char *thought,
+						    const char *final_content)
+{
+	struct model *m = create_direct_stream_llm(chunks, chunk_count, thought);
+	struct direct_stream_data *data =
+		(struct direct_stream_data *)m->handle;
+	data->tool_on_first_call = 1;
+	data->final_content = final_content;
 	return m;
 }
 
@@ -1456,7 +1491,7 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 	return out;
 }
 
-TEST_F(MockLlmTest, StreamsNativeContentAsFinalDeltaWithoutFinalMarker) {
+TEST_F(MockLlmTest, EmitsNativeContentAsFinalDeltaWithoutFinalMarker) {
 	const char *chunks[] = {
 		"# ",
 		"Title\n\nword",
@@ -1476,9 +1511,39 @@ TEST_F(MockLlmTest, StreamsNativeContentAsFinalDeltaWithoutFinalMarker) {
 	int rc = react_run(ctx, "stream final", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 4);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 1);
 	EXPECT_EQ(event_recorder_join_text(&rec, "react.final.delta"),
 		  "# Title\n\nword between words");
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
+
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ClassifiesNativeContentWithToolCallsAsThought) {
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
+		      "A test tool", "{}", test_tool_fn, nullptr, nullptr);
+	const char *chunks[] = {"I will ", "inspect first."};
+	llm = create_direct_stream_tool_llm(
+		chunks, 2, "I will inspect first.", "Done.");
+	struct react_context *ctx =
+		react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+
+	struct morph_event_recorder rec;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(
+		ctx, morph_event_recorder_cb, &rec));
+
+	int rc = react_run(ctx, "inspect", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.thought.delta"),
+		  "I will inspect first.");
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.final.delta"), "Done.");
+	EXPECT_LT(event_recorder_index_name(&rec, "react.thought.delta"),
+		  event_recorder_index_name(&rec, "tool.call"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.end"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);

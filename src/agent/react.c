@@ -1331,6 +1331,7 @@ struct react_stream_data {
 	size_t emitted_len;
 	int in_final;
 	int skip_legacy_final_separator;
+	int defer_typed_content;
 };
 
 static int react_final_marker_len(const char *p)
@@ -1554,6 +1555,8 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
+	if (sd->defer_typed_content)
+		return 0;
 	return react_stream_parse_emit(sd);
 }
 
@@ -1581,13 +1584,11 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 	}
 	if (kind == LLM_STREAM_CONTENT) {
 		/*
-		 * Structured chat-completions streams already separate answer
-		 * text from native tool_calls and reasoning_content. Treat
-		 * content as the answer channel instead of falling back to the
-		 * legacy ReAct "Final:" text marker parser.
+		 * A structured content stream can still accompany native tool
+		 * calls. Defer its UI classification until the completed
+		 * response tells us whether the content is Thought or Final.
 		 */
-		sd->in_final = 1;
-		sd->skip_legacy_final_separator = 0;
+		sd->defer_typed_content = 1;
 		return react_stream_cb(token, user_data);
 	}
 	return react_stream_cb(token, user_data);
@@ -2110,7 +2111,25 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		}
 	}
 	if (status >= 0) {
-		int flush_rc = react_stream_flush(&sd);
+		int flush_rc;
+
+		if (sd.defer_typed_content && response->tool_call_count > 0) {
+			size_t available = sd.acc_len - sd.emitted_len;
+
+			flush_rc = available > 0
+				? react_emit_thought_delta(
+					&sd, sd.accumulated + sd.emitted_len,
+					available)
+				: 0;
+			if (flush_rc == 0)
+				sd.emitted_len += available;
+		} else {
+			if (sd.defer_typed_content) {
+				sd.in_final = 1;
+				sd.skip_legacy_final_separator = 0;
+			}
+			flush_rc = react_stream_flush(&sd);
+		}
 		if (flush_rc != 0)
 			return flush_rc;
 	}
