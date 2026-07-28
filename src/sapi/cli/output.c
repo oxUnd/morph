@@ -41,6 +41,7 @@ static int cli_terminal_supports_kitty(void)
 }
 
 static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
+						   unsigned int initial_column,
 						   int enable_math,
 						   cli_markdown_media_cb cb,
 						   void *user)
@@ -58,10 +59,12 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	options.media_user_data = user;
 	options.terminal_fd = STDOUT_FILENO;
 	options.content_padding_left_columns = indent;
+	options.initial_cursor_column = initial_column;
 	return morph_md_kitty_create(&options);
 }
 
 static void cli_markdown_render(const char *md, unsigned int indent,
+				unsigned int initial_column,
 				cli_markdown_media_cb cb, void *user)
 {
 	struct morph_md_kitty *renderer;
@@ -73,7 +76,7 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 		return;
 	normalized = agent_ui_normalize_markdown(md);
 	content = normalized ? normalized : md;
-	renderer = cli_markdown_create(indent, 1, cb, user);
+	renderer = cli_markdown_create(indent, initial_column, 1, cb, user);
 	if (!renderer) {
 		log_warn("failed to initialize Kitty Markdown renderer");
 		goto out;
@@ -100,7 +103,7 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 		cli_markdown_stream_reset(ctx, 1);
 	if (!ctx->markdown_stream) {
 		ctx->markdown_stream = cli_markdown_create(
-			2u, 1, media_callback, ctx);
+			2u, 2u, 1, media_callback, ctx);
 		if (!ctx->markdown_stream)
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
@@ -153,14 +156,14 @@ void media_callback(const char *type, const char *path, void *user)
 
 void cli_markdown_render_ansi(const char *md)
 {
-	cli_markdown_render(md, 0u, NULL, NULL);
+	cli_markdown_render(md, 0u, 0u, NULL, NULL);
 }
 
 void cli_markdown_render_ansi_with_media(const char *md,
 						cli_markdown_media_cb cb,
 						void *user)
 {
-	cli_markdown_render(md, 0u, cb, user);
+	cli_markdown_render(md, 0u, 0u, cb, user);
 }
 
 void cli_markdown_render_ansi_with_media_indented(const char *md,
@@ -168,7 +171,7 @@ void cli_markdown_render_ansi_with_media_indented(const char *md,
 						  cli_markdown_media_cb cb,
 						  void *user)
 {
-	cli_markdown_render(md, indent, cb, user);
+	cli_markdown_render(md, indent, indent, cb, user);
 }
 
 static int cli_set_ask_user_answers(char ***answers,

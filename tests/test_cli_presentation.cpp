@@ -186,6 +186,7 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 
 	EXPECT_EQ(output.find("final:"), std::string::npos);
 	EXPECT_EQ(output.find("\n• "), 0u);
+	EXPECT_EQ(output.find("  Compact"), std::string::npos);
 	EXPECT_NE(output.find("Compact"), std::string::npos);
 	EXPECT_NE(output.find("\n  • first item"), std::string::npos);
 	EXPECT_NE(output.find("\n  • second item"), std::string::npos);
