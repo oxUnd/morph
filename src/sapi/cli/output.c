@@ -254,6 +254,7 @@ int cli_ask_user_callback(const char *question,
 	if (!ctx || !answers || !answers_count)
 		return -EINVAL;
 
+	cli_presentation_prepare_prompt(ctx);
 	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
 
 	char prompt[128];
@@ -433,6 +434,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	if (!ctx)
 		return HITL_DENY;
 
+	cli_presentation_prepare_prompt(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("approval: %s\n", tool_name);
 	} else {
@@ -530,6 +532,7 @@ enum tool_operation_verdict operation_approval_callback(
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
 
+	cli_presentation_prepare_prompt(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("approval: %s\n", operation_label(op->kind));
 	} else {

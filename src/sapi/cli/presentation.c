@@ -44,6 +44,11 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	fflush(stdout);
 }
 
+void cli_presentation_prepare_prompt(struct cli_context *ctx)
+{
+	presentation_clear_status(ctx);
+}
+
 static const char *event_string(const struct morph_event *ev,
 				const char *name)
 {

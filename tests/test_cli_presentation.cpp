@@ -7,6 +7,7 @@ extern "C" {
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
+void cli_presentation_prepare_prompt(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
 }
@@ -337,6 +338,23 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 
 	EXPECT_NE(output.find("Thinking…"), std::string::npos);
 	cJSON_Delete(thinking);
+}
+
+TEST_F(CliPresentationTest, PreparingPromptStopsStatusSpinner)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.status_visible = 1;
+	ctx.status_spin.style = SPIN_STYLE_SHIMMER;
+
+	testing::internal::CaptureStdout();
+	spin_start(&ctx.status_spin, SPIN_STATE_THINKING, "Running tool…");
+	ASSERT_EQ(ctx.status_spin.running, 1);
+	cli_presentation_prepare_prompt(&ctx);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(ctx.status_spin.running, 0);
+	EXPECT_EQ(ctx.status_visible, 0);
+	EXPECT_NE(output.find("\033[K"), std::string::npos);
 }
 
 TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
