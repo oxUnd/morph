@@ -120,7 +120,7 @@ TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 	cJSON_Delete(thinking);
 }
 
-TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
+TEST_F(CliPresentationTest, OncePrintsThinkingAsLabeledPlainText)
 {
 	cJSON *reasoning = TextData("Checking constraints");
 	cJSON *final = TextData("Done");
@@ -131,7 +131,7 @@ TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_EQ(output, "reasoning: Checking constraints\nfinal:\nDone\n");
+	EXPECT_EQ(output, "thinking: Checking constraints\nfinal:\nDone\n");
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	cJSON_Delete(reasoning);
 	cJSON_Delete(final);
@@ -246,7 +246,7 @@ TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 	cJSON_Delete(final);
 }
 
-TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
+TEST_F(CliPresentationTest, InteractiveStreamsThinkingAsDimText)
 {
 	cJSON *first = TextData("Inspect");
 	cJSON *second = TextData("ing the state");
@@ -262,7 +262,7 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[2m• Reasoning  \033[0m"),
+	EXPECT_NE(output.find("\033[2m• Thinking  \033[0m"),
 		  std::string::npos);
 	EXPECT_NE(output.find("\033[2mInspect\033[0m"),
 		  std::string::npos);
@@ -270,7 +270,7 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 		  std::string::npos);
 	EXPECT_NE(output.find("\n\033[1m\033[36m•\033[0m "),
 		  std::string::npos);
-	EXPECT_EQ(output.find("Reasoning", output.find("Reasoning") + 1),
+	EXPECT_EQ(output.find("Thinking", output.find("Thinking") + 1),
 		  std::string::npos);
 	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
 	EXPECT_EQ(ctx.event_stream_visible, 0);
@@ -283,7 +283,7 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 	cJSON_Delete(final);
 }
 
-TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
+TEST_F(CliPresentationTest, InteractiveThinkingRespectsDisabledColor)
 {
 	cJSON *reasoning = TextData("Checking constraints");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -293,7 +293,7 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	     reasoning);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("• Reasoning  Checking constraints"),
+	EXPECT_NE(output.find("• Thinking  Checking constraints"),
 		  std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	cJSON_Delete(reasoning);
@@ -335,7 +335,7 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 	Emit(MORPH_EVENT_REACT, "react.thinking", "begin", thinking);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Reasoning…"), std::string::npos);
+	EXPECT_NE(output.find("Thinking…"), std::string::npos);
 	cJSON_Delete(thinking);
 }
 

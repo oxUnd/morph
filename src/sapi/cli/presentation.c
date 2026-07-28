@@ -285,7 +285,7 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (already_streamed)
 		goto reset;
 	label = ctx->event_stream_kind == CLI_STREAM_REASONING ?
-		"reasoning" : "thought";
+		"thinking" : "thought";
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		print_plain_labeled(label, content);
 	} else {
@@ -346,7 +346,7 @@ static void presentation_reasoning_delta(struct cli_context *ctx,
 		return;
 	presentation_clear_status(ctx);
 	if (!ctx->event_stream_visible)
-		printf("\n" ANSI_DIM "• Reasoning  " ANSI_RESET);
+		printf("\n" ANSI_DIM "• Thinking  " ANSI_RESET);
 	printf(ANSI_DIM "%s" ANSI_RESET, text);
 	fflush(stdout);
 	ctx->event_stream_visible = 1;
@@ -825,9 +825,7 @@ int cli_presentation_event(struct cli_context *ctx,
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thinking") == 0) {
-			presentation_status(ctx,
-				ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-				"Reasoning…" : "Thinking…");
+			presentation_status(ctx, "Thinking…");
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
