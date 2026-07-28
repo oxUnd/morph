@@ -14,7 +14,10 @@ static void presentation_clear_status(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->status_visible)
 		return;
-	printf("\r\033[2K");
+	if (ctx->status_spin_initialized && ctx->status_spin.running)
+		spin_cancel(&ctx->status_spin);
+	else
+		printf("\r\033[2K");
 	fflush(stdout);
 	ctx->status_visible = 0;
 }
@@ -32,8 +35,8 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 		return;
 	presentation_clear_status(ctx);
 	if (isatty(STDOUT_FILENO) && cli_color_enabled()) {
-		printf("\r" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " "
-		       ANSI_DIM "%s" ANSI_RESET, text);
+		ctx->status_spin.style = SPIN_STYLE_SHIMMER;
+		spin_start(&ctx->status_spin, SPIN_STATE_THINKING, text);
 		ctx->status_visible = 1;
 	} else {
 		printf("• %s\n", text);
@@ -349,6 +352,16 @@ static void presentation_reasoning_delta(struct cli_context *ctx,
 	ctx->event_stream_visible = 1;
 }
 
+static void presentation_stream_marker(struct cli_context *ctx, int kind)
+{
+	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
+	    ctx->markdown_stream)
+		return;
+	if (kind != CLI_STREAM_THOUGHT && kind != CLI_STREAM_FINAL)
+		return;
+	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
+}
+
 static void presentation_tool_call(struct cli_context *ctx,
 				   const struct morph_event *ev)
 {
@@ -557,7 +570,7 @@ static void presentation_final(struct cli_context *ctx,
 			printf("%s\n", text);
 	} else {
 		if (!had_stream)
-			printf("\n");
+			printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_ansi_with_media_indented(
 				text, 2, media_callback, ctx);
@@ -679,9 +692,25 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	if (!ctx->presentation_ready ||
 	    ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
-	if (ev->type == MORPH_EVENT_BACKGROUND)
-		prefix = "Background";
-	else if (ev->type == MORPH_EVENT_TASK)
+	if (ev->type == MORPH_EVENT_BACKGROUND) {
+		if ((ev->name && strstr(ev->name, "failed")) ||
+		    event_error_code(ev) < 0) {
+			presentation_clear_status(ctx);
+			printf("\n" ANSI_DIM ANSI_RED "• Background  %s"
+			       ANSI_RESET "\n",
+			       ev->message ? ev->message :
+			       (ev->name ? ev->name : "failed"));
+		} else if (ev->phase &&
+			   (strcmp(ev->phase, "begin") == 0 ||
+			    strcmp(ev->phase, "progress") == 0)) {
+			presentation_status(ctx, ev->message ?
+					    ev->message : "Working…");
+		} else {
+			presentation_clear_status(ctx);
+		}
+		return;
+	}
+	if (ev->type == MORPH_EVENT_TASK)
 		prefix = "Task";
 	else if (ev->type == MORPH_EVENT_MCP)
 		prefix = "MCP";
@@ -700,12 +729,19 @@ int cli_presentation_init(struct cli_context *ctx)
 
 	if (!ctx)
 		MORPH_RETURN(-EINVAL);
+	spin_init(&ctx->status_spin, stdout);
+	ctx->status_spin_initialized = 1;
 	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
-	if (rc != 0)
+	if (rc != 0) {
+		spin_destroy(&ctx->status_spin);
+		ctx->status_spin_initialized = 0;
 		return rc;
+	}
 	rc = morph_buf_init(&ctx->markdown_stream_text, BUFSIZ);
 	if (rc != 0) {
 		morph_buf_cleanup(&ctx->event_stream);
+		spin_destroy(&ctx->status_spin);
+		ctx->status_spin_initialized = 0;
 		return rc;
 	}
 	rc = morph_strmap_init(&ctx->rendered_artifacts,
@@ -713,6 +749,8 @@ int cli_presentation_init(struct cli_context *ctx)
 	if (rc != 0) {
 		morph_buf_cleanup(&ctx->markdown_stream_text);
 		morph_buf_cleanup(&ctx->event_stream);
+		spin_destroy(&ctx->status_spin);
+		ctx->status_spin_initialized = 0;
 		return rc;
 	}
 	return 0;
@@ -747,6 +785,10 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	morph_buf_cleanup(&ctx->markdown_stream_text);
 	morph_buf_cleanup(&ctx->event_stream);
 	morph_strmap_cleanup(&ctx->rendered_artifacts);
+	if (ctx->status_spin_initialized) {
+		spin_destroy(&ctx->status_spin);
+		ctx->status_spin_initialized = 0;
+	}
 }
 
 int cli_presentation_event(struct cli_context *ctx,
@@ -783,7 +825,9 @@ int cli_presentation_event(struct cli_context *ctx,
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thinking") == 0) {
-			presentation_status(ctx, "Thinking…");
+			presentation_status(ctx,
+				ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+				"Reasoning…" : "Thinking…");
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
@@ -793,6 +837,8 @@ int cli_presentation_event(struct cli_context *ctx,
 			if (rc == 0 &&
 			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 				presentation_clear_status(ctx);
+				presentation_stream_marker(
+					ctx, CLI_STREAM_THOUGHT);
 				rc = cli_markdown_stream_append(
 					ctx, text, CLI_STREAM_THOUGHT);
 			}
@@ -816,6 +862,7 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_clear_status(ctx);
 			if (ctx->event_stream_kind != CLI_STREAM_NONE)
 				presentation_print_stream(ctx);
+			presentation_stream_marker(ctx, CLI_STREAM_FINAL);
 			return cli_markdown_stream_append(
 				ctx, text, CLI_STREAM_FINAL);
 		}

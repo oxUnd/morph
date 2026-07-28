@@ -15,6 +15,7 @@ enum spin_style {
 	SPIN_STYLE_ARROW,
 	SPIN_STYLE_PULSE,
 	SPIN_STYLE_BRAILLE,
+	SPIN_STYLE_SHIMMER,
 };
 
 enum spin_state {
@@ -52,6 +53,7 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 void spin_update(struct spin_context *ctx, const char *message);
 void spin_set_sub(struct spin_context *ctx, const char *submessage);
 void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char *message);
+void spin_cancel(struct spin_context *ctx);
 void spin_pause(struct spin_context *ctx);
 void spin_resume(struct spin_context *ctx);
 void spin_render(struct spin_context *ctx);

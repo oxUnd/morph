@@ -4,6 +4,7 @@
 #include "config.h"
 #include "runtime/runtime.h"
 #include "util/buf.h"
+#include "util/spin.h"
 #include "util/strmap.h"
 #include <stdio.h>
 
@@ -28,12 +29,14 @@ struct cli_context {
 	int event_stream_visible;
 	int final_rendered;
 	int status_visible;
+	int status_spin_initialized;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
 	char image_path[PATH_MAX];
 	morph_buf_t event_stream;
 	morph_buf_t markdown_stream_text;
 	morph_strmap_t rendered_artifacts;
+	struct spin_context status_spin;
 	struct morph_md_kitty *markdown_stream;
 	int trace_json;
 	morph_event_cb event_cb;

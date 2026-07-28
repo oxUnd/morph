@@ -185,6 +185,7 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("final:"), std::string::npos);
+	EXPECT_EQ(output.find("\n• "), 0u);
 	EXPECT_NE(output.find("Compact"), std::string::npos);
 	EXPECT_NE(output.find("\n  • first item"), std::string::npos);
 	EXPECT_NE(output.find("\n  • second item"), std::string::npos);
@@ -206,6 +207,7 @@ TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
+	EXPECT_EQ(output.find("\n• "), 0u);
 	EXPECT_NE(output.find("\033[?2026h"), std::string::npos);
 	EXPECT_NE(output.find("\033[?2026l"), std::string::npos);
 	EXPECT_NE(output.find("Stream"), std::string::npos);
@@ -232,6 +234,7 @@ TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
+	EXPECT_EQ(output.find("\n• "), 0u);
 	EXPECT_NE(output.find("Native stream"), std::string::npos);
 	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
 	EXPECT_EQ(ctx.markdown_stream, nullptr);
@@ -263,6 +266,8 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 	EXPECT_NE(output.find("\033[2mInspect\033[0m"),
 		  std::string::npos);
 	EXPECT_NE(output.find("\033[2ming the state\033[0m"),
+		  std::string::npos);
+	EXPECT_NE(output.find("\n\033[1m\033[36m•\033[0m "),
 		  std::string::npos);
 	EXPECT_EQ(output.find("Reasoning", output.find("Reasoning") + 1),
 		  std::string::npos);
@@ -329,8 +334,38 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 	Emit(MORPH_EVENT_REACT, "react.thinking", "begin", thinking);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Thinking"), std::string::npos);
+	EXPECT_NE(output.find("Reasoning…"), std::string::npos);
 	cJSON_Delete(thinking);
+}
+
+TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
+{
+	cJSON *started = TextData("");
+	cJSON *ready = TextData("");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	struct morph_event begin{
+		MORPH_EVENT_BACKGROUND, "background.started", "begin",
+		"memory consolidation queued", started, "turn_test"
+	};
+	struct morph_event end{
+		MORPH_EVENT_BACKGROUND, "background.ready", "ready",
+		"memory consolidation queued", ready, "turn_test"
+	};
+
+	testing::internal::CaptureStdout();
+	ASSERT_EQ(cli_presentation_event(&ctx, &begin), 0);
+	ASSERT_EQ(cli_presentation_event(&ctx, &end), 0);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("memory consolidation queued"),
+		  std::string::npos);
+	EXPECT_EQ(output.find("memory consolidation queued",
+			      output.find("memory consolidation queued") + 1),
+		  std::string::npos);
+	EXPECT_EQ(output.find("Background"), std::string::npos);
+
+	cJSON_Delete(started);
+	cJSON_Delete(ready);
 }
 
 TEST_F(CliPresentationTest, InteractiveRendersToolArgsAndResultAsTree)

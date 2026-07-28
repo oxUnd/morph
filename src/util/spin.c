@@ -6,6 +6,7 @@
 #include <sys/ioctl.h>
 
 #define FRAME_INTERVAL_MS 120
+#define SHIMMER_INTERVAL_MS 80
 
 static const char *spin_frames_dots[] = {
 	"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
@@ -61,6 +62,7 @@ static const char **get_frames(enum spin_style style)
 	case SPIN_STYLE_ARROW:   return spin_frames_arrow;
 	case SPIN_STYLE_PULSE:   return spin_frames_pulse;
 	case SPIN_STYLE_BRAILLE: return spin_frames_braille;
+	case SPIN_STYLE_SHIMMER: return spin_frames_dots;
 	case SPIN_STYLE_DOTS:
 	default:                 return spin_frames_dots;
 	}
@@ -72,9 +74,50 @@ static int get_frame_count(enum spin_style style)
 	case SPIN_STYLE_ARROW:   return 8;
 	case SPIN_STYLE_PULSE:   return 4;
 	case SPIN_STYLE_BRAILLE: return 8;
+	case SPIN_STYLE_SHIMMER: return 8;
 	case SPIN_STYLE_DOTS:
 	default:                 return 8;
 	}
+}
+
+static void spin_render_shimmer(struct spin_context *ctx, size_t budget)
+{
+	static const int shades[] = {240, 242, 245, 250, 255, 250, 245, 242};
+	char message[1024];
+	const char *p;
+	size_t message_budget;
+	size_t message_width;
+	size_t index = 0;
+	size_t shade_count = sizeof(shades) / sizeof(shades[0]);
+
+	message_budget = budget > 2 ? budget - 2 : 0;
+	message_width = utf8_copy_display_width(message, sizeof(message),
+						ctx->message,
+						message_budget);
+	fprintf(ctx->output, "\r\033[K\033[1;36m•\033[0m ");
+	p = message;
+	while (*p) {
+		size_t bytes = utf8codepointcalcsize(p);
+		size_t shade = (index + (size_t)ctx->frame) % shade_count;
+
+		if (bytes == 0)
+			break;
+		fprintf(ctx->output, "\033[38;5;%dm%.*s",
+			shades[shade], (int)bytes, p);
+		p += bytes;
+		index++;
+	}
+	fprintf(ctx->output, "\033[0m");
+	if (message_width + 2 < ctx->last_render_width) {
+		size_t pad = ctx->last_render_width - message_width - 2;
+
+		if (pad > budget)
+			pad = budget;
+		for (size_t i = 0; i < pad; i++)
+			fputc(' ', ctx->output);
+	}
+	ctx->last_render_width = message_width + 2;
+	fflush(ctx->output);
 }
 
 static void format_elapsed(char *buf, size_t len, time_t start)
@@ -122,6 +165,11 @@ void spin_render(struct spin_context *ctx)
 	/* Reserve the rightmost cell so we never trip terminal autowrap. */
 	size_t budget = term_w > 1 ? term_w - 1 : 79;
 	size_t vis_width = 0;
+
+	if (ctx->style == SPIN_STYLE_SHIMMER) {
+		spin_render_shimmer(ctx, budget);
+		return;
+	}
 
 	int is_final = (ctx->state == SPIN_STATE_COMPLETE ||
 			ctx->state == SPIN_STATE_ABORT ||
@@ -219,8 +267,12 @@ static void *spin_thread_func(void *arg)
 {
 	struct spin_context *ctx = (struct spin_context *)arg;
 
-	while (ctx->running) {
+	for (;;) {
 		pthread_mutex_lock(&ctx->mutex);
+		if (!ctx->running) {
+			pthread_mutex_unlock(&ctx->mutex);
+			break;
+		}
 		if (ctx->active && ctx->running) {
 			ctx->frame++;
 			if (ctx->cancel_flag && *ctx->cancel_flag) {
@@ -263,6 +315,7 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 
 	if (ctx->running) {
 		ctx->active = 0;
+		ctx->running = 0;
 		pthread_mutex_unlock(&ctx->mutex);
 		pthread_join(ctx->thread, NULL);
 		pthread_mutex_lock(&ctx->mutex);
@@ -276,6 +329,8 @@ void spin_start(struct spin_context *ctx, enum spin_state state, const char *mes
 	ctx->last_update = ctx->start_time;
 	ctx->last_render_width = 0;
 	ctx->submessage[0] = '\0';
+	ctx->interval_ms = ctx->style == SPIN_STYLE_SHIMMER ?
+		SHIMMER_INTERVAL_MS : FRAME_INTERVAL_MS;
 
 	if (message) {
 		spin_copy_sanitized(ctx->message, sizeof(ctx->message),
@@ -377,6 +432,25 @@ void spin_stop(struct spin_context *ctx, enum spin_state final_state, const char
 	fflush(ctx->output);
 }
 
+void spin_cancel(struct spin_context *ctx)
+{
+	if (!ctx)
+		return;
+	pthread_mutex_lock(&ctx->mutex);
+	if (!ctx->running) {
+		pthread_mutex_unlock(&ctx->mutex);
+		return;
+	}
+	ctx->active = 0;
+	ctx->running = 0;
+	pthread_mutex_unlock(&ctx->mutex);
+	pthread_join(ctx->thread, NULL);
+	ctx->frame = 0;
+	ctx->last_render_width = 0;
+	fprintf(ctx->output, "\r\033[K");
+	fflush(ctx->output);
+}
+
 void spin_clear(struct spin_context *ctx)
 {
 	if (!ctx) return;
@@ -419,14 +493,7 @@ void spin_destroy(struct spin_context *ctx)
 {
 	if (!ctx) return;
 
-	if (ctx->running) {
-		ctx->running = 0;
-		ctx->active = 0;
-		pthread_join(ctx->thread, NULL);
-	}
-
-	fprintf(ctx->output, "\r\033[K");
-	fflush(ctx->output);
+	spin_cancel(ctx);
 
 	pthread_mutex_destroy(&ctx->mutex);
 	memset(ctx, 0, sizeof(*ctx));

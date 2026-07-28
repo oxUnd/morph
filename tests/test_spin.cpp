@@ -59,6 +59,27 @@ TEST(SpinLifecycle, StartStopNoMessage)
 	fclose(devnull);
 }
 
+TEST(SpinLifecycle, CancelAndRestart)
+{
+	FILE *devnull = fopen("/dev/null", "w");
+	ASSERT_NE(devnull, nullptr);
+	struct spin_context ctx;
+	spin_init(&ctx, devnull);
+	ctx.style = SPIN_STYLE_SHIMMER;
+
+	spin_start(&ctx, SPIN_STATE_THINKING, "Reasoning…");
+	EXPECT_EQ(ctx.running, 1);
+	spin_cancel(&ctx);
+	EXPECT_EQ(ctx.running, 0);
+	spin_start(&ctx, SPIN_STATE_THINKING, "Running tool…");
+	EXPECT_EQ(ctx.running, 1);
+	spin_cancel(&ctx);
+	EXPECT_EQ(ctx.running, 0);
+
+	spin_destroy(&ctx);
+	fclose(devnull);
+}
+
 TEST(SpinSetSub, AsciiSubmessage)
 {
 	FILE *devnull = fopen("/dev/null", "w");
@@ -199,6 +220,46 @@ TEST(SpinRender, ChineseMarqueeFramesAreValidUtf8)
 		fflush(mem);
 		ASSERT_EQ(utf8valid(buf), nullptr) << "invalid frame " << i;
 	}
+
+	ctx.running = 0;
+	spin_destroy(&ctx);
+	fclose(mem);
+	free(buf);
+}
+
+TEST(SpinRender, ShimmerPreservesUtf8AndMovesHighlight)
+{
+	char *buf = nullptr;
+	size_t len = 0;
+	FILE *mem = open_memstream(&buf, &len);
+	ASSERT_NE(mem, nullptr);
+
+	struct spin_context ctx;
+	spin_init(&ctx, mem);
+	ctx.running = 1;
+	ctx.active = 1;
+	ctx.style = SPIN_STYLE_SHIMMER;
+	spin_update(&ctx, "Reasoning… 中文");
+
+	ctx.frame = 0;
+	spin_render(&ctx);
+	fflush(mem);
+	std::string first(buf, len);
+	std::string plain(first.size() + 1, '\0');
+	size_t plain_len = utf8_strip_ansi(
+		plain.data(), first.data(), first.size());
+	plain.resize(plain_len);
+	ASSERT_EQ(utf8valid(buf), nullptr);
+	EXPECT_NE(first.find("\033[1;36m•\033[0m "), std::string::npos);
+	EXPECT_NE(plain.find("Reasoning… 中文"), std::string::npos);
+
+	ctx.frame = 1;
+	spin_render(&ctx);
+	fflush(mem);
+	std::string second(buf + first.size(), len - first.size());
+	ASSERT_EQ(utf8valid(buf), nullptr);
+	EXPECT_NE(second.find("\033[38;5;242mR"), std::string::npos);
+	EXPECT_NE(first, second);
 
 	ctx.running = 0;
 	spin_destroy(&ctx);
