@@ -154,6 +154,51 @@ void cli_list_item(const char *ancestor, int is_last, const char *marker,
 	putchar('\n');
 }
 
+void cli_list_row(const char *id, const char *name, const char *metadata,
+		  int is_current, int is_last, int columns)
+{
+	const char *branch = is_last ? "└" : "├";
+	const char *continuation = is_last ? " " : "│";
+	char compact[CLI_LIST_TEXT_MAX];
+	int id_width;
+	int metadata_width;
+	int name_width;
+	int printed_width;
+
+	if (!id)
+		id = "";
+	if (!name)
+		name = "";
+	if (!metadata)
+		metadata = "";
+	(void)cli_list_compact_text(compact, sizeof(compact), name);
+	id_width = (int)utf8_display_width(id);
+	metadata_width = (int)utf8_display_width_ansi(metadata);
+	name_width = columns - 10 - id_width - metadata_width;
+	if (name_width > 52)
+		name_width = 52;
+	printf("  " ANSI_DIM "%s" ANSI_RESET " %s%s%s "
+	       ANSI_DIM "%s" ANSI_RESET "  ",
+	       branch,
+	       is_current ? ANSI_GREEN : ANSI_DIM,
+	       is_current ? "●" : "○", ANSI_RESET, id);
+	if (name_width >= 12) {
+		cli_list_print_clipped(compact, name_width);
+		printed_width = (int)utf8_display_width(compact);
+		if (printed_width > name_width)
+			printed_width = name_width;
+		for (int i = printed_width; i < name_width; i++)
+			putchar(' ');
+		printf(ANSI_DIM "  %s" ANSI_RESET "\n", metadata);
+		return;
+	}
+	name_width = columns - 9 - id_width;
+	cli_list_print_clipped(compact, name_width);
+	putchar('\n');
+	printf("  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM
+	       "└ %s" ANSI_RESET "\n", continuation, metadata);
+}
+
 void cli_list_value_field(const char *label, const char *value, int is_last,
 			  int label_width, int columns)
 {

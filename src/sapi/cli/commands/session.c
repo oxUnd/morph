@@ -1,6 +1,35 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/list_ui.h"
 
 #define SESSION_LIST_DEFAULT 20
+
+static int append_token_count(morph_buf_t *buf, int64_t tokens)
+{
+	char raw[32];
+	const char *digits;
+	size_t length;
+	int rc;
+
+	snprintf(raw, sizeof(raw), "%lld", (long long)tokens);
+	digits = raw;
+	if (*digits == '-') {
+		rc = morph_buf_putc(buf, *digits++);
+		if (rc != 0)
+			return rc;
+	}
+	length = strlen(digits);
+	for (size_t i = 0; i < length; i++) {
+		if (i > 0 && (length - i) % 3 == 0) {
+			rc = morph_buf_putc(buf, ',');
+			if (rc != 0)
+				return rc;
+		}
+		rc = morph_buf_putc(buf, digits[i]);
+		if (rc != 0)
+			return rc;
+	}
+	return morph_buf_puts(buf, " tokens");
+}
 
 static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 {
@@ -88,6 +117,7 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 {
 	int limit = SESSION_LIST_DEFAULT;
 	const char *filter = NULL;
+	int truncated;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--all") == 0)
 			limit = 0;
@@ -110,57 +140,54 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	const struct config *config = runtime_config_get(ctx->runtime);
-
-	if (filter && filter[0]) {
-		if (limit > 0 && count < total)
-			printf(ANSI_BOLD ANSI_CYAN
-			       "--- sessions (%d of %d, \""
-			       ANSI_YELLOW "%s"
-			       ANSI_CYAN "\")"
-			       ANSI_RESET "\n",
-			       count, total, filter);
-		else
-			printf(ANSI_BOLD ANSI_CYAN
-			       "--- sessions (%d of %d, \""
-			       ANSI_YELLOW "%s"
-			       ANSI_CYAN "\")"
-			       ANSI_RESET "\n",
-			       count, total, filter);
-	} else if (limit > 0 && count < total) {
-		printf(ANSI_BOLD ANSI_CYAN
-		       "--- sessions (%d of %d, use --all for more)"
-		       ANSI_RESET "\n",
-		       count, total);
-	} else {
-		printf(ANSI_BOLD ANSI_CYAN
-		       "--- sessions (%d)"
-		       ANSI_RESET "\n",
-		       count);
+	truncated = limit > 0 &&
+		((filter && filter[0]) ? count == limit : count < total);
+	if (filter && filter[0])
+		CMD_HEADER("sessions (%d shown, filter \"" ANSI_YELLOW
+			   "%s" ANSI_CYAN "\")", count, filter);
+	else if (count < total)
+		CMD_HEADER("sessions (%d of %d)", count, total);
+	else
+		CMD_HEADER("sessions (%d)", count);
+	if (count == 0) {
+		printf("  " ANSI_DIM "└ no sessions" ANSI_RESET "\n");
+		runtime_session_list_free(list);
+		return 0;
 	}
-
-	printf("  ");
-	print_padded("ID", 10); putchar(' ');
-	print_padded("Name", 45); putchar(' ');
-	print_padded("Model", 30); putchar(' ');
-	printf("Tokens\n");
-	printf("  ");
-	print_padded("---", 10); putchar(' ');
-	print_padded("---", 45); putchar(' ');
-	print_padded("---", 30); putchar(' ');
-	printf("---\n");
 	for (int i = 0; i < count; i++) {
 		int is_current = (list[i].id == current.id);
-		const char *model = is_current ? config->models.text.model : list[i].model;
-		printf("  ");
-		if (is_current && cli_color_enabled())
-			fputs(ANSI_GREEN, stdout);
-		print_padded(list[i].display_id, 10);
-		if (is_current && cli_color_enabled())
-			fputs(ANSI_RESET, stdout);
-		putchar(' ');
-		print_padded(list[i].name, 45); putchar(' ');
-		print_padded(model, 30); putchar(' ');
-		printf("%lld\n", (long long)list[i].token_used);
+		const char *model = is_current ?
+			config->models.text.model : list[i].model;
+		morph_buf_t metadata;
+
+		rc = morph_buf_init(&metadata, 64);
+		if (rc != 0) {
+			runtime_session_list_free(list);
+			return rc;
+		}
+		rc = append_token_count(&metadata, list[i].token_used);
+		if (is_current)
+			rc = rc != 0 ? rc :
+				morph_buf_puts(&metadata, " · current");
+		if (rc == 0 && model && model[0] &&
+		    strcmp(model, config->models.text.model) != 0)
+			rc = morph_buf_printf(&metadata, " · %s", model);
+		if (rc != 0) {
+			morph_buf_cleanup(&metadata);
+			runtime_session_list_free(list);
+			return rc;
+		}
+		cli_list_row(list[i].display_id, list[i].name,
+			     morph_buf_cstr(&metadata), is_current,
+			     i == count - 1 && !truncated,
+			     cli_list_columns());
+		morph_buf_cleanup(&metadata);
+	}
+	if (truncated) {
+		printf("  " ANSI_DIM "└ … limited to %d · "
+		       "use /list --all%s%s" ANSI_RESET "\n",
+		       limit, filter && filter[0] ? " " : "",
+		       filter && filter[0] ? filter : "");
 	}
 	runtime_session_list_free(list);
 	return 0;

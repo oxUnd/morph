@@ -56,3 +56,20 @@ TEST(CliListTest, JsonFieldRendersNestedTree)
 	EXPECT_NE(output.find("query"), std::string::npos);
 	EXPECT_NE(output.find("string"), std::string::npos);
 }
+
+TEST(CliListTest, SessionRowKeepsRelatedFieldsTogether)
+{
+	testing::internal::CaptureStdout();
+	cli_list_row("ae2c6f9a", "查一下开放平台、前端架构绩效",
+		     "3,086 tokens", 0, 0, 80);
+	cli_list_row("a6f7b14c", "default", "0 tokens · current",
+		     1, 1, 80);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("├"), std::string::npos);
+	EXPECT_NE(output.find("└"), std::string::npos);
+	EXPECT_NE(output.find("ae2c6f9a"), std::string::npos);
+	EXPECT_NE(output.find("3,086 tokens"), std::string::npos);
+	EXPECT_NE(output.find("●"), std::string::npos);
+	EXPECT_EQ(output.find("Model"), std::string::npos);
+}
