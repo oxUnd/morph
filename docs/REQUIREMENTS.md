@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
 > **文档版本**: v0.6
-> **状态**: Updated — 同步代码实际行为（v0.3.6），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_write / QuickJS+Wasm3 运行时
+> **状态**: Updated — 同步代码实际行为（v0.3.7），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_write / QuickJS+Wasm3 运行时
 
 ## 0. 术语与缩写
 
@@ -298,7 +298,7 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 ```text
 $ morph
 
-morph v0.3.6  |  /help 查看命令
+morph v0.3.7  |  /help 查看命令
 
 [abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
 ⠋ Thinking → 赛博朋克短视频脚本...
@@ -2626,7 +2626,7 @@ enum morph_error {
 |--------|------|--------|------|
 | **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
 | **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
-| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.6） |
+| **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.7） |
 | M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS sandbox-exec | 进行中 |
 | M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | 待开始 |
 | M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | 待开始 |
