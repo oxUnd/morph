@@ -123,10 +123,19 @@ Shared foundational containers live in `src/util/` (linked via `morph-util`). **
   - `MORPH_ERR_LOAD` (-267): dlopen / dlsym failure
   - `MORPH_ERR_LLM` (-268): LLM chat call failed
 - **`MORPH_RETURN(code)`**: use instead of `return code;` for error returns — auto-logs `morph_strerror(code)` + `__FILE__:__LINE__` in debug mode, zero-overhead in release
-- **`MORPH_SET_ERR(var, code)`**: use in `goto out` patterns to capture error code + log in debug mode
+- **`MORPH_SET_ERR(var, code)`**: when a centralized cleanup path is justified, use this before jumping to it so the error code is preserved and logged
 - **`morph_strerror(err)`**: returns human-readable string for all error codes (POSIX + custom); use for LLM-facing and user-facing messages, never raw `%d`
 - **System calls**: return `-errno` (not `-EIO`) when `pipe()`, `fork()`, `select()`, `opendir()` etc. fail
-- **`goto out` pattern**: must propagate error code via `int rc = 0; ... rc = some_call(); ... out: return rc;` — never discard error codes by returning 0 unconditionally
+
+### `goto` Usage
+Follow the Linux kernel's centralized-exit guidance, with a stronger project preference for avoiding `goto`:
+- **Default: do not use `goto`.** Use direct returns for validation failures and error paths that need no cleanup.
+- Use `goto` only when several exit paths share non-trivial cleanup and a centralized exit clearly reduces duplicated cleanup or excessive nesting. Do not use it for ordinary control flow.
+- Before adding `goto`, prefer smaller helper functions, clearer ownership, or immediate local cleanup when those keep the code simple.
+- Cleanup labels must describe the action, such as `out_free_buffer`; never use numbered labels such as `err1` or `err2`.
+- For partially initialized resources, use distinct cleanup levels in reverse acquisition order. Never send every failure to one label that assumes all resources were initialized.
+- A function using centralized cleanup must preserve its real error code with `MORPH_SET_ERR`/`MORPH_SET_ERRNO`; never fall through and return success after an error.
+- Reference: [Linux kernel coding style §7, Centralized exiting of functions](https://www.kernel.org/doc/html/latest/process/coding-style.html#centralized-exiting-of-functions).
 
 ## C Coding Conventions (from REQUIREMENTS.md §6.11)
 These differ from typical C defaults and must be followed:
@@ -139,8 +148,8 @@ These differ from typical C defaults and must be followed:
   - Application-specific limits (e.g. `MAX_CONTENT_SIZE`, `ARENA_DEFAULT_SIZE`) stay as named `#define`s
   - `strncpy` must use `sizeof(dst) - 1`, never magic numbers like `63`
 - **Error codes**: negative errno (`-EINVAL`, `-ENOMEM`) or `MORPH_ERR_*` from `src/util/error.h`; use `MORPH_RETURN(code)` instead of bare `return code;` for all error returns
-- **Cleanup**: `goto out;` pattern, no early returns with leak
-- **Memory**: Arena (`arena_alloc`/`arena_strdup`) for scope-lived data; `morph_buf`/`morph_array` for growable strings/arrays (see Core Data Structures); raw `malloc`/`free` with NULL checks + `goto out` cleanup for short-lived buffers
+- **Cleanup**: prefer direct returns with immediate local cleanup; use centralized `goto` cleanup only under the rules above; no return path may leak
+- **Memory**: Arena (`arena_alloc`/`arena_strdup`) for scope-lived data; `morph_buf`/`morph_array` for growable strings/arrays (see Core Data Structures); raw `malloc`/`free` requires NULL checks and explicit cleanup on every exit path
 - **Multi-statement macros**: wrapped in `do { } while (0)`
 - **Naming**: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`
 - **Warnings**: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` — CI must pass with 0 warnings

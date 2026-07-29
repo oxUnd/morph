@@ -583,9 +583,24 @@ enum tool_operation_verdict operation_approval_callback(
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "",
 		       operation_scope_label(op->kind), op->scope);
+	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
+		const char *prefix =
+			ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+			ANSI_YELLOW "│ " ANSI_RESET : "";
+
+		printf("%sAccess   " ANSI_BOLD "read/write" ANSI_RESET "\n",
+		       prefix);
+		for (int i = 0; i < op->directories_count; i++)
+			printf("%s         %s " ANSI_DIM "%s" ANSI_RESET "\n",
+			       prefix,
+			       i == op->directories_count - 1 ?
+			       "└─" : "├─",
+			       op->directories[i].path);
+	}
 	if (op->kind == TOOL_OP_COMMAND)
-		printf("%s" ANSI_DIM "'session' trusts this program and cwd "
-		       "until exit; 'always' remembers it for this project."
+		printf("%s" ANSI_DIM "'session' trusts this program, cwd, and "
+		       "listed directories until exit; 'always' remembers "
+		       "them for this project."
 		       ANSI_RESET "\n",
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");

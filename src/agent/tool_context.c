@@ -3,6 +3,7 @@
 #include "util/file.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/bash_parse.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -60,6 +61,8 @@ static int has_whitespace(const char *s)
 
 static int command_matches_pattern(const char *cmd, const char *pat)
 {
+	char name[TOOL_CONTEXT_CLI_NAME_MAX];
+
 	cmd = skip_ws(cmd);
 	pat = skip_ws(pat);
 	if (!*pat)
@@ -74,16 +77,20 @@ static int command_matches_pattern(const char *cmd, const char *pat)
 			base--;
 		if (base == 0)
 			return 1;
+		if (!has_whitespace(pat) &&
+		    tool_context_command_name(cmd, name, sizeof(name)) == 0)
+			return strlen(name) == base &&
+				strncmp(name, pat, base) == 0;
 		if (strncmp(cmd, pat, base) != 0)
 			return 0;
 		char after = cmd[base];
 		return after == '\0' || after == ' ' || after == '\t';
 	}
 	if (!has_whitespace(pat)) {
-		if (strncmp(cmd, pat, plen) != 0)
+		if (tool_context_command_name(
+			    cmd, name, sizeof(name)) != 0)
 			return 0;
-		char after = cmd[plen];
-		return after == '\0' || after == ' ' || after == '\t';
+		return strcmp(name, pat) == 0;
 	}
 	return strcmp(cmd, pat) == 0;
 }
@@ -104,27 +111,16 @@ static int cwd_matches_pattern(const char *resolved, const char *pat)
 	return 1;
 }
 
-static int extract_program_name(const char *command, char *out, size_t outsize)
+static int command_program_word(const char *command, char *out,
+				size_t out_size)
 {
-	if (!command || !out || outsize == 0)
-		return -EINVAL;
-	const char *p = skip_ws(command);
-	const char *start = p;
-	while (*p && *p != ' ' && *p != '\t' && *p != ';' && *p != '|' &&
-	       *p != '&' && *p != '\n' && *p != '(' && *p != '`' &&
-	       *p != '$')
-		p++;
-	if (p == start)
-		return -EINVAL;
-	const char *base = p;
-	while (base > start && *(base - 1) != '/')
-		base--;
-	size_t len = (size_t)(p - base);
-	if (len == 0 || len + 1 > outsize)
-		return -EINVAL;
-	memcpy(out, base, len);
-	out[len] = '\0';
-	return 0;
+	return bash_parse_command_program(command, out, out_size);
+}
+
+int tool_context_command_name(const char *command, char *out,
+			      size_t out_size)
+{
+	return bash_parse_command_name(command, out, out_size);
 }
 
 int tool_context_command_principal(const char *command, char *out,
@@ -132,20 +128,13 @@ int tool_context_command_principal(const char *command, char *out,
 {
 	char program[PATH_MAX];
 	const char *path;
-	const char *start;
-	const char *end;
+	int rc;
 
 	if (!command || !out || out_size == 0)
 		MORPH_RETURN(-EINVAL);
-	start = skip_ws(command);
-	end = start;
-	while (*end && *end != ' ' && *end != '\t' && *end != ';' &&
-	       *end != '|' && *end != '&' && *end != '\n')
-		end++;
-	if (end == start || (size_t)(end - start) >= sizeof(program))
-		MORPH_RETURN(-EINVAL);
-	memcpy(program, start, (size_t)(end - start));
-	program[end - start] = '\0';
+	rc = command_program_word(command, program, sizeof(program));
+	if (rc != 0)
+		return rc;
 	if (strchr(program, '/')) {
 		char *resolved = file_resolve_path(program);
 		if (!resolved)
@@ -183,6 +172,128 @@ int tool_context_command_principal(const char *command, char *out,
 	}
 	snprintf(out, out_size, "%s", program);
 	return 0;
+}
+
+static int add_directory_capability(
+	struct tool_directory_capability *directories, int max_directories,
+	int count, const char *path)
+{
+	char *resolved;
+
+	if (!path || !*path || count >= max_directories)
+		return count;
+	resolved = file_resolve_path(path);
+	if (!resolved)
+		MORPH_RETURN(-ENOMEM);
+	if (!file_path_is_absolute(resolved)) {
+		free(resolved);
+		return count;
+	}
+	for (int i = 0; i < count; i++) {
+		if (strcmp(directories[i].path, resolved) == 0) {
+			free(resolved);
+			return count;
+		}
+	}
+	snprintf(directories[count].path,
+		 sizeof(directories[count].path), "%s", resolved);
+	directories[count].create = 1;
+	free(resolved);
+	return count + 1;
+}
+
+static void add_cli_candidate(
+	char candidates[][PATH_MAX], int *count, const char *base,
+	const char *name)
+{
+	if (!base || !*base || !name || !*name ||
+	    *count >= TOOL_CONTEXT_CLI_DIR_MAX)
+		return;
+	if (file_path_join(candidates[*count], PATH_MAX, base, name) == 0)
+		(*count)++;
+}
+
+int tool_context_discover_cli_dirs(
+	const struct tool_context *tctx, const char *command,
+	struct tool_directory_capability *directories, int max_directories)
+{
+	char candidates[TOOL_CONTEXT_CLI_DIR_MAX][PATH_MAX];
+	char name[TOOL_CONTEXT_CLI_NAME_MAX];
+	char dot_name[TOOL_CONTEXT_CLI_NAME_MAX + 2];
+	const char *home_env;
+	const char *xdg;
+	char *home = NULL;
+	char config_base[PATH_MAX] = { 0 };
+	char cache_base[PATH_MAX] = { 0 };
+	char state_base[PATH_MAX] = { 0 };
+	int candidate_count = 0;
+	int count = 0;
+
+	if (!tctx || !command || !*command || !directories ||
+	    max_directories <= 0)
+		MORPH_RETURN(-EINVAL);
+	if (tool_context_command_name(command, name, sizeof(name)) != 0)
+		return 0;
+	home_env = getenv("HOME");
+	if (!home_env || !*home_env)
+		return 0;
+	home = file_resolve_path(home_env);
+	if (!home)
+		MORPH_RETURN(-ENOMEM);
+	snprintf(dot_name, sizeof(dot_name), ".%s", name);
+	add_cli_candidate(candidates, &candidate_count, home, dot_name);
+	xdg = getenv("XDG_CONFIG_HOME");
+	if (xdg && *xdg)
+		snprintf(config_base, sizeof(config_base), "%s", xdg);
+	else
+		(void)file_path_join(config_base, sizeof(config_base),
+				    home, ".config");
+	xdg = getenv("XDG_CACHE_HOME");
+	if (xdg && *xdg)
+		snprintf(cache_base, sizeof(cache_base), "%s", xdg);
+	else
+		(void)file_path_join(cache_base, sizeof(cache_base),
+				    home, ".cache");
+	xdg = getenv("XDG_STATE_HOME");
+	if (xdg && *xdg)
+		snprintf(state_base, sizeof(state_base), "%s", xdg);
+	else {
+		char local[PATH_MAX];
+
+		if (file_path_join(local, sizeof(local), home, ".local") == 0)
+			(void)file_path_join(state_base, sizeof(state_base),
+					    local, "state");
+	}
+	add_cli_candidate(candidates, &candidate_count, config_base, name);
+	add_cli_candidate(candidates, &candidate_count, cache_base, name);
+	add_cli_candidate(candidates, &candidate_count, state_base, name);
+#ifdef __APPLE__
+	{
+		char library[PATH_MAX];
+		char base[PATH_MAX];
+
+		if (file_path_join(library, sizeof(library), home,
+				   "Library") == 0 &&
+		    file_path_join(base, sizeof(base), library,
+				   "Application Support") == 0)
+			add_cli_candidate(candidates, &candidate_count,
+					  base, name);
+		if (file_path_join(base, sizeof(base), library,
+				   "Caches") == 0)
+			add_cli_candidate(candidates, &candidate_count,
+					  base, name);
+	}
+#endif
+	for (int i = 0; i < candidate_count; i++) {
+		count = add_directory_capability(
+			directories, max_directories, count, candidates[i]);
+		if (count < 0) {
+			free(home);
+			return count;
+		}
+	}
+	free(home);
+	return count;
 }
 
 static void resolve_into(char *dst, size_t dst_size, const char *src)
@@ -697,7 +808,8 @@ static int command_scope_is_allowed(struct tool_context *tctx, const char *cwd)
 }
 
 static int check_command_operation(struct tool_context *tctx,
-				   const struct tool_operation *op)
+				   const struct tool_operation *op,
+				   enum tool_operation_verdict *verdict)
 {
 	const char *command = op->action;
 	const char *cwd = op->scope;
@@ -719,17 +831,31 @@ static int check_command_operation(struct tool_context *tctx,
 	}
 	v = tctx->operation_approval_fn(op,
 					tctx->operation_approval_user_data);
+	*verdict = v;
 	if (v == TOOL_OP_DENY) {
 		log_warn("command denied by user: %s", command);
 		MORPH_RETURN(-EACCES);
 	}
+	for (int i = 0; i < op->directories_count; i++) {
+		char resolved[PATH_MAX];
+		int rc = tool_context_grant_write_access(
+			tctx, op->principal ? op->principal : "shell",
+			op->directories[i].path, op->directories[i].create,
+			v, resolved, sizeof(resolved));
+
+		if (rc != 0)
+			return rc;
+	}
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
 		if (!cmd_ok) {
 			char prog[TOOL_CONTEXT_ACTION_MAX];
-			if (extract_program_name(command, prog,
-						 sizeof(prog)) == 0) {
+			if (tool_context_command_name(command, prog,
+						      sizeof(prog)) == 0) {
 				int rc = v == TOOL_OP_ALWAYS ?
-					save_grant(tctx, prog, "command",
+					save_grant(tctx,
+						   op->principal ?
+						   op->principal : prog,
+						   "command",
 						   prog) :
 					tool_context_allow_command_pattern(
 						tctx, prog);
@@ -880,14 +1006,72 @@ int tool_context_request_write_access(struct tool_context *tctx,
 		&op, tctx->operation_approval_user_data);
 	if (verdict == TOOL_OP_DENY)
 		MORPH_RETURN(-EACCES);
-	if (verdict == TOOL_OP_SESSION) {
-		int rc = add_scoped_write_grant(tctx, principal, resolved);
-		if (rc != 0)
-			return rc;
+	return tool_context_grant_write_access(
+		tctx, principal, resolved, 0, verdict,
+		resolved, resolved_size);
+}
+
+int tool_context_grant_write_access(
+	struct tool_context *tctx, const char *principal, const char *path,
+	int create, enum tool_operation_verdict verdict,
+	char *resolved, size_t resolved_size)
+{
+	char local[PATH_MAX];
+	char *expanded = NULL;
+	char *canonical = NULL;
+	struct stat st;
+	int rc;
+
+	if (!tctx || !principal || !*principal || !path || !*path)
+		MORPH_RETURN(-EINVAL);
+	if (verdict != TOOL_OP_ALLOW && verdict != TOOL_OP_SESSION &&
+	    verdict != TOOL_OP_ALWAYS)
+		MORPH_RETURN(-EACCES);
+	expanded = file_expand_path(path);
+	if (!expanded)
+		MORPH_RETURN(-ENOMEM);
+	if (!file_path_is_absolute(expanded)) {
+		free(expanded);
+		MORPH_RETURN(-EINVAL);
 	}
-	if (verdict == TOOL_OP_ALWAYS)
-		return save_grant(tctx, principal, "write_path", resolved);
-	return 0;
+	if (create) {
+		rc = file_ensure_dir(expanded);
+		if (rc != 0) {
+			free(expanded);
+			return rc;
+		}
+	}
+	if (stat(expanded, &st) != 0) {
+		rc = -errno;
+		free(expanded);
+		return rc;
+	}
+	if (!S_ISDIR(st.st_mode)) {
+		free(expanded);
+		MORPH_RETURN(-ENOTDIR);
+	}
+	canonical = file_resolve_path(expanded);
+	free(expanded);
+	if (!canonical) {
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!resolved || resolved_size == 0) {
+		resolved = local;
+		resolved_size = sizeof(local);
+	}
+	if (strlen(canonical) + 1 > resolved_size) {
+		free(canonical);
+		MORPH_RETURN(-ENAMETOOLONG);
+	}
+	snprintf(resolved, resolved_size, "%s", canonical);
+	if (verdict == TOOL_OP_SESSION)
+		rc = add_scoped_write_grant(tctx, principal, canonical);
+	else if (verdict == TOOL_OP_ALWAYS)
+		rc = save_grant(tctx, principal, "write_path", canonical);
+	else
+		rc = 0;
+	free(canonical);
+	return rc;
 }
 
 int tool_context_collect_write_grants(const struct tool_context *tctx,
@@ -927,11 +1111,23 @@ int tool_context_collect_write_grants(const struct tool_context *tctx,
 int tool_context_check_operation(struct tool_context *tctx,
 				 const struct tool_operation *op)
 {
+	enum tool_operation_verdict verdict;
+
+	return tool_context_check_operation_verdict(tctx, op, &verdict);
+}
+
+int tool_context_check_operation_verdict(
+	struct tool_context *tctx, const struct tool_operation *op,
+	enum tool_operation_verdict *verdict)
+{
 	if (!tctx || !op)
 		MORPH_RETURN(-EINVAL);
+	if (!verdict)
+		MORPH_RETURN(-EINVAL);
+	*verdict = TOOL_OP_DENY;
 	switch (op->kind) {
 	case TOOL_OP_COMMAND:
-		return check_command_operation(tctx, op);
+		return check_command_operation(tctx, op, verdict);
 	case TOOL_OP_PATH_READ:
 	case TOOL_OP_PATH_LIST:
 	case TOOL_OP_PATH_WRITE:

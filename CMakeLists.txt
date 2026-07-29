@@ -60,6 +60,53 @@ FetchContent_Declare(
 )
 FetchContent_Populate(blake3)
 
+FetchContent_Declare(
+	tree_sitter
+	URL https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.25.10.tar.gz
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_Populate(tree_sitter)
+
+FetchContent_Declare(
+	tree_sitter_bash
+	URL https://github.com/tree-sitter/tree-sitter-bash/archive/refs/tags/v0.25.1.tar.gz
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_Populate(tree_sitter_bash)
+
+add_library(tree-sitter-core STATIC
+	${tree_sitter_SOURCE_DIR}/lib/src/lib.c
+)
+target_include_directories(tree-sitter-core
+	PUBLIC ${tree_sitter_SOURCE_DIR}/lib/include
+	PRIVATE ${tree_sitter_SOURCE_DIR}/lib/src
+)
+target_compile_options(tree-sitter-core PRIVATE
+	-Wno-conversion
+	-Wno-sign-conversion
+	-Wno-shadow
+	-Wno-unused-parameter
+	-Wno-pedantic
+)
+
+add_library(tree-sitter-bash STATIC
+	${tree_sitter_bash_SOURCE_DIR}/src/parser.c
+	${tree_sitter_bash_SOURCE_DIR}/src/scanner.c
+)
+target_include_directories(tree-sitter-bash
+	PUBLIC ${tree_sitter_bash_SOURCE_DIR}/bindings/c
+	PRIVATE ${tree_sitter_bash_SOURCE_DIR}/src
+)
+target_compile_options(tree-sitter-bash PRIVATE
+	-Wno-conversion
+	-Wno-sign-conversion
+	-Wno-shadow
+	-Wno-unused-parameter
+	-Wno-unused-function
+	-Wno-pedantic
+)
+target_link_libraries(tree-sitter-bash PUBLIC tree-sitter-core)
+
 add_library(blake3 STATIC
 	${blake3_SOURCE_DIR}/c/blake3.c
 	${blake3_SOURCE_DIR}/c/blake3_dispatch.c

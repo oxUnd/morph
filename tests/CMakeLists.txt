@@ -35,6 +35,7 @@ set(TEST_SOURCES
 	test_skill.cpp
 	test_sync.cpp
 	test_bash_exec.cpp
+	test_bash_parse.cpp
 	test_spin.cpp
 	test_util_containers.cpp
 	test_render.cpp

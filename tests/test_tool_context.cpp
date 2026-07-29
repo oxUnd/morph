@@ -15,6 +15,52 @@ protected:
 	void TearDown() override {}
 };
 
+class ScopedEnvVar {
+public:
+	explicit ScopedEnvVar(const char *name)
+		: name_(name), existed_(getenv(name) != nullptr),
+		  value_(getenv(name) ? getenv(name) : "")
+	{
+	}
+
+	~ScopedEnvVar()
+	{
+		if (existed_)
+			(void)setenv(name_.c_str(), value_.c_str(), 1);
+		else
+			(void)unsetenv(name_.c_str());
+	}
+
+	void Set(const char *value)
+	{
+		(void)setenv(name_.c_str(), value, 1);
+	}
+
+private:
+	std::string name_;
+	bool existed_;
+	std::string value_;
+};
+
+static int has_cli_directory(
+	const struct tool_directory_capability *directories, int count,
+	const char *path)
+{
+	char *expected = file_resolve_path(path);
+	int found = 0;
+
+	if (!expected)
+		return 0;
+	for (int i = 0; i < count; i++) {
+		if (strcmp(directories[i].path, expected) == 0) {
+			found = 1;
+			break;
+		}
+	}
+	free(expected);
+	return found;
+}
+
 static int check_command(struct tool_context *tctx, const char *command,
 			 const char *cwd)
 {
@@ -104,6 +150,130 @@ TEST_F(ToolContextTest, CreateWithTilde) {
 	EXPECT_NE(tool_context_output_dir(tctx)[0], '~');
 	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
 	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, CommandNameSkipsEnvironmentAssignments)
+{
+	char name[TOOL_CONTEXT_CLI_NAME_MAX];
+	char direct[PATH_MAX];
+	char prefixed[PATH_MAX];
+
+	ASSERT_EQ(tool_context_command_name(
+		"LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 "
+		"PROFILE='user profile' /usr/local/bin/lark-cli auth status",
+		name, sizeof(name)), 0);
+	EXPECT_STREQ(name, "lark-cli");
+	ASSERT_EQ(tool_context_command_principal(
+		"echo ok", direct, sizeof(direct)), 0);
+	ASSERT_EQ(tool_context_command_principal(
+		"NOTICE=1 echo ok", prefixed, sizeof(prefixed)), 0);
+	EXPECT_STREQ(prefixed, direct);
+}
+
+TEST_F(ToolContextTest, ParsesComplexEnvironmentPrefix)
+{
+	char name[TOOL_CONTEXT_CLI_NAME_MAX];
+
+	ASSERT_EQ(tool_context_command_name(
+		"PROFILE=\"a\\\" b\" lark-cli auth status",
+		name, sizeof(name)), 0);
+	EXPECT_STREQ(name, "lark-cli");
+}
+
+TEST_F(ToolContextTest, SynthesizesCliDirectoriesFromCommandName)
+{
+	char home_template[] = "/tmp/morph_cli_home_XXXXXX";
+	char *home = mkdtemp(home_template);
+	char config[PATH_MAX];
+	char cache[PATH_MAX];
+	char state[PATH_MAX];
+	char expected[PATH_MAX];
+	ScopedEnvVar home_env("HOME");
+	ScopedEnvVar config_env("XDG_CONFIG_HOME");
+	ScopedEnvVar cache_env("XDG_CACHE_HOME");
+	ScopedEnvVar state_env("XDG_STATE_HOME");
+	struct tool_directory_capability
+		directories[TOOL_CONTEXT_CLI_DIR_MAX] = {};
+
+	ASSERT_NE(home, nullptr);
+	ASSERT_EQ(file_path_join(
+		config, sizeof(config), home, "xdg-config"), 0);
+	ASSERT_EQ(file_path_join(
+		cache, sizeof(cache), home, "xdg-cache"), 0);
+	ASSERT_EQ(file_path_join(
+		state, sizeof(state), home, "xdg-state"), 0);
+	home_env.Set(home);
+	config_env.Set(config);
+	cache_env.Set(cache);
+	state_env.Set(state);
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
+	int count = tool_context_discover_cli_dirs(
+		tctx, "NOTICE=1 /usr/local/bin/demo-cli --version",
+		directories,
+		TOOL_CONTEXT_CLI_DIR_MAX);
+#ifdef __APPLE__
+	ASSERT_EQ(count, 6);
+#else
+	ASSERT_EQ(count, 4);
+#endif
+	ASSERT_EQ(file_path_join(
+		expected, sizeof(expected), home, ".demo-cli"), 0);
+	EXPECT_TRUE(has_cli_directory(directories, count, expected));
+	ASSERT_EQ(file_path_join(
+		expected, sizeof(expected), config, "demo-cli"), 0);
+	EXPECT_TRUE(has_cli_directory(directories, count, expected));
+	ASSERT_EQ(file_path_join(
+		expected, sizeof(expected), cache, "demo-cli"), 0);
+	EXPECT_TRUE(has_cli_directory(directories, count, expected));
+	ASSERT_EQ(file_path_join(
+		expected, sizeof(expected), state, "demo-cli"), 0);
+	EXPECT_TRUE(has_cli_directory(directories, count, expected));
+	for (int i = 0; i < count; i++) {
+		EXPECT_EQ(directories[i].create, 1);
+		EXPECT_NE(access(directories[i].path, F_OK), 0);
+	}
+
+	tool_context_destroy(tctx);
+	rmdir(home);
+}
+
+TEST_F(ToolContextTest, CliDirectoryGrantFollowsApprovalLifetime)
+{
+	char dir_template[] = "/tmp/morph_cli_grant_XXXXXX";
+	char *base = mkdtemp(dir_template);
+	char once_dir[PATH_MAX];
+	char session_dir[PATH_MAX];
+	const char *paths[4] = {};
+	char resolved[PATH_MAX];
+
+	ASSERT_NE(base, nullptr);
+	ASSERT_EQ(file_path_join(
+		once_dir, sizeof(once_dir), base, "once"), 0);
+	ASSERT_EQ(file_path_join(
+		session_dir, sizeof(session_dir), base, "session"), 0);
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(tool_context_grant_write_access(
+		tctx, "/usr/bin/demo", once_dir, 1, TOOL_OP_ALLOW,
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(access(once_dir, F_OK), 0);
+	EXPECT_EQ(tool_context_collect_write_grants(
+		tctx, "/usr/bin/demo", paths, 4), 0);
+	ASSERT_EQ(tool_context_grant_write_access(
+		tctx, "/usr/bin/demo", session_dir, 1, TOOL_OP_SESSION,
+		resolved, sizeof(resolved)), 0);
+	ASSERT_EQ(tool_context_collect_write_grants(
+		tctx, "/usr/bin/demo", paths, 4), 1);
+	char *expected = file_resolve_path(session_dir);
+	ASSERT_NE(expected, nullptr);
+	EXPECT_STREQ(paths[0], expected);
+	free(expected);
+
+	tool_context_destroy(tctx);
+	rmdir(session_dir);
+	rmdir(once_dir);
+	rmdir(base);
 }
 
 TEST_F(ToolContextTest, OutputDirNull) {

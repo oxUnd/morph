@@ -14,6 +14,7 @@ add_library(morph-util STATIC
 	strmap.c
 	buf.c
 	array.c
+	bash_parse.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 	${CMAKE_SOURCE_DIR}/vendor/re.c
 )
@@ -27,7 +28,7 @@ target_compile_definitions(morph-util PUBLIC
 	VENDOR_TIKTOKEN_DIR="${CMAKE_BINARY_DIR}/tiktoken"
 )
 
-target_link_libraries(morph-util PUBLIC m)
+target_link_libraries(morph-util PUBLIC m tree-sitter-bash)
 
 set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/re.c PROPERTIES
 	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion"

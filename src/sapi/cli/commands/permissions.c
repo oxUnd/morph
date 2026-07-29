@@ -13,6 +13,28 @@ static const char *subject_name(const char *subject)
 	return slash && slash[1] ? slash + 1 : subject;
 }
 
+static const char *capability_name(const char *resource_kind)
+{
+	if (!resource_kind)
+		return "";
+	if (strcmp(resource_kind, "write_path") == 0 ||
+	    strcmp(resource_kind, "tool_write_path") == 0)
+		return "read/write";
+	if (strcmp(resource_kind, "read_path") == 0)
+		return "read";
+	return resource_kind;
+}
+
+static const char *grant_group_name(
+	const struct runtime_permission_grant *grants, int start, int end)
+{
+	for (int i = start; i < end; i++) {
+		if (strcmp(grants[i].resource_kind, "command") == 0)
+			return grants[i].resource;
+	}
+	return subject_name(grants[start].subject);
+}
+
 static int compare_grants(const void *left, const void *right)
 {
 	const struct runtime_permission_grant *a = left;
@@ -60,7 +82,7 @@ static int print_permissions(struct cli_context *ctx)
 		       strcmp(grants[i].subject, grants[end].subject) == 0)
 			end++;
 		group_last = ++group == group_count;
-		cli_list_group(subject_name(grants[i].subject), end - i,
+		cli_list_group(grant_group_name(grants, i, end), end - i,
 			       group_last);
 		ancestor = group_last ? "  " : "│ ";
 		for (int j = i; j < end; j++) {
@@ -68,7 +90,7 @@ static int print_permissions(struct cli_context *ctx)
 
 			snprintf(label, sizeof(label), "#%lld  %s",
 				 (long long)grants[j].id,
-				 grants[j].resource_kind);
+				 capability_name(grants[j].resource_kind));
 			cli_list_item(ancestor, j == end - 1, "", label,
 				      grants[j].resource, 24, columns);
 		}
@@ -131,7 +153,9 @@ static int revoke_subject_matches(struct cli_context *ctx,
 		int exists = 0;
 
 		if (strcmp(grants[i].subject, name) != 0 &&
-		    strcmp(subject_name(grants[i].subject), name) != 0)
+		    strcmp(subject_name(grants[i].subject), name) != 0 &&
+		    !(strcmp(grants[i].resource_kind, "command") == 0 &&
+		      strcmp(grants[i].resource, name) == 0))
 			continue;
 		morph_array_foreach(stored, &subjects, char *) {
 			if (strcmp(*stored, grants[i].subject) == 0) {

@@ -4,6 +4,8 @@
 #include "util/log.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/file.h"
+#include "util/bash_parse.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -51,30 +53,17 @@ static const char *blocked_commands[] = {
 	NULL
 };
 
-static int is_blocked_command(const char *cmd)
+static int is_blocked_name(const char *name)
 {
-	while (*cmd == ' ' || *cmd == '\t')
-		cmd++;
-	const char *end = cmd;
-	while (*end && *end != ' ' && *end != '\t' && *end != ';' &&
-	       *end != '&' && *end != '|' && *end != '\n' && *end != '(' &&
-	       *end != '`' && *end != '$')
-		end++;
-	size_t len = (size_t)(end - cmd);
-	if (len == 0)
-		return 0;
-	const char *base = end;
-	while (base > cmd && *(base - 1) != '/')
-		base--;
-	size_t base_len = (size_t)(end - base);
+	size_t len;
+
+	len = strlen(name);
 	for (const char **p = blocked_commands; *p; p++) {
 		size_t blen = strlen(*p);
-		if (base_len == blen && strncmp(base, *p, blen) == 0)
+		if (len == blen && strncmp(name, *p, blen) == 0)
 			return 1;
-		if (base_len > blen && base[blen] == '.' &&
-		    strncmp(base, *p, blen) == 0)
-			return 1;
-		if (len == blen && strncmp(cmd, *p, blen) == 0)
+		if (len > blen && name[blen] == '.' &&
+		    strncmp(name, *p, blen) == 0)
 			return 1;
 	}
 	return 0;
@@ -82,27 +71,64 @@ static int is_blocked_command(const char *cmd)
 
 static int contains_blocked_command(const char *cmd)
 {
-	if (is_blocked_command(cmd))
+	struct bash_parse_result analysis;
+	struct bash_parse_command *command;
+	int blocked = 0;
+
+	if (bash_parse_analyze(cmd, &analysis) != 0)
 		return 1;
-	const char *p = cmd;
-	while (*p) {
-		if (*p == ';' || *p == '&' || *p == '|' || *p == '`' ||
-		    *p == '\n' || *p == '(') {
-			p++;
-			while (*p == ' ' || *p == '\t' || *p == '&' || *p == '|')
-				p++;
-			if (is_blocked_command(p))
-				return 1;
-		} else {
-			p++;
+	if (analysis.has_error || analysis.commands.nelts == 0) {
+		blocked = 1;
+	} else {
+		morph_array_foreach(command, &analysis.commands,
+				    struct bash_parse_command) {
+			if (!command->name[0] ||
+			    is_blocked_name(command->name)) {
+				blocked = 1;
+				break;
+			}
 		}
 	}
-	return 0;
+	bash_parse_result_cleanup(&analysis);
+	return blocked;
 }
 
 static int command_has_compound_syntax(const char *command)
 {
-	return command && strpbrk(command, ";|&\n`$<>()") != NULL;
+	struct bash_parse_result analysis;
+	int compound;
+
+	if (!command || bash_parse_analyze(command, &analysis) != 0)
+		return 1;
+	compound = analysis.has_error || analysis.is_compound;
+	bash_parse_result_cleanup(&analysis);
+	return compound;
+}
+
+static int json_paths_allow(cJSON *paths, const char *path)
+{
+	cJSON *item;
+
+	if (!cJSON_IsArray(paths) || !path)
+		return 0;
+	cJSON_ArrayForEach(item, paths) {
+		if (cJSON_IsString(item) && item->valuestring &&
+		    path_is_within(path, item->valuestring))
+			return 1;
+	}
+	return 0;
+}
+
+static int add_allowed_path(char **allowed, int *count, const char *path)
+{
+	if (!allowed || !count || !path || !*path)
+		return 0;
+	for (int i = 0; i < *count; i++) {
+		if (strcmp(allowed[i], path) == 0)
+			return 0;
+	}
+	allowed[(*count)++] = (char *)path;
+	return 1;
 }
 
 static int buf_append(morph_buf_t *b, const char *s, size_t n)
@@ -189,6 +215,9 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	char principal[256];
 	cJSON *write_paths = NULL;
 	cJSON *approved_write_paths = NULL;
+	cJSON *approved_auto_paths = NULL;
+	struct tool_directory_capability auto_dirs[TOOL_CONTEXT_CLI_DIR_MAX];
+	int auto_dir_count = 0;
 	int timeout = bash_exec_default_timeout;
 	if (root) {
 		cJSON *c = cJSON_GetObjectItem(root, "command");
@@ -243,6 +272,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		snprintf(principal, sizeof(principal), "%s", "shell");
 
 	if (tctx) {
+		enum tool_operation_verdict command_verdict = TOOL_OP_DENY;
 		struct tool_operation op = {
 			.kind = TOOL_OP_COMMAND,
 			.tool_name = "bash_exec",
@@ -252,11 +282,29 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			.scope = cwd,
 			.details_json = args_json,
 		};
-		int rc = tool_context_check_operation(tctx, &op);
+		int rc;
+
+		if (!command_has_compound_syntax(command)) {
+			auto_dir_count = tool_context_discover_cli_dirs(
+				tctx, command, auto_dirs,
+				TOOL_CONTEXT_CLI_DIR_MAX);
+			if (auto_dir_count < 0) {
+				cJSON_Delete(root);
+				return auto_dir_count;
+			}
+			op.directories = auto_dirs;
+			op.directories_count = auto_dir_count;
+		}
+		rc = tool_context_check_operation_verdict(
+			tctx, &op, &command_verdict);
 		if (rc < 0) {
 			if (root)
 				cJSON_Delete(root);
-			if (rc == -EACCES)
+			if (command_verdict != TOOL_OP_DENY)
+				(void)tool_result_success_json_text(result, strdup(
+					"{\"error\":\"approved CLI "
+					"directory could not be prepared\"}"));
+			else if (rc == -EACCES)
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"command execution denied "
 					"by user\"}"));
@@ -266,6 +314,35 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 					"allowed by policy and no interactive "
 					"approval is available\"}"));
 			return -EPERM;
+		}
+		if (auto_dir_count > 0 &&
+		    command_verdict != TOOL_OP_DENY) {
+			approved_auto_paths = cJSON_CreateArray();
+			if (!approved_auto_paths) {
+				cJSON_Delete(root);
+				return -ENOMEM;
+			}
+			cJSON_AddItemToObject(root, "_approved_auto_paths",
+					      approved_auto_paths);
+			for (int i = 0; i < auto_dir_count; i++) {
+				char *resolved;
+
+				resolved = file_resolve_path(
+					auto_dirs[i].path);
+				if (!resolved) {
+					cJSON_Delete(root);
+					(void)tool_result_success_json_text(
+						result, strdup(
+							"{\"error\":\"approved "
+							"CLI directory could not "
+							"be prepared\"}"));
+					return -ENOMEM;
+				}
+				cJSON_AddItemToArray(
+					approved_auto_paths,
+					cJSON_CreateString(resolved));
+				free(resolved);
+			}
 		}
 		if (cJSON_IsArray(write_paths)) {
 			cJSON *path;
@@ -280,6 +357,8 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			cJSON_ArrayForEach(path, write_paths) {
 				char resolved[PATH_MAX];
 				int path_rc;
+				char *expanded;
+				char *canonical;
 
 				if (!cJSON_IsString(path) || !path->valuestring) {
 					cJSON_Delete(root);
@@ -289,10 +368,26 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 						"contain only strings\"}"));
 					return -EINVAL;
 				}
-				path_rc = tool_context_request_write_access(
-					tctx, principal, command,
-					path->valuestring, resolved,
-					sizeof(resolved));
+				expanded = file_expand_path(path->valuestring);
+				canonical = expanded ?
+					file_resolve_path(expanded) : NULL;
+				free(expanded);
+				if (canonical &&
+				    file_path_is_absolute(canonical) &&
+				    json_paths_allow(approved_auto_paths,
+						     canonical)) {
+					snprintf(resolved, sizeof(resolved),
+						 "%s", canonical);
+					path_rc = 0;
+				} else {
+					path_rc =
+						tool_context_request_write_access(
+							tctx, principal, command,
+							path->valuestring,
+							resolved,
+							sizeof(resolved));
+				}
+				free(canonical);
 				if (path_rc < 0) {
 					cJSON *denied = cJSON_CreateObject();
 					cJSON_AddStringToObject(
@@ -374,10 +469,13 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		const char **grants = NULL;
 		char **allowed = NULL;
 		int grant_count = 0;
+		int auto_count = approved_auto_paths ?
+			cJSON_GetArraySize(approved_auto_paths) : 0;
 		int requested_count = approved_write_paths ?
 			cJSON_GetArraySize(approved_write_paths) : 0;
 		int grant_capacity = tctx ?
-			(int)tctx->scoped_grants.nelts : 0;
+			(int)(tctx->scoped_grants.nelts +
+			      tctx->persistent_grants.nelts) : 0;
 		int allowed_count = 0;
 
 		close(out_pipe[0]);
@@ -408,7 +506,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		int sb_rc;
 		memset(&sb, 0, sizeof(sb));
 		sb.permissions = EXT_PERM_EXEC | EXT_PERM_NETWORK;
-		allowed = calloc((size_t)(2 + requested_count +
+		allowed = calloc((size_t)(2 + auto_count + requested_count +
 					 grant_capacity), sizeof(*allowed));
 		if (!allowed)
 			_exit(126);
@@ -427,7 +525,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		sb.max_cpu_seconds = timeout;
 
 		if (sandbox_cwd && *sandbox_cwd) {
-			allowed[allowed_count++] = (char *)sandbox_cwd;
+			add_allowed_path(allowed, &allowed_count, sandbox_cwd);
 		}
 		if (tctx) {
 			const char *od = tool_context_output_dir(tctx);
@@ -436,19 +534,30 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 				if (realpath(od, resolved_od)) {
 					if (!sandbox_cwd ||
 					    strcmp(resolved_od, sandbox_cwd) != 0)
-						allowed[allowed_count++] = resolved_od;
+						add_allowed_path(
+							allowed, &allowed_count,
+							resolved_od);
 				}
 			}
+		}
+		for (int i = 0; i < auto_count; i++) {
+			cJSON *path = cJSON_GetArrayItem(
+				approved_auto_paths, i);
+			if (cJSON_IsString(path) && path->valuestring)
+				add_allowed_path(allowed, &allowed_count,
+						 path->valuestring);
 		}
 		for (int i = 0; i < requested_count; i++) {
 			cJSON *path = cJSON_GetArrayItem(
 				approved_write_paths, i);
 			if (cJSON_IsString(path) && path->valuestring)
-				allowed[allowed_count++] = path->valuestring;
+				add_allowed_path(allowed, &allowed_count,
+						 path->valuestring);
 		}
 		for (int i = 0; i < grant_count; i++)
-			allowed[allowed_count++] = (char *)grants[i];
-		if (requested_count > 0 || grant_count > 0)
+			add_allowed_path(allowed, &allowed_count, grants[i]);
+		if (auto_count > 0 || requested_count > 0 ||
+		    grant_count > 0)
 			sb.permissions |= EXT_PERM_FILESYS;
 		sb.allowed_paths = allowed;
 		sb.allowed_paths_count = allowed_count;

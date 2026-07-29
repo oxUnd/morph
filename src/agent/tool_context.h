@@ -13,6 +13,8 @@ extern "C" {
 #define TOOL_CONTEXT_ALLOW_MAX 32
 #define TOOL_CONTEXT_ALLOW_PATH_MAX PATH_MAX
 #define TOOL_CONTEXT_ACTION_MAX 1024
+#define TOOL_CONTEXT_CLI_NAME_MAX 256
+#define TOOL_CONTEXT_CLI_DIR_MAX 6
 
 enum tool_path_op {
 	TOOL_PATH_READ = 0,
@@ -44,12 +46,19 @@ struct tool_operation {
 	const char *target;
 	const char *scope;
 	const char *details_json;
+	const struct tool_directory_capability *directories;
+	int directories_count;
 };
 
 typedef enum tool_operation_verdict (*tool_operation_approval_fn)(
 	const struct tool_operation *op, void *user_data);
 
 struct db;
+
+struct tool_directory_capability {
+	char path[PATH_MAX];
+	int create;
+};
 
 struct tool_context {
 	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
@@ -83,6 +92,9 @@ int tool_context_authorize_path(struct tool_context *tctx,
 				char *resolved, size_t resolved_size);
 int tool_context_check_operation(struct tool_context *tctx,
 				 const struct tool_operation *op);
+int tool_context_check_operation_verdict(
+	struct tool_context *tctx, const struct tool_operation *op,
+	enum tool_operation_verdict *verdict);
 void tool_context_set_operation_approval(struct tool_context *tctx,
 					 tool_operation_approval_fn fn,
 					 void *user_data);
@@ -97,8 +109,17 @@ int tool_context_allow_command_pattern(struct tool_context *tctx,
 				       const char *pattern);
 int tool_context_allow_command_scope(struct tool_context *tctx,
 				     const char *path);
+int tool_context_command_name(const char *command, char *out,
+			      size_t out_size);
 int tool_context_command_principal(const char *command, char *out,
 				   size_t out_size);
+int tool_context_discover_cli_dirs(
+	const struct tool_context *tctx, const char *command,
+	struct tool_directory_capability *directories, int max_directories);
+int tool_context_grant_write_access(
+	struct tool_context *tctx, const char *principal, const char *path,
+	int create, enum tool_operation_verdict verdict,
+	char *resolved, size_t resolved_size);
 int tool_context_request_write_access(struct tool_context *tctx,
 				      const char *principal,
 				      const char *command,

@@ -4,6 +4,7 @@
 #include "agent/tool_context.h"
 #include "util/file.h"
 #include "cJSON.h"
+#include <filesystem>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -13,13 +14,66 @@ class BashExecTest : public ::testing::Test {
 protected:
 	struct tool_registry reg;
 	struct tool_context *tctx;
+	std::string test_home;
+	std::string old_home;
+	std::string old_xdg_config;
+	std::string old_xdg_cache;
+	std::string old_xdg_state;
+	bool had_home;
+	bool had_xdg_config;
+	bool had_xdg_cache;
+	bool had_xdg_state;
+
+	static std::string env_value(const char *name, bool *existed)
+	{
+		const char *value = getenv(name);
+
+		*existed = value != nullptr;
+		return value ? value : "";
+	}
+
+	static void restore_env(const char *name, bool existed,
+				const std::string &value)
+	{
+		if (existed)
+			(void)setenv(name, value.c_str(), 1);
+		else
+			(void)unsetenv(name);
+	}
+
 	void SetUp() override {
+		char home_template[] = "/tmp/morph_bash_home_XXXXXX";
+		char *home;
+
+		old_home = env_value("HOME", &had_home);
+		old_xdg_config =
+			env_value("XDG_CONFIG_HOME", &had_xdg_config);
+		old_xdg_cache =
+			env_value("XDG_CACHE_HOME", &had_xdg_cache);
+		old_xdg_state =
+			env_value("XDG_STATE_HOME", &had_xdg_state);
+		home = mkdtemp(home_template);
+		ASSERT_NE(home, nullptr);
+		test_home = home;
+		ASSERT_EQ(setenv("HOME", test_home.c_str(), 1), 0);
+		ASSERT_EQ(unsetenv("XDG_CONFIG_HOME"), 0);
+		ASSERT_EQ(unsetenv("XDG_CACHE_HOME"), 0);
+		ASSERT_EQ(unsetenv("XDG_STATE_HOME"), 0);
 		tool_registry_init(&reg);
 		tctx = tool_context_create("/tmp", "/tmp");
 	}
 	void TearDown() override {
 		tool_context_destroy(tctx);
 		tool_registry_cleanup(&reg);
+		restore_env("HOME", had_home, old_home);
+		restore_env("XDG_CONFIG_HOME", had_xdg_config,
+			    old_xdg_config);
+		restore_env("XDG_CACHE_HOME", had_xdg_cache,
+			    old_xdg_cache);
+		restore_env("XDG_STATE_HOME", had_xdg_state,
+			    old_xdg_state);
+		std::error_code error;
+		(void)std::filesystem::remove_all(test_home, error);
 	}
 };
 
@@ -474,6 +528,32 @@ TEST_F(BashExecTest, BlockedWithPathPrefix)
 	int rc;
 	exec_command(reg, tctx, "/usr/bin/rm -rf /", rc);
 	EXPECT_EQ(rc, -EPERM);
+}
+
+TEST_F(BashExecTest, BlockedAfterEnvironmentAssignment)
+{
+	bash_exec_init(&reg, tctx);
+	int rc;
+	std::string result = exec_raw(
+		reg, "{\"command\":\"NOTICE=1 rm -f /tmp/x\"}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_NE(result.find("blocked"), std::string::npos);
+}
+
+TEST_F(BashExecTest, QuotedAmpersandInUrlIsNotBlocked)
+{
+	bash_exec_init(&reg, tctx);
+	int rc;
+	std::string result = exec_tool(
+		reg, tctx,
+		"{\"command\":\"printf '%s' "
+		"\\\"https://example.test/verify?"
+		"flow_id=x&user_code=y\\\"\"}",
+		rc);
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(result.find("flow_id=x&user_code=y"), std::string::npos);
+	EXPECT_EQ(result.find("blocked"), std::string::npos);
 }
 
 TEST_F(BashExecTest, BlockedInPipe)
@@ -1242,6 +1322,152 @@ static enum tool_operation_verdict scoped_approval_stub(
 	return TOOL_OP_SESSION;
 }
 
+struct CliDirectoryApprovalState {
+	int calls;
+	int expected_count;
+	std::string expected_path;
+};
+
+class BashScopedEnvVar {
+public:
+	explicit BashScopedEnvVar(const char *name)
+		: name_(name), existed_(getenv(name) != nullptr),
+		  value_(getenv(name) ? getenv(name) : "")
+	{
+	}
+
+	~BashScopedEnvVar()
+	{
+		if (existed_)
+			(void)setenv(name_.c_str(), value_.c_str(), 1);
+		else
+			(void)unsetenv(name_.c_str());
+	}
+
+	void Set(const char *value)
+	{
+		(void)setenv(name_.c_str(), value, 1);
+	}
+
+private:
+	std::string name_;
+	bool existed_;
+	std::string value_;
+};
+
+static enum tool_operation_verdict cli_directory_approval_stub(
+	const struct tool_operation *op, void *user_data)
+{
+	CliDirectoryApprovalState *state =
+		static_cast<CliDirectoryApprovalState *>(user_data);
+
+	state->calls++;
+	EXPECT_EQ(op->kind, TOOL_OP_COMMAND);
+	EXPECT_EQ(op->directories_count, state->expected_count);
+	for (int i = 0; i < op->directories_count; i++) {
+		if (state->expected_path == op->directories[i].path)
+			state->expected_path.clear();
+		EXPECT_EQ(op->directories[i].create, 1);
+	}
+	EXPECT_TRUE(state->expected_path.empty());
+	return TOOL_OP_ALLOW;
+}
+
+TEST_F(BashExecTest, CommandApprovalGrantsSynthesizedCliDirectoriesOnce)
+{
+	char home_template[] = "/tmp/morph_bash_cli_home_XXXXXX";
+	char *home = mkdtemp(home_template);
+	char config[PATH_MAX];
+	char cache[PATH_MAX];
+	char state_dir[PATH_MAX];
+	char dot_dir[PATH_MAX];
+	char path[PATH_MAX];
+	char command[PATH_MAX + 32];
+	char args[PATH_MAX + 64];
+	BashScopedEnvVar home_env("HOME");
+	BashScopedEnvVar config_env("XDG_CONFIG_HOME");
+	BashScopedEnvVar cache_env("XDG_CACHE_HOME");
+	BashScopedEnvVar state_env("XDG_STATE_HOME");
+	const char *grants[4] = {};
+	int rc;
+
+	ASSERT_NE(home, nullptr);
+	ASSERT_EQ(file_path_join(
+		config, sizeof(config), home, "xdg-config"), 0);
+	ASSERT_EQ(file_path_join(
+		cache, sizeof(cache), home, "xdg-cache"), 0);
+	ASSERT_EQ(file_path_join(
+		state_dir, sizeof(state_dir), home, "xdg-state"), 0);
+	ASSERT_EQ(file_path_join(
+		dot_dir, sizeof(dot_dir), home, ".touch"), 0);
+	ASSERT_EQ(file_path_join(
+		path, sizeof(path), dot_dir, "state.txt"), 0);
+	home_env.Set(home);
+	config_env.Set(config);
+	cache_env.Set(cache);
+	state_env.Set(state_dir);
+	char *expected = file_resolve_path(dot_dir);
+	ASSERT_NE(expected, nullptr);
+#ifdef __APPLE__
+	CliDirectoryApprovalState state{0, 6, expected};
+#else
+	CliDirectoryApprovalState state{0, 4, expected};
+#endif
+	free(expected);
+	bash_exec_init(&reg, tctx);
+	tool_context_set_operation_approval(
+		tctx, cli_directory_approval_stub, &state);
+	snprintf(command, sizeof(command), "NOTICE=1 touch %s", path);
+	snprintf(args, sizeof(args), "{\"command\":\"%s\"}", command);
+	std::string result = exec_raw(reg, args, rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_EQ(access(path, F_OK), 0);
+	EXPECT_EQ(tool_context_collect_write_grants(
+		tctx, "/usr/bin/touch", grants, 4), 0);
+	std::remove(path);
+	rmdir(dot_dir);
+	{
+		char dir[PATH_MAX];
+
+		ASSERT_EQ(file_path_join(
+			dir, sizeof(dir), config, "touch"), 0);
+		rmdir(dir);
+		rmdir(config);
+		ASSERT_EQ(file_path_join(
+			dir, sizeof(dir), cache, "touch"), 0);
+		rmdir(dir);
+		rmdir(cache);
+		ASSERT_EQ(file_path_join(
+			dir, sizeof(dir), state_dir, "touch"), 0);
+		rmdir(dir);
+		rmdir(state_dir);
+#ifdef __APPLE__
+		char library[PATH_MAX];
+		char base[PATH_MAX];
+
+		ASSERT_EQ(file_path_join(
+			library, sizeof(library), home, "Library"), 0);
+		ASSERT_EQ(file_path_join(
+			base, sizeof(base), library,
+			"Application Support"), 0);
+		ASSERT_EQ(file_path_join(
+			dir, sizeof(dir), base, "touch"), 0);
+		rmdir(dir);
+		rmdir(base);
+		ASSERT_EQ(file_path_join(
+			base, sizeof(base), library, "Caches"), 0);
+		ASSERT_EQ(file_path_join(
+			dir, sizeof(dir), base, "touch"), 0);
+		rmdir(dir);
+		rmdir(base);
+		rmdir(library);
+#endif
+	}
+	rmdir(home);
+}
+
 TEST_F(BashExecTest, ApprovalCallbackAllowsOnce)
 {
 	bash_exec_init(&reg, tctx);
@@ -1335,13 +1561,15 @@ TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
 	ApprovalState state{0, TOOL_OP_ALWAYS, "", ""};
 	tool_context_set_operation_approval(tctx, approval_stub, &state);
 	int rc;
-	exec_raw(reg, "{\"command\":\"echo first\"}", rc);
+	exec_raw(reg, "{\"command\":\"NOTICE=1 echo first\"}", rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(state.calls, 1);
-	std::string r2 = exec_raw(reg, "{\"command\":\"echo second arg\"}", rc);
+	std::string r2 = exec_raw(
+		reg, "{\"command\":\"PROFILE=test echo second arg\"}", rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(state.calls, 1); /* callback NOT called again */
-	EXPECT_EQ(get_json_field(r2, "command"), "echo second arg");
+	EXPECT_EQ(get_json_field(r2, "command"),
+		  "PROFILE=test echo second arg");
 }
 
 TEST_F(BashExecTest, RequestedWritePathIsGrantedToSandbox)
