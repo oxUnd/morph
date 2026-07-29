@@ -52,6 +52,9 @@ set(FCGI_SOURCES
     handlers/events.c)
 
 add_executable(morph-fastcgi ${FCGI_SOURCES})
+set_target_properties(morph-fastcgi PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+add_dependencies(morph-fastcgi morph-data)
 
 target_include_directories(morph-fastcgi PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -100,4 +103,5 @@ endif()
 
 target_compile_options(morph-fastcgi PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-install(TARGETS morph-fastcgi RUNTIME DESTINATION bin)
+install(TARGETS morph-fastcgi
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(morph LANGUAGES C CXX VERSION 0.3.6)
 
+include(GNUInstallDirs)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -216,14 +218,44 @@ add_compile_options(
 	$<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-gnu-zero-variadic-macro-arguments>
 )
 
-configure_file(
-	${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
-	${CMAKE_BINARY_DIR}/tiktoken/cl100k_base.tiktoken COPYONLY)
-configure_file(
-	${CMAKE_SOURCE_DIR}/vendor/tiktoken/o200k_base.tiktoken
-	${CMAKE_BINARY_DIR}/tiktoken/o200k_base.tiktoken COPYONLY)
+add_custom_target(morph-data ALL
+	COMMAND ${CMAKE_COMMAND} -E make_directory
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts/
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
+		${CMAKE_SOURCE_DIR}/vendor/tiktoken/o200k_base.tiktoken
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken/
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		${CMAKE_SOURCE_DIR}/skills
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
+	COMMAND ${CMAKE_COMMAND} -E rm -f
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/.DS_Store
+	COMMENT "Staging morph runtime data"
+)
 
 add_subdirectory(src)
+
+install(FILES
+	${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
+	${CMAKE_SOURCE_DIR}/vendor/tiktoken/o200k_base.tiktoken
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/tiktoken
+)
+install(FILES
+	${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/fonts
+)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills
+	PATTERN ".DS_Store" EXCLUDE
+)
+install(FILES ${CMAKE_SOURCE_DIR}/config.toml.example
+	DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/morph
+)
 
 if(BUILD_TESTS)
 	enable_testing()

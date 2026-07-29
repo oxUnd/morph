@@ -33,8 +33,5 @@ target_include_directories(morph-tools PUBLIC
 	${CMAKE_SOURCE_DIR}/src/agent
 	${CMAKE_SOURCE_DIR}/src/models
 )
-target_compile_definitions(morph-tools PUBLIC
-	MORPH_JS_RUNNER_PATH="${CMAKE_BINARY_DIR}/morph-js-runner"
-)
 target_link_libraries(morph-tools PUBLIC morph-agent morph-models morph-http morph-util morph-skill morph-sandbox morph-db morph-credits morph-session)
 target_link_libraries(morph-tools PUBLIC morph-toml)

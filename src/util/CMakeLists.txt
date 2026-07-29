@@ -2,6 +2,7 @@ add_library(morph-util STATIC
 	arena.c
 	log.c
 	file.c
+	data.c
 	base64.c
 	image_util.c
 	utf8.c
@@ -22,10 +23,6 @@ add_library(morph-util STATIC
 target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/vendor
-)
-
-target_compile_definitions(morph-util PUBLIC
-	VENDOR_TIKTOKEN_DIR="${CMAKE_BINARY_DIR}/tiktoken"
 )
 
 target_link_libraries(morph-util PUBLIC m tree-sitter-bash)

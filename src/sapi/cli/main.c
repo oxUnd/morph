@@ -1,6 +1,7 @@
 #include "sapi/cli/cli.h"
 #include "config.h"
 #include "skill/skill.h"
+#include "util/data.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "http/client.h"
@@ -77,6 +78,14 @@ static void print_version(const char *config_path)
 				file_ensure_dir(agents_skills);
 			skill_discover(&skills, agents_skills);
 			free(agents_skills);
+		}
+	}
+	{
+		char *builtin_skills = morph_data_find_alloc("skills");
+
+		if (builtin_skills) {
+			skill_discover(&skills, builtin_skills);
+			free(builtin_skills);
 		}
 	}
 

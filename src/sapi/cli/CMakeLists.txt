@@ -24,9 +24,6 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
-target_compile_definitions(morph-cli PRIVATE
-	MORPH_BUILTIN_SKILLS_DIR="${CMAKE_SOURCE_DIR}/skills"
-)
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime
 	morph-util
@@ -49,18 +46,19 @@ target_link_libraries(morph-cli PUBLIC
 	morph-agent-ui
 	morph-sync
 )
-target_compile_definitions(morph-cli PRIVATE
-	MORPH_MARKDOWN_FONT_PATH="${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf"
-)
-
 add_executable(morph main.c)
 set_target_properties(morph PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
 target_include_directories(morph PRIVATE
 	${CMAKE_SOURCE_DIR}/src
 )
 target_link_libraries(morph PRIVATE morph-cli)
+add_dependencies(morph morph-data)
+
+install(TARGETS morph
+	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 find_path(READLINE_INCLUDE_DIR readline/readline.h
 	/opt/homebrew/opt/readline/include

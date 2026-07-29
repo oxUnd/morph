@@ -1,5 +1,6 @@
 #include "bpe.h"
 #include "buf.h"
+#include "data.h"
 #include "error.h"
 #include "file.h"
 #include "log.h"
@@ -1012,36 +1013,24 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 		? "o200k_base.tiktoken" : "cl100k_base.tiktoken";
 
 	char path[PATH_MAX] = {0};
-
-	const char *search_dirs[] = {
-		vocab_dir,
-		getenv("HOME") ? (char[]){0} : NULL,
-		NULL, NULL, NULL
-	};
-	char home_path[PATH_MAX];
-
-	const char *home = getenv("HOME");
-	if (home) {
-		snprintf(home_path, sizeof(home_path),
-			 "%s/.morph/tiktoken", home);
-		search_dirs[1] = home_path;
-	}
-
-	search_dirs[2] = VENDOR_TIKTOKEN_DIR;
-	search_dirs[3] = "vendor/tiktoken";
-
 	const char *found_path = NULL;
-	for (int i = 0; i < 4; i++) {
-		if (!search_dirs[i] || !search_dirs[i][0]) continue;
-		if (file_path_join(path, sizeof(path),
-				   search_dirs[i], filename) != 0)
-			continue;
+
+	if (vocab_dir &&
+	    file_path_join(path, sizeof(path), vocab_dir, filename) == 0) {
 		FILE *fp = fopen(path, "r");
 		if (fp) {
 			fclose(fp);
 			found_path = path;
-			break;
 		}
+	}
+
+	if (!found_path) {
+		char relative[PATH_MAX];
+
+		if (file_path_join(relative, sizeof(relative), "tiktoken",
+				   filename) == 0 &&
+		    morph_data_find(path, sizeof(path), relative) == 0)
+			found_path = path;
 	}
 
 	if (!found_path) {

@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
+#include "util/data.h"
 #include "util/file.h"
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <limits.h>
 #include <sys/stat.h>
 
 class FileTest : public ::testing::Test {
@@ -132,6 +135,27 @@ TEST_F(FileTest, PathAppendAlloc) {
 	ASSERT_NE(path, nullptr);
 	EXPECT_STREQ(path, "/tmp/morph/session.json");
 	free(path);
+}
+
+TEST_F(FileTest, DataFindUsesExecutableLayout) {
+	char resolved[PATH_MAX];
+
+	EXPECT_EQ(morph_data_find(resolved, sizeof(resolved), "skills"), 0);
+	EXPECT_NE(strstr(resolved, "/skills"), nullptr);
+	EXPECT_EQ(morph_data_find(resolved, sizeof(resolved),
+				  "tiktoken/cl100k_base.tiktoken"), 0);
+	EXPECT_EQ(morph_data_find(resolved, sizeof(resolved),
+				  "fonts/STIXTwoMath-Regular.ttf"), 0);
+	EXPECT_EQ(morph_data_find(resolved, sizeof(resolved),
+				  "../bin/morph"), -EINVAL);
+}
+
+TEST_F(FileTest, ExecutableFindLocatesJavaScriptRunner) {
+	char resolved[PATH_MAX];
+
+	EXPECT_EQ(morph_executable_find(resolved, sizeof(resolved),
+					"morph-js-runner"), 0);
+	EXPECT_EQ(access(resolved, X_OK), 0);
 }
 
 TEST_F(FileTest, WriteEmpty) {

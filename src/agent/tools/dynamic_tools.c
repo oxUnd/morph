@@ -1,6 +1,7 @@
 #include "dynamic_tools.h"
 #include "ipc/jsonrpc.h"
 #include "util/buf.h"
+#include "util/data.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -23,10 +24,6 @@
 
 #ifdef __ANDROID__
 #include <dlfcn.h>
-#endif
-
-#ifndef MORPH_JS_RUNNER_PATH
-#define MORPH_JS_RUNNER_PATH "morph-js-runner"
 #endif
 
 #define DYN_TOOL_META_FILE "tool.json"
@@ -79,9 +76,8 @@ struct tool_checkpoint {
 
 static const char *runner_path(void)
 {
-	const char *path = getenv("MORPH_JS_RUNNER_PATH");
-	if (path && *path)
-		return path;
+	static char sibling_runner[PATH_MAX];
+
 #ifdef __ANDROID__
 	{
 		static char android_runner[PATH_MAX];
@@ -114,7 +110,12 @@ static const char *runner_path(void)
 		}
 	}
 #endif
-	return MORPH_JS_RUNNER_PATH;
+	if (sibling_runner[0])
+		return sibling_runner;
+	if (morph_executable_find(sibling_runner, sizeof(sibling_runner),
+				  "morph-js-runner") == 0)
+		return sibling_runner;
+	return "morph-js-runner";
 }
 
 static const struct config_dynamic_tool_profile *

@@ -55,6 +55,10 @@ set(TEST_SOURCES
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
+set_target_properties(morph-tests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
+)
+add_dependencies(morph-tests morph-data)
 
 target_include_directories(morph-tests PRIVATE
 	${CMAKE_SOURCE_DIR}/src

@@ -4,8 +4,9 @@ add_executable(morph-js-runner
 )
 
 set_target_properties(morph-js-runner PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
+add_dependencies(morph-js-runner morph-data)
 
 target_include_directories(morph-js-runner PRIVATE
 	${CMAKE_SOURCE_DIR}/src
@@ -36,4 +37,8 @@ target_compile_options(morph-js-runner PRIVATE
 	-Wno-sign-conversion
 	-Wno-shorten-64-to-32
 	-Wno-pedantic
+)
+
+install(TARGETS morph-js-runner
+	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

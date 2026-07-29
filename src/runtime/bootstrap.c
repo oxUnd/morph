@@ -27,6 +27,7 @@
 #include "models/image_gen.h"
 #include "models/video_gen.h"
 #include "runtime/usage.h"
+#include "util/data.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -34,10 +35,6 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef MORPH_BUILTIN_SKILLS_DIR
-#define MORPH_BUILTIN_SKILLS_DIR ""
-#endif
 
 static const char *runtime_api_key(const struct config_model_entry *model)
 {
@@ -344,11 +341,11 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 			free(agents);
 		}
 	}
-	if (MORPH_BUILTIN_SKILLS_DIR[0]) {
-		char *builtin = file_expand_path(MORPH_BUILTIN_SKILLS_DIR);
+	{
+		char *builtin = morph_data_find_alloc("skills");
+
 		if (builtin) {
-			if (file_exists(builtin))
-				skill_discover(skills, builtin);
+			skill_discover(skills, builtin);
 			free(builtin);
 		}
 	}

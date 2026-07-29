@@ -1,4 +1,21 @@
 #include "sapi/cli/internal.h"
+#include "util/data.h"
+
+#include <limits.h>
+
+static const char *cli_markdown_font_path(void)
+{
+	static char path[PATH_MAX];
+	static int initialized;
+
+	if (!initialized) {
+		if (morph_data_find(path, sizeof(path),
+				    "fonts/STIXTwoMath-Regular.ttf") != 0)
+			path[0] = '\0';
+		initialized = 1;
+	}
+	return path[0] ? path : NULL;
+}
 
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
@@ -47,12 +64,14 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 						   void *user)
 {
 	struct morph_md_kitty_options options;
+	const char *font_path;
 
 	memset(&options, 0, sizeof(options));
-	options.font_path = MORPH_MARKDOWN_FONT_PATH;
+	font_path = cli_markdown_font_path();
+	options.font_path = font_path;
 	options.features = MORPH_MD_FEATURE_GFM;
 	if (enable_math && cli_color_enabled() &&
-	    cli_terminal_supports_kitty())
+	    cli_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
 	options.media = cb;
