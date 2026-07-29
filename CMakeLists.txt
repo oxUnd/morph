@@ -253,10 +253,6 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills
 	PATTERN ".DS_Store" EXCLUDE
 )
-install(FILES ${CMAKE_SOURCE_DIR}/config.toml.example
-	DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/morph
-)
-
 if(BUILD_TESTS)
 	enable_testing()
 	FetchContent_Declare(
