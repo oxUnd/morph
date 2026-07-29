@@ -689,6 +689,84 @@ static void presentation_artifact(struct cli_context *ctx,
 				       (void *)1);
 }
 
+static void presentation_mcp_tree_start(struct cli_context *ctx,
+					const char *server)
+{
+	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " "
+	       ANSI_BOLD "MCP %s" ANSI_RESET "\n", server);
+	strncpy(ctx->mcp_tree_server, server,
+		sizeof(ctx->mcp_tree_server) - 1);
+	ctx->mcp_tree_server[sizeof(ctx->mcp_tree_server) - 1] = '\0';
+	ctx->mcp_tree_active = 1;
+}
+
+static void presentation_mcp_ready(const struct morph_event *ev)
+{
+	cJSON *tools = event_item(ev, "tools");
+	cJSON *resources = event_item(ev, "resources");
+	cJSON *prompts = event_item(ev, "prompts");
+
+	printf(ANSI_BOLD ANSI_GREEN "✓ Ready" ANSI_RESET);
+	if (cJSON_IsNumber(tools) && cJSON_IsNumber(resources) &&
+	    cJSON_IsNumber(prompts)) {
+		printf(ANSI_DIM " · %d tools, %d resources, %d prompts"
+		       ANSI_RESET, tools->valueint, resources->valueint,
+		       prompts->valueint);
+	}
+}
+
+static void presentation_mcp(struct cli_context *ctx,
+			     const struct morph_event *ev)
+{
+	const char *server = event_string(ev, "server");
+	const char *error = event_string(ev, "error");
+	const char *label;
+	int is_last;
+	int failed;
+
+	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+		return;
+	if (!server || !server[0])
+		server = "server";
+	presentation_clear_status(ctx);
+	if (!ctx->mcp_tree_active ||
+	    strcmp(ctx->mcp_tree_server, server) != 0)
+		presentation_mcp_tree_start(ctx, server);
+	failed = ev->name && strcmp(ev->name, "mcp.failed") == 0;
+	is_last = failed ||
+		(ev->name && (strcmp(ev->name, "mcp.ready") == 0 ||
+			     strcmp(ev->name, "mcp.disconnected") == 0));
+	printf("  " ANSI_DIM "%s" ANSI_RESET " ",
+	       is_last ? "└" : "├");
+	if (failed) {
+		printf(ANSI_BOLD ANSI_RED "✗ Failed" ANSI_RESET);
+		if (error && error[0])
+			printf(ANSI_DIM " · %s" ANSI_RESET, error);
+	} else if (ev->name && strcmp(ev->name, "mcp.ready") == 0) {
+		presentation_mcp_ready(ev);
+	} else {
+		if (ev->name && strcmp(ev->name, "mcp.connecting") == 0)
+			label = "Connecting";
+		else if (ev->name &&
+			 strcmp(ev->name, "mcp.connected") == 0)
+			label = "Connected";
+		else if (ev->name &&
+			 strcmp(ev->name, "mcp.discovering") == 0)
+			label = "Discovering capabilities";
+		else if (ev->name &&
+			 strcmp(ev->name, "mcp.disconnected") == 0)
+			label = "Disconnected";
+		else
+			label = ev->message ? ev->message : "Updated";
+		printf("%s", label);
+	}
+	printf("\n");
+	if (is_last) {
+		ctx->mcp_tree_active = 0;
+		ctx->mcp_tree_server[0] = '\0';
+	}
+}
+
 static void presentation_auxiliary(struct cli_context *ctx,
 				   const struct morph_event *ev)
 {
@@ -715,10 +793,12 @@ static void presentation_auxiliary(struct cli_context *ctx,
 		}
 		return;
 	}
+	if (ev->type == MORPH_EVENT_MCP) {
+		presentation_mcp(ctx, ev);
+		return;
+	}
 	if (ev->type == MORPH_EVENT_TASK)
 		prefix = "Task";
-	else if (ev->type == MORPH_EVENT_MCP)
-		prefix = "MCP";
 	else if (ev->type == MORPH_EVENT_ERROR)
 		prefix = "Error";
 	else
@@ -774,6 +854,8 @@ void cli_presentation_reset(struct cli_context *ctx)
 	ctx->event_stream_visible = 0;
 	ctx->final_rendered = 0;
 	ctx->status_visible = 0;
+	ctx->mcp_tree_active = 0;
+	ctx->mcp_tree_server[0] = '\0';
 }
 
 void cli_presentation_finish(struct cli_context *ctx)

@@ -360,25 +360,27 @@ int cli_ask_user_callback(const char *question,
  * subject - Short label rendered after the "Approved (...)"/"Denied (...)"
  *           summary so the user knows which decision they made.
  *
- * Returns:
- *   0 - denied
- *   1 - approved once
- *   2 - approved with "always" semantics
+ * scoped - Whether to offer separate session and persistent choices.
  */
-static int prompt_yna(const char *subject)
+static int prompt_approval(const char *subject, int scoped)
 {
 	static pthread_mutex_t prompt_lock = PTHREAD_MUTEX_INITIALIZER;
 	int v;
 
 	pthread_mutex_lock(&prompt_lock);
 #ifdef HAVE_READLINE
-	char *rl_input = readline("  [y]es / [n]o / [a]lways: ");
+	char *rl_input = readline(scoped ?
+		"  [y]es once / [s]ession / [a]lways / [n]o: " :
+		"  [y]es / [n]o / [a]lways: ");
 	if (!rl_input) {
 		printf("\n");
 		pthread_mutex_unlock(&prompt_lock);
 		return 0;
 	}
 	if (rl_input[0] == 'a' || rl_input[0] == 'A')
+		v = scoped ? 3 : 2;
+	else if (scoped &&
+		 (rl_input[0] == 's' || rl_input[0] == 'S'))
 		v = 2;
 	else if (rl_input[0] == 'y' || rl_input[0] == 'Y')
 		v = 1;
@@ -386,8 +388,13 @@ static int prompt_yna(const char *subject)
 		v = 0;
 	free(rl_input);
 #else
-	printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
-	       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
+	if (scoped)
+		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+		       "[s]ession / [a]lways / ["
+		       ANSI_RED "n" ANSI_RESET "]o: ");
+	else
+		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
+		       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
 	fflush(stdout);
 
 	char buf[16];
@@ -406,6 +413,8 @@ static int prompt_yna(const char *subject)
 	fclose(tty);
 
 	if (buf[0] == 'a' || buf[0] == 'A')
+		v = scoped ? 3 : 2;
+	else if (scoped && (buf[0] == 's' || buf[0] == 'S'))
 		v = 2;
 	else if (buf[0] == 'y' || buf[0] == 'Y')
 		v = 1;
@@ -413,10 +422,10 @@ static int prompt_yna(const char *subject)
 		v = 0;
 #endif
 
-	if (v == 1 || v == 2)
+	if (v > 0)
 		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
 		       subject ? subject : "",
-		       v == 2 ? ", always" : "");
+		       v == 2 ? ", session" : (v == 3 ? ", always" : ""));
 	else
 		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (%s)\n",
 		       subject ? subject : "");
@@ -461,7 +470,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 		       "╰─────────────────────────────────────────────────"
 		       ANSI_RESET "\n");
 
-	int v = prompt_yna(tool_name);
+	int v = prompt_approval(tool_name, 0);
 	if (v == 2)
 		return HITL_ALWAYS;
 	if (v == 1)
@@ -545,6 +554,11 @@ enum tool_operation_verdict operation_approval_callback(
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "",
 		       op->tool_name);
+	if (op->principal && *op->principal)
+		printf("%sSubject  " ANSI_BOLD "%s" ANSI_RESET "\n",
+		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+		       ANSI_YELLOW "│ " ANSI_RESET : "",
+		       op->principal);
 	if (op->kind == TOOL_OP_COMMAND) {
 		const char *command = op->action;
 		if (command) {
@@ -570,13 +584,15 @@ enum tool_operation_verdict operation_approval_callback(
 		       ANSI_YELLOW "│ " ANSI_RESET : "",
 		       operation_scope_label(op->kind), op->scope);
 	if (op->kind == TOOL_OP_COMMAND)
-		printf("%s" ANSI_DIM "'always' trusts this program and cwd "
-		       "for this session." ANSI_RESET "\n",
+		printf("%s" ANSI_DIM "'session' trusts this program and cwd "
+		       "until exit; 'always' remembers it for this project."
+		       ANSI_RESET "\n",
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");
 	else
-		printf("%s" ANSI_DIM "'always' trusts this scope for this "
-		       "session." ANSI_RESET "\n",
+		printf("%s" ANSI_DIM "'session' trusts this scope until exit; "
+		       "'always' remembers it for this project."
+		       ANSI_RESET "\n",
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
@@ -584,9 +600,11 @@ enum tool_operation_verdict operation_approval_callback(
 		       "╰─────────────────────────────────────────────────"
 		       ANSI_RESET "\n");
 
-	int v = prompt_yna(operation_subject(op->kind));
-	if (v == 2)
+	int v = prompt_approval(operation_subject(op->kind), 1);
+	if (v == 3)
 		return TOOL_OP_ALWAYS;
+	if (v == 2)
+		return TOOL_OP_SESSION;
 	if (v == 1)
 		return TOOL_OP_ALLOW;
 	return TOOL_OP_DENY;

@@ -7,6 +7,7 @@ extern "C" {
 
 #include <limits.h>
 #include <stddef.h>
+#include "util/array.h"
 
 #define TOOL_CONTEXT_OUTPUT_DIR_MAX PATH_MAX
 #define TOOL_CONTEXT_ALLOW_MAX 32
@@ -31,12 +32,14 @@ enum tool_operation_kind {
 enum tool_operation_verdict {
 	TOOL_OP_DENY = 0,
 	TOOL_OP_ALLOW = 1,
-	TOOL_OP_ALWAYS = 2,
+	TOOL_OP_SESSION = 2,
+	TOOL_OP_ALWAYS = 3,
 };
 
 struct tool_operation {
 	enum tool_operation_kind kind;
 	const char *tool_name;
+	const char *principal;
 	const char *action;
 	const char *target;
 	const char *scope;
@@ -45,6 +48,8 @@ struct tool_operation {
 
 typedef enum tool_operation_verdict (*tool_operation_approval_fn)(
 	const struct tool_operation *op, void *user_data);
+
+struct db;
 
 struct tool_context {
 	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
@@ -59,6 +64,9 @@ struct tool_context {
 	int allowed_commands_count;
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
+	morph_array_t scoped_grants;
+	struct db *grant_db;
+	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int default_timeout_seconds;
 };
 
@@ -77,6 +85,8 @@ int tool_context_check_operation(struct tool_context *tctx,
 void tool_context_set_operation_approval(struct tool_context *tctx,
 					 tool_operation_approval_fn fn,
 					 void *user_data);
+int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
+				 const char *project_root);
 void tool_context_add_read_allowed_dir(struct tool_context *tctx,
 				       const char *dir);
 void tool_context_add_write_allowed_dir(struct tool_context *tctx,
@@ -85,6 +95,17 @@ int tool_context_allow_command_pattern(struct tool_context *tctx,
 				       const char *pattern);
 int tool_context_allow_command_scope(struct tool_context *tctx,
 				     const char *path);
+int tool_context_command_principal(const char *command, char *out,
+				   size_t out_size);
+int tool_context_request_write_access(struct tool_context *tctx,
+				      const char *principal,
+				      const char *command,
+				      const char *path,
+				      char *resolved,
+				      size_t resolved_size);
+int tool_context_collect_write_grants(const struct tool_context *tctx,
+				      const char *principal,
+				      const char **paths, int max_paths);
 
 #ifdef __cplusplus
 }

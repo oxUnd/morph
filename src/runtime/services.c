@@ -337,6 +337,16 @@ int runtime_tool_flags(const struct runtime *runtime, int index,
 	return 0;
 }
 
+int runtime_tool_origin(const struct runtime *runtime, int index,
+			enum tool_origin *out)
+{
+	if (!runtime || !out || index < 0 ||
+	    index >= runtime->context.tools.count)
+		return -EINVAL;
+	*out = runtime->context.tools.entries[index].origin;
+	return 0;
+}
+
 int runtime_tool_find(const struct runtime *runtime, const char *name,
 		      struct tool_desc *out)
 {

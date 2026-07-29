@@ -1,5 +1,6 @@
 add_library(morph-db STATIC
 	database.c
+	permission_grant.c
 	scheduled_task.c
 )
 

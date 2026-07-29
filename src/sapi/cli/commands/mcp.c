@@ -1,5 +1,11 @@
 #include "sapi/cli/commands/registry.h"
 
+static int mcp_event_tree_visible(const struct cli_context *ctx)
+{
+	return ctx && ctx->presentation_ready &&
+		ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
+}
+
 static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
@@ -120,7 +126,9 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = runtime_mcp_connect(ctx->runtime, name);
 		if (rc < 0) {
-			CMD_ERROR("failed to connect to '%s': %s", name, morph_strerror(rc));
+			if (!mcp_event_tree_visible(ctx))
+				CMD_ERROR("failed to connect to '%s': %s",
+					  name, morph_strerror(rc));
 			return rc;
 		}
 		int tools;
@@ -129,11 +137,13 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		rc = runtime_mcp_discover(ctx->runtime, name, &tools,
 					  &resources, &prompts);
 		if (rc < 0) {
-			CMD_ERROR("failed to discover '%s': %s", name,
-				  morph_strerror(rc));
+			if (!mcp_event_tree_visible(ctx))
+				CMD_ERROR("failed to discover '%s': %s", name,
+					  morph_strerror(rc));
 			return rc;
 		}
-		CMD_OK("MCP server '%s' connected", name);
+		if (!mcp_event_tree_visible(ctx))
+			CMD_OK("MCP server '%s' connected", name);
 		return 0;
 	}
 

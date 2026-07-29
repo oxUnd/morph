@@ -100,10 +100,12 @@ TEST_F(RuntimeFacadeTest, ToolRegistrationIsVisibleThroughFacade)
 {
 	struct tool_spec spec{};
 	struct tool_desc desc{};
+	enum tool_origin origin;
 	int before;
 
 	Open();
 	before = runtime_tool_count(instance);
+	spec.origin = TOOL_ORIGIN_EXT;
 	spec.name = "facade_test";
 	spec.description = "Runtime facade test tool";
 	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
@@ -113,6 +115,8 @@ TEST_F(RuntimeFacadeTest, ToolRegistrationIsVisibleThroughFacade)
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
 	ASSERT_EQ(runtime_tool_find(instance, "facade_test", &desc), 0);
 	EXPECT_STREQ(desc.name, "facade_test");
+	ASSERT_EQ(runtime_tool_origin(instance, before, &origin), 0);
+	EXPECT_EQ(origin, TOOL_ORIGIN_EXT);
 	EXPECT_NE(runtime_register_tool(instance, &spec), 0);
 	EXPECT_EQ(runtime_tool_find(instance, "missing", &desc), -ENOENT);
 }
@@ -241,6 +245,7 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 {
 	struct session session{};
 	struct tool_desc tool{};
+	enum tool_origin origin;
 	struct credit_summary credits{};
 	struct runtime_turn_status status{};
 
@@ -248,6 +253,7 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 	EXPECT_EQ(runtime_session_current_id(nullptr, nullptr), -EINVAL);
 	EXPECT_EQ(runtime_session_find_ref(nullptr, "x", &session), -EINVAL);
 	EXPECT_EQ(runtime_tool_info(nullptr, 0, &tool), -EINVAL);
+	EXPECT_EQ(runtime_tool_origin(nullptr, 0, &origin), -EINVAL);
 	EXPECT_EQ(runtime_turn_status_get(nullptr, &status), -EINVAL);
 	EXPECT_EQ(runtime_credit_summary_today_get(nullptr, &credits), -EINVAL);
 	EXPECT_EQ(runtime_task_cancel(nullptr, 1), -EINVAL);

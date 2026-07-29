@@ -1,4 +1,5 @@
 #include "tool_context.h"
+#include "db/permission_grant.h"
 #include "util/file.h"
 #include "util/log.h"
 #include "util/error.h"
@@ -8,6 +9,14 @@
 #include <errno.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#define TOOL_GRANT_SUBJECT_MAX 256
+
+struct tool_scoped_grant {
+	char subject[TOOL_GRANT_SUBJECT_MAX];
+	char path[PATH_MAX];
+};
 
 static const char *skip_ws(const char *s)
 {
@@ -91,6 +100,64 @@ static int extract_program_name(const char *command, char *out, size_t outsize)
 		return -EINVAL;
 	memcpy(out, base, len);
 	out[len] = '\0';
+	return 0;
+}
+
+int tool_context_command_principal(const char *command, char *out,
+				   size_t out_size)
+{
+	char program[PATH_MAX];
+	const char *path;
+	const char *start;
+	const char *end;
+
+	if (!command || !out || out_size == 0)
+		MORPH_RETURN(-EINVAL);
+	start = skip_ws(command);
+	end = start;
+	while (*end && *end != ' ' && *end != '\t' && *end != ';' &&
+	       *end != '|' && *end != '&' && *end != '\n')
+		end++;
+	if (end == start || (size_t)(end - start) >= sizeof(program))
+		MORPH_RETURN(-EINVAL);
+	memcpy(program, start, (size_t)(end - start));
+	program[end - start] = '\0';
+	if (strchr(program, '/')) {
+		char *resolved = file_resolve_path(program);
+		if (!resolved)
+			MORPH_RETURN(-ENOENT);
+		snprintf(out, out_size, "%s", resolved);
+		free(resolved);
+		return 0;
+	}
+	path = getenv("PATH");
+	if (path && *path) {
+		char *copy = strdup(path);
+		char *save = NULL;
+		char *dir;
+
+		if (!copy)
+			MORPH_RETURN(-ENOMEM);
+		for (dir = strtok_r(copy, ":", &save); dir;
+		     dir = strtok_r(NULL, ":", &save)) {
+			char candidate[PATH_MAX];
+			char *resolved;
+
+			if (file_path_join(candidate, sizeof(candidate), dir,
+					   program) != 0 ||
+			    access(candidate, X_OK) != 0)
+				continue;
+			resolved = file_resolve_path(candidate);
+			if (resolved) {
+				snprintf(out, out_size, "%s", resolved);
+				free(resolved);
+				free(copy);
+				return 0;
+			}
+		}
+		free(copy);
+	}
+	snprintf(out, out_size, "%s", program);
 	return 0;
 }
 
@@ -233,6 +300,30 @@ static void add_parent_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
 	add_allowed_dir(dirs, count, buf);
 }
 
+static int add_scoped_write_grant(struct tool_context *tctx,
+				  const char *subject, const char *path)
+{
+	struct tool_scoped_grant grant;
+	struct tool_scoped_grant *existing;
+
+	if (!tctx || !subject || !*subject || !path || !*path)
+		MORPH_RETURN(-EINVAL);
+	morph_array_foreach(existing, &tctx->scoped_grants,
+			    struct tool_scoped_grant) {
+		if (strcmp(existing->subject, subject) == 0 &&
+		    strcmp(existing->path, path) == 0)
+			return 0;
+	}
+	memset(&grant, 0, sizeof(grant));
+	snprintf(grant.subject, sizeof(grant.subject), "%s", subject);
+	snprintf(grant.path, sizeof(grant.path), "%s", path);
+	existing = morph_array_push(&tctx->scoped_grants);
+	if (!existing)
+		MORPH_RETURN(-ENOMEM);
+	*existing = grant;
+	return 0;
+}
+
 static int path_exists_for_read(enum tool_path_op op, const char *path)
 {
 	struct stat st;
@@ -267,12 +358,21 @@ struct tool_context *tool_context_create(const char *workdir,
 	}
 	tctx->allowed_commands_count = 0;
 	tctx->exec_allowed_dirs_count = 0;
+	if (morph_array_init(&tctx->scoped_grants, 8,
+			     sizeof(struct tool_scoped_grant)) != 0) {
+		free(tctx);
+		return NULL;
+	}
+	tctx->grant_db = NULL;
+	tctx->grant_project_root[0] = '\0';
 	tctx->default_timeout_seconds = 0;
 	return tctx;
 }
 
 void tool_context_destroy(struct tool_context *tctx)
 {
+	if (tctx)
+		morph_array_cleanup(&tctx->scoped_grants);
 	free(tctx);
 }
 
@@ -332,6 +432,73 @@ void tool_context_set_operation_approval(struct tool_context *tctx,
 	tctx->operation_approval_user_data = user_data;
 }
 
+static int load_grant(const struct permission_grant *grant, void *user_data)
+{
+	struct tool_context *tctx = user_data;
+
+	if (strcmp(grant->resource_kind, "command") == 0)
+		return tool_context_allow_command_pattern(tctx, grant->resource);
+	if (strcmp(grant->resource_kind, "command_cwd") == 0)
+		return tool_context_allow_command_scope(tctx, grant->resource);
+	if (strcmp(grant->resource_kind, "write_path") == 0)
+		return add_scoped_write_grant(tctx, grant->subject,
+					      grant->resource);
+	if (strcmp(grant->resource_kind, "read_path") == 0) {
+		add_allowed_dir(tctx->read_allowed_dirs,
+				&tctx->read_allowed_dirs_count,
+				grant->resource);
+		return 0;
+	}
+	if (strcmp(grant->resource_kind, "tool_write_path") == 0) {
+		add_allowed_dir(tctx->write_allowed_dirs,
+				&tctx->write_allowed_dirs_count,
+				grant->resource);
+		return 0;
+	}
+	return 0;
+}
+
+int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
+				 const char *project_root)
+{
+	char *resolved;
+	int rc;
+
+	if (!tctx || !db || !project_root || !*project_root)
+		MORPH_RETURN(-EINVAL);
+	resolved = file_resolve_path(project_root);
+	if (!resolved)
+		MORPH_RETURN(-ENOMEM);
+	snprintf(tctx->grant_project_root, sizeof(tctx->grant_project_root),
+		 "%s", resolved);
+	free(resolved);
+	tctx->grant_db = db;
+	rc = permission_grant_each(db, tctx->grant_project_root,
+				   load_grant, tctx);
+	if (rc != 0) {
+		tctx->grant_db = NULL;
+		tctx->grant_project_root[0] = '\0';
+	}
+	return rc;
+}
+
+static int save_grant(struct tool_context *tctx, const char *subject,
+		      const char *kind, const char *resource)
+{
+	struct permission_grant grant;
+
+	if (!tctx || !tctx->grant_db || !tctx->grant_project_root[0])
+		return 0;
+	memset(&grant, 0, sizeof(grant));
+	snprintf(grant.subject, sizeof(grant.subject), "%s",
+		 subject ? subject : "*");
+	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s", kind);
+	snprintf(grant.resource, sizeof(grant.resource), "%s", resource);
+	snprintf(grant.project_root, sizeof(grant.project_root), "%s",
+		 tctx->grant_project_root);
+	return permission_grant_save(tctx->grant_db, &grant);
+}
+
 int tool_context_authorize_path(struct tool_context *tctx,
 				enum tool_path_op op, const char *path,
 				char *resolved, size_t resolved_size)
@@ -372,6 +539,8 @@ int tool_context_authorize_path(struct tool_context *tctx,
 
 	memset(&operation, 0, sizeof(operation));
 	operation.kind = path_op_to_kind(op);
+	operation.tool_name = "tool";
+	operation.principal = "tool:*";
 	operation.target = resolved;
 	operation.scope = root;
 
@@ -483,7 +652,7 @@ static int check_command_operation(struct tool_context *tctx,
 		log_warn("command denied by user: %s", command);
 		MORPH_RETURN(-EACCES);
 	}
-	if (v == TOOL_OP_ALWAYS) {
+	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
 		if (!cmd_ok) {
 			char prog[TOOL_CONTEXT_ACTION_MAX];
 			if (extract_program_name(command, prog,
@@ -496,6 +665,9 @@ static int check_command_operation(struct tool_context *tctx,
 				else
 					log_info("persisted command '%s' "
 						 "for session", prog);
+				if (v == TOOL_OP_ALWAYS && rc == 0)
+					(void)save_grant(tctx, prog, "command",
+							 prog);
 			}
 		}
 		if (!cwd_ok && cwd && *cwd) {
@@ -506,6 +678,11 @@ static int check_command_operation(struct tool_context *tctx,
 			else
 				log_info("persisted cwd '%s' for session",
 					 cwd);
+			if (v == TOOL_OP_ALWAYS && rc == 0)
+				(void)save_grant(tctx,
+						 op->principal ?
+						 op->principal : "*",
+						 "command_cwd", cwd);
 		}
 	} else {
 		log_info("command approved once by user");
@@ -535,9 +712,118 @@ static int check_path_operation(struct tool_context *tctx,
 					tctx->operation_approval_user_data);
 	if (v == TOOL_OP_DENY)
 		MORPH_RETURN(-EACCES);
-	if (v == TOOL_OP_ALWAYS)
+	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS)
 		add_parent_dir(allow_dirs, allow_count, op->target);
+	if (v == TOOL_OP_ALWAYS) {
+		char parent[PATH_MAX];
+		char *slash;
+		const char *kind = op->kind == TOOL_OP_PATH_WRITE ?
+			"tool_write_path" : "read_path";
+
+		snprintf(parent, sizeof(parent), "%s", op->target);
+		slash = strrchr(parent, '/');
+		if (slash && slash != parent)
+			*slash = '\0';
+		(void)save_grant(tctx,
+				 op->principal ? op->principal : "tool:*",
+				 kind, parent);
+	}
 	return 0;
+}
+
+static int scoped_write_is_allowed(const struct tool_context *tctx,
+				   const char *principal, const char *path)
+{
+	struct tool_scoped_grant *grant;
+
+	morph_array_foreach(grant, &tctx->scoped_grants,
+			    struct tool_scoped_grant) {
+		if (strcmp(grant->subject, principal) == 0 &&
+		    path_is_within(path, grant->path))
+			return 1;
+	}
+	return 0;
+}
+
+int tool_context_request_write_access(struct tool_context *tctx,
+				      const char *principal,
+				      const char *command,
+				      const char *path,
+				      char *resolved,
+				      size_t resolved_size)
+{
+	char local[PATH_MAX];
+	char *expanded;
+	char *canonical;
+	struct tool_operation op;
+	enum tool_operation_verdict verdict;
+
+	if (!tctx || !principal || !*principal || !path || !*path)
+		MORPH_RETURN(-EINVAL);
+	if (!resolved || resolved_size == 0) {
+		resolved = local;
+		resolved_size = sizeof(local);
+	}
+	expanded = file_expand_path(path);
+	if (!expanded)
+		MORPH_RETURN(-ENOMEM);
+	if (!file_path_is_absolute(expanded)) {
+		free(expanded);
+		MORPH_RETURN(-EINVAL);
+	}
+	canonical = file_resolve_path(expanded);
+	free(expanded);
+	if (!canonical)
+		MORPH_RETURN(-ENOMEM);
+	snprintf(resolved, resolved_size, "%s", canonical);
+	free(canonical);
+
+	if ((tctx->output_dir[0] &&
+	     path_is_within(resolved, tctx->output_dir)) ||
+	    scoped_write_is_allowed(tctx, principal, resolved))
+		return 0;
+	if (!tctx->operation_approval_fn)
+		MORPH_RETURN(-EPERM);
+	memset(&op, 0, sizeof(op));
+	op.kind = TOOL_OP_PATH_WRITE;
+	op.tool_name = "bash_exec";
+	op.principal = principal;
+	op.action = command;
+	op.target = resolved;
+	op.scope = tctx->grant_project_root;
+	verdict = tctx->operation_approval_fn(
+		&op, tctx->operation_approval_user_data);
+	if (verdict == TOOL_OP_DENY)
+		MORPH_RETURN(-EACCES);
+	if (verdict == TOOL_OP_SESSION || verdict == TOOL_OP_ALWAYS) {
+		int rc = add_scoped_write_grant(tctx, principal, resolved);
+		if (rc != 0)
+			return rc;
+		if (verdict == TOOL_OP_ALWAYS)
+			return save_grant(tctx, principal, "write_path",
+					  resolved);
+	}
+	return 0;
+}
+
+int tool_context_collect_write_grants(const struct tool_context *tctx,
+				      const char *principal,
+				      const char **paths, int max_paths)
+{
+	struct tool_scoped_grant *grant;
+	int count = 0;
+
+	if (!tctx || !principal || !paths || max_paths <= 0)
+		return 0;
+	morph_array_foreach(grant, &tctx->scoped_grants,
+			    struct tool_scoped_grant) {
+		if (strcmp(grant->subject, principal) != 0)
+			continue;
+		if (count >= max_paths)
+			break;
+		paths[count++] = grant->path;
+	}
+	return count;
 }
 
 int tool_context_check_operation(struct tool_context *tctx,

@@ -2,6 +2,7 @@
 #include "agent/tools/bash_exec.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
+#include "util/file.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdlib.h>
@@ -96,6 +97,12 @@ static std::string get_json_field(const std::string &json, const char *field)
 	cJSON *data = cJSON_GetObjectItem(root, "data");
 	if (cJSON_IsObject(data))
 		scope = data;
+	else {
+		cJSON *error = cJSON_GetObjectItem(root, "error");
+		cJSON *details = cJSON_GetObjectItem(error, "details");
+		if (cJSON_IsObject(details))
+			scope = details;
+	}
 	cJSON *item = cJSON_GetObjectItem(scope, field);
 	std::string val;
 	if (cJSON_IsString(item) && item->valuestring)
@@ -117,6 +124,12 @@ static int get_json_int(const std::string &json, const char *field)
 	cJSON *data = cJSON_GetObjectItem(root, "data");
 	if (cJSON_IsObject(data))
 		scope = data;
+	else {
+		cJSON *error = cJSON_GetObjectItem(root, "error");
+		cJSON *details = cJSON_GetObjectItem(error, "details");
+		if (cJSON_IsObject(details))
+			scope = details;
+	}
 	cJSON *item = cJSON_GetObjectItem(scope, field);
 	int val = cJSON_IsNumber(item) ? item->valueint : -999;
 	cJSON_Delete(root);
@@ -132,6 +145,12 @@ static bool has_json_field(const std::string &json, const char *field)
 	cJSON *data = cJSON_GetObjectItem(root, "data");
 	if (cJSON_IsObject(data))
 		scope = data;
+	else {
+		cJSON *error = cJSON_GetObjectItem(root, "error");
+		cJSON *details = cJSON_GetObjectItem(error, "details");
+		if (cJSON_IsObject(details))
+			scope = details;
+	}
 	bool found = cJSON_GetObjectItem(scope, field) != NULL;
 	cJSON_Delete(root);
 	return found;
@@ -146,6 +165,12 @@ static bool get_json_bool(const std::string &json, const char *field)
 	cJSON *data = cJSON_GetObjectItem(root, "data");
 	if (cJSON_IsObject(data))
 		scope = data;
+	else {
+		cJSON *error = cJSON_GetObjectItem(root, "error");
+		cJSON *details = cJSON_GetObjectItem(error, "details");
+		if (cJSON_IsObject(details))
+			scope = details;
+	}
 	cJSON *item = cJSON_GetObjectItem(scope, field);
 	bool val = cJSON_IsTrue(item);
 	cJSON_Delete(root);
@@ -549,6 +574,7 @@ TEST_F(BashExecTest, AllowedFalse)
 	std::string result = exec_command(reg, tctx, "false", rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_NE(get_json_int(result, "exit_code"), 0);
+	EXPECT_NE(result.find("\"ok\":false"), std::string::npos);
 }
 
 TEST_F(BashExecTest, AllowedGit)
@@ -1193,6 +1219,29 @@ static enum tool_operation_verdict approval_stub(
 	return s->next;
 }
 
+struct ScopedApprovalState {
+	int command_calls;
+	int write_calls;
+};
+
+static enum tool_operation_verdict scoped_approval_stub(
+	const struct tool_operation *op, void *user_data)
+{
+	ScopedApprovalState *state =
+		static_cast<ScopedApprovalState *>(user_data);
+
+	if (op->kind == TOOL_OP_COMMAND)
+		state->command_calls++;
+	if (op->kind == TOOL_OP_PATH_WRITE) {
+		state->write_calls++;
+		EXPECT_NE(op->principal, nullptr);
+		if (op->principal)
+			EXPECT_NE(std::string(op->principal).find("touch"),
+				  std::string::npos);
+	}
+	return TOOL_OP_SESSION;
+}
+
 TEST_F(BashExecTest, ApprovalCallbackAllowsOnce)
 {
 	bash_exec_init(&reg, tctx);
@@ -1293,6 +1342,85 @@ TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsProgram)
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(state.calls, 1); /* callback NOT called again */
 	EXPECT_EQ(get_json_field(r2, "command"), "echo second arg");
+}
+
+TEST_F(BashExecTest, RequestedWritePathIsGrantedToSandbox)
+{
+	const char *dir = "/var/tmp/morph_bash_grant";
+	const char *path = "/var/tmp/morph_bash_grant/state.txt";
+	ScopedApprovalState state{0, 0};
+	int rc;
+
+	file_ensure_dir(dir);
+	std::remove(path);
+	bash_exec_init(&reg, tctx);
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"touch "
+		"/var/tmp/morph_bash_grant/state.txt\","
+		"\"write_paths\":[\"/var/tmp/morph_bash_grant\"]}",
+		rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.command_calls, 1);
+	EXPECT_EQ(state.write_calls, 1);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_EQ(access(path, F_OK), 0);
+	std::remove(path);
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, SessionWriteGrantAvoidsRepeatedApproval)
+{
+	const char *dir = "/var/tmp/morph_bash_session_grant";
+	ScopedApprovalState state{0, 0};
+	int rc;
+
+	file_ensure_dir(dir);
+	bash_exec_init(&reg, tctx);
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	exec_raw(
+		reg,
+		"{\"command\":\"touch "
+		"/var/tmp/morph_bash_session_grant/one.txt\","
+		"\"write_paths\":[\"/var/tmp/morph_bash_session_grant\"]}",
+		rc);
+	ASSERT_EQ(rc, 0);
+	exec_raw(
+		reg,
+		"{\"command\":\"touch "
+		"/var/tmp/morph_bash_session_grant/two.txt\","
+		"\"write_paths\":[\"/var/tmp/morph_bash_session_grant\"]}",
+		rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.command_calls, 1);
+	EXPECT_EQ(state.write_calls, 1);
+	std::remove("/var/tmp/morph_bash_session_grant/one.txt");
+	std::remove("/var/tmp/morph_bash_session_grant/two.txt");
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, WritePathsRejectCompoundShellCommands)
+{
+	ScopedApprovalState state{0, 0};
+	int rc;
+
+	std::remove("/var/tmp/morph_compound_one");
+	std::remove("/var/tmp/morph_compound_two");
+	bash_exec_init(&reg, tctx);
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	std::string result = exec_raw(
+		reg,
+		"{\"command\":\"touch /var/tmp/morph_compound_one; "
+		"touch /var/tmp/morph_compound_two\","
+		"\"write_paths\":[\"/var/tmp\"]}",
+		rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_NE(result.find("single simple command"), std::string::npos);
+	EXPECT_EQ(state.command_calls, 0);
+	EXPECT_EQ(state.write_calls, 0);
+	EXPECT_NE(access("/var/tmp/morph_compound_one", F_OK), 0);
+	EXPECT_NE(access("/var/tmp/morph_compound_two", F_OK), 0);
 }
 
 TEST_F(BashExecTest, ApprovalCallbackAlwaysPersistsCwd)

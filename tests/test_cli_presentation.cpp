@@ -387,6 +387,75 @@ TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
 	cJSON_Delete(ready);
 }
 
+TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
+{
+	cJSON *connecting = cJSON_CreateObject();
+	cJSON *failed = cJSON_CreateObject();
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(connecting, "server", "meego");
+	cJSON_AddStringToObject(connecting, "transport", "http");
+	cJSON_AddStringToObject(failed, "server", "meego");
+	cJSON_AddStringToObject(failed, "transport", "http");
+	cJSON_AddNumberToObject(failed, "error_code", MORPH_ERR_API);
+	cJSON_AddStringToObject(failed, "error", "API error");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
+	Emit(MORPH_EVENT_MCP, "mcp.failed", "failed", failed);
+	std::string output = testing::internal::GetCapturedStdout();
+	size_t root = output.find("MCP meego");
+
+	ASSERT_NE(root, std::string::npos);
+	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
+	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
+	EXPECT_NE(output.find("└ ✗ Failed · API error"), std::string::npos);
+	EXPECT_EQ(ctx.mcp_tree_active, 0);
+
+	cJSON_Delete(connecting);
+	cJSON_Delete(failed);
+}
+
+TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
+{
+	cJSON *connecting = cJSON_CreateObject();
+	cJSON *connected = cJSON_CreateObject();
+	cJSON *discovering = cJSON_CreateObject();
+	cJSON *ready = cJSON_CreateObject();
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(connecting, "server", "meego");
+	cJSON_AddStringToObject(connected, "server", "meego");
+	cJSON_AddStringToObject(discovering, "server", "meego");
+	cJSON_AddStringToObject(ready, "server", "meego");
+	cJSON_AddNumberToObject(ready, "tools", 12);
+	cJSON_AddNumberToObject(ready, "resources", 3);
+	cJSON_AddNumberToObject(ready, "prompts", 2);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
+	Emit(MORPH_EVENT_MCP, "mcp.connected", "end", connected);
+	Emit(MORPH_EVENT_MCP, "mcp.discovering", "begin", discovering);
+	Emit(MORPH_EVENT_MCP, "mcp.ready", "ready", ready);
+	std::string output = testing::internal::GetCapturedStdout();
+	size_t root = output.find("MCP meego");
+
+	ASSERT_NE(root, std::string::npos);
+	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
+	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
+	EXPECT_NE(output.find("├ Connected"), std::string::npos);
+	EXPECT_NE(output.find("├ Discovering capabilities"),
+		  std::string::npos);
+	EXPECT_NE(output.find("└ ✓ Ready · 12 tools, 3 resources, 2 prompts"),
+		  std::string::npos);
+	EXPECT_EQ(ctx.mcp_tree_active, 0);
+
+	cJSON_Delete(connecting);
+	cJSON_Delete(connected);
+	cJSON_Delete(discovering);
+	cJSON_Delete(ready);
+}
+
 TEST_F(CliPresentationTest, InteractiveRendersToolArgsAndResultAsTree)
 {
 	cJSON *call = cJSON_CreateObject();

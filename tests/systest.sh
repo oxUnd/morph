@@ -208,7 +208,7 @@ test_ext_list() {
 test_ext_bare() {
 	out=$(run_morph "/ext
 /quit")
-	assert_contains "18: /ext bare shows tools" "$out" "registered tools"
+	assert_contains "18: /ext bare shows tools" "$out" "Tools"
 }
 
 test_ext_info_translate() {
@@ -232,7 +232,7 @@ test_ext_info_notfound() {
 test_ext_alias() {
 	out=$(run_morph "/x
 /quit")
-	assert_contains "22: /x alias" "$out" "registered tools"
+	assert_contains "22: /x alias" "$out" "Tools"
 }
 
 # ---- E. skill ----
@@ -240,7 +240,7 @@ test_ext_alias() {
 test_skill_list() {
 	out=$(run_morph "/skill list
 /quit")
-	assert_contains "23: /skill list" "$out" "available skills"
+	assert_contains "23: /skill list" "$out" "Skills"
 }
 
 test_skill_notfound() {
@@ -260,7 +260,7 @@ test_mcp_list() {
 test_skill_alias() {
 	out=$(run_morph "/sk
 /quit")
-	assert_contains "26: /sk alias" "$out" "available skills"
+	assert_contains "26: /sk alias" "$out" "Skills"
 }
 
 # ---- G. context ----

@@ -100,6 +100,11 @@ static int contains_blocked_command(const char *cmd)
 	return 0;
 }
 
+static int command_has_compound_syntax(const char *command)
+{
+	return command && strpbrk(command, ";|&\n`$<>()") != NULL;
+}
+
 static int buf_append(morph_buf_t *b, const char *s, size_t n)
 {
 	if (b->len >= BASH_EXEC_MAX_OUTPUT)
@@ -181,6 +186,9 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
 	const char *command = NULL;
 	const char *cwd = NULL;
+	char principal[256];
+	cJSON *write_paths = NULL;
+	cJSON *approved_write_paths = NULL;
 	int timeout = bash_exec_default_timeout;
 	if (root) {
 		cJSON *c = cJSON_GetObjectItem(root, "command");
@@ -192,6 +200,7 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		cJSON *t = cJSON_GetObjectItem(root, "timeout_seconds");
 		if (cJSON_IsNumber(t) && t->valuedouble > 0)
 			timeout = (int)t->valuedouble;
+		write_paths = cJSON_GetObjectItem(root, "write_paths");
 	}
 
 	if (!command || !*command) {
@@ -214,11 +223,30 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			"Use read-only alternatives instead.\"}"));
 		return -EPERM;
 	}
+	if (write_paths && !cJSON_IsArray(write_paths)) {
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"write_paths must be an array "
+			"of directory paths\"}"));
+		return -EINVAL;
+	}
+	if (cJSON_IsArray(write_paths) &&
+	    command_has_compound_syntax(command)) {
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"write_paths requires a single simple "
+			"command without shell operators\"}"));
+		return -EPERM;
+	}
+	if (tool_context_command_principal(command, principal,
+					   sizeof(principal)) != 0)
+		snprintf(principal, sizeof(principal), "%s", "shell");
 
 	if (tctx) {
 		struct tool_operation op = {
 			.kind = TOOL_OP_COMMAND,
 			.tool_name = "bash_exec",
+			.principal = principal,
 			.action = command,
 			.target = NULL,
 			.scope = cwd,
@@ -238,6 +266,62 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 					"allowed by policy and no interactive "
 					"approval is available\"}"));
 			return -EPERM;
+		}
+		if (cJSON_IsArray(write_paths)) {
+			cJSON *path;
+
+			approved_write_paths = cJSON_CreateArray();
+			if (!approved_write_paths) {
+				cJSON_Delete(root);
+				return -ENOMEM;
+			}
+			cJSON_AddItemToObject(root, "_approved_write_paths",
+					      approved_write_paths);
+			cJSON_ArrayForEach(path, write_paths) {
+				char resolved[PATH_MAX];
+				int path_rc;
+
+				if (!cJSON_IsString(path) || !path->valuestring) {
+					cJSON_Delete(root);
+					(void)tool_result_success_json_text(
+						result, strdup(
+						"{\"error\":\"write_paths must "
+						"contain only strings\"}"));
+					return -EINVAL;
+				}
+				path_rc = tool_context_request_write_access(
+					tctx, principal, command,
+					path->valuestring, resolved,
+					sizeof(resolved));
+				if (path_rc < 0) {
+					cJSON *denied = cJSON_CreateObject();
+					cJSON_AddStringToObject(
+						denied, "error",
+						path_rc == -EACCES ?
+						"filesystem permission denied "
+						"by user" :
+						"filesystem permission requires "
+						"interactive approval");
+					cJSON_AddStringToObject(
+						denied, "principal", principal);
+					cJSON_AddStringToObject(
+						denied, "capability", "write");
+					cJSON_AddStringToObject(
+						denied, "target", resolved);
+					char *text =
+						cJSON_PrintUnformatted(denied);
+					cJSON_Delete(denied);
+					cJSON_Delete(root);
+					(void)tool_result_success_json_text(
+						result, text ? text :
+						strdup("{\"error\":"
+						       "\"permission denied\"}"));
+					return -EPERM;
+				}
+				cJSON_AddItemToArray(
+					approved_write_paths,
+					cJSON_CreateString(resolved));
+			}
 		}
 	}
 
@@ -287,7 +371,13 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	if (pid == 0) {
 		char resolved_cwd[PATH_MAX];
 		const char *sandbox_cwd = effective_cwd;
-		char *allowed[2];
+		const char **grants = NULL;
+		char **allowed = NULL;
+		int grant_count = 0;
+		int requested_count = approved_write_paths ?
+			cJSON_GetArraySize(approved_write_paths) : 0;
+		int grant_capacity = tctx ?
+			(int)tctx->scoped_grants.nelts : 0;
 		int allowed_count = 0;
 
 		close(out_pipe[0]);
@@ -318,6 +408,19 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 		int sb_rc;
 		memset(&sb, 0, sizeof(sb));
 		sb.permissions = EXT_PERM_EXEC | EXT_PERM_NETWORK;
+		allowed = calloc((size_t)(2 + requested_count +
+					 grant_capacity), sizeof(*allowed));
+		if (!allowed)
+			_exit(126);
+		if (grant_capacity > 0) {
+			grants = calloc((size_t)grant_capacity,
+					sizeof(*grants));
+			if (!grants)
+				_exit(126);
+			grant_count = tool_context_collect_write_grants(
+				tctx, principal, grants, grant_capacity);
+		}
+
 		if (effective_cwd && *effective_cwd)
 			sb.permissions |= EXT_PERM_FILESYS;
 		sb.max_memory_mb = 512;
@@ -337,6 +440,16 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 				}
 			}
 		}
+		for (int i = 0; i < requested_count; i++) {
+			cJSON *path = cJSON_GetArrayItem(
+				approved_write_paths, i);
+			if (cJSON_IsString(path) && path->valuestring)
+				allowed[allowed_count++] = path->valuestring;
+		}
+		for (int i = 0; i < grant_count; i++)
+			allowed[allowed_count++] = (char *)grants[i];
+		if (requested_count > 0 || grant_count > 0)
+			sb.permissions |= EXT_PERM_FILESYS;
 		sb.allowed_paths = allowed;
 		sb.allowed_paths_count = allowed_count;
 		sb_rc = sandbox_enter(&sb);
@@ -408,6 +521,12 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			      out_buf.len >= BASH_EXEC_MAX_OUTPUT);
 	cJSON_AddBoolToObject(out, "stderr_truncated",
 			      err_buf.len >= BASH_EXEC_MAX_OUTPUT);
+	if (timed_out)
+		cJSON_AddStringToObject(out, "error",
+					"command timed out");
+	else if (exit_code != 0)
+		cJSON_AddStringToObject(out, "error",
+					"command exited with non-zero status");
 
 	char *str = cJSON_PrintUnformatted(out);
 	cJSON_Delete(out);
@@ -428,7 +547,9 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
 		"Network and non-essential inherited environment variables are unavailable. "
-		"File writes require an explicit cwd and are limited to that directory. "
+		"File writes are limited to cwd/output unless write_paths requests "
+		"additional directory capabilities. Approved session or persistent "
+		"grants are reused automatically. "
 		"Commands matching the configured allowlist run silently; "
 		"anything else triggers an interactive approval prompt to the user "
 		"(yes/no/always). DANGEROUS commands are blocked unconditionally: "
@@ -436,11 +557,16 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"Network/download commands and package manager commands require "
 		"approval unless explicitly allowlisted. "
 		"Args: command (required), cwd (optional working dir), "
+		"write_paths (optional array of additional writable directories), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "
 		"use 30 for quick queries.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":\"shell command to execute via /bin/sh -c\"},"
 		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
+		"\"write_paths\":{\"type\":\"array\","
+		"\"items\":{\"type\":\"string\"},"
+		"\"description\":\"additional directory capabilities required "
+		"for writes outside cwd/output\"},"
 		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime in seconds (default 60; use 120-300 for builds/tests/git)\"}"
 		"},\"required\":[\"command\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = bash_exec_run, .user_data = tctx, .user_data_destroy = NULL });
 	if (rc == 0) {

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "agent/tool_context.h"
+#include "db/database.h"
 #include "util/file.h"
 #include <cerrno>
 #include <cstdio>
@@ -455,6 +456,78 @@ TEST_F(ToolContextTest, CheckCommandNoCwdAllowed) {
 	tool_context_allow_command_pattern(tctx, "echo");
 	EXPECT_EQ(check_command(tctx, "echo hi", NULL), 0);
 	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, PersistentCommandGrantLoadsInNewContext)
+{
+	const char *db_path = "/tmp/morph_tctx_grants.db";
+	struct db db = {};
+	struct tool_context *first;
+	struct tool_context *second;
+
+	std::remove(db_path);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	first = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(first, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(first, &db, "/tmp"), 0);
+	tool_context_set_operation_approval(first, op_always, NULL);
+	op_always_calls = 0;
+	EXPECT_EQ(check_command(first, "lark-cli auth status", NULL), 0);
+	EXPECT_EQ(op_always_calls, 1);
+	tool_context_destroy(first);
+
+	second = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(second, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(second, &db, "/tmp"), 0);
+	EXPECT_EQ(check_command(second, "lark-cli auth status", NULL), 0);
+	tool_context_destroy(second);
+	db_close(&db);
+	std::remove(db_path);
+}
+
+TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
+{
+	const char *db_path = "/tmp/morph_tctx_write_grants.db";
+	const char *state_dir = "/var/tmp/morph_lark_state";
+	struct db db = {};
+	struct tool_context *first;
+	struct tool_context *second;
+	char resolved[PATH_MAX];
+	const char *paths[2] = {};
+
+	std::remove(db_path);
+	file_ensure_dir(state_dir);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	first = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(first, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(first, &db, "/tmp"), 0);
+	tool_context_set_operation_approval(first, op_always, NULL);
+	op_always_calls = 0;
+	EXPECT_EQ(tool_context_request_write_access(
+		first, "lark-cli", "lark-cli auth status", state_dir,
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(op_always_calls, 1);
+	tool_context_destroy(first);
+
+	second = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(second, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(second, &db, "/tmp"), 0);
+	tool_context_set_operation_approval(second, op_deny, NULL);
+	EXPECT_EQ(tool_context_request_write_access(
+		second, "lark-cli", "lark-cli auth status", state_dir,
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(tool_context_collect_write_grants(
+		second, "lark-cli", paths, 2), 1);
+	char *expected = file_resolve_path(state_dir);
+	ASSERT_NE(expected, nullptr);
+	EXPECT_STREQ(paths[0], expected);
+	free(expected);
+	tool_context_destroy(second);
+	db_close(&db);
+	std::remove(db_path);
+	rmdir(state_dir);
 }
 
 TEST_F(ToolContextTest, CheckCommandPatternWildcard) {

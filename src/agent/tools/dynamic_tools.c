@@ -758,21 +758,19 @@ static int validate_tool_create_args(cJSON *root, cJSON *name_item,
 	(void)name;
 	if (rc != 0)
 		return rc;
-		if (!cJSON_IsString(source_item) || !source_item->valuestring) {
-			return append_tool_create_arg_error(err, "source_js",
-				"JavaScript source string defining global run(args)",
-				source_item);
-		}
-		if (!cJSON_GetObjectItem(root, "input_schema")) {
-			return append_tool_create_arg_error(err, "input_schema",
-				"JSON Schema object for input arguments",
-				NULL);
-		}
-		if (!cJSON_GetObjectItem(root, "output_schema")) {
-			return append_tool_create_arg_error(err, "output_schema",
-				"JSON Schema object for result data",
-				NULL);
-		}
+	if (!cJSON_IsString(source_item) || !source_item->valuestring) {
+		return append_tool_create_arg_error(err, "source_js",
+			"JavaScript source string defining global run(args)",
+			source_item);
+	}
+	if (!cJSON_GetObjectItem(root, "input_schema")) {
+		return append_tool_create_arg_error(err, "input_schema",
+			"JSON Schema object for input arguments", NULL);
+	}
+	if (!cJSON_GetObjectItem(root, "output_schema")) {
+		return append_tool_create_arg_error(err, "output_schema",
+			"JSON Schema object for result data", NULL);
+	}
 	token = forbidden_source_token(source_item->valuestring);
 	if (token) {
 		return morph_buf_printf(err,

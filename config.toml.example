@@ -154,8 +154,8 @@ bash_exec_default_timeout = 60
 # Allowlist patterns. Commands matching one of these run silently.
 # Anything NOT matched (and not on the hardcoded dangerous blocklist
 # like rm/mv/cp/chmod/curl/wget/ssh/kill/apt/pip/npm/...) triggers an
-# interactive y/n/a prompt before execution; "always" persists the
-# program name (and resolved cwd) to this session's allowlist.
+# interactive approval prompt before execution. "session" keeps the
+# program/cwd until exit; "always" persists it for this project.
 #
 # Pattern syntax for bash_exec_allowed_commands:
 #   "*"                  any command (dangerous blocklist still applies)
@@ -177,6 +177,10 @@ bash_exec_default_timeout = 60
 # the requested cwd is allowed if it equals one of these paths or
 # resolves to a subdirectory of one. Use "*" to allow any cwd.
 # bash_exec_allowed_cwds = ["/absolute/path/to/your/project"]
+#
+# A command that needs to keep state outside cwd/output can request
+# write_paths in its tool call. The same once/session/always choices apply,
+# and persistent grants are scoped to the program and current project.
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names

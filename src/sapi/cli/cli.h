@@ -32,7 +32,9 @@ struct cli_context {
 	int status_spin_initialized;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
+	int mcp_tree_active;
 	char image_path[PATH_MAX];
+	char mcp_tree_server[MCP_NAME_MAX];
 	morph_buf_t event_stream;
 	morph_buf_t markdown_stream_text;
 	morph_strmap_t rendered_artifacts;

@@ -378,6 +378,11 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			return -ENOMEM;
 	}
 	tctx = *profile->tool_context;
+	rc = tool_context_set_grant_store(tctx, profile->db,
+					   profile->workdir);
+	if (rc != 0)
+		log_warn("failed to load persistent permission grants: %s",
+			 morph_strerror(rc));
 	if (profile->operation_approval_cb)
 		tool_context_set_operation_approval(
 			tctx, profile->operation_approval_cb,
