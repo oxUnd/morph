@@ -31,6 +31,21 @@ static int append_token_count(morph_buf_t *buf, int64_t tokens)
 	return morph_buf_puts(buf, " tokens");
 }
 
+static int append_session_time(morph_buf_t *buf, int64_t updated_at,
+			       int64_t created_at)
+{
+	char formatted[16];
+	struct tm local;
+	time_t timestamp;
+
+	timestamp = (time_t)(updated_at > 0 ? updated_at : created_at);
+	if (timestamp <= 0 || !localtime_r(&timestamp, &local) ||
+	    strftime(formatted, sizeof(formatted), "%m-%d %H:%M",
+		     &local) == 0)
+		return morph_buf_puts(buf, " · -- --:--");
+	return morph_buf_printf(buf, " · %s", formatted);
+}
+
 static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 {
 	char name_buf[256];
@@ -166,12 +181,12 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 			return rc;
 		}
 		rc = append_token_count(&metadata, list[i].token_used);
-		if (is_current)
-			rc = rc != 0 ? rc :
-				morph_buf_puts(&metadata, " · current");
 		if (rc == 0 && model && model[0] &&
 		    strcmp(model, config->models.text.model) != 0)
 			rc = morph_buf_printf(&metadata, " · %s", model);
+		if (rc == 0)
+			rc = append_session_time(&metadata, list[i].updated_at,
+						 list[i].created_at);
 		if (rc != 0) {
 			morph_buf_cleanup(&metadata);
 			runtime_session_list_free(list);
