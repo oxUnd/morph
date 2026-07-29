@@ -49,6 +49,7 @@ set(TEST_SOURCES
 	test_agent_ui.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
+	test_utf8.cpp
 	test_kitty_protocol.cpp
 	test_fastcgi_security.cpp
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/security.c

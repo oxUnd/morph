@@ -383,6 +383,56 @@ size_t utf8_copy_sanitized_display_width(char *dst, size_t dst_cap, const char *
 	return vis;
 }
 
+size_t utf8_copy_ellipsized_display_width(char *dst, size_t dst_cap,
+					  const char *src,
+					  size_t max_width,
+					  int keep_tail)
+{
+	static const char ellipsis[] = "…";
+	size_t width;
+	size_t ellipsis_bytes;
+	size_t copied;
+	const char *start;
+
+	if (!dst || dst_cap == 0)
+		return 0;
+	dst[0] = '\0';
+	if (!src || max_width == 0)
+		return 0;
+	width = utf8_display_width(src);
+	if (width <= max_width)
+		return utf8_copy_sanitized_display_width(
+			dst, dst_cap, src, max_width);
+	if (max_width == 1) {
+		(void)utf8_copy_display_width(dst, dst_cap, ellipsis, 1);
+		return 1;
+	}
+	ellipsis_bytes = strlen(ellipsis);
+	if (dst_cap <= ellipsis_bytes)
+		return utf8_copy_sanitized_display_width(
+			dst, dst_cap, src, max_width);
+	if (!keep_tail) {
+		size_t used_bytes;
+
+		copied = utf8_copy_sanitized_display_width(
+			dst, dst_cap, src, max_width - 1);
+		used_bytes = strlen(dst);
+		if (copied < max_width &&
+		    used_bytes + ellipsis_bytes < dst_cap) {
+			memcpy(dst + used_bytes, ellipsis, ellipsis_bytes + 1);
+			copied++;
+		}
+		return copied;
+	}
+	memcpy(dst, ellipsis, ellipsis_bytes);
+	dst[ellipsis_bytes] = '\0';
+	start = utf8_suffix_display_width(src, max_width - 1);
+	copied = utf8_copy_sanitized_display_width(
+		dst + ellipsis_bytes, dst_cap - ellipsis_bytes, start,
+		max_width - 1);
+	return copied + 1;
+}
+
 const char *utf8_prev_codepoint(const char *start, const char *p)
 {
 	if (!start || !p || p <= start)

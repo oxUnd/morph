@@ -3,6 +3,9 @@
 #include "http/client.h"
 
 #define CLI_BANNER_INNER_WIDTH 60
+#define CLI_BANNER_CONTENT_WIDTH (CLI_BANNER_INNER_WIDTH - 2)
+#define CLI_BANNER_LABEL_WIDTH 12
+#define CLI_BANNER_HINT_WIDTH 18
 
 /* ---- sigint ---- */
 
@@ -89,16 +92,54 @@ static char **cmd_completion(const char *text, int start, int end)
 
 #endif
 
-static void cli_print_banner_row(const char *text, const char *style)
+static void cli_print_banner_title(void)
+{
+	size_t used;
+	int pad;
+
+	used = utf8_display_width(">_ ") + utf8_display_width("morph") +
+		2 + utf8_display_width("(v)") +
+		utf8_display_width(MORPH_VERSION);
+	pad = CLI_BANNER_CONTENT_WIDTH -
+		(used > (size_t)INT_MAX ? INT_MAX : (int)used);
+	printf(ANSI_CYAN "│" ANSI_RESET ANSI_DIM " >_ "
+	       ANSI_RESET ANSI_BOLD "morph" ANSI_RESET
+	       "  " ANSI_DIM "(v%s)" ANSI_RESET, MORPH_VERSION);
+	for (int i = 0; i < pad; i++)
+		putchar(' ');
+	printf(ANSI_CYAN " │" ANSI_RESET "\n");
+}
+
+static void cli_print_banner_blank(void)
+{
+	printf(ANSI_CYAN "│" ANSI_RESET);
+	for (int i = 0; i < CLI_BANNER_INNER_WIDTH; i++)
+		putchar(' ');
+	printf(ANSI_CYAN "│" ANSI_RESET "\n");
+}
+
+static void cli_print_banner_field(const char *label, const char *value,
+				   const char *hint, int keep_tail)
 {
 	char clipped[BUFSIZ];
+	int hint_width = hint ? CLI_BANNER_HINT_WIDTH : 0;
+	int value_width = CLI_BANNER_CONTENT_WIDTH -
+		CLI_BANNER_LABEL_WIDTH - hint_width;
 
-	utf8_copy_sanitized_display_width(
-		clipped, sizeof(clipped), text ? text : "",
-		CLI_BANNER_INNER_WIDTH - 2);
-	printf(ANSI_CYAN "│" ANSI_RESET " %s", style ? style : "");
-	print_padded(clipped, CLI_BANNER_INNER_WIDTH - 2);
-	printf(ANSI_RESET " " ANSI_CYAN "│" ANSI_RESET "\n");
+	(void)utf8_copy_ellipsized_display_width(
+		clipped, sizeof(clipped), value, (size_t)value_width,
+		keep_tail);
+	printf(ANSI_CYAN "│" ANSI_RESET " " ANSI_DIM);
+	print_padded(label, CLI_BANNER_LABEL_WIDTH);
+	printf(ANSI_RESET ANSI_BOLD);
+	print_padded(clipped, value_width);
+	printf(ANSI_RESET);
+	if (hint) {
+		printf(ANSI_DIM);
+		print_padded(hint, CLI_BANNER_HINT_WIDTH);
+		printf(ANSI_RESET);
+	}
+	printf(ANSI_CYAN " │" ANSI_RESET "\n");
 }
 
 /* ---- cli_run ---- */
@@ -107,9 +148,9 @@ void cli_run(struct cli_context *ctx)
 {
 	const struct config *config;
 	const char *workdir;
+	const char *home;
 	struct session current;
-	morph_buf_t title;
-	morph_buf_t details;
+	morph_buf_t directory;
 
 	if (!ctx)
 		return;
@@ -119,29 +160,41 @@ void cli_run(struct cli_context *ctx)
 	workdir = runtime_workdir_get(ctx->runtime);
 	memset(&current, 0, sizeof(current));
 	(void)runtime_session_current(ctx->runtime, &current);
-	memset(&title, 0, sizeof(title));
-	memset(&details, 0, sizeof(details));
-	if (morph_buf_init(&title, 64) != 0)
+	memset(&directory, 0, sizeof(directory));
+	if (morph_buf_init(&directory, BUFSIZ) != 0)
 		return;
-	if (morph_buf_init(&details, BUFSIZ) != 0) {
-		morph_buf_cleanup(&title);
-		return;
+	home = getenv("HOME");
+	if (workdir && workdir[0] && home && home[0] &&
+	    strncmp(workdir, home, strlen(home)) == 0 &&
+	    (workdir[strlen(home)] == '\0' ||
+	     workdir[strlen(home)] == '/')) {
+		(void)morph_buf_putc(&directory, '~');
+		(void)morph_buf_puts(&directory, workdir + strlen(home));
+	} else {
+		(void)morph_buf_puts(&directory,
+				    workdir && workdir[0] ? workdir : ".");
 	}
-	(void)morph_buf_printf(&title, ">_ morph  v%s", MORPH_VERSION);
-	(void)morph_buf_printf(&details, "%s  ·  %s  ·  %s",
-		config ? config->models.text.model : "model",
-		current.display_id[0] ? current.display_id : "session",
-		workdir && workdir[0] ? workdir : ".");
 	printf("\n" ANSI_CYAN
-	       "╭────────────────────────────────────────────────────────────╮\n"
+	       "╭───────────────"
+	       "───────────────"
+	       "───────────────"
+	       "───────────────╮\n"
 	       ANSI_RESET);
-	cli_print_banner_row(morph_buf_cstr(&title), ANSI_BOLD);
-	cli_print_banner_row(morph_buf_cstr(&details), ANSI_DIM);
+	cli_print_banner_title();
+	cli_print_banner_blank();
+	cli_print_banner_field("model:",
+		config ? config->models.text.model : "model", NULL, 0);
+	cli_print_banner_field("session:",
+		current.display_id[0] ? current.display_id : "session",
+		"/switch to change", 0);
+	cli_print_banner_field("directory:", morph_buf_cstr(&directory), NULL, 1);
 	printf(ANSI_CYAN
-	       "╰────────────────────────────────────────────────────────────╯"
+	       "╰───────────────"
+	       "───────────────"
+	       "───────────────"
+	       "───────────────╯"
 	       ANSI_RESET "\n\n");
-	morph_buf_cleanup(&title);
-	morph_buf_cleanup(&details);
+	morph_buf_cleanup(&directory);
 	printf(ANSI_DIM "  Type /help for commands." ANSI_RESET "\n\n");
 	char line[8192];
 

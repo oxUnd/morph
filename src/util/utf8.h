@@ -47,6 +47,11 @@ size_t utf8_copy_sanitized_display_width(char *dst, size_t dst_cap,
 					 const char *src,
 					 size_t max_width);
 
+size_t utf8_copy_ellipsized_display_width(char *dst, size_t dst_cap,
+					  const char *src,
+					  size_t max_width,
+					  int keep_tail);
+
 const char *utf8_prev_codepoint(const char *start, const char *p);
 
 int utf8_is_cjk_cp(unsigned cp);
