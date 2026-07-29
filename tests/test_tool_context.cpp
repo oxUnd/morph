@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/tool_context.h"
 #include "db/database.h"
+#include "db/permission_grant.h"
 #include "util/file.h"
 #include <cerrno>
 #include <cstdio>
@@ -54,6 +55,47 @@ TEST_F(ToolContextTest, CreateDestroy) {
 	EXPECT_NE(tool_context_workdir(tctx)[0], '\0');
 	EXPECT_NE(tool_context_workdir(tctx)[0], '~');
 	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, PersistentGrantReloadRevokesImmediately)
+{
+	char db_path[] = "/tmp/morph_grants_XXXXXX";
+	int fd = mkstemp(db_path);
+	struct permission_grant grant = {};
+	struct db db = {};
+	int deleted = 0;
+
+	ASSERT_GE(fd, 0);
+	close(fd);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(tctx, &db, "/tmp"), 0);
+	snprintf(grant.subject, sizeof(grant.subject), "%s", "echo");
+	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s",
+		 "command");
+	snprintf(grant.resource, sizeof(grant.resource), "%s", "echo");
+	snprintf(grant.project_root, sizeof(grant.project_root), "%s",
+		 tctx->grant_project_root);
+	ASSERT_EQ(permission_grant_save(&db, &grant), 0);
+	snprintf(grant.subject, sizeof(grant.subject), "%s", "printf");
+	snprintf(grant.resource, sizeof(grant.resource), "%s", "printf");
+	ASSERT_EQ(permission_grant_save(&db, &grant), 0);
+
+	ASSERT_EQ(tool_context_reload_persistent_grants(tctx), 0);
+	EXPECT_EQ(check_command(tctx, "echo ok", nullptr), 0);
+	EXPECT_EQ(check_command(tctx, "printf ok", nullptr), 0);
+	ASSERT_EQ(permission_grant_delete_subject(
+		&db, tctx->grant_project_root, "echo", &deleted), 0);
+	EXPECT_EQ(deleted, 1);
+	ASSERT_EQ(tool_context_reload_persistent_grants(tctx), 0);
+	EXPECT_EQ(check_command(tctx, "echo ok", nullptr), -EPERM);
+	EXPECT_EQ(check_command(tctx, "printf ok", nullptr), 0);
+
+	tool_context_destroy(tctx);
+	db_close(&db);
+	std::remove(db_path);
 }
 
 TEST_F(ToolContextTest, CreateWithTilde) {
@@ -135,14 +177,14 @@ TEST_F(ToolContextTest, CheckWritePathApprovalDeny) {
 	tool_context_destroy(tctx);
 }
 
-TEST_F(ToolContextTest, CheckWritePathApprovalAlwaysAddsDir) {
+TEST_F(ToolContextTest, CheckWritePathApprovalAlwaysPersists) {
 	op_always_calls = 0;
 	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(tctx, op_always, NULL);
 	EXPECT_EQ(check_write_path(tctx, "/var/test_file.txt"), 0);
 	EXPECT_EQ(op_always_calls, 1);
-	EXPECT_EQ(tctx->write_allowed_dirs_count, 1);
+	EXPECT_EQ(tctx->write_allowed_dirs_count, 0);
 	EXPECT_EQ(check_write_path(tctx, "/var/other_file.txt"), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	tool_context_destroy(tctx);
@@ -280,7 +322,7 @@ TEST_F(ToolContextTest, AuthorizeReadListWithinOutputDir) {
 	rmdir(work);
 }
 
-TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysAddsDir) {
+TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysPersists) {
 	const char *work = "/tmp/morph_tctx_work";
 	const char *dir = "/tmp/morph_tctx_external";
 	const char *one = "/tmp/morph_tctx_external/one.txt";
@@ -295,7 +337,7 @@ TEST_F(ToolContextTest, AuthorizeReadApprovalAlwaysAddsDir) {
 	tool_context_set_operation_approval(tctx, op_always, NULL);
 	EXPECT_EQ(check_read_path(tctx, one), 0);
 	EXPECT_EQ(op_always_calls, 1);
-	EXPECT_EQ(tctx->read_allowed_dirs_count, 2);
+	EXPECT_EQ(tctx->read_allowed_dirs_count, 1);
 	EXPECT_EQ(check_read_path(tctx, two), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	tool_context_destroy(tctx);
@@ -409,7 +451,7 @@ TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsProgram) {
 	tool_context_set_operation_approval(tctx, op_always, NULL);
 	EXPECT_EQ(check_command(tctx, "echo hi", NULL), 0);
 	EXPECT_EQ(op_always_calls, 1);
-	EXPECT_GE(tctx->allowed_commands_count, 1);
+	EXPECT_EQ(tctx->allowed_commands_count, 0);
 	EXPECT_EQ(check_command(tctx, "echo bye", NULL), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	tool_context_destroy(tctx);
@@ -423,7 +465,7 @@ TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsCwd) {
 	tool_context_set_operation_approval(tctx, op_always, NULL);
 	EXPECT_EQ(check_command(tctx, "pwd", "/tmp"), 0);
 	EXPECT_EQ(op_always_calls, 1);
-	EXPECT_GE(tctx->exec_allowed_dirs_count, 1);
+	EXPECT_EQ(tctx->exec_allowed_dirs_count, 0);
 	EXPECT_EQ(check_command(tctx, "pwd", "/tmp"), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	tool_context_destroy(tctx);

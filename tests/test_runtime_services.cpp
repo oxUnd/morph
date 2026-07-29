@@ -241,6 +241,22 @@ TEST_F(RuntimeFacadeTest, EmptyMemoryCanBeRenderedAndCleared)
 	EXPECT_EQ(runtime_memory_clear_current(instance, MEMORY_CLEAR_ALL), 0);
 }
 
+TEST_F(RuntimeFacadeTest, PersistentPermissionsCanBeListedAndCleared)
+{
+	struct runtime_permission_grant *grants = nullptr;
+	int count = -1;
+	int deleted = -1;
+
+	Open();
+	ASSERT_EQ(runtime_permission_list(instance, &grants, &count), 0);
+	EXPECT_EQ(count, 0);
+	runtime_permission_list_free(grants);
+	EXPECT_EQ(runtime_permission_revoke_id(instance, 123, &deleted), 0);
+	EXPECT_EQ(deleted, 0);
+	EXPECT_EQ(runtime_permission_clear(instance, 0, &deleted), 0);
+	EXPECT_EQ(deleted, 0);
+}
+
 TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 {
 	struct session session{};
@@ -258,6 +274,8 @@ TEST(RuntimeFacadeValidationTest, RejectsInvalidFacadeArguments)
 	EXPECT_EQ(runtime_credit_summary_today_get(nullptr, &credits), -EINVAL);
 	EXPECT_EQ(runtime_task_cancel(nullptr, 1), -EINVAL);
 	EXPECT_EQ(runtime_sync_status_instance(nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(runtime_permission_list(nullptr, nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(runtime_permission_clear(nullptr, 0, nullptr), -EINVAL);
 	runtime_turn_status_cleanup(nullptr);
 	runtime_session_list_free(nullptr);
 	runtime_mcp_list_free(nullptr);

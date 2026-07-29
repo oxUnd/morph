@@ -65,6 +65,7 @@ struct tool_context {
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
 	morph_array_t scoped_grants;
+	morph_array_t persistent_grants;
 	struct db *grant_db;
 	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int default_timeout_seconds;
@@ -87,6 +88,7 @@ void tool_context_set_operation_approval(struct tool_context *tctx,
 					 void *user_data);
 int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
 				 const char *project_root);
+int tool_context_reload_persistent_grants(struct tool_context *tctx);
 void tool_context_add_read_allowed_dir(struct tool_context *tctx,
 				       const char *dir);
 void tool_context_add_write_allowed_dir(struct tool_context *tctx,

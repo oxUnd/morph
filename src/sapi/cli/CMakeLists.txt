@@ -12,6 +12,7 @@ add_library(morph-cli STATIC
 	commands/mcp.c
 	commands/media.c
 	commands/memory.c
+	commands/permissions.c
 	commands/registry.c
 	commands/runtime.c
 	commands/session.c

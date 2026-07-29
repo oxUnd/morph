@@ -135,8 +135,10 @@ static int count_permission_grant(const struct permission_grant *grant,
 {
 	int *count = static_cast<int *>(user_data);
 
+	EXPECT_GT(grant->id, 0);
 	EXPECT_STREQ(grant->subject, "lark-cli");
 	EXPECT_STREQ(grant->resource_kind, "write_path");
+	EXPECT_GT(grant->created_at, 0);
 	(*count)++;
 	return 0;
 }
@@ -160,4 +162,38 @@ TEST_F(DatabaseTest, PermissionGrantPersistsAndDeduplicates)
 	ASSERT_EQ(permission_grant_each(&db, "/tmp/project",
 					count_permission_grant, &count), 0);
 	EXPECT_EQ(count, 1);
+}
+
+TEST_F(DatabaseTest, PermissionGrantCanBeRevokedAndCleared)
+{
+	struct permission_grant grant = {};
+	int count = 0;
+	int deleted = 0;
+
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	snprintf(grant.subject, sizeof(grant.subject), "%s", "lark-cli");
+	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s",
+		 "write_path");
+	snprintf(grant.resource, sizeof(grant.resource), "%s",
+		 "/tmp/lark-state");
+	snprintf(grant.project_root, sizeof(grant.project_root), "%s",
+		 "/tmp/project");
+	ASSERT_EQ(permission_grant_save(&db, &grant), 0);
+	snprintf(grant.resource, sizeof(grant.resource), "%s",
+		 "/tmp/lark-cache");
+	ASSERT_EQ(permission_grant_save(&db, &grant), 0);
+	ASSERT_EQ(permission_grant_delete_subject(
+		&db, "/tmp/project", "lark-cli", &deleted), 0);
+	EXPECT_EQ(deleted, 2);
+	ASSERT_EQ(permission_grant_each(&db, "/tmp/project",
+					count_permission_grant, &count), 0);
+	EXPECT_EQ(count, 0);
+
+	snprintf(grant.subject, sizeof(grant.subject), "%s", "git");
+	snprintf(grant.resource, sizeof(grant.resource), "%s", "git");
+	ASSERT_EQ(permission_grant_save(&db, &grant), 0);
+	ASSERT_EQ(permission_grant_clear_project(
+		&db, "/tmp/project", &deleted), 0);
+	EXPECT_EQ(deleted, 1);
 }

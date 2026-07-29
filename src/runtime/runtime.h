@@ -19,6 +19,7 @@ extern "C" {
 #include "runtime/services.h"
 #include "agent/tools/img_annotate.h"
 #include "session.h"
+#include <stdint.h>
 
 /*
  * Public runtime boundary. A front owns a runtime handle, never the database,
@@ -75,6 +76,15 @@ struct runtime_options {
 	int restore_recent_session;
 };
 
+struct runtime_permission_grant {
+	int64_t id;
+	char subject[256];
+	char resource_kind[32];
+	char resource[PATH_MAX];
+	char project_root[PATH_MAX];
+	int64_t created_at;
+};
+
 int runtime_open(const struct runtime_options *options,
 		 struct runtime **out);
 void runtime_close(struct runtime *runtime);
@@ -114,6 +124,16 @@ const struct config *runtime_config_get(const struct runtime *runtime);
 const char *runtime_workdir_get(const struct runtime *runtime);
 const char *runtime_config_path_get(const struct runtime *runtime);
 char *runtime_output_get_json(struct runtime *runtime, const char *path);
+int runtime_permission_list(struct runtime *runtime,
+			    struct runtime_permission_grant **out,
+			    int *count);
+void runtime_permission_list_free(struct runtime_permission_grant *grants);
+int runtime_permission_revoke_id(struct runtime *runtime, int64_t id,
+				 int *deleted);
+int runtime_permission_revoke_subject(struct runtime *runtime,
+				      const char *subject, int *deleted);
+int runtime_permission_clear(struct runtime *runtime, int all_projects,
+			     int *deleted);
 
 
 #ifdef __cplusplus

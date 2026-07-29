@@ -9,6 +9,7 @@ set(MORPH_RUNTIME_SOURCE_NAMES
 	lock.c
 	lifecycle.c
 	output.c
+	permissions_service.c
 	mcp.c
 	mcp_service.c
 	registry_service.c

@@ -28,5 +28,6 @@ int cli_register_ext_commands(void);
 int cli_register_skill_commands(void);
 int cli_register_mcp_commands(void);
 int cli_register_sync_commands(void);
+int cli_register_permission_commands(void);
 
 #endif
