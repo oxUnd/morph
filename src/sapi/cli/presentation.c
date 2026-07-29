@@ -1,4 +1,5 @@
 #include "sapi/cli/internal.h"
+#include "sapi/cli/list_ui.h"
 
 #define CLI_STREAM_NONE      0
 #define CLI_STREAM_THOUGHT   1
@@ -6,9 +7,11 @@
 #define CLI_STREAM_FINAL     3
 #define CLI_EVENT_TEXT_MAX   2000
 #define CLI_EVENT_ARGS_MAX   180
-#define CLI_TREE_VALUE_MAX   160
+#define CLI_TREE_VALUE_MAX   2000
 #define CLI_TREE_DEPTH_MAX   6
 #define CLI_TREE_ITEMS_MAX   12
+#define CLI_TREE_RESULT_DEPTH 2
+#define CLI_TREE_EMBEDDED_JSON_DEPTH 1
 
 static void presentation_clear_status(struct cli_context *ctx)
 {
@@ -98,29 +101,102 @@ static void print_tree_prefix(const int *ancestors_last, int depth,
 	printf("%s ", is_last ? "└" : "├");
 }
 
+static void print_tree_continuation_prefix(const int *ancestors_last,
+					   int depth, int is_last,
+					   size_t label_width)
+{
+	printf("  ");
+	for (int i = 0; i < depth; i++)
+		printf("%s", ancestors_last[i] ? "  " : "│ ");
+	printf("%s", is_last ? "  " : "│ ");
+	for (size_t i = 0; i < label_width + 2; i++)
+		putchar(' ');
+}
+
+static const char *tree_wrap_end(const char *text, size_t width,
+				 int *has_break)
+{
+	const char *end;
+	const char *space = NULL;
+
+	end = utf8_advance_display_width(text, width);
+	if (!*end) {
+		*has_break = 0;
+		return end;
+	}
+	for (const char *p = text; p < end; p++) {
+		if (*p == ' ')
+			space = p;
+	}
+	*has_break = space && space > text;
+	return *has_break ? space : end;
+}
+
+static void print_tree_string(const char *text, const char *label,
+			      int depth, int is_last,
+			      const int *ancestors_last)
+{
+	char *display;
+	const char *line;
+	const char *end;
+	size_t label_width;
+	int available;
+	int has_break;
+	int first = 1;
+
+	display = utf8_dup_clamped(text ? text : "", CLI_TREE_VALUE_MAX);
+	if (!display)
+		return;
+	for (char *p = display; *p; p++) {
+		if (*p == '\n' || *p == '\r' || *p == '\t')
+			*p = ' ';
+	}
+	label_width = label ? utf8_display_width(label) : 0;
+	available = cli_list_columns() - 4 - depth * 2 -
+		(int)label_width - 2;
+	if (available < 8)
+		available = 8;
+	line = display;
+	while (*line) {
+		end = tree_wrap_end(line, (size_t)available, &has_break);
+		if (first) {
+			print_tree_prefix(ancestors_last, depth, is_last);
+			if (label && label[0])
+				printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
+			first = 0;
+		} else {
+			print_tree_continuation_prefix(
+				ancestors_last, depth, is_last, label_width);
+		}
+		if (*end && !has_break)
+			end = utf8_advance_display_width(
+				line, (size_t)(available - 1));
+		printf("%.*s", (int)(end - line), line);
+		if (*end && !has_break) {
+			printf("…\n");
+			break;
+		}
+		printf("\n");
+		line = end;
+		while (*line == ' ')
+			line++;
+	}
+	if (first) {
+		print_tree_prefix(ancestors_last, depth, is_last);
+		if (label && label[0])
+			printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
+		printf("\n");
+	}
+	free(display);
+}
+
 static void print_tree_scalar(const cJSON *item)
 {
-	char *value = NULL;
+	char *value;
 
-	if (cJSON_IsString(item)) {
-		value = utf8_dup_clamped(item->valuestring,
-					 CLI_TREE_VALUE_MAX);
-		if (value) {
-			for (char *p = value; *p; p++) {
-				if (*p == '\n' || *p == '\r' || *p == '\t')
-					*p = ' ';
-			}
-			printf("%s", value);
-		}
-		free(value);
-		return;
-	}
 	value = cJSON_PrintUnformatted(item);
 	if (value) {
-		char *display = utf8_dup_clamped(value, CLI_TREE_VALUE_MAX);
-
-		printf("%s", display ? display : value);
-		free(display);
+		printf("%s", value);
 		free(value);
 	}
 }
@@ -131,28 +207,61 @@ static int json_child_count(const cJSON *item)
 		(cJSON_IsObject(item) ? cJSON_GetArraySize(item) : 0);
 }
 
+static void print_tree_container_summary(const cJSON *item)
+{
+	int count = json_child_count(item);
+
+	printf("%s %d item%s",
+	       cJSON_IsArray(item) ? "[...]" : "{...}",
+	       count, count == 1 ? "" : "s");
+}
+
 static void print_json_tree_node(const cJSON *item, const char *label,
 				 int depth, int is_last,
-				 int *ancestors_last)
+				 int *ancestors_last, int collapse_depth,
+				 int embedded_json_depth)
 {
 	int count;
 	int shown;
 	int index = 0;
 	cJSON *child;
+	cJSON *embedded = NULL;
 
-	print_tree_prefix(ancestors_last, depth, is_last);
-	if (label && label[0])
-		printf(ANSI_DIM "%s:" ANSI_RESET, label);
 	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
+		if (cJSON_IsString(item) &&
+		    depth == embedded_json_depth)
+			embedded = cJSON_Parse(item->valuestring);
+		if (cJSON_IsArray(embedded) || cJSON_IsObject(embedded)) {
+			print_json_tree_node(embedded, label, depth, is_last,
+					     ancestors_last, collapse_depth, -1);
+			cJSON_Delete(embedded);
+			return;
+		}
+		cJSON_Delete(embedded);
+		if (cJSON_IsString(item)) {
+			print_tree_string(item->valuestring, label, depth,
+					  is_last, ancestors_last);
+			return;
+		}
+		print_tree_prefix(ancestors_last, depth, is_last);
 		if (label && label[0])
-			printf(" ");
+			printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
 		print_tree_scalar(item);
 		printf("\n");
 		return;
 	}
+	print_tree_prefix(ancestors_last, depth, is_last);
+	if (label && label[0])
+		printf(ANSI_DIM "%s:" ANSI_RESET, label);
 	count = json_child_count(item);
 	if (count == 0) {
 		printf(" %s\n", cJSON_IsArray(item) ? "[]" : "{}");
+		return;
+	}
+	if (depth >= collapse_depth) {
+		printf(" ");
+		print_tree_container_summary(item);
+		printf("\n");
 		return;
 	}
 	printf("\n");
@@ -178,7 +287,8 @@ static void print_json_tree_node(const cJSON *item, const char *label,
 		}
 		child_last = index == shown - 1 && shown == count;
 		print_json_tree_node(child, child_label, depth + 1,
-				     child_last, ancestors_last);
+				     child_last, ancestors_last,
+				     collapse_depth, embedded_json_depth);
 		index++;
 	}
 	if (shown < count) {
@@ -213,7 +323,7 @@ static void print_json_tree_children(const cJSON *item)
 		is_last = index == count - 1 &&
 			count <= CLI_TREE_ITEMS_MAX;
 		print_json_tree_node(child, label, 0, is_last,
-				     ancestors_last);
+				     ancestors_last, CLI_TREE_DEPTH_MAX, -1);
 		index++;
 	}
 	if (count > CLI_TREE_ITEMS_MAX) {
@@ -528,12 +638,16 @@ static void presentation_observation(struct cli_context *ctx,
 			int ancestors_last[CLI_TREE_DEPTH_MAX] = {0};
 
 			print_json_tree_node(structured, "result", 0, 1,
-					     ancestors_last);
+					     ancestors_last,
+					     CLI_TREE_RESULT_DEPTH,
+					     CLI_TREE_EMBEDDED_JSON_DEPTH);
 		} else if (parsed) {
 			int ancestors_last[CLI_TREE_DEPTH_MAX] = {0};
 
 			print_json_tree_node(parsed, "result", 0, 1,
-					     ancestors_last);
+					     ancestors_last,
+					     CLI_TREE_RESULT_DEPTH,
+					     CLI_TREE_EMBEDDED_JSON_DEPTH);
 		} else {
 			print_indented("  " ANSI_DIM "└ " ANSI_RESET, text);
 		}

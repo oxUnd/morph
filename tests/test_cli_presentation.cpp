@@ -496,6 +496,70 @@ TEST_F(CliPresentationTest, InteractiveRendersToolArgsAndResultAsTree)
 	cJSON_Delete(observation);
 }
 
+TEST_F(CliPresentationTest, InteractiveExpandsEmbeddedJsonOneLevel)
+{
+	cJSON *observation = TextData("structured result");
+	cJSON *result = cJSON_CreateObject();
+	const char *embedded =
+		"{\"ok\":true,\"identity\":\"user\","
+		"\"data\":{\"chats\":[1,2,3]},"
+		"\"messages\":[{\"id\":\"one\"},{\"id\":\"two\"}]}";
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(result, "payload", embedded);
+	cJSON_AddItemToObject(observation, "data", result);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.observation", "end", observation);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("├ ok: true"), std::string::npos);
+	EXPECT_NE(output.find("├ identity: user"), std::string::npos);
+	EXPECT_NE(output.find("├ data: {...} 1 item"), std::string::npos);
+	EXPECT_NE(output.find("└ messages: [...] 2 items"),
+		  std::string::npos);
+	EXPECT_EQ(output.find("\"chats\""), std::string::npos);
+	EXPECT_EQ(output.find("[0]"), std::string::npos);
+
+	cJSON_Delete(observation);
+}
+
+TEST_F(CliPresentationTest, InteractiveWrapsLongTreeStrings)
+{
+	cJSON *call = cJSON_CreateObject();
+	cJSON *args = cJSON_CreateObject();
+	const char *old_columns = getenv("COLUMNS");
+	std::string saved_columns = old_columns ? old_columns : "";
+	int had_columns = old_columns != nullptr;
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	ASSERT_EQ(setenv("COLUMNS", "52", 1), 0);
+	cJSON_AddStringToObject(call, "tool", "bash_exec");
+	cJSON_AddStringToObject(
+		args, "command",
+		"NOTICE=1 lark-cli im +chat-messages-list "
+		"--chat-id oc_1a6eff8d491c1dd23b76789f01d625b "
+		"--page-size 100");
+	cJSON_AddItemToObject(call, "args", args);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("└ command: NOTICE=1 lark-cli im"),
+		  std::string::npos);
+	EXPECT_NE(output.find("+chat-messages-list"), std::string::npos);
+	EXPECT_NE(output.find("--chat-id"), std::string::npos);
+	EXPECT_NE(output.find("--page-size 100"), std::string::npos);
+	EXPECT_EQ(output.find("(truncated)"), std::string::npos);
+
+	if (had_columns)
+		ASSERT_EQ(setenv("COLUMNS", saved_columns.c_str(), 1), 0);
+	else
+		ASSERT_EQ(unsetenv("COLUMNS"), 0);
+	cJSON_Delete(call);
+}
+
 TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 {
 	cJSON *event_data = TextData("{\"plans\":[]}");
