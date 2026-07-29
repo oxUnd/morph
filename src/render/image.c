@@ -1,9 +1,11 @@
 #include "image.h"
+#include "morph_kitty_protocol.h"
 #include "util/buf.h"
 #include "util/log.h"
 #include "util/base64.h"
 #include "util/error.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +57,15 @@ static int terminal_cols(void)
 	return 80;
 }
 
+static int terminal_rows(void)
+{
+	struct winsize ws;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+		return (int)ws.ws_row;
+	return 24;
+}
+
 static void write_all(int fd, const char *buf, size_t len)
 {
 	while (len > 0) {
@@ -63,6 +74,24 @@ static void write_all(int fd, const char *buf, size_t len)
 		buf += n;
 		len -= (size_t)n;
 	}
+}
+
+static int kitty_stdout_write(const char *bytes, size_t len, void *user_data)
+{
+	size_t offset = 0u;
+
+	(void)user_data;
+	while (offset < len) {
+		ssize_t count = write(
+			STDOUT_FILENO, bytes + offset, len - offset);
+
+		if (count < 0)
+			return -errno;
+		if (count == 0)
+			return -EIO;
+		offset += (size_t)count;
+	}
+	return 0;
 }
 
 /* stb_image_write callback: append bytes into a growing buffer. */
@@ -170,20 +199,64 @@ static int render_kitty(const char *path)
 	}
 
 	int cols = terminal_cols();
+	int rows_limit = terminal_rows();
+	int pixel_width;
+	int pixel_height;
+	int channels;
+	int disp_rows;
+	double placement_rows;
+	double cell_width = 8.0;
+	double cell_height = 16.0;
+	struct winsize ws;
 	/*
 	 * 默认按终端宽度的 50% 显示，避免大图占满整个屏幕。
 	 * kitty 在只指定 c= 时会自动保持宽高比，按列数缩放。
 	 */
 	int disp_cols = cols / 2;
 	if (disp_cols < 1) disp_cols = 1;
+	if (disp_cols > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
+		disp_cols = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
+	if (rd > (size_t)INT_MAX ||
+	    !stbi_info_from_memory(
+		    data, (int)rd, &pixel_width, &pixel_height, &channels) ||
+	    pixel_width <= 0 || pixel_height <= 0) {
+		free(data);
+		MORPH_RETURN(-EINVAL);
+	}
+	memset(&ws, 0, sizeof(ws));
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+		if (ws.ws_col > 0 && ws.ws_xpixel > 0)
+			cell_width = (double)ws.ws_xpixel / ws.ws_col;
+		if (ws.ws_row > 0 && ws.ws_ypixel > 0)
+			cell_height = (double)ws.ws_ypixel / ws.ws_row;
+	}
+	if (rows_limit > (int)MORPH_KITTY_PLACEHOLDER_LIMIT)
+		rows_limit = (int)MORPH_KITTY_PLACEHOLDER_LIMIT;
+	placement_rows = (double)pixel_height * disp_cols * cell_width /
+		((double)pixel_width * cell_height);
+	if (placement_rows > rows_limit) {
+		double scaled_columns = (double)disp_cols * rows_limit /
+			placement_rows;
+
+		disp_cols = (int)(scaled_columns + 0.999999);
+		if (disp_cols < 1)
+			disp_cols = 1;
+		disp_rows = rows_limit;
+	} else {
+		disp_rows = (int)(placement_rows + 0.999999);
+		if (disp_rows < 1)
+			disp_rows = 1;
+	}
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
 	if (!b64) MORPH_RETURN(-ENOMEM);
 	size_t b64_len = strlen(b64);
 
-	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu cols=%d disp_cols=%d chunks=%zu",
-		 path, fmt, rd, b64_len, cols, disp_cols,
+	uint32_t image_id = morph_kitty_image_id_new();
+	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu "
+		"cols=%d placement=%dx%d id=%u chunks=%zu",
+		 path, fmt, rd, b64_len, cols, disp_cols, disp_rows, image_id,
 		 (b64_len + 4095) / 4096);
 
 	fflush(stdout);
@@ -198,10 +271,16 @@ static int render_kitty(const char *path)
 		if (i == 0) {
 			if (is_last)
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,c=%d;", fmt, disp_cols);
+					"\033_Ga=T,f=%d,i=%u,U=1,q=2,"
+					"c=%d,r=%d;",
+					fmt, image_id, disp_cols,
+					disp_rows);
 			else
 				hdr_len = snprintf(hdr, sizeof(hdr),
-					"\033_Ga=T,f=%d,c=%d,m=1;", fmt, disp_cols);
+					"\033_Ga=T,f=%d,i=%u,U=1,q=2,"
+					"c=%d,r=%d,m=1;",
+					fmt, image_id, disp_cols,
+					disp_rows);
 		} else {
 			hdr_len = snprintf(hdr, sizeof(hdr),
 				"\033_Gm=%d;", is_last ? 0 : 1);
@@ -213,8 +292,14 @@ static int render_kitty(const char *path)
 	}
 	free(b64);
 
-	const char *nl = "\n";
-	write_all(STDOUT_FILENO, nl, 1);
+	for (int row = 0; row < disp_rows; row++) {
+		rc = morph_kitty_write_placeholder_row(
+			kitty_stdout_write, NULL, image_id,
+			(unsigned int)row, (unsigned int)disp_cols);
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		write_all(STDOUT_FILENO, "\n", 1);
+	}
 	return 0;
 }
 

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/list_ui.h"
 
 static int parse_task_time_arg(const char *arg, int64_t *out)
 {
@@ -46,8 +47,7 @@ fail:
 	return NULL;
 }
 
-static int append_task_table_row(morph_buf_t *buf,
-				 const struct scheduled_task *task);
+static int print_task_list_tree(const struct scheduled_task *tasks, int count);
 static int append_task_show_markdown(morph_buf_t *buf,
 				     const struct scheduled_task *task);
 
@@ -246,8 +246,6 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 {
 	struct scheduled_task *tasks = NULL;
-	morph_buf_t md;
-	int md_ready = 0;
 	int count = 0;
 	const char *status = NULL;
 	int rc;
@@ -259,25 +257,12 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("failed to list tasks: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_HEADER("scheduled tasks");
+	CMD_HEADER("scheduled tasks (%d)", count);
 	if (count == 0) {
-		printf("No tasks.\n");
+		printf("  " ANSI_DIM "└ no tasks" ANSI_RESET "\n");
 	} else {
-		rc = morph_buf_init(&md, 2048);
-		if (rc != 0)
-			goto out;
-		md_ready = 1;
-		rc = morph_buf_puts(&md,
-			"| ID | Status | Schedule | Next run | Attempts | Task |\n"
-			"|---:|---|---|---|---|---|\n");
-		for (int i = 0; rc == 0 && i < count; i++)
-			rc = append_task_table_row(&md, &tasks[i]);
-		if (rc == 0)
-			cli_markdown_render_ansi(morph_buf_cstr(&md));
+		rc = print_task_list_tree(tasks, count);
 	}
-out:
-	if (md_ready)
-		morph_buf_cleanup(&md);
 	scheduled_task_free_list(tasks, count);
 	return rc;
 }
@@ -483,17 +468,51 @@ static int append_markdown_indented_block(morph_buf_t *buf, const char *text)
 	return rc;
 }
 
-static int append_task_table_row(morph_buf_t *buf,
-				 const struct scheduled_task *task)
+static int task_status_is_terminal(const char *status)
+{
+	return status &&
+		(strcmp(status, "completed") == 0 ||
+		 strcmp(status, "cancelled") == 0 ||
+		 strcmp(status, "failed") == 0);
+}
+
+static const char *task_status_marker(const char *status)
+{
+	if (!status)
+		return "○";
+	if (strcmp(status, "completed") == 0)
+		return "✓";
+	if (strcmp(status, "failed") == 0)
+		return "✗";
+	if (strcmp(status, "cancelled") == 0)
+		return "–";
+	if (strcmp(status, "running") == 0)
+		return "●";
+	return "○";
+}
+
+static void task_list_schedule(const struct scheduled_task *task,
+			       char *schedule, size_t schedule_size)
+{
+	if (task->interval_seconds > 0)
+		snprintf(schedule, schedule_size, "every %ds",
+			 task->interval_seconds);
+	else
+		snprintf(schedule, schedule_size, "once");
+}
+
+static int print_active_task(const struct scheduled_task *task,
+			     const char *ancestor, int is_last, int columns)
 {
 	char due[32];
 	char attempts[32];
 	char schedule[32];
+	morph_buf_t summary;
 	cJSON *payload = NULL;
 	const char *prompt;
 	int rc;
 
-	if (!buf || !task)
+	if (!task)
 		MORPH_RETURN(-EINVAL);
 	notification_time_string(task->next_run_at, due, sizeof(due));
 	if (task->max_attempts > 0)
@@ -501,34 +520,75 @@ static int append_task_table_row(morph_buf_t *buf,
 			 task->attempts, task->max_attempts);
 	else
 		snprintf(attempts, sizeof(attempts), "%d/∞", task->attempts);
-	if (task->interval_seconds > 0)
-		snprintf(schedule, sizeof(schedule), "every %ds",
-			 task->interval_seconds);
-	else
-		snprintf(schedule, sizeof(schedule), "once");
+	task_list_schedule(task, schedule, sizeof(schedule));
 	prompt = task_prompt_from_payload(&payload, task);
-	rc = morph_buf_printf(buf, "| %lld | ", (long long)task->id);
+	rc = morph_buf_init(&summary, 128);
+	if (rc != 0) {
+		cJSON_Delete(payload);
+		return rc;
+	}
+	rc = morph_buf_printf(
+		&summary, "#%lld  %s · %s · next %s · %s",
+		(long long)task->id, task->status, schedule, due, attempts);
 	if (rc == 0)
-		rc = markdown_table_cell(buf, task->status);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = markdown_table_cell(buf, schedule);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = markdown_table_cell(buf, due);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = markdown_table_cell(buf, attempts);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " | ");
-	if (rc == 0)
-		rc = markdown_table_cell(buf, prompt);
-	if (rc == 0)
-		rc = morph_buf_puts(buf, " |\n");
+		cli_list_item(ancestor, is_last,
+			      task_status_marker(task->status),
+			      morph_buf_cstr(&summary), prompt, 46, columns);
+	morph_buf_cleanup(&summary);
 	cJSON_Delete(payload);
+	return rc;
+}
+
+static void print_historical_task(const struct scheduled_task *task,
+				  int is_last, int columns)
+{
+	char label[96];
+	const char *description = task->title[0] ? task->title : "task";
+
+	snprintf(label, sizeof(label), "#%lld  %s",
+		 (long long)task->id, task->status);
+	cli_list_item("  ", is_last, task_status_marker(task->status),
+		      label, description, 24, columns);
+}
+
+static int print_task_list_tree(const struct scheduled_task *tasks, int count)
+{
+	int active_count = 0;
+	int history_count = 0;
+	int active_index = 0;
+	int history_index = 0;
+	int columns = cli_list_columns();
+	int rc = 0;
+
+	if (!tasks || count <= 0)
+		MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < count; i++) {
+		if (task_status_is_terminal(tasks[i].status))
+			history_count++;
+		else
+			active_count++;
+	}
+	if (active_count > 0) {
+		cli_list_group("active", active_count, history_count == 0);
+		for (int i = 0; rc == 0 && i < count; i++) {
+			if (task_status_is_terminal(tasks[i].status))
+				continue;
+			active_index++;
+			rc = print_active_task(
+				&tasks[i], history_count == 0 ? "  " : "│ ",
+				active_index == active_count, columns);
+		}
+	}
+	if (rc == 0 && history_count > 0) {
+		cli_list_group("history", history_count, 1);
+		for (int i = 0; i < count; i++) {
+			if (!task_status_is_terminal(tasks[i].status))
+				continue;
+			history_index++;
+			print_historical_task(
+				&tasks[i], history_index == history_count, columns);
+		}
+	}
 	return rc;
 }
 

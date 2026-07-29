@@ -802,6 +802,8 @@ TEST(ImageRender, KittyJpegProtocol) {
 		<< "JPEG input must be transcoded to PNG (f=100) for kitty, got: " << captured;
 	EXPECT_EQ(strstr(captured, "f=101"), nullptr)
 		<< "f=101 is not a valid kitty graphics format, got: " << captured;
+	EXPECT_NE(strstr(captured, "U=1"), nullptr);
+	EXPECT_NE(strstr(captured, "\xF4\x8E\xBB\xAE"), nullptr);
 	unsetenv("KITTY_WINDOW_ID");
 	remove(path);
 }
@@ -848,6 +850,8 @@ TEST(ImageRender, KittyPngProtocol) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_NE(strstr(captured, "f=100"), nullptr)
 		<< "PNG data should use f=100 in kitty protocol, got: " << captured;
+	EXPECT_NE(strstr(captured, "U=1"), nullptr);
+	EXPECT_NE(strstr(captured, "\xF4\x8E\xBB\xAE"), nullptr);
 	unsetenv("KITTY_WINDOW_ID");
 	remove(path);
 }

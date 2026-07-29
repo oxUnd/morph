@@ -8,4 +8,7 @@ target_include_directories(morph-render PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(morph-render PUBLIC morph-util)
+target_link_libraries(morph-render PUBLIC
+	morph-util
+	MorphMarkdown::KittyProtocol
+)
