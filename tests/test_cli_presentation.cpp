@@ -397,8 +397,11 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 	cJSON_AddStringToObject(connecting, "transport", "http");
 	cJSON_AddStringToObject(failed, "server", "meego");
 	cJSON_AddStringToObject(failed, "transport", "http");
-	cJSON_AddNumberToObject(failed, "error_code", MORPH_ERR_API);
-	cJSON_AddStringToObject(failed, "error", "API error");
+	cJSON_AddNumberToObject(failed, "error_code",
+				MORPH_ERR_NOT_CONFIGURED);
+	cJSON_AddStringToObject(
+		failed, "error",
+		"Missing MCP token: environment variable 'MEEGO_TOKEN' is not set");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
@@ -409,7 +412,9 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 	ASSERT_NE(root, std::string::npos);
 	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
 	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
-	EXPECT_NE(output.find("└ ✗ Failed · API error"), std::string::npos);
+	EXPECT_NE(output.find(
+		"└ ✗ Failed · Missing MCP token: environment variable "
+		"'MEEGO_TOKEN' is not set"), std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
 
 	cJSON_Delete(connecting);

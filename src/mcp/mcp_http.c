@@ -268,11 +268,14 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 	url_auth = mcp_http_url_uses_auth_token(client->config.http_url);
 	if (client->config.http_auth_token_env[0] && !url_auth) {
 		const char *token_env = getenv(client->config.http_auth_token_env);
-		if (token_env) {
-			snprintf(auth_hdr, sizeof(auth_hdr),
-				 "Authorization: Bearer %s", token_env);
-			hdrs[nhdrs++] = auth_hdr;
+		if (!token_env || !token_env[0]) {
+			log_err("mcp http: auth token env var '%s' is not set",
+				client->config.http_auth_token_env);
+			MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 		}
+		snprintf(auth_hdr, sizeof(auth_hdr),
+			 "Authorization: Bearer %s", token_env);
+		hdrs[nhdrs++] = auth_hdr;
 	}
 
 	if (client->session_id[0]) {

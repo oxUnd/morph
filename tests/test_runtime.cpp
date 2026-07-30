@@ -73,12 +73,14 @@ TEST_F(RuntimeLifecycleTest, EmitsStartupProgress)
 	FILE *config = std::fopen(config_path.c_str(), "w");
 
 	ASSERT_NE(config, nullptr);
+	unsetenv("MORPH_TEST_MISSING_MCP_TOKEN");
 	std::fprintf(config,
 		     "[mcp]\n"
 		     "[[mcp.servers]]\n"
 		     "name = \"broken-test\"\n"
 		     "transport = \"http\"\n"
-		     "url = \"\"\n"
+		     "url = \"https://example.invalid/mcp\"\n"
+		     "auth_token_env = \"MORPH_TEST_MISSING_MCP_TOKEN\"\n"
 		     "auto_connect = true\n");
 	ASSERT_EQ(std::fclose(config), 0);
 	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
@@ -109,6 +111,9 @@ TEST_F(RuntimeLifecycleTest, EmitsStartupProgress)
 	EXPECT_NE(events.find("\"server\":\"broken-test\""),
 		  std::string::npos);
 	EXPECT_NE(events.find("\"message\":\"Connecting to broken-test\""),
+		  std::string::npos);
+	EXPECT_NE(events.find("Missing MCP token: environment variable "
+			      "'MORPH_TEST_MISSING_MCP_TOKEN' is not set"),
 		  std::string::npos);
 
 	runtime_close(instance);

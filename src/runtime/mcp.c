@@ -5,12 +5,39 @@
 #include "util/log.h"
 
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *runtime_mcp_transport_name(
 	enum mcp_transport_type transport)
 {
 	return transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
+}
+
+static const char *runtime_mcp_error_text(
+	const struct mcp_server_config *server, int error_code,
+	char *buf, size_t buf_cap)
+{
+	const char *token;
+
+	if (!server || !buf || buf_cap == 0)
+		return morph_strerror(error_code);
+	if (server->transport != MCP_TRANSPORT_STREAMABLE_HTTP ||
+	    error_code != MORPH_ERR_NOT_CONFIGURED)
+		return morph_strerror(error_code);
+	if (!server->http_auth_token_env[0]) {
+		snprintf(buf, buf_cap, "MCP authentication token is not configured");
+		return buf;
+	}
+	token = getenv(server->http_auth_token_env);
+	if (!token || !token[0]) {
+		snprintf(buf, buf_cap,
+			 "Missing MCP token: environment variable '%s' is not set",
+			 server->http_auth_token_env);
+		return buf;
+	}
+	return morph_strerror(error_code);
 }
 
 static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
@@ -23,9 +50,13 @@ static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 	cJSON *data;
 	morph_buf_t message_buf;
 	const char *effective_message = message;
+	const char *error_text;
+	char error_buf[256];
 
 	if (!cb || !server)
 		return;
+	error_text = runtime_mcp_error_text(server, error_code, error_buf,
+					    sizeof(error_buf));
 	memset(&message_buf, 0, sizeof(message_buf));
 	if (morph_buf_init(&message_buf, 128) == 0) {
 		if (strcmp(name, "mcp.connecting") == 0)
@@ -52,7 +83,7 @@ static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 		else if (strcmp(name, "mcp.failed") == 0)
 			(void)morph_buf_printf(&message_buf, "%s failed: %s",
 					       server->name,
-					       morph_strerror(error_code));
+					       error_text);
 		else if (strcmp(name, "mcp.disconnected") == 0)
 			(void)morph_buf_printf(&message_buf, "%s disconnected",
 					       server->name);
@@ -80,8 +111,7 @@ static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 		cJSON_AddNumberToObject(data, "prompts", prompts);
 	if (error_code < 0) {
 		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error",
-					morph_strerror(error_code));
+		cJSON_AddStringToObject(data, "error", error_text);
 	}
 	(void)morph_event_emit_simple(cb, user_data, MORPH_EVENT_MCP,
 				     name, phase, effective_message, data);
