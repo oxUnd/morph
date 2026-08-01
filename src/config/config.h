@@ -317,11 +317,20 @@ struct config_validation_error {
 	char message[256];
 };
 
+typedef void (*config_validation_warning_fn)(
+	const struct config_validation_error *warning, void *user_data);
+
 int config_load(struct config *cfg, const char *path);
 int config_load_sub_agents(struct config *cfg, const char *path);
 /* Validate without applying configuration. Returns 0 or a negative error. */
 int config_validate_text(const char *text, struct config_validation_error *error);
 int config_validate_file(const char *path, struct config_validation_error *error);
+int config_validate_text_with_warnings(const char *text,
+	struct config_validation_error *error,
+	config_validation_warning_fn warning_fn, void *warning_user_data);
+int config_validate_file_with_warnings(const char *path,
+	struct config_validation_error *error,
+	config_validation_warning_fn warning_fn, void *warning_user_data);
 /* Returns a malloc-owned semantic inventory as JSON; the caller must free it. */
 char *config_describe_text(const char *text, struct config_validation_error *error);
 void config_set_defaults(struct config *cfg);

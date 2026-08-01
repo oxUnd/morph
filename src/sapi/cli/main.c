@@ -17,6 +17,7 @@
 #define ANSI_DIM    "\033[2m"
 #define ANSI_GREEN  "\033[32m"
 #define ANSI_YELLOW "\033[33m"
+#define ANSI_RED    "\033[31m"
 #define ANSI_CYAN   "\033[36m"
 #define ANSI_RESET  "\033[0m"
 
@@ -37,22 +38,121 @@
 #define ICON_MCP     "\ueb01"
 #define ICON_CONFIG  "\ueaf8"
 
-static void print_version(const char *config_path)
+static const char *config_diagnostic_reason(
+	const struct config_validation_error *item)
+{
+	const char *reason = item->message;
+	size_t path_len;
+
+	if (item->code == CONFIG_VALIDATION_UNKNOWN_KEY)
+		return "unknown key; ignored for forward compatibility";
+	if (!item->path[0])
+		return reason;
+	path_len = strlen(item->path);
+	if (strncmp(reason, item->path, path_len) != 0)
+		return reason;
+	reason += path_len;
+	while (*reason == ' ' || *reason == ':')
+		reason++;
+	return reason;
+}
+
+static void print_config_diagnostic(int is_warning, const char *path,
+				    const struct config_validation_error *item)
+{
+	const char *color = cli_color_enabled() ?
+		(is_warning ? ANSI_YELLOW : ANSI_RED) : "";
+	const char *bold = cli_color_enabled() ? ANSI_BOLD : "";
+	const char *dim = cli_color_enabled() ? ANSI_DIM : "";
+	const char *reset = cli_color_enabled() ? ANSI_RESET : "";
+	const char *icon = is_warning ? "⚠" : "✗";
+	const char *title = is_warning ? "Configuration warning" :
+		"Invalid configuration";
+
+	fprintf(stderr, "%s%s%s  %s%s\n", color, bold, icon, title, reset);
+	fprintf(stderr, "  %sfile%s    %s", dim, reset, path);
+	if (item->line > 0) {
+		fprintf(stderr, ":%d", item->line);
+		if (item->column > 0)
+			fprintf(stderr, ":%d", item->column);
+	}
+	fputc('\n', stderr);
+	if (item->path[0])
+		fprintf(stderr, "  %skey%s     %s\n", dim, reset, item->path);
+	fprintf(stderr, "  %sreason%s  %s\n", dim, reset,
+		config_diagnostic_reason(item));
+}
+
+static void print_config_warning(
+	const struct config_validation_error *warning, void *user_data)
+{
+	const char *path = user_data;
+
+	if (warning)
+		print_config_diagnostic(1, path, warning);
+}
+
+static void print_config_error(const char *config_path, int rc)
+{
+	struct config_validation_error error = {0};
+	const char *requested = config_path ? config_path :
+		"~/.morph/config.toml";
+	char *expanded = file_expand_path(requested);
+	const char *display = expanded ? expanded : requested;
+	int validation_rc = expanded ? config_validate_file(expanded, &error) :
+		-EINVAL;
+
+	if ((validation_rc == MORPH_ERR_CONFIG ||
+	     validation_rc == MORPH_ERR_PARSE) && error.message[0]) {
+		print_config_diagnostic(0, display, &error);
+	} else {
+		fprintf(stderr, "morph: failed to load configuration %s: %s\n",
+			display, morph_strerror(rc));
+	}
+	free(expanded);
+}
+
+static int preflight_config(const char *config_path)
+{
+	struct config_validation_error error = {0};
+	const char *requested = config_path ? config_path :
+		"~/.morph/config.toml";
+	char *expanded = file_expand_path(requested);
+	int rc;
+
+	if (!expanded)
+		return 0;
+	if (!file_exists(expanded)) {
+		free(expanded);
+		return 0;
+	}
+	rc = config_validate_file_with_warnings(expanded, &error,
+		print_config_warning, expanded);
+	if (rc != 0)
+		print_config_diagnostic(0, expanded, &error);
+	free(expanded);
+	return rc;
+}
+
+static int print_version(const char *config_path)
 {
 	struct utsname uts;
+	int rc = 0;
+
 	uname(&uts);
 
 	struct config cfg;
 	config_set_defaults(&cfg);
 
-	char *cfg_path = NULL;
-	if (config_path) {
-		cfg_path = strdup(config_path);
-	} else {
-		cfg_path = file_expand_path("~/.morph/config.toml");
-	}
+	char *cfg_path = file_expand_path(config_path ? config_path :
+		"~/.morph/config.toml");
 	if (cfg_path) {
-		config_load(&cfg, cfg_path);
+		rc = config_load(&cfg, cfg_path);
+		if (rc != 0) {
+			print_config_error(config_path, rc);
+			free(cfg_path);
+			return rc;
+		}
 	}
 
 	struct skill_registry skills;
@@ -222,6 +322,7 @@ static void print_version(const char *config_path)
 		file_free_list(ext_dirs, ext_count);
 	skill_registry_cleanup(&skills);
 	free(cfg_path);
+	return 0;
 }
 
 int main(int argc, char *argv[])
@@ -302,9 +403,10 @@ int main(int argc, char *argv[])
 		printf("  --no-color  Disable ANSI color output\n");
 		return 0;
 	}
+	if (preflight_config(config_path) != 0)
+		return 1;
 	if (show_version) {
-		print_version(config_path);
-		return 0;
+		return print_version(config_path) == 0 ? 0 : 1;
 	}
 	char *log_dir = file_expand_path("~/.morph/log");
 	file_ensure_dir(log_dir);
@@ -317,6 +419,13 @@ int main(int argc, char *argv[])
 	int rc = cli_init(&ctx, config_path, workdir, presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %s", morph_strerror(rc));
+		if (rc == MORPH_ERR_CONFIG || rc == MORPH_ERR_PARSE)
+			print_config_error(config_path, rc);
+		else
+			fprintf(stderr, "morph: failed to initialize: %s\n",
+				morph_strerror(rc));
+		http_cleanup();
+		log_shutdown();
 		return 1;
 	}
 	ctx.trace_json = trace_json;

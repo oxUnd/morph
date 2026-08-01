@@ -163,6 +163,24 @@ TEST_F(ConfigWriteTest, RejectsSemanticallyInvalidConfigBeforeApproval)
 	EXPECT_NE(out.find("react.max_iterations"), std::string::npos);
 }
 
+TEST_F(ConfigWriteTest, AllowsUnknownKeysForForwardCompatibility)
+{
+	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
+	tool_context_set_operation_approval(tctx, approval_cb, &state);
+	ASSERT_EQ(config_write_init(&reg, tctx, config_path), 0);
+
+	const char *toml = "[future]\nenabled = true\n";
+	std::string args = std::string(
+		"{\"reason\":\"future config\",\"content\":") +
+		json_escape(toml) + "}";
+	int rc = 0;
+	std::string out = exec_config_write(&reg, args, &rc);
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(state.calls, 1);
+	EXPECT_NE(out.find("configuration written"), std::string::npos);
+}
+
 TEST_F(ConfigWriteTest, DeniedApprovalDoesNotWrite)
 {
 	struct approval_state state = { TOOL_OP_DENY, 0, "" };

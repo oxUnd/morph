@@ -332,7 +332,9 @@ static int append_path(morph_buf_t *path, const char *key)
 }
 
 static int validate_table(const toml_datum_t *table, morph_buf_t *path,
-			  struct config_validation_error *error)
+			  struct config_validation_error *error,
+			  config_validation_warning_fn warning_fn,
+			  void *warning_user_data)
 {
 	for (int i = 0; i < table->u.tab.size; i++) {
 		const toml_datum_t *value = &table->u.tab.value[i];
@@ -344,9 +346,16 @@ static int validate_table(const toml_datum_t *table, morph_buf_t *path,
 			return rc;
 		entry = schema_find(morph_buf_cstr(path));
 		if (!entry) {
-			return set_error(error, CONFIG_VALIDATION_UNKNOWN_KEY, value,
+			struct config_validation_error warning = {0};
+
+			(void)set_error(&warning, CONFIG_VALIDATION_UNKNOWN_KEY, value,
 				morph_buf_cstr(path), "unknown configuration key: %s",
 				morph_buf_cstr(path));
+			if (warning_fn)
+				warning_fn(&warning, warning_user_data);
+			path->len = old_len;
+			path->data[old_len] = '\0';
+			continue;
 		}
 		rc = validate_value(entry, value, morph_buf_cstr(path), error);
 		if (rc != 0)
@@ -367,7 +376,8 @@ static int validate_table(const toml_datum_t *table, morph_buf_t *path,
 							morph_buf_cstr(path), entry->max_len);
 				}
 			} else {
-				rc = validate_table(value, path, error);
+				rc = validate_table(value, path, error, warning_fn,
+					warning_user_data);
 				if (rc != 0)
 					return rc;
 			}
@@ -377,7 +387,8 @@ static int validate_table(const toml_datum_t *table, morph_buf_t *path,
 			if (rc != 0)
 				return rc;
 			for (int j = 0; j < value->u.arr.size; j++) {
-				rc = validate_table(&value->u.arr.elem[j], path, error);
+				rc = validate_table(&value->u.arr.elem[j], path, error,
+					warning_fn, warning_user_data);
 				if (rc != 0)
 					return rc;
 			}
@@ -500,7 +511,10 @@ static int parse_error_line(const char *message)
 	return line;
 }
 
-int config_validate_text(const char *text, struct config_validation_error *error)
+int config_validate_text_with_warnings(const char *text,
+			    struct config_validation_error *error,
+			    config_validation_warning_fn warning_fn,
+			    void *warning_user_data)
 {
 	toml_result_t parsed;
 	morph_buf_t path;
@@ -549,7 +563,8 @@ int config_validate_text(const char *text, struct config_validation_error *error
 	rc = morph_buf_init(&path, 128);
 	if (rc == 0) {
 		path_ready = 1;
-		rc = validate_table(&parsed.toptab, &path, error);
+		rc = validate_table(&parsed.toptab, &path, error, warning_fn,
+			warning_user_data);
 	}
 	if (rc == 0)
 		rc = validate_relations(&parsed.toptab, error);
@@ -559,7 +574,15 @@ int config_validate_text(const char *text, struct config_validation_error *error
 	return rc;
 }
 
-int config_validate_file(const char *path, struct config_validation_error *error)
+int config_validate_text(const char *text, struct config_validation_error *error)
+{
+	return config_validate_text_with_warnings(text, error, NULL, NULL);
+}
+
+int config_validate_file_with_warnings(const char *path,
+			    struct config_validation_error *error,
+			    config_validation_warning_fn warning_fn,
+			    void *warning_user_data)
 {
 	char *text;
 	size_t length = 0;
@@ -572,7 +595,13 @@ int config_validate_file(const char *path, struct config_validation_error *error
 	if (!text)
 		MORPH_RETURN(errno ? -errno : -EIO);
 	(void)length;
-	rc = config_validate_text(text, error);
+	rc = config_validate_text_with_warnings(text, error, warning_fn,
+		warning_user_data);
 	free(text);
 	return rc;
+}
+
+int config_validate_file(const char *path, struct config_validation_error *error)
+{
+	return config_validate_file_with_warnings(path, error, NULL, NULL);
 }

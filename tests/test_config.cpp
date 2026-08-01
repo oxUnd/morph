@@ -288,14 +288,40 @@ TEST(ConfigValidationTest, ReportsTomlLine)
 	EXPECT_NE(std::string(error.message).find("line 3"), std::string::npos);
 }
 
-TEST(ConfigValidationTest, RejectsUnknownKeys)
+struct config_warning_state {
+	int count;
+	struct config_validation_error last;
+};
+
+static void collect_config_warning(
+	const struct config_validation_error *warning, void *user_data)
+{
+	struct config_warning_state *state =
+		static_cast<struct config_warning_state *>(user_data);
+
+	state->count++;
+	state->last = *warning;
+}
+
+TEST(ConfigValidationTest, WarnsAndContinuesForUnknownKeys)
 {
 	struct config_validation_error error = {};
+	struct config_warning_state warnings = {};
+	const char *text =
+		"[general]\nlog_levle = \"info\"\n"
+		"[react]\nmax_iterations = \"ten\"\n";
 
-	EXPECT_EQ(config_validate_text("[general]\nlog_levle = \"info\"\n",
-		&error), MORPH_ERR_CONFIG);
-	EXPECT_EQ(error.code, CONFIG_VALIDATION_UNKNOWN_KEY);
-	EXPECT_STREQ(error.path, "general.log_levle");
+	EXPECT_EQ(config_validate_text_with_warnings(text, &error,
+		collect_config_warning, &warnings), MORPH_ERR_CONFIG);
+	EXPECT_EQ(warnings.count, 1);
+	EXPECT_EQ(warnings.last.code, CONFIG_VALIDATION_UNKNOWN_KEY);
+	EXPECT_STREQ(warnings.last.path, "general.log_levle");
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_TYPE);
+	EXPECT_STREQ(error.path, "react.max_iterations");
+	memset(&error, 0, sizeof(error));
+	EXPECT_EQ(config_validate_text(
+		"[general]\nlog_levle = \"info\"\n", &error), 0);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_NONE);
 }
 
 TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
@@ -340,17 +366,16 @@ TEST(ConfigValidationTest, ValidatesMcpRequirements)
 	EXPECT_EQ(config_validate_text(valid, &error), 0);
 }
 
-TEST_F(ConfigTest, RejectsInvalidExistingFile)
+TEST_F(ConfigTest, IgnoresUnknownKeysInExistingFile)
 {
 	const char *toml = "[general]\nlog_levle = \"info\"\n";
 	struct config_validation_error error = {};
 	struct config cfg;
 
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
-	EXPECT_EQ(config_validate_file(config_path, &error), MORPH_ERR_CONFIG);
-	EXPECT_EQ(error.code, CONFIG_VALIDATION_UNKNOWN_KEY);
-	EXPECT_STREQ(error.path, "general.log_levle");
-	EXPECT_EQ(config_load(&cfg, config_path), MORPH_ERR_CONFIG);
+	EXPECT_EQ(config_validate_file(config_path, &error), 0);
+	EXPECT_EQ(config_load(&cfg, config_path), 0);
+	EXPECT_STREQ(cfg.general.log_level, "info");
 }
 
 TEST(ConfigValidationTest, DescribesStableSemanticPaths)

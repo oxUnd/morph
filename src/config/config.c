@@ -848,6 +848,18 @@ static void config_expand_paths(struct config *cfg)
 	}
 }
 
+static void config_log_warning(
+	const struct config_validation_error *warning, void *user_data)
+{
+	const char *path = user_data;
+
+	if (!warning)
+		return;
+	log_warn("config warning %s:%d:%d: %s; ignoring %s",
+		path ? path : "<config>", warning->line, warning->column,
+		warning->message, warning->path);
+}
+
 int config_load(struct config *cfg, const char *path)
 {
 	if (!cfg || !path)
@@ -860,7 +872,8 @@ int config_load(struct config *cfg, const char *path)
 		return 0;
 	}
 	struct config_validation_error validation = {0};
-	int validation_rc = config_validate_file(path, &validation);
+	int validation_rc = config_validate_file_with_warnings(path, &validation,
+		config_log_warning, (void *)path);
 	if (validation_rc != 0) {
 		fclose(f);
 		log_err("invalid config %s:%d:%d: %s", path,
