@@ -287,10 +287,11 @@ static int img_inpaint_exec(const char *args_json, struct tool_result *result,
 					 user_prompt);
 
 		struct image_result r = {0};
+		const char *references[] = {st_img->current_ref};
 		int rc = image_gen_create(ctx->image_llm,
 					  morph_buf_cstr(&pb), style,
-					  size,
-					  st_img->current_ref, output_dir, &r);
+					  size, references, 1,
+					  output_dir, &r);
 		morph_buf_cleanup(&pb);
 		if (rc < 0) {
 			snprintf(err_msg, sizeof(err_msg),

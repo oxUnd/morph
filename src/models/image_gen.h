@@ -10,6 +10,8 @@ extern "C" {
 
 struct model;
 
+#define IMAGE_GEN_MAX_REFERENCE_IMAGES 10
+
 struct image_result {
 	char path[PATH_MAX];
 	char url[PATH_MAX];
@@ -26,7 +28,8 @@ const char *image_gen_adapter_name(const struct model *model);
 int image_gen_adapter_supported(const char *provider, const char *adapter);
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
-		    const char *size, const char *image_path,
+		    const char *size, const char **image_paths,
+		    int image_count,
 		    const char *output_dir,
 		    struct image_result *result);
 

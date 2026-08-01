@@ -370,7 +370,8 @@ out:
 }
 
 int image_gen_create(struct model *self, const char *prompt, const char *style,
-		     const char *size, const char *image_path,
+		     const char *size, const char **image_paths,
+		     int image_count,
 		     const char *output_dir,
 		     struct image_result *result)
 {
@@ -379,12 +380,17 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	struct image_payload payload;
 	struct image_request request;
 	morph_buf_t prompt_buf;
-	const char *references[1];
 	char normalized_size[64];
 	int rc;
 
-	if (!prompt || !result)
+	if (!prompt || !result || image_count < 0 ||
+	    image_count > IMAGE_GEN_MAX_REFERENCE_IMAGES ||
+	    (image_count > 0 && !image_paths))
 		MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < image_count; i++) {
+		if (!image_paths[i] || !image_paths[i][0])
+			MORPH_RETURN(-EINVAL);
+	}
 	memset(result, 0, sizeof(*result));
 	memset(&payload, 0, sizeof(payload));
 	if (!self || !self->api_key[0])
@@ -403,7 +409,13 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	rc = ops->capabilities(self, &caps);
 	if (rc != 0)
 		return rc;
-	if (image_path && image_path[0] && !caps.supports_edit) {
+	if (image_count > 1 && !caps.supports_multi_reference) {
+		snprintf(self->last_error, sizeof(self->last_error),
+			 "image adapter '%s' does not support multiple reference "
+			 "images for model '%s'", ops->name, self->model_id);
+		MORPH_RETURN(-ENOTSUP);
+	}
+	if (image_count > 0 && !caps.supports_edit) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support reference edits "
 			 "for model '%s'", ops->name, self->model_id);
@@ -421,11 +433,8 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	memset(&request, 0, sizeof(request));
 	request.prompt = morph_buf_cstr(&prompt_buf);
 	request.size = normalized_size;
-	if (image_path && image_path[0]) {
-		references[0] = image_path;
-		request.reference_images = references;
-		request.reference_image_count = 1;
-	}
+	request.reference_images = image_paths;
+	request.reference_image_count = image_count;
 	rc = ops->execute(self, &request, &payload);
 	morph_buf_cleanup(&prompt_buf);
 	if (rc != 0) {

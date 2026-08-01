@@ -458,8 +458,9 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		morph_buf_printf(&pb, " Additional direction: %s", user_prompt);
 
 	struct image_result r = {0};
+	const char *references[] = {draft_path};
 	int rc = image_gen_create(ctx->image_llm, morph_buf_cstr(&pb), style,
-				  size, draft_path, odir_in, &r);
+				  size, references, 1, odir_in, &r);
 	morph_buf_cleanup(&lb);
 	morph_buf_cleanup(&pb);
 

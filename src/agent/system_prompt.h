@@ -59,7 +59,7 @@ MORPH_PROMPT_TOOL_SURFACE \
 "- Runtime: credits for usage; memory only for explicit user requests to\n" \
 "  inspect stored memory, never to recover ordinary task context.\n" \
 "- Image: img_qa to understand images, answer visual questions, and OCR;\n" \
-"  img_gen creates or edits using a reference_image; its configured\n" \
+"  img_gen creates or edits using ordered reference_images; its configured\n" \
 "  adapter handles provider-specific formats and size rules.\n" \
 "  img_info/img_resize/img_convert/img_annotate inspect metadata,\n" \
 "  post-process, or collect manual annotations.\n" \

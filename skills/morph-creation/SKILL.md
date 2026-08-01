@@ -26,14 +26,14 @@ Call the right tool directly with a richly crafted prompt.
 **Compound request** (multi-asset, a consistent series, or 3+ subtasks):
 1. Outline a creation plan — list each asset, its style, format/size, and how the assets connect narratively.
 2. Generate the first hero asset and lock a **style anchor** from it: the key style words, color palette, and the output file path.
-3. Reuse that anchor in every later call. Pass the prior image as `reference_image` (img_gen) or `image_path` (vid_gen) to carry visual identity forward.
+3. Reuse that anchor in every later call. Pass all image anchors together in the ordered `reference_images` array (img_gen), or use `image_path` (vid_gen), to carry visual identity forward.
 4. Refine iteratively — concept, then composition, then lighting/detail polish. Don't assume one pass is enough.
 
 ## TOOL USAGE
 
 Schemas come from the function-calling interface; this is the creative guidance they don't cover.
 
-- **img_gen** — Create *and* transform images. For a fresh image, specify lighting setup, camera angle, lens, composition, mood, and palette. To restyle/extend/alter an existing image while keeping identity, pass it as `reference_image` (img2img) — this is also how you regenerate after annotation.
+- **img_gen** — Create *and* transform images. For a fresh image, specify lighting setup, camera angle, lens, composition, mood, and palette. To restyle, extend, compose, or alter images while keeping identity, pass up to 10 paths together in ordered `reference_images` and refer to them as image#1, image#2, and so on. The legacy singular `reference_image` remains accepted. This is also how you regenerate after annotation.
 - **vid_gen** — Create motion. Describe camera movement (dolly, pan, tracking), subject motion, scene progression, and timing in beats. Anchor the first frame with `image_path` for continuity.
 - **img_annotate** — Open an image in the interactive editor so the user can mark intent. Two annotation types drive two different follow-up tools:
   - **bbox + label** = "generate this content inside this box" → pass the annotation to **img_inpaint**.

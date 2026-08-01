@@ -1478,7 +1478,7 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 |--------|------|------|---------|------|------|
 | credits | 查询积分用量、限制和总积分 | — | SQLite | 内置 | 是 |
 | memory | 按 scope/type 查询长期记忆 | scope, type, max_episodes | SQLite | 内置 | 是 |
-| img_gen | 图片生成 | prompt, style, size, reference_image | DALL-E / SD / Volcengine | 内置 | 否 |
+| img_gen | 图片生成 | prompt, style, size, reference_images（最多 10 张） | GPT Image / Volcengine Seedream | 内置 | 否 |
 | img_qa | 图片问答/理解 | file_path, question, max_tokens, max_dim | 多模态 LLM（`[model.text]`） | 内置 | 是 |
 | img_inpaint | 区域生成(bbox+label) | annotation, prompt | 图像模型 i2i (确定性百分比指令) | 内置 | 否 |
 | img_compose | 跨图融合(arrow+label) | annotation, prompt | 本地预合成 + 图像模型 i2i | 内置 | 否 |

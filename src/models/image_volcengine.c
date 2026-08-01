@@ -21,6 +21,7 @@ static int volcengine_capabilities(const struct model *model,
 	memset(caps, 0, sizeof(*caps));
 	caps->supports_generate = 1;
 	caps->supports_edit = 1;
+	caps->supports_multi_reference = 1;
 	return 0;
 }
 
@@ -100,24 +101,47 @@ static int volcengine_execute(struct model *model,
 	cJSON_AddStringToObject(body, "size", request->size);
 	cJSON_AddStringToObject(body, "response_format", "url");
 	if (request->reference_image_count > 0) {
-		char *b64 = image_encode_base64(request->reference_images[0],
-					       2048);
-		if (!b64) {
-			cJSON_Delete(body);
-			arena_destroy(arena);
-			MORPH_RETURN(MORPH_ERR_FORMAT);
-		}
-		size_t uri_len = strlen(b64) + 23;
-		char *uri = arena_alloc(arena, uri_len);
-		if (!uri) {
-			free(b64);
+		cJSON *images = cJSON_CreateArray();
+
+		if (!images) {
 			cJSON_Delete(body);
 			arena_destroy(arena);
 			MORPH_RETURN(-ENOMEM);
 		}
-		snprintf(uri, uri_len, "data:image/png;base64,%s", b64);
-		cJSON_AddStringToObject(body, "image", uri);
-		free(b64);
+		for (int i = 0; i < request->reference_image_count; i++) {
+			char *b64 = image_encode_base64(
+				request->reference_images[i], 2048);
+			cJSON *item;
+			char *uri;
+			size_t uri_len;
+
+			if (!b64) {
+				cJSON_Delete(images);
+				cJSON_Delete(body);
+				arena_destroy(arena);
+				MORPH_RETURN(MORPH_ERR_FORMAT);
+			}
+			uri_len = strlen(b64) + 23;
+			uri = arena_alloc(arena, uri_len);
+			if (!uri) {
+				free(b64);
+				cJSON_Delete(images);
+				cJSON_Delete(body);
+				arena_destroy(arena);
+				MORPH_RETURN(-ENOMEM);
+			}
+			snprintf(uri, uri_len, "data:image/png;base64,%s", b64);
+			free(b64);
+			item = cJSON_CreateString(uri);
+			if (!item || !cJSON_AddItemToArray(images, item)) {
+				cJSON_Delete(item);
+				cJSON_Delete(images);
+				cJSON_Delete(body);
+				arena_destroy(arena);
+				MORPH_RETURN(-ENOMEM);
+			}
+		}
+		cJSON_AddItemToObject(body, "image", images);
 	}
 	body_text = cJSON_PrintUnformatted(body);
 	cJSON_Delete(body);

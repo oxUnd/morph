@@ -113,13 +113,41 @@ static int create_solid_png(const char *path, int w, int h)
 
 TEST(ImageGen, InvalidPrompt) {
 	struct image_result result;
-	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, NULL, &result);
+	int rc = image_gen_create(NULL, NULL, NULL, NULL, NULL, 0, NULL,
+				  &result);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(ImageGen, NullResult) {
-	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL, NULL, NULL);
+	int rc = image_gen_create(NULL, "test", NULL, NULL, NULL, 0, NULL,
+				  NULL);
 	EXPECT_NE(rc, 0);
+}
+
+TEST(ImageGen, RejectsMultipleReferencesForUnsupportedModel) {
+	struct model image_model = {};
+	struct image_result result = {};
+	const char *references[] = {"first.png", "second.png"};
+
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	snprintf(image_model.model_id, sizeof(image_model.model_id), "dall-e-3");
+	snprintf(image_model.api_key, sizeof(image_model.api_key), "test-key");
+	int rc = image_gen_create(&image_model, "combine them", NULL,
+				  "2k", references, 2, NULL, &result);
+	EXPECT_EQ(rc, -ENOTSUP);
+	EXPECT_NE(strstr(image_model.last_error, "multiple reference images"),
+		  nullptr);
+}
+
+TEST(ImageGen, RejectsTooManyReferences) {
+	struct image_result result = {};
+	const char *references[IMAGE_GEN_MAX_REFERENCE_IMAGES + 1] = {};
+
+	int rc = image_gen_create(NULL, "combine them", NULL, "2k",
+				  references,
+				  IMAGE_GEN_MAX_REFERENCE_IMAGES + 1,
+				  NULL, &result);
+	EXPECT_EQ(rc, -EINVAL);
 }
 
 TEST(ImageGen, ValidateSizeAllowsAliasesAndBounds) {
@@ -350,6 +378,13 @@ TEST_F(ImgGenToolTest, RegisterTool) {
 	struct tool_entry *e = tool_lookup(&reg, "img_gen");
 	ASSERT_NE(e, nullptr);
 	EXPECT_STREQ(e->desc.name, "img_gen");
+	EXPECT_EQ(strstr(e->desc.description, "auto"), nullptr);
+	EXPECT_EQ(strstr(e->desc.input_schema, "auto"), nullptr);
+	EXPECT_NE(strstr(e->desc.input_schema, "\"default\":\"2k\""),
+		  nullptr);
+	EXPECT_NE(strstr(e->desc.input_schema, "\"reference_images\""),
+		  nullptr);
+	EXPECT_NE(strstr(e->desc.input_schema, "\"maxItems\":10"), nullptr);
 }
 
 TEST_F(ImgGenToolTest, ExecMissingPrompt) {
@@ -380,6 +415,79 @@ TEST_F(ImgGenToolTest, ExecInvalidSize) {
 	EXPECT_NE(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(strstr(result.text.data, "invalid size"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecRejectsAutoSize) {
+	img_gen_init(&reg, NULL, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"a cat\",\"size\":\"auto\"}", &result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "invalid size"), nullptr);
+	EXPECT_EQ(strstr(result.text.data, "auto"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecRejectsCustomSizeBelowPublic2kRange) {
+	struct model image_model = {};
+	snprintf(image_model.provider, sizeof(image_model.provider), "openai");
+	snprintf(image_model.model_id, sizeof(image_model.model_id),
+		 "gpt-image-2");
+	img_gen_init(&reg, &image_model, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"a cat\",\"size\":\"1024x1024\"}",
+		&result);
+	EXPECT_NE(rc, 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "2560x1440"), nullptr);
+	EXPECT_NE(strstr(result.text.data, "4096x4096"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecRejectsSingularAndPluralReferencesTogether) {
+	img_gen_init(&reg, NULL, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"combine them\","
+		"\"reference_image\":\"one.png\","
+		"\"reference_images\":[\"two.png\"]}", &result);
+	EXPECT_EQ(rc, -EINVAL);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "not both"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecRejectsMoreThanTenReferences) {
+	img_gen_init(&reg, NULL, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"combine them\",\"reference_images\":["
+		"\"1.png\",\"2.png\",\"3.png\",\"4.png\",\"5.png\","
+		"\"6.png\",\"7.png\",\"8.png\",\"9.png\",\"10.png\","
+		"\"11.png\"]}", &result);
+	EXPECT_EQ(rc, -EINVAL);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "at most 10"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(ImgGenToolTest, ExecRejectsInvalidReferenceArrayItem) {
+	img_gen_init(&reg, NULL, NULL);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "img_gen",
+		"{\"prompt\":\"combine them\","
+		"\"reference_images\":[\"one.png\",42]}", &result);
+	EXPECT_EQ(rc, -EINVAL);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "non-empty file path"), nullptr);
 	tool_result_cleanup(&result);
 }
 
