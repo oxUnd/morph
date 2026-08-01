@@ -766,13 +766,14 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		? opts->timeout_seconds
 		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
 
-	char *b64 = image_encode_base64(image_path, max_dim);
-	if (!b64) {
+	struct image_encoded encoded = {0};
+	int encode_rc = image_encode_base64(image_path, max_dim, &encoded);
+	if (encode_rc < 0) {
 		log_err("llm_chat_with_image: failed to encode image: %s",
 			image_path);
 		model_set_last_error(self, "failed to read or encode image: %s",
 				     image_path);
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		MORPH_RETURN(encode_rc);
 	}
 
 	cJSON *root = cJSON_CreateObject();
@@ -780,14 +781,14 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!root || !messages) {
 		cJSON_Delete(root);
 		cJSON_Delete(messages);
-		free(b64);
+		image_encoded_cleanup(&encoded);
 		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(root, "model", self->model_id);
 	cJSON_AddItemToObject(root, "messages", messages);
 	if (add_system_message(messages, system_prompt) < 0) {
 		cJSON_Delete(root);
-		free(b64);
+		image_encoded_cleanup(&encoded);
 		return -ENOMEM;
 	}
 
@@ -803,7 +804,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		cJSON_Delete(image);
 		cJSON_Delete(image_url);
 		cJSON_Delete(root);
-		free(b64);
+		image_encoded_cleanup(&encoded);
 		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(user, "role", "user");
@@ -812,15 +813,17 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	cJSON_AddStringToObject(text, "text", prompt);
 	cJSON_AddItemToArray(content, text);
 
-	size_t uri_len = strlen("data:image/png;base64,") + strlen(b64) + 1;
+	size_t uri_len = strlen("data:;base64,") +
+		strlen(encoded.mime_type) + strlen(encoded.base64) + 1;
 	char *data_uri = arena_alloc(arena, uri_len);
 	if (!data_uri) {
 		cJSON_Delete(root);
-		free(b64);
+		image_encoded_cleanup(&encoded);
 		return -ENOMEM;
 	}
-	snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
-	free(b64);
+	snprintf(data_uri, uri_len, "data:%s;base64,%s",
+		 encoded.mime_type, encoded.base64);
+	image_encoded_cleanup(&encoded);
 
 	cJSON_AddStringToObject(image, "type", "image_url");
 	cJSON_AddStringToObject(image_url, "url", data_uri);

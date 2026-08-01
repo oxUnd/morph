@@ -1,5 +1,6 @@
 #include "image_util.h"
 #include "base64.h"
+#include "buf.h"
 #include "error.h"
 #include <errno.h>
 #include <limits.h>
@@ -21,6 +22,48 @@
 
 #define IMAGE_GEN_MIN_PIXELS (2560LL * 1440LL)
 #define IMAGE_GEN_MAX_PIXELS (4096LL * 4096LL)
+#define IMAGE_JPEG_QUALITY 88
+
+enum image_encode_format {
+	IMAGE_ENCODE_PNG,
+	IMAGE_ENCODE_JPEG,
+	IMAGE_ENCODE_OTHER,
+};
+
+struct image_encode_sink {
+	morph_buf_t buf;
+	int rc;
+};
+
+static enum image_encode_format image_encode_detect_format(const char *path)
+{
+	unsigned char header[8] = {0};
+	FILE *file;
+	size_t read_len;
+
+	file = fopen(path, "rb");
+	if (!file)
+		return IMAGE_ENCODE_OTHER;
+	read_len = fread(header, 1, sizeof(header), file);
+	fclose(file);
+	if (read_len >= 8 &&
+	    memcmp(header, "\x89PNG\r\n\x1a\n", sizeof(header)) == 0)
+		return IMAGE_ENCODE_PNG;
+	if (read_len >= 3 && header[0] == 0xff && header[1] == 0xd8 &&
+	    header[2] == 0xff)
+		return IMAGE_ENCODE_JPEG;
+	return IMAGE_ENCODE_OTHER;
+}
+
+static void image_encode_sink_write(void *context, void *data, int size)
+{
+	struct image_encode_sink *sink = context;
+
+	if (!sink || sink->rc != 0 || !data || size <= 0)
+		return;
+	sink->rc = morph_buf_append(&sink->buf, (const char *)data,
+				    (size_t)size);
+}
 
 static const char *image_out_ext(const char *path)
 {
@@ -51,56 +94,123 @@ static int image_write_by_ext(const char *path, const char *ext, int w, int h,
 	return stbi_write_png(path, w, h, ch, data, w * ch);
 }
 
-char *image_encode_base64(const char *path, int max_dim)
+void image_encoded_cleanup(struct image_encoded *encoded)
 {
-	if (!path || max_dim < 1)
-		return NULL;
+	if (!encoded)
+		return;
+	free(encoded->base64);
+	encoded->base64 = NULL;
+	encoded->mime_type = NULL;
+}
 
-	int w, h, ch;
-	unsigned char *pixels = stbi_load(path, &w, &h, &ch, 4);
-	if (!pixels)
-		return NULL;
+int image_encode_base64(const char *path, int max_dim,
+			struct image_encoded *encoded)
+{
+	struct image_encode_sink sink;
+	enum image_encode_format format;
+	unsigned char *pixels = NULL;
+	unsigned char *resized = NULL;
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	int output_channels;
+	int resized_width;
+	int resized_height;
+	int write_ok;
+	int rc;
 
-	int rw = w, rh = h;
-	unsigned char *resized = pixels;
-
-	if (w > max_dim || h > max_dim) {
-		double scale = (w > h) ? (double)max_dim / w : (double)max_dim / h;
-		rw = (int)(w * scale);
-		rh = (int)(h * scale);
-		if (rw < 1) rw = 1;
-		if (rh < 1) rh = 1;
-
-		resized = malloc((size_t)rw * (size_t)rh * 4);
-		if (!resized) {
-			stbi_image_free(pixels);
-			return NULL;
-		}
-
-		for (int y = 0; y < rh; y++) {
-			for (int x = 0; x < rw; x++) {
-				int sx = x * w / rw;
-				int sy = y * h / rh;
-				memcpy(resized + (y * rw + x) * 4,
-				       pixels + (sy * w + sx) * 4, 4);
-			}
-		}
-
-		stbi_image_free(pixels);
+	if (!path || max_dim < 1 || !encoded)
+		MORPH_RETURN(-EINVAL);
+	memset(encoded, 0, sizeof(*encoded));
+	if (!stbi_info(path, &width, &height, &channels) ||
+	    width <= 0 || height <= 0)
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	format = image_encode_detect_format(path);
+	if (width <= max_dim && height <= max_dim &&
+	    format != IMAGE_ENCODE_OTHER) {
+		encoded->base64 = base64_encode_file(path);
+		if (!encoded->base64)
+			MORPH_RETURN(-EIO);
+		encoded->mime_type = format == IMAGE_ENCODE_JPEG
+			? "image/jpeg" : "image/png";
+		return 0;
 	}
 
-	int png_len = 0;
-	unsigned char *png = stbi_write_png_to_mem(resized, 0, rw, rh, 4, &png_len);
+	output_channels = format == IMAGE_ENCODE_JPEG ? 3 : channels;
+	if (output_channels < 1 || output_channels > 4)
+		output_channels = 4;
+	pixels = stbi_load(path, &width, &height, &channels, output_channels);
+	if (!pixels)
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	resized_width = width;
+	resized_height = height;
+	resized = pixels;
+	if (width > max_dim || height > max_dim) {
+		double scale = width > height
+			? (double)max_dim / (double)width
+			: (double)max_dim / (double)height;
 
+		resized_width = (int)((double)width * scale);
+		resized_height = (int)((double)height * scale);
+		if (resized_width < 1)
+			resized_width = 1;
+		if (resized_height < 1)
+			resized_height = 1;
+		resized = malloc((size_t)resized_width *
+				 (size_t)resized_height * (size_t)output_channels);
+		if (!resized) {
+			stbi_image_free(pixels);
+			MORPH_RETURN(-ENOMEM);
+		}
+		if (!stbir_resize_uint8_linear(
+				pixels, width, height, 0, resized,
+				resized_width, resized_height, 0,
+				(stbir_pixel_layout)output_channels)) {
+			free(resized);
+			stbi_image_free(pixels);
+			MORPH_RETURN(MORPH_ERR_PROCESSING);
+		}
+	}
+
+	memset(&sink, 0, sizeof(sink));
+	rc = morph_buf_init(&sink.buf,
+			    (size_t)resized_width * (size_t)resized_height);
+	if (rc != 0) {
+		if (resized != pixels)
+			free(resized);
+		stbi_image_free(pixels);
+		return rc;
+	}
+	if (format == IMAGE_ENCODE_JPEG) {
+		write_ok = stbi_write_jpg_to_func(
+			image_encode_sink_write, &sink, resized_width,
+			resized_height, output_channels, resized,
+			IMAGE_JPEG_QUALITY);
+		encoded->mime_type = "image/jpeg";
+	} else {
+		write_ok = stbi_write_png_to_func(
+			image_encode_sink_write, &sink, resized_width,
+			resized_height, output_channels, resized,
+			resized_width * output_channels);
+		encoded->mime_type = "image/png";
+	}
 	if (resized != pixels)
 		free(resized);
-
-	if (!png || png_len <= 0)
-		return NULL;
-
-	char *b64 = base64_encode(png, (size_t)png_len);
-	free(png);
-	return b64;
+	stbi_image_free(pixels);
+	if (!write_ok || sink.rc != 0 || sink.buf.len == 0) {
+		rc = sink.rc != 0 ? sink.rc : MORPH_ERR_PROCESSING;
+		morph_buf_cleanup(&sink.buf);
+		encoded->mime_type = NULL;
+		MORPH_RETURN(rc);
+	}
+	encoded->base64 = base64_encode(
+		(const unsigned char *)sink.buf.data, sink.buf.len);
+	morph_buf_cleanup(&sink.buf);
+	if (!encoded->base64) {
+		encoded->mime_type = NULL;
+		MORPH_RETURN(-ENOMEM);
+	}
+	return 0;
 }
 
 int image_probe_size(const char *path, int *width, int *height)

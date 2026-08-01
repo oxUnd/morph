@@ -18,6 +18,7 @@
 #include "util/error.h"
 #include "util/image_util.h"
 #include "util/base64.h"
+#include "stb_image.h"
 #include "stb_image_write.h"
 #include <string.h>
 #include <stdlib.h>
@@ -107,6 +108,22 @@ static int create_solid_png(const char *path, int w, int h)
 		pixels[i * 4 + 3] = 0xFF;
 	}
 	int rc = stbi_write_png(path, w, h, 4, pixels, w * 4) ? 0 : -1;
+	free(pixels);
+	return rc;
+}
+
+static int create_solid_jpeg(const char *path, int w, int h)
+{
+	unsigned char *pixels = (unsigned char *)calloc(
+		(size_t)w * (size_t)h * 3, 1);
+	if (!pixels)
+		return -1;
+	for (int i = 0; i < w * h; i++) {
+		pixels[i * 3 + 0] = 0x40;
+		pixels[i * 3 + 1] = 0x80;
+		pixels[i * 3 + 2] = 0xC0;
+	}
+	int rc = stbi_write_jpg(path, w, h, 3, pixels, 90) ? 0 : -1;
 	free(pixels);
 	return rc;
 }
@@ -269,6 +286,96 @@ TEST(ImageGen, DecodesBase64Payloads) {
 	free(decoded);
 	EXPECT_EQ(base64_decode("bad", &decoded_len), nullptr);
 	EXPECT_EQ(decoded_len, 0);
+}
+
+TEST(ImageEncode, PreservesSmallPngWithoutTranscoding) {
+	const char *path = "/tmp/morph_encode_small.png";
+	struct image_encoded encoded = {};
+	size_t decoded_len = 0;
+
+	ASSERT_EQ(create_solid_png(path, 64, 32), 0);
+	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_NE(encoded.base64, nullptr);
+	EXPECT_STREQ(encoded.mime_type, "image/png");
+	char *original = base64_encode_file(path);
+	ASSERT_NE(original, nullptr);
+	EXPECT_STREQ(encoded.base64, original);
+	free(original);
+	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	ASSERT_NE(decoded, nullptr);
+	ASSERT_GE(decoded_len, 8u);
+	EXPECT_EQ(memcmp(decoded, "\x89PNG\r\n\x1a\n", 8), 0);
+	free(decoded);
+	image_encoded_cleanup(&encoded);
+	remove(path);
+}
+
+TEST(ImageEncode, PreservesSmallJpegWithoutTranscoding) {
+	const char *path = "/tmp/morph_encode_small.jpg";
+	struct image_encoded encoded = {};
+	size_t decoded_len = 0;
+
+	ASSERT_EQ(create_solid_jpeg(path, 64, 32), 0);
+	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	ASSERT_NE(encoded.base64, nullptr);
+	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
+	char *original = base64_encode_file(path);
+	ASSERT_NE(original, nullptr);
+	EXPECT_STREQ(encoded.base64, original);
+	free(original);
+	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	ASSERT_NE(decoded, nullptr);
+	ASSERT_GE(decoded_len, 3u);
+	EXPECT_EQ(decoded[0], 0xff);
+	EXPECT_EQ(decoded[1], 0xd8);
+	EXPECT_EQ(decoded[2], 0xff);
+	free(decoded);
+	image_encoded_cleanup(&encoded);
+	remove(path);
+}
+
+TEST(ImageEncode, ResizesJpegAndKeepsJpegMime) {
+	const char *path = "/tmp/morph_encode_large.jpg";
+	struct image_encoded encoded = {};
+	size_t decoded_len = 0;
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+
+	ASSERT_EQ(create_solid_jpeg(path, 800, 400), 0);
+	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	EXPECT_STREQ(encoded.mime_type, "image/jpeg");
+	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	ASSERT_NE(decoded, nullptr);
+	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
+					  &width, &height, &channels));
+	EXPECT_EQ(width, 360);
+	EXPECT_EQ(height, 180);
+	free(decoded);
+	image_encoded_cleanup(&encoded);
+	remove(path);
+}
+
+TEST(ImageEncode, ResizesPngAndKeepsPngMime) {
+	const char *path = "/tmp/morph_encode_large.png";
+	struct image_encoded encoded = {};
+	size_t decoded_len = 0;
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+
+	ASSERT_EQ(create_solid_png(path, 800, 400), 0);
+	ASSERT_EQ(image_encode_base64(path, 360, &encoded), 0);
+	EXPECT_STREQ(encoded.mime_type, "image/png");
+	unsigned char *decoded = base64_decode(encoded.base64, &decoded_len);
+	ASSERT_NE(decoded, nullptr);
+	ASSERT_TRUE(stbi_info_from_memory(decoded, (int)decoded_len,
+					  &width, &height, &channels));
+	EXPECT_EQ(width, 360);
+	EXPECT_EQ(height, 180);
+	free(decoded);
+	image_encoded_cleanup(&encoded);
+	remove(path);
 }
 
 TEST(ImageGen, NormalizeReferenceSizeKeepsInRangeDimensions) {

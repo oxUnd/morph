@@ -148,16 +148,20 @@ int video_gen_create(struct model *self, const char *prompt,
 	for (int i = 0; i < num_images; i++) {
 		if (!image_paths || !image_paths[i] || !image_paths[i][0])
 			continue;
-		char *b64 = image_encode_base64(image_paths[i], 1024);
-		if (!b64) {
+		struct image_encoded encoded = {0};
+		int encode_rc = image_encode_base64(
+			image_paths[i], 1024, &encoded);
+		if (encode_rc < 0) {
 			log_warn("video_gen: failed to encode image: %s", image_paths[i]);
 			continue;
 		}
-		size_t uri_len = 22 + strlen(b64) + 1;
+		size_t uri_len = strlen("data:;base64,") +
+			strlen(encoded.mime_type) + strlen(encoded.base64) + 1;
 		char *data_uri = arena_alloc(arena, uri_len);
 		if (data_uri) {
-			snprintf(data_uri, uri_len, "data:image/png;base64,%s", b64);
-cJSON *img_item = cJSON_CreateObject();
+			snprintf(data_uri, uri_len, "data:%s;base64,%s",
+				 encoded.mime_type, encoded.base64);
+			cJSON *img_item = cJSON_CreateObject();
 			cJSON_AddStringToObject(img_item, "type", "image_url");
 			cJSON_AddStringToObject(img_item, "role", "first_frame");
 			cJSON *url_obj = cJSON_CreateObject();
@@ -165,7 +169,7 @@ cJSON *img_item = cJSON_CreateObject();
 			cJSON_AddItemToObject(img_item, "image_url", url_obj);
 			cJSON_AddItemToArray(content_arr, img_item);
 		}
-		free(b64);
+		image_encoded_cleanup(&encoded);
 	}
 
 	for (int i = 0; i < num_videos; i++) {

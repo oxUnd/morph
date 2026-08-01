@@ -7,7 +7,14 @@ extern "C" {
 
 #include <stddef.h>
 
-char *image_encode_base64(const char *path, int max_dim);
+struct image_encoded {
+	char *base64;
+	const char *mime_type;
+};
+
+int image_encode_base64(const char *path, int max_dim,
+			struct image_encoded *encoded);
+void image_encoded_cleanup(struct image_encoded *encoded);
 int image_probe_size(const char *path, int *width, int *height);
 int image_resize_file_exact(const char *path, int width, int height);
 int image_gen_normalize_reference_size(int src_w, int src_h,

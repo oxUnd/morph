@@ -109,29 +109,34 @@ static int volcengine_execute(struct model *model,
 			MORPH_RETURN(-ENOMEM);
 		}
 		for (int i = 0; i < request->reference_image_count; i++) {
-			char *b64 = image_encode_base64(
-				request->reference_images[i], 2048);
+			struct image_encoded encoded = {0};
 			cJSON *item;
 			char *uri;
 			size_t uri_len;
+			int encode_rc;
 
-			if (!b64) {
+			encode_rc = image_encode_base64(
+				request->reference_images[i], 2048, &encoded);
+			if (encode_rc < 0) {
 				cJSON_Delete(images);
 				cJSON_Delete(body);
 				arena_destroy(arena);
-				MORPH_RETURN(MORPH_ERR_FORMAT);
+				MORPH_RETURN(encode_rc);
 			}
-			uri_len = strlen(b64) + 23;
+			uri_len = strlen("data:;base64,") +
+				strlen(encoded.mime_type) +
+				strlen(encoded.base64) + 1;
 			uri = arena_alloc(arena, uri_len);
 			if (!uri) {
-				free(b64);
+				image_encoded_cleanup(&encoded);
 				cJSON_Delete(images);
 				cJSON_Delete(body);
 				arena_destroy(arena);
 				MORPH_RETURN(-ENOMEM);
 			}
-			snprintf(uri, uri_len, "data:image/png;base64,%s", b64);
-			free(b64);
+			snprintf(uri, uri_len, "data:%s;base64,%s",
+				 encoded.mime_type, encoded.base64);
+			image_encoded_cleanup(&encoded);
 			item = cJSON_CreateString(uri);
 			if (!item || !cJSON_AddItemToArray(images, item)) {
 				cJSON_Delete(item);
