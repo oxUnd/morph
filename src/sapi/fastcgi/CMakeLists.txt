@@ -75,7 +75,6 @@ set(_MORPH_LIBS
     morph-session
     morph-credits
     morph-http
-    morph-toml
     morph-config
     morph-db
     morph-event

@@ -1,7 +1,7 @@
 #ifndef MORPH_RUNTIME_MCP_H
 #define MORPH_RUNTIME_MCP_H
 
-#include "config.h"
+#include "config/config.h"
 #include "event/event.h"
 #include "mcp/mcp.h"
 

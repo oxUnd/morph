@@ -541,7 +541,7 @@ LLM 调用前:
 | HTTP / SSE | libcurl（系统库） | ✓ | 工业级 |
 | TLS | libcurl 内置（OpenSSL 或 GnuTLS） | ✓ | — |
 | JSON | cJSON | ✓ | 单文件嵌入（vendor/） |
-| TOML | toml（tomlc99 fork） | ✓ | 单文件嵌入（vendor/），需 `-include vendor_toml_compat.h` |
+| TOML | tomlc17 | ✓ | 单文件嵌入（vendor/），配置由内置 schema 校验 |
 | Markdown | cmark-gfm 0.29.0.gfm.13 | ✓ | 由 `fronts/morph-markdown` FetchContent 拉取 |
 | Markdown 渲染 | MorphMarkdown Kitty SDK | ✓ | `fronts/morph-markdown/sdk/kitty/morph-markdown/` |
 | LaTeX 渲染 | vendor/mathjax-c + Kitty graphics protocol | ✓ | 依赖 freetype2 / harfbuzz |
@@ -957,11 +957,11 @@ morph/
 ├── src/
 │   ├── CMakeLists.txt
 │   ├── main.c
-│   ├── config.c
-│   ├── config.h
+│   ├── config/
+│   │   ├── config.c / config.h
+│   │   └── schema.c
 │   ├── session.c
 │   ├── session.h
-│   ├── vendor_toml_compat.h
 │   ├── cli/                    # CLI core/init/run/output/events + commands/*
 │   ├── event/                  # 统一事件系统
 │   ├── render/

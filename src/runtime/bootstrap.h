@@ -6,7 +6,7 @@
 #include "agent/tool_context.h"
 #include "agent/tools/img_annotate.h"
 #include "agent/tools/scheduled_tasks.h"
-#include "config.h"
+#include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
 #include "models/llm.h"

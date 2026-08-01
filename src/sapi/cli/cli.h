@@ -1,7 +1,7 @@
 #ifndef CLI_H
 #define CLI_H
 
-#include "config.h"
+#include "config/config.h"
 #include "runtime/runtime.h"
 #include "util/buf.h"
 #include "util/spin.h"

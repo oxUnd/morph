@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
-#include "config.h"
+#include "config/config.h"
 #include "util/file.h"
+#include "util/error.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -84,7 +85,7 @@ model = "gpt-4o"
 api_base = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
 max_tokens = 2048
-retry_count = 99
+retry_count = 10
 
 [model.image]
 provider = "openai"
@@ -282,8 +283,74 @@ TEST(ConfigValidationTest, ReportsTomlLine)
 	struct config_validation_error error = {};
 
 	EXPECT_LT(config_validate_text("[general]\nlog_level = \"unterminated\n", &error), 0);
-	EXPECT_EQ(error.line, 2);
-	EXPECT_NE(std::string(error.message).find("line 2"), std::string::npos);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_SYNTAX);
+	EXPECT_EQ(error.line, 3);
+	EXPECT_NE(std::string(error.message).find("line 3"), std::string::npos);
+}
+
+TEST(ConfigValidationTest, RejectsUnknownKeys)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text("[general]\nlog_levle = \"info\"\n",
+		&error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_UNKNOWN_KEY);
+	EXPECT_STREQ(error.path, "general.log_levle");
+}
+
+TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text("[react]\nmax_iterations = \"ten\"\n",
+		&error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_TYPE);
+	EXPECT_EQ(config_validate_text("[model.text]\nretry_count = 11\n",
+		&error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_RANGE);
+}
+
+TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text(
+		"[context]\ncompress_target_ratio = 0.9\n", &error),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
+	EXPECT_STREQ(error.path, "context.compress_target_ratio");
+	EXPECT_EQ(config_validate_text(
+		"[context]\nsummarize_threshold_ratio = 0.4\n", &error),
+		MORPH_ERR_CONFIG);
+}
+
+TEST(ConfigValidationTest, ValidatesMcpRequirements)
+{
+	struct config_validation_error error = {};
+	const char *invalid =
+		"[[mcp.servers]]\nname = \"remote\"\ntransport = \"http\"\n";
+	const char *valid =
+		"[[mcp.servers]]\nname = \"remote\"\ntransport = \"http\"\n"
+		"url = \"https://example.test/mcp\"\n"
+		"env = { TOKEN = \"secret\" }\n";
+
+	EXPECT_EQ(config_validate_text(invalid, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_REQUIRED);
+	EXPECT_STREQ(error.path, "mcp.servers[].url");
+	EXPECT_EQ(config_validate_text(valid, &error), 0);
+}
+
+TEST_F(ConfigTest, RejectsInvalidExistingFile)
+{
+	const char *toml = "[general]\nlog_levle = \"info\"\n";
+	struct config_validation_error error = {};
+	struct config cfg;
+
+	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	EXPECT_EQ(config_validate_file(config_path, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_UNKNOWN_KEY);
+	EXPECT_STREQ(error.path, "general.log_levle");
+	EXPECT_EQ(config_load(&cfg, config_path), MORPH_ERR_CONFIG);
 }
 
 TEST(ConfigValidationTest, DescribesStableSemanticPaths)

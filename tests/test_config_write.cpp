@@ -142,7 +142,25 @@ TEST_F(ConfigWriteTest, RejectsInvalidToml)
 
 	EXPECT_EQ(rc, MORPH_ERR_PARSE);
 	EXPECT_EQ(state.calls, 0);
-	EXPECT_NE(out.find("invalid TOML"), std::string::npos);
+	EXPECT_NE(out.find("invalid configuration"), std::string::npos);
+}
+
+TEST_F(ConfigWriteTest, RejectsSemanticallyInvalidConfigBeforeApproval)
+{
+	struct approval_state state = { TOOL_OP_ALLOW, 0, "" };
+	tool_context_set_operation_approval(tctx, approval_cb, &state);
+	ASSERT_EQ(config_write_init(&reg, tctx, config_path), 0);
+
+	const char *toml = "[react]\nmax_iterations = \"many\"\n";
+	std::string args = std::string("{\"reason\":\"bad config\",\"content\":")
+		+ json_escape(toml) + "}";
+	int rc = 0;
+	std::string out = exec_config_write(&reg, args, &rc);
+
+	EXPECT_EQ(rc, MORPH_ERR_CONFIG);
+	EXPECT_EQ(state.calls, 0);
+	EXPECT_EQ(access(config_path, F_OK), -1);
+	EXPECT_NE(out.find("react.max_iterations"), std::string::npos);
 }
 
 TEST_F(ConfigWriteTest, DeniedApprovalDoesNotWrite)

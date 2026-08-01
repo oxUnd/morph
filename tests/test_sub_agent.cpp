@@ -5,7 +5,7 @@
 #include "agent/sub_agent.h"
 #include "agent/context.h"
 #include "models/llm.h"
-#include "config.h"
+#include "config/config.h"
 #include "util/file.h"
 #include "cJSON.h"
 #include <string.h>

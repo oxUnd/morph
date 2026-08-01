@@ -76,8 +76,13 @@ static int runtime_load_config(struct runtime *runtime)
 	if (!expanded)
 		return -ENOMEM;
 	strncpy(ctx->config_path, expanded, sizeof(ctx->config_path) - 1);
-	if (file_exists(expanded))
-		(void)config_load(&ctx->config, expanded);
+	if (file_exists(expanded)) {
+		int rc = config_load(&ctx->config, expanded);
+		if (rc != 0) {
+			free(expanded);
+			return rc;
+		}
+	}
 	free(expanded);
 	return 0;
 }

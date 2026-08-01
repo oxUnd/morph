@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include "config.h"
+#include "config/config.h"
 #include "agent/react.h"
 #include "agent/tool.h"
 #include "agent/context.h"

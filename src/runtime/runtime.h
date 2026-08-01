@@ -8,7 +8,7 @@ extern "C" {
 #include "agent/react.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "config.h"
+#include "config/config.h"
 #include "event/event.h"
 #include "models/llm.h"
 #include "mcp/mcp.h"

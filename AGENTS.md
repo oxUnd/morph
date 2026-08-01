@@ -26,7 +26,7 @@
 ## Library Dependency Chain
 All libraries are static. Derived from actual CMake link targets:
 ```
-morph-toml (vendor/toml.c — compiled with -include vendor_toml_compat.h to suppress warnings)
+morph-toml (vendor/tomlc17.c)
   ↓
 morph-util (arena, log, file, cJSON, base64, utf8, spin) ← base lib, cJSON compiled in
   ↓
@@ -163,7 +163,7 @@ These differ from typical C defaults and must be followed:
 - Memory testing: Valgrind + ASan + UBSan expected clean
 
 ## Gotchas
-- `vendor/toml.c` requires `-include vendor_toml_compat.h` to compile without errors — handled in CMake
+- Configuration is parsed with vendored tomlc17 and checked against the embedded schema in `src/config/schema.c`
 - `img_resize.c` and `img_convert.c` need extensive warning suppressions for stb headers (already in CMake)
 - `config.toml` is gitignored (contains API keys); use `config.toml.example` as template
 - `vendor/md4c/` is gitignored (fetched at build time)

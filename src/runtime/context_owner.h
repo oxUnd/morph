@@ -5,7 +5,7 @@
 #include "agent/react.h"
 #include "agent/sub_agent.h"
 #include "agent/tool_context.h"
-#include "config.h"
+#include "config/config.h"
 #include "db/database.h"
 #include "mcp/mcp.h"
 #include "models/llm.h"

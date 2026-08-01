@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include "config.h"
+#include "config/config.h"
 #include "db/database.h"
 #include <stdint.h>
 

@@ -3,6 +3,7 @@
 extern "C" {
 #include "event/event.h"
 #include "runtime/runtime.h"
+#include "util/error.h"
 }
 
 #include <cstdio>
@@ -38,6 +39,24 @@ protected:
 		rmdir(directory);
 	}
 };
+
+TEST_F(RuntimeLifecycleTest, RejectsInvalidConfigurationAtStartup)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	std::string config_path = std::string(directory) + "/config.toml";
+	FILE *config = std::fopen(config_path.c_str(), "w");
+
+	ASSERT_NE(config, nullptr);
+	std::fprintf(config, "[react]\nmax_iterations = \"ten\"\n");
+	ASSERT_EQ(std::fclose(config), 0);
+	options.config_path = config_path.c_str();
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	EXPECT_EQ(runtime_open(&options, &instance), MORPH_ERR_CONFIG);
+	EXPECT_EQ(instance, nullptr);
+}
 
 TEST_F(RuntimeLifecycleTest, OwnsSessionAndServices)
 {

@@ -7,7 +7,7 @@ extern "C" {
 
 #include "agent/tool.h"
 #include "agent/tool_context.h"
-#include "config.h"
+#include "config/config.h"
 
 int dynamic_tools_init(struct tool_registry *reg, struct tool_context *tctx,
 		       const struct config_dynamic_tools *cfg,

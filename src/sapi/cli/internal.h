@@ -41,7 +41,7 @@
 #include "agent/memory.h"
 #include "agent/turn.h"
 #include "ext/install.h"
-#include "config.h"
+#include "config/config.h"
 #include "models/image_gen.h"
 #include "models/video_gen.h"
 #include "morph_markdown_kitty.h"

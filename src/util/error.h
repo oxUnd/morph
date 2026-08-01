@@ -26,6 +26,7 @@ enum morph_error {
 	MORPH_ERR_LOAD            = MORPH_ERR_BASE - 11,
 	MORPH_ERR_LLM             = MORPH_ERR_BASE - 12,
 	MORPH_ERR_REACT_MAX_ITERATIONS = MORPH_ERR_BASE - 13,
+	MORPH_ERR_CONFIG          = MORPH_ERR_BASE - 14,
 };
 
 const char *morph_strerror(morph_err_t err);

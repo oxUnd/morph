@@ -3,8 +3,8 @@
 #include "util/file.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "config/config.h"
 #include "cJSON.h"
-#include "toml.h"
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -45,25 +45,25 @@ static int path_equal_config(const char *path, const char *config_path)
 	return same;
 }
 
-static int validate_toml_content(const char *content, char *errbuf,
-				 size_t errbuf_size)
+static int validate_config_content(const char *content, char *errbuf,
+				   size_t errbuf_size)
 {
-	char *copy;
-	toml_table_t *tbl;
+	struct config_validation_error error = {0};
+	int rc;
 
 	if (!content)
 		MORPH_RETURN(-EINVAL);
-	copy = strdup(content);
-	if (!copy)
-		MORPH_RETURN(-ENOMEM);
 	if (errbuf_size > 0)
 		errbuf[0] = '\0';
-	tbl = toml_parse(copy, errbuf, (int)errbuf_size);
-	free(copy);
-	if (!tbl)
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	toml_free(tbl);
-	return 0;
+	rc = config_validate_text(content, &error);
+	if (rc != 0 && errbuf_size > 0) {
+		if (error.path[0])
+			snprintf(errbuf, errbuf_size, "%s: %s",
+				error.path, error.message);
+		else
+			snprintf(errbuf, errbuf_size, "%s", error.message);
+	}
+	return rc;
 }
 
 static int append_toml_string(morph_buf_t *buf, const char *s)
@@ -263,10 +263,10 @@ static int config_write_exec(const char *args_json, struct tool_result *result,
 		rc = rc != 0 ? rc : -EINVAL;
 		goto out;
 	}
-	rc = validate_toml_content(new_content, errbuf, sizeof(errbuf));
+	rc = validate_config_content(new_content, errbuf, sizeof(errbuf));
 	if (rc < 0) {
 		(void)tool_result_errorf(result, "tool_failed",
-					      "invalid TOML: %s", errbuf);
+					      "invalid configuration: %s", errbuf);
 		goto out;
 	}
 	if (ctx->tctx) {
@@ -320,6 +320,36 @@ int config_write_init(struct tool_registry *reg, struct tool_context *tctx,
 		      const char *config_path)
 {
 	struct config_write_context *ctx;
+	struct tool_spec spec = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "config_write",
+		.description =
+			"Write the active Morph config file after user approval and "
+			"schema validation. Use only when the user asks to change "
+			"Morph configuration. Prefer api_key_env over writing API key "
+			"values. Args: path (optional, must be the active config path), "
+			"reason (required), content (complete TOML) or patches (array "
+			"of section/key/value entries).",
+		.input_schema =
+			"{\"type\":\"object\",\"properties\":{"
+			"\"path\":{\"type\":\"string\",\"description\":"
+			"\"Optional config path; must match the active Morph config\"},"
+			"\"reason\":{\"type\":\"string\",\"description\":"
+			"\"Human-readable reason shown for approval\"},"
+			"\"content\":{\"type\":\"string\",\"description\":"
+			"\"Complete TOML content to write\"},"
+			"\"patches\":{\"type\":\"array\",\"description\":"
+			"\"Simple append-only section/key/value patches\","
+			"\"items\":{\"type\":\"object\",\"properties\":{"
+			"\"section\":{\"type\":\"string\"},"
+			"\"key\":{\"type\":\"string\"},"
+			"\"value\":{}},"
+			"\"required\":[\"section\",\"key\",\"value\"]}}},"
+			"\"required\":[\"reason\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = config_write_exec,
+		.user_data_destroy = config_write_context_destroy
+	};
 	int rc;
 
 	if (!reg || !config_path || !config_path[0])
@@ -329,21 +359,8 @@ int config_write_init(struct tool_registry *reg, struct tool_context *tctx,
 		MORPH_RETURN(-ENOMEM);
 	ctx->tctx = tctx;
 	strncpy(ctx->config_path, config_path, sizeof(ctx->config_path) - 1);
-	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "config_write", .description = "Write the active Morph config file after user approval and TOML validation. "
-		"Use only when the user asks to change Morph configuration. "
-		"Prefer api_key_env over writing API key values. "
-		"Args: path (optional, must be the active config path), reason (required), "
-		"content (complete TOML) or patches (array of section/key/value entries).", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"path\":{\"type\":\"string\",\"description\":\"Optional config path; must match the active Morph config\"},"
-		"\"reason\":{\"type\":\"string\",\"description\":\"Human-readable reason shown for approval\"},"
-		"\"content\":{\"type\":\"string\",\"description\":\"Complete TOML content to write\"},"
-		"\"patches\":{\"type\":\"array\",\"description\":\"Simple append-only section/key/value patches\","
-		"\"items\":{\"type\":\"object\",\"properties\":{"
-		"\"section\":{\"type\":\"string\"},"
-		"\"key\":{\"type\":\"string\"},"
-		"\"value\":{}"
-		"},\"required\":[\"section\",\"key\",\"value\"]}}"
-		"},\"required\":[\"reason\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = config_write_exec, .user_data = ctx, .user_data_destroy = config_write_context_destroy });
+	spec.user_data = ctx;
+	rc = tool_register(reg, &spec);
 	if (rc < 0) {
 		free(ctx);
 		return rc;

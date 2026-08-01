@@ -18,7 +18,7 @@
 #include "event/event.h"
 #include "runtime/runtime.h"
 #include "models/llm.h"
-#include "config.h"
+#include "config/config.h"
 #include "credits.h"
 #include "session.h"
 #include "util/error.h"

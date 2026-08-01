@@ -35,9 +35,10 @@
 #include "ext/ext.h"
 #include "ext/manifest.h"
 #include "models/llm.h"
-#include "config.h"
+#include "config/config.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -52,6 +53,7 @@ static struct model      *g_vision_llm = NULL;
 static struct tool_registry g_tools;
 static struct plan_registry g_plans;
 static struct tool_context *g_tctx    = NULL;
+static int g_init_rc = 0;
 
 static void bridge_init_once(void);
 
@@ -69,6 +71,8 @@ static int bridge_memory_session_visible(const char *display_id,
 const char *fcgi_artifact_output_dir(void)
 {
 	pthread_once(&g_once, bridge_init_once);
+	if (g_init_rc != 0)
+		return "/var/lib/morph/output";
 	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
 	if (env && *env)
 		return env;
@@ -79,6 +83,8 @@ const char *fcgi_artifact_output_dir(void)
 const struct config *fcgi_bridge_config(void)
 {
 	pthread_once(&g_once, bridge_init_once);
+	if (g_init_rc != 0)
+		return NULL;
 	return &g_config;
 }
 
@@ -87,6 +93,8 @@ int react_memory_options_for_session(struct memory_options *out)
 	if (!out)
 		return -EINVAL;
 	pthread_once(&g_once, bridge_init_once);
+	if (g_init_rc != 0)
+		return g_init_rc;
 	memset(out, 0, sizeof(*out));
 	out->enabled = g_config.memory.enabled;
 	out->hot_path_enabled = g_config.memory.hot_path_enabled;
@@ -106,15 +114,20 @@ static void bridge_init_once(void)
 	/* MORPH_FCGI_CONFIG env → $HOME/.morph/config.toml */
 	const char *cfg_env = getenv("MORPH_FCGI_CONFIG");
 	if (cfg_env && *cfg_env) {
-		config_load(&g_config, cfg_env);
+		g_init_rc = config_load(&g_config, cfg_env);
 	} else {
 		const char *home = getenv("HOME");
 		if (home) {
 			char path[PATH_MAX];
 			snprintf(path, sizeof(path),
 				 "%s/.morph/config.toml", home);
-			config_load(&g_config, path);
+			g_init_rc = config_load(&g_config, path);
 		}
+	}
+	if (g_init_rc != 0) {
+		fprintf(stderr, "fcgi-bridge: invalid configuration: %s\n",
+			morph_strerror(g_init_rc));
+		return;
 	}
 	if (!g_config.dynamic_tools.mode_explicit) {
 		strncpy(g_config.dynamic_tools.mode, "server",
@@ -382,6 +395,8 @@ react_context_create_for_session(struct session_store *store,
 				 const char *user_id)
 {
 	pthread_once(&g_once, bridge_init_once);
+	if (g_init_rc != 0)
+		return NULL;
 
 	struct guardrail_config gcfg = {
 		.enabled           = g_config.react.guardrail_enabled,

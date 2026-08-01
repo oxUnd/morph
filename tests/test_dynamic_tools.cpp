@@ -2,7 +2,7 @@
 extern "C" {
 #include "agent/tools/dynamic_tools.h"
 #include "agent/tool_context.h"
-#include "config.h"
+#include "config/config.h"
 #include "cJSON.h"
 #include "util/file.h"
 }

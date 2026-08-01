@@ -1,5 +1,5 @@
 add_library(morph-toml STATIC
-	${CMAKE_SOURCE_DIR}/vendor/toml.c
+	${CMAKE_SOURCE_DIR}/vendor/tomlc17.c
 )
 target_include_directories(morph-toml PUBLIC
 	${CMAKE_SOURCE_DIR}/vendor
@@ -14,15 +14,16 @@ target_compile_options(morph-toml PRIVATE
 	-Wno-misleading-indentation
 	-Wno-unused-function
 	-Wno-unused-variable
-)
-set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/toml.c PROPERTIES
-	COMPILE_FLAGS "-include ${CMAKE_CURRENT_SOURCE_DIR}/vendor_toml_compat.h"
+	-Wno-float-conversion
+	-Wno-implicit-int-conversion
 )
 
 add_library(morph-config STATIC
-	config.c
+	config/config.c
+	config/schema.c
 )
 target_include_directories(morph-config PUBLIC
+	${CMAKE_CURRENT_SOURCE_DIR}/config
 	${CMAKE_CURRENT_SOURCE_DIR}
 	${CMAKE_SOURCE_DIR}/src
 )

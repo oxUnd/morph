@@ -2,7 +2,7 @@
 #define MORPH_RUNTIME_OUTPUT_H
 
 #include "agent/react.h"
-#include "config.h"
+#include "config/config.h"
 #include "db/database.h"
 #include "event/event.h"
 

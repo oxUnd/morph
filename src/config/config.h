@@ -297,15 +297,31 @@ struct config {
 	struct config_sub_agents sub_agents;
 };
 
+enum config_validation_code {
+	CONFIG_VALIDATION_NONE = 0,
+	CONFIG_VALIDATION_SYNTAX,
+	CONFIG_VALIDATION_UNKNOWN_KEY,
+	CONFIG_VALIDATION_TYPE,
+	CONFIG_VALIDATION_RANGE,
+	CONFIG_VALIDATION_VALUE,
+	CONFIG_VALIDATION_REQUIRED,
+	CONFIG_VALIDATION_CONFLICT,
+	CONFIG_VALIDATION_LIMIT
+};
+
 struct config_validation_error {
+	enum config_validation_code code;
 	int line;
 	int column;
+	char path[CONFIG_MAX_KEY_LEN];
 	char message[256];
 };
 
 int config_load(struct config *cfg, const char *path);
 int config_load_sub_agents(struct config *cfg, const char *path);
+/* Validate without applying configuration. Returns 0 or a negative error. */
 int config_validate_text(const char *text, struct config_validation_error *error);
+int config_validate_file(const char *path, struct config_validation_error *error);
 /* Returns a malloc-owned semantic inventory as JSON; the caller must free it. */
 char *config_describe_text(const char *text, struct config_validation_error *error);
 void config_set_defaults(struct config *cfg);

@@ -1,57 +1,256 @@
 #include "config.h"
 #include "util/log.h"
 #include "util/file.h"
-#include "toml.h"
+#include "util/error.h"
+#include "tomlc17.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-static cJSON *config_raw_json(toml_raw_t raw, const char **kind)
+typedef toml_datum_t cfg_table_t;
+typedef toml_datum_t cfg_array_t;
+typedef const toml_datum_t *cfg_raw_t;
+
+struct cfg_datum {
+	int ok;
+	union {
+		char *s;
+		int b;
+		int64_t i;
+		double d;
+	} u;
+};
+
+typedef struct cfg_datum cfg_datum_t;
+
+static toml_datum_t *cfg_find(cfg_table_t *table, const char *key)
+{
+	if (!table || table->type != TOML_TABLE || !key)
+		return NULL;
+	for (int i = 0; i < table->u.tab.size; i++) {
+		if (strcmp(table->u.tab.key[i], key) == 0)
+			return &table->u.tab.value[i];
+	}
+	return NULL;
+}
+
+static const toml_datum_t *cfg_find_const(const cfg_table_t *table,
+					   const char *key)
+{
+	return cfg_find((cfg_table_t *)table, key);
+}
+
+static cfg_datum_t cfg_string_in(const cfg_table_t *table, const char *key)
+{
+	cfg_datum_t out = {0};
+	const toml_datum_t *value = cfg_find_const(table, key);
+
+	if (value && value->type == TOML_STRING) {
+		out.u.s = strdup(value->u.s);
+		out.ok = out.u.s != NULL;
+	}
+	return out;
+}
+
+static cfg_datum_t cfg_int_in(const cfg_table_t *table, const char *key)
+{
+	cfg_datum_t out = {0};
+	const toml_datum_t *value = cfg_find_const(table, key);
+
+	if (value && value->type == TOML_INT64) {
+		out.ok = 1;
+		out.u.i = value->u.int64;
+	}
+	return out;
+}
+
+static cfg_datum_t cfg_bool_in(const cfg_table_t *table, const char *key)
+{
+	cfg_datum_t out = {0};
+	const toml_datum_t *value = cfg_find_const(table, key);
+
+	if (value && value->type == TOML_BOOLEAN) {
+		out.ok = 1;
+		out.u.b = value->u.boolean ? 1 : 0;
+	}
+	return out;
+}
+
+static cfg_datum_t cfg_double_in(const cfg_table_t *table, const char *key)
+{
+	cfg_datum_t out = {0};
+	const toml_datum_t *value = cfg_find_const(table, key);
+
+	if (value && (value->type == TOML_FP64 || value->type == TOML_INT64)) {
+		out.ok = 1;
+		out.u.d = value->type == TOML_FP64 ? value->u.fp64 :
+			(double)value->u.int64;
+	}
+	return out;
+}
+
+static cfg_datum_t cfg_string_at(const cfg_array_t *array, int index)
+{
+	cfg_datum_t out = {0};
+
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
+	    array->u.arr.elem[index].type != TOML_STRING)
+		return out;
+	out.u.s = strdup(array->u.arr.elem[index].u.s);
+	out.ok = out.u.s != NULL;
+	return out;
+}
+
+static cfg_table_t *cfg_table_in(const cfg_table_t *table, const char *key)
+{
+	toml_datum_t *value = cfg_find((cfg_table_t *)table, key);
+
+	return value && value->type == TOML_TABLE ? value : NULL;
+}
+
+static cfg_array_t *cfg_array_in(const cfg_table_t *table, const char *key)
+{
+	toml_datum_t *value = cfg_find((cfg_table_t *)table, key);
+
+	return value && value->type == TOML_ARRAY ? value : NULL;
+}
+
+static cfg_table_t *cfg_table_at(cfg_array_t *array, int index)
+{
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
+	    array->u.arr.elem[index].type != TOML_TABLE)
+		return NULL;
+	return &array->u.arr.elem[index];
+}
+
+static cfg_array_t *cfg_array_at(const cfg_array_t *array, int index)
+{
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
+	    array->u.arr.elem[index].type != TOML_ARRAY)
+		return NULL;
+	return (cfg_array_t *)&array->u.arr.elem[index];
+}
+
+static int cfg_array_nelem(const cfg_array_t *array)
+{
+	return array && array->type == TOML_ARRAY ? array->u.arr.size : 0;
+}
+
+static char cfg_array_kind(const cfg_array_t *array)
+{
+	if (!array || array->type != TOML_ARRAY || array->u.arr.size == 0)
+		return 'v';
+	return array->u.arr.elem[0].type == TOML_TABLE ? 't' : 'v';
+}
+
+static const char *cfg_key_in(const cfg_table_t *table, int index)
+{
+	if (!table || table->type != TOML_TABLE || index < 0 ||
+	    index >= table->u.tab.size)
+		return NULL;
+	return table->u.tab.key[index];
+}
+
+static cfg_raw_t cfg_raw_in(const cfg_table_t *table, const char *key)
+{
+	const toml_datum_t *value = cfg_find_const(table, key);
+
+	if (!value || value->type == TOML_TABLE || value->type == TOML_ARRAY)
+		return NULL;
+	return value;
+}
+
+static cfg_raw_t cfg_raw_at(const cfg_array_t *array, int index)
+{
+	if (!array || array->type != TOML_ARRAY || index < 0 ||
+	    index >= array->u.arr.size ||
+	    array->u.arr.elem[index].type == TOML_TABLE ||
+	    array->u.arr.elem[index].type == TOML_ARRAY)
+		return NULL;
+	return &array->u.arr.elem[index];
+}
+
+static int cfg_rtos(cfg_raw_t raw, char **out)
+{
+	if (!raw || raw->type != TOML_STRING || !out)
+		return -EINVAL;
+	*out = strdup(raw->u.s);
+	return *out ? 0 : -ENOMEM;
+}
+
+static int cfg_rtob(cfg_raw_t raw, int *out)
+{
+	if (!raw || raw->type != TOML_BOOLEAN || !out)
+		return -EINVAL;
+	*out = raw->u.boolean ? 1 : 0;
+	return 0;
+}
+
+static int cfg_rtoi(cfg_raw_t raw, int64_t *out)
+{
+	if (!raw || raw->type != TOML_INT64 || !out)
+		return -EINVAL;
+	*out = raw->u.int64;
+	return 0;
+}
+
+static int cfg_rtod(cfg_raw_t raw, double *out)
+{
+	if (!raw || raw->type != TOML_FP64 || !out)
+		return -EINVAL;
+	*out = raw->u.fp64;
+	return 0;
+}
+
+static cJSON *config_raw_json(cfg_raw_t raw, const char **kind)
 {
 	char *str = NULL;
 	int boolean;
 	int64_t integer;
 	double number;
 
-	if (raw && (*raw == '\'' || *raw == '"') && toml_rtos(raw, &str) == 0) {
+	if (cfg_rtos(raw, &str) == 0) {
 		cJSON *item = cJSON_CreateString(str);
 		free(str);
 		*kind = "string";
 		return item;
 	}
-	if (toml_rtob(raw, &boolean) == 0) {
+	if (cfg_rtob(raw, &boolean) == 0) {
 		*kind = "bool";
 		return cJSON_CreateBool(boolean);
 	}
-	if (toml_rtoi(raw, &integer) == 0) {
+	if (cfg_rtoi(raw, &integer) == 0) {
 		*kind = "int";
 		return cJSON_CreateNumber((double)integer);
 	}
-	if (toml_rtod(raw, &number) == 0) {
+	if (cfg_rtod(raw, &number) == 0) {
 		*kind = "double";
 		return cJSON_CreateNumber(number);
 	}
 	*kind = "timestamp";
-	return cJSON_CreateString(raw ? raw : "");
+	return cJSON_CreateString("");
 }
 
-static cJSON *config_array_json(const toml_array_t *array)
+static cJSON *config_array_json(const cfg_array_t *array)
 {
 	cJSON *result = cJSON_CreateArray();
-	int count = toml_array_nelem(array);
+	int count = cfg_array_nelem(array);
 
 	if (!result)
 		return NULL;
 	for (int i = 0; i < count; i++) {
-		toml_raw_t raw = toml_raw_at(array, i);
+		cfg_raw_t raw = cfg_raw_at(array, i);
 		cJSON *item = NULL;
 		if (raw) {
 			const char *kind;
 			item = config_raw_json(raw, &kind);
-		} else if (toml_array_at(array, i)) {
-			item = config_array_json(toml_array_at(array, i));
+		} else if (cfg_array_at(array, i)) {
+			item = config_array_json(cfg_array_at(array, i));
 		}
 		if (!item)
 			item = cJSON_CreateNull();
@@ -60,16 +259,16 @@ static cJSON *config_array_json(const toml_array_t *array)
 	return result;
 }
 
-static char *config_identity_value(const toml_table_t *table, const char *key)
+static char *config_identity_value(const cfg_table_t *table, const char *key)
 {
-	toml_raw_t raw = toml_raw_in(table, key);
+	cfg_raw_t raw = cfg_raw_in(table, key);
 	char *value = NULL;
-	if (!raw || toml_rtos(raw, &value) != 0)
+	if (!raw || cfg_rtos(raw, &value) != 0)
 		return NULL;
 	return value;
 }
 
-static int config_table_identity(const char *path, const toml_table_t *table,
+static int config_table_identity(const char *path, const cfg_table_t *table,
 				 int index, char *out, size_t out_size,
 				 int *stable)
 {
@@ -118,22 +317,22 @@ static int config_add_entry(cJSON *entries, const char *path,
 	return 0;
 }
 
-static int config_describe_table(const toml_table_t *table, const char *prefix,
+static int config_describe_table(const cfg_table_t *table, const char *prefix,
 				 cJSON *entries, int stable)
 {
 	for (int i = 0;; i++) {
-		const char *key = toml_key_in(table, i);
+		const char *key = cfg_key_in(table, i);
 		char path[1024];
-		toml_raw_t raw;
-		toml_array_t *array;
-		toml_table_t *child;
+		cfg_raw_t raw;
+		cfg_array_t *array;
+		cfg_table_t *child;
 		int rc;
 
 		if (!key)
 			break;
 		snprintf(path, sizeof(path), "%s%s%s", prefix,
 			 prefix[0] ? "." : "", key);
-		raw = toml_raw_in(table, key);
+		raw = cfg_raw_in(table, key);
 		if (raw) {
 			const char *kind;
 			cJSON *value = config_raw_json(raw, &kind);
@@ -142,11 +341,11 @@ static int config_describe_table(const toml_table_t *table, const char *prefix,
 				return rc;
 			continue;
 		}
-		array = toml_array_in(table, key);
+		array = cfg_array_in(table, key);
 		if (array) {
-			if (toml_array_kind(array) == 't') {
-				for (int j = 0; j < toml_array_nelem(array); j++) {
-					toml_table_t *item = toml_table_at(array, j);
+			if (cfg_array_kind(array) == 't') {
+				for (int j = 0; j < cfg_array_nelem(array); j++) {
+					cfg_table_t *item = cfg_table_at(array, j);
 					char identity[512] = {0};
 					char item_path[1536];
 					int item_stable;
@@ -169,7 +368,7 @@ static int config_describe_table(const toml_table_t *table, const char *prefix,
 			}
 			continue;
 		}
-		child = toml_table_in(table, key);
+		child = cfg_table_in(table, key);
 		if (child) {
 			rc = config_describe_table(child, path, entries, stable);
 			if (rc != 0)
@@ -181,37 +380,36 @@ static int config_describe_table(const toml_table_t *table, const char *prefix,
 
 char *config_describe_text(const char *text, struct config_validation_error *error)
 {
-	toml_table_t *table;
+	toml_result_t parsed;
+	cfg_table_t *table;
 	cJSON *root = NULL, *entries = NULL;
-	char errbuf[256] = {0};
-	char *copy, *json = NULL;
+	char *json = NULL;
 	int line = 0, rc;
 
 	if (error)
 		memset(error, 0, sizeof(*error));
 	if (!text)
 		return NULL;
-	copy = strdup(text);
-	if (!copy)
-		return NULL;
-	table = toml_parse(copy, errbuf, sizeof(errbuf));
-	free(copy);
-	if (!table) {
-		if (sscanf(errbuf, "line %d:", &line) != 1)
+	parsed = toml_parse(text, (int)strlen(text));
+	if (!parsed.ok) {
+		if (sscanf(parsed.errmsg, "(line %d)", &line) != 1)
 			line = 0;
 		if (error) {
 			error->line = line;
-			strncpy(error->message, errbuf[0] ? errbuf : "invalid TOML",
+			strncpy(error->message, parsed.errmsg[0] ? parsed.errmsg :
+				"invalid TOML",
 				sizeof(error->message) - 1);
 		}
+		toml_free(parsed);
 		return NULL;
 	}
+	table = &parsed.toptab;
 	root = cJSON_CreateObject();
 	entries = cJSON_CreateArray();
 	if (!root || !entries) {
 		cJSON_Delete(root);
 		cJSON_Delete(entries);
-		toml_free(table);
+		toml_free(parsed);
 		return NULL;
 	}
 	cJSON_AddItemToObject(root, "entries", entries);
@@ -219,47 +417,8 @@ char *config_describe_text(const char *text, struct config_validation_error *err
 	if (rc == 0)
 		json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
-	toml_free(table);
+	toml_free(parsed);
 	return json;
-}
-
-int config_validate_text(const char *text, struct config_validation_error *error)
-{
-	toml_table_t *table;
-	char errbuf[256] = {0};
-	char *copy;
-	int line = 0;
-
-	if (error)
-		memset(error, 0, sizeof(*error));
-	if (!text) {
-		if (error)
-			strncpy(error->message, "config text is null",
-				sizeof(error->message) - 1);
-		return -EINVAL;
-	}
-	copy = strdup(text);
-	if (!copy) {
-		if (error)
-			strncpy(error->message, "out of memory",
-				sizeof(error->message) - 1);
-		return -ENOMEM;
-	}
-	table = toml_parse(copy, errbuf, sizeof(errbuf));
-	free(copy);
-	if (table) {
-		toml_free(table);
-		return 0;
-	}
-	if (sscanf(errbuf, "line %d:", &line) != 1)
-		line = 0;
-	if (error) {
-		error->line = line;
-		error->column = 0;
-		strncpy(error->message, errbuf[0] ? errbuf : "invalid TOML",
-			sizeof(error->message) - 1);
-	}
-	return -EINVAL;
 }
 
 void config_set_defaults(struct config *cfg)
@@ -432,39 +591,39 @@ void config_set_defaults(struct config *cfg)
 }
 
 #define CFG_STR(tab, key, buf) do { \
-	toml_datum_t _d = toml_string_in(tab, key); \
+	cfg_datum_t _d = cfg_string_in(tab, key); \
 	if (_d.ok) { strncpy(buf, _d.u.s, sizeof(buf) - 1); free(_d.u.s); } \
 } while (0)
 
 #define CFG_INT(tab, key, var) do { \
-	toml_datum_t _d = toml_int_in(tab, key); \
+	cfg_datum_t _d = cfg_int_in(tab, key); \
 	if (_d.ok) var = (int)_d.u.i; \
 } while (0)
 
 #define CFG_BOOL(tab, key, var) do { \
-	toml_datum_t _d = toml_bool_in(tab, key); \
+	cfg_datum_t _d = cfg_bool_in(tab, key); \
 	if (_d.ok) var = (int)_d.u.b; \
 } while (0)
 
 #define CFG_DBL(tab, key, var) do { \
-	toml_datum_t _d = toml_double_in(tab, key); \
+	cfg_datum_t _d = cfg_double_in(tab, key); \
 	if (_d.ok) var = _d.u.d; \
 } while (0)
 
-static toml_table_t *table_path(toml_table_t *root, const char *path)
+static cfg_table_t *table_path(cfg_table_t *root, const char *path)
 {
 	if (!root || !path || !*path)
 		return root;
 	char buf[256];
 	strncpy(buf, path, sizeof(buf) - 1);
-	toml_table_t *tbl = root;
+	cfg_table_t *tbl = root;
 	char *part = buf;
 	while (part && *part) {
 		char *dot = strchr(part, '.');
 		if (dot)
 			*dot = '\0';
 		if (*part) {
-			tbl = toml_table_in(tbl, part);
+			tbl = cfg_table_in(tbl, part);
 			if (!tbl)
 				return NULL;
 		}
@@ -473,10 +632,10 @@ static toml_table_t *table_path(toml_table_t *root, const char *path)
 	return tbl;
 }
 
-static void load_model_entry(toml_table_t *parent, const char *sub,
+static void load_model_entry(cfg_table_t *parent, const char *sub,
 			     struct config_model_entry *e)
 {
-	toml_table_t *t = parent ? toml_table_in(parent, sub) : NULL;
+	cfg_table_t *t = parent ? cfg_table_in(parent, sub) : NULL;
 	if (!t)
 		return;
 	CFG_STR(t, "provider", e->provider);
@@ -497,7 +656,7 @@ static void load_model_entry(toml_table_t *parent, const char *sub,
 	CFG_INT(t, "poll_timeout_seconds", e->poll_timeout_seconds);
 }
 
-static void load_credit_price(toml_table_t *t, struct config_credit_price *p)
+static void load_credit_price(cfg_table_t *t, struct config_credit_price *p)
 {
 	if (!t || !p)
 		return;
@@ -505,8 +664,8 @@ static void load_credit_price(toml_table_t *t, struct config_credit_price *p)
 	CFG_STR(t, "model", p->model);
 	CFG_STR(t, "kind", p->kind);
 	CFG_DBL(t, "input_per_million", p->input_per_million);
-	toml_datum_t cached_input =
-		toml_double_in(t, "cached_input_per_million");
+	cfg_datum_t cached_input =
+		cfg_double_in(t, "cached_input_per_million");
 	if (cached_input.ok) {
 		p->cached_input_per_million = cached_input.u.d;
 		p->cached_input_price_configured = 1;
@@ -516,10 +675,10 @@ static void load_credit_price(toml_table_t *t, struct config_credit_price *p)
 	CFG_DBL(t, "video_second_per_million", p->video_second_per_million);
 }
 
-static void load_credits_config(toml_table_t *root, struct config_credits *cfg)
+static void load_credits_config(cfg_table_t *root, struct config_credits *cfg)
 {
-	toml_table_t *credits = table_path(root, "credits");
-	toml_array_t *prices;
+	cfg_table_t *credits = table_path(root, "credits");
+	cfg_array_t *prices;
 
 	if (!credits || !cfg)
 		return;
@@ -535,13 +694,13 @@ static void load_credits_config(toml_table_t *root, struct config_credits *cfg)
 	CFG_DBL(credits, "video_second_credit_coef",
 		cfg->video_second_credit_coef);
 
-	prices = toml_array_in(credits, "prices");
+	prices = cfg_array_in(credits, "prices");
 	if (prices) {
-		int count = toml_array_nelem(prices);
+		int count = cfg_array_nelem(prices);
 		if (count > CREDIT_PRICE_MAX)
 			count = CREDIT_PRICE_MAX;
 		for (int i = 0; i < count; i++) {
-			toml_table_t *pt = toml_table_at(prices, i);
+			cfg_table_t *pt = cfg_table_at(prices, i);
 			if (!pt)
 				continue;
 			load_credit_price(pt, &cfg->prices[cfg->price_count]);
@@ -550,21 +709,21 @@ static void load_credits_config(toml_table_t *root, struct config_credits *cfg)
 	}
 }
 
-static void load_string_array(toml_table_t *tbl, const char *key,
+static void load_string_array(cfg_table_t *tbl, const char *key,
 			      char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
 			      int *out_count, int max_count, size_t value_len)
 {
-	toml_array_t *arr;
+	cfg_array_t *arr;
 	int count;
 
 	if (!tbl || !key || !values || !out_count)
 		return;
-	arr = toml_array_in(tbl, key);
+	arr = cfg_array_in(tbl, key);
 	if (!arr)
 		return;
 	count = 0;
 	for (; count < max_count; count++) {
-		toml_datum_t val = toml_string_at(arr, count);
+		cfg_datum_t val = cfg_string_at(arr, count);
 		if (!val.ok)
 			break;
 		strncpy(values[count], val.u.s, value_len - 1);
@@ -604,21 +763,21 @@ static void migrate_legacy_sync_includes(struct config *cfg)
 	cfg->sync.include_count = 7;
 }
 
-static void load_cap_array(toml_table_t *tbl, const char *key,
+static void load_cap_array(cfg_table_t *tbl, const char *key,
 			   char values[][DYNAMIC_TOOL_CAP_LEN_MAX],
 			   int *out_count)
 {
-	toml_array_t *arr;
+	cfg_array_t *arr;
 	int count;
 
 	if (!tbl || !key || !values || !out_count)
 		return;
-	arr = toml_array_in(tbl, key);
+	arr = cfg_array_in(tbl, key);
 	if (!arr)
 		return;
 	count = 0;
 	for (; count < DYNAMIC_TOOL_CAP_MAX; count++) {
-		toml_datum_t val = toml_string_at(arr, count);
+		cfg_datum_t val = cfg_string_at(arr, count);
 		if (!val.ok)
 			break;
 		strncpy(values[count], val.u.s, DYNAMIC_TOOL_CAP_LEN_MAX - 1);
@@ -628,7 +787,7 @@ static void load_cap_array(toml_table_t *tbl, const char *key,
 	*out_count = count;
 }
 
-static void load_dynamic_profile(toml_table_t *tbl,
+static void load_dynamic_profile(cfg_table_t *tbl,
 				 struct config_dynamic_tool_profile *profile)
 {
 	if (!tbl || !profile)
@@ -700,17 +859,26 @@ int config_load(struct config *cfg, const char *path)
 		log_warn("config file not found: %s, using defaults", path);
 		return 0;
 	}
-
-	char errbuf[256];
-	toml_table_t *tbl = toml_parse_file(f, errbuf, sizeof(errbuf));
-	fclose(f);
-
-	if (!tbl) {
-		log_warn("config parse error: %s, using defaults", errbuf);
-		return 0;
+	struct config_validation_error validation = {0};
+	int validation_rc = config_validate_file(path, &validation);
+	if (validation_rc != 0) {
+		fclose(f);
+		log_err("invalid config %s:%d:%d: %s", path,
+			validation.line, validation.column, validation.message);
+		return validation_rc;
 	}
 
-	toml_table_t *general = table_path(tbl, "general");
+	toml_result_t parsed = toml_parse_file(f);
+	fclose(f);
+
+	if (!parsed.ok) {
+		log_err("config parse error: %s", parsed.errmsg);
+		toml_free(parsed);
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
+	cfg_table_t *tbl = &parsed.toptab;
+
+	cfg_table_t *general = table_path(tbl, "general");
 	if (general) {
 		CFG_STR(general, "default_session", cfg->general.default_session);
 		CFG_STR(general, "output_dir", cfg->general.output_dir);
@@ -718,14 +886,14 @@ int config_load(struct config *cfg, const char *path)
 		CFG_STR(general, "log_file", cfg->general.log_file);
 	}
 
-	toml_table_t *model_tbl = table_path(tbl, "model");
+	cfg_table_t *model_tbl = table_path(tbl, "model");
 	load_model_entry(model_tbl, "text", &cfg->models.text);
 	load_model_entry(model_tbl, "vision", &cfg->models.vision);
 	load_model_entry(model_tbl, "image", &cfg->models.image);
 	load_model_entry(model_tbl, "video", &cfg->models.video);
 	load_credits_config(tbl, &cfg->credits);
 
-	toml_table_t *react = table_path(tbl, "react");
+	cfg_table_t *react = table_path(tbl, "react");
 	if (react) {
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
 		CFG_INT(react, "tool_timeout_seconds", cfg->react.tool_timeout_seconds);
@@ -734,11 +902,11 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
 		CFG_STR(react, "guardrail_llm_model", cfg->react.guardrail_llm_model);
-		toml_array_t *gdr = toml_array_in(react, "guardrail_disabled_rules");
+		cfg_array_t *gdr = cfg_array_in(react, "guardrail_disabled_rules");
 		if (gdr) {
 			int gcount = 0;
 			for (; gcount < GUARDRAIL_DISABLED_RULES_MAX; gcount++) {
-				toml_datum_t val = toml_string_at(gdr, gcount);
+				cfg_datum_t val = cfg_string_at(gdr, gcount);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.guardrail_disabled_rules[gcount],
@@ -747,11 +915,11 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.guardrail_disabled_rule_count = gcount;
 		}
-		toml_array_t *llm_arr = toml_array_in(react, "guardrail_llm_rules");
+		cfg_array_t *llm_arr = cfg_array_in(react, "guardrail_llm_rules");
 		if (llm_arr) {
-			for (int li = 0; li < toml_array_nelem(llm_arr) &&
+			for (int li = 0; li < cfg_array_nelem(llm_arr) &&
 			     cfg->react.guardrail_llm_rule_count < GUARDRAIL_LLM_RULES_MAX; li++) {
-				toml_table_t *lt = toml_table_at(llm_arr, li);
+				cfg_table_t *lt = cfg_table_at(llm_arr, li);
 				if (!lt) continue;
 				struct config_guardrail_llm_rule *lr =
 					&cfg->react.guardrail_llm_rules[
@@ -763,11 +931,11 @@ int config_load(struct config *cfg, const char *path)
 				cfg->react.guardrail_llm_rule_count++;
 			}
 		}
-		toml_array_t *ext_arr = toml_array_in(react, "guardrail_ext_rules");
+		cfg_array_t *ext_arr = cfg_array_in(react, "guardrail_ext_rules");
 		if (ext_arr) {
-			for (int ei = 0; ei < toml_array_nelem(ext_arr) &&
+			for (int ei = 0; ei < cfg_array_nelem(ext_arr) &&
 			     cfg->react.guardrail_ext_rule_count < GUARDRAIL_EXT_RULES_MAX; ei++) {
-				toml_table_t *et = toml_table_at(ext_arr, ei);
+				cfg_table_t *et = cfg_table_at(ext_arr, ei);
 				if (!et) continue;
 				struct config_guardrail_ext_rule *er =
 					&cfg->react.guardrail_ext_rules[
@@ -780,11 +948,11 @@ int config_load(struct config *cfg, const char *path)
 				cfg->react.guardrail_ext_rule_count++;
 			}
 		}
-		toml_array_t *dt = toml_array_in(react, "disabled_tools");
+		cfg_array_t *dt = cfg_array_in(react, "disabled_tools");
 		if (dt) {
 			int count = 0;
 			for (; count < DISABLED_TOOLS_MAX; count++) {
-				toml_datum_t val = toml_string_at(dt, count);
+				cfg_datum_t val = cfg_string_at(dt, count);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.disabled_tools[count], val.u.s,
@@ -793,11 +961,11 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.disabled_tools_count = count;
 		}
-		toml_array_t *rt = toml_array_in(react, "readonly_tools");
+		cfg_array_t *rt = cfg_array_in(react, "readonly_tools");
 		if (rt) {
 			int count = 0;
 			for (; count < READONLY_TOOLS_MAX; count++) {
-				toml_datum_t val = toml_string_at(rt, count);
+				cfg_datum_t val = cfg_string_at(rt, count);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.readonly_tools[count], val.u.s,
@@ -810,11 +978,11 @@ int config_load(struct config *cfg, const char *path)
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
 		CFG_BOOL(react, "bash_exec_enabled", cfg->react.bash_exec_enabled);
 		CFG_INT(react, "bash_exec_default_timeout", cfg->react.bash_exec_default_timeout);
-		toml_array_t *bc = toml_array_in(react, "bash_exec_allowed_commands");
+		cfg_array_t *bc = cfg_array_in(react, "bash_exec_allowed_commands");
 		if (bc) {
 			int count = 0;
 			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
-				toml_datum_t val = toml_string_at(bc, count);
+				cfg_datum_t val = cfg_string_at(bc, count);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.bash_exec_allowed_commands[count],
@@ -823,11 +991,11 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.bash_exec_allowed_commands_count = count;
 		}
-		toml_array_t *bw = toml_array_in(react, "bash_exec_allowed_cwds");
+		cfg_array_t *bw = cfg_array_in(react, "bash_exec_allowed_cwds");
 		if (bw) {
 			int count = 0;
 			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
-				toml_datum_t val = toml_string_at(bw, count);
+				cfg_datum_t val = cfg_string_at(bw, count);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.bash_exec_allowed_cwds[count],
@@ -836,11 +1004,11 @@ int config_load(struct config *cfg, const char *path)
 			}
 			cfg->react.bash_exec_allowed_cwds_count = count;
 		}
-		toml_array_t *ht = toml_array_in(react, "hitl_tools");
+		cfg_array_t *ht = cfg_array_in(react, "hitl_tools");
 		if (ht) {
 			int count = 0;
 			for (; count < HITL_TOOLS_MAX; count++) {
-				toml_datum_t val = toml_string_at(ht, count);
+				cfg_datum_t val = cfg_string_at(ht, count);
 				if (!val.ok)
 					break;
 				strncpy(cfg->react.hitl_tools[count], val.u.s,
@@ -851,14 +1019,14 @@ int config_load(struct config *cfg, const char *path)
 		}
 	}
 
-	toml_table_t *context = table_path(tbl, "context");
+	cfg_table_t *context = table_path(tbl, "context");
 	if (context) {
 		CFG_DBL(context, "summarize_threshold_ratio", cfg->context.summarize_threshold_ratio);
 		CFG_DBL(context, "compress_target_ratio", cfg->context.compress_target_ratio);
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
 	}
 
-	toml_table_t *memory = table_path(tbl, "memory");
+	cfg_table_t *memory = table_path(tbl, "memory");
 	if (memory) {
 		CFG_BOOL(memory, "enabled", cfg->memory.enabled);
 		CFG_BOOL(memory, "hot_path_enabled", cfg->memory.hot_path_enabled);
@@ -870,25 +1038,25 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(memory, "max_context_chars", cfg->memory.max_context_chars);
 	}
 
-	toml_table_t *render = table_path(tbl, "render");
+	cfg_table_t *render = table_path(tbl, "render");
 	if (render) {
 		CFG_STR(render, "prefer_image_protocol", cfg->render.prefer_image_protocol);
 		CFG_STR(render, "mpv_args", cfg->render.mpv_args);
 	}
 
-	toml_table_t *ext = table_path(tbl, "ext");
+	cfg_table_t *ext = table_path(tbl, "ext");
 	if (ext) {
 		CFG_STR(ext, "dir", cfg->ext.dir);
 		CFG_INT(ext, "default_max_memory_mb", cfg->ext.default_max_memory_mb);
 		CFG_INT(ext, "default_max_cpu_seconds", cfg->ext.default_max_cpu_seconds);
 	}
 
-	toml_table_t *dynamic = table_path(tbl, "dynamic_tools");
+	cfg_table_t *dynamic = table_path(tbl, "dynamic_tools");
 	if (dynamic) {
-		toml_datum_t mode;
+		cfg_datum_t mode;
 		CFG_BOOL(dynamic, "enabled", cfg->dynamic_tools.enabled);
 		CFG_STR(dynamic, "runtime", cfg->dynamic_tools.runtime);
-		mode = toml_string_in(dynamic, "mode");
+		mode = cfg_string_in(dynamic, "mode");
 		if (mode.ok) {
 			strncpy(cfg->dynamic_tools.mode, mode.u.s,
 				sizeof(cfg->dynamic_tools.mode) - 1);
@@ -910,24 +1078,24 @@ int config_load(struct config *cfg, const char *path)
 			cfg->dynamic_tools.default_timeout_seconds);
 		CFG_INT(dynamic, "default_max_output_bytes",
 			cfg->dynamic_tools.default_max_output_bytes);
-		load_dynamic_profile(toml_table_in(dynamic, "local"),
+		load_dynamic_profile(cfg_table_in(dynamic, "local"),
 				     &cfg->dynamic_tools.local);
-		load_dynamic_profile(toml_table_in(dynamic, "server"),
+		load_dynamic_profile(cfg_table_in(dynamic, "server"),
 				     &cfg->dynamic_tools.server);
 	}
 
-	toml_table_t *prompt = table_path(tbl, "prompt");
+	cfg_table_t *prompt = table_path(tbl, "prompt");
 	if (prompt) {
 		CFG_STR(prompt, "system_prompt_file", cfg->prompt.system_prompt_file);
 		CFG_STR(prompt, "system_prompt_dir", cfg->prompt.system_prompt_dir);
 	}
 
-	toml_table_t *skill = table_path(tbl, "skill");
+	cfg_table_t *skill = table_path(tbl, "skill");
 	if (skill) {
 		CFG_STR(skill, "dir", cfg->skill.dir);
 	}
 
-	toml_table_t *sync = table_path(tbl, "sync");
+	cfg_table_t *sync = table_path(tbl, "sync");
 	if (sync) {
 		CFG_BOOL(sync, "enabled", cfg->sync.enabled);
 		CFG_STR(sync, "dir", cfg->sync.dir);
@@ -939,13 +1107,13 @@ int config_load(struct config *cfg, const char *path)
 		migrate_legacy_sync_includes(cfg);
 	}
 
-	toml_table_t *mcp_tbl = table_path(tbl, "mcp");
-	toml_array_t *mcp_servers = mcp_tbl
-		? toml_array_in(mcp_tbl, "servers") : NULL;
+	cfg_table_t *mcp_tbl = table_path(tbl, "mcp");
+	cfg_array_t *mcp_servers = mcp_tbl
+		? cfg_array_in(mcp_tbl, "servers") : NULL;
 	if (mcp_servers) {
 		int i = 0;
-		for (; i < toml_array_nelem(mcp_servers) && i < MCP_SERVER_MAX; i++) {
-			toml_table_t *srv = toml_table_at(mcp_servers, i);
+		for (; i < cfg_array_nelem(mcp_servers) && i < MCP_SERVER_MAX; i++) {
+			cfg_table_t *srv = cfg_table_at(mcp_servers, i);
 			if (!srv)
 				continue;
 			struct config_mcp_server *ms = &cfg->mcp.servers[i];
@@ -957,11 +1125,11 @@ int config_load(struct config *cfg, const char *path)
 			CFG_BOOL(srv, "auto_connect", ms->auto_connect);
 			CFG_INT(srv, "connect_timeout", ms->connect_timeout);
 
-			toml_array_t *args_arr = toml_array_in(srv, "args");
+			cfg_array_t *args_arr = cfg_array_in(srv, "args");
 			if (args_arr) {
 				int j = 0;
-				for (; j < toml_array_nelem(args_arr) && j < MCP_CMD_ARGS_MAX; j++) {
-					toml_datum_t a = toml_string_at(args_arr, j);
+				for (; j < cfg_array_nelem(args_arr) && j < MCP_CMD_ARGS_MAX; j++) {
+					cfg_datum_t a = cfg_string_at(args_arr, j);
 					if (!a.ok)
 						break;
 					strncpy(ms->args[j], a.u.s, MCP_CMD_ARG_LEN_MAX - 1);
@@ -970,11 +1138,11 @@ int config_load(struct config *cfg, const char *path)
 				}
 			}
 
-			toml_table_t *env_tbl = toml_table_in(srv, "env");
+			cfg_table_t *env_tbl = cfg_table_in(srv, "env");
 			if (env_tbl) {
 				int ei = 0;
 				for (int ki = 0; ki < 64 && ei < MCP_ENV_MAX; ki++) {
-					const char *key = toml_key_in(env_tbl, ki);
+					const char *key = cfg_key_in(env_tbl, ki);
 					if (!key)
 						break;
 					strncpy(ms->env_keys[ei], key, sizeof(ms->env_keys[ei]) - 1);
@@ -988,15 +1156,13 @@ int config_load(struct config *cfg, const char *path)
 		}
 	}
 
-	toml_free(tbl);
+	toml_free(parsed);
 
 	config_expand_paths(cfg);
 
 	log_info("config loaded from: %s", path);
 
-	(void)config_load_sub_agents(cfg, path);
-
-	return 0;
+	return config_load_sub_agents(cfg, path);
 }
 
 static const char *sub_agent_ctx_policy_str(enum sub_agent_context_policy p)
@@ -1033,20 +1199,28 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 	FILE *f = fopen(path, "r");
 	if (!f)
 		return 0;
+	struct config_validation_error validation = {0};
+	int validation_rc = config_validate_file(path, &validation);
+	if (validation_rc != 0) {
+		fclose(f);
+		return validation_rc;
+	}
 
-	char errbuf[256];
-	toml_table_t *tbl = toml_parse_file(f, errbuf, sizeof(errbuf));
+	toml_result_t parsed = toml_parse_file(f);
 	fclose(f);
-	if (!tbl)
-		return 0;
+	if (!parsed.ok) {
+		toml_free(parsed);
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
+	cfg_table_t *tbl = &parsed.toptab;
 
-	toml_table_t *agent_tbl = table_path(tbl, "agent");
-	toml_array_t *sa_arr = agent_tbl
-		? toml_array_in(agent_tbl, "sub_agents") : NULL;
+	cfg_table_t *agent_tbl = table_path(tbl, "agent");
+	cfg_array_t *sa_arr = agent_tbl
+		? cfg_array_in(agent_tbl, "sub_agents") : NULL;
 	if (sa_arr) {
-		for (int i = 0; i < toml_array_nelem(sa_arr) &&
+		for (int i = 0; i < cfg_array_nelem(sa_arr) &&
 		     cfg->sub_agents.count < SUB_AGENT_MAX; i++) {
-			toml_table_t *st = toml_table_at(sa_arr, i);
+			cfg_table_t *st = cfg_table_at(sa_arr, i);
 			if (!st)
 				continue;
 			struct config_sub_agent *sa =
@@ -1057,13 +1231,13 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 			CFG_STR(st, "model", sa->model);
 			CFG_INT(st, "max_iterations", sa->max_iterations);
 
-			toml_array_t *at = toml_array_in(st, "allowed_tools");
+			cfg_array_t *at = cfg_array_in(st, "allowed_tools");
 			if (at) {
 				for (int j = 0;
-				     j < toml_array_nelem(at) &&
+				     j < cfg_array_nelem(at) &&
 				     sa->allowed_tools_count < SUB_AGENT_TOOL_MAX;
 				     j++) {
-					toml_datum_t v = toml_string_at(at, j);
+					cfg_datum_t v = cfg_string_at(at, j);
 					if (!v.ok) break;
 					strncpy(sa->allowed_tools[j], v.u.s,
 						SUB_AGENT_TOOL_NAME_MAX - 1);
@@ -1072,13 +1246,13 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 				}
 			}
 
-			toml_array_t *dt = toml_array_in(st, "disabled_tools");
+			cfg_array_t *dt = cfg_array_in(st, "disabled_tools");
 			if (dt) {
 				for (int j = 0;
-				     j < toml_array_nelem(dt) &&
+				     j < cfg_array_nelem(dt) &&
 				     sa->disabled_tools_count < SUB_AGENT_TOOL_MAX;
 				     j++) {
-					toml_datum_t v = toml_string_at(dt, j);
+					cfg_datum_t v = cfg_string_at(dt, j);
 					if (!v.ok) break;
 					strncpy(sa->disabled_tools[j], v.u.s,
 						SUB_AGENT_TOOL_NAME_MAX - 1);
@@ -1088,7 +1262,7 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 			}
 
 			{
-				toml_datum_t cp = toml_string_in(st,
+				cfg_datum_t cp = cfg_string_in(st,
 					"context_policy");
 				if (cp.ok) {
 					sa->context_policy = parse_ctx_policy(
@@ -1101,7 +1275,7 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 			}
 
 			{
-				toml_datum_t ms = toml_string_in(st,
+				cfg_datum_t ms = cfg_string_in(st,
 					"merge_strategy");
 				if (ms.ok) {
 					sa->merge_strategy = parse_merge_strategy(
@@ -1114,7 +1288,7 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 			}
 
 			{
-				toml_datum_t os = toml_string_in(st,
+				cfg_datum_t os = cfg_string_in(st,
 					"output_schema");
 				if (os.ok) {
 					sa->output_schema = os.u.s;
@@ -1125,7 +1299,7 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 		}
 	}
 
-	toml_free(tbl);
+	toml_free(parsed);
 	return 0;
 }
 

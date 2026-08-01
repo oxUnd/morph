@@ -7,7 +7,7 @@
 #include "util/arena.h"
 #include "http/client.h"
 #include "http/sse.h"
-#include "config.h"
+#include "config/config.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"

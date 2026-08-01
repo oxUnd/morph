@@ -1,9 +1,10 @@
 #include "sapi/cli/cli.h"
-#include "config.h"
+#include "config/config.h"
 #include "skill/skill.h"
 #include "util/data.h"
 #include "util/log.h"
 #include "util/file.h"
+#include "util/error.h"
 #include "http/client.h"
 #include <locale.h>
 #include <stdio.h>
@@ -315,7 +316,7 @@ int main(int argc, char *argv[])
 	struct cli_context ctx;
 	int rc = cli_init(&ctx, config_path, workdir, presentation_mode);
 	if (rc < 0) {
-		log_err("failed to initialize: %d", rc);
+		log_err("failed to initialize: %s", morph_strerror(rc));
 		return 1;
 	}
 	ctx.trace_json = trace_json;

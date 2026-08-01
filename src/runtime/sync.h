@@ -1,7 +1,7 @@
 #ifndef MORPH_RUNTIME_SYNC_H
 #define MORPH_RUNTIME_SYNC_H
 
-#include "config.h"
+#include "config/config.h"
 #include "sync/sync.h"
 
 struct runtime;

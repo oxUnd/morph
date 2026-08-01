@@ -58,6 +58,7 @@ const char *morph_errname(morph_err_t err)
 	case MORPH_ERR_LLM:             return "MORPH_ERR_LLM";
 	case MORPH_ERR_REACT_MAX_ITERATIONS:
 		return "MORPH_ERR_REACT_MAX_ITERATIONS";
+	case MORPH_ERR_CONFIG:          return "MORPH_ERR_CONFIG";
 	default:
 		return "MORPH_ERR_UNKNOWN";
 	}
@@ -80,6 +81,7 @@ const char *morph_strerror(morph_err_t err)
 	case MORPH_ERR_LLM:             return "LLM error";
 	case MORPH_ERR_REACT_MAX_ITERATIONS:
 		return "maximum ReAct iterations reached";
+	case MORPH_ERR_CONFIG:          return "invalid configuration";
 	default:
 		if (morph_err_is_errno(err))
 			return strerror(-err);
