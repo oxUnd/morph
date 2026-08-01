@@ -175,8 +175,14 @@ int runtime_sync_conflicts(struct runtime *runtime,
 		return -ENOENT;
 	}
 	rc = sqlite3_prepare_v2(database,
-		"SELECT id,path,created_at FROM conflicts ORDER BY id DESC",
+		"SELECT id,path,created_at FROM conflicts WHERE resolved_at=0 "
+		"ORDER BY id DESC",
 		-1, &statement, NULL);
+	if (rc != SQLITE_OK) {
+		rc = sqlite3_prepare_v2(database,
+			"SELECT id,path,created_at FROM conflicts ORDER BY id DESC",
+			-1, &statement, NULL);
+	}
 	if (rc != SQLITE_OK) {
 		sqlite3_close(database);
 		return MORPH_ERR_DB;
@@ -228,4 +234,29 @@ int runtime_sync_restore(struct runtime *runtime, int64_t trash_id)
 		return -EINVAL;
 	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
 	return rc == 0 ? morph_sync_restore_trash(&config, trash_id) : rc;
+}
+
+int runtime_sync_backups(struct runtime *runtime, const char *path,
+			 struct morph_sync_backup **out, int *count)
+{
+	struct morph_sync_config config;
+	int rc;
+
+	if (!runtime || !out || !count)
+		MORPH_RETURN(-EINVAL);
+	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
+	return rc == 0 ? morph_sync_backups(&config, path, out, count) : rc;
+}
+
+int runtime_sync_restore_db(struct runtime *runtime, const char *snapshot_id,
+			    const char *destination)
+{
+	struct morph_sync_config config;
+	int rc;
+
+	if (!runtime || !snapshot_id || !destination)
+		MORPH_RETURN(-EINVAL);
+	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
+	return rc == 0 ? morph_sync_restore_db(&config, snapshot_id,
+						destination) : rc;
 }

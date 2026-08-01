@@ -310,9 +310,10 @@ max_procedures = 4
 max_context_chars = 3000
 
 [sync]
-# Periodically merge critical files under ~/.morph with a user-chosen
-# local sync directory. Deletions are soft-deleted into trash, and
-# conflicting edits are kept as conflict copies.
+# Periodically sync critical files under ~/.morph with a user-chosen local
+# directory. SQLite databases are stored as consistent, page-deduplicated,
+# immutable backup versions; other files use two-way sync with soft deletion
+# and conflict copies.
 enabled = false
 dir = ""
 interval_seconds = 300

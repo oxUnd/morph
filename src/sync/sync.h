@@ -13,6 +13,8 @@ extern "C" {
 #define MORPH_SYNC_INCLUDE_LEN_MAX PATH_MAX
 #define MORPH_SYNC_HASH_LEN 65
 #define MORPH_SYNC_STATUS_TEXT_MAX 256
+#define MORPH_SYNC_SNAPSHOT_ID_MAX 256
+#define MORPH_SYNC_DEVICE_ID_MAX 64
 
 struct morph_sync_backend_stat {
 	int exists;
@@ -56,9 +58,22 @@ struct morph_sync_status {
 	int deleted;
 	int conflicts;
 	int recycled;
+	int db_snapshots;
+	int db_chunks_uploaded;
+	int db_chunks_reused;
+	int64_t db_bytes_uploaded;
 	int error_code;
 	int64_t last_run_at;
 	char last_error[MORPH_SYNC_STATUS_TEXT_MAX];
+};
+
+struct morph_sync_backup {
+	char snapshot_id[MORPH_SYNC_SNAPSHOT_ID_MAX];
+	char path[PATH_MAX];
+	char device_id[MORPH_SYNC_DEVICE_ID_MAX];
+	char hash[MORPH_SYNC_HASH_LEN];
+	int64_t created_at;
+	int64_t size;
 };
 
 struct morph_sync_worker {
@@ -80,6 +95,12 @@ int morph_sync_worker_status(struct morph_sync_worker *worker,
 			     struct morph_sync_status *status);
 int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 			     int64_t trash_id);
+int morph_sync_backups(const struct morph_sync_config *cfg,
+			const char *path, struct morph_sync_backup **out,
+			int *count);
+void morph_sync_backups_free(struct morph_sync_backup *items);
+int morph_sync_restore_db(const struct morph_sync_config *cfg,
+			  const char *snapshot_id, const char *destination);
 
 #ifdef __cplusplus
 }

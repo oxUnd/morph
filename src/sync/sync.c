@@ -1,4 +1,5 @@
 #include "sync/sync.h"
+#include "sync/db_backup.h"
 #include "util/array.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -506,7 +507,8 @@ static int manifest_open(sqlite3 **out, const char *sync_dir)
 		"path TEXT NOT NULL,"
 		"local_hash TEXT,"
 		"remote_hash TEXT,"
-		"created_at INTEGER NOT NULL);"
+		"created_at INTEGER NOT NULL,"
+		"resolved_at INTEGER NOT NULL DEFAULT 0);"
 		"CREATE TABLE IF NOT EXISTS trash("
 		"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 		"path TEXT NOT NULL,"
@@ -533,6 +535,9 @@ static int manifest_open(sqlite3 **out, const char *sync_dir)
 		NULL, NULL, NULL);
 	(void)sqlite3_exec(*out,
 		"ALTER TABLE entries ADD COLUMN last_device TEXT",
+		NULL, NULL, NULL);
+	(void)sqlite3_exec(*out,
+		"ALTER TABLE conflicts ADD COLUMN resolved_at INTEGER NOT NULL DEFAULT 0",
 		NULL, NULL, NULL);
 	return 0;
 }
@@ -641,6 +646,23 @@ static int manifest_conflict(sqlite3 *db, const struct sync_pair *pair)
 	sqlite3_bind_text(stmt, 2, pair->local.hash, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, pair->remote.hash, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 4, (int64_t)time(NULL));
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
+}
+
+static int manifest_resolve_db_conflicts(sqlite3 *db, const char *path)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	rc = sqlite3_prepare_v2(db,
+		"UPDATE conflicts SET resolved_at=? WHERE path=? AND resolved_at=0",
+		-1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, (int64_t)time(NULL));
+	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
@@ -1078,6 +1100,16 @@ static int sync_pair(sqlite3 *db, const struct morph_sync_config *cfg,
 		 strcmp(pair->remote.hash, old.remote_hash) != 0) :
 		old.remote_exists;
 	is_db = is_db_rel(pair->path);
+	if (pair->local.exists && sync_db_is_sqlite(pair->local.full)) {
+		rc = sync_db_backup_create(cfg, pair->path, pair->local.full,
+					   status);
+		if (rc != 0)
+			return rc;
+		rc = manifest_resolve_db_conflicts(db, pair->path);
+		if (rc != 0)
+			return rc;
+		return manifest_put(db, pair, 0);
+	}
 
 	if (is_db) {
 		if (pair->local.exists) {
@@ -1263,6 +1295,21 @@ static int count_table(sqlite3 *db, const char *table)
 	return count;
 }
 
+static int count_unresolved_conflicts(sqlite3 *db)
+{
+	sqlite3_stmt *stmt = NULL;
+	int count = 0;
+
+	if (sqlite3_prepare_v2(db,
+	    "SELECT COUNT(*) FROM conflicts WHERE resolved_at=0", -1,
+	    &stmt, NULL) != SQLITE_OK)
+		return 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		count = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return count;
+}
+
 static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
 {
 	sqlite3_stmt *stmt = NULL;
@@ -1342,8 +1389,11 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 	rc = cleanup_trash(manifest, cfg);
 	if (rc != 0)
 		goto out;
+	rc = sync_db_backup_cleanup(cfg);
+	if (rc != 0)
+		goto out;
 	status->last_run_at = (int64_t)time(NULL);
-	status->conflicts = count_table(manifest, "conflicts");
+	status->conflicts = count_unresolved_conflicts(manifest);
 	status->recycled = count_table(manifest, "trash");
 
 out:

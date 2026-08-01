@@ -1,16 +1,53 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/list_ui.h"
+
+static void print_sync_field(const char *ancestor, int is_last,
+			     const char *name, const char *value, int columns)
+{
+	cli_list_item(ancestor, is_last, "", name, value, 20, columns);
+}
 
 static void print_sync_status(const struct morph_sync_status *st)
 {
-	printf("running: %s\n", st->running ? "yes" : "no");
-	printf("copied: %d\n", st->copied);
-	printf("deleted: %d\n", st->deleted);
-	printf("conflicts: %d\n", st->conflicts);
-	printf("recycled: %d\n", st->recycled);
+	char value[64];
+	int columns = cli_list_columns();
+	int state_count = st->error_code != 0 ? 3 : 2;
+
+	CMD_HEADER("sync status");
+	cli_list_group("state", state_count, 0);
+	print_sync_field("│ ", 0, "running", st->running ? "yes" : "no",
+			 columns);
 	if (st->last_run_at > 0)
-		printf("last_run_at: %lld\n", (long long)st->last_run_at);
+		snprintf(value, sizeof(value), "%lld",
+			 (long long)st->last_run_at);
+	else
+		strncpy(value, "never", sizeof(value) - 1);
+	print_sync_field("│ ", st->error_code == 0, "last run", value,
+			 columns);
 	if (st->error_code != 0)
-		printf("last_error: %s\n", st->last_error);
+		print_sync_field("│ ", 1, "last error", st->last_error,
+				 columns);
+
+	cli_list_group("files", 4, 0);
+	snprintf(value, sizeof(value), "%d", st->copied);
+	print_sync_field("│ ", 0, "copied", value, columns);
+	snprintf(value, sizeof(value), "%d", st->deleted);
+	print_sync_field("│ ", 0, "deleted", value, columns);
+	snprintf(value, sizeof(value), "%d", st->conflicts);
+	print_sync_field("│ ", 0, "conflicts", value, columns);
+	snprintf(value, sizeof(value), "%d", st->recycled);
+	print_sync_field("│ ", 1, "recycled", value, columns);
+
+	cli_list_group("database", 4, 1);
+	snprintf(value, sizeof(value), "%d", st->db_snapshots);
+	print_sync_field("  ", 0, "snapshots", value, columns);
+	snprintf(value, sizeof(value), "%d", st->db_chunks_uploaded);
+	print_sync_field("  ", 0, "chunks uploaded", value, columns);
+	snprintf(value, sizeof(value), "%d", st->db_chunks_reused);
+	print_sync_field("  ", 0, "chunks reused", value, columns);
+	snprintf(value, sizeof(value), "%lld",
+		 (long long)st->db_bytes_uploaded);
+	print_sync_field("  ", 1, "bytes uploaded", value, columns);
 }
 
 static int sync_cmd_status(struct cli_context *ctx)
@@ -52,10 +89,22 @@ static int sync_cmd_conflicts(struct cli_context *ctx)
 	}
 	if (rc != 0)
 		return rc;
+	CMD_HEADER("sync conflicts (%d)", count);
+	if (count == 0) {
+		printf("  " ANSI_DIM "└ none" ANSI_RESET "\n");
+		runtime_sync_conflicts_free(items);
+		return 0;
+	}
 	for (int i = 0; i < count; i++) {
-		printf("#%lld %s %lld\n",
-		       (long long)items[i].id, items[i].path,
-		       (long long)items[i].created_at);
+		char label[64];
+		char description[PATH_MAX + 64];
+
+		snprintf(label, sizeof(label), "#%lld",
+			 (long long)items[i].id);
+		snprintf(description, sizeof(description), "%s · created %lld",
+			 items[i].path, (long long)items[i].created_at);
+		cli_list_item("", i == count - 1, "", label, description,
+			      12, cli_list_columns());
 	}
 	runtime_sync_conflicts_free(items);
 	return 0;
@@ -79,6 +128,82 @@ static int sync_cmd_restore(struct cli_context *ctx, const char *id)
 	return rc;
 }
 
+static int sync_backup_compare(const void *left, const void *right)
+{
+	const struct morph_sync_backup *a = left;
+	const struct morph_sync_backup *b = right;
+	int rc;
+
+	rc = strcmp(a->path, b->path);
+	if (rc != 0)
+		return rc;
+	if (a->created_at != b->created_at)
+		return a->created_at > b->created_at ? -1 : 1;
+	return strcmp(a->snapshot_id, b->snapshot_id);
+}
+
+static int sync_cmd_backups(struct cli_context *ctx, const char *path)
+{
+	struct morph_sync_backup *items = NULL;
+	int columns = cli_list_columns();
+	int count = 0;
+	int rc;
+
+	rc = runtime_sync_backups(ctx->runtime, path, &items, &count);
+	if (rc != 0)
+		return rc;
+	CMD_HEADER("database backups (%d)", count);
+	if (count == 0) {
+		printf("  " ANSI_DIM "└ none" ANSI_RESET "\n");
+		morph_sync_backups_free(items);
+		return 0;
+	}
+	qsort(items, (size_t)count, sizeof(items[0]), sync_backup_compare);
+	for (int i = 0; i < count;) {
+		int end = i + 1;
+		int group_last;
+		const char *ancestor;
+
+		while (end < count && strcmp(items[i].path, items[end].path) == 0)
+			end++;
+		group_last = end == count;
+		cli_list_group(items[i].path, end - i, group_last);
+		ancestor = group_last ? "  " : "│ ";
+		for (int j = i; j < end; j++) {
+			char description[MORPH_SYNC_DEVICE_ID_MAX + 80];
+
+			snprintf(description, sizeof(description),
+				 "%s · created %lld · %lld bytes",
+				 items[j].device_id,
+				 (long long)items[j].created_at,
+				 (long long)items[j].size);
+			cli_list_item(ancestor, j == end - 1, "",
+				      items[j].snapshot_id, description, 24,
+				      columns);
+		}
+		i = end;
+	}
+	morph_sync_backups_free(items);
+	return 0;
+}
+
+static int sync_cmd_restore_db(struct cli_context *ctx, const char *snapshot_id,
+			       const char *destination)
+{
+	int rc;
+
+	if (!snapshot_id || !destination) {
+		CMD_ERROR("usage: /sync restore-db <snapshot-id> <destination>");
+		return -EINVAL;
+	}
+	rc = runtime_sync_restore_db(ctx->runtime, snapshot_id, destination);
+	if (rc == 0)
+		CMD_OK("restored database to %s", destination);
+	else
+		CMD_ERROR("database restore failed: %s", morph_strerror(rc));
+	return rc;
+}
+
 static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
@@ -91,7 +216,13 @@ static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 		return sync_cmd_conflicts(ctx);
 	if (strcmp(sub, "restore") == 0)
 		return sync_cmd_restore(ctx, cli_cmd_arg(argc, argv, 2));
-	CMD_ERROR("usage: /sync [status|now|conflicts|restore <trash-id>]");
+	if (strcmp(sub, "backups") == 0)
+		return sync_cmd_backups(ctx, cli_cmd_arg(argc, argv, 2));
+	if (strcmp(sub, "restore-db") == 0)
+		return sync_cmd_restore_db(ctx, cli_cmd_arg(argc, argv, 2),
+					   cli_cmd_arg(argc, argv, 3));
+	CMD_ERROR("usage: /sync [status|now|conflicts|restore <trash-id>|"
+		  "backups [path]|restore-db <snapshot-id> <destination>]");
 	return -EINVAL;
 }
 
@@ -99,7 +230,8 @@ int cli_register_sync_commands(void)
 {
 	static const struct cli_command cmds[] = {
 		{ "/sync", sync_cmd, "Manage .morph directory sync",
-		  "/sync [status|now|conflicts|restore <trash-id>]" },
+		  "/sync [status|now|conflicts|restore <trash-id>|"
+		  "backups [path]|restore-db <snapshot-id> <destination>]" },
 	};
 
 	return cli_command_register_many(cmds,

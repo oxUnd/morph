@@ -37,5 +37,9 @@ int runtime_sync_conflicts(struct runtime *runtime,
 			   struct runtime_sync_conflict **out, int *count);
 void runtime_sync_conflicts_free(struct runtime_sync_conflict *items);
 int runtime_sync_restore(struct runtime *runtime, int64_t trash_id);
+int runtime_sync_backups(struct runtime *runtime, const char *path,
+			 struct morph_sync_backup **out, int *count);
+int runtime_sync_restore_db(struct runtime *runtime, const char *snapshot_id,
+			    const char *destination);
 
 #endif

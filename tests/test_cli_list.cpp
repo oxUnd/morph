@@ -10,6 +10,7 @@ extern "C" {
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <regex>
 #include <string>
 
@@ -116,6 +117,106 @@ TEST(CliListTest, SessionCommandShowsUpdatedTimeWithoutCurrentLabel)
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
+}
+
+TEST(CliListTest, SyncQueriesUseGroupedTrees)
+{
+	char pattern[] = "/tmp/morph-cli-sync-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	struct runtime_options options{};
+	struct runtime *runtime = nullptr;
+	struct cli_context context{};
+	struct morph_sync_backup *backups = nullptr;
+	int backup_count = 0;
+	std::string root;
+	std::string database;
+	std::string config_path;
+	std::string remote;
+	std::ofstream config;
+	std::ofstream payload;
+
+	ASSERT_NE(directory, nullptr);
+	root = directory;
+	database = root + "/data.db";
+	config_path = root + "/config.toml";
+	remote = root + "/remote";
+	config.open(config_path);
+	ASSERT_TRUE(config.is_open());
+	config << "[sync]\n"
+	       << "enabled = true\n"
+	       << "dir = \"" << remote << "\"\n"
+	       << "interval_seconds = 0\n"
+	       << "retention_days = 30\n"
+	       << "include = [\"data.db\", \"payload.txt\"]\n";
+	config.close();
+	ASSERT_TRUE(config.good());
+	payload.open(root + "/payload.txt");
+	payload << "first";
+	payload.close();
+	ASSERT_TRUE(payload.good());
+	options.db_path = database.c_str();
+	options.config_path = config_path.c_str();
+	options.workdir = root.c_str();
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	context.runtime = runtime;
+	cli_command_registry_clear();
+	ASSERT_EQ(cli_register_sync_commands(), 0);
+
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/sync now");
+	std::string status_output = testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	EXPECT_NE(status_output.find("sync status"), std::string::npos);
+	EXPECT_NE(status_output.find("state"), std::string::npos);
+	EXPECT_NE(status_output.find("files"), std::string::npos);
+	EXPECT_NE(status_output.find("database"), std::string::npos);
+	EXPECT_NE(status_output.find("├"), std::string::npos);
+	EXPECT_NE(status_output.find("└"), std::string::npos);
+	EXPECT_NE(status_output.find("snapshots"), std::string::npos);
+
+	testing::internal::CaptureStdout();
+	rc = cli_command_dispatch(&context, "/sync conflicts");
+	std::string conflict_output = testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	EXPECT_NE(conflict_output.find("sync conflicts (0)"), std::string::npos);
+	EXPECT_NE(conflict_output.find("└ none"), std::string::npos);
+	payload.open(root + "/payload.txt", std::ios::trunc);
+	payload << "local change";
+	payload.close();
+	payload.open(remote + "/data/payload.txt", std::ios::trunc);
+	payload << "remote change";
+	payload.close();
+	testing::internal::CaptureStdout();
+	rc = cli_command_dispatch(&context, "/sync now");
+	(void)testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	testing::internal::CaptureStdout();
+	rc = cli_command_dispatch(&context, "/sync conflicts");
+	conflict_output = testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	EXPECT_NE(conflict_output.find("sync conflicts (1)"), std::string::npos);
+	EXPECT_NE(conflict_output.find("#1"), std::string::npos);
+	EXPECT_NE(conflict_output.find("payload.txt"), std::string::npos);
+
+	ASSERT_EQ(runtime_sync_backups(runtime, "data.db", &backups,
+		&backup_count), 0);
+	ASSERT_EQ(backup_count, 1);
+	testing::internal::CaptureStdout();
+	rc = cli_command_dispatch(&context, "/sync backups");
+	std::string backup_output = testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	EXPECT_NE(backup_output.find("database backups (1)"),
+		  std::string::npos);
+	EXPECT_NE(backup_output.find("data.db"), std::string::npos);
+	EXPECT_NE(backup_output.find(backups[0].snapshot_id), std::string::npos);
+	EXPECT_NE(backup_output.find("created"), std::string::npos);
+	morph_sync_backups_free(backups);
+
+	cli_command_registry_clear();
+	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(root, error);
 }
 
 TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
