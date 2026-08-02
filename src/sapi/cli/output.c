@@ -381,22 +381,23 @@ int cli_ask_user_callback(const char *question,
  *
  * scoped - Whether to offer separate session and persistent choices.
  */
-static int prompt_approval(const char *subject, int scoped)
+static int prompt_approval(const char *subject, int scoped, int ephemeral)
 {
 	static pthread_mutex_t prompt_lock = PTHREAD_MUTEX_INITIALIZER;
 	int v;
 
 	pthread_mutex_lock(&prompt_lock);
 #ifdef HAVE_READLINE
-	char *rl_input = readline(scoped ?
-		"  [y]es once / [s]ession / [a]lways / [n]o: " :
+	char *rl_input = readline(scoped ? (ephemeral ?
+		"  [y]es once / [s]ession / [n]o: " :
+		"  [y]es once / [s]ession / [a]lways / [n]o: ") :
 		"  [y]es / [n]o / [a]lways: ");
 	if (!rl_input) {
 		printf("\n");
 		pthread_mutex_unlock(&prompt_lock);
 		return 0;
 	}
-	if (rl_input[0] == 'a' || rl_input[0] == 'A')
+	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
 		v = scoped ? 3 : 2;
 	else if (scoped &&
 		 (rl_input[0] == 's' || rl_input[0] == 'S'))
@@ -407,7 +408,10 @@ static int prompt_approval(const char *subject, int scoped)
 		v = 0;
 	free(rl_input);
 #else
-	if (scoped)
+	if (scoped && ephemeral)
+		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+		       "[s]ession / [" ANSI_RED "n" ANSI_RESET "]o: ");
+	else if (scoped)
 		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
 		       "[s]ession / [a]lways / ["
 		       ANSI_RED "n" ANSI_RESET "]o: ");
@@ -431,7 +435,7 @@ static int prompt_approval(const char *subject, int scoped)
 	}
 	fclose(tty);
 
-	if (buf[0] == 'a' || buf[0] == 'A')
+	if (!ephemeral && (buf[0] == 'a' || buf[0] == 'A'))
 		v = scoped ? 3 : 2;
 	else if (scoped && (buf[0] == 's' || buf[0] == 'S'))
 		v = 2;
@@ -489,7 +493,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 		       "╰─────────────────────────────────────────────────"
 		       ANSI_RESET "\n");
 
-	int v = prompt_approval(tool_name, 0);
+	int v = prompt_approval(tool_name, 0, 0);
 	if (v == 2)
 		return HITL_ALWAYS;
 	if (v == 1)
@@ -508,6 +512,8 @@ static const char *operation_label(enum tool_operation_kind kind)
 		return "List Path Approval";
 	case TOOL_OP_PATH_WRITE:
 		return "Write Path Approval";
+	case TOOL_OP_PATH_DELETE:
+		return "Delete Path Approval";
 	case TOOL_OP_NETWORK:
 		return "Network Approval";
 	case TOOL_OP_EXTERNAL_SEND:
@@ -527,6 +533,8 @@ static const char *operation_subject(enum tool_operation_kind kind)
 		return "list_path";
 	case TOOL_OP_PATH_WRITE:
 		return "write_path";
+	case TOOL_OP_PATH_DELETE:
+		return "delete_path";
 	case TOOL_OP_NETWORK:
 		return "network";
 	case TOOL_OP_EXTERNAL_SEND:
@@ -544,6 +552,7 @@ static const char *operation_scope_label(enum tool_operation_kind kind)
 	case TOOL_OP_PATH_LIST:
 		return "Workspace";
 	case TOOL_OP_PATH_WRITE:
+	case TOOL_OP_PATH_DELETE:
 		return "Output dir";
 	case TOOL_OP_NETWORK:
 		return "Scope";
@@ -616,10 +625,20 @@ enum tool_operation_verdict operation_approval_callback(
 			       "└─" : "├─",
 			       op->directories[i].path);
 	}
+	int ephemeral = op->tool_name &&
+		strcmp(op->tool_name, "bash_exec") == 0 &&
+		(op->kind == TOOL_OP_PATH_WRITE ||
+		 op->kind == TOOL_OP_PATH_DELETE);
 	if (op->kind == TOOL_OP_COMMAND)
 		printf("%s" ANSI_DIM "'session' trusts this program, cwd, and "
 		       "listed directories until exit; 'always' remembers "
 		       "them for this project."
+		       ANSI_RESET "\n",
+		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+		       ANSI_YELLOW "│ " ANSI_RESET : "");
+	else if (ephemeral)
+		printf("%s" ANSI_DIM "'yes' allows this call; 'session' trusts "
+		       "this capability until exit. It is never persisted."
 		       ANSI_RESET "\n",
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");
@@ -634,7 +653,7 @@ enum tool_operation_verdict operation_approval_callback(
 		       "╰─────────────────────────────────────────────────"
 		       ANSI_RESET "\n");
 
-	int v = prompt_approval(operation_subject(op->kind), 1);
+	int v = prompt_approval(operation_subject(op->kind), 1, ephemeral);
 	if (v == 3)
 		return TOOL_OP_ALWAYS;
 	if (v == 2)

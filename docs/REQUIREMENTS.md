@@ -830,8 +830,14 @@ guardrail_llm_model = ""
 # bash_exec 配置
 bash_exec_enabled = true
 bash_exec_default_timeout = 30
+bash_exec_mode = "server"       # local | server
 bash_exec_allowed_commands = []
-bash_exec_allowed_cwds = []
+
+[react.bash_exec_server]
+read_paths = ["@workdir", "@output"]
+write_paths = ["@output"]
+delete_paths = []
+network_access = false
 
 # Human-in-the-Loop (HITL)
 hitl_enabled = false

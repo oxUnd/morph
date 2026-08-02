@@ -1695,3 +1695,111 @@ TEST_F(BashExecTest, NoCallbackKeepsStrictDeny)
 	EXPECT_TRUE(result.find("not allowed") != std::string::npos ||
 		    result.find("interactive approval") != std::string::npos);
 }
+
+TEST_F(BashExecTest, LocalModeReadsOutsideWorkdir)
+{
+	int rc;
+
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(
+		reg, "{\"command\":\"test -r /etc/hosts\"}", rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+}
+
+TEST_F(BashExecTest, LocalModeDeletesTmpWithoutApproval)
+{
+	char path[] = "/tmp/morph_local_delete_XXXXXX";
+	char command[PATH_MAX];
+	char args[PATH_MAX + 128];
+	int fd = mkstemp(path);
+	int rc;
+
+	ASSERT_GE(fd, 0);
+	close(fd);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	snprintf(command, sizeof(command), "rm -f %s", path);
+	snprintf(args, sizeof(args),
+		"{\"command\":\"%s\",\"delete_paths\":[\"/tmp\"]}",
+		command);
+	std::string result = exec_raw(reg, args, rc);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_NE(access(path, F_OK), 0);
+	std::remove(path);
+}
+
+TEST_F(BashExecTest, LocalModeRequiresApprovalOutsideDefaultRoots)
+{
+	int rc;
+
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"true\",\"write_paths\":[\"/\"]}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_NE(result.find("outside"), std::string::npos);
+}
+
+TEST_F(BashExecTest, ServerModeExecutesAllowlistedCommand)
+{
+	int rc;
+
+	tool_context_set_bash_exec_mode(tctx, "server");
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "echo *"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_READ, "@tmp"), 0);
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(
+		reg, "{\"command\":\"echo server-ok\"}", rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_NE(get_json_field(result, "stdout").find("server-ok"),
+		std::string::npos);
+}
+
+TEST_F(BashExecTest, ServerModeDeniesUnconfiguredDeletePath)
+{
+	int rc;
+
+	tool_context_set_bash_exec_mode(tctx, "server");
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "rm"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_READ, "@tmp"), 0);
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"rm -f /tmp/no-such-file\","
+		"\"delete_paths\":[\"/tmp\"]}", rc);
+	EXPECT_EQ(rc, -EPERM);
+	EXPECT_NE(result.find("configured sandbox policy"), std::string::npos);
+}
+
+TEST_F(BashExecTest, ServerModeUsesConfiguredDeleteCapability)
+{
+	char path[] = "/tmp/morph_server_delete_XXXXXX";
+	char command[PATH_MAX];
+	char args[PATH_MAX + 128];
+	int fd = mkstemp(path);
+	int rc;
+
+	ASSERT_GE(fd, 0);
+	close(fd);
+	tool_context_set_bash_exec_mode(tctx, "server");
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "rm"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_READ, "@tmp"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_DELETE, "@tmp"), 0);
+	bash_exec_init(&reg, tctx);
+	snprintf(command, sizeof(command), "rm -f %s", path);
+	snprintf(args, sizeof(args),
+		"{\"command\":\"%s\",\"delete_paths\":[\"/tmp\"]}",
+		command);
+	std::string result = exec_raw(reg, args, rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_NE(access(path, F_OK), 0);
+	std::remove(path);
+}

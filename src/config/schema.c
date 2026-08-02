@@ -118,10 +118,19 @@ static const struct schema_entry schema[] = {
 	BOOL("react.hitl_auto_approve_readonly"),
 	BOOL("react.bash_exec_enabled"),
 	INT("react.bash_exec_default_timeout", 1, INT_MAX),
+	ENUM("react.bash_exec_mode", 15, "local|server"),
 	STRINGS("react.bash_exec_allowed_commands", BASH_EXEC_ALLOW_MAX,
 		BASH_EXEC_COMMAND_MAX - 1),
 	STRINGS("react.bash_exec_allowed_cwds", BASH_EXEC_ALLOW_MAX,
 		BASH_EXEC_CWD_MAX - 1),
+	TABLE("react.bash_exec_server"),
+	STRINGS("react.bash_exec_server.read_paths", BASH_EXEC_ALLOW_MAX,
+		BASH_EXEC_CWD_MAX - 1),
+	STRINGS("react.bash_exec_server.write_paths", BASH_EXEC_ALLOW_MAX,
+		BASH_EXEC_CWD_MAX - 1),
+	STRINGS("react.bash_exec_server.delete_paths", BASH_EXEC_ALLOW_MAX,
+		BASH_EXEC_CWD_MAX - 1),
+	BOOL("react.bash_exec_server.network_access"),
 	TABLE("context"),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
@@ -449,6 +458,30 @@ static int validate_named_array(const toml_datum_t *root, const char *section,
 	return 0;
 }
 
+static int validate_bash_exec_paths(const toml_datum_t *server,
+				    const char *key, const char *path,
+				    struct config_validation_error *error)
+{
+	const toml_datum_t *paths = table_get(server, key);
+
+	if (!paths)
+		return 0;
+	for (int i = 0; i < paths->u.arr.size; i++) {
+		const toml_datum_t *item = &paths->u.arr.elem[i];
+		const char *value = item->u.s;
+
+		if (strcmp(value, "@workdir") == 0 ||
+		    strcmp(value, "@output") == 0 ||
+		    strcmp(value, "@tmp") == 0 || strcmp(value, "*") == 0 ||
+		    file_path_is_absolute(value))
+			continue;
+		return set_error(error, CONFIG_VALIDATION_VALUE, item, path,
+			"%s item %d must be @workdir, @output, @tmp, *, or an "
+			"absolute path", path, i);
+	}
+	return 0;
+}
+
 static int validate_relations(const toml_datum_t *root,
 			      struct config_validation_error *error)
 {
@@ -458,6 +491,8 @@ static int validate_relations(const toml_datum_t *root,
 	const toml_datum_t *target = table_get(context, "compress_target_ratio");
 	const toml_datum_t *mcp = table_get(root, "mcp");
 	const toml_datum_t *servers = table_get(mcp, "servers");
+	const toml_datum_t *react = table_get(root, "react");
+	const toml_datum_t *bash_server = table_get(react, "bash_exec_server");
 	double summarize_ratio = 0.8;
 	double target_ratio = 0.5;
 	int rc;
@@ -475,6 +510,16 @@ static int validate_relations(const toml_datum_t *root,
 				"context.compress_target_ratio must be less than summarize_threshold_ratio");
 	rc = validate_named_array(root, "mcp", "servers", "mcp.servers[].name",
 		error);
+	if (rc != 0)
+		return rc;
+	rc = validate_bash_exec_paths(bash_server, "read_paths",
+		"react.bash_exec_server.read_paths", error);
+	if (rc == 0)
+		rc = validate_bash_exec_paths(bash_server, "write_paths",
+			"react.bash_exec_server.write_paths", error);
+	if (rc == 0)
+		rc = validate_bash_exec_paths(bash_server, "delete_paths",
+			"react.bash_exec_server.delete_paths", error);
 	if (rc != 0)
 		return rc;
 	rc = validate_named_array(root, "agent", "sub_agents",

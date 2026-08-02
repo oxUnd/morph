@@ -370,6 +370,11 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	       (*runtime_config_get(ctx->runtime)).react.bash_exec_enabled);
 	printf("  bash_exec_default_timeout = %d\n",
 	       (*runtime_config_get(ctx->runtime)).react.bash_exec_default_timeout);
+	printf("  bash_exec_mode = %s\n",
+	       (*runtime_config_get(ctx->runtime)).react.bash_exec_mode);
+	printf("  bash_exec_server_network_access = %d\n",
+	       (*runtime_config_get(ctx->runtime)).react
+		.bash_exec_server_network_access);
 	if ((*runtime_config_get(ctx->runtime)).react.disabled_tools_count > 0) {
 		printf("  disabled_tools =");
 		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count; i++)
@@ -419,6 +424,33 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 		     i < (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds_count; i++)
 			printf(" %s",
 			       (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds[i]);
+		printf("\n");
+	}
+	if ((*runtime_config_get(ctx->runtime)).react
+	    .bash_exec_server_read_paths_count > 0) {
+		printf("  bash_exec_server_read_paths =");
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
+		     .bash_exec_server_read_paths_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react
+			       .bash_exec_server_read_paths[i]);
+		printf("\n");
+	}
+	if ((*runtime_config_get(ctx->runtime)).react
+	    .bash_exec_server_write_paths_count > 0) {
+		printf("  bash_exec_server_write_paths =");
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
+		     .bash_exec_server_write_paths_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react
+			       .bash_exec_server_write_paths[i]);
+		printf("\n");
+	}
+	if ((*runtime_config_get(ctx->runtime)).react
+	    .bash_exec_server_delete_paths_count > 0) {
+		printf("  bash_exec_server_delete_paths =");
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
+		     .bash_exec_server_delete_paths_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react
+			       .bash_exec_server_delete_paths[i]);
 		printf("\n");
 	}
 	printf(ANSI_BOLD "[context]" ANSI_RESET "\n");

@@ -1,5 +1,6 @@
 #include "sandbox.h"
 #include "util/array.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
@@ -244,6 +245,10 @@ int sandbox_apply_env(const char **allowed_env, int count,
 #define LANDLOCK_ACCESS_FS_TRUNCATE       (1ULL << 14)
 #endif
 
+#ifndef LANDLOCK_CREATE_RULESET_VERSION
+#define LANDLOCK_CREATE_RULESET_VERSION 1
+#endif
+
 #ifndef O_PATH
 #define O_PATH 0x200000
 #endif
@@ -255,6 +260,12 @@ static int ll_create_ruleset(uint64_t fs_access)
 	attr.handled_access_fs = fs_access;
 	return (int)syscall(__NR_landlock_create_ruleset,
 			    &attr, sizeof(attr), 0);
+}
+
+static int ll_get_abi(void)
+{
+	return (int)syscall(__NR_landlock_create_ruleset, NULL, 0,
+			    LANDLOCK_CREATE_RULESET_VERSION);
 }
 
 static int ll_add_rule(int ruleset_fd, int path_fd, uint64_t access)
@@ -459,6 +470,119 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	return 0;
 }
 
+static int sandbox_add_landlock_paths(int ruleset_fd, char **paths,
+				      int count, uint64_t access)
+{
+	for (int i = 0; i < count; i++) {
+		int fd;
+
+		if (!paths || !paths[i])
+			continue;
+		fd = open(paths[i], O_PATH | O_CLOEXEC);
+		if (fd < 0) {
+			log_err("sandbox: cannot open policy path '%s': %s",
+				paths[i], strerror(errno));
+			MORPH_RETURN_ERRNO();
+		}
+		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
+			int err = errno;
+
+			close(fd);
+			log_err("sandbox: cannot add policy path '%s': %s",
+				paths[i], strerror(err));
+			MORPH_RETURN(-err);
+		}
+		close(fd);
+	}
+	return 0;
+}
+
+static int sandbox_apply_path_policy(struct sandbox_config *cfg)
+{
+	static const char *const system_paths[] = {
+		"/bin", "/sbin", "/usr", "/lib", "/lib32", "/lib64",
+		"/etc", "/dev", "/proc", "/sys", "/run", "/snap",
+		"/opt", "/nix", NULL
+	};
+	uint64_t read_access = LANDLOCK_ACCESS_FS_READ_FILE |
+		LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_EXECUTE;
+	uint64_t write_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
+		LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_DIR |
+		LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_MAKE_CHAR |
+		LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK |
+		LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_TRUNCATE;
+	uint64_t delete_access = LANDLOCK_ACCESS_FS_REMOVE_FILE |
+		LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REFER;
+	uint64_t handled;
+	int abi;
+	int ruleset_fd;
+	int rc;
+
+	if (!cfg)
+		MORPH_RETURN(-EINVAL);
+	abi = ll_get_abi();
+	if (abi < 0) {
+		if (errno == EOPNOTSUPP || errno == ENOSYS)
+			MORPH_RETURN(-ENOSYS);
+		MORPH_RETURN_ERRNO();
+	}
+	if (abi < 2)
+		delete_access &= ~LANDLOCK_ACCESS_FS_REFER;
+	if (abi < 3)
+		write_access &= ~LANDLOCK_ACCESS_FS_TRUNCATE;
+	handled = write_access | delete_access;
+	if (!cfg->read_all)
+		handled |= read_access;
+	ruleset_fd = ll_create_ruleset(handled);
+	if (ruleset_fd < 0)
+		MORPH_RETURN_ERRNO();
+	if (!cfg->read_all) {
+		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->read_paths,
+			cfg->read_paths_count, read_access);
+		if (rc != 0) {
+			close(ruleset_fd);
+			return rc;
+		}
+		if (cfg->process_exec) {
+			for (int i = 0; system_paths[i]; i++) {
+				char *path = (char *)system_paths[i];
+
+				if (access(path, F_OK) != 0)
+					continue;
+				rc = sandbox_add_landlock_paths(ruleset_fd,
+					&path, 1, read_access);
+				if (rc != 0) {
+					close(ruleset_fd);
+					return rc;
+				}
+			}
+		}
+	}
+	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
+		cfg->write_paths_count, write_access);
+	if (rc == 0)
+		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->delete_paths,
+			cfg->delete_paths_count, delete_access);
+	if (rc != 0) {
+		close(ruleset_fd);
+		return rc;
+	}
+	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+		int err = errno;
+
+		close(ruleset_fd);
+		MORPH_RETURN(-err);
+	}
+	if (ll_restrict_self(ruleset_fd) < 0) {
+		int err = errno;
+
+		close(ruleset_fd);
+		MORPH_RETURN(-err);
+	}
+	close(ruleset_fd);
+	return 0;
+}
+
 #elif defined(__APPLE__)
 
 /*
@@ -484,6 +608,29 @@ extern void sandbox_free_error(char *errorbuf);
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
+static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
+				  const char *path)
+{
+	int rc;
+
+	if (!profile || !operations || !path)
+		MORPH_RETURN(-EINVAL);
+	rc = morph_buf_printf(profile, "(allow %s (subpath \"", operations);
+	if (rc != 0)
+		return rc;
+	for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
+		if (*p < 0x20 || *p == 0x7f)
+			MORPH_RETURN(-EINVAL);
+		if (*p == '\\' || *p == '"')
+			rc = morph_buf_putc(profile, '\\');
+		if (rc == 0)
+			rc = morph_buf_putc(profile, (char)*p);
+		if (rc != 0)
+			return rc;
+	}
+	return morph_buf_puts(profile, "\"))\n");
+}
+
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
@@ -503,133 +650,129 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 
 int sandbox_enter_darwin(struct sandbox_config *cfg)
 {
+	static const char *const system_paths[] = {
+		"/bin", "/sbin", "/usr", "/System", "/Library",
+		"/dev", "/private/etc", "/private/var", "/opt", "/nix",
+		NULL
+	};
+	morph_buf_t sbpl;
+	char *profile;
+	char *errorbuf = NULL;
+	int network_access;
+	int process_exec;
+	int rc;
+	int rv;
+
 	if (!cfg)
 		return -EINVAL;
-
-	/* Build SBPL profile string */
-	char sbpl[8192];
-	int off = 0;
-	int n;
-	size_t remaining;
-
-	remaining = sizeof(sbpl);
-	n = snprintf(sbpl + off, remaining,
-		     "(version 1)\n"
-		     "(deny default)\n");
-	if (n > 0 && (size_t)n < remaining)
-		off += n;
-	remaining = sizeof(sbpl) - (size_t)off;
-
-	/*
-	 * File read: when process execution is allowed, the spawned
-	 * process needs to read system libraries (/usr/lib, /System,
-	 * etc.) so file-read* must be granted globally.  Otherwise,
-	 * restrict to the specified allowed paths only.
-	 */
-	if (cfg->permissions & EXT_PERM_EXEC) {
-		n = snprintf(sbpl + off, remaining,
-			     "(allow file-read*)\n");
-		if (n > 0 && (size_t)n < remaining)
-			off += n;
-	} else if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
-		for (int i = 0; i < cfg->allowed_paths_count; i++) {
-			if (!cfg->allowed_paths[i])
-				continue;
-			remaining = sizeof(sbpl) - (size_t)off;
-			n = snprintf(sbpl + off, remaining,
-				     "(allow file-read* "
-				     "(subpath \"%s\"))\n",
-				     cfg->allowed_paths[i]);
-			if (n > 0 && (size_t)n < remaining)
-				off += n;
-		}
-	} else {
-		n = snprintf(sbpl + off, remaining,
-			     "(allow file-read*)\n");
-		if (n > 0 && (size_t)n < remaining)
-			off += n;
+	rc = morph_buf_init(&sbpl, 4096);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_puts(&sbpl, "(version 1)\n(deny default)\n");
+	if (rc != 0) {
+		morph_buf_cleanup(&sbpl);
+		return rc;
 	}
-	remaining = sizeof(sbpl) - (size_t)off;
+	process_exec = cfg->path_policy_enabled ? cfg->process_exec :
+		!!(cfg->permissions & EXT_PERM_EXEC);
+	network_access = cfg->path_policy_enabled ? cfg->network_access :
+		!!(cfg->permissions & EXT_PERM_NETWORK);
+	if ((cfg->path_policy_enabled && cfg->read_all) ||
+	    (!cfg->path_policy_enabled &&
+	     (process_exec || cfg->allowed_paths_count == 0)))
+		(void)morph_buf_puts(&sbpl, "(allow file-read*)\n");
+	else {
+		char **paths = cfg->path_policy_enabled ? cfg->read_paths :
+			cfg->allowed_paths;
+		int count = cfg->path_policy_enabled ? cfg->read_paths_count :
+			cfg->allowed_paths_count;
 
-	/* File write: restricted to allowed paths or fully allowed */
-	if (cfg->permissions & EXT_PERM_FILESYS) {
+		for (int i = 0; i < count; i++) {
+			if (paths && paths[i]) {
+				rc = sandbox_sbpl_path_rule(&sbpl,
+					"file-read*", paths[i]);
+				if (rc != 0) {
+					morph_buf_cleanup(&sbpl);
+					return rc;
+				}
+			}
+		}
+		if (process_exec) {
+			rc = morph_buf_puts(&sbpl,
+				"(allow file-read-data (literal \"/\"))\n");
+			if (rc != 0) {
+				morph_buf_cleanup(&sbpl);
+				return rc;
+			}
+			for (int i = 0; system_paths[i]; i++) {
+				rc = sandbox_sbpl_path_rule(&sbpl,
+					"file-read*", system_paths[i]);
+				if (rc != 0) {
+					morph_buf_cleanup(&sbpl);
+					return rc;
+				}
+			}
+		}
+	}
+	if (cfg->path_policy_enabled) {
+		for (int i = 0; i < cfg->write_paths_count; i++) {
+			if (cfg->write_paths && cfg->write_paths[i]) {
+				rc = sandbox_sbpl_path_rule(&sbpl,
+					"file-write-data file-write-create",
+					cfg->write_paths[i]);
+				if (rc != 0) {
+					morph_buf_cleanup(&sbpl);
+					return rc;
+				}
+			}
+		}
+		for (int i = 0; i < cfg->delete_paths_count; i++) {
+			if (cfg->delete_paths && cfg->delete_paths[i]) {
+				rc = sandbox_sbpl_path_rule(&sbpl,
+					"file-write-unlink",
+					cfg->delete_paths[i]);
+				if (rc != 0) {
+					morph_buf_cleanup(&sbpl);
+					return rc;
+				}
+			}
+		}
+	} else if (cfg->permissions & EXT_PERM_FILESYS) {
 		if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
 			for (int i = 0; i < cfg->allowed_paths_count; i++) {
-				if (!cfg->allowed_paths[i])
-					continue;
-				remaining = sizeof(sbpl) - (size_t)off;
-				n = snprintf(sbpl + off, remaining,
-					     "(allow file-write* "
-					     "(subpath \"%s\"))\n",
-					     cfg->allowed_paths[i]);
-				if (n > 0 && (size_t)n < remaining)
-					off += n;
+				if (cfg->allowed_paths[i]) {
+					rc = sandbox_sbpl_path_rule(&sbpl,
+						"file-write*",
+						cfg->allowed_paths[i]);
+					if (rc != 0) {
+						morph_buf_cleanup(&sbpl);
+						return rc;
+					}
+				}
 			}
 		} else {
-			remaining = sizeof(sbpl) - (size_t)off;
-			n = snprintf(sbpl + off, remaining,
-				     "(allow file-write*)\n");
-			if (n > 0 && (size_t)n < remaining)
-				off += n;
+			(void)morph_buf_puts(&sbpl, "(allow file-write*)\n");
 		}
 	}
-	/* No EXT_PERM_FILESYS: writes are denied by (deny default) */
-
-	/* Network access */
-	if (cfg->permissions & EXT_PERM_NETWORK) {
-		remaining = sizeof(sbpl) - (size_t)off;
-		n = snprintf(sbpl + off, remaining,
-			     "(allow network*)\n");
-		if (n > 0 && (size_t)n < remaining)
-			off += n;
-		/*
-		 * DNS resolution on macOS requires reading
-		 * /etc/resolv.conf and accessing mDNSResponder
-		 * via Mach IPC (already covered by the
-		 * mach-lookup baseline rule).  When EXEC is
-		 * not set, file-read* is restricted so we
-		 * must add explicit subpath rules for the
-		 * resolver paths.
-		 */
-		if (!(cfg->permissions & EXT_PERM_EXEC)) {
-			remaining = sizeof(sbpl) - (size_t)off;
-			n = snprintf(sbpl + off, remaining,
-				     "(allow file-read* "
-				     "(subpath \"/etc/resolv.conf\"))\n"
-				     "(allow file-read* "
-				     "(subpath \"/private/etc/resolv.conf\"))\n"
-				     "(allow file-read* "
-				     "(subpath \"/private/var/run/mDNSResponder\"))\n"
-				     "(allow file-read* "
-				     "(subpath \"/private/var/run/\"))\n");
-			if (n > 0 && (size_t)n < remaining)
-				off += n;
-		}
+	if (network_access)
+		(void)morph_buf_puts(&sbpl, "(allow network*)\n");
+	if (process_exec)
+		(void)morph_buf_puts(&sbpl, "(allow process-exec)\n");
+	(void)morph_buf_puts(&sbpl,
+		"(allow process-fork)\n"
+		"(allow signal (target same-sandbox))\n"
+		"(allow mach-lookup)\n"
+		"(allow sysctl-read)\n");
+	if (rc != 0 || sbpl.failed) {
+		morph_buf_cleanup(&sbpl);
+		return rc != 0 ? rc : -ENOMEM;
 	}
-
-	/* Process execution */
-	if (cfg->permissions & EXT_PERM_EXEC) {
-		remaining = sizeof(sbpl) - (size_t)off;
-		n = snprintf(sbpl + off, remaining,
-			     "(allow process-exec)\n");
-		if (n > 0 && (size_t)n < remaining)
-			off += n;
-	}
-
-	/* Basic process operations needed for normal functioning */
-	remaining = sizeof(sbpl) - (size_t)off;
-	n = snprintf(sbpl + off, remaining,
-		     "(allow process-fork)\n"
-		     "(allow signal (target same-sandbox))\n"
-		     "(allow mach-lookup)\n"
-		     "(allow sysctl-read)\n");
-	if (n > 0 && (size_t)n < remaining)
-		off += n;
-
-	log_info("sandbox: macOS SBPL profile:\n%s", sbpl);
-
-	char *errorbuf = NULL;
-	int rv = sandbox_init(sbpl, 0, &errorbuf);
+	profile = morph_buf_detach(&sbpl);
+	if (!profile)
+		return -ENOMEM;
+	log_info("sandbox: macOS SBPL profile:\n%s", profile);
+	rv = sandbox_init(profile, 0, &errorbuf);
+	free(profile);
 
 	if (rv != 0) {
 		log_warn("sandbox: sandbox_init failed: %s",
@@ -642,8 +785,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 	if (errorbuf)
 		sandbox_free_error(errorbuf);
 
-	log_info("sandbox: macOS sandbox_init applied (perms=0x%x)",
-		 cfg->permissions);
+	log_info("sandbox: macOS sandbox_init applied");
 	return 0;
 }
 
@@ -1219,22 +1361,33 @@ int sandbox_apply_seccomp(unsigned int permissions)
 
 int sandbox_enter(struct sandbox_config *cfg)
 {
+	unsigned int effective_permissions;
+	int rc;
+
 	if (!cfg)
 		return -EINVAL;
+	effective_permissions = cfg->permissions;
+	if (cfg->path_policy_enabled) {
+		effective_permissions = 0;
+		if (cfg->network_access)
+			effective_permissions |= EXT_PERM_NETWORK;
+		if (cfg->process_exec)
+			effective_permissions |= EXT_PERM_EXEC;
+		if (cfg->write_paths_count > 0 || cfg->delete_paths_count > 0)
+			effective_permissions |= EXT_PERM_FILESYS;
+	}
 
 	log_info("sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d",
 		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
 		 cfg->max_file_size_mb, cfg->max_processes);
 
-	int rc;
-
 	rc = sandbox_apply_env((const char **)cfg->allowed_env,
 			       cfg->allowed_env_count,
-			       cfg->permissions);
+			       effective_permissions);
 	if (rc < 0)
 		return rc;
 
-	rc = sandbox_apply_rlimits(cfg->permissions, cfg->max_memory_mb,
+	rc = sandbox_apply_rlimits(effective_permissions, cfg->max_memory_mb,
 				   cfg->max_cpu_seconds,
 				   cfg->max_file_size_mb,
 				   cfg->max_processes,
@@ -1242,14 +1395,19 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (rc < 0)
 		return rc;
 
-	rc = sandbox_apply_fs((const char **)cfg->allowed_paths,
-			       cfg->allowed_paths_count,
-			       cfg->permissions);
+#ifdef __linux__
+	if (cfg->path_policy_enabled)
+		rc = sandbox_apply_path_policy(cfg);
+	else
+#endif
+		rc = sandbox_apply_fs((const char **)cfg->allowed_paths,
+				       cfg->allowed_paths_count,
+				       effective_permissions);
 	if (rc < 0)
 		return rc;
 
 #ifdef __linux__
-	rc = sandbox_apply_seccomp(cfg->permissions);
+	rc = sandbox_apply_seccomp(effective_permissions);
 	if (rc < 0)
 		return rc;
 #elif defined(__APPLE__)

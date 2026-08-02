@@ -30,64 +30,41 @@ void bash_exec_set_default_timeout(int seconds)
 		bash_exec_default_timeout = seconds;
 }
 
-static const char *blocked_commands[] = {
-	"rm", "rmdir",
-	"mkfs", "dd",
-	"shutdown", "reboot", "poweroff", "halt",
-	"init",
-	"mv", "cp",
-	"chmod", "chown", "chgrp", "chattr",
-	"useradd", "userdel", "usermod",
-	"groupadd", "groupdel",
-	"passwd",
-	"crontab",
-	"systemctl", "service",
-	"launchctl",
-	"kill", "killall", "pkill",
-	"ssh", "scp", "sftp", "rsync",
-	"mount", "umount",
-	"fdisk", "parted", "diskutil",
-	"sysctl",
-	"iptables", "ip6tables",
-	"defaults",
-	NULL
+static const char *const legacy_blocked_commands[] = {
+	"rm", "rmdir", "mkfs", "dd", "shutdown", "reboot", "poweroff",
+	"halt", "init", "mv", "cp", "chmod", "chown", "chgrp", "chattr",
+	"useradd", "userdel", "usermod", "groupadd", "groupdel", "passwd",
+	"crontab", "systemctl", "service", "launchctl", "kill", "killall",
+	"pkill", "ssh", "scp", "sftp", "rsync", "mount", "umount",
+	"fdisk", "parted", "diskutil", "sysctl", "iptables", "ip6tables",
+	"defaults", NULL
 };
 
-static int is_blocked_name(const char *name)
-{
-	size_t len;
-
-	len = strlen(name);
-	for (const char **p = blocked_commands; *p; p++) {
-		size_t blen = strlen(*p);
-		if (len == blen && strncmp(name, *p, blen) == 0)
-			return 1;
-		if (len > blen && name[blen] == '.' &&
-		    strncmp(name, *p, blen) == 0)
-			return 1;
-	}
-	return 0;
-}
-
-static int contains_blocked_command(const char *cmd)
+static int legacy_command_is_blocked(const char *command)
 {
 	struct bash_parse_result analysis;
-	struct bash_parse_command *command;
+	struct bash_parse_command *parsed;
 	int blocked = 0;
 
-	if (bash_parse_analyze(cmd, &analysis) != 0)
+	if (bash_parse_analyze(command, &analysis) != 0)
 		return 1;
-	if (analysis.has_error || analysis.commands.nelts == 0) {
+	if (analysis.has_error || analysis.commands.nelts == 0)
 		blocked = 1;
-	} else {
-		morph_array_foreach(command, &analysis.commands,
-				    struct bash_parse_command) {
-			if (!command->name[0] ||
-			    is_blocked_name(command->name)) {
+	morph_array_foreach(parsed, &analysis.commands,
+			    struct bash_parse_command) {
+		for (const char *const *name = legacy_blocked_commands;
+		     *name; name++) {
+			size_t len = strlen(*name);
+
+			if (strcmp(parsed->name, *name) == 0 ||
+			    (strncmp(parsed->name, *name, len) == 0 &&
+			     parsed->name[len] == '.')) {
 				blocked = 1;
 				break;
 			}
 		}
+		if (blocked)
+			break;
 	}
 	bash_parse_result_cleanup(&analysis);
 	return blocked;
@@ -202,8 +179,8 @@ static int read_pipes_with_timeout(int out_fd, int err_fd,
 	return 0;
 }
 
-static int bash_exec_run(const char *args_json, struct tool_result *result,
-			 void *user_data)
+static int bash_exec_run_legacy(const char *args_json,
+				struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
 	if (!result)
@@ -240,18 +217,13 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 			"Usage: bash_exec({\\\"command\\\": \\\"ls -la\\\"})\"}"));
 		return -EINVAL;
 	}
-
-	if (contains_blocked_command(command)) {
-		log_warn("bash_exec: blocked dangerous command: %s", command);
-		if (root)
-			cJSON_Delete(root);
+	if (legacy_command_is_blocked(command)) {
+		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"command blocked for safety. "
-			"Destructive operations (rm, mv, cp, chmod, ssh, "
-			"kill, etc.) are not allowed. "
-			"Use read-only alternatives instead.\"}"));
-		return -EPERM;
+			"{\"error\":\"command blocked for safety\"}"));
+		MORPH_RETURN(-EPERM);
 	}
+
 	if (write_paths && !cJSON_IsArray(write_paths)) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup(
@@ -648,6 +620,475 @@ static int bash_exec_run(const char *args_json, struct tool_result *result,
 	return 0;
 }
 
+static int path_in_configured_dirs(
+	const char *path,
+	char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX], int count)
+{
+	for (int i = 0; i < count; i++)
+		if (path_is_within(path, dirs[i]))
+			return 1;
+	return 0;
+}
+
+static int path_in_local_defaults(struct tool_context *tctx,
+				  const char *path)
+{
+	const char *workdir = tool_context_workdir(tctx);
+	const char *output = tool_context_output_dir(tctx);
+
+	return (workdir && *workdir && path_is_within(path, workdir)) ||
+		(output && *output && path_is_within(path, output)) ||
+		path_is_within(path, "/tmp");
+}
+
+static int prepare_policy_paths(struct tool_context *tctx,
+				const char *principal,
+				const char *command, cJSON *paths,
+				enum tool_path_op operation,
+				cJSON **approved_out,
+				struct tool_result *result)
+{
+	cJSON *approved;
+	cJSON *path;
+
+	if (!paths) {
+		*approved_out = NULL;
+		return 0;
+	}
+	if (!cJSON_IsArray(paths)) {
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"capability paths must be arrays\"}"));
+		MORPH_RETURN(-EINVAL);
+	}
+	approved = cJSON_CreateArray();
+	if (!approved)
+		MORPH_RETURN(-ENOMEM);
+	*approved_out = approved;
+	cJSON_ArrayForEach(path, paths) {
+		char resolved[PATH_MAX];
+		char *canonical;
+		int rc = 0;
+
+		if (!cJSON_IsString(path) || !path->valuestring ||
+		    !file_path_is_absolute(path->valuestring)) {
+			(void)tool_result_success_json_text(result, strdup(
+				"{\"error\":\"capability paths must contain "
+				"absolute directory paths\"}"));
+			MORPH_RETURN(-EINVAL);
+		}
+		canonical = file_resolve_path(path->valuestring);
+		if (!canonical)
+			MORPH_RETURN(-ENOMEM);
+		snprintf(resolved, sizeof(resolved), "%s", canonical);
+		free(canonical);
+		if (tctx->bash_exec_local_mode) {
+			if (!path_in_local_defaults(tctx, resolved)) {
+				if (operation == TOOL_PATH_WRITE)
+					rc = tool_context_request_write_access(
+						tctx, principal, command, resolved,
+						resolved, sizeof(resolved));
+				else
+					rc = tool_context_request_delete_access(
+						tctx, principal, command, resolved,
+						resolved, sizeof(resolved));
+			}
+		} else {
+			char (*dirs)[TOOL_CONTEXT_ALLOW_PATH_MAX];
+			int count;
+
+			if (operation == TOOL_PATH_WRITE) {
+				dirs = tctx->bash_exec_server_write_dirs;
+				count = tctx->bash_exec_server_write_dirs_count;
+			} else {
+				dirs = tctx->bash_exec_server_delete_dirs;
+				count = tctx->bash_exec_server_delete_dirs_count;
+			}
+			if (!path_in_configured_dirs(resolved, dirs, count))
+				rc = -EPERM;
+		}
+		if (rc != 0) {
+			cJSON *error = cJSON_CreateObject();
+			char *text;
+
+			cJSON_AddStringToObject(error, "error",
+				rc == -EACCES ? "permission denied by user" :
+				"path is outside the configured sandbox policy");
+			cJSON_AddStringToObject(error, "capability",
+				operation == TOOL_PATH_WRITE ? "write" : "delete");
+			cJSON_AddStringToObject(error, "target", resolved);
+			text = cJSON_PrintUnformatted(error);
+			cJSON_Delete(error);
+			(void)tool_result_success_json_text(result,
+				text ? text : strdup("{\"error\":\"permission denied\"}"));
+			return rc;
+		}
+		cJSON_AddItemToArray(approved, cJSON_CreateString(resolved));
+	}
+	return 0;
+}
+
+static void add_json_paths(char **paths, int *count, cJSON *array)
+{
+	int n = array ? cJSON_GetArraySize(array) : 0;
+
+	for (int i = 0; i < n; i++) {
+		cJSON *item = cJSON_GetArrayItem(array, i);
+
+		if (cJSON_IsString(item) && item->valuestring)
+			add_allowed_path(paths, count, item->valuestring);
+	}
+}
+
+static int bash_exec_run_policy(const char *args_json,
+				struct tool_result *result,
+				struct tool_context *tctx)
+{
+	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	cJSON *write_paths;
+	cJSON *delete_paths;
+	cJSON *approved_write = NULL;
+	cJSON *approved_delete = NULL;
+	const char *command = NULL;
+	const char *cwd = NULL;
+	const char *effective_cwd;
+	char workdir_buf[PATH_MAX];
+	char principal[256];
+	int timeout = bash_exec_default_timeout;
+	int rc;
+	int out_pipe[2];
+	int err_pipe[2];
+	pid_t pid;
+
+	if (!root)
+		MORPH_RETURN(-EINVAL);
+	{
+		cJSON *item = cJSON_GetObjectItem(root, "command");
+
+		if (cJSON_IsString(item) && item->valuestring)
+			command = item->valuestring;
+		item = cJSON_GetObjectItem(root, "cwd");
+		if (cJSON_IsString(item) && item->valuestring)
+			cwd = item->valuestring;
+		item = cJSON_GetObjectItem(root, "timeout_seconds");
+		if (cJSON_IsNumber(item) && item->valuedouble > 0)
+			timeout = (int)item->valuedouble;
+	}
+	if (!command || !*command) {
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"missing 'command' parameter\"}"));
+		MORPH_RETURN(-EINVAL);
+	}
+	if (tool_context_command_principal(command, principal,
+					   sizeof(principal)) != 0)
+		snprintf(principal, sizeof(principal), "%s", "shell");
+	{
+		enum tool_operation_verdict verdict;
+		struct tool_operation op = {
+			.kind = TOOL_OP_COMMAND,
+			.tool_name = "bash_exec",
+			.principal = principal,
+			.action = command,
+			.scope = cwd,
+			.details_json = args_json,
+		};
+
+		rc = tool_context_check_operation_verdict(tctx, &op, &verdict);
+		if (rc != 0) {
+			cJSON_Delete(root);
+			(void)tool_result_success_json_text(result, strdup(
+				"{\"error\":\"command is not allowed by server policy\"}"));
+			return rc;
+		}
+	}
+	write_paths = cJSON_GetObjectItem(root, "write_paths");
+	delete_paths = cJSON_GetObjectItem(root, "delete_paths");
+	rc = prepare_policy_paths(tctx, principal, command, write_paths,
+				  TOOL_PATH_WRITE, &approved_write, result);
+	if (rc == 0)
+		rc = prepare_policy_paths(tctx, principal, command, delete_paths,
+					  TOOL_PATH_DELETE, &approved_delete,
+					  result);
+	if (rc != 0) {
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		return rc;
+	}
+	effective_cwd = cwd;
+	if (!effective_cwd || !*effective_cwd) {
+		snprintf(workdir_buf, sizeof(workdir_buf), "%s",
+			 tool_context_workdir(tctx));
+		effective_cwd = workdir_buf;
+	}
+	if (!tctx->bash_exec_local_mode && effective_cwd && *effective_cwd &&
+	    !path_in_configured_dirs(effective_cwd,
+				     tctx->bash_exec_server_read_dirs,
+				     tctx->bash_exec_server_read_dirs_count)) {
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"cwd is outside server read_paths\"}"));
+		MORPH_RETURN(-EPERM);
+	}
+	if (pipe(out_pipe) < 0) {
+		rc = -errno;
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		return rc;
+	}
+	if (pipe(err_pipe) < 0) {
+		rc = -errno;
+		close(out_pipe[0]);
+		close(out_pipe[1]);
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		return rc;
+	}
+	pid = fork();
+	if (pid < 0) {
+		rc = -errno;
+		close(out_pipe[0]);
+		close(out_pipe[1]);
+		close(err_pipe[0]);
+		close(err_pipe[1]);
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		return rc;
+	}
+	if (pid == 0) {
+		struct sandbox_config sb;
+		const char **write_grants = NULL;
+		const char **delete_grants = NULL;
+		char **read_allowed;
+		char **write_allowed;
+		char **delete_allowed;
+		char resolved_cwd[PATH_MAX];
+		char resolved_tmp[PATH_MAX];
+		int grant_capacity = (int)tctx->scoped_grants.nelts;
+		int write_count = 0;
+		int delete_count = 0;
+		int read_count = 0;
+		int write_grant_count = 0;
+		int delete_grant_count = 0;
+		int write_requested = approved_write ?
+			cJSON_GetArraySize(approved_write) : 0;
+		int delete_requested = approved_delete ?
+			cJSON_GetArraySize(approved_delete) : 0;
+		int have_tmp;
+		int base = TOOL_CONTEXT_ALLOW_MAX + grant_capacity +
+			write_requested + delete_requested + 4;
+
+		close(out_pipe[0]);
+		close(err_pipe[0]);
+		(void)dup2(out_pipe[1], STDOUT_FILENO);
+		(void)dup2(err_pipe[1], STDERR_FILENO);
+		close(out_pipe[1]);
+		close(err_pipe[1]);
+		{
+			int devnull = open("/dev/null", O_RDONLY);
+
+			if (devnull >= 0) {
+				(void)dup2(devnull, STDIN_FILENO);
+				close(devnull);
+			}
+		}
+		if (!effective_cwd || !realpath(effective_cwd, resolved_cwd) ||
+		    chdir(resolved_cwd) != 0)
+			_exit(126);
+		have_tmp = realpath("/tmp", resolved_tmp) != NULL;
+		read_allowed = calloc((size_t)base, sizeof(*read_allowed));
+		write_allowed = calloc((size_t)base, sizeof(*write_allowed));
+		delete_allowed = calloc((size_t)base, sizeof(*delete_allowed));
+		if (!read_allowed || !write_allowed || !delete_allowed)
+			_exit(126);
+		if (grant_capacity > 0) {
+			write_grants = calloc((size_t)grant_capacity,
+					      sizeof(*write_grants));
+			delete_grants = calloc((size_t)grant_capacity,
+					       sizeof(*delete_grants));
+			if (!write_grants || !delete_grants)
+				_exit(126);
+			write_grant_count = tool_context_collect_write_grants(
+				tctx, principal, write_grants, grant_capacity);
+			delete_grant_count = tool_context_collect_delete_grants(
+				tctx, principal, delete_grants, grant_capacity);
+		}
+		memset(&sb, 0, sizeof(sb));
+		sb.path_policy_enabled = 1;
+		sb.process_exec = 1;
+		sb.max_memory_mb = 512;
+		sb.max_cpu_seconds = timeout;
+		if (tctx->bash_exec_local_mode) {
+			const char *workdir = tool_context_workdir(tctx);
+
+			sb.read_all = 1;
+			sb.network_access = 1;
+			if (workdir && *workdir) {
+				add_allowed_path(write_allowed, &write_count,
+						 workdir);
+				add_allowed_path(delete_allowed, &delete_count,
+						 workdir);
+			}
+			if (tool_context_output_dir(tctx)[0]) {
+				add_allowed_path(write_allowed, &write_count,
+					tool_context_output_dir(tctx));
+				add_allowed_path(delete_allowed, &delete_count,
+					tool_context_output_dir(tctx));
+			}
+			if (have_tmp) {
+				add_allowed_path(write_allowed, &write_count,
+					resolved_tmp);
+				add_allowed_path(delete_allowed, &delete_count,
+					resolved_tmp);
+				if (strcmp(resolved_tmp, "/tmp") != 0) {
+					add_allowed_path(write_allowed, &write_count,
+						"/tmp");
+					add_allowed_path(delete_allowed, &delete_count,
+						"/tmp");
+				}
+			}
+			add_json_paths(write_allowed, &write_count,
+				       approved_write);
+			add_json_paths(delete_allowed, &delete_count,
+				       approved_delete);
+			for (int i = 0; i < write_grant_count; i++)
+				add_allowed_path(write_allowed, &write_count,
+						 write_grants[i]);
+			for (int i = 0; i < delete_grant_count; i++)
+				add_allowed_path(delete_allowed, &delete_count,
+						 delete_grants[i]);
+		} else {
+			sb.network_access =
+				tctx->bash_exec_server_network_access;
+			for (int i = 0;
+			     i < tctx->bash_exec_server_read_dirs_count; i++) {
+				add_allowed_path(read_allowed, &read_count,
+					tctx->bash_exec_server_read_dirs[i]);
+				if (have_tmp && strcmp(
+				    tctx->bash_exec_server_read_dirs[i],
+				    resolved_tmp) == 0)
+					add_allowed_path(read_allowed, &read_count,
+						"/tmp");
+			}
+			for (int i = 0;
+			     i < tctx->bash_exec_server_write_dirs_count; i++) {
+				add_allowed_path(write_allowed, &write_count,
+					tctx->bash_exec_server_write_dirs[i]);
+				if (have_tmp && strcmp(
+				    tctx->bash_exec_server_write_dirs[i],
+				    resolved_tmp) == 0)
+					add_allowed_path(write_allowed, &write_count,
+						"/tmp");
+			}
+			for (int i = 0;
+			     i < tctx->bash_exec_server_delete_dirs_count; i++) {
+				add_allowed_path(delete_allowed, &delete_count,
+					tctx->bash_exec_server_delete_dirs[i]);
+				if (have_tmp && strcmp(
+				    tctx->bash_exec_server_delete_dirs[i],
+				    resolved_tmp) == 0)
+					add_allowed_path(delete_allowed, &delete_count,
+						"/tmp");
+			}
+			if (read_count == 1 && strcmp(read_allowed[0], "/") == 0)
+				sb.read_all = 1;
+		}
+		sb.read_paths = read_allowed;
+		sb.read_paths_count = read_count;
+		sb.write_paths = write_allowed;
+		sb.write_paths_count = write_count;
+		sb.delete_paths = delete_allowed;
+		sb.delete_paths_count = delete_count;
+		if (sandbox_enter(&sb) != 0)
+			_exit(126);
+		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+		_exit(127);
+	}
+	close(out_pipe[1]);
+	close(err_pipe[1]);
+	{
+		morph_buf_t out_buf;
+		morph_buf_t err_buf;
+		int timed_out = 0;
+		int status = 0;
+		int exit_code = -1;
+		const char *signal_name = NULL;
+		cJSON *out;
+		char *text;
+
+		rc = morph_buf_init(&out_buf, 4096);
+		if (rc == 0)
+			rc = morph_buf_init(&err_buf, 4096);
+		if (rc != 0) {
+			morph_buf_cleanup(&out_buf);
+			close(out_pipe[0]);
+			close(err_pipe[0]);
+			(void)kill(pid, SIGKILL);
+			(void)waitpid(pid, NULL, 0);
+			cJSON_Delete(approved_write);
+			cJSON_Delete(approved_delete);
+			cJSON_Delete(root);
+			return rc;
+		}
+		(void)read_pipes_with_timeout(out_pipe[0], err_pipe[0],
+			&out_buf, &err_buf, timeout, &timed_out);
+		close(out_pipe[0]);
+		close(err_pipe[0]);
+		if (timed_out)
+			(void)kill(pid, SIGKILL);
+		(void)waitpid(pid, &status, 0);
+		if (WIFEXITED(status))
+			exit_code = WEXITSTATUS(status);
+		else if (WIFSIGNALED(status))
+			signal_name = strsignal(WTERMSIG(status));
+		out = cJSON_CreateObject();
+		cJSON_AddStringToObject(out, "command", command);
+		cJSON_AddStringToObject(out, "cwd", effective_cwd);
+		cJSON_AddNumberToObject(out, "exit_code", exit_code);
+		cJSON_AddBoolToObject(out, "timed_out", timed_out);
+		cJSON_AddStringToObject(out, "stdout",
+			out_buf.data ? out_buf.data : "");
+		cJSON_AddStringToObject(out, "stderr",
+			err_buf.data ? err_buf.data : "");
+		cJSON_AddBoolToObject(out, "stdout_truncated",
+			out_buf.len >= BASH_EXEC_MAX_OUTPUT);
+		cJSON_AddBoolToObject(out, "stderr_truncated",
+			err_buf.len >= BASH_EXEC_MAX_OUTPUT);
+		if (signal_name)
+			cJSON_AddStringToObject(out, "signal", signal_name);
+		if (timed_out)
+			cJSON_AddStringToObject(out, "error", "command timed out");
+		else if (exit_code != 0)
+			cJSON_AddStringToObject(out, "error",
+						"command exited with non-zero status");
+		text = cJSON_PrintUnformatted(out);
+		cJSON_Delete(out);
+		morph_buf_cleanup(&out_buf);
+		morph_buf_cleanup(&err_buf);
+		cJSON_Delete(approved_write);
+		cJSON_Delete(approved_delete);
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result,
+			text ? text : strdup("{}"));
+	}
+	return 0;
+}
+
+static int bash_exec_run(const char *args_json, struct tool_result *result,
+			 void *user_data)
+{
+	struct tool_context *tctx = user_data;
+
+	if (tctx && tctx->bash_exec_mode_configured)
+		return bash_exec_run_policy(args_json, result, tctx);
+	return bash_exec_run_legacy(args_json, result, user_data);
+}
+
 int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
@@ -655,18 +1096,13 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "bash_exec", .description = "Execute a shell command in a restricted sandboxed subprocess. "
 		"Captures stdout/stderr and exit code. Use this to run "
 		"commands described in skill instructions (build/test/lint/git/etc.). "
-		"Network and non-essential inherited environment variables are unavailable. "
-		"File writes are limited to cwd/output unless write_paths requests "
-		"additional directory capabilities. Approved session or persistent "
-		"grants are reused automatically. "
-		"Commands matching the configured allowlist run silently; "
-		"anything else triggers an interactive approval prompt to the user "
-		"(yes/no/always). DANGEROUS commands are blocked unconditionally: "
-		"rm, mv, cp, chmod, ssh, kill, and other destructive operations. "
-		"Network/download commands and package manager commands require "
-		"approval unless explicitly allowlisted. "
+		"Local mode can read all files and use the network; writes and deletes "
+		"are confined to workdir/output/tmp unless explicit path capabilities "
+		"receive once/session approval. Server mode uses only configured read, "
+		"write, delete, network, and command rules and never escalates. "
 		"Args: command (required), cwd (optional working dir), "
 		"write_paths (optional array of additional writable directories), "
+		"delete_paths (optional array of additional removable directories), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "
 		"use 30 for quick queries.", .input_schema = "{\"type\":\"object\",\"properties\":{"
@@ -675,7 +1111,11 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"\"write_paths\":{\"type\":\"array\","
 		"\"items\":{\"type\":\"string\"},"
 		"\"description\":\"additional directory capabilities required "
-		"for writes outside cwd/output\"},"
+		"for writes outside the default policy\"},"
+		"\"delete_paths\":{\"type\":\"array\","
+		"\"items\":{\"type\":\"string\"},"
+		"\"description\":\"additional directory capabilities required "
+		"for deletion or rename\"},"
 		"\"timeout_seconds\":{\"type\":\"integer\",\"description\":\"max runtime in seconds (default 60; use 120-300 for builds/tests/git)\"}"
 		"},\"required\":[\"command\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = bash_exec_run, .user_data = tctx, .user_data_destroy = NULL });
 	if (rc == 0) {

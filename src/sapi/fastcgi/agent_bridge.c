@@ -198,8 +198,11 @@ static void bridge_init_once(void)
 
 	g_tctx = tool_context_create(g_config.general.output_dir,
 				     g_config.general.output_dir);
-	if (!g_tctx)
+	if (!g_tctx) {
 		fprintf(stderr, "fcgi-bridge: tool_context_create failed\n");
+		g_init_rc = -ENOMEM;
+		return;
+	}
 	else
 		tool_context_set_default_timeout(
 			g_tctx, g_config.react.tool_timeout_seconds);
@@ -265,16 +268,53 @@ static void bridge_init_once(void)
 	file_info_init(&g_tools, g_tctx);
 
 	if (g_config.react.bash_exec_enabled) {
+		int rc;
+
+		tool_context_set_bash_exec_mode(
+			g_tctx, g_config.react.bash_exec_mode);
+		tool_context_set_bash_exec_server_network(
+			g_tctx,
+			g_config.react.bash_exec_server_network_access);
 		for (int i = 0;
-		     i < g_config.react.bash_exec_allowed_commands_count; i++)
-			tool_context_allow_command_pattern(
+		     i < g_config.react.bash_exec_allowed_commands_count; i++) {
+			rc = tool_context_allow_command_pattern(
 				g_tctx,
 				g_config.react.bash_exec_allowed_commands[i]);
+			if (rc != 0) {
+				g_init_rc = rc;
+				return;
+			}
+		}
 		for (int i = 0;
-		     i < g_config.react.bash_exec_allowed_cwds_count; i++)
-			tool_context_allow_command_scope(
-				g_tctx,
-				g_config.react.bash_exec_allowed_cwds[i]);
+		     i < g_config.react.bash_exec_server_read_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				g_tctx, TOOL_PATH_READ,
+				g_config.react.bash_exec_server_read_paths[i]);
+			if (rc != 0) {
+				g_init_rc = rc;
+				return;
+			}
+		}
+		for (int i = 0;
+		     i < g_config.react.bash_exec_server_write_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				g_tctx, TOOL_PATH_WRITE,
+				g_config.react.bash_exec_server_write_paths[i]);
+			if (rc != 0) {
+				g_init_rc = rc;
+				return;
+			}
+		}
+		for (int i = 0;
+		     i < g_config.react.bash_exec_server_delete_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				g_tctx, TOOL_PATH_DELETE,
+				g_config.react.bash_exec_server_delete_paths[i]);
+			if (rc != 0) {
+				g_init_rc = rc;
+				return;
+			}
+		}
 		bash_exec_init(&g_tools, g_tctx);
 		tool_set_timeout(&g_tools, "bash_exec",
 				 g_config.react.bash_exec_default_timeout);

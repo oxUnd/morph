@@ -197,11 +197,27 @@ execution.  Enable it only when needed:
 
 	[react]
 	bash_exec_enabled = true
+	bash_exec_mode = "local"
 
-Allowed command and cwd patterns can be configured with:
+Local mode can read any file and access the network.  It can write and delete
+below the work directory, output directory, and /tmp.  Additional write or
+delete paths require once/session approval and are never persisted.
 
+Server mode has no runtime approval path.  Every subcommand must match the
+command allowlist, and filesystem/network capabilities come only from config:
+
+	[react]
+	bash_exec_mode = "server"
 	bash_exec_allowed_commands = ["cmake", "ctest", "git"]
-	bash_exec_allowed_cwds = ["/absolute/path/to/project"]
+
+	[react.bash_exec_server]
+	read_paths = ["@workdir", "@output"]
+	write_paths = ["@output"]
+	delete_paths = []
+	network_access = false
+
+Path entries accept @workdir, @output, @tmp, absolute paths, or "*".  The
+legacy bash_exec_allowed_cwds option is ignored by the capability sandbox.
 
 Human-in-the-loop approval:
 

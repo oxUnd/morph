@@ -510,6 +510,16 @@ void config_set_defaults(struct config *cfg)
 
 	cfg->react.bash_exec_enabled = 0;
 	cfg->react.bash_exec_default_timeout = 60;
+	strncpy(cfg->react.bash_exec_mode, "server",
+		sizeof(cfg->react.bash_exec_mode) - 1);
+	strncpy(cfg->react.bash_exec_server_read_paths[0], "@workdir",
+		BASH_EXEC_CWD_MAX - 1);
+	strncpy(cfg->react.bash_exec_server_read_paths[1], "@output",
+		BASH_EXEC_CWD_MAX - 1);
+	cfg->react.bash_exec_server_read_paths_count = 2;
+	strncpy(cfg->react.bash_exec_server_write_paths[0], "@output",
+		BASH_EXEC_CWD_MAX - 1);
+	cfg->react.bash_exec_server_write_paths_count = 1;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
@@ -991,6 +1001,7 @@ int config_load(struct config *cfg, const char *path)
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
 		CFG_BOOL(react, "bash_exec_enabled", cfg->react.bash_exec_enabled);
 		CFG_INT(react, "bash_exec_default_timeout", cfg->react.bash_exec_default_timeout);
+		CFG_STR(react, "bash_exec_mode", cfg->react.bash_exec_mode);
 		cfg_array_t *bc = cfg_array_in(react, "bash_exec_allowed_commands");
 		if (bc) {
 			int count = 0;
@@ -1016,6 +1027,27 @@ int config_load(struct config *cfg, const char *path)
 				free(val.u.s);
 			}
 			cfg->react.bash_exec_allowed_cwds_count = count;
+		}
+		{
+			cfg_table_t *server = cfg_table_in(react,
+							 "bash_exec_server");
+
+			if (server) {
+				load_string_array(server, "read_paths",
+					cfg->react.bash_exec_server_read_paths,
+					&cfg->react.bash_exec_server_read_paths_count,
+					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+				load_string_array(server, "write_paths",
+					cfg->react.bash_exec_server_write_paths,
+					&cfg->react.bash_exec_server_write_paths_count,
+					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+				load_string_array(server, "delete_paths",
+					cfg->react.bash_exec_server_delete_paths,
+					&cfg->react.bash_exec_server_delete_paths_count,
+					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+				CFG_BOOL(server, "network_access",
+					 cfg->react.bash_exec_server_network_access);
+			}
 		}
 		cfg_array_t *ht = cfg_array_in(react, "hitl_tools");
 		if (ht) {
@@ -1342,12 +1374,18 @@ void config_print(const struct config *cfg)
 		 cfg->react.readonly_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
-	log_info("    bash_exec_enabled: %d timeout: %d",
+	log_info("    bash_exec_enabled: %d timeout: %d mode: %s",
 		 cfg->react.bash_exec_enabled,
-		 cfg->react.bash_exec_default_timeout);
+		 cfg->react.bash_exec_default_timeout,
+		 cfg->react.bash_exec_mode);
 	log_info("    bash_exec_allowed_commands: %d allowed_cwds: %d",
 		 cfg->react.bash_exec_allowed_commands_count,
 		 cfg->react.bash_exec_allowed_cwds_count);
+	log_info("    bash_exec_server: read=%d write=%d delete=%d network=%d",
+		 cfg->react.bash_exec_server_read_paths_count,
+		 cfg->react.bash_exec_server_write_paths_count,
+		 cfg->react.bash_exec_server_delete_paths_count,
+		 cfg->react.bash_exec_server_network_access);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)

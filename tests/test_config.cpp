@@ -36,8 +36,15 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
 	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
+	EXPECT_STREQ(cfg.react.bash_exec_mode, "server");
 	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 0);
 	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 0);
+	ASSERT_EQ(cfg.react.bash_exec_server_read_paths_count, 2);
+	EXPECT_STREQ(cfg.react.bash_exec_server_read_paths[0], "@workdir");
+	ASSERT_EQ(cfg.react.bash_exec_server_write_paths_count, 1);
+	EXPECT_STREQ(cfg.react.bash_exec_server_write_paths[0], "@output");
+	EXPECT_EQ(cfg.react.bash_exec_server_delete_paths_count, 0);
+	EXPECT_EQ(cfg.react.bash_exec_server_network_access, 0);
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
@@ -96,8 +103,15 @@ model = "gpt-image-2"
 max_iterations = 5
 tool_timeout_seconds = 45
 bash_exec_enabled = true
+bash_exec_mode = "local"
 bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
 bash_exec_allowed_cwds = ["/tmp"]
+
+[react.bash_exec_server]
+read_paths = ["@workdir", "/srv/reference"]
+write_paths = ["@output", "/srv/cache"]
+delete_paths = ["/srv/cache"]
+network_access = true
 
 [context]
 keep_recent_rounds = 10
@@ -130,11 +144,20 @@ include = ["config.toml", "output"]
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
+	EXPECT_STREQ(cfg.react.bash_exec_mode, "local");
 	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 2);
 	EXPECT_STREQ(cfg.react.bash_exec_allowed_commands[0],
 		     "cmake --build build");
 	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 1);
 	EXPECT_STREQ(cfg.react.bash_exec_allowed_cwds[0], "/tmp");
+	ASSERT_EQ(cfg.react.bash_exec_server_read_paths_count, 2);
+	EXPECT_STREQ(cfg.react.bash_exec_server_read_paths[1],
+		     "/srv/reference");
+	ASSERT_EQ(cfg.react.bash_exec_server_write_paths_count, 2);
+	EXPECT_STREQ(cfg.react.bash_exec_server_write_paths[1], "/srv/cache");
+	ASSERT_EQ(cfg.react.bash_exec_server_delete_paths_count, 1);
+	EXPECT_STREQ(cfg.react.bash_exec_server_delete_paths[0], "/srv/cache");
+	EXPECT_EQ(cfg.react.bash_exec_server_network_access, 1);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
 	EXPECT_EQ(cfg.sync.enabled, 1);
 	EXPECT_STREQ(cfg.sync.dir, "/tmp/morph-sync");
@@ -334,6 +357,10 @@ TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
 	EXPECT_EQ(config_validate_text("[model.text]\nretry_count = 11\n",
 		&error), MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_RANGE);
+	EXPECT_EQ(config_validate_text(
+		"[react]\nbash_exec_mode = \"remote\"\n", &error),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
 }
 
 TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)
@@ -348,6 +375,19 @@ TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)
 	EXPECT_EQ(config_validate_text(
 		"[context]\nsummarize_threshold_ratio = 0.4\n", &error),
 		MORPH_ERR_CONFIG);
+}
+
+TEST(ConfigValidationTest, RejectsRelativeBashExecServerPaths)
+{
+	struct config_validation_error error = {};
+	const char *toml = R"(
+[react.bash_exec_server]
+read_paths = ["@workdir", "relative/path"]
+)";
+
+	EXPECT_EQ(config_validate_text(toml, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+	EXPECT_STREQ(error.path, "react.bash_exec_server.read_paths");
 }
 
 TEST(ConfigValidationTest, ValidatesMcpRequirements)

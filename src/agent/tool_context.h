@@ -20,6 +20,7 @@ enum tool_path_op {
 	TOOL_PATH_READ = 0,
 	TOOL_PATH_LIST = 1,
 	TOOL_PATH_WRITE = 2,
+	TOOL_PATH_DELETE = 3,
 };
 
 enum tool_operation_kind {
@@ -29,6 +30,7 @@ enum tool_operation_kind {
 	TOOL_OP_PATH_WRITE = 3,
 	TOOL_OP_NETWORK = 4,
 	TOOL_OP_EXTERNAL_SEND = 5,
+	TOOL_OP_PATH_DELETE = 6,
 };
 
 enum tool_operation_verdict {
@@ -78,6 +80,15 @@ struct tool_context {
 	struct db *grant_db;
 	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int default_timeout_seconds;
+	int bash_exec_local_mode;
+	int bash_exec_mode_configured;
+	int bash_exec_server_network_access;
+	char bash_exec_server_read_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int bash_exec_server_read_dirs_count;
+	char bash_exec_server_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int bash_exec_server_write_dirs_count;
+	char bash_exec_server_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int bash_exec_server_delete_dirs_count;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -129,6 +140,22 @@ int tool_context_request_write_access(struct tool_context *tctx,
 int tool_context_collect_write_grants(const struct tool_context *tctx,
 				      const char *principal,
 				      const char **paths, int max_paths);
+void tool_context_set_bash_exec_mode(struct tool_context *tctx,
+				     const char *mode);
+void tool_context_set_bash_exec_server_network(struct tool_context *tctx,
+					       int enabled);
+int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
+					   enum tool_path_op op,
+					   const char *path);
+int tool_context_request_delete_access(struct tool_context *tctx,
+				       const char *principal,
+				       const char *command,
+				       const char *path,
+				       char *resolved,
+				       size_t resolved_size);
+int tool_context_collect_delete_grants(const struct tool_context *tctx,
+				       const char *principal,
+				       const char **paths, int max_paths);
 
 #ifdef __cplusplus
 }

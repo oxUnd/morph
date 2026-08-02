@@ -405,14 +405,44 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	if (profile->enable_config_write)
 		config_write_init(profile->tools, tctx, profile->config_path);
 	if (profile->enable_bash && config->react.bash_exec_enabled) {
+		tool_context_set_bash_exec_mode(
+			tctx, config->react.bash_exec_mode);
+		tool_context_set_bash_exec_server_network(
+			tctx, config->react.bash_exec_server_network_access);
 		for (int i = 0;
-		     i < config->react.bash_exec_allowed_commands_count; i++)
-			tool_context_allow_command_pattern(
+		     i < config->react.bash_exec_allowed_commands_count; i++) {
+			rc = tool_context_allow_command_pattern(
 				tctx, config->react.bash_exec_allowed_commands[i]);
+			if (rc != 0)
+				return rc;
+		}
 		for (int i = 0;
-		     i < config->react.bash_exec_allowed_cwds_count; i++)
-			tool_context_allow_command_scope(
-				tctx, config->react.bash_exec_allowed_cwds[i]);
+		     i < config->react.bash_exec_server_read_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				tctx, TOOL_PATH_READ,
+				config->react.bash_exec_server_read_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (int i = 0;
+		     i < config->react.bash_exec_server_write_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				tctx, TOOL_PATH_WRITE,
+				config->react.bash_exec_server_write_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (int i = 0;
+		     i < config->react.bash_exec_server_delete_paths_count; i++) {
+			rc = tool_context_add_bash_exec_server_path(
+				tctx, TOOL_PATH_DELETE,
+				config->react.bash_exec_server_delete_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		if (config->react.bash_exec_allowed_cwds_count > 0)
+			log_warn("react.bash_exec_allowed_cwds is deprecated and "
+				 "ignored");
 		bash_exec_init(profile->tools, tctx);
 		tool_set_timeout(profile->tools, "bash_exec",
 				 config->react.bash_exec_default_timeout);

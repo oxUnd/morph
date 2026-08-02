@@ -6,6 +6,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <limits.h>
 #include <string>
 #include <unistd.h>
 #include <fcntl.h>
@@ -13,6 +14,9 @@ extern "C" {
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 /*
  * Run a callable in a forked child so we don't pollute the test
@@ -233,4 +237,133 @@ TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 TEST(SandboxEnterTest, RejectsNullConfig)
 {
 	EXPECT_EQ(sandbox_enter(NULL), -EINVAL);
+}
+
+TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
+{
+	char write_dir[] = "/tmp/morph_sb_write_XXXXXX";
+	char delete_dir[] = "/tmp/morph_sb_delete_XXXXXX";
+	char write_file[PATH_MAX];
+	char delete_file[PATH_MAX];
+	char resolved_write_dir[PATH_MAX];
+	char resolved_delete_dir[PATH_MAX];
+
+	ASSERT_NE(mkdtemp(write_dir), nullptr);
+	ASSERT_NE(mkdtemp(delete_dir), nullptr);
+	ASSERT_NE(realpath(write_dir, resolved_write_dir), nullptr);
+	ASSERT_NE(realpath(delete_dir, resolved_delete_dir), nullptr);
+	ASSERT_GT(snprintf(write_file, sizeof(write_file), "%s/file", write_dir),
+		0);
+	ASSERT_GT(snprintf(delete_file, sizeof(delete_file), "%s/file",
+		delete_dir), 0);
+	int fd = open(write_file, O_CREAT | O_WRONLY, 0600);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	fd = open(delete_file, O_CREAT | O_WRONLY, 0600);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	int rc = run_in_child([&]() {
+		char *write_paths[] = {write_dir, resolved_write_dir};
+		char *delete_paths[] = {delete_dir, resolved_delete_dir};
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.write_paths = write_paths;
+		cfg.write_paths_count = 2;
+		cfg.delete_paths = delete_paths;
+		cfg.delete_paths_count = 2;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int write_fd = open(write_file, O_WRONLY);
+		if (write_fd < 0)
+			return 11;
+		if (write(write_fd, "x", 1) != 1) {
+			close(write_fd);
+			return 12;
+		}
+		close(write_fd);
+		if (unlink(write_file) == 0)
+			return 13;
+		write_fd = open(delete_file, O_WRONLY);
+		if (write_fd >= 0) {
+			close(write_fd);
+			return 14;
+		}
+		if (unlink(delete_file) != 0)
+			return 15;
+		return 0;
+	});
+	EXPECT_EQ(rc, 0);
+	unlink(write_file);
+	unlink(delete_file);
+	rmdir(write_dir);
+	rmdir(delete_dir);
+}
+
+static int create_loopback_listener(uint16_t *port)
+{
+	struct sockaddr_in address = {};
+	socklen_t length = sizeof(address);
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if (fd < 0)
+		return -1;
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = 0;
+	if (bind(fd, reinterpret_cast<struct sockaddr *>(&address),
+		 sizeof(address)) != 0 ||
+	    getsockname(fd, reinterpret_cast<struct sockaddr *>(&address),
+			&length) != 0 || listen(fd, 1) != 0) {
+		close(fd);
+		return -1;
+	}
+	*port = ntohs(address.sin_port);
+	return fd;
+}
+
+static int sandbox_loopback_connect(uint16_t port, int network_access)
+{
+	return run_in_child([=]() {
+		struct sandbox_config cfg = {};
+		struct sockaddr_in address = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.network_access = network_access;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (fd < 0)
+			return 11;
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		address.sin_port = htons(port);
+		int rc = connect(fd,
+			reinterpret_cast<struct sockaddr *>(&address),
+			sizeof(address));
+		close(fd);
+		return rc == 0 ? 0 : 12;
+	});
+}
+
+TEST(SandboxEnterTest, PathPolicyDeniesNetworkByDefault)
+{
+	uint16_t port = 0;
+	int listener = create_loopback_listener(&port);
+
+	ASSERT_GE(listener, 0);
+	EXPECT_NE(sandbox_loopback_connect(port, 0), 0);
+	close(listener);
+}
+
+TEST(SandboxEnterTest, PathPolicyAllowsConfiguredNetwork)
+{
+	uint16_t port = 0;
+	int listener = create_loopback_listener(&port);
+
+	ASSERT_GE(listener, 0);
+	EXPECT_EQ(sandbox_loopback_connect(port, 1), 0);
+	close(listener);
 }

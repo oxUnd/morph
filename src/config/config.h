@@ -124,10 +124,18 @@ struct config_react {
 	int hitl_auto_approve_readonly;
 	int bash_exec_enabled;
 	int bash_exec_default_timeout;
+	char bash_exec_mode[16];
 	char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_COMMAND_MAX];
 	int bash_exec_allowed_commands_count;
 	char bash_exec_allowed_cwds[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
 	int bash_exec_allowed_cwds_count;
+	char bash_exec_server_read_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int bash_exec_server_read_paths_count;
+	char bash_exec_server_write_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int bash_exec_server_write_paths_count;
+	char bash_exec_server_delete_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int bash_exec_server_delete_paths_count;
+	int bash_exec_server_network_access;
 };
 
 struct config_context {

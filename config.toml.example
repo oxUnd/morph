@@ -147,18 +147,16 @@ max_iterations      = 15
 tool_timeout_seconds  = 300
 tool_max_retries    = 3
 # Disabled by default because this permits model-initiated process execution.
-# When enabled, commands have no network or secret environment access, and
-# can write only below their explicit cwd.
+# Environment secrets are filtered in both modes. Filesystem and network
+# capabilities are controlled by bash_exec_mode below.
 bash_exec_enabled = false
 bash_exec_default_timeout = 60
-# Allowlist patterns. Commands matching one of these run silently.
-# Anything NOT matched (and not on the hardcoded dangerous blocklist
-# like rm/mv/cp/chmod/curl/wget/ssh/kill/apt/pip/npm/...) triggers an
-# interactive approval prompt before execution. "session" keeps the
-# program/cwd until exit; "always" persists it for this project.
+bash_exec_mode = "server"       # local | server
+# Server command allowlist patterns. Every subcommand in a compound shell
+# command must match. Local mode does not use a command allowlist.
 #
 # Pattern syntax for bash_exec_allowed_commands:
-#   "*"                  any command (dangerous blocklist still applies)
+#   "*"                  any command
 #   "prog"               any invocation of `prog` (e.g. `prog --help`)
 #   "prog *"             any command starting with `prog `
 #   "prog sub *"         any command starting with `prog sub `
@@ -173,14 +171,14 @@ bash_exec_default_timeout = 60
 #   "cmake --build build",      # legacy exact match still works
 # ]
 #
-# bash_exec_allowed_cwds entries are interpreted as subtree roots:
-# the requested cwd is allowed if it equals one of these paths or
-# resolves to a subdirectory of one. Use "*" to allow any cwd.
-# bash_exec_allowed_cwds = ["/absolute/path/to/your/project"]
+# Deprecated: bash_exec_allowed_cwds is ignored by the capability sandbox.
 #
-# A command that needs to keep state outside cwd/output can request
-# write_paths in its tool call. The same once/session/always choices apply,
-# and persistent grants are scoped to the program and current project.
+# Local mode reads all files, has network access, and may write/delete only
+# below workdir, output, and /tmp without approval. Additional write/delete
+# paths require once/session approval.
+#
+# In local mode, a tool call can request write_paths or delete_paths outside
+# the defaults. The CLI offers once/session/deny; these grants are never saved.
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names
@@ -267,6 +265,14 @@ hitl_enabled = false
 # hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
 # Automatically approve tools listed in readonly_tools without prompting.
 hitl_auto_approve_readonly = true
+
+# Server mode never requests runtime escalation. It trusts only these rules.
+# Special roots: @workdir, @output, @tmp. Absolute paths and "*" are accepted.
+[react.bash_exec_server]
+read_paths = ["@workdir", "@output"]
+write_paths = ["@output"]
+delete_paths = []
+network_access = false
 
 [context]
 # Compress when token usage exceeds context_limit * threshold

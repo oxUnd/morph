@@ -12,6 +12,16 @@ extern "C" {
 
 struct sandbox_config {
 	unsigned int permissions;
+	int path_policy_enabled;
+	int read_all;
+	char **read_paths;
+	int read_paths_count;
+	char **write_paths;
+	int write_paths_count;
+	char **delete_paths;
+	int delete_paths_count;
+	int network_access;
+	int process_exec;
 	char **allowed_paths;
 	int allowed_paths_count;
 	char **allowed_env;

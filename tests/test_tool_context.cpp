@@ -321,6 +321,17 @@ static enum tool_operation_verdict op_deny(
 	return TOOL_OP_DENY;
 }
 
+static enum tool_operation_verdict op_session(
+	const struct tool_operation *op, void *user_data)
+{
+	int *calls = static_cast<int *>(user_data);
+
+	EXPECT_EQ(op->kind, TOOL_OP_PATH_DELETE);
+	if (calls)
+		(*calls)++;
+	return TOOL_OP_SESSION;
+}
+
 static int op_always_calls = 0;
 static enum tool_operation_verdict op_always(
 	const struct tool_operation *op, void *user_data)
@@ -740,6 +751,116 @@ TEST_F(ToolContextTest, PersistentScopedWriteGrantLoadsInNewContext)
 	db_close(&db);
 	std::remove(db_path);
 	rmdir(state_dir);
+}
+
+TEST_F(ToolContextTest, ConfiguresIndependentServerCapabilityRoots)
+{
+	struct tool_context *tctx = tool_context_create(
+		"/tmp", "/tmp");
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_bash_exec_mode(tctx, "server");
+	EXPECT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_READ, "@workdir"), 0);
+	EXPECT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_WRITE, "@output"), 0);
+	EXPECT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_DELETE, "@tmp"), 0);
+	ASSERT_EQ(tctx->bash_exec_server_read_dirs_count, 1);
+	ASSERT_EQ(tctx->bash_exec_server_write_dirs_count, 1);
+	ASSERT_EQ(tctx->bash_exec_server_delete_dirs_count, 1);
+	EXPECT_STREQ(tctx->bash_exec_server_read_dirs[0],
+		tool_context_workdir(tctx));
+	EXPECT_STREQ(tctx->bash_exec_server_write_dirs[0],
+		tool_context_output_dir(tctx));
+	EXPECT_TRUE(path_is_within("/tmp",
+		tctx->bash_exec_server_delete_dirs[0]));
+	EXPECT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_WRITE, "relative/path"), -EINVAL);
+	EXPECT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_WRITE, "/tmp/morph-path-does-not-exist"),
+		-ENOENT);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, ServerRequiresEveryCompoundCommandToMatch)
+{
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_bash_exec_mode(tctx, "server");
+	ASSERT_EQ(tool_context_allow_command_pattern(
+		tctx, "cmake --build build"), 0);
+	ASSERT_EQ(tool_context_allow_command_pattern(
+		tctx, "ctest *"), 0);
+	EXPECT_EQ(check_command(tctx,
+		"cmake --build build && ctest --output-on-failure", NULL), 0);
+	EXPECT_EQ(check_command(tctx,
+		"cmake --build other && ctest --output-on-failure", NULL),
+		-EPERM);
+	EXPECT_EQ(check_command(tctx,
+		"cmake --build build && curl https://example.com", NULL),
+		-EPERM);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, LocalModeDoesNotRequireCommandApproval)
+{
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	EXPECT_EQ(check_command(tctx, "rm -rf ./generated", NULL), 0);
+	EXPECT_EQ(check_command(tctx, "curl https://example.com", NULL), 0);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, LocalModeIgnoresLegacyPersistentWriteGrants)
+{
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	struct permission_grant *grant;
+	char resolved[PATH_MAX];
+
+	ASSERT_NE(tctx, nullptr);
+	grant = static_cast<struct permission_grant *>(
+		morph_array_push(&tctx->persistent_grants));
+	ASSERT_NE(grant, nullptr);
+	memset(grant, 0, sizeof(*grant));
+	snprintf(grant->subject, sizeof(grant->subject), "%s", "shell");
+	snprintf(grant->resource_kind, sizeof(grant->resource_kind), "%s",
+		"write_path");
+	snprintf(grant->resource, sizeof(grant->resource), "%s", "/");
+	tool_context_set_bash_exec_mode(tctx, "local");
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	EXPECT_EQ(tool_context_request_write_access(
+		tctx, "shell", "touch /file", "/", resolved,
+		sizeof(resolved)), -EACCES);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, DeleteSessionGrantIsCapabilityScoped)
+{
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	const char *paths[2] = {};
+	char resolved[PATH_MAX];
+	int calls = 0;
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	tool_context_set_operation_approval(tctx, op_session, &calls);
+	EXPECT_EQ(tool_context_request_delete_access(
+		tctx, "/bin/rm", "rm file", "/tmp",
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(calls, 1);
+	EXPECT_EQ(tool_context_collect_delete_grants(
+		tctx, "/bin/rm", paths, 2), 1);
+	EXPECT_EQ(tool_context_collect_write_grants(
+		tctx, "/bin/rm", paths, 2), 0);
+	EXPECT_EQ(tool_context_request_delete_access(
+		tctx, "/bin/rm", "rm file", "/tmp",
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(calls, 1);
+	tool_context_destroy(tctx);
 }
 
 TEST_F(ToolContextTest, CheckCommandPatternWildcard) {
