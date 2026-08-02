@@ -5,6 +5,7 @@ extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/list_ui.h"
+#include "util/file.h"
 }
 
 #include <cstdlib>
@@ -211,7 +212,21 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	EXPECT_NE(backup_output.find("data.db"), std::string::npos);
 	EXPECT_NE(backup_output.find(backups[0].snapshot_id), std::string::npos);
 	EXPECT_NE(backup_output.find("created"), std::string::npos);
+	std::string restore_command = "/sync restore-db " +
+		std::string(backups[0].snapshot_id) + " --yes";
+	testing::internal::CaptureStdout();
+	rc = cli_command_dispatch(&context, restore_command.c_str());
+	std::string restore_output = testing::internal::GetCapturedStdout();
+	ASSERT_EQ(rc, 0);
+	EXPECT_EQ(context.pending_db_restore, 1);
+	EXPECT_EQ(context.running, 0);
+	EXPECT_NE(restore_output.find("restore prepared"), std::string::npos);
 	morph_sync_backups_free(backups);
+	runtime_close(runtime);
+	runtime = nullptr;
+	ASSERT_EQ(morph_sync_apply_db_replace(&context.db_restore_plan), 0);
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	EXPECT_FALSE(file_exists(context.db_restore_plan.journal));
 
 	cli_command_registry_clear();
 	runtime_close(runtime);

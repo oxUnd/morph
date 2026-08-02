@@ -514,6 +514,271 @@ TEST_F(SyncTest, RevertedSqliteCreatesAnotherImmutableVersion) {
 	morph_sync_backups_free(backups);
 }
 
+TEST_F(SyncTest, TransactionalDatabaseReplaceCanCommitAndRollback) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	char original_snapshot[MORPH_SYNC_SNAPSHOT_ID_MAX];
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+	sqlite3 *db = nullptr;
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	snprintf(original_snapshot, sizeof(original_snapshot), "%s",
+		 backups[0].snapshot_id);
+	morph_sync_backups_free(backups);
+	backups = nullptr;
+	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
+	ASSERT_EQ(sqlite3_exec(db, "INSERT INTO items(value) VALUES('new')",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	sqlite3_close(db);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 2);
+
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, original_snapshot,
+		&plan), 0);
+	EXPECT_EQ(SqliteCount(database), 2);
+	EXPECT_TRUE(file_exists(plan.staging));
+	ASSERT_EQ(morph_sync_apply_db_replace(&plan), 0);
+	EXPECT_EQ(SqliteCount(database), 1);
+	EXPECT_TRUE(file_exists(plan.rollback));
+	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
+	EXPECT_EQ(SqliteCount(database), 2);
+	EXPECT_FALSE(file_exists(plan.journal));
+
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, original_snapshot,
+		&plan), 0);
+	ASSERT_EQ(morph_sync_apply_db_replace(&plan), 0);
+	EXPECT_EQ(SqliteCount(database), 1);
+	ASSERT_EQ(morph_sync_commit_db_replace(&plan), 0);
+	EXPECT_FALSE(file_exists(plan.rollback));
+	EXPECT_FALSE(file_exists(plan.journal));
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, RecoversPreparedAndFinalizesAppliedRestoreJournals) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	char *json = nullptr;
+	struct morph_sync_restore_plan decoded;
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	json = morph_sync_restore_plan_to_json(&plan);
+	ASSERT_NE(json, nullptr);
+	ASSERT_EQ(morph_sync_restore_plan_from_json(json, &decoded), 0);
+	EXPECT_STREQ(decoded.target, plan.target);
+	free(json);
+	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	EXPECT_FALSE(file_exists(plan.staging));
+	EXPECT_FALSE(file_exists(plan.journal));
+
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	ASSERT_EQ(morph_sync_apply_db_replace(&plan), 0);
+	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	EXPECT_TRUE(file_exists(plan.journal));
+	ASSERT_EQ(morph_sync_finalize_db_replacements(local), 0);
+	EXPECT_FALSE(file_exists(plan.rollback));
+	EXPECT_FALSE(file_exists(plan.journal));
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, PrepareProtectsUncheckpointedLiveWalState) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	char original_snapshot[MORPH_SYNC_SNAPSHOT_ID_MAX];
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+	std::string protected_copy = std::string(root) + "/protected.db";
+	sqlite3 *db = nullptr;
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	snprintf(original_snapshot, sizeof(original_snapshot), "%s",
+		 backups[0].snapshot_id);
+	morph_sync_backups_free(backups);
+	backups = nullptr;
+	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
+	ASSERT_EQ(sqlite3_exec(db, "PRAGMA wal_autocheckpoint=0;"
+		"INSERT INTO items(value) VALUES('live-wal')",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, original_snapshot,
+		&plan), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 2);
+	const char *protected_snapshot = strcmp(backups[0].snapshot_id,
+		original_snapshot) == 0 ? backups[1].snapshot_id :
+		backups[0].snapshot_id;
+	ASSERT_EQ(morph_sync_restore_db(&cfg, protected_snapshot,
+		protected_copy.c_str()), 0);
+	EXPECT_EQ(SqliteCount(protected_copy), 2);
+	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
+	sqlite3_close(db);
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database, 2);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	ASSERT_EQ(std::rename(plan.target, plan.rollback), 0);
+	char *text = file_read_all(plan.journal, nullptr);
+	ASSERT_NE(text, nullptr);
+	cJSON *json = cJSON_Parse(text);
+	free(text);
+	ASSERT_NE(json, nullptr);
+	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "phase",
+		cJSON_CreateString("applying")));
+	char *updated = cJSON_PrintUnformatted(json);
+	ASSERT_NE(updated, nullptr);
+	ASSERT_EQ(file_write_all(plan.journal, updated, strlen(updated)), 0);
+	free(updated);
+	cJSON_Delete(json);
+
+	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	EXPECT_EQ(SqliteCount(database), 2);
+	EXPECT_FALSE(file_exists(plan.rollback));
+	EXPECT_FALSE(file_exists(plan.journal));
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, RejectsChangedStagingDatabaseBeforeReplacement) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+	FILE *file;
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database, 2);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	file = fopen(plan.staging, "ab");
+	ASSERT_NE(file, nullptr);
+	ASSERT_EQ(fwrite("x", 1, 1, file), 1u);
+	ASSERT_EQ(fclose(file), 0);
+	EXPECT_EQ(morph_sync_apply_db_replace(&plan), MORPH_ERR_FORMAT);
+	EXPECT_EQ(SqliteCount(database), 2);
+	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, RejectsTamperedRestorePlanAndSnapshotPathTraversal) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	struct morph_sync_restore_plan tampered;
+	char manifest[PATH_MAX];
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	tampered = plan;
+	snprintf(tampered.target, sizeof(tampered.target), "%s", "/tmp/x.db");
+	EXPECT_EQ(morph_sync_apply_db_replace(&tampered), MORPH_ERR_FORMAT);
+	EXPECT_EQ(SqliteCount(database), 1);
+	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
+
+	snprintf(manifest, sizeof(manifest),
+		 "%s/.morph-sync/db/v1/snapshots/%s.json", remote,
+		 backups[0].snapshot_id);
+	char *text = file_read_all(manifest, nullptr);
+	ASSERT_NE(text, nullptr);
+	cJSON *json = cJSON_Parse(text);
+	free(text);
+	ASSERT_NE(json, nullptr);
+	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "path",
+		cJSON_CreateString("../outside.db")));
+	char *updated = cJSON_PrintUnformatted(json);
+	ASSERT_NE(updated, nullptr);
+	ASSERT_EQ(file_write_all(manifest, updated, strlen(updated)), 0);
+	free(updated);
+	cJSON_Delete(json);
+	EXPECT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), MORPH_ERR_FORMAT);
+	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
+	struct morph_sync_status st;
+	struct morph_sync_backup *backups = nullptr;
+	struct morph_sync_restore_plan plan;
+	int count = 0;
+	std::string database = std::string(local) + "/actual.db";
+	char *original;
+
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(database);
+	ASSERT_EQ(morph_sync_once(&cfg, &st), 0);
+	ASSERT_EQ(morph_sync_backups(&cfg, "actual.db", &backups, &count), 0);
+	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
+		&plan), 0);
+	original = file_read_all(plan.journal, nullptr);
+	ASSERT_NE(original, nullptr);
+	cJSON *json = cJSON_Parse(original);
+	ASSERT_NE(json, nullptr);
+	ASSERT_TRUE(cJSON_ReplaceItemInObject(json, "target",
+		cJSON_CreateString("/tmp/untrusted.db")));
+	char *tampered = cJSON_PrintUnformatted(json);
+	ASSERT_NE(tampered, nullptr);
+	ASSERT_EQ(file_write_all(plan.journal, tampered, strlen(tampered)), 0);
+	free(tampered);
+	cJSON_Delete(json);
+	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	EXPECT_EQ(SqliteCount(database), 1);
+	EXPECT_TRUE(file_exists(plan.journal));
+	ASSERT_EQ(file_write_all(plan.journal, original, strlen(original)), 0);
+	free(original);
+	ASSERT_EQ(morph_sync_rollback_db_replace(&plan), 0);
+	morph_sync_backups_free(backups);
+}
+
 TEST_F(SyncTest, RejectsCorruptDatabaseChunkWithoutPublishingRestore) {
 	struct morph_sync_status st;
 	struct morph_sync_backup *backups = nullptr;

@@ -432,7 +432,42 @@ int main(int argc, char *argv[])
 	if (one_shot_prompt) {
 		cli_run_once(&ctx, one_shot_prompt);
 	} else {
-		cli_run(&ctx);
+		for (;;) {
+			struct morph_sync_restore_plan plan;
+			int restored;
+
+			cli_run(&ctx);
+			if (!ctx.pending_db_restore)
+				break;
+			plan = ctx.db_restore_plan;
+			cli_shutdown(&ctx);
+			rc = morph_sync_apply_db_replace(&plan);
+			restored = rc == 0;
+			if (rc != 0) {
+				fprintf(stderr, "morph: restore failed: %s\n",
+					morph_strerror(rc));
+			}
+			rc = cli_init(&ctx, config_path, workdir,
+				      presentation_mode);
+			if (rc < 0 && file_exists(plan.rollback)) {
+				(void)morph_sync_rollback_db_replace(&plan);
+				restored = 0;
+				rc = cli_init(&ctx, config_path, workdir,
+					      presentation_mode);
+			}
+			if (rc < 0) {
+				fprintf(stderr, "morph: failed to restart: %s\n",
+					morph_strerror(rc));
+				http_cleanup();
+				log_shutdown();
+				return 1;
+			}
+			if (restored) {
+				printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET
+				       "database restored; Morph restarted\n");
+			}
+			ctx.trace_json = trace_json;
+		}
 	}
 	cli_shutdown(&ctx);
 	http_cleanup();

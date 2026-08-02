@@ -41,5 +41,8 @@ int runtime_sync_backups(struct runtime *runtime, const char *path,
 			 struct morph_sync_backup **out, int *count);
 int runtime_sync_restore_db(struct runtime *runtime, const char *snapshot_id,
 			    const char *destination);
+int runtime_sync_prepare_db_replace(struct runtime *runtime,
+				    const char *snapshot_id,
+				    struct morph_sync_restore_plan *plan);
 
 #endif

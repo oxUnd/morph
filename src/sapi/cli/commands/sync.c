@@ -204,6 +204,51 @@ static int sync_cmd_restore_db(struct cli_context *ctx, const char *snapshot_id,
 	return rc;
 }
 
+static int sync_confirm_db_replace(const char *path)
+{
+	char answer[16];
+	FILE *tty;
+
+	printf(ANSI_BOLD ANSI_YELLOW
+	       "? Replace %s with this backup? Current data will be backed up. "
+	       "[y/N]: " ANSI_RESET, path);
+	fflush(stdout);
+	tty = fopen("/dev/tty", "r");
+	if (!tty) {
+		putchar('\n');
+		return 0;
+	}
+	if (!fgets(answer, sizeof(answer), tty))
+		answer[0] = '\0';
+	fclose(tty);
+	return answer[0] == 'y' || answer[0] == 'Y';
+}
+
+static int sync_cmd_replace_db(struct cli_context *ctx,
+			       const char *snapshot_id, int confirmed)
+{
+	struct morph_sync_restore_plan plan;
+	int rc;
+
+	rc = runtime_sync_prepare_db_replace(ctx->runtime, snapshot_id, &plan);
+	if (rc != 0) {
+		CMD_ERROR("database restore preparation failed: %s",
+			  morph_strerror(rc));
+		return rc;
+	}
+	if (!confirmed && !sync_confirm_db_replace(plan.path)) {
+		(void)morph_sync_rollback_db_replace(&plan);
+		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
+		printf(ANSI_DIM "  cancelled" ANSI_RESET "\n");
+		return 0;
+	}
+	ctx->db_restore_plan = plan;
+	ctx->pending_db_restore = 1;
+	ctx->running = 0;
+	CMD_OK("restore prepared; restarting Morph to replace %s", plan.path);
+	return 0;
+}
+
 static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
@@ -218,11 +263,25 @@ static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 		return sync_cmd_restore(ctx, cli_cmd_arg(argc, argv, 2));
 	if (strcmp(sub, "backups") == 0)
 		return sync_cmd_backups(ctx, cli_cmd_arg(argc, argv, 2));
-	if (strcmp(sub, "restore-db") == 0)
-		return sync_cmd_restore_db(ctx, cli_cmd_arg(argc, argv, 2),
-					   cli_cmd_arg(argc, argv, 3));
+	if (strcmp(sub, "restore-db") == 0) {
+		const char *snapshot_id = cli_cmd_arg(argc, argv, 2);
+		const char *destination = cli_cmd_arg(argc, argv, 3);
+		int yes = destination &&
+			(strcmp(destination, "--yes") == 0 ||
+			 strcmp(destination, "-y") == 0);
+
+		if (!snapshot_id) {
+			CMD_ERROR("usage: /sync restore-db <snapshot-id> "
+				  "[destination|--yes]");
+			return -EINVAL;
+		}
+		if (destination && !yes)
+			return sync_cmd_restore_db(ctx, snapshot_id, destination);
+		return sync_cmd_replace_db(ctx, snapshot_id, yes);
+	}
 	CMD_ERROR("usage: /sync [status|now|conflicts|restore <trash-id>|"
-		  "backups [path]|restore-db <snapshot-id> <destination>]");
+		  "backups [path]|restore-db <snapshot-id> "
+		  "[destination|--yes]]");
 	return -EINVAL;
 }
 
@@ -231,7 +290,8 @@ int cli_register_sync_commands(void)
 	static const struct cli_command cmds[] = {
 		{ "/sync", sync_cmd, "Manage .morph directory sync",
 		  "/sync [status|now|conflicts|restore <trash-id>|"
-		  "backups [path]|restore-db <snapshot-id> <destination>]" },
+		  "backups [path]|restore-db <snapshot-id> "
+		  "[destination|--yes]]" },
 	};
 
 	return cli_command_register_many(cmds,

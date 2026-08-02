@@ -260,3 +260,23 @@ int runtime_sync_restore_db(struct runtime *runtime, const char *snapshot_id,
 	return rc == 0 ? morph_sync_restore_db(&config, snapshot_id,
 						destination) : rc;
 }
+
+int runtime_sync_prepare_db_replace(struct runtime *runtime,
+				    const char *snapshot_id,
+				    struct morph_sync_restore_plan *plan)
+{
+	struct morph_sync_config config;
+	int was_running;
+	int rc;
+
+	if (!runtime || !snapshot_id || !plan)
+		MORPH_RETURN(-EINVAL);
+	was_running = runtime_sync_running(runtime);
+	runtime_sync_stop_instance(runtime);
+	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
+	if (rc == 0)
+		rc = morph_sync_prepare_db_replace(&config, snapshot_id, plan);
+	if (rc != 0 && was_running)
+		(void)runtime_sync_start_instance(runtime, NULL, NULL);
+	return rc;
+}

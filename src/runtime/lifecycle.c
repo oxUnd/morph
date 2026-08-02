@@ -10,6 +10,7 @@
 #include "event/event.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/log.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -64,6 +65,39 @@ static int runtime_emit_background(void *user_data, const char *name,
 	return rc;
 }
 
+static int runtime_sync_source_directory(const struct runtime *runtime,
+					 const char *expanded_database,
+					 char source[PATH_MAX])
+{
+	char *expanded = NULL;
+	char *slash;
+	const char *base = runtime->context.config_path;
+
+	if (!base[0]) {
+		if (expanded_database) {
+			base = expanded_database;
+		} else {
+			expanded = file_expand_path(runtime->options.db_path);
+			if (!expanded)
+				MORPH_RETURN(-ENOMEM);
+			base = expanded;
+		}
+	}
+	if (strlen(base) >= PATH_MAX) {
+		free(expanded);
+		MORPH_RETURN(-ENAMETOOLONG);
+	}
+	strncpy(source, base, PATH_MAX - 1);
+	source[PATH_MAX - 1] = '\0';
+	free(expanded);
+	slash = strrchr(source, '/');
+	if (slash)
+		*slash = '\0';
+	else
+		strncpy(source, ".", PATH_MAX - 1);
+	return 0;
+}
+
 static int runtime_load_config(struct runtime *runtime)
 {
 	struct runtime_context *ctx = &runtime->context;
@@ -90,6 +124,7 @@ static int runtime_load_config(struct runtime *runtime)
 static int runtime_open_database(struct runtime *runtime)
 {
 	struct runtime_context *ctx = &runtime->context;
+	char source[PATH_MAX];
 	char *expanded;
 	char *dir;
 	int rc;
@@ -99,6 +134,13 @@ static int runtime_open_database(struct runtime *runtime)
 	expanded = file_expand_path(runtime->options.db_path);
 	if (!expanded)
 		return -ENOMEM;
+	rc = runtime_sync_source_directory(runtime, expanded, source);
+	if (rc == 0)
+		rc = morph_sync_recover_db_replacements(source);
+	if (rc != 0) {
+		free(expanded);
+		return rc;
+	}
 	dir = file_expand_path("~/.morph");
 	if (dir) {
 		(void)file_ensure_dir(dir);
@@ -320,6 +362,19 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	}
 	if (rc == 0)
 		rc = runtime_start_components(runtime);
+	if (rc == 0) {
+		char source[PATH_MAX];
+		int cleanup_rc;
+
+		rc = runtime_sync_source_directory(runtime, NULL, source);
+		if (rc == 0) {
+			cleanup_rc = morph_sync_finalize_db_replacements(source);
+			if (cleanup_rc != 0) {
+				log_warn("database restore cleanup deferred: %s",
+					 morph_strerror(cleanup_rc));
+			}
+		}
+	}
 	if (rc != 0) {
 		runtime_emit_startup(runtime, "startup.failed", "failed",
 				     "Morph could not start");

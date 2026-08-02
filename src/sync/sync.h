@@ -76,6 +76,17 @@ struct morph_sync_backup {
 	int64_t size;
 };
 
+struct morph_sync_restore_plan {
+	char token[64];
+	char snapshot_id[MORPH_SYNC_SNAPSHOT_ID_MAX];
+	char path[PATH_MAX];
+	char target[PATH_MAX];
+	char staging[PATH_MAX];
+	char rollback[PATH_MAX];
+	char journal[PATH_MAX];
+	char expected_hash[MORPH_SYNC_HASH_LEN];
+};
+
 struct morph_sync_worker {
 	struct morph_sync_config cfg;
 	struct morph_sync_status status;
@@ -101,6 +112,18 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 void morph_sync_backups_free(struct morph_sync_backup *items);
 int morph_sync_restore_db(const struct morph_sync_config *cfg,
 			  const char *snapshot_id, const char *destination);
+int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
+				  const char *snapshot_id,
+				  struct morph_sync_restore_plan *plan);
+int morph_sync_apply_db_replace(struct morph_sync_restore_plan *plan);
+int morph_sync_commit_db_replace(struct morph_sync_restore_plan *plan);
+int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan);
+int morph_sync_recover_db_replacements(const char *source_dir);
+int morph_sync_finalize_db_replacements(const char *source_dir);
+char *morph_sync_restore_plan_to_json(
+	const struct morph_sync_restore_plan *plan);
+int morph_sync_restore_plan_from_json(const char *json,
+	struct morph_sync_restore_plan *plan);
 
 #ifdef __cplusplus
 }

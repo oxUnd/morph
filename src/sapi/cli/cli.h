@@ -41,6 +41,8 @@ struct cli_context {
 	struct spin_context status_spin;
 	struct morph_md_kitty *markdown_stream;
 	int trace_json;
+	int pending_db_restore;
+	struct morph_sync_restore_plan db_restore_plan;
 	morph_event_cb event_cb;
 	void *event_user_data;
 };
