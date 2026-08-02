@@ -273,6 +273,9 @@ read_paths = ["@workdir", "@output"]
 write_paths = ["@output"]
 delete_paths = []
 network_access = false
+# Exact environment variable names inherited by server-mode commands.
+# Keep this empty unless a command requires a proxy or custom CA bundle.
+allowed_env = []
 
 [context]
 # Compress when token usage exceeds context_limit * threshold

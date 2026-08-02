@@ -375,6 +375,15 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  bash_exec_server_network_access = %d\n",
 	       (*runtime_config_get(ctx->runtime)).react
 		.bash_exec_server_network_access);
+	if ((*runtime_config_get(ctx->runtime)).react
+	    .bash_exec_server_allowed_env_count > 0) {
+		printf("  bash_exec_server_allowed_env =");
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
+		     .bash_exec_server_allowed_env_count; i++)
+			printf(" %s", (*runtime_config_get(ctx->runtime)).react
+			       .bash_exec_server_allowed_env[i]);
+		printf("\n");
+	}
 	if ((*runtime_config_get(ctx->runtime)).react.disabled_tools_count > 0) {
 		printf("  disabled_tools =");
 		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count; i++)

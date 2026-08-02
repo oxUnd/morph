@@ -201,7 +201,10 @@ execution.  Enable it only when needed:
 
 Local mode can read any file and access the network.  It can write and delete
 below the work directory, output directory, and /tmp.  Additional write or
-delete paths require once/session approval and are never persisted.
+delete paths require once/session approval and are never persisted.  Proxy
+variables (lowercase and uppercase) plus SSL_CERT_FILE, SSL_CERT_DIR, and
+CURL_CA_BUNDLE are inherited automatically; other non-essential variables are
+still filtered.
 
 Server mode has no runtime approval path.  Every subcommand must match the
 command allowlist, and filesystem/network capabilities come only from config:
@@ -215,9 +218,12 @@ command allowlist, and filesystem/network capabilities come only from config:
 	write_paths = ["@output"]
 	delete_paths = []
 	network_access = false
+	allowed_env = []
 
 Path entries accept @workdir, @output, @tmp, absolute paths, or "*".  The
 legacy bash_exec_allowed_cwds option is ignored by the capability sandbox.
+Server allowed_env entries are exact environment variable names and default to
+an empty list.  Use them for required proxy or CA variables, not API secrets.
 
 Human-in-the-loop approval:
 

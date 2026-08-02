@@ -838,6 +838,7 @@ read_paths = ["@workdir", "@output"]
 write_paths = ["@output"]
 delete_paths = []
 network_access = false
+allowed_env = []
 
 # Human-in-the-Loop (HITL)
 hitl_enabled = false

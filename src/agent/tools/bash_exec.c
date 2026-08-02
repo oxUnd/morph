@@ -24,6 +24,12 @@
 
 static int bash_exec_default_timeout = 60;
 
+static const char *const local_network_env[] = {
+	"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE"
+};
+
 void bash_exec_set_default_timeout(int seconds)
 {
 	if (seconds > 0)
@@ -864,6 +870,7 @@ static int bash_exec_run_policy(const char *args_json,
 		struct sandbox_config sb;
 		const char **write_grants = NULL;
 		const char **delete_grants = NULL;
+		char *allowed_env[TOOL_CONTEXT_ALLOW_MAX];
 		char **read_allowed;
 		char **write_allowed;
 		char **delete_allowed;
@@ -873,6 +880,7 @@ static int bash_exec_run_policy(const char *args_json,
 		int write_count = 0;
 		int delete_count = 0;
 		int read_count = 0;
+		int allowed_env_count = 0;
 		int write_grant_count = 0;
 		int delete_grant_count = 0;
 		int write_requested = approved_write ?
@@ -928,6 +936,11 @@ static int bash_exec_run_policy(const char *args_json,
 
 			sb.read_all = 1;
 			sb.network_access = 1;
+			for (size_t i = 0;
+			     i < sizeof(local_network_env) /
+				 sizeof(local_network_env[0]); i++)
+				allowed_env[allowed_env_count++] =
+					(char *)local_network_env[i];
 			if (workdir && *workdir) {
 				add_allowed_path(write_allowed, &write_count,
 						 workdir);
@@ -965,6 +978,10 @@ static int bash_exec_run_policy(const char *args_json,
 		} else {
 			sb.network_access =
 				tctx->bash_exec_server_network_access;
+			for (int i = 0;
+			     i < tctx->bash_exec_server_allowed_env_count; i++)
+				allowed_env[allowed_env_count++] =
+					tctx->bash_exec_server_allowed_env[i];
 			for (int i = 0;
 			     i < tctx->bash_exec_server_read_dirs_count; i++) {
 				add_allowed_path(read_allowed, &read_count,
@@ -1004,6 +1021,8 @@ static int bash_exec_run_policy(const char *args_json,
 		sb.write_paths_count = write_count;
 		sb.delete_paths = delete_allowed;
 		sb.delete_paths_count = delete_count;
+		sb.allowed_env = allowed_env;
+		sb.allowed_env_count = allowed_env_count;
 		if (sandbox_enter(&sb) != 0)
 			_exit(126);
 		execl("/bin/sh", "sh", "-c", command, (char *)NULL);

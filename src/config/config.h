@@ -77,6 +77,8 @@ struct config_credits {
 #define BASH_EXEC_ALLOW_MAX 32
 #define BASH_EXEC_COMMAND_MAX 1024
 #define BASH_EXEC_CWD_MAX PATH_MAX
+#define BASH_EXEC_ENV_MAX 32
+#define BASH_EXEC_ENV_NAME_MAX 128
 #define GUARDRAIL_DISABLED_RULES_MAX 16
 #define GUARDRAIL_LLM_RULES_MAX 8
 #define GUARDRAIL_EXT_RULES_MAX 8
@@ -136,6 +138,8 @@ struct config_react {
 	char bash_exec_server_delete_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
 	int bash_exec_server_delete_paths_count;
 	int bash_exec_server_network_access;
+	char bash_exec_server_allowed_env[BASH_EXEC_ENV_MAX][BASH_EXEC_ENV_NAME_MAX];
+	int bash_exec_server_allowed_env_count;
 };
 
 struct config_context {

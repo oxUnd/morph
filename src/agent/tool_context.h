@@ -13,6 +13,7 @@ extern "C" {
 #define TOOL_CONTEXT_ALLOW_MAX 32
 #define TOOL_CONTEXT_ALLOW_PATH_MAX PATH_MAX
 #define TOOL_CONTEXT_ACTION_MAX 1024
+#define TOOL_CONTEXT_ENV_NAME_MAX 128
 #define TOOL_CONTEXT_CLI_NAME_MAX 256
 #define TOOL_CONTEXT_CLI_DIR_MAX 6
 
@@ -89,6 +90,8 @@ struct tool_context {
 	int bash_exec_server_write_dirs_count;
 	char bash_exec_server_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int bash_exec_server_delete_dirs_count;
+	char bash_exec_server_allowed_env[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ENV_NAME_MAX];
+	int bash_exec_server_allowed_env_count;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -144,6 +147,8 @@ void tool_context_set_bash_exec_mode(struct tool_context *tctx,
 				     const char *mode);
 void tool_context_set_bash_exec_server_network(struct tool_context *tctx,
 					       int enabled);
+int tool_context_add_bash_exec_server_env(struct tool_context *tctx,
+					  const char *name);
 int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
 					   enum tool_path_op op,
 					   const char *path);

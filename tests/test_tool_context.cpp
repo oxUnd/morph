@@ -783,6 +783,25 @@ TEST_F(ToolContextTest, ConfiguresIndependentServerCapabilityRoots)
 	tool_context_destroy(tctx);
 }
 
+TEST_F(ToolContextTest, ConfiguresServerEnvironmentAllowlist)
+{
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+
+	ASSERT_NE(tctx, nullptr);
+	EXPECT_EQ(tool_context_add_bash_exec_server_env(tctx,
+		"https_proxy"), 0);
+	EXPECT_EQ(tool_context_add_bash_exec_server_env(tctx,
+		"https_proxy"), 0);
+	EXPECT_EQ(tool_context_add_bash_exec_server_env(tctx,
+		"SSL_CERT_FILE"), 0);
+	EXPECT_EQ(tool_context_add_bash_exec_server_env(tctx,
+		"invalid-name"), -EINVAL);
+	ASSERT_EQ(tctx->bash_exec_server_allowed_env_count, 2);
+	EXPECT_STREQ(tctx->bash_exec_server_allowed_env[0], "https_proxy");
+	EXPECT_STREQ(tctx->bash_exec_server_allowed_env[1], "SSL_CERT_FILE");
+	tool_context_destroy(tctx);
+}
+
 TEST_F(ToolContextTest, ServerRequiresEveryCompoundCommandToMatch)
 {
 	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");

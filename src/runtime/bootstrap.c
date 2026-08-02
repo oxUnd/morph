@@ -410,6 +410,13 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		tool_context_set_bash_exec_server_network(
 			tctx, config->react.bash_exec_server_network_access);
 		for (int i = 0;
+		     i < config->react.bash_exec_server_allowed_env_count; i++) {
+			rc = tool_context_add_bash_exec_server_env(
+				tctx, config->react.bash_exec_server_allowed_env[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (int i = 0;
 		     i < config->react.bash_exec_allowed_commands_count; i++) {
 			rc = tool_context_allow_command_pattern(
 				tctx, config->react.bash_exec_allowed_commands[i]);

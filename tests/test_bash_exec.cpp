@@ -1743,6 +1743,35 @@ TEST_F(BashExecTest, LocalModeRequiresApprovalOutsideDefaultRoots)
 	EXPECT_NE(result.find("outside"), std::string::npos);
 }
 
+TEST_F(BashExecTest, LocalModeKeepsProxyEnvButFiltersSecrets)
+{
+	const char *old_proxy = getenv("https_proxy");
+	const char *old_secret = getenv("MORPH_TEST_SECRET");
+	std::string saved_proxy = old_proxy ? old_proxy : "";
+	std::string saved_secret = old_secret ? old_secret : "";
+	int rc;
+
+	setenv("https_proxy", "http://127.0.0.1:18765", 1);
+	setenv("MORPH_TEST_SECRET", "must-not-leak", 1);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"printf '%s|%s' $https_proxy "
+		"$MORPH_TEST_SECRET\"}", rc);
+	if (old_proxy)
+		setenv("https_proxy", saved_proxy.c_str(), 1);
+	else
+		unsetenv("https_proxy");
+	if (old_secret)
+		setenv("MORPH_TEST_SECRET", saved_secret.c_str(), 1);
+	else
+		unsetenv("MORPH_TEST_SECRET");
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_EQ(get_json_field(result, "stdout"),
+		"http://127.0.0.1:18765|");
+}
+
 TEST_F(BashExecTest, ServerModeExecutesAllowlistedCommand)
 {
 	int rc;
@@ -1758,6 +1787,32 @@ TEST_F(BashExecTest, ServerModeExecutesAllowlistedCommand)
 	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
 	EXPECT_NE(get_json_field(result, "stdout").find("server-ok"),
 		std::string::npos);
+}
+
+TEST_F(BashExecTest, ServerModeKeepsOnlyConfiguredEnvironment)
+{
+	const char *old_proxy = getenv("https_proxy");
+	std::string saved_proxy = old_proxy ? old_proxy : "";
+	int rc;
+
+	setenv("https_proxy", "http://127.0.0.1:18766", 1);
+	tool_context_set_bash_exec_mode(tctx, "server");
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "printf *"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_path(
+		tctx, TOOL_PATH_READ, "@tmp"), 0);
+	ASSERT_EQ(tool_context_add_bash_exec_server_env(
+		tctx, "https_proxy"), 0);
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"printf '%s' $https_proxy\"}", rc);
+	if (old_proxy)
+		setenv("https_proxy", saved_proxy.c_str(), 1);
+	else
+		unsetenv("https_proxy");
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_EQ(get_json_field(result, "stdout"),
+		"http://127.0.0.1:18766");
 }
 
 TEST_F(BashExecTest, ServerModeDeniesUnconfiguredDeletePath)

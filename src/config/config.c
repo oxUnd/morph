@@ -720,7 +720,7 @@ static void load_credits_config(cfg_table_t *root, struct config_credits *cfg)
 }
 
 static void load_string_array(cfg_table_t *tbl, const char *key,
-			      char values[][DYNAMIC_TOOL_ALLOW_LEN_MAX],
+			      void *values,
 			      int *out_count, int max_count, size_t value_len)
 {
 	cfg_array_t *arr;
@@ -734,10 +734,13 @@ static void load_string_array(cfg_table_t *tbl, const char *key,
 	count = 0;
 	for (; count < max_count; count++) {
 		cfg_datum_t val = cfg_string_at(arr, count);
+		char *dst;
+
 		if (!val.ok)
 			break;
-		strncpy(values[count], val.u.s, value_len - 1);
-		values[count][value_len - 1] = '\0';
+		dst = (char *)values + (size_t)count * value_len;
+		strncpy(dst, val.u.s, value_len - 1);
+		dst[value_len - 1] = '\0';
 		free(val.u.s);
 	}
 	*out_count = count;
@@ -1045,6 +1048,10 @@ int config_load(struct config *cfg, const char *path)
 					cfg->react.bash_exec_server_delete_paths,
 					&cfg->react.bash_exec_server_delete_paths_count,
 					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+				load_string_array(server, "allowed_env",
+					cfg->react.bash_exec_server_allowed_env,
+					&cfg->react.bash_exec_server_allowed_env_count,
+					BASH_EXEC_ENV_MAX, BASH_EXEC_ENV_NAME_MAX);
 				CFG_BOOL(server, "network_access",
 					 cfg->react.bash_exec_server_network_access);
 			}
@@ -1381,11 +1388,12 @@ void config_print(const struct config *cfg)
 	log_info("    bash_exec_allowed_commands: %d allowed_cwds: %d",
 		 cfg->react.bash_exec_allowed_commands_count,
 		 cfg->react.bash_exec_allowed_cwds_count);
-	log_info("    bash_exec_server: read=%d write=%d delete=%d network=%d",
+	log_info("    bash_exec_server: read=%d write=%d delete=%d network=%d env=%d",
 		 cfg->react.bash_exec_server_read_paths_count,
 		 cfg->react.bash_exec_server_write_paths_count,
 		 cfg->react.bash_exec_server_delete_paths_count,
-		 cfg->react.bash_exec_server_network_access);
+		 cfg->react.bash_exec_server_network_access,
+		 cfg->react.bash_exec_server_allowed_env_count);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)

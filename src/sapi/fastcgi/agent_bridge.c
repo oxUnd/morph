@@ -276,6 +276,16 @@ static void bridge_init_once(void)
 			g_tctx,
 			g_config.react.bash_exec_server_network_access);
 		for (int i = 0;
+		     i < g_config.react.bash_exec_server_allowed_env_count; i++) {
+			rc = tool_context_add_bash_exec_server_env(
+				g_tctx,
+				g_config.react.bash_exec_server_allowed_env[i]);
+			if (rc != 0) {
+				g_init_rc = rc;
+				return;
+			}
+		}
+		for (int i = 0;
 		     i < g_config.react.bash_exec_allowed_commands_count; i++) {
 			rc = tool_context_allow_command_pattern(
 				g_tctx,

@@ -1204,6 +1204,39 @@ void tool_context_set_bash_exec_server_network(struct tool_context *tctx,
 		tctx->bash_exec_server_network_access = !!enabled;
 }
 
+int tool_context_add_bash_exec_server_env(struct tool_context *tctx,
+					  const char *name)
+{
+	size_t len;
+
+	if (!tctx || !name || !*name)
+		MORPH_RETURN(-EINVAL);
+	len = strlen(name);
+	if (len >= TOOL_CONTEXT_ENV_NAME_MAX)
+		MORPH_RETURN(-ENAMETOOLONG);
+	if (!((name[0] >= 'A' && name[0] <= 'Z') ||
+	      (name[0] >= 'a' && name[0] <= 'z') || name[0] == '_'))
+		MORPH_RETURN(-EINVAL);
+	for (size_t i = 1; i < len; i++) {
+		if ((name[i] >= 'A' && name[i] <= 'Z') ||
+		    (name[i] >= 'a' && name[i] <= 'z') ||
+		    (name[i] >= '0' && name[i] <= '9') || name[i] == '_')
+			continue;
+		MORPH_RETURN(-EINVAL);
+	}
+	for (int i = 0; i < tctx->bash_exec_server_allowed_env_count; i++) {
+		if (strcmp(tctx->bash_exec_server_allowed_env[i], name) == 0)
+			return 0;
+	}
+	if (tctx->bash_exec_server_allowed_env_count >= TOOL_CONTEXT_ALLOW_MAX)
+		MORPH_RETURN(-ENOSPC);
+	strncpy(tctx->bash_exec_server_allowed_env[
+			tctx->bash_exec_server_allowed_env_count], name,
+		TOOL_CONTEXT_ENV_NAME_MAX - 1);
+	tctx->bash_exec_server_allowed_env_count++;
+	return 0;
+}
+
 int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
 					   enum tool_path_op op,
 					   const char *path)

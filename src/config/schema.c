@@ -131,6 +131,8 @@ static const struct schema_entry schema[] = {
 	STRINGS("react.bash_exec_server.delete_paths", BASH_EXEC_ALLOW_MAX,
 		BASH_EXEC_CWD_MAX - 1),
 	BOOL("react.bash_exec_server.network_access"),
+	STRINGS("react.bash_exec_server.allowed_env", BASH_EXEC_ENV_MAX,
+		BASH_EXEC_ENV_NAME_MAX - 1),
 	TABLE("context"),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
