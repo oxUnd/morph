@@ -783,24 +783,16 @@ static void presentation_artifact(struct cli_context *ctx,
 	if (!ev->name || strcmp(ev->name, "artifact.ready") != 0 ||
 	    !path || !path[0])
 		return;
-	if (morph_strmap_contains(&ctx->rendered_artifacts, path))
+	if (morph_strmap_contains(&ctx->announced_artifacts, path))
 		return;
 	presentation_clear_status(ctx);
+	(void)morph_strmap_set(&ctx->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		(void)morph_strmap_set(&ctx->rendered_artifacts, path,
-				       (void *)1);
 		printf("artifact: %s %s\n", kind ? kind : "file", path);
 		return;
 	}
 	printf("  " ANSI_DIM "└ %s: %s" ANSI_RESET "\n",
 	       kind ? kind : "artifact", path);
-	if (kind && strcmp(kind, "image") == 0)
-		media_callback("image", path, ctx);
-	else if (kind && strcmp(kind, "video") == 0)
-		media_callback("video", path, ctx);
-	else
-		(void)morph_strmap_set(&ctx->rendered_artifacts, path,
-				       (void *)1);
 }
 
 static void presentation_mcp_tree_start(struct cli_context *ctx,
@@ -952,6 +944,16 @@ int cli_presentation_init(struct cli_context *ctx)
 		ctx->status_spin_initialized = 0;
 		return rc;
 	}
+	rc = morph_strmap_init(&ctx->announced_artifacts,
+			       MORPH_STRMAP_INIT_CAP);
+	if (rc != 0) {
+		morph_strmap_cleanup(&ctx->rendered_artifacts);
+		morph_buf_cleanup(&ctx->markdown_stream_text);
+		morph_buf_cleanup(&ctx->event_stream);
+		spin_destroy(&ctx->status_spin);
+		ctx->status_spin_initialized = 0;
+		return rc;
+	}
 	return 0;
 }
 
@@ -961,6 +963,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 		return;
 	morph_buf_reset(&ctx->event_stream);
 	morph_strmap_clear(&ctx->rendered_artifacts);
+	morph_strmap_clear(&ctx->announced_artifacts);
 	cli_markdown_stream_reset(ctx, 1);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
 	ctx->event_stream_has_delta = 0;
@@ -986,6 +989,7 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	morph_buf_cleanup(&ctx->markdown_stream_text);
 	morph_buf_cleanup(&ctx->event_stream);
 	morph_strmap_cleanup(&ctx->rendered_artifacts);
+	morph_strmap_cleanup(&ctx->announced_artifacts);
 	if (ctx->status_spin_initialized) {
 		spin_destroy(&ctx->status_spin);
 		ctx->status_spin_initialized = 0;

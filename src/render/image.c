@@ -343,6 +343,11 @@ static int render_sixel(const char *path)
 	return system(cmd);
 }
 
+int image_terminal_protocol_available(void)
+{
+	return detect_kitty() || detect_iterm2() || detect_sixel();
+}
+
 int image_render_terminal(const char *path)
 {
 	if (!path || !*path) {

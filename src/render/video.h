@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 int video_play(const char *path, const char *mpv_args);
+int video_render_terminal_preview(const char *path);
 
 #ifdef __cplusplus
 }

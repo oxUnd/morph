@@ -158,6 +158,10 @@ void media_callback(const char *type, const char *path, void *user)
 {
 	struct cli_context *ctx = (struct cli_context *)user;
 
+	/*
+	 * Markdown invokes this adapter at the media node's document position.
+	 * Artifact/observation events only announce paths and never call it.
+	 */
 	if (ctx && path && path[0]) {
 		if (morph_strmap_contains(&ctx->rendered_artifacts, path))
 			return;
@@ -167,9 +171,7 @@ void media_callback(const char *type, const char *path, void *user)
 	if (strcmp(type, "image") == 0) {
 		image_render_terminal(path);
 	} else if (strcmp(type, "video") == 0) {
-		const char *mpv = (ctx && (*runtime_config_get(ctx->runtime)).render.mpv_args[0])
-				  ? (*runtime_config_get(ctx->runtime)).render.mpv_args : NULL;
-		video_play(path, mpv);
+		(void)video_render_terminal_preview(path);
 	}
 }
 

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <string>
 #include <unistd.h>
 
 static int create_test_png(const char *path)
@@ -133,6 +134,47 @@ TEST(RenderImage, NonexistentFile) {
 TEST(RenderVideo, NullPath) {
 	int rc = video_play(NULL, NULL);
 	EXPECT_NE(rc, 0);
+}
+
+TEST(RenderVideo, PreviewNullPath) {
+	int rc = video_render_terminal_preview(NULL);
+	EXPECT_NE(rc, 0);
+}
+
+TEST(RenderVideo, PreviewFallsBackToClickableFileLink) {
+	const char *term_value = getenv("TERM");
+	const char *kitty_value = getenv("KITTY_WINDOW_ID");
+	const char *iterm_value = getenv("ITERM_PROFILE");
+	std::string old_term = term_value ? term_value : "";
+	std::string old_kitty = kitty_value ? kitty_value : "";
+	std::string old_iterm = iterm_value ? iterm_value : "";
+	bool had_term = term_value != nullptr;
+	bool had_kitty = kitty_value != nullptr;
+	bool had_iterm = iterm_value != nullptr;
+
+	setenv("TERM", "dumb", 1);
+	unsetenv("KITTY_WINDOW_ID");
+	unsetenv("ITERM_PROFILE");
+	testing::internal::CaptureStdout();
+	int rc = video_render_terminal_preview("/tmp/demo clip.mp4");
+	std::string output = testing::internal::GetCapturedStdout();
+	if (had_term)
+		setenv("TERM", old_term.c_str(), 1);
+	else
+		unsetenv("TERM");
+	if (had_kitty)
+		setenv("KITTY_WINDOW_ID", old_kitty.c_str(), 1);
+	else
+		unsetenv("KITTY_WINDOW_ID");
+	if (had_iterm)
+		setenv("ITERM_PROFILE", old_iterm.c_str(), 1);
+	else
+		unsetenv("ITERM_PROFILE");
+
+	EXPECT_EQ(rc, 0);
+	EXPECT_NE(output.find("file:///tmp/demo%20clip.mp4"),
+		  std::string::npos);
+	EXPECT_NE(output.find("Open video"), std::string::npos);
 }
 
 /* ---- render command: path expansion ---- */

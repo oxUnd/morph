@@ -40,6 +40,7 @@ struct cli_context {
 	morph_buf_t event_stream;
 	morph_buf_t markdown_stream_text;
 	morph_strmap_t rendered_artifacts;
+	morph_strmap_t announced_artifacts;
 	struct spin_context status_spin;
 	struct morph_md_kitty *markdown_stream;
 	int trace_json;

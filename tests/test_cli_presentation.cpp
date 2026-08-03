@@ -243,6 +243,40 @@ TEST_F(CliPresentationTest, OnceReportsArtifactWithoutRendering)
 	cJSON_Delete(artifact);
 }
 
+TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
+{
+	cJSON *image = cJSON_CreateObject();
+	cJSON *video = cJSON_CreateObject();
+	cJSON *final = TextData("![generated](/tmp/generated.png)");
+	cJSON_AddStringToObject(image, "kind", "image");
+	cJSON_AddStringToObject(image, "path", "/tmp/generated.png");
+	cJSON_AddStringToObject(video, "kind", "video");
+	cJSON_AddStringToObject(video, "path", "/tmp/generated.mp4");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", image);
+	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", image);
+	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", video);
+	Emit(MORPH_EVENT_ARTIFACT, "artifact.ready", "ready", video);
+	EXPECT_FALSE(morph_strmap_contains(&ctx.rendered_artifacts,
+					   "/tmp/generated.png"));
+	EXPECT_FALSE(morph_strmap_contains(&ctx.rendered_artifacts,
+					   "/tmp/generated.mp4"));
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(output.find("  └ image: /tmp/generated.png\n"
+			      "  └ video: /tmp/generated.mp4\n"), 0u);
+	EXPECT_TRUE(morph_strmap_contains(&ctx.rendered_artifacts,
+					  "/tmp/generated.png"));
+	EXPECT_FALSE(morph_strmap_contains(&ctx.rendered_artifacts,
+					   "/tmp/generated.mp4"));
+	cJSON_Delete(image);
+	cJSON_Delete(video);
+	cJSON_Delete(final);
+}
+
 TEST_F(CliPresentationTest, JsonModeEmitsOneNdjsonObject)
 {
 	cJSON *data = TextData("hello");
