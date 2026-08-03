@@ -774,6 +774,8 @@ struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name)
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, struct tool_result *result)
 {
+	int result_rc;
+
 	if (!reg || !name || !result)
 		return -EINVAL;
 	struct tool_entry *e = tool_lookup(reg, name);
@@ -782,7 +784,18 @@ int tool_exec(struct tool_registry *reg, const char *name,
 	if (!e->exec)
 		return -ENOSYS;
 	int rc = e->exec(args_json, result, e->user_data);
-	(void)tool_result_finalize(result);
+	if (rc < 0 && !result->envelope) {
+		const char *code = rc == -EINVAL ? "invalid_arguments" :
+			"tool_failed";
+
+		result_rc = tool_result_error(result, code,
+					      morph_strerror(rc));
+		if (result_rc != 0)
+			return result_rc;
+	}
+	result_rc = tool_result_finalize(result);
+	if (result_rc != 0)
+		return result_rc;
 	return rc;
 }
 

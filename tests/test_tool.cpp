@@ -135,7 +135,19 @@ TEST_F(ToolTest, ExecError) {
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&reg, "error_tool", "{}", &result);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, -EIO);
+	ASSERT_NE(result.envelope, nullptr);
+	cJSON *ok = cJSON_GetObjectItem(result.envelope, "ok");
+	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	cJSON *code = cJSON_GetObjectItem(error, "code");
+	cJSON *message = cJSON_GetObjectItem(error, "message");
+	EXPECT_TRUE(cJSON_IsFalse(ok));
+	ASSERT_TRUE(cJSON_IsString(code));
+	EXPECT_STREQ(code->valuestring, "tool_failed");
+	ASSERT_TRUE(cJSON_IsString(message));
+	EXPECT_STREQ(message->valuestring, "Input/output error");
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(strstr(result.text.data, "\"ok\":false"), nullptr);
 	tool_result_cleanup(&result);
 }
 

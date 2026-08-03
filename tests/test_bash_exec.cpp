@@ -279,9 +279,43 @@ TEST_F(BashExecTest, EmptyCommand)
 TEST_F(BashExecTest, MalformedJson)
 {
 	bash_exec_init(&reg, tctx);
-	int rc;
-	std::string result = exec_tool(reg, tctx, "not json", rc);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "bash_exec", "not json", &result);
 	EXPECT_EQ(rc, -EINVAL);
+	ASSERT_NE(result.envelope, nullptr);
+	cJSON *ok = cJSON_GetObjectItem(result.envelope, "ok");
+	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	cJSON *code = cJSON_GetObjectItem(error, "code");
+	cJSON *message = cJSON_GetObjectItem(error, "message");
+	EXPECT_TRUE(cJSON_IsFalse(ok));
+	ASSERT_TRUE(cJSON_IsString(code));
+	EXPECT_STREQ(code->valuestring, "invalid_arguments");
+	ASSERT_TRUE(cJSON_IsString(message));
+	EXPECT_STREQ(message->valuestring,
+		     "bash_exec arguments must be valid JSON");
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_EQ(strstr(result.text.data, "\"ok\":true"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(BashExecTest, PolicyModeMalformedJson)
+{
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	struct tool_result result;
+	tool_result_init(&result);
+	int rc = tool_exec(&reg, "bash_exec", "{\"command\":\"pwd\"",
+			   &result);
+	EXPECT_EQ(rc, -EINVAL);
+	ASSERT_NE(result.envelope, nullptr);
+	cJSON *ok = cJSON_GetObjectItem(result.envelope, "ok");
+	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	cJSON *code = cJSON_GetObjectItem(error, "code");
+	EXPECT_TRUE(cJSON_IsFalse(ok));
+	ASSERT_TRUE(cJSON_IsString(code));
+	EXPECT_STREQ(code->valuestring, "invalid_arguments");
+	tool_result_cleanup(&result);
 }
 
 TEST_F(BashExecTest, NullResultPtr)

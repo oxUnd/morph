@@ -202,6 +202,12 @@ static int bash_exec_run_legacy(const char *args_json,
 	struct tool_directory_capability auto_dirs[TOOL_CONTEXT_CLI_DIR_MAX];
 	int auto_dir_count = 0;
 	int timeout = bash_exec_default_timeout;
+
+	if (args_json && !root) {
+		(void)tool_result_error(result, "invalid_arguments",
+					"bash_exec arguments must be valid JSON");
+		MORPH_RETURN(-EINVAL);
+	}
 	if (root) {
 		cJSON *c = cJSON_GetObjectItem(root, "command");
 		if (cJSON_IsString(c) && c->valuestring)
@@ -837,8 +843,11 @@ static int bash_exec_run_policy(const char *args_json,
 	int err_pipe[2];
 	pid_t pid;
 
-	if (!root)
+	if (!root) {
+		(void)tool_result_error(result, "invalid_arguments",
+					"bash_exec arguments must be valid JSON");
 		MORPH_RETURN(-EINVAL);
+	}
 	{
 		cJSON *item = cJSON_GetObjectItem(root, "command");
 
