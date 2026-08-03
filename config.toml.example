@@ -30,6 +30,15 @@ max_tokens       = 4096
 timeout_seconds  = 300
 # Retries after the initial request for transient HTTP errors (0-10). Default: 3.
 retry_count      = 3
+# Optional provider-specific fields merged into the JSON request body.
+# Must be a JSON object and cannot replace fields managed by morph, including
+# model, messages, tools, stream, stream_options, and max_tokens.
+# extra_body_json = '''
+# {
+#   "reasoning_effort": "high",
+#   "chat_template_kwargs": {"enable_thinking": true}
+# }
+# '''
 
 # ── Volcengine (火山引擎) example ────────────
 # provider    = "volcengine"

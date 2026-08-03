@@ -4,6 +4,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "tomlc17.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -53,6 +54,7 @@ struct schema_entry {
 	STRING("model." name ".api_base", 255), \
 	STRING("model." name ".api_key_env", 63), \
 	STRING("model." name ".api_key", 255), \
+	STRING("model." name ".extra_body_json", MORPH_MODEL_EXTRA_BODY_MAX - 1), \
 	INT("model." name ".context_limit", 0, INT_MAX), \
 	INT("model." name ".max_tokens", 0, INT_MAX), \
 	INT("model." name ".timeout_seconds", 0, INT_MAX), \
@@ -484,6 +486,56 @@ static int validate_bash_exec_paths(const toml_datum_t *server,
 	return 0;
 }
 
+static int extra_body_key_is_reserved(const char *key)
+{
+	static const char *const reserved[] = {
+		"model", "messages", "tools", "tool_choice", "stream",
+		"stream_options", "max_tokens"
+	};
+
+	for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+		if (strcmp(key, reserved[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int validate_model_extra_body(const toml_datum_t *model,
+				     const char *name,
+				     struct config_validation_error *error)
+{
+	const toml_datum_t *value = table_get(model, "extra_body_json");
+	cJSON *extra;
+	cJSON *item;
+	char path[CONFIG_MAX_KEY_LEN];
+
+	if (!value || !value->u.s[0])
+		return 0;
+	snprintf(path, sizeof(path), "model.%s.extra_body_json", name);
+	extra = cJSON_ParseWithOpts(value->u.s, NULL, 1);
+	if (!extra)
+		return set_error(error, CONFIG_VALIDATION_VALUE, value, path,
+			"%s must contain valid JSON", path);
+	if (!cJSON_IsObject(extra)) {
+		cJSON_Delete(extra);
+		return set_error(error, CONFIG_VALIDATION_TYPE, value, path,
+			"%s must contain a JSON object", path);
+	}
+	cJSON_ArrayForEach(item, extra) {
+		if (item->string && extra_body_key_is_reserved(item->string)) {
+			char key[CONFIG_MAX_KEY_LEN];
+
+			strncpy(key, item->string, sizeof(key) - 1);
+			key[sizeof(key) - 1] = '\0';
+			cJSON_Delete(extra);
+			return set_error(error, CONFIG_VALIDATION_CONFLICT, value,
+				path, "%s contains reserved field '%s'", path, key);
+		}
+	}
+	cJSON_Delete(extra);
+	return 0;
+}
+
 static int validate_relations(const toml_datum_t *root,
 			      struct config_validation_error *error)
 {
@@ -495,6 +547,10 @@ static int validate_relations(const toml_datum_t *root,
 	const toml_datum_t *servers = table_get(mcp, "servers");
 	const toml_datum_t *react = table_get(root, "react");
 	const toml_datum_t *bash_server = table_get(react, "bash_exec_server");
+	const toml_datum_t *model = table_get(root, "model");
+	static const char *const model_names[] = {
+		"text", "vision", "image", "video"
+	};
 	double summarize_ratio = 0.8;
 	double target_ratio = 0.5;
 	int rc;
@@ -510,6 +566,13 @@ static int validate_relations(const toml_datum_t *root,
 			target ? target : summarize,
 				"context.compress_target_ratio",
 				"context.compress_target_ratio must be less than summarize_threshold_ratio");
+	for (size_t i = 0;
+	     i < sizeof(model_names) / sizeof(model_names[0]); i++) {
+		rc = validate_model_extra_body(table_get(model, model_names[i]),
+			model_names[i], error);
+		if (rc != 0)
+			return rc;
+	}
 	rc = validate_named_array(root, "mcp", "servers", "mcp.servers[].name",
 		error);
 	if (rc != 0)

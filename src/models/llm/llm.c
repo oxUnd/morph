@@ -89,6 +89,53 @@ static char *json_print_arena(struct arena *arena, cJSON *root)
 	return out;
 }
 
+static int extra_body_key_is_reserved(const char *key)
+{
+	static const char *const reserved[] = {
+		"model", "messages", "tools", "tool_choice", "stream",
+		"stream_options", "max_tokens"
+	};
+
+	for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+		if (strcmp(key, reserved[i]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int add_extra_body_json(cJSON *root, const char *json)
+{
+	cJSON *extra;
+	cJSON *item;
+
+	if (!json || !json[0])
+		return 0;
+	extra = cJSON_ParseWithOpts(json, NULL, 1);
+	if (!extra || !cJSON_IsObject(extra)) {
+		cJSON_Delete(extra);
+		log_err("extra_body_json must contain a valid JSON object");
+		MORPH_RETURN(MORPH_ERR_CONFIG);
+	}
+	cJSON_ArrayForEach(item, extra) {
+		cJSON *copy;
+
+		if (!item->string || extra_body_key_is_reserved(item->string)) {
+			log_err("extra_body_json contains reserved or invalid field: %s",
+				 item->string ? item->string : "<unnamed>");
+			cJSON_Delete(extra);
+			MORPH_RETURN(MORPH_ERR_CONFIG);
+		}
+		copy = cJSON_Duplicate(item, 1);
+		if (!copy || !cJSON_AddItemToObject(root, item->string, copy)) {
+			cJSON_Delete(copy);
+			cJSON_Delete(extra);
+			MORPH_RETURN(-ENOMEM);
+		}
+	}
+	cJSON_Delete(extra);
+	return 0;
+}
+
 static cJSON *build_simple_messages_cjson(const char *system_prompt,
 					  const char **messages, int n)
 {
@@ -129,6 +176,7 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 				const char *system_prompt,
 				const char **messages, int n,
 				int max_tokens, int stream,
+				const char *extra_body_json,
 				char **out_body, size_t *out_body_len)
 {
 	cJSON *root;
@@ -159,6 +207,11 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens > 0 ? max_tokens : 4096);
+	int rc = add_extra_body_json(root, extra_body_json);
+	if (rc < 0) {
+		cJSON_Delete(root);
+		return rc;
+	}
 	body = json_print_arena(arena, root);
 	cJSON_Delete(root);
 	if (!body)
@@ -685,6 +738,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 	size_t body_len = 0;
 	int rc = build_chat_body_json(arena, self->model_id, system_prompt,
 				      messages, n, max_tokens, 1,
+				      self->extra_body_json,
 				      &body, &body_len);
 	if (rc < 0)
 		return rc;
@@ -841,6 +895,11 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens);
+	int extra_rc = add_extra_body_json(root, self->extra_body_json);
+	if (extra_rc < 0) {
+		cJSON_Delete(root);
+		return extra_rc;
+	}
 
 	size_t body_cap = 8192 + uri_len + strlen(prompt);
 	char *body = arena_alloc(arena, body_cap);
@@ -1073,6 +1132,11 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				self->max_tokens > 0 ? self->max_tokens : 4096);
+	int extra_rc = add_extra_body_json(root, self->extra_body_json);
+	if (extra_rc < 0) {
+		cJSON_Delete(root);
+		return extra_rc;
+	}
 
 	size_t body_cap = 8192;
 	char *body = arena_alloc(arena, body_cap);
@@ -1181,7 +1245,8 @@ static int llm_generate(struct model *self, const char *prompt,
 	char *body = NULL;
 	size_t body_len = 0;
 	int rc = build_chat_body_json(arena, self->model_id, NULL, messages, 1,
-				      self->max_tokens, 0, &body, &body_len);
+				      self->max_tokens, 0,
+				      self->extra_body_json, &body, &body_len);
 	if (rc < 0) {
 		arena_destroy(arena);
 		return rc;

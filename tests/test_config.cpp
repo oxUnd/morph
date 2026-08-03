@@ -86,6 +86,7 @@ provider = "deepseek"
 model = "deepseek-chat"
 context_limit = 200000
 retry_count = 7
+extra_body_json = '''{"reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":true}}'''
 
 [model.vision]
 provider = "openai"
@@ -136,6 +137,9 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.models.text.model, "deepseek-chat");
 	EXPECT_EQ(cfg.models.text.context_limit, 200000);
 	EXPECT_EQ(cfg.models.text.retry_count, 7);
+	EXPECT_STREQ(cfg.models.text.extra_body_json,
+		     "{\"reasoning_effort\":\"high\",\"chat_template_kwargs\":"
+		     "{\"enable_thinking\":true}}");
 	EXPECT_STREQ(cfg.models.vision.provider, "openai");
 	EXPECT_STREQ(cfg.models.vision.model, "gpt-4o");
 	EXPECT_EQ(cfg.models.vision.max_tokens, 2048);
@@ -366,6 +370,32 @@ TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
 		"[react]\nbash_exec_mode = \"remote\"\n", &error),
 		MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+}
+
+TEST(ConfigValidationTest, ValidatesModelExtraBodyJson)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text(
+		"[model.text]\n"
+		"extra_body_json = '{\"reasoning_effort\":\"high\","
+		"\"chat_template_kwargs\":{\"enable_thinking\":true}}'\n",
+		&error), 0);
+	EXPECT_EQ(config_validate_text(
+		"[model.text]\nextra_body_json = '{invalid}'\n", &error),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+	EXPECT_STREQ(error.path, "model.text.extra_body_json");
+	EXPECT_EQ(config_validate_text(
+		"[model.text]\nextra_body_json = '[1, 2]'\n", &error),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_TYPE);
+	EXPECT_EQ(config_validate_text(
+		"[model.text]\nextra_body_json = '{\"stream\":false}'\n",
+		&error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
+	EXPECT_NE(std::string(error.message).find("reserved field 'stream'"),
+		  std::string::npos);
 }
 
 TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)

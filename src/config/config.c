@@ -654,6 +654,7 @@ static void load_model_entry(cfg_table_t *parent, const char *sub,
 	CFG_STR(t, "api_base", e->api_base);
 	CFG_STR(t, "api_key_env", e->api_key_env);
 	CFG_STR(t, "api_key", e->api_key);
+	CFG_STR(t, "extra_body_json", e->extra_body_json);
 	CFG_INT(t, "context_limit", e->context_limit);
 	CFG_INT(t, "max_tokens", e->max_tokens);
 	CFG_INT(t, "timeout_seconds", e->timeout_seconds);

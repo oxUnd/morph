@@ -2659,6 +2659,45 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+					       api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	strncpy(model->extra_body_json,
+		"{\"reasoning_effort\":\"high\",\"chat_template_kwargs\":"
+		"{\"enable_thinking\":true}}",
+		sizeof(model->extra_body_json) - 1);
+
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+	int rc = model->chat_with_tools_stream(
+		model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+
+	EXPECT_EQ(rc, 200);
+	EXPECT_NE(strstr(srv.last_request,
+		"\"reasoning_effort\":\"high\""), nullptr);
+	EXPECT_NE(strstr(srv.last_request,
+		"\"chat_template_kwargs\":{\"enable_thinking\":true}"),
+		nullptr);
+	EXPECT_NE(strstr(srv.last_request, "\"stream\":true"), nullptr);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, LlmRetriesTransientHttpErrorsBeforeStreaming) {
 	srv.response_body =
 		"{\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}";

@@ -8,6 +8,10 @@ extern "C" {
 #include "http/client.h"
 #include <stdint.h>
 
+#ifndef MORPH_MODEL_EXTRA_BODY_MAX
+#define MORPH_MODEL_EXTRA_BODY_MAX 8192
+#endif
+
 struct arena;
 
 typedef int (*sse_callback)(const char *token, void *user_data);
@@ -86,6 +90,7 @@ struct model {
 	char api_base[256];
 	char api_key[256];
 	char model_id[128];
+	char extra_body_json[MORPH_MODEL_EXTRA_BODY_MAX];
 	char last_error[512];
 	int context_limit;
 	int max_tokens;

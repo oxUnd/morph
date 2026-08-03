@@ -53,6 +53,9 @@ static void runtime_configure_model(struct model *model,
 	if (cfg->adapter[0])
 		strncpy(model->adapter, cfg->adapter,
 			sizeof(model->adapter) - 1);
+	if (cfg->extra_body_json[0])
+		strncpy(model->extra_body_json, cfg->extra_body_json,
+			sizeof(model->extra_body_json) - 1);
 	model->timeout_seconds = cfg->timeout_seconds;
 	model->retry_count = cfg->retry_count;
 	if (cfg->max_tokens > 0)

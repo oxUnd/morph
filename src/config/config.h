@@ -11,6 +11,9 @@ extern "C" {
 
 #define CONFIG_MAX_KEY_LEN 256
 #define CONFIG_MAX_VAL_LEN 2048
+#ifndef MORPH_MODEL_EXTRA_BODY_MAX
+#define MORPH_MODEL_EXTRA_BODY_MAX 8192
+#endif
 
 struct config_general {
 	char default_session[256];
@@ -26,6 +29,7 @@ struct config_model_entry {
 	char api_base[256];
 	char api_key_env[64];
 	char api_key[256];
+	char extra_body_json[MORPH_MODEL_EXTRA_BODY_MAX];
 	int context_limit;
 	int max_tokens;
 	int timeout_seconds;
