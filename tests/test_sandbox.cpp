@@ -301,6 +301,63 @@ TEST(SandboxEnterTest, PathPolicySeparatesWriteAndDelete)
 	rmdir(delete_dir);
 }
 
+#if defined(__linux__) || defined(__APPLE__)
+TEST(SandboxEnterTest, PathPolicyAllowsDevNullWrite)
+{
+	char denied_file[] = "/tmp/morph_sb_devnull_XXXXXX";
+	int fd = mkstemp(denied_file);
+
+	ASSERT_GE(fd, 0);
+	close(fd);
+	int rc = run_in_child([&]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int null_fd = open("/dev/null", O_WRONLY | O_TRUNC);
+		if (null_fd < 0)
+			return 11;
+		if (write(null_fd, "discard", 7) != 7) {
+			close(null_fd);
+			return 12;
+		}
+		close(null_fd);
+		int denied_fd = open(denied_file, O_WRONLY | O_TRUNC);
+		if (denied_fd >= 0) {
+			close(denied_fd);
+			return 13;
+		}
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+	unlink(denied_file);
+}
+
+TEST(SandboxEnterTest, LegacyPolicyAllowsDevNullWrite)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int null_fd = open("/dev/null", O_WRONLY | O_TRUNC);
+		if (null_fd < 0)
+			return 11;
+		if (write(null_fd, "discard", 7) != 7) {
+			close(null_fd);
+			return 12;
+		}
+		close(null_fd);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+#endif
+
 static int create_loopback_listener(uint16_t *port)
 {
 	struct sockaddr_in address = {};

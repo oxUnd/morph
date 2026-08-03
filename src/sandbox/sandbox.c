@@ -400,6 +400,26 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			 (unsigned long long)path_access);
 		close(fd);
 	}
+	if (handled & write_access) {
+		int fd = open("/dev/null", O_PATH | O_CLOEXEC);
+		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
+			(handled & LANDLOCK_ACCESS_FS_TRUNCATE);
+
+		if (fd < 0) {
+			int err = errno;
+
+			close(ruleset_fd);
+			MORPH_RETURN(-err);
+		}
+		if (ll_add_rule(ruleset_fd, fd, dev_null_access) < 0) {
+			int err = errno;
+
+			close(fd);
+			close(ruleset_fd);
+			MORPH_RETURN(-err);
+		}
+		close(fd);
+	}
 
 	/*
 	 * When EXT_PERM_EXEC is set, add built-in system path rules
@@ -560,6 +580,14 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	}
 	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
 		cfg->write_paths_count, write_access);
+	if (rc == 0) {
+		char *dev_null = (char *)"/dev/null";
+		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
+			(write_access & LANDLOCK_ACCESS_FS_TRUNCATE);
+
+		rc = sandbox_add_landlock_paths(ruleset_fd, &dev_null, 1,
+			dev_null_access);
+	}
 	if (rc == 0)
 		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->delete_paths,
 			cfg->delete_paths_count, delete_access);
@@ -713,6 +741,12 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 				}
 			}
 		}
+	}
+	rc = morph_buf_puts(&sbpl,
+		"(allow file-write-data (literal \"/dev/null\"))\n");
+	if (rc != 0) {
+		morph_buf_cleanup(&sbpl);
+		return rc;
 	}
 	if (cfg->path_policy_enabled) {
 		for (int i = 0; i < cfg->write_paths_count; i++) {
