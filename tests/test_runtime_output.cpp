@@ -119,6 +119,40 @@ TEST_F(RuntimeOutputTest, DuplicateArtifactPathIsIdempotent)
 	sqlite3_finalize(stmt);
 }
 
+TEST_F(RuntimeOutputTest, RecordsVideoImageAndAudioReferences)
+{
+	struct tool_artifact_list artifacts{};
+	struct react_output_event event{};
+	artifacts.count = 1;
+	artifacts.items[0].kind = TOOL_ARTIFACT_VIDEO;
+	std::strncpy(artifacts.items[0].path, "/tmp/mixed-result.mp4",
+		      sizeof(artifacts.items[0].path) - 1);
+	event.type = REACT_STEP_OBSERVATION;
+	event.status = REACT_OUTPUT_COMPLETED;
+	event.tool_name = "vid_gen";
+	event.tool_args = "{\"prompt\":\"waves\","
+		"\"reference_images\":[\"/tmp/frame.png\"],"
+		"\"reference_videos\":[\"https://example.com/motion.mp4\"],"
+		"\"reference_audios\":[\"/tmp/music.mp3\"]}";
+	event.artifacts = &artifacts;
+	struct runtime_output_context context{&db, nullptr, 0, "request", "turn",
+					      nullptr, nullptr};
+	ASSERT_EQ(runtime_output_record_event(&context, &event), 0);
+	char *json = runtime_output_get_json_by_path(&db,
+						      "/tmp/mixed-result.mp4");
+	ASSERT_NE(json, nullptr);
+	cJSON *root = cJSON_Parse(json);
+	free(json);
+	ASSERT_NE(root, nullptr);
+	cJSON *references = cJSON_GetObjectItem(
+		cJSON_GetObjectItem(root, "recipe"), "references");
+	ASSERT_TRUE(cJSON_IsArray(references));
+	EXPECT_EQ(cJSON_GetArraySize(references), 3);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(references, 2),
+					 "kind")->valuestring, "audio");
+	cJSON_Delete(root);
+}
+
 TEST(RuntimeOutputMigrationTest, AddsRecipeColumnsToExistingOutputsTable)
 {
 	char pattern[] = "/tmp/morph-runtime-output-migration-XXXXXX";

@@ -91,12 +91,20 @@ api_key_env = "VOLCENGINE_API_KEY"
 # Video generation model
 # ──────────────────────────────────────────────
 [model.video]
+# Optional wire-protocol adapter. When omitted, inferred from provider.
+# Supported: volcengine-videos
+# adapter           = "volcengine-videos"
 provider            = "volcengine"
-model               = ""
+model               = "doubao-seedance-2-0-260128"
 api_base            = "https://ark.cn-beijing.volces.com/api/v3"
 api_key_env         = "VOLCENGINE_API_KEY"
 poll_interval_seconds = 5
 poll_timeout_seconds  = 600
+
+# Faster alternative:
+# model = "doubao-seedance-2-0-fast-260128"
+# Legacy models remain configurable, but reference video/audio requires 2.0+:
+# model = "doubao-seedance-1-5-pro-251215"
 
 [credits]
 # Daily credit warning threshold. -1 disables warnings.

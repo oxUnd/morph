@@ -29,6 +29,11 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.models.vision.timeout_seconds, 300);
 	EXPECT_EQ(cfg.models.text.timeout_seconds, 300);
 	EXPECT_EQ(cfg.models.image.timeout_seconds, 290);
+	EXPECT_STREQ(cfg.models.video.provider, "volcengine");
+	EXPECT_STREQ(cfg.models.video.adapter, "");
+	EXPECT_STREQ(cfg.models.video.model, "doubao-seedance-2-0-260128");
+	EXPECT_EQ(cfg.models.video.poll_interval_seconds, 5);
+	EXPECT_EQ(cfg.models.video.poll_timeout_seconds, 600);
 	EXPECT_EQ(cfg.models.text.retry_count, 3);
 	EXPECT_EQ(cfg.models.vision.retry_count, 3);
 	EXPECT_EQ(cfg.react.max_iterations, 10);
@@ -109,6 +114,11 @@ provider = "openai"
 adapter = "openai-images"
 model = "gpt-image-2"
 
+[model.video]
+provider = "volcengine"
+adapter = "volcengine-videos"
+model = "doubao-seedance-2-0-fast-260128"
+
 [react]
 max_iterations = 5
 tool_timeout_seconds = 45
@@ -170,6 +180,9 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.models.image.provider, "openai");
 	EXPECT_STREQ(cfg.models.image.adapter, "openai-images");
 	EXPECT_STREQ(cfg.models.image.model, "gpt-image-2");
+	EXPECT_STREQ(cfg.models.video.adapter, "volcengine-videos");
+	EXPECT_STREQ(cfg.models.video.model,
+		     "doubao-seedance-2-0-fast-260128");
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);

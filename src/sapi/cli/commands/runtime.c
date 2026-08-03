@@ -377,6 +377,10 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	       (*runtime_config_get(ctx->runtime)).models.image.context_limit);
 	printf(ANSI_BOLD "[model.video]" ANSI_RESET "\n");
 	printf("  provider = %s\n", (*runtime_config_get(ctx->runtime)).models.video.provider);
+	printf("  adapter = %s\n",
+	       (*runtime_config_get(ctx->runtime)).models.video.adapter[0]
+		       ? (*runtime_config_get(ctx->runtime)).models.video.adapter
+		       : "(auto)");
 	printf("  model = %s\n", (*runtime_config_get(ctx->runtime)).models.video.model);
 	printf("  api_base = %s\n", (*runtime_config_get(ctx->runtime)).models.video.api_base);
 	printf("  context_limit = %d\n",

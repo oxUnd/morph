@@ -63,8 +63,9 @@ MORPH_PROMPT_TOOL_SURFACE \
 "  adapter handles provider-specific formats and size rules.\n" \
 "  img_info/img_resize/img_convert/img_annotate inspect metadata,\n" \
 "  post-process, or collect manual annotations.\n" \
-"- Video: vid_gen to create motion; anchor the first frame with an image\n" \
-"  for continuity when it matters.\n" \
+"- Video: vid_gen creates motion from ordered image, video, and audio\n" \
+"  references. Pass all assets in one call and identify them as image#1,\n" \
+"  video#1, audio#1, etc.\n" \
 "- Files: file_read, file_list, file_info to ground work in real data.\n" \
 MORPH_PROMPT_SHELL_CAPABILITY \
 "\n" \

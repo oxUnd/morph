@@ -1,4 +1,5 @@
 #include "video_gen.h"
+#include "video_provider.h"
 #include "models/llm.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -15,7 +16,97 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
-#include "util/error.h"
+
+#define VIDEO_VOLCENGINE_ADAPTER "volcengine-videos"
+
+static const struct video_provider_ops volcengine_video_provider;
+
+static int seedance_version(const char *model_id, int *major, int *minor)
+{
+	const char *prefix = "doubao-seedance-";
+	const char *version;
+	int consumed = 0;
+
+	if (!model_id || !major || !minor ||
+	    strncmp(model_id, prefix, strlen(prefix)) != 0)
+		return 0;
+	version = model_id + strlen(prefix);
+	if (sscanf(version, "%d-%d%n",
+		   major, minor, &consumed) != 2 || consumed <= 0)
+		return 0;
+	if (*major < 0 || *minor < 0 ||
+	    (version[consumed] != '\0' && version[consumed] != '-'))
+		return 0;
+	return 1;
+}
+
+int video_gen_adapter_supported(const char *provider, const char *adapter)
+{
+	const char *name;
+
+	if (!provider)
+		return 0;
+	name = adapter && adapter[0] ? adapter : provider;
+	if (strcmp(name, VIDEO_VOLCENGINE_ADAPTER) == 0)
+		return 1;
+	return (!adapter || !adapter[0]) && strcmp(name, "volcengine") == 0;
+}
+
+static const struct video_provider_ops *video_provider_resolve(
+	const struct model *model)
+{
+	if (!model || !video_gen_adapter_supported(model->provider,
+						   model->adapter))
+		return NULL;
+	return &volcengine_video_provider;
+}
+
+const char *video_gen_adapter_name(const struct model *model)
+{
+	const struct video_provider_ops *ops = video_provider_resolve(model);
+
+	return ops ? ops->name : NULL;
+}
+
+static int volcengine_video_capabilities(const struct model *model,
+					 struct video_capabilities *caps)
+{
+	const char *model_id;
+	int major = 0;
+	int minor = 0;
+
+	if (!model || !caps)
+		MORPH_RETURN(-EINVAL);
+	memset(caps, 0, sizeof(*caps));
+	caps->supports_generate = 1;
+	caps->supports_reference_images = 1;
+	if (!model->model_id[0])
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	model_id = model->model_id;
+	if (!seedance_version(model_id, &major, &minor))
+		return 0;
+	if (major > 1 || (major == 1 && minor >= 5))
+		caps->supports_generate_audio = 1;
+	if (major >= 2) {
+		caps->supports_multi_reference_images = 1;
+		caps->supports_reference_videos = 1;
+		caps->supports_reference_audios = 1;
+	}
+	return 0;
+}
+
+int video_gen_capabilities(const struct model *model,
+			   struct video_capabilities *caps)
+{
+	const struct video_provider_ops *ops;
+
+	if (!model || !caps)
+		MORPH_RETURN(-EINVAL);
+	ops = video_provider_resolve(model);
+	if (!ops)
+		MORPH_RETURN(-ENOTSUP);
+	return ops->capabilities(model, caps);
+}
 
 static int download_url(const char *url, const char *out_path)
 {
@@ -55,22 +146,15 @@ static void video_report_usage(struct model *self, const char *model_id,
 	model_report_usage(&usage);
 }
 
-int video_gen_create(struct model *self, const char *prompt,
-		    const char **image_paths, int num_images,
-		    const char **video_paths, int num_videos,
-		    int duration, const char *output_dir,
-		    struct video_result *result)
+static int volcengine_video_execute(struct model *self, const char *prompt,
+				    const char **image_paths, int num_images,
+				    const char **video_paths, int num_videos,
+				    const char **audio_paths, int num_audios,
+				    int generate_audio,
+				    const struct video_capabilities *caps,
+				    int duration, const char *output_dir,
+				    struct video_result *result)
 {
-	if (!prompt || !result)
-		return -EINVAL;
-	if (num_images < 0)
-		num_images = 0;
-	if (num_videos < 0)
-		num_videos = 0;
-	/* TODO: Seedance 1.0 fast only supports 1 reference image (first_frame).
-	 * Re-enable multi-image when the API supports it. */
-	if (num_images > 1)
-		num_images = 1;
 	memset(result, 0, sizeof(*result));
 
 	struct arena *arena = arena_create(8192);
@@ -79,10 +163,11 @@ int video_gen_create(struct model *self, const char *prompt,
 
 	const char *api_base = self ? self->api_base : "";
 	const char *api_key = (self && self->api_key[0]) ? self->api_key : "";
-	const char *model_id = (self && self->model_id[0]) ? self->model_id
-			       : "doubao-seedance-1-0-pro-fast-251015";
-	int poll_interval = 5;
-	int poll_timeout = 600;
+	const char *model_id = self ? self->model_id : "";
+	int poll_interval = self && self->poll_interval_seconds > 0 ?
+		self->poll_interval_seconds : 5;
+	int poll_timeout = self && self->poll_timeout_seconds > 0 ?
+		self->poll_timeout_seconds : 600;
 
 	if (!api_key[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
@@ -110,8 +195,9 @@ int video_gen_create(struct model *self, const char *prompt,
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 
 	const char *final_prompt = prompt;
-	if (num_images > 1 || num_videos > 0) {
-		size_t suffix_len = 96 + (size_t)(num_images + num_videos) * 16;
+	if (num_images > 1 || num_videos > 0 || num_audios > 0) {
+		size_t suffix_len = 128 +
+			(size_t)(num_images + num_videos + num_audios) * 16;
 		size_t total = strlen(prompt) + suffix_len;
 		char *buf = arena_alloc(arena, total);
 		if (buf) {
@@ -135,6 +221,19 @@ int video_gen_create(struct model *self, const char *prompt,
 					off += (size_t)snprintf(buf + off, total - off, "video#%d", i + 1);
 				}
 				off += (size_t)snprintf(buf + off, total - off, "]");
+			}
+			if (num_audios > 0) {
+				off += (size_t)snprintf(buf + off, total - off,
+						       "\n[Ref audios: ");
+				for (int i = 0; i < num_audios; i++) {
+					if (i > 0)
+						off += (size_t)snprintf(
+							buf + off, total - off, ", ");
+					off += (size_t)snprintf(
+						buf + off, total - off,
+						"audio#%d", i + 1);
+				}
+				(void)snprintf(buf + off, total - off, "]");
 			}
 			final_prompt = buf;
 		}
@@ -163,7 +262,10 @@ int video_gen_create(struct model *self, const char *prompt,
 				 encoded.mime_type, encoded.base64);
 			cJSON *img_item = cJSON_CreateObject();
 			cJSON_AddStringToObject(img_item, "type", "image_url");
-			cJSON_AddStringToObject(img_item, "role", "first_frame");
+			cJSON_AddStringToObject(
+				img_item, "role",
+				caps->supports_multi_reference_images ?
+					"reference_image" : "first_frame");
 			cJSON *url_obj = cJSON_CreateObject();
 			cJSON_AddStringToObject(url_obj, "url", data_uri);
 			cJSON_AddItemToObject(img_item, "image_url", url_obj);
@@ -219,7 +321,7 @@ int video_gen_create(struct model *self, const char *prompt,
 		}
 
 		if (url_to_send) {
-cJSON *vid_item = cJSON_CreateObject();
+			cJSON *vid_item = cJSON_CreateObject();
 			cJSON_AddStringToObject(vid_item, "type", "video_url");
 			cJSON_AddStringToObject(vid_item, "role", "reference_video");
 			cJSON *url_obj = cJSON_CreateObject();
@@ -230,8 +332,66 @@ cJSON *vid_item = cJSON_CreateObject();
 		free(b64);
 	}
 
+	for (int i = 0; i < num_audios; i++) {
+		const char *apath = audio_paths[i];
+		const char *url_to_send = NULL;
+		char *b64 = NULL;
+
+		if (strncmp(apath, "http://", 7) == 0 ||
+		    strncmp(apath, "https://", 8) == 0) {
+			url_to_send = apath;
+		} else {
+			size_t alen = 0;
+			char *adata = file_read_all(apath, &alen);
+			const char *ext;
+			const char *mime;
+
+			if (!adata || alen == 0) {
+				free(adata);
+				snprintf(result->error_msg,
+					 sizeof(result->error_msg),
+					 "video_gen: failed to read audio: %s", apath);
+				arena_destroy(arena);
+				MORPH_RETURN(-EIO);
+			}
+			b64 = base64_encode((unsigned char *)adata, alen);
+			free(adata);
+			if (!b64) {
+				arena_destroy(arena);
+				MORPH_RETURN(-ENOMEM);
+			}
+			ext = strrchr(apath, '.');
+			mime = ext && strcasecmp(ext, ".wav") == 0 ?
+				"audio/wav" : "audio/mpeg";
+			size_t uri_len = strlen("data:") + strlen(mime) +
+				strlen(";base64,") + strlen(b64) + 1;
+			char *data_uri = arena_alloc(arena, uri_len);
+			if (data_uri) {
+				snprintf(data_uri, uri_len, "data:%s;base64,%s",
+					 mime, b64);
+				url_to_send = data_uri;
+			}
+		}
+
+		if (url_to_send) {
+			cJSON *audio_item = cJSON_CreateObject();
+			cJSON *url_obj = cJSON_CreateObject();
+
+			cJSON_AddStringToObject(audio_item, "type", "audio_url");
+			cJSON_AddStringToObject(audio_item, "role",
+						"reference_audio");
+			cJSON_AddStringToObject(url_obj, "url", url_to_send);
+			cJSON_AddItemToObject(audio_item, "audio_url", url_obj);
+			cJSON_AddItemToArray(content_arr, audio_item);
+		}
+		free(b64);
+	}
+
 	if (duration > 0)
 		cJSON_AddNumberToObject(body_json, "duration", duration);
+	if (generate_audio >= 0)
+		cJSON_AddBoolToObject(body_json, "generate_audio",
+				      generate_audio != 0);
 
 	size_t body_cap = 8192;
 	char *body_str = arena_alloc(arena, body_cap);
@@ -426,4 +586,109 @@ download:
 	log_dbg("video generated: %s (%ds)", out_path, result->duration_seconds);
 	video_report_usage(self, model_id, task_id, result);
 	return 0;
+}
+
+static const struct video_provider_ops volcengine_video_provider = {
+	.name = VIDEO_VOLCENGINE_ADAPTER,
+	.capabilities = volcengine_video_capabilities,
+	.execute = volcengine_video_execute,
+};
+
+static int video_capability_error(struct model *self,
+				  struct video_result *result,
+				  const char *capability)
+{
+	const char *adapter = video_gen_adapter_name(self);
+	const char *model_id = self && self->model_id[0] ?
+		self->model_id : "(not configured)";
+
+	snprintf(result->error_msg, sizeof(result->error_msg),
+		 "video adapter '%s' does not support %s for model '%s'",
+		 adapter ? adapter : "(unknown)", capability, model_id);
+	if (self)
+		snprintf(self->last_error, sizeof(self->last_error), "%s",
+			 result->error_msg);
+	MORPH_RETURN(-ENOTSUP);
+}
+
+int video_gen_create(struct model *self, const char *prompt,
+		    const char **image_paths, int num_images,
+		    const char **video_paths, int num_videos,
+		    const char **audio_paths, int num_audios,
+		    int generate_audio,
+		    int duration, const char *output_dir,
+		    struct video_result *result)
+{
+	const struct video_provider_ops *ops;
+	struct video_capabilities caps;
+	int rc;
+
+	if (!self || !prompt || !result || num_images < 0 || num_videos < 0 ||
+	    num_audios < 0 || num_images > VIDEO_GEN_MAX_REFERENCE_IMAGES ||
+	    num_videos > VIDEO_GEN_MAX_REFERENCE_VIDEOS ||
+	    num_audios > VIDEO_GEN_MAX_REFERENCE_AUDIOS ||
+	    (num_images > 0 && !image_paths) ||
+	    (num_videos > 0 && !video_paths) ||
+	    (num_audios > 0 && !audio_paths) ||
+	    generate_audio < -1 || generate_audio > 1)
+		MORPH_RETURN(-EINVAL);
+	memset(result, 0, sizeof(*result));
+	if (!self->model_id[0]) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "video_gen: no model configured");
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	}
+	for (int i = 0; i < num_images; i++)
+		if (!image_paths[i] || !image_paths[i][0])
+			MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < num_videos; i++)
+		if (!video_paths[i] || !video_paths[i][0])
+			MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < num_audios; i++)
+		if (!audio_paths[i] || !audio_paths[i][0])
+			MORPH_RETURN(-EINVAL);
+
+	ops = video_provider_resolve(self);
+	if (!ops) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "unsupported video adapter for provider '%s'",
+			 self->provider);
+		MORPH_RETURN(-ENOTSUP);
+	}
+	rc = ops->capabilities(self, &caps);
+	if (rc != 0) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "unsupported video adapter for provider '%s'",
+			 self->provider);
+		MORPH_RETURN(rc);
+	}
+	if (num_images > 0 && !caps.supports_reference_images)
+		return video_capability_error(self, result, "reference images");
+	if (num_images > 1 && !caps.supports_multi_reference_images)
+		return video_capability_error(self, result,
+					      "multiple reference images");
+	if (num_videos > 0 && !caps.supports_reference_videos)
+		return video_capability_error(self, result, "reference videos");
+	if (num_audios > 0 && !caps.supports_reference_audios)
+		return video_capability_error(self, result, "reference audios");
+	if (num_audios > 0 && num_images == 0 && num_videos == 0) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "reference audio requires a reference image or video");
+		MORPH_RETURN(-EINVAL);
+	}
+	if (num_audios > 0 && generate_audio == 0) {
+		snprintf(result->error_msg, sizeof(result->error_msg),
+			 "reference audio requires generate_audio=true");
+		MORPH_RETURN(-EINVAL);
+	}
+	if (generate_audio == 1 && !caps.supports_generate_audio)
+		return video_capability_error(self, result, "audio generation");
+	if (num_audios > 0)
+		generate_audio = 1;
+	else if (generate_audio < 0 && caps.supports_generate_audio)
+		generate_audio = 1;
+
+	return ops->execute(self, prompt, image_paths, num_images,
+			    video_paths, num_videos, audio_paths, num_audios,
+			    generate_audio, &caps, duration, output_dir, result);
 }

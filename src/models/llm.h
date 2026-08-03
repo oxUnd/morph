@@ -96,6 +96,8 @@ struct model {
 	int max_tokens;
 	long timeout_seconds;
 	int retry_count;
+	int poll_interval_seconds;
+	int poll_timeout_seconds;
 	void *handle;
 	int (*chat)(struct model *self, struct arena *arena,
 		    const char *system_prompt,

@@ -465,7 +465,7 @@ void config_set_defaults(struct config *cfg)
 
 	strncpy(cfg->models.video.provider, "volcengine",
 		sizeof(cfg->models.video.provider) - 1);
-	strncpy(cfg->models.video.model, "",
+	strncpy(cfg->models.video.model, "doubao-seedance-2-0-260128",
 		sizeof(cfg->models.video.model) - 1);
 	strncpy(cfg->models.video.api_base, "https://ark.cn-beijing.volces.com/api/v3",
 		sizeof(cfg->models.video.api_base) - 1);

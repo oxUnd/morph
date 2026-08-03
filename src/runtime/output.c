@@ -131,6 +131,9 @@ static char *build_recipe(struct db *db, const char *tool_name,
 	add_reference_value(db, references,
 		cJSON_GetObjectItemCaseSensitive(arguments, "reference_videos"),
 		"video");
+	add_reference_value(db, references,
+		cJSON_GetObjectItemCaseSensitive(arguments, "reference_audios"),
+		"audio");
 	if (!strcmp(tool_name, "img_inpaint") ||
 	    !strcmp(tool_name, "img_compose"))
 		add_annotation_references(db, references, arguments);

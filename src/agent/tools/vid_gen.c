@@ -8,11 +8,9 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <limits.h>
-
-#define MAX_REF_IMAGES 16
-#define MAX_REF_VIDEOS 8
 
 struct vid_gen_context {
 	struct model *video_llm;
@@ -30,6 +28,17 @@ static int is_http_url(const char *s)
 		     strncmp(s, "https://", 8) == 0);
 }
 
+static int is_supported_audio_path(const char *path)
+{
+	const char *ext;
+
+	if (is_http_url(path))
+		return 1;
+	ext = path ? strrchr(path, '.') : NULL;
+	return ext && (strcasecmp(ext, ".mp3") == 0 ||
+		       strcasecmp(ext, ".wav") == 0);
+}
+
 static int vid_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct vid_gen_context *ctx = user_data;
@@ -40,14 +49,18 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 
 	cJSON *root = cJSON_Parse(args_json);
 	const char *prompt = NULL;
-	const char *image_paths[MAX_REF_IMAGES];
+	const char *image_paths[VIDEO_GEN_MAX_REFERENCE_IMAGES];
 	int num_images = 0;
-	const char *video_paths[MAX_REF_VIDEOS];
+	const char *video_paths[VIDEO_GEN_MAX_REFERENCE_VIDEOS];
 	int num_videos = 0;
+	const char *audio_paths[VIDEO_GEN_MAX_REFERENCE_AUDIOS];
+	int num_audios = 0;
+	int generate_audio = -1;
 	int duration = 5;
 
 	memset(image_paths, 0, sizeof(image_paths));
 	memset(video_paths, 0, sizeof(video_paths));
+	memset(audio_paths, 0, sizeof(audio_paths));
 
 	if (root) {
 		cJSON *p = cJSON_GetObjectItem(root, "prompt");
@@ -59,7 +72,12 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			num_images = 1;
 		} else if (cJSON_IsArray(ri)) {
 			int n = cJSON_GetArraySize(ri);
-			if (n > MAX_REF_IMAGES) n = MAX_REF_IMAGES;
+			if (n > VIDEO_GEN_MAX_REFERENCE_IMAGES) {
+				cJSON_Delete(root);
+				(void)tool_result_success_json_text(result, strdup(
+					"{\"error\":\"too many reference images\"}"));
+				return -EINVAL;
+			}
 			for (int i = 0; i < n; i++) {
 				cJSON *item = cJSON_GetArrayItem(ri, i);
 				if (cJSON_IsString(item)) {
@@ -74,7 +92,12 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			num_videos = 1;
 		} else if (cJSON_IsArray(rv)) {
 			int n = cJSON_GetArraySize(rv);
-			if (n > MAX_REF_VIDEOS) n = MAX_REF_VIDEOS;
+			if (n > VIDEO_GEN_MAX_REFERENCE_VIDEOS) {
+				cJSON_Delete(root);
+				(void)tool_result_success_json_text(result, strdup(
+					"{\"error\":\"too many reference videos\"}"));
+				return -EINVAL;
+			}
 			for (int i = 0; i < n; i++) {
 				cJSON *item = cJSON_GetArrayItem(rv, i);
 				if (cJSON_IsString(item)) {
@@ -82,6 +105,29 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				}
 			}
 		}
+
+		cJSON *ra = cJSON_GetObjectItem(root, "reference_audios");
+		if (cJSON_IsString(ra)) {
+			audio_paths[0] = ra->valuestring;
+			num_audios = 1;
+		} else if (cJSON_IsArray(ra)) {
+			int n = cJSON_GetArraySize(ra);
+			if (n > VIDEO_GEN_MAX_REFERENCE_AUDIOS) {
+				cJSON_Delete(root);
+				(void)tool_result_success_json_text(result, strdup(
+					"{\"error\":\"too many reference audios\"}"));
+				return -EINVAL;
+			}
+			for (int i = 0; i < n; i++) {
+				cJSON *audio = cJSON_GetArrayItem(ra, i);
+				if (cJSON_IsString(audio))
+					audio_paths[num_audios++] = audio->valuestring;
+			}
+		}
+
+		cJSON *ga = cJSON_GetObjectItem(root, "generate_audio");
+		if (cJSON_IsBool(ga))
+			generate_audio = cJSON_IsTrue(ga) ? 1 : 0;
 
 		cJSON *d = cJSON_GetObjectItem(root, "duration");
 		if (cJSON_IsNumber(d)) duration = (int)d->valuedouble;
@@ -93,14 +139,17 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: vid_gen({\\\"prompt\\\": \\\"a flying drone\\\", "
 			"\\\"reference_images\\\": [\\\"img1.jpg\\\", \\\"img2.png\\\"], "
-			"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"]})\"}"));
+			"\\\"reference_videos\\\": [\\\"clip1.mp4\\\"], "
+			"\\\"reference_audios\\\": [\\\"music.mp3\\\"]})\"}"));
 		return -EINVAL;
 	}
 
-	char resolved_images[MAX_REF_IMAGES][PATH_MAX];
-	char resolved_videos[MAX_REF_VIDEOS][PATH_MAX];
-	const char *image_paths_to_send[MAX_REF_IMAGES];
-	const char *video_paths_to_send[MAX_REF_VIDEOS];
+	char resolved_images[VIDEO_GEN_MAX_REFERENCE_IMAGES][PATH_MAX];
+	char resolved_videos[VIDEO_GEN_MAX_REFERENCE_VIDEOS][PATH_MAX];
+	char resolved_audios[VIDEO_GEN_MAX_REFERENCE_AUDIOS][PATH_MAX];
+	const char *image_paths_to_send[VIDEO_GEN_MAX_REFERENCE_IMAGES];
+	const char *video_paths_to_send[VIDEO_GEN_MAX_REFERENCE_VIDEOS];
+	const char *audio_paths_to_send[VIDEO_GEN_MAX_REFERENCE_AUDIOS];
 
 	for (int i = 0; i < num_images; i++) {
 		image_paths_to_send[i] = image_paths[i];
@@ -143,6 +192,32 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 		}
 	}
 
+	for (int i = 0; i < num_audios; i++) {
+		audio_paths_to_send[i] = audio_paths[i];
+		if (!is_supported_audio_path(audio_paths[i])) {
+			cJSON_Delete(root);
+			(void)tool_result_success_json_text(result, strdup(
+				"{\"error\":\"reference audio must be MP3 or WAV\"}"));
+			return -EINVAL;
+		}
+		if (tctx && !is_http_url(audio_paths[i])) {
+			int auth_rc = tool_context_authorize_path(
+				tctx, TOOL_PATH_READ, audio_paths[i],
+				resolved_audios[i], sizeof(resolved_audios[i]));
+			if (auth_rc < 0) {
+				cJSON_Delete(root);
+				if (auth_rc == -ENOENT)
+					(void)tool_result_success_json_text(result, strdup(
+						"{\"error\":\"reference audio not found\"}"));
+				else
+					(void)tool_result_success_json_text(result, strdup(
+						"{\"error\":\"read path outside workspace: permission denied\"}"));
+				return auth_rc;
+			}
+			audio_paths_to_send[i] = resolved_audios[i];
+		}
+	}
+
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
 	struct video_result vid_res = {0};
 	int rc = video_gen_create(ctx ? ctx->video_llm : NULL, prompt,
@@ -150,6 +225,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 				  num_images,
 				  num_videos > 0 ? video_paths_to_send : NULL,
 				  num_videos,
+				  num_audios > 0 ? audio_paths_to_send : NULL,
+				  num_audios, generate_audio,
 				  duration, output_dir, &vid_res);
 	cJSON_Delete(root);
 
@@ -199,18 +276,43 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 	ctx->video_llm = video_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "vid_gen", .description = "Generate a video from a text prompt with optional reference images and/or reference videos. "
-		"IMPORTANT: Always pass ALL reference assets in a single call via the reference_images / reference_videos arrays. "
-		"Never call vid_gen multiple times for the same video. "
-		"Images are labeled image#1, image#2, etc.; videos are labeled video#1, video#2, etc., in order. "
-		"Use these labels in the prompt to reference specific assets, e.g. "
-		"\"Generate a video of image#1 walking in the style of video#1\". "
-		"reference_videos accepts local file paths (mp4/mov/webm/mkv/avi) or http(s) URLs.", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"prompt\":{\"type\":\"string\",\"description\":\"Text description of the video to generate. Use image#1, image#2, video#1, etc. to reference specific assets\"},"
-		"\"reference_images\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of file paths to reference images for img2vid. Pass ALL images in one array, not one at a time. Images are labeled image#1, image#2, etc. in order\"},"
-		"\"reference_videos\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Array of local file paths or http(s) URLs to reference videos for vid2vid. Pass ALL videos in one array, not one at a time. Videos are labeled video#1, video#2, etc. in order\"},"
-		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration in seconds\"}"
-		"},\"required\":[\"prompt\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = vid_gen_exec, .user_data = ctx, .user_data_destroy = vid_gen_context_destroy });
+	const char *description =
+		"Generate a video from a text prompt with optional reference "
+		"images, videos, and audios. IMPORTANT: Always pass ALL reference "
+		"assets in a single call via the reference_images, reference_videos, "
+		"and reference_audios arrays. Never call vid_gen multiple times for "
+		"the same video. Assets are labeled image#1, video#1, audio#1, etc., "
+		"in order. Use these labels in the prompt to reference specific "
+		"assets. Reference videos and audios require Seedance 2.0+.";
+	const char *input_schema =
+		"{\"type\":\"object\",\"properties\":{"
+		"\"prompt\":{\"type\":\"string\",\"description\":\"Text description "
+		"of the video. Use image#1, video#1, audio#1, etc. to reference "
+		"assets\"},"
+		"\"reference_images\":{\"type\":\"array\",\"items\":{\"type\":"
+		"\"string\"},\"description\":\"Ordered local reference image paths\"},"
+		"\"reference_videos\":{\"type\":\"array\",\"items\":{\"type\":"
+		"\"string\"},\"description\":\"Ordered local paths or HTTP(S) URLs "
+		"for reference videos\"},"
+		"\"reference_audios\":{\"type\":\"array\",\"maxItems\":3,\"items\":"
+		"{\"type\":\"string\"},\"description\":\"Ordered local MP3/WAV paths "
+		"or HTTP(S) URLs; requires a reference image or video\"},"
+		"\"generate_audio\":{\"type\":\"boolean\",\"description\":\"Generate "
+		"synchronized audio; defaults true when supported and is required "
+		"with reference_audios\"},"
+		"\"duration\":{\"type\":\"integer\",\"description\":\"Video duration "
+		"in seconds\"}},\"required\":[\"prompt\"]}";
+	struct tool_spec spec = {
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "vid_gen",
+		.description = description,
+		.input_schema = input_schema,
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = vid_gen_exec,
+		.user_data = ctx,
+		.user_data_destroy = vid_gen_context_destroy,
+	};
+	int rc = tool_register(reg, &spec);
 	if (rc != 0)
 		free(ctx);
 	else

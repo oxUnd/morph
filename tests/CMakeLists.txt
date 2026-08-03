@@ -32,6 +32,7 @@ set(TEST_SOURCES
 	test_sse.cpp
 	test_http.cpp
 	test_image.cpp
+	test_video.cpp
 	test_skill.cpp
 	test_sync.cpp
 	test_bash_exec.cpp

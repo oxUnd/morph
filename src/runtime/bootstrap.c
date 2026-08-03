@@ -136,6 +136,8 @@ static void runtime_configure_model(struct model *model,
 			sizeof(model->extra_body_json) - 1);
 	model->timeout_seconds = cfg->timeout_seconds;
 	model->retry_count = cfg->retry_count;
+	model->poll_interval_seconds = cfg->poll_interval_seconds;
+	model->poll_timeout_seconds = cfg->poll_timeout_seconds;
 	if (cfg->max_tokens > 0)
 		model->max_tokens = cfg->max_tokens;
 	if (cfg->context_limit > 0)
@@ -152,7 +154,7 @@ static struct model *runtime_create_model(const struct config_model_entry *cfg,
 		return NULL;
 	api_key = runtime_api_key(cfg);
 	model = model_llm_create(cfg->provider,
-				 cfg->model[0] ? cfg->model : NULL,
+				 cfg->model,
 				 cfg->api_base[0] ? cfg->api_base : NULL,
 				 api_key ? api_key : "");
 	runtime_configure_model(model, cfg);
@@ -320,6 +322,15 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 			config->models.image.adapter[0]
 				? config->models.image.adapter : "(auto)",
 			config->models.image.provider);
+		MORPH_RETURN(-EINVAL);
+	}
+	if (config->models.video.model[0] &&
+	    !video_gen_adapter_supported(config->models.video.provider,
+					 config->models.video.adapter)) {
+		log_err("unsupported video adapter '%s' for provider '%s'",
+			config->models.video.adapter[0] ?
+				config->models.video.adapter : "(auto)",
+			config->models.video.provider);
 		MORPH_RETURN(-EINVAL);
 	}
 	memset(models, 0, sizeof(*models));

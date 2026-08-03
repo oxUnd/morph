@@ -35,6 +35,7 @@
 #include "ext/ext.h"
 #include "ext/manifest.h"
 #include "models/llm.h"
+#include "models/video_gen.h"
 #include "config/config.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -335,6 +336,15 @@ static void bridge_init_once(void)
 
 	/* Video generation model */
 	{
+		if (!video_gen_adapter_supported(
+			    g_config.models.video.provider,
+			    g_config.models.video.adapter)) {
+			log_err("fcgi-bridge: unsupported video adapter '%s'",
+				g_config.models.video.adapter[0] ?
+					g_config.models.video.adapter : "(auto)");
+			g_init_rc = -EINVAL;
+			return;
+		}
 		const char *vid_key = g_config.models.video.api_key[0]
 			? g_config.models.video.api_key
 			: getenv(g_config.models.video.api_key_env);
@@ -344,6 +354,16 @@ static void bridge_init_once(void)
 			g_config.models.video.api_base[0]
 				? g_config.models.video.api_base : NULL,
 			vid_key ? vid_key : "");
+		if (vid_m && g_config.models.video.adapter[0])
+			strncpy(vid_m->adapter,
+				g_config.models.video.adapter,
+				sizeof(vid_m->adapter) - 1);
+		if (vid_m) {
+			vid_m->poll_interval_seconds =
+				g_config.models.video.poll_interval_seconds;
+			vid_m->poll_timeout_seconds =
+				g_config.models.video.poll_timeout_seconds;
+		}
 		if (vid_m)
 			vid_gen_init(&g_tools, vid_m, g_tctx);
 	}
