@@ -520,6 +520,7 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->react.bash_exec_server_write_paths[0], "@output",
 		BASH_EXEC_CWD_MAX - 1);
 	cfg->react.bash_exec_server_write_paths_count = 1;
+	cfg->react.request_permissions_enabled = 1;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
@@ -1055,6 +1056,47 @@ int config_load(struct config *cfg, const char *path)
 					BASH_EXEC_ENV_MAX, BASH_EXEC_ENV_NAME_MAX);
 				CFG_BOOL(server, "network_access",
 					 cfg->react.bash_exec_server_network_access);
+			}
+		}
+		{
+			cfg_table_t *permissions = cfg_table_in(react, "permissions");
+
+			if (permissions) {
+				CFG_BOOL(permissions, "request_tool_enabled",
+					 cfg->react.request_permissions_enabled);
+				CFG_STR(permissions, "active_profile",
+					cfg->react.permission_active_profile);
+			}
+		}
+		{
+			cfg_array_t *profiles = cfg_array_in(
+				react, "permission_profiles");
+
+			if (profiles) {
+				int count = cfg_array_nelem(profiles);
+
+				if (count > PERMISSION_PROFILE_MAX)
+					count = PERMISSION_PROFILE_MAX;
+				for (int i = 0; i < count; i++) {
+					cfg_table_t *profile = cfg_table_at(profiles, i);
+					struct config_permission_profile *dst =
+						&cfg->react.permission_profiles[i];
+
+					if (!profile)
+						continue;
+					CFG_STR(profile, "name", dst->name);
+					load_string_array(profile, "workspace_roots",
+						dst->workspace_roots,
+						&dst->workspace_roots_count,
+						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+					load_string_array(profile, "write_paths",
+						dst->write_paths, &dst->write_paths_count,
+						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+					load_string_array(profile, "delete_paths",
+						dst->delete_paths, &dst->delete_paths_count,
+						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+					cfg->react.permission_profile_count++;
+				}
 			}
 		}
 		cfg_array_t *ht = cfg_array_in(react, "hitl_tools");

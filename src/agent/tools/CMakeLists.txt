@@ -13,6 +13,7 @@ add_library(morph-tools STATIC
 	config_write.c
 	skill_activate.c
 	bash_exec.c
+	request_permissions.c
 	plan.c
 	ask_user.c
 	img_annotate.c

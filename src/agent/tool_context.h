@@ -92,6 +92,10 @@ struct tool_context {
 	int bash_exec_server_delete_dirs_count;
 	char bash_exec_server_allowed_env[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ENV_NAME_MAX];
 	int bash_exec_server_allowed_env_count;
+	char bash_exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int bash_exec_profile_write_dirs_count;
+	char bash_exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int bash_exec_profile_delete_dirs_count;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -152,12 +156,25 @@ int tool_context_add_bash_exec_server_env(struct tool_context *tctx,
 int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
 					   enum tool_path_op op,
 					   const char *path);
+int tool_context_add_bash_exec_profile_path(struct tool_context *tctx,
+					    enum tool_path_op op,
+					    const char *path);
 int tool_context_request_delete_access(struct tool_context *tctx,
 				       const char *principal,
 				       const char *command,
 				       const char *path,
 				       char *resolved,
 				       size_t resolved_size);
+int tool_context_grant_delete_access(struct tool_context *tctx,
+				     const char *principal, const char *path,
+				     char *resolved, size_t resolved_size);
+int tool_context_request_scoped_access(struct tool_context *tctx,
+				       enum tool_path_op operation,
+				       const char *principal,
+				       const char *command, const char *path,
+				       int session_scope,
+				       char *resolved, size_t resolved_size);
+void tool_context_clear_turn_grants(struct tool_context *tctx);
 int tool_context_collect_delete_grants(const struct tool_context *tctx,
 				       const char *principal,
 				       const char **paths, int max_paths);

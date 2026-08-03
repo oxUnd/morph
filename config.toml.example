@@ -183,23 +183,22 @@ bash_exec_mode = "server"       # local | server
 # Deprecated: bash_exec_allowed_cwds is ignored by the capability sandbox.
 #
 # Local mode reads all files, has network access, and may write/delete only
-# below workdir, output, and /tmp without approval. Additional write/delete
-# paths require once/session approval.
-#
-# In local mode, a tool call can request write_paths or delete_paths outside
-# the defaults. The CLI offers once/session/deny; these grants are never saved.
+# below workdir, output, and /tmp without approval. bash_exec requests narrow
+# extra access with sandbox_permissions = "with_additional_permissions" and
+# additional_permissions.file_system.write/delete. The old top-level
+# write_paths/delete_paths arguments remain accepted for compatibility.
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names
 # - Creative tools called but no output files → retry with guidance
-# - Empty answer → retry or force finalize
+# - Empty answer → retry, then fail explicitly if responses remain empty
 # - Creative tool reports missing file → retry with error injected
-# Guardrail only triggers when tools were actually called; pure text Q&A
-# (no tools used) always passes.
+# Tool-result rules only trigger when tools were called. Output rules such as
+# empty-answer validation also apply to pure text Q&A.
 # guardrail_enabled   = false
 # Maximum number of guardrail-retry cycles per query.
 guardrail_max_retries = 2
-# Maximum consecutive empty answers before forcing finalization.
+# Maximum consecutive empty answers before returning an LLM error.
 guardrail_max_empty_rounds = 2
 
 ## Guardrail: disable specific built-in rules by name.
@@ -285,6 +284,40 @@ network_access = false
 # Exact environment variable names inherited by server-mode commands.
 # Keep this empty unless a command requires a proxy or custom CA bundle.
 allowed_env = []
+
+# ── Local filesystem permission profiles ──────
+# Profiles add trusted local-mode roots at startup. They do not affect server
+# mode and never disable the OS sandbox. Set active_profile to an empty string
+# to use only workdir/output/tmp and request everything else interactively.
+[react.permissions]
+active_profile = "developer"
+# Register request_permissions so the model can proactively ask for narrowly
+# scoped turn or session access before running bash_exec.
+request_tool_enabled = true
+
+# You may define several profiles and switch active_profile above.
+[[react.permission_profiles]]
+name = "developer"
+# A workspace root permits BOTH writing and deletion below the directory.
+# Use this only for directories you treat like an editable project workspace.
+workspace_roots = [
+  # "~/Work",
+]
+# write_paths permits create/modify but does NOT permit delete/rename.
+write_paths = [
+  # "~/Library/Developer/Xcode/DerivedData",
+]
+# delete_paths permits delete/rename. Add the same directory to write_paths
+# too when tools must both create files and remove them.
+delete_paths = [
+  # "~/Library/Developer/Xcode/DerivedData",
+]
+
+[[react.permission_profiles]]
+name = "strict"
+workspace_roots = []
+write_paths = []
+delete_paths = []
 
 [context]
 # Compress when token usage exceeds context_limit * threshold

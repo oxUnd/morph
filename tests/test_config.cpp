@@ -46,6 +46,9 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.bash_exec_server_delete_paths_count, 0);
 	EXPECT_EQ(cfg.react.bash_exec_server_network_access, 0);
 	EXPECT_EQ(cfg.react.bash_exec_server_allowed_env_count, 0);
+	EXPECT_EQ(cfg.react.request_permissions_enabled, 1);
+	EXPECT_STREQ(cfg.react.permission_active_profile, "");
+	EXPECT_EQ(cfg.react.permission_profile_count, 0);
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
@@ -116,6 +119,16 @@ delete_paths = ["/srv/cache"]
 network_access = true
 allowed_env = ["https_proxy", "SSL_CERT_FILE"]
 
+[react.permissions]
+active_profile = "developer"
+request_tool_enabled = false
+
+[[react.permission_profiles]]
+name = "developer"
+workspace_roots = ["/tmp/workspace"]
+write_paths = ["/tmp/build-cache"]
+delete_paths = ["/tmp/build-cache"]
+
 [context]
 keep_recent_rounds = 10
 
@@ -167,6 +180,17 @@ include = ["config.toml", "output"]
 	ASSERT_EQ(cfg.react.bash_exec_server_allowed_env_count, 2);
 	EXPECT_STREQ(cfg.react.bash_exec_server_allowed_env[0], "https_proxy");
 	EXPECT_STREQ(cfg.react.bash_exec_server_allowed_env[1], "SSL_CERT_FILE");
+	EXPECT_EQ(cfg.react.request_permissions_enabled, 0);
+	EXPECT_STREQ(cfg.react.permission_active_profile, "developer");
+	ASSERT_EQ(cfg.react.permission_profile_count, 1);
+	EXPECT_STREQ(cfg.react.permission_profiles[0].name, "developer");
+	ASSERT_EQ(cfg.react.permission_profiles[0].workspace_roots_count, 1);
+	EXPECT_STREQ(cfg.react.permission_profiles[0].workspace_roots[0],
+		     "/tmp/workspace");
+	ASSERT_EQ(cfg.react.permission_profiles[0].write_paths_count, 1);
+	EXPECT_STREQ(cfg.react.permission_profiles[0].write_paths[0],
+		     "/tmp/build-cache");
+	ASSERT_EQ(cfg.react.permission_profiles[0].delete_paths_count, 1);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
 	EXPECT_EQ(cfg.sync.enabled, 1);
 	EXPECT_STREQ(cfg.sync.dir, "/tmp/morph-sync");
@@ -423,6 +447,39 @@ read_paths = ["@workdir", "relative/path"]
 	EXPECT_EQ(config_validate_text(toml, &error), MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
 	EXPECT_STREQ(error.path, "react.bash_exec_server.read_paths");
+}
+
+TEST(ConfigValidationTest, ValidatesPermissionProfiles)
+{
+	struct config_validation_error error = {};
+	const char *missing = R"(
+[react.permissions]
+active_profile = "missing"
+)";
+	const char *relative = R"(
+[react.permissions]
+active_profile = "developer"
+[[react.permission_profiles]]
+name = "developer"
+write_paths = ["relative/cache"]
+)";
+	const char *valid = R"(
+[react.permissions]
+active_profile = "developer"
+[[react.permission_profiles]]
+name = "developer"
+workspace_roots = ["~/Work"]
+write_paths = ["/tmp/cache"]
+)";
+
+	EXPECT_EQ(config_validate_text(missing, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
+	EXPECT_STREQ(error.path, "react.permissions.active_profile");
+	EXPECT_EQ(config_validate_text(relative, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+	EXPECT_STREQ(error.path,
+		     "react.permission_profiles[].write_paths");
+	EXPECT_EQ(config_validate_text(valid, &error), 0);
 }
 
 TEST(ConfigValidationTest, ValidatesMcpRequirements)

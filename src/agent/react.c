@@ -4,6 +4,7 @@
 #include "compress.h"
 #include "system_prompt.h"
 #include "tool_runtime.h"
+#include "tool_context.h"
 #include "models/llm.h"
 #include "http/client.h"
 #include "util/log.h"
@@ -1248,6 +1249,37 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
+	if (ctx->tools && tool_lookup(ctx->tools, "bash_exec")) {
+		rc = morph_buf_puts(&buf,
+			"\nShell filesystem permissions:\n"
+			"- Run commands with sandbox_permissions=use_default unless "
+			"they need to write or delete outside workdir/output/tmp.\n"
+			"- For known external paths, use "
+			"sandbox_permissions=with_additional_permissions and request "
+			"only the smallest absolute directories in "
+			"additional_permissions.file_system.write or .delete.\n"
+			"- Deletion and rename require delete permission; write "
+			"permission alone is insufficient.\n"
+			"- If bash_exec returns error.code=sandbox_denied, retry the "
+			"same command with the narrow additional permissions indicated "
+			"by the failure. Do not claim success from its exit code.\n"
+			"- Use require_escalated only when narrow directory permissions "
+			"cannot work; it always requires approval and is unavailable "
+			"in server mode.\n");
+		if (rc != 0)
+			return NULL;
+		if (tool_lookup(ctx->tools, "request_permissions")) {
+			rc = morph_buf_puts(&buf,
+				"- You may call request_permissions before bash_exec "
+				"when the required directories are known. Include the "
+				"exact future command and use scope=turn unless repeated "
+				"commands need scope=session. Grants are scoped to the "
+				"command executable.\n");
+			if (rc != 0)
+				return NULL;
+		}
+	}
+
 	if (ctx->system_prompt) {
 		rc = morph_buf_printf(&buf, "%s\n", ctx->system_prompt);
 		if (rc != 0)
@@ -1842,6 +1874,7 @@ static int react_track_tool_failure(struct react_context *ctx,
  * Returns 0 guardrail passed (caller should finalize),
  *         1 guardrail failed - revision messages appended, caller should
  *           free response and continue the iteration loop,
+ *         2 repeated empty responses caused a terminal LLM error,
  *        -ENOMEM allocation failure (caller should abort).
  */
 static int react_handle_guardrail_retry(struct react_context *ctx,
@@ -1853,16 +1886,19 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	struct chat_message *slots;
 	struct chat_message *asst_msg;
 	struct chat_message *user_msg;
+	int answer_is_empty;
 
-	if (!ctx->guardrail.enabled ||
-	    ctx->guardrail_retry_count >= ctx->guardrail.max_retries)
+	if (!ctx->guardrail.enabled)
 		return 0;
 
-	if (!proposed || !*proposed ||
-	    strcmp(proposed, "(no response)") == 0) {
+	answer_is_empty = !proposed || !*proposed ||
+		strcmp(proposed, "(no response)") == 0;
+	if (answer_is_empty) {
 		ctx->empty_round_count++;
 	} else {
 		ctx->empty_round_count = 0;
+		if (ctx->guardrail_retry_count >= ctx->guardrail.max_retries)
+			return 0;
 	}
 
 	react_set_state(ctx, REACT_STATE_GUARDRAIL);
@@ -1871,6 +1907,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 		.proposed_answer = proposed,
 		.steps = ctx->steps,
 		.empty_round_count = ctx->empty_round_count,
+		.max_empty_rounds = ctx->guardrail.max_empty_rounds,
 		.arena = ctx->turn_arena,
 	};
 	struct guardrail_result gr = guardrail_run_hook(
@@ -1879,6 +1916,23 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	if (gr.verdict == GUARDRAIL_PASS) {
 		log_info("guardrail: PASS");
 		return 0;
+	}
+	if (answer_is_empty &&
+	    (ctx->guardrail_retry_count >= ctx->guardrail.max_retries ||
+	     (ctx->guardrail.max_empty_rounds > 0 &&
+	      ctx->empty_round_count >= ctx->guardrail.max_empty_rounds))) {
+		const char *detail =
+			"LLM repeatedly returned an empty response.";
+
+		log_warn("guardrail: %s", detail);
+		free(ctx->final_answer);
+		ctx->final_answer = strdup(detail);
+		if (!ctx->final_answer)
+			MORPH_RETURN(-ENOMEM);
+		react_set_error_detail(ctx, detail);
+		react_set_result(ctx, REACT_OUTCOME_LLM_ERROR,
+				 MORPH_ERR_LLM, "empty_response");
+		return 2;
 	}
 
 	ctx->guardrail_retry_count++;
@@ -1897,7 +1951,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 
 	slots = morph_array_push_n(messages, 2);
 	if (!slots)
-		return -ENOMEM;
+		MORPH_RETURN(-ENOMEM);
 	memset(slots, 0, 2 * sizeof(*slots));
 	asst_msg = &slots[0];
 	user_msg = &slots[1];
@@ -2798,6 +2852,8 @@ static int react_handle_final_response(struct react_context *ctx,
 	}
 	if (gr == 1)
 		return 0;
+	if (gr == 2)
+		return 1;
 
 	final_step = react_step_create(ctx->turn_arena, REACT_STEP_FINAL,
 				       final_text, NULL, NULL, NULL);
@@ -2833,6 +2889,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 {
 	if (!ctx || !user_input)
 		return -EINVAL;
+	if (ctx->tools) {
+		struct tool_entry *permission_tool =
+			tool_lookup(ctx->tools, "request_permissions");
+
+		if (permission_tool && permission_tool->user_data)
+			tool_context_clear_turn_grants(
+				permission_tool->user_data);
+	}
 	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);

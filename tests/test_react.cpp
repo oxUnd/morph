@@ -3912,6 +3912,50 @@ TEST_F(MockLlmTest, OutputGuardrailRetriesAndFinalizes) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, EmptyOutputRetriesThenFails) {
+	const char *responses[] = { "", "" };
+	llm = create_multi_mock_llm(responses, 2);
+	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 1;
+	ctx->guardrail.max_empty_rounds = 2;
+
+	int rc = react_run(ctx, "answer carefully", nullptr, nullptr);
+	EXPECT_EQ(rc, MORPH_ERR_LLM);
+	EXPECT_EQ(data->call_count, 2);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_LLM_ERROR);
+	EXPECT_STREQ(ctx->outcome_reason, "empty_response");
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "empty response"), nullptr);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, EmptyOutputHonorsMaxEmptyRounds) {
+	const char *responses[] = { "", "unused" };
+	llm = create_multi_mock_llm(responses, 2);
+	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->guardrail.enabled = 1;
+	ctx->guardrail.max_retries = 3;
+	ctx->guardrail.max_empty_rounds = 1;
+
+	int rc = react_run(ctx, "answer carefully", nullptr, nullptr);
+	EXPECT_EQ(rc, MORPH_ERR_LLM);
+	EXPECT_EQ(data->call_count, 1);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_LLM_ERROR);
+
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, ToolOutputGuardrailRewritesObservation) {
 	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "A test tool", "{}",
 		      test_tool_fn, nullptr, nullptr);
@@ -4531,6 +4575,7 @@ TEST(Guardrail, ConsecutiveEmptyFail) {
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.proposed_answer = "";
 	ctx.empty_round_count = 3;
+	ctx.max_empty_rounds = 3;
 	ctx.arena = a;
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_FAIL);

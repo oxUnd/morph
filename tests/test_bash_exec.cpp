@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "agent/tools/bash_exec.h"
+#include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "util/file.h"
@@ -1741,6 +1742,141 @@ TEST_F(BashExecTest, LocalModeRequiresApprovalOutsideDefaultRoots)
 		"{\"command\":\"true\",\"write_paths\":[\"/\"]}", rc);
 	EXPECT_EQ(rc, -EPERM);
 	EXPECT_NE(result.find("outside"), std::string::npos);
+}
+
+TEST_F(BashExecTest, LocalModeSupportsNestedAdditionalPermissions)
+{
+	const char *dir = "/var/tmp/morph_nested_permission";
+	const char *path = "/var/tmp/morph_nested_permission/state.txt";
+	ScopedApprovalState state{0, 0};
+	int rc;
+
+	ASSERT_EQ(file_ensure_dir(dir), 0);
+	std::remove(path);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"touch /var/tmp/morph_nested_permission/state.txt\","
+		"\"sandbox_permissions\":\"with_additional_permissions\","
+		"\"additional_permissions\":{\"file_system\":{"
+		"\"write\":[\"/var/tmp/morph_nested_permission\"]}}}", rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(state.write_calls, 1);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_EQ(access(path, F_OK), 0);
+	std::remove(path);
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, SandboxDenialOverridesTrailingSuccessfulCommand)
+{
+	const char *dir = "/var/tmp/morph_denial_detection";
+	const char *path = "/var/tmp/morph_denial_detection/state.txt";
+	int rc;
+
+	ASSERT_EQ(file_ensure_dir(dir), 0);
+	std::remove(path);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"touch /var/tmp/morph_denial_detection/state.txt; "
+		"echo finished\"}", rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_NE(result.find("sandbox_denied"), std::string::npos) << result;
+	EXPECT_NE(access(path, F_OK), 0);
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, RequestPermissionsPregrantsCommandSession)
+{
+	const char *dir = "/var/tmp/morph_requested_permission";
+	const char *path = "/var/tmp/morph_requested_permission/state.txt";
+	ScopedApprovalState state{0, 0};
+	struct tool_result permission_result;
+	int rc;
+
+	ASSERT_EQ(file_ensure_dir(dir), 0);
+	std::remove(path);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	ASSERT_EQ(bash_exec_init(&reg, tctx), 0);
+	ASSERT_EQ(request_permissions_init(&reg, tctx), 0);
+	tool_result_init(&permission_result);
+	rc = tool_exec(&reg, "request_permissions",
+		"{\"command\":\"touch /var/tmp/morph_requested_permission/state.txt\","
+		"\"scope\":\"session\","
+		"\"permissions\":{\"file_system\":{"
+		"\"write\":[\"/var/tmp/morph_requested_permission\"]}},"
+		"\"justification\":\"test output\"}", &permission_result);
+	EXPECT_EQ(rc, 0);
+	tool_result_cleanup(&permission_result);
+	EXPECT_EQ(state.write_calls, 1);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"touch /var/tmp/morph_requested_permission/state.txt\"}",
+		rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	EXPECT_EQ(state.write_calls, 1);
+	EXPECT_EQ(access(path, F_OK), 0);
+	std::remove(path);
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, TurnPermissionIsClearedBeforeNextTurn)
+{
+	const char *dir = "/var/tmp/morph_turn_permission";
+	const char *paths[4] = { nullptr };
+	ScopedApprovalState state{0, 0};
+	struct tool_result permission_result;
+	char principal[TOOL_CONTEXT_CLI_NAME_MAX];
+	int rc;
+
+	ASSERT_EQ(file_ensure_dir(dir), 0);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	tool_context_set_operation_approval(tctx, scoped_approval_stub, &state);
+	ASSERT_EQ(request_permissions_init(&reg, tctx), 0);
+	tool_result_init(&permission_result);
+	rc = tool_exec(&reg, "request_permissions",
+		"{\"command\":\"touch /var/tmp/morph_turn_permission/state.txt\","
+		"\"scope\":\"turn\",\"permissions\":{\"file_system\":{"
+		"\"write\":[\"/var/tmp/morph_turn_permission\"]}}}",
+		&permission_result);
+	ASSERT_EQ(rc, 0);
+	tool_result_cleanup(&permission_result);
+	ASSERT_EQ(tool_context_command_principal(
+		"touch /var/tmp/morph_turn_permission/state.txt", principal,
+		sizeof(principal)), 0);
+	EXPECT_EQ(tool_context_collect_write_grants(tctx, principal, paths, 4), 1);
+	tool_context_clear_turn_grants(tctx);
+	EXPECT_EQ(tool_context_collect_write_grants(tctx, principal, paths, 4), 0);
+	rmdir(dir);
+}
+
+TEST_F(BashExecTest, LocalPermissionProfileSeparatesWriteAndDelete)
+{
+	const char *dir = "/var/tmp/morph_profile_permission";
+	int rc;
+
+	ASSERT_EQ(file_ensure_dir(dir), 0);
+	tool_context_set_bash_exec_mode(tctx, "local");
+	ASSERT_EQ(tool_context_add_bash_exec_profile_path(
+		tctx, TOOL_PATH_WRITE, dir), 0);
+	bash_exec_init(&reg, tctx);
+	std::string result = exec_raw(reg,
+		"{\"command\":\"touch /var/tmp/morph_profile_permission/state.txt\"}",
+		rc);
+	EXPECT_EQ(rc, 0) << result;
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
+	result = exec_raw(reg,
+		"{\"command\":\"rm -f /var/tmp/morph_profile_permission/state.txt\","
+		"\"additional_permissions\":{\"file_system\":{"
+		"\"delete\":[\"/var/tmp/morph_profile_permission\"]}}}", rc);
+	EXPECT_EQ(rc, -EPERM) << result;
+	EXPECT_EQ(access("/var/tmp/morph_profile_permission/state.txt", F_OK), 0);
+	std::remove("/var/tmp/morph_profile_permission/state.txt");
+	rmdir(dir);
 }
 
 TEST_F(BashExecTest, LocalModeKeepsProxyEnvButFiltersSecrets)

@@ -19,6 +19,7 @@
 #include "agent/tools/img_resize.h"
 #include "agent/tools/plan.h"
 #include "agent/tools/runtime_query.h"
+#include "agent/tools/request_permissions.h"
 #include "agent/tools/skill_activate.h"
 #include "agent/tools/sub_agent_tools.h"
 #include "agent/tools/vid_gen.h"
@@ -43,6 +44,18 @@ static const char *runtime_api_key(const struct config_model_entry *model)
 	if (model->api_key[0])
 		return model->api_key;
 	return getenv(model->api_key_env);
+}
+
+static const struct config_permission_profile *active_permission_profile(
+	const struct config_react *react)
+{
+	if (!react || !react->permission_active_profile[0])
+		return NULL;
+	for (int i = 0; i < react->permission_profile_count; i++)
+		if (strcmp(react->permission_profiles[i].name,
+			   react->permission_active_profile) == 0)
+			return &react->permission_profiles[i];
+	return NULL;
 }
 
 static void runtime_configure_model(struct model *model,
@@ -408,8 +421,50 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	if (profile->enable_config_write)
 		config_write_init(profile->tools, tctx, profile->config_path);
 	if (profile->enable_bash && config->react.bash_exec_enabled) {
+		const struct config_permission_profile *permission_profile;
+
 		tool_context_set_bash_exec_mode(
 			tctx, config->react.bash_exec_mode);
+		permission_profile = active_permission_profile(&config->react);
+		if (config->react.permission_active_profile[0] &&
+		    !permission_profile) {
+			log_err("active permission profile not found: %s",
+				  config->react.permission_active_profile);
+			MORPH_RETURN(-ENOENT);
+		}
+		if (permission_profile &&
+		    strcmp(config->react.bash_exec_mode, "local") != 0) {
+			log_err("permission profiles require bash_exec_mode=local");
+			MORPH_RETURN(-EINVAL);
+		}
+		if (permission_profile) {
+			for (int i = 0;
+			     i < permission_profile->workspace_roots_count; i++) {
+				rc = tool_context_add_bash_exec_profile_path(
+					tctx, TOOL_PATH_WRITE,
+					permission_profile->workspace_roots[i]);
+				if (rc == 0)
+					rc = tool_context_add_bash_exec_profile_path(
+						tctx, TOOL_PATH_DELETE,
+						permission_profile->workspace_roots[i]);
+				if (rc != 0)
+					return rc;
+			}
+			for (int i = 0; i < permission_profile->write_paths_count; i++) {
+				rc = tool_context_add_bash_exec_profile_path(
+					tctx, TOOL_PATH_WRITE,
+					permission_profile->write_paths[i]);
+				if (rc != 0)
+					return rc;
+			}
+			for (int i = 0; i < permission_profile->delete_paths_count; i++) {
+				rc = tool_context_add_bash_exec_profile_path(
+					tctx, TOOL_PATH_DELETE,
+					permission_profile->delete_paths[i]);
+				if (rc != 0)
+					return rc;
+			}
+		}
 		tool_context_set_bash_exec_server_network(
 			tctx, config->react.bash_exec_server_network_access);
 		for (int i = 0;
@@ -454,6 +509,12 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			log_warn("react.bash_exec_allowed_cwds is deprecated and "
 				 "ignored");
 		bash_exec_init(profile->tools, tctx);
+		if (config->react.request_permissions_enabled &&
+		    strcmp(config->react.bash_exec_mode, "local") == 0) {
+			rc = request_permissions_init(profile->tools, tctx);
+			if (rc != 0)
+				return rc;
+		}
 		tool_set_timeout(profile->tools, "bash_exec",
 				 config->react.bash_exec_default_timeout);
 	}

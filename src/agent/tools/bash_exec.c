@@ -637,6 +637,7 @@ static int path_in_configured_dirs(
 }
 
 static int path_in_local_defaults(struct tool_context *tctx,
+				  enum tool_path_op operation,
 				  const char *path)
 {
 	const char *workdir = tool_context_workdir(tctx);
@@ -644,7 +645,77 @@ static int path_in_local_defaults(struct tool_context *tctx,
 
 	return (workdir && *workdir && path_is_within(path, workdir)) ||
 		(output && *output && path_is_within(path, output)) ||
-		path_is_within(path, "/tmp");
+		path_is_within(path, "/tmp") ||
+		(operation == TOOL_PATH_WRITE && path_in_configured_dirs(path,
+			tctx->bash_exec_profile_write_dirs,
+			tctx->bash_exec_profile_write_dirs_count)) ||
+		(operation == TOOL_PATH_DELETE && path_in_configured_dirs(path,
+			tctx->bash_exec_profile_delete_dirs,
+			tctx->bash_exec_profile_delete_dirs_count));
+}
+
+static int likely_sandbox_denied(const char *stderr_text)
+{
+	static const char *const markers[] = {
+		"Operation not permitted",
+		"operation not permitted",
+		"Permission denied",
+		"permission denied",
+		"sandbox-exec: deny",
+		"Sandbox: ",
+		NULL
+	};
+
+	if (!stderr_text || !*stderr_text)
+		return 0;
+	for (const char *const *marker = markers; *marker; marker++)
+		if (strstr(stderr_text, *marker))
+			return 1;
+	return 0;
+}
+
+static void add_sandbox_denied_error(cJSON *out)
+{
+	cJSON *error = cJSON_CreateObject();
+
+	if (!error)
+		return;
+	cJSON_AddStringToObject(error, "code", "sandbox_denied");
+	cJSON_AddStringToObject(error, "message",
+		"The command attempted an operation outside the sandbox policy.");
+	cJSON_AddBoolToObject(error, "retryable_with_permissions", 1);
+	cJSON_AddStringToObject(error, "retry_instruction",
+		"Retry the same command with sandbox_permissions set to "
+		"with_additional_permissions and the smallest required "
+		"additional_permissions.file_system paths.");
+	cJSON_AddItemToObject(out, "error", error);
+}
+
+static void resolve_permission_arguments(cJSON *root, cJSON **write_paths,
+					 cJSON **delete_paths,
+					 const char **sandbox_permissions)
+{
+	cJSON *additional;
+	cJSON *file_system;
+	cJSON *item;
+
+	*write_paths = cJSON_GetObjectItem(root, "write_paths");
+	*delete_paths = cJSON_GetObjectItem(root, "delete_paths");
+	*sandbox_permissions = "use_default";
+	item = cJSON_GetObjectItem(root, "sandbox_permissions");
+	if (cJSON_IsString(item) && item->valuestring)
+		*sandbox_permissions = item->valuestring;
+	additional = cJSON_GetObjectItem(root, "additional_permissions");
+	file_system = cJSON_IsObject(additional) ?
+		cJSON_GetObjectItem(additional, "file_system") : NULL;
+	if (!cJSON_IsObject(file_system))
+		return;
+	item = cJSON_GetObjectItem(file_system, "write");
+	if (item)
+		*write_paths = item;
+	item = cJSON_GetObjectItem(file_system, "delete");
+	if (item)
+		*delete_paths = item;
 }
 
 static int prepare_policy_paths(struct tool_context *tctx,
@@ -688,7 +759,7 @@ static int prepare_policy_paths(struct tool_context *tctx,
 		snprintf(resolved, sizeof(resolved), "%s", canonical);
 		free(canonical);
 		if (tctx->bash_exec_local_mode) {
-			if (!path_in_local_defaults(tctx, resolved)) {
+			if (!path_in_local_defaults(tctx, operation, resolved)) {
 				if (operation == TOOL_PATH_WRITE)
 					rc = tool_context_request_write_access(
 						tctx, principal, command, resolved,
@@ -754,6 +825,7 @@ static int bash_exec_run_policy(const char *args_json,
 	cJSON *delete_paths;
 	cJSON *approved_write = NULL;
 	cJSON *approved_delete = NULL;
+	const char *sandbox_permissions;
 	const char *command = NULL;
 	const char *cwd = NULL;
 	const char *effective_cwd;
@@ -807,8 +879,36 @@ static int bash_exec_run_policy(const char *args_json,
 			return rc;
 		}
 	}
-	write_paths = cJSON_GetObjectItem(root, "write_paths");
-	delete_paths = cJSON_GetObjectItem(root, "delete_paths");
+	resolve_permission_arguments(root, &write_paths, &delete_paths,
+				     &sandbox_permissions);
+	if (strcmp(sandbox_permissions, "use_default") != 0 &&
+	    strcmp(sandbox_permissions, "with_additional_permissions") != 0 &&
+	    strcmp(sandbox_permissions, "require_escalated") != 0) {
+		cJSON_Delete(root);
+		(void)tool_result_success_json_text(result, strdup(
+			"{\"error\":\"invalid sandbox_permissions value\"}"));
+		MORPH_RETURN(-EINVAL);
+	}
+	if (strcmp(sandbox_permissions, "require_escalated") == 0) {
+		if (!tctx->bash_exec_local_mode) {
+			cJSON_Delete(root);
+			(void)tool_result_success_json_text(result, strdup(
+				"{\"error\":\"server mode never permits escalation\"}"));
+			MORPH_RETURN(-EPERM);
+		}
+		write_paths = cJSON_CreateArray();
+		delete_paths = cJSON_CreateArray();
+		if (!write_paths || !delete_paths) {
+			cJSON_Delete(write_paths);
+			cJSON_Delete(delete_paths);
+			cJSON_Delete(root);
+			MORPH_RETURN(-ENOMEM);
+		}
+		cJSON_AddItemToArray(write_paths, cJSON_CreateString("/"));
+		cJSON_AddItemToArray(delete_paths, cJSON_CreateString("/"));
+		cJSON_AddItemToObject(root, "_escalated_write_paths", write_paths);
+		cJSON_AddItemToObject(root, "_escalated_delete_paths", delete_paths);
+	}
 	rc = prepare_policy_paths(tctx, principal, command, write_paths,
 				  TOOL_PATH_WRITE, &approved_write, result);
 	if (rc == 0)
@@ -888,7 +988,7 @@ static int bash_exec_run_policy(const char *args_json,
 		int delete_requested = approved_delete ?
 			cJSON_GetArraySize(approved_delete) : 0;
 		int have_tmp;
-		int base = TOOL_CONTEXT_ALLOW_MAX + grant_capacity +
+		int base = TOOL_CONTEXT_ALLOW_MAX * 3 + grant_capacity +
 			write_requested + delete_requested + 4;
 
 		close(out_pipe[0]);
@@ -965,6 +1065,14 @@ static int bash_exec_run_policy(const char *args_json,
 						"/tmp");
 				}
 			}
+			for (int i = 0;
+			     i < tctx->bash_exec_profile_write_dirs_count; i++)
+				add_allowed_path(write_allowed, &write_count,
+					tctx->bash_exec_profile_write_dirs[i]);
+			for (int i = 0;
+			     i < tctx->bash_exec_profile_delete_dirs_count; i++)
+				add_allowed_path(delete_allowed, &delete_count,
+					tctx->bash_exec_profile_delete_dirs[i]);
 			add_json_paths(write_allowed, &write_count,
 				       approved_write);
 			add_json_paths(delete_allowed, &delete_count,
@@ -1082,6 +1190,8 @@ static int bash_exec_run_policy(const char *args_json,
 			cJSON_AddStringToObject(out, "signal", signal_name);
 		if (timed_out)
 			cJSON_AddStringToObject(out, "error", "command timed out");
+		else if (likely_sandbox_denied(err_buf.data))
+			add_sandbox_denied_error(out);
 		else if (exit_code != 0)
 			cJSON_AddStringToObject(out, "error",
 						"command exited with non-zero status");
@@ -1120,13 +1230,25 @@ int bash_exec_init(struct tool_registry *reg, struct tool_context *tctx)
 		"receive once/session approval. Server mode uses only configured read, "
 		"write, delete, network, and command rules and never escalates. "
 		"Args: command (required), cwd (optional working dir), "
-		"write_paths (optional array of additional writable directories), "
-		"delete_paths (optional array of additional removable directories), "
+		"sandbox_permissions (use_default, with_additional_permissions, "
+		"or require_escalated), additional_permissions.file_system.write "
+		"and .delete (narrow absolute directory capabilities), "
+		"write_paths/delete_paths (deprecated compatibility aliases), "
 		"timeout_seconds (optional, default 60). "
 		"Use 120-300 for builds, large test suites, or git operations; "
 		"use 30 for quick queries.", .input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":\"shell command to execute via /bin/sh -c\"},"
 		"\"cwd\":{\"type\":\"string\",\"description\":\"working directory\"},"
+		"\"sandbox_permissions\":{\"type\":\"string\","
+		"\"enum\":[\"use_default\",\"with_additional_permissions\","
+		"\"require_escalated\"],\"description\":\"sandbox permission mode\"},"
+		"\"additional_permissions\":{\"type\":\"object\",\"properties\":{"
+		"\"file_system\":{\"type\":\"object\",\"properties\":{"
+		"\"write\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+		"\"delete\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}"
+		"},\"additionalProperties\":false}},\"additionalProperties\":false},"
+		"\"justification\":{\"type\":\"string\","
+		"\"description\":\"why the additional permissions are required\"},"
 		"\"write_paths\":{\"type\":\"array\","
 		"\"items\":{\"type\":\"string\"},"
 		"\"description\":\"additional directory capabilities required "

@@ -135,6 +135,19 @@ static const struct schema_entry schema[] = {
 	BOOL("react.bash_exec_server.network_access"),
 	STRINGS("react.bash_exec_server.allowed_env", BASH_EXEC_ENV_MAX,
 		BASH_EXEC_ENV_NAME_MAX - 1),
+	TABLE("react.permissions"),
+	BOOL("react.permissions.request_tool_enabled"),
+	STRING("react.permissions.active_profile",
+		PERMISSION_PROFILE_NAME_MAX - 1),
+	TABLES("react.permission_profiles", PERMISSION_PROFILE_MAX),
+	STRING("react.permission_profiles[].name",
+		PERMISSION_PROFILE_NAME_MAX - 1),
+	STRINGS("react.permission_profiles[].workspace_roots",
+		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
+	STRINGS("react.permission_profiles[].write_paths",
+		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
+	STRINGS("react.permission_profiles[].delete_paths",
+		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
 	TABLE("context"),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
@@ -486,6 +499,56 @@ static int validate_bash_exec_paths(const toml_datum_t *server,
 	return 0;
 }
 
+static int validate_permission_profiles(const toml_datum_t *react,
+					struct config_validation_error *error)
+{
+	static const char *const keys[] = {
+		"workspace_roots", "write_paths", "delete_paths"
+	};
+	const toml_datum_t *profiles = table_get(react, "permission_profiles");
+	const toml_datum_t *permissions = table_get(react, "permissions");
+	const toml_datum_t *active = table_get(permissions, "active_profile");
+	int active_found = !active || !active->u.s[0];
+
+	if (!profiles)
+		return active_found ? 0 : set_error(error,
+			CONFIG_VALIDATION_CONFLICT, active,
+			"react.permissions.active_profile",
+			"active permission profile '%s' is not defined", active->u.s);
+	for (int i = 0; i < profiles->u.arr.size; i++) {
+		const toml_datum_t *profile = &profiles->u.arr.elem[i];
+		const toml_datum_t *name = table_get(profile, "name");
+
+		if (active && name && strcmp(active->u.s, name->u.s) == 0)
+			active_found = 1;
+		for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+			const toml_datum_t *paths = table_get(profile, keys[k]);
+
+			if (!paths)
+				continue;
+			for (int j = 0; j < paths->u.arr.size; j++) {
+				const toml_datum_t *item = &paths->u.arr.elem[j];
+				const char *value = item->u.s;
+				char path[CONFIG_MAX_KEY_LEN];
+
+				if (file_path_is_absolute(value) || value[0] == '~')
+					continue;
+				snprintf(path, sizeof(path),
+					 "react.permission_profiles[].%s", keys[k]);
+				return set_error(error, CONFIG_VALIDATION_VALUE,
+					item, path,
+					"%s item %d must be an absolute or ~ path",
+					path, j);
+			}
+		}
+	}
+	if (!active_found)
+		return set_error(error, CONFIG_VALIDATION_CONFLICT, active,
+			"react.permissions.active_profile",
+			"active permission profile '%s' is not defined", active->u.s);
+	return 0;
+}
+
 static int extra_body_key_is_reserved(const char *key)
 {
 	static const char *const reserved[] = {
@@ -575,6 +638,12 @@ static int validate_relations(const toml_datum_t *root,
 	}
 	rc = validate_named_array(root, "mcp", "servers", "mcp.servers[].name",
 		error);
+	if (rc != 0)
+		return rc;
+	rc = validate_named_array(root, "react", "permission_profiles",
+		"react.permission_profiles[].name", error);
+	if (rc == 0)
+		rc = validate_permission_profiles(react, error);
 	if (rc != 0)
 		return rc;
 	rc = validate_bash_exec_paths(bash_server, "read_paths",

@@ -93,7 +93,8 @@ static enum guardrail_verdict
 gr_consecutive_empty(const struct guardrail_eval_ctx *ctx,
 		     char *reason_out, size_t reason_cap)
 {
-	if (ctx->empty_round_count >= 2) {
+	if (ctx->max_empty_rounds > 0 &&
+	    ctx->empty_round_count >= ctx->max_empty_rounds) {
 		snprintf(reason_out, reason_cap,
 			 "Multiple empty responses. Provide a substantive answer.");
 		return GUARDRAIL_FAIL;
@@ -751,15 +752,15 @@ void guardrail_register_builtin_rules(struct guardrail_config *cfg)
 {
 	if (!cfg) return;
 
-	guardrail_rule_register(cfg, "empty_answer",
-		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
-		gr_empty_answer, NULL, NULL,
-		"Provide a substantive answer.");
-
 	guardrail_rule_register(cfg, "consecutive_empty",
 		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
 		gr_consecutive_empty, NULL, NULL,
 		"Multiple empty responses. Provide a substantive answer.");
+
+	guardrail_rule_register(cfg, "empty_answer",
+		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,
+		gr_empty_answer, NULL, NULL,
+		"Provide a substantive answer.");
 
 	guardrail_rule_register(cfg, "tools_all_failed",
 		GUARDRAIL_HOOK_OUTPUT, GUARDRAIL_RULE_C,

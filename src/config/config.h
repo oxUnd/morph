@@ -83,6 +83,8 @@ struct config_credits {
 #define BASH_EXEC_CWD_MAX PATH_MAX
 #define BASH_EXEC_ENV_MAX 32
 #define BASH_EXEC_ENV_NAME_MAX 128
+#define PERMISSION_PROFILE_MAX 8
+#define PERMISSION_PROFILE_NAME_MAX 64
 #define GUARDRAIL_DISABLED_RULES_MAX 16
 #define GUARDRAIL_LLM_RULES_MAX 8
 #define GUARDRAIL_EXT_RULES_MAX 8
@@ -104,6 +106,16 @@ struct config_guardrail_ext_rule {
 	char ext_type[8];
 	char ext_entry[CFG_GR_EXT_ENTRY_MAX];
 	char action_text[CFG_GR_ACTION_MAX];
+};
+
+struct config_permission_profile {
+	char name[PERMISSION_PROFILE_NAME_MAX];
+	char workspace_roots[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int workspace_roots_count;
+	char write_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int write_paths_count;
+	char delete_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	int delete_paths_count;
 };
 
 struct config_react {
@@ -144,6 +156,11 @@ struct config_react {
 	int bash_exec_server_network_access;
 	char bash_exec_server_allowed_env[BASH_EXEC_ENV_MAX][BASH_EXEC_ENV_NAME_MAX];
 	int bash_exec_server_allowed_env_count;
+	int request_permissions_enabled;
+	char permission_active_profile[PERMISSION_PROFILE_NAME_MAX];
+	struct config_permission_profile
+		permission_profiles[PERMISSION_PROFILE_MAX];
+	int permission_profile_count;
 };
 
 struct config_context {

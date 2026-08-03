@@ -40,6 +40,7 @@ struct guardrail_eval_ctx {
 	const char *proposed_answer;
 	const void *steps;
 	int empty_round_count;
+	int max_empty_rounds;
 	struct arena *arena;
 };
 
