@@ -185,7 +185,7 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 | 注册到 Tool Registry | Ext 即 Tool | P0 |
 | 沙箱执行（seccomp + rlimit） | Linux | P0 |
 | Guardrail Ext | Ext 可作为 Guardrail 规则插件（.so） | P0 |
-| 沙箱执行（sandbox-exec） | macOS | P2（未实现 `sandbox_enter_darwin`） |
+| 沙箱执行（SBPL） | macOS | P2（已通过 `sandbox_enter_darwin` + `sandbox_init` 实现） |
 | Ext 启停 | enable / disable | P1 |
 | Ext 安装/卸载 | install / remove（本地路径） | P1 |
 | 远程仓库拉取 | git clone | P2 |
@@ -554,7 +554,7 @@ LLM 调用前:
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
 | 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |
-| 沙箱（macOS） | sandbox-exec（系统命令） | ✓ | 子进程方式（P2，未实现） |
+| 沙箱（macOS） | SBPL + `sandbox_init` | ✓ | `sandbox_enter_darwin` 已实现并通过端到端阻断测试 |
 | 动态 JS 工具 | QuickJS 2026-06-04 | ✓ | CMake FetchContent，构建 `morph-js-runner` |
 | WASM Host API | wasm3 v0.5.0 | ✓ | CMake FetchContent，供动态 JS 工具使用 |
 | 视频播放 | fork+exec `mpv`（系统二进制） | ✓ | 用户指定 |
@@ -2634,11 +2634,11 @@ enum morph_error {
 | **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
 | **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
 | **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.7） |
-| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS sandbox-exec | 进行中 |
-| M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | 待开始 |
-| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | 待开始 |
+| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS SBPL 沙箱 | **进行中**（事件、定时任务、QuickJS、Ext install、macOS 沙箱已完成；Ext enable/disable/remove 待完成） |
+| M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | **进行中**（摘要压缩、关键信息提取、跨图片 inpaint/compose 已实现；联动模板验收与递归摘要待完成） |
+| M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | **进行中**（模型 ID 切换与 Ext GitHub 安装已实现；跨 provider 切换、Homebrew formula、模糊测试待完成） |
 
-> **M3/M4 已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具。
+> **已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具、macOS SBPL 沙箱、摘要压缩、关键信息提取、跨图片 inpaint/compose、模型 ID 切换与 Ext GitHub 安装。
 
 ---
 
