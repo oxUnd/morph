@@ -33,6 +33,7 @@
 #include "util/file.h"
 #include "util/log.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,70 @@ static const char *runtime_api_key(const struct config_model_entry *model)
 	if (model->api_key[0])
 		return model->api_key;
 	return getenv(model->api_key_env);
+}
+
+static void runtime_history_add_secret(struct react_context *react,
+				       const char *value)
+{
+	if (!react || !value || strlen(value) < 4 ||
+	    react->history_secret_count >= HISTORY_SECRET_MAX)
+		return;
+	for (int i = 0; i < react->history_secret_count; i++)
+		if (strcmp(react->history_secrets[i], value) == 0)
+			return;
+	react->history_secrets[react->history_secret_count] = strdup(value);
+	if (react->history_secrets[react->history_secret_count])
+		react->history_secret_count++;
+}
+
+#define HISTORY_SECRET_ENV_NAME_MAX 256
+
+static int runtime_secret_env_name(const char *name)
+{
+	static const char *const markers[] = {
+		"KEY", "TOKEN", "SECRET", "PASSWORD"
+	};
+	char upper[HISTORY_SECRET_ENV_NAME_MAX];
+	size_t len;
+
+	if (!name)
+		return 0;
+	len = strlen(name);
+	if (len >= sizeof(upper))
+		len = sizeof(upper) - 1;
+	for (size_t i = 0; i < len; i++)
+		upper[i] = (char)toupper((unsigned char)name[i]);
+	upper[len] = '\0';
+	for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++)
+		if (strstr(upper, markers[i]))
+			return 1;
+	return 0;
+}
+
+static void runtime_history_load_secrets(struct react_context *react,
+					 const struct config *config)
+{
+	const struct config_model_entry *models[] = {
+		&config->models.text, &config->models.vision,
+		&config->models.image, &config->models.video
+	};
+
+	for (size_t i = 0; i < sizeof(models) / sizeof(models[0]); i++)
+		runtime_history_add_secret(react, runtime_api_key(models[i]));
+	for (int i = 0; i < config->mcp.server_count; i++) {
+		const struct config_mcp_server *server = &config->mcp.servers[i];
+		const char *token = server->http_auth_token_env[0] ?
+			getenv(server->http_auth_token_env) : NULL;
+
+		runtime_history_add_secret(react, token);
+		for (int j = 0; j < server->env_count; j++) {
+			const char *key = server->env_keys[j];
+
+			if (runtime_secret_env_name(key))
+				runtime_history_add_secret(react,
+					server->env_vals[j]);
+		}
+	}
 }
 
 static const struct config_permission_profile *active_permission_profile(
@@ -271,6 +336,14 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		config->context.summarize_threshold_ratio;
 	compress_cfg.compress_target_ratio =
 		config->context.compress_target_ratio;
+	compress_cfg.tool_result_max_tokens =
+		config->context.tool_result_max_tokens;
+	compress_cfg.compaction_user_message_tokens =
+		config->context.compaction_user_message_tokens;
+	compress_cfg.compaction_summary_max_tokens =
+		config->context.compaction_summary_max_tokens;
+	compress_cfg.compaction_warning_count =
+		config->context.compaction_warning_count;
 	memset(&guardrail_cfg, 0, sizeof(guardrail_cfg));
 	guardrail_cfg.enabled = config->react.guardrail_enabled;
 	guardrail_cfg.max_retries = config->react.guardrail_max_retries;
@@ -287,6 +360,9 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		config->react.tool_timeout_seconds;
 	models->react->tool_max_retries = config->react.tool_max_retries;
 	models->react->max_iterations = config->react.max_iterations;
+	models->react->history_tool_result_tokens =
+		config->context.tool_result_max_tokens;
+	runtime_history_load_secrets(models->react, config);
 	models->react->hitl.enabled = config->react.hitl_enabled;
 	models->react->hitl.auto_approve_readonly =
 		config->react.hitl_auto_approve_readonly;
@@ -302,6 +378,18 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	}
 	if (profile->workdir && profile->workdir[0])
 		models->react->workdir = strdup(profile->workdir);
+	if (config->context.compaction_prompt_file[0]) {
+		char *path = file_expand_path(
+			config->context.compaction_prompt_file);
+
+		if (path)
+			models->react->history_compaction_prompt =
+				file_read_all(path, NULL);
+		if (!models->react->history_compaction_prompt)
+			log_warn("cannot read compaction prompt '%s'; using built-in",
+				 config->context.compaction_prompt_file);
+		free(path);
+	}
 	(void)runtime_apply_system_prompt(models->react, config);
 	models->text = runtime_create_model(&config->models.text, 0);
 	models->react->llm_model = models->text;

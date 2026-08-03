@@ -231,37 +231,82 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
-	int msg_count = 0;
+	int active_items = 0;
+	int transcript_count = 0;
 	int total_tokens = 0;
+	int tool_tokens = 0;
+	int compactions = 0;
 	int limit = 0;
-	(void)runtime_session_context_stats(ctx->runtime, &msg_count,
-					&total_tokens, &limit);
+	struct message *transcript =
+		runtime_session_messages_current(ctx->runtime, &transcript_count);
+
+	runtime_session_messages_free(transcript);
+	(void)runtime_session_model_context_stats(ctx->runtime, &active_items,
+		&total_tokens, &tool_tokens, &compactions, &limit);
 	double pct = limit > 0 ? (double)total_tokens / limit * 100.0 : 0.0;
-	printf("context: %s%d / %d tokens (%.1f%%)%s | messages: %d\n",
+	printf("context: %s%d / %d tokens (%.1f%%)%s | model items: %d | "
+	       "transcript: %d | tool results: %d tokens | compactions: %d\n",
 	       pct >= 80.0 ? ANSI_YELLOW : "",
 	       total_tokens, limit, pct,
 	       pct >= 80.0 ? ANSI_RESET : "",
-	       msg_count);
+	       active_items, transcript_count, tool_tokens, compactions);
+	{
+		static const char *const kinds[] = {
+			"user_message", "assistant_message",
+			"assistant_tool_calls", "tool_result",
+			"compaction_summary", "background_receipt"
+		};
+		int count = 0;
+		struct model_history_item *items =
+			runtime_session_model_history_current(ctx->runtime, 1, &count);
+
+		printf("context by kind:");
+		for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+			int kind_count = 0;
+			int kind_tokens = 0;
+
+			for (struct model_history_item *item = items; item;
+			     item = item->next) {
+				if (strcmp(item->kind, kinds[i]) == 0) {
+					kind_count++;
+					kind_tokens += item->token_count;
+				}
+			}
+			if (kind_count > 0)
+				printf(" %s=%d/%dt", kinds[i], kind_count,
+				       kind_tokens);
+		}
+		printf("\n");
+		runtime_session_model_history_free(items);
+	}
+	{
+		struct runtime_history_compaction_status status;
+
+		if (runtime_session_compaction_status(ctx->runtime, &status) == 0)
+			printf("last compaction: %s/%s %d -> %d tokens%s\n",
+			       status.trigger_kind, status.status,
+			       status.input_tokens, status.output_tokens,
+			       status.error_code < 0 ? " (failed)" : "");
+	}
 	return 0;
 }
 
 static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 {
-	int trace_removed = 0;
 	int window_removed = 0;
 	int kept = 0;
 	int rc;
 
 	(void)argc;
 	(void)argv;
-	rc = runtime_session_compress(ctx->runtime, &trace_removed,
+	rc = runtime_session_compress(ctx->runtime, NULL,
 					      &window_removed, &kept);
 	if (rc < 0) {
 		CMD_ERROR("compression failed: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("compressed: react_trace removed %d, sliding_window removed %d, kept %d",
-	       trace_removed, window_removed, kept);
+	CMD_OK("model history compacted atomically: removed %d active items, kept %d",
+	       window_removed, kept);
 	return 0;
 }
 

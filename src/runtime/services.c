@@ -2,12 +2,15 @@
 
 #include "runtime/runtime_internal.h"
 #include "agent/compress.h"
+#include "agent/history.h"
 #include "agent/turn.h"
 #include "util/arena.h"
+#include "util/id.h"
 #include "runtime/scheduler.h"
 #include "cJSON.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -239,6 +242,86 @@ int runtime_session_context_stats(struct runtime *runtime, int *messages,
 	return 0;
 }
 
+int runtime_session_model_context_stats(struct runtime *runtime,
+	int *active_items, int *tokens, int *tool_tokens,
+	int *compactions, int *limit)
+{
+	struct model_history_item *items;
+	int count = 0;
+	int total = 0;
+	int tools = 0;
+	int compact_count = 0;
+
+	if (!runtime)
+		return -EINVAL;
+	items = model_history_list(&runtime->context.database,
+		runtime->context.current_session.id, 1, &count);
+	for (struct model_history_item *item = items; item; item = item->next) {
+		total += item->token_count;
+		if (strcmp(item->kind, "tool_result") == 0)
+			tools += item->token_count;
+	}
+	model_history_free_list(items);
+	compact_count = model_history_compaction_count(
+		&runtime->context.database, runtime->context.current_session.id);
+	if (compact_count < 0)
+		return compact_count;
+	if (active_items)
+		*active_items = count;
+	if (tokens)
+		*tokens = total;
+	if (tool_tokens)
+		*tool_tokens = tools;
+	if (compactions)
+		*compactions = compact_count;
+	if (limit)
+		*limit = runtime->context.tokenizer ?
+			runtime->context.tokenizer->context_limit : 0;
+	return 0;
+}
+
+int runtime_session_compaction_status(struct runtime *runtime,
+	struct runtime_history_compaction_status *status)
+{
+	const char *sql =
+		"SELECT trigger_kind,status,input_tokens,output_tokens,error_code "
+		"FROM history_compaction_attempts WHERE session_id=? "
+		"ORDER BY created_at DESC,id DESC LIMIT 1";
+	sqlite3_stmt *stmt;
+	int rc;
+
+	if (!runtime || !status)
+		MORPH_RETURN(-EINVAL);
+	memset(status, 0, sizeof(*status));
+	rc = sqlite3_prepare_v2(runtime->context.database.handle, sql, -1,
+		&stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, runtime->context.current_session.id);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		const char *trigger =
+			(const char *)sqlite3_column_text(stmt, 0);
+		const char *state =
+			(const char *)sqlite3_column_text(stmt, 1);
+
+		snprintf(status->trigger_kind, sizeof(status->trigger_kind),
+			 "%s", trigger ? trigger : "");
+		snprintf(status->status, sizeof(status->status), "%s",
+			 state ? state : "");
+		status->input_tokens = sqlite3_column_int(stmt, 2);
+		status->output_tokens = sqlite3_column_int(stmt, 3);
+		status->error_code = sqlite3_column_int(stmt, 4);
+		rc = 0;
+	} else if (rc == SQLITE_DONE) {
+		rc = -ENOENT;
+	} else {
+		rc = MORPH_ERR_DB;
+	}
+	sqlite3_finalize(stmt);
+	return rc;
+}
+
 char *runtime_trace_load_latest_current(struct runtime *runtime,
 					int *round_no, int *aborted)
 {
@@ -253,64 +336,64 @@ int runtime_session_compress(struct runtime *runtime,
 				     int *window_removed, int *kept)
 {
 	struct runtime_context *ctx = runtime ? &runtime->context : NULL;
-	struct compress_result trace = {0};
-	struct compress_result window = {0};
-	struct message_list *head = NULL;
-	struct message *messages;
-	struct arena *arena;
-	int *ids;
-	int count = 0;
-	int id_count = 0;
-	int remaining;
+	struct react_context *react;
+	char previous_turn_id[sizeof(react->turn_id)];
+	int previous_turn_id_user_set;
+	int before;
+	int after;
 	int rc;
 
 	if (!ctx)
 		return -EINVAL;
-	messages = message_list(&ctx->database, ctx->current_session.id, &count);
-	if (!messages || count == 0) {
-		message_free_list(messages);
-		if (kept)
-			*kept = 0;
-		return 0;
+	react = ctx->react;
+	if (!react)
+		return -EINVAL;
+	rc = agent_session_load_history(&(struct agent_session_runtime) {
+		.db = &ctx->database,
+		.session_id = ctx->current_session.id,
+		.react = react,
+	});
+	if (rc != 0)
+		return rc;
+	before = model_history_count(&ctx->database,
+		ctx->current_session.id, 1);
+	if (before < 0)
+		return before;
+	react->history_db = &ctx->database;
+	react->history_session_id = ctx->current_session.id;
+	react->history_enabled = 1;
+	memcpy(previous_turn_id, react->turn_id, sizeof(previous_turn_id));
+	previous_turn_id_user_set = react->turn_id_user_set;
+	rc = morph_random_id("compact_", react->turn_id,
+			    sizeof(react->turn_id));
+	if (rc != 0) {
+		memcpy(react->turn_id, previous_turn_id,
+		       sizeof(react->turn_id));
+		react->turn_id_user_set = previous_turn_id_user_set;
+		react->history_db = NULL;
+		react->history_session_id = 0;
+		react->history_enabled = 0;
+		return rc;
 	}
-	arena = arena_create(0);
-	ids = calloc((size_t)count, sizeof(*ids));
-	if (!arena || !ids) {
-		message_free_list(messages);
-		arena_destroy(arena);
-		free(ids);
-		return -ENOMEM;
-	}
-	for (struct message *item = messages; item; item = item->next) {
-		struct message_list *node = msg_list_create(arena, item->role,
-			item->content, item->token_count);
-		if (!node)
-			continue;
-		node->compressed = item->compressed;
-		msg_list_append(&head, node);
-		ids[id_count++] = (int)item->id;
-	}
-	message_free_list(messages);
-	(void)compress_react_trace(&head, &trace);
-	rc = compress_sliding_window(&head,
-		ctx->config.context.keep_recent_rounds, &window);
-	if (rc == 0) {
-		remaining = msg_list_count(head);
-		for (int i = 0; i < count - remaining && i < id_count; i++)
-			(void)message_delete(&ctx->database, ids[i]);
-		runtime_session_load_history(&ctx->engine,
-					     ctx->current_session.id);
-		if (trace_removed)
-			*trace_removed = trace.messages_removed;
-		if (window_removed)
-			*window_removed = window.messages_removed;
-		if (kept)
-			*kept = remaining;
-	}
-	msg_list_destroy(head);
-	arena_destroy(arena);
-	free(ids);
-	return rc;
+	rc = agent_history_compact(react, 1);
+	memcpy(react->turn_id, previous_turn_id, sizeof(react->turn_id));
+	react->turn_id_user_set = previous_turn_id_user_set;
+	react->history_db = NULL;
+	react->history_session_id = 0;
+	react->history_enabled = 0;
+	if (rc < 0)
+		return rc;
+	after = model_history_count(&ctx->database,
+		ctx->current_session.id, 1);
+	if (after < 0)
+		return after;
+	if (trace_removed)
+		*trace_removed = 0;
+	if (window_removed)
+		*window_removed = before - after;
+	if (kept)
+		*kept = after;
+	return 0;
 }
 
 int runtime_tool_count(const struct runtime *runtime)

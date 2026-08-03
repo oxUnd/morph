@@ -47,6 +47,18 @@ int runtime_session_set_model(struct runtime *runtime, const char *model);
 int runtime_turn_prepare_tools(struct runtime *runtime, int64_t now);
 int runtime_session_context_stats(struct runtime *runtime, int *messages,
 			      int *tokens, int *limit);
+int runtime_session_model_context_stats(struct runtime *runtime,
+	int *active_items, int *tokens, int *tool_tokens,
+	int *compactions, int *limit);
+struct runtime_history_compaction_status {
+	char trigger_kind[32];
+	char status[32];
+	int input_tokens;
+	int output_tokens;
+	int error_code;
+};
+int runtime_session_compaction_status(struct runtime *runtime,
+	struct runtime_history_compaction_status *status);
 char *runtime_trace_load_latest_current(struct runtime *runtime,
 					int *round_no, int *aborted);
 int runtime_session_compress(struct runtime *runtime,

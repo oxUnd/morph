@@ -326,6 +326,16 @@ summarize_threshold_ratio = 0.8
 compress_target_ratio     = 0.5
 # Always keep the most recent N conversation rounds
 keep_recent_rounds        = 6
+# Maximum size of one tool result retained in model-visible history.
+tool_result_max_tokens = 8000
+# Real user-message budget kept alongside a compaction handoff summary.
+compaction_user_message_tokens = 20000
+# Maximum handoff summary size.
+compaction_summary_max_tokens = 6000
+# Optional custom prompt. Empty uses the built-in domain-neutral prompt.
+compaction_prompt_file = ""
+# Suggest starting a new session after this many compactions; 0 disables it.
+compaction_warning_count = 3
 
 [memory]
 # Master switch for the agent memory subsystem.

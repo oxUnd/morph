@@ -7,6 +7,7 @@
 #include "runtime/usage.h"
 #include "runtime/extensions.h"
 #include "runtime/output.h"
+#include "agent/history.h"
 #include "event/event.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -40,6 +41,9 @@ static int runtime_emit_background(void *user_data, const char *name,
 
 	if (!runtime)
 		return -EINVAL;
+	if (runtime->context.react)
+		(void)agent_history_record_receipt(runtime->context.react,
+			name, phase, message, task, count, error_code);
 	cb = runtime->context.react ? runtime->context.react->event_cb :
 		runtime->options.event_cb;
 	event_user_data = runtime->context.react ?

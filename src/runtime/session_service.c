@@ -165,3 +165,44 @@ void runtime_session_messages_free(struct message *messages)
 {
 	message_free_list(messages);
 }
+
+struct model_history_item *runtime_session_model_history_current(
+	struct runtime *runtime, int active_only, int *count)
+{
+	if (!runtime || !count || runtime->context.current_session.id <= 0)
+		return NULL;
+	return model_history_list(&runtime->context.database,
+		runtime->context.current_session.id, active_only, count);
+}
+
+void runtime_session_model_history_free(struct model_history_item *items)
+{
+	model_history_free_list(items);
+}
+
+int runtime_session_history_diagnose(struct runtime *runtime,
+	struct agent_history_diagnostic *diagnostic)
+{
+	struct model_history_item *items;
+	int count = 0;
+	int rc;
+
+	if (!runtime || !diagnostic)
+		MORPH_RETURN(-EINVAL);
+	items = model_history_list(&runtime->context.database,
+		runtime->context.current_session.id, 1, &count);
+	rc = agent_history_diagnose(items, runtime->context.tokenizer,
+		diagnostic);
+	model_history_free_list(items);
+	return rc;
+}
+
+int runtime_session_history_repair(struct runtime *runtime,
+	struct agent_history_diagnostic *before, int *changed)
+{
+	if (!runtime)
+		MORPH_RETURN(-EINVAL);
+	return agent_history_repair(&runtime->context.database,
+		runtime->context.current_session.id, runtime->context.tokenizer,
+		before, changed);
+}

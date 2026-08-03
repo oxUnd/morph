@@ -2,6 +2,7 @@
 #include "guardrail.h"
 #include "tokenizer.h"
 #include "compress.h"
+#include "history.h"
 #include "system_prompt.h"
 #include "tool_runtime.h"
 #include "tool_context.h"
@@ -667,6 +668,7 @@ struct async_tool_call {
 	char *result;
 	cJSON *data;
 	cJSON *ui;
+	cJSON *meta;
 	struct tool_artifact_list artifacts;
 	int rc;
 	react_output_cb output_cb;
@@ -741,17 +743,18 @@ static void async_tool_call_destroy(struct async_tool_call *call)
 	free(call->result);
 	cJSON_Delete(call->data);
 	cJSON_Delete(call->ui);
+	cJSON_Delete(call->meta);
 	free(call);
 }
 
 static int react_tool_call_cancelled(struct react_context *ctx,
-				     const struct async_tool_call *call)
+				     const struct tool_call *call)
 {
 	if (!call)
 		return 0;
 	return react_emit_tool_event(ctx, "tool.cancelled", "cancelled",
 				     "tool execution cancelled",
-				     call->tool_name, call->tool_args,
+				     call->name, call->arguments,
 				     call->tool_call_id, NULL, -ECANCELED);
 }
 
@@ -922,6 +925,7 @@ static void *async_tool_exec(void *arg)
 				snprintf(buf, need, "tool error: %s (%s)",
 					 raw, morph_strerror(rc));
 			call->result = buf;
+			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;
 			call->rc = rc;
 			call->completed = 1;
 			pthread_cond_broadcast(&call->cond);
@@ -932,6 +936,8 @@ static void *async_tool_exec(void *arg)
 			call->data = res.data ? cJSON_Duplicate(res.data, 1) :
 				NULL;
 			call->ui = res.ui ? cJSON_Duplicate(res.ui, 1) :
+				NULL;
+			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) :
 				NULL;
 			call->artifacts = res.artifacts;
 			call->rc = 0;
@@ -970,31 +976,38 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	struct react_context *ctx = user_data;
 	struct model *llm = ctx->llm_model;
 	if (!llm || !llm->chat || !llm->api_key[0]) {
-		*out = strdup(text);
-		return *out ? 0 : -ENOMEM;
+		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
-	const char *sys = "You are a conversation summarizer. "
-		"Summarize the following conversation concisely, "
-		"preserving all file paths, generated outputs, errors, "
-		"and key decisions made. Use 2-4 sentences.";
+	const char *sys = ctx->history_compaction_prompt ?
+		ctx->history_compaction_prompt :
+		"Create a compact handoff for another model that must continue "
+		"the work without the earlier conversation. Preserve the user's "
+		"goals and constraints, decisions and reasons, completed and "
+		"pending work, exact identifiers and paths, tool outcomes, errors, "
+		"and verification status. Distinguish facts from uncertainty. "
+		"Do not invent details or add domain-specific assumptions.";
 	const char *msgs[] = { text };
 	morph_buf_t b;
+	int previous_max_tokens = llm->max_tokens;
 	int rc = morph_buf_init(&b, 8192);
 	if (rc != 0) {
 		*out = strdup(text);
 		return *out ? 0 : -ENOMEM;
 	}
+	if (ctx->compress.compaction_summary_max_tokens > 0 &&
+	    (llm->max_tokens <= 0 ||
+	     llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
+		llm->max_tokens = ctx->compress.compaction_summary_max_tokens;
 	rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, NULL,
 		       morph_buf_append_cb, &b);
+	llm->max_tokens = previous_max_tokens;
 	if (rc < 0) {
 		morph_buf_cleanup(&b);
-		*out = strdup(text);
-		return *out ? 0 : -ENOMEM;
+		return rc;
 	}
 	*out = morph_buf_detach(&b);
 	if (!*out) {
-		*out = strdup(text);
-		return *out ? 0 : -ENOMEM;
+		MORPH_RETURN(-ENOMEM);
 	}
 	return 0;
 }
@@ -1108,6 +1121,10 @@ void react_context_destroy(struct react_context *ctx)
 	free(ctx->system_prompt);
 	free(ctx->memory_context);
 	free(ctx->workdir);
+	free(ctx->history_compaction_prompt);
+	for (int i = 0; i < ctx->history_secret_count; i++)
+		free(ctx->history_secrets[i]);
+	model_history_free_list(ctx->history_items);
 	arena_destroy(ctx->turn_arena);
 	if (ctx->session_arena)
 		arena_destroy(ctx->session_arena);
@@ -1888,11 +1905,10 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	struct chat_message *user_msg;
 	int answer_is_empty;
 
-	if (!ctx->guardrail.enabled)
-		return 0;
-
 	answer_is_empty = !proposed || !*proposed ||
 		strcmp(proposed, "(no response)") == 0;
+	if (!ctx->guardrail.enabled && !answer_is_empty)
+		return 0;
 	if (answer_is_empty) {
 		ctx->empty_round_count++;
 	} else {
@@ -1912,6 +1928,11 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	};
 	struct guardrail_result gr = guardrail_run_hook(
 		&ctx->guardrail, GUARDRAIL_HOOK_OUTPUT, &eval);
+	if (answer_is_empty && gr.verdict == GUARDRAIL_PASS) {
+		gr.verdict = GUARDRAIL_FAIL;
+		snprintf(gr.reason, sizeof(gr.reason),
+			 "The model returned an empty response.");
+	}
 
 	if (gr.verdict == GUARDRAIL_PASS) {
 		log_info("guardrail: PASS");
@@ -2053,7 +2074,8 @@ static int react_prepare_active_tools(struct react_context *ctx,
 }
 
 static int react_prepare_messages(struct react_context *ctx,
-				  morph_array_t *messages)
+				  morph_array_t *messages,
+				  const char *current_user_input)
 {
 	struct message_list *hist;
 	struct chat_message *message;
@@ -2062,6 +2084,22 @@ static int react_prepare_messages(struct react_context *ctx,
 		return -EINVAL;
 	if (morph_array_init(messages, 64, sizeof(struct chat_message)) < 0)
 		return -ENOMEM;
+	if (ctx->history_enabled) {
+		int rc = agent_history_build_chat_messages(ctx->history_items,
+			messages, ctx->turn_arena);
+
+		if (rc != 0)
+			return rc;
+		message = react_push_chat_message(messages);
+		if (!message)
+			return -ENOMEM;
+		message->role = arena_strdup(ctx->turn_arena, "user");
+		message->content = arena_strdup(ctx->turn_arena,
+			current_user_input ? current_user_input : "");
+		if (!message->role || !message->content)
+			return -ENOMEM;
+		return 0;
+	}
 
 	hist = ctx->messages;
 	while (hist) {
@@ -2430,7 +2468,7 @@ static void react_record_tool_cancelled(struct react_context *ctx)
 static void react_collect_tool_result(struct async_tool_call *call,
 				      int *rc, char **result,
 				      struct tool_artifact_list *artifacts,
-				      cJSON **data, cJSON **ui)
+				      cJSON **data, cJSON **ui, cJSON **meta)
 {
 	pthread_mutex_lock(&call->mutex);
 	*rc = call->rc;
@@ -2441,9 +2479,12 @@ static void react_collect_tool_result(struct async_tool_call *call,
 		*data = call->data;
 	if (ui)
 		*ui = call->ui;
+	if (meta)
+		*meta = call->meta;
 	call->result = NULL;
 	call->data = NULL;
 	call->ui = NULL;
+	call->meta = NULL;
 	memset(&call->artifacts, 0, sizeof(call->artifacts));
 	pthread_mutex_unlock(&call->mutex);
 }
@@ -2520,7 +2561,6 @@ static int react_record_tool_observation(struct react_context *ctx,
 			  call->tool_call_id, rc, artifacts, data, ui);
 	react_emit_observation_event(ctx, obs_text, call->tool_name, rc,
 				     artifacts, data, ui);
-
 	return react_append_tool_message(messages, obs_text,
 					 call->provider_tool_call_id,
 					 ctx->turn_arena);
@@ -2549,6 +2589,9 @@ static int react_record_tool_timeout(struct react_context *ctx,
 			  tc->tool_call_id, -ETIMEDOUT, NULL, NULL, NULL);
 	react_emit_observation_event(ctx, timeout_msg, tc->name, -ETIMEDOUT,
 				     NULL, NULL, NULL);
+	if (agent_history_record_tool_result(ctx, tc->tool_call_id, tc->id,
+		tc->name, timeout_msg, -ETIMEDOUT) != 0)
+		return ctx->history_error ? ctx->history_error : MORPH_ERR_DB;
 
 	return react_append_tool_message(messages, timeout_msg, tc->id,
 					 ctx->turn_arena);
@@ -2577,9 +2620,22 @@ static int react_join_tool_calls(struct react_context *ctx,
 		struct tool_artifact_list artifacts = {0};
 		cJSON *data = NULL;
 		cJSON *ui = NULL;
+		cJSON *meta = NULL;
 
 		if (slots[i].hitl_denied) {
 			struct tool_call *tc = &response->tool_calls[i];
+			const char *denied =
+				"tool error: execution denied by user";
+
+			if (agent_history_record_tool_result(ctx,
+				tc->tool_call_id, tc->id, tc->name, denied,
+				-EPERM) != 0) {
+				react_set_result(ctx,
+						 REACT_OUTCOME_INTERNAL_ERROR,
+						 ctx->history_error,
+						 "history_persistence_error");
+				return 1;
+			}
 			if (react_append_denied_tool_message(ctx, tc,
 							     messages) < 0) {
 				react_set_result(ctx,
@@ -2621,7 +2677,9 @@ static int react_join_tool_calls(struct react_context *ctx,
 						      user_data) < 0) {
 				react_set_result(ctx,
 						 REACT_OUTCOME_INTERNAL_ERROR,
-						 -ENOMEM, "internal_error");
+						 ctx->history_error ?
+						 ctx->history_error : MORPH_ERR_DB,
+						 "history_persistence_error");
 				return 1;
 			}
 			slots[i].call = NULL;
@@ -2629,7 +2687,18 @@ static int react_join_tool_calls(struct react_context *ctx,
 			continue;
 		}
 		if (rc != 0) {
-			react_tool_call_cancelled(ctx, slots[i].call);
+			struct tool_call *tc = &response->tool_calls[i];
+			const char *cancelled =
+				"tool error: execution cancelled by user";
+
+			if (agent_history_record_tool_result(ctx,
+				tc->tool_call_id, tc->id, tc->name, cancelled,
+				-ECANCELED) != 0)
+				react_set_result(ctx,
+					REACT_OUTCOME_INTERNAL_ERROR,
+					ctx->history_error,
+					"history_persistence_error");
+			react_tool_call_cancelled(ctx, tc);
 			slots[i].call = NULL;
 			slots[i].thread_started = 0;
 			react_record_tool_cancelled(ctx);
@@ -2640,14 +2709,29 @@ static int react_join_tool_calls(struct react_context *ctx,
 		react_set_state(ctx, REACT_STATE_OBSERVING);
 		call = slots[i].call;
 		react_collect_tool_result(call, &rc, &result, &artifacts,
-					  &data, &ui);
+					  &data, &ui, &meta);
 		obs_text = result ? result : "";
 		if (rc < 0)
 			react_set_error_detail(ctx, obs_text);
+		{
+			cJSON *history_content = meta ?
+				cJSON_GetObjectItem(meta, "history_content") : NULL;
+
+			if (cJSON_IsString(history_content) &&
+			    history_content->valuestring)
+				obs_text = history_content->valuestring;
+		}
 
 		if (react_track_tool_failure(ctx, call->tool_name,
 					     call->tool_args, rc, cb,
 					     user_data)) {
+			if (agent_history_record_tool_result_ex(ctx,
+				call->tool_call_id, call->provider_tool_call_id,
+				call->tool_name, obs_text, rc, &artifacts, meta) != 0)
+				react_set_result(ctx,
+					REACT_OUTCOME_INTERNAL_ERROR,
+					ctx->history_error,
+					"history_persistence_error");
 			react_cancel_remaining_tool_calls(slots, i + 1,
 							  num_tools);
 			for (int j = 0; j <= i; j++) {
@@ -2660,6 +2744,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 			free(result);
 			cJSON_Delete(data);
 			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			return 1;
 		}
 
@@ -2669,25 +2754,59 @@ static int react_join_tool_calls(struct react_context *ctx,
 						       call->tool_name);
 
 		obs_text = react_apply_tool_output_guardrail(ctx, call,
-							     obs_text, rc,
+						     obs_text, rc,
 							     &artifacts, cb,
 							     user_data);
 		if (!obs_text)
 			obs_text = "";
-		if (react_record_tool_observation(ctx, call, obs_text, rc,
-						  &artifacts, data, ui,
-						  messages,
-						  cb, user_data) < 0) {
+		int persist_rc = agent_history_record_tool_result_ex(ctx,
+			call->tool_call_id, call->provider_tool_call_id,
+			call->tool_name, obs_text, rc, &artifacts, meta);
+
+		if (persist_rc != 0) {
 			free(result);
 			cJSON_Delete(data);
 			cJSON_Delete(ui);
+			cJSON_Delete(meta);
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
-					 -ENOMEM, "internal_error");
+				persist_rc, "history_persistence_error");
 			return 1;
 		}
+		char *prepared_obs = NULL;
+		int prepare_rc = agent_history_prepare_tool_content(ctx,
+			obs_text, &prepared_obs, NULL);
+
+		if (prepare_rc != 0) {
+			free(result);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+				prepare_rc, "history_persistence_error");
+			return 1;
+		}
+		if (react_record_tool_observation(ctx, call, prepared_obs, rc,
+						  &artifacts, data, ui,
+						  messages,
+						  cb, user_data) < 0) {
+			int history_rc = ctx->history_error ?
+				ctx->history_error : MORPH_ERR_DB;
+
+			free(result);
+			cJSON_Delete(data);
+			cJSON_Delete(ui);
+			cJSON_Delete(meta);
+			free(prepared_obs);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					 history_rc,
+					 "history_persistence_error");
+			return 1;
+		}
+		free(prepared_obs);
 		free(result);
 		cJSON_Delete(data);
 		cJSON_Delete(ui);
+		cJSON_Delete(meta);
 	}
 
 	react_cleanup_tool_calls(slots, num_tools);
@@ -2854,7 +2973,6 @@ static int react_handle_final_response(struct react_context *ctx,
 		return 0;
 	if (gr == 2)
 		return 1;
-
 	final_step = react_step_create(ctx->turn_arena, REACT_STEP_FINAL,
 				       final_text, NULL, NULL, NULL);
 	add_step(ctx, final_step);
@@ -2906,6 +3024,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (id_rc != 0)
 			return id_rc;
 	}
+	ctx->history_error = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
 	http_clear_signal_cancel();
 	react_set_state(ctx, REACT_STATE_THINKING);
@@ -2914,14 +3033,16 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	if (react_check_input_guardrail(ctx, user_input) > 0)
 		MORPH_RETURN(react_finish_run(ctx));
-
-	struct message_list *msg = msg_list_create(ctx->session_arena, "user", user_input,
-						  tokenizer_count(ctx->tokenizer, user_input));
-	msg_list_append(&ctx->messages, msg);
-
 	struct model *llm = (struct model *)ctx->llm_model;
 
 	if (!llm || !llm->api_key[0]) {
+		int history_rc = agent_history_record_user(ctx, user_input);
+
+		if (history_rc != 0) {
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+				history_rc, "history_persistence_error");
+			MORPH_RETURN(react_finish_run(ctx));
+		}
 		(void)cb;
 		(void)user_data;
 		react_emit_auth_required(ctx, "text",
@@ -2932,6 +3053,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 				 MORPH_ERR_NOT_CONFIGURED, "missing_api_key");
 		MORPH_RETURN(react_finish_run(ctx));
 	}
+	if (agent_history_record_user(ctx, user_input) != 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+				 ctx->history_error, "history_persistence_error");
+		MORPH_RETURN(react_finish_run(ctx));
+	}
+
+	struct message_list *msg = msg_list_create(ctx->session_arena, "user", user_input,
+						  tokenizer_count(ctx->tokenizer, user_input));
+	msg_list_append(&ctx->messages, msg);
 
 	char *system_prompt = build_system_prompt(ctx, ctx->turn_arena);
 	if (!system_prompt) {
@@ -2945,13 +3075,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int active_tool_count = 0;
 	int has_tools = ctx->tools && ctx->tools->count > 0;
 
-	react_maybe_compress_context(ctx);
+	if (!ctx->history_enabled)
+		react_maybe_compress_context(ctx);
 
 	morph_array_t messages;
 	int messages_ready = 0;
 
 	memset(&messages, 0, sizeof(messages));
-	if (react_prepare_messages(ctx, &messages) < 0) {
+	if (react_prepare_messages(ctx, &messages, user_input) < 0) {
 		morph_array_cleanup(&messages);
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
 				  "internal_error");
@@ -3031,6 +3162,17 @@ int react_run(struct react_context *ctx, const char *user_input,
 						  id_rc, "internal_error");
 				break;
 			}
+			id_rc = agent_history_record_tool_calls(
+				ctx, response.content, response.tool_calls,
+				response.tool_call_count);
+			if (id_rc != 0) {
+				chat_response_free(&response);
+				react_set_result(ctx,
+						  REACT_OUTCOME_INTERNAL_ERROR,
+						  id_rc,
+						  "history_persistence_error");
+				break;
+			}
 			if (react_append_assistant_tool_call_message(
 				ctx, &messages, &response) < 0) {
 				chat_response_free(&response);
@@ -3069,7 +3211,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 			}
 		} else {
 			const char *proposed = response.content
-					       ? response.content : "(no response)";
+					       ? response.content : "";
 
 			if (!react_handle_final_response(ctx, proposed, &messages,
 							 cb, user_data)) {

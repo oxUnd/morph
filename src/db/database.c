@@ -66,6 +66,7 @@ static const char *schema_sql =
 	"request_prompt TEXT,"
 	"provider TEXT,"
 	"tool_name TEXT,"
+	"idempotency_key TEXT,"
 	"tool_call_id TEXT,"
 	"turn_id TEXT,"
 	"recipe_json TEXT,"
@@ -131,6 +132,55 @@ static const char *schema_sql =
 	"ON memory_episodes(session_id, created_at);"
 	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
 	"ON memory_procedures(session_id, updated_at);";
+
+static const char *history_schema_sql =
+	"CREATE TABLE IF NOT EXISTS model_history_items ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"sequence_no INTEGER NOT NULL,"
+	"turn_id TEXT,"
+	"kind TEXT NOT NULL,"
+	"role TEXT,"
+	"content TEXT,"
+	"payload_json TEXT,"
+	"tool_call_id TEXT,"
+	"provider_call_id TEXT,"
+	"tool_name TEXT,"
+	"idempotency_key TEXT,"
+	"token_count INTEGER NOT NULL DEFAULT 0,"
+	"truncated INTEGER NOT NULL DEFAULT 0,"
+	"active INTEGER NOT NULL DEFAULT 1,"
+	"created_at INTEGER NOT NULL,"
+	"UNIQUE(session_id,sequence_no));"
+	"CREATE TABLE IF NOT EXISTS history_compactions ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"turn_id TEXT,"
+	"cutoff_sequence_no INTEGER NOT NULL,"
+	"summary_item_id INTEGER NOT NULL REFERENCES model_history_items(id),"
+	"input_tokens INTEGER NOT NULL,"
+	"output_tokens INTEGER NOT NULL,"
+	"trigger_kind TEXT NOT NULL,"
+	"created_at INTEGER NOT NULL);"
+	"CREATE INDEX IF NOT EXISTS idx_model_history_active "
+	"ON model_history_items(session_id,active,sequence_no);"
+	"CREATE INDEX IF NOT EXISTS idx_model_history_turn "
+	"ON model_history_items(session_id,turn_id,sequence_no);"
+	"CREATE INDEX IF NOT EXISTS idx_model_history_call "
+	"ON model_history_items(session_id,tool_call_id);"
+	"CREATE TABLE IF NOT EXISTS history_compaction_attempts ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
+	"turn_id TEXT,"
+	"trigger_kind TEXT NOT NULL,"
+	"status TEXT NOT NULL,"
+	"input_tokens INTEGER NOT NULL DEFAULT 0,"
+	"output_tokens INTEGER NOT NULL DEFAULT 0,"
+	"error_code INTEGER NOT NULL DEFAULT 0,"
+	"error_text TEXT,"
+	"created_at INTEGER NOT NULL);"
+	"CREATE INDEX IF NOT EXISTS idx_history_compaction_attempts_session "
+	"ON history_compaction_attempts(session_id,created_at,id);";
 
 static const char *permission_schema_sql =
 	"CREATE TABLE IF NOT EXISTS permission_grants ("
@@ -366,6 +416,19 @@ int db_init_schema(struct db *db)
 	if (!db || !db->handle)
 		return -EINVAL;
 	int rc = db_exec(db, schema_sql);
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db, history_schema_sql);
+	if (rc != 0)
+		return rc;
+	db_add_column_if_missing(db, "model_history_items",
+		"idempotency_key", "TEXT");
+	if (!db_table_has_column(db, "model_history_items", "idempotency_key"))
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = db_exec(db,
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_history_idempotency "
+		"ON model_history_items(session_id,idempotency_key) "
+		"WHERE idempotency_key IS NOT NULL;");
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, scheduled_schema_sql);

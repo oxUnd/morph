@@ -33,6 +33,10 @@ struct compress_config {
 	int max_history_rounds;
 	double summarize_threshold_ratio;
 	double compress_target_ratio;
+	int tool_result_max_tokens;
+	int compaction_user_message_tokens;
+	int compaction_summary_max_tokens;
+	int compaction_warning_count;
 	summarize_fn summarize;
 	void *summarize_user_data;
 };

@@ -45,6 +45,12 @@ protected:
 	}
 };
 
+static int agent_turn_summary(const char *, void *, char **out)
+{
+	*out = strdup("old work checkpoint");
+	return *out ? 0 : -ENOMEM;
+}
+
 TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 {
 	ASSERT_EQ(message_add(&db, sess.id, "user", "old question", 2), 0);
@@ -125,7 +131,7 @@ TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 	free(trace);
 }
 
-TEST_F(AgentTurnTest, FinishRollsBackMessagesWhenAssistantPersistenceFails)
+TEST_F(AgentTurnTest, AssistantFailureKeepsPreModelUserCheckpoint)
 {
 	ASSERT_EQ(db_exec(&db,
 		"CREATE TRIGGER reject_assistant_message "
@@ -161,8 +167,17 @@ TEST_F(AgentTurnTest, FinishRollsBackMessagesWhenAssistantPersistenceFails)
 
 	int count = 0;
 	struct message *messages = message_list(&db, sess.id, &count);
-	EXPECT_EQ(messages, nullptr);
-	EXPECT_EQ(count, 0);
+	ASSERT_NE(messages, nullptr);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(messages->role, "user");
+	EXPECT_STREQ(messages->content, "remember this");
+	message_free_list(messages);
+	struct model_history_item *history =
+		model_history_list(&db, sess.id, 1, &count);
+	ASSERT_NE(history, nullptr);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(history->kind, "user_message");
+	model_history_free_list(history);
 }
 
 TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
@@ -209,4 +224,52 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 			 "No long-term memory stored for this session."),
 		  nullptr);
 	free(rendered);
+}
+
+TEST_F(AgentTurnTest, BeginCompactsBeforePersistingCurrentUser)
+{
+	struct model_history_insert old = {};
+	old.session_id = sess.id;
+	old.turn_id = "turn_old";
+	old.kind = "user_message";
+	old.role = "user";
+	old.content = "old large context";
+	old.token_count = 10;
+	old.active = 1;
+	ASSERT_EQ(model_history_add(&db, &old, nullptr), 0);
+	react->compress.max_context_tokens = 2;
+	react->compress.summarize_threshold_ratio = 0.5;
+	react->compress.compress_target_ratio = 0.5;
+	react->compress.compaction_user_message_tokens = 0;
+	react->compress.compaction_summary_max_tokens = 10;
+	react->compress.summarize = agent_turn_summary;
+
+	struct agent_session_runtime runtime = {};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
+		~AGENT_TURN_SAVE_TRACE &
+		~AGENT_TURN_CONSOLIDATE_MEMORY &
+		~AGENT_TURN_ASYNC_MEMORY &
+		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	struct agent_turn_input input = {};
+	input.model_input = "current exact request";
+	input.turn_id = "turn_current";
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+
+	int count = 0;
+	struct model_history_item *items =
+		model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items, nullptr);
+	EXPECT_STREQ(items->kind, "compaction_summary");
+	ASSERT_NE(items->next, nullptr);
+	EXPECT_STREQ(items->next->kind, "user_message");
+	EXPECT_STREQ(items->next->turn_id, "turn_current");
+	EXPECT_STREQ(items->next->content, "current exact request");
+	model_history_free_list(items);
+	react->state = REACT_STATE_ABORT;
+	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
 }

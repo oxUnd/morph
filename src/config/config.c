@@ -525,6 +525,10 @@ void config_set_defaults(struct config *cfg)
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
 	cfg->context.keep_recent_rounds = 6;
+	cfg->context.tool_result_max_tokens = 8000;
+	cfg->context.compaction_user_message_tokens = 20000;
+	cfg->context.compaction_summary_max_tokens = 6000;
+	cfg->context.compaction_warning_count = 3;
 
 	cfg->memory.enabled = 1;
 	cfg->memory.hot_path_enabled = 1;
@@ -1119,6 +1123,16 @@ int config_load(struct config *cfg, const char *path)
 		CFG_DBL(context, "summarize_threshold_ratio", cfg->context.summarize_threshold_ratio);
 		CFG_DBL(context, "compress_target_ratio", cfg->context.compress_target_ratio);
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
+		CFG_INT(context, "tool_result_max_tokens",
+			cfg->context.tool_result_max_tokens);
+		CFG_INT(context, "compaction_user_message_tokens",
+			cfg->context.compaction_user_message_tokens);
+		CFG_INT(context, "compaction_summary_max_tokens",
+			cfg->context.compaction_summary_max_tokens);
+		CFG_STR(context, "compaction_prompt_file",
+			cfg->context.compaction_prompt_file);
+		CFG_INT(context, "compaction_warning_count",
+			cfg->context.compaction_warning_count);
 	}
 
 	cfg_table_t *memory = table_path(tbl, "memory");

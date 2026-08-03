@@ -1,9 +1,11 @@
 #include "agent/turn.h"
 
+#include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "session.h"
 #include "util/arena.h"
 #include "util/error.h"
+#include "util/id.h"
 #include "cJSON.h"
 #include <errno.h>
 #include <stdlib.h>
@@ -60,6 +62,15 @@ static int turn_validate_runtime(const struct agent_session_runtime *runtime)
 	return 0;
 }
 
+static void turn_unbind_history(struct react_context *react)
+{
+	if (!react)
+		return;
+	react->history_db = NULL;
+	react->history_session_id = 0;
+	react->history_enabled = 0;
+}
+
 int agent_session_load_history(const struct agent_session_runtime *runtime)
 {
 	struct message *list;
@@ -73,9 +84,24 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 
 	msg_list_destroy(runtime->react->messages);
 	runtime->react->messages = NULL;
+	model_history_free_list(runtime->react->history_items);
+	runtime->react->history_items = NULL;
 	if (runtime->react->session_arena)
 		arena_reset(runtime->react->session_arena);
 
+	rc = model_history_migrate_messages(runtime->db, runtime->session_id);
+	if (rc != 0)
+		return rc;
+	rc = agent_history_repair(runtime->db, runtime->session_id,
+		runtime->react->tokenizer, NULL, NULL);
+	if (rc != 0)
+		return rc;
+	runtime->react->history_items = model_history_list(
+		runtime->db, runtime->session_id, 1, &count);
+	if (!runtime->react->history_items && count != 0)
+		MORPH_RETURN(MORPH_ERR_DB);
+
+	count = 0;
 	list = message_list(runtime->db, runtime->session_id, &count);
 	cur = list;
 	while (cur) {
@@ -129,22 +155,75 @@ int agent_turn_begin(struct agent_turn *turn,
 	turn->runtime = *runtime;
 	turn->input = *input;
 	flags = turn_flags(&turn->runtime);
+	turn->runtime.react->history_db = turn->runtime.db;
+	turn->runtime.react->history_session_id = turn->runtime.session_id;
+	turn->runtime.react->history_enabled =
+		(flags & AGENT_TURN_SAVE_MESSAGES) ? 1 : 0;
+	turn->runtime.react->history_error = 0;
 
 	if (flags & AGENT_TURN_LOAD_HISTORY) {
 		rc = agent_session_load_history(&turn->runtime);
-		if (rc != 0)
+		if (rc != 0) {
+			turn_unbind_history(turn->runtime.react);
 			return rc;
+		}
 	}
 
 	if (turn->input.turn_id && turn->input.turn_id[0]) {
 		rc = react_set_turn_id(turn->runtime.react, turn->input.turn_id);
-		if (rc != 0)
+		if (rc != 0) {
+			turn_unbind_history(turn->runtime.react);
 			return rc;
+		}
+	} else {
+		char turn_id[64];
+
+		rc = morph_random_id("turn_", turn_id, sizeof(turn_id));
+		if (rc != 0) {
+			turn_unbind_history(turn->runtime.react);
+			return rc;
+		}
+		rc = react_set_turn_id(turn->runtime.react, turn_id);
+		if (rc != 0) {
+			turn_unbind_history(turn->runtime.react);
+			return rc;
+		}
+	}
+	if (turn->runtime.react->history_enabled) {
+		rc = agent_history_maybe_compact(turn->runtime.react);
+		if (rc < 0) {
+			turn_unbind_history(turn->runtime.react);
+			return rc;
+		}
+	}
+	rc = turn_build_memory_context(turn);
+	if (rc != 0) {
+		turn_unbind_history(turn->runtime.react);
+		return rc;
 	}
 
-	rc = turn_build_memory_context(turn);
-	if (rc != 0)
-		return rc;
+	if (flags & AGENT_TURN_SAVE_MESSAGES) {
+		const char *stored = turn->input.stored_user_input ?
+			turn->input.stored_user_input : turn->input.model_input;
+		int tokens = tokenizer_count(turn->runtime.react->tokenizer,
+			stored);
+
+		rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
+		if (rc == 0)
+			rc = message_add_with_turn_id(turn->runtime.db,
+				turn->runtime.session_id, "user", stored, tokens,
+				turn->runtime.react->turn_id);
+		if (rc == 0)
+			rc = agent_history_record_user(turn->runtime.react,
+				turn->input.model_input);
+		if (rc == 0)
+			rc = db_exec(turn->runtime.db, "COMMIT;");
+		if (rc != 0) {
+			(void)db_exec(turn->runtime.db, "ROLLBACK;");
+			turn_unbind_history(turn->runtime.react);
+			return rc;
+		}
+	}
 
 	turn->begun = 1;
 	return 0;
@@ -424,6 +503,11 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 				turn, &local_result, &assistant_for_memory);
 			local_result.assistant_rc = step_rc;
 		}
+		if (step_rc == 0 && turn->runtime.react->final_answer &&
+		    turn->runtime.react->final_answer[0])
+			step_rc = agent_history_record_assistant(
+				turn->runtime.react,
+				turn->runtime.react->final_answer);
 		if (step_rc == 0)
 			step_rc = db_exec(turn->runtime.db, "COMMIT;");
 		if (step_rc != 0) {
@@ -450,6 +534,7 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 		local_result.memory_rc = step_rc;
 
 	free(assistant_for_memory);
+	turn_unbind_history(turn->runtime.react);
 	turn->finished = 1;
 	if (result)
 		*result = local_result;

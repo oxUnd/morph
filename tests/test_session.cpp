@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 #include "db/database.h"
+#include "agent/history.h"
+#include "agent/react.h"
+#include "agent/tokenizer.h"
 #include "session.h"
+#include "util/arena.h"
+#include "util/array.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -23,6 +28,12 @@ protected:
 		std::remove(db_path);
 	}
 };
+
+static int history_summary_failure(const char *, void *, char **out)
+{
+	*out = nullptr;
+	return -EIO;
+}
 
 TEST_F(SessionTest, CreateSession) {
 	struct session s;
@@ -380,4 +391,451 @@ TEST_F(SessionTest, AutoRenameTruncation) {
 	char *dots = strstr(s.name, "...");
 	ASSERT_NE(dots, nullptr);
 	EXPECT_STREQ(dots, "...");
+}
+
+TEST_F(SessionTest, ModelHistoryStoresStructuredItemsInSequence) {
+	struct session s;
+	struct model_history_insert first = {};
+	struct model_history_insert second = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_items", "test", &s), 0);
+	first.session_id = s.id;
+	first.turn_id = "turn_1";
+	first.kind = "assistant_tool_calls";
+	first.role = "assistant";
+	first.payload_json = "{\"calls\":[]}";
+	first.active = 1;
+	second.session_id = s.id;
+	second.turn_id = "turn_1";
+	second.kind = "tool_result";
+	second.role = "tool";
+	second.content = "done";
+	second.tool_call_id = "tool_1";
+	second.provider_call_id = "call_1";
+	second.tool_name = "bash_exec";
+	second.active = 1;
+	ASSERT_EQ(model_history_add(&db, &first, nullptr), 0);
+	ASSERT_EQ(model_history_add(&db, &second, nullptr), 0);
+
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(items->sequence_no, 1);
+	EXPECT_STREQ(items->kind, "assistant_tool_calls");
+	ASSERT_NE(items->next, nullptr);
+	EXPECT_EQ(items->next->sequence_no, 2);
+	EXPECT_STREQ(items->next->provider_call_id, "call_1");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ModelHistoryMigratesTranscriptOnce) {
+	struct session s;
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_migrate", "test", &s), 0);
+	ASSERT_EQ(message_add(&db, s.id, "user", "hello", 2), 0);
+	ASSERT_EQ(message_add(&db, s.id, "assistant", "hi", 1), 0);
+	ASSERT_EQ(model_history_migrate_messages(&db, s.id), 0);
+	ASSERT_EQ(model_history_migrate_messages(&db, s.id), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	EXPECT_STREQ(items->kind, "user_message");
+	EXPECT_STREQ(items->next->kind, "assistant_message");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ModelHistoryCompactionIsPersistentAndKeepsUserBudget) {
+	struct session s;
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_compact", "test", &s), 0);
+	item.session_id = s.id;
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "first";
+	item.token_count = 3;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "answer";
+	item.token_count = 3;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "latest";
+	item.token_count = 2;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+
+	ASSERT_EQ(model_history_compact(&db, s.id, "turn_3", "handoff", 2,
+		2, 8, 0, "test", nullptr), 0);
+	struct model_history_item *active =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(active, nullptr);
+	EXPECT_STREQ(active->content, "latest");
+	ASSERT_NE(active->next, nullptr);
+	EXPECT_STREQ(active->next->kind, "compaction_summary");
+	EXPECT_STREQ(active->next->content, "handoff");
+	model_history_free_list(active);
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 4);
+}
+
+TEST_F(SessionTest, ModelHistoryRepairsInterruptedToolCall) {
+	struct session s;
+	struct model_history_insert call = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_repair", "test", &s), 0);
+	call.session_id = s.id;
+	call.turn_id = "turn_interrupted";
+	call.kind = "assistant_tool_calls";
+	call.role = "assistant";
+	call.payload_json =
+		"{\"calls\":[{\"tool_call_id\":\"tool_1\","
+		"\"provider_call_id\":\"call_1\",\"name\":\"bash_exec\","
+		"\"arguments\":\"{}\"}]}";
+	call.active = 1;
+	ASSERT_EQ(model_history_add(&db, &call, nullptr), 0);
+	ASSERT_EQ(agent_history_repair_interrupted(&db, s.id), 0);
+	ASSERT_EQ(agent_history_repair_interrupted(&db, s.id), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items->next, nullptr);
+	EXPECT_STREQ(items->next->kind, "tool_result");
+	EXPECT_STREQ(items->next->provider_call_id, "call_1");
+	EXPECT_NE(std::strstr(items->next->content, "interrupted"), nullptr);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
+	struct session s;
+	struct react_context react = {};
+	std::string output =
+		"Bearer secret-token api_key=another-secret ";
+	int count = 0;
+
+	for (int i = 0; i < 100; i++)
+		output += "构建完成🙂";
+	ASSERT_EQ(session_create(&db, "history_truncate", "test", &s), 0);
+	react.history_db = &db;
+	react.history_session_id = s.id;
+	react.history_enabled = 1;
+	react.history_tool_result_tokens = 20;
+	ASSERT_EQ(agent_history_record_tool_result(&react, "tool_1", "call_1",
+		"bash_exec", output.c_str(), 0), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(items->truncated, 1);
+	EXPECT_NE(std::strstr(items->content, "tool output truncated"), nullptr);
+	EXPECT_EQ(std::strstr(items->content, "secret-token"), nullptr);
+	EXPECT_EQ(std::strstr(items->content, "another-secret"), nullptr);
+	EXPECT_NE(std::strstr(items->content, "Bearer [REDACTED]"), nullptr);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, TranscriptAndModelHistoryWritesAreIdempotent) {
+	struct session s;
+	struct model_history_insert item = {};
+	int64_t first_id = 0;
+	int64_t second_id = 0;
+
+	ASSERT_EQ(session_create(&db, "history_idempotency", "test", &s), 0);
+	ASSERT_EQ(message_add_with_turn_id(&db, s.id, "user", "first", 1,
+		"turn_same"), 0);
+	ASSERT_EQ(message_add_with_turn_id(&db, s.id, "user", "duplicate", 1,
+		"turn_same"), 0);
+	EXPECT_EQ(message_count(&db, s.id), 1);
+
+	item.session_id = s.id;
+	item.turn_id = "turn_same";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "first";
+	item.idempotency_key = "turn:turn_same:user";
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, &first_id), 0);
+	item.content = "duplicate";
+	ASSERT_EQ(model_history_add(&db, &item, &second_id), 0);
+	EXPECT_EQ(first_id, second_id);
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 1);
+}
+
+TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
+	struct model_history_item call = {};
+	struct model_history_item result = {};
+	struct arena *arena = arena_create(4096);
+	morph_array_t messages;
+
+	ASSERT_NE(arena, nullptr);
+	ASSERT_EQ(morph_array_init(&messages, 2,
+		sizeof(struct chat_message)), 0);
+	std::strcpy(call.kind, "assistant_tool_calls");
+	call.payload_json = const_cast<char *>(
+		"{\"calls\":[{\"tool_call_id\":\"local_1\","
+		"\"provider_call_id\":\"provider_1\",\"name\":\"bash_exec\","
+		"\"arguments\":\"{}\"}]}");
+	call.active = 1;
+	call.next = &result;
+	std::strcpy(result.kind, "tool_result");
+	result.content = const_cast<char *>("done");
+	result.tool_call_id = const_cast<char *>("local_1");
+	result.provider_call_id = const_cast<char *>("provider_1");
+	result.active = 1;
+	ASSERT_EQ(agent_history_build_chat_messages(&call, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 2U);
+	auto *assistant = static_cast<struct chat_message *>(
+		morph_array_get(&messages, 0));
+	auto *tool = static_cast<struct chat_message *>(
+		morph_array_get(&messages, 1));
+	ASSERT_NE(assistant, nullptr);
+	ASSERT_NE(tool, nullptr);
+	ASSERT_EQ(assistant->tool_call_count, 1);
+	EXPECT_STREQ(assistant->tool_calls[0].id, "local_1");
+	EXPECT_STREQ(tool->tool_call_id, "local_1");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
+TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
+	struct session s;
+	struct model_history_insert malformed = {};
+	struct model_history_insert incomplete = {};
+	struct model_history_insert orphan = {};
+	struct tokenizer *tokenizer = tokenizer_create("test", 4096);
+	struct agent_history_diagnostic diagnostic = {};
+	int changed = 0;
+	int count = 0;
+
+	ASSERT_NE(tokenizer, nullptr);
+	ASSERT_EQ(session_create(&db, "history_diagnose", "test", &s), 0);
+	malformed.session_id = s.id;
+	malformed.kind = "assistant_tool_calls";
+	malformed.role = "assistant";
+	malformed.payload_json = "{not-json";
+	malformed.token_count = 99;
+	malformed.active = 1;
+	ASSERT_EQ(model_history_add(&db, &malformed, nullptr), 0);
+	incomplete.session_id = s.id;
+	incomplete.kind = "assistant_tool_calls";
+	incomplete.role = "assistant";
+	incomplete.payload_json =
+		"{\"calls\":[{\"tool_call_id\":\"partial\","
+		"\"provider_call_id\":\"provider\"}]}";
+	incomplete.token_count = 99;
+	incomplete.active = 1;
+	ASSERT_EQ(model_history_add(&db, &incomplete, nullptr), 0);
+	orphan.session_id = s.id;
+	orphan.kind = "tool_result";
+	orphan.role = "tool";
+	orphan.content = "orphan";
+	orphan.tool_call_id = "missing";
+	orphan.token_count = 99;
+	orphan.active = 1;
+	ASSERT_EQ(model_history_add(&db, &orphan, nullptr), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(agent_history_diagnose(items, tokenizer, &diagnostic), 0);
+	EXPECT_EQ(diagnostic.invalid_payloads, 2);
+	EXPECT_EQ(diagnostic.orphan_results, 1);
+	EXPECT_EQ(diagnostic.token_mismatches, 3);
+	model_history_free_list(items);
+	ASSERT_EQ(agent_history_repair(&db, s.id, tokenizer, nullptr,
+		&changed), 0);
+	EXPECT_GE(changed, 2);
+	items = model_history_list(&db, s.id, 1, &count);
+	EXPECT_EQ(count, 0);
+	model_history_free_list(items);
+	tokenizer_destroy(tokenizer);
+}
+
+TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
+	struct session s;
+	struct react_context react = {};
+	struct tool_artifact_list artifacts = {};
+	cJSON *meta = cJSON_CreateObject();
+	int count = 0;
+
+	ASSERT_NE(meta, nullptr);
+	ASSERT_EQ(session_create(&db, "history_envelope", "test", &s), 0);
+	react.history_db = &db;
+	react.history_session_id = s.id;
+	react.history_enabled = 1;
+	react.history_tool_result_tokens = 1000;
+	react.history_secrets[0] = strdup("runtime-exact-secret");
+	react.history_secret_count = 1;
+	artifacts.count = 1;
+	artifacts.items[0].kind = TOOL_ARTIFACT_FILE;
+	std::strcpy(artifacts.items[0].path, "/tmp/report.txt");
+	std::strcpy(artifacts.items[0].mime, "text/plain");
+	cJSON_AddStringToObject(meta, "history_content", "concise result");
+	ASSERT_EQ(agent_history_record_tool_result_ex(&react, "local_1",
+		"provider_1", "tool", "data:image/png;base64,QUJDRA== "
+		"runtime-exact-secret", 0, &artifacts, meta), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(std::strstr(items->content, "QUJDRA=="), nullptr);
+	EXPECT_EQ(std::strstr(items->content, "runtime-exact-secret"), nullptr);
+	EXPECT_NE(std::strstr(items->content, "[binary data omitted]"), nullptr);
+	ASSERT_NE(items->payload_json, nullptr);
+	EXPECT_NE(std::strstr(items->payload_json, "/tmp/report.txt"), nullptr);
+	EXPECT_NE(std::strstr(items->payload_json, "history_content"), nullptr);
+	model_history_free_list(items);
+	free(react.history_secrets[0]);
+	cJSON_Delete(meta);
+}
+
+TEST_F(SessionTest, CompactionFailureRollsBackWithoutChangingHistory) {
+	struct session s;
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_rollback", "test", &s), 0);
+	item.session_id = s.id;
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "keep me";
+	item.token_count = 2;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(sqlite3_exec(db.handle,
+		"CREATE TRIGGER fail_history_checkpoint BEFORE INSERT ON "
+		"history_compactions BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_NE(model_history_compact(&db, s.id, "turn_1", "summary", 2,
+		0, 2, 0, "manual", nullptr), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_STREQ(items->content, "keep me");
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 1);
+	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, AutomaticCompactionFailureFallsBackOnlyAtHardLimit) {
+	struct session s;
+	struct react_context react = {};
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_fallback", "test", &s), 0);
+	item.session_id = s.id;
+	item.turn_id = "turn_1";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "recoverable input";
+	item.token_count = 60;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	react.history_db = &db;
+	react.history_session_id = s.id;
+	react.history_enabled = 1;
+	std::strcpy(react.turn_id, "turn_2");
+	react.compress.max_context_tokens = 100;
+	react.compress.max_history_rounds = 1;
+	react.compress.summarize_threshold_ratio = 0.5;
+	react.compress.compress_target_ratio = 0.5;
+	react.compress.compaction_user_message_tokens = 20;
+	react.compress.compaction_summary_max_tokens = 20;
+	react.compress.summarize = history_summary_failure;
+	react.history_items = model_history_list(&db, s.id, 1, &count);
+	ASSERT_NE(react.history_items, nullptr);
+	EXPECT_EQ(agent_history_compact(&react, 0), 0);
+	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
+	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
+
+	ASSERT_EQ(sqlite3_exec(db.handle,
+		"UPDATE model_history_items SET token_count=100 WHERE active=1",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	model_history_free_list(react.history_items);
+	react.history_items = model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(agent_history_compact(&react, 0), 1);
+	EXPECT_EQ(model_history_compaction_count(&db, s.id), 1);
+	bool found_fallback = false;
+	for (struct model_history_item *cur = react.history_items; cur;
+	     cur = cur->next) {
+		if (std::strcmp(cur->kind, "compaction_summary") == 0) {
+			found_fallback = true;
+			EXPECT_NE(std::strstr(cur->content,
+				"could not be summarized"), nullptr);
+		}
+	}
+	EXPECT_TRUE(found_fallback);
+	model_history_free_list(react.history_items);
+}
+
+TEST_F(SessionTest, ManualCompactionFailureLeavesHistoryUnchanged) {
+	struct session s;
+	struct react_context react = {};
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_manual_failure", "test", &s),
+		0);
+	item.session_id = s.id;
+	item.turn_id = "turn_1";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "unchanged";
+	item.token_count = 10;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	react.history_db = &db;
+	react.history_session_id = s.id;
+	react.history_enabled = 1;
+	std::strcpy(react.turn_id, "turn_2");
+	react.compress.max_context_tokens = 100;
+	react.compress.summarize = history_summary_failure;
+	react.history_items = model_history_list(&db, s.id, 1, &count);
+	EXPECT_EQ(agent_history_compact(&react, 1), -EIO);
+	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
+	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
+	model_history_free_list(react.history_items);
+}
+
+TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
+	struct session s;
+	struct react_context react = {};
+	struct arena *arena = arena_create(4096);
+	morph_array_t messages;
+	int count = 0;
+
+	ASSERT_NE(arena, nullptr);
+	ASSERT_EQ(session_create(&db, "history_receipt", "test", &s), 0);
+	react.history_db = &db;
+	react.history_session_id = s.id;
+	react.history_enabled = 1;
+	std::strcpy(react.turn_id, "turn_receipt");
+	ASSERT_EQ(agent_history_record_receipt(&react, "build", "end",
+		"archive created", "ios_release", 1, 0), 0);
+	ASSERT_EQ(agent_history_record_receipt(&react, "build", "end",
+		"archive created", "ios_release", 1, 0), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_STREQ(items->kind, "background_receipt");
+	EXPECT_NE(std::strstr(items->content, "ios_release"), nullptr);
+	ASSERT_EQ(morph_array_init(&messages, 1,
+		sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 1U);
+	auto *message = static_cast<struct chat_message *>(
+		morph_array_get(&messages, 0));
+	ASSERT_NE(message, nullptr);
+	EXPECT_STREQ(message->role, "system");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+	model_history_free_list(items);
 }

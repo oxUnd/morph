@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
 #include <signal.h>
 #include "agent/tool.h"
 #include "agent/tool_runtime.h"
@@ -69,6 +70,9 @@ enum react_output_status {
 	REACT_OUTPUT_TIMEOUT,
 };
 
+struct db;
+struct model_history_item;
+
 struct react_output_event {
 	enum react_step_type type;
 	enum react_output_status status;
@@ -85,6 +89,7 @@ struct react_output_event {
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
 #define HITL_AUTO_APPROVED_MAX 32
+#define HISTORY_SECRET_MAX 32
 
 enum hitl_verdict {
 	HITL_APPROVE,
@@ -128,6 +133,15 @@ struct react_context {
 	void *ask_user_data;
 	struct tool_registry *tools;
 	struct message_list *messages;
+	struct model_history_item *history_items;
+	struct db *history_db;
+	int64_t history_session_id;
+	int history_enabled;
+	int history_error;
+	int history_tool_result_tokens;
+	char *history_compaction_prompt;
+	char *history_secrets[HISTORY_SECRET_MAX];
+	int history_secret_count;
 	struct tokenizer *tokenizer;
 	struct compress_config compress;
 	void *llm_model;

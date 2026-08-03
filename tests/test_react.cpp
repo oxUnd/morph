@@ -3501,9 +3501,10 @@ TEST_F(MockLlmTest, EmptyLlmResponse) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_EQ(rc, MORPH_ERR_LLM);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
 	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "empty response"), nullptr);
 	react_context_destroy(ctx);
 }
 
@@ -3513,10 +3514,10 @@ TEST_F(MockLlmTest, ResponseOnlyFinalPrefix) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
 	int rc = react_run(ctx, "test", nullptr, nullptr);
-	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_EQ(rc, MORPH_ERR_LLM);
+	EXPECT_EQ(ctx->state, REACT_STATE_ABORT);
 	ASSERT_NE(ctx->final_answer, nullptr);
-	EXPECT_STREQ(ctx->final_answer, "");
+	EXPECT_NE(strstr(ctx->final_answer, "empty response"), nullptr);
 	react_context_destroy(ctx);
 }
 

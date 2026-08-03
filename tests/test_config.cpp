@@ -52,6 +52,11 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
+	EXPECT_EQ(cfg.context.tool_result_max_tokens, 8000);
+	EXPECT_EQ(cfg.context.compaction_user_message_tokens, 20000);
+	EXPECT_EQ(cfg.context.compaction_summary_max_tokens, 6000);
+	EXPECT_STREQ(cfg.context.compaction_prompt_file, "");
+	EXPECT_EQ(cfg.context.compaction_warning_count, 3);
 	EXPECT_EQ(cfg.credits.daily_limit, -1);
 	EXPECT_STREQ(cfg.credits.currency, "USD");
 	EXPECT_DOUBLE_EQ(cfg.credits.cost_to_credit_coef, 1000.0);
@@ -131,6 +136,11 @@ delete_paths = ["/tmp/build-cache"]
 
 [context]
 keep_recent_rounds = 10
+tool_result_max_tokens = 4096
+compaction_user_message_tokens = 12000
+compaction_summary_max_tokens = 3000
+compaction_prompt_file = "/tmp/compact-prompt.md"
+compaction_warning_count = 5
 
 [sync]
 enabled = true
@@ -192,6 +202,12 @@ include = ["config.toml", "output"]
 		     "/tmp/build-cache");
 	ASSERT_EQ(cfg.react.permission_profiles[0].delete_paths_count, 1);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
+	EXPECT_EQ(cfg.context.tool_result_max_tokens, 4096);
+	EXPECT_EQ(cfg.context.compaction_user_message_tokens, 12000);
+	EXPECT_EQ(cfg.context.compaction_summary_max_tokens, 3000);
+	EXPECT_STREQ(cfg.context.compaction_prompt_file,
+		     "/tmp/compact-prompt.md");
+	EXPECT_EQ(cfg.context.compaction_warning_count, 5);
 	EXPECT_EQ(cfg.sync.enabled, 1);
 	EXPECT_STREQ(cfg.sync.dir, "/tmp/morph-sync");
 	EXPECT_EQ(cfg.sync.interval_seconds, 60);

@@ -263,18 +263,154 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
+static int history_export_items(struct model_history_item *items,
+				const char *path)
+{
+	cJSON *array = cJSON_CreateArray();
+	char *expanded;
+	char *json;
+	int rc;
+
+	if (!array || !path) {
+		cJSON_Delete(array);
+		MORPH_RETURN(-EINVAL);
+	}
+	for (struct model_history_item *item = items; item; item = item->next) {
+		cJSON *entry = cJSON_CreateObject();
+
+		if (!entry) {
+			cJSON_Delete(array);
+			MORPH_RETURN(-ENOMEM);
+		}
+		cJSON_AddNumberToObject(entry, "sequence_no",
+			(double)item->sequence_no);
+		cJSON_AddStringToObject(entry, "turn_id",
+			item->turn_id ? item->turn_id : "");
+		cJSON_AddStringToObject(entry, "kind", item->kind);
+		cJSON_AddStringToObject(entry, "role", item->role);
+		cJSON_AddStringToObject(entry, "content",
+			item->content ? item->content : "");
+		if (item->payload_json) {
+			cJSON *payload = cJSON_Parse(item->payload_json);
+
+			if (payload)
+				cJSON_AddItemToObject(entry, "payload", payload);
+		}
+		cJSON_AddBoolToObject(entry, "active", item->active);
+		cJSON_AddBoolToObject(entry, "truncated", item->truncated);
+		cJSON_AddNumberToObject(entry, "token_count",
+			item->token_count);
+		cJSON_AddItemToArray(array, entry);
+	}
+	json = cJSON_Print(array);
+	cJSON_Delete(array);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	expanded = file_expand_path(path);
+	if (!expanded) {
+		free(json);
+		MORPH_RETURN(-ENOMEM);
+	}
+	rc = file_write_all(expanded, json, strlen(json));
+	free(expanded);
+	free(json);
+	return rc;
+}
+
 static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 {
 	int n = 20;
 	int show_all = 0;
+	int show_model = 0;
+	int diagnose = 0;
+	int repair = 0;
+	const char *export_path = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--all") == 0 || strcmp(argv[i], "--from-db") == 0)
 			show_all = 1;
+		else if (strcmp(argv[i], "--model") == 0)
+			show_model = 1;
+		else if (strcmp(argv[i], "--diagnose") == 0)
+			diagnose = 1;
+		else if (strcmp(argv[i], "--repair") == 0)
+			repair = 1;
+		else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
+			export_path = argv[++i];
 		else if (argv[i][0] && isdigit((unsigned char)argv[i][0]))
 			n = atoi(argv[i]);
 	}
 	if (n <= 0)
 		n = 20;
+	if (diagnose || repair) {
+		struct agent_history_diagnostic report = {0};
+		int changed = 0;
+		int rc = repair ? runtime_session_history_repair(ctx->runtime,
+			&report, &changed) :
+			runtime_session_history_diagnose(ctx->runtime, &report);
+
+		if (rc != 0) {
+			CMD_ERROR("history %s failed: %s",
+				repair ? "repair" : "diagnosis",
+				morph_strerror(rc));
+			return rc;
+		}
+		printf("history: active=%d dangling=%d orphan=%d invalid=%d "
+		       "token_mismatches=%d",
+		       report.active_items, report.dangling_calls,
+		       report.orphan_results, report.invalid_payloads,
+		       report.token_mismatches);
+		if (repair)
+			printf(" repaired=%d", changed);
+		printf("\n");
+		return 0;
+	}
+	if (export_path) {
+		int count = 0;
+		struct model_history_item *items =
+			runtime_session_model_history_current(ctx->runtime,
+				show_all ? 0 : 1, &count);
+		int rc = history_export_items(items, export_path);
+
+		runtime_session_model_history_free(items);
+		if (rc != 0) {
+			CMD_ERROR("history export failed: %s", morph_strerror(rc));
+			return rc;
+		}
+		CMD_OK("exported %d model history items to %s", count,
+		       export_path);
+		return 0;
+	}
+	if (show_model) {
+		int count = 0;
+		struct model_history_item *items =
+			runtime_session_model_history_current(ctx->runtime,
+				show_all ? 0 : 1, &count);
+		struct model_history_item *cur = items;
+		int show = show_all ? count : (n > count ? count : n);
+		int skip = show_all ? 0 : count - show;
+
+		CMD_HEADER("%s model history (showing %s %d of %d)",
+			runtime_session_current_name(ctx->runtime),
+			show_all ? "all" : "active last", show, count);
+		for (int i = 0; i < skip && cur; i++)
+			cur = cur->next;
+		while (cur) {
+			printf(ANSI_DIM "[#%lld %s%s]" ANSI_RESET " ",
+				(long long)cur->sequence_no, cur->kind,
+				cur->active ? "" : " inactive");
+			if (strcmp(cur->kind, "tool_result") == 0) {
+				printf("%s: %d tokens%s\n",
+					cur->tool_name[0] ? cur->tool_name : "tool",
+					cur->token_count,
+					cur->truncated ? ", truncated" : "");
+			} else {
+				printf("%s\n", cur->content ? cur->content : "");
+			}
+			cur = cur->next;
+		}
+		runtime_session_model_history_free(items);
+		return 0;
+	}
 	int count = 0;
 	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
@@ -313,8 +449,8 @@ static const struct cli_command session_commands[] = {
 	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
 	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },
 	{ "/del",     cmd_delete,  "Alias for /delete",                 "/del <name|id>" },
-	{ "/history", cmd_history, "Show recent messages",              "/history [n|--all]" },
-	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all]" },
+	{ "/history", cmd_history, "Show, diagnose, repair, or export history", "/history [n|--all] [--model|--diagnose|--repair|--export path]" },
+	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all] [--model|--diagnose|--repair|--export path]" },
 };
 
 int cli_register_session_commands(void)
