@@ -196,6 +196,54 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	cJSON_Delete(final);
 }
 
+TEST_F(CliPresentationTest, InteractiveDistinguishesToolAndFinalMarkers)
+{
+	cJSON *call = cJSON_CreateObject();
+	cJSON *args = cJSON_CreateObject();
+	cJSON *final = TextData("");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(call, "tool", "file_list");
+	cJSON_AddItemToObject(call, "args", args);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("\n◦ file_list\n"), std::string::npos);
+	EXPECT_NE(output.find("\n• "), std::string::npos);
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+
+	cJSON_Delete(call);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
+{
+	cJSON *call = cJSON_CreateObject();
+	cJSON *args = cJSON_CreateObject();
+	cJSON *final = TextData("Done");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+
+	cJSON_AddStringToObject(call, "tool", "file_list");
+	cJSON_AddItemToObject(call, "args", args);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("\n\033[33m◦\033[0m "),
+		  std::string::npos);
+	EXPECT_NE(output.find("\n\033[1m\033[36m•\033[0m "),
+		  std::string::npos);
+
+	cJSON_Delete(call);
+	cJSON_Delete(final);
+}
+
 TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 {
 	cJSON *first = TextData("# Stream");

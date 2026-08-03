@@ -504,7 +504,7 @@ static void presentation_tool_call(struct cli_context *ctx,
 			printf(" %s", display);
 		printf("\n");
 	} else {
-		printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " "
+		printf("\n" ANSI_YELLOW "◦" ANSI_RESET " "
 		       ANSI_BOLD "%s" ANSI_RESET "\n", title);
 		print_json_tree_children(args_item);
 		presentation_status(ctx, "Running tool…");
