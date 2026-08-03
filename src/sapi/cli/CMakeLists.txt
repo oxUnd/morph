@@ -1,4 +1,5 @@
 add_library(morph-cli STATIC
+	cancel_input.c
 	core.c
 	events.c
 	init.c

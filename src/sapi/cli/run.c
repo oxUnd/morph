@@ -92,6 +92,15 @@ static char **cmd_completion(const char *text, int start, int end)
 
 #endif
 
+const char *cli_input_prompt(void)
+{
+	if (!cli_color_enabled())
+		return "> ";
+	return CLI_RL_IGNORE_START ANSI_BOLD ANSI_CYAN CLI_RL_IGNORE_END
+		"› "
+		CLI_RL_IGNORE_START ANSI_RESET CLI_RL_IGNORE_END;
+}
+
 static void cli_print_banner_title(void)
 {
 	size_t used;
@@ -195,7 +204,8 @@ void cli_run(struct cli_context *ctx)
 	       "───────────────╯"
 	       ANSI_RESET "\n\n");
 	morph_buf_cleanup(&directory);
-	printf(ANSI_DIM "  Type /help for commands." ANSI_RESET "\n\n");
+	printf(ANSI_DIM "  Type /help for commands. Esc or Ctrl-C cancels a run."
+	       ANSI_RESET "\n\n");
 	char line[8192];
 
 	struct sigaction sa;
@@ -210,10 +220,8 @@ void cli_run(struct cli_context *ctx)
 	g_comp_ctx = ctx;
 	rl_attempted_completion_function = cmd_completion;
 	while (ctx->running) {
-		const char *prompt = cli_color_enabled() ?
-			ANSI_BOLD ANSI_CYAN "› " ANSI_RESET : "> ";
-		cli_sigint_received = 0;
-		char *input = readline(prompt);
+		cli_cancel_state_reset();
+		char *input = readline(cli_input_prompt());
 		if (!input) {
 			if (cli_sigint_received) {
 				cli_sigint_received = 0;
@@ -237,7 +245,7 @@ void cli_run(struct cli_context *ctx)
 	while (ctx->running) {
 		printf(ANSI_BOLD ANSI_CYAN "› " ANSI_RESET);
 		fflush(stdout);
-		cli_sigint_received = 0;
+		cli_cancel_state_reset();
 		if (!fgets(line, sizeof(line), stdin)) {
 			if (cli_sigint_received) {
 				cli_sigint_received = 0;

@@ -74,6 +74,14 @@
 #define ANSI_CYAN   "\033[36m"
 #define ANSI_RESET  "\033[0m"
 
+#ifdef HAVE_READLINE
+#define CLI_RL_IGNORE_START "\001"
+#define CLI_RL_IGNORE_END   "\002"
+#else
+#define CLI_RL_IGNORE_START ""
+#define CLI_RL_IGNORE_END   ""
+#endif
+
 #define CMD_HEADER(fmt, ...) \
 	printf("\n" ANSI_BOLD ANSI_CYAN "• " fmt ANSI_RESET "\n", \
 	       ##__VA_ARGS__)
@@ -87,6 +95,7 @@ extern const char *default_db_path;
 extern const char *default_config_path;
 extern volatile sig_atomic_t cli_sigint_received;
 void cli_sigint_handler(int sig);
+const char *cli_input_prompt(void);
 
 void print_padded(const char *s, int target_width);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
@@ -106,6 +115,11 @@ void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
+
+struct cli_cancel_monitor;
+struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);
+void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
+void cli_cancel_state_reset(void);
 
 void cli_process_due_tasks(struct cli_context *ctx);
 int cli_scheduled_task_runner(const struct scheduled_task *task,

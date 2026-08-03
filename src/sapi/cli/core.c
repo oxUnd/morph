@@ -168,9 +168,11 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->session_auto_named = 1;
 	}
 
-	cli_sigint_received = 0;
+	cli_cancel_state_reset();
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
+		ctx->cancel_monitor = cli_cancel_monitor_start(STDIN_FILENO);
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	struct runtime_request request = {
@@ -186,6 +188,10 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request,
 					    &runtime_result);
+	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;
+	ctx->cancel_monitor = NULL;
+	cli_cancel_monitor_stop(cancel_monitor);
+	cli_cancel_state_reset();
 	cli_presentation_finish(ctx);
 	ctx->turn_active = 0;
 	if (react_rc < 0 && !ctx->final_rendered &&

@@ -3587,11 +3587,12 @@ TEST_F(MockLlmTest, CancelDuringToolExecution) {
 TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 	const char *responses[] = {
 		"Thought: run slow tool.\nAction: slow_signal({})\n",
+		"Final: recovered after cancellation",
 	};
 	struct slow_signal_tool_state state;
 	state.entered.store(0);
 	state.finished.store(0);
-	llm = create_multi_mock_llm(responses, 1);
+	llm = create_multi_mock_llm(responses, 2);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 							nullptr);
 	ASSERT_NE(ctx, nullptr);
@@ -3624,6 +3625,10 @@ TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 	for (int i = 0; i < 200 && !state.finished.load(); i++)
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	EXPECT_TRUE(state.finished.load());
+	EXPECT_EQ(react_run(ctx, "follow-up question", nullptr, nullptr), 0);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(std::strstr(ctx->final_answer, "recovered after cancellation"),
+		  nullptr);
 
 	react_context_destroy(ctx);
 	http_clear_signal_cancel();

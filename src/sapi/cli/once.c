@@ -127,8 +127,7 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 	action.sa_flags = 0;
 	sigaction(SIGINT, &action, NULL);
 	clock_gettime(CLOCK_MONOTONIC, &started);
-	cli_sigint_received = 0;
-	runtime_cancel_turn(ctx->runtime);
+	cli_cancel_state_reset();
 
 	/*
 	 * Trace mode keeps its historical contract: progress goes to stderr

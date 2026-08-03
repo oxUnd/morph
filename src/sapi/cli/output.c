@@ -258,6 +258,17 @@ static int cli_parse_multi_choice_answer(char *input,
 	return cli_set_ask_user_answers(answers, answers_count, values, count);
 }
 
+static void cli_stop_cancel_monitor(struct cli_context *ctx)
+{
+	struct cli_cancel_monitor *monitor;
+
+	if (!ctx)
+		return;
+	monitor = ctx->cancel_monitor;
+	ctx->cancel_monitor = NULL;
+	cli_cancel_monitor_stop(monitor);
+}
+
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,
@@ -273,6 +284,7 @@ int cli_ask_user_callback(const char *question,
 	if (!ctx || !answers || !answers_count)
 		return -EINVAL;
 
+	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
 	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
 
@@ -282,15 +294,26 @@ int cli_ask_user_callback(const char *question,
 			printf("  %d. %s\n", i + 1, choices[i]);
 		if (multi && max_choices > 0) {
 			snprintf(prompt, sizeof(prompt),
-				 "  [" ANSI_GREEN "1-%d, comma separated; %d-%d choices" ANSI_RESET "]: ",
+				 "  [" CLI_RL_IGNORE_START ANSI_GREEN
+				 CLI_RL_IGNORE_END
+				 "1-%d, comma separated; %d-%d choices"
+				 CLI_RL_IGNORE_START ANSI_RESET
+				 CLI_RL_IGNORE_END "]: ",
 				 choices_count, min_choices, max_choices);
 		} else if (multi) {
 			snprintf(prompt, sizeof(prompt),
-				 "  [" ANSI_GREEN "1-%d, comma separated; min %d" ANSI_RESET "]: ",
+				 "  [" CLI_RL_IGNORE_START ANSI_GREEN
+				 CLI_RL_IGNORE_END
+				 "1-%d, comma separated; min %d"
+				 CLI_RL_IGNORE_START ANSI_RESET
+				 CLI_RL_IGNORE_END "]: ",
 				 choices_count, min_choices);
 		} else {
 			snprintf(prompt, sizeof(prompt),
-				 "  [" ANSI_GREEN "1-%d" ANSI_RESET "]: ",
+				 "  [" CLI_RL_IGNORE_START ANSI_GREEN
+				 CLI_RL_IGNORE_END "1-%d"
+				 CLI_RL_IGNORE_START ANSI_RESET
+				 CLI_RL_IGNORE_END "]: ",
 				 choices_count);
 		}
 	} else {
@@ -466,6 +489,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	if (!ctx)
 		return HITL_DENY;
 
+	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("approval: %s\n", tool_name);
@@ -569,6 +593,7 @@ enum tool_operation_verdict operation_approval_callback(
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
 
+	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("approval: %s\n", operation_label(op->kind));

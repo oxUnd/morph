@@ -2,7 +2,9 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
+#include "agent/react.h"
 #include "event/event.h"
+#include "http/client.h"
 
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
@@ -10,9 +12,17 @@ void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
+const char *cli_input_prompt(void);
+struct cli_cancel_monitor;
+struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);
+void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
+extern volatile sig_atomic_t cli_sigint_received;
 }
 
 #include <string>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 class CliPresentationTest : public ::testing::Test {
 protected:
@@ -49,6 +59,86 @@ protected:
 		return data;
 	}
 };
+
+TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
+{
+	cli_set_color_enabled(1);
+	const unsigned char *prompt = reinterpret_cast<const unsigned char *>(
+		cli_input_prompt());
+	int ignored = 0;
+	int escapes = 0;
+	if (!std::strchr(reinterpret_cast<const char *>(prompt), 0x01))
+		GTEST_SKIP() << "readline is not available";
+
+	for (; *prompt; prompt++) {
+		if (*prompt == 0x01) {
+			EXPECT_EQ(ignored, 0);
+			ignored = 1;
+		} else if (*prompt == 0x02) {
+			EXPECT_EQ(ignored, 1);
+			ignored = 0;
+		} else if (*prompt == 0x1b) {
+			EXPECT_EQ(ignored, 1);
+			escapes++;
+		}
+	}
+	EXPECT_EQ(ignored, 0);
+	EXPECT_GT(escapes, 0);
+}
+
+TEST(CliCancelMonitorTest, StandaloneEscapeRequestsCancellation)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	const char *slave_name = ptsname(master);
+	ASSERT_NE(slave_name, nullptr);
+	int slave = open(slave_name, O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	struct cli_cancel_monitor *monitor = cli_cancel_monitor_start(slave);
+	ASSERT_NE(monitor, nullptr);
+
+	react_sigint_flag = 0;
+	cli_sigint_received = 0;
+	ASSERT_EQ(write(master, "\033", 1), 1);
+	for (int i = 0; i < 50 && !react_sigint_flag; i++)
+		usleep(10000);
+	cli_cancel_monitor_stop(monitor);
+
+	EXPECT_EQ(react_sigint_flag, 1);
+	EXPECT_EQ(cli_sigint_received, 1);
+	react_sigint_flag = 0;
+	http_clear_signal_cancel();
+	close(slave);
+	close(master);
+}
+
+TEST(CliCancelMonitorTest, EscapeSequenceDoesNotCancel)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	const char *slave_name = ptsname(master);
+	ASSERT_NE(slave_name, nullptr);
+	int slave = open(slave_name, O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	struct cli_cancel_monitor *monitor = cli_cancel_monitor_start(slave);
+	ASSERT_NE(monitor, nullptr);
+
+	react_sigint_flag = 0;
+	cli_sigint_received = 0;
+	ASSERT_EQ(write(master, "\033[A", 3), 3);
+	usleep(100000);
+	cli_cancel_monitor_stop(monitor);
+
+	EXPECT_EQ(react_sigint_flag, 0);
+	EXPECT_EQ(cli_sigint_received, 0);
+	http_clear_signal_cancel();
+	close(slave);
+	close(master);
+}
 
 TEST_F(CliPresentationTest, OncePrintsOrderedPlainProgress)
 {

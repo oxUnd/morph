@@ -486,6 +486,8 @@ static int react_finish_run(struct react_context *ctx)
 {
 	int rc = react_finish(ctx);
 
+	react_sigint_flag = 0;
+	http_clear_signal_cancel();
 	if (ctx)
 		ctx->turn_id_user_set = 0;
 	return rc;

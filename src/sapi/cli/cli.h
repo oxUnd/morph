@@ -15,6 +15,7 @@ enum cli_presentation_mode {
 };
 
 struct morph_md_kitty;
+struct cli_cancel_monitor;
 
 struct cli_context {
 	struct runtime *runtime;
@@ -23,6 +24,7 @@ struct cli_context {
 	int session_auto_named;
 	int presentation_ready;
 	int turn_active;
+	struct cli_cancel_monitor *cancel_monitor;
 	int event_stream_kind;
 	int event_stream_has_delta;
 	int event_stream_complete;
