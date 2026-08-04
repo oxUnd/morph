@@ -23,7 +23,7 @@ TEST(KittyProtocol, ImageIdsAreUniqueAndPlaceholderSafe)
 		uint32_t id = morph_kitty_image_id_new();
 
 		EXPECT_NE(id, 0u);
-		EXPECT_NE(id & 0xff000000u, 0u);
+		EXPECT_EQ(id & 0xff000000u, 0x53000000u);
 		EXPECT_NE(id & 0x00ffff00u, 0u);
 		EXPECT_TRUE(ids.insert(id).second);
 	}
