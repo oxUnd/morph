@@ -67,7 +67,8 @@ Create it from:
 Important sections:
 
 	[general]	Output directory, log path, default session.
-	[model.text]	Chat model used by the ReAct loop and image QA.
+	[model.text]	Chat model used by the ReAct loop.
+	[model.vision]	Optional image understanding and OCR model.
 	[model.image]	Image generation/editing model.
 	[model.video]	Video generation model.
 	[react]		Tool loop, guardrails, HITL, and shell settings.
@@ -87,9 +88,10 @@ Then set the environment variable before launch.
 ==============================================================================
 MODELS							*morph-models*
 
-Morph has three independent model backends:
+Morph uses separate configuration roles for each model workload:
 
-	[model.text]	Chat, planning, tool selection, text answers, img_qa.
+	[model.text]	Chat, planning, tool selection, and text answers.
+	[model.vision]	Optional image understanding, OCR, and img_qa.
 	[model.image]	img_gen, img_inpaint, img_compose.
 	[model.video]	vid_gen.
 
@@ -102,6 +104,24 @@ OpenAI-compatible text example:
 	api_key_env = "OPENAI_API_KEY"
 	context_limit = 128000
 	max_tokens = 4096
+	timeout_seconds = 300
+	retry_count = 3
+
+Provider-specific text request fields can be merged with extra_body_json.
+Morph still owns model, messages, tools, stream, stream_options, and
+max_tokens, so extra_body_json cannot replace those fields:
+
+	[model.text]
+	provider = "openai"
+	model = "gpt-4o"
+	api_base = "https://api.openai.com/v1"
+	api_key_env = "OPENAI_API_KEY"
+	extra_body_json = '''
+	{
+	  "reasoning_effort": "high",
+	  "chat_template_kwargs": {"enable_thinking": true}
+	}
+	'''
 
 DeepSeek example:
 
@@ -119,6 +139,20 @@ Volcengine Ark example:
 	api_base = "https://ark.cn-beijing.volces.com/api/v3"
 	api_key_env = "VOLCENGINE_API_KEY"
 
+Optional vision model example:
+
+	[model.vision]
+	provider = "openai"
+	model = "gpt-4o"
+	api_base = "https://api.openai.com/v1"
+	api_key_env = "OPENAI_API_KEY"
+	max_tokens = 4096
+	timeout_seconds = 300
+	retry_count = 3
+
+Leave [model.vision] absent or set model = "" to keep img_qa unavailable.
+Do not point it at a text-only model.
+
 OpenAI image example:
 
 	[model.image]
@@ -127,12 +161,60 @@ OpenAI image example:
 	api_base = "https://api.openai.com/v1"
 	api_key_env = "OPENAI_API_KEY"
 
+Volcengine Seedream example:
+
+	[model.image]
+	provider = "volcengine"
+	model = "doubao-seedream-5-0-260128"
+	api_base = "https://ark.cn-beijing.volces.com/api/v3"
+	api_key_env = "VOLCENGINE_API_KEY"
+
 Image models use a protocol adapter because generation, editing, output
 encoding, and size rules differ by provider. Morph infers openai-images from
 provider = "openai" and volcengine-images from provider = "volcengine". For a
 custom provider name, select one explicitly:
 
 	adapter = "openai-images"
+
+Supported image adapters are openai-images and volcengine-images. GPT Image
+and Volcengine adapters support ordered reference_images. Pass every reference
+in one img_gen call; the adapter validates editing and multi-reference support
+for the configured model.
+
+Volcengine Seedance 2.0 video example:
+
+	[model.video]
+	provider = "volcengine"
+	# Optional; inferred from provider when omitted.
+	# adapter = "volcengine-videos"
+	model = "doubao-seedance-2-0-260128"
+	api_base = "https://ark.cn-beijing.volces.com/api/v3"
+	api_key_env = "VOLCENGINE_API_KEY"
+	poll_interval_seconds = 5
+	poll_timeout_seconds = 600
+
+Use the faster Seedance variant by changing only model:
+
+	model = "doubao-seedance-2-0-fast-260128"
+
+The configured video model determines available inputs:
+
+	Seedance 1.0	Text and one first-frame reference image.
+	Seedance 1.5	The above plus generated audio.
+	Seedance 2.0+	Multiple images, reference videos, reference audio,
+			and generated audio.
+
+Unknown model IDs, including opaque ep-... endpoint IDs, are treated
+conservatively: text and one image are allowed, while multi-image, video, and
+audio references are rejected before sending a request. An empty model value
+is not replaced by a hidden fallback and reports "not configured".
+
+vid_gen accepts ordered reference_images, reference_videos, and
+reference_audios arrays. Reference audio supports local MP3/WAV files or
+HTTP(S) URLs, requires at least one image or video reference, and enables
+generate_audio. Models that support audio generation default to
+generate_audio = true; callers can explicitly disable it when no reference
+audio is supplied.
 
 If image or video generation fails with "not configured", check the matching
 [model.image] or [model.video] section and its API key environment variable.
@@ -368,8 +450,9 @@ Safe workflow:
 	5. Validate the TOML.
 	6. Tell the user to restart Morph if the setting is startup-only.
 
-Do not put API key values into config unless the user explicitly provides that
-secret and insists.  Prefer api_key_env and tell the user to export the env var.
+Do not put API key values into config unless the user explicitly provides
+that secret and insists. Prefer api_key_env and tell the user to export the
+environment variable.
 
 ==============================================================================
 TROUBLESHOOTING					*morph-troubleshooting*
@@ -385,7 +468,13 @@ TROUBLESHOOTING					*morph-troubleshooting*
 
 "no multimodal LLM configured"
 
-	img_qa uses [model.text].  Choose a vision-capable text model.
+	img_qa uses [model.vision]. Configure a vision-capable model there.
+
+"video adapter does not support reference videos/audios"
+
+	Check [model.video]. Reference video and reference audio require a
+	recognized Seedance 2.0+ model ID. Opaque ep-... IDs use conservative
+	capabilities.
 
 "bash_exec tool disabled"
 
