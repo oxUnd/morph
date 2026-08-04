@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 enum schema_flags {
 	SCHEMA_NUMBER = 1 << 0,
@@ -554,6 +555,76 @@ static int validate_permission_profiles(const toml_datum_t *react,
 	return 0;
 }
 
+static int validate_active_permission_directories(
+	const toml_datum_t *root, struct config_validation_error *error)
+{
+	static const char *const keys[] = {
+		"workspace_roots", "write_paths", "delete_paths"
+	};
+	const toml_datum_t *react = table_get(root, "react");
+	const toml_datum_t *permissions = table_get(react, "permissions");
+	const toml_datum_t *active = table_get(permissions, "active_profile");
+	const toml_datum_t *profiles = table_get(react, "permission_profiles");
+
+	if (!active || !active->u.s[0] || !profiles)
+		return 0;
+	for (int i = 0; i < profiles->u.arr.size; i++) {
+		const toml_datum_t *profile = &profiles->u.arr.elem[i];
+		const toml_datum_t *name = table_get(profile, "name");
+
+		if (!name || strcmp(active->u.s, name->u.s) != 0)
+			continue;
+		for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+			const toml_datum_t *paths = table_get(profile, keys[k]);
+
+			if (!paths)
+				continue;
+			for (int j = 0; j < paths->u.arr.size; j++) {
+				const toml_datum_t *item = &paths->u.arr.elem[j];
+				char path[CONFIG_MAX_KEY_LEN];
+				char *expanded = file_expand_path(item->u.s);
+				struct stat st;
+				int stat_rc;
+				int saved_errno;
+
+				snprintf(path, sizeof(path),
+					 "react.permission_profiles[].%s", keys[k]);
+				if (!expanded)
+					MORPH_RETURN(-ENOMEM);
+				stat_rc = stat(expanded, &st);
+				saved_errno = errno;
+				if (stat_rc == 0 && S_ISDIR(st.st_mode)) {
+					free(expanded);
+					continue;
+				}
+				if (stat_rc == 0) {
+					int rc = set_error(error,
+						CONFIG_VALIDATION_VALUE, item, path,
+						"active permission profile '%s' %s item %d "
+						"is not a directory: %s",
+						active->u.s, keys[k], j, expanded);
+
+					free(expanded);
+					return rc;
+				}
+				{
+					int rc = set_error(error,
+						CONFIG_VALIDATION_VALUE, item, path,
+						"cannot use active permission profile '%s': "
+						"directory '%s' from %s item %d: %s",
+						active->u.s, expanded, keys[k], j,
+						strerror(saved_errno));
+
+					free(expanded);
+					return rc;
+				}
+			}
+		}
+		return 0;
+	}
+	return 0;
+}
+
 static int extra_body_key_is_reserved(const char *key)
 {
 	static const char *const reserved[] = {
@@ -695,10 +766,11 @@ static int parse_error_line(const char *message)
 	return line;
 }
 
-int config_validate_text_with_warnings(const char *text,
+static int config_validate_text_internal(const char *text,
 			    struct config_validation_error *error,
 			    config_validation_warning_fn warning_fn,
-			    void *warning_user_data)
+			    void *warning_user_data,
+			    int validate_directories)
 {
 	toml_result_t parsed;
 	morph_buf_t path;
@@ -752,10 +824,21 @@ int config_validate_text_with_warnings(const char *text,
 	}
 	if (rc == 0)
 		rc = validate_relations(&parsed.toptab, error);
+	if (rc == 0 && validate_directories)
+		rc = validate_active_permission_directories(&parsed.toptab, error);
 	if (path_ready)
 		morph_buf_cleanup(&path);
 	toml_free(parsed);
 	return rc;
+}
+
+int config_validate_text_with_warnings(const char *text,
+			    struct config_validation_error *error,
+			    config_validation_warning_fn warning_fn,
+			    void *warning_user_data)
+{
+	return config_validate_text_internal(text, error, warning_fn,
+		warning_user_data, 0);
 }
 
 int config_validate_text(const char *text, struct config_validation_error *error)
@@ -779,8 +862,8 @@ int config_validate_file_with_warnings(const char *path,
 	if (!text)
 		MORPH_RETURN(errno ? -errno : -EIO);
 	(void)length;
-	rc = config_validate_text_with_warnings(text, error, warning_fn,
-		warning_user_data);
+	rc = config_validate_text_internal(text, error, warning_fn,
+		warning_user_data, 1);
 	free(text);
 	return rc;
 }

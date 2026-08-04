@@ -4,6 +4,7 @@
 #include "util/error.h"
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 
 class ConfigTest : public ::testing::Test {
@@ -140,9 +141,9 @@ request_tool_enabled = false
 
 [[react.permission_profiles]]
 name = "developer"
-workspace_roots = ["/tmp/workspace"]
-write_paths = ["/tmp/build-cache"]
-delete_paths = ["/tmp/build-cache"]
+workspace_roots = ["/tmp"]
+write_paths = ["/tmp"]
+delete_paths = ["/tmp"]
 
 [context]
 keep_recent_rounds = 10
@@ -209,10 +210,10 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.react.permission_profiles[0].name, "developer");
 	ASSERT_EQ(cfg.react.permission_profiles[0].workspace_roots_count, 1);
 	EXPECT_STREQ(cfg.react.permission_profiles[0].workspace_roots[0],
-		     "/tmp/workspace");
+		     "/tmp");
 	ASSERT_EQ(cfg.react.permission_profiles[0].write_paths_count, 1);
 	EXPECT_STREQ(cfg.react.permission_profiles[0].write_paths[0],
-		     "/tmp/build-cache");
+		     "/tmp");
 	ASSERT_EQ(cfg.react.permission_profiles[0].delete_paths_count, 1);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 10);
 	EXPECT_EQ(cfg.context.tool_result_max_tokens, 4096);
@@ -509,6 +510,30 @@ write_paths = ["/tmp/cache"]
 	EXPECT_STREQ(error.path,
 		     "react.permission_profiles[].write_paths");
 	EXPECT_EQ(config_validate_text(valid, &error), 0);
+}
+
+TEST_F(ConfigTest, FileValidationReportsMissingActivePermissionDirectory)
+{
+	struct config_validation_error error = {};
+	const char *missing =
+		"/tmp/morph_directory_that_must_not_exist_for_config_test";
+	std::ofstream file(config_path);
+
+	file << "[react.permissions]\n"
+	     << "active_profile = \"developer\"\n"
+	     << "[[react.permission_profiles]]\n"
+	     << "name = \"developer\"\n"
+	     << "write_paths = [\"" << missing << "\"]\n";
+	file.close();
+	std::remove(missing);
+
+	EXPECT_EQ(config_validate_file(config_path, &error), MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+	EXPECT_STREQ(error.path,
+		     "react.permission_profiles[].write_paths");
+	EXPECT_NE(std::string(error.message).find(missing), std::string::npos);
+	EXPECT_NE(std::string(error.message).find("No such file or directory"),
+		  std::string::npos);
 }
 
 TEST(ConfigValidationTest, ValidatesMcpRequirements)
