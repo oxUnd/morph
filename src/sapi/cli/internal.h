@@ -106,6 +106,10 @@ void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      const char *provider,
 				      const char *model,
 				      const char *metadata_json);
+int cli_attach_image(struct cli_context *ctx, const char *path);
+int cli_clipboard_save_image(struct cli_context *ctx, char **out_path);
+int cli_handle_media_path(struct cli_context *ctx, const char *input,
+			  int *handled);
 
 int cli_event_callback(const struct morph_event *ev, void *user_data);
 int cli_presentation_init(struct cli_context *ctx);

@@ -6,14 +6,88 @@ extern "C" {
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/list_ui.h"
 #include "util/file.h"
+
+int cli_handle_media_path(struct cli_context *ctx, const char *input,
+			  int *handled);
 }
 
 #include <cstdlib>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <regex>
 #include <string>
+
+static int cli_test_write_png(const char *path)
+{
+	static const unsigned char png[] = {
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x4b, 0x6d, 0x6b,
+		0xc4, 0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41,
+		0x54, 0x18, 0xd3, 0x63, 0xf8, 0xcf, 0xc0, 0x80,
+		0x15, 0x71, 0xd1, 0x41, 0x2b, 0x00, 0x28, 0x3f,
+		0x4f, 0xc1, 0x6e, 0xec, 0xdf, 0x61, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42,
+		0x60, 0x82
+	};
+	FILE *file = std::fopen(path, "wb");
+
+	if (!file)
+		return -1;
+	size_t written = std::fwrite(png, 1, sizeof(png), file);
+	std::fclose(file);
+	return written == sizeof(png) ? 0 : -1;
+}
+
+TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
+{
+	cli_command_registry_clear();
+	ASSERT_EQ(cli_register_media_commands(), 0);
+	EXPECT_EQ(cli_command_find("/img"), nullptr);
+	EXPECT_EQ(cli_command_find("/paste"), nullptr);
+	EXPECT_EQ(cli_command_find("/video"), nullptr);
+	EXPECT_EQ(cli_command_find("/vid"), nullptr);
+	EXPECT_NE(cli_command_find("/image"), nullptr);
+	cli_command_registry_clear();
+}
+
+TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
+{
+	char pattern[] = "/tmp/morph-cli-media-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	struct runtime_options options{};
+	struct runtime *runtime = nullptr;
+	struct cli_context context{};
+	std::string database;
+	std::string image;
+	std::string input;
+	int handled = 0;
+
+	ASSERT_NE(directory, nullptr);
+	database = std::string(directory) + "/data.db";
+	image = std::string(directory) + "/sample image.png";
+	input = "\"" + image + "\"";
+	ASSERT_EQ(cli_test_write_png(image.c_str()), 0);
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	context.runtime = runtime;
+
+	testing::internal::CaptureStdout();
+	int rc = cli_handle_media_path(&context, input.c_str(), &handled);
+	(void)testing::internal::GetCapturedStdout();
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(handled, 1);
+	EXPECT_STREQ(context.image_path, image.c_str());
+
+	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(directory, error);
+}
 
 TEST(CliListTest, CompactsWhitespaceWithoutBreakingUtf8)
 {

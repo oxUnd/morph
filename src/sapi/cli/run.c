@@ -26,6 +26,58 @@ void cli_sigint_handler(int sig)
 
 static struct cli_context *g_comp_ctx;
 
+static int cli_readline_insert_newline(int count, int key)
+{
+	(void)key;
+	for (int i = 0; i < count; i++) {
+		if (rl_insert_text("\n") != 0)
+			return 1;
+	}
+	rl_redisplay();
+	return 0;
+}
+
+static int cli_readline_paste_image(int count, int key)
+{
+	char *path = NULL;
+	int rc;
+
+	(void)count;
+	(void)key;
+	putchar('\n');
+	if (!g_comp_ctx) {
+		putchar('\a');
+		rl_on_new_line();
+		rl_redisplay();
+		return 1;
+	}
+	rc = cli_clipboard_save_image(g_comp_ctx, &path);
+	if (rc == 0)
+		rc = cli_attach_image(g_comp_ctx, path);
+	if (rc != 0) {
+		if (path)
+			(void)unlink(path);
+		CMD_ERROR("clipboard does not contain a supported image");
+		putchar('\a');
+	}
+	free(path);
+	rl_on_new_line();
+	rl_forced_update_display();
+	return rc == 0 ? 0 : 1;
+}
+
+static void cli_readline_configure(void)
+{
+	(void)rl_variable_bind("enable-bracketed-paste", "on");
+	(void)rl_bind_key('\n', cli_readline_insert_newline);
+	(void)rl_bind_key(0x16, cli_readline_paste_image);
+#ifdef HAVE_RL_BIND_KEYSEQ
+	(void)rl_bind_keyseq("\\e\\C-M", cli_readline_insert_newline);
+	(void)rl_bind_keyseq("\033[13;2u", cli_readline_insert_newline);
+	(void)rl_bind_keyseq("\033[27;2;13~", cli_readline_insert_newline);
+#endif
+}
+
 static char *session_completion_generator(const char *text, int state)
 {
 	static struct session *slist;
@@ -204,9 +256,11 @@ void cli_run(struct cli_context *ctx)
 	       "───────────────╯"
 	       ANSI_RESET "\n\n");
 	morph_buf_cleanup(&directory);
-	printf(ANSI_DIM "  Type /help for commands. Esc or Ctrl-C cancels a run."
-	       ANSI_RESET "\n\n");
-	char line[8192];
+	printf(ANSI_DIM "  /help · ./image.png attach · Ctrl+J/Alt+Enter newline\n"
+	       "  Ctrl+V image · Esc/Ctrl-C cancel" ANSI_RESET "\n\n");
+#ifndef HAVE_READLINE
+	char line[BUFSIZ];
+#endif
 
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -219,6 +273,7 @@ void cli_run(struct cli_context *ctx)
 	using_history();
 	g_comp_ctx = ctx;
 	rl_attempted_completion_function = cmd_completion;
+	cli_readline_configure();
 	while (ctx->running) {
 		cli_cancel_state_reset();
 		char *input = readline(cli_input_prompt());
@@ -235,33 +290,71 @@ void cli_run(struct cli_context *ctx)
 		}
 		if (input[0] != '\0') {
 			add_history(input);
-			strncpy(line, input, sizeof(line) - 1);
-			line[sizeof(line) - 1] = '\0';
-			cli_handle_command(ctx, line);
+			cli_handle_command(ctx, input);
 		}
 		free(input);
 	}
 #else
+	morph_buf_t input;
+	if (morph_buf_init(&input, BUFSIZ) != 0)
+		return;
 	while (ctx->running) {
-		printf(ANSI_BOLD ANSI_CYAN "› " ANSI_RESET);
-		fflush(stdout);
-		cli_cancel_state_reset();
-		if (!fgets(line, sizeof(line), stdin)) {
-			if (cli_sigint_received) {
-				cli_sigint_received = 0;
+		int complete = 0;
+
+		morph_buf_clear(&input);
+		while (!complete) {
+			size_t len;
+			int has_newline;
+			int continuation;
+
+			printf(input.len == 0 ?
+				ANSI_BOLD ANSI_CYAN "› " ANSI_RESET :
+				ANSI_DIM "… " ANSI_RESET);
+			fflush(stdout);
+			cli_cancel_state_reset();
+			if (!fgets(line, sizeof(line), stdin)) {
+				if (cli_sigint_received) {
+					cli_sigint_received = 0;
+					clearerr(stdin);
+					morph_buf_clear(&input);
+					break;
+				}
+				if (feof(stdin)) {
+					ctx->running = 0;
+					break;
+				}
 				clearerr(stdin);
 				continue;
 			}
-			if (feof(stdin))
+			len = strlen(line);
+			has_newline = len > 0 && line[len - 1] == '\n';
+			if (has_newline)
+				line[--len] = '\0';
+			if (len > 0 && line[len - 1] == '\r')
+				line[--len] = '\0';
+			continuation = has_newline && len > 0 &&
+				line[len - 1] == '\\';
+			if (continuation)
+				len--;
+			if (morph_buf_append(&input, line, len) != 0) {
+				CMD_ERROR("input is too large");
+				morph_buf_clear(&input);
 				break;
-			clearerr(stdin);
-			continue;
+			}
+			if (continuation) {
+				if (morph_buf_putc(&input, '\n') != 0) {
+					CMD_ERROR("input is too large");
+					morph_buf_clear(&input);
+					break;
+				}
+			} else if (has_newline) {
+				complete = 1;
+			}
 		}
-		line[strcspn(line, "\n")] = '\0';
-		if (line[0] == '\0')
-			continue;
-		cli_handle_command(ctx, line);
+		if (input.len > 0)
+			cli_handle_command(ctx, morph_buf_cstr(&input));
 	}
+	morph_buf_cleanup(&input);
 #endif
 	signal(SIGINT, SIG_DFL);
 }

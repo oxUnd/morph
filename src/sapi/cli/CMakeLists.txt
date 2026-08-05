@@ -1,5 +1,6 @@
 add_library(morph-cli STATIC
 	cancel_input.c
+	clipboard.c
 	core.c
 	events.c
 	init.c
@@ -61,21 +62,45 @@ install(TARGETS morph
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-find_path(READLINE_INCLUDE_DIR readline/readline.h
+find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h
 	/opt/homebrew/opt/readline/include
 	/usr/local/opt/readline/include
 	/usr/include
+	NO_DEFAULT_PATH
 )
-find_library(READLINE_LIBRARY readline
+find_library(MORPH_READLINE_LIBRARY readline
 	/opt/homebrew/opt/readline/lib
 	/usr/local/opt/readline/lib
 	/usr/lib
+	NO_DEFAULT_PATH
 )
-if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
-	target_include_directories(morph-cli PRIVATE ${READLINE_INCLUDE_DIR})
+if(NOT MORPH_READLINE_INCLUDE_DIR)
+	find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h)
+endif()
+if(NOT MORPH_READLINE_LIBRARY)
+	find_library(MORPH_READLINE_LIBRARY readline)
+endif()
+if(MORPH_READLINE_INCLUDE_DIR AND MORPH_READLINE_LIBRARY)
+	include(CheckCSourceCompiles)
+	set(CMAKE_REQUIRED_INCLUDES ${MORPH_READLINE_INCLUDE_DIR})
+	set(CMAKE_REQUIRED_LIBRARIES ${MORPH_READLINE_LIBRARY})
+	check_c_source_compiles([=[
+#include <stdio.h>
+#include <readline/readline.h>
+int main(void)
+{
+	return rl_bind_keyseq("", 0);
+}
+]=] MORPH_HAVE_RL_BIND_KEYSEQ)
+	unset(CMAKE_REQUIRED_INCLUDES)
+	unset(CMAKE_REQUIRED_LIBRARIES)
+	target_include_directories(morph-cli PRIVATE ${MORPH_READLINE_INCLUDE_DIR})
 	target_compile_definitions(morph-cli PRIVATE HAVE_READLINE=1)
-	target_link_libraries(morph-cli PUBLIC ${READLINE_LIBRARY})
-	message(STATUS "readline found: ${READLINE_LIBRARY}")
+	if(MORPH_HAVE_RL_BIND_KEYSEQ)
+		target_compile_definitions(morph-cli PRIVATE HAVE_RL_BIND_KEYSEQ=1)
+	endif()
+	target_link_libraries(morph-cli PUBLIC ${MORPH_READLINE_LIBRARY})
+	message(STATUS "readline found: ${MORPH_READLINE_LIBRARY}")
 else()
 	message(STATUS "readline not found, using fgets")
 endif()

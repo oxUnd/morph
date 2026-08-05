@@ -1,26 +1,31 @@
 #include "sapi/cli/commands/registry.h"
 
-static int cmd_image(struct cli_context *ctx, int argc, char **argv)
+int cli_attach_image(struct cli_context *ctx, const char *path)
 {
-	const char *path = cli_cmd_arg(argc, argv, 1);
-	if (!path) {
-		CMD_ERROR("usage: /image <file_path>");
-		return -EINVAL;
-	}
-	char *expanded = file_expand_path(path);
+	char *expanded;
+	const struct config *config;
+	int w = 0;
+	int h = 0;
+	int ch = 0;
+
+	if (!ctx || !path || !path[0])
+		MORPH_RETURN(-EINVAL);
+	expanded = file_expand_path(path);
+	if (!expanded)
+		MORPH_RETURN(-ENOMEM);
 	if (!file_exists(expanded)) {
 		CMD_ERROR("file not found: %s", expanded);
 		free(expanded);
-		return -ENOENT;
+		MORPH_RETURN(-ENOENT);
 	}
-	int w = 0, h = 0, ch = 0;
 	if (!stbi_info(expanded, &w, &h, &ch)) {
 		CMD_ERROR("not a valid image file: %s", expanded);
 		free(expanded);
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
-	const struct config *config = runtime_config_get(ctx->runtime);
+	ctx->image_path[sizeof(ctx->image_path) - 1] = '\0';
+	config = runtime_config_get(ctx->runtime);
 	cli_record_media_credits(ctx, "image_input",
 				 credit_image_units_from_size(w, h), 0,
 				 config->models.image.provider,
@@ -31,26 +36,86 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_video(struct cli_context *ctx, int argc, char **argv)
+static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 {
-	if (argc < 2) {
-		CMD_ERROR("usage: /video <file_path>");
-		return -EINVAL;
+	const char *path = cli_cmd_arg(argc, argv, 1);
+
+	if (!path) {
+		CMD_ERROR("usage: /image <file_path>");
+		MORPH_RETURN(-EINVAL);
 	}
-	if (!file_exists(argv[1])) {
-		CMD_ERROR("file not found: %s", argv[1]);
-		return -ENOENT;
-	}
+	return cli_attach_image(ctx, path);
+}
+
+static int media_path_is_video(const char *path)
+{
+	const char *ext = strrchr(path, '.');
+
+	if (!ext)
+		return 0;
+	ext++;
+	return strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
+		strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
+		strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0;
+}
+
+static int media_play_video(struct cli_context *ctx, const char *path)
+{
 	const struct config *config = runtime_config_get(ctx->runtime);
-	if (video_play(argv[1], config->render.mpv_args) != 0) {
-		CMD_ERROR("failed to play video: %s", argv[1]);
-		return -EIO;
+
+	if (video_play(path, config->render.mpv_args) != 0) {
+		CMD_ERROR("failed to play video: %s", path);
+		MORPH_RETURN(-EIO);
 	}
 	cli_record_media_credits(ctx, "video_input", 0, 1,
 				 config->models.video.provider,
 				 config->models.video.model,
 				 "{\"estimated\":true}");
-	CMD_OK("video loaded: %s", argv[1]);
+	CMD_OK("video loaded: %s", path);
+	return 0;
+}
+
+int cli_handle_media_path(struct cli_context *ctx, const char *input,
+			  int *handled)
+{
+	char *copy;
+	char *expanded;
+	char *argv[3];
+	int argc;
+	int width;
+	int height;
+	int channels;
+	int rc = 0;
+
+	if (!ctx || !input || !handled)
+		MORPH_RETURN(-EINVAL);
+	*handled = 0;
+	copy = strdup(input);
+	if (!copy)
+		MORPH_RETURN(-ENOMEM);
+	argc = cli_argv_split(copy, argv, 3);
+	if (argc != 1) {
+		free(copy);
+		return 0;
+	}
+	expanded = file_expand_path(argv[0]);
+	free(copy);
+	if (!expanded)
+		MORPH_RETURN(-ENOMEM);
+	if (!file_exists(expanded)) {
+		free(expanded);
+		return 0;
+	}
+	if (stbi_info(expanded, &width, &height, &channels)) {
+		*handled = 1;
+		rc = cli_attach_image(ctx, expanded);
+	} else if (media_path_is_video(expanded)) {
+		*handled = 1;
+		rc = media_play_video(ctx, expanded);
+	}
+	free(expanded);
+	if (rc != 0)
+		MORPH_RETURN(rc);
 	return 0;
 }
 static int cmd_render(struct cli_context *ctx, int argc, char **argv)
@@ -108,9 +173,6 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 
 static const struct cli_command media_commands[] = {
 	{ "/image",   cmd_image,   "Inject an image into context",      "/image <file_path>" },
-	{ "/img",     cmd_image,   "Alias for /image",                  "/img <file_path>" },
-	{ "/video",   cmd_video,   "Inject a video (M3)",               "/video <file_path>" },
-	{ "/vid",     cmd_video,   "Alias for /video",                  "/vid <file_path>" },
 	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
 	{ "/r",       cmd_render,  "Alias for /render",                 "/r <file_path>" },
 };

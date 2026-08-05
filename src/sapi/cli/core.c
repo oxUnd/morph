@@ -130,6 +130,16 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	(void)runtime_turn_prepare_tools(ctx->runtime, command_started_at);
 
 	cli_process_due_tasks(ctx);
+	{
+		int handled = 0;
+		int rc = cli_handle_media_path(ctx, input, &handled);
+
+		if (handled) {
+			if (rc != 0)
+				MORPH_RETURN(rc);
+			return 0;
+		}
+	}
 
 	if (input[0] == '/') {
 		int rc = cli_command_dispatch(ctx, input);
@@ -137,13 +147,24 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		return rc;
 	}
 
-	char input_buf[8192];
+	morph_buf_t input_buf;
 	const char *effective_input = input;
+	int has_input_buf = 0;
+
+	memset(&input_buf, 0, sizeof(input_buf));
 	if (ctx->image_path[0]) {
-		int n = snprintf(input_buf, sizeof(input_buf),
-				 "[Image: %s]\n%s", ctx->image_path, input);
-		if (n > 0 && (size_t)n < sizeof(input_buf))
-			effective_input = input_buf;
+		int rc = morph_buf_init(&input_buf, 256);
+
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		has_input_buf = 1;
+		rc = morph_buf_printf(&input_buf, "[Image: %s]\n%s",
+				      ctx->image_path, input);
+		if (rc != 0) {
+			morph_buf_cleanup(&input_buf);
+			MORPH_RETURN(rc);
+		}
+		effective_input = morph_buf_cstr(&input_buf);
 		ctx->image_path[0] = '\0';
 	}
 
@@ -151,7 +172,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	if (!ctx->session_auto_named && input[0] != '/') {
 		struct session current;
 		char title[48];
-		size_t len = strlen(input);
+		size_t len = strcspn(input, "\n");
 		size_t max_bytes = sizeof(title) - 4;
 		if (len > max_bytes) {
 			size_t chop = utf8_clamp_bytes(input, max_bytes);
@@ -188,6 +209,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request,
 					    &runtime_result);
+	if (has_input_buf)
+		morph_buf_cleanup(&input_buf);
 	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;
 	ctx->cancel_monitor = NULL;
 	cli_cancel_monitor_stop(cancel_monitor);
