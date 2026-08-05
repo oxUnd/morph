@@ -77,6 +77,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.enable_sub_agents = 1;
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
+	options.create_new_session = 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
 		cli_presentation_cleanup(ctx);

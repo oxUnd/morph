@@ -17,7 +17,36 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
+
+#define RUNTIME_NEW_SESSION_RETRIES 100
+
+static int runtime_create_startup_session(struct runtime_context *ctx,
+					  struct session *out)
+{
+	char name[256];
+	time_t now;
+	int rc = -EEXIST;
+
+	if (!ctx || !out)
+		MORPH_RETURN(-EINVAL);
+	now = time(NULL);
+	for (int i = 0; i < RUNTIME_NEW_SESSION_RETRIES && rc == -EEXIST; i++) {
+		if (i == 0) {
+			snprintf(name, sizeof(name), "new_%lld",
+				 (long long)now);
+		} else {
+			snprintf(name, sizeof(name), "new_%lld_%d",
+				 (long long)now, i);
+		}
+		rc = runtime_session_create(&ctx->engine, name,
+			ctx->config.models.text.model, out);
+	}
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	return 0;
+}
 
 static void runtime_emit_startup(struct runtime *runtime, const char *name,
 				 const char *phase, const char *message)
@@ -286,8 +315,13 @@ static int runtime_start_components(struct runtime *runtime)
 	if (!session_name || !session_name[0])
 		session_name = ctx->config.general.default_session;
 	runtime_emit_startup(runtime, "startup.session", "begin",
-			     "Restoring your session...");
-	if (runtime->options.restore_recent_session) {
+		runtime->options.create_new_session ?
+		"Creating a new session..." : "Restoring your session...");
+	if (runtime->options.create_new_session) {
+		rc = runtime_create_startup_session(ctx, &ctx->current_session);
+		if (rc != 0)
+			return rc;
+	} else if (runtime->options.restore_recent_session) {
 		struct session *sessions = NULL;
 		int count = 0;
 		rc = session_list(&ctx->database, &sessions, &count, 1, NULL);

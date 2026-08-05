@@ -75,6 +75,7 @@ struct runtime_options {
 	int enable_sub_agents;
 	int allocate_skill_registry;
 	int auto_connect_mcp;
+	int create_new_session;
 	int restore_recent_session;
 };
 

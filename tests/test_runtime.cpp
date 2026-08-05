@@ -273,3 +273,31 @@ TEST_F(RuntimeLifecycleTest, RestoresMostRecentSession)
 	EXPECT_STREQ(restored.name, "restore-me");
 	runtime_close(instance);
 }
+
+TEST_F(RuntimeLifecycleTest, CreatesNewSessionOnEveryRequestedStartup)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	struct session first{};
+	struct session second{};
+	struct session *sessions = nullptr;
+	int count = 0;
+
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	options.create_new_session = 1;
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_EQ(runtime_session_current(instance, &first), 0);
+	runtime_close(instance);
+	instance = nullptr;
+
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_EQ(runtime_session_current(instance, &second), 0);
+	EXPECT_NE(second.id, first.id);
+	EXPECT_STRNE(second.name, first.name);
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	EXPECT_EQ(count, 2);
+	runtime_session_list_free(sessions);
+	runtime_close(instance);
+}
