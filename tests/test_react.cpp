@@ -2843,6 +2843,131 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, DeepSeekAdapterCapturesReasoningContent) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"reasoning_content\":\"plan \"}}]}"
+		"\n\ndata: {\"choices\":[{\"delta\":{\"reasoning_content\":\"next\","
+		"\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{"
+		"\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	EXPECT_STREQ(model->adapter, "deepseek");
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("lookup");
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		&message, 1, nullptr, 0, &response, nullptr, nullptr);
+	EXPECT_EQ(rc, 200);
+	ASSERT_NE(response.reasoning_content, nullptr);
+	EXPECT_STREQ(response.reasoning_content, "plan next");
+	ASSERT_EQ(response.tool_call_count, 1);
+	EXPECT_STREQ(response.tool_calls[0].id, "call_1");
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct tool_call prior_call{};
+	std::strcpy(prior_call.id, "call_1");
+	std::strcpy(prior_call.name, "lookup");
+	prior_call.arguments = const_cast<char *>("{}");
+	struct chat_message messages[3]{};
+	messages[0].role = const_cast<char *>("user");
+	messages[0].content = const_cast<char *>("lookup");
+	messages[1].role = const_cast<char *>("assistant");
+	messages[1].reasoning_content = const_cast<char *>("plan next");
+	messages[1].tool_calls = &prior_call;
+	messages[1].tool_call_count = 1;
+	messages[2].role = const_cast<char *>("tool");
+	messages[2].content = const_cast<char *>("result");
+	messages[2].tool_call_id = const_cast<char *>("call_1");
+	struct tool_desc tool{};
+	std::strcpy(tool.name, "lookup");
+	std::strcpy(tool.description, "Lookup data");
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		messages, 3, &tool, 1, &response, nullptr, nullptr);
+	EXPECT_EQ(rc, 200);
+	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(request, "tool_choice"), nullptr);
+	cJSON *sent_messages = cJSON_GetObjectItem(request, "messages");
+	cJSON *assistant = cJSON_GetArrayItem(sent_messages, 1);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(assistant, "content")), "");
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(assistant, "reasoning_content")), "plan next");
+	cJSON_Delete(request);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, DeepSeekDisabledThinkingUsesToolChoice) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	std::strcpy(model->extra_body_json,
+		"{\"thinking\":{\"type\":\"disabled\"}}");
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("lookup");
+	struct tool_desc tool{};
+	std::strcpy(tool.name, "lookup");
+	std::strcpy(tool.description, "Lookup data");
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		&message, 1, &tool, 1, &response, nullptr, nullptr);
+	EXPECT_EQ(rc, 200);
+	EXPECT_NE(std::strstr(srv.last_request,
+		"\"tool_choice\":\"auto\""), nullptr);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
 	srv.response_body =
 		"{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}";

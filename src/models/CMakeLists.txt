@@ -1,4 +1,6 @@
 add_library(morph-models STATIC
+	llm/adapter.c
+	llm/deepseek.c
 	llm/llm.c
 	image_gen.c
 	image_openai.c

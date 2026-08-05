@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
 > **文档版本**: v0.6
-> **状态**: Updated — 同步代码实际行为（v0.3.7），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_write / QuickJS+Wasm3 运行时
+> **状态**: Updated — 同步代码实际行为（v0.3.7），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_edit / QuickJS+Wasm3 运行时
 
 ## 0. 术语与缩写
 
@@ -1497,7 +1497,7 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | file_read | 读取文本文件 | path, offset, limit | 本地 | 内置 | 是 |
 | file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
 | file_info | 文件元数据 | path | 本地 | 内置 | 是 |
-| config_write | 经审批和 TOML 校验后写入当前配置文件 | patch/append, reason | 本地 | 内置 | 否 |
+| config_edit | 经审批、补丁、备份、原子写入和 TOML 校验后编辑当前配置 | patch/content, reason | 本地 | 内置 | 否 |
 | bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
 | plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
 | ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
@@ -2566,7 +2566,7 @@ enum morph_error {
 | `test_tool.cpp` | 工具注册表 |
 | `test_context.cpp` | 上下文管理 |
 | `test_config.cpp` | 配置解析 |
-| `test_config_write.cpp` | 配置写入工具 |
+| `test_config_write.cpp` | config_edit 配置编辑工具 |
 | `test_credits.cpp` | 积分计费 |
 | `test_error.cpp` | 错误码与错误文本 |
 | `test_event.cpp` | 统一事件系统 |

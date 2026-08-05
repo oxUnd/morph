@@ -1,4 +1,5 @@
 #include "llm.h"
+#include "adapter.h"
 #include "agent/tool.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -228,6 +229,7 @@ struct llm_stream_ctx {
 	void *user_data;
 	struct arena *arena;
 	morph_buf_t accumulated;
+	morph_buf_t reasoning;
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	int tool_call_cap;
@@ -244,6 +246,8 @@ static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 	ctx->arena = arena;
 	if (morph_buf_init_arena(&ctx->accumulated, arena, 8192) != 0)
 		memset(&ctx->accumulated, 0, sizeof(ctx->accumulated));
+	if (morph_buf_init_arena(&ctx->reasoning, arena, 8192) != 0)
+		memset(&ctx->reasoning, 0, sizeof(ctx->reasoning));
 	ctx->tool_calls = NULL;
 	ctx->tool_call_count = 0;
 	ctx->tool_call_cap = 0;
@@ -538,6 +542,7 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 
 	cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
 	if (cJSON_IsString(reasoning) && reasoning->valuestring) {
+		(void)morph_buf_puts(&ctx->reasoning, reasoning->valuestring);
 		int rc = llm_stream_emit(ctx, LLM_STREAM_REASONING,
 					  reasoning->valuestring);
 		if (rc != 0) {
@@ -980,7 +985,8 @@ static char *build_text_tool_arguments_json(const char *input)
 
 static cJSON *build_structured_messages_cjson(const char *system_prompt,
 					       struct chat_message *messages,
-					       int msg_count)
+					       int msg_count,
+					       const struct llm_adapter *adapter)
 {
 	cJSON *arr = cJSON_CreateArray();
 
@@ -998,12 +1004,20 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 
 		if (m->content && *m->content)
 			cJSON_AddStringToObject(msg, "content", m->content);
-		else if (strcmp(m->role, "assistant") == 0 && m->tool_calls)
+		else if (adapter->assistant_tool_content_nullable &&
+			 strcmp(m->role, "assistant") == 0 && m->tool_calls)
 			cJSON_AddNullToObject(msg, "content");
 		else if (m->content)
 			cJSON_AddStringToObject(msg, "content", m->content);
 		else
 			cJSON_AddStringToObject(msg, "content", "");
+
+		if (adapter->add_message_fields &&
+		    adapter->add_message_fields(msg, m) < 0) {
+			cJSON_Delete(msg);
+			cJSON_Delete(arr);
+			return NULL;
+		}
 
 		if (strcmp(m->role, "assistant") == 0 && m->tool_calls && m->tool_call_count > 0) {
 			cJSON *tc_arr = cJSON_CreateArray();
@@ -1485,7 +1499,9 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 				    llm_stream_callback stream_cb,
 				    void *stream_ud)
 {
-	if (self && strcmp(self->adapter, "openai-responses") == 0)
+	const struct llm_adapter *adapter = llm_adapter_resolve(self);
+
+	if (adapter->responses_api)
 		return llm_responses_with_tools_impl(self, arena, system_prompt,
 			messages, msg_count, tools, tool_count, response,
 			thought_cb, stream_cb, stream_ud);
@@ -1505,16 +1521,29 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		self->model_id, tool_count, msg_count);
 
 	cJSON *root = cJSON_CreateObject();
+	if (!root)
+		MORPH_RETURN(-ENOMEM);
 	cJSON_AddStringToObject(root, "model", self->model_id);
 
 	cJSON *msgs_arr = build_structured_messages_cjson(system_prompt,
-							   messages, msg_count);
+							   messages, msg_count,
+							   adapter);
+	if (!msgs_arr) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
 	cJSON_AddItemToObject(root, "messages", msgs_arr);
 
 	if (tools && tool_count > 0) {
 		cJSON *tools_arr = build_tools_cjson(tools, tool_count);
+		if (!tools_arr) {
+			cJSON_Delete(root);
+			MORPH_RETURN(-ENOMEM);
+		}
 		cJSON_AddItemToObject(root, "tools", tools_arr);
-		cJSON_AddStringToObject(root, "tool_choice", "auto");
+		if (!adapter->supports_tool_choice ||
+		    adapter->supports_tool_choice(self))
+			cJSON_AddStringToObject(root, "tool_choice", "auto");
 	}
 
 	cJSON_AddBoolToObject(root, "stream", 1);
@@ -1591,6 +1620,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	else {
 		response->content = NULL;
 	}
+	if (adapter->capture_reasoning && ctx.reasoning.len > 0)
+		response->reasoning_content = ctx.reasoning.data;
 
 	llm_stream_transfer_tool_calls(&ctx, response);
 	llm_usage_finalize(self, &ctx, strlen(body));
@@ -1689,6 +1720,8 @@ struct model *model_llm_create(const char *provider, const char *model_id,
 	if (!m)
 		return NULL;
 	strncpy(m->provider, provider ? provider : "openai", sizeof(m->provider) - 1);
+	strncpy(m->adapter, llm_adapter_infer(provider),
+		sizeof(m->adapter) - 1);
 	strncpy(m->model_id, model_id ? model_id : "gpt-4o", sizeof(m->model_id) - 1);
 	if (api_base)
 		strncpy(m->api_base, api_base, sizeof(m->api_base) - 1);
@@ -1725,6 +1758,8 @@ void chat_response_free(struct chat_response *resp)
 	}
 	free(resp->content);
 	resp->content = NULL;
+	free(resp->reasoning_content);
+	resp->reasoning_content = NULL;
 	for (int i = 0; i < resp->tool_call_count; i++)
 		free(resp->tool_calls[i].arguments);
 	free(resp->tool_calls);
@@ -1743,6 +1778,7 @@ void chat_message_cleanup(struct chat_message *msg, struct arena *arena)
 	free(msg->role);
 	free(msg->content);
 	free(msg->tool_call_id);
+	free(msg->reasoning_content);
 	for (int i = 0; i < msg->tool_call_count; i++)
 		free(msg->tool_calls[i].arguments);
 	free(msg->tool_calls);

@@ -30,6 +30,7 @@ int agent_history_record_assistant(struct react_context *ctx,
 				   const char *content);
 int agent_history_record_tool_calls(struct react_context *ctx,
 				    const char *content,
+				    const char *reasoning_content,
 				    const struct tool_call *calls,
 				    int call_count);
 int agent_history_normalize_tool_arguments(const char *arguments,

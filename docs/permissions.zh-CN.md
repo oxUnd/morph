@@ -299,7 +299,7 @@ allowed_env = []
 ```toml
 [react]
 hitl_enabled = true
-hitl_tools = ["img_gen", "config_write"]
+hitl_tools = ["img_gen", "config_edit"]
 hitl_auto_approve_readonly = true
 ```
 

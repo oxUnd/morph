@@ -664,7 +664,8 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 		sizeof(struct chat_message)), 0);
 	std::strcpy(call.kind, "assistant_tool_calls");
 	call.payload_json = const_cast<char *>(
-		"{\"calls\":[{\"tool_call_id\":\"local_1\","
+		"{\"reasoning_content\":\"inspect state\",\"calls\":[{"
+		"\"tool_call_id\":\"local_1\","
 		"\"provider_call_id\":\"provider_1\",\"name\":\"bash_exec\","
 		"\"arguments\":\"{}\"}]}");
 	call.active = 1;
@@ -683,6 +684,7 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	ASSERT_NE(assistant, nullptr);
 	ASSERT_NE(tool, nullptr);
 	ASSERT_EQ(assistant->tool_call_count, 1);
+	EXPECT_STREQ(assistant->reasoning_content, "inspect state");
 	EXPECT_STREQ(assistant->tool_calls[0].id, "local_1");
 	EXPECT_STREQ(tool->tool_call_id, "local_1");
 	morph_array_cleanup(&messages);

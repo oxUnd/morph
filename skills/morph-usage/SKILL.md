@@ -10,9 +10,9 @@ metadata:
 Use this skill whenever the user asks how Morph works or how to configure it.
 Before answering, ground the answer in the Vim-style manual at
 `docs/morph.txt`. If that relative path is not readable, use the activated
-skill `dir` value and read `../../docs/morph.txt` relative to this skill
-directory. Read only the relevant tagged sections unless the user asks for a
-broad overview.
+skill `dir` value and try `../../morph.txt` for an installed tree, then
+`../../docs/morph.txt` for a source tree. Read only the relevant tagged
+sections unless the user asks for a broad overview.
 
 ## Routing
 
@@ -24,7 +24,7 @@ broad overview.
 - MCP: read `*morph-mcp*`.
 - Extensions: read `*morph-exts*`.
 - Memory, context, or credits: read `*morph-memory*`.
-- Config editing: read `*morph-config-write*`.
+- Config editing: read `*morph-config-edit*`.
 - Errors and failures: read `*morph-troubleshooting*`.
 
 ## Answering Rules
@@ -44,9 +44,11 @@ When the user asks Morph to change its own configuration:
 1. Inspect the current config if available.
 2. State the exact path and setting changes.
 3. Ask for approval before writing.
-4. Use the restricted config-writing tool if available.
+4. Use `config_edit` with a minimal patch when available.
 5. Validate that the resulting TOML parses.
 6. Tell the user whether Morph must be restarted.
 
-Never use shell commands to write config unless no restricted config-writing
-tool exists and the user explicitly approves that fallback.
+Never use raw `apply_patch` or shell commands on the active config unless no
+restricted config-editing tool exists and the user explicitly approves that
+fallback. A successful edit requires a normal Morph restart; do not claim the
+running process hot-reloaded startup state.

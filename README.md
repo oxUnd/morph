@@ -33,7 +33,8 @@ cmake --install build --prefix /usr/local
 
 Runtime data is placed under `share/morph`, next to the `bin` directory, in
 both the build and install trees. Morph resolves this fixed layout relative to
-its executable.
+its executable. The installed user manual is available at
+`share/morph/morph.txt`.
 
 Run tests:
 

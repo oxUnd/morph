@@ -524,7 +524,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_config_write)
-		config_write_init(profile->tools, tctx, profile->config_path);
+		config_edit_init(profile->tools, tctx, profile->config_path);
 	if (profile->enable_bash && config->react.bash_exec_enabled) {
 		const struct config_permission_profile *permission_profile;
 
@@ -625,7 +625,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 #else
 	if (profile->enable_config_write)
-		log_info("config_write disabled for this runtime build");
+		log_info("config_edit disabled for this runtime build");
 	if (profile->enable_bash)
 		log_info("bash_exec disabled for this runtime build");
 #endif

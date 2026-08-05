@@ -230,6 +230,9 @@ add_custom_target(morph-data ALL
 		${CMAKE_SOURCE_DIR}/vendor/tiktoken/cl100k_base.tiktoken
 		${CMAKE_SOURCE_DIR}/vendor/tiktoken/o200k_base.tiktoken
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken/
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/docs/morph.txt
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/morph.txt
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		${CMAKE_SOURCE_DIR}/skills
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
@@ -248,6 +251,10 @@ install(FILES
 install(FILES
 	${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/fonts
+)
+install(FILES
+	${CMAKE_SOURCE_DIR}/docs/morph.txt
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph
 )
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills

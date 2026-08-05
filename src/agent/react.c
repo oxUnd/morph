@@ -2419,6 +2419,8 @@ static int react_append_assistant_tool_call_message(
 	asst_msg->role = arena_strdup(ctx->turn_arena, "assistant");
 	asst_msg->content = (response->content && *response->content)
 		? arena_strdup(ctx->turn_arena, response->content) : NULL;
+	asst_msg->reasoning_content = response->reasoning_content
+		? arena_strdup(ctx->turn_arena, response->reasoning_content) : NULL;
 	asst_msg->tool_calls = arena_alloc(ctx->turn_arena,
 		(size_t)response->tool_call_count *
 		sizeof(*asst_msg->tool_calls));
@@ -3311,8 +3313,8 @@ int react_run(struct react_context *ctx, const char *user_input,
 				break;
 			}
 			id_rc = agent_history_record_tool_calls(
-				ctx, response.content, response.tool_calls,
-				response.tool_call_count);
+				ctx, response.content, response.reasoning_content,
+				response.tool_calls, response.tool_call_count);
 			if (id_rc != 0) {
 				chat_response_free(&response);
 				react_set_result(ctx,

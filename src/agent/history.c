@@ -268,9 +268,14 @@ static int history_add_tool_calls(const struct model_history_item *item,
 	message->role = arena_strdup(arena, "assistant");
 	message->content = item->content && item->content[0] ?
 		arena_strdup(arena, item->content) : NULL;
+	cJSON *reasoning = cJSON_GetObjectItem(root, "reasoning_content");
+	if (cJSON_IsString(reasoning) && reasoning->valuestring)
+		message->reasoning_content = arena_strdup(arena,
+			reasoning->valuestring);
 	message->tool_calls = arena_alloc(arena,
 		(size_t)count * sizeof(*message->tool_calls));
-	if (!message->role || !message->tool_calls) {
+	if (!message->role || !message->tool_calls ||
+	    (cJSON_IsString(reasoning) && !message->reasoning_content)) {
 		cJSON_Delete(root);
 		MORPH_RETURN(-ENOMEM);
 	}
@@ -441,6 +446,7 @@ int agent_history_record_assistant(struct react_context *ctx,
 
 int agent_history_record_tool_calls(struct react_context *ctx,
 				    const char *content,
+				    const char *reasoning_content,
 				    const struct tool_call *calls,
 				    int call_count)
 {
@@ -461,6 +467,9 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 		MORPH_RETURN(-ENOMEM);
 	}
 	cJSON_AddItemToObject(root, "calls", array);
+	if (reasoning_content)
+		cJSON_AddStringToObject(root, "reasoning_content",
+			reasoning_content);
 	for (int i = 0; i < call_count; i++) {
 		cJSON *call = cJSON_CreateObject();
 		char *arguments = NULL;

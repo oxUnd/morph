@@ -62,6 +62,7 @@ struct chat_message {
 	char *tool_call_id;
 	struct tool_call *tool_calls;
 	int tool_call_count;
+	char *reasoning_content;
 };
 
 struct chat_response {
@@ -70,6 +71,7 @@ struct chat_response {
 	int tool_call_count;
 	struct model_usage usage;
 	struct arena *arena;
+	char *reasoning_content;
 };
 
 struct model_chat_options {

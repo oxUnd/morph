@@ -22,7 +22,7 @@ CONTENTS						*morph-contents*
 	*morph-mcp*		MCP servers
 	*morph-exts*		Extensions
 	*morph-memory*		Memory, context, and credits
-	*morph-config-write*	Letting Morph edit config
+	*morph-config-edit*	Letting Morph edit config
 	*morph-troubleshooting*	Common problems
 
 ==============================================================================
@@ -127,9 +127,26 @@ DeepSeek example:
 
 	[model.text]
 	provider = "deepseek"
-	model = "deepseek-chat"
-	api_base = "https://api.deepseek.com/v1"
+	adapter = "deepseek"
+	model = "deepseek-v4-flash"
+	api_base = "https://api.deepseek.com"
 	api_key_env = "DEEPSEEK_API_KEY"
+	context_limit = 128000
+	max_tokens = 32768
+	timeout_seconds = 300
+	retry_count = 3
+
+The DeepSeek adapter preserves reasoning_content across tool calls and omits
+tool_choice while thinking is active.  DeepSeek V4 enables thinking by
+default, so no extra_body_json is required.  The adapter is inferred when
+provider = "deepseek", but setting adapter = "deepseek" explicitly makes the
+wire protocol clear.
+
+To disable thinking explicitly, add:
+
+	extra_body_json = '''
+	{"thinking":{"type":"disabled"}}
+	'''
 
 Volcengine Ark example:
 
@@ -273,6 +290,11 @@ Creative and processing tools include:
 	img_resize	Resize images.
 	img_convert	Convert image formats.
 	vid_gen		Generate video.
+
+Workspace and configuration editing tools include:
+
+	apply_patch	Patch text files inside the active work directory.
+	config_edit	Safely patch the active Morph configuration.
 
 bash_exec is disabled by default because it permits model-initiated process
 execution.  Enable it only when needed:
@@ -437,18 +459,26 @@ Credits track estimated usage and optional warning limits:
 	/credits
 
 ==============================================================================
-CONFIG WRITES						*morph-config-write*
+CONFIG EDITS						*morph-config-edit*
 
-Morph can help write its config when the user explicitly asks and approves.
+Morph can safely edit its active config when the user explicitly asks and
+approves. The config_edit tool prefers a minimal Codex-style patch targeting
+only config.toml. It preserves comments and formatting, validates the result,
+creates config.toml.bak, detects concurrent changes, and atomically replaces
+the config.
 
 Safe workflow:
 
 	1. Read the current config or config.toml.example.
 	2. Explain the exact change.
 	3. Ask for user approval.
-	4. Write only the active Morph config file.
-	5. Validate the TOML.
-	6. Tell the user to restart Morph if the setting is startup-only.
+	4. Patch only the active Morph config file.
+	5. Validate the complete resulting configuration.
+	6. Back up and atomically replace the file.
+	7. Tell the user to restart Morph.
+
+Configuration is not hot-reloaded. config_edit completes the current tool
+turn and returns restart_required = true; it does not terminate Morph.
 
 Do not put API key values into config unless the user explicitly provides
 that secret and insists. Prefer api_key_env and tell the user to export the
