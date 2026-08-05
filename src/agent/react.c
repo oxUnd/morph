@@ -2002,14 +2002,6 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	user_msg->tool_call_id = NULL;
 	user_msg->tool_calls = NULL;
 	user_msg->tool_call_count = 0;
-	struct message_list *ml_asst = msg_list_create(ctx->session_arena, "assistant", proposed,
-		tokenizer_count(ctx->tokenizer, proposed));
-	msg_list_append(&ctx->messages, ml_asst);
-	const char *rev_text = rev_msg ? rev_msg :
-		"Please revise your answer using the available tools.";
-	struct message_list *ml_user = msg_list_create(ctx->session_arena, "user",
-		rev_text, tokenizer_count(ctx->tokenizer, rev_text));
-	msg_list_append(&ctx->messages, ml_user);
 	return 1;
 }
 
@@ -2302,6 +2294,9 @@ static int react_append_assistant_tool_call_message(
 		return -ENOMEM;
 	asst_msg->tool_call_count = response->tool_call_count;
 	for (int j = 0; j < response->tool_call_count; j++) {
+		char *arguments;
+		int rc;
+
 		strncpy(asst_msg->tool_calls[j].id,
 			response->tool_calls[j].id,
 			sizeof(asst_msg->tool_calls[j].id) - 1);
@@ -2312,11 +2307,15 @@ static int react_append_assistant_tool_call_message(
 			sizeof(asst_msg->tool_calls[j].name) - 1);
 		asst_msg->tool_calls[j].name[
 			sizeof(asst_msg->tool_calls[j].name) - 1] = '\0';
+		rc = agent_history_normalize_tool_arguments(
+			response->tool_calls[j].arguments, &arguments);
+		if (rc != 0)
+			return rc;
 		asst_msg->tool_calls[j].arguments =
-			response->tool_calls[j].arguments
-			? arena_strdup(ctx->turn_arena,
-				       response->tool_calls[j].arguments)
-			: arena_strdup(ctx->turn_arena, "");
+			arena_strdup(ctx->turn_arena, arguments);
+		free(arguments);
+		if (!asst_msg->tool_calls[j].arguments)
+			return -ENOMEM;
 	}
 	return 0;
 }

@@ -460,6 +460,18 @@ static int turn_consolidate_memory(struct agent_turn *turn,
 	return rc;
 }
 
+static int turn_model_history_succeeded(const struct agent_turn *turn)
+{
+	const struct react_context *react;
+
+	if (!turn || !turn->runtime.react)
+		return 0;
+	react = turn->runtime.react;
+	return react->state == REACT_STATE_DONE &&
+		(react->outcome == REACT_OUTCOME_SUCCESS ||
+		 react->outcome == REACT_OUTCOME_NONE);
+}
+
 int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 {
 	struct agent_turn_result local_result;
@@ -491,6 +503,13 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 			local_result.trace_saved =
 				turn->runtime.react->steps ? 1 : 0;
 	}
+	if ((flags & AGENT_TURN_SAVE_MESSAGES) &&
+	    !turn_model_history_succeeded(turn)) {
+		step_rc = model_history_deactivate_turn(
+			turn->runtime.db, turn->runtime.session_id,
+			turn->runtime.react->turn_id);
+		turn_set_first_error(&rc, step_rc);
+	}
 
 	if (flags & AGENT_TURN_SAVE_MESSAGES) {
 		step_rc = db_exec(turn->runtime.db, "BEGIN IMMEDIATE;");
@@ -503,7 +522,8 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 				turn, &local_result, &assistant_for_memory);
 			local_result.assistant_rc = step_rc;
 		}
-		if (step_rc == 0 && turn->runtime.react->final_answer &&
+		if (step_rc == 0 && turn_model_history_succeeded(turn) &&
+		    turn->runtime.react->final_answer &&
 		    turn->runtime.react->final_answer[0])
 			step_rc = agent_history_record_assistant(
 				turn->runtime.react,

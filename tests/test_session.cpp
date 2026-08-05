@@ -430,6 +430,46 @@ TEST_F(SessionTest, ModelHistoryStoresStructuredItemsInSequence) {
 	model_history_free_list(items);
 }
 
+TEST_F(SessionTest, ModelHistoryDeactivateTurnKeepsOtherTurns) {
+	struct session s;
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_deactivate_turn", "test", &s), 0);
+	item.session_id = s.id;
+	item.turn_id = "turn_failed";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "failed request";
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "failure";
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.turn_id = "turn_good";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "good request";
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "success";
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+
+	ASSERT_EQ(model_history_deactivate_turn(&db, s.id, "turn_failed"), 0);
+	EXPECT_EQ(model_history_count(&db, s.id, 0), 4);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items, nullptr);
+	EXPECT_STREQ(items->turn_id, "turn_good");
+	ASSERT_NE(items->next, nullptr);
+	EXPECT_STREQ(items->next->turn_id, "turn_good");
+	model_history_free_list(items);
+	EXPECT_EQ(model_history_deactivate_turn(&db, s.id, ""), -EINVAL);
+}
+
 TEST_F(SessionTest, ModelHistoryMigratesTranscriptOnce) {
 	struct session s;
 	int count = 0;
@@ -510,6 +550,51 @@ TEST_F(SessionTest, ModelHistoryRepairsInterruptedToolCall) {
 	EXPECT_STREQ(items->next->kind, "tool_result");
 	EXPECT_STREQ(items->next->provider_call_id, "call_1");
 	EXPECT_NE(std::strstr(items->next->content, "interrupted"), nullptr);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, HistoryRepairUsesLocalIdsForDuplicateProviderIds) {
+	struct session s;
+	struct model_history_insert call = {};
+	struct model_history_insert result = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_duplicate_provider", "test", &s),
+		0);
+	call.session_id = s.id;
+	call.turn_id = "turn_duplicate_provider";
+	call.kind = "assistant_tool_calls";
+	call.role = "assistant";
+	call.payload_json =
+		"{\"calls\":[{\"tool_call_id\":\"local_1\","
+		"\"provider_call_id\":\"provider_same\",\"name\":\"tool\","
+		"\"arguments\":\"{}\"},{\"tool_call_id\":\"local_2\","
+		"\"provider_call_id\":\"provider_same\",\"name\":\"tool\","
+		"\"arguments\":\"{}\"}]}";
+	call.active = 1;
+	ASSERT_EQ(model_history_add(&db, &call, nullptr), 0);
+	result.session_id = s.id;
+	result.turn_id = "turn_duplicate_provider";
+	result.kind = "tool_result";
+	result.role = "tool";
+	result.content = "first result";
+	result.tool_call_id = "local_1";
+	result.provider_call_id = "provider_same";
+	result.tool_name = "tool";
+	result.active = 1;
+	ASSERT_EQ(model_history_add(&db, &result, nullptr), 0);
+
+	ASSERT_EQ(agent_history_repair_interrupted(&db, s.id), 0);
+	struct model_history_item *items =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 3);
+	ASSERT_NE(items, nullptr);
+	struct model_history_item *tail = items;
+	while (tail->next)
+		tail = tail->next;
+	EXPECT_STREQ(tail->kind, "tool_result");
+	EXPECT_STREQ(tail->tool_call_id, "local_2");
+	EXPECT_NE(std::strstr(tail->content, "interrupted"), nullptr);
 	model_history_free_list(items);
 }
 
@@ -608,6 +693,8 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	struct session s;
 	struct model_history_insert malformed = {};
 	struct model_history_insert incomplete = {};
+	struct model_history_insert invalid_arguments = {};
+	struct model_history_insert invalid_result = {};
 	struct model_history_insert orphan = {};
 	struct tokenizer *tokenizer = tokenizer_create("test", 4096);
 	struct agent_history_diagnostic diagnostic = {};
@@ -632,6 +719,25 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	incomplete.token_count = 99;
 	incomplete.active = 1;
 	ASSERT_EQ(model_history_add(&db, &incomplete, nullptr), 0);
+	invalid_arguments.session_id = s.id;
+	invalid_arguments.kind = "assistant_tool_calls";
+	invalid_arguments.role = "assistant";
+	invalid_arguments.payload_json =
+		"{\"calls\":[{\"tool_call_id\":\"invalid_args\","
+		"\"provider_call_id\":\"invalid_provider\","
+		"\"name\":\"bash_exec\",\"arguments\":\"{not-json\"}]}";
+	invalid_arguments.token_count = 99;
+	invalid_arguments.active = 1;
+	ASSERT_EQ(model_history_add(&db, &invalid_arguments, nullptr), 0);
+	invalid_result.session_id = s.id;
+	invalid_result.kind = "tool_result";
+	invalid_result.role = "tool";
+	invalid_result.content = "invalid arguments";
+	invalid_result.tool_call_id = "invalid_args";
+	invalid_result.provider_call_id = "invalid_provider";
+	invalid_result.token_count = 99;
+	invalid_result.active = 1;
+	ASSERT_EQ(model_history_add(&db, &invalid_result, nullptr), 0);
 	orphan.session_id = s.id;
 	orphan.kind = "tool_result";
 	orphan.role = "tool";
@@ -643,9 +749,9 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	struct model_history_item *items =
 		model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(agent_history_diagnose(items, tokenizer, &diagnostic), 0);
-	EXPECT_EQ(diagnostic.invalid_payloads, 2);
-	EXPECT_EQ(diagnostic.orphan_results, 1);
-	EXPECT_EQ(diagnostic.token_mismatches, 3);
+	EXPECT_EQ(diagnostic.invalid_payloads, 3);
+	EXPECT_EQ(diagnostic.orphan_results, 2);
+	EXPECT_EQ(diagnostic.token_mismatches, 5);
 	model_history_free_list(items);
 	ASSERT_EQ(agent_history_repair(&db, s.id, tokenizer, nullptr,
 		&changed), 0);

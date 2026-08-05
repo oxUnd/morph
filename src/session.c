@@ -705,6 +705,29 @@ int model_history_count(struct db *db, int64_t session_id, int active_only)
 	return count;
 }
 
+int model_history_deactivate_turn(struct db *db, int64_t session_id,
+				  const char *turn_id)
+{
+	const char *sql =
+		"UPDATE model_history_items SET active=0 "
+		"WHERE session_id=? AND turn_id=? AND active=1";
+	sqlite3_stmt *stmt;
+	int rc;
+
+	if (!db || !db->handle || session_id <= 0 || !turn_id || !turn_id[0])
+		MORPH_RETURN(-EINVAL);
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
 int model_history_compaction_count(struct db *db, int64_t session_id)
 {
 	sqlite3_stmt *stmt;

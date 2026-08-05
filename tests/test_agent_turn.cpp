@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "agent/react.h"
+#include "agent/history.h"
 #include "agent/tokenizer.h"
 #include "agent/turn.h"
 #include "db/database.h"
@@ -217,6 +218,8 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	EXPECT_TRUE(result.assistant_saved);
 	EXPECT_FALSE(result.memory_queued);
 	EXPECT_FALSE(result.memory_ran_inline);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
 
 	char *rendered = memory_render_session(&db, sess.id, 0);
 	ASSERT_NE(rendered, nullptr);
@@ -224,6 +227,78 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 			 "No long-term memory stored for this session."),
 		  nullptr);
 	free(rendered);
+}
+
+TEST_F(AgentTurnTest, FailedTurnHistoryDoesNotPoisonNextTurn)
+{
+	struct agent_session_runtime runtime = {};
+	struct agent_turn_input failed_input = {};
+	struct agent_turn failed_turn;
+	struct tool_call call = {};
+	int count = 0;
+
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
+		~AGENT_TURN_SAVE_TRACE &
+		~AGENT_TURN_CONSOLIDATE_MEMORY &
+		~AGENT_TURN_ASYNC_MEMORY &
+		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	failed_input.model_input = "run malformed tool";
+	failed_input.turn_id = "turn_failed";
+	ASSERT_EQ(agent_turn_begin(&failed_turn, &runtime, &failed_input), 0);
+	std::strcpy(call.id, "provider_failed");
+	std::strcpy(call.tool_call_id, "local_failed");
+	std::strcpy(call.name, "bash_exec");
+	call.arguments = const_cast<char *>("{not-json");
+	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, &call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, "local_failed",
+		"provider_failed", "bash_exec", "invalid arguments", -EINVAL), 0);
+	react->final_answer = strdup(
+		"LLM repeatedly returned an empty response.");
+	ASSERT_NE(react->final_answer, nullptr);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_LLM_ERROR;
+	ASSERT_EQ(agent_turn_finish(&failed_turn, nullptr), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 0), 3);
+
+	struct message *transcript = message_list(&db, sess.id, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(transcript, nullptr);
+	EXPECT_STREQ(transcript->role, "user");
+	ASSERT_NE(transcript->next, nullptr);
+	EXPECT_STREQ(transcript->next->role, "assistant");
+	EXPECT_NE(std::strstr(transcript->next->content, "empty response"),
+		nullptr);
+	message_free_list(transcript);
+
+	struct agent_turn_input next_input = {};
+	struct agent_turn next_turn;
+	next_input.model_input = "next request";
+	next_input.turn_id = "turn_next";
+	ASSERT_EQ(agent_turn_begin(&next_turn, &runtime, &next_input), 0);
+	struct model_history_item *active =
+		model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(active, nullptr);
+	EXPECT_STREQ(active->turn_id, "turn_next");
+	EXPECT_STREQ(active->kind, "user_message");
+	model_history_free_list(active);
+	react->final_answer = strdup("recovered");
+	ASSERT_NE(react->final_answer, nullptr);
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	ASSERT_EQ(agent_turn_finish(&next_turn, nullptr), 0);
+	active = model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(active, nullptr);
+	EXPECT_STREQ(active->turn_id, "turn_next");
+	ASSERT_NE(active->next, nullptr);
+	EXPECT_STREQ(active->next->kind, "assistant_message");
+	EXPECT_STREQ(active->next->content, "recovered");
+	model_history_free_list(active);
 }
 
 TEST_F(AgentTurnTest, BeginCompactsBeforePersistingCurrentUser)

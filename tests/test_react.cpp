@@ -60,6 +60,25 @@ static int failing_tool_fn(const char *args_json, struct tool_result *result, vo
 	return -EIO;
 }
 
+static int json_object_tool_fn(const char *args_json,
+			       struct tool_result *result, void *user_data)
+{
+	cJSON *root;
+
+	(void)user_data;
+	root = args_json ? cJSON_Parse(args_json) : nullptr;
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "invalid_arguments",
+			"arguments must be a valid JSON object; correct them and retry");
+		return -EINVAL;
+	}
+	cJSON_Delete(root);
+	(void)tool_result_success_json_text(result,
+		strdup("{\"result\":\"ok\"}"));
+	return 0;
+}
+
 static int slow_tool_fn(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
@@ -492,6 +511,8 @@ struct multi_mock_data {
 	int count;
 	int call_count;
 	int should_fail;
+	int replay_argument_checks;
+	int invalid_replayed_arguments;
 };
 
 static int multi_mock_chat(struct model *self, struct arena *arena,
@@ -531,6 +552,19 @@ static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 
 	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
 	int idx = data->call_count;
+	for (int i = 0; i < msg_count; i++) {
+		if (!messages[i].tool_calls)
+			continue;
+		for (int j = 0; j < messages[i].tool_call_count; j++) {
+			cJSON *arguments = cJSON_Parse(
+				messages[i].tool_calls[j].arguments);
+
+			data->replay_argument_checks++;
+			if (!cJSON_IsObject(arguments))
+				data->invalid_replayed_arguments++;
+			cJSON_Delete(arguments);
+		}
+	}
 
 	struct mock_collect_data cd = {nullptr, 0, 0};
 	cd.buf = (char *)malloc(8192);
@@ -1998,6 +2032,48 @@ TEST_F(MockLlmTest, ToolFailThenFinal) {
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_TRUE(strstr(ctx->final_answer, "failed") != nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, InvalidToolArgumentsAreReplayedSafelyAndRetried) {
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "json_tool",
+		"Requires a JSON object", "{}", json_object_tool_fn,
+		nullptr, nullptr);
+	const char *responses[] = {
+		"Thought: malformed.\nAction: json_tool({not-json)\n",
+		"Thought: correct arguments.\nAction: json_tool({\"ok\":true})\n",
+		"Final: recovered after correcting arguments"
+	};
+	llm = create_multi_mock_llm(responses, 3);
+	struct multi_mock_data *data =
+		(struct multi_mock_data *)llm->handle;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+
+	int rc = react_run(ctx, "write the file", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(data->call_count, 3);
+	EXPECT_GT(data->replay_argument_checks, 0);
+	EXPECT_EQ(data->invalid_replayed_arguments, 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "recovered"), nullptr);
+	bool saw_invalid_arguments = false;
+	bool saw_success = false;
+	for (struct react_step *step = ctx->steps; step; step = step->next) {
+		if (step->type != REACT_STEP_OBSERVATION)
+			continue;
+		if (step->error_code == -EINVAL)
+			saw_invalid_arguments = true;
+		if (step->error_code == 0)
+			saw_success = true;
+	}
+	EXPECT_TRUE(saw_invalid_arguments);
+	EXPECT_TRUE(saw_success);
+
 	react_context_destroy(ctx);
 }
 
@@ -3909,6 +3985,12 @@ TEST_F(MockLlmTest, OutputGuardrailRetriesAndFinalizes) {
 			saw_reflection = true;
 	}
 	EXPECT_TRUE(saw_reflection);
+	EXPECT_EQ(msg_list_count(ctx->messages), 2);
+	ASSERT_NE(ctx->messages, nullptr);
+	EXPECT_STREQ(ctx->messages->role, "user");
+	ASSERT_NE(ctx->messages->next, nullptr);
+	EXPECT_STREQ(ctx->messages->next->role, "assistant");
+	EXPECT_NE(strstr(ctx->messages->next->content, "good answer"), nullptr);
 
 	react_context_destroy(ctx);
 }
@@ -3933,6 +4015,10 @@ TEST_F(MockLlmTest, EmptyOutputRetriesThenFails) {
 	EXPECT_STREQ(ctx->outcome_reason, "empty_response");
 	ASSERT_NE(ctx->final_answer, nullptr);
 	EXPECT_NE(strstr(ctx->final_answer, "empty response"), nullptr);
+	EXPECT_EQ(msg_list_count(ctx->messages), 1);
+	ASSERT_NE(ctx->messages, nullptr);
+	EXPECT_STREQ(ctx->messages->role, "user");
+	EXPECT_EQ(ctx->messages->next, nullptr);
 
 	react_context_destroy(ctx);
 }

@@ -168,6 +168,53 @@ static int history_add_text_message(morph_array_t *messages,
 	return 0;
 }
 
+static int history_tool_arguments_valid(const cJSON *arguments)
+{
+	cJSON *parsed;
+	int valid;
+
+	if (!cJSON_IsString(arguments) || !arguments->valuestring)
+		return 0;
+	parsed = cJSON_Parse(arguments->valuestring);
+	valid = cJSON_IsObject(parsed);
+	cJSON_Delete(parsed);
+	return valid;
+}
+
+int agent_history_normalize_tool_arguments(const char *arguments,
+					   char **normalized)
+{
+	const char *raw = arguments ? arguments : "{}";
+	cJSON *parsed;
+	cJSON *fallback;
+	char *json;
+
+	if (!normalized)
+		MORPH_RETURN(-EINVAL);
+	*normalized = NULL;
+	parsed = cJSON_Parse(raw);
+	if (cJSON_IsObject(parsed)) {
+		cJSON_Delete(parsed);
+		*normalized = strdup(raw);
+		if (!*normalized)
+			MORPH_RETURN(-ENOMEM);
+		return 0;
+	}
+	cJSON_Delete(parsed);
+	fallback = cJSON_CreateObject();
+	if (!fallback)
+		MORPH_RETURN(-ENOMEM);
+	cJSON_AddStringToObject(fallback, "_morph_invalid_arguments", raw);
+	cJSON_AddStringToObject(fallback, "_morph_recovery",
+		"Reissue this tool call with a valid JSON object.");
+	json = cJSON_PrintUnformatted(fallback);
+	cJSON_Delete(fallback);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	*normalized = json;
+	return 0;
+}
+
 static int history_add_tool_calls(const struct model_history_item *item,
 				  morph_array_t *messages,
 				  struct arena *arena)
@@ -214,7 +261,7 @@ static int history_add_tool_calls(const struct model_history_item *item,
 
 		if (!cJSON_IsString(provider_id) ||
 		    !cJSON_IsString(local_id) || !cJSON_IsString(name) ||
-		    !cJSON_IsString(arguments)) {
+		    !history_tool_arguments_valid(arguments)) {
 			cJSON_Delete(root);
 			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
@@ -388,17 +435,25 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 	cJSON_AddItemToObject(root, "calls", array);
 	for (int i = 0; i < call_count; i++) {
 		cJSON *call = cJSON_CreateObject();
+		char *arguments;
 
 		if (!call) {
 			cJSON_Delete(root);
 			MORPH_RETURN(-ENOMEM);
 		}
+		rc = agent_history_normalize_tool_arguments(calls[i].arguments,
+			&arguments);
+		if (rc != 0) {
+			cJSON_Delete(call);
+			cJSON_Delete(root);
+			return rc;
+		}
 		cJSON_AddStringToObject(call, "tool_call_id",
 			calls[i].tool_call_id);
 		cJSON_AddStringToObject(call, "provider_call_id", calls[i].id);
 		cJSON_AddStringToObject(call, "name", calls[i].name);
-		cJSON_AddStringToObject(call, "arguments",
-			calls[i].arguments ? calls[i].arguments : "{}");
+		cJSON_AddStringToObject(call, "arguments", arguments);
+		free(arguments);
 		cJSON_AddItemToArray(array, call);
 	}
 	json = cJSON_PrintUnformatted(root);
@@ -809,9 +864,12 @@ static int history_result_exists(const struct model_history_item *items,
 	     item = item->next) {
 		if (strcmp(item->kind, "tool_result") != 0)
 			continue;
-		if (local_id && item->tool_call_id &&
-		    strcmp(local_id, item->tool_call_id) == 0)
-			return 1;
+		if (local_id && local_id[0] && item->tool_call_id &&
+		    item->tool_call_id[0]) {
+			if (strcmp(local_id, item->tool_call_id) == 0)
+				return 1;
+			continue;
+		}
 		if (provider_id && item->provider_call_id &&
 		    strcmp(provider_id, item->provider_call_id) == 0)
 			return 1;
@@ -855,7 +913,8 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 			struct model_history_insert repair = {0};
 
 			if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
-			    !cJSON_IsString(name) || !cJSON_IsString(arguments) ||
+			    !cJSON_IsString(name) ||
+			    !history_tool_arguments_valid(arguments) ||
 			    history_result_exists(items, local->valuestring,
 				provider->valuestring))
 				continue;
@@ -918,16 +977,20 @@ static int history_call_exists(const struct model_history_item *items,
 				if (!cJSON_IsString(local) ||
 				    !cJSON_IsString(provider) ||
 				    !cJSON_IsString(name) ||
-				    !cJSON_IsString(arguments))
+				    !history_tool_arguments_valid(arguments))
 					continue;
-				if ((local_id &&
-				     strcmp(local_id, local->valuestring) == 0) ||
-				    (provider_id &&
-				     strcmp(provider_id,
-					    provider->valuestring) == 0)) {
+				if (local_id && local_id[0] &&
+				    local->valuestring[0]) {
+					if (strcmp(local_id,
+						   local->valuestring) == 0)
+						found = 1;
+				} else if (provider_id &&
+					   strcmp(provider_id,
+						  provider->valuestring) == 0) {
 					found = 1;
-					break;
 				}
+				if (found)
+					break;
 			}
 		}
 		cJSON_Delete(root);
@@ -975,7 +1038,7 @@ int agent_history_diagnose(const struct model_history_item *items,
 					if (!cJSON_IsString(local) ||
 					    !cJSON_IsString(provider) ||
 					    !cJSON_IsString(name) ||
-					    !cJSON_IsString(arguments)) {
+					    !history_tool_arguments_valid(arguments)) {
 						diagnostic->invalid_payloads++;
 						continue;
 					}
@@ -1082,8 +1145,9 @@ int agent_history_repair(struct db *db, int64_t session_id,
 						"provider_call_id")) ||
 					    !cJSON_IsString(cJSON_GetObjectItem(call,
 						"name")) ||
-					    !cJSON_IsString(cJSON_GetObjectItem(call,
-						"arguments"))) {
+					    !history_tool_arguments_valid(
+						cJSON_GetObjectItem(call,
+							"arguments"))) {
 						active = 0;
 						break;
 					}
@@ -1107,6 +1171,27 @@ int agent_history_repair(struct db *db, int64_t session_id,
 			}
 			changes++;
 		}
+	}
+	model_history_free_list(items);
+	items = model_history_list(db, session_id, 1, &count);
+	if (!items && count != 0) {
+		(void)db_exec(db, "ROLLBACK;");
+		MORPH_RETURN(MORPH_ERR_DB);
+	}
+	for (struct model_history_item *item = items; item; item = item->next) {
+		if (strcmp(item->kind, "tool_result") != 0 ||
+		    history_call_exists(items, item->tool_call_id,
+			item->provider_call_id))
+			continue;
+		log_warn("deactivating orphan history tool result %lld",
+			 (long long)item->id);
+		rc = history_update_item(db, item->id, 0, item->token_count);
+		if (rc != 0) {
+			model_history_free_list(items);
+			(void)db_exec(db, "ROLLBACK;");
+			return rc;
+		}
+		changes++;
 	}
 	model_history_free_list(items);
 	rc = db_exec(db, "COMMIT;");
