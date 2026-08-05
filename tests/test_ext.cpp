@@ -119,6 +119,7 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 		"exts/demo-upper",
 		"exts/demo-guardrail-pii",
 		"exts/locate",
+		"exts/rg",
 	};
 
 	for (const auto &dir : dirs) {

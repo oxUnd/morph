@@ -1,0 +1,15 @@
+name = "rg"
+version = "1.0.0"
+description = "Search files with ripgrep using bounded, structured arguments"
+author = "morph"
+type = "exec"
+entry = "rg.py"
+fronts = ["cli"]
+categories = ["file", "search", "dev"]
+permissions = 4
+max_memory_mb = 64
+max_cpu_seconds = 15
+max_open_files = 64
+allowed_paths = ["."]
+input_schema = "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"minLength\":1,\"description\":\"Regular expression or literal text to search for\"},\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1},\"maxItems\":64,\"description\":\"Files or directories to search; defaults to the current directory\"},\"globs\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1},\"maxItems\":32,\"description\":\"ripgrep include or exclude globs\"},\"case\":{\"type\":\"string\",\"enum\":[\"smart\",\"sensitive\",\"insensitive\"],\"default\":\"smart\"},\"mode\":{\"type\":\"string\",\"enum\":[\"content\",\"files\",\"count\"],\"default\":\"content\"},\"fixed_strings\":{\"type\":\"boolean\",\"default\":false},\"word_regexp\":{\"type\":\"boolean\",\"default\":false},\"hidden\":{\"type\":\"boolean\",\"default\":false},\"follow\":{\"type\":\"boolean\",\"default\":false},\"context\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100,\"default\":0},\"max_count\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":10000,\"default\":0},\"max_output_bytes\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1048576,\"default\":262144}},\"required\":[\"pattern\"]}"
+output_schema = "{\"type\":\"object\",\"properties\":{\"stdout\":{\"type\":\"string\"},\"stderr\":{\"type\":\"string\"},\"exit_code\":{\"type\":\"integer\"},\"matched\":{\"type\":\"boolean\"},\"truncated\":{\"type\":\"boolean\"}},\"required\":[\"stdout\",\"stderr\",\"exit_code\",\"matched\",\"truncated\"]}"
