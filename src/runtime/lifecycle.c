@@ -186,10 +186,11 @@ static int runtime_open_database(struct runtime *runtime)
 	return db_init_schema(&ctx->database);
 }
 
-static void runtime_set_workdir(struct runtime *runtime)
+static int runtime_set_workdir(struct runtime *runtime)
 {
 	struct runtime_context *ctx = &runtime->context;
 	char *resolved;
+	int rc;
 
 	if (runtime->options.workdir && runtime->options.workdir[0]) {
 		resolved = file_resolve_path(runtime->options.workdir);
@@ -197,14 +198,20 @@ static void runtime_set_workdir(struct runtime *runtime)
 			resolved = file_expand_path(runtime->options.workdir);
 		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
 			sizeof(ctx->workdir) - 1);
-		(void)file_path_join(ctx->config.general.output_dir,
-				     sizeof(ctx->config.general.output_dir),
-				     ctx->workdir, "output");
+		rc = file_path_join(ctx->config.general.output_dir,
+				    sizeof(ctx->config.general.output_dir),
+				    ctx->workdir, "output");
 		free(resolved);
-		return;
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		rc = file_ensure_dir(ctx->config.general.output_dir);
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		return 0;
 	}
 	if (!getcwd(ctx->workdir, sizeof(ctx->workdir)))
 		strncpy(ctx->workdir, ".", sizeof(ctx->workdir) - 1);
+	return 0;
 }
 
 static int runtime_start_components(struct runtime *runtime)
@@ -393,7 +400,7 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	if (rc == 0)
 		rc = runtime_load_config(runtime);
 	if (rc == 0)
-		runtime_set_workdir(runtime);
+		rc = runtime_set_workdir(runtime);
 	if (rc == 0) {
 		runtime_emit_startup(runtime, "startup.database", "begin",
 				     "Opening workspace...");

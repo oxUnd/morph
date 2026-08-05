@@ -557,6 +557,43 @@ TEST_F(SubAgentTest, BuildRegistryWithAllowedTools) {
 	sub_agent_runtime_destroy(rt);
 }
 
+TEST_F(SubAgentTest, BuildRegistryPreservesTextInputMetadata) {
+	struct tool_spec spec = {};
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "patch_tool";
+	spec.title = "Patch tool";
+	spec.description = "text patch tool";
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.input_kind = TOOL_INPUT_TEXT;
+	spec.input_format = "start: PATCH";
+	spec.exec = sa_test_tool_fn;
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	struct config_sub_agents sa_cfg = {};
+	strncpy(sa_cfg.entries[0].name, "developer",
+		sizeof(sa_cfg.entries[0].name) - 1);
+	strncpy(sa_cfg.entries[0].allowed_tools[0], "patch_tool",
+		sizeof(sa_cfg.entries[0].allowed_tools[0]) - 1);
+	sa_cfg.entries[0].allowed_tools_count = 1;
+	sa_cfg.count = 1;
+	sub_agent_runtime_load_config(rt, &sa_cfg);
+
+	struct tool_registry *child = sub_agent_build_tool_registry(
+		rt, &rt->entries[0]);
+	ASSERT_NE(child, nullptr);
+	struct tool_entry *copied = tool_lookup(child, "patch_tool");
+	ASSERT_NE(copied, nullptr);
+	EXPECT_STREQ(copied->desc.title, "Patch tool");
+	EXPECT_EQ(copied->desc.input_kind, TOOL_INPUT_TEXT);
+	EXPECT_STREQ(copied->desc.input_format, "start: PATCH");
+
+	tool_registry_cleanup(child);
+	free(child);
+	sub_agent_runtime_destroy(rt);
+}
+
 TEST_F(SubAgentTest, BuildRegistryWithDisabledTools) {
 	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "desc", "{}",
 		      sa_test_tool_fn, NULL, NULL);

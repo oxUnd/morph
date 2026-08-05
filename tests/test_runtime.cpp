@@ -10,6 +10,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <sqlite3.h>
 
@@ -35,6 +36,10 @@ protected:
 
 	void TearDown() override
 	{
+		char output[PATH_MAX];
+
+		std::snprintf(output, sizeof(output), "%s/output", directory);
+		rmdir(output);
 		std::remove(database);
 		rmdir(directory);
 	}
@@ -242,6 +247,9 @@ TEST_F(RuntimeLifecycleTest, WorkdirOverridesConfiguredOutputWithOutputChild)
 	ASSERT_NE(runtime_config_get(instance), nullptr);
 	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
 		     expected_output.c_str());
+	struct stat output_stat{};
+	ASSERT_EQ(stat(expected_output.c_str(), &output_stat), 0);
+	EXPECT_TRUE(S_ISDIR(output_stat.st_mode));
 	runtime_close(instance);
 	instance = nullptr;
 	std::remove(config_path.c_str());
