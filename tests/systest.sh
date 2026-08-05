@@ -130,18 +130,20 @@ test_new_named() {
 test_list() {
 	out=$(run_morph "/list
 /quit")
-	assert_contains "7: /list shows default" "$out" "default"
+	assert_contains "7: /list does not create a session" "$out" "no sessions"
 }
 
 test_switch() {
-	out=$(run_morph "/new s2
-/switch default
+	out=$(run_morph "/new s1
+/new s2
+/switch s1
 /quit")
-	assert_contains "8: /switch default" "$out" "switched to session: default"
+	assert_contains "8: /switch existing" "$out" "switched to session: s1"
 }
 
 test_rename() {
-	out=$(run_morph "/rename renamed_s
+	out=$(run_morph "/new rename_me
+/rename renamed_s
 /quit")
 	assert_contains "9: /rename" "$out" "renamed_s"
 }
@@ -149,7 +151,6 @@ test_rename() {
 test_delete() {
 	out=$(run_morph "/new todel
 /new keeper
-/switch default
 /delete todel
 /quit")
 	assert_contains "10: /delete no error" "$out" "Goodbye!"
@@ -164,7 +165,7 @@ test_history() {
 test_list_alias() {
 	out=$(run_morph "/ls
 /quit")
-	assert_contains "12: /ls alias" "$out" "default"
+	assert_contains "12: /ls alias" "$out" "no sessions"
 }
 
 # ---- C. model ----

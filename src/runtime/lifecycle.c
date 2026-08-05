@@ -48,6 +48,34 @@ static int runtime_create_startup_session(struct runtime_context *ctx,
 	return 0;
 }
 
+static int runtime_ensure_current_session(struct runtime *runtime)
+{
+	struct runtime_context *ctx;
+	struct session session;
+	int rc = 0;
+
+	if (!runtime)
+		MORPH_RETURN(-EINVAL);
+	ctx = &runtime->context;
+	if (ctx->current_session.id > 0)
+		return 0;
+	pthread_mutex_lock(&ctx->execution_lock);
+	if (ctx->current_session.id <= 0) {
+		rc = runtime_create_startup_session(ctx, &session);
+		if (rc == 0) {
+			ctx->current_session = session;
+			runtime_context_select_plan_session(ctx, session.id);
+			(void)runtime_context_update_tool_runtime_context(ctx,
+							 session.id);
+			runtime_session_clear_history(ctx->react);
+		}
+	}
+	pthread_mutex_unlock(&ctx->execution_lock);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	return 0;
+}
+
 static void runtime_emit_startup(struct runtime *runtime, const char *name,
 				 const char *phase, const char *message)
 {
@@ -323,11 +351,11 @@ static int runtime_start_components(struct runtime *runtime)
 		session_name = ctx->config.general.default_session;
 	runtime_emit_startup(runtime, "startup.session", "begin",
 		runtime->options.create_new_session ?
-		"Creating a new session..." : "Restoring your session...");
+		"Waiting for your first message..." :
+		"Restoring your session...");
 	if (runtime->options.create_new_session) {
-		rc = runtime_create_startup_session(ctx, &ctx->current_session);
-		if (rc != 0)
-			return rc;
+		memset(&ctx->current_session, 0,
+		       sizeof(ctx->current_session));
 	} else if (runtime->options.restore_recent_session) {
 		struct session *sessions = NULL;
 		int count = 0;
@@ -350,16 +378,21 @@ static int runtime_start_components(struct runtime *runtime)
 		if (rc != 0)
 			return rc;
 	}
-	(void)session_ensure_display_id(&ctx->database, &ctx->current_session);
-	runtime_context_select_plan_session(ctx, ctx->current_session.id);
-	(void)runtime_context_update_tool_runtime_context(ctx,
-						ctx->current_session.id);
+	if (ctx->current_session.id > 0) {
+		(void)session_ensure_display_id(&ctx->database,
+						&ctx->current_session);
+		runtime_context_select_plan_session(ctx, ctx->current_session.id);
+		(void)runtime_context_update_tool_runtime_context(ctx,
+							ctx->current_session.id);
+	}
 	{
-		char session_id[32];
+		char session_id[32] = "";
 		struct runtime_models dynamic_models = runtime_context_models(ctx);
 
-		snprintf(session_id, sizeof(session_id), "%lld",
-			 (long long)ctx->current_session.id);
+		if (ctx->current_session.id > 0) {
+			snprintf(session_id, sizeof(session_id), "%lld",
+				 (long long)ctx->current_session.id);
+		}
 		memset(&profile, 0, sizeof(profile));
 		profile.config = &ctx->config;
 		profile.tools = &ctx->tools;
@@ -367,7 +400,9 @@ static int runtime_start_components(struct runtime *runtime)
 		profile.models = &dynamic_models;
 		(void)runtime_bootstrap_dynamic_tools(&profile, session_id);
 	}
-	runtime_session_load_history(&ctx->engine, ctx->current_session.id);
+	if (ctx->current_session.id > 0)
+		runtime_session_load_history(&ctx->engine,
+					     ctx->current_session.id);
 	return 0;
 }
 
@@ -464,6 +499,13 @@ int runtime_execute_turn(struct runtime *runtime,
 	if (!request)
 		return -EINVAL;
 	effective = *request;
+	if (effective.session_id <= 0 &&
+	    runtime->context.current_session.id <= 0) {
+		int rc = runtime_ensure_current_session(runtime);
+
+		if (rc != 0)
+			return rc;
+	}
 	if (effective.session_id <= 0)
 		effective.session_id = runtime->context.current_session.id;
 	if (!effective.memory_options)

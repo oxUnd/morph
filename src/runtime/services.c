@@ -198,13 +198,23 @@ int runtime_session_set_model(struct runtime *runtime, const char *model)
 
 	if (!ctx || !model || !model[0])
 		return -EINVAL;
-	rc = session_update_model(&ctx->database, ctx->current_session.id, model);
-	if (rc != 0)
-		return rc;
+	if (ctx->current_session.id > 0) {
+		rc = session_update_model(&ctx->database,
+					  ctx->current_session.id, model);
+		if (rc != 0)
+			return rc;
+	}
 	strncpy(ctx->current_session.model, model,
 		sizeof(ctx->current_session.model) - 1);
-	if (ctx->llm)
+	ctx->current_session.model[sizeof(ctx->current_session.model) - 1] = '\0';
+	strncpy(ctx->config.models.text.model, model,
+		sizeof(ctx->config.models.text.model) - 1);
+	ctx->config.models.text.model[
+		sizeof(ctx->config.models.text.model) - 1] = '\0';
+	if (ctx->llm) {
 		strncpy(ctx->llm->model_id, model, sizeof(ctx->llm->model_id) - 1);
+		ctx->llm->model_id[sizeof(ctx->llm->model_id) - 1] = '\0';
+	}
 	return 0;
 }
 

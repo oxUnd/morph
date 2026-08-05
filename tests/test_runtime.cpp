@@ -282,12 +282,11 @@ TEST_F(RuntimeLifecycleTest, RestoresMostRecentSession)
 	runtime_close(instance);
 }
 
-TEST_F(RuntimeLifecycleTest, CreatesNewSessionOnEveryRequestedStartup)
+TEST_F(RuntimeLifecycleTest, DefersNewSessionUntilFirstTurn)
 {
 	runtime_options options{};
 	runtime *instance = nullptr;
-	struct session first{};
-	struct session second{};
+	struct session current{};
 	struct session *sessions = nullptr;
 	int count = 0;
 
@@ -296,16 +295,80 @@ TEST_F(RuntimeLifecycleTest, CreatesNewSessionOnEveryRequestedStartup)
 	options.front_name = "test";
 	options.create_new_session = 1;
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
-	ASSERT_EQ(runtime_session_current(instance, &first), 0);
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	EXPECT_EQ(current.id, 0);
+	EXPECT_EQ(runtime_session_set_model(instance, "deferred-model"), 0);
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	EXPECT_STREQ(current.model, "deferred-model");
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	EXPECT_EQ(count, 0);
+	runtime_session_list_free(sessions);
+	runtime_close(instance);
+}
+
+TEST_F(RuntimeLifecycleTest, FirstTurnCreatesDeferredSession)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	runtime_request request{};
+	runtime_result result{};
+	struct session current{};
+	struct session *sessions = nullptr;
+	int count = 0;
+	std::string config_path = std::string(directory) + "/config.toml";
+	FILE *config = std::fopen(config_path.c_str(), "w");
+
+	ASSERT_NE(config, nullptr);
+	std::fprintf(config,
+		"[model.text]\n"
+		"provider = \"openai\"\n"
+		"model = \"test-model\"\n"
+		"api_key_env = \"MORPH_TEST_MISSING_API_KEY\"\n");
+	ASSERT_EQ(std::fclose(config), 0);
+	unsetenv("MORPH_TEST_MISSING_API_KEY");
+	options.config_path = config_path.c_str();
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	options.create_new_session = 1;
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	request.model_input = "hello";
+	request.stored_user_input = "hello";
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &result),
+		  MORPH_ERR_NOT_CONFIGURED);
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	EXPECT_GT(current.id, 0);
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	EXPECT_EQ(count, 1);
+	runtime_session_list_free(sessions);
+	runtime_close(instance);
+	std::remove(config_path.c_str());
+}
+
+TEST_F(RuntimeLifecycleTest, SwitchingBeforeFirstTurnCreatesNoExtraSession)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	struct session existing{};
+	struct session selected{};
+	struct session *sessions = nullptr;
+	int count = 0;
+
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	options.create_new_session = 1;
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "existing",
+						    &existing), 0);
 	runtime_close(instance);
 	instance = nullptr;
-
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
-	ASSERT_EQ(runtime_session_current(instance, &second), 0);
-	EXPECT_NE(second.id, first.id);
-	EXPECT_STRNE(second.name, first.name);
+	ASSERT_EQ(runtime_session_select_existing(instance, existing.id,
+						  &selected), 0);
+	EXPECT_EQ(selected.id, existing.id);
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
-	EXPECT_EQ(count, 2);
+	EXPECT_EQ(count, 1);
 	runtime_session_list_free(sessions);
 	runtime_close(instance);
 }

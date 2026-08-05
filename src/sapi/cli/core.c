@@ -168,27 +168,6 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		ctx->image_path[0] = '\0';
 	}
 
-	/* Auto-name session from first user input */
-	if (!ctx->session_auto_named && input[0] != '/') {
-		struct session current;
-		char title[48];
-		size_t len = strcspn(input, "\n");
-		size_t max_bytes = sizeof(title) - 4;
-		if (len > max_bytes) {
-			size_t chop = utf8_clamp_bytes(input, max_bytes);
-			memcpy(title, input, chop);
-			title[chop] = '\0';
-			strcat(title, "...");
-		} else {
-			memcpy(title, input, len);
-			title[len] = '\0';
-		}
-		if (runtime_session_current(ctx->runtime, &current) == 0)
-			(void)runtime_session_rename_and_update(ctx->runtime,
-							 current.id, title);
-		ctx->session_auto_named = 1;
-	}
-
 	cli_cancel_state_reset();
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;
@@ -209,6 +188,30 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request,
 					    &runtime_result);
+	/* Auto-name a lazily created session from its first user input. */
+	if (!ctx->session_auto_named) {
+		struct session named_session;
+		char title[48];
+		size_t len = strcspn(input, "\n");
+		size_t max_bytes = sizeof(title) - 4;
+
+		if (len > max_bytes) {
+			size_t chop = utf8_clamp_bytes(input, max_bytes);
+
+			memcpy(title, input, chop);
+			title[chop] = '\0';
+			strcat(title, "...");
+		} else {
+			memcpy(title, input, len);
+			title[len] = '\0';
+		}
+		if (runtime_session_current(ctx->runtime, &named_session) == 0 &&
+		    named_session.id > 0) {
+			(void)runtime_session_rename_and_update(ctx->runtime,
+							 named_session.id, title);
+			ctx->session_auto_named = 1;
+		}
+	}
 	if (has_input_buf)
 		morph_buf_cleanup(&input_buf);
 	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;

@@ -11,6 +11,11 @@ int runtime_session_current(const struct runtime *runtime, struct session *out)
 	if (!runtime || !out)
 		return -EINVAL;
 	*out = runtime->context.current_session;
+	if (out->id <= 0) {
+		strncpy(out->model, runtime->context.config.models.text.model,
+			sizeof(out->model) - 1);
+		out->model[sizeof(out->model) - 1] = '\0';
+	}
 	return 0;
 }
 
