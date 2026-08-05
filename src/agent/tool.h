@@ -14,6 +14,7 @@ extern "C" {
 #define TOOL_NAME_MAX 512
 #define TOOL_DESC_MAX 8192
 #define TOOL_SCHEMA_MAX 8192
+#define TOOL_FORMAT_MAX 16384
 #define TOOL_MAX_ENTRIES 128
 #define TOOL_DISABLED_MAX 32
 
@@ -32,6 +33,11 @@ enum tool_origin {
 	TOOL_ORIGIN_DYNAMIC_PERSISTENT,
 	TOOL_ORIGIN_MCP,
 	TOOL_ORIGIN_EXT,
+};
+
+enum tool_input_kind {
+	TOOL_INPUT_JSON = 0,
+	TOOL_INPUT_TEXT,
 };
 
 enum tool_artifact_kind {
@@ -62,6 +68,8 @@ struct tool_desc {
 	char description[TOOL_DESC_MAX];
 	char input_schema[TOOL_SCHEMA_MAX];
 	char output_schema[TOOL_SCHEMA_MAX];
+	enum tool_input_kind input_kind;
+	char input_format[TOOL_FORMAT_MAX];
 };
 
 struct tool_result {
@@ -112,6 +120,8 @@ struct tool_spec {
 	const char *description;
 	const char *input_schema;
 	const char *output_schema;
+	enum tool_input_kind input_kind;
+	const char *input_format;
 	tool_exec_fn exec;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
@@ -151,7 +161,7 @@ int tool_set_timeout(struct tool_registry *reg, const char *name,
 int tool_timeout_seconds(struct tool_registry *reg, const char *name);
 void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
-int tool_is_disabled(struct tool_registry *reg, const char *name);
+int tool_is_disabled(const struct tool_registry *reg, const char *name);
 int tool_is_readonly(struct tool_registry *reg, const char *name);
 int tool_has_flag(struct tool_registry *reg, const char *name,
 		  unsigned int flag);

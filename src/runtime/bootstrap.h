@@ -50,6 +50,7 @@ struct runtime_bootstrap_profile {
 	img_annotate_resume_fn img_annotate_resume_cb;
 	void *img_annotate_user_data;
 	int enable_bash;
+	int enable_apply_patch;
 	int enable_config_write;
 	int enable_img_annotate;
 	int enable_shell_exts;

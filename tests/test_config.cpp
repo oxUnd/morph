@@ -40,6 +40,9 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.max_iterations, 10);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
+	EXPECT_EQ(cfg.react.guardrail_max_retries, 2);
+	EXPECT_EQ(cfg.react.guardrail_max_empty_rounds, 3);
+	EXPECT_EQ(cfg.react.disabled_tools_count, 0);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
 	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
 	EXPECT_STREQ(cfg.react.bash_exec_mode, "server");
@@ -87,6 +90,19 @@ include = ["config.toml", "data.db", "skills", "tools", "exts", "output"]
 	ASSERT_EQ(config_load(&cfg, config_path), 0);
 	ASSERT_EQ(cfg.sync.include_count, 7);
 	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
+}
+
+TEST_F(ConfigTest, EmptyDisabledToolsLeavesAllToolsEnabled) {
+	const char *toml = R"(
+[react]
+disabled_tools = []
+)";
+	file_write_all(config_path, toml, strlen(toml));
+
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	EXPECT_EQ(cfg.react.disabled_tools_count, 0);
+	EXPECT_STREQ(cfg.react.disabled_tools[0], "");
 }
 
 TEST_F(ConfigTest, LoadFromFile) {

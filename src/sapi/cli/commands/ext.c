@@ -4,6 +4,7 @@
 
 struct ext_tool_item {
 	int index;
+	int enabled;
 	enum tool_origin origin;
 	char name[TOOL_NAME_MAX];
 };
@@ -58,14 +59,18 @@ static int ext_tool_compare(const void *left, const void *right)
 
 	if (rank_a != rank_b)
 		return rank_a - rank_b;
+	if (a->enabled != b->enabled)
+		return b->enabled - a->enabled;
 	return strcmp(a->name, b->name);
 }
 
-static int ext_collect_tools(struct cli_context *ctx, morph_array_t *items)
+static int ext_collect_tools(struct cli_context *ctx, morph_array_t *items,
+			     int *enabled_count)
 {
 	int count = runtime_tool_count(ctx->runtime);
 	int rc;
 
+	*enabled_count = 0;
 	rc = morph_array_init(items, (size_t)(count > 0 ? count : 1),
 			      sizeof(struct ext_tool_item));
 	if (rc != 0)
@@ -85,15 +90,26 @@ static int ext_collect_tools(struct cli_context *ctx, morph_array_t *items)
 		memset(item, 0, sizeof(*item));
 		item->index = i;
 		strncpy(item->name, desc.name, sizeof(item->name) - 1);
+		rc = runtime_tool_enabled(ctx->runtime, i, &item->enabled);
+		if (rc != 0)
+			goto out;
 		rc = runtime_tool_origin(ctx->runtime, i, &item->origin);
 		if (rc != 0)
 			goto out;
+		if (item->enabled)
+			(*enabled_count)++;
 	}
 	qsort(items->elts, items->nelts, items->size, ext_tool_compare);
 	return 0;
 out:
 	morph_array_cleanup(items);
 	return rc;
+}
+
+static const char *ext_tool_marker(const struct ext_tool_item *item)
+{
+	return item->enabled ? ANSI_GREEN "●" ANSI_RESET :
+		ANSI_RED "×" ANSI_RESET;
 }
 
 static int ext_group_name_width(const morph_array_t *items, int rank)
@@ -132,7 +148,8 @@ static void ext_print_group(struct cli_context *ctx,
 		if (runtime_tool_info(ctx->runtime, item->index, &desc) != 0)
 			continue;
 		index++;
-		cli_list_item(ancestor, index == group->count, NULL,
+		cli_list_item(ancestor, index == group->count,
+			      ext_tool_marker(item),
 			      desc.name, desc.description, name_width,
 			      columns);
 	}
@@ -146,14 +163,16 @@ static int ext_print_tools(struct cli_context *ctx)
 	struct ext_tool_group groups[5];
 	morph_array_t items;
 	int group_count = 0;
+	int enabled_count;
 	int columns = cli_list_columns();
 	int rc;
 
 	memset(&items, 0, sizeof(items));
-	rc = ext_collect_tools(ctx, &items);
+	rc = ext_collect_tools(ctx, &items, &enabled_count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("Tools %zu", items.nelts);
+	CMD_HEADER("Tools %zu" ANSI_DIM " · %d enabled" ANSI_RESET,
+		   items.nelts, enabled_count);
 	if (items.nelts == 0) {
 		printf("  " ANSI_DIM "(none)" ANSI_RESET "\n");
 		goto out;
@@ -179,6 +198,7 @@ static int ext_print_tools(struct cli_context *ctx)
 		ext_print_group(ctx, &items, &groups[i],
 				i == group_count - 1, columns);
 	}
+	printf("\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
 	return 0;
@@ -208,6 +228,7 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 	struct tool_desc desc;
 	enum tool_origin origin;
 	unsigned flags;
+	int enabled;
 	int columns = cli_list_columns();
 	int schema_count;
 	int index;
@@ -219,7 +240,11 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 	index = ext_find_tool_index(ctx, name, &origin, &flags);
 	if (index < 0)
 		return index;
+	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
+		return -EIO;
 	CMD_HEADER("Tool %s", desc.name);
+	cli_list_value_field("Status", enabled ? "● enabled" : "× disabled",
+			     0, 12, columns);
 	cli_list_value_field("Source", ext_origin_display(origin), 0, 12,
 			     columns);
 	cli_list_value_field("Access",

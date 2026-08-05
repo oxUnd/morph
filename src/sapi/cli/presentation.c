@@ -12,6 +12,8 @@
 #define CLI_TREE_ITEMS_MAX   12
 #define CLI_TREE_RESULT_DEPTH 2
 #define CLI_TREE_EMBEDDED_JSON_DEPTH 1
+#define CLI_PATCH_BYTES_MAX 16384
+#define CLI_PATCH_LINES_MAX 240
 
 static void presentation_clear_status(struct cli_context *ctx)
 {
@@ -477,13 +479,79 @@ static void presentation_stream_marker(struct cli_context *ctx, int kind)
 	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
 }
 
+static const char *presentation_patch_style(const char *line)
+{
+	if (strncmp(line, "*** Add File: ", 14) == 0 ||
+	    strncmp(line, "*** Update File: ", 17) == 0 ||
+	    strncmp(line, "*** Delete File: ", 17) == 0)
+		return ANSI_BOLD ANSI_CYAN;
+	if (strncmp(line, "@@", 2) == 0)
+		return ANSI_CYAN;
+	if (line[0] == '+')
+		return ANSI_GREEN;
+	if (line[0] == '-')
+		return ANSI_RED;
+	if (strncmp(line, "*** Begin Patch", 15) == 0 ||
+	    strncmp(line, "*** End Patch", 13) == 0)
+		return ANSI_DIM;
+	return "";
+}
+
+static void presentation_patch_diff(const char *input)
+{
+	char *display;
+	char *line;
+	size_t input_len;
+	size_t display_len;
+	int truncated;
+	int lines = 0;
+
+	if (!input || !input[0])
+		return;
+	input_len = strlen(input);
+	display = malloc(CLI_PATCH_BYTES_MAX + 1);
+	if (!display)
+		return;
+	display_len = utf8_copy_sanitized_clamped(display,
+		CLI_PATCH_BYTES_MAX + 1, input, CLI_PATCH_BYTES_MAX);
+	truncated = display_len < input_len;
+	for (char *p = display; *p; p++) {
+		unsigned char ch = (unsigned char)*p;
+
+		if ((ch < 0x20 && ch != '\n' && ch != '\t') || ch == 0x7f)
+			*p = '?';
+	}
+	line = display;
+	while (*line && lines < CLI_PATCH_LINES_MAX) {
+		char *end = strchr(line, '\n');
+		const char *style = presentation_patch_style(line);
+		size_t len = end ? (size_t)(end - line) : strlen(line);
+
+		printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
+		lines++;
+		if (!end) {
+			line += len;
+			break;
+		}
+		line = end + 1;
+	}
+	if (*line)
+		truncated = 1;
+	if (truncated)
+		printf("  └ " ANSI_DIM "… patch display truncated" ANSI_RESET
+		       "\n");
+	free(display);
+}
+
 static void presentation_tool_call(struct cli_context *ctx,
 				   const struct morph_event *ev)
 {
 	const char *tool = event_string(ev, "tool");
 	const char *title = event_string(ev, "toolTitle");
 	cJSON *args_item = event_item(ev, "args");
-	char *args = event_args_json(ev);
+	cJSON *input_item = NULL;
+	const char *patch_input = NULL;
+	char *args = NULL;
 	char display[512];
 
 	presentation_clear_status(ctx);
@@ -492,6 +560,13 @@ static void presentation_tool_call(struct cli_context *ctx,
 		tool = "tool";
 	if (!title || !title[0])
 		title = tool;
+	if (strcmp(tool, "apply_patch") == 0 && cJSON_IsObject(args_item)) {
+		input_item = cJSON_GetObjectItemCaseSensitive(args_item, "input");
+		if (cJSON_IsString(input_item))
+			patch_input = input_item->valuestring;
+	}
+	if (!patch_input)
+		args = event_args_json(ev);
 	display[0] = '\0';
 	if (args && strcmp(args, "{}") != 0) {
 		utf8_copy_sanitized_display_width(display, sizeof(display),
@@ -503,10 +578,15 @@ static void presentation_tool_call(struct cli_context *ctx,
 		if (display[0])
 			printf(" %s", display);
 		printf("\n");
+		if (patch_input)
+			presentation_patch_diff(patch_input);
 	} else {
 		printf("\n" ANSI_YELLOW "◦" ANSI_RESET " "
 		       ANSI_BOLD "%s" ANSI_RESET "\n", title);
-		print_json_tree_children(args_item);
+		if (patch_input)
+			presentation_patch_diff(patch_input);
+		else
+			print_json_tree_children(args_item);
 		presentation_status(ctx, "Running tool…");
 	}
 	free(args);

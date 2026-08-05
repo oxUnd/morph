@@ -70,6 +70,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.img_annotate_resume_cb = cli_img_annotate_resume;
 	options.img_annotate_user_data = ctx;
 	options.enable_bash = 1;
+	options.enable_apply_patch = 1;
 	options.enable_config_write = 1;
 	options.enable_img_annotate = 1;
 	options.enable_shell_exts = 1;

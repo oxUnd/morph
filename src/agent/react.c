@@ -504,6 +504,7 @@ static int react_emit_tool_event(struct react_context *ctx,
 {
 	cJSON *data;
 	cJSON *args = NULL;
+	int text_input = 0;
 	int rc;
 
 	if (!react_events_enabled(ctx))
@@ -514,13 +515,23 @@ static int react_emit_tool_event(struct react_context *ctx,
 	cJSON_AddStringToObject(data, "tool", tool ? tool : "");
 	if (ctx->tools && tool) {
 		struct tool_entry *entry = tool_lookup(ctx->tools, tool);
+
 		if (entry && entry->desc.title[0])
 			cJSON_AddStringToObject(data, "toolTitle",
 						entry->desc.title);
+		if (entry && entry->desc.input_kind == TOOL_INPUT_TEXT)
+			text_input = 1;
 	}
 	cJSON_AddStringToObject(data, "tool_call_id",
 				tool_call_id ? tool_call_id : "");
-	args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
+	if (text_input) {
+		args = cJSON_CreateObject();
+		if (args)
+			cJSON_AddStringToObject(args, "input",
+				args_json ? args_json : "");
+	} else {
+		args = args_json && *args_json ? cJSON_Parse(args_json) : NULL;
+	}
 	if (!args)
 		args = cJSON_CreateObject();
 	if (!args) {
@@ -1097,8 +1108,8 @@ struct react_context *react_context_create(struct tool_registry *tools,
 		ctx->guardrail = *gcfg;
 	else {
 		ctx->guardrail.enabled = 0;
-		ctx->guardrail.max_retries = 1;
-		ctx->guardrail.max_empty_rounds = 2;
+		ctx->guardrail.max_retries = 2;
+		ctx->guardrail.max_empty_rounds = 3;
 	}
 	if (ctx->guardrail.rule_count == 0)
 		guardrail_register_builtin_rules(&ctx->guardrail);
@@ -1234,6 +1245,13 @@ static void add_step(struct react_context *ctx, struct react_step *step)
 	ctx->step_count++;
 }
 
+static int react_has_active_tool(const struct react_context *ctx,
+				 const char *name)
+{
+	return ctx && ctx->tools && tool_lookup(ctx->tools, name) &&
+		!tool_is_disabled(ctx->tools, name);
+}
+
 static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 {
 	morph_buf_t buf;
@@ -1266,9 +1284,53 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
-	if (ctx->tools && tool_lookup(ctx->tools, "bash_exec")) {
+	if (react_has_active_tool(ctx, "apply_patch")) {
+		rc = morph_buf_puts(&buf,
+			"\nSource editing:\n"
+			"- Use apply_patch for text files inside the working directory; "
+			"do not pass source content through shell commands.\n"
+			"- Patch paths are relative to the Working directory shown above. "
+			"Do not repeat that directory in the patch path.\n"
+			"- Prefer a bare @@ for Update File hunks. If you use @@ followed "
+			"by an anchor, copy one complete source line verbatim; never invent "
+			"a descriptive label. Do not use unified-diff numeric ranges.\n"
+			"- Every call must be a complete Codex patch: start with "
+			"*** Begin Patch, use *** Add File, *** Update File, or "
+			"*** Delete File with relative paths, and end with "
+			"*** End Patch. The final *** End Patch line is an envelope line "
+			"and must never have a leading +, space, or -. Do not emit "
+			"unified-diff headers such as --- or +++.\n"
+			"- Exact Update File example:\n"
+			"*** Begin Patch\n"
+			"*** Update File: relative/path.c\n"
+			"@@\n"
+			" unchanged context\n"
+			"-old line\n"
+			"+new line\n"
+			"*** End Patch\n"
+			"- Exact Add File example:\n"
+			"*** Begin Patch\n"
+			"*** Add File: relative/path.c\n"
+			"+first content line\n"
+			"+/* MORPH_CONTINUE */\n"
+			"*** End Patch\n"
+			"- Keep one call below 4 KiB and at most 80 changed lines. For a "
+			"large new file, add a small first chunk ending in a unique "
+			"continuation marker, then use later Update File calls to replace "
+			"that marker with the next chunk and a fresh marker. Remove the "
+			"marker in the final call.\n"
+			"- If a patch is truncated or its context does not match, do not "
+			"repeat the same oversized call. Read the file again and retry "
+			"with a smaller complete patch.\n");
+		if (rc != 0)
+			return NULL;
+	}
+
+	if (react_has_active_tool(ctx, "bash_exec")) {
 		rc = morph_buf_puts(&buf,
 			"\nShell filesystem permissions:\n"
+			"- Do not delete files, install packages, or make network calls "
+			"unless the user explicitly asks.\n"
 			"- Run commands with sandbox_permissions=use_default unless "
 			"they need to write or delete outside workdir/output/tmp.\n"
 			"- For known external paths, use "
@@ -1285,7 +1347,7 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			"in server mode.\n");
 		if (rc != 0)
 			return NULL;
-		if (tool_lookup(ctx->tools, "request_permissions")) {
+		if (react_has_active_tool(ctx, "request_permissions")) {
 			rc = morph_buf_puts(&buf,
 				"- You may call request_permissions before bash_exec "
 				"when the required directories are known. Include the "
@@ -1309,7 +1371,8 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
-	if (ctx->skills && ctx->skills->count > 0) {
+	if (ctx->skills && ctx->skills->count > 0 &&
+	    react_has_active_tool(ctx, "activate_skill")) {
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
@@ -1330,25 +1393,56 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	}
 
 	if (ctx->sub_agent_info && ctx->sub_agent_info_count > 0) {
-		rc = morph_buf_puts(&buf, "\nAvailable sub-agents:\n");
-		if (rc != 0)
-			return NULL;
+		int active_sub_agents = 0;
+
 		for (int i = 0; i < ctx->sub_agent_info_count; i++) {
-			rc = morph_buf_printf(&buf, "- agent_%s: %s\n",
-					      ctx->sub_agent_info[i].name,
-					      ctx->sub_agent_info[i].description);
+			char tool_name[TOOL_NAME_MAX];
+
+			snprintf(tool_name, sizeof(tool_name), "agent_%s",
+				 ctx->sub_agent_info[i].name);
+			if (react_has_active_tool(ctx, tool_name))
+				active_sub_agents++;
+		}
+		if (active_sub_agents > 0) {
+			rc = morph_buf_puts(&buf, "\nAvailable sub-agents:\n");
 			if (rc != 0)
 				return NULL;
+			for (int i = 0; i < ctx->sub_agent_info_count; i++) {
+				char tool_name[TOOL_NAME_MAX];
+
+				snprintf(tool_name, sizeof(tool_name), "agent_%s",
+					 ctx->sub_agent_info[i].name);
+				if (!react_has_active_tool(ctx, tool_name))
+					continue;
+				rc = morph_buf_printf(&buf, "- agent_%s: %s\n",
+					ctx->sub_agent_info[i].name,
+					ctx->sub_agent_info[i].description);
+				if (rc != 0)
+					return NULL;
+			}
+			rc = morph_buf_puts(&buf,
+				"\nTo delegate a task, call an enabled agent_<name> "
+				"tool with a task description.\n");
+			if (rc != 0)
+				return NULL;
+			if (react_has_active_tool(ctx, "fanout")) {
+				rc = morph_buf_puts(&buf,
+					"For parallel execution, use fanout.\n");
+				if (rc != 0)
+					return NULL;
+			}
+			if (react_has_active_tool(ctx, "delegate") &&
+			    react_has_active_tool(ctx, "agent_status")) {
+				rc = morph_buf_puts(&buf,
+					"For async delegation, use delegate + "
+					"agent_status.\n");
+				if (rc != 0)
+					return NULL;
+			}
 		}
-		rc = morph_buf_puts(&buf,
-			"\nTo delegate a task, call agent_<name> with a task "
-			"description. For parallel execution, use fanout. "
-			"For async delegation, use delegate + agent_status.\n");
-		if (rc != 0)
-			return NULL;
 	}
 
-	if (ctx->ask_user_fn) {
+	if (ctx->ask_user_fn && react_has_active_tool(ctx, "ask_user")) {
 		rc = morph_buf_puts(&buf,
 			"\nYou have the ask_user tool. Use it ONLY for genuine "
 			"ambiguity or irreversible decisions. Prefer acting on "
@@ -1741,6 +1835,44 @@ static int react_prepare_tool_call_ids(struct chat_response *response)
 			if (rc < 0)
 				return rc;
 		}
+	}
+	return 0;
+}
+
+static int react_normalize_tool_inputs(struct react_context *ctx,
+				       struct chat_response *response)
+{
+	if (!ctx || !response)
+		MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < response->tool_call_count; i++) {
+		struct tool_call *call = &response->tool_calls[i];
+		struct tool_entry *entry = tool_lookup(ctx->tools, call->name);
+
+		if (!entry || entry->desc.input_kind == TOOL_INPUT_JSON) {
+			call->input_kind = TOOL_INPUT_JSON;
+			continue;
+		}
+		if (call->input_kind == TOOL_INPUT_TEXT)
+			continue;
+		cJSON *root = cJSON_Parse(call->arguments ?
+			call->arguments : "");
+		cJSON *input = root ? cJSON_GetObjectItem(root, "input") : NULL;
+
+		if (!cJSON_IsString(input) || !input->valuestring) {
+			cJSON_Delete(root);
+			call->input_kind = TOOL_INPUT_TEXT;
+			continue;
+		}
+		char *normalized = response->arena
+			? arena_strdup(response->arena, input->valuestring)
+			: strdup(input->valuestring);
+		cJSON_Delete(root);
+		if (!normalized)
+			MORPH_RETURN(-ENOMEM);
+		if (!response->arena)
+			free(call->arguments);
+		call->arguments = normalized;
+		call->input_kind = TOOL_INPUT_TEXT;
 	}
 	return 0;
 }
@@ -2307,10 +2439,19 @@ static int react_append_assistant_tool_call_message(
 			sizeof(asst_msg->tool_calls[j].name) - 1);
 		asst_msg->tool_calls[j].name[
 			sizeof(asst_msg->tool_calls[j].name) - 1] = '\0';
-		rc = agent_history_normalize_tool_arguments(
-			response->tool_calls[j].arguments, &arguments);
-		if (rc != 0)
-			return rc;
+		asst_msg->tool_calls[j].input_kind =
+			response->tool_calls[j].input_kind;
+		if (response->tool_calls[j].input_kind == TOOL_INPUT_TEXT) {
+			arguments = strdup(response->tool_calls[j].arguments ?
+				response->tool_calls[j].arguments : "");
+			if (!arguments)
+				return -ENOMEM;
+		} else {
+			rc = agent_history_normalize_tool_arguments(
+				response->tool_calls[j].arguments, &arguments);
+			if (rc != 0)
+				return rc;
+		}
 		asst_msg->tool_calls[j].arguments =
 			arena_strdup(ctx->turn_arena, arguments);
 		free(arguments);
@@ -3159,6 +3300,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 				react_set_result(ctx,
 						  REACT_OUTCOME_INTERNAL_ERROR,
 						  id_rc, "internal_error");
+				break;
+			}
+			id_rc = react_normalize_tool_inputs(ctx, &response);
+			if (id_rc < 0) {
+				chat_response_free(&response);
+				react_set_result(ctx,
+					REACT_OUTCOME_INTERNAL_ERROR,
+					id_rc, "invalid_tool_input");
 				break;
 			}
 			id_rc = agent_history_record_tool_calls(

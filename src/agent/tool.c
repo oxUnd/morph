@@ -708,9 +708,13 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 		return -ENOSPC;
 	if (find_tool(reg, spec->name) >= 0)
 		return -EEXIST;
-	rc = tool_schema_validate(spec->input_schema, 0);
-	if (rc != 0)
-		return rc;
+	if (spec->input_kind == TOOL_INPUT_JSON) {
+		rc = tool_schema_validate(spec->input_schema, 0);
+		if (rc != 0)
+			return rc;
+	} else if (spec->input_kind != TOOL_INPUT_TEXT) {
+		return -EINVAL;
+	}
 	rc = tool_schema_validate(spec->output_schema, 0);
 	if (rc != 0)
 		return rc;
@@ -721,10 +725,16 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 		sizeof(e->desc.title) - 1);
 	strncpy(e->desc.description, spec->description ? spec->description : "",
 		sizeof(e->desc.description) - 1);
-	strncpy(e->desc.input_schema, spec->input_schema,
-		sizeof(e->desc.input_schema) - 1);
-	strncpy(e->desc.output_schema, spec->output_schema,
-		sizeof(e->desc.output_schema) - 1);
+	if (spec->input_schema)
+		strncpy(e->desc.input_schema, spec->input_schema,
+			sizeof(e->desc.input_schema) - 1);
+	if (spec->output_schema)
+		strncpy(e->desc.output_schema, spec->output_schema,
+			sizeof(e->desc.output_schema) - 1);
+	e->desc.input_kind = spec->input_kind;
+	if (spec->input_format)
+		strncpy(e->desc.input_format, spec->input_format,
+			sizeof(e->desc.input_format) - 1);
 	e->exec = spec->exec;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
@@ -842,7 +852,7 @@ int tool_disable(struct tool_registry *reg, const char *name)
 	return 0;
 }
 
-int tool_is_disabled(struct tool_registry *reg, const char *name)
+int tool_is_disabled(const struct tool_registry *reg, const char *name)
 {
 	if (!reg || !name)
 		return 0;

@@ -4,6 +4,7 @@
 #include "agent/guardrail.h"
 #include "agent/tokenizer.h"
 #include "agent/tools/ask_user.h"
+#include "agent/tools/apply_patch.h"
 #include "agent/tools/bash_exec.h"
 #include "agent/tools/config_write.h"
 #include "agent/tools/dynamic_tools.h"
@@ -516,6 +517,11 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	file_read_init(profile->tools, tctx);
 	file_list_init(profile->tools, tctx);
 	file_info_init(profile->tools, tctx);
+	if (profile->enable_apply_patch) {
+		rc = apply_patch_init(profile->tools, tctx);
+		if (rc != 0)
+			return rc;
+	}
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_config_write)
 		config_write_init(profile->tools, tctx, profile->config_path);

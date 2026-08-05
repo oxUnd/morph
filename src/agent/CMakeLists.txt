@@ -8,6 +8,7 @@ add_library(morph-agent STATIC
 	tool.c
 	tool_context.c
 	tool_runtime.c
+	patch.c
 	plan.c
 	memory.c
 	guardrail.c

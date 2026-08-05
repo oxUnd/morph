@@ -673,6 +673,40 @@ TEST_F(CliPresentationTest, InteractiveRendersToolArgsAndResultAsTree)
 	cJSON_Delete(observation);
 }
 
+TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
+{
+	cJSON *call = cJSON_CreateObject();
+	cJSON *args = cJSON_CreateObject();
+	const char *patch =
+		"*** Begin Patch\n"
+		"*** Update File: src/example.c\n"
+		"@@\n"
+		"-old value\n"
+		"+new value\n"
+		"*** End Patch";
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	cJSON_AddStringToObject(call, "tool", "apply_patch");
+	cJSON_AddStringToObject(call, "toolTitle", "Apply patch");
+	cJSON_AddStringToObject(args, "input", patch);
+	cJSON_AddItemToObject(call, "args", args);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Apply patch"), std::string::npos);
+	EXPECT_NE(output.find("│ *** Update File: src/example.c"),
+		  std::string::npos);
+	EXPECT_NE(output.find("│ -old value"), std::string::npos);
+	EXPECT_NE(output.find("│ +new value"), std::string::npos);
+	EXPECT_NE(output.find("│ *** End Patch"), std::string::npos);
+	EXPECT_EQ(output.find("input:"), std::string::npos);
+	EXPECT_EQ(output.find("patch display truncated"), std::string::npos);
+
+	cJSON_Delete(call);
+}
+
 TEST_F(CliPresentationTest, InteractiveExpandsEmbeddedJsonOneLevel)
 {
 	cJSON *observation = TextData("structured result");

@@ -10,6 +10,7 @@ add_library(morph-tools STATIC
 	file_read.c
 	file_list.c
 	file_info.c
+	apply_patch.c
 	config_write.c
 	skill_activate.c
 	bash_exec.c

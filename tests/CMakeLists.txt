@@ -24,6 +24,8 @@ set(TEST_SOURCES
 	test_dynamic_tools.cpp
 	test_tool.cpp
 	test_plan.cpp
+	test_patch.cpp
+	test_apply_patch_codex.cpp
 	test_context.cpp
 	test_tokenizer.cpp
 	test_compress.cpp

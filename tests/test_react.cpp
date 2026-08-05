@@ -79,6 +79,29 @@ static int json_object_tool_fn(const char *args_json,
 	return 0;
 }
 
+struct text_tool_capture {
+	int calls;
+	std::string last_input;
+};
+
+static int text_tool_fn(const char *input, struct tool_result *result,
+			void *user_data)
+{
+	struct text_tool_capture *capture =
+		(struct text_tool_capture *)user_data;
+
+	capture->calls++;
+	capture->last_input = input ? input : "";
+	if (!input || strstr(input, "*** Begin Patch") == nullptr) {
+		(void)tool_result_error(result, "invalid_patch",
+			"input must be a patch; correct it and retry");
+		return -EINVAL;
+	}
+	(void)tool_result_success_json_text(result,
+		strdup("{\"result\":\"ok\"}"));
+	return 0;
+}
+
 static int slow_tool_fn(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
@@ -1449,6 +1472,37 @@ static std::string event_recorder_tool_call_id(
 	return "";
 }
 
+static std::string event_recorder_tool_input(
+	struct morph_event_recorder *rec, const char *tool)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+
+		if (!root)
+			continue;
+		cJSON *name = cJSON_GetObjectItem(root, "name");
+		cJSON *data = cJSON_GetObjectItem(root, "data");
+		cJSON *tool_item = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "tool") : nullptr;
+		cJSON *args = cJSON_IsObject(data) ?
+			cJSON_GetObjectItem(data, "args") : nullptr;
+		cJSON *input = cJSON_IsObject(args) ?
+			cJSON_GetObjectItem(args, "input") : nullptr;
+		bool matched = cJSON_IsString(name) &&
+			strcmp(name->valuestring, "tool.call") == 0 &&
+			cJSON_IsString(tool_item) &&
+			strcmp(tool_item->valuestring, tool) == 0;
+		std::string out = matched && cJSON_IsString(input) ?
+			input->valuestring : "";
+
+		cJSON_Delete(root);
+		if (matched)
+			return out;
+	}
+	return "";
+}
+
 static bool event_recorder_all_turn_ids_match(struct morph_event_recorder *rec,
 					      const char *turn_id)
 {
@@ -2074,6 +2128,60 @@ TEST_F(MockLlmTest, InvalidToolArgumentsAreReplayedSafelyAndRetried) {
 	EXPECT_TRUE(saw_invalid_arguments);
 	EXPECT_TRUE(saw_success);
 
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, TextToolFallbackFailureIsObservedAndRetried) {
+	struct text_tool_capture capture{};
+	struct tool_spec spec{};
+	struct morph_event_recorder rec;
+	const char *responses[] = {
+		"Thought: malformed.\nAction: apply_text({not-json)\n",
+		"Thought: retry.\nAction: apply_text({\"input\":\"*** Begin Patch\\n*** End Patch\"})\n",
+		"Final: recovered after correcting the patch"
+	};
+
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "apply_text";
+	spec.description = "Apply raw text";
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.input_kind = TOOL_INPUT_TEXT;
+	spec.exec = text_tool_fn;
+	spec.user_data = &capture;
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	llm = create_multi_mock_llm(responses, 3);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	ASSERT_EQ(0, morph_event_recorder_init(&rec));
+	ASSERT_EQ(0, react_set_event_callback(ctx, morph_event_recorder_cb, &rec));
+
+	int rc = react_run(ctx, "apply the patch", nullptr, nullptr);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(capture.calls, 2);
+	EXPECT_EQ(capture.last_input,
+		"*** Begin Patch\n*** End Patch");
+	EXPECT_EQ(event_recorder_tool_input(&rec, "apply_text"),
+		"{not-json");
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(ctx->final_answer, nullptr);
+	EXPECT_NE(strstr(ctx->final_answer, "recovered"), nullptr);
+	bool saw_invalid_patch = false;
+	bool saw_success = false;
+	for (struct react_step *step = ctx->steps; step; step = step->next) {
+		if (step->type != REACT_STEP_OBSERVATION)
+			continue;
+		if (step->error_code == -EINVAL)
+			saw_invalid_patch = true;
+		if (step->error_code == 0)
+			saw_success = true;
+	}
+	EXPECT_TRUE(saw_invalid_patch);
+	EXPECT_TRUE(saw_success);
+
+	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
 }
 
@@ -2774,6 +2882,145 @@ TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
+	srv.response_body =
+		"{\"type\":\"response.output_item.added\",\"item\":{"
+		"\"type\":\"custom_tool_call\",\"id\":\"item_patch\","
+		"\"call_id\":\"call_patch\",\"name\":\"apply_patch\","
+		"\"input\":\"\"}}\n\n"
+		"data: {\"type\":\"response.custom_tool_call_input.delta\","
+		"\"item_id\":\"item_patch\","
+		"\"delta\":\"*** Begin Patch\\n*** End Patch\"}\n\n"
+		"data: {\"type\":\"response.output_item.done\",\"item\":{"
+		"\"type\":\"custom_tool_call\",\"id\":\"item_patch\","
+		"\"call_id\":\"call_patch\",\"name\":\"apply_patch\","
+		"\"input\":\"*** Begin Patch\\n*** End Patch\"}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("openai", "gpt-test",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	std::strcpy(model->adapter, "openai-responses");
+	struct arena *arena = arena_create(16384);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("edit the file");
+	struct tool_desc tool{};
+	std::strcpy(tool.name, "apply_patch");
+	std::strcpy(tool.description, "Apply a source patch");
+	tool.input_kind = TOOL_INPUT_TEXT;
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		&message, 1, &tool, 1, &response, nullptr, nullptr);
+	ASSERT_EQ(rc, 200);
+	ASSERT_EQ(response.tool_call_count, 1);
+	EXPECT_STREQ(response.tool_calls[0].id, "call_patch");
+	EXPECT_STREQ(response.tool_calls[0].name, "apply_patch");
+	EXPECT_EQ(response.tool_calls[0].input_kind, TOOL_INPUT_TEXT);
+	EXPECT_STREQ(response.tool_calls[0].arguments,
+		"*** Begin Patch\n*** End Patch");
+	EXPECT_NE(std::strstr(srv.last_request, "POST /v1/responses"), nullptr);
+	EXPECT_NE(std::strstr(srv.last_request,
+		"\"type\":\"custom\",\"name\":\"apply_patch\""), nullptr);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, ResponsesAdapterRejectsMissingApiKeyBeforeRequest) {
+	struct model *model = model_llm_create("openai", "gpt-test",
+		"http://127.0.0.1:1/v1", "");
+	ASSERT_NE(model, nullptr);
+	std::strcpy(model->adapter, "openai-responses");
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message message{};
+	message.role = const_cast<char *>("user");
+	message.content = const_cast<char *>("edit");
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		&message, 1, nullptr, 0, &response, nullptr, nullptr);
+	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
+	EXPECT_NE(strstr(model->last_error, "no API key"), nullptr);
+
+	arena_destroy(arena);
+	model_destroy(model);
+}
+
+TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
+	srv.response_body =
+		"{\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
+		 srv.port);
+	struct model *model = model_llm_create("test", "mock-model",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct tool_call prior_call{};
+	std::strcpy(prior_call.id, "call_patch");
+	std::strcpy(prior_call.name, "apply_patch");
+	prior_call.arguments = const_cast<char *>(
+		"*** Begin Patch\n*** End Patch");
+	prior_call.input_kind = TOOL_INPUT_TEXT;
+	struct chat_message messages[3]{};
+	messages[0].role = const_cast<char *>("user");
+	messages[0].content = const_cast<char *>("edit");
+	messages[1].role = const_cast<char *>("assistant");
+	messages[1].tool_calls = &prior_call;
+	messages[1].tool_call_count = 1;
+	messages[2].role = const_cast<char *>("tool");
+	messages[2].content = const_cast<char *>("invalid patch");
+	messages[2].tool_call_id = const_cast<char *>("call_patch");
+	struct tool_desc tool{};
+	std::strcpy(tool.name, "apply_patch");
+	std::strcpy(tool.description, "Apply patch");
+	tool.input_kind = TOOL_INPUT_TEXT;
+	struct chat_response response{};
+
+	int rc = model->chat_with_tools_stream(model, arena, nullptr,
+		messages, 3, &tool, 1, &response, nullptr, nullptr);
+	EXPECT_EQ(rc, 200);
+	EXPECT_NE(std::strstr(srv.last_request,
+		"\"required\":[\"input\"]"), nullptr);
+	EXPECT_NE(std::strstr(srv.last_request,
+		"\"additionalProperties\":false"), nullptr);
+	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	cJSON *sent_messages = cJSON_GetObjectItem(request, "messages");
+	cJSON *assistant = cJSON_GetArrayItem(sent_messages, 1);
+	cJSON *sent_calls = cJSON_GetObjectItem(assistant, "tool_calls");
+	cJSON *sent_call = cJSON_GetArrayItem(sent_calls, 0);
+	cJSON *function = cJSON_GetObjectItem(sent_call, "function");
+	const char *arguments = cJSON_GetStringValue(
+		cJSON_GetObjectItem(function, "arguments"));
+	ASSERT_NE(arguments, nullptr);
+	cJSON *wrapper = cJSON_Parse(arguments);
+	ASSERT_NE(wrapper, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(wrapper, "input")),
+		"*** Begin Patch\n*** End Patch");
+	cJSON_Delete(wrapper);
+	cJSON_Delete(request);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, LlmRetriesTransientHttpErrorsBeforeStreaming) {
 	srv.response_body =
 		"{\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}";
@@ -3147,6 +3394,135 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	if (cd->system_prompt)
 		found = strstr(cd->system_prompt, "Custom instruction here.");
 	EXPECT_NE(found, nullptr) << "system_prompt should appear in the LLM prompt";
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, SystemPromptRequiresSmallCompleteMorphPatches) {
+	struct capt_prompt_data *cd =
+		(struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	struct tool_spec spec{};
+
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "apply_patch";
+	spec.description = "Apply a patch";
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.input_kind = TOOL_INPUT_TEXT;
+	spec.exec = test_tool_fn;
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	react_run(ctx, "edit a large file", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->system_prompt, nullptr);
+	EXPECT_NE(strstr(cd->system_prompt, "complete Codex patch"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt, "below 4 KiB"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt, "at most 80 changed lines"),
+		nullptr);
+	EXPECT_NE(strstr(cd->system_prompt, "continuation marker"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt, "Do not emit unified-diff"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt,
+		"must never have a leading +, space, or -"), nullptr);
+	EXPECT_NE(strstr(cd->system_prompt,
+		"+/* MORPH_CONTINUE */\n*** End Patch"), nullptr);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, SystemPromptOmitsDisabledApplyPatchInstructions) {
+	struct capt_prompt_data *cd =
+		(struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	struct tool_spec spec{};
+
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "apply_patch";
+	spec.description = "Apply a patch";
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.input_kind = TOOL_INPUT_TEXT;
+	spec.exec = test_tool_fn;
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(tool_disable(&tools, "apply_patch"), 0);
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	react_run(ctx, "edit a file", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->system_prompt, nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "Source editing:"), nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "complete Codex patch"), nullptr);
+	EXPECT_EQ(cd->tool_count, 0);
+	EXPECT_EQ(cd->tool_descs, nullptr);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, DisabledToolsAreAbsentFromPromptAndFunctionSurface) {
+	struct capt_prompt_data *cd =
+		(struct capt_prompt_data *)calloc(1, sizeof(*cd));
+	struct tool_spec spec{};
+
+	cd->resp = "Final: answer";
+	llm = (struct model *)calloc(1, sizeof(*llm));
+	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
+	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
+	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
+	llm->context_limit = 128000;
+	llm->chat = capt_prompt_chat;
+	llm->chat_with_tools = capt_prompt_chat_with_tools;
+	llm->destroy = capt_prompt_destroy;
+	llm->handle = cd;
+	llm_data = nullptr;
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.description = "Disabled test tool";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = test_tool_fn;
+	spec.name = "file_list";
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	spec.name = "bash_exec";
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(tool_disable(&tools, "file_list"), 0);
+	ASSERT_EQ(tool_disable(&tools, "bash_exec"), 0);
+
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	react_run(ctx, "inspect files", nullptr, nullptr);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	ASSERT_NE(cd->system_prompt, nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "file_list"), nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "Shell filesystem permissions:"),
+		nullptr);
+	EXPECT_EQ(cd->tool_count, 0);
+	EXPECT_EQ(cd->tool_descs, nullptr);
+
 	react_context_destroy(ctx);
 }
 
@@ -3836,6 +4212,8 @@ TEST_F(ReactTest, GuardrailDefaultDisabled) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	EXPECT_EQ(ctx->guardrail.enabled, 0);
+	EXPECT_EQ(ctx->guardrail.max_retries, 2);
+	EXPECT_EQ(ctx->guardrail.max_empty_rounds, 3);
 	EXPECT_EQ(ctx->guardrail_retry_count, 0);
 	react_context_destroy(ctx);
 }

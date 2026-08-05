@@ -762,6 +762,38 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	tokenizer_destroy(tokenizer);
 }
 
+TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
+	struct model_history_item item = {};
+	morph_array_t messages = {};
+	struct arena *arena = arena_create(4096);
+	const char *raw =
+		"*** Begin Patch\n*** Add File: a.txt\n+x\n*** End Patch";
+	std::string payload =
+		"{\"calls\":[{\"tool_call_id\":\"local_text\","
+		"\"provider_call_id\":\"provider_text\","
+		"\"name\":\"apply_patch\",\"input_kind\":\"text\","
+		"\"input\":\"*** Begin Patch\\n*** Add File: a.txt\\n+x\\n"
+		"*** End Patch\"}]}";
+
+	ASSERT_NE(arena, nullptr);
+	std::strcpy(item.kind, "assistant_tool_calls");
+	std::strcpy(item.role, "assistant");
+	item.payload_json = const_cast<char *>(payload.c_str());
+	item.active = 1;
+	ASSERT_EQ(morph_array_init(&messages, 2,
+		sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(&item, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 1U);
+	auto *message = static_cast<struct chat_message *>(
+		morph_array_get(&messages, 0));
+	ASSERT_NE(message, nullptr);
+	ASSERT_EQ(message->tool_call_count, 1);
+	EXPECT_EQ(message->tool_calls[0].input_kind, TOOL_INPUT_TEXT);
+	EXPECT_STREQ(message->tool_calls[0].arguments, raw);
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
 TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
 	struct session s;
 	struct react_context react = {};

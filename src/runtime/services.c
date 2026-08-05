@@ -420,6 +420,18 @@ int runtime_tool_flags(const struct runtime *runtime, int index,
 	return 0;
 }
 
+int runtime_tool_enabled(const struct runtime *runtime, int index, int *out)
+{
+	const struct tool_registry *tools;
+
+	if (!runtime || !out || index < 0 ||
+	    index >= runtime->context.tools.count)
+		return -EINVAL;
+	tools = &runtime->context.tools;
+	*out = !tool_is_disabled(tools, tools->entries[index].desc.name);
+	return 0;
+}
+
 int runtime_tool_origin(const struct runtime *runtime, int index,
 			enum tool_origin *out)
 {

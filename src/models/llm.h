@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "http/client.h"
+#include "agent/tool.h"
 #include <stdint.h>
 
 #ifndef MORPH_MODEL_EXTRA_BODY_MAX
@@ -24,13 +25,12 @@ enum llm_stream_kind {
 typedef int (*llm_stream_callback)(enum llm_stream_kind kind,
 				   const char *token, void *user_data);
 
-struct tool_desc;
-
 struct tool_call {
 	char id[128];
 	char tool_call_id[128];
 	char name[64];
 	char *arguments;
+	enum tool_input_kind input_kind;
 };
 
 struct model_usage {

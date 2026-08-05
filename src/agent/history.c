@@ -181,6 +181,33 @@ static int history_tool_arguments_valid(const cJSON *arguments)
 	return valid;
 }
 
+static int history_tool_call_input(const cJSON *call,
+				   enum tool_input_kind *kind,
+				   const char **input)
+{
+	cJSON *kind_item;
+	cJSON *value;
+
+	if (!cJSON_IsObject(call) || !kind || !input)
+		return 0;
+	kind_item = cJSON_GetObjectItem(call, "input_kind");
+	if (cJSON_IsString(kind_item) && kind_item->valuestring &&
+	    strcmp(kind_item->valuestring, "text") == 0) {
+		value = cJSON_GetObjectItem(call, "input");
+		if (!cJSON_IsString(value) || !value->valuestring)
+			return 0;
+		*kind = TOOL_INPUT_TEXT;
+		*input = value->valuestring;
+		return 1;
+	}
+	value = cJSON_GetObjectItem(call, "arguments");
+	if (!history_tool_arguments_valid(value))
+		return 0;
+	*kind = TOOL_INPUT_JSON;
+	*input = value->valuestring;
+	return 1;
+}
+
 int agent_history_normalize_tool_arguments(const char *arguments,
 					   char **normalized)
 {
@@ -256,12 +283,13 @@ static int history_add_tool_calls(const struct model_history_item *item,
 							"provider_call_id");
 		cJSON *local_id = cJSON_GetObjectItem(call, "tool_call_id");
 		cJSON *name = cJSON_GetObjectItem(call, "name");
-		cJSON *arguments = cJSON_GetObjectItem(call, "arguments");
 		struct tool_call *tool_call = &message->tool_calls[i];
+		const char *input;
+		enum tool_input_kind input_kind;
 
 		if (!cJSON_IsString(provider_id) ||
 		    !cJSON_IsString(local_id) || !cJSON_IsString(name) ||
-		    !history_tool_arguments_valid(arguments)) {
+		    !history_tool_call_input(call, &input_kind, &input)) {
 			cJSON_Delete(root);
 			MORPH_RETURN(MORPH_ERR_PROTOCOL);
 		}
@@ -273,8 +301,8 @@ static int history_add_tool_calls(const struct model_history_item *item,
 			 local_id->valuestring);
 		snprintf(tool_call->name, sizeof(tool_call->name), "%s",
 			 name->valuestring);
-		tool_call->arguments = arena_strdup(arena,
-			arguments->valuestring ? arguments->valuestring : "{}");
+		tool_call->input_kind = input_kind;
+		tool_call->arguments = arena_strdup(arena, input);
 		if (!tool_call->arguments) {
 			cJSON_Delete(root);
 			MORPH_RETURN(-ENOMEM);
@@ -435,24 +463,31 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 	cJSON_AddItemToObject(root, "calls", array);
 	for (int i = 0; i < call_count; i++) {
 		cJSON *call = cJSON_CreateObject();
-		char *arguments;
+		char *arguments = NULL;
 
 		if (!call) {
 			cJSON_Delete(root);
 			MORPH_RETURN(-ENOMEM);
 		}
-		rc = agent_history_normalize_tool_arguments(calls[i].arguments,
-			&arguments);
-		if (rc != 0) {
-			cJSON_Delete(call);
-			cJSON_Delete(root);
-			return rc;
-		}
 		cJSON_AddStringToObject(call, "tool_call_id",
 			calls[i].tool_call_id);
 		cJSON_AddStringToObject(call, "provider_call_id", calls[i].id);
 		cJSON_AddStringToObject(call, "name", calls[i].name);
-		cJSON_AddStringToObject(call, "arguments", arguments);
+		if (calls[i].input_kind == TOOL_INPUT_TEXT) {
+			cJSON_AddStringToObject(call, "input_kind", "text");
+			cJSON_AddStringToObject(call, "input",
+				calls[i].arguments ? calls[i].arguments : "");
+		} else {
+			rc = agent_history_normalize_tool_arguments(
+				calls[i].arguments, &arguments);
+			if (rc != 0) {
+				cJSON_Delete(call);
+				cJSON_Delete(root);
+				return rc;
+			}
+			cJSON_AddStringToObject(call, "input_kind", "json");
+			cJSON_AddStringToObject(call, "arguments", arguments);
+		}
 		free(arguments);
 		cJSON_AddItemToArray(array, call);
 	}
@@ -909,12 +944,13 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 			cJSON *provider = cJSON_GetObjectItem(call,
 				"provider_call_id");
 			cJSON *name = cJSON_GetObjectItem(call, "name");
-			cJSON *arguments = cJSON_GetObjectItem(call, "arguments");
 			struct model_history_insert repair = {0};
+			const char *input;
+			enum tool_input_kind input_kind;
 
 			if (!cJSON_IsString(local) || !cJSON_IsString(provider) ||
 			    !cJSON_IsString(name) ||
-			    !history_tool_arguments_valid(arguments) ||
+			    !history_tool_call_input(call, &input_kind, &input) ||
 			    history_result_exists(items, local->valuestring,
 				provider->valuestring))
 				continue;
@@ -971,13 +1007,14 @@ static int history_call_exists(const struct model_history_item *items,
 				cJSON *provider = cJSON_GetObjectItem(call,
 					"provider_call_id");
 				cJSON *name = cJSON_GetObjectItem(call, "name");
-				cJSON *arguments = cJSON_GetObjectItem(call,
-					"arguments");
+				const char *input;
+				enum tool_input_kind input_kind;
 
 				if (!cJSON_IsString(local) ||
 				    !cJSON_IsString(provider) ||
 				    !cJSON_IsString(name) ||
-				    !history_tool_arguments_valid(arguments))
+				    !history_tool_call_input(call, &input_kind,
+					&input))
 					continue;
 				if (local_id && local_id[0] &&
 				    local->valuestring[0]) {
@@ -1032,13 +1069,14 @@ int agent_history_diagnose(const struct model_history_item *items,
 						"provider_call_id");
 					cJSON *name = cJSON_GetObjectItem(call,
 						"name");
-					cJSON *arguments = cJSON_GetObjectItem(call,
-						"arguments");
+					const char *input;
+					enum tool_input_kind input_kind;
 
 					if (!cJSON_IsString(local) ||
 					    !cJSON_IsString(provider) ||
 					    !cJSON_IsString(name) ||
-					    !history_tool_arguments_valid(arguments)) {
+					    !history_tool_call_input(call, &input_kind,
+						&input)) {
 						diagnostic->invalid_payloads++;
 						continue;
 					}
@@ -1138,6 +1176,10 @@ int agent_history_repair(struct db *db, int64_t session_id,
 			} else {
 				for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
 					cJSON *call = cJSON_GetArrayItem(calls, i);
+					const char *input;
+					enum tool_input_kind input_kind;
+					int input_valid = history_tool_call_input(
+						call, &input_kind, &input);
 
 					if (!cJSON_IsString(cJSON_GetObjectItem(call,
 						"tool_call_id")) ||
@@ -1145,9 +1187,7 @@ int agent_history_repair(struct db *db, int64_t session_id,
 						"provider_call_id")) ||
 					    !cJSON_IsString(cJSON_GetObjectItem(call,
 						"name")) ||
-					    !history_tool_arguments_valid(
-						cJSON_GetObjectItem(call,
-							"arguments"))) {
+					    !input_valid) {
 						active = 0;
 						break;
 					}

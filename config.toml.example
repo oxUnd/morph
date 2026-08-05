@@ -19,6 +19,10 @@ log_file = "~/.morph/log/agent.log"
 # Used by the ReAct loop and text Q&A. [model.image] is only for image
 # generation; configure [model.vision] separately to enable img_qa.
 provider    = "openai"
+# Use "openai-responses" to enable native freeform custom tools. Leave
+# unset for the compatible Chat Completions adapter; text tools then use a
+# one-field function-call fallback automatically.
+# adapter     = "openai-responses"
 model       = "gpt-4o"
 api_base    = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
@@ -207,7 +211,7 @@ bash_exec_mode = "server"       # local | server
 # Maximum number of guardrail-retry cycles per query.
 guardrail_max_retries = 2
 # Maximum consecutive empty answers before returning an LLM error.
-guardrail_max_empty_rounds = 2
+guardrail_max_empty_rounds = 3
 
 ## Guardrail: disable specific built-in rules by name.
 ## Built-in rules: empty_answer, consecutive_empty,
@@ -258,8 +262,10 @@ guardrail_max_empty_rounds = 2
 # Disable specific tools by name. Supported tool names:
 # credits, memory, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
-# file_info, config_write, bash_exec
-# disabled_tools = ["vid_gen", "img_resize"]
+# file_info, config_write, apply_patch, bash_exec
+# This example disables apply_patch. Remove it from this array to enable the
+# Codex-style source editing tool on fronts that support it, such as the CLI.
+disabled_tools = ["apply_patch"]
 
 # Tools treated as read-only for HITL auto-approval and runtime reporting.
 # Fronts should not hardcode this list; override it here when tool policy changes.

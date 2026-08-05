@@ -487,8 +487,9 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.tool_timeout_seconds = 300;
 	cfg->react.tool_max_retries = 3;
 	cfg->react.guardrail_enabled = 1;
-	cfg->react.guardrail_max_retries = 1;
-	cfg->react.guardrail_max_empty_rounds = 2;
+	cfg->react.guardrail_max_retries = 2;
+	cfg->react.guardrail_max_empty_rounds = 3;
+	cfg->react.disabled_tools_count = 0;
 
 	cfg->react.hitl_enabled = 0;
 	cfg->react.hitl_tools_count = 0;
@@ -983,6 +984,9 @@ int config_load(struct config *cfg, const char *path)
 		cfg_array_t *dt = cfg_array_in(react, "disabled_tools");
 		if (dt) {
 			int count = 0;
+
+			memset(cfg->react.disabled_tools, 0,
+			       sizeof(cfg->react.disabled_tools));
 			for (; count < DISABLED_TOOLS_MAX; count++) {
 				cfg_datum_t val = cfg_string_at(dt, count);
 				if (!val.ok)
