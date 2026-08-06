@@ -1,0 +1,231 @@
+src/sapi/cli/terminal.c
+  s_baeb30e9d4661b::t_e7aca0012ff446 43-52
+  s_baeb30e9d4661b::t_1b4d5719f73a1b 188-192
+  s_baeb30e9d4661b::t_216e98ced527eb 98-102,108
+  s_baeb30e9d4661b::t_9172ab1f4a0ede 113-117
+  s_baeb30e9d4661b::t_d0a73048232e7d 307-308,313,316-318
+  s_baeb30e9d4661b::t_830e1bbaadae2b 298
+  s_baeb30e9d4661b::t_6937cc39650292 409-413,418
+  s_baeb30e9d4661b::t_26d75b8b1ec641 309-312,314-315,326-327
+  s_baeb30e9d4661b::t_cac9014d8f6127 11-33,39,95-97,103-104,109,111-112,248,258-259,263,295,325,341,358-377,388,390-406,408,414-415,430,432-433 gitai:{"mixed_line_ranges":[{"Single":388},{"Single":390},{"Single":404}],"operations":[]}
+  s_baeb30e9d4661b::t_1fb15b906de46c 419
+  s_baeb30e9d4661b::t_eb7d5ff51f9603 444-468 gitai:{"mixed_line_ranges":[{"Range":[444,445]}],"operations":[]}
+src/sapi/cli/presentation.c
+  s_baeb30e9d4661b::t_1484a45723bdb6 460-466 gitai:{"mixed_line_ranges":[{"Range":[465,466]}],"operations":[]}
+src/sapi/cli/terminal.h
+  s_baeb30e9d4661b::t_af94e212c3b14a 18-24 gitai:{"mixed_line_ranges":[{"Range":[19,20]},{"Single":22},{"Single":24}],"operations":[]}
+src/sapi/cli/run.c
+  s_baeb30e9d4661b::t_bede22f75ae38d 21-25
+  s_baeb30e9d4661b::t_b5cc867337f7c5 632
+  s_baeb30e9d4661b::t_8a80b889991196 93-113,116,126
+  s_baeb30e9d4661b::t_7f8c91881dda21 574
+src/sapi/cli/CMakeLists.txt
+  s_baeb30e9d4661b::t_f69d2101e98f80 98-105,113-114
+tests/test_cli_terminal.cpp
+  s_baeb30e9d4661b::t_1aaad9d094e74e 101,105-106
+  s_baeb30e9d4661b::t_8c16ab85f12763 74-79
+  s_baeb30e9d4661b::t_9bf50d86f85393 114,368-412
+  s_baeb30e9d4661b::t_a4d60d45dcca96 115-174,183-189
+  s_baeb30e9d4661b::t_061cdacd34d08a 314-367
+  s_baeb30e9d4661b::t_1595690f2206f5 190-246,253-259
+  s_baeb30e9d4661b::t_6a72d3e549bc62 247-252
+  s_baeb30e9d4661b::t_586a087a154cd2 102-104
+  s_baeb30e9d4661b::t_70afe5ac54b628 175-182
+  s_baeb30e9d4661b::t_124313c9b7ee63 260-313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.4",
+  "base_commit_sha": "beb4157d954604c00e0560ee83d721e63699f4a7",
+  "prompts": {
+    "baeb30e9d4661be6": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a742118787fc0bd35c59554",
+        "model": "openrouter-2o__dev"
+      },
+      "human_author": "oxUnd",
+      "messages": [],
+      "total_additions": 784,
+      "total_deletions": 32,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  },
+  "attestation_metadata": {
+    "src/sapi/cli/presentation.c": [
+      {
+        "hash": "s_baeb30e9d4661b::t_1484a45723bdb6",
+        "line_ranges": [
+          {
+            "Range": [
+              460,
+              466
+            ]
+          }
+        ],
+        "mixed_line_ranges": [
+          {
+            "Range": [
+              465,
+              466
+            ]
+          }
+        ],
+        "operations": []
+      }
+    ],
+    "src/sapi/cli/terminal.c": [
+      {
+        "hash": "s_baeb30e9d4661b::t_cac9014d8f6127",
+        "line_ranges": [
+          {
+            "Range": [
+              11,
+              33
+            ]
+          },
+          {
+            "Single": 39
+          },
+          {
+            "Range": [
+              95,
+              97
+            ]
+          },
+          {
+            "Range": [
+              103,
+              104
+            ]
+          },
+          {
+            "Single": 109
+          },
+          {
+            "Range": [
+              111,
+              112
+            ]
+          },
+          {
+            "Single": 248
+          },
+          {
+            "Range": [
+              258,
+              259
+            ]
+          },
+          {
+            "Single": 263
+          },
+          {
+            "Single": 295
+          },
+          {
+            "Single": 325
+          },
+          {
+            "Single": 341
+          },
+          {
+            "Range": [
+              358,
+              377
+            ]
+          },
+          {
+            "Single": 388
+          },
+          {
+            "Range": [
+              390,
+              406
+            ]
+          },
+          {
+            "Single": 408
+          },
+          {
+            "Range": [
+              414,
+              415
+            ]
+          },
+          {
+            "Single": 430
+          },
+          {
+            "Range": [
+              432,
+              433
+            ]
+          }
+        ],
+        "mixed_line_ranges": [
+          {
+            "Single": 388
+          },
+          {
+            "Single": 390
+          },
+          {
+            "Single": 404
+          }
+        ],
+        "operations": []
+      },
+      {
+        "hash": "s_baeb30e9d4661b::t_eb7d5ff51f9603",
+        "line_ranges": [
+          {
+            "Range": [
+              444,
+              468
+            ]
+          }
+        ],
+        "mixed_line_ranges": [
+          {
+            "Range": [
+              444,
+              445
+            ]
+          }
+        ],
+        "operations": []
+      }
+    ],
+    "src/sapi/cli/terminal.h": [
+      {
+        "hash": "s_baeb30e9d4661b::t_af94e212c3b14a",
+        "line_ranges": [
+          {
+            "Range": [
+              18,
+              24
+            ]
+          }
+        ],
+        "mixed_line_ranges": [
+          {
+            "Range": [
+              19,
+              20
+            ]
+          },
+          {
+            "Single": 22
+          },
+          {
+            "Single": 24
+          }
+        ],
+        "operations": []
+      }
+    ]
+  },
+  "remote_transcripts": {}
+}
