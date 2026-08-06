@@ -2,6 +2,7 @@
 #define CLI_INTERNAL_H
 
 #include "sapi/cli/cli.h"
+#include "sapi/cli/ui_event.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/buf.h"
@@ -60,6 +61,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <poll.h>
 
 #ifdef HAVE_READLINE
 #include <readline/readline.h>

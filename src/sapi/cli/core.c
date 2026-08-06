@@ -242,6 +242,8 @@ void cli_shutdown(struct cli_context *ctx)
 		return;
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
+	(void)cli_ui_drain(ctx);
 	cli_presentation_cleanup(ctx);
+	cli_ui_cleanup(ctx);
 	log_info("cli shutdown complete");
 }

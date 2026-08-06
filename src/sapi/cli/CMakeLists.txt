@@ -10,6 +10,7 @@ add_library(morph-cli STATIC
 	presentation.c
 	run.c
 	scheduler.c
+	ui_event.c
 	commands/ext.c
 	commands/mcp.c
 	commands/media.c

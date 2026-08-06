@@ -25,6 +25,32 @@ void cli_sigint_handler(int sig)
 #ifdef HAVE_READLINE
 
 static struct cli_context *g_comp_ctx;
+static char *g_readline_ready_input;
+
+static void cli_readline_line_ready(char *input)
+{
+	struct cli_context *ctx = g_comp_ctx;
+
+	if (!ctx) {
+		free(input);
+		return;
+	}
+	if (!input) {
+		ctx->running = 0;
+		return;
+	}
+	free(g_readline_ready_input);
+	g_readline_ready_input = input;
+}
+
+static void cli_readline_drain_ui(struct cli_context *ctx)
+{
+	printf("\r\033[2K");
+	fflush(stdout);
+	(void)cli_ui_drain(ctx);
+	rl_on_new_line();
+	rl_forced_update_display();
+}
 
 static int cli_readline_insert_newline(int count, int key)
 {
@@ -271,29 +297,78 @@ void cli_run(struct cli_context *ctx)
 
 #ifdef HAVE_READLINE
 	using_history();
+	int callback_installed = 1;
+
 	g_comp_ctx = ctx;
+	g_readline_ready_input = NULL;
 	rl_attempted_completion_function = cmd_completion;
 	cli_readline_configure();
+	rl_callback_handler_install(cli_input_prompt(),
+				    cli_readline_line_ready);
 	while (ctx->running) {
-		cli_cancel_state_reset();
-		char *input = readline(cli_input_prompt());
-		if (!input) {
-			if (cli_sigint_received) {
-				cli_sigint_received = 0;
+		struct pollfd fds[2];
+		int nfds = 1;
+		int wake_fd = cli_ui_wake_fd(ctx);
+		int rc;
+
+		fds[0].fd = STDIN_FILENO;
+		fds[0].events = POLLIN;
+		fds[0].revents = 0;
+		if (wake_fd >= 0) {
+			fds[1].fd = wake_fd;
+			fds[1].events = POLLIN;
+			fds[1].revents = 0;
+			nfds = 2;
+		}
+		rc = poll(fds, (nfds_t)nfds, -1);
+		if (rc < 0) {
+			if (errno == EINTR) {
+				if (cli_sigint_received) {
+					cli_sigint_received = 0;
+					rl_replace_line("", 0);
+					rl_on_new_line();
+					rl_forced_update_display();
+				}
 				continue;
 			}
-			if (feof(stdin))
-				break;
-			clearerr(stdin);
-			printf("\n");
-			continue;
+			CMD_ERROR("input polling failed: %s", strerror(errno));
+			break;
 		}
-		if (input[0] != '\0') {
-			add_history(input);
-			cli_handle_command(ctx, input);
+		if (nfds == 2 && (fds[1].revents & POLLIN))
+			cli_readline_drain_ui(ctx);
+		if (fds[0].revents & (POLLIN | POLLHUP)) {
+			cli_cancel_state_reset();
+			rl_callback_read_char();
+			if (g_readline_ready_input) {
+				char *input = g_readline_ready_input;
+
+				g_readline_ready_input = NULL;
+				rl_callback_handler_remove();
+				callback_installed = 0;
+				printf("\r\033[2K");
+				fflush(stdout);
+				if (input[0] != '\0') {
+					add_history(input);
+					(void)cli_handle_command(ctx, input);
+					(void)cli_ui_drain(ctx);
+				}
+				free(input);
+				if (ctx->running) {
+					rl_callback_handler_install(
+						cli_input_prompt(),
+						cli_readline_line_ready);
+					callback_installed = 1;
+				}
+			}
 		}
-		free(input);
 	}
+	if (g_readline_ready_input) {
+		free(g_readline_ready_input);
+		g_readline_ready_input = NULL;
+	}
+	if (callback_installed)
+		rl_callback_handler_remove();
+	g_comp_ctx = NULL;
 #else
 	morph_buf_t input;
 	if (morph_buf_init(&input, BUFSIZ) != 0)
@@ -301,6 +376,7 @@ void cli_run(struct cli_context *ctx)
 	while (ctx->running) {
 		int complete = 0;
 
+		(void)cli_ui_drain(ctx);
 		morph_buf_clear(&input);
 		while (!complete) {
 			size_t len;
@@ -353,6 +429,7 @@ void cli_run(struct cli_context *ctx)
 		}
 		if (input.len > 0)
 			cli_handle_command(ctx, morph_buf_cstr(&input));
+		(void)cli_ui_drain(ctx);
 	}
 	morph_buf_cleanup(&input);
 #endif

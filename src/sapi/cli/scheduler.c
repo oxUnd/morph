@@ -64,18 +64,8 @@ static void cli_task_notification(const struct notification *notification,
 	struct cli_context *ctx = user_data;
 	if (!notification)
 		return;
-	if (ctx &&
-	    ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
-		flockfile(stdout);
-		printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " %s\n",
-		       notification->title);
-		if (notification->body && notification->body[0])
-			printf("%s\n", notification->body);
-		printf(ANSI_DIM "stored in /inbox as #%lld" ANSI_RESET "\n",
-		       (long long)notification->id);
-		fflush(stdout);
-		funlockfile(stdout);
-	}
+	if (ctx && cli_ui_post_notification(ctx, notification) != 0)
+		log_warn("failed to queue task notification");
 }
 
 void cli_process_due_tasks(struct cli_context *ctx)

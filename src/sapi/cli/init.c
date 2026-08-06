@@ -50,6 +50,11 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	rc = cli_presentation_init(ctx);
 	if (rc != 0)
 		return rc;
+	rc = cli_ui_init(ctx);
+	if (rc != 0) {
+		cli_presentation_cleanup(ctx);
+		return rc;
+	}
 	(void)cli_commands_init();
 	memset(&options, 0, sizeof(options));
 	options.config_path = config_path ? config_path : default_config_path;
@@ -80,6 +85,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.create_new_session = 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
+		cli_ui_cleanup(ctx);
 		cli_presentation_cleanup(ctx);
 		return rc;
 	}
