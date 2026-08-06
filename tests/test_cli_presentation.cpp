@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
+#include "sapi/cli/terminal.h"
 #include "agent/react.h"
 #include "event/event.h"
 #include "http/client.h"
@@ -34,12 +35,14 @@ protected:
 		ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
+		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
 	}
 
 	void TearDown() override
 	{
 		cli_presentation_cleanup(&ctx);
+		cli_terminal_cleanup(&ctx);
 		cli_set_color_enabled(1);
 	}
 
@@ -512,21 +515,18 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 	cJSON_Delete(thinking);
 }
 
-TEST_F(CliPresentationTest, PreparingPromptStopsStatusSpinner)
+TEST_F(CliPresentationTest, PreparingPromptClearsLiveStatus)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	ctx.status_visible = 1;
-	ctx.status_spin.style = SPIN_STYLE_SHIMMER;
 
 	testing::internal::CaptureStdout();
-	spin_start(&ctx.status_spin, SPIN_STATE_THINKING, "Running tool…");
-	ASSERT_EQ(ctx.status_spin.running, 1);
+	cli_terminal_live_set(&ctx, "Running tool…");
+	ASSERT_EQ(cli_terminal_live_active(&ctx), 1);
 	cli_presentation_prepare_prompt(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_EQ(ctx.status_spin.running, 0);
-	EXPECT_EQ(ctx.status_visible, 0);
-	EXPECT_NE(output.find("\033[K"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_NE(output.find("Running tool…"), std::string::npos);
 }
 
 TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)

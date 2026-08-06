@@ -17,14 +17,7 @@
 
 static void presentation_clear_status(struct cli_context *ctx)
 {
-	if (!ctx || !ctx->status_visible)
-		return;
-	if (ctx->status_spin_initialized && ctx->status_spin.running)
-		spin_cancel(&ctx->status_spin);
-	else
-		printf("\r\033[2K");
-	fflush(stdout);
-	ctx->status_visible = 0;
+	cli_terminal_live_clear(ctx);
 }
 
 static void presentation_status(struct cli_context *ctx, const char *text)
@@ -38,15 +31,7 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	}
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
-	presentation_clear_status(ctx);
-	if (isatty(STDOUT_FILENO) && cli_color_enabled()) {
-		ctx->status_spin.style = SPIN_STYLE_SHIMMER;
-		spin_start(&ctx->status_spin, SPIN_STATE_THINKING, text);
-		ctx->status_visible = 1;
-	} else {
-		printf("• %s\n", text);
-	}
-	fflush(stdout);
+	cli_terminal_live_set(ctx, text);
 }
 
 void cli_presentation_prepare_prompt(struct cli_context *ctx)
@@ -1000,19 +985,12 @@ int cli_presentation_init(struct cli_context *ctx)
 
 	if (!ctx)
 		MORPH_RETURN(-EINVAL);
-	spin_init(&ctx->status_spin, stdout);
-	ctx->status_spin_initialized = 1;
 	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
-	if (rc != 0) {
-		spin_destroy(&ctx->status_spin);
-		ctx->status_spin_initialized = 0;
+	if (rc != 0)
 		return rc;
-	}
 	rc = morph_buf_init(&ctx->markdown_stream_text, BUFSIZ);
 	if (rc != 0) {
 		morph_buf_cleanup(&ctx->event_stream);
-		spin_destroy(&ctx->status_spin);
-		ctx->status_spin_initialized = 0;
 		return rc;
 	}
 	rc = morph_strmap_init(&ctx->rendered_artifacts,
@@ -1020,8 +998,6 @@ int cli_presentation_init(struct cli_context *ctx)
 	if (rc != 0) {
 		morph_buf_cleanup(&ctx->markdown_stream_text);
 		morph_buf_cleanup(&ctx->event_stream);
-		spin_destroy(&ctx->status_spin);
-		ctx->status_spin_initialized = 0;
 		return rc;
 	}
 	rc = morph_strmap_init(&ctx->announced_artifacts,
@@ -1030,8 +1006,6 @@ int cli_presentation_init(struct cli_context *ctx)
 		morph_strmap_cleanup(&ctx->rendered_artifacts);
 		morph_buf_cleanup(&ctx->markdown_stream_text);
 		morph_buf_cleanup(&ctx->event_stream);
-		spin_destroy(&ctx->status_spin);
-		ctx->status_spin_initialized = 0;
 		return rc;
 	}
 	return 0;
@@ -1050,7 +1024,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 	ctx->event_stream_complete = 0;
 	ctx->event_stream_visible = 0;
 	ctx->final_rendered = 0;
-	ctx->status_visible = 0;
+	cli_terminal_live_clear(ctx);
 	ctx->mcp_tree_active = 0;
 	ctx->mcp_tree_server[0] = '\0';
 }
@@ -1070,10 +1044,6 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	morph_buf_cleanup(&ctx->event_stream);
 	morph_strmap_cleanup(&ctx->rendered_artifacts);
 	morph_strmap_cleanup(&ctx->announced_artifacts);
-	if (ctx->status_spin_initialized) {
-		spin_destroy(&ctx->status_spin);
-		ctx->status_spin_initialized = 0;
-	}
 }
 
 int cli_presentation_event(struct cli_context *ctx,

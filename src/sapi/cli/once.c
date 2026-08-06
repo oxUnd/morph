@@ -101,8 +101,13 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 		if (saved_stdout >= 0)
 			(void)dup2(STDERR_FILENO, STDOUT_FILENO);
 	}
-	(void)cli_handle_command(ctx, prompt);
-	(void)cli_ui_drain(ctx);
+	cli_turn_begin(ctx);
+	{
+		int turn_rc = cli_handle_command(ctx, prompt);
+
+		(void)cli_ui_drain(ctx);
+		cli_turn_finish(ctx, turn_rc);
+	}
 	if (saved_stdout >= 0) {
 		fflush(stdout);
 		(void)dup2(saved_stdout, STDOUT_FILENO);

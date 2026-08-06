@@ -13,6 +13,24 @@ static void cli_img_annotate_resume(void *user_data)
 	fflush(stdout);
 }
 
+struct cli_credit_warning {
+	struct cli_context *ctx;
+	int64_t credits;
+	int daily_limit;
+};
+
+static int cli_credit_warning_on_owner(void *opaque)
+{
+	struct cli_credit_warning *warning = opaque;
+
+	cli_terminal_history_begin(warning->ctx);
+	printf(ANSI_YELLOW "credits warning: %lld / %d today"
+	       ANSI_RESET "\n", (long long)warning->credits,
+	       warning->daily_limit);
+	cli_terminal_history_end(warning->ctx);
+	return 0;
+}
+
 static void cli_usage_observer(const struct model_usage *usage,
 			       void *user_data)
 {
@@ -29,9 +47,15 @@ static void cli_usage_observer(const struct model_usage *usage,
 		return;
 	if (runtime_credit_summary_today_get(ctx->runtime, &today) == 0 &&
 	    today.credits > config->credits.daily_limit) {
-		printf(ANSI_YELLOW "credits warning: %lld / %d today"
-		       ANSI_RESET "\n", (long long)today.credits,
-		       config->credits.daily_limit);
+		struct cli_credit_warning warning = {
+			ctx, today.credits, config->credits.daily_limit,
+		};
+
+		if (ctx->ui)
+			(void)cli_ui_call_owner(
+				ctx, cli_credit_warning_on_owner, &warning);
+		else
+			(void)cli_credit_warning_on_owner(&warning);
 	}
 }
 
@@ -47,12 +71,18 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	ctx->presentation_mode = mode;
 	ctx->event_cb = cli_event_callback;
 	ctx->event_user_data = ctx;
-	rc = cli_presentation_init(ctx);
+	rc = cli_terminal_init(ctx, stdout, STDOUT_FILENO);
 	if (rc != 0)
 		return rc;
+	rc = cli_presentation_init(ctx);
+	if (rc != 0) {
+		cli_terminal_cleanup(ctx);
+		return rc;
+	}
 	rc = cli_ui_init(ctx);
 	if (rc != 0) {
 		cli_presentation_cleanup(ctx);
+		cli_terminal_cleanup(ctx);
 		return rc;
 	}
 	(void)cli_commands_init();
@@ -87,6 +117,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	if (rc != 0) {
 		cli_ui_cleanup(ctx);
 		cli_presentation_cleanup(ctx);
+		cli_terminal_cleanup(ctx);
 		return rc;
 	}
 

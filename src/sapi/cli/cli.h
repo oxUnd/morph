@@ -4,7 +4,6 @@
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "util/buf.h"
-#include "util/spin.h"
 #include "util/strmap.h"
 #include <stdio.h>
 
@@ -17,10 +16,12 @@ enum cli_presentation_mode {
 struct morph_md_kitty;
 struct cli_cancel_monitor;
 struct cli_ui;
+struct cli_terminal;
 
 struct cli_context {
 	struct runtime *runtime;
 	struct cli_ui *ui;
+	struct cli_terminal *terminal;
 	enum cli_presentation_mode presentation_mode;
 	int running;
 	int session_auto_named;
@@ -32,8 +33,6 @@ struct cli_context {
 	int event_stream_complete;
 	int event_stream_visible;
 	int final_rendered;
-	int status_visible;
-	int status_spin_initialized;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
 	int mcp_tree_active;
@@ -43,7 +42,6 @@ struct cli_context {
 	morph_buf_t markdown_stream_text;
 	morph_strmap_t rendered_artifacts;
 	morph_strmap_t announced_artifacts;
-	struct spin_context status_spin;
 	struct morph_md_kitty *markdown_stream;
 	int trace_json;
 	int pending_db_restore;

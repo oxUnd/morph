@@ -271,6 +271,28 @@ static void cli_stop_cancel_monitor(struct cli_context *ctx)
 	cli_cancel_monitor_stop(monitor);
 }
 
+struct cli_ask_user_call {
+	struct cli_context *ctx;
+	const char *question;
+	const char *const *choices;
+	int choices_count;
+	const char *selection_mode;
+	int min_choices;
+	int max_choices;
+	char ***answers;
+	int *answers_count;
+};
+
+static int cli_ask_user_on_owner(void *opaque)
+{
+	struct cli_ask_user_call *call = opaque;
+
+	return cli_ask_user_callback(call->question, call->choices,
+		call->choices_count, call->selection_mode, call->min_choices,
+		call->max_choices, call->answers, call->answers_count,
+		call->ctx);
+}
+
 int cli_ask_user_callback(const char *question,
 			  const char *const *choices,
 			  int choices_count,
@@ -285,6 +307,14 @@ int cli_ask_user_callback(const char *question,
 	int multi = selection_mode && strcmp(selection_mode, "multi") == 0;
 	if (!ctx || !answers || !answers_count)
 		return -EINVAL;
+	if (ctx->ui && !cli_ui_is_owner(ctx)) {
+		struct cli_ask_user_call call = {
+			ctx, question, choices, choices_count, selection_mode,
+			min_choices, max_choices, answers, answers_count,
+		};
+
+		return cli_ui_call_owner(ctx, cli_ask_user_on_owner, &call);
+	}
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
@@ -483,6 +513,32 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 	return v;
 }
 
+struct cli_hitl_call {
+	struct cli_context *ctx;
+	const char *tool_name;
+	const char *tool_args;
+};
+
+static int cli_hitl_on_owner(void *opaque)
+{
+	struct cli_hitl_call *call = opaque;
+
+	return (int)hitl_approval_callback(
+		call->tool_name, call->tool_args, call->ctx);
+}
+
+struct cli_operation_call {
+	struct cli_context *ctx;
+	const struct tool_operation *operation;
+};
+
+static int cli_operation_on_owner(void *opaque)
+{
+	struct cli_operation_call *call = opaque;
+
+	return (int)operation_approval_callback(call->operation, call->ctx);
+}
+
 enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data)
@@ -490,6 +546,12 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	struct cli_context *ctx = user_data;
 	if (!ctx)
 		return HITL_DENY;
+	if (ctx->ui && !cli_ui_is_owner(ctx)) {
+		struct cli_hitl_call call = {ctx, tool_name, tool_args};
+
+		return (enum hitl_verdict)cli_ui_call_owner(
+			ctx, cli_hitl_on_owner, &call);
+	}
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
@@ -594,6 +656,12 @@ enum tool_operation_verdict operation_approval_callback(
 	struct cli_context *ctx = user_data;
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
+	if (ctx->ui && !cli_ui_is_owner(ctx)) {
+		struct cli_operation_call call = {ctx, op};
+
+		return (enum tool_operation_verdict)cli_ui_call_owner(
+			ctx, cli_operation_on_owner, &call);
+	}
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);

@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
+#include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
 #include "event/event.h"
 
@@ -25,6 +26,7 @@ protected:
 		ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
+		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
 		ASSERT_EQ(cli_ui_init(&ctx), 0);
 	}
@@ -33,9 +35,24 @@ protected:
 	{
 		cli_ui_cleanup(&ctx);
 		cli_presentation_cleanup(&ctx);
+		cli_terminal_cleanup(&ctx);
 		cli_set_color_enabled(1);
 	}
 };
+
+struct cli_owner_call_data {
+	struct cli_context *ctx;
+	int ran_on_owner;
+};
+
+static int cli_owner_call(void *opaque)
+{
+	cli_owner_call_data *data =
+		static_cast<cli_owner_call_data *>(opaque);
+
+	data->ran_on_owner = cli_ui_is_owner(data->ctx);
+	return 73;
+}
 
 TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 {
@@ -201,4 +218,22 @@ TEST_F(CliUiTest, NonOwnerCannotDrainPresentationState)
 	});
 	worker.join();
 	EXPECT_EQ(drain_rc, -EPERM);
+}
+
+TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
+{
+	cli_owner_call_data data{&ctx, 0};
+	int call_rc = 0;
+	std::thread worker([&] {
+		call_rc = cli_ui_call_owner(&ctx, cli_owner_call, &data);
+	});
+
+	struct pollfd fd{};
+	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.events = POLLIN;
+	ASSERT_EQ(poll(&fd, 1, 1000), 1);
+	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	worker.join();
+	EXPECT_EQ(call_rc, 73);
+	EXPECT_EQ(data.ran_on_owner, 1);
 }

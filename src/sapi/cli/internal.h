@@ -2,6 +2,7 @@
 #define CLI_INTERNAL_H
 
 #include "sapi/cli/cli.h"
+#include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
 #include "util/log.h"
 #include "util/file.h"
@@ -114,6 +115,8 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 			  int *handled);
 
 int cli_event_callback(const struct morph_event *ev, void *user_data);
+void cli_turn_begin(struct cli_context *ctx);
+void cli_turn_finish(struct cli_context *ctx, int turn_rc);
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
 void cli_presentation_finish(struct cli_context *ctx);

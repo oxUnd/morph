@@ -52,6 +52,7 @@ set(TEST_SOURCES
 	test_agent_ui.cpp
 	test_cli_list.cpp
 	test_cli_presentation.cpp
+	test_cli_terminal.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
 	test_kitty_protocol.cpp
