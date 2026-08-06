@@ -30,7 +30,6 @@ pkg_check_modules(HARFBUZZ REQUIRED harfbuzz)
 pkg_check_modules(VIPS REQUIRED vips)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
-pkg_check_modules(LIBUV REQUIRED libuv)
 
 include(FetchContent)
 

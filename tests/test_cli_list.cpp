@@ -194,6 +194,22 @@ TEST(CliListTest, SessionCommandShowsUpdatedTimeWithoutCurrentLabel)
 	(void)std::filesystem::remove_all(directory, error);
 }
 
+TEST(CliListTest, HelpUsesTreeLayout)
+{
+	ASSERT_EQ(cli_commands_init(), 0);
+
+	testing::internal::CaptureStdout();
+	cli_print_help();
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Commands"), std::string::npos);
+	EXPECT_NE(output.find("├"), std::string::npos);
+	EXPECT_NE(output.find("└"), std::string::npos);
+	EXPECT_NE(output.find("Core"), std::string::npos);
+	EXPECT_NE(output.find("/help"), std::string::npos);
+	cli_command_registry_clear();
+}
+
 TEST(CliListTest, SyncQueriesUseGroupedTrees)
 {
 	char pattern[] = "/tmp/morph-cli-sync-XXXXXX";

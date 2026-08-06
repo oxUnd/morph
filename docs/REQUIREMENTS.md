@@ -550,7 +550,7 @@ LLM 调用前:
 | 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
 | Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
 | UTF-8 | sheredom/utf8.h + 项目扩展 | ✓ | vendored header-only + `src/util/utf8.c` |
-| 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需 libuv |
+| 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需额外事件循环库 |
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
 | 沙箱（Linux） | libseccomp + setrlimit + landlock（可选） | ✓ | 主平台 |

@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/list_ui.h"
 
 #define CLI_COMMAND_MAX 128
 
@@ -95,45 +96,64 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 
 void cli_print_help(void)
 {
-	const char *category = NULL;
+	int group_start = 0;
+	int columns = cli_list_columns();
 
 	printf("\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
-	for (int i = 0; i < num_commands; i++) {
-		const char *desc = commands[i].desc;
-		int alias_end = i;
-		for (int j = i + 1; j < num_commands; j++) {
-			if (commands[j].handler != commands[i].handler)
-				break;
-			alias_end = j;
+	while (group_start < num_commands) {
+		const char *category = command_categories[group_start];
+		int group_end = group_start;
+		int item_count = 0;
+		int group_last;
+
+		while (group_end < num_commands &&
+		       ((category == NULL && command_categories[group_end] == NULL) ||
+			(category != NULL && command_categories[group_end] != NULL &&
+			 strcmp(category, command_categories[group_end]) == 0)))
+			group_end++;
+		for (int i = group_start; i < group_end; ) {
+			int alias_end = i;
+			while (alias_end + 1 < group_end &&
+			       commands[alias_end + 1].handler == commands[i].handler)
+				alias_end++;
+			item_count++;
+			i = alias_end + 1;
 		}
-		if (alias_end > i && strncmp(desc, "Alias for", 9) == 0)
-			desc = commands[alias_end].desc;
-		const char *pri = commands[i].name;
-		const char *alt = (alias_end > i) ? commands[i + 1].name : NULL;
-		char display[128];
-		if (alt) {
-			const char *shorter = (strlen(pri) <= strlen(alt)) ? pri : alt;
-			const char *longer  = (strlen(pri) <= strlen(alt)) ? alt : pri;
-			const char *s = shorter + 1;
-			const char *l = longer + 1;
-			size_t slen = strlen(s);
-			if (strncmp(s, l, slen) == 0)
-				snprintf(display, sizeof(display), "/%s[%s]", s, l + slen);
-			else
-				snprintf(display, sizeof(display), "%s,%s", shorter, longer);
-		} else {
-			snprintf(display, sizeof(display), "%s", pri);
+		group_last = group_end == num_commands;
+		cli_list_group(category ? category : "Other", item_count,
+			       group_last);
+		for (int i = group_start, item = 0; i < group_end; ) {
+			const char *desc = commands[i].desc;
+			int alias_end = i;
+			char display[128];
+			while (alias_end + 1 < group_end &&
+			       commands[alias_end + 1].handler == commands[i].handler)
+				alias_end++;
+			if (alias_end > i && strncmp(desc, "Alias for", 9) == 0)
+				desc = commands[alias_end].desc;
+			if (alias_end > i) {
+				const char *pri = commands[i].name;
+				const char *alt = commands[i + 1].name;
+				const char *shorter = strlen(pri) <= strlen(alt) ? pri : alt;
+				const char *longer = strlen(pri) <= strlen(alt) ? alt : pri;
+				const char *s = shorter + 1;
+				const char *l = longer + 1;
+				size_t slen = strlen(s);
+				if (strncmp(s, l, slen) == 0)
+					snprintf(display, sizeof(display), "/%s[%s]", s,
+						 l + slen);
+				else
+					snprintf(display, sizeof(display), "%s,%s", shorter,
+						 longer);
+			} else {
+				snprintf(display, sizeof(display), "%s", commands[i].name);
+			}
+			item++;
+			cli_list_item(group_last ? "  " : "│ ", item == item_count,
+				      "", display, desc, 22, columns);
+			i = alias_end + 1;
 		}
-		if (!category || !command_categories[i] ||
-		    strcmp(category, command_categories[i]) != 0) {
-			category = command_categories[i];
-			printf("\n" ANSI_DIM "%s" ANSI_RESET "\n",
-			       category ? category : "Other");
-		}
-		printf("  ");
-		print_padded(display, 22);
-		printf("%s\n", desc);
-		i = alias_end;
+		group_start = group_end;
 	}
 	printf("\n" ANSI_DIM "Use /help <command> for details."
 	       ANSI_RESET "\n");

@@ -1094,8 +1094,7 @@ int sandbox_apply_seccomp(unsigned int permissions)
 
 	/*
 	 * Event-driven I/O syscalls (epoll, eventfd, timerfd).
-	 * Needed by libuv, libevent, libev, and any modern runtime
-	 * that uses Linux's event loop primitives.
+	 * Needed by runtimes that use Linux's event loop primitives.
 	 */
 #ifdef __NR_epoll_create1
 	rc = fb_allow(&fb, __NR_epoll_create1);  if (rc < 0) goto fail;
