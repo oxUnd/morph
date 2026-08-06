@@ -155,6 +155,7 @@ struct react_context {
 	char *tool_fail_args;
 	int tool_fail_count;
 	int empty_round_count;
+	int steer_count;
 	volatile sig_atomic_t cancelled;
 	struct morph_cancel_token cancel_token;
 	struct arena *turn_arena;

@@ -133,6 +133,31 @@ static const char *schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
 	"ON memory_procedures(session_id, updated_at);";
 
+static const char *sub_agent_schema_sql =
+	"CREATE TABLE IF NOT EXISTS sub_agent_tasks ("
+	"task_id TEXT PRIMARY KEY,"
+	"parent_session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,"
+	"child_session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,"
+	"agent_name TEXT NOT NULL,"
+	"description TEXT NOT NULL,"
+	"mode TEXT NOT NULL,"
+	"status INTEGER NOT NULL,"
+	"result TEXT,"
+	"error_code INTEGER NOT NULL DEFAULT 0,"
+	"iterations INTEGER NOT NULL DEFAULT 0,"
+	"started_at INTEGER NOT NULL,"
+	"ended_at INTEGER NOT NULL DEFAULT 0);"
+	"CREATE TABLE IF NOT EXISTS sub_agent_events ("
+	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	"task_id TEXT NOT NULL REFERENCES sub_agent_tasks(task_id) "
+	"ON DELETE CASCADE,"
+	"event_json TEXT NOT NULL,"
+	"created_at INTEGER NOT NULL);"
+	"CREATE INDEX IF NOT EXISTS idx_sub_agent_tasks_parent "
+	"ON sub_agent_tasks(parent_session_id,started_at);"
+	"CREATE INDEX IF NOT EXISTS idx_sub_agent_events_task "
+	"ON sub_agent_events(task_id,id);";
+
 static const char *history_schema_sql =
 	"CREATE TABLE IF NOT EXISTS model_history_items ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -416,6 +441,9 @@ int db_init_schema(struct db *db)
 	if (!db || !db->handle)
 		return -EINVAL;
 	int rc = db_exec(db, schema_sql);
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db, sub_agent_schema_sql);
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, history_schema_sql);

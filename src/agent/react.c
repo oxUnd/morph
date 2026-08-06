@@ -1085,6 +1085,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->tool_timeout_seconds = 300;
 	ctx->tool_max_retries = 3;
 	ctx->empty_round_count = 0;
+	ctx->steer_count = 0;
 	ctx->guardrail_retry_count = 0;
 	react_set_state(ctx, REACT_STATE_INIT);
 	ctx->outcome = REACT_OUTCOME_NONE;
@@ -2739,7 +2740,9 @@ static int react_record_tool_timeout(struct react_context *ctx,
 					 ctx->turn_arena);
 }
 
-static int react_poll_cancel(struct react_context *ctx, int iteration);
+static int react_drain_actions(struct react_context *ctx,
+			       morph_array_t *messages, int iteration,
+			       int *prompt_count);
 
 static int react_join_tool_calls(struct react_context *ctx,
 				 struct chat_response *response,
@@ -2953,28 +2956,88 @@ static int react_join_tool_calls(struct react_context *ctx,
 
 	react_cleanup_tool_calls(slots, num_tools);
 
-	if (react_poll_cancel(ctx, -1))
+	if (react_drain_actions(ctx, messages, -1, NULL))
 		return 1;
 	return ctx->state == REACT_STATE_DONE ||
 		ctx->state == REACT_STATE_ABORT;
 }
 
-static int react_poll_cancel(struct react_context *ctx, int iteration)
+static int react_drain_actions(struct react_context *ctx,
+			       morph_array_t *messages, int iteration,
+			       int *prompt_count)
 {
+	struct react_action act;
+	int got;
+
+	if (prompt_count)
+		*prompt_count = 0;
 	if (react_sigint_flag) {
 		ctx->cancelled = 1;
 		morph_cancel_token_cancel(&ctx->cancel_token);
 		react_sigint_flag = 0;
 	}
 
-	if (ctx->action_drain_fn) {
-		struct react_action act;
-		int got = ctx->action_drain_fn(ctx->action_drain_user_data,
-					       &act, 0);
-		if (got > 0 && strcmp(act.type, "cancel") == 0) {
+	while (ctx->action_drain_fn) {
+		cJSON *payload;
+		cJSON *text;
+		struct chat_message *message;
+		struct message_list *history_message;
+		const char *content;
+
+		memset(&act, 0, sizeof(act));
+		got = ctx->action_drain_fn(ctx->action_drain_user_data,
+					   &act, 0);
+		if (got <= 0)
+			break;
+		if (act.type && strcmp(act.type, "cancel") == 0) {
 			ctx->cancelled = 1;
 			morph_cancel_token_cancel(&ctx->cancel_token);
+			continue;
 		}
+		if (!messages || !act.type || strcmp(act.type, "prompt") != 0 ||
+		    !act.payload_json)
+			continue;
+		payload = cJSON_Parse(act.payload_json);
+		text = cJSON_IsObject(payload) ?
+			cJSON_GetObjectItemCaseSensitive(payload, "text") : NULL;
+		content = cJSON_IsString(text) ? text->valuestring : NULL;
+		if (!content || !content[0]) {
+			cJSON_Delete(payload);
+			continue;
+		}
+		message = react_push_chat_message(messages);
+		if (!message) {
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+					 "internal_error");
+			return 1;
+		}
+		message->role = arena_strdup(ctx->turn_arena, "user");
+		message->content = arena_strdup(ctx->turn_arena, content);
+		if (!message->role || !message->content) {
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+					 "internal_error");
+			return 1;
+		}
+		ctx->steer_count++;
+		if (agent_history_record_user_steer(ctx, content,
+						    ctx->steer_count) != 0) {
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					 ctx->history_error,
+					 "history_persistence_error");
+			return 1;
+		}
+		history_message = msg_list_create(ctx->session_arena, "user",
+			content, tokenizer_count(ctx->tokenizer, content));
+		if (history_message)
+			msg_list_append(&ctx->messages, history_message);
+		react_emit_text_event(ctx, MORPH_EVENT_REACT,
+			"react.user.steer", "end", "requirement added", content);
+		if (prompt_count)
+			(*prompt_count)++;
+		cJSON_Delete(payload);
 	}
 
 	if (!ctx->cancelled)
@@ -3237,7 +3300,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	http_set_cancel_token(&ctx->cancel_token);
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
-		if (react_poll_cancel(ctx, iteration))
+		if (react_drain_actions(ctx, &messages, iteration, NULL))
 			break;
 
 		react_set_state(ctx, REACT_STATE_THINKING);
@@ -3278,6 +3341,19 @@ int react_run(struct react_context *ctx, const char *user_input,
 					   user_data)) {
 			chat_response_free(&response);
 			break;
+		}
+		{
+			int prompt_count = 0;
+
+			if (react_drain_actions(ctx, &messages, iteration,
+						&prompt_count)) {
+				chat_response_free(&response);
+				break;
+			}
+			if (prompt_count > 0 && response.tool_call_count == 0) {
+				chat_response_free(&response);
+				continue;
+			}
 		}
 
 		if (response.tool_call_count > 0 &&

@@ -81,6 +81,20 @@ TEST_F(DatabaseTest, SchemaTables) {
 	EXPECT_GE(tables, 6);
 }
 
+TEST_F(DatabaseTest, SubAgentSessionTablesExist) {
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	for (const char *name : { "sub_agent_tasks", "sub_agent_events" }) {
+		sqlite3_stmt *stmt = nullptr;
+		ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+			"SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+			-1, &stmt, nullptr), SQLITE_OK);
+		sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+		EXPECT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+		sqlite3_finalize(stmt);
+	}
+}
+
 TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 	int rc = db_open(&db, db_path);
 	EXPECT_EQ(rc, 0);

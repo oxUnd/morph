@@ -157,6 +157,9 @@ int runtime_context_prepare_turn(struct runtime_context *ctx,
 
 	if (!ctx || !request || request->session_id <= 0)
 		return -EINVAL;
+	if (ctx->sub_agents)
+		(void)sub_agent_runtime_set_parent_session(ctx->sub_agents,
+						   request->session_id);
 	memset(&scope, 0, sizeof(scope));
 	scope.db = &ctx->database;
 	scope.config = &ctx->config;

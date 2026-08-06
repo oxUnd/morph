@@ -318,6 +318,7 @@ static int runtime_start_components(struct runtime *runtime)
 	if (runtime->options.enable_sub_agents) {
 		memset(&profile, 0, sizeof(profile));
 		profile.config = &ctx->config;
+		profile.db = &ctx->database;
 		profile.tools = &ctx->tools;
 		profile.models = &models;
 		profile.event_cb = runtime->options.event_cb;

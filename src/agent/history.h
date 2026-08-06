@@ -26,6 +26,8 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena);
 int agent_history_record_user(struct react_context *ctx, const char *content);
+int agent_history_record_user_steer(struct react_context *ctx,
+				    const char *content, int sequence);
 int agent_history_record_assistant(struct react_context *ctx,
 				   const char *content);
 int agent_history_record_tool_calls(struct react_context *ctx,

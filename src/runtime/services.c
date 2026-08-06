@@ -149,6 +149,44 @@ int runtime_session_count_all(struct runtime *runtime)
 	return runtime ? session_count(&runtime->context.database) : 0;
 }
 
+int runtime_sub_agent_list(struct runtime *runtime,
+			   int64_t parent_session_id,
+			   struct sub_agent_task_info **out, int *count)
+{
+	if (!runtime || !runtime->context.sub_agents)
+		return -ENOENT;
+	return sub_agent_runtime_list_tasks(runtime->context.sub_agents,
+					    parent_session_id, out, count);
+}
+
+void runtime_sub_agent_list_free(struct sub_agent_task_info *tasks,
+				 int count)
+{
+	sub_agent_runtime_free_task_list(tasks, count);
+}
+
+int runtime_sub_agent_select(struct runtime *runtime, const char *task_id)
+{
+	if (!runtime || !runtime->context.sub_agents)
+		return -ENOENT;
+	return sub_agent_runtime_select_task(runtime->context.sub_agents,
+					     task_id);
+}
+
+int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
+			     char ***events, int *count)
+{
+	if (!runtime || !runtime->context.sub_agents)
+		return -ENOENT;
+	return sub_agent_runtime_task_events(runtime->context.sub_agents,
+					     task_id, events, count);
+}
+
+void runtime_sub_agent_events_free(char **events, int count)
+{
+	sub_agent_runtime_free_events(events, count);
+}
+
 int runtime_session_find_ref(struct runtime *runtime, const char *ref,
 			     struct session *out)
 {

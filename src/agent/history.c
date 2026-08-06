@@ -421,6 +421,29 @@ int agent_history_record_user(struct react_context *ctx, const char *content)
 	return history_store(ctx, &item);
 }
 
+int agent_history_record_user_steer(struct react_context *ctx,
+				    const char *content, int sequence)
+{
+	char key[192];
+	struct model_history_insert item = {
+		.session_id = ctx ? ctx->history_session_id : 0,
+		.turn_id = ctx ? ctx->turn_id : NULL,
+		.kind = "user_message",
+		.role = "user",
+		.content = content ? content : "",
+		.token_count = ctx && ctx->tokenizer ?
+			tokenizer_count(ctx->tokenizer, content ? content : "") : 0,
+		.active = 1,
+	};
+
+	if (sequence <= 0)
+		return -EINVAL;
+	snprintf(key, sizeof(key), "turn:%s:user:steer:%d",
+		ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown", sequence);
+	item.idempotency_key = key;
+	return history_store(ctx, &item);
+}
+
 int agent_history_record_assistant(struct react_context *ctx,
 				   const char *content)
 {

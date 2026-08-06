@@ -710,6 +710,7 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 		return -ENOMEM;
 	sub_agent_runtime_set_event_callback(rt, profile->event_cb,
 					     profile->event_user_data);
+	(void)sub_agent_runtime_set_storage(rt, profile->db);
 	rc = sub_agent_runtime_load_config(rt, &profile->config->sub_agents);
 	if (rc < 0)
 		return rc;

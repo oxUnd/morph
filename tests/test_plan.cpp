@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <memory>
 #include <string>
 
 static std::string selected_plan_id(cJSON *data)
@@ -101,36 +102,36 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 
 TEST(PlanTool, RegistryScopedPlanRegistry)
 {
-	struct tool_registry tools1;
-	struct tool_registry tools2;
+	auto tools1 = std::make_unique<struct tool_registry>();
+	auto tools2 = std::make_unique<struct tool_registry>();
 	struct plan_registry plans1;
 	struct plan_registry plans2;
 
-	tool_registry_init(&tools1);
-	tool_registry_init(&tools2);
+	tool_registry_init(tools1.get());
+	tool_registry_init(tools2.get());
 	plan_registry_init(&plans1);
 	plan_registry_init(&plans2);
-	ASSERT_EQ(plan_tool_init(&tools1, &plans1, nullptr), 0);
-	ASSERT_EQ(plan_tool_init(&tools2, &plans2, nullptr), 0);
+	ASSERT_EQ(plan_tool_init(tools1.get(), &plans1, nullptr), 0);
+	ASSERT_EQ(plan_tool_init(tools2.get(), &plans2, nullptr), 0);
 
 	struct tool_result result1;
 	struct tool_result result2;
 	tool_result_init(&result1);
 	tool_result_init(&result2);
 
-	ASSERT_EQ(tool_exec(&tools1, "plan",
+	ASSERT_EQ(tool_exec(tools1.get(), "plan",
 		"{\"command\":\"create\",\"name\":\"first\","
 		"\"steps\":[\"one\"]}", &result1), 0);
-	ASSERT_EQ(tool_exec(&tools2, "plan",
+	ASSERT_EQ(tool_exec(tools2.get(), "plan",
 		"{\"command\":\"create\",\"name\":\"second\","
 		"\"steps\":[\"two\"]}", &result2), 0);
 
 	tool_result_clear(&result1);
 	tool_result_clear(&result2);
 
-	ASSERT_EQ(tool_exec(&tools1, "plan",
+	ASSERT_EQ(tool_exec(tools1.get(), "plan",
 		"{\"command\":\"list\"}", &result1), 0);
-	ASSERT_EQ(tool_exec(&tools2, "plan",
+	ASSERT_EQ(tool_exec(tools2.get(), "plan",
 		"{\"command\":\"list\"}", &result2), 0);
 
 	ASSERT_NE(result1.text.data, nullptr);
@@ -148,8 +149,8 @@ TEST(PlanTool, RegistryScopedPlanRegistry)
 
 	tool_result_cleanup(&result1);
 	tool_result_cleanup(&result2);
-	tool_registry_cleanup(&tools1);
-	tool_registry_cleanup(&tools2);
+	tool_registry_cleanup(tools1.get());
+	tool_registry_cleanup(tools2.get());
 }
 
 TEST(PlanTool, PlanIdSelectsDuplicateNames)

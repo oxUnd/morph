@@ -19,6 +19,7 @@ extern "C" {
 #include "runtime/sync.h"
 #include "runtime/services.h"
 #include "agent/tools/img_annotate.h"
+#include "agent/sub_agent.h"
 #include "session.h"
 #include <stdint.h>
 
@@ -143,7 +144,17 @@ int runtime_permission_revoke_id(struct runtime *runtime, int64_t id,
 int runtime_permission_revoke_subject(struct runtime *runtime,
 				      const char *subject, int *deleted);
 int runtime_permission_clear(struct runtime *runtime, int all_projects,
-			     int *deleted);
+				     int *deleted);
+
+int runtime_sub_agent_list(struct runtime *runtime,
+			   int64_t parent_session_id,
+			   struct sub_agent_task_info **out, int *count);
+void runtime_sub_agent_list_free(struct sub_agent_task_info *tasks,
+				 int count);
+int runtime_sub_agent_select(struct runtime *runtime, const char *task_id);
+int runtime_sub_agent_events(struct runtime *runtime, const char *task_id,
+			     char ***events, int *count);
+void runtime_sub_agent_events_free(char **events, int count);
 
 
 #ifdef __cplusplus

@@ -7,6 +7,8 @@
 #include "models/llm.h"
 #include "config/config.h"
 #include "util/file.h"
+#include "event/event.h"
+#include "session.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdlib.h>
@@ -987,11 +989,13 @@ TEST_F(SubAgentTest, CancelActiveCancelsAll) {
 	react_active_pop(ctx2);
 	react_context_destroy(ctx1);
 	react_context_destroy(ctx2);
+	react_sigint_flag = 0;
 }
 
 TEST_F(SubAgentTest, CancelActiveEmpty) {
 	EXPECT_EQ(react_active_count(), 0);
 	EXPECT_NO_FATAL_FAILURE(react_cancel_active());
+	react_sigint_flag = 0;
 }
 
 /* ====================================================== */
@@ -1104,4 +1108,200 @@ TEST_F(SubAgentTest, ReactContextSubAgentDepthSet) {
 	react_reset(ctx);
 	/* reset does NOT clear sub_agent_depth (it's a structural property) */
 	react_context_destroy(ctx);
+}
+
+/* ====================================================== */
+/* 15. Child sessions and isolated presentation events    */
+/* ====================================================== */
+
+static void configure_worker(struct sub_agent_runtime *rt,
+			     const char *name)
+{
+	struct config_sub_agents sa_cfg = {};
+
+	strncpy(sa_cfg.entries[0].name, name,
+		sizeof(sa_cfg.entries[0].name) - 1);
+	strncpy(sa_cfg.entries[0].description, "Persistent worker",
+		sizeof(sa_cfg.entries[0].description) - 1);
+	sa_cfg.entries[0].max_iterations = 8;
+	sa_cfg.count = 1;
+	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
+}
+
+TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
+	char db_path[256];
+	struct db db = {};
+	struct session parent = {};
+	struct sub_agent_task_info *tasks = nullptr;
+	struct session *visible_sessions = nullptr;
+	struct morph_event_recorder recorder = {};
+	char **events = nullptr;
+	char *result = nullptr;
+	int task_count = 0;
+	int event_count = 0;
+	int visible_count = 0;
+	int64_t child_session_id = 0;
+
+	snprintf(db_path, sizeof(db_path), "/tmp/ma_sa_session_%d.db",
+		 getpid());
+	std::remove(db_path);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "parent", "mock-model", &parent), 0);
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	configure_worker(rt, "dev");
+	ASSERT_EQ(sub_agent_runtime_set_storage(rt, &db), 0);
+	ASSERT_EQ(sub_agent_runtime_set_parent_session(rt, parent.id), 0);
+	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+	ASSERT_EQ(sub_agent_runtime_set_event_callback(
+		rt, morph_event_recorder_cb, &recorder), 0);
+
+	ASSERT_EQ(sub_agent_invoke_sync(rt, &rt->entries[0],
+		"implement isolation", &result), 0);
+	ASSERT_NE(result, nullptr);
+	EXPECT_STREQ(result, "sub-agent result");
+	free(result);
+	ASSERT_EQ(sub_agent_runtime_list_tasks(rt, parent.id, &tasks,
+		&task_count), 0);
+	ASSERT_EQ(task_count, 1);
+	EXPECT_EQ(tasks[0].status, SUB_AGENT_COMPLETED);
+	EXPECT_GT(tasks[0].child_session_id, 0);
+	child_session_id = tasks[0].child_session_id;
+	EXPECT_GE(message_count(&db, tasks[0].child_session_id), 2);
+	ASSERT_EQ(session_list(&db, &visible_sessions, &visible_count, 0,
+			       nullptr), 0);
+	ASSERT_EQ(visible_count, 1);
+	EXPECT_EQ(visible_sessions[0].id, parent.id);
+	free(visible_sessions);
+	ASSERT_EQ(sub_agent_runtime_task_events(rt, tasks[0].id, &events,
+		&event_count), 0);
+	EXPECT_GT(event_count, 0);
+	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
+		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+		ASSERT_NE(event, nullptr);
+		cJSON *type = cJSON_GetObjectItem(event, "type");
+		ASSERT_TRUE(cJSON_IsString(type));
+		EXPECT_STRNE(type->valuestring, "react");
+		EXPECT_STRNE(type->valuestring, "tool");
+		cJSON_Delete(event);
+	}
+	sub_agent_runtime_free_events(events, event_count);
+	sub_agent_runtime_free_task_list(tasks, task_count);
+	morph_event_recorder_cleanup(&recorder);
+	sub_agent_runtime_destroy(rt);
+	ASSERT_EQ(session_delete(&db, parent.id), 0);
+	struct session deleted_child = {};
+	EXPECT_EQ(session_get_by_id(&db, child_session_id, &deleted_child),
+		  -ENOENT);
+	db_close(&db);
+	std::remove(db_path);
+}
+
+TEST_F(SubAgentTest, SelectedChildStreamsOnlyItsOwnEvents) {
+	struct morph_event_recorder recorder = {};
+	char *task_id = nullptr;
+	char *result = nullptr;
+	enum sub_agent_task_status status = SUB_AGENT_PENDING;
+	int react_events = 0;
+
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	configure_worker(rt, "dev");
+	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
+	ASSERT_EQ(sub_agent_runtime_set_event_callback(
+		rt, morph_event_recorder_cb, &recorder), 0);
+	ASSERT_EQ(sub_agent_delegate(rt, "dev", "stream this task", &task_id),
+		0);
+	ASSERT_NE(task_id, nullptr);
+	ASSERT_EQ(sub_agent_runtime_select_task(rt, task_id), 0);
+	for (int i = 0; i < 100; i++) {
+		ASSERT_EQ(sub_agent_check_status(rt, task_id, &status, &result), 0);
+		free(result);
+		result = nullptr;
+		if (status == SUB_AGENT_COMPLETED || status == SUB_AGENT_FAILED)
+			break;
+		usleep(10000);
+	}
+	EXPECT_EQ(status, SUB_AGENT_COMPLETED);
+	for (size_t i = 0; i < morph_event_recorder_count(&recorder); i++) {
+		cJSON *event = cJSON_Parse(morph_event_recorder_get(&recorder, i));
+		cJSON *type = cJSON_GetObjectItem(event, "type");
+		if (cJSON_IsString(type) && strcmp(type->valuestring, "react") == 0)
+			react_events++;
+		cJSON_Delete(event);
+	}
+	EXPECT_GT(react_events, 0);
+	free(task_id);
+	morph_event_recorder_cleanup(&recorder);
+	sub_agent_runtime_destroy(rt);
+}
+
+TEST_F(SubAgentTest, PersistedTasksSurviveRuntimeRecreation) {
+	char db_path[256];
+	struct db db = {};
+	struct session parent = {};
+	struct sub_agent_task_info *tasks = nullptr;
+	char *result = nullptr;
+	int count = 0;
+
+	snprintf(db_path, sizeof(db_path), "/tmp/ma_sa_restore_%d.db",
+		 getpid());
+	std::remove(db_path);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "parent", "mock-model", &parent), 0);
+	struct sub_agent_runtime *first = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	configure_worker(first, "review");
+	ASSERT_EQ(sub_agent_runtime_set_storage(first, &db), 0);
+	ASSERT_EQ(sub_agent_runtime_set_parent_session(first, parent.id), 0);
+	ASSERT_EQ(sub_agent_invoke_sync(first, &first->entries[0],
+		"review implementation", &result), 0);
+	free(result);
+	sub_agent_runtime_destroy(first);
+
+	struct sub_agent_runtime *second = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	configure_worker(second, "review");
+	ASSERT_EQ(sub_agent_runtime_set_storage(second, &db), 0);
+	ASSERT_EQ(sub_agent_runtime_list_tasks(second, parent.id, &tasks,
+		&count), 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(tasks[0].agent_name, "review");
+	EXPECT_EQ(tasks[0].status, SUB_AGENT_COMPLETED);
+	sub_agent_runtime_free_task_list(tasks, count);
+	sub_agent_runtime_destroy(second);
+	db_close(&db);
+	std::remove(db_path);
+}
+
+TEST_F(SubAgentTest, FanoutKeepsEachChildEventStreamSeparate) {
+	const char *descriptions[] = { "implement", "review", "test" };
+	char *merged = nullptr;
+	struct sub_agent_task_info *tasks = nullptr;
+	int count = 0;
+
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	configure_worker(rt, "worker");
+	ASSERT_EQ(sub_agent_fanout(rt, "worker", descriptions, 3,
+		SUB_AGENT_MERGE_RAW, &merged), 0);
+	free(merged);
+	ASSERT_EQ(sub_agent_runtime_list_tasks(rt, 0, &tasks, &count), 0);
+	ASSERT_EQ(count, 3);
+	for (int i = 0; i < count; i++) {
+		char **events = nullptr;
+		int event_count = 0;
+
+		EXPECT_EQ(tasks[i].status, SUB_AGENT_COMPLETED);
+		ASSERT_EQ(sub_agent_runtime_task_events(rt, tasks[i].id,
+			&events, &event_count), 0);
+		EXPECT_GT(event_count, 0);
+		sub_agent_runtime_free_events(events, event_count);
+	}
+	sub_agent_runtime_free_task_list(tasks, count);
+	sub_agent_runtime_destroy(rt);
 }

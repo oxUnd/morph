@@ -4,6 +4,8 @@
 #include "tokenizer.h"
 #include "compress.h"
 #include "system_prompt.h"
+#include "turn.h"
+#include "session.h"
 #include "models/llm.h"
 #include "http/client.h"
 #include "util/log.h"
@@ -14,6 +16,7 @@
 #include "util/file.h"
 #include "cJSON.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -34,6 +37,270 @@ static void generate_task_id(int seq, char *out, size_t out_size)
 	snprintf(out, out_size, "sa_%d", seq);
 }
 
+static _Thread_local int sub_agent_thread_depth;
+
+struct sub_agent_event_sink {
+	struct sub_agent_runtime *rt;
+	struct sub_agent_task *task;
+};
+
+static struct sub_agent_task *sub_agent_task_find_locked(
+	struct sub_agent_runtime *rt, const char *task_id)
+{
+	if (!rt || !task_id)
+		return NULL;
+	for (int i = 0; i < rt->task_count; i++) {
+		if (strcmp(rt->tasks[i].id, task_id) == 0)
+			return &rt->tasks[i];
+	}
+	return NULL;
+}
+
+static int sub_agent_storage_exec_task(struct sub_agent_runtime *rt,
+				       struct sub_agent_task *task,
+				       const char *agent_name)
+{
+	struct session child;
+	sqlite3_stmt *stmt = NULL;
+	char name[256];
+	int rc;
+
+	if (!rt || !task || !agent_name)
+		return -EINVAL;
+	if (!rt->db || !rt->db->handle || task->parent_session_id <= 0)
+		return 0;
+	snprintf(name, sizeof(name), "agent_%lld_%s_%s",
+		 (long long)task->parent_session_id, agent_name, task->id);
+	pthread_mutex_lock(&rt->storage_mutex);
+	rc = session_create(rt->db, name,
+		rt->default_llm ? rt->default_llm->model_id : "", &child);
+	if (rc != 0) {
+		pthread_mutex_unlock(&rt->storage_mutex);
+		return rc;
+	}
+	(void)session_ensure_display_id(rt->db, &child);
+	task->child_session_id = child.id;
+	rc = sqlite3_prepare_v2(rt->db->handle,
+		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,"
+		"child_session_id,agent_name,description,mode,status,"
+		"started_at) VALUES(?,?,?,?,?,?,?,?)", -1, &stmt, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, task->id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 2, task->parent_session_id);
+		sqlite3_bind_int64(stmt, 3, task->child_session_id);
+		sqlite3_bind_text(stmt, 4, agent_name, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 5, task->task_description, -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, task->mode, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 7, (int)task->status);
+		sqlite3_bind_int64(stmt, 8, task->started_at_ms);
+		rc = sqlite3_step(stmt);
+	}
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE) {
+		(void)session_delete(rt->db, child.id);
+		task->child_session_id = 0;
+	}
+	pthread_mutex_unlock(&rt->storage_mutex);
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
+static void sub_agent_storage_update_task(struct sub_agent_runtime *rt,
+					  struct sub_agent_task *task)
+{
+	sqlite3_stmt *stmt = NULL;
+	char *result = NULL;
+	enum sub_agent_task_status status;
+	int error_code;
+	int iteration_count;
+	int64_t ended_at_ms;
+
+	if (!rt || !task || !rt->db || !rt->db->handle ||
+	    task->child_session_id <= 0)
+		return;
+	pthread_mutex_lock(&task->mutex);
+	status = task->status;
+	error_code = task->error_code;
+	iteration_count = task->iteration_count;
+	ended_at_ms = task->ended_at_ms;
+	if (task->result)
+		result = strdup(task->result);
+	pthread_mutex_unlock(&task->mutex);
+	pthread_mutex_lock(&rt->storage_mutex);
+	if (sqlite3_prepare_v2(rt->db->handle,
+		"UPDATE sub_agent_tasks SET status=?,result=?,error_code=?,"
+		"iterations=?,ended_at=? WHERE task_id=?", -1, &stmt,
+		NULL) == SQLITE_OK) {
+		sqlite3_bind_int(stmt, 1, (int)status);
+		if (result)
+			sqlite3_bind_text(stmt, 2, result, -1,
+					  SQLITE_TRANSIENT);
+		else
+			sqlite3_bind_null(stmt, 2);
+		sqlite3_bind_int(stmt, 3, error_code);
+		sqlite3_bind_int(stmt, 4, iteration_count);
+		sqlite3_bind_int64(stmt, 5, ended_at_ms);
+		sqlite3_bind_text(stmt, 6, task->id, -1, SQLITE_TRANSIENT);
+		(void)sqlite3_step(stmt);
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&rt->storage_mutex);
+	free(result);
+}
+
+static struct sub_agent_task *sub_agent_task_create(
+	struct sub_agent_runtime *rt, struct sub_agent_entry *entry,
+	const char *description, const char *mode, int joined, int *error)
+{
+	struct sub_agent_task *task;
+	char *task_description;
+	int rc;
+
+	if (error)
+		*error = 0;
+	if (!rt || !entry || !description || !mode) {
+		if (error)
+			*error = -EINVAL;
+		return NULL;
+	}
+	task_description = strdup(description);
+	if (!task_description) {
+		if (error)
+			*error = -ENOMEM;
+		return NULL;
+	}
+	pthread_mutex_lock(&rt->mutex);
+	if (rt->task_count >= SUB_AGENT_TASK_MAX) {
+		pthread_mutex_unlock(&rt->mutex);
+		free(task_description);
+		if (error)
+			*error = -ENOSPC;
+		return NULL;
+	}
+	task = &rt->tasks[rt->task_count++];
+	memset(task, 0, sizeof(*task));
+	generate_task_id(rt->next_task_id++, task->id, sizeof(task->id));
+	task->agent_index = (int)(entry - rt->entries);
+	task->parent_session_id = rt->parent_session_id;
+	strncpy(task->mode, mode, sizeof(task->mode) - 1);
+	task->task_description = task_description;
+	task->status = SUB_AGENT_PENDING;
+	task->joined = joined;
+	task->started_at_ms = now_ms();
+	pthread_mutex_init(&task->mutex, NULL);
+	rc = morph_array_init(&task->events, MORPH_ARRAY_INIT_CAP,
+			      sizeof(char *));
+	if (rc == 0) {
+		task->events_initialized = 1;
+	} else {
+		pthread_mutex_destroy(&task->mutex);
+		free(task->task_description);
+		memset(task, 0, sizeof(*task));
+		rt->task_count--;
+	}
+	if (rc != 0) {
+		pthread_mutex_unlock(&rt->mutex);
+		if (error)
+			*error = rc;
+		return NULL;
+	}
+	rc = sub_agent_storage_exec_task(rt, task, entry->cfg.name);
+	if (rc != 0) {
+		morph_array_cleanup(&task->events);
+		pthread_mutex_destroy(&task->mutex);
+		free(task->task_description);
+		memset(task, 0, sizeof(*task));
+		rt->task_count--;
+		pthread_mutex_unlock(&rt->mutex);
+		if (error)
+			*error = rc;
+		return NULL;
+	}
+	pthread_mutex_unlock(&rt->mutex);
+	return task;
+}
+
+static int sub_agent_child_event(const struct morph_event *ev,
+				 void *user_data)
+{
+	struct sub_agent_event_sink *sink = user_data;
+	struct sub_agent_runtime *rt;
+	struct sub_agent_task *task;
+	struct morph_event scoped;
+	cJSON *data;
+	char *json;
+	char *active;
+	int forward = 0;
+	int rc = 0;
+
+	if (!sink || !sink->rt || !sink->task || !ev)
+		return -EINVAL;
+	rt = sink->rt;
+	task = sink->task;
+	data = ev->data ? cJSON_Duplicate(ev->data, 1) : cJSON_CreateObject();
+	if (!data)
+		return -ENOMEM;
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "task_id");
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "agent");
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "session_id");
+	cJSON_DeleteItemFromObjectCaseSensitive(data, "parent_session_id");
+	cJSON_AddStringToObject(data, "task_id", task->id);
+	cJSON_AddStringToObject(data, "agent",
+		rt->entries[task->agent_index].cfg.name);
+	cJSON_AddNumberToObject(data, "session_id",
+		(double)task->child_session_id);
+	cJSON_AddNumberToObject(data, "parent_session_id",
+		(double)task->parent_session_id);
+	scoped = *ev;
+	scoped.data = data;
+	json = morph_event_to_json_string(&scoped);
+	if (json) {
+		pthread_mutex_lock(&task->mutex);
+		if (task->events_initialized) {
+			char **slot = morph_array_push(&task->events);
+			if (slot)
+				*slot = json;
+			else
+				free(json);
+		} else {
+			free(json);
+		}
+		pthread_mutex_unlock(&task->mutex);
+	}
+	if (rt->db && rt->db->handle && task->child_session_id > 0) {
+		sqlite3_stmt *stmt = NULL;
+		char *stored = morph_event_to_json_string(&scoped);
+
+		if (stored) {
+			pthread_mutex_lock(&rt->storage_mutex);
+			if (sqlite3_prepare_v2(rt->db->handle,
+				"INSERT INTO sub_agent_events(task_id,event_json,"
+				"created_at) VALUES(?,?,?)", -1, &stmt,
+				NULL) == SQLITE_OK) {
+				sqlite3_bind_text(stmt, 1, task->id, -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, 2, stored, -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_int64(stmt, 3, now_ms());
+				(void)sqlite3_step(stmt);
+			}
+			sqlite3_finalize(stmt);
+			pthread_mutex_unlock(&rt->storage_mutex);
+			free(stored);
+		}
+	}
+	pthread_mutex_lock(&rt->mutex);
+	active = rt->active_task_id;
+	forward = active[0] && strcmp(active, task->id) == 0;
+	pthread_mutex_unlock(&rt->mutex);
+	if (forward && rt->event_cb)
+		rc = morph_event_emit(rt->event_cb, rt->event_user_data, &scoped);
+	cJSON_Delete(data);
+	return rc;
+}
+
 struct sub_agent_runtime *
 sub_agent_runtime_create(struct tool_registry *parent_tools,
 			 struct model *default_llm,
@@ -49,6 +316,9 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 	rt->compress = compress;
 	rt->depth = 0;
 	rt->next_task_id = 0;
+	pthread_mutex_init(&rt->mutex, NULL);
+	pthread_mutex_init(&rt->storage_mutex, NULL);
+	rt->mutexes_initialized = 1;
 	{
 		char *home = file_expand_path("~/.morph/log");
 		if (home) {
@@ -68,17 +338,29 @@ void sub_agent_runtime_destroy(struct sub_agent_runtime *rt)
 	for (int i = 0; i < rt->entry_count; i++)
 		free(rt->entries[i].system_prompt);
 	for (int i = 0; i < rt->task_count; i++) {
+		if (!rt->tasks[i].joined &&
+		    strcmp(rt->tasks[i].mode, "delegate") == 0) {
+			pthread_mutex_lock(&rt->tasks[i].mutex);
+			if (rt->tasks[i].child_ctx)
+				react_cancel(rt->tasks[i].child_ctx);
+			pthread_mutex_unlock(&rt->tasks[i].mutex);
+			pthread_join(rt->tasks[i].thread, NULL);
+			rt->tasks[i].joined = 1;
+		}
+		if (rt->tasks[i].events_initialized) {
+			char **event;
+
+			morph_array_foreach(event, &rt->tasks[i].events, char *)
+				free(*event);
+			morph_array_cleanup(&rt->tasks[i].events);
+		}
 		pthread_mutex_destroy(&rt->tasks[i].mutex);
 		free(rt->tasks[i].task_description);
 		free(rt->tasks[i].result);
-		if (rt->tasks[i].child_ctx && !rt->tasks[i].joined) {
-			struct tool_registry *ct = rt->tasks[i].child_ctx->tools;
-			react_cancel(rt->tasks[i].child_ctx);
-			pthread_join(rt->tasks[i].thread, NULL);
-			react_context_destroy(rt->tasks[i].child_ctx);
-			tool_registry_cleanup(ct);
-			free(ct);
-		}
+	}
+	if (rt->mutexes_initialized) {
+		pthread_mutex_destroy(&rt->storage_mutex);
+		pthread_mutex_destroy(&rt->mutex);
 	}
 	free(rt);
 }
@@ -91,6 +373,83 @@ int sub_agent_runtime_set_event_callback(struct sub_agent_runtime *rt,
 	rt->event_cb = cb;
 	rt->event_user_data = user;
 	return 0;
+}
+
+int sub_agent_runtime_set_storage(struct sub_agent_runtime *rt,
+				  struct db *db)
+{
+	sqlite3_stmt *stmt = NULL;
+	int next_id = 0;
+
+	if (!rt)
+		return -EINVAL;
+	rt->db = db;
+	if (!db || !db->handle)
+		return 0;
+	pthread_mutex_lock(&rt->storage_mutex);
+	if (sqlite3_prepare_v2(db->handle,
+		"SELECT COALESCE(MAX(CAST(SUBSTR(task_id,4) AS INTEGER)),"
+		"-1)+1 FROM sub_agent_tasks", -1, &stmt, NULL) == SQLITE_OK &&
+	    sqlite3_step(stmt) == SQLITE_ROW)
+		next_id = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&rt->storage_mutex);
+	pthread_mutex_lock(&rt->mutex);
+	if (next_id > rt->next_task_id)
+		rt->next_task_id = next_id;
+	pthread_mutex_unlock(&rt->mutex);
+	return 0;
+}
+
+int sub_agent_runtime_set_parent_session(struct sub_agent_runtime *rt,
+					 int64_t session_id)
+{
+	if (!rt || session_id < 0)
+		return -EINVAL;
+	pthread_mutex_lock(&rt->mutex);
+	rt->parent_session_id = session_id;
+	pthread_mutex_unlock(&rt->mutex);
+	return 0;
+}
+
+int sub_agent_runtime_select_task(struct sub_agent_runtime *rt,
+				  const char *task_id)
+{
+	int found = 0;
+
+	if (!rt)
+		return -EINVAL;
+	if (!task_id || !task_id[0]) {
+		pthread_mutex_lock(&rt->mutex);
+		rt->active_task_id[0] = '\0';
+		pthread_mutex_unlock(&rt->mutex);
+		return 0;
+	}
+	pthread_mutex_lock(&rt->mutex);
+	found = sub_agent_task_find_locked(rt, task_id) != NULL;
+	pthread_mutex_unlock(&rt->mutex);
+	if (!found && rt->db && rt->db->handle) {
+		sqlite3_stmt *stmt = NULL;
+
+		pthread_mutex_lock(&rt->storage_mutex);
+		if (sqlite3_prepare_v2(rt->db->handle,
+			"SELECT 1 FROM sub_agent_tasks WHERE task_id=?", -1,
+			&stmt, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, task_id, -1,
+					  SQLITE_TRANSIENT);
+			found = sqlite3_step(stmt) == SQLITE_ROW;
+		}
+		sqlite3_finalize(stmt);
+		pthread_mutex_unlock(&rt->storage_mutex);
+	}
+	if (found) {
+		pthread_mutex_lock(&rt->mutex);
+		strncpy(rt->active_task_id, task_id,
+			sizeof(rt->active_task_id) - 1);
+		rt->active_task_id[sizeof(rt->active_task_id) - 1] = '\0';
+		pthread_mutex_unlock(&rt->mutex);
+	}
+	return found ? 0 : -ENOENT;
 }
 
 static int sub_agent_emit_background_event(struct sub_agent_runtime *rt,
@@ -283,9 +642,9 @@ sub_agent_create_context(struct sub_agent_runtime *rt,
 		return NULL;
 	}
 	child->llm_model = entry->llm;
-	react_set_event_callback(child, rt->event_cb, rt->event_user_data);
+	react_set_event_callback(child, NULL, NULL);
 	child->max_iterations = entry->cfg.max_iterations;
-	child->sub_agent_depth = rt->depth + 1;
+	child->sub_agent_depth = rt->depth + sub_agent_thread_depth + 1;
 	if (entry->system_prompt) {
 		free(child->system_prompt);
 		child->system_prompt = strdup(entry->system_prompt);
@@ -293,78 +652,144 @@ sub_agent_create_context(struct sub_agent_runtime *rt,
 	return child;
 }
 
-int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
-			  struct sub_agent_entry *entry,
-			  const char *task, char **result)
+static int sub_agent_run_task(struct sub_agent_runtime *rt,
+			      struct sub_agent_entry *entry,
+			      struct sub_agent_task *task, char **result)
 {
-	if (!rt || !entry || !task || !result)
+	struct sub_agent_event_sink sink;
+	struct react_context *child;
+	struct agent_session_runtime session_runtime;
+	struct agent_turn turn;
+	struct tool_registry *child_tools;
+	char *final_result = NULL;
+	int64_t start;
+	int64_t end;
+	int rc;
+
+	if (!rt || !entry || !task)
 		return -EINVAL;
-	if (rt->depth >= SUB_AGENT_MAX_DEPTH)
+	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
-	rt->depth++;
-	sub_agent_emit_background_event(rt, "background.started", "begin",
-					"sub-agent started",
-					entry->cfg.name, NULL, task, 0);
-	struct react_context *child =
-		sub_agent_create_context(rt, entry, task);
+	sub_agent_thread_depth++;
+	child = sub_agent_create_context(rt, entry, task->task_description);
 	if (!child) {
-		rt->depth--;
-		sub_agent_emit_background_event(rt, "background.failed",
-						"failed",
-						"sub-agent failed",
-						entry->cfg.name, NULL,
-						task, -ENOMEM);
+		sub_agent_thread_depth--;
 		MORPH_RETURN(-ENOMEM);
 	}
-	int64_t start = now_ms();
-	int rc = react_run(child, task, NULL, NULL);
-	int64_t end = now_ms();
+	sink.rt = rt;
+	sink.task = task;
+	react_set_event_callback(child, sub_agent_child_event, &sink);
+	pthread_mutex_lock(&task->mutex);
+	task->child_ctx = child;
+	task->status = SUB_AGENT_RUNNING;
+	pthread_mutex_unlock(&task->mutex);
+	sub_agent_storage_update_task(rt, task);
+
+	memset(&turn, 0, sizeof(turn));
+	memset(&session_runtime, 0, sizeof(session_runtime));
+	if (rt->db && task->child_session_id > 0) {
+		session_runtime.db = rt->db;
+		session_runtime.session_id = task->child_session_id;
+		session_runtime.react = child;
+		session_runtime.flags = AGENT_TURN_LOAD_HISTORY |
+			AGENT_TURN_SAVE_TRACE | AGENT_TURN_SAVE_MESSAGES |
+			AGENT_TURN_UPDATE_TOKENS;
+		(void)agent_turn_begin(&turn, &session_runtime,
+			&(struct agent_turn_input){
+				.model_input = task->task_description,
+				.stored_user_input = task->task_description,
+			});
+	}
+	start = now_ms();
+	rc = react_run(child, task->task_description, NULL, NULL);
+	end = now_ms();
+	if (turn.begun) {
+		int finish_rc = agent_turn_finish(&turn, NULL);
+
+		if (rc == 0 && finish_rc != 0)
+			rc = finish_rc;
+	}
+	if (rc == 0 && child->final_answer) {
+		if (entry->cfg.output_schema) {
+			rc = sub_agent_apply_output_schema(child->final_answer,
+				entry->cfg.output_schema, entry->llm,
+				&final_result);
+		} else {
+			final_result = strdup(child->final_answer);
+			if (!final_result)
+				rc = -ENOMEM;
+		}
+	} else if (rc < 0) {
+		final_result = strdup(morph_strerror(rc));
+	} else {
+		final_result = strdup("(no answer)");
+	}
 	{
 		struct sub_agent_trace_event ev = {0};
-		snprintf(ev.trace_id, sizeof(ev.trace_id), "sa_%d",
-			 rt->next_task_id++);
-		snprintf(ev.mode, sizeof(ev.mode), "tool");
+
+		strncpy(ev.trace_id, task->id, sizeof(ev.trace_id) - 1);
+		strncpy(ev.mode, task->mode, sizeof(ev.mode) - 1);
 		strncpy(ev.agent_name, entry->cfg.name,
 			sizeof(ev.agent_name) - 1);
 		ev.start_ms = start;
 		ev.end_ms = end;
 		ev.iteration_count = child->step_count;
-		if (child->final_answer) {
-			size_t preview_len = strlen(child->final_answer);
-			if (preview_len > 200)
-				preview_len = 200;
-			ev.result_preview = strndup(child->final_answer,
-						   preview_len);
-		}
+		if (final_result)
+			ev.result_preview = utf8_dup_clamped(final_result, 200);
 		sub_agent_trace_write(rt, &ev);
 		free(ev.result_preview);
 	}
-	if (rc == 0 && child->final_answer) {
-		if (entry->cfg.output_schema) {
-			rc = sub_agent_apply_output_schema(
-				child->final_answer,
-				entry->cfg.output_schema,
-				entry->llm, result);
-		} else {
-			*result = strdup(child->final_answer);
-		}
-	} else if (rc < 0) {
-		*result = strdup(morph_strerror(rc));
-	} else {
-		*result = strdup("(no answer)");
-	}
-	struct tool_registry *child_tools = child->tools;
+	child_tools = child->tools;
+	pthread_mutex_lock(&task->mutex);
+	task->child_ctx = NULL;
+	task->iteration_count = child->step_count;
+	pthread_mutex_unlock(&task->mutex);
 	react_context_destroy(child);
 	tool_registry_cleanup(child_tools);
 	free(child_tools);
-	rt->depth--;
+
+	pthread_mutex_lock(&task->mutex);
+	task->result = final_result;
+	task->error_code = rc < 0 ? rc : 0;
+	task->status = rc == 0 ? SUB_AGENT_COMPLETED :
+		(rc == -ECANCELED ? SUB_AGENT_CANCELLED : SUB_AGENT_FAILED);
+	task->ended_at_ms = end;
+	if (result)
+		*result = strdup(task->result ? task->result : "(no answer)");
+	pthread_mutex_unlock(&task->mutex);
+	sub_agent_storage_update_task(rt, task);
+	sub_agent_thread_depth--;
+	return rc;
+}
+
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
+			  struct sub_agent_entry *entry,
+			  const char *task, char **result)
+{
+	struct sub_agent_task *task_record;
+	int create_rc;
+	int rc;
+
+	if (!rt || !entry || !task || !result)
+		return -EINVAL;
+	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
+		MORPH_RETURN(-ELOOP);
+	task_record = sub_agent_task_create(rt, entry, task, "tool", 1,
+					    &create_rc);
+	if (!task_record)
+		MORPH_RETURN(create_rc);
+	sub_agent_emit_background_event(rt, "background.started", "begin",
+					"sub-agent started",
+					entry->cfg.name, task_record->id,
+					task, 0);
+	rc = sub_agent_run_task(rt, entry, task_record, result);
 	sub_agent_emit_background_event(rt,
 					rc == 0 ? "background.completed" :
 					"background.failed",
 					rc == 0 ? "end" : "failed",
 					rc == 0 ? "sub-agent completed" :
 					"sub-agent failed",
-					entry->cfg.name, NULL, task, rc);
+					entry->cfg.name, task_record->id, task, rc);
 	return rc;
 }
 
@@ -379,67 +804,15 @@ static void *delegate_thread_fn(void *arg)
 	struct delegate_thread_arg *da = arg;
 	struct sub_agent_runtime *rt = da->rt;
 	struct sub_agent_task *task = da->task;
+	int rc;
 
-	pthread_mutex_lock(&task->mutex);
-	task->status = SUB_AGENT_RUNNING;
-	pthread_mutex_unlock(&task->mutex);
 	sub_agent_emit_background_event(rt, "background.progress",
 					"progress",
 					"sub-agent delegate running",
 					da->entry->cfg.name, task->id,
 					task->task_description, 0);
 
-	rt->depth++;
-	struct react_context *child =
-		sub_agent_create_context(rt, da->entry,
-					 task->task_description);
-	if (!child) {
-		pthread_mutex_lock(&task->mutex);
-		task->status = SUB_AGENT_FAILED;
-		task->error_code = -ENOMEM;
-		task->result = strdup("failed to create sub-agent context");
-		pthread_mutex_unlock(&task->mutex);
-		rt->depth--;
-		sub_agent_emit_background_event(rt, "background.failed",
-						"failed",
-						"sub-agent delegate failed",
-						da->entry->cfg.name, task->id,
-						task->task_description,
-						-ENOMEM);
-		free(da);
-		return NULL;
-	}
-	task->child_ctx = child;
-
-	int64_t start = now_ms();
-	int rc = react_run(child, task->task_description, NULL, NULL);
-	int64_t end = now_ms();
-
-	pthread_mutex_lock(&task->mutex);
-	if (rc == 0 && child->final_answer) {
-		if (da->entry->cfg.output_schema) {
-			char *structured = NULL;
-			int src = sub_agent_apply_output_schema(
-				child->final_answer,
-				da->entry->cfg.output_schema,
-				da->entry->llm, &structured);
-			if (src == 0 && structured)
-				task->result = structured;
-			else
-				task->result = strdup(child->final_answer);
-		} else {
-			task->result = strdup(child->final_answer);
-		}
-		task->status = SUB_AGENT_COMPLETED;
-	} else if (rc == -ECANCELED) {
-		task->status = SUB_AGENT_CANCELLED;
-		task->result = strdup("cancelled");
-	} else {
-		task->status = SUB_AGENT_FAILED;
-		task->error_code = rc;
-		task->result = strdup(morph_strerror(rc));
-	}
-	pthread_mutex_unlock(&task->mutex);
+	rc = sub_agent_run_task(rt, da->entry, task, NULL);
 	sub_agent_emit_background_event(rt,
 					task->status == SUB_AGENT_COMPLETED ?
 					"background.completed" :
@@ -451,21 +824,6 @@ static void *delegate_thread_fn(void *arg)
 					"sub-agent delegate failed",
 					da->entry->cfg.name, task->id,
 					task->task_description, rc);
-
-	{
-		struct sub_agent_trace_event ev = {0};
-		snprintf(ev.trace_id, sizeof(ev.trace_id), "%s",
-			 task->id);
-		snprintf(ev.mode, sizeof(ev.mode), "delegate");
-		strncpy(ev.agent_name, da->entry->cfg.name,
-			sizeof(ev.agent_name) - 1);
-		ev.start_ms = start;
-		ev.end_ms = end;
-		ev.iteration_count = child->step_count;
-		sub_agent_trace_write(rt, &ev);
-	}
-
-	rt->depth--;
 	free(da);
 	return NULL;
 }
@@ -474,29 +832,34 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 		       const char *agent_name, const char *task,
 		       char **task_id_out)
 {
+	struct sub_agent_entry *entry;
+	struct sub_agent_task *t;
+	struct delegate_thread_arg *da;
+	int create_rc;
+	int rc;
+
 	if (!rt || !agent_name || !task)
 		return -EINVAL;
-	if (rt->depth >= SUB_AGENT_MAX_DEPTH)
+	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
-	if (rt->task_count >= SUB_AGENT_TASK_MAX)
-		MORPH_RETURN(-ENOSPC);
-	struct sub_agent_entry *entry = sub_agent_find(rt, agent_name);
+	entry = sub_agent_find(rt, agent_name);
 	if (!entry)
 		MORPH_RETURN(-ENOENT);
-	struct sub_agent_task *t = &rt->tasks[rt->task_count];
-	memset(t, 0, sizeof(*t));
-	pthread_mutex_init(&t->mutex, NULL);
-	generate_task_id(rt->next_task_id++, t->id, sizeof(t->id));
-	t->agent_index = (int)(entry - rt->entries);
-	t->task_description = strdup(task);
-	t->status = SUB_AGENT_PENDING;
+	t = sub_agent_task_create(rt, entry, task, "delegate", 0,
+				  &create_rc);
+	if (!t)
+		MORPH_RETURN(create_rc);
 	sub_agent_emit_background_event(rt, "background.started", "begin",
 					"sub-agent delegate started",
 					entry->cfg.name, t->id, task, 0);
-	struct delegate_thread_arg *da = calloc(1, sizeof(*da));
+	da = calloc(1, sizeof(*da));
 	if (!da) {
-		pthread_mutex_destroy(&t->mutex);
-		free(t->task_description);
+		pthread_mutex_lock(&t->mutex);
+		t->status = SUB_AGENT_FAILED;
+		t->error_code = -ENOMEM;
+		t->ended_at_ms = now_ms();
+		pthread_mutex_unlock(&t->mutex);
+		sub_agent_storage_update_task(rt, t);
 		sub_agent_emit_background_event(rt, "background.failed",
 						"failed",
 						"sub-agent delegate failed",
@@ -507,11 +870,15 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 	da->rt = rt;
 	da->entry = entry;
 	da->task = t;
-	int rc = pthread_create(&t->thread, NULL, delegate_thread_fn, da);
+	rc = pthread_create(&t->thread, NULL, delegate_thread_fn, da);
 	if (rc != 0) {
-		pthread_mutex_destroy(&t->mutex);
-		free(t->task_description);
 		free(da);
+		pthread_mutex_lock(&t->mutex);
+		t->status = SUB_AGENT_FAILED;
+		t->error_code = -rc;
+		t->ended_at_ms = now_ms();
+		pthread_mutex_unlock(&t->mutex);
+		sub_agent_storage_update_task(rt, t);
 		sub_agent_emit_background_event(rt, "background.failed",
 						"failed",
 						"sub-agent delegate failed",
@@ -519,7 +886,6 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 						-rc);
 		MORPH_RETURN(-rc);
 	}
-	rt->task_count++;
 	if (task_id_out)
 		*task_id_out = strdup(t->id);
 	return 0;
@@ -530,20 +896,20 @@ int sub_agent_check_status(struct sub_agent_runtime *rt,
 			   enum sub_agent_task_status *status_out,
 			   char **result_out)
 {
+	struct sub_agent_task *found;
+	enum sub_agent_task_status st;
+	char *res;
+
 	if (!rt || !task_id)
 		return -EINVAL;
-	struct sub_agent_task *found = NULL;
-	for (int i = 0; i < rt->task_count; i++) {
-		if (strcmp(rt->tasks[i].id, task_id) == 0) {
-			found = &rt->tasks[i];
-			break;
-		}
-	}
+	pthread_mutex_lock(&rt->mutex);
+	found = sub_agent_task_find_locked(rt, task_id);
+	pthread_mutex_unlock(&rt->mutex);
 	if (!found)
 		MORPH_RETURN(-ENOENT);
 	pthread_mutex_lock(&found->mutex);
-	enum sub_agent_task_status st = found->status;
-	char *res = found->result ? strdup(found->result) : NULL;
+	st = found->status;
+	res = found->result ? strdup(found->result) : NULL;
 	if ((st == SUB_AGENT_COMPLETED || st == SUB_AGENT_FAILED ||
 	     st == SUB_AGENT_CANCELLED) && !found->joined) {
 		found->joined = 1;
@@ -565,6 +931,232 @@ int sub_agent_check_status(struct sub_agent_runtime *rt,
 		*result_out = res;
 	else
 		free(res);
+	return 0;
+}
+
+void sub_agent_runtime_free_task_list(struct sub_agent_task_info *tasks,
+				      int count)
+{
+	if (!tasks)
+		return;
+	for (int i = 0; i < count; i++) {
+		free(tasks[i].description);
+		free(tasks[i].result);
+	}
+	free(tasks);
+}
+
+static int sub_agent_task_info_from_runtime(struct sub_agent_runtime *rt,
+					    int64_t parent_session_id,
+					    morph_array_t *items)
+{
+	if (!rt || !items)
+		return -EINVAL;
+	pthread_mutex_lock(&rt->mutex);
+	for (int i = 0; i < rt->task_count; i++) {
+		struct sub_agent_task *task = &rt->tasks[i];
+		struct sub_agent_task_info *info;
+
+		if (parent_session_id > 0 &&
+		    task->parent_session_id != parent_session_id)
+			continue;
+		info = morph_array_push(items);
+		if (!info) {
+			pthread_mutex_unlock(&rt->mutex);
+			return -ENOMEM;
+		}
+		memset(info, 0, sizeof(*info));
+		pthread_mutex_lock(&task->mutex);
+		strncpy(info->id, task->id, sizeof(info->id) - 1);
+		strncpy(info->agent_name,
+			rt->entries[task->agent_index].cfg.name,
+			sizeof(info->agent_name) - 1);
+		strncpy(info->mode, task->mode, sizeof(info->mode) - 1);
+		info->description = task->task_description ?
+			strdup(task->task_description) : NULL;
+		info->result = task->result ? strdup(task->result) : NULL;
+		info->status = task->status;
+		info->error_code = task->error_code;
+		info->iteration_count = task->iteration_count;
+		info->parent_session_id = task->parent_session_id;
+		info->child_session_id = task->child_session_id;
+		info->started_at_ms = task->started_at_ms;
+		info->ended_at_ms = task->ended_at_ms;
+		pthread_mutex_unlock(&task->mutex);
+	}
+	pthread_mutex_unlock(&rt->mutex);
+	return 0;
+}
+
+int sub_agent_runtime_list_tasks(struct sub_agent_runtime *rt,
+				 int64_t parent_session_id,
+				 struct sub_agent_task_info **out,
+				 int *count)
+{
+	morph_array_t items;
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!rt || !out || !count || parent_session_id < 0)
+		return -EINVAL;
+	*out = NULL;
+	*count = 0;
+	rc = morph_array_init(&items, MORPH_ARRAY_INIT_CAP,
+			      sizeof(struct sub_agent_task_info));
+	if (rc != 0)
+		return rc;
+	if (!rt->db || !rt->db->handle) {
+		rc = sub_agent_task_info_from_runtime(rt, parent_session_id,
+						      &items);
+		if (rc != 0) {
+			morph_array_cleanup(&items);
+			return rc;
+		}
+	} else {
+		pthread_mutex_lock(&rt->storage_mutex);
+		rc = sqlite3_prepare_v2(rt->db->handle,
+			"SELECT task_id,agent_name,mode,description,status,result,"
+			"error_code,iterations,parent_session_id,child_session_id,"
+			"started_at,ended_at FROM sub_agent_tasks WHERE "
+			"(?=0 OR parent_session_id=?) ORDER BY started_at DESC", -1,
+			&stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1, parent_session_id);
+			sqlite3_bind_int64(stmt, 2, parent_session_id);
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				struct sub_agent_task_info *info =
+					morph_array_push(&items);
+				const char *value;
+
+				if (!info) {
+					rc = SQLITE_NOMEM;
+					break;
+				}
+				memset(info, 0, sizeof(*info));
+				value = (const char *)sqlite3_column_text(stmt, 0);
+				if (value)
+					strncpy(info->id, value,
+						sizeof(info->id) - 1);
+				value = (const char *)sqlite3_column_text(stmt, 1);
+				if (value)
+					strncpy(info->agent_name, value,
+						sizeof(info->agent_name) - 1);
+				value = (const char *)sqlite3_column_text(stmt, 2);
+				if (value)
+					strncpy(info->mode, value,
+						sizeof(info->mode) - 1);
+				value = (const char *)sqlite3_column_text(stmt, 3);
+				info->description = value ? strdup(value) : NULL;
+				info->status = (enum sub_agent_task_status)
+					sqlite3_column_int(stmt, 4);
+				value = (const char *)sqlite3_column_text(stmt, 5);
+				info->result = value ? strdup(value) : NULL;
+				info->error_code = sqlite3_column_int(stmt, 6);
+				info->iteration_count = sqlite3_column_int(stmt, 7);
+				info->parent_session_id = sqlite3_column_int64(stmt, 8);
+				info->child_session_id = sqlite3_column_int64(stmt, 9);
+				info->started_at_ms = sqlite3_column_int64(stmt, 10);
+				info->ended_at_ms = sqlite3_column_int64(stmt, 11);
+			}
+		}
+		sqlite3_finalize(stmt);
+		pthread_mutex_unlock(&rt->storage_mutex);
+		if (rc != SQLITE_DONE) {
+			sub_agent_runtime_free_task_list(
+				(struct sub_agent_task_info *)items.elts,
+				(int)items.nelts);
+			return rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
+		}
+	}
+	if (items.nelts > INT_MAX) {
+		sub_agent_runtime_free_task_list(
+			(struct sub_agent_task_info *)items.elts,
+			(int)items.nelts);
+		return -EOVERFLOW;
+	}
+	*out = items.elts;
+	*count = (int)items.nelts;
+	return 0;
+}
+
+void sub_agent_runtime_free_events(char **events, int count)
+{
+	if (!events)
+		return;
+	for (int i = 0; i < count; i++)
+		free(events[i]);
+	free(events);
+}
+
+int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
+				  const char *task_id,
+				  char ***events, int *count)
+{
+	morph_array_t out;
+	struct sub_agent_task *task = NULL;
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!rt || !task_id || !events || !count)
+		return -EINVAL;
+	*events = NULL;
+	*count = 0;
+	rc = morph_array_init(&out, MORPH_ARRAY_INIT_CAP, sizeof(char *));
+	if (rc != 0)
+		return rc;
+	if (rt->db && rt->db->handle) {
+		pthread_mutex_lock(&rt->storage_mutex);
+		rc = sqlite3_prepare_v2(rt->db->handle,
+			"SELECT event_json FROM sub_agent_events WHERE task_id=? "
+			"ORDER BY id", -1, &stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, task_id, -1, SQLITE_TRANSIENT);
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				const char *value =
+					(const char *)sqlite3_column_text(stmt, 0);
+				char **slot = morph_array_push(&out);
+
+				if (!slot || !(*slot = strdup(value ? value : ""))) {
+					rc = SQLITE_NOMEM;
+					break;
+				}
+			}
+		}
+		sqlite3_finalize(stmt);
+		pthread_mutex_unlock(&rt->storage_mutex);
+		if (rc != SQLITE_DONE) {
+			sub_agent_runtime_free_events((char **)out.elts,
+						      (int)out.nelts);
+			return rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
+		}
+	} else {
+		pthread_mutex_lock(&rt->mutex);
+		task = sub_agent_task_find_locked(rt, task_id);
+		pthread_mutex_unlock(&rt->mutex);
+		if (!task) {
+			morph_array_cleanup(&out);
+			return -ENOENT;
+		}
+		pthread_mutex_lock(&task->mutex);
+		for (size_t i = 0; i < task->events.nelts; i++) {
+			char **source = morph_array_get(&task->events, i);
+			char **slot = morph_array_push(&out);
+
+			if (!slot || !(*slot = strdup(*source))) {
+				pthread_mutex_unlock(&task->mutex);
+				sub_agent_runtime_free_events((char **)out.elts,
+							      (int)out.nelts);
+				return -ENOMEM;
+			}
+		}
+		pthread_mutex_unlock(&task->mutex);
+	}
+	if (out.nelts > INT_MAX) {
+		sub_agent_runtime_free_events((char **)out.elts, (int)out.nelts);
+		return -EOVERFLOW;
+	}
+	*events = out.elts;
+	*count = (int)out.nelts;
 	return 0;
 }
 

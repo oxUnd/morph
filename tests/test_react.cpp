@@ -2274,6 +2274,34 @@ static int drain_cancel_once(void *user_data, struct react_action *out,
 	return 1;
 }
 
+static int drain_prompt_once(void *user_data, struct react_action *out,
+			     int block)
+{
+	int *count = (int *)user_data;
+
+	(void)block;
+	if (*count > 0)
+		return 0;
+	(*count)++;
+	out->type = "prompt";
+	out->payload_json = "{\"text\":\"also add tests\"}";
+	return 1;
+}
+
+static int drain_prompt_after_first_call(void *user_data,
+					 struct react_action *out, int block)
+{
+	int *count = (int *)user_data;
+
+	(void)block;
+	(*count)++;
+	if (*count != 2)
+		return 0;
+	out->type = "prompt";
+	out->payload_json = "{\"text\":\"change the implementation\"}";
+	return 1;
+}
+
 TEST_F(MockLlmTest, ActionDrainCancelBeforeLlmCall) {
 	setup_llm_with_response("Final: should not be called");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
@@ -2291,6 +2319,49 @@ TEST_F(MockLlmTest, ActionDrainCancelBeforeLlmCall) {
 	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_CANCELLED);
 	EXPECT_EQ(llm_data->call_count, 0);
 	EXPECT_EQ(drain_count, 1);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ActionDrainInjectsPromptIntoCurrentLoop) {
+	setup_llm_with_response("Final: updated implementation");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int drain_count = 0;
+	ASSERT_EQ(react_set_action_drain(ctx, drain_prompt_once,
+					 &drain_count), 0);
+
+	ASSERT_EQ(react_run(ctx, "implement feature", nullptr, nullptr), 0);
+	ASSERT_NE(ctx->messages, nullptr);
+	EXPECT_STREQ(ctx->messages->content, "implement feature");
+	ASSERT_NE(ctx->messages->next, nullptr);
+	EXPECT_STREQ(ctx->messages->next->role, "user");
+	EXPECT_STREQ(ctx->messages->next->content, "also add tests");
+	EXPECT_EQ(llm_data->call_count, 1);
+
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, PromptArrivingDuringModelCallContinuesCurrentLoop) {
+	setup_llm_with_response("Final: implementation");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+							nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->max_iterations = 5;
+	int drain_count = 0;
+	ASSERT_EQ(react_set_action_drain(ctx, drain_prompt_after_first_call,
+					 &drain_count), 0);
+
+	ASSERT_EQ(react_run(ctx, "build it", nullptr, nullptr), 0);
+	EXPECT_EQ(llm_data->call_count, 2);
+	ASSERT_NE(ctx->messages, nullptr);
+	ASSERT_NE(ctx->messages->next, nullptr);
+	EXPECT_STREQ(ctx->messages->next->content,
+		     "change the implementation");
 
 	react_context_destroy(ctx);
 }

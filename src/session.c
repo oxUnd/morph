@@ -194,12 +194,13 @@ int session_list(struct db *db, struct session **out, int *count,
 	char sql[512];
 	int pos = snprintf(sql, sizeof(sql),
 		"SELECT id,display_id,name,model,created_at,updated_at,token_used"
-		" FROM sessions");
+		" FROM sessions WHERE NOT EXISTS (SELECT 1 FROM sub_agent_tasks "
+		"WHERE sub_agent_tasks.child_session_id=sessions.id)");
 	int bind_idx = 1;
 
 	if (filter && filter[0]) {
 		pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
-				" WHERE name LIKE ?");
+				" AND name LIKE ?");
 	}
 	pos += snprintf(sql + pos, sizeof(sql) - (size_t)pos,
 			" ORDER BY updated_at DESC");
@@ -303,11 +304,15 @@ int session_delete(struct db *db, int64_t id)
 	if (!db || !db->handle)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "DELETE FROM sessions WHERE id=?";
+	const char *sql =
+		"DELETE FROM sessions WHERE id=? OR id IN ("
+		"SELECT child_session_id FROM sub_agent_tasks "
+		"WHERE parent_session_id=?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		MORPH_RETURN(MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, id);
+	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
