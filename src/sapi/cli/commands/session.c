@@ -404,7 +404,10 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 					cur->token_count,
 					cur->truncated ? ", truncated" : "");
 			} else {
-				printf("%s\n", cur->content ? cur->content : "");
+				(void)cli_print_untrusted_text(
+					cur->content ? cur->content : "",
+					UTF8_TERMINAL_TEXT_MULTILINE);
+				printf("\n");
 			}
 			cur = cur->next;
 		}
@@ -430,7 +433,10 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 							    media_callback,
 							    NULL);
 		else
-			printf("%s\n", cur->content ? cur->content : "(empty)");
+			(void)cli_print_untrusted_text(
+				cur->content ? cur->content : "(empty)",
+				UTF8_TERMINAL_TEXT_MULTILINE);
+			printf("\n");
 		cur = cur->next;
 	}
 	runtime_session_messages_free(msgs);

@@ -65,8 +65,11 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 		default:			color = ""; break;
 		}
 		printf("  %d. %s[%s]%s", step, color, react_step_type_name(cur->type), ANSI_RESET);
-		if (cur->content)
-			printf(" %s", cur->content);
+		if (cur->content) {
+			printf(" ");
+			(void)cli_print_untrusted_text(cur->content,
+				UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		}
 		if (cur->tool_name)
 			printf(ANSI_DIM " (tool: %s)" ANSI_RESET, cur->tool_name);
 		printf("\n");
@@ -82,8 +85,11 @@ static void print_runtime_trace(const struct runtime_turn_status *status)
 	for (int i = 0; status && i < status->step_count; i++) {
 		const struct runtime_trace_step *step = &status->steps[i];
 		printf("  %d. [%s]", i + 1, react_step_type_name(step->type));
-		if (step->content)
-			printf(" %s", step->content);
+		if (step->content) {
+			printf(" ");
+			(void)cli_print_untrusted_text(step->content,
+				UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		}
 		if (step->tool_name)
 			printf(ANSI_DIM " (tool: %s)" ANSI_RESET,
 			       step->tool_name);

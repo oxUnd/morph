@@ -366,10 +366,16 @@ static void cli_ui_run_owner_call(struct cli_ui_owner_call *call)
 
 static void cli_ui_render_notification(const struct cli_ui_item *item)
 {
-	printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " %s\n",
-	       item->notification_title ? item->notification_title : "Task");
-	if (item->notification_body && item->notification_body[0])
-		printf("%s\n", item->notification_body);
+	printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " ");
+	(void)cli_print_untrusted_text(
+		item->notification_title ? item->notification_title : "Task",
+		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	printf("\n");
+	if (item->notification_body && item->notification_body[0]) {
+		(void)cli_print_untrusted_text(item->notification_body,
+			UTF8_TERMINAL_TEXT_MULTILINE);
+		printf("\n");
+	}
 	printf(ANSI_DIM "stored in /inbox as #%lld" ANSI_RESET "\n",
 	       (long long)item->notification_id);
 }

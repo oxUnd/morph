@@ -15,6 +15,34 @@
 #define CLI_PATCH_BYTES_MAX 16384
 #define CLI_PATCH_LINES_MAX 240
 
+static char *presentation_safe_dup(const char *text, size_t max_bytes,
+				   enum utf8_terminal_text_mode mode)
+{
+	char *safe;
+	char *limited;
+
+	if (!text)
+		return NULL;
+	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
+	if (!safe)
+		return NULL;
+	limited = utf8_dup_clamped(safe, max_bytes);
+	free(safe);
+	return limited;
+}
+
+static void presentation_print_safe_inline(const char *text,
+					    size_t max_bytes)
+{
+	char *safe = presentation_safe_dup(text ? text : "", max_bytes,
+		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+
+	if (!safe)
+		return;
+	printf("%s", safe);
+	free(safe);
+}
+
 static void presentation_clear_status(struct cli_context *ctx)
 {
 	cli_terminal_live_clear(ctx);
@@ -25,7 +53,9 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	if (!ctx || !text || !text[0])
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("status: %s\n", text);
+		printf("status: ");
+		presentation_print_safe_inline(text, CLI_EVENT_TEXT_MAX);
+		printf("\n");
 		fflush(stdout);
 		return;
 	}
@@ -131,7 +161,8 @@ static void print_tree_string(const char *text, const char *label,
 	int has_break;
 	int first = 1;
 
-	display = utf8_dup_clamped(text ? text : "", CLI_TREE_VALUE_MAX);
+	display = presentation_safe_dup(text ? text : "",
+		CLI_TREE_VALUE_MAX, UTF8_TERMINAL_TEXT_SINGLE_LINE);
 	if (!display)
 		return;
 	for (char *p = display; *p; p++) {
@@ -148,8 +179,12 @@ static void print_tree_string(const char *text, const char *label,
 		end = tree_wrap_end(line, (size_t)available, &has_break);
 		if (first) {
 			print_tree_prefix(ancestors_last, depth, is_last);
-			if (label && label[0])
-				printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
+			if (label && label[0]) {
+				printf(ANSI_DIM);
+				presentation_print_safe_inline(label,
+					CLI_TREE_VALUE_MAX);
+				printf(":" ANSI_RESET " ");
+			}
 			first = 0;
 		} else {
 			print_tree_continuation_prefix(
@@ -170,8 +205,11 @@ static void print_tree_string(const char *text, const char *label,
 	}
 	if (first) {
 		print_tree_prefix(ancestors_last, depth, is_last);
-		if (label && label[0])
-			printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
+		if (label && label[0]) {
+			printf(ANSI_DIM);
+			presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
+			printf(":" ANSI_RESET " ");
+		}
 		printf("\n");
 	}
 	free(display);
@@ -231,15 +269,21 @@ static void print_json_tree_node(const cJSON *item, const char *label,
 			return;
 		}
 		print_tree_prefix(ancestors_last, depth, is_last);
-		if (label && label[0])
-			printf(ANSI_DIM "%s:" ANSI_RESET " ", label);
+		if (label && label[0]) {
+			printf(ANSI_DIM);
+			presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
+			printf(":" ANSI_RESET " ");
+		}
 		print_tree_scalar(item);
 		printf("\n");
 		return;
 	}
 	print_tree_prefix(ancestors_last, depth, is_last);
-	if (label && label[0])
-		printf(ANSI_DIM "%s:" ANSI_RESET, label);
+	if (label && label[0]) {
+		printf(ANSI_DIM);
+		presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
+		printf(":" ANSI_RESET);
+	}
 	count = json_child_count(item);
 	if (count == 0) {
 		printf(" %s\n", cJSON_IsArray(item) ? "[]" : "{}");
@@ -327,7 +371,8 @@ static void print_indented(const char *prefix, const char *content)
 
 	if (!content || !content[0])
 		return;
-	display = utf8_dup_clamped(content, CLI_EVENT_TEXT_MAX);
+	display = presentation_safe_dup(content, CLI_EVENT_TEXT_MAX,
+		UTF8_TERMINAL_TEXT_MULTILINE);
 	if (!display)
 		return;
 	line = display;
@@ -347,7 +392,8 @@ static void print_plain_labeled(const char *label, const char *content)
 
 	if (!content || !content[0])
 		return;
-	display = utf8_dup_clamped(content, CLI_EVENT_TEXT_MAX);
+	display = presentation_safe_dup(content, CLI_EVENT_TEXT_MAX,
+		UTF8_TERMINAL_TEXT_MULTILINE);
 	if (!display)
 		return;
 	if (strchr(display, '\n'))
@@ -374,6 +420,8 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (already_streamed)
 		cli_markdown_stream_reset(ctx, 1);
 	presentation_clear_status(ctx);
+	(void)utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer,
+		&ctx->event_stream, NULL, 0, 1);
 	content = morph_buf_cstr(&ctx->event_stream);
 	if (!content || !content[0])
 		goto reset;
@@ -396,6 +444,7 @@ static void presentation_print_stream(struct cli_context *ctx)
 	}
 reset:
 	morph_buf_reset(&ctx->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
@@ -408,6 +457,7 @@ static void presentation_discard_stream(struct cli_context *ctx)
 		return;
 	cli_markdown_stream_reset(ctx, 1);
 	morph_buf_reset(&ctx->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
@@ -416,24 +466,39 @@ static void presentation_discard_stream(struct cli_context *ctx)
 
 static int presentation_append_stream(struct cli_context *ctx, int kind,
 				      const char *text, int is_delta,
-				      int is_complete)
+				      int is_complete,
+				      const char **appended_text)
 {
+	size_t offset;
 	int rc;
 
 	if (!ctx || !text)
 		return 0;
+	if (appended_text)
+		*appended_text = "";
 	if (ctx->event_stream_kind != CLI_STREAM_NONE &&
 	    ctx->event_stream_kind != kind)
 		presentation_print_stream(ctx);
-	if (ctx->event_stream_kind == CLI_STREAM_NONE)
+	if (ctx->event_stream_kind == CLI_STREAM_NONE) {
 		ctx->event_stream_kind = kind;
+		utf8_terminal_sanitizer_init(&ctx->event_stream_sanitizer,
+			UTF8_TERMINAL_TEXT_MULTILINE);
+	}
 	if (!is_delta && ctx->event_stream_has_delta) {
+		rc = utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer,
+			&ctx->event_stream, NULL, 0, 1);
+		if (rc != 0)
+			return rc;
 		ctx->event_stream_complete = is_complete;
 		return 0;
 	}
-	rc = morph_buf_puts(&ctx->event_stream, text);
+	offset = ctx->event_stream.len;
+	rc = utf8_terminal_sanitize_feed(&ctx->event_stream_sanitizer,
+		&ctx->event_stream, text, strlen(text), !is_delta);
 	if (rc != 0)
 		return rc;
+	if (appended_text)
+		*appended_text = morph_buf_cstr(&ctx->event_stream) + offset;
 	if (is_delta)
 		ctx->event_stream_has_delta = 1;
 	if (is_complete)
@@ -497,9 +562,19 @@ static void presentation_patch_diff(const char *input)
 	display = malloc(CLI_PATCH_BYTES_MAX + 1);
 	if (!display)
 		return;
-	display_len = utf8_copy_sanitized_clamped(display,
-		CLI_PATCH_BYTES_MAX + 1, input, CLI_PATCH_BYTES_MAX);
-	truncated = display_len < input_len;
+	{
+		char *safe = presentation_safe_dup(input, CLI_PATCH_BYTES_MAX,
+			UTF8_TERMINAL_TEXT_MULTILINE);
+
+		if (!safe) {
+			free(display);
+			return;
+		}
+		display_len = strlen(safe);
+		memcpy(display, safe, display_len + 1);
+		free(safe);
+	}
+	truncated = input_len > CLI_PATCH_BYTES_MAX;
 	for (char *p = display; *p; p++) {
 		unsigned char ch = (unsigned char)*p;
 
@@ -537,6 +612,8 @@ static void presentation_tool_call(struct cli_context *ctx,
 	cJSON *input_item = NULL;
 	const char *patch_input = NULL;
 	char *args = NULL;
+	char *safe_tool;
+	char *safe_title;
 	char display[512];
 
 	presentation_clear_status(ctx);
@@ -545,6 +622,14 @@ static void presentation_tool_call(struct cli_context *ctx,
 		tool = "tool";
 	if (!title || !title[0])
 		title = tool;
+	safe_tool = presentation_safe_dup(tool, TOOL_NAME_MAX,
+		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	safe_title = presentation_safe_dup(title, CLI_EVENT_TEXT_MAX,
+		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	if (safe_tool)
+		tool = safe_tool;
+	if (safe_title)
+		title = safe_title;
 	if (strcmp(tool, "apply_patch") == 0 && cJSON_IsObject(args_item)) {
 		input_item = cJSON_GetObjectItemCaseSensitive(args_item, "input");
 		if (cJSON_IsString(input_item))
@@ -575,6 +660,8 @@ static void presentation_tool_call(struct cli_context *ctx,
 		presentation_status(ctx, "Running tool…");
 	}
 	free(args);
+	free(safe_tool);
+	free(safe_title);
 }
 
 static void presentation_tool_end(struct cli_context *ctx,
@@ -590,19 +677,26 @@ static void presentation_tool_end(struct cli_context *ctx,
 		title = tool && tool[0] ? tool : "Tool";
 	failed = !ev->name || strcmp(ev->name, "tool.result") != 0;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("status: %s %s\n", tool ? tool : "tool",
-		       failed ? "failed" : "completed");
+		printf("status: ");
+		presentation_print_safe_inline(tool ? tool : "tool",
+			TOOL_NAME_MAX);
+		printf(" %s\n", failed ? "failed" : "completed");
 		return;
 	}
 	if (failed) {
-		printf("  " ANSI_BOLD ANSI_RED "✗ %s failed" ANSI_RESET,
-		       title);
-		if (error && error[0])
-			printf(ANSI_DIM " · %s" ANSI_RESET, error);
+		printf("  " ANSI_BOLD ANSI_RED "✗ ");
+		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
+		printf(" failed" ANSI_RESET);
+		if (error && error[0]) {
+			printf(ANSI_DIM " · ");
+			presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
+			printf(ANSI_RESET);
+		}
 		printf("\n");
 	} else {
-		printf("  " ANSI_BOLD ANSI_GREEN "✓ %s completed"
-		       ANSI_RESET "\n", title);
+		printf("  " ANSI_BOLD ANSI_GREEN "✓ ");
+		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
+		printf(" completed" ANSI_RESET "\n");
 	}
 }
 
@@ -666,12 +760,13 @@ static int presentation_plan(const struct morph_event *ev)
 				continue;
 			index++;
 			branch = index == count ? "└" : "├";
-			printf("    " ANSI_DIM "%s" ANSI_RESET " %s %s\n",
-			       branch,
+			printf("    " ANSI_DIM "%s" ANSI_RESET " %s ", branch,
 			       plan_mark(cJSON_IsString(status) ?
 					 status->valuestring : NULL,
-					 cJSON_IsTrue(active)),
-			       description->valuestring);
+					 cJSON_IsTrue(active)));
+			presentation_print_safe_inline(description->valuestring,
+				CLI_EVENT_TEXT_MAX);
+			printf("\n");
 		}
 	}
 	return printed;
@@ -750,8 +845,15 @@ static void presentation_final(struct cli_context *ctx,
 	cli_markdown_stream_reset(ctx, 1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("final:\n");
-		if (text && text[0])
-			printf("%s\n", text);
+		if (text && text[0]) {
+			char *safe = presentation_safe_dup(text, SIZE_MAX,
+				UTF8_TERMINAL_TEXT_MULTILINE);
+
+			if (safe) {
+				printf("%s\n", safe);
+				free(safe);
+			}
+		}
 	} else {
 		if (!had_stream)
 			printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
@@ -784,16 +886,24 @@ static void presentation_turn_end(struct cli_context *ctx,
 	detail = event_string(ev, "detail");
 	outcome = event_string(ev, "outcome");
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("error: %s", error ? error :
-		       (outcome ? outcome : "turn failed"));
-		if (detail && detail[0])
-			printf(" (%s)", detail);
+		printf("error: ");
+		presentation_print_safe_inline(error ? error :
+			(outcome ? outcome : "turn failed"), CLI_EVENT_TEXT_MAX);
+		if (detail && detail[0]) {
+			printf(" (");
+			presentation_print_safe_inline(detail, CLI_EVENT_TEXT_MAX);
+			printf(")");
+		}
 		printf("\n");
 	} else {
-		printf("\n" ANSI_BOLD ANSI_RED "• Error" ANSI_RESET " %s",
-		       error ? error : (outcome ? outcome : "turn failed"));
-		if (detail && detail[0])
-			printf(ANSI_DIM " (%s)" ANSI_RESET, detail);
+		printf("\n" ANSI_BOLD ANSI_RED "• Error" ANSI_RESET " ");
+		presentation_print_safe_inline(error ? error :
+			(outcome ? outcome : "turn failed"), CLI_EVENT_TEXT_MAX);
+		if (detail && detail[0]) {
+			printf(ANSI_DIM " (");
+			presentation_print_safe_inline(detail, CLI_EVENT_TEXT_MAX);
+			printf(")" ANSI_RESET);
+		}
 		printf("\n");
 	}
 	ctx->final_rendered = 1;
@@ -821,20 +931,31 @@ static void presentation_auth(struct cli_context *ctx,
 			env_name = config->models.text.api_key_env;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("error: authentication required for %s", backend);
-		if (tool && tool[0])
-			printf(" tool %s", tool);
-		if (env_name && env_name[0])
-			printf("; export %s", env_name);
+		printf("error: authentication required for ");
+		presentation_print_safe_inline(backend, CLI_EVENT_TEXT_MAX);
+		if (tool && tool[0]) {
+			printf(" tool ");
+			presentation_print_safe_inline(tool, TOOL_NAME_MAX);
+		}
+		if (env_name && env_name[0]) {
+			printf("; export ");
+			presentation_print_safe_inline(env_name, CLI_EVENT_TEXT_MAX);
+		}
 		printf("\n");
 	} else {
 		printf("\n" ANSI_BOLD ANSI_YELLOW
-		       "• Authentication required" ANSI_RESET " for %s",
-		       backend);
-		if (tool && tool[0])
-			printf(" tool " ANSI_BOLD "%s" ANSI_RESET, tool);
-		if (env_name && env_name[0])
-			printf(ANSI_DIM " · export %s" ANSI_RESET, env_name);
+		       "• Authentication required" ANSI_RESET " for ");
+		presentation_print_safe_inline(backend, CLI_EVENT_TEXT_MAX);
+		if (tool && tool[0]) {
+			printf(" tool " ANSI_BOLD);
+			presentation_print_safe_inline(tool, TOOL_NAME_MAX);
+			printf(ANSI_RESET);
+		}
+		if (env_name && env_name[0]) {
+			printf(ANSI_DIM " · export ");
+			presentation_print_safe_inline(env_name, CLI_EVENT_TEXT_MAX);
+			printf(ANSI_RESET);
+		}
 		printf("\n");
 	}
 }
@@ -853,18 +974,29 @@ static void presentation_artifact(struct cli_context *ctx,
 	presentation_clear_status(ctx);
 	(void)morph_strmap_set(&ctx->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("artifact: %s %s\n", kind ? kind : "file", path);
+		printf("artifact: ");
+		presentation_print_safe_inline(kind ? kind : "file",
+			CLI_EVENT_TEXT_MAX);
+		printf(" ");
+		presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
+		printf("\n");
 		return;
 	}
-	printf("  " ANSI_DIM "└ %s: %s" ANSI_RESET "\n",
-	       kind ? kind : "artifact", path);
+	printf("  " ANSI_DIM "└ ");
+	presentation_print_safe_inline(kind ? kind : "artifact",
+		CLI_EVENT_TEXT_MAX);
+	printf(": ");
+	presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
+	printf(ANSI_RESET "\n");
 }
 
 static void presentation_mcp_tree_start(struct cli_context *ctx,
 					const char *server)
 {
 	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " "
-	       ANSI_BOLD "MCP %s" ANSI_RESET "\n", server);
+	       ANSI_BOLD "MCP ");
+	presentation_print_safe_inline(server, CLI_EVENT_TEXT_MAX);
+	printf(ANSI_RESET "\n");
 	strncpy(ctx->mcp_tree_server, server,
 		sizeof(ctx->mcp_tree_server) - 1);
 	ctx->mcp_tree_server[sizeof(ctx->mcp_tree_server) - 1] = '\0';
@@ -911,8 +1043,11 @@ static void presentation_mcp(struct cli_context *ctx,
 	       is_last ? "└" : "├");
 	if (failed) {
 		printf(ANSI_BOLD ANSI_RED "✗ Failed" ANSI_RESET);
-		if (error && error[0])
-			printf(ANSI_DIM " · %s" ANSI_RESET, error);
+		if (error && error[0]) {
+			printf(ANSI_DIM " · ");
+			presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
+			printf(ANSI_RESET);
+		}
 	} else if (ev->name && strcmp(ev->name, "mcp.ready") == 0) {
 		presentation_mcp_ready(ev);
 	} else {
@@ -929,7 +1064,7 @@ static void presentation_mcp(struct cli_context *ctx,
 			label = "Disconnected";
 		else
 			label = ev->message ? ev->message : "Updated";
-		printf("%s", label);
+		presentation_print_safe_inline(label, CLI_EVENT_TEXT_MAX);
 	}
 	printf("\n");
 	if (is_last) {
@@ -950,10 +1085,11 @@ static void presentation_auxiliary(struct cli_context *ctx,
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    event_error_code(ev) < 0) {
 			presentation_clear_status(ctx);
-			printf("\n" ANSI_DIM ANSI_RED "• Background  %s"
-			       ANSI_RESET "\n",
-			       ev->message ? ev->message :
-			       (ev->name ? ev->name : "failed"));
+			printf("\n" ANSI_DIM ANSI_RED "• Background  ");
+			presentation_print_safe_inline(ev->message ? ev->message :
+				(ev->name ? ev->name : "failed"),
+				CLI_EVENT_TEXT_MAX);
+			printf(ANSI_RESET "\n");
 		} else if (ev->phase &&
 			   (strcmp(ev->phase, "begin") == 0 ||
 			    strcmp(ev->phase, "progress") == 0)) {
@@ -975,8 +1111,10 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	else
 		return;
 	presentation_clear_status(ctx);
-	printf("\n" ANSI_DIM "• %s  %s" ANSI_RESET "\n", prefix,
-	       ev->message ? ev->message : (ev->name ? ev->name : ""));
+	printf("\n" ANSI_DIM "• %s  ", prefix);
+	presentation_print_safe_inline(ev->message ? ev->message :
+		(ev->name ? ev->name : ""), CLI_EVENT_TEXT_MAX);
+	printf(ANSI_RESET "\n");
 }
 
 int cli_presentation_init(struct cli_context *ctx)
@@ -993,6 +1131,10 @@ int cli_presentation_init(struct cli_context *ctx)
 		morph_buf_cleanup(&ctx->event_stream);
 		return rc;
 	}
+	utf8_terminal_sanitizer_init(&ctx->event_stream_sanitizer,
+		UTF8_TERMINAL_TEXT_MULTILINE);
+	utf8_terminal_sanitizer_init(&ctx->markdown_stream_sanitizer,
+		UTF8_TERMINAL_TEXT_MULTILINE);
 	rc = morph_strmap_init(&ctx->rendered_artifacts,
 			       MORPH_STRMAP_INIT_CAP);
 	if (rc != 0) {
@@ -1016,6 +1158,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 	if (!ctx)
 		return;
 	morph_buf_reset(&ctx->event_stream);
+	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	morph_strmap_clear(&ctx->rendered_artifacts);
 	morph_strmap_clear(&ctx->announced_artifacts);
 	cli_markdown_stream_reset(ctx, 1);
@@ -1085,7 +1228,7 @@ int cli_presentation_event(struct cli_context *ctx,
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {
 			int rc = presentation_append_stream(
-				ctx, CLI_STREAM_THOUGHT, text, 1, 0);
+				ctx, CLI_STREAM_THOUGHT, text, 1, 0, NULL);
 
 			if (rc == 0 &&
 			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
@@ -1099,14 +1242,15 @@ int cli_presentation_event(struct cli_context *ctx,
 		}
 		if (strcmp(ev->name, "react.thought.end") == 0)
 			return presentation_append_stream(
-				ctx, CLI_STREAM_THOUGHT, text, 0, 1);
+				ctx, CLI_STREAM_THOUGHT, text, 0, 1, NULL);
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {
+			const char *clean = "";
 			int rc = presentation_append_stream(
-				ctx, CLI_STREAM_REASONING, text, 1, 0);
+				ctx, CLI_STREAM_REASONING, text, 1, 0, &clean);
 
 			if (rc == 0 &&
 			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-				presentation_reasoning_delta(ctx, text);
+				presentation_reasoning_delta(ctx, clean);
 			return rc;
 		}
 		if (strcmp(ev->name, "react.final.delta") == 0) {

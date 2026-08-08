@@ -2,6 +2,7 @@
 #define MORPH_UTIL_UTF8_H
 
 #include "sheredom_utf8.h"
+#include "buf.h"
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -71,6 +72,32 @@ int utf8_is_latin_extended_cp(unsigned cp);
 size_t utf8_strip_ansi(char *dst, const char *src, size_t src_len);
 char *utf8_strip_ansi_dup(const char *src, size_t src_len,
 			  size_t *out_len);
+
+enum utf8_terminal_text_mode {
+	UTF8_TERMINAL_TEXT_MULTILINE = 0,
+	UTF8_TERMINAL_TEXT_SINGLE_LINE = 1,
+};
+
+/* Stateful sanitizer for untrusted terminal text. It removes terminal escape
+ * strings, preserves valid UTF-8 across chunks, and renders non-layout control
+ * characters visibly. Keep one instance per independently streamed field. */
+struct utf8_terminal_sanitizer {
+	int state;
+	enum utf8_terminal_text_mode mode;
+	int pending_cr;
+	unsigned char utf8_pending[4];
+	size_t utf8_pending_len;
+};
+
+void utf8_terminal_sanitizer_init(struct utf8_terminal_sanitizer *sanitizer,
+				  enum utf8_terminal_text_mode mode);
+void utf8_terminal_sanitizer_reset(struct utf8_terminal_sanitizer *sanitizer);
+int utf8_terminal_sanitize_feed(struct utf8_terminal_sanitizer *sanitizer,
+				morph_buf_t *out, const char *src,
+				size_t src_len, int finish);
+char *utf8_terminal_sanitize_dup(const char *src, size_t src_len,
+			 enum utf8_terminal_text_mode mode,
+			 size_t *out_len);
 
 #ifdef __cplusplus
 }

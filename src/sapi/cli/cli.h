@@ -5,6 +5,7 @@
 #include "runtime/runtime.h"
 #include "util/buf.h"
 #include "util/strmap.h"
+#include "util/utf8.h"
 #include <stdio.h>
 
 enum cli_presentation_mode {
@@ -40,6 +41,8 @@ struct cli_context {
 	char mcp_tree_server[MCP_NAME_MAX];
 	morph_buf_t event_stream;
 	morph_buf_t markdown_stream_text;
+	struct utf8_terminal_sanitizer event_stream_sanitizer;
+	struct utf8_terminal_sanitizer markdown_stream_sanitizer;
 	morph_strmap_t rendered_artifacts;
 	morph_strmap_t announced_artifacts;
 	struct morph_md_kitty *markdown_stream;

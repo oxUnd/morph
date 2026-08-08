@@ -475,6 +475,84 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	cJSON_Delete(reasoning);
 }
 
+TEST_F(CliPresentationTest, OnceNeutralizesObservationControlSequences)
+{
+	cJSON *observation = TextData(
+		"before\033[2J\033]52;c;secret\aafter\rhidden");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.observation", "end", observation);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("beforeafter\\rhidden"), std::string::npos);
+	EXPECT_EQ(output.find("secret"), std::string::npos);
+	EXPECT_EQ(output.find('\033'), std::string::npos);
+	cJSON_Delete(observation);
+}
+
+TEST_F(CliPresentationTest, InteractiveStripsSplitFinalEscapeSequence)
+{
+	cJSON *first = TextData("before\033[");
+	cJSON *second = TextData("2Jafter");
+	cJSON *final = TextData("fallback");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", first);
+	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("beforeafter"), std::string::npos);
+	EXPECT_EQ(output.find("2Jafter"), std::string::npos);
+	EXPECT_EQ(output.find("fallback"), std::string::npos);
+	cli_set_color_enabled(0);
+	cJSON_Delete(first);
+	cJSON_Delete(second);
+	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
+{
+	cJSON *first = TextData("before\033]52;c;sec");
+	cJSON *second = TextData("ret\aafter");
+	cJSON *final = TextData("done");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", first);
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", second);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("before"), std::string::npos);
+	EXPECT_NE(output.find("after"), std::string::npos);
+	EXPECT_EQ(output.find("secret"), std::string::npos);
+	EXPECT_EQ(output.find("52;c"), std::string::npos);
+	cli_set_color_enabled(0);
+	cJSON_Delete(first);
+	cJSON_Delete(second);
+	cJSON_Delete(final);
+}
+
+TEST(CliOutputSafetyTest, PrintfBlocksDangerousSequencesButKeepsTrustedSgr)
+{
+	cli_set_color_enabled(1);
+	testing::internal::CaptureStdout();
+	cli_printf("\033[31mtrusted\033[0m %s\n",
+		"bad\033[2J\033]52;c;secret\aend");
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("\033[31mtrusted\033[0m"),
+		std::string::npos);
+	EXPECT_NE(output.find("badend"), std::string::npos);
+	EXPECT_EQ(output.find("secret"), std::string::npos);
+	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+	cli_set_color_enabled(0);
+}
+
 TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
 {
 	cJSON *thought = TextData("Calling a tool");

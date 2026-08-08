@@ -33,6 +33,7 @@ int cli_list_columns(void)
 
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src)
 {
+	char *safe;
 	size_t in = 0;
 	size_t out = 0;
 	size_t src_len;
@@ -43,7 +44,12 @@ size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src)
 	dst[0] = '\0';
 	if (!src)
 		return 0;
-	src_len = strlen(src);
+	safe = utf8_terminal_sanitize_dup(src, strlen(src),
+		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return 0;
+	src = safe;
+	src_len = strlen(safe);
 	while (src[in]) {
 		unsigned cp;
 		size_t cp_len;
@@ -74,6 +80,7 @@ size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src)
 		in += cp_len;
 	}
 	dst[out] = '\0';
+	free(safe);
 	return out;
 }
 
@@ -102,15 +109,21 @@ static void cli_list_print_clipped(const char *text, int max_width)
 
 void cli_list_group(const char *name, int count, int is_last)
 {
-	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_BOLD "%s"
-	       ANSI_RESET ANSI_DIM "  %d" ANSI_RESET "\n",
-	       is_last ? "└" : "├", name ? name : "Other", count);
+	char compact[CLI_LIST_TEXT_MAX];
+
+	(void)cli_list_compact_text(compact, sizeof(compact),
+		name ? name : "Other");
+	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_BOLD,
+	       is_last ? "└" : "├");
+	fputs(compact, stdout);
+	printf(ANSI_RESET ANSI_DIM "  %d" ANSI_RESET "\n", count);
 }
 
 void cli_list_item(const char *ancestor, int is_last, const char *marker,
 		   const char *name, const char *description, int name_width,
 		   int columns)
 {
+	char safe_name[CLI_LIST_TEXT_MAX];
 	int prefix_width;
 	int marker_width;
 	int item_width;
@@ -123,6 +136,8 @@ void cli_list_item(const char *ancestor, int is_last, const char *marker,
 		marker = "";
 	if (!name)
 		name = "";
+	(void)cli_list_compact_text(safe_name, sizeof(safe_name), name);
+	name = safe_name;
 	prefix_width = 2 + (int)utf8_display_width_ansi(ancestor) + 2;
 	marker_width = marker[0] ?
 		(int)utf8_display_width_ansi(marker) + 1 : 0;
@@ -160,6 +175,8 @@ void cli_list_row(const char *id, const char *name, const char *metadata,
 	const char *branch = is_last ? "└" : "├";
 	const char *continuation = is_last ? " " : "│";
 	char compact[CLI_LIST_TEXT_MAX];
+	char safe_id[CLI_LIST_TEXT_MAX];
+	char safe_metadata[CLI_LIST_TEXT_MAX];
 	int id_width;
 	int metadata_width;
 	int name_width;
@@ -172,8 +189,13 @@ void cli_list_row(const char *id, const char *name, const char *metadata,
 	if (!metadata)
 		metadata = "";
 	(void)cli_list_compact_text(compact, sizeof(compact), name);
+	(void)cli_list_compact_text(safe_id, sizeof(safe_id), id);
+	(void)cli_list_compact_text(safe_metadata, sizeof(safe_metadata),
+		metadata);
+	id = safe_id;
+	metadata = safe_metadata;
 	id_width = (int)utf8_display_width(id);
-	metadata_width = (int)utf8_display_width_ansi(metadata);
+	metadata_width = (int)utf8_display_width(metadata);
 	name_width = columns - 10 - id_width - metadata_width;
 	if (name_width > 52)
 		name_width = 52;
@@ -202,12 +224,15 @@ void cli_list_row(const char *id, const char *name, const char *metadata,
 void cli_list_value_field(const char *label, const char *value, int is_last,
 			  int label_width, int columns)
 {
+	char safe_label[CLI_LIST_TEXT_MAX];
 	int used;
 
 	if (!label)
 		label = "";
 	if (!value)
 		value = "";
+	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label);
+	label = safe_label;
 	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
 	       ANSI_RESET, is_last ? "└" : "├", label);
 	used = (int)utf8_display_width(label);
@@ -238,13 +263,16 @@ void cli_list_text_field(const char *label, const char *value, int is_last,
 			 int columns)
 {
 	char compact[CLI_LIST_TEXT_MAX];
+	char safe_label[CLI_LIST_TEXT_MAX];
 	const char *line;
 	const char *end;
 	int width = columns - 8;
 
+	(void)cli_list_compact_text(safe_label, sizeof(safe_label),
+		label ? label : "");
 	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
 	       ANSI_RESET "\n", is_last ? "└" : "├",
-	       label ? label : "");
+	       safe_label);
 	(void)cli_list_compact_text(compact, sizeof(compact), value);
 	line = compact;
 	if (width < 10)
@@ -277,6 +305,7 @@ static void cli_json_prefix(const int *ancestors_last, int depth, int is_last)
 static void cli_json_node(const cJSON *item, const char *label, int depth,
 			  int is_last, int *ancestors_last, int columns)
 {
+	char safe_label[CLI_LIST_TEXT_MAX];
 	cJSON *child;
 	int count;
 	int shown;
@@ -284,8 +313,11 @@ static void cli_json_node(const cJSON *item, const char *label, int depth,
 	int prefix_width = 4 + depth * 2;
 	char *scalar;
 
+	(void)cli_list_compact_text(safe_label, sizeof(safe_label),
+		label ? label : "item");
+	label = safe_label;
 	cli_json_prefix(ancestors_last, depth, is_last);
-	printf(ANSI_DIM "%s" ANSI_RESET, label ? label : "item");
+	printf(ANSI_DIM "%s" ANSI_RESET, label);
 	if (!cJSON_IsArray(item) && !cJSON_IsObject(item)) {
 		fputs(": ", stdout);
 		scalar = cJSON_IsString(item) ?
@@ -333,11 +365,14 @@ void cli_list_json_field(const char *label, const char *json, int is_last,
 			 int columns)
 {
 	cJSON *root = json ? cJSON_Parse(json) : NULL;
+	char safe_label[CLI_LIST_TEXT_MAX];
 	int ancestors_last[CLI_LIST_DEPTH_MAX] = {0};
 
+	(void)cli_list_compact_text(safe_label, sizeof(safe_label),
+		label ? label : "Schema");
 	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
 	       ANSI_RESET "\n", is_last ? "└" : "├",
-	       label ? label : "Schema");
+	       safe_label);
 	if (!root)
 		return;
 	ancestors_last[0] = is_last;

@@ -17,52 +17,106 @@ int cli_color_enabled(void)
 	return g_cli_color_enabled;
 }
 
-static size_t cli_strip_ansi_into(char *dst, size_t dst_size,
-				  const char *src)
+static const unsigned char *cli_skip_control_string(
+	const unsigned char *cursor)
 {
-	size_t out = 0;
-	const unsigned char *p = (const unsigned char *)src;
+	while (*cursor) {
+		if (*cursor == '\a')
+			return cursor + 1;
+		if (*cursor == 0x1bu && cursor[1] == '\\')
+			return cursor + 2;
+		cursor++;
+	}
+	return cursor;
+}
+
+static int cli_write_visible_control(unsigned cp)
+{
+	if (cp == '\a')
+		return fputs("\\a", stdout) == EOF ? -EIO : 0;
+	if (cp == '\b')
+		return fputs("\\b", stdout) == EOF ? -EIO : 0;
+	if (cp <= 0xffu)
+		return fprintf(stdout, "\\x%02x", cp) < 0 ? -EIO : 0;
+	return fprintf(stdout, "\\u%04x", cp) < 0 ? -EIO : 0;
+}
+
+static int cli_write_terminal_safe(const char *src, int allow_sgr)
+{
+	const unsigned char *cursor = (const unsigned char *)src;
+	const unsigned char *end;
 
 	if (!src)
 		return 0;
-	while (*p) {
-		if (*p == 0x1b) {
-			p++;
-			if (*p == '[') {
-				p++;
-				while (*p && (*p < 0x40 || *p > 0x7e))
-					p++;
-				if (*p)
-					p++;
+	end = cursor + strlen(src);
+	while (cursor < end) {
+		if (*cursor == 0x1bu) {
+			const unsigned char *start = cursor++;
+
+			if (cursor < end && *cursor == '[') {
+				cursor++;
+				while (cursor < end &&
+				       (*cursor < 0x40u || *cursor > 0x7eu))
+					cursor++;
+				if (cursor < end) {
+					cursor++;
+					if (allow_sgr && cursor[-1] == 'm' &&
+					    fwrite(start, 1,
+						(size_t)(cursor - start), stdout) !=
+						(size_t)(cursor - start))
+						MORPH_RETURN(-EIO);
+				}
 				continue;
 			}
-			if (*p)
-				p++;
+			if (cursor < end && (*cursor == ']' || *cursor == 'P' ||
+			    *cursor == 'X' || *cursor == '^' || *cursor == '_')) {
+				cursor = cli_skip_control_string(cursor + 1);
+				continue;
+			}
+			if (cursor < end)
+				cursor++;
 			continue;
 		}
-		if (dst && dst_size > 0 && out + 1 < dst_size)
-			dst[out] = (char)*p;
-		out++;
-		p++;
+		if (*cursor < 0x20u || *cursor == 0x7fu) {
+			unsigned cp = *cursor++;
+
+			if (cp == '\n' || cp == '\t') {
+				if (fputc((int)cp, stdout) == EOF)
+					MORPH_RETURN(-EIO);
+			} else if (cli_write_visible_control(cp) != 0) {
+				MORPH_RETURN(-EIO);
+			}
+			continue;
+		}
+		if (*cursor >= 0x80u) {
+			unsigned cp;
+			size_t avail = (size_t)(end - cursor);
+			size_t cp_len;
+
+			if (!utf8_decode_codepoint((const char *)cursor, avail,
+				&cp, &cp_len)) {
+				cursor++;
+				continue;
+			}
+			if (cp >= 0x80u && cp <= 0x9fu) {
+				if (cli_write_visible_control(cp) != 0)
+					MORPH_RETURN(-EIO);
+			} else if (fwrite(cursor, 1, cp_len, stdout) != cp_len) {
+				MORPH_RETURN(-EIO);
+			}
+			cursor += cp_len;
+			continue;
+		}
+		if (fputc(*cursor++, stdout) == EOF)
+			MORPH_RETURN(-EIO);
 	}
-	if (dst && dst_size > 0) {
-		size_t term = out < dst_size ? out : dst_size - 1;
-		dst[term] = '\0';
-	}
-	return out;
+	return 0;
 }
 
 int cli_printf(const char *fmt, ...)
 {
 	va_list ap;
 	int n;
-
-	if (g_cli_color_enabled) {
-		va_start(ap, fmt);
-		n = vfprintf(stdout, fmt, ap);
-		va_end(ap);
-		return n;
-	}
 
 	va_start(ap, fmt);
 	va_list ap_size;
@@ -76,33 +130,54 @@ int cli_printf(const char *fmt, ...)
 	char *buf = malloc((size_t)n + 1);
 	if (!buf) {
 		va_end(ap);
-		return -1;
+		MORPH_RETURN(-ENOMEM);
 	}
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
-	size_t stripped_len = cli_strip_ansi_into(NULL, 0, buf);
-	char *stripped = malloc(stripped_len + 1);
-	if (!stripped) {
+	if (cli_write_terminal_safe(buf, g_cli_color_enabled) != 0) {
 		free(buf);
-		return -1;
+		MORPH_RETURN(-EIO);
 	}
-	cli_strip_ansi_into(stripped, stripped_len + 1, buf);
 	free(buf);
-	fputs(stripped, stdout);
-	free(stripped);
 	return n;
+}
+
+int cli_print_untrusted_text(const char *text,
+			     enum utf8_terminal_text_mode mode)
+{
+	char *safe;
+	int rc = 0;
+
+	if (!text)
+		return 0;
+	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
+	if (!safe)
+		MORPH_RETURN(-ENOMEM);
+	if (fputs(safe, stdout) == EOF)
+		rc = -EIO;
+	free(safe);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	return 0;
 }
 
 void print_padded(const char *s, int target_width)
 {
+	char *safe;
 	size_t width;
 	int dw;
 	int pad;
 
-	if (!s) s = "";
-	width = utf8_display_width(s);
+	if (!s)
+		s = "";
+	safe = utf8_terminal_sanitize_dup(s, strlen(s),
+		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return;
+	width = utf8_display_width(safe);
 	dw = width > (size_t)INT_MAX ? INT_MAX : (int)width;
-	fputs(s, stdout);
+	fputs(safe, stdout);
+	free(safe);
 	pad = target_width - dw;
 	for (int i = 0; i < pad; i++)
 		putchar(' ');

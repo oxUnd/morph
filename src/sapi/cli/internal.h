@@ -101,6 +101,9 @@ void cli_sigint_handler(int sig);
 const char *cli_input_prompt(void);
 
 void print_padded(const char *s, int target_width);
+/* Use for model, tool, file, database, MCP, and user-provided text. */
+int cli_print_untrusted_text(const char *text,
+			     enum utf8_terminal_text_mode mode);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,

@@ -3,6 +3,24 @@
 
 #include <limits.h>
 
+static void cli_copy_safe_display(char *dst, size_t dst_cap,
+				  const char *src, size_t max_width)
+{
+	char *safe;
+
+	if (!dst || dst_cap == 0)
+		return;
+	dst[0] = '\0';
+	if (!src)
+		return;
+	safe = utf8_terminal_sanitize_dup(src, strlen(src),
+		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return;
+	(void)utf8_copy_sanitized_display_width(dst, dst_cap, safe, max_width);
+	free(safe);
+}
+
 static const char *cli_markdown_font_path(void)
 {
 	static char path[PATH_MAX];
@@ -87,14 +105,19 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 				cli_markdown_media_cb cb, void *user)
 {
 	struct morph_md_kitty *renderer;
+	char *safe;
 	char *normalized;
 	const char *content;
 	int rc;
 
 	if (!md)
 		return;
-	normalized = agent_ui_normalize_markdown(md);
-	content = normalized ? normalized : md;
+	safe = utf8_terminal_sanitize_dup(md, strlen(md),
+		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return;
+	normalized = agent_ui_normalize_markdown(safe);
+	content = normalized ? normalized : safe;
 	renderer = cli_markdown_create(indent, initial_column, 1, cb, user);
 	if (!renderer) {
 		log_warn("failed to initialize Kitty Markdown renderer");
@@ -109,11 +132,13 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 	fflush(stdout);
 out:
 	free(normalized);
+	free(safe);
 }
 
 int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 			       int kind)
 {
+	morph_buf_t safe;
 	int rc;
 
 	if (!ctx || !delta || !delta[0])
@@ -127,12 +152,21 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
 		ctx->markdown_stream_visible = 1;
+		utf8_terminal_sanitizer_init(&ctx->markdown_stream_sanitizer,
+			UTF8_TERMINAL_TEXT_MULTILINE);
 	}
-	rc = morph_buf_puts(&ctx->markdown_stream_text, delta);
+	rc = morph_buf_init(&safe, strlen(delta) + 16);
 	if (rc != 0)
 		return rc;
-	rc = morph_md_kitty_append(ctx->markdown_stream, delta,
-				   strlen(delta), 0);
+	rc = utf8_terminal_sanitize_feed(&ctx->markdown_stream_sanitizer,
+		&safe, delta, strlen(delta), 0);
+	if (rc == 0 && safe.len > 0)
+		rc = morph_buf_append(&ctx->markdown_stream_text,
+			morph_buf_cstr(&safe), safe.len);
+	if (rc == 0 && safe.len > 0)
+		rc = morph_md_kitty_append(ctx->markdown_stream,
+			morph_buf_cstr(&safe), safe.len, 0);
+	morph_buf_cleanup(&safe);
 	if (rc != 0)
 		return rc;
 	return morph_md_kitty_render(ctx->markdown_stream);
@@ -140,18 +174,35 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 
 void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output)
 {
+	morph_buf_t safe;
+	int safe_ready = 0;
+
 	if (!ctx)
 		return;
 	if (finish_output && ctx->markdown_stream) {
+		if (morph_buf_init(&safe, 16) == 0) {
+			safe_ready = 1;
+			if (utf8_terminal_sanitize_feed(
+			    &ctx->markdown_stream_sanitizer, &safe, NULL, 0, 1) == 0 &&
+			    safe.len > 0) {
+				(void)morph_buf_append(&ctx->markdown_stream_text,
+					morph_buf_cstr(&safe), safe.len);
+				(void)morph_md_kitty_append(ctx->markdown_stream,
+					morph_buf_cstr(&safe), safe.len, 0);
+			}
+		}
 		if (morph_md_kitty_append(
 			    ctx->markdown_stream, NULL, 0u, 1) == 0)
 			(void)morph_md_kitty_render(ctx->markdown_stream);
 	}
+	if (safe_ready)
+		morph_buf_cleanup(&safe);
 	morph_md_kitty_destroy(ctx->markdown_stream);
 	ctx->markdown_stream = NULL;
 	ctx->markdown_stream_kind = 0;
 	ctx->markdown_stream_visible = 0;
 	morph_buf_reset(&ctx->markdown_stream_text);
+	utf8_terminal_sanitizer_reset(&ctx->markdown_stream_sanitizer);
 }
 
 void media_callback(const char *type, const char *path, void *user)
@@ -318,12 +369,19 @@ int cli_ask_user_callback(const char *question,
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	printf(ANSI_BOLD ANSI_CYAN "? %s" ANSI_RESET "\n", question);
+	printf(ANSI_BOLD ANSI_CYAN "? ");
+	(void)cli_print_untrusted_text(question,
+		UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	printf(ANSI_RESET "\n");
 
 	char prompt[128];
 	if (choices && choices_count > 0) {
-		for (int i = 0; i < choices_count; i++)
-			printf("  %d. %s\n", i + 1, choices[i]);
+		for (int i = 0; i < choices_count; i++) {
+			printf("  %d. ", i + 1);
+			(void)cli_print_untrusted_text(choices[i],
+				UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			printf("\n");
+		}
 		if (multi && max_choices > 0) {
 			snprintf(prompt, sizeof(prompt),
 				 "  [" CLI_RL_IGNORE_START ANSI_GREEN
@@ -500,13 +558,18 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 		v = 0;
 #endif
 
-	if (v > 0)
-		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (%s%s)\n",
-		       subject ? subject : "",
+	if (v > 0) {
+		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (");
+		(void)cli_print_untrusted_text(subject ? subject : "",
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf("%s)\n",
 		       v == 2 ? ", session" : (v == 3 ? ", always" : ""));
-	else
-		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (%s)\n",
-		       subject ? subject : "");
+	} else {
+		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (");
+		(void)cli_print_untrusted_text(subject ? subject : "",
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(")\n");
+	}
 
 	fflush(stdout);
 	pthread_mutex_unlock(&prompt_lock);
@@ -556,20 +619,24 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("approval: %s\n", tool_name);
+		printf("approval: ");
+		(void)cli_print_untrusted_text(tool_name,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf("\n");
 	} else {
 		printf("\n" ANSI_BOLD ANSI_YELLOW
 		       "╭─ Approval required ─────────────────────────────"
 		       ANSI_RESET "\n");
-		printf(ANSI_YELLOW "│" ANSI_RESET " Tool     "
-		       ANSI_BOLD "%s" ANSI_RESET "\n", tool_name);
+		printf(ANSI_YELLOW "│" ANSI_RESET " Tool     " ANSI_BOLD);
+		(void)cli_print_untrusted_text(tool_name,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
 	}
 
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
 		char display_args[512];
-		utf8_copy_sanitized_display_width(display_args,
-						  sizeof(display_args),
-						  tool_args, 200);
+		cli_copy_safe_display(display_args, sizeof(display_args),
+			tool_args, 200);
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 			printf("args: %s\n", display_args);
 		else
@@ -672,23 +739,27 @@ enum tool_operation_verdict operation_approval_callback(
 		       "╭─ %s ─────────────────────────────"
 		       ANSI_RESET "\n", operation_label(op->kind));
 	}
-	if (op->tool_name && *op->tool_name)
-		printf("%sTool     " ANSI_BOLD "%s" ANSI_RESET "\n",
+	if (op->tool_name && *op->tool_name) {
+		printf("%sTool     " ANSI_BOLD,
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "",
-		       op->tool_name);
-	if (op->principal && *op->principal)
-		printf("%sSubject  " ANSI_BOLD "%s" ANSI_RESET "\n",
+		       ANSI_YELLOW "│ " ANSI_RESET : "");
+		(void)cli_print_untrusted_text(op->tool_name,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
+	}
+	if (op->principal && *op->principal) {
+		printf("%sSubject  " ANSI_BOLD,
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "",
-		       op->principal);
+		       ANSI_YELLOW "│ " ANSI_RESET : "");
+		(void)cli_print_untrusted_text(op->principal,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
+	}
 	if (op->kind == TOOL_OP_COMMAND) {
 		const char *command = op->action;
 		if (command) {
 			char display[512];
-			utf8_copy_sanitized_display_width(display,
-							  sizeof(display),
-							  command, 380);
+			cli_copy_safe_display(display, sizeof(display), command, 380);
 			printf("%sCommand  " ANSI_BOLD "%s" ANSI_RESET "\n",
 			       ctx->presentation_mode ==
 				       CLI_PRESENT_INTERACTIVE ?
@@ -696,16 +767,22 @@ enum tool_operation_verdict operation_approval_callback(
 			       display);
 		}
 	} else if (op->target && *op->target) {
-		printf("%sTarget   " ANSI_BOLD "%s" ANSI_RESET "\n",
+		printf("%sTarget   " ANSI_BOLD,
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "",
-		       op->target);
+		       ANSI_YELLOW "│ " ANSI_RESET : "");
+		(void)cli_print_untrusted_text(op->target,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
 	}
-	if (op->scope && *op->scope)
-		printf("%s%-8s " ANSI_DIM "%s" ANSI_RESET "\n",
+	if (op->scope && *op->scope) {
+		printf("%s%-8s " ANSI_DIM,
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "",
-		       operation_scope_label(op->kind), op->scope);
+		       operation_scope_label(op->kind));
+		(void)cli_print_untrusted_text(op->scope,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
+	}
 	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
 		const char *prefix =
 			ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
@@ -713,12 +790,15 @@ enum tool_operation_verdict operation_approval_callback(
 
 		printf("%sAccess   " ANSI_BOLD "read/write" ANSI_RESET "\n",
 		       prefix);
-		for (int i = 0; i < op->directories_count; i++)
-			printf("%s         %s " ANSI_DIM "%s" ANSI_RESET "\n",
+		for (int i = 0; i < op->directories_count; i++) {
+			printf("%s         %s " ANSI_DIM,
 			       prefix,
 			       i == op->directories_count - 1 ?
-			       "└─" : "├─",
-			       op->directories[i].path);
+			       "└─" : "├─");
+			(void)cli_print_untrusted_text(op->directories[i].path,
+				UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			printf(ANSI_RESET "\n");
+		}
 	}
 	int ephemeral = op->tool_name &&
 		strcmp(op->tool_name, "bash_exec") == 0 &&

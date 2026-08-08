@@ -52,8 +52,10 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		 */
 		char *rendered = runtime_memory_render_current(ctx->runtime, 0);
 		CMD_HEADER("memory (%s)", runtime_session_current_name(ctx->runtime));
-		printf("%s\n", rendered ? rendered :
-		       "No long-term memory stored for this session.");
+		(void)cli_print_untrusted_text(rendered ? rendered :
+		       "No long-term memory stored for this session.",
+		       UTF8_TERMINAL_TEXT_MULTILINE);
+		printf("\n");
 		free(rendered);
 		return 0;
 	}

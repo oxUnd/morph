@@ -549,6 +549,318 @@ char *utf8_strip_ansi_dup(const char *src, size_t src_len,
 	return out;
 }
 
+enum terminal_sanitize_state {
+	TERMINAL_SANITIZE_TEXT = 0,
+	TERMINAL_SANITIZE_ESC,
+	TERMINAL_SANITIZE_CSI,
+	TERMINAL_SANITIZE_OSC,
+	TERMINAL_SANITIZE_OSC_ESC,
+	TERMINAL_SANITIZE_STRING,
+	TERMINAL_SANITIZE_STRING_ESC,
+};
+
+static int terminal_append_visible_control(morph_buf_t *out, unsigned cp)
+{
+	if (cp == '\b')
+		return morph_buf_puts(out, "\\b");
+	if (cp == '\a')
+		return morph_buf_puts(out, "\\a");
+	if (cp <= 0xffu)
+		return morph_buf_printf(out, "\\x%02x", cp);
+	return morph_buf_printf(out, "\\u%04x", cp);
+}
+
+static int terminal_append_text(struct utf8_terminal_sanitizer *sanitizer,
+				morph_buf_t *out, const char *text,
+				size_t len, unsigned cp)
+{
+	if (cp == '\n') {
+		if (sanitizer->mode == UTF8_TERMINAL_TEXT_SINGLE_LINE)
+			return morph_buf_putc(out, ' ');
+		return morph_buf_putc(out, '\n');
+	}
+	if (cp == '\t') {
+		if (sanitizer->mode == UTF8_TERMINAL_TEXT_SINGLE_LINE)
+			return morph_buf_putc(out, ' ');
+		return morph_buf_putc(out, '\t');
+	}
+	if (cp < 0x20u || (cp >= 0x7fu && cp <= 0x9fu))
+		return terminal_append_visible_control(out, cp);
+	return morph_buf_append(out, text, len);
+}
+
+static int terminal_flush_cr(struct utf8_terminal_sanitizer *sanitizer,
+			     morph_buf_t *out)
+{
+	if (!sanitizer->pending_cr)
+		return 0;
+	sanitizer->pending_cr = 0;
+	if (sanitizer->mode == UTF8_TERMINAL_TEXT_SINGLE_LINE)
+		return morph_buf_putc(out, ' ');
+	return morph_buf_puts(out, "\\r");
+}
+
+static int terminal_process_text_byte(
+	struct utf8_terminal_sanitizer *sanitizer, morph_buf_t *out,
+	const char *src, size_t src_len, size_t *index)
+{
+	unsigned char c = (unsigned char)src[*index];
+	unsigned cp;
+	size_t expected;
+	size_t cp_len;
+	int rc;
+
+	if (sanitizer->pending_cr) {
+		if (c == '\n') {
+			sanitizer->pending_cr = 0;
+			(*index)++;
+			return sanitizer->mode ==
+				UTF8_TERMINAL_TEXT_SINGLE_LINE ?
+				morph_buf_putc(out, ' ') :
+				morph_buf_putc(out, '\n');
+		}
+		rc = terminal_flush_cr(sanitizer, out);
+		if (rc != 0)
+			return rc;
+	}
+	if (c == '\r') {
+		sanitizer->pending_cr = 1;
+		(*index)++;
+		return 0;
+	}
+	if (c < 0x80u) {
+		(*index)++;
+		return terminal_append_text(sanitizer, out,
+			(const char *)&src[*index - 1], 1, c);
+	}
+	expected = (size_t)utf8codepointcalcsize(src + *index);
+	if (expected > 1 && expected <= sizeof(sanitizer->utf8_pending) &&
+	    src_len - *index < expected) {
+		sanitizer->utf8_pending_len = src_len - *index;
+		memcpy(sanitizer->utf8_pending, src + *index,
+			sanitizer->utf8_pending_len);
+		*index = src_len;
+		return 0;
+	}
+	cp_len = utf8_next_codepoint_len(src + *index, src_len - *index);
+	if (cp_len == 0) {
+		(*index)++;
+		return 0;
+	}
+	if (!utf8_decode_codepoint(src + *index, cp_len, &cp, &cp_len)) {
+		(*index)++;
+		return 0;
+	}
+	rc = terminal_append_text(sanitizer, out, src + *index, cp_len, cp);
+	*index += cp_len;
+	return rc;
+}
+
+static int terminal_process_pending_utf8(
+	struct utf8_terminal_sanitizer *sanitizer, morph_buf_t *out,
+	const char **src, size_t *src_len, int finish)
+{
+	unsigned char combined[4];
+	unsigned cp;
+	size_t expected;
+	size_t needed;
+	size_t cp_len;
+	int rc;
+
+	if (sanitizer->utf8_pending_len == 0)
+		return 0;
+	expected = (size_t)utf8codepointcalcsize(
+		(const char *)sanitizer->utf8_pending);
+	if (expected == 0 || expected > sizeof(combined)) {
+		sanitizer->utf8_pending_len = 0;
+		return 0;
+	}
+	needed = expected - sanitizer->utf8_pending_len;
+	if (*src_len < needed) {
+		if (*src_len > 0) {
+			memcpy(sanitizer->utf8_pending +
+				sanitizer->utf8_pending_len, *src, *src_len);
+			sanitizer->utf8_pending_len += *src_len;
+			*src += *src_len;
+			*src_len = 0;
+		}
+		if (finish)
+			sanitizer->utf8_pending_len = 0;
+		return 0;
+	}
+	memcpy(combined, sanitizer->utf8_pending,
+		sanitizer->utf8_pending_len);
+	memcpy(combined + sanitizer->utf8_pending_len, *src, needed);
+	*src += needed;
+	*src_len -= needed;
+	sanitizer->utf8_pending_len = 0;
+	cp_len = expected;
+	if (!utf8_decode_codepoint((const char *)combined, cp_len, &cp,
+		&cp_len))
+		return 0;
+	rc = terminal_append_text(sanitizer, out, (const char *)combined,
+		cp_len, cp);
+	return rc;
+}
+
+void utf8_terminal_sanitizer_init(struct utf8_terminal_sanitizer *sanitizer,
+				  enum utf8_terminal_text_mode mode)
+{
+	if (!sanitizer)
+		return;
+	memset(sanitizer, 0, sizeof(*sanitizer));
+	sanitizer->mode = mode;
+}
+
+void utf8_terminal_sanitizer_reset(struct utf8_terminal_sanitizer *sanitizer)
+{
+	enum utf8_terminal_text_mode mode;
+
+	if (!sanitizer)
+		return;
+	mode = sanitizer->mode;
+	memset(sanitizer, 0, sizeof(*sanitizer));
+	sanitizer->mode = mode;
+}
+
+int utf8_terminal_sanitize_feed(struct utf8_terminal_sanitizer *sanitizer,
+				morph_buf_t *out, const char *src,
+				size_t src_len, int finish)
+{
+	size_t i = 0;
+	int rc;
+
+	if (!sanitizer || !out || (!src && src_len > 0))
+		MORPH_RETURN(-EINVAL);
+	if (!src)
+		src = "";
+	rc = terminal_process_pending_utf8(sanitizer, out, &src, &src_len,
+		finish);
+	if (rc != 0)
+		return rc;
+	while (i < src_len) {
+		unsigned char c = (unsigned char)src[i];
+
+		switch (sanitizer->state) {
+		case TERMINAL_SANITIZE_TEXT:
+			if (sanitizer->pending_cr &&
+			    (c == 0x1bu || c == 0x90u || c == 0x98u ||
+			     c == 0x9bu || c == 0x9du || c == 0x9eu ||
+			     c == 0x9fu)) {
+				rc = terminal_flush_cr(sanitizer, out);
+				if (rc != 0)
+					return rc;
+			}
+			if (c == 0x1bu) {
+				sanitizer->state = TERMINAL_SANITIZE_ESC;
+				i++;
+			} else if (c == 0x9bu) {
+				sanitizer->state = TERMINAL_SANITIZE_CSI;
+				i++;
+			} else if (c == 0x9du) {
+				sanitizer->state = TERMINAL_SANITIZE_OSC;
+				i++;
+			} else if (c == 0x90u || c == 0x98u ||
+				   c == 0x9eu || c == 0x9fu) {
+				sanitizer->state = TERMINAL_SANITIZE_STRING;
+				i++;
+			} else {
+				rc = terminal_process_text_byte(sanitizer, out,
+					src, src_len, &i);
+				if (rc != 0)
+					return rc;
+			}
+			break;
+		case TERMINAL_SANITIZE_ESC:
+			if (c == '[')
+				sanitizer->state = TERMINAL_SANITIZE_CSI;
+			else if (c == ']')
+				sanitizer->state = TERMINAL_SANITIZE_OSC;
+			else if (c == 'P' || c == 'X' || c == '^' || c == '_')
+				sanitizer->state = TERMINAL_SANITIZE_STRING;
+			else if (c == 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_ESC;
+			else
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			i++;
+			break;
+		case TERMINAL_SANITIZE_CSI:
+			if (c >= 0x40u && c <= 0x7eu)
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			else if (c == 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_ESC;
+			i++;
+			break;
+		case TERMINAL_SANITIZE_OSC:
+			if (c == '\a' || c == 0x9cu)
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			else if (c == 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_OSC_ESC;
+			i++;
+			break;
+		case TERMINAL_SANITIZE_OSC_ESC:
+			if (c == '\\')
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			else if (c != 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_OSC;
+			i++;
+			break;
+		case TERMINAL_SANITIZE_STRING:
+			if (c == 0x9cu)
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			else if (c == 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_STRING_ESC;
+			i++;
+			break;
+		case TERMINAL_SANITIZE_STRING_ESC:
+			if (c == '\\')
+				sanitizer->state = TERMINAL_SANITIZE_TEXT;
+			else if (c != 0x1bu)
+				sanitizer->state = TERMINAL_SANITIZE_STRING;
+			i++;
+			break;
+		default:
+			utf8_terminal_sanitizer_reset(sanitizer);
+			break;
+		}
+	}
+	if (finish) {
+		rc = terminal_flush_cr(sanitizer, out);
+		utf8_terminal_sanitizer_reset(sanitizer);
+		if (rc != 0)
+			return rc;
+	}
+	return 0;
+}
+
+char *utf8_terminal_sanitize_dup(const char *src, size_t src_len,
+			 enum utf8_terminal_text_mode mode,
+			 size_t *out_len)
+{
+	struct utf8_terminal_sanitizer sanitizer;
+	morph_buf_t out;
+	char *result;
+	int rc;
+
+	if (!src)
+		return NULL;
+	if (src_len > SIZE_MAX - 16)
+		return NULL;
+	rc = morph_buf_init(&out, src_len + 16);
+	if (rc != 0)
+		return NULL;
+	utf8_terminal_sanitizer_init(&sanitizer, mode);
+	rc = utf8_terminal_sanitize_feed(&sanitizer, &out, src, src_len, 1);
+	if (rc != 0) {
+		morph_buf_cleanup(&out);
+		return NULL;
+	}
+	if (out_len)
+		*out_len = out.len;
+	result = morph_buf_detach(&out);
+	return result;
+}
+
 int utf8_is_cjk_cp(unsigned cp)
 {
 	if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;

@@ -98,6 +98,16 @@ TEST(CliListTest, CompactsWhitespaceWithoutBreakingUtf8)
 	EXPECT_STREQ(output, "飞书 Markdown renderer");
 }
 
+TEST(CliListTest, CompactionRemovesTerminalControlSequences)
+{
+	char output[128];
+
+	ASSERT_GT(cli_list_compact_text(output, sizeof(output),
+		"safe\033[31mred\033[0m\033]52;c;secret\a end"), 0u);
+	EXPECT_STREQ(output, "safered end");
+	EXPECT_EQ(std::strchr(output, '\033'), nullptr);
+}
+
 TEST(CliListTest, UsesConfiguredColumnsWhenStdoutIsNotTerminal)
 {
 	const char *previous = std::getenv("COLUMNS");
