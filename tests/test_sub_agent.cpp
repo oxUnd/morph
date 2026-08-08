@@ -215,6 +215,7 @@ protected:
 	void SetUp() override {
 		tool_registry_init(&tools);
 		tok = tokenizer_create("gpt-4o", 128000);
+		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
 		cfg.summarize_threshold_ratio = 0.8;

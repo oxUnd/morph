@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
+#include <limits.h>
 
 volatile sig_atomic_t react_sigint_flag = 0;
 
@@ -1103,6 +1104,8 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	}
 	if (cfg)
 		ctx->compress = *cfg;
+	ctx->history_tool_result_tokens =
+		ctx->compress.tool_result_max_tokens;
 	ctx->compress.summarize = summarize_cb;
 	ctx->compress.summarize_user_data = ctx;
 	if (gcfg)
@@ -1168,6 +1171,7 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_fail_count = 0;
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
+	ctx->in_turn_compaction_count = 0;
 	ctx->cancelled = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
 }
@@ -2196,6 +2200,197 @@ static int react_prepare_active_tools(struct react_context *ctx,
 		return -ENOMEM;
 	collect_active_tools(ctx->tools, *active_tools, *active_tool_count);
 	return 0;
+}
+
+static int react_count_text_tokens(struct react_context *ctx,
+				   const char *text)
+{
+	if (!text || !text[0])
+		return 0;
+	return tokenizer_count(ctx->tokenizer, text);
+}
+
+static int react_estimate_active_tokens(struct react_context *ctx,
+	const char *system_prompt, const morph_array_t *messages,
+	const struct tool_desc *tools, int tool_count)
+{
+	int64_t total = react_count_text_tokens(ctx, system_prompt) + 16;
+
+	if (messages) {
+		for (size_t i = 0; i < messages->nelts; i++) {
+			const struct chat_message *message =
+				morph_array_get(messages, i);
+
+			if (!message)
+				continue;
+			total += 12;
+			total += react_count_text_tokens(ctx, message->role);
+			total += react_count_text_tokens(ctx, message->content);
+			total += react_count_text_tokens(ctx,
+				message->reasoning_content);
+			total += react_count_text_tokens(ctx,
+				message->tool_call_id);
+			for (int j = 0; j < message->tool_call_count; j++) {
+				const struct tool_call *call = &message->tool_calls[j];
+
+				total += 16;
+				total += react_count_text_tokens(ctx, call->id);
+				total += react_count_text_tokens(ctx, call->name);
+				total += react_count_text_tokens(ctx,
+					call->arguments);
+			}
+		}
+	}
+	for (int i = 0; tools && i < tool_count; i++) {
+		total += 24;
+		total += react_count_text_tokens(ctx, tools[i].name);
+		total += react_count_text_tokens(ctx, tools[i].title);
+		total += react_count_text_tokens(ctx, tools[i].description);
+		total += react_count_text_tokens(ctx, tools[i].input_schema);
+		total += react_count_text_tokens(ctx, tools[i].output_schema);
+		total += react_count_text_tokens(ctx, tools[i].input_format);
+	}
+	if (total > INT_MAX)
+		return INT_MAX;
+	return (int)total;
+}
+
+static int react_compaction_trigger_tokens(struct react_context *ctx,
+					   const struct model *llm)
+{
+	int limit = ctx->compress.max_context_tokens;
+	int protocol = ctx->compress.protocol_reserve_tokens;
+	int output = llm && llm->max_tokens > 0 ? llm->max_tokens : 4096;
+	int ratio_limit;
+	int hard_limit;
+
+	if (limit <= 0)
+		return INT_MAX;
+	if (protocol < 0)
+		protocol = 0;
+	if (output > limit / 2)
+		output = limit / 2;
+	ratio_limit = (int)((double)limit *
+		ctx->compress.summarize_threshold_ratio);
+	hard_limit = limit - output - protocol;
+	if (hard_limit < 1)
+		hard_limit = 1;
+	if (ratio_limit < 1 || ratio_limit > hard_limit)
+		return hard_limit;
+	return ratio_limit;
+}
+
+static int react_emit_compaction_event(struct react_context *ctx,
+	const char *name, const char *phase, int iteration, int before_tokens,
+	int after_tokens, int trigger_tokens, int error_code)
+{
+	cJSON *data;
+	int rc;
+
+	if (!react_events_enabled(ctx))
+		return 0;
+	data = cJSON_CreateObject();
+	if (!data)
+		MORPH_RETURN(-ENOMEM);
+	cJSON_AddNumberToObject(data, "iteration", iteration);
+	cJSON_AddNumberToObject(data, "before_tokens", before_tokens);
+	cJSON_AddNumberToObject(data, "after_tokens", after_tokens);
+	cJSON_AddNumberToObject(data, "trigger_tokens", trigger_tokens);
+	cJSON_AddNumberToObject(data, "compaction_count",
+		ctx->in_turn_compaction_count);
+	if (error_code < 0) {
+		cJSON_AddNumberToObject(data, "error_code", error_code);
+		cJSON_AddStringToObject(data, "error",
+			morph_strerror(error_code));
+	}
+	rc = react_emit_event(ctx, MORPH_EVENT_REACT, name, phase,
+		strcmp(phase, "end") == 0 ? "active context compacted" :
+		"active context compaction", data);
+	cJSON_Delete(data);
+	return rc;
+}
+
+static int react_rebuild_history_messages(struct react_context *ctx,
+					  morph_array_t *messages)
+{
+	int rc;
+
+	morph_array_cleanup(messages);
+	memset(messages, 0, sizeof(*messages));
+	rc = morph_array_init(messages, 64, sizeof(struct chat_message));
+	if (rc < 0)
+		MORPH_RETURN(rc);
+	return agent_history_build_chat_messages(ctx->history_items, messages,
+		ctx->turn_arena);
+}
+
+static int react_maybe_compact_active_window(struct react_context *ctx,
+	struct model *llm, const char *system_prompt, morph_array_t *messages,
+	const struct tool_desc *tools, int tool_count, int iteration)
+{
+	char trigger_kind[64];
+	int before_tokens;
+	int after_tokens;
+	int trigger_tokens;
+	int previous_rounds;
+	int compacted = 0;
+	int rc;
+
+	if (!ctx->compress.in_turn_compaction || !ctx->history_enabled ||
+	    !ctx->history_db)
+		return 0;
+	before_tokens = react_estimate_active_tokens(ctx, system_prompt,
+		messages, tools, tool_count);
+	trigger_tokens = react_compaction_trigger_tokens(ctx, llm);
+	if (before_tokens < trigger_tokens)
+		return 0;
+	ctx->in_turn_compaction_count++;
+	snprintf(trigger_kind, sizeof(trigger_kind), "in_turn_%d",
+		ctx->in_turn_compaction_count);
+	log_info("react: in-turn compaction at iteration %d (%d >= %d tokens)",
+		 iteration, before_tokens, trigger_tokens);
+	(void)react_emit_compaction_event(ctx, "react.compaction.begin",
+		"begin", iteration, before_tokens, before_tokens,
+		trigger_tokens, 0);
+	rc = agent_history_reload(ctx);
+	if (rc == 0) {
+		previous_rounds = ctx->compress.max_history_rounds;
+		ctx->compress.max_history_rounds = 0;
+		rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
+		ctx->compress.max_history_rounds = previous_rounds;
+	}
+	if (rc > 0) {
+		compacted = 1;
+		rc = react_rebuild_history_messages(ctx, messages);
+	}
+	if (rc < 0 || !compacted) {
+		if (rc >= 0)
+			rc = MORPH_ERR_PROTOCOL;
+		log_err("react: in-turn compaction failed: %s",
+			morph_strerror(rc));
+		(void)react_emit_compaction_event(ctx, "react.compaction.failed",
+			"failed", iteration, before_tokens, before_tokens,
+			trigger_tokens, rc);
+		MORPH_RETURN(rc);
+	}
+	after_tokens = react_estimate_active_tokens(ctx, system_prompt,
+		messages, tools, tool_count);
+	if (after_tokens >= trigger_tokens) {
+		rc = MORPH_ERR_LLM;
+		log_err("react: active context remains over budget after "
+			"compaction (%d >= %d tokens)", after_tokens,
+			trigger_tokens);
+		(void)react_emit_compaction_event(ctx,
+			"react.compaction.failed", "failed", iteration,
+			before_tokens, after_tokens, trigger_tokens, rc);
+		MORPH_RETURN(rc);
+	}
+	log_info("react: in-turn compaction completed (%d -> %d tokens)",
+		 before_tokens, after_tokens);
+	(void)react_emit_compaction_event(ctx, "react.compaction.completed",
+		"end", iteration, before_tokens, after_tokens,
+		trigger_tokens, 0);
+	return 1;
 }
 
 static int react_prepare_messages(struct react_context *ctx,
@@ -3320,6 +3515,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 			break;
 		}
 		has_tools = active_tool_count > 0;
+		status = react_maybe_compact_active_window(ctx, llm,
+			system_prompt, &messages, active_tools,
+			active_tool_count, iteration);
+		if (status < 0) {
+			react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status,
+				"context_compaction_failed");
+			break;
+		}
 
 		status = react_chat_once(ctx, llm, system_prompt,
 					 (struct chat_message *)messages.elts,

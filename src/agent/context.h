@@ -31,6 +31,8 @@ typedef int (*summarize_fn)(const char *text, void *user_data, char **out);
 struct compress_config {
 	int max_context_tokens;
 	int max_history_rounds;
+	int in_turn_compaction;
+	int protocol_reserve_tokens;
 	double summarize_threshold_ratio;
 	double compress_target_ratio;
 	int tool_result_max_tokens;

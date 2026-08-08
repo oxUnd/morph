@@ -152,6 +152,8 @@ static const struct schema_entry schema[] = {
 	TABLE("context"),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
+	BOOL("context.in_turn_compaction"),
+	INT("context.protocol_reserve_tokens", 0, INT_MAX),
 	INT("context.keep_recent_rounds", 0, INT_MAX),
 	INT("context.tool_result_max_tokens", 1, INT_MAX),
 	INT("context.compaction_user_message_tokens", 0, INT_MAX),

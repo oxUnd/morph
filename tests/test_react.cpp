@@ -8,6 +8,8 @@
 #include "http/client.h"
 #include "http/sse.h"
 #include "config/config.h"
+#include "db/database.h"
+#include "session.h"
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"
@@ -18,6 +20,9 @@
 #include <chrono>
 #include <sstream>
 #include <atomic>
+#include <cstdio>
+#include <limits.h>
+#include <unistd.h>
 
 struct sse_test_info {
 	int count;
@@ -40,6 +45,25 @@ static int test_tool_fn(const char *args_json, struct tool_result *result, void 
 	(void)tool_result_success_json_text(result, strdup("{\"result\":\"test\"}"));
 	return 0;
 }
+
+static int large_tool_fn(const char *args_json, struct tool_result *result,
+			 void *user_data)
+{
+	size_t bytes = *(size_t *)user_data;
+	char *text;
+
+	(void)args_json;
+	text = (char *)malloc(bytes + 1);
+	if (!text)
+		return -ENOMEM;
+	for (size_t i = 0; i < bytes; i++)
+		text[i] = "word "[i % 5];
+	text[bytes] = '\0';
+	(void)tool_result_success_json_text(result, text);
+	return 0;
+}
+
+static int test_compress_cb(const char *text, void *user_data, char **out);
 
 static int streaming_tool_fn(const char *args_json, struct tool_result *result,
 			     void *user_data)
@@ -844,6 +868,7 @@ protected:
 	void SetUp() override {
 		tool_registry_init(&tools);
 		tok = tokenizer_create("gpt-4o", 128000);
+		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
 		cfg.summarize_threshold_ratio = 0.8;
@@ -869,6 +894,7 @@ protected:
 	void SetUp() override {
 		tool_registry_init(&tools);
 		tok = tokenizer_create("gpt-4o", 128000);
+		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
 		cfg.summarize_threshold_ratio = 0.8;
@@ -1577,6 +1603,84 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 		cJSON_Delete(root);
 	}
 	return out;
+}
+
+TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
+{
+	const char *responses[] = {
+		"Thought: gather data.\nAction: large_tool({})\n",
+		"Final: continued after compaction"
+	};
+	char db_path[PATH_MAX];
+	struct db db;
+	struct session session;
+	struct morph_event_recorder rec;
+	size_t result_bytes = 80000;
+	int active_count = 0;
+
+	snprintf(db_path, sizeof(db_path),
+		 "/tmp/morph_react_compact_%d.db", getpid());
+	std::remove(db_path);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "compact", "mock-model", &session), 0);
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "large_tool",
+		"Return a large result", "{}", large_tool_fn, &result_bytes,
+		nullptr), 0);
+	cfg.max_context_tokens = 12000;
+	cfg.max_history_rounds = 6;
+	cfg.in_turn_compaction = 1;
+	cfg.protocol_reserve_tokens = 0;
+	cfg.summarize_threshold_ratio = 0.8;
+	cfg.compress_target_ratio = 0.5;
+	cfg.tool_result_max_tokens = 20000;
+	cfg.compaction_user_message_tokens = 2000;
+	cfg.compaction_summary_max_tokens = 1000;
+	llm = create_multi_mock_llm(responses, 2);
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
+		nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->history_enabled = 1;
+	ctx->history_db = &db;
+	ctx->history_session_id = session.id;
+	ctx->compress.summarize = test_compress_cb;
+	ctx->compress.summarize_user_data = nullptr;
+	ASSERT_EQ(react_set_turn_id(ctx, "turn_in_turn_compaction"), 0);
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec),
+		0);
+
+	EXPECT_EQ(react_run(ctx, "collect the large result", nullptr, nullptr),
+		0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_STREQ(ctx->final_answer, "continued after compaction");
+	EXPECT_EQ(ctx->compress.in_turn_compaction, 1);
+	EXPECT_TRUE(ctx->history_enabled);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "tool.call"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.observation"));
+	EXPECT_GT(model_history_count(&db, session.id, 0), 1);
+	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
+	EXPECT_TRUE(event_recorder_has_name(&rec,
+		"react.compaction.completed"));
+	struct model_history_item *active = model_history_list(&db,
+		session.id, 1, &active_count);
+	ASSERT_NE(active, nullptr);
+	ASSERT_GE(active_count, 2);
+	bool found_summary = false;
+	for (struct model_history_item *item = active; item;
+	     item = item->next) {
+		if (std::strcmp(item->kind, "compaction_summary") == 0)
+			found_summary = true;
+	}
+	EXPECT_TRUE(found_summary);
+	model_history_free_list(active);
+
+	react_context_destroy(ctx);
+	morph_event_recorder_cleanup(&rec);
+	db_close(&db);
+	std::remove(db_path);
 }
 
 TEST_F(MockLlmTest, StreamsNativeContentAsProvisionalThoughtUntilFinal) {

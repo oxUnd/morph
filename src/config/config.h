@@ -166,6 +166,8 @@ struct config_react {
 struct config_context {
 	double summarize_threshold_ratio;
 	double compress_target_ratio;
+	int in_turn_compaction;
+	int protocol_reserve_tokens;
 	int keep_recent_rounds;
 	int tool_result_max_tokens;
 	int compaction_user_message_tokens;

@@ -346,13 +346,22 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 	if (!messages || !arena)
 		MORPH_RETURN(-EINVAL);
 	while (item) {
+		if (strcmp(item->kind, "compaction_summary") == 0) {
+			rc = history_add_text_message(messages, arena, "system",
+				item->content);
+			if (rc != 0)
+				return rc;
+		}
+		item = item->next;
+	}
+	item = items;
+	while (item) {
 		if (strcmp(item->kind, "assistant_tool_calls") == 0)
 			rc = history_add_tool_calls(item, messages, arena);
 		else if (strcmp(item->kind, "tool_result") == 0)
 			rc = history_add_tool_result(item, messages, arena);
 		else if (strcmp(item->kind, "compaction_summary") == 0)
-			rc = history_add_text_message(messages, arena, "system",
-				item->content);
+			rc = 0;
 		else if (strcmp(item->kind, "user_message") == 0)
 			rc = history_add_text_message(messages, arena, "user",
 				item->content);
@@ -793,7 +802,25 @@ static int history_compaction_input(const struct model_history_item *items,
 	return 0;
 }
 
-int agent_history_compact(struct react_context *ctx, int force)
+int agent_history_reload(struct react_context *ctx)
+{
+	struct model_history_item *items;
+	int count = 0;
+
+	if (!ctx || !ctx->history_enabled || !ctx->history_db ||
+	    ctx->history_session_id <= 0)
+		MORPH_RETURN(-EINVAL);
+	items = model_history_list(ctx->history_db, ctx->history_session_id, 1,
+		&count);
+	if (!items && count != 0)
+		MORPH_RETURN(MORPH_ERR_DB);
+	model_history_free_list(ctx->history_items);
+	ctx->history_items = items;
+	return 0;
+}
+
+int agent_history_compact_with_trigger(struct react_context *ctx, int force,
+	const char *trigger_kind_in)
 {
 	struct model_history_item *item;
 	morph_buf_t input;
@@ -805,8 +832,10 @@ int agent_history_compact(struct react_context *ctx, int force)
 	int input_tokens = 0;
 	int threshold;
 	int count = 0;
+	int fallback_used = 0;
 	int rc;
-	const char *trigger_kind = force ? "manual" : "threshold";
+	const char *trigger_kind = trigger_kind_in && trigger_kind_in[0] ?
+		trigger_kind_in : (force ? "manual" : "threshold");
 
 	if (!ctx || !ctx->history_enabled || !ctx->history_db ||
 	    !ctx->compress.summarize || ctx->compress.max_context_tokens <= 0)
@@ -835,9 +864,9 @@ int agent_history_compact(struct react_context *ctx, int force)
 			ctx->history_session_id, ctx->turn_id, trigger_kind,
 			"failed", input_tokens, 0, failure,
 			morph_strerror(failure));
-		if (force)
+		if (force && strncmp(trigger_kind, "in_turn_", 8) != 0)
 			return failure;
-		if (input_tokens < ctx->compress.max_context_tokens) {
+		if (!force && input_tokens < ctx->compress.max_context_tokens) {
 			log_warn("history compaction failed before hard limit: %s",
 				 morph_strerror(failure));
 			return 0;
@@ -848,7 +877,7 @@ int agent_history_compact(struct react_context *ctx, int force)
 			"as unavailable and do not assume unfinished work completed.]");
 		if (!summary)
 			MORPH_RETURN(-ENOMEM);
-		trigger_kind = "fallback";
+		fallback_used = 1;
 	}
 	max_summary_tokens = ctx->compress.compaction_summary_max_tokens;
 	if (max_summary_tokens > 0 &&
@@ -875,7 +904,7 @@ int agent_history_compact(struct react_context *ctx, int force)
 	rc = model_history_compact(ctx->history_db, ctx->history_session_id,
 		ctx->turn_id, summary, max_summary_tokens, user_budget,
 		input_tokens,
-		strcmp(trigger_kind, "fallback") == 0 ?
+		fallback_used ?
 			ctx->compress.max_history_rounds : 0,
 		trigger_kind, NULL);
 	free(summary);
@@ -916,6 +945,11 @@ int agent_history_compact(struct react_context *ctx, int force)
 		}
 	}
 	return 1;
+}
+
+int agent_history_compact(struct react_context *ctx, int force)
+{
+	return agent_history_compact_with_trigger(ctx, force, NULL);
 }
 
 int agent_history_maybe_compact(struct react_context *ctx)

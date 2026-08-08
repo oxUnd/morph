@@ -51,6 +51,9 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 	const char *content, char **prepared, int *truncated);
 int agent_history_maybe_compact(struct react_context *ctx);
 int agent_history_compact(struct react_context *ctx, int force);
+int agent_history_compact_with_trigger(struct react_context *ctx, int force,
+	const char *trigger_kind);
+int agent_history_reload(struct react_context *ctx);
 int agent_history_repair_interrupted(struct db *db, int64_t session_id);
 int agent_history_diagnose(const struct model_history_item *items,
 	struct tokenizer *tokenizer, struct agent_history_diagnostic *diagnostic);

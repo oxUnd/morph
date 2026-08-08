@@ -52,6 +52,12 @@ static int agent_turn_summary(const char *, void *, char **out)
 	return *out ? 0 : -ENOMEM;
 }
 
+static int agent_turn_failing_summary(const char *, void *, char **out)
+{
+	*out = nullptr;
+	return -EIO;
+}
+
 TEST_F(AgentTurnTest, BeginLoadsHistoryAndFinishPersistsTurn)
 {
 	ASSERT_EQ(message_add(&db, sess.id, "user", "old question", 2), 0);
@@ -348,4 +354,72 @@ TEST_F(AgentTurnTest, BeginCompactsBeforePersistingCurrentUser)
 	model_history_free_list(items);
 	react->state = REACT_STATE_ABORT;
 	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
+}
+
+TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
+{
+	struct model_history_item user = {};
+	struct model_history_item summary = {};
+	morph_array_t messages = {};
+	struct arena *arena = arena_create(0);
+
+	ASSERT_NE(arena, nullptr);
+	std::strcpy(user.kind, "user_message");
+	user.content = const_cast<char *>("exact current request");
+	user.next = &summary;
+	std::strcpy(summary.kind, "compaction_summary");
+	summary.content = const_cast<char *>("earlier context summary");
+	ASSERT_EQ(morph_array_init(&messages, 2,
+		sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(&user, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 2U);
+	struct chat_message *built =
+		static_cast<struct chat_message *>(messages.elts);
+	EXPECT_STREQ(built[0].role, "system");
+	EXPECT_STREQ(built[0].content, "earlier context summary");
+	EXPECT_STREQ(built[1].role, "user");
+	EXPECT_STREQ(built[1].content, "exact current request");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
+TEST_F(AgentTurnTest, InTurnCompactionFallsBackWhenSummaryFails)
+{
+	struct model_history_insert old = {};
+
+	old.session_id = sess.id;
+	old.turn_id = "turn_fallback";
+	old.kind = "user_message";
+	old.role = "user";
+	old.content = "important active context";
+	old.token_count = 10;
+	old.active = 1;
+	ASSERT_EQ(model_history_add(&db, &old, nullptr), 0);
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->compress.max_context_tokens = 100;
+	react->compress.max_history_rounds = 2;
+	react->compress.compress_target_ratio = 0.5;
+	react->compress.compaction_user_message_tokens = 20;
+	react->compress.compaction_summary_max_tokens = 20;
+	react->compress.summarize = agent_turn_failing_summary;
+	ASSERT_EQ(react_set_turn_id(react, "turn_fallback"), 0);
+	ASSERT_EQ(agent_history_reload(react), 0);
+	EXPECT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"),
+		1);
+
+	int count = 0;
+	struct model_history_item *items = model_history_list(&db, sess.id, 1,
+		&count);
+	bool found_fallback = false;
+	for (struct model_history_item *item = items; item;
+	     item = item->next) {
+		if (std::strcmp(item->kind, "compaction_summary") == 0 &&
+		    item->content && std::strstr(item->content,
+			"could not be summarized"))
+			found_fallback = true;
+	}
+	EXPECT_TRUE(found_fallback);
+	model_history_free_list(items);
 }

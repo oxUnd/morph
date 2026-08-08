@@ -525,6 +525,8 @@ void config_set_defaults(struct config *cfg)
 
 	cfg->context.summarize_threshold_ratio = 0.8;
 	cfg->context.compress_target_ratio = 0.5;
+	cfg->context.in_turn_compaction = 1;
+	cfg->context.protocol_reserve_tokens = 4096;
 	cfg->context.keep_recent_rounds = 6;
 	cfg->context.tool_result_max_tokens = 8000;
 	cfg->context.compaction_user_message_tokens = 20000;
@@ -1126,6 +1128,9 @@ int config_load(struct config *cfg, const char *path)
 	if (context) {
 		CFG_DBL(context, "summarize_threshold_ratio", cfg->context.summarize_threshold_ratio);
 		CFG_DBL(context, "compress_target_ratio", cfg->context.compress_target_ratio);
+		CFG_BOOL(context, "in_turn_compaction", cfg->context.in_turn_compaction);
+		CFG_INT(context, "protocol_reserve_tokens",
+			cfg->context.protocol_reserve_tokens);
 		CFG_INT(context, "keep_recent_rounds", cfg->context.keep_recent_rounds);
 		CFG_INT(context, "tool_result_max_tokens",
 			cfg->context.tool_result_max_tokens);
@@ -1461,10 +1466,13 @@ void config_print(const struct config *cfg)
 		log_info("    readonly_tool: %s", cfg->react.readonly_tools[i]);
 	for (int i = 0; i < cfg->react.hitl_tools_count; i++)
 		log_info("    hitl_tool: %s", cfg->react.hitl_tools[i]);
-	log_info("  [context] threshold=%.1f target=%.1f keep=%d",
+	log_info("  [context] threshold=%.1f target=%.1f keep=%d "
+		 "in_turn=%d reserve=%d",
 		 cfg->context.summarize_threshold_ratio,
 		 cfg->context.compress_target_ratio,
-		 cfg->context.keep_recent_rounds);
+		 cfg->context.keep_recent_rounds,
+		 cfg->context.in_turn_compaction,
+		 cfg->context.protocol_reserve_tokens);
 	log_info("  [memory] enabled=%d hot=%d cold=%d llm=%d facts=%d episodes=%d procedures=%d chars=%d",
 		 cfg->memory.enabled,
 		 cfg->memory.hot_path_enabled,

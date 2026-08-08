@@ -338,6 +338,11 @@ write_paths = []
 delete_paths = []
 
 [context]
+# Compact between tool iterations instead of waiting for the next user turn.
+in_turn_compaction = true
+# Reserve for provider framing, bookkeeping, and token-estimation error.
+# model.text.max_tokens is reserved separately.
+protocol_reserve_tokens = 4096
 # Compress when token usage exceeds context_limit * threshold
 summarize_threshold_ratio = 0.8
 # After compression, target this fraction of context_limit

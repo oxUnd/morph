@@ -344,6 +344,10 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	compress_cfg.max_context_tokens = config->models.text.context_limit;
 	compress_cfg.max_history_rounds =
 		config->context.keep_recent_rounds;
+	compress_cfg.in_turn_compaction =
+		config->context.in_turn_compaction;
+	compress_cfg.protocol_reserve_tokens =
+		config->context.protocol_reserve_tokens;
 	compress_cfg.summarize_threshold_ratio =
 		config->context.summarize_threshold_ratio;
 	compress_cfg.compress_target_ratio =

@@ -60,6 +60,8 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.permission_profile_count, 0);
 	EXPECT_DOUBLE_EQ(cfg.context.summarize_threshold_ratio, 0.8);
 	EXPECT_DOUBLE_EQ(cfg.context.compress_target_ratio, 0.5);
+	EXPECT_EQ(cfg.context.in_turn_compaction, 1);
+	EXPECT_EQ(cfg.context.protocol_reserve_tokens, 4096);
 	EXPECT_EQ(cfg.context.keep_recent_rounds, 6);
 	EXPECT_EQ(cfg.context.tool_result_max_tokens, 8000);
 	EXPECT_EQ(cfg.context.compaction_user_message_tokens, 20000);
