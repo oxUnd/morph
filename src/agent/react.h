@@ -157,6 +157,7 @@ struct react_context {
 	int empty_round_count;
 	int steer_count;
 	int in_turn_compaction_count;
+	int incomplete_final_retry_count;
 	volatile sig_atomic_t cancelled;
 	struct morph_cancel_token cancel_token;
 	struct arena *turn_arena;

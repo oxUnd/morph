@@ -992,12 +992,14 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	}
 	const char *sys = ctx->history_compaction_prompt ?
 		ctx->history_compaction_prompt :
-		"Create a compact handoff for another model that must continue "
-		"the work without the earlier conversation. Preserve the user's "
-		"goals and constraints, decisions and reasons, completed and "
-		"pending work, exact identifiers and paths, tool outcomes, errors, "
-		"and verification status. Distinguish facts from uncertainty. "
-		"Do not invent details or add domain-specific assumptions.";
+		"Write a factual continuation checkpoint for another model. Start "
+		"directly with these sections: Current objective, Constraints, "
+		"Completed work, Current working state, Pending work, and "
+		"Verification. Preserve exact identifiers, paths, edits, tool "
+		"outcomes, errors, and the next concrete action. Never respond with "
+		"meta narration such as 'let me understand' or restart the task from "
+		"the beginning. Distinguish facts from uncertainty and do not invent "
+		"details or assume unfinished work is complete.";
 	const char *msgs[] = { text };
 	morph_buf_t b;
 	int previous_max_tokens = llm->max_tokens;
@@ -1172,6 +1174,7 @@ void react_reset(struct react_context *ctx)
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
 	ctx->in_turn_compaction_count = 0;
+	ctx->incomplete_final_retry_count = 0;
 	ctx->cancelled = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
 }
@@ -3341,6 +3344,67 @@ static void react_split_legacy_final(struct react_context *ctx,
 		*final_out = final_start;
 }
 
+static int react_final_is_continuation_note(struct react_context *ctx,
+					     const char *proposed)
+{
+	static const char *prefixes[] = {
+		"let me understand",
+		"let me inspect",
+		"let me investigate",
+		"let me check",
+		"now let me",
+		"i need to inspect",
+		"i need to investigate",
+		"i need to check",
+	};
+	const char *text = proposed;
+
+	if (!ctx || ctx->in_turn_compaction_count <= 0 ||
+	    ctx->incomplete_final_retry_count > 0 || !text)
+		return 0;
+	while (*text && isspace((unsigned char)*text))
+		text++;
+	for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
+		size_t len = strlen(prefixes[i]);
+
+		if (strncasecmp(text, prefixes[i], len) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int react_retry_incomplete_final(struct react_context *ctx,
+					 const char *proposed,
+					 morph_array_t *messages)
+{
+	struct chat_message *slots;
+	const char *retry_prompt =
+		"Your previous response was a continuation note, not a completed "
+		"answer. Continue the current task from the checkpoint and preserved "
+		"recent tool results. Use tools if needed. Return a final answer only "
+		"after the requested work is complete or a concrete blocker exists.";
+
+	if (!react_final_is_continuation_note(ctx, proposed))
+		return 0;
+	slots = morph_array_push_n(messages, 2);
+	if (!slots)
+		MORPH_RETURN(-ENOMEM);
+	memset(slots, 0, 2 * sizeof(*slots));
+	slots[0].role = arena_strdup(ctx->turn_arena, "assistant");
+	slots[0].content = arena_strdup(ctx->turn_arena, proposed);
+	slots[1].role = arena_strdup(ctx->turn_arena, "user");
+	slots[1].content = arena_strdup(ctx->turn_arena, retry_prompt);
+	if (!slots[0].role || !slots[0].content || !slots[1].role ||
+	    !slots[1].content)
+		MORPH_RETURN(-ENOMEM);
+	ctx->incomplete_final_retry_count++;
+	log_warn("react: rejected continuation note as Final after compaction");
+	(void)react_emit_text_event(ctx, MORPH_EVENT_REACT,
+		"react.final.retry", "retry", "incomplete final response",
+		proposed);
+	return 1;
+}
+
 static int react_handle_final_response(struct react_context *ctx,
 				       const char *proposed,
 				       morph_array_t *messages,
@@ -3350,6 +3414,7 @@ static int react_handle_final_response(struct react_context *ctx,
 	const char *thought = NULL;
 	const char *final_text = proposed;
 	int gr;
+	int retry;
 
 	react_split_legacy_final(ctx, proposed, &thought, &final_text);
 	if (thought) {
@@ -3361,6 +3426,14 @@ static int react_handle_final_response(struct react_context *ctx,
 				      "react.thought.end", "end",
 				      NULL, thought);
 	}
+	retry = react_retry_incomplete_final(ctx, final_text, messages);
+	if (retry < 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, retry,
+				 "internal_error");
+		return 1;
+	}
+	if (retry > 0)
+		return 0;
 
 	gr = react_handle_guardrail_retry(ctx, final_text, messages, cb,
 					  user_data);

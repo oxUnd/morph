@@ -214,6 +214,53 @@ TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 	cJSON_Delete(thinking);
 }
 
+TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
+{
+	cJSON *begin = cJSON_CreateObject();
+	cJSON *completed = cJSON_CreateObject();
+
+	cJSON_AddNumberToObject(begin, "iteration", 22);
+	cJSON_AddNumberToObject(begin, "before_tokens", 91676);
+	cJSON_AddNumberToObject(begin, "after_tokens", 91676);
+	cJSON_AddNumberToObject(begin, "compaction_count", 1);
+	cJSON_AddNumberToObject(completed, "iteration", 22);
+	cJSON_AddNumberToObject(completed, "before_tokens", 91676);
+	cJSON_AddNumberToObject(completed, "after_tokens", 15672);
+	cJSON_AddNumberToObject(completed, "compaction_count", 1);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", begin);
+	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end",
+	     completed);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_EQ(output, "status: Compressing context…\n"
+		"context: compacted 91676 -> 15672 tokens "
+		"(iteration 22, pass 1)\n");
+	cJSON_Delete(begin);
+	cJSON_Delete(completed);
+}
+
+TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
+{
+	cJSON *completed = cJSON_CreateObject();
+
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON_AddNumberToObject(completed, "iteration", 22);
+	cJSON_AddNumberToObject(completed, "before_tokens", 91676);
+	cJSON_AddNumberToObject(completed, "after_tokens", 15672);
+	cJSON_AddNumberToObject(completed, "compaction_count", 1);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end",
+	     completed);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Context  compacted 91676 → 15672 tokens "
+		"(iteration 22, pass 1)"), std::string::npos);
+	cJSON_Delete(completed);
+}
+
 TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)
 {
 	cJSON *reasoning = TextData("Checking constraints");

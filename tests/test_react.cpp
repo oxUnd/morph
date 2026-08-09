@@ -1167,6 +1167,19 @@ TEST_F(MockLlmTest, LlmFinalDirectly) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, ContinuationWordingWithoutCompactionRemainsFinal) {
+	setup_llm_with_response("Let me understand the requested explanation.");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	EXPECT_EQ(react_run(ctx, "explain this", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
+	EXPECT_STREQ(ctx->final_answer,
+		"Let me understand the requested explanation.");
+	EXPECT_EQ(ctx->incomplete_final_retry_count, 0);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, LlmThoughtAndFinal) {
 	setup_llm_with_response("Thought: Let me think.\nFinal: Here is my answer.");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1609,6 +1622,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 {
 	const char *responses[] = {
 		"Thought: gather data.\nAction: large_tool({})\n",
+		"Let me understand the current task before continuing.",
 		"Final: continued after compaction"
 	};
 	char db_path[PATH_MAX];
@@ -1637,7 +1651,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	cfg.tool_result_max_tokens = 20000;
 	cfg.compaction_user_message_tokens = 2000;
 	cfg.compaction_summary_max_tokens = 1000;
-	llm = create_multi_mock_llm(responses, 2);
+	llm = create_multi_mock_llm(responses, 3);
 	ASSERT_NE(llm, nullptr);
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 		nullptr);
@@ -1662,8 +1676,10 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.observation"));
 	EXPECT_GT(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
+	EXPECT_EQ(ctx->incomplete_final_retry_count, 1);
 	EXPECT_TRUE(event_recorder_has_name(&rec,
 		"react.compaction.completed"));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final.retry"));
 	struct model_history_item *active = model_history_list(&db,
 		session.id, 1, &active_count);
 	ASSERT_NE(active, nullptr);

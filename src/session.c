@@ -844,7 +844,8 @@ static int64_t *history_preserved_add(morph_array_t *preserved, int64_t id)
 int model_history_compact(struct db *db, int64_t session_id,
 			  const char *turn_id, const char *summary,
 			  int summary_tokens, int user_message_tokens,
-			  int input_tokens, int keep_recent_rounds,
+			  int recent_history_tokens, int input_tokens,
+			  int keep_recent_rounds,
 			  const char *trigger_kind,
 			  int64_t *summary_item_id)
 {
@@ -868,10 +869,12 @@ int model_history_compact(struct db *db, int64_t session_id,
 	int64_t new_id = 0;
 	int64_t cutoff_sequence_no = 0;
 	int used_tokens = 0;
+	int recent_used_tokens = 0;
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !summary || !summary[0] ||
 	    summary_tokens < 0 || user_message_tokens < 0 ||
+	    recent_history_tokens < 0 ||
 	    keep_recent_rounds < 0 || !trigger_kind ||
 	    !trigger_kind[0])
 		MORPH_RETURN(-EINVAL);
@@ -907,6 +910,49 @@ int model_history_compact(struct db *db, int64_t session_id,
 	stmt = NULL;
 	if (rc != SQLITE_OK && rc != SQLITE_DONE)
 		goto out_rollback;
+	if (recent_history_tokens > 0) {
+		const char *recent_sql =
+			"SELECT id,kind,token_count FROM model_history_items "
+			"WHERE session_id=? AND active=1 "
+			"AND kind NOT IN ('user_message','compaction_summary') "
+			"ORDER BY sequence_no DESC";
+		int need_tool_call = 0;
+
+		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
+		if (rc != SQLITE_OK)
+			goto out_rollback;
+		sqlite3_bind_int64(stmt, 1, session_id);
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *kind = (const char *)sqlite3_column_text(stmt, 1);
+			int tokens = sqlite3_column_int(stmt, 2);
+			int64_t *id;
+
+			if (tokens < 0)
+				tokens = 0;
+			if (!need_tool_call &&
+			    recent_used_tokens + tokens > recent_history_tokens)
+				break;
+			id = history_preserved_add(&preserved,
+				sqlite3_column_int64(stmt, 0));
+			if (!id) {
+				rc = SQLITE_NOMEM;
+				break;
+			}
+			recent_used_tokens += tokens;
+			if (kind && strcmp(kind, "tool_result") == 0)
+				need_tool_call = 1;
+			else if (need_tool_call && kind &&
+				 strcmp(kind, "assistant_tool_calls") == 0)
+				need_tool_call = 0;
+			if (!need_tool_call &&
+			    recent_used_tokens >= recent_history_tokens)
+				break;
+		}
+		sqlite3_finalize(stmt);
+		stmt = NULL;
+		if (rc != SQLITE_OK && rc != SQLITE_DONE)
+			goto out_rollback;
+	}
 	if (keep_recent_rounds > 0) {
 		const char *recent_sql =
 			"SELECT id FROM model_history_items WHERE session_id=? "

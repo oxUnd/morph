@@ -512,7 +512,7 @@ TEST_F(SessionTest, ModelHistoryCompactionIsPersistentAndKeepsUserBudget) {
 	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
 
 	ASSERT_EQ(model_history_compact(&db, s.id, "turn_3", "handoff", 2,
-		2, 8, 0, "test", nullptr), 0);
+		2, 0, 8, 0, "test", nullptr), 0);
 	struct model_history_item *active =
 		model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(count, 2);
@@ -523,6 +523,66 @@ TEST_F(SessionTest, ModelHistoryCompactionIsPersistentAndKeepsUserBudget) {
 	EXPECT_STREQ(active->next->content, "handoff");
 	model_history_free_list(active);
 	EXPECT_EQ(model_history_count(&db, s.id, 0), 4);
+}
+
+TEST_F(SessionTest, ModelHistoryCompactionKeepsLatestCompleteToolExchange) {
+	struct session s;
+	struct model_history_insert item = {};
+	int count = 0;
+
+	ASSERT_EQ(session_create(&db, "history_recent_tools", "test", &s), 0);
+	item.session_id = s.id;
+	item.turn_id = "turn_1";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "diagnose the failure";
+	item.token_count = 2;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_tool_calls";
+	item.role = "assistant";
+	item.content = "first call";
+	item.payload_json = "{\"calls\":[]}";
+	item.token_count = 10;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "tool_result";
+	item.role = "tool";
+	item.content = "old result";
+	item.payload_json = nullptr;
+	item.tool_call_id = "call_old";
+	item.token_count = 10;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_tool_calls";
+	item.role = "assistant";
+	item.content = "latest call";
+	item.payload_json = "{\"calls\":[]}";
+	item.tool_call_id = nullptr;
+	item.token_count = 10;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "tool_result";
+	item.role = "tool";
+	item.content = "latest result";
+	item.payload_json = nullptr;
+	item.tool_call_id = "call_latest";
+	item.token_count = 10;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+
+	ASSERT_EQ(model_history_compact(&db, s.id, "turn_1", "checkpoint", 2,
+		2, 15, 42, 0, "test", nullptr), 0);
+	struct model_history_item *active =
+		model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 4);
+	ASSERT_NE(active, nullptr);
+	EXPECT_STREQ(active->kind, "user_message");
+	ASSERT_NE(active->next, nullptr);
+	EXPECT_STREQ(active->next->kind, "assistant_tool_calls");
+	EXPECT_STREQ(active->next->content, "latest call");
+	ASSERT_NE(active->next->next, nullptr);
+	EXPECT_STREQ(active->next->next->kind, "tool_result");
+	EXPECT_STREQ(active->next->next->content, "latest result");
+	ASSERT_NE(active->next->next->next, nullptr);
+	EXPECT_STREQ(active->next->next->next->kind, "compaction_summary");
+	model_history_free_list(active);
 }
 
 TEST_F(SessionTest, ModelHistoryRepairsInterruptedToolCall) {
@@ -852,7 +912,7 @@ TEST_F(SessionTest, CompactionFailureRollsBackWithoutChangingHistory) {
 		"history_compactions BEGIN SELECT RAISE(ABORT, 'injected'); END;",
 		nullptr, nullptr, nullptr), SQLITE_OK);
 	EXPECT_NE(model_history_compact(&db, s.id, "turn_1", "summary", 2,
-		0, 2, 0, "manual", nullptr), 0);
+		0, 0, 2, 0, "manual", nullptr), 0);
 	struct model_history_item *items =
 		model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(count, 1);

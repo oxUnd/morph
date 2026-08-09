@@ -90,6 +90,16 @@ static int event_error_code(const struct morph_event *ev)
 	return cJSON_IsNumber(item) ? item->valueint : 0;
 }
 
+static int event_int(const struct morph_event *ev, const char *name)
+{
+	cJSON *item;
+
+	if (!ev || !cJSON_IsObject(ev->data))
+		return 0;
+	item = cJSON_GetObjectItemCaseSensitive(ev->data, name);
+	return cJSON_IsNumber(item) ? item->valueint : 0;
+}
+
 static char *event_args_json(const struct morph_event *ev)
 {
 	cJSON *args;
@@ -828,6 +838,50 @@ static void presentation_reflection(struct cli_context *ctx,
 		print_indented(ANSI_YELLOW "• Guardrail  " ANSI_RESET, text);
 }
 
+static void presentation_compaction(struct cli_context *ctx,
+				    const struct morph_event *ev)
+{
+	int before = event_int(ev, "before_tokens");
+	int after = event_int(ev, "after_tokens");
+	int iteration = event_int(ev, "iteration");
+	int count = event_int(ev, "compaction_count");
+	const char *error = event_string(ev, "error");
+	int failed = ev->name && strcmp(ev->name,
+		"react.compaction.failed") == 0;
+
+	if (ev->name && strcmp(ev->name, "react.compaction.begin") == 0) {
+		presentation_status(ctx, "Compressing context…");
+		return;
+	}
+	presentation_clear_status(ctx);
+	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
+		if (failed) {
+			printf("context: compression failed at iteration %d: %s\n",
+			       iteration, error ? error : "unknown error");
+		} else {
+			printf("context: compacted %d -> %d tokens "
+			       "(iteration %d, pass %d)\n",
+			       before, after, iteration, count);
+		}
+		fflush(stdout);
+		return;
+	}
+	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+		return;
+	if (failed) {
+		printf("\n" ANSI_DIM ANSI_RED "• Context  compression failed "
+		       "at iteration %d: ", iteration);
+		presentation_print_safe_inline(error ? error : "unknown error",
+			CLI_EVENT_TEXT_MAX);
+		printf(ANSI_RESET "\n");
+	} else {
+		printf("\n" ANSI_DIM "• Context  compacted %d → %d tokens "
+		       "(iteration %d, pass %d)" ANSI_RESET "\n",
+		       before, after, iteration, count);
+	}
+	fflush(stdout);
+}
+
 static void presentation_final(struct cli_context *ctx,
 			       const struct morph_event *ev)
 {
@@ -1217,6 +1271,11 @@ int cli_presentation_event(struct cli_context *ctx,
 
 	if (ev->type == MORPH_EVENT_REACT && ev->name) {
 		text = event_string(ev, "text");
+		if (strncmp(ev->name, "react.compaction.",
+		    sizeof("react.compaction.") - 1) == 0) {
+			presentation_compaction(ctx, ev);
+			return 0;
+		}
 		if (strcmp(ev->name, "react.turn.begin") == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
 				presentation_status(ctx, "Starting…");

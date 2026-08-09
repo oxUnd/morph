@@ -829,6 +829,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	char *redacted = NULL;
 	int max_summary_tokens;
 	int user_budget;
+	int recent_budget;
+	int target_budget;
 	int input_tokens = 0;
 	int threshold;
 	int count = 0;
@@ -901,9 +903,15 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		user_budget = 0;
 	if (user_budget > ctx->compress.compaction_user_message_tokens)
 		user_budget = ctx->compress.compaction_user_message_tokens;
+	target_budget = (int)((double)ctx->compress.max_context_tokens *
+		ctx->compress.compress_target_ratio);
+	recent_budget = target_budget - max_summary_tokens -
+		ctx->compress.compaction_user_message_tokens;
+	if (recent_budget < 0)
+		recent_budget = 0;
 	rc = model_history_compact(ctx->history_db, ctx->history_session_id,
 		ctx->turn_id, summary, max_summary_tokens, user_budget,
-		input_tokens,
+		recent_budget, input_tokens,
 		fallback_used ?
 			ctx->compress.max_history_rounds : 0,
 		trigger_kind, NULL);

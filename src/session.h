@@ -123,7 +123,8 @@ int model_history_migrate_messages(struct db *db, int64_t session_id);
 int model_history_compact(struct db *db, int64_t session_id,
 			  const char *turn_id, const char *summary,
 			  int summary_tokens, int user_message_tokens,
-			  int input_tokens, int keep_recent_rounds,
+			  int recent_history_tokens, int input_tokens,
+			  int keep_recent_rounds,
 			  const char *trigger_kind,
 			  int64_t *summary_item_id);
 
