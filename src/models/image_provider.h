@@ -48,6 +48,9 @@ struct image_provider_ops {
 
 const struct image_provider_ops *image_openai_provider(void);
 const struct image_provider_ops *image_volcengine_provider(void);
+int image_volcengine_build_request_body(const struct model *model,
+					const struct image_request *request,
+					char **body_out);
 
 int image_provider_parse_response(struct model *model,
 				  const char *response_json,

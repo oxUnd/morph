@@ -72,21 +72,17 @@ out:
 	return rc;
 }
 
-static int volcengine_execute(struct model *model,
-			      const struct image_request *request,
-			      struct image_payload *payload)
+int image_volcengine_build_request_body(const struct model *model,
+					const struct image_request *request,
+					char **body_out)
 {
-	struct http_response resp = {0};
 	struct arena *arena = NULL;
-	morph_buf_t auth = {0};
-	morph_buf_t url = {0};
 	cJSON *body = NULL;
 	char *body_text = NULL;
-	const char *headers[1];
-	int rc = 0;
 
-	if (!model || !request || !request->prompt || !payload)
+	if (!model || !request || !request->prompt || !body_out)
 		MORPH_RETURN(-EINVAL);
+	*body_out = NULL;
 	arena = arena_create(8192);
 	if (!arena)
 		MORPH_RETURN(-ENOMEM);
@@ -100,6 +96,7 @@ static int volcengine_execute(struct model *model,
 	cJSON_AddNumberToObject(body, "n", 1);
 	cJSON_AddStringToObject(body, "size", request->size);
 	cJSON_AddStringToObject(body, "response_format", "url");
+	cJSON_AddBoolToObject(body, "watermark", 0);
 	if (request->reference_image_count > 0) {
 		cJSON *images = cJSON_CreateArray();
 
@@ -150,14 +147,33 @@ static int volcengine_execute(struct model *model,
 	}
 	body_text = cJSON_PrintUnformatted(body);
 	cJSON_Delete(body);
+	arena_destroy(arena);
 	if (!body_text) {
-		arena_destroy(arena);
 		MORPH_RETURN(-ENOMEM);
 	}
+	*body_out = body_text;
+	return 0;
+}
+
+static int volcengine_execute(struct model *model,
+			      const struct image_request *request,
+			      struct image_payload *payload)
+{
+	struct http_response resp = {0};
+	morph_buf_t auth = {0};
+	morph_buf_t url = {0};
+	char *body_text = NULL;
+	const char *headers[1];
+	int rc;
+
+	if (!model || !request || !request->prompt || !payload)
+		MORPH_RETURN(-EINVAL);
+	rc = image_volcengine_build_request_body(model, request, &body_text);
+	if (rc != 0)
+		return rc;
 	rc = volcengine_build_request_meta(model, &url, &auth);
 	if (rc != 0) {
 		free(body_text);
-		arena_destroy(arena);
 		return rc;
 	}
 	headers[0] = morph_buf_cstr(&auth);
@@ -166,7 +182,6 @@ static int volcengine_execute(struct model *model,
 				  "application/json", headers, 1,
 				  model->timeout_seconds, &resp);
 	free(body_text);
-	arena_destroy(arena);
 	morph_buf_cleanup(&url);
 	morph_buf_cleanup(&auth);
 	if (rc != 0) {

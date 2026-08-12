@@ -208,6 +208,26 @@ TEST(ImageGen, InfersAndOverridesImageAdapters) {
 	EXPECT_FALSE(image_gen_adapter_supported("openai", "unknown-images"));
 }
 
+TEST(ImageGen, VolcengineRequestsDisableProviderWatermarkByDefault) {
+	struct model image_model = {};
+	struct image_request request = {};
+	char *body = nullptr;
+
+	snprintf(image_model.model_id, sizeof(image_model.model_id),
+		 "doubao-seedream-4-5-251128");
+	request.prompt = "a cinematic landscape";
+	request.size = "2k";
+	ASSERT_EQ(image_volcengine_build_request_body(
+		&image_model, &request, &body), 0);
+	ASSERT_NE(body, nullptr);
+	cJSON *json = cJSON_Parse(body);
+	free(body);
+	ASSERT_NE(json, nullptr);
+	cJSON *watermark = cJSON_GetObjectItem(json, "watermark");
+	EXPECT_TRUE(cJSON_IsFalse(watermark));
+	cJSON_Delete(json);
+}
+
 TEST(ImageGen, ValidatesGptImageSizes) {
 	struct model image_model = {};
 
