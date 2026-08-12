@@ -90,6 +90,7 @@ retry_count      = 3
 # api_key_env = "OPENAI_API_KEY"
 
 # ── Volcengine seedream (recommended) ─────────
+adapter     = "volcengine-images"
 provider    = "volcengine"
 model       = "doubao-seedream-5-0-260128"
 api_base    = "https://ark.cn-beijing.volces.com/api/v3"
