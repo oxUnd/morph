@@ -43,7 +43,14 @@ int runtime_session_select(struct runtime *runtime, const char *name,
 		ctx->current_session = session;
 		runtime_context_select_plan_session(ctx, session.id);
 		(void)runtime_context_update_tool_runtime_context(ctx, session.id);
-		runtime_session_load_history(&ctx->engine, session.id);
+		/*
+		 * Selecting a session is a navigation operation.  Loading and
+		 * repairing its entire model history here makes large sessions slow
+		 * to open, and agent_turn_begin() loads the same history again before
+		 * the next model turn.  Drop the previous session's in-memory context
+		 * now and defer the incoming history load until it is actually needed.
+		 */
+		runtime_session_clear_history(ctx->react);
 		if (out)
 			*out = session;
 	}

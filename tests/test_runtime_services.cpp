@@ -3,7 +3,10 @@
 extern "C" {
 #include "agent/tool.h"
 #include "db/scheduled_task.h"
+#include "runtime/runtime_internal.h"
 }
+
+#include <sqlite3.h>
 
 #include <cerrno>
 #include <cstdlib>
@@ -67,6 +70,32 @@ TEST_F(RuntimeFacadeTest, DetachedSessionDoesNotChangeCurrentSession)
 	ASSERT_NE(detached.id, current.id);
 	ASSERT_EQ(runtime_session_current_id(instance, &current_id), 0);
 	EXPECT_EQ(current_id, current.id);
+}
+
+TEST_F(RuntimeFacadeTest, SessionSelectionDefersModelHistoryLoadingUntilTurn)
+{
+	struct session first{};
+	struct session second{};
+	sqlite3 *db = nullptr;
+	int created = 0;
+
+	Open();
+	ASSERT_EQ(runtime_session_current(instance, &first), 0);
+	ASSERT_EQ(runtime_session_select(instance, "second", &second, &created), 0);
+	ASSERT_EQ(sqlite3_open(database.c_str(), &db), SQLITE_OK);
+	const std::string sql =
+		"INSERT INTO messages(session_id,role,content,token_count,compressed,created_at) "
+		"VALUES(" + std::to_string(first.id) + ",'user','saved history',2,0,1)";
+	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	sqlite3_close(db);
+	db = nullptr;
+
+	ASSERT_EQ(runtime_session_select(instance, first.name, &first, &created), 0);
+	EXPECT_EQ(instance->context.react->messages, nullptr);
+	EXPECT_EQ(instance->context.react->history_items, nullptr);
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	ASSERT_NE(instance->context.react->messages, nullptr);
+	EXPECT_STREQ(instance->context.react->messages->content, "saved history");
 }
 
 TEST_F(RuntimeFacadeTest, SessionListFilterModelAndStatsUseRuntimeDatabase)
