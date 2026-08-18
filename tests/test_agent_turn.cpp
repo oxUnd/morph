@@ -224,7 +224,7 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	EXPECT_TRUE(result.assistant_saved);
 	EXPECT_FALSE(result.memory_queued);
 	EXPECT_FALSE(result.memory_ran_inline);
-	EXPECT_EQ(model_history_count(&db, sess.id, 1), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
 
 	char *rendered = memory_render_session(&db, sess.id, 0);
@@ -235,7 +235,7 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	free(rendered);
 }
 
-TEST_F(AgentTurnTest, FailedTurnHistoryDoesNotPoisonNextTurn)
+TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 {
 	struct agent_session_runtime runtime = {};
 	struct agent_turn_input failed_input = {};
@@ -268,7 +268,7 @@ TEST_F(AgentTurnTest, FailedTurnHistoryDoesNotPoisonNextTurn)
 	react->state = REACT_STATE_ABORT;
 	react->outcome = REACT_OUTCOME_LLM_ERROR;
 	ASSERT_EQ(agent_turn_finish(&failed_turn, nullptr), 0);
-	EXPECT_EQ(model_history_count(&db, sess.id, 1), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 	EXPECT_EQ(model_history_count(&db, sess.id, 0), 3);
 
 	struct message *transcript = message_list(&db, sess.id, &count);
@@ -288,10 +288,13 @@ TEST_F(AgentTurnTest, FailedTurnHistoryDoesNotPoisonNextTurn)
 	ASSERT_EQ(agent_turn_begin(&next_turn, &runtime, &next_input), 0);
 	struct model_history_item *active =
 		model_history_list(&db, sess.id, 1, &count);
-	ASSERT_EQ(count, 1);
+	ASSERT_EQ(count, 2);
 	ASSERT_NE(active, nullptr);
-	EXPECT_STREQ(active->turn_id, "turn_next");
+	EXPECT_STREQ(active->turn_id, "turn_failed");
 	EXPECT_STREQ(active->kind, "user_message");
+	ASSERT_NE(active->next, nullptr);
+	EXPECT_STREQ(active->next->turn_id, "turn_next");
+	EXPECT_STREQ(active->next->kind, "user_message");
 	model_history_free_list(active);
 	react->final_answer = strdup("recovered");
 	ASSERT_NE(react->final_answer, nullptr);
@@ -299,12 +302,68 @@ TEST_F(AgentTurnTest, FailedTurnHistoryDoesNotPoisonNextTurn)
 	react->outcome = REACT_OUTCOME_SUCCESS;
 	ASSERT_EQ(agent_turn_finish(&next_turn, nullptr), 0);
 	active = model_history_list(&db, sess.id, 1, &count);
-	ASSERT_EQ(count, 2);
+	ASSERT_EQ(count, 3);
 	ASSERT_NE(active, nullptr);
-	EXPECT_STREQ(active->turn_id, "turn_next");
+	EXPECT_STREQ(active->turn_id, "turn_failed");
 	ASSERT_NE(active->next, nullptr);
-	EXPECT_STREQ(active->next->kind, "assistant_message");
-	EXPECT_STREQ(active->next->content, "recovered");
+	EXPECT_STREQ(active->next->turn_id, "turn_next");
+	ASSERT_NE(active->next->next, nullptr);
+	EXPECT_STREQ(active->next->next->kind, "assistant_message");
+	EXPECT_STREQ(active->next->next->content, "recovered");
+	model_history_free_list(active);
+}
+
+TEST_F(AgentTurnTest, MissingConfigurationKeepsCompleteToolHistory)
+{
+	struct agent_session_runtime runtime = {};
+	struct agent_turn_input input = {};
+	struct agent_turn turn;
+	struct tool_call call = {};
+	int count = 0;
+
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_DEFAULT_FLAGS &
+		~AGENT_TURN_SAVE_TRACE &
+		~AGENT_TURN_CONSOLIDATE_MEMORY &
+		~AGENT_TURN_ASYNC_MEMORY &
+		~AGENT_TURN_BUILD_MEMORY_CONTEXT;
+	input.model_input = "generate an image";
+	input.turn_id = "turn_missing_key";
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	std::strcpy(call.id, "provider_missing_key");
+	std::strcpy(call.tool_call_id, "local_missing_key");
+	std::strcpy(call.name, "img_gen");
+	call.arguments = const_cast<char *>("{\"prompt\":\"sunrise\"}");
+	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr,
+		&call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, "local_missing_key",
+		"provider_missing_key", "img_gen", "missing api key",
+		MORPH_ERR_NOT_CONFIGURED), 0);
+	struct react_step *step = static_cast<struct react_step *>(
+		calloc(1, sizeof(*step)));
+	ASSERT_NE(step, nullptr);
+	step->type = REACT_STEP_OBSERVATION;
+	step->content = strdup("missing api key");
+	ASSERT_NE(step->content, nullptr);
+	step->error_code = MORPH_ERR_NOT_CONFIGURED;
+	react->steps = step;
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_LLM_ERROR;
+	react->last_error_code = MORPH_ERR_LLM;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+
+	struct model_history_item *active = model_history_list(
+		&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 3);
+	ASSERT_NE(active, nullptr);
+	EXPECT_STREQ(active->kind, "user_message");
+	ASSERT_NE(active->next, nullptr);
+	EXPECT_STREQ(active->next->kind, "assistant_tool_calls");
+	ASSERT_NE(active->next->next, nullptr);
+	EXPECT_STREQ(active->next->next->kind, "tool_result");
+	EXPECT_STREQ(active->next->next->tool_name, "img_gen");
 	model_history_free_list(active);
 }
 

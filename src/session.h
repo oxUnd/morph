@@ -114,6 +114,9 @@ void model_history_free_list(struct model_history_item *head);
 int model_history_count(struct db *db, int64_t session_id, int active_only);
 int model_history_deactivate_turn(struct db *db, int64_t session_id,
 				  const char *turn_id);
+int model_history_deactivate_turn_except_user(struct db *db,
+					      int64_t session_id,
+					      const char *turn_id);
 int model_history_compaction_count(struct db *db, int64_t session_id);
 int model_history_compaction_attempt_add(struct db *db, int64_t session_id,
 	const char *turn_id, const char *trigger_kind, const char *status,

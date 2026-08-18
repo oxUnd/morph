@@ -472,6 +472,48 @@ static int turn_model_history_succeeded(const struct agent_turn *turn)
 		 react->outcome == REACT_OUTCOME_NONE);
 }
 
+static int turn_has_error_code(const struct agent_turn *turn, int error_code)
+{
+	const struct react_context *react;
+	const struct react_step *step;
+
+	if (!turn || !turn->runtime.react)
+		return 0;
+	react = turn->runtime.react;
+	if (react->last_error_code == error_code)
+		return 1;
+	for (step = react->steps; step; step = step->next) {
+		if (step->error_code == error_code)
+			return 1;
+	}
+	return 0;
+}
+
+static int turn_should_keep_user_history(const struct agent_turn *turn)
+{
+	const struct react_context *react;
+
+	if (!turn || !turn->runtime.react)
+		return 0;
+	react = turn->runtime.react;
+	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
+		react->outcome == REACT_OUTCOME_MAX_ITERATIONS;
+}
+
+static int turn_should_keep_complete_history(const struct agent_turn *turn)
+{
+	const struct react_context *react;
+
+	if (!turn || !turn->runtime.react ||
+	    !turn_has_error_code(turn, MORPH_ERR_NOT_CONFIGURED))
+		return 0;
+	react = turn->runtime.react;
+	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
+		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
+		react->outcome == REACT_OUTCOME_TOOL_ERROR ||
+		react->outcome == REACT_OUTCOME_TIMEOUT;
+}
+
 int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 {
 	struct agent_turn_result local_result;
@@ -504,10 +546,17 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 				turn->runtime.react->steps ? 1 : 0;
 	}
 	if ((flags & AGENT_TURN_SAVE_MESSAGES) &&
-	    !turn_model_history_succeeded(turn)) {
-		step_rc = model_history_deactivate_turn(
-			turn->runtime.db, turn->runtime.session_id,
-			turn->runtime.react->turn_id);
+	    !turn_model_history_succeeded(turn) &&
+	    !turn_should_keep_complete_history(turn)) {
+		if (turn_should_keep_user_history(turn)) {
+			step_rc = model_history_deactivate_turn_except_user(
+				turn->runtime.db, turn->runtime.session_id,
+				turn->runtime.react->turn_id);
+		} else {
+			step_rc = model_history_deactivate_turn(
+				turn->runtime.db, turn->runtime.session_id,
+				turn->runtime.react->turn_id);
+		}
 		turn_set_first_error(&rc, step_rc);
 	}
 
