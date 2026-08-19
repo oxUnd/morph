@@ -196,6 +196,11 @@ static void cli_readline_configure(void)
 	(void)rl_bind_keyseq("\\e\\C-M", cli_readline_insert_newline);
 	(void)rl_bind_keyseq("\033[13;2u", cli_readline_insert_newline);
 	(void)rl_bind_keyseq("\033[27;2;13~", cli_readline_insert_newline);
+	/* Ctrl+Command+V on macOS (kitty keyboard protocol):
+	 * modifier = 1 + (ctrl=4 | super=8) = 13, keycode for V base key = 118,
+	 * with 86 as an upper-case fallback some terminals emit. */
+	(void)rl_bind_keyseq("\033[118;13u", cli_readline_paste_image);
+	(void)rl_bind_keyseq("\033[86;13u", cli_readline_paste_image);
 #endif
 }
 
@@ -378,7 +383,7 @@ void cli_run(struct cli_context *ctx)
 	       ANSI_RESET "\n\n");
 	morph_buf_cleanup(&directory);
 	printf(ANSI_DIM "  /help · ./image.png attach · Ctrl+J/Alt+Enter newline\n"
-	       "  Ctrl+V image · Esc/Ctrl-C cancel" ANSI_RESET "\n\n");
+	       "  Ctrl+Command+V image · Esc/Ctrl-C cancel" ANSI_RESET "\n\n");
 #ifndef HAVE_READLINE
 	char line[BUFSIZ];
 #endif

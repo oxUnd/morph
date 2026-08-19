@@ -234,8 +234,11 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		if (rc != 0)
 			MORPH_RETURN(rc);
 		has_input_buf = 1;
-		rc = morph_buf_printf(&input_buf, "[Image: %s]\n%s",
-				      ctx->image_path, input);
+		rc = morph_buf_printf(&input_buf,
+			"[Image: %s]\n"
+			"(The user attached the image above; if the task involves "
+			"understanding or reading the image, use img_qa to view it.)\n%s",
+			ctx->image_path, input);
 		if (rc != 0) {
 			morph_buf_cleanup(&input_buf);
 			MORPH_RETURN(rc);
