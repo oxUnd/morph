@@ -232,6 +232,65 @@ TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 	});
 	EXPECT_EQ(rc, 0);
 }
+
+TEST(SandboxEnterTest, MacOSAllowsProcessCacheReadWriteCreateAndChmod)
+{
+	char cache_dir[PATH_MAX];
+	char cache_path[PATH_MAX];
+	size_t length = confstr(_CS_DARWIN_USER_CACHE_DIR, cache_dir,
+				 sizeof(cache_dir));
+
+	ASSERT_GT(length, 0U);
+	ASSERT_LE(length, sizeof(cache_dir));
+	ASSERT_GT(snprintf(cache_path, sizeof(cache_path),
+			   "%smorph_sb_cache_XXXXXX", cache_dir), 0);
+	int fd = mkstemp(cache_path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(write(fd, "before", 6), 6);
+	close(fd);
+
+	int rc = run_in_child([&]() {
+		struct sandbox_config cfg = {};
+		char created_path[PATH_MAX];
+
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int cache_fd = open(cache_path, O_RDWR);
+		if (cache_fd < 0)
+			return 11;
+		char value[7] = {};
+		if (read(cache_fd, value, 6) != 6 || strcmp(value, "before") != 0) {
+			close(cache_fd);
+			return 12;
+		}
+		if (lseek(cache_fd, 0, SEEK_SET) < 0 ||
+		    write(cache_fd, "after!", 6) != 6) {
+			close(cache_fd);
+			return 13;
+		}
+		close(cache_fd);
+		if (chmod(cache_path, 0640) != 0)
+			return 14;
+		if (snprintf(created_path, sizeof(created_path), "%s.created",
+			     cache_path) <= 0)
+			return 15;
+		cache_fd = open(created_path, O_CREAT | O_WRONLY, 0600);
+		if (cache_fd < 0)
+			return 16;
+		close(cache_fd);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+	struct stat st = {};
+	EXPECT_EQ(stat(cache_path, &st), 0);
+	EXPECT_EQ(st.st_mode & 0777, 0640);
+	char created_path[PATH_MAX];
+	ASSERT_GT(snprintf(created_path, sizeof(created_path), "%s.created",
+			   cache_path), 0);
+	unlink(created_path);
+	unlink(cache_path);
+}
 #endif
 
 TEST(SandboxEnterTest, RejectsNullConfig)

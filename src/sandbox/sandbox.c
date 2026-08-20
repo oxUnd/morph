@@ -4,6 +4,7 @@
 #include "util/error.h"
 #include "util/log.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -659,6 +660,27 @@ static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
 	return morph_buf_puts(profile, "\"))\n");
 }
 
+static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
+{
+	char path[PATH_MAX];
+	char resolved[PATH_MAX];
+	size_t length;
+	int rc;
+
+	length = confstr(name, path, sizeof(path));
+	if (length == 0)
+		return 0;
+	if (length > sizeof(path))
+		MORPH_RETURN(-ENAMETOOLONG);
+	if (!realpath(path, resolved))
+		MORPH_RETURN_ERRNO();
+	rc = sandbox_sbpl_path_rule(profile, "file-read*", resolved);
+	if (rc != 0)
+		return rc;
+	return sandbox_sbpl_path_rule(profile,
+		"file-write-data file-write-create file-write-mode", resolved);
+}
+
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
@@ -748,11 +770,21 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		morph_buf_cleanup(&sbpl);
 		return rc;
 	}
+	rc = sandbox_sbpl_darwin_user_dir(&sbpl,
+		_CS_DARWIN_USER_TEMP_DIR);
+	if (rc == 0)
+		rc = sandbox_sbpl_darwin_user_dir(&sbpl,
+			_CS_DARWIN_USER_CACHE_DIR);
+	if (rc != 0) {
+		morph_buf_cleanup(&sbpl);
+		return rc;
+	}
 	if (cfg->path_policy_enabled) {
 		for (int i = 0; i < cfg->write_paths_count; i++) {
 			if (cfg->write_paths && cfg->write_paths[i]) {
 				rc = sandbox_sbpl_path_rule(&sbpl,
-					"file-write-data file-write-create",
+					"file-write-data file-write-create "
+					"file-write-mode",
 					cfg->write_paths[i]);
 				if (rc != 0) {
 					morph_buf_cleanup(&sbpl);
