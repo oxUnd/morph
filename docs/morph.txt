@@ -302,6 +302,8 @@ execution.  Enable it only when needed:
 	[react]
 	bash_exec_enabled = true
 	bash_exec_mode = "local"
+	bash_exec_max_memory_mb = 2048
+	bash_exec_max_open_files = 1024
 
 Local mode can read any file and access the network.  It can write and delete
 below the work directory, output directory, and /tmp.  Additional write or
@@ -328,6 +330,12 @@ Path entries accept @workdir, @output, @tmp, absolute paths, or "*".  The
 legacy bash_exec_allowed_cwds option is ignored by the capability sandbox.
 Server allowed_env entries are exact environment variable names and default to
 an empty list.  Use them for required proxy or CA variables, not API secrets.
+PTY allocation, platform-scoped process inspection, and POSIX IPC are
+available to normal developer commands without granting access to arbitrary
+devices.  On Linux, process visibility follows the host /proc DAC because
+Morph does not create a PID namespace.
+See docs/sandbox.md for the extension capability names, platform policy, and
+macOS nested-sandbox testing caveat.
 
 Human-in-the-loop approval:
 

@@ -15,9 +15,13 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
 - **Lightweight**: minimal static dependencies, fast startup
 
+Sandbox capabilities, platform policy, extension manifests, and nested-macOS
+testing are documented in [docs/sandbox.md](docs/sandbox.md).
+
 ## Build
 
-Requirements: CMake ≥ 3.16, SQLite3, libcurl. Optional: readline., [mathjax-c](oxUnd/mathjax-c)
+Requirements: CMake ≥ 3.20, SQLite3, libcurl, and
+[mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
 
 ```bash
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c

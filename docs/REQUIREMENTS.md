@@ -191,7 +191,7 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 | 远程仓库拉取 | git clone | P2 |
 | Namespace 隔离（PID/NET） | 强隔离 | P2 |
 
-> **MVP 范围裁剪**：M1 的 Ext 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱推迟到 V0.4。
+> **MVP 范围裁剪（历史）**：M1 的 Ext 子系统只交付**最小闭环**——发现 + 注册 + 基础 seccomp 沙箱。`enable/disable/remove`、远程拉取、macOS 沙箱原计划推迟到 V0.4；其中 macOS SBPL 沙箱现已实现。
 
 ### 4.9 长期记忆系统
 
@@ -1702,7 +1702,7 @@ void jsonrpc_response_free(struct jsonrpc_response *resp);
 |------|------|---------|-----------|
 | Linux | seccomp-bpf + rlimit + landlock | 所有 syscall | 见权限位域 |
 | Linux 强隔离（P2） | + unshare（NEWPID/NEWNET/NEWNS） | 网络/PID | 仅 PERM_NETWORK |
-| macOS | sandbox-exec + .sb profile | 网络/文件 | 同上（P2，当前未实现 `sandbox_enter_darwin`） |
+| macOS | Seatbelt SBPL + `sandbox_init` | 网络/文件/设备/IPC | 路径与显式能力白名单（已实现） |
 
 **最小 syscall 白名单**（默认）：
 `read, write, mmap, munmap, mprotect, brk, exit, exit_group, futex, rt_sigaction, rt_sigprocmask, clock_gettime, getpid, gettid, close, fstat, lseek, poll, ppoll, nanosleep`
@@ -1712,6 +1712,10 @@ void jsonrpc_response_free(struct jsonrpc_response *resp);
 #define EXT_PERM_FILESYS	(1 << 1)
 #define EXT_PERM_EXEC		(1 << 2)
 #define EXT_PERM_ENV		(1 << 3)
+#define EXT_PERM_PTY		(1 << 4)
+#define EXT_PERM_PROCESS_INFO	(1 << 5)
+#define EXT_PERM_IPC		(1 << 6)
+#define EXT_PERM_TEMP		(1 << 7)
 
 struct sandbox_config {
 	unsigned int permissions;
@@ -1724,6 +1728,10 @@ struct sandbox_config {
 	int max_file_size_mb;
 	int max_processes;
 	int max_open_files;
+	int allow_pty;
+	int allow_process_info;
+	int allow_ipc;
+	int allow_temp;
 };
 
 int sandbox_enter(struct sandbox_config *cfg);

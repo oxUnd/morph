@@ -39,6 +39,53 @@ static enum ext_purpose parse_purpose(const char *s)
 	return EXT_PURPOSE_TOOL;
 }
 
+static int parse_sandbox_capabilities(toml_datum_t arr,
+				      unsigned int *permissions,
+				      int *named_filesystem)
+{
+	static const struct {
+		const char *name;
+		unsigned int permission;
+	} capabilities[] = {
+		{ "network", EXT_PERM_NETWORK },
+		{ "filesystem", EXT_PERM_FILESYS },
+		{ "exec", EXT_PERM_EXEC },
+		{ "environment", EXT_PERM_ENV },
+		{ "pty", EXT_PERM_PTY },
+		{ "process_info", EXT_PERM_PROCESS_INFO },
+		{ "ipc", EXT_PERM_IPC },
+		{ "temporary_directory", EXT_PERM_TEMP },
+	};
+
+	if (arr.type == TOML_UNKNOWN)
+		return 0;
+	if (arr.type != TOML_ARRAY || !permissions)
+		MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < arr.u.arr.size; i++) {
+		toml_datum_t item = arr.u.arr.elem[i];
+		int found = 0;
+
+		if (item.type != TOML_STRING)
+			MORPH_RETURN(-EINVAL);
+		for (size_t j = 0; j < sizeof(capabilities) /
+					      sizeof(capabilities[0]); j++) {
+			if (strcmp(item.u.s, capabilities[j].name) == 0) {
+				*permissions |= capabilities[j].permission;
+				if (named_filesystem &&
+				    capabilities[j].permission == EXT_PERM_FILESYS)
+					*named_filesystem = 1;
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			log_err("unknown sandbox capability: %s", item.u.s);
+			MORPH_RETURN(-EINVAL);
+		}
+	}
+	return 0;
+}
+
 static char *schema_default_input(void)
 {
 	return strdup("{\"type\":\"object\",\"properties\":{},"
@@ -72,6 +119,7 @@ static char *normalize_manifest_schema(char *schema, int is_output)
 
 static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 {
+	int named_filesystem = 0;
 	if (tbl.type != TOML_TABLE || !out)
 		return -EINVAL;
 	memset(out, 0, sizeof(*out));
@@ -109,6 +157,21 @@ static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 	MGET_STR("action_text", out->action_text);
 
 	MGET_UINT("permissions", out->permissions);
+	{
+		toml_datum_t capabilities = toml_get(tbl,
+			"sandbox_capabilities");
+		int capability_rc = parse_sandbox_capabilities(capabilities,
+			&out->permissions, &named_filesystem);
+
+		if (capability_rc != 0)
+			return capability_rc;
+	}
+	toml_datum_t ap = toml_get(tbl, "allowed_paths");
+	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
+	if (named_filesystem && out->allowed_paths_count == 0) {
+		log_err("filesystem capability requires allowed_paths");
+		MORPH_RETURN(-EINVAL);
+	}
 	MGET_INT("max_memory_mb", out->max_memory_mb);
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
 	MGET_INT("max_open_files", out->max_open_files);
@@ -142,11 +205,12 @@ static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 		}
 	}
 
-	toml_datum_t ap = toml_get(tbl, "allowed_paths");
-	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
-
 	toml_datum_t ae = toml_get(tbl, "allowed_env");
 	parse_string_list(ae, &out->allowed_env, &out->allowed_env_count);
+
+	toml_datum_t am = toml_get(tbl, "allowed_mach_services");
+	parse_string_list(am, &out->allowed_mach_services,
+		&out->allowed_mach_services_count);
 
 	log_info("manifest parsed: name=%s type=%s purpose=%d",
 		 out->name, out->type, out->purpose);

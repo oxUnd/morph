@@ -95,6 +95,8 @@ static const struct schema_entry schema[] = {
 	INT("react.max_iterations", 1, INT_MAX),
 	INT("react.tool_timeout_seconds", 1, INT_MAX),
 	INT("react.tool_max_retries", 0, 10),
+	INT("react.bash_exec_max_memory_mb", 1, INT_MAX),
+	INT("react.bash_exec_max_open_files", 16, INT_MAX),
 	BOOL("react.guardrail_enabled"),
 	INT("react.guardrail_max_retries", 0, 10),
 	INT("react.guardrail_max_empty_rounds", 0, INT_MAX),

@@ -511,6 +511,8 @@ void config_set_defaults(struct config *cfg)
 
 	cfg->react.bash_exec_enabled = 0;
 	cfg->react.bash_exec_default_timeout = 60;
+	cfg->react.bash_exec_max_memory_mb = 2048;
+	cfg->react.bash_exec_max_open_files = 1024;
 	strncpy(cfg->react.bash_exec_mode, "server",
 		sizeof(cfg->react.bash_exec_mode) - 1);
 	strncpy(cfg->react.bash_exec_server_read_paths[0], "@workdir",
@@ -933,6 +935,10 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
 		CFG_INT(react, "tool_timeout_seconds", cfg->react.tool_timeout_seconds);
 		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
+		CFG_INT(react, "bash_exec_max_memory_mb",
+			cfg->react.bash_exec_max_memory_mb);
+		CFG_INT(react, "bash_exec_max_open_files",
+			cfg->react.bash_exec_max_open_files);
 		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
@@ -1447,10 +1453,13 @@ void config_print(const struct config *cfg)
 		 cfg->react.readonly_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
-	log_info("    bash_exec_enabled: %d timeout: %d mode: %s",
+	log_info("    bash_exec_enabled: %d timeout: %d mode: %s mem=%dMB "
+		 "nofile=%d",
 		 cfg->react.bash_exec_enabled,
 		 cfg->react.bash_exec_default_timeout,
-		 cfg->react.bash_exec_mode);
+		 cfg->react.bash_exec_mode,
+		 cfg->react.bash_exec_max_memory_mb,
+		 cfg->react.bash_exec_max_open_files);
 	log_info("    bash_exec_allowed_commands: %d allowed_cwds: %d",
 		 cfg->react.bash_exec_allowed_commands_count,
 		 cfg->react.bash_exec_allowed_cwds_count);

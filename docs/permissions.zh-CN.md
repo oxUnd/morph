@@ -228,6 +228,18 @@ network_access = false
 allowed_env = []
 ```
 
+`bash_exec` 的 PTY、同沙箱进程查询、IPC、设备 ioctl 与资源上限不属于
+`additional_permissions.file_system`。这些操作由底层能力策略单独控制；完整矩阵、
+Ext manifest 声明和 macOS 嵌套沙箱限制见 [sandbox.md](sandbox.md)。
+
+开发任务的资源上限可以独立配置：
+
+```toml
+[react]
+bash_exec_max_memory_mb = 2048
+bash_exec_max_open_files = 1024
+```
+
 ### 5.1 Server 字段
 
 - `bash_exec_allowed_commands`：命令 allowlist；未匹配的命令直接失败。

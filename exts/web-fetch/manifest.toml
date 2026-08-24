@@ -6,7 +6,9 @@ type = "exec"
 entry = "web-fetch.sh"
 fronts = ["cli"]
 categories = ["browser", "web"]
-permissions = 7
+sandbox_capabilities = [
+  "network", "exec", "process_info", "ipc", "temporary_directory"
+]
 max_memory_mb = 4096
 max_cpu_seconds = 60
 max_open_files = 4096

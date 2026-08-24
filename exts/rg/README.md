@@ -39,6 +39,6 @@ usually means a search error. All three are returned as a normal tool result.
 
 ## Permission
 
-`permissions = 4` (`EXT_PERM_EXEC`) lets the wrapper start `rg`.
+`sandbox_capabilities = ["exec"]` lets the wrapper start `rg`.
 `allowed_paths = ["."]` grants read access to the process working directory on
 platforms where the extension filesystem sandbox is active.

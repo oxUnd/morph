@@ -111,6 +111,46 @@ TEST(ExtManifestTest, MissingFrontsMeansAllFronts)
 	ext_manifest_cleanup(&m);
 }
 
+TEST(ExtManifestTest, ParsesNamedSandboxCapabilities)
+{
+	const char *data =
+		"name = \"capable\"\n"
+		"entry = \"capable.sh\"\n"
+		"sandbox_capabilities = [\"exec\", \"pty\", "
+		"\"process_info\", \"ipc\", \"temporary_directory\"]\n";
+	struct ext_manifest m;
+
+	ASSERT_EQ(manifest_parse(data, &m), 0);
+	EXPECT_NE(m.permissions & EXT_PERM_EXEC, 0U);
+	EXPECT_NE(m.permissions & EXT_PERM_PTY, 0U);
+	EXPECT_NE(m.permissions & EXT_PERM_PROCESS_INFO, 0U);
+	EXPECT_NE(m.permissions & EXT_PERM_IPC, 0U);
+	EXPECT_NE(m.permissions & EXT_PERM_TEMP, 0U);
+	ext_manifest_cleanup(&m);
+}
+
+TEST(ExtManifestTest, RejectsUnknownSandboxCapability)
+{
+	const char *data =
+		"name = \"bad-capability\"\n"
+		"entry = \"bad.sh\"\n"
+		"sandbox_capabilities = [\"unrestricted_device\"]\n";
+	struct ext_manifest m;
+
+	EXPECT_EQ(manifest_parse(data, &m), -EINVAL);
+}
+
+TEST(ExtManifestTest, NamedFilesystemRequiresAllowedPaths)
+{
+	const char *data =
+		"name = \"bad-filesystem\"\n"
+		"entry = \"bad.sh\"\n"
+		"sandbox_capabilities = [\"filesystem\"]\n";
+	struct ext_manifest m;
+
+	EXPECT_EQ(manifest_parse(data, &m), -EINVAL);
+}
+
 TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 {
 	const std::vector<std::string> dirs = {

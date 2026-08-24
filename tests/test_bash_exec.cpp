@@ -1457,7 +1457,7 @@ TEST_F(BashExecTest, CommandApprovalGrantsSynthesizedCliDirectoriesOnce)
 	std::string result = exec_raw(reg, args, rc);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(state.calls, 1);
-	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
 	EXPECT_EQ(access(path, F_OK), 0);
 	EXPECT_EQ(tool_context_collect_write_grants(
 		tctx, "/usr/bin/touch", grants, 4), 0);
@@ -1627,7 +1627,7 @@ TEST_F(BashExecTest, RequestedWritePathIsGrantedToSandbox)
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(state.command_calls, 1);
 	EXPECT_EQ(state.write_calls, 1);
-	EXPECT_EQ(get_json_int(result, "exit_code"), 0);
+	EXPECT_EQ(get_json_int(result, "exit_code"), 0) << result;
 	EXPECT_EQ(access(path, F_OK), 0);
 	std::remove(path);
 	rmdir(dir);

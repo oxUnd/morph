@@ -34,6 +34,8 @@ struct ext_manifest {
 	int allowed_paths_count;
 	char **allowed_env;
 	int allowed_env_count;
+	char **allowed_mach_services;
+	int allowed_mach_services_count;
 	int max_memory_mb;
 	int max_cpu_seconds;
 	int max_open_files;

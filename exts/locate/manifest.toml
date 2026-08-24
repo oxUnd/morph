@@ -6,7 +6,12 @@ type = "exec"
 entry = "locate"
 fronts = ["cli"]
 categories = ["system"]
-permissions = 5
+sandbox_capabilities = ["network", "exec"]
+allowed_mach_services = [
+  "com.apple.locationd.desktop.registration",
+  "com.apple.locationd.desktop.synchronous",
+  "com.apple.locationd.desktop.spi"
+]
 max_memory_mb = 64
 max_cpu_seconds = 30
 input_schema = "{\"type\":\"object\",\"properties\":{}}"

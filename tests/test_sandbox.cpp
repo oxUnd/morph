@@ -14,6 +14,9 @@ extern "C" {
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -160,7 +163,7 @@ TEST(SandboxRlimitTest, CoreDumpDisabled)
 	EXPECT_EQ(rc, 0);
 }
 
-TEST(SandboxRlimitTest, NofileCappedAt256)
+TEST(SandboxRlimitTest, NofileDefaultsTo1024)
 {
 	int rc = run_in_child([]() {
 		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 0);
@@ -169,7 +172,7 @@ TEST(SandboxRlimitTest, NofileCappedAt256)
 		struct rlimit rl;
 		if (getrlimit(RLIMIT_NOFILE, &rl) != 0)
 			return 11;
-		if (rl.rlim_cur != 256)
+		if (rl.rlim_cur != 1024)
 			return 12;
 		return 0;
 	});
@@ -192,6 +195,43 @@ TEST(SandboxRlimitTest, NofileCustomLimit)
 	EXPECT_EQ(rc, 0);
 }
 
+TEST(SandboxFdTest, ClosesDescriptorsAboveStandardStreams)
+{
+	int rc = run_in_child([]() {
+		int fds[2];
+
+		if (pipe(fds) != 0)
+			return 10;
+		if (sandbox_close_inherited_fds() != 0)
+			return 11;
+		errno = 0;
+		if (fcntl(fds[0], F_GETFD) != -1 || errno != EBADF)
+			return 12;
+		errno = 0;
+		if (fcntl(fds[1], F_GETFD) != -1 || errno != EBADF)
+			return 13;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxSessionTest, StartsNewTerminalSession)
+{
+	pid_t parent_session = getsid(0);
+	int rc = run_in_child([&]() {
+		if (sandbox_start_isolated_session() != 0)
+			return 10;
+		if (getsid(0) != getpid())
+			return 11;
+		if (getsid(0) == parent_session)
+			return 12;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
 /* ------------------------------------------------------------------
  * sandbox_enter (end-to-end)
  *
@@ -202,6 +242,35 @@ TEST(SandboxRlimitTest, NofileCustomLimit)
  * ------------------------------------------------------------------ */
 
 #if defined(__APPLE__)
+TEST(SandboxEnterTest, MacOSMetadataAccessDoesNotGrantFileContents)
+{
+	char tmpl[] = "/tmp/morph_sb_read_deny_XXXXXX";
+	int fd = mkstemp(tmpl);
+
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(write(fd, "secret", 6), 6);
+	close(fd);
+	int rc = run_in_child([&]() {
+		char *read_paths[] = { (char *)"/dev" };
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_paths = read_paths;
+		cfg.read_paths_count = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int read_fd = open(tmpl, O_RDONLY);
+		if (read_fd >= 0) {
+			close(read_fd);
+			return 11;
+		}
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+	unlink(tmpl);
+}
+
 TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 {
 	int rc = run_in_child([]() {
@@ -233,18 +302,18 @@ TEST(SandboxEnterTest, MacOSDeniesUnauthorizedWrite)
 	EXPECT_EQ(rc, 0);
 }
 
-TEST(SandboxEnterTest, MacOSAllowsProcessCacheReadWriteCreateAndChmod)
+TEST(SandboxEnterTest, MacOSAllowsOptInProcessTempReadWriteCreateAndChmod)
 {
-	char cache_dir[PATH_MAX];
-	char cache_path[PATH_MAX];
-	size_t length = confstr(_CS_DARWIN_USER_CACHE_DIR, cache_dir,
-				 sizeof(cache_dir));
+	char temp_dir[PATH_MAX];
+	char temp_path[PATH_MAX];
+	size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, temp_dir,
+				 sizeof(temp_dir));
 
 	ASSERT_GT(length, 0U);
-	ASSERT_LE(length, sizeof(cache_dir));
-	ASSERT_GT(snprintf(cache_path, sizeof(cache_path),
-			   "%smorph_sb_cache_XXXXXX", cache_dir), 0);
-	int fd = mkstemp(cache_path);
+	ASSERT_LE(length, sizeof(temp_dir));
+	ASSERT_GT(snprintf(temp_path, sizeof(temp_path),
+			   "%smorph_sb_temp_XXXXXX", temp_dir), 0);
+	int fd = mkstemp(temp_path);
 	ASSERT_GE(fd, 0);
 	ASSERT_EQ(write(fd, "before", 6), 6);
 	close(fd);
@@ -252,44 +321,178 @@ TEST(SandboxEnterTest, MacOSAllowsProcessCacheReadWriteCreateAndChmod)
 	int rc = run_in_child([&]() {
 		struct sandbox_config cfg = {};
 		char created_path[PATH_MAX];
+		cfg.allow_temp = 1;
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
 
 		if (sandbox_enter(&cfg) != 0)
 			return 10;
-		int cache_fd = open(cache_path, O_RDWR);
-		if (cache_fd < 0)
+		int temp_fd = open(temp_path, O_RDWR);
+		if (temp_fd < 0)
 			return 11;
 		char value[7] = {};
-		if (read(cache_fd, value, 6) != 6 || strcmp(value, "before") != 0) {
-			close(cache_fd);
+		if (read(temp_fd, value, 6) != 6 || strcmp(value, "before") != 0) {
+			close(temp_fd);
 			return 12;
 		}
-		if (lseek(cache_fd, 0, SEEK_SET) < 0 ||
-		    write(cache_fd, "after!", 6) != 6) {
-			close(cache_fd);
+		if (lseek(temp_fd, 0, SEEK_SET) < 0 ||
+		    write(temp_fd, "after!", 6) != 6) {
+			close(temp_fd);
 			return 13;
 		}
-		close(cache_fd);
-		if (chmod(cache_path, 0640) != 0)
+		close(temp_fd);
+		if (chmod(temp_path, 0640) != 0)
 			return 14;
 		if (snprintf(created_path, sizeof(created_path), "%s.created",
-			     cache_path) <= 0)
+			     temp_path) <= 0)
 			return 15;
-		cache_fd = open(created_path, O_CREAT | O_WRONLY, 0600);
-		if (cache_fd < 0)
+		temp_fd = open(created_path, O_CREAT | O_WRONLY, 0600);
+		if (temp_fd < 0)
 			return 16;
-		close(cache_fd);
+		close(temp_fd);
 		return 0;
 	});
 
 	EXPECT_EQ(rc, 0);
 	struct stat st = {};
-	EXPECT_EQ(stat(cache_path, &st), 0);
+	EXPECT_EQ(stat(temp_path, &st), 0);
 	EXPECT_EQ(st.st_mode & 0777, 0640);
 	char created_path[PATH_MAX];
 	ASSERT_GT(snprintf(created_path, sizeof(created_path), "%s.created",
-			   cache_path), 0);
+			   temp_path), 0);
 	unlink(created_path);
-	unlink(cache_path);
+	unlink(temp_path);
+}
+
+TEST(SandboxEnterTest, MacOSAllowsOptInPtyAllocation)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.allow_pty = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int master = posix_openpt(O_RDWR | O_NOCTTY);
+		if (master < 0)
+			return 11;
+		if (grantpt(master) != 0 || unlockpt(master) != 0) {
+			close(master);
+			return 12;
+		}
+		close(master);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+#endif
+
+#if defined(__linux__)
+TEST(SandboxEnterTest, LinuxAllowsOptInPtyAllocation)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.allow_pty = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int master = posix_openpt(O_RDWR | O_NOCTTY);
+		if (master < 0)
+			return 11;
+		if (grantpt(master) != 0 || unlockpt(master) != 0) {
+			close(master);
+			return 12;
+		}
+		close(master);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxEnterTest, LinuxAllowsOptInPosixSharedMemory)
+{
+	char shm_name[64];
+
+	ASSERT_GT(snprintf(shm_name, sizeof(shm_name), "/morph_sb_%ld",
+			   static_cast<long>(getpid())), 0);
+	shm_unlink(shm_name);
+	int rc = run_in_child([&]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.allow_ipc = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
+		if (fd < 0)
+			return 11;
+		if (ftruncate(fd, 4096) != 0) {
+			close(fd);
+			shm_unlink(shm_name);
+			return 12;
+		}
+		close(fd);
+		if (shm_unlink(shm_name) != 0)
+			return 13;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+	shm_unlink(shm_name);
+}
+
+TEST(SandboxEnterTest, LinuxProcessInfoControlsOtherProcEntries)
+{
+	char parent_cmdline[PATH_MAX];
+
+	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
+			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
+	int rc = run_in_child([&]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.process_exec = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int fd = open(parent_cmdline, O_RDONLY);
+		if (fd >= 0) {
+			close(fd);
+			return 11;
+		}
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
+{
+	char parent_cmdline[PATH_MAX];
+
+	ASSERT_GT(snprintf(parent_cmdline, sizeof(parent_cmdline),
+			   "/proc/%ld/cmdline", static_cast<long>(getpid())), 0);
+	int rc = run_in_child([&]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.process_exec = 1;
+		cfg.allow_process_info = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		int fd = open(parent_cmdline, O_RDONLY);
+		if (fd < 0)
+			return 11;
+		close(fd);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
 }
 #endif
 

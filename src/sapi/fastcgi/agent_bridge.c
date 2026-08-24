@@ -492,6 +492,8 @@ react_context_create_for_session(struct session_store *store,
 	ctx->tool_max_retries     = g_config.react.tool_max_retries;
 	ctx->llm_model            = g_llm;
 	bash_exec_set_default_timeout(g_config.react.bash_exec_default_timeout);
+	bash_exec_set_resource_limits(g_config.react.bash_exec_max_memory_mb,
+		g_config.react.bash_exec_max_open_files);
 
 	for (int i = 0; i < g_config.react.guardrail_llm_rule_count; i++) {
 		struct config_guardrail_llm_rule *cr =

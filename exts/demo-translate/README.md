@@ -40,7 +40,8 @@ Output:
 
 ## Permission
 
-`permissions = 4` (`EXT_PERM_EXEC`) — required because the shell script needs to fork child processes (`sed`, `echo`).
+`sandbox_capabilities = ["exec"]` is required because the shell script needs
+to fork child processes (`sed`, `echo`).
 
 ## Supported languages
 

@@ -106,6 +106,9 @@ void ext_manifest_cleanup(struct ext_manifest *m)
 	for (int i = 0; i < m->allowed_env_count; i++)
 		free(m->allowed_env[i]);
 	free(m->allowed_env);
+	for (int i = 0; i < m->allowed_mach_services_count; i++)
+		free(m->allowed_mach_services[i]);
+	free(m->allowed_mach_services);
 	memset(m, 0, sizeof(*m));
 }
 
@@ -227,6 +230,11 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdin_pipe[0]);
 			close(stdout_pipe[1]);
 			close(stderr_pipe[1]);
+			if (sandbox_start_isolated_session() != 0)
+				_exit(126);
+			log_shutdown();
+			if (sandbox_close_inherited_fds() != 0)
+				_exit(126);
 
 			struct sandbox_config sb_cfg;
 			memset(&sb_cfg, 0, sizeof(sb_cfg));
@@ -237,8 +245,13 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			sb_cfg.allowed_paths_count = ex->manifest.allowed_paths_count;
 			sb_cfg.allowed_env = ex->manifest.allowed_env;
 			sb_cfg.allowed_env_count = ex->manifest.allowed_env_count;
+			sb_cfg.allowed_mach_services =
+				ex->manifest.allowed_mach_services;
+			sb_cfg.allowed_mach_services_count =
+				ex->manifest.allowed_mach_services_count;
 			sb_cfg.max_open_files = ex->manifest.max_open_files;
-			sandbox_enter(&sb_cfg);
+			if (sandbox_enter(&sb_cfg) != 0)
+				_exit(126);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
 			_exit(127);

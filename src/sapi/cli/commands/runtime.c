@@ -425,6 +425,12 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	       (*runtime_config_get(ctx->runtime)).react.bash_exec_enabled);
 	printf("  bash_exec_default_timeout = %d\n",
 	       (*runtime_config_get(ctx->runtime)).react.bash_exec_default_timeout);
+	printf("  bash_exec_max_memory_mb = %d\n",
+	       (*runtime_config_get(ctx->runtime)).react
+		.bash_exec_max_memory_mb);
+	printf("  bash_exec_max_open_files = %d\n",
+	       (*runtime_config_get(ctx->runtime)).react
+		.bash_exec_max_open_files);
 	printf("  bash_exec_mode = %s\n",
 	       (*runtime_config_get(ctx->runtime)).react.bash_exec_mode);
 	printf("  bash_exec_server_network_access = %d\n",

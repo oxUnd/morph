@@ -45,6 +45,8 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.disabled_tools_count, 0);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
 	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
+	EXPECT_EQ(cfg.react.bash_exec_max_memory_mb, 2048);
+	EXPECT_EQ(cfg.react.bash_exec_max_open_files, 1024);
 	EXPECT_STREQ(cfg.react.bash_exec_mode, "server");
 	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 0);
 	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 0);
@@ -143,6 +145,8 @@ max_iterations = 5
 tool_timeout_seconds = 45
 bash_exec_enabled = true
 bash_exec_mode = "local"
+bash_exec_max_memory_mb = 3072
+bash_exec_max_open_files = 1536
 bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
 bash_exec_allowed_cwds = ["/tmp"]
 
@@ -204,6 +208,8 @@ include = ["config.toml", "output"]
 		     "doubao-seedance-2-0-fast-260128");
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
+	EXPECT_EQ(cfg.react.bash_exec_max_memory_mb, 3072);
+	EXPECT_EQ(cfg.react.bash_exec_max_open_files, 1536);
 	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
 	EXPECT_STREQ(cfg.react.bash_exec_mode, "local");
 	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 2);

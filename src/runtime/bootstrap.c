@@ -419,6 +419,8 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 #ifndef MORPH_NO_SHELL
 	bash_exec_set_default_timeout(
 		config->react.bash_exec_default_timeout);
+	bash_exec_set_resource_limits(config->react.bash_exec_max_memory_mb,
+		config->react.bash_exec_max_open_files);
 #endif
 	return 0;
 }

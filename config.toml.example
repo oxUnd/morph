@@ -198,6 +198,11 @@ bash_exec_mode = "server"       # local | server
 # ]
 #
 # Deprecated: bash_exec_allowed_cwds is ignored by the capability sandbox.
+# Resource ceilings for each bash_exec child. These are configurable because
+# compilers, linkers, browsers, and large test suites routinely exceed the old
+# 512 MB / 256 descriptor defaults.
+bash_exec_max_memory_mb = 2048
+bash_exec_max_open_files = 1024
 #
 # Local mode reads all files, has network access, and may write/delete only
 # below workdir, output, and /tmp without approval. bash_exec requests narrow

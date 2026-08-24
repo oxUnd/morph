@@ -23,6 +23,8 @@
 #define BASH_EXEC_MAX_OUTPUT (256 * 1024)
 
 static int bash_exec_default_timeout = 60;
+static int bash_exec_max_memory_mb = 2048;
+static int bash_exec_max_open_files = 1024;
 
 static const char *const local_network_env[] = {
 	"http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -34,6 +36,14 @@ void bash_exec_set_default_timeout(int seconds)
 {
 	if (seconds > 0)
 		bash_exec_default_timeout = seconds;
+}
+
+void bash_exec_set_resource_limits(int max_memory_mb, int max_open_files)
+{
+	if (max_memory_mb > 0)
+		bash_exec_max_memory_mb = max_memory_mb;
+	if (max_open_files > 0)
+		bash_exec_max_open_files = max_open_files;
 }
 
 static const char *const legacy_blocked_commands[] = {
@@ -474,6 +484,11 @@ static int bash_exec_run_legacy(const char *args_json,
 			dup2(devnull, STDIN_FILENO);
 			close(devnull);
 		}
+		if (sandbox_start_isolated_session() != 0)
+			_exit(126);
+		log_shutdown();
+		if (sandbox_close_inherited_fds() != 0)
+			_exit(126);
 
 		if (effective_cwd && *effective_cwd) {
 			if (!realpath(effective_cwd, resolved_cwd) ||
@@ -489,7 +504,9 @@ static int bash_exec_run_legacy(const char *args_json,
 		struct sandbox_config sb;
 		int sb_rc;
 		memset(&sb, 0, sizeof(sb));
-		sb.permissions = EXT_PERM_EXEC | EXT_PERM_NETWORK;
+		sb.permissions = EXT_PERM_EXEC | EXT_PERM_NETWORK |
+			EXT_PERM_PTY | EXT_PERM_PROCESS_INFO |
+			EXT_PERM_IPC | EXT_PERM_TEMP;
 		allowed = calloc((size_t)(2 + auto_count + requested_count +
 					 grant_capacity), sizeof(*allowed));
 		if (!allowed)
@@ -505,7 +522,8 @@ static int bash_exec_run_legacy(const char *args_json,
 
 		if (effective_cwd && *effective_cwd)
 			sb.permissions |= EXT_PERM_FILESYS;
-		sb.max_memory_mb = 512;
+		sb.max_memory_mb = bash_exec_max_memory_mb;
+		sb.max_open_files = bash_exec_max_open_files;
 		sb.max_cpu_seconds = timeout;
 
 		if (sandbox_cwd && *sandbox_cwd) {
@@ -1014,6 +1032,11 @@ static int bash_exec_run_policy(const char *args_json,
 				close(devnull);
 			}
 		}
+		if (sandbox_start_isolated_session() != 0)
+			_exit(126);
+		log_shutdown();
+		if (sandbox_close_inherited_fds() != 0)
+			_exit(126);
 		if (!effective_cwd || !realpath(effective_cwd, resolved_cwd) ||
 		    chdir(resolved_cwd) != 0)
 			_exit(126);
@@ -1038,13 +1061,18 @@ static int bash_exec_run_policy(const char *args_json,
 		memset(&sb, 0, sizeof(sb));
 		sb.path_policy_enabled = 1;
 		sb.process_exec = 1;
-		sb.max_memory_mb = 512;
+		sb.allow_pty = 1;
+		sb.allow_process_info = 1;
+		sb.allow_ipc = 1;
+		sb.max_memory_mb = bash_exec_max_memory_mb;
+		sb.max_open_files = bash_exec_max_open_files;
 		sb.max_cpu_seconds = timeout;
 		if (tctx->bash_exec_local_mode) {
 			const char *workdir = tool_context_workdir(tctx);
 
 			sb.read_all = 1;
 			sb.network_access = 1;
+			sb.allow_temp = 1;
 			for (size_t i = 0;
 			     i < sizeof(local_network_env) /
 				 sizeof(local_network_env[0]); i++)

@@ -97,14 +97,14 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 	(void)max_processes;
 #endif
 
-	rl.rlim_cur = max_open_files > 0 ? (rlim_t)max_open_files : 256;
-	rl.rlim_max = max_open_files > 0 ? (rlim_t)max_open_files : 256;
+	rl.rlim_cur = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
+	rl.rlim_max = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
 	if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
 		log_warn("sandbox: setrlimit RLIMIT_NOFILE failed: %s",
 			 strerror(errno));
 	} else {
 		log_info("sandbox: RLIMIT_NOFILE set to %d",
-			 max_open_files > 0 ? max_open_files : 256);
+			 max_open_files > 0 ? max_open_files : 1024);
 	}
 
 	/* Disable core dumps to avoid leaking sensitive memory */
@@ -226,8 +226,8 @@ int sandbox_apply_env(const char **allowed_env, int count,
  * Landlock LSM implementation (Linux 5.13+)
  *
  * Uses raw syscalls to avoid glibc version dependency.
- * Gracefully degrades: if the kernel doesn't support landlock,
- * we log a warning and continue with seccomp+rlimit only.
+ * Fails closed if the kernel does not support Landlock. Seccomp and
+ * rlimits alone cannot enforce the declared filesystem paths.
  *
  * Requires kernel headers >= 5.13 for <linux/landlock.h>.
  * Ubuntu 20.04 and older are NOT supported — use Ubuntu >= 22.04
@@ -244,6 +244,10 @@ int sandbox_apply_env(const char **allowed_env, int count,
  * Older kernel headers (e.g. Debian 12 / linux-libc-dev 6.1) lack it. */
 #ifndef LANDLOCK_ACCESS_FS_TRUNCATE
 #define LANDLOCK_ACCESS_FS_TRUNCATE       (1ULL << 14)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_IOCTL_DEV
+#define LANDLOCK_ACCESS_FS_IOCTL_DEV       (1ULL << 15)
 #endif
 
 #ifndef LANDLOCK_CREATE_RULESET_VERSION
@@ -285,17 +289,115 @@ static int ll_restrict_self(int ruleset_fd)
 	return (int)syscall(__NR_landlock_restrict_self, ruleset_fd, 0);
 }
 
+static int sandbox_add_landlock_pty(int ruleset_fd, uint64_t access)
+{
+	static const char *const paths[] = { "/dev/ptmx", "/dev/pts", NULL };
+
+	for (int i = 0; paths[i]; i++) {
+		int fd = open(paths[i], O_PATH | O_CLOEXEC);
+
+		if (fd < 0) {
+			if (errno == ENOENT)
+				continue;
+			MORPH_RETURN_ERRNO();
+		}
+		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
+			int err = errno;
+
+			close(fd);
+			MORPH_RETURN(-err);
+		}
+		close(fd);
+	}
+	return 0;
+}
+
+static int sandbox_add_landlock_temp(int ruleset_fd, uint64_t access)
+{
+	static const char *const paths[] = { "/tmp", "/var/tmp", NULL };
+
+	for (int i = 0; paths[i]; i++) {
+		int fd = open(paths[i], O_PATH | O_CLOEXEC);
+
+		if (fd < 0) {
+			if (errno == ENOENT)
+				continue;
+			MORPH_RETURN_ERRNO();
+		}
+		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
+			int err = errno;
+
+			close(fd);
+			MORPH_RETURN(-err);
+		}
+		close(fd);
+	}
+	return 0;
+}
+
+static int sandbox_add_landlock_ipc(int ruleset_fd, uint64_t access)
+{
+	int fd = open("/dev/shm", O_PATH | O_CLOEXEC);
+
+	if (fd < 0) {
+		if (errno == ENOENT)
+			return 0;
+		MORPH_RETURN_ERRNO();
+	}
+	if (ll_add_rule(ruleset_fd, fd, access) < 0) {
+		int err = errno;
+
+		close(fd);
+		MORPH_RETURN(-err);
+	}
+	close(fd);
+	return 0;
+}
+
+static int sandbox_add_landlock_runtime_proc(int ruleset_fd, uint64_t access,
+					      int allow_process_info)
+{
+	static const char *const process_paths[] = { "/proc", NULL };
+	static const char *const runtime_paths[] = {
+		"/proc/self", "/proc/thread-self", "/proc/cpuinfo",
+		"/proc/meminfo", "/proc/stat", "/proc/filesystems",
+		"/proc/mounts", "/proc/sys/kernel/hostname",
+		"/proc/sys/kernel/osrelease", NULL
+	};
+	const char *const *paths = allow_process_info ? process_paths :
+		runtime_paths;
+
+	for (int i = 0; paths[i]; i++) {
+		int fd = open(paths[i], O_PATH | O_CLOEXEC);
+
+		if (fd < 0) {
+			if (errno == ENOENT)
+				continue;
+			MORPH_RETURN_ERRNO();
+		}
+		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
+			int err = errno;
+
+			close(fd);
+			MORPH_RETURN(-err);
+		}
+		close(fd);
+	}
+	return 0;
+}
+
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
+	int abi;
 	/*
 	 * Probe for landlock support.
 	 * Landlock ABI v4+ (kernel 6.6+) rejects rulesets with
 	 * handled_access_fs=0, returning ENOMSG.  Use a non-zero
 	 * access mask so the probe works across all ABI versions.
 	 */
-	int probe_fd = ll_create_ruleset(LANDLOCK_ACCESS_FS_READ_FILE);
-	if (probe_fd < 0) {
+	abi = ll_get_abi();
+	if (abi < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS) {
 			log_err("sandbox: landlock not supported by kernel");
 			return -ENOSYS;
@@ -305,7 +407,6 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			strerror(err));
 		MORPH_RETURN(-err);
 	}
-	close(probe_fd);
 
 	/*
 	 * Determine handled access rights.
@@ -346,9 +447,16 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 		LANDLOCK_ACCESS_FS_MAKE_SOCK |
 		LANDLOCK_ACCESS_FS_REFER |
 		LANDLOCK_ACCESS_FS_TRUNCATE;
+	if (abi < 2)
+		write_access &= ~LANDLOCK_ACCESS_FS_REFER;
+	if (abi < 3)
+		write_access &= ~LANDLOCK_ACCESS_FS_TRUNCATE;
 
 	uint64_t handled = read_access | write_access;
 	int needs_write_rules = 0;
+
+	if (abi >= 5)
+		handled |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 
 	if (permissions & EXT_PERM_FILESYS) {
 		if (count > 0 && allowed_paths) {
@@ -401,6 +509,44 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			 (unsigned long long)path_access);
 		close(fd);
 	}
+	if (permissions & EXT_PERM_PTY) {
+		uint64_t pty_access = handled &
+			(LANDLOCK_ACCESS_FS_READ_FILE |
+			 LANDLOCK_ACCESS_FS_WRITE_FILE);
+		int pty_rc;
+
+		if (abi >= 5)
+			pty_access |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
+		pty_rc = sandbox_add_landlock_pty(ruleset_fd, pty_access);
+		if (pty_rc != 0) {
+			close(ruleset_fd);
+			return pty_rc;
+		}
+		if (abi < 5)
+			log_warn("sandbox: Landlock ABI %d cannot scope PTY ioctl",
+				 abi);
+	}
+	if (permissions & EXT_PERM_TEMP) {
+		uint64_t temp_access = handled &
+			(write_access | read_access);
+		int temp_rc = sandbox_add_landlock_temp(ruleset_fd,
+			temp_access);
+
+		if (temp_rc != 0) {
+			close(ruleset_fd);
+			return temp_rc;
+		}
+	}
+	if (permissions & EXT_PERM_IPC) {
+		uint64_t ipc_access = handled &
+			(write_access | read_access);
+		int ipc_rc = sandbox_add_landlock_ipc(ruleset_fd, ipc_access);
+
+		if (ipc_rc != 0) {
+			close(ruleset_fd);
+			return ipc_rc;
+		}
+	}
 	if (handled & write_access) {
 		int fd = open("/dev/null", O_PATH | O_CLOEXEC);
 		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
@@ -438,10 +584,7 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			"/lib64",
 			"/etc",
 			"/dev",
-			"/proc",
 			"/sys",
-			"/tmp",
-			"/var/tmp",
 			"/run",
 			"/snap",
 			"/opt",
@@ -461,6 +604,14 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 					 "'%s' (read+exec)", sys_paths[i]);
 			}
 			close(fd);
+		}
+		int proc_rc = sandbox_add_landlock_runtime_proc(ruleset_fd,
+			read_access,
+			!!(permissions & EXT_PERM_PROCESS_INFO));
+
+		if (proc_rc != 0) {
+			close(ruleset_fd);
+			return proc_rc;
 		}
 	}
 
@@ -522,7 +673,7 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 {
 	static const char *const system_paths[] = {
 		"/bin", "/sbin", "/usr", "/lib", "/lib32", "/lib64",
-		"/etc", "/dev", "/proc", "/sys", "/run", "/snap",
+		"/etc", "/dev", "/sys", "/run", "/snap",
 		"/opt", "/nix", NULL
 	};
 	uint64_t read_access = LANDLOCK_ACCESS_FS_READ_FILE |
@@ -554,6 +705,8 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	handled = write_access | delete_access;
 	if (!cfg->read_all)
 		handled |= read_access;
+	if (abi >= 5)
+		handled |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 	ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0)
 		MORPH_RETURN_ERRNO();
@@ -577,6 +730,12 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 					return rc;
 				}
 			}
+			rc = sandbox_add_landlock_runtime_proc(ruleset_fd,
+				read_access, cfg->allow_process_info);
+			if (rc != 0) {
+				close(ruleset_fd);
+				return rc;
+			}
 		}
 	}
 	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
@@ -592,6 +751,29 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	if (rc == 0)
 		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->delete_paths,
 			cfg->delete_paths_count, delete_access);
+	if (rc == 0 && cfg->allow_pty) {
+		uint64_t pty_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
+			(handled & LANDLOCK_ACCESS_FS_READ_FILE);
+
+		if (abi >= 5)
+			pty_access |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
+		rc = sandbox_add_landlock_pty(ruleset_fd, pty_access);
+		if (rc == 0 && abi < 5)
+			log_warn("sandbox: Landlock ABI %d cannot scope PTY ioctl",
+				 abi);
+	}
+	if (rc == 0 && cfg->allow_temp) {
+		uint64_t temp_access = write_access |
+			(handled & read_access);
+
+		rc = sandbox_add_landlock_temp(ruleset_fd, temp_access);
+	}
+	if (rc == 0 && cfg->allow_ipc) {
+		uint64_t ipc_access = write_access |
+			(handled & read_access);
+
+		rc = sandbox_add_landlock_ipc(ruleset_fd, ipc_access);
+	}
 	if (rc != 0) {
 		close(ruleset_fd);
 		return rc;
@@ -678,7 +860,24 @@ static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
 	if (rc != 0)
 		return rc;
 	return sandbox_sbpl_path_rule(profile,
-		"file-write-data file-write-create file-write-mode", resolved);
+		"file-write-data file-write-create file-write-mode "
+		"file-write-flags file-write-owner file-write-times "
+		"file-write-xattr file-write-unlink", resolved);
+}
+
+static int sandbox_sbpl_mach_service(morph_buf_t *profile,
+				     const char *service)
+{
+	if (!profile || !service || !service[0])
+		MORPH_RETURN(-EINVAL);
+	for (const unsigned char *p = (const unsigned char *)service; *p; p++) {
+		if ((*p < 'a' || *p > 'z') && (*p < 'A' || *p > 'Z') &&
+		    (*p < '0' || *p > '9') && *p != '.' && *p != '_' &&
+		    *p != '-')
+			MORPH_RETURN(-EINVAL);
+	}
+	return morph_buf_printf(profile,
+		"(allow mach-lookup (global-name \"%s\"))\n", service);
 }
 
 int sandbox_apply_fs(const char **allowed_paths, int count,
@@ -701,8 +900,11 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 int sandbox_enter_darwin(struct sandbox_config *cfg)
 {
 	static const char *const system_paths[] = {
-		"/bin", "/sbin", "/usr", "/System", "/Library",
-		"/dev", "/private/etc", "/private/var", "/opt", "/nix",
+		"/bin", "/sbin", "/usr", "/System", "/dev",
+		"/private/etc", "/private/var/db/timezone",
+		"/private/var/select",
+		"/Library/Apple", "/Library/Frameworks",
+		"/Library/Preferences", "/opt", "/nix",
 		NULL
 	};
 	morph_buf_t sbpl;
@@ -718,7 +920,10 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 	rc = morph_buf_init(&sbpl, 4096);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_puts(&sbpl, "(version 1)\n(deny default)\n");
+	rc = morph_buf_puts(&sbpl,
+		"(version 1)\n"
+		"(deny default)\n"
+		"(allow file-read-metadata)\n");
 	if (rc != 0) {
 		morph_buf_cleanup(&sbpl);
 		return rc;
@@ -727,9 +932,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		!!(cfg->permissions & EXT_PERM_EXEC);
 	network_access = cfg->path_policy_enabled ? cfg->network_access :
 		!!(cfg->permissions & EXT_PERM_NETWORK);
-	if ((cfg->path_policy_enabled && cfg->read_all) ||
-	    (!cfg->path_policy_enabled &&
-	     (process_exec || cfg->allowed_paths_count == 0)))
+	if (cfg->path_policy_enabled && cfg->read_all)
 		(void)morph_buf_puts(&sbpl, "(allow file-read*)\n");
 	else {
 		char **paths = cfg->path_policy_enabled ? cfg->read_paths :
@@ -770,21 +973,31 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		morph_buf_cleanup(&sbpl);
 		return rc;
 	}
-	rc = sandbox_sbpl_darwin_user_dir(&sbpl,
-		_CS_DARWIN_USER_TEMP_DIR);
-	if (rc == 0)
+	if ((cfg->path_policy_enabled && cfg->allow_temp) ||
+	    (!cfg->path_policy_enabled &&
+	     (cfg->permissions & EXT_PERM_TEMP))) {
 		rc = sandbox_sbpl_darwin_user_dir(&sbpl,
-			_CS_DARWIN_USER_CACHE_DIR);
-	if (rc != 0) {
-		morph_buf_cleanup(&sbpl);
-		return rc;
+			_CS_DARWIN_USER_TEMP_DIR);
+		if (rc == 0)
+			rc = sandbox_sbpl_path_rule(&sbpl,
+				"file-write-data file-write-create "
+				"file-write-mode file-write-flags "
+				"file-write-owner file-write-times "
+				"file-write-xattr file-write-unlink",
+				"/private/tmp");
+		if (rc != 0) {
+			morph_buf_cleanup(&sbpl);
+			return rc;
+		}
 	}
 	if (cfg->path_policy_enabled) {
 		for (int i = 0; i < cfg->write_paths_count; i++) {
 			if (cfg->write_paths && cfg->write_paths[i]) {
 				rc = sandbox_sbpl_path_rule(&sbpl,
 					"file-write-data file-write-create "
-					"file-write-mode",
+					"file-write-mode file-write-flags "
+					"file-write-owner file-write-times "
+					"file-write-xattr",
 					cfg->write_paths[i]);
 				if (rc != 0) {
 					morph_buf_cleanup(&sbpl);
@@ -824,11 +1037,107 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 		(void)morph_buf_puts(&sbpl, "(allow network*)\n");
 	if (process_exec)
 		(void)morph_buf_puts(&sbpl, "(allow process-exec)\n");
+	if ((cfg->path_policy_enabled && cfg->allow_process_info) ||
+	    (!cfg->path_policy_enabled &&
+	     (cfg->permissions & EXT_PERM_PROCESS_INFO)))
+		(void)morph_buf_puts(&sbpl,
+			"(allow process-info* (target same-sandbox))\n");
+	if ((cfg->path_policy_enabled && cfg->allow_ipc) ||
+	    (!cfg->path_policy_enabled &&
+	     (cfg->permissions & EXT_PERM_IPC)))
+		(void)morph_buf_puts(&sbpl,
+			"(allow ipc-posix-sem)\n"
+			"(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n");
+	if ((cfg->path_policy_enabled && cfg->allow_pty) ||
+	    (!cfg->path_policy_enabled &&
+	     (cfg->permissions & EXT_PERM_PTY)))
+		(void)morph_buf_puts(&sbpl,
+			"(allow pseudo-tty)\n"
+			"(allow file-read* file-write* file-ioctl "
+			"(literal \"/dev/ptmx\"))\n"
+			"(allow file-read* file-write*\n"
+			"  (require-all (regex #\"^/dev/ttys[0-9]+\")\n"
+			"    (extension \"com.apple.sandbox.pty\")))\n"
+			"(allow file-ioctl (regex #\"^/dev/ttys[0-9]+\"))\n");
+	for (int i = 0; i < cfg->allowed_mach_services_count; i++) {
+		if (!cfg->allowed_mach_services ||
+		    !cfg->allowed_mach_services[i])
+			continue;
+		rc = sandbox_sbpl_mach_service(&sbpl,
+			cfg->allowed_mach_services[i]);
+		if (rc != 0) {
+			morph_buf_cleanup(&sbpl);
+			return rc;
+		}
+	}
 	(void)morph_buf_puts(&sbpl,
 		"(allow process-fork)\n"
 		"(allow signal (target same-sandbox))\n"
-		"(allow mach-lookup)\n"
-		"(allow sysctl-read)\n");
+		"(allow mach-lookup\n"
+		"  (global-name \"com.apple.system.opendirectoryd.libinfo\")\n"
+		"  (global-name \"com.apple.system.opendirectoryd.membership\")\n"
+		"  (global-name \"com.apple.system.DirectoryService.libinfo_v1\")\n"
+		"  (global-name \"com.apple.logd\")\n"
+		"  (global-name \"com.apple.system.logger\")\n"
+		"  (global-name \"com.apple.trustd\")\n"
+		"  (global-name \"com.apple.trustd.agent\")\n"
+		"  (global-name \"com.apple.PowerManagement.control\"))\n"
+		"(allow sysctl-read\n"
+		"  (sysctl-name-prefix \"hw.optional.\")\n"
+		"  (sysctl-name-prefix \"hw.perflevel\")\n"
+		"  (sysctl-name-prefix \"kern.proc.pgrp.\")\n"
+		"  (sysctl-name-prefix \"kern.proc.pid.\")\n"
+		"  (sysctl-name-prefix \"net.routetable.\")\n"
+		"  (sysctl-name \"hw.activecpu\")\n"
+		"  (sysctl-name \"hw.busfrequency_compat\")\n"
+		"  (sysctl-name \"hw.byteorder\")\n"
+		"  (sysctl-name \"hw.cacheconfig\")\n"
+		"  (sysctl-name \"hw.cachelinesize\")\n"
+		"  (sysctl-name \"hw.cachelinesize_compat\")\n"
+		"  (sysctl-name \"hw.cpufamily\")\n"
+		"  (sysctl-name \"hw.cpufrequency\")\n"
+		"  (sysctl-name \"hw.cpufrequency_compat\")\n"
+		"  (sysctl-name \"hw.cputype\")\n"
+		"  (sysctl-name \"hw.l1dcachesize_compat\")\n"
+		"  (sysctl-name \"hw.l1icachesize_compat\")\n"
+		"  (sysctl-name \"hw.l2cachesize_compat\")\n"
+		"  (sysctl-name \"hw.l3cachesize_compat\")\n"
+		"  (sysctl-name \"hw.logicalcpu\")\n"
+		"  (sysctl-name \"hw.logicalcpu_max\")\n"
+		"  (sysctl-name \"hw.machine\")\n"
+		"  (sysctl-name \"hw.memsize\")\n"
+		"  (sysctl-name \"hw.model\")\n"
+		"  (sysctl-name \"hw.ncpu\")\n"
+		"  (sysctl-name \"hw.nperflevels\")\n"
+		"  (sysctl-name \"hw.packages\")\n"
+		"  (sysctl-name \"hw.pagesize\")\n"
+		"  (sysctl-name \"hw.pagesize_compat\")\n"
+		"  (sysctl-name \"hw.physicalcpu\")\n"
+		"  (sysctl-name \"hw.physicalcpu_max\")\n"
+		"  (sysctl-name \"hw.tbfrequency_compat\")\n"
+		"  (sysctl-name \"hw.vectorunit\")\n"
+		"  (sysctl-name \"kern.argmax\")\n"
+		"  (sysctl-name \"kern.hostname\")\n"
+		"  (sysctl-name \"kern.maxfilesperproc\")\n"
+		"  (sysctl-name \"kern.maxproc\")\n"
+		"  (sysctl-name \"kern.osproductversion\")\n"
+		"  (sysctl-name \"kern.osrelease\")\n"
+		"  (sysctl-name \"kern.ostype\")\n"
+		"  (sysctl-name \"kern.osvariant_status\")\n"
+		"  (sysctl-name \"kern.osversion\")\n"
+		"  (sysctl-name \"kern.secure_kernel\")\n"
+		"  (sysctl-name \"kern.sysv.semmns\")\n"
+		"  (sysctl-name \"kern.usrstack64\")\n"
+		"  (sysctl-name \"kern.version\")\n"
+		"  (sysctl-name \"machdep.cpu.brand_string\")\n"
+		"  (sysctl-name \"sysctl.proc_cputype\")\n"
+		"  (sysctl-name \"vm.loadavg\"))\n");
+	(void)morph_buf_puts(&sbpl,
+		"(allow sysctl-write\n"
+		"  (sysctl-name \"kern.grade_cputype\"))\n"
+		"(allow iokit-open\n"
+		"  (iokit-registry-entry-class "
+		"\"RootDomainUserClient\"))\n");
 	if (rc != 0 || sbpl.failed) {
 		morph_buf_cleanup(&sbpl);
 		return rc != 0 ? rc : -ENOMEM;
@@ -1215,6 +1524,21 @@ int sandbox_apply_seccomp(unsigned int permissions)
 #endif
 	}
 
+	if (permissions & EXT_PERM_IPC) {
+#ifdef __NR_socketpair
+		rc = fb_allow(&fb, __NR_socketpair); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_ftruncate
+		rc = fb_allow(&fb, __NR_ftruncate); if (rc < 0) goto fail;
+#endif
+#ifdef __NR_unlink
+		rc = fb_allow(&fb, __NR_unlink);    if (rc < 0) goto fail;
+#endif
+#ifdef __NR_unlinkat
+		rc = fb_allow(&fb, __NR_unlinkat);  if (rc < 0) goto fail;
+#endif
+	}
+
 	if (permissions & EXT_PERM_EXEC) {
 		rc = fb_allow(&fb, SYS_execve);     if (rc < 0) goto fail;
 #ifdef __NR_execveat
@@ -1424,6 +1748,37 @@ int sandbox_apply_seccomp(unsigned int permissions)
 
 #endif /* !__linux__ */
 
+int sandbox_start_isolated_session(void)
+{
+	if (setsid() < 0)
+		MORPH_RETURN_ERRNO();
+	return 0;
+}
+
+int sandbox_close_inherited_fds(void)
+{
+#if defined(__linux__) && defined(__NR_close_range)
+	if (syscall(__NR_close_range, (unsigned int)(STDERR_FILENO + 1),
+		    UINT_MAX, 0) == 0)
+		return 0;
+	if (errno != ENOSYS && errno != EINVAL)
+		MORPH_RETURN_ERRNO();
+#endif
+	struct rlimit rl;
+	rlim_t limit;
+
+	if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
+		limit = rl.rlim_cur;
+	else {
+		long open_max = sysconf(_SC_OPEN_MAX);
+
+		limit = open_max > 0 ? (rlim_t)open_max : (rlim_t)1024;
+	}
+	for (rlim_t fd = (rlim_t)(STDERR_FILENO + 1); fd < limit; fd++)
+		(void)close((int)fd);
+	return 0;
+}
+
 int sandbox_enter(struct sandbox_config *cfg)
 {
 	unsigned int effective_permissions;
@@ -1438,6 +1793,14 @@ int sandbox_enter(struct sandbox_config *cfg)
 			effective_permissions |= EXT_PERM_NETWORK;
 		if (cfg->process_exec)
 			effective_permissions |= EXT_PERM_EXEC;
+		if (cfg->allow_pty)
+			effective_permissions |= EXT_PERM_PTY;
+		if (cfg->allow_process_info)
+			effective_permissions |= EXT_PERM_PROCESS_INFO;
+		if (cfg->allow_ipc)
+			effective_permissions |= EXT_PERM_IPC;
+		if (cfg->allow_temp)
+			effective_permissions |= EXT_PERM_TEMP;
 		if (cfg->write_paths_count > 0 || cfg->delete_paths_count > 0)
 			effective_permissions |= EXT_PERM_FILESYS;
 	}

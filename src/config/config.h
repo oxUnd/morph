@@ -142,6 +142,8 @@ struct config_react {
 	int hitl_auto_approve_readonly;
 	int bash_exec_enabled;
 	int bash_exec_default_timeout;
+	int bash_exec_max_memory_mb;
+	int bash_exec_max_open_files;
 	char bash_exec_mode[16];
 	char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_COMMAND_MAX];
 	int bash_exec_allowed_commands_count;
