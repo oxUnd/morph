@@ -4,6 +4,10 @@ A FastCGI front-end for the Morph terminal-native agent — letting you put
 nginx (or any FastCGI-aware server) in front of Morph and serve a Web UI
 without bringing an HTTP stack into the core binary.
 
+`morph-fastcgi` speaks the FastCGI protocol, not HTTP. A browser or `curl`
+cannot connect to it directly; use nginx/Caddy/Apache in production, or the
+`cgi-fcgi` command for a local protocol-level smoke test. Docker is optional.
+
 > The CLI process and the FastCGI worker share the same SQLite database
 > in WAL mode, so an agent can be driven from either surface
 > simultaneously.
@@ -85,37 +89,124 @@ install endpoint creates the initial admin user.
 
 ---
 
-## Build
+## Prerequisites and build
+
+The project vendors cJSON; do not install a separate cJSON development
+package. Besides libfcgi, the normal Morph dependencies are also required.
+
+### Debian/Ubuntu
 
 ```bash
-sudo apt install libfcgi-dev libsqlite3-dev libcjson-dev libcurl4-openssl-dev
+sudo apt update
+sudo apt install build-essential cmake pkg-config \
+  libfcgi-dev libsqlite3-dev libcurl4-openssl-dev libvips-dev \
+  libcairo2-dev libpango1.0-dev libharfbuzz-dev libfreetype-dev
 
-cd morph
+cmake -S . -B build -DBUILD_FASTCGI=ON
+cmake --build build -j
+```
+
+### macOS/Homebrew
+
+```bash
+brew install cmake pkgconf sqlite curl fcgi vips cairo pango harfbuzz freetype
+
 cmake -S . -B build -DBUILD_FASTCGI=ON
 cmake --build build -j
 ```
 
 The binary lands at `build/bin/morph-fastcgi`.
 
----
-
-## Run
+For a normal prefix install, including Morph's runtime data:
 
 ```bash
-export MORPH_FCGI_LISTEN="unix:/run/morph-fastcgi.sock"
-export MORPH_FCGI_DB="/var/lib/morph/morph.db"
+cmake --install build --prefix "$(brew --prefix)"
+command -v morph-fastcgi
+```
+
+For development, where every rebuild should immediately update the command,
+link the build artifact instead:
+
+```bash
+ln -sf "$PWD/build/bin/morph-fastcgi" \
+  "$(brew --prefix)/bin/morph-fastcgi"
+```
+
+This is a local Homebrew-prefix installation, not a published Homebrew formula.
+
+## Configure
+
+FastCGI and CLI use the same TOML configuration. Create it before launch and
+provide model credentials through environment variables; never put API keys in
+the TOML file.
+
+```bash
+mkdir -p "$HOME/.morph/log" "$HOME/.morph/output" \
+  "$HOME/.morph/skills" "$HOME/.morph/exts"
+cp config.toml.example "$HOME/.morph/config.toml"
+
+# Must match api_key_env in config.toml.
+export OPENAI_API_KEY="..."
+```
+
+At minimum, review `[model.text]` in `~/.morph/config.toml`. Skills are
+discovered from `~/.morph/skills/` and `~/.agents/skills/`. Extensions are
+loaded from `~/.morph/exts/` when their manifest supports the `fastcgi` front.
+
+MCP servers are configured in the same file:
+
+```toml
+[[mcp.servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"]
+auto_connect = true
+```
+
+FastCGI eagerly connects servers with `auto_connect = true`. Each runtime owns
+its own MCP client and tool registry, so a stdio MCP server may have one child
+process per warm/active runtime. Include that cost when setting runtime limits.
+
+---
+
+## Run without Docker
+
+For local development, use writable paths under the current user's home and a
+Unix socket under `/tmp`:
+
+```bash
+export MORPH_FCGI_LISTEN="unix:/tmp/morph-fastcgi.sock"
+export MORPH_FCGI_DB="$HOME/.morph/data.db"
+export MORPH_FCGI_CONFIG="$HOME/.morph/config.toml"
+export MORPH_FCGI_OUTPUT_DIR="$HOME/.morph/output"
+export MORPH_FCGI_LOG_FILE="$HOME/.morph/log/fastcgi.log"
 export MORPH_FCGI_WORKERS=128
 export MORPH_FCGI_RUNTIME_MIN_WORKERS=8
 export MORPH_FCGI_RUNTIME_MAX_WORKERS=64
-# Optional: trust a proxy-injected identity header
-export MORPH_FCGI_TRUST_HDR="X-Remote-User"
-# Optional: override artifact output directory
-export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
-./build/bin/morph-fastcgi
+morph-fastcgi
+# Or, without installing: ./build/bin/morph-fastcgi
 ```
 
 `MORPH_FCGI_LISTEN` accepts `unix:/path/sock`, `:9000`, or `127.0.0.1:9000`.
+Stop with `SIGINT` or `SIGTERM`; shutdown stops accepting requests, waits for
+accepted turn jobs, then closes elastic replicas and the primary runtime.
+
+For a protocol-level health check, install/use the `cgi-fcgi` program shipped
+with libfcgi and run:
+
+```bash
+SCRIPT_NAME=/api/health \
+DOCUMENT_URI=/api/health \
+REQUEST_URI=/api/health \
+REQUEST_METHOD=GET \
+cgi-fcgi -bind -connect /tmp/morph-fastcgi.sock
+```
+
+The response should contain `Status: 200` and a JSON body with `status: "ok"`.
+If `setup_required` is true, create the first administrator through the HTTP
+endpoint after putting nginx in front of the socket.
 
 ---
 
@@ -148,13 +239,78 @@ SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
 `canvas_node_added`, `canvas_node_patched`, `ask_user`, `approval_required`,
 `operation_approval_required`, `error`.
 
+### End-to-end HTTP example
+
+The following assumes nginx is serving the supplied configuration on
+`http://127.0.0.1` and that `jq` is installed. Run installation only once.
+
+```bash
+export MORPH_BASE_URL="http://127.0.0.1"
+export MORPH_ADMIN_USER="admin"
+export MORPH_ADMIN_PASSWORD="replace-with-a-strong-password"
+
+curl -sS "$MORPH_BASE_URL/api/health" | jq
+
+curl -sS -X POST "$MORPH_BASE_URL/api/install" \
+  -H 'Content-Type: application/json' \
+  --data "{\"username\":\"$MORPH_ADMIN_USER\",\
+\"password\":\"$MORPH_ADMIN_PASSWORD\"}" | jq
+
+MORPH_LOGIN_JSON=$(curl -sS -X POST "$MORPH_BASE_URL/api/login" \
+  -u "$MORPH_ADMIN_USER:$MORPH_ADMIN_PASSWORD")
+export MORPH_TOKEN=$(printf '%s' "$MORPH_LOGIN_JSON" | jq -r '.token')
+
+MORPH_SESSION_JSON=$(curl -sS -X POST "$MORPH_BASE_URL/api/sessions" \
+  -H "Authorization: Bearer $MORPH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"browser session","model":"default"}')
+export MORPH_SESSION_ID=$(printf '%s' "$MORPH_SESSION_JSON" | jq -r '.id')
+```
+
+Keep the SSE stream open in one terminal:
+
+```bash
+curl -N "$MORPH_BASE_URL/api/sessions/$MORPH_SESSION_ID/events" \
+  -H "Authorization: Bearer $MORPH_TOKEN"
+```
+
+Submit a turn from another terminal. The request returns `202` immediately;
+progress, the final answer, pool errors, and completion arrive through SSE.
+
+```bash
+curl -sS -X POST \
+  "$MORPH_BASE_URL/api/sessions/$MORPH_SESSION_ID/turns" \
+  -H "Authorization: Bearer $MORPH_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{"prompt":"List the tools currently available."}'
+```
+
+SSE connections last at most one hour, send a heartbeat every 15 seconds, and
+support reconnection with `Last-Event-ID`.
+
+### Common responses
+
+| Status/event | Meaning |
+|--------------|---------|
+| HTTP 202 | Turn accepted; execution continues asynchronously |
+| HTTP 429 `quota_exceeded/turns` | User daily turn quota exhausted |
+| HTTP 429 `quota_exceeded/concurrent_turns` | User concurrency quota exhausted |
+| HTTP 503 `shutting_down` | Process is no longer accepting turn jobs |
+| SSE `error` with `Resource temporarily unavailable` | Runtime wait queue was full |
+| SSE `error` with `Operation timed out` | No runtime became available before the wait deadline |
+
+The built-in admin quota allows four concurrent turns; the free-user profile
+allows one. These per-user quotas are separate from the process-wide runtime
+pool limits.
+
 ### Agent capabilities
 
 FastCGI uses the same runtime bootstrap as the CLI. At process startup it
 discovers Skills, loads extensions that support the `fastcgi` front, registers
 scheduled tasks and sub-agent tools, and connects configured MCP servers with
-`auto_connect = true`. MCP tools, resources, and prompts are registered in the
-shared tool registry before requests are accepted.
+`auto_connect = true`. Every runtime has an independent tool registry and MCP
+client set; replicas created during scale-out perform the same discovery and
+registration before becoming available to requests.
 
 Interactive turns use `POST /api/sessions/:id/actions`:
 
@@ -181,7 +337,7 @@ events to the SSE names above for compatibility with existing GUI clients.
 |----------|---------|-------------|
 | `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
 | `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
-| `MORPH_FCGI_WORKERS` | `128` | FastCGI/SSE connection workers (1–512) |
+| `MORPH_FCGI_WORKERS` | `128` | FastCGI connection slots (1–512); every open SSE stream occupies one |
 | `MORPH_FCGI_RUNTIME_MIN_WORKERS` | `8` | Prewarmed agent runtimes (1–256) |
 | `MORPH_FCGI_RUNTIME_MAX_WORKERS` | `64` | Maximum elastic agent runtimes (1–256) |
 | `MORPH_FCGI_RUNTIME_WORKERS` | _(none)_ | Legacy alias for the minimum worker count |
@@ -255,6 +411,37 @@ enter a bounded queue instead of failing with `EBUSY`. Each turn binds its
 authenticated user identity and session visibility into the selected tool
 runtime, so memory and credit queries remain tenant-scoped. Shutdown waits for
 accepted turn jobs before closing replicas and then the primary runtime.
+
+There are two separate kinds of workers:
+
+- `MORPH_FCGI_WORKERS` accepts FastCGI connections. Long-lived SSE streams
+  occupy these threads, but they do not consume an agent runtime while idle.
+- `MORPH_FCGI_RUNTIME_*_WORKERS` controls simultaneous model/ReAct execution.
+  A runtime is a comparatively heavy independent agent instance.
+
+A local macOS measurement was approximately 31 MB RSS with one runtime and
+170 MB with eight runtimes, or roughly 20 MB for each additional runtime.
+Models, Skills, extensions, MCP clients, allocator behavior, and platform
+libraries can substantially change this number. Stdio MCP child processes are
+not included in the Morph process RSS and must be budgeted separately.
+
+Suggested starting points:
+
+| Deployment | Connection workers | Runtime min/max | Queue |
+|------------|-------------------:|----------------:|------:|
+| Developer laptop | 32 | 1 / 4 | 32 |
+| Small shared server | 128 | 4 / 32 | 256 |
+| Larger host | 256 | 8 / 64 | 512 |
+
+Treat these as initial values, not universal limits. Keep enough connection
+workers for all expected SSE clients plus short API requests, then size runtime
+workers from available memory and the upstream model provider's rate limits.
+Model latency naturally causes queued demand to accumulate.
+
+The turn submission endpoint returns `202` before runtime acquisition. If the
+runtime queue is full or its wait deadline expires, the failure is published as
+an SSE `error` event for that session. It is not returned by the original HTTP
+request.
 
 `GET /api/health` exposes `runtime_pool.workers`, `busy`, `starting`, `waiting`,
 `min`, `max`, `queue_max`, and `idle_seconds` for autoscaling and alerting.

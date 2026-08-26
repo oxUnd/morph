@@ -5,9 +5,8 @@
  * (or TCP if requested) configured via env vars or argv:
  *
  *   MORPH_FCGI_LISTEN     unix:/run/morph-fastcgi.sock | :9000 | 127.0.0.1:9000
- *   MORPH_FCGI_WORKERS    integer (default 8)
+ *   MORPH_FCGI_WORKERS    integer (default 128)
  *   MORPH_FCGI_DB         path to morph SQLite DB
- *   MORPH_FCGI_SECRET     bearer token
  *   MORPH_FCGI_TRUST_HDR  trusted proxy identity header, e.g. "X-Remote-User"
  */
 #define _GNU_SOURCE
@@ -47,16 +46,16 @@ static const char *getenv_or(const char *k, const char *fallback)
 static int open_listen(const char *spec)
 {
 	/* libfcgi accepts ":port" / "host:port" / "/path/to/sock" */
+	const char *socket_spec = strncmp(spec, "unix:", 5) == 0
+		? spec + 5 : spec;
 	int backlog = 128;
-	int fd = FCGX_OpenSocket(spec, backlog);
+	int fd = FCGX_OpenSocket(socket_spec, backlog);
 	if (fd < 0) {
 		fprintf(stderr, "FCGX_OpenSocket(%s) failed\n", spec);
 		MORPH_RETURN(-EIO);
 	}
-	if (spec[0] == '/' || strncmp(spec, "unix:", 5) == 0) {
-		const char *path = spec[0] == '/' ? spec : spec + 5;
-		chmod(path, 0660);
-	}
+	if (socket_spec[0] == '/')
+		chmod(socket_spec, 0660);
 	return fd;
 }
 
