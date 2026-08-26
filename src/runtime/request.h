@@ -2,6 +2,7 @@
 #define MORPH_RUNTIME_REQUEST_H
 
 #include "agent/react.h"
+#include "agent/tool_runtime.h"
 #include "agent/turn.h"
 #include "event/event.h"
 #include "agent/memory.h"
@@ -21,12 +22,19 @@ struct runtime_request {
 	void *event_user_data;
 	void *usage_user_data;
 	int bind_usage_user_data;
+	const char *user_id;
+	int restrict_memory_to_user;
+	tool_runtime_session_visible_fn memory_visible_fn;
+	void *memory_visible_user_data;
 	hitl_approval_cb hitl_cb;
 	void *hitl_user_data;
 	ask_user_callback_fn ask_user_fn;
 	void *ask_user_user_data;
 	int override_hitl;
 	int override_ask_user;
+	react_action_drain_fn action_drain_fn;
+	void *action_drain_user_data;
+	int override_action_drain;
 	unsigned turn_flags;
 };
 

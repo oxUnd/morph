@@ -16,6 +16,7 @@ struct runtime_turn_scope {
 	int bound;
 	int64_t memory_session_id;
 	char credit_session_id[64];
+	char user_id[64];
 };
 
 struct runtime_turn_scope_context {

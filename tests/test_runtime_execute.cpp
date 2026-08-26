@@ -146,6 +146,13 @@ static int runtime_count_events(const struct morph_event *, void *user_data)
 	return 0;
 }
 
+static int runtime_count_action_drains(void *user_data,
+			       struct react_action *, int)
+{
+	(*static_cast<int *>(user_data))++;
+	return 0;
+}
+
 TEST_F(RuntimeExecuteTest, SuccessfulTurnPersistsUserAndAssistantMessages)
 {
 	struct runtime_result result{};
@@ -215,6 +222,25 @@ TEST_F(RuntimeExecuteTest, PerRequestEventCallbackReceivesTurnEvents)
 	request.event_user_data = &events;
 	ASSERT_EQ(runtime_execute_turn(instance, &request, &result), 0);
 	EXPECT_GT(events, 0);
+}
+
+TEST_F(RuntimeExecuteTest, PerRequestActionDrainIsBoundForOneTurn)
+{
+	struct runtime_result result{};
+	struct runtime_request request{};
+	int drains = 0;
+	OpenScripted();
+	request.model_input = "drain actions";
+	request.stored_user_input = "drain actions";
+	request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
+	request.action_drain_fn = runtime_count_action_drains;
+	request.action_drain_user_data = &drains;
+	request.override_action_drain = 1;
+	ASSERT_EQ(runtime_execute_turn(instance, &request, &result), 0);
+	EXPECT_GT(drains, 0);
+	int first_turn_drains = drains;
+	ASSERT_EQ(Execute("no action drain", &result), 0);
+	EXPECT_EQ(drains, first_turn_drains);
 }
 
 TEST_F(RuntimeExecuteTest, ModelFailureReturnsFailedOutcomeAndErrorSnapshot)

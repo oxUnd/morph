@@ -409,9 +409,11 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	(void)runtime_apply_system_prompt(models->react, config);
 	models->text = runtime_create_model(&config->models.text, 0);
 	models->react->llm_model = models->text;
-	memory_set_llm(models->text);
-	model_set_usage_callback(profile->usage_cb);
-	model_set_usage_user_data(profile->usage_user_data);
+	if (!profile->process_replica) {
+		memory_set_llm(models->text);
+		model_set_usage_callback(profile->usage_cb);
+		model_set_usage_user_data(profile->usage_user_data);
+	}
 	models->vision = runtime_create_model(&config->models.vision, 0);
 	models->image = runtime_create_model(&config->models.image, 1);
 	models->video = runtime_create_model(&config->models.video, 1);

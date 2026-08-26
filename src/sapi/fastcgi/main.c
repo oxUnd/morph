@@ -26,8 +26,12 @@
 #include "session_store.h"
 #include "router.h"
 #include "auth.h"
+#include "agent_bridge.h"
 #include "util/error.h"
-#include "agent/memory.h"
+
+#define FCGI_WORKERS_DEFAULT "128"
+#define FCGI_WORKERS_MAX 512
+#define FCGI_WORKER_STACK_SIZE (512U * 1024U)
 
 static int g_listen_fd = -1;
 static struct session_store *g_store = NULL;
@@ -81,9 +85,15 @@ static int configure_trust_param(const char *header)
 
 static void on_signal(int sig)
 {
+	int listen_fd;
+
 	(void)sig;
 	g_shutdown = 1;
 	FCGX_ShutdownPending();
+	listen_fd = g_listen_fd;
+	g_listen_fd = -1;
+	if (listen_fd >= 0)
+		close(listen_fd);
 }
 
 static void install_signals(void)
@@ -150,9 +160,10 @@ int main(int argc, char **argv)
 					    "unix:/run/morph-fastcgi.sock");
 	const char *db_path     = getenv_or("MORPH_FCGI_DB",
 					    "/var/lib/morph/morph.db");
-	int n_workers = atoi(getenv_or("MORPH_FCGI_WORKERS", "8"));
+	int n_workers = atoi(getenv_or("MORPH_FCGI_WORKERS",
+				      FCGI_WORKERS_DEFAULT));
 	if (n_workers < 1) n_workers = 1;
-	if (n_workers > 64) n_workers = 64;
+	if (n_workers > FCGI_WORKERS_MAX) n_workers = FCGI_WORKERS_MAX;
 
 	const char *trust_hdr = getenv("MORPH_FCGI_TRUST_HDR");
 
@@ -171,27 +182,55 @@ int main(int argc, char **argv)
 		fprintf(stderr, "session_store_open(%s) failed\n", db_path);
 		return 3;
 	}
+	if (fcgi_bridge_init(db_path) != 0) {
+		session_store_close(g_store);
+		g_store = NULL;
+		return 5;
+	}
 	auth_init(trust_hdr);
 	install_signals();
 
 	fprintf(stderr, "morph-fastcgi: listening on %s, %d workers, db=%s\n",
 		listen_spec, n_workers, db_path);
+	{
+		struct fcgi_bridge_pool_status pool;
+
+		fcgi_bridge_pool_status(&pool);
+		fprintf(stderr, "morph-fastcgi: elastic runtime pool %d->%d, "
+			"queue=%d, idle=%ds\n", pool.min_workers,
+			pool.max_workers, pool.queue_max, pool.idle_seconds);
+	}
 
 	pthread_t *threads = calloc((size_t)n_workers, sizeof(pthread_t));
+	pthread_attr_t worker_attr;
+	pthread_attr_t *worker_attr_ptr = NULL;
+	int worker_attr_ready = 0;
+	if (!threads) {
+		fprintf(stderr, "morph-fastcgi: worker allocation failed\n");
+		fcgi_bridge_shutdown();
+		session_store_close(g_store);
+		return 6;
+	}
+	if (pthread_attr_init(&worker_attr) == 0) {
+		worker_attr_ready = 1;
+		if (pthread_attr_setstacksize(&worker_attr,
+					      FCGI_WORKER_STACK_SIZE) == 0)
+			worker_attr_ptr = &worker_attr;
+	}
 	for (int i = 0; i < n_workers; i++) {
-		if (pthread_create(&threads[i], NULL, worker_main, NULL) != 0) {
+		if (pthread_create(&threads[i], worker_attr_ptr,
+				   worker_main, NULL) != 0) {
 			fprintf(stderr, "pthread_create #%d failed\n", i);
 			n_workers = i;
 			break;
 		}
 	}
+	if (worker_attr_ready)
+		pthread_attr_destroy(&worker_attr);
 	for (int i = 0; i < n_workers; i++) pthread_join(threads[i], NULL);
 	free(threads);
 
-	/* Drain in-flight memory consolidation jobs before closing the
-	 * shared SQLite handle they depend on. */
-	memory_async_shutdown();
-
+	fcgi_bridge_shutdown();
 	session_store_close(g_store);
 	fprintf(stderr, "morph-fastcgi: shutdown clean\n");
 	return 0;

@@ -58,6 +58,45 @@ TEST(RuntimeInternalTest, CreditSessionKeyPrefersBoundScopeThenDisplayId)
 	EXPECT_STREQ(key, "");
 }
 
+static int runtime_test_session_visible(const char *, const char *, void *)
+{
+	return 1;
+}
+
+TEST(RuntimeInternalTest, TurnScopeAppliesPerRequestUserIsolation)
+{
+	struct db db{};
+	struct config config{};
+	struct session current{};
+	struct react_context react{};
+	struct runtime_turn_scope scope{};
+	struct runtime_turn_scope_context context{};
+	struct runtime_request request{};
+	int marker = 7;
+
+	current.id = 42;
+	std::strncpy(current.display_id, "display-42",
+		    sizeof(current.display_id) - 1);
+	context.db = &db;
+	context.config = &config;
+	context.react = &react;
+	context.current_session = &current;
+	context.scope = &scope;
+	request.session_id = current.id;
+	request.user_id = "tenant-user";
+	request.restrict_memory_to_user = 1;
+	request.memory_visible_fn = runtime_test_session_visible;
+	request.memory_visible_user_data = &marker;
+	ASSERT_EQ(runtime_turn_scope_begin(&context, &request), 0);
+	EXPECT_STREQ(scope.user_id, "tenant-user");
+	EXPECT_STREQ(react.tool_runtime.user_id, "tenant-user");
+	EXPECT_EQ(react.tool_runtime.restrict_memory_to_user, 1);
+	EXPECT_EQ(react.tool_runtime.memory_visible_fn,
+		  runtime_test_session_visible);
+	EXPECT_EQ(react.tool_runtime.memory_visible_user_data, &marker);
+	runtime_turn_scope_finish(&context);
+}
+
 TEST(RuntimeInternalTest, PlanRegistryStateIsIsolatedBySession)
 {
 	struct runtime_plan_session sessions[2]{};
@@ -138,6 +177,33 @@ TEST(RuntimeInternalTest, RecordModelUsageAppliesCachedInputPrice)
 	EXPECT_DOUBLE_EQ(summary.estimated_cost, 5.6);
 	EXPECT_EQ(summary.credits, 5600);
 
+	db_close(&db);
+	std::remove(db_path);
+}
+
+TEST(RuntimeInternalTest, RecordModelUsageCanAttributeTenantUser)
+{
+	char db_path[256];
+	std::snprintf(db_path, sizeof(db_path),
+		      "/tmp/morph_runtime_tenant_usage_%d.db", getpid());
+	std::remove(db_path);
+	struct db db{};
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	struct config config{};
+	config_set_defaults(&config);
+	config.credits.cost_to_credit_coef = 1.0;
+	struct model_usage usage{};
+	std::strncpy(usage.kind, "model_text", sizeof(usage.kind) - 1);
+	usage.input_tokens = 10;
+	ASSERT_EQ(runtime_record_model_usage_for_user(
+		&db, &config, "tenant-a", "session-a", &usage), 0);
+	struct credit_summary tenant{};
+	ASSERT_EQ(credit_summary_total(&db, "tenant-a", &tenant), 0);
+	EXPECT_EQ(tenant.event_count, 1);
+	struct credit_summary local{};
+	ASSERT_EQ(credit_summary_total(&db, "local", &local), 0);
+	EXPECT_EQ(local.event_count, 0);
 	db_close(&db);
 	std::remove(db_path);
 }

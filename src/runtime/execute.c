@@ -47,11 +47,14 @@ int runtime_execute(struct runtime_engine *engine,
 	void *old_hitl_user_data;
 	ask_user_callback_fn old_ask_user_fn;
 	void *old_ask_user_data;
+	react_action_drain_fn old_action_drain_fn;
+	void *old_action_drain_user_data;
 	void *old_usage_user_data = NULL;
 	int event_bound = 0;
 	int usage_bound = 0;
 	int hitl_bound = 0;
 	int ask_user_bound = 0;
+	int action_drain_bound = 0;
 	int rc;
 	int finish_rc;
 	struct runtime_output_forwarder output_forwarder;
@@ -70,6 +73,8 @@ int runtime_execute(struct runtime_engine *engine,
 	old_hitl_user_data = engine->react->hitl.approval_user_data;
 	old_ask_user_fn = engine->react->ask_user_fn;
 	old_ask_user_data = engine->react->ask_user_data;
+	old_action_drain_fn = engine->react->action_drain_fn;
+	old_action_drain_user_data = engine->react->action_drain_user_data;
 	if (request->bind_usage_user_data) {
 		old_usage_user_data =
 			runtime_usage_bind(request->usage_user_data);
@@ -96,6 +101,12 @@ int runtime_execute(struct runtime_engine *engine,
 		engine->react->ask_user_fn = request->ask_user_fn;
 		engine->react->ask_user_data = request->ask_user_user_data;
 		ask_user_bound = 1;
+	}
+	if (request->override_action_drain) {
+		engine->react->action_drain_fn = request->action_drain_fn;
+		engine->react->action_drain_user_data =
+			request->action_drain_user_data;
+		action_drain_bound = 1;
 	}
 	memset(&session_runtime, 0, sizeof(session_runtime));
 	session_runtime.db = engine->db;
@@ -149,6 +160,11 @@ out:
 	if (ask_user_bound) {
 		engine->react->ask_user_fn = old_ask_user_fn;
 		engine->react->ask_user_data = old_ask_user_data;
+	}
+	if (action_drain_bound) {
+		engine->react->action_drain_fn = old_action_drain_fn;
+		engine->react->action_drain_user_data =
+			old_action_drain_user_data;
 	}
 	if (engine->finish_turn)
 		engine->finish_turn(engine->user_data, request, result);

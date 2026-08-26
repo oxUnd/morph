@@ -73,8 +73,9 @@ char *runtime_model_usage_metadata(const struct model_usage *usage)
 	return json;
 }
 
-int runtime_record_model_usage(struct db *db,
+int runtime_record_model_usage_for_user(struct db *db,
 			       const struct config *config,
+			       const char *user_id,
 			       const char *session_id,
 			       const struct model_usage *usage)
 {
@@ -82,13 +83,13 @@ int runtime_record_model_usage(struct db *db,
 	char *metadata;
 	int rc;
 
-	if (!db || !config || !session_id || !usage)
+	if (!db || !config || !user_id || !session_id || !usage)
 		return -EINVAL;
 	if (!runtime_model_usage_is_billable(usage))
 		return 0;
 	metadata = runtime_model_usage_metadata(usage);
 	memset(&event, 0, sizeof(event));
-	event.user_id = "local";
+	event.user_id = user_id;
 	event.session_id = session_id;
 	event.kind = usage->kind[0] ? usage->kind : "model_text";
 	event.provider = usage->provider[0] ? usage->provider :
@@ -104,4 +105,13 @@ int runtime_record_model_usage(struct db *db,
 	rc = credit_record_event(db, &config->credits, &event, NULL);
 	free(metadata);
 	return rc;
+}
+
+int runtime_record_model_usage(struct db *db,
+			       const struct config *config,
+			       const char *session_id,
+			       const struct model_usage *usage)
+{
+	return runtime_record_model_usage_for_user(db, config, "local",
+					   session_id, usage);
 }

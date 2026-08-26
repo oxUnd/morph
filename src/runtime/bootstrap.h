@@ -56,6 +56,7 @@ struct runtime_bootstrap_profile {
 	int enable_shell_exts;
 	int enable_sub_agents;
 	int allocate_skill_registry;
+	int process_replica;
 };
 
 struct runtime_shutdown_resources {

@@ -48,6 +48,8 @@ struct runtime_options {
 	const char *config_path;
 	const char *db_path;
 	const char *workdir;
+	const char *output_dir_override;
+	const char *default_dynamic_tools_mode;
 	const char *default_session;
 	const char *front_name;
 	morph_event_cb event_cb;
@@ -78,6 +80,7 @@ struct runtime_options {
 	int auto_connect_mcp;
 	int create_new_session;
 	int restore_recent_session;
+	int process_replica;
 };
 
 struct runtime_permission_grant {

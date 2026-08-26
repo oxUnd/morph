@@ -219,6 +219,7 @@ TEST_F(RuntimeFacadeTest, TaskCrudRunsEntirelyThroughFacade)
 	EXPECT_EQ(count, 1);
 	scheduled_task_free_list(items, count);
 	ASSERT_EQ(runtime_task_cancel(instance, created.id), 0);
+	scheduled_task_cleanup(&loaded);
 	ASSERT_EQ(runtime_task_get(instance, created.id, &loaded), 0);
 	EXPECT_STREQ(loaded.status, "cancelled");
 	scheduled_task_cleanup(&created);

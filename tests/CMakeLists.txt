@@ -57,7 +57,9 @@ set(TEST_SOURCES
 	test_utf8.cpp
 	test_kitty_protocol.cpp
 	test_fastcgi_security.cpp
+	test_fastcgi_runtime.cpp
 	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/security.c
+	${CMAKE_SOURCE_DIR}/src/sapi/fastcgi/agent_bridge.c
 )
 
 add_executable(morph-tests ${TEST_SOURCES})

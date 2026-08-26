@@ -13,5 +13,10 @@ int runtime_record_model_usage(struct db *db,
 			       const struct config *config,
 			       const char *session_id,
 			       const struct model_usage *usage);
+int runtime_record_model_usage_for_user(struct db *db,
+			       const struct config *config,
+			       const char *user_id,
+			       const char *session_id,
+			       const struct model_usage *usage);
 
 #endif

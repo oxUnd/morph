@@ -4,22 +4,19 @@
  * runtime layer and bridges ReAct events into
  * the FastCGI event store.  Web clients see the stream via the SSE endpoint.
  *
- * Deep integration (cancellation, action injection) is optional and gated
- * on the weak symbol `react_context_create_for_session` — see PATCHES.md.
+ * Execution is delegated to the shared runtime used by every front end.
  */
 #define _GNU_SOURCE
 #include "handlers.h"
+#include "../action_pump.h"
+#include "../agent_bridge.h"
 #include "../session_store.h"
 #include "../event_sink.h"
 #include "agent/react.h"
-#include "agent/tokenizer.h"
-#include "agent/memory.h"
+#include "agent/tool_context.h"
 #include "agent/turn.h"
 #include "event/event.h"
 #include "runtime/runtime.h"
-#include "models/llm.h"
-#include "config/config.h"
-#include "credits.h"
 #include "session.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -36,29 +33,7 @@
 
 #include "cJSON.h"
 
-/* ------------ optional deep hook (weak link) ------------ */
-struct react_context;
-__attribute__((weak)) struct react_context *
-react_context_create_for_session(struct session_store *store,
-				 const char *session_id,
-				 const char *user_id);
-
-__attribute__((weak)) void
-react_context_destroy(struct react_context *ctx);
-
-__attribute__((weak)) int
-react_set_event_callback(struct react_context *ctx,
-			 morph_event_cb cb, void *user);
-
-__attribute__((weak)) int
-react_set_turn_id(struct react_context *ctx, const char *turn_id);
-
-__attribute__((weak)) int
-react_memory_options_for_session(struct memory_options *out);
-
-__attribute__((weak)) const char *fcgi_artifact_output_dir(void);
-__attribute__((weak)) const struct config *fcgi_bridge_config(void);
-/* -------------------------------------------------------- */
+#define FCGI_ACTION_WAIT_SECONDS 300
 
 struct turn_job {
 	struct session_store *store;
@@ -79,131 +54,15 @@ struct turn_job {
 	} artifacts[32];
 	int artifacts_count;
 	int final_sent;
+	char action_type[32];
+	char *action_payload;
+	char pending_type[32];
+	char *pending_payload;
 };
-
-static __thread struct turn_job *current_usage_job;
-
-static void publish_credit_warning(struct turn_job *j,
-				   const struct config *cfg)
-{
-	struct credit_summary today;
-	cJSON *obj = NULL;
-	char *json = NULL;
-
-	if (!j || !cfg || cfg->credits.daily_limit < 0)
-		return;
-	if (credit_summary_today(&j->store->db, j->user_id, &today) != 0)
-		return;
-	if (today.credits <= cfg->credits.daily_limit)
-		return;
-
-	obj = cJSON_CreateObject();
-	if (!obj)
-		return;
-	cJSON_AddNumberToObject(obj, "used_today", (double)today.credits);
-	cJSON_AddNumberToObject(obj, "daily_limit",
-				cfg->credits.daily_limit);
-	cJSON_AddStringToObject(obj, "currency",
-				cfg->credits.currency);
-	cJSON_AddNumberToObject(obj, "estimated_cost_today",
-				today.estimated_cost);
-	cJSON_AddStringToObject(obj, "turn_id", j->turn_id);
-	json = cJSON_PrintUnformatted(obj);
-	cJSON_Delete(obj);
-	events_publish(j->store, j->session_id, "credits_warning",
-		       json ? json : "{}");
-	free(json);
-}
-
-static char *model_usage_metadata_json(const struct model_usage *usage)
-{
-	cJSON *obj;
-	char *json;
-
-	if (!usage)
-		return NULL;
-	obj = cJSON_CreateObject();
-	if (!obj)
-		return NULL;
-	if (usage->response_id[0])
-		cJSON_AddStringToObject(obj, "response_id",
-					usage->response_id);
-	if (usage->model[0])
-		cJSON_AddStringToObject(obj, "actual_model", usage->model);
-	if (usage->finish_reason[0])
-		cJSON_AddStringToObject(obj, "finish_reason",
-					usage->finish_reason);
-	if (usage->system_fingerprint[0])
-		cJSON_AddStringToObject(obj, "system_fingerprint",
-					usage->system_fingerprint);
-	if (usage->usage_source[0])
-		cJSON_AddStringToObject(obj, "usage_source",
-					usage->usage_source);
-	if (usage->created > 0)
-		cJSON_AddNumberToObject(obj, "created",
-					(double)usage->created);
-	if (usage->total_tokens > 0)
-		cJSON_AddNumberToObject(obj, "total_tokens",
-					(double)usage->total_tokens);
-	if (usage->cached_tokens > 0)
-		cJSON_AddNumberToObject(obj, "cached_tokens",
-					(double)usage->cached_tokens);
-	if (usage->reasoning_tokens > 0)
-		cJSON_AddNumberToObject(obj, "reasoning_tokens",
-					(double)usage->reasoning_tokens);
-	if (usage->audio_tokens > 0)
-		cJSON_AddNumberToObject(obj, "audio_tokens",
-					(double)usage->audio_tokens);
-	if (usage->image_tokens > 0)
-		cJSON_AddNumberToObject(obj, "image_tokens",
-					(double)usage->image_tokens);
-	json = cJSON_PrintUnformatted(obj);
-	cJSON_Delete(obj);
-	return json;
-}
-
-static void record_model_usage(const struct model_usage *usage,
-			       void *user_data)
-{
-	struct turn_job *j = user_data ? user_data : current_usage_job;
-	const struct config *cfg;
-	struct credit_event event;
-	char *metadata;
-
-	if (!j || !usage || !fcgi_bridge_config)
-		return;
-	if (usage->input_tokens <= 0 && usage->output_tokens <= 0 &&
-	    usage->image_units <= 0 && usage->video_seconds <= 0)
-		return;
-	cfg = fcgi_bridge_config();
-	if (!cfg)
-		return;
-	metadata = model_usage_metadata_json(usage);
-	memset(&event, 0, sizeof(event));
-	event.user_id = j->user_id;
-	event.session_id = j->session_id;
-	event.kind = usage->kind[0] ? usage->kind : "model_text";
-	event.provider = usage->provider[0] ? usage->provider :
-		cfg->models.text.provider;
-	event.model = usage->model[0] ? usage->model :
-		cfg->models.text.model;
-	event.input_tokens = usage->input_tokens;
-	event.cached_tokens = usage->cached_tokens;
-	event.output_tokens = usage->output_tokens;
-	event.image_units = usage->image_units;
-	event.video_seconds = usage->video_seconds;
-	event.metadata_json = metadata;
-	if (credit_record_event(&j->store->db, &cfg->credits,
-				&event, NULL) == 0)
-		publish_credit_warning(j, cfg);
-	free(metadata);
-}
 
 static const char *bridge_output_dir(void)
 {
-	if (fcgi_artifact_output_dir)
-		return fcgi_artifact_output_dir();
-	return "/var/lib/morph/output";
+	return fcgi_artifact_output_dir();
 }
 
 static const char *artifact_mime(const char *kind, const char *path)
@@ -525,77 +384,6 @@ static char *render_artifact_summary(struct turn_job *j)
 	return morph_buf_detach(&out);
 }
 
-static int bridge_cb(const struct react_output_event *event, void *u)
-{
-	struct turn_job *j = (struct turn_job *)u;
-	const char *text = event && event->text ? event->text : "";
-
-	if (!event)
-		return 0;
-
-	switch (event->type) {
-	case REACT_STEP_THOUGHT:
-		if (!*text)
-			return 0;
-		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
-					text);
-		return 0;
-
-	case REACT_STEP_ACTION:
-		if (event->status != REACT_OUTPUT_STARTED ||
-		    !event->tool_name || !*event->tool_name)
-			return 0;
-		snprintf(j->last_tool, sizeof(j->last_tool), "%s",
-			 event->tool_name);
-		snprintf(j->last_tool_call_id, sizeof(j->last_tool_call_id),
-			 "%s", event->tool_call_id ? event->tool_call_id : "");
-		event_sink_tool_call_turn(j->store, j->session_id,
-					  j->turn_id, event->tool_name,
-					  event->tool_args ?
-					  event->tool_args : "{}",
-					  event->tool_call_id);
-		return 0;
-
-	case REACT_STEP_OBSERVATION:
-		event_sink_tool_result_turn(j->store, j->session_id,
-					    j->turn_id, j->last_tool,
-					    text, event->tool_call_id ?
-					    event->tool_call_id :
-					    j->last_tool_call_id);
-		j->last_tool[0] = '\0';
-		j->last_tool_call_id[0] = '\0';
-		return 0;
-
-	case REACT_STEP_REFLECTION:
-		if (!*text)
-			return 0;
-		event_sink_thought_turn(j->store, j->session_id, j->turn_id,
-					text);
-		return 0;
-
-	case REACT_STEP_FINAL:
-	{
-		char *rendered = render_media_refs(j, text);
-		event_sink_final_turn(j->store, j->session_id, j->turn_id,
-				      rendered ? rendered : text);
-		j->final_sent = 1;
-		free(rendered);
-		return 0;
-	}
-
-	case REACT_STEP_REASONING:
-		if (!*text)
-			return 0;
-		event_sink_reasoning_turn(j->store, j->session_id, j->turn_id,
-					  text);
-		return 0;
-
-	default:
-		return 0;
-	}
-	return 0;
-}
-
 static char *event_data_string(cJSON *data, const char *key)
 {
 	cJSON *item;
@@ -784,83 +572,325 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 	return 0;
 }
 
+static int bridge_memory_session_visible(const char *display_id,
+					 const char *user_id,
+					 void *user_data)
+{
+	struct session_store *store = user_data;
+
+	if (!store || !display_id || !user_id)
+		return 0;
+	return store_session_owned_by(store, display_id, user_id);
+}
+
+static void turn_action_record_cleanup(struct action_record *record)
+{
+	if (!record)
+		return;
+	free(record->payload_json);
+	memset(record, 0, sizeof(*record));
+}
+
+static int turn_take_pending_action(struct turn_job *j,
+				    struct action_record *record)
+{
+	if (!j || !record || !j->pending_type[0])
+		return 0;
+	memset(record, 0, sizeof(*record));
+	snprintf(record->type, sizeof(record->type), "%s", j->pending_type);
+	record->payload_json = j->pending_payload;
+	j->pending_type[0] = '\0';
+	j->pending_payload = NULL;
+	return 1;
+}
+
+static void turn_save_pending_action(struct turn_job *j,
+				     struct action_record *record)
+{
+	if (!j || !record)
+		return;
+	if (j->pending_type[0]) {
+		turn_action_record_cleanup(record);
+		return;
+	}
+	snprintf(j->pending_type, sizeof(j->pending_type), "%s",
+		 record->type);
+	j->pending_payload = record->payload_json;
+	record->payload_json = NULL;
+}
+
+static int fcgi_turn_action_drain(void *user_data, struct react_action *out,
+				  int timeout_sec)
+{
+	struct turn_job *j = user_data;
+	struct action_record record;
+	int got;
+
+	if (!j || !out)
+		return -EINVAL;
+	free(j->action_payload);
+	j->action_payload = NULL;
+	j->action_type[0] = '\0';
+	memset(&record, 0, sizeof(record));
+	got = action_pump_wait(j->store, j->session_id, timeout_sec, &record);
+	if (got <= 0)
+		return got;
+	if (strcmp(record.type, "approve") == 0 ||
+	    strcmp(record.type, "reject") == 0 ||
+	    strcmp(record.type, "always") == 0) {
+		turn_save_pending_action(j, &record);
+		return 0;
+	}
+	snprintf(j->action_type, sizeof(j->action_type), "%s", record.type);
+	j->action_payload = record.payload_json;
+	out->type = j->action_type;
+	out->payload_json = j->action_payload;
+	return 1;
+}
+
+static void publish_interaction(struct turn_job *j, const char *type,
+				const char *message, cJSON *data)
+{
+	cJSON *root;
+	char *json;
+
+	if (!j || !type)
+		return;
+	root = cJSON_CreateObject();
+	if (!root)
+		return;
+	cJSON_AddStringToObject(root, "turn_id", j->turn_id);
+	if (message)
+		cJSON_AddStringToObject(root, "message", message);
+	if (data)
+		cJSON_AddItemToObject(root, "data", data);
+	json = cJSON_PrintUnformatted(root);
+	events_publish(j->store, j->session_id, type, json ? json : "{}");
+	free(json);
+	cJSON_Delete(root);
+}
+
+static int action_answers(const char *payload, char ***answers,
+			  int *answers_count)
+{
+	cJSON *root;
+	cJSON *items;
+	cJSON *text;
+	char **values;
+	int count;
+	int written = 0;
+
+	if (!answers || !answers_count)
+		MORPH_RETURN(-EINVAL);
+	*answers = NULL;
+	*answers_count = 0;
+	root = cJSON_Parse(payload ? payload : "{}");
+	if (!cJSON_IsObject(root)) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-EINVAL);
+	}
+	items = cJSON_GetObjectItem(root, "answers");
+	text = cJSON_GetObjectItem(root, "text");
+	count = cJSON_IsArray(items) ? cJSON_GetArraySize(items) :
+		(cJSON_IsString(text) ? 1 : 0);
+	if (count > 64)
+		count = 64;
+	if (count == 0) {
+		cJSON_Delete(root);
+		return 0;
+	}
+	values = calloc((size_t)count, sizeof(*values));
+	if (!values) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	for (int i = 0; i < count; i++) {
+		cJSON *item = cJSON_IsArray(items)
+			? cJSON_GetArrayItem(items, i) : text;
+		if (!cJSON_IsString(item) || !item->valuestring ||
+		    !item->valuestring[0])
+			continue;
+		values[written] = strdup(item->valuestring);
+		if (!values[written]) {
+			for (int k = 0; k < written; k++)
+				free(values[k]);
+			free(values);
+			cJSON_Delete(root);
+			MORPH_RETURN(-ENOMEM);
+		}
+		written++;
+	}
+	cJSON_Delete(root);
+	*answers = values;
+	*answers_count = written;
+	return 0;
+}
+
+int fcgi_turn_ask_user(const char *question,
+		       const char *const *choices, int choices_count,
+		       const char *selection_mode, int min_choices,
+		       int max_choices, char ***answers, int *answers_count,
+		       void *turn_data)
+{
+	struct turn_job *j = turn_data;
+	struct action_record record;
+	cJSON *data;
+	cJSON *array;
+	int got;
+
+	(void)selection_mode;
+	(void)min_choices;
+	(void)max_choices;
+	if (!j || !answers || !answers_count)
+		MORPH_RETURN(-EINVAL);
+	data = cJSON_CreateObject();
+	array = cJSON_CreateArray();
+	if (data && array) {
+		cJSON_AddStringToObject(data, "question", question ? question : "");
+		for (int i = 0; i < choices_count; i++)
+			cJSON_AddItemToArray(array,
+				cJSON_CreateString(choices[i] ? choices[i] : ""));
+		cJSON_AddItemToObject(data, "choices", array);
+		publish_interaction(j, "ask_user", "user input required", data);
+	} else {
+		cJSON_Delete(array);
+		cJSON_Delete(data);
+	}
+	memset(&record, 0, sizeof(record));
+	got = action_pump_wait(j->store, j->session_id,
+			       FCGI_ACTION_WAIT_SECONDS, &record);
+	if (got <= 0)
+		MORPH_RETURN(got < 0 ? got : -ETIMEDOUT);
+	if (strcmp(record.type, "cancel") == 0) {
+		turn_action_record_cleanup(&record);
+		MORPH_RETURN(-ECANCELED);
+	}
+	if (strcmp(record.type, "prompt") != 0 &&
+	    strcmp(record.type, "answer") != 0) {
+		turn_save_pending_action(j, &record);
+		MORPH_RETURN(-EAGAIN);
+	}
+	got = action_answers(record.payload_json, answers, answers_count);
+	turn_action_record_cleanup(&record);
+	return got;
+}
+
+static int action_is_always(const char *payload)
+{
+	cJSON *root = cJSON_Parse(payload ? payload : "{}");
+	cJSON *always = cJSON_IsObject(root)
+		? cJSON_GetObjectItem(root, "always") : NULL;
+	int result = cJSON_IsTrue(always);
+
+	cJSON_Delete(root);
+	return result;
+}
+
+static enum hitl_verdict fcgi_turn_hitl(const char *tool_name,
+					const char *tool_args,
+					void *turn_data)
+{
+	struct turn_job *j = turn_data;
+	struct action_record record;
+	cJSON *data;
+	int got;
+
+	if (!j)
+		return HITL_DENY;
+	data = cJSON_CreateObject();
+	if (data) {
+		cJSON_AddStringToObject(data, "tool", tool_name ? tool_name : "");
+		cJSON_AddStringToObject(data, "args", tool_args ? tool_args : "{}");
+		publish_interaction(j, "approval_required",
+				    "tool approval required", data);
+	}
+	memset(&record, 0, sizeof(record));
+	got = turn_take_pending_action(j, &record);
+	if (!got)
+		got = action_pump_wait(j->store, j->session_id,
+			       FCGI_ACTION_WAIT_SECONDS, &record);
+	if (got <= 0)
+		return HITL_DENY;
+	if (strcmp(record.type, "always") == 0 ||
+	    (strcmp(record.type, "approve") == 0 &&
+	     action_is_always(record.payload_json))) {
+		turn_action_record_cleanup(&record);
+		return HITL_ALWAYS;
+	}
+	got = strcmp(record.type, "approve") == 0;
+	turn_action_record_cleanup(&record);
+	return got ? HITL_APPROVE : HITL_DENY;
+}
+
+enum tool_operation_verdict
+fcgi_turn_operation_approval(const struct tool_operation *op, void *turn_data)
+{
+	struct turn_job *j = turn_data;
+	struct action_record record;
+	cJSON *data;
+	int got;
+
+	if (!j || !op)
+		return TOOL_OP_DENY;
+	data = cJSON_CreateObject();
+	if (data) {
+		cJSON_AddStringToObject(data, "tool",
+			op->tool_name ? op->tool_name : "");
+		cJSON_AddStringToObject(data, "action",
+			op->action ? op->action : "");
+		cJSON_AddStringToObject(data, "target",
+			op->target ? op->target : "");
+		publish_interaction(j, "operation_approval_required",
+				    "operation approval required", data);
+	}
+	memset(&record, 0, sizeof(record));
+	got = turn_take_pending_action(j, &record);
+	if (!got)
+		got = action_pump_wait(j->store, j->session_id,
+			       FCGI_ACTION_WAIT_SECONDS, &record);
+	if (got <= 0)
+		return TOOL_OP_DENY;
+	if (strcmp(record.type, "always") == 0 ||
+	    (strcmp(record.type, "approve") == 0 &&
+	     action_is_always(record.payload_json))) {
+		turn_action_record_cleanup(&record);
+		return TOOL_OP_ALWAYS;
+	}
+	got = strcmp(record.type, "approve") == 0;
+	turn_action_record_cleanup(&record);
+	return got ? TOOL_OP_ALLOW : TOOL_OP_DENY;
+}
+
 static void *turn_thread(void *arg)
 {
 	struct turn_job *j = (struct turn_job *)arg;
-	struct memory_options mem_opts = {
-		.enabled = 1,
-		.hot_path_enabled = 1,
-		.cold_path_enabled = 1,
-		.llm_extract_enabled = 1,
-		.max_facts = 6,
-		.max_episodes = 4,
-		.max_procedures = 4,
-		.max_context_chars = 3000,
-	};
 	struct session sess = {0};
+	struct runtime *runtime = NULL;
+	struct runtime_request request;
+	struct runtime_result result;
+	int run_rc;
 
-	current_usage_job = j;
-	model_set_usage_callback(record_model_usage);
-	model_set_usage_user_data(j);
-
-	if (!react_context_create_for_session) {
-		cJSON *err = cJSON_CreateObject();
-		char *json = NULL;
-		if (err) {
-			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-			cJSON_AddStringToObject(err, "message",
-				"react integration not linked; see sapi/fastcgi/PATCHES.md §3");
-			json = cJSON_PrintUnformatted(err);
-			cJSON_Delete(err);
-		}
-		events_publish(j->store, j->session_id, "error",
-			       json ? json : "{\"message\":\"react integration not linked\"}");
-		free(json);
-		goto out;
-	}
-
-	struct react_context *rctx =
-		react_context_create_for_session(j->store, j->session_id, j->user_id);
-	if (!rctx) {
-		cJSON *err = cJSON_CreateObject();
-		char *json = NULL;
-		if (err) {
-			cJSON_AddStringToObject(err, "turn_id", j->turn_id);
-			cJSON_AddStringToObject(err, "message",
-				"react_context_create_for_session failed");
-			json = cJSON_PrintUnformatted(err);
-			cJSON_Delete(err);
-		}
-		events_publish(j->store, j->session_id, "error",
-			       json ? json : "{\"message\":\"react_context_create_for_session failed\"}");
-		free(json);
-		goto out;
-	}
-	if (react_memory_options_for_session)
-		react_memory_options_for_session(&mem_opts);
+	memset(&result, 0, sizeof(result));
 	if (session_get_by_display_id(&j->store->db, j->session_id, &sess) == 0) {
-		struct runtime_engine engine;
-		struct runtime_request request;
-		struct runtime_result result;
-		int run_rc;
-
-		memset(&engine, 0, sizeof(engine));
-		runtime_engine_configure(&engine, &j->store->db, rctx, NULL);
-		engine.config = fcgi_bridge_config ? fcgi_bridge_config() : NULL;
 		memset(&request, 0, sizeof(request));
 		request.session_id = sess.id;
 		request.model_input = j->input ? j->input : "";
 		request.stored_user_input = request.model_input;
 		request.turn_id = j->turn_id;
-		request.memory_options = &mem_opts;
 		request.render_assistant = turn_render_assistant_for_store;
 		request.render_user_data = j;
-		request.usage_user_data = j;
-		request.bind_usage_user_data = 1;
-		request.event_cb = react_set_event_callback ? bridge_event_cb : NULL;
+		request.user_id = j->user_id;
+		request.restrict_memory_to_user = 1;
+		request.memory_visible_fn = bridge_memory_session_visible;
+		request.memory_visible_user_data = j->store;
+		request.event_cb = bridge_event_cb;
 		request.event_user_data = j;
-		request.output_cb = react_set_event_callback ? NULL : bridge_cb;
-		request.output_user_data = j;
+		request.hitl_cb = fcgi_turn_hitl;
+		request.hitl_user_data = j;
+		request.override_hitl = 1;
+		request.action_drain_fn = fcgi_turn_action_drain;
+		request.action_drain_user_data = j;
+		request.override_action_drain = 1;
 		request.turn_flags = AGENT_TURN_DEFAULT_FLAGS;
 
 		{
@@ -877,7 +907,11 @@ static void *turn_thread(void *arg)
 			free(json);
 		}
 
-		run_rc = runtime_execute(&engine, &request, &result);
+		run_rc = fcgi_bridge_runtime_acquire(j->session_id, &runtime);
+		if (run_rc == 0)
+			run_rc = runtime_execute_turn(runtime, &request, &result);
+		fcgi_bridge_runtime_release(runtime);
+		runtime = NULL;
 		if (run_rc != 0) {
 			cJSON *err = cJSON_CreateObject();
 			char *json = NULL;
@@ -894,12 +928,12 @@ static void *turn_thread(void *arg)
 				       json ? json :
 				       "{\"message\":\"turn failed\"}");
 			free(json);
-			goto out_destroy;
+			goto out;
 		}
 		if (!j->final_sent) {
 			char *fallback = render_artifact_summary(j);
-			if (!fallback && rctx->final_answer)
-				fallback = render_media_refs(j, rctx->final_answer);
+			if (!fallback && result.final_text)
+				fallback = render_media_refs(j, result.final_text);
 			if (fallback && *fallback) {
 				event_sink_final_turn(j->store, j->session_id,
 						      j->turn_id, fallback);
@@ -921,7 +955,7 @@ static void *turn_thread(void *arg)
 		events_publish(j->store, j->session_id, "error",
 			       json ? json : "{\"message\":\"session not found\"}");
 		free(json);
-		goto out_destroy;
+		goto out;
 	}
 	{
 		cJSON *end = cJSON_CreateObject();
@@ -937,12 +971,12 @@ static void *turn_thread(void *arg)
 		free(json);
 	}
 
-out_destroy:
-	if (react_context_destroy) react_context_destroy(rctx);
 out:
-	model_set_usage_user_data(NULL);
-	current_usage_job = NULL;
+	fcgi_bridge_runtime_release(runtime);
 	store_quota_end_turn(j->store, j->turn_id);
+	fcgi_bridge_turn_end();
+	free(j->action_payload);
+	free(j->pending_payload);
 	free(j->input);
 	free(j);
 	return NULL;
@@ -996,9 +1030,16 @@ void handle_post_turn(request_t *r)
 		free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "oom"); return;
 	}
+	if (fcgi_bridge_turn_begin() != 0) {
+		store_quota_end_turn(r->store, j->turn_id);
+		free(j->input); free(j); cJSON_Delete(root); free(body);
+		reply_json(r, 503, "{\"error\":\"shutting_down\"}");
+		return;
+	}
 
 	pthread_t tid;
 	if (pthread_create(&tid, NULL, turn_thread, j) != 0) {
+		fcgi_bridge_turn_end();
 		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "thread spawn"); return;

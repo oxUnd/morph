@@ -178,6 +178,19 @@ static int runtime_load_config(struct runtime *runtime)
 			return rc;
 		}
 	}
+	if (runtime->options.output_dir_override &&
+	    runtime->options.output_dir_override[0]) {
+		strncpy(ctx->config.general.output_dir,
+			runtime->options.output_dir_override,
+			sizeof(ctx->config.general.output_dir) - 1);
+	}
+	if (!ctx->config.dynamic_tools.mode_explicit &&
+	    runtime->options.default_dynamic_tools_mode &&
+	    runtime->options.default_dynamic_tools_mode[0]) {
+		strncpy(ctx->config.dynamic_tools.mode,
+			runtime->options.default_dynamic_tools_mode,
+			sizeof(ctx->config.dynamic_tools.mode) - 1);
+	}
 	free(expanded);
 	return 0;
 }
@@ -262,6 +275,7 @@ static int runtime_start_components(struct runtime *runtime)
 	profile.event_user_data = runtime->options.event_user_data;
 	profile.usage_cb = runtime_record_usage;
 	profile.usage_user_data = runtime;
+	profile.process_replica = runtime->options.process_replica;
 	profile.hitl_cb = runtime->options.hitl_cb;
 	profile.hitl_user_data = runtime->options.hitl_user_data;
 	rc = runtime_bootstrap_models(&profile);
@@ -479,8 +493,11 @@ void runtime_close(struct runtime *runtime)
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_lock(&runtime->context.execution_lock);
-	cleanup = runtime_context_shutdown_resources(&runtime->context, 1, 1,
-						       runtime->options.allocate_skill_registry);
+	cleanup = runtime_context_shutdown_resources(
+		&runtime->context,
+		runtime->options.process_replica ? 0 : 1,
+		runtime->options.process_replica ? 0 : 1,
+		runtime->options.allocate_skill_registry);
 	runtime_bootstrap_cleanup(&cleanup);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_unlock(&runtime->context.execution_lock);
@@ -529,8 +546,11 @@ void runtime_record_usage(const struct model_usage *usage, void *user_data)
 		return;
 	runtime_context_credit_session_key(&runtime->context, session_id,
 					   sizeof(session_id));
-	(void)runtime_record_model_usage(&runtime->context.database,
-				       &runtime->context.config, session_id, usage);
+	(void)runtime_record_model_usage_for_user(
+		&runtime->context.database, &runtime->context.config,
+		runtime->context.turn_scope.user_id[0]
+			? runtime->context.turn_scope.user_id : "local",
+		session_id, usage);
 	if (runtime->options.usage_observer)
 		runtime->options.usage_observer(usage,
 						runtime->options.usage_observer_user_data);

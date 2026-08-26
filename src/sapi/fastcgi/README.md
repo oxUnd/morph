@@ -15,7 +15,7 @@ without bringing an HTTP stack into the core binary.
 ```
 src/sapi/fastcgi/
 ├── CMakeLists.txt
-├── PATCHES.md          # optional agent-side hooks (additive)
+├── PATCHES.md          # retired weak-symbol bridge notes
 ├── README.md
 ├── main.c              # FCGX_Init + worker pool + signal handling
 ├── router.{c,h}        # /pattern/:id dispatcher (no regex)
@@ -25,7 +25,7 @@ src/sapi/fastcgi/
 ├── session_store.{c,h} # SQLite WAL multi-session backend + login tokens
 ├── event_sink.{c,h}    # convenience wrappers around events_publish
 ├── action_pump.{c,h}   # drain-with-wait for Web → Agent commands
-├── agent_bridge.c      # strong symbols for react integration
+├── agent_bridge.c      # shared runtime lifecycle integration
 └── handlers/
     ├── handlers.h
     ├── health.c        # GET  /api/health
@@ -95,7 +95,7 @@ cmake -S . -B build -DBUILD_FASTCGI=ON
 cmake --build build -j
 ```
 
-The binary lands at `build/src/sapi/fastcgi/morph-fastcgi`.
+The binary lands at `build/bin/morph-fastcgi`.
 
 ---
 
@@ -104,13 +104,15 @@ The binary lands at `build/src/sapi/fastcgi/morph-fastcgi`.
 ```bash
 export MORPH_FCGI_LISTEN="unix:/run/morph-fastcgi.sock"
 export MORPH_FCGI_DB="/var/lib/morph/morph.db"
-export MORPH_FCGI_WORKERS=8
+export MORPH_FCGI_WORKERS=128
+export MORPH_FCGI_RUNTIME_MIN_WORKERS=8
+export MORPH_FCGI_RUNTIME_MAX_WORKERS=64
 # Optional: trust a proxy-injected identity header
 export MORPH_FCGI_TRUST_HDR="X-Remote-User"
 # Optional: override artifact output directory
 export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
-./build/src/sapi/fastcgi/morph-fastcgi
+./build/bin/morph-fastcgi
 ```
 
 `MORPH_FCGI_LISTEN` accepts `unix:/path/sock`, `:9000`, or `127.0.0.1:9000`.
@@ -121,7 +123,7 @@ export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
 | Method | Path                                          | Notes                          |
 | ------ | --------------------------------------------- | ------------------------------ |
-| GET    | /api/health                                   | liveness, `{setup_required}`   |
+| GET    | /api/health                                   | liveness, setup and runtime-pool status |
 | POST   | /api/install                                  | create admin (setup only)      |
 | POST   | /api/signup                                   | create user (if enabled)       |
 | POST   | /api/login                                    | Basic Auth → Bearer token      |
@@ -143,7 +145,29 @@ export MORPH_FCGI_OUTPUT_DIR="/var/lib/morph/output"
 
 SSE event types: `ready`, `turn_start`, `thought`, `tool_call`,
 `tool_stream`, `tool_result`, `reflection`, `final`, `turn_end`, `artifact_ready`,
-`canvas_node_added`, `canvas_node_patched`, `error`.
+`canvas_node_added`, `canvas_node_patched`, `ask_user`, `approval_required`,
+`operation_approval_required`, `error`.
+
+### Agent capabilities
+
+FastCGI uses the same runtime bootstrap as the CLI. At process startup it
+discovers Skills, loads extensions that support the `fastcgi` front, registers
+scheduled tasks and sub-agent tools, and connects configured MCP servers with
+`auto_connect = true`. MCP tools, resources, and prompts are registered in the
+shared tool registry before requests are accepted.
+
+Interactive turns use `POST /api/sessions/:id/actions`:
+
+- `{"type":"prompt","payload":{"text":"..."}}` steers a turn or answers
+  a free-form `ask_user` request;
+- `{"type":"answer","payload":{"answers":["..."]}}` answers a structured
+  `ask_user` request;
+- `{"type":"approve","payload":{}}` approves a pending HITL or filesystem
+  operation;
+- `{"type":"approve","payload":{"always":true}}` persists the grant where
+  supported;
+- `{"type":"reject","payload":{}}` denies it;
+- `{"type":"cancel","payload":{}}` cancels at the next ReAct checkpoint.
 
 Turn execution is driven by the shared structured event system documented in
 `docs/event-system.md`. FastCGI maps `react.*`, `tool.*`, and `artifact.ready`
@@ -157,7 +181,13 @@ events to the SSE names above for compatibility with existing GUI clients.
 |----------|---------|-------------|
 | `MORPH_FCGI_LISTEN` | `unix:/run/morph-fastcgi.sock` | Listen spec: `unix:/path`, `:port`, `host:port` |
 | `MORPH_FCGI_DB` | `/var/lib/morph/morph.db` | Path to SQLite database |
-| `MORPH_FCGI_WORKERS` | `8` | Worker threads (1–64) |
+| `MORPH_FCGI_WORKERS` | `128` | FastCGI/SSE connection workers (1–512) |
+| `MORPH_FCGI_RUNTIME_MIN_WORKERS` | `8` | Prewarmed agent runtimes (1–256) |
+| `MORPH_FCGI_RUNTIME_MAX_WORKERS` | `64` | Maximum elastic agent runtimes (1–256) |
+| `MORPH_FCGI_RUNTIME_WORKERS` | _(none)_ | Legacy alias for the minimum worker count |
+| `MORPH_FCGI_RUNTIME_QUEUE_MAX` | `256` | Maximum turns waiting for a runtime |
+| `MORPH_FCGI_RUNTIME_WAIT_SECONDS` | `600` | Maximum runtime-pool wait time |
+| `MORPH_FCGI_RUNTIME_IDLE_SECONDS` | `300` | Elastic-worker idle lifetime; `0` disables shrinking |
 | `MORPH_FCGI_CONFIG` | `$HOME/.morph/config.toml` | Path to config file |
 | `MORPH_FCGI_OUTPUT_DIR` | _(from config)_ | Override artifact output directory |
 | `MORPH_FCGI_LOG_FILE` | _(from config)_ | Override log file path |
@@ -214,8 +244,17 @@ heartbeat cadence).
 
 ---
 
-## Optional agent integration
+## Runtime integration
 
-See `PATCHES.md` for two small additive patches that enable cancellation
-and per-session context factory.  The base build runs without them and
-returns a clear `error` event so the missing hook is observable.
+The FastCGI process owns an elastic pool of independent runtimes. It prewarms
+`MORPH_FCGI_RUNTIME_MIN_WORKERS`, creates replicas on demand up to
+`MORPH_FCGI_RUNTIME_MAX_WORKERS`, and reclaims elastic replicas after the idle
+timeout. Different sessions execute in parallel; turns for the same session
+are serialized to preserve history order. Once the maximum is reached, turns
+enter a bounded queue instead of failing with `EBUSY`. Each turn binds its
+authenticated user identity and session visibility into the selected tool
+runtime, so memory and credit queries remain tenant-scoped. Shutdown waits for
+accepted turn jobs before closing replicas and then the primary runtime.
+
+`GET /api/health` exposes `runtime_pool.workers`, `busy`, `starting`, `waiting`,
+`min`, `max`, `queue_max`, and `idle_seconds` for autoscaling and alerting.

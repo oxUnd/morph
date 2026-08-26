@@ -73,16 +73,24 @@ static void runtime_turn_scope_credit_session_id(
 }
 
 static void runtime_turn_scope_bind_tool_context(
-	struct runtime_turn_scope_context *ctx, int64_t session_id)
+	struct runtime_turn_scope_context *ctx,
+	const struct runtime_request *request)
 {
 	struct tool_runtime_context rt;
+	int64_t session_id;
 
-	if (!ctx || !ctx->react)
+	if (!ctx || !ctx->react || !request)
 		return;
+	session_id = request->session_id;
 	if (runtime_tool_context_for_session(ctx->db, ctx->config,
 					     ctx->current_session, session_id,
 					     &rt) != 0)
 		return;
+	if (request->user_id && request->user_id[0])
+		rt.user_id = request->user_id;
+	rt.restrict_memory_to_user = request->restrict_memory_to_user;
+	rt.memory_visible_fn = request->memory_visible_fn;
+	rt.memory_visible_user_data = request->memory_visible_user_data;
 	react_set_tool_runtime_context(ctx->react, &rt);
 	if (ctx->tools)
 		(void)dynamic_tools_set_session_id(ctx->tools,
@@ -99,6 +107,12 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 		runtime_usage_bind(ctx->usage_user_data);
 	ctx->scope->bound = 1;
 	ctx->scope->memory_session_id = request->session_id;
+	if (request->user_id && request->user_id[0])
+		snprintf(ctx->scope->user_id, sizeof(ctx->scope->user_id), "%s",
+			 request->user_id);
+	else
+		snprintf(ctx->scope->user_id, sizeof(ctx->scope->user_id),
+			 "local");
 	runtime_turn_scope_credit_session_id(
 		ctx->db, ctx->current_session, request->session_id,
 		ctx->scope->credit_session_id,
@@ -117,7 +131,7 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 					    ctx->active_plans,
 					    request->session_id);
 	}
-	runtime_turn_scope_bind_tool_context(ctx, request->session_id);
+	runtime_turn_scope_bind_tool_context(ctx, request);
 	return 0;
 }
 
@@ -133,6 +147,7 @@ void runtime_turn_scope_finish(struct runtime_turn_scope_context *ctx)
 	scope->bound = 0;
 	scope->memory_session_id = 0;
 	scope->credit_session_id[0] = '\0';
+	scope->user_id[0] = '\0';
 	if (ctx->current_session && ctx->plan_sessions &&
 	    ctx->active_plan_session_id && ctx->active_plans) {
 		runtime_plan_session_select(ctx->plan_sessions,
@@ -141,7 +156,13 @@ void runtime_turn_scope_finish(struct runtime_turn_scope_context *ctx)
 					    ctx->active_plans,
 					    ctx->current_session->id);
 	}
-	if (ctx->current_session)
-		runtime_turn_scope_bind_tool_context(ctx,
-						     ctx->current_session->id);
+	if (ctx->current_session) {
+		struct runtime_request request;
+
+		memset(&request, 0, sizeof(request));
+		request.session_id = ctx->current_session
+			? ctx->current_session->id : 0;
+		if (request.session_id > 0)
+			runtime_turn_scope_bind_tool_context(ctx, &request);
+	}
 }
