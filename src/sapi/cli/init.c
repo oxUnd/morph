@@ -60,7 +60,8 @@ static void cli_usage_observer(const struct model_usage *usage,
 }
 
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir, enum cli_presentation_mode mode)
+	     const char *workdir, const char *session_name,
+	     enum cli_presentation_mode mode)
 {
 	struct runtime_options options;
 	int rc;
@@ -90,6 +91,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.config_path = config_path ? config_path : default_config_path;
 	options.db_path = default_db_path;
 	options.workdir = workdir;
+	options.default_session = session_name;
 	options.front_name = "cli";
 	options.event_cb = ctx->event_cb;
 	options.event_user_data = ctx;
@@ -112,7 +114,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.enable_sub_agents = 1;
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
-	options.create_new_session = 1;
+	options.create_new_session = session_name && session_name[0] ? 0 : 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {
 		cli_ui_cleanup(ctx);
@@ -121,7 +123,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 		return rc;
 	}
 
-	ctx->session_auto_named = 0;
+	ctx->session_auto_named = session_name && session_name[0] ? 1 : 0;
 	ctx->running = 1;
 	ctx->presentation_ready = 1;
 	ctx->image_path[0] = '\0';

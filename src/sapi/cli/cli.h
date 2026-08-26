@@ -54,7 +54,8 @@ struct cli_context {
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *workdir, enum cli_presentation_mode mode);
+	     const char *workdir, const char *session_name,
+	     enum cli_presentation_mode mode);
 void cli_run(struct cli_context *ctx);
 void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);

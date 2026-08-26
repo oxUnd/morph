@@ -69,7 +69,10 @@ Supported providers: `openai`, `volcengine`, `deepseek`.
 Optional flags:
 
 - `-c <path>`: specify a config file
-- `-s <name>`: specify a session name
+- `-w <path>`: specify the working directory
+- `-p <prompt>`: run one prompt and exit
+- `-s <name>`: select or create a named session; combine with `-p` to reuse
+  the same conversation across invocations
 
 ## Extensions
 

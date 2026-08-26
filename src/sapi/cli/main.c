@@ -331,6 +331,7 @@ int main(int argc, char *argv[])
 	const char *config_path = NULL;
 	const char *workdir = NULL;
 	const char *one_shot_prompt = NULL;
+	const char *session_name = NULL;
 	int trace_json = 0;
 	int show_version = 0;
 	int show_help = 0;
@@ -349,6 +350,10 @@ int main(int argc, char *argv[])
 			one_shot_prompt = argv[++i];
 		else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
 			one_shot_prompt = argv[++i];
+		else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc)
+			session_name = argv[++i];
+		else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc)
+			session_name = argv[++i];
 		else if (strcmp(argv[i], "--trace-json") == 0)
 			trace_json = 1;
 		else if (strcmp(argv[i], "--no-color") == 0)
@@ -396,9 +401,10 @@ int main(int argc, char *argv[])
 	cli_set_color_enabled(!no_color);
 	if (show_help) {
 		printf("Usage: morph [-c config_path] [-w workdir] "
-		       "[-p prompt] [-v] [--trace-json] [--no-color] "
+		       "[-p prompt] [-s session] [-v] [--trace-json] [--no-color] "
 		       "[--events json]\n");
 		printf("  -p, --prompt  Run once with plain-text progress\n");
+		printf("  -s, --session Select or create a named session\n");
 		printf("  --events json  Emit raw events as NDJSON\n");
 		printf("  --no-color  Disable ANSI color output\n");
 		return 0;
@@ -416,7 +422,8 @@ int main(int argc, char *argv[])
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
 	struct cli_context ctx;
-	int rc = cli_init(&ctx, config_path, workdir, presentation_mode);
+	int rc = cli_init(&ctx, config_path, workdir, session_name,
+			  presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %s", morph_strerror(rc));
 		if (rc == MORPH_ERR_CONFIG || rc == MORPH_ERR_PARSE)
@@ -447,12 +454,13 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "morph: restore failed: %s\n",
 					morph_strerror(rc));
 			}
-			rc = cli_init(&ctx, config_path, workdir,
+			rc = cli_init(&ctx, config_path, workdir, session_name,
 				      presentation_mode);
 			if (rc < 0 && file_exists(plan.rollback)) {
 				(void)morph_sync_rollback_db_replace(&plan);
 				restored = 0;
 				rc = cli_init(&ctx, config_path, workdir,
+					      session_name,
 					      presentation_mode);
 			}
 			if (rc < 0) {
