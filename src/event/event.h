@@ -19,6 +19,7 @@ enum morph_event_type {
 	MORPH_EVENT_BACKGROUND,
 	MORPH_EVENT_TASK,
 	MORPH_EVENT_ERROR,
+	MORPH_EVENT_COMMAND,
 };
 
 struct morph_event {

@@ -30,7 +30,8 @@ int cli_attach_image(struct cli_context *ctx, const char *path)
 				 credit_image_units_from_size(w, h), 0,
 				 config->models.image.provider,
 				 config->models.image.model, NULL);
-	image_render_terminal(expanded);
+	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
+		image_render_terminal(expanded);
 	CMD_OK("image loaded: %s (%dx%d, %d channels)", expanded, w, h, ch);
 	free(expanded);
 	return 0;
@@ -63,7 +64,8 @@ static int media_play_video(struct cli_context *ctx, const char *path)
 {
 	const struct config *config = runtime_config_get(ctx->runtime);
 
-	if (video_play(path, config->render.mpv_args) != 0) {
+	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
+	    video_play(path, config->render.mpv_args) != 0) {
 		CMD_ERROR("failed to play video: %s", path);
 		MORPH_RETURN(-EIO);
 	}
@@ -137,7 +139,8 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
 		const struct config *config = runtime_config_get(ctx->runtime);
-		if (video_play(expanded, config->render.mpv_args) != 0) {
+		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
+		    video_play(expanded, config->render.mpv_args) != 0) {
 			CMD_ERROR("failed to play video: %s", expanded);
 			free(expanded);
 			return -EIO;
@@ -153,7 +156,8 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 			free(expanded);
 			MORPH_RETURN(MORPH_ERR_FORMAT);
 		}
-		image_render_terminal(expanded);
+		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
+			image_render_terminal(expanded);
 		CMD_OK("image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;
@@ -163,7 +167,10 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 			free(expanded);
 			return -EIO;
 		}
-		cli_markdown_render_ansi(text);
+		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+			printf("%s", text);
+		else
+			cli_markdown_render_ansi(text);
 		free(text);
 	}
 	free(expanded);

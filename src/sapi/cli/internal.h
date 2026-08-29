@@ -106,6 +106,8 @@ int cli_print_untrusted_text(const char *text,
 			     enum utf8_terminal_text_mode mode);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
+int cli_command_capture_begin(morph_buf_t *output);
+void cli_command_capture_end(void);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      int64_t image_units,
 				      int64_t video_seconds,
@@ -170,5 +172,7 @@ enum tool_operation_verdict operation_approval_callback(
 	const struct tool_operation *op, void *user_data);
 
 #define printf cli_printf
+#define fputs cli_fputs
+#define putchar cli_putchar
 
 #endif

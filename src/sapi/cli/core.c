@@ -3,9 +3,14 @@
 #include "runtime/runtime.h"
 #include <stdarg.h>
 
+#undef fputs
+#undef putchar
+
 const char *default_db_path = "~/.morph/data.db";
 const char *default_config_path = "~/.morph/config.toml";
 static int g_cli_color_enabled = 1;
+static int g_cli_structured_output;
+static _Thread_local morph_buf_t *g_cli_command_output;
 
 void cli_set_color_enabled(int enabled)
 {
@@ -15,6 +20,45 @@ void cli_set_color_enabled(int enabled)
 int cli_color_enabled(void)
 {
 	return g_cli_color_enabled;
+}
+
+void cli_set_structured_output(int enabled)
+{
+	g_cli_structured_output = enabled ? 1 : 0;
+}
+
+int cli_structured_output_enabled(void)
+{
+	return g_cli_structured_output;
+}
+
+int cli_command_capture_begin(morph_buf_t *output)
+{
+	if (!output || g_cli_command_output)
+		MORPH_RETURN(-EINVAL);
+	g_cli_command_output = output;
+	return 0;
+}
+
+void cli_command_capture_end(void)
+{
+	g_cli_command_output = NULL;
+}
+
+static int cli_capture_text(const char *text)
+{
+	char *safe;
+	int rc;
+
+	if (!g_cli_command_output || !text)
+		MORPH_RETURN(-EINVAL);
+	safe = utf8_terminal_sanitize_dup(text, strlen(text),
+		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		MORPH_RETURN(-ENOMEM);
+	rc = morph_buf_puts(g_cli_command_output, safe);
+	free(safe);
+	return rc;
 }
 
 static const unsigned char *cli_skip_control_string(
@@ -134,12 +178,65 @@ int cli_printf(const char *fmt, ...)
 	}
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
+	if (g_cli_command_output) {
+		int rc = cli_capture_text(buf);
+
+		free(buf);
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		return n;
+	}
+	if (g_cli_structured_output) {
+		free(buf);
+		return n;
+	}
 	if (cli_write_terminal_safe(buf, g_cli_color_enabled) != 0) {
 		free(buf);
 		MORPH_RETURN(-EIO);
 	}
 	free(buf);
 	return n;
+}
+
+int cli_fputs(const char *text, FILE *stream)
+{
+	int rc;
+
+	if (!text || !stream)
+		MORPH_RETURN(-EINVAL);
+	if (stream != stdout)
+		return fputs(text, stream);
+	if (g_cli_command_output) {
+		rc = cli_capture_text(text);
+		return rc == 0 ? 0 : EOF;
+	}
+	if (g_cli_structured_output)
+		return 0;
+	return cli_write_terminal_safe(text, g_cli_color_enabled) == 0 ? 0 : EOF;
+}
+
+int cli_putchar(int ch)
+{
+	char text[2] = {(char)ch, '\0'};
+
+	if (g_cli_command_output)
+		return cli_capture_text(text) == 0 ? ch : EOF;
+	if (g_cli_structured_output)
+		return ch;
+	return fputc(ch, stdout);
+}
+
+int cli_write_ndjson(const char *json)
+{
+	size_t len;
+
+	if (!json)
+		MORPH_RETURN(-EINVAL);
+	len = strlen(json);
+	if (fwrite(json, 1, len, stdout) != len || fputc('\n', stdout) == EOF)
+		MORPH_RETURN(-EIO);
+	fflush(stdout);
+	return 0;
 }
 
 int cli_print_untrusted_text(const char *text,
@@ -153,7 +250,7 @@ int cli_print_untrusted_text(const char *text,
 	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
 	if (!safe)
 		MORPH_RETURN(-ENOMEM);
-	if (fputs(safe, stdout) == EOF)
+	if (cli_fputs(safe, stdout) == EOF)
 		rc = -EIO;
 	free(safe);
 	if (rc != 0)
@@ -176,11 +273,11 @@ void print_padded(const char *s, int target_width)
 		return;
 	width = utf8_display_width(safe);
 	dw = width > (size_t)INT_MAX ? INT_MAX : (int)width;
-	fputs(safe, stdout);
+	(void)cli_fputs(safe, stdout);
 	free(safe);
 	pad = target_width - dw;
 	for (int i = 0; i < pad; i++)
-		putchar(' ');
+		(void)cli_putchar(' ');
 }
 
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
@@ -343,5 +440,6 @@ void cli_shutdown(struct cli_context *ctx)
 	cli_presentation_cleanup(ctx);
 	cli_ui_cleanup(ctx);
 	cli_terminal_cleanup(ctx);
+	cli_set_structured_output(0);
 	log_info("cli shutdown complete");
 }

@@ -22,6 +22,8 @@ const char *morph_event_type_name(enum morph_event_type type)
 		return "background";
 	case MORPH_EVENT_TASK:
 		return "task";
+	case MORPH_EVENT_COMMAND:
+		return "command";
 	case MORPH_EVENT_ERROR:
 		return "error";
 	default:

@@ -70,6 +70,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 		return -EINVAL;
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->presentation_mode = mode;
+	cli_set_structured_output(mode == CLI_PRESENT_EVENTS_JSON);
 	ctx->event_cb = cli_event_callback;
 	ctx->event_user_data = ctx;
 	rc = cli_terminal_init(ctx, stdout, STDOUT_FILENO);

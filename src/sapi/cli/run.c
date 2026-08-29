@@ -331,6 +331,73 @@ static void cli_print_banner_field(const char *label, const char *value,
 
 /* ---- cli_run ---- */
 
+static void cli_run_structured(struct cli_context *ctx)
+{
+	char line[BUFSIZ];
+	morph_buf_t input;
+	int rc;
+
+	rc = morph_buf_init(&input, BUFSIZ);
+	if (rc != 0)
+		return;
+	while (ctx->running) {
+		size_t len;
+		int complete;
+
+		(void)cli_ui_drain(ctx);
+		morph_buf_reset(&input);
+		complete = 0;
+		while (!complete && ctx->running) {
+			int continuation;
+
+			cli_cancel_state_reset();
+			if (!fgets(line, sizeof(line), stdin)) {
+				if (cli_sigint_received) {
+					cli_sigint_received = 0;
+					clearerr(stdin);
+					morph_buf_reset(&input);
+					break;
+				}
+				if (feof(stdin))
+					ctx->running = 0;
+				else
+					clearerr(stdin);
+				break;
+			}
+			len = strlen(line);
+			complete = len > 0 && line[len - 1] == '\n';
+			if (complete)
+				line[--len] = '\0';
+			if (len > 0 && line[len - 1] == '\r')
+				line[--len] = '\0';
+			continuation = complete && len > 0 &&
+				line[len - 1] == '\\';
+			if (continuation) {
+				len--;
+				complete = 0;
+			}
+			rc = morph_buf_append(&input, line, len);
+			if (rc == 0 && continuation)
+				rc = morph_buf_putc(&input, '\n');
+			if (rc != 0) {
+				morph_buf_reset(&input);
+				break;
+			}
+		}
+		if (input.len > 0) {
+			int command_rc;
+
+			cli_turn_begin(ctx);
+			command_rc = cli_handle_command(
+				ctx, morph_buf_cstr(&input));
+			(void)cli_ui_drain(ctx);
+			cli_turn_finish(ctx, command_rc);
+		}
+		(void)cli_ui_drain(ctx);
+	}
+	morph_buf_cleanup(&input);
+}
+
 void cli_run(struct cli_context *ctx)
 {
 	const struct config *config;
@@ -343,6 +410,18 @@ void cli_run(struct cli_context *ctx)
 		return;
 	if (cli_scheduler_start(ctx) != 0)
 		log_warn("failed to start task scheduler");
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		struct sigaction sa;
+
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = cli_sigint_handler;
+		sigemptyset(&sa.sa_mask);
+		sa.sa_flags = 0;
+		sigaction(SIGINT, &sa, NULL);
+		cli_run_structured(ctx);
+		signal(SIGINT, SIG_DFL);
+		return;
+	}
 	config = runtime_config_get(ctx->runtime);
 	workdir = runtime_workdir_get(ctx->runtime);
 	memset(&current, 0, sizeof(current));
@@ -552,7 +631,7 @@ void cli_run(struct cli_context *ctx)
 		int complete = 0;
 
 		(void)cli_ui_drain(ctx);
-		morph_buf_clear(&input);
+		morph_buf_reset(&input);
 		while (!complete) {
 			size_t len;
 			int has_newline;
@@ -567,7 +646,7 @@ void cli_run(struct cli_context *ctx)
 				if (cli_sigint_received) {
 					cli_sigint_received = 0;
 					clearerr(stdin);
-					morph_buf_clear(&input);
+					morph_buf_reset(&input);
 					break;
 				}
 				if (feof(stdin)) {
@@ -589,13 +668,13 @@ void cli_run(struct cli_context *ctx)
 				len--;
 			if (morph_buf_append(&input, line, len) != 0) {
 				CMD_ERROR("input is too large");
-				morph_buf_clear(&input);
+				morph_buf_reset(&input);
 				break;
 			}
 			if (continuation) {
 				if (morph_buf_putc(&input, '\n') != 0) {
 					CMD_ERROR("input is too large");
-					morph_buf_clear(&input);
+					morph_buf_reset(&input);
 					break;
 				}
 			} else if (has_newline) {

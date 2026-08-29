@@ -428,7 +428,11 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		const char *label = (strcmp(role, "user") == 0) ? "You" :
 				   (strcmp(role, "assistant") == 0) ? "AI" : role;
 		printf(ANSI_DIM "[%s]" ANSI_RESET " ", label);
-		if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
+		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+			(void)cli_print_untrusted_text(
+				cur->content ? cur->content : "(empty)",
+				UTF8_TERMINAL_TEXT_MULTILINE);
+		else if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
 			cli_markdown_render_ansi_with_media(cur->content,
 							    media_callback,
 							    NULL);

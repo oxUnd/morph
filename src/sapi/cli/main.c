@@ -23,6 +23,61 @@
 
 #define printf cli_printf
 
+static int emit_option_event(const char *name, const char *phase,
+			     const char *command, const char *output)
+{
+	cJSON *data;
+	cJSON *args;
+	struct morph_event event;
+	char *json;
+	int rc;
+
+	data = cJSON_CreateObject();
+	args = cJSON_CreateArray();
+	if (!data || !args) {
+		cJSON_Delete(data);
+		cJSON_Delete(args);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddStringToObject(data, "command", command) ||
+	    !cJSON_AddStringToObject(data, "input", command)) {
+		cJSON_Delete(args);
+		cJSON_Delete(data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON_AddItemToObject(data, "args", args);
+	if (output && !cJSON_AddStringToObject(data, "output", output)) {
+		cJSON_Delete(data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	event = (struct morph_event){
+		.type = MORPH_EVENT_COMMAND,
+		.name = name,
+		.phase = phase,
+		.message = NULL,
+		.data = data,
+		.turn_id = NULL,
+	};
+	json = morph_event_to_json_string(&event);
+	cJSON_Delete(data);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	rc = cli_write_ndjson(json);
+	free(json);
+	return rc;
+}
+
+static int emit_option_result(const char *command, const char *output)
+{
+	int rc = emit_option_event("command.started", "begin", command,
+		NULL);
+
+	if (rc != 0)
+		return rc;
+	return emit_option_event("command.completed", "end", command,
+		output);
+}
+
 #define ICON_VERSION "\uea66"
 #define ICON_OS      "\uea7a"
 #define ICON_ARCH    "\uf2db"
@@ -400,6 +455,18 @@ int main(int argc, char *argv[])
 		no_color = 1;
 	cli_set_color_enabled(!no_color);
 	if (show_help) {
+		if (events_json) {
+			const char *help =
+				"Usage: morph [-c config_path] [-w workdir] "
+				"[-p prompt] [-s session] [-v] [--trace-json] "
+				"[--no-color] [--events json]\n"
+				"  -p, --prompt  Run once with plain-text progress\n"
+				"  -s, --session Select or create a named session\n"
+				"  --events json  Emit raw events as NDJSON\n"
+				"  --no-color  Disable ANSI color output\n";
+
+			return emit_option_result("--help", help) == 0 ? 0 : 1;
+		}
 		printf("Usage: morph [-c config_path] [-w workdir] "
 		       "[-p prompt] [-s session] [-v] [--trace-json] [--no-color] "
 		       "[--events json]\n");
@@ -412,6 +479,9 @@ int main(int argc, char *argv[])
 	if (preflight_config(config_path) != 0)
 		return 1;
 	if (show_version) {
+		if (events_json)
+			return emit_option_result("--version", MORPH_VERSION) == 0 ?
+				0 : 1;
 		return print_version(config_path) == 0 ? 0 : 1;
 	}
 	char *log_dir = file_expand_path("~/.morph/log");

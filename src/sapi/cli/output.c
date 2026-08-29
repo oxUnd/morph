@@ -412,15 +412,17 @@ int cli_ask_user_callback(const char *question,
 #ifdef HAVE_READLINE
 	{
 		char *input = NULL;
+		const char *readline_prompt =
+			cli_structured_output_enabled() ? "" : prompt;
 		FILE *tty = fopen("/dev/tty", "r");
 		if (tty) {
 			FILE *old_in = rl_instream;
 			rl_instream = tty;
-			input = readline(prompt);
+			input = readline(readline_prompt);
 			rl_instream = old_in;
 			fclose(tty);
 		} else {
-			input = readline(prompt);
+			input = readline(readline_prompt);
 		}
 		if (!input) {
 			printf("\n");
@@ -501,10 +503,12 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 
 	pthread_mutex_lock(&prompt_lock);
 #ifdef HAVE_READLINE
-	char *rl_input = readline(scoped ? (ephemeral ?
+	const char *approval_prompt = scoped ? (ephemeral ?
 		"  [y]es once / [s]ession / [n]o: " :
 		"  [y]es once / [s]ession / [a]lways / [n]o: ") :
-		"  [y]es / [n]o / [a]lways: ");
+		"  [y]es / [n]o / [a]lways: ";
+	char *rl_input = readline(cli_structured_output_enabled() ? "" :
+		approval_prompt);
 	if (!rl_input) {
 		printf("\n");
 		pthread_mutex_unlock(&prompt_lock);

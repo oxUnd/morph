@@ -7,6 +7,66 @@ static struct cli_command commands[CLI_COMMAND_MAX];
 static const char *command_categories[CLI_COMMAND_MAX];
 static int num_commands;
 
+static int command_event_emit(struct cli_context *ctx, const char *name,
+			      const char *phase, const char *input,
+			      int argc, char **argv, const char *output,
+			      int command_rc)
+{
+	cJSON *data;
+	cJSON *args;
+	struct morph_event event;
+	int rc;
+
+	if (!ctx || !name || !phase || argc < 1 || !argv || !argv[0])
+		MORPH_RETURN(-EINVAL);
+	data = cJSON_CreateObject();
+	args = cJSON_CreateArray();
+	if (!data || !args) {
+		cJSON_Delete(data);
+		cJSON_Delete(args);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddStringToObject(data, "command", argv[0]) ||
+	    !cJSON_AddStringToObject(data, "input", input ? input : "")) {
+		cJSON_Delete(args);
+		cJSON_Delete(data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	for (int i = 1; i < argc; i++) {
+		cJSON *arg = cJSON_CreateString(argv[i]);
+
+		if (!arg) {
+			cJSON_Delete(args);
+			cJSON_Delete(data);
+			MORPH_RETURN(-ENOMEM);
+		}
+		cJSON_AddItemToArray(args, arg);
+	}
+	cJSON_AddItemToObject(data, "args", args);
+	if (output && !cJSON_AddStringToObject(data, "output", output)) {
+		cJSON_Delete(data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (command_rc < 0 &&
+	    (!cJSON_AddNumberToObject(data, "error_code", command_rc) ||
+	     !cJSON_AddStringToObject(data, "error",
+				      morph_strerror(command_rc)))) {
+		cJSON_Delete(data);
+		MORPH_RETURN(-ENOMEM);
+	}
+	event = (struct morph_event){
+		.type = MORPH_EVENT_COMMAND,
+		.name = name,
+		.phase = phase,
+		.message = command_rc < 0 ? morph_strerror(command_rc) : NULL,
+		.data = data,
+		.turn_id = NULL,
+	};
+	rc = morph_event_emit(ctx->event_cb, ctx->event_user_data, &event);
+	cJSON_Delete(data);
+	return rc;
+}
+
 void cli_command_registry_clear(void)
 {
 	num_commands = 0;
@@ -77,7 +137,11 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 {
 	char buf[8192];
 	char *argv[32];
+	morph_buf_t output;
 	int argc;
+	int capture_active = 0;
+	int event_rc;
+	int rc;
 	const struct cli_command *e;
 
 	if (!input)
@@ -85,13 +149,40 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	snprintf(buf, sizeof(buf), "%s", input);
 	argc = cli_argv_split(buf, argv, 32);
 	if (argc < 1)
-		return -EINVAL;
+		MORPH_RETURN(-EINVAL);
+	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		event_rc = command_event_emit(ctx, "command.started", "begin",
+			input, argc, argv, NULL, 0);
+		if (event_rc != 0)
+			MORPH_RETURN(event_rc);
+		rc = morph_buf_init(&output, BUFSIZ);
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		rc = cli_command_capture_begin(&output);
+		if (rc != 0) {
+			morph_buf_cleanup(&output);
+			MORPH_RETURN(rc);
+		}
+		capture_active = 1;
+	}
 	e = cli_command_find(argv[0]);
 	if (!e) {
 		CMD_ERROR("unknown command: %s. Try /help", argv[0]);
-		return -ENOENT;
+		rc = -ENOENT;
+	} else {
+		rc = e->handler(ctx, argc, argv);
 	}
-	return e->handler(ctx, argc, argv);
+	if (!capture_active)
+		return rc;
+	cli_command_capture_end();
+	event_rc = command_event_emit(ctx,
+		rc < 0 ? "command.failed" : "command.completed",
+		rc < 0 ? "failed" : "end", input, argc, argv,
+		morph_buf_cstr(&output), rc);
+	morph_buf_cleanup(&output);
+	if (event_rc != 0)
+		MORPH_RETURN(event_rc);
+	return rc;
 }
 
 void cli_print_help(void)

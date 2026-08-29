@@ -6,9 +6,11 @@ extern "C" {
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/list_ui.h"
 #include "util/file.h"
+#include "event/event.h"
 
 int cli_handle_media_path(struct cli_context *ctx, const char *input,
 			  int *handled);
+int cli_event_callback(const struct morph_event *event, void *user_data);
 }
 
 #include <cstdlib>
@@ -18,6 +20,33 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 #include <fstream>
 #include <regex>
 #include <string>
+#include <vector>
+
+static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
+{
+	std::vector<cJSON *> events;
+	size_t start = 0;
+
+	while (start < output.size()) {
+		size_t end = output.find('\n', start);
+		std::string line = output.substr(start,
+			end == std::string::npos ? std::string::npos : end - start);
+
+		if (!line.empty())
+			events.push_back(cJSON_Parse(line.c_str()));
+		if (end == std::string::npos)
+			break;
+		start = end + 1;
+	}
+	return events;
+}
+
+static void cli_test_delete_events(std::vector<cJSON *> &events)
+{
+	for (cJSON *event : events)
+		cJSON_Delete(event);
+	events.clear();
+}
 
 static int cli_test_write_png(const char *path)
 {
@@ -218,6 +247,73 @@ TEST(CliListTest, HelpUsesTreeLayout)
 	EXPECT_NE(output.find("Core"), std::string::npos);
 	EXPECT_NE(output.find("/help"), std::string::npos);
 	cli_command_registry_clear();
+}
+
+TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
+{
+	struct cli_context context{};
+
+	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	context.event_cb = cli_event_callback;
+	context.event_user_data = &context;
+	ASSERT_EQ(cli_commands_init(), 0);
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/help");
+	std::string output = testing::internal::GetCapturedStdout();
+	std::vector<cJSON *> events = cli_test_parse_ndjson(output);
+
+	ASSERT_EQ(rc, 0);
+	ASSERT_EQ(events.size(), 2u);
+	ASSERT_NE(events[0], nullptr);
+	ASSERT_NE(events[1], nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		events[0], "type")), "command");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		events[0], "name")), "command.started");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		events[1], "name")), "command.completed");
+	cJSON *data = cJSON_GetObjectItem(events[1], "data");
+	ASSERT_TRUE(cJSON_IsObject(data));
+	const char *captured = cJSON_GetStringValue(
+		cJSON_GetObjectItem(data, "output"));
+	ASSERT_NE(captured, nullptr);
+	EXPECT_NE(std::string(captured).find("Commands"), std::string::npos);
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+
+	cli_test_delete_events(events);
+	cli_command_registry_clear();
+}
+
+TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
+{
+	struct cli_context context{};
+
+	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	context.event_cb = cli_event_callback;
+	context.event_user_data = &context;
+	cli_command_registry_clear();
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/does-not-exist");
+	std::string output = testing::internal::GetCapturedStdout();
+	std::vector<cJSON *> events = cli_test_parse_ndjson(output);
+
+	ASSERT_EQ(rc, -ENOENT);
+	ASSERT_EQ(events.size(), 2u);
+	ASSERT_NE(events[0], nullptr);
+	ASSERT_NE(events[1], nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		events[1], "name")), "command.failed");
+	cJSON *data = cJSON_GetObjectItem(events[1], "data");
+	ASSERT_TRUE(cJSON_IsObject(data));
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(
+		data, "error_code")), -ENOENT);
+	const char *captured = cJSON_GetStringValue(
+		cJSON_GetObjectItem(data, "output"));
+	ASSERT_NE(captured, nullptr);
+	EXPECT_NE(std::string(captured).find("unknown command"),
+		  std::string::npos);
+
+	cli_test_delete_events(events);
 }
 
 TEST(CliListTest, SyncQueriesUseGroupedTrees)

@@ -64,5 +64,10 @@ void cli_print_help(void);
 void cli_set_color_enabled(int enabled);
 int cli_color_enabled(void);
 int cli_printf(const char *fmt, ...);
+int cli_fputs(const char *text, FILE *stream);
+int cli_putchar(int ch);
+int cli_write_ndjson(const char *json);
+void cli_set_structured_output(int enabled);
+int cli_structured_output_enabled(void);
 
 #endif

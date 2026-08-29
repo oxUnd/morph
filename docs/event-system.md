@@ -64,7 +64,9 @@ enum morph_event_type {
 	MORPH_EVENT_HITL,
 	MORPH_EVENT_ARTIFACT,
 	MORPH_EVENT_BACKGROUND,
+	MORPH_EVENT_TASK,
 	MORPH_EVENT_ERROR,
+	MORPH_EVENT_COMMAND,
 };
 
 struct morph_event {
@@ -174,6 +176,19 @@ background.stopping
 background.completed
 background.failed
 ```
+
+CLI commands:
+
+```text
+command.started
+command.completed
+command.failed
+```
+
+`command.started` includes the parsed command and arguments. Terminal command
+events include the captured human-readable output; failed events also include
+`error_code` and `error`. In structured CLI mode, command output is never
+written directly to stdout.
 
 Tasks:
 

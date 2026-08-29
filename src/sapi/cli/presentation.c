@@ -1255,10 +1255,10 @@ int cli_presentation_event(struct cli_context *ctx,
 
 		if (!json)
 			MORPH_RETURN(-ENOMEM);
-		printf("%s\n", json);
-		fflush(stdout);
+		int rc = cli_write_ndjson(json);
+
 		free(json);
-		return 0;
+		return rc;
 	}
 	if (!ctx->presentation_ready)
 		return 0;

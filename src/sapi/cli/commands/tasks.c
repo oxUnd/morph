@@ -297,8 +297,12 @@ static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
 		goto out;
 	md_ready = 1;
 	rc = append_task_show_markdown(&md, &task);
-	if (rc == 0)
-		cli_markdown_render_ansi(morph_buf_cstr(&md));
+	if (rc == 0) {
+		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+			printf("%s", morph_buf_cstr(&md));
+		else
+			cli_markdown_render_ansi(morph_buf_cstr(&md));
+	}
 out:
 	if (md_ready)
 		morph_buf_cleanup(&md);
@@ -739,8 +743,12 @@ static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
 		for (int i = 0; rc == 0 && i < count; i++)
 			rc = append_notification_table_row(&md,
 							   &notifications[i]);
-		if (rc == 0)
-			cli_markdown_render_ansi(morph_buf_cstr(&md));
+		if (rc == 0) {
+			if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+				printf("%s", morph_buf_cstr(&md));
+			else
+				cli_markdown_render_ansi(morph_buf_cstr(&md));
+		}
 	}
 out:
 	if (md_ready)
