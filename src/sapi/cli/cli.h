@@ -6,6 +6,7 @@
 #include "util/buf.h"
 #include "util/strmap.h"
 #include "util/utf8.h"
+#include <stdint.h>
 #include <stdio.h>
 
 enum cli_presentation_mode {
@@ -48,6 +49,7 @@ struct cli_context {
 	struct morph_md_kitty *markdown_stream;
 	int trace_json;
 	int pending_db_restore;
+	uint64_t interaction_sequence;
 	struct morph_sync_restore_plan db_restore_plan;
 	morph_event_cb event_cb;
 	void *event_user_data;

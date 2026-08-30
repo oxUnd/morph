@@ -67,6 +67,7 @@ enum morph_event_type {
 	MORPH_EVENT_TASK,
 	MORPH_EVENT_ERROR,
 	MORPH_EVENT_COMMAND,
+	MORPH_EVENT_INTERACTION,
 };
 
 struct morph_event {
@@ -189,6 +190,56 @@ command.failed
 events include the captured human-readable output; failed events also include
 `error_code` and `error`. In structured CLI mode, command output is never
 written directly to stdout.
+
+Structured CLI interactions:
+
+```text
+interaction.request
+interaction.invalid_response
+interaction.resolved
+interaction.cancelled
+```
+
+When `--events json` is active, an operation that requires user input emits an
+`interaction.request` NDJSON event instead of reading from a terminal. Its
+`data` object contains a unique `request_id`, a stable `kind`, and a
+kind-specific `request` payload. The client must write exactly one matching
+response line to stdin:
+
+```json
+{"type":"interaction.response","request_id":"interaction-1","data":{"answers":["blue"]}}
+```
+
+The client can cancel the pending request with:
+
+```json
+{"type":"interaction.cancel","request_id":"interaction-1"}
+```
+
+Malformed input, a mismatched request ID, or a semantically invalid answer
+emits `interaction.invalid_response`; the same request remains pending. EOF and
+explicit cancellation emit `interaction.cancelled`. A valid response emits
+`interaction.resolved` before the agent continues.
+
+Stable interaction kinds and response payloads are:
+
+- `ask_user`: the request contains `question`, `choices`, `selection_mode`,
+  `min_choices`, and `max_choices`; respond with `data.answers`, an array of
+  selected strings.
+- `tool_approval`: the request contains `tool_name`, `arguments_json`, and
+  `allowed_decisions`; respond with `data.decision`.
+- `operation_approval`: the request contains the normalized operation fields,
+  directory capabilities, and `allowed_decisions`; respond with
+  `data.decision`.
+- `command_confirmation`: destructive system commands use this kind with an
+  action-specific request; respond with `data.decision` set to `confirm` or
+  `cancel`.
+
+The permitted decision strings are advertised in each request. They may
+include `allow`, `session`, `always`, and `deny`. Top-level user prompts remain
+plain input lines for backward compatibility; only responses to an active
+interaction are JSON input frames. The default interactive CLI keeps its
+existing terminal prompts and rendering.
 
 Tasks:
 

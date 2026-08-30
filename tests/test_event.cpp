@@ -14,6 +14,8 @@ TEST(EventTest, TypeName)
 	EXPECT_STREQ("hitl", morph_event_type_name(MORPH_EVENT_HITL));
 	EXPECT_STREQ("task", morph_event_type_name(MORPH_EVENT_TASK));
 	EXPECT_STREQ("command", morph_event_type_name(MORPH_EVENT_COMMAND));
+	EXPECT_STREQ("interaction",
+		     morph_event_type_name(MORPH_EVENT_INTERACTION));
 	EXPECT_STREQ("unknown", morph_event_type_name((enum morph_event_type)99));
 }
 

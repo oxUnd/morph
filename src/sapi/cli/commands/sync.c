@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/interaction.h"
 #include "sapi/cli/list_ui.h"
 
 static void print_sync_field(const char *ancestor, int is_last,
@@ -204,10 +205,29 @@ static int sync_cmd_restore_db(struct cli_context *ctx, const char *snapshot_id,
 	return rc;
 }
 
-static int sync_confirm_db_replace(const char *path)
+static int sync_confirm_db_replace(struct cli_context *ctx, const char *path)
 {
 	char answer[16];
 	FILE *tty;
+
+	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		cJSON *request = cJSON_CreateObject();
+		int confirmed = 0;
+		int rc;
+
+		if (!request)
+			return 0;
+		if (!cJSON_AddStringToObject(request, "action",
+					     "replace_database") ||
+		    !cJSON_AddStringToObject(request, "path", path ? path : "")) {
+			cJSON_Delete(request);
+			return 0;
+		}
+		rc = cli_interaction_confirm(ctx, "command_confirmation",
+			request, &confirmed);
+		cJSON_Delete(request);
+		return rc == 0 && confirmed;
+	}
 
 	printf(ANSI_BOLD ANSI_YELLOW
 	       "? Replace %s with this backup? Current data will be backed up. "
@@ -236,7 +256,7 @@ static int sync_cmd_replace_db(struct cli_context *ctx,
 			  morph_strerror(rc));
 		return rc;
 	}
-	if (!confirmed && !sync_confirm_db_replace(plan.path)) {
+	if (!confirmed && !sync_confirm_db_replace(ctx, plan.path)) {
 		(void)morph_sync_rollback_db_replace(&plan);
 		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
 		printf(ANSI_DIM "  cancelled" ANSI_RESET "\n");

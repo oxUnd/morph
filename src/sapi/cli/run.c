@@ -11,6 +11,7 @@
 
 volatile sig_atomic_t cli_sigint_received = 0;
 static volatile sig_atomic_t cli_sigwinch_received = 0;
+static volatile sig_atomic_t cli_structured_signal_mode = 0;
 
 void cli_sigint_handler(int sig)
 {
@@ -18,7 +19,8 @@ void cli_sigint_handler(int sig)
 	react_sigint_flag = 1;
 	http_cancel_from_signal();
 	cli_sigint_received = 1;
-	if (write(STDOUT_FILENO, "\n", 1) < 0) {
+	if (!cli_structured_signal_mode &&
+	    write(STDOUT_FILENO, "\n", 1) < 0) {
 		/* ignore */
 	}
 }
@@ -27,47 +29,6 @@ static void cli_sigwinch_handler(int sig)
 {
 	(void)sig;
 	cli_sigwinch_received = 1;
-}
-
-#ifdef HAVE_READLINE
-
-static struct cli_context *g_comp_ctx;
-static char *g_readline_ready_input;
-
-static void cli_readline_line_ready(char *input)
-{
-	struct cli_context *ctx = g_comp_ctx;
-
-	if (!ctx) {
-		free(input);
-		return;
-	}
-	if (!input) {
-		ctx->running = 0;
-		return;
-	}
-	free(g_readline_ready_input);
-	g_readline_ready_input = input;
-}
-
-static void cli_readline_drain_ui(struct cli_context *ctx)
-{
-	cli_terminal_composer_suspend(ctx);
-	(void)cli_ui_drain(ctx);
-	cli_terminal_composer_resume(ctx);
-	rl_on_new_line();
-	rl_forced_update_display();
-}
-
-static void cli_readline_render_frame(struct cli_context *ctx, int resized)
-{
-	cli_terminal_composer_suspend(ctx);
-	if (resized)
-		cli_terminal_resize(ctx);
-	cli_terminal_render_frame(ctx, resized);
-	cli_terminal_composer_resume(ctx);
-	rl_on_new_line();
-	rl_forced_update_display();
 }
 
 struct cli_command_job {
@@ -145,6 +106,47 @@ static int cli_command_job_finish(struct cli_command_job *job)
 	job->active = 0;
 	job->done = 0;
 	return result;
+}
+
+#ifdef HAVE_READLINE
+
+static struct cli_context *g_comp_ctx;
+static char *g_readline_ready_input;
+
+static void cli_readline_line_ready(char *input)
+{
+	struct cli_context *ctx = g_comp_ctx;
+
+	if (!ctx) {
+		free(input);
+		return;
+	}
+	if (!input) {
+		ctx->running = 0;
+		return;
+	}
+	free(g_readline_ready_input);
+	g_readline_ready_input = input;
+}
+
+static void cli_readline_drain_ui(struct cli_context *ctx)
+{
+	cli_terminal_composer_suspend(ctx);
+	(void)cli_ui_drain(ctx);
+	cli_terminal_composer_resume(ctx);
+	rl_on_new_line();
+	rl_forced_update_display();
+}
+
+static void cli_readline_render_frame(struct cli_context *ctx, int resized)
+{
+	cli_terminal_composer_suspend(ctx);
+	if (resized)
+		cli_terminal_resize(ctx);
+	cli_terminal_render_frame(ctx, resized);
+	cli_terminal_composer_resume(ctx);
+	rl_on_new_line();
+	rl_forced_update_display();
 }
 
 static int cli_readline_insert_newline(int count, int key)
@@ -335,67 +337,102 @@ static void cli_run_structured(struct cli_context *ctx)
 {
 	char line[BUFSIZ];
 	morph_buf_t input;
+	struct cli_command_job job;
+	int mutex_rc;
 	int rc;
 
-	rc = morph_buf_init(&input, BUFSIZ);
-	if (rc != 0)
+	memset(&job, 0, sizeof(job));
+	mutex_rc = pthread_mutex_init(&job.mutex, NULL);
+	if (mutex_rc != 0)
 		return;
-	while (ctx->running) {
-		size_t len;
-		int complete;
+	rc = morph_buf_init(&input, BUFSIZ);
+	if (rc != 0) {
+		pthread_mutex_destroy(&job.mutex);
+		return;
+	}
+	while (ctx->running || job.active) {
+		struct pollfd fds[2];
+		int wake_fd = cli_ui_wake_fd(ctx);
+		int nfds = wake_fd >= 0 ? 2 : 1;
 
-		(void)cli_ui_drain(ctx);
-		morph_buf_reset(&input);
-		complete = 0;
-		while (!complete && ctx->running) {
-			int continuation;
-
-			cli_cancel_state_reset();
-			if (!fgets(line, sizeof(line), stdin)) {
-				if (cli_sigint_received) {
-					cli_sigint_received = 0;
-					clearerr(stdin);
-					morph_buf_reset(&input);
-					break;
-				}
-				if (feof(stdin))
-					ctx->running = 0;
-				else
-					clearerr(stdin);
-				break;
-			}
-			len = strlen(line);
-			complete = len > 0 && line[len - 1] == '\n';
-			if (complete)
-				line[--len] = '\0';
-			if (len > 0 && line[len - 1] == '\r')
-				line[--len] = '\0';
-			continuation = complete && len > 0 &&
-				line[len - 1] == '\\';
-			if (continuation) {
-				len--;
-				complete = 0;
-			}
-			rc = morph_buf_append(&input, line, len);
-			if (rc == 0 && continuation)
-				rc = morph_buf_putc(&input, '\n');
-			if (rc != 0) {
-				morph_buf_reset(&input);
-				break;
-			}
+		fds[0].fd = job.active ? -1 : STDIN_FILENO;
+		fds[0].events = POLLIN;
+		fds[0].revents = 0;
+		if (wake_fd >= 0) {
+			fds[1].fd = wake_fd;
+			fds[1].events = POLLIN;
+			fds[1].revents = 0;
 		}
-		if (input.len > 0) {
-			int command_rc;
+		rc = poll(fds, (nfds_t)nfds, -1);
+		if (rc < 0) {
+			if (errno == EINTR) {
+				cli_sigint_received = 0;
+				continue;
+			}
+			break;
+		}
+		if (wake_fd >= 0 && (fds[1].revents & POLLIN))
+			(void)cli_ui_drain(ctx);
+		if (cli_command_job_done(&job)) {
+			int command_rc = cli_command_job_finish(&job);
 
-			cli_turn_begin(ctx);
-			command_rc = cli_handle_command(
-				ctx, morph_buf_cstr(&input));
 			(void)cli_ui_drain(ctx);
 			cli_turn_finish(ctx, command_rc);
 		}
+		if (!job.active &&
+		    (fds[0].revents & (POLLIN | POLLHUP))) {
+			size_t len;
+			int complete = 0;
+
+			morph_buf_reset(&input);
+			while (!complete && ctx->running) {
+				int continuation;
+
+				cli_cancel_state_reset();
+				if (!fgets(line, sizeof(line), stdin)) {
+					if (feof(stdin))
+						ctx->running = 0;
+					else
+						clearerr(stdin);
+					break;
+				}
+				len = strlen(line);
+				complete = len > 0 && line[len - 1] == '\n';
+				if (complete)
+					line[--len] = '\0';
+				if (len > 0 && line[len - 1] == '\r')
+					line[--len] = '\0';
+				continuation = complete && len > 0 &&
+					line[len - 1] == '\\';
+				if (continuation) {
+					len--;
+					complete = 0;
+				}
+				rc = morph_buf_append(&input, line, len);
+				if (rc == 0 && continuation)
+					rc = morph_buf_putc(&input, '\n');
+				if (rc != 0) {
+					morph_buf_reset(&input);
+					break;
+				}
+			}
+			if (input.len > 0) {
+				cli_turn_begin(ctx);
+				rc = cli_command_job_start(&job, ctx,
+					morph_buf_cstr(&input));
+				if (rc != 0)
+					cli_turn_finish(ctx, rc);
+			}
+		}
+	}
+	if (job.active) {
+		int command_rc = cli_command_job_finish(&job);
+
 		(void)cli_ui_drain(ctx);
+		cli_turn_finish(ctx, command_rc);
 	}
 	morph_buf_cleanup(&input);
+	pthread_mutex_destroy(&job.mutex);
 }
 
 void cli_run(struct cli_context *ctx)
@@ -413,6 +450,8 @@ void cli_run(struct cli_context *ctx)
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		struct sigaction sa;
 
+		cli_structured_signal_mode = 1;
+		(void)setvbuf(stdin, NULL, _IONBF, 0);
 		memset(&sa, 0, sizeof(sa));
 		sa.sa_handler = cli_sigint_handler;
 		sigemptyset(&sa.sa_mask);
@@ -420,6 +459,7 @@ void cli_run(struct cli_context *ctx)
 		sigaction(SIGINT, &sa, NULL);
 		cli_run_structured(ctx);
 		signal(SIGINT, SIG_DFL);
+		cli_structured_signal_mode = 0;
 		return;
 	}
 	config = runtime_config_get(ctx->runtime);

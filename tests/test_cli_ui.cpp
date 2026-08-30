@@ -2,17 +2,35 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
+#include "sapi/cli/interaction.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
+#include "agent/tool_context.h"
 #include "event/event.h"
 
 int cli_event_callback(const struct morph_event *event, void *user_data);
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
+enum hitl_verdict hitl_approval_callback(const char *tool_name,
+					 const char *tool_args,
+					 void *user_data);
+int cli_ask_user_callback(const char *question,
+			  const char *const *choices,
+			  int choices_count,
+			  const char *selection_mode,
+			  int min_choices,
+			  int max_choices,
+			  char ***answers,
+			  int *answers_count,
+			  void *user_data);
+enum tool_operation_verdict operation_approval_callback(
+	const struct tool_operation *op, void *user_data);
 }
 
 #include <poll.h>
 #include <cerrno>
+#include <functional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -236,4 +254,210 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
 	EXPECT_EQ(data.ran_on_owner, 1);
+}
+
+static std::string run_structured_interaction(
+	struct cli_context *ctx, const std::string &input,
+	const std::function<void()> &worker_fn)
+{
+	int input_pipe[2];
+	int saved_stdin;
+
+	if (pipe(input_pipe) != 0)
+		return {};
+	saved_stdin = dup(STDIN_FILENO);
+	if (saved_stdin < 0) {
+		close(input_pipe[0]);
+		close(input_pipe[1]);
+		return {};
+	}
+	if (write(input_pipe[1], input.data(), input.size()) !=
+	    static_cast<ssize_t>(input.size())) {
+		close(input_pipe[0]);
+		close(input_pipe[1]);
+		close(saved_stdin);
+		return {};
+	}
+	close(input_pipe[1]);
+	if (dup2(input_pipe[0], STDIN_FILENO) < 0) {
+		close(input_pipe[0]);
+		close(saved_stdin);
+		return {};
+	}
+	close(input_pipe[0]);
+	clearerr(stdin);
+
+	testing::internal::CaptureStdout();
+	std::thread worker(worker_fn);
+	struct pollfd fd{};
+	fd.fd = cli_ui_wake_fd(ctx);
+	fd.events = POLLIN;
+	(void)poll(&fd, 1, 1000);
+	(void)cli_ui_drain(ctx);
+	worker.join();
+	std::string output = testing::internal::GetCapturedStdout();
+
+	(void)dup2(saved_stdin, STDIN_FILENO);
+	close(saved_stdin);
+	clearerr(stdin);
+	return output;
+}
+
+static cJSON *find_json_event(const std::string &output, const char *name)
+{
+	size_t offset = 0;
+
+	while (offset < output.size()) {
+		size_t end = output.find('\n', offset);
+		std::string line = output.substr(
+			offset, end == std::string::npos ? end : end - offset);
+		cJSON *event = cJSON_Parse(line.c_str());
+
+		if (event) {
+			cJSON *event_name = cJSON_GetObjectItemCaseSensitive(
+				event, "name");
+			if (cJSON_IsString(event_name) && event_name->valuestring &&
+			    std::strcmp(event_name->valuestring, name) == 0)
+				return event;
+			cJSON_Delete(event);
+		}
+		if (end == std::string::npos)
+			break;
+		offset = end + 1;
+	}
+	return nullptr;
+}
+
+TEST_F(CliUiTest, StructuredInteractionRejectsMismatchedResponseThenResolves)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	cJSON *request = cJSON_CreateObject();
+	cJSON *response = nullptr;
+	int call_rc = -1;
+	ASSERT_NE(request, nullptr);
+	cJSON_AddStringToObject(request, "prompt", "continue?");
+	std::string input =
+		"{\"type\":\"interaction.response\",\"request_id\":"
+		"\"wrong\",\"data\":{\"answer\":\"yes\"}}\n"
+		"{\"type\":\"interaction.response\",\"request_id\":"
+		"\"interaction-1\",\"data\":{\"answer\":\"yes\"}}\n";
+
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		call_rc = cli_interaction_request(&ctx, "test", request,
+			nullptr, nullptr, &response);
+	});
+	EXPECT_EQ(call_rc, 0);
+	ASSERT_NE(response, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(response, "answer")->valuestring,
+		     "yes");
+	EXPECT_NE(output.find("interaction.invalid_response"),
+		  std::string::npos);
+	EXPECT_NE(output.find("interaction.resolved"), std::string::npos);
+	cJSON_Delete(response);
+	cJSON_Delete(request);
+}
+
+TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	const char *choices[] = {"red", "blue"};
+	char **answers = nullptr;
+	int answers_count = 0;
+	int call_rc = -1;
+	std::string input =
+		"{\"type\":\"interaction.response\",\"request_id\":"
+		"\"interaction-1\",\"data\":{\"answers\":[\"blue\"]}}\n";
+
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		call_rc = cli_ask_user_callback("pick a color", choices, 2,
+			"single", 1, 1, &answers, &answers_count, &ctx);
+	});
+	EXPECT_EQ(call_rc, 0);
+	ASSERT_EQ(answers_count, 1);
+	EXPECT_STREQ(answers[0], "blue");
+	cJSON *event = find_json_event(output, "interaction.request");
+	ASSERT_NE(event, nullptr);
+	cJSON *data = cJSON_GetObjectItem(event, "data");
+	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring,
+		     "ask_user");
+	cJSON *payload = cJSON_GetObjectItem(data, "request");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "question")->valuestring,
+		     "pick a color");
+	cJSON_Delete(event);
+	for (int i = 0; i < answers_count; i++)
+		free(answers[i]);
+	free(answers);
+}
+
+TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	struct tool_directory_capability directory{};
+	std::snprintf(directory.path, sizeof(directory.path), "/tmp/output");
+	directory.create = 1;
+	struct tool_operation operation{
+		TOOL_OP_COMMAND,
+		"bash_exec",
+		"agent",
+		"make test",
+		nullptr,
+		"/workspace",
+		"{}",
+		&directory,
+		1,
+	};
+	enum tool_operation_verdict verdict = TOOL_OP_DENY;
+	std::string input =
+		"{\"type\":\"interaction.response\",\"request_id\":"
+		"\"interaction-1\",\"data\":{\"decision\":\"session\"}}\n";
+
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		verdict = operation_approval_callback(&operation, &ctx);
+	});
+	EXPECT_EQ(verdict, TOOL_OP_SESSION);
+	cJSON *event = find_json_event(output, "interaction.request");
+	ASSERT_NE(event, nullptr);
+	cJSON *data = cJSON_GetObjectItem(event, "data");
+	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring,
+		     "operation_approval");
+	cJSON *payload = cJSON_GetObjectItem(data, "request");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "operation")->valuestring,
+		     "command");
+	EXPECT_EQ(cJSON_GetArraySize(
+		cJSON_GetObjectItem(payload, "directories")), 1);
+	cJSON_Delete(event);
+}
+
+TEST_F(CliUiTest, StructuredToolApprovalMapsPersistentDecision)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	enum hitl_verdict verdict = HITL_DENY;
+	std::string input =
+		"{\"type\":\"interaction.response\",\"request_id\":"
+		"\"interaction-1\",\"data\":{\"decision\":\"always\"}}\n";
+
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		verdict = hitl_approval_callback(
+			"remote_tool", "{\"query\":\"status\"}", &ctx);
+	});
+	EXPECT_EQ(verdict, HITL_ALWAYS);
+	cJSON *event = find_json_event(output, "interaction.request");
+	ASSERT_NE(event, nullptr);
+	cJSON *data = cJSON_GetObjectItem(event, "data");
+	EXPECT_STREQ(cJSON_GetObjectItem(data, "kind")->valuestring,
+		     "tool_approval");
+	cJSON *payload = cJSON_GetObjectItem(data, "request");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "tool_name")->valuestring,
+		     "remote_tool");
+	EXPECT_EQ(cJSON_GetArraySize(
+		cJSON_GetObjectItem(payload, "allowed_decisions")), 3);
+	cJSON_Delete(event);
 }

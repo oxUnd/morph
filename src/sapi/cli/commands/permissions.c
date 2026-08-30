@@ -1,4 +1,5 @@
 #include "sapi/cli/commands/registry.h"
+#include "sapi/cli/interaction.h"
 #include "sapi/cli/list_ui.h"
 
 #include <stdint.h>
@@ -100,10 +101,30 @@ static int print_permissions(struct cli_context *ctx)
 	return 0;
 }
 
-static int confirm_clear(int all_projects)
+static int confirm_clear(struct cli_context *ctx, int all_projects)
 {
 	char answer[64];
 	FILE *tty;
+
+	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		cJSON *request = cJSON_CreateObject();
+		int confirmed = 0;
+		int rc;
+
+		if (!request)
+			return 0;
+		if (!cJSON_AddStringToObject(request, "action",
+					     "clear_permissions") ||
+		    !cJSON_AddBoolToObject(request, "all_projects",
+					   all_projects)) {
+			cJSON_Delete(request);
+			return 0;
+		}
+		rc = cli_interaction_confirm(ctx, "command_confirmation",
+			request, &confirmed);
+		cJSON_Delete(request);
+		return rc == 0 && confirmed;
+	}
 
 	if (all_projects)
 		printf(ANSI_BOLD ANSI_RED
@@ -242,7 +263,7 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 			}
 		}
 		if (!confirmed)
-			confirmed = confirm_clear(all_projects);
+			confirmed = confirm_clear(ctx, all_projects);
 		if (!confirmed) {
 			printf(ANSI_DIM "  cancelled" ANSI_RESET "\n");
 			return 0;

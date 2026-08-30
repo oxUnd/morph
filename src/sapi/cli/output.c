@@ -1,4 +1,5 @@
 #include "sapi/cli/internal.h"
+#include "sapi/cli/interaction.h"
 #include "util/data.h"
 
 #include <limits.h>
@@ -311,6 +312,125 @@ static int cli_parse_multi_choice_answer(char *input,
 	return cli_set_ask_user_answers(answers, answers_count, values, count);
 }
 
+struct cli_ask_user_validation {
+	const char *const *choices;
+	int choices_count;
+	const char *selection_mode;
+	int min_choices;
+	int max_choices;
+};
+
+static int cli_validate_ask_user_response(const cJSON *response_data,
+					  void *user_data)
+{
+	struct cli_ask_user_validation *validation = user_data;
+	cJSON *answers;
+	int count;
+
+	if (!validation || !cJSON_IsObject(response_data))
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	answers = cJSON_GetObjectItemCaseSensitive(response_data, "answers");
+	if (!cJSON_IsArray(answers))
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	count = cJSON_GetArraySize(answers);
+	if (count < validation->min_choices || count > 64 ||
+	    (validation->max_choices > 0 &&
+	     count > validation->max_choices) ||
+	    ((!validation->selection_mode ||
+	      strcmp(validation->selection_mode, "multi") != 0) &&
+	     count > 1))
+		MORPH_RETURN(-EINVAL);
+	for (int i = 0; i < count; i++) {
+		cJSON *answer = cJSON_GetArrayItem(answers, i);
+		int matched = validation->choices_count == 0;
+
+		if (!cJSON_IsString(answer) || !answer->valuestring ||
+		    !answer->valuestring[0])
+			MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		for (int j = 0; j < validation->choices_count; j++) {
+			if (strcmp(answer->valuestring,
+				   validation->choices[j]) == 0) {
+				matched = 1;
+				break;
+			}
+		}
+		if (!matched)
+			MORPH_RETURN(-EINVAL);
+		for (int j = 0; j < i; j++) {
+			cJSON *previous = cJSON_GetArrayItem(answers, j);
+
+			if (strcmp(answer->valuestring,
+				   previous->valuestring) == 0)
+				MORPH_RETURN(-EINVAL);
+		}
+	}
+	return 0;
+}
+
+static int cli_json_ask_user(struct cli_context *ctx, const char *question,
+			     const char *const *choices, int choices_count,
+			     const char *selection_mode, int min_choices,
+			     int max_choices, char ***answers,
+			     int *answers_count)
+{
+	struct cli_ask_user_validation validation;
+	cJSON *request;
+	cJSON *choices_json;
+	cJSON *response = NULL;
+	cJSON *items;
+	const char *values[64] = {0};
+	int count;
+	int rc;
+
+	request = cJSON_CreateObject();
+	choices_json = cJSON_CreateArray();
+	if (!request || !choices_json) {
+		cJSON_Delete(request);
+		cJSON_Delete(choices_json);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddStringToObject(request, "question",
+				     question ? question : "") ||
+	    !cJSON_AddStringToObject(request, "selection_mode",
+				     selection_mode ? selection_mode : "single") ||
+	    !cJSON_AddNumberToObject(request, "min_choices", min_choices) ||
+	    !cJSON_AddNumberToObject(request, "max_choices", max_choices)) {
+		cJSON_Delete(choices_json);
+		cJSON_Delete(request);
+		MORPH_RETURN(-ENOMEM);
+	}
+	for (int i = 0; i < choices_count; i++) {
+		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
+
+		if (!choice) {
+			cJSON_Delete(choices_json);
+			cJSON_Delete(request);
+			MORPH_RETURN(-ENOMEM);
+		}
+		cJSON_AddItemToArray(choices_json, choice);
+	}
+	cJSON_AddItemToObject(request, "choices", choices_json);
+	validation = (struct cli_ask_user_validation){
+		.choices = choices,
+		.choices_count = choices_count,
+		.selection_mode = selection_mode,
+		.min_choices = min_choices,
+		.max_choices = max_choices,
+	};
+	rc = cli_interaction_request(ctx, "ask_user", request,
+		cli_validate_ask_user_response, &validation, &response);
+	cJSON_Delete(request);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	items = cJSON_GetObjectItemCaseSensitive(response, "answers");
+	count = cJSON_GetArraySize(items);
+	for (int i = 0; i < count; i++)
+		values[i] = cJSON_GetStringValue(cJSON_GetArrayItem(items, i));
+	rc = cli_set_ask_user_answers(answers, answers_count, values, count);
+	cJSON_Delete(response);
+	return rc;
+}
+
 static void cli_stop_cancel_monitor(struct cli_context *ctx)
 {
 	struct cli_cancel_monitor *monitor;
@@ -358,6 +478,10 @@ int cli_ask_user_callback(const char *question,
 	int multi = selection_mode && strcmp(selection_mode, "multi") == 0;
 	if (!ctx || !answers || !answers_count)
 		return -EINVAL;
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+		return cli_json_ask_user(ctx, question, choices, choices_count,
+			selection_mode, min_choices, max_choices, answers,
+			answers_count);
 	if (ctx->ui && !cli_ui_is_owner(ctx)) {
 		struct cli_ask_user_call call = {
 			ctx, question, choices, choices_count, selection_mode,
@@ -580,6 +704,35 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 	return v;
 }
 
+static enum hitl_verdict cli_json_hitl_approval(struct cli_context *ctx,
+						const char *tool_name,
+						const char *tool_args)
+{
+	static const char *const allowed[] = {"allow", "always", "deny"};
+	cJSON *request = cJSON_CreateObject();
+	char decision[16];
+	int rc;
+
+	if (!request)
+		return HITL_DENY;
+	if (!cJSON_AddStringToObject(request, "tool_name",
+				     tool_name ? tool_name : "") ||
+	    !cJSON_AddStringToObject(request, "arguments_json",
+				     tool_args ? tool_args : "{}")) {
+		cJSON_Delete(request);
+		return HITL_DENY;
+	}
+	rc = cli_interaction_decision(ctx, "tool_approval", request, allowed,
+		(int)(sizeof(allowed) / sizeof(allowed[0])), decision,
+		sizeof(decision));
+	cJSON_Delete(request);
+	if (rc != 0 || strcmp(decision, "deny") == 0)
+		return HITL_DENY;
+	if (strcmp(decision, "always") == 0)
+		return HITL_ALWAYS;
+	return HITL_APPROVE;
+}
+
 struct cli_hitl_call {
 	struct cli_context *ctx;
 	const char *tool_name;
@@ -613,6 +766,8 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	struct cli_context *ctx = user_data;
 	if (!ctx)
 		return HITL_DENY;
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+		return cli_json_hitl_approval(ctx, tool_name, tool_args);
 	if (ctx->ui && !cli_ui_is_owner(ctx)) {
 		struct cli_hitl_call call = {ctx, tool_name, tool_args};
 
@@ -721,12 +876,100 @@ static const char *operation_scope_label(enum tool_operation_kind kind)
 	return "Scope";
 }
 
+static int cli_json_add_optional_string(cJSON *object, const char *name,
+					const char *value)
+{
+	if (!value || !value[0])
+		return 0;
+	if (!cJSON_AddStringToObject(object, name, value))
+		MORPH_RETURN(-ENOMEM);
+	return 0;
+}
+
+static enum tool_operation_verdict cli_json_operation_approval(
+	struct cli_context *ctx, const struct tool_operation *op)
+{
+	static const char *const persistent[] = {
+		"allow", "session", "always", "deny"
+	};
+	static const char *const ephemeral_decisions[] = {
+		"allow", "session", "deny"
+	};
+	const char *const *allowed = persistent;
+	int allowed_count = (int)(sizeof(persistent) / sizeof(persistent[0]));
+	cJSON *request;
+	cJSON *directories;
+	char decision[16] = {0};
+	int ephemeral;
+	int rc;
+
+	request = cJSON_CreateObject();
+	directories = cJSON_CreateArray();
+	if (!request || !directories) {
+		cJSON_Delete(request);
+		cJSON_Delete(directories);
+		return TOOL_OP_DENY;
+	}
+	ephemeral = op->tool_name && strcmp(op->tool_name, "bash_exec") == 0 &&
+		(op->kind == TOOL_OP_PATH_WRITE ||
+		 op->kind == TOOL_OP_PATH_DELETE);
+	if (!cJSON_AddStringToObject(request, "operation",
+				     operation_subject(op->kind)) ||
+	    !cJSON_AddBoolToObject(request, "ephemeral", ephemeral) ||
+	    cli_json_add_optional_string(request, "tool_name",
+					 op->tool_name) != 0 ||
+	    cli_json_add_optional_string(request, "principal",
+					 op->principal) != 0 ||
+	    cli_json_add_optional_string(request, "action", op->action) != 0 ||
+	    cli_json_add_optional_string(request, "target", op->target) != 0 ||
+	    cli_json_add_optional_string(request, "scope", op->scope) != 0 ||
+	    cli_json_add_optional_string(request, "details_json",
+					 op->details_json) != 0) {
+		cJSON_Delete(directories);
+		cJSON_Delete(request);
+		return TOOL_OP_DENY;
+	}
+	for (int i = 0; i < op->directories_count; i++) {
+		cJSON *directory = cJSON_CreateObject();
+
+		if (!directory ||
+		    !cJSON_AddStringToObject(directory, "path",
+					     op->directories[i].path) ||
+		    !cJSON_AddBoolToObject(directory, "create",
+					   op->directories[i].create)) {
+			cJSON_Delete(directory);
+			cJSON_Delete(directories);
+			cJSON_Delete(request);
+			return TOOL_OP_DENY;
+		}
+		cJSON_AddItemToArray(directories, directory);
+	}
+	cJSON_AddItemToObject(request, "directories", directories);
+	if (ephemeral) {
+		allowed = ephemeral_decisions;
+		allowed_count = (int)(sizeof(ephemeral_decisions) /
+				      sizeof(ephemeral_decisions[0]));
+	}
+	rc = cli_interaction_decision(ctx, "operation_approval", request, allowed,
+		allowed_count, decision, sizeof(decision));
+	cJSON_Delete(request);
+	if (rc != 0 || strcmp(decision, "deny") == 0)
+		return TOOL_OP_DENY;
+	if (strcmp(decision, "always") == 0)
+		return TOOL_OP_ALWAYS;
+	if (strcmp(decision, "session") == 0)
+		return TOOL_OP_SESSION;
+	return TOOL_OP_ALLOW;
+}
+
 enum tool_operation_verdict operation_approval_callback(
 	const struct tool_operation *op, void *user_data)
 {
 	struct cli_context *ctx = user_data;
 	if (!ctx || !op)
 		return TOOL_OP_DENY;
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
+		return cli_json_operation_approval(ctx, op);
 	if (ctx->ui && !cli_ui_is_owner(ctx)) {
 		struct cli_operation_call call = {ctx, op};
 

@@ -4,6 +4,7 @@ add_library(morph-cli STATIC
 	core.c
 	events.c
 	init.c
+	interaction.c
 	list_ui.c
 	once.c
 	output.c
