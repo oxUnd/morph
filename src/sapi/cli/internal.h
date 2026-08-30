@@ -4,6 +4,7 @@
 #include "sapi/cli/cli.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
+#include "sapi/cli/command_job.h"
 #include "util/log.h"
 #include "util/file.h"
 #include "util/buf.h"

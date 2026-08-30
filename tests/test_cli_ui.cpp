@@ -3,6 +3,7 @@
 extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/interaction.h"
+#include "sapi/cli/command_job.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
 #include "agent/tool_context.h"
@@ -70,6 +71,13 @@ static int cli_owner_call(void *opaque)
 
 	data->ran_on_owner = cli_ui_is_owner(data->ctx);
 	return 73;
+}
+
+static int cli_command_with_owner_call(struct cli_context *ctx,
+			       const char *input, void *opaque)
+{
+	(void)input;
+	return cli_ui_call_owner(ctx, cli_owner_call, opaque);
 }
 
 TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
@@ -254,6 +262,19 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 	worker.join();
 	EXPECT_EQ(call_rc, 73);
 	EXPECT_EQ(data.ran_on_owner, 1);
+}
+
+TEST_F(CliUiTest, CommandWaitPumpsSynchronousOwnerCall)
+{
+	struct cli_command_job job{};
+	cli_owner_call_data data{&ctx, 0};
+
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test",
+		cli_command_with_owner_call, &data), 0);
+	EXPECT_EQ(cli_command_job_wait(&job), 73);
+	EXPECT_EQ(data.ran_on_owner, 1);
+	cli_command_job_cleanup(&job);
 }
 
 TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)

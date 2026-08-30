@@ -76,10 +76,13 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 
 void cli_run_once(struct cli_context *ctx, const char *prompt)
 {
+	struct cli_command_job job;
 	struct sigaction action;
 	struct timespec started;
 	struct timespec finished;
 	int saved_stdout = -1;
+	int job_initialized = 0;
+	int job_rc;
 	double elapsed;
 
 	if (!ctx || !prompt)
@@ -102,12 +105,17 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 			(void)dup2(STDERR_FILENO, STDOUT_FILENO);
 	}
 	cli_turn_begin(ctx);
-	{
-		int turn_rc = cli_handle_command(ctx, prompt);
-
-		(void)cli_ui_drain(ctx);
-		cli_turn_finish(ctx, turn_rc);
+	job_rc = cli_command_job_init(&job);
+	if (job_rc == 0) {
+		job_initialized = 1;
+		job_rc = cli_command_job_start(&job, ctx, prompt);
 	}
+	if (job_rc == 0)
+		job_rc = cli_command_job_wait(&job);
+	(void)cli_ui_drain(ctx);
+	cli_turn_finish(ctx, job_rc);
+	if (job_initialized)
+		cli_command_job_cleanup(&job);
 	if (saved_stdout >= 0) {
 		fflush(stdout);
 		(void)dup2(saved_stdout, STDOUT_FILENO);

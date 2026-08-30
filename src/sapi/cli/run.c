@@ -32,83 +32,6 @@ static void cli_sigwinch_handler(int sig)
 	cli_sigwinch_received = 1;
 }
 
-struct cli_command_job {
-	struct cli_context *ctx;
-	char *input;
-	pthread_t thread;
-	pthread_mutex_t mutex;
-	int active;
-	int done;
-	int result;
-};
-
-static void *cli_command_job_run(void *opaque)
-{
-	struct cli_command_job *job = opaque;
-	int result;
-
-	result = cli_handle_command(job->ctx, job->input);
-	pthread_mutex_lock(&job->mutex);
-	job->result = result;
-	job->done = 1;
-	pthread_mutex_unlock(&job->mutex);
-	cli_ui_notify(job->ctx);
-	return NULL;
-}
-
-static int cli_command_job_start(struct cli_command_job *job,
-				 struct cli_context *ctx,
-				 const char *input)
-{
-	int thread_rc;
-
-	if (!job || !ctx || !input)
-		MORPH_RETURN(-EINVAL);
-	job->input = strdup(input);
-	if (!job->input)
-		MORPH_RETURN(-ENOMEM);
-	job->ctx = ctx;
-	job->done = 0;
-	job->result = 0;
-	job->active = 1;
-	thread_rc = pthread_create(&job->thread, NULL,
-				   cli_command_job_run, job);
-	if (thread_rc != 0) {
-		job->active = 0;
-		free(job->input);
-		job->input = NULL;
-		MORPH_RETURN(-thread_rc);
-	}
-	return 0;
-}
-
-static int cli_command_job_done(struct cli_command_job *job)
-{
-	int done;
-
-	if (!job || !job->active)
-		return 0;
-	pthread_mutex_lock(&job->mutex);
-	done = job->done;
-	pthread_mutex_unlock(&job->mutex);
-	return done;
-}
-
-static int cli_command_job_finish(struct cli_command_job *job)
-{
-	int result;
-
-	if (!job || !job->active)
-		MORPH_RETURN(-EINVAL);
-	pthread_join(job->thread, NULL);
-	result = job->result;
-	free(job->input);
-	job->input = NULL;
-	job->active = 0;
-	job->done = 0;
-	return result;
-}
-
 #ifdef HAVE_READLINE
 
 static struct cli_context *g_comp_ctx;
@@ -339,16 +262,14 @@ static void cli_run_structured(struct cli_context *ctx)
 	char line[BUFSIZ];
 	morph_buf_t input;
 	struct cli_command_job job;
-	int mutex_rc;
 	int rc;
 
-	memset(&job, 0, sizeof(job));
-	mutex_rc = pthread_mutex_init(&job.mutex, NULL);
-	if (mutex_rc != 0)
+	rc = cli_command_job_init(&job);
+	if (rc != 0)
 		return;
 	rc = morph_buf_init(&input, BUFSIZ);
 	if (rc != 0) {
-		pthread_mutex_destroy(&job.mutex);
+		cli_command_job_cleanup(&job);
 		return;
 	}
 	while (ctx->running || job.active) {
@@ -437,7 +358,7 @@ static void cli_run_structured(struct cli_context *ctx)
 		cli_turn_finish(ctx, command_rc);
 	}
 	morph_buf_cleanup(&input);
-	pthread_mutex_destroy(&job.mutex);
+	cli_command_job_cleanup(&job);
 }
 
 void cli_run(struct cli_context *ctx)
@@ -531,11 +452,10 @@ void cli_run(struct cli_context *ctx)
 	struct cli_command_job job;
 	int job_mutex_rc;
 
-	memset(&job, 0, sizeof(job));
-	job_mutex_rc = pthread_mutex_init(&job.mutex, NULL);
+	job_mutex_rc = cli_command_job_init(&job);
 	if (job_mutex_rc != 0) {
 		CMD_ERROR("failed to initialize command worker: %s",
-			  strerror(job_mutex_rc));
+			  morph_strerror(job_mutex_rc));
 		signal(SIGINT, SIG_DFL);
 		signal(SIGWINCH, SIG_DFL);
 		return;
@@ -666,7 +586,7 @@ void cli_run(struct cli_context *ctx)
 		(void)cli_ui_drain(ctx);
 		cli_turn_finish(ctx, turn_rc);
 	}
-	pthread_mutex_destroy(&job.mutex);
+	cli_command_job_cleanup(&job);
 	g_comp_ctx = NULL;
 #else
 	morph_buf_t input;
