@@ -6,6 +6,7 @@
 #define CLI_BANNER_CONTENT_WIDTH (CLI_BANNER_INNER_WIDTH - 2)
 #define CLI_BANNER_LABEL_WIDTH 12
 #define CLI_BANNER_HINT_WIDTH 18
+#define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
 
 /* ---- sigint ---- */
 
@@ -354,6 +355,8 @@ static void cli_run_structured(struct cli_context *ctx)
 		struct pollfd fds[2];
 		int wake_fd = cli_ui_wake_fd(ctx);
 		int nfds = wake_fd >= 0 ? 2 : 1;
+		int poll_timeout = job.active ?
+			CLI_STRUCTURED_POLL_TIMEOUT_MS : -1;
 
 		fds[0].fd = job.active ? -1 : STDIN_FILENO;
 		fds[0].events = POLLIN;
@@ -363,7 +366,7 @@ static void cli_run_structured(struct cli_context *ctx)
 			fds[1].events = POLLIN;
 			fds[1].revents = 0;
 		}
-		rc = poll(fds, (nfds_t)nfds, -1);
+		rc = poll(fds, (nfds_t)nfds, poll_timeout);
 		if (rc < 0) {
 			if (errno == EINTR) {
 				cli_sigint_received = 0;
@@ -371,7 +374,9 @@ static void cli_run_structured(struct cli_context *ctx)
 			}
 			break;
 		}
-		if (wake_fd >= 0 && (fds[1].revents & POLLIN))
+		if ((wake_fd >= 0 &&
+		     (fds[1].revents & (POLLIN | POLLERR | POLLHUP))) ||
+		    (job.active && rc == 0))
 			(void)cli_ui_drain(ctx);
 		if (cli_command_job_done(&job)) {
 			int command_rc = cli_command_job_finish(&job);

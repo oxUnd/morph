@@ -256,6 +256,28 @@ TEST_F(CliUiTest, SynchronousOwnerCallRunsOnUiThread)
 	EXPECT_EQ(data.ran_on_owner, 1);
 }
 
+TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
+{
+	cli_owner_call_data data{&ctx, 0};
+	int call_rc = 0;
+	std::thread worker([&] {
+		call_rc = cli_ui_call_owner(&ctx, cli_owner_call, &data);
+	});
+
+	struct pollfd fd{};
+	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.events = POLLIN;
+	ASSERT_EQ(poll(&fd, 1, 1000), 1);
+	unsigned char wake_byte = 0;
+	ASSERT_EQ(read(fd.fd, &wake_byte, sizeof(wake_byte)), 1);
+	fd.revents = 0;
+	EXPECT_EQ(poll(&fd, 1, 0), 0);
+	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	worker.join();
+	EXPECT_EQ(call_rc, 73);
+	EXPECT_EQ(data.ran_on_owner, 1);
+}
+
 static std::string run_structured_interaction(
 	struct cli_context *ctx, const std::string &input,
 	const std::function<void()> &worker_fn)
