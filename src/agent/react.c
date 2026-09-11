@@ -1268,17 +1268,7 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	if (rc != 0)
 		return NULL;
 
-	char time_buf[128];
-	{
-		time_t now = time(NULL);
-		struct tm tm_local;
-		localtime_r(&now, &tm_local);
-		strftime(time_buf, sizeof(time_buf),
-			 "%Y-%m-%d %A %H:%M:%S %Z", &tm_local);
-	}
-
-	rc = morph_buf_printf(&buf, MORPH_SYSTEM_PROMPT, time_buf,
-			      ctx->max_iterations);
+	rc = morph_buf_printf(&buf, MORPH_SYSTEM_PROMPT, ctx->max_iterations);
 	if (rc != 0)
 		return NULL;
 
@@ -2401,6 +2391,51 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	return 1;
 }
 
+static void react_format_current_time(char *date_buf, size_t date_size,
+				      char *tz_buf, size_t tz_size)
+{
+	time_t now = time(NULL);
+	struct tm tm_local;
+
+	localtime_r(&now, &tm_local);
+	strftime(date_buf, date_size, "%Y-%m-%d %A %H:%M", &tm_local);
+	strftime(tz_buf, tz_size, "%Z", &tm_local);
+}
+
+/*
+ * Append an environment_context block to the latest user message instead of
+ * embedding volatile data in the system prompt. Keeping the system prompt and
+ * prior history byte-for-byte stable lets provider prompt caches match the
+ * whole prefix; only this turn's user message carries the changing values.
+ * The tagged block is a format models recognize directly. Minute precision on
+ * the date avoids per-second churn within a turn's iterations.
+ */
+static int react_append_environment_context(struct react_context *ctx,
+					    struct chat_message *message)
+{
+	char date_buf[128];
+	char tz_buf[64];
+	morph_buf_t buf;
+	const char *base;
+
+	if (!message)
+		return -EINVAL;
+	react_format_current_time(date_buf, sizeof(date_buf),
+				  tz_buf, sizeof(tz_buf));
+	if (morph_buf_init_arena(&buf, ctx->turn_arena, 256) != 0)
+		return -ENOMEM;
+	base = message->content ? message->content : "";
+	if (morph_buf_printf(&buf,
+			     "%s\n\n<environment_context>\n"
+			     "date: %s\n"
+			     "timezone: %s\n"
+			     "</environment_context>\n",
+			     base, date_buf, tz_buf) != 0)
+		return -ENOMEM;
+	message->content = buf.data;
+	return 0;
+}
+
 static int react_prepare_messages(struct react_context *ctx,
 				  morph_array_t *messages,
 				  const char *current_user_input)
@@ -2426,10 +2461,11 @@ static int react_prepare_messages(struct react_context *ctx,
 			current_user_input ? current_user_input : "");
 		if (!message->role || !message->content)
 			return -ENOMEM;
-		return 0;
+		return react_append_environment_context(ctx, message);
 	}
 
 	hist = ctx->messages;
+	message = NULL;
 	while (hist) {
 		message = react_push_chat_message(messages);
 		if (!message)
@@ -2443,6 +2479,8 @@ static int react_prepare_messages(struct react_context *ctx,
 		message->tool_call_count = 0;
 		hist = hist->next;
 	}
+	if (message)
+		return react_append_environment_context(ctx, message);
 	return 0;
 }
 

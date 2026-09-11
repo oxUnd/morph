@@ -463,6 +463,12 @@ static void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
 	llm_usage_parse_details(&ctx->usage, usage_obj);
 	usage_strncpy(ctx->usage.usage_source,
 		      sizeof(ctx->usage.usage_source), "provider");
+	if (ctx->usage.input_tokens > 0)
+		log_dbg("llm usage: prompt cache %lld/%lld input tokens (%.1f%% hit)",
+			(long long)ctx->usage.cached_tokens,
+			(long long)ctx->usage.input_tokens,
+			(double)ctx->usage.cached_tokens * 100.0 /
+				(double)ctx->usage.input_tokens);
 }
 
 static void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx,

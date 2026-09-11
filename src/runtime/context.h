@@ -10,6 +10,7 @@
 
 struct runtime_plan_session {
 	int64_t session_id;
+	uint64_t last_used;
 	struct plan_registry registry;
 };
 
