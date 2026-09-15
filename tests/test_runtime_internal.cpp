@@ -2,17 +2,160 @@
 
 extern "C" {
 #include "credits.h"
+#include "agent/system_prompt.h"
+#include "runtime/bootstrap.h"
 #include "runtime/context.h"
 #include "runtime/scheduler.h"
 #include "runtime/turn_scope.h"
 #include "runtime/usage.h"
 #include "models/llm.h"
+#include "util/file.h"
 }
 
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <unistd.h>
+
+class PromptLoadTest : public ::testing::Test {
+protected:
+	char dir[PATH_MAX] = "/tmp/morph-prompt-XXXXXX";
+	char *text = nullptr;
+
+	void SetUp() override {
+		ASSERT_NE(mkdtemp(dir), nullptr);
+	}
+
+	void TearDown() override {
+		std::free(text);
+		std::filesystem::remove_all(dir);
+	}
+
+	std::string write(const char *name, const std::string &content) {
+		std::string path = std::string(dir) + "/" + name;
+		EXPECT_EQ(file_write_all(path.c_str(), content.data(), content.size()), 0);
+		return path;
+	}
+};
+
+TEST_F(PromptLoadTest, NoSourceDiffersFromExplicitEmptyFile)
+{
+	ASSERT_EQ(morph_prompt_load(nullptr, "", &text), 0);
+	EXPECT_EQ(text, nullptr);
+	auto path = write("empty.txt", " \t\r\n");
+	ASSERT_EQ(morph_prompt_load(path.c_str(), nullptr, &text), 0);
+	ASSERT_NE(text, nullptr);
+	EXPECT_STREQ(text, "");
+	EXPECT_EQ(morph_prompt_load(nullptr, nullptr, nullptr), -EINVAL);
+}
+
+TEST_F(PromptLoadTest, FilePrecedesSortedDirectoryFragments)
+{
+	std::string fragments = std::string(dir) + "/fragments";
+	ASSERT_TRUE(std::filesystem::create_directory(fragments));
+	write("fragments/20-b.txt", "second\n");
+	write("fragments/10-a.md", "first\r\n");
+	write("fragments/15-empty.txt", "\n");
+	write("fragments/.hidden", "ignored");
+	auto path = write("base.txt", "base %s %d\n");
+	ASSERT_EQ(morph_prompt_load(path.c_str(), fragments.c_str(), &text), 0);
+	EXPECT_STREQ(text, "base %s %d\n\nfirst\n\nsecond");
+	std::string snapshot = text;
+	std::free(text);
+	text = nullptr;
+	ASSERT_EQ(morph_prompt_load(path.c_str(), fragments.c_str(), &text), 0);
+	EXPECT_EQ(snapshot, text);
+}
+
+TEST_F(PromptLoadTest, LargeUtf8FileIsNotTruncated)
+{
+	std::string content(3 * BUFSIZ, 'x');
+	content += "\xe4\xb8\xad\xe6\x96\x87";
+	auto path = write("large.txt", content);
+	ASSERT_EQ(morph_prompt_load(path.c_str(), "", &text), 0);
+	EXPECT_EQ(content, text);
+}
+
+TEST_F(PromptLoadTest, RejectsInvalidEncodingAndEmbeddedNul)
+{
+	auto path = write("invalid.txt", std::string("a\0b", 3));
+	EXPECT_EQ(morph_prompt_load(path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(text, nullptr);
+	write("invalid.txt", "\xff");
+	EXPECT_EQ(morph_prompt_load(path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(text, nullptr);
+}
+
+TEST_F(PromptLoadTest, MissingSourcesDoNotReturnPartialContent)
+{
+	auto base = write("base.txt", "valid");
+	std::string missing = std::string(dir) + "/missing";
+	EXPECT_EQ(morph_prompt_load(missing.c_str(), "", &text), -ENOENT);
+	EXPECT_EQ(text, nullptr);
+	EXPECT_LT(morph_prompt_load(base.c_str(), missing.c_str(), &text), 0);
+	EXPECT_EQ(text, nullptr);
+	EXPECT_EQ(morph_prompt_load(dir, "", &text), -EINVAL);
+	EXPECT_EQ(text, nullptr);
+}
+
+TEST_F(PromptLoadTest, InvalidFragmentRejectsWholePrompt)
+{
+	write("10-good.txt", "valid");
+	write("20-bad.txt", "\xff");
+	EXPECT_EQ(morph_prompt_load("", dir, &text), -EILSEQ);
+	EXPECT_EQ(text, nullptr);
+}
+
+TEST_F(PromptLoadTest, BootstrapLoadsReplacementSnapshot)
+{
+	struct config config{};
+	struct tool_registry tools{};
+	struct runtime_models models{};
+	struct runtime_bootstrap_profile profile{};
+	config_set_defaults(&config);
+	auto path = write("agent.txt", "Custom behavior");
+	std::strncpy(config.prompt.mode, "replace", sizeof(config.prompt.mode) - 1);
+	std::strncpy(config.prompt.system_prompt_file, path.c_str(),
+		sizeof(config.prompt.system_prompt_file) - 1);
+	profile.config = &config;
+	profile.tools = &tools;
+	profile.models = &models;
+	profile.process_replica = 1;
+	EXPECT_EQ(runtime_bootstrap_models(&profile), 0);
+	if (models.react) {
+		EXPECT_EQ(models.react->system_prompt_replace, 1);
+		EXPECT_STREQ(models.react->system_prompt, "Custom behavior");
+		write("agent.txt", "Changed on disk");
+		EXPECT_STREQ(models.react->system_prompt, "Custom behavior");
+	} else {
+		ADD_FAILURE() << "Missing react context";
+	}
+	runtime_bootstrap_cleanup_models(&models);
+	tool_registry_cleanup(&tools);
+}
+
+TEST_F(PromptLoadTest, BootstrapPromptFailureReleasesPartialModels)
+{
+	struct config config{};
+	struct tool_registry tools{};
+	struct runtime_models models{};
+	struct runtime_bootstrap_profile profile{};
+	config_set_defaults(&config);
+	std::string missing = std::string(dir) + "/missing.txt";
+	std::strncpy(config.prompt.system_prompt_file, missing.c_str(),
+		sizeof(config.prompt.system_prompt_file) - 1);
+	profile.config = &config;
+	profile.tools = &tools;
+	profile.models = &models;
+	profile.process_replica = 1;
+	EXPECT_EQ(runtime_bootstrap_models(&profile), -ENOENT);
+	EXPECT_EQ(models.react, nullptr);
+	EXPECT_EQ(models.tokenizer, nullptr);
+	runtime_bootstrap_cleanup_models(&models);
+	tool_registry_cleanup(&tools);
+}
 
 TEST(RuntimeInternalTest, MemoryOptionsMirrorConfiguration)
 {

@@ -487,37 +487,6 @@ static int sub_agent_emit_background_event(struct sub_agent_runtime *rt,
 	return rc;
 }
 
-static char *load_file_contents(const char *path)
-{
-	if (!path || !*path)
-		return NULL;
-	char *expanded = file_expand_path(path);
-	if (!expanded)
-		expanded = strdup(path);
-	if (!expanded)
-		return NULL;
-	FILE *f = fopen(expanded, "r");
-	free(expanded);
-	if (!f)
-		return NULL;
-	fseek(f, 0, SEEK_END);
-	long sz = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (sz <= 0) {
-		fclose(f);
-		return NULL;
-	}
-	char *buf = malloc((size_t)sz + 1);
-	if (!buf) {
-		fclose(f);
-		return NULL;
-	}
-	size_t rd = fread(buf, 1, (size_t)sz, f);
-	buf[rd] = '\0';
-	fclose(f);
-	return buf;
-}
-
 int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 				  struct config_sub_agents *cfg)
 {
@@ -527,9 +496,11 @@ int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 	     i++) {
 		struct sub_agent_entry *e = &rt->entries[rt->entry_count];
 		e->cfg = cfg->entries[i];
-		if (e->cfg.system_prompt_file[0])
-			e->system_prompt = load_file_contents(
-				e->cfg.system_prompt_file);
+		int rc = morph_prompt_load(e->cfg.system_prompt_file,
+					  e->cfg.system_prompt_dir,
+					  &e->system_prompt);
+		if (rc != 0)
+			MORPH_RETURN(rc);
 		if (e->cfg.model[0])
 			e->llm = rt->default_llm;
 		else
@@ -645,9 +616,17 @@ sub_agent_create_context(struct sub_agent_runtime *rt,
 	react_set_event_callback(child, NULL, NULL);
 	child->max_iterations = entry->cfg.max_iterations;
 	child->sub_agent_depth = rt->depth + sub_agent_thread_depth + 1;
+	child->system_prompt_replace =
+		strcmp(entry->cfg.system_prompt_mode, "replace") == 0;
 	if (entry->system_prompt) {
 		free(child->system_prompt);
 		child->system_prompt = strdup(entry->system_prompt);
+		if (!child->system_prompt) {
+			react_context_destroy(child);
+			tool_registry_cleanup(child_tools);
+			free(child_tools);
+			return NULL;
+		}
 	}
 	return child;
 }

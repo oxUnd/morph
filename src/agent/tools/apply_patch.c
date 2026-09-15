@@ -100,7 +100,9 @@ int apply_patch_init(struct tool_registry *registry,
 		"Apply a stripped-down Codex patch to text files. The workspace "
 		"root is '%s'. Every patch path is relative to this exact directory; "
 		"do not use absolute paths and do not repeat the workspace directory "
-		"in a path. Use the exact envelope '*** Begin Patch\\n*** Add File: "
+		"in a path. Use this tool for source editing instead of passing "
+		"source content through shell commands. "
+		"Use the exact envelope '*** Begin Patch\\n*** Add File: "
 		"path\\n+content\\n*** End Patch'. Prefer bare '@@' for Update "
 		"File hunks. An optional anchor after '@@ ' must be one complete "
 		"source line copied verbatim, never a descriptive label. Numeric "
@@ -109,7 +111,26 @@ int apply_patch_init(struct tool_registry *registry,
 		"supported. Keep each call below "
 		"4 KiB and at most 80 changed lines. Split large files across "
 		"multiple calls by replacing a unique continuation marker in each "
-		"successive Update File patch.", workspace_root);
+		"successive Update File patch. Remove the marker in the final call. "
+		"Every call must be a complete Codex patch. The final *** End Patch "
+		"line must never have a leading +, space, or -. "
+		"Do not emit unified-diff headers such as --- or +++. "
+		"If a patch is truncated or its context does not match, read the "
+		"file again and retry with a smaller complete patch.\n"
+		"Update File example:\n"
+		"*** Begin Patch\n"
+		"*** Update File: relative/path.c\n"
+		"@@\n"
+		" unchanged context\n"
+		"-old line\n"
+		"+new line\n"
+		"*** End Patch\n"
+		"Add File example:\n"
+		"*** Begin Patch\n"
+		"*** Add File: relative/path.c\n"
+		"+first content line\n"
+		"+/* MORPH_CONTINUE */\n"
+		"*** End Patch\n", workspace_root);
 	if (rc != 0) {
 		morph_buf_cleanup(&description);
 		return rc;

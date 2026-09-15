@@ -164,7 +164,9 @@ int sub_agent_delegate_init(struct tool_registry *reg,
 {
 	if (!reg || !rt)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "delegate", .description = "Start a sub-agent asynchronously and return a task ID", .input_schema = "{\"type\":\"object\",\"properties\""
+	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "delegate", .description = "Start a sub-agent asynchronously and return a task ID. "
+		"Use agent_status with that ID to retrieve status and results.",
+		.input_schema = "{\"type\":\"object\",\"properties\""
 		":{\"agent\":{\"type\":\"string\","
 		"\"description\":\"Name of the sub-agent to invoke\"},"
 		"\"task\":{\"type\":\"string\","

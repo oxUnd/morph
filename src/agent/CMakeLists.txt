@@ -1,5 +1,6 @@
 add_library(morph-agent STATIC
 	react.c
+	system_prompt.c
 	history.c
 	turn.c
 	context.c

@@ -1268,98 +1268,26 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 	if (rc != 0)
 		return NULL;
 
-	rc = morph_buf_printf(&buf, MORPH_SYSTEM_PROMPT, ctx->max_iterations);
+	rc = morph_buf_puts(&buf, MORPH_CORE_PROMPT);
 	if (rc != 0)
 		return NULL;
 
-	rc = morph_buf_puts(&buf, MORPH_LANGUAGE_OUTPUT_PROMPT);
-	if (rc != 0)
-		return NULL;
-
-	rc = morph_buf_puts(&buf, MORPH_MARKDOWN_OUTPUT_PROMPT);
-	if (rc != 0)
-		return NULL;
+	if (!ctx->system_prompt_replace || !ctx->system_prompt) {
+		rc = morph_buf_printf(&buf, MORPH_DEFAULT_BEHAVIOR_PROMPT,
+				     ctx->max_iterations);
+		if (rc == 0)
+			rc = morph_buf_puts(&buf, MORPH_LANGUAGE_OUTPUT_PROMPT);
+		if (rc == 0)
+			rc = morph_buf_puts(&buf, MORPH_MARKDOWN_OUTPUT_PROMPT);
+		if (rc != 0)
+			return NULL;
+	}
 
 	if (ctx->workdir && *ctx->workdir) {
 		rc = morph_buf_printf(&buf, "\nWorking directory: %s\n",
 				      ctx->workdir);
 		if (rc != 0)
 			return NULL;
-	}
-
-	if (react_has_active_tool(ctx, "apply_patch")) {
-		rc = morph_buf_puts(&buf,
-			"\nSource editing:\n"
-			"- Use apply_patch for text files inside the working directory; "
-			"do not pass source content through shell commands.\n"
-			"- Patch paths are relative to the Working directory shown above. "
-			"Do not repeat that directory in the patch path.\n"
-			"- Prefer a bare @@ for Update File hunks. If you use @@ followed "
-			"by an anchor, copy one complete source line verbatim; never invent "
-			"a descriptive label. Do not use unified-diff numeric ranges.\n"
-			"- Every call must be a complete Codex patch: start with "
-			"*** Begin Patch, use *** Add File, *** Update File, or "
-			"*** Delete File with relative paths, and end with "
-			"*** End Patch. The final *** End Patch line is an envelope line "
-			"and must never have a leading +, space, or -. Do not emit "
-			"unified-diff headers such as --- or +++.\n"
-			"- Exact Update File example:\n"
-			"*** Begin Patch\n"
-			"*** Update File: relative/path.c\n"
-			"@@\n"
-			" unchanged context\n"
-			"-old line\n"
-			"+new line\n"
-			"*** End Patch\n"
-			"- Exact Add File example:\n"
-			"*** Begin Patch\n"
-			"*** Add File: relative/path.c\n"
-			"+first content line\n"
-			"+/* MORPH_CONTINUE */\n"
-			"*** End Patch\n"
-			"- Keep one call below 4 KiB and at most 80 changed lines. For a "
-			"large new file, add a small first chunk ending in a unique "
-			"continuation marker, then use later Update File calls to replace "
-			"that marker with the next chunk and a fresh marker. Remove the "
-			"marker in the final call.\n"
-			"- If a patch is truncated or its context does not match, do not "
-			"repeat the same oversized call. Read the file again and retry "
-			"with a smaller complete patch.\n");
-		if (rc != 0)
-			return NULL;
-	}
-
-	if (react_has_active_tool(ctx, "bash_exec")) {
-		rc = morph_buf_puts(&buf,
-			"\nShell filesystem permissions:\n"
-			"- Do not delete files, install packages, or make network calls "
-			"unless the user explicitly asks.\n"
-			"- Run commands with sandbox_permissions=use_default unless "
-			"they need to write or delete outside workdir/output/tmp.\n"
-			"- For known external paths, use "
-			"sandbox_permissions=with_additional_permissions and request "
-			"only the smallest absolute directories in "
-			"additional_permissions.file_system.write or .delete.\n"
-			"- Deletion and rename require delete permission; write "
-			"permission alone is insufficient.\n"
-			"- If bash_exec returns error.code=sandbox_denied, retry the "
-			"same command with the narrow additional permissions indicated "
-			"by the failure. Do not claim success from its exit code.\n"
-			"- Use require_escalated only when narrow directory permissions "
-			"cannot work; it always requires approval and is unavailable "
-			"in server mode.\n");
-		if (rc != 0)
-			return NULL;
-		if (react_has_active_tool(ctx, "request_permissions")) {
-			rc = morph_buf_puts(&buf,
-				"- You may call request_permissions before bash_exec "
-				"when the required directories are known. Include the "
-				"exact future command and use scope=turn unless repeated "
-				"commands need scope=session. Grants are scoped to the "
-				"command executable.\n");
-			if (rc != 0)
-				return NULL;
-		}
 	}
 
 	if (ctx->system_prompt) {
@@ -1388,70 +1316,6 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			if (rc != 0)
 				return NULL;
 		}
-		rc = morph_buf_puts(&buf,
-			"\nWhen a skill matches the task, call activate_skill "
-			"with the skill name to load its full instructions.\n");
-		if (rc != 0)
-			return NULL;
-	}
-
-	if (ctx->sub_agent_info && ctx->sub_agent_info_count > 0) {
-		int active_sub_agents = 0;
-
-		for (int i = 0; i < ctx->sub_agent_info_count; i++) {
-			char tool_name[TOOL_NAME_MAX];
-
-			snprintf(tool_name, sizeof(tool_name), "agent_%s",
-				 ctx->sub_agent_info[i].name);
-			if (react_has_active_tool(ctx, tool_name))
-				active_sub_agents++;
-		}
-		if (active_sub_agents > 0) {
-			rc = morph_buf_puts(&buf, "\nAvailable sub-agents:\n");
-			if (rc != 0)
-				return NULL;
-			for (int i = 0; i < ctx->sub_agent_info_count; i++) {
-				char tool_name[TOOL_NAME_MAX];
-
-				snprintf(tool_name, sizeof(tool_name), "agent_%s",
-					 ctx->sub_agent_info[i].name);
-				if (!react_has_active_tool(ctx, tool_name))
-					continue;
-				rc = morph_buf_printf(&buf, "- agent_%s: %s\n",
-					ctx->sub_agent_info[i].name,
-					ctx->sub_agent_info[i].description);
-				if (rc != 0)
-					return NULL;
-			}
-			rc = morph_buf_puts(&buf,
-				"\nTo delegate a task, call an enabled agent_<name> "
-				"tool with a task description.\n");
-			if (rc != 0)
-				return NULL;
-			if (react_has_active_tool(ctx, "fanout")) {
-				rc = morph_buf_puts(&buf,
-					"For parallel execution, use fanout.\n");
-				if (rc != 0)
-					return NULL;
-			}
-			if (react_has_active_tool(ctx, "delegate") &&
-			    react_has_active_tool(ctx, "agent_status")) {
-				rc = morph_buf_puts(&buf,
-					"For async delegation, use delegate + "
-					"agent_status.\n");
-				if (rc != 0)
-					return NULL;
-			}
-		}
-	}
-
-	if (ctx->ask_user_fn && react_has_active_tool(ctx, "ask_user")) {
-		rc = morph_buf_puts(&buf,
-			"\nYou have the ask_user tool. Use it ONLY for genuine "
-			"ambiguity or irreversible decisions. Prefer acting on "
-			"reasonable assumptions rather than blocking for input.\n");
-		if (rc != 0)
-			return NULL;
 	}
 
 	if (ctx->skills) {

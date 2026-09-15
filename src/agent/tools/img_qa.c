@@ -222,7 +222,11 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 	ctx->tctx = tctx;
 	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_qa", .description = "Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
-		"visual comparison, and content analysis. Before upload, the "
+		"visual comparison, and content analysis. User messages reference "
+		"local images as [Image: <path>]; pass that path as file_path and "
+		"ask the relevant question in prompt. Use the returned analysis "
+		"instead of guessing from the filename or just repeating the path. "
+		"Before upload, the "
 		"image is prepared within max_dim while preserving its format "
 		"and aspect "
 		"ratio. Provide file_path and prompt. Optional max_tokens "

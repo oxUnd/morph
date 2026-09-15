@@ -163,6 +163,7 @@ struct react_context {
 	struct arena *turn_arena;
 	struct arena *session_arena;
 	char *system_prompt;
+	int system_prompt_replace;
 	char *memory_context;
 	const struct memory_options *memory_options;
 	struct skill_registry *skills;

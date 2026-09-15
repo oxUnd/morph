@@ -1,7 +1,13 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
+#include "agent/system_prompt.h"
 #include "agent/tool.h"
+#include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
+#include "agent/tools/apply_patch.h"
+#include "agent/tools/bash_exec.h"
+#include "agent/tools/img_qa.h"
+#include "agent/tools/request_permissions.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
 #include "util/arena.h"
@@ -3704,6 +3710,102 @@ static void capt_prompt_destroy(struct model *self)
 	free(self);
 }
 
+class PromptModeTest : public MockLlmTest {
+protected:
+	struct capt_prompt_data *capt = nullptr;
+	struct react_context *ctx = nullptr;
+	struct tool_context *tctx = nullptr;
+
+	void SetUp() override {
+		MockLlmTest::SetUp();
+		capt = (struct capt_prompt_data *)calloc(1, sizeof(*capt));
+		ASSERT_NE(capt, nullptr);
+		capt->resp = "Final: answer";
+		llm = (struct model *)calloc(1, sizeof(*llm));
+		ASSERT_NE(llm, nullptr);
+		strncpy(llm->api_key, "mock", sizeof(llm->api_key) - 1);
+		llm->context_limit = 128000;
+		llm->chat = capt_prompt_chat;
+		llm->chat_with_tools = capt_prompt_chat_with_tools;
+		llm->destroy = capt_prompt_destroy;
+		llm->handle = capt;
+		ctx = react_context_create(&tools, tok, &cfg, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		ctx->llm_model = llm;
+		tctx = tool_context_create("/tmp", "/tmp");
+		ASSERT_NE(tctx, nullptr);
+	}
+
+	void TearDown() override {
+		react_context_destroy(ctx);
+		MockLlmTest::TearDown();
+		tool_context_destroy(tctx);
+	}
+};
+
+TEST_F(PromptModeTest, AppendKeepsDefaultsAndCore)
+{
+	ctx->system_prompt = strdup("Custom behavior");
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	ASSERT_NE(capt->system_prompt, nullptr);
+	EXPECT_EQ(strncmp(capt->system_prompt, MORPH_CORE_PROMPT,
+		strlen(MORPH_CORE_PROMPT)), 0);
+	EXPECT_NE(strstr(capt->system_prompt, "You are Morph"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "MARKDOWN OUTPUT"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "Custom behavior"), nullptr);
+}
+
+TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
+{
+	ctx->system_prompt_replace = 1;
+	ctx->system_prompt = strdup("Answer as a specialist. Literal %s %d.");
+	ctx->workdir = strdup("/tmp");
+	ASSERT_EQ(react_set_memory_context(ctx, "Remember this fact."), 0);
+	ASSERT_EQ(apply_patch_init(&tools, tctx), 0);
+	ASSERT_EQ(bash_exec_init(&tools, tctx), 0);
+	ASSERT_EQ(request_permissions_init(&tools, tctx), 0);
+	ASSERT_EQ(img_qa_init(&tools, llm, tctx), 0);
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	ASSERT_NE(capt->system_prompt, nullptr);
+	EXPECT_EQ(strncmp(capt->system_prompt, MORPH_CORE_PROMPT,
+		strlen(MORPH_CORE_PROMPT)), 0);
+	EXPECT_NE(strstr(capt->system_prompt, "Literal %s %d."), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "Working directory: /tmp"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "Remember this fact."), nullptr);
+	for (const char *absent : {"You are Morph", "OPERATING LOOP",
+	     "MARKDOWN OUTPUT", "latest explicit language instruction",
+	     "Source editing:", "Shell filesystem permissions:", "img_qa",
+	     "complete Codex patch", "Available sub-agents:"})
+		EXPECT_EQ(strstr(capt->system_prompt, absent), nullptr) << absent;
+	ASSERT_NE(capt->tool_descs, nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "complete Codex patch"), nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "error.code=sandbox_denied"), nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "exact future command"), nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "[Image: <path>]"), nullptr);
+	ASSERT_NE(capt->prompt, nullptr);
+	EXPECT_NE(strstr(capt->prompt, "<environment_context>"), nullptr);
+	std::string first = capt->system_prompt;
+	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+	EXPECT_EQ(first, capt->system_prompt);
+}
+
+TEST_F(PromptModeTest, ExplicitEmptyReplacementKeepsOnlyCore)
+{
+	ctx->system_prompt_replace = 1;
+	ctx->system_prompt = strdup("");
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_EQ(std::string(MORPH_CORE_PROMPT) + "\n", capt->system_prompt);
+}
+
+TEST_F(PromptModeTest, ReplaceWithoutSourceUsesDefaultBehavior)
+{
+	ctx->system_prompt_replace = 1;
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	ASSERT_NE(capt->system_prompt, nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "You are Morph"), nullptr);
+	EXPECT_NE(strstr(capt->system_prompt, "MARKDOWN OUTPUT"), nullptr);
+}
+
 TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
 	cd->resp = "Final: answer";
@@ -3731,10 +3833,11 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 	react_context_destroy(ctx);
 }
 
-TEST_F(MockLlmTest, SystemPromptRequiresSmallCompleteMorphPatches) {
+TEST_F(MockLlmTest, PatchInstructionsComeFromToolRegistration) {
 	struct capt_prompt_data *cd =
 		(struct capt_prompt_data *)calloc(1, sizeof(*cd));
-	struct tool_spec spec{};
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
 
 	cd->resp = "Final: answer";
 	llm = (struct model *)calloc(1, sizeof(*llm));
@@ -3747,13 +3850,7 @@ TEST_F(MockLlmTest, SystemPromptRequiresSmallCompleteMorphPatches) {
 	llm->destroy = capt_prompt_destroy;
 	llm->handle = cd;
 	llm_data = nullptr;
-	spec.origin = TOOL_ORIGIN_BUILTIN;
-	spec.name = "apply_patch";
-	spec.description = "Apply a patch";
-	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
-	spec.input_kind = TOOL_INPUT_TEXT;
-	spec.exec = test_tool_fn;
-	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	ASSERT_EQ(apply_patch_init(&tools, tctx), 0);
 
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 		nullptr);
@@ -3762,18 +3859,22 @@ TEST_F(MockLlmTest, SystemPromptRequiresSmallCompleteMorphPatches) {
 	react_run(ctx, "edit a large file", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(cd->system_prompt, nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "complete Codex patch"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "below 4 KiB"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "at most 80 changed lines"),
+	EXPECT_EQ(strstr(cd->system_prompt, "complete Codex patch"), nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "Source editing:"), nullptr);
+	ASSERT_NE(cd->tool_descs, nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "complete Codex patch"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "below 4 KiB"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "at most 80 changed lines"),
 		nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "continuation marker"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "Do not emit unified-diff"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt,
+	EXPECT_NE(strstr(cd->tool_descs, "continuation marker"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs, "Do not emit unified-diff"), nullptr);
+	EXPECT_NE(strstr(cd->tool_descs,
 		"must never have a leading +, space, or -"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt,
+	EXPECT_NE(strstr(cd->tool_descs,
 		"+/* MORPH_CONTINUE */\n*** End Patch"), nullptr);
 
 	react_context_destroy(ctx);
+	tool_context_destroy(tctx);
 }
 
 TEST_F(MockLlmTest, SystemPromptOmitsDisabledApplyPatchInstructions) {

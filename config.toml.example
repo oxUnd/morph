@@ -450,16 +450,21 @@ allowed_commands = []
 allowed_network = []
 
 [prompt]
-# Optional: path to a plain-text file containing additional system prompt
-# content appended after the default ReAct system prompt header.
-# The file content is inserted before "Available tools:" and the output
-# format instructions.
+# "append" keeps the default behavior and adds custom instructions.
+# "replace" replaces all default behavior (role, language, formatting, workflow).
+# The minimal built-in core and runtime facts always remain; tool instructions
+# come from each registered tool, not from this behavior layer.
+mode = "append"
+
+# UTF-8 plain-text instructions, loaded once during initialization.
+# Missing/unreadable sources are errors, not silent fallbacks.
+# With no sources, both modes use the default behavior. To use only the core,
+# set mode = "replace" and point system_prompt_file at an empty file.
 system_prompt_file = ""
 
-# Optional: directory containing multiple prompt fragment files (.txt).
-# All files are loaded in alphabetical order and concatenated after
-# system_prompt_file (if set). Exts or users can drop prompt files here
-# to inject additional instructions into every LLM call.
+# Optional UTF-8 fragments (for example .txt or .md). All non-hidden regular
+# files are loaded in bytewise filename order after system_prompt_file.
+# Restart Morph after changing the files to load the new snapshot.
 system_prompt_dir = ""
 
 [skill]
@@ -529,7 +534,9 @@ dir = ""
 # [[agent.sub_agents]]
 # name = "researcher"
 # description = "Deep research and information gathering agent"
+# system_prompt_mode = "replace"     # append (default) | replace; independent of main agent
 # system_prompt_file = "~/.morph/prompts/researcher.md"
+# system_prompt_dir = ""             # same loading rules as [prompt]
 # max_iterations = 5
 # allowed_tools = ["credits", "memory", "file_read"]
 # context_policy = "task_only"        # full | summary | task_only

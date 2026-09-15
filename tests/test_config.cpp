@@ -81,6 +81,46 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.sync.include[0], "config.toml");
 	EXPECT_STREQ(cfg.sync.include[1], "data.db");
 	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
+	EXPECT_STREQ(cfg.prompt.mode, "append");
+}
+
+TEST_F(ConfigTest, PromptModesAndIndependentSubAgentSources)
+{
+	const char *toml = R"(
+[prompt]
+mode = "replace"
+system_prompt_file = "/tmp/main.txt"
+system_prompt_dir = "/tmp/main.d"
+[[agent.sub_agents]]
+name = "custom"
+system_prompt_mode = "replace"
+system_prompt_file = "/tmp/child.txt"
+system_prompt_dir = "/tmp/child.d"
+[[agent.sub_agents]]
+name = "legacy"
+system_prompt_file = "/tmp/legacy.txt"
+)";
+	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	EXPECT_STREQ(cfg.prompt.mode, "replace");
+	EXPECT_STREQ(cfg.prompt.system_prompt_file, "/tmp/main.txt");
+	EXPECT_STREQ(cfg.prompt.system_prompt_dir, "/tmp/main.d");
+	ASSERT_EQ(cfg.sub_agents.count, 2);
+	EXPECT_STREQ(cfg.sub_agents.entries[0].system_prompt_mode, "replace");
+	EXPECT_STREQ(cfg.sub_agents.entries[0].system_prompt_dir, "/tmp/child.d");
+	EXPECT_STREQ(cfg.sub_agents.entries[1].system_prompt_mode, "append");
+}
+
+TEST_F(ConfigTest, PromptRejectsUnknownModes)
+{
+	for (const char *toml : {
+	     "[prompt]\nmode = \"replcae\"\n",
+	     "[[agent.sub_agents]]\nname = \"child\"\nsystem_prompt_mode = \"off\"\n"}) {
+		ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+		struct config cfg;
+		EXPECT_NE(config_load(&cfg, config_path), 0);
+	}
 }
 
 TEST_F(ConfigTest, MigratesLegacyDefaultSyncIncludes) {

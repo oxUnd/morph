@@ -2,6 +2,7 @@
 
 #include "agent/compress.h"
 #include "agent/guardrail.h"
+#include "agent/system_prompt.h"
 #include "agent/tokenizer.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tools/apply_patch.h"
@@ -165,84 +166,19 @@ static struct model *runtime_create_model(const struct config_model_entry *cfg,
 static int runtime_apply_system_prompt(struct react_context *react,
 				       const struct config *config)
 {
+	char *content = NULL;
+	int rc;
+
 	if (!react || !config)
-		return -EINVAL;
-	if (config->prompt.system_prompt_file[0]) {
-		char *exp = file_expand_path(config->prompt.system_prompt_file);
-		if (exp) {
-			char *content = file_read_all(exp, NULL);
-			if (content) {
-				size_t len = strlen(content);
-				while (len > 0 &&
-				       (content[len - 1] == '\n' ||
-					content[len - 1] == '\r' ||
-					content[len - 1] == ' '))
-					content[--len] = '\0';
-				react->system_prompt = content;
-				log_info("loaded system prompt: %s",
-					 config->prompt.system_prompt_file);
-			} else {
-				log_warn("failed to read system prompt: %s",
-					 config->prompt.system_prompt_file);
-			}
-			free(exp);
-		}
-	}
-	if (config->prompt.system_prompt_dir[0]) {
-		char *exp = file_expand_path(config->prompt.system_prompt_dir);
-		char **files = NULL;
-		int nfiles = 0;
-
-		if (exp && file_list_files(exp, &files, &nfiles) == 0) {
-			for (int i = 0; i < nfiles; i++) {
-				char full[PATH_MAX];
-				char *content;
-				size_t clen;
-				char *old;
-				char *combined;
-				size_t old_len;
-
-				if (file_path_join(full, sizeof(full), exp,
-						   files[i]) != 0)
-					continue;
-				content = file_read_all(full, NULL);
-				if (!content)
-					continue;
-				clen = strlen(content);
-				while (clen > 0 &&
-				       (content[clen - 1] == '\n' ||
-					content[clen - 1] == '\r' ||
-					content[clen - 1] == ' '))
-					content[--clen] = '\0';
-				if (!clen) {
-					free(content);
-					continue;
-				}
-				old = react->system_prompt;
-				old_len = old ? strlen(old) : 0;
-				combined = malloc(old_len + 3 + clen + 1);
-				if (combined) {
-					if (old) {
-						memcpy(combined, old, old_len);
-						combined[old_len] = '\n';
-						combined[old_len + 1] = '\n';
-						memcpy(combined + old_len + 2,
-						       content, clen + 1);
-					} else {
-						memcpy(combined, content,
-						       clen + 1);
-					}
-					react->system_prompt = combined;
-					free(old);
-				}
-				free(content);
-			}
-			file_free_list(files, nfiles);
-			log_info("loaded %d prompt files from: %s", nfiles,
-				 config->prompt.system_prompt_dir);
-		}
-		free(exp);
-	}
+		MORPH_RETURN(-EINVAL);
+	rc = morph_prompt_load(config->prompt.system_prompt_file,
+			       config->prompt.system_prompt_dir, &content);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	free(react->system_prompt);
+	react->system_prompt = content;
+	react->system_prompt_replace =
+		strcmp(config->prompt.mode, "replace") == 0;
 	return 0;
 }
 
@@ -406,7 +342,11 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 				 config->context.compaction_prompt_file);
 		free(path);
 	}
-	(void)runtime_apply_system_prompt(models->react, config);
+	int prompt_rc = runtime_apply_system_prompt(models->react, config);
+	if (prompt_rc != 0) {
+		runtime_bootstrap_cleanup_models(models);
+		MORPH_RETURN(prompt_rc);
+	}
 	models->text = runtime_create_model(&config->models.text, 0);
 	models->react->llm_model = models->text;
 	if (!profile->process_replica) {
@@ -720,8 +660,10 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 					     profile->event_user_data);
 	(void)sub_agent_runtime_set_storage(rt, profile->db);
 	rc = sub_agent_runtime_load_config(rt, &profile->config->sub_agents);
-	if (rc < 0)
-		return rc;
+	if (rc < 0) {
+		sub_agent_runtime_destroy(rt);
+		MORPH_RETURN(rc);
+	}
 	sub_agent_tools_register_all(profile->tools, rt);
 	profile->models->react->sub_agent_depth = 0;
 	if (rt->entry_count > 0) {

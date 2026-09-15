@@ -201,6 +201,7 @@ struct config_ext {
 };
 
 struct config_prompt {
+	char mode[16];
 	char system_prompt_file[PATH_MAX];
 	char system_prompt_dir[PATH_MAX];
 };
@@ -305,7 +306,9 @@ enum sub_agent_merge_strategy {
 struct config_sub_agent {
 	char name[SUB_AGENT_NAME_MAX];
 	char description[256];
+	char system_prompt_mode[16];
 	char system_prompt_file[PATH_MAX];
+	char system_prompt_dir[PATH_MAX];
 	char model[64];
 	int max_iterations;
 	char allowed_tools[SUB_AGENT_TOOL_MAX][SUB_AGENT_TOOL_NAME_MAX];

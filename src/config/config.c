@@ -427,6 +427,7 @@ void config_set_defaults(struct config *cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
 
+	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
 	strncpy(cfg->general.default_session, "default",
 		sizeof(cfg->general.default_session) - 1);
 	strncpy(cfg->general.output_dir, "~/.morph/output",
@@ -1210,6 +1211,7 @@ int config_load(struct config *cfg, const char *path)
 
 	cfg_table_t *prompt = table_path(tbl, "prompt");
 	if (prompt) {
+		CFG_STR(prompt, "mode", cfg->prompt.mode);
 		CFG_STR(prompt, "system_prompt_file", cfg->prompt.system_prompt_file);
 		CFG_STR(prompt, "system_prompt_dir", cfg->prompt.system_prompt_dir);
 	}
@@ -1351,7 +1353,11 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 				&cfg->sub_agents.entries[cfg->sub_agents.count];
 			CFG_STR(st, "name", sa->name);
 			CFG_STR(st, "description", sa->description);
+			strncpy(sa->system_prompt_mode, "append",
+				sizeof(sa->system_prompt_mode) - 1);
+			CFG_STR(st, "system_prompt_mode", sa->system_prompt_mode);
 			CFG_STR(st, "system_prompt_file", sa->system_prompt_file);
+			CFG_STR(st, "system_prompt_dir", sa->system_prompt_dir);
 			CFG_STR(st, "model", sa->model);
 			CFG_INT(st, "max_iterations", sa->max_iterations);
 

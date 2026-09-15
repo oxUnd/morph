@@ -669,10 +669,57 @@ TEST_F(SubAgentTest, CreateContextSystemPrompt) {
 	ASSERT_NE(child, nullptr);
 	ASSERT_NE(child->system_prompt, nullptr);
 	EXPECT_STREQ(child->system_prompt, "You are a specialist.");
+	EXPECT_EQ(child->system_prompt_replace, 0);
 	struct tool_registry *child_tools = child->tools;
 	react_context_destroy(child);
 	tool_registry_cleanup(child_tools);
 	free(child_tools);
+	sub_agent_runtime_destroy(rt);
+}
+
+TEST_F(SubAgentTest, CreateContextWithEmptyPromptReplacement)
+{
+	ASSERT_EQ(file_write_all(config_path, "", 0), 0);
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	struct config_sub_agents sa_cfg{};
+	sa_cfg.count = 1;
+	auto &entry = sa_cfg.entries[0];
+	strncpy(entry.name, "minimal", sizeof(entry.name) - 1);
+	strncpy(entry.system_prompt_mode, "replace",
+		sizeof(entry.system_prompt_mode) - 1);
+	strncpy(entry.system_prompt_file, config_path,
+		sizeof(entry.system_prompt_file) - 1);
+	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
+	struct react_context *child = sub_agent_create_context(
+		rt, &rt->entries[0], "task");
+	ASSERT_NE(child, nullptr);
+	EXPECT_EQ(child->system_prompt_replace, 1);
+	ASSERT_NE(child->system_prompt, nullptr);
+	EXPECT_STREQ(child->system_prompt, "");
+	EXPECT_NE(child->system_prompt, rt->entries[0].system_prompt);
+	struct tool_registry *child_tools = child->tools;
+	react_context_destroy(child);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
+	sub_agent_runtime_destroy(rt);
+}
+
+TEST_F(SubAgentTest, PromptLoadFailureDoesNotRegisterEntry)
+{
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(
+		&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	struct config_sub_agents sa_cfg{};
+	sa_cfg.count = 1;
+	strncpy(sa_cfg.entries[0].name, "broken",
+		sizeof(sa_cfg.entries[0].name) - 1);
+	snprintf(sa_cfg.entries[0].system_prompt_file,
+		sizeof(sa_cfg.entries[0].system_prompt_file),
+		"%s/missing.txt", config_path);
+	EXPECT_LT(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
+	EXPECT_EQ(rt->entry_count, 0);
 	sub_agent_runtime_destroy(rt);
 }
 
