@@ -222,6 +222,7 @@ add_custom_target(morph-data ALL
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts/
@@ -237,6 +238,11 @@ add_custom_target(morph-data ALL
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
 	COMMAND ${CMAKE_COMMAND} -E rm -f
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills/.DS_Store
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		${CMAKE_SOURCE_DIR}/prompts
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts
+	COMMAND ${CMAKE_COMMAND} -E rm -f
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts/.DS_Store
 	COMMENT "Staging morph runtime data"
 )
 
@@ -257,6 +263,10 @@ install(FILES
 )
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/skills/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/skills
+	PATTERN ".DS_Store" EXCLUDE
+)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/prompts/
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/prompts
 	PATTERN ".DS_Store" EXCLUDE
 )
 if(BUILD_TESTS)
