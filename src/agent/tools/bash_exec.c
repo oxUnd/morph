@@ -571,7 +571,7 @@ static int bash_exec_run_legacy(const char *args_json,
 			_exit(126);
 		}
 
-		execl("/bin/sh", "sh", "-c", command, (char *)NULL);
+		execl("/bin/sh", "bash", "-c", command, (char *)NULL);
 		fprintf(stderr, "bash_exec: execl failed: %s\n",
 			strerror(errno));
 		_exit(127);
