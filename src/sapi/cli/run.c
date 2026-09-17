@@ -204,20 +204,36 @@ static void cli_readline_resume(struct cli_context *ctx, char *draft, int point)
 static void cli_readline_drain_ui(struct cli_context *ctx)
 {
 	int point;
-	char *draft = cli_readline_suspend(ctx, &point);
+	int viewing = ctx->details_visible;
+	char *draft;
+
+	if (viewing) {
+		point = rl_point;
+		draft = strdup(rl_line_buffer ? rl_line_buffer : "");
+	} else {
+		draft = cli_readline_suspend(ctx, &point);
+	}
 
 	if (!draft)
 		return;
 	/* Owner calls may use blocking Readline for approval or ask_user. */
 	rl_callback_handler_remove();
 	(void)cli_ui_drain(ctx);
-	cli_terminal_composer_resume(ctx);
+	if (!ctx->details_visible)
+		cli_terminal_composer_resume(ctx);
 	/* Installing a callback paints its prompt immediately. Restore with an
 	 * empty prompt so the draft redraw is the sole prompt renderer. */
 	rl_callback_handler_install("", cli_readline_line_ready);
 	cli_readline_configure();
 	rl_set_prompt(cli_input_prompt());
-	cli_readline_resume(ctx, draft, point);
+	if (ctx->details_visible) {
+		rl_replace_line(draft, 0);
+		rl_point = point;
+		free(draft);
+		cli_transcript_view_render(ctx, 0);
+	} else {
+		cli_readline_resume(ctx, draft, point);
+	}
 }
 
 static void cli_readline_render_frame(struct cli_context *ctx, int resized)
@@ -453,8 +469,28 @@ static int cli_readline_toggle_details(int count, int key)
 	(void)key;
 	if (!g_comp_ctx || !RL_ISSTATE(RL_STATE_CALLBACK))
 		return 0;
+	if (!g_comp_ctx->details_open) {
+		int point;
+		char *draft = cli_readline_suspend(g_comp_ctx, &point);
+
+		if (!draft)
+			return 0;
+		rl_replace_line(draft, 0);
+		rl_point = point;
+		free(draft);
+	}
 	cli_transcript_toggle(g_comp_ctx);
 	return 0;
+}
+
+static void cli_readline_close_details(struct cli_context *ctx)
+{
+	int point = rl_point;
+	char *draft = strdup(rl_line_buffer ? rl_line_buffer : "");
+
+	cli_transcript_toggle(ctx);
+	if (draft)
+		cli_readline_resume(ctx, draft, point);
 }
 
 static void cli_readline_details_input(struct cli_context *ctx)
@@ -470,7 +506,7 @@ static void cli_readline_details_input(struct cli_context *ctx)
 		page = size.ws_row - 4;
 
 	if (read(STDIN_FILENO, &key, 1) != 1) {
-		cli_transcript_toggle(ctx);
+		cli_readline_close_details(ctx);
 		return;
 	}
 	if (key == 0x1b) {
@@ -485,7 +521,7 @@ static void cli_readline_details_input(struct cli_context *ctx)
 				break;
 		}
 		if (!count) {
-			cli_transcript_toggle(ctx);
+			cli_readline_close_details(ctx);
 			return;
 		}
 		if (strcmp(sequence, "[A") == 0)
@@ -501,7 +537,7 @@ static void cli_readline_details_input(struct cli_context *ctx)
 		else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
 			scroll = INT_MAX;
 	} else if (key == 0x0f) {
-		cli_transcript_toggle(ctx);
+		cli_readline_close_details(ctx);
 		return;
 	}
 	cli_transcript_view_render(ctx, scroll);
@@ -896,6 +932,9 @@ void cli_run(struct cli_context *ctx)
 		int timeout_ms = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
 		int rc;
 
+		if (!ctx->details_open && cli_command_job_done(&job))
+			timeout_ms = 0;
+
 		fds[0].fd = ctx->running ? STDIN_FILENO : -1;
 		fds[0].events = POLLIN;
 		fds[0].revents = 0;
@@ -937,7 +976,8 @@ void cli_run(struct cli_context *ctx)
 				cli_readline_render_frame(ctx, 0);
 			else
 				cli_terminal_render_frame(ctx, 0);
-			continue;
+			if (ctx->details_open || !cli_command_job_done(&job))
+				continue;
 		}
 		if (nfds == 2 && (fds[1].revents & POLLIN)) {
 			if (callback_installed)
@@ -945,7 +985,7 @@ void cli_run(struct cli_context *ctx)
 			else
 				(void)cli_ui_drain(ctx);
 		}
-		if (cli_command_job_done(&job)) {
+		if (cli_command_job_done(&job) && !ctx->details_open) {
 			int point;
 			char *draft = cli_readline_suspend(ctx, &point);
 			int turn_rc = cli_command_job_finish(&job);

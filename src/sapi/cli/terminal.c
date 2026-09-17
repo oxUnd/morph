@@ -160,7 +160,7 @@ void cli_terminal_live_clear(struct cli_context *ctx)
 	if (!ctx || !ctx->terminal)
 		return;
 	terminal = ctx->terminal;
-	if (terminal->transient && terminal->live_visible) {
+	if (!ctx->details_visible && terminal->transient && terminal->live_visible) {
 		if (terminal->live_anchored) {
 			terminal_clear_current(terminal);
 			fprintf(terminal->output, "\033[1A");
@@ -192,7 +192,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	int budget;
 	int tool_live = 0;
 
-	if (!ctx || !ctx->terminal)
+	if (!ctx || !ctx->terminal || ctx->details_visible)
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient || !terminal->live_active)
@@ -295,7 +295,7 @@ void cli_terminal_history_begin(struct cli_context *ctx)
 {
 	struct cli_terminal *terminal;
 
-	if (!ctx || !ctx->terminal)
+	if (!ctx || !ctx->terminal || ctx->details_visible)
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient || !terminal->live_visible)

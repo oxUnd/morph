@@ -47,6 +47,26 @@ void cli_command_capture_end(void)
 	g_cli_capture_styled = 0;
 }
 
+int cli_command_capture_write(const char *bytes, size_t len)
+{
+	int rc;
+	char *safe;
+
+	if (!g_cli_command_output)
+		return 0;
+	if (g_cli_capture_styled) {
+		rc = morph_buf_append(g_cli_command_output, bytes, len);
+	} else {
+		safe = utf8_terminal_sanitize_dup(bytes, len,
+			UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+		if (!safe)
+			MORPH_RETURN(-ENOMEM);
+		rc = morph_buf_puts(g_cli_command_output, safe);
+		free(safe);
+	}
+	return rc != 0 ? rc : 1;
+}
+
 /* Only for renderers whose untrusted inputs have already been sanitized. */
 int cli_command_capture_styled_begin(morph_buf_t *output)
 {

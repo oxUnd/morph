@@ -64,6 +64,19 @@ TEST(CliShellStyleTest, WrapsUtf8AndDropsTerminalControls)
 	morph_buf_cleanup(&styled);
 }
 
+TEST(CliShellStyleTest, SummaryHidesOnlyLiteralCurrentDirectoryPrefix)
+{
+	EXPECT_STREQ(cli_shell_summary("cd /work && ls -la", "/work"), "ls -la");
+	EXPECT_STREQ(cli_shell_summary("cd '/work dir'; git status", "/work dir"),
+		"git status");
+	EXPECT_STREQ(cli_shell_summary("cd -- \"/work dir\" && pwd", "/work dir"), "pwd");
+	EXPECT_STREQ(cli_shell_summary("cd . && ls", "/work"), "ls");
+	for (const char *source : {"cd /other && ls", "cd $PWD && ls", "cd /work || ls",
+		"cd /work & ls", "cd /work", "cd /work && ", "cd '/work && ls",
+		"cd /work;; ls", "cd /work extra && ls", "echo cd /work && ls"})
+		EXPECT_STREQ(cli_shell_summary(source, "/work"), source);
+}
+
 class CliPresentationTest : public ::testing::Test {
 protected:
 	struct cli_context ctx{};
@@ -880,7 +893,7 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("apply_patch   src/example.c"), std::string::npos);
+	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("*** Update File: src/example.c"),
 		  std::string::npos);
 	EXPECT_NE(output.find("-old value"), std::string::npos);
@@ -1084,7 +1097,7 @@ TEST_F(CliPresentationTest, CompactKeepsLongToolNameAndShortensRepositoryPath)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("remote_file_inspection  README.md"), std::string::npos);
+	EXPECT_NE(output.find("remote_file_inspection README.md"), std::string::npos);
 	EXPECT_EQ(output.find(cwd), std::string::npos);
 	cJSON_Delete(call);
 }

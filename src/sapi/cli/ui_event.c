@@ -402,8 +402,19 @@ int cli_ui_drain(struct cli_context *ctx)
 		struct cli_ui_item *item = morph_queue_data(
 			link, struct cli_ui_item, link);
 		int rc = 0;
+		int captured = 0;
 
 		morph_queue_remove(link);
+		if (ctx->details_visible) {
+			if (item->kind == CLI_UI_ITEM_OWNER_CALL)
+				cli_transcript_toggle(ctx);
+			else {
+				rc = cli_transcript_capture_begin(ctx);
+				captured = rc == 0;
+				if (!captured)
+					cli_transcript_toggle(ctx);
+			}
+		}
 		if (item->kind == CLI_UI_ITEM_MORPH_EVENT)
 			rc = cli_presentation_event(ctx, &item->event);
 		else if (item->kind == CLI_UI_ITEM_OWNER_CALL)
@@ -413,6 +424,8 @@ int cli_ui_drain(struct cli_context *ctx)
 			cli_ui_render_notification(item);
 			cli_terminal_history_end(ctx);
 		}
+		if (captured)
+			cli_command_capture_end();
 		if (first_error == 0 && rc != 0)
 			first_error = rc;
 		cli_ui_item_free(item);

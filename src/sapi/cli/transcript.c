@@ -25,6 +25,10 @@ struct cli_transcript {
 	int allocation_failed;
 	int view_follow;
 	size_t view_offset;
+	morph_buf_t deferred;
+	morph_buf_t previous_frame;
+	int frame_rows;
+	int frame_columns;
 };
 
 static double transcript_now(void)
@@ -82,6 +86,11 @@ static int transcript_init(struct cli_context *ctx)
 		MORPH_RETURN(-ENOMEM);
 	}
 	ctx->transcript = tr;
+	if (morph_buf_init(&tr->deferred, BUFSIZ) != 0 ||
+	    morph_buf_init(&tr->previous_frame, BUFSIZ) != 0) {
+		cli_transcript_reset(ctx);
+		MORPH_RETURN(-ENOMEM);
+	}
 	return 0;
 }
 
@@ -92,9 +101,18 @@ void cli_transcript_reset(struct cli_context *ctx)
 	if (!tr)
 		return;
 	morph_array_cleanup(&tr->tools);
+	morph_buf_cleanup(&tr->deferred);
+	morph_buf_cleanup(&tr->previous_frame);
 	arena_destroy(tr->arena);
 	free(tr);
 	ctx->transcript = NULL;
+}
+
+int cli_transcript_capture_begin(struct cli_context *ctx)
+{
+	if (!ctx->transcript)
+		MORPH_RETURN(-EINVAL);
+	return cli_command_capture_styled_begin(&ctx->transcript->deferred);
 }
 
 
@@ -114,12 +132,11 @@ static struct transcript_tool *find_tool(struct cli_transcript *tr,
 	return NULL;
 }
 
-static void append_cell(morph_buf_t *buf, const char *text, int width)
+static void append_clipped_text(morph_buf_t *buf, const char *text, int width)
 {
 	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	const char *end;
-	size_t used;
 
 	if (!safe || width < 1) {
 		free(safe);
@@ -130,13 +147,9 @@ static void append_cell(morph_buf_t *buf, const char *text, int width)
 		end = utf8_advance_display_width(safe, (size_t)(width - 3));
 		(void)morph_buf_append(buf, safe, (size_t)(end - safe));
 		(void)morph_buf_puts(buf, "...");
-		used = utf8_display_width(buf->data);
 	} else {
 		(void)morph_buf_append(buf, safe, (size_t)(end - safe));
-		used = utf8_display_width(buf->data);
 	}
-	while (used++ < (size_t)width)
-		(void)morph_buf_putc(buf, ' ');
 	free(safe);
 }
 
@@ -152,8 +165,8 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	char cwd[PATH_MAX];
 	double elapsed = (tool->state ? tool->ended : transcript_now()) - tool->started;
 
-	if (name_width < 12)
-		name_width = 12;
+	if (strcmp(tool->name, "bash_exec") == 0 && getcwd(cwd, sizeof(cwd)))
+		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
 	if (strcmp(tool->name, "bash_exec") != 0 &&
 	    target[0] == '/' && getcwd(cwd, sizeof(cwd))) {
@@ -177,16 +190,16 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	if (tool->summary[0] && strcmp(tool->summary, "exit 0") != 0)
 		(void)morph_buf_printf(&meta, "%s  ", tool->summary);
 	(void)morph_buf_printf(&meta, "%.1fs", elapsed);
-	append_cell(&action, tool->name, name_width);
-	append_cell(&subject, target,
+	append_clipped_text(&action, tool->name, name_width);
+	append_clipped_text(&subject, target,
 		columns - 2 - name_width - 4 - (int)utf8_display_width(meta.data));
-	(void)morph_buf_printf(row, "%s%s%s  ", styled ? ANSI_DIM : "",
+	(void)morph_buf_printf(row, "%s%s%s ", styled ? ANSI_DIM : "",
 		action.data, styled ? ANSI_RESET : "");
 	if (styled && strcmp(tool->name, "bash_exec") == 0)
 		(void)cli_shell_style(row, subject.data, 0);
 	else
 		(void)morph_buf_puts(row, subject.data);
-	(void)morph_buf_printf(row, "  %s%s%s", styled ? ANSI_DIM : "",
+	(void)morph_buf_printf(row, " · %s%s%s", styled ? ANSI_DIM : "",
 		meta.data, styled ? ANSI_RESET : "");
 	morph_buf_cleanup(&meta);
 	morph_buf_cleanup(&subject);
@@ -392,12 +405,51 @@ static void print_details(const struct transcript_tool *tool, int args)
 	}
 }
 
+static void present_frame(struct cli_transcript *tr, morph_buf_t *frame,
+			  int rows, int columns)
+{
+	const char *current = morph_buf_cstr(frame);
+	const char *previous = morph_buf_cstr(&tr->previous_frame);
+	int resized = rows != tr->frame_rows || columns != tr->frame_columns;
+	int writing = 0;
+	int row = 1;
+
+	while (*current || *previous) {
+		size_t len = strcspn(current, "\n");
+		size_t old_len = strcspn(previous, "\n");
+
+		if (resized || len != old_len || memcmp(current, previous, len) != 0) {
+			if (!writing) {
+				fprintf(stdout, "\033[?2026h");
+				if (resized)
+					fprintf(stdout, "\033[H\033[2J");
+				writing = 1;
+			}
+			fprintf(stdout, "\033[%d;1H", row);
+			printf("%.*s" ANSI_RESET, (int)len, current);
+			fprintf(stdout, "\033[K");
+		}
+		current += len + (current[len] == '\n');
+		previous += old_len + (previous[old_len] == '\n');
+		row++;
+	}
+	if (writing) {
+		fprintf(stdout, "\033[?2026l");
+		fflush(stdout);
+	}
+	morph_buf_reset(&tr->previous_frame);
+	(void)morph_buf_puts(&tr->previous_frame, morph_buf_cstr(frame));
+	tr->frame_rows = rows;
+	tr->frame_columns = columns;
+}
+
 void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 {
 	struct cli_transcript *tr = ctx->transcript;
 	struct transcript_tool *tool;
 	struct winsize size = {0};
 	morph_buf_t page;
+	morph_buf_t frame;
 	const char *line;
 	size_t lines = 0;
 	size_t first;
@@ -441,7 +493,15 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 	first = lines > (size_t)height ? lines - (size_t)height : 0;
 	if (tr->view_follow || tr->view_offset > first)
 		tr->view_offset = first;
-	fprintf(stdout, "\033[H\033[2J");
+	if (morph_buf_init(&frame, BUFSIZ) != 0) {
+		morph_buf_cleanup(&page);
+		return;
+	}
+	if (cli_command_capture_styled_begin(&frame) != 0) {
+		morph_buf_cleanup(&frame);
+		morph_buf_cleanup(&page);
+		return;
+	}
 	printf(ANSI_BOLD "  Tool details" ANSI_RESET
 	       ANSI_DIM "  · %zu calls\n\n" ANSI_RESET, tr->tools.nelts);
 	line = morph_buf_cstr(&page);
@@ -450,7 +510,7 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 
 		line = next ? next + 1 : line + strlen(line);
 	}
-	for (int i = 0; i < height && *line; i++) {
+	for (int i = 0; i < height; i++) {
 		const char *next = strchr(line, '\n');
 		size_t len = next ? (size_t)(next - line) : strlen(line);
 		const char *style = strncmp(line, "    +", 5) == 0 ? ANSI_GREEN :
@@ -459,10 +519,12 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 		printf("%s%.*s" ANSI_RESET "\n", style, (int)len, line);
 		line = next ? next + 1 : line + len;
 	}
-	fprintf(stdout, "\033[%d;1H", rows);
+	printf("\n");
 	print_inline("  ctrl+o / esc back · PgUp/PgDn scroll · End follow",
 		     transcript_columns() - 1);
-	fflush(stdout);
+	cli_command_capture_end();
+	present_frame(tr, &frame, rows, transcript_columns());
+	morph_buf_cleanup(&frame);
 	morph_buf_cleanup(&page);
 }
 
@@ -471,6 +533,12 @@ void cli_transcript_view_suspend(struct cli_context *ctx)
 	if (!ctx || !ctx->details_visible)
 		return;
 	fprintf(stdout, "\033[?1049l\033[?25h");
+	if (ctx->transcript) {
+		morph_buf_t *pending = &ctx->transcript->deferred;
+
+		(void)fwrite(morph_buf_cstr(pending), 1, pending->len, stdout);
+		morph_buf_reset(pending);
+	}
 	fflush(stdout);
 	ctx->details_visible = 0;
 }
@@ -480,6 +548,7 @@ void cli_transcript_view_resume(struct cli_context *ctx)
 	if (!ctx || !ctx->details_open || ctx->details_visible)
 		return;
 	fprintf(stdout, "\033[?1049h\033[?25l");
+	morph_buf_reset(&ctx->transcript->previous_frame);
 	ctx->details_visible = 1;
 	cli_transcript_view_render(ctx, 0);
 }

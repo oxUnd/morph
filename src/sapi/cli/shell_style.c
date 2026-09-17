@@ -6,6 +6,61 @@ static int shell_operator(char ch)
 	return ch && strchr("|&;()<>", ch) != NULL;
 }
 
+/* Recognize only a literal leading cd, never evaluate shell syntax. */
+const char *cli_shell_summary(const char *text, const char *workdir)
+{
+	const char *p = text;
+	morph_buf_t path;
+	char quote = 0;
+	int valid = 1;
+
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (strncmp(p, "cd", 2) != 0 || (p[2] != ' ' && p[2] != '\t'))
+		return text;
+	p += 2;
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (strncmp(p, "-- ", 3) == 0) {
+		p += 3;
+		while (*p == ' ' || *p == '\t')
+			p++;
+	}
+	if (morph_buf_init(&path, 128) != 0)
+		return text;
+	while (*p) {
+		char ch = *p;
+
+		if (!quote && (isspace((unsigned char)ch) || shell_operator(ch)))
+			break;
+		p++;
+		if (ch == quote) {
+			quote = 0;
+		} else if (!quote && (ch == '\'' || ch == '"')) {
+			quote = ch;
+		} else if (quote != '\'' && strchr("$`\\*?~[]", ch)) {
+			valid = 0;
+			break;
+		} else {
+			(void)morph_buf_putc(&path, ch);
+		}
+	}
+	valid = valid && !quote && !path.failed && path.len &&
+		(strcmp(path.data, workdir) == 0 || strcmp(path.data, ".") == 0);
+	morph_buf_cleanup(&path);
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (valid && strncmp(p, "&&", 2) == 0)
+		p += 2;
+	else if (valid && *p == ';' && p[1] != ';' && p[1] != '&')
+		p++;
+	else
+		return text;
+	while (isspace((unsigned char)*p))
+		p++;
+	return *p ? p : text;
+}
+
 static int shell_assignment(const char *text, size_t len)
 {
 	size_t i = 0;

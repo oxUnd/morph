@@ -113,6 +113,8 @@ int cli_argv_split(const char *input, char **argv, int max_args);
 int cli_command_capture_begin(morph_buf_t *output);
 int cli_command_capture_styled_begin(morph_buf_t *output);
 void cli_command_capture_end(void);
+int cli_command_capture_write(const char *bytes, size_t len);
+int cli_transcript_capture_begin(struct cli_context *ctx);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      int64_t image_units,
 				      int64_t video_seconds,

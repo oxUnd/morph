@@ -57,11 +57,16 @@ Tool calls use colored status circles, full tool names, argument summaries,
 elapsed time, and a short result or error. Repository paths are relative to the
 working directory. Shell commands share lightweight syntax highlighting in the
 compact view and the details viewer; their text is never executed by the renderer.
+Compact rows use single-space separation and omit a literal leading `cd` to the
+current working directory; full commands remain available in the details viewer.
 These process lines remain visible after completion.
 Press Ctrl+O to open the current turn's full-screen tool transcript, including
 complete captured arguments, patches, and output in call order. Ctrl+O or Esc
 returns to the conversation, preserving your input and cursor position.
 Esc inside the viewer only closes it; the active task continues running.
+The viewer updates changed rows without switching screens for background output.
+Conversation output is buffered until you return; questions and approval prompts
+automatically return to the conversation so they remain visible.
 Use arrows or PgUp/PgDn to scroll, Home to go to the beginning, and End to
 follow new output. The viewer works during execution and after completion. Streaming
 output appears as events arrive; tools without streaming return output when

@@ -39,6 +39,7 @@ static const char *cli_markdown_font_path(void)
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
 	size_t i;
+	int captured;
 
 	if (!bytes || len == 0)
 		return 0;
@@ -48,6 +49,9 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
 		*(int *)user = 0;
 	}
+	captured = cli_command_capture_write(bytes, len);
+	if (captured)
+		return captured < 0 ? captured : 0;
 	if (cli_color_enabled())
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
 	for (i = 0u; i < len;) {

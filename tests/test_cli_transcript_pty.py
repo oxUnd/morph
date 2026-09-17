@@ -68,7 +68,9 @@ def main():
             rows = [row for row in compact.splitlines() if '◯ file_read' in row]
             assert len(rows) == 2, compact
             assert all(row.startswith('◯ file_read') for row in rows), compact
-            assert all(len(row.rstrip()) == 118 for row in rows), compact
+            assert all(len(row.rstrip()) <= 118 for row in rows), compact
+            assert all(not row[len('◯ file_read '):].startswith(' ')
+                       for row in rows), compact
             assert 'FIRST_PRIVATE_RESULT' not in compact, compact
             assert 'SECOND_PRIVATE_RESULT' not in compact, compact
             terminal.send('草稿🙂 tail\x1b[D')
@@ -90,9 +92,24 @@ def main():
             terminal.send('X')
             assert '草稿🙂 taiXl' in terminal.snapshot('draft cursor preserved'), terminal.raw
             terminal.send('\x0f')
+            switches = terminal.raw.count('\x1b[?1049')
+            clears = terminal.raw.count('\x1b[2J')
+            final_release.delta = {'tool_calls': [
+                {'index': 0, 'id': 'read-in-viewer', 'type': 'function',
+                 'function': {'name': 'file_read', 'arguments': json.dumps({
+                     'file_path': str(directory / 'first.txt')})}}]}
             final_release.set()
+            _, last_release = terminal.request()
+            releases.append(last_release)
+            assert '3 calls' in terminal.snapshot('new tool result updates in place')
+            last_release.set()
             terminal.pump(1)
             assert 'Tool details' in terminal.snapshot('details remain open after completion')
+            assert terminal.raw.count('\x1b[?1049') == switches, terminal.raw
+            assert terminal.raw.count('\x1b[2J') == clears, terminal.raw
+            unchanged = terminal.raw
+            terminal.pump(0.6)
+            assert terminal.raw == unchanged, 'unchanged details should not repaint'
             terminal.send('\x0f')
             completed = terminal.snapshot('finished process remains visible')
             assert completed.count('UPDATED ANSWER') == 1, completed
@@ -100,7 +117,7 @@ def main():
             assert 'succeeded' not in completed, completed
             assert '草稿🙂 taiXl' in completed, completed
             terminal.send('\x0f')
-            assert 'SECOND_PRIVATE_RESULT' in terminal.snapshot('expand after completion')
+            assert 'FIRST_PRIVATE_RESULT' in terminal.snapshot('expand after completion')
             terminal.send('\x0f')
             assert 'SECOND_PRIVATE_RESULT' not in terminal.snapshot('collapse after completion')
             terminal.child.setwinsize(24, 36)
@@ -114,6 +131,26 @@ def main():
             assert '\x1b[?1049l' in terminal.raw, 'must restore the main screen'
             assert '\x1b[3J' not in terminal.raw, 'must preserve terminal scrollback'
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+            terminal.send('\x15ask a question\r')
+            _, ask_release = terminal.request()
+            releases.append(ask_release)
+            terminal.send('question draft\x0f')
+            ask_release.delta = {'tool_calls': [{'index': 0, 'id': 'ask-viewer',
+                'type': 'function', 'function': {'name': 'ask_user',
+                'arguments': json.dumps({'question': 'Choose a color',
+                                         'choices': ['Blue', 'Red']})}}]}
+            ask_release.set()
+            terminal.pump(1)
+            question = terminal.snapshot('question exits viewer without hiding input')
+            assert 'Choose a color' in question, question
+            assert 'Tool details' not in question, question
+            terminal.send('1\r')
+            answered, answered_release = terminal.request()
+            releases.append(answered_release)
+            assert any(m['role'] == 'tool' and 'Blue' in m['content']
+                       for m in answered['messages']), answered
+            assert 'question draft' in terminal.snapshot('draft restored after question')
+            answered_release.set()
         finally:
             for release in releases:
                 release.set()
