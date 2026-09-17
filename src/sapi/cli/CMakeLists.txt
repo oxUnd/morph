@@ -13,7 +13,9 @@ add_library(morph-cli STATIC
 	presentation.c
 	run.c
 	scheduler.c
+	shell_style.c
 	terminal.c
+	transcript.c
 	ui_event.c
 	commands/ext.c
 	commands/mcp.c

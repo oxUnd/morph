@@ -20,12 +20,17 @@ struct cli_cancel_monitor;
 struct cli_ui;
 struct cli_terminal;
 struct cli_command_job;
+struct cli_transcript;
 
 struct cli_context {
 	struct runtime *runtime;
 	struct cli_ui *ui;
 	struct cli_terminal *terminal;
 	struct cli_command_job *input_job;
+	struct cli_transcript *transcript;
+	int tool_details;
+	int details_open;
+	int details_visible;
 	enum cli_presentation_mode presentation_mode;
 	int running;
 	int session_auto_named;
@@ -39,6 +44,7 @@ struct cli_context {
 	int final_rendered;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
+	int markdown_stream_prefix_pending;
 	int mcp_tree_active;
 	char image_path[PATH_MAX];
 	char mcp_tree_server[MCP_NAME_MAX];

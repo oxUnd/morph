@@ -186,9 +186,11 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	struct cli_terminal *terminal;
 	const char *text;
 	char clipped[BUFSIZ];
+	morph_buf_t tool_text = {0};
 	int64_t now;
 	int columns;
 	int budget;
+	int tool_live = 0;
 
 	if (!ctx || !ctx->terminal)
 		return;
@@ -209,15 +211,23 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	    now < terminal->next_frame_ms)
 		return;
 	text = morph_buf_cstr(&terminal->live_text);
+	if (morph_buf_init(&tool_text, 128) == 0) {
+		tool_live = cli_transcript_live_text(ctx, &tool_text, cli_color_enabled());
+		if (tool_live)
+			text = morph_buf_cstr(&tool_text);
+	}
 	budget = terminal->columns - 4;
 	if (budget < 1)
 		budget = 1;
 	(void)utf8_copy_sanitized_display_width(
 		clipped, sizeof(clipped), text ? text : "", (size_t)budget);
 	terminal_clear_current(terminal);
-	fprintf(terminal->output, ANSI_CYAN "%s" ANSI_RESET " %s",
+	fprintf(terminal->output, "%s%s" ANSI_RESET " %s",
+		tool_live ? ANSI_YELLOW : ANSI_CYAN,
+		tool_live ? (terminal->frame % 2 ? "◉" : "◯") :
 		frames[terminal->frame %
-		       (int)(sizeof(frames) / sizeof(frames[0]))], clipped);
+		       (int)(sizeof(frames) / sizeof(frames[0]))], tool_live ? text : clipped);
+	morph_buf_cleanup(&tool_text);
 	fflush(terminal->output);
 	terminal->frame++;
 	terminal->dirty = 0;

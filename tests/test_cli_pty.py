@@ -101,7 +101,8 @@ retry_count = 0
         text = '\n'.join(self.screen.display)
         self.snapshots.append((label, text))
         print('checked:', label, flush=True)
-        assert sum(row.strip() == '›' for row in text.splitlines()) <= 1, text
+        assert sum(row.split('ctrl+o details')[0].strip() == '›'
+                   for row in text.splitlines()) <= 1, text
         return text
 
     def send(self, text):
@@ -132,7 +133,8 @@ def main():
             assert '›' in terminal.snapshot('idle')
             terminal.send('\r\r\r')
             empty = terminal.snapshot('repeated empty Enter')
-            assert sum(row.strip() == '›' for row in empty.splitlines()) == 1, empty
+            assert sum(row.split('ctrl+o details')[0].strip() == '›'
+                       for row in empty.splitlines()) == 1, empty
             terminal.send('  \r\r\x15')
             terminal.snapshot('whitespace Enter')
             terminal.send('initial task\r')

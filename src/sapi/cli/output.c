@@ -40,9 +40,14 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
 	size_t i;
 
-	(void)user;
 	if (!bytes || len == 0)
 		return 0;
+	/* The renderer buffers incomplete blocks. Emit the prefix only when it
+	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
+	if (user && *(int *)user) {
+		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
+		*(int *)user = 0;
+	}
 	if (cli_color_enabled())
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
 	for (i = 0u; i < len;) {
@@ -80,7 +85,7 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 						   unsigned int initial_column,
 						   int enable_math,
 						   cli_markdown_media_cb cb,
-						   void *user)
+						   void *user, int *prefix_pending)
 {
 	struct morph_md_kitty_options options;
 	const char *font_path;
@@ -93,10 +98,12 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	    cli_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
+	options.user_data = prefix_pending;
 	options.media = cb;
 	options.media_user_data = user;
 	options.terminal_fd = STDOUT_FILENO;
 	options.content_padding_left_columns = indent;
+	options.content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;
 	options.initial_cursor_column = initial_column;
 	return morph_md_kitty_create(&options);
 }
@@ -119,7 +126,7 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 		return;
 	normalized = agent_ui_normalize_markdown(safe);
 	content = normalized ? normalized : safe;
-	renderer = cli_markdown_create(indent, initial_column, 1, cb, user);
+	renderer = cli_markdown_create(indent, initial_column, 1, cb, user, NULL);
 	if (!renderer) {
 		log_warn("failed to initialize Kitty Markdown renderer");
 		goto out;
@@ -147,8 +154,9 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 	if (ctx->markdown_stream && ctx->markdown_stream_kind != kind)
 		cli_markdown_stream_reset(ctx, 1);
 	if (!ctx->markdown_stream) {
+		ctx->markdown_stream_prefix_pending = 1;
 		ctx->markdown_stream = cli_markdown_create(
-			2u, 2u, 1, media_callback, ctx);
+			2u, 2u, 1, media_callback, ctx, &ctx->markdown_stream_prefix_pending);
 		if (!ctx->markdown_stream)
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
@@ -202,6 +210,7 @@ void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output)
 	ctx->markdown_stream = NULL;
 	ctx->markdown_stream_kind = 0;
 	ctx->markdown_stream_visible = 0;
+	ctx->markdown_stream_prefix_pending = 0;
 	morph_buf_reset(&ctx->markdown_stream_text);
 	utf8_terminal_sanitizer_reset(&ctx->markdown_stream_sanitizer);
 }

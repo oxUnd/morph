@@ -11,6 +11,7 @@ const char *default_config_path = "~/.morph/config.toml";
 static int g_cli_color_enabled = 1;
 static int g_cli_structured_output;
 static _Thread_local morph_buf_t *g_cli_command_output;
+static _Thread_local int g_cli_capture_styled;
 
 void cli_set_color_enabled(int enabled)
 {
@@ -43,6 +44,17 @@ int cli_command_capture_begin(morph_buf_t *output)
 void cli_command_capture_end(void)
 {
 	g_cli_command_output = NULL;
+	g_cli_capture_styled = 0;
+}
+
+/* Only for renderers whose untrusted inputs have already been sanitized. */
+int cli_command_capture_styled_begin(morph_buf_t *output)
+{
+	int rc = cli_command_capture_begin(output);
+
+	if (rc == 0)
+		g_cli_capture_styled = 1;
+	return rc;
 }
 
 static int cli_capture_text(const char *text)
@@ -52,6 +64,8 @@ static int cli_capture_text(const char *text)
 
 	if (!g_cli_command_output || !text)
 		MORPH_RETURN(-EINVAL);
+	if (g_cli_capture_styled)
+		return morph_buf_puts(g_cli_command_output, text);
 	safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)

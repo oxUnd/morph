@@ -53,6 +53,20 @@ Press Enter to submit a requirement adjustment: the active model request yields
 and ReAct continues with the new message. Running tools finish before applying
 adjustments. Esc or Ctrl+C cancels; Ctrl+J or Alt+Enter inserts a newline.
 
+Tool calls use colored status circles, full tool names, argument summaries,
+elapsed time, and a short result or error. Repository paths are relative to the
+working directory. Shell commands share lightweight syntax highlighting in the
+compact view and the details viewer; their text is never executed by the renderer.
+These process lines remain visible after completion.
+Press Ctrl+O to open the current turn's full-screen tool transcript, including
+complete captured arguments, patches, and output in call order. Ctrl+O or Esc
+returns to the conversation, preserving your input and cursor position.
+Esc inside the viewer only closes it; the active task continues running.
+Use arrows or PgUp/PgDn to scroll, Home to go to the beginning, and End to
+follow new output. The viewer works during execution and after completion. Streaming
+output appears as events arrive; tools without streaming return output when
+they finish. Plain one-shot and JSON event output keep their existing formats.
+
 Pasted images appear as blue `[IMAGE#1]`, `[IMAGE#2]` chips in the composer,
 without opening a preview. Pasted image paths (including quoted or escaped
 spaces) use the same chips; typed paths and `/image <path>` convert on Enter.

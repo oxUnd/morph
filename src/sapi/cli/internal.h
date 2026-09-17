@@ -1,6 +1,9 @@
 #ifndef CLI_INTERNAL_H
 #define CLI_INTERNAL_H
 
+/* Shared right gutter for conversation text and compact tool rows. */
+#define CLI_CONTENT_RIGHT_PADDING 2u
+
 #include "sapi/cli/cli.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
@@ -108,6 +111,7 @@ int cli_print_untrusted_text(const char *text,
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
 int cli_command_capture_begin(morph_buf_t *output);
+int cli_command_capture_styled_begin(morph_buf_t *output);
 void cli_command_capture_end(void);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      int64_t image_units,
@@ -128,8 +132,17 @@ void cli_presentation_reset(struct cli_context *ctx);
 void cli_presentation_finish(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
+void cli_presentation_flush_stream(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
+int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev);
+void cli_transcript_reset(struct cli_context *ctx);
+void cli_transcript_toggle(struct cli_context *ctx);
+void cli_transcript_view_suspend(struct cli_context *ctx);
+void cli_transcript_view_resume(struct cli_context *ctx);
+void cli_transcript_view_render(struct cli_context *ctx, int scroll);
+void cli_transcript_finish(struct cli_context *ctx);
+int cli_transcript_live_text(struct cli_context *ctx, morph_buf_t *text, int styled);
 
 struct cli_cancel_monitor;
 struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);

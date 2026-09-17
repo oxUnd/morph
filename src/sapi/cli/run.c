@@ -39,6 +39,8 @@ static void cli_sigwinch_handler(int sig)
 static struct cli_context *g_comp_ctx;
 static char *g_readline_ready_input;
 static struct cli_composer g_composer;
+static int g_details_hint_visible;
+static int g_details_hint_column;
 static void cli_readline_configure(void);
 
 /* Readline still owns editing and wrapping. Apply color to image labels after
@@ -118,10 +120,32 @@ static void cli_readline_color_images(void)
 	fflush(output);
 }
 
+static void cli_readline_clear_hint(void)
+{
+	if (!g_details_hint_visible)
+		return;
+	fprintf(stdout, "\0337\033[%dG\033[K\0338", g_details_hint_column);
+	g_details_hint_visible = 0;
+}
+
 static void cli_readline_redisplay(void)
 {
+	struct winsize size = {0};
+
+	if (g_comp_ctx && g_comp_ctx->details_visible)
+		return;
+	cli_readline_clear_hint();
 	rl_redisplay();
 	cli_readline_color_images();
+	if (RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
+	    isatty(STDOUT_FILENO) &&
+	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 24) {
+		g_details_hint_column = size.ws_col - 15;
+		fprintf(stdout, "\0337\033[%dG" ANSI_DIM "ctrl+o details"
+			ANSI_RESET "\0338", g_details_hint_column);
+		g_details_hint_visible = 1;
+		fflush(stdout);
+	}
 }
 
 static void cli_readline_line_ready(char *input)
@@ -153,9 +177,11 @@ static char *cli_readline_suspend(struct cli_context *ctx, int *point)
 	*point = rl_point;
 	if (!draft)
 		return NULL;
+	cli_transcript_view_suspend(ctx);
 	rl_replace_line("", 0);
 	rl_point = 0;
 	cli_readline_redisplay();
+	cli_readline_clear_hint();
 	cli_terminal_composer_suspend(ctx);
 	return draft;
 }
@@ -172,6 +198,7 @@ static void cli_readline_resume(struct cli_context *ctx, char *draft, int point)
 	rl_on_new_line();
 	rl_forced_update_display();
 	free(draft);
+	cli_transcript_view_resume(ctx);
 }
 
 static void cli_readline_drain_ui(struct cli_context *ctx)
@@ -196,7 +223,15 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 {
 	int point;
-	char *draft = cli_readline_suspend(ctx, &point);
+	char *draft;
+
+	if (ctx->details_visible) {
+		if (resized)
+			cli_terminal_resize(ctx);
+		cli_transcript_view_render(ctx, 0);
+		return;
+	}
+	draft = cli_readline_suspend(ctx, &point);
 
 	if (!draft)
 		return;
@@ -412,6 +447,66 @@ static int cli_readline_paste_image(int count, int key)
 	return rc == 0 ? 0 : 1;
 }
 
+static int cli_readline_toggle_details(int count, int key)
+{
+	(void)count;
+	(void)key;
+	if (!g_comp_ctx || !RL_ISSTATE(RL_STATE_CALLBACK))
+		return 0;
+	cli_transcript_toggle(g_comp_ctx);
+	return 0;
+}
+
+static void cli_readline_details_input(struct cli_context *ctx)
+{
+	unsigned char key;
+	char sequence[16] = {0};
+	size_t count = 0;
+	int scroll = 0;
+	struct winsize size = {0};
+	int page = 20;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row > 4)
+		page = size.ws_row - 4;
+
+	if (read(STDIN_FILENO, &key, 1) != 1) {
+		cli_transcript_toggle(ctx);
+		return;
+	}
+	if (key == 0x1b) {
+		struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
+
+		while (count < sizeof(sequence) - 1 && poll(&fd, 1, 30) > 0) {
+			if (read(STDIN_FILENO, sequence + count, 1) != 1)
+				break;
+			count++;
+			if ((count > 1 && sequence[count - 1] >= 'A' &&
+			     sequence[count - 1] <= 'Z') || sequence[count - 1] == '~')
+				break;
+		}
+		if (!count) {
+			cli_transcript_toggle(ctx);
+			return;
+		}
+		if (strcmp(sequence, "[A") == 0)
+			scroll = -1;
+		else if (strcmp(sequence, "[B") == 0)
+			scroll = 1;
+		else if (strcmp(sequence, "[5~") == 0)
+			scroll = -page;
+		else if (strcmp(sequence, "[6~") == 0)
+			scroll = page;
+		else if (strcmp(sequence, "[H") == 0 || strcmp(sequence, "[1~") == 0)
+			scroll = INT_MIN;
+		else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
+			scroll = INT_MAX;
+	} else if (key == 0x0f) {
+		cli_transcript_toggle(ctx);
+		return;
+	}
+	cli_transcript_view_render(ctx, scroll);
+}
+
 static void cli_readline_configure(void)
 {
 	(void)rl_variable_bind("enable-bracketed-paste", "on");
@@ -419,6 +514,7 @@ static void cli_readline_configure(void)
 	(void)rl_bind_key('\r', cli_readline_accept);
 	(void)rl_bind_key('\n', cli_readline_insert_newline);
 	(void)rl_bind_key(0x16, cli_readline_paste_image);
+	(void)rl_bind_key(0x0f, cli_readline_toggle_details);
 	(void)rl_bind_key(0x7f, cli_readline_backspace);
 	(void)rl_bind_key(0x08, cli_readline_backspace);
 	(void)rl_bind_key(0x04, cli_readline_delete);
@@ -742,7 +838,8 @@ void cli_run(struct cli_context *ctx)
 	morph_buf_cleanup(&directory);
 	printf(ANSI_DIM "  /help · ./image.png attach · Ctrl+J/Alt+Enter newline\n"
 	       "  Enter send/adjust while running · Ctrl+Command+V image\n"
-	       "  Esc/Ctrl-C cancel" ANSI_RESET "\n\n");
+	       "  Esc/Ctrl-C cancel"
+	       ANSI_RESET "\n\n");
 #ifndef HAVE_READLINE
 	char line[BUFSIZ];
 #endif
@@ -796,7 +893,7 @@ void cli_run(struct cli_context *ctx)
 		struct pollfd fds[2];
 		int nfds = 1;
 		int wake_fd = cli_ui_wake_fd(ctx);
-		int timeout_ms = cli_terminal_next_frame_ms(ctx);
+		int timeout_ms = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
 		int rc;
 
 		fds[0].fd = ctx->running ? STDIN_FILENO : -1;
@@ -822,6 +919,8 @@ void cli_run(struct cli_context *ctx)
 				}
 				if (cli_sigint_received) {
 					cli_sigint_received = 0;
+					if (ctx->details_open)
+						cli_transcript_toggle(ctx);
 					if (callback_installed) {
 						rl_replace_line("", 0);
 						rl_point = 0;
@@ -870,6 +969,10 @@ void cli_run(struct cli_context *ctx)
 			int image_start;
 			int image_end;
 
+			if (ctx->details_open) {
+				cli_readline_details_input(ctx);
+				continue;
+			}
 			if (!job.active)
 				cli_cancel_state_reset();
 			rl_callback_read_char();
@@ -940,6 +1043,8 @@ void cli_run(struct cli_context *ctx)
 			}
 		}
 	}
+	if (ctx->details_open)
+		cli_transcript_toggle(ctx);
 	if (g_readline_ready_input) {
 		free(g_readline_ready_input);
 		g_readline_ready_input = NULL;

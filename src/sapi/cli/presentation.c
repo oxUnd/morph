@@ -449,8 +449,8 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		print_plain_labeled(label, content);
 	} else {
-		printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
-		print_indented("", content);
+		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
+		cli_markdown_render_ansi_with_media_indented(content, 2, media_callback, ctx);
 	}
 reset:
 	morph_buf_reset(&ctx->event_stream);
@@ -472,6 +472,12 @@ static void presentation_discard_stream(struct cli_context *ctx)
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
 	ctx->event_stream_visible = 0;
+}
+
+void cli_presentation_flush_stream(struct cli_context *ctx)
+{
+	presentation_print_stream(ctx);
+	cli_markdown_stream_reset(ctx, 1);
 }
 
 static int presentation_append_stream(struct cli_context *ctx, int kind,
@@ -527,16 +533,6 @@ static void presentation_reasoning_delta(struct cli_context *ctx,
 	printf(ANSI_DIM "%s" ANSI_RESET, text);
 	fflush(stdout);
 	ctx->event_stream_visible = 1;
-}
-
-static void presentation_stream_marker(struct cli_context *ctx, int kind)
-{
-	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
-	    ctx->markdown_stream)
-		return;
-	if (kind != CLI_STREAM_THOUGHT && kind != CLI_STREAM_FINAL)
-		return;
-	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
 }
 
 static const char *presentation_patch_style(const char *line)
@@ -910,7 +906,7 @@ static void presentation_final(struct cli_context *ctx,
 		}
 	} else {
 		if (!had_stream)
-			printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " ");
+			printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_ansi_with_media_indented(
 				text, 2, media_callback, ctx);
@@ -1211,6 +1207,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	cli_transcript_reset(ctx);
 	morph_buf_reset(&ctx->event_stream);
 	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	morph_strmap_clear(&ctx->rendered_artifacts);
@@ -1229,12 +1226,16 @@ void cli_presentation_reset(struct cli_context *ctx)
 void cli_presentation_finish(struct cli_context *ctx)
 {
 	presentation_clear_status(ctx);
+	cli_transcript_finish(ctx);
 }
 
 void cli_presentation_cleanup(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	if (ctx->details_open)
+		cli_transcript_toggle(ctx);
+	cli_transcript_reset(ctx);
 	presentation_clear_status(ctx);
 	cli_markdown_stream_reset(ctx, 0);
 	morph_buf_cleanup(&ctx->markdown_stream_text);
@@ -1268,6 +1269,12 @@ int cli_presentation_event(struct cli_context *ctx,
 	     ev->type == MORPH_EVENT_HITL ||
 	     ev->type == MORPH_EVENT_ARTIFACT))
 		return 0;
+	if (ctx->turn_active) {
+		int handled = cli_transcript_event(ctx, ev);
+
+		if (handled != 0)
+			return handled < 0 ? handled : 0;
+	}
 
 	if (ev->type == MORPH_EVENT_REACT && ev->name) {
 		text = event_string(ev, "text");
@@ -1298,8 +1305,6 @@ int cli_presentation_event(struct cli_context *ctx,
 			if (rc == 0 &&
 			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 				presentation_clear_status(ctx);
-				presentation_stream_marker(
-					ctx, CLI_STREAM_THOUGHT);
 				rc = cli_markdown_stream_append(
 					ctx, text, CLI_STREAM_THOUGHT);
 			}
@@ -1324,7 +1329,6 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_clear_status(ctx);
 			if (ctx->event_stream_kind != CLI_STREAM_NONE)
 				presentation_print_stream(ctx);
-			presentation_stream_marker(ctx, CLI_STREAM_FINAL);
 			return cli_markdown_stream_append(
 				ctx, text, CLI_STREAM_FINAL);
 		}
