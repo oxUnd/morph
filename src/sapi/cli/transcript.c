@@ -6,6 +6,7 @@
 struct transcript_tool {
 	const char *id;
 	const char *name;
+	const char *label;
 	const char *args;
 	const char *subject;
 	const char *result;
@@ -160,12 +161,14 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	morph_buf_t subject;
 	morph_buf_t meta;
 	int columns = transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
-	int name_width = (int)utf8_display_width(tool->name);
+	int name_width = (int)utf8_display_width(tool->label);
 	const char *target = tool->subject;
 	char cwd[PATH_MAX];
 	double elapsed = (tool->state ? tool->ended : transcript_now()) - tool->started;
 
-	if (strcmp(tool->name, "exec") == 0 && getcwd(cwd, sizeof(cwd)))
+	if ((strcmp(tool->name, "exec") == 0 ||
+	     strcmp(tool->name, "process") == 0) &&
+	    getcwd(cwd, sizeof(cwd)))
 		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
 	if (strcmp(tool->name, "exec") != 0 &&
@@ -190,12 +193,13 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	if (tool->summary[0] && strcmp(tool->summary, "exit 0") != 0)
 		(void)morph_buf_printf(&meta, "%s  ", tool->summary);
 	(void)morph_buf_printf(&meta, "%.1fs", elapsed);
-	append_clipped_text(&action, tool->name, name_width);
+	append_clipped_text(&action, tool->label, name_width);
 	append_clipped_text(&subject, target,
 		columns - 2 - name_width - 4 - (int)utf8_display_width(meta.data));
 	(void)morph_buf_printf(row, "%s%s%s ", styled ? ANSI_DIM : "",
 		action.data, styled ? ANSI_RESET : "");
-	if (styled && strcmp(tool->name, "exec") == 0)
+	if (styled && (strcmp(tool->name, "exec") == 0 ||
+		       strcmp(tool->name, "process") == 0))
 		(void)cli_shell_style(row, subject.data, 0);
 	else
 		(void)morph_buf_puts(row, subject.data);
@@ -587,6 +591,77 @@ void cli_transcript_finish(struct cli_context *ctx)
 	tr->finished = 1;
 }
 
+static const char *process_action_label(const char *action)
+{
+	if (strcmp(action, "poll") == 0)
+		return "wait";
+	if (strcmp(action, "write") == 0)
+		return "send input";
+	if (strcmp(action, "interrupt") == 0)
+		return "interrupt";
+	if (strcmp(action, "kill") == 0)
+		return "terminate";
+	return "process";
+}
+
+static const char *find_process_command(struct cli_transcript *tr,
+					const char *session_id)
+{
+	for (size_t i = tr->tools.nelts; i > 0; i--) {
+		struct transcript_tool *candidate =
+			morph_array_get(&tr->tools, i - 1);
+		cJSON *json;
+		const cJSON *data;
+		const char *candidate_id;
+
+		if (strcmp(candidate->name, "exec") != 0 ||
+		    !candidate->result[0])
+			continue;
+		json = cJSON_Parse(candidate->result);
+		data = cJSON_GetObjectItemCaseSensitive(json, "data");
+		if (!cJSON_IsObject(data))
+			data = json;
+		candidate_id = json_string(data, "session_id");
+		if (strcmp(candidate_id, session_id) == 0) {
+			cJSON_Delete(json);
+			return candidate->subject;
+		}
+		cJSON_Delete(json);
+	}
+	return "";
+}
+
+static int process_action_is(const struct transcript_tool *tool,
+			     const char *action)
+{
+	cJSON *args;
+	int matches;
+
+	if (strcmp(tool->name, "process") != 0)
+		return 0;
+	args = cJSON_Parse(tool->args);
+	matches = strcmp(json_string(args, "action"), action) == 0;
+	cJSON_Delete(args);
+	return matches;
+}
+
+static int process_poll_is_running(const struct transcript_tool *tool)
+{
+	cJSON *result;
+	const cJSON *data;
+	int running;
+
+	if (!process_action_is(tool, "poll"))
+		return 0;
+	result = cJSON_Parse(tool->result);
+	data = cJSON_GetObjectItemCaseSensitive(result, "data");
+	if (!cJSON_IsObject(data))
+		data = result;
+	running = strcmp(json_string(data, "status"), "running") == 0;
+	cJSON_Delete(result);
+	return running;
+}
+
 static int add_tool(struct cli_transcript *tr, const cJSON *data)
 {
 	const cJSON *args = cJSON_GetObjectItemCaseSensitive(data, "args");
@@ -602,6 +677,7 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data)
 	memset(tool, 0, sizeof(*tool));
 	tool->id = save_text(tr, json_string(data, "tool_call_id"));
 	tool->name = save_text(tr, json_string(data, "tool"));
+	tool->label = tool->name;
 	json = args ? cJSON_PrintUnformatted(args) : NULL;
 	tool->args = save_text(tr, json ? json : "{}");
 	free(json);
@@ -614,6 +690,21 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data)
 	tool->result = "";
 	tool->error = "";
 	tool->summary = "";
+	if (strcmp(tool->name, "process") == 0) {
+		const char *action = json_string(args, "action");
+		const char *session_id = json_string(args, "session_id");
+		const char *command = find_process_command(tr, session_id);
+		morph_buf_t fallback;
+
+		tool->label = save_text(tr, process_action_label(action));
+		if (command[0]) {
+			tool->subject = command;
+		} else if (morph_buf_init(&fallback, 64) == 0) {
+			(void)morph_buf_printf(&fallback, "session %s", session_id);
+			tool->subject = save_text(tr, morph_buf_cstr(&fallback));
+			morph_buf_cleanup(&fallback);
+		}
+	}
 	if (strcmp(tool->name, "apply_patch") == 0) {
 		const char *input = json_string(args, "input");
 		const char *path = strstr(input, " File: ");
@@ -676,6 +767,10 @@ static void summarize_result(struct cli_transcript *tr, struct transcript_tool *
 		cJSON_Delete(json);
 		return;
 	}
+	value = cJSON_GetObjectItemCaseSensitive(data, "duration_ms");
+	if (strcmp(tool->name, "process") == 0 && cJSON_IsNumber(value) &&
+	    value->valuedouble >= 0)
+		tool->started = tool->ended - value->valuedouble / 1000.0;
 	value = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
 	if (cJSON_IsNumber(value)) {
 		(void)morph_buf_printf(&summary, "exit %d", value->valueint);
@@ -685,6 +780,9 @@ static void summarize_result(struct cli_transcript *tr, struct transcript_tool *
 			if (!tool->error[0])
 				tool->error = save_text(tr, morph_buf_cstr(&summary));
 		}
+	} else if (cJSON_IsString(value =
+		cJSON_GetObjectItemCaseSensitive(data, "status"))) {
+		(void)morph_buf_puts(&summary, value->valuestring);
 	} else if (cJSON_IsNumber(value =
 		cJSON_GetObjectItemCaseSensitive(data, "returned_lines"))) {
 		(void)morph_buf_printf(&summary, "%d lines", value->valueint);
@@ -732,9 +830,13 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (!tool)
 		return 0;
 	if (strcmp(name, "tool.call") == 0) {
+		int quiet_poll = !ctx->tool_details &&
+			process_action_is(tool, "poll");
+
 		cli_terminal_live_clear(ctx);
 		cli_presentation_flush_stream(ctx);
-		if (ctx->tool_details || !isatty(STDOUT_FILENO))
+		if (!quiet_poll &&
+		    (ctx->tool_details || !isatty(STDOUT_FILENO)))
 			print_tool(tool);
 		if (ctx->tool_details)
 			print_details(tool, 1);
@@ -768,7 +870,8 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	(void)utf8_terminal_sanitize_feed(&tool->sanitizer, &tool->stream, NULL, 0, 1);
 	summarize_result(tr, tool);
 	cli_terminal_live_clear(ctx);
-	print_tool(tool);
+	if (ctx->tool_details || !process_poll_is_running(tool))
+		print_tool(tool);
 	if (ctx->tool_details) {
 		print_details(tool, 0);
 	} else if (tool->state > 0 &&

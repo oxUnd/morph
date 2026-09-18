@@ -1100,6 +1100,60 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 	cJSON_Delete(result);
 }
 
+TEST_F(CliPresentationTest, CompactProcessPollShowsCommandOnlyWhenFinished)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *exec_call = cJSON_Parse(
+		"{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
+		"\"args\":{\"command\":\"cmake --build build\"}}");
+	cJSON *exec_result = cJSON_Parse(
+		"{\"tool\":\"exec\",\"tool_call_id\":\"exec-1\","
+		"\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+		"\\\"session_id\\\":\\\"proc-1\\\","
+		"\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1000}}\"}");
+	cJSON *poll_call = cJSON_Parse(
+		"{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
+		"\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}");
+	cJSON *poll_running = cJSON_Parse(
+		"{\"tool\":\"process\",\"tool_call_id\":\"poll-1\","
+		"\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+		"\\\"session_id\\\":\\\"proc-1\\\","
+		"\\\"status\\\":\\\"running\\\",\\\"duration_ms\\\":1800}}\"}");
+	cJSON *final_call = cJSON_Parse(
+		"{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
+		"\"args\":{\"session_id\":\"proc-1\",\"action\":\"poll\"}}");
+	cJSON *final_result = cJSON_Parse(
+		"{\"tool\":\"process\",\"tool_call_id\":\"poll-2\","
+		"\"result\":\"{\\\"ok\\\":true,\\\"data\\\":{"
+		"\\\"session_id\\\":\\\"proc-1\\\","
+		"\\\"status\\\":\\\"exited\\\",\\\"exit_code\\\":0,"
+		"\\\"duration_ms\\\":2500}}\"}");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", exec_call);
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", exec_result);
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", poll_call);
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", poll_running);
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", final_call);
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", final_result);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	size_t wait = output.find("◯ wait cmake --build build");
+	EXPECT_NE(wait, std::string::npos);
+	EXPECT_EQ(output.find("◯ wait cmake --build build", wait + 1),
+		  std::string::npos);
+	EXPECT_EQ(output.find("process "), std::string::npos);
+	EXPECT_EQ(output.find("proc-1"), std::string::npos);
+	EXPECT_NE(output.find("2.5s"), std::string::npos);
+
+	cJSON_Delete(exec_call);
+	cJSON_Delete(exec_result);
+	cJSON_Delete(poll_call);
+	cJSON_Delete(poll_running);
+	cJSON_Delete(final_call);
+	cJSON_Delete(final_result);
+}
+
 TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
