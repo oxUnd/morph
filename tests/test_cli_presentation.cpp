@@ -310,6 +310,8 @@ TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 
 	EXPECT_NE(output.find("Context  compacted 91676 → 15672 tokens "
 		"(iteration 22, pass 1)"), std::string::npos);
+	EXPECT_NE(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
 	cJSON_Delete(completed);
 }
 

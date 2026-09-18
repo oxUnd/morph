@@ -876,6 +876,8 @@ static void presentation_compaction(struct cli_context *ctx,
 		       before, after, iteration, count);
 	}
 	fflush(stdout);
+	if (!failed && ctx->turn_active)
+		presentation_status(ctx, "Thinking…");
 }
 
 static void presentation_final(struct cli_context *ctx,
