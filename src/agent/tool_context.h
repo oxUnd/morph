@@ -81,21 +81,10 @@ struct tool_context {
 	struct db *grant_db;
 	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int default_timeout_seconds;
-	int bash_exec_local_mode;
-	int bash_exec_mode_configured;
-	int bash_exec_server_network_access;
-	char bash_exec_server_read_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int bash_exec_server_read_dirs_count;
-	char bash_exec_server_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int bash_exec_server_write_dirs_count;
-	char bash_exec_server_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int bash_exec_server_delete_dirs_count;
-	char bash_exec_server_allowed_env[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ENV_NAME_MAX];
-	int bash_exec_server_allowed_env_count;
-	char bash_exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int bash_exec_profile_write_dirs_count;
-	char bash_exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int bash_exec_profile_delete_dirs_count;
+	char exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int exec_profile_write_dirs_count;
+	char exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int exec_profile_delete_dirs_count;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -147,18 +136,9 @@ int tool_context_request_write_access(struct tool_context *tctx,
 int tool_context_collect_write_grants(const struct tool_context *tctx,
 				      const char *principal,
 				      const char **paths, int max_paths);
-void tool_context_set_bash_exec_mode(struct tool_context *tctx,
-				     const char *mode);
-void tool_context_set_bash_exec_server_network(struct tool_context *tctx,
-					       int enabled);
-int tool_context_add_bash_exec_server_env(struct tool_context *tctx,
-					  const char *name);
-int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
-					   enum tool_path_op op,
-					   const char *path);
-int tool_context_add_bash_exec_profile_path(struct tool_context *tctx,
-					    enum tool_path_op op,
-					    const char *path);
+int tool_context_add_exec_profile_path(struct tool_context *tctx,
+				       enum tool_path_op op,
+				       const char *path);
 int tool_context_request_delete_access(struct tool_context *tctx,
 				       const char *principal,
 				       const char *command,

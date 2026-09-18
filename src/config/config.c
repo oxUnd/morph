@@ -487,6 +487,13 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.max_iterations = 10;
 	cfg->react.tool_timeout_seconds = 300;
 	cfg->react.tool_max_retries = 3;
+	strncpy(cfg->exec.shell, "/bin/bash", sizeof(cfg->exec.shell) - 1);
+	cfg->exec.default_timeout_ms = 120000;
+	cfg->exec.yield_time_ms = 10000;
+	cfg->exec.max_inline_output = 32768;
+	cfg->exec.max_session_output = 1048576;
+	cfg->exec.kill_grace_ms = 500;
+	cfg->exec.network = 0;
 	cfg->react.guardrail_enabled = 1;
 	cfg->react.guardrail_max_retries = 2;
 	cfg->react.guardrail_max_empty_rounds = 3;
@@ -510,20 +517,6 @@ void config_set_defaults(struct config *cfg)
 		cfg->react.readonly_tools_count = 11;
 	}
 
-	cfg->react.bash_exec_enabled = 0;
-	cfg->react.bash_exec_default_timeout = 60;
-	cfg->react.bash_exec_max_memory_mb = 2048;
-	cfg->react.bash_exec_max_open_files = 1024;
-	strncpy(cfg->react.bash_exec_mode, "server",
-		sizeof(cfg->react.bash_exec_mode) - 1);
-	strncpy(cfg->react.bash_exec_server_read_paths[0], "@workdir",
-		BASH_EXEC_CWD_MAX - 1);
-	strncpy(cfg->react.bash_exec_server_read_paths[1], "@output",
-		BASH_EXEC_CWD_MAX - 1);
-	cfg->react.bash_exec_server_read_paths_count = 2;
-	strncpy(cfg->react.bash_exec_server_write_paths[0], "@output",
-		BASH_EXEC_CWD_MAX - 1);
-	cfg->react.bash_exec_server_write_paths_count = 1;
 	cfg->react.request_permissions_enabled = 1;
 
 	cfg->context.summarize_threshold_ratio = 0.8;
@@ -931,15 +924,22 @@ int config_load(struct config *cfg, const char *path)
 	load_model_entry(model_tbl, "video", &cfg->models.video);
 	load_credits_config(tbl, &cfg->credits);
 
+	cfg_table_t *exec = table_path(tbl, "exec");
+	if (exec) {
+		CFG_STR(exec, "shell", cfg->exec.shell);
+		CFG_INT(exec, "default_timeout_ms", cfg->exec.default_timeout_ms);
+		CFG_INT(exec, "yield_time_ms", cfg->exec.yield_time_ms);
+		CFG_INT(exec, "max_inline_output", cfg->exec.max_inline_output);
+		CFG_INT(exec, "max_session_output", cfg->exec.max_session_output);
+		CFG_INT(exec, "kill_grace_ms", cfg->exec.kill_grace_ms);
+		CFG_BOOL(exec, "network", cfg->exec.network);
+	}
+
 	cfg_table_t *react = table_path(tbl, "react");
 	if (react) {
 		CFG_INT(react, "max_iterations", cfg->react.max_iterations);
 		CFG_INT(react, "tool_timeout_seconds", cfg->react.tool_timeout_seconds);
 		CFG_INT(react, "tool_max_retries", cfg->react.tool_max_retries);
-		CFG_INT(react, "bash_exec_max_memory_mb",
-			cfg->react.bash_exec_max_memory_mb);
-		CFG_INT(react, "bash_exec_max_open_files",
-			cfg->react.bash_exec_max_open_files);
 		CFG_BOOL(react, "guardrail_enabled", cfg->react.guardrail_enabled);
 		CFG_INT(react, "guardrail_max_retries", cfg->react.guardrail_max_retries);
 		CFG_INT(react, "guardrail_max_empty_rounds", cfg->react.guardrail_max_empty_rounds);
@@ -1021,60 +1021,6 @@ int config_load(struct config *cfg, const char *path)
 		}
 		CFG_BOOL(react, "hitl_enabled", cfg->react.hitl_enabled);
 		CFG_BOOL(react, "hitl_auto_approve_readonly", cfg->react.hitl_auto_approve_readonly);
-		CFG_BOOL(react, "bash_exec_enabled", cfg->react.bash_exec_enabled);
-		CFG_INT(react, "bash_exec_default_timeout", cfg->react.bash_exec_default_timeout);
-		CFG_STR(react, "bash_exec_mode", cfg->react.bash_exec_mode);
-		cfg_array_t *bc = cfg_array_in(react, "bash_exec_allowed_commands");
-		if (bc) {
-			int count = 0;
-			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
-				cfg_datum_t val = cfg_string_at(bc, count);
-				if (!val.ok)
-					break;
-				strncpy(cfg->react.bash_exec_allowed_commands[count],
-					val.u.s, BASH_EXEC_COMMAND_MAX - 1);
-				free(val.u.s);
-			}
-			cfg->react.bash_exec_allowed_commands_count = count;
-		}
-		cfg_array_t *bw = cfg_array_in(react, "bash_exec_allowed_cwds");
-		if (bw) {
-			int count = 0;
-			for (; count < BASH_EXEC_ALLOW_MAX; count++) {
-				cfg_datum_t val = cfg_string_at(bw, count);
-				if (!val.ok)
-					break;
-				strncpy(cfg->react.bash_exec_allowed_cwds[count],
-					val.u.s, BASH_EXEC_CWD_MAX - 1);
-				free(val.u.s);
-			}
-			cfg->react.bash_exec_allowed_cwds_count = count;
-		}
-		{
-			cfg_table_t *server = cfg_table_in(react,
-							 "bash_exec_server");
-
-			if (server) {
-				load_string_array(server, "read_paths",
-					cfg->react.bash_exec_server_read_paths,
-					&cfg->react.bash_exec_server_read_paths_count,
-					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
-				load_string_array(server, "write_paths",
-					cfg->react.bash_exec_server_write_paths,
-					&cfg->react.bash_exec_server_write_paths_count,
-					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
-				load_string_array(server, "delete_paths",
-					cfg->react.bash_exec_server_delete_paths,
-					&cfg->react.bash_exec_server_delete_paths_count,
-					BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
-				load_string_array(server, "allowed_env",
-					cfg->react.bash_exec_server_allowed_env,
-					&cfg->react.bash_exec_server_allowed_env_count,
-					BASH_EXEC_ENV_MAX, BASH_EXEC_ENV_NAME_MAX);
-				CFG_BOOL(server, "network_access",
-					 cfg->react.bash_exec_server_network_access);
-			}
-		}
 		{
 			cfg_table_t *permissions = cfg_table_in(react, "permissions");
 
@@ -1105,13 +1051,13 @@ int config_load(struct config *cfg, const char *path)
 					load_string_array(profile, "workspace_roots",
 						dst->workspace_roots,
 						&dst->workspace_roots_count,
-						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
 					load_string_array(profile, "write_paths",
 						dst->write_paths, &dst->write_paths_count,
-						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
 					load_string_array(profile, "delete_paths",
 						dst->delete_paths, &dst->delete_paths_count,
-						BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX);
+						PERMISSION_PATH_MAX, PERMISSION_PATH_LEN);
 					cfg->react.permission_profile_count++;
 				}
 			}
@@ -1459,22 +1405,12 @@ void config_print(const struct config *cfg)
 		 cfg->react.readonly_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
-	log_info("    bash_exec_enabled: %d timeout: %d mode: %s mem=%dMB "
-		 "nofile=%d",
-		 cfg->react.bash_exec_enabled,
-		 cfg->react.bash_exec_default_timeout,
-		 cfg->react.bash_exec_mode,
-		 cfg->react.bash_exec_max_memory_mb,
-		 cfg->react.bash_exec_max_open_files);
-	log_info("    bash_exec_allowed_commands: %d allowed_cwds: %d",
-		 cfg->react.bash_exec_allowed_commands_count,
-		 cfg->react.bash_exec_allowed_cwds_count);
-	log_info("    bash_exec_server: read=%d write=%d delete=%d network=%d env=%d",
-		 cfg->react.bash_exec_server_read_paths_count,
-		 cfg->react.bash_exec_server_write_paths_count,
-		 cfg->react.bash_exec_server_delete_paths_count,
-		 cfg->react.bash_exec_server_network_access,
-		 cfg->react.bash_exec_server_allowed_env_count);
+	log_info("  [exec] shell=%s timeout_ms=%d yield_ms=%d "
+		 "inline=%d session=%d grace_ms=%d network=%d",
+		 cfg->exec.shell, cfg->exec.default_timeout_ms,
+		 cfg->exec.yield_time_ms, cfg->exec.max_inline_output,
+		 cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
+		 cfg->exec.network);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)

@@ -413,7 +413,7 @@ TEST_F(SessionTest, ModelHistoryStoresStructuredItemsInSequence) {
 	second.content = "done";
 	second.tool_call_id = "tool_1";
 	second.provider_call_id = "call_1";
-	second.tool_name = "bash_exec";
+	second.tool_name = "exec";
 	second.active = 1;
 	ASSERT_EQ(model_history_add(&db, &first, nullptr), 0);
 	ASSERT_EQ(model_history_add(&db, &second, nullptr), 0);
@@ -597,7 +597,7 @@ TEST_F(SessionTest, ModelHistoryRepairsInterruptedToolCall) {
 	call.role = "assistant";
 	call.payload_json =
 		"{\"calls\":[{\"tool_call_id\":\"tool_1\","
-		"\"provider_call_id\":\"call_1\",\"name\":\"bash_exec\","
+		"\"provider_call_id\":\"call_1\",\"name\":\"exec\","
 		"\"arguments\":\"{}\"}]}";
 	call.active = 1;
 	ASSERT_EQ(model_history_add(&db, &call, nullptr), 0);
@@ -673,7 +673,7 @@ TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
 	react.history_enabled = 1;
 	react.history_tool_result_tokens = 20;
 	ASSERT_EQ(agent_history_record_tool_result(&react, "tool_1", "call_1",
-		"bash_exec", output.c_str(), 0), 0);
+		"exec", output.c_str(), 0), 0);
 	struct model_history_item *items =
 		model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(count, 1);
@@ -726,7 +726,7 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	call.payload_json = const_cast<char *>(
 		"{\"reasoning_content\":\"inspect state\",\"calls\":[{"
 		"\"tool_call_id\":\"local_1\","
-		"\"provider_call_id\":\"provider_1\",\"name\":\"bash_exec\","
+		"\"provider_call_id\":\"provider_1\",\"name\":\"exec\","
 		"\"arguments\":\"{}\"}]}");
 	call.active = 1;
 	call.next = &result;
@@ -787,7 +787,7 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	invalid_arguments.payload_json =
 		"{\"calls\":[{\"tool_call_id\":\"invalid_args\","
 		"\"provider_call_id\":\"invalid_provider\","
-		"\"name\":\"bash_exec\",\"arguments\":\"{not-json\"}]}";
+		"\"name\":\"exec\",\"arguments\":\"{not-json\"}]}";
 	invalid_arguments.token_count = 99;
 	invalid_arguments.active = 1;
 	ASSERT_EQ(model_history_add(&db, &invalid_arguments, nullptr), 0);

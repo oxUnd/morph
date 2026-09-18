@@ -43,20 +43,13 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.react.guardrail_max_retries, 2);
 	EXPECT_EQ(cfg.react.guardrail_max_empty_rounds, 3);
 	EXPECT_EQ(cfg.react.disabled_tools_count, 0);
-	EXPECT_EQ(cfg.react.bash_exec_enabled, 0);
-	EXPECT_EQ(cfg.react.bash_exec_default_timeout, 60);
-	EXPECT_EQ(cfg.react.bash_exec_max_memory_mb, 2048);
-	EXPECT_EQ(cfg.react.bash_exec_max_open_files, 1024);
-	EXPECT_STREQ(cfg.react.bash_exec_mode, "server");
-	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 0);
-	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 0);
-	ASSERT_EQ(cfg.react.bash_exec_server_read_paths_count, 2);
-	EXPECT_STREQ(cfg.react.bash_exec_server_read_paths[0], "@workdir");
-	ASSERT_EQ(cfg.react.bash_exec_server_write_paths_count, 1);
-	EXPECT_STREQ(cfg.react.bash_exec_server_write_paths[0], "@output");
-	EXPECT_EQ(cfg.react.bash_exec_server_delete_paths_count, 0);
-	EXPECT_EQ(cfg.react.bash_exec_server_network_access, 0);
-	EXPECT_EQ(cfg.react.bash_exec_server_allowed_env_count, 0);
+	EXPECT_STREQ(cfg.exec.shell, "/bin/bash");
+	EXPECT_EQ(cfg.exec.default_timeout_ms, 120000);
+	EXPECT_EQ(cfg.exec.yield_time_ms, 10000);
+	EXPECT_EQ(cfg.exec.max_inline_output, 32768);
+	EXPECT_EQ(cfg.exec.max_session_output, 1048576);
+	EXPECT_EQ(cfg.exec.kill_grace_ms, 500);
+	EXPECT_EQ(cfg.exec.network, 0);
 	EXPECT_EQ(cfg.react.request_permissions_enabled, 1);
 	EXPECT_STREQ(cfg.react.permission_active_profile, "");
 	EXPECT_EQ(cfg.react.permission_profile_count, 0);
@@ -180,22 +173,18 @@ provider = "volcengine"
 adapter = "volcengine-videos"
 model = "doubao-seedance-2-0-fast-260128"
 
+[exec]
+shell = "/bin/zsh"
+default_timeout_ms = 0
+yield_time_ms = 2500
+max_inline_output = 16384
+max_session_output = 524288
+kill_grace_ms = 750
+network = true
+
 [react]
 max_iterations = 5
 tool_timeout_seconds = 45
-bash_exec_enabled = true
-bash_exec_mode = "local"
-bash_exec_max_memory_mb = 3072
-bash_exec_max_open_files = 1536
-bash_exec_allowed_commands = ["cmake --build build", "ctest --output-on-failure"]
-bash_exec_allowed_cwds = ["/tmp"]
-
-[react.bash_exec_server]
-read_paths = ["@workdir", "/srv/reference"]
-write_paths = ["@output", "/srv/cache"]
-delete_paths = ["/srv/cache"]
-network_access = true
-allowed_env = ["https_proxy", "SSL_CERT_FILE"]
 
 [react.permissions]
 active_profile = "developer"
@@ -248,26 +237,13 @@ include = ["config.toml", "output"]
 		     "doubao-seedance-2-0-fast-260128");
 	EXPECT_EQ(cfg.react.max_iterations, 5);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 45);
-	EXPECT_EQ(cfg.react.bash_exec_max_memory_mb, 3072);
-	EXPECT_EQ(cfg.react.bash_exec_max_open_files, 1536);
-	EXPECT_EQ(cfg.react.bash_exec_enabled, 1);
-	EXPECT_STREQ(cfg.react.bash_exec_mode, "local");
-	EXPECT_EQ(cfg.react.bash_exec_allowed_commands_count, 2);
-	EXPECT_STREQ(cfg.react.bash_exec_allowed_commands[0],
-		     "cmake --build build");
-	EXPECT_EQ(cfg.react.bash_exec_allowed_cwds_count, 1);
-	EXPECT_STREQ(cfg.react.bash_exec_allowed_cwds[0], "/tmp");
-	ASSERT_EQ(cfg.react.bash_exec_server_read_paths_count, 2);
-	EXPECT_STREQ(cfg.react.bash_exec_server_read_paths[1],
-		     "/srv/reference");
-	ASSERT_EQ(cfg.react.bash_exec_server_write_paths_count, 2);
-	EXPECT_STREQ(cfg.react.bash_exec_server_write_paths[1], "/srv/cache");
-	ASSERT_EQ(cfg.react.bash_exec_server_delete_paths_count, 1);
-	EXPECT_STREQ(cfg.react.bash_exec_server_delete_paths[0], "/srv/cache");
-	EXPECT_EQ(cfg.react.bash_exec_server_network_access, 1);
-	ASSERT_EQ(cfg.react.bash_exec_server_allowed_env_count, 2);
-	EXPECT_STREQ(cfg.react.bash_exec_server_allowed_env[0], "https_proxy");
-	EXPECT_STREQ(cfg.react.bash_exec_server_allowed_env[1], "SSL_CERT_FILE");
+	EXPECT_STREQ(cfg.exec.shell, "/bin/zsh");
+	EXPECT_EQ(cfg.exec.default_timeout_ms, 0);
+	EXPECT_EQ(cfg.exec.yield_time_ms, 2500);
+	EXPECT_EQ(cfg.exec.max_inline_output, 16384);
+	EXPECT_EQ(cfg.exec.max_session_output, 524288);
+	EXPECT_EQ(cfg.exec.kill_grace_ms, 750);
+	EXPECT_EQ(cfg.exec.network, 1);
 	EXPECT_EQ(cfg.react.request_permissions_enabled, 0);
 	EXPECT_STREQ(cfg.react.permission_active_profile, "developer");
 	ASSERT_EQ(cfg.react.permission_profile_count, 1);
@@ -485,9 +461,25 @@ TEST(ConfigValidationTest, RejectsWrongTypesAndRanges)
 		&error), MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_RANGE);
 	EXPECT_EQ(config_validate_text(
-		"[react]\nbash_exec_mode = \"remote\"\n", &error),
+		"[exec]\nmax_inline_output = 100\n", &error),
 		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_RANGE);
+}
+
+TEST(ConfigValidationTest, ValidatesExecOutputLimits)
+{
+	struct config_validation_error error = {};
+
+	EXPECT_EQ(config_validate_text(
+		"[exec]\nmax_inline_output = 65536\n"
+		"max_session_output = 32768\n", &error),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(error.code, CONFIG_VALIDATION_CONFLICT);
+	EXPECT_STREQ(error.path, "exec.max_inline_output");
+	EXPECT_EQ(config_validate_text(
+		"[exec]\nshell = \"\"\n", &error), MORPH_ERR_CONFIG);
 	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
+	EXPECT_STREQ(error.path, "exec.shell");
 }
 
 TEST(ConfigValidationTest, ValidatesModelExtraBodyJson)
@@ -528,19 +520,6 @@ TEST(ConfigValidationTest, ValidatesRelationsAgainstDefaults)
 	EXPECT_EQ(config_validate_text(
 		"[context]\nsummarize_threshold_ratio = 0.4\n", &error),
 		MORPH_ERR_CONFIG);
-}
-
-TEST(ConfigValidationTest, RejectsRelativeBashExecServerPaths)
-{
-	struct config_validation_error error = {};
-	const char *toml = R"(
-[react.bash_exec_server]
-read_paths = ["@workdir", "relative/path"]
-)";
-
-	EXPECT_EQ(config_validate_text(toml, &error), MORPH_ERR_CONFIG);
-	EXPECT_EQ(error.code, CONFIG_VALIDATION_VALUE);
-	EXPECT_STREQ(error.path, "react.bash_exec_server.read_paths");
 }
 
 TEST(ConfigValidationTest, ValidatesPermissionProfiles)

@@ -30,7 +30,6 @@
 #include "agent/tools/file_info.h"
 #include "agent/tools/config_write.h"
 #include "agent/tools/skill_activate.h"
-#include "agent/tools/bash_exec.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tools/img_annotate.h"
 #include "agent/plan.h"

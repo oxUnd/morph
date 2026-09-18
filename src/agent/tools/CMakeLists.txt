@@ -13,7 +13,6 @@ add_library(morph-tools STATIC
 	apply_patch.c
 	config_write.c
 	skill_activate.c
-	bash_exec.c
 	request_permissions.c
 	plan.c
 	ask_user.c
@@ -22,6 +21,7 @@ add_library(morph-tools STATIC
 	scheduled_tasks.c
 	runtime_query.c
 	dynamic_tools.c
+	exec_tool.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings
@@ -38,4 +38,5 @@ target_include_directories(morph-tools PUBLIC
 target_link_libraries(morph-tools PUBLIC
 	morph-agent morph-models morph-http morph-util morph-skill
 	morph-sandbox morph-db morph-credits morph-session morph-config
+	morph-exec
 )

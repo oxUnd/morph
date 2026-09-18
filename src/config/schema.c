@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,12 +92,18 @@ static const struct schema_entry schema[] = {
 	NUMBER("credits.prices[].output_per_million", 0, 1.0e15),
 	NUMBER("credits.prices[].image_unit_per_million", 0, 1.0e15),
 	NUMBER("credits.prices[].video_second_per_million", 0, 1.0e15),
+	TABLE("exec"),
+	STRING("exec.shell", PATH_MAX - 1),
+	INT("exec.default_timeout_ms", 0, INT_MAX),
+	INT("exec.yield_time_ms", 0, INT_MAX),
+	INT("exec.max_inline_output", 1024, INT_MAX),
+	INT("exec.max_session_output", 1024, INT_MAX),
+	INT("exec.kill_grace_ms", 0, INT_MAX),
+	BOOL("exec.network"),
 	TABLE("react"),
 	INT("react.max_iterations", 1, INT_MAX),
 	INT("react.tool_timeout_seconds", 1, INT_MAX),
 	INT("react.tool_max_retries", 0, 10),
-	INT("react.bash_exec_max_memory_mb", 1, INT_MAX),
-	INT("react.bash_exec_max_open_files", 16, INT_MAX),
 	BOOL("react.guardrail_enabled"),
 	INT("react.guardrail_max_retries", 0, 10),
 	INT("react.guardrail_max_empty_rounds", 0, INT_MAX),
@@ -121,23 +128,6 @@ static const struct schema_entry schema[] = {
 	BOOL("react.hitl_enabled"),
 	STRINGS("react.hitl_tools", HITL_TOOLS_MAX, HITL_TOOL_NAME_MAX - 1),
 	BOOL("react.hitl_auto_approve_readonly"),
-	BOOL("react.bash_exec_enabled"),
-	INT("react.bash_exec_default_timeout", 1, INT_MAX),
-	ENUM("react.bash_exec_mode", 15, "local|server"),
-	STRINGS("react.bash_exec_allowed_commands", BASH_EXEC_ALLOW_MAX,
-		BASH_EXEC_COMMAND_MAX - 1),
-	STRINGS("react.bash_exec_allowed_cwds", BASH_EXEC_ALLOW_MAX,
-		BASH_EXEC_CWD_MAX - 1),
-	TABLE("react.bash_exec_server"),
-	STRINGS("react.bash_exec_server.read_paths", BASH_EXEC_ALLOW_MAX,
-		BASH_EXEC_CWD_MAX - 1),
-	STRINGS("react.bash_exec_server.write_paths", BASH_EXEC_ALLOW_MAX,
-		BASH_EXEC_CWD_MAX - 1),
-	STRINGS("react.bash_exec_server.delete_paths", BASH_EXEC_ALLOW_MAX,
-		BASH_EXEC_CWD_MAX - 1),
-	BOOL("react.bash_exec_server.network_access"),
-	STRINGS("react.bash_exec_server.allowed_env", BASH_EXEC_ENV_MAX,
-		BASH_EXEC_ENV_NAME_MAX - 1),
 	TABLE("react.permissions"),
 	BOOL("react.permissions.request_tool_enabled"),
 	STRING("react.permissions.active_profile",
@@ -146,11 +136,11 @@ static const struct schema_entry schema[] = {
 	STRING("react.permission_profiles[].name",
 		PERMISSION_PROFILE_NAME_MAX - 1),
 	STRINGS("react.permission_profiles[].workspace_roots",
-		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
+		PERMISSION_PATH_MAX, PERMISSION_PATH_LEN - 1),
 	STRINGS("react.permission_profiles[].write_paths",
-		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
+		PERMISSION_PATH_MAX, PERMISSION_PATH_LEN - 1),
 	STRINGS("react.permission_profiles[].delete_paths",
-		BASH_EXEC_ALLOW_MAX, BASH_EXEC_CWD_MAX - 1),
+		PERMISSION_PATH_MAX, PERMISSION_PATH_LEN - 1),
 	TABLE("context"),
 	NUMBER("context.summarize_threshold_ratio", 0.000001, 1.0),
 	NUMBER("context.compress_target_ratio", 0.000001, 1.0),
@@ -488,30 +478,6 @@ static int validate_named_array(const toml_datum_t *root, const char *section,
 	return 0;
 }
 
-static int validate_bash_exec_paths(const toml_datum_t *server,
-				    const char *key, const char *path,
-				    struct config_validation_error *error)
-{
-	const toml_datum_t *paths = table_get(server, key);
-
-	if (!paths)
-		return 0;
-	for (int i = 0; i < paths->u.arr.size; i++) {
-		const toml_datum_t *item = &paths->u.arr.elem[i];
-		const char *value = item->u.s;
-
-		if (strcmp(value, "@workdir") == 0 ||
-		    strcmp(value, "@output") == 0 ||
-		    strcmp(value, "@tmp") == 0 || strcmp(value, "*") == 0 ||
-		    file_path_is_absolute(value))
-			continue;
-		return set_error(error, CONFIG_VALIDATION_VALUE, item, path,
-			"%s item %d must be @workdir, @output, @tmp, *, or an "
-			"absolute path", path, i);
-	}
-	return 0;
-}
-
 static int validate_permission_profiles(const toml_datum_t *react,
 					struct config_validation_error *error)
 {
@@ -692,15 +658,35 @@ static int validate_relations(const toml_datum_t *root,
 	const toml_datum_t *mcp = table_get(root, "mcp");
 	const toml_datum_t *servers = table_get(mcp, "servers");
 	const toml_datum_t *react = table_get(root, "react");
-	const toml_datum_t *bash_server = table_get(react, "bash_exec_server");
+	const toml_datum_t *exec = table_get(root, "exec");
+	const toml_datum_t *shell = table_get(exec, "shell");
+	const toml_datum_t *inline_output = table_get(exec,
+		"max_inline_output");
+	const toml_datum_t *session_output = table_get(exec,
+		"max_session_output");
 	const toml_datum_t *model = table_get(root, "model");
 	static const char *const model_names[] = {
 		"text", "vision", "image", "video"
 	};
 	double summarize_ratio = 0.8;
 	double target_ratio = 0.5;
+	int64_t inline_limit = 32768;
+	int64_t session_limit = 1048576;
 	int rc;
 
+	if (shell && !shell->u.s[0])
+		return set_error(error, CONFIG_VALIDATION_VALUE, shell,
+			"exec.shell", "exec.shell must not be empty");
+	if (inline_output)
+		inline_limit = inline_output->u.int64;
+	if (session_output)
+		session_limit = session_output->u.int64;
+	if (inline_limit > session_limit)
+		return set_error(error, CONFIG_VALIDATION_CONFLICT,
+			inline_output ? inline_output : session_output,
+			"exec.max_inline_output",
+			"exec.max_inline_output must not exceed "
+			"exec.max_session_output");
 	if (summarize)
 		summarize_ratio = summarize->type == TOML_INT64 ?
 			(double)summarize->u.int64 : summarize->u.fp64;
@@ -727,16 +713,6 @@ static int validate_relations(const toml_datum_t *root,
 		"react.permission_profiles[].name", error);
 	if (rc == 0)
 		rc = validate_permission_profiles(react, error);
-	if (rc != 0)
-		return rc;
-	rc = validate_bash_exec_paths(bash_server, "read_paths",
-		"react.bash_exec_server.read_paths", error);
-	if (rc == 0)
-		rc = validate_bash_exec_paths(bash_server, "write_paths",
-			"react.bash_exec_server.write_paths", error);
-	if (rc == 0)
-		rc = validate_bash_exec_paths(bash_server, "delete_paths",
-			"react.bash_exec_server.delete_paths", error);
 	if (rc != 0)
 		return rc;
 	rc = validate_named_array(root, "agent", "sub_agents",

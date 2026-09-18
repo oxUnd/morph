@@ -312,7 +312,7 @@ static int runtime_start_components(struct runtime *runtime)
 	profile.img_annotate_pause_cb = runtime->options.img_annotate_pause_cb;
 	profile.img_annotate_resume_cb = runtime->options.img_annotate_resume_cb;
 	profile.img_annotate_user_data = runtime->options.img_annotate_user_data;
-	profile.enable_bash = runtime->options.enable_bash;
+	profile.enable_exec = runtime->options.enable_exec;
 	profile.enable_apply_patch = runtime->options.enable_apply_patch;
 	profile.enable_config_write = runtime->options.enable_config_write;
 	profile.enable_img_annotate = runtime->options.enable_img_annotate;

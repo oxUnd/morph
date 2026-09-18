@@ -232,7 +232,10 @@ def main():
             pasted, paste_release = terminal.request()
             releases.append(paste_release)
             users = [m['content'] for m in pasted['messages'] if m['role'] == 'user']
-            assert users[-1] == 'pasted 中文\nsecond line', users
+            assert users[-1].startswith(
+                'pasted 中文\nsecond line\n\n<environment_context>\n'
+            ), users
+            assert users[-1].endswith('</environment_context>\n'), users
             terminal.send('line one\x0aline two\x1b\rline three')
             multiline = terminal.snapshot('Ctrl-J and Alt-Enter draft')
             assert all(line in multiline for line in ['line one', 'line two', 'line three']), multiline

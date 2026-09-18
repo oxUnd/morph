@@ -5,7 +5,7 @@
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
 #include "agent/tools/apply_patch.h"
-#include "agent/tools/bash_exec.h"
+#include "agent/tools/exec_tool.h"
 #include "agent/tools/img_qa.h"
 #include "agent/tools/request_permissions.h"
 #include "agent/tokenizer.h"
@@ -3762,7 +3762,7 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	ctx->workdir = strdup("/tmp");
 	ASSERT_EQ(react_set_memory_context(ctx, "Remember this fact."), 0);
 	ASSERT_EQ(apply_patch_init(&tools, tctx), 0);
-	ASSERT_EQ(bash_exec_init(&tools, tctx), 0);
+	ASSERT_EQ(exec_tool_init(&tools, tctx, nullptr), 0);
 	ASSERT_EQ(request_permissions_init(&tools, tctx), 0);
 	ASSERT_EQ(img_qa_init(&tools, llm, tctx), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
@@ -3940,10 +3940,10 @@ TEST_F(MockLlmTest, DisabledToolsAreAbsentFromPromptAndFunctionSurface) {
 	spec.exec = test_tool_fn;
 	spec.name = "file_list";
 	ASSERT_EQ(::tool_register(&tools, &spec), 0);
-	spec.name = "bash_exec";
+	spec.name = "exec";
 	ASSERT_EQ(::tool_register(&tools, &spec), 0);
 	ASSERT_EQ(tool_disable(&tools, "file_list"), 0);
-	ASSERT_EQ(tool_disable(&tools, "bash_exec"), 0);
+	ASSERT_EQ(tool_disable(&tools, "exec"), 0);
 
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg,
 		nullptr);
@@ -4966,7 +4966,7 @@ TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 TEST(HitlTest, NeedsApprovalSpecificTool) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
@@ -4974,8 +4974,8 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->hitl.enabled = 1;
 	ctx->hitl.tools_count = 1;
-	strncpy(ctx->hitl.tools[0], "bash_exec", HITL_TOOL_NAME_MAX - 1);
-	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 1);
+	strncpy(ctx->hitl.tools[0], "exec", HITL_TOOL_NAME_MAX - 1);
+	EXPECT_EQ(hitl_needs_approval(ctx, "exec"), 1);
 	EXPECT_EQ(hitl_needs_approval(ctx, "file_read"), 0);
 	react_context_destroy(ctx);
 }
@@ -4983,10 +4983,10 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
 		      NULL);
-	struct tool_entry *e = tool_lookup(&reg, "bash_exec");
+	struct tool_entry *e = tool_lookup(&reg, "exec");
 	ASSERT_NE(e, nullptr);
 	e->flags |= TOOL_FLAG_INTERNAL_APPROVAL;
 	struct compress_config ccfg = {0};
@@ -4995,9 +4995,9 @@ TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 	ASSERT_NE(ctx, nullptr);
 	ctx->hitl.enabled = 1;
 	ctx->hitl.tools_count = 2;
-	strncpy(ctx->hitl.tools[0], "bash_exec", HITL_TOOL_NAME_MAX - 1);
+	strncpy(ctx->hitl.tools[0], "exec", HITL_TOOL_NAME_MAX - 1);
 	strncpy(ctx->hitl.tools[1], "dangerous_tool", HITL_TOOL_NAME_MAX - 1);
-	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 0);
+	EXPECT_EQ(hitl_needs_approval(ctx, "exec"), 0);
 	EXPECT_EQ(hitl_needs_approval(ctx, "dangerous_tool"), 1);
 	react_context_destroy(ctx);
 }
@@ -5005,7 +5005,7 @@ TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 TEST(HitlTest, NeedsApprovalAutoApproved) {
 	struct tool_registry reg;
 	tool_registry_init(&reg);
-	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "bash_exec", "desc", "{}", test_tool_fn, NULL, NULL);
+	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
 	struct react_context *ctx = react_context_create(&reg, NULL, &ccfg, &gcfg);
@@ -5013,8 +5013,8 @@ TEST(HitlTest, NeedsApprovalAutoApproved) {
 	ctx->hitl.enabled = 1;
 	ctx->hitl.auto_approve_readonly = 0;
 	ctx->hitl.tools_count = 0;
-	hitl_add_auto_approved(&ctx->hitl, "bash_exec");
-	EXPECT_EQ(hitl_needs_approval(ctx, "bash_exec"), 0);
+	hitl_add_auto_approved(&ctx->hitl, "exec");
+	EXPECT_EQ(hitl_needs_approval(ctx, "exec"), 0);
 	react_context_destroy(ctx);
 }
 

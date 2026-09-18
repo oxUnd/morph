@@ -446,7 +446,7 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 	directory.create = 1;
 	struct tool_operation operation{
 		TOOL_OP_COMMAND,
-		"bash_exec",
+		"exec",
 		"agent",
 		"make test",
 		nullptr,

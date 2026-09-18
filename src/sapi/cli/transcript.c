@@ -165,10 +165,10 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	char cwd[PATH_MAX];
 	double elapsed = (tool->state ? tool->ended : transcript_now()) - tool->started;
 
-	if (strcmp(tool->name, "bash_exec") == 0 && getcwd(cwd, sizeof(cwd)))
+	if (strcmp(tool->name, "exec") == 0 && getcwd(cwd, sizeof(cwd)))
 		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
-	if (strcmp(tool->name, "bash_exec") != 0 &&
+	if (strcmp(tool->name, "exec") != 0 &&
 	    target[0] == '/' && getcwd(cwd, sizeof(cwd))) {
 		size_t len = strlen(cwd);
 
@@ -195,7 +195,7 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 		columns - 2 - name_width - 4 - (int)utf8_display_width(meta.data));
 	(void)morph_buf_printf(row, "%s%s%s ", styled ? ANSI_DIM : "",
 		action.data, styled ? ANSI_RESET : "");
-	if (styled && strcmp(tool->name, "bash_exec") == 0)
+	if (styled && strcmp(tool->name, "exec") == 0)
 		(void)cli_shell_style(row, subject.data, 0);
 	else
 		(void)morph_buf_puts(row, subject.data);
@@ -357,7 +357,7 @@ static void print_details(const struct transcript_tool *tool, int args)
 
 			print_lines(json_string(json, "input"));
 			cJSON_Delete(json);
-		} else if (strcmp(tool->name, "bash_exec") == 0) {
+		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
 			morph_buf_t command;
 
@@ -384,7 +384,7 @@ static void print_details(const struct transcript_tool *tool, int args)
 
 		if (!cJSON_IsObject(data))
 			data = json;
-		if (strcmp(tool->name, "bash_exec") == 0 &&
+		if (strcmp(tool->name, "exec") == 0 &&
 		    cJSON_IsString(cJSON_GetObjectItemCaseSensitive(data, "stdout"))) {
 			const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
 
@@ -772,5 +772,20 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (ctx->tool_details)
 		print_details(tool, 0);
 	restore_live(ctx);
+	/*
+	 * The next react.thinking event is emitted only after tool result
+	 * persistence and the next model round have been prepared. Keep a
+	 * visible busy state during that gap so a completed tool does not look
+	 * like the turn has stalled.
+	 */
+	{
+		morph_buf_t live;
+
+		if (morph_buf_init(&live, 128) == 0) {
+			if (!cli_transcript_live_text(ctx, &live, 0))
+				cli_terminal_live_set(ctx, "Thinking…");
+			morph_buf_cleanup(&live);
+		}
+	}
 	return 1;
 }

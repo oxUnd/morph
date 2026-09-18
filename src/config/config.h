@@ -78,11 +78,8 @@ struct config_credits {
 #define READONLY_TOOL_NAME_MAX 64
 #define HITL_TOOLS_MAX 32
 #define HITL_TOOL_NAME_MAX 64
-#define BASH_EXEC_ALLOW_MAX 32
-#define BASH_EXEC_COMMAND_MAX 1024
-#define BASH_EXEC_CWD_MAX PATH_MAX
-#define BASH_EXEC_ENV_MAX 32
-#define BASH_EXEC_ENV_NAME_MAX 128
+#define PERMISSION_PATH_MAX 32
+#define PERMISSION_PATH_LEN PATH_MAX
 #define PERMISSION_PROFILE_MAX 8
 #define PERMISSION_PROFILE_NAME_MAX 64
 #define GUARDRAIL_DISABLED_RULES_MAX 16
@@ -110,11 +107,11 @@ struct config_guardrail_ext_rule {
 
 struct config_permission_profile {
 	char name[PERMISSION_PROFILE_NAME_MAX];
-	char workspace_roots[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	char workspace_roots[PERMISSION_PATH_MAX][PERMISSION_PATH_LEN];
 	int workspace_roots_count;
-	char write_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	char write_paths[PERMISSION_PATH_MAX][PERMISSION_PATH_LEN];
 	int write_paths_count;
-	char delete_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
+	char delete_paths[PERMISSION_PATH_MAX][PERMISSION_PATH_LEN];
 	int delete_paths_count;
 };
 
@@ -140,29 +137,21 @@ struct config_react {
 	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int hitl_tools_count;
 	int hitl_auto_approve_readonly;
-	int bash_exec_enabled;
-	int bash_exec_default_timeout;
-	int bash_exec_max_memory_mb;
-	int bash_exec_max_open_files;
-	char bash_exec_mode[16];
-	char bash_exec_allowed_commands[BASH_EXEC_ALLOW_MAX][BASH_EXEC_COMMAND_MAX];
-	int bash_exec_allowed_commands_count;
-	char bash_exec_allowed_cwds[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
-	int bash_exec_allowed_cwds_count;
-	char bash_exec_server_read_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
-	int bash_exec_server_read_paths_count;
-	char bash_exec_server_write_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
-	int bash_exec_server_write_paths_count;
-	char bash_exec_server_delete_paths[BASH_EXEC_ALLOW_MAX][BASH_EXEC_CWD_MAX];
-	int bash_exec_server_delete_paths_count;
-	int bash_exec_server_network_access;
-	char bash_exec_server_allowed_env[BASH_EXEC_ENV_MAX][BASH_EXEC_ENV_NAME_MAX];
-	int bash_exec_server_allowed_env_count;
 	int request_permissions_enabled;
 	char permission_active_profile[PERMISSION_PROFILE_NAME_MAX];
 	struct config_permission_profile
 		permission_profiles[PERMISSION_PROFILE_MAX];
 	int permission_profile_count;
+};
+
+struct config_exec {
+	char shell[PATH_MAX];
+	int default_timeout_ms;
+	int yield_time_ms;
+	int max_inline_output;
+	int max_session_output;
+	int kill_grace_ms;
+	int network;
 };
 
 struct config_context {
@@ -329,6 +318,7 @@ struct config {
 	struct config_general general;
 	struct config_models models;
 	struct config_credits credits;
+	struct config_exec exec;
 	struct config_react react;
 	struct config_context context;
 	struct config_memory memory;

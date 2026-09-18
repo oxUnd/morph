@@ -168,47 +168,27 @@ kind = "model_video"
 input_per_million = 4.2
 output_per_million = 2.1
 
+[exec]
+# Shell used to evaluate command strings. Workdirs are applied natively before
+# execution; do not embed "cd <dir> &&" in commands.
+shell = "/bin/bash"
+# 0 disables the hard timeout. yield_time_ms controls how long exec waits
+# before returning a running process session.
+default_timeout_ms = 120000
+yield_time_ms = 10000
+# Per-response and per-session output retention limits, in bytes.
+max_inline_output = 32768
+max_session_output = 1048576
+# Grace period between SIGTERM and SIGKILL.
+kill_grace_ms = 500
+# Network access granted to sandboxed child processes by default.
+network = false
+
 [react]
 max_iterations      = 15
 tool_timeout_seconds  = 300
 tool_max_retries    = 3
-# Disabled by default because this permits model-initiated process execution.
-# Environment secrets are filtered in both modes. Filesystem and network
-# capabilities are controlled by bash_exec_mode below.
-bash_exec_enabled = false
-bash_exec_default_timeout = 60
-bash_exec_mode = "server"       # local | server
-# Server command allowlist patterns. Every subcommand in a compound shell
-# command must match. Local mode does not use a command allowlist.
-#
-# Pattern syntax for bash_exec_allowed_commands:
-#   "*"                  any command
-#   "prog"               any invocation of `prog` (e.g. `prog --help`)
-#   "prog *"             any command starting with `prog `
-#   "prog sub *"         any command starting with `prog sub `
-#   "prog exact args"    exact string match
-#
-# bash_exec_allowed_commands = [
-#   "cmake",                    # any cmake invocation
-#   "ctest",                    # any ctest invocation
-#   "git",                      # any git invocation
-#   "lark-cli",                 # CLI bundled with skills/lark-*
-#   "gh pr *",                  # only gh pr subcommands
-#   "cmake --build build",      # legacy exact match still works
-# ]
-#
-# Deprecated: bash_exec_allowed_cwds is ignored by the capability sandbox.
-# Resource ceilings for each bash_exec child. These are configurable because
-# compilers, linkers, browsers, and large test suites routinely exceed the old
-# 512 MB / 256 descriptor defaults.
-bash_exec_max_memory_mb = 2048
-bash_exec_max_open_files = 1024
-#
-# Local mode reads all files, has network access, and may write/delete only
-# below workdir, output, and /tmp without approval. bash_exec requests narrow
-# extra access with sandbox_permissions = "with_additional_permissions" and
-# additional_permissions.file_system.write/delete. The old top-level
-# write_paths/delete_paths arguments remain accepted for compatibility.
+
 # Enable output quality guardrail.
 # When enabled, the agent checks tool execution results before finalizing:
 # - All tools failed → retry with specific failed tool names
@@ -272,7 +252,7 @@ guardrail_max_empty_rounds = 3
 # Disable specific tools by name. Supported tool names:
 # credits, memory, img_gen, img_qa, img_inpaint, img_compose, img_info,
 # img_resize, img_convert, img_annotate, vid_gen, file_read, file_list,
-# file_info, config_edit, apply_patch, bash_exec
+# file_info, config_edit, apply_patch, exec, process
 # This example disables apply_patch. Remove it from this array to enable the
 # Codex-style source editing tool on fronts that support it, such as the CLI.
 disabled_tools = ["apply_patch"]
@@ -294,29 +274,18 @@ hitl_enabled = false
 # List of tool names requiring explicit approval.
 # If empty and hitl_enabled is true, ALL tools require approval
 # (except read-only tools when hitl_auto_approve_readonly is true).
-# hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
+# hitl_tools = ["exec", "img_gen", "vid_gen"]
 # Automatically approve tools listed in readonly_tools without prompting.
 hitl_auto_approve_readonly = true
 
-# Server mode never requests runtime escalation. It trusts only these rules.
-# Special roots: @workdir, @output, @tmp. Absolute paths and "*" are accepted.
-[react.bash_exec_server]
-read_paths = ["@workdir", "@output"]
-write_paths = ["@output"]
-delete_paths = []
-network_access = false
-# Exact environment variable names inherited by server-mode commands.
-# Keep this empty unless a command requires a proxy or custom CA bundle.
-allowed_env = []
-
-# ── Local filesystem permission profiles ──────
-# Profiles add trusted local-mode roots at startup. They do not affect server
-# mode and never disable the OS sandbox. Set active_profile to an empty string
+# ── Filesystem permission profiles ────────────
+# Profiles add trusted roots at startup and never disable the OS sandbox.
+# Set active_profile to an empty string
 # to use only workdir/output/tmp and request everything else interactively.
 [react.permissions]
 active_profile = "developer"
 # Register request_permissions so the model can proactively ask for narrowly
-# scoped turn or session access before running bash_exec.
+# scoped turn or session access before running exec.
 request_tool_enabled = true
 
 # You may define several profiles and switch active_profile above.
@@ -550,5 +519,5 @@ dir = ""
 # system_prompt_file = "~/.morph/prompts/reviewer.md"
 # max_iterations = 3
 # allowed_tools = ["file_read", "file_list", "file_info", "credits"]
-# disabled_tools = ["bash_exec"]
+# disabled_tools = ["exec", "process"]
 # context_policy = "task_only"

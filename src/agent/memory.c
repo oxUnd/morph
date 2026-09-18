@@ -985,7 +985,7 @@ static const char *memory_infer_task_type(const char *user_input,
 			    strstr(user_input, "视频") != NULL)))
 		return "video";
 	if ((tool_names && strstr(tool_names, "file_")) ||
-	    (tool_names && strstr(tool_names, "bash_exec")) ||
+	    (tool_names && strstr(tool_names, "exec")) ||
 	    (user_input && (memory_contains_ci(user_input, "code") ||
 			    memory_contains_ci(user_input, "repo") ||
 			    strstr(user_input, "代码") != NULL ||

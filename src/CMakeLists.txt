@@ -50,6 +50,7 @@ target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config morp
 add_subdirectory(render)
 add_subdirectory(agent)
 add_subdirectory(sandbox)
+add_subdirectory(exec)
 add_subdirectory(ext)
 add_subdirectory(skill)
 add_subdirectory(mcp)

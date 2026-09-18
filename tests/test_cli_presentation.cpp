@@ -944,7 +944,7 @@ TEST_F(CliPresentationTest, InteractiveWrapsLongTranscriptStrings)
 	ctx.tool_details = 1;
 
 	ASSERT_EQ(setenv("COLUMNS", "52", 1), 0);
-	cJSON_AddStringToObject(call, "tool", "bash_exec");
+	cJSON_AddStringToObject(call, "tool", "exec");
 	cJSON_AddStringToObject(
 		args, "command",
 		"NOTICE=1 lark-cli im +chat-messages-list "
@@ -1041,11 +1041,11 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cJSON *call = cJSON_Parse(
-		"{\"tool\":\"bash_exec\",\"tool_call_id\":\"shell\","
+		"{\"tool\":\"exec\",\"tool_call_id\":\"shell\","
 		"\"args\":{\"command\":\"cmake --build build\"}}");
 	cJSON *result = cJSON_CreateObject();
 	cJSON_AddStringToObject(result, "tool_call_id", "shell");
-	cJSON_AddStringToObject(result, "tool", "bash_exec");
+	cJSON_AddStringToObject(result, "tool", "exec");
 	cJSON_AddStringToObject(result, "result",
 		"{\"data\":{\"exit_code\":2,\"stdout\":\"VERBOSE OUTPUT\","
 		"\"stderr\":\"undefined reference to react_init\"}}");
@@ -1054,7 +1054,7 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	cli_presentation_finish(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("⊗ bash_exec"), std::string::npos);
+	EXPECT_NE(output.find("⊗ exec"), std::string::npos);
 	EXPECT_NE(output.find("undefined reference to react_init"), std::string::npos);
 	EXPECT_EQ(output.find("failed"), std::string::npos);
 	EXPECT_EQ(output.find("VERBOSE OUTPUT"), std::string::npos);
@@ -1067,7 +1067,7 @@ TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cli_set_color_enabled(1);
 	cJSON *call = cJSON_Parse(
-		"{\"tool\":\"bash_exec\",\"args\":{\"command\":\"rg 'hello' src/ | head\"}}");
+		"{\"tool\":\"exec\",\"args\":{\"command\":\"rg 'hello' src/ | head\"}}");
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string compact = testing::internal::GetCapturedStdout();
@@ -1110,7 +1110,7 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	cJSON *call = cJSON_CreateObject();
 	cJSON *args = cJSON_AddObjectToObject(call, "args");
-	cJSON_AddStringToObject(call, "tool", "bash_exec");
+	cJSON_AddStringToObject(call, "tool", "exec");
 	std::string command = "echo " + std::string(240, 'x');
 	cJSON_AddStringToObject(args, "command", command.c_str());
 	for (int columns : {52, 120, 180}) {

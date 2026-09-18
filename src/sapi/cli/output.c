@@ -626,7 +626,7 @@ int cli_ask_user_callback(const char *question,
 }
 
 /*
- * Generic y/n/a prompt shared by HITL and bash_exec approval flows.
+ * Generic y/n/a prompt shared by HITL and exec approval flows.
  *
  * subject - Short label rendered after the "Approved (...)"/"Denied (...)"
  *           summary so the user knows which decision they made.
@@ -923,7 +923,7 @@ static enum tool_operation_verdict cli_json_operation_approval(
 		cJSON_Delete(directories);
 		return TOOL_OP_DENY;
 	}
-	ephemeral = op->tool_name && strcmp(op->tool_name, "bash_exec") == 0 &&
+	ephemeral = op->tool_name && strcmp(op->tool_name, "exec") == 0 &&
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 	if (!cJSON_AddStringToObject(request, "operation",
@@ -1061,7 +1061,7 @@ enum tool_operation_verdict operation_approval_callback(
 		}
 	}
 	int ephemeral = op->tool_name &&
-		strcmp(op->tool_name, "bash_exec") == 0 &&
+		strcmp(op->tool_name, "exec") == 0 &&
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 	if (op->kind == TOOL_OP_COMMAND)

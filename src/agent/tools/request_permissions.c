@@ -152,7 +152,7 @@ int request_permissions_init(struct tool_registry *reg,
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "request_permissions",
 		.description = "Request the smallest additional filesystem "
-			"permissions needed by a later bash_exec command. Grants are "
+			"permissions needed by a later exec command. Grants are "
 			"scoped to that command executable for this turn by default, "
 			"or for the session when scope=session. Include the exact "
 			"future command. Use scope=turn unless repeated commands "

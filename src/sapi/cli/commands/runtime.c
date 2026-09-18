@@ -421,30 +421,20 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf("  hitl_enabled = %d\n", (*runtime_config_get(ctx->runtime)).react.hitl_enabled);
 	printf("  hitl_auto_approve_readonly = %d\n",
 	       (*runtime_config_get(ctx->runtime)).react.hitl_auto_approve_readonly);
-	printf("  bash_exec_enabled = %d\n",
-	       (*runtime_config_get(ctx->runtime)).react.bash_exec_enabled);
-	printf("  bash_exec_default_timeout = %d\n",
-	       (*runtime_config_get(ctx->runtime)).react.bash_exec_default_timeout);
-	printf("  bash_exec_max_memory_mb = %d\n",
-	       (*runtime_config_get(ctx->runtime)).react
-		.bash_exec_max_memory_mb);
-	printf("  bash_exec_max_open_files = %d\n",
-	       (*runtime_config_get(ctx->runtime)).react
-		.bash_exec_max_open_files);
-	printf("  bash_exec_mode = %s\n",
-	       (*runtime_config_get(ctx->runtime)).react.bash_exec_mode);
-	printf("  bash_exec_server_network_access = %d\n",
-	       (*runtime_config_get(ctx->runtime)).react
-		.bash_exec_server_network_access);
-	if ((*runtime_config_get(ctx->runtime)).react
-	    .bash_exec_server_allowed_env_count > 0) {
-		printf("  bash_exec_server_allowed_env =");
-		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
-		     .bash_exec_server_allowed_env_count; i++)
-			printf(" %s", (*runtime_config_get(ctx->runtime)).react
-			       .bash_exec_server_allowed_env[i]);
-		printf("\n");
-	}
+	printf("  exec.shell = %s\n",
+	       (*runtime_config_get(ctx->runtime)).exec.shell);
+	printf("  exec.default_timeout_ms = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.default_timeout_ms);
+	printf("  exec.yield_time_ms = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.yield_time_ms);
+	printf("  exec.max_inline_output = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.max_inline_output);
+	printf("  exec.max_session_output = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.max_session_output);
+	printf("  exec.kill_grace_ms = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.kill_grace_ms);
+	printf("  exec.network = %d\n",
+	       (*runtime_config_get(ctx->runtime)).exec.network);
 	if ((*runtime_config_get(ctx->runtime)).react.disabled_tools_count > 0) {
 		printf("  disabled_tools =");
 		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count; i++)
@@ -477,50 +467,6 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 			    runtime_tool_flags(ctx->runtime, i, &flags) == 0 &&
 			    (flags & TOOL_FLAG_READONLY))
 				printf(" %s", tool.name);
-		printf("\n");
-	}
-	if ((*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands_count > 0) {
-		printf("  bash_exec_allowed_commands =");
-		for (int i = 0;
-		     i < (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands_count;
-		     i++)
-			printf(" %s",
-			       (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_commands[i]);
-		printf("\n");
-	}
-	if ((*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds_count > 0) {
-		printf("  bash_exec_allowed_cwds =");
-		for (int i = 0;
-		     i < (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds_count; i++)
-			printf(" %s",
-			       (*runtime_config_get(ctx->runtime)).react.bash_exec_allowed_cwds[i]);
-		printf("\n");
-	}
-	if ((*runtime_config_get(ctx->runtime)).react
-	    .bash_exec_server_read_paths_count > 0) {
-		printf("  bash_exec_server_read_paths =");
-		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
-		     .bash_exec_server_read_paths_count; i++)
-			printf(" %s", (*runtime_config_get(ctx->runtime)).react
-			       .bash_exec_server_read_paths[i]);
-		printf("\n");
-	}
-	if ((*runtime_config_get(ctx->runtime)).react
-	    .bash_exec_server_write_paths_count > 0) {
-		printf("  bash_exec_server_write_paths =");
-		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
-		     .bash_exec_server_write_paths_count; i++)
-			printf(" %s", (*runtime_config_get(ctx->runtime)).react
-			       .bash_exec_server_write_paths[i]);
-		printf("\n");
-	}
-	if ((*runtime_config_get(ctx->runtime)).react
-	    .bash_exec_server_delete_paths_count > 0) {
-		printf("  bash_exec_server_delete_paths =");
-		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react
-		     .bash_exec_server_delete_paths_count; i++)
-			printf(" %s", (*runtime_config_get(ctx->runtime)).react
-			       .bash_exec_server_delete_paths[i]);
 		printf("\n");
 	}
 	printf(ANSI_BOLD "[context]" ANSI_RESET "\n");

@@ -253,10 +253,8 @@ static int print_version(const char *config_path)
 	}
 
 	int builtin_tools = 12;
-	int has_bash = cfg.react.bash_exec_enabled;
 	int has_skill_tool = (skills.count > 0);
-	if (has_bash)
-		builtin_tools++;
+	builtin_tools += 2;
 	if (has_skill_tool)
 		builtin_tools++;
 
@@ -325,8 +323,8 @@ static int print_version(const char *config_path)
 	       cfg.context.compress_target_ratio);
 	printf("  " ICON_TOOLS " " ANSI_BOLD ANSI_GREEN "Tools"
 	       ANSI_RESET "      %d built-in, "
-	       ANSI_YELLOW "bash %s" ANSI_RESET "\n",
-	       builtin_tools, has_bash ? "on" : "off");
+	       ANSI_YELLOW "exec on" ANSI_RESET "\n",
+	       builtin_tools);
 
 	printf("  " ICON_SKILLS " " ANSI_BOLD ANSI_GREEN "Skills"
 	       ANSI_RESET "     %d discovered",

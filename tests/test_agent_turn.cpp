@@ -256,12 +256,12 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	ASSERT_EQ(agent_turn_begin(&failed_turn, &runtime, &failed_input), 0);
 	std::strcpy(call.id, "provider_failed");
 	std::strcpy(call.tool_call_id, "local_failed");
-	std::strcpy(call.name, "bash_exec");
+	std::strcpy(call.name, "exec");
 	call.arguments = const_cast<char *>("{not-json");
 	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr,
 		&call, 1), 0);
 	ASSERT_EQ(agent_history_record_tool_result(react, "local_failed",
-		"provider_failed", "bash_exec", "invalid arguments", -EINVAL), 0);
+		"provider_failed", "exec", "invalid arguments", -EINVAL), 0);
 	react->final_answer = strdup(
 		"LLM repeatedly returned an empty response.");
 	ASSERT_NE(react->final_answer, nullptr);

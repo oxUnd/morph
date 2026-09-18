@@ -142,7 +142,7 @@ static void bridge_runtime_options(struct runtime_options *options,
 	options->front_name = "fastcgi";
 	options->ask_user_cb = bridge_ask_user;
 	options->operation_approval_cb = bridge_operation_approval;
-	options->enable_bash = 1;
+	options->enable_exec = 1;
 	options->enable_apply_patch = 1;
 	options->enable_config_write = 1;
 	options->enable_img_annotate = 0;

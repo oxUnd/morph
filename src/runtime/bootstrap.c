@@ -6,7 +6,7 @@
 #include "agent/tokenizer.h"
 #include "agent/tools/ask_user.h"
 #include "agent/tools/apply_patch.h"
-#include "agent/tools/bash_exec.h"
+#include "agent/tools/exec_tool.h"
 #include "agent/tools/config_write.h"
 #include "agent/tools/dynamic_tools.h"
 #include "agent/tools/file_info.h"
@@ -358,12 +358,6 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->image = runtime_create_model(&config->models.image, 1);
 	models->video = runtime_create_model(&config->models.video, 1);
 	runtime_apply_guardrails(models->react, config, models->text);
-#ifndef MORPH_NO_SHELL
-	bash_exec_set_default_timeout(
-		config->react.bash_exec_default_timeout);
-	bash_exec_set_resource_limits(config->react.bash_exec_max_memory_mb,
-		config->react.bash_exec_max_open_files);
-#endif
 	return 0;
 }
 
@@ -473,11 +467,12 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_config_write)
 		config_edit_init(profile->tools, tctx, profile->config_path);
-	if (profile->enable_bash && config->react.bash_exec_enabled) {
+	if (profile->enable_exec) {
 		const struct config_permission_profile *permission_profile;
 
-		tool_context_set_bash_exec_mode(
-			tctx, config->react.bash_exec_mode);
+		rc = exec_tool_init(profile->tools, tctx, &config->exec);
+		if (rc != 0)
+			return rc;
 		permission_profile = active_permission_profile(&config->react);
 		if (config->react.permission_active_profile[0] &&
 		    !permission_profile) {
@@ -485,97 +480,47 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 				  config->react.permission_active_profile);
 			MORPH_RETURN(-ENOENT);
 		}
-		if (permission_profile &&
-		    strcmp(config->react.bash_exec_mode, "local") != 0) {
-			log_err("permission profiles require bash_exec_mode=local");
-			MORPH_RETURN(-EINVAL);
-		}
 		if (permission_profile) {
 			for (int i = 0;
 			     i < permission_profile->workspace_roots_count; i++) {
-				rc = tool_context_add_bash_exec_profile_path(
+				rc = tool_context_add_exec_profile_path(
 					tctx, TOOL_PATH_WRITE,
 					permission_profile->workspace_roots[i]);
 				if (rc == 0)
-					rc = tool_context_add_bash_exec_profile_path(
+					rc = tool_context_add_exec_profile_path(
 						tctx, TOOL_PATH_DELETE,
 						permission_profile->workspace_roots[i]);
 				if (rc != 0)
 					return rc;
 			}
 			for (int i = 0; i < permission_profile->write_paths_count; i++) {
-				rc = tool_context_add_bash_exec_profile_path(
+				rc = tool_context_add_exec_profile_path(
 					tctx, TOOL_PATH_WRITE,
 					permission_profile->write_paths[i]);
 				if (rc != 0)
 					return rc;
 			}
 			for (int i = 0; i < permission_profile->delete_paths_count; i++) {
-				rc = tool_context_add_bash_exec_profile_path(
+				rc = tool_context_add_exec_profile_path(
 					tctx, TOOL_PATH_DELETE,
 					permission_profile->delete_paths[i]);
 				if (rc != 0)
 					return rc;
 			}
 		}
-		tool_context_set_bash_exec_server_network(
-			tctx, config->react.bash_exec_server_network_access);
-		for (int i = 0;
-		     i < config->react.bash_exec_server_allowed_env_count; i++) {
-			rc = tool_context_add_bash_exec_server_env(
-				tctx, config->react.bash_exec_server_allowed_env[i]);
-			if (rc != 0)
-				return rc;
-		}
-		for (int i = 0;
-		     i < config->react.bash_exec_allowed_commands_count; i++) {
-			rc = tool_context_allow_command_pattern(
-				tctx, config->react.bash_exec_allowed_commands[i]);
-			if (rc != 0)
-				return rc;
-		}
-		for (int i = 0;
-		     i < config->react.bash_exec_server_read_paths_count; i++) {
-			rc = tool_context_add_bash_exec_server_path(
-				tctx, TOOL_PATH_READ,
-				config->react.bash_exec_server_read_paths[i]);
-			if (rc != 0)
-				return rc;
-		}
-		for (int i = 0;
-		     i < config->react.bash_exec_server_write_paths_count; i++) {
-			rc = tool_context_add_bash_exec_server_path(
-				tctx, TOOL_PATH_WRITE,
-				config->react.bash_exec_server_write_paths[i]);
-			if (rc != 0)
-				return rc;
-		}
-		for (int i = 0;
-		     i < config->react.bash_exec_server_delete_paths_count; i++) {
-			rc = tool_context_add_bash_exec_server_path(
-				tctx, TOOL_PATH_DELETE,
-				config->react.bash_exec_server_delete_paths[i]);
-			if (rc != 0)
-				return rc;
-		}
-		if (config->react.bash_exec_allowed_cwds_count > 0)
-			log_warn("react.bash_exec_allowed_cwds is deprecated and "
-				 "ignored");
-		bash_exec_init(profile->tools, tctx);
-		if (config->react.request_permissions_enabled &&
-		    strcmp(config->react.bash_exec_mode, "local") == 0) {
+		if (config->react.request_permissions_enabled) {
 			rc = request_permissions_init(profile->tools, tctx);
 			if (rc != 0)
 				return rc;
 		}
-		tool_set_timeout(profile->tools, "bash_exec",
-				 config->react.bash_exec_default_timeout);
+		tool_set_timeout(profile->tools, "exec",
+				 config->react.tool_timeout_seconds);
 	}
 #else
 	if (profile->enable_config_write)
 		log_info("config_edit disabled for this runtime build");
-	if (profile->enable_bash)
-		log_info("bash_exec disabled for this runtime build");
+	if (profile->enable_exec)
+		log_info("exec disabled for this runtime build");
 #endif
 	if (profile->ask_user_cb) {
 		ask_user_init(profile->tools, profile->ask_user_cb,

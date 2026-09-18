@@ -4,7 +4,6 @@
 #include "util/log.h"
 #include "util/error.h"
 #include "util/bash_parse.h"
-#include "util/buf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -773,58 +772,7 @@ int tool_context_allow_command_scope(struct tool_context *tctx, const char *path
 
 static int command_is_allowed(struct tool_context *tctx, const char *command)
 {
-	struct bash_parse_result analysis;
-	struct bash_parse_command *parsed;
 	struct permission_grant *grant;
-	int allowed;
-
-	if (tctx->bash_exec_mode_configured &&
-	    !tctx->bash_exec_local_mode) {
-		if (bash_parse_analyze(command, &analysis) != 0)
-			return 0;
-		if (analysis.has_error || analysis.commands.nelts == 0) {
-			bash_parse_result_cleanup(&analysis);
-			return 0;
-		}
-		morph_array_foreach(parsed, &analysis.commands,
-				    struct bash_parse_command) {
-			morph_buf_t source;
-			size_t source_len;
-			int rc;
-
-			if (parsed->end_byte < parsed->start_byte ||
-			    parsed->end_byte > strlen(command)) {
-				bash_parse_result_cleanup(&analysis);
-				return 0;
-			}
-			source_len = parsed->end_byte - parsed->start_byte;
-			rc = morph_buf_init(&source, source_len + 1);
-			if (rc == 0)
-				rc = morph_buf_append(&source,
-					command + parsed->start_byte, source_len);
-			if (rc != 0) {
-				morph_buf_cleanup(&source);
-				bash_parse_result_cleanup(&analysis);
-				return 0;
-			}
-			allowed = 0;
-			for (int i = 0; i < tctx->allowed_commands_count; i++) {
-				if (command_matches_pattern(
-					    morph_buf_cstr(&source),
-					    tctx->allowed_commands[i])) {
-					allowed = 1;
-					break;
-				}
-			}
-			morph_buf_cleanup(&source);
-			if (!allowed) {
-				bash_parse_result_cleanup(&analysis);
-				return 0;
-			}
-		}
-		bash_parse_result_cleanup(&analysis);
-		return 1;
-	}
 
 	for (int i = 0; i < tctx->allowed_commands_count; i++) {
 		if (command_matches_pattern(command,
@@ -888,19 +836,6 @@ static int check_command_operation(struct tool_context *tctx,
 
 	cmd_ok = command_is_allowed(tctx, command);
 	cwd_ok = command_scope_is_allowed(tctx, cwd);
-	if (tctx->bash_exec_mode_configured) {
-		if (tctx->bash_exec_local_mode) {
-			*verdict = TOOL_OP_ALLOW;
-			return 0;
-		}
-		if (cmd_ok) {
-			*verdict = TOOL_OP_ALLOW;
-			return 0;
-		}
-		log_warn("server command not present in allowlist: %s",
-			 command);
-		MORPH_RETURN(-EPERM);
-	}
 	if (cmd_ok && cwd_ok)
 		return 0;
 	if (!tctx->operation_approval_fn) {
@@ -1023,17 +958,14 @@ static int scoped_write_is_allowed(const struct tool_context *tctx,
 		    path_is_within(path, grant->path))
 			return 1;
 	}
-	if (!tctx->bash_exec_mode_configured) {
-		struct permission_grant *persistent;
+	struct permission_grant *persistent;
 
-		morph_array_foreach(persistent, &tctx->persistent_grants,
-				    struct permission_grant) {
-			if (strcmp(persistent->resource_kind,
-				   "write_path") == 0 &&
-			    strcmp(persistent->subject, principal) == 0 &&
-			    path_is_within(path, persistent->resource))
-				return 1;
-		}
+	morph_array_foreach(persistent, &tctx->persistent_grants,
+			    struct permission_grant) {
+		if (strcmp(persistent->resource_kind, "write_path") == 0 &&
+		    strcmp(persistent->subject, principal) == 0 &&
+		    path_is_within(path, persistent->resource))
+			return 1;
 	}
 	return 0;
 }
@@ -1079,7 +1011,7 @@ int tool_context_request_write_access(struct tool_context *tctx,
 		MORPH_RETURN(-EPERM);
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_WRITE;
-	op.tool_name = "bash_exec";
+	op.tool_name = "exec";
 	op.principal = principal;
 	op.action = command;
 	op.target = resolved;
@@ -1088,8 +1020,6 @@ int tool_context_request_write_access(struct tool_context *tctx,
 		&op, tctx->operation_approval_user_data);
 	if (verdict == TOOL_OP_DENY)
 		MORPH_RETURN(-EACCES);
-	if (tctx->bash_exec_mode_configured && verdict == TOOL_OP_ALWAYS)
-		verdict = TOOL_OP_SESSION;
 	return tool_context_grant_write_access(
 		tctx, principal, resolved, 0, verdict,
 		resolved, resolved_size);
@@ -1177,124 +1107,27 @@ int tool_context_collect_write_grants(const struct tool_context *tctx,
 			break;
 		paths[count++] = grant->path;
 	}
-	if (!tctx->bash_exec_mode_configured) {
-		struct permission_grant *persistent;
+	for (int i = 0; i < tctx->exec_profile_write_dirs_count; i++) {
+		if (count >= max_paths)
+			break;
+		paths[count++] = tctx->exec_profile_write_dirs[i];
+	}
+	struct permission_grant *persistent;
 
-		morph_array_foreach(persistent, &tctx->persistent_grants,
-				    struct permission_grant) {
-			if (strcmp(persistent->resource_kind,
-				   "write_path") != 0 ||
-			    strcmp(persistent->subject, principal) != 0)
-				continue;
-			if (count >= max_paths)
-				break;
-			paths[count++] = persistent->resource;
-		}
+	morph_array_foreach(persistent, &tctx->persistent_grants,
+			    struct permission_grant) {
+		if (strcmp(persistent->resource_kind, "write_path") != 0 ||
+		    strcmp(persistent->subject, principal) != 0)
+			continue;
+		if (count >= max_paths)
+			break;
+		paths[count++] = persistent->resource;
 	}
 	return count;
 }
-
-void tool_context_set_bash_exec_mode(struct tool_context *tctx,
-				     const char *mode)
-{
-	if (!tctx || !mode)
-		return;
-	tctx->bash_exec_mode_configured = 1;
-	tctx->bash_exec_local_mode = strcmp(mode, "local") == 0;
-}
-
-void tool_context_set_bash_exec_server_network(struct tool_context *tctx,
-					       int enabled)
-{
-	if (tctx)
-		tctx->bash_exec_server_network_access = !!enabled;
-}
-
-int tool_context_add_bash_exec_server_env(struct tool_context *tctx,
-					  const char *name)
-{
-	size_t len;
-
-	if (!tctx || !name || !*name)
-		MORPH_RETURN(-EINVAL);
-	len = strlen(name);
-	if (len >= TOOL_CONTEXT_ENV_NAME_MAX)
-		MORPH_RETURN(-ENAMETOOLONG);
-	if (!((name[0] >= 'A' && name[0] <= 'Z') ||
-	      (name[0] >= 'a' && name[0] <= 'z') || name[0] == '_'))
-		MORPH_RETURN(-EINVAL);
-	for (size_t i = 1; i < len; i++) {
-		if ((name[i] >= 'A' && name[i] <= 'Z') ||
-		    (name[i] >= 'a' && name[i] <= 'z') ||
-		    (name[i] >= '0' && name[i] <= '9') || name[i] == '_')
-			continue;
-		MORPH_RETURN(-EINVAL);
-	}
-	for (int i = 0; i < tctx->bash_exec_server_allowed_env_count; i++) {
-		if (strcmp(tctx->bash_exec_server_allowed_env[i], name) == 0)
-			return 0;
-	}
-	if (tctx->bash_exec_server_allowed_env_count >= TOOL_CONTEXT_ALLOW_MAX)
-		MORPH_RETURN(-ENOSPC);
-	strncpy(tctx->bash_exec_server_allowed_env[
-			tctx->bash_exec_server_allowed_env_count], name,
-		TOOL_CONTEXT_ENV_NAME_MAX - 1);
-	tctx->bash_exec_server_allowed_env_count++;
-	return 0;
-}
-
-int tool_context_add_bash_exec_server_path(struct tool_context *tctx,
-					   enum tool_path_op op,
-					   const char *path)
-{
-	char (*dirs)[TOOL_CONTEXT_ALLOW_PATH_MAX];
-	struct stat st;
-	int *count;
-	const char *expanded;
-	int before;
-
-	if (!tctx || !path || !*path)
-		MORPH_RETURN(-EINVAL);
-	if (op == TOOL_PATH_READ) {
-		dirs = tctx->bash_exec_server_read_dirs;
-		count = &tctx->bash_exec_server_read_dirs_count;
-	} else if (op == TOOL_PATH_WRITE) {
-		dirs = tctx->bash_exec_server_write_dirs;
-		count = &tctx->bash_exec_server_write_dirs_count;
-	} else if (op == TOOL_PATH_DELETE) {
-		dirs = tctx->bash_exec_server_delete_dirs;
-		count = &tctx->bash_exec_server_delete_dirs_count;
-	} else {
-		MORPH_RETURN(-EINVAL);
-	}
-	if (strcmp(path, "@workdir") == 0)
-		expanded = tctx->workdir;
-	else if (strcmp(path, "@output") == 0)
-		expanded = tctx->output_dir;
-	else if (strcmp(path, "@tmp") == 0)
-		expanded = "/tmp";
-	else if (strcmp(path, "*") == 0)
-		expanded = "/";
-	else if (file_path_is_absolute(path))
-		expanded = path;
-	else
-		MORPH_RETURN(-EINVAL);
-	if (!expanded || !*expanded)
-		MORPH_RETURN(-EINVAL);
-	if (stat(expanded, &st) != 0)
-		MORPH_RETURN_ERRNO();
-	if (!S_ISDIR(st.st_mode))
-		MORPH_RETURN(-ENOTDIR);
-	before = *count;
-	add_allowed_dir(dirs, count, expanded);
-	if (*count == before && before >= TOOL_CONTEXT_ALLOW_MAX)
-		MORPH_RETURN(-ENOSPC);
-	return 0;
-}
-
-int tool_context_add_bash_exec_profile_path(struct tool_context *tctx,
-					    enum tool_path_op op,
-					    const char *path)
+int tool_context_add_exec_profile_path(struct tool_context *tctx,
+				       enum tool_path_op op,
+				       const char *path)
 {
 	char (*dirs)[TOOL_CONTEXT_ALLOW_PATH_MAX];
 	char *expanded;
@@ -1306,11 +1139,11 @@ int tool_context_add_bash_exec_profile_path(struct tool_context *tctx,
 	if (!tctx || !path || !*path)
 		MORPH_RETURN(-EINVAL);
 	if (op == TOOL_PATH_WRITE) {
-		dirs = tctx->bash_exec_profile_write_dirs;
-		count = &tctx->bash_exec_profile_write_dirs_count;
+		dirs = tctx->exec_profile_write_dirs;
+		count = &tctx->exec_profile_write_dirs_count;
 	} else if (op == TOOL_PATH_DELETE) {
-		dirs = tctx->bash_exec_profile_delete_dirs;
-		count = &tctx->bash_exec_profile_delete_dirs_count;
+		dirs = tctx->exec_profile_delete_dirs;
+		count = &tctx->exec_profile_delete_dirs_count;
 	} else {
 		MORPH_RETURN(-EINVAL);
 	}
@@ -1396,7 +1229,7 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 		MORPH_RETURN(-EPERM);
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_DELETE;
-	op.tool_name = "bash_exec";
+	op.tool_name = "exec";
 	op.principal = principal;
 	op.action = command;
 	op.target = resolved;
@@ -1526,14 +1359,14 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		already_allowed = already_allowed ||
 			scoped_write_is_allowed(tctx, principal, canonical) ||
 			configured_path_allowed(canonical,
-				tctx->bash_exec_profile_write_dirs,
-				tctx->bash_exec_profile_write_dirs_count);
+				tctx->exec_profile_write_dirs,
+				tctx->exec_profile_write_dirs_count);
 	else
 		already_allowed = already_allowed ||
 			scoped_delete_is_allowed(tctx, principal, canonical) ||
 			configured_path_allowed(canonical,
-				tctx->bash_exec_profile_delete_dirs,
-				tctx->bash_exec_profile_delete_dirs_count);
+				tctx->exec_profile_delete_dirs,
+				tctx->exec_profile_delete_dirs_count);
 	if (already_allowed) {
 		free(canonical);
 		return 0;
@@ -1597,6 +1430,11 @@ int tool_context_collect_delete_grants(const struct tool_context *tctx,
 		if (count >= max_paths)
 			break;
 		paths[count++] = grant->path;
+	}
+	for (int i = 0; i < tctx->exec_profile_delete_dirs_count; i++) {
+		if (count >= max_paths)
+			break;
+		paths[count++] = tctx->exec_profile_delete_dirs[i];
 	}
 	return count;
 }

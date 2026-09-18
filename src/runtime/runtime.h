@@ -70,7 +70,7 @@ struct runtime_options {
 	img_annotate_pause_fn img_annotate_pause_cb;
 	img_annotate_resume_fn img_annotate_resume_cb;
 	void *img_annotate_user_data;
-	int enable_bash;
+	int enable_exec;
 	int enable_apply_patch;
 	int enable_config_write;
 	int enable_img_annotate;
