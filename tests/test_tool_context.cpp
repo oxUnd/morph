@@ -332,6 +332,19 @@ static enum tool_operation_verdict op_session(
 	return TOOL_OP_SESSION;
 }
 
+static enum tool_operation_verdict command_batch_session(
+	const struct tool_operation *op, void *user_data)
+{
+	int *calls = static_cast<int *>(user_data);
+
+	EXPECT_EQ(op->kind, TOOL_OP_COMMAND);
+	EXPECT_NE(op->reason, nullptr);
+	EXPECT_EQ(op->programs_count, 2);
+	if (calls)
+		(*calls)++;
+	return TOOL_OP_SESSION;
+}
+
 static int op_always_calls = 0;
 static enum tool_operation_verdict op_always(
 	const struct tool_operation *op, void *user_data)
@@ -635,6 +648,32 @@ TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsProgram) {
 	EXPECT_EQ(tctx->allowed_commands_count, 0);
 	EXPECT_EQ(check_command(tctx, "echo bye", NULL), 0);
 	EXPECT_EQ(op_always_calls, 1);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, CommandBatchSessionPersistsEveryProgram)
+{
+	struct tool_context *tctx =
+		tool_context_create("/tmp/morph_batch_work", "/tmp");
+	const char *programs[] = {"echo", "pwd"};
+	struct tool_operation operation = {
+		.kind = TOOL_OP_COMMAND,
+		.tool_name = "exec",
+		.principal = "shell",
+		.action = "echo hi && pwd",
+		.programs = programs,
+		.programs_count = 2,
+	};
+	int calls = 0;
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, command_batch_session, &calls);
+	EXPECT_EQ(tool_context_check_operation(tctx, &operation), 0);
+	EXPECT_EQ(calls, 1);
+	EXPECT_EQ(check_command(tctx, "echo bye", nullptr), 0);
+	EXPECT_EQ(check_command(tctx, "pwd", nullptr), 0);
+	EXPECT_EQ(calls, 1);
 	tool_context_destroy(tctx);
 }
 

@@ -834,12 +834,29 @@ fcgi_turn_operation_approval(const struct tool_operation *op, void *turn_data)
 		return TOOL_OP_DENY;
 	data = cJSON_CreateObject();
 	if (data) {
+		cJSON *programs = cJSON_CreateArray();
+
 		cJSON_AddStringToObject(data, "tool",
 			op->tool_name ? op->tool_name : "");
 		cJSON_AddStringToObject(data, "action",
 			op->action ? op->action : "");
 		cJSON_AddStringToObject(data, "target",
 			op->target ? op->target : "");
+		cJSON_AddStringToObject(data, "scope",
+			op->scope ? op->scope : "");
+		cJSON_AddStringToObject(data, "reason",
+			op->reason ? op->reason : "");
+		if (programs) {
+			for (int i = 0; i < op->programs_count; i++) {
+				cJSON *program =
+					cJSON_CreateString(op->programs[i]);
+
+				if (!program)
+					break;
+				cJSON_AddItemToArray(programs, program);
+			}
+			cJSON_AddItemToObject(data, "programs", programs);
+		}
 		publish_interaction(j, "operation_approval_required",
 				    "operation approval required", data);
 	}

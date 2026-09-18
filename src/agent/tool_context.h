@@ -51,6 +51,9 @@ struct tool_operation {
 	const char *details_json;
 	const struct tool_directory_capability *directories;
 	int directories_count;
+	const char *reason;
+	const char *const *programs;
+	int programs_count;
 };
 
 typedef enum tool_operation_verdict (*tool_operation_approval_fn)(

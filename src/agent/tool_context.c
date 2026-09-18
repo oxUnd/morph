@@ -821,12 +821,55 @@ static int command_scope_is_allowed(struct tool_context *tctx, const char *cwd)
 	return 1;
 }
 
+static int operation_programs_allowed(struct tool_context *tctx,
+				      const struct tool_operation *op)
+{
+	if (op->programs && op->programs_count > 0) {
+		for (int i = 0; i < op->programs_count; i++) {
+			if (!command_is_allowed(tctx, op->programs[i]))
+				return 0;
+		}
+		return 1;
+	}
+	return command_is_allowed(tctx, op->action);
+}
+
+static void persist_command_programs(struct tool_context *tctx,
+				     const struct tool_operation *op,
+				     enum tool_operation_verdict verdict)
+{
+	int count = op->programs && op->programs_count > 0 ?
+		op->programs_count : 1;
+
+	for (int i = 0; i < count; i++) {
+		char program[TOOL_CONTEXT_ACTION_MAX];
+		const char *command = op->programs && op->programs_count > 0 ?
+			op->programs[i] : op->action;
+		int rc;
+
+		if (tool_context_command_name(command, program,
+					      sizeof(program)) != 0)
+			continue;
+		rc = verdict == TOOL_OP_ALWAYS ?
+			save_grant(tctx, program, "command", program) :
+			tool_context_allow_command_pattern(tctx, program);
+		if (rc < 0)
+			log_warn("failed to persist command '%s' (rc=%d)",
+				 program, rc);
+		else
+			log_info("persisted command '%s' %s", program,
+				 verdict == TOOL_OP_ALWAYS ?
+				 "always" : "for session");
+	}
+}
+
 static int check_command_operation(struct tool_context *tctx,
 				   const struct tool_operation *op,
 				   enum tool_operation_verdict *verdict)
 {
 	const char *command = op->action;
 	const char *cwd = op->scope;
+	struct tool_operation approval_operation;
 	char resolved_cwd[PATH_MAX];
 	int cmd_ok;
 	int cwd_ok;
@@ -840,7 +883,7 @@ static int check_command_operation(struct tool_context *tctx,
 		return 0;
 	}
 
-	cmd_ok = command_is_allowed(tctx, command);
+	cmd_ok = operation_programs_allowed(tctx, op);
 	cwd_ok = command_scope_is_allowed(tctx, cwd);
 	if (cmd_ok && cwd_ok)
 		return 0;
@@ -849,7 +892,21 @@ static int check_command_operation(struct tool_context *tctx,
 			 command);
 		MORPH_RETURN(-EPERM);
 	}
-	v = tctx->operation_approval_fn(op,
+	approval_operation = *op;
+	if (!approval_operation.reason) {
+		if (!cmd_ok && !cwd_ok)
+			approval_operation.reason =
+				"Programs and working directory are outside "
+				"the current trusted scope.";
+		else if (!cmd_ok)
+			approval_operation.reason =
+				"One or more programs are not trusted yet.";
+		else
+			approval_operation.reason =
+				"The working directory is outside the trusted "
+				"command scope.";
+	}
+	v = tctx->operation_approval_fn(&approval_operation,
 					tctx->operation_approval_user_data);
 	*verdict = v;
 	if (v == TOOL_OP_DENY) {
@@ -867,28 +924,8 @@ static int check_command_operation(struct tool_context *tctx,
 			return rc;
 	}
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
-		if (!cmd_ok) {
-			char prog[TOOL_CONTEXT_ACTION_MAX];
-			if (tool_context_command_name(command, prog,
-						      sizeof(prog)) == 0) {
-				int rc = v == TOOL_OP_ALWAYS ?
-					save_grant(tctx,
-						   op->principal ?
-						   op->principal : prog,
-						   "command",
-						   prog) :
-					tool_context_allow_command_pattern(
-						tctx, prog);
-				if (rc < 0)
-					log_warn("failed to persist command "
-						 "'%s' (rc=%d)", prog, rc);
-				else
-					log_info("persisted command '%s' %s",
-						 prog,
-						 v == TOOL_OP_ALWAYS ?
-						 "always" : "for session");
-			}
-		}
+		if (!cmd_ok)
+			persist_command_programs(tctx, op, v);
 		if (!cwd_ok && cwd && *cwd) {
 			int rc = v == TOOL_OP_ALWAYS ?
 				save_grant(tctx,

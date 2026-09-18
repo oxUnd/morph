@@ -832,7 +832,7 @@ static const char *operation_label(enum tool_operation_kind kind)
 {
 	switch (kind) {
 	case TOOL_OP_COMMAND:
-		return "Shell Command Approval";
+		return "Command Approval Required";
 	case TOOL_OP_PATH_READ:
 		return "Read Path Approval";
 	case TOOL_OP_PATH_LIST:
@@ -874,7 +874,7 @@ static const char *operation_scope_label(enum tool_operation_kind kind)
 {
 	switch (kind) {
 	case TOOL_OP_COMMAND:
-		return "Cwd";
+		return "Workdir";
 	case TOOL_OP_PATH_READ:
 	case TOOL_OP_PATH_LIST:
 		return "Workspace";
@@ -912,15 +912,18 @@ static enum tool_operation_verdict cli_json_operation_approval(
 	int allowed_count = (int)(sizeof(persistent) / sizeof(persistent[0]));
 	cJSON *request;
 	cJSON *directories;
+	cJSON *programs;
 	char decision[16] = {0};
 	int ephemeral;
 	int rc;
 
 	request = cJSON_CreateObject();
 	directories = cJSON_CreateArray();
-	if (!request || !directories) {
+	programs = cJSON_CreateArray();
+	if (!request || !directories || !programs) {
 		cJSON_Delete(request);
 		cJSON_Delete(directories);
+		cJSON_Delete(programs);
 		return TOOL_OP_DENY;
 	}
 	ephemeral = op->tool_name && strcmp(op->tool_name, "exec") == 0 &&
@@ -936,11 +939,24 @@ static enum tool_operation_verdict cli_json_operation_approval(
 	    cli_json_add_optional_string(request, "action", op->action) != 0 ||
 	    cli_json_add_optional_string(request, "target", op->target) != 0 ||
 	    cli_json_add_optional_string(request, "scope", op->scope) != 0 ||
+	    cli_json_add_optional_string(request, "reason", op->reason) != 0 ||
 	    cli_json_add_optional_string(request, "details_json",
 					 op->details_json) != 0) {
 		cJSON_Delete(directories);
+		cJSON_Delete(programs);
 		cJSON_Delete(request);
 		return TOOL_OP_DENY;
+	}
+	for (int i = 0; i < op->programs_count; i++) {
+		cJSON *program = cJSON_CreateString(op->programs[i]);
+
+		if (!program) {
+			cJSON_Delete(directories);
+			cJSON_Delete(programs);
+			cJSON_Delete(request);
+			return TOOL_OP_DENY;
+		}
+		cJSON_AddItemToArray(programs, program);
 	}
 	for (int i = 0; i < op->directories_count; i++) {
 		cJSON *directory = cJSON_CreateObject();
@@ -952,11 +968,13 @@ static enum tool_operation_verdict cli_json_operation_approval(
 					   op->directories[i].create)) {
 			cJSON_Delete(directory);
 			cJSON_Delete(directories);
+			cJSON_Delete(programs);
 			cJSON_Delete(request);
 			return TOOL_OP_DENY;
 		}
 		cJSON_AddItemToArray(directories, directory);
 	}
+	cJSON_AddItemToObject(request, "programs", programs);
 	cJSON_AddItemToObject(request, "directories", directories);
 	if (ephemeral) {
 		allowed = ephemeral_decisions;
@@ -1007,11 +1025,20 @@ enum tool_operation_verdict operation_approval_callback(
 			UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		printf(ANSI_RESET "\n");
 	}
-	if (op->principal && *op->principal) {
+	if (op->kind != TOOL_OP_COMMAND &&
+	    op->principal && *op->principal) {
 		printf("%sSubject  " ANSI_BOLD,
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");
 		(void)cli_print_untrusted_text(op->principal,
+			UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ANSI_RESET "\n");
+	}
+	if (op->reason && *op->reason) {
+		printf("%sReason   " ANSI_BOLD,
+		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+		       ANSI_YELLOW "│ " ANSI_RESET : "");
+		(void)cli_print_untrusted_text(op->reason,
 			UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		printf(ANSI_RESET "\n");
 	}
@@ -1025,6 +1052,21 @@ enum tool_operation_verdict operation_approval_callback(
 				       CLI_PRESENT_INTERACTIVE ?
 			       ANSI_YELLOW "│ " ANSI_RESET : "",
 			       display);
+		}
+		if (op->programs_count > 0) {
+			const char *prefix =
+				ctx->presentation_mode ==
+					CLI_PRESENT_INTERACTIVE ?
+				ANSI_YELLOW "│ " ANSI_RESET : "";
+
+			printf("%sPrograms " ANSI_BOLD, prefix);
+			for (int i = 0; i < op->programs_count; i++) {
+				if (i > 0)
+					printf(", ");
+				(void)cli_print_untrusted_text(op->programs[i],
+					UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			}
+			printf(ANSI_RESET "\n");
 		}
 	} else if (op->target && *op->target) {
 		printf("%sTarget   " ANSI_BOLD,
@@ -1065,9 +1107,10 @@ enum tool_operation_verdict operation_approval_callback(
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 	if (op->kind == TOOL_OP_COMMAND)
-		printf("%s" ANSI_DIM "'session' trusts this program, cwd, and "
-		       "listed directories until exit; 'always' remembers "
-		       "them for this project."
+		printf("%s" ANSI_DIM "'yes once' runs only the command shown; "
+		       "'session' trusts the listed programs and workdir "
+		       "until exit; 'always' remembers that trust for this "
+		       "project."
 		       ANSI_RESET "\n",
 		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
 		       ANSI_YELLOW "│ " ANSI_RESET : "");

@@ -442,6 +442,7 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 	ctx.event_cb = cli_event_callback;
 	ctx.event_user_data = &ctx;
 	struct tool_directory_capability directory{};
+	const char *programs[] = {"make", "ctest"};
 	std::snprintf(directory.path, sizeof(directory.path), "/tmp/output");
 	directory.create = 1;
 	struct tool_operation operation{
@@ -454,6 +455,9 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 		"{}",
 		&directory,
 		1,
+		"Programs are not trusted yet.",
+		programs,
+		2,
 	};
 	enum tool_operation_verdict verdict = TOOL_OP_DENY;
 	std::string input =
@@ -472,6 +476,10 @@ TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 	cJSON *payload = cJSON_GetObjectItem(data, "request");
 	EXPECT_STREQ(cJSON_GetObjectItem(payload, "operation")->valuestring,
 		     "command");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "reason")->valuestring,
+		     "Programs are not trusted yet.");
+	EXPECT_EQ(cJSON_GetArraySize(
+		cJSON_GetObjectItem(payload, "programs")), 2);
 	EXPECT_EQ(cJSON_GetArraySize(
 		cJSON_GetObjectItem(payload, "directories")), 1);
 	cJSON_Delete(event);

@@ -2,15 +2,37 @@
 #include "exec/process.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool.h"
+#include "agent/tool_context.h"
 
 #include <gtest/gtest.h>
 
 #include <cerrno>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace {
+
+struct ExecApprovalState {
+	int calls = 0;
+	std::string command;
+	std::string reason;
+	std::vector<std::string> programs;
+};
+
+static enum tool_operation_verdict approve_exec_operation(
+	const struct tool_operation *op, void *user_data)
+{
+	auto *state = static_cast<ExecApprovalState *>(user_data);
+
+	state->calls++;
+	state->command = op->action ? op->action : "";
+	state->reason = op->reason ? op->reason : "";
+	for (int i = 0; i < op->programs_count; i++)
+		state->programs.emplace_back(op->programs[i]);
+	return TOOL_OP_ALLOW;
+}
 
 class ProcessTest : public ::testing::Test {
 protected:
@@ -70,6 +92,39 @@ TEST(ExecToolTest, RegistersExecAndProcessTools)
 	EXPECT_NE(tool_lookup(&registry, "exec"), nullptr);
 	EXPECT_NE(tool_lookup(&registry, "process"), nullptr);
 	tool_registry_cleanup(&registry);
+}
+
+TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
+{
+	char work_template[] = "/tmp/morph_exec_policy_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(
+		&registry, "exec",
+		"{\"command\":\"printf first && pwd\","
+		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		&result), 0);
+	EXPECT_EQ(approval.calls, 1);
+	EXPECT_EQ(approval.command, "printf first && pwd");
+	EXPECT_FALSE(approval.reason.empty());
+	ASSERT_EQ(approval.programs.size(), 2u);
+	EXPECT_EQ(approval.programs[0], "printf");
+	EXPECT_EQ(approval.programs[1], "pwd");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(workdir);
 }
 
 TEST_F(ProcessTest, CapturesSeparateStreamsAndExitCode)

@@ -119,6 +119,9 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 			struct tool_result *result)
 {
 	struct command_analysis analysis;
+	char (*program_names)[TOOL_CONTEXT_CLI_NAME_MAX] = NULL;
+	const char **programs = NULL;
+	int programs_count = 0;
 	int rc;
 
 	rc = command_analyze(command, &analysis);
@@ -131,20 +134,58 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 		return -EPERM;
 	}
 	if (runtime->tool_context) {
+		if (analysis.count > (size_t)INT_MAX) {
+			command_analysis_cleanup(&analysis);
+			MORPH_RETURN(-E2BIG);
+		}
+		program_names = calloc(analysis.count, sizeof(*program_names));
+		programs = calloc(analysis.count, sizeof(*programs));
+		if (!program_names || !programs) {
+			free(program_names);
+			free(programs);
+			command_analysis_cleanup(&analysis);
+			MORPH_RETURN(-ENOMEM);
+		}
 		for (size_t i = 0; i < analysis.count; i++) {
 			struct command_segment *segment = &analysis.segments[i];
+			int duplicate = 0;
+
+			rc = tool_context_command_name(
+				segment->raw, program_names[programs_count],
+				sizeof(program_names[programs_count]));
+			if (rc != 0)
+				continue;
+			for (int j = 0; j < programs_count; j++) {
+				if (strcmp(programs[j],
+					   program_names[programs_count]) == 0) {
+					duplicate = 1;
+					break;
+				}
+			}
+			if (!duplicate) {
+				programs[programs_count] =
+					program_names[programs_count];
+				programs_count++;
+			}
+		}
+		{
 			struct tool_operation operation = {
 				.kind = TOOL_OP_COMMAND,
 				.tool_name = "exec",
-				.principal = segment->argc > 0 ? segment->argv[0] : "shell",
-				.action = segment->raw,
+				.principal = programs_count == 1 ?
+					programs[0] : "shell",
+				.action = command,
 				.scope = workdir,
 				.details_json = args_json,
+				.programs = programs,
+				.programs_count = programs_count,
 			};
 			enum tool_operation_verdict verdict = TOOL_OP_DENY;
 
 			rc = tool_context_check_operation_verdict(
 				runtime->tool_context, &operation, &verdict);
+			free(program_names);
+			free(programs);
 			if (rc != 0 || verdict == TOOL_OP_DENY) {
 				command_analysis_cleanup(&analysis);
 				(void)tool_result_error(result,
