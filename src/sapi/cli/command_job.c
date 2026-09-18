@@ -199,6 +199,34 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text)
 	return 0;
 }
 
+int cli_command_job_prompt_snapshot(struct cli_command_job *job,
+				    char **items, size_t capacity,
+				    size_t *total)
+{
+	size_t copied = 0;
+
+	if (!job || (!items && capacity > 0) || !total)
+		MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock(&job->mutex);
+	*total = job->prompts.nelts;
+	while (copied < capacity && copied < job->prompts.nelts) {
+		struct cli_prompt *prompt =
+			morph_array_get(&job->prompts, copied);
+
+		items[copied] = strdup(prompt->text);
+		if (!items[copied])
+			break;
+		copied++;
+	}
+	pthread_mutex_unlock(&job->mutex);
+	if (copied < capacity && copied < *total) {
+		while (copied > 0)
+			free(items[--copied]);
+		MORPH_RETURN(-ENOMEM);
+	}
+	return 0;
+}
+
 /* The returned payload stays valid until the next drain, including when the
  * producer appends another prompt while ReAct is processing this one. */
 int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
@@ -220,6 +248,8 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 	pthread_mutex_unlock(&job->mutex);
 	out->type = "prompt";
 	out->payload_json = job->delivered_prompt;
+	if (out->payload_json && job->ctx)
+		cli_ui_notify(job->ctx);
 	return out->payload_json ? 1 : 0;
 }
 

@@ -2,6 +2,7 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
+#include "sapi/cli/command_job.h"
 #include "sapi/cli/terminal.h"
 }
 
@@ -96,6 +97,82 @@ TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAndRestoresComposer)
 	EXPECT_NE(restored.find("\033[1A"), std::string::npos);
 
 	cli_terminal_cleanup(&ctx);
+	fclose(output);
+	close(slave);
+	close(master);
+}
+
+TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
+{
+	struct cli_command_job job{};
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	const char *slave_name = ptsname(master);
+	ASSERT_NE(slave_name, nullptr);
+	int slave = open(slave_name, O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	struct winsize size{};
+	size.ws_col = 48;
+	size.ws_row = 12;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	ctx.input_job = &job;
+	ASSERT_EQ(cli_command_job_prompt(&job, "first adjustment"), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "second adjustment"), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "third adjustment"), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "fourth adjustment"), 0);
+	cli_set_color_enabled(1);
+	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
+
+	char bytes[BUFSIZ];
+	cli_terminal_queue_changed(&ctx);
+	ssize_t count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	std::string queue_only(bytes);
+	EXPECT_NE(queue_only.find("first adjustment"), std::string::npos);
+	EXPECT_EQ(queue_only.find("Thinking…"), std::string::npos);
+
+	cli_terminal_live_set(&ctx, "Thinking…");
+	cli_terminal_render_frame(&ctx, 1);
+	count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	std::string queued(bytes);
+	size_t first = queued.find("first adjustment");
+	size_t second = queued.find("second adjustment");
+	size_t status = queued.find("Thinking…");
+	ASSERT_NE(first, std::string::npos);
+	ASSERT_NE(second, std::string::npos);
+	ASSERT_NE(status, std::string::npos);
+	EXPECT_LT(first, second);
+	EXPECT_LT(second, status);
+	EXPECT_NE(queued.find("+2 more queued"), std::string::npos);
+	EXPECT_EQ(queued.find("third adjustment"), std::string::npos);
+
+	char *consumed = cli_command_job_take_prompt(&job);
+	ASSERT_NE(consumed, nullptr);
+	EXPECT_STREQ(consumed, "first adjustment");
+	free(consumed);
+	cli_terminal_render_frame(&ctx, 1);
+	count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	std::string redrawn(bytes);
+	EXPECT_EQ(redrawn.find("first adjustment"), std::string::npos);
+	EXPECT_NE(redrawn.find("second adjustment"), std::string::npos);
+	EXPECT_NE(redrawn.find("third adjustment"), std::string::npos);
+	EXPECT_NE(redrawn.find("fourth adjustment"), std::string::npos);
+	EXPECT_NE(redrawn.find("\033[1A"), std::string::npos);
+
+	ctx.input_job = nullptr;
+	cli_terminal_cleanup(&ctx);
+	cli_command_job_cleanup(&job);
 	fclose(output);
 	close(slave);
 	close(master);

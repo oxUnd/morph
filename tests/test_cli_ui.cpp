@@ -521,6 +521,15 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	ASSERT_EQ(cli_command_job_prompt(&job, "改成中文🙂"), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "second\nline"), 0);
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 1);
+	char *snapshot[2] = {nullptr, nullptr};
+	size_t total = 0;
+	ASSERT_EQ(cli_command_job_prompt_snapshot(&job, snapshot, 2, &total), 0);
+	ASSERT_EQ(total, 2);
+	EXPECT_STREQ(snapshot[0], "改成中文🙂");
+	EXPECT_STREQ(snapshot[1], "second\nline");
+	snapshot[0][0] = 'X';
+	free(snapshot[0]);
+	free(snapshot[1]);
 	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
 	EXPECT_STREQ(action.type, "prompt");
 	std::string delivered = action.payload_json;

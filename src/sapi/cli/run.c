@@ -1052,7 +1052,7 @@ void cli_run(struct cli_context *ctx)
 						if (command_rc != 0)
 							CMD_ERROR("%s", morph_strerror(command_rc));
 						else
-							printf(ANSI_DIM "  Requirement queued" ANSI_RESET "\n");
+							cli_terminal_queue_changed(ctx);
 						handled = 1;
 					} else if (!handled) {
 						command_rc = cli_handle_media_path(

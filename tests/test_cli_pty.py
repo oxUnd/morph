@@ -147,11 +147,14 @@ def main():
             terminal.send('\x1b[D\x7f')
             terminal.send('新')
             terminal.send('\x05\r')
-            assert 'Requirement queued' in terminal.raw
+            assert '↳ queued  改成中新🙂' in terminal.raw, terminal.raw[-3000:]
+            assert 'Requirement queued' not in terminal.raw
             started = time.monotonic()
             second, release2 = terminal.request()
             releases.append(release2)
             assert time.monotonic() - started < 2.5, 'steering waited for model completion'
+            consumed = terminal.snapshot('steering queue consumed')
+            assert '↳ queued  改成中新🙂' not in consumed, consumed
             assert not release.is_set(), 'first request must still be gated'
             user_text = [m['content'] for m in second['messages'] if m['role'] == 'user']
             assert user_text[-1] == '改成中新🙂', user_text
