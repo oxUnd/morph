@@ -184,6 +184,27 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 	}
 }
 
+TEST(ExtRuntimeTest, ExecExtensionSandboxCanReadItsOwnEntry)
+{
+	struct ext extension = {};
+	struct sandbox_config config = {};
+	std::string directory = std::string(MORPH_TEST_SOURCE_DIR) +
+		"/exts/rg";
+	char cwd[PATH_MAX];
+
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	ASSERT_EQ(ext_load(&extension, directory.c_str()), 0);
+	ASSERT_EQ(ext_sandbox_config_prepare(&extension, &config), 0);
+	ASSERT_EQ(config.read_paths_count, 2);
+	EXPECT_TRUE(path_is_within(extension.exec_path, config.read_paths[0]));
+	EXPECT_TRUE(path_is_within(cwd, config.read_paths[1]));
+	EXPECT_EQ(config.write_paths_count, 0);
+	EXPECT_EQ(config.delete_paths_count, 0);
+	EXPECT_TRUE(config.process_exec);
+	ext_sandbox_config_cleanup(&config);
+	ext_unload(&extension);
+}
+
 TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
 {
 	if (test_cmd("git --version >/dev/null 2>&1") != 0)

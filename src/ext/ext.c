@@ -1,5 +1,6 @@
 #include "ext.h"
 #include "loader.h"
+#include "util/file.h"
 #include "util/log.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -170,6 +171,100 @@ static int read_fd(int fd, char **out, size_t *out_len)
 	return 0;
 }
 
+static char *ext_resolve_sandbox_path(const char *path)
+{
+	char cwd[PATH_MAX];
+	char *expanded;
+	char *absolute;
+	char *resolved;
+
+	expanded = file_expand_path(path);
+	if (!expanded)
+		return NULL;
+	if (file_path_is_absolute(expanded)) {
+		absolute = expanded;
+	} else {
+		if (!getcwd(cwd, sizeof(cwd))) {
+			free(expanded);
+			return NULL;
+		}
+		absolute = file_path_full_alloc(cwd, expanded);
+		free(expanded);
+		if (!absolute)
+			return NULL;
+	}
+	resolved = file_resolve_path(absolute);
+	free(absolute);
+	return resolved;
+}
+
+void ext_sandbox_config_cleanup(struct sandbox_config *config)
+{
+	if (!config)
+		return;
+	for (int i = 0; i < config->read_paths_count; i++)
+		free(config->read_paths[i]);
+	free(config->read_paths);
+	memset(config, 0, sizeof(*config));
+}
+
+int ext_sandbox_config_prepare(const struct ext *ex,
+			       struct sandbox_config *config)
+{
+	char **read_paths;
+	int count;
+
+	if (!ex || !config)
+		MORPH_RETURN(-EINVAL);
+	count = ex->manifest.allowed_paths_count;
+	read_paths = calloc((size_t)count + 1, sizeof(*read_paths));
+	if (!read_paths)
+		MORPH_RETURN(-ENOMEM);
+	memset(config, 0, sizeof(*config));
+	config->read_paths = read_paths;
+	read_paths[0] = ext_resolve_sandbox_path(ex->path);
+	if (!read_paths[0]) {
+		ext_sandbox_config_cleanup(config);
+		MORPH_RETURN(-ENOENT);
+	}
+	config->read_paths_count = 1;
+	for (int i = 0; i < count; i++) {
+		read_paths[i + 1] = ext_resolve_sandbox_path(
+			ex->manifest.allowed_paths[i]);
+		if (!read_paths[i + 1]) {
+			ext_sandbox_config_cleanup(config);
+			MORPH_RETURN(-ENOENT);
+		}
+		config->read_paths_count++;
+	}
+
+	config->permissions = ex->manifest.permissions;
+	config->path_policy_enabled = 1;
+	if (ex->manifest.permissions & EXT_PERM_FILESYS) {
+		config->write_paths = read_paths + 1;
+		config->write_paths_count = count;
+		config->delete_paths = read_paths + 1;
+		config->delete_paths_count = count;
+	}
+	config->network_access =
+		!!(ex->manifest.permissions & EXT_PERM_NETWORK);
+	config->process_exec = !!(ex->manifest.permissions & EXT_PERM_EXEC);
+	config->allow_pty = !!(ex->manifest.permissions & EXT_PERM_PTY);
+	config->allow_process_info =
+		!!(ex->manifest.permissions & EXT_PERM_PROCESS_INFO);
+	config->allow_ipc = !!(ex->manifest.permissions & EXT_PERM_IPC);
+	config->allow_temp = !!(ex->manifest.permissions & EXT_PERM_TEMP);
+	config->allowed_env = ex->manifest.allowed_env;
+	config->allowed_env_count = ex->manifest.allowed_env_count;
+	config->allowed_mach_services = ex->manifest.allowed_mach_services;
+	config->allowed_mach_services_count =
+		ex->manifest.allowed_mach_services_count;
+	config->max_memory_mb = ex->manifest.max_memory_mb;
+	config->max_cpu_seconds = ex->manifest.max_cpu_seconds;
+	config->max_open_files = ex->manifest.max_open_files;
+	return 0;
+}
+
 int ext_run(struct ext *ex, const char *args_json, char **result_json)
 {
 	if (!ex || !args_json || !result_json)
@@ -237,21 +332,14 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				_exit(126);
 
 			struct sandbox_config sb_cfg;
-			memset(&sb_cfg, 0, sizeof(sb_cfg));
-			sb_cfg.permissions = ex->manifest.permissions;
-			sb_cfg.max_memory_mb = ex->manifest.max_memory_mb;
-			sb_cfg.max_cpu_seconds = ex->manifest.max_cpu_seconds;
-			sb_cfg.allowed_paths = ex->manifest.allowed_paths;
-			sb_cfg.allowed_paths_count = ex->manifest.allowed_paths_count;
-			sb_cfg.allowed_env = ex->manifest.allowed_env;
-			sb_cfg.allowed_env_count = ex->manifest.allowed_env_count;
-			sb_cfg.allowed_mach_services =
-				ex->manifest.allowed_mach_services;
-			sb_cfg.allowed_mach_services_count =
-				ex->manifest.allowed_mach_services_count;
-			sb_cfg.max_open_files = ex->manifest.max_open_files;
-			if (sandbox_enter(&sb_cfg) != 0)
+
+			if (ext_sandbox_config_prepare(ex, &sb_cfg) != 0)
 				_exit(126);
+			if (sandbox_enter(&sb_cfg) != 0) {
+				ext_sandbox_config_cleanup(&sb_cfg);
+				_exit(126);
+			}
+			ext_sandbox_config_cleanup(&sb_cfg);
 
 			execlp(ex->exec_path, ex->exec_path, (char *)NULL);
 			_exit(127);
@@ -316,9 +404,9 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			log_warn("ext %s stderr: %s",
 				 ex->manifest.name, child_stderr);
 		}
-		free(child_stderr);
 
 		if (rc < 0 || !raw_response) {
+			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"failed to read ext output\"}");
 			return -EIO;
@@ -328,10 +416,26 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		if (WIFSIGNALED(status)) {
 			log_warn("ext %s killed by signal %d",
 				 ex->manifest.name, WTERMSIG(status));
+			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"ext process was terminated\"}");
 			MORPH_RETURN(MORPH_ERR_SANDBOX);
 		}
+		if (WIFEXITED(status) && WEXITSTATUS(status) != 0 &&
+		    raw_response[0] == '\0') {
+			int exit_code = WEXITSTATUS(status);
+
+			free(child_stderr);
+			free(raw_response);
+			*result_json = strdup(exit_code == 126 ?
+				"{\"error\":\"extension sandbox setup failed\"}" :
+				"{\"error\":\"extension process exited before "
+				"producing a JSON-RPC response\"}");
+			if (exit_code == 126)
+				MORPH_RETURN(MORPH_ERR_SANDBOX);
+			MORPH_RETURN(-ECHILD);
+		}
+		free(child_stderr);
 
 		/* Parse JSON-RPC response and extract result field */
 		struct jsonrpc_response jr;
