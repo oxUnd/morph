@@ -553,14 +553,17 @@ static const char *presentation_patch_style(const char *line)
 	return "";
 }
 
-static void presentation_patch_diff(const char *input)
+void cli_presentation_patch_diff(const char *input)
 {
 	char *display;
 	char *line;
 	size_t input_len;
 	size_t display_len;
+	size_t line_number = 1;
+	size_t total_lines = 1;
 	int truncated;
 	int lines = 0;
+	int number_width = 1;
 
 	if (!input || !input[0])
 		return;
@@ -586,15 +589,21 @@ static void presentation_patch_diff(const char *input)
 
 		if ((ch < 0x20 && ch != '\n' && ch != '\t') || ch == 0x7f)
 			*p = '?';
+		if (ch == '\n')
+			total_lines++;
 	}
+	for (size_t value = total_lines; value >= 10; value /= 10)
+		number_width++;
 	line = display;
 	while (*line && lines < CLI_PATCH_LINES_MAX) {
 		char *end = strchr(line, '\n');
 		const char *style = presentation_patch_style(line);
 		size_t len = end ? (size_t)(end - line) : strlen(line);
 
-		printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
+		printf("  │ " ANSI_DIM "%*zu" ANSI_RESET " %s%.*s" ANSI_RESET
+		       "\n", number_width, line_number, style, (int)len, line);
 		lines++;
+		line_number++;
 		if (!end) {
 			line += len;
 			break;
@@ -655,12 +664,12 @@ static void presentation_tool_call(struct cli_context *ctx,
 			printf(" %s", display);
 		printf("\n");
 		if (patch_input)
-			presentation_patch_diff(patch_input);
+			cli_presentation_patch_diff(patch_input);
 	} else {
 		printf("\n" ANSI_YELLOW "◦" ANSI_RESET " "
 		       ANSI_BOLD "%s" ANSI_RESET "\n", title);
 		if (patch_input)
-			presentation_patch_diff(patch_input);
+			cli_presentation_patch_diff(patch_input);
 		else
 			print_json_tree_children(args_item);
 		presentation_status(ctx, "Running tool…");

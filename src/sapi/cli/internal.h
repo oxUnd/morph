@@ -134,6 +134,7 @@ void cli_presentation_finish(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 void cli_presentation_flush_stream(struct cli_context *ctx);
+void cli_presentation_patch_diff(const char *input);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
 int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev);

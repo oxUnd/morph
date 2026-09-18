@@ -19,6 +19,7 @@ struct patch_chunk {
 	char *context;
 	morph_array_t old_lines;
 	morph_array_t new_lines;
+	size_t line_number;
 	int end_of_file;
 };
 
@@ -337,6 +338,7 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 			hunk->chunks.nelts--;
 			return rc;
 		}
+		chunk->line_number = *index + 1;
 		patch_trim_view(lines[*index], &trimmed, &trimmed_len);
 		if (trimmed_len == 2 && memcmp(trimmed, "@@", 2) == 0) {
 			(*index)++;
@@ -478,6 +480,13 @@ static int patch_parse(char *copy, morph_array_t *hunks, char *error,
 			       patch_header_kind(line[index], NULL, NULL) ==
 			       PATCH_HEADER_NONE) {
 				rc = patch_append_add_line(&content, line[index]);
+				if (rc == -EINVAL) {
+					rc = patch_error(error, error_size, -EINVAL,
+						"invalid add-file line %zu in %s: "
+						"content lines must start with '+'",
+						index + 1, hunk->path);
+					break;
+				}
 				if (rc != 0)
 					break;
 				hunk->added++;
@@ -827,7 +836,9 @@ static int patch_compute_replacements(morph_array_t *source,
 			}
 			if (!matched)
 				return patch_error(error, error_size, -EINVAL,
-					"failed to find expected lines in %s", hunk->path);
+					"failed to find expected lines from patch "
+					"line %zu in %s", chunk->line_number,
+					hunk->path);
 			cursor = found + old_count;
 		}
 		replacement = morph_array_push(replacements);

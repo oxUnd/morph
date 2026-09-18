@@ -355,7 +355,7 @@ static void print_details(const struct transcript_tool *tool, int args)
 		if (strcmp(tool->name, "apply_patch") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
 
-			print_lines(json_string(json, "input"));
+			cli_presentation_patch_diff(json_string(json, "input"));
 			cJSON_Delete(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
@@ -769,8 +769,15 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	summarize_result(tr, tool);
 	cli_terminal_live_clear(ctx);
 	print_tool(tool);
-	if (ctx->tool_details)
+	if (ctx->tool_details) {
 		print_details(tool, 0);
+	} else if (tool->state > 0 &&
+		   strcmp(tool->name, "apply_patch") == 0) {
+		cJSON *args = cJSON_Parse(tool->args);
+
+		cli_presentation_patch_diff(json_string(args, "input"));
+		cJSON_Delete(args);
+	}
 	restore_live(ctx);
 	/*
 	 * The next react.thinking event is emitted only after tool result

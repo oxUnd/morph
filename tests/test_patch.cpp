@@ -135,6 +135,7 @@ TEST_F(PatchTest, UsesSemanticHunkContextLikeCodex)
 		"*** End Patch";
 	EXPECT_EQ(apply(invalid, &result, error, sizeof(error)), -EINVAL);
 	EXPECT_NE(std::strstr(error, "expected lines"), nullptr);
+	EXPECT_NE(std::strstr(error, "patch line 3"), nullptr);
 }
 
 TEST_F(PatchTest, MissingFileErrorIncludesResolvedWorkspacePath)
@@ -259,6 +260,22 @@ TEST_F(PatchTest, RejectsTraversalAndAbsolutePaths)
 
 	EXPECT_EQ(apply(traversal, &result, error, sizeof(error)), -EINVAL);
 	EXPECT_EQ(apply(absolute, &result, error, sizeof(error)), -EINVAL);
+}
+
+TEST_F(PatchTest, AddFileErrorReportsPatchLine)
+{
+	const char *input =
+		"*** Begin Patch\n"
+		"*** Add File: broken.txt\n"
+		"+valid\n"
+		"missing prefix\n"
+		"*** End Patch";
+	struct patch_result result{};
+	char error[512];
+
+	EXPECT_EQ(apply(input, &result, error, sizeof(error)), -EINVAL);
+	EXPECT_STREQ(error, "invalid add-file line 4 in broken.txt: "
+		     "content lines must start with '+'");
 }
 
 TEST_F(PatchTest, RejectsSymbolicLinkTargets)

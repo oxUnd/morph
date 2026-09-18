@@ -544,9 +544,16 @@ static int react_emit_tool_event(struct react_context *ctx,
 	if (result)
 		cJSON_AddStringToObject(data, "result", result);
 	if (error_code < 0) {
+		const char *error = morph_strerror(error_code);
+
+		if (result && result[0]) {
+			static const char prefix[] = "tool error: ";
+
+			error = strncmp(result, prefix, sizeof(prefix) - 1) == 0 ?
+				result + sizeof(prefix) - 1 : result;
+		}
 		cJSON_AddNumberToObject(data, "error_code", error_code);
-		cJSON_AddStringToObject(data, "error",
-					morph_strerror(error_code));
+		cJSON_AddStringToObject(data, "error", error);
 	}
 	rc = react_emit_event(ctx, MORPH_EVENT_TOOL, name, phase, message,
 			      data);
@@ -875,6 +882,34 @@ static int react_tool_call_timeout(struct react_context *ctx,
 	return timeout;
 }
 
+static char *react_format_tool_error(const struct tool_result *result, int rc)
+{
+	const cJSON *error;
+	const cJSON *message;
+	const char *raw;
+	const char *detail = NULL;
+	morph_buf_t text;
+
+	if (result && cJSON_IsObject(result->envelope)) {
+		error = cJSON_GetObjectItemCaseSensitive(result->envelope, "error");
+		message = cJSON_IsObject(error) ?
+			cJSON_GetObjectItemCaseSensitive(error, "message") : NULL;
+		if (cJSON_IsString(message) && message->valuestring[0])
+			detail = message->valuestring;
+	}
+	raw = result && result->text.data ? result->text.data : "unknown error";
+	if (morph_buf_init(&text, strlen(detail ? detail : raw) + 64) != 0)
+		return NULL;
+	if (detail)
+		(void)morph_buf_printf(&text, "tool error: %s", detail);
+	else if (strncmp(raw, "tool error: ", strlen("tool error: ")) == 0)
+		(void)morph_buf_puts(&text, raw);
+	else
+		(void)morph_buf_printf(&text, "tool error: %s (%s)", raw,
+				      morph_strerror(rc));
+	return morph_buf_detach(&text);
+}
+
 static void *async_tool_exec(void *arg)
 {
 	struct async_tool_call *call = (struct async_tool_call *)arg;
@@ -931,13 +966,7 @@ static void *async_tool_exec(void *arg)
 			call->completed = 1;
 			pthread_cond_broadcast(&call->cond);
 		} else if (rc < 0) {
-			const char *raw = res.text.data ? res.text.data : "unknown error";
-			size_t need = strlen(raw) + 64;
-			char *buf = malloc(need);
-			if (buf)
-				snprintf(buf, need, "tool error: %s (%s)",
-					 raw, morph_strerror(rc));
-			call->result = buf;
+			call->result = react_format_tool_error(&res, rc);
 			call->meta = res.meta ? cJSON_Duplicate(res.meta, 1) : NULL;
 			call->rc = rc;
 			call->completed = 1;

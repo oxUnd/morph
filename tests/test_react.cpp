@@ -1323,6 +1323,35 @@ static bool event_recorder_has_name(struct morph_event_recorder *rec,
 	return false;
 }
 
+static std::string event_recorder_data_string(
+	struct morph_event_recorder *rec, const char *name, const char *key)
+{
+	for (size_t i = 0; i < morph_event_recorder_count(rec); i++) {
+		const char *json = morph_event_recorder_get(rec, i);
+		cJSON *root = cJSON_Parse(json);
+		cJSON *name_item;
+		cJSON *data;
+		cJSON *value;
+		bool matched;
+		std::string result;
+
+		if (!root)
+			continue;
+		name_item = cJSON_GetObjectItem(root, "name");
+		data = cJSON_GetObjectItem(root, "data");
+		value = cJSON_IsObject(data) ? cJSON_GetObjectItem(data, key) :
+			nullptr;
+		matched = cJSON_IsString(name_item) &&
+			strcmp(name_item->valuestring, name) == 0;
+		if (matched && cJSON_IsString(value))
+			result = value->valuestring;
+		cJSON_Delete(root);
+		if (matched)
+			return result;
+	}
+	return "";
+}
+
 static int event_recorder_count_name(struct morph_event_recorder *rec,
 				     const char *name)
 {
@@ -2306,6 +2335,8 @@ TEST_F(MockLlmTest, TextToolFallbackFailureIsObservedAndRetried) {
 	}
 	EXPECT_TRUE(saw_invalid_patch);
 	EXPECT_TRUE(saw_success);
+	EXPECT_EQ(event_recorder_data_string(&rec, "tool.failed", "error"),
+		"input must be a patch; correct it and retry");
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
