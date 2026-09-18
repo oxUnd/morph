@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -125,6 +126,41 @@ TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
 	rmdir(workdir);
+}
+
+TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
+{
+	char path[PATH_MAX];
+	char args[PATH_MAX + 128];
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(realpath(__FILE__, path), nullptr);
+
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	ASSERT_GT(snprintf(args, sizeof(args),
+			   "{\"command\":\"cat %s\",\"workdir\":\"/tmp\","
+			   "\"yield_time_ms\":1000}", path), 0);
+	ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	const char *output = cJSON_GetStringValue(
+		cJSON_GetObjectItem(result.data, "stdout"));
+	ASSERT_NE(output, nullptr);
+	EXPECT_NE(strstr(output, "#include \"exec/command_analyzer.h\""),
+		  nullptr);
+	EXPECT_EQ(cJSON_GetNumberValue(
+		cJSON_GetObjectItem(result.data, "exit_code")), 0);
+
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
 }
 
 TEST_F(ProcessTest, CapturesSeparateStreamsAndExitCode)

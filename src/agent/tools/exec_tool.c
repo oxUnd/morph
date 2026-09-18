@@ -346,6 +346,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			delete_paths[delete_path_count++] = (char *)delete_grants[i];
 	}
 	sandbox.path_policy_enabled = 1;
+	sandbox.read_all = 1;
 	sandbox.read_paths = read_paths;
 	sandbox.read_paths_count = read_path_count;
 	sandbox.write_paths = write_paths;
