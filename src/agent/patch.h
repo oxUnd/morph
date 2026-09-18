@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "util/array.h"
+#include "util/buf.h"
 #include <limits.h>
 
 enum patch_action {
@@ -27,6 +28,15 @@ struct patch_result {
 
 int patch_apply(const char *workdir, const char *input,
 		struct patch_result *result, char *error, size_t error_size);
+/*
+ * Render the patch as a unified diff (Codex-style) without touching the
+ * filesystem. Target files are read to locate the hunks so the emitted
+ * line numbers are the real line numbers from those files. Returns a
+ * negative error when the patch cannot be previewed; callers may then fall
+ * back to showing the raw patch text.
+ */
+int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
+		  char *error, size_t error_size);
 void patch_result_cleanup(struct patch_result *result);
 const char *patch_action_name(enum patch_action action);
 

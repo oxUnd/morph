@@ -47,6 +47,7 @@ struct cli_context {
 	int markdown_stream_prefix_pending;
 	int mcp_tree_active;
 	char image_path[PATH_MAX];
+	char workdir[PATH_MAX];
 	char mcp_tree_server[MCP_NAME_MAX];
 	morph_buf_t event_stream;
 	morph_buf_t markdown_stream_text;

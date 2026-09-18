@@ -128,6 +128,13 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	ctx->running = 1;
 	ctx->presentation_ready = 1;
 	ctx->image_path[0] = '\0';
+	{
+		const char *resolved_workdir = runtime_workdir_get(ctx->runtime);
+
+		if (resolved_workdir && resolved_workdir[0])
+			strncpy(ctx->workdir, resolved_workdir,
+				sizeof(ctx->workdir) - 1);
+	}
 	rc = cli_sync_start(ctx);
 	if (rc != 0)
 		log_warn("failed to start sync worker: %s", morph_strerror(rc));

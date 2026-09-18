@@ -5,6 +5,7 @@ extern "C" {
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/shell_style.h"
 #include "util/utf8.h"
+#include "util/file.h"
 #include "agent/react.h"
 #include "event/event.h"
 #include "http/client.h"
@@ -26,6 +27,7 @@ extern volatile sig_atomic_t cli_sigint_received;
 }
 
 #include <string>
+#include <filesystem>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -80,6 +82,7 @@ TEST(CliShellStyleTest, SummaryHidesOnlyLiteralCurrentDirectoryPrefix)
 class CliPresentationTest : public ::testing::Test {
 protected:
 	struct cli_context ctx{};
+	char dir[PATH_MAX]{};
 
 	void SetUp() override
 	{
@@ -87,14 +90,20 @@ protected:
 		ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
+		std::strcpy(dir, "/tmp/morph-cli-presentation-XXXXXX");
+		ASSERT_NE(mkdtemp(dir), nullptr);
+		std::strcpy(ctx.workdir, dir);
 		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
 	}
 
 	void TearDown() override
 	{
+		std::error_code error;
+
 		cli_presentation_cleanup(&ctx);
 		cli_terminal_cleanup(&ctx);
+		std::filesystem::remove_all(dir, error);
 		cli_set_color_enabled(1);
 	}
 
@@ -883,6 +892,11 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 		"-old value\n"
 		"+new value\n"
 		"*** End Patch";
+	const char *content = "foo\nold value\nbar\n";
+
+	std::filesystem::create_directories(std::string(dir) + "/src");
+	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(),
+		content, std::strlen(content)), 0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.tool_details = 1;
 
@@ -898,11 +912,11 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("*** Update File: src/example.c"),
 		  std::string::npos);
-	EXPECT_NE(output.find("│ 4 -old value"), std::string::npos);
-	EXPECT_NE(output.find("│ 5 +new value"), std::string::npos);
+	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
 	EXPECT_NE(output.find("-old value"), std::string::npos);
 	EXPECT_NE(output.find("+new value"), std::string::npos);
-	EXPECT_NE(output.find("*** End Patch"), std::string::npos);
+	EXPECT_EQ(output.find("*** End Patch"), std::string::npos);
+	EXPECT_EQ(output.find("│ 4 -old value"), std::string::npos);
 	EXPECT_EQ(output.find("input:"), std::string::npos);
 	EXPECT_EQ(output.find("patch display truncated"), std::string::npos);
 
@@ -921,6 +935,11 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 		"-old value\n"
 		"+new value\n"
 		"*** End Patch";
+	const char *content = "foo\nold value\nbar\n";
+
+	std::filesystem::create_directories(std::string(dir) + "/src");
+	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(),
+		content, std::strlen(content)), 0);
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	cJSON_AddStringToObject(call, "tool", "apply_patch");
@@ -936,8 +955,9 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
-	EXPECT_NE(output.find("│ 4 -old value"), std::string::npos);
-	EXPECT_NE(output.find("│ 5 +new value"), std::string::npos);
+	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
+	EXPECT_NE(output.find("-old value"), std::string::npos);
+	EXPECT_NE(output.find("+new value"), std::string::npos);
 
 	cJSON_Delete(call);
 	cJSON_Delete(result);

@@ -5,6 +5,7 @@ extern "C" {
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tools/apply_patch.h"
+#include "util/buf.h"
 #include "util/file.h"
 }
 
@@ -57,6 +58,21 @@ protected:
 		  char *error, size_t error_size)
 	{
 		return patch_apply(dir, input, result, error, error_size);
+	}
+
+	std::string preview(const char *input, int *rc, char *error,
+			    size_t error_size)
+	{
+		morph_buf_t out;
+		std::string text;
+
+		if (morph_buf_init(&out, 256) != 0)
+			return text;
+		*rc = patch_preview(dir, input, &out, error, error_size);
+		if (*rc == 0)
+			text = morph_buf_cstr(&out);
+		morph_buf_cleanup(&out);
+		return text;
 	}
 };
 
@@ -354,4 +370,110 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(context);
+}
+
+TEST_F(PatchTest, PreviewRendersUnifiedDiffWithFileLineNumbers)
+{
+	write_file("multi.txt", "foo\nbar\nbaz\nqux\n");
+	const char *input =
+		"*** Begin Patch\n"
+		"*** Update File: multi.txt\n"
+		"@@\n"
+		" foo\n"
+		"-bar\n"
+		"+BAR\n"
+		"@@\n"
+		" baz\n"
+		"-qux\n"
+		"+QUX\n"
+		"*** End Patch";
+	char error[512];
+	int rc = 0;
+	std::string diff = preview(input, &rc, error, sizeof(error));
+
+	ASSERT_EQ(rc, 0) << error;
+	EXPECT_EQ(diff,
+		"*** Update File: multi.txt\n"
+		"@@ -1,4 +1,4 @@\n"
+		" foo\n"
+		"-bar\n"
+		"+BAR\n"
+		" baz\n"
+		"-qux\n"
+		"+QUX\n");
+	EXPECT_EQ(read_file("multi.txt"), "foo\nbar\nbaz\nqux\n");
+}
+
+TEST_F(PatchTest, PreviewKeepsContextInsideReplacedBlock)
+{
+	write_file("first.txt", "foo\nbar\nbaz\n");
+	const char *input =
+		"*** Begin Patch\n"
+		"*** Update File: first.txt\n"
+		"@@\n"
+		"-foo\n"
+		"+FOO\n"
+		" bar\n"
+		"*** End Patch";
+	char error[512];
+	int rc = 0;
+	std::string diff = preview(input, &rc, error, sizeof(error));
+
+	ASSERT_EQ(rc, 0) << error;
+	EXPECT_EQ(diff,
+		"*** Update File: first.txt\n"
+		"@@ -1,2 +1,2 @@\n"
+		"-foo\n"
+		"+FOO\n"
+		" bar\n");
+}
+
+TEST_F(PatchTest, PreviewRendersAddAndDeleteFiles)
+{
+	write_file("gone.txt", "a\nb\n");
+	const char *add =
+		"*** Begin Patch\n"
+		"*** Add File: new.txt\n"
+		"+one\n"
+		"+two\n"
+		"*** End Patch";
+	const char *del =
+		"*** Begin Patch\n"
+		"*** Delete File: gone.txt\n"
+		"*** End Patch";
+	char error[512];
+	int rc = 0;
+
+	EXPECT_EQ(preview(add, &rc, error, sizeof(error)),
+		"*** Add File: new.txt\n"
+		"@@ -0,0 +1,2 @@\n"
+		"+one\n"
+		"+two\n");
+	EXPECT_EQ(rc, 0) << error;
+	EXPECT_EQ(preview(del, &rc, error, sizeof(error)),
+		"*** Delete File: gone.txt\n"
+		"@@ -1,2 +0,0 @@\n"
+		"-a\n"
+		"-b\n");
+	EXPECT_EQ(rc, 0) << error;
+	EXPECT_EQ(read_file("gone.txt"), "a\nb\n");
+}
+
+TEST_F(PatchTest, PreviewFailsWhenContextIsMissing)
+{
+	write_file("target.txt", "one\ntwo\n");
+	const char *input =
+		"*** Begin Patch\n"
+		"*** Update File: target.txt\n"
+		"@@\n"
+		"-absent\n"
+		"+present\n"
+		"*** End Patch";
+	char error[512];
+	int rc = 0;
+
+	EXPECT_EQ(preview(input, &rc, error, sizeof(error)), "");
+	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_NE(std::strstr(error, "failed to find expected lines"), nullptr);
+	EXPECT_EQ(read_file("target.txt"), "one\ntwo\n");
 }

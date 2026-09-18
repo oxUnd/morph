@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,8 @@
 #include <unistd.h>
 
 #define PATCH_MAX_BYTES (64 * 1024)
+#define PATCH_DIFF_CONTEXT 1
+#define PATCH_DIFF_CELLS_MAX (1u << 20)
 
 struct patch_chunk {
 	char *context;
@@ -949,6 +952,402 @@ static int patch_build_updated_content(const char *original,
 	morph_buf_cleanup(&output);
 	morph_array_cleanup(&replacements);
 	patch_string_array_cleanup(&source);
+	return rc;
+}
+
+enum patch_diff_kind {
+	PATCH_DIFF_COMMON,
+	PATCH_DIFF_REMOVE,
+	PATCH_DIFF_ADD,
+};
+
+struct patch_diff_op {
+	enum patch_diff_kind kind;
+	const char *text;
+};
+
+static int patch_diff_push(morph_array_t *ops, enum patch_diff_kind kind,
+			   const char *text)
+{
+	struct patch_diff_op *op = morph_array_push(ops);
+
+	if (!op)
+		MORPH_RETURN(-ENOMEM);
+	op->kind = kind;
+	op->text = text;
+	return 0;
+}
+
+static int patch_diff_emit(morph_buf_t *out, char prefix, const char *line)
+{
+	int rc = morph_buf_putc(out, prefix);
+
+	if (rc == 0)
+		rc = morph_buf_puts(out, line);
+	if (rc == 0)
+		rc = morph_buf_putc(out, '\n');
+	return rc;
+}
+
+/*
+ * Compute a minimal line diff between two blocks with an LCS table so that
+ * unchanged lines inside a chunk stay as context lines. Oversized blocks
+ * fall back to a plain remove-then-add listing to bound memory.
+ */
+static int patch_diff_block(char **old_lines, size_t old_count,
+			    char **new_lines, size_t new_count,
+			    morph_array_t *ops)
+{
+	size_t base = ops->nelts;
+	size_t rows = old_count + 1;
+	size_t cols = new_count + 1;
+	uint32_t *table = NULL;
+	size_t i;
+	size_t j;
+	int rc = 0;
+
+	if (rows * cols > PATCH_DIFF_CELLS_MAX) {
+		for (i = 0; i < old_count; i++) {
+			rc = patch_diff_push(ops, PATCH_DIFF_REMOVE, old_lines[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (j = 0; j < new_count; j++) {
+			rc = patch_diff_push(ops, PATCH_DIFF_ADD, new_lines[j]);
+			if (rc != 0)
+				return rc;
+		}
+		return 0;
+	}
+	table = calloc(rows * cols, sizeof(*table));
+	if (!table)
+		MORPH_RETURN(-ENOMEM);
+	for (i = 1; i < rows; i++) {
+		for (j = 1; j < cols; j++) {
+			if (strcmp(old_lines[i - 1], new_lines[j - 1]) == 0)
+				table[i * cols + j] =
+					table[(i - 1) * cols + (j - 1)] + 1;
+			else
+				table[i * cols + j] =
+					table[(i - 1) * cols + j] >=
+					table[i * cols + (j - 1)] ?
+					table[(i - 1) * cols + j] :
+					table[i * cols + (j - 1)];
+		}
+	}
+	i = old_count;
+	j = new_count;
+	while (i > 0 && j > 0) {
+		if (strcmp(old_lines[i - 1], new_lines[j - 1]) == 0) {
+			rc = patch_diff_push(ops, PATCH_DIFF_COMMON,
+				old_lines[i - 1]);
+			i--;
+			j--;
+		} else if (table[(i - 1) * cols + j] >
+			   table[i * cols + (j - 1)]) {
+			rc = patch_diff_push(ops, PATCH_DIFF_REMOVE,
+				old_lines[i - 1]);
+			i--;
+		} else {
+			rc = patch_diff_push(ops, PATCH_DIFF_ADD,
+				new_lines[j - 1]);
+			j--;
+		}
+		if (rc != 0)
+			break;
+	}
+	while (rc == 0 && i > 0)
+		rc = patch_diff_push(ops, PATCH_DIFF_REMOVE, old_lines[--i]);
+	while (rc == 0 && j > 0)
+		rc = patch_diff_push(ops, PATCH_DIFF_ADD, new_lines[--j]);
+	free(table);
+	if (rc != 0)
+		return rc;
+	if (ops->nelts > base) {
+		struct patch_diff_op *items = ops->elts;
+
+		for (i = base, j = ops->nelts - 1; i < j; i++, j--) {
+			struct patch_diff_op swap = items[i];
+
+			items[i] = items[j];
+			items[j] = swap;
+		}
+	}
+	return 0;
+}
+
+static int patch_build_file_ops(morph_array_t *source,
+				morph_array_t *replacements, morph_array_t *ops)
+{
+	char **source_lines = source->elts;
+	struct patch_replacement *items = replacements->elts;
+	size_t old_index = 0;
+	int rc;
+
+	for (size_t k = 0; k < replacements->nelts; k++) {
+		struct patch_replacement *replacement = &items[k];
+		char **new_lines = replacement->chunk->new_lines.elts;
+
+		while (old_index < replacement->start) {
+			rc = patch_diff_push(ops, PATCH_DIFF_COMMON,
+				source_lines[old_index]);
+			if (rc != 0)
+				return rc;
+			old_index++;
+		}
+		rc = patch_diff_block(source_lines + replacement->start,
+			replacement->old_count, new_lines, replacement->new_count,
+			ops);
+		if (rc != 0)
+			return rc;
+		old_index = replacement->start + replacement->old_count;
+	}
+	while (old_index < source->nelts) {
+		rc = patch_diff_push(ops, PATCH_DIFF_COMMON,
+			source_lines[old_index]);
+		if (rc != 0)
+			return rc;
+		old_index++;
+	}
+	return 0;
+}
+
+static int patch_render_diff_hunks(morph_buf_t *out, morph_array_t *ops)
+{
+	struct patch_diff_op *items = ops->elts;
+	size_t count = ops->nelts;
+	size_t index = 0;
+	int rc = 0;
+
+	while (index < count && rc == 0) {
+		size_t hunk_start;
+		size_t hunk_end;
+		size_t begin;
+		size_t end;
+		size_t old_start = 1;
+		size_t new_start = 1;
+		size_t old_len = 0;
+		size_t new_len = 0;
+		size_t back;
+		size_t forward;
+
+		while (index < count && items[index].kind == PATCH_DIFF_COMMON)
+			index++;
+		if (index >= count)
+			break;
+		hunk_start = index;
+		hunk_end = index;
+		while (hunk_end < count) {
+			size_t run_start = hunk_end;
+			size_t run_end;
+
+			while (run_start < count &&
+			       items[run_start].kind == PATCH_DIFF_COMMON)
+				run_start++;
+			if (run_start >= count)
+				break;
+			run_end = run_start;
+			while (run_end < count &&
+			       items[run_end].kind != PATCH_DIFF_COMMON)
+				run_end++;
+			if (run_start - hunk_end > 2 * PATCH_DIFF_CONTEXT)
+				break;
+			hunk_end = run_end;
+		}
+		begin = hunk_start;
+		end = hunk_end;
+		back = 0;
+		while (begin > 0 &&
+		       items[begin - 1].kind == PATCH_DIFF_COMMON &&
+		       back < PATCH_DIFF_CONTEXT) {
+			begin--;
+			back++;
+		}
+		forward = 0;
+		while (end < count &&
+		       items[end].kind == PATCH_DIFF_COMMON &&
+		       forward < PATCH_DIFF_CONTEXT) {
+			end++;
+			forward++;
+		}
+		for (size_t i = 0; i < begin; i++) {
+			if (items[i].kind != PATCH_DIFF_ADD)
+				old_start++;
+			if (items[i].kind != PATCH_DIFF_REMOVE)
+				new_start++;
+		}
+		for (size_t i = begin; i < end; i++) {
+			if (items[i].kind != PATCH_DIFF_ADD)
+				old_len++;
+			if (items[i].kind != PATCH_DIFF_REMOVE)
+				new_len++;
+		}
+		rc = morph_buf_printf(out, "@@ -%zu,%zu +%zu,%zu @@\n",
+			old_start, old_len, new_start, new_len);
+		for (size_t i = begin; i < end && rc == 0; i++) {
+			char prefix = items[i].kind == PATCH_DIFF_COMMON ? ' ' :
+				items[i].kind == PATCH_DIFF_REMOVE ? '-' : '+';
+
+			rc = patch_diff_emit(out, prefix, items[i].text);
+		}
+		index = end;
+	}
+	return rc;
+}
+
+static int patch_render_update_preview(morph_buf_t *out, morph_array_t *source,
+				       struct patch_hunk *hunk, char *error,
+				       size_t error_size)
+{
+	morph_array_t replacements;
+	morph_array_t ops;
+	int rc;
+
+	memset(&replacements, 0, sizeof(replacements));
+	memset(&ops, 0, sizeof(ops));
+	rc = morph_array_init(&replacements, hunk->chunks.nelts,
+		sizeof(struct patch_replacement));
+	if (rc != 0)
+		return rc;
+	rc = patch_compute_replacements(source, hunk, &replacements, error,
+		error_size);
+	if (rc == 0)
+		qsort(replacements.elts, replacements.nelts,
+			sizeof(struct patch_replacement),
+			patch_replacement_compare);
+	if (rc == 0)
+		rc = morph_array_init(&ops, source->nelts + 8,
+			sizeof(struct patch_diff_op));
+	if (rc == 0)
+		rc = patch_build_file_ops(source, &replacements, &ops);
+	if (rc == 0)
+		rc = patch_render_diff_hunks(out, &ops);
+	morph_array_cleanup(&ops);
+	morph_array_cleanup(&replacements);
+	return rc;
+}
+
+static int patch_render_add_preview(morph_buf_t *out, struct patch_hunk *hunk)
+{
+	morph_array_t lines;
+	char **entries;
+	int rc;
+
+	rc = patch_content_lines(hunk->add_content, &lines);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_printf(out, "*** Add File: %s\n@@ -0,0 +1,%zu @@\n",
+		hunk->path, lines.nelts);
+	entries = lines.elts;
+	for (size_t i = 0; rc == 0 && i < lines.nelts; i++)
+		rc = patch_diff_emit(out, '+', entries[i]);
+	patch_string_array_cleanup(&lines);
+	return rc;
+}
+
+static int patch_render_delete_preview(morph_buf_t *out, const char *path,
+				       const char *resolved, char *error,
+				       size_t error_size)
+{
+	char *content = file_read_all(resolved, NULL);
+	morph_array_t lines;
+	char **entries;
+	int rc;
+
+	if (!content)
+		return patch_error(error, error_size, -errno,
+			"failed to read file to delete %s", resolved);
+	rc = patch_content_lines(content, &lines);
+	free(content);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_printf(out, "*** Delete File: %s\n@@ -1,%zu +0,0 @@\n",
+		path, lines.nelts);
+	entries = lines.elts;
+	for (size_t i = 0; rc == 0 && i < lines.nelts; i++)
+		rc = patch_diff_emit(out, '-', entries[i]);
+	patch_string_array_cleanup(&lines);
+	return rc;
+}
+
+static int patch_render_hunk_preview(morph_buf_t *out, const char *root,
+				     struct patch_hunk *hunk, char *error,
+				     size_t error_size)
+{
+	char source_path[PATH_MAX];
+	char *original;
+	morph_array_t source;
+	int rc;
+
+	rc = patch_resolve_target(root, hunk->path, source_path,
+		sizeof(source_path), error, error_size);
+	if (rc != 0)
+		return rc;
+	if (hunk->action == PATCH_ACTION_ADD)
+		return patch_render_add_preview(out, hunk);
+	if (hunk->action == PATCH_ACTION_DELETE)
+		return patch_render_delete_preview(out, hunk->path, source_path,
+			error, error_size);
+	original = file_read_all(source_path, NULL);
+	if (!original)
+		return patch_error(error, error_size, -errno,
+			"failed to read file to update %s", source_path);
+	rc = patch_content_lines(original, &source);
+	free(original);
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_printf(out, "*** Update File: %s\n", hunk->path);
+	if (rc == 0 && hunk->move_path)
+		rc = morph_buf_printf(out, "*** Move to: %s\n", hunk->move_path);
+	if (rc == 0)
+		rc = patch_render_update_preview(out, &source, hunk, error,
+			error_size);
+	patch_string_array_cleanup(&source);
+	return rc;
+}
+
+int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
+		  char *error, size_t error_size)
+{
+	morph_array_t hunks;
+	struct patch_hunk *hunk;
+	char *root;
+	char *copy;
+	int rc;
+
+	if (!workdir || !input || !out)
+		MORPH_RETURN(-EINVAL);
+	memset(&hunks, 0, sizeof(hunks));
+	if (error && error_size > 0)
+		error[0] = '\0';
+	if (strlen(input) > PATCH_MAX_BYTES)
+		return patch_error(error, error_size, -EFBIG,
+			"patch exceeds the 64 KiB limit");
+	if (utf8valid(input) != NULL)
+		return patch_error(error, error_size, -EINVAL,
+			"patch is not valid UTF-8");
+	root = file_resolve_path(workdir);
+	if (!root)
+		MORPH_RETURN(-ENOMEM);
+	copy = strdup(input);
+	if (!copy) {
+		free(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
+	if (rc == 0)
+		rc = patch_parse(copy, &hunks, error, error_size);
+	if (rc == 0) {
+		morph_array_foreach(hunk, &hunks, struct patch_hunk) {
+			rc = patch_render_hunk_preview(out, root, hunk, error,
+				error_size);
+			if (rc != 0)
+				break;
+		}
+	}
+	patch_hunks_cleanup(&hunks);
+	free(copy);
+	free(root);
 	return rc;
 }
 

@@ -50,6 +50,15 @@ static int transcript_columns(void)
 	return cli_list_columns();
 }
 
+static const char *transcript_workdir(struct cli_context *ctx)
+{
+	if (!ctx)
+		return NULL;
+	if (ctx->workdir[0])
+		return ctx->workdir;
+	return runtime_workdir_get(ctx->runtime);
+}
+
 static const char *json_string(const cJSON *data, const char *key)
 {
 	const cJSON *item = cJSON_GetObjectItemCaseSensitive(data, key);
@@ -353,13 +362,15 @@ static void print_payload(const char *text)
 	}
 }
 
-static void print_details(const struct transcript_tool *tool, int args)
+static void print_details(const struct transcript_tool *tool, int args,
+			  const char *workdir)
 {
 	if (args) {
 		if (strcmp(tool->name, "apply_patch") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
 
-			cli_presentation_patch_diff(json_string(json, "input"));
+			cli_presentation_patch_diff(workdir,
+				json_string(json, "input"));
 			cJSON_Delete(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
@@ -471,7 +482,7 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 	}
 	morph_array_foreach(tool, &tr->tools, struct transcript_tool) {
 		print_tool(tool);
-		print_details(tool, 1);
+		print_details(tool, 1, transcript_workdir(ctx));
 		printf("\n");
 	}
 	if (!tr->tools.nelts)
@@ -839,7 +850,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		    (ctx->tool_details || !isatty(STDOUT_FILENO)))
 			print_tool(tool);
 		if (ctx->tool_details)
-			print_details(tool, 1);
+			print_details(tool, 1, transcript_workdir(ctx));
 		restore_live(ctx);
 		return 1;
 	}
@@ -873,12 +884,13 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (ctx->tool_details || !process_poll_is_running(tool))
 		print_tool(tool);
 	if (ctx->tool_details) {
-		print_details(tool, 0);
+		print_details(tool, 0, transcript_workdir(ctx));
 	} else if (tool->state > 0 &&
 		   strcmp(tool->name, "apply_patch") == 0) {
 		cJSON *args = cJSON_Parse(tool->args);
 
-		cli_presentation_patch_diff(json_string(args, "input"));
+		cli_presentation_patch_diff(transcript_workdir(ctx),
+			json_string(args, "input"));
 		cJSON_Delete(args);
 	}
 	restore_live(ctx);

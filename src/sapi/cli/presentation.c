@@ -1,5 +1,6 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/list_ui.h"
+#include "agent/patch.h"
 
 #define CLI_STREAM_NONE      0
 #define CLI_STREAM_THOUGHT   1
@@ -535,11 +536,21 @@ static void presentation_reasoning_delta(struct cli_context *ctx,
 	ctx->event_stream_visible = 1;
 }
 
+static const char *presentation_workdir(struct cli_context *ctx)
+{
+	if (!ctx)
+		return NULL;
+	if (ctx->workdir[0])
+		return ctx->workdir;
+	return runtime_workdir_get(ctx->runtime);
+}
+
 static const char *presentation_patch_style(const char *line)
 {
 	if (strncmp(line, "*** Add File: ", 14) == 0 ||
 	    strncmp(line, "*** Update File: ", 17) == 0 ||
-	    strncmp(line, "*** Delete File: ", 17) == 0)
+	    strncmp(line, "*** Delete File: ", 17) == 0 ||
+	    strncmp(line, "*** Move to: ", 13) == 0)
 		return ANSI_BOLD ANSI_CYAN;
 	if (strncmp(line, "@@", 2) == 0)
 		return ANSI_CYAN;
@@ -553,30 +564,48 @@ static const char *presentation_patch_style(const char *line)
 	return "";
 }
 
-void cli_presentation_patch_diff(const char *input)
+void cli_presentation_patch_diff(const char *workdir, const char *input)
 {
+	morph_buf_t preview;
+	char preview_error[256];
+	const char *text = input;
 	char *display;
 	char *line;
 	size_t input_len;
 	size_t display_len;
-	size_t line_number = 1;
-	size_t total_lines = 1;
 	int truncated;
 	int lines = 0;
-	int number_width = 1;
+	int preview_ready = 0;
 
 	if (!input || !input[0])
 		return;
-	input_len = strlen(input);
+	if (workdir && workdir[0]) {
+		memset(&preview, 0, sizeof(preview));
+		if (morph_buf_init(&preview, 256) == 0) {
+			if (patch_preview(workdir, input, &preview, preview_error,
+				sizeof(preview_error)) == 0) {
+				text = morph_buf_cstr(&preview);
+				preview_ready = 1;
+			} else {
+				morph_buf_cleanup(&preview);
+			}
+		}
+	}
+	input_len = strlen(text);
 	display = malloc(CLI_PATCH_BYTES_MAX + 1);
-	if (!display)
+	if (!display) {
+		if (preview_ready)
+			morph_buf_cleanup(&preview);
 		return;
+	}
 	{
-		char *safe = presentation_safe_dup(input, CLI_PATCH_BYTES_MAX,
+		char *safe = presentation_safe_dup(text, CLI_PATCH_BYTES_MAX,
 			UTF8_TERMINAL_TEXT_MULTILINE);
 
 		if (!safe) {
 			free(display);
+			if (preview_ready)
+				morph_buf_cleanup(&preview);
 			return;
 		}
 		display_len = strlen(safe);
@@ -589,21 +618,15 @@ void cli_presentation_patch_diff(const char *input)
 
 		if ((ch < 0x20 && ch != '\n' && ch != '\t') || ch == 0x7f)
 			*p = '?';
-		if (ch == '\n')
-			total_lines++;
 	}
-	for (size_t value = total_lines; value >= 10; value /= 10)
-		number_width++;
 	line = display;
 	while (*line && lines < CLI_PATCH_LINES_MAX) {
 		char *end = strchr(line, '\n');
 		const char *style = presentation_patch_style(line);
 		size_t len = end ? (size_t)(end - line) : strlen(line);
 
-		printf("  │ " ANSI_DIM "%*zu" ANSI_RESET " %s%.*s" ANSI_RESET
-		       "\n", number_width, line_number, style, (int)len, line);
+		printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
 		lines++;
-		line_number++;
 		if (!end) {
 			line += len;
 			break;
@@ -616,6 +639,8 @@ void cli_presentation_patch_diff(const char *input)
 		printf("  └ " ANSI_DIM "… patch display truncated" ANSI_RESET
 		       "\n");
 	free(display);
+	if (preview_ready)
+		morph_buf_cleanup(&preview);
 }
 
 static void presentation_tool_call(struct cli_context *ctx,
@@ -664,12 +689,14 @@ static void presentation_tool_call(struct cli_context *ctx,
 			printf(" %s", display);
 		printf("\n");
 		if (patch_input)
-			cli_presentation_patch_diff(patch_input);
+			cli_presentation_patch_diff(presentation_workdir(ctx),
+						   patch_input);
 	} else {
 		printf("\n" ANSI_YELLOW "◦" ANSI_RESET " "
 		       ANSI_BOLD "%s" ANSI_RESET "\n", title);
 		if (patch_input)
-			cli_presentation_patch_diff(patch_input);
+			cli_presentation_patch_diff(presentation_workdir(ctx),
+						   patch_input);
 		else
 			print_json_tree_children(args_item);
 		presentation_status(ctx, "Running tool…");
