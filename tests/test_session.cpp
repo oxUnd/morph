@@ -751,6 +751,50 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	arena_destroy(arena);
 }
 
+TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
+	struct model_history_item item = {};
+	struct arena *arena = arena_create(4096);
+	morph_array_t messages;
+
+	ASSERT_NE(arena, nullptr);
+	ASSERT_EQ(morph_array_init(&messages, 1,
+		sizeof(struct chat_message)), 0);
+	std::strcpy(item.kind, "assistant_tool_calls");
+	item.payload_json = const_cast<char *>(
+		"{\"calls\":[{\"tool_call_id\":\"legacy_1\","
+		"\"provider_call_id\":\"provider_1\","
+		"\"name\":\"bash_exec\",\"arguments\":\"{"
+		"\\\"command\\\":\\\"pwd\\\","
+		"\\\"timeout_seconds\\\":30,"
+		"\\\"cwd\\\":\\\"/tmp\\\","
+		"\\\"write_paths\\\":[\\\"/tmp\\\"]}\"}]}");
+	item.active = 1;
+	ASSERT_EQ(agent_history_build_chat_messages(&item, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 1U);
+	auto *message = static_cast<struct chat_message *>(
+		morph_array_get(&messages, 0));
+	ASSERT_NE(message, nullptr);
+	ASSERT_EQ(message->tool_call_count, 1);
+	EXPECT_STREQ(message->tool_calls[0].name, "exec");
+	EXPECT_STREQ(message->tool_calls[0].arguments, "{\"command\":\"pwd\"}");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
+TEST_F(SessionTest, MigratesLiveLegacyBashExecCall) {
+	struct tool_call call = {};
+
+	std::strcpy(call.name, "bash_exec");
+	call.input_kind = TOOL_INPUT_JSON;
+	call.arguments = strdup(
+		"{\"command\":\"make\",\"timeout_seconds\":60}");
+	ASSERT_NE(call.arguments, nullptr);
+	ASSERT_EQ(agent_history_migrate_legacy_tool_call(&call, nullptr), 0);
+	EXPECT_STREQ(call.name, "exec");
+	EXPECT_STREQ(call.arguments, "{\"command\":\"make\"}");
+	free(call.arguments);
+}
+
 TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	struct session s;
 	struct model_history_insert malformed = {};

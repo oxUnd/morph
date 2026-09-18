@@ -144,6 +144,7 @@ int apply_patch_init(struct tool_registry *registry,
 		.input_kind = TOOL_INPUT_TEXT,
 		.input_format = format,
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.flags = TOOL_FLAG_INTERNAL_APPROVAL,
 		.exec = apply_patch_exec,
 		.user_data = tool_context,
 	};

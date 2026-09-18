@@ -827,12 +827,18 @@ static int check_command_operation(struct tool_context *tctx,
 {
 	const char *command = op->action;
 	const char *cwd = op->scope;
+	char resolved_cwd[PATH_MAX];
 	int cmd_ok;
 	int cwd_ok;
 	enum tool_operation_verdict v;
 
 	if (!command)
 		MORPH_RETURN(-EINVAL);
+	if (cwd && tctx->workdir[0] && realpath(cwd, resolved_cwd) &&
+	    path_is_within(resolved_cwd, tctx->workdir)) {
+		*verdict = TOOL_OP_ALLOW;
+		return 0;
+	}
 
 	cmd_ok = command_is_allowed(tctx, command);
 	cwd_ok = command_scope_is_allowed(tctx, cwd);

@@ -1713,8 +1713,13 @@ static int react_normalize_tool_inputs(struct react_context *ctx,
 		MORPH_RETURN(-EINVAL);
 	for (int i = 0; i < response->tool_call_count; i++) {
 		struct tool_call *call = &response->tool_calls[i];
-		struct tool_entry *entry = tool_lookup(ctx->tools, call->name);
+		struct tool_entry *entry;
+		int rc = agent_history_migrate_legacy_tool_call(
+			call, response->arena);
 
+		if (rc != 0)
+			return rc;
+		entry = tool_lookup(ctx->tools, call->name);
 		if (!entry || entry->desc.input_kind == TOOL_INPUT_JSON) {
 			call->input_kind = TOOL_INPUT_JSON;
 			continue;

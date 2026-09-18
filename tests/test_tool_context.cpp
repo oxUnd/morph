@@ -644,11 +644,22 @@ TEST_F(ToolContextTest, CheckCommandCallbackAlwaysPersistsCwd) {
 	ASSERT_NE(tctx, nullptr);
 	tool_context_allow_command_pattern(tctx, "pwd");
 	tool_context_set_operation_approval(tctx, op_always, NULL);
-	EXPECT_EQ(check_command(tctx, "pwd", "/tmp"), 0);
+	EXPECT_EQ(check_command(tctx, "pwd", "/var"), 0);
 	EXPECT_EQ(op_always_calls, 1);
 	EXPECT_EQ(tctx->exec_allowed_dirs_count, 0);
-	EXPECT_EQ(check_command(tctx, "pwd", "/tmp"), 0);
+	EXPECT_EQ(check_command(tctx, "pwd", "/var"), 0);
 	EXPECT_EQ(op_always_calls, 1);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, WorkspaceCommandDoesNotRequireApproval) {
+	op_always_calls = 0;
+	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_always, NULL);
+	EXPECT_EQ(check_command(tctx, "rm -rf ./generated", "/tmp"), 0);
+	EXPECT_EQ(op_always_calls, 0);
 	tool_context_destroy(tctx);
 }
 

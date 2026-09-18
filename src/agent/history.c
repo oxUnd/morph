@@ -242,6 +242,43 @@ int agent_history_normalize_tool_arguments(const char *arguments,
 	return 0;
 }
 
+int agent_history_migrate_legacy_tool_call(struct tool_call *call,
+					   struct arena *arena)
+{
+	cJSON *arguments;
+	char *normalized;
+
+	if (!call || strcmp(call->name, "bash_exec") != 0)
+		return 0;
+	snprintf(call->name, sizeof(call->name), "%s", "exec");
+	if (call->input_kind != TOOL_INPUT_JSON || !call->arguments)
+		return 0;
+	arguments = cJSON_Parse(call->arguments);
+	if (!cJSON_IsObject(arguments)) {
+		cJSON_Delete(arguments);
+		return 0;
+	}
+	cJSON_DeleteItemFromObject(arguments, "timeout_seconds");
+	cJSON_DeleteItemFromObject(arguments, "cwd");
+	cJSON_DeleteItemFromObject(arguments, "write_paths");
+	normalized = cJSON_PrintUnformatted(arguments);
+	cJSON_Delete(arguments);
+	if (!normalized)
+		MORPH_RETURN(-ENOMEM);
+	if (arena) {
+		char *copy = arena_strdup(arena, normalized);
+
+		free(normalized);
+		if (!copy)
+			MORPH_RETURN(-ENOMEM);
+		call->arguments = copy;
+	} else {
+		free(call->arguments);
+		call->arguments = normalized;
+	}
+	return 0;
+}
+
 static int history_add_tool_calls(const struct model_history_item *item,
 				  morph_array_t *messages,
 				  struct arena *arena)
@@ -311,6 +348,13 @@ static int history_add_tool_calls(const struct model_history_item *item,
 		if (!tool_call->arguments) {
 			cJSON_Delete(root);
 			MORPH_RETURN(-ENOMEM);
+		}
+		int migrate_rc = agent_history_migrate_legacy_tool_call(
+			tool_call, arena);
+
+		if (migrate_rc != 0) {
+			cJSON_Delete(root);
+			return migrate_rc;
 		}
 	}
 	cJSON_Delete(root);

@@ -418,7 +418,6 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	rc = tool_register(reg, &exec_spec);
 	if (rc != 0) {
 		exec_runtime_destroy(runtime);
-		exec_runtime_destroy(runtime);
 		return rc;
 	}
 	memset(&process_spec, 0, sizeof(process_spec));

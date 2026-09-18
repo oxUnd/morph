@@ -317,6 +317,7 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 	struct tool_entry *entry = tool_lookup(&registry, "apply_patch");
 	ASSERT_NE(entry, nullptr);
 	EXPECT_EQ(entry->desc.input_kind, TOOL_INPUT_TEXT);
+	EXPECT_NE(entry->flags & TOOL_FLAG_INTERNAL_APPROVAL, 0);
 	EXPECT_NE(strstr(entry->desc.description, "below 4 KiB"), nullptr);
 	EXPECT_NE(strstr(entry->desc.description, "continuation marker"),
 		nullptr);
