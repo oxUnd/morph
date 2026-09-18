@@ -865,19 +865,193 @@ static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
 		"file-write-xattr file-write-unlink", resolved);
 }
 
-static int sandbox_sbpl_mach_service(morph_buf_t *profile,
-				     const char *service)
+static int sandbox_sbpl_base(morph_buf_t *profile)
 {
-	if (!profile || !service || !service[0])
-		MORPH_RETURN(-EINVAL);
-	for (const unsigned char *p = (const unsigned char *)service; *p; p++) {
-		if ((*p < 'a' || *p > 'z') && (*p < 'A' || *p > 'Z') &&
-		    (*p < '0' || *p > '9') && *p != '.' && *p != '_' &&
-		    *p != '-')
-			MORPH_RETURN(-EINVAL);
+	return morph_buf_puts(profile,
+		"(version 1)\n"
+		"(deny default)\n"
+		"(allow file-read-metadata)\n");
+}
+
+/*
+ * Generic macOS runtime policy.
+ *
+ * Keep the runtime layer deliberately application-agnostic.  A code agent
+ * must be able to launch ordinary CLI and GUI applications without carrying
+ * a growing per-application list of Mach/XPC services.
+ *
+ * The actual security boundary remains filesystem data/write access and
+ * network access, which are emitted separately from this runtime policy.
+ */
+static int sandbox_sbpl_runtime(morph_buf_t *profile)
+{
+	static const char *const runtime_read_paths[] = {
+		"/Applications",
+		"/bin",
+		"/sbin",
+		"/usr",
+		"/System",
+		"/Library",
+		"/private/etc",
+		"/private/var/db/timezone",
+		"/private/var/select",
+		"/opt",
+		"/nix",
+		NULL
+	};
+	int rc;
+
+	rc = morph_buf_puts(profile,
+		"(allow process-exec)\n"
+		"(allow process-fork)\n"
+		"(allow signal (target same-sandbox))\n"
+		"(allow process-info*)\n"
+		"(allow mach-lookup)\n"
+		"(allow mach-register)\n"
+		"(allow ipc-posix-sem)\n"
+		"(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n"
+		"(allow sysctl-read)\n"
+		"(allow pseudo-tty)\n"
+		"(allow file-read* file-write* file-ioctl "
+		"(literal \"/dev/null\"))\n"
+		"(allow file-read* file-write* file-ioctl "
+		"(literal \"/dev/zero\"))\n"
+		"(allow file-read* (literal \"/dev/random\"))\n"
+		"(allow file-read* (literal \"/dev/urandom\"))\n"
+		"(allow file-read* file-write* file-ioctl "
+		"(literal \"/dev/ptmx\"))\n"
+		"(allow file-read* file-write*\n"
+		"  (require-all (regex #\"^/dev/ttys[0-9]+\")\n"
+		"    (extension \"com.apple.sandbox.pty\")))\n"
+		"(allow file-ioctl (regex #\"^/dev/ttys[0-9]+\"))\n"
+		"(allow iokit-open\n"
+		"  (iokit-registry-entry-class \"RootDomainUserClient\"))\n");
+	if (rc != 0)
+		return rc;
+
+	for (int i = 0; runtime_read_paths[i]; i++) {
+		rc = sandbox_sbpl_path_rule(profile, "file-read*",
+			runtime_read_paths[i]);
+		if (rc != 0)
+			return rc;
 	}
-	return morph_buf_printf(profile,
-		"(allow mach-lookup (global-name \"%s\"))\n", service);
+
+	return 0;
+}
+
+static int sandbox_sbpl_temp(morph_buf_t *profile)
+{
+	int rc;
+
+	rc = sandbox_sbpl_darwin_user_dir(profile, _CS_DARWIN_USER_TEMP_DIR);
+	if (rc != 0)
+		return rc;
+
+	return sandbox_sbpl_path_rule(profile,
+		"file-read* file-write-data file-write-create "
+		"file-write-mode file-write-flags file-write-owner "
+		"file-write-times file-write-xattr file-write-unlink",
+		"/private/tmp");
+}
+
+static int sandbox_sbpl_filesystem(morph_buf_t *profile,
+				   const struct sandbox_config *cfg)
+{
+	char **paths;
+	int count;
+	int rc;
+
+	/*
+	 * Let runtimes traverse/probe the root without granting arbitrary file
+	 * contents.  The actual readable subtrees are emitted below.
+	 */
+	rc = morph_buf_puts(profile,
+		"(allow file-read-data (literal \"/\"))\n"
+		"(allow file-write-data (literal \"/dev/null\"))\n");
+	if (rc != 0)
+		return rc;
+
+	if (cfg->path_policy_enabled && cfg->read_all) {
+		rc = morph_buf_puts(profile, "(allow file-read*)\n");
+		if (rc != 0)
+			return rc;
+	} else {
+		paths = cfg->path_policy_enabled ? cfg->read_paths :
+			cfg->allowed_paths;
+		count = cfg->path_policy_enabled ? cfg->read_paths_count :
+			cfg->allowed_paths_count;
+
+		for (int i = 0; i < count; i++) {
+			if (!paths || !paths[i])
+				continue;
+			rc = sandbox_sbpl_path_rule(profile, "file-read*", paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+	}
+
+	if ((cfg->path_policy_enabled && cfg->allow_temp) ||
+	    (!cfg->path_policy_enabled &&
+	     (cfg->permissions & EXT_PERM_TEMP))) {
+		rc = sandbox_sbpl_temp(profile);
+		if (rc != 0)
+			return rc;
+	}
+
+	if (cfg->path_policy_enabled) {
+		for (int i = 0; i < cfg->write_paths_count; i++) {
+			if (!cfg->write_paths || !cfg->write_paths[i])
+				continue;
+			rc = sandbox_sbpl_path_rule(profile,
+				"file-write-data file-write-create "
+				"file-write-mode file-write-flags "
+				"file-write-owner file-write-times "
+				"file-write-xattr",
+				cfg->write_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+
+		for (int i = 0; i < cfg->delete_paths_count; i++) {
+			if (!cfg->delete_paths || !cfg->delete_paths[i])
+				continue;
+			rc = sandbox_sbpl_path_rule(profile, "file-write-unlink",
+				cfg->delete_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		return 0;
+	}
+
+	if (!(cfg->permissions & EXT_PERM_FILESYS))
+		return 0;
+
+	if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
+		for (int i = 0; i < cfg->allowed_paths_count; i++) {
+			if (!cfg->allowed_paths[i])
+				continue;
+			rc = sandbox_sbpl_path_rule(profile, "file-write*",
+				cfg->allowed_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		return 0;
+	}
+
+	return morph_buf_puts(profile, "(allow file-write*)\n");
+}
+
+static int sandbox_sbpl_network(morph_buf_t *profile,
+				const struct sandbox_config *cfg)
+{
+	int network_access;
+
+	network_access = cfg->path_policy_enabled ? cfg->network_access :
+		!!(cfg->permissions & EXT_PERM_NETWORK);
+	if (!network_access)
+		return 0;
+
+	return morph_buf_puts(profile, "(allow network*)\n");
 }
 
 int sandbox_apply_fs(const char **allowed_paths, int count,
@@ -899,252 +1073,36 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 
 int sandbox_enter_darwin(struct sandbox_config *cfg)
 {
-	static const char *const system_paths[] = {
-		"/bin", "/sbin", "/usr", "/System", "/dev",
-		"/private/etc", "/private/var/db/timezone",
-		"/private/var/select",
-		"/Library/Apple", "/Library/Frameworks",
-		"/Library/Preferences", "/opt", "/nix",
-		NULL
-	};
 	morph_buf_t sbpl;
 	char *profile;
 	char *errorbuf = NULL;
-	int network_access;
-	int process_exec;
 	int rc;
 	int rv;
 
 	if (!cfg)
 		return -EINVAL;
+
 	rc = morph_buf_init(&sbpl, 4096);
 	if (rc != 0)
 		return rc;
-	rc = morph_buf_puts(&sbpl,
-		"(version 1)\n"
-		"(deny default)\n"
-		"(allow file-read-metadata)\n");
-	if (rc != 0) {
-		morph_buf_cleanup(&sbpl);
-		return rc;
-	}
-	process_exec = cfg->path_policy_enabled ? cfg->process_exec :
-		!!(cfg->permissions & EXT_PERM_EXEC);
-	network_access = cfg->path_policy_enabled ? cfg->network_access :
-		!!(cfg->permissions & EXT_PERM_NETWORK);
-	if (cfg->path_policy_enabled && cfg->read_all)
-		(void)morph_buf_puts(&sbpl, "(allow file-read*)\n");
-	else {
-		char **paths = cfg->path_policy_enabled ? cfg->read_paths :
-			cfg->allowed_paths;
-		int count = cfg->path_policy_enabled ? cfg->read_paths_count :
-			cfg->allowed_paths_count;
 
-		for (int i = 0; i < count; i++) {
-			if (paths && paths[i]) {
-				rc = sandbox_sbpl_path_rule(&sbpl,
-					"file-read*", paths[i]);
-				if (rc != 0) {
-					morph_buf_cleanup(&sbpl);
-					return rc;
-				}
-			}
-		}
-		if (process_exec) {
-			rc = morph_buf_puts(&sbpl,
-				"(allow file-read-data (literal \"/\"))\n");
-			if (rc != 0) {
-				morph_buf_cleanup(&sbpl);
-				return rc;
-			}
-			for (int i = 0; system_paths[i]; i++) {
-				rc = sandbox_sbpl_path_rule(&sbpl,
-					"file-read*", system_paths[i]);
-				if (rc != 0) {
-					morph_buf_cleanup(&sbpl);
-					return rc;
-				}
-			}
-		}
-	}
-	rc = morph_buf_puts(&sbpl,
-		"(allow file-write-data (literal \"/dev/null\"))\n");
-	if (rc != 0) {
-		morph_buf_cleanup(&sbpl);
-		return rc;
-	}
-	if ((cfg->path_policy_enabled && cfg->allow_temp) ||
-	    (!cfg->path_policy_enabled &&
-	     (cfg->permissions & EXT_PERM_TEMP))) {
-		rc = sandbox_sbpl_darwin_user_dir(&sbpl,
-			_CS_DARWIN_USER_TEMP_DIR);
-		if (rc == 0)
-			rc = sandbox_sbpl_path_rule(&sbpl,
-				"file-write-data file-write-create "
-				"file-write-mode file-write-flags "
-				"file-write-owner file-write-times "
-				"file-write-xattr file-write-unlink",
-				"/private/tmp");
-		if (rc != 0) {
-			morph_buf_cleanup(&sbpl);
-			return rc;
-		}
-	}
-	if (cfg->path_policy_enabled) {
-		for (int i = 0; i < cfg->write_paths_count; i++) {
-			if (cfg->write_paths && cfg->write_paths[i]) {
-				rc = sandbox_sbpl_path_rule(&sbpl,
-					"file-write-data file-write-create "
-					"file-write-mode file-write-flags "
-					"file-write-owner file-write-times "
-					"file-write-xattr",
-					cfg->write_paths[i]);
-				if (rc != 0) {
-					morph_buf_cleanup(&sbpl);
-					return rc;
-				}
-			}
-		}
-		for (int i = 0; i < cfg->delete_paths_count; i++) {
-			if (cfg->delete_paths && cfg->delete_paths[i]) {
-				rc = sandbox_sbpl_path_rule(&sbpl,
-					"file-write-unlink",
-					cfg->delete_paths[i]);
-				if (rc != 0) {
-					morph_buf_cleanup(&sbpl);
-					return rc;
-				}
-			}
-		}
-	} else if (cfg->permissions & EXT_PERM_FILESYS) {
-		if (cfg->allowed_paths_count > 0 && cfg->allowed_paths) {
-			for (int i = 0; i < cfg->allowed_paths_count; i++) {
-				if (cfg->allowed_paths[i]) {
-					rc = sandbox_sbpl_path_rule(&sbpl,
-						"file-write*",
-						cfg->allowed_paths[i]);
-					if (rc != 0) {
-						morph_buf_cleanup(&sbpl);
-						return rc;
-					}
-				}
-			}
-		} else {
-			(void)morph_buf_puts(&sbpl, "(allow file-write*)\n");
-		}
-	}
-	if (network_access)
-		(void)morph_buf_puts(&sbpl, "(allow network*)\n");
-	if (process_exec)
-		(void)morph_buf_puts(&sbpl, "(allow process-exec)\n");
-	if ((cfg->path_policy_enabled && cfg->allow_process_info) ||
-	    (!cfg->path_policy_enabled &&
-	     (cfg->permissions & EXT_PERM_PROCESS_INFO)))
-		(void)morph_buf_puts(&sbpl,
-			"(allow process-info* (target same-sandbox))\n");
-	if ((cfg->path_policy_enabled && cfg->allow_ipc) ||
-	    (!cfg->path_policy_enabled &&
-	     (cfg->permissions & EXT_PERM_IPC)))
-		(void)morph_buf_puts(&sbpl,
-			"(allow ipc-posix-sem)\n"
-			"(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n");
-	if ((cfg->path_policy_enabled && cfg->allow_pty) ||
-	    (!cfg->path_policy_enabled &&
-	     (cfg->permissions & EXT_PERM_PTY)))
-		(void)morph_buf_puts(&sbpl,
-			"(allow pseudo-tty)\n"
-			"(allow file-read* file-write* file-ioctl "
-			"(literal \"/dev/ptmx\"))\n"
-			"(allow file-read* file-write*\n"
-			"  (require-all (regex #\"^/dev/ttys[0-9]+\")\n"
-			"    (extension \"com.apple.sandbox.pty\")))\n"
-			"(allow file-ioctl (regex #\"^/dev/ttys[0-9]+\"))\n");
-	for (int i = 0; i < cfg->allowed_mach_services_count; i++) {
-		if (!cfg->allowed_mach_services ||
-		    !cfg->allowed_mach_services[i])
-			continue;
-		rc = sandbox_sbpl_mach_service(&sbpl,
-			cfg->allowed_mach_services[i]);
-		if (rc != 0) {
-			morph_buf_cleanup(&sbpl);
-			return rc;
-		}
-	}
-	(void)morph_buf_puts(&sbpl,
-		"(allow process-fork)\n"
-		"(allow signal (target same-sandbox))\n"
-		"(allow mach-lookup\n"
-		"  (global-name \"com.apple.system.opendirectoryd.libinfo\")\n"
-		"  (global-name \"com.apple.system.opendirectoryd.membership\")\n"
-		"  (global-name \"com.apple.system.DirectoryService.libinfo_v1\")\n"
-		"  (global-name \"com.apple.logd\")\n"
-		"  (global-name \"com.apple.system.logger\")\n"
-		"  (global-name \"com.apple.trustd\")\n"
-		"  (global-name \"com.apple.trustd.agent\")\n"
-		"  (global-name \"com.apple.PowerManagement.control\"))\n"
-		"(allow sysctl-read\n"
-		"  (sysctl-name-prefix \"hw.optional.\")\n"
-		"  (sysctl-name-prefix \"hw.perflevel\")\n"
-		"  (sysctl-name-prefix \"kern.proc.pgrp.\")\n"
-		"  (sysctl-name-prefix \"kern.proc.pid.\")\n"
-		"  (sysctl-name-prefix \"net.routetable.\")\n"
-		"  (sysctl-name \"hw.activecpu\")\n"
-		"  (sysctl-name \"hw.busfrequency_compat\")\n"
-		"  (sysctl-name \"hw.byteorder\")\n"
-		"  (sysctl-name \"hw.cacheconfig\")\n"
-		"  (sysctl-name \"hw.cachelinesize\")\n"
-		"  (sysctl-name \"hw.cachelinesize_compat\")\n"
-		"  (sysctl-name \"hw.cpufamily\")\n"
-		"  (sysctl-name \"hw.cpufrequency\")\n"
-		"  (sysctl-name \"hw.cpufrequency_compat\")\n"
-		"  (sysctl-name \"hw.cputype\")\n"
-		"  (sysctl-name \"hw.l1dcachesize_compat\")\n"
-		"  (sysctl-name \"hw.l1icachesize_compat\")\n"
-		"  (sysctl-name \"hw.l2cachesize_compat\")\n"
-		"  (sysctl-name \"hw.l3cachesize_compat\")\n"
-		"  (sysctl-name \"hw.logicalcpu\")\n"
-		"  (sysctl-name \"hw.logicalcpu_max\")\n"
-		"  (sysctl-name \"hw.machine\")\n"
-		"  (sysctl-name \"hw.memsize\")\n"
-		"  (sysctl-name \"hw.model\")\n"
-		"  (sysctl-name \"hw.ncpu\")\n"
-		"  (sysctl-name \"hw.nperflevels\")\n"
-		"  (sysctl-name \"hw.packages\")\n"
-		"  (sysctl-name \"hw.pagesize\")\n"
-		"  (sysctl-name \"hw.pagesize_compat\")\n"
-		"  (sysctl-name \"hw.physicalcpu\")\n"
-		"  (sysctl-name \"hw.physicalcpu_max\")\n"
-		"  (sysctl-name \"hw.tbfrequency_compat\")\n"
-		"  (sysctl-name \"hw.vectorunit\")\n"
-		"  (sysctl-name \"kern.argmax\")\n"
-		"  (sysctl-name \"kern.hostname\")\n"
-		"  (sysctl-name \"kern.maxfilesperproc\")\n"
-		"  (sysctl-name \"kern.maxproc\")\n"
-		"  (sysctl-name \"kern.osproductversion\")\n"
-		"  (sysctl-name \"kern.osrelease\")\n"
-		"  (sysctl-name \"kern.ostype\")\n"
-		"  (sysctl-name \"kern.osvariant_status\")\n"
-		"  (sysctl-name \"kern.osversion\")\n"
-		"  (sysctl-name \"kern.secure_kernel\")\n"
-		"  (sysctl-name \"kern.sysv.semmns\")\n"
-		"  (sysctl-name \"kern.usrstack64\")\n"
-		"  (sysctl-name \"kern.version\")\n"
-		"  (sysctl-name \"machdep.cpu.brand_string\")\n"
-		"  (sysctl-name \"sysctl.proc_cputype\")\n"
-		"  (sysctl-name \"vm.loadavg\"))\n");
-	(void)morph_buf_puts(&sbpl,
-		"(allow sysctl-write\n"
-		"  (sysctl-name \"kern.grade_cputype\"))\n"
-		"(allow iokit-open\n"
-		"  (iokit-registry-entry-class "
-		"\"RootDomainUserClient\"))\n");
+	rc = sandbox_sbpl_base(&sbpl);
+	if (rc == 0)
+		rc = sandbox_sbpl_runtime(&sbpl);
+	if (rc == 0)
+		rc = sandbox_sbpl_filesystem(&sbpl, cfg);
+	if (rc == 0)
+		rc = sandbox_sbpl_network(&sbpl, cfg);
+
 	if (rc != 0 || sbpl.failed) {
 		morph_buf_cleanup(&sbpl);
 		return rc != 0 ? rc : -ENOMEM;
 	}
+
 	profile = morph_buf_detach(&sbpl);
 	if (!profile)
 		return -ENOMEM;
+
 	log_info("sandbox: macOS SBPL profile:\n%s", profile);
 	rv = sandbox_init(profile, 0, &errorbuf);
 	free(profile);
