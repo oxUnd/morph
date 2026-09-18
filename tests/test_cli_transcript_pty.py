@@ -40,7 +40,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='morph-transcript-') as temp:
         directory = Path(temp)
         (directory / 'first.txt').write_text('FIRST_PRIVATE_RESULT\n', encoding='utf-8')
-        (directory / 'second.txt').write_text('SECOND_PRIVATE_RESULT 中文🙂\n', encoding='utf-8')
+        second_content = ''.join(f'SECOND_LINE_{i:03d}\n' for i in range(200))
+        second_content += 'SECOND_PRIVATE_RESULT 中文🙂\n'
+        (directory / 'second.txt').write_text(second_content, encoding='utf-8')
         terminal = Terminal(driver, directory, server.server_port)
         terminal.child.setwinsize(24, 120)
         terminal.screen = AlternateScreen(120, 24)
@@ -79,6 +81,18 @@ def main():
             assert 'SECOND_PRIVATE_RESULT 中文🙂' in expanded, expanded
             assert 'Tool details' in expanded, expanded
             assert '草稿🙂 tail' not in expanded, expanded
+            terminal.send('\x1b[<64;10;10M')
+            wheel = terminal.snapshot('mouse wheel scrolls details')
+            assert wheel != expanded, wheel
+            burst_start = len(terminal.raw)
+            terminal.child.send('\x1b[A' * 200)
+            terminal.pump(0.5)
+            drained = terminal.snapshot('wheel burst drains without momentum backlog')
+            assert 'SECOND_LINE_000' in drained, drained
+            assert len(terminal.raw) - burst_start < 30000, terminal.raw[burst_start:]
+            terminal.send('\x1b[F')
+            assert 'SECOND_PRIVATE_RESULT 中文🙂' in terminal.snapshot(
+                'end restores follow'), terminal.raw
             terminal.send('\x1b[5~')
             page = terminal.snapshot('page up through details')
             assert page != expanded, page

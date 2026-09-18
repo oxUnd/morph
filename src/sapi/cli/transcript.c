@@ -536,7 +536,7 @@ void cli_transcript_view_suspend(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->details_visible)
 		return;
-	fprintf(stdout, "\033[?1049l\033[?25h");
+	fprintf(stdout, "\033[?1006l\033[?1000l\033[?1049l\033[?25h");
 	if (ctx->transcript) {
 		morph_buf_t *pending = &ctx->transcript->deferred;
 
@@ -551,7 +551,7 @@ void cli_transcript_view_resume(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->details_open || ctx->details_visible)
 		return;
-	fprintf(stdout, "\033[?1049h\033[?25l");
+	fprintf(stdout, "\033[?1049h\033[?25l\033[?1000h\033[?1006h");
 	morph_buf_reset(&ctx->transcript->previous_frame);
 	ctx->details_visible = 1;
 	cli_transcript_view_render(ctx, 0);

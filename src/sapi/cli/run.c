@@ -9,6 +9,7 @@
 #define CLI_BANNER_LABEL_WIDTH 12
 #define CLI_BANNER_HINT_WIDTH 18
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
+#define CLI_DETAILS_INPUT_BURST_MAX 1024
 
 /* ---- sigint ---- */
 
@@ -493,54 +494,88 @@ static void cli_readline_close_details(struct cli_context *ctx)
 		cli_readline_resume(ctx, draft, point);
 }
 
-static void cli_readline_details_input(struct cli_context *ctx)
+static int cli_readline_details_escape(int page, int *scroll)
 {
-	unsigned char key;
 	char sequence[16] = {0};
 	size_t count = 0;
-	int scroll = 0;
+	struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
+	unsigned button;
+	unsigned column;
+	unsigned row;
+	char action;
+
+	while (count < sizeof(sequence) - 1 && poll(&fd, 1, 30) > 0) {
+		if (read(STDIN_FILENO, sequence + count, 1) != 1)
+			break;
+		count++;
+		if ((count > 1 && sequence[count - 1] >= 'A' &&
+		     sequence[count - 1] <= 'Z') || sequence[count - 1] == '~' ||
+		    sequence[count - 1] == 'm')
+			break;
+	}
+	if (!count)
+		return 1;
+	if (strcmp(sequence, "[A") == 0)
+		*scroll = -1;
+	else if (strcmp(sequence, "[B") == 0)
+		*scroll = 1;
+	else if (strcmp(sequence, "[5~") == 0)
+		*scroll = -page;
+	else if (strcmp(sequence, "[6~") == 0)
+		*scroll = page;
+	else if (strcmp(sequence, "[H") == 0 || strcmp(sequence, "[1~") == 0)
+		*scroll = INT_MIN;
+	else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
+		*scroll = INT_MAX;
+	else if (sscanf(sequence, "[<%u;%u;%u%c",
+			&button, &column, &row, &action) == 4 &&
+		 action == 'M' && (button & 64U))
+		*scroll = (button & 1U) ? 3 : -3;
+	return 0;
+}
+
+static void cli_readline_details_input(struct cli_context *ctx)
+{
 	struct winsize size = {0};
+	struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
+	int pending_scroll = 0;
 	int page = 20;
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row > 4)
 		page = size.ws_row - 4;
+	for (int i = 0; i < CLI_DETAILS_INPUT_BURST_MAX; i++) {
+		unsigned char key;
+		int scroll = 0;
 
-	if (read(STDIN_FILENO, &key, 1) != 1) {
-		cli_readline_close_details(ctx);
-		return;
-	}
-	if (key == 0x1b) {
-		struct pollfd fd = {.fd = STDIN_FILENO, .events = POLLIN};
-
-		while (count < sizeof(sequence) - 1 && poll(&fd, 1, 30) > 0) {
-			if (read(STDIN_FILENO, sequence + count, 1) != 1)
-				break;
-			count++;
-			if ((count > 1 && sequence[count - 1] >= 'A' &&
-			     sequence[count - 1] <= 'Z') || sequence[count - 1] == '~')
-				break;
-		}
-		if (!count) {
+		if (read(STDIN_FILENO, &key, 1) != 1) {
 			cli_readline_close_details(ctx);
 			return;
 		}
-		if (strcmp(sequence, "[A") == 0)
-			scroll = -1;
-		else if (strcmp(sequence, "[B") == 0)
-			scroll = 1;
-		else if (strcmp(sequence, "[5~") == 0)
-			scroll = -page;
-		else if (strcmp(sequence, "[6~") == 0)
-			scroll = page;
-		else if (strcmp(sequence, "[H") == 0 || strcmp(sequence, "[1~") == 0)
-			scroll = INT_MIN;
-		else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
-			scroll = INT_MAX;
-	} else if (key == 0x0f) {
-		cli_readline_close_details(ctx);
-		return;
+		if (key == 0x1b) {
+			if (cli_readline_details_escape(page, &scroll)) {
+				cli_readline_close_details(ctx);
+				return;
+			}
+		} else if (key == 0x0f) {
+			cli_readline_close_details(ctx);
+			return;
+		}
+		if (scroll == INT_MIN || scroll == INT_MAX) {
+			if (pending_scroll)
+				cli_transcript_view_render(ctx, pending_scroll);
+			cli_transcript_view_render(ctx, scroll);
+			pending_scroll = 0;
+		} else if (scroll) {
+			if ((scroll > 0 && pending_scroll <= INT_MAX - scroll) ||
+			    (scroll < 0 && pending_scroll >= INT_MIN - scroll))
+				pending_scroll += scroll;
+		}
+		fd.revents = 0;
+		if (poll(&fd, 1, 0) <= 0)
+			break;
 	}
-	cli_transcript_view_render(ctx, scroll);
+	if (pending_scroll)
+		cli_transcript_view_render(ctx, pending_scroll);
 }
 
 static void cli_readline_configure(void)
