@@ -16,6 +16,7 @@ extern "C" {
 #include <sys/stat.h>
 #if defined(__linux__)
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #endif
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -490,6 +491,126 @@ TEST(SandboxEnterTest, LinuxProcessInfoAllowsOtherProcEntries)
 			return 11;
 		close(fd);
 		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+#endif
+
+/*
+ * The seccomp policy is a denylist with a default ALLOW action.  These
+ * tests guard against a regression to the old allowlist behaviour, in
+ * which any syscall not explicitly listed failed with ENOSYS or killed
+ * the process.
+ */
+#if defined(__linux__)
+TEST(SandboxSeccompTest, AllowsUnlistedSyscalls)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		errno = 0;
+		long rv = syscall(SYS_getcpu, NULL, NULL, NULL);
+		if (rv != 0)
+			return 11;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxSeccompTest, DeniesDangerousSyscallsWithEperm)
+{
+#if defined(SYS_io_uring_setup)
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		errno = 0;
+		long rv = syscall(SYS_io_uring_setup, 1, NULL);
+		if (rv != -1 || errno != EPERM)
+			return 11;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+#else
+	GTEST_SKIP() << "SYS_io_uring_setup unavailable";
+#endif
+}
+
+TEST(SandboxSeccompTest, AllowsUnixSocketpairWithoutNetwork)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+		int fds[2];
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0)
+			return 11;
+		close(fds[0]);
+		close(fds[1]);
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxSeccompTest, DeniesInternetSocketsWithoutNetwork)
+{
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		errno = 0;
+		int fd = socket(AF_INET, SOCK_STREAM, 0);
+		if (fd >= 0) {
+			close(fd);
+			return 11;
+		}
+		if (errno != EPERM)
+			return 12;
+		return 0;
+	});
+
+	EXPECT_EQ(rc, 0);
+}
+
+TEST(SandboxSeccompTest, RunsPythonIfAvailable)
+{
+	if (access("/usr/bin/python3", X_OK) != 0)
+		GTEST_SKIP() << "python3 not installed";
+
+	int rc = run_in_child([]() {
+		struct sandbox_config cfg = {};
+		char *write_paths[] = { (char *)"/tmp" };
+
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.process_exec = 1;
+		cfg.allow_temp = 1;
+		cfg.write_paths = write_paths;
+		cfg.write_paths_count = 1;
+		cfg.delete_paths = write_paths;
+		cfg.delete_paths_count = 1;
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		execl("/usr/bin/python3", "python3", "-c",
+		      "import ssl, ctypes, hashlib", (char *)NULL);
+		return 11;
 	});
 
 	EXPECT_EQ(rc, 0);

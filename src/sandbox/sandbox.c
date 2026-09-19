@@ -238,6 +238,7 @@ int sandbox_apply_env(const char **allowed_env, int count,
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <linux/landlock.h>
 
 /* LANDLOCK_ACCESS_FS_TRUNCATE was added in Landlock ABI v3 (kernel 6.2).
@@ -276,6 +277,20 @@ static int ll_get_abi(void)
 static int ll_add_rule(int ruleset_fd, int path_fd, uint64_t access)
 {
 	struct landlock_path_beneath_attr pb;
+	struct stat st;
+
+	/*
+	 * Landlock rejects directory-only rights (READ_DIR, MAKE_*,
+	 * REMOVE_*) when the rule target is not a directory.  Mask them
+	 * out so callers can pass a uniform access mask for both files
+	 * and directories.
+	 */
+	if (fstat(path_fd, &st) == 0 && !S_ISDIR(st.st_mode))
+		access &= LANDLOCK_ACCESS_FS_READ_FILE |
+			  LANDLOCK_ACCESS_FS_WRITE_FILE |
+			  LANDLOCK_ACCESS_FS_EXECUTE |
+			  LANDLOCK_ACCESS_FS_TRUNCATE |
+			  LANDLOCK_ACCESS_FS_IOCTL_DEV;
 	memset(&pb, 0, sizeof(pb));
 	pb.allowed_access = access;
 	pb.parent_fd = path_fd;
@@ -652,21 +667,92 @@ static int sandbox_add_landlock_paths(int ruleset_fd, char **paths,
 			continue;
 		fd = open(paths[i], O_PATH | O_CLOEXEC);
 		if (fd < 0) {
-			log_err("sandbox: cannot open policy path '%s': %s",
-				paths[i], strerror(errno));
-			MORPH_RETURN_ERRNO();
+			/*
+			 * Optional policy paths may legitimately not
+			 * exist on this host; skipping one must not
+			 * disable the whole sandbox.
+			 */
+			log_warn("sandbox: skipping policy path '%s': %s",
+				 paths[i], strerror(errno));
+			continue;
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
-			int err = errno;
-
+			log_warn("sandbox: cannot add policy path '%s': %s",
+				 paths[i], strerror(errno));
 			close(fd);
-			log_err("sandbox: cannot add policy path '%s': %s",
-				paths[i], strerror(err));
-			MORPH_RETURN(-err);
+			continue;
 		}
 		close(fd);
 	}
 	return 0;
+}
+
+static void sandbox_try_writable_path(int ruleset_fd, uint64_t access,
+				      const char *path)
+{
+	int fd;
+
+	if (!path || !*path)
+		return;
+	fd = open(path, O_PATH | O_CLOEXEC);
+	if (fd < 0)
+		return;
+	if (ll_add_rule(ruleset_fd, fd, access) < 0)
+		log_warn("sandbox: default writable path '%s' rejected: %s",
+			 path, strerror(errno));
+	close(fd);
+}
+
+static void sandbox_add_xdg_dir(int ruleset_fd, uint64_t access,
+				const char *var, const char *fallback)
+{
+	const char *value = getenv(var);
+	const char *home;
+	char path[PATH_MAX];
+	int written;
+
+	if (value && *value) {
+		sandbox_try_writable_path(ruleset_fd, access, value);
+		return;
+	}
+	home = getenv("HOME");
+	if (!home || !*home)
+		return;
+	written = snprintf(path, sizeof(path), "%s/%s", home, fallback);
+	if (written > 0 && (size_t)written < sizeof(path))
+		sandbox_try_writable_path(ruleset_fd, access, path);
+}
+
+static void sandbox_add_default_writable_dirs(int ruleset_fd,
+					      uint64_t access)
+{
+	static const char *const home_dirs[] = {
+		".cargo", ".rustup", ".npm", ".gradle", ".m2", ".go",
+		"go", ".local/bin", NULL
+	};
+	const char *home = getenv("HOME");
+	const char *runtime = getenv("XDG_RUNTIME_DIR");
+	char path[PATH_MAX];
+
+	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_CACHE_HOME", ".cache");
+	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_CONFIG_HOME", ".config");
+	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_DATA_HOME",
+			    ".local/share");
+	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_STATE_HOME",
+			    ".local/state");
+	if (runtime && *runtime)
+		sandbox_try_writable_path(ruleset_fd, access, runtime);
+	sandbox_try_writable_path(ruleset_fd, access, "/var/tmp");
+	sandbox_try_writable_path(ruleset_fd, access, "/dev/tty");
+	if (!home || !*home)
+		return;
+	for (int i = 0; home_dirs[i]; i++) {
+		int written = snprintf(path, sizeof(path), "%s/%s", home,
+				       home_dirs[i]);
+
+		if (written > 0 && (size_t)written < sizeof(path))
+			sandbox_try_writable_path(ruleset_fd, access, path);
+	}
 }
 
 static int sandbox_apply_path_policy(struct sandbox_config *cfg)
@@ -740,6 +826,8 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	}
 	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
 		cfg->write_paths_count, write_access);
+	if (rc == 0)
+		sandbox_add_default_writable_dirs(ruleset_fd, write_access);
 	if (rc == 0) {
 		char *dev_null = (char *)"/dev/null";
 		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
@@ -763,13 +851,13 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 				 abi);
 	}
 	if (rc == 0 && cfg->allow_temp) {
-		uint64_t temp_access = write_access |
+		uint64_t temp_access = write_access | delete_access |
 			(handled & read_access);
 
 		rc = sandbox_add_landlock_temp(ruleset_fd, temp_access);
 	}
 	if (rc == 0 && cfg->allow_ipc) {
-		uint64_t ipc_access = write_access |
+		uint64_t ipc_access = write_access | delete_access |
 			(handled & read_access);
 
 		rc = sandbox_add_landlock_ipc(ruleset_fd, ipc_access);
@@ -1149,6 +1237,7 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 #include <linux/filter.h>
 #include <linux/audit.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #if defined(__x86_64__)
@@ -1172,18 +1261,85 @@ static int fb_append(morph_array_t *fb, struct sock_filter insn)
 	return 0;
 }
 
-static int fb_allow(morph_array_t *fb, int nr)
+/*
+ * Seccomp-BPF denylist.
+ *
+ * The default action is ALLOW on purpose.  A syscall allowlist cannot
+ * keep pace with the kernel and breaks runtimes (Node.js, Python, Go,
+ * glibc) whenever they issue a syscall that is not listed.  We only
+ * deny the operations that would let the sandbox escape, and return
+ * EPERM so callers degrade gracefully instead of being killed.
+ */
+
+#define SECCOMP_DENY(fbp, nr) \
+	do { \
+		rc = fb_deny_syscall((fbp), (nr)); \
+		if (rc < 0) \
+			goto fail; \
+	} while (0)
+
+#define SECCOMP_DENY_IP_SOCKET(fbp, nr) \
+	do { \
+		rc = fb_deny_ip_socket((fbp), (nr)); \
+		if (rc < 0) \
+			goto fail; \
+	} while (0)
+
+static int fb_stmt(morph_array_t *fb, unsigned int code, unsigned int k)
+{
+	return fb_append(fb, (struct sock_filter)BPF_STMT(code, k));
+}
+
+static int fb_jump(morph_array_t *fb, unsigned int code, unsigned int k,
+		   unsigned char jt, unsigned char jf)
+{
+	return fb_append(fb, (struct sock_filter)BPF_JUMP(code, k, jt, jf));
+}
+
+static int fb_ret(morph_array_t *fb, unsigned int action)
+{
+	return fb_stmt(fb, BPF_RET | BPF_K, action);
+}
+
+static int fb_deny_syscall(morph_array_t *fb, int nr)
 {
 	int rc;
+
 	if (nr < 0)
-		return -EINVAL;
-	rc = fb_append(fb, (struct sock_filter)BPF_JUMP(
-		BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)nr, 0, 1));
+		return 0;
+	rc = fb_jump(fb, BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)nr, 0, 1);
 	if (rc < 0)
 		return rc;
-	rc = fb_append(fb, (struct sock_filter)BPF_STMT(
-		BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
-	return rc;
+	return fb_ret(fb, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+}
+
+/*
+ * Deny a socket-family syscall unless arg0 is AF_UNIX.  Emits a
+ * self-contained block that reloads the syscall number afterwards so
+ * the linear nr dispatch can continue.
+ */
+static int fb_deny_ip_socket(morph_array_t *fb, int nr)
+{
+	int rc;
+
+	if (nr < 0)
+		return 0;
+	rc = fb_jump(fb, BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)nr, 0, 4);
+	if (rc < 0)
+		return rc;
+	rc = fb_stmt(fb, BPF_LD | BPF_W | BPF_ABS,
+		(unsigned int)offsetof(struct seccomp_data, args[0]));
+	if (rc < 0)
+		return rc;
+	rc = fb_jump(fb, BPF_JMP | BPF_JEQ | BPF_K, (unsigned int)AF_UNIX,
+		1, 0);
+	if (rc < 0)
+		return rc;
+	rc = fb_ret(fb, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+	if (rc < 0)
+		return rc;
+	return fb_stmt(fb, BPF_LD | BPF_W | BPF_ABS,
+		(unsigned int)offsetof(struct seccomp_data, nr));
 }
 
 int sandbox_apply_seccomp(unsigned int permissions)
@@ -1195,494 +1351,216 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	if (rc < 0)
 		return rc;
 
-	rc = fb_append(&fb, (struct sock_filter)BPF_STMT(
-		BPF_LD | BPF_W | BPF_ABS,
-		offsetof(struct seccomp_data, arch)));
+	rc = fb_stmt(&fb, BPF_LD | BPF_W | BPF_ABS,
+		(unsigned int)offsetof(struct seccomp_data, arch));
 	if (rc < 0)
 		goto fail;
-	rc = fb_append(&fb, (struct sock_filter)BPF_JUMP(
-		BPF_JMP | BPF_JEQ | BPF_K, SECCOMP_ARCH_NR, 1, 0));
+	rc = fb_jump(&fb, BPF_JMP | BPF_JEQ | BPF_K, SECCOMP_ARCH_NR, 1, 0);
 	if (rc < 0)
 		goto fail;
-	rc = fb_append(&fb, (struct sock_filter)BPF_STMT(
-		BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+	rc = fb_ret(&fb, SECCOMP_RET_KILL_PROCESS);
 	if (rc < 0)
 		goto fail;
-
-	rc = fb_append(&fb, (struct sock_filter)BPF_STMT(
-		BPF_LD | BPF_W | BPF_ABS,
-		offsetof(struct seccomp_data, nr)));
+	rc = fb_stmt(&fb, BPF_LD | BPF_W | BPF_ABS,
+		(unsigned int)offsetof(struct seccomp_data, nr));
 	if (rc < 0)
 		goto fail;
 
-	rc = fb_allow(&fb, SYS_read);       if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_write);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_close);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_fstat);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_lseek);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_mmap);       if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_mprotect);    if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_munmap);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_brk);        if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_rt_sigaction); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_rt_sigprocmask); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_ioctl);      if (rc < 0) goto fail;
-#ifdef SYS_poll
-	rc = fb_allow(&fb, SYS_poll);       if (rc < 0) goto fail;
+	/*
+	 * Process introspection: ptrace and friends can read or rewrite
+	 * another same-uid process (including the agent itself), which
+	 * landlock does not mediate.  Always deny them; EXT_PERM_PROCESS_INFO
+	 * only widens /proc visibility.
+	 */
+#ifdef SYS_ptrace
+	SECCOMP_DENY(&fb, SYS_ptrace);
 #endif
-	rc = fb_allow(&fb, SYS_mremap);     if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_nanosleep);  if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_clock_gettime); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_getpid);     if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_sendfile);   if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_dup);       if (rc < 0) goto fail;
-#ifdef SYS_dup2
-	rc = fb_allow(&fb, SYS_dup2);       if (rc < 0) goto fail;
+#ifdef SYS_process_vm_readv
+	SECCOMP_DENY(&fb, SYS_process_vm_readv);
 #endif
-	rc = fb_allow(&fb, SYS_getdents64); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_gettid);     if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_futex);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_sched_yield); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_exit_group); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_exit);       if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_writev);     if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_readv);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_set_robust_list); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_getrandom);  if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_gettimeofday); if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_getrlimit);  if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_ppoll);      if (rc < 0) goto fail;
-	rc = fb_allow(&fb, SYS_pipe2);      if (rc < 0) goto fail;
-
-#ifdef __NR_openat
-	rc = fb_allow(&fb, __NR_openat);    if (rc < 0) goto fail;
+#ifdef SYS_process_vm_writev
+	SECCOMP_DENY(&fb, SYS_process_vm_writev);
 #endif
-#ifdef __NR_faccessat
-	rc = fb_allow(&fb, __NR_faccessat);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_newfstatat
-	rc = fb_allow(&fb, __NR_newfstatat); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_readlinkat
-	rc = fb_allow(&fb, __NR_readlinkat); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_set_tid_address
-	rc = fb_allow(&fb, __NR_set_tid_address); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_clock_nanosleep
-	rc = fb_allow(&fb, __NR_clock_nanosleep); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_renameat2
-	rc = fb_allow(&fb, __NR_renameat2); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_open
-	rc = fb_allow(&fb, __NR_open);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_access
-	rc = fb_allow(&fb, __NR_access);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_stat
-	rc = fb_allow(&fb, __NR_stat);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_lstat
-	rc = fb_allow(&fb, __NR_lstat);     if (rc < 0) goto fail;
+#ifdef SYS_pidfd_getfd
+	SECCOMP_DENY(&fb, SYS_pidfd_getfd);
 #endif
 
 	/*
-	 * Additional syscalls needed by most programs (glibc, dynamic
-	 * linker, V8/Node.js, Python, Go, etc.).  These are read-only
-	 * or process-internal operations that do not compromise sandbox
-	 * security.
+	 * Host-level operations that need capabilities we never grant.
+	 * EPERM matches what an unprivileged caller would observe.
 	 */
-#ifdef __NR_fcntl
-	rc = fb_allow(&fb, __NR_fcntl);          if (rc < 0) goto fail;
+#ifdef SYS_mount
+	SECCOMP_DENY(&fb, SYS_mount);
 #endif
-#ifdef __NR_prlimit64
-	rc = fb_allow(&fb, __NR_prlimit64);      if (rc < 0) goto fail;
+#ifdef SYS_umount2
+	SECCOMP_DENY(&fb, SYS_umount2);
 #endif
-#ifdef __NR_rseq
-	rc = fb_allow(&fb, __NR_rseq);           if (rc < 0) goto fail;
+#ifdef SYS_pivot_root
+	SECCOMP_DENY(&fb, SYS_pivot_root);
 #endif
-#ifdef __NR_getuid
-	rc = fb_allow(&fb, __NR_getuid);         if (rc < 0) goto fail;
+#ifdef SYS_chroot
+	SECCOMP_DENY(&fb, SYS_chroot);
 #endif
-#ifdef __NR_getgid
-	rc = fb_allow(&fb, __NR_getgid);         if (rc < 0) goto fail;
+#ifdef SYS_kexec_load
+	SECCOMP_DENY(&fb, SYS_kexec_load);
 #endif
-#ifdef __NR_geteuid
-	rc = fb_allow(&fb, __NR_geteuid);        if (rc < 0) goto fail;
+#ifdef SYS_kexec_file_load
+	SECCOMP_DENY(&fb, SYS_kexec_file_load);
 #endif
-#ifdef __NR_getegid
-	rc = fb_allow(&fb, __NR_getegid);        if (rc < 0) goto fail;
+#ifdef SYS_reboot
+	SECCOMP_DENY(&fb, SYS_reboot);
 #endif
-#ifdef __NR_getppid
-	rc = fb_allow(&fb, __NR_getppid);        if (rc < 0) goto fail;
+#ifdef SYS_swapon
+	SECCOMP_DENY(&fb, SYS_swapon);
 #endif
-#ifdef __NR_getcwd
-	rc = fb_allow(&fb, __NR_getcwd);         if (rc < 0) goto fail;
+#ifdef SYS_swapoff
+	SECCOMP_DENY(&fb, SYS_swapoff);
 #endif
-#ifdef __NR_uname
-	rc = fb_allow(&fb, __NR_uname);          if (rc < 0) goto fail;
+#ifdef SYS_init_module
+	SECCOMP_DENY(&fb, SYS_init_module);
 #endif
-#ifdef __NR_statx
-	rc = fb_allow(&fb, __NR_statx);          if (rc < 0) goto fail;
+#ifdef SYS_finit_module
+	SECCOMP_DENY(&fb, SYS_finit_module);
 #endif
-#ifdef __NR_statfs
-	rc = fb_allow(&fb, __NR_statfs);         if (rc < 0) goto fail;
+#ifdef SYS_delete_module
+	SECCOMP_DENY(&fb, SYS_delete_module);
 #endif
-#ifdef __NR_fstatfs
-	rc = fb_allow(&fb, __NR_fstatfs);        if (rc < 0) goto fail;
+#ifdef SYS_bpf
+	SECCOMP_DENY(&fb, SYS_bpf);
 #endif
-#ifdef __NR_sigaltstack
-	rc = fb_allow(&fb, __NR_sigaltstack);    if (rc < 0) goto fail;
+#ifdef SYS_userfaultfd
+	SECCOMP_DENY(&fb, SYS_userfaultfd);
 #endif
-#ifdef __NR_madvise
-	rc = fb_allow(&fb, __NR_madvise);        if (rc < 0) goto fail;
+#ifdef SYS_perf_event_open
+	SECCOMP_DENY(&fb, SYS_perf_event_open);
 #endif
-#ifdef __NR_pread64
-	rc = fb_allow(&fb, __NR_pread64);        if (rc < 0) goto fail;
+#ifdef SYS_keyctl
+	SECCOMP_DENY(&fb, SYS_keyctl);
 #endif
-#ifdef __NR_pwrite64
-	rc = fb_allow(&fb, __NR_pwrite64);       if (rc < 0) goto fail;
+#ifdef SYS_add_key
+	SECCOMP_DENY(&fb, SYS_add_key);
 #endif
-#ifdef __NR_dup3
-	rc = fb_allow(&fb, __NR_dup3);           if (rc < 0) goto fail;
+#ifdef SYS_request_key
+	SECCOMP_DENY(&fb, SYS_request_key);
 #endif
-#ifdef __NR_rt_sigreturn
-	rc = fb_allow(&fb, __NR_rt_sigreturn);   if (rc < 0) goto fail;
+#ifdef SYS_acct
+	SECCOMP_DENY(&fb, SYS_acct);
 #endif
-#ifdef __NR_sched_getaffinity
-	rc = fb_allow(&fb, __NR_sched_getaffinity); if (rc < 0) goto fail;
+#ifdef SYS_quotactl
+	SECCOMP_DENY(&fb, SYS_quotactl);
 #endif
-#ifdef __NR_sched_getparam
-	rc = fb_allow(&fb, __NR_sched_getparam); if (rc < 0) goto fail;
+#ifdef SYS_open_by_handle_at
+	SECCOMP_DENY(&fb, SYS_open_by_handle_at);
 #endif
-#ifdef __NR_sched_getscheduler
-	rc = fb_allow(&fb, __NR_sched_getscheduler); if (rc < 0) goto fail;
+#ifdef SYS_name_to_handle_at
+	SECCOMP_DENY(&fb, SYS_name_to_handle_at);
 #endif
-#ifdef __NR_clock_getres
-	rc = fb_allow(&fb, __NR_clock_getres);   if (rc < 0) goto fail;
+#ifdef SYS_io_uring_setup
+	SECCOMP_DENY(&fb, SYS_io_uring_setup);
 #endif
-#ifdef __NR_memfd_create
-	rc = fb_allow(&fb, __NR_memfd_create);   if (rc < 0) goto fail;
+#ifdef SYS_io_uring_enter
+	SECCOMP_DENY(&fb, SYS_io_uring_enter);
 #endif
-#ifdef __NR_sysinfo
-	rc = fb_allow(&fb, __NR_sysinfo);        if (rc < 0) goto fail;
-#endif
-#ifdef __NR_fadvise64
-	rc = fb_allow(&fb, __NR_fadvise64);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_inotify_init1
-	rc = fb_allow(&fb, __NR_inotify_init1);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_inotify_add_watch
-	rc = fb_allow(&fb, __NR_inotify_add_watch); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_getpriority
-	rc = fb_allow(&fb, __NR_getpriority);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_restart_syscall
-	rc = fb_allow(&fb, __NR_restart_syscall); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_faccessat2
-	rc = fb_allow(&fb, __NR_faccessat2);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_landlock_create_ruleset
-	rc = fb_allow(&fb, __NR_landlock_create_ruleset); if (rc < 0) goto fail;
+#ifdef SYS_io_uring_register
+	SECCOMP_DENY(&fb, SYS_io_uring_register);
 #endif
 
 	/*
-	 * Event-driven I/O syscalls (epoll, eventfd, timerfd).
-	 * Needed by runtimes that use Linux's event loop primitives.
+	 * Without EXT_PERM_EXEC the process may still fork and run its
+	 * own code, but it must not load a new program image.
 	 */
-#ifdef __NR_epoll_create1
-	rc = fb_allow(&fb, __NR_epoll_create1);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_epoll_ctl
-	rc = fb_allow(&fb, __NR_epoll_ctl);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_epoll_pwait
-	rc = fb_allow(&fb, __NR_epoll_pwait);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_epoll_wait
-	rc = fb_allow(&fb, __NR_epoll_wait);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_eventfd2
-	rc = fb_allow(&fb, __NR_eventfd2);       if (rc < 0) goto fail;
-#endif
-#ifdef __NR_timerfd_create
-	rc = fb_allow(&fb, __NR_timerfd_create); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_timerfd_settime
-	rc = fb_allow(&fb, __NR_timerfd_settime); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_timerfd_gettime
-	rc = fb_allow(&fb, __NR_timerfd_gettime); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_signalfd4
-	rc = fb_allow(&fb, __NR_signalfd4);      if (rc < 0) goto fail;
-#endif
-
-	/*
-	 * io_uring syscalls — Node.js 22+ probes these at startup.
-	 * If blocked, Node.js falls back to epoll, but since our
-	 * default action is KILL_PROCESS (not ERRNO), a missing
-	 * allow entry crashes the process.
-	 */
-#ifdef __NR_io_uring_setup
-	rc = fb_allow(&fb, __NR_io_uring_setup); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_io_uring_enter
-	rc = fb_allow(&fb, __NR_io_uring_enter); if (rc < 0) goto fail;
-#endif
-
-	if (permissions & EXT_PERM_NETWORK) {
-#ifdef __NR_socket
-		rc = fb_allow(&fb, __NR_socket);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_connect
-		rc = fb_allow(&fb, __NR_connect);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_bind
-		rc = fb_allow(&fb, __NR_bind);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_listen
-		rc = fb_allow(&fb, __NR_listen);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_accept
-		rc = fb_allow(&fb, __NR_accept);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_accept4
-		rc = fb_allow(&fb, __NR_accept4);   if (rc < 0) goto fail;
-#endif
-		rc = fb_allow(&fb, SYS_recvfrom);   if (rc < 0) goto fail;
-		rc = fb_allow(&fb, SYS_sendto);     if (rc < 0) goto fail;
-#ifdef __NR_recvmsg
-		rc = fb_allow(&fb, __NR_recvmsg);   if (rc < 0) goto fail;
-#endif
-#ifdef __NR_sendmsg
-		rc = fb_allow(&fb, __NR_sendmsg);   if (rc < 0) goto fail;
-#endif
-		rc = fb_allow(&fb, SYS_setsockopt); if (rc < 0) goto fail;
-		rc = fb_allow(&fb, SYS_getsockopt); if (rc < 0) goto fail;
-#ifdef __NR_getsockname
-		rc = fb_allow(&fb, __NR_getsockname); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_getpeername
-		rc = fb_allow(&fb, __NR_getpeername); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_shutdown
-		rc = fb_allow(&fb, __NR_shutdown);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_sendmmsg
-		rc = fb_allow(&fb, __NR_sendmmsg);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_recvmmsg
-		rc = fb_allow(&fb, __NR_recvmmsg);  if (rc < 0) goto fail;
-#endif
-	}
-
-	if (permissions & EXT_PERM_IPC) {
-#ifdef __NR_socketpair
-		rc = fb_allow(&fb, __NR_socketpair); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_ftruncate
-		rc = fb_allow(&fb, __NR_ftruncate); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_unlink
-		rc = fb_allow(&fb, __NR_unlink);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_unlinkat
-		rc = fb_allow(&fb, __NR_unlinkat);  if (rc < 0) goto fail;
-#endif
-	}
-
-	if (permissions & EXT_PERM_EXEC) {
-		rc = fb_allow(&fb, SYS_execve);     if (rc < 0) goto fail;
-#ifdef __NR_execveat
-		rc = fb_allow(&fb, __NR_execveat);  if (rc < 0) goto fail;
-#endif
-		/*
-		 * Thread / process management syscalls needed by
-		 * interpreters and runtimes (Node.js, Python, Go, etc.)
-		 * that spawn worker threads or child processes.
-		 */
-#ifdef __NR_clone
-		rc = fb_allow(&fb, __NR_clone);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_clone3
-		rc = fb_allow(&fb, __NR_clone3);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_wait4
-		rc = fb_allow(&fb, __NR_wait4);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_setpgid
-		rc = fb_allow(&fb, __NR_setpgid);   if (rc < 0) goto fail;
-#endif
-#ifdef __NR_capget
-		rc = fb_allow(&fb, __NR_capget);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_prctl
-		rc = fb_allow(&fb, __NR_prctl);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_socketpair
-		rc = fb_allow(&fb, __NR_socketpair); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_chdir
-		rc = fb_allow(&fb, __NR_chdir);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_pidfd_open
-		rc = fb_allow(&fb, __NR_pidfd_open); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_pidfd_send_signal
-		rc = fb_allow(&fb, __NR_pidfd_send_signal); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_tgkill
-		rc = fb_allow(&fb, __NR_tgkill);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_rt_tgsigqueueinfo
-		rc = fb_allow(&fb, __NR_rt_tgsigqueueinfo); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_getgroups
-		rc = fb_allow(&fb, __NR_getgroups);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_getresuid
-		rc = fb_allow(&fb, __NR_getresuid);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_getresgid
-		rc = fb_allow(&fb, __NR_getresgid);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_setgroups
-		rc = fb_allow(&fb, __NR_setgroups);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_setsid
-		rc = fb_allow(&fb, __NR_setsid);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_kill
-		rc = fb_allow(&fb, __NR_kill);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_capset
-		rc = fb_allow(&fb, __NR_capset);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_setpriority
-		rc = fb_allow(&fb, __NR_setpriority); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_sched_setaffinity
-		rc = fb_allow(&fb, __NR_sched_setaffinity); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_sched_setscheduler
-		rc = fb_allow(&fb, __NR_sched_setscheduler); if (rc < 0) goto fail;
-#endif
-	}
-
-	if (permissions & EXT_PERM_FILESYS) {
-#ifdef __NR_mkdir
-		rc = fb_allow(&fb, __NR_mkdir);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_mkdirat
-		rc = fb_allow(&fb, __NR_mkdirat);   if (rc < 0) goto fail;
-#endif
-#ifdef __NR_unlink
-		rc = fb_allow(&fb, __NR_unlink);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_unlinkat
-		rc = fb_allow(&fb, __NR_unlinkat);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_chmod
-		rc = fb_allow(&fb, __NR_chmod);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_fchmod
-		rc = fb_allow(&fb, __NR_fchmod);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_fchmodat
-		rc = fb_allow(&fb, __NR_fchmodat);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_rename
-		rc = fb_allow(&fb, __NR_rename);    if (rc < 0) goto fail;
-#endif
-#ifdef __NR_renameat
-		rc = fb_allow(&fb, __NR_renameat);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_rmdir
-		rc = fb_allow(&fb, __NR_rmdir);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_readlink
-		rc = fb_allow(&fb, __NR_readlink);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_creat
-		rc = fb_allow(&fb, __NR_creat);     if (rc < 0) goto fail;
-#endif
-#ifdef __NR_truncate
-		rc = fb_allow(&fb, __NR_truncate);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_ftruncate
-		rc = fb_allow(&fb, __NR_ftruncate); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_fallocate
-		rc = fb_allow(&fb, __NR_fallocate); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_copy_file_range
-		rc = fb_allow(&fb, __NR_copy_file_range); if (rc < 0) goto fail;
-#endif
-#ifdef __NR_fdatasync
-		rc = fb_allow(&fb, __NR_fdatasync);  if (rc < 0) goto fail;
-#endif
-#ifdef __NR_flock
-		rc = fb_allow(&fb, __NR_flock);      if (rc < 0) goto fail;
-#endif
-#ifdef __NR_symlinkat
-		rc = fb_allow(&fb, __NR_symlinkat);  if (rc < 0) goto fail;
+	if (!(permissions & EXT_PERM_EXEC)) {
+#ifdef SYS_execve
+		SECCOMP_DENY(&fb, SYS_execve);
+#endif
+#ifdef SYS_execveat
+		SECCOMP_DENY(&fb, SYS_execveat);
 #endif
 	}
 
 	/*
-	 * Default action for unmatched syscalls.
-	 *
-	 * Without EXEC permission: KILL_PROCESS — strict sandbox,
-	 * no subprocess execution expected.
-	 *
-	 * With EXEC permission: ERRNO(ENOSYS) — subprocess-heavy
-	 * extensions (e.g., Chromium) may use syscalls we haven't
-	 * explicitly allowed.  Returning ENOSYS lets them degrade
-	 * gracefully instead of being killed, and allows their own
-	 * seccomp filters to stack on top of ours without conflict.
+	 * Network isolation: only AF_UNIX sockets are reachable and the
+	 * socket setup/teardown calls are blocked.  socketpair(AF_UNIX)
+	 * and recvfrom stay available so runtimes can manage children.
 	 */
-	unsigned int default_action;
-	if (permissions & EXT_PERM_EXEC)
-		default_action = SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA);
-	else
-		default_action = SECCOMP_RET_KILL_PROCESS;
+	if (!(permissions & EXT_PERM_NETWORK)) {
+#ifdef SYS_socket
+		SECCOMP_DENY_IP_SOCKET(&fb, SYS_socket);
+#endif
+#ifdef SYS_socketpair
+		SECCOMP_DENY_IP_SOCKET(&fb, SYS_socketpair);
+#endif
+#ifdef SYS_connect
+		SECCOMP_DENY(&fb, SYS_connect);
+#endif
+#ifdef SYS_bind
+		SECCOMP_DENY(&fb, SYS_bind);
+#endif
+#ifdef SYS_listen
+		SECCOMP_DENY(&fb, SYS_listen);
+#endif
+#ifdef SYS_accept
+		SECCOMP_DENY(&fb, SYS_accept);
+#endif
+#ifdef SYS_accept4
+		SECCOMP_DENY(&fb, SYS_accept4);
+#endif
+#ifdef SYS_sendto
+		SECCOMP_DENY(&fb, SYS_sendto);
+#endif
+#ifdef SYS_sendmsg
+		SECCOMP_DENY(&fb, SYS_sendmsg);
+#endif
+#ifdef SYS_sendmmsg
+		SECCOMP_DENY(&fb, SYS_sendmmsg);
+#endif
+#ifdef SYS_recvmmsg
+		SECCOMP_DENY(&fb, SYS_recvmmsg);
+#endif
+#ifdef SYS_getsockopt
+		SECCOMP_DENY(&fb, SYS_getsockopt);
+#endif
+#ifdef SYS_setsockopt
+		SECCOMP_DENY(&fb, SYS_setsockopt);
+#endif
+#ifdef SYS_getpeername
+		SECCOMP_DENY(&fb, SYS_getpeername);
+#endif
+#ifdef SYS_getsockname
+		SECCOMP_DENY(&fb, SYS_getsockname);
+#endif
+#ifdef SYS_shutdown
+		SECCOMP_DENY(&fb, SYS_shutdown);
+#endif
+	}
 
-	rc = fb_append(&fb, (struct sock_filter)BPF_STMT(
-		BPF_RET | BPF_K, default_action));
+	rc = fb_ret(&fb, SECCOMP_RET_ALLOW);
 	if (rc < 0)
 		goto fail;
 
 	/*
-	 * PR_SET_NO_NEW_PRIVS may have already been set by
-	 * sandbox_apply_fs (landlock). Setting it again is harmless.
+	 * PR_SET_NO_NEW_PRIVS may already be set by sandbox_apply_fs
+	 * (landlock).  Setting it again is harmless.
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
-		int err = errno;
+		rc = -errno;
 		log_err("sandbox: PR_SET_NO_NEW_PRIVS failed: %s",
-			strerror(err));
-		rc = -err;
+			strerror(errno));
 		goto fail;
 	}
 
 	struct sock_fprog prog;
+
 	prog.len = (unsigned short)fb.nelts;
 	prog.filter = fb.elts;
-
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
-		int err = errno;
+		rc = -errno;
 		log_err("sandbox: SECCOMP_MODE_FILTER failed: %s",
-			strerror(err));
-		rc = -err;
+			strerror(errno));
 		goto fail;
 	}
 
-	log_info("sandbox: seccomp-bpf filter installed (%zu instructions, "
+	log_info("sandbox: seccomp denylist installed (%zu instructions, "
 		 "perms=0x%x)", fb.nelts, permissions);
 	morph_array_cleanup(&fb);
 	return 0;
@@ -1691,6 +1569,9 @@ fail:
 	morph_array_cleanup(&fb);
 	return rc;
 }
+
+#undef SECCOMP_DENY
+#undef SECCOMP_DENY_IP_SOCKET
 
 #endif /* __linux__ */
 

@@ -10,9 +10,11 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define EXEC_DEFAULT_TIMEOUT_MS 120000u
 #define EXEC_DEFAULT_YIELD_MS 10000u
@@ -249,6 +251,97 @@ static int result_snapshot(struct tool_result *result,
 	return rc;
 }
 
+/*
+ * A linked git worktree stores its metadata in the main repository's
+ * .git directory.  That path sits outside the workdir, so grant it
+ * explicitly when workdir's .git is a file pointing elsewhere.  The
+ * shared object store lives in the common dir, which we resolve
+ * through the gitdir's "commondir" file.
+ */
+static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
+					  size_t out_size)
+{
+	char git_path[PATH_MAX];
+	char line[PATH_MAX];
+	char candidate[PATH_MAX];
+	char resolved[PATH_MAX];
+	const char *gitdir;
+	struct stat st;
+	FILE *file;
+
+	if (out_size > 0)
+		out[0] = '\0';
+	if (!workdir || !*workdir || out_size == 0)
+		return;
+	if (snprintf(git_path, sizeof(git_path), "%s/.git", workdir) <= 0 ||
+	    strlen(git_path) >= sizeof(git_path))
+		return;
+	if (stat(git_path, &st) != 0 || !S_ISREG(st.st_mode))
+		return;
+	file = fopen(git_path, "r");
+	if (!file)
+		return;
+	if (!fgets(line, sizeof(line), file)) {
+		fclose(file);
+		return;
+	}
+	fclose(file);
+	if (strncmp(line, "gitdir:", 7) != 0)
+		return;
+	gitdir = line + 7;
+	while (*gitdir == ' ' || *gitdir == '\t')
+		gitdir++;
+	if (snprintf(candidate, sizeof(candidate), "%s", gitdir) <= 0)
+		return;
+	{
+		size_t length = strlen(candidate);
+
+		while (length > 0 && (candidate[length - 1] == '\n' ||
+				      candidate[length - 1] == '\r'))
+			candidate[--length] = '\0';
+	}
+	if (candidate[0] == '/') {
+		if (!realpath(candidate, resolved))
+			return;
+	} else if (snprintf(git_path, sizeof(git_path), "%s/%s", workdir,
+			    candidate) <= 0 || !realpath(git_path, resolved)) {
+		return;
+	}
+	if (snprintf(git_path, sizeof(git_path), "%s/commondir",
+		     resolved) > 0) {
+		file = fopen(git_path, "r");
+		if (file) {
+			char common[PATH_MAX];
+			char common_path[PATH_MAX];
+			char common_resolved[PATH_MAX];
+			size_t length;
+
+			if (fgets(common, sizeof(common), file)) {
+				length = strlen(common);
+				while (length > 0 &&
+				       (common[length - 1] == '\n' ||
+					common[length - 1] == '\r'))
+					common[--length] = '\0';
+				if (common[0] == '/') {
+					snprintf(common_path,
+						 sizeof(common_path), "%s",
+						 common);
+				} else if (snprintf(common_path,
+						    sizeof(common_path), "%s/%s",
+						    resolved, common) <= 0) {
+					common_path[0] = '\0';
+				}
+				if (common_path[0] &&
+				    realpath(common_path, common_resolved))
+					snprintf(resolved, sizeof(resolved),
+						 "%s", common_resolved);
+			}
+			fclose(file);
+		}
+	}
+	snprintf(out, out_size, "%s", resolved);
+}
+
 static int exec_run(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
@@ -259,12 +352,13 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	struct process_spawn_options options;
 	struct sandbox_config sandbox;
 	char resolved_workdir[PATH_MAX];
+	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
 	const char *write_grants[TOOL_CONTEXT_ALLOW_MAX];
 	const char *delete_grants[TOOL_CONTEXT_ALLOW_MAX];
-	char *read_paths[10];
-	char *write_paths[TOOL_CONTEXT_ALLOW_MAX + 2];
-	char *delete_paths[TOOL_CONTEXT_ALLOW_MAX + 1];
+	char *read_paths[12];
+	char *write_paths[TOOL_CONTEXT_ALLOW_MAX + 4];
+	char *delete_paths[TOOL_CONTEXT_ALLOW_MAX + 4];
 	int read_path_count = 0;
 	int write_path_count = 0;
 	int delete_path_count = 0;
@@ -332,6 +426,11 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	read_paths[read_path_count++] = "/tmp";
 	write_paths[write_path_count++] = "/tmp";
 	delete_paths[delete_path_count++] = "/tmp";
+	exec_resolve_worktree_git_dir(workdir, git_dir, sizeof(git_dir));
+	if (git_dir[0]) {
+		write_paths[write_path_count++] = git_dir;
+		delete_paths[delete_path_count++] = git_dir;
+	}
 	if (runtime->tool_context) {
 		int count = tool_context_collect_write_grants(
 			runtime->tool_context, principal, write_grants,
