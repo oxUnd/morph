@@ -19,7 +19,7 @@
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"
-#include <string.h>
+#include <cstring>
 #include <signal.h>
 #include <cstdlib>
 #include <thread>

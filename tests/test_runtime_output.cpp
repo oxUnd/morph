@@ -4,6 +4,7 @@ extern "C" {
 #include "runtime/output.h"
 }
 
+#include <cstring>
 #include <filesystem>
 #include <string>
 

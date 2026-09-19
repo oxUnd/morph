@@ -14,6 +14,7 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 int cli_event_callback(const struct morph_event *event, void *user_data);
 }
 
+#include <cstring>
 #include <cstdlib>
 #include <cstdio>
 #include <ctime>

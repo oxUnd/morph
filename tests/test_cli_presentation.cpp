@@ -27,6 +27,7 @@ extern volatile sig_atomic_t cli_sigint_received;
 }
 
 #include <string>
+#include <cstring>
 #include <filesystem>
 #include <fcntl.h>
 #include <stdlib.h>

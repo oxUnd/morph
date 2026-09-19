@@ -32,6 +32,7 @@ enum tool_operation_verdict operation_approval_callback(
 #include <cerrno>
 #include <functional>
 #include <string>
+#include <cstring>
 #include <thread>
 #include <vector>
 
