@@ -702,6 +702,69 @@ TEST_F(ToolContextTest, WorkspaceCommandDoesNotRequireApproval) {
 	tool_context_destroy(tctx);
 }
 
+TEST_F(ToolContextTest, TemporaryDirectoryCommandDoesNotRequireApproval)
+{
+	char workdir[PATH_MAX];
+	struct tool_context *tctx;
+
+	ASSERT_NE(getcwd(workdir, sizeof(workdir)), nullptr);
+	tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	op_always_calls = 0;
+	tool_context_set_operation_approval(tctx, op_always, NULL);
+	EXPECT_EQ(check_command(tctx, "npm install", "/tmp"), 0);
+	EXPECT_EQ(op_always_calls, 0);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, MissingTemporaryDirectoryPermissionIsAlreadyAllowed)
+{
+	char path[] = "/tmp/morph_missing_permission_XXXXXX";
+	char resolved[PATH_MAX];
+	struct tool_context *tctx;
+
+	ASSERT_NE(mkdtemp(path), nullptr);
+	ASSERT_EQ(rmdir(path), 0);
+	tctx = tool_context_create("/", "/");
+	ASSERT_NE(tctx, nullptr);
+	EXPECT_EQ(tool_context_request_scoped_access(
+		tctx, TOOL_PATH_WRITE, "npm", "npm install", path, 1,
+		resolved, sizeof(resolved)), 0);
+	EXPECT_TRUE(path_is_within(resolved, "/tmp"));
+	EXPECT_EQ(access(path, F_OK), -1);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, ApprovedMissingDirectoryIsCreatedAndGranted)
+{
+	char cwd[PATH_MAX];
+	char parent[PATH_MAX];
+	char nested[PATH_MAX];
+	char resolved[PATH_MAX];
+	struct tool_context *tctx;
+
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	ASSERT_EQ(file_path_join(parent, sizeof(parent), cwd,
+		"build/morph_permission_XXXXXX"), 0);
+	ASSERT_NE(mkdtemp(parent), nullptr);
+	ASSERT_EQ(file_path_join(nested, sizeof(nested), parent,
+		"cache/nested"), 0);
+	tctx = tool_context_create("/var", "/var");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_allow, NULL);
+	EXPECT_EQ(tool_context_request_scoped_access(
+		tctx, TOOL_PATH_WRITE, "npm", "npm install", nested, 1,
+		resolved, sizeof(resolved)), 0);
+	EXPECT_EQ(access(nested, F_OK), 0);
+	EXPECT_TRUE(path_is_within(resolved, parent));
+	tool_context_destroy(tctx);
+	ASSERT_EQ(rmdir(nested), 0);
+	char cache[PATH_MAX];
+	ASSERT_EQ(file_path_join(cache, sizeof(cache), parent, "cache"), 0);
+	ASSERT_EQ(rmdir(cache), 0);
+	ASSERT_EQ(rmdir(parent), 0);
+}
+
 TEST_F(ToolContextTest, SetOperationApprovalNullTctx) {
 	tool_context_set_operation_approval(NULL, op_allow, NULL);
 }

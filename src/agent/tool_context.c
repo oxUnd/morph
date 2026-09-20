@@ -821,6 +821,23 @@ static int command_scope_is_allowed(struct tool_context *tctx, const char *cwd)
 	return 1;
 }
 
+static int path_is_default_temporary(const char *path)
+{
+	if (path_is_within(path, "/tmp") ||
+	    path_is_within(path, "/var/tmp"))
+		return 1;
+#ifdef __APPLE__
+	char user_tmp[PATH_MAX];
+	size_t len = confstr(_CS_DARWIN_USER_TEMP_DIR,
+			     user_tmp, sizeof(user_tmp));
+
+	if (len > 0 && len <= sizeof(user_tmp) &&
+	    path_is_within(path, user_tmp))
+		return 1;
+#endif
+	return 0;
+}
+
 static int operation_programs_allowed(struct tool_context *tctx,
 				      const struct tool_operation *op)
 {
@@ -877,10 +894,13 @@ static int check_command_operation(struct tool_context *tctx,
 
 	if (!command)
 		MORPH_RETURN(-EINVAL);
-	if (cwd && tctx->workdir[0] && realpath(cwd, resolved_cwd) &&
-	    path_is_within(resolved_cwd, tctx->workdir)) {
-		*verdict = TOOL_OP_ALLOW;
-		return 0;
+	if (cwd && realpath(cwd, resolved_cwd)) {
+		if ((tctx->workdir[0] &&
+		     path_is_within(resolved_cwd, tctx->workdir)) ||
+		    path_is_default_temporary(resolved_cwd)) {
+			*verdict = TOOL_OP_ALLOW;
+			return 0;
+		}
 	}
 
 	cmd_ok = operation_programs_allowed(tctx, op);
@@ -1357,6 +1377,7 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 	struct stat st;
 	struct tool_operation op;
 	enum tool_operation_verdict verdict;
+	int exists = 1;
 	int already_allowed;
 	int rc;
 
@@ -1372,11 +1393,13 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		MORPH_RETURN(-EINVAL);
 	}
 	if (stat(expanded, &st) != 0) {
-		rc = -errno;
-		free(expanded);
-		return rc;
-	}
-	if (!S_ISDIR(st.st_mode)) {
+		if (errno != ENOENT || operation != TOOL_PATH_WRITE) {
+			rc = -errno;
+			free(expanded);
+			return rc;
+		}
+		exists = 0;
+	} else if (!S_ISDIR(st.st_mode)) {
 		free(expanded);
 		MORPH_RETURN(-ENOTDIR);
 	}
@@ -1397,7 +1420,7 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		path_is_within(canonical, tctx->workdir)) ||
 		(tctx->output_dir[0] &&
 		 path_is_within(canonical, tctx->output_dir)) ||
-		path_is_within(canonical, "/tmp");
+		path_is_default_temporary(canonical);
 	if (operation == TOOL_PATH_WRITE)
 		already_allowed = already_allowed ||
 			scoped_write_is_allowed(tctx, principal, canonical) ||
@@ -1431,6 +1454,27 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 	if (verdict == TOOL_OP_DENY) {
 		free(canonical);
 		MORPH_RETURN(-EACCES);
+	}
+	if (!exists) {
+		char *created;
+
+		rc = file_ensure_dir(canonical);
+		if (rc != 0) {
+			free(canonical);
+			return rc;
+		}
+		created = file_resolve_path(canonical);
+		if (!created) {
+			free(canonical);
+			MORPH_RETURN(-ENOMEM);
+		}
+		free(canonical);
+		canonical = created;
+		if (strlen(canonical) + 1 > resolved_size) {
+			free(canonical);
+			MORPH_RETURN(-ENAMETOOLONG);
+		}
+		snprintf(resolved, resolved_size, "%s", canonical);
 	}
 	rc = add_scoped_path_grant(tctx, operation, principal, canonical,
 				   !session_scope);

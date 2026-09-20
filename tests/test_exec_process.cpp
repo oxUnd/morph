@@ -67,6 +67,35 @@ TEST(ExecToolTest, RegistersExecAndProcessTools)
 	tool_registry_cleanup(&registry);
 }
 
+TEST(ExecToolTest, ReportsUnavailableApprovalWithoutClaimingItIsPending)
+{
+	char work_template[] = "/tmp/morph_exec_unavailable_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	struct tool_registry registry;
+	struct tool_result result;
+
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(
+		&registry, "exec",
+		"{\"command\":\"printf test\",\"workdir\":\"/\","
+		"\"yield_time_ms\":1000}",
+		&result), -EPERM);
+	ASSERT_NE(result.envelope, nullptr);
+	cJSON *error = cJSON_GetObjectItem(result.envelope, "error");
+	ASSERT_NE(error, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(error, "code")), "approval_unavailable");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(workdir);
+}
+
 TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 {
 	char work_template[] = "/tmp/morph_exec_policy_XXXXXX";
@@ -86,7 +115,7 @@ TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 	ASSERT_EQ(tool_exec(
 		&registry, "exec",
 		"{\"command\":\"printf first && pwd\","
-		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		"\"workdir\":\"/\",\"yield_time_ms\":1000}",
 		&result), 0);
 	EXPECT_EQ(approval.calls, 1);
 	EXPECT_EQ(approval.command, "printf first && pwd");
@@ -119,7 +148,7 @@ TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)
 	ASSERT_EQ(tool_exec(
 		&registry, "exec",
 		"{\"command\":\"python3 -c \\\"print(1 << 2, 'x >> y')\\\"\","
-		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		"\"workdir\":\"/\",\"yield_time_ms\":1000}",
 		&result), 0);
 	EXPECT_EQ(approval.calls, 1);
 	EXPECT_EQ(approval.programs, std::vector<std::string>({"python3"}));
@@ -153,7 +182,7 @@ TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
 	ASSERT_EQ(tool_exec(
 		&registry, "exec",
 		"{\"command\":\"printf '%s' \\\"$(echo nested)\\\"\","
-		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		"\"workdir\":\"/\",\"yield_time_ms\":1000}",
 		&result), 0);
 	EXPECT_EQ(approval.calls, 1);
 	EXPECT_EQ(approval.programs,

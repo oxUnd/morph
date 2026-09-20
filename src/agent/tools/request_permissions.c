@@ -38,11 +38,16 @@ static int request_array(struct tool_context *tctx, const char *principal,
 			tctx, operation, principal, command, path->valuestring,
 			session_scope, resolved, sizeof(resolved));
 		if (rc != 0) {
+			const char *code = rc == -EACCES ? "permission_denied" :
+				rc == -EPERM ? "approval_unavailable" :
+				"permission_request_failed";
+			const char *message = rc == -EACCES ?
+				"Permission was denied by the user." :
+				rc == -EPERM ?
+				"Interactive permission approval is unavailable." :
+				"The directory permission could not be granted.";
 			int result_rc = tool_result_error(
-				result, rc == -EACCES ? "permission_denied" :
-				"permission_request_failed",
-				rc == -EACCES ? "Permission was denied by the user." :
-				"The directory permission could not be granted.");
+				result, code, message);
 
 			return result_rc == 0 ? 1 : result_rc;
 		}

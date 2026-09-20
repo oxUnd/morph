@@ -185,13 +185,19 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				runtime->tool_context, &operation, &verdict);
 			free(programs);
 			if (rc != 0 || verdict == TOOL_OP_DENY) {
+				const char *code = rc == -EACCES ?
+					"permission_denied" :
+					rc == -EPERM ?
+					"approval_unavailable" :
+					"approval_required";
+				const char *message = rc == -EACCES ?
+					"Command approval was denied by the user." :
+					rc == -EPERM ?
+					"Interactive command approval is unavailable." :
+					"Command approval failed.";
+
 				bash_parse_result_cleanup(&analysis);
-				(void)tool_result_error(result,
-					rc == -EACCES ? "permission_denied" :
-					"approval_required",
-					verdict == TOOL_OP_DENY ?
-					"command requires approval" :
-					"command is not allowed by policy");
+				(void)tool_result_error(result, code, message);
 				return rc != 0 ? rc : -EPERM;
 			}
 		}
