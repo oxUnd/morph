@@ -1,4 +1,3 @@
-#include "exec/command_analyzer.h"
 #include "exec/process.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool.h"
@@ -57,33 +56,6 @@ protected:
 	struct process_manager *manager = nullptr;
 };
 
-TEST(CommandAnalyzerTest, SplitsShellOperatorsAndPreservesQuotes)
-{
-	struct command_analysis analysis = {};
-
-	ASSERT_EQ(command_analyze(
-		"echo \"a && b\" && git status | tee out ; git push",
-		&analysis), 0);
-	ASSERT_EQ(analysis.count, 4u);
-	ASSERT_STREQ(analysis.segments[0].argv[0], "echo");
-	ASSERT_STREQ(analysis.segments[0].argv[1], "a && b");
-	ASSERT_STREQ(analysis.segments[1].argv[0], "git");
-	ASSERT_STREQ(analysis.segments[1].argv[1], "status");
-	ASSERT_STREQ(analysis.segments[2].argv[0], "tee");
-	ASSERT_STREQ(analysis.segments[3].argv[1], "push");
-	EXPECT_FALSE(analysis.complex);
-	command_analysis_cleanup(&analysis);
-}
-
-TEST(CommandAnalyzerTest, MarksUnsupportedShellSyntaxComplex)
-{
-	struct command_analysis analysis = {};
-
-	ASSERT_EQ(command_analyze("printf '%s' \"$(date)\"", &analysis), 0);
-	EXPECT_TRUE(analysis.complex);
-	command_analysis_cleanup(&analysis);
-}
-
 TEST(ExecToolTest, RegistersExecAndProcessTools)
 {
 	struct tool_registry registry;
@@ -128,6 +100,102 @@ TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 	rmdir(workdir);
 }
 
+TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)
+{
+	char work_template[] = "/tmp/morph_exec_python_policy_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(
+		&registry, "exec",
+		"{\"command\":\"python3 -c \\\"print(1 << 2, 'x >> y')\\\"\","
+		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		&result), 0);
+	EXPECT_EQ(approval.calls, 1);
+	EXPECT_EQ(approval.programs, std::vector<std::string>({"python3"}));
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(result.data, "stdout")), "4 x >> y\n");
+	EXPECT_EQ(cJSON_GetNumberValue(
+		cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(workdir);
+}
+
+TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
+{
+	char work_template[] = "/tmp/morph_exec_nested_policy_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(
+		&registry, "exec",
+		"{\"command\":\"printf '%s' \\\"$(echo nested)\\\"\","
+		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		&result), 0);
+	EXPECT_EQ(approval.calls, 1);
+	EXPECT_EQ(approval.programs,
+		std::vector<std::string>({"printf", "echo"}));
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(result.data, "stdout")), "nested");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(workdir);
+}
+
+TEST(ExecToolTest, DynamicCommandIsRejectedBeforeApproval)
+{
+	char work_template[] = "/tmp/morph_exec_dynamic_policy_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(
+		&registry, "exec",
+		"{\"command\":\"$COMMAND argument\","
+		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
+		&result), -EPERM);
+	EXPECT_EQ(approval.calls, 0);
+	ASSERT_NE(result.envelope, nullptr);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(workdir);
+}
+
 TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
 {
 	char path[PATH_MAX];
@@ -153,8 +221,7 @@ TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
 	const char *output = cJSON_GetStringValue(
 		cJSON_GetObjectItem(result.data, "stdout"));
 	ASSERT_NE(output, nullptr);
-	EXPECT_NE(strstr(output, "#include \"exec/command_analyzer.h\""),
-		  nullptr);
+	EXPECT_NE(strstr(output, "#include \"exec/process.h\""), nullptr);
 	EXPECT_EQ(cJSON_GetNumberValue(
 		cJSON_GetObjectItem(result.data, "exit_code")), 0);
 

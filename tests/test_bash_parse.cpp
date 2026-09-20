@@ -49,6 +49,41 @@ TEST(BashParseTest, QuotedAmpersandIsNotCompound)
 	bash_parse_result_cleanup(&result);
 }
 
+TEST(BashParseTest, PythonOperatorsInsideQuotedArgumentAreNotShellSyntax)
+{
+	struct bash_parse_result result;
+
+	ASSERT_EQ(bash_parse_analyze(
+		"python3 -c \"import pathlib; value = 1 << 2; "
+		"pathlib.Path('out').write_text('x >> y; a | b && c')\"",
+		&result), 0);
+	EXPECT_FALSE(result.has_error);
+	EXPECT_FALSE(result.is_compound);
+	ASSERT_EQ(result.commands.nelts, 1u);
+	const auto *command = static_cast<const struct bash_parse_command *>(
+		morph_array_get(&result.commands, 0));
+	ASSERT_NE(command, nullptr);
+	EXPECT_STREQ(command->name, "python3");
+	bash_parse_result_cleanup(&result);
+}
+
+TEST(BashParseTest, SingleQuotedShellSyntaxIsLiteral)
+{
+	struct bash_parse_result result;
+
+	ASSERT_EQ(bash_parse_analyze(
+		"python3 -c 'print(\"$(date) `whoami` << >> ; | &&\")'",
+		&result), 0);
+	EXPECT_FALSE(result.has_error);
+	EXPECT_FALSE(result.is_compound);
+	ASSERT_EQ(result.commands.nelts, 1u);
+	const auto *command = static_cast<const struct bash_parse_command *>(
+		morph_array_get(&result.commands, 0));
+	ASSERT_NE(command, nullptr);
+	EXPECT_STREQ(command->name, "python3");
+	bash_parse_result_cleanup(&result);
+}
+
 TEST(BashParseTest, CollectsPipelineAndCommandSubstitution)
 {
 	struct bash_parse_result result;
@@ -73,12 +108,37 @@ TEST(BashParseTest, CollectsPipelineAndCommandSubstitution)
 	bash_parse_result_cleanup(&result);
 }
 
+TEST(BashParseTest, HeredocBodyDoesNotCreateCommands)
+{
+	struct bash_parse_result result;
+
+	ASSERT_EQ(bash_parse_analyze(
+		"cat <<'EOF'\n$(echo literal)\nvalue >> output\nEOF",
+		&result), 0);
+	EXPECT_FALSE(result.has_error);
+	ASSERT_EQ(result.commands.nelts, 1u);
+	const auto *command = static_cast<const struct bash_parse_command *>(
+		morph_array_get(&result.commands, 0));
+	ASSERT_NE(command, nullptr);
+	EXPECT_STREQ(command->name, "cat");
+	bash_parse_result_cleanup(&result);
+}
+
 TEST(BashParseTest, RejectsDynamicCommandName)
 {
 	char name[BASH_PARSE_COMMAND_NAME_MAX];
 
 	EXPECT_NE(bash_parse_command_name("$COMMAND argument",
 					  name, sizeof(name)), 0);
+}
+
+TEST(BashParseTest, ReportsMalformedShellSyntax)
+{
+	struct bash_parse_result result;
+
+	ASSERT_EQ(bash_parse_analyze("printf '%s' \"unterminated", &result), 0);
+	EXPECT_TRUE(result.has_error);
+	bash_parse_result_cleanup(&result);
 }
 
 TEST(BashParseTest, SemicolonSeparatesCommands)

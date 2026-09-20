@@ -1,9 +1,9 @@
 #include "exec_tool.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
-#include "exec/command_analyzer.h"
 #include "exec/process.h"
 #include "sandbox.h"
+#include "util/bash_parse.h"
 #include "util/error.h"
 #include "util/id.h"
 #include "cJSON.h"
@@ -120,53 +120,50 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 			const char *workdir, const char *args_json,
 			struct tool_result *result)
 {
-	struct command_analysis analysis;
-	char (*program_names)[TOOL_CONTEXT_CLI_NAME_MAX] = NULL;
+	struct bash_parse_result analysis;
 	const char **programs = NULL;
 	int programs_count = 0;
 	int rc;
 
-	rc = command_analyze(command, &analysis);
+	rc = bash_parse_analyze(command, &analysis);
 	if (rc != 0)
 		return rc;
-	if (analysis.count == 0 || analysis.complex) {
-		command_analysis_cleanup(&analysis);
+	if (analysis.has_error || analysis.commands.nelts == 0) {
+		bash_parse_result_cleanup(&analysis);
 		(void)tool_result_error(result, "approval_required",
-			"complex shell syntax requires approval");
+			"shell command could not be analyzed safely");
 		return -EPERM;
 	}
 	if (runtime->tool_context) {
-		if (analysis.count > (size_t)INT_MAX) {
-			command_analysis_cleanup(&analysis);
+		if (analysis.commands.nelts > (size_t)INT_MAX) {
+			bash_parse_result_cleanup(&analysis);
 			MORPH_RETURN(-E2BIG);
 		}
-		program_names = calloc(analysis.count, sizeof(*program_names));
-		programs = calloc(analysis.count, sizeof(*programs));
-		if (!program_names || !programs) {
-			free(program_names);
-			free(programs);
-			command_analysis_cleanup(&analysis);
+		programs = calloc(analysis.commands.nelts, sizeof(*programs));
+		if (!programs) {
+			bash_parse_result_cleanup(&analysis);
 			MORPH_RETURN(-ENOMEM);
 		}
-		for (size_t i = 0; i < analysis.count; i++) {
-			struct command_segment *segment = &analysis.segments[i];
+		for (size_t i = 0; i < analysis.commands.nelts; i++) {
+			const struct bash_parse_command *parsed =
+				morph_array_get(&analysis.commands, i);
 			int duplicate = 0;
 
-			rc = tool_context_command_name(
-				segment->raw, program_names[programs_count],
-				sizeof(program_names[programs_count]));
-			if (rc != 0)
-				continue;
+			if (!parsed || !parsed->name[0]) {
+				free(programs);
+				bash_parse_result_cleanup(&analysis);
+				(void)tool_result_error(result, "approval_required",
+					"dynamic shell command cannot be approved safely");
+				return -EPERM;
+			}
 			for (int j = 0; j < programs_count; j++) {
-				if (strcmp(programs[j],
-					   program_names[programs_count]) == 0) {
+				if (strcmp(programs[j], parsed->name) == 0) {
 					duplicate = 1;
 					break;
 				}
 			}
 			if (!duplicate) {
-				programs[programs_count] =
-					program_names[programs_count];
+				programs[programs_count] = parsed->name;
 				programs_count++;
 			}
 		}
@@ -186,10 +183,9 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 
 			rc = tool_context_check_operation_verdict(
 				runtime->tool_context, &operation, &verdict);
-			free(program_names);
 			free(programs);
 			if (rc != 0 || verdict == TOOL_OP_DENY) {
-				command_analysis_cleanup(&analysis);
+				bash_parse_result_cleanup(&analysis);
 				(void)tool_result_error(result,
 					rc == -EACCES ? "permission_denied" :
 					"approval_required",
@@ -200,7 +196,7 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 			}
 		}
 	}
-	command_analysis_cleanup(&analysis);
+	bash_parse_result_cleanup(&analysis);
 	return 0;
 }
 

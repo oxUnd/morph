@@ -1,5 +1,4 @@
 add_library(morph-exec STATIC
-	command_analyzer.c
 	process.c
 )
 
