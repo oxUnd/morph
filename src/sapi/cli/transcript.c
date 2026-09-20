@@ -1,6 +1,7 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/shell_style.h"
+#include "agent/patch.h"
 #include <sys/ioctl.h>
 
 struct transcript_tool {
@@ -12,6 +13,7 @@ struct transcript_tool {
 	const char *result;
 	const char *error;
 	const char *summary;
+	const char *patch_preview;
 	morph_buf_t stream;
 	struct utf8_terminal_sanitizer sanitizer;
 	int state;
@@ -369,8 +371,12 @@ static void print_details(const struct transcript_tool *tool, int args,
 		if (strcmp(tool->name, "apply_patch") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
 
-			cli_presentation_patch_diff(workdir,
-				json_string(json, "input"));
+			if (tool->patch_preview[0])
+				cli_presentation_patch_diff(NULL,
+					tool->patch_preview);
+			else
+				cli_presentation_patch_diff(workdir,
+					json_string(json, "input"));
 			cJSON_Delete(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
@@ -673,7 +679,8 @@ static int process_poll_is_running(const struct transcript_tool *tool)
 	return running;
 }
 
-static int add_tool(struct cli_transcript *tr, const cJSON *data)
+static int add_tool(struct cli_transcript *tr, const cJSON *data,
+		    const char *workdir)
 {
 	const cJSON *args = cJSON_GetObjectItemCaseSensitive(data, "args");
 	struct transcript_tool *tool = morph_array_push(&tr->tools);
@@ -701,6 +708,7 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data)
 	tool->result = "";
 	tool->error = "";
 	tool->summary = "";
+	tool->patch_preview = "";
 	if (strcmp(tool->name, "process") == 0) {
 		const char *action = json_string(args, "action");
 		const char *session_id = json_string(args, "session_id");
@@ -720,9 +728,19 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data)
 		const char *input = json_string(args, "input");
 		const char *path = strstr(input, " File: ");
 		morph_buf_t patch;
+		morph_buf_t preview;
+		char preview_error[256];
 		size_t added = 0;
 		size_t removed = 0;
 
+		if (workdir && workdir[0] &&
+		    morph_buf_init(&preview, 256) == 0) {
+			if (patch_preview(workdir, input, &preview, preview_error,
+				sizeof(preview_error)) == 0)
+				tool->patch_preview = save_text(
+					tr, morph_buf_cstr(&preview));
+			morph_buf_cleanup(&preview);
+		}
 		if (morph_buf_init(&patch, 128) == 0) {
 			if (path) {
 				path += strlen(" File: ");
@@ -833,7 +851,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (ev->type != MORPH_EVENT_TOOL)
 		return 0;
 	if (strcmp(name, "tool.call") == 0) {
-		rc = add_tool(tr, ev->data);
+		rc = add_tool(tr, ev->data, transcript_workdir(ctx));
 		if (rc != 0)
 			MORPH_RETURN(rc);
 	}
@@ -889,8 +907,11 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		   strcmp(tool->name, "apply_patch") == 0) {
 		cJSON *args = cJSON_Parse(tool->args);
 
-		cli_presentation_patch_diff(transcript_workdir(ctx),
-			json_string(args, "input"));
+		if (tool->patch_preview[0])
+			cli_presentation_patch_diff(NULL, tool->patch_preview);
+		else
+			cli_presentation_patch_diff(transcript_workdir(ctx),
+				json_string(args, "input"));
 		cJSON_Delete(args);
 	}
 	restore_live(ctx);

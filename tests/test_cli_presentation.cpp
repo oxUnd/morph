@@ -917,7 +917,8 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	EXPECT_NE(output.find("-old value"), std::string::npos);
 	EXPECT_NE(output.find("+new value"), std::string::npos);
 	EXPECT_EQ(output.find("*** End Patch"), std::string::npos);
-	EXPECT_EQ(output.find("│ 4 -old value"), std::string::npos);
+	EXPECT_NE(output.find("│     2 -old value"), std::string::npos);
+	EXPECT_NE(output.find("│     2 +new value"), std::string::npos);
 	EXPECT_EQ(output.find("input:"), std::string::npos);
 	EXPECT_EQ(output.find("patch display truncated"), std::string::npos);
 
@@ -952,13 +953,15 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	ASSERT_EQ(file_write_all((std::string(dir) + "/src/example.c").c_str(),
+		"foo\nnew value\nbar\n", 18), 0);
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
-	EXPECT_NE(output.find("-old value"), std::string::npos);
-	EXPECT_NE(output.find("+new value"), std::string::npos);
+	EXPECT_NE(output.find("│     2 -old value"), std::string::npos);
+	EXPECT_NE(output.find("│     2 +new value"), std::string::npos);
 
 	cJSON_Delete(call);
 	cJSON_Delete(result);

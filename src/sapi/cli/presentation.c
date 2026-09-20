@@ -564,6 +564,46 @@ static const char *presentation_patch_style(const char *line)
 	return "";
 }
 
+static int presentation_patch_range(const char *line, size_t *old_line,
+				    size_t *new_line)
+{
+	size_t old_count;
+	size_t new_count;
+
+	return sscanf(line, "@@ -%zu,%zu +%zu,%zu @@",
+		      old_line, &old_count, new_line, &new_count) == 4;
+}
+
+static void presentation_print_patch_line(const char *line, size_t len,
+					  const char *style,
+					  int in_hunk,
+					  size_t *old_line,
+					  size_t *new_line)
+{
+	char number[32] = "";
+
+	if (in_hunk && len > 0) {
+		if (line[0] == '-') {
+			snprintf(number, sizeof(number), "%zu", *old_line);
+			(*old_line)++;
+		} else if (line[0] == '+') {
+			snprintf(number, sizeof(number), "%zu", *new_line);
+			(*new_line)++;
+		} else if (line[0] == ' ') {
+			snprintf(number, sizeof(number), "%zu", *new_line);
+			(*old_line)++;
+			(*new_line)++;
+		}
+	}
+	if (number[0]) {
+		printf("  │ " ANSI_DIM "%5s " ANSI_RESET "%s%.*s"
+		       ANSI_RESET "\n",
+		       number, style, (int)len, line);
+		return;
+	}
+	printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
+}
+
 void cli_presentation_patch_diff(const char *workdir, const char *input)
 {
 	morph_buf_t preview;
@@ -576,6 +616,9 @@ void cli_presentation_patch_diff(const char *workdir, const char *input)
 	int truncated;
 	int lines = 0;
 	int preview_ready = 0;
+	int in_hunk = 0;
+	size_t old_line = 0;
+	size_t new_line = 0;
 
 	if (!input || !input[0])
 		return;
@@ -625,7 +668,12 @@ void cli_presentation_patch_diff(const char *workdir, const char *input)
 		const char *style = presentation_patch_style(line);
 		size_t len = end ? (size_t)(end - line) : strlen(line);
 
-		printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
+		if (presentation_patch_range(line, &old_line, &new_line))
+			in_hunk = 1;
+		else if (strncmp(line, "*** ", 4) == 0)
+			in_hunk = 0;
+		presentation_print_patch_line(line, len, style, in_hunk,
+			&old_line, &new_line);
 		lines++;
 		if (!end) {
 			line += len;
