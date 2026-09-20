@@ -138,6 +138,9 @@ def main():
             terminal.send('  \r\r\x15')
             terminal.snapshot('whitespace Enter')
             terminal.send('initial task\r')
+            starting = terminal.snapshot('immediate turn status')
+            assert ('Starting' in starting or 'Thinking' in starting or
+                    'Live output' in starting), starting
             first, release = terminal.request()
             releases.append(release)
             assert '›' in terminal.snapshot('model running'), 'composer missing'

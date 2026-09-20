@@ -448,6 +448,8 @@ void cli_turn_begin(struct cli_context *ctx)
 	cli_cancel_state_reset();
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;
+	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
+		cli_terminal_live_set(ctx, "Starting…");
 }
 
 void cli_turn_finish(struct cli_context *ctx, int turn_rc)

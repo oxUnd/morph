@@ -16,6 +16,7 @@ void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
+void cli_turn_begin(struct cli_context *ctx);
 void cli_transcript_toggle(struct cli_context *ctx);
 void cli_transcript_finish(struct cli_context *ctx);
 void cli_presentation_finish(struct cli_context *ctx);
@@ -723,6 +724,34 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 	cJSON_Delete(thinking);
 }
 
+TEST_F(CliPresentationTest, TurnBeginsWithImmediateStatus)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.turn_active = 0;
+
+	testing::internal::CaptureStdout();
+	cli_turn_begin(&ctx);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Starting…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+}
+
+TEST_F(CliPresentationTest, SteeringRestoresThinkingStatus)
+{
+	cJSON *steer = TextData("updated requirement");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.user.steer", "end", steer);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Requirement applied"), std::string::npos);
+	EXPECT_NE(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	cJSON_Delete(steer);
+}
+
 TEST_F(CliPresentationTest, PreparingPromptClearsLiveStatus)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -742,6 +771,7 @@ TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
 	cJSON *started = TextData("");
 	cJSON *ready = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.turn_active = 0;
 	struct morph_event begin{
 		MORPH_EVENT_BACKGROUND, "background.started", "begin",
 		"memory consolidation queued", started, "turn_test"
@@ -762,6 +792,35 @@ TEST_F(CliPresentationTest, InteractiveCoalescesBackgroundLifecycle)
 			      output.find("memory consolidation queued") + 1),
 		  std::string::npos);
 	EXPECT_EQ(output.find("Background"), std::string::npos);
+
+	cJSON_Delete(started);
+	cJSON_Delete(ready);
+}
+
+TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
+{
+	cJSON *started = TextData("");
+	cJSON *ready = TextData("");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	struct morph_event begin{
+		MORPH_EVENT_BACKGROUND, "background.started", "begin",
+		"memory consolidation queued", started, "turn_test"
+	};
+	struct morph_event end{
+		MORPH_EVENT_BACKGROUND, "background.ready", "ready",
+		"memory consolidation queued", ready, "turn_test"
+	};
+
+	testing::internal::CaptureStdout();
+	cli_terminal_live_set(&ctx, "Thinking…");
+	ASSERT_EQ(cli_presentation_event(&ctx, &begin), 0);
+	ASSERT_EQ(cli_presentation_event(&ctx, &end), 0);
+	std::string output = testing::internal::GetCapturedStdout();
+
+	EXPECT_NE(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(output.find("memory consolidation queued"),
+		  std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
 
 	cJSON_Delete(started);
 	cJSON_Delete(ready);
@@ -818,6 +877,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	cJSON_AddNumberToObject(ready, "prompts", 2);
 
 	testing::internal::CaptureStdout();
+	cli_terminal_live_set(&ctx, "Thinking…");
 	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
 	Emit(MORPH_EVENT_MCP, "mcp.connected", "end", connected);
 	Emit(MORPH_EVENT_MCP, "mcp.discovering", "begin", discovering);
@@ -834,6 +894,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	EXPECT_NE(output.find("└ ✓ Ready · 12 tools, 3 resources, 2 prompts"),
 		  std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
 
 	cJSON_Delete(connecting);
 	cJSON_Delete(connected);

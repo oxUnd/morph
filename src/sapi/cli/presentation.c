@@ -65,6 +65,22 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	cli_terminal_live_set(ctx, text);
 }
 
+static int presentation_pause_status(struct cli_context *ctx)
+{
+	if (ctx && ctx->turn_active && cli_terminal_live_active(ctx)) {
+		cli_terminal_history_begin(ctx);
+		return 1;
+	}
+	presentation_clear_status(ctx);
+	return 0;
+}
+
+static void presentation_resume_status(struct cli_context *ctx, int paused)
+{
+	if (paused)
+		cli_terminal_history_end(ctx);
+}
+
 void cli_presentation_prepare_prompt(struct cli_context *ctx)
 {
 	presentation_clear_status(ctx);
@@ -1101,13 +1117,14 @@ static void presentation_artifact(struct cli_context *ctx,
 {
 	const char *path = event_string(ev, "path");
 	const char *kind = event_string(ev, "kind");
+	int status_paused;
 
 	if (!ev->name || strcmp(ev->name, "artifact.ready") != 0 ||
 	    !path || !path[0])
 		return;
 	if (morph_strmap_contains(&ctx->announced_artifacts, path))
 		return;
-	presentation_clear_status(ctx);
+	status_paused = presentation_pause_status(ctx);
 	(void)morph_strmap_set(&ctx->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("artifact: ");
@@ -1116,6 +1133,7 @@ static void presentation_artifact(struct cli_context *ctx,
 		printf(" ");
 		presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
 		printf("\n");
+		presentation_resume_status(ctx, status_paused);
 		return;
 	}
 	printf("  " ANSI_DIM "└ ");
@@ -1124,6 +1142,7 @@ static void presentation_artifact(struct cli_context *ctx,
 	printf(": ");
 	presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
 	printf(ANSI_RESET "\n");
+	presentation_resume_status(ctx, status_paused);
 }
 
 static void presentation_mcp_tree_start(struct cli_context *ctx,
@@ -1162,12 +1181,13 @@ static void presentation_mcp(struct cli_context *ctx,
 	const char *label;
 	int is_last;
 	int failed;
+	int status_paused;
 
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
 	if (!server || !server[0])
 		server = "server";
-	presentation_clear_status(ctx);
+	status_paused = presentation_pause_status(ctx);
 	if (!ctx->mcp_tree_active ||
 	    strcmp(ctx->mcp_tree_server, server) != 0)
 		presentation_mcp_tree_start(ctx, server);
@@ -1207,12 +1227,14 @@ static void presentation_mcp(struct cli_context *ctx,
 		ctx->mcp_tree_active = 0;
 		ctx->mcp_tree_server[0] = '\0';
 	}
+	presentation_resume_status(ctx, status_paused);
 }
 
 static void presentation_auxiliary(struct cli_context *ctx,
 				   const struct morph_event *ev)
 {
 	const char *prefix;
+	int status_paused;
 
 	if (!ctx->presentation_ready ||
 	    ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
@@ -1220,18 +1242,20 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	if (ev->type == MORPH_EVENT_BACKGROUND) {
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    event_error_code(ev) < 0) {
-			presentation_clear_status(ctx);
+			status_paused = presentation_pause_status(ctx);
 			printf("\n" ANSI_DIM ANSI_RED "• Background  ");
 			presentation_print_safe_inline(ev->message ? ev->message :
 				(ev->name ? ev->name : "failed"),
 				CLI_EVENT_TEXT_MAX);
 			printf(ANSI_RESET "\n");
+			presentation_resume_status(ctx, status_paused);
 		} else if (ev->phase &&
 			   (strcmp(ev->phase, "begin") == 0 ||
 			    strcmp(ev->phase, "progress") == 0)) {
-			presentation_status(ctx, ev->message ?
-					    ev->message : "Working…");
-		} else {
+			if (!ctx->turn_active)
+				presentation_status(ctx, ev->message ?
+						    ev->message : "Working…");
+		} else if (!ctx->turn_active) {
 			presentation_clear_status(ctx);
 		}
 		return;
@@ -1246,11 +1270,12 @@ static void presentation_auxiliary(struct cli_context *ctx,
 		prefix = "Error";
 	else
 		return;
-	presentation_clear_status(ctx);
+	status_paused = presentation_pause_status(ctx);
 	printf("\n" ANSI_DIM "• %s  ", prefix);
 	presentation_print_safe_inline(ev->message ? ev->message :
 		(ev->name ? ev->name : ""), CLI_EVENT_TEXT_MAX);
 	printf(ANSI_RESET "\n");
+	presentation_resume_status(ctx, status_paused);
 }
 
 int cli_presentation_init(struct cli_context *ctx)
@@ -1378,6 +1403,7 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_clear_status(ctx);
 			presentation_discard_stream(ctx);
 			printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
+			presentation_status(ctx, "Thinking…");
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thinking") == 0) {
