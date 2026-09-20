@@ -16,16 +16,40 @@ static int is_static_program_char(unsigned char ch)
 		strchr("_./+@:-", (int)ch) != NULL;
 }
 
+static int quoted_program_is_static(TSNode node)
+{
+	const char *type = ts_node_type(node);
+	uint32_t count;
+
+	if (strcmp(type, "raw_string") == 0)
+		return 1;
+	if (strcmp(type, "string") != 0)
+		return 0;
+	count = ts_node_named_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_named_child(node, i);
+
+		if (strcmp(ts_node_type(child), "string_content") != 0)
+			return 0;
+	}
+	return 1;
+}
+
 static int copy_static_program(const char *source, TSNode node,
 			       char *out, size_t out_size)
 {
+	TSNode literal;
 	uint32_t start;
 	uint32_t end;
 	size_t len;
 	size_t offset = 0;
+	int quoted = 0;
 
 	if (!source || ts_node_is_null(node) || !out || out_size == 0)
 		MORPH_RETURN(-EINVAL);
+	if (ts_node_named_child_count(node) != 1)
+		MORPH_RETURN(-EINVAL);
+	literal = ts_node_named_child(node, 0);
 	start = ts_node_start_byte(node);
 	end = ts_node_end_byte(node);
 	if (end <= start)
@@ -34,6 +58,9 @@ static int copy_static_program(const char *source, TSNode node,
 	if (len >= 2 &&
 	    ((source[start] == '\'' && source[end - 1] == '\'') ||
 	     (source[start] == '"' && source[end - 1] == '"'))) {
+		if (!quoted_program_is_static(literal))
+			MORPH_RETURN(-EINVAL);
+		quoted = 1;
 		offset = 1;
 		len -= 2;
 	}
@@ -43,7 +70,8 @@ static int copy_static_program(const char *source, TSNode node,
 		unsigned char ch =
 			(unsigned char)source[(size_t)start + offset + i];
 
-		if (!is_static_program_char(ch))
+		if ((!quoted && !is_static_program_char(ch)) ||
+		    (quoted && source[start] == '"' && ch == '\\'))
 			MORPH_RETURN(-EINVAL);
 	}
 	memcpy(out, source + (size_t)start + offset, len);

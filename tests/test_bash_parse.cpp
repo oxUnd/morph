@@ -30,6 +30,32 @@ TEST(BashParseTest, AcceptsComplexEnvironmentAssignment)
 	EXPECT_STREQ(name, "lark-cli");
 }
 
+TEST(BashParseTest, AcceptsQuotedExecutablePathWithSpaces)
+{
+	char name[BASH_PARSE_COMMAND_NAME_MAX];
+	char program[PATH_MAX];
+	const char *command =
+		"\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\" "
+		"--headless";
+
+	ASSERT_EQ(bash_parse_command_name(command, name, sizeof(name)), 0);
+	EXPECT_STREQ(name, "Google Chrome");
+	ASSERT_EQ(bash_parse_command_program(
+		command, program, sizeof(program)), 0);
+	EXPECT_STREQ(program,
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+}
+
+TEST(BashParseTest, RejectsExpansionInQuotedCommandName)
+{
+	char name[BASH_PARSE_COMMAND_NAME_MAX];
+
+	EXPECT_NE(bash_parse_command_name(
+		"\"$COMMAND\" argument", name, sizeof(name)), 0);
+	EXPECT_NE(bash_parse_command_name(
+		"\"$(printf tool)\" argument", name, sizeof(name)), 0);
+}
+
 TEST(BashParseTest, QuotedAmpersandIsNotCompound)
 {
 	struct bash_parse_result result;

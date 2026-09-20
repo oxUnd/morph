@@ -163,6 +163,46 @@ TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)
 	rmdir(workdir);
 }
 
+TEST(ExecToolTest, ExecutesQuotedProgramPathWithSpaces)
+{
+	char work_template[] = "/tmp/morph_exec_quoted_program_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	char executable[PATH_MAX];
+	char args[PATH_MAX + 160];
+	struct tool_registry registry;
+	struct tool_result result;
+	ExecApprovalState approval;
+
+	ASSERT_NE(workdir, nullptr);
+	ASSERT_GT(snprintf(executable, sizeof(executable),
+			   "%s/quoted tool", workdir), 0);
+	ASSERT_EQ(symlink("/bin/echo", executable), 0);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(
+		tctx, approve_exec_operation, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	tool_result_init(&result);
+	ASSERT_GT(snprintf(
+		args, sizeof(args),
+		"{\"command\":\"\\\"%s\\\" works\","
+		"\"workdir\":\"/\",\"yield_time_ms\":1000}",
+		executable), 0);
+	ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
+	EXPECT_EQ(approval.calls, 1);
+	EXPECT_EQ(approval.programs,
+		std::vector<std::string>({"quoted tool"}));
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(
+		cJSON_GetObjectItem(result.data, "stdout")), "works\n");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	unlink(executable);
+	rmdir(workdir);
+}
+
 TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
 {
 	char work_template[] = "/tmp/morph_exec_nested_policy_XXXXXX";
