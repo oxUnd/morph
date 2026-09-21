@@ -65,8 +65,7 @@ retry_count      = 3
 # Optional vision chat model
 # ──────────────────────────────────────────────
 # Used only by img_qa for image understanding, OCR, and visual comparison.
-# Leave this section absent or empty to keep img_qa unavailable. Do not point
-# it at a text-only model such as DeepSeek V4.
+# Leave this section absent or empty to keep img_qa unavailable.
 # [model.vision]
 # provider    = "openai"
 # model       = "gpt-4o"
@@ -75,6 +74,13 @@ retry_count      = 3
 # max_tokens  = 4096
 # timeout_seconds = 300
 # retry_count = 3
+# DeepSeek vision example:
+# provider    = "deepseek"
+# adapter     = "deepseek"
+# model       = "deepseek-flash"
+# api_base    = "https://api.deepseek.com"
+# api_key_env = "DEEPSEEK_API_KEY"
+# extra_body_json = '''{"thinking":{"type":"disabled"}}'''
 
 # ──────────────────────────────────────────────
 # Image generation model

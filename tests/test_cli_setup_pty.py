@@ -83,9 +83,11 @@ class Terminal:
         self.send('\r', 'Create images with morph?')
 
     def required_tokens(self, next_title, context='64000', output='8000'):
-        self.send('\r', 'Context window (tokens)')
-        self.send(context + '\r', 'Max output (tokens)')
-        self.send(output + '\r', next_title)
+        self.send('5\r', 'Context window (tokens)')
+        self.send('\x15' + context + '\r', 'Make it yours')
+        self.send('6\r', 'Max output (tokens)')
+        self.send('\x15' + output + '\r', 'Make it yours')
+        self.send('\r', next_title)
 
     def finish(self, result, key_ready=None):
         deadline = time.monotonic() + 6
@@ -161,6 +163,7 @@ def tests(driver, directory, production):
         t.send('\r', 'Ready when you are')
         config = t.save()
         assert 'model = "模型乙"' in config and 'adapter = "deepseek"' in config
+        assert 'extra_body_json = "{\\"thinking\\":{\\"type\\":\\"disabled\\"}}"' in config
 
         # Both optional capabilities configured independently.
         t = start('both', ready=True)
@@ -217,7 +220,7 @@ def tests(driver, directory, production):
         t = start('vision', ready=True)
         t.send('2\r\r', 'Understand images with morph?')
         t.send('2\r', 'Choose your provider')
-        assert 'DeepSeek' not in '\n'.join(t.screen.display[-10:])
+        assert 'DeepSeek' in '\n'.join(t.screen.display[-10:])
         t.send('\r\r', 'Create images with morph?')
         t.send('\r', 'Create videos with morph?')
         t.send('\r', 'Ready when you are')
@@ -234,11 +237,30 @@ def tests(driver, directory, production):
         assert 'adapter = "openai-chat-compatible"' in vision
         assert config.count('model = ""') == 2
 
+        # DeepSeek defaults and an environment variable selection survive saving.
+        t = start('vision-deepseek', ready=True)
+        t.send('\r\r', 'Understand images with morph?')
+        t.send('2\r', 'Choose your provider')
+        t.send('2\r', 'Make it yours')
+        screen = '\n'.join(t.screen.display)
+        assert '128000 tokens' in screen and '16384 tokens' in screen
+        t.send('4\r', 'Connect your account')
+        t.send('2\r', 'API key environment variable')
+        t.send('\x15SETUP_MISSING_API_KEY\r', 'Make it yours')
+        assert 'SETUP_MISSING_API_KEY (not exported)' in '\n'.join(t.screen.display)
+        t.send('\r', 'Create images with morph?')
+        t.send('\r', 'Create videos with morph?')
+        t.send('\r', 'Ready when you are')
+        config = t.save(1)
+        vision = config.split('[model.vision]')[1].split('[model.image]')[0]
+        assert 'api_key_env = "SETUP_MISSING_API_KEY"' in vision
+        assert 'context_limit = 128000' in vision and 'max_tokens = 16384' in vision
+
         # Other vision endpoints can be configured and then skipped from review.
         t = start('vision-other', ready=True)
         t.send('\r\r', 'Understand images with morph?')
         t.send('2\r', 'Choose your provider')
-        t.send('3\r', 'Make it yours')
+        t.send('4\r', 'Make it yours')
         t.send('\r', 'Model name / endpoint ID')
         t.send('custom-vision\r', 'Make it yours')
         t.send('\r', 'API base URL')
@@ -270,11 +292,13 @@ def tests(driver, directory, production):
         t.send('\x154096\r', 'Make it yours')
         t.send('2\r', 'Model name / endpoint ID')
         t.send('\x15my-deployment\r', 'Make it yours')
-        assert 'Required for this model' in '\n'.join(t.screen.display)
-        t.send('\r', 'Context window (tokens)')
-        t.send('8192\r', 'Max output (tokens)')
+        assert '128000 tokens' in '\n'.join(t.screen.display)
+        t.send('5\r', 'Context window (tokens)')
+        t.send('\x158192\r', 'Make it yours')
+        t.send('6\r', 'Max output (tokens)')
         t.send('8192\r', 'Invalid token count')
-        t.send('\x152048\r', 'Understand images with morph?')
+        t.send('\x152048\r', 'Make it yours')
+        t.send('\r', 'Understand images with morph?')
         t.send('\r', 'Create images with morph?')
         t.send('2\r', 'Choose your provider')
         t.send('\r', 'Make it yours')
@@ -323,7 +347,7 @@ def tests(driver, directory, production):
         t.child.close()
         assert t.child.exitstatus == 0 and t.path.exists()
         t.assert_inline()
-        print('Setup PTY: 12 scenarios passed, including the production CLI')
+        print('Setup PTY: 13 scenarios passed, including the production CLI')
     finally:
         for term in terminals:
             term.close()

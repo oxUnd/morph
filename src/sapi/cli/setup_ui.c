@@ -460,8 +460,16 @@ static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
 		morph_buf_printf(&labels, "API URL  %s", entry->api_base[0] ? entry->api_base : "Set URL");
 		morph_buf_putc(&labels, '\0');
 		offsets[2] = labels.len;
-		morph_buf_printf(&labels, "API key  %s", has_key(ui, entry) == 2 ?
-			"Ready for this session" : has_key(ui, entry) ? "Ready" : "Not set yet");
+		int key_status = has_key(ui, entry);
+		if (key_status == 2)
+			morph_buf_puts(&labels, "API key  Ready for this session");
+		else if (key_status)
+			morph_buf_puts(&labels, "API key  Ready");
+		else if (ui->deferred[ui->step] && entry->api_key_env[0])
+			morph_buf_printf(&labels, "API key  %s (not exported)",
+				 entry->api_key_env);
+		else
+			morph_buf_puts(&labels, "API key  Not set yet");
 		morph_buf_putc(&labels, '\0');
 		for (int i = 3; i < 5; i++) {
 			offsets[i] = labels.len;
@@ -536,13 +544,15 @@ static int choose_provider(struct setup_ui *ui, int kind, int *provider)
 	const char *text[] = {"OpenAI", "DeepSeek", "Volcengine / Ark", "Other · OpenAI compatible"};
 	const char *image[] = {"OpenAI", "Volcengine / Ark", "Other · OpenAI Images compatible"};
 	const char *video[] = {"Volcengine / Ark", "Other · Volcengine Video compatible"};
-	const char *vision[] = {"OpenAI", "Volcengine / Ark", "Other · Vision chat compatible"};
+	const char *vision[] = {"OpenAI", "DeepSeek", "Volcengine / Ark",
+		"Other · Vision chat compatible"};
 	const char *const *items = kind == SETUP_TEXT ? text :
 		kind == SETUP_VISION ? vision : kind == SETUP_IMAGE ? image : video;
 	for (;;) {
 		int selected = menu(ui, "Choose your provider",
 			"Use your own account with any supported provider.",
-			items, kind == SETUP_TEXT ? 4 : kind == SETUP_VIDEO ? 2 : 3, *provider);
+			items, kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
+			kind == SETUP_VIDEO ? 2 : 3, *provider);
 		if (selected < 0) MORPH_RETURN(selected);
 		if (!entry->provider[0] || selected != *provider) {
 			cli_setup_model_defaults(kind, selected + 1, entry);

@@ -109,8 +109,11 @@ is saved under `[model.vision]` and requires a model that accepts image input.
 Text and Vision model settings include **Context window** (`context_limit`) and
 **Max output** (`max_tokens`). These are saved explicitly for each enabled chat
 model. Known provider/model pairs receive model-specific presets, which you can
-lower. Unknown models, custom providers, and Ark endpoint IDs require you to
-enter the limits from your deployment's documentation. Changing the model resets
+lower. DeepSeek vision defaults to 128000 context tokens and 16384 output tokens;
+the built-in Ark model defaults to 128000 and 8192. Unknown models, custom
+providers, and Ark endpoint IDs start with editable budgets of 128000 and 16384;
+adjust these to your deployment's capacity. These budgets are not model ceilings.
+Changing the model resets
 its limits; unchanged models keep your overrides. Output must fit within the
 context window with room for input, and known model ceilings are enforced.
 Image/video generation does not expose these chat token settings.

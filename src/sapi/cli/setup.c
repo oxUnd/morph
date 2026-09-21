@@ -17,16 +17,20 @@ struct setup_preset {
 	const char *base;
 	const char *env;
 	const char *text;
+	const char *vision;
+	const char *vision_base;
 	const char *image;
 };
 
 static const struct setup_preset presets[] = {
 	{"openai", "https://api.openai.com/v1", "OPENAI_API_KEY",
-	 "gpt-4o", "gpt-image-2"},
+	 "gpt-4o", "gpt-4o", "https://api.openai.com/v1", "gpt-image-2"},
 	{"deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY",
-	 "deepseek-v4-flash", ""},
+	 "deepseek-v4-flash", "deepseek-flash", "https://api.deepseek.com", ""},
 	{"volcengine", "https://ark.cn-beijing.volces.com/api/v3",
-	 "VOLCENGINE_API_KEY", "", "doubao-seedream-5-0-260128"},
+	 "VOLCENGINE_API_KEY", "doubao-seed-2-0-lite-260428",
+	 "doubao-seed-2-0-lite-260428", "https://ark.cn-beijing.volces.com/api/v3",
+	 "doubao-seedream-5-0-260128"},
 };
 
 static int prompt(FILE *in, FILE *out, const char *label,
@@ -123,8 +127,12 @@ static const struct setup_token_limits *find_token_limits(
 void cli_setup_reset_token_limits(struct config_model_entry *entry)
 {
 	const struct setup_token_limits *limits = find_token_limits(entry);
-	entry->context_limit = limits ? limits->context : 0;
-	entry->max_tokens = limits ? limits->output : 0;
+	/* Deployment defaults, not claims about an unknown model's capacity. */
+	entry->context_limit = limits ? limits->context : 128000;
+	entry->max_tokens = limits ? limits->output : 16384;
+	if (strcmp(entry->provider, "volcengine") == 0 &&
+	    strcmp(entry->model, "doubao-seed-2-0-lite-260428") == 0)
+		entry->max_tokens = 8192;
 }
 
 int cli_setup_token_ceiling(const struct config_model_entry *entry, int output)
@@ -168,20 +176,27 @@ void cli_setup_model_defaults(int kind, int selected,
 			      struct config_model_entry *entry)
 {
 	memset(entry, 0, sizeof(*entry));
-	int custom = selected == (kind == SETUP_TEXT ? 4 : kind == SETUP_VIDEO ? 2 : 3);
-	int index = kind == SETUP_TEXT ? selected - 1 :
-		(kind != SETUP_VIDEO && selected == 1 ? 0 : 2);
+	int custom = selected == (kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
+		kind == SETUP_VIDEO ? 2 : 3);
+	int index = kind == SETUP_TEXT || kind == SETUP_VISION ? selected - 1 :
+		(kind == SETUP_IMAGE && selected == 1 ? 0 : 2);
 	const struct setup_preset *preset = &presets[custom ? 0 : index];
 	strcpy(entry->provider, custom ? "custom" : preset->provider);
 	strcpy(entry->adapter, (kind == SETUP_TEXT || kind == SETUP_VISION) ?
 		(!custom && index == 1 ? "deepseek" : "openai-chat-compatible") :
 		kind == SETUP_IMAGE ? (!custom && index == 2 ? "volcengine-images" :
 		"openai-images") : "volcengine-videos");
-	const char *model = custom ? "" : (kind == SETUP_TEXT || kind == SETUP_VISION) ? preset->text :
+	const char *model = custom ? "" : kind == SETUP_TEXT ? preset->text :
+		kind == SETUP_VISION ? preset->vision :
 		kind == SETUP_IMAGE ? preset->image : "doubao-seedance-2-0-260128";
 	strcpy(entry->model, model);
-	strcpy(entry->api_base, custom ? "" : preset->base);
+	strcpy(entry->api_base, custom ? "" : kind == SETUP_VISION ?
+		preset->vision_base : preset->base);
 	strcpy(entry->api_key_env, custom ? "MORPH_API_KEY" : preset->env);
+	if ((kind == SETUP_TEXT || kind == SETUP_VISION) &&
+	    !custom && index == 1)
+		strcpy(entry->extra_body_json,
+		       "{\"thinking\":{\"type\":\"disabled\"}}");
 	if (kind == SETUP_TEXT || kind == SETUP_VISION)
 		cli_setup_reset_token_limits(entry);
 }
@@ -192,12 +207,13 @@ static int configure_model(FILE *in, FILE *out, int kind,
 	const char *menu = kind == SETUP_TEXT ?
 		"Provider: 1) OpenAI  2) DeepSeek  3) Volcengine  4) Other (OpenAI compatible)" :
 		kind == SETUP_VISION ?
-		"Provider: 1) OpenAI  2) Volcengine  3) Other (vision chat compatible)" :
+		"Provider: 1) OpenAI  2) DeepSeek  3) Volcengine  4) Other (vision chat compatible)" :
 		kind == SETUP_IMAGE ?
 		"Provider: 1) OpenAI  2) Volcengine  3) Other (OpenAI Images compatible)" :
 		"Provider: 1) Volcengine  2) Other (Volcengine Video compatible)";
 	int selected = choice(in, out, menu, "1",
-		kind == SETUP_TEXT ? 4 : kind == SETUP_VIDEO ? 2 : 3);
+		kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
+		kind == SETUP_VIDEO ? 2 : 3);
 	if (selected < 0)
 		MORPH_RETURN(selected);
 	cli_setup_model_defaults(kind, selected, entry);
@@ -344,6 +360,9 @@ int cli_setup(const char *path, FILE *input, FILE *output)
 		append_field(&buf, "model", entries[i].model);
 		append_field(&buf, "api_base", entries[i].api_base);
 		append_field(&buf, "api_key_env", entries[i].api_key_env);
+		if (entries[i].extra_body_json[0])
+			append_field(&buf, "extra_body_json",
+				     entries[i].extra_body_json);
 		if ((i == SETUP_TEXT || i == SETUP_VISION) && entries[i].model[0])
 			morph_buf_printf(&buf, "context_limit = %d\nmax_tokens = %d\n",
 				entries[i].context_limit, entries[i].max_tokens);

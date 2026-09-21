@@ -168,7 +168,9 @@ Optional vision model example:
 	retry_count = 3
 
 Leave [model.vision] absent or set model = "" to keep img_qa unavailable.
-Do not point it at a text-only model.
+DeepSeek's vision-capable deepseek-flash model uses adapter = "deepseek".  Set
+extra_body_json = '''{"thinking":{"type":"disabled"}}''' when thinking must
+remain disabled.
 
 OpenAI image example:
 

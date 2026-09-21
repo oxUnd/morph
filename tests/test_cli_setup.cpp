@@ -60,6 +60,8 @@ TEST_F(CliSetupTest, ConfigureBothMediaModels) {
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
 	EXPECT_EQ(cfg.models.text.context_limit, 1000000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 384000);
+	EXPECT_STREQ(cfg.models.text.extra_body_json,
+		     "{\"thinking\":{\"type\":\"disabled\"}}");
 	EXPECT_STREQ(cfg.models.image.adapter, "volcengine-images");
 	EXPECT_STREQ(cfg.models.video.adapter, "volcengine-videos");
 	EXPECT_STRNE(cfg.models.image.model, "");
@@ -118,7 +120,7 @@ TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
 }
 
 TEST_F(CliSetupTest, VisionAcceptsArkEndpoint) {
-	ASSERT_GE(run("\n\n\n\n\n\n2\n2\nep-vision-test\n256000\n16000\n\n\n1\n1\n"), 0);
+	ASSERT_GE(run("\n\n\n\n\n\n2\n3\nep-vision-test\n256000\n16000\n\n\n1\n1\n"), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.vision.provider, "volcengine");
@@ -126,23 +128,38 @@ TEST_F(CliSetupTest, VisionAcceptsArkEndpoint) {
 	EXPECT_STREQ(cfg.models.vision.model, "ep-vision-test");
 }
 
-TEST(CliSetupTokens, ModelChangesResetLimitsAndUnknownModelsDoNotInherit) {
+TEST_F(CliSetupTest, VisionAcceptsDeepSeekWithDeepSeekAdapter) {
+	ASSERT_GE(run("\n\n\n\n\n\n2\n2\n\n\n\n\n\n1\n1\n"), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	EXPECT_STREQ(cfg.models.vision.provider, "deepseek");
+	EXPECT_STREQ(cfg.models.vision.adapter, "deepseek");
+	EXPECT_STREQ(cfg.models.vision.model, "deepseek-flash");
+	EXPECT_EQ(cfg.models.vision.context_limit, 128000);
+	EXPECT_EQ(cfg.models.vision.max_tokens, 16384);
+	EXPECT_STREQ(cfg.models.vision.api_base, "https://api.deepseek.com");
+	EXPECT_STREQ(cfg.models.vision.api_key_env, "DEEPSEEK_API_KEY");
+	EXPECT_STREQ(cfg.models.vision.extra_body_json,
+		     "{\"thinking\":{\"type\":\"disabled\"}}");
+}
+
+TEST(CliSetupTokens, ModelChangesResetLimitsToEditableDefaults) {
 	struct config_model_entry entry = {};
 	cli_setup_model_defaults(SETUP_TEXT, 1, &entry);
 	EXPECT_EQ(entry.context_limit, 128000);
 	EXPECT_EQ(entry.max_tokens, 16384);
 	strcpy(entry.model, "gpt-4o-unknown-version");
 	cli_setup_reset_token_limits(&entry);
-	EXPECT_EQ(entry.context_limit, 0);
-	EXPECT_EQ(entry.max_tokens, 0);
+	EXPECT_EQ(entry.context_limit, 128000);
+	EXPECT_EQ(entry.max_tokens, 16384);
 	cli_setup_model_defaults(SETUP_TEXT, 2, &entry);
 	EXPECT_EQ(entry.context_limit, 1000000);
 	EXPECT_EQ(entry.max_tokens, 384000);
-	cli_setup_model_defaults(SETUP_VISION, 3, &entry);
+	cli_setup_model_defaults(SETUP_VISION, 4, &entry);
 	strcpy(entry.model, "gpt-4o");
 	cli_setup_reset_token_limits(&entry);
-	EXPECT_EQ(entry.context_limit, 0);
-	EXPECT_EQ(entry.max_tokens, 0);
+	EXPECT_EQ(entry.context_limit, 128000);
+	EXPECT_EQ(entry.max_tokens, 16384);
 }
 
 TEST(CliSetupTokens, RejectsInvalidAndOutOfRangeCountsWithoutChangingValue) {
