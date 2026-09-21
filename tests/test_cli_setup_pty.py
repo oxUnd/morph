@@ -178,7 +178,7 @@ def tests(driver, directory, production):
         assert 'adapter = "volcengine-videos"' in config
 
         # Hidden bracketed paste does not submit on pasted newline; a key supplied
-        # for images is shared by the text model without being written to disk.
+        # for images survives saving even when missing text credentials cause exit.
         secret = 'fixture-session-secret-123'
         t = start('secret')
         t.send('\r\r', 'Connect your account')
@@ -190,9 +190,11 @@ def tests(driver, directory, production):
         assert 'Paste your API key' in '\n'.join(t.screen.display), '\n'.join(t.screen.display)
         t.send('\r', 'Create videos with morph?')
         t.send('\r', 'Ready when you are')
-        config = t.save(0, key_ready=1)
-        assert secret not in config and secret not in t.transcript
-        assert 'Text  gpt-4o · Session key' in t.transcript
+        config = t.save(1, key_ready=0)
+        assert f'api_key = "{secret}"' in config and secret not in t.transcript
+        assert 'IMAGE_CONFIG_KEY_READY=1' in t.transcript
+        assert t.path.stat().st_mode & 0o777 == 0o600
+        assert 'Images  gpt-image-2 · Config key' in t.transcript
 
         # Custom endpoint, URL validation, input cancel, and horizontal scrolling.
         t = start('custom', ready=True)

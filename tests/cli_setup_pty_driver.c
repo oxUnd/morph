@@ -1,5 +1,6 @@
 #include "sapi/cli/cli.h"
 #include "sapi/cli/setup.h"
+#include "config/config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,5 +29,10 @@ int main(int argc, char **argv)
 		memcmp(before.c_cc, after.c_cc, sizeof(before.c_cc)) == 0;
 	printf("SETUP_RESULT=%d RAW_RESTORED=%d SESSION_KEY_READY=%d\n", rc,
 		restored, getenv("OPENAI_API_KEY") != NULL);
+	struct config cfg;
+	if (rc >= 0 && config_load(&cfg, argv[1]) == 0) {
+		printf("IMAGE_CONFIG_KEY_READY=%d\n", cfg.models.image.api_key[0] != '\0');
+		memset(&cfg, 0, sizeof(cfg));
+	}
 	return restored ? 0 : 2;
 }

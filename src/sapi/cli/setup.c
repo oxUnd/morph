@@ -359,7 +359,10 @@ int cli_setup(const char *path, FILE *input, FILE *output)
 		append_field(&buf, "adapter", entries[i].adapter);
 		append_field(&buf, "model", entries[i].model);
 		append_field(&buf, "api_base", entries[i].api_base);
-		append_field(&buf, "api_key_env", entries[i].api_key_env);
+		if (entries[i].api_key[0])
+			append_field(&buf, "api_key", entries[i].api_key);
+		else
+			append_field(&buf, "api_key_env", entries[i].api_key_env);
 		if (entries[i].extra_body_json[0])
 			append_field(&buf, "extra_body_json",
 				     entries[i].extra_body_json);
@@ -376,17 +379,9 @@ int cli_setup(const char *path, FILE *input, FILE *output)
 		MORPH_RETURN(rc);
 	fprintf(output, "\nConfiguration saved to %s.\n"
 		"You can edit this file later to add or change model capabilities.\n", path);
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
-		if (entries[i].api_key[0] &&
-		    setenv(entries[i].api_key_env, entries[i].api_key, 1) != 0) {
-			int env_rc = -errno;
-			memset(entries, 0, sizeof(entries));
-			MORPH_RETURN(env_rc);
-		}
-	}
 	int missing = 0;
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
-		if (!entries[i].model[0])
+		if (!entries[i].model[0] || entries[i].api_key[0])
 			continue;
 		const char *key = getenv(entries[i].api_key_env);
 		if (!key || !*key) {

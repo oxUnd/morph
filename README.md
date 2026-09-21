@@ -138,9 +138,10 @@ The wizard supports terminal resizing and `--no-color`; `TERM=dumb` uses plain
 numbered prompts.
 
 API keys already set in environment variables are detected automatically.
-You can also paste a hidden key for the current session, choose another variable,
-or defer credentials. Pasted keys are never saved to the config; set the named
-environment variable in your shell for future launches. When credentials are
+You can also paste a hidden key to save in the config, choose another variable,
+or defer credentials. Pasted keys are saved in the model's `api_key` field;
+the config is created with owner-only permissions (0600). Choosing an environment
+variable saves its name in `api_key_env` instead. When credentials are
 ready, the CLI goes straight into chat. Otherwise it prints the needed `export`
 commands. Edit the config later to enable capabilities you skipped.
 

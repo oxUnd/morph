@@ -301,7 +301,7 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 			if (!overflow && input.len && utf8valid(morph_buf_cstr(&input)) == NULL) {
 				memcpy(value, input.data, input.len + 1);
 				rc = record_answer(ui, secret ?
-					"Session key entered (hidden)" : value);
+					"API key entered (hidden)" : value);
 				break;
 			}
 			continue;
@@ -352,18 +352,16 @@ static int env_valid(const char *name)
 
 static int has_key(struct setup_ui *ui, struct config_model_entry *entry)
 {
+	(void)ui;
+	if (entry->api_key[0]) return 2;
 	const char *env = getenv(entry->api_key_env);
 	if (env && *env) return 1;
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
-		if (ui->entries[i].api_key[0] &&
-		    strcmp(ui->entries[i].api_key_env, entry->api_key_env) == 0)
-			return 2;
 	return 0;
 }
 
 static int credentials(struct setup_ui *ui, struct config_model_entry *entry)
 {
-	const char *items[] = {"Paste API key for this session", "Use an environment variable",
+	const char *items[] = {"Save API key to config", "Use an environment variable",
 		"Set up later"};
 	for (;;) {
 		int selected = menu(ui, "Connect your account", entry->api_key_env, items, 3, 0);
@@ -374,7 +372,7 @@ static int credentials(struct setup_ui *ui, struct config_model_entry *entry)
 		}
 		if (selected == 0) {
 			int rc = edit(ui, "Paste your API key",
-				"Hidden input. Used for this session only; never saved to the config.",
+				"Hidden input. Saved in your config file for future sessions.",
 				entry->api_key, sizeof(entry->api_key), 1);
 			if (rc == SETUP_BACK) continue;
 			return rc;
@@ -391,8 +389,7 @@ static int credentials(struct setup_ui *ui, struct config_model_entry *entry)
 		if (rc == SETUP_BACK) continue;
 		if (rc < 0) MORPH_RETURN(rc);
 		if (env_valid(name)) {
-			if (strcmp(name, entry->api_key_env) != 0)
-				memset(entry->api_key, 0, sizeof(entry->api_key));
+			memset(entry->api_key, 0, sizeof(entry->api_key));
 			strcpy(entry->api_key_env, name);
 			ui->deferred[ui->step] = 1;
 			return 0;
@@ -462,7 +459,7 @@ static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
 		offsets[2] = labels.len;
 		int key_status = has_key(ui, entry);
 		if (key_status == 2)
-			morph_buf_puts(&labels, "API key  Ready for this session");
+			morph_buf_puts(&labels, "API key  Save to config (hidden)");
 		else if (key_status)
 			morph_buf_puts(&labels, "API key  Ready");
 		else if (ui->deferred[ui->step] && entry->api_key_env[0])
@@ -599,7 +596,7 @@ static int review(struct setup_ui *ui, const char *path)
 		offsets[i] = labels.len;
 		morph_buf_printf(&labels, "%s  %s%s", names[i],
 			entry->model[0] ? entry->model : "Skipped",
-			entry->model[0] ? (has_key(ui, entry) == 2 ? " · Session key" :
+			entry->model[0] ? (has_key(ui, entry) == 2 ? " · Config key" :
 			 has_key(ui, entry) ? " · Ready" : " · Key needed") : "");
 		if ((i == SETUP_TEXT || i == SETUP_VISION) && entry->model[0])
 			morph_buf_printf(&labels, " · ctx=%d out=%d",
