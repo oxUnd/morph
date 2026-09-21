@@ -5,6 +5,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "util/arena.h"
+#include "util/json.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/image_util.h"
@@ -73,21 +74,6 @@ static void model_set_last_error(struct model *self, const char *fmt, ...)
 	va_start(ap, fmt);
 	vsnprintf(self->last_error, sizeof(self->last_error), fmt, ap);
 	va_end(ap);
-}
-
-static char *json_print_arena(struct arena *arena, cJSON *root)
-{
-	char *heap;
-	char *out;
-
-	if (!arena || !root)
-		return NULL;
-	heap = cJSON_PrintUnformatted(root);
-	if (!heap)
-		return NULL;
-	out = arena_strdup(arena, heap);
-	free(heap);
-	return out;
 }
 
 static int extra_body_key_is_reserved(const char *key)
@@ -214,7 +200,7 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 		cJSON_Delete(root);
 		return rc;
 	}
-	body = json_print_arena(arena, root);
+	body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 	if (!body)
 		return -ENOMEM;
@@ -836,8 +822,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		? opts->timeout_seconds
 		: (self->timeout_seconds > 0 ? self->timeout_seconds : 300L);
 
-	struct image_encoded encoded = {0};
-	int encode_rc = image_encode_base64(image_path, max_dim, &encoded);
+	char *data_uri = NULL;
+	int encode_rc = image_encode_data_uri(image_path, max_dim, &data_uri);
 	if (encode_rc < 0) {
 		log_err("llm_chat_with_image: failed to encode image: %s",
 			image_path);
@@ -851,14 +837,14 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	if (!root || !messages) {
 		cJSON_Delete(root);
 		cJSON_Delete(messages);
-		image_encoded_cleanup(&encoded);
+		free(data_uri);
 		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(root, "model", self->model_id);
 	cJSON_AddItemToObject(root, "messages", messages);
 	if (add_system_message(messages, system_prompt) < 0) {
 		cJSON_Delete(root);
-		image_encoded_cleanup(&encoded);
+		free(data_uri);
 		return -ENOMEM;
 	}
 
@@ -874,7 +860,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		cJSON_Delete(image);
 		cJSON_Delete(image_url);
 		cJSON_Delete(root);
-		image_encoded_cleanup(&encoded);
+		free(data_uri);
 		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(user, "role", "user");
@@ -883,20 +869,16 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	cJSON_AddStringToObject(text, "text", prompt);
 	cJSON_AddItemToArray(content, text);
 
-	size_t uri_len = strlen("data:;base64,") +
-		strlen(encoded.mime_type) + strlen(encoded.base64) + 1;
-	char *data_uri = arena_alloc(arena, uri_len);
-	if (!data_uri) {
-		cJSON_Delete(root);
-		image_encoded_cleanup(&encoded);
-		return -ENOMEM;
-	}
-	snprintf(data_uri, uri_len, "data:%s;base64,%s",
-		 encoded.mime_type, encoded.base64);
-	image_encoded_cleanup(&encoded);
-
 	cJSON_AddStringToObject(image, "type", "image_url");
-	cJSON_AddStringToObject(image_url, "url", data_uri);
+	cJSON *uri_value = morph_json_take_string(data_uri);
+	if (!uri_value || !cJSON_AddItemToObject(image_url, "url", uri_value)) {
+		cJSON_Delete(uri_value);
+		cJSON_Delete(image_url);
+		cJSON_Delete(image);
+		cJSON_Delete(user);
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
 	cJSON_AddItemToObject(image, "image_url", image_url);
 	cJSON_AddItemToArray(content, image);
 	cJSON_AddItemToArray(messages, user);
@@ -917,13 +899,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		return extra_rc;
 	}
 
-	size_t body_cap = 8192 + uri_len + strlen(prompt);
-	char *body = arena_alloc(arena, body_cap);
-	while (body && !cJSON_PrintPreallocated(root, body,
-						(int)body_cap, 0)) {
-		body_cap *= 2;
-		body = arena_alloc(arena, body_cap);
-	}
+	char *body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 	if (!body)
 		return -ENOMEM;
@@ -1130,7 +1106,7 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 				"\"description\":\"Raw text input for this tool.\"}},"
 				"\"required\":[\"input\"],"
 				"\"additionalProperties\":false}");
-		} else if (tools[i].input_schema[0]) {
+		} else if ((tools[i].input_schema && tools[i].input_schema[0])) {
 			params = cJSON_Parse(tools[i].input_schema);
 		}
 		params = normalize_params_to_schema(params);
@@ -1165,7 +1141,7 @@ static cJSON *build_responses_tools_cjson(struct tool_desc *tools,
 			cJSON_AddStringToObject(tool, "name", tools[i].name);
 			cJSON_AddStringToObject(tool, "description",
 				tools[i].description);
-			if (tools[i].input_format[0]) {
+			if ((tools[i].input_format && tools[i].input_format[0])) {
 				cJSON *format = cJSON_Parse(tools[i].input_format);
 
 				if (!format) {
@@ -1176,7 +1152,7 @@ static cJSON *build_responses_tools_cjson(struct tool_desc *tools,
 				cJSON_AddItemToObject(tool, "format", format);
 			}
 		} else {
-			cJSON *params = tools[i].input_schema[0] ?
+			cJSON *params = (tools[i].input_schema && tools[i].input_schema[0]) ?
 				cJSON_Parse(tools[i].input_schema) : NULL;
 
 			params = normalize_params_to_schema(params);
@@ -1467,7 +1443,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 		cJSON_Delete(root);
 		return rc;
 	}
-	body = json_print_arena(arena, root);
+	body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 	if (!body)
 		MORPH_RETURN(-ENOMEM);
@@ -1568,12 +1544,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		return extra_rc;
 	}
 
-	size_t body_cap = 8192;
-	char *body = arena_alloc(arena, body_cap);
-	while (body && !cJSON_PrintPreallocated(root, body, (int)body_cap, 0)) {
-		body_cap *= 2;
-		body = arena_alloc(arena, body_cap);
-	}
+	char *body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 
 	if (!body)

@@ -59,6 +59,7 @@ static void memory_steps_free(struct react_step *s)
 {
 	while (s) {
 		struct react_step *n = s->next;
+		free(s->artifacts);
 		free(s->content);
 		free(s->tool_name);
 		free(s->tool_args);
@@ -81,7 +82,15 @@ static struct react_step *memory_steps_dup(const struct react_step *src)
 		}
 		node->type = cur->type;
 		node->error_code = cur->error_code;
-		node->artifacts = cur->artifacts;
+		if (cur->artifact_count > 0) {
+			size_t bytes = (size_t)cur->artifact_count * sizeof(*cur->artifacts);
+
+			node->artifacts = malloc(bytes);
+			if (!node->artifacts)
+				goto oom;
+			memcpy(node->artifacts, cur->artifacts, bytes);
+			node->artifact_count = cur->artifact_count;
+		}
 		if (cur->content) {
 			node->content = strdup(cur->content);
 			if (!node->content)
@@ -109,6 +118,7 @@ static struct react_step *memory_steps_dup(const struct react_step *src)
 		tail = node;
 		continue;
 oom:
+		free(node->artifacts);
 		free(node->content);
 		free(node->tool_name);
 		free(node->tool_args);

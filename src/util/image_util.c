@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -23,6 +24,45 @@
 #define IMAGE_GEN_MIN_PIXELS (2560LL * 1440LL)
 #define IMAGE_GEN_MAX_PIXELS (4096LL * 4096LL)
 #define IMAGE_JPEG_QUALITY 88
+
+int image_pixel_bytes(int width, int height, int channels, size_t *bytes)
+{
+	size_t pixels;
+
+	if (!bytes || width <= 0 || height <= 0 || channels < 1 || channels > 4)
+		MORPH_RETURN(-EINVAL);
+	if (width > MORPH_IMAGE_MAX_DIMENSION || height > MORPH_IMAGE_MAX_DIMENSION ||
+	    (size_t)width > MORPH_IMAGE_MAX_PIXELS / (size_t)height)
+		MORPH_RETURN(-EFBIG);
+	pixels = (size_t)width * (size_t)height;
+	*bytes = pixels * (size_t)channels;
+	return 0;
+}
+
+int image_validate_file(const char *path)
+{
+	struct stat st;
+	int w, h, ch;
+	size_t bytes;
+
+	if (!path)
+		MORPH_RETURN(-EINVAL);
+	if (stat(path, &st) != 0)
+		MORPH_RETURN(-errno);
+	if (!S_ISREG(st.st_mode) || st.st_size > MORPH_MEDIA_MAX_FILE_BYTES)
+		MORPH_RETURN(-EFBIG);
+	if (!stbi_info(path, &w, &h, &ch))
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	return image_pixel_bytes(w, h, 4, &bytes);
+}
+
+unsigned char *image_load_bounded(const char *path, int *width, int *height,
+				 int *channels, int desired_channels)
+{
+	if (image_validate_file(path) != 0)
+		return NULL;
+	return stbi_load(path, width, height, channels, desired_channels);
+}
 
 enum image_encode_format {
 	IMAGE_ENCODE_PNG,
@@ -122,15 +162,19 @@ int image_encode_base64(const char *path, int max_dim,
 	if (!path || max_dim < 1 || !encoded)
 		MORPH_RETURN(-EINVAL);
 	memset(encoded, 0, sizeof(*encoded));
+	rc = image_validate_file(path);
+	if (rc != 0)
+		MORPH_RETURN(rc);
 	if (!stbi_info(path, &width, &height, &channels) ||
 	    width <= 0 || height <= 0)
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	format = image_encode_detect_format(path);
 	if (width <= max_dim && height <= max_dim &&
 	    format != IMAGE_ENCODE_OTHER) {
-		encoded->base64 = base64_encode_file(path);
-		if (!encoded->base64)
-			MORPH_RETURN(-EIO);
+		rc = base64_encode_file_prefixed(path, "", MORPH_MEDIA_MAX_FILE_BYTES,
+			&encoded->base64);
+		if (rc != 0)
+			MORPH_RETURN(rc);
 		encoded->mime_type = format == IMAGE_ENCODE_JPEG
 			? "image/jpeg" : "image/png";
 		return 0;
@@ -172,6 +216,11 @@ int image_encode_base64(const char *path, int max_dim,
 		}
 	}
 
+	if (resized != pixels) {
+		stbi_image_free(pixels);
+		pixels = resized;
+	}
+
 	memset(&sink, 0, sizeof(sink));
 	rc = morph_buf_init(&sink.buf,
 			    (size_t)resized_width * (size_t)resized_height);
@@ -211,6 +260,29 @@ int image_encode_base64(const char *path, int max_dim,
 		MORPH_RETURN(-ENOMEM);
 	}
 	return 0;
+}
+
+int image_encode_data_uri(const char *path, int max_dim, char **uri)
+{
+	struct image_encoded encoded = {0};
+	morph_buf_t buf = {0};
+	int rc;
+
+	if (!uri)
+		MORPH_RETURN(-EINVAL);
+	*uri = NULL;
+	rc = image_encode_base64(path, max_dim, &encoded);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	rc = morph_buf_init(&buf, strlen(encoded.base64) + strlen(encoded.mime_type) + 14);
+	if (rc == 0)
+		rc = morph_buf_printf(&buf, "data:%s;base64,%s", encoded.mime_type,
+			encoded.base64);
+	image_encoded_cleanup(&encoded);
+	if (rc == 0)
+		*uri = morph_buf_detach(&buf);
+	morph_buf_cleanup(&buf);
+	MORPH_RETURN(rc);
 }
 
 int image_probe_size(const char *path, int *width, int *height)
@@ -306,6 +378,12 @@ int image_resize_file_exact(const char *path, int width, int height)
 	if (!path || width <= 0 || height <= 0)
 		MORPH_RETURN(-EINVAL);
 
+	size_t dst_bytes;
+	rc = image_pixel_bytes(width, height, 4, &dst_bytes);
+	if (rc == 0)
+		rc = image_validate_file(path);
+	if (rc != 0)
+		MORPH_RETURN(rc);
 	src = stbi_load(path, &src_w, &src_h, &src_ch, 0);
 	if (!src)
 		MORPH_RETURN(MORPH_ERR_FORMAT);

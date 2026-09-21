@@ -15,6 +15,7 @@ add_library(morph-util STATIC
 	strmap.c
 	buf.c
 	array.c
+	json.c
 	bash_parse.c
 	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
 	${CMAKE_SOURCE_DIR}/vendor/re.c
@@ -32,5 +33,5 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/vendor/re.c PROPERTIES
 )
 
 set_source_files_properties(image_util.c PROPERTIES
-	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion"
+	COMPILE_FLAGS "-Wno-sign-conversion -Wno-conversion -Wno-deprecated-declarations -Wno-unused-parameter -Wno-unused-but-set-variable"
 )

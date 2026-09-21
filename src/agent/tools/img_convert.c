@@ -3,6 +3,7 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "util/error.h"
+#include "util/image_util.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -122,7 +123,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	}
 
 	int w = 0, h = 0, ch = 0;
-	unsigned char *data = stbi_load(resolved_input, &w, &h, &ch, 0);
+	unsigned char *data = image_load_bounded(resolved_input, &w, &h, &ch, 0);
 	if (!data) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));

@@ -66,6 +66,7 @@ int runtime_session_compress(struct runtime *runtime,
 				     int *window_removed, int *kept);
 
 int runtime_tool_count(const struct runtime *runtime);
+/* Descriptor strings are borrowed until registry mutation or destruction. */
 int runtime_tool_info(const struct runtime *runtime, int index,
 		      struct tool_desc *out);
 int runtime_tool_flags(const struct runtime *runtime, int index,
@@ -74,6 +75,7 @@ int runtime_tool_enabled(const struct runtime *runtime, int index,
 			 int *out);
 int runtime_tool_origin(const struct runtime *runtime, int index,
 			enum tool_origin *out);
+/* Same borrowed lifetime as runtime_tool_info. */
 int runtime_tool_find(const struct runtime *runtime, const char *name,
 		      struct tool_desc *out);
 

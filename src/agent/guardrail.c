@@ -61,7 +61,7 @@ static int build_tool_outcomes(const struct react_step *steps,
 						o->succeeded = 0;
 					} else {
 						o->succeeded = 1;
-						if (obs->artifacts.count > 0)
+						if (obs->artifact_count > 0)
 							o->has_file_output = 1;
 					}
 					break;

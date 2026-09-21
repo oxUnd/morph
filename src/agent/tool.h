@@ -10,6 +10,7 @@ extern "C" {
 #include "cJSON.h"
 #include "util/str.h"
 #include "util/strmap.h"
+#include "util/array.h"
 
 #define TOOL_NAME_MAX 512
 #define TOOL_DESC_MAX 8192
@@ -62,14 +63,15 @@ struct tool_artifact_list {
 	int count;
 };
 
+/* Non-owning string views; registry entries own their descriptor arena. */
 struct tool_desc {
-	char name[TOOL_NAME_MAX];
-	char title[TOOL_NAME_MAX];
-	char description[TOOL_DESC_MAX];
-	char input_schema[TOOL_SCHEMA_MAX];
-	char output_schema[TOOL_SCHEMA_MAX];
+	const char *name;
+	const char *title;
+	const char *description;
+	const char *input_schema;
+	const char *output_schema;
 	enum tool_input_kind input_kind;
-	char input_format[TOOL_FORMAT_MAX];
+	const char *input_format;
 };
 
 struct tool_result {
@@ -106,6 +108,7 @@ int tool_result_add_image(struct tool_result *result, const char *path,
 			  int width, int height);
 int tool_result_add_video(struct tool_result *result, const char *path,
 			  int duration_seconds);
+cJSON *tool_artifacts_to_json(const struct tool_artifact *items, int count);
 cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts);
 
 typedef int (*tool_exec_fn)(const char *args_json,
@@ -131,6 +134,7 @@ struct tool_spec {
 
 struct tool_entry {
 	struct tool_desc desc;
+	struct arena *descriptor_arena;
 	tool_exec_fn exec;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
@@ -140,7 +144,8 @@ struct tool_entry {
 };
 
 struct tool_registry {
-	struct tool_entry entries[TOOL_MAX_ENTRIES];
+	struct tool_entry *entries;
+	morph_array_t storage;
 	int count;
 	char disabled[TOOL_DISABLED_MAX][TOOL_NAME_MAX];
 	int disabled_count;
@@ -151,6 +156,7 @@ struct tool_registry {
 void tool_registry_init(struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
+int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *spec);
 int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
 int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);

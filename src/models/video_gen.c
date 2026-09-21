@@ -6,6 +6,8 @@
 #include "util/base64.h"
 #include "util/image_util.h"
 #include "util/arena.h"
+#include "util/json.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "http/client.h"
 #include "cJSON.h"
@@ -18,6 +20,86 @@
 #include <unistd.h>
 
 #define VIDEO_VOLCENGINE_ADAPTER "volcengine-videos"
+
+#define VIDEO_REFERENCE_MAX_ENCODED_BYTES (128U * 1024U * 1024U)
+
+static const char *video_reference_mime(const char *path, int audio)
+{
+	const char *ext = strrchr(path, '.');
+
+	if (audio)
+		return ext && !strcasecmp(ext, ".wav") ? "audio/wav" : "audio/mpeg";
+	if (ext && !strcasecmp(ext, ".mov"))
+		return "video/quicktime";
+	if (ext && !strcasecmp(ext, ".webm"))
+		return "video/webm";
+	if (ext && !strcasecmp(ext, ".mkv"))
+		return "video/x-matroska";
+	if (ext && !strcasecmp(ext, ".avi"))
+		return "video/x-msvideo";
+	return "video/mp4";
+}
+
+/* Takes ownership of uri on both success and failure. */
+static int video_add_reference(cJSON *content, const char *type,
+			       const char *role, char *uri, size_t *budget)
+{
+	cJSON *item = cJSON_CreateObject();
+	cJSON *url = item ? cJSON_AddObjectToObject(item, type) : NULL;
+	cJSON *value;
+	size_t len = strlen(uri);
+
+	if (len > *budget) {
+		free(uri);
+		cJSON_Delete(item);
+		MORPH_RETURN(-EFBIG);
+	}
+	value = morph_json_take_string(uri);
+	if (!value) {
+		cJSON_Delete(item);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!url || !cJSON_AddItemToObject(url, "url", value)) {
+		cJSON_Delete(value);
+		cJSON_Delete(item);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddStringToObject(item, "type", type) ||
+	    !cJSON_AddStringToObject(item, "role", role) ||
+	    !cJSON_AddItemToArray(content, item)) {
+		cJSON_Delete(item);
+		MORPH_RETURN(-ENOMEM);
+	}
+	*budget -= len;
+	return 0;
+}
+
+static int video_reference_uri(const char *path, int audio, size_t budget,
+			       char **uri)
+{
+	morph_buf_t prefix;
+	size_t max_bytes = budget / 4 * 3;
+	int rc;
+
+	if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
+		*uri = strdup(path);
+		if (!*uri)
+			MORPH_RETURN(-ENOMEM);
+		return 0;
+	}
+	if (max_bytes > MORPH_MEDIA_MAX_FILE_BYTES)
+		max_bytes = MORPH_MEDIA_MAX_FILE_BYTES;
+	rc = morph_buf_init(&prefix, 64);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	rc = morph_buf_printf(&prefix, "data:%s;base64,",
+		video_reference_mime(path, audio));
+	if (rc == 0)
+		rc = base64_encode_file_prefixed(path, morph_buf_cstr(&prefix),
+			max_bytes, uri);
+	morph_buf_cleanup(&prefix);
+	MORPH_RETURN(rc);
+}
 
 static const struct video_provider_ops volcengine_video_provider;
 
@@ -194,197 +276,78 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 
 	cJSON *content_arr = cJSON_AddArrayToObject(body_json, "content");
 
-	const char *final_prompt = prompt;
-	if (num_images > 1 || num_videos > 0 || num_audios > 0) {
-		size_t suffix_len = 128 +
-			(size_t)(num_images + num_videos + num_audios) * 16;
-		size_t total = strlen(prompt) + suffix_len;
-		char *buf = arena_alloc(arena, total);
-		if (buf) {
-			size_t off = (size_t)snprintf(buf, total, "%s", prompt);
-			if (num_images > 1) {
-				off += (size_t)snprintf(buf + off, total - off,
-						       "\n[Ref images: ");
-				for (int i = 0; i < num_images; i++) {
-					if (i > 0)
-						off += (size_t)snprintf(buf + off, total - off, ", ");
-					off += (size_t)snprintf(buf + off, total - off, "image#%d", i + 1);
-				}
-				off += (size_t)snprintf(buf + off, total - off, "]");
-			}
-			if (num_videos > 0) {
-				off += (size_t)snprintf(buf + off, total - off,
-						       "\n[Ref videos: ");
-				for (int i = 0; i < num_videos; i++) {
-					if (i > 0)
-						off += (size_t)snprintf(buf + off, total - off, ", ");
-					off += (size_t)snprintf(buf + off, total - off, "video#%d", i + 1);
-				}
-				off += (size_t)snprintf(buf + off, total - off, "]");
-			}
-			if (num_audios > 0) {
-				off += (size_t)snprintf(buf + off, total - off,
-						       "\n[Ref audios: ");
-				for (int i = 0; i < num_audios; i++) {
-					if (i > 0)
-						off += (size_t)snprintf(
-							buf + off, total - off, ", ");
-					off += (size_t)snprintf(
-						buf + off, total - off,
-						"audio#%d", i + 1);
-				}
-				(void)snprintf(buf + off, total - off, "]");
-			}
-			final_prompt = buf;
-		}
+	morph_buf_t prompt_buf;
+	int prompt_rc = morph_buf_init_arena(&prompt_buf, arena, 256);
+	const int counts[] = {num_images > 1 ? num_images : 0, num_videos, num_audios};
+	const char *labels[] = {"image", "video", "audio"};
+	if (prompt_rc == 0)
+		prompt_rc = morph_buf_puts(&prompt_buf, prompt);
+	for (size_t kind = 0; prompt_rc == 0 && kind < 3; kind++) {
+		if (counts[kind] <= 0)
+			continue;
+		prompt_rc = morph_buf_printf(&prompt_buf, "\n[Ref %ss: ", labels[kind]);
+		for (int i = 0; prompt_rc == 0 && i < counts[kind]; i++)
+			prompt_rc = morph_buf_printf(&prompt_buf, "%s%s#%d",
+				i ? ", " : "", labels[kind], i + 1);
+		if (prompt_rc == 0)
+			prompt_rc = morph_buf_putc(&prompt_buf, ']');
+	}
+	cJSON *item = cJSON_CreateObject();
+	if (prompt_rc != 0 || !content_arr || !item ||
+	    !cJSON_AddStringToObject(item, "type", "text") ||
+	    !cJSON_AddStringToObject(item, "text", morph_buf_cstr(&prompt_buf)) ||
+	    !cJSON_AddItemToArray(content_arr, item)) {
+		cJSON_Delete(item);
+		cJSON_Delete(body_json);
+		arena_destroy(arena);
+		MORPH_RETURN(prompt_rc != 0 ? prompt_rc : -ENOMEM);
 	}
 
-	cJSON *item = cJSON_CreateObject();
-	cJSON_AddStringToObject(item, "type", "text");
-	cJSON_AddStringToObject(item, "text", final_prompt);
-	cJSON_AddItemToArray(content_arr, item);
-
+	size_t reference_budget = VIDEO_REFERENCE_MAX_ENCODED_BYTES;
 	for (int i = 0; i < num_images; i++) {
+		char *uri = NULL;
+		int rc;
+
 		if (!image_paths || !image_paths[i] || !image_paths[i][0])
 			continue;
-		struct image_encoded encoded = {0};
-		int encode_rc = image_encode_base64(
-			image_paths[i], 1024, &encoded);
-		if (encode_rc < 0) {
-			log_warn("video_gen: failed to encode image: %s", image_paths[i]);
-			continue;
-		}
-		size_t uri_len = strlen("data:;base64,") +
-			strlen(encoded.mime_type) + strlen(encoded.base64) + 1;
-		char *data_uri = arena_alloc(arena, uri_len);
-		if (data_uri) {
-			snprintf(data_uri, uri_len, "data:%s;base64,%s",
-				 encoded.mime_type, encoded.base64);
-			cJSON *img_item = cJSON_CreateObject();
-			cJSON_AddStringToObject(img_item, "type", "image_url");
-			cJSON_AddStringToObject(
-				img_item, "role",
+		rc = image_encode_data_uri(image_paths[i], 1024, &uri);
+		if (rc == 0)
+			rc = video_add_reference(content_arr, "image_url",
 				caps->supports_multi_reference_images ?
-					"reference_image" : "first_frame");
-			cJSON *url_obj = cJSON_CreateObject();
-			cJSON_AddStringToObject(url_obj, "url", data_uri);
-			cJSON_AddItemToObject(img_item, "image_url", url_obj);
-			cJSON_AddItemToArray(content_arr, img_item);
+				"reference_image" : "first_frame", uri, &reference_budget);
+		if (rc != 0) {
+			cJSON_Delete(body_json);
+			arena_destroy(arena);
+			snprintf(result->error_msg, sizeof(result->error_msg),
+				"video_gen: image reference: %s", morph_strerror(rc));
+			MORPH_RETURN(rc);
 		}
-		image_encoded_cleanup(&encoded);
 	}
 
-	for (int i = 0; i < num_videos; i++) {
-		if (!video_paths || !video_paths[i] || !video_paths[i][0])
-			continue;
-		const char *vpath = video_paths[i];
-		const char *url_to_send = NULL;
-		char *b64 = NULL;
+	for (int audio = 0; audio <= 1; audio++) {
+		const char **paths = audio ? audio_paths : video_paths;
+		int count = audio ? num_audios : num_videos;
 
-		if (strncmp(vpath, "http://", 7) == 0 ||
-		    strncmp(vpath, "https://", 8) == 0) {
-			url_to_send = vpath;
-		} else {
-			size_t vlen = 0;
-			char *vdata = file_read_all(vpath, &vlen);
-			if (!vdata || vlen == 0) {
-				log_warn("video_gen: failed to read video: %s", vpath);
-				free(vdata);
+		for (int i = 0; i < count; i++) {
+			char *uri = NULL;
+			int rc;
+
+			if (!paths || !paths[i] || !paths[i][0])
 				continue;
-			}
-			b64 = base64_encode((unsigned char *)vdata, vlen);
-			free(vdata);
-			if (!b64) {
-				log_warn("video_gen: failed to encode video: %s", vpath);
-				continue;
-			}
-			const char *mime = "video/mp4";
-			const char *ext = strrchr(vpath, '.');
-			if (ext) {
-				if (!strcasecmp(ext, ".mov"))
-					mime = "video/quicktime";
-				else if (!strcasecmp(ext, ".webm"))
-					mime = "video/webm";
-				else if (!strcasecmp(ext, ".mkv"))
-					mime = "video/x-matroska";
-				else if (!strcasecmp(ext, ".avi"))
-					mime = "video/x-msvideo";
-			}
-			size_t uri_len = strlen("data:") + strlen(mime) +
-					 strlen(";base64,") + strlen(b64) + 1;
-			char *data_uri = arena_alloc(arena, uri_len);
-			if (data_uri) {
-				snprintf(data_uri, uri_len, "data:%s;base64,%s",
-					 mime, b64);
-				url_to_send = data_uri;
-			}
-		}
-
-		if (url_to_send) {
-			cJSON *vid_item = cJSON_CreateObject();
-			cJSON_AddStringToObject(vid_item, "type", "video_url");
-			cJSON_AddStringToObject(vid_item, "role", "reference_video");
-			cJSON *url_obj = cJSON_CreateObject();
-			cJSON_AddStringToObject(url_obj, "url", url_to_send);
-			cJSON_AddItemToObject(vid_item, "video_url", url_obj);
-			cJSON_AddItemToArray(content_arr, vid_item);
-		}
-		free(b64);
-	}
-
-	for (int i = 0; i < num_audios; i++) {
-		const char *apath = audio_paths[i];
-		const char *url_to_send = NULL;
-		char *b64 = NULL;
-
-		if (strncmp(apath, "http://", 7) == 0 ||
-		    strncmp(apath, "https://", 8) == 0) {
-			url_to_send = apath;
-		} else {
-			size_t alen = 0;
-			char *adata = file_read_all(apath, &alen);
-			const char *ext;
-			const char *mime;
-
-			if (!adata || alen == 0) {
-				free(adata);
-				snprintf(result->error_msg,
-					 sizeof(result->error_msg),
-					 "video_gen: failed to read audio: %s", apath);
+			rc = video_reference_uri(paths[i], audio, reference_budget, &uri);
+			if (rc == 0)
+				rc = video_add_reference(content_arr,
+					audio ? "audio_url" : "video_url",
+					audio ? "reference_audio" : "reference_video",
+					uri, &reference_budget);
+			if (rc != 0) {
+				cJSON_Delete(body_json);
 				arena_destroy(arena);
-				MORPH_RETURN(-EIO);
-			}
-			b64 = base64_encode((unsigned char *)adata, alen);
-			free(adata);
-			if (!b64) {
-				arena_destroy(arena);
-				MORPH_RETURN(-ENOMEM);
-			}
-			ext = strrchr(apath, '.');
-			mime = ext && strcasecmp(ext, ".wav") == 0 ?
-				"audio/wav" : "audio/mpeg";
-			size_t uri_len = strlen("data:") + strlen(mime) +
-				strlen(";base64,") + strlen(b64) + 1;
-			char *data_uri = arena_alloc(arena, uri_len);
-			if (data_uri) {
-				snprintf(data_uri, uri_len, "data:%s;base64,%s",
-					 mime, b64);
-				url_to_send = data_uri;
+				snprintf(result->error_msg, sizeof(result->error_msg),
+					"video_gen: media reference: %s", morph_strerror(rc));
+				MORPH_RETURN(rc);
 			}
 		}
-
-		if (url_to_send) {
-			cJSON *audio_item = cJSON_CreateObject();
-			cJSON *url_obj = cJSON_CreateObject();
-
-			cJSON_AddStringToObject(audio_item, "type", "audio_url");
-			cJSON_AddStringToObject(audio_item, "role",
-						"reference_audio");
-			cJSON_AddStringToObject(url_obj, "url", url_to_send);
-			cJSON_AddItemToObject(audio_item, "audio_url", url_obj);
-			cJSON_AddItemToArray(content_arr, audio_item);
-		}
-		free(b64);
 	}
 
 	if (duration > 0)
@@ -393,12 +356,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		cJSON_AddBoolToObject(body_json, "generate_audio",
 				      generate_audio != 0);
 
-	size_t body_cap = 8192;
-	char *body_str = arena_alloc(arena, body_cap);
-	while (body_str && !cJSON_PrintPreallocated(body_json, body_str, (int)body_cap, 0)) {
-		body_cap *= 2;
-		body_str = arena_alloc(arena, body_cap);
-	}
+	char *body_str = morph_json_print(arena, body_json);
 	cJSON_Delete(body_json);
 
 	if (!body_str) {

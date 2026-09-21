@@ -64,7 +64,7 @@ static const char *image_path_at(cJSON *images, int idx)
 static unsigned char *load_rgba(const char *path, int *w, int *h)
 {
 	int n = 0;
-	return stbi_load(path, w, h, &n, 4);
+	return image_load_bounded(path, w, h, &n, 4);
 }
 
 /* Crop an axis-aligned region (clipped to bounds) into a fresh RGBA buffer. */
@@ -73,7 +73,10 @@ static unsigned char *crop_rgba(const unsigned char *src, int sw, int sh,
 {
 	if (rw <= 0 || rh <= 0)
 		return NULL;
-	unsigned char *out = malloc((size_t)rw * (size_t)rh * 4);
+	size_t bytes;
+	if (image_pixel_bytes(rw, rh, 4, &bytes) != 0)
+		return NULL;
+	unsigned char *out = malloc(bytes);
 	if (!out)
 		return NULL;
 	for (int y = 0; y < rh; y++) {
@@ -366,7 +369,12 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 		if (th < 1)
 			th = 1;
 
-		unsigned char *resized = malloc((size_t)tw * (size_t)th * 4);
+		size_t bytes;
+		if (image_pixel_bytes(tw, th, 4, &bytes) != 0) {
+			free(crop);
+			continue;
+		}
+		unsigned char *resized = malloc(bytes);
 		if (!resized) {
 			free(crop);
 			continue;

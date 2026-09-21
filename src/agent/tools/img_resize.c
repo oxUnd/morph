@@ -3,6 +3,7 @@
 #include "util/log.h"
 #include "util/file.h"
 #include "util/error.h"
+#include "util/image_util.h"
 #include "cJSON.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -10,6 +11,7 @@
 #include "stb_image_resize2.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -63,6 +65,14 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	cJSON *out = cJSON_GetObjectItem(root, "output_path");
 
 	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
+	if ((cJSON_IsNumber(cw) && (!isfinite(cw->valuedouble) ||
+	     cw->valuedouble < 0 || cw->valuedouble > MORPH_IMAGE_MAX_DIMENSION)) ||
+	    (cJSON_IsNumber(chh) && (!isfinite(chh->valuedouble) ||
+	     chh->valuedouble < 0 || chh->valuedouble > MORPH_IMAGE_MAX_DIMENSION))) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "image_too_large", "Invalid image dimensions");
+		MORPH_RETURN(-EFBIG);
+	}
 	int target_w = cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
 	int target_h = cJSON_IsNumber(chh) ? (int)chh->valuedouble : 0;
 	const char *out_path_in = cJSON_IsString(out) ? out->valuestring : NULL;
@@ -97,7 +107,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	}
 
 	int src_w = 0, src_h = 0, src_ch = 0;
-	unsigned char *src = stbi_load(resolved_input, &src_w, &src_h, &src_ch, 0);
+	unsigned char *src = image_load_bounded(resolved_input, &src_w, &src_h, &src_ch, 0);
 	if (!src) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));
@@ -114,7 +124,15 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	if (target_h <= 0)
 		target_h = 1;
 
-	unsigned char *dst = malloc((size_t)target_w * (size_t)target_h * (size_t)src_ch);
+	size_t dst_bytes;
+	int size_rc = image_pixel_bytes(target_w, target_h, src_ch, &dst_bytes);
+	if (size_rc != 0) {
+		stbi_image_free(src);
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "image_too_large", "Image exceeds pixel limit");
+		MORPH_RETURN(size_rc);
+	}
+	unsigned char *dst = malloc(dst_bytes);
 	if (!dst) {
 		stbi_image_free(src);
 		cJSON_Delete(root);

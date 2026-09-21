@@ -10,6 +10,7 @@
 #include "agent/tools/request_permissions.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
+#include "models/video_gen.h"
 #include "util/arena.h"
 #include "http/client.h"
 #include "http/sse.h"
@@ -1785,6 +1786,34 @@ static std::string event_recorder_join_text(struct morph_event_recorder *rec,
 	return out;
 }
 
+struct compaction_memory_probe {
+	struct react_context *ctx;
+	struct morph_event_recorder *recorder;
+	int reclaimed = 0;
+	int observed = 0;
+};
+
+static void compaction_memory_reclaimed(void *data)
+{
+	static_cast<compaction_memory_probe *>(data)->reclaimed++;
+}
+
+static int record_compaction_memory(const struct morph_event *event, void *data)
+{
+	auto *probe = static_cast<compaction_memory_probe *>(data);
+	if (strcmp(event->name, "react.compaction.begin") == 0) {
+		auto *cleanup = arena_cleanup_add(probe->ctx->message_arena, 0);
+		if (!cleanup)
+			MORPH_RETURN(-ENOMEM);
+		cleanup->handler = compaction_memory_reclaimed;
+		cleanup->data = probe;
+	} else if (strcmp(event->name, "react.compaction.completed") == 0) {
+		EXPECT_EQ(probe->reclaimed, 1);
+		probe->observed++;
+	}
+	return morph_event_recorder_cb(event, probe->recorder);
+}
+
 TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 {
 	const char *responses[] = {
@@ -1830,8 +1859,8 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	ctx->compress.summarize = test_compress_cb;
 	ctx->compress.summarize_user_data = nullptr;
 	ASSERT_EQ(react_set_turn_id(ctx, "turn_in_turn_compaction"), 0);
-	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec),
-		0);
+	compaction_memory_probe memory_probe = {ctx, &rec};
+	ASSERT_EQ(react_set_event_callback(ctx, record_compaction_memory, &memory_probe), 0);
 
 	EXPECT_EQ(react_run(ctx, "collect the large result", nullptr, nullptr),
 		0);
@@ -1843,6 +1872,8 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.observation"));
 	EXPECT_GT(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
+	EXPECT_EQ(memory_probe.reclaimed, 1);
+	EXPECT_EQ(memory_probe.observed, 1);
 	EXPECT_EQ(ctx->incomplete_final_retry_count, 1);
 	EXPECT_TRUE(event_recorder_has_name(&rec,
 		"react.compaction.completed"));
@@ -2137,6 +2168,19 @@ TEST_F(MockLlmTest, EmitsStructuredArtifactEvents) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_TRUE(event_recorder_has_name(&rec, "artifact.ready"));
 	EXPECT_TRUE(event_recorder_observation_has_artifacts(&rec));
+
+	int artifact_steps = 0;
+	for (auto *step = ctx->steps; step; step = step->next) {
+		if (step->artifact_count == 0) {
+			EXPECT_EQ(step->artifacts, nullptr);
+			continue;
+		}
+		artifact_steps++;
+		EXPECT_EQ(step->artifact_count, 1);
+		EXPECT_STREQ(step->artifacts[0].path, "/tmp/morph-event-test.png");
+		EXPECT_EQ(step->artifacts[0].width, 640);
+	}
+	EXPECT_EQ(artifact_steps, 1);
 
 	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
@@ -3286,8 +3330,8 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	messages[2].content = const_cast<char *>("result");
 	messages[2].tool_call_id = const_cast<char *>("call_1");
 	struct tool_desc tool{};
-	std::strcpy(tool.name, "lookup");
-	std::strcpy(tool.description, "Lookup data");
+	tool.name = "lookup";
+	tool.description = "Lookup data";
 	struct chat_response response{};
 
 	int rc = model->chat_with_tools_stream(model, arena, nullptr,
@@ -3331,8 +3375,8 @@ TEST_F(MockServerTest, DeepSeekDisabledThinkingUsesToolChoice) {
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("lookup");
 	struct tool_desc tool{};
-	std::strcpy(tool.name, "lookup");
-	std::strcpy(tool.description, "Lookup data");
+	tool.name = "lookup";
+	tool.description = "Lookup data";
 	struct chat_response response{};
 
 	int rc = model->chat_with_tools_stream(model, arena, nullptr,
@@ -3414,8 +3458,8 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 	message.role = const_cast<char *>("user");
 	message.content = const_cast<char *>("edit the file");
 	struct tool_desc tool{};
-	std::strcpy(tool.name, "apply_patch");
-	std::strcpy(tool.description, "Apply a source patch");
+	tool.name = "apply_patch";
+	tool.description = "Apply a source patch";
 	tool.input_kind = TOOL_INPUT_TEXT;
 	struct chat_response response{};
 
@@ -3488,8 +3532,8 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 	messages[2].content = const_cast<char *>("invalid patch");
 	messages[2].tool_call_id = const_cast<char *>("call_patch");
 	struct tool_desc tool{};
-	std::strcpy(tool.name, "apply_patch");
-	std::strcpy(tool.description, "Apply patch");
+	tool.name = "apply_patch";
+	tool.description = "Apply patch";
 	tool.input_kind = TOOL_INPUT_TEXT;
 	struct chat_response response{};
 
@@ -5868,4 +5912,38 @@ TEST(Guardrail, ExtSoUnloadNullSafe) {
 	struct guardrail_rule rule;
 	memset(&rule, 0, sizeof(rule));
 	guardrail_ext_so_unload(&rule);
+}
+
+TEST_F(MockServerTest, VideoReferenceKeepsDataUriAndRoleOnWire)
+{
+	char path[] = "/tmp/morph_video_payload_XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(write(fd, "abc", 3), 3);
+	close(fd);
+	srv.response_body = "{\"error\":{\"message\":\"test response\"}}";
+	srv.response_status = 400;
+	START_MOCK_OR_SKIP(&srv);
+	struct model model = {};
+	strcpy(model.provider, "volcengine");
+	strcpy(model.model_id, "doubao-seedance-2-0-260128");
+	strcpy(model.api_key, "mock");
+	snprintf(model.api_base, sizeof(model.api_base), "http://127.0.0.1:%d", srv.port);
+	const char *videos[] = {path};
+	struct video_result result = {};
+	EXPECT_LT(video_gen_create(&model, "animate", nullptr, 0, videos, 1,
+		nullptr, 0, -1, 5, nullptr, &result), 0);
+	unlink(path);
+	const char *body = strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	cJSON *content = cJSON_GetObjectItem(request, "content");
+	ASSERT_EQ(cJSON_GetArraySize(content), 2);
+	cJSON *video = cJSON_GetArrayItem(content, 1);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(video, "role")),
+		"reference_video");
+	cJSON *url = cJSON_GetObjectItem(cJSON_GetObjectItem(video, "video_url"), "url");
+	EXPECT_STREQ(cJSON_GetStringValue(url), "data:video/mp4;base64,YWJj");
+	cJSON_Delete(request);
 }

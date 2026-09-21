@@ -7,6 +7,14 @@ extern "C" {
 
 #include <stddef.h>
 
+#define MORPH_IMAGE_MAX_DIMENSION 32768
+#define MORPH_IMAGE_MAX_PIXELS (32U * 1024U * 1024U)
+
+int image_pixel_bytes(int width, int height, int channels, size_t *bytes);
+int image_validate_file(const char *path);
+unsigned char *image_load_bounded(const char *path, int *width, int *height,
+				 int *channels, int desired_channels);
+
 struct image_encoded {
 	char *base64;
 	const char *mime_type;
@@ -14,6 +22,7 @@ struct image_encoded {
 
 int image_encode_base64(const char *path, int max_dim,
 			struct image_encoded *encoded);
+int image_encode_data_uri(const char *path, int max_dim, char **uri);
 void image_encoded_cleanup(struct image_encoded *encoded);
 int image_probe_size(const char *path, int *width, int *height);
 int image_resize_file_exact(const char *path, int width, int height);

@@ -297,9 +297,9 @@ static int turn_save_trace(struct agent_turn *turn)
 		if (cur->error_code < 0)
 			cJSON_AddNumberToObject(obj, "error_code",
 						cur->error_code);
-		if (cur->artifacts.count > 0) {
+		if (cur->artifact_count > 0) {
 			cJSON *artifacts =
-				tool_artifact_list_to_json(&cur->artifacts);
+				tool_artifacts_to_json(cur->artifacts, cur->artifact_count);
 			if (artifacts)
 				cJSON_AddItemToObject(obj, "artifacts",
 						      artifacts);

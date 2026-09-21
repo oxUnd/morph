@@ -618,17 +618,17 @@ static int register_dynamic_tool(struct tool_registry *reg,
 	if (existing) {
 		if (!(existing->flags & TOOL_FLAG_DYNAMIC))
 			return -EEXIST;
+		struct tool_spec descriptor = {
+			.name = dt->name,
+			.description = dt->description,
+			.input_schema = dt->input_schema,
+			.output_schema = dt->output_schema,
+		};
+		rc = tool_entry_set_descriptor(existing, &descriptor);
+		if (rc != 0)
+			MORPH_RETURN(rc);
 		if (existing->user_data && existing->user_data_destroy)
 			existing->user_data_destroy(existing->user_data);
-		memset(&existing->desc, 0, sizeof(existing->desc));
-		strncpy(existing->desc.name, dt->name,
-			sizeof(existing->desc.name) - 1);
-			strncpy(existing->desc.description, dt->description,
-				sizeof(existing->desc.description) - 1);
-			strncpy(existing->desc.input_schema, dt->input_schema,
-				sizeof(existing->desc.input_schema) - 1);
-			strncpy(existing->desc.output_schema, dt->output_schema,
-				sizeof(existing->desc.output_schema) - 1);
 		existing->exec = dynamic_tool_exec;
 		existing->user_data = dt;
 		existing->user_data_destroy = dynamic_tool_destroy;

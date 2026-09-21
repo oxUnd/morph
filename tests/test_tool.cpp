@@ -477,3 +477,33 @@ TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	std::remove(path);
 	rmdir(work);
 }
+
+TEST_F(ToolTest, DescriptorOwnsExactStringsAcrossGrowthAndRemoval)
+{
+	std::string description(24000, 'd');
+	struct tool_spec spec = {};
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "owned_tool";
+	spec.description = description.c_str();
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = mock_tool_exec;
+	ASSERT_EQ(tool_register(&reg, &spec), 0);
+	description.assign(24000, 'z');
+	for (int i = 0; i < 40; i++) {
+		std::string name = "growth_" + std::to_string(i);
+		spec.name = name.c_str();
+		spec.description = "small";
+		ASSERT_EQ(tool_register(&reg, &spec), 0);
+	}
+	auto *entry = tool_lookup(&reg, "owned_tool");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(std::string(entry->desc.description), std::string(24000, 'd'));
+	ASSERT_EQ(tool_unregister(&reg, "growth_2"), 0);
+	ASSERT_NE(tool_lookup(&reg, "growth_39"), nullptr);
+	EXPECT_EQ(tool_lookup(&reg, "growth_2"), nullptr);
+	entry = tool_lookup(&reg, "owned_tool");
+	ASSERT_NE(entry, nullptr);
+	EXPECT_EQ(tool_unregister(&reg, entry->desc.name), 0);
+	EXPECT_EQ(tool_lookup(&reg, "owned_tool"), nullptr);
+}

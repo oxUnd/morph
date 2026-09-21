@@ -1,5 +1,7 @@
 #include "tool.h"
 #include "util/buf.h"
+#include "util/arena.h"
+#include <stdint.h>
 #include "util/error.h"
 #include "util/log.h"
 #include <stdarg.h>
@@ -474,15 +476,19 @@ int tool_result_add_video(struct tool_result *result, const char *path,
 
 cJSON *tool_artifact_list_to_json(const struct tool_artifact_list *artifacts)
 {
+	return tool_artifacts_to_json(artifacts ? artifacts->items : NULL,
+				      artifacts ? artifacts->count : 0);
+}
+
+cJSON *tool_artifacts_to_json(const struct tool_artifact *items, int count)
+{
 	cJSON *arr;
 
 	arr = cJSON_CreateArray();
 	if (!arr)
 		return NULL;
-	if (!artifacts)
-		return arr;
-	for (int i = 0; i < artifacts->count; i++) {
-		const struct tool_artifact *artifact = &artifacts->items[i];
+	for (int i = 0; items && i < count; i++) {
+		const struct tool_artifact *artifact = &items[i];
 		cJSON *obj = cJSON_CreateObject();
 		if (!obj) {
 			cJSON_Delete(arr);
@@ -561,6 +567,11 @@ void tool_registry_cleanup(struct tool_registry *reg)
 	tool_entry_cleanup_user_data(reg);
 	if (!reg)
 		return;
+	for (int i = 0; i < reg->count; i++)
+		arena_destroy(reg->entries[i].descriptor_arena);
+	morph_array_cleanup(&reg->storage);
+	reg->entries = NULL;
+	reg->count = 0;
 	morph_strmap_cleanup(&reg->by_name);
 	morph_strmap_cleanup(&reg->disabled_by_name);
 }
@@ -698,6 +709,43 @@ out:
 	return rc;
 }
 
+int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *spec)
+{
+	if (!entry || !spec || !spec->name)
+		MORPH_RETURN(-EINVAL);
+	const char *values[] = {spec->name, spec->title, spec->description,
+		spec->input_schema, spec->output_schema, spec->input_format};
+	struct tool_desc desc = {0};
+	const char **fields[] = {&desc.name, &desc.title, &desc.description,
+		&desc.input_schema, &desc.output_schema, &desc.input_format};
+	size_t bytes = 0;
+	struct arena *arena;
+
+	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+		size_t len = values[i] ? strlen(values[i]) : 0;
+
+		if (bytes > SIZE_MAX - sizeof(entry->descriptor_arena) ||
+		    len > SIZE_MAX - bytes - sizeof(entry->descriptor_arena))
+			MORPH_RETURN(-EOVERFLOW);
+		bytes += len + sizeof(entry->descriptor_arena);
+	}
+	arena = arena_create(bytes);
+	if (!arena)
+		MORPH_RETURN(-ENOMEM);
+	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+		*fields[i] = arena_strdup(arena, values[i] ? values[i] : "");
+		if (!*fields[i]) {
+			arena_destroy(arena);
+			MORPH_RETURN(-ENOMEM);
+		}
+	}
+	desc.input_kind = spec->input_kind;
+	arena_destroy(entry->descriptor_arena);
+	entry->descriptor_arena = arena;
+	entry->desc = desc;
+	return 0;
+}
+
 int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 {
 	int rc;
@@ -718,31 +766,33 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 	rc = tool_schema_validate(spec->output_schema, 0);
 	if (rc != 0)
 		return rc;
-	struct tool_entry *e = &reg->entries[reg->count];
-	memset(e, 0, sizeof(*e));
-	strncpy(e->desc.name, spec->name, sizeof(e->desc.name) - 1);
-	strncpy(e->desc.title, spec->title ? spec->title : "",
-		sizeof(e->desc.title) - 1);
-	strncpy(e->desc.description, spec->description ? spec->description : "",
-		sizeof(e->desc.description) - 1);
-	if (spec->input_schema)
-		strncpy(e->desc.input_schema, spec->input_schema,
-			sizeof(e->desc.input_schema) - 1);
-	if (spec->output_schema)
-		strncpy(e->desc.output_schema, spec->output_schema,
-			sizeof(e->desc.output_schema) - 1);
-	e->desc.input_kind = spec->input_kind;
-	if (spec->input_format)
-		strncpy(e->desc.input_format, spec->input_format,
-			sizeof(e->desc.input_format) - 1);
+	struct tool_entry value = {0};
+	struct tool_entry *e;
+
+	rc = tool_entry_set_descriptor(&value, spec);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	if (!reg->storage.elts)
+		rc = morph_array_init(&reg->storage, 8, sizeof(value));
+	if (rc != 0) {
+		arena_destroy(value.descriptor_arena);
+		MORPH_RETURN(rc);
+	}
+	e = morph_array_push(&reg->storage);
+	if (!e) {
+		arena_destroy(value.descriptor_arena);
+		MORPH_RETURN(-ENOMEM);
+	}
+	reg->entries = reg->storage.elts;
+	*e = value;
 	e->exec = spec->exec;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
 	e->origin = spec->origin;
 	e->flags = spec->flags;
 	e->timeout_seconds = spec->timeout_seconds > 0 ? spec->timeout_seconds : 0;
-	(void)morph_strmap_set(&reg->by_name, e->desc.name, e);
 	reg->count++;
+	rebuild_tool_name_index(reg);
 	log_dbg("tool registered: %s", spec->name);
 	return 0;
 }
@@ -760,14 +810,17 @@ int tool_unregister(struct tool_registry *reg, const char *name)
 	    reg->entries[idx].user_data_destroy) {
 		reg->entries[idx].user_data_destroy(reg->entries[idx].user_data);
 	}
+	struct arena *descriptor_arena = reg->entries[idx].descriptor_arena;
 	for (int i = idx; i < reg->count - 1; i++)
 		reg->entries[i] = reg->entries[i + 1];
 	memset(&reg->entries[reg->count - 1], 0,
 	       sizeof(reg->entries[reg->count - 1]));
 	reg->count--;
+	morph_array_pop(&reg->storage);
 	rebuild_tool_name_index(reg);
 	tool_enable_remove_disabled(reg, name);
 	log_dbg("tool unregistered: %s", name);
+	arena_destroy(descriptor_arena);
 	return 0;
 }
 

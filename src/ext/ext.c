@@ -60,16 +60,14 @@ int ext_load(struct ext *ex, const char *dir_path)
 		log_warn("unknown ext type: %s", ex->manifest.type);
 	}
 
-	snprintf(ex->tool_desc.name, sizeof(ex->tool_desc.name), "%s", ex->manifest.name);
-	snprintf(ex->tool_desc.description, sizeof(ex->tool_desc.description), "%s", ex->manifest.description);
 	if (!ex->manifest.input_schema || !ex->manifest.output_schema)
-		return -EINVAL;
-	if (ex->manifest.input_schema)
-		snprintf(ex->tool_desc.input_schema, sizeof(ex->tool_desc.input_schema),
-			 "%s", ex->manifest.input_schema);
-	if (ex->manifest.output_schema)
-		snprintf(ex->tool_desc.output_schema, sizeof(ex->tool_desc.output_schema),
-			 "%s", ex->manifest.output_schema);
+		MORPH_RETURN(-EINVAL);
+	ex->tool_desc.name = ex->manifest.name;
+	ex->tool_desc.title = "";
+	ex->tool_desc.description = ex->manifest.description;
+	ex->tool_desc.input_schema = ex->manifest.input_schema;
+	ex->tool_desc.output_schema = ex->manifest.output_schema;
+	ex->tool_desc.input_format = "";
 
 	ex->enabled = 1;
 	return 0;

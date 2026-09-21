@@ -52,7 +52,8 @@ enum react_outcome {
 struct react_step {
 	enum react_step_type type;
 	int error_code;
-	struct tool_artifact_list artifacts;
+	struct tool_artifact *artifacts;
+	int artifact_count;
 	char *content;
 	char *tool_name;
 	char *tool_args;
@@ -122,6 +123,7 @@ typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 
 struct react_context {
 	struct react_step *steps;
+	struct react_step *steps_tail;
 	int step_count;
 	int max_iterations;
 	int tool_timeout_seconds;
@@ -163,6 +165,8 @@ struct react_context {
 	struct arena *turn_arena;
 	/* Model requests and responses live until the next iteration. */
 	struct arena *iteration_arena;
+	/* Active model messages; replaced after successful compaction. */
+	struct arena *message_arena;
 	struct arena *session_arena;
 	char *system_prompt;
 	int system_prompt_replace;

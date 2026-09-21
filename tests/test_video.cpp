@@ -8,6 +8,8 @@ extern "C" {
 #include "models/video_gen.h"
 #include "models/video_provider.h"
 #include "util/error.h"
+#include "util/base64.h"
+#include <unistd.h>
 }
 
 #include <cerrno>
@@ -151,4 +153,23 @@ TEST(VideoToolTest, SchemaExposesAudioInputs)
 	EXPECT_NE(schema, nullptr);
 	cJSON_Delete(schema);
 	tool_registry_cleanup(&registry);
+}
+
+TEST(VideoAdapterTest, RejectsOversizedLocalVideoBeforeNetworkRequest)
+{
+	char path[] = "/tmp/morph_video_limit_XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(ftruncate(fd, (off_t)MORPH_MEDIA_MAX_FILE_BYTES + 1), 0);
+	close(fd);
+	struct model model = make_video_model(
+		"volcengine", "", "doubao-seedance-2-0-260128");
+	strcpy(model.api_key, "mock");
+	strcpy(model.api_base, "http://127.0.0.1:1");
+	struct video_result result{};
+	const char *videos[] = {path};
+	EXPECT_EQ(video_gen_create(&model, "test", nullptr, 0, videos, 1,
+		nullptr, 0, -1, 5, nullptr, &result), -EFBIG);
+	EXPECT_NE(strstr(result.error_msg, "media reference"), nullptr);
+	unlink(path);
 }

@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "util/arena.h"
+#include "util/json.h"
+#include "util/base64.h"
+#include <unistd.h>
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/id.h"
@@ -463,4 +466,57 @@ TEST(UtilStr, ChrRchrTrimAndInvalidInputs)
 	EXPECT_LT(morph_strcasecmp(invalid, MORPH_STRLIT("abc")), 0);
 	EXPECT_LT(morph_strncmp(invalid, "abc", 3), 0);
 	EXPECT_EQ(morph_str_to_c(nullptr, MORPH_STRLIT("x")), nullptr);
+}
+
+TEST(UtilJson, SerializedDocumentOutlivesTreeAndResetsWithArena)
+{
+	auto *arena = arena_create(0);
+	ASSERT_NE(arena, nullptr);
+	for (int i = 0; i < 5; i++) {
+		cJSON *root = cJSON_CreateObject();
+		std::string payload(1024 * 1024, 'x');
+		payload += "\n\"escaped\"";
+		ASSERT_NE(cJSON_AddStringToObject(root, "payload", payload.c_str()), nullptr);
+		char *serialized = morph_json_print(arena, root);
+		ASSERT_NE(serialized, nullptr);
+		cJSON_Delete(root);
+		cJSON *parsed = cJSON_Parse(serialized);
+		ASSERT_NE(parsed, nullptr);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(parsed, "payload")),
+			payload.c_str());
+		cJSON_Delete(parsed);
+		arena_reset(arena);
+		EXPECT_EQ(arena->cleanup, nullptr);
+	}
+	arena_destroy(arena);
+}
+
+TEST(UtilBase64, FileChunksPreservePaddingAndEnforceLimit)
+{
+	char path[] = "/tmp/morph_b64_chunks_XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	const char *prefix = "data:video/mp4;base64,";
+	for (size_t length : {1u, 2u, 3u, (unsigned)BUFSIZ - 1,
+		(unsigned)BUFSIZ, (unsigned)BUFSIZ + 1, (unsigned)BUFSIZ * 3 + 2}) {
+		std::vector<unsigned char> data(length);
+		for (size_t i = 0; i < length; i++)
+			data[i] = (unsigned char)(i % 251);
+		ASSERT_EQ(ftruncate(fd, 0), 0);
+		ASSERT_EQ(lseek(fd, 0, SEEK_SET), 0);
+		ASSERT_EQ(write(fd, data.data(), length), (ssize_t)length);
+		char *actual = nullptr;
+		ASSERT_EQ(base64_encode_file_prefixed(path, prefix, length, &actual), 0);
+		char *expected = base64_encode(data.data(), length);
+		ASSERT_NE(expected, nullptr);
+		EXPECT_STREQ(actual, (std::string(prefix) + expected).c_str());
+		free(actual);
+		free(expected);
+		actual = nullptr;
+		EXPECT_EQ(base64_encode_file_prefixed(path, prefix, length - 1, &actual),
+			-EFBIG);
+		EXPECT_EQ(actual, nullptr);
+	}
+	close(fd);
+	unlink(path);
 }

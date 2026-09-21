@@ -145,9 +145,9 @@ static int runtime_append_react_artifact_markdown(morph_buf_t *body,
 	paths_ready = 1;
 
 	for (step = react ? react->steps : NULL; step; step = step->next) {
-		for (int i = 0; i < step->artifacts.count; i++) {
+		for (int i = 0; i < step->artifact_count; i++) {
 			const struct tool_artifact *artifact =
-				&step->artifacts.items[i];
+				&step->artifacts[i];
 			const char **slot;
 			const char *label;
 

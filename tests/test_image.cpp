@@ -1182,3 +1182,22 @@ TEST(ImageGenExtMagic, ShortBuffer) {
 	unsigned char buf[] = {0x89};
 	EXPECT_STREQ(image_gen_ext_from_magic(buf, 1), "png");
 }
+
+TEST(ImageEncode, RejectsExcessivePixelsAndDimensionsBeforeAllocation)
+{
+	size_t bytes = 0;
+	EXPECT_EQ(image_pixel_bytes(4096, 4096, 4, &bytes), 0);
+	EXPECT_EQ(bytes, 64u * 1024u * 1024u);
+	EXPECT_EQ(image_pixel_bytes(32768, 32768, 4, &bytes), -EFBIG);
+	EXPECT_EQ(image_pixel_bytes(INT_MAX, INT_MAX, 4, &bytes), -EFBIG);
+	EXPECT_EQ(image_pixel_bytes(0, 100, 4, &bytes), -EINVAL);
+	EXPECT_EQ(image_pixel_bytes(100, 100, 5, &bytes), -EINVAL);
+	const char *path = "/tmp/morph_resize_limit.png";
+	ASSERT_EQ(create_solid_png(path, 16, 16), 0);
+	EXPECT_EQ(image_resize_file_exact(path, 32768, 32768), -EFBIG);
+	int w = 0, h = 0;
+	ASSERT_EQ(image_probe_size(path, &w, &h), 0);
+	EXPECT_EQ(w, 16);
+	EXPECT_EQ(h, 16);
+	remove(path);
+}

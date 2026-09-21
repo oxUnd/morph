@@ -745,7 +745,7 @@ TEST_F(ToolContextTest, ApprovedMissingDirectoryIsCreatedAndGranted)
 
 	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
 	ASSERT_EQ(file_path_join(parent, sizeof(parent), cwd,
-		"build/morph_permission_XXXXXX"), 0);
+		"morph_permission_XXXXXX"), 0);
 	ASSERT_NE(mkdtemp(parent), nullptr);
 	ASSERT_EQ(file_path_join(nested, sizeof(nested), parent,
 		"cache/nested"), 0);
