@@ -161,6 +161,8 @@ struct react_context {
 	volatile sig_atomic_t cancelled;
 	struct morph_cancel_token cancel_token;
 	struct arena *turn_arena;
+	/* Model requests and responses live until the next iteration. */
+	struct arena *iteration_arena;
 	struct arena *session_arena;
 	char *system_prompt;
 	int system_prompt_replace;

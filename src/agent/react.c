@@ -492,8 +492,10 @@ static int react_finish_run(struct react_context *ctx)
 
 	react_sigint_flag = 0;
 	http_clear_signal_cancel();
-	if (ctx)
+	if (ctx) {
 		ctx->turn_id_user_set = 0;
+		arena_reset(ctx->iteration_arena);
+	}
 	return rc;
 }
 
@@ -1042,7 +1044,7 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	    (llm->max_tokens <= 0 ||
 	     llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
 		llm->max_tokens = ctx->compress.compaction_summary_max_tokens;
-	rc = llm->chat(llm, ctx->turn_arena, sys, msgs, 1, NULL,
+	rc = llm->chat(llm, ctx->iteration_arena, sys, msgs, 1, NULL,
 		       morph_buf_append_cb, &b);
 	llm->max_tokens = previous_max_tokens;
 	if (rc < 0) {
@@ -1127,9 +1129,11 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	ctx->cancelled = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
 	ctx->turn_arena = arena_create(0);
+	ctx->iteration_arena = arena_create(0);
 	ctx->session_arena = arena_create(0);
-	if (!ctx->turn_arena || !ctx->session_arena) {
+	if (!ctx->turn_arena || !ctx->iteration_arena || !ctx->session_arena) {
 		arena_destroy(ctx->turn_arena);
+		arena_destroy(ctx->iteration_arena);
 		arena_destroy(ctx->session_arena);
 		free(ctx);
 		return NULL;
@@ -1173,6 +1177,7 @@ void react_context_destroy(struct react_context *ctx)
 		free(ctx->history_secrets[i]);
 	model_history_free_list(ctx->history_items);
 	arena_destroy(ctx->turn_arena);
+	arena_destroy(ctx->iteration_arena);
 	if (ctx->session_arena)
 		arena_destroy(ctx->session_arena);
 	free(ctx);
@@ -2076,24 +2081,31 @@ static int react_check_input_guardrail(struct react_context *ctx,
 }
 
 static int react_prepare_active_tools(struct react_context *ctx,
+				      morph_array_t *storage,
 				      struct tool_desc **active_tools,
 				      int *active_tool_count)
 {
 	int has_tools;
 
-	if (!active_tools || !active_tool_count)
-		return -EINVAL;
+	if (!storage || !active_tools || !active_tool_count)
+		MORPH_RETURN(-EINVAL);
 	*active_tools = NULL;
 	*active_tool_count = 0;
 	has_tools = ctx->tools && ctx->tools->count > 0;
 	*active_tool_count = has_tools ? count_active_tools(ctx->tools) : 0;
 	if (*active_tool_count <= 0)
 		return 0;
-	*active_tools = arena_alloc(ctx->turn_arena,
-				    (size_t)*active_tool_count *
-				    sizeof(**active_tools));
+	if (!storage->elts) {
+		int rc = morph_array_init(storage, (size_t)*active_tool_count,
+					  sizeof(**active_tools));
+		if (rc != 0)
+			MORPH_RETURN(rc);
+	}
+	morph_array_clear(storage);
+	*active_tools = morph_array_push_n(storage, (size_t)*active_tool_count);
 	if (!*active_tools)
-		return -ENOMEM;
+		MORPH_RETURN(-ENOMEM);
+	/* Refresh in place: tools may be registered or disabled mid-turn. */
 	collect_active_tools(ctx->tools, *active_tools, *active_tool_count);
 	return 0;
 }
@@ -2434,6 +2446,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			   struct chat_response *response)
 {
 	struct react_stream_data sd;
+	struct arena *arena = ctx->iteration_arena;
 	int status;
 
 	memset(&sd, 0, sizeof(sd));
@@ -2441,8 +2454,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	sd.user_cb = cb;
 	sd.user_data = user_data;
 	sd.cancelled = &ctx->cancelled;
-	sd.arena = ctx->turn_arena;
-	sd.accumulated = arena_alloc(ctx->turn_arena, 8192);
+	sd.arena = arena;
+	sd.accumulated = arena_alloc(arena, 8192);
 	sd.acc_len = 0;
 	sd.acc_cap = 8192;
 	if (sd.accumulated)
@@ -2452,11 +2465,11 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 				 ctx->action_drain_user_data);
 	if (llm->chat_with_tools_stream) {
 		status = llm->chat_with_tools_stream(
-			llm, ctx->turn_arena, system_prompt, messages,
+			llm, arena, system_prompt, messages,
 			msg_count, active_tools, active_tool_count, response,
 			react_typed_stream_cb, &sd);
 	} else if (llm->chat_with_tools) {
-		status = llm->chat_with_tools(llm, ctx->turn_arena,
+		status = llm->chat_with_tools(llm, arena,
 					      system_prompt, messages, msg_count,
 					      active_tools, active_tool_count,
 					      response, react_stream_cb, &sd);
@@ -2469,7 +2482,7 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			hist_n++;
 			h = h->next;
 		}
-		hist_msgs = arena_alloc(ctx->turn_arena,
+		hist_msgs = arena_alloc(arena,
 					(size_t)hist_n * sizeof(*hist_msgs));
 		if (!hist_msgs && hist_n > 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
@@ -2484,13 +2497,13 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 				h = h->next;
 			}
 		}
-		status = llm->chat(llm, ctx->turn_arena, system_prompt,
+		status = llm->chat(llm, arena, system_prompt,
 				   hist_msgs, hist_n, NULL, react_stream_cb,
 				   &sd);
 		if (status >= 0 && sd.accumulated) {
 			response->content = sd.accumulated;
 			sd.accumulated = NULL;
-			response->arena = ctx->turn_arena;
+			response->arena = arena;
 		}
 	}
 	http_set_interrupt_check(NULL, NULL);
@@ -3455,6 +3468,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);
+	arena_reset(ctx->iteration_arena);
 	if (!use_user_turn_id) {
 		int id_rc = morph_random_id("turn_", ctx->turn_id,
 					    sizeof(ctx->turn_id));
@@ -3526,12 +3540,17 @@ int react_run(struct react_context *ctx, const char *user_input,
 		MORPH_RETURN(react_finish_run(ctx));
 	}
 	messages_ready = 1;
+	morph_array_t tool_descriptors = {0};
+	char *base_system_prompt = system_prompt;
 
 	react_active_push(ctx);
 	http_set_cancel_flag(&ctx->cancelled);
 	http_set_cancel_token(&ctx->cancel_token);
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
+		/* Persistent messages and steps own copies of response data. */
+		arena_reset(ctx->iteration_arena);
+		system_prompt = base_system_prompt;
 		if (react_drain_actions(ctx, &messages, iteration, NULL))
 			break;
 
@@ -3545,7 +3564,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 			free(memory);
 			if (rc == 0)
-				system_prompt = build_system_prompt(ctx, ctx->turn_arena);
+				system_prompt = build_system_prompt(ctx, ctx->iteration_arena);
 			if (rc != 0 || !system_prompt) {
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					rc != 0 ? rc : -ENOMEM, "memory_context_error");
@@ -3563,7 +3582,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		struct chat_response response = {0};
 		int status;
 
-		if (react_prepare_active_tools(ctx, &active_tools,
+		if (react_prepare_active_tools(ctx, &tool_descriptors, &active_tools,
 					       &active_tool_count) < 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
@@ -3669,7 +3688,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 				break;
 			}
 			react_set_state(ctx, REACT_STATE_ACTING);
-			if (morph_array_init_arena(&tool_slots, ctx->turn_arena,
+			if (morph_array_init_arena(&tool_slots, ctx->iteration_arena,
 						   (size_t)num_tools,
 						   sizeof(*slots)) < 0) {
 				chat_response_free(&response);
@@ -3721,6 +3740,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	react_append_final_message(ctx);
 	if (messages_ready)
 		morph_array_cleanup(&messages);
+	morph_array_cleanup(&tool_descriptors);
 
 	MORPH_RETURN(react_finish_run(ctx));
 }

@@ -927,6 +927,137 @@ protected:
 /* Basic React tests                             */
 /* ============================================= */
 
+struct iteration_memory_probe {
+	struct react_context *ctx;
+	int calls = 0;
+	int pending = 0;
+	int reclaimed = 0;
+	int final_call = 40;
+	int terminal_error = 0;
+};
+
+static void reclaim_iteration_probe(void *data)
+{
+	auto *probe = static_cast<iteration_memory_probe *>(data);
+	probe->pending--;
+	probe->reclaimed++;
+}
+
+static int iteration_memory_chat(struct model *self, struct arena *arena,
+	const char *, struct chat_message *messages, int message_count,
+	struct tool_desc *tools, int tool_count, struct chat_response *response,
+	sse_callback, void *)
+{
+	auto *probe = static_cast<iteration_memory_probe *>(self->handle);
+
+	EXPECT_EQ(probe->pending, 0);
+	EXPECT_EQ(probe->reclaimed, probe->calls);
+	probe->calls++;
+	auto *cleanup = arena_cleanup_add(arena, 0);
+	if (!cleanup)
+		MORPH_RETURN(-ENOMEM);
+	cleanup->handler = reclaim_iteration_probe;
+	cleanup->data = probe;
+	probe->pending++;
+	/* Overwrite reused request storage before inspecting retained messages. */
+	void *scratch = arena_alloc(arena, 1024 * 1024);
+	if (!scratch)
+		MORPH_RETURN(-ENOMEM);
+	memset(scratch, 'x', 1024 * 1024);
+	for (int i = 0; i < message_count; i++) {
+		if (messages[i].tool_call_count == 0)
+			continue;
+		EXPECT_STREQ(messages[i].content, "thinking");
+		EXPECT_STREQ(messages[i].reasoning_content, "reasoning");
+		EXPECT_STREQ(messages[i].tool_calls[0].name, "test_tool");
+		EXPECT_STREQ(messages[i].tool_calls[0].arguments, "{}");
+	}
+	EXPECT_EQ(tool_count, probe->calls == 1 ? 1 : 2);
+	if (tool_count == 2)
+		EXPECT_STREQ(tools[1].name, "late_tool");
+	response->arena = arena;
+	if (probe->calls == probe->final_call) {
+		response->content = arena_strdup(arena, "completed");
+		if (probe->terminal_error == -ECANCELED)
+			react_cancel(probe->ctx);
+		return probe->terminal_error;
+	}
+	response->content = arena_strdup(arena, "thinking");
+	response->reasoning_content = arena_strdup(arena, "reasoning");
+	response->tool_calls = static_cast<struct tool_call *>(
+		arena_alloc(arena, sizeof(*response->tool_calls)));
+	if (!response->tool_calls)
+		MORPH_RETURN(-ENOMEM);
+	response->tool_call_count = 1;
+	strcpy(response->tool_calls[0].name, "test_tool");
+	response->tool_calls[0].arguments = arena_strdup(arena, "{}");
+	return 0;
+}
+
+static int register_late_tool(const char *, struct tool_result *result, void *data)
+{
+	auto *probe = static_cast<iteration_memory_probe *>(data);
+	if (probe->calls == 1) {
+		int rc = tool_register(TOOL_ORIGIN_BUILTIN, probe->ctx->tools,
+			"late_tool", "Registered during a turn", "{}", test_tool_fn,
+			nullptr, nullptr);
+		if (rc != 0)
+			return rc;
+	}
+	return tool_result_success_text(result, "ok");
+}
+
+TEST_F(ReactTest, ReclaimsRequestMemoryAndPreservesMessagesAcrossIterations)
+{
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	iteration_memory_probe probe = {ctx};
+	struct model model = {};
+	strcpy(model.api_key, "mock");
+	model.handle = &probe;
+	model.chat_with_tools = iteration_memory_chat;
+	ctx->llm_model = &model;
+	ctx->hitl.enabled = 0;
+	EXPECT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
+		"Test tool", "{}", register_late_tool, &probe, nullptr), 0);
+	EXPECT_EQ(react_run(ctx, "Exercise request lifetimes", nullptr, nullptr), 0);
+	EXPECT_EQ(probe.calls, 40);
+	EXPECT_EQ(probe.pending, 0);
+	EXPECT_EQ(probe.reclaimed, probe.calls);
+	EXPECT_STREQ(ctx->final_answer, "completed");
+	EXPECT_NE(ctx->steps, nullptr);
+	if (ctx->steps)
+		EXPECT_STREQ(ctx->steps->content, "thinking");
+	react_context_destroy(ctx);
+}
+
+TEST_F(ReactTest, ReclaimsRequestMemoryOnErrorCancellationAndIterationLimit)
+{
+	for (int terminal : {-EIO, -ECANCELED, 0}) {
+		auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+		ASSERT_NE(ctx, nullptr);
+		iteration_memory_probe probe = {ctx};
+		probe.final_call = 3;
+		probe.terminal_error = terminal;
+		struct model model = {};
+		strcpy(model.api_key, "mock");
+		model.handle = &probe;
+		model.chat_with_tools = iteration_memory_chat;
+		ctx->llm_model = &model;
+		ctx->hitl.enabled = 0;
+		ctx->max_iterations = terminal == 0 ? 2 : 3;
+		EXPECT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool",
+			"Test tool", "{}", register_late_tool, &probe, nullptr), 0);
+		EXPECT_LT(react_run(ctx, "Exercise early exit", nullptr, nullptr), 0);
+		EXPECT_EQ(probe.calls, ctx->max_iterations);
+		EXPECT_EQ(probe.pending, 0);
+		EXPECT_EQ(probe.reclaimed, probe.calls);
+		react_context_destroy(ctx);
+		EXPECT_EQ(tool_unregister(&tools, "test_tool"), 0);
+		EXPECT_EQ(tool_unregister(&tools, "late_tool"), 0);
+	}
+}
+
 TEST_F(ReactTest, CreateDestroy) {
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
