@@ -1149,7 +1149,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	}
 	if (ctx->guardrail.rule_count == 0)
 		guardrail_register_builtin_rules(&ctx->guardrail);
-	ctx->hitl.enabled = 0;
+	ctx->hitl.enabled = 1;
 	ctx->hitl.tools_count = 0;
 	ctx->hitl.auto_approve_readonly = 1;
 	ctx->hitl.approval_cb = NULL;

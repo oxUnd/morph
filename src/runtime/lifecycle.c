@@ -163,26 +163,46 @@ static int runtime_load_config(struct runtime *runtime)
 {
 	struct runtime_context *ctx = &runtime->context;
 	char *expanded = NULL;
+	char *expanded_output = NULL;
+	int rc = 0;
 
 	config_set_defaults(&ctx->config);
-	if (!runtime->options.config_path || !runtime->options.config_path[0])
-		return 0;
-	expanded = file_expand_path(runtime->options.config_path);
-	if (!expanded)
-		return -ENOMEM;
-	strncpy(ctx->config_path, expanded, sizeof(ctx->config_path) - 1);
-	if (file_exists(expanded)) {
-		int rc = config_load(&ctx->config, expanded);
-		if (rc != 0) {
-			free(expanded);
-			return rc;
+	if (runtime->options.config_path && runtime->options.config_path[0]) {
+		expanded = file_expand_path(runtime->options.config_path);
+		if (!expanded)
+			MORPH_RETURN(-ENOMEM);
+		strncpy(ctx->config_path, expanded,
+			sizeof(ctx->config_path) - 1);
+		if (file_exists(expanded)) {
+			rc = config_load(&ctx->config, expanded);
+			if (rc != 0) {
+				free(expanded);
+				return rc;
+			}
 		}
 	}
 	if (runtime->options.output_dir_override &&
 	    runtime->options.output_dir_override[0]) {
-		strncpy(ctx->config.general.output_dir,
-			runtime->options.output_dir_override,
+		expanded_output = file_expand_path(
+			runtime->options.output_dir_override);
+		if (!expanded_output) {
+			free(expanded);
+			MORPH_RETURN(-ENOMEM);
+		}
+		strncpy(ctx->config.general.output_dir, expanded_output,
 			sizeof(ctx->config.general.output_dir) - 1);
+		ctx->config.general.output_dir[
+			sizeof(ctx->config.general.output_dir) - 1] = '\0';
+	} else if (ctx->config.general.output_dir[0] == '~') {
+		expanded_output = file_expand_path(ctx->config.general.output_dir);
+		if (!expanded_output) {
+			free(expanded);
+			MORPH_RETURN(-ENOMEM);
+		}
+		strncpy(ctx->config.general.output_dir, expanded_output,
+			sizeof(ctx->config.general.output_dir) - 1);
+		ctx->config.general.output_dir[
+			sizeof(ctx->config.general.output_dir) - 1] = '\0';
 	}
 	if (!ctx->config.dynamic_tools.mode_explicit &&
 	    runtime->options.default_dynamic_tools_mode &&
@@ -192,6 +212,7 @@ static int runtime_load_config(struct runtime *runtime)
 			sizeof(ctx->config.dynamic_tools.mode) - 1);
 	}
 	free(expanded);
+	free(expanded_output);
 	return 0;
 }
 
@@ -239,19 +260,13 @@ static int runtime_set_workdir(struct runtime *runtime)
 			resolved = file_expand_path(runtime->options.workdir);
 		strncpy(ctx->workdir, resolved ? resolved : runtime->options.workdir,
 			sizeof(ctx->workdir) - 1);
-		rc = file_path_join(ctx->config.general.output_dir,
-				    sizeof(ctx->config.general.output_dir),
-				    ctx->workdir, "output");
 		free(resolved);
-		if (rc != 0)
-			MORPH_RETURN(rc);
-		rc = file_ensure_dir(ctx->config.general.output_dir);
-		if (rc != 0)
-			MORPH_RETURN(rc);
-		return 0;
-	}
-	if (!getcwd(ctx->workdir, sizeof(ctx->workdir)))
+	} else if (!getcwd(ctx->workdir, sizeof(ctx->workdir))) {
 		strncpy(ctx->workdir, ".", sizeof(ctx->workdir) - 1);
+	}
+	rc = file_ensure_dir(ctx->config.general.output_dir);
+	if (rc != 0)
+		MORPH_RETURN(rc);
 	return 0;
 }
 

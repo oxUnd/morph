@@ -115,6 +115,10 @@ set_target_properties(morph-setup-pty-driver PROPERTIES
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND UNIX)
+	add_test(NAME cli_options_integration
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_options.py
+			$<TARGET_FILE:morph>)
 	add_test(NAME cli_setup_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_setup_pty.py
 			$<TARGET_FILE:morph-setup-pty-driver> $<TARGET_FILE:morph>)

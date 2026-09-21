@@ -191,7 +191,9 @@ TEST_F(RuntimeLifecycleTest, ReportsConfiguredPathsAndRejectsInvalidDatabase)
 	ASSERT_NE(realpath(directory, resolved), nullptr);
 	EXPECT_STREQ(runtime_workdir_get(instance), resolved);
 	EXPECT_NE(runtime_config_get(instance), nullptr);
-	std::string expected_output = std::string(resolved) + "/output";
+	const char *home = std::getenv("HOME");
+	ASSERT_NE(home, nullptr);
+	std::string expected_output = std::string(home) + "/.morph/output";
 	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
 		     expected_output.c_str());
 	runtime_close(instance);
@@ -225,15 +227,17 @@ TEST_F(RuntimeLifecycleTest, KeepsConfiguredOutputWithoutExplicitWorkdir)
 	std::remove(config_path.c_str());
 }
 
-TEST_F(RuntimeLifecycleTest, WorkdirOverridesConfiguredOutputWithOutputChild)
+TEST_F(RuntimeLifecycleTest, WorkdirPreservesConfiguredOutput)
 {
 	runtime_options options{};
 	runtime *instance = nullptr;
 	std::string config_path = std::string(directory) + "/config.toml";
+	std::string configured_output = std::string(directory) +
+		"/configured-output";
 	FILE *config = std::fopen(config_path.c_str(), "w");
 	ASSERT_NE(config, nullptr);
-	std::fprintf(config,
-		     "[general]\noutput_dir = \"/tmp/ignored-output\"\n");
+	std::fprintf(config, "[general]\noutput_dir = \"%s\"\n",
+		     configured_output.c_str());
 	ASSERT_EQ(std::fclose(config), 0);
 
 	options.config_path = config_path.c_str();
@@ -241,14 +245,11 @@ TEST_F(RuntimeLifecycleTest, WorkdirOverridesConfiguredOutputWithOutputChild)
 	options.workdir = directory;
 	options.front_name = "test";
 	ASSERT_EQ(runtime_open(&options, &instance), 0);
-	char resolved[PATH_MAX];
-	ASSERT_NE(realpath(directory, resolved), nullptr);
-	std::string expected_output = std::string(resolved) + "/output";
 	ASSERT_NE(runtime_config_get(instance), nullptr);
 	EXPECT_STREQ(runtime_config_get(instance)->general.output_dir,
-		     expected_output.c_str());
+		     configured_output.c_str());
 	struct stat output_stat{};
-	ASSERT_EQ(stat(expected_output.c_str(), &output_stat), 0);
+	ASSERT_EQ(stat(configured_output.c_str(), &output_stat), 0);
 	EXPECT_TRUE(S_ISDIR(output_stat.st_mode));
 	runtime_close(instance);
 	instance = nullptr;

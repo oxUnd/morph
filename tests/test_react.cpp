@@ -934,6 +934,7 @@ TEST_F(ReactTest, CreateDestroy) {
 	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_NONE);
 	EXPECT_EQ(ctx->last_error_code, 0);
 	EXPECT_EQ(ctx->max_iterations, 2048);
+	EXPECT_EQ(ctx->hitl.enabled, 1);
 	react_context_destroy(ctx);
 }
 
@@ -5097,10 +5098,10 @@ TEST(HitlTest, AddAutoApprovedIdempotent) {
 	EXPECT_EQ(h.auto_approved_count, 2);
 }
 
-TEST(HitlTest, ConfigDefaultsDisabled) {
+TEST(HitlTest, ConfigDefaultsEnabled) {
 	struct config cfg;
 	config_set_defaults(&cfg);
-	EXPECT_EQ(cfg.react.hitl_enabled, 0);
+	EXPECT_EQ(cfg.react.hitl_enabled, 1);
 	EXPECT_EQ(cfg.react.hitl_tools_count, 0);
 	EXPECT_EQ(cfg.react.hitl_auto_approve_readonly, 1);
 }

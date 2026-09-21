@@ -7,6 +7,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "http/client.h"
+#include <getopt.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,6 +94,140 @@ static int emit_option_result(const char *command, const char *output)
 #define ICON_EXTS    "\ueae6"
 #define ICON_MCP     "\ueb01"
 #define ICON_CONFIG  "\ueaf8"
+
+enum cli_option_id {
+	CLI_OPTION_TRACE_JSON = 256,
+	CLI_OPTION_NO_COLOR,
+	CLI_OPTION_EVENTS,
+};
+
+struct cli_options {
+	const char *config_path;
+	const char *workdir;
+	const char *one_shot_prompt;
+	const char *session_name;
+	int trace_json;
+	int show_version;
+	int show_help;
+	int no_color;
+	int events_json;
+};
+
+static const struct option cli_long_options[] = {
+	{"config", required_argument, NULL, 'c'},
+	{"workdir", required_argument, NULL, 'w'},
+	{"prompt", required_argument, NULL, 'p'},
+	{"session", required_argument, NULL, 's'},
+	{"version", no_argument, NULL, 'v'},
+	{"help", no_argument, NULL, 'h'},
+	{"trace-json", no_argument, NULL, CLI_OPTION_TRACE_JSON},
+	{"no-color", no_argument, NULL, CLI_OPTION_NO_COLOR},
+	{"events", required_argument, NULL, CLI_OPTION_EVENTS},
+	{NULL, 0, NULL, 0},
+};
+
+static const char cli_usage_text[] =
+	"Usage: morph [options]\n"
+	"\n"
+	"Options:\n"
+	"  -c, --config PATH     Use the specified configuration file\n"
+	"  -w, --workdir PATH    Use PATH as the working directory\n"
+	"  -p, --prompt TEXT     Run once with plain-text progress\n"
+	"  -s, --session NAME    Select or create a named session\n"
+	"  -v, --version         Show version and runtime information\n"
+	"  -h, --help            Show this help text\n"
+	"      --trace-json      Include JSON details in trace output\n"
+	"      --no-color        Disable ANSI color output\n"
+	"      --events json     Emit raw events as NDJSON\n";
+
+static int cli_parse_events_mode(struct cli_options *options,
+				 const char *mode)
+{
+	if (strcmp(mode, "json") != 0) {
+		fprintf(stderr,
+			"morph: invalid --events mode: %s (expected json)\n",
+			mode);
+		return 2;
+	}
+	options->events_json = 1;
+	return 0;
+}
+
+static int cli_parse_options(int argc, char **argv,
+			     struct cli_options *options)
+{
+	int option;
+
+	memset(options, 0, sizeof(*options));
+	opterr = 0;
+	optind = 1;
+	while ((option = getopt_long(argc, argv, ":c:w:p:s:vh",
+				  cli_long_options, NULL)) != -1) {
+		switch (option) {
+		case 'c':
+			options->config_path = optarg;
+			break;
+		case 'w':
+			options->workdir = optarg;
+			break;
+		case 'p':
+			options->one_shot_prompt = optarg;
+			break;
+		case 's':
+			options->session_name = optarg;
+			break;
+		case 'v':
+			options->show_version = 1;
+			break;
+		case 'h':
+			options->show_help = 1;
+			break;
+		case CLI_OPTION_TRACE_JSON:
+			options->trace_json = 1;
+			break;
+		case CLI_OPTION_NO_COLOR:
+			options->no_color = 1;
+			break;
+		case CLI_OPTION_EVENTS:
+			if (cli_parse_events_mode(options, optarg) != 0)
+				return 2;
+			break;
+		case ':':
+			fprintf(stderr,
+				"morph: option requires an argument: %s\n",
+				argv[optind - 1]);
+			return 2;
+		case '?':
+		default:
+			fprintf(stderr, "morph: unknown option: %s\n",
+				argv[optind - 1]);
+			return 2;
+		}
+	}
+	if (optind < argc) {
+		fprintf(stderr, "morph: unexpected argument: %s\n", argv[optind]);
+		return 2;
+	}
+	return 0;
+}
+
+static enum cli_presentation_mode cli_options_presentation_mode(
+	const struct cli_options *options)
+{
+	if (options->events_json)
+		return CLI_PRESENT_EVENTS_JSON;
+	if (options->one_shot_prompt)
+		return CLI_PRESENT_ONCE_PLAIN;
+	return CLI_PRESENT_INTERACTIVE;
+}
+
+static int cli_print_usage(const struct cli_options *options)
+{
+	if (options->events_json)
+		return emit_option_result("--help", cli_usage_text) == 0 ? 0 : 1;
+	fputs(cli_usage_text, stdout);
+	return 0;
+}
 
 static const char *config_diagnostic_reason(
 	const struct config_validation_error *item)
@@ -381,128 +516,58 @@ static int print_version(const char *config_path)
 
 int main(int argc, char *argv[])
 {
+	struct cli_options options;
+	struct cli_context ctx;
+	enum cli_presentation_mode presentation_mode;
+	char log_path[PATH_MAX];
+	char *log_dir;
+	int rc;
+
 	setlocale(LC_ALL, "");
-	const char *config_path = NULL;
-	const char *workdir = NULL;
-	const char *one_shot_prompt = NULL;
-	const char *session_name = NULL;
-	int trace_json = 0;
-	int show_version = 0;
-	int show_help = 0;
-	int no_color = 0;
-	int events_json = 0;
-	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
-			config_path = argv[++i];
-		else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)
-			config_path = argv[++i];
-		else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc)
-			workdir = argv[++i];
-		else if (strcmp(argv[i], "--workdir") == 0 && i + 1 < argc)
-			workdir = argv[++i];
-		else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc)
-			one_shot_prompt = argv[++i];
-		else if (strcmp(argv[i], "--prompt") == 0 && i + 1 < argc)
-			one_shot_prompt = argv[++i];
-		else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc)
-			session_name = argv[++i];
-		else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc)
-			session_name = argv[++i];
-		else if (strcmp(argv[i], "--trace-json") == 0)
-			trace_json = 1;
-		else if (strcmp(argv[i], "--no-color") == 0)
-			no_color = 1;
-		else if (strcmp(argv[i], "--events") == 0) {
-			const char *mode;
-
-			if (i + 1 >= argc) {
-				fprintf(stderr,
-					"missing value for --events "
-					"(expected json)\n");
-				return 2;
-			}
-			mode = argv[++i];
-			if (strcmp(mode, "json") == 0) {
-				events_json = 1;
-			} else {
-				fprintf(stderr,
-					"invalid --events mode: %s "
-					"(expected json)\n", mode);
-				return 2;
-			}
-		} else if (strncmp(argv[i], "--events=", 9) == 0) {
-			const char *mode = argv[i] + 9;
-			if (strcmp(mode, "json") == 0) {
-				events_json = 1;
-			} else {
-				fprintf(stderr,
-					"invalid --events mode: %s "
-					"(expected json)\n", mode);
-				return 2;
-			}
-		}
-		else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
-			show_version = 1;
-		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
-			show_help = 1;
-	}
-	enum cli_presentation_mode presentation_mode =
-		events_json ? CLI_PRESENT_EVENTS_JSON :
-		(one_shot_prompt ? CLI_PRESENT_ONCE_PLAIN :
-		 CLI_PRESENT_INTERACTIVE);
-	if (one_shot_prompt || events_json)
-		no_color = 1;
-	cli_set_color_enabled(!no_color);
-	if (show_help) {
-		if (events_json) {
-			const char *help =
-				"Usage: morph [-c config_path] [-w workdir] "
-				"[-p prompt] [-s session] [-v] [--trace-json] "
-				"[--no-color] [--events json]\n"
-				"  -p, --prompt  Run once with plain-text progress\n"
-				"  -s, --session Select or create a named session\n"
-				"  --events json  Emit raw events as NDJSON\n"
-				"  --no-color  Disable ANSI color output\n";
-
-			return emit_option_result("--help", help) == 0 ? 0 : 1;
-		}
-		printf("Usage: morph [-c config_path] [-w workdir] "
-		       "[-p prompt] [-s session] [-v] [--trace-json] [--no-color] "
-		       "[--events json]\n");
-		printf("  -p, --prompt  Run once with plain-text progress\n");
-		printf("  -s, --session Select or create a named session\n");
-		printf("  --events json  Emit raw events as NDJSON\n");
-		printf("  --no-color  Disable ANSI color output\n");
-		return 0;
-	}
-	if (!show_version) {
-		int setup_rc = cli_setup_if_missing(config_path,
-			!one_shot_prompt && !events_json);
+	rc = cli_parse_options(argc, argv, &options);
+	if (rc != 0)
+		return rc;
+	presentation_mode = cli_options_presentation_mode(&options);
+	if (options.one_shot_prompt || options.events_json)
+		options.no_color = 1;
+	cli_set_color_enabled(!options.no_color);
+	if (options.show_help)
+		return cli_print_usage(&options);
+	if (!options.show_version) {
+		int setup_rc = cli_setup_if_missing(options.config_path,
+			!options.one_shot_prompt && !options.events_json);
 		if (setup_rc != 0)
 			return setup_rc < 0 ? 1 : 0;
 	}
-	if (preflight_config(config_path) != 0)
+	if (preflight_config(options.config_path) != 0)
 		return 1;
-	if (show_version) {
-		if (events_json)
+	if (options.show_version) {
+		if (options.events_json)
 			return emit_option_result("--version", MORPH_VERSION) == 0 ?
 				0 : 1;
-		return print_version(config_path) == 0 ? 0 : 1;
+		return print_version(options.config_path) == 0 ? 0 : 1;
 	}
-	char *log_dir = file_expand_path("~/.morph/log");
-	file_ensure_dir(log_dir);
-	char log_path[PATH_MAX];
-	snprintf(log_path, sizeof(log_path), "%s/agent.log", log_dir);
+	log_dir = file_expand_path("~/.morph/log");
+	if (!log_dir)
+		return 1;
+	rc = file_ensure_dir(log_dir);
+	if (rc == 0)
+		rc = file_path_join(log_path, sizeof(log_path), log_dir,
+				    "agent.log");
 	free(log_dir);
+	if (rc != 0) {
+		fprintf(stderr, "morph: failed to prepare log directory: %s\n",
+			morph_strerror(rc));
+		return 1;
+	}
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
-	struct cli_context ctx;
-	int rc = cli_init(&ctx, config_path, workdir, session_name,
-			  presentation_mode);
+	rc = cli_init(&ctx, options.config_path, options.workdir,
+		      options.session_name, presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %s", morph_strerror(rc));
 		if (rc == MORPH_ERR_CONFIG || rc == MORPH_ERR_PARSE)
-			print_config_error(config_path, rc);
+			print_config_error(options.config_path, rc);
 		else
 			fprintf(stderr, "morph: failed to initialize: %s\n",
 				morph_strerror(rc));
@@ -510,9 +575,9 @@ int main(int argc, char *argv[])
 		log_shutdown();
 		return 1;
 	}
-	ctx.trace_json = trace_json;
-	if (one_shot_prompt) {
-		cli_run_once(&ctx, one_shot_prompt);
+	ctx.trace_json = options.trace_json;
+	if (options.one_shot_prompt) {
+		cli_run_once(&ctx, options.one_shot_prompt);
 	} else {
 		for (;;) {
 			struct morph_sync_restore_plan plan;
@@ -529,13 +594,14 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "morph: restore failed: %s\n",
 					morph_strerror(rc));
 			}
-			rc = cli_init(&ctx, config_path, workdir, session_name,
-				      presentation_mode);
+			rc = cli_init(&ctx, options.config_path, options.workdir,
+				      options.session_name, presentation_mode);
 			if (rc < 0 && file_exists(plan.rollback)) {
 				(void)morph_sync_rollback_db_replace(&plan);
 				restored = 0;
-				rc = cli_init(&ctx, config_path, workdir,
-					      session_name,
+				rc = cli_init(&ctx, options.config_path,
+					      options.workdir,
+					      options.session_name,
 					      presentation_mode);
 			}
 			if (rc < 0) {
@@ -549,7 +615,7 @@ int main(int argc, char *argv[])
 				printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET
 				       "database restored; Morph restarted\n");
 			}
-			ctx.trace_json = trace_json;
+			ctx.trace_json = options.trace_json;
 		}
 	}
 	cli_shutdown(&ctx);

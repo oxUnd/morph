@@ -841,7 +841,7 @@ network_access = false
 allowed_env = []
 
 # Human-in-the-Loop (HITL)
-hitl_enabled = false
+hitl_enabled = true
 # hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
 hitl_auto_approve_readonly = true
 

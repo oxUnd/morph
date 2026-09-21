@@ -499,7 +499,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->react.guardrail_max_empty_rounds = 3;
 	cfg->react.disabled_tools_count = 0;
 
-	cfg->react.hitl_enabled = 0;
+	cfg->react.hitl_enabled = 1;
 	cfg->react.hitl_tools_count = 0;
 	cfg->react.hitl_auto_approve_readonly = 1;
 	{
