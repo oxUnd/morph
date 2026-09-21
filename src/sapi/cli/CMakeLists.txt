@@ -12,6 +12,8 @@ add_library(morph-cli STATIC
 	output.c
 	presentation.c
 	run.c
+	setup.c
+	setup_ui.c
 	scheduler.c
 	shell_style.c
 	terminal.c

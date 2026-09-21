@@ -9,6 +9,7 @@ set(TEST_SOURCES
 	test_file.cpp
 	test_database.cpp
 	test_scheduled_task.cpp
+	test_cli_setup.cpp
 	test_config.cpp
 	test_config_write.cpp
 	test_credits.cpp
@@ -106,7 +107,20 @@ set_target_properties(morph-cli-pty-driver PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
 
+add_executable(morph-setup-pty-driver cli_setup_pty_driver.c)
+target_link_libraries(morph-setup-pty-driver PRIVATE morph-cli)
+set_target_properties(morph-setup-pty-driver PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
+)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND UNIX)
+	add_test(NAME cli_setup_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_setup_pty.py
+			$<TARGET_FILE:morph-setup-pty-driver> $<TARGET_FILE:morph>)
+	set_tests_properties(cli_setup_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+endif()
 if(Python3_Interpreter_FOUND AND UNIX AND MORPH_READLINE_LIBRARY)
 	add_test(NAME cli_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_pty.py

@@ -185,7 +185,7 @@ kill_grace_ms = 500
 network = false
 
 [react]
-max_iterations      = 15
+max_iterations      = 2048
 tool_timeout_seconds  = 300
 tool_max_retries    = 3
 

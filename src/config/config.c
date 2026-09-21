@@ -484,7 +484,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->credits.image_unit_credit_coef = 0.0;
 	cfg->credits.video_second_credit_coef = 0.0;
 
-	cfg->react.max_iterations = 10;
+	cfg->react.max_iterations = 2048;
 	cfg->react.tool_timeout_seconds = 300;
 	cfg->react.tool_max_retries = 3;
 	strncpy(cfg->exec.shell, "/bin/bash", sizeof(cfg->exec.shell) - 1);

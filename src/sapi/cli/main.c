@@ -1,4 +1,5 @@
 #include "sapi/cli/cli.h"
+#include "sapi/cli/setup.h"
 #include "config/config.h"
 #include "skill/skill.h"
 #include "util/data.h"
@@ -473,6 +474,12 @@ int main(int argc, char *argv[])
 		printf("  --events json  Emit raw events as NDJSON\n");
 		printf("  --no-color  Disable ANSI color output\n");
 		return 0;
+	}
+	if (!show_version) {
+		int setup_rc = cli_setup_if_missing(config_path,
+			!one_shot_prompt && !events_json);
+		if (setup_rc != 0)
+			return setup_rc < 0 ? 1 : 0;
 	}
 	if (preflight_config(config_path) != 0)
 		return 1;

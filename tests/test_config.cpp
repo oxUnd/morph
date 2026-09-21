@@ -37,7 +37,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.models.video.poll_timeout_seconds, 600);
 	EXPECT_EQ(cfg.models.text.retry_count, 3);
 	EXPECT_EQ(cfg.models.vision.retry_count, 3);
-	EXPECT_EQ(cfg.react.max_iterations, 10);
+	EXPECT_EQ(cfg.react.max_iterations, 2048);
 	EXPECT_EQ(cfg.react.tool_timeout_seconds, 300);
 	EXPECT_EQ(cfg.react.tool_max_retries, 3);
 	EXPECT_EQ(cfg.react.guardrail_max_retries, 2);

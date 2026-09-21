@@ -482,7 +482,7 @@ INIT → THINKING → ACTING → OBSERVING → THINKING → ... → GUARDRAIL �
 #### 6.2.2 终止条件（必须全部实现）
 
 1. LLM 返回无工具调用的文本响应 → 进入 Guardrail 验证
-2. 步数达到 `max_iterations`（示例配置默认 15，可配置） → 返回最后一次 Observation 并标记 `aborted`
+2. 步数达到 `max_iterations`（示例配置默认 2048，可配置） → 返回最后一次 Observation 并标记 `aborted`
 3. 工具耗时超过 `tool_timeout_seconds` 或工具自己的覆盖值 → 取消该工具调用，生成失败 Observation 回灌
 4. 用户按 `Ctrl-C` → 优雅取消，保存已完成步骤到会话
 5. 当 `guardrail_enabled` 时，LLM 输出最终回答后进入 `GUARDRAIL` 状态，由可插拔规则引擎验证结果质量；若 Guardrail 验证失败则回到 `THINKING` 重试（示例配置 `guardrail_max_retries = 2`）
@@ -800,7 +800,7 @@ image_unit_credit_coef = 0.0
 video_second_credit_coef = 0.0
 
 [react]
-max_iterations = 15
+max_iterations = 2048
 tool_timeout_seconds = 300
 tool_max_retries = 3
 guardrail_enabled = false

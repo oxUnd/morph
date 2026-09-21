@@ -96,7 +96,53 @@ CTest skips this regression when the Python dependencies are unavailable.
 
 ## Configuration
 
-Copy the example config and set your API key:
+Run `morph` in a terminal. When the configuration is missing, an interactive
+wizard runs inline in your terminal history, guiding you through text, optional
+vision/image/video capabilities, and a final review. Completed answers stay in scrollback;
+only the current prompt is redrawn, without clearing the screen. Use **↑/↓** to choose, **Enter** to select, and **Esc** to go back.
+Provider presets fill in the model and API URL; select a setting to edit it,
+or choose Other for a compatible endpoint. Video endpoints currently need the
+Volcengine Video protocol. Vision (image understanding), image generation, and
+video generation are independent optional steps and can each be skipped. Vision
+is saved under `[model.vision]` and requires a model that accepts image input.
+
+Text and Vision model settings include **Context window** (`context_limit`) and
+**Max output** (`max_tokens`). These are saved explicitly for each enabled chat
+model. Known provider/model pairs receive model-specific presets, which you can
+lower. Unknown models, custom providers, and Ark endpoint IDs require you to
+enter the limits from your deployment's documentation. Changing the model resets
+its limits; unchanged models keep your overrides. Output must fit within the
+context window with room for input, and known model ceilings are enforced.
+Image/video generation does not expose these chat token settings.
+
+Current presets (verified September 21, 2026):
+
+| Provider / model | Context window | Max output |
+| --- | ---: | ---: |
+| OpenAI / gpt-4o | 128000 | 16384 |
+| DeepSeek / deepseek-v4-flash | 1000000 | 384000 |
+| DeepSeek / deepseek-v4-pro | 1000000 | 384000 |
+
+Sources: [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-4o)
+and [DeepSeek's official integration settings](https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/).
+`max_tokens` is the request's output budget, not a target response length; you can
+choose a smaller budget in the wizard.
+
+The review step lets you revisit any capability before saving. Existing files
+are never overwritten. The config is saved to `~/.morph/config.toml`, or the
+path supplied with `-c`. **Ctrl-C** or **Ctrl-D** cancels without saving.
+The wizard supports terminal resizing and `--no-color`; `TERM=dumb` uses plain
+numbered prompts.
+
+API keys already set in environment variables are detected automatically.
+You can also paste a hidden key for the current session, choose another variable,
+or defer credentials. Pasted keys are never saved to the config; set the named
+environment variable in your shell for future launches. When credentials are
+ready, the CLI goes straight into chat. Otherwise it prints the needed `export`
+commands. Edit the config later to enable capabilities you skipped.
+
+One-shot (`-p`), JSON events, and non-terminal runs do not prompt; create the
+configuration interactively first, or copy the example and set your API key:
 
 ```bash
 mkdir -p ~/.morph

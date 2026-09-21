@@ -933,7 +933,7 @@ TEST_F(ReactTest, CreateDestroy) {
 	EXPECT_EQ(ctx->state, REACT_STATE_INIT);
 	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_NONE);
 	EXPECT_EQ(ctx->last_error_code, 0);
-	EXPECT_EQ(ctx->max_iterations, 10);
+	EXPECT_EQ(ctx->max_iterations, 2048);
 	react_context_destroy(ctx);
 }
 
