@@ -20,8 +20,12 @@ testing are documented in [docs/sandbox.md](docs/sandbox.md).
 
 ## Build
 
-Requirements: CMake ≥ 3.20, SQLite3, libcurl, and
+Requirements: CMake ≥ 3.20, SQLite3, libcurl, libwebp, and
 [mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
+
+CLI Markdown images (local files or HTTP/HTTPS URLs) are decoded before layout,
+so PNG, JPEG, WebP, GIF (first frame), BMP and other stb-supported images stay
+inside table cells and document flow. Failed images keep an inline placeholder.
 
 ```bash
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c

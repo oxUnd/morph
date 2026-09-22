@@ -105,6 +105,8 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	options.user_data = prefix_pending;
 	options.media = cb;
 	options.media_user_data = user;
+	options.load_image = cli_markdown_load_image;
+	options.release_image = cli_markdown_release_image;
 	options.terminal_fd = STDOUT_FILENO;
 	options.content_padding_left_columns = indent;
 	options.content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;

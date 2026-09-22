@@ -9,6 +9,12 @@ extern "C" {
 #include "agent/react.h"
 #include "event/event.h"
 #include "http/client.h"
+#include "stb_image_write.h"
+#include "stb_image.h"
+
+int cli_markdown_load_image(const char *url, char **path, void *user);
+void cli_markdown_release_image(char *path, void *user);
+void cli_markdown_render_ansi(const char *md);
 
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
@@ -33,6 +39,10 @@ extern volatile sig_atomic_t cli_sigint_received;
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <webp/encode.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <thread>
 
 TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 {
@@ -52,6 +62,106 @@ TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 	EXPECT_STREQ(plain, source);
 	free(plain);
 	morph_buf_cleanup(&styled);
+}
+
+TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
+{
+	char directory[] = "/tmp/morph-cli-images-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	unsigned char pixels[12 * 36 * 3];
+	memset(pixels, 180, sizeof(pixels));
+	for (const char *extension : {"jpg", "bmp", "png", "webp"}) {
+		std::string source = std::string(directory) + "/test." + extension;
+		int written = strcmp(extension, "jpg") == 0 ?
+			stbi_write_jpg(source.c_str(), 12, 36, 3, pixels, 90) :
+			strcmp(extension, "bmp") == 0 ?
+			stbi_write_bmp(source.c_str(), 12, 36, 3, pixels) :
+			stbi_write_png(source.c_str(), 12, 36, 3, pixels, 36);
+		if (strcmp(extension, "webp") == 0) {
+			uint8_t *encoded = nullptr;
+			size_t length = WebPEncodeLosslessRGB(pixels, 12, 36, 36, &encoded);
+			ASSERT_GT(length, 0u);
+			written = file_write_all(source.c_str(),
+				reinterpret_cast<const char *>(encoded), length) == 0;
+			WebPFree(encoded);
+		}
+		ASSERT_NE(written, 0);
+		char *resolved = nullptr;
+		ASSERT_EQ(cli_markdown_load_image(source.c_str(), &resolved, nullptr), 0);
+		ASSERT_NE(resolved, nullptr);
+		std::string temporary = resolved;
+		int w, h, channels;
+		EXPECT_EQ(stbi_info(resolved, &w, &h, &channels), 1);
+		EXPECT_EQ(w, 12);
+		EXPECT_EQ(h, 36);
+		cli_markdown_release_image(resolved, nullptr);
+		EXPECT_FALSE(std::filesystem::exists(temporary));
+		std::string markdown = "before\n\n| image | text |\n|---|---|\n| ![](" +
+			source + ") | beside |\n\nafter\n";
+		testing::internal::CaptureStdout();
+		cli_markdown_render_ansi(markdown.c_str());
+		std::string output = testing::internal::GetCapturedStdout();
+		auto image = output.find("\033_Ga=T,f=100,");
+		ASSERT_NE(image, std::string::npos);
+		EXPECT_LT(output.find("┌"), image);
+		EXPECT_LT(image, output.find("└"));
+		EXPECT_NE(output.find("beside"), std::string::npos);
+		EXPECT_EQ(output.find("[image"), std::string::npos);
+		EXPECT_EQ(unlink(source.c_str()), 0);
+	}
+	EXPECT_EQ(rmdir(directory), 0);
+}
+
+TEST(CliMarkdownImageTest, MissingImageStaysInsideTable)
+{
+	testing::internal::CaptureStdout();
+	cli_markdown_render_ansi("| image |\n|---|\n| ![](/missing.jpg) |\n");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_LT(output.find("┌"), output.find("[image unavailable:"));
+	EXPECT_LT(output.find("[image unavailable:"), output.find("└"));
+	EXPECT_EQ(output.find("\033_G"), std::string::npos);
+}
+
+TEST(CliMarkdownImageTest, RemoteGifRendersInsideTable)
+{
+	static const unsigned char gif[] = {
+		'G','I','F','8','9','a',1,0,1,0,0x80,0,0,
+		0,0,0,255,255,255,0x2c,0,0,0,0,1,0,1,0,0,
+		2,2,0x44,1,0,0x3b
+	};
+	int server = socket(AF_INET, SOCK_STREAM, 0);
+	ASSERT_GE(server, 0);
+	struct sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	ASSERT_EQ(bind(server, reinterpret_cast<sockaddr *>(&address), sizeof(address)), 0);
+	ASSERT_EQ(listen(server, 1), 0);
+	socklen_t size = sizeof(address);
+	ASSERT_EQ(getsockname(server, reinterpret_cast<sockaddr *>(&address), &size), 0);
+	std::thread responder([&] {
+		int client = accept(server, nullptr, nullptr);
+		if (client < 0)
+			return;
+		char request[BUFSIZ];
+		(void)recv(client, request, sizeof(request), 0);
+		std::string response = "HTTP/1.1 200 OK\r\nContent-Length: " +
+			std::to_string(sizeof(gif)) + "\r\nConnection: close\r\n\r\n";
+		response.append(reinterpret_cast<const char *>(gif), sizeof(gif));
+		(void)send(client, response.data(), response.size(), 0);
+		close(client);
+	});
+	std::string markdown = "| remote |\n|---|\n| ![](http://127.0.0.1:" +
+		std::to_string(ntohs(address.sin_port)) + "/image.gif) |\n";
+	testing::internal::CaptureStdout();
+	cli_markdown_render_ansi(markdown.c_str());
+	std::string output = testing::internal::GetCapturedStdout();
+	shutdown(server, SHUT_RDWR);
+	close(server);
+	responder.join();
+	auto image = output.find("\033_Ga=T,f=100,");
+	ASSERT_NE(image, std::string::npos);
+	EXPECT_LT(output.find("┌"), image);
+	EXPECT_LT(image, output.find("└"));
 }
 
 TEST(CliShellStyleTest, WrapsUtf8AndDropsTerminalControls)
@@ -383,7 +493,8 @@ TEST_F(CliPresentationTest, InteractiveDefersMediaRenderingUntilFinal)
 
 	EXPECT_EQ(output.find("  └ image: /tmp/generated.png\n"
 			      "  └ video: /tmp/generated.mp4\n"), 0u);
-	EXPECT_TRUE(morph_strmap_contains(&ctx.rendered_artifacts,
+	EXPECT_NE(output.find("[image unavailable:"), std::string::npos);
+	EXPECT_FALSE(morph_strmap_contains(&ctx.rendered_artifacts,
 					  "/tmp/generated.png"));
 	EXPECT_FALSE(morph_strmap_contains(&ctx.rendered_artifacts,
 					   "/tmp/generated.mp4"));

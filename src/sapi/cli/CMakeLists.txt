@@ -6,6 +6,7 @@ add_library(morph-cli STATIC
 	core.c
 	events.c
 	init.c
+	image_loader.c
 	interaction.c
 	list_ui.c
 	once.c
@@ -34,6 +35,8 @@ add_library(morph-cli STATIC
 target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
+pkg_check_modules(CLI_WEBP REQUIRED IMPORTED_TARGET libwebp)
+target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP PRIVATE CURL::libcurl)
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime

@@ -160,6 +160,8 @@ int cli_sync_start(struct cli_context *ctx);
 
 void media_callback(const char *type, const char *path, void *user);
 void cli_markdown_render_ansi(const char *md);
+int cli_markdown_load_image(const char *url, char **path, void *user);
+void cli_markdown_release_image(char *path, void *user);
 typedef void (*cli_markdown_media_cb)(const char *type, const char *path,
 				      void *user);
 void cli_markdown_render_ansi_with_media(const char *md,
