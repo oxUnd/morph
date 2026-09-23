@@ -1,4 +1,5 @@
 #include "exec_tool.h"
+#include "agent/environment_context.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
 #include "exec/process.h"
@@ -534,6 +535,15 @@ static int process_run(const char *args_json, struct tool_result *result,
 	return rc;
 }
 
+static void exec_environment(void *opaque, struct prompt_context_input *out)
+{
+	struct exec_runtime *runtime = opaque;
+
+	out->cwd = tool_context_workdir(runtime->tool_context);
+	out->shell = process_manager_shell(runtime->manager);
+	/* Per-command capability policies cannot be expressed as a single mode. */
+}
+
 int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		   const struct config_exec *config)
 {
@@ -555,6 +565,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.input_schema = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\",\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},\"pty\":{\"type\":\"boolean\"},\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}";
 	exec_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec_spec.exec = exec_run;
+	exec_spec.get_environment = exec_environment;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;
 	exec_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;

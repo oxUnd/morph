@@ -4,6 +4,7 @@
 #include "compress.h"
 #include "history.h"
 #include "system_prompt.h"
+#include "prompt_context.h"
 #include "agent/memory.h"
 #include "tool_runtime.h"
 #include "tool_context.h"
@@ -493,6 +494,7 @@ static int react_finish_run(struct react_context *ctx)
 	react_sigint_flag = 0;
 	http_clear_signal_cancel();
 	if (ctx) {
+		ctx->runtime_context = NULL;
 		ctx->turn_id_user_set = 0;
 		arena_reset(ctx->iteration_arena);
 		arena_reset(ctx->message_arena);
@@ -1321,13 +1323,6 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
-	if (ctx->workdir && *ctx->workdir) {
-		rc = morph_buf_printf(&buf, "\nWorking directory: %s\n",
-				      ctx->workdir);
-		if (rc != 0)
-			return NULL;
-	}
-
 	if (ctx->system_prompt) {
 		rc = morph_buf_printf(&buf, "%s\n", ctx->system_prompt);
 		if (rc != 0)
@@ -2135,6 +2130,8 @@ static int react_estimate_active_tokens(struct react_context *ctx,
 {
 	int64_t total = react_count_text_tokens(ctx, system_prompt) + 16;
 
+	total += react_count_text_tokens(ctx, ctx->runtime_context) + 12;
+
 	if (messages) {
 		for (size_t i = 0; i < messages->nelts; i++) {
 			const struct chat_message *message =
@@ -2323,51 +2320,6 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	return 1;
 }
 
-static void react_format_current_time(char *date_buf, size_t date_size,
-				      char *tz_buf, size_t tz_size)
-{
-	time_t now = time(NULL);
-	struct tm tm_local;
-
-	localtime_r(&now, &tm_local);
-	strftime(date_buf, date_size, "%Y-%m-%d %A %H:%M", &tm_local);
-	strftime(tz_buf, tz_size, "%Z", &tm_local);
-}
-
-/*
- * Append an environment_context block to the latest user message instead of
- * embedding volatile data in the system prompt. Keeping the system prompt and
- * prior history byte-for-byte stable lets provider prompt caches match the
- * whole prefix; only this turn's user message carries the changing values.
- * The tagged block is a format models recognize directly. Minute precision on
- * the date avoids per-second churn within a turn's iterations.
- */
-static int react_append_environment_context(struct react_context *ctx,
-					    struct chat_message *message)
-{
-	char date_buf[128];
-	char tz_buf[64];
-	morph_buf_t buf;
-	const char *base;
-
-	if (!message)
-		return -EINVAL;
-	react_format_current_time(date_buf, sizeof(date_buf),
-				  tz_buf, sizeof(tz_buf));
-	if (morph_buf_init_arena(&buf, ctx->message_arena, 256) != 0)
-		return -ENOMEM;
-	base = message->content ? message->content : "";
-	if (morph_buf_printf(&buf,
-			     "%s\n\n<environment_context>\n"
-			     "date: %s\n"
-			     "timezone: %s\n"
-			     "</environment_context>\n",
-			     base, date_buf, tz_buf) != 0)
-		return -ENOMEM;
-	message->content = buf.data;
-	return 0;
-}
-
 static int react_prepare_messages(struct react_context *ctx,
 				  morph_array_t *messages,
 				  const char *current_user_input)
@@ -2393,7 +2345,7 @@ static int react_prepare_messages(struct react_context *ctx,
 			current_user_input ? current_user_input : "");
 		if (!message->role || !message->content)
 			return -ENOMEM;
-		return react_append_environment_context(ctx, message);
+		return 0;
 	}
 
 	hist = ctx->messages;
@@ -2411,8 +2363,6 @@ static int react_prepare_messages(struct react_context *ctx,
 		message->tool_call_count = 0;
 		hist = hist->next;
 	}
-	if (message)
-		return react_append_environment_context(ctx, message);
 	return 0;
 }
 
@@ -2470,6 +2420,36 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	struct react_stream_data sd;
 	struct arena *arena = ctx->iteration_arena;
 	int status;
+
+	/* Request-only prefix survives active-history rebuilds without duplication. */
+	if (ctx->runtime_context &&
+	    (llm->chat_with_tools_stream || llm->chat_with_tools)) {
+		struct chat_message *request;
+
+		if (msg_count < 0 || msg_count == INT_MAX ||
+		    (size_t)msg_count + 1 > SIZE_MAX / sizeof(*request))
+			MORPH_RETURN(-EOVERFLOW);
+		request = arena_alloc(arena, ((size_t)msg_count + 1) * sizeof(*request));
+		if (!request)
+			MORPH_RETURN(-ENOMEM);
+		request[0].role = "system";
+		request[0].content = (char *)ctx->runtime_context;
+		if (msg_count)
+			memcpy(request + 1, messages, (size_t)msg_count * sizeof(*request));
+		messages = request;
+		msg_count++;
+	} else if (ctx->runtime_context) {
+		/* Legacy text-only backends have no role-aware message API. */
+		morph_buf_t combined;
+		int rc = morph_buf_init_arena(&combined, arena, 1024);
+
+		if (rc == 0)
+			rc = morph_buf_printf(&combined, "%s\n%s", system_prompt,
+				ctx->runtime_context);
+		if (rc != 0)
+			return rc;
+		system_prompt = morph_buf_cstr(&combined);
+	}
 
 	memset(&sd, 0, sizeof(sd));
 	sd.ctx = ctx;
@@ -3497,6 +3477,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int use_user_turn_id = ctx->turn_id_user_set && ctx->turn_id[0];
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);
+	ctx->runtime_context = NULL;
 	arena_reset(ctx->message_arena);
 	arena_reset(ctx->iteration_arena);
 	if (!use_user_turn_id) {
@@ -3543,6 +3524,19 @@ int react_run(struct react_context *ctx, const char *user_input,
 	struct message_list *msg = msg_list_create(ctx->session_arena, "user", user_input,
 						  tokenizer_count(ctx->tokenizer, user_input));
 	msg_list_append(&ctx->messages, msg);
+
+	struct prompt_context_input environment = { .cwd = ctx->workdir };
+	struct tool_entry *exec_tool = ctx->tools ? tool_lookup(ctx->tools, "exec") : NULL;
+
+	if (exec_tool && exec_tool->get_environment)
+		exec_tool->get_environment(exec_tool->user_data, &environment);
+	int context_rc = prompt_context_build_default(&environment, ctx->turn_arena,
+		&ctx->runtime_context);
+	if (context_rc != 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,
+			"runtime_context_error");
+		MORPH_RETURN(react_finish_run(ctx));
+	}
 
 	char *system_prompt = build_system_prompt(ctx, ctx->turn_arena);
 	if (!system_prompt) {

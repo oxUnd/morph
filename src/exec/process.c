@@ -491,7 +491,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 		return rc;
 	}
 	if (pid == 0) {
-		const char *shell = manager->shell[0] ? manager->shell : "/bin/bash";
+		const char *shell = process_manager_shell(manager);
 
 		(void)setpgid(0, 0);
 		if (options->workdir && chdir(options->workdir) != 0)
@@ -546,7 +546,7 @@ static int spawn_pty_process(struct process_manager *manager,
 	if (pid < 0)
 		MORPH_RETURN_ERRNO();
 	if (pid == 0) {
-		const char *shell = manager->shell[0] ? manager->shell : "/bin/bash";
+		const char *shell = process_manager_shell(manager);
 
 		(void)setpgid(0, 0);
 		if (options->workdir && chdir(options->workdir) != 0)
@@ -890,4 +890,9 @@ const char *process_state_name(enum process_state state)
 	case PROCESS_KILLED: return "killed";
 	default: return "unknown";
 	}
+}
+
+const char *process_manager_shell(const struct process_manager *manager)
+{
+	return manager && manager->shell[0] ? manager->shell : "/bin/bash";
 }

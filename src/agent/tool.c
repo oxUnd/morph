@@ -786,6 +786,7 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 	reg->entries = reg->storage.elts;
 	*e = value;
 	e->exec = spec->exec;
+	e->get_environment = spec->get_environment;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
 	e->origin = spec->origin;

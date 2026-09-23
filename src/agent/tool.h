@@ -116,6 +116,10 @@ typedef int (*tool_exec_fn)(const char *args_json,
 			    void *user_data);
 typedef void (*tool_user_data_destroy_fn)(void *user_data);
 
+struct prompt_context_input;
+typedef void (*tool_environment_fn)(void *user_data,
+	struct prompt_context_input *out);
+
 struct tool_spec {
 	enum tool_origin origin;
 	const char *name;
@@ -126,6 +130,7 @@ struct tool_spec {
 	enum tool_input_kind input_kind;
 	const char *input_format;
 	tool_exec_fn exec;
+	tool_environment_fn get_environment;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	unsigned int flags;
@@ -136,6 +141,7 @@ struct tool_entry {
 	struct tool_desc desc;
 	struct arena *descriptor_arena;
 	tool_exec_fn exec;
+	tool_environment_fn get_environment;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	enum tool_origin origin;

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
 #include "agent/system_prompt.h"
+#include "agent/environment_context.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
@@ -606,6 +607,20 @@ static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 
 	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
 	int idx = data->call_count;
+	int environment_count = 0;
+	for (int i = 0; i < msg_count; i++) {
+		const char *text = messages[i].content;
+		while (text && (text = strstr(text, "<environment_context>"))) {
+			environment_count++;
+			text++;
+		}
+	}
+	EXPECT_EQ(environment_count, 1);
+	EXPECT_GT(msg_count, 0);
+	if (msg_count > 0) {
+		EXPECT_STREQ(messages[0].role, "system");
+		EXPECT_NE(strstr(messages[0].content, "<environment_context>"), nullptr);
+	}
 	for (int i = 0; i < msg_count; i++) {
 		if (!messages[i].tool_calls)
 			continue;
@@ -2328,6 +2343,43 @@ TEST_F(MockLlmTest, MissingProviderIdsGetProtocolFallbacks) {
 	react_context_destroy(ctx);
 }
 
+static void counting_environment(void *data, struct prompt_context_input *out)
+{
+	auto *count = static_cast<int *>(data);
+	(*count)++;
+	out->cwd = "/tmp";
+	out->shell = "/bin/bash";
+}
+
+TEST_F(MockLlmTest, EnvironmentCollectedOncePerTurnAcrossToolIterations)
+{
+	int collections = 0;
+	struct tool_spec spec{};
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "exec";
+	spec.description = "Test execution context";
+	spec.input_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = test_tool_fn;
+	spec.user_data = &collections;
+	spec.get_environment = counting_environment;
+	ASSERT_EQ(tool_register(&tools, &spec), 0);
+	const char *responses[] = {
+		"Thought: run.\nAction: exec({})\n",
+		"Final: done", "Final: next"
+	};
+	llm = create_multi_mock_llm(responses, 3);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_EQ(collections, 1);
+	EXPECT_EQ(static_cast<multi_mock_data *>(llm->handle)->call_count, 2);
+	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+	EXPECT_EQ(collections, 2);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 	struct slot_mock_data *slot_data = nullptr;
 	llm = create_slot_mock_llm(&slot_data);
@@ -2352,7 +2404,8 @@ TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(slot_data, nullptr);
-	EXPECT_EQ(slot_data->last_msg_count, 71);
+	/* 70 history messages, one current user, one runtime context. */
+	EXPECT_EQ(slot_data->last_msg_count, 72);
 
 	react_context_destroy(ctx);
 }
@@ -3950,6 +4003,52 @@ protected:
 	}
 };
 
+
+TEST_F(PromptModeTest, EnvironmentRefreshesWithoutChangingStaticPromptOrHistory)
+{
+	ctx->workdir = strdup("/tmp");
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	std::string first = capt->prompt;
+	std::string system = capt->system_prompt;
+	EXPECT_EQ(first.find("system:<environment_context>"), 0u);
+	EXPECT_EQ(first.find("<environment_context>"), first.rfind("<environment_context>"));
+	EXPECT_EQ(system.find("<environment_context>"), std::string::npos);
+	EXPECT_EQ(ctx->runtime_context, nullptr);
+	free(ctx->workdir);
+	ctx->workdir = strdup("/");
+	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+	std::string second = capt->prompt;
+	EXPECT_NE(second.find("<cwd>/</cwd>"), std::string::npos);
+	EXPECT_EQ(second.find("<environment_context>"), second.rfind("<environment_context>"));
+	EXPECT_EQ(system, capt->system_prompt);
+	for (auto *message = ctx->messages; message; message = message->next)
+		EXPECT_EQ(strstr(message->content, "<environment_context>"), nullptr);
+}
+
+TEST_F(PromptModeTest, LegacyBackendReceivesEnvironmentWithoutSavingIt)
+{
+	llm->chat_with_tools = nullptr;
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	std::string system = capt->system_prompt;
+	EXPECT_NE(system.find("<environment_context>"), std::string::npos);
+	EXPECT_EQ(system.find("<environment_context>"), system.rfind("<environment_context>"));
+	EXPECT_STREQ(capt->prompt, "hello");
+}
+
+TEST_F(PromptModeTest, ExecConfigurationOverridesProcessEnvironment)
+{
+	struct config_exec config{};
+	strncpy(config.shell, "/bin/zsh", sizeof(config.shell) - 1);
+	ASSERT_EQ(exec_tool_init(&tools, tctx, &config), 0);
+	ctx->workdir = strdup("/");
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->prompt, "<shell>zsh</shell>"), nullptr);
+	char resolved[PATH_MAX];
+	ASSERT_NE(realpath("/tmp", resolved), nullptr);
+	std::string expected = std::string("<cwd>") + resolved + "</cwd>";
+	EXPECT_NE(strstr(capt->prompt, expected.c_str()), nullptr);
+}
+
 TEST_F(PromptModeTest, AppendKeepsDefaultsAndCore)
 {
 	ctx->system_prompt = strdup("Custom behavior");
@@ -3977,7 +4076,8 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	EXPECT_EQ(strncmp(capt->system_prompt, MORPH_CORE_PROMPT,
 		strlen(MORPH_CORE_PROMPT)), 0);
 	EXPECT_NE(strstr(capt->system_prompt, "Literal %s %d."), nullptr);
-	EXPECT_NE(strstr(capt->system_prompt, "Working directory: /tmp"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "Working directory:"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "<cwd>"), nullptr);
 	EXPECT_NE(strstr(capt->system_prompt, "Remember this fact."), nullptr);
 	for (const char *absent : {"You are Morph", "OPERATING LOOP",
 	     "MARKDOWN OUTPUT", "latest explicit language instruction",
@@ -4394,7 +4494,7 @@ TEST_F(MockLlmTest, MultiTurnMessageRolesAlternate) {
 
 static int test_compress_cb(const char *text, void *user_data, char **out)
 {
-	(void)text;
+	EXPECT_EQ(strstr(text, "<environment_context>"), nullptr);
 	(void)user_data;
 	*out = strdup("[COMPRESSED SUMMARY]");
 	return *out ? 0 : -ENOMEM;

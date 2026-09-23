@@ -57,6 +57,7 @@ struct process_snapshot {
 int process_manager_create(const struct process_manager_config *config,
 			   struct process_manager **out);
 void process_manager_destroy(struct process_manager *manager);
+const char *process_manager_shell(const struct process_manager *manager);
 
 int process_spawn(struct process_manager *manager,
 		  const struct process_spawn_options *options,
