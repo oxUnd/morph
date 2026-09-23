@@ -1,14 +1,15 @@
 # Sandbox policy
 
-This document describes the operating-system sandbox used by `bash_exec` and
+This document describes the operating-system sandbox used by the `exec` tool and
 executable extensions. The policy is capability based: filesystem paths,
 network access, PTYs, process inspection, IPC, environment variables, and
 resource ceilings are independent permissions.
 
 ## Security invariants
 
-1. The policy starts from deny-by-default on macOS Seatbelt and Linux seccomp
-   plus Landlock.
+1. macOS Seatbelt starts from an explicit allowlist. Linux seccomp starts from
+   an allow-by-default denylist that rejects only sandbox-escape syscalls, and
+   Landlock confines filesystem paths.
 2. A failed sandbox initialization must stop the child. Executable extensions
    exit with status 126 and are never executed without isolation.
 3. Write and delete are separate filesystem capabilities.
@@ -86,37 +87,42 @@ allowed_mach_services = [
 Service names accept only ASCII letters, digits, `.`, `_`, and `-`. This field
 does nothing on Linux.
 
-## `bash_exec` defaults
+## `exec` defaults
 
-`bash_exec` enables the capabilities needed by normal developer tools:
+`exec` enables the capabilities needed by normal developer tools:
 
 - child execution;
 - PTY allocation;
 - platform-scoped process inspection as described below;
 - POSIX IPC.
 
-Local mode additionally reads all files, enables direct networking, and uses
-the OS temporary directory. Writes and deletion remain limited to the workdir,
-output directory, temporary directory, active permission profile, and approved
-additional paths.
+System paths are granted automatically so toolchains resolve their runtime,
+while writes and deletion elsewhere remain limited to the workdir, output
+directory, the active permission profile, and approved additional paths:
 
-Server mode does not enable direct networking or OS temporary-directory writes
-unless its configured path policy grants them. Its read, write, delete,
-environment, and network policy remains fixed by `[react.bash_exec_server]`.
-
-Resource ceilings are configurable:
-
-```toml
-[react]
-bash_exec_max_memory_mb = 2048
-bash_exec_max_open_files = 1024
+```text
+read-only:      /usr  /bin  /sbin  /System  /Library  /opt/homebrew  /private
+read/write/del: /tmp
 ```
 
-The memory value applies to `RLIMIT_DATA`. `RLIMIT_AS` is skipped for executable
-workloads because modern runtimes reserve large virtual address ranges. Core
-dumps remain disabled. CPU time follows the command timeout. Resource limits
-are best-effort OS controls: unsupported limits are logged, while failure of
-the filesystem or syscall sandbox remains fatal.
+The command workdir receives read, write, and delete rights. When the workdir
+contains a `.git` file that points elsewhere (a git worktree), that git
+directory is granted write and delete access explicitly because it lives
+outside the workdir.
+
+Direct networking is off by default and controlled by `[exec].network`:
+
+```toml
+[exec]
+network = false
+```
+
+Sandbox resource ceilings are applied by the sandbox layer rather than the
+`[exec]` table. The memory value applies to `RLIMIT_DATA`. `RLIMIT_AS` is
+skipped for executable workloads because modern runtimes reserve large virtual
+address ranges. Core dumps remain disabled. CPU time follows the command
+timeout. Resource limits are best-effort OS controls: unsupported limits are
+logged, while failure of the filesystem or syscall sandbox remains fatal.
 
 ## macOS policy
 
@@ -155,8 +161,15 @@ Consequences:
 
 Linux combines two layers:
 
-- seccomp-BPF allowlists system calls;
+- seccomp-BPF denylists escape-relevant system calls, with a default ALLOW
+  action;
 - Landlock limits filesystem paths and, on ABI 5 or newer, device ioctls.
+
+The seccomp filter deliberately allows unknown syscalls. A syscall allowlist
+cannot keep pace with the kernel and breaks runtimes such as Node.js, Python,
+Go, and glibc whenever they issue a syscall that is not listed. Denied
+operations return `EPERM` so callers degrade gracefully instead of being
+killed. Only operations that would let the sandbox escape are denied.
 
 The `ioctl` syscall remains available because terminals and common runtimes use
 it, but Landlock ABI 5 denies ioctl on newly opened device files. With the

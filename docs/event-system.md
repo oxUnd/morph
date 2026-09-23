@@ -103,9 +103,12 @@ Startup:
 
 ```text
 startup.begin
-startup.component.begin
-startup.component.ready
-startup.component.failed
+startup.config
+startup.database
+startup.models
+startup.tools
+startup.mcp
+startup.session
 startup.ready
 startup.failed
 ```
@@ -128,6 +131,7 @@ ReAct:
 
 ```text
 react.turn.begin
+react.thinking
 react.thought.delta
 react.thought.end
 react.reasoning.delta
@@ -135,6 +139,12 @@ react.action
 react.observation
 react.reflection
 react.final
+react.final.delta
+react.final.retry
+react.user.steer
+react.compaction.begin
+react.compaction.completed
+react.compaction.failed
 react.turn.end
 react.cancelled
 react.timed_out
@@ -147,6 +157,7 @@ Tool:
 ```text
 tool.call
 tool.running
+tool.stream.delta
 tool.result
 tool.failed
 tool.cancelled
@@ -356,8 +367,8 @@ HITL event payload:
 
 ```json
 {
-  "tool": "bash_exec",
-  "args": {"cmd": "make test"},
+  "tool": "exec",
+  "args": {"command": "make test"},
   "verdict": "approved"
 }
 ```
@@ -407,34 +418,45 @@ Test recorder:
 
 ## Required Migration Points
 
-The implementation is incomplete until every item below has been reviewed.
+The event module is implemented under `src/event/`. Consumers below reflect the
+current layout; keep them in sync when moving code.
 
 Core event module:
 
 - `src/event/event.h`
 - `src/event/event.c`
-- top-level and `src/` CMake integration
+- `src/event/CMakeLists.txt` and `src/` CMake integration
 
-CLI:
+Runtime owners:
 
-- `src/sapi/cli/cli.h`: event callback/mode fields in `struct cli_context`
-- `src/sapi/cli/init.c`: startup init path
-- `src/sapi/cli/init.c` and `src/sapi/cli/commands/mcp.c`: MCP init and `/mcp` command events
-- `src/sapi/cli/events.c`: JSON and human event renderers
-- `src/sapi/cli/core.c`: one-shot command path emits structured events
-- `src/sapi/cli/scheduler.c` and `src/sapi/cli/core.c`: task scheduler and memory consolidation background events
-- `src/sapi/cli/main.c`: CLI flags and startup event mode wiring
+- `src/runtime/lifecycle.c`: all `startup.*` events (`startup.begin`,
+  `startup.config`, `startup.database`, `startup.models`, `startup.tools`,
+  `startup.mcp`, `startup.session`, `startup.ready`, `startup.failed`)
+- `src/runtime/mcp.c`: `mcp.connecting`, `mcp.connected`, `mcp.discovering`,
+  `mcp.ready`, `mcp.failed`, `mcp.disconnected`
+- `src/db/scheduled_task.c`: `task.created`, `task.updated`, `task.cancelled`,
+  `task.claimed`, `task.started`, `task.notification`, `task.completed`,
+  `task.rescheduled`, `task.timed_out`, `task.failed`,
+  `task.max_attempts_reached`
+- `src/runtime/task_worker.c`: drives the due-task pass that produces those
+  task events; it forwards the callback rather than emitting names itself
+
+`src/runtime/bootstrap.c` builds models and built-in tools but does not emit
+events itself; `lifecycle.c` reports the outcome. `src/runtime/engine.c` and
+`src/runtime/execute.c` wire the background callback and emit no event names
+directly.
 
 ReAct:
 
 - `src/agent/react.h`: event callback API on `react_context`
 - `src/agent/react.c`: turn begin/end
-- `src/agent/react.c`: streaming thought deltas
+- `src/agent/react.c`: streaming thought, reasoning, and final deltas
 - `src/agent/react.c`: action, tool call/running/result/failed/cancelled
 - `src/agent/react.c`: observation/reflection/final
 - `src/agent/react.c`: cancellation and timeout events
 - `src/agent/react.c`: HITL request/verdict events
 - `src/agent/react.c`: guardrail reflection events
+- `src/agent/react.c`: in-turn compaction and user-steer events
 - `src/agent/react.c`: artifact detection from structured tool results
 
 Tools and artifacts:
@@ -445,15 +467,17 @@ Tools and artifacts:
 MCP:
 
 - `src/mcp/mcp_client.c`: register functions return structured counts
-- `src/sapi/cli/events.c`, `src/sapi/cli/init.c`, and `src/sapi/cli/commands/mcp.c`: registered, skipped, connecting, connected, discovering,
-  ready, timeout, failed, and disconnected events
+- `src/runtime/mcp.c` emits connecting, connected, discovering, ready,
+  failed, and disconnected events; `src/sapi/cli/commands/mcp.c` surfaces the
+  register/skip results for the `/mcp` command
 
 FastCGI:
 
-- `src/sapi/fastcgi/handlers/turns.c`: consumes unified React/tool/artifact events
-  and maps them to existing SSE records
-- `src/sapi/fastcgi/handlers/events.c`: SSE output compatibility
-- `src/sapi/fastcgi/README.md`: update event type documentation
+- `src/sapi/fastcgi/handlers/turns.c` and
+  `src/sapi/fastcgi/handlers/events.c`: consume unified React/tool/artifact
+  events and map them to SSE records
+- `src/sapi/fastcgi/agent_bridge.c` and `src/sapi/fastcgi/event_sink.c`: bridge
+  the runtime event callback into those handlers
 
 Sub-agents/background work:
 
@@ -464,9 +488,9 @@ Sub-agents/background work:
 
 Memory/compression:
 
-- `src/sapi/cli/core.c`: background memory consolidation status is surfaced
+- `src/agent/turn.c`: background memory consolidation status is surfaced
 - compression remains a ReAct internal operation and is visible through the
-  enclosing turn events
+  enclosing turn events (`react.compaction.*`)
 
 Docs/tests:
 

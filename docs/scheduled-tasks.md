@@ -223,10 +223,16 @@ list
 cancel
 inbox
 mark_read
+run_due     仅存在占位分支，调用即返回错误
 ```
 
-`run_due` 不暴露给 agent tool。due processing 是 scheduler-only，避免 agent 递归触发
-任务执行。
+`run_due` 虽然出现在 op 分派中，但会直接返回
+`run_due is scheduler-only for agent tasks`。due processing 是 scheduler-only，
+避免 agent 递归触发任务执行。真正的入口是
+`runtime_tasks_run_due_for_runtime()`（`src/runtime/task_controller.c`），
+由 `src/sapi/cli/scheduler.c`（交互式后台）和 `src/sapi/cli/commands/tasks.c`
+（`/tasks run`）调用；`src/runtime/task_worker.c` 走的是底层
+`runtime_task_run_due_collect()`。
 
 相对时间：
 

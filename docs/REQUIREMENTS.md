@@ -1,7 +1,7 @@
 # 多题材 Agent 需求文档
 
 > **文档版本**: v0.6
-> **状态**: Updated — 同步代码实际行为（v0.3.7），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_edit / QuickJS+Wasm3 运行时
+> **状态**: Updated — 同步代码实际行为（v0.3.11），补齐事件系统 / 定时任务 / 动态 JS 工具 / img_qa / config_edit / QuickJS+Wasm3 运行时 / exec+process 受管 shell 与命令审批 / 权限 profile / runtime 门面 / seccomp denylist+Landlock
 
 ## 0. 术语与缩写
 
@@ -298,7 +298,7 @@ ReAct、工具调用、MCP 启动/连接、HITL、Artifact、后台任务和错�
 ```text
 $ morph
 
-morph v0.3.7  |  /help 查看命令
+morph v0.3.11  |  /help 查看命令
 
 [abc1] $ 帮我写一个赛博朋克短视频脚本，并配图和视频
 ⠋ Thinking → 赛博朋克短视频脚本...
@@ -827,22 +827,30 @@ guardrail_llm_model = ""
 # ext_entry = "pii_check.so"
 # action_text = "Remove PII from output"
 
-# bash_exec 配置
-bash_exec_enabled = true
-bash_exec_default_timeout = 30
-bash_exec_mode = "server"       # local | server
-bash_exec_allowed_commands = []
+# exec 配置（shell 工具与进程会话）
+[exec]
+shell = "/bin/bash"
+default_timeout_ms = 120000
+yield_time_ms = 10000
+max_inline_output = 32768
+max_session_output = 1048576
+kill_grace_ms = 500
+network = false
 
-[react.bash_exec_server]
-read_paths = ["@workdir", "@output"]
-write_paths = ["@output"]
+# 文件系统信任根由 permission profile 提供
+[react.permissions]
+active_profile = "developer"
+request_tool_enabled = true
+
+[[react.permission_profiles]]
+name = "developer"
+workspace_roots = []
+write_paths = []
 delete_paths = []
-network_access = false
-allowed_env = []
 
 # Human-in-the-Loop (HITL)
 hitl_enabled = true
-# hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
+# hitl_tools = ["img_gen", "vid_gen"]
 hitl_auto_approve_readonly = true
 
 [context]
@@ -928,7 +936,7 @@ dir = ""
 # system_prompt_file = "~/.morph/prompts/translate.md"
 # model = "gpt-4o"
 # max_iterations = 5
-# allowed_tools = ["file_read", "bash_exec"]
+# allowed_tools = ["file_read", "exec"]
 # disabled_tools = []
 # context_policy = "task_only"
 # merge_strategy = "raw"
@@ -982,9 +990,16 @@ morph/
 │   │       ├── img_gen.c / img_qa.c / img_inpaint.c / img_compose.c
 │   │       ├── img_info.c / img_resize.c / img_convert.c / img_annotate.c
 │   │       ├── vid_gen.c / file_read.c / file_list.c / file_info.c
-│   │       ├── config_write.c / bash_exec.c / skill_activate.c / plan.c
-│   │       ├── ask_user.c / sub_agent_tools.c / scheduled_tasks.c
-│   │       └── runtime_query.c / dynamic_tools.c
+│   │       ├── config_write.c / apply_patch.c / exec_tool.c
+│   │       ├── request_permissions.c / skill_activate.c / plan.c
+│   │       ├── scheduled_tasks.c / ask_user.c / sub_agent_tools.c
+│   │       ├── runtime_query.c / dynamic_tools.c
+│   ├── runtime/                # 进程级所有者：生命周期、会话、turn、任务
+│   ├── exec/                   # 受管进程会话（exec / process 背后）
+│   ├── event/                  # 统一事件 sink
+│   ├── js_runner/              # 内嵌 QuickJS（动态工具）
+│   ├── sync/                   # 会话同步
+│   ├── sapi/                   # 前端：CLI 与 FastCGI
 │   ├── skill/                  # Skill 发现、解析、激活
 │   ├── sandbox/                # seccomp/rlimit sandbox + loader
 │   ├── ext/                    # Ext manifest、加载、安装
@@ -1498,12 +1513,13 @@ void tool_call_cleanup(struct tool_call *tc, struct arena *arena);
 | file_list | 列出目录内容 | path | 本地 | 内置 | 是 |
 | file_info | 文件元数据 | path | 本地 | 内置 | 是 |
 | config_edit | 经审批、补丁、备份、原子写入和 TOML 校验后编辑当前配置 | patch/content, reason | 本地 | 内置 | 否 |
-| bash_exec | 执行 shell 命令 | command | 本地（含黑名单过滤） | 内置 | 否 |
+| exec | 执行 shell 命令（AST 解析 + 逐 program 审批 + 进程会话） | command, workdir, timeout_ms, yield_time_ms, pty, background | 本地沙箱 | 内置 | 否 |
+| process | 轮询/写入/中断/终止 exec 会话 | session_id, action, input | 本地 | 内置 | 否 |
+| request_permissions | 为后续 exec 命令申请最小文件系统权限 | command, permissions, scope, justification | 本地 | 内置 | 否 |
 | plan | 创建/管理多步计划 | command, name, goal, steps | LLM | 内置 | 是 |
 | ask_user | 向用户提问并等待回答 | question, choices | 本地 | 内置 | 是 |
-| skill_activate | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
-| scheduled_tasks | 创建/管理定时 Agent 任务 | action, time, prompt | SQLite + ReAct | 内置 | 否 |
-| runtime_query | 查询运行时信息/上下文 | query | 本地 | 内置 | 是 |
+| activate_skill | 激活 Skill 注入上下文 | name | 本地 | 内置 | 是 |
+| tasks | 创建/管理定时 Agent 任务与 inbox | op, title, kind, trigger_type, delay_seconds, interval_seconds, prompt | SQLite + ReAct | 内置 | 否 |
 | tool_create | 创建或更新 QuickJS 动态工具 | name, description, args_schema, source_js | QuickJS | 动态工具管理 | 否 |
 | tool_promote | 提升会话动态工具为持久工具 | name | 本地 | 动态工具管理 | 否 |
 | tool_delete | 删除动态工具 | name | 本地 | 动态工具管理 | 否 |
@@ -2206,32 +2222,75 @@ enum write_verdict {
 	WRITE_ALWAYS = 2,
 };
 
-typedef enum write_verdict (*tool_write_approval_fn)(const char *path,
-						     const char *output_dir,
-						     void *user_data);
-
-enum command_verdict {
-	COMMAND_DENY = 0,
-	COMMAND_ALLOW = 1,
-	COMMAND_ALWAYS = 2,
+enum tool_path_op {
+	TOOL_PATH_READ = 0,
+	TOOL_PATH_LIST = 1,
+	TOOL_PATH_WRITE = 2,
+	TOOL_PATH_DELETE = 3,
 };
 
-typedef enum command_verdict (*tool_command_approval_fn)(
-	const char *command, const char *cwd, void *user_data);
+enum tool_operation_kind {
+	TOOL_OP_COMMAND = 0,
+	TOOL_OP_PATH_READ = 1,
+	TOOL_OP_PATH_LIST = 2,
+	TOOL_OP_PATH_WRITE = 3,
+	TOOL_OP_NETWORK = 4,
+	TOOL_OP_EXTERNAL_SEND = 5,
+	TOOL_OP_PATH_DELETE = 6,
+};
+
+enum tool_operation_verdict {
+	TOOL_OP_DENY = 0,
+	TOOL_OP_ALLOW = 1,
+	TOOL_OP_SESSION = 2,
+	TOOL_OP_ALWAYS = 3,
+};
+
+struct tool_operation {
+	enum tool_operation_kind kind;
+	const char *tool_name;
+	const char *principal;
+	const char *action;
+	const char *target;
+	const char *scope;
+	const char *details_json;
+	const struct tool_directory_capability *directories;
+	int directories_count;
+	const char *reason;
+	const char *const *programs;
+	int programs_count;
+};
+
+typedef enum tool_operation_verdict (*tool_operation_approval_fn)(
+	const struct tool_operation *op, void *user_data);
+
+struct tool_directory_capability {
+	char path[PATH_MAX];
+	int create;
+};
 
 struct tool_context {
 	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
-	tool_write_approval_fn approval_fn;
-	void *approval_user_data;
-	char allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
-	int allowed_dirs_count;
-	tool_command_approval_fn command_approval_fn;
-	void *command_approval_user_data;
-	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_COMMAND_MAX];
+	tool_operation_approval_fn operation_approval_fn;
+	void *operation_approval_user_data;
+	char read_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int read_allowed_dirs_count;
+	char write_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int write_allowed_dirs_count;
+	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ACTION_MAX];
 	int allowed_commands_count;
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
+	morph_array_t scoped_grants;
+	morph_array_t persistent_grants;
+	struct db *grant_db;
+	char grant_project_root[TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int default_timeout_seconds;
+	char exec_profile_write_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int exec_profile_write_dirs_count;
+	char exec_profile_delete_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int exec_profile_delete_dirs_count;
 };
 
 struct tool_context *tool_context_create(const char *workdir,
@@ -2239,15 +2298,19 @@ struct tool_context *tool_context_create(const char *workdir,
 void tool_context_destroy(struct tool_context *tctx);
 const char *tool_context_workdir(const struct tool_context *tctx);
 const char *tool_context_output_dir(const struct tool_context *tctx);
-int tool_context_check_write_path(struct tool_context *tctx, const char *path);
-void tool_context_add_allowed_dir(struct tool_context *tctx, const char *dir);
-void tool_context_set_command_approval(struct tool_context *tctx,
-				       tool_command_approval_fn fn,
-				       void *user_data);
-int tool_context_allow_command(struct tool_context *tctx, const char *pattern);
-int tool_context_allow_exec_dir(struct tool_context *tctx, const char *path);
-int tool_context_check_command(struct tool_context *tctx,
-			       const char *command, const char *cwd);
+void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
+int tool_context_default_timeout(const struct tool_context *tctx);
+int tool_context_authorize_path(struct tool_context *tctx,
+				enum tool_path_op op, const char *path,
+				char *resolved, size_t resolved_size);
+int tool_context_check_operation(struct tool_context *tctx,
+				 const struct tool_operation *op);
+int tool_context_check_operation_verdict(
+	struct tool_context *tctx, const struct tool_operation *op,
+	enum tool_operation_verdict *verdict);
+void tool_context_set_operation_approval(struct tool_context *tctx,
+					 tool_operation_approval_fn fn,
+					 void *user_data);
 ```
 
 #### 6.9.15 Plan 子系统接口
@@ -2332,7 +2395,7 @@ name: code-review
 description: Code review and analysis
 license: MIT
 compatibility: morph>=0.1
-allowed_tools: file_read,bash_exec,memory
+allowed_tools: file_read,exec,memory
 metadata:
   author: morph-team
   version: "1.0"
@@ -2593,7 +2656,15 @@ enum morph_error {
 | `test_react.cpp` | ReAct 循环 |
 | `test_markdown.cpp` | Markdown 渲染 |
 | `test_skill.cpp` | Skill 系统 |
-| `test_bash_exec.cpp` | Shell 执行工具 |
+| `test_exec_process.cpp` | exec 与 process 工具 |
+| `test_bash_parse.cpp` | Shell 命令 AST 解析 |
+| `test_runtime.cpp` | runtime 生命周期 |
+| `test_runtime_execute.cpp` | runtime 请求执行 |
+| `test_runtime_internal.cpp` | runtime 内部依赖图 |
+| `test_runtime_output.cpp` | runtime 输出回调 |
+| `test_runtime_services.cpp` | runtime 快照与操作 |
+| `test_runtime_sync.cpp` | runtime 同步 worker |
+| `test_fastcgi_runtime.cpp` | FastCGI runtime 桥接 |
 | `test_render.cpp` | 渲染系统 |
 | `test_memory.cpp` | 长期记忆 |
 | `test_mcp.cpp` | MCP 客户端 |
@@ -2642,11 +2713,11 @@ enum morph_error {
 | **M1 / MVP** | W1–W4 | 项目骨架 + CLI + 文字对话（流式）+ 会话持久化 + Token 计数 + 滑动窗口 + 1 个 demo Ext（无沙箱） | **已完成** |
 | **M2 / V0.2** | W5–W7 | 文生图 + 图片理解 + 终端预览（kitty/sixel/iterm2） | **已完成** |
 | **M3 / V0.3** | W8–W10 | 文/图生视频 + mpv 播放 + 视频理解 + 异步轮询 + BPE Tokenizer + 长期记忆 + 子代理 + 可插拔 Guardrail + MCP + Plan + FastCGI | **已完成**（v0.3.7） |
-| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS SBPL 沙箱 | **进行中**（事件、定时任务、QuickJS、Ext install、macOS 沙箱已完成；Ext enable/disable/remove 待完成） |
+| M4 / V0.4 | W11–W13 | 统一事件系统 + 定时任务 + QuickJS 动态工具 + Ext install/enable/disable + macOS SBPL 沙箱 | **进行中**（截至 v0.3.11：事件、定时任务、QuickJS、Ext install、macOS SBPL 沙箱已完成；Ext enable/disable/remove 待完成） |
 | M5 / V0.5 | W14–W15 | 跨模态联动模板 + 摘要压缩完善 + 关键信息提取 + 递归摘要 | **进行中**（摘要压缩、关键信息提取、跨图片 inpaint/compose 已实现；联动模板验收与递归摘要待完成） |
 | M6 / V1.0 | W16–W18 | 多模型切换 + Ext 市场（git）+ Homebrew formula + 模糊测试 | **进行中**（模型 ID 切换与 Ext GitHub 安装已实现；跨 provider 切换、Homebrew formula、模糊测试待完成） |
 
-> **已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具、macOS SBPL 沙箱、摘要压缩、关键信息提取、跨图片 inpaint/compose、模型 ID 切换与 Ext GitHub 安装。
+> **已提前实现项**：BPE Tokenizer（原计划 M5/P2）、长期记忆系统（原计划 M5）、子代理系统（原计划 M6）、可插拔 Guardrail 引擎（原计划 M4）、MCP 客户端（新增需求）、Plan 子系统（新增需求）、FastCGI 前端、统一事件系统、定时任务、QuickJS 动态工具、macOS SBPL 沙箱、摘要压缩、关键信息提取、跨图片 inpaint/compose、模型 ID 切换与 Ext GitHub 安装、exec+process 受管 shell 与命令 AST 审批、权限 profile 与持久 grant、runtime 门面、seccomp denylist+Landlock、turn 级环境上下文注入。
 
 ---
 

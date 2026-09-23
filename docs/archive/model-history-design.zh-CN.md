@@ -158,7 +158,7 @@ JSON 组装使用 `cJSON` 和 `morph_buf_t`。
     {
       "tool_call_id": "call_local_stable_id",
       "provider_call_id": "provider_call_id",
-      "name": "bash_exec",
+      "name": "exec",
       "arguments": "{\"command\":\"cmake --build build\"}"
     }
   ]
@@ -175,7 +175,7 @@ JSON 组装使用 `cJSON` 和 `morph_buf_t`。
 {
   "tool_call_id": "call_local_stable_id",
   "provider_call_id": "provider_call_id",
-  "tool_name": "bash_exec",
+  "tool_name": "exec",
   "status": "completed",
   "error_code": 0,
   "content": "model-visible truncated result",
@@ -399,7 +399,7 @@ adapter 构造 `chat_message`。迁移期可以并存：
 - 两条路径通过统一的 `history_build_chat_messages()` 输出。
 
 不能把 tool call 序列格式化成普通 assistant 文本，例如
-`bash_exec({"command":"..."})`。必须恢复为模型 API 的结构化 tool call，结果恢复为
+`exec({"command":"..."})`。必须恢复为模型 API 的结构化 tool call，结果恢复为
 匹配 call ID 的 tool message。
 
 ## 12. Compaction

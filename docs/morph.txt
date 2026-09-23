@@ -18,9 +18,11 @@ CONTENTS						*morph-contents*
 	*morph-models*		Text, image, and video models
 	*morph-cli*		Interactive CLI commands
 	*morph-tools*		Built-in tools and permissions
+	*morph-tasks*		Scheduled tasks and inbox
 	*morph-skills*		Skills
 	*morph-mcp*		MCP servers
 	*morph-exts*		Extensions
+	*morph-dynamic*		Dynamic JavaScript tools
 	*morph-memory*		Memory, context, and credits
 	*morph-config-edit*	Letting Morph edit config
 	*morph-troubleshooting*	Common problems
@@ -71,9 +73,16 @@ Important sections:
 	[model.vision]	Optional image understanding and OCR model.
 	[model.image]	Image generation/editing model.
 	[model.video]	Video generation model.
-	[react]		Tool loop, guardrails, HITL, and shell settings.
+	[credits]	Credit tracking and per-model prices.
+	[exec]		Shell, timeouts, output limits, and network for exec.
+	[react]		Tool loop, guardrails, HITL, and tool policy.
+	[react.permissions]	Permission profile selection.
 	[context]	Context compression settings.
 	[memory]	Persistent memory settings.
+	[sync]		Optional backup of the ~/.morph directory.
+	[render]	Terminal image protocol and video player arguments.
+	[ext]		Extension directory and sandbox resource defaults.
+	[dynamic_tools]	JavaScript tool execution profiles.
 	[prompt]	Extra system prompt file or prompt directory.
 	[skill]		Custom skill directory.
 	[[mcp.servers]]	MCP server definitions.
@@ -246,17 +255,24 @@ Common interactive commands:
 	/help [command]	List commands or show one command.
 	/quit		Exit.
 	/new [name]	Create a new session.
-	/list		List sessions.
-	/switch <name>	Switch session.
+	/list [n|query|--all]	List sessions.
+	/switch <name|id|^N>	Switch session.
 	/rename <name>	Rename current session.
-	/delete <name>	Delete a session.
+	/delete <name|id>	Delete a session.
+	/history [n|--all]	Show, diagnose, repair, or export history.
 	/model [name]	Show or change the text model for the session.
 	/config		Print loaded configuration.
-	/trace		Show the latest ReAct trace.
+	/trace [--from-db]	Show the latest ReAct trace.
 	/context	Show token context usage.
 	/compress	Compress old conversation context.
 	/credits	Show estimated credit usage.
-	/memory show	Show remembered facts and procedures.
+	/save [format]	Export the session to a file.
+	/clear		Clear the terminal screen.
+	/memory [show|history|explain|set|unset|clear|jobs]
+	/permissions [list|revoke <id|program>|clear ...]
+	/tasks [list|show|add|every|update|cancel|run]
+	/inbox [list [limit]|read <id>]
+	/sync [status|now|conflicts|restore <trash-id>|restore-db ...]
 	/skill list	List skills.
 	/skill info <name>
 	/skill activate <name>
@@ -264,11 +280,12 @@ Common interactive commands:
 	/mcp connect <name>
 	/mcp tools <name>
 	/ext list	List extension tools.
-	/image <path>	Render an image in the terminal.
-	/video <path>	Render a video.
-	/render <path>	Render supported media.
+	/image <path>	Inject an image into context.
+	/render <path>	Render an image, video, or markdown file.
 
-Use /help /command for exact usage.
+Most commands have short aliases: /q, /h, /n, /ls, /s, /rn, /del, /m,
+/cfg, /t, /ctx, /cp, /r, /mem, /perms, /x.  Use /help /command for exact
+usage.
 
 ==============================================================================
 TOOLS AND PERMISSIONS					*morph-tools*
@@ -281,6 +298,9 @@ Built-in read-only tools include:
 	img_info	Image metadata.
 	credits		Credit usage.
 	memory		Memory inspection.
+	activate_skill	Load a skill's instructions into context.
+	plan		Create and manage a multi-step plan.
+	agent_status	Check an asynchronous sub-agent.
 
 Creative and processing tools include:
 
@@ -293,49 +313,72 @@ Creative and processing tools include:
 	img_convert	Convert image formats.
 	vid_gen		Generate video.
 
-Workspace and configuration editing tools include:
+Workspace, task, and configuration tools include:
 
 	apply_patch	Patch text files inside the active work directory.
 	config_edit	Safely patch the active Morph configuration.
+	memory_preference	Persist an explicit user preference.
+	tasks		Create and manage scheduled tasks and the inbox.
+	tool_create	Create or update a dynamic JavaScript tool.
+	delegate	Start a sub-agent asynchronously.
+	fanout		Run several sub-agent tasks in parallel.
+	ask_user		Ask the user a question and wait for an answer.
 
-bash_exec is disabled by default because it permits model-initiated process
-execution.  Enable it only when needed:
+Shell and process tools include:
 
-	[react]
-	bash_exec_enabled = true
-	bash_exec_mode = "local"
-	bash_exec_max_memory_mb = 2048
-	bash_exec_max_open_files = 1024
+	exec		Run a shell command with workdir, timeout, and sessions.
+	process		Poll, write to, interrupt, or kill an exec session.
+	request_permissions  Ask for the smallest additional filesystem access.
 
-Local mode can read any file and access the network.  It can write and delete
-below the work directory, output directory, and /tmp.  Additional write or
-delete paths require once/session approval and are never persisted.  Proxy
-variables (lowercase and uppercase) plus SSL_CERT_FILE, SSL_CERT_DIR, and
-CURL_CA_BUNDLE are inherited automatically; other non-essential variables are
-still filtered.
+The exec tool runs shell commands; the process tool manages the resulting
+process sessions.  Both are registered always and share one configuration
+table:
 
-Server mode has no runtime approval path.  Every subcommand must match the
-command allowlist, and filesystem/network capabilities come only from config:
+	[exec]
+	shell = "/bin/bash"
+	default_timeout_ms = 120000
+	yield_time_ms = 10000
+	max_inline_output = 32768
+	max_session_output = 1048576
+	kill_grace_ms = 500
+	network = false
 
-	[react]
-	bash_exec_mode = "server"
-	bash_exec_allowed_commands = ["cmake", "ctest", "git"]
+Each command is parsed before execution.  Morph derives the programs it would
+run, then asks for approval scoped to those programs.  If a command cannot be
+parsed safely, exec returns approval_required instead of running it.  A single
+approval can apply to this call only, to the whole session, or permanently.
+Persistent grants are stored per project and listed with /permissions.
 
-	[react.bash_exec_server]
-	read_paths = ["@workdir", "@output"]
-	write_paths = ["@output"]
+The sandbox grants read access to system toolchain paths (/usr, /bin, /sbin,
+/System, /Library, /opt/homebrew, /private) and read, write, and delete
+access to /tmp.  The command workdir also gets read, write, and delete
+rights.  Additional write or delete paths may be requested through approval
+and are never persisted unless you choose the permanent option.  Proxy
+variables (lowercase and uppercase) plus SSL_CERT_FILE,
+SSL_CERT_DIR, and CURL_CA_BUNDLE are inherited automatically; other
+non-essential variables are still filtered.
+
+Commands that outlive yield_time_ms return a session_id.  Continue them with
+the process tool, whose action is one of poll, write, interrupt, or kill.
+
+Long-term trusted directories belong in a permission profile, which adds
+trusted roots at startup and never weakens the OS sandbox:
+
+	[react.permissions]
+	active_profile = "developer"
+	request_tool_enabled = true
+
+	[[react.permission_profiles]]
+	name = "developer"
+	workspace_roots = []
+	write_paths = []
 	delete_paths = []
-	network_access = false
-	allowed_env = []
 
-Path entries accept @workdir, @output, @tmp, absolute paths, or "*".  The
-legacy bash_exec_allowed_cwds option is ignored by the capability sandbox.
-Server allowed_env entries are exact environment variable names and default to
-an empty list.  Use them for required proxy or CA variables, not API secrets.
 PTY allocation, platform-scoped process inspection, and POSIX IPC are
 available to normal developer commands without granting access to arbitrary
-devices.  On Linux, process visibility follows the host /proc DAC because
-Morph does not create a PID namespace.
+devices.  Networking stays off unless [exec].network is enabled.
+On Linux, process visibility follows the host /proc DAC because Morph does not
+create a PID namespace.
 See docs/sandbox.md for the extension capability names, platform policy, and
 macOS nested-sandbox testing caveat.
 
@@ -343,10 +386,80 @@ Human-in-the-loop approval:
 
 	[react]
 	hitl_enabled = true
-	hitl_tools = ["bash_exec", "img_gen", "vid_gen"]
+	hitl_tools = ["img_gen", "vid_gen"]
 	hitl_auto_approve_readonly = true
 
 When HITL is enabled, Morph asks before selected tool calls.
+
+==============================================================================
+SCHEDULED TASKS					*morph-tasks*
+
+A task is a prompt Morph runs later, either once or on an interval.  When a
+task is due, the agent executes the prompt and delivers the final answer as a
+notification.  Results go to a persistent inbox.
+
+Commands:
+
+	/tasks list [status]	List tasks.
+	/tasks show <id>	Show one task in detail.
+	/tasks add <unix_time|+seconds> <prompt>
+	/tasks every <seconds> <prompt>
+	/tasks update <id> <unix_time|+seconds> <prompt>
+	/tasks cancel <id>
+	/tasks run [limit]	Process due tasks now.
+	/inbox list [limit]	List notifications.
+	/inbox read <id>	Mark a notification as read.
+
+Examples:
+
+	/tasks add +300 Summarize today's AI news in five points.
+	/tasks every 3600 Summarize the most important AI news.
+
+Times are UTC Unix seconds, or a relative +seconds value.  The agent can also
+create and manage tasks through the tasks tool, which supports the ops create,
+update, list, cancel, inbox, and mark_read.  Due processing stays in the
+scheduler; run_due is not available to the agent.
+
+The interactive CLI runs a lightweight background scheduler that checks due
+tasks about once per second.  Tasks and notifications live in the Morph
+SQLite database, so they survive after a session ends.
+
+==============================================================================
+DYNAMIC TOOLS						*morph-dynamic*
+
+Morph can write small JavaScript tools at runtime and call them immediately.
+Tools run in an embedded QuickJS interpreter, not Node.js.  They may use the
+host APIs listed below and return a JSON-serializable value.
+
+Tools:
+
+	tool_create	Create or update a dynamic tool.
+	tool_promote	Move a session tool into the persistent tool directory.
+	tool_delete	Delete a dynamic tool.
+	tool_history	List checkpoints for a tool.
+	tool_diff	Show a diff against a checkpoint.
+	tool_rollback	Rewind a tool to a checkpoint.
+
+A dynamic tool defines a global run(args) function, or async run(args).  Every
+successful create or update records a checkpoint.
+
+Available host APIs include morph.fs (readText, writeText), morph.env.get,
+morph.tool.call, morph.exec, morph.fetch, morph.image (metadata, resize, crop,
+extend, rotate, convert, compose, frame, open), morph.canvas (create,
+loadImage, toFile, toBuffer), and WebAssembly.
+
+Capabilities are controlled by the active profile under [dynamic_tools], not
+by the tool itself:
+
+	[dynamic_tools.local]
+	default_capabilities = ["fs_read", "fs_write", "network", "process",
+	                        "env", "mcp", "model", "shell", "image", "wasm"]
+
+The server profile starts from an empty capability list.  Set
+dynamic_tools.mode to "server" to use it; FastCGI and other non-interactive
+front-ends default to server mode when mode is not set explicitly.
+
+See docs/quickjs-tools.md for the full API surface and sandbox details.
 
 ==============================================================================
 SKILLS							*morph-skills*
@@ -370,6 +483,8 @@ Commands:
 	/skill info <name>
 	/skill activate <name>
 	/skill deactivate <name>
+
+Skills follow the Agent Skills open standard.  Short alias: /sk.
 
 If a task matches a skill, Morph can activate it automatically through the
 activate_skill tool.  Activation loads the full SKILL.md instructions into the
@@ -445,9 +560,18 @@ Memory can store user facts, procedures, and episode summaries:
 	max_facts = 6
 	max_context_chars = 3000
 
-Inspect it:
+Inspect or change it:
 
 	/memory show
+	/memory history
+	/memory explain
+	/memory set <key> <value> [personal|project|session]
+	/memory unset <key> [personal|project|session]
+	/memory jobs
+	/memory clear [all|facts|episodes|procedures]
+
+Explicit preferences are stored by scope.  Session overrides project, which
+overrides personal.  Use /memory explain to see which value is effective.
 
 Context compression protects long sessions:
 
@@ -516,9 +640,20 @@ TROUBLESHOOTING					*morph-troubleshooting*
 	recognized Seedance 2.0+ model ID. Opaque ep-... IDs use conservative
 	capabilities.
 
-"bash_exec tool disabled"
+"exec cannot run a command"
 
-	Set bash_exec_enabled = true under [react], then restart Morph.
+	Check the returned error.code:
+
+	approval_required	The command could not be parsed safely, or it was
+				not approved.  Rewrite it without dynamic
+				construction, or approve it when prompted.
+	approval_unavailable	This run has no interactive approval channel.
+	permission_denied	You denied the command.
+	spawn_failed / invalid_workdir	The process could not start, or the
+				workdir is invalid.
+
+	A command that needs a directory outside the sandbox should be added to a
+	permission profile.  See the TOOLS AND PERMISSIONS section.
 
 "skill not found"
 

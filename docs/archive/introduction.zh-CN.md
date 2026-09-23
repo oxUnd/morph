@@ -1,6 +1,6 @@
 # Morph 系统介绍
 
-![Morph 终端演示](../misc/demo.png)
+![Morph 终端演示](../../misc/demo.png)
 
 Morph 是一套终端原生的多模态 AI Agent 系统，用纯 C 实现，面向文本、图片、视频和自动化工具调用场景。它把模型能力、工具系统、技能包、扩展插件和本地会话管理组合在一起，让用户可以用一条自然语言指令完成跨步骤、跨模态的任务。
 
@@ -35,7 +35,9 @@ flowchart LR
 	Tools --> ImgTool[图片生成、编辑、标注、转换]
 	Tools --> VidTool[视频生成]
 	Tools --> FileTool[文件读取与列表]
-	Tools --> BashTool[命令执行]
+	Tools --> ExecTool[exec 命令执行与 process 会话]
+	Tools --> TaskTool[tasks 定时任务]
+	Tools --> DynTool[动态工具]
 
 	Agent --> Skills[技能包]
 	Agent --> Exts[扩展插件]
@@ -210,9 +212,20 @@ flowchart BT
 	Agent --> MCP
 	Util --> Config[morph-config]
 	Config --> CLI[morph-cli]
+	Util --> Event[morph-event]
+	Util --> Exec[morph-exec]
+	Tools --> Runtime[morph-runtime]
+	Agent --> Runtime
+	Config --> Runtime
+	Event --> Runtime
+	MCP --> Runtime
+	Skill --> Runtime
+	Runtime --> CLI
 ```
 
 这套分层让系统既能保持 C 项目的可控性，也能把模型、工具、技能、MCP、前端渲染等能力拆成清晰边界。
+`morph-runtime` 是进程级的所有者，CLI、FastCGI 和移动端只持有不透明的
+`struct runtime *`，不各自重写初始化、执行、持久化和关闭流程。
 
 ## 和普通 AI CLI 的区别
 

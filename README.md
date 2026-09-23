@@ -4,7 +4,7 @@
 
 A terminal-native multimodal AI agent written in pure C. Orchestrates text, image, and video generation and understanding through a ReAct loop.
 
-中文系统介绍: [docs/introduction.zh-CN.md](docs/introduction.zh-CN.md)
+中文系统介绍（存档）: [docs/archive/introduction.zh-CN.md](docs/archive/introduction.zh-CN.md)
 
 ## Features
 
@@ -12,6 +12,9 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 - **ReAct engine**: automatic Thought → Action → Observation orchestration
 - **Skills**: hot-loadable instruction packs (SKILL.md) that inject specialized behavior into the agent
 - **Extensions**: hot-pluggable extensions running in a sandbox, written in any language
+- **Managed shell**: the `exec` tool parses each command, asks for approval scoped to the programs it would run, and hands long-running work to `process` sessions
+- **Dynamic tools**: create session JavaScript tools on the fly with `tool_create`, then inspect or roll them back
+- **Scheduled tasks**: recurring or one-shot agent runs deliver results to a persistent inbox
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
 - **Lightweight**: minimal static dependencies, fast startup
 
@@ -220,14 +223,23 @@ src/
   agent/    ReAct loop, context compression, tool dispatch
   agent/tools/
             Built-in tools (credits, memory, img_gen, vid_gen, ...)
+  runtime/  Process-level owner: lifecycle, sessions, turns, tasks, MCP
+  exec/     Managed process sessions behind the exec and process tools
+  event/    Unified event sink shared by all frontends
+  js_runner/
+            Embedded QuickJS runtime for dynamic tools
   persistence/
             Persistent stores for memory and credit queries
   models/   LLM / image / video backends
   skill/    Skill discovery, parsing, and activation
+  sync/     Session synchronisation
+  sapi/     Front-ends: CLI and FastCGI
+  db/       SQLite schema, sessions, permission grants
   ext/      Ext loading and management
   sandbox/  Sandboxed ext execution
   ipc/      JSON-RPC
   render/   Markdown / image / video terminal rendering
+fronts/     Extra front-end libraries (morph-markdown)
 exts/       Example exts (manifest.toml + entry script)
 vendor/     Third-party libraries (cJSON, stb_image, toml)
 ```

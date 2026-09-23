@@ -54,21 +54,41 @@ diagnostic state is read through copied runtime snapshots such as
 runtime/
   lifecycle.c       construction, shutdown, and turn entry point
   execute.c         serialized request execution
+  engine.c          turn orchestration and per-turn state
   turn_scope.c      per-request binding and restoration
+  context.c         private runtime context definition
   context_owner.c   private dependency graph ownership
   bootstrap.c       model and built-in tool construction
   extensions.c      desktop extension discovery
+  mcp.c             MCP client lifecycle
   mcp_service.c     MCP DTO and operation facade
   registry_service.c platform tool and MCP registration facade
   session_service.c session ownership and selection facade
+  session.c         session lifecycle and switching
+  permissions_service.c persistent permission grant listing and revocation
   task_service.c    scheduled-task and notification facade
   task_controller.c scheduled-task execution and worker control
   task_worker.c     background scheduled execution lifecycle
+  scheduler.c       due-task scanning and claim loop
   tasks.h           public scheduled-task DTO/callback facade
   services.c        turn/session/tool/memory/credit snapshots and operations
+  cancel.c          cancellation plumbing
+  output.c          output and rendering callbacks
+  usage.c           token and credit accounting
+  lock.c            runtime lock helpers
   sync.c            sync worker facade
+  runtime.h         public runtime facade
+  runtime_internal.h private shared declarations
+  request.h         runtime_request definition
+  result.h          runtime_result definition
 ```
 
 CLI and Android may render results differently and provide platform callbacks,
 but neither frontend reimplements core initialization, execution, persistence,
 credits, memory, tool registration, or shutdown.
+
+`morph-runtime` links `morph-agent`, `morph-config`, `morph-credits`,
+`morph-event`, `morph-mcp`, `morph-session`, `morph-skill`, `morph-sync`, and
+`morph-tools`. Frontends link `morph-runtime` and never reach into its private
+context. See `src/runtime/CMakeLists.txt` and `src/runtime/sources.cmake` for the
+authoritative file list.
