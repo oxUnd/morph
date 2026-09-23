@@ -4,48 +4,36 @@
 
 A terminal-native multimodal AI agent written in pure C. Orchestrates text, image, and video generation and understanding through a ReAct loop.
 
-中文系统介绍（存档）: [docs/archive/introduction.zh-CN.md](docs/archive/introduction.zh-CN.md)
+中文系统介绍: [docs/archive/introduction.zh-CN.md](docs/archive/introduction.zh-CN.md)
 
 ## Features
 
-- **Multimodal in one place**: text chat, image generation/editing, and video generation under a single entry point
+- **Multimodal**: text chat, image generation/editing, and video generation under one entry point
 - **ReAct engine**: automatic Thought → Action → Observation orchestration
-- **Skills**: hot-loadable instruction packs (SKILL.md) that inject specialized behavior into the agent
-- **Extensions**: hot-pluggable extensions running in a sandbox, written in any language
-- **Managed shell**: the `exec` tool parses each command, asks for approval scoped to the programs it would run, and hands long-running work to `process` sessions
-- **Dynamic tools**: create session JavaScript tools on the fly with `tool_create`, then inspect or roll them back
-- **Scheduled tasks**: recurring or one-shot agent runs deliver results to a persistent inbox
+- **Skills**: hot-loadable instruction packs (SKILL.md)
+- **Extensions**: hot-pluggable, sandboxed, any language
+- **Managed shell**: `exec` parses each command, asks approval scoped to the programs it would run, and hands long-running work to `process` sessions
+- **Dynamic tools**: create session JavaScript tools on the fly with `tool_create`
+- **Scheduled tasks**: recurring or one-shot agent runs deliver to a persistent inbox
 - **Local-first**: sessions and artifacts persisted to SQLite, replayable offline
-- **Lightweight**: minimal static dependencies, fast startup
 
-Sandbox capabilities, platform policy, extension manifests, and nested-macOS
-testing are documented in [docs/sandbox.md](docs/sandbox.md).
+Sandbox, platform policy, extension manifests, and nested-macOS testing: [docs/sandbox.md](docs/sandbox.md).
 
 ## Build
 
 Requirements: CMake ≥ 3.20, SQLite3, libcurl, libwebp, and
 [mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
 
-CLI Markdown images (local files or HTTP/HTTPS URLs) are decoded before layout,
-so PNG, JPEG, WebP, GIF (first frame), BMP and other stb-supported images stay
-inside table cells and document flow. Failed images keep an inline placeholder.
-
 ```bash
 git clone https://github.com/oxUnd/mathjax-c vendor/mathjax-c
+git clone https://github.com/oxUnd/morph-markdown fronts/morph-markdown
 cmake -S . -B build
 cmake --build build
+cmake --install build --prefix /usr/local   # optional
 ```
 
-Install the CLI, JavaScript runner, and runtime data files:
-
-```bash
-cmake --install build --prefix /usr/local
-```
-
-Runtime data is placed under `share/morph`, next to the `bin` directory, in
-both the build and install trees. Morph resolves this fixed layout relative to
-its executable. The installed user manual is available at
-`share/morph/morph.txt`.
+Runtime data lives in `share/morph` relative to the executable; the installed
+user manual is `share/morph/morph.txt`.
 
 Run tests:
 
@@ -55,40 +43,7 @@ cmake --build build
 cd build && ctest --output-on-failure
 ```
 
-With readline, the interactive prompt remains editable while the agent runs.
-Press Enter to submit a requirement adjustment: the active model request yields
-and ReAct continues with the new message. Running tools finish before applying
-adjustments. Esc or Ctrl+C cancels; Ctrl+J or Alt+Enter inserts a newline.
-
-Tool calls use colored status circles, full tool names, argument summaries,
-elapsed time, and a short result or error. Repository paths are relative to the
-working directory. Shell commands share lightweight syntax highlighting in the
-compact view and the details viewer; their text is never executed by the renderer.
-Compact rows use single-space separation and omit a literal leading `cd` to the
-current working directory; full commands remain available in the details viewer.
-These process lines remain visible after completion.
-Press Ctrl+O to open the current turn's full-screen tool transcript, including
-complete captured arguments, patches, and output in call order. Ctrl+O or Esc
-returns to the conversation, preserving your input and cursor position.
-Esc inside the viewer only closes it; the active task continues running.
-The viewer updates changed rows without switching screens for background output.
-Conversation output is buffered until you return; questions and approval prompts
-automatically return to the conversation so they remain visible.
-Use arrows or PgUp/PgDn to scroll, Home to go to the beginning, and End to
-follow new output. The viewer works during execution and after completion. Streaming
-output appears as events arrive; tools without streaming return output when
-they finish. Plain one-shot and JSON event output keep their existing formats.
-
-Pasted images appear as blue `[IMAGE#1]`, `[IMAGE#2]` chips in the composer,
-without opening a preview. Pasted image paths (including quoted or escaped
-spaces) use the same chips; typed paths and `/image <path>` convert on Enter.
-Backspace or Delete removes an entire chip, and only chips still present are
-attached when you submit. Multiple images and images added during a turn are
-supported. Use `/render <path>` when you explicitly want a preview.
-
-The PTY regression uses the production CLI, a disposable database, and a local
-streaming model server. It checks both rendered terminal screens and model
-requests (including editing, steering, resizing, pasting, and cancellation):
+The PTY regression needs `pexpect` and `pyte`; CTest skips it when unavailable:
 
 ```sh
 python3 -m venv /tmp/morph-pty-venv
@@ -98,62 +53,17 @@ cmake --build build
 ctest --test-dir build -R cli_pty_integration --output-on-failure
 ```
 
-CTest skips this regression when the Python dependencies are unavailable.
-
-
 ## Configuration
 
-Run `morph` in a terminal. When the configuration is missing, an interactive
-wizard runs inline in your terminal history, guiding you through text, optional
-vision/image/video capabilities, and a final review. Completed answers stay in scrollback;
-only the current prompt is redrawn, without clearing the screen. Use **↑/↓** to choose, **Enter** to select, and **Esc** to go back.
-Provider presets fill in the model and API URL; select a setting to edit it,
-or choose Other for a compatible endpoint. Video endpoints currently need the
-Volcengine Video protocol. Vision (image understanding), image generation, and
-video generation are independent optional steps and can each be skipped. Vision
-is saved under `[model.vision]` and requires a model that accepts image input.
+Run `morph` in a terminal; a missing config triggers an interactive wizard
+(↑/↓ choose, Enter select, Esc back, Ctrl-C/Ctrl-D cancel). Provider presets
+fill in model and API URL. Vision, image generation, and video generation are
+independent optional steps. The config is saved to `~/.morph/config.toml`
+(owner-only, 0600), or the path from `-c`; existing files are never overwritten.
 
-Text and Vision model settings include **Context window** (`context_limit`) and
-**Max output** (`max_tokens`). These are saved explicitly for each enabled chat
-model. Known provider/model pairs receive model-specific presets, which you can
-lower. DeepSeek vision defaults to 128000 context tokens and 16384 output tokens;
-the built-in Ark model defaults to 128000 and 8192. Unknown models, custom
-providers, and Ark endpoint IDs start with editable budgets of 128000 and 16384;
-adjust these to your deployment's capacity. These budgets are not model ceilings.
-Changing the model resets
-its limits; unchanged models keep your overrides. Output must fit within the
-context window with room for input, and known model ceilings are enforced.
-Image/video generation does not expose these chat token settings.
-
-Current presets (verified September 21, 2026):
-
-| Provider / model | Context window | Max output |
-| --- | ---: | ---: |
-| OpenAI / gpt-4o | 128000 | 16384 |
-| DeepSeek / deepseek-v4-flash | 1000000 | 384000 |
-| DeepSeek / deepseek-v4-pro | 1000000 | 384000 |
-
-Sources: [OpenAI model documentation](https://developers.openai.com/api/docs/models/gpt-4o)
-and [DeepSeek's official integration settings](https://api-docs.deepseek.com/quick_start/agent_integrations/pi_mono/).
-`max_tokens` is the request's output budget, not a target response length; you can
-choose a smaller budget in the wizard.
-
-The review step lets you revisit any capability before saving. Existing files
-are never overwritten. The config is saved to `~/.morph/config.toml`, or the
-path supplied with `-c`. **Ctrl-C** or **Ctrl-D** cancels without saving.
-The wizard supports terminal resizing and `--no-color`; `TERM=dumb` uses plain
-numbered prompts.
-
-API keys already set in environment variables are detected automatically.
-You can also paste a hidden key to save in the config, choose another variable,
-or defer credentials. Pasted keys are saved in the model's `api_key` field;
-the config is created with owner-only permissions (0600). Choosing an environment
-variable saves its name in `api_key_env` instead. When credentials are
-ready, the CLI goes straight into chat. Otherwise it prints the needed `export`
-commands. Edit the config later to enable capabilities you skipped.
-
-One-shot (`-p`), JSON events, and non-terminal runs do not prompt; create the
-configuration interactively first, or copy the example and set your API key:
+API keys already in environment variables are detected; you can paste a key to
+save in `api_key` or name an `api_key_env` instead. Non-interactive runs
+(`-p`, JSON events) do not prompt — create the config first or copy the example:
 
 ```bash
 mkdir -p ~/.morph
@@ -169,79 +79,55 @@ Supported providers: `openai`, `volcengine`, `deepseek`.
 ./build/bin/morph
 ```
 
-Optional flags:
-
-- `-c <path>`: specify a config file
-- `-w <path>`: specify the working directory
+- `-c <path>`: config file
+- `-w <path>`: working directory
 - `-p <prompt>`: run one prompt and exit
-- `-s <name>`: select or create a named session; combine with `-p` to reuse
-  the same conversation across invocations
+- `-s <name>`: select or create a named session (with `-p`, reuse the conversation)
+
+With readline, the prompt stays editable while the agent runs: Enter submits a
+requirement adjustment, Esc/Ctrl+C cancels, Ctrl+J or Alt+Enter inserts a
+newline. Ctrl+O opens the turn's full-screen tool transcript. Pasted and typed
+image paths become `[IMAGE#1]` chips (Backspace removes one); `/render <path>`
+previews, `/image <path>` attaches.
 
 ## Extensions
 
-Extensions are installed under `[ext].dir` from `config.toml`, which defaults to
-`~/.morph/exts`.
-
-Install from GitHub:
+Extensions install under `[ext].dir` (default `~/.morph/exts`):
 
 ```bash
 /ext install github:owner/repo
 /ext install github:owner/repo@v1.2.0
 /ext install github:owner/repo//exts/foo
-/ext install github:owner/repo@v1.2.0//exts/foo
 /ext install https://github.com/owner/repo/tree/main/exts/foo
 ```
 
-The source format is `github:<owner>/<repo>[@ref][//subdir]`. `ref` may be a
-tag, branch, or commit. Monorepo installs use `subdir` as the extension package
-root. GitHub tree URLs are also accepted for the common
-`https://github.com/<owner>/<repo>/tree/<ref>/<subdir>` form.
-
-An extension package contains `manifest.toml` or `morph-ext.toml`:
-
-```toml
-name = "demo-native"
-version = "0.1.0"
-description = "Native demo extension"
-type = "exec"
-entry = "bin/demo-native"
-fronts = ["cli"]
-categories = ["dev"]
-
-[build]
-command = "make build"
-```
-
-`[build]` is optional. If present, morph asks before running the command unless
-`--yes` is passed. After download or build, `entry` must exist inside the
-package directory; no separate output list is configured.
+Source format: `github:<owner>/<repo>[@ref][//subdir]`. A package contains
+`manifest.toml` or `morph-ext.toml` with `name`, `version`, `type`, `entry`, and
+optional `[build] command` (run only after confirmation unless `--yes`).
 
 ## Layout
 
 ```
 src/
-  agent/    ReAct loop, context compression, tool dispatch
-  agent/tools/
-            Built-in tools (credits, memory, img_gen, vid_gen, ...)
-  runtime/  Process-level owner: lifecycle, sessions, turns, tasks, MCP
-  exec/     Managed process sessions behind the exec and process tools
-  event/    Unified event sink shared by all frontends
-  js_runner/
-            Embedded QuickJS runtime for dynamic tools
-  persistence/
-            Persistent stores for memory and credit queries
-  models/   LLM / image / video backends
-  skill/    Skill discovery, parsing, and activation
-  sync/     Session synchronisation
-  sapi/     Front-ends: CLI and FastCGI
-  db/       SQLite schema, sessions, permission grants
-  ext/      Ext loading and management
-  sandbox/  Sandboxed ext execution
-  ipc/      JSON-RPC
-  render/   Markdown / image / video terminal rendering
-fronts/     Extra front-end libraries (morph-markdown)
-exts/       Example exts (manifest.toml + entry script)
-vendor/     Third-party libraries (cJSON, stb_image, toml)
+  agent/        ReAct loop, context compression, tool dispatch
+  agent/tools/  Built-in tools (credits, memory, img_gen, vid_gen, ...)
+  runtime/      Process-level owner: lifecycle, sessions, turns, tasks, MCP
+  exec/         Managed process sessions behind the exec and process tools
+  event/        Unified event sink shared by all frontends
+  js_runner/    Embedded QuickJS runtime for dynamic tools
+  persistence/  Persistent stores for memory and credit queries
+  models/       LLM / image / video backends
+  skill/        Skill discovery, parsing, and activation
+  sync/         Session synchronisation
+  sapi/         Front-ends: CLI and FastCGI
+  db/           SQLite schema, sessions, permission grants
+  ext/          Ext loading and management
+  sandbox/      Sandboxed ext execution
+  ipc/          JSON-RPC
+  render/       Markdown / image / video terminal rendering
+fronts/         Extra front-end libraries (morph-markdown)
+exts/           Example exts (manifest.toml + entry script)
+vendor/         Third-party libraries (cJSON, stb_image, toml)
 ```
 
-See [AGENTS.md](AGENTS.md) for conventions and [REQUIREMENTS.md](docs/REQUIREMENTS.md) for the full spec.
+See [AGENTS.md](AGENTS.md) for conventions and [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the full spec.
