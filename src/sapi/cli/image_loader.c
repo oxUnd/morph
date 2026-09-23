@@ -1,3 +1,4 @@
+#include "http/client.h"
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/image_util.h"
@@ -37,6 +38,7 @@ static int image_fetch(const char *url, morph_buf_t *buffer)
 
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
+	http_apply_ca_env(curl);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
 	curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");

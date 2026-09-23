@@ -32,19 +32,13 @@ static int curl_debug_cb(CURL *handle, curl_infotype type,
 	return 0;
 }
 
-static void curl_apply_common_opts(CURL *curl, char *errbuf)
+void http_apply_ca_env(CURL *curl)
 {
-#ifdef __ANDROID__
 	const char *ca_file;
 	const char *ca_dir;
-#endif
 
-	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-	if (errbuf) {
-		errbuf[0] = '\0';
-		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
-	}
-#ifdef __ANDROID__
+	if (!curl)
+		return;
 	ca_file = getenv("CURL_CA_BUNDLE");
 	if (!ca_file || !*ca_file)
 		ca_file = getenv("SSL_CERT_FILE");
@@ -53,7 +47,16 @@ static void curl_apply_common_opts(CURL *curl, char *errbuf)
 	ca_dir = getenv("SSL_CERT_DIR");
 	if (ca_dir && *ca_dir)
 		curl_easy_setopt(curl, CURLOPT_CAPATH, ca_dir);
-#endif
+}
+
+static void curl_apply_common_opts(CURL *curl, char *errbuf)
+{
+	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+	if (errbuf) {
+		errbuf[0] = '\0';
+		curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+	}
+	http_apply_ca_env(curl);
 	if (getenv("MORPH_DEBUG")) {
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 		curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
@@ -284,7 +287,6 @@ static int do_request(const char *url, const char *method, const char *body,
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
 
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	rc = append_content_type_header(&headers, content_type);
 	if (rc != 0)
 		goto out;
@@ -458,7 +460,6 @@ int http_post_multipart_ex(const char *url,
 	rc = append_extra_headers(&headers, extra_headers, extra_header_count);
 	if (rc != 0)
 		goto out;
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
 	if (headers)
@@ -555,7 +556,6 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	curl = curl_easy_init();
 	if (!curl)
 		MORPH_RETURN(-ENOMEM);
-	curl_easy_setopt(curl, CURLOPT_PROXY, "");
 
 	snprintf(ct, sizeof(ct), "Content-Type: %s",
 		 content_type ? content_type : "application/json");
@@ -739,8 +739,6 @@ int http_session_post(struct http_session *s, const char *url,
 		return -EINVAL;
 
 	http_session_reset(s);
-
-	curl_easy_setopt(s->curl, CURLOPT_PROXY, "");
 
 	rc = append_content_type_header(&headers, content_type);
 	if (rc != 0)

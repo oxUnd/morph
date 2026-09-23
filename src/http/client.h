@@ -54,6 +54,8 @@ struct http_session {
 
 int http_init(void);
 void http_cleanup(void);
+/* Use nonempty CURL_CA_BUNDLE, then SSL_CERT_FILE, plus SSL_CERT_DIR. */
+void http_apply_ca_env(CURL *curl);
 /* Thread-local request interruption, without cancelling the enclosing turn. */
 void http_set_interrupt_check(int (*check)(void *), void *user_data);
 void http_set_cancel_flag(volatile sig_atomic_t *flag);
