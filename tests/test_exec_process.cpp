@@ -6,9 +6,12 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -387,6 +390,182 @@ TEST_F(ProcessTest, TimeoutKillsProcessGroup)
 	ASSERT_EQ(process_spawn(manager, &options, session_id, &snapshot), 0);
 	EXPECT_EQ(snapshot.state, PROCESS_TIMED_OUT);
 	process_snapshot_cleanup(&snapshot);
+}
+
+/*
+ * Regression test for a use-after-free in process_spawn().
+ *
+ * session_reserve() grows manager->sessions with realloc(), which frees the
+ * old block and may move the array. process_spawn() caches
+ * `session = &manager->sessions[i]` and then parks in
+ * pthread_cond_timedwait(), which releases manager->mutex. A concurrent
+ * process_spawn() that takes the lock can realloc the array underneath the
+ * parked caller; when that caller wakes it re-reads `session->state` in the
+ * `while (session->state < PROCESS_EXITED)` guard through the stale pointer.
+ *
+ * That is a genuine use-after-free: the manifest crash was
+ * `SIGSEGV / SEGV_MAPERR` at `process_spawn+0x166306`, precisely this guard
+ * (`cmpl $0x1,0x2064(%rbx)`), with two threads stopped at that same
+ * instruction after pthread_cond_timedwait.
+ *
+ * Reproducing it needs three things at once:
+ *
+ *   1. The array at capacity, so the next spawn calls realloc().
+ *   2. A caller parked in the wait loop at that moment.
+ *   3. The freed block actually unmapped, so the stale read faults instead of
+ *      silently returning stale-but-mapped memory. realloc() often grows in
+ *      place, and a freed small block usually stays in the heap and remains
+ *      readable, which is why the bug is intermittent in production.
+ *
+ * Point 3 is the reason this test is usually run under
+ * MALLOC_PERTURB_ (and often MALLOC_MMAP_THRESHOLD_): glibc then writes a
+ * poison pattern over freed memory and more readily returns pages to the
+ * kernel. Without it the realloc frequently does not fault and the test can
+ * pass on the unfixed tree. The test detects that situation itself and skips
+ * rather than reporting a false pass -- see the malloc tuning check below.
+ *
+ * On a fixed tree the parked caller re-resolves its session (or the array is
+ * stable), the guard reads valid memory, and every spawn returns 0.
+ */
+TEST_F(ProcessTest, ConcurrentSpawnSurvivesSessionArrayGrowth)
+{
+	/*
+	 * The array starts empty and is first sized to 16, so spawning 16
+	 * sessions puts session_count at capacity and makes the next spawn the
+	 * one that calls realloc().
+	 */
+	constexpr int kCapacity = 16;
+	constexpr int kGrowWhileParked = 64;
+
+	struct process_spawn_options options = {};
+	struct process_snapshot snapshot = {};
+	char session_id[PROCESS_SESSION_ID_MAX] = {};
+	std::atomic<bool> victim_started{false};
+	std::atomic<int> victim_rc{-1};
+	std::thread victim;
+	int rc;
+
+	for (int i = 0; i < kCapacity; i++) {
+		options.command = "true";
+		options.yield_time_ms = 2000;
+		ASSERT_EQ(process_spawn(manager, &options, session_id, nullptr), 0);
+	}
+
+	/*
+	 * Victim: a command that outlives its yield window by a wide margin,
+	 * so it is guaranteed to sit in pthread_cond_timedwait() with the
+	 * mutex released while the array is grown underneath it.
+	 */
+	victim = std::thread([&]() {
+		struct process_spawn_options victim_options = {};
+		char victim_id[PROCESS_SESSION_ID_MAX] = {};
+
+		victim_options.command = "sleep 2.0";
+		victim_options.yield_time_ms = 1500;
+		victim_started.store(true, std::memory_order_release);
+		victim_rc.store(process_spawn(manager, &victim_options,
+					      victim_id, nullptr),
+				std::memory_order_release);
+	});
+
+	while (!victim_started.load(std::memory_order_acquire))
+		std::this_thread::yield();
+	/*
+	 * Let the victim reach the wait. fork/exec plus taking the manager
+	 * lock is well under this; the victim then stays parked for ~1.5s.
+	 */
+	usleep(250000);
+
+	/*
+	 * Grow the array repeatedly while the victim is parked. One realloc may
+	 * grow in place and leave the stale pointer readable, so keep going;
+	 * the stale pointer is dereferenced on every wakeup, and each further
+	 * realloc is another chance to free the block actually in use.
+	 */
+	for (int i = 0; i < kGrowWhileParked; i++) {
+		options.command = "true";
+		options.yield_time_ms = 0;
+		rc = process_spawn(manager, &options, session_id, nullptr);
+		ASSERT_EQ(rc, 0) << "grower spawn failed at iteration " << i;
+	}
+
+	victim.join();
+
+	/*
+	 * Reaching this point is the real assertion. On the unfixed tree the
+	 * victim dereferences freed memory inside process_spawn() and the whole
+	 * test binary dies with SIGSEGV before these expectations run, which is
+	 * exactly the manifest failure. These checks catch the non-fatal
+	 * variants (moved-but-mapped memory yielding a wrong state or a
+	 * corrupted session) if the process happens to survive.
+	 */
+	EXPECT_EQ(victim_rc.load(std::memory_order_acquire), 0);
+
+	/*
+	 * Guard against a silent false pass: if glibc kept the freed block
+	 * mapped, the stale read succeeds and this test cannot fail. Say so
+	 * instead of implying the code is correct.
+	 */
+	if (!getenv("MALLOC_PERTURB_"))
+		GTEST_SKIP() << "run with MALLOC_PERTURB_=165 to make the freed "
+				"session array fault reliably; without it a "
+				"passing run does not prove the fix is correct";
+}
+
+/*
+ * The same defect seen from the outside, without hand-placed timing.
+ *
+ * Many threads spawn concurrently with mixed yield windows: the zero-yield
+ * calls run straight through and grow the array, while the longer-yield calls
+ * park in the wait loop and re-read their cached session pointer on every
+ * wakeup. This is the interleaving the production crash showed -- two threads
+ * stopped at the same instruction after pthread_cond_timedwait.
+ *
+ * Timing here is deliberately unforced; the point is coverage across many
+ * schedules rather than one precise interleaving, so this test is a companion
+ * to ConcurrentSpawnSurvivesSessionArrayGrowth rather than a replacement. It
+ * is most informative under MALLOC_PERTURB_, but is worth running always.
+ */
+TEST_F(ProcessTest, ManyConcurrentSpawnsAcrossSessionArrayGrowth)
+{
+	constexpr int kThreads = 12;
+	constexpr int kSpawnsPerThread = 4;
+
+	std::atomic<int> failures{0};
+	std::vector<std::thread> threads;
+
+	for (int t = 0; t < kThreads; t++) {
+		threads.emplace_back([&, t]() {
+			for (int i = 0; i < kSpawnsPerThread; i++) {
+				struct process_spawn_options options = {};
+				char session_id[PROCESS_SESSION_ID_MAX] = {};
+				int rc;
+
+				/*
+				 * Slow callers park and re-read their session;
+				 * fast callers complete without parking and grow
+				 * the array. The mix is what makes them overlap.
+				 */
+				if ((t + i) % 2 == 0) {
+					options.command = "sleep 0.2";
+					options.yield_time_ms = 50;
+				} else {
+					options.command = "true";
+					options.yield_time_ms = 0;
+				}
+				rc = process_spawn(manager, &options, session_id,
+						   nullptr);
+				if (rc != 0 || session_id[0] == '\0')
+					failures.fetch_add(1,
+							   std::memory_order_relaxed);
+			}
+		});
+	}
+	for (auto &thread : threads)
+		thread.join();
+
+	/* Reaching here proves no spawn died on a stale session pointer. */
+	EXPECT_EQ(failures.load(std::memory_order_relaxed), 0);
 }
 
 }  /* namespace */

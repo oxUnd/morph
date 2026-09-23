@@ -678,6 +678,13 @@ int process_spawn(struct process_manager *manager,
 			  struct process_snapshot *snapshot)
 {
 	struct process_session *session;
+	/*
+	 * The index of this session, rather than its address. session_reserve()
+	 * can realloc() manager->sessions while this call is parked in the wait
+	 * loop below, which moves the array; an index survives that, a cached
+	 * pointer does not.
+	 */
+	size_t session_index;
 	int rc;
 
 	if (!manager || !options || !options->command || !session_id)
@@ -692,6 +699,7 @@ int process_spawn(struct process_manager *manager,
 		return rc;
 	}
 	session = &manager->sessions[manager->session_count++];
+	session_index = manager->session_count - 1;
 	memset(session, 0, sizeof(*session));
 	session->stdout_fd = -1;
 	session->stderr_fd = -1;
@@ -729,10 +737,19 @@ int process_spawn(struct process_manager *manager,
 	if (!options->background && options->yield_time_ms > 0) {
 		uint64_t deadline = process_now_ms() + options->yield_time_ms;
 
-		while (session->state < PROCESS_EXITED) {
+		for (;;) {
 			uint64_t now = process_now_ms();
 			struct timespec wait_until;
 
+			/*
+			 * Re-resolve the session before touching it:
+			 * pthread_cond_timedwait() released the mutex, so a
+			 * concurrent spawn may have grown the array and freed
+			 * the block this call was pointing at.
+			 */
+			session = &manager->sessions[session_index];
+			if (session->state >= PROCESS_EXITED)
+				break;
 			if (now >= deadline)
 				break;
 			clock_gettime(CLOCK_REALTIME, &wait_until);
@@ -746,6 +763,7 @@ int process_spawn(struct process_manager *manager,
 			(void)pthread_cond_timedwait(&manager->condition,
 				&manager->mutex, &wait_until);
 		}
+		session = &manager->sessions[session_index];
 	}
 	if (snapshot)
 		rc = snapshot_locked(manager, session, snapshot);
