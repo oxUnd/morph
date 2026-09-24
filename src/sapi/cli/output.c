@@ -3,24 +3,7 @@
 #include "util/data.h"
 
 #include <limits.h>
-
-static void cli_copy_safe_display(char *dst, size_t dst_cap,
-				  const char *src, size_t max_width)
-{
-	char *safe;
-
-	if (!dst || dst_cap == 0)
-		return;
-	dst[0] = '\0';
-	if (!src)
-		return;
-	safe = utf8_terminal_sanitize_dup(src, strlen(src),
-		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
-	if (!safe)
-		return;
-	(void)utf8_copy_sanitized_display_width(dst, dst_cap, safe, max_width);
-	free(safe);
-}
+#include <sys/ioctl.h>
 
 static const char *cli_markdown_font_path(void)
 {
@@ -784,6 +767,116 @@ static int cli_operation_on_owner(void *opaque)
 	return (int)operation_approval_callback(call->operation, call->ctx);
 }
 
+/* Reserve a right gutter so terminal autowrap never owns card layout. */
+static size_t approval_card_width(void)
+{
+	struct winsize size;
+	const char *configured = getenv("COLUMNS");
+	char *end;
+	long columns = 80;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 0) {
+		columns = size.ws_col;
+	} else if (configured && *configured) {
+		errno = 0;
+		long parsed = strtol(configured, &end, 10);
+
+		if (errno == 0 && *end == '\0' && parsed > 0)
+			columns = parsed;
+	}
+	return columns > 82 ? 80u : (columns > 2 ? (size_t)columns - 2u : 1u);
+}
+
+static void approval_card_rule(size_t width, const char *title)
+{
+	size_t used = 1;
+
+	printf(ANSI_YELLOW "%s", title ? "╭" : "╰");
+	if (title && width > 4) {
+		const char *end = utf8_advance_display_width(title, width - 4);
+
+		printf("─ " ANSI_BOLD);
+		fwrite(title, 1, (size_t)(end - title), stdout);
+		printf(ANSI_RESET ANSI_YELLOW " ");
+		/* Approval titles contain only ASCII. */
+		used = 4u + (size_t)(end - title);
+	}
+	for (; used < width; used++)
+		printf("─");
+	printf(ANSI_RESET "\n");
+}
+
+static void approval_card_field(size_t width, const char *label,
+				const char *value, const char *style)
+{
+	char *safe;
+	const char *line;
+	size_t indent = label && *label ? 11u : 0u;
+	int first = 1;
+
+	if (!value)
+		value = "";
+	safe = utf8_terminal_sanitize_dup(value, strlen(value),
+		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	if (!safe)
+		return;
+	if (width == 0) {
+		if (indent)
+			printf("%-8s ", label);
+		printf("%s%s" ANSI_RESET "\n", style, safe);
+		free(safe);
+		return;
+	}
+	if (indent && width < indent + 4u) {
+		approval_card_field(width, NULL, label, style);
+		indent = 0;
+	}
+	line = safe;
+	do {
+		size_t budget = width >= 4u ? width - 2u - indent : 2u;
+		const char *end = utf8_advance_display_width(line, budget);
+
+		if (width >= 4u)
+			printf(ANSI_YELLOW "│ " ANSI_RESET);
+		if (indent) {
+			size_t used = first ? utf8_display_width(label) : 0u;
+
+			if (first)
+				printf("%s", label);
+			for (; used < indent; used++)
+				putchar(' ');
+		}
+		printf("%s", style);
+		fwrite(line, 1, (size_t)(end - line), stdout);
+		printf(ANSI_RESET "\n");
+		line = end;
+		first = 0;
+	} while (*line);
+	free(safe);
+}
+
+void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
+			      const char *tool_args)
+{
+	size_t width = ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+		approval_card_width() : 0u;
+
+	if (width) {
+		printf("\n");
+		approval_card_rule(width, "Approval required");
+	}
+	if (!width)
+		printf("approval: ");
+	approval_card_field(width, width ? "Tool" : NULL, tool_name, ANSI_BOLD);
+	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
+		if (!width)
+			printf("args: ");
+		approval_card_field(width, width ? "Args" : NULL, tool_args, ANSI_DIM);
+	}
+	if (width)
+		approval_card_rule(width, NULL);
+}
+
 enum hitl_verdict hitl_approval_callback(const char *tool_name,
 						const char *tool_args,
 						void *user_data)
@@ -802,35 +895,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("approval: ");
-		(void)cli_print_untrusted_text(tool_name,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf("\n");
-	} else {
-		printf("\n" ANSI_BOLD ANSI_YELLOW
-		       "╭─ Approval required ─────────────────────────────"
-		       ANSI_RESET "\n");
-		printf(ANSI_YELLOW "│" ANSI_RESET " Tool     " ANSI_BOLD);
-		(void)cli_print_untrusted_text(tool_name,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-
-	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
-		char display_args[512];
-		cli_copy_safe_display(display_args, sizeof(display_args),
-			tool_args, 200);
-		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-			printf("args: %s\n", display_args);
-		else
-			printf(ANSI_YELLOW "│" ANSI_RESET " Args     "
-			       ANSI_DIM "%s" ANSI_RESET "\n", display_args);
-	}
-	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-		printf(ANSI_YELLOW
-		       "╰─────────────────────────────────────────────────"
-		       ANSI_RESET "\n");
+	cli_render_tool_approval(ctx, tool_name, tool_args);
 
 	int v = prompt_approval(tool_name, 0, 0);
 	if (v == 2)
@@ -1005,6 +1070,76 @@ static enum tool_operation_verdict cli_json_operation_approval(
 	return TOOL_OP_ALLOW;
 }
 
+void cli_render_operation_approval(struct cli_context *ctx,
+				   const struct tool_operation *op)
+{
+	size_t width = ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
+		approval_card_width() : 0u;
+	int ephemeral = op->tool_name &&
+		strcmp(op->tool_name, "exec") == 0 &&
+		(op->kind == TOOL_OP_PATH_WRITE ||
+		 op->kind == TOOL_OP_PATH_DELETE);
+
+	if (width) {
+		printf("\n");
+		approval_card_rule(width, operation_label(op->kind));
+	} else {
+		printf("approval: %s\n", operation_label(op->kind));
+	}
+	if (op->tool_name && *op->tool_name)
+		approval_card_field(width, "Tool", op->tool_name, ANSI_BOLD);
+	if (op->kind != TOOL_OP_COMMAND && op->principal && *op->principal)
+		approval_card_field(width, "Subject", op->principal, ANSI_BOLD);
+	if (op->reason && *op->reason)
+		approval_card_field(width, "Reason", op->reason, ANSI_BOLD);
+	if (op->kind == TOOL_OP_COMMAND) {
+		if (op->action)
+			approval_card_field(width, "Command", op->action, ANSI_BOLD);
+		if (op->programs_count > 0) {
+			morph_buf_t programs;
+
+			if (morph_buf_init(&programs, 128) == 0) {
+				for (int i = 0; i < op->programs_count; i++) {
+					if (i > 0)
+						(void)morph_buf_puts(&programs, ", ");
+					(void)morph_buf_puts(&programs, op->programs[i]);
+				}
+				approval_card_field(width, "Programs",
+					morph_buf_cstr(&programs), ANSI_BOLD);
+				morph_buf_cleanup(&programs);
+			}
+		}
+	} else if (op->target && *op->target) {
+		approval_card_field(width, "Target", op->target, ANSI_BOLD);
+	}
+	if (op->scope && *op->scope)
+		approval_card_field(width, operation_scope_label(op->kind),
+			op->scope, ANSI_DIM);
+	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
+		approval_card_field(width, "Access", "read/write", ANSI_BOLD);
+		for (int i = 0; i < op->directories_count; i++)
+			approval_card_field(width,
+				i == op->directories_count - 1 ? "└─" : "├─",
+				op->directories[i].path, ANSI_DIM);
+	}
+	if (op->kind == TOOL_OP_COMMAND)
+		approval_card_field(width, NULL,
+			"'yes once' runs only the command shown; "
+			"'session' trusts the listed programs and workdir "
+			"until exit; 'always' remembers that trust for this "
+			"project.", ANSI_DIM);
+	else if (ephemeral)
+		approval_card_field(width, NULL,
+			"'yes' allows this call; 'session' trusts "
+			"this capability until exit. It is never persisted.", ANSI_DIM);
+	else
+		approval_card_field(width, NULL,
+			"'session' trusts this scope until exit; "
+			"'always' remembers it for this project.", ANSI_DIM);
+	if (width)
+		approval_card_rule(width, NULL);
+}
+
 enum tool_operation_verdict operation_approval_callback(
 	const struct tool_operation *op, void *user_data)
 {
@@ -1022,126 +1157,11 @@ enum tool_operation_verdict operation_approval_callback(
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("approval: %s\n", operation_label(op->kind));
-	} else {
-		printf("\n" ANSI_BOLD ANSI_YELLOW
-		       "╭─ %s ─────────────────────────────"
-		       ANSI_RESET "\n", operation_label(op->kind));
-	}
-	if (op->tool_name && *op->tool_name) {
-		printf("%sTool     " ANSI_BOLD,
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-		(void)cli_print_untrusted_text(op->tool_name,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-	if (op->kind != TOOL_OP_COMMAND &&
-	    op->principal && *op->principal) {
-		printf("%sSubject  " ANSI_BOLD,
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-		(void)cli_print_untrusted_text(op->principal,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-	if (op->reason && *op->reason) {
-		printf("%sReason   " ANSI_BOLD,
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-		(void)cli_print_untrusted_text(op->reason,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-	if (op->kind == TOOL_OP_COMMAND) {
-		const char *command = op->action;
-		if (command) {
-			char display[512];
-			cli_copy_safe_display(display, sizeof(display), command, 380);
-			printf("%sCommand  " ANSI_BOLD "%s" ANSI_RESET "\n",
-			       ctx->presentation_mode ==
-				       CLI_PRESENT_INTERACTIVE ?
-			       ANSI_YELLOW "│ " ANSI_RESET : "",
-			       display);
-		}
-		if (op->programs_count > 0) {
-			const char *prefix =
-				ctx->presentation_mode ==
-					CLI_PRESENT_INTERACTIVE ?
-				ANSI_YELLOW "│ " ANSI_RESET : "";
-
-			printf("%sPrograms " ANSI_BOLD, prefix);
-			for (int i = 0; i < op->programs_count; i++) {
-				if (i > 0)
-					printf(", ");
-				(void)cli_print_untrusted_text(op->programs[i],
-					UTF8_TERMINAL_TEXT_SINGLE_LINE);
-			}
-			printf(ANSI_RESET "\n");
-		}
-	} else if (op->target && *op->target) {
-		printf("%sTarget   " ANSI_BOLD,
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-		(void)cli_print_untrusted_text(op->target,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-	if (op->scope && *op->scope) {
-		printf("%s%-8s " ANSI_DIM,
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "",
-		       operation_scope_label(op->kind));
-		(void)cli_print_untrusted_text(op->scope,
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(ANSI_RESET "\n");
-	}
-	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
-		const char *prefix =
-			ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-			ANSI_YELLOW "│ " ANSI_RESET : "";
-
-		printf("%sAccess   " ANSI_BOLD "read/write" ANSI_RESET "\n",
-		       prefix);
-		for (int i = 0; i < op->directories_count; i++) {
-			printf("%s         %s " ANSI_DIM,
-			       prefix,
-			       i == op->directories_count - 1 ?
-			       "└─" : "├─");
-			(void)cli_print_untrusted_text(op->directories[i].path,
-				UTF8_TERMINAL_TEXT_SINGLE_LINE);
-			printf(ANSI_RESET "\n");
-		}
-	}
+	cli_render_operation_approval(ctx, op);
 	int ephemeral = op->tool_name &&
 		strcmp(op->tool_name, "exec") == 0 &&
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
-	if (op->kind == TOOL_OP_COMMAND)
-		printf("%s" ANSI_DIM "'yes once' runs only the command shown; "
-		       "'session' trusts the listed programs and workdir "
-		       "until exit; 'always' remembers that trust for this "
-		       "project."
-		       ANSI_RESET "\n",
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-	else if (ephemeral)
-		printf("%s" ANSI_DIM "'yes' allows this call; 'session' trusts "
-		       "this capability until exit. It is never persisted."
-		       ANSI_RESET "\n",
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-	else
-		printf("%s" ANSI_DIM "'session' trusts this scope until exit; "
-		       "'always' remembers it for this project."
-		       ANSI_RESET "\n",
-		       ctx->presentation_mode == CLI_PRESENT_INTERACTIVE ?
-		       ANSI_YELLOW "│ " ANSI_RESET : "");
-	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-		printf(ANSI_YELLOW
-		       "╰─────────────────────────────────────────────────"
-		       ANSI_RESET "\n");
 
 	int v = prompt_approval(operation_subject(op->kind), 1, ephemeral);
 	if (v == 3)

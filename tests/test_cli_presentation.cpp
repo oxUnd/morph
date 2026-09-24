@@ -7,11 +7,16 @@ extern "C" {
 #include "util/utf8.h"
 #include "util/file.h"
 #include "agent/react.h"
+#include "agent/tool_context.h"
 #include "event/event.h"
 #include "http/client.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
+void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
+			      const char *tool_args);
+void cli_render_operation_approval(struct cli_context *ctx,
+				   const struct tool_operation *op);
 int cli_markdown_load_image(const char *url, char **path, void *user);
 void cli_markdown_release_image(char *path, void *user);
 void cli_markdown_render_ansi(const char *md);
@@ -34,6 +39,7 @@ extern volatile sig_atomic_t cli_sigint_received;
 }
 
 #include <string>
+#include <sstream>
 #include <cstring>
 #include <filesystem>
 #include <fcntl.h>
@@ -1511,4 +1517,85 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	EXPECT_NE(output.find("Implement presenter"), std::string::npos);
 	EXPECT_EQ(output.find("{\"plans\""), std::string::npos);
 	cJSON_Delete(event_data);
+}
+
+TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
+{
+	const char *configured = getenv("COLUMNS");
+	std::string saved = configured ? configured : "";
+	bool had_columns = configured != nullptr;
+	struct cli_context ctx = {};
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	std::string long_value;
+	for (int i = 0; i < 30; i++)
+		long_value += "中文/path-without-spaces/";
+	const char *programs[] = {long_value.c_str(), "python3"};
+	struct tool_directory_capability directory = {};
+	ASSERT_LT(long_value.size(), sizeof(directory.path));
+	memcpy(directory.path, long_value.c_str(), long_value.size() + 1);
+	struct tool_operation op = {};
+	op.kind = TOOL_OP_COMMAND;
+	op.tool_name = long_value.c_str();
+	op.action = long_value.c_str();
+	op.reason = long_value.c_str();
+	op.scope = long_value.c_str();
+	op.principal = long_value.c_str();
+	op.target = long_value.c_str();
+	op.programs = programs;
+	op.programs_count = 2;
+	op.directories = &directory;
+	op.directories_count = 1;
+	for (int columns : {12, 24, 40, 80, 120}) {
+		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
+		for (int kind = 0; kind < 3; kind++) {
+			testing::internal::CaptureStdout();
+			if (kind == 0) {
+				cli_render_tool_approval(&ctx, long_value.c_str(),
+					long_value.c_str());
+			} else {
+				op.kind = kind == 1 ? TOOL_OP_COMMAND : TOOL_OP_PATH_WRITE;
+				cli_render_operation_approval(&ctx, &op);
+			}
+			std::string output = testing::internal::GetCapturedStdout();
+			char *safe = utf8_terminal_sanitize_dup(output.c_str(),
+				output.size(), UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+			EXPECT_NE(safe, nullptr);
+			if (!safe)
+				continue;
+			std::istringstream lines(safe);
+			free(safe);
+			std::string line;
+			std::string body;
+			size_t width = static_cast<size_t>(std::min(columns - 2, 80));
+			int borders = 0;
+			while (std::getline(lines, line)) {
+				if (line.empty())
+					continue;
+				EXPECT_EQ(utf8valid(line.c_str()), nullptr);
+				EXPECT_LE(utf8_display_width(line.c_str()), width) << line;
+				if (line.rfind("╭", 0) == 0 || line.rfind("╰", 0) == 0) {
+					EXPECT_EQ(utf8_display_width(line.c_str()), width);
+					borders++;
+				} else {
+					EXPECT_EQ(line.rfind("│ ", 0), 0u) << line;
+					size_t prefix = std::string("│ ").size() +
+						(width >= 15 ? 11u : 0u);
+					body += line.substr(std::min(prefix, line.size()));
+				}
+			}
+			EXPECT_EQ(borders, 2);
+			/* Long values must survive wrapping, including their tail. */
+			size_t offset = 0;
+			int values = 0;
+			while ((offset = body.find(long_value, offset)) != std::string::npos) {
+				values++;
+				offset += long_value.size();
+			}
+			EXPECT_EQ(values, kind == 0 ? 2 : (kind == 1 ? 6 : 5));
+		}
+	}
+	if (had_columns)
+		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
+	else
+		EXPECT_EQ(unsetenv("COLUMNS"), 0);
 }

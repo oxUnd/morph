@@ -183,6 +183,10 @@ int cli_ask_user_callback(const char *question,
 			  char ***answers,
 			  int *answers_count,
 			  void *user_data);
+void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
+			      const char *tool_args);
+void cli_render_operation_approval(struct cli_context *ctx,
+				   const struct tool_operation *op);
 enum hitl_verdict hitl_approval_callback(const char *tool_name,
 					 const char *tool_args,
 					 void *user_data);
