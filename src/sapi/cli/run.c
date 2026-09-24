@@ -207,7 +207,10 @@ static void cli_readline_footer(struct cli_context *ctx)
 		"  ·  %lld credits" : " · %lld cr",
 		(long long)ctx->input_status.credits);
 	(void)morph_buf_puts(&text, "  ");
-	remaining = (size_t)size.ws_col - 4;
+	cli_footer_field(&text, "morph", 5, "\033[1;38;5;252m", 0);
+	(void)morph_buf_puts(&text, " · ");
+	remaining = (size_t)size.ws_col - 2 -
+		utf8_display_width_ansi(morph_buf_cstr(&text));
 	if (remaining > utf8_display_width(morph_buf_cstr(&usage)) + 10) {
 		remaining -= utf8_display_width(morph_buf_cstr(&usage)) + 6;
 		model_width = remaining / 3;

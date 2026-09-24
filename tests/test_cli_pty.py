@@ -136,7 +136,7 @@ def main():
             prompt_row = next(i for i, row in enumerate(rows) if '›' in row)
             assert rows[prompt_row].startswith('› '), idle
             assert 'ctx 0 / 128k · 0 cr' in rows[prompt_row + 2], idle
-            assert 'pty-test' in rows[prompt_row + 2], idle
+            assert 'morph · pty-test' in rows[prompt_row + 2], idle
             assert terminal.screen.buffer[prompt_row][0].bg == '1c1c1c', idle
             assert Path(temp).name in rows[prompt_row + 2], idle
             terminal.send('\r\r\r')
@@ -149,6 +149,10 @@ def main():
             starting = terminal.snapshot('immediate turn status')
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
             assert 'Working (' in starting and 'esc to interrupt' in starting, starting
+            starting_rows = starting.splitlines()
+            working_row = next(i for i, row in enumerate(starting_rows)
+                               if 'Working (' in row)
+            assert working_row > 0 and not starting_rows[working_row - 1].strip(), starting
             first, release = terminal.request()
             releases.append(release)
             assert '›' in terminal.snapshot('model running'), 'composer missing'
@@ -215,6 +219,7 @@ def main():
             worked_row = next(i for i, row in enumerate(completed_rows)
                               if 'Worked for ' in row)
             assert completed_rows[worked_row].startswith('Worked for '), completed
+            assert worked_row > 0 and not completed_rows[worked_row - 1].strip(), completed
             assert not completed_rows[worked_row + 1].strip(), completed
             assert terminal.screen.buffer[worked_row + 1][0].bg == 'default', completed
             assert terminal.screen.buffer[worked_row + 2][0].bg == '1c1c1c', completed

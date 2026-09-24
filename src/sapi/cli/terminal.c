@@ -407,6 +407,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			fputc('\n', terminal->output);
 	}
 	if (terminal->work_state) {
+		fputc('\n', terminal->output);
 		terminal_work_row(terminal, terminal->columns);
 		if (queue_shown)
 			fputc('\n', terminal->output);
@@ -441,7 +442,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	terminal->dirty = 0;
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
-	terminal->live_rows = status_visible + (terminal->work_state != CLI_WORK_NONE) +
+	terminal->live_rows = status_visible + 2 * (terminal->work_state != CLI_WORK_NONE) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
 	terminal->next_frame_ms = now +
