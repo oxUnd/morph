@@ -159,7 +159,6 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 		"exts/demo-upper",
 		"exts/demo-guardrail-pii",
 		"exts/locate",
-		"exts/rg",
 	};
 
 	for (const auto &dir : dirs) {
@@ -189,7 +188,7 @@ TEST(ExtRuntimeTest, ExecExtensionSandboxCanReadItsOwnEntry)
 	struct ext extension = {};
 	struct sandbox_config config = {};
 	std::string directory = std::string(MORPH_TEST_SOURCE_DIR) +
-		"/exts/rg";
+		"/tests/fixtures/exec-sandbox";
 	char cwd[PATH_MAX];
 
 	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);

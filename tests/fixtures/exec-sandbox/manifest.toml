@@ -1,0 +1,8 @@
+name = "exec-sandbox-test"
+version = "1.0.0"
+type = "exec"
+entry = "entry.sh"
+fronts = ["cli"]
+categories = ["test"]
+sandbox_capabilities = ["exec"]
+allowed_paths = ["."]
