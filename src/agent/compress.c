@@ -266,6 +266,7 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	summary_msg->file_paths = NULL;
 	summary_msg->file_count = 0;
 	summary_msg->compressed = 0;
+	summary_msg->is_reference = 1;
 
 	*head = summary_msg;
 	if (rechain) {

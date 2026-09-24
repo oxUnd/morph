@@ -208,35 +208,47 @@ void skill_deactivate_all(struct skill_registry *reg)
 		skill_deactivate(&reg->entries[i]);
 }
 
-char *skill_build_activated_instructions(struct skill_registry *reg)
+int skill_build_activated_instructions_checked(struct skill_registry *reg, char **out)
 {
-	if (!reg)
-		return NULL;
-
 	morph_buf_t buf;
-	int rc = morph_buf_init(&buf, 8192);
-	if (rc != 0)
-		return NULL;
+	int rc;
 
+	if (!out)
+		MORPH_RETURN(-EINVAL);
+	*out = NULL;
+	if (!reg)
+		return 0;
+	rc = morph_buf_init(&buf, 8192);
+	if (rc != 0)
+		return rc;
 	for (int i = 0; i < reg->count; i++) {
 		struct skill_entry *e = &reg->entries[i];
-		if (!e->activated || !e->body || !e->body[0])
+
+		if (!e->enabled || !e->activated || !e->body || !e->body[0])
 			continue;
 		rc = morph_buf_printf(&buf,
-				      "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
-				      e->fm.name, e->skill_dir, e->body);
+			"<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>\n\n",
+			e->fm.name, e->skill_dir, e->body);
 		if (rc != 0) {
 			morph_buf_cleanup(&buf);
-			return NULL;
+			return rc;
 		}
 	}
-
-	if (buf.len == 0) {
-		morph_buf_cleanup(&buf);
-		return NULL;
+	if (buf.len) {
+		*out = morph_buf_detach(&buf);
+		if (!*out)
+			rc = -ENOMEM;
 	}
+	morph_buf_cleanup(&buf);
+	MORPH_RETURN(rc);
+}
 
-	return morph_buf_detach(&buf);
+char *skill_build_activated_instructions(struct skill_registry *reg)
+{
+	char *out = NULL;
+
+	(void)skill_build_activated_instructions_checked(reg, &out);
+	return out;
 }
 
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)

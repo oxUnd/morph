@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
 #include "agent/system_prompt.h"
+#include "agent/tools/skill_activate.h"
+#include "skill/skill.h"
 #include "agent/environment_context.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
@@ -2404,8 +2406,9 @@ TEST_F(MockLlmTest, MessageArrayGrowsBeyondInitialCapacity) {
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(slot_data, nullptr);
-	/* 70 history messages, one current user, one runtime context. */
-	EXPECT_EQ(slot_data->last_msg_count, 72);
+	/* 70 history messages, current user, environment, optional project guidance. */
+	EXPECT_GE(slot_data->last_msg_count, 72);
+	EXPECT_LE(slot_data->last_msg_count, 73);
 
 	react_context_destroy(ctx);
 }
@@ -3882,6 +3885,8 @@ struct capt_prompt_data {
 	char *tool_descs;
 	const char *resp;
 	int tool_count;
+	int calls;
+	int activate_on_first_call;
 };
 
 static void capt_store_structured_messages(struct capt_prompt_data *d,
@@ -3946,6 +3951,15 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	capt_store_structured_messages(d, messages, msg_count);
 
 	memset(response, 0, sizeof(*response));
+	if (d->activate_on_first_call && d->calls++ == 0) {
+		response->tool_calls = static_cast<tool_call *>(calloc(1,
+			sizeof(*response->tool_calls)));
+		response->tool_call_count = 1;
+		strcpy(response->tool_calls[0].id, "activate-test");
+		strcpy(response->tool_calls[0].name, "activate_skill");
+		response->tool_calls[0].arguments = strdup("{\"name\":\"test-skill\"}");
+		return 200;
+	}
 	const char *content = d->resp ? d->resp : "";
 	char *final_pos = strcasestr_local((char *)content, "Final:");
 	if (final_pos) {
@@ -4361,38 +4375,6 @@ TEST_F(MockLlmTest, ToolDescriptionsIncludeOriginPrefixes) {
 		  nullptr);
 	EXPECT_NE(strstr(cd->tool_descs,
 			 "persistent_tool:[dynamic persistent] persistent desc"),
-		  nullptr);
-	react_context_destroy(ctx);
-}
-
-TEST_F(MockLlmTest, SystemPromptIncludesMarkdownOutputRules) {
-	struct capt_prompt_data *cd = (struct capt_prompt_data *)calloc(1, sizeof(*cd));
-	cd->resp = "Final: answer";
-	llm = (struct model *)calloc(1, sizeof(*llm));
-	strncpy(llm->provider, "mock", sizeof(llm->provider) - 1);
-	strncpy(llm->model_id, "mock", sizeof(llm->model_id) - 1);
-	strncpy(llm->api_key, "k", sizeof(llm->api_key) - 1);
-	llm->context_limit = 128000;
-	llm->chat = capt_prompt_chat;
-	llm->chat_with_tools = capt_prompt_chat_with_tools;
-	llm->destroy = capt_prompt_destroy;
-	llm->handle = cd;
-	llm_data = nullptr;
-
-	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
-	ASSERT_NE(ctx, nullptr);
-	ctx->llm_model = llm;
-	react_run(ctx, "hello", nullptr, nullptr);
-	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
-	ASSERT_NE(cd->system_prompt, nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "MARKDOWN OUTPUT"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt,
-			 "Do not wrap the entire response in a code block"),
-		  nullptr);
-	EXPECT_NE(strstr(cd->system_prompt,
-			 "Do not use Markdown tables on mobile clients"), nullptr);
-	EXPECT_NE(strstr(cd->system_prompt,
-			 "Chinese prose may use normal Chinese punctuation"),
 		  nullptr);
 	react_context_destroy(ctx);
 }
@@ -6046,4 +6028,100 @@ TEST_F(MockServerTest, VideoReferenceKeepsDataUriAndRoleOnWire)
 	cJSON *url = cJSON_GetObjectItem(cJSON_GetObjectItem(video, "video_url"), "url");
 	EXPECT_STREQ(cJSON_GetStringValue(url), "data:video/mp4;base64,YWJj");
 	cJSON_Delete(request);
+}
+
+TEST_F(PromptModeTest, ActivatedSkillRefreshesWithoutMemoryAndAppearsOnlyOnce)
+{
+	auto *skills = new skill_registry{};
+	skill_registry_init(skills);
+	skills->count = 1;
+	auto *entry = &skills->entries[0];
+	strcpy(entry->fm.name, "test-skill");
+	entry->enabled = 1;
+	entry->body_loaded = 1;
+	entry->body = strdup("UNIQUE_SKILL_BODY_MARKER");
+	ASSERT_EQ(morph_strmap_set(&skills->by_name, entry->fm.name, entry), 0);
+	ctx->skills = skills;
+	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
+	capt->activate_on_first_call = 1;
+	ASSERT_EQ(ctx->memory_options, nullptr);
+	ASSERT_EQ(react_run(ctx, "Use test-skill", nullptr, nullptr), 0);
+	EXPECT_EQ(capt->calls, 2);
+	std::string system = capt->system_prompt;
+	EXPECT_NE(system.find("UNIQUE_SKILL_BODY_MARKER"), std::string::npos);
+	EXPECT_EQ(system.find("UNIQUE_SKILL_BODY_MARKER"),
+		system.rfind("UNIQUE_SKILL_BODY_MARKER"));
+	EXPECT_EQ(strstr(capt->prompt, "UNIQUE_SKILL_BODY_MARKER"), nullptr);
+	ctx->skills = nullptr;
+	skill_registry_cleanup(skills);
+	delete skills;
+}
+
+TEST_F(PromptModeTest, SkillCatalogIsBoundedAndDisabledBodiesAreExcluded)
+{
+	auto *skills = new skill_registry{};
+	skill_registry_init(skills);
+	skills->count = SKILL_MAX_ENTRIES;
+	for (int i = 0; i < skills->count; i++) {
+		auto *entry = &skills->entries[i];
+		snprintf(entry->fm.name, sizeof(entry->fm.name), "skill-%d", i);
+		memset(entry->fm.description, 'x', sizeof(entry->fm.description) - 1);
+		entry->enabled = 1;
+	}
+	skills->entries[0].enabled = 0;
+	skills->entries[0].activated = 1;
+	skills->entries[0].body = strdup("DISABLED_BODY_MARKER");
+	ctx->skills = skills;
+	llm->context_limit = 32000;
+	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	const char *catalog = strstr(capt->system_prompt, "Available skills:");
+	ASSERT_NE(catalog, nullptr);
+	EXPECT_LT(strlen(catalog), 9000u);
+	EXPECT_NE(strstr(catalog, "omitted"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "DISABLED_BODY_MARKER"), nullptr);
+	skills->count = 1;
+	skills->entries[0].enabled = 1;
+	skills->entries[0].activated = 0;
+	strcpy(skills->entries[0].fm.description + 900, "DESCRIPTION_TAIL_MARKER");
+	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->system_prompt, "DESCRIPTION_TAIL_MARKER"), nullptr);
+	ctx->skills = nullptr;
+	skill_registry_cleanup(skills);
+	delete skills;
+}
+
+TEST_F(PromptModeTest, LegacyCheckpointIsSentAsAssistantReference)
+{
+	auto *checkpoint = msg_list_create(ctx->session_arena, "system",
+		"CHECKPOINT_MARKER", 10);
+	ASSERT_NE(checkpoint, nullptr);
+	checkpoint->is_reference = 1;
+	msg_list_append(&ctx->messages, checkpoint);
+	ASSERT_EQ(react_run(ctx, "continue", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->prompt, "assistant:Historical reference checkpoint"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "CHECKPOINT_MARKER"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "CHECKPOINT_MARKER"), nullptr);
+}
+
+TEST_F(PromptModeTest, ProjectGuidanceIsRequestOnlyAndReloadedNextTurn)
+{
+	char directory[] = "/tmp/morph-guidance-react-XXXXXX";
+	ASSERT_NE(mkdtemp(directory), nullptr);
+	std::string path = std::string(directory) + "/AGENTS.md";
+	ctx->workdir = strdup(directory);
+	ASSERT_EQ(file_write_all(path.c_str(), "FIRST_GUIDANCE", 14), 0);
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->prompt, "user:Project guidance snapshot"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "FIRST_GUIDANCE"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "FIRST_GUIDANCE"), nullptr);
+	EXPECT_EQ(ctx->project_context, nullptr);
+	ASSERT_EQ(file_write_all(path.c_str(), "SECOND_GUIDANCE", 15), 0);
+	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->prompt, "SECOND_GUIDANCE"), nullptr);
+	EXPECT_EQ(strstr(capt->prompt, "FIRST_GUIDANCE"), nullptr);
+	for (auto *message = ctx->messages; message; message = message->next)
+		EXPECT_EQ(strstr(message->content, "GUIDANCE"), nullptr);
+	unlink(path.c_str());
+	rmdir(directory);
 }

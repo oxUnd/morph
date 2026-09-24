@@ -5,6 +5,8 @@
 #include "history.h"
 #include "system_prompt.h"
 #include "prompt_context.h"
+#include "project_context.h"
+#include "util/file.h"
 #include "agent/memory.h"
 #include "tool_runtime.h"
 #include "tool_context.h"
@@ -495,6 +497,7 @@ static int react_finish_run(struct react_context *ctx)
 	http_clear_signal_cancel();
 	if (ctx) {
 		ctx->runtime_context = NULL;
+		ctx->project_context = NULL;
 		ctx->turn_id_user_set = 0;
 		arena_reset(ctx->iteration_arena);
 		arena_reset(ctx->message_arena);
@@ -1340,19 +1343,61 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
+		struct model *model = ctx->llm_model;
+		int budget = model && model->context_limit > 0 ?
+			model->context_limit / 50 : 2048;
+		int used = 64;
+		int omitted = 0;
+
+		if (budget > 2048)
+			budget = 2048;
+		int full_tokens = used;
+
 		for (int i = 0; i < ctx->skills->count; i++) {
-			if (!ctx->skills->entries[i].enabled)
+			struct skill_entry *entry = &ctx->skills->entries[i];
+
+			if (entry->enabled)
+				full_tokens += tokenizer_count(ctx->tokenizer, entry->fm.name) +
+					tokenizer_count(ctx->tokenizer, entry->fm.description) + 6;
+		}
+		for (int i = 0; i < ctx->skills->count; i++) {
+			struct skill_entry *entry = &ctx->skills->entries[i];
+			morph_buf_t line;
+
+			if (!entry->enabled)
 				continue;
-			rc = morph_buf_printf(&buf, "- %s: %s\n",
-					      ctx->skills->entries[i].fm.name,
-					      ctx->skills->entries[i].fm.description);
+			rc = morph_buf_init_arena(&line, arena, 256);
 			if (rc != 0)
 				return NULL;
+			size_t limit = full_tokens > budget ? 160 :
+				sizeof(entry->fm.description) - 1;
+			size_t len = utf8_clamp_bytes(entry->fm.description, limit);
+			rc = morph_buf_printf(&line, "- %s: %.*s%s\n",
+				entry->fm.name, (int)len, entry->fm.description,
+				entry->fm.description[len] ? "..." : "");
+			if (rc != 0)
+				return NULL;
+			int tokens = tokenizer_count(ctx->tokenizer, line.data);
+			if (tokens > budget - used) {
+				omitted++;
+				continue;
+			}
+			used += tokens;
+			if (morph_buf_puts(&buf, line.data) != 0)
+				return NULL;
 		}
+		if (omitted && morph_buf_printf(&buf,
+			"%d skills omitted from this catalog due to its budget.\n",
+			omitted) != 0)
+			return NULL;
 	}
 
 	if (ctx->skills) {
-		char *active = skill_build_activated_instructions(ctx->skills);
+		char *active = NULL;
+
+		rc = skill_build_activated_instructions_checked(ctx->skills, &active);
+		if (rc != 0)
+			return NULL;
 		if (active) {
 			rc = morph_buf_puts(&buf, active);
 			free(active);
@@ -2131,6 +2176,7 @@ static int react_estimate_active_tokens(struct react_context *ctx,
 	int64_t total = react_count_text_tokens(ctx, system_prompt) + 16;
 
 	total += react_count_text_tokens(ctx, ctx->runtime_context) + 12;
+	total += react_count_text_tokens(ctx, ctx->project_context) + 12;
 
 	if (messages) {
 		for (size_t i = 0; i < messages->nelts; i++) {
@@ -2354,10 +2400,16 @@ static int react_prepare_messages(struct react_context *ctx,
 		message = react_push_chat_message(messages);
 		if (!message)
 			return -ENOMEM;
-		message->role = arena_strdup(ctx->message_arena, hist->role);
+		message->role = arena_strdup(ctx->message_arena,
+			hist->is_reference ? "assistant" : hist->role);
 		message->content = hist->content ?
 			arena_strdup(ctx->message_arena, hist->content) :
 			arena_strdup(ctx->message_arena, "");
+		if (hist->is_reference)
+			message->content = prompt_reference_build(ctx->message_arena,
+				hist->content);
+		if (!message->role || !message->content)
+			MORPH_RETURN(-ENOMEM);
 		message->tool_call_id = NULL;
 		message->tool_calls = NULL;
 		message->tool_call_count = 0;
@@ -2426,18 +2478,26 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	    (llm->chat_with_tools_stream || llm->chat_with_tools)) {
 		struct chat_message *request;
 
-		if (msg_count < 0 || msg_count == INT_MAX ||
-		    (size_t)msg_count + 1 > SIZE_MAX / sizeof(*request))
+		int prefix_count = ctx->project_context ? 2 : 1;
+
+		if (msg_count < 0 || msg_count > INT_MAX - prefix_count ||
+		    (size_t)msg_count + (size_t)prefix_count > SIZE_MAX / sizeof(*request))
 			MORPH_RETURN(-EOVERFLOW);
-		request = arena_alloc(arena, ((size_t)msg_count + 1) * sizeof(*request));
+		request = arena_alloc(arena,
+			((size_t)msg_count + (size_t)prefix_count) * sizeof(*request));
 		if (!request)
 			MORPH_RETURN(-ENOMEM);
 		request[0].role = "system";
 		request[0].content = (char *)ctx->runtime_context;
+		if (ctx->project_context) {
+			request[1].role = "user";
+			request[1].content = (char *)ctx->project_context;
+		}
 		if (msg_count)
-			memcpy(request + 1, messages, (size_t)msg_count * sizeof(*request));
+			memcpy(request + prefix_count, messages,
+				(size_t)msg_count * sizeof(*request));
 		messages = request;
-		msg_count++;
+		msg_count += prefix_count;
 	} else if (ctx->runtime_context) {
 		/* Legacy text-only backends have no role-aware message API. */
 		morph_buf_t combined;
@@ -2446,6 +2506,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		if (rc == 0)
 			rc = morph_buf_printf(&combined, "%s\n%s", system_prompt,
 				ctx->runtime_context);
+		if (rc == 0 && ctx->project_context)
+			rc = morph_buf_printf(&combined, "\n%s", ctx->project_context);
 		if (rc != 0)
 			return rc;
 		system_prompt = morph_buf_cstr(&combined);
@@ -3478,6 +3540,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	react_reset(ctx);
 	arena_reset(ctx->turn_arena);
 	ctx->runtime_context = NULL;
+	ctx->project_context = NULL;
 	arena_reset(ctx->message_arena);
 	arena_reset(ctx->iteration_arena);
 	if (!use_user_turn_id) {
@@ -3538,13 +3601,29 @@ int react_run(struct react_context *ctx, const char *user_input,
 		MORPH_RETURN(react_finish_run(ctx));
 	}
 
-	char *system_prompt = build_system_prompt(ctx, ctx->turn_arena);
-	if (!system_prompt) {
-		log_err("react_run: failed to build system prompt");
-		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
-				  "internal_error");
+	struct environment_context project_environment;
+	const char *global_dir = NULL;
+	char *expanded_global = NULL;
+
+	context_rc = environment_context_collect(&project_environment,
+		&environment, ctx->turn_arena);
+	if (getenv("HOME")) {
+		expanded_global = file_expand_path("~/.morph");
+		if (!expanded_global)
+			context_rc = -ENOMEM;
+		global_dir = expanded_global;
+	}
+	if (context_rc == 0)
+		context_rc = project_context_build(&project_environment, global_dir,
+			ctx->turn_arena, &ctx->project_context);
+	free(expanded_global);
+	if (context_rc != 0) {
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,
+			"project_context_error");
 		MORPH_RETURN(react_finish_run(ctx));
 	}
+
+	char *system_prompt = NULL;
 
 	struct tool_desc *active_tools = NULL;
 	int active_tool_count = 0;
@@ -3565,7 +3644,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 	}
 	messages_ready = 1;
 	morph_array_t tool_descriptors = {0};
-	char *base_system_prompt = system_prompt;
 
 	react_active_push(ctx);
 	http_set_cancel_flag(&ctx->cancelled);
@@ -3574,7 +3652,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		/* Persistent messages and steps own copies of response data. */
 		arena_reset(ctx->iteration_arena);
-		system_prompt = base_system_prompt;
 		if (react_drain_actions(ctx, &messages, iteration, NULL))
 			break;
 
@@ -3587,13 +3664,19 @@ int react_run(struct react_context *ctx, const char *user_input,
 				rc = react_set_memory_context(ctx, memory);
 
 			free(memory);
-			if (rc == 0)
-				system_prompt = build_system_prompt(ctx, ctx->iteration_arena);
-			if (rc != 0 || !system_prompt) {
+			if (rc != 0) {
 				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
-					rc != 0 ? rc : -ENOMEM, "memory_context_error");
+					rc, "memory_context_error");
 				break;
 			}
+		}
+
+		/* Skills and policy updates do not depend on memory being enabled. */
+		system_prompt = build_system_prompt(ctx, ctx->iteration_arena);
+		if (!system_prompt) {
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+				"prompt_context_error");
+			break;
 		}
 
 		react_set_state(ctx, REACT_STATE_THINKING);

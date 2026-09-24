@@ -29,6 +29,7 @@ set(TEST_SOURCES
 	test_apply_patch_codex.cpp
 	test_context.cpp
 	test_environment_context.cpp
+	test_project_context.cpp
 	test_tokenizer.cpp
 	test_compress.cpp
 	test_react.cpp

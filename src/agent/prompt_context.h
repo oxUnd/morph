@@ -25,6 +25,8 @@ struct prompt_context_provider {
 int prompt_context_build(const struct prompt_context_provider *providers,
 	size_t count, const struct prompt_context_input *input,
 	struct arena *arena, const char **out);
+char *prompt_reference_build(struct arena *arena, const char *content);
+
 int prompt_context_build_default(const struct prompt_context_input *input,
 	struct arena *arena, const char **out);
 

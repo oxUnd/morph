@@ -1,3 +1,4 @@
+#include "prompt_context.h"
 #include "history.h"
 #include "react.h"
 #include "tokenizer.h"
@@ -391,8 +392,12 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 		MORPH_RETURN(-EINVAL);
 	while (item) {
 		if (strcmp(item->kind, "compaction_summary") == 0) {
-			rc = history_add_text_message(messages, arena, "system",
-				item->content);
+			char *reference = prompt_reference_build(arena, item->content);
+
+			if (!reference)
+				MORPH_RETURN(-ENOMEM);
+			rc = history_add_text_message(messages, arena, "assistant",
+				reference);
 			if (rc != 0)
 				return rc;
 		}

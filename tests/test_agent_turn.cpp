@@ -434,8 +434,8 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	ASSERT_EQ(messages.nelts, 2U);
 	struct chat_message *built =
 		static_cast<struct chat_message *>(messages.elts);
-	EXPECT_STREQ(built[0].role, "system");
-	EXPECT_STREQ(built[0].content, "earlier context summary");
+	EXPECT_STREQ(built[0].role, "assistant");
+	EXPECT_NE(strstr(built[0].content, "earlier context summary"), nullptr);
 	EXPECT_STREQ(built[1].role, "user");
 	EXPECT_STREQ(built[1].content, "exact current request");
 	morph_array_cleanup(&messages);

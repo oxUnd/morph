@@ -17,6 +17,8 @@ struct message_list {
 	int file_count;
 	int token_count;
 	int compressed;
+	/* Keep internal retention semantics, but send as reference data. */
+	int is_reference;
 	struct message_list *next;
 };
 

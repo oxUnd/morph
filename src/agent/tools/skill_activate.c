@@ -80,21 +80,13 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		return 0;
 	}
 
-	size_t body_len = strlen(skill->body);
-	size_t dir_len = strlen(skill->skill_dir);
-	size_t result_len = 128 + strlen(name) + dir_len + body_len + 16;
-	char *msg = malloc(result_len);
-	if (!msg) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"out of memory\"}"));
-		return -ENOMEM;
-	}
-	snprintf(msg, result_len,
-		 "<skill name=\"%s\" dir=\"%s\">\n%s\n</skill>",
-		 name, skill->skill_dir, skill->body);
-	(void)tool_result_success_json_text(result, msg);
-
-	log_info("skill_activate: '%s' activated (%zu bytes of instructions)",
-		 name, body_len);
+	char *message = strdup(
+		"Skill activated. Its full instructions are supplied in the "
+		"active skill context on the next model request.");
+	if (!message)
+		MORPH_RETURN(-ENOMEM);
+	(void)tool_result_success_json_text(result, message);
+	log_info("skill_activate: '%s' activated", name);
 	return 0;
 }
 

@@ -55,6 +55,7 @@ struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);
 void skill_deactivate_all(struct skill_registry *reg);
+int skill_build_activated_instructions_checked(struct skill_registry *reg, char **out);
 char *skill_build_activated_instructions(struct skill_registry *reg);
 int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size);
 
