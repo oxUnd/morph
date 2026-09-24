@@ -173,6 +173,7 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	morph_buf_t meta;
 	int columns = transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
 	int name_width = (int)utf8_display_width(tool->label);
+	int is_skill = strcmp(tool->name, "activate_skill") == 0;
 	const char *target = tool->subject;
 	char cwd[PATH_MAX];
 	double elapsed = (tool->state ? tool->ended : transcript_now()) - tool->started;
@@ -182,7 +183,7 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	    getcwd(cwd, sizeof(cwd)))
 		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
-	if (strcmp(tool->name, "exec") != 0 &&
+	if (!is_skill && strcmp(tool->name, "exec") != 0 &&
 	    target[0] == '/' && getcwd(cwd, sizeof(cwd))) {
 		size_t len = strlen(cwd);
 
@@ -206,10 +207,15 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	(void)morph_buf_printf(&meta, "%.1fs", elapsed);
 	append_clipped_text(&action, tool->label, name_width);
 	append_clipped_text(&subject, target,
-		columns - 2 - name_width - 4 - (int)utf8_display_width(meta.data));
+		columns - 2 - name_width - 4 - (is_skill ? 2 : 0) -
+		(int)utf8_display_width(meta.data));
 	(void)morph_buf_printf(row, "%s%s%s ", styled ? ANSI_DIM : "",
 		action.data, styled ? ANSI_RESET : "");
-	if (styled && (strcmp(tool->name, "exec") == 0 ||
+	if (is_skill)
+		(void)morph_buf_printf(row, "(%s%s%s)",
+			styled ? ANSI_CYAN : "", subject.data,
+			styled ? ANSI_RESET : "");
+	else if (styled && (strcmp(tool->name, "exec") == 0 ||
 		       strcmp(tool->name, "process") == 0))
 		(void)cli_shell_style(row, subject.data, 0);
 	else
@@ -709,6 +715,10 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	tool->error = "";
 	tool->summary = "";
 	tool->patch_preview = "";
+	if (strcmp(tool->name, "activate_skill") == 0) {
+		tool->label = "SKILL.md";
+		tool->subject = save_text(tr, json_string(args, "name"));
+	}
 	if (strcmp(tool->name, "process") == 0) {
 		const char *action = json_string(args, "action");
 		const char *session_id = json_string(args, "session_id");

@@ -130,7 +130,14 @@ def main():
         releases = []
         try:
             terminal.pump(1)
-            assert '›' in terminal.snapshot('idle')
+            idle = terminal.snapshot('idle')
+            rows = idle.splitlines()
+            prompt_row = next(i for i, row in enumerate(rows) if '›' in row)
+            assert rows[prompt_row].startswith('› '), idle
+            assert 'ctx 0 / 128k · 0 cr' in rows[prompt_row + 2], idle
+            assert 'pty-test' in rows[prompt_row + 2], idle
+            assert terminal.screen.buffer[prompt_row][0].bg == '1c1c1c', idle
+            assert Path(temp).name in rows[prompt_row + 2], idle
             terminal.send('\r\r\r')
             empty = terminal.snapshot('repeated empty Enter')
             assert sum(row.split('ctrl+o details')[0].strip() == '›'
@@ -141,6 +148,7 @@ def main():
             starting = terminal.snapshot('immediate turn status')
             assert ('Starting' in starting or 'Thinking' in starting or
                     'Live output' in starting), starting
+            assert 'Working (' in starting and 'esc to interrupt' in starting, starting
             first, release = terminal.request()
             releases.append(release)
             assert '›' in terminal.snapshot('model running'), 'composer missing'
@@ -150,14 +158,14 @@ def main():
             terminal.send('\x1b[D\x7f')
             terminal.send('新')
             terminal.send('\x05\r')
-            assert '↳ queued  改成中新🙂' in terminal.raw, terminal.raw[-3000:]
+            assert 'Messages queued' in terminal.raw, terminal.raw[-3000:]
             assert 'Requirement queued' not in terminal.raw
             started = time.monotonic()
             second, release2 = terminal.request()
             releases.append(release2)
             assert time.monotonic() - started < 2.5, 'steering waited for model completion'
             consumed = terminal.snapshot('steering queue consumed')
-            assert '↳ queued  改成中新🙂' not in consumed, consumed
+            assert 'Messages queued' not in consumed, consumed
             assert not release.is_set(), 'first request must still be gated'
             user_text = [m['content'] for m in second['messages'] if m['role'] == 'user']
             assert user_text[-1] == '改成中新🙂', user_text
@@ -195,6 +203,17 @@ def main():
             completed = terminal.snapshot('wrapped draft after completion')
             assert completed.count('long') == 10, completed
             assert completed.count('UPDATED ANSWER') == 1, completed
+            assert 'Worked for ' in completed, completed
+            completed_rows = completed.splitlines()
+            worked_row = next(i for i, row in enumerate(completed_rows)
+                              if 'Worked for ' in row)
+            assert completed_rows[worked_row].startswith('Worked for '), completed
+            assert not completed_rows[worked_row + 1].strip(), completed
+            assert terminal.screen.buffer[worked_row + 1][0].bg == 'default', completed
+            assert terminal.screen.buffer[worked_row + 2][0].bg == '1c1c1c', completed
+            assert 'Working (' not in completed, completed
+            assert completed.count('ctx ') == 1, completed
+            assert ' cr' in completed, completed
             terminal.send('\x15\r')
             terminal.send('ask a question\r')
             ask_request, ask_release = terminal.request()
@@ -238,10 +257,7 @@ def main():
             pasted, paste_release = terminal.request()
             releases.append(paste_release)
             users = [m['content'] for m in pasted['messages'] if m['role'] == 'user']
-            assert users[-1].startswith(
-                'pasted 中文\nsecond line\n\n<environment_context>\n'
-            ), users
-            assert users[-1].endswith('</environment_context>\n'), users
+            assert users[-1] == 'pasted 中文\nsecond line', users
             terminal.send('line one\x0aline two\x1b\rline three')
             multiline = terminal.snapshot('Ctrl-J and Alt-Enter draft')
             assert all(line in multiline for line in ['line one', 'line two', 'line three']), multiline

@@ -6,8 +6,17 @@
 #define CLI_TERMINAL_DEFAULT_COLUMNS 80
 #define CLI_TERMINAL_MIN_COLUMNS 20
 #define CLI_TERMINAL_FRAME_MS 80
+#define CLI_TERMINAL_WORK_FRAME_MS 120
 #define CLI_TERMINAL_STATUS_MAX 2000
 #define CLI_TERMINAL_QUEUE_VISIBLE 3
+
+enum cli_work_state {
+	CLI_WORK_NONE,
+	CLI_WORK_RUNNING,
+	CLI_WORK_COMPLETED,
+	CLI_WORK_STOPPED,
+	CLI_WORK_FAILED,
+};
 
 struct cli_terminal {
 	FILE *output;
@@ -23,6 +32,10 @@ struct cli_terminal {
 	int frame;
 	int columns;
 	int64_t next_frame_ms;
+	enum cli_work_state work_state;
+	int64_t work_started_ms;
+	int64_t work_elapsed_ms;
+	time_t work_finished_at;
 };
 
 static int64_t terminal_now_ms(void)
@@ -32,6 +45,77 @@ static int64_t terminal_now_ms(void)
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
 		return 0;
 	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+void cli_terminal_turn_begin(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->terminal ||
+	    ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+		return;
+	ctx->terminal->work_state = CLI_WORK_RUNNING;
+	ctx->terminal->work_started_ms = terminal_now_ms();
+	ctx->terminal->work_elapsed_ms = 0;
+	ctx->terminal->dirty = 1;
+}
+
+void cli_terminal_turn_end(struct cli_context *ctx, int result)
+{
+	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
+
+	if (!terminal || terminal->work_state != CLI_WORK_RUNNING)
+		return;
+	terminal->work_elapsed_ms = terminal_now_ms() - terminal->work_started_ms;
+	terminal->work_finished_at = time(NULL);
+	terminal->work_state = result >= 0 ? CLI_WORK_COMPLETED :
+		result == -ECANCELED ? CLI_WORK_STOPPED : CLI_WORK_FAILED;
+	terminal->dirty = 1;
+}
+
+static void terminal_work_row(struct cli_terminal *terminal, int columns)
+{
+	morph_buf_t text;
+	char clipped[BUFSIZ];
+	int64_t elapsed = terminal->work_state == CLI_WORK_RUNNING ?
+		terminal_now_ms() - terminal->work_started_ms : terminal->work_elapsed_ms;
+	int64_t seconds = elapsed > 0 ? elapsed / 1000 : 0;
+	struct tm finished;
+	char clock[32] = "";
+
+	if (morph_buf_init(&text, 128) != 0)
+		return;
+	(void)morph_buf_puts(&text, terminal->work_state == CLI_WORK_RUNNING ? "(" :
+		terminal->work_state == CLI_WORK_COMPLETED ? "Worked for " :
+		terminal->work_state == CLI_WORK_STOPPED ? "Stopped after " : "Failed after ");
+	if (seconds >= 60)
+		(void)morph_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
+	(void)morph_buf_printf(&text, "%llds", (long long)(seconds % 60));
+	if (terminal->work_state == CLI_WORK_RUNNING)
+		(void)morph_buf_puts(&text, " · esc to interrupt)");
+	else if (localtime_r(&terminal->work_finished_at, &finished)) {
+		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
+		(void)morph_buf_printf(&text, " · %s", clock);
+	}
+	int prefix = terminal->work_state == CLI_WORK_RUNNING ? 12 : 2;
+
+	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
+		morph_buf_cstr(&text), (size_t)(columns > prefix ? columns - prefix : 1), 0);
+	if (terminal->work_state == CLI_WORK_RUNNING) {
+		const char label[] = "Working";
+		int position = (int)((elapsed / CLI_TERMINAL_WORK_FRAME_MS) %
+			(int)(sizeof(label) + 3)) - 2;
+
+		fprintf(terminal->output, "\033[38;5;246m● ");
+		for (size_t i = 0; i < sizeof(label) - 1; i++) {
+			int distance = abs((int)i - position);
+			int shade = distance == 0 ? 255 : distance == 1 ? 250 :
+				distance == 2 ? 244 : 240;
+
+			fprintf(terminal->output, "\033[38;5;%dm%c", shade, label[i]);
+		}
+		fprintf(terminal->output, ANSI_RESET " ");
+	}
+	fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, clipped);
+	morph_buf_cleanup(&text);
 }
 
 static int terminal_columns(const struct cli_terminal *terminal)
@@ -260,7 +344,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		queue_shown = queue_total < CLI_TERMINAL_QUEUE_VISIBLE ?
 			queue_total : CLI_TERMINAL_QUEUE_VISIBLE;
 	}
-	if (!status_visible && queue_shown == 0) {
+	if (!status_visible && queue_shown == 0 && !terminal->work_state) {
 		if (terminal->live_visible) {
 			terminal_clear_frame(terminal);
 			fflush(terminal->output);
@@ -286,30 +370,6 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		terminal_clear_frame(terminal);
 	else
 		terminal_clear_current(terminal);
-	for (size_t i = 0; i < queue_shown; i++) {
-		size_t remaining = queue_total - i;
-		int queue_budget = terminal->columns - 6;
-
-		terminal_sanitize_line(queue_items[i]);
-		if (queue_budget < 1)
-			queue_budget = 1;
-		(void)utf8_copy_sanitized_display_width(
-			queue_clipped, sizeof(queue_clipped), queue_items[i],
-			(size_t)queue_budget);
-		if (i + 1 == CLI_TERMINAL_QUEUE_VISIBLE &&
-		    remaining > 1) {
-			fprintf(terminal->output, ANSI_DIM
-				"  +%zu more queued" ANSI_RESET,
-				remaining);
-		} else {
-			fprintf(terminal->output, ANSI_DIM
-				"  ↳ queued  %s" ANSI_RESET,
-				queue_clipped);
-		}
-		if (i + 1 < queue_shown || status_visible)
-			fputc('\n', terminal->output);
-		free(queue_items[i]);
-	}
 	if (status_visible) {
 		fprintf(terminal->output, "%s%s" ANSI_RESET " %s",
 			tool_live ? ANSI_YELLOW : ANSI_CYAN,
@@ -317,15 +377,49 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			frames[terminal->frame %
 			       (int)(sizeof(frames) / sizeof(frames[0]))],
 			tool_live ? text : status_clipped);
+		if (queue_shown || terminal->work_state)
+			fputc('\n', terminal->output);
 	}
+	if (terminal->work_state) {
+		terminal_work_row(terminal, terminal->columns);
+		if (queue_shown)
+			fputc('\n', terminal->output);
+	}
+	if (queue_shown) {
+		const char *heading = terminal->columns >= 44 ?
+			"Messages queued for the next step" : "Messages queued";
+
+		if (status_visible || terminal->work_state)
+			fputc('\n', terminal->output);
+		fprintf(terminal->output, "  " ANSI_DIM "•" ANSI_RESET
+			" \033[38;5;252m%s" ANSI_RESET, heading);
+		if ((size_t)terminal->columns >= utf8_display_width(heading) + 25)
+			fprintf(terminal->output, ANSI_DIM
+				" (esc to interrupt)" ANSI_RESET);
+	}
+	for (size_t i = 0; i < queue_shown; i++) {
+		terminal_sanitize_line(queue_items[i]);
+		(void)utf8_copy_ellipsized_display_width(
+			queue_clipped, sizeof(queue_clipped), queue_items[i],
+			(size_t)(terminal->columns - 6), 0);
+		fprintf(terminal->output, "\n    " ANSI_DIM "↳ %s" ANSI_RESET,
+			queue_clipped);
+		free(queue_items[i]);
+	}
+	if (queue_total > queue_shown)
+		fprintf(terminal->output, "\n    " ANSI_DIM "+%zu more queued"
+			ANSI_RESET, queue_total - queue_shown);
 	morph_buf_cleanup(&tool_text);
 	fflush(terminal->output);
 	terminal->frame++;
 	terminal->dirty = 0;
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
-	terminal->live_rows = (int)queue_shown + status_visible;
-	terminal->next_frame_ms = now + CLI_TERMINAL_FRAME_MS;
+	terminal->live_rows = status_visible + (terminal->work_state != CLI_WORK_NONE) +
+		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
+		(queue_shown > 0 && (status_visible || terminal->work_state));
+	terminal->next_frame_ms = now +
+		(terminal->live_active ? CLI_TERMINAL_FRAME_MS : CLI_TERMINAL_WORK_FRAME_MS);
 }
 
 int cli_terminal_next_frame_ms(const struct cli_context *ctx)
@@ -336,7 +430,8 @@ int cli_terminal_next_frame_ms(const struct cli_context *ctx)
 	if (!ctx || !ctx->terminal)
 		return -1;
 	terminal = ctx->terminal;
-	if (!terminal->transient || !terminal->live_active)
+	if (!terminal->transient ||
+	    (!terminal->live_active && terminal->work_state != CLI_WORK_RUNNING))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;
@@ -356,6 +451,10 @@ void cli_terminal_composer_suspend(struct cli_context *ctx)
 	if (!terminal->is_terminal)
 		return;
 	terminal_clear_current(terminal);
+	while (ctx->input_status.padding_rows > 0) {
+		fprintf(terminal->output, "\033[1A\r\033[2K");
+		ctx->input_status.padding_rows--;
+	}
 	terminal_clear_frame(terminal);
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
@@ -378,6 +477,11 @@ void cli_terminal_composer_resume(struct cli_context *ctx)
 		fputc('\n', terminal->output);
 		fflush(terminal->output);
 		terminal->live_anchored = 1;
+	}
+	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
+		fprintf(terminal->output, ANSI_RESET "\033[2K\n"
+			"\033[48;5;234m\033[2K\n" ANSI_RESET);
+		ctx->input_status.padding_rows = 2;
 	}
 }
 

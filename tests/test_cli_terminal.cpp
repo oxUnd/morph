@@ -151,9 +151,12 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	ASSERT_NE(second, std::string::npos);
 	ASSERT_NE(status, std::string::npos);
 	EXPECT_LT(first, second);
-	EXPECT_LT(second, status);
-	EXPECT_NE(queued.find("+2 more queued"), std::string::npos);
-	EXPECT_EQ(queued.find("third adjustment"), std::string::npos);
+	EXPECT_LT(status, queued.find("Messages queued"));
+	EXPECT_LT(queued.find("Messages queued"), first);
+	EXPECT_NE(queued.find("↳ first adjustment"), std::string::npos);
+	EXPECT_NE(queued.find("+1 more queued"), std::string::npos);
+	EXPECT_LT(second, queued.find("third adjustment"));
+	EXPECT_EQ(queued.find("fourth adjustment"), std::string::npos);
 
 	char *consumed = cli_command_job_take_prompt(&job);
 	ASSERT_NE(consumed, nullptr);

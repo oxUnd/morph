@@ -22,12 +22,24 @@ struct cli_terminal;
 struct cli_command_job;
 struct cli_transcript;
 
+struct cli_input_status {
+	int enabled;
+	int padding_rows;
+	int distance;
+	int suspended;
+	int64_t updated;
+	int tokens;
+	int limit;
+	int64_t credits;
+};
+
 struct cli_context {
 	struct runtime *runtime;
 	struct cli_ui *ui;
 	struct cli_terminal *terminal;
 	struct cli_command_job *input_job;
 	struct cli_transcript *transcript;
+	struct cli_input_status input_status;
 	int tool_details;
 	int details_open;
 	int details_visible;

@@ -10,6 +10,7 @@
 #define CLI_BANNER_HINT_WIDTH 18
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
 #define CLI_DETAILS_INPUT_BURST_MAX 1024
+#define CLI_INPUT_BACKGROUND "\033[48;5;234m"
 
 /* ---- sigint ---- */
 
@@ -121,6 +122,133 @@ static void cli_readline_color_images(void)
 	fflush(output);
 }
 
+static void cli_readline_clear_footer(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->input_status.distance)
+		return;
+	fprintf(stdout, "\0337\033[%dB\r\033[2K\033[1A\033[2K\0338",
+		ctx->input_status.distance);
+	ctx->input_status.distance = 0;
+}
+
+static void cli_footer_field(morph_buf_t *text, const char *value,
+			     size_t width, const char *color, int keep_tail)
+{
+	char clipped[BUFSIZ];
+	char *safe = utf8_terminal_sanitize_dup(value, strlen(value),
+		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+
+	if (!safe)
+		return;
+	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
+		safe, width, keep_tail);
+	(void)morph_buf_printf(text, "%s%s%s", cli_color_enabled() ? color : "",
+		clipped, cli_color_enabled() ? ANSI_RESET : "");
+	free(safe);
+}
+
+static void cli_footer_tokens(morph_buf_t *text, int tokens)
+{
+	if (tokens >= 1000000)
+		(void)morph_buf_printf(text, "%.3gM", (double)tokens / 1000000.0);
+	else if (tokens >= 1000)
+		(void)morph_buf_printf(text, "%.3gk", (double)tokens / 1000.0);
+	else
+		(void)morph_buf_printf(text, "%d", tokens);
+}
+
+static void cli_readline_footer(struct cli_context *ctx)
+{
+	struct winsize size = {0};
+	struct timespec now;
+	morph_buf_t text;
+	morph_buf_t usage;
+	struct session session = {0};
+	size_t remaining;
+	size_t model_width;
+	const char *workdir;
+	const char *home = getenv("HOME");
+	int row, column, last_row, last_column;
+
+	if (!ctx || !ctx->runtime || ctx->input_status.suspended ||
+	    !RL_ISSTATE(RL_STATE_CALLBACK) || !rl_line_buffer ||
+	    !isatty(STDOUT_FILENO) ||
+	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0 ||
+	    size.ws_col < 20 || size.ws_row < 3)
+		return;
+	cli_readline_position(rl_point, size.ws_col, &row, &column);
+	cli_readline_position(rl_end, size.ws_col, &last_row, &last_column);
+	if (last_row >= size.ws_row - 2)
+		return;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+	    now.tv_sec != ctx->input_status.updated) {
+		struct credit_summary credits = {0};
+
+		(void)runtime_session_model_context_stats(ctx->runtime, NULL,
+			&ctx->input_status.tokens, NULL, NULL, &ctx->input_status.limit);
+		if (ctx->input_status.limit <= 0)
+			ctx->input_status.limit =
+				runtime_config_get(ctx->runtime)->models.text.context_limit;
+		if (runtime_credit_summary_current_get(ctx->runtime, &credits) == 0)
+			ctx->input_status.credits = credits.credits;
+		ctx->input_status.updated = now.tv_sec;
+	}
+	if (morph_buf_init(&text, 128) != 0)
+		return;
+	if (morph_buf_init(&usage, 64) != 0) {
+		morph_buf_cleanup(&text);
+		return;
+	}
+	(void)morph_buf_puts(&usage, size.ws_col >= 100 ? "context " : "ctx ");
+	cli_footer_tokens(&usage, ctx->input_status.tokens);
+	(void)morph_buf_puts(&usage, " / ");
+	cli_footer_tokens(&usage, ctx->input_status.limit);
+	(void)morph_buf_printf(&usage, size.ws_col >= 100 ?
+		"  ·  %lld credits" : " · %lld cr",
+		(long long)ctx->input_status.credits);
+	(void)morph_buf_puts(&text, "  ");
+	remaining = (size_t)size.ws_col - 4;
+	if (remaining > utf8_display_width(morph_buf_cstr(&usage)) + 10) {
+		remaining -= utf8_display_width(morph_buf_cstr(&usage)) + 6;
+		model_width = remaining / 3;
+		if (model_width > 24)
+			model_width = 24;
+		(void)runtime_session_current(ctx->runtime, &session);
+		cli_footer_field(&text, session.model[0] ? session.model :
+			runtime_config_get(ctx->runtime)->models.text.model,
+			model_width, "\033[38;5;180m", 0);
+		(void)morph_buf_puts(&text, " · ");
+		workdir = runtime_workdir_get(ctx->runtime);
+		if (!workdir || !workdir[0])
+			workdir = ctx->workdir;
+		if (home && home[0] && strncmp(workdir, home, strlen(home)) == 0 &&
+		    (workdir[strlen(home)] == '/' || workdir[strlen(home)] == '\0')) {
+			(void)morph_buf_puts(&text, cli_color_enabled() ?
+				"\033[38;5;108m~" : "~");
+			workdir += strlen(home);
+			remaining--;
+		}
+		cli_footer_field(&text, workdir,
+			remaining - model_width, "\033[38;5;108m", 1);
+		(void)morph_buf_puts(&text, " · ");
+	}
+	cli_footer_field(&text, morph_buf_cstr(&usage),
+		(size_t)size.ws_col - 2 - utf8_display_width_ansi(morph_buf_cstr(&text)),
+		ANSI_DIM, 0);
+	/* Reserve a padded input row and footer even at screen bottom. */
+	if (last_row > row)
+		fprintf(stdout, "\033[%dB", last_row - row);
+	fprintf(stdout, "\033[%dG%s\033[K\r\n\033[2K%s\r\n\033[2K%s"
+		"\033[%dA\033[%dG", last_column + 1,
+		cli_color_enabled() ? CLI_INPUT_BACKGROUND : "",
+		cli_color_enabled() ? ANSI_RESET : "", morph_buf_cstr(&text),
+		last_row - row + 2, column + 1);
+	ctx->input_status.distance = last_row - row + 2;
+	morph_buf_cleanup(&usage);
+	morph_buf_cleanup(&text);
+	fflush(stdout);
+}
+
 static void cli_readline_clear_hint(void)
 {
 	if (!g_details_hint_visible)
@@ -131,18 +259,25 @@ static void cli_readline_clear_hint(void)
 
 static void cli_readline_redisplay(void)
 {
+	struct cli_context *ctx = g_comp_ctx;
 	struct winsize size = {0};
 
 	if (g_comp_ctx && g_comp_ctx->details_visible)
 		return;
+	cli_readline_clear_footer(ctx);
 	cli_readline_clear_hint();
+	if (cli_color_enabled())
+		fputs(CLI_INPUT_BACKGROUND, stdout);
 	rl_redisplay();
+	if (cli_color_enabled())
+		fputs(ANSI_RESET, stdout);
 	cli_readline_color_images();
+	cli_readline_footer(ctx);
 	if (RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
 	    isatty(STDOUT_FILENO) &&
 	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 24) {
-		g_details_hint_column = size.ws_col - 15;
-		fprintf(stdout, "\0337\033[%dG" ANSI_DIM "ctrl+o details"
+		g_details_hint_column = size.ws_col - 17;
+		fprintf(stdout, "\0337\033[%dG" ANSI_DIM CLI_INPUT_BACKGROUND "ctrl+o details"
 			ANSI_RESET "\0338", g_details_hint_column);
 		g_details_hint_visible = 1;
 		fflush(stdout);
@@ -179,6 +314,8 @@ static char *cli_readline_suspend(struct cli_context *ctx, int *point)
 	if (!draft)
 		return NULL;
 	cli_transcript_view_suspend(ctx);
+	cli_readline_clear_footer(ctx);
+	ctx->input_status.suspended = 1;
 	rl_replace_line("", 0);
 	rl_point = 0;
 	cli_readline_redisplay();
@@ -189,6 +326,7 @@ static char *cli_readline_suspend(struct cli_context *ctx, int *point)
 
 static void cli_readline_resume(struct cli_context *ctx, char *draft, int point)
 {
+	ctx->input_status.suspended = 0;
 	cli_terminal_composer_resume(ctx);
 	/* Resize and callback installation may already have painted a prompt.
 	 * rl_on_new_line assumes column zero on an empty row. */
@@ -248,16 +386,27 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 		cli_transcript_view_render(ctx, 0);
 		return;
 	}
+	if (isatty(STDOUT_FILENO))
+		fputs("\033[?2026h", stdout);
 	draft = cli_readline_suspend(ctx, &point);
 
-	if (!draft)
+	if (!draft) {
+		if (isatty(STDOUT_FILENO)) {
+			fputs("\033[?2026l", stdout);
+			fflush(stdout);
+		}
 		return;
+	}
 	if (resized) {
 		rl_resize_terminal();
 		cli_terminal_resize(ctx);
 	}
 	cli_terminal_render_frame(ctx, resized);
 	cli_readline_resume(ctx, draft, point);
+	if (isatty(STDOUT_FILENO)) {
+		fputs("\033[?2026l", stdout);
+		fflush(stdout);
+	}
 }
 
 static int cli_readline_getc(FILE *stream)
@@ -680,9 +829,9 @@ const char *cli_input_prompt(void)
 {
 	if (!cli_color_enabled())
 		return "> ";
-	return CLI_RL_IGNORE_START ANSI_BOLD ANSI_CYAN CLI_RL_IGNORE_END
+	return CLI_RL_IGNORE_START "\033[38;5;245m" CLI_RL_IGNORE_END
 		"› "
-		CLI_RL_IGNORE_START ANSI_RESET CLI_RL_IGNORE_END;
+		CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 }
 
 static void cli_print_banner_title(void)
@@ -950,6 +1099,8 @@ void cli_run(struct cli_context *ctx)
 	}
 	cli_structured_signal_mode = 1;
 	g_comp_ctx = ctx;
+	memset(&ctx->input_status, 0, sizeof(ctx->input_status));
+	ctx->input_status.enabled = 1;
 	g_readline_ready_input = NULL;
 	ctx->input_job = &job;
 	rl_initialize();
@@ -957,6 +1108,7 @@ void cli_run(struct cli_context *ctx)
 	rl_redisplay_function = cli_readline_redisplay;
 	rl_attempted_completion_function = cmd_completion;
 	cli_readline_configure();
+	cli_terminal_composer_resume(ctx);
 	rl_callback_handler_install(cli_input_prompt(),
 				    cli_readline_line_ready);
 	cli_readline_configure();
@@ -1028,6 +1180,7 @@ void cli_run(struct cli_context *ctx)
 
 			(void)cli_ui_drain(ctx);
 			cli_turn_finish(ctx, turn_rc);
+			ctx->input_status.updated = 0;
 			pending = cli_command_job_take_prompt(&job);
 			if (pending) {
 				cli_turn_begin(ctx);
@@ -1050,6 +1203,7 @@ void cli_run(struct cli_context *ctx)
 			}
 			if (!job.active)
 				cli_cancel_state_reset();
+			cli_readline_clear_footer(ctx);
 			rl_callback_read_char();
 			if (!g_readline_ready_input &&
 			    cli_composer_image_span(&g_composer, rl_line_buffer, rl_point,
@@ -1062,6 +1216,7 @@ void cli_run(struct cli_context *ctx)
 				char *input = g_readline_ready_input;
 
 				g_readline_ready_input = NULL;
+				cli_readline_clear_footer(ctx);
 				rl_callback_handler_remove();
 				callback_installed = 0;
 				cli_terminal_composer_suspend(ctx);
@@ -1108,6 +1263,8 @@ void cli_run(struct cli_context *ctx)
 				}
 				free(input);
 				if (ctx->running) {
+					ctx->input_status.updated = 0;
+					ctx->input_status.suspended = 0;
 					cli_terminal_composer_resume(ctx);
 					rl_callback_handler_install(
 						cli_input_prompt(),
@@ -1124,6 +1281,7 @@ void cli_run(struct cli_context *ctx)
 		free(g_readline_ready_input);
 		g_readline_ready_input = NULL;
 	}
+	cli_readline_clear_footer(ctx);
 	if (callback_installed)
 		rl_callback_handler_remove();
 	if (job.active) {
@@ -1132,6 +1290,7 @@ void cli_run(struct cli_context *ctx)
 		(void)cli_ui_drain(ctx);
 		cli_turn_finish(ctx, turn_rc);
 	}
+	memset(&ctx->input_status, 0, sizeof(ctx->input_status));
 	cli_composer_cleanup(&g_composer);
 	ctx->input_job = NULL;
 	rl_getc_function = rl_getc;
