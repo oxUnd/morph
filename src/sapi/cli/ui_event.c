@@ -417,8 +417,14 @@ int cli_ui_drain(struct cli_context *ctx)
 		}
 		if (item->kind == CLI_UI_ITEM_MORPH_EVENT)
 			rc = cli_presentation_event(ctx, &item->event);
-		else if (item->kind == CLI_UI_ITEM_OWNER_CALL)
+		else if (item->kind == CLI_UI_ITEM_OWNER_CALL) {
+			int updating = cli_terminal_update_active(ctx);
+
+			cli_terminal_update_end(ctx);
 			cli_ui_run_owner_call(item->owner_call);
+			if (updating)
+				cli_terminal_update_begin(ctx);
+		}
 		else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
 			cli_terminal_history_begin(ctx);
 			cli_ui_render_notification(item);

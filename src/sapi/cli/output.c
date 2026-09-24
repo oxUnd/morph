@@ -43,6 +43,16 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 
 	if (!bytes || len == 0)
 		return 0;
+	/* The CLI synchronizes the entire feed/composer update. The SDK delivers
+	 * complete frames; its inner end marker must not reveal a cleared input. */
+	if (len >= 8 && memcmp(bytes, "\033[?2026h", 8) == 0) {
+		bytes += 8;
+		len -= 8;
+	}
+	if (len >= 8 && memcmp(bytes + len - 8, "\033[?2026l", 8) == 0)
+		len -= 8;
+	if (!len)
+		return 0;
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (user && *(int *)user) {

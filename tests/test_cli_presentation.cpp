@@ -431,8 +431,8 @@ TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 
 	EXPECT_NE(output.find("Context  compacted 91676 → 15672 tokens "
 		"(iteration 22, pass 1)"), std::string::npos);
-	EXPECT_NE(output.find("Thinking…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
 	cJSON_Delete(completed);
 }
 
@@ -608,8 +608,8 @@ TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("\n● "), 0u);
-	EXPECT_NE(output.find("\033[?2026h"), std::string::npos);
-	EXPECT_NE(output.find("\033[?2026l"), std::string::npos);
+	EXPECT_EQ(output.find("\033[?2026h"), std::string::npos);
+	EXPECT_EQ(output.find("\033[?2026l"), std::string::npos);
 	EXPECT_NE(output.find("Stream"), std::string::npos);
 	EXPECT_NE(output.find("• item"), std::string::npos);
 	EXPECT_EQ(output.find("fallback final payload"), std::string::npos);
@@ -822,7 +822,7 @@ TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
 	cJSON_Delete(final);
 }
 
-TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
+TEST_F(CliPresentationTest, InteractiveDoesNotDuplicateWorkingStatus)
 {
 	cJSON *thinking = TextData("");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -831,11 +831,11 @@ TEST_F(CliPresentationTest, InteractiveShowsThinkingStatus)
 	Emit(MORPH_EVENT_REACT, "react.thinking", "begin", thinking);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
 	cJSON_Delete(thinking);
 }
 
-TEST_F(CliPresentationTest, TurnBeginsWithImmediateStatus)
+TEST_F(CliPresentationTest, TurnBeginsWithoutRedundantStartingStatus)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.turn_active = 0;
@@ -844,11 +844,11 @@ TEST_F(CliPresentationTest, TurnBeginsWithImmediateStatus)
 	cli_turn_begin(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Starting…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(output.find("Starting…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
 }
 
-TEST_F(CliPresentationTest, SteeringRestoresThinkingStatus)
+TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
 {
 	cJSON *steer = TextData("updated requirement");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -858,8 +858,8 @@ TEST_F(CliPresentationTest, SteeringRestoresThinkingStatus)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("Requirement applied"), std::string::npos);
-	EXPECT_NE(output.find("Thinking…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
 	cJSON_Delete(steer);
 }
 

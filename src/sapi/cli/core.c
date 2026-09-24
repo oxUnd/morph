@@ -450,7 +450,7 @@ void cli_turn_begin(struct cli_context *ctx)
 	ctx->turn_active = 1;
 	cli_terminal_turn_begin(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-		cli_terminal_live_set(ctx, "Starting…");
+		cli_terminal_render_frame(ctx, 1);
 }
 
 void cli_turn_finish(struct cli_context *ctx, int turn_rc)

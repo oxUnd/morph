@@ -350,11 +350,14 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 		point = rl_point;
 		draft = strdup(rl_line_buffer ? rl_line_buffer : "");
 	} else {
+		cli_terminal_update_begin(ctx);
 		draft = cli_readline_suspend(ctx, &point);
 	}
 
-	if (!draft)
+	if (!draft) {
+		cli_terminal_update_end(ctx);
 		return;
+	}
 	/* Owner calls may use blocking Readline for approval or ask_user. */
 	rl_callback_handler_remove();
 	(void)cli_ui_drain(ctx);
@@ -373,6 +376,7 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 	} else {
 		cli_readline_resume(ctx, draft, point);
 	}
+	cli_terminal_update_end(ctx);
 }
 
 static void cli_readline_render_frame(struct cli_context *ctx, int resized)
@@ -386,15 +390,11 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 		cli_transcript_view_render(ctx, 0);
 		return;
 	}
-	if (isatty(STDOUT_FILENO))
-		fputs("\033[?2026h", stdout);
+	cli_terminal_update_begin(ctx);
 	draft = cli_readline_suspend(ctx, &point);
 
 	if (!draft) {
-		if (isatty(STDOUT_FILENO)) {
-			fputs("\033[?2026l", stdout);
-			fflush(stdout);
-		}
+		cli_terminal_update_end(ctx);
 		return;
 	}
 	if (resized) {
@@ -403,10 +403,7 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 	}
 	cli_terminal_render_frame(ctx, resized);
 	cli_readline_resume(ctx, draft, point);
-	if (isatty(STDOUT_FILENO)) {
-		fputs("\033[?2026l", stdout);
-		fflush(stdout);
-	}
+	cli_terminal_update_end(ctx);
 }
 
 static int cli_readline_getc(FILE *stream)
@@ -1174,6 +1171,8 @@ void cli_run(struct cli_context *ctx)
 		}
 		if (cli_command_job_done(&job) && !ctx->details_open) {
 			int point;
+
+			cli_terminal_update_begin(ctx);
 			char *draft = cli_readline_suspend(ctx, &point);
 			int turn_rc = cli_command_job_finish(&job);
 			char *pending;
@@ -1191,6 +1190,7 @@ void cli_run(struct cli_context *ctx)
 			}
 			if (draft)
 				cli_readline_resume(ctx, draft, point);
+			cli_terminal_update_end(ctx);
 		}
 		if (fds[0].revents & (POLLIN | POLLHUP)) {
 			int previous_point = rl_point;

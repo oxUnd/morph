@@ -65,6 +65,13 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	cli_terminal_live_set(ctx, text);
 }
 
+static void presentation_model_wait(struct cli_context *ctx)
+{
+	presentation_clear_status(ctx);
+	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
+		presentation_status(ctx, "Thinking…");
+}
+
 static int presentation_pause_status(struct cli_context *ctx)
 {
 	if (ctx && ctx->turn_active && cli_terminal_live_active(ctx)) {
@@ -977,7 +984,7 @@ static void presentation_compaction(struct cli_context *ctx,
 	}
 	fflush(stdout);
 	if (!failed && ctx->turn_active)
-		presentation_status(ctx, "Thinking…");
+		presentation_model_wait(ctx);
 }
 
 static void presentation_final(struct cli_context *ctx,
@@ -1396,18 +1403,18 @@ int cli_presentation_event(struct cli_context *ctx,
 		}
 		if (strcmp(ev->name, "react.turn.begin") == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-				presentation_status(ctx, "Starting…");
+				cli_terminal_render_frame(ctx, 1);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.user.steer") == 0) {
 			presentation_clear_status(ctx);
 			presentation_discard_stream(ctx);
 			printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
-			presentation_status(ctx, "Thinking…");
+			presentation_model_wait(ctx);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thinking") == 0) {
-			presentation_status(ctx, "Thinking…");
+			presentation_model_wait(ctx);
 			return 0;
 		}
 		if (strcmp(ev->name, "react.thought.delta") == 0) {

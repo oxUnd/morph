@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import tempfile
 import threading
@@ -146,12 +147,18 @@ def main():
             terminal.snapshot('whitespace Enter')
             terminal.send('initial task\r')
             starting = terminal.snapshot('immediate turn status')
-            assert ('Starting' in starting or 'Thinking' in starting or
-                    'Live output' in starting), starting
+            assert 'Starting' not in starting and 'Thinking' not in starting, starting
             assert 'Working (' in starting and 'esc to interrupt' in starting, starting
             first, release = terminal.request()
             releases.append(release)
             assert '›' in terminal.snapshot('model running'), 'composer missing'
+            frames = re.findall(r'\x1b\[\?2026h(.*?)\x1b\[\?2026l',
+                                terminal.raw, re.S)
+            feed_frames = [frame for frame in frames if 'Live output' in frame]
+            assert feed_frames, 'streaming feed must use synchronized updates'
+            for frame in feed_frames:
+                assert '› ' in frame and 'ctx ' in frame, repr(frame)
+                assert frame.rfind('› ') > frame.rfind('Live output'), repr(frame)
             terminal.send('改成中文🙂')
             draft = terminal.snapshot('Chinese draft during spinner')
             assert '改成中文🙂' in draft, draft
@@ -191,7 +198,7 @@ def main():
             terminal.send('unsent draft 中文')
             draft = terminal.snapshot('draft across model transition')
             assert 'unsent draft 中文' in draft
-            assert draft.count('Thinking') <= 1, draft
+            assert 'Thinking' not in draft, draft
             terminal.child.setwinsize(24, 40)
             terminal.screen.resize(24, 40)
             terminal.pump(0.5)

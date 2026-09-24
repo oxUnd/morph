@@ -925,20 +925,5 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		cJSON_Delete(args);
 	}
 	restore_live(ctx);
-	/*
-	 * The next react.thinking event is emitted only after tool result
-	 * persistence and the next model round have been prepared. Keep a
-	 * visible busy state during that gap so a completed tool does not look
-	 * like the turn has stalled.
-	 */
-	{
-		morph_buf_t live;
-
-		if (morph_buf_init(&live, 128) == 0) {
-			if (!cli_transcript_live_text(ctx, &live, 0))
-				cli_terminal_live_set(ctx, "Thinking…");
-			morph_buf_cleanup(&live);
-		}
-	}
 	return 1;
 }

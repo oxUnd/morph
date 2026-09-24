@@ -7,6 +7,9 @@ struct cli_context;
 
 int cli_terminal_init(struct cli_context *ctx, FILE *output, int output_fd);
 void cli_terminal_cleanup(struct cli_context *ctx);
+void cli_terminal_update_begin(struct cli_context *ctx);
+void cli_terminal_update_end(struct cli_context *ctx);
+int cli_terminal_update_active(const struct cli_context *ctx);
 void cli_terminal_turn_begin(struct cli_context *ctx);
 void cli_terminal_turn_end(struct cli_context *ctx, int result);
 void cli_terminal_live_set(struct cli_context *ctx, const char *text);

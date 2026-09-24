@@ -30,6 +30,7 @@ struct cli_terminal {
 	int is_terminal;
 	int transient;
 	int frame;
+	int update_active;
 	int columns;
 	int64_t next_frame_ms;
 	enum cli_work_state work_state;
@@ -37,6 +38,30 @@ struct cli_terminal {
 	int64_t work_elapsed_ms;
 	time_t work_finished_at;
 };
+
+int cli_terminal_update_active(const struct cli_context *ctx)
+{
+	return ctx && ctx->terminal && ctx->terminal->update_active;
+}
+
+void cli_terminal_update_begin(struct cli_context *ctx)
+{
+	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
+
+	if (!terminal || !terminal->transient || terminal->update_active)
+		return;
+	fprintf(terminal->output, "\033[?2026h");
+	terminal->update_active = 1;
+}
+
+void cli_terminal_update_end(struct cli_context *ctx)
+{
+	if (!cli_terminal_update_active(ctx))
+		return;
+	fprintf(ctx->terminal->output, "\033[?2026l");
+	fflush(ctx->terminal->output);
+	ctx->terminal->update_active = 0;
+}
 
 static int64_t terminal_now_ms(void)
 {
@@ -224,6 +249,7 @@ void cli_terminal_cleanup(struct cli_context *ctx)
 		return;
 	terminal = ctx->terminal;
 	cli_terminal_live_clear(ctx);
+	cli_terminal_update_end(ctx);
 	morph_buf_cleanup(&terminal->live_text);
 	free(terminal);
 	ctx->terminal = NULL;
