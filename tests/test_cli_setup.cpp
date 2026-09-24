@@ -44,6 +44,7 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 	struct config cfg;
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.model, "gpt-4o");
+	EXPECT_EQ(cfg.exec.network, 1);
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 16384);
 	EXPECT_STREQ(cfg.models.vision.model, "");

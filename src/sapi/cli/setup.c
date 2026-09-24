@@ -370,6 +370,7 @@ int cli_setup(const char *path, FILE *input, FILE *output)
 			morph_buf_printf(&buf, "context_limit = %d\nmax_tokens = %d\n",
 				entries[i].context_limit, entries[i].max_tokens);
 	}
+	morph_buf_puts(&buf, "\n[exec]\nnetwork = true\n");
 	struct config_validation_error error = {0};
 	rc = buf.failed ? -ENOMEM : config_validate_text(morph_buf_cstr(&buf), &error);
 	if (rc == 0)
