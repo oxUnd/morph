@@ -1,3 +1,5 @@
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
 include(${CMAKE_CURRENT_LIST_DIR}/sources.cmake)
 
 add_library(morph-runtime STATIC

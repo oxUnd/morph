@@ -1,25 +1,7 @@
-add_library(morph-util STATIC
-	arena.c
-	log.c
-	file.c
-	data.c
-	base64.c
-	image_util.c
-	utf8.c
-	spin.c
-	cancel.c
-	error.c
-	id.c
-	bpe.c
-	str.c
-	strmap.c
-	buf.c
-	array.c
-	json.c
-	bash_parse.c
-	${CMAKE_SOURCE_DIR}/vendor/cJSON.c
-	${CMAKE_SOURCE_DIR}/vendor/re.c
-)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_UTIL_SOURCES)
+add_library(morph-util STATIC ${MORPH_UTIL_SOURCES})
 
 target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}

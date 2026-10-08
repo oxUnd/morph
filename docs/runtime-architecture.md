@@ -90,5 +90,11 @@ credits, memory, tool registration, or shutdown.
 `morph-runtime` links `morph-agent`, `morph-config`, `morph-credits`,
 `morph-event`, `morph-mcp`, `morph-session`, `morph-skill`, `morph-sync`, and
 `morph-tools`. Frontends link `morph-runtime` and never reach into its private
-context. See `src/runtime/CMakeLists.txt` and `src/runtime/sources.cmake` for the
-authoritative file list.
+context. See `src/runtime/CMakeLists.txt` and `src/runtime/sources.list` for the
+authoritative file list. The `sources.cmake` wrapper exposes that list to CMake.
+
+The agent, runtime, persistence, and util modules each own a `sources.list`
+manifest. Desktop CMake, Android CMake, and the iOS core build read the same
+manifests so splitting a core implementation into new files does not leave
+mobile builds behind. Keep each manifest to one relative source path per line.
+Platform adapters and optional tools remain selected by each frontend.

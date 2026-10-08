@@ -1,24 +1,7 @@
-add_library(morph-agent STATIC
-	react.c
-	environment_context.c
-	project_context.c
-	prompt_context.c
-	system_prompt.c
-	history.c
-	turn.c
-	context.c
-	compress.c
-	tokenizer.c
-	tool.c
-	tool_context.c
-	tool_runtime.c
-	patch.c
-	plan.c
-	memory.c
-	memory_jobs.c
-	guardrail.c
-	sub_agent.c
-)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_AGENT_SOURCES)
+add_library(morph-agent STATIC ${MORPH_AGENT_SOURCES})
 
 target_include_directories(morph-agent PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}
