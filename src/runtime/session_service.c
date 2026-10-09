@@ -241,6 +241,42 @@ static int transcript_add_display(sqlite3 *db, int64_t session_id, cJSON *root)
 	MORPH_RETURN(rc);
 }
 
+static int transcript_add_traces(sqlite3 *db, int64_t session_id, cJSON *root)
+{
+	sqlite3_stmt *stmt = NULL;
+	cJSON *items = cJSON_AddArrayToObject(root, "traces");
+	int rc = 0;
+	int step;
+
+	if (!items)
+		MORPH_RETURN(-ENOMEM);
+	if (sqlite3_prepare_v2(db,
+		"SELECT id,steps_json,created_at FROM react_traces "
+		"WHERE session_id=? AND aborted=0 ORDER BY created_at,id",
+		-1, &stmt, NULL) != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		cJSON *item = cJSON_CreateObject();
+		const char *steps = (const char *)sqlite3_column_text(stmt, 1);
+		if (!item ||
+		    !cJSON_AddNumberToObject(item, "id",
+			(double)sqlite3_column_int64(stmt, 0)) ||
+		    !cJSON_AddStringToObject(item, "steps_json", steps ? steps : "[]") ||
+		    !cJSON_AddNumberToObject(item, "created_at",
+			(double)sqlite3_column_int64(stmt, 2)) ||
+		    !cJSON_AddItemToArray(items, item)) {
+			cJSON_Delete(item);
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+	}
+	if (rc == 0 && step != SQLITE_DONE)
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+	sqlite3_finalize(stmt);
+	MORPH_RETURN(rc);
+}
+
 int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 				    char **out)
 {
@@ -298,6 +334,8 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 	sqlite3_finalize(stmt);
 	if (rc == 0)
 		rc = transcript_add_display(runtime->context.database.handle, session_id, root);
+	if (rc == 0)
+		rc = transcript_add_traces(runtime->context.database.handle, session_id, root);
 	if (rc == 0) {
 		*out = cJSON_PrintUnformatted(root);
 		if (!*out)

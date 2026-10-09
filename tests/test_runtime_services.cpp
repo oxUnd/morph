@@ -216,6 +216,14 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 		"user", "Imported question", 3), 0);
 	ASSERT_EQ(message_add(&instance->context.database, imported.id,
 		"assistant", "Imported answer", 3), 0);
+	const char *steps = "[{\"type\":\"Thought\",\"content\":\"Working\"},"
+		"{\"type\":\"Final\",\"content\":\"Imported answer\"}]";
+	ASSERT_EQ(trace_save(&instance->context.database, imported.id, 1,
+		steps, 0), 0);
+	ASSERT_EQ(trace_save(&instance->context.database, imported.id, 2,
+		"[]", 1), 0);
+	ASSERT_EQ(trace_save(&instance->context.database, current.id, 1,
+		"[]", 0), 0);
 	char *json = nullptr;
 	ASSERT_EQ(runtime_session_transcript_json(instance, imported.id, &json), 0);
 	cJSON *root = cJSON_Parse(json);
@@ -227,6 +235,10 @@ TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
 	ASSERT_EQ(cJSON_GetArraySize(items), 2);
 	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(items, 0),
 		"content")->valuestring, "Imported question");
+	cJSON *traces = cJSON_GetObjectItem(root, "traces");
+	ASSERT_EQ(cJSON_GetArraySize(traces), 1);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(traces, 0),
+		"steps_json")->valuestring, steps);
 	cJSON_Delete(root);
 	int64_t selected = 0;
 	ASSERT_EQ(runtime_session_current_id(instance, &selected), 0);
