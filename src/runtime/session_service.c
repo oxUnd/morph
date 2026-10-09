@@ -1,6 +1,8 @@
 #include "runtime/runtime_internal.h"
 
 #include "runtime/session.h"
+#include "util/error.h"
+#include "cJSON.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -176,6 +178,133 @@ struct message *runtime_session_messages_current(struct runtime *runtime,
 void runtime_session_messages_free(struct message *messages)
 {
 	message_free_list(messages);
+}
+
+static int transcript_add_display(sqlite3 *db, int64_t session_id, cJSON *root)
+{
+	sqlite3_stmt *stmt = NULL;
+	cJSON *items;
+	int rc;
+	int step;
+
+	if (sqlite3_prepare_v2(db,
+		"SELECT 1 FROM sqlite_master WHERE type='table' "
+		"AND name='sync_ui_messages'", -1, &stmt, NULL) != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	step = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (step == SQLITE_DONE)
+		return 0;
+	if (step != SQLITE_ROW)
+		MORPH_RETURN(MORPH_ERR_DB);
+	items = cJSON_AddArrayToObject(root, "display");
+	if (!items)
+		MORPH_RETURN(-ENOMEM);
+	if (sqlite3_prepare_v2(db,
+		"SELECT type,content,attachments_json,structured_data,agent_ui_ir,"
+		"hitl_verdict,core_message_id,created_at,turn_id FROM sync_ui_messages "
+		"WHERE session_id=? ORDER BY seq", -1, &stmt, NULL) != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = 0;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		cJSON *item = cJSON_CreateObject();
+		if (!item) {
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+		for (int i = 0; i < sqlite3_column_count(stmt); i++) {
+			const char *key = sqlite3_column_name(stmt, i);
+			cJSON *value;
+			if (sqlite3_column_type(stmt, i) == SQLITE_NULL)
+				continue;
+			if (sqlite3_column_type(stmt, i) == SQLITE_INTEGER)
+				value = cJSON_AddNumberToObject(item, key,
+					(double)sqlite3_column_int64(stmt, i));
+			else
+				value = cJSON_AddStringToObject(item, key,
+					(const char *)sqlite3_column_text(stmt, i));
+			if (!value) {
+				MORPH_SET_ERR(rc, -ENOMEM);
+				break;
+			}
+		}
+		if (rc != 0 || !cJSON_AddItemToArray(items, item)) {
+			cJSON_Delete(item);
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+	}
+	if (rc == 0 && step != SQLITE_DONE)
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+	sqlite3_finalize(stmt);
+	MORPH_RETURN(rc);
+}
+
+int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
+				    char **out)
+{
+	struct session session;
+	sqlite3_stmt *stmt = NULL;
+	cJSON *root = NULL;
+	cJSON *items;
+	int rc;
+	int step;
+
+	if (!out)
+		MORPH_RETURN(-EINVAL);
+	*out = NULL;
+	if (!runtime || session_id <= 0)
+		MORPH_RETURN(-EINVAL);
+	rc = session_get_by_id(&runtime->context.database, session_id, &session);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	root = cJSON_CreateObject();
+	items = root ? cJSON_AddArrayToObject(root, "messages") : NULL;
+	if (!items || !cJSON_AddStringToObject(root, "identity", session.display_id)) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	rc = sqlite3_prepare_v2(runtime->context.database.handle,
+		"SELECT id,role,content,turn_id,created_at FROM messages "
+		"WHERE session_id=? ORDER BY created_at,id", -1, &stmt, NULL);
+	if (rc != SQLITE_OK) {
+		cJSON_Delete(root);
+		MORPH_RETURN(MORPH_ERR_DB);
+	}
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = 0;
+	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
+		cJSON *item = cJSON_CreateObject();
+		const char *role = (const char *)sqlite3_column_text(stmt, 1);
+		const char *content = (const char *)sqlite3_column_text(stmt, 2);
+		const char *turn = (const char *)sqlite3_column_text(stmt, 3);
+		if (!item ||
+		    !cJSON_AddNumberToObject(item, "id",
+			(double)sqlite3_column_int64(stmt, 0)) ||
+		    !cJSON_AddStringToObject(item, "role", role ? role : "") ||
+		    !cJSON_AddStringToObject(item, "content", content ? content : "") ||
+		    !cJSON_AddStringToObject(item, "turn_id", turn ? turn : "") ||
+		    !cJSON_AddNumberToObject(item, "created_at",
+			(double)sqlite3_column_int64(stmt, 4)) ||
+		    !cJSON_AddItemToArray(items, item)) {
+			cJSON_Delete(item);
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+	}
+	if (rc == 0 && step != SQLITE_DONE)
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+	sqlite3_finalize(stmt);
+	if (rc == 0)
+		rc = transcript_add_display(runtime->context.database.handle, session_id, root);
+	if (rc == 0) {
+		*out = cJSON_PrintUnformatted(root);
+		if (!*out)
+			MORPH_SET_ERR(rc, -ENOMEM);
+	}
+	cJSON_Delete(root);
+	MORPH_RETURN(rc);
 }
 
 struct model_history_item *runtime_session_model_history_current(

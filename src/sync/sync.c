@@ -258,6 +258,8 @@ static int refresh_file(struct sync_file *file)
 		MORPH_RETURN(-EINVAL);
 	rc = stat(file->full, &st);
 	if (rc != 0) {
+		if (errno != ENOENT)
+			MORPH_RETURN_ERRNO();
 		file->exists = 0;
 		file->hash[0] = '\0';
 		file->size = 0;
@@ -350,7 +352,7 @@ static int scan_dir(morph_array_t *pairs, const char *root, const char *rel_dir,
 	if (!dir && errno == ENOENT)
 		return 0;
 	if (!dir)
-		MORPH_RETURN(-EIO);
+		MORPH_RETURN_ERRNO();
 	while ((ent = readdir(dir)) != NULL) {
 		char child_rel[PATH_MAX];
 		char child_full[PATH_MAX];
@@ -372,8 +374,10 @@ static int scan_dir(morph_array_t *pairs, const char *root, const char *rel_dir,
 				    root, child_rel);
 		if (rc != 0)
 			break;
-		if (stat(child_full, &st) != 0)
-			continue;
+		if (stat(child_full, &st) != 0) {
+			MORPH_SET_ERR(rc, -errno);
+			break;
+		}
 		if (S_ISDIR(st.st_mode)) {
 			rc = scan_dir(pairs, root, child_rel, remote_side);
 			if (rc != 0)
@@ -445,10 +449,57 @@ static int scan_include(morph_array_t *pairs, const char *root,
 	if (rc != 0 && errno == ENOENT)
 		return 0;
 	if (rc != 0)
-		return 0;
+		MORPH_RETURN_ERRNO();
 	if (S_ISDIR(st.st_mode))
 		return scan_dir(pairs, root, include, remote_side);
 	return add_file(pairs, root, include, remote_side);
+}
+
+static int output_relative(const char *rel)
+{
+	return strcmp(rel, "output") == 0 || strncmp(rel, "output/", 7) == 0;
+}
+
+static int local_path(const struct morph_sync_config *cfg, const char *rel,
+		      char *out, size_t size)
+{
+	if (cfg->output_dir[0] && output_relative(rel))
+		return sync_path_join(out, size, cfg->output_dir,
+				      rel[6] ? rel + 7 : "");
+	return sync_path_join(out, size, cfg->source_dir, rel);
+}
+
+static int scan_output(morph_array_t *pairs, const struct morph_sync_config *cfg,
+		       const char *include)
+{
+	morph_array_t files;
+	int rc = morph_array_init(&files, 16, sizeof(struct sync_pair));
+	if (rc != 0)
+		return rc;
+	rc = include[6] ? scan_include(&files, cfg->output_dir, include + 7, 0)
+		: scan_dir(&files, cfg->output_dir, "", 0);
+	for (size_t i = 0; rc == 0 && i < files.nelts; i++) {
+		struct sync_pair *file = &((struct sync_pair *)files.elts)[i];
+		struct sync_pair *pair;
+		char path[PATH_MAX];
+		rc = sync_path_join(path, sizeof(path), "output", file->path);
+		if (rc != 0)
+			break;
+		pair = find_pair(pairs, path);
+		if (!pair) {
+			pair = morph_array_push(pairs);
+			if (!pair) {
+				MORPH_SET_ERR(rc, -ENOMEM);
+				break;
+			}
+			memset(pair, 0, sizeof(*pair));
+			strncpy(pair->path, path, sizeof(pair->path) - 1);
+		}
+		pair->local = file->local;
+		strncpy(pair->local.path, path, sizeof(pair->local.path) - 1);
+	}
+	morph_array_cleanup(&files);
+	MORPH_RETURN(rc);
 }
 
 static int scan_side(morph_array_t *pairs, const char *root,
@@ -461,6 +512,9 @@ static int scan_side(morph_array_t *pairs, const char *root,
 		if (remote_side && sync_has_remote_backend(cfg))
 			rc = scan_remote_backend_include(pairs, cfg,
 							 cfg->include[i]);
+		else if (!remote_side && cfg->output_dir[0] &&
+			 output_relative(cfg->include[i]))
+			rc = scan_output(pairs, cfg, cfg->include[i]);
 		else
 			rc = scan_include(pairs, root, cfg->include[i],
 					  remote_side);
@@ -1011,8 +1065,7 @@ static int create_conflict(sqlite3 *db, const struct morph_sync_config *cfg,
 		 pair->path, suffix);
 	if (pair->remote.exists) {
 		char dst[PATH_MAX];
-		rc = sync_path_join(dst, sizeof(dst), cfg->source_dir,
-				    local_conflict);
+		rc = local_path(cfg, local_conflict, dst, sizeof(dst));
 		if (rc != 0)
 			return rc;
 		rc = sync_copy_from_remote(cfg, pair->remote.full, dst,
@@ -1050,8 +1103,8 @@ static int update_pair_paths(struct sync_pair *pair,
 	if (rc != 0)
 		return rc;
 	if (!pair->local.full[0]) {
-		rc = sync_path_join(pair->local.full, sizeof(pair->local.full),
-				    cfg->source_dir, pair->path);
+		rc = local_path(cfg, pair->path, pair->local.full,
+				sizeof(pair->local.full));
 		if (rc != 0)
 			return rc;
 	}
@@ -1346,7 +1399,7 @@ static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
 	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
-int morph_sync_once(const struct morph_sync_config *cfg,
+static int sync_once_locked(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
 	struct morph_sync_status local_status;
@@ -1407,6 +1460,25 @@ out_no_array:
 			sizeof(status->last_error) - 1);
 	}
 	return rc;
+}
+
+int morph_sync_once(const struct morph_sync_config *cfg,
+		    struct morph_sync_status *status)
+{
+	static pthread_mutex_t run_lock = PTHREAD_MUTEX_INITIALIZER;
+	int rc;
+
+	if (status)
+		memset(status, 0, sizeof(*status));
+	pthread_mutex_lock(&run_lock);
+	rc = sync_once_locked(cfg, status);
+	pthread_mutex_unlock(&run_lock);
+	if (status && rc != 0 && !status->error_code) {
+		status->error_code = rc;
+		strncpy(status->last_error, morph_strerror(rc),
+			sizeof(status->last_error) - 1);
+	}
+	MORPH_RETURN(rc);
 }
 
 static void *sync_worker_main(void *arg)
@@ -1548,8 +1620,7 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 	}
 	memset(&pair, 0, sizeof(pair));
 	strncpy(pair.path, rel_buf, sizeof(pair.path) - 1);
-	rc = sync_path_join(pair.local.full, sizeof(pair.local.full),
-			    cfg->source_dir, rel_buf);
+	rc = local_path(cfg, rel_buf, pair.local.full, sizeof(pair.local.full));
 	if (rc != 0)
 		goto out;
 	rc = sync_path_join(data_root, sizeof(data_root), cfg->sync_dir,

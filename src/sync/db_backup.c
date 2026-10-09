@@ -447,6 +447,85 @@ static int json_add_string(cJSON *object, const char *name, const char *value)
 	return cJSON_AddStringToObject(object, name, value) ? 0 : -ENOMEM;
 }
 
+/* Bundle display history into the core snapshot, never into the live database.
+ * The core transcript remains authoritative if a UI writer was ahead/behind.
+ * Readers validate message anchors before accepting this optional projection. */
+static int snapshot_include_display(const struct morph_sync_config *cfg,
+				    const char *rel, const char *snapshot)
+{
+	char source[PATH_MAX];
+	char staging[PATH_MAX];
+	struct stat st;
+	sqlite3 *db = NULL;
+	sqlite3_stmt *attach = NULL;
+	int page_size = 0;
+	int rc;
+
+	if (strcmp(rel, "data.db") != 0)
+		return 0;
+	rc = file_path_join(source, sizeof(source), cfg->source_dir, "ui-history.db");
+	if (rc != 0)
+		return rc;
+	if (stat(source, &st) != 0) {
+		if (errno == ENOENT)
+			return 0;
+		MORPH_RETURN_ERRNO();
+	}
+	rc = staging_path(cfg, ".display.db", staging);
+	if (rc != 0)
+		return rc;
+	rc = sqlite_snapshot(source, staging, &page_size);
+	if (rc != 0)
+		goto out_remove_display;
+	if (sqlite3_open_v2(snapshot, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
+	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1,
+			       &attach, NULL) != SQLITE_OK) {
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		goto out_remove_display;
+	}
+	sqlite3_bind_text(attach, 1, staging, -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(attach) != SQLITE_DONE) {
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		goto out_remove_display;
+	}
+	if (sqlite3_exec(db,
+		"BEGIN IMMEDIATE;"
+		"CREATE TEMP TABLE local_display AS "
+		"SELECT session_id,turn_id,core_message_id,seq,type,content,"
+		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,"
+		"created_at,updated_at FROM display.ui_messages;"
+		"CREATE TABLE IF NOT EXISTS sync_ui_messages AS SELECT * FROM local_display WHERE 0;",
+		NULL, NULL, NULL) != SQLITE_OK)
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+	if (rc == 0 && sqlite3_table_column_metadata(db, "display",
+		"ui_session_identity", "identity", NULL, NULL, NULL, NULL, NULL) == SQLITE_OK &&
+	    sqlite3_table_column_metadata(db, "main", "sessions", "display_id",
+		NULL, NULL, NULL, NULL, NULL) == SQLITE_OK) {
+		if (sqlite3_exec(db,
+			"DELETE FROM local_display WHERE session_id IN ("
+			"SELECT i.session_id FROM display.ui_session_identity i "
+			"JOIN main.sessions s ON s.id=i.session_id "
+			"WHERE i.identity<>s.display_id)", NULL, NULL, NULL) != SQLITE_OK)
+			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+	}
+
+	if (rc == 0 && sqlite3_exec(db,
+		"DELETE FROM sync_ui_messages WHERE session_id IN "
+		"(SELECT DISTINCT session_id FROM local_display);"
+		"INSERT INTO sync_ui_messages SELECT * FROM local_display;"
+		"CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
+		"ON sync_ui_messages(session_id,seq); COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+
+
+out_remove_display:
+	sqlite3_finalize(attach);
+	if (db)
+		sqlite3_close(db);
+	(void)unlink(staging);
+	MORPH_RETURN(rc);
+}
+
 static int db_backup_create_one(const struct morph_sync_config *cfg,
 				const char *rel, const char *path,
 				struct morph_sync_status *status,
@@ -479,6 +558,11 @@ static int db_backup_create_one(const struct morph_sync_config *cfg,
 	rc = sqlite_snapshot(path, snapshot_path, &page_size);
 	if (rc != 0)
 		goto out;
+	if (update_cursor) {
+		rc = snapshot_include_display(cfg, rel, snapshot_path);
+		if (rc != 0)
+			goto out;
+	}
 	if (!quick_check(snapshot_path)) {
 		rc = MORPH_ERR_FORMAT;
 		goto out;

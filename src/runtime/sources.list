@@ -15,6 +15,7 @@ registry_service.c
 scheduler.c
 services.c
 session_service.c
+session_import.c
 task_service.c
 task_controller.c
 session.c

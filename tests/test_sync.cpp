@@ -320,6 +320,52 @@ TEST_F(SyncTest, CopiesRemoteBackendFileToLocal) {
 	EXPECT_EQ(st.copied, 1);
 }
 
+TEST_F(SyncTest, RemoteReadFailureDoesNotBecomeADeletion) {
+	struct morph_sync_backend backend = {
+		.user_data = remote,
+		.stat = test_backend_stat,
+		.list = test_backend_list,
+		.copy_from_local = test_backend_copy_from_local,
+		.copy_to_local = test_backend_copy_to_local,
+		.delete_file = test_backend_delete,
+		.ensure_dir = test_backend_ensure_dir,
+	};
+	cfg.remote_backend = &backend;
+	snprintf(cfg.sync_dir, sizeof(cfg.sync_dir), "%s", state);
+	std::string source = std::string(local) + "/config.toml";
+	ASSERT_EQ(file_write_all(source.c_str(), "keep", 4), 0);
+	struct morph_sync_status status{};
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0);
+	backend.stat = [](void *, const char *, struct morph_sync_backend_stat *) {
+		return -EACCES;
+	};
+	EXPECT_EQ(morph_sync_once(&cfg, &status), -EACCES);
+	EXPECT_EQ(status.error_code, -EACCES);
+	EXPECT_EQ(status.deleted, 0);
+	EXPECT_TRUE(file_exists(source.c_str()));
+}
+
+TEST_F(SyncTest, FailedSnapshotPublishIsNotReportedAsSuccess) {
+	struct morph_sync_backend backend = {
+		.user_data = remote,
+		.stat = test_backend_stat,
+		.list = test_backend_list,
+		.copy_from_local = [](void *, const char *, const char *, int) { return -EIO; },
+		.copy_to_local = test_backend_copy_to_local,
+		.delete_file = test_backend_delete,
+		.ensure_dir = test_backend_ensure_dir,
+	};
+	cfg.remote_backend = &backend;
+	snprintf(cfg.sync_dir, sizeof(cfg.sync_dir), "%s", state);
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "actual.db");
+	cfg.include_count = 1;
+	CreateSqlite(std::string(local) + "/actual.db");
+	struct morph_sync_status status{};
+	EXPECT_EQ(morph_sync_once(&cfg, &status), -EIO);
+	EXPECT_EQ(status.db_snapshots, 0);
+	EXPECT_EQ(status.error_code, -EIO);
+}
+
 TEST_F(SyncTest, CopiesRemoteFileToLocal) {
 	struct morph_sync_status st;
 	char dir[PATH_MAX];
@@ -456,6 +502,76 @@ TEST_F(SyncTest, UnchangedSqliteDoesNotCreateAnotherSnapshot) {
 	ASSERT_EQ(morph_sync_backups(&cfg, nullptr, &backups, &count), 0);
 	EXPECT_EQ(count, 1);
 	morph_sync_backups_free(backups);
+}
+
+TEST_F(SyncTest, CoreSnapshotIncludesDisplayHistoryFromWalAndIsIdempotent) {
+	const std::string database = std::string(local) + "/data.db";
+	const std::string ui = std::string(local) + "/ui-history.db";
+	const std::string restored = std::string(root) + "/restored.db";
+	CreateSqlite(database);
+	sqlite3 *core = nullptr;
+	ASSERT_EQ(sqlite3_open(database.c_str(), &core), SQLITE_OK);
+	ASSERT_EQ(sqlite3_exec(core,
+		"CREATE TABLE sessions(id INTEGER PRIMARY KEY, display_id TEXT);"
+		"INSERT INTO sessions VALUES(1,'session-a');"
+		"CREATE TABLE sync_ui_messages(session_id,turn_id,core_message_id,seq,type,content,"
+		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,created_at,updated_at);"
+		"INSERT INTO sync_ui_messages VALUES(2,'imported',NULL,0,'thought','preserved',"
+		"NULL,NULL,NULL,NULL,1000,1000)", nullptr, nullptr, nullptr), SQLITE_OK);
+	sqlite3_close(core);
+	sqlite3 *writer = nullptr;
+	ASSERT_EQ(sqlite3_open(ui.c_str(), &writer), SQLITE_OK);
+	ASSERT_EQ(sqlite3_exec(writer,
+		"PRAGMA journal_mode=WAL;"
+		"CREATE TABLE ui_session_identity(session_id INTEGER PRIMARY KEY, identity TEXT);"
+		"INSERT INTO ui_session_identity VALUES(1,'session-a');"
+		"CREATE TABLE ui_messages(session_id,turn_id,core_message_id,seq,type,content,"
+		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,created_at,updated_at);"
+		"INSERT INTO ui_messages VALUES(1,'turn',10,0,'USER','question',"
+		"NULL,NULL,NULL,NULL,1000,1000)", nullptr, nullptr, nullptr), SQLITE_OK);
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "data.db");
+	cfg.include_count = 1;
+	struct morph_sync_status status{};
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0) << status.last_error;
+	EXPECT_EQ(status.db_snapshots, 1);
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0) << status.last_error;
+	EXPECT_EQ(status.db_snapshots, 0);
+	struct morph_sync_backup *backups = nullptr;
+	int count = 0;
+	ASSERT_EQ(morph_sync_backups(&cfg, "data.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	ASSERT_EQ(morph_sync_restore_db(&cfg, backups[0].snapshot_id, restored.c_str()), 0);
+	morph_sync_backups_free(backups);
+	sqlite3 *copy = nullptr;
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_open(restored.c_str(), &copy), SQLITE_OK);
+	ASSERT_EQ(sqlite3_prepare_v2(copy,
+		"SELECT type,content FROM sync_ui_messages ORDER BY session_id", -1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "USER");
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "question");
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "preserved");
+	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+	sqlite3_finalize(stmt);
+	sqlite3_close(copy);
+	sqlite3_close(writer);
+}
+
+TEST_F(SyncTest, ExternalOutputDirectoryUsesPortableOutputNamespace) {
+	std::string output = std::string(root) + "/workspace/generated";
+	ASSERT_EQ(file_ensure_dir(output.c_str()), 0);
+	ASSERT_EQ(file_write_all((output + "/picture.png").c_str(), "image", 5), 0);
+	snprintf(cfg.output_dir, sizeof(cfg.output_dir), "%s", output.c_str());
+	struct morph_sync_status status{};
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0) << status.last_error;
+	EXPECT_TRUE(file_exists((std::string(remote) + "/data/output/picture.png").c_str()));
+	EXPECT_FALSE(file_exists((std::string(local) + "/output/picture.png").c_str()));
+	ASSERT_EQ(file_write_all((std::string(remote) + "/data/output/new.png").c_str(),
+		"new", 3), 0);
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0) << status.last_error;
+	EXPECT_TRUE(file_exists((output + "/new.png").c_str()));
+	EXPECT_FALSE(file_exists((std::string(local) + "/output/new.png").c_str()));
 }
 
 TEST_F(SyncTest, ChangedSqliteCreatesImmutableVersion) {

@@ -25,8 +25,14 @@ int runtime_sync_config_instance(
 		*slash = '\0';
 	else
 		strncpy(source, ".", sizeof(source) - 1);
-	return runtime_sync_config_from_config(&runtime->context.config.sync,
+	int rc = runtime_sync_config_from_config(&runtime->context.config.sync,
 		source, default_sync_dir, backend, out);
+	if (rc == 0 && runtime->context.tctx) {
+		const char *output = tool_context_output_dir(runtime->context.tctx);
+		if (output && output[0] == '/')
+			strncpy(out->output_dir, output, sizeof(out->output_dir) - 1);
+	}
+	return rc;
 }
 
 int runtime_sync_config_from_config(const struct config_sync *config,

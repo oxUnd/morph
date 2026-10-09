@@ -122,6 +122,9 @@ const char *runtime_session_current_name(const struct runtime *runtime);
 struct message *runtime_session_messages_current(struct runtime *runtime,
 					 int *count);
 void runtime_session_messages_free(struct message *messages);
+/* Read a session without selecting it. Caller frees the JSON on success. */
+int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
+				    char **out);
 struct model_history_item *runtime_session_model_history_current(
 	struct runtime *runtime, int active_only, int *count);
 void runtime_session_model_history_free(struct model_history_item *items);

@@ -44,6 +44,8 @@ struct morph_sync_backend {
 struct morph_sync_config {
 	int enabled;
 	char source_dir[PATH_MAX];
+	/* Optional local directory mapped to the portable output/ namespace. */
+	char output_dir[PATH_MAX];
 	char sync_dir[PATH_MAX];
 	int interval_seconds;
 	int retention_days;

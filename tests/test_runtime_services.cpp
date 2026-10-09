@@ -4,6 +4,8 @@ extern "C" {
 #include "agent/tool.h"
 #include "db/scheduled_task.h"
 #include "runtime/runtime_internal.h"
+#include "runtime/sync.h"
+#include "cJSON.h"
 }
 
 #include <sqlite3.h>
@@ -13,9 +15,231 @@ extern "C" {
 #include <cstring>
 #include <ctime>
 
+static void create_session_import_fixture(const std::string &path, const char *name)
+{
+	struct db source{};
+	struct session session{};
+	ASSERT_EQ(db_open(&source, path.c_str()), 0);
+	ASSERT_EQ(db_init_schema(&source), 0);
+	ASSERT_EQ(session_create(&source, name, "import-model", &session), 0);
+	ASSERT_EQ(session.id, 1);
+	ASSERT_EQ(message_add(&source, session.id, "user", "imported question", 3), 0);
+	ASSERT_EQ(message_add(&source, session.id, "assistant", "imported answer", 3), 0);
+	ASSERT_EQ(db_exec(&source,
+		"INSERT INTO model_history_items(session_id,sequence_no,kind,role,content,created_at) "
+		"VALUES(1,1,'user_message','user','imported question',1),"
+		"(1,2,'assistant_message','assistant','imported answer',2);"
+		"CREATE TABLE sync_ui_messages(session_id,turn_id,core_message_id,seq,type,content,"
+		"attachments_json,structured_data,agent_ui_ir,hitl_verdict,created_at,updated_at);"
+		"INSERT INTO sync_ui_messages VALUES(1,'turn',1,0,'user','imported question',"
+		"NULL,NULL,NULL,NULL,1000,1000),"
+		"(1,'turn',NULL,1,'thought','working',NULL,NULL,NULL,NULL,1000,1000),"
+		"(1,'turn',2,2,'final','imported answer',NULL,NULL,NULL,NULL,2000,2000);"), 0);
+	db_close(&source);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportPreservesLocalHistoryAndRemapsDisplayAndModelHistory)
+{
+	Open();
+	struct session current{};
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	ASSERT_EQ(message_add(&instance->context.database, current.id, "user", "local question", 2), 0);
+	std::string source = directory + "/incoming.db";
+	create_session_import_fixture(source, current.name);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 1);
+	EXPECT_EQ(result.unchanged, 0);
+	struct session *sessions = nullptr;
+	int count = 0;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	ASSERT_EQ(count, 2);
+	int64_t imported = sessions[0].id == current.id ? sessions[1].id : sessions[0].id;
+	runtime_session_list_free(sessions);
+	EXPECT_EQ(message_count(&instance->context.database, current.id), 1);
+	EXPECT_EQ(message_count(&instance->context.database, imported), 2);
+	char *json = nullptr;
+	ASSERT_EQ(runtime_session_transcript_json(instance, imported, &json), 0);
+	cJSON *root = cJSON_Parse(json);
+	free(json);
+	ASSERT_NE(root, nullptr);
+	cJSON *messages = cJSON_GetObjectItem(root, "messages");
+	cJSON *display = cJSON_GetObjectItem(root, "display");
+	EXPECT_EQ(cJSON_GetArraySize(display), 3);
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetArrayItem(messages, 0), "id")->valueint,
+		cJSON_GetObjectItem(cJSON_GetArrayItem(display, 0), "core_message_id")->valueint);
+	cJSON_Delete(root);
+	ASSERT_EQ(runtime_session_select_existing(instance, imported, nullptr), 0);
+	ASSERT_EQ(runtime_session_reload_current(instance), 0);
+	ASSERT_NE(instance->context.react->history_items, nullptr);
+	EXPECT_STREQ(instance->context.react->history_items->content, "imported question");
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+	EXPECT_EQ(result.unchanged, 1);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalformedData)
+{
+	Open();
+	std::string source = directory + "/incoming.db";
+	create_session_import_fixture(source, "remote");
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	struct db changed{};
+	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(message_add(&changed, 1, "user", "second question", 2), 0);
+	db_close(&changed);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 1);
+	struct session *sessions = nullptr;
+	int before = 0;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &before, 0), 0);
+	EXPECT_EQ(before, 3);
+	runtime_session_list_free(sessions);
+	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_exec(&changed, "DROP TABLE messages; CREATE TABLE messages(session_id INTEGER, content TEXT); INSERT INTO messages VALUES(1,'broken');"), 0);
+	db_close(&changed);
+	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+	int after = 0;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &after, 0), 0);
+	EXPECT_EQ(after, before);
+	runtime_session_list_free(sessions);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportWriteFailureRollsBackReceiptAndSession)
+{
+	Open();
+	std::string source = directory + "/incoming.db";
+	create_session_import_fixture(source, "remote");
+	ASSERT_EQ(db_exec(&instance->context.database,
+		"CREATE TRIGGER reject_import BEFORE INSERT ON messages "
+		"BEGIN SELECT RAISE(ABORT,'injected write failure'); END;"), 0);
+	struct runtime_session_import_result result{};
+	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+	struct session *sessions = nullptr;
+	int count = 0;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	EXPECT_EQ(count, 1);
+	runtime_session_list_free(sessions);
+	ASSERT_EQ(db_exec(&instance->context.database, "DROP TRIGGER reject_import"), 0);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 1);
+	EXPECT_EQ(result.unchanged, 0);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportFromPublishedBackupIsAtomicAndRepeatable)
+{
+	Open();
+	const auto source_dir = directory + "/source";
+	const auto remote = directory + "/remote";
+	std::filesystem::create_directories(source_dir);
+	std::filesystem::create_directories(remote);
+	create_session_import_fixture(source_dir + "/data.db", "remote snapshot");
+	struct morph_sync_config cfg{};
+	cfg.enabled = 1;
+	cfg.retention_days = 30;
+	snprintf(cfg.source_dir, sizeof(cfg.source_dir), "%s", source_dir.c_str());
+	snprintf(cfg.sync_dir, sizeof(cfg.sync_dir), "%s", remote.c_str());
+	snprintf(cfg.include[0], sizeof(cfg.include[0]), "%s", "data.db");
+	cfg.include_count = 1;
+	struct morph_sync_status status{};
+	ASSERT_EQ(morph_sync_once(&cfg, &status), 0) << status.last_error;
+	struct morph_sync_backup *backups = nullptr;
+	int count = 0;
+	ASSERT_EQ(morph_sync_backups(&cfg, "data.db", &backups, &count), 0);
+	ASSERT_EQ(count, 1);
+	std::string snapshot = backups[0].snapshot_id;
+	morph_sync_backups_free(backups);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_sync_import_backup(instance, &cfg, snapshot.c_str(), &result), 0);
+	EXPECT_EQ(result.imported, 1);
+	ASSERT_EQ(runtime_sync_import_backup(instance, &cfg, snapshot.c_str(), &result), 0);
+	EXPECT_EQ(result.imported, 0);
+	EXPECT_EQ(result.unchanged, 1);
+	EXPECT_NE(runtime_sync_import_backup(instance, &cfg, "missing", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+}
+
+TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrphans)
+{
+	Open();
+	std::string source = directory + "/incoming.db";
+	create_session_import_fixture(source, "parent");
+	struct db changed{};
+	struct session child{};
+	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(session_create(&changed, "child", "model", &child), 0);
+	ASSERT_EQ(db_exec(&changed,
+		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,child_session_id,"
+		"agent_name,description,mode,status,started_at) "
+		"VALUES('task-a',1,2,'researcher','find evidence','delegate',2,1);"
+		"INSERT INTO sub_agent_events(task_id,event_json,created_at) "
+		"VALUES('task-a','{}',1);"), 0);
+	db_close(&changed);
+	struct runtime_session_import_result result{};
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 2);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(instance->context.database.handle,
+		"SELECT p.name,c.name FROM sub_agent_tasks t JOIN sessions p ON p.id=t.parent_session_id "
+		"JOIN sessions c ON c.id=t.child_session_id WHERE t.task_id='task-a'",
+		-1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 0), "parent");
+	EXPECT_STREQ((const char *)sqlite3_column_text(stmt, 1), "child");
+	sqlite3_finalize(stmt);
+	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+	EXPECT_EQ(result.unchanged, 2);
+	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_exec(&changed, "PRAGMA foreign_keys=OFF; UPDATE messages SET session_id=999;"), 0);
+	db_close(&changed);
+	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
+	EXPECT_EQ(result.imported, 0);
+}
+
 static int facade_test_tool(const char *, struct tool_result *result, void *)
 {
 	return tool_result_success_text(result, "ok");
+}
+
+TEST_F(RuntimeFacadeTest, TranscriptReadsDetachedSessionWithoutSelectingIt)
+{
+	Open();
+	struct session current{};
+	struct session imported{};
+	ASSERT_EQ(runtime_session_current(instance, &current), 0);
+	ASSERT_EQ(runtime_session_create_detached(instance, "imported", &imported), 0);
+	ASSERT_EQ(message_add(&instance->context.database, imported.id,
+		"user", "Imported question", 3), 0);
+	ASSERT_EQ(message_add(&instance->context.database, imported.id,
+		"assistant", "Imported answer", 3), 0);
+	char *json = nullptr;
+	ASSERT_EQ(runtime_session_transcript_json(instance, imported.id, &json), 0);
+	cJSON *root = cJSON_Parse(json);
+	free(json);
+	ASSERT_NE(root, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(root, "identity")->valuestring,
+		imported.display_id);
+	cJSON *items = cJSON_GetObjectItem(root, "messages");
+	ASSERT_EQ(cJSON_GetArraySize(items), 2);
+	EXPECT_STREQ(cJSON_GetObjectItem(cJSON_GetArrayItem(items, 0),
+		"content")->valuestring, "Imported question");
+	cJSON_Delete(root);
+	int64_t selected = 0;
+	ASSERT_EQ(runtime_session_current_id(instance, &selected), 0);
+	EXPECT_EQ(selected, current.id);
+	json = nullptr;
+	EXPECT_NE(runtime_session_transcript_json(instance, imported.id + 100,
+		&json), 0);
+	EXPECT_EQ(json, nullptr);
+	ASSERT_EQ(runtime_session_transcript_json(instance, current.id, &json), 0);
+	root = cJSON_Parse(json);
+	free(json);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(root, "messages")), 0);
+	cJSON_Delete(root);
 }
 
 static int facade_task_runner(const struct scheduled_task *,

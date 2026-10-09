@@ -6,6 +6,17 @@
 
 struct runtime;
 
+struct runtime_session_import_result {
+	int imported;
+	int unchanged;
+};
+
+int runtime_session_import_file(struct runtime *runtime, const char *path,
+	const char *origin, struct runtime_session_import_result *result);
+int runtime_sync_import_backup(struct runtime *runtime,
+	const struct morph_sync_config *cfg, const char *snapshot_id,
+	struct runtime_session_import_result *result);
+
 int runtime_sync_config_from_config(const struct config_sync *config,
 				    const char *source_dir,
 				    const char *default_sync_dir,
