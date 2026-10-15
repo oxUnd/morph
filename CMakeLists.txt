@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(morph LANGUAGES C CXX VERSION 0.3.12)
+project(morph LANGUAGES C CXX VERSION 0.3.13)
 
 include(GNUInstallDirs)
 
