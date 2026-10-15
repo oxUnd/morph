@@ -1417,7 +1417,8 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_model_wait(ctx);
 			return 0;
 		}
-		if (strcmp(ev->name, "react.thought.delta") == 0) {
+		if (strcmp(ev->name, "react.thought.delta") == 0 ||
+		    strcmp(ev->name, "react.content.delta") == 0) {
 			int rc = presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 1, 0, NULL);
 
@@ -1429,7 +1430,8 @@ int cli_presentation_event(struct cli_context *ctx,
 			}
 			return rc;
 		}
-		if (strcmp(ev->name, "react.thought.end") == 0)
+		if (strcmp(ev->name, "react.thought.end") == 0 ||
+		    strcmp(ev->name, "react.content.end") == 0)
 			return presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 0, 1, NULL);
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {

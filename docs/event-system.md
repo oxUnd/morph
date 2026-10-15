@@ -132,6 +132,8 @@ ReAct:
 ```text
 react.turn.begin
 react.thinking
+react.content.delta
+react.content.end
 react.thought.delta
 react.thought.end
 react.reasoning.delta
@@ -151,6 +153,12 @@ react.timed_out
 react.max_iterations
 react.failed
 ```
+
+`react.content.delta` carries native assistant response text, separately from
+`react.reasoning.delta`. Its final role is known when the response completes:
+text before tool calls ends with `react.content.end`; an answer ends with
+`react.final`. Frontends can render content immediately without treating it
+as reasoning or waiting for the terminal event.
 
 Tool:
 

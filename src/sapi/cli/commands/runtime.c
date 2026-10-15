@@ -56,6 +56,7 @@ static void print_trace_steps(struct react_step *steps, int count, const char *s
 	while (cur) {
 		const char *color = "";
 		switch (cur->type) {
+		case REACT_STEP_CONTENT:
 		case REACT_STEP_THOUGHT:	color = ANSI_DIM; break;
 		case REACT_STEP_ACTION:		color = ANSI_YELLOW; break;
 		case REACT_STEP_OBSERVATION:	color = ANSI_DIM; break;
@@ -125,6 +126,7 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 		else if (strcmp(type_name, "Reflection") == 0)	type = REACT_STEP_REFLECTION;
 		else if (strcmp(type_name, "Final") == 0)	type = REACT_STEP_FINAL;
 		else if (strcmp(type_name, "Reasoning") == 0)	type = REACT_STEP_REASONING;
+		else if (strcmp(type_name, "Content") == 0)	type = REACT_STEP_CONTENT;
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");

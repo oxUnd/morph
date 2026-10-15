@@ -1914,7 +1914,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	std::remove(db_path);
 }
 
-TEST_F(MockLlmTest, StreamsNativeContentAsProvisionalThoughtUntilFinal) {
+TEST_F(MockLlmTest, StreamsNativeContentSeparatelyFromThoughtUntilFinal) {
 	const char *chunks[] = {
 		"# ",
 		"Title\n\nword",
@@ -1933,11 +1933,12 @@ TEST_F(MockLlmTest, StreamsNativeContentAsProvisionalThoughtUntilFinal) {
 
 	int rc = react_run(ctx, "stream final", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 4);
-	EXPECT_EQ(event_recorder_join_text(&rec, "react.thought.delta"),
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.content.delta"), 4);
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.content.delta"),
 		  "# Title\n\nword between words");
 	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
-	EXPECT_LT(event_recorder_index_name(&rec, "react.thought.delta"),
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
+	EXPECT_LT(event_recorder_index_name(&rec, "react.content.delta"),
 		  event_recorder_index_name(&rec, "react.final"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
@@ -1963,13 +1964,17 @@ TEST_F(MockLlmTest, StreamsNativeContentBeforeToolsAndPromotesLastResponse) {
 
 	int rc = react_run(ctx, "inspect", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(event_recorder_join_text(&rec, "react.thought.delta"),
+	EXPECT_EQ(event_recorder_join_text(&rec, "react.content.delta"),
 		  "I will inspect first.Done.");
-	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 3);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.content.delta"), 3);
 	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
-	EXPECT_LT(event_recorder_index_name(&rec, "react.thought.delta"),
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
+	EXPECT_LT(event_recorder_index_name(&rec, "react.content.delta"),
 		  event_recorder_index_name(&rec, "tool.call"));
-	EXPECT_TRUE(event_recorder_has_name(&rec, "react.thought.end"));
+	ASSERT_NE(ctx->steps, nullptr);
+	EXPECT_EQ(ctx->steps->type, REACT_STEP_CONTENT);
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.content.end"));
+	EXPECT_FALSE(event_recorder_has_name(&rec, "react.thought.end"));
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
@@ -1995,8 +2000,9 @@ TEST_F(MockLlmTest, StreamingDeltasDoNotSplitUtf8Codepoints) {
 	int rc = react_run(ctx, "stream utf8", nullptr, nullptr);
 	EXPECT_EQ(rc, 0);
 	EXPECT_TRUE(event_recorder_named_text_valid_utf8(&rec,
-							"react.thought.delta"));
+							"react.content.delta"));
 	EXPECT_EQ(event_recorder_count_name(&rec, "react.final.delta"), 0);
+	EXPECT_EQ(event_recorder_count_name(&rec, "react.thought.delta"), 0);
 	EXPECT_TRUE(event_recorder_has_name(&rec, "react.final"));
 
 	morph_event_recorder_cleanup(&rec);
@@ -4837,7 +4843,7 @@ TEST_F(MockLlmTest, StepLinkedListTraversal) {
 	EXPECT_GE(call_count, 1);
 	ASSERT_GE(ctx->step_count, 3);
 	struct react_step *s = ctx->steps;
-	int type_order[] = {REACT_STEP_THOUGHT, REACT_STEP_ACTION,
+	int type_order[] = {REACT_STEP_CONTENT, REACT_STEP_ACTION,
 			    REACT_STEP_OBSERVATION, REACT_STEP_THOUGHT,
 			    REACT_STEP_FINAL};
 	int idx = 0;

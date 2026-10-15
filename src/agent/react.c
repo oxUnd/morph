@@ -1073,6 +1073,7 @@ const char *react_step_type_name(enum react_step_type type)
 	case REACT_STEP_REFLECTION:	return "Reflection";
 	case REACT_STEP_FINAL:		return "Final";
 	case REACT_STEP_REASONING:	return "Reasoning";
+	case REACT_STEP_CONTENT:		return "Content";
 	default:			return "Unknown";
 	}
 }
@@ -1481,7 +1482,8 @@ static int react_emit_thought_delta(struct react_stream_data *sd,
 			  REACT_OUTPUT_DELTA, delta, NULL, NULL, NULL, 0,
 			  NULL, NULL, NULL);
 	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
-			      "react.thought.delta", "delta", NULL, delta);
+			      sd->provisional_typed_content ? "react.content.delta"
+			      : "react.thought.delta", "delta", NULL, delta);
 	return 0;
 }
 
@@ -1693,12 +1695,8 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 		return 0;
 	}
 	if (kind == LLM_STREAM_CONTENT) {
-		/*
-		 * Structured content can still accompany native tool calls, and
-		 * the response does not reveal that until streaming completes.
-		 * Stream it provisionally as Thought for low latency. A response
-		 * with tools keeps that classification; a response without tools
-		 * is promoted by the terminal Final event.
+		/* Native content is distinct from reasoning. Tool calls may follow,
+		 * so its terminal role is resolved only when the response ends.
 		 */
 		sd->provisional_typed_content = 1;
 		return react_stream_cb(token, user_data);
@@ -3746,10 +3744,10 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (response.tool_call_count > 0 &&
 		    response.content && *response.content) {
 			struct react_step *thought = react_step_create(ctx->turn_arena,
-				REACT_STEP_THOUGHT, response.content, NULL, NULL, NULL);
+				REACT_STEP_CONTENT, response.content, NULL, NULL, NULL);
 			add_step(ctx, thought);
 			react_emit_text_event(ctx, MORPH_EVENT_REACT,
-					      "react.thought.end", "end",
+					      "react.content.end", "end",
 					      NULL, response.content);
 		}
 

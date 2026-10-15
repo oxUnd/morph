@@ -432,7 +432,8 @@ static int bridge_event_cb(const struct morph_event *ev, void *u)
 		return 0;
 	}
 
-	if (strcmp(ev->name, "react.thought.delta") == 0) {
+	if (strcmp(ev->name, "react.thought.delta") == 0 ||
+		    strcmp(ev->name, "react.content.delta") == 0) {
 		char *text = event_data_string(data, "text");
 		if (text && *text)
 			event_sink_thought_turn(j->store, j->session_id,
