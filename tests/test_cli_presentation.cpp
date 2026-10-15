@@ -670,6 +670,103 @@ TEST_F(CliPresentationTest, InteractivePromotesProvisionalContentDeltas)
 	cJSON_Delete(final);
 }
 
+TEST_F(CliPresentationTest, PlainNativeAnswerIsFinalWithoutThoughtOrDuplicateContent)
+{
+	cJSON *body = TextData("Native answer");
+	cJSON *reasoning = TextData("Private reasoning");
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", reasoning);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", body);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("reasoning:"), std::string::npos);
+	EXPECT_NE(output.find("final:"), std::string::npos);
+	EXPECT_EQ(output.find("thought:"), std::string::npos);
+	EXPECT_EQ(output.find("content:"), std::string::npos);
+	EXPECT_EQ(output.find("Native answer"), output.rfind("Native answer"));
+	cJSON_Delete(body);
+	cJSON_Delete(reasoning);
+}
+
+TEST_F(CliPresentationTest, PlainNativeToolPreambleKeepsContentClassification)
+{
+	cJSON *preamble = TextData("Searching first");
+	cJSON *answer = TextData("Answer after search");
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", preamble);
+	Emit(MORPH_EVENT_REACT, "react.content.end", "end", preamble);
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", answer);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("content: Searching first"), std::string::npos);
+	EXPECT_NE(output.find("final:\nAnswer after search"), std::string::npos);
+	EXPECT_EQ(output.find("thought:"), std::string::npos);
+	EXPECT_EQ(output.find("Searching first"), output.rfind("Searching first"));
+	cJSON_Delete(preamble);
+	cJSON_Delete(answer);
+}
+
+TEST_F(CliPresentationTest, InteractiveNativeContentSurvivesInterleavedReasoning)
+{
+	cJSON *body = TextData("# Visible answer\n");
+	cJSON *reasoning = TextData("Separate reasoning");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", reasoning);
+	Emit(MORPH_EVENT_REACT, "react.final", "end", body);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Visible answer"), std::string::npos);
+	EXPECT_EQ(output.find("Visible answer"), output.rfind("Visible answer"));
+	EXPECT_NE(output.find("Separate reasoning"), std::string::npos);
+	cJSON_Delete(body);
+	cJSON_Delete(reasoning);
+}
+
+TEST_F(CliPresentationTest, PlainNativePreambleIsNotTruncatedToStatusLength)
+{
+	std::string long_text(4096, 'x');
+	long_text += " end of content";
+	cJSON *body = TextData(long_text.c_str());
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_REACT, "react.content.end", "end", body);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find(long_text), std::string::npos);
+	cJSON_Delete(body);
+}
+
+TEST_F(CliPresentationTest, CancelledNativeAnswerPreservesSanitizedPartialContent)
+{
+	cJSON *body = TextData("Partial\033[31m answer");
+	cJSON *outcome = cJSON_CreateObject();
+	cJSON_AddStringToObject(outcome, "outcome", "cancelled");
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_REACT, "react.turn.end", "cancelled", outcome);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("content: Partial answer"), std::string::npos);
+	EXPECT_EQ(output.find("\033[31m"), std::string::npos);
+	cJSON_Delete(body);
+	cJSON_Delete(outcome);
+}
+
+TEST_F(CliPresentationTest, NativeContentEndWithoutDeltasRendersPreamble)
+{
+	cJSON *body = TextData("Preamble without deltas");
+	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.end", "end", body);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("content: Preamble without deltas"), std::string::npos);
+	EXPECT_EQ(output.find("thought:"), std::string::npos);
+	cJSON_Delete(body);
+}
+
 TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 {
 	cJSON *first = TextData("Inspect");

@@ -158,7 +158,11 @@ react.failed
 `react.reasoning.delta`. Its final role is known when the response completes:
 text before tool calls ends with `react.content.end`; an answer ends with
 `react.final`. Frontends can render content immediately without treating it
-as reasoning or waiting for the terminal event.
+as reasoning or waiting for the terminal event. Native tool preambles persist
+as `Content` trace steps; the low-level output callback uses
+`REACT_STEP_CONTENT`. CLI labels preambles `content` in plain output, while
+Android stores `CONTENT` and `REASONING` separately and renders assistant
+content as streaming Markdown. Legacy thought events remain supported.
 
 Tool:
 

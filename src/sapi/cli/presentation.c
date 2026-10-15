@@ -6,6 +6,7 @@
 #define CLI_STREAM_THOUGHT   1
 #define CLI_STREAM_REASONING 2
 #define CLI_STREAM_FINAL     3
+#define CLI_STREAM_CONTENT   4
 #define CLI_EVENT_TEXT_MAX   2000
 #define CLI_EVENT_ARGS_MAX   180
 #define CLI_TREE_VALUE_MAX   2000
@@ -469,7 +470,8 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (already_streamed)
 		goto reset;
 	label = ctx->event_stream_kind == CLI_STREAM_REASONING ?
-		"reasoning" : "thought";
+		"reasoning" : (ctx->event_stream_kind == CLI_STREAM_CONTENT ?
+		"content" : "thought");
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		print_plain_labeled(label, content);
 	} else {
@@ -477,6 +479,8 @@ static void presentation_print_stream(struct cli_context *ctx)
 		cli_markdown_render_ansi_with_media_indented(content, 2, media_callback, ctx);
 	}
 reset:
+	if (ctx->event_stream_kind == CLI_STREAM_CONTENT)
+		ctx->native_content_visible = 1;
 	morph_buf_reset(&ctx->event_stream);
 	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	ctx->event_stream_kind = CLI_STREAM_NONE;
@@ -498,8 +502,31 @@ static void presentation_discard_stream(struct cli_context *ctx)
 	ctx->event_stream_visible = 0;
 }
 
+static void presentation_plain_content(struct cli_context *ctx, const char *text)
+{
+	char *safe;
+
+	if (ctx->presentation_mode != CLI_PRESENT_ONCE_PLAIN)
+		return;
+	if (!text || !*text)
+		text = morph_buf_cstr(&ctx->native_content);
+	if (text && *text) {
+		safe = presentation_safe_dup(text, SIZE_MAX,
+			UTF8_TERMINAL_TEXT_MULTILINE);
+		if (safe) {
+			if (strchr(safe, '\n'))
+				printf("content:\n%s\n", safe);
+			else
+				printf("content: %s\n", safe);
+			free(safe);
+		}
+	}
+	morph_buf_reset(&ctx->native_content);
+}
+
 void cli_presentation_flush_stream(struct cli_context *ctx)
 {
+	presentation_plain_content(ctx, NULL);
 	presentation_print_stream(ctx);
 	cli_markdown_stream_reset(ctx, 1);
 }
@@ -993,10 +1020,16 @@ static void presentation_final(struct cli_context *ctx,
 	const char *text = event_string(ev, "text");
 	int had_stream = ctx->markdown_stream_visible &&
 		(ctx->markdown_stream_kind == CLI_STREAM_THOUGHT ||
+		 ctx->markdown_stream_kind == CLI_STREAM_CONTENT ||
 		 ctx->markdown_stream_kind == CLI_STREAM_FINAL);
+	had_stream = had_stream || ctx->native_content_visible;
+	morph_buf_reset(&ctx->native_content);
+	ctx->native_content_started = 0;
+	ctx->native_content_visible = 0;
 
 	presentation_clear_status(ctx);
-	if (ctx->event_stream_kind == CLI_STREAM_THOUGHT &&
+	if ((ctx->event_stream_kind == CLI_STREAM_THOUGHT ||
+	     ctx->event_stream_kind == CLI_STREAM_CONTENT) &&
 	    !ctx->event_stream_complete)
 		presentation_discard_stream(ctx);
 	else
@@ -1038,6 +1071,7 @@ static void presentation_turn_end(struct cli_context *ctx,
 		return;
 	if (ctx->final_rendered)
 		return;
+	presentation_plain_content(ctx, NULL);
 	cli_markdown_stream_reset(ctx, 1);
 	presentation_clear_status(ctx);
 	presentation_print_stream(ctx);
@@ -1318,6 +1352,14 @@ int cli_presentation_init(struct cli_context *ctx)
 		morph_buf_cleanup(&ctx->event_stream);
 		return rc;
 	}
+	rc = morph_buf_init(&ctx->native_content, BUFSIZ);
+	if (rc != 0) {
+		morph_strmap_cleanup(&ctx->announced_artifacts);
+		morph_strmap_cleanup(&ctx->rendered_artifacts);
+		morph_buf_cleanup(&ctx->markdown_stream_text);
+		morph_buf_cleanup(&ctx->event_stream);
+		return rc;
+	}
 	return 0;
 }
 
@@ -1326,6 +1368,9 @@ void cli_presentation_reset(struct cli_context *ctx)
 	if (!ctx)
 		return;
 	cli_transcript_reset(ctx);
+	morph_buf_reset(&ctx->native_content);
+	ctx->native_content_started = 0;
+	ctx->native_content_visible = 0;
 	morph_buf_reset(&ctx->event_stream);
 	utf8_terminal_sanitizer_reset(&ctx->event_stream_sanitizer);
 	morph_strmap_clear(&ctx->rendered_artifacts);
@@ -1356,6 +1401,7 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	cli_transcript_reset(ctx);
 	presentation_clear_status(ctx);
 	cli_markdown_stream_reset(ctx, 0);
+	morph_buf_cleanup(&ctx->native_content);
 	morph_buf_cleanup(&ctx->markdown_stream_text);
 	morph_buf_cleanup(&ctx->event_stream);
 	morph_strmap_cleanup(&ctx->rendered_artifacts);
@@ -1407,6 +1453,9 @@ int cli_presentation_event(struct cli_context *ctx,
 			return 0;
 		}
 		if (strcmp(ev->name, "react.user.steer") == 0) {
+			morph_buf_reset(&ctx->native_content);
+			ctx->native_content_started = 0;
+			ctx->native_content_visible = 0;
 			presentation_clear_status(ctx);
 			presentation_discard_stream(ctx);
 			printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
@@ -1417,8 +1466,36 @@ int cli_presentation_event(struct cli_context *ctx,
 			presentation_model_wait(ctx);
 			return 0;
 		}
-		if (strcmp(ev->name, "react.thought.delta") == 0 ||
-		    strcmp(ev->name, "react.content.delta") == 0) {
+		if (strcmp(ev->name, "react.content.delta") == 0) {
+			ctx->native_content_started = 1;
+			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
+				return text ? morph_buf_puts(&ctx->native_content, text) : 0;
+			int rc = presentation_append_stream(
+				ctx, CLI_STREAM_CONTENT, text, 1, 0, NULL);
+			if (rc == 0) {
+				presentation_clear_status(ctx);
+				rc = cli_markdown_stream_append(ctx, text, CLI_STREAM_CONTENT);
+			}
+			return rc;
+		}
+		if (strcmp(ev->name, "react.content.end") == 0) {
+			if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
+				presentation_plain_content(ctx, text);
+			} else {
+				if (!ctx->native_content_started ||
+				    ctx->event_stream_kind == CLI_STREAM_CONTENT) {
+					int rc = presentation_append_stream(ctx,
+						CLI_STREAM_CONTENT, text, 0, 1, NULL);
+					if (rc != 0)
+						return rc;
+				}
+				presentation_print_stream(ctx);
+			}
+			ctx->native_content_started = 0;
+			ctx->native_content_visible = 0;
+			return 0;
+		}
+		if (strcmp(ev->name, "react.thought.delta") == 0) {
 			int rc = presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 1, 0, NULL);
 
@@ -1430,8 +1507,7 @@ int cli_presentation_event(struct cli_context *ctx,
 			}
 			return rc;
 		}
-		if (strcmp(ev->name, "react.thought.end") == 0 ||
-		    strcmp(ev->name, "react.content.end") == 0)
+		if (strcmp(ev->name, "react.thought.end") == 0)
 			return presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 0, 1, NULL);
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {

@@ -54,6 +54,8 @@ struct cli_context {
 	int event_stream_complete;
 	int event_stream_visible;
 	int final_rendered;
+	int native_content_started;
+	int native_content_visible;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
 	int markdown_stream_prefix_pending;
@@ -62,6 +64,7 @@ struct cli_context {
 	char workdir[PATH_MAX];
 	char mcp_tree_server[MCP_NAME_MAX];
 	morph_buf_t event_stream;
+	morph_buf_t native_content;
 	morph_buf_t markdown_stream_text;
 	struct utf8_terminal_sanitizer event_stream_sanitizer;
 	struct utf8_terminal_sanitizer markdown_stream_sanitizer;

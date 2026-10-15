@@ -1478,8 +1478,9 @@ static int react_emit_thought_delta(struct react_stream_data *sd,
 		return -ENOMEM;
 	memcpy(delta, text, len);
 	delta[len] = '\0';
-	react_output_emit(sd->user_cb, sd->user_data, REACT_STEP_THOUGHT,
-			  REACT_OUTPUT_DELTA, delta, NULL, NULL, NULL, 0,
+	react_output_emit(sd->user_cb, sd->user_data,
+			  sd->provisional_typed_content ? REACT_STEP_CONTENT
+			  : REACT_STEP_THOUGHT, REACT_OUTPUT_DELTA, delta, NULL, NULL, NULL, 0,
 			  NULL, NULL, NULL);
 	react_emit_text_event(sd->ctx, MORPH_EVENT_REACT,
 			      sd->provisional_typed_content ? "react.content.delta"
