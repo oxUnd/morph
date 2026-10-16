@@ -325,13 +325,13 @@ int session_update_model(struct db *db, int64_t id, const char *model)
 	if (!db || !db->handle || !model)
 		return -EINVAL;
 	sqlite3_stmt *stmt;
-	const char *sql = "UPDATE sessions SET model=?, updated_at=? WHERE id=?";
+	const char *sql = "UPDATE sessions SET model=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		MORPH_RETURN(MORPH_ERR_DB);
 	sqlite3_bind_text(stmt, 1, model, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
-	sqlite3_bind_int64(stmt, 3, id);
+	/* Model synchronization also runs when merely opening a session. */
+	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)

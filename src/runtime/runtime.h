@@ -116,6 +116,10 @@ int runtime_session_rename_and_update(struct runtime *runtime, int64_t id,
 				      const char *name);
 int runtime_session_list_all(struct runtime *runtime, struct session **out,
 			     int *count, int recent_first);
+/* Active history tokens used by automatic compaction, excluding billed usage.
+ * Returns -ENODATA for legacy sessions without model history. */
+int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
+				   int64_t *out);
 void runtime_session_list_free(struct session *sessions);
 int runtime_session_reload_current(struct runtime *runtime);
 const char *runtime_session_current_name(const struct runtime *runtime);

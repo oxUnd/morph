@@ -88,6 +88,85 @@ TEST_F(RuntimeLifecycleTest, OwnsSessionAndServices)
 	runtime_close(instance);
 }
 
+TEST_F(RuntimeLifecycleTest, ContextTokensExcludeCompactedHistoryAndBilledUsage)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	session created{};
+	int64_t tokens = -1;
+	sqlite3 *db = nullptr;
+
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "usage", &created), 0);
+	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), 0);
+	EXPECT_EQ(tokens, 0);
+	ASSERT_EQ(sqlite3_open(database, &db), SQLITE_OK);
+	std::string id = std::to_string(created.id);
+	std::string sql = "UPDATE sessions SET token_used=999999 WHERE id=" + id +
+		";INSERT INTO model_history_items"
+		"(session_id,sequence_no,kind,content,token_count,active,created_at) VALUES (" +
+		id + ",1,'user','old',90000,0,1),(" + id +
+		",2,'summary','summary',1200,1,2),(" + id +
+		",3,'user','recent',300,1,3)";
+	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), 0);
+	EXPECT_EQ(tokens, 1500);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "legacy", &created), 0);
+	sql = "INSERT INTO messages(session_id,role,content,token_count,created_at) VALUES (" +
+		std::to_string(created.id) + ",'user','legacy history',10,1)";
+	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_EQ(runtime_session_context_tokens(instance, created.id, &tokens), -ENODATA);
+	EXPECT_EQ(runtime_session_context_tokens(nullptr, created.id, &tokens), -EINVAL);
+	sqlite3_close(db);
+	runtime_close(instance);
+}
+
+TEST_F(RuntimeLifecycleTest, OpeningSessionPreservesActivityAndRecentOrder)
+{
+	runtime_options options{};
+	runtime *instance = nullptr;
+	session older{};
+	session newer{};
+	session selected{};
+	session *sessions = nullptr;
+	sqlite3 *db = nullptr;
+	int count = 0;
+	int created = 0;
+
+	options.db_path = database;
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "older", &older), 0);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "newer", &newer), 0);
+	ASSERT_EQ(sqlite3_open(database, &db), SQLITE_OK);
+	std::string sql = "UPDATE sessions SET updated_at=100 WHERE id=" +
+		std::to_string(older.id) +
+		";UPDATE sessions SET updated_at=200 WHERE id=" + std::to_string(newer.id);
+	ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+	ASSERT_EQ(runtime_session_select(instance, "older", &selected, &created), 0);
+	EXPECT_EQ(created, 0);
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	int older_index = -1;
+	int newer_index = -1;
+	for (int i = 0; i < count; i++) {
+		if (sessions[i].id == older.id) {
+			older_index = i;
+			EXPECT_EQ(sessions[i].updated_at, 100);
+		}
+		if (sessions[i].id == newer.id)
+			newer_index = i;
+	}
+	EXPECT_GE(newer_index, 0);
+	EXPECT_GT(older_index, newer_index);
+	runtime_session_list_free(sessions);
+	sqlite3_close(db);
+	runtime_close(instance);
+}
+
 TEST_F(RuntimeLifecycleTest, EmitsStartupProgress)
 {
 	runtime_options options{};

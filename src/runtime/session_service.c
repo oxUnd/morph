@@ -147,6 +147,35 @@ int runtime_session_list_all(struct runtime *runtime, struct session **out,
 			    recent_first, NULL);
 }
 
+int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
+				   int64_t *out)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!runtime || session_id <= 0 || !out)
+		MORPH_RETURN(-EINVAL);
+	*out = 0;
+	rc = sqlite3_prepare_v2(runtime->context.database.handle,
+		"SELECT COALESCE(SUM(CASE WHEN active=1 THEN token_count "
+		"ELSE 0 END),0),COUNT(*),"
+		"EXISTS(SELECT 1 FROM messages WHERE session_id=?1) "
+		"FROM model_history_items WHERE session_id=?1", -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		*out = sqlite3_column_int64(stmt, 0);
+		rc = sqlite3_column_int64(stmt, 1) == 0 &&
+			sqlite3_column_int(stmt, 2) ? -ENODATA : 0;
+	} else {
+		rc = MORPH_ERR_DB;
+	}
+	sqlite3_finalize(stmt);
+	MORPH_RETURN(rc);
+}
+
 void runtime_session_list_free(struct session *sessions)
 {
 	free(sessions);
