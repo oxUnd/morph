@@ -2,10 +2,13 @@
 #include "agent/tools/exec_tool.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
+#include "util/file.h"
 
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <algorithm>
+#include <filesystem>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -239,33 +242,46 @@ TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
 	rmdir(workdir);
 }
 
-TEST(ExecToolTest, DynamicCommandIsRejectedBeforeApproval)
+TEST(ExecToolTest, DynamicScriptsExecuteInsideWorkspace)
 {
-	char work_template[] = "/tmp/morph_exec_dynamic_policy_XXXXXX";
-	char *workdir = mkdtemp(work_template);
+	char work_template[] = "/tmp/morph_exec_dynamic_XXXXXX";
+	ASSERT_NE(mkdtemp(work_template), nullptr);
 	struct tool_registry registry;
-	struct tool_result result;
 	ExecApprovalState approval;
-
-	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	auto *tctx = tool_context_create(work_template, work_template);
 	ASSERT_NE(tctx, nullptr);
-	tool_context_set_operation_approval(
-		tctx, approve_exec_operation, &approval);
+	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
 	tool_registry_init(&registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
-	tool_result_init(&result);
-	EXPECT_EQ(tool_exec(
-		&registry, "exec",
-		"{\"command\":\"$COMMAND argument\","
-		"\"workdir\":\"/tmp\",\"yield_time_ms\":1000}",
-		&result), -EPERM);
+	const char *commands[] = {
+		"COMMAND=printf; \"$COMMAND\" '%s' variable",
+		"NAME=$(printf world); printf 'hello %s' \"$NAME\"",
+		"for n in 1 2; do printf '%s' \"$n\"; done",
+		"values=(alpha beta); printf '%s' \"${values[1]}\"",
+		"x=42"
+	};
+	const char *expected[] = {"variable", "hello world", "12", "beta", ""};
+	for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "command", commands[i]);
+		cJSON_AddStringToObject(args, "workdir", work_template);
+		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
+		char *json = cJSON_PrintUnformatted(args);
+		struct tool_result result;
+		tool_result_init(&result);
+		ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0) << commands[i];
+		ASSERT_NE(result.data, nullptr);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
+			expected[i]);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+		tool_result_cleanup(&result);
+		free(json);
+		cJSON_Delete(args);
+	}
 	EXPECT_EQ(approval.calls, 0);
-	ASSERT_NE(result.envelope, nullptr);
-	tool_result_cleanup(&result);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
-	rmdir(workdir);
+	rmdir(work_template);
 }
 
 TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
@@ -569,3 +585,74 @@ TEST_F(ProcessTest, ManyConcurrentSpawnsAcrossSessionArrayGrowth)
 }
 
 }  /* namespace */
+
+TEST(ExecToolTest, DynamicCommandsStillUseApprovalOutsideTrustedScope)
+{
+	struct tool_registry registry;
+	ExecApprovalState approval;
+	auto *tctx = tool_context_create("/tmp/morph-dynamic-work", "/tmp/morph-dynamic-work");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *op, void *data) {
+			(void)approve_exec_operation(op, data);
+			return TOOL_OP_DENY;
+		}, &approval);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	struct tool_result result;
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&registry, "exec",
+		"{\"command\":\"CMD=printf; $CMD dynamic\",\"workdir\":\"/\"}", &result), -EACCES);
+	EXPECT_EQ(approval.calls, 1);
+	EXPECT_NE(std::find(approval.programs.begin(), approval.programs.end(), "shell"),
+		approval.programs.end());
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+}
+
+TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
+{
+	const char *home = getenv("HOME");
+	ASSERT_NE(home, nullptr);
+	char temp[PATH_MAX];
+	ASSERT_LT(snprintf(temp, sizeof(temp), "%s/.morph_grant_exec_XXXXXX", home),
+		(int)sizeof(temp));
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string base(temp);
+	std::string work = base + "/work";
+	std::string profile = base + "/profile";
+	ASSERT_EQ(file_ensure_dir(work.c_str()), 0);
+	ASSERT_EQ(file_ensure_dir(profile.c_str()), 0);
+	auto *tctx = tool_context_create(work.c_str(), work.c_str());
+	ASSERT_NE(tctx, nullptr);
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	char principal[TOOL_CONTEXT_CLI_NAME_MAX];
+	ASSERT_EQ(tool_context_command_principal("printf okay", principal, sizeof(principal)), 0);
+	for (int i = 0; i < 40; i++) {
+		std::string dir = base + "/grant-" + std::to_string(i);
+		ASSERT_EQ(tool_context_grant_write_access(tctx, principal, dir.c_str(), 1,
+			TOOL_OP_SESSION, NULL, 0), 0);
+	}
+	ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, profile.c_str()), 0);
+	std::string command = "printf okay > '" + profile + "/result'";
+	cJSON *args = cJSON_CreateObject();
+	cJSON_AddStringToObject(args, "command", command.c_str());
+	cJSON_AddStringToObject(args, "workdir", work.c_str());
+	cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
+	char *json = cJSON_PrintUnformatted(args);
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+	EXPECT_TRUE(file_exists((profile + "/result").c_str()));
+	tool_result_cleanup(&result);
+	free(json);
+	cJSON_Delete(args);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	std::filesystem::remove_all(temp);
+}

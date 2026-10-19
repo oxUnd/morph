@@ -22,6 +22,7 @@ enum path_base {
 enum path_kind {
 	PATH_DIRECTORY,
 	PATH_EXISTING_DIRECTORY,
+	PATH_TEMP_DIRECTORY,
 	PATH_DEVICE,
 };
 
@@ -49,6 +50,7 @@ static const struct tool_path tool_paths[] = {
 	TOOL_DIR("xdg-state", PATH_HOME, ".local/state", NULL),
 	TOOL_DIR("xdg-state", PATH_HOME, ".local/state", "XDG_STATE_HOME"),
 	{"xdg-runtime", PATH_ABSOLUTE, "", "XDG_RUNTIME_DIR", PATH_EXISTING_DIRECTORY},
+	{"temporary", PATH_ABSOLUTE, "", "TMPDIR", PATH_TEMP_DIRECTORY},
 	{"terminal", PATH_ABSOLUTE, "/dev/tty", NULL, PATH_DEVICE},
 #ifdef __APPLE__
 	TOOL_DIR("macos-cache", PATH_HOME, "Library/Caches", NULL),
@@ -414,6 +416,8 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 		char *path = NULL;
 		const char *value = entry->env ? getenv(entry->env) : NULL;
 
+		if (entry->kind == PATH_TEMP_DIRECTORY && !cfg->allow_temp)
+			continue;
 		if (entry->base == PATH_LIST && value && *value) {
 			char *parts = arena_strdup(arena, value);
 			char *part;

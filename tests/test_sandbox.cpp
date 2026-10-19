@@ -2,9 +2,14 @@
 extern "C" {
 #include "sandbox/sandbox.h"
 #include "sandbox/tool_paths.h"
+#include "agent/tool_context.h"
+#include "agent/tool.h"
+#include "agent/tools/exec_tool.h"
+#include "agent/tools/request_permissions.h"
 extern char **environ;
 }
 #include <cerrno>
+#include <filesystem>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -1094,4 +1099,110 @@ TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
 	EXPECT_EQ(rc, 0);
 	std::string cleanup = std::string("rm -rf ") + temp;
 	EXPECT_EQ(system(cleanup.c_str()), 0);
+}
+
+TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
+{
+	const char *real_home = getenv("HOME");
+	ASSERT_NE(real_home, nullptr);
+	char temp[PATH_MAX];
+	ASSERT_LT(snprintf(temp, sizeof(temp), "%s/.morph_approval_XXXXXX", real_home),
+		(int)sizeof(temp));
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string base(temp);
+	ASSERT_EQ(mkdir((base + "/home").c_str(), 0700), 0);
+	ASSERT_EQ(mkdir((base + "/work").c_str(), 0700), 0);
+	int rc = run_in_child([&]() {
+		while (environ && *environ) {
+			std::string name(*environ);
+			name.resize(name.find('='));
+			if (unsetenv(name.c_str()) != 0)
+				return 10;
+		}
+		std::string home = base + "/home";
+		setenv("HOME", home.c_str(), 1);
+		struct tool_context *tctx = tool_context_create(
+			(base + "/work").c_str(), (base + "/work").c_str());
+		if (!tctx)
+			return 11;
+		int approvals = 0;
+		tool_context_set_operation_approval(tctx,
+			[](const struct tool_operation *, void *data) {
+				++*static_cast<int *>(data);
+				return TOOL_OP_DENY;
+			}, &approvals);
+		struct tool_registry registry;
+		tool_registry_init(&registry);
+		if (exec_tool_init(&registry, tctx, nullptr) != 0 ||
+		    request_permissions_init(&registry, tctx) != 0)
+			return 12;
+		if (tctx->builtin_paths.nelts <= TOOL_CONTEXT_ALLOW_MAX)
+			return 13;
+		const char *roots[] = {".gradle", ".config", ".morph/skills", ".codex"};
+		for (const char *root : roots) {
+			std::string dir = home + "/" + root;
+			std::string file = dir + "/config.txt";
+			int fd = open(file.c_str(), O_CREAT | O_WRONLY, 0600);
+			if (fd < 0)
+				return 14;
+			close(fd);
+			for (enum tool_path_op op : {TOOL_PATH_READ, TOOL_PATH_WRITE,
+						    TOOL_PATH_DELETE}) {
+				if (tool_context_authorize_path(tctx, op, file.c_str(),
+					NULL, 0) != 0)
+					return 15;
+			}
+			if (tool_context_authorize_path(tctx, TOOL_PATH_LIST,
+				dir.c_str(), NULL, 0) != 0 ||
+			    tool_context_request_write_access(tctx, "gradle", "gradle test",
+				dir.c_str(), NULL, 0) != 0 ||
+			    tool_context_request_delete_access(tctx, "gradle", "gradle clean",
+				dir.c_str(), NULL, 0) != 0)
+				return 16;
+			struct tool_operation operation = {};
+			operation.kind = TOOL_OP_PATH_WRITE;
+			operation.target = file.c_str();
+			enum tool_operation_verdict verdict = TOOL_OP_DENY;
+			if (tool_context_check_operation_verdict(tctx, &operation,
+				&verdict) != 0 || verdict != TOOL_OP_ALLOW)
+				return 17;
+			std::string request = "{\"command\":\"gradle test\","
+				"\"permissions\":{\"file_system\":{\"write\":[\"" + dir +
+				"\"],\"delete\":[\"" + dir + "\"]}}}";
+			struct tool_result result;
+			tool_result_init(&result);
+			if (tool_exec(&registry, "request_permissions", request.c_str(),
+				&result) != 0 || !result.envelope ||
+			    cJSON_GetObjectItem(result.envelope, "error"))
+				return 18;
+			tool_result_cleanup(&result);
+		}
+		if (approvals != 0)
+			return 19;
+		std::string outside = home + "/private";
+		if (mkdir(outside.c_str(), 0700) != 0 ||
+		    symlink(outside.c_str(), (home + "/.gradle/escape").c_str()) != 0)
+			return 20;
+		for (const std::string &file : {home + "/.gradle-other/config",
+				home + "/.gradle/escape/config", home + "/.morph/config.toml"}) {
+			if (tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+				file.c_str(), NULL, 0) != -EACCES)
+				return 21;
+		}
+		if (approvals != 3)
+			return 22;
+		if (rename((home + "/.gradle").c_str(),
+			   (home + "/.gradle-old").c_str()) != 0 ||
+		    symlink(outside.c_str(), (home + "/.gradle").c_str()) != 0)
+			return 23;
+		if (tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+			(home + "/.gradle/config").c_str(), NULL, 0) != -EACCES ||
+		    approvals != 4)
+			return 24;
+		tool_registry_cleanup(&registry);
+		tool_context_destroy(tctx);
+		return 0;
+	});
+	EXPECT_EQ(rc, 0);
+	std::filesystem::remove_all(temp);
 }

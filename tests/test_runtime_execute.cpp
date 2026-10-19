@@ -295,3 +295,40 @@ TEST_F(RuntimeExecuteTest, InvalidTurnArgumentsAreRejected)
 	EXPECT_EQ(runtime_execute_turn(instance, nullptr, &result), -EINVAL);
 	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), -EINVAL);
 }
+
+TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
+{
+	std::string skills = directory + "-skills";
+	std::string trusted = directory + "-trusted";
+	std::filesystem::create_directories(trusted);
+	WriteConfig("[memory]\nenabled=false\n[skill]\ndir=\"" + skills +
+		"\"\n[react.permissions]\nactive_profile=\"test\"\n"
+		"[[react.permission_profiles]]\nname=\"test\"\nwrite_paths=[\"" + trusted + "\"]\n");
+	struct State { std::string skills; std::string trusted; bool called = false; } state;
+	state.skills = skills;
+	state.trusted = trusted;
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.enable_exec = 0;
+	options.platform_tools_user_data = &state;
+	options.platform_tools_cb = [](struct tool_registry *tools,
+		struct tool_context *tctx, void *data) {
+		auto *state = static_cast<State *>(data);
+		state->called = true;
+		EXPECT_EQ(tool_lookup(tools, "exec"), nullptr);
+		EXPECT_GT(tctx->builtin_paths.nelts, 32u);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+			(state->skills + "/SKILL.md").c_str(), NULL, 0), 0);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+			(state->trusted + "/config").c_str(), NULL, 0), 0);
+		EXPECT_NE(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+			(state->trusted + "/config").c_str(), NULL, 0), 0);
+		return 0;
+	};
+	Open(&options);
+	EXPECT_TRUE(state.called);
+	runtime_close(instance);
+	instance = nullptr;
+	std::filesystem::remove_all(skills);
+	std::filesystem::remove_all(trusted);
+}

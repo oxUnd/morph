@@ -22,6 +22,7 @@ add_library(morph-tools STATIC
 	runtime_query.c
 	dynamic_tools.c
 	exec_tool.c
+	path_policy.c
 )
 
 # stb_image_write/resize2 use long-form macros and pragmas; suppress noisy warnings

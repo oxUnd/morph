@@ -1210,3 +1210,46 @@ TEST_F(DynamicToolsTest, ServerProfileDeniesImageCapability)
 		  std::string::npos);
 	tool_result_cleanup(&result);
 }
+
+TEST_F(DynamicToolsTest, FilesystemAllowlistRejectsSiblingPrefixesAndSymlinks)
+{
+	std::string allowed = root + "/allowed";
+	std::string sibling = root + "/allowed-other";
+	ASSERT_EQ(file_ensure_dir(allowed.c_str()), 0);
+	ASSERT_EQ(file_ensure_dir(sibling.c_str()), 0);
+	ASSERT_EQ(file_write_all((sibling + "/secret").c_str(), "secret", 6), 0);
+	ASSERT_EQ(symlink(sibling.c_str(), (allowed + "/escape").c_str()), 0);
+	snprintf(cfg.dynamic_tools.local.allowed_read_paths[0],
+		sizeof(cfg.dynamic_tools.local.allowed_read_paths[0]), "%s", allowed.c_str());
+	cfg.dynamic_tools.local.allowed_read_paths_count = 1;
+	snprintf(cfg.dynamic_tools.local.allowed_write_paths[0],
+		sizeof(cfg.dynamic_tools.local.allowed_write_paths[0]), "%s", allowed.c_str());
+	cfg.dynamic_tools.local.allowed_write_paths_count = 1;
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	std::string source = "function run(args) { if (args.write) {"
+		"morph.fs.writeText(args.path, 'ok'); return {ok:true}; }"
+		"return {text:morph.fs.readText(args.path)}; }";
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+		create_args("boundary_probe", source).c_str(), &result), 0);
+	tool_result_cleanup(&result);
+	for (const std::string &path : {allowed + "/ok", sibling + "/result",
+		allowed + "/escape/result"}) {
+		tool_result_init(&result);
+		std::string args = "{\"write\":true,\"path\":\"" + path + "\"}";
+		int rc = tool_exec(&reg, "boundary_probe", args.c_str(), &result);
+		if (path == allowed + "/ok")
+			EXPECT_EQ(rc, 0);
+		else
+			EXPECT_NE(rc, 0);
+		tool_result_cleanup(&result);
+	}
+	for (const std::string &path : {sibling + "/secret", allowed + "/escape/secret"}) {
+		tool_result_init(&result);
+		std::string args = "{\"path\":\"" + path + "\"}";
+		EXPECT_NE(tool_exec(&reg, "boundary_probe", args.c_str(), &result), 0);
+		tool_result_cleanup(&result);
+	}
+	EXPECT_FALSE(file_exists((sibling + "/result").c_str()));
+}

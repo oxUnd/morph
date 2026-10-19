@@ -924,3 +924,126 @@ TEST_F(ToolContextTest, CheckCommandPatternPrefix) {
 	EXPECT_EQ(check_command(tctx, "cmake --build build", NULL), 0);
 	tool_context_destroy(tctx);
 }
+
+TEST_F(ToolContextTest, NativeWriteAndDeleteApprovalsRemainSeparate)
+{
+	char temp[] = "/tmp/morph_native_grants_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string file = std::string(temp) + "/config";
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	int approvals = 0;
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *, void *data) {
+			++*static_cast<int *>(data);
+			return TOOL_OP_SESSION;
+		}, &approvals);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(approvals, 1);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(approvals, 1);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(approvals, 2);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(approvals, 2);
+	tool_context_destroy(tctx);
+	rmdir(temp);
+}
+
+TEST_F(ToolContextTest, NativeAndExecAlwaysDeleteGrantsSurviveReload)
+{
+	char temp[] = "/tmp/morph_always_delete_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string base(temp);
+	std::string file = base + "/file";
+	struct db db = {};
+	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		auto *tctx = tool_context_create("/work", "/output");
+		ASSERT_NE(tctx, nullptr);
+		ASSERT_EQ(tool_context_set_grant_store(tctx, &db, temp), 0);
+		op_always_calls = 0;
+		tool_context_set_operation_approval(tctx, op_always, nullptr);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, file.c_str(), NULL, 0), 0);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, file.c_str(), NULL, 0), 0);
+		EXPECT_EQ(op_always_calls, attempt == 0 ? 1 : 0);
+		op_always_calls = 0;
+		EXPECT_EQ(tool_context_request_delete_access(tctx, "rm", "rm file", temp, NULL, 0), 0);
+		EXPECT_EQ(tool_context_request_delete_access(tctx, "rm", "rm file", temp, NULL, 0), 0);
+		EXPECT_EQ(op_always_calls, attempt == 0 ? 1 : 0);
+		tool_context_set_operation_approval(tctx, op_deny, nullptr);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE, file.c_str(), NULL, 0), -EACCES);
+		tool_context_destroy(tctx);
+	}
+	db_close(&db);
+	rmdir(temp);
+}
+
+TEST_F(ToolContextTest, ProfilePathsApplyToNativeToolsWithoutDeleteEscalation)
+{
+	char temp[] = "/tmp/morph_native_profile_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	auto *tctx = tool_context_create("/work", "/output");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, temp), 0);
+	std::string file = std::string(temp) + "/config";
+	ASSERT_EQ(file_write_all(file.c_str(), "x", 1), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE, file.c_str(), NULL, 0), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE, file.c_str(), NULL, 0), -EACCES);
+	tool_context_destroy(tctx);
+	unlink(file.c_str());
+	rmdir(temp);
+}
+
+TEST_F(ToolContextTest, CollectAllGrantsWithoutTruncatingProfile)
+{
+	char temp[] = "/tmp/morph_many_grants_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	auto *tctx = tool_context_create("/work", "/output");
+	ASSERT_NE(tctx, nullptr);
+	for (int i = 0; i < 40; i++) {
+		std::string path = std::string(temp) + "/grant-" + std::to_string(i);
+		ASSERT_EQ(tool_context_grant_write_access(tctx, "gradle", path.c_str(), 1,
+			TOOL_OP_SESSION, NULL, 0), 0);
+	}
+	ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, temp), 0);
+	morph_array_t paths;
+	ASSERT_EQ(morph_array_init(&paths, 4, sizeof(const char *)), 0);
+	ASSERT_EQ(tool_context_collect_path_grants(tctx, "gradle", TOOL_PATH_WRITE, &paths), 0);
+	EXPECT_EQ(paths.nelts, 41u);
+	const char *limited[TOOL_CONTEXT_ALLOW_MAX];
+	EXPECT_EQ(tool_context_collect_write_grants(tctx, "gradle", limited,
+		TOOL_CONTEXT_ALLOW_MAX), -ENOSPC);
+	morph_array_cleanup(&paths);
+	tool_context_destroy(tctx);
+	for (int i = 0; i < 40; i++)
+		rmdir((std::string(temp) + "/grant-" + std::to_string(i)).c_str());
+	rmdir(temp);
+}
+
+TEST_F(ToolContextTest, CustomTmpdirPermissionRequestDoesNotPrompt)
+{
+	ScopedEnvVar tmpdir("TMPDIR");
+	const char *home = getenv("HOME");
+	ASSERT_NE(home, nullptr);
+	char temp[PATH_MAX];
+	ASSERT_LT(snprintf(temp, sizeof(temp), "%s/.morph_tmp_policy_XXXXXX", home),
+		(int)sizeof(temp));
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	tmpdir.Set(temp);
+	auto *tctx = tool_context_create("/work", "/output");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	EXPECT_EQ(tool_context_request_scoped_access(tctx, TOOL_PATH_WRITE,
+		"printf", "printf x", temp, 0, NULL, 0), 0);
+	EXPECT_EQ(tool_context_request_scoped_access(tctx, TOOL_PATH_DELETE,
+		"rm", "rm x", temp, 0, NULL, 0), 0);
+	tmpdir.Set("/");
+	EXPECT_EQ(tool_context_request_scoped_access(tctx, TOOL_PATH_WRITE,
+		"printf", "printf x", temp, 0, NULL, 0), -EACCES);
+	tool_context_destroy(tctx);
+	rmdir(temp);
+}

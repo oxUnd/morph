@@ -75,10 +75,13 @@ struct tool_context {
 	int read_allowed_dirs_count;
 	char write_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int write_allowed_dirs_count;
+	char delete_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
+	int delete_allowed_dirs_count;
 	char allowed_commands[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ACTION_MAX];
 	int allowed_commands_count;
 	char exec_allowed_dirs[TOOL_CONTEXT_ALLOW_MAX][TOOL_CONTEXT_ALLOW_PATH_MAX];
 	int exec_allowed_dirs_count;
+	morph_array_t builtin_paths;
 	morph_array_t scoped_grants;
 	morph_array_t persistent_grants;
 	struct db *grant_db;
@@ -97,6 +100,9 @@ const char *tool_context_workdir(const struct tool_context *tctx);
 const char *tool_context_output_dir(const struct tool_context *tctx);
 void tool_context_set_default_timeout(struct tool_context *tctx, int seconds);
 int tool_context_default_timeout(const struct tool_context *tctx);
+/* Built-in policy paths are independent of bounded user approval grants. */
+int tool_context_add_builtin_path(struct tool_context *tctx,
+				 enum tool_path_op op, const char *path);
 int tool_context_authorize_path(struct tool_context *tctx,
 				enum tool_path_op op, const char *path,
 				char *resolved, size_t resolved_size);
@@ -136,6 +142,9 @@ int tool_context_request_write_access(struct tool_context *tctx,
 				      const char *path,
 				      char *resolved,
 				      size_t resolved_size);
+/* Append all matching paths to a caller-initialized array of const char *. */
+int tool_context_collect_path_grants(const struct tool_context *tctx,
+	const char *principal, enum tool_path_op op, morph_array_t *paths);
 int tool_context_collect_write_grants(const struct tool_context *tctx,
 				      const char *principal,
 				      const char **paths, int max_paths);

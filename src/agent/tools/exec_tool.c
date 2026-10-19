@@ -5,6 +5,7 @@
 #include "exec/process.h"
 #include "sandbox.h"
 #include "sandbox/tool_paths.h"
+#include "path_policy.h"
 #include "util/bash_parse.h"
 #include "util/error.h"
 #include "util/id.h"
@@ -125,23 +126,24 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 	struct bash_parse_result analysis;
 	const char **programs = NULL;
 	int programs_count = 0;
+	int dynamic = 0;
 	int rc;
 
 	rc = bash_parse_analyze(command, &analysis);
 	if (rc != 0)
 		return rc;
-	if (analysis.has_error || analysis.commands.nelts == 0) {
+	if (analysis.has_error) {
 		bash_parse_result_cleanup(&analysis);
 		(void)tool_result_error(result, "approval_required",
 			"shell command could not be analyzed safely");
 		return -EPERM;
 	}
 	if (runtime->tool_context) {
-		if (analysis.commands.nelts > (size_t)INT_MAX) {
+		if (analysis.commands.nelts >= (size_t)INT_MAX) {
 			bash_parse_result_cleanup(&analysis);
 			MORPH_RETURN(-E2BIG);
 		}
-		programs = calloc(analysis.commands.nelts, sizeof(*programs));
+		programs = calloc(analysis.commands.nelts + 1, sizeof(*programs));
 		if (!programs) {
 			bash_parse_result_cleanup(&analysis);
 			MORPH_RETURN(-ENOMEM);
@@ -152,11 +154,8 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 			int duplicate = 0;
 
 			if (!parsed || !parsed->name[0]) {
-				free(programs);
-				bash_parse_result_cleanup(&analysis);
-				(void)tool_result_error(result, "approval_required",
-					"dynamic shell command cannot be approved safely");
-				return -EPERM;
+				dynamic = 1;
+				continue;
 			}
 			for (int j = 0; j < programs_count; j++) {
 				if (strcmp(programs[j], parsed->name) == 0) {
@@ -169,6 +168,14 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				programs_count++;
 			}
 		}
+		if (dynamic || programs_count == 0) {
+			int found = 0;
+
+			for (int i = 0; i < programs_count; i++)
+				found |= strcmp(programs[i], "shell") == 0;
+			if (!found)
+				programs[programs_count++] = "shell";
+		}
 		{
 			struct tool_operation operation = {
 				.kind = TOOL_OP_COMMAND,
@@ -178,6 +185,7 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				.action = command,
 				.scope = workdir,
 				.details_json = args_json,
+				.reason = dynamic ? "The script contains runtime-expanded commands." : NULL,
 				.programs = programs,
 				.programs_count = programs_count,
 			};
@@ -346,6 +354,48 @@ static void exec_resolve_worktree_git_dir(const char *workdir, char *out,
 	snprintf(out, out_size, "%s", resolved);
 }
 
+static int merge_path_grants(struct tool_context *tctx, const char *principal,
+	struct sandbox_config *cfg, struct arena *arena)
+{
+	if (!tctx)
+		return 0;
+	for (int deletion = 0; deletion < 2; deletion++) {
+		morph_array_t grants;
+		enum tool_path_op op = deletion ? TOOL_PATH_DELETE : TOOL_PATH_WRITE;
+		char **old = deletion ? cfg->delete_paths : cfg->write_paths;
+		int old_count = deletion ? cfg->delete_paths_count : cfg->write_paths_count;
+		int rc = morph_array_init(&grants, 16, sizeof(const char *));
+
+		if (rc != 0)
+			return rc;
+		rc = tool_context_collect_path_grants(tctx, principal, op, &grants);
+		if (rc == 0 && grants.nelts > (size_t)(INT_MAX - old_count))
+			rc = -EOVERFLOW;
+		if (rc != 0) {
+			morph_array_cleanup(&grants);
+			return rc;
+		}
+		size_t count = (size_t)old_count + grants.nelts;
+		char **merged = arena_alloc(arena, count * sizeof(*merged));
+
+		if (!merged) {
+			morph_array_cleanup(&grants);
+			MORPH_RETURN(-ENOMEM);
+		}
+		memcpy(merged, old, (size_t)old_count * sizeof(*merged));
+		memcpy(merged + old_count, grants.elts, grants.nelts * sizeof(*merged));
+		morph_array_cleanup(&grants);
+		if (deletion) {
+			cfg->delete_paths = merged;
+			cfg->delete_paths_count = (int)count;
+		} else {
+			cfg->write_paths = merged;
+			cfg->write_paths_count = (int)count;
+		}
+	}
+	return 0;
+}
+
 static int exec_run(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
@@ -359,11 +409,9 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	char resolved_workdir[PATH_MAX];
 	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
-	const char *write_grants[TOOL_CONTEXT_ALLOW_MAX];
-	const char *delete_grants[TOOL_CONTEXT_ALLOW_MAX];
 	char *read_paths[12];
-	char *write_paths[TOOL_CONTEXT_ALLOW_MAX + 4];
-	char *delete_paths[TOOL_CONTEXT_ALLOW_MAX + 4];
+	char *write_paths[4];
+	char *delete_paths[4];
 	int read_path_count = 0;
 	int write_path_count = 0;
 	int delete_path_count = 0;
@@ -436,19 +484,6 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		write_paths[write_path_count++] = git_dir;
 		delete_paths[delete_path_count++] = git_dir;
 	}
-	if (runtime->tool_context) {
-		int count = tool_context_collect_write_grants(
-			runtime->tool_context, principal, write_grants,
-			TOOL_CONTEXT_ALLOW_MAX);
-
-		for (int i = 0; i < count; i++)
-			write_paths[write_path_count++] = (char *)write_grants[i];
-		count = tool_context_collect_delete_grants(
-			runtime->tool_context, principal, delete_grants,
-			TOOL_CONTEXT_ALLOW_MAX);
-		for (int i = 0; i < count; i++)
-			delete_paths[delete_path_count++] = (char *)delete_grants[i];
-	}
 	sandbox.path_policy_enabled = 1;
 	sandbox.read_all = 1;
 	sandbox.read_paths = read_paths;
@@ -470,7 +505,9 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			morph_strerror(-ENOMEM));
 		MORPH_RETURN(-ENOMEM);
 	}
-	rc = sandbox_prepare_tool_paths(&sandbox, path_arena);
+	rc = merge_path_grants(runtime->tool_context, principal, &sandbox, path_arena);
+	if (rc == 0)
+		rc = sandbox_prepare_tool_paths(&sandbox, path_arena);
 	if (rc != 0) {
 		arena_destroy(path_arena);
 		cJSON_Delete(root);
@@ -573,6 +610,9 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 
 	if (!reg)
 		MORPH_RETURN(-EINVAL);
+	rc = tool_path_policy_init(tctx);
+	if (rc != 0)
+		return rc;
 	rc = exec_runtime_create(tctx, config, &runtime);
 	if (rc != 0)
 		return rc;

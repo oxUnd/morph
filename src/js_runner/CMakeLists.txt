@@ -22,13 +22,15 @@ target_link_directories(morph-js-runner PRIVATE
 	${PANGOCAIRO_LIBRARY_DIRS}
 )
 
+set(MORPH_JS_MEDIA_LIBRARIES
+	${VIPS_LIBRARIES} ${CAIRO_LIBRARIES} ${PANGOCAIRO_LIBRARIES})
+list(REMOVE_DUPLICATES MORPH_JS_MEDIA_LIBRARIES)
+
 target_link_libraries(morph-js-runner PRIVATE
 	quickjs
 	morph-util
 	m3
-	${VIPS_LIBRARIES}
-	${CAIRO_LIBRARIES}
-	${PANGOCAIRO_LIBRARIES}
+	${MORPH_JS_MEDIA_LIBRARIES}
 )
 
 target_compile_options(morph-js-runner PRIVATE

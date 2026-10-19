@@ -72,8 +72,14 @@ int runner_list_allows(const char *env_name, const char *value)
 		if (len == 1 && start[0] == '*')
 			return 1;
 		if (len > 0 && value_len >= len &&
-		    strncmp(value, start, len) == 0)
-			return 1;
+		    strncmp(value, start, len) == 0) {
+			int filesystem = strcmp(env_name, "MORPH_DYNAMIC_ALLOWED_READ") == 0 ||
+				strcmp(env_name, "MORPH_DYNAMIC_ALLOWED_WRITE") == 0;
+
+			if (!filesystem || value_len == len || start[len - 1] == '/' ||
+			    value[len] == '/')
+				return 1;
+		}
 	}
 	return 0;
 }

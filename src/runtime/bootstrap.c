@@ -7,6 +7,7 @@
 #include "agent/tools/ask_user.h"
 #include "agent/tools/apply_patch.h"
 #include "agent/tools/exec_tool.h"
+#include "agent/tools/path_policy.h"
 #include "agent/tools/config_write.h"
 #include "agent/tools/dynamic_tools.h"
 #include "agent/tools/file_info.h"
@@ -444,6 +445,62 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			profile->operation_approval_user_data);
 	tool_context_set_default_timeout(tctx,
 					 config->react.tool_timeout_seconds);
+	rc = tool_path_policy_init(tctx);
+	if (rc != 0)
+		return rc;
+	const struct config_permission_profile *permission_profile;
+
+	permission_profile = active_permission_profile(&config->react);
+	if (config->react.permission_active_profile[0] &&
+	    !permission_profile) {
+		log_err("active permission profile not found: %s",
+			  config->react.permission_active_profile);
+		MORPH_RETURN(-ENOENT);
+	}
+	if (permission_profile) {
+		for (int i = 0;
+		     i < permission_profile->workspace_roots_count; i++) {
+			rc = tool_context_add_exec_profile_path(
+				tctx, TOOL_PATH_WRITE,
+				permission_profile->workspace_roots[i]);
+			if (rc == 0)
+				rc = tool_context_add_exec_profile_path(
+					tctx, TOOL_PATH_DELETE,
+					permission_profile->workspace_roots[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (int i = 0; i < permission_profile->write_paths_count; i++) {
+			rc = tool_context_add_exec_profile_path(
+				tctx, TOOL_PATH_WRITE,
+				permission_profile->write_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+		for (int i = 0; i < permission_profile->delete_paths_count; i++) {
+			rc = tool_context_add_exec_profile_path(
+				tctx, TOOL_PATH_DELETE,
+				permission_profile->delete_paths[i]);
+			if (rc != 0)
+				return rc;
+		}
+	}
+	if (config->skill.dir[0]) {
+		char *dir = file_expand_path(config->skill.dir);
+
+		if (!dir)
+			MORPH_RETURN(-ENOMEM);
+		rc = file_ensure_dir(dir);
+		if (rc == 0)
+			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_READ, dir);
+		if (rc == 0)
+			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_WRITE, dir);
+		if (rc == 0)
+			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_DELETE, dir);
+		free(dir);
+		if (rc != 0)
+			return rc;
+	}
 	runtime_query_tools_init(profile->tools);
 	if (config->models.vision.model[0] && models->vision)
 		img_qa_init(profile->tools, models->vision, tctx);
@@ -468,46 +525,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	if (profile->enable_config_write)
 		config_edit_init(profile->tools, tctx, profile->config_path);
 	if (profile->enable_exec) {
-		const struct config_permission_profile *permission_profile;
-
 		rc = exec_tool_init(profile->tools, tctx, &config->exec);
 		if (rc != 0)
 			return rc;
-		permission_profile = active_permission_profile(&config->react);
-		if (config->react.permission_active_profile[0] &&
-		    !permission_profile) {
-			log_err("active permission profile not found: %s",
-				  config->react.permission_active_profile);
-			MORPH_RETURN(-ENOENT);
-		}
-		if (permission_profile) {
-			for (int i = 0;
-			     i < permission_profile->workspace_roots_count; i++) {
-				rc = tool_context_add_exec_profile_path(
-					tctx, TOOL_PATH_WRITE,
-					permission_profile->workspace_roots[i]);
-				if (rc == 0)
-					rc = tool_context_add_exec_profile_path(
-						tctx, TOOL_PATH_DELETE,
-						permission_profile->workspace_roots[i]);
-				if (rc != 0)
-					return rc;
-			}
-			for (int i = 0; i < permission_profile->write_paths_count; i++) {
-				rc = tool_context_add_exec_profile_path(
-					tctx, TOOL_PATH_WRITE,
-					permission_profile->write_paths[i]);
-				if (rc != 0)
-					return rc;
-			}
-			for (int i = 0; i < permission_profile->delete_paths_count; i++) {
-				rc = tool_context_add_exec_profile_path(
-					tctx, TOOL_PATH_DELETE,
-					permission_profile->delete_paths[i]);
-				if (rc != 0)
-					return rc;
-			}
-		}
 		if (config->react.request_permissions_enabled) {
 			rc = request_permissions_init(profile->tools, tctx);
 			if (rc != 0)

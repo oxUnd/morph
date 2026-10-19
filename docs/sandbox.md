@@ -120,6 +120,22 @@ JULIA_DEPOT_PATH, R_LIBS_USER, CONDA_PKGS_DIRS, and CONDA_ENVS_PATH accept
 colon-separated lists; empty and relative entries are skipped. Paths resolving
 to HOME or its ancestors are not granted. Unavailable directories are skipped.
 
+Runtime startup registers the same resolved presets with tool-context path
+approval even when exec is disabled. An explicit `skill.dir` is included too. Reads, writes, deletions, and explicit `request_permissions` requests
+inside these roots do not prompt again. Built-in paths use a dynamic collection
+independent of user grant limits. Exec merges all matching scoped, persistent,
+profile, and built-in grants dynamically; bounded compatibility APIs report
+`ENOSPC` instead of silently dropping paths. Profile write/delete roots are
+recognized by native tools as well. Native write and delete session grants are
+separate, and persistent delete grants are reused only by the matching subject.
+
+Valid shell scripts may contain variable-expanded command names, substitutions,
+functions, arrays, loops, and assignment-only statements. AST analysis still
+collects known program names; runtime-expanded commands additionally require the
+`shell` program permission outside trusted command scopes. The full script is
+shown for approval. Workspace and temporary-directory commands retain their
+existing automatic approval behavior; syntax errors remain rejected.
+
 The built-in families include:
 
 - Shared XDG cache/config/data/state roots, `~/.local/bin`, `~/.local/lib`,

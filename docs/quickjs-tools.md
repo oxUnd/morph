@@ -233,6 +233,7 @@ streaming compile、threads、SIMD 或完整浏览器宿主对象。
 
 - `fs_read` 受 `allowed_read_paths` 控制。
 - `fs_write` 受 `allowed_write_paths` 控制。
+- 文件路径 allowlist 按完整目录边界匹配，授权目录不包含同名前缀的相邻目录；符号链接在检查前解析。
 - `shell` / `process` 受 `allowed_commands` 控制。
 - `network` 受 `allowed_network` 控制。
 - `sharp` / `canvas` / `loadImage` 需要 `image`；读写图片路径仍同时受
