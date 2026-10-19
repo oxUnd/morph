@@ -1,4 +1,5 @@
 #include "exec/process.h"
+#include "config/config.h"
 #include "agent/tools/exec_tool.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
@@ -7,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <chrono>
 #include <algorithm>
 #include <filesystem>
 #include <atomic>
@@ -133,6 +135,57 @@ TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
 	rmdir(workdir);
+}
+
+TEST(ExecToolTest, BackgroundTimeoutIsOptIn)
+{
+	char work_template[] = "/tmp/morph_exec_background_XXXXXX";
+	char *workdir = mkdtemp(work_template);
+	ASSERT_NE(workdir, nullptr);
+	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	ASSERT_NE(tctx, nullptr);
+	ExecApprovalState approval;
+	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
+	struct config_exec config = {};
+	strcpy(config.shell, "/bin/bash");
+	config.default_timeout_ms = 30;
+	config.yield_time_ms = 500;
+	config.max_inline_output = 4096;
+	config.max_session_output = 4096;
+	config.kill_grace_ms = 10;
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, &config), 0);
+	const char *requests[] = {
+		"{\"command\":\"sleep 0.2\",\"background\":true,\"yield_time_ms\":500}",
+		"{\"command\":\"sleep 0.2\",\"background\":true,\"timeout_ms\":30,\"yield_time_ms\":500}",
+		"{\"command\":\"sleep 0.2\",\"yield_time_ms\":500}"
+	};
+	const char *expected[] = {"exited", "timed_out", "timed_out"};
+	for (size_t i = 0; i < 3; i++) {
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&registry, "exec", requests[i], &result), 0);
+		std::string session = cJSON_GetStringValue(
+			cJSON_GetObjectItem(result.data, "session_id"));
+		std::string poll = "{\"action\":\"poll\",\"session_id\":\"" + session + "\"}";
+		for (int attempt = 0; attempt < 100; attempt++) {
+			const char *status = cJSON_GetStringValue(
+				cJSON_GetObjectItem(result.data, "status"));
+			if (status && strcmp(status, "running") != 0)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			tool_result_cleanup(&result);
+			tool_result_init(&result);
+			EXPECT_EQ(tool_exec(&registry, "process", poll.c_str(), &result), 0);
+		}
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data,
+			"status")), expected[i]);
+		tool_result_cleanup(&result);
+	}
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	std::filesystem::remove_all(workdir);
 }
 
 TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)

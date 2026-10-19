@@ -452,12 +452,12 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	memset(&options, 0, sizeof(options));
 	options.command = command;
 	options.workdir = workdir;
+	options.background = json_bool(root, "background", 0);
 	options.timeout_ms = json_u64(root, "timeout_ms",
-		runtime->default_timeout_ms);
+		options.background ? 0 : runtime->default_timeout_ms);
 	options.yield_time_ms = json_u64(root, "yield_time_ms",
 		runtime->default_yield_time_ms);
 	options.pty = json_bool(root, "pty", 0);
-	options.background = json_bool(root, "background", 0);
 	memset(&sandbox, 0, sizeof(sandbox));
 	if (workdir && realpath(workdir, resolved_workdir)) {
 		read_paths[read_path_count++] = resolved_workdir;
@@ -497,6 +497,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.allow_pty = options.pty;
 	sandbox.allow_process_info = 1;
 	sandbox.allow_temp = 1;
+	sandbox.allow_ipc = 1;
+	sandbox.development_runtime = 1;
 	path_arena = arena_create(0);
 
 	if (!path_arena) {
@@ -620,7 +622,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.origin = TOOL_ORIGIN_BUILTIN;
 	exec_spec.name = "exec";
 	exec_spec.title = "Execute command";
-	exec_spec.description = "Run a shell command with workdir, policy, timeout, yield, and process session support. If the result reports error.code=sandbox_denied, request the smallest additional capability and retry the exact command.";
+	exec_spec.description = "Run a shell command with workdir, policy, timeout, yield, and process session support. Background sessions have no default timeout; set timeout_ms explicitly to limit them. If the result reports error.code=sandbox_denied, request the smallest additional capability and retry the exact command.";
 	exec_spec.input_schema = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\",\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},\"pty\":{\"type\":\"boolean\"},\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}";
 	exec_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec_spec.exec = exec_run;

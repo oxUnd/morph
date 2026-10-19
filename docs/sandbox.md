@@ -15,10 +15,10 @@ resource ceilings are independent permissions.
 3. Write and delete are separate filesystem capabilities.
 4. PTY access never implies general device access. Only the PTY allocator and
    its slave devices receive read, write, and ioctl access.
-5. macOS process inspection is limited to the same sandbox. Linux defaults to
+5. macOS runtime process inspection follows host permissions. Linux defaults to
    self-only `/proc`; explicit `process_info` follows the host's `/proc` DAC
    because morph does not create a PID namespace.
-6. macOS Mach services are allowlisted by exact service name.
+6. macOS runtime Mach lookup and registration support host applications.
 7. Temporary-directory access is explicit. The exec frontend additionally
    grants built-in tool cache paths; other sandbox callers do not inherit them.
 8. Child processes close all inherited file descriptors above stderr before
@@ -157,7 +157,9 @@ The built-in families include:
   kubectl caches, Pulumi, Ansible, and an explicit Terraform plugin cache.
 - On macOS, `~/Library/Caches`, `~/Library/Python`, `~/Library/R`, `~/Library/pnpm`,
   `~/Library/Android/sdk`, selected fnm/Coursier Application Support directories,
-  SwiftPM state, and Xcode DerivedData.
+  SwiftPM state, `~/Library/Developer` (CoreSimulator, Xcode archives,
+  DerivedData and device support), `/Library/Developer`, provisioning profiles
+  under `~/Library/MobileDevice`, Xcode Application Support and device logs.
 
 `~/.cache`, `~/.config`, `~/.local/share`, and `~/.local/state` remain writable
 alongside absolute XDG overrides. Whole toolchain directories include any
@@ -191,11 +193,29 @@ address ranges. Core dumps remain disabled. CPU time follows the command
 timeout. Resource limits are best-effort OS controls: unsupported limits are
 logged, while failure of the filesystem or syscall sandbox remains fatal.
 
+## Local development runtime
+
+The exec frontend enables a built-in development runtime, independently of
+extension capabilities. On macOS this permits IOKit operations for GPU/Metal
+and IOSurface access, System V IPC, user preferences, distributed notification
+posting, device ioctls and signals to processes accessible to the current user.
+Filesystem paths and network policy continue to apply. Other sandbox callers
+retain the baseline policy unless they explicitly enable this runtime.
+
+Exec also enables IPC and inherits the host environment, including Android,
+Java, Xcode and simulator settings. Environment inheritance includes credentials
+present in the parent process. macOS privacy consent, code-signing entitlements,
+Keychain authorization and administrator privileges are still enforced by the OS.
+
+Background exec sessions default to no timeout. An explicit `timeout_ms` still
+limits them; foreground commands retain the configured default. Background
+sessions remain owned by the process manager and stop when it shuts down.
+
 ## macOS policy
 
 The Seatbelt profile grants only selected system runtime paths. In particular,
 it does not grant the whole `/private/var` tree. Baseline Mach lookups and
-read-only sysctls are explicit allowlists. File metadata reads are allowed so
+read-only sysctls are allowed. File metadata reads are allowed so
 processes can traverse parent directories and resolve an approved descendant;
 file contents and directory enumeration remain controlled by the path rules.
 The narrow `RootDomainUserClient` and `kern.grade_cputype` rules follow the

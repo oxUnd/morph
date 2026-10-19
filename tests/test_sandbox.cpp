@@ -21,6 +21,10 @@ extern char **environ;
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#if defined(__APPLE__)
+#include <IOSurface/IOSurface.h>
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 #if defined(__linux__)
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -250,6 +254,59 @@ TEST(SandboxSessionTest, StartsNewTerminalSession)
  * ------------------------------------------------------------------ */
 
 #if defined(__APPLE__)
+TEST(SandboxEnterTest, MacOSDevelopmentRuntimeAllowsSurfaceAndHostProcessProbe)
+{
+	auto check_surface = []() {
+		int dimension = 16;
+		int bytes = 4;
+		CFNumberRef size = CFNumberCreate(NULL, kCFNumberIntType, &dimension);
+		CFNumberRef pixel = CFNumberCreate(NULL, kCFNumberIntType, &bytes);
+		if (!size || !pixel)
+			return 12;
+		const void *keys[] = {kIOSurfaceWidth, kIOSurfaceHeight,
+			kIOSurfaceBytesPerElement};
+		const void *values[] = {size, size, pixel};
+		CFDictionaryRef properties = CFDictionaryCreate(NULL, keys, values, 3,
+			&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		CFRelease(size);
+		CFRelease(pixel);
+		if (!properties)
+			return 13;
+		IOSurfaceRef surface = IOSurfaceCreate(properties);
+		CFRelease(properties);
+		if (!surface)
+			return 14;
+		IOReturn locked = IOSurfaceLock(surface, 0, NULL);
+		if (locked == kIOReturnSuccess)
+			IOSurfaceUnlock(surface, 0, NULL);
+		CFRelease(surface);
+		return locked == kIOReturnSuccess ? 0 : 15;
+	};
+	/* Re-exec: IOKit connections and Objective-C state cannot cross fork. */
+	::testing::FLAGS_gtest_death_test_style = "threadsafe";
+	EXPECT_EXIT({
+	int rc = [&]() {
+		pid_t parent = getppid();
+		struct sandbox_config cfg = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.development_runtime = 1;
+		cfg.allow_temp = 1;
+		setenv("MORPH_TEST_DEVELOPMENT_ENV", "retained", 1);
+		if (sandbox_enter(&cfg) != 0)
+			return 10;
+		const char *env = getenv("MORPH_TEST_DEVELOPMENT_ENV");
+		if (!env || strcmp(env, "retained") != 0)
+			return 16;
+		/* Signal zero checks permission without delivering a signal. */
+		if (kill(parent, 0) != 0)
+			return 11;
+		return check_surface();
+	}();
+	_exit(rc);
+	}, ::testing::ExitedWithCode(0), "");
+}
+
 TEST(SandboxEnterTest, MacOSMetadataAccessDoesNotGrantFileContents)
 {
 	char tmpl[] = "/tmp/morph_sb_read_deny_XXXXXX";
@@ -881,7 +938,8 @@ TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
 			".gemini", ".continue", ".cursor", ".aider", ".opencode",
 			".ollama", ".lmstudio", ".triton",
 #ifdef __APPLE__
-			"Library/Caches",
+			"Library/Caches", "Library/Developer", "Library/MobileDevice",
+			"Library/Application Support/Xcode", "Library/Logs/CoreSimulator",
 #endif
 		};
 		for (const char *dir : shared) {

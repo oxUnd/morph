@@ -30,6 +30,8 @@ struct sandbox_config {
 	int allow_process_info;
 	int allow_ipc;
 	int allow_temp;
+	/* Host development services for exec; extensions remain opt-in. */
+	int development_runtime;
 	char **allowed_paths;
 	int allowed_paths_count;
 	char **allowed_env;

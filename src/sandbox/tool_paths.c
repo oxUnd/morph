@@ -232,7 +232,12 @@ static const struct tool_path tool_paths[] = {
 	HOME_DIR("coursier", "Library/Application Support/Coursier", "COURSIER_HOME"),
 	HOME_DIR("fnm", "Library/Application Support/fnm", NULL),
 	TOOL_DIR("swiftpm", PATH_HOME, "Library/Caches/org.swift.swiftpm", NULL),
-	TOOL_DIR("xcode", PATH_HOME, "Library/Developer/Xcode/DerivedData", NULL),
+	HOME_DIR("apple-development", "Library/Developer", NULL),
+	TOOL_DIR("apple-development", PATH_ABSOLUTE, "/Library/Developer", NULL),
+	HOME_DIR("apple-provisioning", "Library/MobileDevice", NULL),
+	HOME_DIR("apple-device-logs", "Library/Logs/CoreSimulator", NULL),
+	HOME_DIR("apple-device-logs", "Library/Logs/DiagnosticReports", NULL),
+	HOME_DIR("xcode", "Library/Application Support/Xcode", NULL),
 #else
 	TOOL_DIR("pnpm", PATH_HOME, ".local/share/pnpm/store", NULL),
 	TOOL_DIR("homebrew", PATH_CACHE, "Homebrew", "HOMEBREW_CACHE"),

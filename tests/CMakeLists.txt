@@ -99,6 +99,10 @@ target_link_libraries(morph-tests PRIVATE
 	GTest::gtest_main
 )
 
+if(APPLE)
+	target_link_libraries(morph-tests PRIVATE "-framework IOSurface" "-framework CoreFoundation")
+endif()
+
 gtest_discover_tests(morph-tests)
 
 # PTY integration driver uses the production CLI with a disposable database.

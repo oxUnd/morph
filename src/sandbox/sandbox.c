@@ -930,7 +930,8 @@ static int sandbox_sbpl_base(morph_buf_t *profile)
  * The actual security boundary remains filesystem data/write access and
  * network access, which are emitted separately from this runtime policy.
  */
-static int sandbox_sbpl_runtime(morph_buf_t *profile)
+static int sandbox_sbpl_runtime(morph_buf_t *profile,
+				const struct sandbox_config *cfg)
 {
 	static const char *const runtime_read_paths[] = {
 		"/Applications",
@@ -975,6 +976,19 @@ static int sandbox_sbpl_runtime(morph_buf_t *profile)
 		"  (iokit-registry-entry-class \"RootDomainUserClient\"))\n");
 	if (rc != 0)
 		return rc;
+
+	/* GPU/IOSurface, simulator IPC and cross-session process control. */
+	if (cfg->development_runtime) {
+		rc = morph_buf_puts(profile,
+			"(allow iokit*)\n"
+			"(allow ipc-sysv*)\n"
+			"(allow signal)\n"
+			"(allow file-ioctl)\n"
+			"(allow user-preference*)\n"
+			"(allow distributed-notification-post)\n");
+		if (rc != 0)
+			return rc;
+	}
 
 	for (int i = 0; runtime_read_paths[i]; i++) {
 		rc = sandbox_sbpl_path_rule(profile, "file-read*",
@@ -1152,7 +1166,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 
 	rc = sandbox_sbpl_base(&sbpl);
 	if (rc == 0)
-		rc = sandbox_sbpl_runtime(&sbpl);
+		rc = sandbox_sbpl_runtime(&sbpl, cfg);
 	if (rc == 0)
 		rc = sandbox_sbpl_filesystem(&sbpl, cfg);
 	if (rc == 0)
@@ -1619,6 +1633,10 @@ int sandbox_enter(struct sandbox_config *cfg)
 		if (cfg->write_paths_count > 0 || cfg->delete_paths_count > 0)
 			effective_permissions |= EXT_PERM_FILESYS;
 	}
+
+	/* Local development commands retain host toolchain configuration. */
+	if (cfg->development_runtime)
+		effective_permissions |= EXT_PERM_ENV;
 
 	log_info("sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d",
 		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
