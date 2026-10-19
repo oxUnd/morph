@@ -150,6 +150,10 @@ def main():
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
             assert 'Working (' in starting and 'esc to interrupt' in starting, starting
             starting_rows = starting.splitlines()
+            user_row = next(i for i, row in enumerate(starting_rows)
+                            if '│ > initial task' in row)
+            assert terminal.screen.buffer[user_row][4].bold, starting
+            assert terminal.screen.buffer[user_row][4].bg == '1c1c1c', starting
             working_row = next(i for i, row in enumerate(starting_rows)
                                if 'Working (' in row)
             assert working_row > 0 and not starting_rows[working_row - 1].strip(), starting

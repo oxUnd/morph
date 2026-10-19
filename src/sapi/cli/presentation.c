@@ -1,6 +1,7 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/list_ui.h"
 #include "agent/patch.h"
+#include <sys/ioctl.h>
 
 #define CLI_STREAM_NONE      0
 #define CLI_STREAM_THOUGHT   1
@@ -42,6 +43,85 @@ static void presentation_print_safe_inline(const char *text,
 	if (!safe)
 		return;
 	printf("%s", safe);
+	free(safe);
+}
+
+/* Submitted user messages remain ordinary scrollback, separate from tools. */
+static void presentation_user_row(const char *text, size_t length, int width,
+				 int first)
+{
+	int color = cli_color_enabled();
+	int used;
+
+	if (color)
+		printf("\033[48;5;234m" ANSI_CYAN);
+	printf("│");
+	if (color)
+		printf(ANSI_RESET "\033[48;5;234m" ANSI_BOLD);
+	printf(" %s%.*s", first ? "> " : "  ", (int)length, text);
+	used = 4;
+	for (size_t i = 0; i < length;) {
+		unsigned cp;
+		size_t bytes;
+
+		if (!utf8_decode_codepoint(text + i, length - i, &cp, &bytes))
+			break;
+		used += utf8_codepoint_width(cp);
+		i += bytes;
+	}
+	if (color) {
+		for (int i = used; i < width; i++)
+			putchar(' ');
+		printf(ANSI_RESET);
+	}
+	putchar('\n');
+}
+
+void cli_presentation_user_input(const char *text)
+{
+	char *safe;
+	char *line;
+	struct winsize size = {0};
+	int width = cli_list_columns() - 1;
+	int first = 1;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
+		width = size.ws_col - 1;
+
+	if (!text || !*text)
+		return;
+	safe = utf8_terminal_sanitize_dup(text, strlen(text),
+		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	if (!safe)
+		return;
+	/* Tabs affect terminal cursor position; normalize only the display copy. */
+	for (char *p = safe; *p; p++) {
+		if (*p == '\t')
+			*p = ' ';
+	}
+	if (width < 8)
+		width = 8;
+	putchar('\n');
+	presentation_user_row("", 0, width, 0);
+	line = safe;
+	while (line) {
+		char *newline = strchr(line, '\n');
+		const char *cursor = line;
+
+		if (newline)
+			*newline = '\0';
+		do {
+			const char *end = utf8_advance_display_width(cursor,
+				(size_t)(width - 4));
+
+			presentation_user_row(cursor, (size_t)(end - cursor), width, first);
+			first = 0;
+			cursor = end;
+		} while (*cursor);
+		line = newline ? newline + 1 : NULL;
+	}
+	presentation_user_row("", 0, width, 0);
+	putchar('\n');
 	free(safe);
 }
 

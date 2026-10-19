@@ -32,6 +32,7 @@ void cli_transcript_toggle(struct cli_context *ctx);
 void cli_transcript_finish(struct cli_context *ctx);
 void cli_presentation_finish(struct cli_context *ctx);
 const char *cli_input_prompt(void);
+void cli_presentation_user_input(const char *text);
 struct cli_cancel_monitor;
 struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);
 void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
@@ -1695,4 +1696,38 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
 	else
 		EXPECT_EQ(unsetenv("COLUMNS"), 0);
+}
+
+TEST(CliUserInputTest, SeparatesMultilineInputAndSanitizesTerminalControls)
+{
+	cli_set_color_enabled(0);
+	testing::internal::CaptureStdout();
+	cli_presentation_user_input("Fix 中文🙂\nsecond\tline\033[2J");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("│ > Fix 中文🙂"), std::string::npos);
+	EXPECT_NE(output.find("│   second line"), std::string::npos);
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
+	EXPECT_EQ(output.substr(0, 1), "\n");
+	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
+	cli_set_color_enabled(1);
+}
+
+TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
+{
+	cli_set_color_enabled(0);
+	std::string input;
+	for (int i = 0; i < 160; i++)
+		input += "中文🙂";
+	testing::internal::CaptureStdout();
+	cli_presentation_user_input(input.c_str());
+	std::string output = testing::internal::GetCapturedStdout();
+	size_t count = 0;
+	for (size_t pos = 0; (pos = output.find("🙂", pos)) != std::string::npos;
+	     pos += strlen("🙂"))
+		count++;
+	EXPECT_EQ(count, 160u);
+	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+	EXPECT_EQ(output.find("truncated"), std::string::npos);
+	cli_set_color_enabled(1);
 }

@@ -564,6 +564,17 @@ static int cli_readline_accept(int count, int key)
 
 	if (!draft)
 		return 1;
+	if (RL_ISSTATE(RL_STATE_CALLBACK) && draft[0] != '/') {
+		/* The composer has been erased; commit the styled message once. */
+		if (isatty(STDOUT_FILENO))
+			printf("\r\033[2K");
+		cli_presentation_user_input(draft);
+		rl_replace_line(draft, 0);
+		rl_point = point;
+		rl_done = 1;
+		free(draft);
+		return 0;
+	}
 	/* Commit the submitted input where the live row was, so accepting a
 	 * line never leaves an old spinner behind in terminal history. */
 	rl_replace_line(draft, 0);
