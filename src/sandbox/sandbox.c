@@ -2,6 +2,7 @@
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
+#include "util/file.h"
 #include "util/log.h"
 #include <errno.h>
 #include <limits.h>
@@ -12,6 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 
 extern char **environ;
 
@@ -220,6 +222,25 @@ int sandbox_apply_env(const char **allowed_env, int count,
  * Filesystem path restrictions
  * ──────────────────────────────────────────────────────────────── */
 
+#if defined(__linux__) || defined(__APPLE__)
+static int sandbox_resolve_custom_temp(char *resolved)
+{
+	const char *temp = getenv("TMPDIR");
+	const char *home = getenv("HOME");
+	char resolved_home[PATH_MAX];
+	struct stat st;
+
+	if (!temp || temp[0] != '/' || !realpath(temp, resolved) ||
+	    strcmp(resolved, "/") == 0 || stat(resolved, &st) != 0 ||
+	    !S_ISDIR(st.st_mode))
+		return 0;
+	if (home && realpath(home, resolved_home) &&
+	    path_is_within(resolved_home, resolved))
+		return 0;
+	return 1;
+}
+#endif
+
 #ifdef __linux__
 
 /*
@@ -329,10 +350,18 @@ static int sandbox_add_landlock_pty(int ruleset_fd, uint64_t access)
 
 static int sandbox_add_landlock_temp(int ruleset_fd, uint64_t access)
 {
-	static const char *const paths[] = { "/tmp", "/var/tmp", NULL };
+	char custom[PATH_MAX];
+	const char *const paths[] = {
+		"/tmp", "/var/tmp",
+		sandbox_resolve_custom_temp(custom) ? custom : NULL, NULL
+	};
 
 	for (int i = 0; paths[i]; i++) {
-		int fd = open(paths[i], O_PATH | O_CLOEXEC);
+		int fd;
+
+		if (paths[i][0] != '/')
+			continue;
+		fd = open(paths[i], O_PATH | O_CLOEXEC);
 
 		if (fd < 0) {
 			if (errno == ENOENT)
@@ -687,74 +716,6 @@ static int sandbox_add_landlock_paths(int ruleset_fd, char **paths,
 	return 0;
 }
 
-static void sandbox_try_writable_path(int ruleset_fd, uint64_t access,
-				      const char *path)
-{
-	int fd;
-
-	if (!path || !*path)
-		return;
-	fd = open(path, O_PATH | O_CLOEXEC);
-	if (fd < 0)
-		return;
-	if (ll_add_rule(ruleset_fd, fd, access) < 0)
-		log_warn("sandbox: default writable path '%s' rejected: %s",
-			 path, strerror(errno));
-	close(fd);
-}
-
-static void sandbox_add_xdg_dir(int ruleset_fd, uint64_t access,
-				const char *var, const char *fallback)
-{
-	const char *value = getenv(var);
-	const char *home;
-	char path[PATH_MAX];
-	int written;
-
-	if (value && *value) {
-		sandbox_try_writable_path(ruleset_fd, access, value);
-		return;
-	}
-	home = getenv("HOME");
-	if (!home || !*home)
-		return;
-	written = snprintf(path, sizeof(path), "%s/%s", home, fallback);
-	if (written > 0 && (size_t)written < sizeof(path))
-		sandbox_try_writable_path(ruleset_fd, access, path);
-}
-
-static void sandbox_add_default_writable_dirs(int ruleset_fd,
-					      uint64_t access)
-{
-	static const char *const home_dirs[] = {
-		".cargo", ".rustup", ".npm", ".gradle", ".m2", ".go",
-		"go", ".local/bin", NULL
-	};
-	const char *home = getenv("HOME");
-	const char *runtime = getenv("XDG_RUNTIME_DIR");
-	char path[PATH_MAX];
-
-	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_CACHE_HOME", ".cache");
-	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_CONFIG_HOME", ".config");
-	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_DATA_HOME",
-			    ".local/share");
-	sandbox_add_xdg_dir(ruleset_fd, access, "XDG_STATE_HOME",
-			    ".local/state");
-	if (runtime && *runtime)
-		sandbox_try_writable_path(ruleset_fd, access, runtime);
-	sandbox_try_writable_path(ruleset_fd, access, "/var/tmp");
-	sandbox_try_writable_path(ruleset_fd, access, "/dev/tty");
-	if (!home || !*home)
-		return;
-	for (int i = 0; home_dirs[i]; i++) {
-		int written = snprintf(path, sizeof(path), "%s/%s", home,
-				       home_dirs[i]);
-
-		if (written > 0 && (size_t)written < sizeof(path))
-			sandbox_try_writable_path(ruleset_fd, access, path);
-	}
-}
-
 static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 {
 	static const char *const system_paths[] = {
@@ -826,8 +787,6 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	}
 	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
 		cfg->write_paths_count, write_access);
-	if (rc == 0)
-		sandbox_add_default_writable_dirs(ruleset_fd, write_access);
 	if (rc == 0) {
 		char *dev_null = (char *)"/dev/null";
 		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
@@ -1029,9 +988,26 @@ static int sandbox_sbpl_runtime(morph_buf_t *profile)
 
 static int sandbox_sbpl_temp(morph_buf_t *profile)
 {
+	char resolved[PATH_MAX];
 	int rc;
 
+	if (sandbox_resolve_custom_temp(resolved)) {
+		rc = sandbox_sbpl_path_rule(profile,
+			"file-read* file-write-data file-write-create "
+			"file-write-mode file-write-flags file-write-owner "
+			"file-write-times file-write-xattr file-write-unlink", resolved);
+		if (rc != 0)
+			return rc;
+	}
 	rc = sandbox_sbpl_darwin_user_dir(profile, _CS_DARWIN_USER_TEMP_DIR);
+	if (rc != 0)
+		return rc;
+
+	rc = sandbox_sbpl_path_rule(profile,
+		"file-read* file-write-data file-write-create "
+		"file-write-mode file-write-flags file-write-owner "
+		"file-write-times file-write-xattr file-write-unlink",
+		"/private/var/tmp");
 	if (rc != 0)
 		return rc;
 

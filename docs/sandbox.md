@@ -19,8 +19,8 @@ resource ceilings are independent permissions.
    self-only `/proc`; explicit `process_info` follows the host's `/proc` DAC
    because morph does not create a PID namespace.
 6. macOS Mach services are allowlisted by exact service name.
-7. Temporary-directory access is explicit. Cache directories are not writable
-   unless separately granted as filesystem paths.
+7. Temporary-directory access is explicit. The exec frontend additionally
+   grants built-in tool cache paths; other sandbox callers do not inherit them.
 8. Child processes close all inherited file descriptors above stderr before
    entering the sandbox. Path policies cannot revoke access through a file
    descriptor that was opened by the parent.
@@ -109,6 +109,57 @@ The command workdir receives read, write, and delete rights. When the workdir
 contains a `.git` file that points elsewhere (a git worktree), that git
 directory is granted write and delete access explicitly because it lives
 outside the workdir.
+
+Exec adds shared directories and toolchain paths from
+`src/sandbox/tool_paths.c` on both macOS and Linux. Directory rules receive
+read, write, and delete permissions, including executable installation,
+configuration updates, atomic replacement, and lock cleanup. The parent creates
+missing directories before spawning the sandboxed process. Supported absolute
+environment overrides are resolved before environment filtering. GOPATH,
+JULIA_DEPOT_PATH, R_LIBS_USER, CONDA_PKGS_DIRS, and CONDA_ENVS_PATH accept
+colon-separated lists; empty and relative entries are skipped. Paths resolving
+to HOME or its ancestors are not granted. Unavailable directories are skipped.
+
+The built-in families include:
+
+- Shared XDG cache/config/data/state roots, `~/.local/bin`, `~/.local/lib`,
+  `~/.local/include`, `~/.local/etc`, and existing `XDG_RUNTIME_DIR`.
+- Skills in `~/.morph/skills` and `~/.agents/skills`; other files in their
+  parent directories do not inherit these grants.
+- Codex, Claude Code, Gemini CLI, Continue, Cursor, Aider, OpenCode, Ollama,
+  LM Studio, GPT4All (macOS), Hugging Face, ModelScope, PyTorch, vLLM, Triton,
+  and explicit tokenizer/model-cache overrides. Full AI tool directories
+  include sessions, configuration, credentials, and installed skills. Project
+  skill directories are already covered by their workspace permissions.
+- Node/npm/pnpm/Yarn/Corepack, Bun, Deno, nvm, Volta, fnm, and user npm prefixes.
+- Cargo/rustup, Go workspaces and installed tools, Gradle/Maven/Ivy/SBT/SDKMAN,
+  .NET/NuGet, Python/uv/pipx/pyenv/Conda/Mamba, Ruby/Bundler/rbenv/RVM,
+  Composer, Julia, R, Haskell, Elixir, Clojure, Dart, and Android SDK/AVD.
+- Conan/vcpkg/xmake/CMake, asdf/mise, build and compiler caches, browser testing,
+  Docker Buildx state, editor extension directories, TeX, and model caches.
+- HTTPie, aria2, lftp, SSH control sockets in `~/.ssh/controlmasters`, Helm and
+  kubectl caches, Pulumi, Ansible, and an explicit Terraform plugin cache.
+- On macOS, `~/Library/Caches`, `~/Library/Python`, `~/Library/R`, `~/Library/pnpm`,
+  `~/Library/Android/sdk`, selected fnm/Coursier Application Support directories,
+  SwiftPM state, and Xcode DerivedData.
+
+`~/.cache`, `~/.config`, `~/.local/share`, and `~/.local/state` remain writable
+alongside absolute XDG overrides. Whole toolchain directories include any
+configuration and credentials stored inside them. No whole HOME or Library
+permission is implied. Rules are built in; there is no extra configuration.
+
+`/dev/tty` receives read/write access without deletion rights. `/tmp`,
+`/var/tmp`, and an existing absolute `$TMPDIR` follow the temporary-directory
+capability on both platforms. A custom TMPDIR resolving to HOME, its ancestors,
+or `/` is ignored. macOS also grants its native per-user temporary directory.
+
+Other home paths, system installation prefixes, SSH keys/known_hosts, and daemon
+sockets still need explicit grants. In particular, a directory preset does not
+make root-level files such as `~/.npmrc` or `~/.wget-hsts` writable. Network,
+listener, and privileged socket capabilities remain independent of filesystem
+permissions. The source table is the authoritative list of supported paths and
+environment overrides; arbitrary project/tool configuration is not executed to
+discover additional directories.
 
 Direct networking is off by default and controlled by `[exec].network`:
 

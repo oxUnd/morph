@@ -1,5 +1,6 @@
 add_library(morph-sandbox STATIC
 	sandbox.c
+	tool_paths.c
 	loader.c
 )
 

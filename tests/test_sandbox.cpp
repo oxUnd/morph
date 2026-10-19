@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 extern "C" {
 #include "sandbox/sandbox.h"
+#include "sandbox/tool_paths.h"
+extern char **environ;
 }
 #include <cerrno>
 #include <cstdlib>
@@ -806,4 +808,290 @@ TEST(SandboxEnterTest, PathPolicyAllowsConfiguredNetwork)
 	ASSERT_GE(listener, 0);
 	EXPECT_EQ(sandbox_loopback_connect(port, 1), 0);
 	close(listener);
+}
+
+/* Prepare in an isolated process so the real home is never modified. */
+TEST(SandboxToolPathsTest, CacheLifecycleAndIsolation)
+{
+	char temp[] = "/tmp/morph_tool_paths_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string home = std::string(temp) + "/home";
+	ASSERT_EQ(mkdir(home.c_str(), 0700), 0);
+	int rc = run_in_child([&]() {
+		/* Do not inherit tool locations from the developer machine. */
+		while (environ && *environ) {
+			std::string name(*environ);
+			name.resize(name.find('='));
+			if (unsetenv(name.c_str()) != 0)
+				return 30;
+		}
+		setenv("HOME", home.c_str(), 1);
+		setenv("XDG_CACHE_HOME", (home + "/cache").c_str(), 1);
+		setenv("XDG_CONFIG_HOME", (home + "/config").c_str(), 1);
+		setenv("XDG_DATA_HOME", (home + "/data").c_str(), 1);
+		setenv("XDG_STATE_HOME", (home + "/state").c_str(), 1);
+		setenv("XDG_RUNTIME_DIR", (home + "/runtime").c_str(), 1);
+		if (mkdir((home + "/runtime").c_str(), 0700) != 0)
+			return 23;
+		setenv("npm_config_cache", (home + "/custom-npm").c_str(), 1);
+		struct arena *arena = arena_create(8192);
+		if (!arena)
+			return 10;
+		struct sandbox_config cfg = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		if (sandbox_prepare_tool_paths(&cfg, arena) != 0)
+			return 11;
+		std::string cache = home + "/custom-npm";
+		std::string pip = home + "/cache/pip";
+		struct stat st;
+		if (stat(cache.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) ||
+		    stat(pip.c_str(), &st) != 0)
+			return 12;
+		/* Invalid overrides must not widen the policy or create cwd caches. */
+		setenv("npm_config_cache", "/", 1);
+		setenv("PIP_CACHE_DIR", "relative-cache", 1);
+		struct sandbox_config invalid = {};
+		invalid.path_policy_enabled = 1;
+		if (sandbox_prepare_tool_paths(&invalid, arena) != 0)
+			return 21;
+		for (int i = 0; i < invalid.write_paths_count; i++) {
+			if (strcmp(invalid.write_paths[i], "/") == 0 ||
+			    strstr(invalid.write_paths[i], "relative-cache"))
+				return 22;
+		}
+		if (sandbox_enter(&cfg) != 0)
+			return 13;
+		const char *shared[] = {
+			".cache", ".config", ".local/share", ".local/state",
+			"cache", "config", "data", "state", "runtime",
+			".local/bin", ".local/lib", ".local/include",
+			".cargo", ".rustup", ".gradle", ".m2", ".sbt", ".ivy2",
+			"go", ".dotnet", ".nuget", ".nvm", ".volta", ".bun",
+			".pyenv", ".conda", "miniforge3", ".gem", ".bundle",
+			".rbenv", ".conan2", ".vcpkg", ".asdf", ".android",
+			".julia", ".stack", ".cabal", ".mix", ".hex",
+			".httpie", ".aria2", ".lftp", ".ssh/controlmasters",
+			".morph/skills", ".agents/skills", ".codex", ".claude",
+			".gemini", ".continue", ".cursor", ".aider", ".opencode",
+			".ollama", ".lmstudio", ".triton",
+#ifdef __APPLE__
+			"Library/Caches",
+#endif
+		};
+		for (const char *dir : shared) {
+			std::string subdir = home + "/" + dir + "/new-tool";
+			if (mkdir(subdir.c_str(), 0700) != 0)
+				return 24;
+			std::string first_path = subdir + "/state.tmp";
+			std::string final_path = subdir + "/state";
+			int shared_fd = open(first_path.c_str(), O_CREAT | O_RDWR, 0600);
+			if (shared_fd < 0)
+				return 25;
+			char value = 0;
+			if (write(shared_fd, "x", 1) != 1 ||
+			    lseek(shared_fd, 0, SEEK_SET) < 0 ||
+			    read(shared_fd, &value, 1) != 1 || value != 'x')
+				return 26;
+			close(shared_fd);
+			if (rename(first_path.c_str(), final_path.c_str()) != 0 ||
+			    unlink(final_path.c_str()) != 0 || rmdir(subdir.c_str()) != 0)
+				return 27;
+		}
+		int lock_fd = open((home + "/.cargo/.package-cache").c_str(),
+			O_CREAT | O_WRONLY, 0600);
+		if (lock_fd < 0)
+			return 19;
+		close(lock_fd);
+		int config_fd = open((home + "/.cargo/config.toml").c_str(),
+			O_CREAT | O_WRONLY, 0600);
+		if (config_fd < 0)
+			return 20;
+		close(config_fd);
+		if (unlink((home + "/.cargo/config.toml").c_str()) != 0)
+			return 31;
+		std::string first = cache + "/download.tmp";
+		std::string second = cache + "/download";
+		int fd = open(first.c_str(), O_CREAT | O_WRONLY, 0600);
+		if (fd < 0)
+			return 14;
+		if (write(fd, "cache", 5) != 5)
+			return 15;
+		close(fd);
+		if (rename(first.c_str(), second.c_str()) != 0 ||
+		    unlink(second.c_str()) != 0)
+			return 16;
+		fd = open((home + "/.npmrc").c_str(), O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0) {
+			close(fd);
+			return 17;
+		}
+		fd = open((home + "/.morph/config.toml").c_str(),
+			O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0) {
+			close(fd);
+			return 32;
+		}
+		fd = open((home + "/unrelated").c_str(), O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0) {
+			close(fd);
+			return 18;
+		}
+		arena_destroy(arena);
+		return 0;
+	});
+	EXPECT_EQ(rc, 0);
+	/* This path comes exclusively from mkdtemp. */
+	std::string cleanup = std::string("rm -rf ") + temp;
+	EXPECT_EQ(system(cleanup.c_str()), 0);
+}
+
+TEST(SandboxToolPathsTest, RejectsInvalidArguments)
+{
+	struct sandbox_config cfg = {};
+	struct arena *arena = arena_create(1024);
+	ASSERT_NE(arena, nullptr);
+	EXPECT_EQ(sandbox_prepare_tool_paths(nullptr, arena), -EINVAL);
+	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg, nullptr), -EINVAL);
+	EXPECT_EQ(sandbox_prepare_tool_paths(&cfg, arena), -EINVAL);
+	arena_destroy(arena);
+}
+
+TEST(SandboxEnterTest, VarTmpFollowsTempCapability)
+{
+	char dir[] = "/var/tmp/morph_sb_temp_XXXXXX";
+	ASSERT_NE(mkdtemp(dir), nullptr);
+	std::string path = std::string(dir) + "/state";
+	for (int allow : {0, 1}) {
+		int rc = run_in_child([&]() {
+			struct sandbox_config cfg = {};
+			cfg.path_policy_enabled = 1;
+			cfg.read_all = 1;
+			cfg.allow_temp = allow;
+			if (sandbox_enter(&cfg) != 0)
+				return 10;
+			int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+			if (!allow)
+				return fd < 0 ? 0 : 11;
+			if (fd < 0)
+				return 12;
+			close(fd);
+			return unlink(path.c_str()) == 0 ? 0 : 13;
+		});
+		EXPECT_EQ(rc, 0) << "allow_temp=" << allow;
+	}
+	unlink(path.c_str());
+	rmdir(dir);
+}
+
+TEST(SandboxEnterTest, CustomTmpdirFollowsTempCapability)
+{
+	const char *home = getenv("HOME");
+	ASSERT_NE(home, nullptr);
+	char dir[PATH_MAX];
+	ASSERT_LT(snprintf(dir, sizeof(dir), "%s/.morph_test_tmp_XXXXXX", home),
+		(int)sizeof(dir));
+	ASSERT_NE(mkdtemp(dir), nullptr);
+	char resolved[PATH_MAX];
+	ASSERT_NE(realpath(dir, resolved), nullptr);
+	if (strncmp(resolved, "/tmp/", 5) == 0 ||
+	    strncmp(resolved, "/private/tmp/", 13) == 0 ||
+	    strncmp(resolved, "/var/tmp/", 9) == 0 ||
+	    strncmp(resolved, "/private/var/tmp/", 17) == 0) {
+		rmdir(dir);
+		GTEST_SKIP() << "HOME is already inside a default temporary root";
+	}
+	std::string path = std::string(dir) + "/state";
+	for (int mode : {0, 1, 2, 3}) {
+		int rc = run_in_child([&]() {
+			setenv("TMPDIR", mode == 2 ? "/" : mode == 3 ? home : dir, 1);
+			struct sandbox_config cfg = {};
+			cfg.path_policy_enabled = 1;
+			cfg.read_all = 1;
+			cfg.allow_temp = mode != 0;
+			if (sandbox_enter(&cfg) != 0)
+				return 10;
+			int fd = open(path.c_str(), O_CREAT | O_WRONLY, 0600);
+			if (mode != 1) {
+				if (fd >= 0)
+					close(fd);
+				return fd < 0 ? 0 : 11;
+			}
+			if (fd < 0)
+				return 12;
+			close(fd);
+			return unlink(path.c_str()) == 0 ? 0 : 13;
+		});
+		EXPECT_EQ(rc, 0) << "mode=" << mode;
+	}
+	unlink(path.c_str());
+	rmdir(dir);
+}
+
+TEST(SandboxToolPathsTest, OverridesListsAndExistingGrants)
+{
+	char temp[] = "/tmp/morph_tool_overrides_XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	std::string base(temp);
+	ASSERT_EQ(mkdir((base + "/home").c_str(), 0700), 0);
+	ASSERT_EQ(mkdir((base + "/explicit").c_str(), 0700), 0);
+	int rc = run_in_child([&]() {
+		while (environ && *environ) {
+			std::string name(*environ);
+			name.resize(name.find('='));
+			if (unsetenv(name.c_str()) != 0)
+				return 10;
+		}
+		setenv("HOME", (base + "/home").c_str(), 1);
+		setenv("CARGO_HOME", (base + "/cargo").c_str(), 1);
+		setenv("RUSTUP_HOME", (base + "/rustup").c_str(), 1);
+		setenv("GRADLE_USER_HOME", (base + "/gradle").c_str(), 1);
+		setenv("CODEX_HOME", (base + "/codex").c_str(), 1);
+		setenv("CLAUDE_CONFIG_DIR", (base + "/claude").c_str(), 1);
+		setenv("HF_HOME", (base + "/huggingface").c_str(), 1);
+		setenv("OLLAMA_MODELS", (base + "/models").c_str(), 1);
+		std::string gopath = base + "/go-one:relative:" + base + "/go-two:/";
+		setenv("GOPATH", gopath.c_str(), 1);
+		std::string explicit_path = base + "/explicit";
+		char *grants[] = {explicit_path.data()};
+		struct sandbox_config cfg = {};
+		cfg.path_policy_enabled = 1;
+		cfg.read_all = 1;
+		cfg.write_paths = grants;
+		cfg.write_paths_count = 1;
+		cfg.delete_paths = grants;
+		cfg.delete_paths_count = 1;
+		struct arena *arena = arena_create(1024);
+		if (!arena || sandbox_prepare_tool_paths(&cfg, arena) != 0)
+			return 11;
+		int count = cfg.write_paths_count;
+		if (sandbox_prepare_tool_paths(&cfg, arena) != 0 ||
+		    cfg.write_paths_count != count)
+			return 12;
+		if (sandbox_enter(&cfg) != 0)
+			return 13;
+		for (const char *dir : {"cargo", "rustup", "gradle", "go-one",
+				       "go-two", "explicit", "codex", "claude",
+				       "huggingface", "models"}) {
+			std::string first = base + "/" + dir + "/install.tmp";
+			std::string second = base + "/" + dir + "/install";
+			int fd = open(first.c_str(), O_CREAT | O_WRONLY, 0600);
+			if (fd < 0)
+				return 14;
+			close(fd);
+			if (rename(first.c_str(), second.c_str()) != 0 ||
+			    unlink(second.c_str()) != 0)
+				return 15;
+		}
+		int fd = open((base + "/unrelated").c_str(), O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0) {
+			close(fd);
+			return 16;
+		}
+		arena_destroy(arena);
+		return 0;
+	});
+	EXPECT_EQ(rc, 0);
+	std::string cleanup = std::string("rm -rf ") + temp;
+	EXPECT_EQ(system(cleanup.c_str()), 0);
 }

@@ -4,6 +4,7 @@
 #include "config/config.h"
 #include "exec/process.h"
 #include "sandbox.h"
+#include "sandbox/tool_paths.h"
 #include "util/bash_parse.h"
 #include "util/error.h"
 #include "util/id.h"
@@ -354,6 +355,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	const char *workdir;
 	struct process_spawn_options options;
 	struct sandbox_config sandbox;
+	struct arena *path_arena;
 	char resolved_workdir[PATH_MAX];
 	char git_dir[PATH_MAX] = {0};
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = "shell";
@@ -460,9 +462,26 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.allow_pty = options.pty;
 	sandbox.allow_process_info = 1;
 	sandbox.allow_temp = 1;
+	path_arena = arena_create(0);
+
+	if (!path_arena) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "sandbox_policy_failed",
+			morph_strerror(-ENOMEM));
+		MORPH_RETURN(-ENOMEM);
+	}
+	rc = sandbox_prepare_tool_paths(&sandbox, path_arena);
+	if (rc != 0) {
+		arena_destroy(path_arena);
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "sandbox_policy_failed",
+			morph_strerror(rc));
+		return rc;
+	}
 	options.sandbox = &sandbox;
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
+	arena_destroy(path_arena);
 	if (rc != 0) {
 		const char *code = rc == -ENOENT ? "invalid_workdir" :
 			rc == -ENOTDIR ? "invalid_workdir" : "spawn_failed";
