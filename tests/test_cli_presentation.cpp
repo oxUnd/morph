@@ -1704,12 +1704,13 @@ TEST(CliUserInputTest, SeparatesMultilineInputAndSanitizesTerminalControls)
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input("Fix 中文🙂\nsecond\tline\033[2J");
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("│ > Fix 中文🙂"), std::string::npos);
-	EXPECT_NE(output.find("│   second line"), std::string::npos);
+	EXPECT_NE(output.find("\n> Fix 中文🙂"), std::string::npos);
+	EXPECT_NE(output.find("\n  second line"), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	EXPECT_EQ(output.substr(0, 1), "\n");
-	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
+	EXPECT_EQ(output.back(), '\n');
+	EXPECT_EQ(output.find("\n\n"), std::string::npos);
 	cli_set_color_enabled(1);
 }
 
@@ -1729,5 +1730,15 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	EXPECT_EQ(count, 160u);
 	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
 	EXPECT_EQ(output.find("truncated"), std::string::npos);
+	cli_set_color_enabled(1);
+}
+
+TEST(CliUserInputTest, ShortMessageHasNoInternalPaddingRows)
+{
+	cli_set_color_enabled(0);
+	testing::internal::CaptureStdout();
+	cli_presentation_user_input("Review");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(output, "\n> Review\n");
 	cli_set_color_enabled(1);
 }

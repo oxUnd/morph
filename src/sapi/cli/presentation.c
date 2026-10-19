@@ -54,12 +54,19 @@ static void presentation_user_row(const char *text, size_t length, int width,
 	int used;
 
 	if (color)
-		printf("\033[48;5;234m" ANSI_CYAN);
-	printf("│");
+		printf(ANSI_RESET "\033[48;5;234m");
+	if (first) {
+		if (color)
+			printf("\033[38;5;245m› \033[39m");
+		else
+			printf("> ");
+	} else {
+		printf("  ");
+	}
 	if (color)
-		printf(ANSI_RESET "\033[48;5;234m" ANSI_BOLD);
-	printf(" %s%.*s", first ? "> " : "  ", (int)length, text);
-	used = 4;
+		printf(ANSI_BOLD);
+	printf("%.*s", (int)length, text);
+	used = 2;
 	for (size_t i = 0; i < length;) {
 		unsigned cp;
 		size_t bytes;
@@ -102,7 +109,6 @@ void cli_presentation_user_input(const char *text)
 	if (width < 8)
 		width = 8;
 	putchar('\n');
-	presentation_user_row("", 0, width, 0);
 	line = safe;
 	while (line) {
 		char *newline = strchr(line, '\n');
@@ -112,7 +118,7 @@ void cli_presentation_user_input(const char *text)
 			*newline = '\0';
 		do {
 			const char *end = utf8_advance_display_width(cursor,
-				(size_t)(width - 4));
+				(size_t)(width - 2));
 
 			presentation_user_row(cursor, (size_t)(end - cursor), width, first);
 			first = 0;
@@ -120,8 +126,6 @@ void cli_presentation_user_input(const char *text)
 		} while (*cursor);
 		line = newline ? newline + 1 : NULL;
 	}
-	presentation_user_row("", 0, width, 0);
-	putchar('\n');
 	free(safe);
 }
 

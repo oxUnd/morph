@@ -151,9 +151,13 @@ def main():
             assert 'Working (' in starting and 'esc to interrupt' in starting, starting
             starting_rows = starting.splitlines()
             user_row = next(i for i, row in enumerate(starting_rows)
-                            if '│ > initial task' in row)
-            assert terminal.screen.buffer[user_row][4].bold, starting
-            assert terminal.screen.buffer[user_row][4].bg == '1c1c1c', starting
+                            if row.startswith('› initial task'))
+            assert '\\x0d' not in terminal.raw, terminal.raw[-3000:]
+            assert terminal.screen.buffer[user_row][0].fg == '8a8a8a', starting
+            assert not terminal.screen.buffer[user_row][0].bold, starting
+            assert terminal.screen.buffer[user_row][2].bold, starting
+            assert terminal.screen.buffer[user_row][2].bg == '1c1c1c', starting
+            assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
                                if 'Working (' in row)
             assert working_row > 0 and not starting_rows[working_row - 1].strip(), starting
@@ -180,6 +184,7 @@ def main():
             releases.append(release2)
             assert time.monotonic() - started < 2.5, 'steering waited for model completion'
             consumed = terminal.snapshot('steering queue consumed')
+            assert '\\x0d' not in terminal.raw, terminal.raw[-3000:]
             assert 'Messages queued' not in consumed, consumed
             assert not release.is_set(), 'first request must still be gated'
             user_text = [m['content'] for m in second['messages'] if m['role'] == 'user']

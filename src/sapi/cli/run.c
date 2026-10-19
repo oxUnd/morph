@@ -567,7 +567,7 @@ static int cli_readline_accept(int count, int key)
 	if (RL_ISSTATE(RL_STATE_CALLBACK) && draft[0] != '/') {
 		/* The composer has been erased; commit the styled message once. */
 		if (isatty(STDOUT_FILENO))
-			printf("\r\033[2K");
+			fprintf(stdout, "\r\033[2K");
 		cli_presentation_user_input(draft);
 		rl_replace_line(draft, 0);
 		rl_point = point;
