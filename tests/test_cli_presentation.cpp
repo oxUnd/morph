@@ -1742,3 +1742,59 @@ TEST(CliUserInputTest, ShortMessageHasNoInternalPaddingRows)
 	EXPECT_EQ(output, "\n> Review\n");
 	cli_set_color_enabled(1);
 }
+
+extern "C" void cli_print_welcome(const char *model, const char *directory);
+
+TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
+{
+	const char *columns = getenv("COLUMNS");
+	std::string saved = columns ? columns : "";
+	bool had_columns = columns != nullptr;
+	cli_set_color_enabled(0);
+	for (int width : {40, 80, 120}) {
+		ASSERT_EQ(setenv("COLUMNS", std::to_string(width).c_str(), 1), 0);
+		testing::internal::CaptureStdout();
+		cli_print_welcome("deepseek-flash", "~/Work/macos/cat");
+		std::string output = testing::internal::GetCapturedStdout();
+		EXPECT_NE(output.find("  morph  v"), std::string::npos);
+		EXPECT_EQ(output.find("session:"), std::string::npos);
+		EXPECT_EQ(output.find("╭"), std::string::npos);
+		EXPECT_EQ(output.find("─"), std::string::npos);
+		EXPECT_EQ(output.find("\033"), std::string::npos);
+		EXPECT_NE(output.find("/switch sessions"), std::string::npos);
+		EXPECT_NE(output.find("Ctrl+Cmd+V image"), std::string::npos);
+		std::istringstream lines(output);
+		std::string line;
+		while (std::getline(lines, line))
+			EXPECT_LE(utf8_display_width(line.c_str()), static_cast<size_t>(width));
+		if (width >= 80) {
+			EXPECT_NE(output.find("deepseek-flash · ~/Work/macos/cat"), std::string::npos);
+			EXPECT_EQ(std::count(output.begin(), output.end(), '\n'), 7);
+		}
+	}
+	if (had_columns)
+		setenv("COLUMNS", saved.c_str(), 1);
+	else
+		unsetenv("COLUMNS");
+	cli_set_color_enabled(1);
+}
+
+TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
+{
+	const char *columns = getenv("COLUMNS");
+	std::string saved = columns ? columns : "";
+	bool had_columns = columns != nullptr;
+	ASSERT_EQ(setenv("COLUMNS", "40", 1), 0);
+	cli_set_color_enabled(0);
+	testing::internal::CaptureStdout();
+	cli_print_welcome("model\033[2J", "/very/long/中文/workspace/path/ending");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(output.find("\033"), std::string::npos);
+	EXPECT_NE(output.find("/ending"), std::string::npos);
+	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
+	if (had_columns)
+		setenv("COLUMNS", saved.c_str(), 1);
+	else
+		unsetenv("COLUMNS");
+	cli_set_color_enabled(1);
+}

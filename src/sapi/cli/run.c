@@ -4,10 +4,6 @@
 #include "sapi/cli/composer.h"
 #include <sys/ioctl.h>
 
-#define CLI_BANNER_INNER_WIDTH 60
-#define CLI_BANNER_CONTENT_WIDTH (CLI_BANNER_INNER_WIDTH - 2)
-#define CLI_BANNER_LABEL_WIDTH 12
-#define CLI_BANNER_HINT_WIDTH 18
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
 #define CLI_DETAILS_INPUT_BURST_MAX 1024
 #define CLI_INPUT_BACKGROUND "\033[48;5;234m"
@@ -861,56 +857,6 @@ const char *cli_input_prompt(void)
 		CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 }
 
-static void cli_print_banner_title(void)
-{
-	size_t used;
-	int pad;
-
-	used = utf8_display_width(">_ ") + utf8_display_width("morph") +
-		2 + utf8_display_width("(v)") +
-		utf8_display_width(MORPH_VERSION);
-	pad = CLI_BANNER_CONTENT_WIDTH -
-		(used > (size_t)INT_MAX ? INT_MAX : (int)used);
-	printf(ANSI_CYAN "│" ANSI_RESET ANSI_DIM " >_ "
-	       ANSI_RESET ANSI_BOLD "morph" ANSI_RESET
-	       "  " ANSI_DIM "(v%s)" ANSI_RESET, MORPH_VERSION);
-	for (int i = 0; i < pad; i++)
-		putchar(' ');
-	printf(ANSI_CYAN " │" ANSI_RESET "\n");
-}
-
-static void cli_print_banner_blank(void)
-{
-	printf(ANSI_CYAN "│" ANSI_RESET);
-	for (int i = 0; i < CLI_BANNER_INNER_WIDTH; i++)
-		putchar(' ');
-	printf(ANSI_CYAN "│" ANSI_RESET "\n");
-}
-
-static void cli_print_banner_field(const char *label, const char *value,
-				   const char *hint, int keep_tail)
-{
-	char clipped[BUFSIZ];
-	int hint_width = hint ? CLI_BANNER_HINT_WIDTH : 0;
-	int value_width = CLI_BANNER_CONTENT_WIDTH -
-		CLI_BANNER_LABEL_WIDTH - hint_width;
-
-	(void)utf8_copy_ellipsized_display_width(
-		clipped, sizeof(clipped), value, (size_t)value_width,
-		keep_tail);
-	printf(ANSI_CYAN "│" ANSI_RESET " " ANSI_DIM);
-	print_padded(label, CLI_BANNER_LABEL_WIDTH);
-	printf(ANSI_RESET ANSI_BOLD);
-	print_padded(clipped, value_width);
-	printf(ANSI_RESET);
-	if (hint) {
-		printf(ANSI_DIM);
-		print_padded(hint, CLI_BANNER_HINT_WIDTH);
-		printf(ANSI_RESET);
-	}
-	printf(ANSI_CYAN " │" ANSI_RESET "\n");
-}
-
 /* ---- cli_run ---- */
 
 static void cli_run_structured(struct cli_context *ctx)
@@ -1022,7 +968,6 @@ void cli_run(struct cli_context *ctx)
 	const struct config *config;
 	const char *workdir;
 	const char *home;
-	struct session current;
 	morph_buf_t directory;
 
 	if (!ctx)
@@ -1046,8 +991,6 @@ void cli_run(struct cli_context *ctx)
 	}
 	config = runtime_config_get(ctx->runtime);
 	workdir = runtime_workdir_get(ctx->runtime);
-	memset(&current, 0, sizeof(current));
-	(void)runtime_session_current(ctx->runtime, &current);
 	memset(&directory, 0, sizeof(directory));
 	if (morph_buf_init(&directory, BUFSIZ) != 0)
 		return;
@@ -1062,31 +1005,9 @@ void cli_run(struct cli_context *ctx)
 		(void)morph_buf_puts(&directory,
 				    workdir && workdir[0] ? workdir : ".");
 	}
-	printf("\n" ANSI_CYAN
-	       "╭───────────────"
-	       "───────────────"
-	       "───────────────"
-	       "───────────────╮\n"
-	       ANSI_RESET);
-	cli_print_banner_title();
-	cli_print_banner_blank();
-	cli_print_banner_field("model:",
-		config ? config->models.text.model : "model", NULL, 0);
-	cli_print_banner_field("session:",
-		current.display_id[0] ? current.display_id : "session",
-		"/switch to change", 0);
-	cli_print_banner_field("directory:", morph_buf_cstr(&directory), NULL, 1);
-	printf(ANSI_CYAN
-	       "╰───────────────"
-	       "───────────────"
-	       "───────────────"
-	       "───────────────╯"
-	       ANSI_RESET "\n\n");
+	cli_print_welcome(config ? config->models.text.model : NULL,
+		morph_buf_cstr(&directory));
 	morph_buf_cleanup(&directory);
-	printf(ANSI_DIM "  /help · ./image.png attach · Ctrl+J/Alt+Enter newline\n"
-	       "  Enter send/adjust while running · Ctrl+Command+V image\n"
-	       "  Esc/Ctrl-C cancel"
-	       ANSI_RESET "\n\n");
 #ifndef HAVE_READLINE
 	char line[BUFSIZ];
 #endif

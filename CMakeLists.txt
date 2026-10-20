@@ -224,6 +224,9 @@ add_custom_target(morph-data ALL
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/misc/morph-logo.png
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/morph-logo.png
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		${CMAKE_SOURCE_DIR}/vendor/mathjax-c/fonts/STIXTwoMath-Regular.ttf
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts/
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -258,6 +261,7 @@ install(FILES
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/fonts
 )
 install(FILES
+	${CMAKE_SOURCE_DIR}/misc/morph-logo.png
 	${CMAKE_SOURCE_DIR}/docs/morph.txt
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph
 )

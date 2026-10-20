@@ -103,6 +103,7 @@ extern volatile sig_atomic_t cli_sigint_received;
 void cli_sigint_handler(int sig);
 const char *cli_input_prompt(void);
 void cli_presentation_user_input(const char *text);
+void cli_print_welcome(const char *model, const char *directory);
 
 void print_padded(const char *s, int target_width);
 /* Use for model, tool, file, database, MCP, and user-provided text. */
