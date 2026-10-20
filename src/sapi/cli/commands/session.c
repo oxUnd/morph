@@ -1,9 +1,14 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/list_ui.h"
+#include "sapi/cli/setup_ui.h"
+
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 #define SESSION_LIST_DEFAULT 20
 
-static int append_token_count(morph_buf_t *buf, int64_t tokens)
+static int append_token_number(morph_buf_t *buf, int64_t tokens)
 {
 	char raw[32];
 	const char *digits;
@@ -28,7 +33,14 @@ static int append_token_count(morph_buf_t *buf, int64_t tokens)
 		if (rc != 0)
 			return rc;
 	}
-	return morph_buf_puts(buf, " tokens");
+	return 0;
+}
+
+static int append_token_count(morph_buf_t *buf, int64_t tokens)
+{
+	int rc = append_token_number(buf, tokens);
+
+	return rc == 0 ? morph_buf_puts(buf, " tokens") : rc;
 }
 
 static int append_session_time(morph_buf_t *buf, int64_t updated_at,
@@ -206,6 +218,425 @@ static int cmd_list(struct cli_context *ctx, int argc, char **argv)
 	}
 	runtime_session_list_free(list);
 	return 0;
+}
+
+#define RESUME_PAGE_SIZE 10
+
+static int resume_page(struct session *list, int count, int page,
+		       int64_t current_id, int page_size)
+{
+	int start = page * page_size;
+	int end = count - start > page_size ?
+		start + page_size : count;
+
+	CMD_HEADER("resume · page %d/%d · %d sessions", page + 1,
+		   (count - 1) / page_size + 1, count);
+	for (int i = start; i < end; i++) {
+		char number[16];
+		morph_buf_t metadata;
+		int rc = morph_buf_init(&metadata, 64);
+
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		rc = morph_buf_printf(&metadata, "%s · ", list[i].display_id);
+		if (rc == 0)
+			rc = append_token_count(&metadata, list[i].token_used);
+		if (rc == 0)
+			rc = append_session_time(&metadata, list[i].updated_at,
+					 list[i].created_at);
+		if (rc == 0) {
+			snprintf(number, sizeof(number), "%d", i - start + 1);
+			cli_list_row(number, list[i].name,
+				     morph_buf_cstr(&metadata),
+				     list[i].id == current_id, i == end - 1,
+				     cli_list_columns());
+		}
+		morph_buf_cleanup(&metadata);
+		if (rc != 0)
+			MORPH_RETURN(rc);
+	}
+	return 0;
+}
+
+#define RESUME_NORMAL "\033[0;38;2;225;229;234;48;2;16;18;20m"
+#define RESUME_MUTED "\033[0;38;2;142;150;161;48;2;16;18;20m"
+#define RESUME_ACCENT "\033[0;38;2;71;211;230;48;2;16;18;20m"
+#define RESUME_RULE "\033[0;38;2;48;57;65;48;2;16;18;20m"
+#define RESUME_SELECTED "\033[0;38;2;239;244;248;48;2;29;48;56m"
+#define RESUME_SELECTED_META "\033[0;38;2;180;194;203;48;2;29;48;56m"
+#define RESUME_BAR "\033[0;38;2;71;211;230;48;2;29;48;56m"
+
+struct resume_layout {
+	int rows;
+	int columns;
+	int first_row;
+	int page_size;
+	int width;
+	int name_width;
+	int id_column;
+	int tokens_column;
+	int updated_column;
+};
+
+static struct resume_layout resume_dimensions(void)
+{
+	struct winsize ws;
+	struct resume_layout layout = {.rows = 24, .columns = 80};
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+		if (ws.ws_row) layout.rows = ws.ws_row;
+		if (ws.ws_col) layout.columns = ws.ws_col;
+	}
+	layout.width = layout.columns > 4 ? layout.columns - 4 : 1;
+	layout.first_row = layout.rows >= 14 ? 8 : layout.rows >= 6 ? 3 :
+		layout.rows >= 3 ? 2 : 1;
+	layout.page_size = layout.rows >= 14 ? layout.rows - 12 :
+		layout.rows >= 6 ? layout.rows - 5 : layout.rows >= 3 ?
+		layout.rows - 2 : 1;
+	layout.name_width = layout.width;
+	if (layout.width >= 48) {
+		layout.updated_column = 3 + layout.width - 14;
+		layout.name_width -= 17;
+	}
+	if (layout.width >= 68) {
+		layout.tokens_column = layout.updated_column - 15;
+		layout.name_width -= 15;
+	}
+	if (layout.width >= 88) {
+		layout.id_column = layout.tokens_column - 11;
+		layout.name_width -= 11;
+	}
+	return layout;
+}
+
+/* All data passes through the single-line sanitizer before raw frame output. */
+static void resume_cell(int row, int column, int width, const char *text,
+			const char *style, int right)
+{
+	char compact[BUFSIZ];
+	char clipped[BUFSIZ];
+	int padding;
+
+	if (width <= 0)
+		return;
+	cli_list_compact_text(compact, sizeof(compact), text);
+	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), compact,
+					 (size_t)width, 0);
+	padding = width - (int)utf8_display_width(clipped);
+	fprintf(stdout, "\033[%d;%dH%s", row, column, style);
+	if (right)
+		fprintf(stdout, "%*s", padding, "");
+	fprintf(stdout, "%s", clipped);
+	if (!right)
+		fprintf(stdout, "%*s", padding, "");
+}
+
+static void resume_rule(int row, int width)
+{
+	fprintf(stdout, "\033[%d;3H%s", row, RESUME_RULE);
+	for (int i = 0; i < width; i++)
+		fprintf(stdout, "─");
+}
+
+static int resume_frame(struct session *list, int count, int focus,
+			const struct resume_layout *layout)
+{
+	int page = focus / layout->page_size;
+	int start = page * layout->page_size;
+	int end = count - start > layout->page_size ?
+		start + layout->page_size : count;
+	char label[128];
+	morph_buf_t tokens;
+	int rc = morph_buf_init(&tokens, 32);
+
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	/* These trusted controls bypass cli_printf's text-only output policy. */
+	fprintf(stdout, "\033[?2026h%s\033[H\033[J", RESUME_NORMAL);
+	if (layout->columns < 5) {
+		resume_cell(1, 1, layout->columns, list[focus].name, RESUME_SELECTED, 0);
+		fprintf(stdout, "\033[0m\033[?2026l");
+		fflush(stdout);
+		morph_buf_cleanup(&tokens);
+		return 0;
+	}
+	if (layout->rows >= 14) {
+		resume_cell(1, 3, 5, "morph", RESUME_ACCENT, 0);
+		resume_cell(1, 9, layout->width - 6, "/ sessions", RESUME_MUTED, 0);
+		resume_cell(3, 3, layout->width, "Resume a session", RESUME_NORMAL "\033[1m", 0);
+		snprintf(label, sizeof(label), "%d sessions · sorted by recent activity", count);
+		resume_cell(4, 3, layout->width, label, RESUME_MUTED, 0);
+		resume_rule(6, layout->width);
+	} else if (layout->rows >= 3) {
+		resume_cell(1, 3, layout->width, "Sessions", RESUME_ACCENT, 0);
+	}
+	if (layout->rows >= 3 && layout->width >= 28) {
+		snprintf(label, sizeof(label), "%d / %d", page + 1,
+			 (count - 1) / layout->page_size + 1);
+		int width = (int)strlen(label);
+
+		resume_cell(layout->rows >= 14 ? 3 : 1, 3 + layout->width - width,
+			    width, label, RESUME_MUTED, 1);
+	}
+	if (layout->rows >= 6) {
+		int row = layout->first_row - 1;
+
+		resume_cell(row, 3, layout->name_width, "SESSION", RESUME_MUTED, 0);
+		if (layout->id_column)
+			resume_cell(row, layout->id_column, 8, "ID", RESUME_MUTED, 0);
+		if (layout->tokens_column)
+			resume_cell(row, layout->tokens_column, 12, "TOKENS", RESUME_MUTED, 1);
+		if (layout->updated_column)
+			resume_cell(row, layout->updated_column, 14, "UPDATED", RESUME_MUTED, 0);
+	}
+	for (int i = start; i < end; i++) {
+		int row = layout->first_row + i - start;
+		int selected = i == focus;
+		const char *text = selected ? RESUME_SELECTED "\033[1m" : RESUME_NORMAL;
+		const char *metadata = selected ? RESUME_SELECTED_META : RESUME_MUTED;
+
+		resume_cell(row, 3, layout->width, "", text, 0);
+		if (selected && layout->columns > 4)
+			resume_cell(row, 2, 1, "▏", RESUME_BAR, 0);
+		resume_cell(row, 3, layout->name_width, list[i].name, text, 0);
+		if (layout->id_column)
+			resume_cell(row, layout->id_column, 8, list[i].display_id, metadata, 0);
+		if (layout->tokens_column) {
+			morph_buf_reset(&tokens);
+			rc = append_token_number(&tokens, list[i].token_used);
+			if (rc != 0)
+				break;
+			resume_cell(row, layout->tokens_column, 12,
+				    morph_buf_cstr(&tokens), metadata, 1);
+		}
+		if (layout->updated_column) {
+			morph_buf_reset(&tokens);
+			rc = append_session_time(&tokens, list[i].updated_at, list[i].created_at);
+			if (rc != 0)
+				break;
+			resume_cell(row, layout->updated_column, 14,
+				    morph_buf_cstr(&tokens) + strlen(" · "), metadata, 0);
+		}
+	}
+	if (layout->rows >= 6) {
+		snprintf(label, sizeof(label), "Showing %d–%d of %d", start + 1, end, count);
+		if (layout->rows >= 14) resume_rule(layout->rows - 4, layout->width);
+		resume_cell(layout->rows - 3 + (layout->rows < 14), 3,
+			    layout->width, label, RESUME_MUTED, 0);
+		resume_rule(layout->rows - 1, layout->width);
+	}
+	if (layout->rows >= 3) {
+		const char *hint = layout->width >= 68 ?
+			"↑ ↓  Select    Enter  Resume    ← →  Page" :
+			layout->width >= 36 ? "↑↓ Select  Enter Resume  Esc Cancel" :
+			"↑↓ Enter Esc";
+
+		resume_cell(layout->rows, 3, layout->width, hint, RESUME_MUTED, 0);
+		if (layout->width >= 68)
+			resume_cell(layout->rows, 3 + layout->width - 10, 10,
+				    "Esc Cancel", RESUME_NORMAL, 1);
+	}
+	fprintf(stdout, "\033[0m\033[?2026l");
+	fflush(stdout);
+	morph_buf_cleanup(&tokens);
+	return rc;
+}
+
+/* Return a byte, or a negative error; escape sequences use a short timeout. */
+static int resume_read_byte(int timeout)
+{
+	struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
+	unsigned char byte;
+	int rc = poll(&input, 1, timeout);
+
+	if (rc < 0)
+		MORPH_RETURN(-errno);
+	if (rc == 0)
+		return 0;
+	ssize_t size = read(STDIN_FILENO, &byte, 1);
+	if (size < 0)
+		MORPH_RETURN(-errno);
+	if (size == 0)
+		MORPH_RETURN(-ECANCELED);
+	return byte;
+}
+
+/* Own a temporary screen so navigation never fills the transcript. */
+static int resume_pick(struct session *list, int count, int *selected)
+{
+	struct termios saved;
+	struct resume_layout previous = {0};
+	int focus = 0;
+	int dirty = 1;
+	int rc = 0;
+
+	*selected = -1;
+	if (tcgetattr(STDIN_FILENO, &saved) != 0)
+		MORPH_RETURN(-errno);
+	struct termios raw = saved;
+	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
+	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
+	raw.c_cc[VMIN] = 1;
+	raw.c_cc[VTIME] = 0;
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+		MORPH_RETURN(-errno);
+	fprintf(stdout, "\033[?1049h\033[?25l");
+	for (;;) {
+		struct resume_layout layout = resume_dimensions();
+
+		if (dirty || layout.rows != previous.rows || layout.columns != previous.columns) {
+			rc = resume_frame(list, count, focus, &layout);
+			if (rc != 0)
+				break;
+			previous = layout;
+			dirty = 0;
+		}
+		int key = resume_read_byte(100);
+
+		if (key == 0)
+			continue;
+		if (key == 27) {
+			key = resume_read_byte(80);
+			if (key == 0)
+				break;
+			if (key == '[' || key == 'O') {
+				key = resume_read_byte(80);
+				if (key == 'A') key = 'k';
+				else if (key == 'B') key = 'j';
+				else if (key == 'C') key = 'n';
+				else if (key == 'D') key = 'p';
+				else if (key >= 0) continue;
+			} else if (key >= 0) {
+				break;
+			}
+		}
+		if (key < 0) {
+			if (key == -EINTR)
+				continue;
+			if (key != -ECANCELED)
+				MORPH_SET_ERR(rc, key);
+			break;
+		}
+		if (key == 'q' || key == 3 || key == 4)
+			break;
+		if (key == '\r' || key == '\n') {
+			*selected = focus;
+			break;
+		}
+		int old_focus = focus;
+
+		if (key == 'k' && focus > 0) focus--;
+		if ((key == 'j' || key == '\t') && focus < count - 1) focus++;
+		if (key == 'n')
+			focus = focus + layout.page_size < count ? focus + layout.page_size : count - 1;
+		if (key == 'p')
+			focus = focus >= layout.page_size ? focus - layout.page_size : 0;
+		dirty = focus != old_focus;
+	}
+	fprintf(stdout, "\033[0m\033[?25h\033[?1049l");
+	fflush(stdout);
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && rc == 0)
+		MORPH_SET_ERR(rc, -errno);
+	return rc;
+}
+
+static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
+{
+	struct session *list = NULL;
+	struct session selected;
+	int64_t current_id = 0;
+	int count = 0;
+	int page = 0;
+	int rc;
+
+	if (argc > 1)
+		return cmd_switch(ctx, argc, argv);
+	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		CMD_ERROR("use /list and /resume <name|id> in JSON mode");
+		MORPH_RETURN(-EINVAL);
+	}
+	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	(void)runtime_session_current_id(ctx->runtime, &current_id);
+	if (count == 0)
+		CMD_OK("no sessions to resume");
+	if (count > 0 && cli_setup_ui_available(stdin, stdout)) {
+		int index;
+
+		rc = resume_pick(list, count, &index);
+		if (rc == 0 && index >= 0) {
+			rc = runtime_session_select_existing(ctx->runtime,
+				list[index].id, &selected);
+			if (rc == 0) {
+				ctx->session_auto_named = 1;
+				CMD_OK("resumed session: %s", selected.name);
+			} else {
+				CMD_ERROR("failed to resume session: %s", morph_strerror(rc));
+			}
+		}
+		runtime_session_list_free(list);
+		return rc;
+	}
+	while (count > 0) {
+		char answer[BUFSIZ];
+		char *end;
+		long number;
+
+		rc = resume_page(list, count, page, current_id, RESUME_PAGE_SIZE);
+		if (rc != 0)
+			break;
+		printf("  Select 1-%d · n next · p previous · q cancel: ",
+		       count - page * RESUME_PAGE_SIZE > RESUME_PAGE_SIZE ?
+		       RESUME_PAGE_SIZE : count - page * RESUME_PAGE_SIZE);
+		fflush(stdout);
+		if (!fgets(answer, sizeof(answer), stdin))
+			break;
+		if (!strchr(answer, '\n') && !feof(stdin)) {
+			int ch;
+
+			while ((ch = getchar()) != '\n' && ch != EOF) {}
+			CMD_ERROR("invalid selection");
+			continue;
+		}
+		answer[strcspn(answer, "\r\n")] = '\0';
+		if (!answer[0] || strcmp(answer, "q") == 0)
+			break;
+		if (strcmp(answer, "n") == 0) {
+			if (page < (count - 1) / RESUME_PAGE_SIZE)
+				page++;
+			else
+				CMD_ERROR("already on the last page");
+			continue;
+		}
+		if (strcmp(answer, "p") == 0) {
+			if (page > 0)
+				page--;
+			else
+				CMD_ERROR("already on the first page");
+			continue;
+		}
+		errno = 0;
+		number = strtol(answer, &end, 10);
+		if (errno || end == answer || *end || number < 1 ||
+		    number > RESUME_PAGE_SIZE ||
+		    number > count - page * RESUME_PAGE_SIZE) {
+			CMD_ERROR("invalid selection");
+			continue;
+		}
+		rc = runtime_session_select_existing(ctx->runtime,
+			list[page * RESUME_PAGE_SIZE + (int)number - 1].id,
+			&selected);
+		if (rc == 0) {
+			ctx->session_auto_named = 1;
+			CMD_OK("resumed session: %s", selected.name);
+		} else {
+			CMD_ERROR("failed to resume session: %s", morph_strerror(rc));
+		}
+		break;
+	}
+	runtime_session_list_free(list);
+	return rc;
 }
 
 static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
@@ -451,6 +882,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 static const struct cli_command session_commands[] = {
 	{ "/new",     cmd_new,     "Create a new session",              "/new [name]" },
 	{ "/n",       cmd_new,     "Alias for /new",                    "/n [name]" },
+	{ "/resume",  cmd_resume,  "Choose a session to resume",         "/resume [name|id]" },
 	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id|^N>" },
 	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id|^N>" },
 	{ "/list",    cmd_list,    "List sessions",                     "/list [n|query|--all]" },

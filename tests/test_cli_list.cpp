@@ -24,6 +24,86 @@ int cli_event_callback(const struct morph_event *event, void *user_data);
 #include <string>
 #include <vector>
 
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <atomic>
+#include <thread>
+#include <termios.h>
+#include <unistd.h>
+
+static void resume_terminal_pick(struct cli_context *context, const char *keys,
+				int64_t expected, unsigned short rows)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	struct winsize size{};
+	size.ws_row = rows;
+	size.ws_col = 120;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	struct termios before{}, after{};
+	ASSERT_EQ(tcgetattr(slave, &before), 0);
+	int saved_input = dup(STDIN_FILENO);
+	int saved_output = dup(STDOUT_FILENO);
+	ASSERT_GE(saved_input, 0);
+	ASSERT_GE(saved_output, 0);
+	const char *term = getenv("TERM");
+	std::string saved_term = term ? term : "";
+	setenv("TERM", "xterm-256color", 1);
+	fflush(stdout);
+	ASSERT_GE(dup2(slave, STDIN_FILENO), 0);
+	ASSERT_GE(dup2(slave, STDOUT_FILENO), 0);
+	clearerr(stdin);
+	std::string output;
+	bool sent = false;
+	std::atomic<bool> finished{false};
+	std::thread keyboard([&] {
+		while (!finished.load()) {
+			struct pollfd input{master, POLLIN, 0};
+			if (poll(&input, 1, 100) <= 0)
+				continue;
+			char buffer[4096];
+			ssize_t length = read(master, buffer, sizeof(buffer));
+			if (length > 0)
+				output.append(buffer, static_cast<size_t>(length));
+			if (!sent && output.find("Cancel") != std::string::npos) {
+				(void)write(master, keys, strlen(keys));
+				sent = true;
+			}
+		}
+	});
+	int rc = cli_command_dispatch(context, "/resume");
+	fflush(stdout);
+	int restored = tcgetattr(slave, &after);
+	dup2(saved_input, STDIN_FILENO);
+	dup2(saved_output, STDOUT_FILENO);
+	close(saved_input);
+	close(saved_output);
+	clearerr(stdin);
+	finished.store(true);
+	keyboard.join();
+	close(slave);
+	close(master);
+	if (term) setenv("TERM", saved_term.c_str(), 1);
+	else unsetenv("TERM");
+	EXPECT_TRUE(sent) << output;
+	EXPECT_NE(output.find("\033[?1049h"), std::string::npos);
+	EXPECT_NE(output.find("\033[H\033[J"), std::string::npos);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(restored, 0);
+	const tcflag_t flags = ICANON | ECHO | ISIG | IEXTEN;
+	EXPECT_EQ(before.c_lflag & flags, after.c_lflag & flags);
+	EXPECT_EQ(before.c_iflag, after.c_iflag);
+	struct session current{};
+	ASSERT_EQ(runtime_session_current(context->runtime, &current), 0);
+	EXPECT_EQ(current.id, expected);
+	EXPECT_NE(output.find("SESSION"), std::string::npos);
+}
+
 static std::vector<cJSON *> cli_test_parse_ndjson(const std::string &output)
 {
 	std::vector<cJSON *> events;
@@ -229,6 +309,94 @@ TEST(CliListTest, SessionCommandShowsUpdatedTimeWithoutCurrentLabel)
 	EXPECT_NE(output.find("●"), std::string::npos);
 	EXPECT_EQ(output.find("current"), std::string::npos);
 
+	cli_command_registry_clear();
+	runtime_close(runtime);
+	std::error_code error;
+	(void)std::filesystem::remove_all(directory, error);
+}
+
+TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
+{
+	char pattern[] = "/tmp/morph-cli-resume-XXXXXX";
+	char *directory = mkdtemp(pattern);
+	ASSERT_NE(directory, nullptr);
+	std::string database = std::string(directory) + "/data.db";
+	struct runtime_options options{};
+	struct runtime *runtime = nullptr;
+	struct cli_context context{};
+	options.db_path = database.c_str();
+	options.workdir = directory;
+	options.front_name = "test";
+	ASSERT_EQ(runtime_open(&options, &runtime), 0);
+	context.runtime = runtime;
+	for (int i = 0; i < 22; i++) {
+		struct session session{};
+		std::string name = "resume-" + std::to_string(i);
+		ASSERT_EQ(runtime_session_create_detached(runtime, name.c_str(),
+			&session), 0);
+	}
+	struct session *sessions = nullptr;
+	int count = 0;
+	ASSERT_EQ(runtime_session_list_query(runtime, &sessions, &count, 0,
+		nullptr), 0);
+	ASSERT_GT(count, 20);
+	int64_t expected = sessions[20].id;
+	int64_t arrow_selected = sessions[13].id;
+	int64_t small_selected = sessions[2].id;
+	runtime_session_list_free(sessions);
+	cli_command_registry_clear();
+	ASSERT_EQ(cli_register_session_commands(), 0);
+	FILE *input = tmpfile();
+	ASSERT_NE(input, nullptr);
+	fputs("p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
+	rewind(input);
+	int saved_stdin = dup(STDIN_FILENO);
+	ASSERT_GE(saved_stdin, 0);
+	ASSERT_GE(dup2(fileno(input), STDIN_FILENO), 0);
+	clearerr(stdin);
+	testing::internal::CaptureStdout();
+	int rc = cli_command_dispatch(&context, "/resume");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_GE(dup2(saved_stdin, STDIN_FILENO), 0);
+	close(saved_stdin);
+	fclose(input);
+	clearerr(stdin);
+	EXPECT_EQ(rc, 0);
+	struct session current{};
+	ASSERT_EQ(runtime_session_current(runtime, &current), 0);
+	EXPECT_EQ(current.id, expected);
+	EXPECT_NE(output.find("page 1/3"), std::string::npos);
+	EXPECT_NE(output.find("page 2/3"), std::string::npos);
+	EXPECT_NE(output.find("page 3/3"), std::string::npos);
+	EXPECT_NE(output.find("already on the first page"), std::string::npos);
+	EXPECT_NE(output.find("already on the last page"), std::string::npos);
+	EXPECT_NE(output.find("invalid selection"), std::string::npos);
+	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(output.find("\033[?1049h"), std::string::npos);
+	for (const char *answer : {"q\n", "\n", ""}) {
+		input = tmpfile();
+		ASSERT_NE(input, nullptr);
+		fputs(answer, input);
+		rewind(input);
+		saved_stdin = dup(STDIN_FILENO);
+		ASSERT_GE(saved_stdin, 0);
+		ASSERT_GE(dup2(fileno(input), STDIN_FILENO), 0);
+		clearerr(stdin);
+		testing::internal::CaptureStdout();
+		rc = cli_command_dispatch(&context, "/resume");
+		(void)testing::internal::GetCapturedStdout();
+		EXPECT_GE(dup2(saved_stdin, STDIN_FILENO), 0);
+		close(saved_stdin);
+		fclose(input);
+		clearerr(stdin);
+		EXPECT_EQ(rc, 0);
+		ASSERT_EQ(runtime_session_current(runtime, &current), 0);
+		EXPECT_EQ(current.id, expected);
+	}
+	resume_terminal_pick(&context, "\033[B\033[A\033[C\033[B\r", arrow_selected, 24);
+	resume_terminal_pick(&context, "\033[B\033[B\033[B\033[A\r", small_selected, 6);
+	resume_terminal_pick(&context, "\033", small_selected, 24);
+	resume_terminal_pick(&context, "\003", small_selected, 24);
 	cli_command_registry_clear();
 	runtime_close(runtime);
 	std::error_code error;
