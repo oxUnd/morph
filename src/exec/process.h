@@ -38,6 +38,10 @@ struct process_spawn_options {
 	uint64_t yield_time_ms;
 	int pty;
 	int background;
+	/* Optional regular-file stdin; ignored unless use_stdin_fd is set. */
+	int hook_mode;
+	int use_stdin_fd;
+	int stdin_fd;
 	struct sandbox_config *sandbox;
 };
 

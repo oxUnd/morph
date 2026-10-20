@@ -61,37 +61,11 @@ target_include_directories(morph-fastcgi PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${FCGI_INCLUDE_DIRS})
 
-# Reuse the existing morph static libraries.  Names match the parent CMake
-# tree; if a target hasn't been registered (e.g. a pared-down build) the
-# linker line silently drops it via the conditional below.
-set(_MORPH_LIBS
-    morph-agent
-    morph-skill
-    morph-mcp
-    morph-tools
-    morph-ext
-    morph-ipc
-    morph-models
-    morph-session
-    morph-credits
-    morph-http
-    morph-config
-    morph-db
-    morph-event
-    morph-util)
-
-foreach(_lib ${_MORPH_LIBS})
-    if(TARGET ${_lib})
-        target_link_libraries(morph-fastcgi PRIVATE ${_lib})
-    endif()
-endforeach()
-
+# The runtime facade exports its core static-library dependencies.
 target_link_libraries(morph-fastcgi PRIVATE
     ${FCGI_LIBRARIES}
     morph-runtime
-    pthread
-    sqlite3
-    m)
+    pthread)
 
 if(FCGI_LIBRARY_DIRS)
     target_link_directories(morph-fastcgi PRIVATE ${FCGI_LIBRARY_DIRS})

@@ -19,4 +19,6 @@ target_link_libraries(morph-runtime PUBLIC
 	morph-skill
 	morph-sync
 	morph-tools
+	morph-ext
+	morph-ipc
 )

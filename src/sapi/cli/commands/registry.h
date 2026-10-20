@@ -29,5 +29,6 @@ int cli_register_skill_commands(void);
 int cli_register_mcp_commands(void);
 int cli_register_sync_commands(void);
 int cli_register_permission_commands(void);
+int cli_register_hook_commands(void);
 
 #endif

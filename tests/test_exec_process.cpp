@@ -709,3 +709,30 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 	tool_context_destroy(tctx);
 	std::filesystem::remove_all(temp);
 }
+
+TEST(ExecToolTest, SessionApprovalAllowsRepeatedExecution)
+{
+	struct tool_registry registry;
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	int approvals = 0;
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *, void *data) {
+			++*static_cast<int *>(data);
+			return TOOL_OP_SESSION;
+		}, &approvals);
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&registry, "exec",
+			"{\"command\":\"printf approved\",\"workdir\":\"/\"}", &result), 0);
+		ASSERT_NE(result.envelope, nullptr);
+		EXPECT_EQ(cJSON_GetObjectItem(result.envelope, "error"), nullptr);
+		tool_result_cleanup(&result);
+	}
+	EXPECT_EQ(approvals, 1);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+}

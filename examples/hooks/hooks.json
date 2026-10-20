@@ -1,0 +1,17 @@
+{
+  "description": "Run the focused arena tests before accepting completion.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 examples/hooks/verify_stop.py",
+            "timeout": 30,
+            "statusMessage": "Checking focused tests"
+          }
+        ]
+      }
+    ]
+  }
+}

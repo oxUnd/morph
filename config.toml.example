@@ -530,3 +530,16 @@ dir = ""
 # allowed_tools = ["file_read", "file_list", "file_info", "credits"]
 # disabled_tools = ["exec", "process"]
 # context_policy = "task_only"
+
+# Lifecycle hooks use the Codex-compatible command-hook structure.
+# Definitions require review and trust through /hooks before execution.
+# See docs/hooks.md for hooks.json, project trust, and supported events.
+# [features]
+# hooks = true
+#
+# [[hooks.Stop]]
+# [[hooks.Stop.hooks]]
+# type = "command"
+# command = "python3 /absolute/path/to/check_completion.py"
+# timeout = 30
+# statusMessage = "Checking completion"

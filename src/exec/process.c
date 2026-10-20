@@ -53,6 +53,7 @@ struct process_session {
 	int stderr_fd;
 	int stdin_fd;
 	int pty;
+	int hook_mode;
 	int stdout_open;
 	int stderr_open;
 	int stdin_open;
@@ -310,7 +311,8 @@ static void drain_fd(struct process_manager *manager, int *fd,
 
 	if (!*open || *fd < 0)
 		return;
-	for (;;) {
+	/* Bound each pass so a continuously writing child cannot starve timeouts. */
+	for (int batch = 0; batch < 64; batch++) {
 		ssize_t count = read(*fd, buffer, sizeof(buffer));
 
 		if (count > 0) {
@@ -391,6 +393,8 @@ static void monitor_session(struct process_manager *manager,
 		if (!session->pty)
 			drain_fd(manager, &session->stderr_fd, &session->stderr_stream,
 				 &session->stderr_open, 0);
+		if (session->hook_mode)
+			(void)kill(-session->pgid, SIGKILL);
 		finish_session(session, status);
 		close_session_fds(session);
 		pthread_cond_broadcast(&manager->condition);
@@ -501,15 +505,24 @@ static int spawn_pipe_process(struct process_manager *manager,
 		close(stdin_pipe[1]);
 		(void)dup2(stdout_pipe[1], STDOUT_FILENO);
 		(void)dup2(stderr_pipe[1], STDERR_FILENO);
-		(void)dup2(stdin_pipe[0], STDIN_FILENO);
+		(void)dup2(options->use_stdin_fd ? options->stdin_fd :
+			   stdin_pipe[0], STDIN_FILENO);
 		close(stdout_pipe[1]);
 		close(stderr_pipe[1]);
 		close(stdin_pipe[0]);
+		if (options->hook_mode) {
+			static const char *allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
+			if (sandbox_apply_env(allowed, 5, 0) != 0)
+				_exit(126);
+			(void)setenv("MORPH_HOOK_ACTIVE", "1", 1);
+			(void)sandbox_close_inherited_fds();
+		}
 		(void)setenv("TERM", "dumb", 0);
 		(void)setenv("NO_COLOR", "1", 0);
 		if (options->sandbox && sandbox_enter(options->sandbox) != 0)
 			_exit(126);
-		execl(shell, shell, "-lc", options->command, (char *)NULL);
+		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
+		      options->command, (char *)NULL);
 		_exit(127);
 	}
 	(void)setpgid(pid, pid);
@@ -521,9 +534,11 @@ static int spawn_pipe_process(struct process_manager *manager,
 	session->stdout_fd = stdout_pipe[0];
 	session->stderr_fd = stderr_pipe[0];
 	session->stdin_fd = stdin_pipe[1];
+	if (options->use_stdin_fd)
+		close_fd(&session->stdin_fd);
 	if (set_nonblocking(session->stdout_fd) != 0 ||
 		set_nonblocking(session->stderr_fd) != 0 ||
-		set_nonblocking(session->stdin_fd) != 0) {
+		(session->stdin_fd >= 0 && set_nonblocking(session->stdin_fd) != 0)) {
 		int rc = -errno;
 
 		(void)kill(-session->pgid, SIGKILL);
@@ -553,7 +568,8 @@ static int spawn_pty_process(struct process_manager *manager,
 			_exit(126);
 		if (options->sandbox && sandbox_enter(options->sandbox) != 0)
 			_exit(126);
-		execl(shell, shell, "-lc", options->command, (char *)NULL);
+		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
+		      options->command, (char *)NULL);
 		_exit(127);
 	}
 	(void)setpgid(pid, pid);
@@ -727,6 +743,7 @@ int process_spawn(struct process_manager *manager,
 		pthread_mutex_unlock(&manager->mutex);
 		return rc;
 	}
+	session->hook_mode = options->hook_mode;
 	session->pty = options->pty;
 	session->stdout_open = 1;
 	session->stderr_open = !options->pty;

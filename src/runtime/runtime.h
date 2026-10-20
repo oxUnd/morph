@@ -145,6 +145,11 @@ const struct config *runtime_config_get(const struct runtime *runtime);
 const char *runtime_workdir_get(const struct runtime *runtime);
 const char *runtime_config_path_get(const struct runtime *runtime);
 char *runtime_output_get_json(struct runtime *runtime, const char *path);
+/* Host management only; never register these operations as model tools. */
+int runtime_hooks_snapshot(struct runtime *runtime, cJSON **out);
+int runtime_hooks_manage(struct runtime *runtime, const char *action,
+	const char *id, const char *expected_digest);
+
 int runtime_permission_list(struct runtime *runtime,
 			    struct runtime_permission_grant **out,
 			    int *count);

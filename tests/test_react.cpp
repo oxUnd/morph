@@ -6131,3 +6131,205 @@ TEST_F(PromptModeTest, ProjectGuidanceIsRequestOnlyAndReloadedNextTurn)
 	unlink(path.c_str());
 	rmdir(directory);
 }
+
+struct TestHookState {
+	int stops = 0;
+	int tool_before = 0;
+	int tool_after = 0;
+	bool always_block = false;
+	bool deny_tool = false;
+	bool reject_input = false;
+	bool ask = false;
+	std::string rewrite;
+};
+
+static int test_lifecycle_hook(void *user, const char *event,
+			       const cJSON *, cJSON **output)
+{
+	auto *state = static_cast<TestHookState *>(user);
+	*output = cJSON_CreateObject();
+	bool block = false;
+	if (strcmp(event, "UserPromptSubmit") == 0)
+		block = state->reject_input;
+	if (strcmp(event, "Stop") == 0) {
+		state->stops++;
+		block = state->always_block || state->stops == 1;
+	}
+	if (strcmp(event, "PreToolUse") == 0) {
+		state->tool_before++;
+		block = state->deny_tool;
+		if (!state->rewrite.empty())
+			cJSON_AddItemToObject(*output, "updatedInput", cJSON_Parse(state->rewrite.c_str()));
+	}
+	if (strcmp(event, "PostToolUse") == 0)
+		state->tool_after++;
+	cJSON_AddBoolToObject(*output, "blocked", block);
+	cJSON_AddBoolToObject(*output, "ask", state->ask && strcmp(event, "PreToolUse") == 0);
+	cJSON_AddStringToObject(*output, "reason", "Run the focused verification.");
+	return 0;
+}
+
+TEST_F(MockLlmTest, StopHookRevisesBeforePublishingFinal)
+{
+	const char *responses[] = {"Final: rejected candidate", "Final: accepted candidate"};
+	llm = create_multi_mock_llm(responses, 2);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	ctx->hook_stop_active = 1;
+	std::string published;
+	auto cb = [](const struct react_output_event *event, void *ud) -> int {
+		if (event->text)
+			*static_cast<std::string *>(ud) += event->text;
+		return 0;
+	};
+	EXPECT_EQ(react_run(ctx, "finish", cb, &published), 0);
+	EXPECT_EQ(state.stops, 2);
+	EXPECT_STREQ(ctx->final_answer, "accepted candidate");
+	EXPECT_EQ(published.find("rejected candidate"), std::string::npos);
+	EXPECT_NE(published.find("accepted candidate"), std::string::npos);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, StopHookPersistentVetoCannotSilentlyPass)
+{
+	setup_llm_with_response("Final: rejected candidate");
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.always_block = true;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	ctx->hook_stop_active = 1;
+	EXPECT_EQ(react_run(ctx, "finish", nullptr, nullptr), -EPERM);
+	EXPECT_EQ(state.stops, 3);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
+	EXPECT_EQ(ctx->final_answer, nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, UserPromptHookRejectsBeforeModel)
+{
+	setup_llm_with_response("Final: should never run");
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.reject_input = true;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	EXPECT_EQ(react_run(ctx, "blocked", nullptr, nullptr), -EPERM);
+	EXPECT_EQ(llm_data->call_count, 0);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, PreToolHookDenialSkipsExecutionAndPostHook)
+{
+	int executions = 0;
+	auto tool = [](const char *, struct tool_result *result, void *ud) -> int {
+		++*static_cast<int *>(ud);
+		return tool_result_success_json_text(result, strdup("executed"));
+	};
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
+		tool, &executions, nullptr);
+	const char *responses[] = {"Action: test_tool({})", "Final: respected denial"};
+	llm = create_multi_mock_llm(responses, 2);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.deny_tool = true;
+	state.stops = 1;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	EXPECT_EQ(react_run(ctx, "try tool", nullptr, nullptr), 0);
+	EXPECT_EQ(executions, 0);
+	EXPECT_EQ(state.tool_before, 1);
+	EXPECT_EQ(state.tool_after, 0);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, HookRewriteReachesToolAndPostHook)
+{
+	std::string observed;
+	auto tool = [](const char *args, struct tool_result *result, void *ud) -> int {
+		*static_cast<std::string *>(ud) = args;
+		return tool_result_success_json_text(result, strdup("executed"));
+	};
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
+		tool, &observed, nullptr);
+	const char *responses[] = {"Action: test_tool({\"value\":\"original\"})", "Final: done"};
+	llm = create_multi_mock_llm(responses, 2);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.stops = 1;
+	state.rewrite = "{\"value\":\"rewritten\"}";
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	EXPECT_EQ(react_run(ctx, "try tool", nullptr, nullptr), 0);
+	EXPECT_NE(observed.find("rewritten"), std::string::npos);
+	EXPECT_EQ(state.tool_before, 1);
+	EXPECT_EQ(state.tool_after, 1);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, HookTextToolRewritePreservesRawInputAndOwnership)
+{
+	struct text_tool_capture capture{};
+	struct tool_spec spec{};
+	spec.origin = TOOL_ORIGIN_BUILTIN;
+	spec.name = "apply_text";
+	spec.description = "Apply raw text";
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.input_kind = TOOL_INPUT_TEXT;
+	spec.exec = text_tool_fn;
+	spec.user_data = &capture;
+	ASSERT_EQ(::tool_register(&tools, &spec), 0);
+	const char *responses[] = {
+		"Action: apply_text({\"input\":\"*** Begin Patch\\n*** End Patch\"})",
+		"Final: done"
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.stops = 1;
+	state.rewrite = "{\"command\":\"*** Begin Patch\\n*** End Patch\\n\"}";
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	EXPECT_EQ(react_run(ctx, "apply patch", nullptr, nullptr), 0);
+	EXPECT_EQ(capture.calls, 1);
+	EXPECT_EQ(capture.last_input, "*** Begin Patch\n*** End Patch\n");
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, HookAskDoesNotExecuteWithoutAnApprovalHandler)
+{
+	int executions = 0;
+	auto tool = [](const char *, struct tool_result *result, void *ud) -> int {
+		++*static_cast<int *>(ud);
+		return tool_result_success_json_text(result, strdup("executed"));
+	};
+	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
+		tool, &executions, nullptr);
+	const char *responses[] = {"Action: test_tool({})", "Final: permission needed"};
+	llm = create_multi_mock_llm(responses, 2);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.ask = true;
+	state.stops = 1;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	EXPECT_EQ(react_run(ctx, "use tool", nullptr, nullptr), 0);
+	EXPECT_EQ(executions, 0);
+	react_context_destroy(ctx);
+}

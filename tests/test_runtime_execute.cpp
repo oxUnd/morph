@@ -332,3 +332,50 @@ TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
 	std::filesystem::remove_all(skills);
 	std::filesystem::remove_all(trusted);
 }
+
+TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAnswer)
+{
+	ASSERT_NE(runtime_create_scripted_model(&scripted), nullptr);
+	std::string script = directory + "/completion.py";
+	{
+		std::ofstream file(script);
+		file << "import json,sys\nx=json.load(sys.stdin)\n"
+		     << "print(json.dumps({} if x['stop_hook_active'] else "
+		     << "{'decision':'block','reason':'Verify once more.'}))\n";
+	}
+	WriteConfig("[memory]\nenabled=false\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\n"
+		"type='command'\ncommand='python3 " + script + "'\ntimeout=3\n");
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.after_models_cb = runtime_install_scripted_model;
+	options.after_models_user_data = &scripted;
+	Open(&options);
+	ASSERT_NE(instance, nullptr);
+	cJSON *hooks = nullptr;
+	ASSERT_EQ(runtime_hooks_snapshot(instance, &hooks), 0);
+	const cJSON *row;
+	int trusted = 0;
+	cJSON_ArrayForEach(row, hooks) {
+		const cJSON *source = cJSON_GetObjectItem(row, "source");
+		if (source && config_path == source->valuestring) {
+			ASSERT_EQ(runtime_hooks_manage(instance, "trust",
+				cJSON_GetObjectItem(row, "id")->valuestring,
+				cJSON_GetObjectItem(row, "digest")->valuestring), 0);
+			trusted++;
+		}
+	}
+	cJSON_Delete(hooks);
+	ASSERT_EQ(trusted, 1);
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("finish the work", &result), 0);
+	EXPECT_EQ(scripted.calls, 2);
+	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
+	int count = 0, assistant_count = 0;
+	struct message *messages = runtime_session_messages_current(instance, &count);
+	for (auto *msg = messages; msg; msg = msg->next) {
+		if (strcmp(msg->role, "assistant") == 0)
+			assistant_count++;
+	}
+	EXPECT_EQ(assistant_count, 1);
+	runtime_session_messages_free(messages);
+}

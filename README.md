@@ -154,3 +154,5 @@ vendor/         Third-party libraries (cJSON, stb_image, toml)
 ```
 
 See [AGENTS.md](AGENTS.md) for conventions and [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the full spec.
+
+Lifecycle command hooks and review/trust configuration: [Hooks](docs/hooks.md).

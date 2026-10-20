@@ -18,3 +18,4 @@ json.c
 bash_parse.c
 ../../vendor/cJSON.c
 ../../vendor/re.c
+sha256.c

@@ -421,11 +421,49 @@ char *config_describe_text(const char *text, struct config_validation_error *err
 	return json;
 }
 
+static cJSON *config_toml_json(const toml_datum_t *value)
+{
+	cJSON *out;
+
+	if (!value)
+		return NULL;
+	switch (value->type) {
+	case TOML_STRING: return cJSON_CreateString(value->u.s);
+	case TOML_INT64: return cJSON_CreateNumber((double)value->u.int64);
+	case TOML_FP64: return cJSON_CreateNumber(value->u.fp64);
+	case TOML_BOOLEAN: return cJSON_CreateBool(value->u.boolean);
+	case TOML_TABLE:
+		out = cJSON_CreateObject();
+		for (int i = 0; out && i < value->u.tab.size; i++) {
+			cJSON *child = config_toml_json(&value->u.tab.value[i]);
+			if (!child || !cJSON_AddItemToObject(out, value->u.tab.key[i], child)) {
+				cJSON_Delete(child);
+				cJSON_Delete(out);
+				return NULL;
+			}
+		}
+		return out;
+	case TOML_ARRAY:
+		out = cJSON_CreateArray();
+		for (int i = 0; out && i < value->u.arr.size; i++) {
+			cJSON *child = config_toml_json(&value->u.arr.elem[i]);
+			if (!child || !cJSON_AddItemToArray(out, child)) {
+				cJSON_Delete(child);
+				cJSON_Delete(out);
+				return NULL;
+			}
+		}
+		return out;
+	default: return NULL;
+	}
+}
+
 void config_set_defaults(struct config *cfg)
 {
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
+	cfg->hooks_enabled = 1;
 
 	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
 	strncpy(cfg->general.default_session, "default",
@@ -898,6 +936,24 @@ int config_load(struct config *cfg, const char *path)
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 	cfg_table_t *tbl = &parsed.toptab;
+
+	cfg_table_t *features = table_path(tbl, "features");
+	if (features)
+		CFG_BOOL(features, "hooks", cfg->hooks_enabled);
+	cfg_table_t *hooks = table_path(tbl, "hooks");
+	if (hooks) {
+		cJSON *json = config_toml_json(hooks);
+		char *text = json ? cJSON_PrintUnformatted(json) : NULL;
+		if (!text || strlen(text) >= sizeof(cfg->hooks_json)) {
+			free(text);
+			cJSON_Delete(json);
+			toml_free(parsed);
+			MORPH_RETURN(MORPH_ERR_CONFIG);
+		}
+		memcpy(cfg->hooks_json, text, strlen(text) + 1);
+		free(text);
+		cJSON_Delete(json);
+	}
 
 	cfg_table_t *general = table_path(tbl, "general");
 	if (general) {

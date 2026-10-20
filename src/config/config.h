@@ -9,6 +9,8 @@ extern "C" {
 
 #define SUB_AGENT_TOOL_NAME_MAX 64
 
+#define CONFIG_HOOKS_JSON_MAX 65536
+
 #define CONFIG_MAX_KEY_LEN 256
 #define CONFIG_MAX_VAL_LEN 2048
 #ifndef MORPH_MODEL_EXTRA_BODY_MAX
@@ -315,6 +317,8 @@ struct config_sub_agents {
 };
 
 struct config {
+	int hooks_enabled;
+	char hooks_json[CONFIG_HOOKS_JSON_MAX];
 	struct config_general general;
 	struct config_models models;
 	struct config_credits credits;

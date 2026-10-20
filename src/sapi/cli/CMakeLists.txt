@@ -9,6 +9,7 @@ add_library(morph-cli STATIC
 	image_loader.c
 	interaction.c
 	list_ui.c
+	hooks_ui.c
 	manage.c
 	manage_mcp.c
 	manage_skills.c
@@ -29,6 +30,7 @@ add_library(morph-cli STATIC
 	commands/media.c
 	commands/memory.c
 	commands/permissions.c
+	commands/hooks.c
 	commands/registry.c
 	commands/runtime.c
 	commands/session.c

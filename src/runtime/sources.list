@@ -23,3 +23,5 @@ sync.c
 task_worker.c
 turn_scope.c
 usage.c
+hooks.c
+hooks_service.c

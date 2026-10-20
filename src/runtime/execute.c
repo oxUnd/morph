@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 
 struct runtime_output_forwarder {
 	const struct runtime_request *request;
@@ -124,17 +125,75 @@ int runtime_execute(struct runtime_engine *engine,
 	session_runtime.flags = request->turn_flags ? request->turn_flags :
 		AGENT_TURN_DEFAULT_FLAGS;
 	memset(&turn, 0, sizeof(turn));
+	engine->react->cancelled = 0;
+	morph_cancel_token_reset(&engine->react->cancel_token);
 	rc = agent_turn_begin(&turn, &session_runtime,
 		&(struct agent_turn_input){
 			.model_input = request->model_input,
 			.stored_user_input = request->stored_user_input,
 			.turn_id = request->turn_id,
 		});
+	if (rc == 0 && engine->hooks && engine->hooks->ready) {
+		struct hook_manager *hooks = engine->hooks;
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		rc = hook_manager_reload(hooks);
+		hooks->remaining_ms = 600000;
+		hooks->context_bytes = 0;
+		hooks->event_cb = engine->react->event_cb;
+		hooks->event_user = engine->react->event_user_data;
+		hooks->turn_id = engine->react->turn_id;
+		hooks->model = engine->config ? engine->config->models.text.model : "";
+		hooks->cancelled = &engine->react->cancelled;
+		hooks->cancel_token = &engine->react->cancel_token;
+		if (rc == 0 && hooks->session_id != request->session_id) {
+			const char *source = hooks->session_id ? "resume" : "startup";
+			if (hooks->session_id) {
+				cJSON_AddStringToObject(input, "reason", "other");
+				rc = hook_manager_dispatch(hooks, "SessionEnd", input, &output);
+				cJSON_Delete(output);
+				output = NULL;
+				cJSON_DeleteItemFromObject(input, "reason");
+			}
+			hooks->session_id = request->session_id;
+			cJSON_AddStringToObject(input, "source", source);
+			if (rc == 0)
+				rc = hook_manager_dispatch(hooks, "SessionStart", input, &output);
+			free(hooks->session_context);
+			hooks->session_context = NULL;
+			const cJSON *extra = cJSON_GetObjectItem(output, "context");
+			if (cJSON_IsString(extra)) {
+				hooks->session_context = strdup(extra->valuestring);
+				if (!hooks->session_context)
+					rc = -ENOMEM;
+			}
+		}
+		cJSON_Delete(input);
+		cJSON_Delete(output);
+		if (rc != 0) {
+			react_reset(engine->react);
+			engine->react->outcome = rc == -ECANCELED ?
+				REACT_OUTCOME_CANCELLED : REACT_OUTCOME_INTERNAL_ERROR;
+			engine->react->state = REACT_STATE_ABORT;
+			engine->react->last_error_code = rc;
+		}
+		engine->react->hook_fn = hook_manager_dispatch;
+		engine->react->hook_user = hooks;
+		engine->react->hook_stop_active = hook_manager_has(hooks, "Stop");
+	}
 	if (rc == 0) {
 		output_forwarder.request = request;
 		output_forwarder.engine = engine;
 		rc = react_run(engine->react, request->model_input,
 			       runtime_output_forward, &output_forwarder);
+	}
+	engine->react->hook_fn = NULL;
+	engine->react->hook_user = NULL;
+	engine->react->hook_stop_active = 0;
+	if (engine->hooks) {
+		engine->hooks->event_cb = NULL;
+		engine->hooks->event_user = NULL;
+		engine->hooks->cancelled = NULL;
+		engine->hooks->cancel_token = NULL;
 	}
 	if (turn.begun) {
 		finish_rc = agent_turn_finish(&turn, &result->turn);

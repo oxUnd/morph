@@ -11,6 +11,7 @@
 #include "models/llm.h"
 #include "runtime/bootstrap.h"
 #include "runtime/context.h"
+#include "runtime/hooks.h"
 #include "runtime/engine.h"
 #include "runtime/turn_scope.h"
 #include "session.h"
@@ -23,6 +24,7 @@
 #define RUNTIME_PLAN_SESSION_CACHE_MAX 32
 
 struct runtime_context {
+	struct hook_manager hooks;
 	struct config config;
 	struct db database;
 	struct session current_session;

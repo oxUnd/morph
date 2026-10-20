@@ -473,6 +473,10 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	}
 	if (rc == 0)
 		rc = runtime_start_components(runtime);
+	if (rc == 0)
+		rc = hook_manager_init(&runtime->context.hooks,
+			&runtime->context.database, &runtime->context.config,
+			runtime->context.config_path, runtime->context.workdir);
 	if (rc == 0) {
 		char source[PATH_MAX];
 		int cleanup_rc;
@@ -492,6 +496,21 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		runtime_close(runtime);
 		return rc;
 	}
+	{
+		cJSON *hooks = hook_manager_list(&runtime->context.hooks);
+		const cJSON *row;
+		int pending = 0;
+		cJSON_ArrayForEach(row, hooks) {
+			const cJSON *state = cJSON_GetObjectItem(row, "state");
+			if (cJSON_IsString(state) && strcmp(state->valuestring, "trusted") != 0 &&
+			    strcmp(state->valuestring, "off") != 0 && strcmp(state->valuestring, "disabled") != 0)
+				pending++;
+		}
+		if (pending)
+			runtime_emit_startup(runtime, "startup.hooks", "ready",
+				"Hooks need review or are unsupported; inspect /hooks");
+		cJSON_Delete(hooks);
+	}
 	runtime_emit_startup(runtime, "startup.ready", "ready",
 			     "Morph is ready");
 	*out = runtime;
@@ -508,6 +527,20 @@ void runtime_close(struct runtime *runtime)
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_lock(&runtime->context.execution_lock);
+	if (runtime->context.hooks.ready && runtime->context.hooks.session_id) {
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "reason", "other");
+		runtime->context.hooks.remaining_ms = 1000;
+		runtime->context.hooks.event_cb = runtime->options.event_cb;
+		runtime->context.hooks.event_user = runtime->options.event_user_data;
+		runtime->context.hooks.cancelled = NULL;
+		runtime->context.hooks.cancel_token = NULL;
+		(void)hook_manager_dispatch(&runtime->context.hooks,
+			"SessionEnd", input, &output);
+		cJSON_Delete(input);
+		cJSON_Delete(output);
+	}
+	hook_manager_cleanup(&runtime->context.hooks);
 	cleanup = runtime_context_shutdown_resources(
 		&runtime->context,
 		runtime->options.process_replica ? 0 : 1,

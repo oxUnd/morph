@@ -498,6 +498,7 @@ static int react_finish_run(struct react_context *ctx)
 	if (ctx) {
 		ctx->runtime_context = NULL;
 		ctx->project_context = NULL;
+		ctx->hook_context = NULL;
 		ctx->turn_id_user_set = 0;
 		arena_reset(ctx->iteration_arena);
 		arena_reset(ctx->message_arena);
@@ -715,6 +716,8 @@ struct react_tool_slot {
 	pthread_t thread;
 	struct async_tool_call *call;
 	int hitl_denied;
+	int hook_ask;
+	const char *hook_denial;
 	int thread_started;
 };
 
@@ -1220,6 +1223,7 @@ void react_reset(struct react_context *ctx)
 	ctx->tool_fail_count = 0;
 	ctx->guardrail_retry_count = 0;
 	ctx->empty_round_count = 0;
+	ctx->hook_revision_count = 0;
 	ctx->in_turn_compaction_count = 0;
 	ctx->incomplete_final_retry_count = 0;
 	ctx->cancelled = 0;
@@ -1329,6 +1333,12 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 
 	if (ctx->system_prompt) {
 		rc = morph_buf_printf(&buf, "%s\n", ctx->system_prompt);
+		if (rc != 0)
+			return NULL;
+	}
+
+	if (ctx->hook_context && ctx->hook_context[0]) {
+		rc = morph_buf_printf(&buf, "\nHook supplied context:\n%s\n", ctx->hook_context);
 		if (rc != 0)
 			return NULL;
 	}
@@ -1526,6 +1536,8 @@ static int react_stream_parse_emit(struct react_stream_data *sd)
 	const char *start = base + sd->emitted_len;
 	size_t available;
 
+	if (sd->ctx->hook_stop_active)
+		return 0;
 	if (!base || sd->acc_len <= sd->emitted_len)
 		return 0;
 
@@ -1588,6 +1600,8 @@ static int react_stream_flush(struct react_stream_data *sd)
 	const char *start;
 	size_t available;
 
+	if (sd->ctx->hook_stop_active)
+		return 0;
 	if (!base || sd->acc_len <= sd->emitted_len)
 		return 0;
 
@@ -1670,6 +1684,8 @@ static int react_stream_cb(const char *token, void *user_data)
 	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
+	if (sd->ctx->hook_stop_active)
+		return 0;
 	return react_stream_parse_emit(sd);
 }
 
@@ -1847,6 +1863,10 @@ static int react_normalize_tool_inputs(struct react_context *ctx,
  * cb - Output callback for step notifications
  * user_data - Opaque pointer passed to cb
  */
+static const char *react_hook_text(const cJSON *obj, const char *key);
+static int react_hook_invoke(struct react_context *ctx, const char *event,
+	cJSON *input, cJSON **output);
+
 static void react_check_hitl_approvals(struct react_context *ctx,
 					struct chat_response *response,
 					struct react_tool_slot *slots,
@@ -1859,10 +1879,17 @@ static void react_check_hitl_approvals(struct react_context *ctx,
 		struct tool_call *tc = &response->tool_calls[i];
 		const char *tool_name = tc->name;
 		const char *tool_args = tc->arguments ? tc->arguments : "{}";
-		if (!hitl_needs_approval(ctx, tool_name))
+		if (slots[i].hitl_denied ||
+		    (!slots[i].hook_ask && !hitl_needs_approval(ctx, tool_name)))
 			continue;
-		if (!ctx->hitl.approval_cb)
+		if (!ctx->hitl.approval_cb) {
+			if (slots[i].hook_ask) {
+				slots[i].hitl_denied = 1;
+				slots[i].hook_denial =
+					"Hook requested approval, but no approval handler is available.";
+			}
 			continue;
+		}
 		react_emit_hitl_event(ctx, "hitl.request", "begin",
 				      "approval requested", tool_name,
 				      tool_args, tc->tool_call_id, NULL);
@@ -1956,6 +1983,12 @@ static int react_track_tool_failure(struct react_context *ctx,
 	snprintf(fail_msg, sizeof(fail_msg),
 		 "Tool '%s' repeatedly failed. Please try a different approach.",
 		 fail_name);
+	if (ctx->hook_stop_active) {
+		react_set_error_detail(ctx, fail_msg);
+		react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR, MORPH_ERR_PROCESSING,
+			"tool_retries_exhausted");
+		return 1;
+	}
 	struct react_step *final_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_FINAL, fail_msg, NULL, NULL, NULL);
 	add_step(ctx, final_step);
@@ -2683,6 +2716,61 @@ static int react_append_assistant_tool_call_message(
 	return 0;
 }
 
+static int react_pre_tool_hooks(struct react_context *ctx,
+	struct chat_response *response, struct react_tool_slot *slots)
+{
+	if (!ctx->hook_fn)
+		return 0;
+	for (int i = 0; i < response->tool_call_count; i++) {
+		struct tool_call *tc = &response->tool_calls[i];
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON *args = tc->input_kind == TOOL_INPUT_TEXT ? cJSON_CreateObject() :
+			cJSON_Parse(tc->arguments ? tc->arguments : "{}");
+		if (args && tc->input_kind == TOOL_INPUT_TEXT)
+			cJSON_AddStringToObject(args, "command", tc->arguments ? tc->arguments : "");
+		if (!args)
+			args = cJSON_CreateObject();
+		int rc;
+
+		if (!input || !args) {
+			cJSON_Delete(input);
+			cJSON_Delete(args);
+			MORPH_RETURN(-ENOMEM);
+		}
+		cJSON_AddStringToObject(input, "tool_name", tc->name);
+		cJSON_AddStringToObject(input, "tool_use_id", tc->tool_call_id);
+		cJSON_AddItemToObject(input, "tool_input", args);
+		rc = react_hook_invoke(ctx, "PreToolUse", input, &output);
+		if (rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) {
+			slots[i].hitl_denied = 1;
+			slots[i].hook_denial = arena_strdup(ctx->turn_arena,
+				react_hook_text(output, "reason"));
+		}
+		slots[i].hook_ask = cJSON_IsTrue(cJSON_GetObjectItem(output, "ask"));
+		const cJSON *updated = cJSON_GetObjectItem(output, "updatedInput");
+		if (rc == 0 && updated && !slots[i].hitl_denied) {
+			char *json = tc->input_kind == TOOL_INPUT_TEXT ?
+				strdup(react_hook_text(updated, "command")) :
+				cJSON_PrintUnformatted(updated);
+			char *replacement = json && response->arena ?
+				arena_strdup(response->arena, json) : json;
+			if (response->arena)
+				free(json);
+			if (!replacement)
+				rc = -ENOMEM;
+			else {
+				if (!response->arena)
+					free(tc->arguments);
+				tc->arguments = replacement;
+			}
+		}
+		cJSON_Delete(output);
+		if (rc < 0)
+			return rc;
+	}
+	return react_normalize_tool_inputs(ctx, response);
+}
+
 static void react_start_tool_calls(struct react_context *ctx,
 				   struct chat_response *response,
 				   struct react_tool_slot *slots,
@@ -2800,15 +2888,6 @@ static void react_cleanup_tool_calls(struct react_tool_slot *slots, int count)
 			slots[i].thread_started = 0;
 		}
 	}
-}
-
-static int react_append_denied_tool_message(struct react_context *ctx,
-					    struct tool_call *tc,
-					    morph_array_t *messages)
-{
-	return react_append_tool_message(messages,
-					 "tool error: execution denied by user",
-					 tc->id, ctx->message_arena);
 }
 
 static void react_record_tool_cancelled(struct react_context *ctx)
@@ -2995,7 +3074,7 @@ static int react_join_tool_calls(struct react_context *ctx,
 
 		if (slots[i].hitl_denied) {
 			struct tool_call *tc = &response->tool_calls[i];
-			const char *denied =
+			const char *denied = slots[i].hook_denial ? slots[i].hook_denial :
 				"tool error: execution denied by user";
 
 			if (agent_history_record_tool_result(ctx,
@@ -3007,8 +3086,8 @@ static int react_join_tool_calls(struct react_context *ctx,
 						 "history_persistence_error");
 				return 1;
 			}
-			if (react_append_denied_tool_message(ctx, tc,
-							     messages) < 0) {
+			if (react_append_tool_message(messages, denied, tc->id,
+				ctx->message_arena) < 0) {
 				react_set_result(ctx,
 						 REACT_OUTCOME_INTERNAL_ERROR,
 						 -ENOMEM, "internal_error");
@@ -3130,6 +3209,29 @@ static int react_join_tool_calls(struct react_context *ctx,
 							     user_data);
 		if (!obs_text)
 			obs_text = "";
+		if (ctx->hook_fn) {
+			cJSON *input = cJSON_CreateObject(), *output = NULL;
+			cJSON_AddStringToObject(input, "tool_name", call->tool_name);
+			cJSON_AddStringToObject(input, "tool_use_id", call->tool_call_id);
+			cJSON *hook_args = cJSON_Parse(call->tool_args);
+			if (!hook_args) {
+				hook_args = cJSON_CreateObject();
+				cJSON_AddStringToObject(hook_args, "command", call->tool_args);
+			}
+			cJSON_AddItemToObject(input, "tool_input", hook_args);
+			cJSON_AddStringToObject(input, "tool_response", obs_text);
+			cJSON_AddNumberToObject(input, "error_code", rc);
+			int hook_rc = react_hook_invoke(ctx, "PostToolUse", input, &output);
+			if (hook_rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) {
+				const char *feedback = react_hook_text(output, "reason");
+				morph_buf_t combined;
+				if (morph_buf_init_arena(&combined, ctx->turn_arena, 256) == 0 &&
+				    morph_buf_printf(&combined, "%s\n[PostToolUse feedback]\n%s",
+					obs_text, feedback) == 0)
+					obs_text = morph_buf_cstr(&combined);
+			}
+			cJSON_Delete(output);
+		}
 		int persist_rc = agent_history_record_tool_result_ex(ctx,
 			call->tool_call_id, call->provider_tool_call_id,
 			call->tool_name, obs_text, rc, &artifacts, meta);
@@ -3452,6 +3554,44 @@ static int react_retry_incomplete_final(struct react_context *ctx,
 	return 1;
 }
 
+static const char *react_hook_text(const cJSON *obj, const char *key)
+{
+	const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+
+	return cJSON_IsString(item) ? item->valuestring : "";
+}
+
+static int react_hook_invoke(struct react_context *ctx, const char *event,
+	cJSON *input, cJSON **output)
+{
+	int rc;
+	const char *extra;
+	morph_buf_t joined = {0};
+
+	*output = NULL;
+	if (!ctx->hook_fn) {
+		cJSON_Delete(input);
+		return 0;
+	}
+	rc = ctx->hook_fn(ctx->hook_user, event, input, output);
+	cJSON_Delete(input);
+	if (rc < 0)
+		return rc;
+	extra = react_hook_text(*output, "context");
+	if (*extra) {
+		rc = morph_buf_init_arena(&joined, ctx->turn_arena, 256);
+		if (rc == 0)
+			rc = morph_buf_printf(&joined, "%s\n%s", ctx->hook_context ?
+				ctx->hook_context : "", extra);
+		if (rc == 0)
+			ctx->hook_context = morph_buf_cstr(&joined);
+		if (rc == 0)
+			add_step(ctx, react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
+				arena_strdup(ctx->turn_arena, extra), NULL, NULL, NULL));
+	}
+	return rc;
+}
+
 static int react_handle_final_response(struct react_context *ctx,
 				       const char *proposed,
 				       morph_array_t *messages,
@@ -3493,6 +3633,43 @@ static int react_handle_final_response(struct react_context *ctx,
 		return 0;
 	if (gr == 2)
 		return 1;
+	if (ctx->hook_fn) {
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "last_assistant_message", final_text);
+		cJSON_AddBoolToObject(input, "stop_hook_active", ctx->hook_revision_count > 0);
+		int hook_rc = react_hook_invoke(ctx, "Stop", input, &output);
+		int blocked = cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"));
+		if (hook_rc < 0 || cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")) ||
+		    (blocked && ctx->hook_revision_count >= 2)) {
+			react_set_error_detail(ctx, blocked ? react_hook_text(output, "reason") :
+				morph_strerror(hook_rc));
+			react_set_result(ctx, hook_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED :
+				REACT_OUTCOME_GUARDRAIL_DENIED, hook_rc < 0 ? hook_rc : -EPERM,
+				"hook_completion_blocked");
+			cJSON_Delete(output);
+			return 1;
+		}
+		if (blocked) {
+			struct chat_message *feedback = morph_array_push(messages);
+			if (!feedback) {
+				cJSON_Delete(output);
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					 -ENOMEM, "hook_failed");
+				return 1;
+			}
+			memset(feedback, 0, sizeof(*feedback));
+			feedback->role = "user";
+			feedback->content = arena_strdup(ctx->message_arena,
+				react_hook_text(output, "reason"));
+			add_step(ctx, react_step_create(ctx->turn_arena, REACT_STEP_REFLECTION,
+				arena_strdup(ctx->turn_arena, feedback->content),
+				NULL, NULL, NULL));
+			ctx->hook_revision_count++;
+			cJSON_Delete(output);
+			return 0;
+		}
+		cJSON_Delete(output);
+	}
 	final_step = react_step_create(ctx->turn_arena, REACT_STEP_FINAL,
 				       final_text, NULL, NULL, NULL);
 	add_step(ctx, final_step);
@@ -3540,6 +3717,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 	arena_reset(ctx->turn_arena);
 	ctx->runtime_context = NULL;
 	ctx->project_context = NULL;
+	ctx->hook_context = NULL;
 	arena_reset(ctx->message_arena);
 	arena_reset(ctx->iteration_arena);
 	if (!use_user_turn_id) {
@@ -3555,6 +3733,22 @@ int react_run(struct react_context *ctx, const char *user_input,
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
 
+	if (ctx->hook_fn) {
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+		cJSON_AddStringToObject(input, "prompt", user_input);
+		int hook_rc = react_hook_invoke(ctx, "UserPromptSubmit", input, &output);
+		int blocked = cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"));
+		if (hook_rc < 0 || blocked) {
+			react_set_error_detail(ctx, blocked ? react_hook_text(output, "reason") :
+				morph_strerror(hook_rc));
+			react_set_result(ctx, hook_rc == -ECANCELED ? REACT_OUTCOME_CANCELLED :
+				REACT_OUTCOME_GUARDRAIL_DENIED, hook_rc < 0 ? hook_rc : -EPERM,
+				"hook_input_blocked");
+			cJSON_Delete(output);
+			MORPH_RETURN(react_finish_run(ctx));
+		}
+		cJSON_Delete(output);
+	}
 	if (react_check_input_guardrail(ctx, user_input) > 0)
 		MORPH_RETURN(react_finish_run(ctx));
 	struct model *llm = (struct model *)ctx->llm_model;
@@ -3642,6 +3836,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		MORPH_RETURN(react_finish_run(ctx));
 	}
 	messages_ready = 1;
+
 	morph_array_t tool_descriptors = {0};
 
 	react_active_push(ctx);
@@ -3774,25 +3969,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 					id_rc, "invalid_tool_input");
 				break;
 			}
-			id_rc = agent_history_record_tool_calls(
-				ctx, response.content, response.reasoning_content,
-				response.tool_calls, response.tool_call_count);
-			if (id_rc != 0) {
-				chat_response_free(&response);
-				react_set_result(ctx,
-						  REACT_OUTCOME_INTERNAL_ERROR,
-						  id_rc,
-						  "history_persistence_error");
-				break;
-			}
-			if (react_append_assistant_tool_call_message(
-				ctx, &messages, &response) < 0) {
-				chat_response_free(&response);
-				react_set_result(ctx,
-						  REACT_OUTCOME_INTERNAL_ERROR,
-						  -ENOMEM, "internal_error");
-				break;
-			}
 			react_set_state(ctx, REACT_STATE_ACTING);
 			if (morph_array_init_arena(&tool_slots, ctx->iteration_arena,
 						   (size_t)num_tools,
@@ -3814,6 +3990,33 @@ int react_run(struct react_context *ctx, const char *user_input,
 			}
 			memset(slots, 0, (size_t)num_tools * sizeof(*slots));
 
+			id_rc = react_pre_tool_hooks(ctx, &response, slots);
+			if (id_rc != 0) {
+				chat_response_free(&response);
+				react_set_result(ctx, id_rc == -ECANCELED ?
+					REACT_OUTCOME_CANCELLED : REACT_OUTCOME_INTERNAL_ERROR,
+					id_rc, "hook_failed");
+				break;
+			}
+			id_rc = agent_history_record_tool_calls(
+				ctx, response.content, response.reasoning_content,
+				response.tool_calls, response.tool_call_count);
+			if (id_rc != 0) {
+				chat_response_free(&response);
+				react_set_result(ctx,
+						  REACT_OUTCOME_INTERNAL_ERROR,
+						  id_rc,
+						  "history_persistence_error");
+				break;
+			}
+			if (react_append_assistant_tool_call_message(
+				ctx, &messages, &response) < 0) {
+				chat_response_free(&response);
+				react_set_result(ctx,
+						  REACT_OUTCOME_INTERNAL_ERROR,
+						  -ENOMEM, "internal_error");
+				break;
+			}
 			react_start_tool_calls(ctx, &response, slots, cb,
 					       user_data);
 			if (react_join_tool_calls(ctx, &response, slots,

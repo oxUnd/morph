@@ -19,7 +19,10 @@ typedef void (*runtime_finish_turn_fn)(void *user_data,
 					       const struct runtime_request *request,
 					       const struct runtime_result *result);
 
+struct hook_manager;
+
 struct runtime_engine {
+	struct hook_manager *hooks;
 	struct db *db;
 	struct react_context *react;
 	const struct config *config;

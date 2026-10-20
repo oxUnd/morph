@@ -41,6 +41,7 @@ void runtime_context_configure_engine(struct runtime_context *ctx)
 	runtime_engine_configure(&ctx->engine, &ctx->database, ctx->react,
 				 &ctx->execution_lock);
 	ctx->engine.config = &ctx->config;
+	ctx->engine.hooks = &ctx->hooks;
 }
 
 struct runtime_models runtime_context_models(struct runtime_context *ctx)

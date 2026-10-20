@@ -64,7 +64,32 @@ struct schema_entry {
 	INT("model." name ".poll_interval_seconds", 0, INT_MAX), \
 	INT("model." name ".poll_timeout_seconds", 0, INT_MAX)
 
+#define HOOK_EVENT(name) \
+	TABLES("hooks." name, 64), \
+	STRING("hooks." name "[].matcher", 1024), \
+	TABLES("hooks." name "[].hooks", 64), \
+	STRING("hooks." name "[].hooks[].type", 32), \
+	STRING("hooks." name "[].hooks[].command", 8191), \
+	STRING("hooks." name "[].hooks[].statusMessage", 1024), \
+	INT("hooks." name "[].hooks[].timeout", 1, 600), \
+	INT("hooks." name "[].hooks[].additionalContextLimit", 0, 32768)
+
 static const struct schema_entry schema[] = {
+	TABLE("features"),
+	BOOL("features.hooks"),
+	TABLE("hooks"),
+	HOOK_EVENT("SessionStart"),
+	HOOK_EVENT("SessionEnd"),
+	HOOK_EVENT("UserPromptSubmit"),
+	HOOK_EVENT("PreToolUse"),
+	HOOK_EVENT("PostToolUse"),
+	HOOK_EVENT("Stop"),
+	HOOK_EVENT("PermissionRequest"),
+	HOOK_EVENT("PreCompact"),
+	HOOK_EVENT("PostCompact"),
+	HOOK_EVENT("SubagentStart"),
+	HOOK_EVENT("SubagentStop"),
+	HOOK_EVENT("Interrupt"),
 	TABLE("general"),
 	STRING("general.default_session", 255),
 	STRING("general.output_dir", PATH_MAX - 1),

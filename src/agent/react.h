@@ -8,6 +8,7 @@ extern "C" {
 #include <stdint.h>
 #include <signal.h>
 #include "agent/tool.h"
+#include "agent/hooks.h"
 #include "agent/tool_runtime.h"
 #include "agent/context.h"
 #include "agent/guardrail.h"
@@ -123,6 +124,11 @@ typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 				     int timeout_sec);
 
 struct react_context {
+	agent_hook_fn hook_fn;
+	void *hook_user;
+	int hook_stop_active;
+	int hook_revision_count;
+	const char *hook_context;
 	struct react_step *steps;
 	struct react_step *steps_tail;
 	int step_count;
