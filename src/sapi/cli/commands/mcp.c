@@ -22,15 +22,21 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			struct runtime_mcp_status *mc = &info;
 			if (runtime_mcp_info(ctx->runtime, i, &info) != 0)
 				continue;
-			const char *status = mc->connected ?
-				ANSI_GREEN "connected" ANSI_RESET :
-				ANSI_YELLOW "disconnected" ANSI_RESET;
+			const char *states[] = {
+				"disconnected", "connecting", "discovering",
+				"registering", "ready", "failed"
+			};
+			const char *status = states[mc->state];
 			const char *transport = mc->config.transport ==
 				MCP_TRANSPORT_STDIO ? "stdio" : "http";
 
 			printf("  %s%-20s%s  [%s]  %s\n",
 				ANSI_BOLD, mc->config.name, ANSI_RESET,
 				transport, status);
+			if (mc->elapsed_ms > 0)
+				printf("    elapsed: %lld ms\n", (long long)mc->elapsed_ms);
+			if (mc->error_code < 0)
+				printf("    error: %s\n", morph_strerror(mc->error_code));
 			if (mc->connected) {
 				printf("    server: %s v%s | proto: %s\n",
 					mc->server_name, mc->server_version,
@@ -120,7 +126,13 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR("MCP server not found: %s", name);
 			return -ENOENT;
 		}
-		if (info.connected) {
+		if (info.state == RUNTIME_MCP_CONNECTING ||
+		    info.state == RUNTIME_MCP_DISCOVERING ||
+		    info.state == RUNTIME_MCP_REGISTERING) {
+			CMD_OK("MCP server '%s' is initializing", name);
+			return 0;
+		}
+		if (info.state == RUNTIME_MCP_READY) {
 			CMD_OK("MCP server '%s' already connected", name);
 			return 0;
 		}

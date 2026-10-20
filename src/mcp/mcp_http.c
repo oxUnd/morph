@@ -293,7 +293,9 @@ static int mcp_http_do_post(struct mcp_client *client, const char *body,
 
 	rc = http_session_post(&client->session, request_url,
 			       body, strlen(body), "application/json",
-			       hdrs, nhdrs, timeout);
+			       hdrs, nhdrs, client->config.connect_timeout > 0 &&
+			       (client->connecting || client->interrupt_check) ?
+			       client->config.connect_timeout : timeout);
 	free(request_url);
 	return rc;
 }

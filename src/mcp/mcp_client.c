@@ -218,8 +218,10 @@ int mcp_ensure_connected(struct mcp_client *client)
 
 	pthread_mutex_lock(&client->lock);
 	if (client->connected || client->connecting) {
+		int status = client->connecting ? -EAGAIN : 0;
+
 		pthread_mutex_unlock(&client->lock);
-		return client->connecting ? -EAGAIN : 0;
+		return status;
 	}
 	client->connecting = 1;
 	pthread_mutex_unlock(&client->lock);
@@ -232,6 +234,8 @@ int mcp_ensure_connected(struct mcp_client *client)
 
 	if (rc == 0)
 		rc = mcp_initialize(client);
+	if (rc != 0)
+		mcp_disconnect(client);
 
 	pthread_mutex_lock(&client->lock);
 	client->connecting = 0;
@@ -350,6 +354,13 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 	}
 
 	int count = cJSON_GetArraySize(tools_arr);
+	if (count == 0) {
+		cJSON_Delete(obj);
+		free(result);
+		*out_tools = NULL;
+		*out_count = 0;
+		return 0;
+	}
 	struct mcp_tool_desc *tools = arena_alloc(arena, (size_t)count * sizeof(*tools));
 	if (!tools) {
 		cJSON_Delete(obj);
@@ -565,6 +576,13 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 	}
 
 	int count = cJSON_GetArraySize(res_arr);
+	if (count == 0) {
+		cJSON_Delete(obj);
+		free(result);
+		*out_res = NULL;
+		*out_count = 0;
+		return 0;
+	}
 	struct mcp_resource_desc *res = arena_alloc(arena, (size_t)count * sizeof(*res));
 	if (!res) {
 		cJSON_Delete(obj);
@@ -679,6 +697,65 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 
 /* ----- MCP prompts/list ----- */
 
+static int mcp_prompt_arguments_schema(cJSON *arguments, char *destination, size_t capacity)
+{
+	cJSON *schema = cJSON_CreateObject();
+	cJSON *properties;
+	cJSON *required;
+	cJSON *argument;
+	char *encoded = NULL;
+	int rc = 0;
+
+	if (!schema)
+		MORPH_RETURN(-ENOMEM);
+	properties = cJSON_AddObjectToObject(schema, "properties");
+	required = cJSON_AddArrayToObject(schema, "required");
+	if (!properties || !required ||
+	    !cJSON_AddStringToObject(schema, "type", "object") ||
+	    !cJSON_AddBoolToObject(schema, "additionalProperties", 0))
+		goto out_free_schema_oom;
+	cJSON_ArrayForEach(argument, arguments) {
+		cJSON *name = cJSON_GetObjectItem(argument, "name");
+		cJSON *description = cJSON_GetObjectItem(argument, "description");
+		cJSON *mandatory = cJSON_GetObjectItem(argument, "required");
+		cJSON *property;
+
+		if (!cJSON_IsString(name))
+			continue;
+		property = cJSON_AddObjectToObject(properties, name->valuestring);
+		if (!property || !cJSON_AddStringToObject(property, "type", "string"))
+			goto out_free_schema_oom;
+		if (cJSON_IsString(description) &&
+		    !cJSON_AddStringToObject(property, "description", description->valuestring))
+			goto out_free_schema_oom;
+		if (cJSON_IsTrue(mandatory)) {
+			cJSON *item = cJSON_CreateString(name->valuestring);
+
+			if (!item)
+				goto out_free_schema_oom;
+			if (!cJSON_AddItemToArray(required, item)) {
+				cJSON_Delete(item);
+				goto out_free_schema_oom;
+			}
+		}
+	}
+	encoded = cJSON_PrintUnformatted(schema);
+	if (!encoded)
+		goto out_free_schema_oom;
+	if (strlen(encoded) >= capacity) {
+		MORPH_SET_ERR(rc, -E2BIG);
+	} else {
+		memcpy(destination, encoded, strlen(encoded) + 1);
+	}
+	free(encoded);
+	cJSON_Delete(schema);
+	return rc;
+
+out_free_schema_oom:
+	cJSON_Delete(schema);
+	MORPH_RETURN(-ENOMEM);
+}
+
 int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 		     struct mcp_prompt_desc **out_prompts, int *out_count)
 {
@@ -718,6 +795,13 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 	}
 
 	int count = cJSON_GetArraySize(prompts_arr);
+	if (count == 0) {
+		cJSON_Delete(obj);
+		free(result);
+		*out_prompts = NULL;
+		*out_count = 0;
+		return 0;
+	}
 	struct mcp_prompt_desc *prompts = arena_alloc(arena, (size_t)count * sizeof(*prompts));
 	if (!prompts) {
 		cJSON_Delete(obj);
@@ -738,12 +822,12 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 			strncpy(prompts[i].description, v->valuestring, MCP_DESC_MAX - 1);
 
 		v = cJSON_GetObjectItem(p, "arguments");
-		if (v && cJSON_IsArray(v)) {
-			char *schema = cJSON_PrintUnformatted(v);
-			if (schema) {
-				strncpy(prompts[i].arguments_schema, schema, MCP_SCHEMA_MAX - 1);
-				free(schema);
-			}
+		rc = mcp_prompt_arguments_schema(v, prompts[i].arguments_schema,
+			sizeof(prompts[i].arguments_schema));
+		if (rc != 0) {
+			cJSON_Delete(obj);
+			free(result);
+			return rc;
 		}
 	}
 
@@ -844,11 +928,13 @@ int mcp_register_server_tools(struct mcp_client *client,
 	}
 
 	int registered = 0;
+	int first_error = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_tool_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
 			log_err("mcp: failed to allocate tool binding");
-			continue;
+			first_error = -ENOMEM;
+			break;
 		}
 		binding->client = client;
 		strncpy(binding->mcp_tool_name, tools[i].name, MCP_NAME_MAX - 1);
@@ -880,10 +966,24 @@ int mcp_register_server_tools(struct mcp_client *client,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 		};
+		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		if (existing && existing->exec == spec.exec && existing->user_data) {
+			struct mcp_tool_binding *previous = existing->user_data;
+
+			if (previous->client == client &&
+			    strcmp(previous->mcp_tool_name, binding->mcp_tool_name) == 0) {
+				free(binding);
+				registered++;
+				continue;
+			}
+		}
+
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register tool '%s' (rc=%d)", tool_name, rc);
 			free(binding);
+			if (first_error == 0)
+				first_error = rc;
 		} else {
 			log_info("mcp: registered tool '%s' -> '%s'", tools[i].name, tool_name);
 			registered++;
@@ -891,7 +991,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 	}
 
 	arena_destroy(arena);
-	return registered;
+	return first_error != 0 ? first_error : registered;
 }
 
 struct mcp_resource_binding {
@@ -943,11 +1043,13 @@ int mcp_register_server_resources(struct mcp_client *client,
 	}
 
 	int registered = 0;
+	int first_error = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_resource_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
 			log_err("mcp: failed to allocate resource binding");
-			continue;
+			first_error = -ENOMEM;
+			break;
 		}
 		binding->client = client;
 		strncpy(binding->uri, res[i].uri, MCP_URI_MAX - 1);
@@ -978,10 +1080,24 @@ int mcp_register_server_resources(struct mcp_client *client,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 			.flags = TOOL_FLAG_READONLY,
 		};
+		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		if (existing && existing->exec == spec.exec && existing->user_data) {
+			struct mcp_resource_binding *previous = existing->user_data;
+
+			if (previous->client == client &&
+			    strcmp(previous->uri, binding->uri) == 0) {
+				free(binding);
+				registered++;
+				continue;
+			}
+		}
+
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register resource '%s' (rc=%d)", tool_name, rc);
 			free(binding);
+			if (first_error == 0)
+				first_error = rc;
 		} else {
 			struct tool_entry *e = tool_lookup(reg, tool_name);
 			if (e)
@@ -992,7 +1108,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 	}
 
 	arena_destroy(arena);
-	return registered;
+	return first_error != 0 ? first_error : registered;
 }
 
 struct mcp_prompt_binding {
@@ -1044,11 +1160,13 @@ int mcp_register_server_prompts(struct mcp_client *client,
 	}
 
 	int registered = 0;
+	int first_error = 0;
 	for (int i = 0; i < count; i++) {
 		struct mcp_prompt_binding *binding = calloc(1, sizeof(*binding));
 		if (!binding) {
 			log_err("mcp: failed to allocate prompt binding");
-			continue;
+			first_error = -ENOMEM;
+			break;
 		}
 		binding->client = client;
 		strncpy(binding->mcp_prompt_name, prompts[i].name, MCP_NAME_MAX - 1);
@@ -1078,10 +1196,24 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			.user_data = binding,
 			.user_data_destroy = (tool_user_data_destroy_fn)free,
 		};
+		struct tool_entry *existing = tool_lookup(reg, spec.name);
+		if (existing && existing->exec == spec.exec && existing->user_data) {
+			struct mcp_prompt_binding *previous = existing->user_data;
+
+			if (previous->client == client &&
+			    strcmp(previous->mcp_prompt_name, binding->mcp_prompt_name) == 0) {
+				free(binding);
+				registered++;
+				continue;
+			}
+		}
+
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
 			log_warn("mcp: failed to register prompt '%s' (rc=%d)", tool_name, rc);
 			free(binding);
+			if (first_error == 0)
+				first_error = rc;
 		} else {
 			struct tool_entry *e = tool_lookup(reg, tool_name);
 			if (e)
@@ -1092,5 +1224,5 @@ int mcp_register_server_prompts(struct mcp_client *client,
 	}
 
 	arena_destroy(arena);
-	return registered;
+	return first_error != 0 ? first_error : registered;
 }

@@ -51,6 +51,8 @@ void http_apply_ca_env(CURL *curl)
 
 static void curl_apply_common_opts(CURL *curl, char *errbuf)
 {
+	/* Concurrent requests must not change process-wide signal handlers. */
+	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 	if (errbuf) {
 		errbuf[0] = '\0';

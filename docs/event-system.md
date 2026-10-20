@@ -121,6 +121,7 @@ mcp.skipped
 mcp.connecting
 mcp.connected
 mcp.discovering
+mcp.registering
 mcp.ready
 mcp.timeout
 mcp.failed
@@ -479,6 +480,8 @@ Tools and artifacts:
 MCP:
 
 - `src/mcp/mcp_client.c`: register functions return structured counts
+- `src/runtime/mcp_background.c` adds concurrent startup and `mcp.registering`;
+  background events carry `data.background = true` and use the host event queue.
 - `src/runtime/mcp.c` emits connecting, connected, discovering, ready,
   failed, and disconnected events; `src/sapi/cli/commands/mcp.c` surfaces the
   register/skip results for the `/mcp` command

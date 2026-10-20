@@ -17,6 +17,7 @@ set(TEST_SOURCES
 	test_session.cpp
 	test_memory.cpp
 	test_runtime_query.cpp
+	test_runtime_mcp.cpp
 	test_runtime.cpp
 	test_runtime_services.cpp
 	test_runtime_internal.cpp
@@ -139,6 +140,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX AND MORPH_READLINE_LIBRARY)
+	add_test(NAME cli_mcp_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_mcp_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 30)
 	add_test(NAME cli_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

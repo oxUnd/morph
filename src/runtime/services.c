@@ -446,61 +446,74 @@ int runtime_session_compress(struct runtime *runtime,
 
 int runtime_tool_count(const struct runtime *runtime)
 {
-	return runtime ? runtime->context.tools.count : 0;
+	int count;
+
+	if (!runtime)
+		return 0;
+	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	count = runtime->context.tools.count;
+	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	return count;
 }
 
-int runtime_tool_info(const struct runtime *runtime, int index,
-		      struct tool_desc *out)
+static int runtime_tool_get(const struct runtime *runtime, int index,
+	struct tool_desc *desc, unsigned *flags, int *enabled, enum tool_origin *origin)
 {
-	if (!runtime || !out || index < 0 || index >= runtime->context.tools.count)
-		return -EINVAL;
-	*out = runtime->context.tools.entries[index].desc;
-	return 0;
+	const struct tool_registry *tools;
+	int rc = 0;
+
+	if (!runtime || index < 0)
+		MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	tools = &runtime->context.tools;
+	if (index >= tools->count) {
+		rc = -EINVAL;
+	} else {
+		if (desc)
+			*desc = tools->entries[index].desc;
+		if (flags)
+			*flags = tools->entries[index].flags;
+		if (enabled)
+			*enabled = !tool_is_disabled(tools, tools->entries[index].desc.name);
+		if (origin)
+			*origin = tools->entries[index].origin;
+	}
+	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	return rc;
 }
 
-int runtime_tool_flags(const struct runtime *runtime, int index,
-		       unsigned *out)
+int runtime_tool_info(const struct runtime *runtime, int index, struct tool_desc *out)
 {
-	if (!runtime || !out || index < 0 ||
-	    index >= runtime->context.tools.count)
-		return -EINVAL;
-	*out = runtime->context.tools.entries[index].flags;
-	return 0;
+	return out ? runtime_tool_get(runtime, index, out, NULL, NULL, NULL) : -EINVAL;
+}
+
+int runtime_tool_flags(const struct runtime *runtime, int index, unsigned *out)
+{
+	return out ? runtime_tool_get(runtime, index, NULL, out, NULL, NULL) : -EINVAL;
 }
 
 int runtime_tool_enabled(const struct runtime *runtime, int index, int *out)
 {
-	const struct tool_registry *tools;
-
-	if (!runtime || !out || index < 0 ||
-	    index >= runtime->context.tools.count)
-		return -EINVAL;
-	tools = &runtime->context.tools;
-	*out = !tool_is_disabled(tools, tools->entries[index].desc.name);
-	return 0;
+	return out ? runtime_tool_get(runtime, index, NULL, NULL, out, NULL) : -EINVAL;
 }
 
-int runtime_tool_origin(const struct runtime *runtime, int index,
-			enum tool_origin *out)
+int runtime_tool_origin(const struct runtime *runtime, int index, enum tool_origin *out)
 {
-	if (!runtime || !out || index < 0 ||
-	    index >= runtime->context.tools.count)
-		return -EINVAL;
-	*out = runtime->context.tools.entries[index].origin;
-	return 0;
+	return out ? runtime_tool_get(runtime, index, NULL, NULL, NULL, out) : -EINVAL;
 }
 
-int runtime_tool_find(const struct runtime *runtime, const char *name,
-		      struct tool_desc *out)
+int runtime_tool_find(const struct runtime *runtime, const char *name, struct tool_desc *out)
 {
 	struct tool_entry *entry;
+
 	if (!runtime || !name || !out)
-		return -EINVAL;
+		MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	entry = tool_lookup((struct tool_registry *)&runtime->context.tools, name);
-	if (!entry)
-		return -ENOENT;
-	*out = entry->desc;
-	return 0;
+	if (entry)
+		*out = entry->desc;
+	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	return entry ? 0 : -ENOENT;
 }
 
 int runtime_skill_count(const struct runtime *runtime)

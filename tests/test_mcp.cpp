@@ -732,3 +732,112 @@ TEST_F(McpHttpAuthUrlTest, MissingTokenEnvFailsWhenPlaceholderIsUsed) {
 	EXPECT_EQ(rc, MORPH_ERR_NOT_CONFIGURED);
 	EXPECT_EQ(url, nullptr);
 }
+
+/* Exercise framing independently of a particular MCP server implementation. */
+#include <thread>
+#include <chrono>
+#include <string>
+#include <unistd.h>
+
+extern "C" int mcp_stdio_request(struct mcp_client *, int, const char *,
+	const char *, char **);
+
+class McpStdioFramingTest : public ::testing::Test {
+protected:
+	struct mcp_client client = {};
+	int request_read = -1;
+	int response_write = -1;
+
+	void SetUp() override
+	{
+		int requests[2], responses[2];
+		ASSERT_EQ(pipe(requests), 0);
+		ASSERT_EQ(pipe(responses), 0);
+		client.stdin_fd = requests[1];
+		request_read = requests[0];
+		client.stdout_fd = responses[0];
+		response_write = responses[1];
+		client.server_pid = -1;
+		pthread_mutex_init(&client.lock, nullptr);
+	}
+
+	void TearDown() override
+	{
+		mcp_disconnect(&client);
+		close(request_read);
+		close(response_write);
+		pthread_mutex_destroy(&client.lock);
+	}
+
+	void send(const std::string &message)
+	{
+		size_t sent = 0;
+		while (sent < message.size()) {
+			ssize_t count = write(response_write, message.data() + sent, message.size() - sent);
+			if (count <= 0)
+				return;
+			sent += static_cast<size_t>(count);
+		}
+	}
+};
+
+TEST_F(McpStdioFramingTest, ReadsResponsesLargerThanOldFixedBuffer)
+{
+	std::string padding(300000, 'x');
+	std::thread producer([&] {
+		send("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"padding\":\"" + padding + "\"}}\n");
+	});
+	char *response = nullptr;
+	int rc = mcp_stdio_request(&client, 1, "tools/list", nullptr, &response);
+	producer.join();
+	EXPECT_EQ(rc, 0);
+	ASSERT_NE(response, nullptr);
+	EXPECT_GT(strlen(response), padding.size());
+	free(response);
+}
+
+TEST_F(McpStdioFramingTest, SkipsNotificationsAndPreservesFollowingBufferedResponse)
+{
+	send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"first\":true}}\n"
+		"{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"second\":true}}\n");
+	char *response = nullptr;
+	EXPECT_EQ(mcp_stdio_request(&client, 1, "tools/list", nullptr, &response), 0);
+	ASSERT_NE(response, nullptr);
+	EXPECT_NE(strstr(response, "first"), nullptr);
+	free(response);
+	response = nullptr;
+	EXPECT_EQ(mcp_stdio_request(&client, 2, "prompts/list", nullptr, &response), 0);
+	ASSERT_NE(response, nullptr);
+	EXPECT_NE(strstr(response, "second"), nullptr);
+	free(response);
+}
+
+TEST_F(McpStdioFramingTest, NotificationsDoNotResetRequestDeadline)
+{
+	client.config.connect_timeout = 1;
+	client.connecting = 1;
+	std::thread producer([&] {
+		for (int i = 0; i < 24; i++) {
+			send("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n");
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+	});
+	char *response = nullptr;
+	auto start = std::chrono::steady_clock::now();
+	int rc = mcp_stdio_request(&client, 1, "initialize", nullptr, &response);
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	producer.join();
+	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(response, nullptr);
+	EXPECT_LT(elapsed, std::chrono::milliseconds(1500));
+}
+
+TEST_F(McpStdioFramingTest, DeadServerReturnsPipeErrorWithoutSignallingHost)
+{
+	close(request_read);
+	request_read = -1;
+	char *response = nullptr;
+	EXPECT_EQ(mcp_stdio_request(&client, 1, "initialize", nullptr, &response), -EPIPE);
+	EXPECT_EQ(response, nullptr);
+}

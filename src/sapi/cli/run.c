@@ -199,6 +199,25 @@ static void cli_readline_footer(struct cli_context *ctx)
 		morph_buf_cleanup(&text);
 		return;
 	}
+	{
+		int total = runtime_mcp_count(ctx->runtime);
+		int ready = 0, pending = 0, failed = 0;
+
+		for (int i = 0; i < total; i++) {
+			struct runtime_mcp_status status;
+
+			if (runtime_mcp_info(ctx->runtime, i, &status) != 0)
+				continue;
+			ready += status.state == RUNTIME_MCP_READY;
+			failed += status.state == RUNTIME_MCP_FAILED;
+			pending += status.state == RUNTIME_MCP_CONNECTING ||
+				status.state == RUNTIME_MCP_DISCOVERING ||
+				status.state == RUNTIME_MCP_REGISTERING;
+		}
+		if (total > 0)
+			(void)morph_buf_printf(&usage, "MCP %d/%d%s%s · ",
+				ready, total, pending ? " ..." : "", failed ? " !" : "");
+	}
 	(void)morph_buf_puts(&usage, size.ws_col >= 100 ? "context " : "ctx ");
 	cli_footer_tokens(&usage, ctx->input_status.tokens);
 	(void)morph_buf_puts(&usage, " / ");

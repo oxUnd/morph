@@ -2,6 +2,7 @@
 #include "runtime/mcp.h"
 #include "runtime/runtime_internal.h"
 #include "util/arena.h"
+#include "util/error.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -14,11 +15,61 @@ static struct mcp_client *runtime_mcp_lookup_client(struct runtime *runtime,
 		: NULL;
 }
 
-static void runtime_mcp_status_copy(const struct mcp_client *client,
+static int runtime_mcp_busy(struct runtime *runtime, struct mcp_client *client)
+{
+	struct runtime_mcp_job *job = runtime_mcp_job_find(runtime, client);
+	int active = 0;
+
+	if (job) {
+		pthread_mutex_lock(&job->lock);
+		active = job->active;
+		pthread_mutex_unlock(&job->lock);
+		if (!active && job->started && !pthread_equal(pthread_self(), job->thread)) {
+			pthread_join(job->thread, NULL);
+			job->started = 0;
+		}
+	}
+	return active;
+}
+
+static void runtime_mcp_update_state(struct runtime *runtime,
+	struct mcp_client *client, enum runtime_mcp_state state, int error_code)
+{
+	struct runtime_mcp_job *job = runtime_mcp_job_find(runtime, client);
+
+	if (job) {
+		pthread_mutex_lock(&job->lock);
+		job->state = state;
+		job->error_code = error_code;
+		pthread_mutex_unlock(&job->lock);
+	}
+}
+
+static void runtime_mcp_status_copy(struct runtime *runtime,
+				    struct mcp_client *client,
 				    struct runtime_mcp_status *out)
 {
+	struct runtime_mcp_job *job = runtime_mcp_job_find(runtime, client);
+
 	memset(out, 0, sizeof(*out));
 	out->config = client->config;
+	if (job) {
+		pthread_mutex_lock(&job->lock);
+		out->state = job->state;
+		out->error_code = job->error_code;
+		out->elapsed_ms = job->active ? runtime_mcp_now_ms() - job->started_ms :
+			job->elapsed_ms;
+		if (job->active) {
+			pthread_mutex_unlock(&job->lock);
+			return;
+		}
+		pthread_mutex_unlock(&job->lock);
+	} else {
+		out->error_code = client->discovery_error;
+		out->state = client->discovery_error < 0 ? RUNTIME_MCP_FAILED :
+			(client->connected ? (client->capabilities_registered ?
+			 RUNTIME_MCP_READY : RUNTIME_MCP_DISCOVERING) : RUNTIME_MCP_DISCONNECTED);
+	}
 	out->connected = client->connected;
 	strncpy(out->negotiated_version, client->negotiated_version,
 		sizeof(out->negotiated_version) - 1);
@@ -41,7 +92,8 @@ int runtime_mcp_info(const struct runtime *runtime, int index,
 {
 	if (!runtime || !out || index < 0 || index >= runtime->context.mcp.count)
 		return -EINVAL;
-	runtime_mcp_status_copy(runtime->context.mcp.servers[index], out);
+	runtime_mcp_status_copy((struct runtime *)runtime,
+		runtime->context.mcp.servers[index], out);
 	return 0;
 }
 
@@ -55,26 +107,47 @@ int runtime_mcp_find(const struct runtime *runtime, const char *name,
 				  name);
 	if (!client)
 		return -ENOENT;
-	runtime_mcp_status_copy(client, out);
+	runtime_mcp_status_copy((struct runtime *)runtime, client, out);
 	return 0;
 }
 
 int runtime_mcp_connect(struct runtime *runtime, const char *name)
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
-	return client ? runtime_mcp_client_connect(
-		client, runtime->options.event_cb,
-		runtime->options.event_user_data) : -ENOENT;
+	int rc;
+
+	if (!client)
+		MORPH_RETURN(-ENOENT);
+	if (runtime_mcp_busy(runtime, client))
+		MORPH_RETURN(-EAGAIN);
+	rc = runtime_mcp_client_connect(client, runtime->options.event_cb,
+		runtime->options.event_user_data);
+	runtime_mcp_update_state(runtime, client,
+		rc == 0 ? RUNTIME_MCP_DISCOVERING : RUNTIME_MCP_FAILED, rc);
+	return rc;
 }
 
 int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 {
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
+	int rc;
+
 	if (!client)
-		return -ENOENT;
-	return runtime_mcp_client_disconnect(
-		client, runtime->options.event_cb,
+		MORPH_RETURN(-ENOENT);
+	struct runtime_mcp_job *job = runtime_mcp_job_find(runtime, client);
+	if (job && runtime_mcp_busy(runtime, client)) {
+		pthread_mutex_lock(&job->lock);
+		morph_cancel_token_cancel(&job->cancel);
+		pthread_mutex_unlock(&job->lock);
+		if (job->started) {
+			pthread_join(job->thread, NULL);
+			job->started = 0;
+		}
+	}
+	rc = runtime_mcp_client_disconnect(client, runtime->options.event_cb,
 		runtime->options.event_user_data);
+	runtime_mcp_update_state(runtime, client, RUNTIME_MCP_DISCONNECTED, rc);
+	return rc;
 }
 
 static int runtime_mcp_copy_list(void **out, int count, const void *items,
@@ -99,6 +172,8 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
+	if (runtime_mcp_busy(runtime, client))
+		MORPH_RETURN(-EAGAIN);
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -121,6 +196,8 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
+	if (runtime_mcp_busy(runtime, client))
+		MORPH_RETURN(-EAGAIN);
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -143,6 +220,8 @@ int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
+	if (runtime_mcp_busy(runtime, client))
+		MORPH_RETURN(-EAGAIN);
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -170,11 +249,18 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 	int p;
 	if (!client)
 		return -ENOENT;
-	return runtime_mcp_client_discover(
+	if (runtime_mcp_busy(runtime, client))
+		MORPH_RETURN(-EAGAIN);
+	pthread_mutex_lock(&runtime->context.execution_lock);
+	int rc = runtime_mcp_client_discover(
 		client, &runtime->context.tools,
 		runtime->options.event_cb,
 		runtime->options.event_user_data,
 		tools ? tools : &t,
 		resources ? resources : &r,
 		prompts ? prompts : &p);
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	runtime_mcp_update_state(runtime, client,
+		rc == 0 ? RUNTIME_MCP_READY : RUNTIME_MCP_FAILED, rc);
+	return rc;
 }

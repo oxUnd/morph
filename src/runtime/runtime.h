@@ -81,6 +81,8 @@ struct runtime_options {
 	int create_new_session;
 	int restore_recent_session;
 	int process_replica;
+	/* Opt-in: MCP events may arrive on worker threads. Zero keeps sync startup. */
+	int background_connect_mcp;
 };
 
 struct runtime_permission_grant {

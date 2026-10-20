@@ -47,6 +47,7 @@ struct runtime_context {
 	struct runtime_turn_scope turn_scope;
 	struct memory_options memory_options;
 	pthread_mutex_t execution_lock;
+	pthread_mutex_t tool_registry_lock;
 	int execution_lock_ready;
 	char config_path[PATH_MAX];
 	char workdir[PATH_MAX];

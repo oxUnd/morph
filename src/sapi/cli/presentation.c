@@ -1386,7 +1386,9 @@ static void presentation_auxiliary(struct cli_context *ctx,
 		return;
 	}
 	if (ev->type == MORPH_EVENT_MCP) {
-		presentation_mcp(ctx, ev);
+		if (!cJSON_IsTrue(event_item(ev, "background")) ||
+		    !ctx->input_status.enabled)
+			presentation_mcp(ctx, ev);
 		return;
 	}
 	if (ev->type == MORPH_EVENT_TASK)

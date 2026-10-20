@@ -453,8 +453,9 @@ dir = ""
 # ──────────────────────────────────────────────
 # MCP (Model Context Protocol) servers
 # ──────────────────────────────────────────────
-# MCP servers are discovered at startup and their tools/resources/prompts
-# are automatically registered as morph tools.
+# Auto-connected MCP servers register their tools/resources/prompts automatically.
+# Interactive CLI connects in the background; /mcp shows progress and failures.
+# One-shot CLI and existing runtime hosts retain synchronous startup.
 # Manage without starting a chat: morph mcp add/list/get/remove/test
 #
 # Supported transports:
@@ -468,7 +469,7 @@ dir = ""
 # command        = "npx"
 # args           = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 # auto_connect   = true         # Connect at startup instead of lazy (default: false)
-# connect_timeout = 30          # Seconds to wait before giving up (default: 0 = no timeout)
+# connect_timeout = 30          # Background connect + discovery deadline; 0 = per-request limits
 #
 # Example: GitHub server (stdio)
 # [[mcp.servers]]

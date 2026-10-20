@@ -25,3 +25,4 @@ turn_scope.c
 usage.c
 hooks.c
 hooks_service.c
+mcp_background.c

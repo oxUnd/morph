@@ -115,6 +115,8 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	options.enable_sub_agents = 1;
 	options.allocate_skill_registry = 1;
 	options.auto_connect_mcp = 1;
+	options.background_connect_mcp =
+		ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 	options.create_new_session = session_name && session_name[0] ? 0 : 1;
 	rc = runtime_open(&options, &ctx->runtime);
 	if (rc != 0) {

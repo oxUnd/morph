@@ -362,11 +362,12 @@ static int runtime_start_components(struct runtime *runtime)
 			     "Connecting services...");
 	(void)runtime_mcp_init_from_config(&ctx->mcp, &ctx->config.mcp,
 					   &ctx->tools,
-					   runtime->options.auto_connect_mcp,
+					   runtime->options.auto_connect_mcp &&
+					   !runtime->options.background_connect_mcp,
 					   runtime->options.event_cb,
 					   runtime->options.event_user_data);
 	runtime_emit_startup(runtime, "startup.mcp", "end",
-			     "Services connected");
+			     "Services configured");
 	runtime_context_configure_engine(ctx);
 	ctx->memory_options = runtime_memory_options_from_config(&ctx->config);
 	ctx->engine.memory_options = &ctx->memory_options;
@@ -513,6 +514,9 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	}
 	runtime_emit_startup(runtime, "startup.ready", "ready",
 			     "Morph is ready");
+	if (runtime->options.auto_connect_mcp &&
+	    runtime->options.background_connect_mcp)
+		(void)runtime_mcp_background_start(runtime);
 	*out = runtime;
 	return 0;
 }
@@ -523,6 +527,7 @@ void runtime_close(struct runtime *runtime)
 
 	if (!runtime)
 		return;
+	runtime_mcp_background_stop(runtime);
 	runtime_task_worker_stop(&runtime->task_worker);
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)

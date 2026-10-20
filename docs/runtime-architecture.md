@@ -61,6 +61,7 @@ runtime/
   bootstrap.c       model and built-in tool construction
   extensions.c      desktop extension discovery
   mcp.c             MCP client lifecycle
+  mcp_background.c  concurrent startup discovery and safe tool publication
   mcp_service.c     MCP DTO and operation facade
   registry_service.c platform tool and MCP registration facade
   session_service.c session ownership and selection facade
@@ -98,3 +99,49 @@ manifest. Desktop CMake, Android CMake, and the iOS core build read the same
 manifests so splitting a core implementation into new files does not leave
 mobile builds behind. Keep each manifest to one relative source path per line.
 Platform adapters and optional tools remain selected by each frontend.
+
+## Background MCP startup
+
+`runtime_options.auto_connect_mcp` enables configured servers whose
+`auto_connect` is true. Hosts can additionally set `background_connect_mcp = 1`
+to return from `runtime_open()` without waiting for those servers. Each server
+has its own worker, so an unavailable service does not delay another service.
+Zero preserves synchronous startup for existing hosts, including FastCGI and
+mobile integrations. The interactive CLI opts in; one-shot and event-stream
+CLI modes retain synchronous startup so their first request has its MCP tools.
+
+Workers discover tools, resources, and prompts in a private registry. They
+publish capabilities under the runtime execution lock between turns. A turn
+already in progress keeps its existing tool set; newly ready capabilities are
+available to subsequent turns. Failed discovery publishes no partial tool set;
+publication errors roll back additions. Waiting for a running turn to finish
+is a separate `registering` state and does not consume the connection deadline.
+
+`runtime_mcp_info()` and `runtime_mcp_find()` expose `state`, `error_code`, and
+monotonic `elapsed_ms`, in addition to the existing connection metadata. States
+are disconnected, connecting, discovering, registering, ready, and failed.
+The interactive footer shows `MCP ready/total`, `...` while work is pending,
+and `!` when a server failed. `/mcp` shows per-server state, elapsed time, and
+errors. `/mcp connect NAME` retries failed initialization;
+`/mcp disconnect NAME` also cancels an in-progress startup worker.
+
+While a server is initializing, explicit connect, discovery, and list requests
+return `-EAGAIN` rather than sharing its transport. `connect_timeout > 0`
+bounds background connection plus discovery; zero retains the transport's
+30-second per-request timeout without an overall startup deadline. This setting
+does not shorten subsequent tool executions. Stdio reads use an absolute
+request deadline, support responses up to 16 MiB, preserve buffered messages,
+and skip notifications or responses for other request IDs.
+
+With background startup enabled, MCP event callbacks run on worker threads and
+can overlap. Hosts must marshal callbacks onto their UI/event queue and keep
+callback data alive until `runtime_close()` returns. Events include
+`data.background = true` and preserve `mcp.connecting`, `mcp.connected`,
+`mcp.discovering`, `mcp.ready`, and `mcp.failed`; `mcp.registering` reports waiting
+for safe publication. Do not close the runtime from its worker callback.
+Android and iOS hosts can opt in and render the same states using their native
+UI; they do not need to implement connection workers or tool registration.
+`runtime_close()` cancels and joins all startup workers before releasing MCP
+clients, tools, and event sinks. HTTP interruption uses the existing curl
+progress callback; stdio interruption is checked at most every 100 ms while
+waiting for responses. Child-process termination is bounded and reaped.

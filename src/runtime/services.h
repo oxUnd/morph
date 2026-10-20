@@ -121,6 +121,14 @@ int runtime_notification_list(struct runtime *runtime, int limit,
 int runtime_notification_mark_read(struct runtime *runtime, int64_t id);
 
 int runtime_mcp_count(const struct runtime *runtime);
+enum runtime_mcp_state {
+	RUNTIME_MCP_DISCONNECTED,
+	RUNTIME_MCP_CONNECTING,
+	RUNTIME_MCP_DISCOVERING,
+	RUNTIME_MCP_REGISTERING,
+	RUNTIME_MCP_READY,
+	RUNTIME_MCP_FAILED,
+};
 struct runtime_mcp_status {
 	struct mcp_server_config config;
 	int connected;
@@ -130,6 +138,9 @@ struct runtime_mcp_status {
 	int supports_tools;
 	int supports_resources;
 	int supports_prompts;
+	enum runtime_mcp_state state;
+	int error_code;
+	int64_t elapsed_ms;
 };
 int runtime_mcp_info(const struct runtime *runtime, int index,
 		     struct runtime_mcp_status *out);

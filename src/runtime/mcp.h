@@ -5,6 +5,11 @@
 #include "event/event.h"
 #include "mcp/mcp.h"
 
+void runtime_mcp_emit(morph_event_cb cb, void *user_data,
+	const char *name, const char *phase, const char *message,
+	const struct mcp_server_config *server,
+	int tools, int resources, int prompts, int error_code);
+
 int runtime_mcp_server_config_from_config(const struct config_mcp_server *config,
 					  struct mcp_server_config *out);
 int runtime_mcp_register_configured(struct mcp_registry *registry,

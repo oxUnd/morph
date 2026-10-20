@@ -22,6 +22,11 @@ int runtime_context_init_lock(struct runtime_context *ctx)
 	rc = pthread_mutex_init(&ctx->execution_lock, NULL);
 	if (rc != 0)
 		return -rc;
+	rc = pthread_mutex_init(&ctx->tool_registry_lock, NULL);
+	if (rc != 0) {
+		pthread_mutex_destroy(&ctx->execution_lock);
+		return -rc;
+	}
 	ctx->execution_lock_ready = 1;
 	return 0;
 }
@@ -30,6 +35,7 @@ void runtime_context_cleanup_lock(struct runtime_context *ctx)
 {
 	if (!ctx || !ctx->execution_lock_ready)
 		return;
+	pthread_mutex_destroy(&ctx->tool_registry_lock);
 	pthread_mutex_destroy(&ctx->execution_lock);
 	ctx->execution_lock_ready = 0;
 }

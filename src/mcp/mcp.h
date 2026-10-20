@@ -80,6 +80,12 @@ struct mcp_client {
 	struct mcp_server_config config;
 	int connected;
 	int connecting;
+	/* Registry discovery status, maintained by the runtime facade. */
+	int discovery_error;
+	int capabilities_registered;
+	/* Optional startup interruption; owned by the connection worker. */
+	int (*interrupt_check)(void *);
+	void *interrupt_user_data;
 	char negotiated_version[32];
 	char server_name[MCP_NAME_MAX];
 	char server_version[64];
@@ -92,6 +98,7 @@ struct mcp_client {
 	pid_t server_pid;
 	int stdin_fd;
 	int stdout_fd;
+	morph_buf_t read_buffer;
 	/* http transport state */
 	struct http_session session;
 	char session_id[128];

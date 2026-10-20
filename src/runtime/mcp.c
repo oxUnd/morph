@@ -40,7 +40,7 @@ static const char *runtime_mcp_error_text(
 	return morph_strerror(error_code);
 }
 
-static void runtime_mcp_emit(morph_event_cb cb, void *user_data,
+void runtime_mcp_emit(morph_event_cb cb, void *user_data,
 			     const char *name, const char *phase,
 			     const char *message,
 			     const struct mcp_server_config *server,
@@ -192,6 +192,7 @@ int runtime_mcp_client_connect(struct mcp_client *client,
 			 "begin", "Connecting MCP server", &client->config,
 			 -1, -1, -1, 0);
 	rc = mcp_ensure_connected(client);
+	client->discovery_error = rc;
 	if (rc != 0) {
 		runtime_mcp_emit(event_cb, event_user_data, "mcp.failed",
 				 "failed", "MCP server unavailable",
@@ -211,6 +212,8 @@ int runtime_mcp_client_disconnect(struct mcp_client *client,
 	if (!client)
 		MORPH_RETURN(-EINVAL);
 	mcp_disconnect(client);
+	client->discovery_error = 0;
+	client->capabilities_registered = 0;
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.disconnected",
 			 "end", "MCP server disconnected", &client->config,
 			 -1, -1, -1, 0);
@@ -245,6 +248,8 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	if (prompts_count)
 		*prompts_count = p;
 	rc = t < 0 ? t : (r < 0 ? r : (p < 0 ? p : 0));
+	client->discovery_error = rc;
+	client->capabilities_registered = rc == 0;
 	if (rc < 0) {
 		runtime_mcp_emit(event_cb, event_user_data, "mcp.failed",
 				 "failed", "MCP discovery failed",
