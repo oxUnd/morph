@@ -127,7 +127,15 @@ independent of user grant limits. Exec merges all matching scoped, persistent,
 profile, and built-in grants dynamically; bounded compatibility APIs report
 `ENOSPC` instead of silently dropping paths. Profile write/delete roots are
 recognized by native tools as well. Native write and delete session grants are
-separate, and persistent delete grants are reused only by the matching subject.
+separate. `request_permissions` grants read, write, and delete access to directories
+and their descendants, shared by native tools and all command executables. Its
+optional `command` provides context only. Grants expire at the end of the turn
+(default) or session (`scope=session`); choosing Always persists the directory
+grant for the current project. Write does not include deletion: installers and
+atomic replacements can require both. Paths outside the approved roots,
+including symlinks leading outside, remain restricted. Legacy executable-scoped
+grants retain their original scope; request directory access again to share it
+across tools. Command execution approvals remain separate from filesystem access.
 
 Valid shell scripts may contain variable-expanded command names, substitutions,
 functions, arrays, loops, and assignment-only statements. AST analysis still

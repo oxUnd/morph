@@ -160,6 +160,7 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 int tool_context_grant_delete_access(struct tool_context *tctx,
 				     const char *principal, const char *path,
 				     char *resolved, size_t resolved_size);
+/* Use principal "*" for directory grants shared by tools and commands. */
 int tool_context_request_scoped_access(struct tool_context *tctx,
 				       enum tool_path_op operation,
 				       const char *principal,

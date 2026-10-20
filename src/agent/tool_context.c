@@ -734,10 +734,31 @@ static int builtin_path_is_allowed(const struct tool_context *tctx,
 	return 0;
 }
 
+static int directory_grant_is_allowed(const struct tool_context *tctx,
+				      enum tool_path_op op, const char *path,
+				      int session_scope)
+{
+	struct tool_scoped_grant *grant;
+	const char *kind;
+
+	if (path_op_is_read(op))
+		op = TOOL_PATH_READ;
+	kind = op == TOOL_PATH_READ ? "read_path" :
+		op == TOOL_PATH_WRITE ? "write_path" : "delete_path";
+	morph_array_foreach(grant, &tctx->scoped_grants, struct tool_scoped_grant) {
+		if (grant->kind == op && (!session_scope || !grant->turn_only) &&
+		    strcmp(grant->subject, "*") == 0 &&
+		    path_is_within(path, grant->path))
+			return 1;
+	}
+	return persistent_path_is_allowed(tctx, "*", kind, path);
+}
+
 static int policy_path_is_allowed(const struct tool_context *tctx,
 				  enum tool_path_op op, const char *path)
 {
-	if (builtin_path_is_allowed(tctx, op, path))
+	if (builtin_path_is_allowed(tctx, op, path) ||
+	    directory_grant_is_allowed(tctx, op, path, 0))
 		return 1;
 	if (op != TOOL_PATH_DELETE && configured_path_allowed(path,
 			tctx->exec_profile_write_dirs, tctx->exec_profile_write_dirs_count))
@@ -1078,20 +1099,6 @@ static int check_path_operation(struct tool_context *tctx,
 
 	if (!op->target)
 		MORPH_RETURN(-EINVAL);
-	if (tctx->builtin_paths.nelts > 0) {
-		char resolved[PATH_MAX];
-		enum tool_path_op path_op = op->kind == TOOL_OP_PATH_WRITE ?
-			TOOL_PATH_WRITE : op->kind == TOOL_OP_PATH_DELETE ?
-			TOOL_PATH_DELETE : op->kind == TOOL_OP_PATH_LIST ?
-			TOOL_PATH_LIST : TOOL_PATH_READ;
-		int rc = resolve_user_path(tctx, path_op, op->target,
-			resolved, sizeof(resolved));
-
-		if (rc != 0)
-			return rc;
-		if (policy_path_is_allowed(tctx, path_op, resolved))
-			return 0;
-	}
 	if (op->kind == TOOL_OP_PATH_DELETE) {
 		allow_dirs = tctx->delete_allowed_dirs;
 		allow_count = &tctx->delete_allowed_dirs_count;
@@ -1114,6 +1121,8 @@ static int check_path_operation(struct tool_context *tctx,
 		if (path_is_within(canonical, allow_dirs[i]))
 			return 0;
 	}
+	if (policy_path_is_allowed(tctx, path_op, canonical))
+		return 0;
 	struct tool_scoped_grant *grant;
 
 	morph_array_foreach(grant, &tctx->scoped_grants, struct tool_scoped_grant) {
@@ -1334,7 +1343,9 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 	    (op != TOOL_PATH_WRITE && op != TOOL_PATH_DELETE))
 		MORPH_RETURN(-EINVAL);
 	morph_array_foreach(grant, &tctx->scoped_grants, struct tool_scoped_grant) {
-		if (grant->kind != op || strcmp(grant->subject, principal) != 0)
+		if (grant->kind != op ||
+		    (strcmp(grant->subject, principal) != 0 &&
+		     strcmp(grant->subject, "*") != 0))
 			continue;
 		rc = append_grant_path(paths, grant->path);
 		if (rc != 0)
@@ -1353,7 +1364,8 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 	}
 	morph_array_foreach(persistent, &tctx->persistent_grants, struct permission_grant) {
 		if (strcmp(persistent->resource_kind, kind) != 0 ||
-		    strcmp(persistent->subject, principal) != 0)
+		    (strcmp(persistent->subject, principal) != 0 &&
+		     strcmp(persistent->subject, "*") != 0))
 			continue;
 		rc = append_grant_path(paths, persistent->resource);
 		if (rc != 0)
@@ -1427,7 +1439,7 @@ int tool_context_add_exec_profile_path(struct tool_context *tctx,
 		MORPH_RETURN(-EINVAL);
 	}
 	if (stat(expanded, &st) != 0) {
-		int rc = -errno;
+		rc = -errno;
 
 		free(expanded);
 		return rc;
@@ -1600,7 +1612,8 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 
 	if (!tctx || !principal || !*principal || !command || !*command ||
 	    !path || !*path ||
-	    (operation != TOOL_PATH_WRITE && operation != TOOL_PATH_DELETE))
+	    (operation != TOOL_PATH_READ && operation != TOOL_PATH_WRITE &&
+	     operation != TOOL_PATH_DELETE))
 		MORPH_RETURN(-EINVAL);
 	expanded = file_expand_path(path);
 	if (!expanded)
@@ -1638,7 +1651,12 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		(tctx->output_dir[0] &&
 		 path_is_within(canonical, tctx->output_dir)) ||
 		path_is_default_temporary(canonical);
-	if (operation == TOOL_PATH_WRITE)
+	already_allowed = already_allowed ||
+		policy_path_is_allowed(tctx, operation, canonical);
+	if (operation == TOOL_PATH_READ)
+		already_allowed = already_allowed ||
+			persistent_path_is_allowed(tctx, principal, "read_path", canonical);
+	else if (operation == TOOL_PATH_WRITE)
 		already_allowed = already_allowed ||
 			scoped_write_is_allowed(tctx, principal, canonical) ||
 			configured_path_allowed(canonical,
@@ -1650,6 +1668,11 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 			configured_path_allowed(canonical,
 				tctx->exec_profile_delete_dirs,
 				tctx->exec_profile_delete_dirs_count);
+	/* Extending a turn grant to a session requires a new approval. */
+	if (session_scope && strcmp(principal, "*") == 0 &&
+	    directory_grant_is_allowed(tctx, operation, canonical, 0) &&
+	    !directory_grant_is_allowed(tctx, operation, canonical, 1))
+		already_allowed = 0;
 	if (already_allowed) {
 		free(canonical);
 		return 0;
@@ -1659,8 +1682,7 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		MORPH_RETURN(-EPERM);
 	}
 	memset(&op, 0, sizeof(op));
-	op.kind = operation == TOOL_PATH_WRITE ?
-		TOOL_OP_PATH_WRITE : TOOL_OP_PATH_DELETE;
+	op.kind = path_op_to_kind(operation);
 	op.tool_name = "request_permissions";
 	op.principal = principal;
 	op.action = command;
@@ -1695,6 +1717,7 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 	}
 	if (verdict == TOOL_OP_ALWAYS)
 		rc = save_grant(tctx, principal,
+			operation == TOOL_PATH_READ ? "read_path" :
 			operation == TOOL_PATH_WRITE ? "write_path" : "delete_path",
 			canonical);
 	else

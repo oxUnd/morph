@@ -75,25 +75,20 @@ static int request_permissions_run(const char *args_json,
 	cJSON *permissions;
 	cJSON *file_system;
 	cJSON *data;
+	cJSON *granted_read;
 	cJSON *granted_write;
 	cJSON *granted_delete;
 	const char *command;
 	const char *scope;
-	char principal[TOOL_CONTEXT_CLI_NAME_MAX] = { 0 };
+	const char *principal = "*";
 	int session_scope;
 	int rc;
 
 	if (!tctx || !root)
 		MORPH_RETURN(-EINVAL);
 	command = cJSON_GetStringValue(cJSON_GetObjectItem(root, "command"));
-	if (!command || !*command) {
-		cJSON_Delete(root);
-		return tool_result_error(result, "invalid_arguments",
-			"command is required so the grant can be scoped safely.");
-	}
-	if (tool_context_command_principal(command, principal,
-					   sizeof(principal)) != 0)
-		strncpy(principal, "shell", sizeof(principal) - 1);
+	if (!command || !*command)
+		command = "Access the requested directories";
 	scope = cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope"));
 	if (!scope)
 		scope = "turn";
@@ -112,11 +107,13 @@ static int request_permissions_run(const char *args_json,
 			"permissions.file_system is required.");
 	}
 	data = cJSON_CreateObject();
+	granted_read = cJSON_CreateArray();
 	granted_write = cJSON_CreateArray();
 	granted_delete = cJSON_CreateArray();
-	if (!data || !granted_write || !granted_delete) {
+	if (!data || !granted_read || !granted_write || !granted_delete) {
 		cJSON_Delete(root);
 		cJSON_Delete(data);
+		cJSON_Delete(granted_read);
 		cJSON_Delete(granted_write);
 		cJSON_Delete(granted_delete);
 		MORPH_RETURN(-ENOMEM);
@@ -126,17 +123,23 @@ static int request_permissions_run(const char *args_json,
 		granted_write, session_scope, result);
 	if (rc == 0)
 		rc = request_array(tctx, principal, command,
+			cJSON_GetObjectItem(file_system, "read"), TOOL_PATH_READ,
+			granted_read, session_scope, result);
+	if (rc == 0)
+		rc = request_array(tctx, principal, command,
 			cJSON_GetObjectItem(file_system, "delete"),
 			TOOL_PATH_DELETE, granted_delete, session_scope, result);
 	if (rc != 0) {
 		cJSON_Delete(root);
 		cJSON_Delete(data);
+		cJSON_Delete(granted_read);
 		cJSON_Delete(granted_write);
 		cJSON_Delete(granted_delete);
 		return rc == 1 ? 0 : rc;
 	}
 	cJSON_AddStringToObject(data, "scope", scope);
 	cJSON_AddStringToObject(data, "principal", principal);
+	cJSON_AddItemToObject(data, "read", granted_read);
 	cJSON_AddItemToObject(data, "write", granted_write);
 	cJSON_AddItemToObject(data, "delete", granted_delete);
 	cJSON_Delete(root);
@@ -149,16 +152,17 @@ int request_permissions_init(struct tool_registry *reg,
 	static const char schema[] =
 		"{\"type\":\"object\",\"properties\":{"
 		"\"command\":{\"type\":\"string\",\"description\":"
-		"\"Exact shell command that will use the permissions\"},"
+		"\"Optional command context; grants apply to all tools and commands\"},"
 		"\"permissions\":{\"type\":\"object\",\"properties\":{"
 		"\"file_system\":{\"type\":\"object\",\"properties\":{"
+		"\"read\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
 		"\"write\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
 		"\"delete\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}"
 		"},\"additionalProperties\":false}}},"
 		"\"scope\":{\"type\":\"string\",\"enum\":[\"turn\",\"session\"],"
 		"\"description\":\"Grant lifetime; defaults to turn\"},"
 		"\"justification\":{\"type\":\"string\"}},"
-		"\"required\":[\"command\",\"permissions\"],"
+		"\"required\":[\"permissions\"],"
 		"\"additionalProperties\":false}";
 	int rc;
 
@@ -167,12 +171,13 @@ int request_permissions_init(struct tool_registry *reg,
 	rc = tool_register(reg, &(struct tool_spec){
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "request_permissions",
-		.description = "Request the smallest additional filesystem "
-			"permissions needed by a later exec command. Grants are "
-			"scoped to that command executable for this turn by default, "
-			"or for the session when scope=session. Include the exact "
-			"future command. Use scope=turn unless repeated commands "
-			"need scope=session.",
+		.description = "Request the smallest additional directory permissions. "
+			"Read, write and delete grants apply to all tools and commands "
+			"within the approved directories, for this turn by default or "
+			"the session when scope=session. Command is optional context. "
+			"Write does not include deletion; atomic replacement and "
+			"installers may also need delete. Use scope=turn unless "
+			"repeated operations need scope=session.",
 		.input_schema = schema,
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = request_permissions_run,

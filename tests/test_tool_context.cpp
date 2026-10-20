@@ -1235,3 +1235,56 @@ TEST_F(ToolContextTest, NonPathApprovalReturnsActualVerdict)
 	}
 	tool_context_destroy(tctx);
 }
+
+TEST_F(ToolContextTest, PersistentDirectoryGrantsAreSharedAndProjectScoped)
+{
+	char cwd[PATH_MAX];
+	char path[PATH_MAX];
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	ASSERT_EQ(file_path_join(path, sizeof(path), cwd,
+		"morph_directory_persistent_XXXXXX"), 0);
+	ASSERT_NE(mkdtemp(path), nullptr);
+	std::string file = std::string(path) + "/file";
+	FILE *stream = fopen(file.c_str(), "w");
+	ASSERT_NE(stream, nullptr);
+	fclose(stream);
+	struct db db = {};
+	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	for (int attempt = 0; attempt < 3; attempt++) {
+		auto *tctx = tool_context_create("/different-work", "/different-output");
+		ASSERT_NE(tctx, nullptr);
+		std::string project = attempt == 2 ? std::string(cwd) + "/other" : cwd;
+		ASSERT_EQ(tool_context_set_grant_store(tctx, &db, project.c_str()), 0);
+		tool_context_set_operation_approval(tctx,
+			attempt == 0 ? op_always : op_deny, nullptr);
+		op_always_calls = 0;
+		for (auto operation : {TOOL_PATH_READ, TOOL_PATH_WRITE, TOOL_PATH_DELETE}) {
+			if (attempt == 0)
+				ASSERT_EQ(tool_context_request_scoped_access(tctx, operation,
+					"*", "Use directory", path, 0, nullptr, 0), 0);
+			tool_context_clear_turn_grants(tctx);
+			int expected = attempt == 2 ? -EACCES : 0;
+			EXPECT_EQ(tool_context_authorize_path(tctx, operation,
+				file.c_str(), nullptr, 0), expected);
+			struct tool_operation op = {};
+			op.kind = operation == TOOL_PATH_READ ? TOOL_OP_PATH_READ :
+				operation == TOOL_PATH_WRITE ? TOOL_OP_PATH_WRITE : TOOL_OP_PATH_DELETE;
+			op.principal = "/bin/cp";
+			op.target = file.c_str();
+			EXPECT_EQ(tool_context_check_operation(tctx, &op), expected);
+			if (operation != TOOL_PATH_READ) {
+				const char *paths[2] = {};
+				int count = operation == TOOL_PATH_WRITE ?
+					tool_context_collect_write_grants(tctx, "/bin/sh", paths, 2) :
+					tool_context_collect_delete_grants(tctx, "/bin/rm", paths, 2);
+				EXPECT_EQ(count, attempt == 2 ? 0 : 1);
+			}
+		}
+		EXPECT_EQ(op_always_calls, attempt == 0 ? 3 : 0);
+		tool_context_destroy(tctx);
+	}
+	db_close(&db);
+	unlink(file.c_str());
+	rmdir(path);
+}

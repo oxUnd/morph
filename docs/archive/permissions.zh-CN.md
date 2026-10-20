@@ -211,16 +211,16 @@ stdin。错误码包括 `process_not_found`、`process_not_running`、`io_error`
 }
 ```
 
-- `command` 必须是未来实际运行的完整命令。
-- 授权按命令的可执行程序 principal 和目录绑定，不是对所有 shell 命令开放。
+- `command` 可选，仅为审批提供执行背景。
+- 文件系统授权绑定目录，供所有内置工具和命令共同使用；执行程序审批独立控制。
 - `scope = "turn"` 是默认值，下一轮开始前自动清除。
 - `scope = "session"` 保留到当前 Morph 进程退出。
-- 该工具只支持文件系统 write/delete，不申请网络权限。
+- 该工具支持文件系统 read/write/delete，分别授权；write 不包含 delete，不申请网络权限。
 - `request_tool_enabled = false` 时不注册该工具；`exec` 命令审批仍然可用。
 
-该工具的返回值会回显实际生效的 `scope`、`principal` 以及被授予的 `write` /
-`delete` 路径。它不会写入持久权限数据库；需要长期授权时应使用 profile，或在
-命令审批时选择 `always`。
+该工具的返回值回显实际生效的 `scope`、`principal`（`*` 表示目录授权）以及
+`read` / `write` / `delete` 路径。审批时选择 `always` 会将目录权限持久保存到当前
+项目；旧的程序绑定授权保持原有范围，可重新申请目录授权。
 
 ## 5. 资源上限
 

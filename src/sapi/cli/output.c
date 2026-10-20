@@ -1088,8 +1088,12 @@ void cli_render_operation_approval(struct cli_context *ctx,
 	}
 	if (op->tool_name && *op->tool_name)
 		approval_card_field(width, "Tool", op->tool_name, ANSI_BOLD);
-	if (op->kind != TOOL_OP_COMMAND && op->principal && *op->principal)
+	if (op->kind != TOOL_OP_COMMAND && op->principal && *op->principal &&
+	    strcmp(op->principal, "*") != 0)
 		approval_card_field(width, "Subject", op->principal, ANSI_BOLD);
+	if (op->kind != TOOL_OP_COMMAND && op->principal &&
+	    strcmp(op->principal, "*") == 0)
+		approval_card_field(width, "Applies to", "All tools and commands", ANSI_BOLD);
 	if (op->reason && *op->reason)
 		approval_card_field(width, "Reason", op->reason, ANSI_BOLD);
 	if (op->kind == TOOL_OP_COMMAND) {

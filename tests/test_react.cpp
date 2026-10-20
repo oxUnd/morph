@@ -4107,7 +4107,7 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	ASSERT_NE(capt->tool_descs, nullptr);
 	EXPECT_NE(strstr(capt->tool_descs, "complete Codex patch"), nullptr);
 	EXPECT_NE(strstr(capt->tool_descs, "error.code=sandbox_denied"), nullptr);
-	EXPECT_NE(strstr(capt->tool_descs, "exact future command"), nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "apply to all tools and commands"), nullptr);
 	EXPECT_NE(strstr(capt->tool_descs, "[Image: <path>]"), nullptr);
 	ASSERT_NE(capt->prompt, nullptr);
 	EXPECT_NE(strstr(capt->prompt, "<environment_context>"), nullptr);

@@ -1,6 +1,7 @@
 #include "exec/process.h"
 #include "config/config.h"
 #include "agent/tools/exec_tool.h"
+#include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "util/file.h"
@@ -735,4 +736,108 @@ TEST(ExecToolTest, SessionApprovalAllowsRepeatedExecution)
 	EXPECT_EQ(approvals, 1);
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
+}
+
+TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
+{
+	const char *home = getenv("HOME");
+	ASSERT_NE(home, nullptr);
+	std::string pattern = std::string(home) + "/.morph_directory_grants_XXXXXX";
+	std::vector<char> temp(pattern.begin(), pattern.end());
+	temp.push_back('\0');
+	ASSERT_NE(mkdtemp(temp.data()), nullptr);
+	std::string base(temp.data());
+	std::string work = base + "/work";
+	std::string target = base + "/target";
+	std::string sibling = base + "/target-other";
+	std::filesystem::create_directories(work);
+	std::filesystem::create_directories(target);
+	std::filesystem::create_directories(sibling);
+	auto *tctx = tool_context_create(work.c_str(), work.c_str());
+	ASSERT_NE(tctx, nullptr);
+	int approvals = 0;
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *op, void *data) {
+			if (op->tool_name && strcmp(op->tool_name, "request_permissions") == 0) {
+				++*static_cast<int *>(data);
+				EXPECT_STREQ(op->principal, "*");
+				return TOOL_OP_ALLOW;
+			}
+			return op->kind == TOOL_OP_COMMAND ? TOOL_OP_ALLOW : TOOL_OP_DENY;
+		}, &approvals);
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
+	ASSERT_EQ(request_permissions_init(&registry, tctx), 0);
+	auto request = [&](const char *capability, const char *scope) {
+		std::string json = "{\"scope\":\"" + std::string(scope) +
+			"\",\"permissions\":{\"file_system\":{\"" + capability +
+			"\":[\"" + target + "\"]}}}";
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&registry, "request_permissions", json.c_str(), &result), 0);
+		ASSERT_NE(result.envelope, nullptr);
+		EXPECT_EQ(cJSON_GetObjectItem(result.envelope, "error"), nullptr);
+		tool_result_cleanup(&result);
+	};
+	auto execute = [&](const std::string &command) {
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "command", command.c_str());
+		cJSON_AddStringToObject(args, "workdir", work.c_str());
+		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
+		char *json = cJSON_PrintUnformatted(args);
+		struct tool_result result;
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&registry, "exec", json, &result), 0);
+		int status = result.data ?
+			(int)cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")) : -1;
+		tool_result_cleanup(&result);
+		free(json);
+		cJSON_Delete(args);
+		return status;
+	};
+	request("write", "session");
+	EXPECT_EQ(approvals, 1);
+	EXPECT_EQ(execute("cd '" + work + "' && sh -c \"printf first > '" +
+		target + "/first'\""), 0);
+	EXPECT_EQ(execute("cp '" + target + "/first' '" + target + "/second'"), 0);
+	EXPECT_EQ(execute("cat '" + target + "/first' > '" + target + "/third'"), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+		(target + "/native").c_str(), nullptr, 0), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		(target + "/first").c_str(), nullptr, 0), -EACCES);
+	EXPECT_NE(execute("rm '" + target + "/first'"), 0);
+	EXPECT_NE(execute("printf denied > '" + sibling + "/denied'"), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+		(sibling + "/denied").c_str(), nullptr, 0), -EACCES);
+	std::filesystem::create_directory_symlink(sibling, target + "/escape");
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+		(target + "/escape/denied").c_str(), nullptr, 0), -EACCES);
+	EXPECT_NE(execute("printf denied > '" + target + "/escape/denied'"), 0);
+	request("read", "turn");
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
+		(target + "/first").c_str(), nullptr, 0), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_LIST,
+		target.c_str(), nullptr, 0), 0);
+	request("delete", "turn");
+	EXPECT_EQ(approvals, 3);
+	EXPECT_EQ(execute("rm '" + target + "/second'"), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		(target + "/first").c_str(), nullptr, 0), 0);
+	tool_context_clear_turn_grants(tctx);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		(target + "/first").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
+		(target + "/first").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(execute("printf session > '" + target + "/session'"), 0);
+	EXPECT_NE(execute("rm '" + target + "/first'"), 0);
+	request("read", "turn");
+	request("read", "session");
+	EXPECT_EQ(approvals, 5);
+	tool_context_clear_turn_grants(tctx);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_READ,
+		(target + "/first").c_str(), nullptr, 0), 0);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	std::filesystem::remove_all(base);
 }
