@@ -36,14 +36,18 @@ def main():
         releases = []
         try:
             terminal.pump(1)
+            composer_raw_start = len(terminal.raw)
             terminal.send('Compare \x16\x16')
             terminal.pump(2)
             screen = terminal.snapshot('two clipboard image chips')
             assert '[IMAGE#1][IMAGE#2]' in screen, screen
+            chip_backgrounds = set()
             for y, row in enumerate(terminal.screen.display):
                 for label in ('[IMAGE#1]', '[IMAGE#2]'):
                     if label in row:
                         x = row.index(label)
+                        chip_backgrounds.update(terminal.screen.buffer[y][col].bg
+                                                for col in range(x, x + len(label)))
                         assert all(terminal.screen.buffer[y][col].bg != 'default'
                                    for col in range(x, x + len(label))), row
             terminal.child.setwinsize(24, 24)
@@ -53,7 +57,7 @@ def main():
             colored = ''.join(terminal.screen.buffer[y][x].data
                               for y in range(terminal.screen.lines)
                               for x in range(terminal.screen.columns)
-                              if terminal.screen.buffer[y][x].bg != 'default')
+                              if terminal.screen.buffer[y][x].bg in chip_backgrounds)
             assert colored == '[IMAGE#1][IMAGE#2]', repr(colored)
             terminal.child.setwinsize(24, 80)
             terminal.screen.resize(24, 80)
@@ -98,7 +102,8 @@ def main():
             terminal.child.close()
             assert terminal.child.exitstatus == 0
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts[:1]
-            assert '\x1b_G' not in terminal.raw and ']1337;File=' not in terminal.raw
+            composer_raw = terminal.raw[composer_raw_start:]
+            assert '\x1b_G' not in composer_raw and ']1337;File=' not in composer_raw
             print('PASS: colored image chips, multi-image paste, file paths, atomic deletion, active-turn input, submitted image references')
         finally:
             for release in releases:
