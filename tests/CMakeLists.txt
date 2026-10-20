@@ -121,6 +121,12 @@ set_target_properties(morph-setup-pty-driver PROPERTIES
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND UNIX)
+	add_test(NAME cli_manage_integration
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_manage.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_manage_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 120)
 	add_test(NAME cli_options_integration
 		COMMAND ${Python3_EXECUTABLE}
 			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_options.py

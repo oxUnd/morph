@@ -51,6 +51,9 @@ struct skill_registry {
 void skill_registry_init(struct skill_registry *reg);
 void skill_registry_cleanup(struct skill_registry *reg);
 int skill_discover(struct skill_registry *reg, const char *dir_path);
+/* Project skills take precedence; NULL workdir omits project discovery. */
+int skill_discover_configured(struct skill_registry *reg, const char *workdir,
+			     const char *user_dir);
 struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);

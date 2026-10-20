@@ -58,6 +58,46 @@ struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name)
 	return &reg->entries[idx];
 }
 
+int skill_discover_configured(struct skill_registry *reg, const char *workdir,
+			     const char *user_dir)
+{
+	int rc = 0;
+	int initial;
+
+	if (!reg)
+		MORPH_RETURN(-EINVAL);
+	initial = reg->count;
+
+	if (workdir && *workdir) {
+		char *project = file_path_join_alloc(workdir, ".agents/skills");
+
+		if (!project)
+			MORPH_RETURN(-ENOMEM);
+		char *resolved = file_resolve_path(project);
+
+		rc = resolved ? skill_discover(reg, resolved) : -ENOMEM;
+		free(resolved);
+		free(project);
+		if (rc < 0)
+			return rc;
+	}
+	rc = skill_discover(reg, user_dir && *user_dir ? user_dir : "~/.morph/skills");
+	if (rc < 0)
+		return rc;
+	char *default_dir = file_expand_path("~/.morph/skills");
+	int use_shared = !user_dir || !*user_dir ||
+		strcmp(user_dir, "~/.morph/skills") == 0 ||
+		(default_dir && strcmp(user_dir, default_dir) == 0);
+
+	free(default_dir);
+	if (use_shared) {
+		rc = skill_discover(reg, "~/.agents/skills");
+		if (rc < 0)
+			return rc;
+	}
+	return reg->count - initial;
+}
+
 int skill_discover(struct skill_registry *reg, const char *dir_path)
 {
 	if (!reg || !dir_path)

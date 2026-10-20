@@ -9,6 +9,10 @@ add_library(morph-cli STATIC
 	image_loader.c
 	interaction.c
 	list_ui.c
+	manage.c
+	manage_mcp.c
+	manage_skills.c
+	skill_store.c
 	once.c
 	output.c
 	presentation.c
@@ -59,6 +63,7 @@ target_link_libraries(morph-cli PUBLIC
 	morph-event
 	morph-agent-ui
 	morph-sync
+	blake3
 )
 add_executable(morph main.c)
 set_target_properties(morph PROPERTIES

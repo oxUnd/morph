@@ -1,5 +1,6 @@
 #include "sapi/cli/cli.h"
 #include "sapi/cli/setup.h"
+#include "sapi/cli/manage.h"
 #include "config/config.h"
 #include "skill/skill.h"
 #include "util/data.h"
@@ -111,6 +112,7 @@ struct cli_options {
 	int show_help;
 	int no_color;
 	int events_json;
+	int command_index;
 };
 
 static const struct option cli_long_options[] = {
@@ -128,6 +130,10 @@ static const struct option cli_long_options[] = {
 
 static const char cli_usage_text[] =
 	"Usage: morph [options]\n"
+	"\n"
+	"Commands:\n"
+	"  mcp                  Manage MCP servers (add/list/get/remove/test)\n"
+	"  skills (skill)       Install and manage skills from Git or local paths\n"
 	"\n"
 	"Options:\n"
 	"  -c, --config PATH     Use the specified configuration file\n"
@@ -161,7 +167,7 @@ static int cli_parse_options(int argc, char **argv,
 	memset(options, 0, sizeof(*options));
 	opterr = 0;
 	optind = 1;
-	while ((option = getopt_long(argc, argv, ":c:w:p:s:vh",
+	while ((option = getopt_long(argc, argv, "+:c:w:p:s:vh",
 				  cli_long_options, NULL)) != -1) {
 		switch (option) {
 		case 'c':
@@ -205,6 +211,12 @@ static int cli_parse_options(int argc, char **argv,
 		}
 	}
 	if (optind < argc) {
+		if (strcmp(argv[optind], "mcp") == 0 ||
+		    strcmp(argv[optind], "skills") == 0 ||
+		    strcmp(argv[optind], "skill") == 0) {
+			options->command_index = optind;
+			return 0;
+		}
 		fprintf(stderr, "morph: unexpected argument: %s\n", argv[optind]);
 		return 2;
 	}
@@ -349,29 +361,8 @@ static int print_version(const char *config_path)
 	struct skill_registry skills;
 	skill_registry_init(&skills);
 
-	if (cfg.skill.dir[0]) {
-		char *sdir = file_expand_path(cfg.skill.dir);
-		if (sdir) {
-			if (file_exists(sdir))
-				skill_discover(&skills, sdir);
-			free(sdir);
-		}
-	} else {
-		char *morph_skills = file_expand_path("~/.morph/skills");
-		if (morph_skills) {
-			if (!file_exists(morph_skills))
-				file_ensure_dir(morph_skills);
-			skill_discover(&skills, morph_skills);
-			free(morph_skills);
-		}
-		char *agents_skills = file_expand_path("~/.agents/skills");
-		if (agents_skills) {
-			if (!file_exists(agents_skills))
-				file_ensure_dir(agents_skills);
-			skill_discover(&skills, agents_skills);
-			free(agents_skills);
-		}
-	}
+	(void)skill_discover_configured(&skills, ".", cfg.skill.dir);
+
 	{
 		char *builtin_skills = morph_data_find_alloc("skills");
 
@@ -533,6 +524,39 @@ int main(int argc, char *argv[])
 	cli_set_color_enabled(!options.no_color);
 	if (options.show_help)
 		return cli_print_usage(&options);
+	if (options.command_index) {
+		char *command = argv[options.command_index];
+		char current[PATH_MAX];
+		char *expanded = options.config_path ?
+			file_expand_path(options.config_path) : NULL;
+		char *management_config = options.config_path ?
+			(expanded && getcwd(current, sizeof(current)) ?
+			 file_path_full_alloc(current, expanded) : NULL) : NULL;
+
+		free(expanded);
+
+		if (options.one_shot_prompt || options.session_name ||
+		    options.events_json || options.show_version || options.trace_json) {
+			fputs("morph: session/output options cannot be used with management commands\n",
+			      stderr);
+			free(management_config);
+			return 2;
+		}
+		if (options.config_path && !management_config)
+			return cli_manage_error(-ENOMEM, "configuration path");
+		if (options.workdir && chdir(options.workdir) != 0) {
+			free(management_config);
+			return cli_manage_error(-errno, "working directory");
+		}
+		int remaining = argc - options.command_index - 1;
+		char **arguments = argv + options.command_index + 1;
+
+		rc = strcmp(command, "mcp") == 0 ?
+			cli_manage_mcp(remaining, arguments, management_config) :
+			cli_manage_skills(remaining, arguments, management_config);
+		free(management_config);
+		return rc;
+	}
 	if (!options.show_version) {
 		int setup_rc = cli_setup_if_missing(options.config_path,
 			!options.one_shot_prompt && !options.events_json);

@@ -250,6 +250,15 @@ If image or video generation fails with "not configured", check the matching
 ==============================================================================
 CLI COMMANDS						*morph-cli*
 
+Shell management commands (no chat/model initialization):
+
+	morph mcp <add|list|get|remove|test> ...
+	morph skills <add|list|remove|update> ...
+	morph skill ...	Alias for morph skills.
+
+Use "morph mcp --help" or "morph skills --help" for options. Global -c and -w
+go before the command group. See |morph-skills| and |morph-mcp| for examples.
+
 Common interactive commands:
 
 	/help [command]	List commands or show one command.
@@ -469,15 +478,42 @@ specialized workflow.
 
 Default discovery paths:
 
+	<working-directory>/.agents/skills/
 	~/.morph/skills/
 	~/.agents/skills/
+
+Project skills take precedence over user skills with the same name. Bundled
+skills are discovered last. A custom user path replaces both default user
+paths, while project discovery remains enabled.
 
 Custom path:
 
 	[skill]
 	dir = "/path/to/skills"
 
-Commands:
+Shell installation and management:
+
+	morph skills add owner/repo --list
+	morph skills add owner/repo --skill review
+	morph skills add git@github.com:owner/repo.git --skill review -g
+	morph skills add owner/repo --path skills/review --ref v1.2.0
+	morph skills add ./my-skill
+	morph skills list
+	morph skills update [name ...]
+	morph skills remove <name ...>
+
+Default installation scope is the current working directory's .agents/skills/;
+-g selects ~/.morph/skills/ or [skill].dir. --skill selects SKILL.md names;
+--all explicitly selects every candidate. Multiple candidates prompt in a
+terminal; scripts must use --skill or --all. -y never implies --all.
+
+Git installs record source/ref/commit; updates follow the requested ref and
+commit-pinned installs stay pinned. Full skill resources are installed. Update,
+remove, and --replace refuse local changes and unmanaged installations.
+Restart a running chat to discover newly installed skills. Full reference:
+docs/cli-management.md.
+
+Interactive commands:
 
 	/skill list
 	/skill info <name>
@@ -494,6 +530,26 @@ current context.
 MCP							*morph-mcp*
 
 Morph can connect to Model Context Protocol servers by stdio or HTTP.
+
+Shell configuration commands:
+
+	morph mcp add filesystem -- npx -y some-mcp /path
+	morph mcp add remote --transport http https://example.com/mcp
+	morph mcp add remote --url https://example.com/mcp
+	morph mcp add private --url https://example.com/mcp --auth-token-env TOKEN
+	morph mcp list
+	morph mcp get <name>
+	morph mcp test <name>
+	morph mcp remove <name>
+
+The two remote forms are equivalent. --env KEY=VALUE is repeatable for stdio.
+Everything after -- is passed directly to the server without shell evaluation.
+--bearer-token-env-var aliases --auth-token-env. --replace explicitly replaces
+a duplicate entry. User scope is the default and currently the only MCP scope;
+-c selects another config file. List/get do not connect; test checks the handshake.
+Writes preserve unrelated text and use locking, schema validation, and atomic
+file replacement. Inline server arrays must be converted to [[mcp.servers]]
+before CLI editing. Restart a running chat to load the new configuration.
 
 Stdio filesystem example:
 

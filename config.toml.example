@@ -445,6 +445,8 @@ system_prompt_dir = ""
 [skill]
 # Optional: custom directory for skills.
 # Defaults to ~/.morph/skills/ and ~/.agents/skills/ if empty.
+# Project <working-directory>/.agents/skills/ is always discovered first.
+# Install: morph skills add owner/repo --skill NAME [-g]
 # Skills follow the Agent Skills open standard (agentskills.io).
 dir = ""
 
@@ -453,6 +455,7 @@ dir = ""
 # ──────────────────────────────────────────────
 # MCP servers are discovered at startup and their tools/resources/prompts
 # are automatically registered as morph tools.
+# Manage without starting a chat: morph mcp add/list/get/remove/test
 #
 # Supported transports:
 #   "stdio" — launch a local subprocess (recommended for local servers)

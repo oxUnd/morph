@@ -197,11 +197,9 @@ int mcp_stdio_connect(struct mcp_client *client)
 		argv[argc] = NULL;
 
 		for (int i = 0; i < client->config.env_count; i++) {
-			char envbuf[64 + MCP_ENV_VAL_MAX];
-			snprintf(envbuf, sizeof(envbuf), "%s=%s",
-				 client->config.env_keys[i],
-				 client->config.env_vals[i]);
-			putenv(envbuf);
+			if (setenv(client->config.env_keys[i],
+				   client->config.env_vals[i], 1) != 0)
+				_exit(127);
 		}
 
 		execvp(client->config.command, argv);

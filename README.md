@@ -84,6 +84,29 @@ Supported providers: `openai`, `volcengine`, `deepseek`.
 - `-p <prompt>`: run one prompt and exit
 - `-s <name>`: select or create a named session (with `-p`, reuse the conversation)
 
+Manage MCP servers and skills directly from the shell, without starting a chat
+or configuring a model:
+
+```bash
+morph mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /tmp
+morph mcp add docs --transport http https://example.com/mcp
+morph mcp list
+morph mcp test docs
+
+morph skills add owner/repo --list
+morph skills add owner/repo --skill review
+morph skills add git@github.com:owner/repo.git --skill review -g
+morph skills update review
+morph skills remove review
+```
+
+Skills install into the current working directory's `.agents/skills/` by default;
+`-g` selects `~/.morph/skills/`, or the configured `[skill].dir`. Project skills
+take precedence over user skills. Git sources support `--path` and `--ref`;
+local directories also work. `morph skill` aliases `morph skills`.
+See [the management command reference](docs/cli-management.md) for selection,
+update protection, configuration scope, and all options.
+
 With readline, the prompt stays editable while the agent runs: Enter submits a
 requirement adjustment, Esc/Ctrl+C cancels, Ctrl+J or Alt+Enter inserts a
 newline. Ctrl+O opens the turn's full-screen tool transcript. Pasted and typed

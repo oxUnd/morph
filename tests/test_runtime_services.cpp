@@ -15,6 +15,34 @@ extern "C" {
 #include <cstring>
 #include <ctime>
 
+TEST_F(RuntimeFacadeTest, ProjectSkillsTakePrecedenceOverConfiguredUserSkills)
+{
+	std::string project = directory + "/.agents/skills/review";
+	std::string user = directory + "/user-skills/review";
+	std::filesystem::create_directories(project);
+	std::filesystem::create_directories(user);
+	{
+		std::ofstream file(project + "/SKILL.md");
+		file << "---\nname: review\ndescription: Project review.\n---\nProject body.\n";
+	}
+	{
+		std::ofstream file(user + "/SKILL.md");
+		file << "---\nname: review\ndescription: User review.\n---\nUser body.\n";
+	}
+	WriteConfig("[memory]\nenabled=false\n[skill]\ndir=\"" +
+		directory + "/user-skills\"\n");
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.allocate_skill_registry = 1;
+	Open(&options);
+	struct skill_entry entry{};
+	ASSERT_EQ(runtime_skill_find(instance, "review", &entry), 0);
+	EXPECT_STREQ(entry.fm.description, "Project review.");
+	EXPECT_EQ(std::filesystem::canonical(entry.skill_dir),
+		std::filesystem::canonical(project));
+	ASSERT_EQ(runtime_skill_set_active(instance, "review", 1, nullptr), 0);
+}
+
 static void create_session_import_fixture(const std::string &path, const char *name)
 {
 	struct db source{};

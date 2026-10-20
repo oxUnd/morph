@@ -377,29 +377,12 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 		return 0;
 	skills = *profile->skills;
 	skill_registry_init(skills);
-	if (profile->config->skill.dir[0]) {
-		char *dir = file_expand_path(profile->config->skill.dir);
-		if (dir) {
-			if (file_exists(dir))
-				skill_discover(skills, dir);
-			free(dir);
-		}
-	} else {
-		char *morph = file_expand_path("~/.morph/skills");
-		char *agents = file_expand_path("~/.agents/skills");
-		if (morph) {
-			if (!file_exists(morph))
-				file_ensure_dir(morph);
-			skill_discover(skills, morph);
-			free(morph);
-		}
-		if (agents) {
-			if (!file_exists(agents))
-				file_ensure_dir(agents);
-			skill_discover(skills, agents);
-			free(agents);
-		}
-	}
+	int discover_rc = skill_discover_configured(skills,
+		profile->workdir ? profile->workdir : ".", profile->config->skill.dir);
+
+	if (discover_rc < 0)
+		return discover_rc;
+
 	{
 		char *builtin = morph_data_find_alloc("skills");
 
