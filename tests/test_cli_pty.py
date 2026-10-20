@@ -157,6 +157,8 @@ def main():
             assert not terminal.screen.buffer[user_row][0].bold, starting
             assert terminal.screen.buffer[user_row][2].bold, starting
             assert terminal.screen.buffer[user_row][2].bg == '1c1c1c', starting
+            assert all(terminal.screen.buffer[user_row][column].bg == '1c1c1c'
+                       for column in range(terminal.screen.columns)), starting
             assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
                                if 'Working (' in row)

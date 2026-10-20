@@ -73,6 +73,10 @@ auto_connect = true
             child.sendcontrol('u')
             child.send('/mcp\r')
             wait_for(lambda text: 'good' in text and 'ready' in text and 'failed' in text)
+            command_row = next(i for i, row in enumerate(screen.display)
+                               if row.startswith('› /mcp'))
+            assert all(screen.buffer[command_row][column].bg == '1c1c1c'
+                       for column in range(screen.columns)), '\n'.join(screen.display)
             child.send('/quit\r')
             child.expect(pexpect.EOF)
         finally:

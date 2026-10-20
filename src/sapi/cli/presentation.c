@@ -47,14 +47,16 @@ static void presentation_print_safe_inline(const char *text,
 }
 
 /* Submitted user messages remain ordinary scrollback, separate from tools. */
-static void presentation_user_row(const char *text, size_t length, int width,
-				 int first)
+static void presentation_user_row(const char *text, size_t length, int first)
 {
 	int color = cli_color_enabled();
-	int used;
 
-	if (color)
+	/* Erase with the active background, without padding scrollback with spaces. */
+	if (color) {
 		printf(ANSI_RESET "\033[48;5;234m");
+		/* Trusted layout control bypasses the text output sanitizer. */
+		(void)fwrite("\033[K", 1, 3, stdout);
+	}
 	if (first) {
 		if (color)
 			printf("\033[38;5;245m› \033[39m");
@@ -66,21 +68,8 @@ static void presentation_user_row(const char *text, size_t length, int width,
 	if (color)
 		printf(ANSI_BOLD);
 	printf("%.*s", (int)length, text);
-	used = 2;
-	for (size_t i = 0; i < length;) {
-		unsigned cp;
-		size_t bytes;
-
-		if (!utf8_decode_codepoint(text + i, length - i, &cp, &bytes))
-			break;
-		used += utf8_codepoint_width(cp);
-		i += bytes;
-	}
-	if (color) {
-		for (int i = used; i < width; i++)
-			putchar(' ');
+	if (color)
 		printf(ANSI_RESET);
-	}
 	putchar('\n');
 }
 
@@ -120,7 +109,7 @@ void cli_presentation_user_input(const char *text)
 			const char *end = utf8_advance_display_width(cursor,
 				(size_t)(width - 2));
 
-			presentation_user_row(cursor, (size_t)(end - cursor), width, first);
+			presentation_user_row(cursor, (size_t)(end - cursor), first);
 			first = 0;
 			cursor = end;
 		} while (*cursor);

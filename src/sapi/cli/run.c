@@ -583,11 +583,8 @@ static int cli_readline_accept(int count, int key)
 
 	if (!draft)
 		return 1;
-	if (RL_ISSTATE(RL_STATE_CALLBACK) && draft[0] != '/') {
-		/* The composer has been erased; commit the styled message once. */
-		if (isatty(STDOUT_FILENO))
-			fprintf(stdout, "\r\033[2K");
-		cli_presentation_user_input(draft);
+	if (RL_ISSTATE(RL_STATE_CALLBACK)) {
+		/* Commit scrollback after Readline finishes its final redisplay. */
 		rl_replace_line(draft, 0);
 		rl_point = point;
 		rl_done = 1;
@@ -1257,6 +1254,7 @@ void cli_run(struct cli_context *ctx)
 					int handled = 0;
 					int command_rc;
 
+					cli_presentation_user_input(input);
 					add_history(input);
 					if (input[0] != '/') {
 						char *expanded = cli_composer_expand(&g_composer, input);
