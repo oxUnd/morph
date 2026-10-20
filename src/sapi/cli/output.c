@@ -1113,8 +1113,9 @@ void cli_render_operation_approval(struct cli_context *ctx,
 		approval_card_field(width, "Target", op->target, ANSI_BOLD);
 	}
 	if (op->scope && *op->scope)
-		approval_card_field(width, operation_scope_label(op->kind),
-			op->scope, ANSI_DIM);
+		approval_card_field(width,
+			op->tool_name && strcmp(op->tool_name, "request_permissions") == 0 ?
+			"Lifetime" : operation_scope_label(op->kind), op->scope, ANSI_DIM);
 	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
 		approval_card_field(width, "Access", "read/write", ANSI_BOLD);
 		for (int i = 0; i < op->directories_count; i++)

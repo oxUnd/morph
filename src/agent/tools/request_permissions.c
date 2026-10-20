@@ -2,6 +2,7 @@
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "util/error.h"
+#include "util/buf.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -42,13 +43,23 @@ static int request_array(struct tool_context *tctx, const char *principal,
 				rc == -EPERM ? "approval_unavailable" :
 				"permission_request_failed";
 			const char *message = rc == -EACCES ?
-				"Permission was denied by the user." :
+				"Permission was denied by the user or filesystem." :
 				rc == -EPERM ?
-				"Interactive permission approval is unavailable." :
+				"Permission approval is unavailable or the filesystem "
+				"operation is not permitted." :
 				"The directory permission could not be granted.";
-			int result_rc = tool_result_error(
-				result, code, message);
+			morph_buf_t detail;
+			int result_rc;
 
+			result_rc = morph_buf_init(&detail, 128);
+			if (result_rc != 0)
+				return result_rc;
+			result_rc = morph_buf_printf(&detail, "%s Path: %s. Cause: %s",
+				message, path->valuestring, morph_strerror(rc));
+			if (result_rc == 0)
+				result_rc = tool_result_error(result, code,
+					morph_buf_cstr(&detail));
+			morph_buf_cleanup(&detail);
 			return result_rc == 0 ? 1 : result_rc;
 		}
 		cJSON_AddItemToArray(granted, cJSON_CreateString(resolved));

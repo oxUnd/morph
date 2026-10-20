@@ -1047,3 +1047,191 @@ TEST_F(ToolContextTest, CustomTmpdirPermissionRequestDoesNotPrompt)
 	tool_context_destroy(tctx);
 	rmdir(temp);
 }
+
+TEST_F(ToolContextTest, RequestedAlwaysGrantSurvivesTurnAndReload)
+{
+	char cwd[PATH_MAX];
+	char path[PATH_MAX];
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	ASSERT_EQ(file_path_join(path, sizeof(path), cwd,
+		"morph_always_request_XXXXXX"), 0);
+	ASSERT_NE(mkdtemp(path), nullptr);
+	struct db db = {};
+	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		auto *tctx = tool_context_create("/different-work", "/different-output");
+		ASSERT_NE(tctx, nullptr);
+		ASSERT_EQ(tool_context_set_grant_store(tctx, &db, cwd), 0);
+		op_always_calls = 0;
+		tool_context_set_operation_approval(tctx, op_always, nullptr);
+		for (auto operation : {TOOL_PATH_WRITE, TOOL_PATH_DELETE}) {
+			EXPECT_EQ(tool_context_request_scoped_access(tctx, operation,
+				"rm", "rm file", path, 0, nullptr, 0), 0);
+			tool_context_clear_turn_grants(tctx);
+			EXPECT_EQ(tool_context_request_scoped_access(tctx, operation,
+				"rm", "rm file", path, 0, nullptr, 0), 0);
+		}
+		EXPECT_EQ(op_always_calls, attempt == 0 ? 2 : 0);
+		tool_context_destroy(tctx);
+	}
+	db_close(&db);
+	ASSERT_EQ(rmdir(path), 0);
+}
+
+TEST_F(ToolContextTest, RequestedSessionGrantOverridesTurnDefault)
+{
+	char cwd[PATH_MAX];
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *, void *) { return TOOL_OP_SESSION; },
+		nullptr);
+	for (auto operation : {TOOL_PATH_WRITE, TOOL_PATH_DELETE})
+		ASSERT_EQ(tool_context_request_scoped_access(tctx, operation,
+			"test", "test", cwd, 0, nullptr, 0), 0);
+	tool_context_clear_turn_grants(tctx);
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	for (auto operation : {TOOL_PATH_WRITE, TOOL_PATH_DELETE}) {
+		EXPECT_EQ(tool_context_request_scoped_access(tctx, operation,
+			"test", "test", cwd, 0, nullptr, 0), 0);
+		EXPECT_EQ(tool_context_request_scoped_access(tctx, operation,
+			"other", "other", cwd, 0, nullptr, 0), -EACCES);
+	}
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, NativeSessionGrantsGrowAndKeepDirectoryScope)
+{
+	char base[] = "/tmp/morph_native_scope_XXXXXX";
+	ASSERT_NE(mkdtemp(base), nullptr);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	int approvals = 0;
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *, void *data) {
+			++*static_cast<int *>(data);
+			return TOOL_OP_SESSION;
+		}, &approvals);
+	for (int i = 0; i < 40; i++) {
+		std::string dir = std::string(base) + "/dir-" + std::to_string(i);
+		ASSERT_EQ(mkdir(dir.c_str(), 0700), 0);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+			dir.c_str(), nullptr, 0), 0);
+		EXPECT_EQ(approvals, i + 1);
+	}
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	for (int i = 0; i < 40; i++) {
+		std::string dir = std::string(base) + "/dir-" + std::to_string(i);
+		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+			(dir + "/file").c_str(), nullptr, 0), 0);
+		ASSERT_EQ(rmdir(dir.c_str()), 0);
+	}
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+		(std::string(base) + "/sibling").c_str(), nullptr, 0), -EACCES);
+	tool_context_destroy(tctx);
+	ASSERT_EQ(rmdir(base), 0);
+}
+
+TEST_F(ToolContextTest, CommandPersistenceFailureIsReturned)
+{
+	char cwd[PATH_MAX];
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	struct db db = {};
+	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(tool_context_set_grant_store(tctx, &db, cwd), 0);
+	ASSERT_EQ(sqlite3_exec(db.handle,
+		"CREATE TRIGGER reject_grant BEFORE INSERT ON permission_grants "
+		"BEGIN SELECT RAISE(FAIL, 'test persistence failure'); END",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	tool_context_set_operation_approval(tctx, op_always, nullptr);
+	struct tool_operation op = {};
+	op.kind = TOOL_OP_COMMAND;
+	op.action = "morph-test-program";
+	op.scope = cwd;
+	EXPECT_EQ(tool_context_check_operation(tctx, &op), MORPH_ERR_DB);
+	tool_context_destroy(tctx);
+	db_close(&db);
+}
+
+TEST_F(ToolContextTest, FullProfileAcceptsExistingPath)
+{
+	char base[] = "/tmp/morph_full_profile_XXXXXX";
+	ASSERT_NE(mkdtemp(base), nullptr);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	for (int i = 0; i < TOOL_CONTEXT_ALLOW_MAX; i++) {
+		std::string dir = std::string(base) + "/dir-" + std::to_string(i);
+		ASSERT_EQ(mkdir(dir.c_str(), 0700), 0);
+		ASSERT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE,
+			dir.c_str()), 0);
+	}
+	EXPECT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE,
+		(std::string(base) + "/dir-0").c_str()), 0);
+	EXPECT_EQ(tool_context_add_exec_profile_path(tctx, TOOL_PATH_WRITE, base), -ENOSPC);
+	tool_context_destroy(tctx);
+	for (int i = 0; i < TOOL_CONTEXT_ALLOW_MAX; i++)
+		ASSERT_EQ(rmdir((std::string(base) + "/dir-" + std::to_string(i)).c_str()), 0);
+	ASSERT_EQ(rmdir(base), 0);
+}
+
+TEST_F(ToolContextTest, NativeAlwaysDirectoryGrantDoesNotTrustSibling)
+{
+	char base[] = "/tmp/morph_always_scope_XXXXXX";
+	ASSERT_NE(mkdtemp(base), nullptr);
+	std::string dir = std::string(base) + "/approved";
+	ASSERT_EQ(mkdir(dir.c_str(), 0700), 0);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_always, nullptr);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		dir.c_str(), nullptr, 0), 0);
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		(dir + "/file").c_str(), nullptr, 0), 0);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
+		(std::string(base) + "/sibling").c_str(), nullptr, 0), -EACCES);
+	EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
+		(dir + "/file").c_str(), nullptr, 0), -EACCES);
+	tool_context_destroy(tctx);
+	ASSERT_EQ(rmdir(dir.c_str()), 0);
+	ASSERT_EQ(rmdir(base), 0);
+}
+
+TEST_F(ToolContextTest, TrustedCommandReturnsAllowVerdict)
+{
+	char cwd[PATH_MAX];
+	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
+	auto *tctx = tool_context_create("/different-work", "/different-output");
+	ASSERT_NE(tctx, nullptr);
+	ASSERT_EQ(tool_context_allow_command_pattern(tctx, "test-program"), 0);
+	ASSERT_EQ(tool_context_allow_command_scope(tctx, cwd), 0);
+	tool_context_set_operation_approval(tctx, op_deny, nullptr);
+	struct tool_operation op = {};
+	op.kind = TOOL_OP_COMMAND;
+	op.action = "test-program";
+	op.scope = cwd;
+	enum tool_operation_verdict verdict = TOOL_OP_DENY;
+	EXPECT_EQ(tool_context_check_operation_verdict(tctx, &op, &verdict), 0);
+	EXPECT_EQ(verdict, TOOL_OP_ALLOW);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ToolContextTest, NonPathApprovalReturnsActualVerdict)
+{
+	auto *tctx = tool_context_create("/work", "/output");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx, op_allow, nullptr);
+	for (auto kind : {TOOL_OP_NETWORK, TOOL_OP_EXTERNAL_SEND}) {
+		struct tool_operation op = {};
+		op.kind = kind;
+		enum tool_operation_verdict verdict = TOOL_OP_DENY;
+		EXPECT_EQ(tool_context_check_operation_verdict(tctx, &op, &verdict), 0);
+		EXPECT_EQ(verdict, TOOL_OP_ALLOW);
+	}
+	tool_context_destroy(tctx);
+}
