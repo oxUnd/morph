@@ -20,6 +20,7 @@ struct hook_manager {
 	morph_array_t entries;
 	int ready;
 	int enabled;
+	struct config_file_error error;
 	cJSON *recent;
 	size_t context_bytes;
 	uint64_t remaining_ms;

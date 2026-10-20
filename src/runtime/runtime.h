@@ -83,6 +83,8 @@ struct runtime_options {
 	int process_replica;
 	/* Opt-in: MCP events may arrive on worker threads. Zero keeps sync startup. */
 	int background_connect_mcp;
+	/* Optional caller-owned output, valid even when runtime_open fails. */
+	struct config_file_error *startup_error;
 };
 
 struct runtime_permission_grant {

@@ -100,6 +100,21 @@ manifests so splitting a core implementation into new files does not leave
 mobile builds behind. Keep each manifest to one relative source path per line.
 Platform adapters and optional tools remain selected by each frontend.
 
+## Startup diagnostics
+
+Hosts may provide caller-owned `runtime_options.startup_error` storage. On a
+configuration failure, `runtime_open()` fills the actual source path and its
+validation detail (line, column, key, and reason) before cleaning up the partial
+runtime. The output remains valid when the runtime handle is null. It is cleared
+on each valid open attempt, including successful retries. Secondary sources such
+as global/project `hooks.json` and project TOML retain their own file names.
+
+`startup.failed` events also carry `error_code`, and, when available, `file`,
+`line`, `column`, and `key`; the event message contains the specific reason.
+CLI diagnostics use this output rather than attributing every initialization
+parse error to the selected main TOML file. JSON syntax errors include a position
+without echoing configuration contents or secrets.
+
 ## Background MCP startup
 
 `runtime_options.auto_connect_mcp` enables configured servers whose

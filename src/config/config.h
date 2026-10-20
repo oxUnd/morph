@@ -356,6 +356,12 @@ struct config_validation_error {
 	char message[256];
 };
 
+/* A diagnostic may refer to a secondary configuration source such as hooks.json. */
+struct config_file_error {
+	char file[PATH_MAX];
+	struct config_validation_error detail;
+};
+
 typedef void (*config_validation_warning_fn)(
 	const struct config_validation_error *warning, void *user_data);
 

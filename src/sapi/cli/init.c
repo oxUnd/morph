@@ -89,6 +89,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	}
 	(void)cli_commands_init();
 	memset(&options, 0, sizeof(options));
+	options.startup_error = &ctx->startup_error;
 	options.config_path = config_path ? config_path : default_config_path;
 	options.db_path = default_db_path;
 	options.workdir = workdir;

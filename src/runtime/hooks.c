@@ -299,12 +299,48 @@ static int load_object(struct hook_manager *manager, const cJSON *hooks, const c
 	return 0;
 }
 
+static int hook_load_error(struct hook_manager *manager, const char *path,
+			   int rc, const char *message)
+{
+	snprintf(manager->error.file, sizeof(manager->error.file), "%s", path);
+	if (message != manager->error.detail.message)
+		snprintf(manager->error.detail.message, sizeof(manager->error.detail.message),
+			 "%s", message ? message : morph_strerror(rc));
+	if (manager->error.detail.code == CONFIG_VALIDATION_NONE)
+		manager->error.detail.code = rc == MORPH_ERR_PARSE ?
+			CONFIG_VALIDATION_SYNTAX : CONFIG_VALIDATION_VALUE;
+	log_err("failed to load hooks %s:%d:%d: %s", path,
+		manager->error.detail.line, manager->error.detail.column,
+		manager->error.detail.message);
+	MORPH_RETURN(rc);
+}
+
+static void hook_json_error_position(struct hook_manager *manager,
+				     const char *text, const char *position)
+{
+	const char *line_start = text;
+	int line = 1;
+
+	if (!position)
+		position = text;
+	for (const char *p = text; p < position; p++) {
+		if (*p == '\n') {
+			line++;
+			line_start = p + 1;
+		}
+	}
+	manager->error.detail.line = line;
+	manager->error.detail.column = (int)utf8nlen(line_start,
+		(size_t)(position - line_start)) + 1;
+}
+
 static int load_json_file(struct hook_manager *manager, const char *path, int project)
 {
 	struct stat st;
 	char *text;
 	cJSON *root;
 	int rc;
+	const char *parse_end = NULL;
 
 	struct hook_entry *existing;
 	morph_array_foreach(existing, &manager->entries, struct hook_entry)
@@ -312,20 +348,34 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 		if (strcmp(existing->source, path) == 0)
 			return 0;
 	}
-	if (stat(path, &st) != 0)
-		MORPH_RETURN(errno == ENOENT ? 0 : -errno);
+	if (stat(path, &st) != 0) {
+		rc = -errno;
+		return rc == -ENOENT ? 0 : hook_load_error(manager, path, rc, NULL);
+	}
 	if (!S_ISREG(st.st_mode) || st.st_size > CONFIG_HOOKS_JSON_MAX)
-		MORPH_RETURN(-EFBIG);
+		return hook_load_error(manager, path, -EFBIG,
+			"Hooks configuration must be a regular file within the size limit.");
 	text = file_read_all(path, NULL);
 	if (!text)
-		MORPH_RETURN(-EIO);
-	root = cJSON_ParseWithOpts(text, NULL, 1);
+		return hook_load_error(manager, path, -EIO, NULL);
+	root = cJSON_ParseWithOpts(text, &parse_end, 1);
+	if (!root) {
+		hook_json_error_position(manager, text, parse_end);
+		rc = hook_load_error(manager, path, MORPH_ERR_PARSE,
+			parse_end && *parse_end ?
+			"Invalid JSON syntax; check quotes, commas, and brackets." :
+			"Unexpected end of JSON input; expected a complete JSON document.");
+		free(text);
+		return rc;
+	}
 	free(text);
-	if (!root)
-		MORPH_RETURN(MORPH_ERR_PARSE);
 	rc = load_object(manager, cJSON_GetObjectItemCaseSensitive(root, "hooks"), path, project);
 	cJSON_Delete(root);
-	return rc;
+	if (rc != 0)
+		return hook_load_error(manager, path, rc, rc == MORPH_ERR_CONFIG ?
+			"Invalid hooks structure: expected a hooks object with event arrays, "
+			"hook groups, and valid handlers." : NULL);
+	return 0;
 }
 
 static int load_inline(struct hook_manager *manager, const char *path, const char *json,
@@ -353,10 +403,14 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 	}
 	hooks = cJSON_ParseWithOpts(json, NULL, 1);
 	if (!hooks)
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return hook_load_error(manager, path, MORPH_ERR_PARSE,
+			"Invalid inline hooks JSON.");
 	rc = load_object(manager, hooks, path, project);
 	cJSON_Delete(hooks);
-	return rc;
+	if (rc != 0)
+		return hook_load_error(manager, path, rc,
+			"Invalid inline hooks structure.");
+	return 0;
 }
 
 int hook_manager_reload(struct hook_manager *manager)
@@ -371,6 +425,7 @@ int hook_manager_reload(struct hook_manager *manager)
 		free(home);
 		MORPH_RETURN(-EINVAL);
 	}
+	memset(&manager->error, 0, sizeof(manager->error));
 	morph_array_foreach(entry, &manager->entries, struct hook_entry) entry_cleanup(entry);
 	morph_array_clear(&manager->entries);
 	rc = load_json_file(manager, home, 0);
@@ -394,6 +449,11 @@ int hook_manager_reload(struct hook_manager *manager)
 		if (!fresh)
 			MORPH_RETURN(-ENOMEM);
 		rc = config_load(fresh, manager->config_path);
+		if (rc != 0) {
+			(void)config_validate_file(manager->config_path, &manager->error.detail);
+			hook_load_error(manager, manager->config_path, rc,
+				manager->error.detail.message[0] ? manager->error.detail.message : NULL);
+		}
 		enabled = fresh->hooks_enabled;
 		if (rc == 0)
 			rc = load_inline(manager, manager->config_path, fresh->hooks_json, 0);
@@ -413,6 +473,11 @@ int hook_manager_reload(struct hook_manager *manager)
 		if (!project)
 			MORPH_RETURN(-ENOMEM);
 		rc = config_load(project, path);
+		if (rc != 0) {
+			(void)config_validate_file(path, &manager->error.detail);
+			hook_load_error(manager, path, rc,
+				manager->error.detail.message[0] ? manager->error.detail.message : NULL);
+		}
 		if (rc == 0)
 			rc = load_inline(manager, path, project->hooks_json, 1);
 		free(project);

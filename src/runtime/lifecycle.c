@@ -159,7 +159,7 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 	return 0;
 }
 
-static int runtime_load_config(struct runtime *runtime)
+static int runtime_load_config(struct runtime *runtime, struct config_file_error *error)
 {
 	struct runtime_context *ctx = &runtime->context;
 	char *expanded = NULL;
@@ -176,6 +176,11 @@ static int runtime_load_config(struct runtime *runtime)
 		if (file_exists(expanded)) {
 			rc = config_load(&ctx->config, expanded);
 			if (rc != 0) {
+				snprintf(error->file, sizeof(error->file), "%s", expanded);
+				(void)config_validate_file(expanded, &error->detail);
+				if (!error->detail.message[0])
+					snprintf(error->detail.message, sizeof(error->detail.message),
+						 "%s", morph_strerror(rc));
 				free(expanded);
 				return rc;
 			}
@@ -441,10 +446,13 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 {
 	struct runtime *runtime;
 	int rc;
+	struct config_file_error error = {0};
 
 	if (!options || !out || !options->db_path)
 		return -EINVAL;
 	*out = NULL;
+	if (options->startup_error)
+		memset(options->startup_error, 0, sizeof(*options->startup_error));
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
 		return -ENOMEM;
@@ -464,7 +472,7 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 			     "Reading configuration...");
 	rc = runtime_context_init_lock(&runtime->context);
 	if (rc == 0)
-		rc = runtime_load_config(runtime);
+		rc = runtime_load_config(runtime, &error);
 	if (rc == 0)
 		rc = runtime_set_workdir(runtime);
 	if (rc == 0) {
@@ -474,10 +482,13 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 	}
 	if (rc == 0)
 		rc = runtime_start_components(runtime);
-	if (rc == 0)
+	if (rc == 0) {
 		rc = hook_manager_init(&runtime->context.hooks,
 			&runtime->context.database, &runtime->context.config,
 			runtime->context.config_path, runtime->context.workdir);
+		if (rc != 0)
+			error = runtime->context.hooks.error;
+	}
 	if (rc == 0) {
 		char source[PATH_MAX];
 		int cleanup_rc;
@@ -492,8 +503,23 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 		}
 	}
 	if (rc != 0) {
-		runtime_emit_startup(runtime, "startup.failed", "failed",
-				     "Morph could not start");
+		cJSON *data = cJSON_CreateObject();
+
+		if (options->startup_error)
+			*options->startup_error = error;
+		if (data) {
+			cJSON_AddNumberToObject(data, "error_code", rc);
+			if (error.file[0]) {
+				cJSON_AddStringToObject(data, "file", error.file);
+				cJSON_AddNumberToObject(data, "line", error.detail.line);
+				cJSON_AddNumberToObject(data, "column", error.detail.column);
+				cJSON_AddStringToObject(data, "key", error.detail.path);
+			}
+		}
+		(void)morph_event_emit_simple(options->event_cb, options->event_user_data,
+			MORPH_EVENT_STARTUP, "startup.failed", "failed",
+			error.detail.message[0] ? error.detail.message : morph_strerror(rc), data);
+		cJSON_Delete(data);
 		runtime_close(runtime);
 		return rc;
 	}

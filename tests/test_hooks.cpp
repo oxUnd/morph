@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "runtime/hooks.h"
+#include "runtime/runtime.h"
 #include "agent/react.h"
 #include "agent/tokenizer.h"
 #include "models/llm.h"
@@ -456,4 +457,81 @@ TEST_F(HooksTest, NonObjectHandlerIsRejectedWithoutExecution)
 {
 	Write(R"({"hooks":{"Stop":[{"hooks":[[]]}]}})");
 	EXPECT_LT(hook_manager_init(&hooks, &database, cfg.get(), "", directory.c_str()), 0);
+}
+
+TEST_F(HooksTest, JsonSyntaxDiagnosticSurvivesRuntimeFailure)
+{
+	Write("{\n  \"hooks\": @\n}\n");
+	Write("[memory]\nenabled = false\n", "dev.toml");
+	struct runtime_options options = {};
+	struct config_file_error error = {};
+	struct runtime *instance = nullptr;
+	std::string config = directory + "/dev.toml";
+	std::string db = directory + "/runtime.db";
+	std::string event_json;
+	options.config_path = config.c_str();
+	options.db_path = db.c_str();
+	options.workdir = directory.c_str();
+	options.startup_error = &error;
+	options.event_cb = [](const struct morph_event *event, void *data) {
+		if (strcmp(event->name, "startup.failed") == 0) {
+			char *json = morph_event_to_json_string(event);
+			if (json) {
+				*static_cast<std::string *>(data) = json;
+				free(json);
+			}
+		}
+		return 0;
+	};
+	options.event_user_data = &event_json;
+	EXPECT_EQ(runtime_open(&options, &instance), MORPH_ERR_PARSE);
+	EXPECT_EQ(instance, nullptr);
+	EXPECT_EQ(error.file, directory + "/.morph/hooks.json");
+	EXPECT_EQ(error.detail.line, 2);
+	EXPECT_EQ(error.detail.column, 12);
+	EXPECT_NE(strstr(error.detail.message, "Invalid JSON"), nullptr);
+	cJSON *event = cJSON_Parse(event_json.c_str());
+	ASSERT_NE(event, nullptr);
+	const cJSON *data = cJSON_GetObjectItem(event, "data");
+	ASSERT_NE(data, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "file")), error.file);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "line")), 2);
+	cJSON_Delete(event);
+	Write(R"({"hooks":{}})");
+	ASSERT_EQ(runtime_open(&options, &instance), 0);
+	EXPECT_EQ(error.file[0], '\0');
+	EXPECT_EQ(error.detail.message[0], '\0');
+	runtime_close(instance);
+}
+
+TEST_F(HooksTest, JsonDiagnosticsCoverTruncationTrailingInputAndRecovery)
+{
+	Write("{\n  \"hooks\":");
+	EXPECT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "", directory.c_str()),
+		MORPH_ERR_PARSE);
+	EXPECT_EQ(hooks.error.detail.line, 2);
+	EXPECT_NE(strstr(hooks.error.detail.message, "end of JSON"), nullptr);
+	Write(R"({"hooks":{}} trailing)");
+	EXPECT_EQ(hook_manager_reload(&hooks), MORPH_ERR_PARSE);
+	EXPECT_EQ(hooks.error.detail.line, 1);
+	EXPECT_EQ(hooks.error.detail.column, 14);
+	Write(R"({"hooks":[]})");
+	EXPECT_EQ(hook_manager_reload(&hooks), MORPH_ERR_CONFIG);
+	EXPECT_NE(strstr(hooks.error.detail.message, "hooks structure"), nullptr);
+	Write(R"({"hooks":{}})");
+	EXPECT_EQ(hook_manager_reload(&hooks), 0);
+	EXPECT_EQ(hooks.error.file[0], '\0');
+	EXPECT_EQ(hooks.error.detail.line, 0);
+}
+
+TEST_F(HooksTest, SecondaryTomlDiagnosticNamesTheProjectFile)
+{
+	Write("[memory]\nenabled = \"invalid\"\n", ".morph/config.toml");
+	EXPECT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "", directory.c_str()),
+		MORPH_ERR_CONFIG);
+	EXPECT_EQ(hooks.error.file, directory + "/.morph/config.toml");
+	EXPECT_EQ(hooks.error.detail.line, 2);
+	EXPECT_STREQ(hooks.error.detail.path, "memory.enabled");
+	EXPECT_EQ(hooks.error.detail.code, CONFIG_VALIDATION_TYPE);
+	EXPECT_NE(strstr(hooks.error.detail.message, "TOML type"), nullptr);
 }

@@ -590,8 +590,9 @@ int main(int argc, char *argv[])
 		      options.session_name, presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %s", morph_strerror(rc));
-		if (rc == MORPH_ERR_CONFIG || rc == MORPH_ERR_PARSE)
-			print_config_error(options.config_path, rc);
+		if (ctx.startup_error.file[0])
+			print_config_diagnostic(0, ctx.startup_error.file,
+				&ctx.startup_error.detail);
 		else
 			fprintf(stderr, "morph: failed to initialize: %s\n",
 				morph_strerror(rc));

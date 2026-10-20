@@ -35,6 +35,7 @@ struct cli_input_status {
 
 struct cli_context {
 	struct runtime *runtime;
+	struct config_file_error startup_error;
 	struct cli_ui *ui;
 	struct cli_terminal *terminal;
 	struct cli_command_job *input_job;
