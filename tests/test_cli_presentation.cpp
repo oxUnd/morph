@@ -414,9 +414,8 @@ TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
 	     completed);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_EQ(output, "status: Compressing context…\n"
-		"context: compacted 91676 -> 15672 tokens "
-		"(iteration 22, pass 1)\n");
+	EXPECT_EQ(output, "status: Compacting context…\n"
+		"context: compacted 91676 -> 15672 tokens\n");
 	cJSON_Delete(begin);
 	cJSON_Delete(completed);
 }
@@ -436,11 +435,73 @@ TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 	     completed);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Context  compacted 91676 → 15672 tokens "
-		"(iteration 22, pass 1)"), std::string::npos);
+	EXPECT_NE(output.find("◇ Context compacted  92k → 16k"), std::string::npos);
+	EXPECT_EQ(output.find("iteration"), std::string::npos);
+	EXPECT_EQ(output.find("pass"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
 	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
 	cJSON_Delete(completed);
+}
+
+TEST_F(CliPresentationTest, CompactionReplacesLiveStateWithOneIndependentHistoryRow)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *data = cJSON_CreateObject();
+	cJSON_AddNumberToObject(data, "before_tokens", 103869);
+	cJSON_AddNumberToObject(data, "after_tokens", 68804);
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", data);
+	EXPECT_GE(cli_terminal_activity_elapsed_ms(&ctx), 0);
+	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\n◇ Context compacted  104k → 69k · 0s\n\n"),
+		std::string::npos);
+	EXPECT_EQ(output.find("Context compacted"), output.rfind("Context compacted"));
+	EXPECT_EQ(output.find("└"), std::string::npos);
+	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	cJSON_Delete(data);
+}
+
+TEST_F(CliPresentationTest, CompactionCompletionFitsNarrowTerminal)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	const char *previous = getenv("COLUMNS");
+	std::string saved = previous ? previous : "";
+	setenv("COLUMNS", "24", 1);
+	cJSON *data = cJSON_CreateObject();
+	cJSON_AddNumberToObject(data, "before_tokens", 103869);
+	cJSON_AddNumberToObject(data, "after_tokens", 68804);
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	if (previous)
+		setenv("COLUMNS", saved.c_str(), 1);
+	else
+		unsetenv("COLUMNS");
+	std::istringstream lines(output);
+	std::string line;
+	while (std::getline(lines, line))
+		EXPECT_LE(utf8_display_width_ansi(line.c_str()), 23U);
+	EXPECT_NE(output.find("◇ Context compacted"), std::string::npos);
+	cJSON_Delete(data);
+}
+
+TEST_F(CliPresentationTest, CompactionFailureIsIndependentAndSanitizesError)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *data = cJSON_CreateObject();
+	cJSON_AddStringToObject(data, "error", "parse error\n\033[2Jhidden");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", data);
+	Emit(MORPH_EVENT_REACT, "react.compaction.failed", "failed", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\n◇ Context compression failed · parse error"),
+		std::string::npos);
+	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(output.find("iteration"), std::string::npos);
+	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
+	cJSON_Delete(data);
 }
 
 TEST_F(CliPresentationTest, OncePrintsReasoningAsLabeledPlainText)

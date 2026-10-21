@@ -1041,47 +1041,80 @@ static void presentation_reflection(struct cli_context *ctx,
 		print_indented(ANSI_YELLOW "• Guardrail  " ANSI_RESET, text);
 }
 
+static void presentation_token_label(int tokens, char *label, size_t size)
+{
+	if (tokens >= 1000000)
+		snprintf(label, size, "%.1fm", (double)tokens / 1000000.0);
+	else if (tokens >= 1000)
+		snprintf(label, size, "%.0fk", (double)tokens / 1000.0);
+	else
+		snprintf(label, size, "%d", tokens);
+}
+
 static void presentation_compaction(struct cli_context *ctx,
 				    const struct morph_event *ev)
 {
 	int before = event_int(ev, "before_tokens");
 	int after = event_int(ev, "after_tokens");
-	int iteration = event_int(ev, "iteration");
-	int count = event_int(ev, "compaction_count");
 	const char *error = event_string(ev, "error");
 	int failed = ev->name && strcmp(ev->name,
 		"react.compaction.failed") == 0;
+	int64_t elapsed = cli_terminal_activity_elapsed_ms(ctx);
 
 	if (ev->name && strcmp(ev->name, "react.compaction.begin") == 0) {
-		presentation_status(ctx, "Compressing context…");
+		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
+			presentation_status(ctx, "Compacting context…");
+		} else if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+			presentation_clear_status(ctx);
+			presentation_print_stream(ctx);
+			printf("\n");
+			cli_terminal_activity_set(ctx, "Compacting context…");
+		}
 		return;
 	}
 	presentation_clear_status(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		if (failed) {
-			printf("context: compression failed at iteration %d: %s\n",
-			       iteration, error ? error : "unknown error");
+			printf("context: compression failed: ");
+			presentation_print_safe_inline(error ? error : "unknown error",
+				CLI_EVENT_TEXT_MAX);
+			printf("\n");
 		} else {
-			printf("context: compacted %d -> %d tokens "
-			       "(iteration %d, pass %d)\n",
-			       before, after, iteration, count);
+			printf("context: compacted %d -> %d tokens\n", before, after);
 		}
 		fflush(stdout);
 		return;
 	}
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+	if (elapsed < 0)
+		printf("\n");
 	if (failed) {
-		printf("\n" ANSI_DIM ANSI_RED "• Context  compression failed "
-		       "at iteration %d: ", iteration);
+		printf(ANSI_DIM ANSI_RED "◇ Context compression failed · ");
 		presentation_print_safe_inline(error ? error : "unknown error",
 			CLI_EVENT_TEXT_MAX);
-		printf(ANSI_RESET "\n");
 	} else {
-		printf("\n" ANSI_DIM "• Context  compacted %d → %d tokens "
-		       "(iteration %d, pass %d)" ANSI_RESET "\n",
-		       before, after, iteration, count);
+		char before_label[32];
+		char after_label[32];
+		char line[BUFSIZ];
+		char clipped[BUFSIZ];
+		int columns = cli_terminal_columns(ctx) - 1;
+
+		presentation_token_label(before, before_label, sizeof(before_label));
+		presentation_token_label(after, after_label, sizeof(after_label));
+		if (elapsed >= 0)
+			snprintf(line, sizeof(line), "◇ Context compacted  %s → %s · %llds",
+				before_label, after_label, (long long)(elapsed / 1000));
+		else
+			snprintf(line, sizeof(line), "◇ Context compacted  %s → %s",
+				before_label, after_label);
+		(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), line,
+			(size_t)(columns > 0 ? columns : 1), 0);
+		printf(ANSI_DIM "%s", clipped);
 	}
+	if (failed && elapsed >= 0)
+		printf(" · %llds", (long long)(elapsed / 1000));
+	printf(ANSI_RESET "\n\n");
 	fflush(stdout);
 	if (!failed && ctx->turn_active)
 		presentation_model_wait(ctx);

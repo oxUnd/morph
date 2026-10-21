@@ -2,6 +2,7 @@
 #define CLI_TERMINAL_H
 
 #include <stdio.h>
+#include <stdint.h>
 
 struct cli_context;
 
@@ -14,6 +15,9 @@ void cli_terminal_turn_begin(struct cli_context *ctx);
 void cli_terminal_turn_end(struct cli_context *ctx, int result);
 void cli_terminal_live_set(struct cli_context *ctx, const char *text);
 void cli_terminal_live_clear(struct cli_context *ctx);
+void cli_terminal_activity_set(struct cli_context *ctx, const char *text);
+int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx);
+int cli_terminal_columns(const struct cli_context *ctx);
 void cli_terminal_queue_changed(struct cli_context *ctx);
 void cli_terminal_render_frame(struct cli_context *ctx, int force);
 int cli_terminal_next_frame_ms(const struct cli_context *ctx);

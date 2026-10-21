@@ -4,6 +4,9 @@ extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/command_job.h"
 #include "sapi/cli/terminal.h"
+int cli_presentation_init(struct cli_context *ctx);
+void cli_presentation_cleanup(struct cli_context *ctx);
+int cli_presentation_event(struct cli_context *ctx, const struct morph_event *event);
 }
 
 #include <fcntl.h>
@@ -176,6 +179,60 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	ctx.input_job = nullptr;
 	cli_terminal_cleanup(&ctx);
 	cli_command_job_cleanup(&job);
+	fclose(output);
+	close(slave);
+	close(master);
+}
+
+TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	struct winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.presentation_ready = 1;
+	ctx.turn_active = 1;
+	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
+	ASSERT_EQ(cli_presentation_init(&ctx), 0);
+	cJSON *data = cJSON_Parse(
+		"{\"tool\":\"exec\",\"tool_call_id\":\"active\",\"args\":{\"command\":\"sleep 30\"}}");
+	struct morph_event event{MORPH_EVENT_TOOL, "tool.call", "begin", nullptr, data, "turn"};
+	testing::internal::CaptureStdout();
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	(void)testing::internal::GetCapturedStdout();
+	char bytes[BUFSIZ];
+	while (read(master, bytes, sizeof(bytes)) > 0) {}
+	cli_terminal_activity_set(&ctx, "Compacting context…");
+	cli_terminal_render_frame(&ctx, 1);
+	ssize_t count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	EXPECT_NE(std::string(bytes).find("Compacting context…  0s"), std::string::npos);
+	EXPECT_EQ(std::string(bytes).find("exec"), std::string::npos);
+	usleep(1100000);
+	size.ws_col = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	cli_terminal_render_frame(&ctx, 1);
+	count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	EXPECT_NE(std::string(bytes).find("1s"), std::string::npos);
+	EXPECT_GE(cli_terminal_activity_elapsed_ms(&ctx), 1000);
+	cli_terminal_live_clear(&ctx);
+	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
+	cli_presentation_cleanup(&ctx);
+	cJSON_Delete(data);
+	cli_terminal_cleanup(&ctx);
 	fclose(output);
 	close(slave);
 	close(master);

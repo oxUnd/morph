@@ -23,6 +23,8 @@ struct cli_terminal {
 	int output_fd;
 	morph_buf_t live_text;
 	int live_active;
+	int live_independent;
+	int64_t live_started_ms;
 	int live_visible;
 	int live_anchored;
 	int live_rows;
@@ -168,6 +170,11 @@ static int terminal_columns(const struct cli_terminal *terminal)
 		CLI_TERMINAL_MIN_COLUMNS : (int)columns;
 }
 
+int cli_terminal_columns(const struct cli_context *ctx)
+{
+	return terminal_columns(ctx ? ctx->terminal : NULL);
+}
+
 static void terminal_clear_current(struct cli_terminal *terminal)
 {
 	if (!terminal || !terminal->is_terminal)
@@ -255,7 +262,7 @@ void cli_terminal_cleanup(struct cli_context *ctx)
 	ctx->terminal = NULL;
 }
 
-void cli_terminal_live_set(struct cli_context *ctx, const char *text)
+static void terminal_live_set(struct cli_context *ctx, const char *text, int independent)
 {
 	struct cli_terminal *terminal;
 	char *clean;
@@ -277,6 +284,9 @@ void cli_terminal_live_set(struct cli_context *ctx, const char *text)
 		}
 		terminal->dirty = 1;
 	}
+	if (independent && (!terminal->live_independent || !terminal->live_active || changed))
+		terminal->live_started_ms = terminal_now_ms();
+	terminal->live_independent = independent;
 	terminal->live_active = 1;
 	if (!terminal->transient) {
 		if (changed) {
@@ -288,6 +298,27 @@ void cli_terminal_live_set(struct cli_context *ctx, const char *text)
 	}
 	free(clean);
 	cli_terminal_render_frame(ctx, !terminal->live_visible);
+}
+
+void cli_terminal_live_set(struct cli_context *ctx, const char *text)
+{
+	terminal_live_set(ctx, text, 0);
+}
+
+void cli_terminal_activity_set(struct cli_context *ctx, const char *text)
+{
+	terminal_live_set(ctx, text, 1);
+}
+
+int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx)
+{
+	const struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
+
+	if (!terminal || !terminal->live_active || !terminal->live_independent)
+		return -1;
+	int64_t elapsed = terminal_now_ms() - terminal->live_started_ms;
+
+	return elapsed > 0 ? elapsed : 0;
 }
 
 void cli_terminal_live_clear(struct cli_context *ctx)
@@ -302,6 +333,8 @@ void cli_terminal_live_clear(struct cli_context *ctx)
 		fflush(terminal->output);
 	}
 	terminal->live_active = 0;
+	terminal->live_independent = 0;
+	terminal->live_started_ms = 0;
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
 	terminal->live_rows = 0;
@@ -382,9 +415,22 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	}
 	text = morph_buf_cstr(&terminal->live_text);
 	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
-		tool_live = cli_transcript_live_text(ctx, &tool_text, cli_color_enabled());
-		if (tool_live)
+		if (terminal->live_independent) {
+			char elapsed[32];
+			int length = snprintf(elapsed, sizeof(elapsed), "%llds",
+				(long long)(cli_terminal_activity_elapsed_ms(ctx) / 1000));
+			int available = terminal->columns - 6 - length;
+
+			(void)utf8_copy_ellipsized_display_width(status_clipped,
+				sizeof(status_clipped), text,
+				(size_t)(available > 0 ? available : 1), 0);
+			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
 			text = morph_buf_cstr(&tool_text);
+		} else {
+			tool_live = cli_transcript_live_text(ctx, &tool_text, cli_color_enabled());
+			if (tool_live)
+				text = morph_buf_cstr(&tool_text);
+		}
 	}
 	budget = terminal->columns - 4;
 	if (budget < 1)
@@ -397,11 +443,12 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	else
 		terminal_clear_current(terminal);
 	if (status_visible) {
-		fprintf(terminal->output, "%s%s" ANSI_RESET " %s",
+		fprintf(terminal->output, "%s%s" ANSI_RESET " %s%s" ANSI_RESET,
 			tool_live ? ANSI_YELLOW : ANSI_CYAN,
 			tool_live ? (terminal->frame % 2 ? "◉" : "◯") :
 			frames[terminal->frame %
 			       (int)(sizeof(frames) / sizeof(frames[0]))],
+			terminal->live_independent ? ANSI_DIM : "",
 			tool_live ? text : status_clipped);
 		if (queue_shown || terminal->work_state)
 			fputc('\n', terminal->output);
