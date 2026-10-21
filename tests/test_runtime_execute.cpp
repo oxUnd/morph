@@ -357,7 +357,8 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 	int trusted = 0;
 	cJSON_ArrayForEach(row, hooks) {
 		const cJSON *source = cJSON_GetObjectItem(row, "source");
-		if (source && config_path == source->valuestring) {
+		if (source && std::filesystem::canonical(config_path) ==
+		    std::filesystem::canonical(source->valuestring)) {
 			ASSERT_EQ(runtime_hooks_manage(instance, "trust",
 				cJSON_GetObjectItem(row, "id")->valuestring,
 				cJSON_GetObjectItem(row, "digest")->valuestring), 0);

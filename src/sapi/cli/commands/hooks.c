@@ -22,8 +22,10 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    cli_setup_ui_available(stdin, stdout) &&
 	    ((argc <= 2 && strcmp(action, "list") == 0) ||
+	     (argc == 2 && strcmp(action, "review-all") == 0) ||
 	     (argc == 3 && strcmp(action, "review") == 0))) {
-		rc = cli_hooks_ui(ctx, &rows, argc == 3 ? argv[2] : NULL);
+		rc = strcmp(action, "review-all") == 0 ? cli_hooks_review_all(ctx, &rows) :
+			cli_hooks_ui(ctx, &rows, argc == 3 ? argv[2] : NULL);
 		cJSON_Delete(rows);
 		return rc;
 	}
@@ -55,6 +57,11 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 			       hook_field(row, "source"), hook_field(row, "matcher"));
 		}
 		printf("Review: /hooks review <id>\nWorkspace review: /hooks project\n");
+		if (cJSON_GetArraySize(rows) > 0) {
+			const char *digest = hook_field(cJSON_GetArrayItem(rows, 0), "review_digest");
+			printf("Trust all: /hooks trust-all workspace %s\n"
+			       "Reject all: /hooks deny-all workspace %s\n", digest, digest);
+		}
 	} else if (strcmp(action, "review") == 0 && argc == 3) {
 		rc = -ENOENT;
 		cJSON_ArrayForEach(row, rows)
@@ -84,7 +91,7 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 		if (rc == 0)
 			printf("Hook action completed: %s\n", action);
 	} else {
-		printf("Usage: /hooks [list|check|project|review <id>|"
+		printf("Usage: /hooks [list|check|project|review-all|review <id>|"
 		       "trust|enable|disable|revoke <id> <digest>]\n");
 		rc = -EINVAL;
 	}

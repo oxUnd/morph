@@ -59,7 +59,17 @@ workdir; use absolute paths if the script must work from subdirectories.
 ## Review and trust
 
 Loading configuration never grants permission to run it. In an interactive
-terminal, `/hooks` opens a full-screen list with states and selected-hook details.
+terminal, startup shows one review when hooks need a decision. Choose **Trust all
+current hooks and remember**, **Reject all current hooks and remember**, or review
+hooks individually. Trusting all also trusts the displayed workspace for project
+hooks. Rejecting all disables the current hooks persistently. Neither action runs
+hook commands. Esc leaves decisions unchanged.
+
+`/hooks review-all`, or **a** in the `/hooks` list, opens this batch review again.
+The batch review token covers every displayed definition; changes invalidate it,
+and the entire decision is saved atomically.
+
+`/hooks` opens a full-screen list with states and selected-hook details.
 Use Up/Down to select, Left/Right to page, r to refresh, and Enter to open Review. Review shows
 the complete definition, highlights changes from the trusted definition, and
 shows the latest recorded execution result. PgUp/PgDn and Home/End scroll long
@@ -92,12 +102,18 @@ Other commands use the current digest shown in review:
 /hooks enable <id> <digest>
 /hooks revoke <id> <digest>
 /hooks revoke-project workspace <workspace-digest>
+/hooks trust-all workspace <review-digest>
+/hooks deny-all workspace <review-digest>
 ```
 
 Enable does not grant trust. Disabling an unreviewed hook is supported. Pending,
 changed, disabled, and unsupported hooks do not run. Unattended turns skip
-unreviewed hooks without prompting. Trust is persisted in the runtime database,
-scoped to source and workdir. It is managed through host commands/runtime APIs,
+unreviewed hooks without prompting. Trust is persisted in the runtime database. User hooks are scoped to their
+canonical configuration source and apply across workspaces. Project hooks remain
+scoped to source and canonical workdir. Unchanged trust and rejection decisions
+survive restarts; changed trusted definitions require review again. Matching old
+user trust records are migrated when their original workspace is opened. Revoking
+trust prevents legacy records from restoring it. It is managed through host commands/runtime APIs,
 not exposed as an agent tool. Treat database access as host authority.
 
 ## Supported events

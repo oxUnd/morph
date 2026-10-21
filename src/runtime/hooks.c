@@ -35,6 +35,7 @@ struct hook_entry {
 	char *status;
 	int supported;
 	int trusted;
+	int recorded;
 	int disabled;
 	int project;
 	int timeout;
@@ -104,6 +105,7 @@ static int refresh_trust(struct hook_manager *manager, struct hook_entry *entry)
 	int rc;
 
 	entry->trusted = 0;
+	entry->recorded = 0;
 	entry->disabled = 0;
 	free(entry->previous);
 	entry->previous = NULL;
@@ -115,6 +117,7 @@ static int refresh_trust(struct hook_manager *manager, struct hook_entry *entry)
 	sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
+		entry->recorded = 1;
 		entry->trusted =
 		    strcmp(entry->digest, (const char *)sqlite3_column_text(stmt, 0)) == 0;
 		entry->disabled = sqlite3_column_int(stmt, 1);
@@ -167,7 +170,9 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		MORPH_RETURN(-ENOMEM);
 	}
 	memset(entry, 0, sizeof(*entry));
-	entry->source = strdup(source);
+	entry->source = file_resolve_path(source);
+	if (!entry->source)
+		entry->source = strdup(source);
 	entry->event = strdup(event);
 	entry->matcher = strdup(matcher);
 	entry->command = strdup(json_string(handler, "command"));
@@ -210,8 +215,9 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 		MORPH_RETURN(-ENOMEM);
 	rc = morph_buf_init(&identity, 128);
 	if (rc == 0)
-		rc = morph_buf_printf(&identity, "%s\n%s\n%s\n%d\n%d", manager->workdir, source,
-				      event, group_index, handler_index);
+		rc = morph_buf_printf(&identity, "%s\n%s\n%s\n%d\n%d",
+			project ? manager->workdir : "user", entry->source,
+			event, group_index, handler_index);
 	if (rc == 0) {
 		digest_text(morph_buf_cstr(&identity), entry->id);
 		morph_buf_reset(&identity);
@@ -237,7 +243,47 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	entry->status = strdup(!valid ? "invalid" : !entry->supported ? "unsupported" : "");
 	if (!entry->status)
 		MORPH_RETURN(-ENOMEM);
-	return refresh_trust(manager, entry);
+	rc = refresh_trust(manager, entry);
+	if (rc == 0 && !project && !entry->recorded) {
+		char legacy_id[65];
+		char legacy_digest[65];
+		morph_buf_t legacy;
+		sqlite3_stmt *stmt = NULL;
+
+		rc = morph_buf_init(&legacy, 128);
+		if (rc != 0)
+			return rc;
+		rc = morph_buf_printf(&legacy, "%s\n%s\n%s\n%d\n%d",
+			manager->workdir, source, event, group_index, handler_index);
+		if (rc == 0) {
+			digest_text(morph_buf_cstr(&legacy), legacy_id);
+			morph_buf_reset(&legacy);
+			rc = morph_buf_printf(&legacy, "%s\n%s", legacy_id, entry->definition);
+		}
+		if (rc == 0)
+			digest_text(morph_buf_cstr(&legacy), legacy_digest);
+		morph_buf_cleanup(&legacy);
+		if (rc != 0)
+			return rc;
+		rc = sqlite3_prepare_v2(manager->db->handle,
+			"INSERT OR IGNORE INTO hook_trust(id,digest,disabled,definition) "
+			"SELECT ?,CASE WHEN digest=? THEN ? ELSE '' END,disabled,definition "
+			"FROM hook_trust "
+			"WHERE id=? AND (digest=? OR disabled=1)", -1, &stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 2, legacy_digest, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 3, entry->digest, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 4, legacy_id, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 5, legacy_digest, -1, SQLITE_TRANSIENT);
+			rc = sqlite3_step(stmt);
+		}
+		sqlite3_finalize(stmt);
+		if (rc != SQLITE_DONE)
+			MORPH_RETURN(MORPH_ERR_DB);
+		rc = refresh_trust(manager, entry);
+	}
+	return rc;
 }
 
 static int json_unique_fields(const cJSON *value, int depth)
@@ -341,7 +387,10 @@ static int load_json_file(struct hook_manager *manager, const char *path, int pr
 	cJSON *root;
 	int rc;
 	const char *parse_end = NULL;
+	char canonical[PATH_MAX];
 
+	if (realpath(path, canonical))
+		path = canonical;
 	struct hook_entry *existing;
 	morph_array_foreach(existing, &manager->entries, struct hook_entry)
 	{
@@ -500,7 +549,9 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 	manager->config = config;
 	snprintf(manager->config_path, sizeof(manager->config_path), "%s",
 		 config_path ? config_path : "");
-	snprintf(manager->workdir, sizeof(manager->workdir), "%s", workdir);
+	char *resolved = file_resolve_path(workdir);
+	snprintf(manager->workdir, sizeof(manager->workdir), "%s", resolved ? resolved : workdir);
+	free(resolved);
 	rc = db_exec(db,
 		     "CREATE TABLE IF NOT EXISTS hook_trust("
 		     "id TEXT PRIMARY KEY,digest TEXT NOT NULL,disabled INTEGER NOT NULL DEFAULT 0,"
@@ -548,12 +599,34 @@ static const char *entry_state(struct hook_manager *manager, struct hook_entry *
 	return "trusted";
 }
 
+static int hook_review_digest(struct hook_manager *manager, char digest[65])
+{
+	morph_buf_t text;
+	struct hook_entry *entry;
+	int rc = morph_buf_init(&text, 256);
+
+	if (rc != 0)
+		return rc;
+	rc = morph_buf_printf(&text, "%s\n%d\n", manager->workdir, manager->enabled);
+	morph_array_foreach(entry, &manager->entries, struct hook_entry) {
+		if (rc == 0)
+			rc = morph_buf_printf(&text, "%s:%s:%d\n", entry->id,
+				entry->digest, entry->supported);
+	}
+	if (rc == 0)
+		digest_text(morph_buf_cstr(&text), digest);
+	morph_buf_cleanup(&text);
+	return rc;
+}
+
 cJSON *hook_manager_list(struct hook_manager *manager)
 {
 	cJSON *list = cJSON_CreateArray();
 	struct hook_entry *entry;
+	char review_digest[65];
 
-	if (!manager || !manager->ready || !list) {
+	if (!manager || !manager->ready || !list ||
+	    hook_review_digest(manager, review_digest) != 0) {
 		cJSON_Delete(list);
 		return NULL;
 	}
@@ -565,6 +638,8 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 			cJSON_Delete(list);
 			return NULL;
 		}
+		cJSON_AddStringToObject(row, "review_digest", review_digest);
+		cJSON_AddBoolToObject(row, "project", entry->project);
 		cJSON_AddStringToObject(row, "id", entry->id);
 		cJSON_AddStringToObject(row, "digest", entry->digest);
 		cJSON_AddStringToObject(row, "source", entry->source);
@@ -594,6 +669,74 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 	return list;
 }
 
+static int hook_manager_batch(struct hook_manager *manager, int trust,
+			      const char *expected_digest)
+{
+	char digest[65];
+	struct hook_entry *entry;
+	sqlite3_stmt *stmt = NULL;
+	int rc = hook_manager_reload(manager);
+
+	if (rc == 0)
+		rc = hook_review_digest(manager, digest);
+	if (rc != 0)
+		return rc;
+	if (strcmp(digest, expected_digest) != 0)
+		MORPH_RETURN(-ESTALE);
+	rc = db_exec(manager->db, "SAVEPOINT hook_batch;");
+	if (rc != 0)
+		return rc;
+	if (trust) {
+		rc = sqlite3_prepare_v2(manager->db->handle,
+			"INSERT OR IGNORE INTO hook_workspaces(path) VALUES(?)", -1, &stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_text(stmt, 1, manager->workdir, -1, SQLITE_TRANSIENT);
+			rc = sqlite3_step(stmt);
+		}
+		sqlite3_finalize(stmt);
+		stmt = NULL;
+		if (rc != SQLITE_DONE) {
+			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			goto out_rollback_batch;
+		}
+	}
+	rc = sqlite3_prepare_v2(manager->db->handle, trust ?
+		"INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,?,0,?) "
+		"ON CONFLICT(id) DO UPDATE SET digest=excluded.digest,"
+		"definition=excluded.definition,disabled=0" :
+		"INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,'',1,'') "
+		"ON CONFLICT(id) DO UPDATE SET disabled=1", -1, &stmt, NULL);
+	if (rc != SQLITE_OK) {
+		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		goto out_rollback_batch;
+	}
+	morph_array_foreach(entry, &manager->entries, struct hook_entry) {
+		if (!entry->supported)
+			continue;
+		sqlite3_reset(stmt);
+		sqlite3_clear_bindings(stmt);
+		sqlite3_bind_text(stmt, 1, entry->id, -1, SQLITE_TRANSIENT);
+		if (trust) {
+			sqlite3_bind_text(stmt, 2, entry->digest, -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, 3, entry->definition, -1, SQLITE_TRANSIENT);
+		}
+		rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE) {
+			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			goto out_rollback_batch;
+		}
+	}
+	sqlite3_finalize(stmt);
+	stmt = NULL;
+	rc = db_exec(manager->db, "RELEASE hook_batch;");
+	if (rc == 0)
+		return 0;
+out_rollback_batch:
+	sqlite3_finalize(stmt);
+	(void)db_exec(manager->db, "ROLLBACK TO hook_batch; RELEASE hook_batch;");
+	MORPH_RETURN(rc);
+}
+
 int hook_manager_action(struct hook_manager *manager, const char *action, const char *id,
 			const char *expected_digest)
 {
@@ -603,6 +746,9 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 
 	if (!manager || !action || !id || !expected_digest)
 		MORPH_RETURN(-EINVAL);
+	if (strcmp(action, "trust-all") == 0 || strcmp(action, "deny-all") == 0)
+		return hook_manager_batch(manager, strcmp(action, "trust-all") == 0,
+			expected_digest);
 	if (strcmp(action, "trust-project") == 0 || strcmp(action, "revoke-project") == 0) {
 		char digest[65];
 		digest_text(manager->workdir, digest);
@@ -638,7 +784,7 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 			    manager->db->handle,
 			    "INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,?,0,?) "
 			    "ON CONFLICT(id) DO UPDATE SET "
-			    "digest=excluded.digest,definition=excluded.definition",
+			    "digest=excluded.digest,definition=excluded.definition,disabled=0",
 			    -1, &stmt, NULL);
 			if (rc == SQLITE_OK) {
 				sqlite3_bind_text(stmt, 2, entry->digest, -1, SQLITE_TRANSIENT);
@@ -646,7 +792,9 @@ int hook_manager_action(struct hook_manager *manager, const char *action, const 
 			}
 		} else if (strcmp(action, "revoke") == 0) {
 			rc = sqlite3_prepare_v2(manager->db->handle,
-						"DELETE FROM hook_trust WHERE id=?", -1, &stmt,
+						"INSERT INTO hook_trust(id,digest,disabled,definition) VALUES(?,'',0,'') "
+						"ON CONFLICT(id) DO UPDATE SET digest='',disabled=0,definition=''",
+						-1, &stmt,
 						NULL);
 		} else if (strcmp(action, "disable") == 0 || strcmp(action, "enable") == 0) {
 			rc = sqlite3_prepare_v2(

@@ -1,5 +1,6 @@
 #include "sapi/cli/hooks_ui.h"
 #include "sapi/cli/list_ui.h"
+#include "sapi/cli/setup_ui.h"
 #include "runtime/runtime.h"
 #include "util/arena.h"
 #include "util/array.h"
@@ -47,6 +48,7 @@ struct hook_screen {
 	int width;
 	int focus;
 	int review;
+	int batch;
 	int scroll;
 	int choice;
 	int page_size;
@@ -379,6 +381,52 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 	if (!count) cell(screen, 7, 3, screen->width, "No hooks configured.", UI_DIM);
 }
 
+static void render_batch(struct hook_screen *screen, const cJSON *rows)
+{
+	int count = cJSON_GetArraySize(rows);
+	int visible = (screen->height - 16) / 3;
+	const char *choices[] = {
+		"Trust all current hooks and remember",
+		"Reject all current hooks and remember",
+		"Review individually / keep unchanged"
+	};
+	char label[128];
+
+	if (visible < 1)
+		visible = 1;
+	if (screen->scroll > count - visible)
+		screen->scroll = count > visible ? count - visible : 0;
+	screen->page_size = visible;
+	cell(screen, 3, 3, screen->width, "Trust lifecycle hooks?", UI_TEXT "\033[1m");
+	cell(screen, 4, 3, screen->width, field(cJSON_GetArrayItem(rows, 0), "cwd"), UI_DIM);
+	cell(screen, 5, 3, screen->width,
+		"User hooks: all workspaces. Project hooks: this workspace only.", UI_DIM);
+	rule(screen, 6);
+	for (int i = 0; i < visible && screen->scroll + i < count; i++) {
+		const cJSON *row = cJSON_GetArrayItem(rows, screen->scroll + i);
+		int y = 7 + i * 3;
+
+		snprintf(label, sizeof(label), "%s · %s", field(row, "event"), state_label(row));
+		cell(screen, y, 3, screen->width, label, state_style(row));
+		cell(screen, y + 1, 5, screen->width - 2, field(row, "source"), UI_DIM);
+		cell(screen, y + 2, 5, screen->width - 2, field(row, "command"), UI_TEXT);
+	}
+	snprintf(label, sizeof(label), "Showing %d–%d of %d · PgUp/PgDn to scroll",
+		count ? screen->scroll + 1 : 0,
+		screen->scroll + visible < count ? screen->scroll + visible : count, count);
+	cell(screen, screen->height - 8, 3, screen->width, label, UI_DIM);
+	rule(screen, screen->height - 7);
+	for (int i = 0; i < 3; i++) {
+		if (i == screen->choice)
+			selected(screen, screen->height - 6 + i, choices[i]);
+		else
+			cell(screen, screen->height - 6 + i, 3, screen->width, choices[i], UI_TEXT);
+	}
+	cell(screen, screen->height - 2, 3, screen->width, screen->message, UI_AMBER);
+	cell(screen, screen->height, 3, screen->width,
+		"↑↓ Choose  Enter Confirm  Esc Keep unchanged", UI_DIM);
+}
+
 static int render(struct hook_screen *screen, const cJSON *rows)
 {
 	const cJSON *row = cJSON_GetArrayItem(rows, screen->focus);
@@ -401,10 +449,13 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 	cell(screen, 1, 3, 5, "morph", UI_CYAN);
 	cell(screen, 1, 9, screen->width - 6,
 	     screen->review ? "/ hooks / review" : "/ hooks", UI_DIM);
-	if (height < 12 || screen->width < 24) {
+	if (height < (screen->batch ? 20 : 12) ||
+	    screen->width < (screen->batch ? 40 : 24)) {
 		cell(screen, 3, 3, screen->width, "Resize terminal to view hooks.", UI_AMBER);
 		cell(screen, height, 3, screen->width, "Esc Back / q Close", UI_DIM);
 		screen->document_height = 0;
+	} else if (screen->batch) {
+		render_batch(screen, rows);
 	} else if (cJSON_GetArraySize(rows) == 0) {
 		screen->page_size = 1;
 		screen->document_height = 0;
@@ -461,10 +512,10 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 		cell(screen, height, 3, screen->width, screen->review ?
 		     "↑↓ Choose  Enter Confirm  PgUp/PgDn Scroll  Esc Back" :
 		     cJSON_GetArraySize(rows) > screen->page_size ?
-		     "↑↓ Select  Enter Review  ←→ Page  r Refresh  Esc Close" :
-		     "↑↓ Select  Enter Review  r Refresh  Esc Close", UI_DIM);
+		     "↑↓ Select  Enter Review  a Review all  ←→ Page  r Refresh  Esc Close" :
+		     "↑↓ Select  Enter Review  a Review all  r Refresh  Esc Close", UI_DIM);
 	}
-	if (*screen->message)
+	if (!screen->batch && *screen->message)
 		cell(screen, height - 1, 3, screen->width, screen->message, UI_AMBER);
 	else if (screen->review && screen->document_height > 0 &&
 		 screen->document_lines > screen->document_height) {
@@ -551,9 +602,9 @@ static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *sc
 	return 0;
 }
 
-int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)
+static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id, int batch)
 {
-	struct hook_screen screen = {.page_size = 1};
+	struct hook_screen screen = {.batch = batch, .choice = batch ? 2 : 0, .page_size = 1};
 	struct termios saved;
 	const cJSON *row;
 	int rc = 0;
@@ -616,8 +667,45 @@ int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)
 			dirty = 1;
 			continue;
 		}
-		if (screen.height < 12 || screen.width < 24 ||
+		if (screen.height < (screen.batch ? 20 : 12) ||
+		    screen.width < (screen.batch ? 40 : 24) ||
 		    (screen.review && screen.document_height == 0)) continue;
+		if (screen.batch) {
+			if (key == KEY_UP || key == 'k') screen.choice = (screen.choice + 2) % 3;
+			if (key == KEY_DOWN || key == 'j' || key == '\t')
+				screen.choice = (screen.choice + 1) % 3;
+			if (key == KEY_PAGE_DOWN) screen.scroll += screen.page_size;
+			if (key == KEY_PAGE_UP) screen.scroll -= screen.page_size;
+			if (screen.scroll < 0) screen.scroll = 0;
+			if (key == '\r' || key == '\n') {
+				if (screen.choice == 2) {
+					screen.batch = 0;
+					screen.scroll = 0;
+				} else {
+					row = cJSON_GetArrayItem(*rows, 0);
+					int result = runtime_hooks_manage(ctx->runtime,
+						screen.choice == 0 ? "trust-all" : "deny-all",
+						"workspace", field(row, "review_digest"));
+					if (result == 0) break;
+					rc = refresh(ctx, rows, &screen);
+					if (rc != 0) break;
+					screen.choice = 2;
+					snprintf(screen.message, sizeof(screen.message),
+						"Action failed: %s. Review the refreshed hooks.",
+						morph_strerror(result));
+				}
+			}
+			dirty = 1;
+			continue;
+		}
+		if (key == 'a' && !screen.review && cJSON_GetArraySize(*rows) > 0) {
+			rc = refresh(ctx, rows, &screen);
+			if (rc != 0) break;
+			screen.batch = 1;
+			screen.choice = 2;
+			dirty = 1;
+			continue;
+		}
 		row = cJSON_GetArrayItem(*rows, screen.focus);
 		struct hook_action items[3];
 		int count = actions(row, items);
@@ -670,5 +758,40 @@ int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)
 	fflush(stdout);
 	if (tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && rc == 0)
 		MORPH_SET_ERR(rc, -errno);
+	return rc;
+}
+
+int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)
+{
+	return hooks_ui(ctx, rows, review_id, 0);
+}
+
+int cli_hooks_review_all(struct cli_context *ctx, cJSON **rows)
+{
+	return hooks_ui(ctx, rows, NULL, 1);
+}
+
+int cli_hooks_startup(struct cli_context *ctx)
+{
+	cJSON *rows = NULL;
+	const cJSON *row;
+	int rc;
+
+	if (!cli_setup_ui_available(stdin, stdout))
+		return 0;
+	rc = runtime_hooks_snapshot(ctx->runtime, &rows);
+	if (rc != 0)
+		return rc;
+	cJSON_ArrayForEach(row, rows) {
+		const char *state = field(row, "state");
+
+		if (strcmp(state, "needs_review") == 0 ||
+		    strcmp(state, "changed / needs_review") == 0 ||
+		    strcmp(state, "project_untrusted") == 0) {
+			rc = cli_hooks_review_all(ctx, &rows);
+			break;
+		}
+	}
+	cJSON_Delete(rows);
 	return rc;
 }

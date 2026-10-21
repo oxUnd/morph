@@ -114,6 +114,170 @@ class HooksTest : public ::testing::Test
 	}
 };
 
+TEST_F(HooksTest, BatchTrustAndRejectionPersistAcrossRestart)
+{
+	Define("PreToolUse", "touch should-not-run");
+	Init();
+	cJSON *rows = hook_manager_list(&hooks);
+	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
+	cJSON_Delete(rows);
+	ASSERT_EQ(hook_manager_action(&hooks, "deny-all", "workspace", digest.c_str()), 0);
+	hook_manager_cleanup(&hooks);
+	Init();
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "disabled");
+	digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
+	cJSON_Delete(rows);
+	ASSERT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), 0);
+	hook_manager_cleanup(&hooks);
+	Init();
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
+	cJSON_Delete(rows);
+	EXPECT_FALSE(std::filesystem::exists(directory + "/should-not-run"));
+}
+
+TEST_F(HooksTest, UserTrustSurvivesDatabaseReopenAndWorkspaceChange)
+{
+	Define("PreToolUse", "printf '{}'");
+	db_close(&database);
+	ASSERT_EQ(db_open(&database, (directory + "/trust.db").c_str()), 0);
+	Init();
+	TrustAll();
+	cJSON *rows = hook_manager_list(&hooks);
+	auto id = field(cJSON_GetArrayItem(rows, 0), "id");
+	cJSON_Delete(rows);
+	hook_manager_cleanup(&hooks);
+	db_close(&database);
+	ASSERT_EQ(db_open(&database, (directory + "/trust.db").c_str()), 0);
+	std::filesystem::create_directory(directory + "/another-workspace");
+	ASSERT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "",
+		(directory + "/another-workspace").c_str()), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "id"), id);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
+	cJSON_Delete(rows);
+}
+
+TEST_F(HooksTest, BatchTrustRejectsChangedSnapshotWithoutPartialApproval)
+{
+	Define("Stop", "printf '{}'");
+	Init();
+	cJSON *rows = hook_manager_list(&hooks);
+	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
+	cJSON_Delete(rows);
+	Define("Stop", "touch changed-script");
+	EXPECT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), -ESTALE);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "needs_review");
+	cJSON_Delete(rows);
+	EXPECT_FALSE(std::filesystem::exists(directory + "/changed-script"));
+}
+
+TEST_F(HooksTest, BatchTrustIncludesProjectTrustAndRollsBackOnFailure)
+{
+	std::filesystem::create_directories(directory + "/project/.morph");
+	std::ofstream(directory + "/project/.morph/hooks.json") <<
+		R"({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]}})";
+	ASSERT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "",
+		(directory + "/project").c_str()), 0);
+	cJSON *rows = hook_manager_list(&hooks);
+	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
+	cJSON_Delete(rows);
+	ASSERT_EQ(db_exec(&database, "CREATE TRIGGER fail_hook_trust BEFORE INSERT "
+		"ON hook_trust BEGIN SELECT RAISE(ABORT,'injected'); END;"), 0);
+	EXPECT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), MORPH_ERR_DB);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "project_untrusted");
+	cJSON_Delete(rows);
+	ASSERT_EQ(db_exec(&database, "DROP TRIGGER fail_hook_trust;"), 0);
+	ASSERT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
+	cJSON_Delete(rows);
+}
+
+TEST_F(HooksTest, TrustActionReenablesDisabledHook)
+{
+	Define("PreToolUse", "true");
+	Init();
+	TrustAll();
+	cJSON *rows = hook_manager_list(&hooks);
+	auto id = field(cJSON_GetArrayItem(rows, 0), "id");
+	auto digest = field(cJSON_GetArrayItem(rows, 0), "digest");
+	cJSON_Delete(rows);
+	ASSERT_EQ(hook_manager_action(&hooks, "disable", id.c_str(), digest.c_str()), 0);
+	ASSERT_EQ(hook_manager_action(&hooks, "trust", id.c_str(), digest.c_str()), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
+	cJSON_Delete(rows);
+}
+
+TEST_F(HooksTest, ProjectBatchTrustDoesNotTransferToAnotherWorkspace)
+{
+	for (const char *name : {"first", "second"}) {
+		std::filesystem::create_directories(directory + "/" + name + "/.morph");
+		std::ofstream(directory + "/" + name + "/.morph/hooks.json") <<
+			R"({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]}})";
+	}
+	ASSERT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "",
+		(directory + "/first").c_str()), 0);
+	cJSON *rows = hook_manager_list(&hooks);
+	auto digest = field(cJSON_GetArrayItem(rows, 0), "review_digest");
+	cJSON_Delete(rows);
+	ASSERT_EQ(hook_manager_action(&hooks, "trust-all", "workspace", digest.c_str()), 0);
+	hook_manager_cleanup(&hooks);
+	ASSERT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "",
+		(directory + "/second").c_str()), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "project_untrusted");
+	cJSON_Delete(rows);
+}
+
+static std::string hook_test_hash(const std::string &text)
+{
+	struct sha256_ctx ctx;
+	unsigned char hash[32];
+	char hex[65];
+	sha256_init(&ctx);
+	sha256_update(&ctx, reinterpret_cast<const unsigned char *>(text.data()), text.size());
+	sha256_final(&ctx, hash);
+	for (size_t i = 0; i < sizeof(hash); i++)
+		std::snprintf(hex + i * 2, 3, "%02x", hash[i]);
+	return hex;
+}
+
+TEST_F(HooksTest, LegacyTrustMigratesOnceAndCannotResurrectAfterRevoke)
+{
+	Define("Stop", "true");
+	Init();
+	cJSON *rows = hook_manager_list(&hooks);
+	auto *row = cJSON_GetArrayItem(rows, 0);
+	auto source = field(row, "source"), definition = field(row, "definition");
+	auto id = field(row, "id"), digest = field(row, "digest");
+	cJSON_Delete(rows);
+	auto legacy_id = hook_test_hash(std::string(hooks.workdir) + "\n" + source + "\nStop\n0\n0");
+	auto legacy_digest = hook_test_hash(legacy_id + "\n" + definition);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(database.handle,
+		"INSERT INTO hook_trust(id,digest,definition) VALUES(?,?,?)", -1, &stmt, nullptr),
+		SQLITE_OK);
+	sqlite3_bind_text(stmt, 1, legacy_id.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 2, legacy_digest.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, definition.c_str(), -1, SQLITE_TRANSIENT);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+	sqlite3_finalize(stmt);
+	ASSERT_EQ(hook_manager_reload(&hooks), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "trusted");
+	cJSON_Delete(rows);
+	ASSERT_EQ(hook_manager_action(&hooks, "revoke", id.c_str(), digest.c_str()), 0);
+	ASSERT_EQ(hook_manager_reload(&hooks), 0);
+	rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 0), "state"), "needs_review");
+	cJSON_Delete(rows);
+}
+
 TEST_F(HooksTest, UnreviewedNeverExecutes)
 {
 	Define("Stop", "touch should-not-exist");
@@ -486,7 +650,8 @@ TEST_F(HooksTest, JsonSyntaxDiagnosticSurvivesRuntimeFailure)
 	options.event_user_data = &event_json;
 	EXPECT_EQ(runtime_open(&options, &instance), MORPH_ERR_PARSE);
 	EXPECT_EQ(instance, nullptr);
-	EXPECT_EQ(error.file, directory + "/.morph/hooks.json");
+	EXPECT_EQ(std::filesystem::canonical(error.file),
+		std::filesystem::canonical(directory + "/.morph/hooks.json"));
 	EXPECT_EQ(error.detail.line, 2);
 	EXPECT_EQ(error.detail.column, 12);
 	EXPECT_NE(strstr(error.detail.message, "Invalid JSON"), nullptr);
@@ -529,7 +694,8 @@ TEST_F(HooksTest, SecondaryTomlDiagnosticNamesTheProjectFile)
 	Write("[memory]\nenabled = \"invalid\"\n", ".morph/config.toml");
 	EXPECT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "", directory.c_str()),
 		MORPH_ERR_CONFIG);
-	EXPECT_EQ(hooks.error.file, directory + "/.morph/config.toml");
+	EXPECT_EQ(std::filesystem::canonical(hooks.error.file),
+		std::filesystem::canonical(directory + "/.morph/config.toml"));
 	EXPECT_EQ(hooks.error.detail.line, 2);
 	EXPECT_STREQ(hooks.error.detail.path, "memory.enabled");
 	EXPECT_EQ(hooks.error.detail.code, CONFIG_VALIDATION_TYPE);

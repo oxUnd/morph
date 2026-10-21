@@ -2,6 +2,7 @@
 #include "sapi/cli/commands/registry.h"
 #include "http/client.h"
 #include "sapi/cli/composer.h"
+#include "sapi/cli/hooks_ui.h"
 #include <sys/ioctl.h>
 
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
@@ -1008,6 +1009,9 @@ void cli_run(struct cli_context *ctx)
 	cli_print_welcome(config ? config->models.text.model : NULL,
 		morph_buf_cstr(&directory));
 	morph_buf_cleanup(&directory);
+	int hooks_rc = cli_hooks_startup(ctx);
+	if (hooks_rc != 0)
+		log_warn("hook trust review failed: %s", morph_strerror(hooks_rc));
 #ifndef HAVE_READLINE
 	char line[BUFSIZ];
 #endif

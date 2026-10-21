@@ -49,7 +49,7 @@ def main():
 
         def trust_rows():
             with sqlite3.connect(database) as db:
-                return db.execute('SELECT id,digest,disabled,definition FROM hook_trust').fetchall()
+                return db.execute("SELECT id,digest,disabled,definition FROM hook_trust WHERE digest<>'' OR disabled=1").fetchall()
 
         def review():
             terminal.send('\r')
@@ -77,6 +77,9 @@ def main():
 
         try:
             terminal.pump(1)
+            text = snapshot('startup batch review')
+            assert 'Trust lifecycle hooks?' in text and 'Reject all current hooks' in text, text
+            terminal.send('\x1b')
             terminal.send('/hooks\r')
             text = snapshot('hook list')
             assert text.count('Lifecycle hooks') == 1, text
