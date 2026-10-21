@@ -13,6 +13,8 @@
 #include <cstring>
 #include <limits.h>
 #include <unistd.h>
+#include <string>
+#include "util/utf8.h"
 
 class AgentTurnTest : public ::testing::Test {
 protected:
@@ -507,4 +509,64 @@ TEST_F(AgentTurnTest, PreferenceIsSavedBeforeModelAndSurvivesCancellation)
 	ASSERT_NE(effective, nullptr);
 	EXPECT_NE(strstr(effective, "Chinese"), nullptr);
 	free(effective);
+}
+
+TEST_F(AgentTurnTest, CompactionReplayFailureRollsBackDatabaseAndMemory)
+{
+	struct model_history_insert item = {};
+	item.session_id = sess.id;
+	item.kind = "assistant_tool_calls";
+	item.role = "assistant";
+	item.payload_json = "{broken payload";
+	item.token_count = 1;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->history_enabled = 1;
+	react->compress.max_context_tokens = 10000;
+	react->compress.compress_target_ratio = 0.5;
+	react->compress.compaction_user_message_tokens = 100;
+	react->compress.summarize = agent_turn_summary;
+	ASSERT_EQ(agent_history_reload(react), 0);
+	auto *original = react->history_items;
+	EXPECT_EQ(agent_history_compact(react, 1), MORPH_ERR_PARSE);
+	EXPECT_EQ(react->history_items, original);
+	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 0), 1);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
+	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+}
+
+static int agent_turn_unicode_summary(const char *, void *, char **out)
+{
+	std::string summary;
+	for (int i = 0; i < 300; i++)
+		summary += "待验证的构建结果🙂";
+	*out = strdup(summary.c_str());
+	return *out ? 0 : -ENOMEM;
+}
+
+TEST_F(AgentTurnTest, CompactionSummaryUsesTokenizerLimitForUnicode)
+{
+	struct model_history_insert item = {};
+	item.session_id = sess.id;
+	item.kind = "user_message";
+	item.content = "objective";
+	item.token_count = 1;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->history_enabled = 1;
+	react->compress.max_context_tokens = 10000;
+	react->compress.compress_target_ratio = 0.5;
+	react->compress.compaction_summary_max_tokens = 30;
+	react->compress.summarize = agent_turn_unicode_summary;
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	ASSERT_NE(react->history_items, nullptr);
+	EXPECT_STREQ(react->history_items->kind, "compaction_summary");
+	EXPECT_LE(tokenizer_count(tok, react->history_items->content), 30);
+	EXPECT_EQ(utf8valid(react->history_items->content), nullptr);
 }

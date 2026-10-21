@@ -106,6 +106,7 @@ int message_count(struct db *db, int64_t session_id);
 int model_history_add(struct db *db,
 		      const struct model_history_insert *item,
 		      int64_t *out_id);
+/* Returns NULL with *count == 0 for an empty history, -1 on failure. */
 struct model_history_item *model_history_list(struct db *db,
 					       int64_t session_id,
 					       int active_only,

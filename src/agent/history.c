@@ -63,12 +63,17 @@ static char *history_redact(const char *text)
 		int preserve_prefix = 0;
 		if (strncmp(cur, "data:", 5) == 0) {
 			const char *base64 = strstr(cur, ";base64,");
+			const char *header = cur + 5;
 
-			if (base64 && (size_t)(base64 - cur) < 128) {
+			while (*header && (isalnum((unsigned char)*header) ||
+			       strchr("/;=.+-", *header)))
+				header++;
+			if (base64 && (size_t)(base64 - cur) < 128 &&
+			    header == base64 + strlen(";base64")) {
 				rc = morph_buf_puts(&buf, "[binary data omitted]");
 				cur = base64 + strlen(";base64,");
-				while (*cur && !isspace((unsigned char)*cur) &&
-				       *cur != '"' && *cur != '\'')
+				while (*cur && (isalnum((unsigned char)*cur) ||
+				       strchr("+/=", *cur)))
 					cur++;
 				if (rc != 0)
 					break;
@@ -153,6 +158,46 @@ static char *history_redact_all(struct react_context *ctx, const char *text)
 	return safe;
 }
 
+/* Redact decoded values so replacements cannot corrupt JSON escaping.
+ * Tool arguments may themselves contain a serialized JSON object. */
+static char *history_redact_json(struct react_context *ctx, const char *text);
+
+static int history_redact_json_values(struct react_context *ctx, cJSON *value)
+{
+	if (cJSON_IsString(value)) {
+		char *safe = history_redact_json(ctx, value->valuestring);
+		int rc = safe && cJSON_SetValuestring(value, safe) ? 0 : -ENOMEM;
+
+		free(safe);
+		return rc;
+	}
+	for (cJSON *child = value->child; child; child = child->next) {
+		int rc = history_redact_json_values(ctx, child);
+
+		if (rc != 0)
+			return rc;
+	}
+	return 0;
+}
+
+static char *history_redact_json(struct react_context *ctx, const char *text)
+{
+	cJSON *root;
+	char *safe = NULL;
+
+	if (!text)
+		return NULL;
+	root = cJSON_ParseWithOpts(text, NULL, 1);
+	if (!cJSON_IsObject(root) && !cJSON_IsArray(root)) {
+		cJSON_Delete(root);
+		return history_redact_all(ctx, text);
+	}
+	if (history_redact_json_values(ctx, root) == 0)
+		safe = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	return safe;
+}
+
 static int history_add_text_message(morph_array_t *messages,
 				    struct arena *arena,
 				    const char *role,
@@ -176,7 +221,7 @@ static int history_tool_arguments_valid(const cJSON *arguments)
 
 	if (!cJSON_IsString(arguments) || !arguments->valuestring)
 		return 0;
-	parsed = cJSON_Parse(arguments->valuestring);
+	parsed = cJSON_ParseWithOpts(arguments->valuestring, NULL, 1);
 	valid = cJSON_IsObject(parsed);
 	cJSON_Delete(parsed);
 	return valid;
@@ -220,7 +265,7 @@ int agent_history_normalize_tool_arguments(const char *arguments,
 	if (!normalized)
 		MORPH_RETURN(-EINVAL);
 	*normalized = NULL;
-	parsed = cJSON_Parse(raw);
+	parsed = cJSON_ParseWithOpts(raw, NULL, 1);
 	if (cJSON_IsObject(parsed)) {
 		cJSON_Delete(parsed);
 		*normalized = strdup(raw);
@@ -289,9 +334,12 @@ static int history_add_tool_calls(const struct model_history_item *item,
 	cJSON *root;
 	int count;
 
-	root = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
-	if (!root)
+	root = item->payload_json ? cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
+	if (!root) {
+		log_err("history replay: invalid tool payload at item %lld, sequence %lld",
+			(long long)item->id, (long long)item->sequence_no);
 		MORPH_RETURN(MORPH_ERR_PARSE);
+	}
 	calls = cJSON_GetObjectItem(root, "calls");
 	count = cJSON_IsArray(calls) ? cJSON_GetArraySize(calls) : 0;
 	if (count <= 0) {
@@ -441,7 +489,7 @@ static int history_store(struct react_context *ctx,
 	    !ctx->history_enabled)
 		return 0;
 	content = history_redact_all(ctx, insert->content);
-	payload = history_redact_all(ctx, insert->payload_json);
+	payload = history_redact_json(ctx, insert->payload_json);
 	if ((insert->content && !content) || (insert->payload_json && !payload)) {
 		free(content);
 		free(payload);
@@ -450,6 +498,8 @@ static int history_store(struct react_context *ctx,
 	safe = *insert;
 	safe.content = content;
 	safe.payload_json = payload;
+	safe.token_count = tokenizer_count(ctx->tokenizer,
+		strcmp(insert->kind, "assistant_tool_calls") == 0 ? payload : content);
 	rc = model_history_add(ctx->history_db, &safe, NULL);
 	free(content);
 	free(payload);
@@ -868,13 +918,89 @@ int agent_history_reload(struct react_context *ctx)
 	return 0;
 }
 
+static int history_validate_replay(const struct model_history_item *items)
+{
+	struct arena *arena = arena_create(0);
+	morph_array_t messages = {0};
+	int rc;
+
+	if (!arena)
+		MORPH_RETURN(-ENOMEM);
+	rc = morph_array_init(&messages, 64, sizeof(struct chat_message));
+	if (rc == 0)
+		rc = agent_history_build_chat_messages(items, &messages, arena);
+	if (rc == 0) {
+		struct agent_history_diagnostic diagnostic;
+
+		rc = agent_history_diagnose(items, NULL, &diagnostic);
+		if (rc == 0 && (diagnostic.invalid_payloads ||
+		    diagnostic.dangling_calls || diagnostic.orphan_results))
+			rc = MORPH_ERR_PROTOCOL;
+	}
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+	return rc;
+}
+
+/* Keep the old window until the new database window can actually replay. */
+static int history_compact_checked(struct react_context *ctx,
+	const char *summary, int summary_tokens, int user_budget,
+	int recent_budget, int input_tokens, int keep_rounds,
+	const char *trigger_kind, int *active_count)
+{
+	struct model_history_item *candidate = NULL;
+	int count = 0;
+	int rc = db_exec(ctx->history_db, "SAVEPOINT history_replay;");
+
+	if (rc != 0)
+		return rc;
+	rc = model_history_compact(ctx->history_db, ctx->history_session_id,
+		ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
+		input_tokens, keep_rounds, trigger_kind, NULL);
+	if (rc == 0) {
+		candidate = model_history_list(ctx->history_db,
+			ctx->history_session_id, 1, &count);
+		rc = count < 0 ? MORPH_ERR_DB : history_validate_replay(candidate);
+	}
+	if (rc == 0)
+		rc = db_exec(ctx->history_db, "RELEASE history_replay;");
+	if (rc != 0) {
+		(void)db_exec(ctx->history_db,
+			"ROLLBACK TO history_replay; RELEASE history_replay;");
+		model_history_free_list(candidate);
+		return rc;
+	}
+	model_history_free_list(ctx->history_items);
+	ctx->history_items = candidate;
+	*active_count = count;
+	return 0;
+}
+
+/* Byte limits are only an initial estimate; verify with the active tokenizer. */
+static int history_limit_summary(struct react_context *ctx, char *summary,
+				 int max_tokens)
+{
+	int tokens = tokenizer_count(ctx->tokenizer, summary);
+
+	while (tokens > max_tokens && summary[0]) {
+		size_t len = strlen(summary);
+		size_t bytes = (size_t)((double)len *
+			(double)max_tokens / (double)tokens);
+
+		if (bytes >= len)
+			bytes = len - 1;
+		summary[utf8_clamp_bytes(summary, bytes)] = '\0';
+		tokens = tokenizer_count(ctx->tokenizer, summary);
+	}
+	return tokens;
+}
+
 int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	const char *trigger_kind_in)
 {
 	struct model_history_item *item;
 	morph_buf_t input;
 	char *summary = NULL;
-	char *limited = NULL;
 	char *redacted = NULL;
 	int max_summary_tokens;
 	int user_budget;
@@ -930,22 +1056,19 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			MORPH_RETURN(-ENOMEM);
 		fallback_used = 1;
 	}
-	max_summary_tokens = ctx->compress.compaction_summary_max_tokens;
-	if (max_summary_tokens > 0 &&
-	    tokenizer_count(ctx->tokenizer, summary) > max_summary_tokens) {
-		limited = utf8_dup_clamped(summary,
-			(size_t)max_summary_tokens * HISTORY_BYTES_PER_TOKEN);
-		free(summary);
-		summary = limited;
-		if (!summary)
-			MORPH_RETURN(-ENOMEM);
-	}
 	redacted = history_redact_all(ctx, summary);
 	free(summary);
 	summary = redacted;
 	if (!summary)
 		MORPH_RETURN(-ENOMEM);
-	max_summary_tokens = tokenizer_count(ctx->tokenizer, summary);
+	max_summary_tokens = ctx->compress.compaction_summary_max_tokens;
+	max_summary_tokens = max_summary_tokens > 0 ?
+		history_limit_summary(ctx, summary, max_summary_tokens) :
+		tokenizer_count(ctx->tokenizer, summary);
+	if (!summary[0]) {
+		free(summary);
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	}
 	user_budget = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.compress_target_ratio) - max_summary_tokens;
 	if (user_budget < 0)
@@ -958,12 +1081,10 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		ctx->compress.compaction_user_message_tokens;
 	if (recent_budget < 0)
 		recent_budget = 0;
-	rc = model_history_compact(ctx->history_db, ctx->history_session_id,
-		ctx->turn_id, summary, max_summary_tokens, user_budget,
-		recent_budget, input_tokens,
-		fallback_used ?
-			ctx->compress.max_history_rounds : 0,
-		trigger_kind, NULL);
+	rc = history_compact_checked(ctx, summary, max_summary_tokens,
+		user_budget, recent_budget, input_tokens,
+		fallback_used ? ctx->compress.max_history_rounds : 0,
+		trigger_kind, &count);
 	free(summary);
 	if (rc != 0) {
 		(void)model_history_compaction_attempt_add(ctx->history_db,
@@ -974,12 +1095,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	(void)model_history_compaction_attempt_add(ctx->history_db,
 		ctx->history_session_id, ctx->turn_id, trigger_kind,
 		"completed", input_tokens, max_summary_tokens, 0, NULL);
-	model_history_free_list(ctx->history_items);
-	ctx->history_items = model_history_list(ctx->history_db,
-		ctx->history_session_id, 1, &count);
-	if (!ctx->history_items && count != 0)
-		MORPH_RETURN(MORPH_ERR_DB);
-	log_info("model history compacted: %d input tokens, %d active items",
+	log_info("model history compaction %s: %d input tokens, %d active items",
+		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed",
 		 input_tokens, count);
 	if (ctx->compress.compaction_warning_count > 0) {
 		int compactions = model_history_compaction_count(
@@ -1055,7 +1172,7 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 		if (strcmp(item->kind, "assistant_tool_calls") != 0 ||
 		    !item->payload_json)
 			continue;
-		root = cJSON_Parse(item->payload_json);
+		root = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
 		calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
 		if (!cJSON_IsArray(calls)) {
 			cJSON_Delete(root);
@@ -1120,7 +1237,7 @@ static int history_call_exists(const struct model_history_item *items,
 		if (strcmp(item->kind, "assistant_tool_calls") != 0 ||
 		    !item->payload_json)
 			continue;
-		root = cJSON_Parse(item->payload_json);
+		root = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
 		calls = root ? cJSON_GetObjectItem(root, "calls") : NULL;
 		if (cJSON_IsArray(calls)) {
 			for (int i = 0; i < cJSON_GetArraySize(calls); i++) {
@@ -1176,7 +1293,7 @@ int agent_history_diagnose(const struct model_history_item *items,
 		diagnostic->active_items++;
 		if (strcmp(item->kind, "assistant_tool_calls") == 0) {
 			cJSON *root = item->payload_json ?
-				cJSON_Parse(item->payload_json) : NULL;
+				cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
 			cJSON *calls = root ?
 				cJSON_GetObjectItem(root, "calls") : NULL;
 
@@ -1288,7 +1405,7 @@ int agent_history_repair(struct db *db, int64_t session_id,
 
 		if (strcmp(item->kind, "assistant_tool_calls") == 0) {
 			cJSON *root = item->payload_json ?
-				cJSON_Parse(item->payload_json) : NULL;
+				cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
 			cJSON *calls = root ?
 				cJSON_GetObjectItem(root, "calls") : NULL;
 

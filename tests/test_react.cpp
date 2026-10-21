@@ -1914,6 +1914,59 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	std::remove(db_path);
 }
 
+TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
+{
+	char db_path[PATH_MAX];
+	struct db db;
+	struct session session;
+	struct morph_event_recorder rec;
+	snprintf(db_path, sizeof(db_path), "/tmp/morph_compact_budget_%d.db", getpid());
+	std::remove(db_path);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "budget_rollback", "mock-model", &session), 0);
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	cfg.max_context_tokens = 1000;
+	cfg.in_turn_compaction = 1;
+	cfg.protocol_reserve_tokens = 0;
+	cfg.summarize_threshold_ratio = 0.8;
+	cfg.compress_target_ratio = 0.5;
+	cfg.compaction_summary_max_tokens = 100;
+	llm = create_mock_llm("Final: should not be called");
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->history_enabled = 1;
+	ctx->history_db = &db;
+	ctx->history_session_id = session.id;
+	ctx->compress.summarize = test_compress_cb;
+	ctx->system_prompt_replace = 1;
+	ctx->system_prompt = strdup(std::string(8000, '!').c_str());
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec), 0);
+	EXPECT_NE(react_run(ctx, "keep the original objective", nullptr, nullptr), 0);
+	EXPECT_EQ(model_history_compaction_count(&db, session.id), 0);
+	EXPECT_EQ(model_history_count(&db, session.id, 0), 1);
+	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
+	ASSERT_NE(ctx->history_items, nullptr);
+	EXPECT_STREQ(ctx->history_items->content, "keep the original objective");
+	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_TRUE(event_recorder_has_name(&rec, "react.compaction.failed"));
+	EXPECT_FALSE(event_recorder_has_name(&rec, "react.compaction.completed"));
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+		"SELECT status FROM history_compaction_attempts ORDER BY id",
+		-1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "failed");
+	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+	sqlite3_finalize(stmt);
+	react_context_destroy(ctx);
+	morph_event_recorder_cleanup(&rec);
+	db_close(&db);
+	std::remove(db_path);
+}
+
 TEST_F(MockLlmTest, StreamsNativeContentSeparatelyFromThoughtUntilFinal) {
 	const char *chunks[] = {
 		"# ",

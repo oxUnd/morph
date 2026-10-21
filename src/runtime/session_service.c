@@ -399,6 +399,8 @@ int runtime_session_history_diagnose(struct runtime *runtime,
 		MORPH_RETURN(-EINVAL);
 	items = model_history_list(&runtime->context.database,
 		runtime->context.current_session.id, 1, &count);
+	if (count < 0)
+		MORPH_RETURN(MORPH_ERR_DB);
 	rc = agent_history_diagnose(items, runtime->context.tokenizer,
 		diagnostic);
 	model_history_free_list(items);

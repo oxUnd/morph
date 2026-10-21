@@ -568,7 +568,7 @@ TEST_F(SessionTest, ModelHistoryCompactionKeepsLatestCompleteToolExchange) {
 	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
 
 	ASSERT_EQ(model_history_compact(&db, s.id, "turn_1", "checkpoint", 2,
-		2, 15, 42, 0, "test", nullptr), 0);
+		2, 20, 42, 0, "test", nullptr), 0);
 	struct model_history_item *active =
 		model_history_list(&db, s.id, 1, &count);
 	ASSERT_EQ(count, 4);
@@ -900,6 +900,62 @@ TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 	arena_destroy(arena);
 }
 
+TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
+	struct session session;
+	struct react_context react = {};
+	const char *source =
+		"return `export default \"data:${mime};base64,${buf.toString(\"base64\")}\";`;";
+	const char *binary = "data:image/png;base64,QUJDRA==";
+
+	ASSERT_EQ(session_create(&db, "redacted_calls", "test", &session), 0);
+	react.history_db = &db;
+	react.history_session_id = session.id;
+	react.history_enabled = 1;
+	for (int i = 0; i < 2; i++) {
+		struct tool_call call = {};
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "source", source);
+		cJSON_AddStringToObject(args, "image", binary);
+		cJSON_AddStringToObject(args, "key", "Bearer secret-value");
+		char *json = cJSON_PrintUnformatted(args);
+		cJSON_Delete(args);
+		ASSERT_NE(json, nullptr);
+		std::snprintf(call.id, sizeof(call.id), "provider_%d", i);
+		std::snprintf(call.tool_call_id, sizeof(call.tool_call_id), "local_%d", i);
+		std::strcpy(call.name, i == 0 ? "exec" : "apply_patch");
+		call.input_kind = i == 0 ? TOOL_INPUT_JSON : TOOL_INPUT_TEXT;
+		call.arguments = i == 0 ? json : const_cast<char *>(source);
+		ASSERT_EQ(agent_history_record_tool_calls(&react, nullptr, nullptr,
+			&call, 1), 0);
+		free(json);
+	}
+	int count = 0;
+	struct model_history_item *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(std::strstr(items->payload_json, "QUJDRA=="), nullptr);
+	EXPECT_EQ(std::strstr(items->payload_json, "secret-value"), nullptr);
+	EXPECT_EQ(items->token_count, tokenizer_count(nullptr, items->payload_json));
+	morph_array_t messages = {};
+	struct arena *arena = arena_create(0);
+	ASSERT_NE(arena, nullptr);
+	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 2U);
+	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	cJSON *args = cJSON_Parse(message->tool_calls[0].arguments);
+	ASSERT_NE(args, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "source")), source);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(args, "image")),
+		"[binary data omitted]");
+	cJSON_Delete(args);
+	message = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	EXPECT_STREQ(message->tool_calls[0].arguments, source);
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+	model_history_free_list(items);
+}
+
 TEST_F(SessionTest, ToolResultEnvelopeKeepsArtifactsMetaAndRemovesBinary) {
 	struct session s;
 	struct react_context react = {};
@@ -1082,4 +1138,78 @@ TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	morph_array_cleanup(&messages);
 	arena_destroy(arena);
 	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, HistoryReadFailureIsDistinctFromEmptyHistory) {
+	int count = 0;
+	ASSERT_EQ(sqlite3_exec(db.handle, "DROP TABLE model_history_items",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_EQ(model_history_list(&db, 1, 1, &count), nullptr);
+	EXPECT_EQ(count, -1);
+}
+
+TEST_F(SessionTest, CompactionDropsWholeToolGroupWhenItExceedsBudget) {
+	struct session session;
+	struct model_history_insert item = {};
+	ASSERT_EQ(session_create(&db, "bounded_tool_group", "test", &session), 0);
+	item.session_id = session.id;
+	item.kind = "assistant_tool_calls";
+	item.payload_json = "{\"calls\":[]}";
+	item.token_count = 10;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "tool_result";
+	item.payload_json = nullptr;
+	item.content = "first result";
+	item.token_count = 5;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.content = "second result";
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(model_history_compact(&db, session.id, "turn", "checkpoint",
+		2, 0, 15, 20, 0, "test", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(count, 1);
+	EXPECT_STREQ(items->kind, "compaction_summary");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, RepeatedManualCompactionCreatesFreshSummary) {
+	struct session session;
+	ASSERT_EQ(session_create(&db, "repeat_compaction", "test", &session), 0);
+	ASSERT_EQ(model_history_compact(&db, session.id, "turn", "first", 2,
+		0, 0, 10, 0, "manual", nullptr), 0);
+	ASSERT_EQ(model_history_compact(&db, session.id, "turn", "second", 2,
+		0, 0, 10, 0, "manual", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_NE(items, nullptr);
+	EXPECT_EQ(count, 1);
+	EXPECT_STREQ(items->content, "second");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, CompactionCommitFailureClosesTransactionAndRestoresHistory) {
+	struct session session;
+	struct model_history_insert item = {};
+	ASSERT_EQ(session_create(&db, "deferred_commit_failure", "test", &session), 0);
+	item.session_id = session.id;
+	item.kind = "user_message";
+	item.content = "keep original history";
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(sqlite3_exec(db.handle,
+		"CREATE TABLE commit_parent(id INTEGER PRIMARY KEY);"
+		"CREATE TABLE commit_child(parent_id INTEGER REFERENCES commit_parent(id) "
+		"DEFERRABLE INITIALLY DEFERRED);"
+		"CREATE TRIGGER fail_commit AFTER INSERT ON history_compactions BEGIN "
+		"INSERT INTO commit_child VALUES(123); END;",
+		nullptr, nullptr, nullptr), SQLITE_OK);
+	EXPECT_NE(model_history_compact(&db, session.id, "turn", "checkpoint", 2,
+		0, 0, 10, 0, "manual", nullptr), 0);
+	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+	EXPECT_EQ(model_history_count(&db, session.id, 0), 1);
+	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
+	EXPECT_EQ(model_history_compaction_count(&db, session.id), 0);
 }

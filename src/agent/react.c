@@ -1045,10 +1045,8 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	morph_buf_t b;
 	int previous_max_tokens = llm->max_tokens;
 	int rc = morph_buf_init(&b, 8192);
-	if (rc != 0) {
-		*out = strdup(text);
-		return *out ? 0 : -ENOMEM;
-	}
+	if (rc != 0)
+		return rc;
 	if (ctx->compress.compaction_summary_max_tokens > 0 &&
 	    (llm->max_tokens <= 0 ||
 	     llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
@@ -2275,29 +2273,19 @@ static int react_emit_compaction_event(struct react_context *ctx,
 	return rc;
 }
 
-static int react_rebuild_history_messages(struct react_context *ctx,
-					  morph_array_t *messages)
+static int react_prepare_compacted_messages(struct react_context *ctx,
+	morph_array_t *replacement, struct arena **arena)
 {
-	morph_array_t replacement = {0};
-	struct arena *arena = arena_create(0);
 	int rc;
 
-	if (!arena)
+	*arena = arena_create(0);
+	if (!*arena)
 		MORPH_RETURN(-ENOMEM);
-	rc = morph_array_init(&replacement, 64, sizeof(struct chat_message));
+	rc = morph_array_init(replacement, 64, sizeof(struct chat_message));
 	if (rc == 0)
 		rc = agent_history_build_chat_messages(ctx->history_items,
-			&replacement, arena);
-	if (rc != 0) {
-		morph_array_cleanup(&replacement);
-		arena_destroy(arena);
-		MORPH_RETURN(rc);
-	}
-	morph_array_cleanup(messages);
-	arena_destroy(ctx->message_arena);
-	ctx->message_arena = arena;
-	*messages = replacement;
-	return 0;
+			replacement, *arena);
+	return rc;
 }
 
 static int react_maybe_compact_active_window(struct react_context *ctx,
@@ -2305,6 +2293,12 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	const struct tool_desc *tools, int tool_count, int iteration)
 {
 	char trigger_kind[64];
+	morph_array_t replacement = {0};
+	struct arena *replacement_arena = NULL;
+	struct model_history_item *original_items = NULL;
+	int snapshot_saved = 0;
+	double previous_target_ratio;
+	int transaction_open = 0;
 	int before_tokens;
 	int after_tokens;
 	int trigger_tokens;
@@ -2330,18 +2324,64 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		trigger_tokens, 0);
 	rc = agent_history_reload(ctx);
 	if (rc == 0) {
+		original_items = ctx->history_items;
+		ctx->history_items = NULL;
+		snapshot_saved = 1;
+		rc = agent_history_reload(ctx);
+	}
+	if (rc == 0) {
+		rc = db_exec(ctx->history_db, "SAVEPOINT react_compaction;");
+		transaction_open = rc == 0;
+	}
+	if (rc == 0) {
+		int overhead = react_estimate_active_tokens(ctx, system_prompt,
+			NULL, tools, tool_count);
+		int target = (int)((double)ctx->compress.max_context_tokens *
+			ctx->compress.compress_target_ratio);
+
+		previous_target_ratio = ctx->compress.compress_target_ratio;
+		target = target > overhead ? target - overhead : 0;
+		ctx->compress.compress_target_ratio = (double)target /
+			(double)ctx->compress.max_context_tokens;
 		previous_rounds = ctx->compress.max_history_rounds;
 		ctx->compress.max_history_rounds = 0;
 		rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
 		ctx->compress.max_history_rounds = previous_rounds;
+		ctx->compress.compress_target_ratio = previous_target_ratio;
 	}
 	if (rc > 0) {
 		compacted = 1;
-		rc = react_rebuild_history_messages(ctx, messages);
+		rc = react_prepare_compacted_messages(ctx, &replacement,
+			&replacement_arena);
 	}
+	if (rc == 0 && compacted) {
+		after_tokens = react_estimate_active_tokens(ctx, system_prompt,
+			&replacement, tools, tool_count);
+		if (after_tokens >= trigger_tokens) {
+			rc = MORPH_ERR_LLM;
+			log_err("react: active context remains over budget after "
+				"compaction (%d >= %d tokens)", after_tokens,
+				trigger_tokens);
+		}
+	}
+	if (rc == 0 && compacted)
+		rc = db_exec(ctx->history_db, "RELEASE react_compaction;");
 	if (rc < 0 || !compacted) {
 		if (rc >= 0)
 			rc = MORPH_ERR_PROTOCOL;
+		if (transaction_open) {
+			(void)db_exec(ctx->history_db,
+				"ROLLBACK TO react_compaction; RELEASE react_compaction;");
+		}
+		if (snapshot_saved) {
+			model_history_free_list(ctx->history_items);
+			ctx->history_items = original_items;
+		}
+		morph_array_cleanup(&replacement);
+		arena_destroy(replacement_arena);
+		(void)model_history_compaction_attempt_add(ctx->history_db,
+			ctx->history_session_id, ctx->turn_id, trigger_kind,
+			"failed", before_tokens, 0, rc, morph_strerror(rc));
 		log_err("react: in-turn compaction failed: %s",
 			morph_strerror(rc));
 		(void)react_emit_compaction_event(ctx, "react.compaction.failed",
@@ -2349,18 +2389,11 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 			trigger_tokens, rc);
 		MORPH_RETURN(rc);
 	}
-	after_tokens = react_estimate_active_tokens(ctx, system_prompt,
-		messages, tools, tool_count);
-	if (after_tokens >= trigger_tokens) {
-		rc = MORPH_ERR_LLM;
-		log_err("react: active context remains over budget after "
-			"compaction (%d >= %d tokens)", after_tokens,
-			trigger_tokens);
-		(void)react_emit_compaction_event(ctx,
-			"react.compaction.failed", "failed", iteration,
-			before_tokens, after_tokens, trigger_tokens, rc);
-		MORPH_RETURN(rc);
-	}
+	model_history_free_list(original_items);
+	morph_array_cleanup(messages);
+	arena_destroy(ctx->message_arena);
+	ctx->message_arena = replacement_arena;
+	*messages = replacement;
 	log_info("react: in-turn compaction completed (%d -> %d tokens)",
 		 before_tokens, after_tokens);
 	(void)react_emit_compaction_event(ctx, "react.compaction.completed",
@@ -3800,10 +3833,11 @@ int react_run(struct react_context *ctx, const char *user_input,
 	int messages_ready = 0;
 
 	memset(&messages, 0, sizeof(messages));
-	if (react_prepare_messages(ctx, &messages, user_input) < 0) {
+	int prepare_rc = react_prepare_messages(ctx, &messages, user_input);
+	if (prepare_rc < 0) {
 		morph_array_cleanup(&messages);
-		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
-				  "internal_error");
+		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, prepare_rc,
+				  "history_replay_error");
 		MORPH_RETURN(react_finish_run(ctx));
 	}
 	messages_ready = 1;

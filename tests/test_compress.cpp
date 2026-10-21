@@ -431,3 +431,20 @@ TEST_F(CompressTest, ExtractKeyInfoLineContext) {
 	EXPECT_TRUE(strstr(info->value, "generated: /tmp/x") != nullptr);
 	key_info_free(info);
 }
+
+static int test_summarize_empty_cb(const char *, void *, char **out)
+{
+	*out = strdup("");
+	return *out ? 0 : -ENOMEM;
+}
+
+TEST_F(CompressTest, EmptySummaryDoesNotReplaceOriginalHistory)
+{
+	struct message_list *head = make_msg(ar, "user", "preserve me", 0);
+	struct message_list *original = head;
+	struct compress_result result = {};
+	EXPECT_EQ(compress_summarize(&head, 0, test_summarize_empty_cb,
+		nullptr, ar, &result), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(head, original);
+	EXPECT_STREQ(head->content, "preserve me");
+}

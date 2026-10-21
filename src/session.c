@@ -619,7 +619,7 @@ struct model_history_item *model_history_list(struct db *db,
 	int rc;
 
 	if (count)
-		*count = 0;
+		*count = -1;
 	if (!db || !db->handle || session_id <= 0 || !count)
 		return NULL;
 	rc = sqlite3_prepare_v2(db->handle, active_only ? sql_active : sql_all,
@@ -627,11 +627,13 @@ struct model_history_item *model_history_list(struct db *db,
 	if (rc != SQLITE_OK)
 		return NULL;
 	sqlite3_bind_int64(stmt, 1, session_id);
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		struct model_history_item *item = calloc(1, sizeof(*item));
 
-		if (!item)
+		if (!item) {
+			rc = SQLITE_NOMEM;
 			break;
+		}
 		item->id = sqlite3_column_int64(stmt, 0);
 		item->session_id = sqlite3_column_int64(stmt, 1);
 		item->sequence_no = sqlite3_column_int64(stmt, 2);
@@ -661,11 +663,25 @@ struct model_history_item *model_history_list(struct db *db,
 		item->truncated = sqlite3_column_int(stmt, 13);
 		item->active = sqlite3_column_int(stmt, 14);
 		item->created_at = sqlite3_column_int64(stmt, 15);
+		if ((sqlite3_column_type(stmt, 3) != SQLITE_NULL && !item->turn_id) ||
+		    (sqlite3_column_type(stmt, 6) != SQLITE_NULL && !item->content) ||
+		    (sqlite3_column_type(stmt, 7) != SQLITE_NULL && !item->payload_json) ||
+		    (sqlite3_column_type(stmt, 8) != SQLITE_NULL && !item->tool_call_id) ||
+		    (sqlite3_column_type(stmt, 9) != SQLITE_NULL && !item->provider_call_id) ||
+		    (sqlite3_column_type(stmt, 11) != SQLITE_NULL && !item->idempotency_key)) {
+			model_history_free_list(item);
+			rc = SQLITE_NOMEM;
+			break;
+		}
 		tail->next = item;
 		tail = item;
 		n++;
 	}
 	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE) {
+		model_history_free_list(head.next);
+		return NULL;
+	}
 	*count = n;
 	return head.next;
 }
@@ -906,7 +922,7 @@ int model_history_compact(struct db *db, int64_t session_id,
 	rc = morph_array_init(&preserved, 8, sizeof(int64_t));
 	if (rc != 0)
 		return rc;
-	rc = db_exec(db, "BEGIN IMMEDIATE;");
+	rc = db_exec(db, "SAVEPOINT model_history_compact;");
 	if (rc != 0) {
 		morph_array_cleanup(&preserved);
 		return rc;
@@ -914,13 +930,13 @@ int model_history_compact(struct db *db, int64_t session_id,
 	rc = sqlite3_prepare_v2(db->handle, select_sql, -1, &stmt, NULL);
 	if (rc == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, session_id);
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			int tokens = sqlite3_column_int(stmt, 1);
 			int64_t *id;
 
 			if (tokens < 0)
 				tokens = 0;
-			if (used_tokens + tokens > user_message_tokens)
+			if (tokens > user_message_tokens - used_tokens)
 				continue;
 			id = history_preserved_add(&preserved,
 				sqlite3_column_int64(stmt, 0));
@@ -942,21 +958,24 @@ int model_history_compact(struct db *db, int64_t session_id,
 			"AND kind NOT IN ('user_message','compaction_summary') "
 			"ORDER BY sequence_no DESC";
 		int need_tool_call = 0;
+		size_t group_start = preserved.nelts;
 
 		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
 			goto out_rollback;
 		sqlite3_bind_int64(stmt, 1, session_id);
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			const char *kind = (const char *)sqlite3_column_text(stmt, 1);
 			int tokens = sqlite3_column_int(stmt, 2);
 			int64_t *id;
 
 			if (tokens < 0)
 				tokens = 0;
-			if (!need_tool_call &&
-			    recent_used_tokens + tokens > recent_history_tokens)
+			if (tokens > recent_history_tokens - recent_used_tokens) {
+				preserved.nelts = group_start;
+				rc = SQLITE_DONE;
 				break;
+			}
 			id = history_preserved_add(&preserved,
 				sqlite3_column_int64(stmt, 0));
 			if (!id) {
@@ -969,13 +988,19 @@ int model_history_compact(struct db *db, int64_t session_id,
 			else if (need_tool_call && kind &&
 				 strcmp(kind, "assistant_tool_calls") == 0)
 				need_tool_call = 0;
+			if (!need_tool_call)
+				group_start = preserved.nelts;
 			if (!need_tool_call &&
-			    recent_used_tokens >= recent_history_tokens)
+			    recent_used_tokens >= recent_history_tokens) {
+				rc = SQLITE_DONE;
 				break;
+			}
 		}
+		if (need_tool_call)
+			preserved.nelts = group_start;
 		sqlite3_finalize(stmt);
 		stmt = NULL;
-		if (rc != SQLITE_OK && rc != SQLITE_DONE)
+		if (rc != SQLITE_DONE)
 			goto out_rollback;
 	}
 	if (keep_recent_rounds > 0) {
@@ -992,7 +1017,7 @@ int model_history_compact(struct db *db, int64_t session_id,
 		sqlite3_bind_int64(stmt, 1, session_id);
 		sqlite3_bind_int64(stmt, 2, session_id);
 		sqlite3_bind_int(stmt, 3, keep_recent_rounds);
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 			if (!history_preserved_add(&preserved,
 				sqlite3_column_int64(stmt, 0))) {
 				rc = SQLITE_NOMEM;
@@ -1045,8 +1070,9 @@ int model_history_compact(struct db *db, int64_t session_id,
 	insert.kind = "compaction_summary";
 	insert.role = "system";
 	insert.content = summary;
-	snprintf(compact_key, sizeof(compact_key), "compaction:%s:%s",
-		turn_id ? turn_id : "unknown", trigger_kind);
+	snprintf(compact_key, sizeof(compact_key), "compaction:%s:%s:%lld",
+		turn_id ? turn_id : "unknown", trigger_kind,
+		(long long)cutoff_sequence_no);
 	insert.idempotency_key = compact_key;
 	insert.token_count = summary_tokens;
 	insert.active = 1;
@@ -1071,17 +1097,18 @@ int model_history_compact(struct db *db, int64_t session_id,
 	stmt = NULL;
 	if (rc != SQLITE_DONE)
 		goto out_rollback;
-	rc = db_exec(db, "COMMIT;");
-	morph_array_cleanup(&preserved);
+	rc = db_exec(db, "RELEASE model_history_compact;");
 	if (rc != 0)
-		return rc;
+		goto out_rollback;
+	morph_array_cleanup(&preserved);
 	if (summary_item_id)
 		*summary_item_id = new_id;
 	return 0;
 
 out_rollback:
 	sqlite3_finalize(stmt);
-	(void)db_exec(db, "ROLLBACK;");
+	(void)db_exec(db,
+		"ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
 	morph_array_cleanup(&preserved);
 	MORPH_RETURN(MORPH_ERR_DB);
 }

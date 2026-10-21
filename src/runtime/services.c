@@ -304,6 +304,8 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 		return -EINVAL;
 	items = model_history_list(&runtime->context.database,
 		runtime->context.current_session.id, 1, &count);
+	if (count < 0)
+		MORPH_RETURN(MORPH_ERR_DB);
 	for (struct model_history_item *item = items; item; item = item->next) {
 		total += item->token_count;
 		if (strcmp(item->kind, "tool_result") == 0)
