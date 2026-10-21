@@ -17,6 +17,7 @@ working directory.
 
 | Task | Reference |
 | --- | --- |
+| Visible UI changes, screenshot review, visual regressions | [UI inspection](references/ui-review.md) |
 | State, navigation, Compose, Views, persistence, lifecycle bugs | [Architecture and UI](references/architecture-ui.md) |
 | New project, Gradle failures, device checks, crashes, release issues | [Build and debug](references/build-debug.md) |
 
@@ -85,6 +86,20 @@ same tool, install extra skills automatically, or depend on unavailable MCP tool
   release APKs or AABs when requested; use the user's signing configuration and
   keep keys and passwords out of source and logs. Publishing is a separate action
   that requires the user's instruction.
+
+## Required visual verification
+
+For changes to visible UI, read and follow [UI inspection](references/ui-review.md).
+Run the affected flow, capture fresh screenshots, and actually analyze the pixels
+with `img_qa` or available vision tools. Review the whole screen and detailed
+regions, corroborate controls with available UI/accessibility hierarchy, and
+reinspect after fixes. In Morph, use `img_qa` with `max_dim: 1024` for UI detail;
+the current default of 360 can hide small text and spacing defects.
+
+This is part of completing a UI change whenever runtime and vision access exist.
+Report missing capture, interaction, or vision capability as a blocked check;
+never infer visual acceptance from a build, screenshot path, or UI tree alone.
+Backend-only changes do not require unrelated screen review.
 
 ## Research basis
 

@@ -16,6 +16,7 @@ from the active skill context, not the application working directory.
 
 | Task | Reference |
 | --- | --- |
+| Visible UI changes, screenshot review, visual regressions | [UI inspection](references/ui-review.md) |
 | Windows, menus, layout, documents, file access, Swift concurrency | [AppKit implementation](references/appkit-patterns.md) |
 | Project creation, build failures, tests, runtime diagnostics, packaging | [Build and debug](references/build-debug.md) |
 
@@ -93,6 +94,20 @@ constraint still applies to samples and suggested dependencies.
   from a signed, notarized distribution. Use existing signing configuration for
   requested distribution work; do not change team identities, provision new
   credentials, notarize, upload, or publish without the user's instruction.
+
+## Required visual verification
+
+For changes to visible UI, read and follow [UI inspection](references/ui-review.md).
+Run the affected flow, capture fresh screenshots, and actually analyze the pixels
+with `img_qa` or available vision tools. Review the whole screen and detailed
+regions, corroborate controls with available UI/accessibility hierarchy, and
+reinspect after fixes. In Morph, use `img_qa` with `max_dim: 1024` for UI detail;
+the current default of 360 can hide small text and spacing defects.
+
+This is part of completing a UI change whenever runtime and vision access exist.
+Report missing capture, interaction, or vision capability as a blocked check;
+never infer visual acceptance from a build, screenshot path, or UI tree alone.
+Backend-only changes do not require unrelated screen review.
 
 ## Research basis
 

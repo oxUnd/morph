@@ -17,6 +17,7 @@ from the active skill context, not the application working directory.
 
 | Task | Reference |
 | --- | --- |
+| Visible UI changes, screenshot review, visual regressions | [UI inspection](references/ui-review.md) |
 | UIKit screens, navigation, scenes, layout, state, Swift concurrency | [UIKit implementation](references/uikit-patterns.md) |
 | Project creation, Xcode failures, simulator checks, crashes, archives | [Build and debug](references/build-debug.md) |
 
@@ -100,6 +101,20 @@ to UIKit when they use SwiftUI; do not introduce a hosting bridge to reuse them.
 - For requested archives or exports, use the user's signing and export settings.
   Do not change team identities, provision credentials, upload to TestFlight, or
   publish to the App Store without the user's instruction.
+
+## Required visual verification
+
+For changes to visible UI, read and follow [UI inspection](references/ui-review.md).
+Run the affected flow, capture fresh screenshots, and actually analyze the pixels
+with `img_qa` or available vision tools. Review the whole screen and detailed
+regions, corroborate controls with available UI/accessibility hierarchy, and
+reinspect after fixes. In Morph, use `img_qa` with `max_dim: 1024` for UI detail;
+the current default of 360 can hide small text and spacing defects.
+
+This is part of completing a UI change whenever runtime and vision access exist.
+Report missing capture, interaction, or vision capability as a blocked check;
+never infer visual acceptance from a build, screenshot path, or UI tree alone.
+Backend-only changes do not require unrelated screen review.
 
 ## Research basis
 
