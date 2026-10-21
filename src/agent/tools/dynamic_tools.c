@@ -4,6 +4,7 @@
 #include "util/data.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/name.h"
 #include "util/log.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -133,10 +134,8 @@ static int valid_tool_name(const char *name)
 	if (!name || !*name)
 		return 0;
 	for (const char *p = name; *p; p++) {
-		if ((*p >= 'a' && *p <= 'z') ||
-		    (*p >= '0' && *p <= '9') || *p == '_')
-			continue;
-		return 0;
+		if (!morph_name_char_valid(*p, "_") || (*p >= 'A' && *p <= 'Z'))
+			return 0;
 	}
 	return 1;
 }

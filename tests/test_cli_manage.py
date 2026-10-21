@@ -94,6 +94,13 @@ def test_mcp(work):
     work.morph("mcp", "add", "bad", "--unknown", ok=False)
     require(config.read_bytes() == original, "Invalid input changed config")
 
+    for name in ("0TOKEN", "MCP-TOKEN", "MCP.TOKEN"):
+        work.morph("mcp", "add", "bad-env", "--url", "https://example.invalid/mcp",
+                   "--bearer-token-env-var", name, ok=False)
+        work.morph("mcp", "add", "bad-env", "--env", name + "=value",
+                   "--", "echo", ok=False)
+    require(config.read_bytes() == original, "Invalid environment names changed config")
+
     marker = work.root / "server-started"
     server = work.root / "mock_mcp.py"
     server.write_text('''import json, os, sys

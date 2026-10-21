@@ -2,6 +2,7 @@
 #include "cli.h"
 #include "util/error.h"
 #include "util/utf8.h"
+#include "util/name.h"
 #include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -339,17 +340,6 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 	return 0;
 }
 
-static int env_valid(const char *name)
-{
-	for (size_t i = 0; name[i]; i++) {
-		char c = name[i];
-		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		      c == '_' || (i > 0 && c >= '0' && c <= '9')))
-			return 0;
-	}
-	return *name != '\0';
-}
-
 static int has_key(struct setup_ui *ui, struct config_model_entry *entry)
 {
 	(void)ui;
@@ -383,12 +373,12 @@ static int credentials(struct setup_ui *ui, struct config_model_entry *entry)
 		int rc;
 		for (;;) {
 			rc = edit(ui, "API key environment variable", hint, name, sizeof(name), 0);
-			if (rc < 0 || env_valid(name)) break;
+			if (rc < 0 || morph_env_name_valid(name)) break;
 			hint = "Start with a letter or underscore; use letters, digits and underscores.";
 		}
 		if (rc == SETUP_BACK) continue;
 		if (rc < 0) MORPH_RETURN(rc);
-		if (env_valid(name)) {
+		if (morph_env_name_valid(name)) {
 			memset(entry->api_key, 0, sizeof(entry->api_key));
 			strcpy(entry->api_key_env, name);
 			ui->deferred[ui->step] = 1;

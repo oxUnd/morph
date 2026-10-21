@@ -15,6 +15,7 @@
 #include "util/buf.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/name.h"
 #include "security.h"
 #include "cJSON.h"
 
@@ -210,18 +211,7 @@ static int username_valid(const char *username)
 	if (!username)
 		return 0;
 	len = strlen(username);
-	if (len < 3 || len > 63)
-		return 0;
-	for (size_t i = 0; i < len; i++) {
-		char c = username[i];
-		if (!((c >= 'a' && c <= 'z') ||
-		      (c >= 'A' && c <= 'Z') ||
-		      (c >= '0' && c <= '9') ||
-		      c == '_' || c == '-' || c == '.')) {
-			return 0;
-		}
-	}
-	return 1;
+	return len >= 3 && len <= 63 && morph_name_valid(username, "_-.");
 }
 
 int store_setup_required(struct session_store *s)

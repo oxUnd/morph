@@ -6,6 +6,7 @@
 #include "util/array.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/name.h"
 #include "tomlc17.h"
 #include <errno.h>
 #include <getopt.h>
@@ -193,7 +194,7 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 	if (options->url)
 		mcp_field(buffer, "url", options->url);
 	if (options->token_env) {
-		if (!cli_manage_name_valid(options->token_env) ||
+		if (!morph_env_name_valid(options->token_env) ||
 		    strlen(options->token_env) >= 64)
 			MORPH_RETURN(-EINVAL);
 		mcp_field(buffer, "auth_token_env", options->token_env);
@@ -228,7 +229,7 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 				MORPH_RETURN(-EINVAL);
 			memcpy(key, pair, (size_t)(equal - pair));
 			key[equal - pair] = '\0';
-			if (!cli_manage_name_valid(key))
+			if (!morph_env_name_valid(key))
 				MORPH_RETURN(-EINVAL);
 			if (i)
 				morph_buf_puts(buffer, ", ");

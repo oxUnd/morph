@@ -5,10 +5,10 @@
 #include "util/id.h"
 #include "util/log.h"
 #include "util/strmap.h"
+#include "util/name.h"
 #include "blake3.h"
 #include "cJSON.h"
 #include <sqlite3.h>
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -756,14 +756,7 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 
 static int snapshot_id_valid(const char *snapshot_id)
 {
-	if (!snapshot_id || !snapshot_id[0])
-		return 0;
-	for (size_t i = 0; snapshot_id[i]; i++) {
-		if (!isalnum((unsigned char)snapshot_id[i]) &&
-		    snapshot_id[i] != '-' && snapshot_id[i] != '_')
-			return 0;
-	}
-	return 1;
+	return morph_name_valid(snapshot_id, "-_");
 }
 
 static int manifest_load(const struct morph_sync_config *cfg, const char *name,
@@ -1377,13 +1370,7 @@ static int restore_rel_valid(const char *path)
 
 static int restore_token_valid(const char *token)
 {
-	if (!token || strncmp(token, "restore_", 8) != 0)
-		return 0;
-	for (const char *p = token; *p; p++) {
-		if (!isalnum((unsigned char)*p) && *p != '_')
-			return 0;
-	}
-	return 1;
+	return morph_name_valid(token, "_") && strncmp(token, "restore_", 8) == 0;
 }
 
 static int restore_plan_valid(const char *source_dir,

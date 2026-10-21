@@ -1,6 +1,7 @@
 #include "sapi/cli/manage.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/name.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -42,16 +43,7 @@ int cli_manage_copy_arg(char *dst, size_t cap, const char *src)
 
 int cli_manage_name_valid(const char *name)
 {
-	if (!name || !*name || strcmp(name, ".") == 0 ||
-	    strcmp(name, "..") == 0 || name[0] == '.')
-		return 0;
-	for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-		if (!((*p >= 'a' && *p <= 'z') ||
-		      (*p >= 'A' && *p <= 'Z') ||
-		      (*p >= '0' && *p <= '9') || *p == '-' || *p == '_'))
-			return 0;
-	}
-	return 1;
+	return morph_name_valid(name, "-_");
 }
 
 int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output)

@@ -27,6 +27,7 @@
 #include "auth.h"
 #include "agent_bridge.h"
 #include "util/error.h"
+#include "util/name.h"
 
 #define FCGI_WORKERS_DEFAULT "128"
 #define FCGI_WORKERS_MAX 512
@@ -71,7 +72,7 @@ static int configure_trust_param(const char *header)
 	for (const unsigned char *p = (const unsigned char *)header; *p; p++) {
 		if (off + 1 >= sizeof(g_trust_param))
 			MORPH_RETURN(-ENAMETOOLONG);
-		if (isalnum(*p))
+		if (morph_name_char_valid((char)*p, NULL))
 			g_trust_param[off++] = (char)toupper(*p);
 		else if (*p == '-')
 			g_trust_param[off++] = '_';

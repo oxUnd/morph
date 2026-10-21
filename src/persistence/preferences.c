@@ -3,7 +3,7 @@
 #include "util/error.h"
 #include "util/id.h"
 #include "util/utf8.h"
-#include <ctype.h>
+#include "util/name.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,13 +53,7 @@ int preference_bind(struct db *db, int64_t session_id,
 
 static int preference_valid_key(const char *key)
 {
-	if (!key || !*key || strlen(key) > 128)
-		return 0;
-	for (const unsigned char *p = (const unsigned char *)key; *p; p++) {
-		if (!isalnum(*p) && *p != '.' && *p != '_' && *p != '-')
-			return 0;
-	}
-	return 1;
+	return key && strlen(key) <= 128 && morph_name_valid(key, "._-");
 }
 
 int preference_set(struct db *db, int64_t session_id, const char *scope,

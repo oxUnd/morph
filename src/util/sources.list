@@ -11,6 +11,7 @@ error.c
 id.c
 bpe.c
 str.c
+name.c
 strmap.c
 buf.c
 array.c

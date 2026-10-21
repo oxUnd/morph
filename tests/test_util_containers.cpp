@@ -7,6 +7,7 @@
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/id.h"
+#include "util/name.h"
 #include "util/queue.h"
 #include "util/str.h"
 #include "util/strmap.h"
@@ -519,4 +520,28 @@ TEST(UtilBase64, FileChunksPreservePaddingAndEnforceLimit)
 	}
 	close(fd);
 	unlink(path);
+}
+
+TEST(UtilName, AsciiNamesUseExplicitPunctuation)
+{
+	EXPECT_TRUE(morph_name_valid("Az09_-", "_-"));
+	EXPECT_TRUE(morph_name_valid("owner.repo/ref+1", "-_.+/"));
+	EXPECT_FALSE(morph_name_valid(nullptr, "_-"));
+	EXPECT_FALSE(morph_name_valid("", "_-"));
+	EXPECT_FALSE(morph_name_valid("has space", "_-"));
+	EXPECT_FALSE(morph_name_valid("a.b", "_-"));
+	EXPECT_TRUE(morph_name_valid("a.b", "_.-"));
+	EXPECT_FALSE(morph_name_valid("na\xc3\xafve", "_-"));
+	EXPECT_TRUE(morph_name_valid("Ab09", nullptr));
+	EXPECT_FALSE(morph_name_char_valid('\0', "_-"));
+	EXPECT_FALSE(morph_name_char_valid(static_cast<char>(0xff), "_-"));
+}
+
+TEST(UtilName, EnvironmentNamesEnforceFirstCharacter)
+{
+	for (const char *name : {"API_KEY", "_", "_token2", "token", "A0"})
+		EXPECT_TRUE(morph_env_name_valid(name)) << name;
+	for (const char *name : {"", "0TOKEN", "API-KEY", "a.b", "a b"})
+		EXPECT_FALSE(morph_env_name_valid(name)) << name;
+	EXPECT_FALSE(morph_env_name_valid(nullptr));
 }

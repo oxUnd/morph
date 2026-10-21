@@ -3,6 +3,7 @@
 #include "util/data.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/name.h"
 #include "tomlc17.h"
 #include <errno.h>
 #include <getopt.h>
@@ -205,16 +206,7 @@ static int skills_git(const char *root, const char *verb, const char *arg,
 
 static int skills_repo_name_valid(const char *name)
 {
-	if (!name || !*name || name[0] == '.' || name[0] == '-')
-		return 0;
-	for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
-		if (!((*p >= 'a' && *p <= 'z') ||
-		      (*p >= 'A' && *p <= 'Z') ||
-		      (*p >= '0' && *p <= '9') ||
-		      *p == '-' || *p == '_' || *p == '.'))
-			return 0;
-	}
-	return 1;
+	return morph_name_valid(name, "-_.") && name[0] != '.' && name[0] != '-';
 }
 
 static int skills_prepare(const char *source, const char *ref, int force_git,

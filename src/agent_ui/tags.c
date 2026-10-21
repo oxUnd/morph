@@ -2,6 +2,7 @@
 
 #include "util/buf.h"
 #include "util/strmap.h"
+#include "util/name.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -23,9 +24,7 @@ struct agent_ui_parser {
 
 static int is_name_char(char c)
 {
-	unsigned char uc = (unsigned char)c;
-
-	return isalnum(uc) || c == '-' || c == '_' || c == ':';
+	return morph_name_char_valid(c, "-_:");
 }
 
 static int is_attr_end(char c)

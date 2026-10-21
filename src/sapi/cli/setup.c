@@ -5,6 +5,7 @@
 #include "util/error.h"
 #include "util/file.h"
 #include "util/utf8.h"
+#include "util/name.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -81,19 +82,6 @@ static int choice(FILE *in, FILE *out, const char *label,
 			return value[0] - '0';
 		fprintf(out, "Choose a number from 1 to %d.\n", max);
 	}
-}
-
-static int env_name_valid(const char *name)
-{
-	if (!((*name >= 'A' && *name <= 'Z') ||
-	      (*name >= 'a' && *name <= 'z') || *name == '_'))
-		return 0;
-	for (const char *p = name + 1; *p; p++)
-		if (!( (*p >= 'A' && *p <= 'Z') ||
-		       (*p >= 'a' && *p <= 'z') ||
-		       (*p >= '0' && *p <= '9') || *p == '_'))
-			return 0;
-	return 1;
 }
 
 struct setup_token_limits {
@@ -251,7 +239,7 @@ static int configure_model(FILE *in, FILE *out, int kind,
 			entry->api_key_env, sizeof(entry->api_key_env));
 		if (rc < 0)
 			MORPH_RETURN(rc);
-		if (env_name_valid(entry->api_key_env))
+		if (morph_env_name_valid(entry->api_key_env))
 			return 0;
 		fprintf(out, "Use letters, digits and underscores; start with a letter or underscore.\n");
 	}

@@ -4,6 +4,7 @@
 #include "util/buf.h"
 #include "util/log.h"
 #include "util/error.h"
+#include "util/name.h"
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -879,6 +880,14 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 
 /* ----- morph tool registry integration ----- */
 
+static void sanitize_tool_name(char *name)
+{
+	for (char *p = name; *p; p++) {
+		if (!morph_name_char_valid(*p, "_-"))
+			*p = '_';
+	}
+}
+
 struct mcp_tool_binding {
 	struct mcp_client *client;
 	char mcp_tool_name[MCP_NAME_MAX];
@@ -943,13 +952,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 		snprintf(tool_name, sizeof(tool_name), "mcp_%s__%s",
 			 client->config.name, tools[i].name);
 
-		/* sanitize name */
-		for (size_t j = 0; j < strlen(tool_name); j++) {
-			char c = tool_name[j];
-			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			      (c >= '0' && c <= '9') || c == '_' || c == '-'))
-				tool_name[j] = '_';
-		}
+		sanitize_tool_name(tool_name);
 
 		const char *schema = tools[i].input_schema;
 		if (!schema || !schema[0])
@@ -1058,12 +1061,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 		snprintf(tool_name, sizeof(tool_name), "mcp_res_%s__%s",
 			 client->config.name, res[i].name);
 
-		for (size_t j = 0; j < strlen(tool_name); j++) {
-			char c = tool_name[j];
-			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			      (c >= '0' && c <= '9') || c == '_' || c == '-'))
-				tool_name[j] = '_';
-		}
+		sanitize_tool_name(tool_name);
 
 		char desc_buf[TOOL_DESC_MAX];
 		snprintf(desc_buf, sizeof(desc_buf), "Read MCP resource: %s (%s)",
@@ -1175,12 +1173,7 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		snprintf(tool_name, sizeof(tool_name), "mcp_prompt_%s__%s",
 			 client->config.name, prompts[i].name);
 
-		for (size_t j = 0; j < strlen(tool_name); j++) {
-			char c = tool_name[j];
-			if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			      (c >= '0' && c <= '9') || c == '_' || c == '-'))
-				tool_name[j] = '_';
-		}
+		sanitize_tool_name(tool_name);
 
 		const char *schema = prompts[i].arguments_schema;
 		if (!schema || !schema[0])

@@ -4,7 +4,7 @@
 #include "util/file.h"
 #include "util/error.h"
 #include "util/log.h"
-#include <ctype.h>
+#include "util/name.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -16,33 +16,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-static int is_owner_char(int ch)
-{
-	return isalnum(ch) || ch == '-' || ch == '_';
-}
-
-static int is_repo_char(int ch)
-{
-	return isalnum(ch) || ch == '-' || ch == '_' || ch == '.';
-}
-
-static int is_ref_char(int ch)
-{
-	return isalnum(ch) || ch == '-' || ch == '_' || ch == '.' ||
-		ch == '/' || ch == '+';
-}
-
-static int valid_component(const char *s, int (*valid)(int))
-{
-	if (!s || !s[0])
-		return 0;
-	for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-		if (!valid(*p))
-			return 0;
-	}
-	return 1;
-}
 
 static int valid_subdir(const char *s)
 {
@@ -60,9 +33,8 @@ static int valid_subdir(const char *s)
 		    (len == 2 && p[0] == '.' && p[1] == '.'))
 			return 0;
 		for (size_t i = 0; i < len; i++) {
-			unsigned char ch = (unsigned char)p[i];
-			if (!(isalnum(ch) || ch == '-' || ch == '_' ||
-			      ch == '.' || ch == '+'))
+			char ch = p[i];
+			if (!morph_name_char_valid(ch, "-_.+"))
 				return 0;
 		}
 		if (!slash)
@@ -127,9 +99,9 @@ int ext_source_parse(const char *source, struct ext_source *out)
 			       ref_end + 1, strlen(ref_end + 1));
 		if (rc < 0)
 			return rc;
-		if (!valid_component(out->owner, is_owner_char) ||
-		    !valid_component(out->repo, is_repo_char) ||
-		    !valid_component(out->ref, is_ref_char) ||
+		if (!morph_name_valid(out->owner, "-_") ||
+		    !morph_name_valid(out->repo, "-_.") ||
+		    !morph_name_valid(out->ref, "-_./+") ||
 		    !valid_subdir(out->subdir))
 			return -EINVAL;
 		return 0;
@@ -178,9 +150,9 @@ int ext_source_parse(const char *source, struct ext_source *out)
 		strncpy(out->ref, "HEAD", sizeof(out->ref) - 1);
 	}
 
-	if (!valid_component(out->owner, is_owner_char) ||
-	    !valid_component(out->repo, is_repo_char) ||
-	    !valid_component(out->ref, is_ref_char))
+	if (!morph_name_valid(out->owner, "-_") ||
+	    !morph_name_valid(out->repo, "-_.") ||
+	    !morph_name_valid(out->ref, "-_./+"))
 		return -EINVAL;
 
 	return 0;
@@ -497,7 +469,7 @@ static int copy_tree(const char *src, const char *dst)
 
 static int validate_ext_name(const char *name)
 {
-	return valid_component(name, is_repo_char);
+	return morph_name_valid(name, "-_.");
 }
 
 int ext_install_source(const char *source,
