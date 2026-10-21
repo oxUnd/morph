@@ -1321,10 +1321,7 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		return NULL;
 
 	if (!ctx->system_prompt_replace || !ctx->system_prompt) {
-		rc = morph_buf_printf(&buf, MORPH_DEFAULT_BEHAVIOR_PROMPT,
-				     ctx->max_iterations);
-		if (rc == 0)
-			rc = morph_buf_puts(&buf, MORPH_LANGUAGE_OUTPUT_PROMPT);
+		rc = morph_buf_puts(&buf, MORPH_DEFAULT_BEHAVIOR_PROMPT);
 		if (rc == 0)
 			rc = morph_buf_puts(&buf, MORPH_MARKDOWN_OUTPUT_PROMPT);
 		if (rc != 0)
@@ -1337,25 +1334,18 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
-	if (ctx->hook_context && ctx->hook_context[0]) {
-		rc = morph_buf_printf(&buf, "\nHook supplied context:\n%s\n", ctx->hook_context);
-		if (rc != 0)
-			return NULL;
-	}
-
-	if (ctx->memory_context && ctx->memory_context[0]) {
-		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_context);
-		if (rc != 0)
-			return NULL;
-	}
-
 	if (ctx->skills && ctx->skills->count > 0 &&
 	    react_has_active_tool(ctx, "activate_skill")) {
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
-		for (int i = 0; i < ctx->skills->count; i++) {
-			struct skill_entry *entry = &ctx->skills->entries[i];
+		const struct skill_entry *entries[SKILL_MAX_ENTRIES];
+		int count = skill_sorted_entries(ctx->skills, entries, SKILL_MAX_ENTRIES);
+
+		if (count < 0)
+			return NULL;
+		for (int i = 0; i < count; i++) {
+			const struct skill_entry *entry = entries[i];
 
 			if (!entry->enabled)
 				continue;
@@ -1378,6 +1368,24 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			if (rc != 0)
 				return NULL;
 		}
+	}
+
+	rc = morph_buf_printf(&buf,
+		"Runtime limits:\n- Maximum %d tool-calling iterations.\n\n",
+		ctx->max_iterations);
+	if (rc != 0)
+		return NULL;
+
+	if (ctx->memory_context && ctx->memory_context[0]) {
+		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_context);
+		if (rc != 0)
+			return NULL;
+	}
+
+	if (ctx->hook_context && ctx->hook_context[0]) {
+		rc = morph_buf_printf(&buf, "\nHook supplied context:\n%s\n", ctx->hook_context);
+		if (rc != 0)
+			return NULL;
 	}
 
 	return buf.data;

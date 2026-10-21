@@ -380,6 +380,9 @@ static void llm_usage_parse_details(struct model_usage *usage,
 	input_details = cJSON_GetObjectItem(usage_obj,
 					    "input_tokens_details");
 	cached_tokens = json_i64(usage_obj, "cached_tokens");
+	candidate = json_i64(usage_obj, "prompt_cache_hit_tokens");
+	if (candidate > cached_tokens)
+		cached_tokens = candidate;
 	candidate = json_i64(prompt_details, "cached_tokens");
 	if (candidate > cached_tokens)
 		cached_tokens = candidate;

@@ -240,6 +240,27 @@ void skill_deactivate(struct skill_entry *skill)
 	log_info("skill_deactivate: deactivated '%s'", skill->fm.name);
 }
 
+static int skill_entry_compare(const void *left, const void *right)
+{
+	const struct skill_entry *const *a = left;
+	const struct skill_entry *const *b = right;
+
+	return strcmp((*a)->fm.name, (*b)->fm.name);
+}
+
+int skill_sorted_entries(const struct skill_registry *reg,
+			 const struct skill_entry **entries, size_t capacity)
+{
+	if (!reg || !entries)
+		MORPH_RETURN(-EINVAL);
+	if ((size_t)reg->count > capacity)
+		MORPH_RETURN(-ENOSPC);
+	for (int i = 0; i < reg->count; i++)
+		entries[i] = &reg->entries[i];
+	qsort(entries, (size_t)reg->count, sizeof(entries[0]), skill_entry_compare);
+	return reg->count;
+}
+
 void skill_deactivate_all(struct skill_registry *reg)
 {
 	if (!reg)
@@ -258,11 +279,16 @@ int skill_build_activated_instructions_checked(struct skill_registry *reg, char 
 	*out = NULL;
 	if (!reg)
 		return 0;
+	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
+
+	rc = skill_sorted_entries(reg, entries, SKILL_MAX_ENTRIES);
+	if (rc < 0)
+		return rc;
 	rc = morph_buf_init(&buf, 8192);
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < reg->count; i++) {
-		struct skill_entry *e = &reg->entries[i];
+		const struct skill_entry *e = entries[i];
 
 		if (!e->enabled || !e->activated || !e->body || !e->body[0])
 			continue;
@@ -295,12 +321,17 @@ int skill_build_catalog(struct skill_registry *reg, char *buf, size_t buf_size)
 {
 	if (!reg || !buf || buf_size == 0)
 		return -EINVAL;
+	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
+	int rc = skill_sorted_entries(reg, entries, SKILL_MAX_ENTRIES);
+
+	if (rc < 0)
+		return rc;
 
 	size_t len = 0;
 	int written = 0;
 
 	for (int i = 0; i < reg->count; i++) {
-		struct skill_entry *e = &reg->entries[i];
+		const struct skill_entry *e = entries[i];
 		if (!e->enabled)
 			continue;
 

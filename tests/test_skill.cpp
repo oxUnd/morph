@@ -4,6 +4,7 @@
 #include "agent/tools/skill_activate.h"
 #include "agent/tool.h"
 #include "util/file.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -292,6 +293,35 @@ TEST_F(SkillRegistryTest, BuildCatalog) {
 	EXPECT_NE(strstr(buf, "cat-b: Catalog B."), nullptr);
 	remove_skill("cat-a");
 	remove_skill("cat-b");
+}
+
+TEST_F(SkillRegistryTest, SortedOutputPreservesRegistryLookupPointers)
+{
+	create_skill("zeta", "zeta", "Last.", "Z body");
+	ASSERT_EQ(skill_discover(&reg, tmpdir), 1);
+	auto *zeta = skill_lookup(&reg, "zeta");
+	create_skill("alpha", "alpha", "First.", "A body");
+	ASSERT_EQ(skill_discover(&reg, tmpdir), 1);
+	auto *alpha = skill_lookup(&reg, "alpha");
+	ASSERT_EQ(skill_activate(zeta), 0);
+	ASSERT_EQ(skill_activate(alpha), 0);
+	const struct skill_entry *entries[SKILL_MAX_ENTRIES];
+	EXPECT_EQ(skill_sorted_entries(&reg, entries, 1), -ENOSPC);
+	ASSERT_EQ(skill_sorted_entries(&reg, entries, SKILL_MAX_ENTRIES), 2);
+	EXPECT_EQ(entries[0], alpha);
+	EXPECT_EQ(entries[1], zeta);
+	EXPECT_EQ(skill_lookup(&reg, "zeta"), zeta);
+	EXPECT_EQ(skill_lookup(&reg, "alpha"), alpha);
+	EXPECT_EQ(&reg.entries[0], zeta);
+	char catalog[4096];
+	ASSERT_EQ(skill_build_catalog(&reg, catalog, sizeof(catalog)), 2);
+	EXPECT_LT(strstr(catalog, "- alpha:"), strstr(catalog, "- zeta:"));
+	char *instructions = skill_build_activated_instructions(&reg);
+	ASSERT_NE(instructions, nullptr);
+	EXPECT_LT(strstr(instructions, "A body"), strstr(instructions, "Z body"));
+	free(instructions);
+	remove_skill("zeta");
+	remove_skill("alpha");
 }
 
 TEST_F(SkillRegistryTest, DuplicateNameSkipped) {

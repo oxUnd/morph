@@ -55,6 +55,9 @@ int skill_discover(struct skill_registry *reg, const char *dir_path);
 int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 			     const char *user_dir);
 struct skill_entry *skill_lookup(struct skill_registry *reg, const char *name);
+/* Sort a pointer view without moving registry entries or invalidating lookups. */
+int skill_sorted_entries(const struct skill_registry *reg,
+			 const struct skill_entry **entries, size_t capacity);
 int skill_activate(struct skill_entry *skill);
 void skill_deactivate(struct skill_entry *skill);
 void skill_deactivate_all(struct skill_registry *reg);

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
+#include "agent/system_prompt.h"
 #include "agent/tool.h"
 #include "agent/tokenizer.h"
 #include "agent/sub_agent.h"
@@ -700,6 +701,46 @@ TEST_F(SubAgentTest, CreateContextWithEmptyPromptReplacement)
 	EXPECT_STREQ(child->system_prompt, "");
 	EXPECT_NE(child->system_prompt, rt->entries[0].system_prompt);
 	struct tool_registry *child_tools = child->tools;
+	react_context_destroy(child);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
+	sub_agent_runtime_destroy(rt);
+}
+
+TEST_F(SubAgentTest, ReplacementRequestPreservesCoreAndChildRuntimeLimits)
+{
+	auto *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	rt->entry_count = 1;
+	auto *entry = &rt->entries[0];
+	entry->llm = llm;
+	entry->cfg.max_iterations = 7;
+	strcpy(entry->cfg.system_prompt_mode, "replace");
+	entry->system_prompt = strdup("Child JSON-only behavior.");
+	llm->chat_with_tools = nullptr;
+	llm->chat = [](struct model *self, struct arena *, const char *system,
+		const char **, int, const struct model_chat_options *,
+		sse_callback cb, void *user_data) {
+		auto *data = static_cast<mock_llm_data *>(self->handle);
+		data->call_count++;
+		EXPECT_NE(system, nullptr);
+		if (system) {
+			EXPECT_EQ(strncmp(system, MORPH_CORE_PROMPT,
+				strlen(MORPH_CORE_PROMPT)), 0);
+			EXPECT_NE(strstr(system, "Child JSON-only behavior."), nullptr);
+			EXPECT_NE(strstr(system, "Maximum 7 tool-calling iterations."), nullptr);
+			EXPECT_EQ(strstr(system, "You are Morph"), nullptr);
+			EXPECT_EQ(strstr(system, "MARKDOWN OUTPUT"), nullptr);
+		}
+		if (cb)
+			cb("Done", user_data);
+		return 200;
+	};
+	auto *child = sub_agent_create_context(rt, entry, "task");
+	ASSERT_NE(child, nullptr);
+	EXPECT_EQ(react_run(child, "task", nullptr, nullptr), 0);
+	EXPECT_EQ(static_cast<mock_llm_data *>(llm->handle)->call_count, 1);
+	auto *child_tools = child->tools;
 	react_context_destroy(child);
 	tool_registry_cleanup(child_tools);
 	free(child_tools);

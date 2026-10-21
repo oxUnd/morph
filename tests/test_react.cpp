@@ -3808,10 +3808,40 @@ TEST_F(MockServerTest, LlmParsesKimiTopLevelCachedTokens) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, LlmParsesDeepSeekCacheHitsWithoutDoubleCounting)
+{
+	srv.response_body =
+		"{\"choices\":[],\"usage\":{\"prompt_tokens\":100,"
+		"\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}\n\n"
+		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}],"
+		"\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":10,"
+		"\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":20}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create("deepseek", "deepseek-flash", api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	auto *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+		(char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response{};
+	EXPECT_EQ(model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0,
+		&response, NULL, NULL), 200);
+	EXPECT_EQ(response.usage.input_tokens, 100);
+	EXPECT_EQ(response.usage.cached_tokens, 80);
+	EXPECT_EQ(response.usage.output_tokens, 10);
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
 	srv.response_body =
 		"{\"choices\":[],\"usage\":{\"prompt_tokens\":100,"
-		"\"cached_tokens\":60,\"prompt_tokens_details\":{"
+		"\"cached_tokens\":60,\"prompt_cache_hit_tokens\":90,\"prompt_tokens_details\":{"
 		"\"cached_tokens\":70},\"input_tokens_details\":{"
 		"\"cached_tokens\":80}}}\n\n"
 		"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}],"
@@ -3837,7 +3867,7 @@ TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
 					&response, NULL, NULL);
 	EXPECT_EQ(rc, 200);
 	EXPECT_EQ(response.usage.input_tokens, 100);
-	EXPECT_EQ(response.usage.cached_tokens, 80);
+	EXPECT_EQ(response.usage.cached_tokens, 90);
 
 	arena_destroy(arena);
 	model_destroy(model);
@@ -4100,7 +4130,7 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	EXPECT_NE(strstr(capt->prompt, "<cwd>"), nullptr);
 	EXPECT_NE(strstr(capt->system_prompt, "Remember this fact."), nullptr);
 	for (const char *absent : {"You are Morph", "OPERATING LOOP",
-	     "MARKDOWN OUTPUT", "latest explicit language instruction",
+	     "MARKDOWN OUTPUT", "After two",
 	     "Source editing:", "Shell filesystem permissions:", "img_qa",
 	     "complete Codex patch", "Available sub-agents:"})
 		EXPECT_EQ(strstr(capt->system_prompt, absent), nullptr) << absent;
@@ -4116,12 +4146,104 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	EXPECT_EQ(first, capt->system_prompt);
 }
 
-TEST_F(PromptModeTest, ExplicitEmptyReplacementKeepsOnlyCore)
+TEST_F(PromptModeTest, ExplicitEmptyReplacementKeepsCoreAndRuntimeLimits)
 {
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup("");
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
-	EXPECT_EQ(std::string(MORPH_CORE_PROMPT) + "\n", capt->system_prompt);
+	std::string expected = std::string(MORPH_CORE_PROMPT) +
+		"\nRuntime limits:\n- Maximum " + std::to_string(ctx->max_iterations) +
+		" tool-calling iterations.\n\n";
+	EXPECT_EQ(expected, capt->system_prompt);
+}
+
+TEST_F(PromptModeTest, CoreContractsSurviveReplacementWithoutDuplication)
+{
+	for (int replace : {0, 1}) {
+		ctx->system_prompt_replace = replace;
+		free(ctx->system_prompt);
+		ctx->system_prompt = strdup("Custom JSON-only behavior.");
+		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+		std::string system = capt->system_prompt;
+		for (const char *contract : {
+		     "Treat new user messages as updates to the active task",
+		     "After compaction, resume from the checkpoint",
+		     "The function-calling interface is the source of truth",
+		     "Check tool results and inspect produced artifacts",
+		     "On failure, use the error and current state",
+		     "provide accessible references to actual outputs",
+		     "latest explicit language instruction",
+		     "Never claim a preference was saved without a committed result"}) {
+			EXPECT_NE(system.find(contract), std::string::npos) << contract;
+			EXPECT_EQ(system.find(contract), system.rfind(contract)) << contract;
+			EXPECT_LT(system.find(contract), system.find("Custom JSON-only"));
+		}
+		if (replace) {
+			EXPECT_EQ(system.find("MARKDOWN OUTPUT"), std::string::npos);
+			EXPECT_EQ(system.find("images  ![image]"), std::string::npos);
+		}
+	}
+}
+
+TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
+{
+	auto *skills = new skill_registry{};
+	skill_registry_init(skills);
+	skills->count = 2;
+	for (int i = 0; i < 2; i++) {
+		auto *entry = &skills->entries[i];
+		strcpy(entry->fm.name, i == 0 ? "zeta" : "alpha");
+		strcpy(entry->fm.description, "Stable description");
+		entry->enabled = 1;
+		entry->activated = 1;
+		entry->body_loaded = 1;
+		entry->body = strdup("Stable instructions");
+	}
+	ctx->skills = skills;
+	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
+	for (int replace : {0, 1}) {
+		ctx->system_prompt_replace = replace;
+		free(ctx->system_prompt);
+		ctx->system_prompt = strdup("Stable custom prompt");
+		ctx->max_iterations = 3;
+		ASSERT_EQ(react_set_memory_context(ctx, "MEMORY_FIRST"), 0);
+		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+		std::string first = capt->system_prompt;
+		auto boundary = first.find("Runtime limits:");
+		ASSERT_NE(boundary, std::string::npos);
+		EXPECT_LT(first.find("Stable custom prompt"), first.find("Available skills:"));
+		EXPECT_LT(first.find("- alpha:"), first.find("- zeta:"));
+		EXPECT_LT(first.find("<skill name=\"alpha\""),
+			first.find("<skill name=\"zeta\""));
+		EXPECT_LT(first.find("<skill name=\"zeta\""), boundary);
+		EXPECT_LT(boundary, first.find("MEMORY_FIRST"));
+		ctx->max_iterations = 17;
+		ASSERT_EQ(react_set_memory_context(ctx, "MEMORY_SECOND"), 0);
+		ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
+		std::string second = capt->system_prompt;
+		EXPECT_EQ(first.substr(0, boundary),
+			second.substr(0, second.find("Runtime limits:")));
+		EXPECT_NE(second.find("MEMORY_SECOND"), std::string::npos);
+		EXPECT_EQ(second.find("MEMORY_FIRST"), std::string::npos);
+	}
+	ctx->skills = nullptr;
+	skill_registry_cleanup(skills);
+	delete skills;
+}
+
+TEST_F(PromptModeTest, RuntimeIterationLimitRefreshesUnderReplacement)
+{
+	ctx->system_prompt_replace = 1;
+	ctx->system_prompt = strdup("Custom behavior");
+	for (int limit : {3, 17}) {
+		ctx->max_iterations = limit;
+		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+		std::string expected = "Runtime limits:\n- Maximum " +
+			std::to_string(limit) + " tool-calling iterations.\n";
+		std::string system = capt->system_prompt;
+		EXPECT_NE(system.find(expected), std::string::npos);
+		EXPECT_EQ(system.find("Runtime limits:"), system.rfind("Runtime limits:"));
+	}
 }
 
 TEST_F(PromptModeTest, ReplaceWithoutSourceUsesDefaultBehavior)
