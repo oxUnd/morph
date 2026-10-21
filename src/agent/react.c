@@ -1354,53 +1354,16 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
-		struct model *model = ctx->llm_model;
-		int budget = model && model->context_limit > 0 ?
-			model->context_limit / 50 : 2048;
-		int used = 64;
-		int omitted = 0;
-
-		if (budget > 2048)
-			budget = 2048;
-		int full_tokens = used;
-
 		for (int i = 0; i < ctx->skills->count; i++) {
 			struct skill_entry *entry = &ctx->skills->entries[i];
-
-			if (entry->enabled)
-				full_tokens += tokenizer_count(ctx->tokenizer, entry->fm.name) +
-					tokenizer_count(ctx->tokenizer, entry->fm.description) + 6;
-		}
-		for (int i = 0; i < ctx->skills->count; i++) {
-			struct skill_entry *entry = &ctx->skills->entries[i];
-			morph_buf_t line;
 
 			if (!entry->enabled)
 				continue;
-			rc = morph_buf_init_arena(&line, arena, 256);
+			rc = morph_buf_printf(&buf, "- %s: %s\n",
+				entry->fm.name, entry->fm.description);
 			if (rc != 0)
-				return NULL;
-			size_t limit = full_tokens > budget ? 160 :
-				sizeof(entry->fm.description) - 1;
-			size_t len = utf8_clamp_bytes(entry->fm.description, limit);
-			rc = morph_buf_printf(&line, "- %s: %.*s%s\n",
-				entry->fm.name, (int)len, entry->fm.description,
-				entry->fm.description[len] ? "..." : "");
-			if (rc != 0)
-				return NULL;
-			int tokens = tokenizer_count(ctx->tokenizer, line.data);
-			if (tokens > budget - used) {
-				omitted++;
-				continue;
-			}
-			used += tokens;
-			if (morph_buf_puts(&buf, line.data) != 0)
 				return NULL;
 		}
-		if (omitted && morph_buf_printf(&buf,
-			"%d skills omitted from this catalog due to its budget.\n",
-			omitted) != 0)
-			return NULL;
 	}
 
 	if (ctx->skills) {

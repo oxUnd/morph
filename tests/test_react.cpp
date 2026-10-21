@@ -6036,8 +6036,10 @@ TEST_F(MockServerTest, VideoReferenceKeepsDataUriAndRoleOnWire)
 	cJSON_Delete(request);
 }
 
-TEST_F(PromptModeTest, ActivatedSkillRefreshesWithoutMemoryAndAppearsOnlyOnce)
+TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 {
+	ctx->system_prompt_replace = 1;
+	ctx->system_prompt = strdup("Custom behavior");
 	auto *skills = new skill_registry{};
 	skill_registry_init(skills);
 	skills->count = 1;
@@ -6063,7 +6065,26 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesWithoutMemoryAndAppearsOnlyOnce)
 	delete skills;
 }
 
-TEST_F(PromptModeTest, SkillCatalogIsBoundedAndDisabledBodiesAreExcluded)
+TEST_F(PromptModeTest, SkillActivationPolicySurvivesReplacement)
+{
+	for (int replace : {0, 1}) {
+		ctx->system_prompt_replace = replace;
+		free(ctx->system_prompt);
+		ctx->system_prompt = strdup("Custom behavior without skill instructions.");
+		ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+		std::string system = capt->system_prompt;
+		const char *policy = "check the available skills.";
+		EXPECT_NE(system.find(policy), std::string::npos);
+		EXPECT_EQ(system.find(policy), system.rfind(policy));
+		EXPECT_LT(system.find(policy), system.find("Custom behavior"));
+		EXPECT_NE(system.find("use activate_skill to load its full guidance"),
+			std::string::npos);
+		EXPECT_NE(system.find("activate the morph-usage skill before answering"),
+			std::string::npos);
+	}
+}
+
+TEST_F(PromptModeTest, SkillCatalogPreservesEveryEnabledDescription)
 {
 	auto *skills = new skill_registry{};
 	skill_registry_init(skills);
@@ -6072,26 +6093,38 @@ TEST_F(PromptModeTest, SkillCatalogIsBoundedAndDisabledBodiesAreExcluded)
 		auto *entry = &skills->entries[i];
 		snprintf(entry->fm.name, sizeof(entry->fm.name), "skill-%d", i);
 		memset(entry->fm.description, 'x', sizeof(entry->fm.description) - 1);
+		strcpy(entry->fm.description + 900, "DESCRIPTION_TAIL_MARKER");
 		entry->enabled = 1;
 	}
 	skills->entries[0].enabled = 0;
 	skills->entries[0].activated = 1;
 	skills->entries[0].body = strdup("DISABLED_BODY_MARKER");
 	ctx->skills = skills;
-	llm->context_limit = 32000;
 	ASSERT_EQ(skill_activate_init(&tools, skills), 0);
+	for (int replace : {0, 1}) {
+		ctx->system_prompt_replace = replace;
+		free(ctx->system_prompt);
+		ctx->system_prompt = strdup("Custom behavior");
+		for (int limit : {0, 32000, 128000}) {
+			llm->context_limit = limit;
+			ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+			ASSERT_NE(capt->system_prompt, nullptr);
+			std::string system = capt->system_prompt;
+			EXPECT_NE(system.find("Available skills:"), std::string::npos);
+			for (int i = 1; i < skills->count; i++) {
+				auto *entry = &skills->entries[i];
+				std::string expected = std::string("- ") + entry->fm.name +
+					": " + entry->fm.description + "\n";
+				EXPECT_NE(system.find(expected), std::string::npos)
+					<< "Missing full description: " << entry->fm.name;
+			}
+			EXPECT_EQ(system.find("- skill-0:"), std::string::npos);
+			EXPECT_EQ(system.find("DISABLED_BODY_MARKER"), std::string::npos);
+		}
+	}
+	ASSERT_EQ(tool_disable(&tools, "activate_skill"), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
-	const char *catalog = strstr(capt->system_prompt, "Available skills:");
-	ASSERT_NE(catalog, nullptr);
-	EXPECT_LT(strlen(catalog), 9000u);
-	EXPECT_NE(strstr(catalog, "omitted"), nullptr);
-	EXPECT_EQ(strstr(capt->system_prompt, "DISABLED_BODY_MARKER"), nullptr);
-	skills->count = 1;
-	skills->entries[0].enabled = 1;
-	skills->entries[0].activated = 0;
-	strcpy(skills->entries[0].fm.description + 900, "DESCRIPTION_TAIL_MARKER");
-	ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
-	EXPECT_NE(strstr(capt->system_prompt, "DESCRIPTION_TAIL_MARKER"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "Available skills:"), nullptr);
 	ctx->skills = nullptr;
 	skill_registry_cleanup(skills);
 	delete skills;
