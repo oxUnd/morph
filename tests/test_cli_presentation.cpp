@@ -756,6 +756,47 @@ TEST_F(CliPresentationTest, CancelledNativeAnswerPreservesSanitizedPartialConten
 	cJSON_Delete(outcome);
 }
 
+TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
+{
+	for (auto mode : {CLI_PRESENT_ONCE_PLAIN, CLI_PRESENT_INTERACTIVE}) {
+		cli_presentation_reset(&ctx);
+		ctx.presentation_mode = mode;
+		cli_set_color_enabled(1);
+		cJSON *data = cJSON_CreateObject();
+		cJSON_AddStringToObject(data, "outcome", "cancelled");
+		cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
+		cJSON_AddStringToObject(data, "error", "Operation canceled");
+		cJSON_AddStringToObject(data, "detail", "user_cancelled");
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_REACT, "react.turn.end", "cancelled", data);
+		std::string output = testing::internal::GetCapturedStdout();
+		EXPECT_NE(output.find(mode == CLI_PRESENT_ONCE_PLAIN ?
+			"cancelled\n" : "\033[2m• Cancelled\033[0m"),
+			std::string::npos);
+		EXPECT_EQ(output.find("Error"), std::string::npos);
+		EXPECT_EQ(output.find("Operation canceled"), std::string::npos);
+		EXPECT_EQ(output.find("user_cancelled"), std::string::npos);
+		EXPECT_EQ(output.find("\033[31m"), std::string::npos);
+		cJSON_Delete(data);
+	}
+}
+
+TEST_F(CliPresentationTest, FailedTurnStillUsesErrorStatus)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+	cJSON *data = cJSON_CreateObject();
+	cJSON_AddStringToObject(data, "outcome", "internal_error");
+	cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
+	cJSON_AddStringToObject(data, "error", "Operation canceled");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.turn.end", "failed", data);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\033[31m• Error"), std::string::npos);
+	EXPECT_NE(output.find("Operation canceled"), std::string::npos);
+	cJSON_Delete(data);
+}
+
 TEST_F(CliPresentationTest, NativeContentEndWithoutDeltasRendersPreamble)
 {
 	cJSON *body = TextData("Preamble without deltas");

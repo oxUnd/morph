@@ -1151,6 +1151,15 @@ static void presentation_turn_end(struct cli_context *ctx,
 	error = event_string(ev, "error");
 	detail = event_string(ev, "detail");
 	outcome = event_string(ev, "outcome");
+	if ((outcome && strcmp(outcome, "cancelled") == 0) ||
+	    strcmp(ev->phase, "cancelled") == 0) {
+		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
+			printf("cancelled\n");
+		else
+			printf("\n" ANSI_DIM "• Cancelled" ANSI_RESET "\n");
+		ctx->final_rendered = 1;
+		return;
+	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		printf("error: ");
 		presentation_print_safe_inline(error ? error :
