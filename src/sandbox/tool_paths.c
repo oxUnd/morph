@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* Shared developer directories and tool-specific paths for exec policies. */
 enum path_base {
@@ -17,6 +18,9 @@ enum path_base {
 	PATH_ABSOLUTE,
 	PATH_CACHE,
 	PATH_LIST,
+#ifdef __APPLE__
+	PATH_DARWIN_TEMP,
+#endif
 };
 
 enum path_kind {
@@ -51,6 +55,11 @@ static const struct tool_path tool_paths[] = {
 	TOOL_DIR("xdg-state", PATH_HOME, ".local/state", "XDG_STATE_HOME"),
 	{"xdg-runtime", PATH_ABSOLUTE, "", "XDG_RUNTIME_DIR", PATH_EXISTING_DIRECTORY},
 	{"temporary", PATH_ABSOLUTE, "", "TMPDIR", PATH_TEMP_DIRECTORY},
+	{"temporary", PATH_ABSOLUTE, "/tmp", NULL, PATH_TEMP_DIRECTORY},
+	{"temporary", PATH_ABSOLUTE, "/var/tmp", NULL, PATH_TEMP_DIRECTORY},
+#ifdef __APPLE__
+	{"temporary", PATH_DARWIN_TEMP, "", NULL, PATH_TEMP_DIRECTORY},
+#endif
 	{"terminal", PATH_ABSOLUTE, "/dev/tty", NULL, PATH_DEVICE},
 #ifdef __APPLE__
 	TOOL_DIR("macos-cache", PATH_HOME, "Library/Caches", NULL),
@@ -292,6 +301,19 @@ static int resolve_tool_path(struct arena *arena,
 	morph_buf_t path;
 	int rc;
 
+#ifdef __APPLE__
+	if (entry->base == PATH_DARWIN_TEMP) {
+		char temp[PATH_MAX];
+		size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, temp, sizeof(temp));
+
+		if (length == 0 || length > sizeof(temp))
+			return 0;
+		*result = arena_strdup(arena, temp);
+		if (!*result)
+			MORPH_RETURN(-ENOMEM);
+		return 0;
+	}
+#endif
 	rc = morph_buf_init_arena(&path, arena, 128);
 	if (rc != 0)
 		return rc;

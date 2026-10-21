@@ -15,6 +15,7 @@ extern char **environ;
 #include <cstring>
 #include <limits.h>
 #include <string>
+#include <vector>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -1234,6 +1235,25 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 			    cJSON_GetObjectItem(result.envelope, "error"))
 				return 18;
 			tool_result_cleanup(&result);
+		}
+		std::vector<std::string> temporary_roots = {"/tmp", "/var/tmp"};
+#ifdef __APPLE__
+		char native_temp[PATH_MAX];
+		size_t length = confstr(_CS_DARWIN_USER_TEMP_DIR, native_temp,
+					 sizeof(native_temp));
+		if (length == 0 || length > sizeof(native_temp))
+			return 25;
+		temporary_roots.insert(temporary_roots.end(),
+			{"/private/tmp", "/private/var/tmp", native_temp});
+#endif
+		/* Both symlink aliases and canonical roots must bypass approval. */
+		for (const auto &dir : temporary_roots) {
+			for (enum tool_path_op op : {TOOL_PATH_READ, TOOL_PATH_LIST,
+						    TOOL_PATH_WRITE, TOOL_PATH_DELETE}) {
+				if (tool_context_authorize_path(tctx, op, dir.c_str(),
+					NULL, 0) != 0)
+					return 26;
+			}
 		}
 		if (approvals != 0)
 			return 19;
