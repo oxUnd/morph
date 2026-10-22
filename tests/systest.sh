@@ -127,10 +127,10 @@ test_new_named() {
 	assert_contains "6: /new mytest" "$out" "mytest"
 }
 
-test_list() {
-	out=$(run_morph "/list
+test_resume() {
+	out=$(run_morph "/resume
 /quit")
-	assert_contains "7: /list does not create a session" "$out" "no sessions"
+	assert_contains "7: /resume does not create a session" "$out" "no sessions"
 }
 
 test_switch() {
@@ -162,10 +162,10 @@ test_history() {
 	assert_contains "11: /history shows empty" "$out" "showing"
 }
 
-test_list_alias() {
+test_removed_list_alias() {
 	out=$(run_morph "/ls
 /quit")
-	assert_contains "12: /ls alias" "$out" "no sessions"
+	assert_contains "12: /ls removed" "$out" "unknown command"
 }
 
 # ---- C. model ----
@@ -406,12 +406,12 @@ register_test 3  "$G_HELP"      test_help_detail
 register_test 4  "$G_HELP"      test_help_alias
 register_test 5  "$G_SESSION"   test_new_auto
 register_test 6  "$G_SESSION"   test_new_named
-register_test 7  "$G_SESSION"   test_list
+register_test 7  "$G_SESSION"   test_resume
 register_test 8  "$G_SESSION"   test_switch
 register_test 9  "$G_SESSION"   test_rename
 register_test 10 "$G_SESSION"   test_delete
 register_test 11 "$G_SESSION"   test_history
-register_test 12 "$G_SESSION"   test_list_alias
+register_test 12 "$G_SESSION"   test_removed_list_alias
 register_test 13 "$G_MODEL"     test_model_show
 register_test 14 "$G_MODEL"     test_model_switch
 register_test 15 "$G_MODEL"     test_config

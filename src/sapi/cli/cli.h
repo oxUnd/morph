@@ -26,11 +26,13 @@ struct cli_input_status {
 	int enabled;
 	int padding_rows;
 	int distance;
+	int footer_rows;
 	int suspended;
 	int64_t updated;
 	int tokens;
 	int limit;
 	int64_t credits;
+	struct scheduled_task_counts tasks;
 };
 
 struct cli_context {

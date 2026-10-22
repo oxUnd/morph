@@ -368,7 +368,7 @@ saved 5 messages
 | `/help [cmd]` | `/h` | 帮助 | `/h ext` |
 | `/new [name]` | `/n` | 新建会话 | `/n 项目A` |
 | `/switch <name\|id\|display_id>` | `/s` | 切换会话（支持 `^N` 索引） | `/s abc1` |
-| `/list [filter] [--all]` | `/ls` | 会话列表（含 display_id，支持过滤） | `/ls --all` |
+| `/resume [name\|id]` | — | 分页选择或直接恢复会话 | `/resume abc1` |
 | `/rename <new>` | `/rn` | 重命名当前会话 | `/rn 项目B` |
 | `/delete <name\|id>` | `/del` | 删除会话 | `/del 3` |
 | `/history [n\|--all]` | `/hi` | 当前会话最近 n 条 | `/hi --all` |

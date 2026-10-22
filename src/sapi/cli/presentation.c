@@ -653,7 +653,7 @@ static void presentation_reasoning_delta(struct cli_context *ctx,
 		return;
 	presentation_clear_status(ctx);
 	if (!ctx->event_stream_visible)
-		printf("\n" ANSI_DIM "• Reasoning  " ANSI_RESET);
+		printf("\n" ANSI_DIM CLI_FEED_SYSTEM " Reasoning · " ANSI_RESET);
 	printf(ANSI_DIM "%s" ANSI_RESET, text);
 	fflush(stdout);
 	ctx->event_stream_visible = 1;
@@ -897,7 +897,7 @@ static void presentation_tool_end(struct cli_context *ctx,
 		return;
 	}
 	if (failed) {
-		printf("  " ANSI_BOLD ANSI_RED "✗ ");
+		printf("  " ANSI_RED CLI_FEED_FAILED " ");
 		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
 		printf(" failed" ANSI_RESET);
 		if (error && error[0]) {
@@ -907,7 +907,7 @@ static void presentation_tool_end(struct cli_context *ctx,
 		}
 		printf("\n");
 	} else {
-		printf("  " ANSI_BOLD ANSI_GREEN "✓ ");
+		printf("  " ANSI_GREEN CLI_FEED_DONE " ");
 		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
 		printf(" completed" ANSI_RESET "\n");
 	}
@@ -916,14 +916,14 @@ static void presentation_tool_end(struct cli_context *ctx,
 static const char *plan_mark(const char *status, int active)
 {
 	if (active)
-		return "›";
+		return CLI_FEED_RUNNING;
 	if (status && strcmp(status, "completed") == 0)
-		return "✔";
+		return CLI_FEED_DONE;
 	if (status && strcmp(status, "failed") == 0)
-		return "✘";
+		return CLI_FEED_FAILED;
 	if (status && strcmp(status, "skipped") == 0)
 		return "–";
-	return "□";
+	return CLI_FEED_PENDING;
 }
 
 static int presentation_plan(const struct morph_event *ev)
@@ -945,7 +945,7 @@ static int presentation_plan(const struct morph_event *ev)
 	cJSON_ArrayForEach(plan, plans) {
 		cJSON *steps;
 		cJSON *step;
-		int index = 0;
+		int completed = 0;
 		int count;
 
 		if (!cJSON_IsObject(plan))
@@ -953,15 +953,22 @@ static int presentation_plan(const struct morph_event *ev)
 		steps = cJSON_GetObjectItemCaseSensitive(plan, "steps");
 		if (!cJSON_IsArray(steps))
 			continue;
-		if (!printed)
-			printf("  " ANSI_DIM "└ Updated plan" ANSI_RESET "\n");
-		printed = 1;
 		count = cJSON_GetArraySize(steps);
+		cJSON_ArrayForEach(step, steps) {
+			const cJSON *status = cJSON_GetObjectItemCaseSensitive(step, "status");
+
+			if (cJSON_IsString(status) && strcmp(status->valuestring, "completed") == 0)
+				completed++;
+		}
+		printf("  " ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n",
+			completed, count);
+		printed = 1;
 		cJSON_ArrayForEach(step, steps) {
 			cJSON *description;
 			cJSON *status;
 			cJSON *active;
-			const char *branch;
+			const char *mark;
+			const char *color;
 
 			if (!cJSON_IsObject(step))
 				continue;
@@ -971,12 +978,12 @@ static int presentation_plan(const struct morph_event *ev)
 			active = cJSON_GetObjectItemCaseSensitive(step, "active");
 			if (!cJSON_IsString(description))
 				continue;
-			index++;
-			branch = index == count ? "└" : "├";
-			printf("    " ANSI_DIM "%s" ANSI_RESET " %s ", branch,
-			       plan_mark(cJSON_IsString(status) ?
-					 status->valuestring : NULL,
-					 cJSON_IsTrue(active)));
+			mark = plan_mark(cJSON_IsString(status) ? status->valuestring : NULL,
+				cJSON_IsTrue(active));
+			color = strcmp(mark, CLI_FEED_DONE) == 0 ? ANSI_GREEN :
+				strcmp(mark, CLI_FEED_FAILED) == 0 ? ANSI_RED :
+				strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_YELLOW : ANSI_DIM;
+			printf("  %s%s" ANSI_RESET " ", color, mark);
 			presentation_print_safe_inline(description->valuestring,
 				CLI_EVENT_TEXT_MAX);
 			printf("\n");
@@ -1038,7 +1045,7 @@ static void presentation_reflection(struct cli_context *ctx,
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 		print_plain_labeled("guardrail", text);
 	else if (text && text[0])
-		print_indented(ANSI_YELLOW "• Guardrail  " ANSI_RESET, text);
+		print_indented(ANSI_YELLOW CLI_FEED_SYSTEM " Guardrail · " ANSI_RESET, text);
 }
 
 static void presentation_token_label(int tokens, char *label, size_t size)
@@ -1189,7 +1196,7 @@ static void presentation_turn_end(struct cli_context *ctx,
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
 			printf("cancelled\n");
 		else
-			printf("\n" ANSI_DIM "• Cancelled" ANSI_RESET "\n");
+			printf("\n" ANSI_DIM CLI_FEED_SYSTEM " Cancelled" ANSI_RESET "\n");
 		ctx->final_rendered = 1;
 		return;
 	}
@@ -1204,7 +1211,7 @@ static void presentation_turn_end(struct cli_context *ctx,
 		}
 		printf("\n");
 	} else {
-		printf("\n" ANSI_BOLD ANSI_RED "• Error" ANSI_RESET " ");
+		printf("\n" ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error" ANSI_RESET " ");
 		presentation_print_safe_inline(error ? error :
 			(outcome ? outcome : "turn failed"), CLI_EVENT_TEXT_MAX);
 		if (detail && detail[0]) {
@@ -1252,7 +1259,7 @@ static void presentation_auth(struct cli_context *ctx,
 		printf("\n");
 	} else {
 		printf("\n" ANSI_BOLD ANSI_YELLOW
-		       "• Authentication required" ANSI_RESET " for ");
+		       CLI_FEED_QUESTION " Authentication required" ANSI_RESET " for ");
 		presentation_print_safe_inline(backend, CLI_EVENT_TEXT_MAX);
 		if (tool && tool[0]) {
 			printf(" tool " ANSI_BOLD);
@@ -1304,7 +1311,7 @@ static void presentation_artifact(struct cli_context *ctx,
 static void presentation_mcp_tree_start(struct cli_context *ctx,
 					const char *server)
 {
-	printf("\n" ANSI_BOLD ANSI_CYAN "•" ANSI_RESET " "
+	printf("\n" ANSI_DIM CLI_FEED_SYSTEM ANSI_RESET " "
 	       ANSI_BOLD "MCP ");
 	presentation_print_safe_inline(server, CLI_EVENT_TEXT_MAX);
 	printf(ANSI_RESET "\n");
@@ -1320,7 +1327,7 @@ static void presentation_mcp_ready(const struct morph_event *ev)
 	cJSON *resources = event_item(ev, "resources");
 	cJSON *prompts = event_item(ev, "prompts");
 
-	printf(ANSI_BOLD ANSI_GREEN "✓ Ready" ANSI_RESET);
+	printf(ANSI_GREEN CLI_FEED_DONE " Ready" ANSI_RESET);
 	if (cJSON_IsNumber(tools) && cJSON_IsNumber(resources) &&
 	    cJSON_IsNumber(prompts)) {
 		printf(ANSI_DIM " · %d tools, %d resources, %d prompts"
@@ -1354,7 +1361,7 @@ static void presentation_mcp(struct cli_context *ctx,
 	printf("  " ANSI_DIM "%s" ANSI_RESET " ",
 	       is_last ? "└" : "├");
 	if (failed) {
-		printf(ANSI_BOLD ANSI_RED "✗ Failed" ANSI_RESET);
+		printf(ANSI_RED CLI_FEED_FAILED " Failed" ANSI_RESET);
 		if (error && error[0]) {
 			printf(ANSI_DIM " · ");
 			presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
@@ -1395,11 +1402,27 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	if (!ctx->presentation_ready ||
 	    ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
+	if (ev->type == MORPH_EVENT_TASK && ev->name) {
+		if (strcmp(ev->name, "task.notification") == 0 ||
+		    (ctx->input_status.enabled &&
+		     (strcmp(ev->name, "task.started") == 0 ||
+		      strcmp(ev->name, "task.claimed") == 0 ||
+		      strcmp(ev->name, "task.rescheduled") == 0 ||
+		      cJSON_IsNumber(event_item(ev, "notification_id")))))
+			return;
+	}
+	/* Foreground task mutations are already reported by the tool result. */
+	if (ev->type == MORPH_EVENT_TASK && ctx->turn_active && ev->name &&
+	    event_error_code(ev) >= 0 &&
+	    (strcmp(ev->name, "task.created") == 0 ||
+	     strcmp(ev->name, "task.updated") == 0 ||
+	     strcmp(ev->name, "task.cancelled") == 0))
+		return;
 	if (ev->type == MORPH_EVENT_BACKGROUND) {
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    event_error_code(ev) < 0) {
 			status_paused = presentation_pause_status(ctx);
-			printf("\n" ANSI_DIM ANSI_RED "• Background  ");
+			printf("\n" ANSI_RED CLI_FEED_FAILED " Background · ");
 			presentation_print_safe_inline(ev->message ? ev->message :
 				(ev->name ? ev->name : "failed"),
 				CLI_EVENT_TEXT_MAX);
@@ -1418,8 +1441,24 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	}
 	if (ev->type == MORPH_EVENT_MCP) {
 		if (!cJSON_IsTrue(event_item(ev, "background")) ||
-		    !ctx->input_status.enabled)
+		    !ctx->input_status.enabled) {
 			presentation_mcp(ctx, ev);
+		} else if (ev->name && strcmp(ev->name, "mcp.failed") == 0) {
+			const char *server = event_string(ev, "server");
+			const char *error = event_string(ev, "error");
+
+			status_paused = presentation_pause_status(ctx);
+			printf("\n" ANSI_RED CLI_FEED_FAILED ANSI_RESET " MCP ");
+			presentation_print_safe_inline(server ? server : "server",
+				CLI_EVENT_TEXT_MAX);
+			printf(ANSI_DIM " · failed" ANSI_RESET "\n");
+			if (error && error[0]) {
+				printf("  ");
+				presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
+				printf("\n");
+			}
+			presentation_resume_status(ctx, status_paused);
+		}
 		return;
 	}
 	if (ev->type == MORPH_EVENT_TASK)
@@ -1429,7 +1468,11 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	else
 		return;
 	status_paused = presentation_pause_status(ctx);
-	printf("\n" ANSI_DIM "• %s  ", prefix);
+	printf("\n%s%s" ANSI_RESET " %s · ",
+		ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ?
+		ANSI_RED : ANSI_DIM,
+		ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ?
+		CLI_FEED_FAILED : CLI_FEED_SYSTEM, prefix);
 	presentation_print_safe_inline(ev->message ? ev->message :
 		(ev->name ? ev->name : ""), CLI_EVENT_TEXT_MAX);
 	printf(ANSI_RESET "\n");

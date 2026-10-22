@@ -6,8 +6,6 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 
-#define SESSION_LIST_DEFAULT 20
-
 static int append_token_number(morph_buf_t *buf, int64_t tokens)
 {
 	char raw[32];
@@ -138,86 +136,6 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR("session not found: %s", name);
 	}
 	return rc;
-}
-
-static int cmd_list(struct cli_context *ctx, int argc, char **argv)
-{
-	int limit = SESSION_LIST_DEFAULT;
-	const char *filter = NULL;
-	int truncated;
-	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "--all") == 0)
-			limit = 0;
-		else if (argv[i][0] && isdigit((unsigned char)argv[i][0]))
-			limit = atoi(argv[i]);
-		else
-			filter = argv[i];
-	}
-	if (limit < 0)
-		limit = 0;
-
-	struct session *list;
-	int count = 0;
-	int rc = runtime_session_list_query(ctx->runtime, &list, &count, limit,
-					    filter);
-	if (rc != 0)
-		return rc;
-
-	int total = runtime_session_count_all(ctx->runtime);
-	struct session current;
-	(void)runtime_session_current(ctx->runtime, &current);
-	const struct config *config = runtime_config_get(ctx->runtime);
-	truncated = limit > 0 &&
-		((filter && filter[0]) ? count == limit : count < total);
-	if (filter && filter[0])
-		CMD_HEADER("sessions (%d shown, filter \"" ANSI_YELLOW
-			   "%s" ANSI_CYAN "\")", count, filter);
-	else if (count < total)
-		CMD_HEADER("sessions (%d of %d)", count, total);
-	else
-		CMD_HEADER("sessions (%d)", count);
-	if (count == 0) {
-		printf("  " ANSI_DIM "└ no sessions" ANSI_RESET "\n");
-		runtime_session_list_free(list);
-		return 0;
-	}
-	for (int i = 0; i < count; i++) {
-		int is_current = (list[i].id == current.id);
-		const char *model = is_current ?
-			config->models.text.model : list[i].model;
-		morph_buf_t metadata;
-
-		rc = morph_buf_init(&metadata, 64);
-		if (rc != 0) {
-			runtime_session_list_free(list);
-			return rc;
-		}
-		rc = append_token_count(&metadata, list[i].token_used);
-		if (rc == 0 && model && model[0] &&
-		    strcmp(model, config->models.text.model) != 0)
-			rc = morph_buf_printf(&metadata, " · %s", model);
-		if (rc == 0)
-			rc = append_session_time(&metadata, list[i].updated_at,
-						 list[i].created_at);
-		if (rc != 0) {
-			morph_buf_cleanup(&metadata);
-			runtime_session_list_free(list);
-			return rc;
-		}
-		cli_list_row(list[i].display_id, list[i].name,
-			     morph_buf_cstr(&metadata), is_current,
-			     i == count - 1 && !truncated,
-			     cli_list_columns());
-		morph_buf_cleanup(&metadata);
-	}
-	if (truncated) {
-		printf("  " ANSI_DIM "└ … limited to %d · "
-		       "use /list --all%s%s" ANSI_RESET "\n",
-		       limit, filter && filter[0] ? " " : "",
-		       filter && filter[0] ? filter : "");
-	}
-	runtime_session_list_free(list);
-	return 0;
 }
 
 #define RESUME_PAGE_SIZE 10
@@ -552,7 +470,7 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 	if (argc > 1)
 		return cmd_switch(ctx, argc, argv);
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
-		CMD_ERROR("use /list and /resume <name|id> in JSON mode");
+		CMD_ERROR("use /resume <name|id> in JSON mode");
 		MORPH_RETURN(-EINVAL);
 	}
 	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
@@ -885,8 +803,6 @@ static const struct cli_command session_commands[] = {
 	{ "/resume",  cmd_resume,  "Choose a session to resume",         "/resume [name|id]" },
 	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id|^N>" },
 	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id|^N>" },
-	{ "/list",    cmd_list,    "List sessions",                     "/list [n|query|--all]" },
-	{ "/ls",      cmd_list,    "Alias for /list",                   "/ls [n|query|--all]" },
 	{ "/rename",  cmd_rename,  "Rename current session",            "/rename <new_name>" },
 	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
 	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },

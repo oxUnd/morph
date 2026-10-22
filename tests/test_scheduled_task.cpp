@@ -352,6 +352,33 @@ TEST_F(ScheduledTaskTest, ListDueTasks) {
 	scheduled_task_free_list(tasks, count);
 }
 
+TEST_F(ScheduledTaskTest, CountsActiveTasksAcrossLifecycle) {
+	struct scheduled_task_counts counts = {};
+	struct scheduled_task_input input = {};
+	struct scheduled_task task = {};
+
+	ASSERT_EQ(scheduled_task_count_active(&db, &counts), 0);
+	EXPECT_EQ(counts.running, 0);
+	EXPECT_EQ(counts.pending, 0);
+	input.title = "Status task";
+	input.kind = "reminder";
+	input.trigger_type = "once";
+	input.next_run_at = 10;
+	input.action_type = "reminder";
+	ASSERT_EQ(scheduled_task_create(&db, &input, &task), 0);
+	ASSERT_EQ(scheduled_task_create(&db, &input, nullptr), 0);
+	ASSERT_EQ(scheduled_task_count_active(&db, &counts), 0);
+	EXPECT_EQ(counts.pending, 2);
+	for (const char *status : {"running", "waiting", "completed", "failed", "cancelled"}) {
+		ASSERT_EQ(scheduled_task_update_run(&db, task.id, status, 10, 1,
+			0, ""), 0);
+		ASSERT_EQ(scheduled_task_count_active(&db, &counts), 0);
+		EXPECT_EQ(counts.running, std::strcmp(status, "running") == 0 ? 1 : 0);
+		EXPECT_EQ(counts.pending, std::strcmp(status, "waiting") == 0 ? 2 : 1);
+	}
+	scheduled_task_cleanup(&task);
+}
+
 TEST_F(ScheduledTaskTest, ListTasksByStatus) {
 	struct scheduled_task_input input = {};
 	struct scheduled_task task = {};

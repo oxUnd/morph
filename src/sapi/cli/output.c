@@ -695,13 +695,13 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 #endif
 
 	if (v > 0) {
-		printf(ANSI_BOLD ANSI_GREEN "  ✓ Approved" ANSI_RESET " (");
+		printf(ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
 		(void)cli_print_untrusted_text(subject ? subject : "",
 			UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		printf("%s)\n",
 		       v == 2 ? ", session" : (v == 3 ? ", always" : ""));
 	} else {
-		printf(ANSI_BOLD ANSI_RED "  ✗ Denied" ANSI_RESET " (");
+		printf(ANSI_RED CLI_FEED_SYSTEM " Denied" ANSI_RESET " (");
 		(void)cli_print_untrusted_text(subject ? subject : "",
 			UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		printf(")\n");
@@ -863,7 +863,7 @@ void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
 
 	if (width) {
 		printf("\n");
-		approval_card_rule(width, "Approval required");
+		approval_card_rule(width, CLI_FEED_QUESTION " Approval required");
 	}
 	if (!width)
 		printf("approval: ");

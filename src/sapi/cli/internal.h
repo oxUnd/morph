@@ -5,6 +5,7 @@
 #define CLI_CONTENT_RIGHT_PADDING 2u
 
 #include "sapi/cli/cli.h"
+#include "sapi/cli/feed_style.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
 #include "sapi/cli/command_job.h"

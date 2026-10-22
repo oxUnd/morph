@@ -279,42 +279,6 @@ TEST(CliListTest, SessionRowKeepsRelatedFieldsTogether)
 	EXPECT_EQ(output.find("Model"), std::string::npos);
 }
 
-TEST(CliListTest, SessionCommandShowsUpdatedTimeWithoutCurrentLabel)
-{
-	char pattern[] = "/tmp/morph-cli-list-XXXXXX";
-	char *directory = mkdtemp(pattern);
-	struct runtime_options options{};
-	struct runtime *runtime = nullptr;
-	struct cli_context context{};
-	std::string database;
-
-	ASSERT_NE(directory, nullptr);
-	database = std::string(directory) + "/data.db";
-	options.db_path = database.c_str();
-	options.workdir = directory;
-	options.front_name = "test";
-	ASSERT_EQ(runtime_open(&options, &runtime), 0);
-	context.runtime = runtime;
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_session_commands(), 0);
-
-	testing::internal::CaptureStdout();
-	int rc = cli_command_dispatch(&context, "/list");
-	std::string output = testing::internal::GetCapturedStdout();
-
-	ASSERT_EQ(rc, 0);
-	EXPECT_TRUE(std::regex_search(
-		output, std::regex("[0-9]{2}-[0-9]{2} "
-				   "[0-9]{2}:[0-9]{2}")));
-	EXPECT_NE(output.find("●"), std::string::npos);
-	EXPECT_EQ(output.find("current"), std::string::npos);
-
-	cli_command_registry_clear();
-	runtime_close(runtime);
-	std::error_code error;
-	(void)std::filesystem::remove_all(directory, error);
-}
-
 TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 {
 	char pattern[] = "/tmp/morph-cli-resume-XXXXXX";
@@ -365,6 +329,9 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	struct session current{};
 	ASSERT_EQ(runtime_session_current(runtime, &current), 0);
 	EXPECT_EQ(current.id, expected);
+	EXPECT_TRUE(std::regex_search(
+		output, std::regex("[0-9]{2}-[0-9]{2} "
+				   "[0-9]{2}:[0-9]{2}")));
 	EXPECT_NE(output.find("page 1/3"), std::string::npos);
 	EXPECT_NE(output.find("page 2/3"), std::string::npos);
 	EXPECT_NE(output.find("page 3/3"), std::string::npos);
@@ -416,6 +383,11 @@ TEST(CliListTest, HelpUsesTreeLayout)
 	EXPECT_NE(output.find("└"), std::string::npos);
 	EXPECT_NE(output.find("Core"), std::string::npos);
 	EXPECT_NE(output.find("/help"), std::string::npos);
+	EXPECT_NE(output.find("/resume"), std::string::npos);
+	EXPECT_EQ(cli_command_find("/list"), nullptr);
+	EXPECT_EQ(cli_command_find("/ls"), nullptr);
+	EXPECT_EQ(output.find("/list"), std::string::npos);
+	EXPECT_EQ(output.find("/ls"), std::string::npos);
 	cli_command_registry_clear();
 }
 

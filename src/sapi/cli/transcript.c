@@ -282,7 +282,8 @@ static void print_tool(const struct transcript_tool *tool)
 		return;
 	tool_row(tool, &line, 1);
 	printf("%s%s" ANSI_RESET " %s\n", color,
-		tool->state < 0 ? "⊗" : (tool->state ? "◯" : "◉"),
+		tool->state < 0 ? CLI_FEED_FAILED :
+		(tool->state ? CLI_FEED_DONE : CLI_FEED_RUNNING),
 		morph_buf_cstr(&line));
 	if (tool->state < 0) {
 		printf("  " ANSI_RED);
@@ -701,7 +702,9 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	memset(tool, 0, sizeof(*tool));
 	tool->id = save_text(tr, json_string(data, "tool_call_id"));
 	tool->name = save_text(tr, json_string(data, "tool"));
-	tool->label = tool->name;
+	tool->label = strcmp(tool->name, "exec") == 0 ? "Exec" :
+		strcmp(tool->name, "tasks") == 0 ? "Tasks" :
+		strcmp(tool->name, "plan") == 0 ? "Plan" : tool->name;
 	json = args ? cJSON_PrintUnformatted(args) : NULL;
 	tool->args = save_text(tr, json ? json : "{}");
 	free(json);
@@ -716,7 +719,7 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	tool->summary = "";
 	tool->patch_preview = "";
 	if (strcmp(tool->name, "activate_skill") == 0) {
-		tool->label = "SKILL.md";
+		tool->label = "Skill";
 		tool->subject = save_text(tr, json_string(args, "name"));
 	}
 	if (strcmp(tool->name, "process") == 0) {
@@ -828,6 +831,23 @@ static void summarize_result(struct cli_transcript *tr, struct transcript_tool *
 	} else if (cJSON_IsArray(value =
 		cJSON_GetObjectItemCaseSensitive(data, "entries"))) {
 		(void)morph_buf_printf(&summary, "%d entries", cJSON_GetArraySize(value));
+	}
+	if (tool->state > 0 && strcmp(tool->name, "activate_skill") == 0)
+		(void)morph_buf_puts(&summary, "loaded");
+	if (strcmp(tool->name, "tasks") == 0) {
+		const cJSON *id = cJSON_GetObjectItemCaseSensitive(data, "id");
+		const cJSON *tasks = cJSON_GetObjectItemCaseSensitive(data, "tasks");
+		const cJSON *task = cJSON_GetArrayItem(tasks, 0);
+		const char *title = json_string(task, "title");
+		morph_buf_t subject;
+
+		if (cJSON_IsNumber(id) && id->valuedouble > 0 &&
+		    morph_buf_init(&subject, 64) == 0) {
+			(void)morph_buf_printf(&subject, "#%lld%s%s",
+				(long long)id->valuedouble, title[0] ? " " : "", title);
+			tool->subject = save_text(tr, morph_buf_cstr(&subject));
+			morph_buf_cleanup(&subject);
+		}
 	}
 	if (summary.len)
 		tool->summary = save_text(tr, morph_buf_cstr(&summary));

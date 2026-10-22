@@ -111,13 +111,90 @@ TEST_F(CliUiTest, CrossThreadEventWaitsForOwnerDrain)
 	EXPECT_NE(output.find("queued error"), std::string::npos);
 }
 
+TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
+{
+	struct morph_event event{};
+	event.type = MORPH_EVENT_TASK;
+	event.phase = "end";
+	event.message = "task changed";
+	for (const char *name : {"task.created", "task.updated", "task.cancelled"}) {
+		event.name = name;
+		testing::internal::CaptureStdout();
+		EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	}
+	event.name = "task.failed";
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("task changed"),
+		  std::string::npos);
+	ctx.turn_active = 0;
+	event.name = "task.created";
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("task changed"),
+		  std::string::npos);
+}
+
+TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
+{
+	struct morph_event event{};
+	event.type = MORPH_EVENT_TASK;
+	event.phase = "end";
+	event.message = "task lifecycle";
+	event.data = cJSON_CreateObject();
+	cJSON_AddNumberToObject(event.data, "notification_id", 42);
+	ctx.input_status.enabled = 1;
+	for (const char *name : {"task.claimed", "task.started", "task.completed",
+		"task.notification", "task.rescheduled", "task.failed"}) {
+		event.name = name;
+		testing::internal::CaptureStdout();
+		EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+		EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	}
+	cJSON_DeleteItemFromObject(event.data, "notification_id");
+	event.name = "task.failed";
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("task lifecycle"),
+		  std::string::npos);
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	event.name = "task.notification";
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_event_callback(&event, &ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("task.notification"),
+		  std::string::npos);
+	cJSON_Delete(event.data);
+}
+
+TEST_F(CliUiTest, NotificationSeverityUsesDistinctMarkers)
+{
+	struct notification notification{};
+	notification.id = 43;
+	std::snprintf(notification.title, sizeof(notification.title), "network check");
+	for (const char *level : {"error", "warning"}) {
+		std::snprintf(notification.level, sizeof(notification.level), "%s", level);
+		ASSERT_EQ(cli_ui_post_notification(&ctx, &notification), 0);
+		testing::internal::CaptureStdout();
+		ASSERT_EQ(cli_ui_drain(&ctx), 0);
+		std::string output = testing::internal::GetCapturedStdout();
+		EXPECT_EQ(output.find("completed"), std::string::npos);
+		EXPECT_NE(output.find(std::strcmp(level, "error") == 0 ? "⊗" : "◇"),
+			  std::string::npos);
+	}
+}
+
 TEST_F(CliUiTest, WakePipeSignalsQueuedWorkAndDrains)
 {
 	struct notification notification{};
 	notification.id = 42;
+	notification.task_id = 17;
+	notification.created_at = 1792639574;
 	std::snprintf(notification.title, sizeof(notification.title),
 		      "nightly task");
-	notification.body = const_cast<char *>("finished safely");
+	notification.body = const_cast<char *>(
+		"**finished safely**\n\n"
+		"| Item | Value |\n|---|---|\n| DNS | 10.1.0.2 |\n");
 	int callback_rc = -1;
 
 	std::thread worker([&] {
@@ -137,7 +214,13 @@ TEST_F(CliUiTest, WakePipeSignalsQueuedWorkAndDrains)
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("nightly task"), std::string::npos);
 	EXPECT_NE(output.find("finished safely"), std::string::npos);
-	EXPECT_NE(output.find("#42"), std::string::npos);
+	EXPECT_EQ(output.find("**"), std::string::npos);
+	EXPECT_NE(output.find("DNS"), std::string::npos);
+	EXPECT_NE(output.find("10.1.0.2"), std::string::npos);
+	EXPECT_EQ(output.find("|---|---|"), std::string::npos);
+	EXPECT_NE(output.find("inbox #42"), std::string::npos);
+	EXPECT_NE(output.find("#17"), std::string::npos);
+	EXPECT_NE(output.find("completed"), std::string::npos);
 
 	fd.revents = 0;
 	EXPECT_EQ(poll(&fd, 1, 0), 0);

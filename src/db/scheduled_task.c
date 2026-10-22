@@ -519,6 +519,32 @@ int scheduled_task_update(struct db *db, int64_t id,
 	return scheduled_task_update_with_events(db, id, input, out, NULL);
 }
 
+int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out)
+{
+	const char *sql =
+		"SELECT COUNT(CASE WHEN status='running' THEN 1 END),"
+		"COUNT(CASE WHEN status IN ('pending','waiting') THEN 1 END) "
+		"FROM scheduled_tasks WHERE status IN ('running','pending','waiting')";
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!db || !db->handle || !out)
+		MORPH_RETURN(-EINVAL);
+	memset(out, 0, sizeof(*out));
+	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		out->running = sqlite3_column_int64(stmt, 0);
+		out->pending = sqlite3_column_int64(stmt, 1);
+	}
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_ROW)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
 int scheduled_task_list(struct db *db, const char *status, int limit,
 			struct scheduled_task **out, int *count)
 {

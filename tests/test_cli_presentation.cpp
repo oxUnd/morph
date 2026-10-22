@@ -832,7 +832,7 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 		Emit(MORPH_EVENT_REACT, "react.turn.end", "cancelled", data);
 		std::string output = testing::internal::GetCapturedStdout();
 		EXPECT_NE(output.find(mode == CLI_PRESENT_ONCE_PLAIN ?
-			"cancelled\n" : "\033[2m• Cancelled\033[0m"),
+			"cancelled\n" : "\033[2m◇ Cancelled\033[0m"),
 			std::string::npos);
 		EXPECT_EQ(output.find("Error"), std::string::npos);
 		EXPECT_EQ(output.find("Operation canceled"), std::string::npos);
@@ -853,7 +853,7 @@ TEST_F(CliPresentationTest, FailedTurnStillUsesErrorStatus)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.turn.end", "failed", data);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("\033[31m• Error"), std::string::npos);
+	EXPECT_NE(output.find("\033[31m⊗ Error"), std::string::npos);
 	EXPECT_NE(output.find("Operation canceled"), std::string::npos);
 	cJSON_Delete(data);
 }
@@ -886,7 +886,7 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[2m• Reasoning  \033[0m"),
+	EXPECT_NE(output.find("\033[2m◇ Reasoning · \033[0m"),
 		  std::string::npos);
 	EXPECT_NE(output.find("\033[2mInspect\033[0m"),
 		  std::string::npos);
@@ -917,7 +917,7 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	     reasoning);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("• Reasoning  Checking constraints"),
+	EXPECT_NE(output.find("◇ Reasoning · Checking constraints"),
 		  std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	cJSON_Delete(reasoning);
@@ -1169,7 +1169,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 	EXPECT_EQ(output.find("MCP meego", root + 1), std::string::npos);
 	EXPECT_NE(output.find("├ Connecting"), std::string::npos);
 	EXPECT_NE(output.find(
-		"└ ✗ Failed · Missing MCP token: environment variable "
+		"└ ⊗ Failed · Missing MCP token: environment variable "
 		"'MEEGO_TOKEN' is not set"), std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
 
@@ -1208,7 +1208,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	EXPECT_NE(output.find("├ Connected"), std::string::npos);
 	EXPECT_NE(output.find("├ Discovering capabilities"),
 		  std::string::npos);
-	EXPECT_NE(output.find("└ ✓ Ready · 12 tools, 3 resources, 2 prompts"),
+	EXPECT_NE(output.find("└ ◯ Ready · 12 tools, 3 resources, 2 prompts"),
 		  std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
 	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
@@ -1494,7 +1494,7 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	cli_presentation_finish(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("⊗ exec"), std::string::npos);
+	EXPECT_NE(output.find("⊗ Exec"), std::string::npos);
 	EXPECT_NE(output.find("undefined reference to react_init"), std::string::npos);
 	EXPECT_EQ(output.find("failed"), std::string::npos);
 	EXPECT_EQ(output.find("VERBOSE OUTPUT"), std::string::npos);
@@ -1712,7 +1712,7 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Updated plan"), std::string::npos);
+	EXPECT_NE(output.find("Plan · 1/2 completed"), std::string::npos);
 	EXPECT_NE(output.find("Inspect CLI"), std::string::npos);
 	EXPECT_NE(output.find("Implement presenter"), std::string::npos);
 	EXPECT_EQ(output.find("{\"plans\""), std::string::npos);

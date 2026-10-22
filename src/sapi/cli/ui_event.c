@@ -31,6 +31,10 @@ struct cli_ui_item {
 	char *notification_title;
 	char *notification_body;
 	int64_t notification_id;
+	int64_t notification_task_id;
+	int64_t notification_created_at;
+	int notification_failed;
+	int notification_warning;
 	struct cli_ui_owner_call *owner_call;
 };
 
@@ -288,6 +292,10 @@ int cli_ui_post_notification(struct cli_context *ctx,
 		MORPH_RETURN(-ENOMEM);
 	item->kind = CLI_UI_ITEM_NOTIFICATION;
 	item->notification_id = notification->id;
+	item->notification_task_id = notification->task_id;
+	item->notification_created_at = notification->created_at;
+	item->notification_failed = strcmp(notification->level, "error") == 0;
+	item->notification_warning = strcmp(notification->level, "warning") == 0;
 	rc = cli_ui_dup_optional(notification->title,
 				 &item->notification_title);
 	if (rc == 0)
@@ -364,20 +372,38 @@ static void cli_ui_run_owner_call(struct cli_ui_owner_call *call)
 	cli_ui_complete_owner_call(call, result);
 }
 
-static void cli_ui_render_notification(const struct cli_ui_item *item)
+static void cli_ui_render_notification(struct cli_context *ctx,
+				       const struct cli_ui_item *item)
 {
-	printf("\n" ANSI_BOLD ANSI_CYAN "[task]" ANSI_RESET " ");
+	const char *color = item->notification_failed ? ANSI_RED :
+		item->notification_warning ? ANSI_YELLOW : ANSI_GREEN;
+	const char *mark = item->notification_failed ? CLI_FEED_FAILED :
+		item->notification_warning ? CLI_FEED_SYSTEM : CLI_FEED_DONE;
+	const char *status = item->notification_failed ? "failed" :
+		item->notification_warning ? "attention" : "completed";
+	char clock[32] = "";
+	struct tm local;
+	time_t created = (time_t)item->notification_created_at;
+
+	printf("\n%s%s" ANSI_RESET " " ANSI_CYAN "[task]" ANSI_RESET " ",
+		color, mark);
+	if (item->notification_task_id > 0)
+		printf(ANSI_DIM "#%lld " ANSI_RESET,
+			(long long)item->notification_task_id);
 	(void)cli_print_untrusted_text(
 		item->notification_title ? item->notification_title : "Task",
 		UTF8_TERMINAL_TEXT_SINGLE_LINE);
-	printf("\n");
+	printf(ANSI_DIM " · " ANSI_RESET "%s%s" ANSI_RESET "\n", color, status);
 	if (item->notification_body && item->notification_body[0]) {
-		(void)cli_print_untrusted_text(item->notification_body,
-			UTF8_TERMINAL_TEXT_MULTILINE);
-		printf("\n");
+		printf("  ");
+		cli_markdown_render_ansi_with_media_indented(
+			item->notification_body, 2, media_callback, ctx);
 	}
-	printf(ANSI_DIM "stored in /inbox as #%lld" ANSI_RESET "\n",
-	       (long long)item->notification_id);
+	printf("  " ANSI_DIM "inbox #%lld", (long long)item->notification_id);
+	if (created > 0 && localtime_r(&created, &local) &&
+	    strftime(clock, sizeof(clock), "%H:%M:%S", &local) > 0)
+		printf(" · %s", clock);
+	printf(ANSI_RESET "\n\n");
 }
 
 int cli_ui_drain(struct cli_context *ctx)
@@ -427,7 +453,7 @@ int cli_ui_drain(struct cli_context *ctx)
 		}
 		else if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
 			cli_terminal_history_begin(ctx);
-			cli_ui_render_notification(item);
+			cli_ui_render_notification(ctx, item);
 			cli_terminal_history_end(ctx);
 		}
 		if (captured)

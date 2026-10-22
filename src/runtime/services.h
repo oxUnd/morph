@@ -111,6 +111,8 @@ int runtime_task_create(struct runtime *runtime,
 int runtime_task_update(struct runtime *runtime, int64_t id,
 			const struct scheduled_task_input *input,
 			struct scheduled_task *out);
+int runtime_task_count_active(struct runtime *runtime,
+			      struct scheduled_task_counts *out);
 int runtime_task_list(struct runtime *runtime, const char *status, int limit,
 		      struct scheduled_task **out, int *count);
 int runtime_task_get(struct runtime *runtime, int64_t id,

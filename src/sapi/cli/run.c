@@ -123,9 +123,12 @@ static void cli_readline_clear_footer(struct cli_context *ctx)
 {
 	if (!ctx || !ctx->input_status.distance)
 		return;
-	fprintf(stdout, "\0337\033[%dB\r\033[2K\033[1A\033[2K\0338",
-		ctx->input_status.distance);
+	fprintf(stdout, "\0337\033[%dB\r\033[2K", ctx->input_status.distance);
+	for (int i = 0; i < ctx->input_status.footer_rows; i++)
+		fprintf(stdout, "\033[1A\r\033[2K");
+	fprintf(stdout, "\0338");
 	ctx->input_status.distance = 0;
+	ctx->input_status.footer_rows = 0;
 }
 
 static void cli_footer_field(morph_buf_t *text, const char *value,
@@ -166,6 +169,7 @@ static void cli_readline_footer(struct cli_context *ctx)
 	const char *workdir;
 	const char *home = getenv("HOME");
 	int row, column, last_row, last_column;
+	int footer_rows;
 
 	if (!ctx || !ctx->runtime || ctx->input_status.suspended ||
 	    !RL_ISSTATE(RL_STATE_CALLBACK) || !rl_line_buffer ||
@@ -188,6 +192,7 @@ static void cli_readline_footer(struct cli_context *ctx)
 				runtime_config_get(ctx->runtime)->models.text.context_limit;
 		if (runtime_credit_summary_current_get(ctx->runtime, &credits) == 0)
 			ctx->input_status.credits = credits.credits;
+		(void)runtime_task_count_active(ctx->runtime, &ctx->input_status.tasks);
 		ctx->input_status.updated = now.tv_sec;
 	}
 	if (morph_buf_init(&text, 128) != 0)
@@ -196,6 +201,7 @@ static void cli_readline_footer(struct cli_context *ctx)
 		morph_buf_cleanup(&text);
 		return;
 	}
+
 	{
 		int total = runtime_mcp_count(ctx->runtime);
 		int ready = 0, pending = 0, failed = 0;
@@ -254,6 +260,23 @@ static void cli_readline_footer(struct cli_context *ctx)
 	cli_footer_field(&text, morph_buf_cstr(&usage),
 		(size_t)size.ws_col - 2 - utf8_display_width_ansi(morph_buf_cstr(&text)),
 		ANSI_DIM, 0);
+	footer_rows = 1;
+	if (ctx->input_status.tasks.running || ctx->input_status.tasks.pending) {
+		morph_buf_t tasks;
+
+		if (morph_buf_init(&tasks, 64) == 0) {
+			(void)morph_buf_printf(&tasks, "Tasks %lld running · %lld pending",
+				(long long)ctx->input_status.tasks.running,
+				(long long)ctx->input_status.tasks.pending);
+			(void)morph_buf_puts(&text, "\r\n\033[2K  ");
+			cli_footer_field(&text, morph_buf_cstr(&tasks),
+				(size_t)size.ws_col - 4,
+				ctx->input_status.tasks.running ? ANSI_YELLOW : ANSI_DIM, 0);
+			morph_buf_cleanup(&tasks);
+			footer_rows++;
+		}
+	}
+	cli_readline_clear_footer(ctx);
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
 		fprintf(stdout, "\033[%dB", last_row - row);
@@ -261,8 +284,9 @@ static void cli_readline_footer(struct cli_context *ctx)
 		"\033[%dA\033[%dG", last_column + 1,
 		cli_color_enabled() ? CLI_INPUT_BACKGROUND : "",
 		cli_color_enabled() ? ANSI_RESET : "", morph_buf_cstr(&text),
-		last_row - row + 2, column + 1);
-	ctx->input_status.distance = last_row - row + 2;
+		last_row - row + footer_rows + 1, column + 1);
+	ctx->input_status.distance = last_row - row + footer_rows + 1;
+	ctx->input_status.footer_rows = footer_rows;
 	morph_buf_cleanup(&usage);
 	morph_buf_cleanup(&text);
 	fflush(stdout);
@@ -1071,6 +1095,8 @@ void cli_run(struct cli_context *ctx)
 		int timeout_ms = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
 		int rc;
 
+		if (callback_installed && (timeout_ms < 0 || timeout_ms > 1000))
+			timeout_ms = 1000;
 		if (!ctx->details_open && cli_command_job_done(&job))
 			timeout_ms = 0;
 

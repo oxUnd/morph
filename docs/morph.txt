@@ -264,7 +264,7 @@ Common interactive commands:
 	/help [command]	List commands or show one command.
 	/quit		Exit.
 	/new [name]	Create a new session.
-	/list [n|query|--all]	List sessions.
+	/resume [name|id]	Choose or resume a session.
 	/switch <name|id|^N>	Switch session.
 	/rename <name>	Rename current session.
 	/delete <name|id>	Delete a session.
@@ -292,9 +292,18 @@ Common interactive commands:
 	/image <path>	Inject an image into context.
 	/render <path>	Render an image, video, or markdown file.
 
-Most commands have short aliases: /q, /h, /n, /ls, /s, /rn, /del, /m,
+Most commands have short aliases: /q, /h, /n, /s, /rn, /del, /m,
 /cfg, /t, /ctx, /cp, /r, /mem, /perms, /x.  Use /help /command for exact
 usage.
+
+The interactive footer shows running and pending scheduled task counts while
+any are active. Waiting tasks count as pending; the counts refresh while idle.
+Active tasks use a separate footer row so model and context information remain
+visible. Background results include their task ID, delivery time, and inbox ID.
+
+Feed marks: ● assistant output, ◯ completed action, ◉ running action,
+⊗ failure, ◇ system update or warning, and ? input required. Tool details remain
+available through Ctrl+O. Task bodies use the same Markdown renderer as replies.
 
 ==============================================================================
 TOOLS AND PERMISSIONS					*morph-tools*

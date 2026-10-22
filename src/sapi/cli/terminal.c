@@ -110,14 +110,14 @@ static void terminal_work_row(struct cli_terminal *terminal, int columns)
 
 	if (morph_buf_init(&text, 128) != 0)
 		return;
-	(void)morph_buf_puts(&text, terminal->work_state == CLI_WORK_RUNNING ? "(" :
+	(void)morph_buf_puts(&text, terminal->work_state == CLI_WORK_RUNNING ? "" :
 		terminal->work_state == CLI_WORK_COMPLETED ? "Worked for " :
 		terminal->work_state == CLI_WORK_STOPPED ? "Stopped after " : "Failed after ");
 	if (seconds >= 60)
 		(void)morph_buf_printf(&text, "%lldm ", (long long)(seconds / 60));
 	(void)morph_buf_printf(&text, "%llds", (long long)(seconds % 60));
 	if (terminal->work_state == CLI_WORK_RUNNING)
-		(void)morph_buf_puts(&text, " · esc to interrupt)");
+		(void)morph_buf_puts(&text, " · esc to interrupt");
 	else if (localtime_r(&terminal->work_finished_at, &finished)) {
 		(void)strftime(clock, sizeof(clock), "%H:%M", &finished);
 		(void)morph_buf_printf(&text, " · %s", clock);
@@ -131,7 +131,7 @@ static void terminal_work_row(struct cli_terminal *terminal, int columns)
 		int position = (int)((elapsed / CLI_TERMINAL_WORK_FRAME_MS) %
 			(int)(sizeof(label) + 3)) - 2;
 
-		fprintf(terminal->output, "\033[38;5;246m● ");
+		fprintf(terminal->output, "  ");
 		for (size_t i = 0; i < sizeof(label) - 1; i++) {
 			int distance = abs((int)i - position);
 			int shade = distance == 0 ? 255 : distance == 1 ? 250 :
@@ -139,7 +139,9 @@ static void terminal_work_row(struct cli_terminal *terminal, int columns)
 
 			fprintf(terminal->output, "\033[38;5;%dm%c", shade, label[i]);
 		}
-		fprintf(terminal->output, ANSI_RESET " ");
+		fprintf(terminal->output, ANSI_RESET ANSI_DIM " · ");
+	} else {
+		fprintf(terminal->output, "  ");
 	}
 	fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, clipped);
 	morph_buf_cleanup(&text);
@@ -445,7 +447,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	if (status_visible) {
 		fprintf(terminal->output, "%s%s" ANSI_RESET " %s%s" ANSI_RESET,
 			tool_live ? ANSI_YELLOW : ANSI_CYAN,
-			tool_live ? (terminal->frame % 2 ? "◉" : "◯") :
+			tool_live ? (terminal->frame % 2 ? CLI_FEED_RUNNING : CLI_FEED_DONE) :
 			frames[terminal->frame %
 			       (int)(sizeof(frames) / sizeof(frames[0]))],
 			terminal->live_independent ? ANSI_DIM : "",

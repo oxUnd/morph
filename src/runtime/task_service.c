@@ -1,5 +1,6 @@
 #include "runtime/services.h"
 #include "runtime/runtime_internal.h"
+#include "util/error.h"
 
 #include <errno.h>
 
@@ -21,6 +22,14 @@ int runtime_task_update(struct runtime *runtime, int64_t id,
 		return -EINVAL;
 	return scheduled_task_update_with_events(&runtime->context.database, id,
 		input, out, runtime->options.task_events);
+}
+
+int runtime_task_count_active(struct runtime *runtime,
+			      struct scheduled_task_counts *out)
+{
+	if (!runtime)
+		MORPH_RETURN(-EINVAL);
+	return scheduled_task_count_active(&runtime->context.database, out);
 }
 
 int runtime_task_list(struct runtime *runtime, const char *status, int limit,

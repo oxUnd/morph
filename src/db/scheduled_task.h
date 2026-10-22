@@ -12,6 +12,11 @@ extern "C" {
 #define SCHEDULED_TASK_TEXT_MAX 256
 #define SCHEDULED_TASK_TYPE_MAX 32
 
+struct scheduled_task_counts {
+	int64_t running;
+	int64_t pending;
+};
+
 struct scheduled_task_input {
 	int64_t source_session_id;
 	const char *title;
@@ -92,6 +97,7 @@ int scheduled_task_update(struct db *db, int64_t id,
 int scheduled_task_update_with_events(
 	struct db *db, int64_t id, const struct scheduled_task_input *input,
 	struct scheduled_task *out, const struct scheduled_task_event_sink *events);
+int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out);
 int scheduled_task_list(struct db *db, const char *status, int limit,
 			struct scheduled_task **out, int *count);
 int scheduled_task_list_due(struct db *db, int64_t now, int limit,

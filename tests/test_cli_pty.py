@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -57,10 +58,12 @@ class Model(http.server.BaseHTTPRequestHandler):
 
 
 class Terminal:
-    def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False):
+    def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False, hooks_enabled=True):
         config = directory / 'config.toml'
         config.write_text(f'''[general]
 output_dir = "{directory}/output"
+[features]
+hooks = {str(hooks_enabled).lower()}
 [memory]
 enabled = {str(memory_enabled).lower()}
 llm_extract_enabled = false
@@ -127,7 +130,7 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='morph-pty-') as temp:
-        terminal = Terminal(driver, Path(temp), server.server_port)
+        terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
         releases = []
         try:
             terminal.pump(1)
@@ -139,6 +142,55 @@ def main():
             assert 'morph · pty-test' in rows[prompt_row + 2], idle
             assert terminal.screen.buffer[prompt_row][0].bg == '1c1c1c', idle
             assert Path(temp).name in rows[prompt_row + 2], idle
+            with sqlite3.connect(Path(temp) / 'data.db') as database:
+                database.execute("""INSERT INTO scheduled_tasks
+                    (title,kind,status,trigger_type,next_run_at,action_type,created_at,updated_at)
+                    VALUES ('footer test','reminder','pending','once',4102444800,
+                            'reminder',1,1)""")
+            terminal.pump(1.2)
+            pending = terminal.snapshot('pending task footer refresh')
+            assert 'Tasks 0 running · 1 pending' in pending, pending
+            assert 'pty-test' in pending and 'ctx ' in pending, pending
+            terminal.child.setwinsize(24, 40)
+            terminal.screen.resize(lines=24, columns=40)
+            terminal.pump(.5)
+            narrow_tasks = terminal.snapshot('narrow active task footer')
+            assert 'Tasks 0 running · 1 pending' in narrow_tasks, narrow_tasks
+            assert 'ctx ' in narrow_tasks, narrow_tasks
+            terminal.child.setwinsize(24, 80)
+            terminal.screen.resize(lines=24, columns=80)
+            terminal.pump(.5)
+            with sqlite3.connect(Path(temp) / 'data.db') as database:
+                database.execute("UPDATE scheduled_tasks SET status='running', updated_at=?",
+                                 (int(time.time()),))
+            terminal.pump(1.2)
+            running = terminal.snapshot('running task footer refresh')
+            assert 'Tasks 1 running · 0 pending' in running, running
+            with sqlite3.connect(Path(temp) / 'data.db') as database:
+                database.execute("UPDATE scheduled_tasks SET status='completed'")
+            terminal.pump(1.2)
+            completed_tasks = terminal.snapshot('completed task footer clears')
+            assert 'Tasks ' not in completed_tasks, completed_tasks
+            terminal.send('preserved task draft')
+            with sqlite3.connect(Path(temp) / 'data.db') as database:
+                database.execute("""INSERT INTO scheduled_tasks
+                    (title,kind,status,trigger_type,next_run_at,action_type,payload_json,
+                     created_at,updated_at)
+                    VALUES ('DNS notification','reminder','pending','once',1,
+                            'reminder',?,1,1)""",
+                    (json.dumps({'message': '**DNS check complete**\n\n'
+                                 '| Interface | DNS |\n|---|---|\n'
+                                 '| en0 | 10.1.0.2 |\n'}),))
+            terminal.pump(2)
+            notification = terminal.snapshot('task markdown notification preserves draft')
+            assert 'DNS check complete' in notification, notification
+            assert next(row for row in notification.splitlines()
+                        if 'DNS check complete' in row).startswith('  DNS'), notification
+            assert '**' not in notification and '|---|---|' not in notification, notification
+            assert '10.1.0.2' in notification and 'inbox #' in notification, notification
+            assert 'preserved task draft' in notification, notification
+            assert notification.count('[task]') == 1, notification
+            terminal.send('\x15')
             terminal.send('\r\r\r')
             empty = terminal.snapshot('repeated empty Enter')
             assert sum(row.split('ctrl+o details')[0].strip() == '›'
@@ -148,7 +200,7 @@ def main():
             terminal.send('initial task\r')
             starting = terminal.snapshot('immediate turn status')
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
-            assert 'Working (' in starting and 'esc to interrupt' in starting, starting
+            assert 'Working ·' in starting and 'esc to interrupt' in starting, starting
             starting_rows = starting.splitlines()
             user_row = next(i for i, row in enumerate(starting_rows)
                             if row.startswith('› initial task'))
@@ -161,7 +213,7 @@ def main():
                        for column in range(terminal.screen.columns)), starting
             assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
-                               if 'Working (' in row)
+                               if 'Working ·' in row)
             assert working_row > 0 and not starting_rows[working_row - 1].strip(), starting
             first, release = terminal.request()
             releases.append(release)
@@ -229,12 +281,12 @@ def main():
             completed_rows = completed.splitlines()
             worked_row = next(i for i, row in enumerate(completed_rows)
                               if 'Worked for ' in row)
-            assert completed_rows[worked_row].startswith('Worked for '), completed
+            assert completed_rows[worked_row].startswith('  Worked for '), completed
             assert worked_row > 0 and not completed_rows[worked_row - 1].strip(), completed
             assert not completed_rows[worked_row + 1].strip(), completed
             assert terminal.screen.buffer[worked_row + 1][0].bg == 'default', completed
             assert terminal.screen.buffer[worked_row + 2][0].bg == '1c1c1c', completed
-            assert 'Working (' not in completed, completed
+            assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
             assert ' cr' in completed, completed
             terminal.send('\x15\r')
