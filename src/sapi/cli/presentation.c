@@ -1587,6 +1587,16 @@ int cli_presentation_event(struct cli_context *ctx,
 	}
 	if (!ctx->presentation_ready)
 		return 0;
+	/* Background metadata belongs in the footer, never in the conversation. */
+	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
+	    strcmp(ev->name, "session.title") == 0) {
+		if (ev->phase && strcmp(ev->phase, "begin") == 0)
+			ctx->input_status.session_titles_pending++;
+		else if (ev->phase && strcmp(ev->phase, "end") == 0 &&
+			 ctx->input_status.session_titles_pending > 0)
+			ctx->input_status.session_titles_pending--;
+		return 0;
+	}
 	if (!ctx->turn_active &&
 	    (ev->type == MORPH_EVENT_REACT ||
 	     ev->type == MORPH_EVENT_TOOL ||

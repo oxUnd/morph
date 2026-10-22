@@ -228,6 +228,8 @@ static void cli_readline_footer(struct cli_context *ctx)
 	(void)morph_buf_printf(&usage, size.ws_col >= 100 ?
 		"  ·  %lld credits" : " · %lld cr",
 		(long long)ctx->input_status.credits);
+	if (ctx->input_status.session_titles_pending > 0)
+		(void)morph_buf_puts(&usage, " · Naming session...");
 	(void)morph_buf_puts(&text, "  ");
 	cli_footer_field(&text, "morph", 5, "\033[1;38;5;252m", 0);
 	(void)morph_buf_puts(&text, " · ");

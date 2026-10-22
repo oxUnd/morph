@@ -126,7 +126,7 @@ int runtime_session_context_tokens(struct runtime *runtime, int64_t session_id,
 				   int64_t *out);
 void runtime_session_list_free(struct session *sessions);
 int runtime_session_reload_current(struct runtime *runtime);
-const char *runtime_session_current_name(const struct runtime *runtime);
+const char *runtime_session_current_name(struct runtime *runtime);
 struct message *runtime_session_messages_current(struct runtime *runtime,
 					 int *count);
 void runtime_session_messages_free(struct message *messages);

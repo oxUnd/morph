@@ -37,6 +37,8 @@ struct runtime_request {
 	react_action_drain_fn action_drain_fn;
 	void *action_drain_user_data;
 	int override_action_drain;
+	/* Opt in only for an unnamed session's first user turn. */
+	int generate_session_title;
 	unsigned turn_flags;
 };
 

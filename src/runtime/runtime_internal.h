@@ -20,6 +20,10 @@ struct runtime_mcp_job {
 	int64_t elapsed_ms;
 };
 
+#define RUNTIME_TITLE_JOB_MAX 4
+
+struct runtime_title_job;
+
 struct runtime {
 	struct runtime_context context;
 	struct runtime_options options;
@@ -29,7 +33,13 @@ struct runtime {
 	int sync_started;
 	struct runtime_mcp_job mcp_jobs[MCP_MAX_SERVERS];
 	int mcp_job_count;
+	struct runtime_title_job *title_jobs[RUNTIME_TITLE_JOB_MAX];
 };
+
+/* Start/cancel run under execution_lock; shutdown joins before freeing runtime. */
+int runtime_title_start(struct runtime *runtime, const struct runtime_request *request);
+void runtime_title_cancel(struct runtime *runtime, int64_t session_id);
+void runtime_title_stop(struct runtime *runtime);
 
 int runtime_mcp_background_start(struct runtime *runtime);
 void runtime_mcp_background_stop(struct runtime *runtime);

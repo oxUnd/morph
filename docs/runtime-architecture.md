@@ -65,6 +65,7 @@ runtime/
   mcp_service.c     MCP DTO and operation facade
   registry_service.c platform tool and MCP registration facade
   session_service.c session ownership and selection facade
+  session_title.c   isolated background title generation and conditional persistence
   session.c         session lifecycle and switching
   permissions_service.c persistent permission grant listing and revocation
   task_service.c    scheduled-task and notification facade
@@ -160,3 +161,36 @@ UI; they do not need to implement connection workers or tool registration.
 clients, tools, and event sinks. HTTP interruption uses the existing curl
 progress callback; stdio interruption is checked at most every 100 ms while
 waiting for responses. Child-process termination is bounded and reaped.
+
+## Background session titles
+
+A frontend can set `runtime_request.generate_session_title` on the first user
+turn of an automatically created session. Explicit names and resumed sessions
+leave it unset. The CLI uses this instead of truncating the first prompt into
+a session name.
+
+The runtime snapshots the text model, session identity, original name, billing
+configuration, and a UTF-8-safe prompt bounded to 960 bytes. An isolated worker
+uses the same model/provider with no tools, no output callbacks, a 30-second
+request timeout, and no retries. Only a valid JSON title is accepted; it is
+normalized to one line and limited to 36 Unicode characters. Requests for the
+same session are deduplicated while running, and at most four jobs run at once.
+
+Each worker owns its model, arena, cancellation token, and database connection.
+The result updates metadata only if both the original display ID and name still
+match. A duplicate title receives a stable display-ID suffix within the length
+limit. Title updates preserve activity timestamps and never enter model history
+or the transcript. Usage is billed to the original session and user rather than
+the foreground turn. Failures leave the original name intact and are silent.
+
+Manual rename and deletion cancel pending work, including a rename to the same
+name. Switching sessions does not redirect or cancel the original request.
+Shutdown cancels and joins workers before releasing runtime resources. Session
+snapshots and name accessors read persisted titles so hosts see background
+updates without receiving extra chat messages.
+
+`session.title` background events bracket each request with `begin` and `end`
+phases, including failure and cancellation. They use the runtime's event sink
+on the worker thread; hosts opting into naming must marshal events to their
+UI thread. The CLI shows `Naming session...` in the footer while work is pending,
+without replacing foreground activity or printing metadata in the conversation.

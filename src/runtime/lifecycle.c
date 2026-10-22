@@ -558,6 +558,7 @@ void runtime_close(struct runtime *runtime)
 	runtime_sync_stop_instance(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_lock(&runtime->context.execution_lock);
+	runtime_title_stop(runtime);
 	if (runtime->context.hooks.ready && runtime->context.hooks.session_id) {
 		cJSON *input = cJSON_CreateObject(), *output = NULL;
 		cJSON_AddStringToObject(input, "reason", "other");
@@ -637,8 +638,16 @@ void runtime_record_usage(const struct model_usage *usage, void *user_data)
 
 int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 {
-	return runtime_context_prepare_turn(&((struct runtime *)user_data)->context,
-				    request, user_data);
+	struct runtime *runtime = user_data;
+	int rc = runtime_context_prepare_turn(&runtime->context, request, user_data);
+
+	if (rc == 0 && request->generate_session_title) {
+		int title_rc = runtime_title_start(runtime, request);
+
+		if (title_rc != 0)
+			log_dbg("session title skipped: %s", morph_strerror(title_rc));
+	}
+	return rc;
 }
 
 void runtime_finish_turn(void *user_data, const struct runtime_request *request,

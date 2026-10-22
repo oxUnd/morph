@@ -32,6 +32,7 @@ struct cli_input_status {
 	int tokens;
 	int limit;
 	int64_t credits;
+	int session_titles_pending;
 	struct scheduled_task_counts tasks;
 };
 

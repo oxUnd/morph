@@ -121,7 +121,7 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 	return -ENOENT;
 }
 
-int session_get_by_id(struct db *db, int64_t id, struct session *out)
+int session_get_by_id(const struct db *db, int64_t id, struct session *out)
 {
 	if (!db || !db->handle || !out)
 		return -EINVAL;

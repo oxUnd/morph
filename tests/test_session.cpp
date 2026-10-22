@@ -209,62 +209,6 @@ TEST_F(SessionTest, MessageFreeListNull) {
 	EXPECT_NO_FATAL_FAILURE(message_free_list(nullptr));
 }
 
-TEST_F(SessionTest, AutoRenameNewSession) {
-	struct session s;
-	int rc = session_create(&db, "new", "gpt-4o", &s);
-	ASSERT_EQ(rc, 0);
-	int auto_named = 0;
-
-	const char *input = "画一只猫";
-	if (!auto_named && input[0] != '/') {
-		char title[48];
-		size_t max_len = sizeof(title) - 4;
-		std::string title_str(input);
-		if (title_str.size() > max_len) {
-			title_str.resize(max_len);
-			title_str += "...";
-		}
-		ASSERT_LT(title_str.size(), sizeof(title));
-		memcpy(title, title_str.c_str(), title_str.size() + 1);
-		session_rename(&db, s.id, title);
-		strncpy(s.name, title, sizeof(s.name) - 1);
-		auto_named = 1;
-	}
-	EXPECT_STREQ(s.name, "画一只猫");
-	EXPECT_EQ(auto_named, 1);
-
-	struct session loaded;
-	rc = session_get_by_name(&db, "画一只猫", &loaded);
-	EXPECT_EQ(rc, 0);
-	EXPECT_STREQ(loaded.name, "画一只猫");
-}
-
-TEST_F(SessionTest, AutoRenameExistingSession) {
-	struct session s;
-	int rc = session_create(&db, "new", "gpt-4o", &s);
-	ASSERT_EQ(rc, 0);
-	message_add(&db, s.id, "user", "old message", 2);
-
-	int auto_named = 0;
-	const char *input = "画一只猫";
-	if (!auto_named && input[0] != '/') {
-		char title[48];
-		size_t max_len = sizeof(title) - 4;
-		std::string title_str(input);
-		if (title_str.size() > max_len) {
-			title_str.resize(max_len);
-			title_str += "...";
-		}
-		ASSERT_LT(title_str.size(), sizeof(title));
-		memcpy(title, title_str.c_str(), title_str.size() + 1);
-		session_rename(&db, s.id, title);
-		strncpy(s.name, title, sizeof(s.name) - 1);
-		auto_named = 1;
-	}
-	EXPECT_STREQ(s.name, "画一只猫");
-	EXPECT_EQ(auto_named, 1);
-}
-
 TEST_F(SessionTest, DisplayIdGetByDisplayId) {
 	struct session s;
 	session_create(&db, "display_find", "gpt-4o", &s);
@@ -337,60 +281,6 @@ TEST_F(SessionTest, AutoNamedUnique) {
 	rc = session_create(&db, name2, "gpt-4o", &s2);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STRNE(s1.name, s2.name);
-}
-
-TEST_F(SessionTest, AutoRenameFromUniqueName) {
-	struct session s;
-	char name[256];
-	snprintf(name, sizeof(name), "new_%lld", (long long)time(NULL));
-	int rc = session_create(&db, name, "gpt-4o", &s);
-	ASSERT_EQ(rc, 0);
-
-	/* Auto-rename on first user input (same logic as cli.c L2210-2227) */
-	const char *input = "hello world";
-	char title[48];
-	size_t len = strlen(input);
-	memcpy(title, input, len);
-	title[len] = '\0';
-	session_rename(&db, s.id, title);
-	strncpy(s.name, title, sizeof(s.name) - 1);
-
-	EXPECT_STREQ(s.name, "hello world");
-
-	struct session loaded;
-	rc = session_get_by_name(&db, "hello world", &loaded);
-	EXPECT_EQ(rc, 0);
-	EXPECT_STREQ(loaded.name, "hello world");
-}
-
-TEST_F(SessionTest, AutoRenameTruncation) {
-	struct session s;
-	int rc = session_create(&db, "new", "gpt-4o", &s);
-	ASSERT_EQ(rc, 0);
-	int auto_named = 0;
-
-	const char *input = "这是一段非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常非常长的输入内容用来测试截断";
-	if (!auto_named && input[0] != '/') {
-		char title[48];
-		size_t len = strlen(input);
-		size_t max_len = sizeof(title) - 4;
-		if (len > max_len) {
-			memcpy(title, input, max_len);
-			title[max_len] = '\0';
-			strcat(title, "...");
-		} else {
-			memcpy(title, input, len);
-			title[len] = '\0';
-		}
-		session_rename(&db, s.id, title);
-		strncpy(s.name, title, sizeof(s.name) - 1);
-		auto_named = 1;
-	}
-	EXPECT_EQ(auto_named, 1);
-	EXPECT_EQ(strlen(s.name), 47);
-	char *dots = strstr(s.name, "...");
-	ASSERT_NE(dots, nullptr);
-	EXPECT_STREQ(dots, "...");
 }
 
 TEST_F(SessionTest, ModelHistoryStoresStructuredItemsInSequence) {

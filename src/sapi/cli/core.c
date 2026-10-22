@@ -390,6 +390,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		.session_id = current.id,
 		.model_input = effective_input,
 		.stored_user_input = input,
+		.generate_session_title = !ctx->session_auto_named,
 		.prompt_pending_fn = cli_command_job_prompt_pending,
 		.action_drain_fn = cli_command_job_drain,
 		.action_drain_user_data = ctx->input_job,
@@ -403,30 +404,8 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 	struct runtime_result runtime_result;
 	int react_rc = runtime_execute_turn(ctx->runtime, &request,
 					    &runtime_result);
-	/* Auto-name a lazily created session from its first user input. */
-	if (!ctx->session_auto_named) {
-		struct session named_session;
-		char title[48];
-		size_t len = strcspn(input, "\n");
-		size_t max_bytes = sizeof(title) - 4;
-
-		if (len > max_bytes) {
-			size_t chop = utf8_clamp_bytes(input, max_bytes);
-
-			memcpy(title, input, chop);
-			title[chop] = '\0';
-			strcat(title, "...");
-		} else {
-			memcpy(title, input, len);
-			title[len] = '\0';
-		}
-		if (runtime_session_current(ctx->runtime, &named_session) == 0 &&
-		    named_session.id > 0) {
-			(void)runtime_session_rename_and_update(ctx->runtime,
-							 named_session.id, title);
-			ctx->session_auto_named = 1;
-		}
-	}
+	if (react_rc != -EBUSY)
+		ctx->session_auto_named = 1;
 	if (has_input_buf)
 		morph_buf_cleanup(&input_buf);
 	struct cli_cancel_monitor *cancel_monitor = ctx->cancel_monitor;

@@ -20,6 +20,7 @@ set(TEST_SOURCES
 	test_runtime_mcp.cpp
 	test_runtime.cpp
 	test_runtime_services.cpp
+	test_session_title.cpp
 	test_runtime_internal.cpp
 	test_runtime_sync.cpp
 	test_runtime_execute.cpp

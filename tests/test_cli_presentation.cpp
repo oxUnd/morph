@@ -1143,6 +1143,30 @@ TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 	cJSON_Delete(ready);
 }
 
+TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivity)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_terminal_live_set(&ctx, "Thinking...");
+	struct morph_event event{
+		MORPH_EVENT_BACKGROUND, "session.title", "begin",
+		"Naming session...", nullptr, nullptr
+	};
+
+	testing::internal::CaptureStdout();
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	EXPECT_EQ(ctx.input_status.session_titles_pending, 2);
+	event.phase = "end";
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	EXPECT_EQ(ctx.input_status.session_titles_pending, 1);
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_presentation_event(&ctx, &event), 0);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(ctx.input_status.session_titles_pending, 0);
+	EXPECT_TRUE(output.empty());
+	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+}
+
 TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
 {
 	cJSON *connecting = cJSON_CreateObject();

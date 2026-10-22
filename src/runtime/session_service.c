@@ -13,6 +13,9 @@ int runtime_session_current(const struct runtime *runtime, struct session *out)
 	if (!runtime || !out)
 		return -EINVAL;
 	*out = runtime->context.current_session;
+	if (out->id > 0)
+		return session_get_by_id(&runtime->context.database,
+			out->id, out);
 	if (out->id <= 0) {
 		strncpy(out->model, runtime->context.config.models.text.model,
 			sizeof(out->model) - 1);
@@ -108,6 +111,7 @@ int runtime_session_delete_and_update(struct runtime *runtime, int64_t id)
 	if (!ctx || id <= 0)
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	runtime_title_cancel(runtime, id);
 	rc = runtime_session_delete(&ctx->engine, id);
 	if (rc == 0) {
 		runtime_context_forget_plan_session(ctx, id);
@@ -129,6 +133,7 @@ int runtime_session_rename_and_update(struct runtime *runtime, int64_t id,
 	if (!ctx || id <= 0 || !name || !name[0])
 		return -EINVAL;
 	pthread_mutex_lock(&ctx->execution_lock);
+	runtime_title_cancel(runtime, id);
 	rc = runtime_session_rename(&ctx->engine, id, name);
 	if (rc == 0 && ctx->current_session.id == id) {
 		strncpy(ctx->current_session.name, name,
@@ -190,9 +195,17 @@ int runtime_session_reload_current(struct runtime *runtime)
 	return 0;
 }
 
-const char *runtime_session_current_name(const struct runtime *runtime)
+const char *runtime_session_current_name(struct runtime *runtime)
 {
-	return runtime ? runtime->context.current_session.name : NULL;
+	struct session session;
+
+	if (!runtime)
+		return NULL;
+	pthread_mutex_lock(&runtime->context.execution_lock);
+	if (runtime_session_current(runtime, &session) == 0)
+		runtime->context.current_session = session;
+	pthread_mutex_unlock(&runtime->context.execution_lock);
+	return runtime->context.current_session.name;
 }
 
 struct message *runtime_session_messages_current(struct runtime *runtime,
