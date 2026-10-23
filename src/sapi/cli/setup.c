@@ -6,6 +6,7 @@
 #include "util/file.h"
 #include "util/utf8.h"
 #include "util/name.h"
+#include "cJSON.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -189,6 +190,63 @@ void cli_setup_model_defaults(int kind, int selected,
 		cli_setup_reset_token_limits(entry);
 }
 
+int cli_setup_thinking_enabled(const struct config_model_entry *entry)
+{
+	cJSON *root = cJSON_Parse(entry->extra_body_json);
+	const cJSON *thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+	const cJSON *type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
+	int enabled = cJSON_IsString(type) && strcmp(type->valuestring, "enabled") == 0;
+
+	cJSON_Delete(root);
+	return enabled;
+}
+
+int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
+{
+	cJSON *root;
+	cJSON *thinking;
+	char *json;
+	int rc = 0;
+
+	if (strcmp(entry->adapter, "deepseek") != 0)
+		MORPH_RETURN(-EINVAL);
+	if (entry->extra_body_json[0]) {
+		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
+		if (!cJSON_IsObject(root)) {
+			cJSON_Delete(root);
+			MORPH_RETURN(MORPH_ERR_PARSE);
+		}
+	} else {
+		root = cJSON_CreateObject();
+		if (!root)
+			MORPH_RETURN(-ENOMEM);
+	}
+	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+	if (!cJSON_IsObject(thinking)) {
+		cJSON_DeleteItemFromObjectCaseSensitive(root, "thinking");
+		thinking = cJSON_AddObjectToObject(root, "thinking");
+	}
+	if (!thinking) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON_DeleteItemFromObjectCaseSensitive(thinking, "type");
+	if (!cJSON_AddStringToObject(thinking, "type", enabled ? "enabled" : "disabled")) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	json = cJSON_PrintUnformatted(root);
+	cJSON_Delete(root);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	if (strlen(json) >= sizeof(entry->extra_body_json))
+		MORPH_SET_ERR(rc, -E2BIG);
+	else
+		strcpy(entry->extra_body_json, json);
+	free(json);
+	return rc;
+}
+
 static int configure_model(FILE *in, FILE *out, int kind,
 			   struct config_model_entry *entry)
 {
@@ -220,6 +278,17 @@ static int configure_model(FILE *in, FILE *out, int kind,
 		rc = prompt_token_count(in, out, "Max output (tokens)", 1, ceiling,
 			&entry->max_tokens);
 		if (rc < 0) MORPH_RETURN(rc);
+	}
+	if (strcmp(entry->adapter, "deepseek") == 0) {
+		int thinking = choice(in, out,
+			"DeepSeek thinking: 1) Off (faster responses)  2) On (more time to reason)",
+			"1", 2);
+
+		if (thinking < 0)
+			MORPH_RETURN(thinking);
+		rc = cli_setup_set_thinking(entry, thinking == 2);
+		if (rc != 0)
+			return rc;
 	}
 	for (;;) {
 		rc = prompt(in, out, "API base URL", entry->api_base,

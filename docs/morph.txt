@@ -35,18 +35,28 @@ Build from source:
 	cmake -S . -B build
 	cmake --build build
 
-Create the default config:
+Run Morph without a config to start the first-time setup wizard:
+
+	./build/bin/morph
+
+Follow three steps: Account, Preferences, and Start. Choose a provider and
+connect your account, then adjust only the preferences you need. Model names,
+API URLs, context windows, and output limits are under Advanced settings.
+For DeepSeek, setup asks whether to enable thinking: Off (default) for faster
+responses, or On for more time to reason. The choice can be changed from the model's
+Thinking setting or the final review. Text and Vision choices are independent.
+Use arrows or Tab to move, Enter to select, Esc to go back, and Ctrl-C to exit
+without saving. Your config is written only after Start using morph (or Save
+setup for later when credentials are missing). The wizard uses append mode:
+completed answers remain in scrollback, and only the current card is redrawn.
+It never clears the screen or enters the alternate screen buffer. Narrow or
+short terminals use compact choices instead of cards.
+
+Alternatively, copy the example config and set its provider's API key:
 
 	mkdir -p ~/.morph
 	cp config.toml.example ~/.morph/config.toml
-
-Set the API key required by the configured provider:
-
 	export OPENAI_API_KEY=sk-...
-
-Run Morph:
-
-	./build/morph
 
 Useful flags:
 

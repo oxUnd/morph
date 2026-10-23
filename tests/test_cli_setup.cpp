@@ -55,7 +55,7 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 }
 
 TEST_F(CliSetupTest, ConfigureBothMediaModels) {
-	ASSERT_GE(run("2\n\n\n\n\n\n1\n2\n2\n\n\n\n2\n1\n\n\n\n"), 0);
+	ASSERT_GE(run("2\n\n\n\n\n\n\n1\n2\n2\n\n\n\n2\n1\n\n\n\n"), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
@@ -104,7 +104,7 @@ TEST_F(CliSetupTest, NonInteractiveDoesNotCreateConfig) {
 }
 
 TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
-	ASSERT_GE(run("2\n\n\n\n\n\n2\n1\n\n\n\n\n\n1\n1\n"), 0);
+	ASSERT_GE(run("2\n\n\n\n\n\n\n2\n1\n\n\n\n\n\n1\n1\n"), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
@@ -130,7 +130,7 @@ TEST_F(CliSetupTest, VisionAcceptsArkEndpoint) {
 }
 
 TEST_F(CliSetupTest, VisionAcceptsDeepSeekWithDeepSeekAdapter) {
-	ASSERT_GE(run("\n\n\n\n\n\n2\n2\n\n\n\n\n\n1\n1\n"), 0);
+	ASSERT_GE(run("\n\n\n\n\n\n2\n2\n\n\n\n\n\n\n1\n1\n"), 0);
 	struct config cfg;
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.vision.provider, "deepseek");
@@ -184,4 +184,38 @@ TEST_F(CliSetupTest, PlainPromptsValidateAndPersistCustomTokenLimits) {
 	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
 	EXPECT_EQ(cfg.models.text.context_limit, 32000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 4096);
+}
+
+TEST_F(CliSetupTest, DeepSeekThinkingCanBeEnabledInPlainSetup) {
+	ASSERT_GE(run("2\n\n\n\n2\n\n\n1\n1\n1\n"), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
+	EXPECT_TRUE(cli_setup_thinking_enabled(&cfg.models.text));
+	EXPECT_STREQ(cfg.models.text.extra_body_json,
+		"{\"thinking\":{\"type\":\"enabled\"}}");
+}
+
+TEST_F(CliSetupTest, ThinkingPromptValidatesAndCanBeCancelled) {
+	EXPECT_EQ(run("2\n\n\n\ninvalid\n"), -ECANCELED);
+	EXPECT_FALSE(file_exists(path.c_str()));
+	ASSERT_GE(run("2\n\n\n\ninvalid\n1\n\n\n1\n1\n1\n"), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	EXPECT_FALSE(cli_setup_thinking_enabled(&cfg.models.text));
+}
+
+TEST(CliSetupThinking, OnlyDeepSeekChangesAndOtherOptionsSurvive) {
+	struct config_model_entry entry{};
+	cli_setup_model_defaults(SETUP_TEXT, 1, &entry);
+	EXPECT_EQ(cli_setup_set_thinking(&entry, 1), -EINVAL);
+	EXPECT_STREQ(entry.extra_body_json, "");
+	cli_setup_model_defaults(SETUP_TEXT, 2, &entry);
+	strcpy(entry.extra_body_json,
+		"{\"reasoning_effort\":\"high\",\"thinking\":{\"type\":\"disabled\"}}");
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 1), 0);
+	EXPECT_TRUE(cli_setup_thinking_enabled(&entry));
+	EXPECT_NE(strstr(entry.extra_body_json, "\"reasoning_effort\":\"high\""), nullptr);
+	ASSERT_EQ(cli_setup_set_thinking(&entry, 0), 0);
+	EXPECT_FALSE(cli_setup_thinking_enabled(&entry));
 }

@@ -19,18 +19,26 @@
 #define SETUP_KEY_PASTE_START 260
 #define SETUP_KEY_PASTE_END 261
 
+enum setup_phase {
+	SETUP_ACCOUNT,
+	SETUP_PREFERENCES,
+	SETUP_START
+};
+
 struct setup_ui {
 	FILE *output;
 	int fd;
 	int output_fd;
 	int color;
 	int step;
+	enum setup_phase phase;
 	int columns;
 	int rows;
 	int active_lines;
 	int frame_lines;
 	int cursor_up;
 	int deferred[SETUP_MODEL_COUNT];
+	int thinking_confirmed[SETUP_MODEL_COUNT];
 	struct config_model_entry *entries;
 };
 
@@ -124,8 +132,10 @@ static void clear_active(struct setup_ui *ui, morph_buf_t *frame)
 	int old_columns = ui->columns;
 	int old_rows = ui->rows;
 	dimensions(ui);
+	morph_buf_puts(frame, "\033[?2026h");
 	if (ui->active_lines &&
-	    (old_columns != ui->columns || old_rows != ui->rows)) {
+	    (old_columns != ui->columns || old_rows != ui->rows ||
+	     ui->active_lines >= old_rows)) {
 		/* A terminal may reflow old lines on resize. Do not guess their
 		 * new positions and risk erasing history; append a fresh prompt. */
 		morph_buf_puts(frame, "\033[999B\r\n");
@@ -163,19 +173,21 @@ static int frame_start(struct setup_ui *ui, morph_buf_t *frame,
 	morph_buf_puts(frame, "\033[?25l");
 	clear_active(ui, frame);
 	const char *progress[] = {
-		"1/5  Text model", "2/5  Vision / image understanding (optional)",
-		"3/5  Image generation (optional)",
-		"4/5  Video generation (optional)", "5/5  Review & finish"
+		"1/3  Account", "2/3  Preferences", "3/3  Start"
 	};
-	line(ui, frame, "\033[2m", progress[ui->step]);
+	if (ui->rows >= 8)
+		line(ui, frame, "\033[2m", progress[ui->phase]);
 	line(ui, frame, "\033[1m", title);
-	if (ui->rows >= 12 && detail)
+	if (ui->rows >= 14 && detail)
 		line(ui, frame, "\033[2m", detail);
+	if (ui->rows >= 20)
+		line(ui, frame, "", "");
 	return 0;
 }
 
 static int frame_show(struct setup_ui *ui, morph_buf_t *frame)
 {
+	morph_buf_puts(frame, "\033[?2026l");
 	int rc = frame->failed ? -ENOMEM : 0;
 	if (rc == 0 && (fputs(morph_buf_cstr(frame), ui->output) == EOF ||
 		       fflush(ui->output) != 0))
@@ -204,8 +216,49 @@ static int record_answer(struct setup_ui *ui, const char *answer)
 	return frame_show(ui, &frame);
 }
 
-static int menu(struct setup_ui *ui, const char *title, const char *detail,
-		const char *const *items, int count, int selected)
+static void card_border(struct setup_ui *ui, morph_buf_t *frame, int selected,
+	int width, int bottom)
+{
+	morph_buf_t border;
+
+	if (morph_buf_init(&border, 128) != 0) {
+		frame->failed = 1;
+		return;
+	}
+	morph_buf_puts(&border, bottom ? "└" : "┌");
+	for (int i = 0; i < width - 2; i++)
+		morph_buf_puts(&border, "─");
+	morph_buf_puts(&border, bottom ? "┘" : "┐");
+	line(ui, frame, selected ? "\033[36m" : "\033[2m", morph_buf_cstr(&border));
+	if (border.failed)
+		frame->failed = 1;
+	morph_buf_cleanup(&border);
+}
+
+static void card_text(struct setup_ui *ui, morph_buf_t *frame, const char *text,
+	int width, const char *style)
+{
+	morph_buf_t row;
+	char clipped[BUFSIZ];
+
+	if (morph_buf_init(&row, 128) != 0) {
+		frame->failed = 1;
+		return;
+	}
+	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), text,
+		(size_t)(width - 4), 0);
+	morph_buf_printf(&row, "│ %s", clipped);
+	for (size_t i = utf8_display_width(clipped); i < (size_t)(width - 4); i++)
+		morph_buf_putc(&row, ' ');
+	morph_buf_puts(&row, " │");
+	line(ui, frame, style, morph_buf_cstr(&row));
+	if (row.failed)
+		frame->failed = 1;
+	morph_buf_cleanup(&row);
+}
+
+static int select_menu(struct setup_ui *ui, const char *title, const char *detail,
+	const char *const *items, const char *const *descriptions, int count, int selected)
 {
 	int paste = 0;
 	for (;;) {
@@ -213,7 +266,9 @@ static int menu(struct setup_ui *ui, const char *title, const char *detail,
 		int rc = frame_start(ui, &frame, title, detail);
 		if (rc < 0)
 			MORPH_RETURN(rc);
-		int visible = ui->rows - ui->frame_lines - 2;
+		int available = ui->rows - ui->frame_lines - 2;
+		int cards = descriptions && ui->columns >= 44 && available >= 8;
+		int visible = cards ? available / 4 : available;
 		if (visible < 1) visible = 1;
 		int first = selected >= visible ? selected - visible + 1 : 0;
 		for (int i = first; i < count && i < first + visible; i++) {
@@ -224,14 +279,26 @@ static int menu(struct setup_ui *ui, const char *title, const char *detail,
 				MORPH_RETURN(rc);
 			}
 			morph_buf_printf(&label, "%s %s", i == selected ? "›" : " ", items[i]);
-			line(ui, &frame,
-				i == selected ? "\033[1;36m" : "", morph_buf_cstr(&label));
+			if (cards) {
+				int width = ui->columns - 4;
+				if (width > 72) width = 72;
+				card_border(ui, &frame, i == selected, width, 0);
+				card_text(ui, &frame, morph_buf_cstr(&label), width,
+					i == selected ? "\033[1;36;48;5;235m" : "");
+				card_text(ui, &frame, descriptions[i], width,
+					i == selected ? "\033[2;36;48;5;235m" : "\033[2m");
+				card_border(ui, &frame, i == selected, width, 1);
+			} else {
+				line(ui, &frame, i == selected ? "\033[1;30;46m" : "",
+					morph_buf_cstr(&label));
+			}
 			if (label.failed) frame.failed = 1;
 			morph_buf_cleanup(&label);
 		}
-		line(ui, &frame, "\033[2m",
-			ui->columns < 60 ? "↑↓ Move  Enter OK  Esc Back" :
-			"↑↓ Choose · Enter Select · Esc Back · Ctrl-C Exit");
+		if (ui->rows >= 4)
+			line(ui, &frame, "\033[2m", ui->columns < 60 ?
+				"↑↓ Move  Enter OK  Esc Back" :
+				"↑↓ Choose · Enter Select · Esc Back · Ctrl-C Exit");
 		rc = frame_show(ui, &frame);
 		if (rc < 0)
 			MORPH_RETURN(rc);
@@ -247,12 +314,15 @@ static int menu(struct setup_ui *ui, const char *title, const char *detail,
 			selected = (selected + 1) % count;
 		if (key >= '1' && key < '1' + count)
 			selected = key - '1';
-		if (key == '\r' || key == '\n') {
-			rc = record_answer(ui, items[selected]);
-			if (rc < 0) MORPH_RETURN(rc);
+		if (key == '\r' || key == '\n')
 			return selected;
-		}
 	}
+}
+
+static int menu(struct setup_ui *ui, const char *title, const char *detail,
+	const char *const *items, int count, int selected)
+{
+	return select_menu(ui, title, detail, items, NULL, count, selected);
 }
 
 static int edit(struct setup_ui *ui, const char *title, const char *detail,
@@ -266,10 +336,13 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 	size_t cursor = input.len;
 	int paste = 0;
 	int overflow = 0;
+	const char *validation = NULL;
 	for (;;) {
 		morph_buf_t frame;
-		rc = frame_start(ui, &frame, title, overflow ?
-			"Value is too long. Shorten it before continuing." : detail);
+		rc = frame_start(ui, &frame,
+			validation && ui->rows < 14 ? "Value required" : title, overflow ?
+			"Value is too long. Shorten it before continuing." :
+			validation ? validation : detail);
 		if (rc < 0) break;
 		const char *text = morph_buf_cstr(&input);
 		const char *shown = secret ? (input.len ? "••••••••" : "") : text;
@@ -305,13 +378,17 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 					"API key entered (hidden)" : value);
 				break;
 			}
+			validation = input.len ? "Enter valid UTF-8 text." :
+				"Enter a value, or press Esc to go back.";
 			continue;
 		}
 		if (key == 21) {
+			validation = NULL;
 			morph_buf_reset(&input);
 			cursor = 0;
 			overflow = 0;
 		} else if ((key == 127 || key == 8) && cursor) {
+			validation = NULL;
 			size_t previous = (size_t)(utf8_prev_codepoint(input.data,
 				input.data + cursor) - input.data);
 			memmove(input.data + previous, input.data + cursor,
@@ -325,6 +402,7 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 		} else if (key == SETUP_KEY_RIGHT && cursor < input.len) {
 			cursor += utf8_next_codepoint_len(input.data + cursor, input.len - cursor);
 		} else if (key >= 32 && key < 256 && key != 127) {
+			validation = NULL;
 			if (input.len + 1 >= capacity) { overflow = 1; continue; }
 			if (morph_buf_reserve(&input, 1) < 0) { rc = -ENOMEM; break; }
 			memmove(input.data + cursor + 1, input.data + cursor,
@@ -353,12 +431,19 @@ static int credentials(struct setup_ui *ui, struct config_model_entry *entry)
 {
 	const char *items[] = {"Save API key to config", "Use an environment variable",
 		"Set up later"};
+	const char *descriptions[] = {
+		"Hidden input. Saved locally for future sessions.",
+		"Use a key already set in your shell.",
+		"Save your preferences and connect when ready."
+	};
+	ui->phase = ui->step == SETUP_TEXT ? SETUP_ACCOUNT : SETUP_PREFERENCES;
 	for (;;) {
-		int selected = menu(ui, "Connect your account", entry->api_key_env, items, 3, 0);
+		int selected = select_menu(ui, "Connect your account",
+			"Use your own provider account.", items, descriptions, 3, 0);
 		if (selected < 0) MORPH_RETURN(selected);
 		if (selected == 2) {
 			ui->deferred[ui->step] = 1;
-			return 0;
+			return record_answer(ui, "Account · Set up later");
 		}
 		if (selected == 0) {
 			int rc = edit(ui, "Paste your API key",
@@ -431,10 +516,36 @@ static int ensure_token_limits(struct setup_ui *ui, struct config_model_entry *e
 	return 0;
 }
 
-static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
+static int choose_thinking(struct setup_ui *ui, struct config_model_entry *entry)
+{
+	const char *items[] = {"Off · Faster responses", "On · More time to reason"};
+	const char *descriptions[] = {
+		"Keep things moving. Thinking is off.",
+		"For complex tasks. Replies take longer."
+	};
+	ui->phase = SETUP_PREFERENCES;
+	int selected = select_menu(ui, "How should morph think?",
+		"You can change this later.", items, descriptions, 2,
+		cli_setup_thinking_enabled(entry));
+	int rc;
+
+	if (selected < 0)
+		MORPH_RETURN(selected);
+	rc = cli_setup_set_thinking(entry, selected);
+	if (rc == 0) {
+		ui->thinking_confirmed[ui->step] = 1;
+		rc = record_answer(ui, selected ? "Thinking · On" : "Thinking · Off");
+	}
+	return rc;
+}
+
+static int advanced_settings(struct setup_ui *ui, struct config_model_entry *entry)
 {
 	int chat = ui->step == SETUP_TEXT || ui->step == SETUP_VISION;
+	ui->phase = SETUP_PREFERENCES;
+
 	for (;;) {
+		ui->phase = SETUP_PREFERENCES;
 		morph_buf_t labels;
 		int rc = morph_buf_init(&labels, 0);
 		if (rc < 0) MORPH_RETURN(rc);
@@ -467,29 +578,22 @@ static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
 			morph_buf_putc(&labels, '\0');
 		}
 		if (labels.failed) { morph_buf_cleanup(&labels); MORPH_RETURN(-ENOMEM); }
-		const char *items[] = {"Continue", labels.data + offsets[0],
+		const char *items[] = {"Done", labels.data + offsets[0],
 			labels.data + offsets[1], labels.data + offsets[2],
 			labels.data + offsets[3], labels.data + offsets[4]};
-		int selected = menu(ui, "Make it yours", "Choose a setting to edit, or continue with defaults.",
+		int selected = menu(ui, "Advanced settings",
+			"Defaults work for most people. Edit only what you need.",
 			items, chat ? 6 : 4, 0);
 		morph_buf_cleanup(&labels);
 		if (selected < 0) MORPH_RETURN(selected);
 		if (selected == 0) {
 			if (!entry->model[0]) selected = 1;
 			else if (!entry->api_base[0]) selected = 2;
-			else {
-				if (chat) {
-					rc = ensure_token_limits(ui, entry);
-					if (rc == SETUP_BACK) continue;
-					if (rc < 0) MORPH_RETURN(rc);
-				}
-				if (!has_key(ui, entry) && !ui->deferred[ui->step]) {
-					rc = credentials(ui, entry);
-					if (rc == SETUP_BACK) continue;
-					return rc;
-				}
-				return 0;
-			}
+			else if (chat) {
+				rc = ensure_token_limits(ui, entry);
+				if (rc == SETUP_BACK) continue;
+				return rc;
+			} else return 0;
 		}
 		if (selected == 1) {
 			char previous[sizeof(entry->model)];
@@ -525,6 +629,54 @@ static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
 	}
 }
 
+static int model_settings(struct setup_ui *ui, struct config_model_entry *entry)
+{
+	int thinking = strcmp(entry->adapter, "deepseek") == 0;
+	int chat = ui->step == SETUP_TEXT || ui->step == SETUP_VISION;
+
+	for (;;) {
+		const char *items[] = {"Continue →", "Account", "Advanced settings", NULL};
+		const char *descriptions[] = {"Use these preferences and move on.",
+			has_key(ui, entry) ? "Connected. Change how your key is stored." :
+			"Not connected yet. You can set this up later.",
+			"Model, API URL, context and output limits.", NULL};
+		if (thinking) {
+			items[2] = cli_setup_thinking_enabled(entry) ?
+				"Thinking · On" : "Thinking · Off";
+			descriptions[2] = "Choose quick replies or more time to think.";
+			items[3] = "Advanced settings";
+			descriptions[3] = "Model, API URL, context and output limits.";
+		}
+		ui->phase = SETUP_PREFERENCES;
+		int selected = select_menu(ui, "Make morph yours",
+			"You can change these preferences later.", items, descriptions,
+			thinking ? 4 : 3, 0);
+		if (selected < 0) MORPH_RETURN(selected);
+		int rc = 0;
+		if (selected == 0) {
+			if (!entry->model[0] || !entry->api_base[0] ||
+			    (chat && (entry->context_limit <= 0 || entry->max_tokens <= 0))) {
+				rc = advanced_settings(ui, entry);
+				if (rc < 0 && rc != SETUP_BACK) return rc;
+				continue;
+			}
+			if (thinking && !ui->thinking_confirmed[ui->step]) {
+				rc = choose_thinking(ui, entry);
+				if (rc == SETUP_BACK) continue;
+				if (rc < 0) MORPH_RETURN(rc);
+			}
+			return 0;
+		} else if (selected == 1) {
+			rc = credentials(ui, entry);
+		} else if (thinking && selected == 2) {
+			rc = choose_thinking(ui, entry);
+		} else {
+			rc = advanced_settings(ui, entry);
+		}
+		if (rc < 0 && rc != SETUP_BACK) return rc;
+	}
+}
+
 static int choose_provider(struct setup_ui *ui, int kind, int *provider)
 {
 	struct config_model_entry *entry = &ui->entries[kind];
@@ -535,19 +687,35 @@ static int choose_provider(struct setup_ui *ui, int kind, int *provider)
 		"Other · Vision chat compatible"};
 	const char *const *items = kind == SETUP_TEXT ? text :
 		kind == SETUP_VISION ? vision : kind == SETUP_IMAGE ? image : video;
+	const char *chat_details[] = {"Connect your OpenAI account.",
+		"Connect your DeepSeek account.", "Use your Volcengine / Ark account.",
+		"Bring your own compatible endpoint."};
+	const char *image_details[] = {chat_details[0], chat_details[2], chat_details[3]};
+	const char *video_details[] = {chat_details[2], chat_details[3]};
+	const char *const *descriptions = kind == SETUP_IMAGE ? image_details :
+		kind == SETUP_VIDEO ? video_details : chat_details;
 	for (;;) {
-		int selected = menu(ui, "Choose your provider",
+		ui->phase = kind == SETUP_TEXT ? SETUP_ACCOUNT : SETUP_PREFERENCES;
+		int selected = select_menu(ui, "Choose your provider",
 			"Use your own account with any supported provider.",
-			items, kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
+			items, descriptions, kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
 			kind == SETUP_VIDEO ? 2 : 3, *provider);
 		if (selected < 0) MORPH_RETURN(selected);
 		if (!entry->provider[0] || selected != *provider) {
 			cli_setup_model_defaults(kind, selected + 1, entry);
 			ui->deferred[kind] = 0;
+			ui->thinking_confirmed[kind] = 0;
 		}
 		*provider = selected;
-		int rc = model_settings(ui, entry);
+		int rc;
+		if (!has_key(ui, entry) && !ui->deferred[kind]) {
+			rc = credentials(ui, entry);
+			if (rc == SETUP_BACK) continue;
+			if (rc < 0) MORPH_RETURN(rc);
+		}
+		rc = model_settings(ui, entry);
 		if (rc == SETUP_BACK) continue;
+		if (rc == 0) rc = record_answer(ui, items[selected]);
 		return rc;
 	}
 }
@@ -558,16 +726,22 @@ static int model_step(struct setup_ui *ui, int kind, int *provider)
 		return choose_provider(ui, kind, provider);
 	struct config_model_entry *entry = &ui->entries[kind];
 	const char *items[] = {"Skip for now", "Set up this capability"};
+	const char *descriptions[] = {"Start simple. You can add this later.",
+		"Connect a separate model for this capability."};
 	for (;;) {
-		int selected = menu(ui, kind == SETUP_VISION ? "Understand images with morph?" :
-			kind == SETUP_IMAGE ? "Create images with morph?" : "Create videos with morph?",
+		ui->phase = SETUP_PREFERENCES;
+		const char *title = kind == SETUP_VISION ? "Understand images with morph?" :
+			kind == SETUP_IMAGE ? "Create images with morph?" :
+			"Create videos with morph?";
+		int selected = select_menu(ui, title,
 			kind == SETUP_VISION ? "Read images and answer visual questions. Optional." :
 			"Optional. You can enable this later in your configuration.",
-			items, 2, entry->model[0] ? 1 : 0);
+			items, descriptions, 2, entry->model[0] ? 1 : 0);
 		if (selected < 0) MORPH_RETURN(selected);
 		if (selected == 0) {
 			memset(entry, 0, sizeof(*entry));
-			return 0;
+			ui->thinking_confirmed[kind] = 0;
+			return record_answer(ui, "Skip for now");
 		}
 		int rc = choose_provider(ui, kind, provider);
 		if (rc != SETUP_BACK) return rc;
@@ -580,25 +754,38 @@ static int review(struct setup_ui *ui, const char *path)
 	int rc = morph_buf_init(&labels, 0);
 	if (rc < 0) MORPH_RETURN(rc);
 	const char *names[] = {"Text", "Vision", "Images", "Video"};
+	int ready = 1;
 	size_t offsets[SETUP_MODEL_COUNT];
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
 		struct config_model_entry *entry = &ui->entries[i];
+		if (entry->model[0] && !has_key(ui, entry)) ready = 0;
 		offsets[i] = labels.len;
-		morph_buf_printf(&labels, "%s  %s%s", names[i],
-			entry->model[0] ? entry->model : "Skipped",
+		morph_buf_printf(&labels, "%s  ", names[i]);
+		if (entry->model[0] && strcmp(entry->adapter, "deepseek") == 0)
+			morph_buf_printf(&labels, "Thinking %s · ",
+				cli_setup_thinking_enabled(entry) ? "On" : "Off");
+		const char *provider = strcmp(entry->provider, "openai") == 0 ? "OpenAI" :
+			strcmp(entry->provider, "deepseek") == 0 ? "DeepSeek" :
+			strcmp(entry->provider, "volcengine") == 0 ? "Volcengine / Ark" : "Custom";
+		morph_buf_printf(&labels, "%s%s",
+			entry->model[0] ? provider : "Set up later",
 			entry->model[0] ? (has_key(ui, entry) == 2 ? " · Config key" :
 			 has_key(ui, entry) ? " · Ready" : " · Key needed") : "");
-		if ((i == SETUP_TEXT || i == SETUP_VISION) && entry->model[0])
-			morph_buf_printf(&labels, " · ctx=%d out=%d",
-				entry->context_limit, entry->max_tokens);
 		morph_buf_putc(&labels, '\0');
 	}
 	if (labels.failed) { morph_buf_cleanup(&labels); MORPH_RETURN(-ENOMEM); }
-	const char *items[SETUP_MODEL_COUNT + 2] = {"Save & finish"};
+	const char *items[SETUP_MODEL_COUNT + 2] = {
+		ready ? "Start using morph →" : "Save setup for later →"
+	};
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
 		items[i + 1] = labels.data + offsets[i];
 	items[SETUP_MODEL_COUNT + 1] = "Cancel without saving";
-	int selected = menu(ui, "Ready when you are", path, items, SETUP_MODEL_COUNT + 2, 0);
+	(void)path;
+	ui->phase = SETUP_START;
+	int selected = menu(ui, ready ? "You're ready." : "Save your setup",
+		ready ? "Saved only when you choose Start using morph." :
+		"Add your API key later to start chatting.",
+		items, SETUP_MODEL_COUNT + 2, 0);
 	if (selected == 0) {
 		for (int i = 1; i <= SETUP_MODEL_COUNT; i++) {
 			rc = record_answer(ui, items[i]);

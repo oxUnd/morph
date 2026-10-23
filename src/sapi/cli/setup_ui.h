@@ -21,6 +21,8 @@ extern "C" {
 /* Shared provider defaults for the terminal wizard and plain fallback. */
 void cli_setup_model_defaults(int kind, int selected,
 			      struct config_model_entry *entry);
+int cli_setup_thinking_enabled(const struct config_model_entry *entry);
+int cli_setup_set_thinking(struct config_model_entry *entry, int enabled);
 void cli_setup_reset_token_limits(struct config_model_entry *entry);
 int cli_setup_token_ceiling(const struct config_model_entry *entry, int output);
 int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int *value);

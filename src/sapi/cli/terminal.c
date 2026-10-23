@@ -362,8 +362,7 @@ void cli_terminal_queue_changed(struct cli_context *ctx)
 void cli_terminal_render_frame(struct cli_context *ctx, int force)
 {
 	static const char *frames[] = {
-		"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
-		"⠇", "⠏",
+		"◰", "◳", "◲", "◱",
 	};
 	struct cli_terminal *terminal;
 	const char *text;
