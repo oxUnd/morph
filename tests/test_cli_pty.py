@@ -92,6 +92,7 @@ retry_count = 0
         self.duplicate_prompts = []
         self.raw = ''
         self.snapshots = []
+        self.queued_states = []
 
     def pump(self, duration=0.3):
         until = time.monotonic() + duration
@@ -104,6 +105,9 @@ retry_count = 0
                 return
             self.raw += data
             self.stream.feed(data)
+            screen = '\n'.join(self.screen.display)
+            if 'Messages queued' in screen:
+                self.queued_states.append(screen)
             if any(row.count('›') > 1 for row in self.screen.display):
                 self.duplicate_prompts.append('\n'.join(self.screen.display))
 
@@ -240,6 +244,10 @@ def main():
             terminal.send('\x05\r')
             assert 'Messages queued' in terminal.raw, terminal.raw[-3000:]
             assert 'Requirement queued' not in terminal.raw
+            queued = [state for state in terminal.queued_states if '↳ 改成中新🙂' in state]
+            assert queued, 'No rendered queue state was observed'
+            for state in queued:
+                assert '› 改成中新🙂' not in state, 'Queued input was committed early:\n' + state
             started = time.monotonic()
             second, release2 = terminal.request()
             releases.append(release2)
@@ -247,6 +255,7 @@ def main():
             consumed = terminal.snapshot('steering queue consumed')
             assert '\\x0d' not in terminal.raw, terminal.raw[-3000:]
             assert 'Messages queued' not in consumed, consumed
+            assert sum('› 改成中新🙂' in row for row in consumed.splitlines()) == 1, consumed
             assert not release.is_set(), 'first request must still be gated'
             user_text = [m['content'] for m in second['messages'] if m['role'] == 'user']
             assert user_text[-1] == '改成中新🙂', user_text

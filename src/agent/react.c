@@ -3396,8 +3396,21 @@ static int react_drain_actions(struct react_context *ctx,
 			content, tokenizer_count(ctx->tokenizer, content));
 		if (history_message)
 			msg_list_append(&ctx->messages, history_message);
-		react_emit_text_event(ctx, MORPH_EVENT_REACT,
-			"react.user.steer", "end", "requirement added", content);
+		cJSON *event_data = cJSON_CreateObject();
+		const cJSON *display = cJSON_GetObjectItemCaseSensitive(payload, "display_text");
+
+		if (!event_data || !cJSON_AddStringToObject(event_data, "text", content) ||
+		    (cJSON_IsString(display) && !cJSON_AddStringToObject(event_data,
+			"display_text", display->valuestring))) {
+			cJSON_Delete(event_data);
+			cJSON_Delete(payload);
+			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+				"internal_error");
+			return 1;
+		}
+		react_emit_event(ctx, MORPH_EVENT_REACT,
+			"react.user.steer", "end", "requirement added", event_data);
+		cJSON_Delete(event_data);
 		if (prompt_count)
 			(*prompt_count)++;
 		cJSON_Delete(payload);

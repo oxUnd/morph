@@ -165,6 +165,12 @@ as `Content` trace steps; the low-level output callback uses
 Android stores `CONTENT` and `REASONING` separately and renders assistant
 content as streaming Markdown. Legacy thought events remain supported.
 
+`react.user.steer` is emitted when a queued prompt is accepted into the current
+loop. Its `text` is the full model input; optional `display_text` preserves the
+original user-facing input (for example, image labels without expanded file
+paths). Display metadata is not substituted into model history. The CLI commits
+that user message to the feed at this event, not when it is first queued.
+
 Tool:
 
 ```text

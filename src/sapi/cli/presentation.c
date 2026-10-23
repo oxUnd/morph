@@ -1668,7 +1668,13 @@ int cli_presentation_event(struct cli_context *ctx,
 			ctx->native_content_visible = 0;
 			presentation_clear_status(ctx);
 			presentation_discard_stream(ctx);
-			printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
+			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
+				const char *display = event_string(ev, "display_text");
+
+				cli_presentation_user_input(display ? display : text);
+			} else {
+				printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
+			}
 			presentation_model_wait(ctx);
 			return 0;
 		}

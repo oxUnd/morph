@@ -1188,18 +1188,21 @@ void cli_run(struct cli_context *ctx)
 			char *draft = cli_readline_suspend(ctx, &point);
 			int turn_rc = cli_command_job_finish(&job);
 			char *pending;
+			char *display = NULL;
 
 			(void)cli_ui_drain(ctx);
 			cli_turn_finish(ctx, turn_rc);
 			ctx->input_status.updated = 0;
-			pending = cli_command_job_take_prompt(&job);
+			pending = cli_command_job_take_prompt(&job, &display);
 			if (pending) {
+				cli_presentation_user_input(display ? display : pending);
 				cli_turn_begin(ctx);
 				turn_rc = cli_command_job_start(&job, ctx, pending);
 				free(pending);
 				if (turn_rc != 0)
 					cli_turn_finish(ctx, turn_rc);
 			}
+			free(display);
 			if (draft)
 				cli_readline_resume(ctx, draft, point);
 			cli_terminal_update_end(ctx);
@@ -1226,6 +1229,7 @@ void cli_run(struct cli_context *ctx)
 			}
 			if (g_readline_ready_input) {
 				char *input = g_readline_ready_input;
+				char *submitted = input;
 
 				g_readline_ready_input = NULL;
 				cli_readline_clear_footer(ctx);
@@ -1238,14 +1242,14 @@ void cli_run(struct cli_context *ctx)
 					int handled = 0;
 					int command_rc;
 
-					cli_presentation_user_input(input);
+					if (!job.active || strcmp(input, "/recap") == 0)
+						cli_presentation_user_input(input);
 					add_history(input);
 					if (input[0] != '/') {
 						char *expanded = cli_composer_expand(&g_composer, input);
 
 						if (expanded) {
 							cli_composer_record_images(&g_composer, ctx, input);
-							free(input);
 							input = expanded;
 						} else {
 							handled = 1;
@@ -1256,7 +1260,8 @@ void cli_run(struct cli_context *ctx)
 						command_rc = cli_recap_start(ctx, 0);
 						handled = 1;
 					} else if (!handled && job.active) {
-						command_rc = cli_command_job_prompt(&job, input);
+						command_rc = cli_command_job_prompt(
+							&job, input, submitted);
 						if (command_rc != 0)
 							CMD_ERROR("%s", morph_strerror(command_rc));
 						else
@@ -1279,6 +1284,8 @@ void cli_run(struct cli_context *ctx)
 							cli_turn_finish(ctx, command_rc);
 					}
 				}
+				if (submitted != input)
+					free(submitted);
 				free(input);
 				if (ctx->running) {
 					ctx->input_status.updated = 0;

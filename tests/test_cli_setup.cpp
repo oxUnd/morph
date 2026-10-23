@@ -66,7 +66,7 @@ TEST_F(CliSetupTest, ConfigureBothMediaModels) {
 	EXPECT_STREQ(cfg.models.image.adapter, "volcengine-images");
 	EXPECT_STREQ(cfg.models.video.adapter, "volcengine-videos");
 	EXPECT_STRNE(cfg.models.image.model, "");
-	EXPECT_STRNE(cfg.models.video.model, "");
+	EXPECT_STREQ(cfg.models.video.model, "doubao-seedance-2-0-mini-260615");
 }
 
 TEST_F(CliSetupTest, CustomAndInvalidInputsRoundTrip) {

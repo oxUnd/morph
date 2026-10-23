@@ -5,6 +5,7 @@
 struct cli_prompt {
 	char *text;
 	char *payload;
+	char *display_text;
 };
 
 static void *cli_command_job_run(void *opaque)
@@ -59,6 +60,7 @@ void cli_command_job_cleanup(struct cli_command_job *job)
 
 		free(prompt->text);
 		free(prompt->payload);
+		free(prompt->display_text);
 	}
 	morph_array_cleanup(&job->prompts);
 	free(job->delivered_prompt);
@@ -160,19 +162,27 @@ int cli_command_job_wait(struct cli_command_job *job)
 	return cli_command_job_finish(job);
 }
 
-int cli_command_job_prompt(struct cli_command_job *job, const char *text)
+int cli_command_job_prompt(struct cli_command_job *job, const char *text,
+			   const char *display_text)
 {
 	cJSON *payload;
 	char *json;
 	struct cli_prompt prompt;
 	struct cli_prompt *slot;
+	int distinct_display;
 
 	if (!job || !text || !text[0])
 		MORPH_RETURN(-EINVAL);
+	distinct_display = display_text && strcmp(display_text, text) != 0;
 	payload = cJSON_CreateObject();
 	if (!payload)
 		MORPH_RETURN(-ENOMEM);
 	if (!cJSON_AddStringToObject(payload, "text", text)) {
+		cJSON_Delete(payload);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (distinct_display &&
+	    !cJSON_AddStringToObject(payload, "display_text", display_text)) {
 		cJSON_Delete(payload);
 		MORPH_RETURN(-ENOMEM);
 	}
@@ -182,7 +192,10 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text)
 		MORPH_RETURN(-ENOMEM);
 	prompt.text = strdup(text);
 	prompt.payload = json;
-	if (!prompt.text) {
+	prompt.display_text = distinct_display ? strdup(display_text) : NULL;
+	if (!prompt.text || (distinct_display && !prompt.display_text)) {
+		free(prompt.text);
+		free(prompt.display_text);
 		free(json);
 		MORPH_RETURN(-ENOMEM);
 	}
@@ -193,6 +206,7 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text)
 	pthread_mutex_unlock(&job->mutex);
 	if (!slot) {
 		free(prompt.text);
+		free(prompt.display_text);
 		free(json);
 		MORPH_RETURN(-ENOMEM);
 	}
@@ -213,7 +227,7 @@ int cli_command_job_prompt_snapshot(struct cli_command_job *job,
 		struct cli_prompt *prompt =
 			morph_array_get(&job->prompts, copied);
 
-		items[copied] = strdup(prompt->text);
+		items[copied] = strdup(prompt->display_text ? prompt->display_text : prompt->text);
 		if (!items[copied])
 			break;
 		copied++;
@@ -242,6 +256,7 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 		items = job->prompts.elts;
 		job->delivered_prompt = items[0].payload;
 		free(items[0].text);
+		free(items[0].display_text);
 		job->prompts.nelts--;
 		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
 	}
@@ -255,15 +270,21 @@ int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 
 /* Called after joining the worker: submissions that missed the final drain
  * become the next turn instead of disappearing at the completion boundary. */
-char *cli_command_job_take_prompt(struct cli_command_job *job)
+char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_text)
 {
 	struct cli_prompt *items;
 	char *text = NULL;
 
+	if (display_text)
+		*display_text = NULL;
 	pthread_mutex_lock(&job->mutex);
 	if (job->prompts.nelts > 0) {
 		items = job->prompts.elts;
 		text = items[0].text;
+		if (display_text)
+			*display_text = items[0].display_text;
+		else
+			free(items[0].display_text);
 		free(items[0].payload);
 		job->prompts.nelts--;
 		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));

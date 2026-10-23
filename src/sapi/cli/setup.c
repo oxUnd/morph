@@ -177,7 +177,7 @@ void cli_setup_model_defaults(int kind, int selected,
 		"openai-images") : "volcengine-videos");
 	const char *model = custom ? "" : kind == SETUP_TEXT ? preset->text :
 		kind == SETUP_VISION ? preset->vision :
-		kind == SETUP_IMAGE ? preset->image : "doubao-seedance-2-0-260128";
+		kind == SETUP_IMAGE ? preset->image : "doubao-seedance-2-0-mini-260615";
 	strcpy(entry->model, model);
 	strcpy(entry->api_base, custom ? "" : kind == SETUP_VISION ?
 		preset->vision_base : preset->base);

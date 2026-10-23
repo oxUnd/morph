@@ -602,8 +602,8 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	struct cli_command_job job;
 	struct react_action action;
 	ASSERT_EQ(cli_command_job_init(&job), 0);
-	ASSERT_EQ(cli_command_job_prompt(&job, "改成中文🙂"), 0);
-	ASSERT_EQ(cli_command_job_prompt(&job, "second\nline"), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "改成中文🙂", nullptr), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "second\nline", nullptr), 0);
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 1);
 	char *snapshot[2] = {nullptr, nullptr};
 	size_t total = 0;
@@ -620,19 +620,54 @@ TEST(CliCommandPrompts, PreservesOrderPayloadLifetimeAndCompletionTail)
 	const char *borrowed = action.payload_json;
 	/* Grow the queue while the consumer still owns the previous payload. */
 	for (int i = 0; i < 100; i++)
-		ASSERT_EQ(cli_command_job_prompt(&job, "tail"), 0);
+		ASSERT_EQ(cli_command_job_prompt(&job, "tail", nullptr), 0);
 	EXPECT_EQ(delivered, borrowed);
-	char *pending = cli_command_job_take_prompt(&job);
+	char *pending = cli_command_job_take_prompt(&job, nullptr);
 	ASSERT_NE(pending, nullptr);
 	EXPECT_STREQ(pending, "second\nline");
 	free(pending);
 	for (int i = 0; i < 100; i++) {
-		pending = cli_command_job_take_prompt(&job);
+		pending = cli_command_job_take_prompt(&job, nullptr);
 		ASSERT_NE(pending, nullptr);
 		EXPECT_STREQ(pending, "tail");
 		free(pending);
 	}
 	EXPECT_EQ(cli_command_job_prompt_pending(&job), 0);
-	EXPECT_EQ(cli_command_job_take_prompt(&job), nullptr);
+	EXPECT_EQ(cli_command_job_take_prompt(&job, nullptr), nullptr);
+	cli_command_job_cleanup(&job);
+}
+
+TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
+{
+	struct cli_command_job job;
+	struct react_action action{};
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	const char *model_input = "Inspect [Image #1] [Image: /tmp/attachment.png]";
+	const char *display_input = "Inspect [Image #1]";
+	ASSERT_EQ(cli_command_job_prompt(&job, model_input, display_input), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, model_input, display_input), 0);
+	char *snapshot[1] = {nullptr};
+	size_t total = 0;
+	ASSERT_EQ(cli_command_job_prompt_snapshot(&job, snapshot, 1, &total), 0);
+	EXPECT_EQ(total, 2U);
+	EXPECT_STREQ(snapshot[0], display_input);
+	free(snapshot[0]);
+	ASSERT_EQ(cli_command_job_drain(&job, &action, 0), 1);
+	cJSON *payload = cJSON_Parse(action.payload_json);
+	ASSERT_NE(payload, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "text")), model_input);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text")), display_input);
+	cJSON_Delete(payload);
+	char *display = nullptr;
+	char *pending = cli_command_job_take_prompt(&job, &display);
+	ASSERT_NE(pending, nullptr);
+	ASSERT_NE(display, nullptr);
+	EXPECT_STREQ(pending, model_input);
+	EXPECT_STREQ(display, display_input);
+	free(pending);
+	free(display);
+	display = reinterpret_cast<char *>(1);
+	EXPECT_EQ(cli_command_job_take_prompt(&job, &display), nullptr);
+	EXPECT_EQ(display, nullptr);
 	cli_command_job_cleanup(&job);
 }

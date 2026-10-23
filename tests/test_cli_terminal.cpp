@@ -125,10 +125,10 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
 	ASSERT_EQ(cli_command_job_init(&job), 0);
 	ctx.input_job = &job;
-	ASSERT_EQ(cli_command_job_prompt(&job, "first adjustment"), 0);
-	ASSERT_EQ(cli_command_job_prompt(&job, "second adjustment"), 0);
-	ASSERT_EQ(cli_command_job_prompt(&job, "third adjustment"), 0);
-	ASSERT_EQ(cli_command_job_prompt(&job, "fourth adjustment"), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "first adjustment", nullptr), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "second adjustment", nullptr), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "third adjustment", nullptr), 0);
+	ASSERT_EQ(cli_command_job_prompt(&job, "fourth adjustment", nullptr), 0);
 	cli_set_color_enabled(1);
 	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
 
@@ -161,7 +161,7 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	EXPECT_LT(second, queued.find("third adjustment"));
 	EXPECT_EQ(queued.find("fourth adjustment"), std::string::npos);
 
-	char *consumed = cli_command_job_take_prompt(&job);
+	char *consumed = cli_command_job_take_prompt(&job, nullptr);
 	ASSERT_NE(consumed, nullptr);
 	EXPECT_STREQ(consumed, "first adjustment");
 	free(consumed);

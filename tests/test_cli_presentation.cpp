@@ -1077,9 +1077,26 @@ TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
 	Emit(MORPH_EVENT_REACT, "react.user.steer", "end", steer);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Requirement applied"), std::string::npos);
+	EXPECT_NE(output.find("updated requirement"), std::string::npos);
+	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
 	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	cJSON_Delete(steer);
+}
+
+TEST_F(CliPresentationTest, SteeringCommitsOriginalInputInsteadOfAttachmentPayload)
+{
+	cJSON *steer = TextData("Inspect [Image #1] [Image: /tmp/attachment.png]");
+	cJSON_AddStringToObject(steer, "display_text", "Inspect [Image #1]");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.user.steer", "end", steer);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Inspect [Image #1]"), std::string::npos);
+	EXPECT_EQ(output.find("Inspect [Image #1]"), output.rfind("Inspect [Image #1]"));
+	EXPECT_EQ(output.find("/tmp/attachment.png"), std::string::npos);
+	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	cJSON_Delete(steer);
 }
 

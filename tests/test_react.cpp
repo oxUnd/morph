@@ -2760,7 +2760,7 @@ static int drain_prompt_once(void *user_data, struct react_action *out,
 		return 0;
 	(*count)++;
 	out->type = "prompt";
-	out->payload_json = "{\"text\":\"also add tests\"}";
+	out->payload_json = "{\"text\":\"also add tests\",\"display_text\":\"add tests\"}";
 	return 1;
 }
 
@@ -2810,6 +2810,9 @@ TEST_F(MockLlmTest, ActionDrainInjectsPromptIntoCurrentLoop) {
 	ASSERT_EQ(react_set_action_drain(ctx, drain_prompt_once,
 					 &drain_count), 0);
 
+	struct morph_event_recorder rec;
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec), 0);
 	ASSERT_EQ(react_run(ctx, "implement feature", nullptr, nullptr), 0);
 	ASSERT_NE(ctx->messages, nullptr);
 	EXPECT_STREQ(ctx->messages->content, "implement feature");
@@ -2817,7 +2820,24 @@ TEST_F(MockLlmTest, ActionDrainInjectsPromptIntoCurrentLoop) {
 	EXPECT_STREQ(ctx->messages->next->role, "user");
 	EXPECT_STREQ(ctx->messages->next->content, "also add tests");
 	EXPECT_EQ(llm_data->call_count, 1);
-
+	int displayed = 0;
+	for (size_t i = 0; i < rec.records.nelts; i++) {
+		auto *record = static_cast<struct morph_event_record *>(
+			morph_array_get(&rec.records, i));
+		cJSON *event = cJSON_Parse(record->json);
+		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(event, "name"));
+		if (name && strcmp(name, "react.user.steer") == 0) {
+			cJSON *data = cJSON_GetObjectItem(event, "data");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "text")),
+				"also add tests");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "display_text")),
+				"add tests");
+			displayed++;
+		}
+		cJSON_Delete(event);
+	}
+	EXPECT_EQ(displayed, 1);
+	morph_event_recorder_cleanup(&rec);
 	react_context_destroy(ctx);
 }
 

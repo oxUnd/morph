@@ -386,6 +386,7 @@ def tests(driver, directory, production):
         config = t.save()
         assert 'adapter = "volcengine-images"' in config
         assert 'adapter = "volcengine-videos"' in config
+        assert 'model = "doubao-seedance-2-0-mini-260615"' in config
 
         # Optional capability can be removed from the final review.
         t = start('skip-vision', ready=True)

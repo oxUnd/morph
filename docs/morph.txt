@@ -219,19 +219,23 @@ and Volcengine adapters support ordered reference_images. Pass every reference
 in one img_gen call; the adapter validates editing and multi-reference support
 for the configured model.
 
-Volcengine Seedance 2.0 video example:
+Volcengine Seedance 2.0 Mini video example (setup default):
 
 	[model.video]
 	provider = "volcengine"
 	# Optional; inferred from provider when omitted.
 	# adapter = "volcengine-videos"
-	model = "doubao-seedance-2-0-260128"
+	model = "doubao-seedance-2-0-mini-260615"
 	api_base = "https://ark.cn-beijing.volces.com/api/v3"
 	api_key_env = "VOLCENGINE_API_KEY"
 	poll_interval_seconds = 5
 	poll_timeout_seconds = 600
 
-Use the faster Seedance variant by changing only model:
+Mini supports 480p/720p output and durations from 4 to 15 seconds.
+Morph requests 5 seconds by default. API credentials and polling settings
+use the same Volcengine adapter as other Seedance models.
+
+Use the Seedance Fast variant by changing only model:
 
 	model = "doubao-seedance-2-0-fast-260128"
 
@@ -306,6 +310,11 @@ Common interactive commands:
 Most commands have short aliases: /q, /h, /n, /s, /rn, /del, /m,
 /cfg, /t, /ctx, /cp, /r, /mem, /perms, /x.  Use /help /command for exact
 usage.
+
+While Morph is working, additional messages appear in the queue above the work
+status. They enter the conversation feed only when the agent accepts them at its
+next input boundary. Messages left at a turn's completion are displayed when the
+next turn starts. This does not require waiting for the entire task to finish.
 
 The interactive footer shows running and pending scheduled task counts while
 any are active. Waiting tasks count as pending; the counts refresh while idle.

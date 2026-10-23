@@ -56,6 +56,8 @@ TEST(VideoAdapterTest, CapabilitiesFollowSeedanceVersion)
 		"volcengine", "", "doubao-seedance-2-0-260128");
 	struct model fast = make_video_model(
 		"volcengine", "", "doubao-seedance-2-0-fast-260128");
+	struct model mini = make_video_model(
+		"volcengine", "", "doubao-seedance-2-0-mini-260615");
 	struct model endpoint = make_video_model("volcengine", "", "ep-test");
 	struct video_capabilities caps{};
 
@@ -77,6 +79,12 @@ TEST(VideoAdapterTest, CapabilitiesFollowSeedanceVersion)
 	EXPECT_TRUE(caps.supports_reference_audios);
 
 	ASSERT_EQ(video_gen_capabilities(&fast, &caps), 0);
+	EXPECT_TRUE(caps.supports_reference_videos);
+	EXPECT_TRUE(caps.supports_reference_audios);
+
+	ASSERT_EQ(video_gen_capabilities(&mini, &caps), 0);
+	EXPECT_TRUE(caps.supports_multi_reference_images);
+	EXPECT_TRUE(caps.supports_generate_audio);
 	EXPECT_TRUE(caps.supports_reference_videos);
 	EXPECT_TRUE(caps.supports_reference_audios);
 
