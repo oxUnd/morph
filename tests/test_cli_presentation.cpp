@@ -23,12 +23,14 @@ void cli_markdown_render_ansi(const char *md);
 
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_reset(struct cli_context *ctx);
+void cli_presentation_flush_stream(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
 void cli_turn_begin(struct cli_context *ctx);
 void cli_transcript_toggle(struct cli_context *ctx);
+void cli_transcript_view_render(struct cli_context *ctx, int scroll);
 void cli_transcript_finish(struct cli_context *ctx);
 void cli_presentation_finish(struct cli_context *ctx);
 const char *cli_input_prompt(void);
@@ -870,10 +872,10 @@ TEST_F(CliPresentationTest, NativeContentEndWithoutDeltasRendersPreamble)
 	cJSON_Delete(body);
 }
 
-TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
+TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 {
 	cJSON *first = TextData("Inspect");
-	cJSON *second = TextData("ing the state");
+	cJSON *second = TextData("ing the state\nA hidden detail");
 	cJSON *answer = TextData("Done");
 	cJSON *final = TextData("fallback final payload");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
@@ -886,12 +888,17 @@ TEST_F(CliPresentationTest, InteractiveStreamsReasoningAsDimText)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[2m◇ Reasoning · \033[0m"),
+	EXPECT_NE(output.find("\033[2m◇ Reasoning · "),
 		  std::string::npos);
-	EXPECT_NE(output.find("\033[2mInspect\033[0m"),
-		  std::string::npos);
-	EXPECT_NE(output.find("\033[2ming the state\033[0m"),
-		  std::string::npos);
+	EXPECT_NE(output.find("Inspecting the state…"), std::string::npos);
+	EXPECT_EQ(output.find("A hidden detail"), std::string::npos);
+	testing::internal::CaptureStdout();
+	ctx.details_visible = 1;
+	cli_transcript_view_render(&ctx, 0);
+	ctx.details_visible = 0;
+	std::string details = testing::internal::GetCapturedStdout();
+	EXPECT_NE(details.find("Inspecting the state"), std::string::npos);
+	EXPECT_NE(details.find("A hidden detail"), std::string::npos);
 	EXPECT_NE(output.find("\n\033[1m●\033[0m "),
 		  std::string::npos);
 	EXPECT_EQ(output.find("Reasoning", output.find("Reasoning") + 1),
@@ -915,10 +922,12 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta",
 	     reasoning);
+	cli_presentation_flush_stream(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("◇ Reasoning · Checking constraints"),
 		  std::string::npos);
+	EXPECT_EQ(output.find("…"), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 	cJSON_Delete(reasoning);
 }
@@ -975,8 +984,13 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("before"), std::string::npos);
-	EXPECT_NE(output.find("after"), std::string::npos);
+	EXPECT_NE(output.find("beforeafter"), std::string::npos);
+	testing::internal::CaptureStdout();
+	ctx.details_visible = 1;
+	cli_transcript_view_render(&ctx, 0);
+	ctx.details_visible = 0;
+	output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("beforeafter"), std::string::npos);
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find("52;c"), std::string::npos);
 	cli_set_color_enabled(0);
@@ -1450,11 +1464,13 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 		"{\"tool\":\"file_read\",\"tool_call_id\":\"second\","
 		"\"result\":\"SECOND OUTPUT\"}");
 	cJSON *thought = TextData("Checking files");
+	cJSON *reasoning = TextData("Compare the two files");
 	cJSON *final = TextData("Files checked");
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.thought.end", "end", thought);
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", first);
+	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", reasoning);
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", second);
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", second_result);
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", first_result);
@@ -1477,9 +1493,10 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	std::string expanded = testing::internal::GetCapturedStdout();
 	EXPECT_NE(expanded.find("hidden argument"), std::string::npos);
 	EXPECT_LT(expanded.find("first.txt"), expanded.find("FIRST OUTPUT"));
-	EXPECT_LT(expanded.find("FIRST OUTPUT"), expanded.find("second.txt"));
+	EXPECT_LT(expanded.find("FIRST OUTPUT"), expanded.find("Compare the two files"));
+	EXPECT_LT(expanded.find("Compare the two files"), expanded.find("second.txt"));
 	EXPECT_LT(expanded.find("second.txt"), expanded.find("SECOND OUTPUT"));
-	EXPECT_NE(expanded.find("Tool details"), std::string::npos);
+	EXPECT_NE(expanded.find("Turn details"), std::string::npos);
 	EXPECT_NE(expanded.find("\033[?1049h"), std::string::npos);
 	EXPECT_EQ(expanded.find("Files checked"), std::string::npos);
 	EXPECT_EQ(ctx.turn_active, 0);
@@ -1498,6 +1515,7 @@ TEST_F(CliPresentationTest, ToolDetailsTogglePreservesOrderAndCompletedAnswer)
 	cJSON_Delete(first_result);
 	cJSON_Delete(second_result);
 	cJSON_Delete(thought);
+	cJSON_Delete(reasoning);
 	cJSON_Delete(final);
 }
 

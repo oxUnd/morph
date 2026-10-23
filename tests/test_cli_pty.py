@@ -32,7 +32,14 @@ class Model(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         release = threading.Event()
-        self.requests.put((body, release))
+        is_title = any(message.get('role') == 'system' and
+                       message.get('content', '').startswith("Summarize the user's underlying task")
+                       for message in body.get('messages', []))
+        if is_title:
+            release.delta = {'content': '{"title":"PTY session"}'}
+            release.set()
+        else:
+            self.requests.put((body, release))
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.end_headers()

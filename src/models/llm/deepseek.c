@@ -36,16 +36,26 @@ static int deepseek_supports_tool_choice(const struct model *model)
 	return !deepseek_thinking_enabled(model);
 }
 
-static int deepseek_add_message_fields(cJSON *message,
+static int deepseek_add_message_fields(const struct model *model, cJSON *message,
 				       const struct chat_message *chat_message)
 {
 	if (!message || !chat_message)
 		return 0;
-	if (strcmp(chat_message->role, "assistant") != 0 ||
-	    !chat_message->reasoning_content)
+	if (strcmp(chat_message->role, "assistant") != 0)
 		return 0;
+	if (deepseek_thinking_enabled(model)) {
+		/* A checkpoint is context, not a model answer with a reasoning trace. */
+		if (chat_message->is_context_summary) {
+			cJSON *role = cJSON_GetObjectItemCaseSensitive(message, "role");
+
+			return cJSON_SetValuestring(role, "user") ? 0 : -ENOMEM;
+		}
+	} else if (!chat_message->reasoning_content) {
+		return 0;
+	}
 	if (!cJSON_AddStringToObject(message, "reasoning_content",
-				     chat_message->reasoning_content))
+				     chat_message->reasoning_content ?
+				     chat_message->reasoning_content : ""))
 		return -ENOMEM;
 	return 0;
 }

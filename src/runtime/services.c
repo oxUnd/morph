@@ -218,6 +218,7 @@ int runtime_session_select_existing(struct runtime *runtime, int64_t id,
 	pthread_mutex_lock(&ctx->execution_lock);
 	rc = session_get_by_id(&ctx->database, id, &session);
 	if (rc == 0) {
+		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
 		runtime_context_select_plan_session(ctx, session.id);
 		(void)runtime_context_update_tool_runtime_context(ctx, session.id);

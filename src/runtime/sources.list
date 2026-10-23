@@ -16,6 +16,7 @@ scheduler.c
 services.c
 session_service.c
 session_title.c
+recap.c
 session_import.c
 task_service.c
 task_controller.c

@@ -971,7 +971,8 @@ static char *build_text_tool_arguments_json(const char *input)
 static cJSON *build_structured_messages_cjson(const char *system_prompt,
 					       struct chat_message *messages,
 					       int msg_count,
-					       const struct llm_adapter *adapter)
+					       const struct llm_adapter *adapter,
+					       const struct model *model)
 {
 	cJSON *arr = cJSON_CreateArray();
 
@@ -998,7 +999,7 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 			cJSON_AddStringToObject(msg, "content", "");
 
 		if (adapter->add_message_fields &&
-		    adapter->add_message_fields(msg, m) < 0) {
+		    adapter->add_message_fields(model, msg, m) < 0) {
 			cJSON_Delete(msg);
 			cJSON_Delete(arr);
 			return NULL;
@@ -1512,7 +1513,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 
 	cJSON *msgs_arr = build_structured_messages_cjson(system_prompt,
 							   messages, msg_count,
-							   adapter);
+							   adapter, self);
 	if (!msgs_arr) {
 		cJSON_Delete(root);
 		MORPH_RETURN(-ENOMEM);

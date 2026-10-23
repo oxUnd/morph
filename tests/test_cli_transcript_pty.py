@@ -43,7 +43,7 @@ def main():
         second_content = ''.join(f'SECOND_LINE_{i:03d}\n' for i in range(200))
         second_content += 'SECOND_PRIVATE_RESULT 中文🙂\n'
         (directory / 'second.txt').write_text(second_content, encoding='utf-8')
-        terminal = Terminal(driver, directory, server.server_port)
+        terminal = Terminal(driver, directory, server.server_port, hooks_enabled=False)
         terminal.child.setwinsize(24, 120)
         terminal.screen = AlternateScreen(120, 24)
         terminal.stream = pyte.Stream(terminal.screen)
@@ -79,7 +79,7 @@ def main():
             terminal.send('\x0f')
             expanded = terminal.snapshot('expanded while model running')
             assert 'SECOND_PRIVATE_RESULT 中文🙂' in expanded, expanded
-            assert 'Tool details' in expanded, expanded
+            assert 'Turn details' in expanded, expanded
             assert '草稿🙂 tail' not in expanded, expanded
             terminal.send('\x1b[<64;10;10M')
             wheel = terminal.snapshot('mouse wheel scrolls details')
@@ -118,7 +118,7 @@ def main():
             assert '3 calls' in terminal.snapshot('new tool result updates in place')
             last_release.set()
             terminal.pump(1)
-            assert 'Tool details' in terminal.snapshot('details remain open after completion')
+            assert 'Turn details' in terminal.snapshot('details remain open after completion')
             assert terminal.raw.count('\x1b[?1049') == switches, terminal.raw
             assert terminal.raw.count('\x1b[2J') == clears, terminal.raw
             unchanged = terminal.raw
@@ -157,7 +157,7 @@ def main():
             terminal.pump(1)
             question = terminal.snapshot('question exits viewer without hiding input')
             assert 'Choose a color' in question, question
-            assert 'Tool details' not in question, question
+            assert 'Turn details' not in question, question
             terminal.send('1\r')
             answered, answered_release = terminal.request()
             releases.append(answered_release)

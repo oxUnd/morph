@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
+#include "agent/history.h"
 #include "agent/system_prompt.h"
 #include "agent/tools/skill_activate.h"
 #include "skill/skill.h"
@@ -2673,6 +2674,33 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, LlmFailurePreservesProviderErrorDetail) {
+	llm = create_mock_llm("unused");
+	llm_data = (struct mock_llm_data *)llm->handle;
+	llm_data->should_fail = 1;
+	std::strcpy(llm->last_error, "HTTP 400: reasoning_content is required");
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	struct morph_event_recorder rec;
+	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
+	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec), 0);
+	EXPECT_EQ(react_run(ctx, "continue", nullptr, nullptr), -EIO);
+	ASSERT_NE(ctx->last_error_detail, nullptr);
+	EXPECT_STREQ(ctx->last_error_detail, llm->last_error);
+	bool found_detail = false;
+	for (size_t i = 0; i < rec.records.nelts; i++) {
+		auto *record = static_cast<struct morph_event_record *>(
+			morph_array_get(&rec.records, i));
+		if (std::strstr(record->json, "react.turn.end") &&
+		    std::strstr(record->json, "HTTP 400: reasoning_content is required"))
+			found_detail = true;
+	}
+	EXPECT_TRUE(found_detail);
+	morph_event_recorder_cleanup(&rec);
+	react_context_destroy(ctx);
+}
+
 TEST_F(MockLlmTest, StepCountAfterFinal) {
 	setup_llm_with_response("Final: quick answer");
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -3467,6 +3495,139 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 
 	arena_destroy(arena);
 	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
+	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
+		api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct model_history_item summary{};
+	struct model_history_item answer{};
+	std::strcpy(summary.kind, "compaction_summary");
+	summary.content = const_cast<char *>("Earlier work checkpoint");
+	summary.next = &answer;
+	std::strcpy(answer.kind, "assistant_message");
+	answer.content = const_cast<char *>("Earlier answer");
+	answer.payload_json = const_cast<char *>("{\"reasoning_content\":\"Original reasoning\"}");
+	morph_array_t messages{};
+	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(&summary, &messages, arena), 0);
+	/* Old non-thinking history has no reasoning to replay. */
+	struct chat_message *legacy = static_cast<struct chat_message *>(morph_array_push(&messages));
+	ASSERT_NE(legacy, nullptr);
+	*legacy = {};
+	legacy->role = const_cast<char *>("assistant");
+	legacy->content = const_cast<char *>("Legacy answer");
+	struct tool_desc tool{};
+	tool.name = "lookup";
+	tool.description = "Lookup data";
+	struct chat_response response{};
+	EXPECT_EQ(model->chat_with_tools_stream(model, arena, nullptr,
+		static_cast<struct chat_message *>(messages.elts), (int)messages.nelts,
+		&tool, 1, &response, nullptr, nullptr), 200);
+	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	cJSON *sent = cJSON_GetObjectItem(request, "messages");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 0), "role")), "user");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 1), "reasoning_content")), "Original reasoning");
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(sent, 2), "reasoning_content")), "");
+	cJSON_Delete(request);
+	chat_response_free(&response);
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
+	struct adapter_case {
+		const char *provider;
+		const char *adapter;
+		bool thinking;
+		bool deepseek;
+	};
+	const adapter_case cases[] = {
+		{"openai", "openai-chat-compatible", true, false},
+		{"deepseek", "openai-chat-compatible", true, false},
+		{"deepseek", "openai-responses", true, false},
+		{"openai", "deepseek", true, true},
+		{"deepseek", "deepseek", false, true},
+	};
+	for (const auto &test : cases) {
+		bool responses_api = std::strcmp(test.adapter, "openai-responses") == 0;
+		srv.response_body = responses_api ?
+			"{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}" :
+			"{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
+		SCOPED_TRACE(std::string(test.provider) + "/" + test.adapter +
+			(test.thinking ? "/thinking" : "/non-thinking"));
+		struct model *model = model_llm_create(test.provider, "deepseek-v4-flash",
+			api_base, "test-key");
+		ASSERT_NE(model, nullptr);
+		std::strcpy(model->adapter, test.adapter);
+		std::strcpy(model->extra_body_json, test.thinking ?
+			"{\"thinking\":{\"type\":\"enabled\"}}" :
+			"{\"thinking\":{\"type\":\"disabled\"}}");
+		struct chat_message messages[3]{};
+		messages[0].role = const_cast<char *>("assistant");
+		messages[0].content = const_cast<char *>("Checkpoint");
+		messages[0].is_context_summary = 1;
+		messages[1].role = const_cast<char *>("assistant");
+		messages[1].content = const_cast<char *>("Earlier reply");
+		messages[1].reasoning_content = const_cast<char *>("Original trace");
+		messages[2].role = const_cast<char *>("assistant");
+		messages[2].content = const_cast<char *>("Legacy reply");
+		struct arena *arena = arena_create(8192);
+		ASSERT_NE(arena, nullptr);
+		struct chat_response response{};
+		EXPECT_EQ(model->chat_with_tools_stream(model, arena, nullptr,
+			messages, 3, nullptr, 0, &response, nullptr, nullptr), 200);
+		const char *body = std::strstr(srv.last_request, "\r\n\r\n");
+		ASSERT_NE(body, nullptr);
+		cJSON *request = cJSON_Parse(body + 4);
+		ASSERT_NE(request, nullptr);
+		cJSON *sent = cJSON_GetObjectItem(request, responses_api ? "input" : "messages");
+		cJSON *summary = cJSON_GetArrayItem(sent, 0);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(summary, "role")),
+			test.deepseek && test.thinking ? "user" : "assistant");
+		EXPECT_EQ(cJSON_GetObjectItem(summary, "reasoning_content"), nullptr);
+		cJSON *reasoning = cJSON_GetObjectItem(cJSON_GetArrayItem(sent, 1),
+			"reasoning_content");
+		if (test.deepseek)
+			EXPECT_STREQ(cJSON_GetStringValue(reasoning), "Original trace");
+		else
+			EXPECT_EQ(reasoning, nullptr);
+		cJSON *legacy = cJSON_GetObjectItem(cJSON_GetArrayItem(sent, 2),
+			"reasoning_content");
+		if (test.deepseek && test.thinking)
+			EXPECT_STREQ(cJSON_GetStringValue(legacy), "");
+		else
+			EXPECT_EQ(legacy, nullptr);
+		/* Wire conversion must not mutate shared history when changing models. */
+		EXPECT_STREQ(messages[0].role, "assistant");
+		EXPECT_EQ(messages[2].reasoning_content, nullptr);
+		cJSON_Delete(request);
+		chat_response_free(&response);
+		arena_destroy(arena);
+		model_destroy(model);
+	}
 	mock_server_stop(&srv);
 }
 

@@ -511,6 +511,8 @@ static void print_plain_labeled(const char *label, const char *content)
 	free(display);
 }
 
+static void presentation_reasoning_flush(struct cli_context *ctx, int finish);
+
 static void presentation_print_stream(struct cli_context *ctx)
 {
 	const char *content;
@@ -522,7 +524,7 @@ static void presentation_print_stream(struct cli_context *ctx)
 		return;
 	reasoning_streamed =
 		ctx->event_stream_kind == CLI_STREAM_REASONING &&
-		ctx->event_stream_visible;
+		ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 	already_streamed = ctx->markdown_stream_visible &&
 		ctx->markdown_stream_kind == ctx->event_stream_kind;
 	if (already_streamed)
@@ -534,10 +536,7 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (!content || !content[0])
 		goto reset;
 	if (reasoning_streamed) {
-		size_t len = strlen(content);
-
-		if (len > 0 && content[len - 1] != '\n')
-			printf("\n");
+		presentation_reasoning_flush(ctx, 1);
 		goto reset;
 	}
 	if (already_streamed)
@@ -560,6 +559,7 @@ reset:
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
 	ctx->event_stream_visible = 0;
+	ctx->reasoning_stream_offset = 0;
 }
 
 static void presentation_discard_stream(struct cli_context *ctx)
@@ -573,6 +573,7 @@ static void presentation_discard_stream(struct cli_context *ctx)
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
 	ctx->event_stream_visible = 0;
+	ctx->reasoning_stream_offset = 0;
 }
 
 static void presentation_plain_content(struct cli_context *ctx, const char *text)
@@ -646,17 +647,47 @@ static int presentation_append_stream(struct cli_context *ctx, int kind,
 	return 0;
 }
 
-static void presentation_reasoning_delta(struct cli_context *ctx,
-					 const char *text)
+/* The terminal owns the live row; commit its preview only when the stream ends. */
+static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 {
-	if (!ctx || !text || !text[0])
+	const char *content = morph_buf_cstr(&ctx->event_stream);
+	size_t offset = ctx->reasoning_stream_offset;
+	const char *start;
+	const char *end;
+	const char *newline;
+	morph_buf_t preview;
+	size_t width = (size_t)cli_terminal_columns(ctx) - 15u;
+	int rc;
+
+	if (offset < ctx->event_stream.len) {
+		rc = cli_transcript_reasoning_append(ctx, content + offset,
+			ctx->event_stream.len - offset, !ctx->event_stream_visible);
+		if (rc != 0) {
+			log_warn("Could not retain reasoning details: %s", morph_strerror(rc));
+			return;
+		}
+		ctx->reasoning_stream_offset = ctx->event_stream.len;
+		ctx->event_stream_visible = 1;
+	}
+	start = content + strspn(content, " \t\r\n");
+	if (!*start || morph_buf_init(&preview, 128) != 0)
 		return;
-	presentation_clear_status(ctx);
-	if (!ctx->event_stream_visible)
-		printf("\n" ANSI_DIM CLI_FEED_SYSTEM " Reasoning · " ANSI_RESET);
-	printf(ANSI_DIM "%s" ANSI_RESET, text);
-	fflush(stdout);
-	ctx->event_stream_visible = 1;
+	newline = strchr(start, '\n');
+	end = utf8_advance_display_width(start, width - 1u);
+	if (newline && newline < end)
+		end = newline;
+	(void)morph_buf_puts(&preview, "Reasoning · ");
+	(void)morph_buf_append(&preview, start, (size_t)(end - start));
+	if (*end)
+		(void)morph_buf_puts(&preview, "…");
+	if (finish) {
+		presentation_clear_status(ctx);
+		printf("\n" ANSI_DIM CLI_FEED_SYSTEM " %s" ANSI_RESET "\n",
+			morph_buf_cstr(&preview));
+	} else if (isatty(STDOUT_FILENO)) {
+		cli_terminal_live_set(ctx, morph_buf_cstr(&preview));
+	}
+	morph_buf_cleanup(&preview);
 }
 
 static const char *presentation_workdir(struct cli_context *ctx)
@@ -1540,6 +1571,7 @@ void cli_presentation_reset(struct cli_context *ctx)
 	ctx->event_stream_has_delta = 0;
 	ctx->event_stream_complete = 0;
 	ctx->event_stream_visible = 0;
+	ctx->reasoning_stream_offset = 0;
 	ctx->final_rendered = 0;
 	cli_terminal_live_clear(ctx);
 	ctx->mcp_tree_active = 0;
@@ -1576,6 +1608,9 @@ int cli_presentation_event(struct cli_context *ctx,
 	if (!ctx || !ev)
 		MORPH_RETURN(-EINVAL);
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
+		if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
+		    strcmp(ev->name, "session.recap") == 0)
+			cli_recap_event(ctx, ev);
 		char *json = morph_event_to_json_string(ev);
 
 		if (!json)
@@ -1587,6 +1622,11 @@ int cli_presentation_event(struct cli_context *ctx,
 	}
 	if (!ctx->presentation_ready)
 		return 0;
+	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
+	    strcmp(ev->name, "session.recap") == 0) {
+		cli_recap_event(ctx, ev);
+		return 0;
+	}
 	/* Background metadata belongs in the footer, never in the conversation. */
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 	    strcmp(ev->name, "session.title") == 0) {
@@ -1681,13 +1721,12 @@ int cli_presentation_event(struct cli_context *ctx,
 			return presentation_append_stream(
 				ctx, CLI_STREAM_THOUGHT, text, 0, 1, NULL);
 		if (strcmp(ev->name, "react.reasoning.delta") == 0) {
-			const char *clean = "";
 			int rc = presentation_append_stream(
-				ctx, CLI_STREAM_REASONING, text, 1, 0, &clean);
+				ctx, CLI_STREAM_REASONING, text, 1, 0, NULL);
 
 			if (rc == 0 &&
 			    ctx->presentation_mode == CLI_PRESENT_INTERACTIVE)
-				presentation_reasoning_delta(ctx, clean);
+				presentation_reasoning_flush(ctx, 0);
 			return rc;
 		}
 		if (strcmp(ev->name, "react.final.delta") == 0) {

@@ -1216,6 +1216,8 @@ void react_reset(struct react_context *ctx)
 	ctx->last_error_detail = NULL;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
+	free(ctx->final_reasoning_content);
+	ctx->final_reasoning_content = NULL;
 	ctx->tool_fail_name = NULL;
 	ctx->tool_fail_args = NULL;
 	ctx->tool_fail_count = 0;
@@ -2069,6 +2071,10 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 
 	asst_msg->role = arena_strdup(ctx->message_arena, "assistant");
 	asst_msg->content = arena_strdup(ctx->message_arena, proposed);
+	asst_msg->reasoning_content = ctx->final_reasoning_content ?
+		arena_strdup(ctx->message_arena, ctx->final_reasoning_content) : NULL;
+	if (ctx->final_reasoning_content && !asst_msg->reasoning_content)
+		MORPH_RETURN(-ENOMEM);
 	asst_msg->tool_call_id = NULL;
 	asst_msg->tool_calls = NULL;
 	asst_msg->tool_call_count = 0;
@@ -2646,10 +2652,16 @@ static int react_handle_llm_error(struct react_context *ctx,
 {
 	const char *err_content = "LLM call failed";
 	struct react_step *err;
+	struct model *model = ctx->llm_model;
 
 	if (status >= 0)
 		return 0;
-	log_err("react_run: LLM call failed: %d", status);
+	log_err("react_run: LLM call failed: %s", morph_strerror(status));
+
+	if (model && model->last_error[0])
+		react_set_error_detail(ctx, model->last_error);
+	else if (response->content && *response->content)
+		react_set_error_detail(ctx, response->content);
 	if (response->content && *response->content)
 		err_content = response->content;
 	err = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
@@ -3545,6 +3557,10 @@ static int react_retry_incomplete_final(struct react_context *ctx,
 	memset(slots, 0, 2 * sizeof(*slots));
 	slots[0].role = arena_strdup(ctx->message_arena, "assistant");
 	slots[0].content = arena_strdup(ctx->message_arena, proposed);
+	slots[0].reasoning_content = ctx->final_reasoning_content ?
+		arena_strdup(ctx->message_arena, ctx->final_reasoning_content) : NULL;
+	if (ctx->final_reasoning_content && !slots[0].reasoning_content)
+		MORPH_RETURN(-ENOMEM);
 	slots[1].role = arena_strdup(ctx->message_arena, "user");
 	slots[1].content = arena_strdup(ctx->message_arena, retry_prompt);
 	if (!slots[0].role || !slots[0].content || !slots[1].role ||
@@ -4033,6 +4049,15 @@ int react_run(struct react_context *ctx, const char *user_input,
 			const char *proposed = response.content
 					       ? response.content : "";
 
+			free(ctx->final_reasoning_content);
+			ctx->final_reasoning_content = response.reasoning_content ?
+				strdup(response.reasoning_content) : NULL;
+			if (response.reasoning_content && !ctx->final_reasoning_content) {
+				chat_response_free(&response);
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					-ENOMEM, "internal_error");
+				break;
+			}
 			if (!react_handle_final_response(ctx, proposed, &messages,
 							 cb, user_data)) {
 				chat_response_free(&response);

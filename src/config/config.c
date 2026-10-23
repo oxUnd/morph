@@ -468,6 +468,7 @@ void config_set_defaults(struct config *cfg)
 	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
 	strncpy(cfg->general.default_session, "default",
 		sizeof(cfg->general.default_session) - 1);
+	cfg->general.auto_recap = 1;
 	strncpy(cfg->general.output_dir, "~/.morph/output",
 		sizeof(cfg->general.output_dir) - 1);
 	strncpy(cfg->general.log_level, "info",
@@ -957,6 +958,7 @@ int config_load(struct config *cfg, const char *path)
 
 	cfg_table_t *general = table_path(tbl, "general");
 	if (general) {
+		CFG_BOOL(general, "auto_recap", cfg->general.auto_recap);
 		CFG_STR(general, "default_session", cfg->general.default_session);
 		CFG_STR(general, "output_dir", cfg->general.output_dir);
 		CFG_STR(general, "log_level", cfg->general.log_level);

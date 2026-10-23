@@ -559,6 +559,7 @@ void runtime_close(struct runtime *runtime)
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_lock(&runtime->context.execution_lock);
 	runtime_title_stop(runtime);
+	runtime_recap_stop(runtime);
 	if (runtime->context.hooks.ready && runtime->context.hooks.session_id) {
 		cJSON *input = cJSON_CreateObject(), *output = NULL;
 		cJSON_AddStringToObject(input, "reason", "other");
@@ -641,6 +642,8 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 	struct runtime *runtime = user_data;
 	int rc = runtime_context_prepare_turn(&runtime->context, request, user_data);
 
+	if (rc == 0)
+		runtime_recap_invalidate(runtime);
 	if (rc == 0 && request->generate_session_title) {
 		int title_rc = runtime_title_start(runtime, request);
 

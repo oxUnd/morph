@@ -92,6 +92,7 @@ static const struct schema_entry schema[] = {
 	HOOK_EVENT("Interrupt"),
 	TABLE("general"),
 	STRING("general.default_session", 255),
+	BOOL("general.auto_recap"),
 	STRING("general.output_dir", PATH_MAX - 1),
 	ENUM("general.log_level", 15, "debug|info|warn|error"),
 	STRING("general.log_file", PATH_MAX - 1),

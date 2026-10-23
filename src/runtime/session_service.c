@@ -45,6 +45,7 @@ int runtime_session_select(struct runtime *runtime, const char *name,
 	rc = runtime_session_switch(&ctx->engine, name,
 			ctx->config.models.text.model, &session, created);
 	if (rc == 0) {
+		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
 		runtime_context_select_plan_session(ctx, session.id);
 		(void)runtime_context_update_tool_runtime_context(ctx, session.id);
@@ -76,6 +77,7 @@ int runtime_session_create_and_select(struct runtime *runtime, const char *name,
 	rc = runtime_session_create(&ctx->engine, name,
 			ctx->config.models.text.model, &session);
 	if (rc == 0) {
+		runtime_recap_invalidate(runtime);
 		ctx->current_session = session;
 		runtime_context_select_plan_session(ctx, session.id);
 		(void)runtime_context_update_tool_runtime_context(ctx, session.id);
@@ -114,6 +116,7 @@ int runtime_session_delete_and_update(struct runtime *runtime, int64_t id)
 	runtime_title_cancel(runtime, id);
 	rc = runtime_session_delete(&ctx->engine, id);
 	if (rc == 0) {
+		runtime_recap_invalidate(runtime);
 		runtime_context_forget_plan_session(ctx, id);
 		if (ctx->current_session.id == id) {
 			runtime_session_clear_history(ctx->react);

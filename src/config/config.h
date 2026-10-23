@@ -18,6 +18,7 @@ extern "C" {
 #endif
 
 struct config_general {
+	int auto_recap;
 	char default_session[256];
 	char output_dir[PATH_MAX];
 	char log_level[16];

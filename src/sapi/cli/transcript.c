@@ -21,9 +21,15 @@ struct transcript_tool {
 	double ended;
 };
 
+struct transcript_reasoning {
+	size_t after_tools;
+	morph_buf_t text;
+};
+
 struct cli_transcript {
 	struct arena *arena;
 	morph_array_t tools;
+	morph_array_t reasoning;
 	int finished;
 	int allocation_failed;
 	int view_follow;
@@ -81,6 +87,7 @@ static int transcript_init(struct cli_context *ctx)
 {
 	struct cli_transcript *tr = calloc(1, sizeof(*tr));
 	struct transcript_tool tool;
+	struct transcript_reasoning reasoning;
 
 	if (!tr)
 		MORPH_RETURN(-ENOMEM);
@@ -98,6 +105,11 @@ static int transcript_init(struct cli_context *ctx)
 		MORPH_RETURN(-ENOMEM);
 	}
 	ctx->transcript = tr;
+	if (morph_array_init(&tr->reasoning, MORPH_ARRAY_INIT_CAP,
+			     sizeof(reasoning)) != 0) {
+		cli_transcript_reset(ctx);
+		MORPH_RETURN(-ENOMEM);
+	}
 	if (morph_buf_init(&tr->deferred, BUFSIZ) != 0 ||
 	    morph_buf_init(&tr->previous_frame, BUFSIZ) != 0) {
 		cli_transcript_reset(ctx);
@@ -109,15 +121,48 @@ static int transcript_init(struct cli_context *ctx)
 void cli_transcript_reset(struct cli_context *ctx)
 {
 	struct cli_transcript *tr = ctx->transcript;
+	struct transcript_reasoning *reasoning;
 
 	if (!tr)
 		return;
+
+	morph_array_foreach(reasoning, &tr->reasoning, struct transcript_reasoning)
+		morph_buf_cleanup(&reasoning->text);
+	morph_array_cleanup(&tr->reasoning);
 	morph_array_cleanup(&tr->tools);
 	morph_buf_cleanup(&tr->deferred);
 	morph_buf_cleanup(&tr->previous_frame);
 	arena_destroy(tr->arena);
 	free(tr);
 	ctx->transcript = NULL;
+}
+
+/* Reasoning stays separate from tools, with its original position in the turn. */
+int cli_transcript_reasoning_append(struct cli_context *ctx, const char *text,
+				    size_t len, int begin)
+{
+	struct cli_transcript *tr;
+	struct transcript_reasoning *reasoning;
+	int rc;
+
+	if (!ctx->transcript && transcript_init(ctx) != 0)
+		MORPH_RETURN(-ENOMEM);
+	tr = ctx->transcript;
+	if (begin || !tr->reasoning.nelts) {
+		reasoning = morph_array_push(&tr->reasoning);
+		if (!reasoning)
+			MORPH_RETURN(-ENOMEM);
+		memset(reasoning, 0, sizeof(*reasoning));
+		reasoning->after_tools = tr->tools.nelts;
+		rc = morph_buf_init(&reasoning->text, BUFSIZ);
+		if (rc != 0) {
+			(void)morph_array_pop(&tr->reasoning);
+			return rc;
+		}
+	} else {
+		reasoning = morph_array_get(&tr->reasoning, tr->reasoning.nelts - 1);
+	}
+	return morph_buf_append(&reasoning->text, text, len);
 }
 
 int cli_transcript_capture_begin(struct cli_context *ctx)
@@ -493,13 +538,29 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 		morph_buf_cleanup(&page);
 		return;
 	}
-	morph_array_foreach(tool, &tr->tools, struct transcript_tool) {
-		print_tool(tool);
-		print_details(tool, 1, transcript_workdir(ctx));
-		printf("\n");
+	size_t reasoning_index = 0;
+
+	for (size_t i = 0; i <= tr->tools.nelts; i++) {
+		while (reasoning_index < tr->reasoning.nelts) {
+			struct transcript_reasoning *reasoning =
+				morph_array_get(&tr->reasoning, reasoning_index);
+
+			if (reasoning->after_tools > i)
+				break;
+			printf(ANSI_DIM "  " CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
+			print_lines(morph_buf_cstr(&reasoning->text));
+			printf("\n");
+			reasoning_index++;
+		}
+		if (i < tr->tools.nelts) {
+			tool = morph_array_get(&tr->tools, i);
+			print_tool(tool);
+			print_details(tool, 1, transcript_workdir(ctx));
+			printf("\n");
+		}
 	}
-	if (!tr->tools.nelts)
-		printf("  No tool calls yet.\n");
+	if (!tr->tools.nelts && !tr->reasoning.nelts)
+		printf("  No activity yet.\n");
 	cli_command_capture_end();
 	for (const char *p = morph_buf_cstr(&page); *p; p++)
 		lines += *p == '\n';
@@ -530,7 +591,7 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 		morph_buf_cleanup(&page);
 		return;
 	}
-	printf(ANSI_BOLD "  Tool details" ANSI_RESET
+	printf(ANSI_BOLD "  Turn details" ANSI_RESET
 	       ANSI_DIM "  · %zu calls\n\n" ANSI_RESET, tr->tools.nelts);
 	line = morph_buf_cstr(&page);
 	for (size_t i = 0; i < tr->view_offset && *line; i++) {

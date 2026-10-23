@@ -429,6 +429,30 @@ static int history_add_tool_result(const struct model_history_item *item,
 	return 0;
 }
 
+static int history_add_assistant_message(const struct model_history_item *item,
+	morph_array_t *messages, struct arena *arena)
+{
+	int rc = history_add_text_message(messages, arena, "assistant", item->content);
+	cJSON *payload;
+	const cJSON *reasoning;
+	struct chat_message *message;
+
+	if (rc != 0 || !item->payload_json || !item->payload_json[0])
+		return rc;
+	payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
+	if (!payload)
+		MORPH_RETURN(MORPH_ERR_PARSE);
+	reasoning = cJSON_GetObjectItemCaseSensitive(payload, "reasoning_content");
+	message = morph_array_get(messages, messages->nelts - 1);
+	if (cJSON_IsString(reasoning)) {
+		message->reasoning_content = arena_strdup(arena, reasoning->valuestring);
+		if (!message->reasoning_content)
+			MORPH_SET_ERR(rc, -ENOMEM);
+	}
+	cJSON_Delete(payload);
+	return rc;
+}
+
 int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena)
@@ -448,6 +472,10 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 				reference);
 			if (rc != 0)
 				return rc;
+			struct chat_message *message = morph_array_get(messages,
+				messages->nelts - 1);
+
+			message->is_context_summary = 1;
 		}
 		item = item->next;
 	}
@@ -463,8 +491,7 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 			rc = history_add_text_message(messages, arena, "user",
 				item->content);
 		else if (strcmp(item->kind, "assistant_message") == 0)
-			rc = history_add_text_message(messages, arena, "assistant",
-				item->content);
+			rc = history_add_assistant_message(item, messages, arena);
 		else if (strcmp(item->kind, "background_receipt") == 0)
 			rc = history_add_text_message(messages, arena, "system",
 				item->content);
@@ -500,6 +527,8 @@ static int history_store(struct react_context *ctx,
 	safe.payload_json = payload;
 	safe.token_count = tokenizer_count(ctx->tokenizer,
 		strcmp(insert->kind, "assistant_tool_calls") == 0 ? payload : content);
+	if (strcmp(insert->kind, "assistant_message") == 0 && payload)
+		safe.token_count += tokenizer_count(ctx->tokenizer, payload);
 	rc = model_history_add(ctx->history_db, &safe, NULL);
 	free(content);
 	free(payload);
@@ -572,6 +601,27 @@ int agent_history_record_assistant(struct react_context *ctx,
 	snprintf(key, sizeof(key), "turn:%s:assistant",
 		ctx && ctx->turn_id[0] ? ctx->turn_id : "unknown");
 	item.idempotency_key = key;
+	if (ctx && ctx->final_reasoning_content) {
+		cJSON *payload = cJSON_CreateObject();
+		char *json;
+		int rc;
+
+		if (!payload)
+			MORPH_RETURN(-ENOMEM);
+		if (!cJSON_AddStringToObject(payload, "reasoning_content",
+			ctx->final_reasoning_content)) {
+			cJSON_Delete(payload);
+			MORPH_RETURN(-ENOMEM);
+		}
+		json = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
+		if (!json)
+			MORPH_RETURN(-ENOMEM);
+		item.payload_json = json;
+		rc = history_store(ctx, &item);
+		free(json);
+		return rc;
+	}
 	return history_store(ctx, &item);
 }
 

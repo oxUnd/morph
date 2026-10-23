@@ -10,7 +10,7 @@ struct llm_adapter {
 	int capture_reasoning;
 	int assistant_tool_content_nullable;
 	int (*supports_tool_choice)(const struct model *model);
-	int (*add_message_fields)(cJSON *message,
+	int (*add_message_fields)(const struct model *model, cJSON *message,
 				  const struct chat_message *chat_message);
 };
 

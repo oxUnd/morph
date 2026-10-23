@@ -545,6 +545,16 @@ static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
 }
 
 
+static int cmd_recap(struct cli_context *ctx, int argc, char **argv)
+{
+	(void)argv;
+	if (argc != 1) {
+		CMD_ERROR("usage: /recap");
+		MORPH_RETURN(-EINVAL);
+	}
+	return cli_recap_start(ctx, 0);
+}
+
 static const struct cli_command runtime_commands[] = {
 	{ "/quit",    cmd_quit,    "Exit the program",                  "" },
 	{ "/q",       cmd_quit,    "Alias for /quit",                   "" },
@@ -558,6 +568,7 @@ static const struct cli_command runtime_commands[] = {
 	{ "/ctx",     cmd_context, "Alias for /context",                "/ctx" },
 	{ "/credits", cmd_credits, "Show credit usage and estimated cost", "/credits" },
 	{ "/compress",cmd_compress,"Manually compress context window",  "/compress" },
+	{ "/recap",   cmd_recap,   "Summarize the current conversation", "/recap" },
 	{ "/cp",      cmd_compress,"Alias for /compress",               "/cp" },
 	{ "/save",    cmd_save,    "Export session to a file",          "/save [format]" },
 	{ "/config",  cmd_config,  "View current configuration",        "/config" },

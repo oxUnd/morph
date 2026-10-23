@@ -18,6 +18,7 @@ add_library(morph-cli STATIC
 	once.c
 	output.c
 	presentation.c
+	recap.c
 	run.c
 	setup.c
 	setup_ui.c

@@ -23,6 +23,7 @@ struct runtime_mcp_job {
 #define RUNTIME_TITLE_JOB_MAX 4
 
 struct runtime_title_job;
+struct runtime_recap_job;
 
 struct runtime {
 	struct runtime_context context;
@@ -34,7 +35,12 @@ struct runtime {
 	struct runtime_mcp_job mcp_jobs[MCP_MAX_SERVERS];
 	int mcp_job_count;
 	struct runtime_title_job *title_jobs[RUNTIME_TITLE_JOB_MAX];
+	struct runtime_recap_job *recap_job;
+	uint64_t recap_revision;
 };
+
+void runtime_recap_invalidate(struct runtime *runtime);
+void runtime_recap_stop(struct runtime *runtime);
 
 /* Start/cancel run under execution_lock; shutdown joins before freeing runtime. */
 int runtime_title_start(struct runtime *runtime, const struct runtime_request *request);

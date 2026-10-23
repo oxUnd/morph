@@ -230,6 +230,8 @@ static void cli_readline_footer(struct cli_context *ctx)
 		(long long)ctx->input_status.credits);
 	if (ctx->input_status.session_titles_pending > 0)
 		(void)morph_buf_puts(&usage, " · Naming session...");
+	if (ctx->recap.pending)
+		(void)morph_buf_puts(&usage, " · Generating recap...");
 	(void)morph_buf_puts(&text, "  ");
 	cli_footer_field(&text, "morph", 5, "\033[1;38;5;252m", 0);
 	(void)morph_buf_puts(&text, " · ");
@@ -726,6 +728,10 @@ static int cli_readline_details_escape(int page, int *scroll)
 		*scroll = INT_MIN;
 	else if (strcmp(sequence, "[F") == 0 || strcmp(sequence, "[4~") == 0)
 		*scroll = INT_MAX;
+	else if (strcmp(sequence, "[I") == 0)
+		cli_recap_focus(g_comp_ctx, 1, cli_recap_now());
+	else if (strcmp(sequence, "[O") == 0)
+		cli_recap_focus(g_comp_ctx, 0, cli_recap_now());
 	else if (sscanf(sequence, "[<%u;%u;%u%c",
 			&button, &column, &row, &action) == 4 &&
 		 action == 'M' && (button & 64U))
@@ -777,6 +783,24 @@ static void cli_readline_details_input(struct cli_context *ctx)
 		cli_transcript_view_render(ctx, pending_scroll);
 }
 
+#ifdef HAVE_RL_BIND_KEYSEQ
+static int cli_readline_focus_in(int count, int key)
+{
+	(void)count;
+	(void)key;
+	cli_recap_focus(g_comp_ctx, 1, cli_recap_now());
+	return 0;
+}
+
+static int cli_readline_focus_out(int count, int key)
+{
+	(void)count;
+	(void)key;
+	cli_recap_focus(g_comp_ctx, 0, cli_recap_now());
+	return 0;
+}
+#endif
+
 static void cli_readline_configure(void)
 {
 	(void)rl_variable_bind("enable-bracketed-paste", "on");
@@ -792,6 +816,10 @@ static void cli_readline_configure(void)
 	(void)rl_bind_key(0x02, cli_readline_backward);
 	(void)rl_bind_key(0x06, cli_readline_forward);
 #ifdef HAVE_RL_BIND_KEYSEQ
+	(void)rl_bind_keyseq("\033[I", cli_readline_focus_in);
+	(void)rl_bind_keyseq("\033[O", cli_readline_focus_out);
+	if (isatty(STDOUT_FILENO))
+		fprintf(stdout, "\033[?1004h");
 	(void)rl_bind_keyseq("\033[D", cli_readline_backward);
 	(void)rl_bind_keyseq("\033[C", cli_readline_forward);
 	(void)rl_bind_keyseq("\033[3~", cli_readline_delete);
@@ -1097,6 +1125,7 @@ void cli_run(struct cli_context *ctx)
 		int timeout_ms = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
 		int rc;
 
+		cli_recap_tick(ctx, cli_recap_now());
 		if (callback_installed && (timeout_ms < 0 || timeout_ms > 1000))
 			timeout_ms = 1000;
 		if (!ctx->details_open && cli_command_job_done(&job))
@@ -1202,6 +1231,8 @@ void cli_run(struct cli_context *ctx)
 				cli_readline_clear_footer(ctx);
 				rl_callback_handler_remove();
 				callback_installed = 0;
+				if (isatty(STDOUT_FILENO))
+					fprintf(stdout, "\033[?1004l");
 				cli_terminal_composer_suspend(ctx);
 				if (input[0] != '\0') {
 					int handled = 0;
@@ -1221,7 +1252,10 @@ void cli_run(struct cli_context *ctx)
 							CMD_ERROR("%s", morph_strerror(-ENOMEM));
 						}
 					}
-					if (!handled && job.active) {
+					if (!handled && job.active && strcmp(input, "/recap") == 0) {
+						command_rc = cli_recap_start(ctx, 0);
+						handled = 1;
+					} else if (!handled && job.active) {
 						command_rc = cli_command_job_prompt(&job, input);
 						if (command_rc != 0)
 							CMD_ERROR("%s", morph_strerror(command_rc));
@@ -1261,6 +1295,8 @@ void cli_run(struct cli_context *ctx)
 	}
 	if (ctx->details_open)
 		cli_transcript_toggle(ctx);
+	if (isatty(STDOUT_FILENO))
+		fprintf(stdout, "\033[?1004l");
 	if (g_readline_ready_input) {
 		free(g_readline_ready_input);
 		g_readline_ready_input = NULL;

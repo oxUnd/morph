@@ -274,6 +274,7 @@ Common interactive commands:
 	/trace [--from-db]	Show the latest ReAct trace.
 	/context	Show token context usage.
 	/compress	Compress old conversation context.
+	/recap		Generate a brief catch-up from the recent conversation.
 	/credits	Show estimated credit usage.
 	/save [format]	Export the session to a file.
 	/clear		Clear the terminal screen.
@@ -302,8 +303,10 @@ Active tasks use a separate footer row so model and context information remain
 visible. Background results include their task ID, delivery time, and inbox ID.
 
 Feed marks: ● assistant output, ◯ completed action, ◉ running action,
-⊗ failure, ◇ system update or warning, and ? input required. Tool details remain
-available through Ctrl+O. Task bodies use the same Markdown renderer as replies.
+⊗ failure, ◇ system update or warning, and ? input required. Reasoning is folded
+into a single preview row, with an ellipsis when more text is hidden. Ctrl+O opens the current turn's full reasoning and tool
+details, including live updates; Ctrl+O or Esc returns to the conversation.
+Task bodies use the same Markdown renderer as replies.
 
 ==============================================================================
 TOOLS AND PERMISSIONS					*morph-tools*
@@ -652,6 +655,28 @@ Inspect current usage:
 Manually compress:
 
 	/compress
+
+Generate a user-facing catch-up without compressing context:
+
+	/recap
+
+Recaps summarize the current goal, completed work, and unresolved caveats.
+They include a Next action only when an agreed next step, unanswered question,
+or explicit blocker remedy exists. They read recent user messages and final
+answers, excluding tools and reasoning, and never enter model history.
+
+In the interactive CLI, automatic recaps are enabled by default. A terminal
+that reports focus events can generate one after it has been unfocused and
+the conversation has been idle for 30 minutes. At least 3 completed turns are
+required, with at least 2 additional turns between recaps. New input or session
+navigation invalidates older results. Returning focus cancels an automatic
+request, while manual requests remain available. Unsupported terminals can
+always use /recap explicitly.
+
+Disable automatic recaps without disabling /recap:
+
+	[general]
+	auto_recap = false
 
 Credits track estimated usage and optional warning limits:
 

@@ -141,6 +141,8 @@ void cli_presentation_patch_diff(const char *workdir, const char *input);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
 int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev);
+int cli_transcript_reasoning_append(struct cli_context *ctx, const char *text,
+				    size_t len, int begin);
 void cli_transcript_reset(struct cli_context *ctx);
 void cli_transcript_toggle(struct cli_context *ctx);
 void cli_transcript_view_suspend(struct cli_context *ctx);

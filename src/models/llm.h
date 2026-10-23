@@ -63,6 +63,8 @@ struct chat_message {
 	struct tool_call *tool_calls;
 	int tool_call_count;
 	char *reasoning_content;
+	/* Synthetic context references may need a different wire role per adapter. */
+	int is_context_summary;
 };
 
 struct chat_response {

@@ -3,6 +3,9 @@
 # Environment variables referenced by api_key_env must be set before launch.
 
 [general]
+# Generate a catch-up after 30 minutes unfocused and idle (at least 3 turns).
+# Manual /recap remains available when this is false.
+auto_recap = true
 # Default session name on startup
 default_session = "default"
 # Directory for generated output files

@@ -417,6 +417,31 @@ TEST_F(AgentTurnTest, BeginCompactsBeforePersistingCurrentUser)
 	EXPECT_EQ(agent_turn_finish(&turn, nullptr), 0);
 }
 
+TEST_F(AgentTurnTest, AssistantReasoningSurvivesHistoryReloadAndReset)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	ASSERT_EQ(react_set_turn_id(react, "reasoning_turn"), 0);
+	react->final_reasoning_content = strdup("Original final reasoning");
+	ASSERT_NE(react->final_reasoning_content, nullptr);
+	ASSERT_EQ(agent_history_record_assistant(react, "Final answer"), 0);
+	ASSERT_EQ(agent_history_reload(react), 0);
+	morph_array_t messages{};
+	struct arena *arena = arena_create(0);
+	ASSERT_NE(arena, nullptr);
+	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(react->history_items, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 1U);
+	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	EXPECT_STREQ(message->content, "Final answer");
+	EXPECT_STREQ(message->reasoning_content, "Original final reasoning");
+	react_reset(react);
+	EXPECT_EQ(react->final_reasoning_content, nullptr);
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
 TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 {
 	struct model_history_item user = {};
@@ -437,6 +462,7 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	struct chat_message *built =
 		static_cast<struct chat_message *>(messages.elts);
 	EXPECT_STREQ(built[0].role, "assistant");
+	EXPECT_TRUE(built[0].is_context_summary);
 	EXPECT_NE(strstr(built[0].content, "earlier context summary"), nullptr);
 	EXPECT_STREQ(built[1].role, "user");
 	EXPECT_STREQ(built[1].content, "exact current request");

@@ -66,6 +66,7 @@ runtime/
   registry_service.c platform tool and MCP registration facade
   session_service.c session ownership and selection facade
   session_title.c   isolated background title generation and conditional persistence
+  recap.c           isolated catch-up requests and stale-result validation
   session.c         session lifecycle and switching
   permissions_service.c persistent permission grant listing and revocation
   task_service.c    scheduled-task and notification facade
@@ -194,3 +195,36 @@ phases, including failure and cancellation. They use the runtime's event sink
 on the worker thread; hosts opting into naming must marshal events to their
 UI thread. The CLI shows `Naming session...` in the footer while work is pending,
 without replacing foreground activity or printing metadata in the conversation.
+
+## Conversation recaps
+
+Recap is independent of compaction. `runtime_recap_request()` snapshots the
+selected session's recent user messages and final answers and starts an isolated
+request using the configured text model. The prompt is bounded to 32 KiB,
+including instructions. Long messages retain both their beginning and end.
+Tools, reasoning, and previous recaps are excluded. Model output must contain
+`summary` (up to 700 Unicode characters) and nullable `next_action` (up to 200).
+An invented next step is explicitly forbidden by the prompt.
+
+The runtime owns the worker, model, arena, cancellation, and billing resources.
+Requests have no tools, a 30-second timeout, and no model-level retries. Only
+one request runs at a time. `session.recap` events carry begin/end phases,
+session identity, history position, request revision, trigger type, and either
+the structured result or an error code. Hosts must marshal the runtime event
+sink from the worker thread and call `runtime_recap_is_current()` before
+displaying an end event. Foreground turns and session navigation cancel work
+and advance the revision; history position also detects writes from another
+database connection. A late event cannot replace a newer request or enter the
+wrong session. Shutdown cancels and joins the worker. Recaps do not write chat
+messages, model history, or compaction records.
+
+The CLI exposes `/recap`, maintains a lower-priority pending indicator, and
+renders a sanitized, width-aware `Recap` block in scrollback. It displays `Next`
+only when the model supplies one. Manual failures are shown; automatic failures
+retry once after 30 seconds and otherwise stay silent. The automatic scheduler
+requires 3 completed turns, 2 new turns since the last displayed recap, and 30
+minutes after both focus loss and the last finished turn. It uses terminal focus
+reports, not guessed keyboard inactivity. Focus return cancels only automatic
+requests. The UI retains recap progress for its 32 most recently recapped
+sessions across navigation. Set `general.auto_recap=false` to disable automatic
+requests. Terminals without focus reporting retain manual `/recap` support.

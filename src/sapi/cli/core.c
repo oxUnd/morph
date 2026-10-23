@@ -439,6 +439,7 @@ void cli_turn_finish(struct cli_context *ctx, int turn_rc)
 	cli_cancel_state_reset();
 	cli_presentation_finish(ctx);
 	ctx->turn_active = 0;
+	cli_recap_turn_finished(ctx, cli_recap_now());
 	cli_terminal_turn_end(ctx, turn_rc);
 	if (turn_rc >= 0 || ctx->final_rendered ||
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)

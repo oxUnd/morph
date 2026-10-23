@@ -3,6 +3,7 @@
 
 #include "config/config.h"
 #include "runtime/runtime.h"
+#include "sapi/cli/recap.h"
 #include "util/buf.h"
 #include "util/strmap.h"
 #include "util/utf8.h"
@@ -37,6 +38,7 @@ struct cli_input_status {
 };
 
 struct cli_context {
+	struct cli_recap_state recap;
 	struct runtime *runtime;
 	struct config_file_error startup_error;
 	struct cli_ui *ui;
@@ -57,6 +59,7 @@ struct cli_context {
 	int event_stream_has_delta;
 	int event_stream_complete;
 	int event_stream_visible;
+	size_t reasoning_stream_offset;
 	int final_rendered;
 	int native_content_started;
 	int native_content_visible;

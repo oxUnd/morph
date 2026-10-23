@@ -17,6 +17,7 @@ extern "C" {
 #include "runtime/result.h"
 #include "runtime/tasks.h"
 #include "runtime/sync.h"
+#include "runtime/recap.h"
 #include "runtime/services.h"
 #include "agent/tools/img_annotate.h"
 #include "agent/sub_agent.h"

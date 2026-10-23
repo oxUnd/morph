@@ -155,6 +155,7 @@ struct react_context {
 	struct compress_config compress;
 	void *llm_model;
 	char *final_answer;
+	char *final_reasoning_content;
 	enum react_state state;
 	enum react_outcome outcome;
 	int last_error_code;
