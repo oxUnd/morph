@@ -192,6 +192,10 @@ max_session_output = 1048576
 kill_grace_ms = 500
 # Network access granted to sandboxed child processes by default.
 network = false
+# Opt in to explicit exec host=true calls (no child OS sandbox).
+# Host calls retain command approval but have the user's file/network access.
+# Useful for macOS AppleScript automation; macOS privacy consent still applies.
+allow_host_execution = false
 
 [react]
 max_iterations      = 2048

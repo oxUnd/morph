@@ -461,6 +461,15 @@ static int session_reserve(struct process_manager *manager)
 	return 0;
 }
 
+static int prepare_child_execution(const struct process_spawn_options *options)
+{
+	if (options->sandbox)
+		return sandbox_enter(options->sandbox);
+	if (!options->host_execution)
+		return 0;
+	return sandbox_close_inherited_fds();
+}
+
 static int spawn_pipe_process(struct process_manager *manager,
 				      const struct process_spawn_options *options,
 				      struct process_session *session)
@@ -519,7 +528,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 		}
 		(void)setenv("TERM", "dumb", 0);
 		(void)setenv("NO_COLOR", "1", 0);
-		if (options->sandbox && sandbox_enter(options->sandbox) != 0)
+		if (prepare_child_execution(options) != 0)
 			_exit(126);
 		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
 		      options->command, (char *)NULL);
@@ -566,7 +575,7 @@ static int spawn_pty_process(struct process_manager *manager,
 		(void)setpgid(0, 0);
 		if (options->workdir && chdir(options->workdir) != 0)
 			_exit(126);
-		if (options->sandbox && sandbox_enter(options->sandbox) != 0)
+		if (prepare_child_execution(options) != 0)
 			_exit(126);
 		execl(shell, shell, options->hook_mode ? "-c" : "-lc",
 		      options->command, (char *)NULL);

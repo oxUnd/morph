@@ -155,6 +155,7 @@ struct config_exec {
 	int max_session_output;
 	int kill_grace_ms;
 	int network;
+	int allow_host_execution;
 };
 
 struct config_context {

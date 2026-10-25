@@ -50,6 +50,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_EQ(cfg.exec.max_session_output, 1048576);
 	EXPECT_EQ(cfg.exec.kill_grace_ms, 500);
 	EXPECT_EQ(cfg.exec.network, 0);
+	EXPECT_EQ(cfg.exec.allow_host_execution, 0);
 	EXPECT_EQ(cfg.react.request_permissions_enabled, 1);
 	EXPECT_STREQ(cfg.react.permission_active_profile, "");
 	EXPECT_EQ(cfg.react.permission_profile_count, 0);
@@ -181,6 +182,7 @@ max_inline_output = 16384
 max_session_output = 524288
 kill_grace_ms = 750
 network = true
+allow_host_execution = true
 
 [react]
 max_iterations = 5
@@ -244,6 +246,7 @@ include = ["config.toml", "output"]
 	EXPECT_EQ(cfg.exec.max_session_output, 524288);
 	EXPECT_EQ(cfg.exec.kill_grace_ms, 750);
 	EXPECT_EQ(cfg.exec.network, 1);
+	EXPECT_EQ(cfg.exec.allow_host_execution, 1);
 	EXPECT_EQ(cfg.react.request_permissions_enabled, 0);
 	EXPECT_STREQ(cfg.react.permission_active_profile, "developer");
 	ASSERT_EQ(cfg.react.permission_profile_count, 1);

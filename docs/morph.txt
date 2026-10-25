@@ -382,12 +382,19 @@ table:
 	max_session_output = 1048576
 	kill_grace_ms = 500
 	network = false
+	allow_host_execution = false
 
 Each command is parsed before execution.  Morph derives the programs it would
 run, then asks for approval scoped to those programs.  If a command cannot be
 parsed safely, exec returns approval_required instead of running it.  A single
 approval can apply to this call only, to the whole session, or permanently.
 Persistent grants are stored per project and listed with /permissions.
+
+For trusted host automation, opt in with exec.allow_host_execution = true and
+pass host=true on the individual exec call. Ordinary calls remain sandboxed.
+Host calls retain command approval, timeouts, output limits, and process sessions,
+but run with the user's host filesystem and network access. macOS privacy consent
+still applies. See docs/sandbox.md for the contract and live verification.
 
 The sandbox grants read access to system toolchain paths (/usr, /bin, /sbin,
 /System, /Library, /opt/homebrew, /private) and read, write, and delete

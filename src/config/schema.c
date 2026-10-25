@@ -126,6 +126,7 @@ static const struct schema_entry schema[] = {
 	INT("exec.max_session_output", 1024, INT_MAX),
 	INT("exec.kill_grace_ms", 0, INT_MAX),
 	BOOL("exec.network"),
+	BOOL("exec.allow_host_execution"),
 	TABLE("react"),
 	INT("react.max_iterations", 1, INT_MAX),
 	INT("react.tool_timeout_seconds", 1, INT_MAX),

@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace {
 
@@ -75,6 +76,138 @@ TEST(ExecToolTest, RegistersExecAndProcessTools)
 	EXPECT_NE(tool_lookup(&registry, "process"), nullptr);
 	tool_registry_cleanup(&registry);
 }
+
+TEST(ExecToolTest, HostExecutionRequiresUserConfigOptIn)
+{
+	struct tool_registry registry;
+	struct tool_result result;
+
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&registry, "exec",
+		"{\"command\":\"printf must-not-run\",\"host\":true}", &result), -EACCES);
+	ASSERT_NE(result.envelope, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(result.envelope, "error"), "code")),
+		"host_execution_disabled");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+}
+
+TEST(ExecToolTest, ExplicitHostExecutionRetainsApprovalAndReportsMode)
+{
+	struct config config;
+	config_set_defaults(&config);
+	config.exec.allow_host_execution = 1;
+	char work_template[] = "/tmp/morph_host_exec_XXXXXX";
+	ASSERT_NE(mkdtemp(work_template), nullptr);
+	auto *tctx = tool_context_create(work_template, work_template);
+	ASSERT_NE(tctx, nullptr);
+	ExecApprovalState approval;
+	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, &config.exec), 0);
+	for (bool host : {false, true}) {
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "command", "printf host-probe");
+		cJSON_AddStringToObject(args, "workdir", "/");
+		cJSON_AddBoolToObject(args, "host", host);
+		cJSON_AddNumberToObject(args, "yield_time_ms", 1000);
+		char *json = cJSON_PrintUnformatted(args);
+		struct tool_result result;
+		tool_result_init(&result);
+		ASSERT_EQ(tool_exec(&registry, "exec", json, &result), 0);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
+			"host-probe");
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
+			host ? "host" : "sandbox");
+		tool_result_cleanup(&result);
+		free(json);
+		cJSON_Delete(args);
+	}
+	EXPECT_EQ(approval.calls, 2);
+	EXPECT_NE(approval.reason.find("Host execution"), std::string::npos);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+	rmdir(work_template);
+}
+
+TEST(ExecToolTest, HostExecutionStillHonorsCommandDenial)
+{
+	struct config config;
+	config_set_defaults(&config);
+	config.exec.allow_host_execution = 1;
+	auto *tctx = tool_context_create("/tmp", "/tmp");
+	ASSERT_NE(tctx, nullptr);
+	tool_context_set_operation_approval(tctx,
+		[](const struct tool_operation *, void *) { return TOOL_OP_DENY; }, nullptr);
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, tctx, &config.exec), 0);
+	struct tool_result result;
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&registry, "exec",
+		"{\"command\":\"printf must-not-run\",\"workdir\":\"/\",\"host\":true}",
+		&result), -EACCES);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	tool_context_destroy(tctx);
+}
+
+TEST_F(ProcessTest, HostExecutionClosesInheritedDescriptors)
+{
+	int original = open("/dev/null", O_RDONLY);
+	ASSERT_GE(original, 0);
+	int inherited = fcntl(original, F_DUPFD, 200);
+	close(original);
+	ASSERT_GE(inherited, 200);
+	std::string command = "test ! -e /dev/fd/" + std::to_string(inherited);
+	struct process_spawn_options options = {};
+	options.command = command.c_str();
+	options.host_execution = 1;
+	options.yield_time_ms = 1000;
+	char session[PROCESS_SESSION_ID_MAX];
+	struct process_snapshot snapshot = {};
+	int rc = process_spawn(manager, &options, session, &snapshot);
+	close(inherited);
+	ASSERT_EQ(rc, 0);
+	EXPECT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_EQ(snapshot.exit_code, 0);
+	process_snapshot_cleanup(&snapshot);
+}
+
+#if defined(__APPLE__)
+TEST(ExecToolTest, LiveHostAutomationReadsFrontmostApplication)
+{
+	if (!getenv("MORPH_TEST_HOST_AUTOMATION"))
+		GTEST_SKIP() << "Requires an unlocked Mac and existing macOS privacy consent.";
+	struct config config;
+	config_set_defaults(&config);
+	config.exec.allow_host_execution = 1;
+	struct tool_registry registry;
+	tool_registry_init(&registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, &config.exec), 0);
+	struct tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&registry, "exec",
+		"{\"command\":\"/usr/bin/osascript -e 'tell application \\\"System Events\\\" "
+		"to get name of first application process whose frontmost is true'\","
+		"\"host\":true,\"timeout_ms\":10000,\"yield_time_ms\":10000}", &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "exit_code")), 0)
+		<< cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stderr"));
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "execution_mode")),
+		"host");
+	const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout"));
+	ASSERT_NE(text, nullptr);
+	EXPECT_GT(strlen(text), 1u);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+}
+#endif
 
 TEST(ExecToolTest, ReportsUnavailableApprovalWithoutClaimingItIsPending)
 {

@@ -14,7 +14,7 @@ in the working directory. Read the relevant tagged sections, not the entire
 manual. If none is readable, state that limitation rather than inventing
 commands or settings.
 
-For setup, model configuration, thinking, or recap settings, also read
+For setup, model configuration, thinking, recap settings, or host automation, read
 [references/configuration.md](references/configuration.md). It explains the
 current configuration distinctions and gives a complete DeepSeek example.
 When working in the source checkout, resolve discrepancies against
@@ -27,6 +27,8 @@ Do not assume an older installed binary supports unreleased source changes.
 - Config paths, sections, keys, and models: `*morph-config*`, `*morph-models*`.
 - Commands, session switching, and interactive details: `*morph-cli*`.
 - Tools and filesystem or shell permissions: `*morph-tools*`.
+- AppleScript/System Events errors or explicit host execution: `*morph-tools*`
+  and [Host execution](references/configuration.md#explicit-host-execution).
 - Skills, MCP, or extensions: `*morph-skills*`, `*morph-mcp*`, `*morph-exts*`.
 - Scheduled work and delivered results: `*morph-tasks*`.
 - Context, compression, recaps, memory, or credits: `*morph-memory*`.

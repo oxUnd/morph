@@ -30,6 +30,7 @@ struct exec_runtime {
 	uint64_t default_timeout_ms;
 	uint64_t default_yield_time_ms;
 	int network;
+	int allow_host_execution;
 };
 
 static void exec_runtime_destroy(void *opaque)
@@ -80,6 +81,7 @@ static int exec_runtime_create(struct tool_context *tctx,
 	runtime->default_yield_time_ms = exec_config ?
 		(uint64_t)exec_config->yield_time_ms : EXEC_DEFAULT_YIELD_MS;
 	runtime->network = exec_config ? exec_config->network : 0;
+	runtime->allow_host_execution = exec_config ? exec_config->allow_host_execution : 0;
 	rc = pthread_mutex_init(&runtime->mutex, NULL);
 	if (rc != 0) {
 		free(runtime);
@@ -121,7 +123,7 @@ static const char *json_string(const cJSON *root, const char *name)
 
 static int policy_check(struct exec_runtime *runtime, const char *command,
 			const char *workdir, const char *args_json,
-			struct tool_result *result)
+			int host, struct tool_result *result)
 {
 	struct bash_parse_result analysis;
 	const char **programs = NULL;
@@ -185,7 +187,9 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 				.action = command,
 				.scope = workdir,
 				.details_json = args_json,
-				.reason = dynamic ? "The script contains runtime-expanded commands." : NULL,
+				.reason = host ?
+					"Host execution without the child OS sandbox was requested." :
+					dynamic ? "The script contains runtime-expanded commands." : NULL,
 				.programs = programs,
 				.programs_count = programs_count,
 			};
@@ -244,7 +248,8 @@ static void snapshot_add_json(cJSON *object,
 static int result_snapshot(struct tool_result *result,
 			   const char *session_id, const char *command,
 			   const char *workdir,
-			   const struct process_snapshot *snapshot)
+			   const struct process_snapshot *snapshot,
+			   const char *execution_mode)
 {
 	cJSON *data = cJSON_CreateObject();
 	int rc;
@@ -256,6 +261,8 @@ static int result_snapshot(struct tool_result *result,
 		cJSON_AddStringToObject(data, "command", command);
 	if (workdir)
 		cJSON_AddStringToObject(data, "workdir", workdir);
+	if (execution_mode)
+		cJSON_AddStringToObject(data, "execution_mode", execution_mode);
 	snapshot_add_json(data, snapshot);
 	rc = tool_result_success(result, data);
 	if (rc != 0)
@@ -417,6 +424,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int delete_path_count = 0;
 	struct process_snapshot snapshot;
 	char session_id[PROCESS_SESSION_ID_MAX];
+	int host;
 	int rc;
 
 	if (!runtime || !result)
@@ -439,12 +447,19 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			"command is required");
 		MORPH_RETURN(-EINVAL);
 	}
+	host = json_bool(root, "host", 0);
+	if (host && !runtime->allow_host_execution) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "host_execution_disabled",
+			"Host execution requires exec.allow_host_execution=true in the user config.");
+		MORPH_RETURN(-EACCES);
+	}
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir(runtime->tool_context);
 	if (runtime->tool_context)
 		(void)tool_context_command_principal(command, principal,
 						     sizeof(principal));
-	rc = policy_check(runtime, command, workdir, args_json, result);
+	rc = policy_check(runtime, command, workdir, args_json, host, result);
 	if (rc != 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -453,6 +468,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	options.command = command;
 	options.workdir = workdir;
 	options.background = json_bool(root, "background", 0);
+	options.host_execution = host;
 	options.timeout_ms = json_u64(root, "timeout_ms",
 		options.background ? 0 : runtime->default_timeout_ms);
 	options.yield_time_ms = json_u64(root, "yield_time_ms",
@@ -517,7 +533,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			morph_strerror(rc));
 		return rc;
 	}
-	options.sandbox = &sandbox;
+	options.sandbox = host ? NULL : &sandbox;
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
 	arena_destroy(path_arena);
@@ -530,7 +546,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		process_snapshot_cleanup(&snapshot);
 		return rc;
 	}
-	rc = result_snapshot(result, session_id, command, workdir, &snapshot);
+	rc = result_snapshot(result, session_id, command, workdir, &snapshot,
+		host ? "host" : "sandbox");
 	process_snapshot_cleanup(&snapshot);
 	cJSON_Delete(root);
 	return rc;
@@ -587,7 +604,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_session_snapshot(runtime->manager, session_id, &snapshot);
 	if (rc == 0)
-		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot);
+		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
 	process_snapshot_cleanup(&snapshot);
 	cJSON_Delete(root);
 	return rc;
@@ -622,8 +639,25 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.origin = TOOL_ORIGIN_BUILTIN;
 	exec_spec.name = "exec";
 	exec_spec.title = "Execute command";
-	exec_spec.description = "Run a shell command with workdir, policy, timeout, yield, and process session support. Background sessions have no default timeout; set timeout_ms explicitly to limit them. If the result reports error.code=sandbox_denied, request the smallest additional capability and retry the exact command.";
-	exec_spec.input_schema = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\",\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},\"pty\":{\"type\":\"boolean\"},\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},\"required\":[\"command\"],\"additionalProperties\":false}";
+	exec_spec.description = runtime->allow_host_execution ?
+		"Run a shell command with command approval, timeout, and process sessions. "
+		"Commands are sandboxed by default. Explicit host=true runs without the child "
+		"OS sandbox, with the user's file and network access. Use only when the task "
+		"requires host automation, such as macOS System Events AppleScript. "
+		"macOS privacy consent still applies. Do not silently retry in host mode. "
+		"Background sessions have no default timeout; set timeout_ms to limit them." :
+		"Run a shell command with workdir, policy, timeout, yield, and process sessions. "
+		"Host execution is disabled. Background sessions have no default timeout; "
+		"set timeout_ms to limit them. For sandbox_denied, request the smallest "
+		"additional capability and retry the exact command.";
+	exec_spec.input_schema =
+		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
+		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
+		"\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},"
+		"\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
+		"\"description\":\"Explicit host execution; requires exec.allow_host_execution. Default false.\"},"
+		"\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},"
+		"\"required\":[\"command\"],\"additionalProperties\":false}";
 	exec_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec_spec.exec = exec_run;
 	exec_spec.get_environment = exec_environment;

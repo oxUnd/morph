@@ -1,6 +1,6 @@
 # Current Morph Configuration
 
-Read this for first-run setup, model settings, thinking, recaps, or config changes.
+Read this for setup, model settings, thinking, recaps, host execution, or config changes.
 The matching-version manual remains the full reference. In a source checkout,
 check `config.toml.example` and `src/config/schema.c` before proposing unfamiliar keys.
 
@@ -125,6 +125,52 @@ the selected adapter rather than copying a different provider's thinking syntax.
 - Thinking is shown as a one-line live preview, with an ellipsis for hidden text.
   Ctrl+O opens current-turn reasoning and tool details; Ctrl+O or Esc returns to
   the conversation. Do not describe the preview as discarded reasoning.
+
+## Explicit Host Execution
+
+Ordinary `exec` calls run inside the child OS sandbox. A trusted development
+setup can enable explicit host calls in the active user config:
+
+```toml
+[exec]
+allow_host_execution = true
+```
+
+This is disabled by default. Enabling it makes `host: true` available for individual
+`exec` calls; it does not change ordinary calls or executable-extension isolation.
+Host calls have the current user's filesystem and network access, without the
+child OS sandbox or its resource limits. Command approval, timeouts, output limits,
+and process-session management still apply. Explain that scope when enabling the
+option; honor authorization already given rather than asking again.
+
+For an authorized task requiring macOS host automation, explicit tool arguments
+can be:
+
+```json
+{"command":"osascript -e 'tell application \"System Events\" to get name of first application process whose frontmost is true'","host":true,"timeout_ms":10000}
+```
+
+The initial result reports `execution_mode: "host"` or `"sandbox"`; inspect the
+command's `exit_code` and stderr to determine whether it succeeded. With the config
+option disabled, `host: true` returns `host_execution_disabled` without execution.
+Do not silently escalate a failed sandboxed command to host execution or enable
+the config merely because an error occurred. A config change requires a normal
+restart using the same active config path.
+
+For AppleScript errors, distinguish Morph's sandbox from macOS privacy consent.
+`sandbox_extension_issue_file ... Operation not permitted` with `-54`, or system
+logs denying `appleevent-send`, identifies a sandbox restriction. `System Events`
+can also reject a sandboxed sender with `-10004`, even with permissive profile
+rules. `-600` can mean the application is not running or reflect a sandbox
+restriction; the number alone does not establish the cause. Confirm the command,
+full stderr, and relevant system logs before attributing a failure to permissions.
+
+Host execution does not grant or reset Automation, Accessibility, or Screen
+Recording permissions. If macOS reports missing privacy consent, identify the
+actual responsible terminal/application and the required Privacy & Security
+setting. Do not bypass a system denial or claim that changing Morph's config
+grants those permissions. See the matching manual's shell/tool section for the
+full contract, and check installed-version support before suggesting this option.
 
 ## Diagnose Before Changing Settings
 

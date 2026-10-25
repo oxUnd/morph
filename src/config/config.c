@@ -533,6 +533,7 @@ void config_set_defaults(struct config *cfg)
 	cfg->exec.max_session_output = 1048576;
 	cfg->exec.kill_grace_ms = 500;
 	cfg->exec.network = 0;
+	cfg->exec.allow_host_execution = 0;
 	cfg->react.guardrail_enabled = 1;
 	cfg->react.guardrail_max_retries = 2;
 	cfg->react.guardrail_max_empty_rounds = 3;
@@ -981,6 +982,7 @@ int config_load(struct config *cfg, const char *path)
 		CFG_INT(exec, "max_session_output", cfg->exec.max_session_output);
 		CFG_INT(exec, "kill_grace_ms", cfg->exec.kill_grace_ms);
 		CFG_BOOL(exec, "network", cfg->exec.network);
+		CFG_BOOL(exec, "allow_host_execution", cfg->exec.allow_host_execution);
 	}
 
 	cfg_table_t *react = table_path(tbl, "react");
@@ -1454,11 +1456,11 @@ void config_print(const struct config *cfg)
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
 	log_info("  [exec] shell=%s timeout_ms=%d yield_ms=%d "
-		 "inline=%d session=%d grace_ms=%d network=%d",
+		 "inline=%d session=%d grace_ms=%d network=%d allow_host_execution=%d",
 		 cfg->exec.shell, cfg->exec.default_timeout_ms,
 		 cfg->exec.yield_time_ms, cfg->exec.max_inline_output,
 		 cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
-		 cfg->exec.network);
+		 cfg->exec.network, cfg->exec.allow_host_execution);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
 		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)

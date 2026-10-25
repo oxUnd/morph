@@ -5,6 +5,49 @@ executable extensions. The policy is capability based: filesystem paths,
 network access, PTYs, process inspection, IPC, environment variables, and
 resource ceilings are independent permissions.
 
+## Explicit host execution
+
+`exec` defaults to sandboxed child execution. For a trusted development setup,
+the user config can opt in to individual host calls:
+
+```toml
+[exec]
+allow_host_execution = true
+```
+
+The caller must additionally pass `host: true` to `exec`. Opting in does not
+change ordinary calls, does not automatically retry failed commands on the
+host, and does not change executable-extension isolation. Command parsing and
+approval still apply; the approval reason identifies host execution. The initial
+result reports `execution_mode: "host"` or `"sandbox"`. Host children close
+inherited descriptors and retain process groups, output limits, timeouts, and
+`process` session control.
+
+Host execution does not apply the child OS sandbox, including its filesystem
+and network restrictions or resource limits. It has the current user's host
+access. Enable it only for trusted tasks that need this access; it is not a
+narrow Apple Events entitlement. A `host: true` call is rejected when the config
+option is disabled, which is the default.
+
+On macOS this supports AppleScript automation that `System Events` rejects from
+a Seatbelt-sandboxed sender even after profile rules allow Apple Events. It does
+not grant or reset macOS Automation, Accessibility, or Screen Recording consent.
+Grant the required access to the actual responsible terminal/application in
+System Settings > Privacy & Security. A denied system permission remains denied.
+
+Example explicit tool arguments:
+
+```json
+{"command":"osascript -e 'tell application \"System Events\" to get name of first application process whose frontmost is true'","host":true,"timeout_ms":10000}
+```
+
+Offline behavior is covered by `ExecToolTest` and `ProcessTest`. The opt-in live
+test requires an unlocked Mac with existing privacy consent:
+
+```sh
+MORPH_TEST_HOST_AUTOMATION=1 build/bin/morph-tests --gtest_filter=ExecToolTest.LiveHostAutomationReadsFrontmostApplication
+```
+
 ## Security invariants
 
 1. macOS Seatbelt starts from an explicit allowlist. Linux seccomp starts from
