@@ -293,7 +293,7 @@ def main():
             completed = terminal.snapshot('wrapped draft after completion')
             assert completed.count('long') == 10, completed
             assert completed.count('UPDATED ANSWER') == 1, completed
-            assert 'Worked for ' in completed, completed
+            assert completed.count('Worked for ') == 1, completed
             completed_rows = completed.splitlines()
             worked_row = next(i for i, row in enumerate(completed_rows)
                               if 'Worked for ' in row)
@@ -305,6 +305,13 @@ def main():
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
             assert ' cr' in completed, completed
+            idle_start = len(terminal.raw)
+            terminal.pump(2)
+            terminal.send('\x1b[O\x1b[I')
+            terminal.send('\x15' + 'long 中文 ' * 10)
+            idle = terminal.snapshot('completed work remains single during idle refresh')
+            assert idle.count('Worked for ') == 1, idle
+            assert 'Worked for ' not in terminal.raw[idle_start:], terminal.raw[idle_start:]
             terminal.send('\x15\r')
             terminal.send('ask a question\r')
             ask_request, ask_release = terminal.request()

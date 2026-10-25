@@ -108,6 +108,15 @@ def main():
             assert 'STALE_RECAP_SHOULD_NOT_APPEAR' not in terminal.raw
             terminal.snapshot('new turn discards the old recap')
 
+            terminal.send('/recap\r')
+            _, completed_recap = terminal.request()
+            releases.append(completed_recap)
+            completed_recap.answer = json.dumps({'summary': 'Completed work recap.', 'next_action': None})
+            completed_recap.set()
+            terminal.pump(1)
+            screen = terminal.snapshot('recap preserves a single completed work status')
+            assert screen.count('Worked for ') == 1, screen
+
             terminal.child.setwinsize(24, 32)
             terminal.screen.resize(lines=24, columns=32)
             terminal.send('/recap\r')
@@ -122,6 +131,8 @@ def main():
             terminal.pump(1)
             screen = terminal.snapshot('narrow recap wraps and sanitizes terminal controls')
             assert 'Recap:' in screen and 'Next:' in screen, screen
+            assert screen.count('Worked for ') <= 1, screen
+            assert 'Worked for ' not in terminal.raw[start:], terminal.raw[start:]
             assert '\x1b[2J' not in terminal.raw[start:]
             terminal.send('/quit\r')
             terminal.child.expect(__import__('pexpect').EOF, timeout=10)

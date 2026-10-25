@@ -85,19 +85,6 @@ void cli_terminal_turn_begin(struct cli_context *ctx)
 	ctx->terminal->dirty = 1;
 }
 
-void cli_terminal_turn_end(struct cli_context *ctx, int result)
-{
-	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
-
-	if (!terminal || terminal->work_state != CLI_WORK_RUNNING)
-		return;
-	terminal->work_elapsed_ms = terminal_now_ms() - terminal->work_started_ms;
-	terminal->work_finished_at = time(NULL);
-	terminal->work_state = result >= 0 ? CLI_WORK_COMPLETED :
-		result == -ECANCELED ? CLI_WORK_STOPPED : CLI_WORK_FAILED;
-	terminal->dirty = 1;
-}
-
 static void terminal_work_row(struct cli_terminal *terminal, int columns)
 {
 	morph_buf_t text;
@@ -145,6 +132,28 @@ static void terminal_work_row(struct cli_terminal *terminal, int columns)
 	}
 	fprintf(terminal->output, ANSI_DIM "%s" ANSI_RESET, clipped);
 	morph_buf_cleanup(&text);
+}
+
+void cli_terminal_turn_end(struct cli_context *ctx, int result)
+{
+	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
+
+	if (!terminal || terminal->work_state != CLI_WORK_RUNNING)
+		return;
+	terminal->work_elapsed_ms = terminal_now_ms() - terminal->work_started_ms;
+	terminal->work_finished_at = time(NULL);
+	terminal->work_state = result >= 0 ? CLI_WORK_COMPLETED :
+		result == -ECANCELED ? CLI_WORK_STOPPED : CLI_WORK_FAILED;
+	/* A finished duration is immutable history, not a live footer. */
+	if (terminal->transient) {
+		cli_terminal_history_begin(ctx);
+		fputc('\n', terminal->output);
+		terminal_work_row(terminal, cli_terminal_columns(ctx));
+		fputc('\n', terminal->output);
+		fflush(terminal->output);
+		terminal->work_state = CLI_WORK_NONE;
+	}
+	terminal->dirty = 1;
 }
 
 static int terminal_columns(const struct cli_terminal *terminal)
