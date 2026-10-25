@@ -691,7 +691,8 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 		(void)morph_buf_puts(&preview, "…");
 	if (finish) {
 		presentation_clear_status(ctx);
-		printf("\n" ANSI_DIM CLI_FEED_SYSTEM " %s" ANSI_RESET "\n",
+		/* Replace the live preview in place without adding a history gap. */
+		printf(ANSI_DIM CLI_FEED_SYSTEM " %s" ANSI_RESET "\n",
 			morph_buf_cstr(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_terminal_live_set(ctx, morph_buf_cstr(&preview));

@@ -78,6 +78,11 @@ def main():
                     assert '检查推理输出' not in compact, streaming
                     assert 'keepmydraft' in compact, streaming
                     assert 'Answercomplete.' not in compact, streaming
+                    rows = streaming.splitlines()
+                    question_row = next(i for i, row in enumerate(rows)
+                                        if row.startswith('› Check reasoning rendering'))
+                    preview_row = next(i for i, row in enumerate(rows) if 'Reasoning' in row)
+                    preview_distance = preview_row - question_row
                     terminal.send('\x0f')
                     details = terminal.snapshot(f'{width} columns: live reasoning details')
                     assert 'Inspectingthecurrentstatecarefully.' in ''.join(details.split()), details
@@ -98,6 +103,11 @@ def main():
                     preview_rows = [row for row in text.splitlines() if 'Reasoning' in row]
                     assert len(preview_rows) == 1, text
                     assert '…' in preview_rows[0], text
+                    rows = text.splitlines()
+                    question_row = next(i for i, row in enumerate(rows)
+                                        if row.startswith('› Check reasoning rendering'))
+                    preview_row = next(i for i, row in enumerate(rows) if 'Reasoning' in row)
+                    assert preview_row - question_row == preview_distance, text
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                 finally:
                     if release:
