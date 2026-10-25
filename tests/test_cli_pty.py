@@ -208,7 +208,15 @@ def main():
                        for row in empty.splitlines()) == 1, empty
             terminal.send('  \r\r\x15')
             terminal.snapshot('whitespace Enter')
-            terminal.send('initial task\r')
+            terminal.send('initial task')
+            draft = terminal.snapshot('input style before submission')
+            draft_row = next(i for i, row in enumerate(draft.splitlines())
+                             if row.startswith('› initial task'))
+            draft_style = [(terminal.screen.buffer[draft_row][column].fg,
+                            terminal.screen.buffer[draft_row][column].bg,
+                            terminal.screen.buffer[draft_row][column].bold)
+                           for column in range(14)]
+            terminal.send('\r')
             starting = terminal.snapshot('immediate turn status')
             assert 'Starting' not in starting and 'Thinking' not in starting, starting
             assert 'Working ·' in starting and 'esc to interrupt' in starting, starting
@@ -218,10 +226,18 @@ def main():
             assert '\\x0d' not in terminal.raw, terminal.raw[-3000:]
             assert terminal.screen.buffer[user_row][0].fg == '8a8a8a', starting
             assert not terminal.screen.buffer[user_row][0].bold, starting
-            assert terminal.screen.buffer[user_row][2].bold, starting
+            assert not terminal.screen.buffer[user_row][2].bold, starting
+            assert [(terminal.screen.buffer[user_row][column].fg,
+                     terminal.screen.buffer[user_row][column].bg,
+                     terminal.screen.buffer[user_row][column].bold)
+                    for column in range(14)] == draft_style, starting
             assert terminal.screen.buffer[user_row][2].bg == '1c1c1c', starting
             assert all(terminal.screen.buffer[user_row][column].bg == '1c1c1c'
                        for column in range(terminal.screen.columns)), starting
+            for padding_row in (user_row - 1, user_row + 1):
+                assert not starting_rows[padding_row].strip(), starting
+                assert all(terminal.screen.buffer[padding_row][column].bg == '1c1c1c'
+                           for column in range(terminal.screen.columns)), starting
             assert starting_rows[user_row + 1].strip() != '│', starting
             working_row = next(i for i, row in enumerate(starting_rows)
                                if 'Working ·' in row)

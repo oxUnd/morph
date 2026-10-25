@@ -7,7 +7,6 @@
 
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
 #define CLI_DETAILS_INPUT_BURST_MAX 1024
-#define CLI_INPUT_BACKGROUND "\033[48;5;234m"
 
 /* ---- sigint ---- */
 
@@ -907,7 +906,7 @@ const char *cli_input_prompt(void)
 {
 	if (!cli_color_enabled())
 		return "> ";
-	return CLI_RL_IGNORE_START "\033[38;5;245m" CLI_RL_IGNORE_END
+	return CLI_RL_IGNORE_START CLI_INPUT_MARKER_COLOR CLI_RL_IGNORE_END
 		"› "
 		CLI_RL_IGNORE_START ANSI_RESET CLI_INPUT_BACKGROUND CLI_RL_IGNORE_END;
 }

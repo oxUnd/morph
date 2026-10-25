@@ -564,7 +564,7 @@ void cli_terminal_composer_resume(struct cli_context *ctx)
 	}
 	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
 		fprintf(terminal->output, ANSI_RESET "\033[2K\n"
-			"\033[48;5;234m\033[2K\n" ANSI_RESET);
+			CLI_INPUT_BACKGROUND "\033[2K\n" ANSI_RESET);
 		ctx->input_status.padding_rows = 2;
 	}
 }

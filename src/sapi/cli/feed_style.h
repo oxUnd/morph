@@ -9,4 +9,8 @@
 #define CLI_FEED_PENDING "○"
 #define CLI_FEED_QUESTION "?"
 
+/* Keep editable input and submitted user messages visually consistent. */
+#define CLI_INPUT_BACKGROUND "\033[48;5;234m"
+#define CLI_INPUT_MARKER_COLOR "\033[38;5;245m"
+
 #endif
