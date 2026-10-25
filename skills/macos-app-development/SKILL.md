@@ -11,6 +11,22 @@ inspect tool schemas before use. Do not assume Xcode or GUI access is available.
 
 ## Task routing and delivery loop
 
+Choose the workflow from the current request before following the development
+loop below. Prior development context does not require repeating completed work.
+
+| Current request | Required work | Stop when |
+| --- | --- | --- |
+| Launch, open, or bring an existing app to the foreground | Launch or activate it and confirm the requested app/window state | The requested state is established |
+| Inspect or test an existing app | Exercise the requested interactions and review relevant screenshots | The requested checks have a supported conclusion |
+| Modify UI or interaction | Implement, build, and verify affected interactions and rendered states | The change and required verification are complete |
+
+Launching or activating an existing build alone does not require the UI-change
+verification workflow. Do not create documents, enter test content, or switch
+data directories solely to demonstrate a successful launch. Diagnose launch or
+activation failures as needed; stop once the requested state is confirmed.
+After required checks pass, repeat or broaden them only for relevant changes,
+failures, or unresolved concerns.
+
 Read only the matching references. Resolve paths against this skill's directory
 from the active skill context, not the application working directory.
 
@@ -96,6 +112,9 @@ constraint still applies to samples and suggested dependencies.
   credentials, notarize, upload, or publish without the user's instruction.
 
 ## Required visual verification
+
+For UI changes and requested UI testing, complete both checks: operate the app
+with computer use and analyze fresh screenshots. Neither replaces the other.
 
 For changes to visible UI, read and follow [UI inspection](references/ui-review.md).
 Run the affected flow, capture fresh screenshots, and actually analyze the pixels

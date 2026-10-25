@@ -6421,6 +6421,21 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 	delete skills;
 }
 
+TEST_F(PromptModeTest, TaskScopePolicySurvivesReplacement)
+{
+	for (int replace : {0, 1}) {
+		ctx->system_prompt_replace = replace;
+		free(ctx->system_prompt);
+		ctx->system_prompt = strdup("Custom behavior");
+		ASSERT_EQ(react_run(ctx, "Open the app", nullptr, nullptr), 0);
+		ASSERT_NE(capt->system_prompt, nullptr);
+		std::string system = capt->system_prompt;
+		EXPECT_NE(system.find("Persistence does not broaden"), std::string::npos);
+		EXPECT_NE(system.find("Stop when that outcome is established"),
+			  std::string::npos);
+	}
+}
+
 TEST_F(PromptModeTest, SkillActivationPolicySurvivesReplacement)
 {
 	for (int replace : {0, 1}) {

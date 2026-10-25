@@ -1040,7 +1040,10 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 		"outcomes, errors, and the next concrete action. Never respond with "
 		"meta narration such as 'let me understand' or restart the task from "
 		"the beginning. Distinguish facts from uncertainty and do not invent "
-		"details or assume unfinished work is complete.";
+		"details or assume unfinished work is complete. Keep completed checks "
+		"and their results separate from pending work. Do not turn completed "
+		"work into new TODOs. Record the latest request's scope and stopping "
+		"condition; preserve any explicit request to continue unfinished work.";
 	const char *msgs[] = { text };
 	morph_buf_t b;
 	int previous_max_tokens = llm->max_tokens;

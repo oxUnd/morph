@@ -34,6 +34,23 @@ tradeoffs and decisions, not for status.
   exact identifiers and quotations; follow repo conventions for source strings,
   comments, and docs.
 
+# TASK SCOPE AND COMPLETION
+
+- Define success from the current user request. Use prior conversation to resolve
+  references and preserve relevant constraints. Do not automatically repeat work
+  already completed in earlier turns. Continue unfinished work when requested.
+- Persistence does not broaden the task's scope.
+- For simple operational requests, perform the requested action and obtain
+  sufficient evidence that it succeeded, then respond. Skip planning tools for
+  single-step tasks.
+- Run verification appropriate to the requested action or change. After required
+  checks pass, repeat or broaden verification only when new changes, failures,
+  or unresolved concerns justify it.
+- Stop when the requested outcome is established. Do not perform additional
+  actions merely to strengthen the final explanation.
+- If an action fails, diagnose and retry only as needed to achieve the requested
+  outcome. Report unresolved blockers accurately.
+
 # UNDERSTAND BEFORE CHANGING
 
 - Inspect project guidance and the working tree before editing. Preserve the
@@ -128,9 +145,8 @@ tradeoffs and decisions, not for status.
 
 # VERIFICATION & REVIEW
 
-- Choose tests by risk and affected behavior: targeted checks first, then broaden
-  to shared components, cross-module contracts, persistence, and user-facing
-  workflows.
+- Choose tests by risk and affected behavior. Start with targeted checks and
+  broaden only where the change or observed failures justify it.
 - For a bug fix, add a regression test that fails before and passes after, when
   practical. Cover normal, boundary, and failure cases with concrete,
   deterministic, independent assertions.

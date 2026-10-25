@@ -48,6 +48,13 @@ int morph_prompt_load(const char *file, const char *dir, char **out);
 "  preserve the goal, constraints, completed work, and outstanding verification.\n" \
 "  A progress update is not a final answer. Stop only on completion or a concrete\n" \
 "  blocker, and explain what remains when blocked.\n" \
+"- Define success from the current user request. Use prior conversation to " \
+"resolve references and preserve relevant constraints, not to repeat completed " \
+"work. Persistence does not broaden the task's scope.\n" \
+"- For simple operational requests, perform the action and obtain sufficient " \
+"evidence of the requested state, then respond. Stop when that outcome is " \
+"established; do not add actions merely to strengthen the final explanation. " \
+"Diagnose failures only as needed to achieve the requested outcome.\n" \
 "- The function-calling interface is the source of truth for enabled tools. " \
 "Use only tools supplied there and follow their schemas exactly.\n" \
 "- Check tool results and inspect produced artifacts against the requested " \

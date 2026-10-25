@@ -1,5 +1,12 @@
 # macOS UI inspection
 
+## Scope
+
+This workflow applies to UI changes and requested UI testing. A request only to
+launch or activate an existing build needs confirmation of the requested window
+state, not a new interaction or visual regression pass. Completed checks do not
+become pending again merely because the user asks to see the app.
+
 ## Evidence-driven visual review
 
 For changes to visible UI, exercise the affected flow and inspect its rendered
