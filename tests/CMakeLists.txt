@@ -125,6 +125,9 @@ set_target_properties(morph-setup-pty-driver PROPERTIES
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND UNIX)
+	add_test(NAME macos_mcp_adapter
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_macos_mcp_adapter.py)
 	add_test(NAME cli_manage_integration
 		COMMAND ${Python3_EXECUTABLE}
 			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_manage.py

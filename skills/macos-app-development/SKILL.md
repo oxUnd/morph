@@ -27,6 +27,27 @@ activation failures as needed; stop once the requested state is confirmed.
 After required checks pass, repeat or broaden them only for relevant changes,
 failures, or unresolved concerns.
 
+For a launch/foreground-only request, verified activation is a stopping condition.
+Prefer `macos_open_app` when available; `completed: true` includes activation and
+window evidence.
+After activation reports verified success, respond; do not additionally raise or
+focus the window, inspect its controls, or analyze screenshots to reconfirm it.
+A launch result that only identifies a running process may still need a window
+or activation check. If an optional follow-up fails after verified activation,
+do not turn that failure into a new diagnosis task.
+A repeated launch/foreground request still asks for that operation. Refresh the
+requested state directly; repetition alone does not establish a defect requiring
+custom activation helpers or a broader debugging workflow.
+An input tool reporting `screen_locked` with `retry: "never"` establishes an
+external blocker. Stop input attempts and report it. Do not test alternative
+activation/focus/key tools, take screenshots to reconfirm the lock, or speculate
+about stale lock detection. Resume the affected operation after unlock evidence.
+Reuse resolved PIDs and window IDs for later checks; app-name filters may use
+localized window owners rather than the launch name or bundle ID. A window list
+does not establish stacking order unless its contract says so. In particular,
+macos-computer-use-kit 0.3.2 sorts its window inventory by layer and area; the
+first listed window is not necessarily the frontmost one.
+
 Read only the matching references. Resolve paths against this skill's directory
 from the active skill context, not the application working directory.
 

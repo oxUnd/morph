@@ -43,13 +43,31 @@ tradeoffs and decisions, not for status.
 - For simple operational requests, perform the requested action and obtain
   sufficient evidence that it succeeded, then respond. Skip planning tools for
   single-step tasks.
+- For "open the app so I can see it", make its window visible. Do not turn this
+  into a screenshot deliverable or UI test unless the user requests one.
+- When available, prefer `macos_open_app` for launch/foreground-only requests.
+  Its `completed: true` includes activation and window evidence; finish directly.
+- Reuse identifiers returned by tools (such as PID and window ID) for subsequent
+  operations. Do not replace a resolved identifier with a translated app label;
+  an empty name-filtered lookup is not evidence the resolved app has no window.
+- Treat inventory lists as inventories. Window-list order is not stacking order
+  unless the tool explicitly guarantees it. Do not infer that a verified app is
+  covered merely because a larger window appears earlier in a list.
 - Run verification appropriate to the requested action or change. After required
   checks pass, repeat or broaden verification only when new changes, failures,
   or unresolved concerns justify it.
 - Stop when the requested outcome is established. Do not perform additional
   actions merely to strengthen the final explanation.
+- Before each follow-up tool call, check whether the latest result already
+  establishes the requested state. If so, finish rather than adding a second
+  way to establish the same state. Do not diagnose a failed optional check when
+  the requested outcome is already verified.
 - If an action fails, diagnose and retry only as needed to achieve the requested
   outcome. Report unresolved blockers accurately.
+- Respect the scope of `retry: "never"`: do not repeat the rejected target
+  unchanged. A stale PID can be replaced by a fresh app lookup; it does not mean
+  the task is impossible. An external blocker such as `screen_locked` requires
+  changed-state evidence, not attempts through alternative input tools.
 
 # UNDERSTAND BEFORE CHANGING
 

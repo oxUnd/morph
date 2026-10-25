@@ -571,6 +571,7 @@ struct multi_mock_data {
 	int should_fail;
 	int replay_argument_checks;
 	int invalid_replayed_arguments;
+	int last_tool_count;
 };
 
 static int multi_mock_chat(struct model *self, struct arena *arena,
@@ -610,6 +611,7 @@ static int multi_mock_chat_with_tools(struct model *self, struct arena *arena,
 
 	struct multi_mock_data *data = (struct multi_mock_data *)self->handle;
 	int idx = data->call_count;
+	data->last_tool_count = tool_count;
 	int environment_count = 0;
 	for (int i = 0; i < msg_count; i++) {
 		const char *text = messages[i].content;
@@ -5900,6 +5902,147 @@ TEST(Guardrail, EmptyAnswerPass) {
 	auto r = guardrail_run_hook(&cfg, GUARDRAIL_HOOK_OUTPUT, &ctx);
 	EXPECT_EQ(r.verdict, GUARDRAIL_PASS);
 	arena_destroy(a);
+}
+
+TEST(Guardrail, ExplicitTerminalToolFailureAllowsBlockerReport)
+{
+	const int codes[] = {-EPERM, -EACCES, -ECANCELED, MORPH_ERR_NOT_CONFIGURED, -EIO};
+	for (int code : codes) {
+		struct guardrail_config config = {};
+		config.enabled = 1;
+		guardrail_register_builtin_rules(&config);
+		struct react_step action = {};
+		struct react_step observation = {};
+		action.type = REACT_STEP_ACTION;
+		action.tool_name = const_cast<char *>("macos_app");
+		action.next = &observation;
+		observation.type = REACT_STEP_OBSERVATION;
+		observation.error_code = code;
+		observation.content = const_cast<char *>(code == -EIO ?
+			"tool error: {\"ok\":false,\"reason\":\"screen_locked\","
+			"\"retry\":\"never\"}" :
+			"tool error: permission or configuration is required");
+		struct guardrail_eval_ctx eval = {};
+		eval.steps = &action;
+		eval.proposed_answer = "The screen is locked. Unlock it before continuing.";
+		EXPECT_EQ(guardrail_run_hook(&config, GUARDRAIL_HOOK_OUTPUT, &eval).verdict,
+			GUARDRAIL_PASS);
+	}
+}
+
+TEST(Guardrail, RecoverableToolFailureStillRequestsCorrection)
+{
+	struct guardrail_config config = {};
+	config.enabled = 1;
+	guardrail_register_builtin_rules(&config);
+	struct react_step action = {};
+	struct react_step observation = {};
+	action.type = REACT_STEP_ACTION;
+	action.tool_name = const_cast<char *>("macos_app");
+	action.next = &observation;
+	observation.type = REACT_STEP_OBSERVATION;
+	observation.error_code = -EINVAL;
+	observation.content = const_cast<char *>("{\"retry\":\"reobserve\"}");
+	struct guardrail_eval_ctx eval = {};
+	eval.steps = &action;
+	eval.proposed_answer = "Unable to launch the app.";
+	auto result = guardrail_run_hook(&config, GUARDRAIL_HOOK_OUTPUT, &eval);
+	EXPECT_EQ(result.verdict, GUARDRAIL_FAIL);
+	ASSERT_NE(result.triggered_rule, nullptr);
+	EXPECT_STREQ(result.triggered_rule->name, "tools_all_failed");
+}
+
+TEST(Guardrail, TerminalCreativeFailureDoesNotForceRegeneration)
+{
+	struct guardrail_config config = {};
+	config.enabled = 1;
+	guardrail_register_builtin_rules(&config);
+	struct react_step action = {};
+	struct react_step observation = {};
+	action.type = REACT_STEP_ACTION;
+	action.tool_name = const_cast<char *>("img_gen");
+	action.next = &observation;
+	observation.type = REACT_STEP_OBSERVATION;
+	observation.error_code = -EACCES;
+	observation.content = const_cast<char *>("Permission was denied");
+	struct guardrail_eval_ctx eval = {};
+	eval.steps = &action;
+	eval.proposed_answer = "No image was generated because permission was denied.";
+	EXPECT_EQ(guardrail_run_hook(&config, GUARDRAIL_HOOK_OUTPUT, &eval).verdict,
+		GUARDRAIL_PASS);
+}
+
+static int screen_locked_tool(const char *, struct tool_result *result, void *)
+{
+	(void)tool_result_error(result, "screen_locked",
+		"{\"ok\":false,\"reason\":\"screen_locked\",\"retry\":\"never\"}");
+	return -EIO;
+}
+
+static int stale_target_tool(const char *, struct tool_result *result, void *)
+{
+	(void)tool_result_error(result, "app_not_found",
+		"{\"ok\":false,\"reason\":\"app_not_found\",\"retry\":\"never\"}");
+	return -EIO;
+}
+
+TEST_F(MockLlmTest, StaleTargetDoesNotPreventRecoveryUsingFreshLookup)
+{
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "old_pid", "Activate PID",
+		"{}", stale_target_tool, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "fresh_app", "Find app",
+		"{}", test_tool_fn, nullptr, nullptr), 0);
+	const char *responses[] = {
+		"Thought: Activate the known PID.\nAction: old_pid({})",
+		"Thought: That PID is stale. Find the app by name.\nAction: fresh_app({})",
+		"Final: The app is now in the foreground.",
+	};
+	llm = create_multi_mock_llm(responses, 3);
+	struct guardrail_config guardrail = {};
+	guardrail.enabled = 1;
+	guardrail.max_retries = 2;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, &guardrail);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	EXPECT_EQ(react_run(ctx, "Bring the app to the foreground", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_SUCCESS);
+	EXPECT_EQ(ctx->terminal_tool_error, 0);
+	EXPECT_EQ(static_cast<multi_mock_data *>(llm->handle)->call_count, 3);
+	EXPECT_GT(static_cast<multi_mock_data *>(llm->handle)->last_tool_count, 0);
+	EXPECT_NE(strstr(ctx->final_answer, "foreground"), nullptr);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, ScreenLockBlockerDoesNotForceAdditionalToolCalls)
+{
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "locked_app", "Activate app",
+		"{}", screen_locked_tool, nullptr, nullptr), 0);
+	const char *responses[] = {
+		"Thought: Activate the app.\nAction: locked_app({})",
+		"Final: The screen is locked. Unlock it before continuing.",
+	};
+	llm = create_multi_mock_llm(responses, 2);
+	struct guardrail_config guardrail = {};
+	guardrail.enabled = 1;
+	guardrail.max_retries = 2;
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, &guardrail);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ASSERT_EQ(react_run(ctx, "Bring the app to the foreground", nullptr, nullptr), -EIO);
+	EXPECT_EQ(ctx->guardrail_retry_count, 0);
+	EXPECT_EQ(static_cast<multi_mock_data *>(llm->handle)->call_count, 2);
+	EXPECT_EQ(static_cast<multi_mock_data *>(llm->handle)->last_tool_count, 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_TOOL_ERROR);
+	EXPECT_NE(strstr(ctx->final_answer, "screen is locked"), nullptr);
+	const char *recovered[] = {"Final: Ready for a new request."};
+	auto *data = static_cast<multi_mock_data *>(llm->handle);
+	data->responses = recovered;
+	data->count = 1;
+	data->call_count = 0;
+	EXPECT_EQ(react_run(ctx, "The screen is now unlocked", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->terminal_tool_error, 0);
+	EXPECT_GT(data->last_tool_count, 0);
+	react_context_destroy(ctx);
 }
 
 TEST(Guardrail, CreativeNoMediaIgnoresTextFileReferences) {

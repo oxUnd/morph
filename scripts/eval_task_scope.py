@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
+import urllib.error
 import urllib.request
 
 
@@ -69,7 +70,9 @@ PRIOR = [
 def checkpoint(request, name, arguments, observation):
     return PRIOR + [
         {"role": "user", "content": request},
-        {"role": "assistant", "content": None, "tool_calls": [{
+        {"role": "assistant", "content": None,
+         "reasoning_content": "Perform the requested action, then assess its result.",
+         "tool_calls": [{
             "id": "call_checkpoint", "type": "function", "function": {
                 "name": name, "arguments": json.dumps(arguments),
             },
@@ -142,6 +145,14 @@ def main():
                        "finish_reason": result["choices"][0].get("finish_reason")}
                 if row["finish_reason"] == "length":
                     row["pass"] = False
+            except urllib.error.HTTPError as error:
+                try:
+                    detail = json.load(error).get("error", {}).get("message", "")
+                except (ValueError, AttributeError):
+                    detail = "Provider rejected the request"
+                row = {"case": name, "repetition": repetition + 1, "pass": False,
+                       "error_type": type(error).__name__, "http_status": error.code,
+                       "detail": str(detail).replace(key, "[redacted]")[:500]}
             except Exception as error:
                 row = {"case": name, "repetition": repetition + 1, "pass": False,
                        "error_type": type(error).__name__}

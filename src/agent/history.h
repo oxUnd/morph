@@ -30,6 +30,7 @@ int agent_history_record_user_steer(struct react_context *ctx,
 				    const char *content, int sequence);
 int agent_history_record_assistant(struct react_context *ctx,
 				   const char *content);
+int agent_history_record_turn_outcome(struct react_context *ctx);
 int agent_history_record_tool_calls(struct react_context *ctx,
 				    const char *content,
 				    const char *reasoning_content,

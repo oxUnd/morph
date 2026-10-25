@@ -453,6 +453,51 @@ static int history_add_assistant_message(const struct model_history_item *item,
 	return rc;
 }
 
+static char *history_user_content(const struct model_history_item *item)
+{
+	cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+	const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
+	const cJSON *status = cJSON_GetObjectItemCaseSensitive(outcome, "status");
+	const cJSON *finished = cJSON_GetObjectItemCaseSensitive(outcome, "finished");
+	morph_buf_t text;
+	int rc = morph_buf_init(&text, 256);
+
+	if (rc == 0)
+		rc = morph_buf_puts(&text, item->content ? item->content : "");
+	if (rc == 0 && cJSON_IsString(status) && cJSON_IsTrue(finished))
+		rc = morph_buf_printf(&text,
+			"\n\n[Historical turn execution ended: %s. This records "
+			"execution status, not completion of a broader objective. "
+			"Later results supersede earlier checkpoint TODOs for this turn.]",
+			status->valuestring);
+	cJSON_Delete(payload);
+	if (rc != 0) {
+		morph_buf_cleanup(&text);
+		return NULL;
+	}
+	return morph_buf_detach(&text);
+}
+
+static int history_item_tokens(const struct model_history_item *item,
+	struct tokenizer *tokenizer, const char *text)
+{
+	if (strcmp(item->kind, "user_message") == 0) {
+		char *rendered = history_user_content(item);
+		int tokens;
+
+		if (!rendered)
+			MORPH_RETURN(-ENOMEM);
+		tokens = tokenizer_count(tokenizer, rendered);
+		free(rendered);
+		return tokens;
+	}
+	int tokens = tokenizer_count(tokenizer, text ? text : "");
+
+	if (strcmp(item->kind, "assistant_message") == 0 && item->payload_json)
+		tokens += tokenizer_count(tokenizer, item->payload_json);
+	return tokens;
+}
+
 int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena)
@@ -464,7 +509,21 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 		MORPH_RETURN(-EINVAL);
 	while (item) {
 		if (strcmp(item->kind, "compaction_summary") == 0) {
-			char *reference = prompt_reference_build(arena, item->content);
+			morph_buf_t snapshot;
+
+			rc = morph_buf_init_arena(&snapshot, arena, 256);
+			if (rc == 0)
+				rc = morph_buf_printf(&snapshot,
+					"Snapshot through history sequence %lld. Later "
+					"messages and turn outcomes supersede this snapshot; "
+					"its pending work may already be resolved below.\n%s",
+					(long long)(item->sequence_no > 0 ?
+					 item->sequence_no - 1 : 0),
+					item->content ? item->content : "");
+			if (rc != 0)
+				return rc;
+			char *reference = prompt_reference_build(arena,
+				morph_buf_cstr(&snapshot));
 
 			if (!reference)
 				MORPH_RETURN(-ENOMEM);
@@ -487,10 +546,15 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 			rc = history_add_tool_result(item, messages, arena);
 		else if (strcmp(item->kind, "compaction_summary") == 0)
 			rc = 0;
-		else if (strcmp(item->kind, "user_message") == 0)
+		else if (strcmp(item->kind, "user_message") == 0) {
+			char *content = history_user_content(item);
+
+			if (!content)
+				MORPH_RETURN(-ENOMEM);
 			rc = history_add_text_message(messages, arena, "user",
-				item->content);
-		else if (strcmp(item->kind, "assistant_message") == 0)
+				content);
+			free(content);
+		} else if (strcmp(item->kind, "assistant_message") == 0)
 			rc = history_add_assistant_message(item, messages, arena);
 		else if (strcmp(item->kind, "background_receipt") == 0)
 			rc = history_add_text_message(messages, arena, "system",
@@ -623,6 +687,123 @@ int agent_history_record_assistant(struct react_context *ctx,
 		return rc;
 	}
 	return history_store(ctx, &item);
+}
+
+/* Store lifecycle facts on the request, so compaction cannot separate them. */
+static int history_store_turn_outcomes(struct db *db, int64_t session_id,
+	const char *turn_id, const char *status, int error_code,
+	struct tokenizer *tokenizer, int *changed)
+{
+	const char *select_sql = "SELECT id,content,payload_json "
+		"FROM model_history_items WHERE session_id=? AND turn_id=? "
+		"AND kind='user_message'";
+	const char *backfill_sql = "SELECT u.id,u.content,u.payload_json "
+		"FROM model_history_items u WHERE u.session_id=? AND u.active=1 "
+		"AND u.kind='user_message' AND EXISTS (SELECT 1 "
+		"FROM model_history_items a WHERE a.session_id=u.session_id "
+		"AND a.turn_id=u.turn_id AND a.kind='assistant_message' "
+		"AND a.sequence_no>u.sequence_no)";
+	const char *update_sql = "UPDATE model_history_items SET "
+		"payload_json=?,token_count=? WHERE id=?";
+	sqlite3_stmt *select = NULL;
+	sqlite3_stmt *update = NULL;
+	int rc;
+	int error = 0;
+
+	rc = sqlite3_prepare_v2(db->handle, turn_id ? select_sql : backfill_sql,
+		-1, &select, NULL);
+	if (rc == SQLITE_OK)
+		rc = sqlite3_prepare_v2(db->handle, update_sql, -1,
+			&update, NULL);
+	if (rc != SQLITE_OK) {
+		sqlite3_finalize(select);
+		sqlite3_finalize(update);
+		MORPH_RETURN(MORPH_ERR_DB);
+	}
+	sqlite3_bind_int64(select, 1, session_id);
+	if (turn_id)
+		sqlite3_bind_text(select, 2, turn_id, -1, SQLITE_TRANSIENT);
+	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
+		const char *old = (const char *)sqlite3_column_text(select, 2);
+		cJSON *payload = old ? cJSON_Parse(old) : cJSON_CreateObject();
+		cJSON *outcome = cJSON_CreateObject();
+		char *json = NULL;
+		char *rendered = NULL;
+		struct model_history_item item = {0};
+
+		if (!turn_id && cJSON_HasObjectItem(payload, "turn_outcome")) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
+			continue;
+		}
+		if (old && !cJSON_IsObject(payload)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
+			MORPH_SET_ERR(error, MORPH_ERR_PARSE);
+			break;
+		}
+		if (!payload || !outcome ||
+		    !cJSON_AddStringToObject(outcome, "status", status) ||
+		    !cJSON_AddBoolToObject(outcome, "finished", 1) ||
+		    !cJSON_AddNumberToObject(outcome, "error_code", error_code)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
+			MORPH_SET_ERR(error, -ENOMEM);
+			break;
+		}
+		cJSON_DeleteItemFromObjectCaseSensitive(payload, "turn_outcome");
+		if (!cJSON_AddItemToObject(payload, "turn_outcome", outcome)) {
+			cJSON_Delete(outcome);
+			cJSON_Delete(payload);
+			MORPH_SET_ERR(error, -ENOMEM);
+			break;
+		}
+		json = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
+		item.content = (char *)sqlite3_column_text(select, 1);
+		item.payload_json = json;
+		if (json)
+			rendered = history_user_content(&item);
+		if (!rendered) {
+			free(json);
+			MORPH_SET_ERR(error, -ENOMEM);
+			break;
+		}
+		sqlite3_bind_text(update, 1, json, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(update, 2, tokenizer_count(tokenizer, rendered));
+		sqlite3_bind_int64(update, 3, sqlite3_column_int64(select, 0));
+		free(rendered);
+		free(json);
+		if (sqlite3_step(update) != SQLITE_DONE) {
+			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			break;
+		}
+		if (changed)
+			(*changed)++;
+		sqlite3_reset(update);
+		sqlite3_clear_bindings(update);
+	}
+	sqlite3_finalize(select);
+	sqlite3_finalize(update);
+	if (error)
+		return error;
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
+int agent_history_record_turn_outcome(struct react_context *ctx)
+{
+	const char *status;
+
+	if (!ctx || !ctx->history_enabled || !ctx->history_db || !ctx->turn_id[0])
+		return 0;
+	status = react_outcome_name(ctx->outcome);
+	if (ctx->outcome == REACT_OUTCOME_NONE)
+		status = ctx->state == REACT_STATE_DONE ? "success" : "interrupted";
+	return history_store_turn_outcomes(ctx->history_db,
+		ctx->history_session_id, ctx->turn_id, status,
+		ctx->last_error_code, ctx->tokenizer, NULL);
 }
 
 int agent_history_record_tool_calls(struct react_context *ctx,
@@ -939,12 +1120,23 @@ static int history_compaction_input(const struct model_history_item *items,
 	while (item) {
 		const char *label = item->role[0] ? item->role : item->kind;
 		const char *text = item->content;
+		char *rendered = NULL;
+		int rc = 0;
 
 		if (strcmp(item->kind, "assistant_tool_calls") == 0)
 			text = item->payload_json;
+		if (strcmp(item->kind, "user_message") == 0) {
+			rendered = history_user_content(item);
+			if (!rendered)
+				MORPH_RETURN(-ENOMEM);
+			text = rendered;
+		}
 		if (text && text[0] &&
 		    morph_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
 			item->kind, text) != 0)
+			rc = -ENOMEM;
+		free(rendered);
+		if (rc != 0)
 			MORPH_RETURN(-ENOMEM);
 		item = item->next;
 	}
@@ -992,6 +1184,55 @@ static int history_validate_replay(const struct model_history_item *items)
 	return rc;
 }
 
+/* Archived answers may have been counted by an older tokenizer. */
+static int history_refresh_answer_tokens(struct react_context *ctx)
+{
+	const char *sql = "SELECT a.id,a.content,a.payload_json "
+		"FROM model_history_items a WHERE a.session_id=? AND a.active=0 "
+		"AND a.kind='assistant_message' AND EXISTS (SELECT 1 "
+		"FROM model_history_items u WHERE u.session_id=a.session_id "
+		"AND u.turn_id=a.turn_id AND u.active=1 AND u.kind='user_message')";
+	const char *update_sql = "UPDATE model_history_items SET token_count=? WHERE id=?";
+	sqlite3_stmt *select = NULL;
+	sqlite3_stmt *update = NULL;
+	int error = 0;
+	int rc = sqlite3_prepare_v2(ctx->history_db->handle, sql, -1, &select, NULL);
+
+	if (rc == SQLITE_OK)
+		rc = sqlite3_prepare_v2(ctx->history_db->handle, update_sql, -1,
+			&update, NULL);
+	if (rc != SQLITE_OK) {
+		sqlite3_finalize(select);
+		sqlite3_finalize(update);
+		MORPH_RETURN(MORPH_ERR_DB);
+	}
+	sqlite3_bind_int64(select, 1, ctx->history_session_id);
+	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
+		struct model_history_item item = {0};
+
+		strcpy(item.kind, "assistant_message");
+		item.content = (char *)sqlite3_column_text(select, 1);
+		item.payload_json = (char *)sqlite3_column_text(select, 2);
+		int tokens = history_item_tokens(&item, ctx->tokenizer, item.content);
+
+		sqlite3_bind_int(update, 1, tokens);
+		sqlite3_bind_int64(update, 2, sqlite3_column_int64(select, 0));
+		if (sqlite3_step(update) != SQLITE_DONE) {
+			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			break;
+		}
+		sqlite3_reset(update);
+		sqlite3_clear_bindings(update);
+	}
+	sqlite3_finalize(select);
+	sqlite3_finalize(update);
+	if (error)
+		return error;
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
 /* Keep the old window until the new database window can actually replay. */
 static int history_compact_checked(struct react_context *ctx,
 	const char *summary, int summary_tokens, int user_budget,
@@ -1004,9 +1245,11 @@ static int history_compact_checked(struct react_context *ctx,
 
 	if (rc != 0)
 		return rc;
-	rc = model_history_compact(ctx->history_db, ctx->history_session_id,
-		ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
-		input_tokens, keep_rounds, trigger_kind, NULL);
+	rc = history_refresh_answer_tokens(ctx);
+	if (rc == 0)
+		rc = model_history_compact(ctx->history_db, ctx->history_session_id,
+			ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
+			input_tokens, keep_rounds, trigger_kind, NULL);
 	if (rc == 0) {
 		candidate = model_history_list(ctx->history_db,
 			ctx->history_session_id, 1, &count);
@@ -1059,7 +1302,6 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	int input_tokens = 0;
 	int threshold;
 	int count = 0;
-	int fallback_used = 0;
 	int rc;
 	const char *trigger_kind = trigger_kind_in && trigger_kind_in[0] ?
 		trigger_kind_in : (force ? "manual" : "threshold");
@@ -1104,7 +1346,6 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			"as unavailable and do not assume unfinished work completed.]");
 		if (!summary)
 			MORPH_RETURN(-ENOMEM);
-		fallback_used = 1;
 	}
 	redacted = history_redact_all(ctx, summary);
 	free(summary);
@@ -1133,7 +1374,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		recent_budget = 0;
 	rc = history_compact_checked(ctx, summary, max_summary_tokens,
 		user_budget, recent_budget, input_tokens,
-		fallback_used ? ctx->compress.max_history_rounds : 0,
+		ctx->compress.max_history_rounds,
 		trigger_kind, &count);
 	free(summary);
 	if (rc != 0) {
@@ -1382,8 +1623,11 @@ int agent_history_diagnose(const struct model_history_item *items,
 				item->provider_call_id)) {
 			diagnostic->orphan_results++;
 		}
-		if (tokenizer_count(tokenizer, token_text ? token_text : "") !=
-		    item->token_count)
+		int tokens = history_item_tokens(item, tokenizer, token_text);
+
+		if (tokens < 0)
+			return tokens;
+		if (tokens != item->token_count)
 			diagnostic->token_mismatches++;
 	}
 	return 0;
@@ -1438,6 +1682,13 @@ int agent_history_repair(struct db *db, int64_t session_id,
 		return rc;
 	}
 	changes = before ? before->dangling_calls : local.dangling_calls;
+	/* Legacy answers prove a response was delivered, not task success. */
+	rc = history_store_turn_outcomes(db, session_id, NULL, "answered", 0,
+		tokenizer, &changes);
+	if (rc != 0) {
+		(void)db_exec(db, "ROLLBACK;");
+		return rc;
+	}
 	rc = agent_history_repair_interrupted(db, session_id);
 	if (rc != 0) {
 		(void)db_exec(db, "ROLLBACK;");
@@ -1491,7 +1742,12 @@ int agent_history_repair(struct db *db, int64_t session_id,
 			log_warn("deactivating orphan history tool result %lld",
 				 (long long)item->id);
 		}
-		tokens = tokenizer_count(tokenizer, token_text ? token_text : "");
+		tokens = history_item_tokens(item, tokenizer, token_text);
+		if (tokens < 0) {
+			model_history_free_list(items);
+			(void)db_exec(db, "ROLLBACK;");
+			return tokens;
+		}
 		if (active != item->active || tokens != item->token_count) {
 			rc = history_update_item(db, item->id, active, tokens);
 			if (rc != 0) {

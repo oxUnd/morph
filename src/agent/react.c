@@ -1136,6 +1136,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	react_set_state(ctx, REACT_STATE_INIT);
 	ctx->outcome = REACT_OUTCOME_NONE;
 	ctx->last_error_code = 0;
+	ctx->terminal_tool_error = 0;
 	ctx->outcome_reason[0] = '\0';
 	ctx->cancelled = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
@@ -1214,6 +1215,7 @@ void react_reset(struct react_context *ctx)
 	react_set_state(ctx, REACT_STATE_INIT);
 	ctx->outcome = REACT_OUTCOME_NONE;
 	ctx->last_error_code = 0;
+	ctx->terminal_tool_error = 0;
 	ctx->outcome_reason[0] = '\0';
 	free(ctx->last_error_detail);
 	ctx->last_error_detail = NULL;
@@ -2311,7 +2313,6 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	int before_tokens;
 	int after_tokens;
 	int trigger_tokens;
-	int previous_rounds;
 	int compacted = 0;
 	int rc;
 
@@ -2352,10 +2353,7 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		target = target > overhead ? target - overhead : 0;
 		ctx->compress.compress_target_ratio = (double)target /
 			(double)ctx->compress.max_context_tokens;
-		previous_rounds = ctx->compress.max_history_rounds;
-		ctx->compress.max_history_rounds = 0;
 		rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
-		ctx->compress.max_history_rounds = previous_rounds;
 		ctx->compress.compress_target_ratio = previous_target_ratio;
 	}
 	if (rc > 0) {
@@ -3011,6 +3009,8 @@ static int react_record_tool_observation(struct react_context *ctx,
 				obs_text, NULL, NULL, NULL);
 	if (obs) {
 		obs->error_code = rc;
+		if (guardrail_tool_retry_policy(obs) == GUARDRAIL_RETRY_BLOCKED)
+			ctx->terminal_tool_error = rc;
 		if (artifacts && artifacts->count > 0) {
 			size_t bytes = (size_t)artifacts->count * sizeof(*obs->artifacts);
 
@@ -3711,8 +3711,13 @@ static int react_handle_final_response(struct react_context *ctx,
 	add_step(ctx, final_step);
 	free(ctx->final_answer);
 	ctx->final_answer = strdup(final_text);
-	react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
+	if (ctx->terminal_tool_error < 0)
+		react_set_result(ctx, REACT_OUTCOME_TOOL_ERROR,
+			ctx->terminal_tool_error, "non_retryable_tool_error");
+	else
+		react_set_result(ctx, REACT_OUTCOME_SUCCESS, 0, NULL);
 	react_output_emit(cb, user_data, REACT_STEP_FINAL,
+			  ctx->terminal_tool_error < 0 ? REACT_OUTPUT_FAILED :
 			  REACT_OUTPUT_COMPLETED, final_text, NULL, NULL,
 			  NULL, 0, NULL, NULL, NULL);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.final",
@@ -3925,6 +3930,25 @@ int react_run(struct react_context *ctx, const char *user_input,
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
 			break;
+		}
+		if (ctx->terminal_tool_error < 0) {
+			morph_buf_t terminal_prompt;
+
+			active_tools = NULL;
+			active_tool_count = 0;
+			if (morph_buf_init_arena(&terminal_prompt, ctx->iteration_arena,
+			    256) != 0 || morph_buf_printf(&terminal_prompt,
+			    "%s\nA tool explicitly reported a locked-screen blocker. "
+			    "Tool execution "
+			    "has ended for this turn. Report the blocker and any completed "
+			    "work truthfully. Do not claim the blocked action succeeded. "
+			    "No further tools are available until a new turn.\n",
+			    system_prompt) != 0) {
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+					-ENOMEM, "internal_error");
+				break;
+			}
+			system_prompt = terminal_prompt.data;
 		}
 		has_tools = active_tool_count > 0;
 		status = react_maybe_compact_active_window(ctx, llm,

@@ -54,6 +54,138 @@ static int agent_turn_summary(const char *, void *, char **out)
 	return *out ? 0 : -ENOMEM;
 }
 
+TEST_F(AgentTurnTest, PersistsExecutionOutcomeWithoutInventingTaskCompletion)
+{
+	const enum react_outcome outcomes[] = {
+		REACT_OUTCOME_SUCCESS, REACT_OUTCOME_CANCELLED,
+		REACT_OUTCOME_LLM_ERROR, REACT_OUTCOME_TIMEOUT,
+		REACT_OUTCOME_MAX_ITERATIONS,
+	};
+	for (auto outcome : outcomes) {
+		struct agent_session_runtime runtime = {};
+		runtime.db = &db;
+		runtime.session_id = sess.id;
+		runtime.react = react;
+		runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+		struct agent_turn_input input = {};
+		std::string id = react_outcome_name(outcome);
+		input.model_input = "Launch the app";
+		input.turn_id = id.c_str();
+		struct agent_turn turn;
+		ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+		react->outcome = outcome;
+		react->last_error_code = outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO;
+		react->state = outcome == REACT_OUTCOME_SUCCESS ?
+			REACT_STATE_DONE : REACT_STATE_ABORT;
+		react->final_answer = strdup("Execution result");
+		ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+		int count = 0;
+		auto *items = model_history_list(&db, sess.id, 0, &count);
+		const struct model_history_item *request = nullptr;
+		for (auto *item = items; item; item = item->next) {
+			if (item->turn_id && id == item->turn_id &&
+			    strcmp(item->kind, "user_message") == 0)
+				request = item;
+		}
+		ASSERT_NE(request, nullptr);
+		cJSON *payload = cJSON_Parse(request->payload_json);
+		ASSERT_NE(payload, nullptr);
+		cJSON *record = cJSON_GetObjectItem(payload, "turn_outcome");
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(record, "status")),
+			id.c_str());
+		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(record, "finished")));
+		EXPECT_EQ(cJSON_GetObjectItem(record, "error_code")->valueint,
+			outcome == REACT_OUTCOME_SUCCESS ? 0 : -EIO);
+		EXPECT_EQ(cJSON_GetObjectItem(record, "task_completed"), nullptr);
+		cJSON_Delete(payload);
+		model_history_free_list(items);
+	}
+}
+
+TEST_F(AgentTurnTest, OutcomeWriteFailureRollsBackFinalAnswer)
+{
+	struct agent_session_runtime runtime = {};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input = {};
+	input.model_input = "Launch the app";
+	input.turn_id = "rollback_outcome";
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER fail_outcome BEFORE UPDATE OF "
+		"payload_json ON model_history_items BEGIN "
+		"SELECT RAISE(ABORT, 'injected'); END;"), 0);
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	react->final_answer = strdup("Opened");
+	EXPECT_NE(agent_turn_finish(&turn, nullptr), 0);
+	/* The pre-model user checkpoint survives; the final answer rolls back. */
+	EXPECT_EQ(message_count(&db, sess.id), 1);
+	int count = 0;
+	auto *items = model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(items->kind, "user_message");
+	EXPECT_EQ(items->payload_json, nullptr);
+	model_history_free_list(items);
+}
+
+TEST_F(AgentTurnTest, AbortedTurnWithoutOutcomeIsInterruptedRatherThanSuccessful)
+{
+	struct agent_session_runtime runtime = {};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input = {};
+	input.model_input = "Verify the fix";
+	input.turn_id = "unfinished";
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_NONE;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, sess.id, 0, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items->payload_json, nullptr);
+	EXPECT_NE(strstr(items->payload_json, "interrupted"), nullptr);
+	EXPECT_EQ(strstr(items->payload_json, "success"), nullptr);
+	model_history_free_list(items);
+}
+
+TEST_F(AgentTurnTest, NonRetryableFailureKeepsRequestAndBlockerForResume)
+{
+	struct agent_session_runtime runtime = {};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input = {};
+	input.model_input = "Bring Calculator forward";
+	input.turn_id = "locked";
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_TOOL_ERROR;
+	react->terminal_tool_error = -EIO;
+	react->last_error_code = -EIO;
+	react->final_answer = strdup("The screen is locked. Unlock before continuing.");
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	EXPECT_STREQ(items->kind, "user_message");
+	ASSERT_NE(items->payload_json, nullptr);
+	EXPECT_NE(strstr(items->payload_json, "tool_error"), nullptr);
+	EXPECT_EQ(strstr(items->payload_json, "success"), nullptr);
+	ASSERT_NE(items->next, nullptr);
+	EXPECT_STREQ(items->next->content,
+		"The screen is locked. Unlock before continuing.");
+	model_history_free_list(items);
+}
+
 static int agent_turn_failing_summary(const char *, void *, char **out)
 {
 	*out = nullptr;
@@ -595,4 +727,78 @@ TEST_F(AgentTurnTest, CompactionSummaryUsesTokenizerLimitForUnicode)
 	EXPECT_STREQ(react->history_items->kind, "compaction_summary");
 	EXPECT_LE(tokenizer_count(tok, react->history_items->content), 30);
 	EXPECT_EQ(utf8valid(react->history_items->content), nullptr);
+}
+
+TEST_F(AgentTurnTest, RestoredAnswerUsesCurrentTokenizerBeforeBudgetSelection)
+{
+	struct model_history_insert item = {};
+	item.session_id = sess.id;
+	item.turn_id = "old_answer";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "fix";
+	item.token_count = 1;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	std::string large(4000, 'x');
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = large.c_str();
+	item.active = 0;
+	item.token_count = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->history_enabled = 1;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = 0.1;
+	react->compress.compaction_user_message_tokens = 100;
+	react->compress.compaction_summary_max_tokens = 20;
+	react->compress.summarize = agent_turn_summary;
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	int count = 0;
+	auto *items = model_history_list(&db, sess.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(items->kind, "compaction_summary");
+	model_history_free_list(items);
+}
+
+TEST_F(AgentTurnTest, NormalCompactionUsesConfiguredRecentRounds)
+{
+	for (int i = 0; i < 3; i++) {
+		std::string turn = "turn_" + std::to_string(i);
+		struct model_history_insert item = {};
+		item.session_id = sess.id;
+		item.turn_id = turn.c_str();
+		item.kind = "user_message";
+		item.role = "user";
+		item.content = "request";
+		item.token_count = tokenizer_count(tok, item.content);
+		item.active = 1;
+		ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+		item.kind = "assistant_message";
+		item.role = "assistant";
+		item.content = "answered";
+		item.token_count = tokenizer_count(tok, item.content);
+		ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	}
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->history_enabled = 1;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = 0.5;
+	react->compress.compaction_user_message_tokens = 0;
+	react->compress.max_history_rounds = 2;
+	react->compress.summarize = agent_turn_summary;
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	int users = 0;
+	for (auto *it = react->history_items; it; it = it->next) {
+		if (strcmp(it->kind, "user_message") == 0) {
+			EXPECT_STRNE(it->turn_id, "turn_0");
+			users++;
+		}
+	}
+	EXPECT_EQ(users, 2);
 }

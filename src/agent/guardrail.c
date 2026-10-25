@@ -37,7 +37,42 @@ struct tool_outcome {
 	int succeeded;
 	int is_creative;
 	int has_file_output;
+	int terminal_failure;
 };
+
+/* Explicit policy/permission blockers must not trigger forced tool retries. */
+enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step *observation)
+{
+	const char *text = observation ? observation->content : NULL;
+	static const char prefix[] = "tool error: ";
+	cJSON *payload;
+	const cJSON *retry;
+	const cJSON *reason;
+	int terminal;
+	int blocked;
+
+	if (!observation || observation->error_code >= 0)
+		return GUARDRAIL_RETRY_UNSPECIFIED;
+	if (text && strncmp(text, prefix, sizeof(prefix) - 1) == 0)
+		text += sizeof(prefix) - 1;
+	payload = text ? cJSON_ParseWithOpts(text, NULL, 1) : NULL;
+	retry = cJSON_GetObjectItemCaseSensitive(payload, "retry");
+	terminal = cJSON_IsString(retry) && strcmp(retry->valuestring, "never") == 0;
+	reason = cJSON_GetObjectItemCaseSensitive(payload, "reason");
+	blocked = terminal && cJSON_IsString(reason) &&
+		strcmp(reason->valuestring, "screen_locked") == 0;
+	cJSON_Delete(payload);
+	if (blocked)
+		return GUARDRAIL_RETRY_BLOCKED;
+	if (terminal)
+		return GUARDRAIL_RETRY_NEVER;
+	if (observation->error_code == -EPERM ||
+	    observation->error_code == -EACCES ||
+	    observation->error_code == -ECANCELED ||
+	    observation->error_code == MORPH_ERR_NOT_CONFIGURED)
+		return GUARDRAIL_RETRY_NEEDS_USER;
+	return GUARDRAIL_RETRY_UNSPECIFIED;
+}
 
 static int build_tool_outcomes(const struct react_step *steps,
 			       struct tool_outcome *out,
@@ -54,11 +89,17 @@ static int build_tool_outcomes(const struct react_step *steps,
 			o->is_creative = is_creative_tool(cur->tool_name);
 			o->succeeded = 0;
 			o->has_file_output = 0;
+			o->terminal_failure = 0;
 			const struct react_step *obs = obs_cursor;
 			while (obs) {
 				if (obs->type == REACT_STEP_OBSERVATION) {
 					if (obs->error_code < 0) {
+						enum guardrail_retry_policy policy =
+							guardrail_tool_retry_policy(obs);
+
 						o->succeeded = 0;
+						o->terminal_failure =
+							policy != GUARDRAIL_RETRY_UNSPECIFIED;
 					} else {
 						o->succeeded = 1;
 						if (obs->artifact_count > 0)
@@ -114,6 +155,8 @@ gr_tools_all_failed(const struct guardrail_eval_ctx *ctx,
 	char failed_names[256] = {0};
 	size_t fn_len = 0;
 	for (int i = 0; i < count; i++) {
+		if (outcomes[i].terminal_failure)
+			return GUARDRAIL_PASS;
 		if (outcomes[i].succeeded) {
 			all_failed = 0;
 		} else {
@@ -146,13 +189,19 @@ gr_creative_no_media(const struct guardrail_eval_ctx *ctx,
 					outcomes, 64);
 	int any_creative = 0;
 	int creative_all_no_file = 1;
+	int creative_terminal_failure = 0;
+	int creative_succeeded = 0;
 	for (int i = 0; i < count; i++) {
 		if (outcomes[i].is_creative) {
 			any_creative = 1;
+			creative_terminal_failure |= outcomes[i].terminal_failure;
+			creative_succeeded |= outcomes[i].succeeded;
 			if (outcomes[i].has_file_output)
 				creative_all_no_file = 0;
 		}
 	}
+	if (creative_terminal_failure && !creative_succeeded)
+		return GUARDRAIL_PASS;
 	if (any_creative && creative_all_no_file) {
 		snprintf(reason_out, reason_cap,
 			 "Creative tools were called but no output files were produced.");

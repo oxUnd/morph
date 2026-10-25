@@ -28,6 +28,14 @@ enum guardrail_hook {
 #define GUARDRAIL_EXT_ENTRY_MAX      PATH_MAX
 
 struct react_step;
+enum guardrail_retry_policy {
+	GUARDRAIL_RETRY_UNSPECIFIED,
+	GUARDRAIL_RETRY_NEEDS_USER,
+	GUARDRAIL_RETRY_NEVER,
+	GUARDRAIL_RETRY_BLOCKED,
+};
+
+enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step *observation);
 struct tool_artifact_list;
 
 struct guardrail_eval_ctx {

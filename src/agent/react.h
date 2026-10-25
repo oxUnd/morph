@@ -147,6 +147,7 @@ struct react_context {
 	int64_t history_session_id;
 	int history_enabled;
 	int history_error;
+	int terminal_tool_error;
 	int history_tool_result_tokens;
 	char *history_compaction_prompt;
 	char *history_secrets[HISTORY_SECRET_MAX];

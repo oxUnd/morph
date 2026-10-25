@@ -331,7 +331,8 @@ protocol_reserve_tokens = 4096
 summarize_threshold_ratio = 0.8
 # After compression, target this fraction of context_limit
 compress_target_ratio     = 0.5
-# Always keep the most recent N conversation rounds
+# Prefer up to N complete recent rounds within the history token budget.
+# Oversized rounds fall back to paired requests/answers and complete tool groups.
 keep_recent_rounds        = 6
 # Maximum size of one tool result retained in model-visible history.
 tool_result_max_tokens = 8000

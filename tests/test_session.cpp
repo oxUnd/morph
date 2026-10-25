@@ -415,6 +415,180 @@ TEST_F(SessionTest, ModelHistoryCompactionIsPersistentAndKeepsUserBudget) {
 	EXPECT_EQ(model_history_count(&db, s.id, 0), 4);
 }
 
+TEST_F(SessionTest, CompactionRestoresArchivedAnswerWithRetainedRequest)
+{
+	struct session s;
+	ASSERT_EQ(session_create(&db, "closed_turn", "test", &s), 0);
+	struct model_history_insert item = {};
+	item.session_id = s.id;
+	item.turn_id = "old_turn";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "Fix the placeholder";
+	item.token_count = 2;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "Fixed and verified";
+	item.token_count = 3;
+	item.active = 0;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(model_history_compact(&db, s.id, "now", "checkpoint", 1,
+		5, 0, 6, 0, "test", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 3);
+	EXPECT_STREQ(items->kind, "user_message");
+	EXPECT_STREQ(items->next->content, "Fixed and verified");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, LegacyArchivedAnswerClosesRequestWithoutAssumingSuccess)
+{
+	struct session s;
+	ASSERT_EQ(session_create(&db, "legacy_closure", "test", &s), 0);
+	struct model_history_insert item = {};
+	item.session_id = s.id;
+	item.turn_id = "answered";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "Fix the editor";
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "I am blocked on permissions";
+	item.active = 0;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.turn_id = "unfinished";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "Continue testing";
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	struct tokenizer *tok = tokenizer_create("test", 4096);
+	ASSERT_NE(tok, nullptr);
+	int changed = 0;
+	ASSERT_EQ(agent_history_repair(&db, s.id, tok, nullptr, &changed), 0);
+	EXPECT_GT(changed, 0);
+	int count = 0;
+	auto *items = model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 2);
+	ASSERT_NE(items->payload_json, nullptr);
+	EXPECT_NE(strstr(items->payload_json, "answered"), nullptr);
+	EXPECT_EQ(strstr(items->payload_json, "success"), nullptr);
+	EXPECT_EQ(items->next->payload_json, nullptr);
+	struct arena *arena = arena_create(0);
+	morph_array_t messages = {};
+	struct chat_message slot = {};
+	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	auto *request = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	EXPECT_NE(strstr(request->content, "execution ended: answered"), nullptr);
+	EXPECT_EQ(tokenizer_count(tok, request->content), items->token_count);
+	request = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	EXPECT_STREQ(request->content, "Continue testing");
+	struct agent_history_diagnostic diagnostic = {};
+	ASSERT_EQ(agent_history_diagnose(items, tok, &diagnostic), 0);
+	EXPECT_EQ(diagnostic.token_mismatches, 0);
+	model_history_free_list(items);
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+	ASSERT_EQ(agent_history_repair(&db, s.id, tok, nullptr, &changed), 0);
+	EXPECT_EQ(changed, 0);
+	tokenizer_destroy(tok);
+}
+
+TEST_F(SessionTest, SnapshotBoundaryPrecedesLaterFinalAnswer)
+{
+	struct model_history_item summary = {};
+	struct model_history_item answer = {};
+	strcpy(summary.kind, "compaction_summary");
+	summary.sequence_no = 10;
+	summary.content = const_cast<char *>("Pending work: run the self-test");
+	summary.next = &answer;
+	strcpy(answer.kind, "assistant_message");
+	answer.sequence_no = 11;
+	answer.content = const_cast<char *>("Self-test complete: 34 PASS, 0 FAIL");
+	struct arena *arena = arena_create(0);
+	morph_array_t messages = {};
+	struct chat_message slot = {};
+	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(&summary, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 2U);
+	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	EXPECT_NE(strstr(message->content, "sequence 9"), nullptr);
+	EXPECT_NE(strstr(message->content, "supersede this snapshot"), nullptr);
+	EXPECT_TRUE(message->is_context_summary);
+	message = static_cast<struct chat_message *>(morph_array_get(&messages, 1));
+	EXPECT_STREQ(message->content, "Self-test complete: 34 PASS, 0 FAIL");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
+TEST_F(SessionTest, CompactionDoesNotRetainRequestWithoutItsAnswerOnBudgetLimit)
+{
+	struct session s;
+	ASSERT_EQ(session_create(&db, "closure_budget", "test", &s), 0);
+	struct model_history_insert item = {};
+	item.session_id = s.id;
+	item.turn_id = "closed";
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "Fix it";
+	item.token_count = 2;
+	item.active = 1;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_message";
+	item.role = "assistant";
+	item.content = "Already done";
+	item.token_count = 3;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(model_history_compact(&db, s.id, "now", "checkpoint", 1,
+		2, 0, 6, 0, "test", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, s.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(items->kind, "compaction_summary");
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, CompactionRetainsRecentRoundsWithinBudget)
+{
+	struct session s;
+	ASSERT_EQ(session_create(&db, "recent_rounds", "test", &s), 0);
+	for (int i = 0; i < 3; i++) {
+		std::string turn = "turn_" + std::to_string(i);
+		struct model_history_insert item = {};
+		item.session_id = s.id;
+		item.turn_id = turn.c_str();
+		item.kind = "user_message";
+		item.role = "user";
+		item.content = "request";
+		item.token_count = 2;
+		item.active = 1;
+		ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+		item.kind = "assistant_message";
+		item.role = "assistant";
+		item.content = "done";
+		ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	}
+	ASSERT_EQ(model_history_compact(&db, s.id, "now", "checkpoint", 1,
+		0, 4, 12, 2, "test", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, s.id, 1, &count);
+	int tokens = 0;
+	for (auto *item = items; item; item = item->next) {
+		tokens += item->token_count;
+		if (strcmp(item->kind, "compaction_summary") != 0)
+			EXPECT_STREQ(item->turn_id, "turn_2");
+	}
+	EXPECT_LE(tokens, 5);
+	EXPECT_EQ(count, 3);
+	model_history_free_list(items);
+}
+
 TEST_F(SessionTest, ModelHistoryCompactionKeepsLatestCompleteToolExchange) {
 	struct session s;
 	struct model_history_insert item = {};

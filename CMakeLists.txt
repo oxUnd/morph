@@ -273,6 +273,9 @@ install(DIRECTORY ${CMAKE_SOURCE_DIR}/prompts/
 	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/prompts
 	PATTERN ".DS_Store" EXCLUDE
 )
+install(FILES ${CMAKE_SOURCE_DIR}/scripts/macos_mcp_adapter.py
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/scripts
+)
 if(BUILD_TESTS)
 	enable_testing()
 	FetchContent_Declare(

@@ -511,7 +511,8 @@ static int turn_should_keep_user_history(const struct agent_turn *turn)
 		return 0;
 	react = turn->runtime.react;
 	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
-		react->outcome == REACT_OUTCOME_MAX_ITERATIONS;
+		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
+		react->terminal_tool_error < 0;
 }
 
 static int turn_should_keep_complete_history(const struct agent_turn *turn)
@@ -585,12 +586,15 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 				turn, &local_result, &assistant_for_memory);
 			local_result.assistant_rc = step_rc;
 		}
-		if (step_rc == 0 && turn_model_history_succeeded(turn) &&
+		if (step_rc == 0 && (turn_model_history_succeeded(turn) ||
+		    turn->runtime.react->terminal_tool_error < 0) &&
 		    turn->runtime.react->final_answer &&
 		    turn->runtime.react->final_answer[0])
 			step_rc = agent_history_record_assistant(
 				turn->runtime.react,
 				turn->runtime.react->final_answer);
+		if (step_rc == 0)
+			step_rc = agent_history_record_turn_outcome(turn->runtime.react);
 		if (step_rc == 0)
 			step_rc = db_exec(turn->runtime.db, "COMMIT;");
 		if (step_rc != 0) {

@@ -882,6 +882,137 @@ static int64_t *history_preserved_add(morph_array_t *preserved, int64_t id)
 	return slot;
 }
 
+/* Selected rows share budgets even when several policies select the same row. */
+static int history_preserved_contains(const morph_array_t *preserved, int64_t id)
+{
+	for (size_t i = 0; i < preserved->nelts; i++) {
+		const int64_t *existing = morph_array_get(preserved, i);
+
+		if (*existing == id)
+			return 1;
+	}
+	return 0;
+}
+
+static int history_preserve_user_pairs(struct db *db, int64_t session_id,
+	morph_array_t *preserved, int budget)
+{
+	const char *sql =
+		"SELECT u.id,MAX(u.token_count,0),a.id,MAX(a.token_count,0) "
+		"FROM model_history_items u LEFT JOIN model_history_items a "
+		"ON a.id=(SELECT id FROM model_history_items "
+		"WHERE session_id=u.session_id AND turn_id=u.turn_id "
+		"AND kind='assistant_message' AND sequence_no>u.sequence_no "
+		"ORDER BY sequence_no DESC LIMIT 1) "
+		"WHERE u.session_id=? AND u.active=1 AND u.kind='user_message' "
+		"ORDER BY u.sequence_no DESC";
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
+	int error = 0;
+
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		int64_t user_id = sqlite3_column_int64(stmt, 0);
+		int64_t answer_id = sqlite3_column_int64(stmt, 2);
+		int64_t cost = 0;
+
+		if (!history_preserved_contains(preserved, user_id))
+			cost += sqlite3_column_int(stmt, 1);
+		if (answer_id && !history_preserved_contains(preserved, answer_id))
+			cost += sqlite3_column_int(stmt, 3);
+		if (cost < 0)
+			cost = 0;
+		if (cost > budget)
+			continue;
+		if (!history_preserved_add(preserved, user_id) ||
+		    (answer_id && !history_preserved_add(preserved, answer_id))) {
+			MORPH_SET_ERR(error, -ENOMEM);
+			break;
+		}
+		budget -= (int)cost;
+	}
+	sqlite3_finalize(stmt);
+	if (error)
+		return error;
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
+/* Full recent rounds are preferred, but never override the token budget. */
+static int history_preserve_rounds(struct db *db, int64_t session_id,
+	morph_array_t *preserved, int rounds, int *budget)
+{
+	const char *sql =
+		"SELECT turn_id FROM model_history_items WHERE session_id=? "
+		"AND active=1 AND turn_id IS NOT NULL AND turn_id<>'' "
+		"AND kind<>'compaction_summary' GROUP BY turn_id "
+		"ORDER BY MAX(sequence_no) DESC LIMIT ?";
+	const char *rows_sql =
+		"SELECT id,MAX(token_count,0) FROM model_history_items "
+		"WHERE session_id=? AND turn_id=? AND kind<>'compaction_summary' "
+		"AND (active=1 OR kind='assistant_message')";
+	sqlite3_stmt *turns = NULL;
+	sqlite3_stmt *rows = NULL;
+	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &turns, NULL);
+	int error = 0;
+
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = sqlite3_prepare_v2(db->handle, rows_sql, -1, &rows, NULL);
+	if (rc != SQLITE_OK) {
+		sqlite3_finalize(turns);
+		MORPH_RETURN(MORPH_ERR_DB);
+	}
+	sqlite3_bind_int64(turns, 1, session_id);
+	sqlite3_bind_int(turns, 2, rounds);
+	while ((rc = sqlite3_step(turns)) == SQLITE_ROW) {
+		const char *turn = (const char *)sqlite3_column_text(turns, 0);
+		int64_t cost = 0;
+		int row_rc;
+
+		sqlite3_bind_int64(rows, 1, session_id);
+		sqlite3_bind_text(rows, 2, turn, -1, SQLITE_TRANSIENT);
+		while ((row_rc = sqlite3_step(rows)) == SQLITE_ROW) {
+			if (!history_preserved_contains(preserved,
+			    sqlite3_column_int64(rows, 0)))
+				cost += sqlite3_column_int(rows, 1);
+		}
+		if (row_rc != SQLITE_DONE) {
+			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			break;
+		}
+		sqlite3_reset(rows);
+		if (cost > *budget) {
+			rc = SQLITE_DONE;
+			break;
+		}
+		while ((row_rc = sqlite3_step(rows)) == SQLITE_ROW) {
+			if (!history_preserved_add(preserved,
+			    sqlite3_column_int64(rows, 0))) {
+				MORPH_SET_ERR(error, -ENOMEM);
+				break;
+			}
+		}
+		if (!error && row_rc != SQLITE_DONE)
+			MORPH_SET_ERR(error, MORPH_ERR_DB);
+		if (error)
+			break;
+		sqlite3_reset(rows);
+		sqlite3_clear_bindings(rows);
+		*budget -= (int)cost;
+	}
+	sqlite3_finalize(rows);
+	sqlite3_finalize(turns);
+	if (error)
+		return error;
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	return 0;
+}
+
 int model_history_compact(struct db *db, int64_t session_id,
 			  const char *turn_id, const char *summary,
 			  int summary_tokens, int user_message_tokens,
@@ -890,10 +1021,6 @@ int model_history_compact(struct db *db, int64_t session_id,
 			  const char *trigger_kind,
 			  int64_t *summary_item_id)
 {
-	const char *select_sql =
-		"SELECT id,token_count FROM model_history_items "
-		"WHERE session_id=? AND active=1 AND kind='user_message' "
-		"ORDER BY sequence_no DESC";
 	const char *inactive_sql =
 		"UPDATE model_history_items SET active=0 "
 		"WHERE session_id=? AND active=1";
@@ -909,7 +1036,7 @@ int model_history_compact(struct db *db, int64_t session_id,
 	sqlite3_stmt *stmt = NULL;
 	int64_t new_id = 0;
 	int64_t cutoff_sequence_no = 0;
-	int used_tokens = 0;
+	int failure = MORPH_ERR_DB;
 	int recent_used_tokens = 0;
 	int rc;
 
@@ -927,30 +1054,15 @@ int model_history_compact(struct db *db, int64_t session_id,
 		morph_array_cleanup(&preserved);
 		return rc;
 	}
-	rc = sqlite3_prepare_v2(db->handle, select_sql, -1, &stmt, NULL);
-	if (rc == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, session_id);
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			int tokens = sqlite3_column_int(stmt, 1);
-			int64_t *id;
-
-			if (tokens < 0)
-				tokens = 0;
-			if (tokens > user_message_tokens - used_tokens)
-				continue;
-			id = history_preserved_add(&preserved,
-				sqlite3_column_int64(stmt, 0));
-			if (!id) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-			used_tokens += tokens;
-		}
-	}
-	sqlite3_finalize(stmt);
-	stmt = NULL;
-	if (rc != SQLITE_OK && rc != SQLITE_DONE)
+	rc = history_preserve_rounds(db, session_id, &preserved,
+		keep_recent_rounds, &recent_history_tokens);
+	if (rc == 0)
+		rc = history_preserve_user_pairs(db, session_id, &preserved,
+			user_message_tokens);
+	if (rc != 0) {
+		MORPH_SET_ERR(failure, rc);
 		goto out_rollback;
+	}
 	if (recent_history_tokens > 0) {
 		const char *recent_sql =
 			"SELECT id,kind,token_count FROM model_history_items "
@@ -969,6 +1081,9 @@ int model_history_compact(struct db *db, int64_t session_id,
 			int tokens = sqlite3_column_int(stmt, 2);
 			int64_t *id;
 
+			if (history_preserved_contains(&preserved,
+			    sqlite3_column_int64(stmt, 0)))
+				continue;
 			if (tokens < 0)
 				tokens = 0;
 			if (tokens > recent_history_tokens - recent_used_tokens) {
@@ -1001,32 +1116,6 @@ int model_history_compact(struct db *db, int64_t session_id,
 		sqlite3_finalize(stmt);
 		stmt = NULL;
 		if (rc != SQLITE_DONE)
-			goto out_rollback;
-	}
-	if (keep_recent_rounds > 0) {
-		const char *recent_sql =
-			"SELECT id FROM model_history_items WHERE session_id=? "
-			"AND active=1 AND turn_id IN (SELECT turn_id FROM "
-			"model_history_items WHERE session_id=? AND active=1 "
-			"AND turn_id IS NOT NULL GROUP BY turn_id "
-			"ORDER BY MAX(sequence_no) DESC LIMIT ?)";
-
-		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
-		if (rc != SQLITE_OK)
-			goto out_rollback;
-		sqlite3_bind_int64(stmt, 1, session_id);
-		sqlite3_bind_int64(stmt, 2, session_id);
-		sqlite3_bind_int(stmt, 3, keep_recent_rounds);
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			if (!history_preserved_add(&preserved,
-				sqlite3_column_int64(stmt, 0))) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-		}
-		sqlite3_finalize(stmt);
-		stmt = NULL;
-		if (rc != SQLITE_OK && rc != SQLITE_DONE)
 			goto out_rollback;
 	}
 	rc = sqlite3_prepare_v2(db->handle,
@@ -1110,7 +1199,7 @@ out_rollback:
 	(void)db_exec(db,
 		"ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
 	morph_array_cleanup(&preserved);
-	MORPH_RETURN(MORPH_ERR_DB);
+	MORPH_RETURN(failure);
 }
 
 int trace_save(struct db *db, int64_t session_id, int round_no,
