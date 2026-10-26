@@ -50,6 +50,7 @@ set(TEST_SOURCES
 	test_util_containers.cpp
 	test_render.cpp
 	test_mcp.cpp
+	test_mcp_protocol.cpp
 	test_ask_user.cpp
 	test_sandbox.cpp
 	test_tool_context.cpp

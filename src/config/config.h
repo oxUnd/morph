@@ -235,6 +235,8 @@ struct config_mcp_server {
 	/* http */
 	char http_url[PATH_MAX];
 	char http_auth_token_env[64];
+	/* Empty or "auto" probes; a version pins its adapter without downgrade. */
+	char protocol_version[32];
 	/* startup */
 	int auto_connect;
 	int connect_timeout;

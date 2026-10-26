@@ -478,6 +478,7 @@ dir = ""
 # args           = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 # auto_connect   = true         # Connect at startup instead of lazy (default: false)
 # connect_timeout = 30          # Background connect + discovery deadline; 0 = per-request limits
+# protocol_version = "auto"     # Probe 2026-07-28, then legacy; pin a date to disable fallback
 #
 # Example: GitHub server (stdio)
 # [[mcp.servers]]

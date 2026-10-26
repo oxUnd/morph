@@ -150,16 +150,51 @@ int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 	return rc;
 }
 
+/* One allocation keeps runtime_mcp_list_free() ownership unchanged. */
 static int runtime_mcp_copy_list(void **out, int count, const void *items,
-				 size_t item_size)
+	size_t item_size, const size_t *offsets, size_t field_count)
 {
 	*out = NULL;
 	if (count <= 0)
 		return 0;
-	*out = malloc((size_t)count * item_size);
-	if (!*out)
-		return -ENOMEM;
-	memcpy(*out, items, (size_t)count * item_size);
+	if ((size_t)count > SIZE_MAX / item_size)
+		MORPH_RETURN(-EOVERFLOW);
+	size_t bytes = (size_t)count * item_size;
+
+	for (int i = 0; i < count; i++) {
+		for (size_t j = 0; j < field_count; j++) {
+			const char *value;
+
+			memcpy(&value, (const char *)items + (size_t)i * item_size + offsets[j],
+				sizeof(value));
+			size_t length = strlen(value) + 1;
+
+			if (length > SIZE_MAX - bytes)
+				MORPH_RETURN(-EOVERFLOW);
+			bytes += length;
+		}
+	}
+	char *copy = malloc(bytes);
+
+	if (!copy)
+		MORPH_RETURN(-ENOMEM);
+	memcpy(copy, items, (size_t)count * item_size);
+	char *destination = copy + (size_t)count * item_size;
+
+	for (int i = 0; i < count; i++) {
+		for (size_t j = 0; j < field_count; j++) {
+			const char *value;
+			char *field = copy + (size_t)i * item_size + offsets[j];
+
+			memcpy(&value, field, sizeof(value));
+			size_t length = strlen(value) + 1;
+
+			memcpy(destination, value, length);
+			memcpy(field, &destination, sizeof(destination));
+			destination += length;
+		}
+	}
+	*out = copy;
 	return 0;
 }
 
@@ -169,6 +204,12 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_tool_desc *items = NULL;
 	struct arena *arena;
+	const size_t offsets[] = {
+		offsetof(struct mcp_tool_desc, name),
+		offsetof(struct mcp_tool_desc, title),
+		offsetof(struct mcp_tool_desc, description),
+		offsetof(struct mcp_tool_desc, input_schema)
+	};
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
@@ -182,7 +223,8 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 		rc = mcp_list_tools(client, arena, &items, count);
 	if (rc == 0)
 		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out));
+					   sizeof(**out), offsets,
+					   sizeof(offsets) / sizeof(offsets[0]));
 	arena_destroy(arena);
 	return rc;
 }
@@ -193,6 +235,12 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_resource_desc *items = NULL;
 	struct arena *arena;
+	const size_t offsets[] = {
+		offsetof(struct mcp_resource_desc, uri),
+		offsetof(struct mcp_resource_desc, name),
+		offsetof(struct mcp_resource_desc, description),
+		offsetof(struct mcp_resource_desc, mime_type)
+	};
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
@@ -206,7 +254,8 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 		rc = mcp_list_resources(client, arena, &items, count);
 	if (rc == 0)
 		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out));
+					   sizeof(**out), offsets,
+					   sizeof(offsets) / sizeof(offsets[0]));
 	arena_destroy(arena);
 	return rc;
 }
@@ -217,6 +266,11 @@ int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 	struct mcp_client *client = runtime_mcp_lookup_client(runtime, name);
 	struct mcp_prompt_desc *items = NULL;
 	struct arena *arena;
+	const size_t offsets[] = {
+		offsetof(struct mcp_prompt_desc, name),
+		offsetof(struct mcp_prompt_desc, description),
+		offsetof(struct mcp_prompt_desc, arguments_schema)
+	};
 	int rc;
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
@@ -230,7 +284,8 @@ int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 		rc = mcp_list_prompts(client, arena, &items, count);
 	if (rc == 0)
 		rc = runtime_mcp_copy_list((void **)out, *count, items,
-					   sizeof(**out));
+					   sizeof(**out), offsets,
+					   sizeof(offsets) / sizeof(offsets[0]));
 	arena_destroy(arena);
 	return rc;
 }

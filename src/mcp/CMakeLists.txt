@@ -1,4 +1,6 @@
 add_library(morph-mcp STATIC
+	mcp_protocol.c
+	mcp_headers.c
 	mcp_client.c
 	mcp_stdio.c
 	mcp_http.c

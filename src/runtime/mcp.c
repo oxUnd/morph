@@ -124,6 +124,9 @@ int runtime_mcp_server_config_from_config(const struct config_mcp_server *config
 {
 	if (!config || !out)
 		MORPH_RETURN(-EINVAL);
+	if (config->args_count < 0 || config->args_count > MCP_CMD_MAX ||
+	    config->env_count < 0 || config->env_count > MCP_ENV_MAX)
+		MORPH_RETURN(-E2BIG);
 	memset(out, 0, sizeof(*out));
 	strncpy(out->name, config->name, MCP_NAME_MAX - 1);
 	out->transport = strcmp(config->transport, "http") == 0
@@ -133,14 +136,10 @@ int runtime_mcp_server_config_from_config(const struct config_mcp_server *config
 		strncpy(out->command, config->command,
 			sizeof(out->command) - 1);
 		out->cmd_args_count = config->args_count;
-		if (out->cmd_args_count > MCP_CMD_MAX)
-			out->cmd_args_count = MCP_CMD_MAX;
 		for (int i = 0; i < out->cmd_args_count; i++)
 			strncpy(out->cmd_args[i], config->args[i],
 				MCP_CMD_ARG_MAX - 1);
 		out->env_count = config->env_count;
-		if (out->env_count > MCP_ENV_MAX)
-			out->env_count = MCP_ENV_MAX;
 		for (int i = 0; i < out->env_count; i++) {
 			strncpy(out->env_keys[i], config->env_keys[i],
 				sizeof(out->env_keys[i]) - 1);
@@ -154,6 +153,7 @@ int runtime_mcp_server_config_from_config(const struct config_mcp_server *config
 			config->http_auth_token_env,
 			sizeof(out->http_auth_token_env) - 1);
 	}
+	memcpy(out->protocol_version, config->protocol_version, sizeof(out->protocol_version));
 	out->auto_connect = config->auto_connect;
 	out->connect_timeout = config->connect_timeout;
 	return 0;

@@ -658,3 +658,16 @@ TEST(ConfigValidationTest, ReportsUnstableUnknownArrayTables)
 	EXPECT_NE(result.find("custom.items[index=0].value"), std::string::npos);
 	EXPECT_NE(result.find("\"stable\":false"), std::string::npos);
 }
+
+TEST_F(ConfigTest, McpProtocolVersionIsLoadedAndValidated)
+{
+	const char *toml = "[[mcp.servers]]\nname = \"pinned\"\ntransport = \"stdio\"\n"
+		"command = \"server\"\nprotocol_version = \"2026-07-28\"\n";
+	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
+	struct config cfg;
+	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	EXPECT_STREQ(cfg.mcp.servers[0].protocol_version, "2026-07-28");
+	struct config_validation_error error = {};
+	EXPECT_LT(config_validate_text("[[mcp.servers]]\nname = \"bad\"\ntransport = \"stdio\"\n"
+		"command = \"server\"\nprotocol_version = \"2099-01-01\"\n", &error), 0);
+}

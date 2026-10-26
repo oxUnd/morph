@@ -1,4 +1,4 @@
-#include "mcp/mcp.h"
+#include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "http/sse.h"
 #include "util/log.h"
@@ -9,15 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-char *mcp_build_request(int id, const char *method, const char *params_json);
-int mcp_parse_result(const char *resp_json, char **out_result);
-
-#define MCP_HTTP_TIMEOUT_S 30
 #define MCP_AUTH_TOKEN_PLACEHOLDER "${auth_token}"
 
 struct mcp_sse_extract {
 	morph_buf_t data;
 	int seen_data;
+	int expected_id;
 };
 
 static int mcp_sse_extract_cb(const char *event, const char *data,
@@ -29,11 +26,18 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 	(void)event;
 	if (!ctx || !data)
 		return 0;
-	if (ctx->seen_data) {
-		rc = morph_buf_putc(&ctx->data, '\n');
-		if (rc != 0)
-			return rc;
+	if (ctx->expected_id >= 0) {
+		cJSON *object = cJSON_Parse(data);
+		cJSON *id = cJSON_GetObjectItemCaseSensitive(object, "id");
+		cJSON *error = cJSON_GetObjectItemCaseSensitive(object, "error");
+		int matches = (cJSON_IsNumber(id) && id->valuedouble == ctx->expected_id) ||
+			(!id && error);
+
+		cJSON_Delete(object);
+		if (!matches)
+			return 0;
 	}
+	morph_buf_reset(&ctx->data);
 	rc = morph_buf_puts(&ctx->data, data);
 	if (rc != 0)
 		return rc;
@@ -41,7 +45,7 @@ static int mcp_sse_extract_cb(const char *event, const char *data,
 	return 0;
 }
 
-char *mcp_http_extract_sse_json(const char *raw, size_t len)
+static char *mcp_http_sse_response(const char *raw, size_t len, int expected_id)
 {
 	struct mcp_sse_extract ctx;
 	struct sse_parser parser;
@@ -55,6 +59,7 @@ char *mcp_http_extract_sse_json(const char *raw, size_t len)
 	if (rc != 0)
 		return NULL;
 	ctx.seen_data = 0;
+	ctx.expected_id = expected_id;
 
 	sse_parser_init(&parser, mcp_sse_extract_cb, &ctx);
 	rc = sse_parser_feed(&parser, raw, len);
@@ -67,6 +72,11 @@ char *mcp_http_extract_sse_json(const char *raw, size_t len)
 	else
 		morph_buf_cleanup(&ctx.data);
 	return json;
+}
+
+char *mcp_http_extract_sse_json(const char *raw, size_t len)
+{
+	return mcp_http_sse_response(raw, len, -1);
 }
 
 int mcp_http_url_uses_auth_token(const char *url)
@@ -245,58 +255,77 @@ out:
 	return NULL;
 }
 
-static int mcp_http_do_post(struct mcp_client *client, const char *body,
-			    const char **extra_hdrs, int extra_count,
-			    long timeout)
+int mcp_http_exchange(struct mcp_client *client,
+	const struct mcp_wire_request *request, int timeout_ms,
+	struct mcp_wire_reply *reply)
 {
-	const char *hdrs[8];
-	int nhdrs = 0;
-	char ver_hdr[128];
-	char auth_hdr[512];
-	char sess_hdr[256];
-	char *request_url = NULL;
-	int url_auth;
+	morph_array_t headers;
+	morph_buf_t authorization = {0};
+	char *url = NULL;
 	int rc;
 
-	hdrs[nhdrs++] = "Accept: application/json, text/event-stream";
-
-	snprintf(ver_hdr, sizeof(ver_hdr),
-		 "MCP-Protocol-Version: %s", client->negotiated_version[0]
-		 ? client->negotiated_version : MCP_PROTOCOL_VERSION);
-	hdrs[nhdrs++] = ver_hdr;
-
-	url_auth = mcp_http_url_uses_auth_token(client->config.http_url);
-	if (client->config.http_auth_token_env[0] && !url_auth) {
-		const char *token_env = getenv(client->config.http_auth_token_env);
-		if (!token_env || !token_env[0]) {
-			log_err("mcp http: auth token env var '%s' is not set",
-				client->config.http_auth_token_env);
-			MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
-		}
-		snprintf(auth_hdr, sizeof(auth_hdr),
-			 "Authorization: Bearer %s", token_env);
-		hdrs[nhdrs++] = auth_hdr;
-	}
-
-	if (client->session_id[0]) {
-		snprintf(sess_hdr, sizeof(sess_hdr),
-			 "Mcp-Session-Id: %s", client->session_id);
-		hdrs[nhdrs++] = sess_hdr;
-	}
-
-	for (int i = 0; i < extra_count && nhdrs < 8; i++)
-		hdrs[nhdrs++] = extra_hdrs[i];
-
-	rc = mcp_http_build_request_url(&client->config, &request_url);
-	if (rc < 0)
+	if (!client || !client->session.initialized)
+		MORPH_RETURN(-EINVAL);
+	if (request->headers.nelts > INT_MAX - 2)
+		MORPH_RETURN(-EOVERFLOW);
+	rc = morph_array_init(&headers, request->headers.nelts + 2, sizeof(url));
+	if (rc != 0)
 		return rc;
+	const char **values = morph_array_push_n(&headers, request->headers.nelts + 2);
 
-	rc = http_session_post(&client->session, request_url,
-			       body, strlen(body), "application/json",
-			       hdrs, nhdrs, client->config.connect_timeout > 0 &&
-			       (client->connecting || client->interrupt_check) ?
-			       client->config.connect_timeout : timeout);
-	free(request_url);
+	if (!values) {
+		morph_array_cleanup(&headers);
+		MORPH_RETURN(-ENOMEM);
+	}
+	values[0] = "Accept: application/json, text/event-stream";
+	for (size_t i = 0; i < request->headers.nelts; i++)
+		values[i + 1] = *(const char **)morph_array_get(&request->headers, i);
+	headers.nelts = request->headers.nelts + 1;
+	if (client->config.http_auth_token_env[0] &&
+	    !mcp_http_url_uses_auth_token(client->config.http_url)) {
+		const char *token = getenv(client->config.http_auth_token_env);
+
+		if (!token || !token[0]) {
+			MORPH_SET_ERR(rc, MORPH_ERR_NOT_CONFIGURED);
+			goto out_free_headers;
+		}
+		rc = morph_buf_init(&authorization, 128);
+		if (rc == 0)
+			rc = morph_buf_printf(&authorization, "Authorization: Bearer %s", token);
+		if (rc != 0)
+			goto out_free_headers;
+		values[headers.nelts++] = morph_buf_cstr(&authorization);
+	}
+	if (headers.nelts > INT_MAX) {
+		MORPH_SET_ERR(rc, -EOVERFLOW);
+		goto out_free_headers;
+	}
+	rc = mcp_http_build_request_url(&client->config, &url);
+	if (rc != 0)
+		goto out_free_headers;
+	long timeout = (long)(timeout_ms / 1000) + (timeout_ms % 1000 != 0);
+
+	rc = http_session_post(&client->session, url, request->json,
+		strlen(request->json), "application/json", headers.elts,
+		(int)headers.nelts, timeout);
+	if (rc != 0)
+		goto out_free_headers;
+	reply->http_status = http_session_status(&client->session);
+	reply->session_id = http_session_header_get(&client->session, "Mcp-Session-Id");
+	const char *body = http_session_body(&client->session, NULL);
+
+	if (body && body[0]) {
+		reply->json = mcp_http_sse_response(body, strlen(body), request->id);
+		if (!reply->json)
+			reply->json = strdup(body);
+		if (!reply->json)
+			MORPH_SET_ERR(rc, -ENOMEM);
+	}
+
+out_free_headers:
+	free(url);
+	morph_buf_cleanup(&authorization);
+	morph_array_cleanup(&headers);
 	return rc;
 }
 
@@ -316,7 +345,8 @@ int mcp_http_connect(struct mcp_client *client)
 		return rc;
 	}
 
-	client->session_id[0] = '\0';
+	free(client->session_id);
+	client->session_id = NULL;
 
 	log_url = mcp_http_redact_url_for_log(client->config.http_url);
 	log_info("mcp http: connecting to '%s' at %s",
@@ -325,179 +355,13 @@ int mcp_http_connect(struct mcp_client *client)
 	return 0;
 }
 
-int mcp_http_initialize(struct mcp_client *client)
-{
-	if (!client || !client->session.initialized)
-		return -EINVAL;
-
-	char params_buf[2048];
-	snprintf(params_buf, sizeof(params_buf),
-		 "{"
-		 "\"protocolVersion\":\"%s\","
-		 "\"capabilities\":{\"roots\":{\"listChanged\":false}},"
-		 "\"clientInfo\":{\"name\":\"morph\",\"version\":\"" MORPH_VERSION "\"}"
-		 "}",
-		 MCP_PROTOCOL_VERSION);
-
-	char *req = mcp_build_request(client->next_req_id++, "initialize", params_buf);
-	if (!req)
-		return -ENOMEM;
-
-	int rc = mcp_http_do_post(client, req, NULL, 0, MCP_HTTP_TIMEOUT_S);
-	free(req);
-
-	if (rc < 0) {
-		log_err("mcp http: initialize failed: %s", morph_strerror(rc));
-		return rc;
-	}
-
-	long http_code = http_session_status(&client->session);
-	if (http_code == 404 || http_code == 405) {
-		log_err("mcp http: server returned %ld", http_code);
-		return -ENOTSUP;
-	}
-	if (http_code >= 400) {
-		log_err("mcp http: HTTP error %ld", http_code);
-		MORPH_RETURN(MORPH_ERR_API);
-	}
-
-	const char *resp_raw = http_session_body(&client->session, NULL);
-	if (!resp_raw || !*resp_raw) {
-		log_err("mcp http: initialize returned empty body");
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
-	}
-
-	char *resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
-	const char *parsed = resp_json ? resp_json : resp_raw;
-
-	char *result_str = NULL;
-	int parse_rc = mcp_parse_result(parsed, &result_str);
-	if (parse_rc < 0) {
-		log_err("mcp http: initialize response had error (parse_rc=%d), raw=%.200s",
-			parse_rc, resp_raw ? resp_raw : "(null)");
-		free(resp_json);
-		MORPH_RETURN(parse_rc < -256 ? parse_rc : MORPH_ERR_PARSE);
-	}
-
-	cJSON *obj = cJSON_Parse(result_str);
-	if (obj) {
-		cJSON *v = cJSON_GetObjectItem(obj, "protocolVersion");
-		if (v && cJSON_IsString(v))
-			strncpy(client->negotiated_version, v->valuestring,
-				sizeof(client->negotiated_version) - 1);
-
-		v = cJSON_GetObjectItem(obj, "serverInfo");
-		if (v) {
-			cJSON *sn = cJSON_GetObjectItem(v, "name");
-			if (sn && cJSON_IsString(sn))
-				strncpy(client->server_name, sn->valuestring,
-					sizeof(client->server_name) - 1);
-			cJSON *sv = cJSON_GetObjectItem(v, "version");
-			if (sv && cJSON_IsString(sv))
-				strncpy(client->server_version, sv->valuestring,
-					sizeof(client->server_version) - 1);
-		}
-
-		cJSON *caps = cJSON_GetObjectItem(obj, "capabilities");
-		if (caps) {
-			client->supports_tools = cJSON_HasObjectItem(caps, "tools");
-			client->supports_resources = cJSON_HasObjectItem(caps, "resources");
-			client->supports_prompts = cJSON_HasObjectItem(caps, "prompts");
-		}
-
-		cJSON_Delete(obj);
-	}
-	free(result_str);
-
-	char *sid = http_session_header_get(&client->session, "Mcp-Session-Id");
-	if (sid) {
-		strncpy(client->session_id, sid, sizeof(client->session_id) - 1);
-		client->session_id[sizeof(client->session_id) - 1] = '\0';
-		free(sid);
-	}
-
-	free(resp_json);
-
-	log_info("mcp http: initialized '%s' (server=%s v%s, proto=%s)",
-		 client->config.name,
-		 client->server_name, client->server_version,
-		 client->negotiated_version);
-
-	/* Send initialized notification */
-	char notif[64];
-	snprintf(notif, sizeof(notif),
-		 "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
-	mcp_http_do_post(client, notif, NULL, 0, MCP_HTTP_TIMEOUT_S);
-
-	client->connected = 1;
-	return 0;
-}
-
-int mcp_http_request(struct mcp_client *client, const char *method,
-		     const char *params_json, char **out_result)
-{
-	const char *resp_raw;
-	char *resp_json;
-	char *raw_copy;
-	char *req;
-	long http_code;
-	int rc;
-
-	if (!client || !client->session.initialized)
-		return -EINVAL;
-
-	pthread_mutex_lock(&client->lock);
-	req = mcp_build_request(client->next_req_id++, method, params_json);
-	if (!req) {
-		pthread_mutex_unlock(&client->lock);
-		return -ENOMEM;
-	}
-
-	rc = mcp_http_do_post(client, req, NULL, 0, MCP_HTTP_TIMEOUT_S);
-	free(req);
-
-	if (rc < 0) {
-		log_err("mcp http: request '%s' failed: %s", method, morph_strerror(rc));
-		pthread_mutex_unlock(&client->lock);
-		return rc;
-	}
-
-	http_code = http_session_status(&client->session);
-	if (http_code >= 400) {
-		log_err("mcp http: request '%s' HTTP error %ld", method, http_code);
-		pthread_mutex_unlock(&client->lock);
-		MORPH_RETURN(MORPH_ERR_API);
-	}
-
-	resp_raw = http_session_body(&client->session, NULL);
-	if (!resp_raw) {
-		log_err("mcp http: request '%s' returned empty body", method);
-		pthread_mutex_unlock(&client->lock);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
-	}
-
-	resp_json = mcp_http_extract_sse_json(resp_raw, strlen(resp_raw));
-	if (resp_json) {
-		rc = mcp_parse_result(resp_json, out_result);
-		free(resp_json);
-	} else {
-		raw_copy = strdup(resp_raw);
-		if (!raw_copy) {
-			pthread_mutex_unlock(&client->lock);
-			MORPH_RETURN(-ENOMEM);
-		}
-		rc = mcp_parse_result(raw_copy, out_result);
-		free(raw_copy);
-	}
-	pthread_mutex_unlock(&client->lock);
-	return rc;
-}
-
 void mcp_http_disconnect(struct mcp_client *client)
 {
 	if (!client)
 		return;
 	http_session_cleanup(&client->session);
+	free(client->session_id);
+	client->session_id = NULL;
 	client->connected = 0;
 	log_info("mcp http: disconnected '%s'", client->config.name);
 }

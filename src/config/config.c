@@ -1244,6 +1244,7 @@ int config_load(struct config *cfg, const char *path)
 			CFG_STR(srv, "command", ms->command);
 			CFG_STR(srv, "url", ms->http_url);
 			CFG_STR(srv, "auth_token_env", ms->http_auth_token_env);
+			CFG_STR(srv, "protocol_version", ms->protocol_version);
 			CFG_BOOL(srv, "auto_connect", ms->auto_connect);
 			CFG_INT(srv, "connect_timeout", ms->connect_timeout);
 

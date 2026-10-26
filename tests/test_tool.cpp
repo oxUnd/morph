@@ -221,15 +221,15 @@ TEST_F(ToolTest, NullParams) {
 	EXPECT_NE(tool_exec(nullptr, "x", "{}", nullptr), 0);
 }
 
-TEST_F(ToolTest, MaxEntries) {
-	for (int i = 0; i < TOOL_MAX_ENTRIES; i++) {
+TEST_F(ToolTest, GrowsBeyondOldEntryLimit) {
+	for (int i = 0; i < TOOL_REGISTRY_INITIAL_CAP * 2; i++) {
 		char name[32];
 		snprintf(name, sizeof(name), "tool_%d", i);
 		int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, name, "desc", nullptr, mock_tool_exec, nullptr, nullptr);
 		EXPECT_EQ(rc, 0);
 	}
 	int rc = register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "overflow", "desc", nullptr, mock_tool_exec, nullptr, nullptr);
-	EXPECT_NE(rc, 0);
+	EXPECT_EQ(rc, 0);
 }
 
 /* ---- user_data_destroy tests ---- */

@@ -1,4 +1,4 @@
-#include "mcp/mcp.h"
+#include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -18,11 +18,6 @@
 #include "util/buf.h"
 
 extern char **environ;
-
-char *mcp_build_request(int id, const char *method, const char *params_json);
-int mcp_parse_result(const char *resp_json, char **out_result);
-
-#define MCP_STDIO_TIMEOUT_MS 30000
 
 /* ----- Internal: stdio send/recv ----- */
 
@@ -91,8 +86,6 @@ static int64_t mcp_stdio_now_ms(void)
 	return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
-#define MCP_STDIO_RESPONSE_MAX (16U * 1024U * 1024U)
-
 static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 	int timeout_ms, char **response)
 {
@@ -156,52 +149,21 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 		}
 		if (received == 0)
 			MORPH_RETURN(-EPIPE);
-		if (buffer->len + (size_t)received > MCP_STDIO_RESPONSE_MAX)
-			MORPH_RETURN(-EFBIG);
 		rc = morph_buf_append(buffer, chunk, (size_t)received);
 		if (rc != 0)
 			return rc;
 	}
 }
 
-/* ----- stdio request: send + recv + parse ----- */
-
-int mcp_stdio_request(struct mcp_client *client, int req_id,
-		      const char *method, const char *params_json,
-		      char **out_result)
+int mcp_stdio_exchange(struct mcp_client *client,
+	const struct mcp_wire_request *request, int timeout_ms,
+	struct mcp_wire_reply *reply)
 {
-	char *req = mcp_build_request(req_id, method, params_json);
-	if (!req)
-		return -ENOMEM;
+	int rc = mcp_stdio_send(client, request->json);
 
-	log_info("mcp stdio: sending '%s' to '%s'",
-		 method, client->config.name);
-
-	pthread_mutex_lock(&client->lock);
-	int rc = mcp_stdio_send(client, req);
-	free(req);
-	if (rc < 0) {
-		pthread_mutex_unlock(&client->lock);
+	if (rc != 0 || request->id < 0)
 		return rc;
-	}
-
-	int timeout_ms = MCP_STDIO_TIMEOUT_MS;
-	if (client->config.connect_timeout > 0 &&
-	    (client->connecting || client->interrupt_check))
-		timeout_ms = client->config.connect_timeout > INT_MAX / 1000 ?
-			INT_MAX : client->config.connect_timeout * 1000;
-	char *resp = NULL;
-	rc = mcp_stdio_recv(client, req_id, timeout_ms, &resp);
-	pthread_mutex_unlock(&client->lock);
-
-	if (rc != 0) {
-		log_err("mcp stdio: request '%s' failed: %s", method, morph_strerror(rc));
-		return rc;
-	}
-
-	rc = mcp_parse_result(resp, out_result);
-	free(resp);
-	return rc;
+	return mcp_stdio_recv(client, request->id, timeout_ms, &reply->json);
 }
 
 /* ----- Public stdio transport functions ----- */
@@ -354,75 +316,6 @@ int mcp_stdio_connect(struct mcp_client *client)
 	return rc;
 }
 
-int mcp_stdio_initialize(struct mcp_client *client)
-{
-	if (!client)
-		return -EINVAL;
-
-	char params_buf[2048];
-	snprintf(params_buf, sizeof(params_buf),
-		 "{"
-		 "\"protocolVersion\":\"%s\","
-		 "\"capabilities\":{\"roots\":{\"listChanged\":false}},"
-		 "\"clientInfo\":{\"name\":\"morph\",\"version\":\"" MORPH_VERSION "\"}"
-		 "}",
-		 MCP_PROTOCOL_VERSION);
-
-	char *result = NULL;
-	int req_id = client->next_req_id++;
-	int rc = mcp_stdio_request(client, req_id, "initialize", params_buf, &result);
-	if (rc < 0) {
-		log_err("mcp: initialize failed for '%s'", client->config.name);
-		return rc;
-	}
-
-	cJSON *obj = cJSON_Parse(result);
-	if (obj) {
-		cJSON *v = cJSON_GetObjectItem(obj, "protocolVersion");
-		if (v && cJSON_IsString(v))
-			strncpy(client->negotiated_version, v->valuestring,
-				sizeof(client->negotiated_version) - 1);
-
-		v = cJSON_GetObjectItem(obj, "serverInfo");
-		if (v) {
-			cJSON *sn = cJSON_GetObjectItem(v, "name");
-			if (sn && cJSON_IsString(sn))
-				strncpy(client->server_name, sn->valuestring,
-					sizeof(client->server_name) - 1);
-			cJSON *sv = cJSON_GetObjectItem(v, "version");
-			if (sv && cJSON_IsString(sv))
-				strncpy(client->server_version, sv->valuestring,
-					sizeof(client->server_version) - 1);
-		}
-
-		cJSON *caps = cJSON_GetObjectItem(obj, "capabilities");
-		if (caps) {
-			client->supports_tools = cJSON_HasObjectItem(caps, "tools");
-			client->supports_resources = cJSON_HasObjectItem(caps, "resources");
-			client->supports_prompts = cJSON_HasObjectItem(caps, "prompts");
-		}
-
-		cJSON_Delete(obj);
-	}
-	free(result);
-
-	log_info("mcp stdio: initialized '%s' (server=%s v%s, proto=%s)",
-		 client->config.name,
-		 client->server_name, client->server_version,
-		 client->negotiated_version);
-
-	char notif[64];
-	snprintf(notif, sizeof(notif),
-		 "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
-
-	pthread_mutex_lock(&client->lock);
-	mcp_stdio_send(client, notif);
-	pthread_mutex_unlock(&client->lock);
-
-	client->connected = 1;
-	return 0;
-}
-
 void mcp_stdio_disconnect(struct mcp_client *client)
 {
 	if (!client)
@@ -464,16 +357,4 @@ void mcp_stdio_disconnect(struct mcp_client *client)
 
 	morph_buf_cleanup(&client->read_buffer);
 	client->connected = 0;
-}
-
-int mcp_stdio_ping(struct mcp_client *client)
-{
-	if (!client)
-		return -EINVAL;
-
-	char *result = NULL;
-	int req_id = client->next_req_id++;
-	int rc = mcp_stdio_request(client, req_id, "ping", NULL, &result);
-	free(result);
-	return rc;
 }

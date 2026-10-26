@@ -23,6 +23,10 @@ name, gate = sys.argv[1:]
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get('method')
+    if method == 'server/discover':
+        print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'error': {
+            'code': -32601, 'message': 'Method not found'}}), flush=True)
+        continue
     if method == 'initialize':
         while not pathlib.Path(gate).exists():
             time.sleep(0.02)

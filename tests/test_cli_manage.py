@@ -109,6 +109,10 @@ for line in sys.stdin:
     request = json.loads(line)
     if "id" not in request:
         continue
+    if request["method"] != "initialize":
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {
+            "code": -32601, "message": "Method not found"}}), flush=True)
+        continue
     result = {"protocolVersion": "2024-11-05", "capabilities": {},
               "serverInfo": {"name": "fixture", "version": "1"}}
     print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
@@ -139,11 +143,17 @@ for line in sys.stdin:
                 self.send_response(202)
                 self.end_headers()
                 return
-            response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {
-                "protocolVersion": request["params"]["protocolVersion"],
-                "capabilities": {}, "serverInfo": {"name": "http-fixture", "version": "1"}
-            }}).encode()
-            self.send_response(200)
+            if request["method"] == "initialize":
+                payload = {"result": {
+                    "protocolVersion": request["params"]["protocolVersion"],
+                    "capabilities": {}, "serverInfo": {"name": "http-fixture", "version": "1"}
+                }}
+                status = 200
+            else:
+                payload = {"error": {"code": -32601, "message": "Method not found"}}
+                status = 400
+            response = json.dumps({"jsonrpc": "2.0", "id": request["id"], **payload}).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
             self.end_headers()

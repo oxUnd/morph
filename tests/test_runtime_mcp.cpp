@@ -42,12 +42,17 @@ protected:
 while IFS= read -r line; do
  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
  case "$line" in
+ *'"method":"server/discover"'*)
+   printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+   ;;
  *'"method":"initialize"'*)
    while [ ! -f "$1" ]; do sleep 0.02; done
    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"mock","version":"1"},"capabilities":{"tools":{},"resources":{},"prompts":{}}}}' | sed "s/\"id\":1/\"id\":$id/"
    ;;
  *'"method":"tools/list"'*)
-   if [ "$3" = invalid ]; then
+   if [ "$3" = large ]; then
+     sed "s/\"id\":2/\"id\":$id/" "$(dirname "$1")/large.json"
+   elif [ "$3" = invalid ]; then
      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"valid","inputSchema":{"type":"object","properties":{}}},{"name":"bad","inputSchema":{"type":"invalid"}}]}}' | sed "s/\"id\":[0-9]*/\"id\":$id/"
    elif [ "$3" = two ]; then
      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"first","inputSchema":{"type":"object","properties":{}}},{"name":"second","inputSchema":{"type":"object","properties":{}}}]}}' | sed "s/\"id\":[0-9]*/\"id\":$id/"
@@ -59,7 +64,9 @@ while IFS= read -r line; do
    printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resources":[]}}' | sed "s/\"id\":[0-9]*/\"id\":$id/"
    ;;
  *'"method":"prompts/list"'*)
-   if [ "$3" = prompt ]; then
+   if [ "$3" = missing_prompt ]; then
+     printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"Method not found: Unknown method: prompts/list","data":{"detail":"Unknown method: prompts/list"}}}\n' "$id"
+   elif [ "$3" = prompt ]; then
      printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{"prompts":[{"name":"review","arguments":[{"name":"subject","description":"Review subject","required":true}]}]}}' | sed "s/\"id\":[0-9]*/\"id\":$id/"
    else
    printf '%s\n' '{"jsonrpc":"2.0","id":4,"result":{"prompts":[]}}' | sed "s/\"id\":[0-9]*/\"id\":$id/"
@@ -276,29 +283,26 @@ TEST_F(RuntimeMcpBackgroundTest, SynchronousStartupRemainsAvailable)
 	EXPECT_EQ(runtime_tool_find(instance, "mcp_sync__echo", &desc), 0);
 }
 
-TEST_F(RuntimeMcpBackgroundTest, PublicationFailureRollsBackNewTools)
+TEST_F(RuntimeMcpBackgroundTest, PublicationCollisionRollsBackNewTools)
 {
 	server("capacity", 0, true, "two");
 	ASSERT_EQ(open(), 0);
 	int before = runtime_tool_count(instance);
-	for (int i = before; i < TOOL_MAX_ENTRIES - 1; i++) {
-		std::string name = "filler_" + std::to_string(i);
-		struct tool_spec spec = {};
-		spec.name = name.c_str();
-		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
-		spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
-		spec.exec = [](const char *, struct tool_result *, void *) { return 0; };
-		ASSERT_EQ(runtime_register_tool(instance, &spec), 0);
-	}
+	struct tool_spec spec = {};
+	spec.name = "mcp_capacity__second";
+	spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	spec.exec = [](const char *, struct tool_result *, void *) { return 0; };
+	ASSERT_EQ(runtime_register_tool(instance, &spec), 0);
 	release("capacity");
 	ASSERT_TRUE(wait([&] { return state("capacity", RUNTIME_MCP_FAILED); }));
 	struct runtime_mcp_status status = {};
 	EXPECT_EQ(runtime_mcp_find(instance, "capacity", &status), 0);
-	EXPECT_EQ(status.error_code, -ENOSPC);
+	EXPECT_EQ(status.error_code, -EEXIST);
 	struct tool_desc desc = {};
-	EXPECT_EQ(runtime_tool_count(instance), TOOL_MAX_ENTRIES - 1);
+	EXPECT_EQ(runtime_tool_count(instance), before + 1);
 	EXPECT_EQ(runtime_tool_find(instance, "mcp_capacity__first", &desc), -ENOENT);
-	EXPECT_EQ(runtime_tool_find(instance, "mcp_capacity__second", &desc), -ENOENT);
+	EXPECT_EQ(runtime_tool_find(instance, "mcp_capacity__second", &desc), 0);
 }
 
 #include <atomic>
@@ -433,4 +437,131 @@ TEST_F(RuntimeMcpBackgroundTest, SynchronousDiscoveryFailureIsVisible)
 	struct runtime_mcp_status status = {};
 	EXPECT_EQ(runtime_mcp_find(instance, "invalid", &status), 0);
 	EXPECT_LT(status.error_code, 0);
+}
+
+TEST_F(RuntimeMcpBackgroundTest, DiscoveryListsOwnStringsAfterArenaIsDestroyed)
+{
+	server("lists", 0, true, "prompt");
+	release("lists");
+	ASSERT_EQ(open(false), 0);
+	struct mcp_tool_desc *tools = nullptr;
+	struct mcp_prompt_desc *prompts = nullptr;
+	int tool_count = 0, prompt_count = 0;
+	ASSERT_EQ(runtime_mcp_list_tools(instance, "lists", &tools, &tool_count), 0);
+	ASSERT_EQ(runtime_mcp_list_prompts(instance, "lists", &prompts, &prompt_count), 0);
+	ASSERT_EQ(tool_count, 1);
+	ASSERT_EQ(prompt_count, 1);
+	EXPECT_STREQ(tools[0].name, "echo");
+	EXPECT_STREQ(tools[0].description, "Mock echo");
+	EXPECT_STREQ(prompts[0].name, "review");
+	EXPECT_NE(strstr(prompts[0].arguments_schema, "subject"), nullptr);
+	runtime_mcp_list_free(tools);
+	runtime_mcp_list_free(prompts);
+}
+
+TEST_F(RuntimeMcpBackgroundTest, PeekabooSizedSchemasDoNotDisconnectServer)
+{
+	server("peekaboo", 0, true, "large");
+	const std::string prefix = "{\"type\":\"object\",\"description\":\"";
+	const std::string suffix = "\"}";
+	std::string verify = prefix + std::string(5200 - prefix.size() - suffix.size(), 'v') + suffix;
+	std::string browser = prefix + std::string(5649 - prefix.size() - suffix.size(), 'b') + suffix;
+	{
+		std::ofstream response(directory + "/large.json");
+		response << "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"verify_state\",\"inputSchema\":"
+			<< verify << "},{\"name\":\"browser\",\"inputSchema\":" << browser << "}]}}\n";
+	}
+	release("peekaboo");
+	ASSERT_EQ(open(), 0);
+	ASSERT_TRUE(wait([&] { return state("peekaboo", RUNTIME_MCP_READY); }));
+	struct runtime_mcp_status status = {};
+	ASSERT_EQ(runtime_mcp_find(instance, "peekaboo", &status), 0);
+	EXPECT_EQ(status.connected, 1);
+	EXPECT_EQ(status.error_code, 0);
+	struct tool_desc desc = {};
+	ASSERT_EQ(runtime_tool_find(instance, "mcp_peekaboo__verify_state", &desc), 0);
+	EXPECT_EQ(std::string(desc.input_schema), verify);
+	ASSERT_EQ(runtime_tool_find(instance, "mcp_peekaboo__browser", &desc), 0);
+	EXPECT_EQ(std::string(desc.input_schema), browser);
+}
+
+TEST_F(RuntimeMcpBackgroundTest, PinnedVersionPassesThroughRuntimeConfiguration)
+{
+	server("pinned");
+	{
+		std::ofstream config(config_path, std::ios::app);
+		config << "protocol_version = \"2025-06-18\"\n";
+	}
+	release("pinned");
+	ASSERT_EQ(open(false), 0);
+	EXPECT_TRUE(state("pinned", RUNTIME_MCP_READY));
+	auto *client = mcp_registry_get(&instance->context.mcp, "pinned");
+	ASSERT_NE(client, nullptr);
+	EXPECT_STREQ(client->config.protocol_version, "2025-06-18");
+	EXPECT_STREQ(client->negotiated_version, "2025-06-18");
+}
+
+TEST_F(RuntimeMcpBackgroundTest, MissingAdvertisedPromptHandlerPreservesTools)
+{
+	for (bool background : {false, true}) {
+		SCOPED_TRACE(background);
+		server("missing_prompt", 0, true, "missing_prompt");
+		release("missing_prompt");
+		ASSERT_EQ(open(background), 0);
+		ASSERT_TRUE(wait([&] { return state("missing_prompt", RUNTIME_MCP_READY); }));
+		struct runtime_mcp_status status = {};
+		ASSERT_EQ(runtime_mcp_find(instance, "missing_prompt", &status), 0);
+		EXPECT_EQ(status.connected, 1);
+		EXPECT_EQ(status.error_code, 0);
+		EXPECT_EQ(status.supports_tools, 1);
+		EXPECT_EQ(status.supports_prompts, 0);
+		struct tool_desc desc = {};
+		EXPECT_EQ(runtime_tool_find(instance, "mcp_missing_prompt__echo", &desc), 0);
+		runtime_close(instance);
+		instance = nullptr;
+		std::filesystem::remove(config_path);
+	}
+}
+
+TEST_F(RuntimeMcpBackgroundTest, LiveServerPublishesToolsAndBecomesReady)
+{
+	const char *command = getenv("MORPH_TEST_MCP_COMMAND");
+	if (!command || !command[0])
+		GTEST_SKIP() << "Set MORPH_TEST_MCP_COMMAND to a stdio MCP server executable";
+	cJSON *value = cJSON_CreateString(command);
+	char *encoded = cJSON_PrintUnformatted(value);
+	cJSON_Delete(value);
+	ASSERT_NE(encoded, nullptr);
+	{
+		std::ofstream config(config_path);
+		config << "[[mcp.servers]]\nname = \"live\"\ntransport = \"stdio\"\ncommand = "
+			<< encoded << "\nauto_connect = true\nconnect_timeout = 90\n";
+	}
+	free(encoded);
+	ASSERT_EQ(open(), 0);
+	ASSERT_TRUE(wait([&] {
+		return state("live", RUNTIME_MCP_READY) || state("live", RUNTIME_MCP_FAILED);
+	}, 90000));
+	struct runtime_mcp_status status = {};
+	ASSERT_EQ(runtime_mcp_find(instance, "live", &status), 0);
+	ASSERT_EQ(status.state, RUNTIME_MCP_READY) << morph_strerror(status.error_code);
+	EXPECT_EQ(status.connected, 1);
+	EXPECT_EQ(status.error_code, 0);
+	int published = 0;
+	for (int i = 0; i < runtime_tool_count(instance); i++) {
+		struct tool_desc descriptor = {};
+		ASSERT_EQ(runtime_tool_info(instance, i, &descriptor), 0);
+		if (strncmp(descriptor.name, "mcp_live__", strlen("mcp_live__")) == 0)
+			published++;
+	}
+	struct mcp_tool_desc *tools = nullptr;
+	int count = 0;
+	int rc = runtime_mcp_list_tools(instance, "live", &tools, &count);
+	runtime_mcp_list_free(tools);
+	EXPECT_EQ(rc, 0);
+	EXPECT_EQ(count, published);
+	RecordProperty("state", "ready");
+	RecordProperty("tools", published);
+	RecordProperty("supports_prompts", status.supports_prompts);
+	RecordProperty("protocol", status.negotiated_version);
 }

@@ -15,45 +15,42 @@ extern "C" {
 #include "util/strmap.h"
 #include "agent/tool.h"
 
-#define MCP_PROTOCOL_VERSION   "2025-06-18"
+#define MCP_PROTOCOL_VERSION   "2026-07-28"
+#define MCP_LEGACY_PROTOCOL_VERSION "2025-11-25"
 #define MCP_NAME_MAX           128
-#define MCP_DESC_MAX           1024
-#define MCP_SCHEMA_MAX         4096
-#define MCP_URI_MAX            PATH_MAX
 #define MCP_CMD_MAX            64
 #define MCP_CMD_ARG_MAX        256
 #define MCP_ENV_MAX            16
 #define MCP_ENV_VAL_MAX        PATH_MAX
 #define MCP_MAX_SERVERS        32
-#define MCP_JSON_BUF_MAX       65536
-#define MCP_READ_BUF_MAX       131072
 
 enum mcp_transport_type {
 	MCP_TRANSPORT_STDIO,
 	MCP_TRANSPORT_STREAMABLE_HTTP,
 };
 
+/* Discovery strings are owned by the caller-provided arena, without truncation. */
 /* MCP tool descriptor returned by tools/list */
 struct mcp_tool_desc {
-	char name[MCP_NAME_MAX];
-	char title[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char input_schema[MCP_SCHEMA_MAX];
+	const char *name;
+	const char *title;
+	const char *description;
+	const char *input_schema;
 };
 
 /* MCP resource descriptor returned by resources/list */
 struct mcp_resource_desc {
-	char uri[MCP_URI_MAX];
-	char name[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char mime_type[64];
+	const char *uri;
+	const char *name;
+	const char *description;
+	const char *mime_type;
 };
 
 /* MCP prompt descriptor returned by prompts/list */
 struct mcp_prompt_desc {
-	char name[MCP_NAME_MAX];
-	char description[MCP_DESC_MAX];
-	char arguments_schema[MCP_SCHEMA_MAX];
+	const char *name;
+	const char *description;
+	const char *arguments_schema;
 };
 
 /* One MCP server configuration */
@@ -70,10 +67,14 @@ struct mcp_server_config {
 	/* http */
 	char http_url[PATH_MAX];
 	char http_auth_token_env[64];
+	/* Empty or "auto" probes; a version pins its adapter without downgrade. */
+	char protocol_version[32];
 	/* startup */
 	int auto_connect;
 	int connect_timeout;
 };
+
+struct mcp_protocol_adapter;
 
 /* MCP client -- manages one server connection */
 struct mcp_client {
@@ -86,6 +87,8 @@ struct mcp_client {
 	/* Optional startup interruption; owned by the connection worker. */
 	int (*interrupt_check)(void *);
 	void *interrupt_user_data;
+	const struct mcp_protocol_adapter *protocol;
+	morph_strmap_t tool_schemas;
 	char negotiated_version[32];
 	char server_name[MCP_NAME_MAX];
 	char server_version[64];
@@ -101,7 +104,7 @@ struct mcp_client {
 	morph_buf_t read_buffer;
 	/* http transport state */
 	struct http_session session;
-	char session_id[128];
+	char *session_id;
 	/* JSON-RPC id counter */
 	int next_req_id;
 	/* thread safety */

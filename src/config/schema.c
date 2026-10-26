@@ -250,6 +250,8 @@ static const struct schema_entry schema[] = {
 	DYNAMIC("mcp.servers[].env", MCP_ENV_MAX, MCP_ENV_VAL_MAX - 1),
 	STRING("mcp.servers[].url", PATH_MAX - 1),
 	STRING("mcp.servers[].auth_token_env", 63),
+	ENUM("mcp.servers[].protocol_version", 31,
+		"auto|2026-07-28|2025-11-25|2025-06-18|2025-03-26|2024-11-05"),
 	BOOL("mcp.servers[].auto_connect"),
 	INT("mcp.servers[].connect_timeout", 0, INT_MAX),
 	TABLE("agent"),

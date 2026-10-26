@@ -558,7 +558,7 @@ void tool_registry_init(struct tool_registry *reg)
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
-	(void)morph_strmap_init(&reg->by_name, TOOL_MAX_ENTRIES);
+	(void)morph_strmap_init(&reg->by_name, TOOL_REGISTRY_INITIAL_CAP);
 	(void)morph_strmap_init(&reg->disabled_by_name, TOOL_DISABLED_MAX);
 }
 
@@ -679,7 +679,7 @@ static int tool_schema_validate(const char *schema, int require_closed)
 	type = cJSON_GetObjectItem(root, "type");
 	props = cJSON_GetObjectItem(root, "properties");
 	if (!cJSON_IsString(type) || strcmp(type->valuestring, "object") != 0 ||
-	    !cJSON_IsObject(props)) {
+	    (props && !cJSON_IsObject(props))) {
 		rc = -EINVAL;
 		goto out;
 	}
@@ -694,8 +694,8 @@ static int tool_schema_validate(const char *schema, int require_closed)
 	required = cJSON_GetObjectItem(root, "required");
 	if (required && cJSON_IsArray(required)) {
 		cJSON_ArrayForEach(item, required) {
-			if (!cJSON_IsString(item) ||
-			    !cJSON_GetObjectItem(props, item->valuestring)) {
+			if (!cJSON_IsString(item) || (require_closed &&
+			    !cJSON_GetObjectItem(props, item->valuestring))) {
 				rc = -EINVAL;
 				goto out;
 			}
@@ -752,8 +752,8 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 
 	if (!reg || !spec || !spec->name || !spec->exec)
 		return -EINVAL;
-	if (reg->count >= TOOL_MAX_ENTRIES)
-		return -ENOSPC;
+	if (reg->count >= INT_MAX)
+		return -EOVERFLOW;
 	if (find_tool(reg, spec->name) >= 0)
 		return -EEXIST;
 	if (spec->input_kind == TOOL_INPUT_JSON) {

@@ -1,7 +1,8 @@
-#include "mcp/mcp.h"
+#include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "util/arena.h"
 #include "util/buf.h"
+#include "util/array.h"
 #include "util/log.h"
 #include "util/error.h"
 #include "util/name.h"
@@ -11,94 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ----- Transport-level declarations ----- */
-
-int mcp_stdio_request(struct mcp_client *client, int req_id,
-		      const char *method, const char *params_json,
-		      char **out_result);
-int mcp_stdio_connect(struct mcp_client *client);
-int mcp_stdio_initialize(struct mcp_client *client);
-void mcp_stdio_disconnect(struct mcp_client *client);
-int mcp_stdio_ping(struct mcp_client *client);
-
-int mcp_http_connect(struct mcp_client *client);
-int mcp_http_initialize(struct mcp_client *client);
-void mcp_http_disconnect(struct mcp_client *client);
-int mcp_http_request(struct mcp_client *client, const char *method,
-		     const char *params_json, char **out_result);
-
 static char *mcp_strdup_result(struct arena *arena, const char *s)
 {
 	if (!s)
 		return NULL;
-	if (arena)
-		return arena_strdup(arena, s);
+	/* tool_result_success_json_text takes ownership and frees its input. */
+	(void)arena;
 	return strdup(s);
-}
-
-static int mcp_next_request_id(struct mcp_client *client)
-{
-	int req_id;
-
-	pthread_mutex_lock(&client->lock);
-	req_id = client->next_req_id++;
-	pthread_mutex_unlock(&client->lock);
-	return req_id;
-}
-
-/* ----- Shared JSON-RPC helpers ----- */
-
-char *mcp_build_request(int id, const char *method, const char *params_json)
-{
-	cJSON *req = cJSON_CreateObject();
-	if (!req)
-		return NULL;
-	cJSON_AddStringToObject(req, "jsonrpc", "2.0");
-	cJSON_AddNumberToObject(req, "id", (double)id);
-	cJSON_AddStringToObject(req, "method", method);
-
-	if (params_json && params_json[0]) {
-		cJSON *params = cJSON_Parse(params_json);
-		if (params)
-			cJSON_AddItemToObject(req, "params", params);
-	}
-
-	char *out = cJSON_PrintUnformatted(req);
-	cJSON_Delete(req);
-	return out;
-}
-
-int mcp_parse_result(const char *resp_json, char **out_result)
-{
-	cJSON *obj = cJSON_Parse(resp_json);
-	if (!obj) {
-		log_err("mcp: failed to parse response JSON");
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	}
-
-	cJSON *err = cJSON_GetObjectItem(obj, "error");
-	if (err) {
-		int code = 0;
-		const char *msg = "";
-		cJSON *c = cJSON_GetObjectItem(err, "code");
-		if (c && cJSON_IsNumber(c))
-			code = (int)c->valuedouble;
-		c = cJSON_GetObjectItem(err, "message");
-		if (c && cJSON_IsString(c))
-			msg = c->valuestring;
-		log_err("mcp: JSON-RPC error: code=%d, message=%s", code, msg);
-		if (out_result)
-			*out_result = strdup(resp_json);
-		cJSON_Delete(obj);
-		return MORPH_ERR_PROTOCOL;
-	}
-
-	cJSON *result = cJSON_GetObjectItem(obj, "result");
-	if (result && out_result)
-		*out_result = cJSON_PrintUnformatted(result);
-
-	cJSON_Delete(obj);
-	return 0;
 }
 
 /* ----- Registry ----- */
@@ -195,9 +115,7 @@ int mcp_initialize(struct mcp_client *client)
 {
 	if (!client)
 		return -EINVAL;
-	if (client->config.transport == MCP_TRANSPORT_STDIO)
-		return mcp_stdio_initialize(client);
-	return mcp_http_initialize(client);
+	return mcp_protocol_initialize(client);
 }
 
 void mcp_disconnect(struct mcp_client *client)
@@ -208,6 +126,7 @@ void mcp_disconnect(struct mcp_client *client)
 		mcp_stdio_disconnect(client);
 	else
 		mcp_http_disconnect(client);
+	mcp_protocol_reset(client);
 }
 
 /* ----- Lazy-connect wrapper ----- */
@@ -251,12 +170,8 @@ int mcp_ping(struct mcp_client *client)
 {
 	if (!client)
 		return -EINVAL;
-	if (client->config.transport == MCP_TRANSPORT_STDIO)
-		return mcp_stdio_ping(client);
-
-	/* HTTP ping */
 	char *result = NULL;
-	int rc = mcp_http_request(client, "ping", NULL, &result);
+	int rc = mcp_request(client, "ping", NULL, &result);
 	free(result);
 	return rc;
 }
@@ -314,92 +229,226 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 	return rc;
 }
 
-/* ----- MCP tools/list ----- */
-
-int mcp_list_tools(struct mcp_client *client, struct arena *arena,
-		   struct mcp_tool_desc **out_tools, int *out_count)
+/* Some servers advertise a capability but omit its list handler. A correlated
+ * MethodNotFound disables only that capability, never the usable ones. */
+static void mcp_disable_list_capability(struct mcp_client *client,
+	const char *key, const char *method)
 {
-	if (!client || !out_tools || !out_count || !arena)
-		return -EINVAL;
+	pthread_mutex_lock(&client->lock);
+	if (strcmp(key, "tools") == 0)
+		client->supports_tools = 0;
+	else if (strcmp(key, "resources") == 0)
+		client->supports_resources = 0;
+	else if (strcmp(key, "prompts") == 0)
+		client->supports_prompts = 0;
+	pthread_mutex_unlock(&client->lock);
+	log_warn("mcp: '%s' advertised %s but %s is not implemented; "
+		"disabling this capability", client->config.name, key, method);
+}
 
+/* Collect every page, rejecting malformed lists and cyclic cursors. */
+static int mcp_list_all(struct mcp_client *client, const char *method,
+	const char *key, cJSON **out)
+{
+	cJSON *items = cJSON_CreateArray();
+	cJSON *page = NULL;
+	char *params = NULL;
 	char *result = NULL;
-	int req_id;
-	int rc;
+	morph_strmap_t cursors;
+	int rc = morph_strmap_init(&cursors, 16);
 
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "tools/list", NULL, &result);
-	} else {
-		rc = mcp_http_request(client, "tools/list", NULL, &result);
+	*out = NULL;
+	if (rc != 0 || !items) {
+		cJSON_Delete(items);
+		if (rc == 0)
+			morph_strmap_cleanup(&cursors);
+		MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
 	}
+	for (;;) {
+		int first_page = params == NULL;
 
-	if (rc < 0 || !result) {
+		rc = mcp_request(client, method, params, &result);
+		free(params);
+		params = NULL;
+		if (rc == -ENOSYS && first_page) {
+			mcp_disable_list_capability(client, key, method);
+			rc = 0;
+			break;
+		}
+		if (rc != 0)
+			break;
+		page = result ? cJSON_Parse(result) : NULL;
 		free(result);
-		return rc ? rc : MORPH_ERR_PROTOCOL;
-	}
+		result = NULL;
+		cJSON *list = cJSON_GetObjectItemCaseSensitive(page, key);
+		cJSON *next = cJSON_GetObjectItemCaseSensitive(page, "nextCursor");
 
-	cJSON *obj = cJSON_Parse(result);
-	if (!obj) {
-		log_err("mcp: tools/list response parse error");
-		free(result);
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	}
+		if (!cJSON_IsArray(list) || (next && !cJSON_IsString(next))) {
+			MORPH_SET_ERR(rc, MORPH_ERR_PROTOCOL);
+			break;
+		}
+		if (cJSON_GetArraySize(list) > INT_MAX - cJSON_GetArraySize(items)) {
+			MORPH_SET_ERR(rc, -EOVERFLOW);
+			break;
+		}
+		while (list->child) {
+			cJSON *item = cJSON_DetachItemViaPointer(list, list->child);
 
-	cJSON *tools_arr = cJSON_GetObjectItem(obj, "tools");
-	if (!tools_arr || !cJSON_IsArray(tools_arr)) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_tools = NULL;
-		*out_count = 0;
-		return 0;
-	}
-
-	int count = cJSON_GetArraySize(tools_arr);
-	if (count == 0) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_tools = NULL;
-		*out_count = 0;
-		return 0;
-	}
-	struct mcp_tool_desc *tools = arena_alloc(arena, (size_t)count * sizeof(*tools));
-	if (!tools) {
-		cJSON_Delete(obj);
-		free(result);
-		return -ENOMEM;
-	}
-
-	for (int i = 0; i < count; i++) {
-		cJSON *t = cJSON_GetArrayItem(tools_arr, i);
-		cJSON *v;
-
-		v = cJSON_GetObjectItem(t, "name");
-		if (v && cJSON_IsString(v))
-			strncpy(tools[i].name, v->valuestring, MCP_NAME_MAX - 1);
-
-		v = cJSON_GetObjectItem(t, "title");
-		if (v && cJSON_IsString(v))
-			strncpy(tools[i].title, v->valuestring, MCP_NAME_MAX - 1);
-
-		v = cJSON_GetObjectItem(t, "description");
-		if (v && cJSON_IsString(v))
-			strncpy(tools[i].description, v->valuestring, MCP_DESC_MAX - 1);
-
-		v = cJSON_GetObjectItem(t, "inputSchema");
-		if (v) {
-			char *schema = cJSON_PrintUnformatted(v);
-			if (schema) {
-				strncpy(tools[i].input_schema, schema, MCP_SCHEMA_MAX - 1);
-				free(schema);
+			if (!cJSON_AddItemToArray(items, item)) {
+				cJSON_Delete(item);
+				MORPH_SET_ERR(rc, -ENOMEM);
+				break;
 			}
 		}
+		if (rc != 0 || !next)
+			break;
+		if (morph_strmap_contains(&cursors, next->valuestring)) {
+			MORPH_SET_ERR(rc, MORPH_ERR_PROTOCOL);
+			break;
+		}
+		rc = morph_strmap_set(&cursors, next->valuestring, client);
+		if (rc != 0)
+			break;
+		cJSON *request = cJSON_CreateObject();
+
+		if (request && cJSON_AddStringToObject(request, "cursor", next->valuestring))
+			params = cJSON_PrintUnformatted(request);
+		cJSON_Delete(request);
+		if (!params) {
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+		cJSON_Delete(page);
+		page = NULL;
 	}
-
-	cJSON_Delete(obj);
 	free(result);
+	free(params);
+	cJSON_Delete(page);
+	morph_strmap_cleanup(&cursors);
+	if (rc != 0) {
+		cJSON_Delete(items);
+		log_warn("mcp: %s failed: %s", method, morph_strerror(rc));
+		return rc;
+	}
+	*out = items;
+	return 0;
+}
 
-	*out_tools = tools;
-	*out_count = count;
+static const char *mcp_string(struct arena *arena, cJSON *item, const char *key)
+{
+	cJSON *value = cJSON_GetObjectItemCaseSensitive(item, key);
+
+	return arena_strdup(arena, cJSON_IsString(value) ? value->valuestring : "");
+}
+
+static const char *mcp_schema(struct arena *arena, cJSON *value)
+{
+	char *json = value ? cJSON_PrintUnformatted(value) : NULL;
+	const char *copy = json ? arena_strdup(arena, json) : NULL;
+
+	free(json);
+	return copy;
+}
+
+/* Build parameters with JSON escaping and no fixed size ceiling. */
+static int mcp_named_request(struct mcp_client *client, const char *method,
+	const char *key, const char *name, const char *args, char **result)
+{
+	cJSON *params = cJSON_CreateObject();
+	char *json;
+	int rc;
+
+	if (!params)
+		MORPH_RETURN(-ENOMEM);
+	if (!cJSON_AddStringToObject(params, key, name)) {
+		cJSON_Delete(params);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (args) {
+		cJSON *arguments = cJSON_ParseWithOpts(args, NULL, 1);
+
+		if (!cJSON_IsObject(arguments)) {
+			cJSON_Delete(arguments);
+			cJSON_Delete(params);
+			MORPH_RETURN(MORPH_ERR_PARSE);
+		}
+		if (!cJSON_AddItemToObject(params, "arguments", arguments)) {
+			cJSON_Delete(arguments);
+			cJSON_Delete(params);
+			MORPH_RETURN(-ENOMEM);
+		}
+	}
+	json = cJSON_PrintUnformatted(params);
+	cJSON_Delete(params);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	rc = mcp_request(client, method, json, result);
+	free(json);
+	return rc;
+}
+
+int mcp_list_tools(struct mcp_client *client, struct arena *arena,
+	struct mcp_tool_desc **out_tools, int *out_count)
+{
+	if (!client || !arena || !out_tools || !out_count)
+		MORPH_RETURN(-EINVAL);
+	*out_tools = NULL;
+	*out_count = 0;
+	cJSON *items = NULL;
+	int rc = mcp_list_all(client, "tools/list", "tools", &items);
+
+	if (rc != 0)
+		return rc;
+	int count = cJSON_GetArraySize(items);
+	struct mcp_tool_desc *entries = NULL;
+
+	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-EOVERFLOW);
+	}
+	if (count > 0)
+		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+	if (count > 0 && !entries) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON *item;
+	int i = 0;
+
+	cJSON_ArrayForEach(item, items) {
+		cJSON *schema = cJSON_GetObjectItemCaseSensitive(item, "inputSchema");
+		cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
+
+		if (schema && cJSON_IsString(name)) {
+			rc = mcp_protocol_cache_tool(client, name->valuestring, schema);
+			if (rc == -EINVAL) {
+				log_warn("mcp: excluding tool '%s': invalid x-mcp-header annotation",
+					name->valuestring);
+				rc = 0;
+				continue;
+			}
+			if (rc != 0) {
+				cJSON_Delete(items);
+				return rc;
+			}
+		}
+		entries[i].name = mcp_string(arena, item, "name");
+		entries[i].title = mcp_string(arena, item, "title");
+		entries[i].description = mcp_string(arena, item, "description");
+		entries[i].input_schema = schema ? mcp_schema(arena, schema) :
+			arena_strdup(arena, TOOL_EMPTY_INPUT_SCHEMA);
+		if (rc != 0 || !entries[i].name ||
+		    !entries[i].title ||
+		    !entries[i].description ||
+		    !entries[i].input_schema) {
+			cJSON_Delete(items);
+			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+		}
+		i++;
+	}
+	cJSON_Delete(items);
+	*out_tools = entries;
+	*out_count = i;
 	return 0;
 }
 
@@ -411,21 +460,29 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	if (!client || !name || !out_result)
 		return -EINVAL;
 
-	char params_buf[MCP_JSON_BUF_MAX];
-	snprintf(params_buf, sizeof(params_buf),
-		 "{\"name\":\"%s\",\"arguments\":%s}",
-		 name, args_json ? args_json : "{}");
+	if (client->protocol && client->protocol->per_request &&
+	    client->config.transport == MCP_TRANSPORT_STREAMABLE_HTTP) {
+		pthread_mutex_lock(&client->lock);
+		int cached = morph_strmap_contains(&client->tool_schemas, name);
+		pthread_mutex_unlock(&client->lock);
+		if (!cached) {
+			struct arena *discovery = arena_create(0);
+			struct mcp_tool_desc *tools = NULL;
+			int count = 0;
+
+			if (!discovery)
+				MORPH_RETURN(-ENOMEM);
+			int rc = mcp_list_tools(client, discovery, &tools, &count);
+
+			arena_destroy(discovery);
+			if (rc != 0)
+				return rc;
+		}
+	}
 
 	char *result = NULL;
-	int req_id;
-	int rc;
-
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "tools/call", params_buf, &result);
-	} else {
-		rc = mcp_http_request(client, "tools/call", params_buf, &result);
-	}
+	int rc = mcp_named_request(client, "tools/call", "name", name,
+		args_json && args_json[0] ? args_json : "{}", &result);
 
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
@@ -440,7 +497,8 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 		return rc;
 	}
 
-	/* Parse the tools/call response: extract content array into a text string */
+	(void)arena;
+	/* Parse the tools/call response without discarding structured content. */
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
 		log_err("mcp: tools/call response parse error");
@@ -452,85 +510,48 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	cJSON *is_err = cJSON_GetObjectItem(obj, "isError");
 	int tool_error = (is_err && cJSON_IsBool(is_err) && cJSON_IsTrue(is_err));
 
-	/* Extract text content */
-	cJSON *content = cJSON_GetObjectItem(obj, "content");
-	if (content && cJSON_IsArray(content)) {
-		morph_buf_t combined_buf;
-		cJSON *resp = NULL;
-		char *printed;
-		int buf_ok = morph_buf_init(&combined_buf, 256);
+	/* Keep every content block and extension field alongside readable text. */
+	cJSON *content = cJSON_GetObjectItemCaseSensitive(obj, "content");
+	morph_buf_t combined;
+	rc = morph_buf_init(&combined, BUFSIZ);
+	cJSON *item;
 
-		for (int i = 0; i < cJSON_GetArraySize(content); i++) {
-			cJSON *item = cJSON_GetArrayItem(content, i);
-			cJSON *type = cJSON_GetObjectItem(item, "type");
-			if (type && cJSON_IsString(type)) {
-				const char *text_to_add = NULL;
-				if (strcmp(type->valuestring, "text") == 0) {
-					cJSON *text = cJSON_GetObjectItem(item, "text");
-					if (text && cJSON_IsString(text))
-						text_to_add = text->valuestring;
-				} else if (strcmp(type->valuestring, "image") == 0) {
-					text_to_add = "[image content]";
-				}
+	cJSON_ArrayForEach(item, content) {
+		cJSON *text = cJSON_GetObjectItemCaseSensitive(item, "text");
 
-				if (text_to_add && buf_ok == 0) {
-					if (combined_buf.len > 0)
-						buf_ok = morph_buf_putc(&combined_buf, '\n');
-					if (buf_ok == 0)
-						buf_ok = morph_buf_puts(&combined_buf, text_to_add);
-				}
-			}
-		}
-
-		if (buf_ok == 0 && combined_buf.len > 0) {
-			resp = cJSON_CreateObject();
-			if (!resp)
-				goto mcp_tool_oom;
-			if (tool_error &&
-			    !cJSON_AddStringToObject(resp, "error",
-						     combined_buf.data))
-				goto mcp_tool_oom_resp;
-			if (!cJSON_AddStringToObject(resp, "content",
-						     combined_buf.data))
-				goto mcp_tool_oom_resp;
-			if (!cJSON_AddBoolToObject(resp, "isError", tool_error))
-				goto mcp_tool_oom_resp;
-			printed = cJSON_PrintUnformatted(resp);
-			if (!printed)
-				goto mcp_tool_oom_resp;
-			(void)tool_result_success_json_text(out_result, printed);
-			cJSON_Delete(resp);
-			morph_buf_cleanup(&combined_buf);
-		} else {
-			morph_buf_cleanup(&combined_buf);
-			(void)tool_result_success_json_text(out_result,
-				strdup("{\"error\":\"out of memory\","
-				       "\"isError\":true}"));
-		}
-		goto mcp_tool_done;
-
-mcp_tool_oom_resp:
-		cJSON_Delete(resp);
-mcp_tool_oom:
-		morph_buf_cleanup(&combined_buf);
-		(void)tool_result_success_json_text(out_result,
-			strdup("{\"error\":\"out of memory\","
-			       "\"isError\":true}"));
-mcp_tool_done:
-		;
-	} else {
-		if (tool_error && cJSON_IsObject(obj) &&
-		    !cJSON_GetObjectItem(obj, "error")) {
-			cJSON_AddStringToObject(obj, "error",
-						"MCP tool returned isError");
-			(void)tool_result_success_json_text(out_result,
-				cJSON_PrintUnformatted(obj));
-		} else {
-			(void)tool_result_success_json_text(out_result,
-				mcp_strdup_result(arena, result));
-		}
+		if (rc != 0 || !cJSON_IsString(text))
+			continue;
+		if (combined.len > 0)
+			rc = morph_buf_putc(&combined, '\n');
+		if (rc == 0)
+			rc = morph_buf_puts(&combined, text->valuestring);
 	}
+	if (rc == 0 && combined.len > 0) {
+		cJSON *blocks = cJSON_DetachItemFromObjectCaseSensitive(obj, "content");
 
+		if (!cJSON_AddItemToObject(obj, "contentBlocks", blocks)) {
+			cJSON_Delete(blocks);
+			MORPH_SET_ERR(rc, -ENOMEM);
+		}
+		if (rc == 0 && !cJSON_AddStringToObject(obj, "content", combined.data))
+			MORPH_SET_ERR(rc, -ENOMEM);
+	}
+	if (rc == 0 && tool_error && !cJSON_HasObjectItem(obj, "error")) {
+		if (!cJSON_AddStringToObject(obj, "error", combined.len > 0 ?
+			combined.data : "MCP tool returned isError"))
+			MORPH_SET_ERR(rc, -ENOMEM);
+	}
+	morph_buf_cleanup(&combined);
+	if (rc == 0) {
+		char *json = cJSON_PrintUnformatted(obj);
+
+		rc = tool_result_success_json_text(out_result, json);
+	}
+	if (rc != 0) {
+		cJSON_Delete(obj);
+		free(result);
+		return rc;
+	}
 	cJSON_Delete(obj);
 	free(result);
 	return tool_error ? -EIO : 0;
@@ -539,83 +560,49 @@ mcp_tool_done:
 /* ----- MCP resources/list ----- */
 
 int mcp_list_resources(struct mcp_client *client, struct arena *arena,
-		       struct mcp_resource_desc **out_res, int *out_count)
+	struct mcp_resource_desc **out_res, int *out_count)
 {
-	if (!client || !out_res || !out_count || !arena)
-		return -EINVAL;
+	if (!client || !arena || !out_res || !out_count)
+		MORPH_RETURN(-EINVAL);
+	*out_res = NULL;
+	*out_count = 0;
+	cJSON *items = NULL;
+	int rc = mcp_list_all(client, "resources/list", "resources", &items);
 
-	char *result = NULL;
-	int req_id;
-	int rc;
+	if (rc != 0)
+		return rc;
+	int count = cJSON_GetArraySize(items);
+	struct mcp_resource_desc *entries = NULL;
 
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "resources/list", NULL, &result);
-	} else {
-		rc = mcp_http_request(client, "resources/list", NULL, &result);
+	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-EOVERFLOW);
 	}
-
-	if (rc < 0 || !result) {
-		free(result);
-		return rc ? rc : MORPH_ERR_PROTOCOL;
+	if (count > 0)
+		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+	if (count > 0 && !entries) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-ENOMEM);
 	}
+	cJSON *item;
+	int i = 0;
 
-	cJSON *obj = cJSON_Parse(result);
-	if (!obj) {
-		log_err("mcp: resources/list response parse error");
-		free(result);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+	cJSON_ArrayForEach(item, items) {
+		entries[i].uri = mcp_string(arena, item, "uri");
+		entries[i].name = mcp_string(arena, item, "name");
+		entries[i].description = mcp_string(arena, item, "description");
+		entries[i].mime_type = mcp_string(arena, item, "mimeType");
+		if (rc != 0 || !entries[i].uri ||
+		    !entries[i].name ||
+		    !entries[i].description ||
+		    !entries[i].mime_type) {
+			cJSON_Delete(items);
+			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+		}
+		i++;
 	}
-
-	cJSON *res_arr = cJSON_GetObjectItem(obj, "resources");
-	if (!res_arr || !cJSON_IsArray(res_arr)) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_res = NULL;
-		*out_count = 0;
-		return 0;
-	}
-
-	int count = cJSON_GetArraySize(res_arr);
-	if (count == 0) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_res = NULL;
-		*out_count = 0;
-		return 0;
-	}
-	struct mcp_resource_desc *res = arena_alloc(arena, (size_t)count * sizeof(*res));
-	if (!res) {
-		cJSON_Delete(obj);
-		free(result);
-		return -ENOMEM;
-	}
-
-	for (int i = 0; i < count; i++) {
-		cJSON *r = cJSON_GetArrayItem(res_arr, i);
-		cJSON *v;
-
-		v = cJSON_GetObjectItem(r, "uri");
-		if (v && cJSON_IsString(v))
-			strncpy(res[i].uri, v->valuestring, MCP_URI_MAX - 1);
-
-		v = cJSON_GetObjectItem(r, "name");
-		if (v && cJSON_IsString(v))
-			strncpy(res[i].name, v->valuestring, MCP_NAME_MAX - 1);
-
-		v = cJSON_GetObjectItem(r, "description");
-		if (v && cJSON_IsString(v))
-			strncpy(res[i].description, v->valuestring, MCP_DESC_MAX - 1);
-
-		v = cJSON_GetObjectItem(r, "mimeType");
-		if (v && cJSON_IsString(v))
-			strncpy(res[i].mime_type, v->valuestring, sizeof(res[i].mime_type) - 1);
-	}
-
-	cJSON_Delete(obj);
-	free(result);
-
-	*out_res = res;
+	cJSON_Delete(items);
+	*out_res = entries;
 	*out_count = count;
 	return 0;
 }
@@ -628,20 +615,9 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 	if (!client || !uri || !out_content)
 		return -EINVAL;
 
-	char params_buf[MCP_JSON_BUF_MAX];
-	snprintf(params_buf, sizeof(params_buf),
-		 "{\"uri\":\"%s\"}", uri);
-
 	char *result = NULL;
-	int req_id;
-	int rc;
-
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "resources/read", params_buf, &result);
-	} else {
-		rc = mcp_http_request(client, "resources/read", params_buf, &result);
-	}
+	int rc = mcp_named_request(client, "resources/read", "uri", uri,
+		NULL, &result);
 
 	if (rc < 0 || !result) {
 		free(result);
@@ -658,35 +634,33 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 	/* Extract text from contents array */
 	cJSON *contents = cJSON_GetObjectItem(obj, "contents");
 	if (contents && cJSON_IsArray(contents)) {
-		char combined[MCP_JSON_BUF_MAX];
-		combined[0] = '\0';
-		size_t offset = 0;
+		morph_buf_t combined;
+		rc = morph_buf_init(&combined, BUFSIZ);
+		cJSON *item;
 
-		for (int i = 0; i < cJSON_GetArraySize(contents); i++) {
-			cJSON *item = cJSON_GetArrayItem(contents, i);
-			cJSON *text = cJSON_GetObjectItem(item, "text");
-			if (text && cJSON_IsString(text)) {
-				size_t remaining = sizeof(combined) - offset - 1;
-				if (remaining > 0) {
-					if (offset > 0)
-						combined[offset++] = '\n';
-					strncpy(combined + offset, text->valuestring, remaining);
-					offset += strlen(combined + offset);
-				}
-			}
-			cJSON *blob = cJSON_GetObjectItem(item, "blob");
-			if (blob && cJSON_IsString(blob)) {
-				size_t remaining = sizeof(combined) - offset - 1;
-				if (remaining > strlen(blob->valuestring)) {
-					if (offset > 0)
-						combined[offset++] = '\n';
-					strncpy(combined + offset, blob->valuestring, remaining);
-					offset += strlen(combined + offset);
-				}
+		cJSON_ArrayForEach(item, contents) {
+			const char *keys[] = {"text", "blob"};
+
+			for (size_t i = 0; rc == 0 && i < sizeof(keys) / sizeof(keys[0]); i++) {
+				cJSON *value = cJSON_GetObjectItemCaseSensitive(item, keys[i]);
+
+				if (!cJSON_IsString(value))
+					continue;
+				if (combined.len > 0)
+					rc = morph_buf_putc(&combined, '\n');
+				if (rc == 0)
+					rc = morph_buf_puts(&combined, value->valuestring);
 			}
 		}
+		char *text = rc == 0 ? mcp_strdup_result(arena, morph_buf_cstr(&combined)) : NULL;
 
-		(void)tool_result_success_json_text(out_content, mcp_strdup_result(arena, combined));
+		morph_buf_cleanup(&combined);
+		if (!text) {
+			cJSON_Delete(obj);
+			free(result);
+			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+		}
+		(void)tool_result_success_json_text(out_content, text);
 	} else {
 		(void)tool_result_success_json_text(out_content, mcp_strdup_result(arena, result));
 	}
@@ -698,7 +672,8 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 
 /* ----- MCP prompts/list ----- */
 
-static int mcp_prompt_arguments_schema(cJSON *arguments, char *destination, size_t capacity)
+static int mcp_prompt_arguments_schema(struct arena *arena, cJSON *arguments,
+	const char **destination)
 {
 	cJSON *schema = cJSON_CreateObject();
 	cJSON *properties;
@@ -743,11 +718,9 @@ static int mcp_prompt_arguments_schema(cJSON *arguments, char *destination, size
 	encoded = cJSON_PrintUnformatted(schema);
 	if (!encoded)
 		goto out_free_schema_oom;
-	if (strlen(encoded) >= capacity) {
-		MORPH_SET_ERR(rc, -E2BIG);
-	} else {
-		memcpy(destination, encoded, strlen(encoded) + 1);
-	}
+	*destination = arena_strdup(arena, encoded);
+	if (!*destination)
+		MORPH_SET_ERR(rc, -ENOMEM);
 	free(encoded);
 	cJSON_Delete(schema);
 	return rc;
@@ -758,84 +731,49 @@ out_free_schema_oom:
 }
 
 int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
-		     struct mcp_prompt_desc **out_prompts, int *out_count)
+	struct mcp_prompt_desc **out_prompts, int *out_count)
 {
-	if (!client || !out_prompts || !out_count || !arena)
-		return -EINVAL;
+	if (!client || !arena || !out_prompts || !out_count)
+		MORPH_RETURN(-EINVAL);
+	*out_prompts = NULL;
+	*out_count = 0;
+	cJSON *items = NULL;
+	int rc = mcp_list_all(client, "prompts/list", "prompts", &items);
 
-	char *result = NULL;
-	int req_id;
-	int rc;
+	if (rc != 0)
+		return rc;
+	int count = cJSON_GetArraySize(items);
+	struct mcp_prompt_desc *entries = NULL;
 
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "prompts/list", NULL, &result);
-	} else {
-		rc = mcp_http_request(client, "prompts/list", NULL, &result);
+	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-EOVERFLOW);
 	}
-
-	if (rc < 0 || !result) {
-		free(result);
-		return rc ? rc : MORPH_ERR_PROTOCOL;
+	if (count > 0)
+		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
+	if (count > 0 && !entries) {
+		cJSON_Delete(items);
+		MORPH_RETURN(-ENOMEM);
 	}
+	cJSON *item;
+	int i = 0;
 
-	cJSON *obj = cJSON_Parse(result);
-	if (!obj) {
-		log_err("mcp: prompts/list response parse error");
-		free(result);
-		MORPH_RETURN(MORPH_ERR_PARSE);
-	}
-
-	cJSON *prompts_arr = cJSON_GetObjectItem(obj, "prompts");
-	if (!prompts_arr || !cJSON_IsArray(prompts_arr)) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_prompts = NULL;
-		*out_count = 0;
-		return 0;
-	}
-
-	int count = cJSON_GetArraySize(prompts_arr);
-	if (count == 0) {
-		cJSON_Delete(obj);
-		free(result);
-		*out_prompts = NULL;
-		*out_count = 0;
-		return 0;
-	}
-	struct mcp_prompt_desc *prompts = arena_alloc(arena, (size_t)count * sizeof(*prompts));
-	if (!prompts) {
-		cJSON_Delete(obj);
-		free(result);
-		return -ENOMEM;
-	}
-
-	for (int i = 0; i < count; i++) {
-		cJSON *p = cJSON_GetArrayItem(prompts_arr, i);
-		cJSON *v;
-
-		v = cJSON_GetObjectItem(p, "name");
-		if (v && cJSON_IsString(v))
-			strncpy(prompts[i].name, v->valuestring, MCP_NAME_MAX - 1);
-
-		v = cJSON_GetObjectItem(p, "description");
-		if (v && cJSON_IsString(v))
-			strncpy(prompts[i].description, v->valuestring, MCP_DESC_MAX - 1);
-
-		v = cJSON_GetObjectItem(p, "arguments");
-		rc = mcp_prompt_arguments_schema(v, prompts[i].arguments_schema,
-			sizeof(prompts[i].arguments_schema));
-		if (rc != 0) {
-			cJSON_Delete(obj);
-			free(result);
-			return rc;
+	cJSON_ArrayForEach(item, items) {
+		entries[i].name = mcp_string(arena, item, "name");
+		entries[i].description = mcp_string(arena, item, "description");
+		rc = mcp_prompt_arguments_schema(arena,
+			cJSON_GetObjectItemCaseSensitive(item, "arguments"),
+			&entries[i].arguments_schema);
+		if (rc != 0 || !entries[i].name ||
+		    !entries[i].description ||
+		    !entries[i].arguments_schema) {
+			cJSON_Delete(items);
+			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
 		}
+		i++;
 	}
-
-	cJSON_Delete(obj);
-	free(result);
-
-	*out_prompts = prompts;
+	cJSON_Delete(items);
+	*out_prompts = entries;
 	*out_count = count;
 	return 0;
 }
@@ -848,25 +786,9 @@ int mcp_get_prompt(struct mcp_client *client, struct arena *arena, const char *n
 	if (!client || !name || !out_result)
 		return -EINVAL;
 
-	char params_buf[MCP_JSON_BUF_MAX];
-	if (args_json && args_json[0]) {
-		snprintf(params_buf, sizeof(params_buf),
-			 "{\"name\":\"%s\",\"arguments\":%s}", name, args_json);
-	} else {
-		snprintf(params_buf, sizeof(params_buf),
-			 "{\"name\":\"%s\",\"arguments\":{}}", name);
-	}
-
 	char *result = NULL;
-	int req_id;
-	int rc;
-
-	if (client->config.transport == MCP_TRANSPORT_STDIO) {
-		req_id = mcp_next_request_id(client);
-		rc = mcp_stdio_request(client, req_id, "prompts/get", params_buf, &result);
-	} else {
-		rc = mcp_http_request(client, "prompts/get", params_buf, &result);
-	}
+	int rc = mcp_named_request(client, "prompts/get", "name", name,
+		args_json && args_json[0] ? args_json : "{}", &result);
 
 	if (rc < 0 || !result) {
 		free(result);
@@ -890,7 +812,7 @@ static void sanitize_tool_name(char *name)
 
 struct mcp_tool_binding {
 	struct mcp_client *client;
-	char mcp_tool_name[MCP_NAME_MAX];
+	char mcp_tool_name[];
 };
 
 static int mcp_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -939,18 +861,26 @@ int mcp_register_server_tools(struct mcp_client *client,
 	int registered = 0;
 	int first_error = 0;
 	for (int i = 0; i < count; i++) {
-		struct mcp_tool_binding *binding = calloc(1, sizeof(*binding));
+		struct mcp_tool_binding *binding = calloc(1,
+			sizeof(*binding) + strlen(tools[i].name) + 1);
 		if (!binding) {
 			log_err("mcp: failed to allocate tool binding");
 			first_error = -ENOMEM;
 			break;
 		}
 		binding->client = client;
-		strncpy(binding->mcp_tool_name, tools[i].name, MCP_NAME_MAX - 1);
+		memcpy(binding->mcp_tool_name, tools[i].name, strlen(tools[i].name) + 1);
 
 		char tool_name[TOOL_NAME_MAX];
-		snprintf(tool_name, sizeof(tool_name), "mcp_%s__%s",
+		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_%s__%s",
 			 client->config.name, tools[i].name);
+		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
+			log_warn("mcp: capability name exceeds registry name limit: %s", tools[i].name);
+			free(binding);
+			if (first_error == 0)
+				first_error = -ENAMETOOLONG;
+			continue;
+		}
 
 		sanitize_tool_name(tool_name);
 
@@ -983,7 +913,8 @@ int mcp_register_server_tools(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register tool '%s' (rc=%d)", tool_name, rc);
+			log_warn("mcp: failed to register tool '%s': %s",
+				 tool_name, morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
@@ -999,7 +930,7 @@ int mcp_register_server_tools(struct mcp_client *client,
 
 struct mcp_resource_binding {
 	struct mcp_client *client;
-	char uri[MCP_URI_MAX];
+	char uri[];
 };
 
 static int mcp_resource_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -1048,29 +979,44 @@ int mcp_register_server_resources(struct mcp_client *client,
 	int registered = 0;
 	int first_error = 0;
 	for (int i = 0; i < count; i++) {
-		struct mcp_resource_binding *binding = calloc(1, sizeof(*binding));
+		struct mcp_resource_binding *binding = calloc(1,
+			sizeof(*binding) + strlen(res[i].uri) + 1);
 		if (!binding) {
 			log_err("mcp: failed to allocate resource binding");
 			first_error = -ENOMEM;
 			break;
 		}
 		binding->client = client;
-		strncpy(binding->uri, res[i].uri, MCP_URI_MAX - 1);
+		memcpy(binding->uri, res[i].uri, strlen(res[i].uri) + 1);
 
 		char tool_name[TOOL_NAME_MAX];
-		snprintf(tool_name, sizeof(tool_name), "mcp_res_%s__%s",
+		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_res_%s__%s",
 			 client->config.name, res[i].name);
+		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
+			log_warn("mcp: capability name exceeds registry name limit: %s", res[i].name);
+			free(binding);
+			if (first_error == 0)
+				first_error = -ENAMETOOLONG;
+			continue;
+		}
 
 		sanitize_tool_name(tool_name);
 
-		char desc_buf[TOOL_DESC_MAX];
-		snprintf(desc_buf, sizeof(desc_buf), "Read MCP resource: %s (%s)",
-			 res[i].name, res[i].uri);
+		morph_buf_t description;
+		rc = morph_buf_init_arena(&description, arena, 128);
+		if (rc == 0)
+			rc = morph_buf_printf(&description, "Read MCP resource: %s (%s)",
+				res[i].name, res[i].uri);
+		if (rc != 0) {
+			free(binding);
+			first_error = rc;
+			break;
+		}
 
 		struct tool_spec spec = {
 			.origin = TOOL_ORIGIN_MCP,
 			.name = tool_name,
-			.description = desc_buf,
+			.description = morph_buf_cstr(&description),
 			.input_schema = TOOL_EMPTY_INPUT_SCHEMA,
 			.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 			.exec = mcp_resource_exec,
@@ -1092,7 +1038,8 @@ int mcp_register_server_resources(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register resource '%s' (rc=%d)", tool_name, rc);
+			log_warn("mcp: failed to register resource '%s': %s",
+				 tool_name, morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
@@ -1111,7 +1058,7 @@ int mcp_register_server_resources(struct mcp_client *client,
 
 struct mcp_prompt_binding {
 	struct mcp_client *client;
-	char mcp_prompt_name[MCP_NAME_MAX];
+	char mcp_prompt_name[];
 };
 
 static int mcp_prompt_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -1160,18 +1107,26 @@ int mcp_register_server_prompts(struct mcp_client *client,
 	int registered = 0;
 	int first_error = 0;
 	for (int i = 0; i < count; i++) {
-		struct mcp_prompt_binding *binding = calloc(1, sizeof(*binding));
+		struct mcp_prompt_binding *binding = calloc(1,
+			sizeof(*binding) + strlen(prompts[i].name) + 1);
 		if (!binding) {
 			log_err("mcp: failed to allocate prompt binding");
 			first_error = -ENOMEM;
 			break;
 		}
 		binding->client = client;
-		strncpy(binding->mcp_prompt_name, prompts[i].name, MCP_NAME_MAX - 1);
+		memcpy(binding->mcp_prompt_name, prompts[i].name, strlen(prompts[i].name) + 1);
 
 		char tool_name[TOOL_NAME_MAX];
-		snprintf(tool_name, sizeof(tool_name), "mcp_prompt_%s__%s",
+		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_prompt_%s__%s",
 			 client->config.name, prompts[i].name);
+		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
+			log_warn("mcp: capability name exceeds registry name limit: %s", prompts[i].name);
+			free(binding);
+			if (first_error == 0)
+				first_error = -ENAMETOOLONG;
+			continue;
+		}
 
 		sanitize_tool_name(tool_name);
 
@@ -1203,7 +1158,8 @@ int mcp_register_server_prompts(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register prompt '%s' (rc=%d)", tool_name, rc);
+			log_warn("mcp: failed to register prompt '%s': %s",
+				 tool_name, morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
