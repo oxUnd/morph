@@ -895,7 +895,7 @@ static int history_preserved_contains(const morph_array_t *preserved, int64_t id
 }
 
 static int history_preserve_user_pairs(struct db *db, int64_t session_id,
-	morph_array_t *preserved, int budget)
+	morph_array_t *preserved, int *budget)
 {
 	const char *sql =
 		"SELECT u.id,MAX(u.token_count,0),a.id,MAX(a.token_count,0) "
@@ -924,14 +924,14 @@ static int history_preserve_user_pairs(struct db *db, int64_t session_id,
 			cost += sqlite3_column_int(stmt, 3);
 		if (cost < 0)
 			cost = 0;
-		if (cost > budget)
+		if (cost > *budget)
 			continue;
 		if (!history_preserved_add(preserved, user_id) ||
 		    (answer_id && !history_preserved_add(preserved, answer_id))) {
 			MORPH_SET_ERR(error, -ENOMEM);
 			break;
 		}
-		budget -= (int)cost;
+		*budget -= (int)cost;
 	}
 	sqlite3_finalize(stmt);
 	if (error)
@@ -1054,11 +1054,16 @@ int model_history_compact(struct db *db, int64_t session_id,
 		morph_array_cleanup(&preserved);
 		return rc;
 	}
-	rc = history_preserve_rounds(db, session_id, &preserved,
-		keep_recent_rounds, &recent_history_tokens);
-	if (rc == 0)
-		rc = history_preserve_user_pairs(db, session_id, &preserved,
-			user_message_tokens);
+	/* User retention is a cap, not a reservation that wastes unused capacity.
+	 * Select pairs first, then spend the remaining combined budget once. */
+	rc = history_preserve_user_pairs(db, session_id, &preserved,
+		&user_message_tokens);
+	if (rc == 0) {
+		recent_history_tokens = user_message_tokens > INT_MAX - recent_history_tokens ?
+			INT_MAX : recent_history_tokens + user_message_tokens;
+		rc = history_preserve_rounds(db, session_id, &preserved,
+			keep_recent_rounds, &recent_history_tokens);
+	}
 	if (rc != 0) {
 		MORPH_SET_ERR(failure, rc);
 		goto out_rollback;

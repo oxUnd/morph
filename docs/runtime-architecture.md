@@ -102,6 +102,29 @@ manifests so splitting a core implementation into new files does not leave
 mobile builds behind. Keep each manifest to one relative source path per line.
 Platform adapters and optional tools remain selected by each frontend.
 
+## Context budgets
+
+The agent supplies its tokenizer to `model_estimate_input_tokens()` through a
+counter callback. The model layer reuses the selected adapter's message and tool
+serializers, so budgeting follows Chat Completions or Responses input without a
+dependency from models back to agent tokenization. Runtime/project prefixes use
+the same preparation helper for estimates and actual requests. Fields absent
+from the wire, including tool titles and output schemas, consume no budget.
+
+These counts remain local estimates, not provider-reported usage. The trigger is
+the smaller of the configured threshold and context capacity minus output and
+protocol reserves. Tokenizer differences and provider framing still require that
+protocol margin. Compaction logs fixed input overhead and the resulting history
+budget. BPE splitting processes complete text in bounded batches; the batch size
+does not cap the text counted.
+
+Tool results are UTF-8 repaired and redacted before their complete stored text,
+including any omission marker, is checked against the tokenizer limit. Retention
+refreshes cached counts before selecting history, keeps request/answer pairs and
+complete tool exchanges, and shares unused user retention capacity with recent
+history. These rules apply to active in-turn compaction as well as persisted
+history; original transcript storage remains separate.
+
 ## Startup diagnostics
 
 Hosts may provide caller-owned `runtime_options.startup_error` storage. On a

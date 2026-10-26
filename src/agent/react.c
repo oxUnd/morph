@@ -2173,60 +2173,76 @@ static int react_prepare_active_tools(struct react_context *ctx,
 		*active_tools, *active_tool_count);
 }
 
-static int react_count_text_tokens(struct react_context *ctx,
-				   const char *text)
+static int react_prepare_request_messages(struct react_context *ctx,
+	const struct model *llm, struct arena *arena, const char **system_prompt,
+	struct chat_message **messages, int *msg_count)
 {
-	if (!text || !text[0])
-		return 0;
-	return tokenizer_count(ctx->tokenizer, text);
+	/* Request-only prefix survives active-history rebuilds without duplication. */
+	if (ctx->runtime_context &&
+	    (llm->chat_with_tools_stream || llm->chat_with_tools)) {
+		struct chat_message *request;
+
+		int prefix_count = ctx->project_context ? 2 : 1;
+
+		if (*msg_count < 0 || *msg_count > INT_MAX - prefix_count ||
+		    (size_t)*msg_count + (size_t)prefix_count > SIZE_MAX / sizeof(*request))
+			MORPH_RETURN(-EOVERFLOW);
+		request = arena_alloc(arena,
+			((size_t)*msg_count + (size_t)prefix_count) * sizeof(*request));
+		if (!request)
+			MORPH_RETURN(-ENOMEM);
+		request[0].role = "system";
+		request[0].content = (char *)ctx->runtime_context;
+		if (ctx->project_context) {
+			request[1].role = "user";
+			request[1].content = (char *)ctx->project_context;
+		}
+		if (*msg_count)
+			memcpy(request + prefix_count, *messages,
+				(size_t)*msg_count * sizeof(*request));
+		*messages = request;
+		*msg_count += prefix_count;
+	} else if (ctx->runtime_context) {
+		/* Legacy text-only backends have no role-aware message API. */
+		morph_buf_t combined;
+		int rc = morph_buf_init_arena(&combined, arena, 1024);
+
+		if (rc == 0)
+			rc = morph_buf_printf(&combined, "%s\n%s", *system_prompt,
+				ctx->runtime_context);
+		if (rc == 0 && ctx->project_context)
+			rc = morph_buf_printf(&combined, "\n%s", ctx->project_context);
+		if (rc != 0)
+			return rc;
+		*system_prompt = morph_buf_cstr(&combined);
+	}
+
+	return 0;
+}
+
+static int react_count_input_text(const char *text, void *user_data)
+{
+	return tokenizer_count(user_data, text);
 }
 
 static int react_estimate_active_tokens(struct react_context *ctx,
-	const char *system_prompt, const morph_array_t *messages,
+	const struct model *llm, const char *system_prompt, const morph_array_t *messages,
 	const struct tool_desc *tools, int tool_count)
 {
-	int64_t total = react_count_text_tokens(ctx, system_prompt) + 16;
+	struct chat_message *request = messages ? messages->elts : NULL;
+	int count;
+	int tokens;
+	int rc;
 
-	total += react_count_text_tokens(ctx, ctx->runtime_context) + 12;
-	total += react_count_text_tokens(ctx, ctx->project_context) + 12;
-
-	if (messages) {
-		for (size_t i = 0; i < messages->nelts; i++) {
-			const struct chat_message *message =
-				morph_array_get(messages, i);
-
-			if (!message)
-				continue;
-			total += 12;
-			total += react_count_text_tokens(ctx, message->role);
-			total += react_count_text_tokens(ctx, message->content);
-			total += react_count_text_tokens(ctx,
-				message->reasoning_content);
-			total += react_count_text_tokens(ctx,
-				message->tool_call_id);
-			for (int j = 0; j < message->tool_call_count; j++) {
-				const struct tool_call *call = &message->tool_calls[j];
-
-				total += 16;
-				total += react_count_text_tokens(ctx, call->id);
-				total += react_count_text_tokens(ctx, call->name);
-				total += react_count_text_tokens(ctx,
-					call->arguments);
-			}
-		}
-	}
-	for (int i = 0; tools && i < tool_count; i++) {
-		total += 24;
-		total += react_count_text_tokens(ctx, tools[i].name);
-		total += react_count_text_tokens(ctx, tools[i].title);
-		total += react_count_text_tokens(ctx, tools[i].description);
-		total += react_count_text_tokens(ctx, tools[i].input_schema);
-		total += react_count_text_tokens(ctx, tools[i].output_schema);
-		total += react_count_text_tokens(ctx, tools[i].input_format);
-	}
-	if (total > INT_MAX)
-		return INT_MAX;
-	return (int)total;
+	if (messages && messages->nelts > INT_MAX)
+		MORPH_RETURN(-EOVERFLOW);
+	count = messages ? (int)messages->nelts : 0;
+	rc = react_prepare_request_messages(ctx, llm, ctx->iteration_arena,
+		&system_prompt, &request, &count);
+	if (rc == 0)
+		rc = model_estimate_input_tokens(llm, system_prompt, request, count,
+			tools, tool_count, react_count_input_text, ctx->tokenizer, &tokens);
+	return rc != 0 ? rc : tokens;
 }
 
 static int react_compaction_trigger_tokens(struct react_context *ctx,
@@ -2319,8 +2335,10 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	if (!ctx->compress.in_turn_compaction || !ctx->history_enabled ||
 	    !ctx->history_db)
 		return 0;
-	before_tokens = react_estimate_active_tokens(ctx, system_prompt,
+	before_tokens = react_estimate_active_tokens(ctx, llm, system_prompt,
 		messages, tools, tool_count);
+	if (before_tokens < 0)
+		return before_tokens;
 	trigger_tokens = react_compaction_trigger_tokens(ctx, llm);
 	if (before_tokens < trigger_tokens)
 		return 0;
@@ -2344,17 +2362,23 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		transaction_open = rc == 0;
 	}
 	if (rc == 0) {
-		int overhead = react_estimate_active_tokens(ctx, system_prompt,
+		int overhead = react_estimate_active_tokens(ctx, llm, system_prompt,
 			NULL, tools, tool_count);
 		int target = (int)((double)ctx->compress.max_context_tokens *
 			ctx->compress.compress_target_ratio);
 
-		previous_target_ratio = ctx->compress.compress_target_ratio;
-		target = target > overhead ? target - overhead : 0;
-		ctx->compress.compress_target_ratio = (double)target /
-			(double)ctx->compress.max_context_tokens;
-		rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
-		ctx->compress.compress_target_ratio = previous_target_ratio;
+		if (overhead < 0) {
+			MORPH_SET_ERR(rc, overhead);
+		} else {
+			previous_target_ratio = ctx->compress.compress_target_ratio;
+			target = target > overhead ? target - overhead : 0;
+			log_info("react: compaction budget: fixed=%d, history_target=%d, "
+				 "trigger=%d tokens", overhead, target, trigger_tokens);
+			ctx->compress.compress_target_ratio = (double)target /
+				(double)ctx->compress.max_context_tokens;
+			rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
+			ctx->compress.compress_target_ratio = previous_target_ratio;
+		}
 	}
 	if (rc > 0) {
 		compacted = 1;
@@ -2362,9 +2386,11 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 			&replacement_arena);
 	}
 	if (rc == 0 && compacted) {
-		after_tokens = react_estimate_active_tokens(ctx, system_prompt,
+		after_tokens = react_estimate_active_tokens(ctx, llm, system_prompt,
 			&replacement, tools, tool_count);
-		if (after_tokens >= trigger_tokens) {
+		if (after_tokens < 0)
+			MORPH_SET_ERR(rc, after_tokens);
+		else if (after_tokens >= trigger_tokens) {
 			rc = MORPH_ERR_LLM;
 			log_err("react: active context remains over budget after "
 				"compaction (%d >= %d tokens)", after_tokens,
@@ -2516,45 +2542,10 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	struct arena *arena = ctx->iteration_arena;
 	int status;
 
-	/* Request-only prefix survives active-history rebuilds without duplication. */
-	if (ctx->runtime_context &&
-	    (llm->chat_with_tools_stream || llm->chat_with_tools)) {
-		struct chat_message *request;
-
-		int prefix_count = ctx->project_context ? 2 : 1;
-
-		if (msg_count < 0 || msg_count > INT_MAX - prefix_count ||
-		    (size_t)msg_count + (size_t)prefix_count > SIZE_MAX / sizeof(*request))
-			MORPH_RETURN(-EOVERFLOW);
-		request = arena_alloc(arena,
-			((size_t)msg_count + (size_t)prefix_count) * sizeof(*request));
-		if (!request)
-			MORPH_RETURN(-ENOMEM);
-		request[0].role = "system";
-		request[0].content = (char *)ctx->runtime_context;
-		if (ctx->project_context) {
-			request[1].role = "user";
-			request[1].content = (char *)ctx->project_context;
-		}
-		if (msg_count)
-			memcpy(request + prefix_count, messages,
-				(size_t)msg_count * sizeof(*request));
-		messages = request;
-		msg_count += prefix_count;
-	} else if (ctx->runtime_context) {
-		/* Legacy text-only backends have no role-aware message API. */
-		morph_buf_t combined;
-		int rc = morph_buf_init_arena(&combined, arena, 1024);
-
-		if (rc == 0)
-			rc = morph_buf_printf(&combined, "%s\n%s", system_prompt,
-				ctx->runtime_context);
-		if (rc == 0 && ctx->project_context)
-			rc = morph_buf_printf(&combined, "\n%s", ctx->project_context);
-		if (rc != 0)
-			return rc;
-		system_prompt = morph_buf_cstr(&combined);
-	}
+	status = react_prepare_request_messages(ctx, llm, arena, &system_prompt,
+		&messages, &msg_count);
+	if (status != 0)
+		return status;
 
 	memset(&sd, 0, sizeof(sd));
 	sd.ctx = ctx;

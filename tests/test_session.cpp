@@ -6,6 +6,7 @@
 #include "session.h"
 #include "util/arena.h"
 #include "util/array.h"
+#include "util/utf8.h"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -735,7 +736,7 @@ TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
 	react.history_db = &db;
 	react.history_session_id = s.id;
 	react.history_enabled = 1;
-	react.history_tool_result_tokens = 20;
+	react.history_tool_result_tokens = 64;
 	ASSERT_EQ(agent_history_record_tool_result(&react, "tool_1", "call_1",
 		"exec", output.c_str(), 0), 0);
 	struct model_history_item *items =
@@ -748,6 +749,65 @@ TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
 	EXPECT_EQ(std::strstr(items->content, "another-secret"), nullptr);
 	EXPECT_NE(std::strstr(items->content, "Bearer [REDACTED]"), nullptr);
 	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
+{
+	auto *tokenizer = tokenizer_create("deepseek-flash", 128000);
+	ASSERT_NE(tokenizer, nullptr);
+	std::string text = "HEAD ";
+	for (int i = 0; i < 3000; i++)
+		text += "测试🙂!@#$%^&*() short-secret ";
+	text += " TAIL";
+	for (auto *counter : {tokenizer, static_cast<struct tokenizer *>(nullptr)}) {
+		for (int limit : {1, 2, 8, 64, 257, 4000}) {
+			struct react_context ctx = {};
+			char *prepared = nullptr;
+			int truncated = 0;
+			ctx.tokenizer = counter;
+			ctx.history_tool_result_tokens = limit;
+			ctx.history_secrets[0] = strdup("short-secret");
+			ctx.history_secret_count = 1;
+			ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
+				&prepared, &truncated), 0);
+			ASSERT_NE(prepared, nullptr);
+			EXPECT_EQ(truncated, 1);
+			EXPECT_LE(tokenizer_count(counter, prepared), limit);
+			EXPECT_EQ(strstr(prepared, "short-secret"), nullptr);
+			EXPECT_EQ(utf8valid(prepared), nullptr);
+			if (limit >= 64) {
+				EXPECT_NE(strstr(prepared, "HEAD"), nullptr);
+				EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
+				EXPECT_NE(strstr(prepared, "tool output truncated"), nullptr);
+			}
+			free(prepared);
+			free(ctx.history_secrets[0]);
+		}
+	}
+	tokenizer_destroy(tokenizer);
+}
+
+TEST_F(SessionTest, ToolResultLimitPreservesLargeButLowTokenOutput)
+{
+	auto *tokenizer = tokenizer_create("deepseek-flash", 128000);
+	ASSERT_NE(tokenizer, nullptr);
+	if (!tokenizer->encoder) {
+		tokenizer_destroy(tokenizer);
+		GTEST_SKIP() << "BPE vocabulary unavailable";
+	}
+	struct react_context ctx = {};
+	std::string text(12000, ' ');
+	char *prepared = nullptr;
+	int truncated = 1;
+	ctx.tokenizer = tokenizer;
+	ctx.history_tool_result_tokens = 256;
+	ASSERT_LE(tokenizer_count(tokenizer, text.c_str()), 256);
+	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
+		&prepared, &truncated), 0);
+	EXPECT_EQ(truncated, 0);
+	EXPECT_STREQ(prepared, text.c_str());
+	free(prepared);
+	tokenizer_destroy(tokenizer);
 }
 
 TEST_F(SessionTest, TranscriptAndModelHistoryWritesAreIdempotent) {
@@ -1276,4 +1336,89 @@ TEST_F(SessionTest, CompactionCommitFailureClosesTransactionAndRestoresHistory) 
 	EXPECT_EQ(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, session.id), 0);
+}
+
+TEST_F(SessionTest, UnusedUserRetentionBudgetKeepsRecentToolExchange)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "shared_compaction_budget", "test", &session), 0);
+	struct model_history_insert item = {};
+	item.session_id = session.id;
+	item.turn_id = "turn_active";
+	item.active = 1;
+	item.kind = "user_message";
+	item.role = "user";
+	item.content = "request";
+	item.token_count = 2;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "assistant_tool_calls";
+	item.role = "assistant";
+	item.content = "call";
+	item.token_count = 8;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	item.kind = "tool_result";
+	item.role = "tool";
+	item.content = "result";
+	item.tool_call_id = "call_1";
+	item.token_count = 8;
+	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
+	ASSERT_EQ(model_history_compact(&db, session.id, "turn_active", "summary", 2,
+		20, 0, 18, 0, "test", nullptr), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	EXPECT_EQ(count, 4);
+	int total = 0;
+	for (auto *p = items; p; p = p->next)
+		total += p->token_count;
+	EXPECT_LE(total, 22);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ToolCallHistoryCountsAssistantTextAsWellAsArguments)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "tool_preamble_tokens", "test", &session), 0);
+	struct react_context ctx = {};
+	ctx.history_enabled = 1;
+	ctx.history_db = &db;
+	ctx.history_session_id = session.id;
+	std::string text(4000, '!');
+	struct tool_call call = {};
+	std::strcpy(call.id, "provider_1");
+	std::strcpy(call.tool_call_id, "local_1");
+	std::strcpy(call.name, "exec");
+	call.arguments = const_cast<char *>("{}");
+	ASSERT_EQ(agent_history_record_tool_calls(&ctx, text.c_str(), nullptr,
+		&call, 1), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, session.id, 1, &count);
+	ASSERT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_GE(items->token_count, tokenizer_count(nullptr, text.c_str()));
+	struct agent_history_diagnostic diagnostic = {};
+	EXPECT_EQ(agent_history_diagnose(items, nullptr, &diagnostic), 0);
+	EXPECT_EQ(diagnostic.token_mismatches, 0);
+	model_history_free_list(items);
+}
+
+TEST_F(SessionTest, ToolResultRepairsInvalidUtf8AndPreservesUsefulEnds)
+{
+	struct react_context ctx = {};
+	ctx.history_tool_result_tokens = 128;
+	std::string text = "HEAD ";
+	for (int i = 0; i < 1500; i++)
+		text += "测试🙂 data ";
+	text += "\xe4\xb8oops";
+	for (int i = 0; i < 1500; i++)
+		text += "数据🙂 tail ";
+	text += " TAIL";
+	char *prepared = nullptr;
+	ASSERT_EQ(agent_history_prepare_tool_content(&ctx, text.c_str(),
+		&prepared, nullptr), 0);
+	ASSERT_NE(prepared, nullptr);
+	EXPECT_EQ(utf8valid(prepared), nullptr);
+	EXPECT_LE(tokenizer_count(nullptr, prepared), 128);
+	EXPECT_NE(strstr(prepared, "HEAD"), nullptr);
+	EXPECT_NE(strstr(prepared, "TAIL"), nullptr);
+	free(prepared);
 }

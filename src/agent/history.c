@@ -8,13 +8,13 @@
 #include "util/log.h"
 #include "util/utf8.h"
 #include <errno.h>
+#include <limits.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS 8000
-#define HISTORY_BYTES_PER_TOKEN 4
 
 static struct chat_message *history_push_message(morph_array_t *messages)
 {
@@ -491,11 +491,13 @@ static int history_item_tokens(const struct model_history_item *item,
 		free(rendered);
 		return tokens;
 	}
-	int tokens = tokenizer_count(tokenizer, text ? text : "");
+	int64_t tokens = tokenizer_count(tokenizer, text ? text : "");
 
+	if (strcmp(item->kind, "assistant_tool_calls") == 0)
+		tokens += tokenizer_count(tokenizer, item->content);
 	if (strcmp(item->kind, "assistant_message") == 0 && item->payload_json)
 		tokens += tokenizer_count(tokenizer, item->payload_json);
-	return tokens;
+	return tokens > INT_MAX ? INT_MAX : (int)tokens;
 }
 
 int agent_history_build_chat_messages(const struct model_history_item *items,
@@ -579,7 +581,11 @@ static int history_store(struct react_context *ctx,
 	if (!ctx || !ctx->history_db || ctx->history_session_id <= 0 ||
 	    !ctx->history_enabled)
 		return 0;
-	content = history_redact_all(ctx, insert->content);
+	/* Tool contents are already redacted and token-bounded by prepare_tool_content.
+	 * Replacing secrets again here could expand them beyond that budget. */
+	content = strcmp(insert->kind, "tool_result") == 0 ?
+		(insert->content ? strdup(insert->content) : NULL) :
+		history_redact_all(ctx, insert->content);
 	payload = history_redact_json(ctx, insert->payload_json);
 	if ((insert->content && !content) || (insert->payload_json && !payload)) {
 		free(content);
@@ -589,10 +595,12 @@ static int history_store(struct react_context *ctx,
 	safe = *insert;
 	safe.content = content;
 	safe.payload_json = payload;
-	safe.token_count = tokenizer_count(ctx->tokenizer,
-		strcmp(insert->kind, "assistant_tool_calls") == 0 ? payload : content);
-	if (strcmp(insert->kind, "assistant_message") == 0 && payload)
-		safe.token_count += tokenizer_count(ctx->tokenizer, payload);
+	int64_t tokens = tokenizer_count(ctx->tokenizer, content);
+
+	if (strcmp(insert->kind, "assistant_message") == 0 ||
+	    strcmp(insert->kind, "assistant_tool_calls") == 0)
+		tokens += tokenizer_count(ctx->tokenizer, payload);
+	safe.token_count = tokens > INT_MAX ? INT_MAX : (int)tokens;
 	rc = model_history_add(ctx->history_db, &safe, NULL);
 	free(content);
 	free(payload);
@@ -881,55 +889,58 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 	return rc;
 }
 
-static char *history_truncate_result(const char *content, int max_tokens,
-				    int *truncated)
+/* Keep useful head/tail context, then verify the whole stored string, including
+ * its marker, with the same tokenizer used for the active request. */
+static char *history_truncate_result(struct tokenizer *tokenizer,
+	const char *content, int max_tokens, int *truncated)
 {
+	const char *marker = "\n…(tool output truncated)…\n";
 	morph_buf_t buf;
-	size_t head_bytes;
-	size_t max_bytes;
-	size_t prefix_len;
-	size_t tail_bytes;
-	size_t len;
-	size_t stored_bytes;
-	char marker[160];
+	size_t len = strlen(content);
+	size_t budget;
+	int tokens;
 	int rc;
 
-	if (!content)
-		content = "";
 	if (max_tokens <= 0)
 		max_tokens = HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS;
-	max_bytes = (size_t)max_tokens * HISTORY_BYTES_PER_TOKEN;
-	len = strlen(content);
-	if (len <= max_bytes) {
+	tokens = tokenizer_count(tokenizer, content);
+	if (tokens <= max_tokens) {
 		*truncated = 0;
 		return strdup(content);
 	}
-	head_bytes = max_bytes * 3 / 5;
-	tail_bytes = max_bytes - head_bytes;
-	head_bytes = utf8_clamp_bytes(content, head_bytes);
-	prefix_len = utf8_clamp_bytes(content, len - tail_bytes);
-	stored_bytes = head_bytes + (len - prefix_len);
-	for (int i = 0; i < 3; i++) {
-		int marker_len = snprintf(marker, sizeof(marker),
-			"\n…(tool output truncated: original_bytes=%zu, "
-			"stored_bytes=%zu)…\n", len, stored_bytes);
-
-		if (marker_len < 0 || (size_t)marker_len >= sizeof(marker))
-			return NULL;
-		stored_bytes = head_bytes + (len - prefix_len) +
-			(size_t)marker_len;
-	}
-	rc = morph_buf_init(&buf, max_bytes + 128);
+	/* Very small budgets still have a bounded, recognizable omission marker. */
+	if (tokenizer_count(tokenizer, marker) > max_tokens)
+		marker = "...";
+	if (tokenizer_count(tokenizer, marker) > max_tokens)
+		marker = ".";
+	if (tokenizer_count(tokenizer, marker) > max_tokens)
+		marker = "";
+	budget = (size_t)((double)len * (double)max_tokens / (double)tokens);
+	if (budget >= len)
+		budget = len - 1;
+	rc = morph_buf_init(&buf, 128);
 	if (rc != 0)
 		return NULL;
-	rc = morph_buf_append(&buf, content, head_bytes);
-	if (rc == 0)
-		rc = morph_buf_puts(&buf, marker);
-	if (rc == 0)
-		rc = morph_buf_puts(&buf, content + prefix_len);
-	if (rc != 0) {
-		morph_buf_cleanup(&buf);
-		return NULL;
+	for (;;) {
+		size_t head = utf8_clamp_bytes(content, budget * 3 / 5);
+		size_t tail = utf8_clamp_bytes(content, len - (budget - budget * 3 / 5));
+		size_t next;
+
+		morph_buf_reset(&buf);
+		rc = morph_buf_append(&buf, content, head);
+		if (rc == 0)
+			rc = morph_buf_puts(&buf, marker);
+		if (rc == 0)
+			rc = morph_buf_puts(&buf, content + tail);
+		if (rc != 0) {
+			morph_buf_cleanup(&buf);
+			return NULL;
+		}
+		tokens = tokenizer_count(tokenizer, morph_buf_cstr(&buf));
+		if (tokens <= max_tokens)
+			break;
+		next = (size_t)((double)budget * (double)max_tokens / (double)tokens);
+		budget = next < budget ? next : budget - 1;
 	}
 	*truncated = 1;
 	return morph_buf_detach(&buf);
@@ -944,15 +955,22 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 
 	if (!ctx || !prepared)
 		MORPH_RETURN(-EINVAL);
-	limited = history_truncate_result(content,
-		ctx->history_tool_result_tokens, &was_truncated);
+	/* Repair malformed tool bytes before redaction or UTF-8 boundary selection. */
+	limited = strdup(content ? content : "");
 	if (!limited)
 		MORPH_RETURN(-ENOMEM);
+	utf8_sanitize_inplace(limited);
+	/* Redaction may expand short secrets into longer replacement strings. */
 	safe = history_redact_all(ctx, limited);
 	free(limited);
 	if (!safe)
 		MORPH_RETURN(-ENOMEM);
-	*prepared = safe;
+	limited = history_truncate_result(ctx->tokenizer, safe,
+		ctx->history_tool_result_tokens, &was_truncated);
+	free(safe);
+	if (!limited)
+		MORPH_RETURN(-ENOMEM);
+	*prepared = limited;
 	if (truncated)
 		*truncated = was_truncated;
 	return 0;
@@ -1184,14 +1202,14 @@ static int history_validate_replay(const struct model_history_item *items)
 	return rc;
 }
 
-/* Archived answers may have been counted by an older tokenizer. */
-static int history_refresh_answer_tokens(struct react_context *ctx)
+/* Retained rows may have been counted by an older tokenizer or budget policy. */
+static int history_refresh_retention_tokens(struct react_context *ctx)
 {
-	const char *sql = "SELECT a.id,a.content,a.payload_json "
-		"FROM model_history_items a WHERE a.session_id=? AND a.active=0 "
-		"AND a.kind='assistant_message' AND EXISTS (SELECT 1 "
+	const char *sql = "SELECT a.id,a.kind,a.content,a.payload_json "
+		"FROM model_history_items a WHERE a.session_id=? AND (a.active=1 OR "
+		"(a.kind='assistant_message' AND EXISTS (SELECT 1 "
 		"FROM model_history_items u WHERE u.session_id=a.session_id "
-		"AND u.turn_id=a.turn_id AND u.active=1 AND u.kind='user_message')";
+		"AND u.turn_id=a.turn_id AND u.active=1 AND u.kind='user_message')))";
 	const char *update_sql = "UPDATE model_history_items SET token_count=? WHERE id=?";
 	sqlite3_stmt *select = NULL;
 	sqlite3_stmt *update = NULL;
@@ -1210,10 +1228,18 @@ static int history_refresh_answer_tokens(struct react_context *ctx)
 	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
 		struct model_history_item item = {0};
 
-		strcpy(item.kind, "assistant_message");
-		item.content = (char *)sqlite3_column_text(select, 1);
-		item.payload_json = (char *)sqlite3_column_text(select, 2);
-		int tokens = history_item_tokens(&item, ctx->tokenizer, item.content);
+		strncpy(item.kind, (const char *)sqlite3_column_text(select, 1),
+			sizeof(item.kind) - 1);
+		item.content = (char *)sqlite3_column_text(select, 2);
+		item.payload_json = (char *)sqlite3_column_text(select, 3);
+		const char *text = strcmp(item.kind, "assistant_tool_calls") == 0 ?
+			item.payload_json : item.content;
+		int tokens = history_item_tokens(&item, ctx->tokenizer, text);
+
+		if (tokens < 0) {
+			MORPH_SET_ERR(error, tokens);
+			break;
+		}
 
 		sqlite3_bind_int(update, 1, tokens);
 		sqlite3_bind_int64(update, 2, sqlite3_column_int64(select, 0));
@@ -1245,7 +1271,7 @@ static int history_compact_checked(struct react_context *ctx,
 
 	if (rc != 0)
 		return rc;
-	rc = history_refresh_answer_tokens(ctx);
+	rc = history_refresh_retention_tokens(ctx);
 	if (rc == 0)
 		rc = model_history_compact(ctx->history_db, ctx->history_session_id,
 			ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
@@ -1309,8 +1335,11 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	if (!ctx || !ctx->history_enabled || !ctx->history_db ||
 	    !ctx->compress.summarize || ctx->compress.max_context_tokens <= 0)
 		return 0;
-	for (item = ctx->history_items; item; item = item->next)
-		input_tokens += item->token_count;
+	for (item = ctx->history_items; item; item = item->next) {
+		if (item->token_count > 0)
+			input_tokens = item->token_count > INT_MAX - input_tokens ?
+				INT_MAX : input_tokens + item->token_count;
+	}
 	threshold = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.summarize_threshold_ratio);
 	if (!force && input_tokens < threshold)
@@ -1368,8 +1397,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		user_budget = ctx->compress.compaction_user_message_tokens;
 	target_budget = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.compress_target_ratio);
-	recent_budget = target_budget - max_summary_tokens -
-		ctx->compress.compaction_user_message_tokens;
+	recent_budget = target_budget - max_summary_tokens - user_budget;
 	if (recent_budget < 0)
 		recent_budget = 0;
 	rc = history_compact_checked(ctx, summary, max_summary_tokens,

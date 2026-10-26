@@ -125,6 +125,7 @@ int model_history_compaction_attempt_add(struct db *db, int64_t session_id,
 	const char *error_text);
 int model_history_migrate_messages(struct db *db, int64_t session_id);
 /* Recent rounds and request/answer pairs are retained within their budgets. */
+/* User retention is capped; unused user budget is available to recent history. */
 int model_history_compact(struct db *db, int64_t session_id,
 			  const char *turn_id, const char *summary,
 			  int summary_tokens, int user_message_tokens,

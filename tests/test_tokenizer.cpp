@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/tokenizer.h"
 #include "agent/context.h"
+#include "util/bpe.h"
 #include <string.h>
 
 class TokenizerTest : public ::testing::Test {
@@ -54,9 +55,12 @@ TEST_F(TokenizerTest, CountLongEnglishText) {
 }
 
 TEST_F(TokenizerTest, CountChineseCharacters) {
-	/* 你好世界 = 4 CJK chars, should be 4-8 tokens */
+	/* o200k merges common CJK words; fallback estimates characters separately. */
 	int count = tokenizer_count(tok, "你好世界");
-	EXPECT_GE(count, 4);
+	if (tok->encoder)
+		EXPECT_EQ(count, 2);
+	else
+		EXPECT_GE(count, 4);
 	EXPECT_LE(count, 10);
 }
 
@@ -70,7 +74,10 @@ TEST_F(TokenizerTest, CountChineseMixed) {
 TEST_F(TokenizerTest, CountChineseWithEnglish) {
 	/* "我是一个AI助手" = 6 CJK + 2 ASCII chars */
 	int count = tokenizer_count(tok, "我是一个AI助手");
-	EXPECT_GE(count, 6);
+	if (tok->encoder)
+		EXPECT_EQ(count, 4);
+	else
+		EXPECT_GE(count, 6);
 	EXPECT_LE(count, 20);
 }
 
@@ -182,9 +189,9 @@ TEST_F(TokenizerTest, CountSingleChar) {
 }
 
 TEST_F(TokenizerTest, CountEmoji) {
-	/* Emoji is 4 bytes UTF-8, should be 2-3 tokens */
+	/* A common emoji is one o200k token, independent of its UTF-8 byte length. */
 	int count = tokenizer_count(tok, "😀");
-	EXPECT_GE(count, 2);
+	EXPECT_GE(count, 1);
 	EXPECT_LE(count, 4);
 }
 
@@ -205,4 +212,60 @@ TEST_F(TokenizerTest, ReActPromptEstimation) {
 	int count = tokenizer_count(tok, prompt);
 	EXPECT_GE(count, 20);
 	EXPECT_LE(count, 200);
+}
+
+TEST_F(TokenizerTest, BaseModelUsesSameVocabularyAsDatedVariant)
+{
+	auto *dated = tokenizer_create("gpt-4o-2024-08-06", 128000);
+	ASSERT_NE(dated, nullptr);
+	for (const char *text : {"你好世界", "我是一个AI助手", "hello world", "😀"})
+		EXPECT_EQ(tokenizer_count(tok, text), tokenizer_count(dated, text));
+	tokenizer_destroy(dated);
+}
+
+TEST(TokenizerEstimateTest, LeadingWhitespaceConsumesBudget)
+{
+	EXPECT_GT(tokenizer_estimate_tokens(std::string(8192, ' ').c_str()), 1000);
+	EXPECT_GT(tokenizer_estimate_tokens("\t\t\t\tmessage"), 0);
+	EXPECT_GT(tokenizer_estimate_tokens("\xf0\x9f"), 0);
+}
+
+TEST(BpeCountTest, CountsAllPiecesBeyondBatchBoundary)
+{
+	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
+		auto *encoder = bpe_encoder_create(encoding, nullptr);
+		if (!encoder)
+			GTEST_SKIP() << "BPE vocabulary unavailable";
+		for (const char *unit : {" word", "123", "\nhello"}) {
+			std::string text;
+			for (int i = 0; i < 20000; i++)
+				text += unit;
+			EXPECT_EQ(bpe_count_tokens(encoder, text.c_str()),
+				20000 * bpe_count_tokens(encoder, unit));
+		}
+		bpe_encoder_destroy(encoder);
+	}
+}
+
+TEST(BpeCountTest, MalformedSuffixDoesNotDisappearFromBudget)
+{
+	auto *encoder = bpe_encoder_create(BPE_CL100K_BASE, nullptr);
+	if (!encoder)
+		GTEST_SKIP() << "BPE vocabulary unavailable";
+	std::string text = "hello ";
+	int before = bpe_count_tokens(encoder, text.c_str());
+	text += std::string(100, static_cast<char>(0xff));
+	EXPECT_GE(bpe_count_tokens(encoder, text.c_str()), before + 100);
+	bpe_encoder_destroy(encoder);
+}
+
+TEST_F(TokenizerTest, DefaultAndBaseReasoningModelsUseTheResolvedVocabulary)
+{
+	for (const char *name : {static_cast<const char *>(nullptr), "o1", "o3", "o4"}) {
+		auto *other = tokenizer_create(name, 128000);
+		ASSERT_NE(other, nullptr);
+		for (const char *text : {"你好世界", "我是一个AI助手", "😀"})
+			EXPECT_EQ(tokenizer_count(other, text), tokenizer_count(tok, text));
+		tokenizer_destroy(other);
+	}
 }

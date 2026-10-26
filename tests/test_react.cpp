@@ -1858,7 +1858,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "large_tool",
 		"Return a large result", "{}", large_tool_fn, &result_bytes,
 		nullptr), 0);
-	cfg.max_context_tokens = 12000;
+	cfg.max_context_tokens = 18000;
 	cfg.max_history_rounds = 6;
 	cfg.in_turn_compaction = 1;
 	cfg.protocol_reserve_tokens = 0;

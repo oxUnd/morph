@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <climits>
 #include "agent/context.h"
 #include "agent/tokenizer.h"
 #include "util/arena.h"
@@ -100,4 +101,18 @@ TEST_F(ContextTest, NeedsCompressNullCfg) {
 	struct message_list *head = nullptr;
 	msg_list_append(&head, msg_list_create(ar, "user", "test", 1));
 	EXPECT_EQ(context_needs_compress(head, tok, nullptr), 0);
+}
+
+TEST_F(ContextTest, LargeTokenCountsSaturateWithoutDisablingCompression)
+{
+	struct message_list *head = nullptr;
+	msg_list_append(&head, msg_list_create(ar, "user", "first", INT_MAX));
+	msg_list_append(&head, msg_list_create(ar, "assistant", "second", INT_MAX));
+	EXPECT_EQ(context_token_count(head, tok), INT_MAX);
+	struct compress_config cfg = {};
+	cfg.max_context_tokens = 128000;
+	cfg.summarize_threshold_ratio = .8;
+	EXPECT_EQ(context_needs_compress(head, tok, &cfg), 1);
+	cfg.max_context_tokens = 0;
+	EXPECT_EQ(context_needs_compress(head, tok, &cfg), 0);
 }

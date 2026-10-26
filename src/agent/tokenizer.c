@@ -3,6 +3,8 @@
 #include "util/bpe.h"
 #include "util/utf8.h"
 #include <stdlib.h>
+#include <stdint.h>
+#include <limits.h>
 #include <string.h>
 
 /*
@@ -49,7 +51,8 @@ enum char_class {
 	CHAR_OTHER		/* Everything else */
 };
 
-static enum char_class classify_utf8(const unsigned char **p)
+static enum char_class classify_utf8(const unsigned char **p,
+				     const unsigned char *end)
 {
 	unsigned char b0 = **p;
 	if (b0 < 0x80) {
@@ -66,7 +69,7 @@ static enum char_class classify_utf8(const unsigned char **p)
 	unsigned cp;
 	size_t cp_len;
 
-	if (!utf8_decode_codepoint((const char *)*p, strlen((const char *)*p),
+	if (!utf8_decode_codepoint((const char *)*p, (size_t)(end - *p),
 			 &cp, &cp_len)) {
 		(*p)++;
 		return CHAR_OTHER;
@@ -109,13 +112,14 @@ int tokenizer_estimate_tokens(const char *text)
 	if (!text || *text == '\0')
 		return 0;
 
-	int tokens = 0;
-	int word_chars = 0;		/* consecutive ASCII word chars */
+	int64_t tokens = 0;
+	int64_t word_chars = 0;		/* consecutive ASCII word chars */
 	int consecutive_newlines = 0;
 
 	const unsigned char *p = (const unsigned char *)text;
-	while (*p) {
-		enum char_class cc = classify_utf8(&p);
+	const unsigned char *end = p + strlen(text);
+	while (p < end) {
+		enum char_class cc = classify_utf8(&p, end);
 
 		switch (cc) {
 		case CHAR_ASCII_LOWER:
@@ -193,11 +197,8 @@ int tokenizer_estimate_tokens(const char *text)
 			/* Spaces are often merged into adjacent tokens,
 			 * but some become separate tokens.
 			 * Count 1 per ~4 spaces for overhead */
-			if (word_chars > 0) {
-				/* Spaces inside a word sequence: likely merged.
-				 * Don't break the word yet */
-				word_chars++;
-			}
+			/* Include leading/standalone whitespace as well as word separators. */
+			word_chars++;
 			consecutive_newlines = 0;
 			break;
 
@@ -235,7 +236,7 @@ int tokenizer_estimate_tokens(const char *text)
 	if (tokens == 0 && *text != '\0')
 		tokens = 1;
 
-	return tokens;
+	return tokens > INT_MAX ? INT_MAX : (int)tokens;
 }
 
 struct tokenizer *tokenizer_create(const char *model_name, int context_limit)
@@ -249,15 +250,13 @@ struct tokenizer *tokenizer_create(const char *model_name, int context_limit)
 	tok->count = tokenizer_estimate_tokens;
 
 	enum bpe_encoding enc = BPE_CL100K_BASE;
-	if (model_name) {
-		if (strstr(model_name, "o200k") ||
-		    strstr(model_name, "gpt-4o-2024-08") ||
-		    strstr(model_name, "gpt-4o-2025") ||
-		    strstr(model_name, "o1-") ||
-		    strstr(model_name, "o3-") ||
-		    strstr(model_name, "o4-"))
-			enc = BPE_O200K_BASE;
-	}
+	const char *name = tok->model_name;
+
+	if (strstr(name, "o200k") || strstr(name, "gpt-4o") ||
+	    strcmp(name, "o1") == 0 || strstr(name, "o1-") ||
+	    strcmp(name, "o3") == 0 || strstr(name, "o3-") ||
+	    strcmp(name, "o4") == 0 || strstr(name, "o4-"))
+		enc = BPE_O200K_BASE;
 
 	tok->encoder = bpe_encoder_create(enc, NULL);
 	return tok;

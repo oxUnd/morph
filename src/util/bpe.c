@@ -356,7 +356,7 @@ static int is_contraction_suffix(const unsigned char *text, size_t len,
 	return 0;
 }
 
-#define MAX_PIECES 8192
+#define BPE_PIECE_BATCH_SIZE 8192
 
 struct bpe_piece {
 	size_t offset;
@@ -927,8 +927,11 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 	size_t *parts = stack_buf;
 	size_t nparts = piece_len;
 
+	if (piece_len >= INT_MAX || piece_len > SIZE_MAX / sizeof(*parts) - 1)
+		return INT_MAX;
+
 	if (piece_len > MAX_PIECE_BYTES) {
-		parts = malloc(sizeof(size_t) * (piece_len + 1));
+		parts = malloc(sizeof(*parts) * (piece_len + 1));
 		if (!parts) return (int)piece_len;
 	}
 
@@ -953,7 +956,7 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 		if (min_rank == INT32_MAX) break;
 
 		memmove(&parts[min_idx + 1], &parts[min_idx + 2],
-			sizeof(size_t) * (nparts - min_idx - 1));
+			sizeof(*parts) * (nparts - min_idx - 1));
 		nparts--;
 	}
 
@@ -962,45 +965,8 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 	return (int)nparts;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Special token handling                                             */
-/* ------------------------------------------------------------------ */
-
-static const char *cl100k_specials[] = {
-	"<|endoftext|>",
-	"<|fim_prefix|>",
-	"<|fim_middle|>",
-	"<|fim_suffix|>",
-	"<|endofprompt|>",
-	NULL
-};
-
-static const char *o200k_specials[] = {
-	"<|endoftext|>",
-	"<|endofprompt|>",
-	NULL
-};
-
-static int count_special_tokens(enum bpe_encoding encoding,
-				const char *text, size_t text_len)
-{
-	const char **specs = (encoding == BPE_O200K_BASE)
-		? o200k_specials : cl100k_specials;
-	int count = 0;
-	for (const char **sp = specs; *sp; sp++) {
-		size_t slen = strlen(*sp);
-		const char *p = text;
-		const char *end = text + text_len;
-		while (p < end) {
-			const char *found = memmem(p, (size_t)(end - p),
-						   *sp, slen);
-			if (!found) break;
-			count++;
-			p = found + slen;
-		}
-	}
-	return count;
-}
+/* Inputs are ordinary message/schema text. Strings that spell a reserved token
+ * are counted as literal text, not counted a second time as control tokens. */
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
@@ -1079,27 +1045,36 @@ void bpe_encoder_destroy(struct bpe_encoder *enc)
 
 int bpe_count_tokens_n(struct bpe_encoder *enc, const char *text, size_t len)
 {
-	if (!enc || !text || len == 0) return 0;
+	struct bpe_piece *pieces;
+	size_t offset = 0;
+	int64_t total = 0;
 
-	int specials = count_special_tokens(enc->encoding, text, len);
+	if (!enc || !text || len == 0)
+		return 0;
+	pieces = malloc(sizeof(*pieces) * BPE_PIECE_BATCH_SIZE);
+	/* One token per byte is a conservative bound when allocation fails. */
+	if (!pieces)
+		return len > INT_MAX ? INT_MAX : (int)len;
+	while (offset < len && total < INT_MAX) {
+		const char *remaining = text + offset;
+		int count = enc->encoding == BPE_O200K_BASE ?
+			split_o200k(remaining, len - offset, pieces, BPE_PIECE_BATCH_SIZE) :
+			split_cl100k(remaining, len - offset, pieces, BPE_PIECE_BATCH_SIZE);
 
-	struct bpe_piece *pieces = malloc(sizeof(struct bpe_piece) * MAX_PIECES);
-	if (!pieces) return (int)(len / 4 + 1);
-
-	int npieces;
-	if (enc->encoding == BPE_O200K_BASE)
-		npieces = split_o200k(text, len, pieces, MAX_PIECES);
-	else
-		npieces = split_cl100k(text, len, pieces, MAX_PIECES);
-
-	int total = 0;
-	for (int i = 0; i < npieces; i++)
-		total += bpe_merge_count(enc,
-			(const unsigned char *)text + pieces[i].offset,
-			pieces[i].len);
-
+		if (count == 0) {
+			/* Malformed UTF-8 must not silently discard the unparsed suffix. */
+			total += len - offset > INT_MAX ? INT_MAX : (int)(len - offset);
+			break;
+		}
+		for (int i = 0; i < count; i++)
+			total += bpe_merge_count(enc,
+				(const unsigned char *)remaining + pieces[i].offset,
+				pieces[i].len);
+		/* Continue only at a completed regex piece, preserving lookahead. */
+		offset += pieces[count - 1].offset + pieces[count - 1].len;
+	}
 	free(pieces);
-	return total + specials;
+	return total > INT_MAX ? INT_MAX : (int)total;
 }
 
 int bpe_count_tokens(struct bpe_encoder *enc, const char *text)

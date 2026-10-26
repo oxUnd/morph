@@ -3,6 +3,7 @@
 #include "util/bpe.h"
 #include "util/arena.h"
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 struct message_list *msg_list_create(struct arena *session, const char *role, const char *content,
@@ -53,7 +54,7 @@ int msg_list_count(struct message_list *head)
 
 int context_token_count(struct message_list *head, struct tokenizer *tok)
 {
-	int total = 0;
+	int64_t total = 0;
 	struct message_list *cur = head;
 	while (cur) {
 		if (cur->token_count > 0)
@@ -66,13 +67,13 @@ int context_token_count(struct message_list *head, struct tokenizer *tok)
 			total += tokenizer_estimate_tokens(cur->content);
 		cur = cur->next;
 	}
-	return total;
+	return total > INT_MAX ? INT_MAX : (int)total;
 }
 
 int context_needs_compress(struct message_list *head, struct tokenizer *tok,
 			   struct compress_config *cfg)
 {
-	if (!cfg)
+	if (!cfg || cfg->max_context_tokens <= 0)
 		return 0;
 	int total = context_token_count(head, tok);
 	int threshold = (int)(cfg->max_context_tokens * cfg->summarize_threshold_ratio);

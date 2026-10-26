@@ -131,6 +131,14 @@ struct model {
 	void (*destroy)(struct model *self);
 };
 
+/* Local estimate over the selected adapter's serialized input. This is not
+ * provider usage: tokenizer differences and framing require a safety margin. */
+typedef int (*model_token_counter)(const char *text, void *user_data);
+int model_estimate_input_tokens(const struct model *model,
+	const char *system_prompt, const struct chat_message *messages, int msg_count,
+	const struct tool_desc *tools, int tool_count, model_token_counter count,
+	void *user_data, int *tokens);
+
 struct model *model_llm_create(const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 void model_destroy(struct model *m);

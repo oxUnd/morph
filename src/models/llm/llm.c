@@ -13,6 +13,7 @@
 #include "http/sse.h"
 #include "cJSON.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -969,7 +970,7 @@ static char *build_text_tool_arguments_json(const char *input)
 }
 
 static cJSON *build_structured_messages_cjson(const char *system_prompt,
-					       struct chat_message *messages,
+					       const struct chat_message *messages,
 					       int msg_count,
 					       const struct llm_adapter *adapter,
 					       const struct model *model)
@@ -984,7 +985,7 @@ static cJSON *build_structured_messages_cjson(const char *system_prompt,
 	}
 
 	for (int i = 0; i < msg_count; i++) {
-		struct chat_message *m = &messages[i];
+		const struct chat_message *m = &messages[i];
 		cJSON *msg = cJSON_CreateObject();
 		cJSON_AddStringToObject(msg, "role", m->role);
 
@@ -1091,7 +1092,7 @@ static cJSON *normalize_params_to_schema(cJSON *params)
 	return NULL;
 }
 
-static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
+static cJSON *build_tools_cjson(const struct tool_desc *tools, int tool_count)
 {
 	cJSON *arr = cJSON_CreateArray();
 	for (int i = 0; i < tool_count; i++) {
@@ -1126,7 +1127,7 @@ static cJSON *build_tools_cjson(struct tool_desc *tools, int tool_count)
 	return arr;
 }
 
-static cJSON *build_responses_tools_cjson(struct tool_desc *tools,
+static cJSON *build_responses_tools_cjson(const struct tool_desc *tools,
 					  int tool_count)
 {
 	cJSON *array = cJSON_CreateArray();
@@ -1174,7 +1175,7 @@ static cJSON *build_responses_tools_cjson(struct tool_desc *tools,
 }
 
 static enum tool_input_kind responses_call_kind(
-	struct chat_message *messages, int before, const char *call_id)
+	const struct chat_message *messages, int before, const char *call_id)
 {
 	for (int i = before - 1; i >= 0; i--) {
 		for (int j = 0; j < messages[i].tool_call_count; j++) {
@@ -1188,7 +1189,7 @@ static enum tool_input_kind responses_call_kind(
 	return TOOL_INPUT_JSON;
 }
 
-static cJSON *build_responses_input_cjson(struct chat_message *messages,
+static cJSON *build_responses_input_cjson(const struct chat_message *messages,
 					  int msg_count)
 {
 	cJSON *array = cJSON_CreateArray();
@@ -1196,7 +1197,7 @@ static cJSON *build_responses_input_cjson(struct chat_message *messages,
 	if (!array)
 		return NULL;
 	for (int i = 0; i < msg_count; i++) {
-		struct chat_message *message = &messages[i];
+		const struct chat_message *message = &messages[i];
 
 		if (message->tool_calls && message->tool_call_count > 0) {
 			if (message->content && message->content[0]) {
@@ -1251,6 +1252,64 @@ static cJSON *build_responses_input_cjson(struct chat_message *messages,
 		cJSON_AddItemToArray(array, item);
 	}
 	return array;
+}
+
+/* Count transmitted text, not JSON escaping around message contents. Framing
+ * remains an estimate; the caller reserves a separate protocol safety margin. */
+static int64_t input_text_tokens(const cJSON *value, model_token_counter count,
+				 void *user_data)
+{
+	int64_t total = 0;
+	const cJSON *child;
+
+	if (cJSON_IsString(value))
+		return count(value->valuestring, user_data);
+	if (cJSON_IsObject(value))
+		total = 12;
+	cJSON_ArrayForEach(child, value)
+		total += input_text_tokens(child, count, user_data);
+	return total;
+}
+
+int model_estimate_input_tokens(const struct model *model,
+	const char *system_prompt, const struct chat_message *messages, int msg_count,
+	const struct tool_desc *tools, int tool_count, model_token_counter count,
+	void *user_data, int *tokens)
+{
+	const struct llm_adapter *adapter = llm_adapter_resolve(model);
+	cJSON *input;
+	cJSON *wire_tools;
+	char *json;
+	int64_t total;
+
+	if (!count || !tokens || msg_count < 0 || tool_count < 0 ||
+	    (msg_count && !messages) || (tool_count && !tools))
+		MORPH_RETURN(-EINVAL);
+	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
+		build_structured_messages_cjson(system_prompt, messages, msg_count,
+			adapter, model);
+	if (!input)
+		MORPH_RETURN(-ENOMEM);
+	total = 16 + input_text_tokens(input, count, user_data);
+	cJSON_Delete(input);
+	if (adapter->responses_api && system_prompt && system_prompt[0])
+		total += count(system_prompt, user_data);
+	if (tool_count > 0) {
+		wire_tools = adapter->responses_api ?
+			build_responses_tools_cjson(tools, tool_count) :
+			build_tools_cjson(tools, tool_count);
+		if (!wire_tools)
+			MORPH_RETURN(-ENOMEM);
+		/* Schema keys and constraints are part of the model-visible definition. */
+		json = cJSON_PrintUnformatted(wire_tools);
+		cJSON_Delete(wire_tools);
+		if (!json)
+			MORPH_RETURN(-ENOMEM);
+		total += count(json, user_data);
+		free(json);
+	}
+	*tokens = total > INT_MAX ? INT_MAX : (int)total;
+	return 0;
 }
 
 static struct tool_call *responses_find_tool_call(struct llm_stream_ctx *ctx,
