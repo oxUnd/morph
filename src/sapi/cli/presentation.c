@@ -1204,12 +1204,12 @@ static void presentation_final(struct cli_context *ctx,
 		if (!had_stream)
 			printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
 		if (!had_stream && text && text[0]) {
-			cli_markdown_render_ansi_with_media_indented(
-				text, 2, media_callback, ctx);
+			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {
 			printf("\n");
+			ctx->markdown_output.trailing_newlines = 1;
 		}
-		printf("\n");
+		cli_markdown_finish_final(ctx);
 	}
 	ctx->final_rendered = 1;
 }

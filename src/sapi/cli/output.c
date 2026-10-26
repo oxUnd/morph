@@ -19,8 +19,36 @@ static const char *cli_markdown_font_path(void)
 	return path[0] ? path : NULL;
 }
 
+/* Renderer blocks end differently (paragraphs versus code/table frames). Track
+ * visible trailing newlines so final spacing has a single owner. */
+static void cli_markdown_track_tail(struct cli_markdown_output *output,
+				     const char *bytes, size_t len)
+{
+	char *safe = utf8_terminal_sanitize_dup(bytes, len,
+		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	int newlines = 0;
+	size_t end;
+
+	if (!safe)
+		return;
+	end = strlen(safe);
+	while (end && strchr(" \t\r\n", safe[end - 1])) {
+		if (safe[--end] == '\n' && newlines < 2)
+			newlines++;
+	}
+	if (end)
+		output->trailing_newlines = newlines;
+	else {
+		output->trailing_newlines += newlines;
+		if (output->trailing_newlines > 2)
+			output->trailing_newlines = 2;
+	}
+	free(safe);
+}
+
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
+	struct cli_markdown_output *output = user;
 	size_t i;
 	int captured;
 
@@ -38,10 +66,12 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		return 0;
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
-	if (user && *(int *)user) {
+	if (output && output->prefix_pending) {
 		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
-		*(int *)user = 0;
+		output->prefix_pending = 0;
 	}
+	if (output)
+		cli_markdown_track_tail(output, bytes, len);
 	captured = cli_command_capture_write(bytes, len);
 	if (captured)
 		return captured < 0 ? captured : 0;
@@ -82,7 +112,7 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 						   unsigned int initial_column,
 						   int enable_math,
 						   cli_markdown_media_cb cb,
-						   void *user, int *prefix_pending)
+						   void *user, struct cli_markdown_output *output)
 {
 	struct morph_md_kitty_options options;
 	const char *font_path;
@@ -95,7 +125,7 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	    cli_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
-	options.user_data = prefix_pending;
+	options.user_data = output;
 	options.media = cb;
 	options.media_user_data = user;
 	options.load_image = cli_markdown_load_image;
@@ -107,10 +137,11 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	return morph_md_kitty_create(&options);
 }
 
-static void cli_markdown_render(const char *md, unsigned int indent,
+static int cli_markdown_render(const char *md, unsigned int indent,
 				unsigned int initial_column,
 				cli_markdown_media_cb cb, void *user)
 {
+	struct cli_markdown_output output = {0};
 	struct morph_md_kitty *renderer;
 	char *safe;
 	char *normalized;
@@ -118,14 +149,14 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 	int rc;
 
 	if (!md)
-		return;
+		return 0;
 	safe = utf8_terminal_sanitize_dup(md, strlen(md),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
-		return;
+		return 0;
 	normalized = agent_ui_normalize_markdown(safe);
 	content = normalized ? normalized : safe;
-	renderer = cli_markdown_create(indent, initial_column, 1, cb, user, NULL);
+	renderer = cli_markdown_create(indent, initial_column, 1, cb, user, &output);
 	if (!renderer) {
 		log_warn("failed to initialize Kitty Markdown renderer");
 		goto out;
@@ -140,6 +171,21 @@ static void cli_markdown_render(const char *md, unsigned int indent,
 out:
 	free(normalized);
 	free(safe);
+	return output.trailing_newlines;
+}
+
+void cli_markdown_render_final(struct cli_context *ctx, const char *text)
+{
+	ctx->markdown_output.trailing_newlines =
+		cli_markdown_render(text, 2u, 2u, media_callback, ctx);
+}
+
+void cli_markdown_finish_final(struct cli_context *ctx)
+{
+	while (ctx->markdown_output.trailing_newlines < 2) {
+		putchar('\n');
+		ctx->markdown_output.trailing_newlines++;
+	}
 }
 
 int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
@@ -153,9 +199,10 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 	if (ctx->markdown_stream && ctx->markdown_stream_kind != kind)
 		cli_markdown_stream_reset(ctx, 1);
 	if (!ctx->markdown_stream) {
-		ctx->markdown_stream_prefix_pending = 1;
+		ctx->markdown_output.prefix_pending = 1;
+		ctx->markdown_output.trailing_newlines = 0;
 		ctx->markdown_stream = cli_markdown_create(
-			2u, 2u, 1, media_callback, ctx, &ctx->markdown_stream_prefix_pending);
+			2u, 2u, 1, media_callback, ctx, &ctx->markdown_output);
 		if (!ctx->markdown_stream)
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
@@ -209,7 +256,7 @@ void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output)
 	ctx->markdown_stream = NULL;
 	ctx->markdown_stream_kind = 0;
 	ctx->markdown_stream_visible = 0;
-	ctx->markdown_stream_prefix_pending = 0;
+	ctx->markdown_output.prefix_pending = 0;
 	morph_buf_reset(&ctx->markdown_stream_text);
 	utf8_terminal_sanitizer_reset(&ctx->markdown_stream_sanitizer);
 }

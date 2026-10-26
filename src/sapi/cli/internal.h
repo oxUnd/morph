@@ -177,6 +177,8 @@ void cli_markdown_render_ansi_with_media_indented(const char *md,
 						  unsigned int indent,
 						  cli_markdown_media_cb cb,
 						  void *user);
+void cli_markdown_render_final(struct cli_context *ctx, const char *text);
+void cli_markdown_finish_final(struct cli_context *ctx);
 int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 			       int kind);
 void cli_markdown_stream_reset(struct cli_context *ctx, int finish_output);

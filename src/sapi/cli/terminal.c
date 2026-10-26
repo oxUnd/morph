@@ -147,7 +147,8 @@ void cli_terminal_turn_end(struct cli_context *ctx, int result)
 	/* A finished duration is immutable history, not a live footer. */
 	if (terminal->transient) {
 		cli_terminal_history_begin(ctx);
-		fputc('\n', terminal->output);
+		if (result < 0 || !ctx->final_rendered)
+			fputc('\n', terminal->output);
 		terminal_work_row(terminal, cli_terminal_columns(ctx));
 		fputc('\n', terminal->output);
 		fflush(terminal->output);
@@ -457,14 +458,12 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	if (status_visible) {
 		if (tool_live)
 			fputc('\n', terminal->output);
-		fprintf(terminal->output, "%s%s" ANSI_RESET "%s%s%s" ANSI_RESET,
-			ANSI_CYAN,
-			tool_live ? "●" :
-			frames[terminal->frame %
-			       (int)(sizeof(frames) / sizeof(frames[0]))],
-			(tool_live ? "  " : " "),
-			terminal->live_independent ? ANSI_DIM : "",
-			tool_live ? text : status_clipped);
+		if (tool_live)
+			fprintf(terminal->output, "%s", text);
+		else
+			fprintf(terminal->output, ANSI_CYAN "%s" ANSI_RESET " %s%s" ANSI_RESET,
+				frames[terminal->frame % (int)(sizeof(frames) / sizeof(frames[0]))],
+				terminal->live_independent ? ANSI_DIM : "", status_clipped);
 		if (tool_live && morph_buf_init(&tool_body, 128) == 0) {
 			body_rows = cli_transcript_live_body(ctx, &tool_body, cli_color_enabled());
 			if (body_rows)

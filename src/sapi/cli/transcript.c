@@ -7,10 +7,8 @@
 struct transcript_tool {
 	const char *id;
 	const char *name;
-	const char *label;
 	const char *args;
 	const char *subject;
-	const char *description;
 	const char *result;
 	const char *error;
 	const char *summary;
@@ -212,6 +210,29 @@ static void append_clipped_text(morph_buf_t *buf, const char *text, int width)
 	free(safe);
 }
 
+static int shell_tool(const struct transcript_tool *tool)
+{
+	return strcmp(tool->name, "exec") == 0 || strcmp(tool->name, "process") == 0;
+}
+
+static int tool_is_running(const struct transcript_tool *tool)
+{
+	return tool->state >= 0 &&
+		(!tool->state || strcmp(tool->summary, "running") == 0);
+}
+
+static const char *tool_state_color(const struct transcript_tool *tool)
+{
+	return tool->timed_out ? ANSI_YELLOW : tool->state < 0 ? ANSI_RED :
+		tool_is_running(tool) ? ANSI_CYAN : ANSI_GREEN;
+}
+
+static const char *tool_state_marker(const struct transcript_tool *tool)
+{
+	return tool->state < 0 && !tool->timed_out ? CLI_FEED_FAILED :
+		tool_is_running(tool) ? CLI_FEED_RUNNING : "●";
+}
+
 static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 		     int styled)
 {
@@ -219,20 +240,17 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	morph_buf_t subject;
 	morph_buf_t meta;
 	int columns = transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING;
-	int name_width = (int)utf8_display_width(tool->label);
-	int is_skill = strcmp(tool->name, "activate_skill") == 0;
-	const char *target = tool->description[0] ? tool->description :
-		strcmp(tool->name, "exec") == 0 ? "Run command" : tool->subject;
+	const char *label = strcmp(tool->name, "exec") == 0 ? "Exec" : tool->name;
+	int name_width = (int)utf8_display_width(label);
+	const char *target = tool->subject;
+	const char *color = tool_state_color(tool);
 	char cwd[PATH_MAX];
-	double elapsed = (tool->state ? tool->ended : transcript_now()) - tool->started;
+	double elapsed = tool->ended - tool->started;
 
-	if (!tool->description[0] && (strcmp(tool->name, "exec") == 0 ||
-	     strcmp(tool->name, "process") == 0) &&
-	    getcwd(cwd, sizeof(cwd)))
+	if (shell_tool(tool) && getcwd(cwd, sizeof(cwd)))
 		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
-	if (!is_skill && strcmp(tool->name, "exec") != 0 &&
-	    target[0] == '/' && getcwd(cwd, sizeof(cwd))) {
+	if (!shell_tool(tool) && target[0] == '/' && getcwd(cwd, sizeof(cwd))) {
 		size_t len = strlen(cwd);
 
 		if (strncmp(target, cwd, len) == 0 &&
@@ -252,34 +270,30 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	}
 	if (tool->timed_out)
 		(void)morph_buf_puts(&meta, "TIMEOUT · ");
-	else if (tool->state < 0 && tool->summary[0] &&
-		 strcmp(tool->summary, "exit 0") != 0)
-		(void)morph_buf_printf(&meta, "%s  ", tool->summary);
+	else if (tool->state < 0)
+		(void)morph_buf_puts(&meta, "FAILED · ");
+	else if (tool->state && tool_is_running(tool))
+		(void)morph_buf_puts(&meta, "RUNNING · ");
 	if (tool->state)
 		(void)morph_buf_printf(&meta, "%.1fs", elapsed);
-	/* Remote tool names can exceed the whole viewport. Reserve metadata first. */
-	int available = columns - 8 - (int)utf8_display_width(meta.data);
+	int available = columns - 5 - (int)utf8_display_width(meta.data);
 
 	if (name_width > available)
 		name_width = available > 0 ? available : 1;
-	append_clipped_text(&action, tool->label, name_width);
+	append_clipped_text(&action, label, name_width);
 	append_clipped_text(&subject, target,
-		columns - 3 - name_width - 5 - (is_skill ? 2 : 0) -
-		(int)utf8_display_width(meta.data));
-	(void)morph_buf_printf(row, "%s%s%s  ", styled ? ANSI_DIM : "",
-		action.data, styled ? ANSI_RESET : "");
-	if (is_skill)
-		(void)morph_buf_printf(row, "(%s%s%s)",
-			styled ? ANSI_CYAN : "", subject.data,
-			styled ? ANSI_RESET : "");
+		columns - name_width - 5 - (int)utf8_display_width(meta.data));
+	(void)morph_buf_printf(row, "%s%s%s %s%s%s ", styled ? color : "",
+		tool_state_marker(tool), styled ? ANSI_RESET : "",
+		styled ? ANSI_BOLD : "", action.data, styled ? ANSI_RESET : "");
+	if (styled && shell_tool(tool))
+		(void)cli_shell_style(row, subject.data, 0);
 	else
-		(void)morph_buf_puts(row, subject.data);
-	if (tool->state && tool->timed_out && styled) {
-		(void)morph_buf_printf(row, " · " ANSI_YELLOW "TIMEOUT" ANSI_RESET
-			ANSI_DIM " · %.1fs" ANSI_RESET, elapsed);
-	} else if (tool->state) {
-		(void)morph_buf_printf(row, " · %s%s%s",
-			styled ? ANSI_DIM : "",
+		(void)morph_buf_printf(row, "%s%s%s", styled ? ANSI_CYAN : "",
+			subject.data, styled ? ANSI_RESET : "");
+	if (tool->state) {
+		(void)morph_buf_printf(row, "  %s%s%s", styled ?
+			(tool->state < 0 ? color : ANSI_DIM) : "",
 			meta.data, styled ? ANSI_RESET : "");
 	} else {
 		(void)morph_buf_puts(row, "…");
@@ -314,26 +328,14 @@ int cli_transcript_live_text(struct cli_context *ctx, morph_buf_t *text, int sty
 	return 1;
 }
 
-static int shell_tool(const struct transcript_tool *tool)
-{
-	return strcmp(tool->name, "exec") == 0 || strcmp(tool->name, "process") == 0;
-}
-
-/* The active block is transient; completed blocks are appended exactly once. */
+/* The command is in the header; the active body contains only progress. */
 int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int styled)
 {
-	struct transcript_tool *latest = active_tool(ctx);
-
-	if (!latest || !shell_tool(latest))
+	if (!active_tool(ctx))
 		return 0;
-	(void)morph_buf_puts(body, styled ? ANSI_DIM "    $ " : "    $ ");
-	append_clipped_text(body, latest->subject,
-		transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING - 6);
-	(void)morph_buf_puts(body, styled ? ANSI_RESET "\n" ANSI_DIM : "\n");
-	(void)morph_buf_puts(body, "    Running…");
-	if (styled)
-		(void)morph_buf_puts(body, ANSI_RESET);
-	return 2;
+	(void)morph_buf_printf(body, "%s    Running…%s",
+		styled ? ANSI_DIM : "", styled ? ANSI_RESET : "");
+	return 1;
 }
 
 static void restore_live(struct cli_context *ctx)
@@ -371,54 +373,126 @@ static void print_feed_line(const char *prefix, const char *text, const char *co
 	printf(ANSI_RESET "\n");
 }
 
-/* Only one physical output line enters scrollback; complete output stays in details. */
+#define TOOL_PREVIEW_LINES 3
+
+/* Prefer human-readable payloads. The complete original stays in turn details. */
+static void tool_preview_text(const struct transcript_tool *tool, const cJSON *data,
+			       morph_buf_t *text)
+{
+	const char *value = tool->error;
+	const cJSON *content;
+
+	if (!value[0] && cJSON_IsString(data))
+		value = data->valuestring;
+
+	if (!value[0] && shell_tool(tool)) {
+		value = json_string(data, tool->state < 0 ? "stderr" : "stdout");
+		if (!value[0])
+			value = json_string(data, "stderr");
+	} else if (!value[0] && strcmp(tool->name, "apply_patch") == 0) {
+		value = tool->patch_preview;
+	} else if (!value[0]) {
+		value = json_string(data, "content");
+		if (!value[0])
+			value = json_string(data, "text");
+		if (!value[0])
+			value = json_string(data, "preview");
+	}
+	if (value[0]) {
+		(void)morph_buf_puts(text, value);
+		return;
+	}
+	content = cJSON_GetObjectItemCaseSensitive(data, "content");
+	if (cJSON_IsArray(content)) {
+		const cJSON *block;
+
+		cJSON_ArrayForEach(block, content) {
+			value = json_string(block, "text");
+			if (!value[0])
+				continue;
+			if (text->len)
+				(void)morph_buf_putc(text, '\n');
+			(void)morph_buf_puts(text, value);
+		}
+	}
+	if (!text->len && tool->stream.len)
+		(void)morph_buf_puts(text, morph_buf_cstr(&tool->stream));
+	if (!text->len) {
+		value = !data && tool->result[0] ? tool->result :
+			tool->timed_out ? "Command timed out" :
+			tool->state < 0 ? "Tool failed" :
+			tool->summary[0] && strcmp(tool->summary, "exit 0") != 0 ?
+			tool->summary : "Completed";
+		(void)morph_buf_puts(text, value);
+	}
+}
+
 static void print_tool_preview(const struct transcript_tool *tool)
 {
 	cJSON *json = cJSON_Parse(tool->result);
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
-	const char *text;
+	morph_buf_t text;
 	char *safe;
-	char *newline;
+	char *line;
+	size_t total = 0;
+	size_t shown = 0;
+	const char *color = tool->timed_out ? ANSI_YELLOW :
+		tool->state < 0 ? ANSI_RED : ANSI_DIM;
 
 	if (!cJSON_IsObject(data))
 		data = json;
-	text = tool->error;
-	if (!text[0] && shell_tool(tool)) {
-		text = json_string(data, tool->state < 0 ? "stderr" : "stdout");
-		if (!text[0])
-			text = json_string(data, "stderr");
+	if (morph_buf_init(&text, 128) != 0) {
+		cJSON_Delete(json);
+		return;
 	}
-	if (!text[0])
-		text = tool->timed_out ? "Command timed out" :
-			tool->state < 0 ? "Tool failed" :
-			tool->summary[0] && strcmp(tool->summary, "exit 0") != 0 ?
-			tool->summary : "Completed";
-	text += strspn(text, " \t\r\n");
-	safe = utf8_terminal_sanitize_dup(text, strlen(text),
+	tool_preview_text(tool, data, &text);
+	safe = utf8_terminal_sanitize_dup(morph_buf_cstr(&text), text.len,
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	if (safe) {
-		newline = strchr(safe, '\n');
+	morph_buf_cleanup(&text);
+	cJSON_Delete(json);
+	if (!safe)
+		return;
+	size_t len = strlen(safe);
+
+	while (len && safe[len - 1] == '\n')
+		safe[--len] = '\0';
+	line = safe + strspn(safe, "\n");
+	for (char *p = line; *p; p++)
+		total += *p == '\n';
+	if (*line)
+		total++;
+	while (*line && shown < TOOL_PREVIEW_LINES) {
+		char *newline = strchr(line, '\n');
+
 		if (newline)
 			*newline = '\0';
-		print_feed_line("    └ ", safe, tool->timed_out ? ANSI_YELLOW :
-			tool->state < 0 ? ANSI_RED : ANSI_DIM);
-		free(safe);
+		print_feed_line(shown ? "    " : "  └ ", line, color);
+		shown++;
+		if (!newline)
+			break;
+		line = newline + 1;
 	}
-	cJSON_Delete(json);
+	if (total > shown) {
+		morph_buf_t hint;
+
+		if (morph_buf_init(&hint, 64) == 0) {
+			(void)morph_buf_printf(&hint, "+ %zu %s (ctrl+o to expand)",
+				total - shown, total - shown == 1 ? "line" : "lines");
+			print_feed_line("    ", morph_buf_cstr(&hint), ANSI_DIM);
+			morph_buf_cleanup(&hint);
+		}
+	}
+	free(safe);
 }
 
 static void print_tool(const struct transcript_tool *tool, int compact)
 {
 	morph_buf_t line;
-	const char *color = tool->timed_out ? ANSI_YELLOW :
-		tool->state < 0 ? ANSI_RED : tool->state ? ANSI_GREEN : ANSI_CYAN;
 
 	if (morph_buf_init(&line, 128) != 0)
 		return;
 	tool_row(tool, &line, 1);
-	printf("\n%s●" ANSI_RESET "  %s\n", color, morph_buf_cstr(&line));
-	if (compact && shell_tool(tool))
-		print_feed_line("    $ ", tool->subject, ANSI_DIM);
+	printf("\n%s\n", morph_buf_cstr(&line));
 	if (compact && tool->state)
 		print_tool_preview(tool);
 	morph_buf_cleanup(&line);
@@ -763,19 +837,6 @@ void cli_transcript_finish(struct cli_context *ctx)
 	tr->finished = 1;
 }
 
-static const char *process_action_label(const char *action)
-{
-	if (strcmp(action, "poll") == 0)
-		return "wait";
-	if (strcmp(action, "write") == 0)
-		return "send input";
-	if (strcmp(action, "interrupt") == 0)
-		return "interrupt";
-	if (strcmp(action, "kill") == 0)
-		return "terminate";
-	return "process";
-}
-
 static const char *find_process_command(struct cli_transcript *tr,
 					const char *session_id)
 {
@@ -850,9 +911,6 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	memset(tool, 0, sizeof(*tool));
 	tool->id = save_text(tr, json_string(data, "tool_call_id"));
 	tool->name = save_text(tr, json_string(data, "tool"));
-	tool->label = strcmp(tool->name, "exec") == 0 ? "Exec" :
-		strcmp(tool->name, "tasks") == 0 ? "Tasks" :
-		strcmp(tool->name, "plan") == 0 ? "Plan" : tool->name;
 	json = args ? cJSON_PrintUnformatted(args) : NULL;
 	tool->args = save_text(tr, json ? json : "{}");
 	free(json);
@@ -862,23 +920,18 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 			break;
 	}
 	tool->subject = save_text(tr, subject);
-	tool->description = strcmp(tool->name, "exec") == 0 ?
-		save_text(tr, json_string(args, "description")) : "";
 	tool->result = "";
 	tool->error = "";
 	tool->summary = "";
 	tool->patch_preview = "";
 	if (strcmp(tool->name, "activate_skill") == 0) {
-		tool->label = "Skill";
 		tool->subject = save_text(tr, json_string(args, "name"));
 	}
 	if (strcmp(tool->name, "process") == 0) {
-		const char *action = json_string(args, "action");
 		const char *session_id = json_string(args, "session_id");
 		const char *command = find_process_command(tr, session_id);
 		morph_buf_t fallback;
 
-		tool->label = save_text(tr, process_action_label(action));
 		if (command[0]) {
 			tool->subject = command;
 		} else if (morph_buf_init(&fallback, 64) == 0) {
@@ -1087,17 +1140,8 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		print_tool(tool, !ctx->tool_details);
 	if (ctx->tool_details) {
 		print_details(tool, 0, transcript_workdir(ctx));
-	} else if (tool->state > 0 &&
-		   strcmp(tool->name, "apply_patch") == 0) {
-		cJSON *args = cJSON_Parse(tool->args);
-
-		if (tool->patch_preview[0])
-			cli_presentation_patch_diff(NULL, tool->patch_preview);
-		else
-			cli_presentation_patch_diff(transcript_workdir(ctx),
-				json_string(args, "input"));
-		cJSON_Delete(args);
 	}
+
 	restore_live(ctx);
 	return 1;
 }

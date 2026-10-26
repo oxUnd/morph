@@ -50,21 +50,64 @@ def check_feed_replay(driver):
             screen = pyte.Screen(width, 42)
             pyte.Stream(screen).feed(raw)
             text = '\n'.join(screen.display)
-            assert text.count('●  Exec') == 6, text
-            assert text.count('    $ ') == 6, text
-            assert text.count('    └ ') == 5, text
+            assert sum(row.startswith(('● Exec ', '◉ Exec ')) for row in screen.display) == 6, text
+            assert '    $ ' not in text, text
+            assert text.count('● Exec ') == 5, text
+            assert text.count('◉ Exec ') == 1, text
+            assert text.count('  └ ') == 5, text
             assert text.count('Running…') == 1, text
             assert 'TIMEOUT' in text and '10.0s' in text, text
-            assert '\x1b[33m●' in raw, raw
-            assert '\x1b[36m●' in raw, raw
+            assert '\x1b[33m●\x1b[0m \x1b[1mExec' in raw, raw
+            assert '\x1b[36m◉\x1b[0m \x1b[1mExec' in raw, raw
             assert '\x1b[2J' not in raw, raw
             assert all(len(row.rstrip()) <= width - 2 for row in screen.display), text
             if width == 100:
-                assert 'Resolve endpoint DNS · 0.3s' in text, text
+                assert '● Exec dig +short mcp.exa.ai  0.3s' in text, text
                 assert '104.18.6.160, 104.18.7.160' in text, text
             print(f'checked: {width} columns: append feed replay')
         finally:
             child.close(force=True)
+
+
+def check_final_spacing(driver, port):
+    replies = [
+        'FINAL_SENTINEL plain answer.',
+        'First paragraph.\n\nFINAL_SENTINEL final paragraph.\n\n\n',
+        '```text\nfirst line\n\nFINAL_SENTINEL code line\n```\n\n',
+        '- first item\n- FINAL_SENTINEL last item\n\n',
+        '| key | value |\n| --- | --- |\n| final | FINAL_SENTINEL |\n\n',
+    ]
+    for index, reply in enumerate(replies):
+        with tempfile.TemporaryDirectory(prefix='morph-final-spacing-') as temp:
+            terminal = Terminal(driver, Path(temp), port, hooks_enabled=False)
+            release = None
+            try:
+                terminal.child.setwinsize(32, 100)
+                terminal.screen = pyte.Screen(100, 32)
+                terminal.stream = pyte.Stream(terminal.screen)
+                terminal.pump(1)
+                terminal.send('final spacing check\r')
+                _, release = terminal.request()
+                release.delta = {'content': reply}
+                release.set()
+                terminal.pump(.8)
+                text = terminal.snapshot(f'final spacing case {index}')
+                rows = text.splitlines()
+                assert 'FINAL_SENTINEL' in text, text
+                footer = next(i for i, row in enumerate(rows) if 'Worked for' in row)
+                last_content = max(i for i, row in enumerate(rows[:footer]) if row.strip())
+                assert footer - last_content == 2, text
+                if index == 1:
+                    assert rows[last_content - 1].strip() == '', text
+                if index == 2:
+                    first = next(i for i, row in enumerate(rows) if 'first line' in row)
+                    last = next(i for i, row in enumerate(rows) if 'FINAL_SENTINEL code' in row)
+                    assert last - first == 2, text
+                assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+            finally:
+                if release:
+                    release.set()
+                terminal.child.close(force=True)
 
 
 def main():
@@ -73,6 +116,7 @@ def main():
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    check_final_spacing(driver, server.server_port)
     with tempfile.TemporaryDirectory(prefix='morph-transcript-') as temp:
         directory = Path(temp)
         (directory / 'first.txt').write_text('FIRST_PRIVATE_RESULT\n', encoding='utf-8')
@@ -103,13 +147,13 @@ def main():
             releases.append(final_release)
             assert sum(m['role'] == 'tool' for m in response['messages']) == 2
             compact = terminal.snapshot('compact tool results')
-            rows = [row for row in compact.splitlines() if '●  file_read' in row]
+            rows = [row for row in compact.splitlines() if '● file_read' in row]
             assert len(rows) == 2, compact
-            assert all(row.startswith('●  file_read') for row in rows), compact
+            assert all(row.startswith('● file_read') for row in rows), compact
             assert all(len(row.rstrip()) <= 118 for row in rows), compact
-            assert all(not row[len('●  file_read  '):].startswith(' ')
+            assert all(not row[len('● file_read '):].startswith(' ')
                        for row in rows), compact
-            assert 'FIRST_PRIVATE_RESULT' not in compact, compact
+            assert 'FIRST_PRIVATE_RESULT' in compact, compact
             assert 'SECOND_PRIVATE_RESULT' not in compact, compact
             terminal.send('草稿🙂 tail\x1b[D')
             terminal.send('\x0f')

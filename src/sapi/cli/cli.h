@@ -37,6 +37,11 @@ struct cli_input_status {
 	struct scheduled_task_counts tasks;
 };
 
+struct cli_markdown_output {
+	int prefix_pending;
+	int trailing_newlines;
+};
+
 struct cli_context {
 	struct cli_recap_state recap;
 	struct runtime *runtime;
@@ -65,7 +70,7 @@ struct cli_context {
 	int native_content_visible;
 	int markdown_stream_kind;
 	int markdown_stream_visible;
-	int markdown_stream_prefix_pending;
+	struct cli_markdown_output markdown_output;
 	int mcp_tree_active;
 	char image_path[PATH_MAX];
 	char workdir[PATH_MAX];
