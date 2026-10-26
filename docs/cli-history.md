@@ -14,6 +14,15 @@ is not a complete, standalone request: tool-call batches and their results still
 belong together in the replay window. `s` opens the last captured model input.
 Filtering and inspecting records never changes their retention or execution.
 
+Memory-consolidation scheduling/progress/completion notices are internal telemetry,
+not conversation evidence. They remain UI/log events and are not written into new
+model history. Database migration deactivates their old canonical receipts while
+preserving the saved text; the replay and compaction paths also exclude imported
+or otherwise stale memory-maintenance receipts. The inspector labels them `OUT`
+even when older summary provenance references them. Existing summaries and past
+request snapshots are historical artifacts and are not rewritten. Other useful
+background receipts, such as completed build results, retain their replay behavior.
+
 ## Membership labels
 
 | Label | Meaning |

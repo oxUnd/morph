@@ -208,6 +208,39 @@ TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer
 	cJSON_Delete(snapshot);
 }
 
+TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
+{
+	OpenScripted();
+	struct session session{};
+	ASSERT_EQ(runtime_session_create_and_select(instance, "receipt-policy", &session), 0);
+	struct db handle{};
+	ASSERT_EQ(db_open(&handle, database.c_str()), 0);
+	struct model_history_insert item{};
+	item.session_id = session.id;
+	item.kind = "background_receipt";
+	item.role = "system";
+	item.active = 1;
+	item.content = "[Background receipt] memory_consolidation: memory consolidation queued";
+	item.payload_json = "{\"task\":\"memory_consolidation\",\"phase\":\"ready\"}";
+	ASSERT_EQ(model_history_add(&handle, &item, nullptr), 0);
+	item.content = "[Background receipt] build: archive created";
+	item.payload_json = "{\"task\":\"build\",\"phase\":\"end\"}";
+	ASSERT_EQ(model_history_add(&handle, &item, nullptr), 0);
+	struct runtime_result result{};
+	ASSERT_EQ(Execute("continue after the background build", &result), 0);
+	cJSON *snapshot = nullptr;
+	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
+	ASSERT_NE(input, nullptr);
+	EXPECT_EQ(strstr(input, "memory_consolidation"), nullptr);
+	EXPECT_EQ(strstr(input, "memory consolidation queued"), nullptr);
+	EXPECT_NE(strstr(input, "archive created"), nullptr);
+	EXPECT_EQ(model_history_count(&handle, session.id, 0), 4);
+	EXPECT_EQ(model_history_count(&handle, session.id, 1), 3);
+	cJSON_Delete(snapshot);
+	db_close(&handle);
+}
+
 TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 {
 	struct runtime_result result{};

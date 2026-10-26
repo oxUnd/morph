@@ -420,7 +420,8 @@ static int turn_consolidate_memory(struct agent_turn *turn,
 		background = *turn->runtime.memory_options;
 	background.hot_path_enabled = 0;
 
-	if (!(turn_flags(&turn->runtime) & AGENT_TURN_CONSOLIDATE_MEMORY))
+	if (!background.enabled ||
+	    !(turn_flags(&turn->runtime) & AGENT_TURN_CONSOLIDATE_MEMORY))
 		return 0;
 	success = turn->runtime.react &&
 		turn->runtime.react->state == REACT_STATE_DONE &&
@@ -432,7 +433,7 @@ static int turn_consolidate_memory(struct agent_turn *turn,
 	if (turn_flags(&turn->runtime) & AGENT_TURN_ASYNC_MEMORY) {
 		turn_emit_background(&turn->runtime, "background.started",
 				     "begin",
-				     "memory consolidation queued", 0);
+				     "memory consolidation scheduling", 0);
 		rc = memory_consolidate_turn_async(
 			turn->runtime.db, turn->runtime.session_id,
 			turn_model_input(turn), assistant_output,

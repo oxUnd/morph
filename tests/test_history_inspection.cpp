@@ -93,6 +93,31 @@ TEST_F(HistoryInspectionTest, EntryInputUsesRealSummaryWrapperAndDoesNotReplayIn
 	cJSON_Delete(input);
 }
 
+TEST_F(HistoryInspectionTest, InternalMemoryReceiptsStayOutEvenAfterImportOrSummaryCoverage)
+{
+	int64_t receipt = Add("background_receipt",
+		"[Background receipt] memory_consolidation: memory consolidation queued");
+	int64_t summary = Add("compaction_summary", "retained summary");
+	std::string sql = "INSERT INTO history_summary_sources VALUES(" +
+		std::to_string(summary) + "," + std::to_string(receipt) + ")";
+	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
+	for (bool active : {true, false}) {
+		ASSERT_EQ(db_exec(&db, ("UPDATE model_history_items SET active=" +
+			std::string(active ? "1" : "0") + " WHERE id=" +
+			std::to_string(receipt)).c_str()), 0);
+		cJSON *report = nullptr;
+		ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
+		cJSON *entry = cJSON_GetArrayItem(cJSON_GetObjectItem(report, "entries"), 0);
+		EXPECT_EQ(Field(entry, "status"), "OUT");
+		EXPECT_NE(Field(entry, "reason").find("Internal memory-maintenance"), std::string::npos);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "active_items")), 1);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(report, "history_tokens")), 7);
+		cJSON_Delete(report);
+		cJSON *input = nullptr;
+		EXPECT_EQ(runtime_session_history_entry_input(instance, 1, &input), -ENODATA);
+	}
+}
+
 TEST_F(HistoryInspectionTest, InactiveCallDoesNotHideAnActiveOrphanResult)
 {
 	struct model_history_insert call{};

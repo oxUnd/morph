@@ -1264,6 +1264,46 @@ TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	model_history_free_list(items);
 }
 
+TEST_F(SessionTest, MemoryMaintenanceIsNeitherPersistedNorReplayed) {
+	struct session session = {};
+	struct react_context react = {};
+	ASSERT_EQ(session_create(&db, "memory_receipts", "test", &session), 0);
+	react.history_db = &db;
+	react.history_session_id = session.id;
+	react.history_enabled = 1;
+	strcpy(react.turn_id, "maintenance-turn");
+	for (const char *phase : {"begin", "ready", "progress", "end", "failed"}) {
+		ASSERT_EQ(agent_history_record_receipt(&react, "background.progress", phase,
+			"memory maintenance status", "memory_consolidation", -1, 0), 0);
+	}
+	EXPECT_EQ(model_history_count(&db, session.id, 0), 0);
+	struct model_history_item legacy = {};
+	strcpy(legacy.kind, "background_receipt");
+	legacy.content = const_cast<char *>("[Background receipt] memory_consolidation: queued");
+	legacy.payload_json = const_cast<char *>("{malformed legacy metadata");
+	struct model_history_item metadata = {};
+	strcpy(metadata.kind, "background_receipt");
+	metadata.content = const_cast<char *>("Different wording for internal maintenance");
+	metadata.payload_json = const_cast<char *>("{\"task\":\"memory_consolidation\"}");
+	legacy.next = &metadata;
+	struct model_history_item meaningful = {};
+	strcpy(meaningful.kind, "background_receipt");
+	meaningful.content = const_cast<char *>("archive created");
+	meaningful.payload_json = const_cast<char *>("{\"task\":\"ios_release\"}");
+	metadata.next = &meaningful;
+	struct arena *arena = arena_create(4096);
+	ASSERT_NE(arena, nullptr);
+	morph_array_t messages;
+	struct chat_message message = {};
+	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(message)), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(&legacy, &messages, arena), 0);
+	ASSERT_EQ(messages.nelts, 1U);
+	auto *actual = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
+	EXPECT_STREQ(actual->content, "archive created");
+	morph_array_cleanup(&messages);
+	arena_destroy(arena);
+}
+
 TEST_F(SessionTest, HistoryReadFailureIsDistinctFromEmptyHistory) {
 	int count = 0;
 	ASSERT_EQ(sqlite3_exec(db.handle, "DROP TABLE model_history_items",

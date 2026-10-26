@@ -22,6 +22,9 @@ struct agent_history_diagnostic {
 	int token_mismatches;
 };
 
+/* Payload eligibility; callers select the active window separately. */
+int agent_history_item_replayable(const struct model_history_item *item);
+
 int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena);

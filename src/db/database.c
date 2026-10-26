@@ -489,6 +489,36 @@ static int db_migrate_scheduled_task_columns(struct db *db)
 	return 0;
 }
 
+static int db_retire_memory_receipts(struct db *db)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(db->handle,
+		"SELECT 1 FROM schema_migrations WHERE version=2", -1, &stmt, NULL);
+
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc == SQLITE_ROW)
+		return 0;
+	if (rc != SQLITE_DONE)
+		MORPH_RETURN(MORPH_ERR_DB);
+	rc = db_exec(db, "SAVEPOINT retire_memory_receipts;");
+	if (rc != 0)
+		return rc;
+	rc = db_exec(db,
+		"UPDATE model_history_items SET active=0 "
+		"WHERE kind='background_receipt' AND active=1 AND "
+		"substr(content,1,length('[Background receipt] memory_consolidation:'))="
+		"'[Background receipt] memory_consolidation:';"
+		"INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) "
+		"VALUES(2,'retire_memory_maintenance_receipts',strftime('%s','now'));"
+		"RELEASE retire_memory_receipts;");
+	if (rc != 0)
+		(void)db_exec(db, "ROLLBACK TO retire_memory_receipts; RELEASE retire_memory_receipts;");
+	return rc;
+}
+
 int db_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
@@ -503,6 +533,9 @@ int db_init_schema(struct db *db)
 	if (rc != 0)
 		return rc;
 	rc = db_exec(db, history_schema_sql);
+	if (rc != 0)
+		return rc;
+	rc = db_retire_memory_receipts(db);
 	if (rc != 0)
 		return rc;
 	db_add_column_if_missing(db, "model_history_items",

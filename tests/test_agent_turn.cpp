@@ -369,6 +369,41 @@ TEST_F(AgentTurnTest, FinishDoesNotConsolidateMemoryForAbortedTurn)
 	free(rendered);
 }
 
+TEST_F(AgentTurnTest, DisabledMemoryDoesNotQueueOrEmitBackgroundStatus)
+{
+	for (bool configured : {false, true}) {
+		struct memory_options options = {};
+		struct agent_session_runtime runtime = {};
+		int events = 0;
+
+		runtime.db = &db;
+		runtime.session_id = sess.id;
+		runtime.react = react;
+		runtime.memory_options = configured ? &options : nullptr;
+		runtime.flags = AGENT_TURN_DEFAULT_FLAGS;
+		runtime.background_user_data = &events;
+		runtime.background_cb = [](void *data, const char *, const char *,
+			const char *, const char *, int, int) {
+			++*static_cast<int *>(data);
+			return 0;
+		};
+		struct agent_turn_input input = {};
+		input.model_input = "ordinary question";
+		struct agent_turn turn = {};
+		ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+		react->state = REACT_STATE_DONE;
+		react->outcome = REACT_OUTCOME_SUCCESS;
+		free(react->final_answer);
+		react->final_answer = strdup("answer");
+		ASSERT_NE(react->final_answer, nullptr);
+		struct agent_turn_result result = {};
+		ASSERT_EQ(agent_turn_finish(&turn, &result), 0);
+		EXPECT_EQ(events, 0);
+		EXPECT_FALSE(result.memory_queued);
+		EXPECT_FALSE(result.memory_ran_inline);
+	}
+}
+
 TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 {
 	struct agent_session_runtime runtime = {};

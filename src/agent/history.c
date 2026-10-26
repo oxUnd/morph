@@ -544,6 +544,28 @@ static int history_item_tokens(const struct model_history_item *item,
 	return tokens > INT_MAX ? INT_MAX : (int)tokens;
 }
 
+int agent_history_item_replayable(const struct model_history_item *item)
+{
+	if (!item)
+		return 0;
+	if (strcmp(item->kind, "background_receipt") == 0) {
+		static const char prefix[] = "[Background receipt] memory_consolidation:";
+		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+		const cJSON *task = cJSON_GetObjectItemCaseSensitive(payload, "task");
+		int internal = (cJSON_IsString(task) &&
+			strcmp(task->valuestring, "memory_consolidation") == 0) ||
+			(item->content && strncmp(item->content, prefix, sizeof(prefix) - 1) == 0);
+
+		cJSON_Delete(payload);
+		return !internal;
+	}
+	return strcmp(item->kind, "user_message") == 0 ||
+		strcmp(item->kind, "assistant_message") == 0 ||
+		strcmp(item->kind, "assistant_tool_calls") == 0 ||
+		strcmp(item->kind, "tool_result") == 0 ||
+		strcmp(item->kind, "compaction_summary") == 0;
+}
+
 int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena)
@@ -586,6 +608,10 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 	}
 	item = items;
 	while (item) {
+		if (!agent_history_item_replayable(item)) {
+			item = item->next;
+			continue;
+		}
 		if (strcmp(item->kind, "assistant_tool_calls") == 0)
 			rc = history_add_tool_calls(item, messages, arena);
 		else if (strcmp(item->kind, "tool_result") == 0)
@@ -1128,6 +1154,9 @@ int agent_history_record_receipt(struct react_context *ctx,
 
 	if (!ctx)
 		MORPH_RETURN(-EINVAL);
+	/* Memory maintenance is UI/log telemetry, not conversation evidence. */
+	if (task && strcmp(task, "memory_consolidation") == 0)
+		return 0;
 	if (!ctx->history_enabled || !ctx->history_db)
 		return 0;
 	rc = morph_buf_init(&text, 256);
@@ -1178,6 +1207,8 @@ static const char *history_compaction_text(const struct model_history_item *item
 	char **rendered)
 {
 	*rendered = NULL;
+	if (!agent_history_item_replayable(item))
+		return NULL;
 	if (strcmp(item->kind, "user_message") == 0) {
 		*rendered = history_user_content(item);
 		return *rendered;
@@ -1424,6 +1455,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	    !ctx->compress.summarize || ctx->compress.max_context_tokens <= 0)
 		return 0;
 	for (item = ctx->history_items; item; item = item->next) {
+		if (!agent_history_item_replayable(item))
+			continue;
 		if (item->token_count > 0)
 			input_tokens = item->token_count > INT_MAX - input_tokens ?
 				INT_MAX : input_tokens + item->token_count;
@@ -1818,7 +1851,8 @@ int agent_history_repair(struct db *db, int64_t session_id,
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
 		const char *token_text = item->content;
-		int active = 1;
+		int active = strcmp(item->kind, "background_receipt") == 0 ?
+			agent_history_item_replayable(item) : 1;
 		int tokens;
 
 		if (strcmp(item->kind, "assistant_tool_calls") == 0) {

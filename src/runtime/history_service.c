@@ -45,13 +45,6 @@ static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered
 	MORPH_RETURN(error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
 }
 
-static int history_replayed_kind(const char *kind)
-{
-	return strcmp(kind, "user_message") == 0 || strcmp(kind, "assistant_message") == 0 ||
-		strcmp(kind, "assistant_tool_calls") == 0 || strcmp(kind, "tool_result") == 0 ||
-		strcmp(kind, "compaction_summary") == 0 || strcmp(kind, "background_receipt") == 0;
-}
-
 static cJSON *history_entry(const struct model_history_item *item,
 	const morph_strmap_t *covered)
 {
@@ -61,7 +54,10 @@ static cJSON *history_entry(const struct model_history_item *item,
 	const char *reason = "Inactive history; summary coverage is unavailable or no longer active.";
 
 	snprintf(key, sizeof(key), "%lld", (long long)item->id);
-	if (item->active && history_replayed_kind(item->kind)) {
+	if (strcmp(item->kind, "background_receipt") == 0 &&
+	    !agent_history_item_replayable(item)) {
+		reason = "Internal memory-maintenance status; excluded from model input.";
+	} else if (item->active && agent_history_item_replayable(item)) {
 		status = item->truncated ? "IN / TRIMMED" : "IN";
 		reason = item->truncated ?
 			"Active replay item. Output was shortened before persistence; the original is unavailable." :
@@ -167,7 +163,7 @@ int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 			rc = -ENOMEM;
 			break;
 		}
-		if (item->active && history_replayed_kind(item->kind)) {
+		if (item->active && agent_history_item_replayable(item)) {
 			active++;
 			tokens += item->token_count > 0 ? item->token_count : 0;
 			if (strcmp(item->kind, "compaction_summary") == 0)
@@ -218,7 +214,7 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 	items = model_history_list(&ctx->database, ctx->current_session.id, 0, &count);
 	for (item = items; item && item->sequence_no != sequence; item = item->next) {}
 	rc = count < 0 ? MORPH_ERR_DB : item ? 0 : -ENOENT;
-	if (rc == 0 && (!item->active || !history_replayed_kind(item->kind)))
+	if (rc == 0 && (!item->active || !agent_history_item_replayable(item)))
 		rc = -ENODATA;
 	if (rc == 0) {
 		struct chat_message message;

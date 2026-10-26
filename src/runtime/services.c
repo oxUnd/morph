@@ -299,6 +299,7 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 	int count = 0;
 	int total = 0;
 	int tools = 0;
+	int replay_items = 0;
 	int compact_count = 0;
 
 	if (!runtime)
@@ -308,6 +309,9 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 	if (count < 0)
 		MORPH_RETURN(MORPH_ERR_DB);
 	for (struct model_history_item *item = items; item; item = item->next) {
+		if (!agent_history_item_replayable(item))
+			continue;
+		replay_items++;
 		total += item->token_count;
 		if (strcmp(item->kind, "tool_result") == 0)
 			tools += item->token_count;
@@ -318,7 +322,7 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 	if (compact_count < 0)
 		return compact_count;
 	if (active_items)
-		*active_items = count;
+		*active_items = replay_items;
 	if (tokens)
 		*tokens = total;
 	if (tool_tokens)

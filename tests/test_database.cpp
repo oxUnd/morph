@@ -110,6 +110,34 @@ TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 	sqlite3_finalize(stmt);
 }
 
+TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(db_exec(&db,
+		"INSERT INTO sessions(id,name,model,created_at,updated_at) VALUES(1,'legacy','test',1,1);"
+		"INSERT INTO model_history_items(session_id,sequence_no,kind,role,content,active,created_at) "
+		"VALUES(1,1,'background_receipt','system',"
+		"'[Background receipt] memory_consolidation: memory consolidation queued',1,1),"
+		"(1,2,'background_receipt','system','[Background receipt] build: archive created',1,1),"
+		"(1,3,'user_message','user','[Background receipt] memory_consolidation: user text',1,1);"
+		"DELETE FROM schema_migrations WHERE version=2;"), 0);
+	db_close(&db);
+	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+		"SELECT sequence_no,active,content FROM model_history_items ORDER BY sequence_no",
+		-1, &stmt, nullptr), SQLITE_OK);
+	for (int index = 1; index <= 3; index++) {
+		ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+		EXPECT_EQ(sqlite3_column_int(stmt, 0), index);
+		EXPECT_EQ(sqlite3_column_int(stmt, 1), index == 1 ? 0 : 1);
+		EXPECT_GT(sqlite3_column_bytes(stmt, 2), 0);
+	}
+	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+	sqlite3_finalize(stmt);
+}
+
 TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {
 	int rc = db_open(&db, db_path);
 	EXPECT_EQ(rc, 0);
