@@ -33,6 +33,7 @@ void cli_turn_begin(struct cli_context *ctx);
 void cli_transcript_toggle(struct cli_context *ctx);
 void cli_transcript_view_render(struct cli_context *ctx, int scroll);
 void cli_transcript_finish(struct cli_context *ctx);
+int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int styled);
 void cli_presentation_finish(struct cli_context *ctx);
 const char *cli_input_prompt(void);
 void cli_presentation_user_input(const char *text);
@@ -1806,7 +1807,68 @@ TEST_F(CliPresentationTest, OversizedRemoteToolNameDoesNotWrapFeedHeader)
 	std::string row = output.substr(start, output.find('\n', start) - start);
 	EXPECT_LE(utf8_display_width(row.c_str()),
 		  static_cast<size_t>(cli_list_columns() - 2));
-	EXPECT_NE(row.find("..."), std::string::npos);
+	EXPECT_NE(row.find("…"), std::string::npos);
+	cJSON_Delete(call);
+}
+
+TEST_F(CliPresentationTest, LiveToolPreviewFollowsTailAndRetainsFullStream)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"tool_call_id\":\"live\","
+		"\"args\":{\"command\":\"make\"}}");
+	cJSON *delta = cJSON_Parse("{\"tool_call_id\":\"live\","
+		"\"text\":\"FIRST_DETAIL_LINE\\nsecond\\nthird\\n中文\\tprogress\\n\"}");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_TOOL, "tool.stream.delta", "update", delta);
+	(void)testing::internal::GetCapturedStdout();
+	morph_buf_t body;
+	ASSERT_EQ(morph_buf_init(&body, 128), 0);
+	EXPECT_EQ(cli_transcript_live_body(&ctx, &body, 0), 3);
+	EXPECT_STREQ(morph_buf_cstr(&body), "  └ second\n    third\n    中文 progress");
+	EXPECT_EQ(utf8valid(morph_buf_cstr(&body)), nullptr);
+	morph_buf_cleanup(&body);
+	testing::internal::CaptureStdout();
+	cli_transcript_toggle(&ctx);
+	std::string details = testing::internal::GetCapturedStdout();
+	EXPECT_NE(details.find("FIRST_DETAIL_LINE"), std::string::npos);
+	cJSON_Delete(delta);
+	cJSON_Delete(call);
+}
+
+TEST_F(CliPresentationTest, NarrowTimeoutRowsFitActualWidth)
+{
+	const char *previous = getenv("COLUMNS");
+	std::string saved = previous ? previous : "";
+	bool had_columns = previous != nullptr;
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse("{\"tool\":\"exec\",\"args\":{\"command\":\"sleep 30\"}}");
+	cJSON *result = cJSON_Parse("{\"tool\":\"exec\",\"result\":"
+		"\"{\\\"data\\\":{\\\"status\\\":\\\"timed_out\\\","
+		"\\\"duration_ms\\\":10000,\\\"stderr\\\":\\\"中文 timeout\\\"}}\"}");
+	for (int columns : {8, 12, 20, 24, 40}) {
+		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+		(void)testing::internal::GetCapturedStdout();
+		testing::internal::CaptureStdout();
+		Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
+		std::string output = testing::internal::GetCapturedStdout();
+		std::istringstream lines(output);
+		std::string line;
+		while (std::getline(lines, line)) {
+			EXPECT_EQ(utf8valid(line.c_str()), nullptr);
+			EXPECT_LE(utf8_display_width_ansi(line.c_str()),
+				static_cast<size_t>(columns - 2)) << line;
+		}
+		if (columns >= 12)
+			EXPECT_NE(output.find("TIMEOUT"), std::string::npos);
+	}
+	if (had_columns)
+		setenv("COLUMNS", saved.c_str(), 1);
+	else
+		unsetenv("COLUMNS");
+	cJSON_Delete(result);
 	cJSON_Delete(call);
 }
 

@@ -371,6 +371,18 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 
 	is_fence = line_fence_info(line, len, &line_fence_marker,
 				   &line_fence_len);
+	if (was_in_fence && is_fence) {
+		size_t indent = skip_indent(line, len);
+		size_t tail = indent;
+
+		for (int i = 0; i < line_fence_len; i++)
+			tail += utf8codepointcalcsize(line + tail);
+		while (tail < len && (line[tail] == ' ' || line[tail] == '\t'))
+			tail++;
+		is_fence = indent <= 3 && !memchr(line, '\t', indent) &&
+			line_fence_marker == *fence_marker &&
+			line_fence_len >= *fence_len && tail == len;
+	}
 	table_sep = !was_in_fence && line_is_table_sep(line, len);
 	normalize_body = !was_in_fence || is_fence;
 
@@ -389,6 +401,14 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 
 	line = morph_buf_cstr(&normalized);
 	len = normalized.len;
+	/* Code is literal: blank rows, whitespace and fence-like source survive. */
+	if (was_in_fence && !is_fence) {
+		rc = morph_buf_append(out, line, len);
+		if (rc == 0)
+			rc = morph_buf_putc(out, '\n');
+		*previous_blank = len == 0;
+		goto out;
+	}
 	if (!was_in_fence && !line_is_table_sep(line, len)) {
 		size_t table_len;
 		size_t text_start;
@@ -488,7 +508,7 @@ char *agent_ui_normalize_markdown(const char *input)
 		while (pos < len && s[pos] != '\n' && s[pos] != '\r')
 			pos++;
 		line_len = pos - start;
-		while (line_len > 0 &&
+		while (!in_fence && line_len > 0 &&
 		       (s[start + line_len - 1] == ' ' ||
 			s[start + line_len - 1] == '\t'))
 			line_len--;

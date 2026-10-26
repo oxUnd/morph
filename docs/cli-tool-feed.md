@@ -16,6 +16,35 @@ blocks use the same limit. Long lines are clipped to the terminal width. Ctrl+O
 retains complete arguments, output, errors, reasoning and patch diffs in the
 existing details view. Plain and JSON event output keep their existing contracts.
 
+While a tool streams, the live block follows its last three output lines instead
+of showing only `Running…`. Tabs and terminal controls use the same safe text
+path as completed previews. The full stream remains available in Ctrl+O details.
+
+Elapsed-time updates run once per second, with a steady running marker and muted
+`Working` label. Incoming data requests a coalesced update after 80 ms. Idle
+polling refreshes changed footer data without erasing the composer; an unchanged
+footer emits no bytes. The footer uses bold and dim text rather than separate
+colors for the model and directory.
+
+Live layout uses the actual terminal width. Below 20 columns, a clipped
+`Widen terminal` row replaces the live block until the window grows. Compact
+headers and previews use a one-column ellipsis, including narrow Unicode text.
+Normal conversation output continues to use native terminal scrollback.
+
+Nonempty `NO_COLOR`, `TERM=dumb`, `--no-color` and redirected stdout disable
+colors. Non-TTY stdin/stdout and dumb terminals use the existing line-oriented
+input path and plain event presenter, without Readline repainting, graphical
+output, or interactive key hints. JSON events retain their separate path.
+
+Markdown normalization preserves literal fenced-code whitespace, repeated blank
+lines, and fence-like source lines; only a matching, sufficiently long fence
+without trailing source text closes a block.
+
+These refinements apply the lifecycle, redraw and width guidance from
+[tui-design](https://github.com/diegomarino/tui-design/blob/main/skills/tui-design/SKILL.md)
+and the prompt/state separation in
+[AI Coding Agents Terminal UI](https://github.com/vasilyu1983/AI-Agents-public/blob/main/frameworks/shared-skills/skills/ai-coding-agents-terminal-ui/SKILL.md).
+
 `transcript.c` owns tool state and formats the feed. `terminal.c` owns only the
 transient active block and its row accounting. On completion it clears that
 block before appending the final block to scrollback.
@@ -46,6 +75,6 @@ build/bin/morph-cli-pty-driver --replay-events tests/fixtures/cli_tool_feed.json
 
 Press Enter to close the replay. The fixture includes success, timeout, reasoning
 and an active command. It performs no commands or network requests. The PTY
-transcript test checks its visible rows at 100 and 40 columns, as well as normal
+transcript test checks its visible rows at 100, 60, 40, 20 and 12 columns, as well as normal
 CLI streaming, details, scrolling and draft restoration. Terminal font, palette
 and line height remain controlled by the user's terminal.

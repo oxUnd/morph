@@ -39,6 +39,7 @@ static char *g_readline_ready_input;
 static struct cli_composer g_composer;
 static int g_details_hint_visible;
 static int g_details_hint_column;
+static char *g_footer_text;
 static void cli_readline_configure(void);
 
 /* Readline still owns editing and wrapping. Apply color to image labels after
@@ -232,7 +233,7 @@ static void cli_readline_footer(struct cli_context *ctx)
 	if (ctx->recap.pending)
 		(void)morph_buf_puts(&usage, " · Generating recap...");
 	(void)morph_buf_puts(&text, "  ");
-	cli_footer_field(&text, "morph", 5, "\033[1;38;5;252m", 0);
+	cli_footer_field(&text, "morph", 5, ANSI_BOLD, 0);
 	(void)morph_buf_puts(&text, " · ");
 	remaining = (size_t)size.ws_col - 2 -
 		utf8_display_width_ansi(morph_buf_cstr(&text));
@@ -244,7 +245,7 @@ static void cli_readline_footer(struct cli_context *ctx)
 		(void)runtime_session_current(ctx->runtime, &session);
 		cli_footer_field(&text, session.model[0] ? session.model :
 			runtime_config_get(ctx->runtime)->models.text.model,
-			model_width, "\033[38;5;180m", 0);
+			model_width, ANSI_DIM, 0);
 		(void)morph_buf_puts(&text, " · ");
 		workdir = runtime_workdir_get(ctx->runtime);
 		if (!workdir || !workdir[0])
@@ -252,12 +253,12 @@ static void cli_readline_footer(struct cli_context *ctx)
 		if (home && home[0] && strncmp(workdir, home, strlen(home)) == 0 &&
 		    (workdir[strlen(home)] == '/' || workdir[strlen(home)] == '\0')) {
 			(void)morph_buf_puts(&text, cli_color_enabled() ?
-				"\033[38;5;108m~" : "~");
+				ANSI_DIM "~" : "~");
 			workdir += strlen(home);
 			remaining--;
 		}
 		cli_footer_field(&text, workdir,
-			remaining - model_width, "\033[38;5;108m", 1);
+			remaining - model_width, ANSI_DIM, 1);
 		(void)morph_buf_puts(&text, " · ");
 	}
 	cli_footer_field(&text, morph_buf_cstr(&usage),
@@ -279,6 +280,16 @@ static void cli_readline_footer(struct cli_context *ctx)
 			footer_rows++;
 		}
 	}
+	/* A background poll must not repaint an unchanged footer or touch the draft. */
+	if (ctx->input_status.distance == last_row - row + footer_rows + 1 &&
+	    ctx->input_status.footer_rows == footer_rows && g_footer_text &&
+	    strcmp(g_footer_text, morph_buf_cstr(&text)) == 0) {
+		morph_buf_cleanup(&usage);
+		morph_buf_cleanup(&text);
+		return;
+	}
+	free(g_footer_text);
+	g_footer_text = strdup(morph_buf_cstr(&text));
 	cli_readline_clear_footer(ctx);
 	/* Reserve a padded input row and footer even at screen bottom. */
 	if (last_row > row)
@@ -434,6 +445,10 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 		if (resized)
 			cli_terminal_resize(ctx);
 		cli_transcript_view_render(ctx, 0);
+		return;
+	}
+	if (!resized && cli_terminal_next_frame_ms(ctx) < 0) {
+		cli_readline_footer(ctx);
 		return;
 	}
 	cli_terminal_update_begin(ctx);
@@ -1017,11 +1032,89 @@ static void cli_run_structured(struct cli_context *ctx)
 	cli_command_job_cleanup(&job);
 }
 
+static void cli_run_plain(struct cli_context *ctx)
+{
+	morph_buf_t input;
+	char line[BUFSIZ];
+	int prompt = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+
+	if (morph_buf_init(&input, BUFSIZ) != 0)
+		return;
+	while (ctx->running) {
+		int complete = 0;
+
+		(void)cli_ui_drain(ctx);
+		morph_buf_reset(&input);
+		while (!complete) {
+			size_t len;
+			int has_newline;
+			int continuation;
+
+			if (prompt) {
+				printf("%s", input.len == 0 ? "> " : "… ");
+				fflush(stdout);
+			}
+			cli_cancel_state_reset();
+			if (!fgets(line, sizeof(line), stdin)) {
+				if (cli_sigint_received) {
+					cli_sigint_received = 0;
+					clearerr(stdin);
+					morph_buf_reset(&input);
+					break;
+				}
+				if (feof(stdin)) {
+					ctx->running = 0;
+					break;
+				}
+				clearerr(stdin);
+				continue;
+			}
+			len = strlen(line);
+			has_newline = len > 0 && line[len - 1] == '\n';
+			if (has_newline)
+				line[--len] = '\0';
+			if (len > 0 && line[len - 1] == '\r')
+				line[--len] = '\0';
+			continuation = has_newline && len > 0 &&
+				line[len - 1] == '\\';
+			if (continuation)
+				len--;
+			if (morph_buf_append(&input, line, len) != 0) {
+				CMD_ERROR("input is too large");
+				morph_buf_reset(&input);
+				break;
+			}
+			if (continuation) {
+				if (morph_buf_putc(&input, '\n') != 0) {
+					CMD_ERROR("input is too large");
+					morph_buf_reset(&input);
+					break;
+				}
+			} else if (has_newline) {
+				complete = 1;
+			}
+		}
+		if (input.len > 0) {
+			int turn_rc;
+
+			cli_turn_begin(ctx);
+			turn_rc = cli_handle_command(ctx, morph_buf_cstr(&input));
+			(void)cli_ui_drain(ctx);
+			cli_turn_finish(ctx, turn_rc);
+		}
+		(void)cli_ui_drain(ctx);
+	}
+	morph_buf_cleanup(&input);
+}
+
 void cli_run(struct cli_context *ctx)
 {
 	const struct config *config;
 	const char *workdir;
 	const char *home;
+	const char *term = getenv("TERM");
+	int plain = !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) ||
+		(term && strcmp(term, "dumb") == 0);
 	morph_buf_t directory;
 
 	if (!ctx)
@@ -1043,6 +1136,10 @@ void cli_run(struct cli_context *ctx)
 		cli_structured_signal_mode = 0;
 		return;
 	}
+	if (plain) {
+		cli_set_color_enabled(0);
+		ctx->presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	}
 	config = runtime_config_get(ctx->runtime);
 	workdir = runtime_workdir_get(ctx->runtime);
 	memset(&directory, 0, sizeof(directory));
@@ -1059,15 +1156,13 @@ void cli_run(struct cli_context *ctx)
 		(void)morph_buf_puts(&directory,
 				    workdir && workdir[0] ? workdir : ".");
 	}
-	cli_print_welcome(config ? config->models.text.model : NULL,
-		morph_buf_cstr(&directory));
+	if (isatty(STDIN_FILENO) && isatty(STDOUT_FILENO))
+		cli_print_welcome(config ? config->models.text.model : NULL,
+			morph_buf_cstr(&directory));
 	morph_buf_cleanup(&directory);
 	int hooks_rc = cli_hooks_startup(ctx);
 	if (hooks_rc != 0)
 		log_warn("hook trust review failed: %s", morph_strerror(hooks_rc));
-#ifndef HAVE_READLINE
-	char line[BUFSIZ];
-#endif
 
 	struct sigaction sa;
 	struct sigaction winch_sa;
@@ -1081,6 +1176,13 @@ void cli_run(struct cli_context *ctx)
 	sigemptyset(&winch_sa.sa_mask);
 	winch_sa.sa_flags = 0;
 	sigaction(SIGWINCH, &winch_sa, NULL);
+
+	if (plain) {
+		cli_run_plain(ctx);
+		signal(SIGINT, SIG_DFL);
+		signal(SIGWINCH, SIG_DFL);
+		return;
+	}
 
 #ifdef HAVE_READLINE
 	using_history();
@@ -1308,6 +1410,8 @@ void cli_run(struct cli_context *ctx)
 		g_readline_ready_input = NULL;
 	}
 	cli_readline_clear_footer(ctx);
+	free(g_footer_text);
+	g_footer_text = NULL;
 	if (callback_installed)
 		rl_callback_handler_remove();
 	if (job.active) {
@@ -1325,74 +1429,7 @@ void cli_run(struct cli_context *ctx)
 	g_comp_ctx = NULL;
 	cli_structured_signal_mode = 0;
 #else
-	morph_buf_t input;
-	if (morph_buf_init(&input, BUFSIZ) != 0)
-		return;
-	while (ctx->running) {
-		int complete = 0;
-
-		(void)cli_ui_drain(ctx);
-		morph_buf_reset(&input);
-		while (!complete) {
-			size_t len;
-			int has_newline;
-			int continuation;
-
-			printf(input.len == 0 ?
-				ANSI_BOLD ANSI_CYAN "› " ANSI_RESET :
-				ANSI_DIM "… " ANSI_RESET);
-			fflush(stdout);
-			cli_cancel_state_reset();
-			if (!fgets(line, sizeof(line), stdin)) {
-				if (cli_sigint_received) {
-					cli_sigint_received = 0;
-					clearerr(stdin);
-					morph_buf_reset(&input);
-					break;
-				}
-				if (feof(stdin)) {
-					ctx->running = 0;
-					break;
-				}
-				clearerr(stdin);
-				continue;
-			}
-			len = strlen(line);
-			has_newline = len > 0 && line[len - 1] == '\n';
-			if (has_newline)
-				line[--len] = '\0';
-			if (len > 0 && line[len - 1] == '\r')
-				line[--len] = '\0';
-			continuation = has_newline && len > 0 &&
-				line[len - 1] == '\\';
-			if (continuation)
-				len--;
-			if (morph_buf_append(&input, line, len) != 0) {
-				CMD_ERROR("input is too large");
-				morph_buf_reset(&input);
-				break;
-			}
-			if (continuation) {
-				if (morph_buf_putc(&input, '\n') != 0) {
-					CMD_ERROR("input is too large");
-					morph_buf_reset(&input);
-					break;
-				}
-			} else if (has_newline) {
-				complete = 1;
-			}
-		}
-		if (input.len > 0) {
-			int turn_rc;
-
-			cli_turn_begin(ctx);
-			turn_rc = cli_handle_command(ctx, morph_buf_cstr(&input));
-			(void)cli_ui_drain(ctx);
-			cli_turn_finish(ctx, turn_rc);
-		}
-		(void)cli_ui_drain(ctx);
-	}
-	morph_buf_cleanup(&input);
+	cli_run_plain(ctx);
 #endif
 	signal(SIGINT, SIG_DFL);
 	signal(SIGWINCH, SIG_DFL);

@@ -35,7 +35,7 @@ class AlternateScreen(pyte.Screen):
 
 def check_feed_replay(driver):
     fixture = Path(__file__).parent / 'fixtures' / 'cli_tool_feed.jsonl'
-    for width in (100, 40):
+    for width in (100, 60, 40, 20, 12):
         child = pexpect.spawn(str(driver), ['--replay-events', str(fixture)],
                               encoding='utf-8', dimensions=(42, width))
         raw = ''
@@ -50,6 +50,17 @@ def check_feed_replay(driver):
             screen = pyte.Screen(width, 42)
             pyte.Stream(screen).feed(raw)
             text = '\n'.join(screen.display)
+            if width < 26:
+                assert 'TIMEOUT' in text, text
+                if width == 20:
+                    assert 'TIMEOUT Exec' in text, text
+                    assert 'Running…' in text, text
+                else:
+                    assert 'Widen term…' in text, text
+                assert not any(row.strip() == 's' for row in screen.display), text
+                assert '\x1b[2J' not in raw, raw
+                print(f'checked: {width} columns: bounded tool states')
+                continue
             assert sum(row.startswith(('● Exec ', '◉ Exec ')) for row in screen.display) == 6, text
             assert '    $ ' not in text, text
             assert text.count('● Exec ') == 5, text

@@ -519,7 +519,11 @@ int main(int argc, char *argv[])
 	if (rc != 0)
 		return rc;
 	presentation_mode = cli_options_presentation_mode(&options);
-	if (options.one_shot_prompt || options.events_json)
+	const char *no_color = getenv("NO_COLOR");
+	const char *term = getenv("TERM");
+
+	if (options.one_shot_prompt || options.events_json || !isatty(STDOUT_FILENO) ||
+	    (no_color && no_color[0]) || (term && strcmp(term, "dumb") == 0))
 		options.no_color = 1;
 	cli_set_color_enabled(!options.no_color);
 	if (options.show_help)

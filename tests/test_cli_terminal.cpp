@@ -85,6 +85,7 @@ TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAndRestoresComposer)
 	EXPECT_GE(cli_terminal_next_frame_ms(&ctx), 0);
 
 	cli_terminal_render_frame(&ctx, 1);
+	EXPECT_GT(cli_terminal_next_frame_ms(&ctx), 800);
 	cli_terminal_history_begin(&ctx);
 	fprintf(output, "committed history\n");
 	fflush(output);
@@ -228,6 +229,16 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	bytes[count] = '\0';
 	EXPECT_NE(std::string(bytes).find("1s"), std::string::npos);
 	EXPECT_GE(cli_terminal_activity_elapsed_ms(&ctx), 1000);
+	size.ws_col = 12;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	cli_terminal_resize(&ctx);
+	EXPECT_EQ(cli_terminal_columns(&ctx), 12);
+	cli_terminal_render_frame(&ctx, 1);
+	count = read(master, bytes, sizeof(bytes) - 1);
+	ASSERT_GT(count, 0);
+	bytes[count] = '\0';
+	EXPECT_NE(std::string(bytes).find("Widen term…"), std::string::npos);
+	EXPECT_EQ(std::string(bytes).find('\n'), std::string::npos);
 	cli_terminal_live_clear(&ctx);
 	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
 	cli_presentation_cleanup(&ctx);

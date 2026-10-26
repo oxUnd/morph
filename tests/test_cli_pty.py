@@ -10,6 +10,7 @@ from pathlib import Path
 import queue
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -144,6 +145,35 @@ def main():
         terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
         releases = []
         try:
+            piped = subprocess.run(
+                [str(driver), str(Path(temp) / 'config.toml'), temp,
+                 str(Path(temp) / 'pipe.db')],
+                input='/help\n/quit\n', text=True, capture_output=True,
+                env={**os.environ, 'MORPH_PTY_API_KEY': 'local-test'}, timeout=10)
+            assert piped.returncode == 0, piped.stderr
+            assert '/help' in piped.stdout, piped.stdout
+            assert '\x1b' not in piped.stdout, repr(piped.stdout)
+            assert 'ctrl+o details' not in piped.stdout, piped.stdout
+            assert 'Enter send/adjust' not in piped.stdout, piped.stdout
+            with subprocess.Popen(
+                    [str(driver), str(Path(temp) / 'config.toml'), temp,
+                     str(Path(temp) / 'pipe-model.db')],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, env={**os.environ, 'MORPH_PTY_API_KEY': 'local-test'}) as process:
+                process.stdin.write('pipe task\n/quit\n')
+                process.stdin.flush()
+                try:
+                    _, pipe_release = Model.requests.get(timeout=8)
+                    pipe_release.delta = {'content': 'PIPE_FINAL_SENTINEL 中文'}
+                    pipe_release.set()
+                    output, errors = process.communicate(timeout=10)
+                    assert process.returncode == 0, errors
+                    assert 'PIPE_FINAL_SENTINEL 中文' in output, output
+                    assert '\x1b' not in output, repr(output)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
             terminal.pump(1)
             idle = terminal.snapshot('idle')
             rows = idle.splitlines()
@@ -153,6 +183,13 @@ def main():
             assert 'morph · pty-test' in rows[prompt_row + 2], idle
             assert terminal.screen.buffer[prompt_row][0].bg == '1c1c1c', idle
             assert Path(temp).name in rows[prompt_row + 2], idle
+            terminal.send('idle 中文 draft')
+            terminal.pump(.3)
+            before = len(terminal.raw)
+            terminal.pump(1.3)
+            assert terminal.raw[before:] == '', repr(terminal.raw[before:])
+            assert 'idle 中文 draft' in terminal.snapshot('idle draft remains quiet')
+            terminal.send('\x15')
             with sqlite3.connect(Path(temp) / 'data.db') as database:
                 database.execute("""INSERT INTO scheduled_tasks
                     (title,kind,status,trigger_type,next_run_at,action_type,created_at,updated_at)

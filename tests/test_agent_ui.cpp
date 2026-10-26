@@ -274,6 +274,19 @@ TEST(TestAgentUI, NormalizesCodeFenceButPreservesCodeBody)
 	EXPECT_EQ(normalized.find("# not heading"), std::string::npos);
 }
 
+TEST(TestAgentUI, PreservesLiteralCodeWhitespaceAndFenceLikeLines)
+{
+	const char *input = "````text\nline  \n\n\n\t\n```\n````suffix\n"
+		"~~~\n    ````\n＃ literal\n````\nAfter";
+	char *out = agent_ui_normalize_markdown(input);
+	ASSERT_NE(out, nullptr);
+	std::string normalized(out);
+	free(out);
+	EXPECT_NE(normalized.find("line  \n\n\n\t\n```\n````suffix\n"
+		"~~~\n    ````\n＃ literal\n````\n"), std::string::npos);
+	EXPECT_NE(normalized.find("After\n"), std::string::npos);
+}
+
 TEST(TestAgentUI, NormalizesFullwidthLinksAndTables)
 {
 	char *out = agent_ui_normalize_markdown(

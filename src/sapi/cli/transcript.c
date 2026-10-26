@@ -52,9 +52,12 @@ static double transcript_now(void)
 static int transcript_columns(void)
 {
 	struct winsize size = {0};
+	const char *configured = getenv("COLUMNS");
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
 		return size.ws_col;
+	if (configured && configured[0])
+		return cli_terminal_columns(NULL);
 	return cli_list_columns();
 }
 
@@ -200,10 +203,10 @@ static void append_clipped_text(morph_buf_t *buf, const char *text, int width)
 		return;
 	}
 	end = utf8_advance_display_width(safe, (size_t)width);
-	if (*end && width > 3) {
-		end = utf8_advance_display_width(safe, (size_t)(width - 3));
+	if (*end) {
+		end = utf8_advance_display_width(safe, (size_t)(width - 1));
 		(void)morph_buf_append(buf, safe, (size_t)(end - safe));
-		(void)morph_buf_puts(buf, "...");
+		(void)morph_buf_puts(buf, "…");
 	} else {
 		(void)morph_buf_append(buf, safe, (size_t)(end - safe));
 	}
@@ -247,6 +250,19 @@ static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,
 	char cwd[PATH_MAX];
 	double elapsed = tool->ended - tool->started;
 
+	if (columns < 24) {
+		if (morph_buf_init(&action, 64) != 0)
+			return;
+		(void)morph_buf_printf(&action, "%s %s%s", tool_state_marker(tool),
+			tool->timed_out ? "TIMEOUT " : tool->state < 0 ? "FAILED " : "", label);
+		if (styled)
+			(void)morph_buf_puts(row, color);
+		append_clipped_text(row, morph_buf_cstr(&action), columns);
+		if (styled)
+			(void)morph_buf_puts(row, ANSI_RESET);
+		morph_buf_cleanup(&action);
+		return;
+	}
 	if (shell_tool(tool) && getcwd(cwd, sizeof(cwd)))
 		target = cli_shell_summary(target, cwd);
 	/* Shorten only a whole path prefix, never shell source or sibling paths. */
@@ -331,11 +347,47 @@ int cli_transcript_live_text(struct cli_context *ctx, morph_buf_t *text, int sty
 /* The command is in the header; the active body contains only progress. */
 int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int styled)
 {
-	if (!active_tool(ctx))
+	struct transcript_tool *tool = active_tool(ctx);
+	const char *start;
+	const char *end;
+	int rows = 0;
+	int width = transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING - 4;
+
+	if (!tool)
 		return 0;
-	(void)morph_buf_printf(body, "%s    Running…%s",
-		styled ? ANSI_DIM : "", styled ? ANSI_RESET : "");
-	return 1;
+	end = morph_buf_cstr(&tool->stream) + tool->stream.len;
+	while (end > tool->stream.data && end[-1] == '\n')
+		end--;
+	if (end == tool->stream.data) {
+		(void)morph_buf_printf(body, "%s    Running…%s",
+			styled ? ANSI_DIM : "", styled ? ANSI_RESET : "");
+		return 1;
+	}
+	/* Inspect only the tail. Retain the complete sanitized stream for details. */
+	start = end;
+	while (start > tool->stream.data) {
+		if (start[-1] == '\n' && ++rows == 3)
+			break;
+		start--;
+	}
+	rows = 0;
+	while (start < end) {
+		const char *newline = memchr(start, '\n', (size_t)(end - start));
+		char *line = strndup(start, (size_t)((newline ? newline : end) - start));
+
+		if (!line)
+			break;
+		if (rows)
+			(void)morph_buf_putc(body, '\n');
+		(void)morph_buf_printf(body, "%s%s", styled ? ANSI_DIM : "",
+			rows ? "    " : "  └ ");
+		append_clipped_text(body, line, width);
+		(void)morph_buf_puts(body, styled ? ANSI_RESET : "");
+		free(line);
+		rows++;
+		start = newline ? newline + 1 : end;
+	}
+	return rows;
 }
 
 static void restore_live(struct cli_context *ctx)
@@ -355,18 +407,22 @@ static void print_inline(const char *text, int columns)
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	const char *end;
 
-	if (!safe)
+	if (!safe || columns < 1) {
+		free(safe);
 		return;
-	end = utf8_advance_display_width(safe, (size_t)(columns > 0 ? columns : 1));
-	if (*end && columns > 3)
-		end = utf8_advance_display_width(safe, (size_t)(columns - 3));
-	printf("%.*s%s", (int)(end - safe), safe, *end ? "..." : "");
+	}
+	end = utf8_advance_display_width(safe, (size_t)columns);
+	if (*end)
+		end = utf8_advance_display_width(safe, (size_t)(columns - 1));
+	printf("%.*s%s", (int)(end - safe), safe, *end ? "…" : "");
 	free(safe);
 }
 
 /* Compact feed lines share one width budget and never interpret shell text. */
 static void print_feed_line(const char *prefix, const char *text, const char *color)
 {
+	if (transcript_columns() < 8)
+		return;
 	printf("%s%s", color, prefix);
 	print_inline(text, transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING -
 		(int)utf8_display_width(prefix));
@@ -1122,8 +1178,8 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		if (ctx->tool_details) {
 			cli_terminal_live_clear(ctx);
 			print_lines(morph_buf_cstr(&tool->stream) + offset);
-			restore_live(ctx);
 		}
+		restore_live(ctx);
 		return 1;
 	}
 	if (strcmp(name, "tool.result") != 0 && strcmp(name, "tool.failed") != 0 &&
