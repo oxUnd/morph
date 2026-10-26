@@ -20,6 +20,7 @@ int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx);
 int cli_terminal_columns(const struct cli_context *ctx);
 void cli_terminal_queue_changed(struct cli_context *ctx);
 void cli_terminal_render_frame(struct cli_context *ctx, int force);
+int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows);
 int cli_terminal_next_frame_ms(const struct cli_context *ctx);
 void cli_terminal_composer_suspend(struct cli_context *ctx);
 void cli_terminal_composer_resume(struct cli_context *ctx);

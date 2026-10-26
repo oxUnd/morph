@@ -5,6 +5,7 @@
 
 #define CLI_TERMINAL_DEFAULT_COLUMNS 80
 #define CLI_TERMINAL_FRAME_MS 80
+#define CLI_TERMINAL_ANIMATION_MS 32
 #define CLI_TERMINAL_WORK_FRAME_MS 1000
 #define CLI_TERMINAL_STATUS_MAX 2000
 #define CLI_TERMINAL_QUEUE_VISIBLE 3
@@ -32,6 +33,9 @@ struct cli_terminal {
 	int update_active;
 	int columns;
 	int64_t next_frame_ms;
+	int64_t next_content_ms;
+	int content_dirty;
+	int work_rows_below;
 	enum cli_work_state work_state;
 	int64_t work_started_ms;
 	int64_t work_elapsed_ms;
@@ -79,6 +83,41 @@ void cli_terminal_turn_begin(struct cli_context *ctx)
 	ctx->terminal->work_state = CLI_WORK_RUNNING;
 	ctx->terminal->work_started_ms = terminal_now_ms();
 	ctx->terminal->work_elapsed_ms = 0;
+	ctx->terminal->content_dirty = 1;
+}
+
+static void terminal_work_label(struct cli_terminal *terminal, int64_t elapsed)
+{
+	const char label[] = "Working";
+	int64_t phase = elapsed > 600 ? (elapsed - 600) % 4000 : 0;
+	double position = (double)(phase < 1000 ? phase : 1000) / 1000.0 * 13.0 - 3.0;
+
+	fprintf(terminal->output, ANSI_RESET "  ");
+	for (size_t i = 0; i < sizeof(label) - 1; i++) {
+		double distance = ((double)i + 0.5 - position) / 3.0;
+
+		if (distance < 0.0)
+			distance = -distance;
+		double intensity = distance < 1.0 ? 1.0 - distance : 0.0;
+		int shade = 138 + (int)(117.0 * intensity * intensity *
+			(3.0 - 2.0 * intensity));
+
+		fprintf(terminal->output, "\033[38;2;%d;%d;%dm%c",
+			shade, shade, shade, label[i]);
+	}
+	fprintf(terminal->output, ANSI_RESET);
+}
+
+static int terminal_work_interval(const struct cli_terminal *terminal, int64_t now)
+{
+	int64_t elapsed = now - terminal->work_started_ms;
+	int64_t phase = elapsed > 600 ? (elapsed - 600) % 4000 : 0;
+	int64_t delay = elapsed < 600 ? 600 - elapsed :
+		phase < 1000 ? CLI_TERMINAL_ANIMATION_MS : 4000 - phase;
+	int64_t second = 1000 - elapsed % 1000;
+
+	/* Between sweeps, wake only for the clock or the next sweep. */
+	return (int)(delay < second ? delay : second);
 }
 
 static void terminal_work_row(struct cli_terminal *terminal, int columns)
@@ -110,7 +149,8 @@ static void terminal_work_row(struct cli_terminal *terminal, int columns)
 	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped),
 		morph_buf_cstr(&text), (size_t)(columns > prefix ? columns - prefix : 1), 0);
 	if (terminal->work_state == CLI_WORK_RUNNING) {
-		fprintf(terminal->output, ANSI_DIM "  Working · ");
+		terminal_work_label(terminal, elapsed);
+		fprintf(terminal->output, ANSI_DIM " · ");
 	} else {
 		fprintf(terminal->output, "  ");
 	}
@@ -280,9 +320,12 @@ static void terminal_live_set(struct cli_context *ctx, const char *text, int ind
 		terminal->live_started_ms = terminal_now_ms();
 	terminal->live_independent = independent;
 	terminal->live_active = 1;
-	/* Data changes are coalesced; elapsed-time ticks need only one frame a second. */
+	/* Coalesce content separately from the lightweight animation frames. */
 	int64_t next = terminal_now_ms() + CLI_TERMINAL_FRAME_MS;
 
+	terminal->content_dirty = 1;
+	if (terminal->next_content_ms > next)
+		terminal->next_content_ms = next;
 	if (terminal->next_frame_ms > next)
 		terminal->next_frame_ms = next;
 	if (!terminal->transient) {
@@ -351,6 +394,43 @@ void cli_terminal_queue_changed(struct cli_context *ctx)
 		cli_terminal_render_frame(ctx, 1);
 }
 
+/* cursor_rows is the cursor's distance below the start of the composer.
+ * Keep Readline, queued input and tool output untouched on animation ticks. */
+int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
+{
+	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
+	struct winsize size = {0};
+	int64_t now = terminal_now_ms();
+	int distance;
+
+	if (!terminal || !terminal->transient || !terminal->live_visible ||
+	    ctx->details_visible || terminal->work_state != CLI_WORK_RUNNING ||
+	    terminal->columns < 20 || terminal_columns(terminal) != terminal->columns)
+		return 0;
+	if ((terminal->content_dirty || terminal->live_independent) &&
+	    now >= terminal->next_content_ms)
+		return 0;
+	if (now < terminal->next_frame_ms)
+		return 1;
+	terminal->next_frame_ms = now + terminal_work_interval(terminal, now);
+	distance = terminal->work_rows_below + cursor_rows + terminal->live_anchored;
+	/* A long wrapped draft can push the status row out of the viewport. */
+	if (ioctl(terminal->output_fd, TIOCGWINSZ, &size) == 0 &&
+	    size.ws_row > 0 && distance >= size.ws_row)
+		return 1;
+	int updating = cli_terminal_update_active(ctx);
+
+	cli_terminal_update_begin(ctx);
+	fprintf(terminal->output, "\0337\r");
+	if (distance > 0)
+		fprintf(terminal->output, "\033[%dA", distance);
+	terminal_work_row(terminal, terminal->columns);
+	fprintf(terminal->output, "\0338");
+	if (!updating)
+		cli_terminal_update_end(ctx);
+	return 1;
+}
+
 void cli_terminal_render_frame(struct cli_context *ctx, int force)
 {
 	struct cli_terminal *terminal;
@@ -383,6 +463,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	}
 	if (!force && terminal->live_visible &&
 	    now < terminal->next_frame_ms)
+		return;
+	if (!force && !terminal->live_anchored && cli_terminal_render_tick(ctx, 0))
 		return;
 	if (ctx->input_job &&
 	    cli_command_job_prompt_snapshot(ctx->input_job, queue_items,
@@ -504,7 +586,12 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		2 * (terminal->work_state != CLI_WORK_NONE) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
-	terminal->next_frame_ms = now + CLI_TERMINAL_WORK_FRAME_MS;
+	terminal->work_rows_below = queue_shown ?
+		2 + (int)queue_shown + (queue_total > queue_shown) : 0;
+	terminal->content_dirty = 0;
+	terminal->next_content_ms = now + CLI_TERMINAL_WORK_FRAME_MS;
+	terminal->next_frame_ms = now + (terminal->work_state == CLI_WORK_RUNNING ?
+		terminal_work_interval(terminal, now) : CLI_TERMINAL_WORK_FRAME_MS);
 }
 
 int cli_terminal_next_frame_ms(const struct cli_context *ctx)

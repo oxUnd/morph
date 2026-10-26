@@ -451,6 +451,19 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 		cli_readline_footer(ctx);
 		return;
 	}
+	if (!resized && rl_line_buffer) {
+		int row, column;
+
+		cli_readline_position(rl_point, cli_terminal_columns(ctx), &row, &column);
+		if (cli_terminal_render_tick(ctx, row + ctx->input_status.padding_rows)) {
+			struct timespec now;
+
+			if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+			    now.tv_sec != ctx->input_status.updated)
+				cli_readline_footer(ctx);
+			return;
+		}
+	}
 	cli_terminal_update_begin(ctx);
 	draft = cli_readline_suspend(ctx, &point);
 

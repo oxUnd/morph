@@ -248,3 +248,59 @@ TEST_F(CliTerminalTest, IndependentActivityOverridesToolAndKeepsTimerAfterResize
 	close(slave);
 	close(master);
 }
+
+TEST_F(CliTerminalTest, WorkAnimationPreservesComposerAndQueuedContent)
+{
+	struct cli_command_job job{};
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	struct winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	ctx.input_job = &job;
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.input_status.enabled = 1;
+	ASSERT_EQ(cli_command_job_prompt(&job, "queued adjustment", nullptr), 0);
+	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
+	cli_terminal_turn_begin(&ctx);
+	cli_terminal_live_set(&ctx, "stable tool output");
+	cli_terminal_composer_resume(&ctx);
+	char bytes[BUFSIZ];
+	while (read(master, bytes, sizeof(bytes)) > 0) {}
+	usleep(850000);
+	ASSERT_EQ(cli_terminal_render_tick(&ctx, 3), 1);
+	ssize_t count = read(master, bytes, sizeof(bytes));
+	ASSERT_GT(count, 0);
+	std::string first(bytes, static_cast<size_t>(count));
+	EXPECT_NE(first.find("\033[7A"), std::string::npos);
+	EXPECT_NE(first.find("\033[38;2;"), std::string::npos);
+	EXPECT_NE(first.find("\0337"), std::string::npos);
+	EXPECT_NE(first.find("\0338"), std::string::npos);
+	EXPECT_EQ(first.find("stable tool output"), std::string::npos);
+	EXPECT_EQ(first.find("queued adjustment"), std::string::npos);
+	EXPECT_EQ(first.find("\033[2K"), std::string::npos);
+	EXPECT_EQ(first.find('\n'), std::string::npos);
+	EXPECT_LE(cli_terminal_next_frame_ms(&ctx), 32);
+	usleep(70000);
+	ASSERT_EQ(cli_terminal_render_tick(&ctx, 3), 1);
+	count = read(master, bytes, sizeof(bytes));
+	ASSERT_GT(count, 0);
+	EXPECT_NE(first, std::string(bytes, static_cast<size_t>(count)));
+	cli_terminal_turn_end(&ctx, 0);
+	EXPECT_EQ(cli_terminal_render_tick(&ctx, 3), 0);
+	ctx.input_job = nullptr;
+	cli_terminal_cleanup(&ctx);
+	cli_command_job_cleanup(&job);
+	fclose(output);
+	close(slave);
+	close(master);
+}

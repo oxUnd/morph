@@ -289,6 +289,13 @@ def main():
             for frame in feed_frames:
                 assert '› ' in frame and 'ctx ' in frame, repr(frame)
                 assert frame.rfind('› ') > frame.rfind('Live output'), repr(frame)
+            terminal.pump(0.8)
+            tick_start = len(terminal.raw)
+            terminal.pump(1.1)
+            ticks = terminal.raw[tick_start:]
+            assert '\x1b[38;2;' in ticks, 'waiting status must keep animating'
+            assert '\x1b[2K' not in ticks, 'animation erased the composer or feed'
+            assert 'Live output' not in ticks and 'ctx ' not in ticks, repr(ticks)
             terminal.send('改成中文🙂')
             draft = terminal.snapshot('Chinese draft during spinner')
             assert '改成中文🙂' in draft, draft
