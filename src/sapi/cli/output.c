@@ -918,12 +918,21 @@ static const char *operation_label(enum tool_operation_kind kind)
 		return "Write Path Approval";
 	case TOOL_OP_PATH_DELETE:
 		return "Delete Path Approval";
+	case TOOL_OP_DIRECTORY_ACCESS:
+		return "Directory Access Approval";
 	case TOOL_OP_NETWORK:
 		return "Network Approval";
 	case TOOL_OP_EXTERNAL_SEND:
 		return "External Send Approval";
 	}
 	return "Operation Approval";
+}
+
+static const char *operation_approval_label(const struct tool_operation *op)
+{
+	if (op->path_access && (op->path_access & (op->path_access - 1u)))
+		return "Directory Access Approval";
+	return operation_label(op->kind);
 }
 
 static const char *operation_subject(enum tool_operation_kind kind)
@@ -939,12 +948,21 @@ static const char *operation_subject(enum tool_operation_kind kind)
 		return "write_path";
 	case TOOL_OP_PATH_DELETE:
 		return "delete_path";
+	case TOOL_OP_DIRECTORY_ACCESS:
+		return "directory_access";
 	case TOOL_OP_NETWORK:
 		return "network";
 	case TOOL_OP_EXTERNAL_SEND:
 		return "external_send";
 	}
 	return "operation";
+}
+
+static const char *operation_approval_subject(const struct tool_operation *op)
+{
+	if (op->path_access && (op->path_access & (op->path_access - 1u)))
+		return "directory_access";
+	return operation_subject(op->kind);
 }
 
 static const char *operation_scope_label(enum tool_operation_kind kind)
@@ -958,6 +976,8 @@ static const char *operation_scope_label(enum tool_operation_kind kind)
 	case TOOL_OP_PATH_WRITE:
 	case TOOL_OP_PATH_DELETE:
 		return "Output dir";
+	case TOOL_OP_DIRECTORY_ACCESS:
+		return "Lifetime";
 	case TOOL_OP_NETWORK:
 		return "Scope";
 	case TOOL_OP_EXTERNAL_SEND:
@@ -1007,8 +1027,10 @@ static enum tool_operation_verdict cli_json_operation_approval(
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 	if (!cJSON_AddStringToObject(request, "operation",
-				     operation_subject(op->kind)) ||
+				     operation_approval_subject(op)) ||
 	    !cJSON_AddBoolToObject(request, "ephemeral", ephemeral) ||
+	    cli_json_add_optional_string(request, "access",
+		tool_path_access_name(op->path_access)) != 0 ||
 	    cli_json_add_optional_string(request, "tool_name",
 					 op->tool_name) != 0 ||
 	    cli_json_add_optional_string(request, "principal",
@@ -1082,9 +1104,9 @@ void cli_render_operation_approval(struct cli_context *ctx,
 
 	if (width) {
 		printf("\n");
-		approval_card_rule(width, operation_label(op->kind));
+		approval_card_rule(width, operation_approval_label(op));
 	} else {
-		printf("approval: %s\n", operation_label(op->kind));
+		printf("approval: %s\n", operation_approval_label(op));
 	}
 	if (op->tool_name && *op->tool_name)
 		approval_card_field(width, "Tool", op->tool_name, ANSI_BOLD);
@@ -1116,6 +1138,9 @@ void cli_render_operation_approval(struct cli_context *ctx,
 	} else if (op->target && *op->target) {
 		approval_card_field(width, "Target", op->target, ANSI_BOLD);
 	}
+	if (op->path_access)
+		approval_card_field(width, "Access",
+			tool_path_access_name(op->path_access), ANSI_BOLD);
 	if (op->scope && *op->scope)
 		approval_card_field(width,
 			op->tool_name && strcmp(op->tool_name, "request_permissions") == 0 ?
@@ -1137,6 +1162,10 @@ void cli_render_operation_approval(struct cli_context *ctx,
 		approval_card_field(width, NULL,
 			"'yes' allows this call; 'session' trusts "
 			"this capability until exit. It is never persisted.", ANSI_DIM);
+	else if (op->path_access)
+		approval_card_field(width, NULL,
+			"Approves the listed access. 'session': until exit. "
+			"'always': remember for this project.", ANSI_DIM);
 	else
 		approval_card_field(width, NULL,
 			"'session' trusts this scope until exit; "
@@ -1168,7 +1197,7 @@ enum tool_operation_verdict operation_approval_callback(
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 
-	int v = prompt_approval(operation_subject(op->kind), 1, ephemeral);
+	int v = prompt_approval(operation_approval_subject(op), 1, ephemeral);
 	if (v == 3)
 		return TOOL_OP_ALWAYS;
 	if (v == 2)

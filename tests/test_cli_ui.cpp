@@ -671,3 +671,32 @@ TEST_F(CliUiTest, QueuePreservesDisplayTextForSteeringAndNextTurn)
 	EXPECT_EQ(display, nullptr);
 	cli_command_job_cleanup(&job);
 }
+
+TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	struct tool_operation operation = {};
+	operation.kind = TOOL_OP_PATH_DELETE;
+	operation.tool_name = "request_permissions";
+	operation.principal = "*";
+	operation.target = "/workspace/project";
+	operation.scope = "session";
+	operation.path_access = TOOL_PATH_ACCESS_ALL;
+	enum tool_operation_verdict verdict = TOOL_OP_DENY;
+	std::string input = "{\"type\":\"interaction.response\",\"request_id\":"
+		"\"interaction-1\",\"data\":{\"decision\":\"session\"}}\n";
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		verdict = operation_approval_callback(&operation, &ctx);
+	});
+	EXPECT_EQ(verdict, TOOL_OP_SESSION);
+	cJSON *event = find_json_event(output, "interaction.request");
+	ASSERT_NE(event, nullptr);
+	cJSON *payload = cJSON_GetObjectItem(cJSON_GetObjectItem(event, "data"), "request");
+	ASSERT_NE(payload, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "operation")->valuestring, "directory_access");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "access")->valuestring, "read/write/delete");
+	EXPECT_STREQ(cJSON_GetObjectItem(payload, "scope")->valuestring, "session");
+	cJSON_Delete(event);
+}

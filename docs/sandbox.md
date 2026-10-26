@@ -180,6 +180,34 @@ including symlinks leading outside, remain restricted. Legacy executable-scoped
 grants retain their original scope; request directory access again to share it
 across tools. Command execution approvals remain separate from filesystem access.
 
+`request_permissions` groups read/write/delete requests by canonical directory.
+Repeated entries and symlink aliases produce one approval with the complete
+requested Access and lifetime. Existing grants are reused; only missing access
+or an explicit turn-to-session extension needs approval. Parent directories are
+handled before children so a covering grant avoids redundant prompts without
+extending child-only rights to its parent. Plan the workflow's required access
+in one call rather than requesting each operation separately:
+
+```json
+{
+  "scope": "session",
+  "permissions": {
+    "file_system": {
+      "read": ["/path/to/project"],
+      "write": ["/path/to/project"],
+      "delete": ["/path/to/project"]
+    }
+  },
+  "justification": "Update generated project files"
+}
+```
+
+All paths and array entries are validated before the first prompt. A denial
+stores no new permissions for that directory, and a persistence failure rolls
+back the directory's whole batch. Read/write/delete remain independent grants:
+the single approval grants exactly the access displayed. CLI structured events,
+FastCGI interactions and embedded approval details carry the combined access.
+
 Valid shell scripts may contain variable-expanded command names, substitutions,
 functions, arrays, loops, and assignment-only statements. AST analysis still
 collects known program names; runtime-expanded commands additionally require the

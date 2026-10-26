@@ -24,6 +24,23 @@ enum tool_path_op {
 	TOOL_PATH_DELETE = 3,
 };
 
+enum tool_path_access {
+	TOOL_PATH_ACCESS_READ = 1u << 0,
+	TOOL_PATH_ACCESS_WRITE = 1u << 1,
+	TOOL_PATH_ACCESS_DELETE = 1u << 2,
+	TOOL_PATH_ACCESS_ALL = TOOL_PATH_ACCESS_READ | TOOL_PATH_ACCESS_WRITE |
+		TOOL_PATH_ACCESS_DELETE,
+};
+
+struct tool_directory_access_request {
+	unsigned int access;
+	const char *principal;
+	const char *command;
+	const char *path;
+	const char *reason;
+	int session_scope;
+};
+
 enum tool_operation_kind {
 	TOOL_OP_COMMAND = 0,
 	TOOL_OP_PATH_READ = 1,
@@ -32,6 +49,7 @@ enum tool_operation_kind {
 	TOOL_OP_NETWORK = 4,
 	TOOL_OP_EXTERNAL_SEND = 5,
 	TOOL_OP_PATH_DELETE = 6,
+	TOOL_OP_DIRECTORY_ACCESS = 7,
 };
 
 enum tool_operation_verdict {
@@ -54,6 +72,8 @@ struct tool_operation {
 	const char *reason;
 	const char *const *programs;
 	int programs_count;
+	/* Explicit directory permissions shown together in one approval. */
+	unsigned int path_access;
 };
 
 typedef enum tool_operation_verdict (*tool_operation_approval_fn)(
@@ -160,6 +180,13 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 int tool_context_grant_delete_access(struct tool_context *tctx,
 				     const char *principal, const char *path,
 				     char *resolved, size_t resolved_size);
+/* Directory batches preserve independent read/write/delete grants. */
+const char *tool_path_access_name(unsigned int access);
+int tool_context_resolve_directory_access(const char *path, unsigned int access,
+	char *resolved, size_t resolved_size);
+int tool_context_request_directory_access(struct tool_context *tctx,
+	const struct tool_directory_access_request *request,
+	char *resolved, size_t resolved_size);
 /* Use principal "*" for directory grants shared by tools and commands. */
 int tool_context_request_scoped_access(struct tool_context *tctx,
 				       enum tool_path_op operation,

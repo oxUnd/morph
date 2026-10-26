@@ -1,4 +1,5 @@
 #include "tool_context.h"
+#include "cJSON.h"
 #include "db/permission_grant.h"
 #include "util/file.h"
 #include "util/log.h"
@@ -348,6 +349,8 @@ static const char *operation_kind_name(enum tool_operation_kind kind)
 		return "external_send";
 	case TOOL_OP_PATH_DELETE:
 		return "delete";
+	case TOOL_OP_DIRECTORY_ACCESS:
+		return "directory_access";
 	}
 	return "operation";
 }
@@ -1593,60 +1596,69 @@ static int configured_path_allowed(
 	return 0;
 }
 
-int tool_context_request_scoped_access(struct tool_context *tctx,
-				       enum tool_path_op operation,
-				       const char *principal,
-				       const char *command, const char *path,
-				       int session_scope,
-				       char *resolved, size_t resolved_size)
-{
-	char local[PATH_MAX];
-	char *expanded;
-	char *canonical;
-	struct stat st;
-	struct tool_operation op;
-	enum tool_operation_verdict verdict;
-	int exists = 1;
-	int already_allowed;
-	int rc;
+static const struct {
+	unsigned int access;
+	enum tool_path_op operation;
+	const char *kind;
+} directory_access_kinds[] = {
+	{TOOL_PATH_ACCESS_READ, TOOL_PATH_READ, "read_path"},
+	{TOOL_PATH_ACCESS_WRITE, TOOL_PATH_WRITE, "write_path"},
+	{TOOL_PATH_ACCESS_DELETE, TOOL_PATH_DELETE, "delete_path"},
+};
 
-	if (!tctx || !principal || !*principal || !command || !*command ||
-	    !path || !*path ||
-	    (operation != TOOL_PATH_READ && operation != TOOL_PATH_WRITE &&
-	     operation != TOOL_PATH_DELETE))
+const char *tool_path_access_name(unsigned int access)
+{
+	static const char *const names[] = {
+		"", "read", "write", "read/write", "delete", "read/delete",
+		"write/delete", "read/write/delete",
+	};
+
+	return access <= TOOL_PATH_ACCESS_ALL ? names[access] : "";
+}
+
+int tool_context_resolve_directory_access(const char *path, unsigned int access,
+	char *resolved, size_t resolved_size)
+{
+	if (!path || !*path || !access || (access & ~(unsigned int)TOOL_PATH_ACCESS_ALL) ||
+	    !resolved || !resolved_size)
 		MORPH_RETURN(-EINVAL);
-	expanded = file_expand_path(path);
+	char *expanded = file_expand_path(path);
+
 	if (!expanded)
 		MORPH_RETURN(-ENOMEM);
-	if (!file_path_is_absolute(expanded)) {
+	if (!file_path_is_absolute(expanded) || strlen(expanded) >= PATH_MAX) {
+		int rc = strlen(expanded) >= PATH_MAX ? -ENAMETOOLONG : -EINVAL;
+
 		free(expanded);
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN(rc);
 	}
-	if (stat(expanded, &st) != 0) {
-		if (errno != ENOENT || operation != TOOL_PATH_WRITE) {
-			rc = -errno;
-			free(expanded);
-			return rc;
-		}
-		exists = 0;
-	} else if (!S_ISDIR(st.st_mode)) {
-		free(expanded);
-		MORPH_RETURN(-ENOTDIR);
-	}
-	canonical = file_resolve_path(expanded);
+	char *canonical = file_resolve_path(expanded);
+
 	free(expanded);
 	if (!canonical)
 		MORPH_RETURN(-ENOMEM);
-	if (!resolved || resolved_size == 0) {
-		resolved = local;
-		resolved_size = sizeof(local);
+	struct stat st;
+	int rc = 0;
+
+	if (stat(canonical, &st) != 0) {
+		if (errno != ENOENT || !(access & TOOL_PATH_ACCESS_WRITE))
+			MORPH_SET_ERR(rc, -errno);
+	} else if (!S_ISDIR(st.st_mode)) {
+		MORPH_SET_ERR(rc, -ENOTDIR);
 	}
-	if (strlen(canonical) + 1 > resolved_size) {
-		free(canonical);
-		MORPH_RETURN(-ENAMETOOLONG);
-	}
-	snprintf(resolved, resolved_size, "%s", canonical);
-	already_allowed = (tctx->workdir[0] &&
+	if (rc == 0 && strlen(canonical) >= resolved_size)
+		MORPH_SET_ERR(rc, -ENAMETOOLONG);
+	if (rc == 0)
+		memcpy(resolved, canonical, strlen(canonical) + 1);
+	free(canonical);
+	return rc;
+}
+
+static int directory_access_is_allowed(const struct tool_context *tctx,
+	const struct tool_directory_access_request *request,
+	enum tool_path_op operation, const char *canonical)
+{
+	int already_allowed = (tctx->workdir[0] &&
 		path_is_within(canonical, tctx->workdir)) ||
 		(tctx->output_dir[0] &&
 		 path_is_within(canonical, tctx->output_dir)) ||
@@ -1655,76 +1667,185 @@ int tool_context_request_scoped_access(struct tool_context *tctx,
 		policy_path_is_allowed(tctx, operation, canonical);
 	if (operation == TOOL_PATH_READ)
 		already_allowed = already_allowed ||
-			persistent_path_is_allowed(tctx, principal, "read_path", canonical);
+			persistent_path_is_allowed(tctx, request->principal,
+				"read_path", canonical);
 	else if (operation == TOOL_PATH_WRITE)
 		already_allowed = already_allowed ||
-			scoped_write_is_allowed(tctx, principal, canonical) ||
+			scoped_write_is_allowed(tctx, request->principal, canonical) ||
 			configured_path_allowed(canonical,
 				tctx->exec_profile_write_dirs,
 				tctx->exec_profile_write_dirs_count);
 	else
 		already_allowed = already_allowed ||
-			scoped_delete_is_allowed(tctx, principal, canonical) ||
+			scoped_delete_is_allowed(tctx, request->principal, canonical) ||
 			configured_path_allowed(canonical,
 				tctx->exec_profile_delete_dirs,
 				tctx->exec_profile_delete_dirs_count);
 	/* Extending a turn grant to a session requires a new approval. */
-	if (session_scope && strcmp(principal, "*") == 0 &&
+	if (request->session_scope && strcmp(request->principal, "*") == 0 &&
 	    directory_grant_is_allowed(tctx, operation, canonical, 0) &&
 	    !directory_grant_is_allowed(tctx, operation, canonical, 1))
 		already_allowed = 0;
-	if (already_allowed) {
-		free(canonical);
-		return 0;
-	}
-	if (!tctx->operation_approval_fn) {
-		free(canonical);
-		MORPH_RETURN(-EPERM);
-	}
-	memset(&op, 0, sizeof(op));
-	op.kind = path_op_to_kind(operation);
-	op.tool_name = "request_permissions";
-	op.principal = principal;
-	op.action = command;
-	op.target = canonical;
-	op.scope = session_scope ? "session" : "turn";
-	verdict = tctx->operation_approval_fn(
-		&op, tctx->operation_approval_user_data);
-	if (verdict == TOOL_OP_DENY) {
-		free(canonical);
-		MORPH_RETURN(-EACCES);
-	}
-	if (!exists) {
-		char *created;
+	return already_allowed;
+}
 
-		rc = file_ensure_dir(canonical);
-		if (rc != 0) {
-			free(canonical);
+static int store_directory_access(struct tool_context *tctx,
+	const struct tool_directory_access_request *request, const char *canonical,
+	unsigned int access, enum tool_operation_verdict verdict)
+{
+	int persistent = verdict == TOOL_OP_ALWAYS;
+	morph_array_t *storage = persistent ? &tctx->persistent_grants : &tctx->scoped_grants;
+	size_t before = storage->nelts;
+
+	if (before > SIZE_MAX - 3)
+		MORPH_RETURN(-EOVERFLOW);
+	int rc = morph_array_reserve(storage, before + 3);
+	int transaction = persistent && tctx->grant_db && tctx->grant_project_root[0];
+
+	if (rc != 0)
+		return rc;
+	if (transaction) {
+		rc = db_exec(tctx->grant_db, "SAVEPOINT directory_access;");
+		if (rc != 0)
 			return rc;
-		}
-		created = file_resolve_path(canonical);
-		if (!created) {
-			free(canonical);
-			MORPH_RETURN(-ENOMEM);
-		}
-		free(canonical);
-		canonical = created;
-		if (strlen(canonical) + 1 > resolved_size) {
-			free(canonical);
-			MORPH_RETURN(-ENAMETOOLONG);
-		}
-		snprintf(resolved, resolved_size, "%s", canonical);
 	}
-	if (verdict == TOOL_OP_ALWAYS)
-		rc = save_grant(tctx, principal,
-			operation == TOOL_PATH_READ ? "read_path" :
-			operation == TOOL_PATH_WRITE ? "write_path" : "delete_path",
-			canonical);
-	else
-		rc = add_scoped_path_grant(tctx, operation, principal, canonical,
-			!session_scope && verdict != TOOL_OP_SESSION);
-	free(canonical);
+	for (size_t i = 0; i < sizeof(directory_access_kinds) / sizeof(directory_access_kinds[0]);
+	     i++) {
+		if (!(access & directory_access_kinds[i].access))
+			continue;
+		if (persistent)
+			rc = save_grant(tctx, request->principal, directory_access_kinds[i].kind,
+				canonical);
+		else
+			rc = add_scoped_path_grant(tctx, directory_access_kinds[i].operation,
+				request->principal, canonical,
+				!request->session_scope && verdict != TOOL_OP_SESSION);
+		if (rc != 0)
+			break;
+	}
+	if (transaction && rc == 0)
+		rc = db_exec(tctx->grant_db, "RELEASE directory_access;");
+	if (rc != 0) {
+		if (transaction) {
+			(void)db_exec(tctx->grant_db, "ROLLBACK TO directory_access;");
+			(void)db_exec(tctx->grant_db, "RELEASE directory_access;");
+		}
+		storage->nelts = before;
+	}
 	return rc;
+}
+
+static char *directory_access_details(const struct tool_operation *operation)
+{
+	cJSON *details = cJSON_CreateObject();
+	char *encoded = NULL;
+
+	if (details && cJSON_AddStringToObject(details, "access",
+	    tool_path_access_name(operation->path_access)) &&
+	    cJSON_AddStringToObject(details, "target", operation->target) &&
+	    cJSON_AddStringToObject(details, "scope", operation->scope) &&
+	    cJSON_AddStringToObject(details, "reason", operation->reason ? operation->reason : ""))
+		encoded = cJSON_PrintUnformatted(details);
+	cJSON_Delete(details);
+	return encoded;
+}
+
+int tool_context_request_directory_access(struct tool_context *tctx,
+	const struct tool_directory_access_request *request,
+	char *resolved, size_t resolved_size)
+{
+	char canonical[PATH_MAX];
+	char local[PATH_MAX];
+	unsigned int pending = 0;
+	int rc;
+
+	if (!tctx || !request || !request->principal || !*request->principal ||
+	    strlen(request->principal) >= TOOL_GRANT_SUBJECT_MAX ||
+	    !request->command || !*request->command)
+		MORPH_RETURN(-EINVAL);
+	rc = tool_context_resolve_directory_access(request->path, request->access,
+		canonical, sizeof(canonical));
+	if (rc != 0)
+		return rc;
+	if (!resolved || !resolved_size) {
+		resolved = local;
+		resolved_size = sizeof(local);
+	}
+	if (strlen(canonical) >= resolved_size)
+		MORPH_RETURN(-ENAMETOOLONG);
+	memcpy(resolved, canonical, strlen(canonical) + 1);
+	for (size_t i = 0; i < sizeof(directory_access_kinds) / sizeof(directory_access_kinds[0]);
+	     i++) {
+		if ((request->access & directory_access_kinds[i].access) &&
+		    !directory_access_is_allowed(tctx, request,
+			directory_access_kinds[i].operation, canonical))
+			pending |= directory_access_kinds[i].access;
+	}
+	if (!pending)
+		return 0;
+	if (!tctx->operation_approval_fn)
+		MORPH_RETURN(-EPERM);
+	struct tool_operation operation = {0};
+
+	operation.kind = (pending & (pending - 1u)) ? TOOL_OP_DIRECTORY_ACCESS :
+		pending & TOOL_PATH_ACCESS_DELETE ? TOOL_OP_PATH_DELETE :
+		pending & TOOL_PATH_ACCESS_WRITE ? TOOL_OP_PATH_WRITE : TOOL_OP_PATH_READ;
+	operation.tool_name = "request_permissions";
+	operation.principal = request->principal;
+	operation.action = request->command;
+	operation.target = canonical;
+	operation.scope = request->session_scope ? "session" : "turn";
+	operation.reason = request->reason;
+	operation.path_access = pending;
+	char *details = directory_access_details(&operation);
+
+	if (!details)
+		MORPH_RETURN(-ENOMEM);
+	operation.details_json = details;
+	enum tool_operation_verdict verdict = tctx->operation_approval_fn(
+		&operation, tctx->operation_approval_user_data);
+
+	free(details);
+	if (verdict == TOOL_OP_DENY)
+		MORPH_RETURN(-EACCES);
+	if (verdict != TOOL_OP_ALLOW && verdict != TOOL_OP_SESSION && verdict != TOOL_OP_ALWAYS)
+		MORPH_RETURN(-EINVAL);
+	struct stat st;
+
+	if (stat(canonical, &st) != 0) {
+		if (errno != ENOENT || !(request->access & TOOL_PATH_ACCESS_WRITE))
+			MORPH_RETURN(-errno);
+		rc = file_ensure_dir(canonical);
+		if (rc != 0)
+			return rc;
+	}
+	char checked[PATH_MAX];
+
+	rc = tool_context_resolve_directory_access(canonical, request->access,
+		checked, sizeof(checked));
+	if (rc != 0)
+		return rc;
+	if (strcmp(checked, canonical) != 0)
+		MORPH_RETURN(-ESTALE);
+	return store_directory_access(tctx, request, canonical, pending, verdict);
+}
+
+int tool_context_request_scoped_access(struct tool_context *tctx,
+				       enum tool_path_op operation,
+				       const char *principal,
+				       const char *command, const char *path,
+				       int session_scope,
+				       char *resolved, size_t resolved_size)
+{
+	unsigned int access = operation == TOOL_PATH_READ ? TOOL_PATH_ACCESS_READ :
+		operation == TOOL_PATH_WRITE ? TOOL_PATH_ACCESS_WRITE :
+		operation == TOOL_PATH_DELETE ? TOOL_PATH_ACCESS_DELETE : 0;
+	struct tool_directory_access_request request = {
+		.access = access, .principal = principal, .command = command,
+		.path = path, .session_scope = session_scope,
+	};
+
+	return tool_context_request_directory_access(tctx, &request, resolved, resolved_size);
 }
 
 void tool_context_clear_turn_grants(struct tool_context *tctx)
@@ -1777,6 +1898,21 @@ int tool_context_check_operation_verdict(
 	case TOOL_OP_PATH_DELETE:
 	{
 		int rc = check_path_operation(tctx, op);
+
+		if (rc == 0)
+			*verdict = TOOL_OP_ALLOW;
+		return rc;
+	}
+	case TOOL_OP_DIRECTORY_ACCESS:
+	{
+		struct tool_directory_access_request request = {
+			.access = op->path_access,
+			.principal = op->principal ? op->principal : "*",
+			.command = op->action ? op->action : "Access the requested directory",
+			.path = op->target, .reason = op->reason,
+			.session_scope = op->scope && strcmp(op->scope, "session") == 0,
+		};
+		int rc = tool_context_request_directory_access(tctx, &request, NULL, 0);
 
 		if (rc == 0)
 			*verdict = TOOL_OP_ALLOW;

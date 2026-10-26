@@ -847,6 +847,9 @@ fcgi_turn_operation_approval(const struct tool_operation *op, void *turn_data)
 			op->scope ? op->scope : "");
 		cJSON_AddStringToObject(data, "reason",
 			op->reason ? op->reason : "");
+		if (op->path_access)
+			cJSON_AddStringToObject(data, "access",
+				tool_path_access_name(op->path_access));
 		if (programs) {
 			for (int i = 0; i < op->programs_count; i++) {
 				cJSON *program =

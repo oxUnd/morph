@@ -3,6 +3,8 @@
 #include "agent/tool_context.h"
 #include "util/error.h"
 #include "util/buf.h"
+#include "util/arena.h"
+#include "util/array.h"
 #include "cJSON.h"
 
 #include <errno.h>
@@ -10,140 +12,200 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int request_array(struct tool_context *tctx, const char *principal,
-			 const char *command, cJSON *paths,
-			 enum tool_path_op operation, cJSON *granted,
-			 int session_scope,
-			 struct tool_result *result)
+struct directory_request {
+	const char *path;
+	unsigned int access;
+};
+
+static const struct {
+	const char *name;
+	unsigned int access;
+} permissions[] = {
+	{"read", TOOL_PATH_ACCESS_READ},
+	{"write", TOOL_PATH_ACCESS_WRITE},
+	{"delete", TOOL_PATH_ACCESS_DELETE},
+};
+
+static int collect_requests(cJSON *file_system, struct arena *arena,
+	morph_array_t *requests, const char **failed_path)
 {
-	cJSON *path;
+	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
+		cJSON *paths = cJSON_GetObjectItemCaseSensitive(file_system, permissions[i].name);
+		cJSON *path;
 
-	if (!paths)
-		return 0;
-	if (!cJSON_IsArray(paths)) {
-		int rc = tool_result_error(result, "invalid_arguments",
-			"Permission paths must be arrays.");
+		if (!paths)
+			continue;
+		if (!cJSON_IsArray(paths))
+			MORPH_RETURN(-EINVAL);
+		cJSON_ArrayForEach(path, paths) {
+			char canonical[PATH_MAX];
 
-		return rc == 0 ? 1 : rc;
+			if (!cJSON_IsString(path))
+				MORPH_RETURN(-EINVAL);
+			*failed_path = path->valuestring;
+			/* Merge before validating a path created by the same write request. */
+			int rc = tool_context_resolve_directory_access(path->valuestring,
+				TOOL_PATH_ACCESS_ALL, canonical, sizeof(canonical));
+
+			if (rc != 0)
+				return rc;
+			struct directory_request *entry;
+			int found = 0;
+
+			morph_array_foreach(entry, requests, struct directory_request) {
+				if (strcmp(entry->path, canonical) == 0) {
+					entry->access |= permissions[i].access;
+					found = 1;
+					break;
+				}
+			}
+			if (found)
+				continue;
+			const char *copy = arena_strdup(arena, canonical);
+
+			entry = copy ? morph_array_push(requests) : NULL;
+			if (!entry)
+				MORPH_RETURN(-ENOMEM);
+			entry->path = copy;
+			entry->access = permissions[i].access;
+		}
 	}
-	cJSON_ArrayForEach(path, paths) {
-		char resolved[PATH_MAX];
-		int rc;
+	struct directory_request *entry;
 
-		if (!cJSON_IsString(path) || !path->valuestring) {
-			rc = tool_result_error(result, "invalid_arguments",
-				"Permission paths must contain strings.");
-			return rc == 0 ? 1 : rc;
-		}
-		rc = tool_context_request_scoped_access(
-			tctx, operation, principal, command, path->valuestring,
-			session_scope, resolved, sizeof(resolved));
-		if (rc != 0) {
-			const char *code = rc == -EACCES ? "permission_denied" :
-				rc == -EPERM ? "approval_unavailable" :
-				"permission_request_failed";
-			const char *message = rc == -EACCES ?
-				"Permission was denied by the user or filesystem." :
-				rc == -EPERM ?
-				"Permission approval is unavailable or the filesystem "
-				"operation is not permitted." :
-				"The directory permission could not be granted.";
-			morph_buf_t detail;
-			int result_rc;
+	/* Validate every directory before asking the user about any of them. */
+	morph_array_foreach(entry, requests, struct directory_request) {
+		char canonical[PATH_MAX];
 
-			result_rc = morph_buf_init(&detail, 128);
-			if (result_rc != 0)
-				return result_rc;
-			result_rc = morph_buf_printf(&detail, "%s Path: %s. Cause: %s",
-				message, path->valuestring, morph_strerror(rc));
-			if (result_rc == 0)
-				result_rc = tool_result_error(result, code,
-					morph_buf_cstr(&detail));
-			morph_buf_cleanup(&detail);
-			return result_rc == 0 ? 1 : result_rc;
-		}
-		cJSON_AddItemToArray(granted, cJSON_CreateString(resolved));
+		*failed_path = entry->path;
+		int rc = tool_context_resolve_directory_access(entry->path, entry->access,
+			canonical, sizeof(canonical));
+
+		if (rc != 0)
+			return rc;
 	}
 	return 0;
 }
 
+static int request_parent_first(const void *left, const void *right)
+{
+	const struct directory_request *a = left;
+	const struct directory_request *b = right;
+	size_t a_length = strlen(a->path);
+	size_t b_length = strlen(b->path);
+
+	if (a_length != b_length)
+		return a_length < b_length ? -1 : 1;
+	return strcmp(a->path, b->path);
+}
+
+static int permission_error(struct tool_result *result, int error,
+	const char *path, int validation)
+{
+	const char *code = validation ? "invalid_arguments" :
+		error == -EACCES ? "permission_denied" :
+		error == -EPERM ? "approval_unavailable" : "permission_request_failed";
+
+	return tool_result_errorf(result, code, "Directory permission request failed%s%s: %s",
+		path ? " for " : "", path ? path : "", morph_strerror(error));
+}
+
 static int request_permissions_run(const char *args_json,
-				   struct tool_result *result, void *user_data)
+	struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
-	cJSON *permissions;
-	cJSON *file_system;
-	cJSON *data;
-	cJSON *granted_read;
-	cJSON *granted_write;
-	cJSON *granted_delete;
-	const char *command;
-	const char *scope;
-	const char *principal = "*";
-	int session_scope;
+	cJSON *root = args_json ? cJSON_ParseWithOpts(args_json, NULL, 1) : NULL;
+	cJSON *data = NULL;
+	struct arena *arena = NULL;
+	morph_array_t requests = {0};
+	const char *failed_path = NULL;
+	struct directory_request *entry;
 	int rc;
 
-	if (!tctx || !root)
-		MORPH_RETURN(-EINVAL);
-	command = cJSON_GetStringValue(cJSON_GetObjectItem(root, "command"));
+	if (!tctx || !cJSON_IsObject(root)) {
+		cJSON_Delete(root);
+		return tool_result_error(result, "invalid_arguments",
+			"Expected a permission request.");
+	}
+	const char *command = cJSON_GetStringValue(cJSON_GetObjectItem(root, "command"));
+	const char *scope = cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope"));
+	const char *reason = cJSON_GetStringValue(cJSON_GetObjectItem(root, "justification"));
+	cJSON *permission = cJSON_GetObjectItem(root, "permissions");
+	cJSON *file_system = cJSON_GetObjectItem(permission, "file_system");
+
 	if (!command || !*command)
 		command = "Access the requested directories";
-	scope = cJSON_GetStringValue(cJSON_GetObjectItem(root, "scope"));
 	if (!scope)
 		scope = "turn";
-	if (strcmp(scope, "turn") != 0 && strcmp(scope, "session") != 0) {
+	if ((strcmp(scope, "turn") != 0 && strcmp(scope, "session") != 0) ||
+	    !cJSON_IsObject(file_system)) {
 		cJSON_Delete(root);
 		return tool_result_error(result, "invalid_arguments",
-			"scope must be turn or session.");
+			"permissions.file_system is required; scope must be turn or session.");
 	}
-	session_scope = strcmp(scope, "session") == 0;
-	permissions = cJSON_GetObjectItem(root, "permissions");
-	file_system = cJSON_IsObject(permissions) ?
-		cJSON_GetObjectItem(permissions, "file_system") : NULL;
-	if (!cJSON_IsObject(file_system)) {
+	arena = arena_create(0);
+	if (!arena) {
 		cJSON_Delete(root);
-		return tool_result_error(result, "invalid_arguments",
-			"permissions.file_system is required.");
-	}
-	data = cJSON_CreateObject();
-	granted_read = cJSON_CreateArray();
-	granted_write = cJSON_CreateArray();
-	granted_delete = cJSON_CreateArray();
-	if (!data || !granted_read || !granted_write || !granted_delete) {
-		cJSON_Delete(root);
-		cJSON_Delete(data);
-		cJSON_Delete(granted_read);
-		cJSON_Delete(granted_write);
-		cJSON_Delete(granted_delete);
 		MORPH_RETURN(-ENOMEM);
 	}
-	rc = request_array(tctx, principal, command,
-		cJSON_GetObjectItem(file_system, "write"), TOOL_PATH_WRITE,
-		granted_write, session_scope, result);
-	if (rc == 0)
-		rc = request_array(tctx, principal, command,
-			cJSON_GetObjectItem(file_system, "read"), TOOL_PATH_READ,
-			granted_read, session_scope, result);
-	if (rc == 0)
-		rc = request_array(tctx, principal, command,
-			cJSON_GetObjectItem(file_system, "delete"),
-			TOOL_PATH_DELETE, granted_delete, session_scope, result);
+	rc = morph_array_init(&requests, 8, sizeof(*entry));
+	if (rc != 0)
+		goto out_free_request;
+	rc = collect_requests(file_system, arena, &requests, &failed_path);
 	if (rc != 0) {
-		cJSON_Delete(root);
-		cJSON_Delete(data);
-		cJSON_Delete(granted_read);
-		cJSON_Delete(granted_write);
-		cJSON_Delete(granted_delete);
-		return rc == 1 ? 0 : rc;
+		rc = permission_error(result, rc, failed_path, 1);
+		goto out_free_request;
 	}
-	cJSON_AddStringToObject(data, "scope", scope);
-	cJSON_AddStringToObject(data, "principal", principal);
-	cJSON_AddItemToObject(data, "read", granted_read);
-	cJSON_AddItemToObject(data, "write", granted_write);
-	cJSON_AddItemToObject(data, "delete", granted_delete);
+	qsort(requests.elts, requests.nelts, requests.size, request_parent_first);
+	data = cJSON_CreateObject();
+	cJSON *granted[sizeof(permissions) / sizeof(permissions[0])] = {0};
+
+	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
+	    !cJSON_AddStringToObject(data, "principal", "*")) {
+		MORPH_SET_ERR(rc, -ENOMEM);
+		goto out_free_request;
+	}
+	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
+		granted[i] = cJSON_AddArrayToObject(data, permissions[i].name);
+		if (!granted[i]) {
+			MORPH_SET_ERR(rc, -ENOMEM);
+			goto out_free_request;
+		}
+	}
+	morph_array_foreach(entry, &requests, struct directory_request) {
+		struct tool_directory_access_request request = {
+			.access = entry->access, .principal = "*", .command = command,
+			.path = entry->path, .reason = reason,
+			.session_scope = strcmp(scope, "session") == 0,
+		};
+		char resolved[PATH_MAX];
+
+		rc = tool_context_request_directory_access(tctx, &request,
+			resolved, sizeof(resolved));
+		if (rc != 0) {
+			rc = permission_error(result, rc, entry->path, 0);
+			goto out_free_request;
+		}
+		for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
+			if (!(entry->access & permissions[i].access))
+				continue;
+			cJSON *path = cJSON_CreateString(resolved);
+
+			if (!path || !cJSON_AddItemToArray(granted[i], path)) {
+				cJSON_Delete(path);
+				MORPH_SET_ERR(rc, -ENOMEM);
+				goto out_free_request;
+			}
+		}
+	}
+	rc = tool_result_success(result, data);
+	data = NULL;
+
+out_free_request:
+	cJSON_Delete(data);
+	morph_array_cleanup(&requests);
+	arena_destroy(arena);
 	cJSON_Delete(root);
-	return tool_result_success(result, data);
+	return rc;
 }
 
 int request_permissions_init(struct tool_registry *reg,
@@ -171,7 +233,10 @@ int request_permissions_init(struct tool_registry *reg,
 	rc = tool_register(reg, &(struct tool_spec){
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "request_permissions",
-		.description = "Request the smallest additional directory permissions. "
+		.description = "Request the smallest additional directory permissions for this workflow. "
+			"Combine every anticipated read, write and delete permission for each "
+			"directory in one call; approve each directory once for the listed access. "
+			"Reuse existing grants rather than requesting operations one at a time. "
 			"Read, write and delete grants apply to all tools and commands "
 			"within the approved directories, for this turn by default or "
 			"the session when scope=session. Command is optional context. "

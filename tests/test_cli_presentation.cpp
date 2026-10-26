@@ -1806,13 +1806,14 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	op.directories_count = 1;
 	for (int columns : {12, 24, 40, 80, 120}) {
 		EXPECT_EQ(setenv("COLUMNS", std::to_string(columns).c_str(), 1), 0);
-		for (int kind = 0; kind < 3; kind++) {
+		for (int kind = 0; kind < 4; kind++) {
 			testing::internal::CaptureStdout();
 			if (kind == 0) {
 				cli_render_tool_approval(&ctx, long_value.c_str(),
 					long_value.c_str());
 			} else {
 				op.kind = kind == 1 ? TOOL_OP_COMMAND : TOOL_OP_PATH_WRITE;
+				op.path_access = kind == 3 ? TOOL_PATH_ACCESS_ALL : 0;
 				cli_render_operation_approval(&ctx, &op);
 			}
 			std::string output = testing::internal::GetCapturedStdout();
@@ -1958,4 +1959,27 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 	else
 		unsetenv("COLUMNS");
 	cli_set_color_enabled(1);
+}
+
+TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)
+{
+	struct cli_context context = {};
+	context.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
+	struct tool_operation operation = {};
+	operation.kind = TOOL_OP_PATH_DELETE;
+	operation.tool_name = "request_permissions";
+	operation.principal = "*";
+	operation.target = "/workspace/project";
+	operation.scope = "session";
+	operation.reason = "Update generated project files";
+	operation.path_access = TOOL_PATH_ACCESS_ALL;
+	testing::internal::CaptureStdout();
+	cli_render_operation_approval(&context, &operation);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Directory Access Approval"), std::string::npos);
+	EXPECT_NE(output.find("read/write/delete"), std::string::npos);
+	EXPECT_NE(output.find("Lifetime"), std::string::npos);
+	EXPECT_NE(output.find("session"), std::string::npos);
+	EXPECT_NE(output.find("All tools and commands"), std::string::npos);
+	EXPECT_NE(output.find("Update generated project files"), std::string::npos);
 }

@@ -54,6 +54,7 @@ set(TEST_SOURCES
 	test_ask_user.cpp
 	test_sandbox.cpp
 	test_tool_context.cpp
+	test_request_permissions.cpp
 	test_sub_agent.cpp
 	test_ext.cpp
 	test_event.cpp
