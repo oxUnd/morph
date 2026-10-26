@@ -11,6 +11,7 @@ add_library(morph-cli STATIC
 	interaction.c
 	list_ui.c
 	hooks_ui.c
+	history_ui.c
 	manage.c
 	manage_mcp.c
 	manage_skills.c

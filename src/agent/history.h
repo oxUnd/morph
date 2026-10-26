@@ -25,6 +25,9 @@ struct agent_history_diagnostic {
 int agent_history_build_chat_messages(const struct model_history_item *items,
 				      morph_array_t *messages,
 				      struct arena *arena);
+int agent_history_record_request(struct react_context *ctx, const struct model *model,
+	const char *system_prompt, const struct chat_message *messages, int count,
+	const struct tool_desc *tools, int tool_count);
 int agent_history_record_user(struct react_context *ctx, const char *content);
 int agent_history_record_user_steer(struct react_context *ctx,
 				    const char *content, int sequence);

@@ -15,6 +15,7 @@ set(TEST_SOURCES
 	test_config_write.cpp
 	test_credits.cpp
 	test_session.cpp
+	test_history_inspection.cpp
 	test_memory.cpp
 	test_runtime_query.cpp
 	test_runtime_mcp.cpp
@@ -176,6 +177,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND MORPH_READLINE_LIBRARY)
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_transcript_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_transcript_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_history_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_history_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_history_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_image_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_image_pty.py

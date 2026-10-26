@@ -137,6 +137,11 @@ int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 struct model_history_item *runtime_session_model_history_current(
 	struct runtime *runtime, int active_only, int *count);
 void runtime_session_model_history_free(struct model_history_item *items);
+/* Read-only context inspection. Caller owns JSON. Returns -EBUSY during a turn. */
+int runtime_session_history_inspect(struct runtime *runtime, cJSON **out);
+int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequence,
+	cJSON **out);
+int runtime_session_last_request(struct runtime *runtime, cJSON **out);
 int runtime_session_history_diagnose(struct runtime *runtime,
 	struct agent_history_diagnostic *diagnostic);
 int runtime_session_history_repair(struct runtime *runtime,

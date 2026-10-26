@@ -1,6 +1,7 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/setup_ui.h"
+#include "sapi/cli/history_ui.h"
 
 #include <poll.h>
 #include <sys/ioctl.h>
@@ -673,6 +674,10 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	int show_model = 0;
 	int diagnose = 0;
 	int repair = 0;
+	int show_messages = 0;
+	int stored = 0;
+	int last_request = 0;
+	int64_t sequence = 0;
 	const char *export_path = NULL;
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--all") == 0 || strcmp(argv[i], "--from-db") == 0)
@@ -683,10 +688,42 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			diagnose = 1;
 		else if (strcmp(argv[i], "--repair") == 0)
 			repair = 1;
+		else if (strcmp(argv[i], "--messages") == 0)
+			show_messages = 1;
+		else if (strcmp(argv[i], "--stored") == 0)
+			stored = 1;
+		else if (strcmp(argv[i], "--last-request") == 0)
+			last_request = 1;
+		else if (strcmp(argv[i], "--entry") == 0 && i + 1 < argc) {
+			char *end;
+			const char *value = argv[++i];
+
+			if (*value == '#') value++;
+			errno = 0;
+			sequence = strtoll(value, &end, 10);
+			if (errno || end == value || *end || sequence <= 0) {
+				CMD_ERROR("history entry must be a positive sequence number");
+				MORPH_RETURN(-EINVAL);
+			}
+		}
 		else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
 			export_path = argv[++i];
-		else if (argv[i][0] && isdigit((unsigned char)argv[i][0]))
-			n = atoi(argv[i]);
+		else if (argv[i][0] && isdigit((unsigned char)argv[i][0])) {
+			char *end;
+			long value;
+
+			errno = 0;
+			value = strtol(argv[i], &end, 10);
+			if (errno || *end || value <= 0 || value > INT_MAX) {
+				CMD_ERROR("history count must be a positive integer");
+				MORPH_RETURN(-EINVAL);
+			}
+			n = (int)value;
+		}
+		else {
+			CMD_ERROR("unknown or incomplete history option: %s", argv[i]);
+			MORPH_RETURN(-EINVAL);
+		}
 	}
 	if (n <= 0)
 		n = 20;
@@ -763,6 +800,25 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		runtime_session_model_history_free(items);
 		return 0;
 	}
+	if (last_request)
+		return cli_history_request_print(ctx);
+	if (!show_messages) {
+		cJSON *report = NULL;
+		int rc = runtime_session_history_inspect(ctx->runtime, &report);
+
+		if (rc == 0 && sequence)
+			rc = cli_history_entry_print(ctx, report, sequence, stored);
+		else if (rc == 0 && argc == 1 &&
+			 ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+			 cli_setup_ui_available(stdin, stdout))
+			rc = cli_history_view(ctx, report);
+		else if (rc == 0)
+			cli_history_print(report, n, show_all);
+		cJSON_Delete(report);
+		if (rc != 0)
+			CMD_ERROR("history inspection failed: %s", morph_strerror(rc));
+		return rc;
+	}
 	int count = 0;
 	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
@@ -807,8 +863,8 @@ static const struct cli_command session_commands[] = {
 	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
 	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },
 	{ "/del",     cmd_delete,  "Alias for /delete",                 "/del <name|id>" },
-	{ "/history", cmd_history, "Show, diagnose, repair, or export history", "/history [n|--all] [--model|--diagnose|--repair|--export path]" },
-	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all] [--model|--diagnose|--repair|--export path]" },
+	{ "/history", cmd_history, "Inspect full history and context membership", "/history [n|--all|--messages|--model|--last-request|--entry N [--stored]|--diagnose|--repair|--export path]" },
+	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]" },
 };
 
 int cli_register_session_commands(void)

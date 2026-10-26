@@ -2547,6 +2547,14 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	if (status != 0)
 		return status;
 
+	/* One replaceable, redacted snapshot per session. Inspection failure must
+	 * not prevent an otherwise valid model request. */
+	status = llm->chat_with_tools_stream || llm->chat_with_tools ?
+		agent_history_record_request(ctx, llm, system_prompt, messages,
+			msg_count, active_tools, active_tool_count) : 0;
+	if (status != 0)
+		log_warn("could not capture model input: %s", morph_strerror(status));
+
 	memset(&sd, 0, sizeof(sd));
 	sd.ctx = ctx;
 	sd.user_cb = cb;

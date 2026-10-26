@@ -214,6 +214,50 @@ static int history_add_text_message(morph_array_t *messages,
 	return 0;
 }
 
+int agent_history_record_request(struct react_context *ctx, const struct model *model,
+	const char *system_prompt, const struct chat_message *messages, int count,
+	const struct tool_desc *tools, int tool_count)
+{
+	cJSON *input = NULL;
+	char *json;
+	char *safe;
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+
+	if (!ctx || !model)
+		MORPH_RETURN(-EINVAL);
+	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
+		return 0;
+	rc = model_input_snapshot(model, system_prompt, messages, count, tools, tool_count, &input);
+	if (rc != 0)
+		return rc;
+	json = cJSON_PrintUnformatted(input);
+	cJSON_Delete(input);
+	if (!json)
+		MORPH_RETURN(-ENOMEM);
+	safe = history_redact_json(ctx, json);
+	free(json);
+	if (!safe)
+		MORPH_RETURN(-ENOMEM);
+	rc = sqlite3_prepare_v2(ctx->history_db->handle,
+		"INSERT INTO model_request_snapshots(session_id,turn_id,provider,model,"
+		"input_json,created_at) VALUES(?,?,?,?,?,strftime('%s','now')) "
+		"ON CONFLICT(session_id) DO UPDATE SET turn_id=excluded.turn_id,"
+		"provider=excluded.provider,model=excluded.model,input_json=excluded.input_json,"
+		"created_at=excluded.created_at", -1, &stmt, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, ctx->history_session_id);
+		sqlite3_bind_text(stmt, 2, ctx->turn_id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, model->provider, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 4, model->model_id, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 5, safe, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(stmt);
+	}
+	sqlite3_finalize(stmt);
+	free(safe);
+	MORPH_RETURN(rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+}
+
 static int history_tool_arguments_valid(const cJSON *arguments)
 {
 	cJSON *parsed;
@@ -1130,6 +1174,18 @@ int agent_history_record_receipt(struct react_context *ctx,
 	return rc;
 }
 
+static const char *history_compaction_text(const struct model_history_item *item,
+	char **rendered)
+{
+	*rendered = NULL;
+	if (strcmp(item->kind, "user_message") == 0) {
+		*rendered = history_user_content(item);
+		return *rendered;
+	}
+	return strcmp(item->kind, "assistant_tool_calls") == 0 ?
+		item->payload_json : item->content;
+}
+
 static int history_compaction_input(const struct model_history_item *items,
 				    morph_buf_t *buf)
 {
@@ -1137,18 +1193,12 @@ static int history_compaction_input(const struct model_history_item *items,
 
 	while (item) {
 		const char *label = item->role[0] ? item->role : item->kind;
-		const char *text = item->content;
 		char *rendered = NULL;
+		const char *text = history_compaction_text(item, &rendered);
 		int rc = 0;
 
-		if (strcmp(item->kind, "assistant_tool_calls") == 0)
-			text = item->payload_json;
-		if (strcmp(item->kind, "user_message") == 0) {
-			rendered = history_user_content(item);
-			if (!rendered)
-				MORPH_RETURN(-ENOMEM);
-			text = rendered;
-		}
+		if (strcmp(item->kind, "user_message") == 0 && !rendered)
+			MORPH_RETURN(-ENOMEM);
 		if (text && text[0] &&
 		    morph_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
 			item->kind, text) != 0)
@@ -1259,13 +1309,48 @@ static int history_refresh_retention_tokens(struct react_context *ctx)
 	return 0;
 }
 
+static int history_record_summary_sources(struct react_context *ctx, int64_t summary_id)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc = sqlite3_prepare_v2(ctx->history_db->handle,
+		"INSERT INTO history_summary_sources(summary_item_id,source_item_id) "
+		"VALUES(?,?)", -1, &stmt, NULL);
+	int error = 0;
+
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
+		char *rendered = NULL;
+		const char *text = history_compaction_text(item, &rendered);
+		int has_text = text && text[0];
+
+		if (strcmp(item->kind, "user_message") == 0 && !rendered)
+			error = -ENOMEM;
+		free(rendered);
+		if (error)
+			break;
+		if (!has_text)
+			continue;
+		sqlite3_bind_int64(stmt, 1, summary_id);
+		sqlite3_bind_int64(stmt, 2, item->id);
+		rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			break;
+		sqlite3_reset(stmt);
+		sqlite3_clear_bindings(stmt);
+	}
+	sqlite3_finalize(stmt);
+	MORPH_RETURN(error ? error : rc == SQLITE_DONE || rc == SQLITE_OK ? 0 : MORPH_ERR_DB);
+}
+
 /* Keep the old window until the new database window can actually replay. */
 static int history_compact_checked(struct react_context *ctx,
 	const char *summary, int summary_tokens, int user_budget,
 	int recent_budget, int input_tokens, int keep_rounds,
-	const char *trigger_kind, int *active_count)
+	const char *trigger_kind, int record_sources, int *active_count)
 {
 	struct model_history_item *candidate = NULL;
+	int64_t summary_id = 0;
 	int count = 0;
 	int rc = db_exec(ctx->history_db, "SAVEPOINT history_replay;");
 
@@ -1275,7 +1360,9 @@ static int history_compact_checked(struct react_context *ctx,
 	if (rc == 0)
 		rc = model_history_compact(ctx->history_db, ctx->history_session_id,
 			ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
-			input_tokens, keep_rounds, trigger_kind, NULL);
+			input_tokens, keep_rounds, trigger_kind, &summary_id);
+	if (rc == 0 && record_sources)
+		rc = history_record_summary_sources(ctx, summary_id);
 	if (rc == 0) {
 		candidate = model_history_list(ctx->history_db,
 			ctx->history_session_id, 1, &count);
@@ -1328,6 +1415,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	int input_tokens = 0;
 	int threshold;
 	int count = 0;
+	int record_sources;
 	int rc;
 	const char *trigger_kind = trigger_kind_in && trigger_kind_in[0] ?
 		trigger_kind_in : (force ? "manual" : "threshold");
@@ -1354,6 +1442,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		rc = ctx->compress.summarize(morph_buf_cstr(&input),
 			ctx->compress.summarize_user_data, &summary);
 	morph_buf_cleanup(&input);
+	record_sources = rc == 0 && summary && summary[0];
 	if (rc != 0 || !summary || !summary[0]) {
 		int failure = rc != 0 ? rc : MORPH_ERR_PROTOCOL;
 
@@ -1403,7 +1492,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	rc = history_compact_checked(ctx, summary, max_summary_tokens,
 		user_budget, recent_budget, input_tokens,
 		ctx->compress.max_history_rounds,
-		trigger_kind, &count);
+		trigger_kind, record_sources, &count);
 	free(summary);
 	if (rc != 0) {
 		(void)model_history_compaction_attempt_add(ctx->history_db,
@@ -1456,7 +1545,7 @@ static int history_result_exists(const struct model_history_item *items,
 {
 	for (const struct model_history_item *item = items; item;
 	     item = item->next) {
-		if (strcmp(item->kind, "tool_result") != 0)
+		if (!item->active || strcmp(item->kind, "tool_result") != 0)
 			continue;
 		if (local_id && local_id[0] && item->tool_call_id &&
 		    item->tool_call_id[0]) {
@@ -1553,7 +1642,7 @@ static int history_call_exists(const struct model_history_item *items,
 		cJSON *calls;
 		int found = 0;
 
-		if (strcmp(item->kind, "assistant_tool_calls") != 0 ||
+		if (!item->active || strcmp(item->kind, "assistant_tool_calls") != 0 ||
 		    !item->payload_json)
 			continue;
 		root = cJSON_ParseWithOpts(item->payload_json, NULL, 1);

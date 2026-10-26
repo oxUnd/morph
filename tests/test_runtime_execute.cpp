@@ -192,6 +192,38 @@ TEST_F(RuntimeExecuteTest, SecondTurnReceivesEarlierSessionHistory)
 	runtime_session_messages_free(messages);
 }
 
+TEST_F(RuntimeExecuteTest, CapturesDispatchedInputWithoutTheLaterAssistantAnswer)
+{
+	struct runtime_result result{};
+	OpenScripted();
+	ASSERT_EQ(Execute("inspect actual model input", &result), 0);
+	cJSON *snapshot = nullptr;
+	ASSERT_EQ(runtime_session_last_request(instance, &snapshot), 0);
+	const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(snapshot, "input_json"));
+	ASSERT_NE(input, nullptr);
+	EXPECT_NE(strstr(input, "inspect actual model input"), nullptr);
+	EXPECT_EQ(strstr(input, "scripted answer"), nullptr);
+	EXPECT_NE(strstr(input, "messages"), nullptr);
+	EXPECT_NE(strstr(input, "tools"), nullptr);
+	cJSON_Delete(snapshot);
+}
+
+TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
+{
+	struct runtime_result result{};
+	struct db database_handle{};
+	OpenScripted();
+	ASSERT_EQ(db_open(&database_handle, database.c_str()), 0);
+	ASSERT_EQ(db_exec(&database_handle, "CREATE TRIGGER fail_input_snapshot BEFORE INSERT ON "
+		"model_request_snapshots BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
+	ASSERT_EQ(Execute("still execute this request", &result), 0);
+	EXPECT_EQ(result.outcome, RUNTIME_OUTCOME_COMPLETED);
+	EXPECT_EQ(scripted.calls, 1);
+	cJSON *snapshot = nullptr;
+	EXPECT_EQ(runtime_session_last_request(instance, &snapshot), -ENODATA);
+	db_close(&database_handle);
+}
+
 TEST_F(RuntimeExecuteTest, TurnStatusIsADeepCopiedSnapshot)
 {
 	struct runtime_result result{};

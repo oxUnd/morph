@@ -44,6 +44,31 @@ TEST(ModelTokenBudgetTest, IgnoresToolFieldsAbsentFromBothWireFormats)
 	}
 }
 
+TEST(ModelInputSnapshotTest, UsesAdapterWireFieldsWithoutHeadersOrGenerationOptions)
+{
+	for (const char *adapter : {"openai-chat-compatible", "openai-responses"}) {
+		struct model model{};
+		strncpy(model.adapter, adapter, sizeof(model.adapter) - 1);
+		strcpy(model.api_key, "never-serialize-this-header-secret");
+		struct chat_message message{};
+		message.role = const_cast<char *>("user");
+		message.content = const_cast<char *>("visible input 中文");
+		cJSON *input = nullptr;
+		ASSERT_EQ(model_input_snapshot(&model, "system instructions", &message, 1,
+			nullptr, 0, &input), 0);
+		bool responses = std::string(adapter) == "openai-responses";
+		EXPECT_TRUE(cJSON_IsArray(cJSON_GetObjectItem(input, responses ? "input" : "messages")));
+		EXPECT_EQ(cJSON_HasObjectItem(input, "instructions"), responses);
+		EXPECT_FALSE(cJSON_HasObjectItem(input, "max_tokens"));
+		char *json = cJSON_PrintUnformatted(input);
+		ASSERT_NE(json, nullptr);
+		EXPECT_EQ(strstr(json, model.api_key), nullptr);
+		EXPECT_NE(strstr(json, "system instructions"), nullptr);
+		free(json);
+		cJSON_Delete(input);
+	}
+}
+
 TEST(ModelTokenBudgetTest, CountsReasoningOnlyForAdapterThatSendsIt)
 {
 	std::string reasoning(20000, '!');

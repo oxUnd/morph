@@ -138,6 +138,11 @@ int model_estimate_input_tokens(const struct model *model,
 	const char *system_prompt, const struct chat_message *messages, int msg_count,
 	const struct tool_desc *tools, int tool_count, model_token_counter count,
 	void *user_data, int *tokens);
+/* Adapter-normalized model input, without transport headers or generation options.
+ * Caller owns the JSON. Used by local request inspection, not model tools. */
+int model_input_snapshot(const struct model *model, const char *system_prompt,
+	const struct chat_message *messages, int msg_count,
+	const struct tool_desc *tools, int tool_count, cJSON **out);
 
 struct model *model_llm_create(const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);

@@ -15,6 +15,7 @@ registry_service.c
 scheduler.c
 services.c
 session_service.c
+history_service.c
 session_title.c
 recap.c
 session_import.c

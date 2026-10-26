@@ -1271,6 +1271,50 @@ static int64_t input_text_tokens(const cJSON *value, model_token_counter count,
 	return total;
 }
 
+int model_input_snapshot(const struct model *model, const char *system_prompt,
+	const struct chat_message *messages, int msg_count,
+	const struct tool_desc *tools, int tool_count, cJSON **out)
+{
+	const struct llm_adapter *adapter = llm_adapter_resolve(model);
+	cJSON *root;
+	cJSON *input;
+	cJSON *definitions;
+
+	if (!out || msg_count < 0 || tool_count < 0 ||
+	    (msg_count && !messages) || (tool_count && !tools))
+		MORPH_RETURN(-EINVAL);
+	*out = NULL;
+	root = cJSON_CreateObject();
+	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
+		build_structured_messages_cjson(system_prompt, messages, msg_count, adapter, model);
+	definitions = adapter->responses_api ? build_responses_tools_cjson(tools, tool_count) :
+		build_tools_cjson(tools, tool_count);
+	if (!root || !input || !definitions) {
+		cJSON_Delete(root);
+		cJSON_Delete(input);
+		cJSON_Delete(definitions);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddItemToObject(root, adapter->responses_api ? "input" : "messages", input)) {
+		cJSON_Delete(input);
+		cJSON_Delete(definitions);
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!cJSON_AddItemToObject(root, "tools", definitions)) {
+		cJSON_Delete(definitions);
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (adapter->responses_api && system_prompt && *system_prompt &&
+	    !cJSON_AddStringToObject(root, "instructions", system_prompt)) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-ENOMEM);
+	}
+	*out = root;
+	return 0;
+}
+
 int model_estimate_input_tokens(const struct model *model,
 	const char *system_prompt, const struct chat_message *messages, int msg_count,
 	const struct tool_desc *tools, int tool_count, model_token_counter count,
