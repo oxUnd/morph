@@ -149,6 +149,7 @@ void cli_transcript_view_suspend(struct cli_context *ctx);
 void cli_transcript_view_resume(struct cli_context *ctx);
 void cli_transcript_view_render(struct cli_context *ctx, int scroll);
 void cli_transcript_finish(struct cli_context *ctx);
+int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *text, int styled);
 int cli_transcript_live_text(struct cli_context *ctx, morph_buf_t *text, int styled);
 
 struct cli_cancel_monitor;

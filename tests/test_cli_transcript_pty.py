@@ -10,6 +10,7 @@ import copy
 
 from test_cli_pty import Model, Terminal
 import pyte
+import pexpect
 
 
 class AlternateScreen(pyte.Screen):
@@ -32,8 +33,43 @@ class AlternateScreen(pyte.Screen):
         super().reset_mode(*modes, **kwargs)
 
 
+def check_feed_replay(driver):
+    fixture = Path(__file__).parent / 'fixtures' / 'cli_tool_feed.jsonl'
+    for width in (100, 40):
+        child = pexpect.spawn(str(driver), ['--replay-events', str(fixture)],
+                              encoding='utf-8', dimensions=(42, width))
+        raw = ''
+        try:
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                try:
+                    raw += child.read_nonblocking(65536, timeout=.2)
+                except pexpect.TIMEOUT:
+                    if raw:
+                        break
+            screen = pyte.Screen(width, 42)
+            pyte.Stream(screen).feed(raw)
+            text = '\n'.join(screen.display)
+            assert text.count('●  Exec') == 6, text
+            assert text.count('    $ ') == 6, text
+            assert text.count('    └ ') == 5, text
+            assert text.count('Running…') == 1, text
+            assert 'TIMEOUT' in text and '10.0s' in text, text
+            assert '\x1b[33m●' in raw, raw
+            assert '\x1b[36m●' in raw, raw
+            assert '\x1b[2J' not in raw, raw
+            assert all(len(row.rstrip()) <= width - 2 for row in screen.display), text
+            if width == 100:
+                assert 'Resolve endpoint DNS · 0.3s' in text, text
+                assert '104.18.6.160, 104.18.7.160' in text, text
+            print(f'checked: {width} columns: append feed replay')
+        finally:
+            child.close(force=True)
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
+    check_feed_replay(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -67,11 +103,11 @@ def main():
             releases.append(final_release)
             assert sum(m['role'] == 'tool' for m in response['messages']) == 2
             compact = terminal.snapshot('compact tool results')
-            rows = [row for row in compact.splitlines() if '◯ file_read' in row]
+            rows = [row for row in compact.splitlines() if '●  file_read' in row]
             assert len(rows) == 2, compact
-            assert all(row.startswith('◯ file_read') for row in rows), compact
+            assert all(row.startswith('●  file_read') for row in rows), compact
             assert all(len(row.rstrip()) <= 118 for row in rows), compact
-            assert all(not row[len('◯ file_read '):].startswith(' ')
+            assert all(not row[len('●  file_read  '):].startswith(' ')
                        for row in rows), compact
             assert 'FIRST_PRIVATE_RESULT' not in compact, compact
             assert 'SECOND_PRIVATE_RESULT' not in compact, compact

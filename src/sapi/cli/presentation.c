@@ -665,7 +665,8 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 	const char *end;
 	const char *newline;
 	morph_buf_t preview;
-	size_t width = (size_t)cli_terminal_columns(ctx) - 15u;
+	int columns = cli_terminal_columns(ctx);
+	size_t width = columns > 4 ? (size_t)(columns - 4) : 1u;
 	int rc;
 
 	if (offset < ctx->event_stream.len) {
@@ -685,14 +686,13 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 	end = utf8_advance_display_width(start, width - 1u);
 	if (newline && newline < end)
 		end = newline;
-	(void)morph_buf_puts(&preview, "Reasoning · ");
 	(void)morph_buf_append(&preview, start, (size_t)(end - start));
 	if (*end)
 		(void)morph_buf_puts(&preview, "…");
 	if (finish) {
 		presentation_clear_status(ctx);
-		/* Replace the live preview in place without adding a history gap. */
-		printf(ANSI_DIM CLI_FEED_SYSTEM " %s" ANSI_RESET "\n",
+		/* Commit one quiet narration line between tool blocks. */
+		printf("\n" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
 			morph_buf_cstr(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_terminal_live_set(ctx, morph_buf_cstr(&preview));

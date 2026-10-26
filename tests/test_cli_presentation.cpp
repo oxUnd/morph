@@ -3,6 +3,7 @@
 extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/terminal.h"
+#include "sapi/cli/list_ui.h"
 #include "sapi/cli/shell_style.h"
 #include "util/utf8.h"
 #include "util/file.h"
@@ -616,7 +617,7 @@ TEST_F(CliPresentationTest, InteractiveUsesCompactFinalWithoutLabel)
 	cJSON_Delete(final);
 }
 
-TEST_F(CliPresentationTest, InteractiveDistinguishesToolAndFinalMarkers)
+TEST_F(CliPresentationTest, InteractiveSeparatesToolBlocksFromFinalAnswer)
 {
 	cJSON *call = cJSON_CreateObject();
 	cJSON *args = cJSON_CreateObject();
@@ -631,7 +632,7 @@ TEST_F(CliPresentationTest, InteractiveDistinguishesToolAndFinalMarkers)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("◉ file_list"), std::string::npos);
+	EXPECT_NE(output.find("●  file_list"), std::string::npos);
 	EXPECT_NE(output.find("\n● "), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 
@@ -655,7 +656,7 @@ TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[33m◉\033[0m "),
+	EXPECT_NE(output.find("\033[36m●\033[0m "),
 		  std::string::npos);
 	EXPECT_NE(output.find("\n\033[1m●\033[0m "),
 		  std::string::npos);
@@ -888,7 +889,7 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	Emit(MORPH_EVENT_REACT, "react.final", "end", final);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("\033[2m◇ Reasoning · "),
+	EXPECT_NE(output.find("\033[2m\033[3m"),
 		  std::string::npos);
 	EXPECT_NE(output.find("Inspecting the state…"), std::string::npos);
 	EXPECT_EQ(output.find("A hidden detail"), std::string::npos);
@@ -925,7 +926,7 @@ TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 	cli_presentation_flush_stream(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("◇ Reasoning · Checking constraints"),
+	EXPECT_NE(output.find("Checking constraints"),
 		  std::string::npos);
 	EXPECT_EQ(output.find("…"), std::string::npos);
 	EXPECT_EQ(output.find("\033"), std::string::npos);
@@ -1304,7 +1305,7 @@ TEST_F(CliPresentationTest, InteractiveExpandsCompleteToolTranscript)
 	EXPECT_NE(output.find("options:"), std::string::npos);
 	EXPECT_NE(output.find("limit:\n    15"), std::string::npos);
 	EXPECT_NE(output.find("safe:\n    true"), std::string::npos);
-	EXPECT_NE(output.find("◉ web_search"), std::string::npos);
+	EXPECT_NE(output.find("●  web_search"), std::string::npos);
 	EXPECT_NE(output.find("ok:\n    true"), std::string::npos);
 	EXPECT_NE(output.find("count:\n    15"), std::string::npos);
 	EXPECT_EQ(output.find("{\"query\""), std::string::npos);
@@ -1343,7 +1344,7 @@ TEST_F(CliPresentationTest, InteractiveRendersApplyPatchAsDiff)
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
+	EXPECT_NE(output.find("apply_patch  src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("*** Update File: src/example.c"),
 		  std::string::npos);
 	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
@@ -1391,7 +1392,7 @@ TEST_F(CliPresentationTest, InteractiveCompactFeedShowsApplyPatchDiff)
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("apply_patch src/example.c"), std::string::npos);
+	EXPECT_NE(output.find("apply_patch  src/example.c"), std::string::npos);
 	EXPECT_NE(output.find("@@ -1,3 +1,3 @@"), std::string::npos);
 	EXPECT_NE(output.find("│     2 -old value"), std::string::npos);
 	EXPECT_NE(output.find("│     2 +new value"), std::string::npos);
@@ -1553,10 +1554,73 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
 	cli_presentation_finish(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("⊗ Exec"), std::string::npos);
+	EXPECT_NE(output.find("●  Exec"), std::string::npos);
 	EXPECT_NE(output.find("undefined reference to react_init"), std::string::npos);
 	EXPECT_EQ(output.find("failed"), std::string::npos);
 	EXPECT_EQ(output.find("VERBOSE OUTPUT"), std::string::npos);
+	cJSON_Delete(call);
+	cJSON_Delete(result);
+}
+
+TEST_F(CliPresentationTest, AppendFeedSeparatesSummaryCommandAndBoundedOutput)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+	cJSON *call = cJSON_Parse(
+		"{\"tool\":\"exec\",\"tool_call_id\":\"probe\",\"args\":{"
+		"\"description\":\"Resolve endpoint DNS\","
+		"\"command\":\"dig +short mcp.exa.ai\"}}");
+	cJSON *result = cJSON_CreateObject();
+	cJSON_AddStringToObject(result, "tool_call_id", "probe");
+	cJSON_AddStringToObject(result, "result",
+		"{\"ok\":true,\"data\":{\"exit_code\":0,\"duration_ms\":300,"
+		"\"stdout\":\"104.18.6.160\\nFULL_SECOND_LINE\"}}");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	(void)testing::internal::GetCapturedStdout();
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\n\033[32m●\033[0m "), std::string::npos);
+	EXPECT_NE(output.find("Resolve endpoint DNS · "), std::string::npos);
+	EXPECT_NE(output.find("0.3s"), std::string::npos);
+	EXPECT_NE(output.find("    $ dig +short mcp.exa.ai"), std::string::npos);
+	EXPECT_NE(output.find("    └ 104.18.6.160"), std::string::npos);
+	EXPECT_EQ(output.find("FULL_SECOND_LINE"), std::string::npos);
+	EXPECT_EQ(output.find("\033[36mdig"), std::string::npos);
+
+	testing::internal::CaptureStdout();
+	cli_transcript_toggle(&ctx);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("FULL_SECOND_LINE"),
+		  std::string::npos);
+	cJSON_Delete(call);
+	cJSON_Delete(result);
+}
+
+TEST_F(CliPresentationTest, AppendFeedTimeoutIsAmberAndRetainsFailureState)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+	cJSON *call = cJSON_Parse(
+		"{\"tool\":\"exec\",\"tool_call_id\":\"timeout\",\"args\":{"
+		"\"description\":\"Probe HTTPS connection\",\"command\":\"curl -I https://exa.ai\"}}");
+	cJSON *result = cJSON_CreateObject();
+	cJSON_AddStringToObject(result, "tool_call_id", "timeout");
+	cJSON_AddStringToObject(result, "result",
+		"{\"ok\":true,\"data\":{\"status\":\"timed_out\",\"duration_ms\":10000,"
+		"\"stderr\":\"TCP connection timed out\"}}");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	(void)testing::internal::GetCapturedStdout();
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", result);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\033[33m●\033[0m"), std::string::npos);
+	EXPECT_NE(output.find("TIMEOUT\033[0m\033[2m · 10.0s"), std::string::npos);
+	EXPECT_NE(output.find("\033[33m    └ TCP connection timed out"), std::string::npos);
+	EXPECT_EQ(output.find("\033[32m●"), std::string::npos);
+	EXPECT_EQ(output.find("\033[31m"), std::string::npos);
 	cJSON_Delete(call);
 	cJSON_Delete(result);
 }
@@ -1599,9 +1663,9 @@ TEST_F(CliPresentationTest, CompactProcessPollShowsCommandOnlyWhenFinished)
 	Emit(MORPH_EVENT_TOOL, "tool.result", "end", final_result);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	size_t wait = output.find("◯ wait cmake --build build");
+	size_t wait = output.find("●  wait  cmake --build build");
 	EXPECT_NE(wait, std::string::npos);
-	EXPECT_EQ(output.find("◯ wait cmake --build build", wait + 1),
+	EXPECT_EQ(output.find("●  wait  cmake --build build", wait + 1),
 		  std::string::npos);
 	EXPECT_EQ(output.find("process "), std::string::npos);
 	EXPECT_EQ(output.find("proc-1"), std::string::npos);
@@ -1624,8 +1688,9 @@ TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string compact = testing::internal::GetCapturedStdout();
-	EXPECT_NE(compact.find("\033[36mrg\033[0m"), std::string::npos);
-	EXPECT_NE(compact.find("\033[32m'hello'\033[0m"), std::string::npos);
+	EXPECT_EQ(compact.find("\033[36mrg\033[0m"), std::string::npos);
+	EXPECT_NE(compact.find("\033[2m    $ rg"), std::string::npos);
+	EXPECT_NE(compact.find("'hello'"), std::string::npos);
 	testing::internal::CaptureStdout();
 	cli_transcript_toggle(&ctx);
 	std::string full = testing::internal::GetCapturedStdout();
@@ -1650,7 +1715,7 @@ TEST_F(CliPresentationTest, CompactKeepsLongToolNameAndShortensRepositoryPath)
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_NE(output.find("remote_file_inspection README.md"), std::string::npos);
+	EXPECT_NE(output.find("remote_file_inspection  README.md"), std::string::npos);
 	EXPECT_EQ(output.find(cwd), std::string::npos);
 	cJSON_Delete(call);
 }
@@ -1672,7 +1737,7 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 		testing::internal::CaptureStdout();
 		Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
 		std::string output = testing::internal::GetCapturedStdout();
-		size_t start = output.find("◉");
+		size_t start = output.find("    $ ");
 		EXPECT_NE(start, std::string::npos);
 		if (start != std::string::npos) {
 			std::string row = output.substr(start, output.find('\n', start) - start);
@@ -1683,6 +1748,25 @@ TEST_F(CliPresentationTest, ToolRowsUseTerminalWidthWithRightGutter)
 		EXPECT_EQ(setenv("COLUMNS", saved.c_str(), 1), 0);
 	else
 		EXPECT_EQ(unsetenv("COLUMNS"), 0);
+	cJSON_Delete(call);
+}
+
+TEST_F(CliPresentationTest, OversizedRemoteToolNameDoesNotWrapFeedHeader)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_CreateObject();
+	std::string name(512, 'x');
+	cJSON_AddStringToObject(call, "tool", name.c_str());
+	cJSON_AddObjectToObject(call, "args");
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	std::string output = testing::internal::GetCapturedStdout();
+	size_t start = output.find("●");
+	ASSERT_NE(start, std::string::npos);
+	std::string row = output.substr(start, output.find('\n', start) - start);
+	EXPECT_LE(utf8_display_width(row.c_str()),
+		  static_cast<size_t>(cli_list_columns() - 2));
+	EXPECT_NE(row.find("..."), std::string::npos);
 	cJSON_Delete(call);
 }
 

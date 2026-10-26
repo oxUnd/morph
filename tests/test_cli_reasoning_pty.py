@@ -81,7 +81,7 @@ def main():
                     rows = streaming.splitlines()
                     question_row = next(i for i, row in enumerate(rows)
                                         if row.startswith('› Check reasoning rendering'))
-                    preview_row = next(i for i, row in enumerate(rows) if 'Reasoning' in row)
+                    preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
                     preview_distance = preview_row - question_row
                     terminal.send('\x0f')
                     details = terminal.snapshot(f'{width} columns: live reasoning details')
@@ -99,15 +99,15 @@ def main():
                     assert '检查推理输出是否完整，中文换行也要保持正确。' not in compact, text
                     assert 'Answercomplete.' in compact, text
                     assert 'keepmydraft' in compact, text
-                    assert compact.count('Reasoning') == 1, text
-                    preview_rows = [row for row in text.splitlines() if 'Reasoning' in row]
+                    assert compact.count('Inspecting') == 1, text
+                    preview_rows = [row for row in text.splitlines() if 'Inspecting' in row]
                     assert len(preview_rows) == 1, text
                     assert '…' in preview_rows[0], text
                     rows = text.splitlines()
                     question_row = next(i for i, row in enumerate(rows)
                                         if row.startswith('› Check reasoning rendering'))
-                    preview_row = next(i for i, row in enumerate(rows) if 'Reasoning' in row)
-                    assert preview_row - question_row == preview_distance, text
+                    preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
+                    assert preview_row - question_row == preview_distance + 1, text
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                 finally:
                     if release:

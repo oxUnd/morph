@@ -378,6 +378,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	char status_clipped[BUFSIZ];
 	char queue_clipped[BUFSIZ];
 	morph_buf_t tool_text = {0};
+	morph_buf_t tool_body = {0};
 	char *queue_items[CLI_TERMINAL_QUEUE_VISIBLE] = {0};
 	size_t queue_total = 0;
 	size_t queue_shown = 0;
@@ -385,6 +386,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	int columns;
 	int budget;
 	int tool_live = 0;
+	int body_rows = 0;
 	int status_visible;
 
 	if (!ctx || !ctx->terminal || ctx->details_visible)
@@ -453,13 +455,21 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	else
 		terminal_clear_current(terminal);
 	if (status_visible) {
-		fprintf(terminal->output, "%s%s" ANSI_RESET " %s%s" ANSI_RESET,
-			tool_live ? ANSI_YELLOW : ANSI_CYAN,
-			tool_live ? (terminal->frame % 2 ? CLI_FEED_RUNNING : CLI_FEED_DONE) :
+		if (tool_live)
+			fputc('\n', terminal->output);
+		fprintf(terminal->output, "%s%s" ANSI_RESET "%s%s%s" ANSI_RESET,
+			ANSI_CYAN,
+			tool_live ? "●" :
 			frames[terminal->frame %
 			       (int)(sizeof(frames) / sizeof(frames[0]))],
+			(tool_live ? "  " : " "),
 			terminal->live_independent ? ANSI_DIM : "",
 			tool_live ? text : status_clipped);
+		if (tool_live && morph_buf_init(&tool_body, 128) == 0) {
+			body_rows = cli_transcript_live_body(ctx, &tool_body, cli_color_enabled());
+			if (body_rows)
+				fprintf(terminal->output, "\n%s", morph_buf_cstr(&tool_body));
+		}
 		if (queue_shown || terminal->work_state)
 			fputc('\n', terminal->output);
 	}
@@ -494,12 +504,14 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		fprintf(terminal->output, "\n    " ANSI_DIM "+%zu more queued"
 			ANSI_RESET, queue_total - queue_shown);
 	morph_buf_cleanup(&tool_text);
+	morph_buf_cleanup(&tool_body);
 	fflush(terminal->output);
 	terminal->frame++;
 	terminal->dirty = 0;
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
-	terminal->live_rows = status_visible + 2 * (terminal->work_state != CLI_WORK_NONE) +
+	terminal->live_rows = status_visible + tool_live + body_rows +
+		2 * (terminal->work_state != CLI_WORK_NONE) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
 	terminal->next_frame_ms = now +

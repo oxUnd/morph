@@ -1,0 +1,13 @@
+{"name": "react.reasoning.delta", "data": {"text": "Checking configuration and endpoint reachability."}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "1", "args": {"description": "Read MCP configuration", "command": "sed -n '270,310p' ~/.morph/dev.toml"}}}
+{"name": "tool.result", "data": {"tool": "exec", "tool_call_id": "1", "result": "{\"ok\": true, \"data\": {\"status\": \"exited\", \"duration_ms\": 200, \"stdout\": \"exa \\u2192 https://mcp.exa.ai/mcp\", \"stderr\": \"\", \"exit_code\": 0}}"}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "2", "args": {"description": "Check HTTP timeout settings", "command": "rg -n 'CONNECTTIMEOUT|TIMEOUT' src/http/client.c"}}}
+{"name": "tool.result", "data": {"tool": "exec", "tool_call_id": "2", "result": "{\"ok\": true, \"data\": {\"status\": \"exited\", \"duration_ms\": 100, \"stdout\": \"Connection timeout: 10s\", \"stderr\": \"\", \"exit_code\": 0}}"}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "3", "args": {"description": "Resolve endpoint DNS", "command": "dig +short mcp.exa.ai"}}}
+{"name": "tool.result", "data": {"tool": "exec", "tool_call_id": "3", "result": "{\"ok\": true, \"data\": {\"status\": \"exited\", \"duration_ms\": 300, \"stdout\": \"104.18.6.160, 104.18.7.160\", \"stderr\": \"\", \"exit_code\": 0}}"}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "4", "args": {"description": "Probe HTTPS connection", "command": "curl --connect-timeout 10 -I https://mcp.exa.ai/mcp"}}}
+{"name": "tool.result", "data": {"tool": "exec", "tool_call_id": "4", "result": "{\"ok\": true, \"data\": {\"status\": \"timed_out\", \"duration_ms\": 10000, \"stdout\": \"\", \"stderr\": \"TCP connection timed out\"}}"}}
+{"name": "react.reasoning.delta", "data": {"text": "DNS resolves. Checking another port."}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "5", "args": {"description": "Probe alternate port", "command": "nc -vz -w 3 mcp.exa.ai 8443"}}}
+{"name": "tool.result", "data": {"tool": "exec", "tool_call_id": "5", "result": "{\"ok\": true, \"data\": {\"status\": \"exited\", \"duration_ms\": 400, \"stdout\": \"Port 8443 is reachable\", \"stderr\": \"\", \"exit_code\": 0}}"}}
+{"name": "tool.call", "data": {"tool": "exec", "tool_call_id": "6", "args": {"description": "Compare endpoint connectivity", "command": "curl --connect-timeout 5 -I https://exa.ai"}}}

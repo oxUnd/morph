@@ -652,6 +652,8 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		"additional capability and retry the exact command.";
 	exec_spec.input_schema =
 		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
+		"\"description\":{\"type\":\"string\",\"description\":"
+		"\"Short action summary for the user, e.g. Check HTTP timeout settings.\"},"
 		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
 		"\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},"
 		"\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
