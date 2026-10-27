@@ -229,20 +229,14 @@ static cJSON *event_item(const struct morph_event *ev, const char *name)
 static void print_tree_prefix(const int *ancestors_last, int depth,
 			      int is_last)
 {
-	printf("  ");
-	for (int i = 0; i < depth; i++)
-		printf("%s", ancestors_last[i] ? "  " : "│ ");
-	printf("%s ", is_last ? "└" : "├");
+	cli_tree_prefix(ancestors_last, depth, is_last, 0);
 }
 
 static void print_tree_continuation_prefix(const int *ancestors_last,
 					   int depth, int is_last,
 					   size_t label_width)
 {
-	printf("  ");
-	for (int i = 0; i < depth; i++)
-		printf("%s", ancestors_last[i] ? "  " : "│ ");
-	printf("%s", is_last ? "  " : "│ ");
+	cli_tree_prefix(ancestors_last, depth, is_last, 1);
 	for (size_t i = 0; i < label_width + 2; i++)
 		putchar(' ');
 }
@@ -848,8 +842,8 @@ void cli_presentation_patch_diff(const char *workdir, const char *input)
 	if (*line)
 		truncated = 1;
 	if (truncated)
-		printf("  └ " ANSI_DIM "… patch display truncated" ANSI_RESET
-		       "\n");
+		printf("  %s" ANSI_DIM "… patch display truncated" ANSI_RESET
+		       "\n", tui_tree_branch(1, 0));
 	free(display);
 	if (preview_ready)
 		morph_buf_cleanup(&preview);
@@ -1049,7 +1043,13 @@ static void presentation_observation(struct cli_context *ctx,
 	} else if (presentation_plan(ev)) {
 		return;
 	} else if (event_error_code(ev) < 0) {
-		print_indented("  " ANSI_RED "└ Error: " ANSI_RESET, text);
+		morph_buf_t prefix = {0};
+		if (morph_buf_init(&prefix, 64) == 0) {
+			tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+			morph_buf_puts(&prefix, ANSI_RED "Error: " ANSI_RESET);
+			print_indented(morph_buf_cstr(&prefix), text);
+			morph_buf_cleanup(&prefix);
+		}
 	} else {
 		if (!cJSON_IsArray(structured) &&
 		    !cJSON_IsObject(structured))
@@ -1070,7 +1070,12 @@ static void presentation_observation(struct cli_context *ctx,
 					     CLI_TREE_RESULT_DEPTH,
 					     CLI_TREE_EMBEDDED_JSON_DEPTH);
 		} else {
-			print_indented("  " ANSI_DIM "└ " ANSI_RESET, text);
+			morph_buf_t prefix = {0};
+			if (morph_buf_init(&prefix, 32) == 0) {
+				tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+				print_indented(morph_buf_cstr(&prefix), text);
+				morph_buf_cleanup(&prefix);
+			}
 		}
 		cJSON_Delete(parsed);
 	}
@@ -1340,7 +1345,8 @@ static void presentation_artifact(struct cli_context *ctx,
 		presentation_resume_status(ctx, status_paused);
 		return;
 	}
-	printf("  " ANSI_DIM "└ ");
+	cli_tree_prefix(NULL, 0, 1, 0);
+	printf(ANSI_DIM);
 	presentation_print_safe_inline(kind ? kind : "artifact",
 		CLI_EVENT_TEXT_MAX);
 	printf(": ");
@@ -1399,8 +1405,7 @@ static void presentation_mcp(struct cli_context *ctx,
 	is_last = failed ||
 		(ev->name && (strcmp(ev->name, "mcp.ready") == 0 ||
 			     strcmp(ev->name, "mcp.disconnected") == 0));
-	printf("  " ANSI_DIM "%s" ANSI_RESET " ",
-	       is_last ? "└" : "├");
+	cli_tree_prefix(NULL, 0, is_last, 0);
 	if (failed) {
 		printf(ANSI_RED CLI_FEED_FAILED " Failed" ANSI_RESET);
 		if (error && error[0]) {

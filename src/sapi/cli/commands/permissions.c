@@ -64,7 +64,9 @@ static int print_permissions(struct cli_context *ctx)
 		return rc;
 	CMD_HEADER("persistent permissions (%d)", count);
 	if (count == 0) {
-		printf("  " ANSI_DIM "└ none for this project" ANSI_RESET "\n");
+		printf(ANSI_DIM);
+		cli_tree_prefix(NULL, 0, 1, 0);
+		printf("none for this project" ANSI_RESET "\n");
 		runtime_permission_list_free(grants);
 		return 0;
 	}
@@ -85,7 +87,7 @@ static int print_permissions(struct cli_context *ctx)
 		group_last = ++group == group_count;
 		cli_list_group(grant_group_name(grants, i, end), end - i,
 			       group_last);
-		ancestor = group_last ? "  " : "│ ";
+		ancestor = tui_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
 

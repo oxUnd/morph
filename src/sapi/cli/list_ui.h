@@ -2,6 +2,9 @@
 #define CLI_LIST_UI_H
 
 #include <stddef.h>
+#include "tui/tree.h"
+
+void cli_tree_prefix(const int *last, int depth, int is_last, int continuation);
 
 int cli_list_columns(void);
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src);

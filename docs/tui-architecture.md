@@ -22,11 +22,12 @@ interaction state, layout helpers, and presentation primitives.
 | Card | Width-aware borders and sanitized, padded content rows | Setup provider cards |
 | Editor | Cursor editing, UTF-8 backspace/movement, bounded input, paste, masking, validation | Setup fields/API keys and history search |
 | Text viewer | Borrowed document, wrapped line spans, viewport scrolling | History details and request inspector |
+| Tree | Owned hierarchy, expansion, navigation, bounded rows and viewport drawing | Skill list; all CLI report and streaming tree geometry through adapters |
 | Drawing | Compose safe cells in memory and validate before output | Hooks and sessions, with application-specific styles |
 | Frame renderer | Reusable row-diff output, cache invalidation, no-op suppression | History |
 
 The public low-level API is `tui/tui.h`; layout, components, and screen hosting
-are in `tui/components.h`. Implementations are divided into `terminal.c`,
+are in `tui/components.h`; hierarchical views use `tui/tree.h`. Implementations are divided into `terminal.c`,
 `input.c`, `screen.c`, `layout.c`, `list.c`, `editor.c`, `card.c`, `text_view.c`,
 `draw.c`, and `frame.c`.
 
@@ -141,3 +142,34 @@ The existing setup, sessions, hooks, startup hook review, and history PTY suites
 the production consumers, including resize without keyboard input, defaults,
 confirmation, paste, search, scrolling, cancellation, stale hook snapshots,
 and restoring the chat composer after closing a modal screen.
+
+## Tree component
+
+`tui/tree.h` supports both retained trees and incremental reports. Initialize a
+`tui_tree`, add roots with `TUI_TREE_ROOT` and children with their parent index,
+then render or draw it. Labels and descriptions are copied into its arena and
+sanitized; callers can release their input immediately. Indices remain stable
+when storage grows. Adding a node with an invalid parent records a sticky error.
+Cleanup releases the complete model. Initialize each instance once per lifetime.
+
+Traversal follows sibling insertion order, including children added after later
+roots. It uses an iterative traversal rather than recursive C calls. Nodes start
+expanded. Up/Down, Home/End and Page Up/Down use list navigation; Right expands a
+parent or enters its first child; Left collapses a parent or selects its parent.
+Enter submits, Escape/Ctrl-C cancel, and bracketed paste cannot navigate or submit. Selection and
+scroll position live in the component, and resize clamps them to the new page.
+`tui_tree_draw` fills an allocated rectangle, highlights the selected row with
+caller-supplied styles, and erases unused rows. It appends commands without I/O.
+`tui_tree_render` produces plain, newline-separated rows for transcript output;
+its `first` and `rows` parameters address visible nodes. Every row respects the
+requested display width, including CJK text and very narrow terminals. Skill
+names and descriptions use bounded columns; long text receives an ellipsis.
+
+`tui_tree_row`, `tui_tree_prefix`, and `tui_tree_branch` serve incremental reports
+whose later siblings are not yet available. CLI adapters retain domain formatting
+(JSON limits, status colors, timestamps and receipts), while all branch geometry
+comes from this component. Help, extensions, permissions, tasks, sync, sessions,
+JSON/tool details, tool previews, artifacts, MCP startup, and approval directories
+use these paths. Patch gutters and approval card borders are separate components,
+not hierarchical views. JSON event envelopes and noninteractive command behavior
+retain their existing dispatch paths.

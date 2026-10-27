@@ -79,11 +79,15 @@ auto_connect = true
             wait_for(lambda text: 'MCP 1/2 !' in text and 'keep-this-input' in text)
             child.sendcontrol('u')
             child.send('/mcp\r')
-            wait_for(lambda text: 'good' in text and 'ready' in text and 'failed' in text)
-            command_row = next(i for i, row in enumerate(screen.display)
-                               if row.startswith('› /mcp'))
-            assert all(screen.buffer[command_row][column].bg == '1c1c1c'
-                       for column in range(screen.columns)), '\n'.join(screen.display)
+            wait_for(lambda text: 'MCP servers (2)' in text and
+                     'good' in text and 'ready' in text and 'failed' in text and
+                     any(row.startswith('› ') for row in screen.display))
+            display = '\n'.join(screen.display)
+            assert '› /mcp' not in display, display
+            prompts = [i for i, row in enumerate(screen.display) if row.startswith('› ')]
+            assert len(prompts) == 1, display
+            assert all(screen.buffer[prompts[0]][column].bg == '1c1c1c'
+                       for column in range(screen.columns)), display
             child.send('/quit\r')
             child.expect(pexpect.EOF)
         finally:

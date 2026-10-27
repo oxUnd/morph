@@ -16,28 +16,28 @@ static void print_sync_status(const struct morph_sync_status *st)
 
 	CMD_HEADER("sync status");
 	cli_list_group("state", state_count, 0);
-	print_sync_field("│ ", 0, "running", st->running ? "yes" : "no",
+	print_sync_field(tui_tree_branch(0, 1), 0, "running", st->running ? "yes" : "no",
 			 columns);
 	if (st->last_run_at > 0)
 		snprintf(value, sizeof(value), "%lld",
 			 (long long)st->last_run_at);
 	else
 		strncpy(value, "never", sizeof(value) - 1);
-	print_sync_field("│ ", st->error_code == 0, "last run", value,
+	print_sync_field(tui_tree_branch(0, 1), st->error_code == 0, "last run", value,
 			 columns);
 	if (st->error_code != 0)
-		print_sync_field("│ ", 1, "last error", st->last_error,
+		print_sync_field(tui_tree_branch(0, 1), 1, "last error", st->last_error,
 				 columns);
 
 	cli_list_group("files", 4, 0);
 	snprintf(value, sizeof(value), "%d", st->copied);
-	print_sync_field("│ ", 0, "copied", value, columns);
+	print_sync_field(tui_tree_branch(0, 1), 0, "copied", value, columns);
 	snprintf(value, sizeof(value), "%d", st->deleted);
-	print_sync_field("│ ", 0, "deleted", value, columns);
+	print_sync_field(tui_tree_branch(0, 1), 0, "deleted", value, columns);
 	snprintf(value, sizeof(value), "%d", st->conflicts);
-	print_sync_field("│ ", 0, "conflicts", value, columns);
+	print_sync_field(tui_tree_branch(0, 1), 0, "conflicts", value, columns);
 	snprintf(value, sizeof(value), "%d", st->recycled);
-	print_sync_field("│ ", 1, "recycled", value, columns);
+	print_sync_field(tui_tree_branch(0, 1), 1, "recycled", value, columns);
 
 	cli_list_group("database", 4, 1);
 	snprintf(value, sizeof(value), "%d", st->db_snapshots);
@@ -92,7 +92,9 @@ static int sync_cmd_conflicts(struct cli_context *ctx)
 		return rc;
 	CMD_HEADER("sync conflicts (%d)", count);
 	if (count == 0) {
-		printf("  " ANSI_DIM "└ none" ANSI_RESET "\n");
+		printf(ANSI_DIM);
+		cli_tree_prefix(NULL, 0, 1, 0);
+		printf("none" ANSI_RESET "\n");
 		runtime_sync_conflicts_free(items);
 		return 0;
 	}
@@ -155,7 +157,9 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 		return rc;
 	CMD_HEADER("database backups (%d)", count);
 	if (count == 0) {
-		printf("  " ANSI_DIM "└ none" ANSI_RESET "\n");
+		printf(ANSI_DIM);
+		cli_tree_prefix(NULL, 0, 1, 0);
+		printf("none" ANSI_RESET "\n");
 		morph_sync_backups_free(items);
 		return 0;
 	}
@@ -169,7 +173,7 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 			end++;
 		group_last = end == count;
 		cli_list_group(items[i].path, end - i, group_last);
-		ancestor = group_last ? "  " : "│ ";
+		ancestor = tui_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char description[MORPH_SYNC_DEVICE_ID_MAX + 80];
 

@@ -548,7 +548,11 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	EXPECT_NE(backup_output.find("database backups (1)"),
 		  std::string::npos);
 	EXPECT_NE(backup_output.find("data.db"), std::string::npos);
-	EXPECT_NE(backup_output.find(backups[0].snapshot_id), std::string::npos);
+	/* Snapshot names now obey the same viewport bound as other tree labels. */
+	EXPECT_NE(backup_output.find(std::string(backups[0].snapshot_id).substr(0, 20)),
+		  std::string::npos);
+	if (strlen(backups[0].snapshot_id) > (size_t)(cli_list_columns() - 6))
+		EXPECT_NE(backup_output.find("…"), std::string::npos);
 	EXPECT_NE(backup_output.find("created"), std::string::npos);
 	std::string restore_command = "/sync restore-db " +
 		std::string(backups[0].snapshot_id) + " --yes";

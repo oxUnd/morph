@@ -59,37 +59,14 @@ out:
 	return rc;
 }
 
-static const char *skill_marker(const struct skill_list_item *item)
-{
-	if (!item->enabled)
-		return ANSI_RED "×" ANSI_RESET;
-	if (item->activated)
-		return ANSI_GREEN "●" ANSI_RESET;
-	return ANSI_DIM "○" ANSI_RESET;
-}
-
-static int skill_name_width(const morph_array_t *items)
-{
-	struct skill_list_item *item;
-	int width = 12;
-
-	morph_array_foreach(item, items, struct skill_list_item) {
-		size_t item_width = utf8_display_width(item->name);
-
-		if (item_width > (size_t)width)
-			width = item_width > 28u ? 28 : (int)item_width;
-	}
-	return width;
-}
-
 static int skill_print_list(struct cli_context *ctx)
 {
 	morph_array_t items;
 	struct skill_list_item *item;
 	int active_count;
 	int columns = cli_list_columns();
-	int name_width;
-	int index = 0;
+	struct tui_tree tree = {0};
+	morph_buf_t output = {0};
 	int rc;
 
 	memset(&items, 0, sizeof(items));
@@ -103,22 +80,46 @@ static int skill_print_list(struct cli_context *ctx)
 		       "or ~/.agents/skills/)" ANSI_RESET "\n");
 		goto out;
 	}
-	name_width = skill_name_width(&items);
+	rc = tui_tree_init(&tree);
+	if (rc != 0)
+		goto out;
+	rc = morph_buf_init(&output, 1024);
+	if (rc != 0)
+		goto out_tree;
 	morph_array_foreach(item, &items, struct skill_list_item) {
 		struct skill_entry entry;
+		morph_buf_t label = {0};
 
 		if (runtime_skill_info(ctx->runtime, item->index, &entry) != 0)
 			continue;
-		index++;
-		cli_list_item("", index == (int)items.nelts,
-			      skill_marker(item), entry.fm.name,
-			      entry.fm.description, name_width, columns);
+		rc = morph_buf_init(&label, 128);
+		if (rc != 0)
+			break;
+		/* Markers are data here; terminal styles stay out of the model. */
+		const char *marker = !item->enabled ? "×" :
+			(item->activated ? "●" : "○");
+		morph_buf_printf(&label, "%s %s", marker, entry.fm.name);
+		if (label.failed)
+			rc = label.failed;
+		else
+			tui_tree_add(&tree, TUI_TREE_ROOT, morph_buf_cstr(&label),
+				entry.fm.description);
+		morph_buf_cleanup(&label);
+		if (rc != 0)
+			break;
 	}
+	if (rc == 0)
+		rc = tui_tree_render(&tree, &output, columns, 0, SIZE_MAX);
+	if (rc == 0)
+		fputs(morph_buf_cstr(&output), stdout);
+	morph_buf_cleanup(&output);
+out_tree:
+	tui_tree_cleanup(&tree);
 	printf("\n  " ANSI_DIM "● active   ○ available   × disabled"
 	       ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
-	return 0;
+	MORPH_RETURN(rc);
 }
 
 static const char *skill_status(const struct skill_entry *entry)

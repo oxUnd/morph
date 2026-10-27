@@ -4,10 +4,20 @@
 #include <sys/ioctl.h>
 
 #define CLI_LIST_DEFAULT_COLUMNS 100
-#define CLI_LIST_MIN_COLUMNS 40
 #define CLI_LIST_TEXT_MAX 8192
 #define CLI_LIST_DEPTH_MAX 5
 #define CLI_LIST_ITEMS_MAX 12
+
+void cli_tree_prefix(const int *last, int depth, int is_last, int continuation)
+{
+	morph_buf_t output = {0};
+	if (depth < 0 || morph_buf_init(&output, 64) != 0)
+		return;
+	if (tui_tree_prefix(&output, last, (size_t)depth, is_last,
+			    continuation, 2) == 0)
+		fputs(morph_buf_cstr(&output), stdout);
+	morph_buf_cleanup(&output);
+}
 
 int cli_list_columns(void)
 {
@@ -17,8 +27,7 @@ int cli_list_columns(void)
 	long columns;
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-		return ws.ws_col < CLI_LIST_MIN_COLUMNS ?
-			CLI_LIST_MIN_COLUMNS : ws.ws_col;
+		return ws.ws_col;
 	configured = getenv("COLUMNS");
 	if (!configured || !configured[0])
 		return CLI_LIST_DEFAULT_COLUMNS;
@@ -27,8 +36,7 @@ int cli_list_columns(void)
 	if (errno != 0 || *end != '\0' || columns <= 0 ||
 	    columns > INT_MAX)
 		return CLI_LIST_DEFAULT_COLUMNS;
-	return columns < CLI_LIST_MIN_COLUMNS ?
-		CLI_LIST_MIN_COLUMNS : (int)columns;
+	return (int)columns;
 }
 
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src)
@@ -110,70 +118,49 @@ static void cli_list_print_clipped(const char *text, int max_width)
 void cli_list_group(const char *name, int count, int is_last)
 {
 	char compact[CLI_LIST_TEXT_MAX];
+	morph_buf_t label = {0};
+	morph_buf_t output = {0};
 
-	(void)cli_list_compact_text(compact, sizeof(compact),
-		name ? name : "Other");
-	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_BOLD,
-	       is_last ? "└" : "├");
-	fputs(compact, stdout);
-	printf(ANSI_RESET ANSI_DIM "  %d" ANSI_RESET "\n", count);
+	if (morph_buf_init(&label, 128) != 0)
+		return;
+	if (morph_buf_init(&output, 128) != 0) {
+		morph_buf_cleanup(&label);
+		return;
+	}
+	cli_list_compact_text(compact, sizeof(compact), name ? name : "Other");
+	morph_buf_printf(&label, "%s  %d", compact, count);
+	if (!label.failed && tui_tree_row(&output, "", is_last, "",
+		morph_buf_cstr(&label), "", 0, cli_list_columns(),
+		ANSI_BOLD, ANSI_RESET) == 0)
+		fputs(morph_buf_cstr(&output), stdout);
+	morph_buf_cleanup(&output);
+	morph_buf_cleanup(&label);
 }
 
 void cli_list_item(const char *ancestor, int is_last, const char *marker,
 		   const char *name, const char *description, int name_width,
 		   int columns)
 {
-	char safe_name[CLI_LIST_TEXT_MAX];
-	int prefix_width;
-	int marker_width;
-	int item_width;
-	int description_width;
-	int one_line;
+	morph_buf_t output = {0};
+	char compact[CLI_LIST_TEXT_MAX];
+	char detail[CLI_LIST_TEXT_MAX];
 
-	if (!ancestor)
-		ancestor = "";
-	if (!marker)
-		marker = "";
-	if (!name)
-		name = "";
-	(void)cli_list_compact_text(safe_name, sizeof(safe_name), name);
-	name = safe_name;
-	prefix_width = 2 + (int)utf8_display_width_ansi(ancestor) + 2;
-	marker_width = marker[0] ?
-		(int)utf8_display_width_ansi(marker) + 1 : 0;
-	item_width = marker_width + (int)utf8_display_width(name);
-	one_line = description && description[0] &&
-		prefix_width + item_width + 3 + 18 <= columns;
-	printf("  %s" ANSI_DIM "%s" ANSI_RESET " ", ancestor,
-	       is_last ? "└" : "├");
-	if (marker[0])
-		printf("%s ", marker);
-	printf(ANSI_BOLD "%s" ANSI_RESET, name);
-	if (one_line) {
-		int target = name_width + marker_width;
-
-		for (int i = item_width; i < target; i++)
-			putchar(' ');
-		fputs(ANSI_DIM "  " ANSI_RESET, stdout);
-		description_width = columns - prefix_width - target - 2;
-		cli_list_print_clipped(description, description_width);
-		putchar('\n');
+	if (morph_buf_init(&output, 256) != 0)
 		return;
-	}
-	putchar('\n');
-	if (!description || !description[0])
-		return;
-	printf("  %s%s  ", ancestor, is_last ? "  " : "│ ");
-	description_width = columns - prefix_width - 2;
-	cli_list_print_clipped(description, description_width);
-	putchar('\n');
+	cli_list_compact_text(compact, sizeof(compact), name);
+	cli_list_compact_text(detail, sizeof(detail), description);
+	if (tui_tree_row(&output, ancestor ? ancestor : "", is_last,
+			 marker ? marker : "", compact, detail, name_width,
+			 columns, ANSI_BOLD, ANSI_RESET) == 0)
+		fputs(morph_buf_cstr(&output), stdout);
+	morph_buf_cleanup(&output);
 }
 
 void cli_list_row(const char *id, const char *name, const char *metadata,
 		  int is_current, int is_last, int columns)
 {
-	const char *branch = is_last ? "└" : "├";
-	const char *continuation = is_last ? " " : "│";
+	const char *branch = tui_tree_branch(is_last, 0);
+	const char *continuation = tui_tree_branch(is_last, 1);
 	char compact[CLI_LIST_TEXT_MAX];
 	char safe_id[CLI_LIST_TEXT_MAX];
 	char safe_metadata[CLI_LIST_TEXT_MAX];
@@ -199,7 +186,7 @@ void cli_list_row(const char *id, const char *name, const char *metadata,
 	name_width = columns - 10 - id_width - metadata_width;
 	if (name_width > 52)
 		name_width = 52;
-	printf("  " ANSI_DIM "%s" ANSI_RESET " %s%s%s "
+	printf("  " ANSI_DIM "%s" ANSI_RESET "%s%s%s "
 	       ANSI_DIM "%s" ANSI_RESET "  ",
 	       branch,
 	       is_current ? ANSI_GREEN : ANSI_DIM,
@@ -218,7 +205,8 @@ void cli_list_row(const char *id, const char *name, const char *metadata,
 	cli_list_print_clipped(compact, name_width);
 	putchar('\n');
 	printf("  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM
-	       "└ %s" ANSI_RESET "\n", continuation, metadata);
+	       "%s%s" ANSI_RESET "\n", continuation,
+	       tui_tree_branch(1, 0), metadata);
 }
 
 void cli_list_value_field(const char *label, const char *value, int is_last,
@@ -233,8 +221,8 @@ void cli_list_value_field(const char *label, const char *value, int is_last,
 		value = "";
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label), label);
 	label = safe_label;
-	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
-	       ANSI_RESET, is_last ? "└" : "├", label);
+	cli_tree_prefix(NULL, 0, is_last, 0);
+	printf(ANSI_DIM "%s" ANSI_RESET, label);
 	used = (int)utf8_display_width(label);
 	for (int i = used; i < label_width; i++)
 		putchar(' ');
@@ -270,17 +258,16 @@ void cli_list_text_field(const char *label, const char *value, int is_last,
 
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label),
 		label ? label : "");
-	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
-	       ANSI_RESET "\n", is_last ? "└" : "├",
-	       safe_label);
+	cli_tree_prefix(NULL, 0, is_last, 0);
+	printf(ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
 	(void)cli_list_compact_text(compact, sizeof(compact), value);
 	line = compact;
 	if (width < 10)
 		width = 10;
 	while (*line) {
 		end = cli_list_wrap_end(line, width);
-		printf("  %s" ANSI_DIM "%s" ANSI_RESET " %.*s\n",
-		       is_last ? "  " : "│ ", end[0] ? "├" : "└",
+		cli_tree_prefix(&is_last, 1, !end[0], 0);
+		printf("%.*s\n",
 		       (int)(end - line), line);
 		line = end;
 		while (*line == ' ')
@@ -296,10 +283,7 @@ static int cli_json_count(const cJSON *item)
 
 static void cli_json_prefix(const int *ancestors_last, int depth, int is_last)
 {
-	printf("  ");
-	for (int i = 0; i < depth; i++)
-		printf("%s", ancestors_last[i] ? "  " : "│ ");
-	printf(ANSI_DIM "%s" ANSI_RESET " ", is_last ? "└" : "├");
+	cli_tree_prefix(ancestors_last, depth, is_last, 0);
 }
 
 static void cli_json_node(const cJSON *item, const char *label, int depth,
@@ -370,9 +354,8 @@ void cli_list_json_field(const char *label, const char *json, int is_last,
 
 	(void)cli_list_compact_text(safe_label, sizeof(safe_label),
 		label ? label : "Schema");
-	printf("  " ANSI_DIM "%s" ANSI_RESET " " ANSI_DIM "%s"
-	       ANSI_RESET "\n", is_last ? "└" : "├",
-	       safe_label);
+	cli_tree_prefix(NULL, 0, is_last, 0);
+	printf(ANSI_DIM "%s" ANSI_RESET "\n", safe_label);
 	if (!root)
 		return;
 	ancestors_last[0] = is_last;

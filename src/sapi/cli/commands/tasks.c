@@ -259,7 +259,9 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 	}
 	CMD_HEADER("scheduled tasks (%d)", count);
 	if (count == 0) {
-		printf("  " ANSI_DIM "└ no tasks" ANSI_RESET "\n");
+		printf(ANSI_DIM);
+		cli_tree_prefix(NULL, 0, 1, 0);
+		printf("no tasks" ANSI_RESET "\n");
 	} else {
 		rc = print_task_list_tree(tasks, count);
 	}
@@ -579,7 +581,7 @@ static int print_task_list_tree(const struct scheduled_task *tasks, int count)
 				continue;
 			active_index++;
 			rc = print_active_task(
-				&tasks[i], history_count == 0 ? "  " : "│ ",
+				&tasks[i], tui_tree_branch(history_count == 0, 1),
 				active_index == active_count, columns);
 		}
 	}

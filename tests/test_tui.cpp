@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "tui/components.h"
+#include "tui/tree.h"
+#include "util/utf8.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -521,4 +523,113 @@ TEST_F(TuiTest, NumericCellsAlignInsideTheirAllocatedWidth)
 		"42", "", 1), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&commands)), "\033[1;2H   42");
 	morph_buf_cleanup(&commands);
+}
+
+TEST_F(TuiTest, TreeTraversesOutOfOrderChildrenAndCollapses)
+{
+	struct tui_tree tree{};
+	ASSERT_EQ(tui_tree_init(&tree), 0);
+	size_t root = tui_tree_add(&tree, TUI_TREE_ROOT, "Root", "");
+	tui_tree_add(&tree, TUI_TREE_ROOT, "Other", "");
+	size_t child = tui_tree_add(&tree, root, "Child", "");
+	morph_buf_t text{};
+	ASSERT_EQ(morph_buf_init(&text, 128), 0);
+	ASSERT_EQ(tui_tree_render(&tree, &text, 40, 0, 10), 0);
+	EXPECT_STREQ(morph_buf_cstr(&text), "  ├ ▾ Root\n  │ └ Child\n  └ Other\n");
+	EXPECT_EQ(tui_tree_selected(&tree), root);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_RIGHT, 2), TUI_CHANGED);
+	EXPECT_EQ(tui_tree_selected(&tree), child);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_LEFT, 2), TUI_CHANGED);
+	EXPECT_EQ(tui_tree_selected(&tree), root);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_LEFT, 2), TUI_CHANGED);
+	EXPECT_EQ(tree.visible.nelts, 2u);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_END, 1), TUI_CHANGED);
+	EXPECT_EQ(tree.list.first, 1u);
+	tui_tree_cleanup(&tree);
+	morph_buf_cleanup(&text);
+}
+
+TEST_F(TuiTest, TreeClipsUtf8AndSanitizesTerminalControls)
+{
+	struct tui_tree tree{};
+	ASSERT_EQ(tui_tree_init(&tree), 0);
+	tui_tree_add(&tree, TUI_TREE_ROOT, "中文名称名称\033[2J", "description");
+	for (int width : {1, 4, 9, 20, 80}) {
+		morph_buf_t text{};
+		ASSERT_EQ(morph_buf_init(&text, 128), 0);
+		ASSERT_EQ(tui_tree_render(&tree, &text, width, 0, 10), 0);
+		std::string row = morph_buf_cstr(&text);
+		row.pop_back();
+		EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(width));
+		EXPECT_EQ(row.find('\033'), std::string::npos);
+		EXPECT_EQ(utf8valid(row.c_str()), nullptr);
+		morph_buf_cleanup(&text);
+	}
+	tui_tree_cleanup(&tree);
+}
+
+TEST_F(TuiTest, TreeRejectsInvalidParentsAndPreservesStickyErrors)
+{
+	struct tui_tree tree{};
+	ASSERT_EQ(tui_tree_init(&tree), 0);
+	EXPECT_EQ(tui_tree_add(&tree, 3, "invalid", ""), TUI_TREE_ROOT);
+	EXPECT_EQ(tree.error, -EINVAL);
+	EXPECT_EQ(tui_tree_add(&tree, TUI_TREE_ROOT, "later", ""), TUI_TREE_ROOT);
+	EXPECT_EQ(tree.nodes.nelts, 0u);
+	tui_tree_cleanup(&tree);
+}
+
+TEST_F(TuiTest, TreeViewportScrollsAndErasesUnusedRows)
+{
+	struct tui_tree tree{};
+	ASSERT_EQ(tui_tree_init(&tree), 0);
+	for (int i = 0; i < 30; i++) {
+		std::string label = "Node " + std::to_string(i);
+		ASSERT_NE(tui_tree_add(&tree, TUI_TREE_ROOT, label.c_str(), ""), TUI_TREE_ROOT);
+	}
+	tui_tree_update(&tree, TUI_KEY_END, 3);
+	morph_buf_t commands{};
+	ASSERT_EQ(morph_buf_init(&commands, 256), 0);
+	ASSERT_EQ(tui_tree_draw(&tree, &commands, {2, 3, 20, 3}, "\033[0m", "\033[7m"), 0);
+	std::string text = morph_buf_cstr(&commands);
+	EXPECT_NE(text.find("Node 29"), std::string::npos);
+	EXPECT_EQ(text.find("Node 0"), std::string::npos);
+	EXPECT_NE(text.find("\033[5;2H\033[7m"), std::string::npos);
+	morph_buf_cleanup(&commands);
+	tui_tree_cleanup(&tree);
+}
+
+TEST_F(TuiTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
+{
+	for (int width : {1, 4, 12, 40, 80}) {
+		morph_buf_t text{};
+		ASSERT_EQ(morph_buf_init(&text, 128), 0);
+		ASSERT_EQ(tui_tree_row(&text, "│ │ │ ", 1, "○", "中文很长的名称名称名称",
+			"description description description", 28, width, "", ""), 0);
+		std::string value = morph_buf_cstr(&text);
+		size_t start = 0;
+		for (size_t end; (end = value.find('\n', start)) != std::string::npos;) {
+			std::string row = value.substr(start, end - start);
+			EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(width));
+			start = end + 1;
+		}
+		morph_buf_cleanup(&text);
+	}
+}
+
+TEST_F(TuiTest, TreeIgnoresPastedNavigationAndSubmitsOnlyRealKeys)
+{
+	struct tui_tree tree{};
+	ASSERT_EQ(tui_tree_init(&tree), 0);
+	tui_tree_add(&tree, TUI_TREE_ROOT, "First", "");
+	tui_tree_add(&tree, TUI_TREE_ROOT, "Second", "");
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_PASTE_BEGIN, 2), TUI_UNHANDLED);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_DOWN, 2), TUI_UNHANDLED);
+	EXPECT_EQ(tui_tree_update(&tree, '\r', 2), TUI_UNHANDLED);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_PASTE_END, 2), TUI_UNHANDLED);
+	EXPECT_EQ(tree.list.index, 0u);
+	EXPECT_EQ(tui_tree_update(&tree, TUI_KEY_RIGHT, 2), TUI_UNHANDLED);
+	EXPECT_EQ(tui_tree_update(&tree, '\r', 2), TUI_SUBMIT);
+	EXPECT_EQ(tui_tree_update(&tree, 27, 2), TUI_CANCEL);
+	tui_tree_cleanup(&tree);
 }

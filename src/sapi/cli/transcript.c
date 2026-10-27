@@ -379,8 +379,8 @@ int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int sty
 			break;
 		if (rows)
 			(void)morph_buf_putc(body, '\n');
-		(void)morph_buf_printf(body, "%s%s", styled ? ANSI_DIM : "",
-			rows ? "    " : "  └ ");
+		(void)morph_buf_puts(body, styled ? ANSI_DIM : "");
+		(void)tui_tree_prefix(body, NULL, 0, 1, rows != 0, 2);
 		append_clipped_text(body, line, width);
 		(void)morph_buf_puts(body, styled ? ANSI_RESET : "");
 		free(line);
@@ -522,7 +522,12 @@ static void print_tool_preview(const struct transcript_tool *tool)
 
 		if (newline)
 			*newline = '\0';
-		print_feed_line(shown ? "    " : "  └ ", line, color);
+		morph_buf_t prefix = {0};
+		if (morph_buf_init(&prefix, 16) != 0)
+			break;
+		tui_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
+		print_feed_line(morph_buf_cstr(&prefix), line, color);
+		morph_buf_cleanup(&prefix);
 		shown++;
 		if (!newline)
 			break;
