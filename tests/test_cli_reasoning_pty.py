@@ -55,7 +55,7 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for width in (80, 40):
+        for width, inspect_details in ((80, False), (40, False), (80, True), (40, True)):
             with tempfile.TemporaryDirectory(prefix='morph-reasoning-pty-') as temp:
                 terminal = Terminal(Path(sys.argv[1]).resolve(), Path(temp),
                                     server.server_port, hooks_enabled=False)
@@ -71,7 +71,17 @@ def main():
                     _, release = terminal.request()
                     terminal.send('keep my draft')
                     release.set()
-                    terminal.pump(2.5)
+                    terminal.pump(.55)
+                    early = terminal.snapshot(f'{width} columns: first reasoning preview')
+                    early_rows = early.splitlines()
+                    early_question = next(i for i, row in enumerate(early_rows)
+                                          if row.startswith('› Check reasoning rendering'))
+                    early_preview = next(i for i, row in enumerate(early_rows)
+                                         if 'Inspecting' in row)
+                    early_distance = early_preview - early_question
+                    assert early_rows[early_preview].startswith('Inspecting'), early
+                    assert terminal.screen.buffer[early_preview][0].italics, early
+                    terminal.pump(1.65)
                     streaming = terminal.snapshot(f'{width} columns: live reasoning and draft')
                     compact = ''.join(streaming.split())
                     assert 'Inspecting' in compact and '…' in compact, streaming
@@ -83,16 +93,19 @@ def main():
                                         if row.startswith('› Check reasoning rendering'))
                     preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
                     preview_distance = preview_row - question_row
-                    terminal.send('\x0f')
-                    details = terminal.snapshot(f'{width} columns: live reasoning details')
-                    assert 'Inspectingthecurrentstatecarefully.' in ''.join(details.split()), details
+                    assert preview_distance == early_distance, streaming
+                    if inspect_details:
+                        terminal.send('\x0f')
+                        details = terminal.snapshot(f'{width} columns: live reasoning details')
+                        assert 'Inspectingthecurrentstatecarefully.' in ''.join(details.split()), details
                     release.finish.set()
                     terminal.pump(1)
-                    details = terminal.snapshot(f'{width} columns: completed reasoning details')
-                    compact = ''.join(details.split())
-                    assert '检查推理输出是否完整，中文换行也要保持正确。' in compact, details
-                    assert 'Turn details' in details, details
-                    terminal.send('\x0f')
+                    if inspect_details:
+                        details = terminal.snapshot(f'{width} columns: completed reasoning details')
+                        compact = ''.join(details.split())
+                        assert '检查推理输出是否完整，中文换行也要保持正确。' in compact, details
+                        assert 'Turn details' in details, details
+                        terminal.send('\x0f')
                     text = terminal.snapshot(f'{width} columns: reasoning, answer, and draft')
                     compact = ''.join(text.split())
                     assert 'Inspecting' in compact and '…' in compact, text
@@ -107,7 +120,7 @@ def main():
                     question_row = next(i for i, row in enumerate(rows)
                                         if row.startswith('› Check reasoning rendering'))
                     preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
-                    assert preview_row - question_row == preview_distance + 1, text
+                    assert preview_row - question_row == preview_distance, text
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                 finally:
                     if release:

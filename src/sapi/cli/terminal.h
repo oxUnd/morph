@@ -14,6 +14,7 @@ int cli_terminal_update_active(const struct cli_context *ctx);
 void cli_terminal_turn_begin(struct cli_context *ctx);
 void cli_terminal_turn_end(struct cli_context *ctx, int result);
 void cli_terminal_live_set(struct cli_context *ctx, const char *text);
+void cli_terminal_reasoning_set(struct cli_context *ctx, const char *text);
 void cli_terminal_live_clear(struct cli_context *ctx);
 void cli_terminal_activity_set(struct cli_context *ctx, const char *text);
 int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx);

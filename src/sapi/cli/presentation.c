@@ -695,7 +695,7 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 		printf("\n" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
 			morph_buf_cstr(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
-		cli_terminal_live_set(ctx, morph_buf_cstr(&preview));
+		cli_terminal_reasoning_set(ctx, morph_buf_cstr(&preview));
 	}
 	morph_buf_cleanup(&preview);
 }

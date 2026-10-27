@@ -24,6 +24,7 @@ struct cli_terminal {
 	morph_buf_t live_text;
 	int live_active;
 	int live_independent;
+	int live_reasoning;
 	int64_t live_started_ms;
 	int live_visible;
 	int live_anchored;
@@ -295,7 +296,8 @@ void cli_terminal_cleanup(struct cli_context *ctx)
 	ctx->terminal = NULL;
 }
 
-static void terminal_live_set(struct cli_context *ctx, const char *text, int independent)
+static void terminal_live_set(struct cli_context *ctx, const char *text,
+			      int independent, int reasoning)
 {
 	struct cli_terminal *terminal;
 	char *clean;
@@ -319,6 +321,7 @@ static void terminal_live_set(struct cli_context *ctx, const char *text, int ind
 	if (independent && (!terminal->live_independent || !terminal->live_active || changed))
 		terminal->live_started_ms = terminal_now_ms();
 	terminal->live_independent = independent;
+	terminal->live_reasoning = reasoning;
 	terminal->live_active = 1;
 	/* Coalesce content separately from the lightweight animation frames. */
 	int64_t next = terminal_now_ms() + CLI_TERMINAL_FRAME_MS;
@@ -342,12 +345,17 @@ static void terminal_live_set(struct cli_context *ctx, const char *text, int ind
 
 void cli_terminal_live_set(struct cli_context *ctx, const char *text)
 {
-	terminal_live_set(ctx, text, 0);
+	terminal_live_set(ctx, text, 0, 0);
+}
+
+void cli_terminal_reasoning_set(struct cli_context *ctx, const char *text)
+{
+	terminal_live_set(ctx, text, 0, 1);
 }
 
 void cli_terminal_activity_set(struct cli_context *ctx, const char *text)
 {
-	terminal_live_set(ctx, text, 1);
+	terminal_live_set(ctx, text, 1, 0);
 }
 
 int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx)
@@ -374,6 +382,7 @@ void cli_terminal_live_clear(struct cli_context *ctx)
 	}
 	terminal->live_active = 0;
 	terminal->live_independent = 0;
+	terminal->live_reasoning = 0;
 	terminal->live_started_ms = 0;
 	terminal->live_visible = 0;
 	terminal->live_anchored = 0;
@@ -514,7 +523,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 				(size_t)(available > 0 ? available : 1), 0);
 			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
 			text = morph_buf_cstr(&tool_text);
-		} else {
+		} else if (!terminal->live_reasoning) {
 			tool_live = cli_transcript_live_text(ctx, &tool_text, cli_color_enabled());
 			if (tool_live)
 				text = morph_buf_cstr(&tool_text);
@@ -531,10 +540,14 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	else
 		terminal_clear_current(terminal);
 	if (status_visible) {
-		if (tool_live)
+		/* Match the committed reasoning line from its first streaming frame. */
+		if (tool_live || terminal->live_reasoning)
 			fputc('\n', terminal->output);
 		if (tool_live)
 			fprintf(terminal->output, "%s", text);
+		else if (terminal->live_reasoning)
+			fprintf(terminal->output, ANSI_DIM "\033[3m%s" ANSI_RESET,
+				status_clipped);
 		else
 			fprintf(terminal->output, ANSI_CYAN "%s" ANSI_RESET " %s%s" ANSI_RESET,
 				CLI_FEED_RUNNING,
@@ -582,7 +595,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	fflush(terminal->output);
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
-	terminal->live_rows = status_visible + tool_live + body_rows +
+	terminal->live_rows = status_visible + tool_live +
+		(status_visible && terminal->live_reasoning) + body_rows +
 		2 * (terminal->work_state != CLI_WORK_NONE) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
