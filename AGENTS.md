@@ -27,6 +27,27 @@
 - **Scheduled tasks** `src/runtime/task_*.c`. See `docs/scheduled-tasks.md`.
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
+## CLI Slash Command Presentation
+- Treat slash commands as local UI/actions, separate from chat user messages.
+  Do not commit submitted slash commands as `› /command` chat bubbles or retain
+  their editable background in scrollback. Readline recall history is separate
+  and may retain the submitted command for Up/Down recall.
+- Navigation commands (`/hooks`, `/resume`, `/history`, including aliases) open
+  their panel without appending a command bubble. Closing/cancelling a panel
+  restores one editable composer and its footer; do not print a close receipt.
+- Queries print their command/result heading and results in the normal output
+  area. State changes print a concise success receipt. Neither uses user-message
+  padding or the composer's background. Failures retain an explicit error.
+- Unrecognized commands remain in the editable composer after the error, so the
+  user can correct them. Do not forward slash commands as model steering text:
+  while a turn is active, unsupported local commands report that they must wait
+  and keep the input for retry; explicitly supported commands such as `/recap`
+  retain their existing behavior.
+- Keep JSON command events and non-interactive output contracts unchanged.
+  Verify panel cancellation, queries, receipts, unknown-command correction,
+  command recall, and the absence of stale/duplicate composer backgrounds in PTY
+  tests whenever command submission or display routing changes.
+
 ## Libraries (all static, from CMake link targets)
 ```
 morph-toml (vendor/tomlc17)

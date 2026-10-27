@@ -1354,6 +1354,7 @@ void cli_run(struct cli_context *ctx)
 			if (g_readline_ready_input) {
 				char *input = g_readline_ready_input;
 				char *submitted = input;
+				char *retry_command = NULL;
 
 				g_readline_ready_input = NULL;
 				cli_readline_clear_footer(ctx);
@@ -1366,7 +1367,7 @@ void cli_run(struct cli_context *ctx)
 					int handled = 0;
 					int command_rc;
 
-					if (!job.active || strcmp(input, "/recap") == 0)
+					if (!job.active && input[0] != '/')
 						cli_presentation_user_input(input);
 					add_history(input);
 					if (input[0] != '/') {
@@ -1383,6 +1384,15 @@ void cli_run(struct cli_context *ctx)
 					if (!handled && job.active && strcmp(input, "/recap") == 0) {
 						command_rc = cli_recap_start(ctx, 0);
 						handled = 1;
+					} else if (!handled && job.active && input[0] == '/') {
+						if (!cli_command_find_input(input))
+							CMD_ERROR("unknown command: %s. Try /help",
+								  input);
+						else
+							CMD_ERROR("wait for the active turn "
+								  "before running this command");
+						retry_command = input;
+						handled = 1;
 					} else if (!handled && job.active) {
 						command_rc = cli_command_job_prompt(
 							&job, input, submitted);
@@ -1396,9 +1406,11 @@ void cli_run(struct cli_context *ctx)
 							ctx, input, &handled);
 					}
 					if (handled || input[0] == '/') {
-						if (!handled)
-							command_rc = cli_handle_command(
-								ctx, input);
+						if (!handled) {
+							if (!cli_command_find_input(input))
+								retry_command = input;
+							command_rc = cli_handle_command(ctx, input);
+						}
 						(void)cli_ui_drain(ctx);
 					} else {
 						cli_turn_begin(ctx);
@@ -1410,7 +1422,8 @@ void cli_run(struct cli_context *ctx)
 				}
 				if (submitted != input)
 					free(submitted);
-				free(input);
+				if (input != retry_command)
+					free(input);
 				if (ctx->running) {
 					ctx->input_status.updated = 0;
 					ctx->input_status.suspended = 0;
@@ -1420,7 +1433,13 @@ void cli_run(struct cli_context *ctx)
 						cli_readline_line_ready);
 					cli_readline_configure();
 					callback_installed = 1;
+					if (retry_command) {
+						rl_replace_line(retry_command, 0);
+						rl_point = rl_end;
+						cli_readline_redisplay();
+					}
 				}
+				free(retry_command);
 			}
 		}
 	}

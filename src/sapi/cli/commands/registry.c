@@ -97,6 +97,21 @@ const struct cli_command *cli_command_find(const char *name)
 	return NULL;
 }
 
+const struct cli_command *cli_command_find_input(const char *input)
+{
+	if (!input)
+		return NULL;
+	while (isspace((unsigned char)*input)) input++;
+	for (int i = 0; i < num_commands; i++) {
+		size_t length = strlen(commands[i].name);
+
+		if (strncmp(input, commands[i].name, length) == 0 &&
+		    (!input[length] || isspace((unsigned char)input[length])))
+			return &commands[i];
+	}
+	return NULL;
+}
+
 int cli_argv_split(const char *input, char **argv, int max_args)
 {
 	char *p = (char *)input;

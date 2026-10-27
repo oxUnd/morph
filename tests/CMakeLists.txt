@@ -158,6 +158,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND MORPH_READLINE_LIBRARY)
 	add_test(NAME cli_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
+	add_test(NAME cli_slash_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_slash_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_slash_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 45)
 	add_test(NAME cli_completion_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_completion_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
