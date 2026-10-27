@@ -651,9 +651,13 @@ void cli_terminal_composer_resume(struct cli_context *ctx)
 		terminal->live_anchored = 1;
 	}
 	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
-		fprintf(terminal->output, ANSI_RESET "\033[2K\n"
-			CLI_INPUT_BACKGROUND "\033[2K\n" ANSI_RESET);
-		ctx->input_status.padding_rows = 2;
+		/* A live block needs a separator; idle history already ends in a newline. */
+		int padding = terminal->live_visible ? 2 : 1;
+
+		if (padding == 2)
+			fprintf(terminal->output, ANSI_RESET "\033[2K\n");
+		fprintf(terminal->output, CLI_INPUT_BACKGROUND "\033[2K\n" ANSI_RESET);
+		ctx->input_status.padding_rows = padding;
 	}
 }
 
