@@ -37,6 +37,7 @@ struct cli_terminal {
 	int64_t next_content_ms;
 	int content_dirty;
 	int work_rows_below;
+	int work_finalizing;
 	enum cli_work_state work_state;
 	int64_t work_started_ms;
 	int64_t work_elapsed_ms;
@@ -482,6 +483,10 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		queue_shown = queue_total < CLI_TERMINAL_QUEUE_VISIBLE ?
 			queue_total : CLI_TERMINAL_QUEUE_VISIBLE;
 	}
+	/* Final output already owns its trailing separator. Match the completed
+	 * work row even if persistence keeps the worker alive for another tick. */
+	terminal->work_finalizing = ctx->final_rendered &&
+		terminal->work_state == CLI_WORK_RUNNING && !status_visible && !queue_shown;
 	if (!status_visible && queue_shown == 0 && !terminal->work_state) {
 		if (terminal->live_visible) {
 			terminal_clear_frame(terminal);
@@ -561,7 +566,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			fputc('\n', terminal->output);
 	}
 	if (terminal->work_state) {
-		fputc('\n', terminal->output);
+		if (!terminal->work_finalizing)
+			fputc('\n', terminal->output);
 		terminal_work_row(terminal, terminal->columns);
 		if (queue_shown)
 			fputc('\n', terminal->output);
@@ -597,7 +603,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	terminal->live_anchored = 0;
 	terminal->live_rows = status_visible + tool_live +
 		(status_visible && terminal->live_reasoning) + body_rows +
-		2 * (terminal->work_state != CLI_WORK_NONE) +
+		(terminal->work_state ? (terminal->work_finalizing ? 1 : 2) : 0) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
 	terminal->work_rows_below = queue_shown ?
@@ -665,8 +671,8 @@ void cli_terminal_composer_resume(struct cli_context *ctx)
 		terminal->live_anchored = 1;
 	}
 	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
-		/* A live block needs a separator; idle history already ends in a newline. */
-		int padding = terminal->live_visible ? 2 : 1;
+		/* Finalizing work uses the same reservation as its committed row. */
+		int padding = terminal->live_visible && !terminal->work_finalizing ? 2 : 1;
 
 		if (padding == 2)
 			fprintf(terminal->output, ANSI_RESET "\033[2K\n");

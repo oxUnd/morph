@@ -50,6 +50,7 @@ target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC
 	morph-runtime
 	morph-util
+	morph-tui
 	morph-db
 	morph-agent
 	morph-http

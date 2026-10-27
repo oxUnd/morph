@@ -1,45 +1,27 @@
+#include "tui/components.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/history_ui.h"
 #include "sapi/cli/list_ui.h"
 
-#include <sys/ioctl.h>
-#include <termios.h>
-
 #define HISTORY_QUERY_MAX 256
 #define HISTORY_PREVIEW_MAX 240
-#define HISTORY_UP 256
-#define HISTORY_DOWN 257
-#define HISTORY_HOME 258
-#define HISTORY_END 259
-#define HISTORY_PAGE_UP 260
-#define HISTORY_PAGE_DOWN 261
-#define HISTORY_PASTE_BEGIN 262
-#define HISTORY_PASTE_END 263
-
-struct history_line {
-	size_t offset;
-	size_t length;
-};
 
 struct history_view {
 	struct cli_context *ctx;
 	cJSON *report;
 	morph_array_t matches;
-	morph_array_t lines;
+	struct tui_text_view document_view;
 	morph_buf_t document;
-	morph_buf_t previous;
-	morph_buf_t query;
-	size_t focus;
+	struct tui_frame frame;
+	struct tui_editor query;
+	struct tui_list selection;
 	size_t scroll;
 	int filter;
 	int searching;
-	int pasting;
 	int detail;
 	int stored;
 	int rows;
 	int columns;
-	int previous_rows;
-	int previous_columns;
 	const char *message;
 };
 
@@ -103,7 +85,7 @@ static int history_contains(const char *text, const char *query)
 static int history_filter(struct history_view *view)
 {
 	cJSON *entry;
-	const char *query = morph_buf_cstr(&view->query);
+	const char *query = morph_buf_cstr(&view->query.text);
 
 	morph_array_clear(&view->matches);
 	cJSON_ArrayForEach(entry, cJSON_GetObjectItemCaseSensitive(view->report, "entries")) {
@@ -126,14 +108,13 @@ static int history_filter(struct history_view *view)
 			MORPH_RETURN(-ENOMEM);
 		*slot = entry;
 	}
-	if (view->focus >= view->matches.nelts)
-		view->focus = view->matches.nelts ? view->matches.nelts - 1 : 0;
+	tui_list_layout(&view->selection, view->matches.nelts, view->selection.page);
 	return 0;
 }
 
 static cJSON *history_selected(struct history_view *view)
 {
-	cJSON **slot = morph_array_get(&view->matches, view->focus);
+	cJSON **slot = morph_array_get(&view->matches, view->selection.index);
 
 	return slot ? *slot : NULL;
 }
@@ -282,27 +263,10 @@ static int history_document(struct history_view *view)
 
 static int history_wrap(struct history_view *view)
 {
-	const char *start = morph_buf_cstr(&view->document);
-	int width = view->columns > 4 ? view->columns - 4 : 1;
+	size_t width = view->columns > 4 ? (size_t)view->columns - 4 : 1;
 
-	morph_array_clear(&view->lines);
-	while (*start) {
-		const char *newline = strchr(start, '\n');
-		const char *end = utf8_advance_display_width(start, (size_t)width);
-
-		if (newline && newline < end)
-			end = newline;
-		if (end == start && *start != '\n')
-			end += utf8codepointcalcsize(start);
-		struct history_line *line = morph_array_push(&view->lines);
-
-		if (!line)
-			MORPH_RETURN(-ENOMEM);
-		line->offset = (size_t)(start - view->document.data);
-		line->length = (size_t)(end - start);
-		start = *end == '\n' ? end + 1 : end;
-	}
-	return 0;
+	return tui_text_view_wrap(&view->document_view,
+		morph_buf_cstr(&view->document), width);
 }
 
 static int history_frame_line(morph_buf_t *frame, int columns, const char *text,
@@ -325,9 +289,12 @@ static int history_frame_line(morph_buf_t *frame, int columns, const char *text,
 
 static int history_page_size(const struct history_view *view)
 {
-	int overhead = view->detail ? 5 : 11;
+	struct tui_rect area = {1, 1, view->columns, view->rows};
 
-	return view->rows > overhead ? view->rows - overhead : 1;
+	(void)tui_rect_take_top(&area, view->detail ? 2 : 8);
+	struct tui_rect body = tui_rect_take_top(&area, area.height - 3);
+
+	return body.height > 0 ? body.height : 1;
 }
 
 static int history_render(struct history_view *view)
@@ -343,11 +310,10 @@ static int history_render(struct history_view *view)
 		return rc;
 	}
 	int page = history_page_size(view);
-	size_t first = view->focus >= (size_t)page ? view->focus - (size_t)page + 1 : 0;
-	size_t max_scroll = view->lines.nelts > (size_t)page ? view->lines.nelts - (size_t)page : 0;
-
-	if (view->scroll > max_scroll)
-		view->scroll = max_scroll;
+	tui_list_layout(&view->selection, view->matches.nelts, (size_t)page);
+	size_t first = view->selection.first;
+	view->scroll = tui_scroll_update(view->scroll,
+		view->document_view.lines.nelts, (size_t)page, 0);
 	for (int row = 1; row <= view->rows && rc == 0; row++) {
 		const char *style = ANSI_DIM;
 
@@ -361,7 +327,7 @@ static int history_render(struct history_view *view)
 				"  morph / history / entry details" : "  morph / history");
 			style = ANSI_BOLD;
 		} else if (view->detail && row >= 3 && row < 3 + page) {
-			struct history_line *line = morph_array_get(&view->lines,
+			struct tui_text_line *line = morph_array_get(&view->document_view.lines,
 				view->scroll + (size_t)(row - 3));
 
 			if (line) {
@@ -371,8 +337,9 @@ static int history_render(struct history_view *view)
 			}
 		} else if (view->detail && row == view->rows - 1) {
 			(void)morph_buf_printf(&text, "  Lines %zu–%zu of %zu", view->scroll + 1,
-				view->scroll + (size_t)page < view->lines.nelts ?
-				view->scroll + (size_t)page : view->lines.nelts, view->lines.nelts);
+				view->scroll + (size_t)page < view->document_view.lines.nelts ?
+				view->scroll + (size_t)page : view->document_view.lines.nelts,
+				view->document_view.lines.nelts);
 		} else if (view->detail && row == view->rows) {
 			(void)morph_buf_puts(&text, view->columns < 76 ?
 				(view->detail == 2 ? "  Up/Down PgUp/PgDn · Esc back" :
@@ -425,7 +392,7 @@ static int history_render(struct history_view *view)
 
 				history_preview(entry, preview, sizeof(preview));
 				(void)morph_buf_printf(&text, "%s #%lld %s %s %s",
-					index == view->focus ? ">" : " ",
+					index == view->selection.index ? ">" : " ",
 					(long long)history_number(entry, "sequence_no"), history_label(entry),
 					history_string(entry, "tool_name"), preview);
 				char *safe = utf8_terminal_sanitize_dup(morph_buf_cstr(&text), text.len,
@@ -440,7 +407,7 @@ static int history_render(struct history_view *view)
 					history_string(entry, "status"));
 				const char *status = history_string(entry, "status");
 
-				style = index == view->focus ? ANSI_CYAN "\033[7m" :
+				style = index == view->selection.index ? ANSI_CYAN "\033[7m" :
 					strcmp(status, "OUT") == 0 ? ANSI_DIM :
 					strcmp(status, "IN") == 0 ? "" : ANSI_YELLOW;
 			} else if (!view->matches.nelts && row == 9) {
@@ -450,7 +417,8 @@ static int history_render(struct history_view *view)
 			(void)morph_buf_puts(&text, "  IN direct · VIA SUMMARY condensed · OUT not sent");
 		} else if (!view->detail && row == view->rows - 1) {
 			(void)morph_buf_printf(&text, "  %s%s%s", view->searching ? "Search: " : "/ ",
-				morph_buf_cstr(&view->query), view->message ? view->message : "");
+				morph_buf_cstr(&view->query.text),
+				view->message ? view->message : "");
 		} else if (!view->detail && row == view->rows) {
 			(void)morph_buf_puts(&text, view->columns < 70 ?
 				"  Up/Down Enter / Tab s Esc back" :
@@ -461,255 +429,143 @@ static int history_render(struct history_view *view)
 		else
 			rc = history_frame_line(&frame, view->columns, morph_buf_cstr(&text), style);
 	}
-	if (rc == 0) {
-		const char *current = morph_buf_cstr(&frame);
-		const char *previous = morph_buf_cstr(&view->previous);
-		int resized = view->previous_rows != view->rows ||
-			view->previous_columns != view->columns;
-
-		fprintf(stdout, "\033[?2026h");
-		if (resized)
-			fprintf(stdout, "\033[H\033[2J");
-		for (int row = 1; row <= view->rows; row++) {
-			size_t length = strcspn(current, "\n");
-			size_t old_length = strcspn(previous, "\n");
-
-			if (resized || length != old_length || memcmp(current, previous, length) != 0)
-				fprintf(stdout, "\033[%d;1H%.*s\033[0m\033[K", row, (int)length, current);
-			current += length + (current[length] == '\n');
-			previous += old_length + (previous[old_length] == '\n');
-		}
-		fprintf(stdout, "\033[?2026l");
-		fflush(stdout);
-		morph_buf_reset(&view->previous);
-		rc = morph_buf_append(&view->previous, frame.data, frame.len);
-		view->previous_rows = view->rows;
-		view->previous_columns = view->columns;
-	}
+	if (rc == 0)
+		rc = tui_frame_present(&view->frame, stdout, view->columns,
+			view->rows, morph_buf_cstr(&frame));
 	morph_buf_cleanup(&text);
 	morph_buf_cleanup(&frame);
 	return rc;
 }
 
-static int history_read_byte(int timeout)
+static int history_draw(void *data, const struct tui_screen *screen)
 {
-	struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
-	unsigned char byte;
-	int rc = poll(&input, 1, timeout);
+	struct history_view *view = data;
+	int resized = view->rows != screen->area.height ||
+		view->columns != screen->area.width;
 
-	if (rc < 0)
-		MORPH_RETURN(-errno);
-	if (rc == 0)
-		return 0;
-	ssize_t count = read(STDIN_FILENO, &byte, 1);
+	view->rows = screen->area.height;
+	view->columns = screen->area.width;
+	if (resized && view->detail) {
+		int rc = history_wrap(view);
 
-	MORPH_RETURN(count == 1 ? byte : count == 0 ? -ECANCELED : -errno);
+		if (rc != 0) return rc;
+	}
+	return history_render(view);
 }
 
-static int history_read_key(void)
+static int history_update(void *data, const struct tui_event *event)
 {
-	int key = history_read_byte(100);
-	char sequence[32];
-	size_t length = 0;
+	struct history_view *view = data;
 
-	if (key != 27)
-		return key;
-	key = history_read_byte(60);
-	if (key == 0)
-		return 27;
-	if (key != '[' && key != 'O')
-		return key < 0 ? key : 0;
-	while (length + 1 < sizeof(sequence)) {
-		key = history_read_byte(60);
-		if (key <= 0)
-			return key;
-		sequence[length++] = (char)key;
-		if (key >= 0x40 && key <= 0x7e)
-			break;
+	if (event->type != TUI_EVENT_KEY)
+		return TUI_SCREEN_CONTINUE;
+	int key = event->key;
+
+	if (key == TUI_KEY_PASTE_BEGIN || key == TUI_KEY_PASTE_END) {
+		(void)tui_editor_update(&view->query, key);
+		return key == TUI_KEY_PASTE_END ? TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
 	}
-	sequence[length] = '\0';
-	if (strcmp(sequence, "A") == 0) return HISTORY_UP;
-	if (strcmp(sequence, "B") == 0) return HISTORY_DOWN;
-	if (strcmp(sequence, "H") == 0 || strcmp(sequence, "1~") == 0) return HISTORY_HOME;
-	if (strcmp(sequence, "F") == 0 || strcmp(sequence, "4~") == 0) return HISTORY_END;
-	if (strcmp(sequence, "5~") == 0) return HISTORY_PAGE_UP;
-	if (strcmp(sequence, "6~") == 0) return HISTORY_PAGE_DOWN;
-	if (strcmp(sequence, "200~") == 0) return HISTORY_PASTE_BEGIN;
-	if (strcmp(sequence, "201~") == 0) return HISTORY_PASTE_END;
-	return 0;
+	if (event->pasting && !view->searching)
+		return TUI_SCREEN_CONTINUE;
+	if (!event->pasting && (key == 3 || key == 4))
+		return TUI_SCREEN_CLOSE;
+	if (view->searching) {
+		int result = tui_editor_update(&view->query, key);
+
+		if (result < 0) return result;
+		if (result == TUI_SUBMIT || result == TUI_BACK)
+			view->searching = 0;
+		view->selection.index = 0;
+		int rc = history_filter(view);
+
+		if (rc != 0) return rc;
+		return view->query.pasting ? TUI_SCREEN_CONTINUE : TUI_SCREEN_REDRAW;
+	}
+	if (key == 27 || key == 'q') {
+		if (!view->detail) return TUI_SCREEN_CLOSE;
+		view->detail = 0;
+		return TUI_SCREEN_REDRAW;
+	}
+	if ((!view->detail && (key == '\r' || key == '\n') && history_selected(view)) ||
+	    key == 's' || (view->detail == 1 && key == 'v')) {
+		if (key == 's') view->detail = 2;
+		else if (key == 'v') view->stored = !view->stored;
+		else { view->detail = 1; view->stored = 0; }
+		view->scroll = 0;
+		int rc = history_document(view);
+
+		if (rc == 0) rc = history_wrap(view);
+		return rc != 0 ? rc : TUI_SCREEN_REDRAW;
+	}
+	if (!view->detail && key == '/') {
+		view->searching = 1;
+		return TUI_SCREEN_REDRAW;
+	}
+	if (!view->detail && key == '\t') {
+		view->filter = (view->filter + 1) % 4;
+		view->selection.index = 0;
+		int rc = history_filter(view);
+
+		return rc != 0 ? rc : TUI_SCREEN_REDRAW;
+	}
+	if (view->detail) {
+		size_t old = view->scroll;
+
+		view->scroll = tui_scroll_update(view->scroll, view->document_view.lines.nelts,
+			(size_t)history_page_size(view), key);
+		return old != view->scroll ? TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
+	}
+	return tui_list_update(&view->selection, key) ?
+		TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
 }
 
 int cli_history_view(struct cli_context *ctx, cJSON *report)
 {
 	struct history_view view = {.ctx = ctx, .report = report, .rows = 24, .columns = 80};
+	struct tui_screen screen = {0};
 	cJSON *entry;
-	struct history_line line;
-	struct termios saved;
 	struct sigaction action = {0};
 	struct sigaction previous[4];
 	const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH};
+	const struct tui_screen_ops ops = {.update = history_update, .draw = history_draw};
 	int installed = 0;
-	int entered = 0;
-	int screen_active = 0;
-	int dirty = 1;
-	int caught = 0;
 	int rc = morph_array_init(&view.matches, 32, sizeof(entry));
 
-	if (rc == 0) rc = morph_array_init(&view.lines, 32, sizeof(line));
+	view.selection.flags = TUI_LIST_VIM;
 	if (rc == 0) rc = morph_buf_init(&view.document, BUFSIZ);
-	if (rc == 0) rc = morph_buf_init(&view.previous, BUFSIZ);
-	if (rc == 0) rc = morph_buf_init(&view.query, HISTORY_QUERY_MAX);
+	if (rc == 0) rc = tui_editor_init(&view.query, "", HISTORY_QUERY_MAX, 0);
 	if (rc == 0) rc = history_filter(&view);
 	if (rc == 0 && view.matches.nelts)
-		view.focus = view.matches.nelts - 1;
-	if (rc == 0 && tcgetattr(STDIN_FILENO, &saved) != 0)
-		rc = -errno;
-	if (rc == 0) {
-		struct termios raw = saved;
-
-		raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
-		raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
-		raw.c_cc[VMIN] = 1;
-		raw.c_cc[VTIME] = 0;
-		if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
-			rc = -errno;
-		else
-			entered = 1;
-	}
+		view.selection.index = view.matches.nelts - 1;
 	history_signal = 0;
 	action.sa_handler = history_handle_signal;
 	sigemptyset(&action.sa_mask);
 	while (rc == 0 && installed < 4) {
 		if (sigaction(signals[installed], &action, &previous[installed]) != 0)
-			rc = -errno;
+			MORPH_SET_ERR(rc, -errno);
 		else
 			installed++;
 	}
-	if (rc == 0) {
-		fprintf(stdout, "\033[?1049h\033[?25l\033[?2004h");
-		screen_active = 1;
-	}
-	while (rc == 0) {
-		struct winsize size = {0};
+	screen.interrupted = &history_signal;
+	if (rc == 0)
+		rc = tui_screen_open(&screen, stdin, stdout,
+			TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
+	if (rc == 0) rc = tui_screen_run(&screen, &ops, &view);
+	int caught = history_signal;
+	int leave_rc = tui_screen_close(&screen);
 
-		if (history_signal) {
-			caught = history_signal;
-			break;
-		}
-		if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col && size.ws_row &&
-		    (view.rows != size.ws_row || view.columns != size.ws_col)) {
-			view.rows = size.ws_row;
-			view.columns = size.ws_col;
-			if (view.detail)
-				rc = history_wrap(&view);
-			dirty = 1;
-		}
-		if (rc == 0 && dirty)
-			rc = history_render(&view);
-		if (rc != 0)
-			break;
-		dirty = 0;
-		int key = history_read_key();
-
-		if (key == -EINTR || key == 0)
-			continue;
-		if (key < 0) {
-			rc = key == -ECANCELED ? 0 : key;
-			break;
-		}
-		if (key == 3 || key == 4)
-			break;
-		if (key == HISTORY_PASTE_BEGIN) {
-			view.pasting = 1;
-			continue;
-		}
-		if (key == HISTORY_PASTE_END) {
-			view.pasting = 0;
-			dirty = 1;
-			continue;
-		}
-		if (view.pasting && !view.searching)
-			continue;
-		if (view.searching) {
-			if (view.pasting && (key < 32 || key > 255))
-				continue;
-			if (key == 27 || key == '\r' || key == '\n') view.searching = 0;
-			else if (key == 0x7f || key == 8) {
-				const char *end = utf8_prev_codepoint(view.query.data,
-					view.query.data + view.query.len);
-
-				(void)morph_buf_truncate(&view.query, (size_t)(end - view.query.data));
-			} else if (key == 21) morph_buf_reset(&view.query);
-			else if (key >= 32 && key <= 255 && view.query.len < HISTORY_QUERY_MAX - 1)
-				rc = morph_buf_putc(&view.query, (char)key);
-			view.focus = 0;
-			if (rc == 0) rc = history_filter(&view);
-			dirty = !view.pasting;
-			continue;
-		}
-		if (key == 27 || key == 'q') {
-			if (!view.detail)
-				break;
-			view.detail = 0;
-			dirty = 1;
-			continue;
-		}
-		if ((!view.detail && (key == '\r' || key == '\n') && history_selected(&view)) ||
-		    key == 's' || (view.detail == 1 && key == 'v')) {
-			if (key == 's') view.detail = 2;
-			else if (key == 'v') view.stored = !view.stored;
-			else { view.detail = 1; view.stored = 0; }
-			view.scroll = 0;
-			rc = history_document(&view);
-			if (rc == 0) rc = history_wrap(&view);
-			dirty = 1;
-			continue;
-		}
-		if (!view.detail && key == '/') {
-			view.searching = 1;
-			dirty = 1;
-			continue;
-		}
-		if (!view.detail && key == '\t') {
-			view.filter = (view.filter + 1) % 4;
-			view.focus = 0;
-			rc = history_filter(&view);
-			dirty = 1;
-			continue;
-		}
-		size_t *position = view.detail ? &view.scroll : &view.focus;
-		size_t count = view.detail ? view.lines.nelts : view.matches.nelts;
-		size_t step = key == HISTORY_PAGE_UP || key == HISTORY_PAGE_DOWN ?
-			(size_t)history_page_size(&view) : 1;
-		size_t old = *position;
-
-		if (key == HISTORY_UP || key == 'k' || key == HISTORY_PAGE_UP)
-			*position = *position > step ? *position - step : 0;
-		if ((key == HISTORY_DOWN || key == 'j' || key == HISTORY_PAGE_DOWN) && count)
-			*position = *position + step < count ? *position + step : count - 1;
-		if (key == HISTORY_HOME) *position = 0;
-		if (key == HISTORY_END) *position = count ? count - 1 : 0;
-		dirty = old != *position;
-	}
-	if (entered) {
-		if (screen_active) {
-			fprintf(stdout, "\033[?2004l\033[0m\033[?25h\033[?1049l");
-			fflush(stdout);
-		}
-		if (tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && rc == 0)
-			rc = -errno;
-	}
+	if (caught && rc == -EINTR) rc = 0;
+	if (rc == 0) rc = leave_rc;
 	while (installed > 0) {
 		installed--;
 		(void)sigaction(signals[installed], &previous[installed], NULL);
 	}
 	morph_array_cleanup(&view.matches);
-	morph_array_cleanup(&view.lines);
+	tui_text_view_cleanup(&view.document_view);
 	morph_buf_cleanup(&view.document);
-	morph_buf_cleanup(&view.previous);
-	morph_buf_cleanup(&view.query);
-	if (caught)
-		raise(caught);
+	tui_frame_cleanup(&view.frame);
+	tui_editor_cleanup(&view.query);
+	if (caught) raise(caught);
 	MORPH_RETURN(rc);
 }
 

@@ -397,6 +397,30 @@ static void cli_readline_resume(struct cli_context *ctx, char *draft, int point)
 	cli_transcript_view_resume(ctx);
 }
 
+/* Finish while the composer is suspended, so final output and the idle
+ * composer share one synchronized update rather than a temporary live frame. */
+static void cli_readline_finish_job(struct cli_context *ctx)
+{
+	struct cli_command_job *job = ctx->input_job;
+	int turn_rc = cli_command_job_finish(job);
+	char *display = NULL;
+
+	(void)cli_ui_drain(ctx);
+	cli_turn_finish(ctx, turn_rc);
+	ctx->input_status.updated = 0;
+	char *pending = cli_command_job_take_prompt(job, &display);
+
+	if (pending) {
+		cli_presentation_user_input(display ? display : pending);
+		cli_turn_begin(ctx);
+		turn_rc = cli_command_job_start(job, ctx, pending);
+		free(pending);
+		if (turn_rc != 0)
+			cli_turn_finish(ctx, turn_rc);
+	}
+	free(display);
+}
+
 static void cli_readline_drain_ui(struct cli_context *ctx)
 {
 	int point;
@@ -418,6 +442,8 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 	/* Owner calls may use blocking Readline for approval or ask_user. */
 	rl_callback_handler_remove();
 	(void)cli_ui_drain(ctx);
+	if (!ctx->details_open && cli_command_job_done(ctx->input_job))
+		cli_readline_finish_job(ctx);
 	if (!ctx->details_visible)
 		cli_terminal_composer_resume(ctx);
 	/* Installing a callback paints its prompt immediately. Restore with an
@@ -1300,23 +1326,7 @@ void cli_run(struct cli_context *ctx)
 
 			cli_terminal_update_begin(ctx);
 			char *draft = cli_readline_suspend(ctx, &point);
-			int turn_rc = cli_command_job_finish(&job);
-			char *pending;
-			char *display = NULL;
-
-			(void)cli_ui_drain(ctx);
-			cli_turn_finish(ctx, turn_rc);
-			ctx->input_status.updated = 0;
-			pending = cli_command_job_take_prompt(&job, &display);
-			if (pending) {
-				cli_presentation_user_input(display ? display : pending);
-				cli_turn_begin(ctx);
-				turn_rc = cli_command_job_start(&job, ctx, pending);
-				free(pending);
-				if (turn_rc != 0)
-					cli_turn_finish(ctx, turn_rc);
-			}
-			free(display);
+			cli_readline_finish_job(ctx);
 			if (draft)
 				cli_readline_resume(ctx, draft, point);
 			cli_terminal_update_end(ctx);

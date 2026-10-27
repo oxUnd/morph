@@ -1,3 +1,4 @@
+#include "tui/components.h"
 #include "sapi/cli/hooks_ui.h"
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/setup_ui.h"
@@ -10,12 +11,9 @@
 
 #include <errno.h>
 #include <limits.h>
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <termios.h>
 #include <unistd.h>
 
 #define UI_TEXT "\033[0;38;2;225;229;234;48;2;16;18;20m"
@@ -28,14 +26,6 @@
 #define UI_SELECTED "\033[0;38;2;239;244;248;48;2;29;48;56m"
 #define UI_BAR "\033[0;38;2;71;211;230;48;2;29;48;56m"
 #define UI_RULE "\033[0;38;2;48;57;65;48;2;16;18;20m"
-#define KEY_UP 256
-#define KEY_DOWN 257
-#define KEY_LEFT 258
-#define KEY_RIGHT 259
-#define KEY_PAGE_UP 260
-#define KEY_PAGE_DOWN 261
-#define KEY_HOME 262
-#define KEY_END 263
 
 struct hook_line {
 	const char *text;
@@ -43,6 +33,7 @@ struct hook_line {
 };
 
 struct hook_screen {
+	morph_buf_t frame;
 	int height;
 	int columns;
 	int width;
@@ -105,37 +96,25 @@ static const char *selected_state_style(const cJSON *row)
 }
 
 /* Only trusted positioning/styles bypass the CLI output filter. */
-static void cell(const struct hook_screen *screen, int row, int column, int width,
+static void cell(struct hook_screen *screen, int row, int column, int width,
 		 const char *text, const char *style)
 {
-	char clipped[BUFSIZ];
+	struct tui_rect area = {1, 1, screen->columns, screen->height};
 
-	if (row < 1 || row > screen->height || column > screen->columns || width <= 0)
-		return;
-	if (width > screen->columns - column)
-		width = screen->columns - column;
-	if (width <= 0)
-		return;
-	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
-		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
-	if (!safe) return;
-	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
-					 (size_t)width, 0);
-	free(safe);
-	fprintf(stdout, "\033[%d;%dH%s%s%*s", row, column, style, clipped,
-		width - (int)utf8_display_width(clipped), "");
+	(void)tui_region_cell(&screen->frame, area, row - 1, column - 1,
+			      width, text, style);
 }
 
-static void rule(const struct hook_screen *screen, int row)
+static void rule(struct hook_screen *screen, int row)
 {
 	if (row < 1 || row > screen->height)
 		return;
-	fprintf(stdout, "\033[%d;3H%s", row, UI_RULE);
+	morph_buf_printf(&screen->frame, "\033[%d;3H%s", row, UI_RULE);
 	for (int i = 0; i < screen->width; i++)
-		fprintf(stdout, "─");
+		morph_buf_puts(&screen->frame, "─");
 }
 
-static void selected(const struct hook_screen *screen, int row, const char *text)
+static void selected(struct hook_screen *screen, int row, const char *text)
 {
 	cell(screen, row, 3, screen->width, text, UI_SELECTED "\033[1m");
 	cell(screen, row, 2, 1, "▏", UI_BAR);
@@ -339,12 +318,17 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 	int state_width = screen->width >= 68 ? 22 : screen->width >= 40 ? 16 : 0;
 	int source_width = screen->width >= 90 ? 10 : 0;
 	int event_width = screen->width >= 68 ? 22 : screen->width >= 40 ? 20 : screen->width;
-	int command_column = 3 + event_width;
-	int state_column = 3 + screen->width - state_width;
-	int source_column = state_column - source_width;
-	int command_width = source_column - command_column - 2;
+	struct tui_rect table = {3, 6, screen->width, 1};
+	struct tui_rect event_area = tui_rect_take_left(&table, event_width);
+	int command_column = table.x;
+	int command_width = table.width - state_width - source_width - 2;
 
-	cell(screen, 6, 3, event_width, "EVENT", UI_DIM);
+	(void)tui_rect_take_left(&table, command_width + 2);
+	struct tui_rect source_area = tui_rect_take_left(&table, source_width);
+	int source_column = source_area.x;
+	int state_column = table.x;
+
+	cell(screen, event_area.y, event_area.x, event_area.width, "EVENT", UI_DIM);
 	if (command_width > 4) cell(screen, 6, command_column, command_width, "COMMAND", UI_DIM);
 	if (source_width) cell(screen, 6, source_column, source_width, "SOURCE", UI_DIM);
 	if (state_width) cell(screen, 6, state_column, state_width, "STATE", UI_DIM);
@@ -445,7 +429,13 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 		return rc;
 	}
 
-	fprintf(stdout, "\033[?2026h%s\033[H\033[J", UI_TEXT);
+	if (!screen->frame.data)
+		rc = morph_buf_init(&screen->frame, BUFSIZ);
+	else
+		morph_buf_reset(&screen->frame);
+	if (rc == 0)
+		rc = morph_buf_printf(&screen->frame,
+			"\033[?2026h%s\033[H\033[J", UI_TEXT);
 	cell(screen, 1, 3, 5, "morph", UI_CYAN);
 	cell(screen, 1, 9, screen->width - 6,
 	     screen->review ? "/ hooks / review" : "/ hooks", UI_DIM);
@@ -526,54 +516,13 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 			 screen->document_lines);
 		cell(screen, height - 1, 3, screen->width, status, UI_DIM);
 	}
-	fprintf(stdout, "\033[0m\033[?2026l");
-	fflush(stdout);
+	if (rc == 0)
+		rc = morph_buf_puts(&screen->frame, "\033[0m\033[?2026l");
+	if (rc == 0)
+		rc = tui_output_write(stdout, &screen->frame);
 	morph_array_cleanup(&lines);
 	arena_destroy(arena);
 	return rc;
-}
-
-static int read_byte(int timeout)
-{
-	struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
-	unsigned char byte;
-	int rc = poll(&input, 1, timeout);
-
-	if (rc < 0) MORPH_RETURN(-errno);
-	if (!rc) return 0;
-	ssize_t size = read(STDIN_FILENO, &byte, 1);
-	if (size < 0) MORPH_RETURN(-errno);
-	return size ? byte : -ECANCELED;
-}
-
-static int read_key(void)
-{
-	int key = read_byte(100);
-
-	if (key != 27) return key;
-	key = read_byte(80);
-	if (!key) return 27;
-	if (key < 0) return key;
-	if (key != '[' && key != 'O') return 0;
-	char sequence[16];
-	size_t length = 0;
-
-	while (length + 1 < sizeof(sequence)) {
-		key = read_byte(80);
-		if (key <= 0) return key;
-		sequence[length++] = (char)key;
-		if (key >= '@' && key <= '~') break;
-	}
-	sequence[length] = '\0';
-	if (strcmp(sequence, "A") == 0) return KEY_UP;
-	if (strcmp(sequence, "B") == 0) return KEY_DOWN;
-	if (strcmp(sequence, "C") == 0) return KEY_RIGHT;
-	if (strcmp(sequence, "D") == 0) return KEY_LEFT;
-	if (strcmp(sequence, "5~") == 0) return KEY_PAGE_UP;
-	if (strcmp(sequence, "6~") == 0) return KEY_PAGE_DOWN;
-	if (strcmp(sequence, "H") == 0 || strcmp(sequence, "1~") == 0) return KEY_HOME;
-	if (strcmp(sequence, "F") == 0 || strcmp(sequence, "4~") == 0) return KEY_END;
-	return 0;
 }
 
 static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *screen)
@@ -602,163 +551,177 @@ static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *sc
 	return 0;
 }
 
+struct hook_controller {
+	struct cli_context *ctx;
+	cJSON **rows;
+	struct hook_screen screen;
+};
+
+static void hook_choose(int *index, int count, int page, int key, unsigned flags)
+{
+	struct tui_menu menu = {0};
+
+	menu.list.index = (size_t)*index;
+	menu.list.flags = flags;
+	if ((flags & TUI_LIST_WRAP) && key != TUI_KEY_UP && key != TUI_KEY_DOWN &&
+	    key != 'k' && key != 'j' && key != '\t')
+		key = 0;
+	tui_list_layout(&menu.list, (size_t)count, page > 0 ? (size_t)page : 1);
+	(void)tui_menu_update(&menu, key);
+	*index = (int)menu.list.index;
+}
+
+static int hooks_draw(void *data, const struct tui_screen *terminal)
+{
+	struct hook_controller *controller = data;
+	struct hook_screen *screen = &controller->screen;
+	struct tui_rect body = tui_rect_inset(terminal->area, 2, 0);
+
+	screen->height = terminal->area.height;
+	screen->columns = terminal->area.width;
+	screen->width = body.width > 0 ? body.width : 1;
+	return render(screen, *controller->rows);
+}
+
+static int hooks_update(void *data, const struct tui_event *event)
+{
+	struct hook_controller *controller = data;
+	struct hook_screen *screen = &controller->screen;
+	struct cli_context *ctx = controller->ctx;
+	cJSON **rows = controller->rows;
+
+	if (event->type != TUI_EVENT_KEY || event->pasting)
+		return TUI_SCREEN_CONTINUE;
+	int key = event->key;
+	int rc;
+
+	if (key == 3 || key == 4 || key == 'q') return TUI_SCREEN_CLOSE;
+	if (key == 27) {
+		if (!screen->review) return TUI_SCREEN_CLOSE;
+		screen->review = 0;
+		screen->scroll = 0;
+		screen->message[0] = '\0';
+		return TUI_SCREEN_REDRAW;
+	}
+	if (key == 'r' && !screen->review) {
+		rc = refresh(ctx, rows, screen);
+		if (rc != 0) return rc;
+		screen->message[0] = '\0';
+		return TUI_SCREEN_REDRAW;
+	}
+	if (screen->height < (screen->batch ? 20 : 12) ||
+	    screen->width < (screen->batch ? 40 : 24) ||
+	    (screen->review && screen->document_height == 0))
+		return TUI_SCREEN_CONTINUE;
+	if (screen->batch) {
+		hook_choose(&screen->choice, 3, 1, key,
+			TUI_LIST_WRAP | TUI_LIST_VIM | TUI_LIST_TAB);
+		if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN)
+			screen->scroll = (int)tui_scroll_update((size_t)screen->scroll,
+				(size_t)cJSON_GetArraySize(*rows), (size_t)screen->page_size, key);
+		if (key == '\r' || key == '\n') {
+			if (screen->choice == 2) {
+				screen->batch = 0;
+				screen->scroll = 0;
+			} else {
+				const cJSON *row = cJSON_GetArrayItem(*rows, 0);
+				int result = runtime_hooks_manage(ctx->runtime,
+					screen->choice == 0 ? "trust-all" : "deny-all",
+					"workspace", field(row, "review_digest"));
+
+				if (result == 0) return TUI_SCREEN_CLOSE;
+				rc = refresh(ctx, rows, screen);
+				if (rc != 0) return rc;
+				screen->choice = 2;
+				snprintf(screen->message, sizeof(screen->message),
+					"Action failed: %s. Review the refreshed hooks.",
+					morph_strerror(result));
+			}
+		}
+		return TUI_SCREEN_REDRAW;
+	}
+	if (key == 'a' && !screen->review && cJSON_GetArraySize(*rows) > 0) {
+		rc = refresh(ctx, rows, screen);
+		if (rc != 0) return rc;
+		screen->batch = 1;
+		screen->choice = 2;
+		return TUI_SCREEN_REDRAW;
+	}
+	const cJSON *row = cJSON_GetArrayItem(*rows, screen->focus);
+	struct hook_action items[3];
+	int count = actions(row, items);
+	int total = cJSON_GetArraySize(*rows);
+
+	if (screen->review) {
+		hook_choose(&screen->choice, count, 1, key,
+			TUI_LIST_WRAP | TUI_LIST_VIM | TUI_LIST_TAB);
+		if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN ||
+		    key == TUI_KEY_HOME || key == TUI_KEY_END)
+			screen->scroll = (int)tui_scroll_update((size_t)screen->scroll,
+				(size_t)screen->document_lines,
+				(size_t)screen->document_height, key);
+	}
+	if (key == '\r' || key == '\n') {
+		if (!row) return TUI_SCREEN_CONTINUE;
+		if (!screen->review) {
+			rc = refresh(ctx, rows, screen);
+			if (rc != 0) return rc;
+			screen->review = cJSON_GetArraySize(*rows) > 0;
+		} else if (!items[screen->choice].name) {
+			screen->review = 0;
+			screen->scroll = 0;
+		} else {
+			const char *action = items[screen->choice].name;
+			int project = strcmp(action, "trust-project") == 0;
+			int result = runtime_hooks_manage(ctx->runtime, action,
+				project ? "workspace" : field(row, "id"),
+				field(row, project ? "workspace_digest" : "digest"));
+
+			snprintf(screen->message, sizeof(screen->message), result == 0 ?
+				"Completed: %s" : "Action failed: %s",
+				result == 0 ? action : morph_strerror(result));
+			rc = refresh(ctx, rows, screen);
+			if (rc != 0) return rc;
+		}
+	} else if (!screen->review && total > 0) {
+		hook_choose(&screen->focus, total, screen->page_size, key,
+			TUI_LIST_VIM | TUI_LIST_HORIZONTAL_PAGES | TUI_LIST_PAGED);
+		screen->scroll = 0;
+	}
+	return TUI_SCREEN_REDRAW;
+}
+
 static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id, int batch)
 {
-	struct hook_screen screen = {.batch = batch, .choice = batch ? 2 : 0, .page_size = 1};
-	struct termios saved;
-	const cJSON *row;
-	int rc = 0;
-	int dirty = 1;
+	struct hook_controller controller = {.ctx = ctx, .rows = rows,
+		.screen = {.batch = batch, .choice = batch ? 2 : 0, .page_size = 1}};
+	struct hook_screen *screen = &controller.screen;
+	struct tui_screen terminal = {0};
+	const struct tui_screen_ops ops = {.update = hooks_update, .draw = hooks_draw};
 
 	if (review_id) {
+		const cJSON *row;
 		int found = 0;
+
 		cJSON_ArrayForEach(row, *rows) {
 			if (strcmp(field(row, "id"), review_id) == 0) { found = 1; break; }
-			screen.focus++;
+			screen->focus++;
 		}
 		if (!found) MORPH_RETURN(-ENOENT);
-		screen.review = 1;
+		screen->review = 1;
 		struct hook_action items[3];
-		screen.choice = actions(row, items) - 1;
-	}
-	if (tcgetattr(STDIN_FILENO, &saved) != 0) MORPH_RETURN(-errno);
-	struct termios raw = saved;
-	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
-	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
-	raw.c_cc[VMIN] = 1;
-	raw.c_cc[VTIME] = 0;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) MORPH_RETURN(-errno);
-	fprintf(stdout, "\033[?1049h\033[?25l");
-	for (;;) {
-		struct winsize ws;
-		int height = 24, columns = 80;
 
-		if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-			if (ws.ws_row) height = ws.ws_row;
-			if (ws.ws_col) columns = ws.ws_col;
-		}
-		if (dirty || height != screen.height || columns != screen.columns) {
-			screen.height = height;
-			screen.columns = columns;
-			screen.width = columns > 4 ? columns - 4 : 1;
-			rc = render(&screen, *rows);
-			if (rc != 0) break;
-			dirty = 0;
-		}
-		int key = read_key();
-		if (!key || key == -EINTR) continue;
-		if (key < 0) {
-			if (key != -ECANCELED) MORPH_SET_ERR(rc, key);
-			break;
-		}
-		if (key == 3 || key == 4 || key == 'q') break;
-		if (key == 27) {
-			if (!screen.review) break;
-			screen.review = 0;
-			screen.scroll = 0;
-			screen.message[0] = '\0';
-			dirty = 1;
-			continue;
-		}
-		if (key == 'r' && !screen.review) {
-			rc = refresh(ctx, rows, &screen);
-			if (rc != 0) break;
-			screen.message[0] = '\0';
-			dirty = 1;
-			continue;
-		}
-		if (screen.height < (screen.batch ? 20 : 12) ||
-		    screen.width < (screen.batch ? 40 : 24) ||
-		    (screen.review && screen.document_height == 0)) continue;
-		if (screen.batch) {
-			if (key == KEY_UP || key == 'k') screen.choice = (screen.choice + 2) % 3;
-			if (key == KEY_DOWN || key == 'j' || key == '\t')
-				screen.choice = (screen.choice + 1) % 3;
-			if (key == KEY_PAGE_DOWN) screen.scroll += screen.page_size;
-			if (key == KEY_PAGE_UP) screen.scroll -= screen.page_size;
-			if (screen.scroll < 0) screen.scroll = 0;
-			if (key == '\r' || key == '\n') {
-				if (screen.choice == 2) {
-					screen.batch = 0;
-					screen.scroll = 0;
-				} else {
-					row = cJSON_GetArrayItem(*rows, 0);
-					int result = runtime_hooks_manage(ctx->runtime,
-						screen.choice == 0 ? "trust-all" : "deny-all",
-						"workspace", field(row, "review_digest"));
-					if (result == 0) break;
-					rc = refresh(ctx, rows, &screen);
-					if (rc != 0) break;
-					screen.choice = 2;
-					snprintf(screen.message, sizeof(screen.message),
-						"Action failed: %s. Review the refreshed hooks.",
-						morph_strerror(result));
-				}
-			}
-			dirty = 1;
-			continue;
-		}
-		if (key == 'a' && !screen.review && cJSON_GetArraySize(*rows) > 0) {
-			rc = refresh(ctx, rows, &screen);
-			if (rc != 0) break;
-			screen.batch = 1;
-			screen.choice = 2;
-			dirty = 1;
-			continue;
-		}
-		row = cJSON_GetArrayItem(*rows, screen.focus);
-		struct hook_action items[3];
-		int count = actions(row, items);
-		int total = cJSON_GetArraySize(*rows);
-
-		if (screen.review) {
-			if (key == KEY_UP || key == 'k') screen.choice = (screen.choice + count - 1) % count;
-			if (key == KEY_DOWN || key == 'j' || key == '\t') screen.choice = (screen.choice + 1) % count;
-			if (key == KEY_PAGE_UP) screen.scroll -= screen.document_height;
-			if (key == KEY_PAGE_DOWN) screen.scroll += screen.document_height;
-			if (key == KEY_HOME) screen.scroll = 0;
-			if (key == KEY_END) screen.scroll = screen.document_lines;
-			if (screen.scroll < 0) screen.scroll = 0;
-		}
-		if (key == '\r' || key == '\n') {
-			if (!row) continue;
-			if (!screen.review) {
-				rc = refresh(ctx, rows, &screen);
-				if (rc != 0) break;
-				screen.review = cJSON_GetArraySize(*rows) > 0;
-			} else if (!items[screen.choice].name) {
-				screen.review = 0;
-				screen.scroll = 0;
-			} else {
-				const char *action = items[screen.choice].name;
-				int project = strcmp(action, "trust-project") == 0;
-				int result = runtime_hooks_manage(ctx->runtime, action,
-					project ? "workspace" : field(row, "id"),
-					field(row, project ? "workspace_digest" : "digest"));
-				snprintf(screen.message, sizeof(screen.message), result == 0 ?
-					"Completed: %s" : "Action failed: %s", result == 0 ? action : morph_strerror(result));
-				rc = refresh(ctx, rows, &screen);
-				if (rc != 0) break;
-			}
-		} else if (!screen.review && total > 0) {
-			if ((key == KEY_UP || key == 'k') && screen.focus > 0) screen.focus--;
-			if ((key == KEY_DOWN || key == 'j') && screen.focus < total - 1) screen.focus++;
-			if (key == KEY_RIGHT || key == KEY_PAGE_DOWN)
-				screen.focus += screen.page_size < total - 1 - screen.focus ?
-					screen.page_size : total - 1 - screen.focus;
-			if (key == KEY_LEFT || key == KEY_PAGE_UP)
-				screen.focus = screen.focus >= screen.page_size ? screen.focus - screen.page_size : 0;
-			if (key == KEY_HOME) screen.focus = 0;
-			if (key == KEY_END && total) screen.focus = total - 1;
-			screen.scroll = 0;
-		}
-		dirty = 1;
+		screen->choice = actions(row, items) - 1;
 	}
-	fprintf(stdout, "\033[0m\033[?25h\033[?1049l");
-	fflush(stdout);
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && rc == 0)
-		MORPH_SET_ERR(rc, -errno);
-	return rc;
+	int rc = tui_screen_open(&terminal, stdin, stdout,
+		TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
+
+	if (rc == 0) rc = tui_screen_run(&terminal, &ops, &controller);
+	morph_buf_cleanup(&screen->frame);
+	int leave_rc = tui_screen_close(&terminal);
+
+	if (rc == 0) rc = leave_rc;
+	MORPH_RETURN(rc);
 }
 
 int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)

@@ -1,23 +1,15 @@
+#include "tui/components.h"
 #include "setup_ui.h"
 #include "cli.h"
 #include "util/error.h"
 #include "util/utf8.h"
 #include "util/name.h"
-#include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <termios.h>
 #include <unistd.h>
 
 #define SETUP_BACK (-EAGAIN)
-#define SETUP_KEY_UP 256
-#define SETUP_KEY_DOWN 257
-#define SETUP_KEY_LEFT 258
-#define SETUP_KEY_RIGHT 259
-#define SETUP_KEY_PASTE_START 260
-#define SETUP_KEY_PASTE_END 261
 
 enum setup_phase {
 	SETUP_ACCOUNT,
@@ -26,6 +18,7 @@ enum setup_phase {
 };
 
 struct setup_ui {
+	struct tui_screen screen;
 	FILE *output;
 	int fd;
 	int output_fd;
@@ -44,9 +37,7 @@ struct setup_ui {
 
 int cli_setup_ui_available(FILE *input, FILE *output)
 {
-	const char *term = getenv("TERM");
-	return isatty(fileno(input)) && isatty(fileno(output)) &&
-		(!term || strcmp(term, "dumb") != 0);
+	return tui_available(input, output);
 }
 
 static volatile sig_atomic_t setup_interrupted;
@@ -56,73 +47,30 @@ static void setup_signal(int signal_number)
 	setup_interrupted = signal_number;
 }
 
-static int read_byte(struct setup_ui *ui, int timeout)
-{
-	if (setup_interrupted)
-		MORPH_RETURN(-ECANCELED);
-	struct pollfd pfd = {.fd = ui->fd, .events = POLLIN};
-	int rc = poll(&pfd, 1, timeout);
-	if (rc < 0)
-		MORPH_RETURN(setup_interrupted ? -ECANCELED : -errno);
-	if (rc == 0)
-		return 0;
-	unsigned char byte;
-	ssize_t count = read(ui->fd, &byte, 1);
-	if (count < 0)
-		MORPH_RETURN(-errno);
-	if (count == 0)
-		MORPH_RETURN(-ECANCELED);
-	return byte;
-}
-
 static int read_key(struct setup_ui *ui)
 {
-	int key;
 	for (;;) {
-		key = read_byte(ui, 100);
-		if (key != 0) break;
-		struct winsize ws;
-		if (ioctl(ui->output_fd, TIOCGWINSZ, &ws) == 0 &&
-		    ((ws.ws_col && ws.ws_col != ui->columns) ||
-		     (ws.ws_row && ws.ws_row != ui->rows)))
+		struct tui_event event;
+		int rc = tui_screen_poll(&ui->screen, &event, 100);
+
+		if (setup_interrupted)
+			MORPH_RETURN(-ECANCELED);
+		if (rc == -EINTR)
+			continue;
+		if (rc != 0)
+			MORPH_RETURN(rc);
+		if (event.type == TUI_EVENT_EOF)
+			MORPH_RETURN(-ECANCELED);
+		if (event.type == TUI_EVENT_RESIZE)
 			return 0;
+		if (event.type == TUI_EVENT_KEY)
+			return event.key;
 	}
-	if (key != 27)
-		return key;
-	key = read_byte(ui, 80);
-	if (key == 0)
-		return SETUP_BACK;
-	if (key != '[' && key != 'O')
-		return key < 0 ? key : SETUP_BACK;
-	char sequence[16];
-	size_t len = 0;
-	while (len + 1 < sizeof(sequence)) {
-		key = read_byte(ui, 80);
-		if (key <= 0)
-			return key < 0 ? key : SETUP_BACK;
-		sequence[len++] = (char)key;
-		if (key >= '@' && key <= '~')
-			break;
-	}
-	sequence[len] = '\0';
-	if (strcmp(sequence, "A") == 0) return SETUP_KEY_UP;
-	if (strcmp(sequence, "B") == 0) return SETUP_KEY_DOWN;
-	if (strcmp(sequence, "C") == 0) return SETUP_KEY_RIGHT;
-	if (strcmp(sequence, "D") == 0) return SETUP_KEY_LEFT;
-	if (strcmp(sequence, "200~") == 0) return SETUP_KEY_PASTE_START;
-	if (strcmp(sequence, "201~") == 0) return SETUP_KEY_PASTE_END;
-	return 0;
 }
 
 static void dimensions(struct setup_ui *ui)
 {
-	struct winsize ws;
-	ui->columns = 80;
-	ui->rows = 24;
-	if (ioctl(ui->output_fd, TIOCGWINSZ, &ws) == 0) {
-		if (ws.ws_col) ui->columns = ws.ws_col;
-		if (ws.ws_row) ui->rows = ws.ws_row;
-	}
+	tui_dimensions(ui->output_fd, &ui->columns, &ui->rows);
 }
 
 /* The cursor normally rests on the blank line below the active prompt.
@@ -188,10 +136,7 @@ static int frame_start(struct setup_ui *ui, morph_buf_t *frame,
 static int frame_show(struct setup_ui *ui, morph_buf_t *frame)
 {
 	morph_buf_puts(frame, "\033[?2026l");
-	int rc = frame->failed ? -ENOMEM : 0;
-	if (rc == 0 && (fputs(morph_buf_cstr(frame), ui->output) == EOF ||
-		       fflush(ui->output) != 0))
-		rc = errno ? -errno : -EIO;
+	int rc = tui_output_write(ui->output, frame);
 	ui->active_lines = ui->frame_lines;
 	morph_buf_cleanup(frame);
 	if (rc < 0)
@@ -219,48 +164,37 @@ static int record_answer(struct setup_ui *ui, const char *answer)
 static void card_border(struct setup_ui *ui, morph_buf_t *frame, int selected,
 	int width, int bottom)
 {
-	morph_buf_t border;
+	morph_buf_t border = {0};
+	int rc = morph_buf_init(&border, 128);
 
-	if (morph_buf_init(&border, 128) != 0) {
-		frame->failed = 1;
-		return;
-	}
-	morph_buf_puts(&border, bottom ? "└" : "┌");
-	for (int i = 0; i < width - 2; i++)
-		morph_buf_puts(&border, "─");
-	morph_buf_puts(&border, bottom ? "┘" : "┐");
-	line(ui, frame, selected ? "\033[36m" : "\033[2m", morph_buf_cstr(&border));
-	if (border.failed)
-		frame->failed = 1;
+	if (rc == 0) rc = tui_card_border(&border, width, bottom);
+	if (rc == 0)
+		line(ui, frame, selected ? "\033[36m" : "\033[2m",
+			morph_buf_cstr(&border));
+	if (rc != 0) MORPH_SET_ERR(frame->failed, rc);
 	morph_buf_cleanup(&border);
 }
 
 static void card_text(struct setup_ui *ui, morph_buf_t *frame, const char *text,
 	int width, const char *style)
 {
-	morph_buf_t row;
-	char clipped[BUFSIZ];
+	morph_buf_t row = {0};
+	int rc = morph_buf_init(&row, 128);
 
-	if (morph_buf_init(&row, 128) != 0) {
-		frame->failed = 1;
-		return;
-	}
-	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), text,
-		(size_t)(width - 4), 0);
-	morph_buf_printf(&row, "│ %s", clipped);
-	for (size_t i = utf8_display_width(clipped); i < (size_t)(width - 4); i++)
-		morph_buf_putc(&row, ' ');
-	morph_buf_puts(&row, " │");
-	line(ui, frame, style, morph_buf_cstr(&row));
-	if (row.failed)
-		frame->failed = 1;
+	if (rc == 0) rc = tui_card_row(&row, width, text);
+	if (rc == 0) line(ui, frame, style, morph_buf_cstr(&row));
+	if (rc != 0) MORPH_SET_ERR(frame->failed, rc);
 	morph_buf_cleanup(&row);
 }
 
 static int select_menu(struct setup_ui *ui, const char *title, const char *detail,
 	const char *const *items, const char *const *descriptions, int count, int selected)
 {
-	int paste = 0;
+	struct tui_menu menu_state = {0};
+
+	menu_state.list.index = (size_t)selected;
+	menu_state.list.flags = TUI_LIST_WRAP | TUI_LIST_VIM |
+		TUI_LIST_TAB | TUI_LIST_DIGITS;
 	for (;;) {
 		morph_buf_t frame;
 		int rc = frame_start(ui, &frame, title, detail);
@@ -270,7 +204,9 @@ static int select_menu(struct setup_ui *ui, const char *title, const char *detai
 		int cards = descriptions && ui->columns >= 44 && available >= 8;
 		int visible = cards ? available / 4 : available;
 		if (visible < 1) visible = 1;
-		int first = selected >= visible ? selected - visible + 1 : 0;
+		tui_list_layout(&menu_state.list, (size_t)count, (size_t)visible);
+		selected = (int)menu_state.list.index;
+		int first = (int)menu_state.list.first;
 		for (int i = first; i < count && i < first + visible; i++) {
 			morph_buf_t label;
 			rc = morph_buf_init(&label, 0);
@@ -292,7 +228,7 @@ static int select_menu(struct setup_ui *ui, const char *title, const char *detai
 				line(ui, &frame, i == selected ? "\033[1;30;46m" : "",
 					morph_buf_cstr(&label));
 			}
-			if (label.failed) frame.failed = 1;
+			if (label.failed) MORPH_SET_ERR(frame.failed, label.failed);
 			morph_buf_cleanup(&label);
 		}
 		if (ui->rows >= 4)
@@ -304,18 +240,11 @@ static int select_menu(struct setup_ui *ui, const char *title, const char *detai
 			MORPH_RETURN(rc);
 		int key = read_key(ui);
 		if (key < 0) MORPH_RETURN(key);
-		if (key == 3 || key == 4) MORPH_RETURN(-ECANCELED);
-		if (key == SETUP_KEY_PASTE_START) { paste = 1; continue; }
-		if (key == SETUP_KEY_PASTE_END) { paste = 0; continue; }
-		if (paste) continue;
-		if (key == SETUP_KEY_UP || key == 'k')
-			selected = (selected + count - 1) % count;
-		if (key == SETUP_KEY_DOWN || key == 'j' || key == '\t')
-			selected = (selected + 1) % count;
-		if (key >= '1' && key < '1' + count)
-			selected = key - '1';
-		if (key == '\r' || key == '\n')
-			return selected;
+		int result = tui_menu_update(&menu_state, key);
+
+		if (result == TUI_CANCEL) MORPH_RETURN(-ECANCELED);
+		if (result == TUI_BACK) return SETUP_BACK;
+		if (result == TUI_SUBMIT) return (int)menu_state.list.index;
 	}
 }
 
@@ -328,94 +257,68 @@ static int menu(struct setup_ui *ui, const char *title, const char *detail,
 static int edit(struct setup_ui *ui, const char *title, const char *detail,
 		char *value, size_t capacity, int secret)
 {
-	morph_buf_t input;
-	int rc = morph_buf_init(&input, 0);
-	if (rc < 0)
+	struct tui_editor editor = {0};
+	morph_buf_t shown = {0};
+	int rc = tui_editor_init(&editor, secret ? "" : value, capacity, secret);
+
+	if (rc == 0) rc = morph_buf_init(&shown, 128);
+	if (rc != 0) {
+		tui_editor_cleanup(&editor);
 		MORPH_RETURN(rc);
-	if (!secret) morph_buf_puts(&input, value);
-	size_t cursor = input.len;
-	int paste = 0;
-	int overflow = 0;
+	}
 	const char *validation = NULL;
+
 	for (;;) {
 		morph_buf_t frame;
 		rc = frame_start(ui, &frame,
-			validation && ui->rows < 14 ? "Value required" : title, overflow ?
+			validation && ui->rows < 14 ? "Value required" : title, editor.overflow ?
 			"Value is too long. Shorten it before continuing." :
 			validation ? validation : detail);
 		if (rc < 0) break;
-		const char *text = morph_buf_cstr(&input);
-		const char *shown = secret ? (input.len ? "••••••••" : "") : text;
-		size_t max_column = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
-		size_t column = secret ? (input.len ? 8 : 0) : 0;
-		if (!secret) {
-			char saved = input.data[cursor];
-			input.data[cursor] = '\0';
-			shown = utf8_suffix_display_width(input.data, max_column - 1);
-			column = utf8_display_width(shown);
-			input.data[cursor] = saved;
+		size_t width = ui->columns > 4 ? (size_t)ui->columns - 4 : 1;
+		size_t column;
+
+		morph_buf_reset(&shown);
+		rc = tui_editor_view(&editor, &shown, width, &column);
+		if (rc != 0) {
+			morph_buf_cleanup(&frame);
+			break;
 		}
 		int input_row = ui->frame_lines;
-		line(ui, &frame, "\033[36m", shown);
-		line(ui, &frame, "\033[2m",
-			ui->columns < 60 ? "Enter OK  Esc Back  ^U Clear" :
+
+		line(ui, &frame, "\033[36m", morph_buf_cstr(&shown));
+		line(ui, &frame, "\033[2m", ui->columns < 60 ?
+			"Enter OK  Esc Back  ^U Clear" :
 			"Enter Continue · Esc Back · Ctrl-U Clear · Ctrl-C Exit");
-		if (column > max_column) column = max_column;
 		ui->cursor_up = ui->frame_lines - input_row;
 		morph_buf_printf(&frame, "\033[%dA\r\033[%zuC\033[?25h",
 			ui->cursor_up, column + 2);
 		rc = frame_show(ui, &frame);
 		if (rc < 0) break;
 		int key = read_key(ui);
+
 		if (key < 0) { rc = key; break; }
-		if (key == 3 || key == 4) { rc = -ECANCELED; break; }
-		if (key == SETUP_KEY_PASTE_START) { paste = 1; continue; }
-		if (key == SETUP_KEY_PASTE_END) { paste = 0; continue; }
-		if ((key == '\r' || key == '\n') && !paste) {
-			if (!overflow && input.len && utf8valid(morph_buf_cstr(&input)) == NULL) {
-				memcpy(value, input.data, input.len + 1);
+		int result = tui_editor_update(&editor, key);
+
+		if (result < 0) { rc = result; break; }
+		if (result == TUI_CANCEL) { rc = -ECANCELED; break; }
+		if (result == TUI_BACK) { rc = SETUP_BACK; break; }
+		if (result == TUI_SUBMIT) {
+			if (tui_editor_valid(&editor)) {
+				memcpy(value, editor.text.data, editor.text.len + 1);
 				rc = record_answer(ui, secret ?
 					"API key entered (hidden)" : value);
 				break;
 			}
-			validation = input.len ? "Enter valid UTF-8 text." :
+			validation = editor.text.len ? "Enter valid UTF-8 text." :
 				"Enter a value, or press Esc to go back.";
-			continue;
+		} else if (result == TUI_CHANGED) {
+			validation = NULL;
 		}
-		if (key == 21) {
-			validation = NULL;
-			morph_buf_reset(&input);
-			cursor = 0;
-			overflow = 0;
-		} else if ((key == 127 || key == 8) && cursor) {
-			validation = NULL;
-			size_t previous = (size_t)(utf8_prev_codepoint(input.data,
-				input.data + cursor) - input.data);
-			memmove(input.data + previous, input.data + cursor,
-				input.len - cursor + 1);
-			input.len -= cursor - previous;
-			cursor = previous;
-			overflow = 0;
-		} else if (key == SETUP_KEY_LEFT && cursor) {
-			cursor = (size_t)(utf8_prev_codepoint(input.data,
-				input.data + cursor) - input.data);
-		} else if (key == SETUP_KEY_RIGHT && cursor < input.len) {
-			cursor += utf8_next_codepoint_len(input.data + cursor, input.len - cursor);
-		} else if (key >= 32 && key < 256 && key != 127) {
-			validation = NULL;
-			if (input.len + 1 >= capacity) { overflow = 1; continue; }
-			if (morph_buf_reserve(&input, 1) < 0) { rc = -ENOMEM; break; }
-			memmove(input.data + cursor + 1, input.data + cursor,
-				input.len - cursor + 1);
-			input.data[cursor++] = (char)key;
-			input.len++;
-		}
-		if (input.failed) { rc = -ENOMEM; break; }
 	}
-	if (input.data) memset(input.data, 0, input.cap);
-	morph_buf_cleanup(&input);
-	if (rc < 0) MORPH_RETURN(rc);
-	return 0;
+	tui_editor_cleanup(&editor);
+	morph_buf_cleanup(&shown);
+	MORPH_RETURN(rc);
 }
 
 static int has_key(struct setup_ui *ui, struct config_model_entry *entry)
@@ -802,14 +705,6 @@ int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
 	struct setup_ui ui = {.output = output, .fd = fileno(input),
 		.output_fd = fileno(output), .color = cli_color_enabled() && !getenv("NO_COLOR"),
 		.entries = entries};
-	struct termios saved;
-	if (tcgetattr(ui.fd, &saved) != 0) MORPH_RETURN(-errno);
-	struct termios raw = saved;
-	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
-	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
-	raw.c_cc[VMIN] = 1;
-	raw.c_cc[VTIME] = 0;
-	if (tcsetattr(ui.fd, TCSANOW, &raw) != 0) MORPH_RETURN(-errno);
 	const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
 	struct sigaction old_actions[4];
 	struct sigaction action = {0};
@@ -822,12 +717,18 @@ int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
 			int signal_rc = -errno;
 			while (installed-- > 0)
 				sigaction(signals[installed], &old_actions[installed], NULL);
-			tcsetattr(ui.fd, TCSANOW, &saved);
 			MORPH_RETURN(signal_rc);
 		}
 	}
-	fputs("\r\n  morph  /  First-time setup\r\n\r\n"
-		"\033[?2004h\033[?25l", output);
+	ui.screen.interrupted = &setup_interrupted;
+	int enter_rc = tui_screen_open(&ui.screen, input, output, TUI_SESSION_PASTE);
+
+	if (enter_rc != 0) {
+		while (installed-- > 0)
+			sigaction(signals[installed], &old_actions[installed], NULL);
+		return enter_rc;
+	}
+	fputs("\r\n  morph  /  First-time setup\r\n\r\n", output);
 	int providers[SETUP_MODEL_COUNT] = {0};
 	int rc = 0;
 	int reviewing = 0;
@@ -857,10 +758,9 @@ int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
 		ending_rc = frame_show(&ui, &ending);
 	}
 	if (rc == 0 && ending_rc < 0) rc = ending_rc;
-	fputs("\033[?2004l\033[?25h", output);
-	fflush(output);
-	if (tcsetattr(ui.fd, TCSANOW, &saved) != 0 && rc == 0)
-		rc = -errno;
+	int leave_rc = tui_screen_close(&ui.screen);
+
+	if (rc == 0) rc = leave_rc;
 	for (int i = 0; i < installed; i++)
 		sigaction(signals[i], &old_actions[i], NULL);
 	if (rc < 0) MORPH_RETURN(rc);

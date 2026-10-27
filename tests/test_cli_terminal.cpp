@@ -11,6 +11,7 @@ int cli_presentation_event(struct cli_context *ctx, const struct morph_event *ev
 
 #include <fcntl.h>
 #include <poll.h>
+#include <regex>
 #include <string>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -300,6 +301,62 @@ TEST_F(CliTerminalTest, WorkAnimationPreservesComposerAndQueuedContent)
 	ctx.input_job = nullptr;
 	cli_terminal_cleanup(&ctx);
 	cli_command_job_cleanup(&job);
+	fclose(output);
+	close(slave);
+	close(master);
+}
+
+TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	ASSERT_NE(fcntl(master, F_SETFL, O_NONBLOCK), -1);
+	struct winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	ctx.input_status.enabled = 1;
+	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
+	cli_terminal_turn_begin(&ctx);
+	/* Final is visible while the worker still owns persistence/cleanup. */
+	ctx.final_rendered = 1;
+	cli_terminal_composer_resume(&ctx);
+	fflush(output);
+	char bytes[BUFSIZ];
+	ssize_t count = read(master, bytes, sizeof(bytes));
+	ASSERT_GT(count, 0);
+	EXPECT_NE(std::string(bytes, static_cast<size_t>(count)).find("esc to interrupt"),
+		std::string::npos);
+	cli_terminal_composer_suspend(&ctx);
+	cli_terminal_turn_end(&ctx, 0);
+	cli_terminal_composer_resume(&ctx);
+	fflush(output);
+	count = read(master, bytes, sizeof(bytes));
+	ASSERT_GT(count, 0);
+	std::string transition(bytes, static_cast<size_t>(count));
+	EXPECT_NE(transition.find("Worked for"), std::string::npos);
+	/* No text wraps at this width. Count vertical cursor controls and LF
+	 * to verify the composer ends at the exact row it started on. */
+	std::regex vertical("\x1b\\[([0-9]*)([AB])|(\n)");
+	int displacement = 0;
+	for (auto match = std::sregex_iterator(transition.begin(), transition.end(), vertical);
+	     match != std::sregex_iterator(); ++match) {
+		if ((*match)[3].matched) {
+			displacement++;
+		} else {
+			int rows = (*match)[1].str().empty() ? 1 : std::stoi((*match)[1]);
+			displacement += (*match)[2] == "A" ? -rows : rows;
+		}
+	}
+	EXPECT_EQ(displacement, 0);
+	cli_terminal_cleanup(&ctx);
 	fclose(output);
 	close(slave);
 	close(master);

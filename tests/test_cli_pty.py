@@ -65,6 +65,19 @@ class Model(http.server.BaseHTTPRequestHandler):
             pass
 
 
+def terminal_environment(directory, extra=None):
+    # Each PTY owns its home and terminal capabilities, including when tests
+    # run inside a terminal that supports native graphics or custom hooks.
+    home = directory / 'home'
+    home.mkdir(exist_ok=True)
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ('TERM_PROGRAM', 'KITTY_WINDOW_ID', 'ITERM_PROFILE')}
+    environment.update(HOME=str(home), TERM='xterm-256color',
+                       MORPH_PTY_API_KEY='local-test')
+    environment.update(extra or {})
+    return environment
+
+
 class Terminal:
     def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False, hooks_enabled=True):
         config = directory / 'config.toml'
@@ -85,8 +98,7 @@ retry_count = 0
 ''')
         self.child = pexpect.spawn(str(driver), [str(config), str(directory),
                                                str(directory / 'data.db')],
-                                   env={**os.environ, 'TERM': 'xterm-256color',
-                                        'MORPH_PTY_API_KEY': 'local-test', **(extra_env or {})},
+                                   env=terminal_environment(directory, extra_env),
                                    encoding='utf-8', dimensions=(24, 80), timeout=8)
         self.screen = pyte.Screen(80, 24)
         self.stream = pyte.Stream(self.screen)

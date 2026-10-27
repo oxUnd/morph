@@ -3,9 +3,7 @@
 #include "sapi/cli/setup_ui.h"
 #include "sapi/cli/history_ui.h"
 
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <termios.h>
+#include "tui/components.h"
 
 static int append_token_number(morph_buf_t *buf, int64_t tokens)
 {
@@ -197,16 +195,13 @@ struct resume_layout {
 	int updated_column;
 };
 
-static struct resume_layout resume_dimensions(void)
+static struct resume_layout resume_dimensions(const struct tui_screen *screen)
 {
-	struct winsize ws;
-	struct resume_layout layout = {.rows = 24, .columns = 80};
+	struct resume_layout layout = {.rows = screen->area.height,
+		.columns = screen->area.width};
+	struct tui_rect body = tui_rect_inset(screen->area, 2, 0);
 
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-		if (ws.ws_row) layout.rows = ws.ws_row;
-		if (ws.ws_col) layout.columns = ws.ws_col;
-	}
-	layout.width = layout.columns > 4 ? layout.columns - 4 : 1;
+	layout.width = body.width > 0 ? body.width : 1;
 	layout.first_row = layout.rows >= 14 ? 8 : layout.rows >= 6 ? 3 :
 		layout.rows >= 3 ? 2 : 1;
 	layout.page_size = layout.rows >= 14 ? layout.rows - 12 :
@@ -229,35 +224,25 @@ static struct resume_layout resume_dimensions(void)
 }
 
 /* All data passes through the single-line sanitizer before raw frame output. */
-static void resume_cell(int row, int column, int width, const char *text,
+static void resume_cell(morph_buf_t *frame, const struct resume_layout *layout,
+			int row, int column, int width, const char *text,
 			const char *style, int right)
 {
 	char compact[BUFSIZ];
-	char clipped[BUFSIZ];
-	int padding;
 
-	if (width <= 0)
-		return;
 	cli_list_compact_text(compact, sizeof(compact), text);
-	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), compact,
-					 (size_t)width, 0);
-	padding = width - (int)utf8_display_width(clipped);
-	fprintf(stdout, "\033[%d;%dH%s", row, column, style);
-	if (right)
-		fprintf(stdout, "%*s", padding, "");
-	fprintf(stdout, "%s", clipped);
-	if (!right)
-		fprintf(stdout, "%*s", padding, "");
+	(void)tui_cell_append_aligned(frame, layout->columns, layout->rows,
+		row, column, width, compact, style, right);
 }
 
-static void resume_rule(int row, int width)
+static void resume_rule(morph_buf_t *frame, int row, int width)
 {
-	fprintf(stdout, "\033[%d;3H%s", row, RESUME_RULE);
+	morph_buf_printf(frame, "\033[%d;3H%s", row, RESUME_RULE);
 	for (int i = 0; i < width; i++)
-		fprintf(stdout, "─");
+		morph_buf_puts(frame, "─");
 }
 
-static int resume_frame(struct session *list, int count, int focus,
+static int resume_frame(morph_buf_t *frame, struct session *list, int count, int focus,
 			const struct resume_layout *layout)
 {
 	int page = focus / layout->page_size;
@@ -270,43 +255,47 @@ static int resume_frame(struct session *list, int count, int focus,
 
 	if (rc != 0)
 		MORPH_RETURN(rc);
-	/* These trusted controls bypass cli_printf's text-only output policy. */
-	fprintf(stdout, "\033[?2026h%s\033[H\033[J", RESUME_NORMAL);
+	morph_buf_reset(frame);
+	morph_buf_printf(frame, "\033[?2026h%s\033[H\033[J", RESUME_NORMAL);
 	if (layout->columns < 5) {
-		resume_cell(1, 1, layout->columns, list[focus].name, RESUME_SELECTED, 0);
-		fprintf(stdout, "\033[0m\033[?2026l");
-		fflush(stdout);
+		resume_cell(frame, layout, 1, 1, layout->columns,
+			list[focus].name, RESUME_SELECTED, 0);
+		morph_buf_puts(frame, "\033[0m\033[?2026l");
 		morph_buf_cleanup(&tokens);
-		return 0;
+		return tui_output_write(stdout, frame);
 	}
 	if (layout->rows >= 14) {
-		resume_cell(1, 3, 5, "morph", RESUME_ACCENT, 0);
-		resume_cell(1, 9, layout->width - 6, "/ sessions", RESUME_MUTED, 0);
-		resume_cell(3, 3, layout->width, "Resume a session", RESUME_NORMAL "\033[1m", 0);
+		resume_cell(frame, layout, 1, 3, 5, "morph", RESUME_ACCENT, 0);
+		resume_cell(frame, layout, 1, 9, layout->width - 6, "/ sessions", RESUME_MUTED, 0);
+		resume_cell(frame, layout, 3, 3, layout->width,
+			"Resume a session", RESUME_NORMAL "\033[1m", 0);
 		snprintf(label, sizeof(label), "%d sessions · sorted by recent activity", count);
-		resume_cell(4, 3, layout->width, label, RESUME_MUTED, 0);
-		resume_rule(6, layout->width);
+		resume_cell(frame, layout, 4, 3, layout->width, label, RESUME_MUTED, 0);
+		resume_rule(frame, 6, layout->width);
 	} else if (layout->rows >= 3) {
-		resume_cell(1, 3, layout->width, "Sessions", RESUME_ACCENT, 0);
+		resume_cell(frame, layout, 1, 3, layout->width, "Sessions", RESUME_ACCENT, 0);
 	}
 	if (layout->rows >= 3 && layout->width >= 28) {
 		snprintf(label, sizeof(label), "%d / %d", page + 1,
 			 (count - 1) / layout->page_size + 1);
 		int width = (int)strlen(label);
 
-		resume_cell(layout->rows >= 14 ? 3 : 1, 3 + layout->width - width,
+		resume_cell(frame, layout, layout->rows >= 14 ? 3 : 1, 3 + layout->width - width,
 			    width, label, RESUME_MUTED, 1);
 	}
 	if (layout->rows >= 6) {
 		int row = layout->first_row - 1;
 
-		resume_cell(row, 3, layout->name_width, "SESSION", RESUME_MUTED, 0);
+		resume_cell(frame, layout, row, 3, layout->name_width, "SESSION", RESUME_MUTED, 0);
 		if (layout->id_column)
-			resume_cell(row, layout->id_column, 8, "ID", RESUME_MUTED, 0);
+			resume_cell(frame, layout, row, layout->id_column, 8,
+				"ID", RESUME_MUTED, 0);
 		if (layout->tokens_column)
-			resume_cell(row, layout->tokens_column, 12, "TOKENS", RESUME_MUTED, 1);
+			resume_cell(frame, layout, row, layout->tokens_column, 12,
+				"TOKENS", RESUME_MUTED, 1);
 		if (layout->updated_column)
-			resume_cell(row, layout->updated_column, 14, "UPDATED", RESUME_MUTED, 0);
+			resume_cell(frame, layout, row, layout->updated_column, 14,
+				"UPDATED", RESUME_MUTED, 0);
 	}
 	for (int i = start; i < end; i++) {
 		int row = layout->first_row + i - start;
@@ -314,18 +303,19 @@ static int resume_frame(struct session *list, int count, int focus,
 		const char *text = selected ? RESUME_SELECTED "\033[1m" : RESUME_NORMAL;
 		const char *metadata = selected ? RESUME_SELECTED_META : RESUME_MUTED;
 
-		resume_cell(row, 3, layout->width, "", text, 0);
+		resume_cell(frame, layout, row, 3, layout->width, "", text, 0);
 		if (selected && layout->columns > 4)
-			resume_cell(row, 2, 1, "▏", RESUME_BAR, 0);
-		resume_cell(row, 3, layout->name_width, list[i].name, text, 0);
+			resume_cell(frame, layout, row, 2, 1, "▏", RESUME_BAR, 0);
+		resume_cell(frame, layout, row, 3, layout->name_width, list[i].name, text, 0);
 		if (layout->id_column)
-			resume_cell(row, layout->id_column, 8, list[i].display_id, metadata, 0);
+			resume_cell(frame, layout, row, layout->id_column, 8,
+				list[i].display_id, metadata, 0);
 		if (layout->tokens_column) {
 			morph_buf_reset(&tokens);
 			rc = append_token_number(&tokens, list[i].token_used);
 			if (rc != 0)
 				break;
-			resume_cell(row, layout->tokens_column, 12,
+			resume_cell(frame, layout, row, layout->tokens_column, 12,
 				    morph_buf_cstr(&tokens), metadata, 1);
 		}
 		if (layout->updated_column) {
@@ -333,16 +323,16 @@ static int resume_frame(struct session *list, int count, int focus,
 			rc = append_session_time(&tokens, list[i].updated_at, list[i].created_at);
 			if (rc != 0)
 				break;
-			resume_cell(row, layout->updated_column, 14,
+			resume_cell(frame, layout, row, layout->updated_column, 14,
 				    morph_buf_cstr(&tokens) + strlen(" · "), metadata, 0);
 		}
 	}
 	if (layout->rows >= 6) {
 		snprintf(label, sizeof(label), "Showing %d–%d of %d", start + 1, end, count);
-		if (layout->rows >= 14) resume_rule(layout->rows - 4, layout->width);
-		resume_cell(layout->rows - 3 + (layout->rows < 14), 3,
+		if (layout->rows >= 14) resume_rule(frame, layout->rows - 4, layout->width);
+		resume_cell(frame, layout, layout->rows - 3 + (layout->rows < 14), 3,
 			    layout->width, label, RESUME_MUTED, 0);
-		resume_rule(layout->rows - 1, layout->width);
+		resume_rule(frame, layout->rows - 1, layout->width);
 	}
 	if (layout->rows >= 3) {
 		const char *hint = layout->width >= 68 ?
@@ -350,113 +340,80 @@ static int resume_frame(struct session *list, int count, int focus,
 			layout->width >= 36 ? "↑↓ Select  Enter Resume  Esc Cancel" :
 			"↑↓ Enter Esc";
 
-		resume_cell(layout->rows, 3, layout->width, hint, RESUME_MUTED, 0);
+		resume_cell(frame, layout, layout->rows, 3, layout->width, hint, RESUME_MUTED, 0);
 		if (layout->width >= 68)
-			resume_cell(layout->rows, 3 + layout->width - 10, 10,
+			resume_cell(frame, layout, layout->rows, 3 + layout->width - 10, 10,
 				    "Esc Cancel", RESUME_NORMAL, 1);
 	}
-	fprintf(stdout, "\033[0m\033[?2026l");
-	fflush(stdout);
+	morph_buf_puts(frame, "\033[0m\033[?2026l");
+	if (rc == 0) rc = tui_output_write(stdout, frame);
 	morph_buf_cleanup(&tokens);
 	return rc;
 }
 
-/* Return a byte, or a negative error; escape sequences use a short timeout. */
-static int resume_read_byte(int timeout)
-{
-	struct pollfd input = {.fd = STDIN_FILENO, .events = POLLIN};
-	unsigned char byte;
-	int rc = poll(&input, 1, timeout);
+struct resume_picker {
+	struct session *sessions;
+	int count;
+	int *selected;
+	struct tui_menu menu;
+	struct resume_layout layout;
+	morph_buf_t frame;
+};
 
-	if (rc < 0)
-		MORPH_RETURN(-errno);
-	if (rc == 0)
-		return 0;
-	ssize_t size = read(STDIN_FILENO, &byte, 1);
-	if (size < 0)
-		MORPH_RETURN(-errno);
-	if (size == 0)
-		MORPH_RETURN(-ECANCELED);
-	return byte;
+static int resume_draw(void *data, const struct tui_screen *screen)
+{
+	struct resume_picker *picker = data;
+
+	picker->layout = resume_dimensions(screen);
+	tui_list_layout(&picker->menu.list, (size_t)picker->count,
+		(size_t)picker->layout.page_size);
+	return resume_frame(&picker->frame, picker->sessions, picker->count,
+		(int)picker->menu.list.index, &picker->layout);
+}
+
+static int resume_update(void *data, const struct tui_event *event)
+{
+	struct resume_picker *picker = data;
+
+	if (event->type != TUI_EVENT_KEY || event->pasting)
+		return TUI_SCREEN_CONTINUE;
+	int key = event->key;
+
+	if (key == 'q') return TUI_SCREEN_CLOSE;
+	if (key == 'n') key = TUI_KEY_PAGE_DOWN;
+	if (key == 'p') key = TUI_KEY_PAGE_UP;
+	int result = tui_menu_update(&picker->menu, key);
+
+	if (result == TUI_SUBMIT) {
+		*picker->selected = (int)picker->menu.list.index;
+		return TUI_SCREEN_CLOSE;
+	}
+	if (result == TUI_BACK || result == TUI_CANCEL)
+		return TUI_SCREEN_CLOSE;
+	return result == TUI_CHANGED ? TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
 }
 
 /* Own a temporary screen so navigation never fills the transcript. */
 static int resume_pick(struct session *list, int count, int *selected)
 {
-	struct termios saved;
-	struct resume_layout previous = {0};
-	int focus = 0;
-	int dirty = 1;
-	int rc = 0;
+	struct resume_picker picker = {.sessions = list, .count = count,
+		.selected = selected};
+	struct tui_screen screen = {0};
+	const struct tui_screen_ops ops = {.update = resume_update, .draw = resume_draw};
+	int rc = morph_buf_init(&picker.frame, BUFSIZ);
 
 	*selected = -1;
-	if (tcgetattr(STDIN_FILENO, &saved) != 0)
-		MORPH_RETURN(-errno);
-	struct termios raw = saved;
-	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
-	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
-	raw.c_cc[VMIN] = 1;
-	raw.c_cc[VTIME] = 0;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
-		MORPH_RETURN(-errno);
-	fprintf(stdout, "\033[?1049h\033[?25l");
-	for (;;) {
-		struct resume_layout layout = resume_dimensions();
+	picker.menu.list.flags = TUI_LIST_VIM | TUI_LIST_TAB |
+		TUI_LIST_HORIZONTAL_PAGES | TUI_LIST_PAGED;
+	if (rc == 0)
+		rc = tui_screen_open(&screen, stdin, stdout,
+			TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
+	if (rc == 0) rc = tui_screen_run(&screen, &ops, &picker);
+	int leave_rc = tui_screen_close(&screen);
 
-		if (dirty || layout.rows != previous.rows || layout.columns != previous.columns) {
-			rc = resume_frame(list, count, focus, &layout);
-			if (rc != 0)
-				break;
-			previous = layout;
-			dirty = 0;
-		}
-		int key = resume_read_byte(100);
-
-		if (key == 0)
-			continue;
-		if (key == 27) {
-			key = resume_read_byte(80);
-			if (key == 0)
-				break;
-			if (key == '[' || key == 'O') {
-				key = resume_read_byte(80);
-				if (key == 'A') key = 'k';
-				else if (key == 'B') key = 'j';
-				else if (key == 'C') key = 'n';
-				else if (key == 'D') key = 'p';
-				else if (key >= 0) continue;
-			} else if (key >= 0) {
-				break;
-			}
-		}
-		if (key < 0) {
-			if (key == -EINTR)
-				continue;
-			if (key != -ECANCELED)
-				MORPH_SET_ERR(rc, key);
-			break;
-		}
-		if (key == 'q' || key == 3 || key == 4)
-			break;
-		if (key == '\r' || key == '\n') {
-			*selected = focus;
-			break;
-		}
-		int old_focus = focus;
-
-		if (key == 'k' && focus > 0) focus--;
-		if ((key == 'j' || key == '\t') && focus < count - 1) focus++;
-		if (key == 'n')
-			focus = focus + layout.page_size < count ? focus + layout.page_size : count - 1;
-		if (key == 'p')
-			focus = focus >= layout.page_size ? focus - layout.page_size : 0;
-		dirty = focus != old_focus;
-	}
-	fprintf(stdout, "\033[0m\033[?25h\033[?1049l");
-	fflush(stdout);
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && rc == 0)
-		MORPH_SET_ERR(rc, -errno);
-	return rc;
+	if (rc == 0) rc = leave_rc;
+	morph_buf_cleanup(&picker.frame);
+	MORPH_RETURN(rc);
 }
 
 static int cmd_resume(struct cli_context *ctx, int argc, char **argv)

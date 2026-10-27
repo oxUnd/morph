@@ -13,6 +13,9 @@ except ImportError:
     sys.exit(77)
 
 
+from test_cli_pty import terminal_environment
+
+
 def main():
     driver = str(Path(sys.argv[1]).resolve())
     with tempfile.TemporaryDirectory(prefix='morph-cli-mcp-') as temporary:
@@ -50,7 +53,7 @@ auto_connect = true
 '''
         config.write_text(text)
         child = pexpect.spawn(driver, [str(config), temporary, str(directory / 'data.db')],
-                              env={**os.environ, 'TERM': 'xterm-256color'},
+                              env=terminal_environment(directory),
                               encoding='utf-8', dimensions=(24, 100), timeout=8)
         screen = pyte.Screen(100, 24)
         stream = pyte.Stream(screen)
