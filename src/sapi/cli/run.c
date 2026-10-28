@@ -1367,7 +1367,9 @@ void cli_run(struct cli_context *ctx)
 					int handled = 0;
 					int command_rc;
 
-					if (!job.active && input[0] != '/')
+					if (input[0] == '/')
+						cli_presentation_command_input(ctx, input);
+					else if (!job.active)
 						cli_presentation_user_input(input);
 					add_history(input);
 					if (input[0] != '/') {

@@ -30,11 +30,15 @@
 ## CLI Slash Command Presentation
 - Treat slash commands as local UI/actions, separate from chat user messages.
   Do not commit submitted slash commands as `› /command` chat bubbles or retain
-  their editable background in scrollback. Readline recall history is separate
-  and may retain the submitted command for Up/Down recall.
+  their editable background in scrollback. Keep each submitted command visible
+  as a separate purple command line on the normal background, followed by its
+  results. Include arguments and aliases as submitted, with terminal controls
+  sanitized. Readline recall history is separate and may retain the submitted
+  command for Up/Down recall.
 - Navigation commands (`/hooks`, `/resume`, `/history`, including aliases) open
-  their panel without appending a command bubble. Closing/cancelling a panel
-  restores one editable composer and its footer; do not print a close receipt.
+  their panel after committing the plain command line, without a command bubble.
+  Closing/cancelling a panel retains that command line and restores one editable
+  composer and its footer; do not print a close receipt.
 - Queries print their command/result heading and results in the normal output
   area. State changes print a concise success receipt. Neither uses user-message
   padding or the composer's background. Failures retain an explicit error.

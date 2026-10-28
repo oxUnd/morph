@@ -37,6 +37,7 @@ int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *body, int sty
 void cli_presentation_finish(struct cli_context *ctx);
 const char *cli_input_prompt(void);
 void cli_presentation_user_input(const char *text);
+void cli_presentation_command_input(struct cli_context *ctx, const char *text);
 struct cli_cancel_monitor;
 struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);
 void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
@@ -2168,4 +2169,31 @@ TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)
 	EXPECT_NE(output.find("session"), std::string::npos);
 	EXPECT_NE(output.find("All tools and commands"), std::string::npos);
 	EXPECT_NE(output.find("Update generated project files"), std::string::npos);
+}
+
+TEST_F(CliPresentationTest, SlashCommandHasAPlainSanitizedHeading)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cli_set_color_enabled(1);
+	testing::internal::CaptureStdout();
+	cli_presentation_command_input(&ctx, "/rename 中文\033[2J\nname");
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("\033[38;5;141m/rename 中文"), std::string::npos);
+	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(output.find("\033[48;"), std::string::npos);
+	EXPECT_EQ(output.find("›"), std::string::npos);
+	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
+}
+
+TEST_F(CliPresentationTest, SlashHeadingDoesNotChangePlainOrJsonOutput)
+{
+	testing::internal::CaptureStdout();
+	cli_presentation_command_input(&ctx, "/share");
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	cli_presentation_command_input(&ctx, "/share");
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	cli_presentation_command_input(&ctx, "/share");
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\n/share\n\n");
 }

@@ -35,6 +35,18 @@ def composer(terminal, expected=''):
     return row
 
 
+def command_heading(terminal, command):
+    rows = terminal.screen.display
+    matches = [i for i, row in enumerate(rows) if row.rstrip() == command]
+    assert matches, '\n'.join(rows)
+    row = matches[-1]
+    assert terminal.screen.buffer[row][0].fg == 'af87ff', rows[row]
+    assert all(terminal.screen.buffer[row][column].bg != '1c1c1c'
+               for column in range(terminal.screen.columns)), '\n'.join(rows)
+    assert row + 1 < len(rows) and not rows[row + 1].strip(), '\n'.join(rows)
+    return row
+
+
 def main():
     driver = Path(sys.argv[1]).resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
@@ -61,18 +73,21 @@ def main():
                 wait_for(terminal, lambda: title in '\n'.join(terminal.screen.display))
                 terminal.send('\x1b')
                 composer(terminal)
-                assert command not in '\n'.join(terminal.screen.display)
-                print(f'PASS: {command} cancellation restores one composer without an echo')
+                command_heading(terminal, command)
+                print(f'PASS: {command} cancellation preserves its plain command heading')
             terminal.send('/model\r')
             display = '\n'.join(terminal.screen.display)
             assert 'current model: pty-test' in display, display
             composer(terminal)
+            heading_row = command_heading(terminal, '/model')
             output_row = next(index for index, row in enumerate(terminal.screen.display)
                               if 'current model: pty-test' in row)
+            assert output_row > heading_row
             assert terminal.screen.buffer[output_row][0].bg != '1c1c1c'
             terminal.send('/rename slash-renamed\r')
             assert 'session renamed to: slash-renamed' in '\n'.join(terminal.screen.display)
             composer(terminal)
+            command_heading(terminal, '/rename slash-renamed')
             terminal.send('/model-unknown\r')
             assert 'unknown command: /model-unknown' in '\n'.join(terminal.screen.display)
             composer(terminal, '/model-unknown')

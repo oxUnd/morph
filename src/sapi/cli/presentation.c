@@ -46,6 +46,22 @@ static void presentation_print_safe_inline(const char *text,
 	free(safe);
 }
 
+/* Keep submitted local commands visible without committing an editable bubble. */
+void cli_presentation_command_input(struct cli_context *ctx, const char *text)
+{
+	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
+	    !text || text[0] != '/')
+		return;
+	if (cli_color_enabled())
+		printf(ANSI_RESET "\n" CLI_COMMAND_COLOR);
+	else
+		putchar('\n');
+	presentation_print_safe_inline(text, SIZE_MAX);
+	if (cli_color_enabled())
+		printf(ANSI_RESET);
+	printf("\n\n");
+}
+
 /* Submitted user messages remain ordinary scrollback, separate from tools. */
 static void presentation_user_padding(void)
 {

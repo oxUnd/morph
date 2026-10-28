@@ -71,6 +71,7 @@ def main():
                 wait_for(terminal, lambda: 'saved conversation to' in '\n'.join(terminal.screen.display))
                 terminal.pump(.2)
                 check_composer(terminal)
+                assert any(row.rstrip() == '/share' for row in terminal.screen.display)
                 path = next(downloads.glob('*.html'))
                 html = path.read_text()
                 assert '请把本次对话' in html and '<strong>' in html
