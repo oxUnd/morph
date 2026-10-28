@@ -11,8 +11,12 @@ extern "C" {
 #include "persistence/preferences.h"
 
 struct model;
+struct memory_worker;
 
 struct memory_options {
+	/* Borrowed dependencies; the owner drains the worker before model teardown. */
+	struct memory_worker *worker;
+	struct model *llm;
 	int enabled;
 	int hot_path_enabled;
 	int cold_path_enabled;
@@ -34,10 +38,9 @@ enum memory_clear_scope {
 	MEMORY_CLEAR_PROCEDURES,
 };
 
-/* Inject the LLM model used for structured extraction / consolidation.
- * Pass NULL to disable LLM-based memory and fall back to anchor heuristics
- * only. Safe to call multiple times. */
-void memory_set_llm(struct model *llm);
+/* Each runtime owns an independent queue and worker. */
+struct memory_worker *memory_worker_create(void);
+void memory_worker_destroy(struct memory_worker *worker);
 
 /* Accept explicit preferences before model execution, independently of outcome.
  * event_token identifies the original input, including steering messages. */
@@ -84,14 +87,14 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 /* Drain the async queue and join the worker thread. CLI must call this
  * before db_close() so any in-flight job finishes against a still-open
  * database file. Safe to call when the worker was never started. */
-void memory_async_shutdown(void);
+void memory_async_shutdown(struct memory_worker *worker);
 /* Recover queued/crashed advisory jobs; preferences are already committed. */
-int memory_async_resume(struct db *db);
+int memory_async_resume(struct db *db, const struct memory_options *opts);
 char *memory_background_render(struct db *db, int64_t session_id);
 
 /* Return non-zero when async memory consolidation has queued or in-flight
  * work that shutdown may need to wait for. */
-int memory_async_pending(void);
+int memory_async_pending(struct memory_worker *worker);
 
 int memory_clear(struct db *db, int64_t session_id,
 		 enum memory_clear_scope scope);

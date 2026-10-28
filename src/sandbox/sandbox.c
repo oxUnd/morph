@@ -160,7 +160,7 @@ static int env_in_allow_list(const char *name,
 	return 0;
 }
 
-int sandbox_apply_env(const char **allowed_env, int count,
+int sandbox_apply_env(const char *const *allowed_env, int count,
 		      unsigned int permissions)
 {
 	/* If ENV permission is set with no explicit allow list, leave
@@ -1642,7 +1642,7 @@ int sandbox_enter(struct sandbox_config *cfg)
 		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
 		 cfg->max_file_size_mb, cfg->max_processes);
 
-	rc = sandbox_apply_env((const char **)cfg->allowed_env,
+	rc = sandbox_apply_env((const char *const *)cfg->allowed_env,
 			       cfg->allowed_env_count,
 			       effective_permissions);
 	if (rc < 0)

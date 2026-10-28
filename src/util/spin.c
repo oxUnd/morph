@@ -8,19 +8,19 @@
 #define FRAME_INTERVAL_MS 120
 #define SHIMMER_INTERVAL_MS 80
 
-static const char *spin_frames_dots[] = {
+static const char *const spin_frames_dots[] = {
 	"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 };
 
-static const char *spin_frames_arrow[] = {
+static const char *const spin_frames_arrow[] = {
 	"←", "↖", "↑", "↗", "→", "↘", "↓", "↙",
 };
 
-static const char *spin_frames_pulse[] = {
+static const char *const spin_frames_pulse[] = {
 	"◐", "◓", "◑", "◒",
 };
 
-static const char *spin_frames_braille[] = {
+static const char *const spin_frames_braille[] = {
 	"⠛", "⠟", "⠿", "⠻", "⠽", "⠾", "⠿", "⠾",
 };
 
@@ -56,7 +56,7 @@ static const char *state_text(enum spin_state state)
 	}
 }
 
-static const char **get_frames(enum spin_style style)
+static const char *const *get_frames(enum spin_style style)
 {
 	switch (style) {
 	case SPIN_STYLE_ARROW:   return spin_frames_arrow;
@@ -153,7 +153,7 @@ void spin_render(struct spin_context *ctx)
 {
 	if (!ctx || !ctx->running) return;
 
-	const char **frames = get_frames(ctx->style);
+	const char *const *frames = get_frames(ctx->style);
 	int frame_count = get_frame_count(ctx->style);
 	const char *frame = frames[ctx->frame % frame_count];
 	const char *prefix = state_prefix(ctx->state);

@@ -7,17 +7,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-void *runtime_usage_bind(void *user_data)
+void *runtime_usage_bind(struct model_usage_sink *sink, void *user_data)
 {
-	void *previous = model_get_usage_user_data();
+	void *previous = sink ? sink->user_data : NULL;
 
-	model_set_usage_user_data(user_data);
+	if (sink)
+		sink->user_data = user_data;
 	return previous;
 }
 
-void runtime_usage_restore(void *previous)
+void runtime_usage_restore(struct model_usage_sink *sink, void *previous)
 {
-	model_set_usage_user_data(previous);
+	if (sink)
+		sink->user_data = previous;
 }
 
 int runtime_model_usage_is_billable(const struct model_usage *usage)

@@ -22,12 +22,12 @@
 static int is_creative_tool(const char *name)
 {
 	if (!name) return 0;
-	static const char *creative[] = {
+	static const char *const creative[] = {
 		"img_gen", "img_inpaint", "img_compose",
 		"img_resize", "img_convert",
 		"vid_gen", NULL
 	};
-	for (const char **t = creative; *t; t++)
+	for (const char *const *t = creative; *t; t++)
 		if (strcmp(name, *t) == 0) return 1;
 	return 0;
 }

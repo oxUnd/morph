@@ -225,7 +225,7 @@ static void video_report_usage(struct model *self, const char *model_id,
 			 "%s", task_id);
 	usage.video_seconds = result && result->duration_seconds > 0 ?
 		result->duration_seconds : 1;
-	model_report_usage(&usage);
+	model_report_usage(self, &usage);
 }
 
 static int volcengine_video_execute(struct model *self, const char *prompt,

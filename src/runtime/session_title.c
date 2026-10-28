@@ -196,7 +196,6 @@ static void *title_worker(void *opaque)
 	title_event(job, "begin");
 	/* Isolate cancellation and billing from the foreground turn's TLS state. */
 	http_set_cancel_token(&job->cancel);
-	model_set_usage_user_data(NULL);
 	if (arena && !morph_cancel_token_is_cancelled(&job->cancel))
 		rc = job->model->chat_with_tools(job->model, arena,
 			title_instructions, &message, 1, NULL, 0, &response, NULL, NULL);

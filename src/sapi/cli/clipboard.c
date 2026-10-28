@@ -91,7 +91,7 @@ static int clipboard_output_path(struct cli_context *ctx, char **out_path)
 
 static int clipboard_save_platform_image(const char *png_path)
 {
-	static const char *script =
+	static const char script[] =
 		"on run argv\n"
 		"set outFile to open for access POSIX file (item 1 of argv) "
 		"with write permission\n"

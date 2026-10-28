@@ -349,15 +349,18 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		MORPH_RETURN(prompt_rc);
 	}
 	models->text = runtime_create_model(&config->models.text, 0);
+	/* Background extraction must not mutate the foreground model or bill its turn. */
+	models->memory_text = runtime_create_model(&config->models.text, 0);
 	models->react->llm_model = models->text;
-	if (!profile->process_replica) {
-		memory_set_llm(models->text);
-		model_set_usage_callback(profile->usage_cb);
-		model_set_usage_user_data(profile->usage_user_data);
-	}
 	models->vision = runtime_create_model(&config->models.vision, 0);
 	models->image = runtime_create_model(&config->models.image, 1);
 	models->video = runtime_create_model(&config->models.video, 1);
+	struct model *all[] = {models->text, models->vision, models->image, models->video};
+
+	for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
+		if (all[i])
+			all[i]->usage_sink = profile->usage_sink;
+	}
 	runtime_apply_guardrails(models->react, config, models->text);
 	return 0;
 }
@@ -645,6 +648,8 @@ void runtime_bootstrap_cleanup_models(struct runtime_models *models)
 {
 	if (!models)
 		return;
+	if (models->memory_text)
+		model_destroy(models->memory_text);
 	if (models->text)
 		model_destroy(models->text);
 	if (models->vision)
@@ -665,8 +670,10 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 	if (!r)
 		return;
 
-	if (r->shutdown_memory)
-		memory_async_shutdown();
+	if (r->memory_worker) {
+		memory_worker_destroy(*r->memory_worker);
+		*r->memory_worker = NULL;
+	}
 
 	if (r->react && *r->react) {
 		free((*r->react)->sub_agent_info);
@@ -686,9 +693,9 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		*r->tool_context = NULL;
 	}
 
-	if (r->reset_usage_callbacks) {
-		model_set_usage_callback(NULL);
-		runtime_usage_restore(NULL);
+	if (r->memory_text && *r->memory_text) {
+		model_destroy(*r->memory_text);
+		*r->memory_text = NULL;
 	}
 	if (r->text && *r->text) {
 		model_destroy(*r->text);

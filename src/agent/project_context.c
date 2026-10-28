@@ -72,7 +72,7 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 static int append_directory(morph_buf_t *buf, const char *directory,
 	int global, struct arena *arena, size_t *used)
 {
-	static const char *names[] = { "AGENTS.override.md", "AGENTS.md" };
+	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 		char path[PATH_MAX];

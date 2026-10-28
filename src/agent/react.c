@@ -709,7 +709,6 @@ struct async_tool_call {
 	volatile sig_atomic_t detached;
 	volatile sig_atomic_t start_released;
 	struct morph_cancel_token cancel_token;
-	void *usage_user_data;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 };
@@ -747,7 +746,6 @@ async_tool_call_create(struct tool_registry *tools,
 					     provider_tool_call_id : "");
 	call->output_cb = output_cb;
 	call->output_user_data = output_user_data;
-	call->usage_user_data = model_get_usage_user_data();
 	morph_cancel_token_reset(&call->cancel_token);
 	if (!call->tool_name || !call->tool_args || !call->tool_call_id ||
 	    !call->provider_tool_call_id) {
@@ -955,12 +953,9 @@ static void *async_tool_exec(void *arg)
 	} else {
 		struct tool_result res;
 		struct tool_runtime_context runtime;
-		void *prev_usage_user_data;
 		int rc;
 
 		tool_result_init(&res);
-		prev_usage_user_data = model_get_usage_user_data();
-		model_set_usage_user_data(call->usage_user_data);
 		runtime = call->react->tool_runtime;
 		runtime.event_cb = call->react->event_cb;
 		runtime.event_user_data = call->react->event_user_data;
@@ -971,7 +966,6 @@ static void *async_tool_exec(void *arg)
 		rc = tool_exec(call->tools, call->tool_name,
 			       call->tool_args, &res);
 		tool_runtime_set_current(NULL);
-		model_set_usage_user_data(prev_usage_user_data);
 
 		pthread_mutex_lock(&call->mutex);
 		int was_cancelled = call->cancelled;
@@ -3650,7 +3644,7 @@ static void react_split_legacy_final(struct react_context *ctx,
 static int react_final_is_continuation_note(struct react_context *ctx,
 					     const char *proposed)
 {
-	static const char *prefixes[] = {
+	static const char *const prefixes[] = {
 		"let me understand",
 		"let me inspect",
 		"let me investigate",

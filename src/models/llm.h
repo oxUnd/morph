@@ -57,6 +57,11 @@ struct model_usage {
 typedef void (*model_usage_callback)(const struct model_usage *usage,
 				     void *user_data);
 
+struct model_usage_sink {
+	model_usage_callback callback;
+	void *user_data;
+};
+
 struct chat_message {
 	char *role;
 	char *content;
@@ -111,6 +116,8 @@ struct model_error_info {
 };
 
 struct model {
+	/* Borrowed for the model lifetime; shared only within its owning runtime. */
+	struct model_usage_sink *usage_sink;
 	char name[64];
 	char provider[32];
 	char adapter[64];
@@ -171,10 +178,7 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 struct model *model_llm_create(const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 void model_destroy(struct model *m);
-void model_set_usage_callback(model_usage_callback cb);
-void model_set_usage_user_data(void *user_data);
-void *model_get_usage_user_data(void);
-void model_report_usage(const struct model_usage *usage);
+void model_report_usage(const struct model *model, const struct model_usage *usage);
 
 
 void chat_response_free(struct chat_response *resp);

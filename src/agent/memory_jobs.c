@@ -46,14 +46,44 @@ struct memory_job {
 	struct memory_job *next;
 };
 
-static pthread_mutex_t g_async_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_async_cv = PTHREAD_COND_INITIALIZER;
-static struct memory_job *g_async_head;
-static struct memory_job *g_async_tail;
-static pthread_t g_async_thread;
-static int g_async_running;
-static int g_async_stop;
-static int g_async_active;
+struct memory_worker {
+	pthread_mutex_t lock;
+	pthread_cond_t cv;
+	struct memory_job *head;
+	struct memory_job *tail;
+	pthread_t thread;
+	int running;
+	int stop;
+	int active;
+};
+
+struct memory_worker *memory_worker_create(void)
+{
+	struct memory_worker *worker = calloc(1, sizeof(*worker));
+
+	if (!worker)
+		return NULL;
+	if (pthread_mutex_init(&worker->lock, NULL) != 0) {
+		free(worker);
+		return NULL;
+	}
+	if (pthread_cond_init(&worker->cv, NULL) != 0) {
+		pthread_mutex_destroy(&worker->lock);
+		free(worker);
+		return NULL;
+	}
+	return worker;
+}
+
+void memory_worker_destroy(struct memory_worker *worker)
+{
+	if (!worker)
+		return;
+	memory_async_shutdown(worker);
+	pthread_cond_destroy(&worker->cv);
+	pthread_mutex_destroy(&worker->lock);
+	free(worker);
+}
 
 static void memory_steps_free(struct react_step *s)
 {
@@ -234,23 +264,24 @@ static int memory_job_complete(struct db *db, int64_t id, int error)
 
 static void *memory_async_worker(void *arg)
 {
-	(void)arg;
+	struct memory_worker *worker = arg;
+
 	for (;;) {
 		struct memory_job *job = NULL;
 
-		pthread_mutex_lock(&g_async_lock);
-		while (!g_async_stop && !g_async_head)
-			pthread_cond_wait(&g_async_cv, &g_async_lock);
-		if (g_async_stop && !g_async_head) {
-			pthread_mutex_unlock(&g_async_lock);
+		pthread_mutex_lock(&worker->lock);
+		while (!worker->stop && !worker->head)
+			pthread_cond_wait(&worker->cv, &worker->lock);
+		if (worker->stop && !worker->head) {
+			pthread_mutex_unlock(&worker->lock);
 			break;
 		}
-		job = g_async_head;
-		g_async_head = job->next;
-		if (!g_async_head)
-			g_async_tail = NULL;
-		g_async_active = 1;
-		pthread_mutex_unlock(&g_async_lock);
+		job = worker->head;
+		worker->head = job->next;
+		if (!worker->head)
+			worker->tail = NULL;
+		worker->active = 1;
+		pthread_mutex_unlock(&worker->lock);
 
 		if (!job)
 			continue;
@@ -285,28 +316,28 @@ static void *memory_async_worker(void *arg)
 		}
 		memory_job_free(job);
 
-		pthread_mutex_lock(&g_async_lock);
-		g_async_active = 0;
-		pthread_mutex_unlock(&g_async_lock);
+		pthread_mutex_lock(&worker->lock);
+		worker->active = 0;
+		pthread_mutex_unlock(&worker->lock);
 	}
 	return NULL;
 }
 
-static int memory_async_ensure_worker(void)
+static int memory_async_ensure_worker(struct memory_worker *worker)
 {
 	int rc = 0;
 
-	pthread_mutex_lock(&g_async_lock);
-	if (!g_async_running) {
-		g_async_stop = 0;
-		int err = pthread_create(&g_async_thread, NULL,
-					 memory_async_worker, NULL);
+	pthread_mutex_lock(&worker->lock);
+	if (!worker->running) {
+		worker->stop = 0;
+		int err = pthread_create(&worker->thread, NULL,
+					 memory_async_worker, worker);
 		if (err != 0)
 			rc = -err;
 		else
-			g_async_running = 1;
+			worker->running = 1;
 	}
-	pthread_mutex_unlock(&g_async_lock);
+	pthread_mutex_unlock(&worker->lock);
 	return rc;
 }
 
@@ -318,11 +349,12 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 				  const struct memory_options *opts)
 {
 	struct memory_job *job;
+	struct memory_worker *worker = opts ? opts->worker : NULL;
 
 	if (!db || !db->path[0] || !opts || !opts->enabled || !user_input)
 		return 0;
 
-	if (!strcmp(db->path, ":memory:"))
+	if (!worker || !strcmp(db->path, ":memory:"))
 		MORPH_RETURN(-ENOTSUP);
 
 	job = calloc(1, sizeof(*job));
@@ -358,53 +390,57 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 			return rc;
 		}
 	}
-	if (memory_async_ensure_worker() != 0) {
+	if (memory_async_ensure_worker(worker) != 0) {
 		/* Durable queued work will be recovered on the next input. */
 		memory_job_free(job);
 		return 0;
 	}
 
-	pthread_mutex_lock(&g_async_lock);
-	if (g_async_tail)
-		g_async_tail->next = job;
+	pthread_mutex_lock(&worker->lock);
+	if (worker->tail)
+		worker->tail->next = job;
 	else
-		g_async_head = job;
-	g_async_tail = job;
-	pthread_cond_signal(&g_async_cv);
-	pthread_mutex_unlock(&g_async_lock);
+		worker->head = job;
+	worker->tail = job;
+	pthread_cond_signal(&worker->cv);
+	pthread_mutex_unlock(&worker->lock);
 	return 0;
 }
 
-void memory_async_shutdown(void)
+void memory_async_shutdown(struct memory_worker *worker)
 {
 	pthread_t th;
 	int running;
 
-	pthread_mutex_lock(&g_async_lock);
-	running = g_async_running;
+	if (!worker)
+		return;
+	pthread_mutex_lock(&worker->lock);
+	running = worker->running;
 	if (running) {
-		g_async_stop = 1;
-		th = g_async_thread;
-		pthread_cond_broadcast(&g_async_cv);
+		worker->stop = 1;
+		th = worker->thread;
+		pthread_cond_broadcast(&worker->cv);
 	}
-	pthread_mutex_unlock(&g_async_lock);
+	pthread_mutex_unlock(&worker->lock);
 
 	if (running)
 		pthread_join(th, NULL);
 
-	pthread_mutex_lock(&g_async_lock);
-	g_async_running = 0;
-	g_async_active = 0;
-	pthread_mutex_unlock(&g_async_lock);
+	pthread_mutex_lock(&worker->lock);
+	worker->running = 0;
+	worker->active = 0;
+	pthread_mutex_unlock(&worker->lock);
 }
 
-int memory_async_pending(void)
+int memory_async_pending(struct memory_worker *worker)
 {
 	int pending;
 
-	pthread_mutex_lock(&g_async_lock);
-	pending = g_async_running && (g_async_active || g_async_head != NULL);
-	pthread_mutex_unlock(&g_async_lock);
+	if (!worker)
+		return 0;
+	pthread_mutex_lock(&worker->lock);
+	pending = worker->running && (worker->active || worker->head != NULL);
+	pthread_mutex_unlock(&worker->lock);
 	return pending;
 }
 
@@ -469,13 +505,14 @@ static struct memory_job *memory_job_restore(struct db *db, sqlite3_stmt *row)
 	return job;
 }
 
-int memory_async_resume(struct db *db)
+int memory_async_resume(struct db *db, const struct memory_options *opts)
 {
 	sqlite3_stmt *stmt = NULL;
+	struct memory_worker *worker = opts ? opts->worker : NULL;
 	int rc;
 
 	/* A private in-memory connection cannot be reopened by the worker. */
-	if (!db || !db->handle || !strcmp(db->path, ":memory:"))
+	if (!worker || !db || !db->handle || !strcmp(db->path, ":memory:"))
 		return 0;
 	rc = sqlite3_prepare_v2(db->handle,
 		"SELECT id,session_id,generation,payload,state,worker_pid FROM memory_jobs "
@@ -519,17 +556,19 @@ int memory_async_resume(struct db *db)
 			sqlite3_finalize(stmt);
 			MORPH_RETURN(-ENOMEM);
 		}
-		result = memory_async_ensure_worker();
+		job->opts.worker = worker;
+		job->opts.llm = opts->llm;
+		result = memory_async_ensure_worker(worker);
 		if (result != 0) {
 			memory_job_free(job);
 			sqlite3_finalize(stmt);
 			return result;
 		}
-		pthread_mutex_lock(&g_async_lock);
+		pthread_mutex_lock(&worker->lock);
 		{
 			int exists = 0;
 
-			for (struct memory_job *queued = g_async_head; queued;
+			for (struct memory_job *queued = worker->head; queued;
 			     queued = queued->next) {
 				if (queued->opts.background_job_id == id &&
 				    !strcmp(queued->db_path, db->path)) {
@@ -540,15 +579,15 @@ int memory_async_resume(struct db *db)
 			if (exists) {
 				memory_job_free(job);
 			} else {
-				if (g_async_tail)
-					g_async_tail->next = job;
+				if (worker->tail)
+					worker->tail->next = job;
 				else
-					g_async_head = job;
-				g_async_tail = job;
-				pthread_cond_signal(&g_async_cv);
+					worker->head = job;
+				worker->tail = job;
+				pthread_cond_signal(&worker->cv);
 			}
 		}
-		pthread_mutex_unlock(&g_async_lock);
+		pthread_mutex_unlock(&worker->lock);
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)

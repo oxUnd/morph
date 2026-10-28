@@ -293,8 +293,9 @@ static int runtime_start_components(struct runtime *runtime)
 	profile.workdir = ctx->workdir;
 	profile.event_cb = runtime->options.event_cb;
 	profile.event_user_data = runtime->options.event_user_data;
-	profile.usage_cb = runtime_record_usage;
-	profile.usage_user_data = runtime;
+	ctx->usage_sink.callback = runtime_record_usage;
+	ctx->usage_sink.user_data = runtime;
+	profile.usage_sink = &ctx->usage_sink;
 	profile.process_replica = runtime->options.process_replica;
 	profile.hitl_cb = runtime->options.hitl_cb;
 	profile.hitl_user_data = runtime->options.hitl_user_data;
@@ -374,7 +375,10 @@ static int runtime_start_components(struct runtime *runtime)
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
 	runtime_context_configure_engine(ctx);
-	ctx->memory_options = runtime_memory_options_from_config(&ctx->config);
+	ctx->memory_options = runtime_context_memory_options(ctx);
+	ctx->memory_options.worker = memory_worker_create();
+	if (!ctx->memory_options.worker)
+		MORPH_RETURN(-ENOMEM);
 	ctx->engine.memory_options = &ctx->memory_options;
 	ctx->engine.prepare_turn = runtime_prepare_turn;
 	ctx->engine.finish_turn = runtime_finish_turn;
@@ -576,8 +580,6 @@ void runtime_close(struct runtime *runtime)
 	hook_manager_cleanup(&runtime->context.hooks);
 	cleanup = runtime_context_shutdown_resources(
 		&runtime->context,
-		runtime->options.process_replica ? 0 : 1,
-		runtime->options.process_replica ? 0 : 1,
 		runtime->options.allocate_skill_registry);
 	runtime_bootstrap_cleanup(&cleanup);
 	if (runtime->context.execution_lock_ready)

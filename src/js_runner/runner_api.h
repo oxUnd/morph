@@ -2,6 +2,16 @@
 #define RUNNER_API_H
 
 #include "quickjs.h"
+#include <time.h>
+
+struct runner_state {
+	time_t deadline;
+	JSClassID sharp_class_id;
+	JSClassID canvas_class_id;
+	JSClassID image_data_class_id;
+	JSClassID wasm_module_class_id;
+	JSClassID wasm_instance_class_id;
+};
 
 int runner_has_cap(const char *cap);
 int runner_list_allows(const char *env_name, const char *value);

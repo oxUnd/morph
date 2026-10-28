@@ -6,8 +6,6 @@
 #undef fputs
 #undef putchar
 
-const char *default_db_path = "~/.morph/data.db";
-const char *default_config_path = "~/.morph/config.toml";
 static int g_cli_color_enabled = 1;
 static int g_cli_structured_output;
 static _Thread_local morph_buf_t *g_cli_command_output;

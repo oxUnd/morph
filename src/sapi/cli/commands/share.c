@@ -28,11 +28,14 @@ static int cmd_share(struct cli_context *ctx, int argc, char **argv)
 	MORPH_RETURN(rc);
 }
 
-int cli_register_share_commands(void)
+struct cli_command_group cli_share_commands(void)
 {
 	static const struct cli_command commands[] = {
 		{"/share", cmd_share, "Save the latest conversation as offline HTML", "/share"},
 	};
-	return cli_command_register_many(commands,
-		(int)(sizeof(commands) / sizeof(commands[0])), "Session");
+	return (struct cli_command_group){
+		.entries = commands,
+		.count = (int)(sizeof(commands) / sizeof(commands[0])),
+		.category = "Session",
+	};
 }

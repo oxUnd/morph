@@ -61,6 +61,7 @@ struct runtime_models runtime_context_models(struct runtime_context *ctx)
 	models.tokenizer = ctx->tokenizer;
 	models.react = ctx->react;
 	models.text = ctx->llm;
+	models.memory_text = ctx->memory_llm;
 	models.vision = ctx->vision_llm;
 	models.image = ctx->img_llm;
 	models.video = ctx->vid_llm;
@@ -75,6 +76,7 @@ void runtime_context_update_models(struct runtime_context *ctx,
 	ctx->tokenizer = models->tokenizer;
 	ctx->react = models->react;
 	ctx->llm = models->text;
+	ctx->memory_llm = models->memory_text;
 	ctx->vision_llm = models->vision;
 	ctx->img_llm = models->image;
 	ctx->vid_llm = models->video;
@@ -143,7 +145,14 @@ int runtime_context_tool_credit_session_id(struct runtime_context *ctx,
 struct memory_options
 runtime_context_memory_options(const struct runtime_context *ctx)
 {
-	return runtime_memory_options_from_config(ctx ? &ctx->config : NULL);
+	struct memory_options opts =
+		runtime_memory_options_from_config(ctx ? &ctx->config : NULL);
+
+	if (ctx) {
+		opts.worker = ctx->memory_options.worker;
+		opts.llm = ctx->memory_llm;
+	}
+	return opts;
 }
 
 void runtime_context_credit_session_key(struct runtime_context *ctx,
@@ -207,8 +216,6 @@ void runtime_context_finish_turn(struct runtime_context *ctx)
 
 struct runtime_shutdown_resources
 runtime_context_shutdown_resources(struct runtime_context *ctx,
-				   int shutdown_memory,
-				   int reset_usage_callbacks,
 				   int free_skill_registry)
 {
 	struct runtime_shutdown_resources cleanup;
@@ -216,6 +223,7 @@ runtime_context_shutdown_resources(struct runtime_context *ctx,
 	memset(&cleanup, 0, sizeof(cleanup));
 	if (!ctx)
 		return cleanup;
+	cleanup.memory_worker = &ctx->memory_options.worker;
 	cleanup.db = &ctx->database;
 	cleanup.tools = &ctx->tools;
 	cleanup.tool_context = &ctx->tctx;
@@ -225,11 +233,10 @@ runtime_context_shutdown_resources(struct runtime_context *ctx,
 	cleanup.react = &ctx->react;
 	cleanup.tokenizer = &ctx->tokenizer;
 	cleanup.text = &ctx->llm;
+	cleanup.memory_text = &ctx->memory_llm;
 	cleanup.vision = &ctx->vision_llm;
 	cleanup.image = &ctx->img_llm;
 	cleanup.video = &ctx->vid_llm;
-	cleanup.shutdown_memory = shutdown_memory;
-	cleanup.reset_usage_callbacks = reset_usage_callbacks;
 	cleanup.free_skill_registry = free_skill_registry;
 	return cleanup;
 }

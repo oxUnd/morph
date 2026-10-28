@@ -21,30 +21,16 @@
 
 #define LLM_IMAGE_QA_MAX_DIM 360
 
-static model_usage_callback g_usage_cb;
-static __thread void *g_usage_user_data;
-void model_set_usage_callback(model_usage_callback cb)
+void model_report_usage(const struct model *model, const struct model_usage *usage)
 {
-	g_usage_cb = cb;
-}
+	const struct model_usage_sink *sink = model ? model->usage_sink : NULL;
 
-void model_set_usage_user_data(void *user_data)
-{
-	g_usage_user_data = user_data;
-}
-
-void *model_get_usage_user_data(void)
-{
-	return g_usage_user_data;
-}
-
-void model_report_usage(const struct model_usage *usage)
-{
-	if (g_usage_cb && usage) {
+	if (sink && sink->callback && usage) {
 		struct model_usage tagged = *usage;
+
 		snprintf(tagged.phase, sizeof(tagged.phase), "%s",
 			 usage->phase[0] ? usage->phase : "turn");
-		g_usage_cb(&tagged, g_usage_user_data);
+		sink->callback(&tagged, sink->user_data);
 	}
 }
 
@@ -355,7 +341,7 @@ static void llm_usage_report(struct model *self, struct llm_stream_ctx *ctx,
 	if (!ctx)
 		return;
 	llm_usage_finalize(self, ctx, request_bytes);
-	model_report_usage(&ctx->usage);
+	model_report_usage(self, &ctx->usage);
 }
 
 static int64_t json_i64(cJSON *obj, const char *name)
@@ -1637,7 +1623,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 	llm_stream_transfer_tool_calls(&ctx, response);
 	llm_usage_finalize(self, &ctx, strlen(body));
 	response->usage = ctx.usage;
-	model_report_usage(&response->usage);
+	model_report_usage(self, &response->usage);
 	return status;
 }
 
@@ -1775,7 +1761,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	llm_stream_transfer_tool_calls(&ctx, response);
 	llm_usage_finalize(self, &ctx, strlen(body));
 	response->usage = ctx.usage;
-	model_report_usage(&response->usage);
+	model_report_usage(self, &response->usage);
 
 	return status;
 }

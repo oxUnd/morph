@@ -70,7 +70,7 @@ int apply_patch_init(struct tool_registry *registry,
 	const char *workspace_root;
 	struct tool_spec spec;
 	int rc;
-	static const char *format =
+	static const char format[] =
 		"{\"type\":\"grammar\",\"syntax\":\"lark\",\"definition\":\""
 		"start: begin section+ end NEWLINE?\\n"
 		"begin: \\\"*** Begin Patch\\\" NEWLINE\\n"

@@ -10,27 +10,29 @@ struct cli_command {
 	const char *usage;
 };
 
-int cli_command_register_many(const struct cli_command *entries, int count,
-			      const char *category);
-void cli_command_registry_clear(void);
+struct cli_command_group {
+	const struct cli_command *entries;
+	int count;
+	const char *category;
+};
+
 const struct cli_command *cli_command_find(const char *name);
 const struct cli_command *cli_command_find_input(const char *input);
 int cli_command_dispatch(struct cli_context *ctx, const char *input);
 void cli_print_help(void);
 char *cli_command_completion_generator(const char *text, int state);
-int cli_commands_init(void);
 
-int cli_register_share_commands(void);
-int cli_register_runtime_commands(void);
-int cli_register_session_commands(void);
-int cli_register_memory_commands(void);
-int cli_register_task_commands(void);
-int cli_register_media_commands(void);
-int cli_register_ext_commands(void);
-int cli_register_skill_commands(void);
-int cli_register_mcp_commands(void);
-int cli_register_sync_commands(void);
-int cli_register_permission_commands(void);
-int cli_register_hook_commands(void);
+struct cli_command_group cli_share_commands(void);
+struct cli_command_group cli_runtime_commands(void);
+struct cli_command_group cli_session_commands(void);
+struct cli_command_group cli_memory_commands(void);
+struct cli_command_group cli_task_commands(void);
+struct cli_command_group cli_media_commands(void);
+struct cli_command_group cli_ext_commands(void);
+struct cli_command_group cli_skill_commands(void);
+struct cli_command_group cli_mcp_commands(void);
+struct cli_command_group cli_sync_commands(void);
+struct cli_command_group cli_permission_commands(void);
+struct cli_command_group cli_hook_commands(void);
 
 #endif

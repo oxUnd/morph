@@ -578,10 +578,11 @@ static const struct cli_command runtime_commands[] = {
 	{ "/cl",      cmd_clear,   "Alias for /clear",                  "/cl" },
 };
 
-int cli_register_runtime_commands(void)
+struct cli_command_group cli_runtime_commands(void)
 {
-	return cli_command_register_many(runtime_commands,
-					 (int)(sizeof(runtime_commands) /
-					 sizeof(runtime_commands[0])),
-					 "Core");
+	return (struct cli_command_group){
+		.entries = runtime_commands,
+		.count = (int)(sizeof(runtime_commands) / sizeof(runtime_commands[0])),
+		.category = "Core",
+	};
 }

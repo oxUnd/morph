@@ -154,7 +154,7 @@ struct react_context {
 	int history_secret_count;
 	struct tokenizer *tokenizer;
 	struct compress_config compress;
-	void *llm_model;
+	struct model *llm_model;
 	char *final_answer;
 	char *final_reasoning_content;
 	enum react_state state;

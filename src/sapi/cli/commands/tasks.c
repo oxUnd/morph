@@ -803,10 +803,11 @@ static const struct cli_command task_commands[] = {
 	{ "/inbox",   cmd_inbox,   "Show task notifications",           "/inbox [list|read]" },
 };
 
-int cli_register_task_commands(void)
+struct cli_command_group cli_task_commands(void)
 {
-	return cli_command_register_many(task_commands,
-					 (int)(sizeof(task_commands) /
-					 sizeof(task_commands[0])),
-					 "Automation");
+	return (struct cli_command_group){
+		.entries = task_commands,
+		.count = (int)(sizeof(task_commands) / sizeof(task_commands[0])),
+		.category = "Automation",
+	};
 }

@@ -309,7 +309,7 @@ static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 	return -EINVAL;
 }
 
-int cli_register_sync_commands(void)
+struct cli_command_group cli_sync_commands(void)
 {
 	static const struct cli_command cmds[] = {
 		{ "/sync", sync_cmd, "Manage .morph directory sync",
@@ -318,8 +318,9 @@ int cli_register_sync_commands(void)
 		  "[destination|--yes]]" },
 	};
 
-	return cli_command_register_many(cmds,
-					 (int)(sizeof(cmds) /
-					 sizeof(cmds[0])),
-					 "Sync");
+	return (struct cli_command_group){
+		.entries = cmds,
+		.count = (int)(sizeof(cmds) / sizeof(cmds[0])),
+		.category = "Sync",
+	};
 }

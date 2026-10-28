@@ -590,7 +590,7 @@ int main(int argc, char *argv[])
 	}
 	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	http_init();
-	rc = cli_init(&ctx, options.config_path, options.workdir,
+	rc = cli_init(&ctx, options.config_path, NULL, options.workdir,
 		      options.session_name, presentation_mode);
 	if (rc < 0) {
 		log_err("failed to initialize: %s", morph_strerror(rc));
@@ -623,12 +623,12 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "morph: restore failed: %s\n",
 					morph_strerror(rc));
 			}
-			rc = cli_init(&ctx, options.config_path, options.workdir,
+			rc = cli_init(&ctx, options.config_path, NULL, options.workdir,
 				      options.session_name, presentation_mode);
 			if (rc < 0 && file_exists(plan.rollback)) {
 				(void)morph_sync_rollback_db_replace(&plan);
 				restored = 0;
-				rc = cli_init(&ctx, options.config_path,
+				rc = cli_init(&ctx, options.config_path, NULL,
 					      options.workdir,
 					      options.session_name,
 					      presentation_mode);

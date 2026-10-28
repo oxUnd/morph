@@ -5,8 +5,8 @@
 #include "db/database.h"
 #include "models/llm.h"
 
-void *runtime_usage_bind(void *user_data);
-void runtime_usage_restore(void *previous);
+void *runtime_usage_bind(struct model_usage_sink *sink, void *user_data);
+void runtime_usage_restore(struct model_usage_sink *sink, void *previous);
 int runtime_model_usage_is_billable(const struct model_usage *usage);
 char *runtime_model_usage_metadata(const struct model_usage *usage);
 int runtime_record_model_usage(struct db *db,

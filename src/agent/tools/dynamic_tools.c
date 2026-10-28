@@ -75,47 +75,40 @@ struct tool_checkpoint {
 	long created_at;
 };
 
-static const char *runner_path(void)
+static const char *runner_path(char buffer[PATH_MAX])
 {
-	static char sibling_runner[PATH_MAX];
-
 #ifdef __ANDROID__
 	{
-		static char android_runner[PATH_MAX];
 		Dl_info info;
 		const char *slash;
 		size_t dir_len;
 
-		if (android_runner[0])
-			return android_runner;
 		memset(&info, 0, sizeof(info));
 		if (dladdr((void *)(uintptr_t)runner_path, &info) != 0 &&
 		    info.dli_fname && *info.dli_fname) {
 			slash = strrchr(info.dli_fname, '/');
 			if (slash) {
 				dir_len = (size_t)(slash - info.dli_fname);
-				if (dir_len > 0 && dir_len < sizeof(android_runner)) {
-					memcpy(android_runner, info.dli_fname,
+				if (dir_len > 0 && dir_len < PATH_MAX) {
+					memcpy(buffer, info.dli_fname,
 					       dir_len);
-					android_runner[dir_len] = '\0';
-					if (snprintf(android_runner + dir_len,
-						sizeof(android_runner) - dir_len,
+					buffer[dir_len] = '\0';
+					if (snprintf(buffer + dir_len,
+						PATH_MAX - dir_len,
 						"/libmorph-js-runner.so") <
-					    (int)(sizeof(android_runner) -
+					    (int)(PATH_MAX -
 					    dir_len)) {
-						return android_runner;
+						return buffer;
 					}
-					android_runner[0] = '\0';
+					buffer[0] = '\0';
 				}
 			}
 		}
 	}
 #endif
-	if (sibling_runner[0])
-		return sibling_runner;
-	if (morph_executable_find(sibling_runner, sizeof(sibling_runner),
+	if (morph_executable_find(buffer, PATH_MAX,
 				  "morph-js-runner") == 0)
-		return sibling_runner;
+		return buffer;
 	return "morph-js-runner";
 }
 
@@ -475,7 +468,8 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 				workdir, strerror(errno));
 			_exit(126);
 		}
-		const char *runner = runner_path();
+		char runner_storage[PATH_MAX];
+		const char *runner = runner_path(runner_storage);
 		execl(runner, runner,
 		      dt->source_path, (char *)NULL);
 		execlp("morph-js-runner", "morph-js-runner",
@@ -709,7 +703,7 @@ static int append_tool_create_arg_error(morph_buf_t *buf,
 
 static const char *forbidden_source_token(const char *source)
 {
-	static const char *tokens[] = {
+	static const char *const tokens[] = {
 		"require(",
 		"require (",
 		"Buffer",
@@ -1249,6 +1243,8 @@ static int check_js_source(const char *source_path,
 	pid_t pid;
 	int output_pipe[2] = {-1, -1};
 	int status = 0;
+	char runner_storage[PATH_MAX];
+	const char *runner = runner_path(runner_storage);
 
 	if (error_out)
 		*error_out = NULL;
@@ -1266,7 +1262,6 @@ static int check_js_source(const char *source_path,
 		dup2(output_pipe[1], STDOUT_FILENO);
 		dup2(output_pipe[1], STDERR_FILENO);
 		close(output_pipe[1]);
-		const char *runner = runner_path();
 		execl(runner, runner, "--check",
 		      source_path, (char *)NULL);
 		first_errno = errno;
@@ -1316,7 +1311,7 @@ static int check_js_source(const char *source_path,
 						"morph-js-runner --check failed "
 						"without output. runner=%s "
 						"source=%s exit_status=%d",
-						runner_path(),
+						runner,
 						source_path ? source_path :
 						"(null)",
 						WEXITSTATUS(status));
@@ -1325,7 +1320,7 @@ static int check_js_source(const char *source_path,
 						"morph-js-runner --check was "
 						"terminated by signal %d. "
 						"runner=%s source=%s",
-						WTERMSIG(status), runner_path(),
+						WTERMSIG(status), runner,
 						source_path ? source_path :
 						"(null)");
 				} else {
@@ -1333,7 +1328,7 @@ static int check_js_source(const char *source_path,
 						"morph-js-runner --check failed "
 						"without output. runner=%s "
 						"source=%s status=%d",
-						runner_path(),
+						runner,
 						source_path ? source_path :
 						"(null)", status);
 				}
@@ -2512,7 +2507,7 @@ int dynamic_tools_load_persistent(struct tool_registry *reg,
 					    TOOL_ORIGIN_DYNAMIC_PERSISTENT);
 }
 
-static const char *TOOL_CREATE_DESCRIPTION =
+static const char TOOL_CREATE_DESCRIPTION[] =
 	"Create or update a dynamic JavaScript tool for this agent session. "
 	"The source_js runs in embedded QuickJS. It must define global function "
 	"run(args) or async function run(args), and return a JSON-serializable "

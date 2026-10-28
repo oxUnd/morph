@@ -163,7 +163,7 @@ static void image_report_usage(struct model *self,
 			 "estimated");
 	usage.image_units = result ?
 		image_units_from_dims(result->width, result->height) : 1;
-	model_report_usage(&usage);
+	model_report_usage(self, &usage);
 }
 
 static const struct image_provider_ops *image_provider_resolve(

@@ -12,6 +12,7 @@
 #include <stddef.h>
 
 struct runtime_turn_scope {
+	struct model_usage_sink *usage_sink;
 	void *previous_usage_user_data;
 	int bound;
 	int64_t memory_session_id;

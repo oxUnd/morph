@@ -963,7 +963,7 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	struct transcript_tool *tool = morph_array_push(&tr->tools);
 	char *json;
 	const char *subject = "";
-	static const char *keys[] = {
+	static const char *const keys[] = {
 		"command", "file_path", "dir_path", "path", "query", "pattern", "url"
 	};
 

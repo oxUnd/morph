@@ -258,10 +258,11 @@ static const struct cli_command skill_commands[] = {
 	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
 };
 
-int cli_register_skill_commands(void)
+struct cli_command_group cli_skill_commands(void)
 {
-	return cli_command_register_many(skill_commands,
-					 (int)(sizeof(skill_commands) /
-					 sizeof(skill_commands[0])),
-					 "Skills");
+	return (struct cli_command_group){
+		.entries = skill_commands,
+		.count = (int)(sizeof(skill_commands) / sizeof(skill_commands[0])),
+		.category = "Skills",
+	};
 }

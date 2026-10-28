@@ -52,6 +52,7 @@ int runtime_execute(struct runtime_engine *engine,
 	react_action_drain_fn old_action_drain_fn;
 	void *old_action_drain_user_data;
 	void *old_usage_user_data = NULL;
+	struct model_usage_sink *usage_sink;
 	int event_bound = 0;
 	int usage_bound = 0;
 	int hitl_bound = 0;
@@ -78,9 +79,11 @@ int runtime_execute(struct runtime_engine *engine,
 	old_prompt_pending_fn = engine->react->prompt_pending_fn;
 	old_action_drain_fn = engine->react->action_drain_fn;
 	old_action_drain_user_data = engine->react->action_drain_user_data;
+	usage_sink = engine->react->llm_model
+		? engine->react->llm_model->usage_sink : NULL;
 	if (request->bind_usage_user_data) {
 		old_usage_user_data =
-			runtime_usage_bind(request->usage_user_data);
+			runtime_usage_bind(usage_sink, request->usage_user_data);
 		usage_bound = 1;
 	}
 	if (engine->prepare_turn) {
@@ -232,7 +235,7 @@ out:
 	if (engine->finish_turn)
 		engine->finish_turn(engine->user_data, request, result);
 	if (usage_bound)
-		runtime_usage_restore(old_usage_user_data);
+		runtime_usage_restore(usage_sink, old_usage_user_data);
 	runtime_unlock_turn(engine);
 	return rc;
 }

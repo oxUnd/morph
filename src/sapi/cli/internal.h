@@ -98,8 +98,6 @@
 #define CMD_OK(fmt, ...) \
 	printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 
-extern const char *default_db_path;
-extern const char *default_config_path;
 extern volatile sig_atomic_t cli_sigint_received;
 void cli_sigint_handler(int sig);
 const char *cli_input_prompt(void);

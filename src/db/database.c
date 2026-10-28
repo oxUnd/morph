@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-static const char *schema_sql =
+static const char schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS schema_migrations ("
 	"version INTEGER PRIMARY KEY,"
 	"name TEXT NOT NULL,"
@@ -133,7 +133,7 @@ static const char *schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_memory_procedures_session "
 	"ON memory_procedures(session_id, updated_at);";
 
-static const char *preference_schema_sql =
+static const char preference_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS memory_scopes ("
 	"session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
 	"owner TEXT NOT NULL,project TEXT NOT NULL DEFAULT '',"
@@ -162,7 +162,7 @@ static const char *preference_schema_sql =
 	"worker_pid INTEGER NOT NULL DEFAULT 0,error_code INTEGER NOT NULL DEFAULT 0,"
 	"updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)));";
 
-static const char *sub_agent_schema_sql =
+static const char sub_agent_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS sub_agent_tasks ("
 	"task_id TEXT PRIMARY KEY,"
 	"parent_session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,"
@@ -187,7 +187,7 @@ static const char *sub_agent_schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_sub_agent_events_task "
 	"ON sub_agent_events(task_id,id);";
 
-static const char *history_schema_sql =
+static const char history_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS model_history_items ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,"
@@ -244,7 +244,7 @@ static const char *history_schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_history_compaction_attempts_session "
 	"ON history_compaction_attempts(session_id,created_at,id);";
 
-static const char *permission_schema_sql =
+static const char permission_schema_sql[] =
     "CREATE TABLE IF NOT EXISTS session_plans ("
     "session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
     "state_json TEXT NOT NULL);"
@@ -259,11 +259,11 @@ static const char *permission_schema_sql =
     "CREATE INDEX IF NOT EXISTS idx_permission_grants_project "
     "ON permission_grants(project_root,subject,resource_kind);";
 
-static const char *schema_baseline_sql =
+static const char schema_baseline_sql[] =
 	"INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) "
 	"VALUES(1,'baseline',strftime('%s','now'));";
 
-static const char *scheduled_schema_sql =
+static const char scheduled_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS scheduled_tasks ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"source_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,"
@@ -301,7 +301,7 @@ static const char *scheduled_schema_sql =
 	"CREATE INDEX IF NOT EXISTS idx_notifications_unread "
 	"ON notifications(read_at, created_at);";
 
-static const char *credit_schema_sql =
+static const char credit_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS credit_events ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"user_id TEXT,"

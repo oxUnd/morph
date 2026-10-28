@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 
-static const char *key_patterns[] = {
+static const char *const key_patterns[] = {
 	"file_path", "output", "result", "path",
 	"error", "generated", "downloaded", "saved",
 	"created", "wrote",
@@ -155,7 +155,7 @@ struct key_info *extract_key_info(struct message_list *head)
 	struct message_list *cur = head;
 	while (cur) {
 		if (!cur->content) { cur = cur->next; continue; }
-		for (const char **p = key_patterns; *p; p++)
+		for (const char *const *p = key_patterns; *p; p++)
 			info = key_info_add(info, *p, cur->content);
 		cur = cur->next;
 	}

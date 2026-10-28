@@ -5,7 +5,7 @@
 #include <string.h>
 #include <time.h>
 
-static const char *credit_schema_sql =
+static const char credit_schema_sql[] =
 	"CREATE TABLE IF NOT EXISTS credit_events ("
 	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
 	"user_id TEXT,"

@@ -52,7 +52,7 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 			  int max_processes, int max_open_files);
 int sandbox_apply_fs(const char **allowed_paths, int count,
 		     unsigned int permissions);
-int sandbox_apply_env(const char **allowed_env, int count,
+int sandbox_apply_env(const char *const *allowed_env, int count,
 		      unsigned int permissions);
 int sandbox_start_isolated_session(void);
 int sandbox_close_inherited_fds(void);

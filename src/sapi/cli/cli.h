@@ -38,6 +38,7 @@ struct cli_input_status {
 };
 
 struct cli_markdown_output {
+	char font_path[PATH_MAX];
 	int prefix_pending;
 	int trailing_newlines;
 };
@@ -92,6 +93,7 @@ struct cli_context {
 };
 
 int cli_init(struct cli_context *ctx, const char *config_path,
+	     const char *db_path,
 	     const char *workdir, const char *session_name,
 	     enum cli_presentation_mode mode);
 void cli_run(struct cli_context *ctx);

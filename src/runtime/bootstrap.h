@@ -15,6 +15,7 @@
 #include <limits.h>
 
 struct runtime_models {
+	struct model *memory_text;
 	struct tokenizer *tokenizer;
 	struct react_context *react;
 	struct model *text;
@@ -35,8 +36,7 @@ struct runtime_bootstrap_profile {
 	const char *config_path;
 	morph_event_cb event_cb;
 	void *event_user_data;
-	model_usage_callback usage_cb;
-	void *usage_user_data;
+	struct model_usage_sink *usage_sink;
 	runtime_hitl_approval_fn hitl_cb;
 	void *hitl_user_data;
 	runtime_ask_user_fn ask_user_cb;
@@ -60,6 +60,7 @@ struct runtime_bootstrap_profile {
 };
 
 struct runtime_shutdown_resources {
+	struct memory_worker **memory_worker;
 	struct db *db;
 	struct tool_registry *tools;
 	struct tool_context **tool_context;
@@ -69,11 +70,10 @@ struct runtime_shutdown_resources {
 	struct react_context **react;
 	struct tokenizer **tokenizer;
 	struct model **text;
+	struct model **memory_text;
 	struct model **vision;
 	struct model **image;
 	struct model **video;
-	int shutdown_memory;
-	int reset_usage_callbacks;
 	int free_skill_registry;
 };
 

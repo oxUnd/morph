@@ -3988,11 +3988,12 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	auto *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
 	struct model_usage captured{};
-	void *previous = model_get_usage_user_data();
-	model_set_usage_user_data(&captured);
-	model_set_usage_callback([](const struct model_usage *usage, void *data) {
+	struct model_usage_sink sink{};
+	sink.user_data = &captured;
+	model->usage_sink = &sink;
+	sink.callback = [](const struct model_usage *usage, void *data) {
 		*static_cast<struct model_usage *>(data) = *usage;
-	});
+	};
 	const char *messages[] = {"hello"};
 	struct model_chat_options options{};
 	options.usage_phase = "compaction";
@@ -4000,8 +4001,6 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	EXPECT_STREQ(captured.phase, "compaction");
 	EXPECT_EQ(model->chat(model, arena, nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
 	EXPECT_STREQ(captured.phase, "turn");
-	model_set_usage_callback(nullptr);
-	model_set_usage_user_data(previous);
 	arena_destroy(arena);
 	model_destroy(model);
 	mock_server_stop(&srv);

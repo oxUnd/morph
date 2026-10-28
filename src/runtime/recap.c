@@ -279,7 +279,6 @@ static void *recap_worker(void *opaque)
 
 	recap_event(job, "begin", NULL, 0);
 	http_set_cancel_token(&job->cancel);
-	model_set_usage_user_data(NULL);
 	if (arena)
 		rc = job->model->chat_with_tools(job->model, arena, recap_instructions,
 			&message, 1, NULL, 0, &response, NULL, NULL);

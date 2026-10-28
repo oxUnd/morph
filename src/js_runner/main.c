@@ -11,10 +11,6 @@
 
 #define RUNNER_MAX_CAPTURE (1024 * 1024)
 
-struct runner_state {
-	time_t deadline;
-};
-
 int runner_has_cap(const char *cap)
 {
 	const char *caps;
@@ -821,6 +817,7 @@ int main(int argc, char **argv)
 		js_media_shutdown();
 		return 1;
 	}
+	JS_SetRuntimeOpaque(rt, &state);
 	JS_SetInterruptHandler(rt, interrupt_handler, &state);
 	ctx = JS_NewContext(rt);
 	if (!ctx) {

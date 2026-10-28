@@ -45,7 +45,7 @@ static int starts_with(const struct agent_ui_parser *p, const char *s)
 
 static int supported_tag(const char *name)
 {
-	static const char *tags[] = {
+	static const char *const tags[] = {
 		"speak", "vocab", "sentence", "button", "navigate",
 		"highlight", "copy", NULL
 	};

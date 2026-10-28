@@ -25,7 +25,7 @@ struct event_subscriber {
 	struct event_subscriber *next;
 };
 
-static const char *SCHEMA =
+static const char SCHEMA[] =
 "PRAGMA journal_mode=WAL;"
 "PRAGMA synchronous=NORMAL;"
 "PRAGMA busy_timeout=5000;"
@@ -801,12 +801,12 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 int store_delete_session(struct session_store *s, const char *session_id,
 			const char *user_id)
 {
-	static const char *chk_owner =
+	static const char chk_owner[] =
 		"SELECT 1 FROM fcgi_session_owner"
 		" WHERE session_id=? AND user_id=?";
-	static const char *chk_turns =
+	static const char chk_turns[] =
 		"SELECT COUNT(*) FROM fcgi_running_turns WHERE session_id=?";
-	static const char *del_tables[] = {
+	static const char *const del_tables[] = {
 		"DELETE FROM fcgi_session_owner WHERE session_id=?",
 		"DELETE FROM fcgi_events WHERE session_id=?",
 		"DELETE FROM fcgi_actions WHERE session_id=?",

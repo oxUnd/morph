@@ -157,7 +157,7 @@ static void ext_print_group(struct cli_context *ctx,
 
 static int ext_print_tools(struct cli_context *ctx)
 {
-	static const char *group_names[] = {
+	static const char *const group_names[] = {
 		"Built-in", "Extensions", "MCP", "Dynamic", "Other"
 	};
 	struct ext_tool_group groups[5];
@@ -329,10 +329,11 @@ static const struct cli_command ext_commands[] = {
 	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
 };
 
-int cli_register_ext_commands(void)
+struct cli_command_group cli_ext_commands(void)
 {
-	return cli_command_register_many(ext_commands,
-					 (int)(sizeof(ext_commands) /
-					 sizeof(ext_commands[0])),
-					 "Extensions");
+	return (struct cli_command_group){
+		.entries = ext_commands,
+		.count = (int)(sizeof(ext_commands) / sizeof(ext_commands[0])),
+		.category = "Extensions",
+	};
 }

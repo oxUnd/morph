@@ -81,7 +81,7 @@ static int copy_static_program(const char *source, TSNode node,
 
 static int node_marks_compound(const char *type)
 {
-	static const char *types[] = {
+	static const char *const types[] = {
 		"pipeline",
 		"list",
 		"subshell",
@@ -98,7 +98,7 @@ static int node_marks_compound(const char *type)
 		NULL
 	};
 
-	for (const char **item = types; *item; item++) {
+	for (const char *const *item = types; *item; item++) {
 		if (strcmp(type, *item) == 0)
 			return 1;
 	}

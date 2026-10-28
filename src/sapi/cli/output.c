@@ -6,20 +6,6 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 
-static const char *cli_markdown_font_path(void)
-{
-	static char path[PATH_MAX];
-	static int initialized;
-
-	if (!initialized) {
-		if (morph_data_find(path, sizeof(path),
-				    "fonts/STIXTwoMath-Regular.ttf") != 0)
-			path[0] = '\0';
-		initialized = 1;
-	}
-	return path[0] ? path : NULL;
-}
-
 /* Renderer blocks end differently (paragraphs versus code/table frames). Track
  * visible trailing newlines so final spacing has a single owner. */
 static void cli_markdown_track_tail(struct cli_markdown_output *output,
@@ -119,7 +105,8 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	const char *font_path;
 
 	memset(&options, 0, sizeof(options));
-	font_path = cli_markdown_font_path();
+	font_path = morph_data_find(output->font_path, sizeof(output->font_path),
+		"fonts/STIXTwoMath-Regular.ttf") == 0 ? output->font_path : NULL;
 	options.font_path = font_path;
 	options.features = MORPH_MD_FEATURE_GFM;
 	if (enable_math && cli_color_enabled() &&

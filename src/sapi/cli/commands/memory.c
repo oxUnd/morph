@@ -150,10 +150,11 @@ static const struct cli_command memory_commands[] = {
 	{ "/mem",     cmd_memory,  "Alias for /memory",                 "/mem [show|clear] [all|facts|episodes|procedures]" },
 };
 
-int cli_register_memory_commands(void)
+struct cli_command_group cli_memory_commands(void)
 {
-	return cli_command_register_many(memory_commands,
-					 (int)(sizeof(memory_commands) /
-					 sizeof(memory_commands[0])),
-					 "Memory");
+	return (struct cli_command_group){
+		.entries = memory_commands,
+		.count = (int)(sizeof(memory_commands) / sizeof(memory_commands[0])),
+		.category = "Memory",
+	};
 }

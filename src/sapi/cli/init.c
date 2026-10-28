@@ -60,6 +60,7 @@ static void cli_usage_observer(const struct model_usage *usage,
 }
 
 int cli_init(struct cli_context *ctx, const char *config_path,
+	     const char *db_path,
 	     const char *workdir, const char *session_name,
 	     enum cli_presentation_mode mode)
 {
@@ -87,11 +88,10 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 		cli_terminal_cleanup(ctx);
 		return rc;
 	}
-	(void)cli_commands_init();
 	memset(&options, 0, sizeof(options));
 	options.startup_error = &ctx->startup_error;
-	options.config_path = config_path ? config_path : default_config_path;
-	options.db_path = default_db_path;
+	options.config_path = config_path ? config_path : "~/.morph/config.toml";
+	options.db_path = db_path ? db_path : "~/.morph/data.db";
 	options.workdir = workdir;
 	options.default_session = session_name;
 	options.front_name = "cli";

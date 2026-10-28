@@ -574,7 +574,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 		close(stderr_pipe[1]);
 		close(stdin_pipe[0]);
 		if (options->hook_mode) {
-			static const char *allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
+			static const char *const allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
 			if (sandbox_apply_env(allowed, 5, 0) != 0)
 				_exit(126);
 			(void)setenv("MORPH_HOOK_ACTIVE", "1", 1);

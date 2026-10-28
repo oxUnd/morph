@@ -111,8 +111,10 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 		if (rc != 0)
 			return rc;
 	}
+	ctx->scope->usage_sink = ctx->react && ctx->react->llm_model
+		? ctx->react->llm_model->usage_sink : NULL;
 	ctx->scope->previous_usage_user_data =
-		runtime_usage_bind(ctx->usage_user_data);
+		runtime_usage_bind(ctx->scope->usage_sink, ctx->usage_user_data);
 	ctx->scope->bound = 1;
 	ctx->scope->memory_session_id = request->session_id;
 	if (request->user_id && request->user_id[0])
@@ -159,7 +161,7 @@ void runtime_turn_scope_finish(struct runtime_turn_scope_context *ctx)
 	if (!ctx || !ctx->scope || !ctx->scope->bound)
 		return;
 	scope = ctx->scope;
-	runtime_usage_restore(scope->previous_usage_user_data);
+	runtime_usage_restore(scope->usage_sink, scope->previous_usage_user_data);
 	scope->previous_usage_user_data = NULL;
 	scope->bound = 0;
 	scope->memory_session_id = 0;

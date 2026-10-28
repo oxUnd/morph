@@ -190,10 +190,11 @@ static const struct cli_command mcp_commands[] = {
 	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
 };
 
-int cli_register_mcp_commands(void)
+struct cli_command_group cli_mcp_commands(void)
 {
-	return cli_command_register_many(mcp_commands,
-					 (int)(sizeof(mcp_commands) /
-					 sizeof(mcp_commands[0])),
-					 "MCP");
+	return (struct cli_command_group){
+		.entries = mcp_commands,
+		.count = (int)(sizeof(mcp_commands) / sizeof(mcp_commands[0])),
+		.category = "MCP",
+	};
 }

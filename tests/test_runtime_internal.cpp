@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <thread>
 
 extern "C" {
 #include "credits.h"
@@ -360,13 +361,13 @@ TEST(RuntimeInternalTest, UsageBindingRestoresPreviousValue)
 {
 	int first = 1;
 	int second = 2;
-	model_set_usage_user_data(&first);
-	void *previous = runtime_usage_bind(&second);
+	struct model_usage_sink sink{};
+	sink.user_data = &first;
+	void *previous = runtime_usage_bind(&sink, &second);
 	EXPECT_EQ(previous, &first);
-	EXPECT_EQ(model_get_usage_user_data(), &second);
-	runtime_usage_restore(previous);
-	EXPECT_EQ(model_get_usage_user_data(), &first);
-	model_set_usage_user_data(nullptr);
+	EXPECT_EQ(sink.user_data, &second);
+	runtime_usage_restore(&sink, previous);
+	EXPECT_EQ(sink.user_data, &first);
 }
 
 TEST(RuntimeInternalTest, ScheduledTaskPayloadHelpersHandleValidAndInvalidJson)
@@ -409,4 +410,41 @@ TEST(RuntimeInternalTest, ErrorAndNotificationTextUseReactSnapshot)
 	EXPECT_STREQ(notification, "partial answer");
 	std::free(error);
 	std::free(notification);
+}
+
+TEST(RuntimeInternalTest, UsageSinksRemainIndependentAcrossThreads)
+{
+	int first_count = 0;
+	int second_count = 0;
+	struct model_usage_sink first{};
+	struct model_usage_sink second{};
+	auto count = [](const struct model_usage *, void *data) {
+		++*static_cast<int *>(data);
+	};
+	first.callback = count;
+	first.user_data = &first_count;
+	second.callback = count;
+	second.user_data = &second_count;
+	struct model first_model{};
+	struct model second_model{};
+	first_model.usage_sink = &first;
+	second_model.usage_sink = &second;
+	struct model_usage usage{};
+	std::thread one([&] {
+		for (int i = 0; i < 100; i++)
+			model_report_usage(&first_model, &usage);
+	});
+	std::thread two([&] {
+		for (int i = 0; i < 200; i++)
+			model_report_usage(&second_model, &usage);
+	});
+	one.join();
+	two.join();
+	EXPECT_EQ(first_count, 100);
+	EXPECT_EQ(second_count, 200);
+	first_model.usage_sink = nullptr;
+	model_report_usage(&first_model, &usage);
+	model_report_usage(&second_model, &usage);
+	EXPECT_EQ(first_count, 100);
+	EXPECT_EQ(second_count, 201);
 }

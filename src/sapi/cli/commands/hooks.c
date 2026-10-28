@@ -99,12 +99,12 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
-int cli_register_hook_commands(void)
+struct cli_command_group cli_hook_commands(void)
 {
 	static const struct cli_command commands[] = {
 	    {"/hooks", cmd_hooks, "Review and manage lifecycle hooks",
 	     "/hooks [list|check|project|review <id>|<action> <id> <digest>]"},
 	};
 
-	return cli_command_register_many(commands, 1, "Runtime");
+	return (struct cli_command_group){commands, 1, "Runtime"};
 }

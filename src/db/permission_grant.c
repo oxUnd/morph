@@ -8,7 +8,7 @@
 int permission_grant_save(struct db *db,
 			  const struct permission_grant *grant)
 {
-	static const char *sql =
+	static const char sql[] =
 		"INSERT OR IGNORE INTO permission_grants("
 		"subject,resource_kind,resource,project_root,created_at)"
 		"VALUES(?,?,?,?,strftime('%s','now'))";
@@ -48,7 +48,7 @@ out:
 int permission_grant_each(struct db *db, const char *project_root,
 			  permission_grant_iter_fn fn, void *user_data)
 {
-	static const char *sql =
+	static const char sql[] =
 		"SELECT id,subject,resource_kind,resource,project_root,created_at "
 		"FROM permission_grants WHERE project_root=? ORDER BY id";
 	struct permission_grant grant;

@@ -238,8 +238,8 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 	ctx.runtime = instance;
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	cli_set_color_enabled(0);
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_session_commands(), 0);
+
+
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/history --all");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -250,7 +250,7 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 	EXPECT_EQ(output.find('\033'), std::string::npos);
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry bad"), -EINVAL);
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry"), -EINVAL);
-	cli_command_registry_clear();
+
 	cli_set_color_enabled(1);
 }
 

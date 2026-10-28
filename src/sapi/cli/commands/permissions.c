@@ -293,11 +293,9 @@ static const struct cli_command permission_commands[] = {
 	  "/perms [list|revoke <id|program>|clear]" },
 };
 
-int cli_register_permission_commands(void)
+struct cli_command_group cli_permission_commands(void)
 {
-	return cli_command_register_many(
-		permission_commands,
-		(int)(sizeof(permission_commands) /
-		      sizeof(permission_commands[0])),
-		"Security");
+	return (struct cli_command_group){
+		permission_commands, (int)(sizeof(permission_commands) /
+		      sizeof(permission_commands[0])), "Security"};
 }

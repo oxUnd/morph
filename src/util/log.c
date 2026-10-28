@@ -19,7 +19,7 @@ static struct {
 	.path = {0},
 };
 
-static const char *level_strings[] = {
+static const char *const level_strings[] = {
 	[LOG_DEBUG] = "DEBUG",
 	[LOG_INFO] = "INFO",
 	[LOG_WARN] = "WARN",

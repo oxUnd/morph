@@ -25,30 +25,6 @@
 #define MEMORY_VALUE_MIN_BYTES   2
 #define MEMORY_VALUE_MAX_BYTES   200
 
-/* LLM model used for structured extraction (optional). Set via
- * memory_set_llm(); guarded by g_memory_llm_lock to remain thread-safe
- * across CLI / FastCGI worker threads (in particular the async
- * consolidation worker reads the pointer concurrently with foreground
- * set/clear calls). */
-static struct model *g_memory_llm;
-static pthread_mutex_t g_memory_llm_lock = PTHREAD_MUTEX_INITIALIZER;
-
-void memory_set_llm(struct model *llm)
-{
-	pthread_mutex_lock(&g_memory_llm_lock);
-	g_memory_llm = llm;
-	pthread_mutex_unlock(&g_memory_llm_lock);
-}
-
-static struct model *memory_get_llm(void)
-{
-	struct model *llm;
-	pthread_mutex_lock(&g_memory_llm_lock);
-	llm = g_memory_llm;
-	pthread_mutex_unlock(&g_memory_llm_lock);
-	return llm;
-}
-
 static int64_t memory_now_unix(void)
 {
 	return (int64_t)time(NULL);
@@ -81,7 +57,7 @@ static int memory_is_ascii_stop(char c)
  * This is the last line of defense after the substring anchors fire. */
 static int memory_value_is_plausible(const char *value)
 {
-	static const char *bad_prefixes[] = {
+	static const char *const bad_prefixes[] = {
 		"\xe4\xba\x86",          /* 了 */
 		"\xe7\x9a\x84",          /* 的 */
 		"\xe5\xbe\x97",          /* 得 */
@@ -546,24 +522,24 @@ static int memory_try_anchors(const char *user_input, char *value,
  * questions, negations, quotations and translation tasks must not change it. */
 static const char *memory_language_directive(const char *clause)
 {
-	static const char *reject[] = {
+	static const char *const reject[] = {
 		"why", "how", "don't", "do not", "not ", "never ", "translate",
 		"为什么", "为啥", "怎么", "不是", "不要", "别", "不用", "无需",
 		"翻译", "是否", "吗", "英文版", "中文版", "\"", "“", "”", "`", NULL,
 	};
-	static const char *prefixes[] = {
+	static const char *const prefixes[] = {
 		"please ", "always ", "reply ", "respond ", "answer ", "use ",
 		"from now on ", "i prefer ", "my preferred language ",
 		"本会话", "这个会话", "本项目", "这个项目", "for this session",
 		"for this project", "请", "以后", "后续", "之后", "从现在起", "默认", "用", "使用",
 		"改成", "切换到", "回答", "回复", "我的", "我希望", "语言", NULL,
 	};
-	static const char *chinese[] = {
+	static const char *const chinese[] = {
 		"reply in chinese", "respond in chinese", "answer in chinese",
 		"use chinese", "prefer chinese", "preferred language is chinese",
 		"用中文", "中文回答", "中文回复", "改成中文", "切换到中文", NULL,
 	};
-	static const char *english[] = {
+	static const char *const english[] = {
 		"reply in english", "respond in english", "answer in english",
 		"use english", "prefer english", "preferred language is english",
 		"用英文", "英文回答", "英文回复", "改成英文", "切换到英文", NULL,
@@ -647,11 +623,11 @@ int memory_prepare_session(struct db *db, int64_t session_id)
 
 const char *memory_preference_request_scope(const char *input)
 {
-	static const char *temporary[] = {
+	static const char *const temporary[] = {
 		"这次", "本次", "这封", "这篇", "这段", "这个回答", "这一轮",
 		"this time", "this email", "this reply", "this answer", NULL,
 	};
-	static const char *standing[] = {
+	static const char *const standing[] = {
 		"以后", "后续", "之后", "从现在起", "默认", "一直", "我的偏好",
 		"我希望", "记住", "偏好改", "偏好设", "remember", "always",
 		"from now on", "by default", "i prefer", NULL,
@@ -775,8 +751,8 @@ static int memory_accept_preferences(struct db *db, int64_t session_id,
 	if (!strncasecmp(input, "call me ", 8) ||
 	    !strncasecmp(input, "please call me ", 15) ||
 	    !strncmp(input, "叫我", strlen("叫我"))) {
-		static const char *ci[] = { "please call me ", "call me ", NULL };
-		static const char *raw[] = { "叫我", NULL };
+		static const char *const ci[] = { "please call me ", "call me ", NULL };
+		static const char *const raw[] = { "叫我", NULL };
 		char value[256];
 
 		if (memory_try_anchors(input, value, sizeof(value), ci, raw)) {
@@ -865,7 +841,7 @@ int memory_accept_input(struct db *db, int64_t session_id,
 		(void)db_exec(db, "ROLLBACK");
 		return rc;
 	}
-	rc = memory_async_resume(db);
+	rc = memory_async_resume(db, opts);
 	if (rc != 0)
 		log_err("memory: recovering background jobs failed: %s", morph_strerror(rc));
 	if (opts->hot_path_enabled)
@@ -880,25 +856,25 @@ static int memory_capture_hot_path(struct db *db, int64_t session_id,
 	 * record a wrong one. Phrases like "i am " or "我想" were dropped
 	 * because they fire on neutral statements ("I am tired", "我想知道
 	 * 天气"). */
-	static const char *user_name_ci[] = {
+	static const char *const user_name_ci[] = {
 		"my name is ", "i am called ", "i'm called ", NULL,
 	};
-	static const char *user_name_raw[] = {
+	static const char *const user_name_raw[] = {
 		"\xe6\x88\x91\xe5\x8f\xab",  /* 我叫 */
 		"\xe6\x88\x91\xe7\x9a\x84\xe5\x90\x8d\xe5\xad\x97\xe6\x98\xaf", /* 我的名字是 */
 		NULL,
 	};
-	static const char *goal_ci[] = {
+	static const char *const goal_ci[] = {
 		"my goal is ", "i want to ", "i'd like to ", NULL,
 	};
-	static const char *goal_raw[] = {
+	static const char *const goal_raw[] = {
 		"\xe6\x88\x91\xe7\x9a\x84\xe7\x9b\xae\xe6\xa0\x87\xe6\x98\xaf", /* 我的目标是 */
 		NULL,
 	};
-	static const char *location_ci[] = {
+	static const char *const location_ci[] = {
 		"i live in ", "i am in ", "i'm in ", NULL,
 	};
-	static const char *location_raw[] = {
+	static const char *const location_raw[] = {
 		"\xe6\x88\x91\xe4\xbd\x8f\xe5\x9c\xa8", /* 我住在 */
 		NULL,
 	};
@@ -2051,7 +2027,7 @@ static const char MEMORY_LLM_SYSTEM[] =
 	"Never invent facts not grounded in the turn.\n"
 	"- Output JSON only — no markdown, no commentary.";
 
-static char *memory_llm_extract_json(const char *user_input,
+static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 				     const char *assistant_output,
 				     const char *tool_names,
 				     int success);
@@ -2191,12 +2167,11 @@ static int memory_apply_llm_envelope(struct db *db, int64_t session_id,
 	return worst;
 }
 
-static char *memory_llm_extract_json(const char *user_input,
+static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 				     const char *assistant_output,
 				     const char *tool_names,
 				     int success)
 {
-	struct model *llm = memory_get_llm();
 	struct arena *arena;
 	char *prompt;
 	size_t prompt_cap;
@@ -2293,7 +2268,8 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id,
 				   char **out_entities,
 				   char **out_decisions,
 				   char **out_artifacts,
-				   double *out_importance, int64_t generation)
+				   double *out_importance, int64_t generation,
+				   struct model *llm)
 {
 	char tools[256];
 	char *raw;
@@ -2301,7 +2277,7 @@ static int memory_capture_llm_path(struct db *db, int64_t session_id,
 	int rc;
 
 	memory_collect_tools(steps, tools, sizeof(tools));
-	raw = memory_llm_extract_json(user_input, assistant_output, tools,
+	raw = memory_llm_extract_json(llm, user_input, assistant_output, tools,
 				      success);
 	if (!raw)
 		return -ENODATA;
@@ -2362,7 +2338,7 @@ int memory_consolidate_turn(struct db *db, int64_t session_id,
 					     assistant_output, steps,
 					     success, &llm_entities,
 					     &llm_decisions,
-					     &llm_artifacts, &llm_importance, generation);
+					     &llm_artifacts, &llm_importance, generation, opts->llm);
 		if (rc == 0)
 			llm_ran = 1;
 		else if (rc != -ENODATA && worst == 0)

@@ -4,7 +4,6 @@
 #include "sapi/cli/internal.h"
 #include <locale.h>
 
-extern const char *default_db_path;
 
 /* Replay the real presenter without a model, for deterministic visual review. */
 static int replay_feed(const char *path)
@@ -66,9 +65,8 @@ int main(int argc, char **argv)
 	if (argc != 4)
 		return 2;
 	(void)setlocale(LC_ALL, "");
-	default_db_path = argv[3];
 	http_init();
-	rc = cli_init(&ctx, argv[1], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
+	rc = cli_init(&ctx, argv[1], argv[3], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
 		cli_run(&ctx);
 		cli_shutdown(&ctx);

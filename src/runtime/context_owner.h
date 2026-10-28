@@ -24,6 +24,7 @@
 #define RUNTIME_PLAN_SESSION_CACHE_MAX 32
 
 struct runtime_context {
+	struct model_usage_sink usage_sink;
 	struct hook_manager hooks;
 	struct config config;
 	struct db database;
@@ -37,6 +38,7 @@ struct runtime_context {
 	struct react_context *react;
 	struct tokenizer *tokenizer;
 	struct model *llm;
+	struct model *memory_llm;
 	struct model *vision_llm;
 	struct model *img_llm;
 	struct model *vid_llm;
@@ -79,8 +81,6 @@ int runtime_context_prepare_turn(struct runtime_context *ctx,
 void runtime_context_finish_turn(struct runtime_context *ctx);
 struct runtime_shutdown_resources
 runtime_context_shutdown_resources(struct runtime_context *ctx,
-				   int shutdown_memory,
-				   int reset_usage_callbacks,
 				   int free_skill_registry);
 
 #endif

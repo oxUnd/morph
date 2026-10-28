@@ -65,12 +65,10 @@ struct wasm_instance {
 #define CANVAS_DEFAULT_TEXT_ALIGN "start"
 #define CANVAS_DEFAULT_TEXT_BASELINE "alphabetic"
 
-static JSClassID sharp_class_id;
-static JSClassID canvas_class_id;
-static JSClassID image_data_class_id;
-static JSClassID wasm_module_class_id;
-static JSClassID wasm_instance_class_id;
-static int classes_inited;
+static struct runner_state *media_state(JSContext *ctx)
+{
+	return JS_GetRuntimeOpaque(JS_GetRuntime(ctx));
+}
 
 static VipsImage *image_from_stb_pixels(JSContext *ctx, unsigned char *pixels,
 					int width, int height);
@@ -103,7 +101,7 @@ static int require_wasm(JSContext *ctx)
 
 static void sharp_finalizer(JSRuntime *rt, JSValue val)
 {
-	struct sharp_image *img = JS_GetOpaque(val, sharp_class_id);
+	struct sharp_image *img = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
 	if (!img)
@@ -115,7 +113,7 @@ static void sharp_finalizer(JSRuntime *rt, JSValue val)
 
 static void canvas_finalizer(JSRuntime *rt, JSValue val)
 {
-	struct canvas *canvas = JS_GetOpaque(val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
 	if (!canvas)
@@ -130,7 +128,7 @@ static void canvas_finalizer(JSRuntime *rt, JSValue val)
 
 static void image_data_finalizer(JSRuntime *rt, JSValue val)
 {
-	struct image_data *data = JS_GetOpaque(val, image_data_class_id);
+	struct image_data *data = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
 	if (!data)
@@ -141,7 +139,7 @@ static void image_data_finalizer(JSRuntime *rt, JSValue val)
 
 static void wasm_module_finalizer(JSRuntime *rt, JSValue val)
 {
-	struct wasm_module *module = JS_GetOpaque(val, wasm_module_class_id);
+	struct wasm_module *module = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
 	if (!module)
@@ -152,7 +150,7 @@ static void wasm_module_finalizer(JSRuntime *rt, JSValue val)
 
 static void wasm_instance_finalizer(JSRuntime *rt, JSValue val)
 {
-	struct wasm_instance *inst = JS_GetOpaque(val, wasm_instance_class_id);
+	struct wasm_instance *inst = JS_GetOpaque(val, JS_GetClassID(val));
 
 	(void)rt;
 	if (!inst)
@@ -176,7 +174,7 @@ static JSValue new_sharp_object(JSContext *ctx, VipsImage *image,
 		return JS_ThrowOutOfMemory(ctx);
 	img->image = image;
 	strncpy(img->format, format ? format : ".png", sizeof(img->format) - 1);
-	obj = JS_NewObjectClass(ctx, sharp_class_id);
+	obj = JS_NewObjectClass(ctx, media_state(ctx)->sharp_class_id);
 	if (JS_IsException(obj)) {
 		if (img->image)
 			g_object_unref(img->image);
@@ -785,7 +783,7 @@ static JSValue new_canvas_object(JSContext *ctx, int width, int height)
 	canvas->cr = cairo_create(canvas->surface);
 	if (cairo_status(canvas->cr) != CAIRO_STATUS_SUCCESS)
 		goto fail;
-	obj = JS_NewObjectClass(ctx, canvas_class_id);
+	obj = JS_NewObjectClass(ctx, media_state(ctx)->canvas_class_id);
 	if (JS_IsException(obj))
 		goto fail_value;
 	JS_SetOpaque(obj, canvas);
@@ -841,7 +839,7 @@ static JSValue js_sharp_call(JSContext *ctx, JSValueConst this_val,
 
 static struct sharp_image *sharp_this(JSContext *ctx, JSValueConst val)
 {
-	struct sharp_image *img = JS_GetOpaque2(ctx, val, sharp_class_id);
+	struct sharp_image *img = JS_GetOpaque2(ctx, val, media_state(ctx)->sharp_class_id);
 
 	return img;
 }
@@ -1164,7 +1162,7 @@ static JSValue js_sharp_composite(JSContext *ctx, JSValueConst this_val,
 		(void)JS_ToInt32(ctx, &top, top_val);
 		JS_FreeValue(ctx, left_val);
 		JS_FreeValue(ctx, top_val);
-		overlay_sharp = JS_GetOpaque(input, sharp_class_id);
+		overlay_sharp = JS_GetOpaque(input, media_state(ctx)->sharp_class_id);
 		if (overlay_sharp && overlay_sharp->image)
 			overlay = g_object_ref(overlay_sharp->image);
 		else
@@ -1285,7 +1283,7 @@ static JSValue js_create_canvas(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_get_context(JSContext *ctx, JSValueConst this_val,
 				  int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	const char *kind;
 
 	if (!canvas)
@@ -1356,7 +1354,7 @@ static int parse_color(const char *s, double *r, double *g, double *b,
 static void canvas_set_source(JSContext *ctx, JSValueConst this_val,
 			      const char *prop)
 {
-	struct canvas *canvas = JS_GetOpaque(this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque(this_val, media_state(ctx)->canvas_class_id);
 	JSValue val;
 	const char *style;
 	double r = 0.0;
@@ -1379,7 +1377,7 @@ static void canvas_set_source(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_rect_op(JSContext *ctx, JSValueConst this_val,
 			      int argc, JSValueConst *argv, int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	double x;
 	double y;
 	double w;
@@ -1408,7 +1406,7 @@ static JSValue canvas_rect_op(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_simple(JSContext *ctx, JSValueConst this_val,
 			     int argc, JSValueConst *argv, int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 
 	(void)argc;
 	(void)argv;
@@ -1441,7 +1439,7 @@ static JSValue canvas_simple(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_xy(JSContext *ctx, JSValueConst this_val, int argc,
 			 JSValueConst *argv, int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	double x;
 	double y;
 
@@ -1464,7 +1462,7 @@ static JSValue canvas_xy(JSContext *ctx, JSValueConst this_val, int argc,
 static JSValue canvas_arc(JSContext *ctx, JSValueConst this_val,
 			  int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	double x;
 	double y;
 	double radius;
@@ -1775,7 +1773,7 @@ static void canvas_move_to_text(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 			   int argc, JSValueConst *argv, int magic)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	PangoFontDescription *font_desc;
 	PangoLayout *layout;
 	const char *text;
@@ -1824,7 +1822,10 @@ static JSValue canvas_text(JSContext *ctx, JSValueConst this_val,
 	return JS_UNDEFINED;
 }
 
-static cairo_user_data_key_t surface_pixels_key;
+struct surface_pixels {
+	cairo_user_data_key_t key;
+	unsigned char bytes[];
+};
 
 static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 {
@@ -1833,6 +1834,7 @@ static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 	VipsImage *cast = NULL;
 	void *pixels = NULL;
 	unsigned char *data = NULL;
+	struct surface_pixels *storage;
 	size_t len = 0;
 	size_t needed;
 	int width;
@@ -1875,13 +1877,20 @@ static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 			g_object_unref(cast);
 		return NULL;
 	}
-	data = calloc((size_t)stride, (size_t)height);
-	if (!data) {
+	if ((size_t)height > (SIZE_MAX - sizeof(*storage)) / (size_t)stride) {
 		g_free(pixels);
 		if (cast)
 			g_object_unref(cast);
 		return NULL;
 	}
+	storage = calloc(1, sizeof(*storage) + (size_t)stride * (size_t)height);
+	if (!storage) {
+		g_free(pixels);
+		if (cast)
+			g_object_unref(cast);
+		return NULL;
+	}
+	data = storage->bytes;
 	for (int y = 0; y < height; y++) {
 		const unsigned char *src = (const unsigned char *)pixels +
 			(size_t)y * (size_t)width * (size_t)bands;
@@ -1926,13 +1935,13 @@ static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 						      width, height, stride);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(surface);
-		free(data);
+		free(storage);
 		return NULL;
 	}
-	if (cairo_surface_set_user_data(surface, &surface_pixels_key, data,
+	if (cairo_surface_set_user_data(surface, &storage->key, storage,
 					free) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(surface);
-		free(data);
+		free(storage);
 		return NULL;
 	}
 	return surface;
@@ -1941,7 +1950,7 @@ static cairo_surface_t *surface_from_sharp(struct sharp_image *img)
 static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val,
 				 int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	struct canvas *src_canvas;
 	struct sharp_image *src_sharp;
 	cairo_surface_t *surface = NULL;
@@ -1957,8 +1966,8 @@ static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val,
 		return JS_EXCEPTION;
 	if (argc < 3)
 		return JS_ThrowTypeError(ctx, "drawImage(image, x, y[, w, h])");
-	src_canvas = JS_GetOpaque(argv[0], canvas_class_id);
-	src_sharp = JS_GetOpaque(argv[0], sharp_class_id);
+	src_canvas = JS_GetOpaque(argv[0], media_state(ctx)->canvas_class_id);
+	src_sharp = JS_GetOpaque(argv[0], media_state(ctx)->sharp_class_id);
 	if (src_canvas) {
 		surface = src_canvas->surface;
 		sw = src_canvas->width;
@@ -2007,7 +2016,7 @@ static JSValue canvas_draw_image(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 			      int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	const char *path;
 	char *resolved;
 	int rc;
@@ -2034,7 +2043,7 @@ static JSValue canvas_to_file(JSContext *ctx, JSValueConst this_val,
 static JSValue canvas_to_buffer(JSContext *ctx, JSValueConst this_val,
 				int argc, JSValueConst *argv)
 {
-	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, canvas_class_id);
+	struct canvas *canvas = JS_GetOpaque2(ctx, this_val, media_state(ctx)->canvas_class_id);
 	morph_buf_t buf;
 	cairo_status_t status;
 	JSValue out;
@@ -2683,7 +2692,7 @@ static JSValue new_wasm_module(JSContext *ctx, const uint8_t *bytes,
 		free(module);
 		return JS_ThrowTypeError(ctx, "invalid wasm module");
 	}
-	obj = JS_NewObjectClass(ctx, wasm_module_class_id);
+	obj = JS_NewObjectClass(ctx, media_state(ctx)->wasm_module_class_id);
 	if (JS_IsException(obj)) {
 		free(module->bytes);
 		free(module);
@@ -2732,7 +2741,7 @@ static JSValue wasm_export_call(JSContext *ctx, JSValueConst this_val,
 	M3Result res;
 
 	(void)this_val;
-	inst = JS_GetOpaque2(ctx, func_data[0], wasm_instance_class_id);
+	inst = JS_GetOpaque2(ctx, func_data[0], media_state(ctx)->wasm_instance_class_id);
 	name = JS_ToCString(ctx, func_data[1]);
 	if (!inst || !name)
 		return JS_EXCEPTION;
@@ -2802,7 +2811,7 @@ static JSValue build_wasm_instance(JSContext *ctx, struct wasm_module *module)
 	m3_module = NULL;
 	if (res)
 		goto wasm_fail;
-	obj = JS_NewObjectClass(ctx, wasm_instance_class_id);
+	obj = JS_NewObjectClass(ctx, media_state(ctx)->wasm_instance_class_id);
 	if (JS_IsException(obj))
 		goto oom;
 	JS_SetOpaque(obj, inst);
@@ -2854,7 +2863,7 @@ static JSValue js_wasm_instance_ctor(JSContext *ctx, JSValueConst new_target,
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "WebAssembly.Instance(module)");
-	module = JS_GetOpaque2(ctx, argv[0], wasm_module_class_id);
+	module = JS_GetOpaque2(ctx, argv[0], media_state(ctx)->wasm_module_class_id);
 	if (!module)
 		return JS_EXCEPTION;
 	return build_wasm_instance(ctx, module);
@@ -2880,7 +2889,7 @@ static JSValue js_wasm_instantiate(JSContext *ctx, JSValueConst this_val,
 		return JS_EXCEPTION;
 	if (argc < 1)
 		return JS_ThrowTypeError(ctx, "WebAssembly.instantiate(bytes)");
-	module = JS_GetOpaque(argv[0], wasm_module_class_id);
+	module = JS_GetOpaque(argv[0], media_state(ctx)->wasm_module_class_id);
 	if (module) {
 		instance = build_wasm_instance(ctx, module);
 		return instance;
@@ -2888,7 +2897,7 @@ static JSValue js_wasm_instantiate(JSContext *ctx, JSValueConst this_val,
 	module_obj = js_wasm_module_ctor(ctx, JS_UNDEFINED, argc, argv);
 	if (JS_IsException(module_obj))
 		return module_obj;
-	module = JS_GetOpaque2(ctx, module_obj, wasm_module_class_id);
+	module = JS_GetOpaque2(ctx, module_obj, media_state(ctx)->wasm_module_class_id);
 	if (!module) {
 		JS_FreeValue(ctx, module_obj);
 		return JS_EXCEPTION;
@@ -3003,45 +3012,44 @@ static void install_classes(JSContext *ctx)
 	JSRuntime *rt = JS_GetRuntime(ctx);
 	JSValue proto;
 
-	if (!classes_inited) {
-		JS_NewClassID(&sharp_class_id);
-		JS_NewClassID(&canvas_class_id);
-		JS_NewClassID(&image_data_class_id);
-		JS_NewClassID(&wasm_module_class_id);
-		JS_NewClassID(&wasm_instance_class_id);
-		classes_inited = 1;
+	if (!media_state(ctx)->sharp_class_id) {
+		JS_NewClassID(&media_state(ctx)->sharp_class_id);
+		JS_NewClassID(&media_state(ctx)->canvas_class_id);
+		JS_NewClassID(&media_state(ctx)->image_data_class_id);
+		JS_NewClassID(&media_state(ctx)->wasm_module_class_id);
+		JS_NewClassID(&media_state(ctx)->wasm_instance_class_id);
 	}
 	{
 		JSClassDef def = {"Sharp", .finalizer = sharp_finalizer};
-		JS_NewClass(rt, sharp_class_id, &def);
+		JS_NewClass(rt, media_state(ctx)->sharp_class_id, &def);
 	}
 	{
 		JSClassDef def = {"Canvas", .finalizer = canvas_finalizer};
-		JS_NewClass(rt, canvas_class_id, &def);
+		JS_NewClass(rt, media_state(ctx)->canvas_class_id, &def);
 	}
 	{
 		JSClassDef def = {"ImageData", .finalizer = image_data_finalizer};
-		JS_NewClass(rt, image_data_class_id, &def);
+		JS_NewClass(rt, media_state(ctx)->image_data_class_id, &def);
 	}
 	{
 		JSClassDef def = {"WasmModule", .finalizer = wasm_module_finalizer};
-		JS_NewClass(rt, wasm_module_class_id, &def);
+		JS_NewClass(rt, media_state(ctx)->wasm_module_class_id, &def);
 	}
 	{
 		JSClassDef def = {"WasmInstance",
 				  .finalizer = wasm_instance_finalizer};
-		JS_NewClass(rt, wasm_instance_class_id, &def);
+		JS_NewClass(rt, media_state(ctx)->wasm_instance_class_id, &def);
 	}
 	proto = JS_NewObject(ctx);
 	JS_SetPropertyFunctionList(ctx, proto, sharp_proto_funcs,
 				   sizeof(sharp_proto_funcs) /
 				   sizeof(sharp_proto_funcs[0]));
-	JS_SetClassProto(ctx, sharp_class_id, proto);
+	JS_SetClassProto(ctx, media_state(ctx)->sharp_class_id, proto);
 	proto = JS_NewObject(ctx);
 	JS_SetPropertyFunctionList(ctx, proto, canvas_proto_funcs,
 				   sizeof(canvas_proto_funcs) /
 				   sizeof(canvas_proto_funcs[0]));
-	JS_SetClassProto(ctx, canvas_class_id, proto);
+	JS_SetClassProto(ctx, media_state(ctx)->canvas_class_id, proto);
 }
 
 static JSValue js_require_disabled(JSContext *ctx, JSValueConst this_val,

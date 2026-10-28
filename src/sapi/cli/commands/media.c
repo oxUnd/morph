@@ -182,10 +182,11 @@ static const struct cli_command media_commands[] = {
 	{ "/r",       cmd_render,  "Alias for /render",                 "/r <file_path>" },
 };
 
-int cli_register_media_commands(void)
+struct cli_command_group cli_media_commands(void)
 {
-	return cli_command_register_many(media_commands,
-					 (int)(sizeof(media_commands) /
-					 sizeof(media_commands[0])),
-					 "Media");
+	return (struct cli_command_group){
+		.entries = media_commands,
+		.count = (int)(sizeof(media_commands) / sizeof(media_commands[0])),
+		.category = "Media",
+	};
 }

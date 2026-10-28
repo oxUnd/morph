@@ -824,10 +824,11 @@ static const struct cli_command session_commands[] = {
 	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]" },
 };
 
-int cli_register_session_commands(void)
+struct cli_command_group cli_session_commands(void)
 {
-	return cli_command_register_many(session_commands,
-					 (int)(sizeof(session_commands) /
-					 sizeof(session_commands[0])),
-					 "Sessions");
+	return (struct cli_command_group){
+		.entries = session_commands,
+		.count = (int)(sizeof(session_commands) / sizeof(session_commands[0])),
+		.category = "Sessions",
+	};
 }

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <memory>
 #include <chrono>
 #include "models/llm.h"
 
@@ -28,6 +29,8 @@ protected:
 		ASSERT_EQ(db_open(&db, db_path), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 		std::memset(&opts, 0, sizeof(opts));
+		opts.worker = memory_worker_create();
+		ASSERT_NE(opts.worker, nullptr);
 		opts.enabled = 1;
 		opts.hot_path_enabled = 1;
 		opts.cold_path_enabled = 1;
@@ -39,7 +42,7 @@ protected:
 
 	void TearDown() override
 	{
-		memory_async_shutdown();
+		memory_worker_destroy(opts.worker);
 		db_close(&db);
 		std::remove(db_path);
 	}
@@ -474,24 +477,24 @@ TEST_F(MemoryTest, DurableJobsRecoverAndDoNotDuplicateEpisodes)
 		"INSERT INTO memory_jobs(session_id,generation,payload) VALUES(1,0,"
 		"'{\"input\":\"old task\",\"answer\":\"done\",\"success\":true,"
 		"\"episodes\":true,\"llm\":false,\"tools\":[\"file_read\"]}');"), 0);
-	ASSERT_EQ(memory_async_resume(&db), 0);
-	memory_async_shutdown();
+	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
+	memory_async_shutdown(opts.worker);
 	char *jobs = memory_background_render(&db, session.id);
 	ASSERT_NE(jobs, nullptr);
 	EXPECT_NE(strstr(jobs, "completed"), nullptr);
 	free(jobs);
 	/* Simulate a crash after episode commit but before the completion marker. */
 	ASSERT_EQ(db_exec(&db, "UPDATE memory_jobs SET state='queued'"), 0);
-	ASSERT_EQ(memory_async_resume(&db), 0);
-	memory_async_shutdown();
+	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
+	memory_async_shutdown(opts.worker);
 	sqlite3_stmt *stmt = nullptr;
 	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT COUNT(*) FROM memory_episodes", -1, &stmt, nullptr), SQLITE_OK);
 	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
 	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
 	sqlite3_finalize(stmt);
 	ASSERT_EQ(memory_clear(&db, session.id, MEMORY_CLEAR_ALL), 0);
-	ASSERT_EQ(memory_async_resume(&db), 0);
-	memory_async_shutdown();
+	ASSERT_EQ(memory_async_resume(&db, &opts), 0);
+	memory_async_shutdown(opts.worker);
 	char *render = memory_render_session(&db, session.id, 0);
 	ASSERT_NE(render, nullptr);
 	EXPECT_STREQ(render, "No long-term memory stored for this session.");
@@ -529,7 +532,7 @@ TEST_F(MemoryTest, InFlightExtractionCannotOverrideOrResurrectPreference)
 	model.handle = &state;
 	model.chat = delayed_memory_chat;
 	std::strcpy(model.api_key, "mock");
-	memory_set_llm(&model);
+	opts.llm = &model;
 	opts.llm_extract_enabled = 1;
 	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id, "以后都用英文", "OK", nullptr, 1, &opts), 0);
 	{
@@ -544,8 +547,8 @@ TEST_F(MemoryTest, InFlightExtractionCannotOverrideOrResurrectPreference)
 		state.released = true;
 		state.cv.notify_all();
 	}
-	memory_async_shutdown();
-	memory_set_llm(nullptr);
+	memory_async_shutdown(opts.worker);
+	opts.llm = nullptr;
 	EXPECT_EQ(effective_preferences(&db, session.id), "");
 	char *context = memory_build_context(&db, session.id, "上次 always", &opts);
 	EXPECT_EQ(context, nullptr);
@@ -624,4 +627,49 @@ TEST_F(MemoryTest, EssentialLanguageSurvivesSmallGeneralMemoryBudget)
 	EXPECT_NE(strstr(context, "response.language: Chinese"), nullptr);
 	EXPECT_LE(strlen(context), 512u);
 	free(context);
+}
+
+TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
+{
+	struct session session;
+	ASSERT_EQ(session_create(&db, "isolated_workers", "mock", &session), 0);
+	DelayedMemoryModel state;
+	struct model model{};
+	model.handle = &state;
+	model.chat = delayed_memory_chat;
+	std::strcpy(model.api_key, "mock");
+	std::unique_ptr<struct memory_worker, decltype(&memory_worker_destroy)> other(
+		memory_worker_create(), memory_worker_destroy);
+	ASSERT_NE(other, nullptr);
+	struct memory_options second = opts;
+	second.worker = other.get();
+	opts.llm = &model;
+	opts.llm_extract_enabled = 1;
+	ASSERT_EQ(memory_consolidate_turn_async(&db, session.id,
+		"first task", "first answer", nullptr, 1, &opts), 0);
+	{
+		std::unique_lock<std::mutex> lock(state.mutex);
+		EXPECT_TRUE(state.cv.wait_for(lock, std::chrono::seconds(5),
+			[&] { return state.entered; }));
+	}
+	EXPECT_NE(memory_async_pending(opts.worker), 0);
+	EXPECT_EQ(memory_async_pending(other.get()), 0);
+	EXPECT_EQ(memory_consolidate_turn_async(&db, session.id,
+		"second task", "second answer", nullptr, 1, &second), 0);
+	memory_async_shutdown(other.get());
+	EXPECT_EQ(memory_async_pending(other.get()), 0);
+	EXPECT_NE(memory_async_pending(opts.worker), 0);
+	{
+		std::lock_guard<std::mutex> lock(state.mutex);
+		state.released = true;
+		state.cv.notify_all();
+	}
+	memory_async_shutdown(opts.worker);
+	opts.llm = nullptr;
+	EXPECT_EQ(memory_async_pending(opts.worker), 0);
+	char *jobs = memory_background_render(&db, session.id);
+	ASSERT_NE(jobs, nullptr);
+	EXPECT_EQ(strstr(jobs, "queued"), nullptr);
+	EXPECT_EQ(strstr(jobs, "running"), nullptr);
+	free(jobs);
 }

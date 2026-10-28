@@ -155,14 +155,14 @@ static int cli_test_write_png(const char *path)
 
 TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
 {
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_media_commands(), 0);
+
+
 	EXPECT_EQ(cli_command_find("/img"), nullptr);
 	EXPECT_EQ(cli_command_find("/paste"), nullptr);
 	EXPECT_EQ(cli_command_find("/video"), nullptr);
 	EXPECT_EQ(cli_command_find("/vid"), nullptr);
 	EXPECT_NE(cli_command_find("/image"), nullptr);
-	cli_command_registry_clear();
+
 }
 
 TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
@@ -308,8 +308,8 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	int64_t arrow_selected = sessions[13].id;
 	int64_t small_selected = sessions[2].id;
 	runtime_session_list_free(sessions);
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_session_commands(), 0);
+
+
 	FILE *input = tmpfile();
 	ASSERT_NE(input, nullptr);
 	fputs("p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
@@ -364,7 +364,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	resume_terminal_pick(&context, "\033[B\033[B\033[B\033[A\r", small_selected, 6);
 	resume_terminal_pick(&context, "\033", small_selected, 24);
 	resume_terminal_pick(&context, "\003", small_selected, 24);
-	cli_command_registry_clear();
+
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
@@ -372,7 +372,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 
 TEST(CliListTest, HelpUsesTreeLayout)
 {
-	ASSERT_EQ(cli_commands_init(), 0);
+
 
 	testing::internal::CaptureStdout();
 	cli_print_help();
@@ -388,7 +388,7 @@ TEST(CliListTest, HelpUsesTreeLayout)
 	EXPECT_EQ(cli_command_find("/ls"), nullptr);
 	EXPECT_EQ(output.find("/list"), std::string::npos);
 	EXPECT_EQ(output.find("/ls"), std::string::npos);
-	cli_command_registry_clear();
+
 }
 
 TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
@@ -398,7 +398,7 @@ TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	context.event_cb = cli_event_callback;
 	context.event_user_data = &context;
-	ASSERT_EQ(cli_commands_init(), 0);
+
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/help");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -423,7 +423,7 @@ TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 	EXPECT_EQ(output.find("\033"), std::string::npos);
 
 	cli_test_delete_events(events);
-	cli_command_registry_clear();
+
 }
 
 TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
@@ -433,7 +433,7 @@ TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	context.event_cb = cli_event_callback;
 	context.event_user_data = &context;
-	cli_command_registry_clear();
+
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/does-not-exist");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -499,8 +499,8 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	options.front_name = "test";
 	ASSERT_EQ(runtime_open(&options, &runtime), 0);
 	context.runtime = runtime;
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_sync_commands(), 0);
+
+
 
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/sync now");
@@ -570,7 +570,6 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	ASSERT_EQ(runtime_open(&options, &runtime), 0);
 	EXPECT_FALSE(file_exists(context.db_restore_plan.journal));
 
-	cli_command_registry_clear();
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(root, error);
@@ -613,8 +612,7 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	ASSERT_EQ(runtime_task_create(runtime, &input, &history), 0);
 	ASSERT_EQ(runtime_task_cancel(runtime, history.id), 0);
 
-	cli_command_registry_clear();
-	ASSERT_EQ(cli_register_task_commands(), 0);
+
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/tasks");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -630,7 +628,7 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 
 	scheduled_task_cleanup(&active);
 	scheduled_task_cleanup(&history);
-	cli_command_registry_clear();
+
 	runtime_close(runtime);
 	std::error_code error;
 	(void)std::filesystem::remove_all(directory, error);
