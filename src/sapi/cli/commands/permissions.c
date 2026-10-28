@@ -87,7 +87,7 @@ static int print_permissions(struct cli_context *ctx)
 		group_last = ++group == group_count;
 		cli_list_group(grant_group_name(grants, i, end), end - i,
 			       group_last);
-		ancestor = tui_tree_branch(group_last, 1);
+		ancestor = morph_tui_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
 

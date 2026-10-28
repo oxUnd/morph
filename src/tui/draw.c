@@ -1,11 +1,11 @@
-#include "tui/tui.h"
+#include <morph/tui.h>
 #include "util/error.h"
 #include "util/utf8.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-int tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
+int morph_tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 			    int row, int column, int width, const char *text,
 			    const char *style, int right)
 {
@@ -48,7 +48,7 @@ int tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 	MORPH_RETURN(rc);
 }
 
-int tui_output_write(FILE *output, const morph_buf_t *commands)
+int morph_tui_output_write(FILE *output, const morph_buf_t *commands)
 {
 	if (!output || !commands)
 		MORPH_RETURN(-EINVAL);
@@ -64,7 +64,7 @@ int tui_output_write(FILE *output, const morph_buf_t *commands)
 	return 0;
 }
 
-int tui_cell(FILE *output, int columns, int rows, int row, int column,
+int morph_tui_cell(FILE *output, int columns, int rows, int row, int column,
 	     int width, const char *text, const char *style)
 {
 	morph_buf_t commands = {0};
@@ -72,17 +72,17 @@ int tui_cell(FILE *output, int columns, int rows, int row, int column,
 
 	if (rc != 0)
 		MORPH_RETURN(rc);
-	rc = tui_cell_append(&commands, columns, rows, row, column, width, text, style);
+	rc = morph_tui_cell_append(&commands, columns, rows, row, column, width, text, style);
 	if (rc == 0)
-		rc = tui_output_write(output, &commands);
+		rc = morph_tui_output_write(output, &commands);
 	morph_buf_cleanup(&commands);
 	MORPH_RETURN(rc);
 }
 
-int tui_cell_append(morph_buf_t *commands, int columns, int rows,
+int morph_tui_cell_append(morph_buf_t *commands, int columns, int rows,
 		    int row, int column, int width, const char *text,
 		    const char *style)
 {
-	return tui_cell_append_aligned(commands, columns, rows,
+	return morph_tui_cell_append_aligned(commands, columns, rows,
 		row, column, width, text, style, 0);
 }

@@ -1,7 +1,7 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
 #include "util/data.h"
-#include "tui/tree.h"
+#include <morph/tui/tree.h>
 
 #include <limits.h>
 #include <sys/ioctl.h>
@@ -1184,7 +1184,7 @@ void cli_render_operation_approval(struct cli_context *ctx,
 		approval_card_field(width, "Access", "read/write", ANSI_BOLD);
 		for (int i = 0; i < op->directories_count; i++)
 			approval_card_field(width,
-				tui_tree_branch(i == op->directories_count - 1, 0),
+				morph_tui_tree_branch(i == op->directories_count - 1, 0),
 				op->directories[i].path, ANSI_DIM);
 	}
 	if (op->kind == TOOL_OP_COMMAND)

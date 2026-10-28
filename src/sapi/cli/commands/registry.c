@@ -268,7 +268,7 @@ void cli_print_help(void)
 				snprintf(display, sizeof(display), "%s", command_at(i, NULL)->name);
 			}
 			item++;
-			cli_list_item(tui_tree_branch(group_last, 1), item == item_count,
+			cli_list_item(morph_tui_tree_branch(group_last, 1), item == item_count,
 				      "", display, desc, 22, columns);
 			i = alias_end + 1;
 		}

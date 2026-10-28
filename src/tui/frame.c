@@ -1,9 +1,9 @@
-#include "tui/tui.h"
+#include <morph/tui.h>
 #include "util/error.h"
 
 #include <string.h>
 
-int tui_frame_present(struct tui_frame *frame, FILE *output,
+int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 		      int columns, int rows, const char *lines)
 {
 	if (!frame || !output || !lines || columns < 1 || rows < 1)
@@ -55,9 +55,9 @@ int tui_frame_present(struct tui_frame *frame, FILE *output,
 		previous += old_length + (previous[old_length] == '\n');
 	}
 	morph_buf_puts(commands, "\033[?2026l");
-	rc = tui_output_write(output, commands);
+	rc = morph_tui_output_write(output, commands);
 	if (rc != 0) {
-		tui_frame_invalidate(frame);
+		morph_tui_frame_invalidate(frame);
 		MORPH_RETURN(rc);
 	}
 	morph_buf_reset(&frame->previous);
@@ -68,7 +68,7 @@ int tui_frame_present(struct tui_frame *frame, FILE *output,
 	MORPH_RETURN(rc);
 }
 
-void tui_frame_invalidate(struct tui_frame *frame)
+void morph_tui_frame_invalidate(struct morph_tui_frame *frame)
 {
 	if (!frame)
 		return;
@@ -77,11 +77,11 @@ void tui_frame_invalidate(struct tui_frame *frame)
 	frame->target = NULL;
 }
 
-void tui_frame_cleanup(struct tui_frame *frame)
+void morph_tui_frame_cleanup(struct morph_tui_frame *frame)
 {
 	if (!frame)
 		return;
 	morph_buf_cleanup(&frame->previous);
 	morph_buf_cleanup(&frame->output);
-	tui_frame_invalidate(frame);
+	morph_tui_frame_invalidate(frame);
 }

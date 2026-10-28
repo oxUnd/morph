@@ -1,4 +1,4 @@
-#include "tui/tui.h"
+#include <morph/tui.h>
 #include "util/error.h"
 
 #include <stdlib.h>
@@ -6,7 +6,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-int tui_available(FILE *input, FILE *output)
+int morph_tui_available(FILE *input, FILE *output)
 {
 	const char *term = getenv("TERM");
 
@@ -14,7 +14,7 @@ int tui_available(FILE *input, FILE *output)
 		isatty(fileno(output)) && (!term || strcmp(term, "dumb") != 0);
 }
 
-void tui_dimensions(int output_fd, int *columns, int *rows)
+void morph_tui_dimensions(int output_fd, int *columns, int *rows)
 {
 	struct winsize size = {0};
 
@@ -26,7 +26,7 @@ void tui_dimensions(int output_fd, int *columns, int *rows)
 	}
 }
 
-int tui_session_enter(struct tui_session *session, FILE *input, FILE *output,
+int morph_tui_session_enter(struct morph_tui_session *session, FILE *input, FILE *output,
 		      int flags)
 {
 	struct termios raw;
@@ -50,32 +50,32 @@ int tui_session_enter(struct tui_session *session, FILE *input, FILE *output,
 	session->output = output;
 	session->flags = flags;
 	session->active = 1;
-	if (flags & TUI_SESSION_ALTERNATE)
+	if (flags & MORPH_TUI_SESSION_ALTERNATE)
 		fputs("\033[?1049h", output);
 	fputs("\033[?25l", output);
-	if (flags & TUI_SESSION_PASTE)
+	if (flags & MORPH_TUI_SESSION_PASTE)
 		fputs("\033[?2004h", output);
 	if (fflush(output) != 0 || ferror(output)) {
 		int rc = errno ? -errno : -EIO;
 
-		(void)tui_session_leave(session);
+		(void)morph_tui_session_leave(session);
 		MORPH_RETURN(rc);
 	}
 	return 0;
 }
 
-int tui_session_leave(struct tui_session *session)
+int morph_tui_session_leave(struct morph_tui_session *session)
 {
 	int rc = 0;
 
 	if (!session || !session->active)
 		return 0;
-	if (session->flags & TUI_SESSION_PASTE)
+	if (session->flags & MORPH_TUI_SESSION_PASTE)
 		fputs("\033[?2004l", session->output);
-	if (session->flags & TUI_SESSION_ALTERNATE)
+	if (session->flags & MORPH_TUI_SESSION_ALTERNATE)
 		fputs("\033[0m", session->output);
 	fputs("\033[?25h", session->output);
-	if (session->flags & TUI_SESSION_ALTERNATE)
+	if (session->flags & MORPH_TUI_SESSION_ALTERNATE)
 		fputs("\033[?1049l", session->output);
 	if (fflush(session->output) != 0 || ferror(session->output))
 		MORPH_SET_ERR(rc, errno ? -errno : -EIO);

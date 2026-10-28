@@ -581,7 +581,7 @@ static int print_task_list_tree(const struct scheduled_task *tasks, int count)
 				continue;
 			active_index++;
 			rc = print_active_task(
-				&tasks[i], tui_tree_branch(history_count == 0, 1),
+				&tasks[i], morph_tui_tree_branch(history_count == 0, 1),
 				active_index == active_count, columns);
 		}
 	}

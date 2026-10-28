@@ -2,7 +2,7 @@
 #define CLI_LIST_UI_H
 
 #include <stddef.h>
-#include "tui/tree.h"
+#include <morph/tui/tree.h>
 
 void cli_tree_prefix(const int *last, int depth, int is_last, int continuation);
 

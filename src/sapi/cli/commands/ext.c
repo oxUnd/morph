@@ -137,7 +137,7 @@ static void ext_print_group(struct cli_context *ctx,
 	struct ext_tool_item *item;
 	int index = 0;
 	int name_width = ext_group_name_width(items, group->rank);
-	const char *ancestor = tui_tree_branch(is_last, 1);
+	const char *ancestor = morph_tui_tree_branch(is_last, 1);
 
 	cli_list_group(group->name, group->count, is_last);
 	morph_array_foreach(item, items, struct ext_tool_item) {
