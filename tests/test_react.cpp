@@ -995,7 +995,7 @@ static int iteration_memory_chat(struct model *self, struct arena *arena,
 	}
 	EXPECT_EQ(tool_count, probe->calls == 1 ? 1 : 2);
 	if (tool_count == 2)
-		EXPECT_STREQ(tools[1].name, "late_tool");
+		EXPECT_STREQ(tools[0].name, "late_tool");
 	response->arena = arena;
 	if (probe->calls == probe->final_call) {
 		response->content = arena_strdup(arena, "completed");
@@ -3048,6 +3048,7 @@ struct mock_server {
 	int thread_started;
 	volatile int running;
 	const char *response_body;
+	const char *extra_response_headers;
 	int response_status;
 	const char *transient_error_body;
 	int transient_error_status;
@@ -3129,14 +3130,15 @@ static void *mock_http_server_thread(void *arg)
 		} else if (srv->response_body) {
 			int body_len = strlen(srv->response_body);
 			char header[512];
-			int hlen = snprintf(header, sizeof(header),
-				"HTTP/1.1 %d OK\r\n"
-				"Content-Type: application/json\r\n"
-				"Content-Length: %d\r\n"
-				"Connection: close\r\n"
-				"\r\n",
-				srv->response_status > 0 ? srv->response_status : 200,
-				body_len);
+			int hlen = snprintf(
+			    header, sizeof(header),
+			    "HTTP/1.1 %d OK\r\n"
+			    "Content-Type: application/json\r\n"
+			    "Content-Length: %d\r\n"
+			    "Connection: close\r\n%s"
+			    "\r\n",
+			    srv->response_status > 0 ? srv->response_status : 200, body_len,
+			    srv->extra_response_headers ? srv->extra_response_headers : "");
 			send(client_fd, header, hlen, 0);
 			send(client_fd, srv->response_body, body_len, 0);
 		} else {
@@ -3154,6 +3156,7 @@ static void *mock_http_server_thread(void *arg)
 static int mock_server_start(struct mock_server *srv, int suggested_port)
 {
 	const char *saved_body = srv->response_body;
+	const char *saved_extra_headers = srv->extra_response_headers;
 	int saved_status = srv->response_status;
 	const char *saved_transient_body = srv->transient_error_body;
 	int saved_transient_status = srv->transient_error_status;
@@ -3161,6 +3164,7 @@ static int mock_server_start(struct mock_server *srv, int suggested_port)
 	int saved_transient_sse_body = srv->transient_sse_body;
 	memset(srv, 0, sizeof(*srv));
 	srv->response_body = saved_body;
+	srv->extra_response_headers = saved_extra_headers;
 	srv->response_status = saved_status;
 	srv->transient_error_body = saved_transient_body;
 	srv->transient_error_status = saved_transient_status;
@@ -3971,6 +3975,122 @@ TEST_F(MockServerTest, LlmDoesNotRetryNonTransientHttpErrors) {
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
+{
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"ok\"}}],"
+		"\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create("test", "mock-model", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	auto *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct model_usage captured{};
+	void *previous = model_get_usage_user_data();
+	model_set_usage_user_data(&captured);
+	model_set_usage_callback([](const struct model_usage *usage, void *data) {
+		*static_cast<struct model_usage *>(data) = *usage;
+	});
+	const char *messages[] = {"hello"};
+	struct model_chat_options options{};
+	options.usage_phase = "compaction";
+	EXPECT_EQ(model->chat(model, arena, nullptr, messages, 1, &options, nullptr, nullptr), 200);
+	EXPECT_STREQ(captured.phase, "compaction");
+	EXPECT_EQ(model->chat(model, arena, nullptr, messages, 1, nullptr, nullptr, nullptr), 200);
+	EXPECT_STREQ(captured.phase, "turn");
+	model_set_usage_callback(nullptr);
+	model_set_usage_user_data(previous);
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, SseRetryMetadataBelongsToTheRequest)
+{
+	srv.response_body = "{\"error\":{\"message\":\"rate limited\"}}";
+	srv.response_status = 429;
+	srv.extra_response_headers = "Retry-After: 3\r\n";
+	START_MOCK_OR_SKIP(&srv);
+	char url[256];
+	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/test", srv.port);
+	struct http_sse_metadata first{};
+	struct http_sse_metadata second{};
+	auto sink = [](const char *, size_t, void *) -> int { return 0; };
+	EXPECT_EQ(http_post_sse_ex_timeout_metadata(url, "{}", 2, "application/json",
+		nullptr, 0, 5, sink, nullptr, &first), 429);
+	EXPECT_EQ(first.retry_after_seconds, 3);
+	/* Reusing another request's output object cannot overwrite the first. */
+	second.retry_after_seconds = 99;
+	EXPECT_EQ(http_post_sse_ex_timeout_metadata(url, "{}", 2, "application/json",
+		nullptr, 0, 5, sink, nullptr, &second), 429);
+	EXPECT_EQ(second.retry_after_seconds, 3);
+	EXPECT_EQ(first.retry_after_seconds, 3);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmPreservesRetryAfterAndRateLimitCategory)
+{
+	srv.response_body = "{\"error\":{\"message\":\"bad request\"}}";
+	srv.response_status = 429;
+	srv.extra_response_headers = "Retry-After: 3\r\n";
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
+	struct model *model = model_llm_create("test", "mock-model", api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	model->retry_count = 0;
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+	    (char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc =
+	    model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+	EXPECT_EQ(rc, MORPH_ERR_API);
+	EXPECT_EQ(srv.request_count, 1);
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_RATE_LIMIT);
+	EXPECT_EQ(model->error_info.retry_after_seconds, 3);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, LlmClassifiesContextOverflowWithoutBlindRetry)
+{
+	srv.response_body =
+	    "{\"error\":{\"message\":\"too much context\",\"code\":\"context_length_exceeded\"}}";
+	srv.response_status = 400;
+	START_MOCK_OR_SKIP(&srv);
+
+	char api_base[256];
+	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
+	struct model *model = model_llm_create("test", "mock-model", api_base, "test-key");
+	ASSERT_NE(model, nullptr);
+	struct arena *arena = arena_create(8192);
+	ASSERT_NE(arena, nullptr);
+	struct chat_message msg = {
+	    (char *)"user", (char *)"hello", NULL, NULL, 0,
+	};
+	struct chat_response response;
+
+	int rc =
+	    model->chat_with_tools(model, arena, NULL, &msg, 1, NULL, 0, &response, NULL, NULL);
+	EXPECT_EQ(rc, MORPH_ERR_CONTEXT_LIMIT);
+	EXPECT_EQ(model->error_info.kind, MODEL_ERROR_CONTEXT);
+	EXPECT_STREQ(model->error_info.provider_code, "context_length_exceeded");
+	EXPECT_EQ(srv.request_count, 1);
+
+	arena_destroy(arena);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, LlmDoesNotRetryAfterStreamContentWasEmitted) {
 	srv.response_body = "{}";
 	srv.response_status = 200;
@@ -4364,7 +4484,8 @@ TEST_F(PromptModeTest, ReplaceRemovesDefaultsButPreservesContextAndTools)
 	EXPECT_NE(strstr(capt->system_prompt, "Literal %s %d."), nullptr);
 	EXPECT_EQ(strstr(capt->system_prompt, "Working directory:"), nullptr);
 	EXPECT_NE(strstr(capt->prompt, "<cwd>"), nullptr);
-	EXPECT_NE(strstr(capt->system_prompt, "Remember this fact."), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "Remember this fact."), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "Remember this fact."), nullptr);
 	for (const char *absent : {"You are Morph", "OPERATING LOOP",
 	     "MARKDOWN OUTPUT", "After two",
 	     "Source editing:", "Shell filesystem permissions:", "img_qa",
@@ -4449,17 +4570,20 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		ASSERT_NE(boundary, std::string::npos);
 		EXPECT_LT(first.find("Stable custom prompt"), first.find("Available skills:"));
 		EXPECT_LT(first.find("- alpha:"), first.find("- zeta:"));
-		EXPECT_LT(first.find("<skill name=\"alpha\""),
-			first.find("<skill name=\"zeta\""));
-		EXPECT_LT(first.find("<skill name=\"zeta\""), boundary);
-		EXPECT_LT(boundary, first.find("MEMORY_FIRST"));
+		std::string dynamic = capt->prompt;
+		EXPECT_LT(dynamic.find("<skill name=\"alpha\""),
+			  dynamic.find("<skill name=\"zeta\""));
+		EXPECT_EQ(first.find("<skill name="), std::string::npos);
+		EXPECT_NE(dynamic.find("MEMORY_FIRST"), std::string::npos);
 		ctx->max_iterations = 17;
 		ASSERT_EQ(react_set_memory_context(ctx, "MEMORY_SECOND"), 0);
 		ASSERT_EQ(react_run(ctx, "next", nullptr, nullptr), 0);
 		std::string second = capt->system_prompt;
 		EXPECT_EQ(first.substr(0, boundary),
 			second.substr(0, second.find("Runtime limits:")));
-		EXPECT_NE(second.find("MEMORY_SECOND"), std::string::npos);
+		EXPECT_EQ(second.find("MEMORY_SECOND"), std::string::npos);
+		EXPECT_NE(strstr(capt->prompt, "MEMORY_SECOND"), nullptr);
+		EXPECT_EQ(strstr(capt->prompt, "MEMORY_FIRST"), nullptr);
 		EXPECT_EQ(second.find("MEMORY_FIRST"), std::string::npos);
 	}
 	ctx->skills = nullptr;
@@ -4766,7 +4890,8 @@ TEST_F(MockLlmTest, MemoryContextAppearsInPrompt) {
 	react_run(ctx, "hello", nullptr, nullptr);
 	EXPECT_EQ(ctx->state, REACT_STATE_DONE);
 	ASSERT_NE(cd->system_prompt, nullptr);
-	EXPECT_NE(strstr(cd->system_prompt, "Preferred language: Chinese"), nullptr);
+	EXPECT_EQ(strstr(cd->system_prompt, "Preferred language: Chinese"), nullptr);
+	EXPECT_NE(strstr(cd->prompt, "Preferred language: Chinese"), nullptr);
 	EXPECT_NE(strstr(cd->system_prompt, "latest explicit language instruction"), nullptr);
 	EXPECT_NE(strstr(cd->system_prompt, "progress updates before"), nullptr);
 	EXPECT_NE(strstr(cd->system_prompt, "Do not switch to English"), nullptr);
@@ -6554,11 +6679,11 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 	ASSERT_EQ(ctx->memory_options, nullptr);
 	ASSERT_EQ(react_run(ctx, "Use test-skill", nullptr, nullptr), 0);
 	EXPECT_EQ(capt->calls, 2);
-	std::string system = capt->system_prompt;
+	std::string system = capt->prompt;
 	EXPECT_NE(system.find("UNIQUE_SKILL_BODY_MARKER"), std::string::npos);
 	EXPECT_EQ(system.find("UNIQUE_SKILL_BODY_MARKER"),
 		system.rfind("UNIQUE_SKILL_BODY_MARKER"));
-	EXPECT_EQ(strstr(capt->prompt, "UNIQUE_SKILL_BODY_MARKER"), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "UNIQUE_SKILL_BODY_MARKER"), nullptr);
 	ctx->skills = nullptr;
 	skill_registry_cleanup(skills);
 	delete skills;

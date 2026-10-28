@@ -139,6 +139,15 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 					    ctx->active_plans,
 					    request->session_id);
 	}
+	if (ctx->active_plans) {
+		int rc = plan_registry_bind(ctx->active_plans, ctx->db, request->session_id);
+		if (rc != 0) {
+			runtime_turn_scope_finish(ctx);
+			return rc;
+		}
+		if (ctx->react)
+			ctx->react->plans = ctx->active_plans;
+	}
 	runtime_turn_scope_bind_tool_context(ctx, request);
 	return 0;
 }

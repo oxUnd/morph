@@ -14,12 +14,21 @@
 
 /* Import only durable conversation state. Scheduled work, grants, credentials
  * and process state must never become active through a history import. */
-static const char *const history_tables[] = {
-	"messages", "model_history_items", "react_traces", "outputs",
-	"memory_profiles", "memory_facts", "memory_episodes", "memory_procedures",
-	"history_compactions", "history_compaction_attempts", "sync_ui_messages",
-	"message_attachments", "sub_agent_tasks", "sub_agent_events"
-};
+static const char *const history_tables[] = {"messages",
+					     "model_history_items",
+					     "react_traces",
+					     "outputs",
+					     "memory_profiles",
+					     "memory_facts",
+					     "memory_episodes",
+					     "memory_procedures",
+					     "history_compactions",
+					     "history_compaction_attempts",
+					     "sync_ui_messages",
+					     "message_attachments",
+					     "sub_agent_tasks",
+					     "sub_agent_events",
+					     "session_plans"};
 
 #define IMPORT_TABLE_COUNT (sizeof(history_tables) / sizeof(history_tables[0]))
 

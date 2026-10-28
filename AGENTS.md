@@ -118,6 +118,7 @@ Prefer these over hand-rolled equivalents.
 - Memory: arena for scope-lived data, `morph_buf`/`morph_array` for growth; raw `malloc`/`free` needs NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.
+- Do not introduce global variables.
 - `-Wall -Wextra -Wpedantic -Wshadow -Wconversion`; CI must pass with 0 warnings.
 - Tab indent (8); soft 80 / hard 100 columns.
 

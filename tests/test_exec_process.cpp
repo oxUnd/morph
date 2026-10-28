@@ -569,15 +569,17 @@ TEST_F(ProcessTest, WritesToStdin)
 	ASSERT_EQ(process_spawn(manager, &options, session_id, &snapshot), 0);
 	process_snapshot_cleanup(&snapshot);
 	ASSERT_EQ(process_session_write(manager, session_id, "hello\n", 6), 0);
+	std::string received;
 	for (int i = 0; i < 20; i++) {
 		ASSERT_EQ(process_session_snapshot(manager, session_id, &snapshot), 0);
+		received += snapshot.stdout_text ? snapshot.stdout_text : "";
 		if (snapshot.state >= PROCESS_EXITED)
 			break;
 		process_snapshot_cleanup(&snapshot);
 		usleep(25000);
 	}
 	EXPECT_EQ(snapshot.state, PROCESS_EXITED);
-	EXPECT_STREQ(snapshot.stdout_text, "got:hello");
+	EXPECT_EQ(received, "got:hello");
 	process_snapshot_cleanup(&snapshot);
 }
 
@@ -973,4 +975,44 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	tool_registry_cleanup(&registry);
 	tool_context_destroy(tctx);
 	std::filesystem::remove_all(base);
+}
+
+TEST_F(ProcessTest, ExplicitCursorWaitsAndReplaysWithoutConsumingOutput)
+{
+	process_spawn_options options{};
+	options.command = "sleep 0.1; printf hello; sleep 0.2";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot first{};
+	ASSERT_EQ(process_spawn(manager, &options, id, &first), 0);
+	process_cursor cursor = first.next_cursor;
+	process_snapshot_cleanup(&first);
+	process_snapshot next{};
+	ASSERT_EQ(process_session_poll(manager, id, &cursor, 2000, nullptr, nullptr, &next), 0);
+	EXPECT_STREQ(next.stdout_text, "hello");
+	EXPECT_FALSE(std::string(next.stdout_path).empty());
+	EXPECT_GT(next.next_cursor.stdout_offset, cursor.stdout_offset);
+	process_snapshot replay{};
+	ASSERT_EQ(process_session_poll(manager, id, &cursor, 0, nullptr, nullptr, &replay), 0);
+	EXPECT_STREQ(replay.stdout_text, next.stdout_text);
+	process_snapshot_cleanup(&next);
+	process_snapshot_cleanup(&replay);
+}
+
+TEST_F(ProcessTest, CancellingWaitLeavesChildRunning)
+{
+	process_spawn_options options{};
+	options.command = "sleep 2";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot{};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	process_cursor cursor = snapshot.next_cursor;
+	process_snapshot_cleanup(&snapshot);
+	EXPECT_EQ(process_session_poll(
+		      manager, id, &cursor, 2000, [](void *) { return 1; }, nullptr, &snapshot),
+		  -ECANCELED);
+	ASSERT_EQ(process_session_snapshot(manager, id, &snapshot), 0);
+	EXPECT_EQ(snapshot.state, PROCESS_RUNNING);
+	process_snapshot_cleanup(&snapshot);
 }

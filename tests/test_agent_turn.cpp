@@ -637,7 +637,7 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	arena_destroy(arena);
 }
 
-TEST_F(AgentTurnTest, InTurnCompactionFallsBackWhenSummaryFails)
+TEST_F(AgentTurnTest, InTurnCompactionPreservesHistoryWhenSummaryFails)
 {
 	struct model_history_insert old = {};
 
@@ -660,8 +660,7 @@ TEST_F(AgentTurnTest, InTurnCompactionFallsBackWhenSummaryFails)
 	react->compress.summarize = agent_turn_failing_summary;
 	ASSERT_EQ(react_set_turn_id(react, "turn_fallback"), 0);
 	ASSERT_EQ(agent_history_reload(react), 0);
-	EXPECT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"),
-		1);
+	EXPECT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), -EIO);
 
 	int count = 0;
 	struct model_history_item *items = model_history_list(&db, sess.id, 1,
@@ -674,7 +673,10 @@ TEST_F(AgentTurnTest, InTurnCompactionFallsBackWhenSummaryFails)
 			"could not be summarized"))
 			found_fallback = true;
 	}
-	EXPECT_TRUE(found_fallback);
+	EXPECT_FALSE(found_fallback);
+	EXPECT_EQ(count, 1);
+	ASSERT_NE(items, nullptr);
+	EXPECT_STREQ(items->content, "important active context");
 	model_history_free_list(items);
 }
 
@@ -836,4 +838,66 @@ TEST_F(AgentTurnTest, NormalCompactionUsesConfiguredRecentRounds)
 		}
 	}
 	EXPECT_EQ(users, 2);
+}
+
+TEST_F(AgentTurnTest, ToolHistoryKeepsOriginalAndDeduplicatesModelContent)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	const char *input = "{\"ok\":true,\"data\":{\"stdout\":\"hello\","
+			    "\"exit_code\":0},\"stdout\":\"hello\",\"exit_code\":0}";
+	ASSERT_EQ(agent_history_record_tool_result(react, "dedup", nullptr, "exec", input, 0), 0);
+	int count = 0;
+	auto *items = model_history_list(&db, sess.id, 1, &count);
+	ASSERT_NE(items, nullptr);
+	cJSON *model = cJSON_Parse(items->content);
+	ASSERT_NE(model, nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(model, "stdout"), nullptr);
+	EXPECT_NE(cJSON_GetObjectItem(cJSON_GetObjectItem(model, "data"), "stdout"), nullptr);
+	cJSON *payload = cJSON_Parse(items->payload_json);
+	ASSERT_NE(payload, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "original_content")), input);
+	cJSON_Delete(payload);
+	cJSON_Delete(model);
+	model_history_free_list(items);
+}
+
+TEST_F(AgentTurnTest, JsonToolTruncationPreservesExecutionControls)
+{
+	react->history_tool_result_tokens = 100;
+	std::string input = "{\"ok\":true,\"data\":{\"stdout\":\"";
+	input += std::string(5000, 'x');
+	input += "\",\"exit_code\":7,\"session_id\":\"proc_test\"}}";
+	char *prepared = nullptr;
+	int truncated = 0;
+	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
+		  0);
+	EXPECT_EQ(truncated, 1);
+	cJSON *json = cJSON_Parse(prepared);
+	ASSERT_NE(json, nullptr);
+	cJSON *data = cJSON_GetObjectItem(json, "data");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "session_id")), "proc_test");
+	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 100);
+	cJSON_Delete(json);
+	free(prepared);
+}
+
+TEST_F(AgentTurnTest, GenericJsonTruncationReturnsAnExplicitPreview)
+{
+	react->history_tool_result_tokens = 100;
+	std::string input = "[\"" + std::string(5000, 'x') + "\"]";
+	char *prepared = nullptr;
+	int truncated = 0;
+	ASSERT_EQ(agent_history_prepare_tool_content(react, input.c_str(), &prepared, &truncated),
+		  0);
+	cJSON *json = cJSON_Parse(prepared);
+	ASSERT_NE(json, nullptr);
+	EXPECT_EQ(truncated, 1);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(json, "history_truncated")));
+	EXPECT_EQ(cJSON_GetObjectItem(json, "ok"), nullptr);
+	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 100);
+	cJSON_Delete(json);
+	free(prepared);
 }

@@ -36,6 +36,8 @@ char *runtime_model_usage_metadata(const struct model_usage *usage)
 	obj = cJSON_CreateObject();
 	if (!obj)
 		return NULL;
+	if (usage->phase[0])
+		cJSON_AddStringToObject(obj, "phase", usage->phase);
 	if (usage->response_id[0])
 		cJSON_AddStringToObject(obj, "response_id",
 					usage->response_id);
@@ -56,6 +58,11 @@ char *runtime_model_usage_metadata(const struct model_usage *usage)
 	if (usage->total_tokens > 0)
 		cJSON_AddNumberToObject(obj, "total_tokens",
 					(double)usage->total_tokens);
+	if (usage->input_tokens > 0)
+		cJSON_AddNumberToObject(obj, "uncached_input_tokens",
+					(double)(usage->input_tokens > usage->cached_tokens
+						     ? usage->input_tokens - usage->cached_tokens
+						     : 0));
 	if (usage->cached_tokens > 0)
 		cJSON_AddNumberToObject(obj, "cached_tokens",
 					(double)usage->cached_tokens);

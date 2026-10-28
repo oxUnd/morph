@@ -177,6 +177,10 @@ struct react_context {
 	/* Active model messages; replaced after successful compaction. */
 	struct arena *message_arena;
 	struct arena *session_arena;
+	int force_compaction;
+	int context_recovery_count;
+	int ineffective_compactions;
+	struct plan_registry *plans;
 	char *system_prompt;
 	int system_prompt_replace;
 	char *memory_context;

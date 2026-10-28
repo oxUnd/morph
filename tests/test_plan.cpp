@@ -233,3 +233,120 @@ TEST(PlanTool, LegacyNameUpdateStillWorks)
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&tools);
 }
+
+extern "C" {
+#include "db/database.h"
+#include "session.h"
+#include "agent/tool_context.h"
+#include "util/file.h"
+}
+#include <filesystem>
+#include <thread>
+#include <vector>
+#include <unistd.h>
+
+TEST(PlanTool, DurableCheckpointRestoresEvidenceAndRollsBackInvalidUpdates)
+{
+	struct db db{};
+	struct session session{};
+	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "checkpoint", "test", &session), 0);
+	auto plans = std::make_unique<plan_registry>();
+	plan_registry_init(plans.get());
+	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
+	auto tools = std::make_unique<tool_registry>();
+	tool_registry_init(tools.get());
+	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
+	struct tool_result result{};
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(tools.get(), "plan",
+			    "{\"command\":\"create\",\"name\":\"film\","
+			    "\"steps\":[\"render\"],\"acceptance\":\"300 "
+			    "seconds\",\"request\":\"original request\"}",
+			    &result),
+		  0);
+	ASSERT_EQ(tool_exec(tools.get(), "plan",
+			    "{\"command\":\"update\",\"plan\":\"film\","
+			    "\"step_id\":1,\"status\":\"completed\",\"evidence\":\"ffprobe "
+			    "300.0\",\"artifact\":\"film.mp4\"}",
+			    &result),
+		  0);
+	auto restored = std::make_unique<plan_registry>();
+	plan_registry_init(restored.get());
+	ASSERT_EQ(plan_registry_bind(restored.get(), &db, session.id), 0);
+	ASSERT_EQ(restored->count, 1);
+	EXPECT_STREQ(restored->plans[0].acceptance, "300 seconds");
+	EXPECT_STREQ(restored->plans[0].steps[0].evidence, "ffprobe 300.0");
+	EXPECT_NE(tool_exec(tools.get(), "plan",
+			    "{\"command\":\"checkpoint\",\"plan\":\"film\","
+			    "\"acceptance\":42}",
+			    &result),
+		  0);
+	EXPECT_STREQ(plans->plans[0].acceptance, "300 seconds");
+	ASSERT_EQ(db_exec(&db, "CREATE TRIGGER fail_checkpoint BEFORE UPDATE ON session_plans "
+		"BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
+	EXPECT_NE(tool_exec(tools.get(), "plan", "{\"command\":\"update\",\"plan\":\"film\","
+		"\"step_id\":1,\"status\":\"pending\"}", &result), 0);
+	EXPECT_STREQ(plans->plans[0].steps[0].status, "completed");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(tools.get());
+	db_close(&db);
+}
+
+TEST(PlanTool, VerificationReportBecomesStaleWhenAnInputChanges)
+{
+	char dir[] = "/tmp/morph-plan-report-XXXXXX";
+	ASSERT_NE(mkdtemp(dir), nullptr);
+	std::string input = std::string(dir) + "/input.html";
+	std::string report = std::string(dir) + "/report.json";
+	ASSERT_EQ(file_write_all(input.c_str(), "one", 3), 0);
+	ASSERT_EQ(file_write_all(report.c_str(), "passed", 6), 0);
+	auto plans = std::make_unique<plan_registry>();
+	auto tools = std::make_unique<tool_registry>();
+	plan_registry_init(plans.get());
+	tool_registry_init(tools.get());
+	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
+	auto *tctx = tool_context_create(dir, dir);
+	ASSERT_NE(tctx, nullptr);
+	plan_tool_set_context(tools.get(), tctx);
+	struct tool_result result{};
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(tools.get(), "plan",
+			    "{\"command\":\"create\",\"name\":\"check\",\"steps\":[\"check\"]}",
+			    &result),
+		  0);
+	std::string args = "{\"command\":\"verify\",\"plan\":\"check\",\"files\":[\"" + input +
+			   "\"],\"report\":\"" + report + "\",\"outcome\":\"passed\"}";
+	ASSERT_EQ(tool_exec(tools.get(), "plan", args.c_str(), &result), 0);
+	EXPECT_NE(std::string(plans->plans[0].verification).find("current"), std::string::npos);
+	ASSERT_EQ(plan_tool_refresh_reports(tools.get()), 0);
+	ASSERT_EQ(file_write_all(input.c_str(), "two", 3), 0);
+	ASSERT_EQ(plan_tool_refresh_reports(tools.get()), 0);
+	EXPECT_NE(std::string(plans->plans[0].verification).find("stale"), std::string::npos);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(tools.get());
+	tool_context_destroy(tctx);
+	std::filesystem::remove_all(dir);
+}
+
+TEST(PlanTool, ConcurrentCreatesPreserveAllCheckpoints)
+{
+	auto plans = std::make_unique<plan_registry>();
+	auto tools = std::make_unique<tool_registry>();
+	plan_registry_init(plans.get());
+	tool_registry_init(tools.get());
+	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
+	std::vector<std::thread> workers;
+	for (int i = 0; i < 4; i++) workers.emplace_back([&, i] {
+		tool_result result{};
+		tool_result_init(&result);
+		std::string args = "{\"command\":\"create\",\"name\":\"parallel-" +
+			std::to_string(i) + "\",\"steps\":[\"work\"]}";
+		EXPECT_EQ(tool_exec(tools.get(), "plan", args.c_str(), &result), 0);
+		tool_result_cleanup(&result);
+	});
+	for (auto &worker : workers) worker.join();
+	EXPECT_EQ(plans->count, 4);
+	tool_registry_cleanup(tools.get());
+}

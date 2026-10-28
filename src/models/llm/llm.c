@@ -23,7 +23,6 @@
 
 static model_usage_callback g_usage_cb;
 static __thread void *g_usage_user_data;
-
 void model_set_usage_callback(model_usage_callback cb)
 {
 	g_usage_cb = cb;
@@ -41,8 +40,12 @@ void *model_get_usage_user_data(void)
 
 void model_report_usage(const struct model_usage *usage)
 {
-	if (g_usage_cb && usage)
-		g_usage_cb(usage, g_usage_user_data);
+	if (g_usage_cb && usage) {
+		struct model_usage tagged = *usage;
+		snprintf(tagged.phase, sizeof(tagged.phase), "%s",
+			 usage->phase[0] ? usage->phase : "turn");
+		g_usage_cb(&tagged, g_usage_user_data);
+	}
 }
 
 static int64_t estimate_tokens_from_bytes(size_t bytes)
@@ -62,8 +65,10 @@ static void usage_strncpy(char *dst, size_t dst_cap, const char *src)
 
 static void model_clear_last_error(struct model *self)
 {
-	if (self)
+	if (self) {
 		self->last_error[0] = '\0';
+		memset(&self->error_info, 0, sizeof(self->error_info));
+	}
 }
 
 static void model_set_last_error(struct model *self, const char *fmt, ...)
@@ -648,8 +653,54 @@ static int llm_retry_delay_seconds(int retry_index)
 	return seconds > 8 ? 8 : seconds;
 }
 
+static void llm_record_error(struct model *self, int status, const char *raw, int started, long retry_after_seconds)
+{
+	struct model_error_info *info = &self->error_info;
+	cJSON *json = raw ? cJSON_Parse(raw) : NULL;
+	const cJSON *error = cJSON_GetObjectItemCaseSensitive(json, "error");
+	const char *code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "code"));
+	if (!code)
+		code = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "type"));
+	memset(info, 0, sizeof(*info));
+	info->http_status = status > 0 ? status : 0;
+	info->output_started = started;
+	info->retry_after_seconds = retry_after_seconds;
+	if (code)
+		snprintf(info->provider_code, sizeof(info->provider_code), "%s", code);
+	if (status < 0)
+		info->kind = started ? MODEL_ERROR_INCOMPLETE : MODEL_ERROR_NETWORK;
+	else if (status == 401 || status == 403)
+		info->kind = MODEL_ERROR_AUTH;
+	else if (status == 429)
+		info->kind = MODEL_ERROR_RATE_LIMIT;
+	else if (status >= 500)
+		info->kind = MODEL_ERROR_SERVER;
+	else if (status >= 400)
+		info->kind = MODEL_ERROR_API;
+	if (status == 400 || status == 413) {
+		if (code &&
+		    (!strcmp(code, "context_length_exceeded") ||
+		     !strcmp(code, "context_window_exceeded") || !strcmp(code, "prompt_too_long")))
+			info->kind = MODEL_ERROR_CONTEXT;
+		const char *message =
+		    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(error, "message"));
+		if (message && (strstr(message, "maximum context length") ||
+				strstr(message, "exceeds the context window") ||
+				strstr(message, "prompt is too long")))
+			info->kind = MODEL_ERROR_CONTEXT;
+	}
+	if (info->kind == MODEL_ERROR_CONTEXT && started)
+		info->kind = MODEL_ERROR_INCOMPLETE;
+	info->retryable = !started && (status == MORPH_ERR_NETWORK || status == -ETIMEDOUT ||
+				       status == -ECONNRESET || status == -ECONNREFUSED ||
+				       llm_retryable_status(status));
+	if (status == -ECANCELED || status == -EINTR)
+		info->retryable = 0;
+	cJSON_Delete(json);
+}
+
 static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
-				   const char *operation, const char *url,
+				   const char *operation, const char *usage_phase, const char *url,
 				   const char *body, size_t body_len,
 				   const char **headers, long timeout,
 				   sse_callback cb,
@@ -674,6 +725,7 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 		else
 			llm_stream_init(&ctx, arena, cb, user_data);
 
+		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s", usage_phase ? usage_phase : "turn");
 		struct sse_parser parser;
 		sse_parser_init(&parser, event_cb ? event_cb : llm_sse_event_cb,
 				&ctx);
@@ -684,10 +736,11 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 		if (morph_buf_init_arena(&hctx.error_buf, arena, 4096) != 0)
 			memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
 
-		int status = http_post_sse_ex_timeout(url, body, body_len,
+		struct http_sse_metadata metadata = {0};
+		int status = http_post_sse_ex_timeout_metadata(url, body, body_len,
 						      "application/json",
 						      headers, 1, timeout,
-						      llm_http_cb, &hctx);
+						      llm_http_cb, &hctx, &metadata);
 		sse_parser_free(&parser);
 
 		const char *detail = NULL;
@@ -696,17 +749,22 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 		if (error_detail)
 			*error_detail = detail;
 
-		if (status >= 400 && llm_retryable_status(status) &&
-		    !llm_stream_started(&ctx) && attempt < retries) {
-			int delay = llm_retry_delay_seconds(attempt);
+		llm_record_error(self, status, hctx.error_buf.data, llm_stream_started(&ctx),
+			metadata.retry_after_seconds);
+		if (self->error_info.kind == MODEL_ERROR_CONTEXT) {
+			*result = ctx;
+			return MORPH_ERR_CONTEXT_LIMIT;
+		}
+		if (self->error_info.retryable && attempt < retries) {
+			long delay = self->error_info.retry_after_seconds > 0
+					 ? self->error_info.retry_after_seconds
+					 : llm_retry_delay_seconds(attempt);
 			if (detail)
-				log_warn("%s: HTTP %d (%s), retry %d/%d in %ds",
-					 operation, status, detail, attempt + 1,
-					 retries, delay);
+				log_warn("%s: HTTP %d (%s), retry %d/%d in %lds", operation, status,
+					 detail, attempt + 1, retries, delay);
 			else
-				log_warn("%s: HTTP %d, retry %d/%d in %ds",
-					 operation, status, attempt + 1,
-					 retries, delay);
+				log_warn("%s: HTTP %d, retry %d/%d in %lds", operation, status,
+					 attempt + 1, retries, delay);
 			int wait_rc = http_wait_cancelable((unsigned int)delay * 1000);
 			if (wait_rc < 0)
 				return wait_rc;
@@ -729,6 +787,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat: no API key configured");
+		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
@@ -763,14 +822,15 @@ static int llm_chat(struct model *self, struct arena *arena,
 	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
-	int status = llm_post_sse_with_retry(self, arena, "llm_chat", url,
+	int status = llm_post_sse_with_retry(self, arena, "llm_chat", opts ? opts->usage_phase : NULL, url,
 					     body, body_len, extra_headers,
 					     timeout, cb, NULL, NULL, user_data,
 					     &ctx, &detail);
 	log_dbg("llm_chat: SSE request done, status=%d", status);
 
 	if (status < 0) {
-		log_err("llm_chat: SSE request failed: %d", status);
+		model_set_last_error(self, "%s", detail ? detail : morph_strerror(status));
+		log_err("llm_chat: SSE request failed: %s", morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
@@ -813,6 +873,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	model_clear_last_error(self);
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_image: no API key configured");
+		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
@@ -926,7 +987,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
 	int status = llm_post_sse_with_retry(self, arena,
-					     "llm_chat_with_image", url,
+					     "llm_chat_with_image", NULL, url,
 					     body, body_len, extra_headers,
 					     timeout, cb, NULL, NULL, user_data,
 					     &ctx, &detail);
@@ -1520,6 +1581,8 @@ static int llm_responses_with_tools_impl(struct model *self,
 		MORPH_RETURN(-EINVAL);
 	if (!self->api_key[0]) {
 		log_err("llm_responses_with_tools: no API key configured");
+		model_clear_last_error(self);
+		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -1560,7 +1623,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 	headers[0] = auth_header;
 	timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
 	status = llm_post_sse_with_retry(self, arena,
-		"llm_responses_with_tools", url, body, strlen(body), headers,
+		"llm_responses_with_tools", NULL, url, body, strlen(body), headers,
 		timeout, thought_cb, stream_cb, llm_responses_sse_event_cb,
 		stream_ud, &ctx, &detail);
 	if (status < 0)
@@ -1596,6 +1659,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 			thought_cb, stream_cb, stream_ud);
 	if (!self || !self->api_key[0]) {
 		log_err("llm_chat_with_tools: no API key configured");
+		model_clear_last_error(self);
+		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -1673,7 +1738,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
 	int status = llm_post_sse_with_retry(self, arena,
-					     "llm_chat_with_tools", url,
+					     "llm_chat_with_tools", NULL, url,
 					     body, strlen(body), extra_headers,
 					     timeout, thought_cb, stream_cb, NULL,
 					     stream_ud, &ctx, &detail);

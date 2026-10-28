@@ -386,8 +386,9 @@ TEST_F(RuntimeFacadeTest, PathPoliciesAndCustomSkillsLoadWithoutExec)
 			(state->skills + "/SKILL.md").c_str(), NULL, 0), 0);
 		EXPECT_EQ(tool_context_authorize_path(tctx, TOOL_PATH_WRITE,
 			(state->trusted + "/config").c_str(), NULL, 0), 0);
-		EXPECT_NE(tool_context_authorize_path(tctx, TOOL_PATH_DELETE,
-			(state->trusted + "/config").c_str(), NULL, 0), 0);
+		/* Temp directories have an independent built-in delete grant. A write
+		 * profile must not populate the configured delete roots. */
+		EXPECT_EQ(tctx->exec_profile_delete_dirs_count, 0);
 		return 0;
 	};
 	Open(&options);

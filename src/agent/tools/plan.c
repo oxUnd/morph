@@ -13,15 +13,25 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include "util/error.h"
+#include "util/sha256.h"
+#include "agent/tool_context.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <pthread.h>
 
 struct plan_tool_context {
+	pthread_mutex_t mutex;
 	struct plan_registry *plans;
+	struct tool_context *tctx;
 	struct model *llm;
 };
 
 static void plan_tool_context_destroy(void *user_data)
 {
-	free(user_data);
+	struct plan_tool_context *ctx = user_data;
+	if (ctx) pthread_mutex_destroy(&ctx->mutex);
+	free(ctx);
 }
 
 static char *format_plan(struct plan *p)
@@ -201,6 +211,11 @@ static cJSON *plan_to_json(struct plan *p)
 	if (!cJSON_AddStringToObject(obj, "id", p->id) ||
 	    !cJSON_AddStringToObject(obj, "name", p->name) ||
 	    !cJSON_AddStringToObject(obj, "goal", p->goal) ||
+	    !cJSON_AddStringToObject(obj, "request", p->request) ||
+	    !cJSON_AddStringToObject(obj, "constraints", p->constraints) ||
+	    !cJSON_AddStringToObject(obj, "acceptance", p->acceptance) ||
+	    !cJSON_AddStringToObject(obj, "rejected", p->rejected) ||
+	    !cJSON_AddStringToObject(obj, "verification", p->verification) ||
 	    !cJSON_AddNumberToObject(obj, "step_count", p->step_count) ||
 	    !cJSON_AddNumberToObject(obj, "active_step", p->active_step) ||
 	    !cJSON_AddBoolToObject(obj, "all_done", plan_all_done(p)))
@@ -212,12 +227,13 @@ static cJSON *plan_to_json(struct plan *p)
 		if (!step)
 			goto fail;
 		if (!cJSON_AddNumberToObject(step, "id", s->id) ||
-		    !cJSON_AddStringToObject(step, "description",
-					     s->description) ||
+		    !cJSON_AddStringToObject(step, "description", s->description) ||
 		    !cJSON_AddStringToObject(step, "status", s->status) ||
+		    !cJSON_AddStringToObject(step, "evidence", s->evidence) ||
+		    !cJSON_AddStringToObject(step, "blocker", s->blocker) ||
+		    !cJSON_AddStringToObject(step, "artifact", s->artifact) ||
 		    !cJSON_AddBoolToObject(step, "active",
-					   i == p->active_step &&
-					   p->active_step >= 0)) {
+					   i == p->active_step && p->active_step >= 0)) {
 			cJSON_Delete(step);
 			goto fail;
 		}
@@ -504,8 +520,7 @@ static void free_step_descs(const char **descs, int count)
 		free((void *)descs[i]);
 }
 
-static int plan_tool_exec(const char *args_json, struct tool_result *result,
-			  void *user_data)
+static int plan_tool_exec_inner(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
 
@@ -773,6 +788,296 @@ static int plan_tool_exec(const char *args_json, struct tool_result *result,
 	return 0;
 }
 
+static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
+			    char resolved[PATH_MAX], char hex[65])
+{
+	struct sha256_ctx hash;
+	unsigned char digest[32];
+	unsigned char buf[BUFSIZ];
+	struct stat st;
+	int fd;
+	int rc;
+	if (!ctx->tctx || !path)
+		MORPH_RETURN(-EINVAL);
+	rc = tool_context_authorize_path(ctx->tctx, TOOL_PATH_READ, path, resolved, PATH_MAX);
+	if (rc != 0)
+		return rc;
+	fd = open(resolved, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+	if (fd < 0)
+		MORPH_RETURN_ERRNO();
+	if (fstat(fd, &st) != 0) {
+		rc = -errno;
+		close(fd);
+		return rc;
+	}
+	if (!S_ISREG(st.st_mode) || st.st_size > 64 * 1024 * 1024) {
+		close(fd);
+		MORPH_RETURN(-EFBIG);
+	}
+	sha256_init(&hash);
+	size_t total = 0;
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof(buf));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0) {
+			rc = -errno;
+			close(fd);
+			return rc;
+		}
+		if (!n)
+			break;
+		total += (size_t)n;
+		if (total > 64u * 1024u * 1024u) {
+			close(fd);
+			MORPH_RETURN(-EFBIG);
+		}
+		sha256_update(&hash, buf, (size_t)n);
+	}
+	close(fd);
+	sha256_final(&hash, digest);
+	for (size_t i = 0; i < sizeof(digest); i++)
+		snprintf(hex + i * 2, 3, "%02x", digest[i]);
+	return 0;
+}
+
+static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args, cJSON *selected)
+{
+	const cJSON *files = cJSON_GetObjectItemCaseSensitive(args, "files");
+	const char *report = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "report"));
+	const char *outcome =
+	    cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "outcome"));
+	cJSON *state;
+	cJSON *inputs;
+	int rc = 0;
+	if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) < 1 ||
+	    cJSON_GetArraySize(files) > 16 || !report || !outcome ||
+	    (strcmp(outcome, "passed") && strcmp(outcome, "failed")))
+		MORPH_RETURN(-EINVAL);
+	state = cJSON_CreateObject();
+	inputs = state ? cJSON_AddArrayToObject(state, "inputs") : NULL;
+	if (!inputs || !cJSON_AddStringToObject(state, "status", "current") ||
+	    !cJSON_AddStringToObject(state, "outcome", outcome) ||
+	    !cJSON_AddStringToObject(state, "report", report)) {
+		cJSON_Delete(state);
+		MORPH_RETURN(-ENOMEM);
+	}
+	/* Include the report itself so replacing its contents invalidates reuse. */
+	for (int i = -1; i < cJSON_GetArraySize(files); i++) {
+		const char *path =
+		    i < 0 ? report : cJSON_GetStringValue(cJSON_GetArrayItem(files, i));
+		char resolved[PATH_MAX];
+		char hex[65];
+		rc = plan_file_digest(ctx, path, resolved, hex);
+		if (rc != 0)
+			break;
+		cJSON *input = cJSON_CreateObject();
+		if (!input) {
+			rc = -ENOMEM;
+			break;
+		}
+		cJSON_AddItemToArray(inputs, input);
+		if (!cJSON_AddStringToObject(input, "path", resolved) ||
+		    !cJSON_AddStringToObject(input, "sha256", hex)) {
+			rc = -ENOMEM;
+			break;
+		}
+	}
+	char *text = rc == 0 ? cJSON_PrintUnformatted(state) : NULL;
+	if (rc == 0 && (!text || strlen(text) >= sizeof(ctx->plans->plans[0].verification)))
+		rc = text ? -E2BIG : -ENOMEM;
+	if (rc == 0) {
+		cJSON *value = cJSON_CreateString(text);
+		if (!value ||
+		    !cJSON_ReplaceItemInObjectCaseSensitive(selected, "verification", value)) {
+			cJSON_Delete(value);
+			rc = -ENOMEM;
+		}
+	}
+	free(text);
+	cJSON_Delete(state);
+	MORPH_RETURN(rc);
+}
+
+void plan_tool_set_context(struct tool_registry *reg, struct tool_context *tctx)
+{
+	struct tool_entry *entry = tool_lookup(reg, "plan");
+	if (entry && entry->user_data)
+		((struct plan_tool_context *)entry->user_data)->tctx = tctx;
+}
+
+static int plan_refresh_reports(struct plan_tool_context *ctx)
+{
+	int changed = 0;
+	if (!ctx || !ctx->tctx)
+		return 0;
+	for (int i = 0; i < ctx->plans->count; i++) {
+		struct plan *p = &ctx->plans->plans[i];
+		cJSON *state = cJSON_Parse(p->verification);
+		const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(state, "status"));
+		if (!status || strcmp(status, "current")) {
+			cJSON_Delete(state);
+			continue;
+		}
+		cJSON *input;
+		int stale = 0;
+		cJSON_ArrayForEach(input, cJSON_GetObjectItem(state, "inputs"))
+		{
+			const char *path = cJSON_GetStringValue(cJSON_GetObjectItem(input, "path"));
+			const char *expected =
+			    cJSON_GetStringValue(cJSON_GetObjectItem(input, "sha256"));
+			char resolved[PATH_MAX];
+			char hex[65];
+			if (!expected || plan_file_digest(ctx, path, resolved, hex) != 0 ||
+			    strcmp(expected, hex)) {
+				stale = 1;
+				break;
+			}
+		}
+		if (stale) {
+			cJSON_ReplaceItemInObjectCaseSensitive(state, "status",
+							       cJSON_CreateString("stale"));
+			char *text = cJSON_PrintUnformatted(state);
+			if (!text) {
+				cJSON_Delete(state);
+				MORPH_RETURN(-ENOMEM);
+			}
+			snprintf(p->verification, sizeof(p->verification), "%s", text);
+			free(text);
+			changed = 1;
+		}
+		cJSON_Delete(state);
+	}
+	return changed ? plan_registry_save(ctx->plans) : 0;
+}
+
+int plan_tool_refresh_reports(struct tool_registry *reg)
+{
+	struct tool_entry *entry = reg ? tool_lookup(reg, "plan") : NULL;
+	struct plan_tool_context *ctx = entry ? entry->user_data : NULL;
+	if (!ctx) return 0;
+	pthread_mutex_lock(&ctx->mutex);
+	int rc = plan_refresh_reports(ctx);
+	pthread_mutex_unlock(&ctx->mutex);
+	return rc;
+}
+
+static int plan_tool_exec_checked(const char *args_json, struct tool_result *result, void *user_data)
+{
+	struct plan_tool_context *ctx = user_data;
+	cJSON *args = cJSON_Parse(args_json);
+	cJSON *before;
+	cJSON *state;
+	const char *command = cJSON_GetStringValue(cJSON_GetObjectItem(args, "command"));
+	int rc;
+	if (!ctx || !ctx->plans || !command) {
+		cJSON_Delete(args);
+		MORPH_RETURN(-EINVAL);
+	}
+	rc = plan_refresh_reports(ctx);
+	if (rc != 0) {
+		cJSON_Delete(args);
+		return rc;
+	}
+	before = plan_registry_json(ctx->plans);
+	if (!before) {
+		cJSON_Delete(args);
+		MORPH_RETURN(-ENOMEM);
+	}
+	if (!strcmp(command, "checkpoint") || !strcmp(command, "verify"))
+		rc = 0;
+	else
+		rc = plan_tool_exec_inner(args_json, result, user_data);
+	state = rc == 0 ? plan_registry_json(ctx->plans) : NULL;
+	if (rc == 0 && !state)
+		rc = -ENOMEM;
+	if (rc == 0 && (!strcmp(command, "checkpoint") || !strcmp(command, "create") ||
+			!strcmp(command, "update") || !strcmp(command, "verify"))) {
+		const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(args, "plan_id"));
+		const char *name = cJSON_GetStringValue(
+		    cJSON_GetObjectItem(args, !strcmp(command, "create") ? "name" : "plan"));
+		cJSON *selected = NULL;
+		cJSON *entry;
+		cJSON_ArrayForEach(entry, state)
+		{
+			const char *entry_id =
+			    cJSON_GetStringValue(cJSON_GetObjectItem(entry, "id"));
+			const char *entry_name =
+			    cJSON_GetStringValue(cJSON_GetObjectItem(entry, "name"));
+			if ((id && entry_id && !strcmp(id, entry_id)) ||
+			    (!id && name && entry_name && !strcmp(name, entry_name))) {
+				if (!selected || !strcmp(command, "create"))
+					selected = entry;
+			}
+		}
+		if (!selected)
+			rc = -ENOENT;
+		if (rc == 0 && !strcmp(command, "verify"))
+			rc = plan_capture_report(ctx, args, selected);
+		const char *fields[] = {"request", "constraints", "acceptance", "rejected"};
+		for (size_t i = 0; selected && i < sizeof(fields) / sizeof(fields[0]); i++) {
+			cJSON *value = cJSON_GetObjectItemCaseSensitive(args, fields[i]);
+			if (!value)
+				continue;
+			cJSON *copy = cJSON_Duplicate(value, 1);
+			if (!copy ||
+			    !cJSON_ReplaceItemInObjectCaseSensitive(selected, fields[i], copy)) {
+				cJSON_Delete(copy);
+				rc = -ENOMEM;
+				break;
+			}
+		}
+		cJSON *step_id = cJSON_GetObjectItem(args, "step_id");
+		if (selected && cJSON_IsNumber(step_id)) {
+			cJSON *step = cJSON_GetArrayItem(cJSON_GetObjectItem(selected, "steps"),
+							 step_id->valueint - 1);
+			const char *step_fields[] = {"evidence", "blocker", "artifact"};
+			if (!step)
+				rc = -ENOENT;
+			for (size_t i = 0; step && i < sizeof(step_fields) / sizeof(step_fields[0]);
+			     i++) {
+				cJSON *value =
+				    cJSON_GetObjectItemCaseSensitive(args, step_fields[i]);
+				if (!value)
+					continue;
+				cJSON *copy = cJSON_Duplicate(value, 1);
+				if (!copy || !cJSON_ReplaceItemInObjectCaseSensitive(
+						 step, step_fields[i], copy)) {
+					cJSON_Delete(copy);
+					rc = -ENOMEM;
+					break;
+				}
+			}
+		}
+		if (rc == 0)
+			rc = plan_registry_restore(ctx->plans, state);
+		if (rc == 0)
+			rc = attach_plan_state(
+			    result, ctx->plans, command,
+			    cJSON_GetStringValue(cJSON_GetObjectItem(selected, "id")), name);
+		if (rc == 0)
+			rc = plan_registry_save(ctx->plans);
+	}
+	if (rc != 0) {
+		(void)plan_registry_restore(ctx->plans, before);
+		(void)tool_result_error(result, "plan_checkpoint_failed", morph_strerror(rc));
+	}
+	cJSON_Delete(state);
+	cJSON_Delete(before);
+	cJSON_Delete(args);
+	MORPH_RETURN(rc);
+}
+
+static int plan_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
+{
+	struct plan_tool_context *ctx = user_data;
+	if (!ctx) MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock(&ctx->mutex);
+	int rc = plan_tool_exec_checked(args_json, result, user_data);
+	pthread_mutex_unlock(&ctx->mutex);
+	return rc;
+}
+
 int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		   struct model *llm)
 {
@@ -782,27 +1087,64 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	struct plan_tool_context *ctx = malloc(sizeof(*ctx));
 	if (!ctx)
 		return -ENOMEM;
+	int mutex_rc = pthread_mutex_init(&ctx->mutex, NULL);
+	if (mutex_rc != 0) { free(ctx); MORPH_RETURN(-mutex_rc); }
+	ctx->tctx = NULL;
 	ctx->plans = plans;
 	ctx->llm = llm;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "plan", .description = "Create and manage multi-step plans. "
-		"Commands: create (name, goal, steps), "
-		"update (plan_id or plan, step_id, status), "
-		"get (plan_id or plan), list. "
-		"If 'goal' is provided without 'steps', the plan is "
-		"auto-decomposed into steps using AI.", .input_schema = "{\"type\":\"object\",\"properties\":{"
-		"\"command\":{\"type\":\"string\",\"description\":\"create|update|get|list\","
-		"\"enum\":[\"create\",\"update\",\"get\",\"list\"]},"
-		"\"name\":{\"type\":\"string\",\"description\":\"Plan name (for create)\"},"
-		"\"goal\":{\"type\":\"string\",\"description\":\"Plan goal/objective. If steps not provided, auto-decomposed into steps\"},"
-		"\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
-		"\"description\":\"Array of step descriptions (optional if goal provided)\"},"
-		"\"plan_id\":{\"type\":\"string\",\"description\":\"Stable plan id to act on (preferred for update/get)\"},"
-		"\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for update/get)\"},"
-		"\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
-		"\"status\":{\"type\":\"string\",\"description\":\"New status (for update): pending, in_progress, completed, failed, skipped\"}"
-		"},\"required\":[\"command\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = plan_tool_exec, .user_data = ctx, .user_data_destroy = plan_tool_context_destroy });
+	int rc = tool_register(
+	    reg,
+	    &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "plan",
+		.description = "Create and manage multi-step plans. "
+			       "Plans persist across compaction and resumed sessions. "
+			       "Record exact request, constraints, acceptance criteria and "
+			       "rejected approaches. "
+			       "Before finishing, verify acceptance and record evidence/artifacts; "
+			       "do not claim unverified completion. "
+			       "Commands: verify (plan_id or plan, files, report, outcome) records "
+			       "a report against file hashes. "
+			       "Reuse current reports for unchanged files; stale reports require "
+			       "rechecking. Checkpoint (plan_id or plan, request, constraints, "
+			       "acceptance, rejected), create (name, goal, steps), "
+			       "update (plan_id or plan, step_id, status), "
+			       "get (plan_id or plan), list. "
+			       "If 'goal' is provided without 'steps', the plan is "
+			       "auto-decomposed into steps using AI.",
+		.input_schema =
+		    "{\"type\":\"object\",\"properties\":{"
+		    "\"command\":{\"type\":\"string\",\"description\":\"create|update|get|list\","
+		    "\"enum\":[\"create\",\"update\",\"get\",\"list\",\"checkpoint\",\"verify\"]},"
+		    "\"name\":{\"type\":\"string\",\"description\":\"Plan name (for create)\"},"
+		    "\"goal\":{\"type\":\"string\",\"description\":\"Plan goal/objective. If steps "
+		    "not provided, auto-decomposed into steps\"},"
+		    "\"steps\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},"
+		    "\"description\":\"Array of step descriptions (optional if goal provided)\"},"
+		    "\"plan_id\":{\"type\":\"string\",\"description\":\"Stable plan id to act on "
+		    "(preferred for update/get)\"},"
+		    "\"plan\":{\"type\":\"string\",\"description\":\"Plan name to act on (for "
+		    "update/get)\"},"
+		    "\"step_id\":{\"type\":\"integer\",\"description\":\"Step ID (for update)\"},"
+		    "\"files\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},"
+		    "\"report\":{\"type\":\"string\"},\"outcome\":{\"type\":\"string\",\"enum\":["
+		    "\"passed\",\"failed\"]},"
+		    "\"request\":{\"type\":\"string\"},"
+		    "\"constraints\":{\"type\":\"string\"},"
+		    "\"acceptance\":{\"type\":\"string\"},"
+		    "\"rejected\":{\"type\":\"string\"},"
+		    "\"evidence\":{\"type\":\"string\"},"
+		    "\"blocker\":{\"type\":\"string\"},"
+		    "\"artifact\":{\"type\":\"string\"},"
+		    "\"status\":{\"type\":\"string\",\"description\":\"New status (for update): "
+		    "pending, in_progress, completed, failed, skipped\"}"
+		    "},\"required\":[\"command\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = plan_tool_exec,
+		.user_data = ctx,
+		.user_data_destroy = plan_tool_context_destroy});
 	if (rc != 0)
-		free(ctx);
+		plan_tool_context_destroy(ctx);
 	return rc;
 }

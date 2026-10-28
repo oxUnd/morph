@@ -7,6 +7,7 @@ extern "C" {
 
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 struct sandbox_config;
 
@@ -47,7 +48,15 @@ struct process_spawn_options {
 	struct sandbox_config *sandbox;
 };
 
+struct process_cursor {
+	size_t stdout_offset;
+	size_t stderr_offset;
+};
+
 struct process_snapshot {
+	struct process_cursor next_cursor;
+	char stdout_path[PATH_MAX];
+	char stderr_path[PATH_MAX];
 	enum process_state state;
 	int exit_code;
 	int signal_number;
@@ -69,6 +78,10 @@ int process_spawn(struct process_manager *manager,
 		  const struct process_spawn_options *options,
 		  char session_id[PROCESS_SESSION_ID_MAX],
 		  struct process_snapshot *snapshot);
+int process_session_poll(struct process_manager *manager, const char *session_id,
+			 const struct process_cursor *cursor, uint64_t wait_ms,
+			 int (*cancelled)(void *), void *cancel_data,
+			 struct process_snapshot *snapshot);
 int process_session_snapshot(struct process_manager *manager,
 			     const char *session_id,
 			     struct process_snapshot *snapshot);

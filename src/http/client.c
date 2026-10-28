@@ -531,12 +531,41 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 	return total;
 }
 
+static size_t sse_header_retry_after(char *ptr, size_t size, size_t count, void *opaque)
+{
+	struct http_sse_metadata *metadata = opaque;
+	size_t len = size * count;
+	if (len >= 5 && !strncmp(ptr, "HTTP/", 5))
+		metadata->retry_after_seconds = 0;
+	if (len > 12 && !strncasecmp(ptr, "Retry-After:", 12)) {
+		char value[128];
+		size_t n = len - 12;
+		char *end;
+		long seconds;
+		if (n >= sizeof(value))
+			n = sizeof(value) - 1;
+		memcpy(value, ptr + 12, n);
+		value[n] = '\0';
+		seconds = strtol(value, &end, 10);
+		if (end == value) {
+			time_t when = curl_getdate(value, NULL);
+			seconds = when > time(NULL) ? (long)(when - time(NULL)) : 0;
+		}
+		if (seconds > 0)
+			metadata->retry_after_seconds = seconds > 86400 ? 86400 : seconds;
+	}
+	return len;
+}
+
 static int do_sse_request(const char *url, const char *body, size_t body_len,
 			  const char *content_type,
 			  const char **extra_headers, int extra_header_count,
 			  long idle_timeout,
-			  http_callback cb, void *user_data)
+			  http_callback cb, void *user_data, struct http_sse_metadata *metadata)
 {
+	struct http_sse_metadata local_metadata = {0};
+	if (!metadata) metadata = &local_metadata;
+	metadata->retry_after_seconds = 0;
 	struct curl_slist *headers = NULL;
 	char ct[256];
 	struct sse_write_data swd;
@@ -576,6 +605,9 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	swd.callback_rc = 0;
 
 	curl_easy_setopt(curl, CURLOPT_URL, url);
+	metadata->retry_after_seconds = 0;
+	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, sse_header_retry_after);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, metadata);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &swd);
 	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -628,7 +660,7 @@ int http_post_sse(const char *url, const char *body, size_t body_len,
 		   const char *content_type, http_callback cb, void *user_data)
 {
 	return do_sse_request(url, body, body_len, content_type, NULL, 0,
-			      HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, cb, user_data);
+			      HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, cb, user_data, NULL);
 }
 
 int http_post_sse_ex(const char *url, const char *body, size_t body_len,
@@ -637,7 +669,7 @@ int http_post_sse_ex(const char *url, const char *body, size_t body_len,
 {
 	return do_sse_request(url, body, body_len, content_type, extra_headers,
 			      extra_header_count, HTTP_SSE_DEFAULT_TIMEOUT_SECONDS,
-			      cb, user_data);
+			      cb, user_data, NULL);
 }
 
 int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
@@ -649,7 +681,16 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 		HTTP_SSE_DEFAULT_TIMEOUT_SECONDS;
 
 	return do_sse_request(url, body, body_len, content_type, extra_headers,
-			      extra_header_count, idle_timeout, cb, user_data);
+			      extra_header_count, idle_timeout, cb, user_data, NULL);
+}
+
+int http_post_sse_ex_timeout_metadata(const char *url, const char *body, size_t body_len,
+	const char *content_type, const char **extra_headers, int extra_header_count,
+	long timeout_seconds, http_callback cb, void *user_data, struct http_sse_metadata *metadata)
+{
+	long idle_timeout = timeout_seconds > 0 ? timeout_seconds : HTTP_SSE_DEFAULT_TIMEOUT_SECONDS;
+	return do_sse_request(url, body, body_len, content_type, extra_headers,
+		extra_header_count, idle_timeout, cb, user_data, metadata);
 }
 
 void http_response_free(struct http_response *resp)

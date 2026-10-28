@@ -1,6 +1,8 @@
 #include "react.h"
 #include "guardrail.h"
 #include "tokenizer.h"
+#include "plan.h"
+#include "agent/tools/plan.h"
 #include "compress.h"
 #include "history.h"
 #include "system_prompt.h"
@@ -1046,17 +1048,18 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 		"condition; preserve any explicit request to continue unfinished work.";
 	const char *msgs[] = { text };
 	morph_buf_t b;
-	int previous_max_tokens = llm->max_tokens;
+	struct model_chat_options options = {0};
+	options.usage_phase = "compaction";
+	options.max_tokens = llm->max_tokens;
 	int rc = morph_buf_init(&b, 8192);
 	if (rc != 0)
 		return rc;
 	if (ctx->compress.compaction_summary_max_tokens > 0 &&
 	    (llm->max_tokens <= 0 ||
 	     llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
-		llm->max_tokens = ctx->compress.compaction_summary_max_tokens;
-	rc = llm->chat(llm, ctx->iteration_arena, sys, msgs, 1, NULL,
+		options.max_tokens = ctx->compress.compaction_summary_max_tokens;
+	rc = llm->chat(llm, ctx->iteration_arena, sys, msgs, 1, &options,
 		       morph_buf_append_cb, &b);
-	llm->max_tokens = previous_max_tokens;
 	if (rc < 0) {
 		morph_buf_cleanup(&b);
 		return rc;
@@ -1230,6 +1233,9 @@ void react_reset(struct react_context *ctx)
 	ctx->empty_round_count = 0;
 	ctx->hook_revision_count = 0;
 	ctx->in_turn_compaction_count = 0;
+	ctx->force_compaction = 0;
+	ctx->context_recovery_count = 0;
+	ctx->ineffective_compactions = 0;
 	ctx->incomplete_final_retry_count = 0;
 	ctx->cancelled = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
@@ -1339,6 +1345,15 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
+	if (react_has_active_tool(ctx, "plan")) {
+		rc = morph_buf_puts(&buf,
+			"For long multi-step tasks, persist requirements, acceptance criteria, decisions "
+			"and progress with plan. Record evidence and artifacts; keep unmet requirements "
+			"visible after compaction. Reuse reports only for unchanged inputs.\n");
+		if (rc != 0)
+			return NULL;
+	}
+
 	if (ctx->skills && ctx->skills->count > 0 &&
 	    react_has_active_tool(ctx, "activate_skill")) {
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
@@ -1361,6 +1376,21 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		}
 	}
 
+	rc = morph_buf_printf(&buf, "Runtime limits:\n- Maximum %d tool-calling iterations.\n\n",
+			      ctx->max_iterations);
+	if (rc != 0)
+		return NULL;
+
+	return buf.data;
+}
+
+static char *build_dynamic_context(struct react_context *ctx, struct arena *arena)
+{
+	morph_buf_t buf;
+	int rc = morph_buf_init_arena(&buf, arena, 1024);
+	if (rc != 0)
+		return NULL;
+
 	if (ctx->skills) {
 		char *active = NULL;
 
@@ -1375,12 +1405,44 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		}
 	}
 
-	rc = morph_buf_printf(&buf,
-		"Runtime limits:\n- Maximum %d tool-calling iterations.\n\n",
-		ctx->max_iterations);
-	if (rc != 0)
-		return NULL;
-
+	if (ctx->plans && ctx->plans->count) {
+		if (plan_tool_refresh_reports(ctx->tools) != 0)
+			return NULL;
+		cJSON *state = plan_registry_json(ctx->plans);
+		cJSON *plan;
+		cJSON_ArrayForEach(plan, state)
+		{
+			cJSON *verification = cJSON_GetObjectItem(plan, "verification");
+			cJSON *report = cJSON_IsString(verification)
+					    ? cJSON_Parse(verification->valuestring)
+					    : NULL;
+			if (report) {
+				cJSON_DeleteItemFromObjectCaseSensitive(report, "inputs");
+				cJSON_ReplaceItemInObjectCaseSensitive(plan, "verification",
+								       report);
+			}
+			cJSON *step;
+			cJSON_ArrayForEach(step, cJSON_GetObjectItem(plan, "steps"))
+			{
+				const char *evidence =
+				    cJSON_GetStringValue(cJSON_GetObjectItem(step, "evidence"));
+				cJSON_ReplaceItemInObjectCaseSensitive(
+				    step, "evidence", cJSON_CreateBool(evidence && evidence[0]));
+			}
+		}
+		char *text = state ? cJSON_PrintUnformatted(state) : NULL;
+		cJSON_Delete(state);
+		if (!text)
+			return NULL;
+		rc = morph_buf_printf(
+		    &buf,
+		    "\nDurable task checkpoint (reported status is not verification):\n%s\n"
+		    "Review acceptance criteria and unresolved blockers before a final answer.\n",
+		    text);
+		free(text);
+		if (rc != 0)
+			return NULL;
+	}
 	if (ctx->memory_context && ctx->memory_context[0]) {
 		rc = morph_buf_printf(&buf, "\n%s\n", ctx->memory_context);
 		if (rc != 0)
@@ -1726,6 +1788,15 @@ static int collect_active_tools(struct tool_registry *reg, struct arena *arena,
 			out[idx].description = morph_buf_cstr(&description);
 			idx++;
 		}
+	}
+	for (int i = 1; i < idx; i++) {
+		struct tool_desc value = out[i];
+		int j = i;
+		while (j > 0 && strcmp(out[j - 1].name, value.name) > 0) {
+			out[j] = out[j - 1];
+			j--;
+		}
+		out[j] = value;
 	}
 	return 0;
 }
@@ -2217,6 +2288,31 @@ static int react_prepare_request_messages(struct react_context *ctx,
 		*system_prompt = morph_buf_cstr(&combined);
 	}
 
+	char *dynamic = build_dynamic_context(ctx, arena);
+	if (!dynamic)
+		MORPH_RETURN(-ENOMEM);
+	if (dynamic[0] && (llm->chat_with_tools_stream || llm->chat_with_tools)) {
+		struct chat_message *request;
+		if (*msg_count < 0 || *msg_count == INT_MAX)
+			MORPH_RETURN(-EOVERFLOW);
+		request = arena_alloc(arena, ((size_t)*msg_count + 1) * sizeof(*request));
+		if (!request)
+			MORPH_RETURN(-ENOMEM);
+		if (*msg_count)
+			memcpy(request, *messages, (size_t)*msg_count * sizeof(*request));
+		request[*msg_count].role = "system";
+		request[*msg_count].content = dynamic;
+		*messages = request;
+		(*msg_count)++;
+	} else if (dynamic[0]) {
+		morph_buf_t combined;
+		int rc = morph_buf_init_arena(&combined, arena, 1024);
+		if (rc == 0)
+			rc = morph_buf_printf(&combined, "%s\n%s", *system_prompt, dynamic);
+		if (rc != 0)
+			return rc;
+		*system_prompt = combined.data;
+	}
 	return 0;
 }
 
@@ -2340,8 +2436,9 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	if (before_tokens < 0)
 		return before_tokens;
 	trigger_tokens = react_compaction_trigger_tokens(ctx, llm);
-	if (before_tokens < trigger_tokens)
+	if (before_tokens < trigger_tokens && !ctx->force_compaction)
 		return 0;
+	ctx->force_compaction = 0;
 	ctx->in_turn_compaction_count++;
 	snprintf(trigger_kind, sizeof(trigger_kind), "in_turn_%d",
 		ctx->in_turn_compaction_count);
@@ -2395,6 +2492,16 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 			log_err("react: active context remains over budget after "
 				"compaction (%d >= %d tokens)", after_tokens,
 				trigger_tokens);
+		}
+	}
+	if (rc == 0 && compacted) {
+		ctx->ineffective_compactions = after_tokens > before_tokens - before_tokens / 20
+						   ? ctx->ineffective_compactions + 1
+						   : 0;
+		if (ctx->ineffective_compactions >= 3) {
+			log_err("compaction thrashing: three checkpoints reduced context by less "
+				"than 5%%");
+			rc = MORPH_ERR_CONTEXT_LIMIT;
 		}
 	}
 	if (rc == 0 && compacted)
@@ -2546,6 +2653,22 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		&messages, &msg_count);
 	if (status != 0)
 		return status;
+
+	int estimate = 0;
+	if (model_estimate_input_tokens(llm, system_prompt, messages, msg_count, active_tools,
+					active_tool_count, react_count_input_text, ctx->tokenizer,
+					&estimate) == 0) {
+		cJSON *metrics = cJSON_CreateObject();
+		if (metrics) {
+			cJSON_AddNumberToObject(metrics, "active_input_tokens_estimate", estimate);
+			cJSON_AddNumberToObject(metrics, "tool_count", active_tool_count);
+			cJSON_AddNumberToObject(metrics, "context_recoveries",
+						ctx->context_recovery_count);
+			(void)react_emit_event(ctx, MORPH_EVENT_REACT, "react.context.usage",
+					       "info", "model request context", metrics);
+			cJSON_Delete(metrics);
+		}
+	}
 
 	/* One replaceable, redacted snapshot per session. Inspection failure must
 	 * not prevent an otherwise valid model request. */
@@ -3992,6 +4115,14 @@ int react_run(struct react_context *ctx, const char *user_input,
 			}
 		}
 
+		if (status == MORPH_ERR_CONTEXT_LIMIT && ctx->history_enabled &&
+		    ctx->compress.in_turn_compaction && !llm->error_info.output_started &&
+		    ctx->context_recovery_count < 2) {
+			ctx->context_recovery_count++;
+			ctx->force_compaction = 1;
+			chat_response_free(&response);
+			continue;
+		}
 		if (react_handle_llm_error(ctx, &response, status, cb, user_data)) {
 			chat_response_free(&response);
 			break;

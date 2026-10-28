@@ -535,6 +535,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		plan_registry_init(profile->plans);
 		rc = plan_tool_init(profile->tools, profile->plans,
 				    models->text);
+		if (rc == 0 && profile->tool_context)
+			plan_tool_set_context(profile->tools, *profile->tool_context);
 		if (rc < 0)
 			log_warn("failed to register plan tool: %s",
 				 morph_strerror(rc));

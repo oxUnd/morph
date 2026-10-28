@@ -278,7 +278,7 @@ TEST_F(HistoryInspectionTest, SourceRecordingFailureRollsBackTheEntireCompaction
 	react_context_destroy(react);
 }
 
-TEST_F(HistoryInspectionTest, FailedSummarizerFallbackDoesNotClaimSemanticCoverage)
+TEST_F(HistoryInspectionTest, FailedSummarizerPreservesActiveHistory)
 {
 	Add("user_message", "old details unavailable in fallback");
 	struct react_context *react = react_context_create(nullptr, nullptr, nullptr, nullptr);
@@ -290,12 +290,74 @@ TEST_F(HistoryInspectionTest, FailedSummarizerFallbackDoesNotClaimSemanticCovera
 	react->compress.compress_target_ratio = .5;
 	react->compress.summarize = [](const char *, void *, char **) { return -EIO; };
 	ASSERT_EQ(agent_history_reload(react), 0);
-	ASSERT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), 1);
+	ASSERT_EQ(agent_history_compact_with_trigger(react, 1, "in_turn_1"), -EIO);
 	react_context_destroy(react);
 	cJSON *report = nullptr;
 	ASSERT_EQ(runtime_session_history_inspect(instance, &report), 0);
 	cJSON *entries = cJSON_GetObjectItem(report, "entries");
-	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "OUT");
-	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 1), "status"), "IN");
+	EXPECT_EQ(cJSON_GetArraySize(entries), 1);
+	EXPECT_EQ(Field(cJSON_GetArrayItem(entries, 0), "status"), "IN");
 	cJSON_Delete(report);
+}
+
+TEST_F(HistoryInspectionTest, TransientSummaryFailureRetriesBeforeCommit)
+{
+	Add("user_message", "keep the exact objective");
+	auto *react = react_context_create(nullptr, nullptr, nullptr, nullptr);
+	ASSERT_NE(react, nullptr);
+	int attempts = 0;
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = session.id;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.summarize_user_data = &attempts;
+	react->compress.summarize = [](const char *, void *user, char **out) -> int {
+		if (++*static_cast<int *>(user) == 1)
+			return MORPH_ERR_NETWORK;
+		*out = strdup("Objective and verification checkpoint");
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	EXPECT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_EQ(attempts, 2);
+	EXPECT_EQ(model_history_compaction_count(&db, session.id), 1);
+	react_context_destroy(react);
+}
+
+TEST_F(HistoryInspectionTest, OverflowPrunesOnlyCandidateToolGroupsAndKeepsRequirements)
+{
+	Add("user_message", "EXACT_REQUIREMENT");
+	auto *react = react_context_create(nullptr, nullptr, nullptr, nullptr);
+	ASSERT_NE(react, nullptr);
+	int attempts = 0;
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = session.id;
+	ASSERT_EQ(react_set_turn_id(react, "overflow-test"), 0);
+	struct tool_call call{};
+	strcpy(call.id, "provider-old");
+	strcpy(call.tool_call_id, "old");
+	strcpy(call.name, "exec");
+	call.arguments = const_cast<char *>("{}");
+	ASSERT_EQ(agent_history_record_tool_calls(react, "gather", nullptr, &call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, "old", "provider-old", "exec",
+						   "OLD_BULKY_TOOL_RESULT", 0),
+		  0);
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.summarize_user_data = &attempts;
+	react->compress.summarize = [](const char *input, void *user, char **out) -> int {
+		EXPECT_NE(strstr(input, "EXACT_REQUIREMENT"), nullptr);
+		if (++*static_cast<int *>(user) == 1)
+			return MORPH_ERR_CONTEXT_LIMIT;
+		EXPECT_EQ(strstr(input, "OLD_BULKY_TOOL_RESULT"), nullptr);
+		*out = strdup("Continue the exact requirement");
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_EQ(attempts, 2);
+	EXPECT_GE(model_history_count(&db, session.id, 0), 3);
+	react_context_destroy(react);
 }

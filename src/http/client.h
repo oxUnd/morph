@@ -63,6 +63,7 @@ void http_set_cancel_token(struct morph_cancel_token *token);
 void http_cancel_from_signal(void);
 void http_clear_signal_cancel(void);
 int http_wait_cancelable(unsigned int milliseconds);
+
 int http_get(const char *url, struct http_response *resp);
 int http_get_ex(const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp);
@@ -89,6 +90,12 @@ int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
 			     const char *content_type, const char **extra_headers,
 			     int extra_header_count, long timeout_seconds,
 			     http_callback cb, void *user_data);
+struct http_sse_metadata {
+	long retry_after_seconds;
+};
+int http_post_sse_ex_timeout_metadata(const char *url, const char *body, size_t body_len,
+	const char *content_type, const char **extra_headers, int extra_header_count,
+	long timeout_seconds, http_callback cb, void *user_data, struct http_sse_metadata *metadata);
 void http_response_free(struct http_response *resp);
 
 /* ---- HTTP Session (persistent curl handle) ---- */

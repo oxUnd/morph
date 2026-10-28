@@ -1,4 +1,5 @@
 #include "runtime/context_owner.h"
+#include "util/log.h"
 
 #include "runtime/bootstrap.h"
 #include "runtime/turn_scope.h"
@@ -88,6 +89,8 @@ void runtime_context_select_plan_session(struct runtime_context *ctx,
 				    RUNTIME_PLAN_SESSION_CACHE_MAX,
 				    &ctx->active_plan_session_id,
 				    &ctx->plans, session_id);
+	if (session_id > 0 && plan_registry_bind(&ctx->plans, &ctx->database, session_id) != 0)
+		log_warn("cannot restore session plan checkpoint");
 }
 
 void runtime_context_forget_plan_session(struct runtime_context *ctx,

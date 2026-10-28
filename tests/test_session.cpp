@@ -1147,7 +1147,8 @@ TEST_F(SessionTest, CompactionFailureRollsBackWithoutChangingHistory) {
 	model_history_free_list(items);
 }
 
-TEST_F(SessionTest, AutomaticCompactionFailureFallsBackOnlyAtHardLimit) {
+TEST_F(SessionTest, AutomaticCompactionFailurePreservesHistoryAtEveryBudget)
+{
 	struct session s;
 	struct react_context react = {};
 	struct model_history_insert item = {};
@@ -1175,7 +1176,7 @@ TEST_F(SessionTest, AutomaticCompactionFailureFallsBackOnlyAtHardLimit) {
 	react.compress.summarize = history_summary_failure;
 	react.history_items = model_history_list(&db, s.id, 1, &count);
 	ASSERT_NE(react.history_items, nullptr);
-	EXPECT_EQ(agent_history_compact(&react, 0), 0);
+	EXPECT_EQ(agent_history_compact(&react, 0), -EIO);
 	EXPECT_EQ(model_history_count(&db, s.id, 1), 1);
 	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 
@@ -1184,8 +1185,8 @@ TEST_F(SessionTest, AutomaticCompactionFailureFallsBackOnlyAtHardLimit) {
 		nullptr, nullptr, nullptr), SQLITE_OK);
 	model_history_free_list(react.history_items);
 	react.history_items = model_history_list(&db, s.id, 1, &count);
-	ASSERT_EQ(agent_history_compact(&react, 0), 1);
-	EXPECT_EQ(model_history_compaction_count(&db, s.id), 1);
+	ASSERT_EQ(agent_history_compact(&react, 0), -EIO);
+	EXPECT_EQ(model_history_compaction_count(&db, s.id), 0);
 	bool found_fallback = false;
 	for (struct model_history_item *cur = react.history_items; cur;
 	     cur = cur->next) {
@@ -1195,7 +1196,7 @@ TEST_F(SessionTest, AutomaticCompactionFailureFallsBackOnlyAtHardLimit) {
 				"could not be summarized"), nullptr);
 		}
 	}
-	EXPECT_TRUE(found_fallback);
+	EXPECT_FALSE(found_fallback);
 	model_history_free_list(react.history_items);
 }
 

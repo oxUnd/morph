@@ -59,9 +59,13 @@ static cJSON *history_entry(const struct model_history_item *item,
 		reason = "Internal memory-maintenance status; excluded from model input.";
 	} else if (item->active && agent_history_item_replayable(item)) {
 		status = item->truncated ? "IN / TRIMMED" : "IN";
-		reason = item->truncated ?
-			"Active replay item. Output was shortened before persistence; the original is unavailable." :
-			"Included in the current replay window. New input may trigger repair or compaction.";
+		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+		int has_original = cJSON_IsString(cJSON_GetObjectItem(payload, "original_content"));
+		reason = !item->truncated ?
+			"Included in the current replay window. New input may trigger repair or compaction." :
+			has_original ? "Model output was shortened; a redacted original is retained in metadata." :
+			"Active replay item. Output was shortened before persistence; the original is unavailable.";
+		cJSON_Delete(payload);
 	} else if (!item->active && morph_strmap_contains(covered, key)) {
 		status = "VIA SUMMARY";
 		reason = "Used to produce a summary represented in the active summary chain; original not sent.";

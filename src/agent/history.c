@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include "http/client.h"
 
 #define HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS 8000
 
@@ -1016,6 +1018,146 @@ static char *history_truncate_result(struct tokenizer *tokenizer,
 	return morph_buf_detach(&buf);
 }
 
+/* Only payload fields are expendable; execution control fields stay intact. */
+static cJSON *history_largest_payload(cJSON *node, size_t *size)
+{
+	cJSON *best = NULL;
+	cJSON *child;
+
+	cJSON_ArrayForEach(child, node)
+	{
+		const char *key = child->string;
+		if (key &&
+		    (!strcmp(key, "ok") || !strcmp(key, "error") || !strcmp(key, "exit_code") ||
+		     !strcmp(key, "status") || !strcmp(key, "session_id") ||
+		     !strcmp(key, "artifacts") || !strcmp(key, "ui")))
+			continue;
+		if (cJSON_IsString(child) && strlen(child->valuestring) > *size) {
+			*size = strlen(child->valuestring);
+			best = child;
+		} else if (cJSON_IsArray(child) && cJSON_GetArraySize(child) > 0) {
+			char *json = cJSON_PrintUnformatted(child);
+			if (json && strlen(json) > *size) {
+				*size = strlen(json);
+				best = child;
+			}
+			free(json);
+		} else if (cJSON_IsObject(child)) {
+			cJSON *nested = history_largest_payload(child, size);
+			if (nested)
+				best = nested;
+		}
+	}
+	return best;
+}
+
+static char *history_prepare_json(struct tokenizer *tokenizer, cJSON *root, int budget,
+				  int *truncated)
+{
+	cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
+	cJSON *ok = cJSON_GetObjectItemCaseSensitive(root, "ok");
+	cJSON *child;
+	cJSON *next;
+
+	if (!(cJSON_IsBool(ok) && cJSON_IsObject(data))) {
+		char *json = cJSON_PrintUnformatted(root);
+		cJSON *wrapper;
+		char *result;
+
+		if (!json || tokenizer_count(tokenizer, json) <= budget)
+			return json;
+		wrapper = cJSON_CreateObject();
+		if (!wrapper) {
+			free(json);
+			return NULL;
+		}
+		if (!cJSON_AddBoolToObject(wrapper, "history_truncated", 1) ||
+		    !cJSON_AddStringToObject(wrapper, "preview", json)) {
+			free(json);
+			cJSON_Delete(wrapper);
+			return NULL;
+		}
+		free(json);
+		for (int preview_budget = budget; preview_budget > 0; preview_budget /= 2) {
+			int ignored;
+			cJSON *preview = cJSON_GetObjectItemCaseSensitive(wrapper, "preview");
+			char *snippet = history_truncate_result(tokenizer, preview->valuestring,
+								preview_budget, &ignored);
+			if (!snippet)
+				break;
+			if (!cJSON_SetValuestring(preview, snippet)) {
+				free(snippet);
+				break;
+			}
+			free(snippet);
+			result = cJSON_PrintUnformatted(wrapper);
+			if (result && tokenizer_count(tokenizer, result) <= budget) {
+				*truncated = 1;
+				cJSON_Delete(wrapper);
+				return result;
+			}
+			free(result);
+		}
+		result = NULL;
+		cJSON_Delete(wrapper);
+		return result;
+	}
+	if (cJSON_IsBool(ok) && cJSON_IsObject(data)) {
+		for (child = root->child; child; child = next) {
+			cJSON *original;
+
+			next = child->next;
+			if (child == data || !child->string)
+				continue;
+			original = cJSON_GetObjectItemCaseSensitive(data, child->string);
+			if (original && cJSON_Compare(original, child, 1))
+				cJSON_DeleteItemFromObjectCaseSensitive(root, child->string);
+		}
+	}
+	for (;;) {
+		char *json = cJSON_PrintUnformatted(root);
+		cJSON *largest;
+		size_t size = 0;
+		char *snippet;
+		int ignored;
+		int total_tokens;
+
+		if (!json)
+			return NULL;
+		if (*truncated && cJSON_IsObject(root) &&
+		    !cJSON_GetObjectItemCaseSensitive(root, "history_truncated")) {
+			free(json);
+			if (!cJSON_AddBoolToObject(root, "history_truncated", 1))
+				return NULL;
+			continue;
+		}
+		total_tokens = tokenizer_count(tokenizer, json);
+		if (total_tokens <= budget)
+			return json;
+		free(json);
+		largest = history_largest_payload(root, &size);
+		if (!largest || size < 16)
+			return NULL;
+		if (cJSON_IsArray(largest)) {
+			cJSON_DeleteItemFromArray(largest, cJSON_GetArraySize(largest) - 1);
+			*truncated = 1;
+			continue;
+		}
+		int text_tokens = tokenizer_count(tokenizer, largest->valuestring);
+		int text_budget = text_tokens - (total_tokens - budget) - 16;
+		snippet = history_truncate_result(tokenizer, largest->valuestring,
+						  text_budget > 0 ? text_budget : 1, &ignored);
+		if (!snippet)
+			return NULL;
+		if (!cJSON_SetValuestring(largest, snippet)) {
+			free(snippet);
+			return NULL;
+		}
+		free(snippet);
+		*truncated = 1;
+	}
+}
+
 int agent_history_prepare_tool_content(struct react_context *ctx,
 	const char *content, char **prepared, int *truncated)
 {
@@ -1035,11 +1177,30 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 	free(limited);
 	if (!safe)
 		MORPH_RETURN(-ENOMEM);
-	limited = history_truncate_result(ctx->tokenizer, safe,
-		ctx->history_tool_result_tokens, &was_truncated);
+	{
+		cJSON *root = cJSON_ParseWithOpts(safe, NULL, 1);
+		int budget = ctx->history_tool_result_tokens > 0
+				 ? ctx->history_tool_result_tokens
+				 : HISTORY_DEFAULT_TOOL_RESULT_MAX_TOKENS;
+
+		if (root) {
+			limited =
+			    history_prepare_json(ctx->tokenizer, root, budget, &was_truncated);
+			cJSON_Delete(root);
+			if (!limited) {
+				free(safe);
+				MORPH_RETURN(-E2BIG);
+			}
+		} else {
+			limited =
+			    history_truncate_result(ctx->tokenizer, safe, budget, &was_truncated);
+		}
+	}
 	free(safe);
 	if (!limited)
 		MORPH_RETURN(-ENOMEM);
+	log_dbg("history tool result: %zu -> %zu bytes, truncated=%d",
+		content ? strlen(content) : 0, strlen(limited), was_truncated);
 	*prepared = limited;
 	if (truncated)
 		*truncated = was_truncated;
@@ -1093,6 +1254,26 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 	cJSON_AddStringToObject(metadata, "tool_name",
 		tool_name ? tool_name : "");
 	cJSON_AddStringToObject(metadata, "content", stored);
+	{
+		char *original = strdup(content ? content : "");
+		char *redacted;
+
+		if (!original) {
+			cJSON_Delete(metadata);
+			free(stored);
+			MORPH_RETURN(-ENOMEM);
+		}
+		utf8_sanitize_inplace(original);
+		redacted = history_redact_all(ctx, original);
+		free(original);
+		if (!redacted || !cJSON_AddStringToObject(metadata, "original_content", redacted)) {
+			free(redacted);
+			cJSON_Delete(metadata);
+			free(stored);
+			MORPH_RETURN(-ENOMEM);
+		}
+		free(redacted);
+	}
 	if (artifacts && artifacts->count > 0) {
 		cJSON *artifact_json = tool_artifact_list_to_json(artifacts);
 
@@ -1217,12 +1398,54 @@ static const char *history_compaction_text(const struct model_history_item *item
 		item->payload_json : item->content;
 }
 
-static int history_compaction_input(const struct model_history_item *items,
-				    morph_buf_t *buf)
+/* Steering can interleave a call and its output; remove both from candidates. */
+static int history_result_in_omitted_group(const struct model_history_item *items,
+					   const struct model_history_item *result, int64_t cutoff)
+{
+	for (const struct model_history_item *item = items; item; item = item->next) {
+		if (item->sequence_no > cutoff || strcmp(item->kind, "assistant_tool_calls"))
+			continue;
+		cJSON *payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+		cJSON *call;
+		int found = 0;
+		cJSON_ArrayForEach(call, cJSON_GetObjectItem(payload, "calls"))
+		{
+			const char *local =
+			    cJSON_GetStringValue(cJSON_GetObjectItem(call, "tool_call_id"));
+			const char *provider =
+			    cJSON_GetStringValue(cJSON_GetObjectItem(call, "provider_call_id"));
+			if ((local && result->tool_call_id &&
+			     !strcmp(local, result->tool_call_id)) ||
+			    (provider && result->provider_call_id &&
+			     !strcmp(provider, result->provider_call_id))) {
+				found = 1;
+				break;
+			}
+		}
+		cJSON_Delete(payload);
+		if (found)
+			return 1;
+	}
+	return 0;
+}
+
+static int history_compaction_input(const struct model_history_item *items, morph_buf_t *buf,
+				    int64_t omitted_through)
 {
 	const struct model_history_item *item = items;
+	if (omitted_through &&
+	    morph_buf_puts(buf, "Earlier tool groups were omitted to fit the summary request; do "
+				"not infer their results.\n") != 0)
+		MORPH_RETURN(-ENOMEM);
 
 	while (item) {
+		if ((!strcmp(item->kind, "assistant_tool_calls") &&
+		     item->sequence_no <= omitted_through) ||
+		    (!strcmp(item->kind, "tool_result") && omitted_through &&
+		     history_result_in_omitted_group(items, item, omitted_through))) {
+			item = item->next;
+			continue;
+		}
 		const char *label = item->role[0] ? item->role : item->kind;
 		char *rendered = NULL;
 		const char *text = history_compaction_text(item, &rendered);
@@ -1254,6 +1477,30 @@ int agent_history_reload(struct react_context *ctx)
 		&count);
 	if (!items && count != 0)
 		MORPH_RETURN(MORPH_ERR_DB);
+	for (struct model_history_item *item = items; item; item = item->next) {
+		cJSON *payload;
+		const cJSON *original;
+		char *prepared;
+		int truncated;
+		int rc;
+
+		if (strcmp(item->kind, "tool_result") != 0)
+			continue;
+		payload = item->payload_json ? cJSON_Parse(item->payload_json) : NULL;
+		original = cJSON_GetObjectItemCaseSensitive(payload, "original_content");
+		rc = agent_history_prepare_tool_content(
+		    ctx, cJSON_IsString(original) ? original->valuestring : item->content,
+		    &prepared, &truncated);
+		cJSON_Delete(payload);
+		if (rc != 0) {
+			model_history_free_list(items);
+			return rc;
+		}
+		free(item->content);
+		item->content = prepared;
+		item->truncated = truncated;
+		item->token_count = tokenizer_count(ctx->tokenizer, prepared);
+	}
 	model_history_free_list(ctx->history_items);
 	ctx->history_items = items;
 	return 0;
@@ -1447,6 +1694,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	int threshold;
 	int count = 0;
 	int record_sources;
+	int64_t omitted_through = 0;
+	int pruned_groups = 0;
 	int rc;
 	const char *trigger_kind = trigger_kind_in && trigger_kind_in[0] ?
 		trigger_kind_in : (force ? "manual" : "threshold");
@@ -1470,12 +1719,52 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	rc = morph_buf_init(&input, 8192);
 	if (rc != 0)
 		return rc;
-	rc = history_compaction_input(ctx->history_items, &input);
-	if (rc == 0)
-		rc = ctx->compress.summarize(morph_buf_cstr(&input),
-			ctx->compress.summarize_user_data, &summary);
+	rc = history_compaction_input(ctx->history_items, &input, omitted_through);
+	if (rc == 0) {
+		for (int attempt = 0; attempt < 3; attempt++) {
+			rc = ctx->compress.summarize(morph_buf_cstr(&input),
+						     ctx->compress.summarize_user_data, &summary);
+			if (rc == 0 && summary && summary[0])
+				break;
+			if (rc == 0)
+				rc = MORPH_ERR_PROTOCOL;
+			free(summary);
+			summary = NULL;
+			if (rc == MORPH_ERR_CONTEXT_LIMIT && pruned_groups < 32) {
+				const struct model_history_item *group = ctx->history_items;
+				while (group && (group->sequence_no <= omitted_through ||
+						 strcmp(group->kind, "assistant_tool_calls")))
+					group = group->next;
+				if (!group)
+					break;
+				omitted_through = group->sequence_no;
+				for (group = group->next;
+				     group && strcmp(group->kind, "assistant_tool_calls") &&
+				     strcmp(group->kind, "user_message");
+				     group = group->next)
+					omitted_through = group->sequence_no;
+				pruned_groups++;
+				morph_buf_reset(&input);
+				rc = history_compaction_input(ctx->history_items, &input,
+							      omitted_through);
+				if (rc != 0)
+					break;
+				log_warn("summary context recovery: omitted %d old tool groups",
+					 pruned_groups);
+				attempt--;
+				continue;
+			}
+			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != MORPH_ERR_PROTOCOL &&
+					     rc != -ETIMEDOUT))
+				break;
+			log_warn("history summary retry %d: %s", attempt + 1, morph_strerror(rc));
+			rc = http_wait_cancelable((unsigned int)(attempt + 1) * 1000u);
+			if (rc != 0)
+				break;
+		}
+	}
 	morph_buf_cleanup(&input);
-	record_sources = rc == 0 && summary && summary[0];
+	record_sources = rc == 0 && summary && summary[0] && !pruned_groups;
 	if (rc != 0 || !summary || !summary[0]) {
 		int failure = rc != 0 ? rc : MORPH_ERR_PROTOCOL;
 
@@ -1484,19 +1773,24 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			ctx->history_session_id, ctx->turn_id, trigger_kind,
 			"failed", input_tokens, 0, failure,
 			morph_strerror(failure));
-		if (force && strncmp(trigger_kind, "in_turn_", 8) != 0)
-			return failure;
-		if (!force && input_tokens < ctx->compress.max_context_tokens) {
-			log_warn("history compaction failed before hard limit: %s",
-				 morph_strerror(failure));
-			return 0;
-		}
-		summary = strdup(
-			"[Earlier context could not be summarized. The most recent "
-			"complete turns are preserved below; treat earlier details "
-			"as unavailable and do not assume unfinished work completed.]");
-		if (!summary)
+		MORPH_RETURN(failure);
+	}
+	if (pruned_groups) {
+		morph_buf_t marked;
+		if (morph_buf_init(&marked, 256) != 0) {
+			free(summary);
 			MORPH_RETURN(-ENOMEM);
+		}
+		rc = morph_buf_printf(
+		    &marked,
+		    "%d older tool groups were omitted; their outcomes are unavailable.\n%s",
+		    pruned_groups, summary);
+		free(summary);
+		if (rc != 0) {
+			morph_buf_cleanup(&marked);
+			return rc;
+		}
+		summary = morph_buf_detach(&marked);
 	}
 	redacted = history_redact_all(ctx, summary);
 	free(summary);

@@ -9,6 +9,9 @@ extern "C" {
 #include "agent/plan.h"
 
 struct model;
+struct tool_context;
+void plan_tool_set_context(struct tool_registry *reg, struct tool_context *tctx);
+int plan_tool_refresh_reports(struct tool_registry *reg);
 
 int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 		   struct model *llm);

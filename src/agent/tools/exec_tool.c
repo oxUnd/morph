@@ -1,4 +1,5 @@
 #include "exec_tool.h"
+#include "http/client.h"
 #include "agent/environment_context.h"
 #include "agent/tool_context.h"
 #include "config/config.h"
@@ -109,7 +110,8 @@ static uint64_t json_u64(const cJSON *root, const char *name,
 {
 	const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
 
-	if (!cJSON_IsNumber(item) || item->valuedouble < 0)
+	if (!cJSON_IsNumber(item) || item->valuedouble < 0 ||
+	    item->valuedouble >= (double)UINT64_MAX)
 		return fallback;
 	return (uint64_t)item->valuedouble;
 }
@@ -264,6 +266,16 @@ static int result_snapshot(struct tool_result *result,
 	if (execution_mode)
 		cJSON_AddStringToObject(data, "execution_mode", execution_mode);
 	snapshot_add_json(data, snapshot);
+	{
+		char cursor[96];
+		snprintf(cursor, sizeof(cursor), "%zu:%zu", snapshot->next_cursor.stdout_offset,
+			 snapshot->next_cursor.stderr_offset);
+		cJSON_AddStringToObject(data, "next_cursor", cursor);
+		if (snapshot->stdout_path[0])
+			cJSON_AddStringToObject(data, "stdout_path", snapshot->stdout_path);
+		if (snapshot->stderr_path[0])
+			cJSON_AddStringToObject(data, "stderr_path", snapshot->stderr_path);
+	}
 	rc = tool_result_success(result, data);
 	if (rc != 0)
 		cJSON_Delete(data);
@@ -553,6 +565,12 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	return rc;
 }
 
+static int process_wait_cancelled(void *unused)
+{
+	(void)unused;
+	return http_wait_cancelable(0) < 0;
+}
+
 static int process_run(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
@@ -602,9 +620,39 @@ static int process_run(const char *args_json, struct tool_result *result,
 		return rc;
 	}
 	memset(&snapshot, 0, sizeof(snapshot));
-	rc = process_session_snapshot(runtime->manager, session_id, &snapshot);
-	if (rc == 0)
+	struct process_cursor cursor;
+	const char *cursor_text = json_string(root, "cursor");
+	const cJSON *wait_arg = cJSON_GetObjectItemCaseSensitive(root, "wait_ms");
+	if (wait_arg && (!cJSON_IsNumber(wait_arg) || wait_arg->valuedouble < 0 ||
+			 wait_arg->valuedouble > 60000 ||
+			 wait_arg->valuedouble != (double)wait_arg->valueint)) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "invalid_request",
+					"wait_ms must be an integer from 0 to 60000");
+		MORPH_RETURN(-EINVAL);
+	}
+	uint64_t wait_ms = json_u64(root, "wait_ms", 0);
+	int used = 0;
+	if (cursor_text && (sscanf(cursor_text, "%zu:%zu%n", &cursor.stdout_offset,
+				   &cursor.stderr_offset, &used) != 2 ||
+			    cursor_text[used] != '\0')) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-EINVAL);
+	}
+	rc = process_session_poll(runtime->manager, session_id, cursor_text ? &cursor : NULL,
+				  !strcmp(action, "poll") ? wait_ms : 0, process_wait_cancelled,
+				  NULL, &snapshot);
+	if (rc == 0) {
 		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
+		if (rc == 0 && result->data) {
+			int empty = (!snapshot.stdout_text || !snapshot.stdout_text[0]) &&
+				    (!snapshot.stderr_text || !snapshot.stderr_text[0]);
+			cJSON_AddBoolToObject(result->data, "empty_poll",
+					      !strcmp(action, "poll") && empty &&
+						  snapshot.state < PROCESS_EXITED);
+			cJSON_AddNumberToObject(result->data, "wait_ms", (double)wait_ms);
+		}
+	}
 	process_snapshot_cleanup(&snapshot);
 	cJSON_Delete(root);
 	return rc;
@@ -639,17 +687,19 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.origin = TOOL_ORIGIN_BUILTIN;
 	exec_spec.name = "exec";
 	exec_spec.title = "Execute command";
-	exec_spec.description = runtime->allow_host_execution ?
-		"Run a shell command with command approval, timeout, and process sessions. "
-		"Commands are sandboxed by default. Explicit host=true runs without the child "
-		"OS sandbox, with the user's file and network access. Use only when the task "
-		"requires host automation, such as macOS System Events AppleScript. "
-		"macOS privacy consent still applies. Do not silently retry in host mode. "
-		"Background sessions have no default timeout; set timeout_ms to limit them." :
-		"Run a shell command with workdir, policy, timeout, yield, and process sessions. "
-		"Host execution is disabled. Background sessions have no default timeout; "
-		"set timeout_ms to limit them. For sandbox_denied, request the smallest "
-		"additional capability and retry the exact command.";
+	exec_spec.description =
+	    runtime->allow_host_execution
+		? "Run a shell command with command approval, timeout, and process sessions. "
+		  "Commands are sandboxed by default. Explicit host=true runs without the child "
+		  "OS sandbox, with the user's file and network access. Use only when the task "
+		  "requires host automation, such as macOS System Events AppleScript. "
+		  "macOS privacy consent still applies. Do not silently retry in host mode. "
+		  "Background sessions have no default timeout; set timeout_ms to limit them."
+		: "Run a shell command with workdir, policy, timeout, yield, and process sessions. "
+		  "Host execution is disabled. Background sessions have no default timeout; "
+		  "set timeout_ms to limit them. For error.code=sandbox_denied, request the "
+		  "smallest "
+		  "additional capability and retry the exact command.";
 	exec_spec.input_schema =
 		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
 		"\"description\":{\"type\":\"string\",\"description\":"
@@ -675,8 +725,18 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	process_spec.origin = TOOL_ORIGIN_BUILTIN;
 	process_spec.name = "process";
 	process_spec.title = "Manage process";
-	process_spec.description = "Poll, write to, interrupt, or kill an exec process session.";
-	process_spec.input_schema = "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"action\":{\"type\":\"string\",\"enum\":[\"poll\",\"write\",\"interrupt\",\"kill\"]},\"input\":{\"type\":\"string\"}},\"required\":[\"session_id\",\"action\"],\"additionalProperties\":false}";
+	process_spec.description =
+	    "Poll, write to, interrupt, or kill a process. Use poll with wait_ms (0-60000) "
+	    "and next_cursor from the previous result to wait for new output instead of shell "
+	    "sleep. "
+	    "Explicit cursors are replayable; output files contain redacted retained windows "
+	    "and are removed at runtime shutdown. Cancelling a wait does not stop the process.";
+	process_spec.input_schema =
+	    "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"action\":{"
+	    "\"type\":\"string\",\"enum\":[\"poll\",\"write\",\"interrupt\",\"kill\"]},\"input\":{"
+	    "\"type\":\"string\"},\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":"
+	    "60000},\"cursor\":{\"type\":\"string\"}},\"required\":[\"session_id\",\"action\"],"
+	    "\"additionalProperties\":false}";
 	process_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	process_spec.exec = process_run;
 	process_spec.user_data = runtime;

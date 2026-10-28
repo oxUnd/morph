@@ -39,6 +39,8 @@ struct process_secret {
 
 struct process_stream {
 	morph_buf_t data;
+	char path[PATH_MAX];
+	size_t file_size;
 	size_t base;
 	size_t cursor;
 	size_t omitted;
@@ -75,6 +77,7 @@ struct process_manager {
 	pthread_t thread;
 	int thread_started;
 	int stopping;
+	size_t spool_bytes;
 	size_t max_session_output;
 	size_t max_inline_output;
 	uint64_t kill_grace_ms;
@@ -132,6 +135,8 @@ static void stream_cleanup(struct process_stream *stream)
 {
 	if (!stream)
 		return;
+	if (stream->path[0])
+		(void)unlink(stream->path);
 	morph_buf_cleanup(&stream->data);
 	memset(stream, 0, sizeof(*stream));
 }
@@ -155,6 +160,7 @@ static int stream_append(struct process_manager *manager,
 		data += drop;
 		length -= drop;
 		stream->omitted += drop;
+		stream->base += drop;
 	}
 	if (stream->data.len + length > manager->max_session_output) {
 		drop = stream->data.len + length - manager->max_session_output;
@@ -275,6 +281,50 @@ static int append_snapshot_stream(const struct process_manager *manager,
 	return *out ? 0 : -ENOMEM;
 }
 
+/* Materialize the redacted retained window, bounded by memory and disk quotas. */
+static void stream_spool(struct process_manager *manager, struct process_stream *stream,
+			 char path[PATH_MAX])
+{
+	char *text;
+	int fd;
+	size_t length;
+	if (!stream->data.len)
+		return;
+	text = redact_text(manager, stream->data.data, stream->data.len);
+	if (!text)
+		return;
+	length = strlen(text);
+	if (length > manager->max_session_output ||
+	    manager->spool_bytes - stream->file_size + length > 64u * 1024u * 1024u) {
+		free(text);
+		return;
+	}
+	if (!stream->path[0]) {
+		snprintf(stream->path, sizeof(stream->path), "/tmp/morph-process-XXXXXX");
+		fd = mkstemp(stream->path);
+		if (fd < 0)
+			stream->path[0] = '\0';
+	} else
+		fd = open(stream->path, O_WRONLY | O_TRUNC | O_NOFOLLOW);
+	if (fd >= 0) {
+		size_t offset = 0;
+		while (offset < length) {
+			ssize_t n = write(fd, text + offset, length - offset);
+			if (n < 0 && errno == EINTR)
+				continue;
+			if (n <= 0)
+				break;
+			offset += (size_t)n;
+		}
+		close(fd);
+		manager->spool_bytes = manager->spool_bytes - stream->file_size + offset;
+		stream->file_size = offset;
+		if (offset == length)
+			snprintf(path, PATH_MAX, "%s", stream->path);
+	}
+	free(text);
+}
+
 static int snapshot_locked(struct process_manager *manager,
 				   struct process_session *session,
 				   struct process_snapshot *snapshot)
@@ -301,6 +351,10 @@ static int snapshot_locked(struct process_manager *manager,
 		session->stdout_stream.data.len;
 	session->stderr_stream.cursor = session->stderr_stream.base +
 		session->stderr_stream.data.len;
+	snapshot->next_cursor.stdout_offset = session->stdout_stream.cursor;
+	snapshot->next_cursor.stderr_offset = session->stderr_stream.cursor;
+	stream_spool(manager, &session->stdout_stream, snapshot->stdout_path);
+	stream_spool(manager, &session->stderr_stream, snapshot->stderr_path);
 	return 0;
 }
 
@@ -795,6 +849,69 @@ int process_spawn(struct process_manager *manager,
 		rc = snapshot_locked(manager, session, snapshot);
 	pthread_mutex_unlock(&manager->mutex);
 	return rc;
+}
+
+int process_session_poll(struct process_manager *manager, const char *session_id,
+			 const struct process_cursor *cursor, uint64_t wait_ms,
+			 int (*cancelled)(void *), void *cancel_data,
+			 struct process_snapshot *snapshot)
+{
+	uint64_t deadline;
+	int rc = 0;
+	if (!manager || !session_id || !snapshot || wait_ms > 60000)
+		MORPH_RETURN(-EINVAL);
+	deadline = process_now_ms() + wait_ms;
+	pthread_mutex_lock(&manager->mutex);
+	for (;;) {
+		struct process_session *session = find_session(manager, session_id);
+		struct process_cursor start;
+		struct timespec until;
+		if (!session) {
+			rc = -ENOENT;
+			break;
+		}
+		start.stdout_offset =
+		    cursor ? cursor->stdout_offset : session->stdout_stream.cursor;
+		start.stderr_offset =
+		    cursor ? cursor->stderr_offset : session->stderr_stream.cursor;
+		if (start.stdout_offset >
+			session->stdout_stream.base + session->stdout_stream.data.len ||
+		    start.stderr_offset >
+			session->stderr_stream.base + session->stderr_stream.data.len) {
+			rc = -EINVAL;
+			break;
+		}
+		if (cancelled && cancelled(cancel_data)) {
+			rc = -ECANCELED;
+			break;
+		}
+		if (session->state >= PROCESS_EXITED || process_now_ms() >= deadline ||
+		    session->stdout_stream.base + session->stdout_stream.data.len >
+			start.stdout_offset ||
+		    session->stderr_stream.base + session->stderr_stream.data.len >
+			start.stderr_offset) {
+			size_t saved_out = session->stdout_stream.cursor;
+			size_t saved_err = session->stderr_stream.cursor;
+			session->stdout_stream.cursor = start.stdout_offset;
+			session->stderr_stream.cursor = start.stderr_offset;
+			rc = snapshot_locked(manager, session, snapshot);
+			if (cursor || rc != 0) {
+				session->stdout_stream.cursor = saved_out;
+				session->stderr_stream.cursor = saved_err;
+			}
+			break;
+		}
+		clock_gettime(CLOCK_REALTIME, &until);
+		until.tv_nsec += 25000000L;
+		if (until.tv_nsec >= 1000000000L) {
+			until.tv_sec++;
+			until.tv_nsec -= 1000000000L;
+		}
+		(void)pthread_cond_timedwait(&manager->condition, &manager->mutex, &until);
+		/* Never hold a session pointer across a wait: the array can grow. */
+	}
+	pthread_mutex_unlock(&manager->mutex);
+	MORPH_RETURN(rc);
 }
 
 int process_session_snapshot(struct process_manager *manager,

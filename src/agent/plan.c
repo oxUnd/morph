@@ -1,5 +1,9 @@
 #include "plan.h"
 #include "util/id.h"
+#include "util/error.h"
+#include "util/utf8.h"
+#include "db/database.h"
+#include <stdlib.h>
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -260,4 +264,201 @@ out:
 			"No plans yet. Use plan create to start one.");
 	}
 	return rc;
+}
+
+/* A checkpoint is independent of model history and survives compaction. */
+cJSON *plan_registry_json(const struct plan_registry *reg)
+{
+	cJSON *root = cJSON_CreateArray();
+	if (!root)
+		return NULL;
+	for (int i = 0; i < reg->count; i++) {
+		const struct plan *p = &reg->plans[i];
+		cJSON *obj = cJSON_CreateObject();
+		cJSON *steps = cJSON_CreateArray();
+		if (!obj || !steps) {
+			cJSON_Delete(obj);
+			cJSON_Delete(steps);
+			cJSON_Delete(root);
+			return NULL;
+		}
+		cJSON_AddItemToArray(root, obj);
+		cJSON_AddItemToObject(obj, "steps", steps);
+#define PLAN_WRITE(field)                                                                          \
+	do {                                                                                       \
+		if (!cJSON_AddStringToObject(obj, #field, p->field)) {                             \
+			cJSON_Delete(root);                                                        \
+			return NULL;                                                               \
+		}                                                                                  \
+	} while (0)
+		PLAN_WRITE(id);
+		PLAN_WRITE(name);
+		PLAN_WRITE(goal);
+		PLAN_WRITE(request);
+		PLAN_WRITE(constraints);
+		PLAN_WRITE(acceptance);
+		PLAN_WRITE(rejected);
+		PLAN_WRITE(verification);
+#undef PLAN_WRITE
+		for (int j = 0; j < p->step_count; j++) {
+			const struct plan_step *step = &p->steps[j];
+			cJSON *entry = cJSON_CreateObject();
+			if (!entry) {
+				cJSON_Delete(root);
+				return NULL;
+			}
+			cJSON_AddItemToArray(steps, entry);
+#define STEP_WRITE(field)                                                                          \
+	do {                                                                                       \
+		if (!cJSON_AddStringToObject(entry, #field, step->field)) {                        \
+			cJSON_Delete(root);                                                        \
+			return NULL;                                                               \
+		}                                                                                  \
+	} while (0)
+			STEP_WRITE(description);
+			STEP_WRITE(status);
+			STEP_WRITE(evidence);
+			STEP_WRITE(blocker);
+			STEP_WRITE(artifact);
+#undef STEP_WRITE
+		}
+	}
+	return root;
+}
+
+static int plan_restore_text(const cJSON *obj, const char *key, char *dst, size_t cap)
+{
+	const cJSON *value = cJSON_GetObjectItemCaseSensitive(obj, key);
+	if (!value)
+		return 0;
+	if (!cJSON_IsString(value) || strlen(value->valuestring) >= cap ||
+	    utf8valid(value->valuestring))
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	memcpy(dst, value->valuestring, strlen(value->valuestring) + 1);
+	return 0;
+}
+
+int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
+{
+	struct plan_registry *copy;
+	int rc = 0;
+	if (!reg || !cJSON_IsArray(json) || cJSON_GetArraySize(json) > PLAN_MAX_PLANS)
+		MORPH_RETURN(MORPH_ERR_FORMAT);
+	copy = calloc(1, sizeof(*copy));
+	if (!copy)
+		MORPH_RETURN(-ENOMEM);
+	copy->db = reg->db;
+	copy->session_id = reg->session_id;
+	copy->count = cJSON_GetArraySize(json);
+	for (int i = 0; i < copy->count && rc == 0; i++) {
+		struct plan *p = &copy->plans[i];
+		const cJSON *obj = cJSON_GetArrayItem(json, i);
+		const cJSON *steps = cJSON_GetObjectItemCaseSensitive(obj, "steps");
+#define PLAN_READ(field)                                                                           \
+	do {                                                                                       \
+		if (rc == 0)                                                                       \
+			rc = plan_restore_text(obj, #field, p->field, sizeof(p->field));           \
+	} while (0)
+		PLAN_READ(id);
+		PLAN_READ(name);
+		PLAN_READ(goal);
+		PLAN_READ(request);
+		PLAN_READ(constraints);
+		PLAN_READ(acceptance);
+		PLAN_READ(rejected);
+		PLAN_READ(verification);
+#undef PLAN_READ
+		if (!p->id[0] || !p->name[0] || !cJSON_IsArray(steps) ||
+		    cJSON_GetArraySize(steps) > PLAN_MAX_STEPS) {
+			rc = MORPH_ERR_FORMAT;
+			break;
+		}
+		p->step_count = cJSON_GetArraySize(steps);
+		p->active_step = -1;
+		for (int j = 0; j < p->step_count && rc == 0; j++) {
+			struct plan_step *step = &p->steps[j];
+			const cJSON *entry = cJSON_GetArrayItem(steps, j);
+			step->id = j + 1;
+#define STEP_READ(field)                                                                           \
+	do {                                                                                       \
+		if (rc == 0)                                                                       \
+			rc = plan_restore_text(entry, #field, step->field, sizeof(step->field));   \
+	} while (0)
+			STEP_READ(description);
+			STEP_READ(status);
+			STEP_READ(evidence);
+			STEP_READ(blocker);
+			STEP_READ(artifact);
+#undef STEP_READ
+			if (!strcmp(step->status, "in_progress"))
+				p->active_step = j;
+			else if (strcmp(step->status, "pending") &&
+				 strcmp(step->status, "completed") &&
+				 strcmp(step->status, "failed") && strcmp(step->status, "skipped"))
+				rc = MORPH_ERR_FORMAT;
+		}
+	}
+	if (rc == 0)
+		*reg = *copy;
+	free(copy);
+	MORPH_RETURN(rc);
+}
+
+int plan_registry_save(struct plan_registry *reg)
+{
+	cJSON *json;
+	char *text;
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+	if (!reg || !reg->db || reg->session_id <= 0)
+		return 0;
+	json = plan_registry_json(reg);
+	text = json ? cJSON_PrintUnformatted(json) : NULL;
+	cJSON_Delete(json);
+	if (!text)
+		MORPH_RETURN(-ENOMEM);
+	rc = sqlite3_prepare_v2(
+	    reg->db->handle,
+	    "INSERT INTO session_plans(session_id,state_json) VALUES(?,?) "
+	    "ON CONFLICT(session_id) DO UPDATE SET state_json=excluded.state_json",
+	    -1, &stmt, NULL);
+	if (rc == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, reg->session_id);
+		sqlite3_bind_text(stmt, 2, text, -1, SQLITE_TRANSIENT);
+		rc = sqlite3_step(stmt);
+	}
+	sqlite3_finalize(stmt);
+	free(text);
+	MORPH_RETURN(rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+}
+
+int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session_id)
+{
+	sqlite3_stmt *stmt = NULL;
+	int rc;
+	if (!reg || !db || session_id <= 0)
+		MORPH_RETURN(-EINVAL);
+	if (reg->db == db && reg->session_id == session_id)
+		return 0;
+	rc = sqlite3_prepare_v2(
+	    db->handle, "SELECT state_json FROM session_plans WHERE session_id=?", -1, &stmt, NULL);
+	if (rc != SQLITE_OK)
+		MORPH_RETURN(MORPH_ERR_DB);
+	sqlite3_bind_int64(stmt, 1, session_id);
+	rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		cJSON *json = cJSON_Parse((const char *)sqlite3_column_text(stmt, 0));
+		rc = plan_registry_restore(reg, json);
+		cJSON_Delete(json);
+	} else if (rc == SQLITE_DONE) {
+		plan_registry_init(reg);
+		rc = 0;
+	} else
+		rc = MORPH_ERR_DB;
+	sqlite3_finalize(stmt);
+	if (rc == 0) {
+		reg->db = db;
+		reg->session_id = session_id;
+	}
+	MORPH_RETURN(rc);
 }

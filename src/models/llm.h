@@ -37,6 +37,7 @@ struct model_usage {
 	char provider[32];
 	char model[128];
 	char kind[32];
+	char phase[32];
 	char response_id[128];
 	char system_fingerprint[128];
 	char finish_reason[64];
@@ -79,12 +80,34 @@ struct chat_response {
 struct model_chat_options {
 	int max_tokens;
 	long timeout_seconds;
+	const char *usage_phase;
 };
 
 struct model_image_chat_options {
 	int max_tokens;
 	long timeout_seconds;
 	int max_dim;
+};
+
+enum model_error_kind {
+	MODEL_ERROR_NONE,
+	MODEL_ERROR_NETWORK,
+	MODEL_ERROR_CONTEXT,
+	MODEL_ERROR_RATE_LIMIT,
+	MODEL_ERROR_AUTH,
+	MODEL_ERROR_CONFIG,
+	MODEL_ERROR_SERVER,
+	MODEL_ERROR_INCOMPLETE,
+	MODEL_ERROR_API,
+};
+
+struct model_error_info {
+	enum model_error_kind kind;
+	int http_status;
+	char provider_code[96];
+	long retry_after_seconds;
+	int output_started;
+	int retryable;
 };
 
 struct model {
@@ -96,6 +119,7 @@ struct model {
 	char model_id[128];
 	char extra_body_json[MORPH_MODEL_EXTRA_BODY_MAX];
 	char last_error[512];
+	struct model_error_info error_info;
 	int context_limit;
 	int max_tokens;
 	long timeout_seconds;
@@ -151,6 +175,7 @@ void model_set_usage_callback(model_usage_callback cb);
 void model_set_usage_user_data(void *user_data);
 void *model_get_usage_user_data(void);
 void model_report_usage(const struct model_usage *usage);
+
 
 void chat_response_free(struct chat_response *resp);
 void chat_message_cleanup(struct chat_message *msg, struct arena *arena);

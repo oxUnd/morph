@@ -245,16 +245,19 @@ static const char *history_schema_sql =
 	"ON history_compaction_attempts(session_id,created_at,id);";
 
 static const char *permission_schema_sql =
-	"CREATE TABLE IF NOT EXISTS permission_grants ("
-	"id INTEGER PRIMARY KEY AUTOINCREMENT,"
-	"subject TEXT NOT NULL,"
-	"resource_kind TEXT NOT NULL,"
-	"resource TEXT NOT NULL,"
-	"project_root TEXT NOT NULL,"
-	"created_at INTEGER NOT NULL,"
-	"UNIQUE(subject,resource_kind,resource,project_root));"
-	"CREATE INDEX IF NOT EXISTS idx_permission_grants_project "
-	"ON permission_grants(project_root,subject,resource_kind);";
+    "CREATE TABLE IF NOT EXISTS session_plans ("
+    "session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,"
+    "state_json TEXT NOT NULL);"
+    "CREATE TABLE IF NOT EXISTS permission_grants ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "subject TEXT NOT NULL,"
+    "resource_kind TEXT NOT NULL,"
+    "resource TEXT NOT NULL,"
+    "project_root TEXT NOT NULL,"
+    "created_at INTEGER NOT NULL,"
+    "UNIQUE(subject,resource_kind,resource,project_root));"
+    "CREATE INDEX IF NOT EXISTS idx_permission_grants_project "
+    "ON permission_grants(project_root,subject,resource_kind);";
 
 static const char *schema_baseline_sql =
 	"INSERT OR IGNORE INTO schema_migrations(version,name,applied_at) "
