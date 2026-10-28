@@ -1,3 +1,5 @@
+#include "util/signals.h"
+#include "agent/tool_runtime.h"
 #include "dynamic_tools.h"
 #include "ipc/jsonrpc.h"
 #include "util/buf.h"
@@ -445,6 +447,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		MORPH_RETURN(-e);
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		const char *workdir;
 
 		close(stdin_pipe[1]);
@@ -537,8 +540,8 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 	}
 	waitpid(pid, &status, 0);
 	if (err.len > 0)
-		log_warn("dynamic tool %s stderr: %s", dt->name,
-			 morph_buf_cstr(&err));
+		log_warn(result && result->runtime ? result->runtime->http.logger : NULL,
+			 "dynamic tool %s stderr: %s", dt->name, morph_buf_cstr(&err));
 	if (rc < 0) {
 		morph_buf_cleanup(&out);
 		morph_buf_cleanup(&err);
@@ -631,7 +634,7 @@ static int register_dynamic_tool(struct tool_registry *reg,
 			? dt->cfg->default_timeout_seconds
 			: tool_context_default_timeout(dt->tctx);
 		existing->flags |= TOOL_FLAG_DYNAMIC;
-		log_dbg("dynamic tool replaced: %s", dt->name);
+		log_dbg(reg ? reg->logger : NULL, "dynamic tool replaced: %s", dt->name);
 		return 1;
 	}
 		struct tool_spec spec = {
@@ -1257,6 +1260,7 @@ static int check_js_source(const char *source_path,
 		MORPH_RETURN_ERRNO();
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		int first_errno;
 		close(output_pipe[0]);
 		dup2(output_pipe[1], STDOUT_FILENO);
@@ -1695,7 +1699,8 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		if (meta_rc == 0)
 			meta_rc = prune_checkpoint_history(dt->dir);
 		if (meta_rc < 0)
-			log_warn("failed to update dynamic tool checkpoint: %s",
+			log_warn(result && result->runtime ? result->runtime->http.logger : NULL,
+				 "failed to update dynamic tool checkpoint: %s",
 				 morph_strerror(meta_rc));
 	}
 	cJSON_Delete(root);

@@ -365,10 +365,9 @@ static int prepare_path(const char *path, enum path_kind kind)
 	return 0;
 }
 
-static int append_tool_path(struct arena *arena, const struct tool_path *entry,
-			    const char *path, const char *home,
-			    morph_array_t *reads, morph_array_t *writes,
-			    morph_array_t *deletes)
+static int append_tool_path(struct morph_log *logger, struct arena *arena,
+			    const struct tool_path *entry, const char *path, const char *home,
+			    morph_array_t *reads, morph_array_t *writes, morph_array_t *deletes)
 {
 	char resolved[PATH_MAX];
 	char *owned;
@@ -378,12 +377,12 @@ static int append_tool_path(struct arena *arena, const struct tool_path *entry,
 	    strstr(path, "/..") || path_is_within(home, path))
 		return 0;
 	if (prepare_path(path, entry->kind) != 0 || !realpath(path, resolved)) {
-		log_dbg("sandbox: skipping unavailable %s path", entry->tool);
+		log_dbg(logger, "sandbox: skipping unavailable %s path", entry->tool);
 		return 0;
 	}
 	if (path_is_within(home, resolved))
 		return 0;
-	log_dbg("sandbox: tool path %s: %s", entry->tool, resolved);
+	log_dbg(logger, "sandbox: tool path %s: %s", entry->tool, resolved);
 	owned = arena_strdup(arena, resolved);
 	if (!owned)
 		MORPH_RETURN(-ENOMEM);
@@ -454,8 +453,8 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 				MORPH_RETURN(-ENOMEM);
 			for (part = strtok_r(parts, ":", &save); part;
 			     part = strtok_r(NULL, ":", &save)) {
-				rc = append_tool_path(arena, entry, part, home,
-					&reads, &writes, &deletes);
+				rc = append_tool_path(cfg ? cfg->logger : NULL, arena, entry, part,
+						      home, &reads, &writes, &deletes);
 				if (rc != 0)
 					return rc;
 			}
@@ -463,8 +462,8 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 		}
 		rc = resolve_tool_path(arena, entry, home, &path);
 		if (rc == 0)
-			rc = append_tool_path(arena, entry, path, home,
-				&reads, &writes, &deletes);
+			rc = append_tool_path(cfg ? cfg->logger : NULL, arena, entry, path, home,
+					      &reads, &writes, &deletes);
 		if (rc != 0)
 			return rc;
 	}

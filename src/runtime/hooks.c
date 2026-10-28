@@ -355,7 +355,7 @@ static int hook_load_error(struct hook_manager *manager, const char *path,
 	if (manager->error.detail.code == CONFIG_VALIDATION_NONE)
 		manager->error.detail.code = rc == MORPH_ERR_PARSE ?
 			CONFIG_VALIDATION_SYNTAX : CONFIG_VALIDATION_VALUE;
-	log_err("failed to load hooks %s:%d:%d: %s", path,
+	log_err(manager ? manager->logger : NULL, "failed to load hooks %s:%d:%d: %s", path,
 		manager->error.detail.line, manager->error.detail.column,
 		manager->error.detail.message);
 	MORPH_RETURN(rc);
@@ -444,7 +444,8 @@ static int load_inline(struct hook_manager *manager, const char *path, const cha
 			if (source_slash &&
 			    (size_t)(source_slash - entry->source) == (size_t)(slash - path) &&
 			    strncmp(entry->source, path, (size_t)(slash - path)) == 0) {
-				log_warn("Both hooks.json and inline hooks found; merging: %s",
+				log_warn(manager ? manager->logger : NULL,
+					 "Both hooks.json and inline hooks found; merging: %s",
 					 path);
 				break;
 			}
@@ -497,7 +498,7 @@ int hook_manager_reload(struct hook_manager *manager)
 		struct config *fresh = calloc(1, sizeof(*fresh));
 		if (!fresh)
 			MORPH_RETURN(-ENOMEM);
-		rc = config_load(fresh, manager->config_path);
+		rc = config_load(manager ? manager->logger : NULL, fresh, manager->config_path);
 		if (rc != 0) {
 			(void)config_validate_file(manager->config_path, &manager->error.detail);
 			hook_load_error(manager, manager->config_path, rc,
@@ -521,7 +522,7 @@ int hook_manager_reload(struct hook_manager *manager)
 		struct config *project = calloc(1, sizeof(*project));
 		if (!project)
 			MORPH_RETURN(-ENOMEM);
-		rc = config_load(project, path);
+		rc = config_load(manager ? manager->logger : NULL, project, path);
 		if (rc != 0) {
 			(void)config_validate_file(path, &manager->error.detail);
 			hook_load_error(manager, path, rc,
@@ -545,6 +546,7 @@ int hook_manager_init(struct hook_manager *manager, struct db *db, const struct 
 	if (!manager || !db || !db->handle || !config || !workdir)
 		MORPH_RETURN(-EINVAL);
 	memset(manager, 0, sizeof(*manager));
+	manager->logger = config->logger;
 	manager->db = db;
 	manager->config = config;
 	snprintf(manager->config_path, sizeof(manager->config_path), "%s",
@@ -1138,7 +1140,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		}
 		return 0;
 	}
-	if (react_sigint_flag || (manager->cancelled && *manager->cancelled) ||
+	if ((manager->cancelled && *manager->cancelled) ||
 	    morph_cancel_token_is_cancelled(manager->cancel_token))
 		MORPH_RETURN(-ECANCELED);
 	payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
@@ -1173,7 +1175,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	{
 		struct hook_run *run;
 		FILE *stdin_file;
-		struct process_spawn_options options = {0};
+		struct process_spawn_options options = {.logger = manager->logger};
 
 		if (!hook_matches(entry, event, input))
 			continue;
@@ -1226,7 +1228,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	for (;;) {
 		int pending = 0;
 		struct hook_run *run;
-		int cancelled = react_sigint_flag || (manager->cancelled && *manager->cancelled) ||
+		int cancelled = (manager->cancelled && *manager->cancelled) ||
 				morph_cancel_token_is_cancelled(manager->cancel_token);
 
 		morph_array_foreach(run, &runs, struct hook_run)

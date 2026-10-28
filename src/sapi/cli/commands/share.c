@@ -5,25 +5,25 @@ static int cmd_share(struct cli_context *ctx, int argc, char **argv)
 {
 	(void)argv;
 	if (argc != 1) {
-		CMD_ERROR("usage: /share");
+		CMD_ERROR(ctx, "usage: /share");
 		MORPH_RETURN(-EINVAL);
 	}
 	cJSON *document = NULL;
 	int rc = runtime_session_share_current(ctx->runtime, &document);
 	if (rc != 0) {
 		if (rc == -ENODATA)
-			CMD_ERROR("no completed conversation is available to share");
+			CMD_ERROR(ctx, "no completed conversation is available to share");
 		else
-			CMD_ERROR("share failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "share failed: %s", morph_strerror(rc));
 		MORPH_RETURN(rc);
 	}
 	char *path = NULL;
 	rc = cli_share_save(document, &path);
 	cJSON_Delete(document);
 	if (rc != 0)
-		CMD_ERROR("share failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "share failed: %s", morph_strerror(rc));
 	else
-		CMD_OK("saved conversation to %s", path);
+		CMD_OK(ctx, "saved conversation to %s", path);
 	free(path);
 	MORPH_RETURN(rc);
 }

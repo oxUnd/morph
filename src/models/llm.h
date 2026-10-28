@@ -1,6 +1,7 @@
 #ifndef LLM_H
 #define LLM_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,6 +117,7 @@ struct model_error_info {
 };
 
 struct model {
+	struct http_control http;
 	/* Borrowed for the model lifetime; shared only within its owning runtime. */
 	struct model_usage_sink *usage_sink;
 	char name[64];
@@ -175,9 +177,13 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 	const struct chat_message *messages, int msg_count,
 	const struct tool_desc *tools, int tool_count, cJSON **out);
 
-struct model *model_llm_create(const char *provider, const char *model_id,
+struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
 			       const char *api_base, const char *api_key);
 void model_destroy(struct model *m);
+struct tool_runtime_context;
+struct model *model_bind_tool_request(const struct model *source,
+				      const struct tool_runtime_context *runtime,
+				      struct model *storage);
 void model_report_usage(const struct model *model, const struct model_usage *usage);
 
 

@@ -2,53 +2,53 @@
 #include "sapi/cli/interaction.h"
 #include "sapi/cli/list_ui.h"
 
-static void print_sync_field(const char *ancestor, int is_last,
+static void print_sync_field(struct cli_context *ctx, const char *ancestor, int is_last,
 			     const char *name, const char *value, int columns)
 {
-	cli_list_item(ancestor, is_last, "", name, value, 20, columns);
+	cli_list_item(ctx, ancestor, is_last, "", name, value, 20, columns);
 }
 
-static void print_sync_status(const struct morph_sync_status *st)
+static void print_sync_status(struct cli_context *ctx, const struct morph_sync_status *st)
 {
 	char value[64];
 	int columns = cli_list_columns();
 	int state_count = st->error_code != 0 ? 3 : 2;
 
-	CMD_HEADER("sync status");
-	cli_list_group("state", state_count, 0);
-	print_sync_field(tui_tree_branch(0, 1), 0, "running", st->running ? "yes" : "no",
+	CMD_HEADER(ctx, "sync status");
+	cli_list_group(ctx, "state", state_count, 0);
+	print_sync_field(ctx, tui_tree_branch(0, 1), 0, "running", st->running ? "yes" : "no",
 			 columns);
 	if (st->last_run_at > 0)
 		snprintf(value, sizeof(value), "%lld",
 			 (long long)st->last_run_at);
 	else
 		strncpy(value, "never", sizeof(value) - 1);
-	print_sync_field(tui_tree_branch(0, 1), st->error_code == 0, "last run", value,
+	print_sync_field(ctx, tui_tree_branch(0, 1), st->error_code == 0, "last run", value,
 			 columns);
 	if (st->error_code != 0)
-		print_sync_field(tui_tree_branch(0, 1), 1, "last error", st->last_error,
+		print_sync_field(ctx, tui_tree_branch(0, 1), 1, "last error", st->last_error,
 				 columns);
 
-	cli_list_group("files", 4, 0);
+	cli_list_group(ctx, "files", 4, 0);
 	snprintf(value, sizeof(value), "%d", st->copied);
-	print_sync_field(tui_tree_branch(0, 1), 0, "copied", value, columns);
+	print_sync_field(ctx, tui_tree_branch(0, 1), 0, "copied", value, columns);
 	snprintf(value, sizeof(value), "%d", st->deleted);
-	print_sync_field(tui_tree_branch(0, 1), 0, "deleted", value, columns);
+	print_sync_field(ctx, tui_tree_branch(0, 1), 0, "deleted", value, columns);
 	snprintf(value, sizeof(value), "%d", st->conflicts);
-	print_sync_field(tui_tree_branch(0, 1), 0, "conflicts", value, columns);
+	print_sync_field(ctx, tui_tree_branch(0, 1), 0, "conflicts", value, columns);
 	snprintf(value, sizeof(value), "%d", st->recycled);
-	print_sync_field(tui_tree_branch(0, 1), 1, "recycled", value, columns);
+	print_sync_field(ctx, tui_tree_branch(0, 1), 1, "recycled", value, columns);
 
-	cli_list_group("database", 4, 1);
+	cli_list_group(ctx, "database", 4, 1);
 	snprintf(value, sizeof(value), "%d", st->db_snapshots);
-	print_sync_field("  ", 0, "snapshots", value, columns);
+	print_sync_field(ctx, "  ", 0, "snapshots", value, columns);
 	snprintf(value, sizeof(value), "%d", st->db_chunks_uploaded);
-	print_sync_field("  ", 0, "chunks uploaded", value, columns);
+	print_sync_field(ctx, "  ", 0, "chunks uploaded", value, columns);
 	snprintf(value, sizeof(value), "%d", st->db_chunks_reused);
-	print_sync_field("  ", 0, "chunks reused", value, columns);
+	print_sync_field(ctx, "  ", 0, "chunks reused", value, columns);
 	snprintf(value, sizeof(value), "%lld",
 		 (long long)st->db_bytes_uploaded);
-	print_sync_field("  ", 1, "bytes uploaded", value, columns);
+	print_sync_field(ctx, "  ", 1, "bytes uploaded", value, columns);
 }
 
 static int sync_cmd_status(struct cli_context *ctx)
@@ -59,7 +59,7 @@ static int sync_cmd_status(struct cli_context *ctx)
 	rc = runtime_sync_status_instance(ctx->runtime, &st);
 	if (rc != 0)
 		return rc;
-	print_sync_status(&st);
+	print_sync_status(ctx, &st);
 	return 0;
 }
 
@@ -69,11 +69,11 @@ static int sync_cmd_now(struct cli_context *ctx)
 	int rc;
 
 	rc = runtime_sync_now_instance(ctx->runtime, NULL, NULL, &st);
-	print_sync_status(&st);
+	print_sync_status(ctx, &st);
 	if (rc == 0)
-		CMD_OK("sync completed");
+		CMD_OK(ctx, "sync completed");
 	else
-		CMD_ERROR("sync failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "sync failed: %s", morph_strerror(rc));
 	return rc;
 }
 
@@ -85,16 +85,16 @@ static int sync_cmd_conflicts(struct cli_context *ctx)
 
 	rc = runtime_sync_conflicts(ctx->runtime, &items, &count);
 	if (rc == -ENOENT) {
-		CMD_ERROR("sync manifest not found");
+		CMD_ERROR(ctx, "sync manifest not found");
 		return -ENOENT;
 	}
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("sync conflicts (%d)", count);
+	CMD_HEADER(ctx, "sync conflicts (%d)", count);
 	if (count == 0) {
-		printf(ANSI_DIM);
-		cli_tree_prefix(NULL, 0, 1, 0);
-		printf("none" ANSI_RESET "\n");
+		printf(ctx, ANSI_DIM);
+		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		printf(ctx, "none" ANSI_RESET "\n");
 		runtime_sync_conflicts_free(items);
 		return 0;
 	}
@@ -106,8 +106,8 @@ static int sync_cmd_conflicts(struct cli_context *ctx)
 			 (long long)items[i].id);
 		snprintf(description, sizeof(description), "%s · created %lld",
 			 items[i].path, (long long)items[i].created_at);
-		cli_list_item("", i == count - 1, "", label, description,
-			      12, cli_list_columns());
+		cli_list_item(ctx, "", i == count - 1, "", label, description, 12,
+			      cli_list_columns());
 	}
 	runtime_sync_conflicts_free(items);
 	return 0;
@@ -119,15 +119,15 @@ static int sync_cmd_restore(struct cli_context *ctx, const char *id)
 	int rc;
 
 	if (!id || !id[0]) {
-		CMD_ERROR("usage: /sync restore <trash-id>");
+		CMD_ERROR(ctx, "usage: /sync restore <trash-id>");
 		return -EINVAL;
 	}
 	trash_id = atoll(id);
 	rc = runtime_sync_restore(ctx->runtime, trash_id);
 	if (rc == 0)
-		CMD_OK("restored trash entry %s", id);
+		CMD_OK(ctx, "restored trash entry %s", id);
 	else
-		CMD_ERROR("restore failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "restore failed: %s", morph_strerror(rc));
 	return rc;
 }
 
@@ -155,11 +155,11 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 	rc = runtime_sync_backups(ctx->runtime, path, &items, &count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("database backups (%d)", count);
+	CMD_HEADER(ctx, "database backups (%d)", count);
 	if (count == 0) {
-		printf(ANSI_DIM);
-		cli_tree_prefix(NULL, 0, 1, 0);
-		printf("none" ANSI_RESET "\n");
+		printf(ctx, ANSI_DIM);
+		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		printf(ctx, "none" ANSI_RESET "\n");
 		morph_sync_backups_free(items);
 		return 0;
 	}
@@ -172,7 +172,7 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 		while (end < count && strcmp(items[i].path, items[end].path) == 0)
 			end++;
 		group_last = end == count;
-		cli_list_group(items[i].path, end - i, group_last);
+		cli_list_group(ctx, items[i].path, end - i, group_last);
 		ancestor = tui_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char description[MORPH_SYNC_DEVICE_ID_MAX + 80];
@@ -182,9 +182,8 @@ static int sync_cmd_backups(struct cli_context *ctx, const char *path)
 				 items[j].device_id,
 				 (long long)items[j].created_at,
 				 (long long)items[j].size);
-			cli_list_item(ancestor, j == end - 1, "",
-				      items[j].snapshot_id, description, 24,
-				      columns);
+			cli_list_item(ctx, ancestor, j == end - 1, "", items[j].snapshot_id,
+				      description, 24, columns);
 		}
 		i = end;
 	}
@@ -198,14 +197,14 @@ static int sync_cmd_restore_db(struct cli_context *ctx, const char *snapshot_id,
 	int rc;
 
 	if (!snapshot_id || !destination) {
-		CMD_ERROR("usage: /sync restore-db <snapshot-id> <destination>");
+		CMD_ERROR(ctx, "usage: /sync restore-db <snapshot-id> <destination>");
 		return -EINVAL;
 	}
 	rc = runtime_sync_restore_db(ctx->runtime, snapshot_id, destination);
 	if (rc == 0)
-		CMD_OK("restored database to %s", destination);
+		CMD_OK(ctx, "restored database to %s", destination);
 	else
-		CMD_ERROR("database restore failed: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "database restore failed: %s", morph_strerror(rc));
 	return rc;
 }
 
@@ -233,13 +232,15 @@ static int sync_confirm_db_replace(struct cli_context *ctx, const char *path)
 		return rc == 0 && confirmed;
 	}
 
-	printf(ANSI_BOLD ANSI_YELLOW
+	printf(ctx,
+	       ANSI_BOLD ANSI_YELLOW
 	       "? Replace %s with this backup? Current data will be backed up. "
-	       "[y/N]: " ANSI_RESET, path);
+	       "[y/N]: " ANSI_RESET,
+	       path);
 	fflush(stdout);
 	tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		putchar('\n');
+		putchar(ctx, '\n');
 		return 0;
 	}
 	if (!fgets(answer, sizeof(answer), tty))
@@ -256,20 +257,19 @@ static int sync_cmd_replace_db(struct cli_context *ctx,
 
 	rc = runtime_sync_prepare_db_replace(ctx->runtime, snapshot_id, &plan);
 	if (rc != 0) {
-		CMD_ERROR("database restore preparation failed: %s",
-			  morph_strerror(rc));
+		CMD_ERROR(ctx, "database restore preparation failed: %s", morph_strerror(rc));
 		return rc;
 	}
 	if (!confirmed && !sync_confirm_db_replace(ctx, plan.path)) {
 		(void)morph_sync_rollback_db_replace(&plan);
 		(void)runtime_sync_start_instance(ctx->runtime, NULL, NULL);
-		printf(ANSI_DIM "  cancelled" ANSI_RESET "\n");
+		printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
 		return 0;
 	}
 	ctx->db_restore_plan = plan;
 	ctx->pending_db_restore = 1;
 	ctx->running = 0;
-	CMD_OK("restore prepared; restarting Morph to replace %s", plan.path);
+	CMD_OK(ctx, "restore prepared; restarting Morph to replace %s", plan.path);
 	return 0;
 }
 
@@ -295,17 +295,17 @@ static int sync_cmd(struct cli_context *ctx, int argc, char **argv)
 			 strcmp(destination, "-y") == 0);
 
 		if (!snapshot_id) {
-			CMD_ERROR("usage: /sync restore-db <snapshot-id> "
-				  "[destination|--yes]");
+			CMD_ERROR(ctx, "usage: /sync restore-db <snapshot-id> "
+				       "[destination|--yes]");
 			return -EINVAL;
 		}
 		if (destination && !yes)
 			return sync_cmd_restore_db(ctx, snapshot_id, destination);
 		return sync_cmd_replace_db(ctx, snapshot_id, yes);
 	}
-	CMD_ERROR("usage: /sync [status|now|conflicts|restore <trash-id>|"
-		  "backups [path]|restore-db <snapshot-id> "
-		  "[destination|--yes]]");
+	CMD_ERROR(ctx, "usage: /sync [status|now|conflicts|restore <trash-id>|"
+		       "backups [path]|restore-db <snapshot-id> "
+		       "[destination|--yes]]");
 	return -EINVAL;
 }
 

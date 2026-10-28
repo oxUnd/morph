@@ -48,8 +48,8 @@ class HooksTest : public ::testing::Test
 		setenv("HOME", directory.c_str(), 1);
 		std::filesystem::create_directory(directory + "/.morph");
 		cfg = std::make_unique<struct config>();
-		config_set_defaults(cfg.get());
-		ASSERT_EQ(db_open(&database, ":memory:"), 0);
+		config_set_defaults(NULL, cfg.get());
+		ASSERT_EQ(db_open(NULL, &database, ":memory:"), 0);
 	}
 	void TearDown() override
 	{
@@ -141,7 +141,7 @@ TEST_F(HooksTest, UserTrustSurvivesDatabaseReopenAndWorkspaceChange)
 {
 	Define("PreToolUse", "printf '{}'");
 	db_close(&database);
-	ASSERT_EQ(db_open(&database, (directory + "/trust.db").c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &database, (directory + "/trust.db").c_str()), 0);
 	Init();
 	TrustAll();
 	cJSON *rows = hook_manager_list(&hooks);
@@ -149,7 +149,7 @@ TEST_F(HooksTest, UserTrustSurvivesDatabaseReopenAndWorkspaceChange)
 	cJSON_Delete(rows);
 	hook_manager_cleanup(&hooks);
 	db_close(&database);
-	ASSERT_EQ(db_open(&database, (directory + "/trust.db").c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &database, (directory + "/trust.db").c_str()), 0);
 	std::filesystem::create_directory(directory + "/another-workspace");
 	ASSERT_EQ(hook_manager_init(&hooks, &database, cfg.get(), "",
 		(directory + "/another-workspace").c_str()), 0);
@@ -402,7 +402,7 @@ TEST_F(HooksTest, InlineTomlIsPortableAndStaleReviewIsRejected)
 	Write("[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype='command'\ncommand=\"printf "
 	      "'{}'\"\ntimeout=3\n",
 	      "config.toml");
-	ASSERT_EQ(config_load(cfg.get(), path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, cfg.get(), path.c_str()), 0);
 	EXPECT_NE(strstr(cfg->hooks_json, "Stop"), nullptr);
 	Init(path.c_str());
 	TrustAll();

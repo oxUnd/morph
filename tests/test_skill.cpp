@@ -33,7 +33,7 @@ TEST_F(SkillParseTest, MinimalFrontmatter) {
 		"---\n"
 		"# Test\n"
 		"Body content here.\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "test-skill");
 	EXPECT_STREQ(fm.description, "A test skill for unit testing.");
@@ -54,7 +54,7 @@ TEST_F(SkillParseTest, AllFields) {
 		"  version: \"1.0\"\n"
 		"---\n"
 		"Instructions here.\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "full-skill");
 	EXPECT_STREQ(fm.license, "MIT");
@@ -69,7 +69,7 @@ TEST_F(SkillParseTest, AllFields) {
 
 TEST_F(SkillParseTest, NoClosingDelimiter) {
 	const char *data = "---\nname: broken\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_NE(rc, 0);
 }
 
@@ -79,7 +79,7 @@ TEST_F(SkillParseTest, EmptyBody) {
 		"name: empty-body\n"
 		"description: No body.\n"
 		"---\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "empty-body");
 }
@@ -90,7 +90,7 @@ TEST_F(SkillParseTest, QuotedValues) {
 		"name: quoted\n"
 		"description: \"A description with: colons\"\n"
 		"---\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "quoted");
 	EXPECT_STREQ(fm.description, "A description with: colons");
@@ -105,7 +105,7 @@ TEST_F(SkillParseTest, BlockScalarChinese) {
 		"  第二行内容。\n"
 		"---\n"
 		"# 正文\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "中文技能");
 	EXPECT_NE(strstr(fm.description, "这是一个多行的中文描述。"), nullptr);
@@ -119,16 +119,16 @@ TEST_F(SkillParseTest, EmptyValueFollowedByKey) {
 		"description:\n"
 		"license: MIT\n"
 		"---\n";
-	int rc = skill_parse(data, strlen(data), &fm, &body);
+	int rc = skill_parse(NULL, data, strlen(data), &fm, &body);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "x");
 	EXPECT_STREQ(fm.license, "MIT");
 }
 
 TEST_F(SkillParseTest, NullInput) {
-	int rc = skill_parse(nullptr, 0, &fm, &body);
+	int rc = skill_parse(NULL, nullptr, 0, &fm, &body);
 	EXPECT_NE(rc, 0);
-	rc = skill_parse("---\nname:x\n---\n", 17, nullptr, &body);
+	rc = skill_parse(NULL, "---\nname:x\n---\n", 17, nullptr, &body);
 	EXPECT_NE(rc, 0);
 }
 
@@ -137,7 +137,7 @@ protected:
 	struct skill_registry reg;
 	char tmpdir[256];
 	void SetUp() override {
-		skill_registry_init(&reg);
+		skill_registry_init(NULL, &reg);
 		snprintf(tmpdir, sizeof(tmpdir), "/tmp/morph_skill_test_%d", getpid());
 		mkdir(tmpdir, 0755);
 	}
@@ -198,7 +198,7 @@ TEST_F(SkillRegistryTest, DiscoverMultiple) {
 
 TEST_F(SkillRegistryTest, BuiltinMorphUsageSkillExists) {
 	struct skill_registry builtin;
-	skill_registry_init(&builtin);
+	skill_registry_init(NULL, &builtin);
 	int rc = skill_discover(&builtin, MORPH_TEST_SOURCE_DIR "/skills");
 	ASSERT_GE(rc, 0);
 	struct skill_entry *e = skill_lookup(&builtin, "morph-usage");
@@ -346,7 +346,7 @@ TEST_F(SkillRegistryTest, DuplicateNameSkipped) {
 }
 
 TEST_F(SkillRegistryTest, NullParams) {
-	skill_registry_init(nullptr);
+	skill_registry_init(NULL, nullptr);
 	skill_registry_cleanup(nullptr);
 	EXPECT_EQ(skill_discover(nullptr, "/tmp"), -EINVAL);
 	EXPECT_EQ(skill_discover(&reg, nullptr), -EINVAL);
@@ -364,8 +364,8 @@ protected:
 	struct tool_registry tools;
 	struct skill_registry skills;
 	void SetUp() override {
-		tool_registry_init(&tools);
-		skill_registry_init(&skills);
+		tool_registry_init(NULL, &tools);
+		skill_registry_init(NULL, &skills);
 	}
 	void TearDown() override {
 		skill_registry_cleanup(&skills);
@@ -444,8 +444,8 @@ TEST_F(SkillActivateToolTest, RegistryScopedSkillRegistry) {
 	char tmpdir1[256];
 	char tmpdir2[256];
 
-	tool_registry_init(&other_tools);
-	skill_registry_init(&other_skills);
+	tool_registry_init(NULL, &other_tools);
+	skill_registry_init(NULL, &other_skills);
 	snprintf(tmpdir1, sizeof(tmpdir1),
 		 "/tmp/morph_skill_tool_scope_a_%d", getpid());
 	snprintf(tmpdir2, sizeof(tmpdir2),
@@ -533,7 +533,7 @@ TEST_F(SkillParseFrontmatterTest, BasicFrontmatter) {
 		"---\n"
 		"# Body\n"
 		"This body should not be read.\n");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "test-fm");
 	EXPECT_STREQ(fm.description, "A frontmatter-only test.");
@@ -552,7 +552,7 @@ TEST_F(SkillParseFrontmatterTest, AllFields) {
 		"  version: \"1.0\"\n"
 		"---\n"
 		"Big body here.\n");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "full-fm");
 	EXPECT_STREQ(fm.license, "MIT");
@@ -568,7 +568,7 @@ TEST_F(SkillParseFrontmatterTest, LargeBodySkipped) {
 	for (int i = 0; i < 10000; i++)
 		content += "Line of body content that should be skipped.\n";
 	write_file(content.c_str());
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "big-body");
 	EXPECT_STREQ(fm.description, "Has big body.");
@@ -576,31 +576,31 @@ TEST_F(SkillParseFrontmatterTest, LargeBodySkipped) {
 
 TEST_F(SkillParseFrontmatterTest, NoClosingDelimiter) {
 	write_file("---\nname: broken\ndescription: No close.\n");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(SkillParseFrontmatterTest, NoOpeningDelimiter) {
 	write_file("name: nope\ndescription: Bad.\n---\n");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(SkillParseFrontmatterTest, EmptyFile) {
 	write_file("");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(SkillParseFrontmatterTest, NonexistentFile) {
-	int rc = skill_parse_frontmatter("/tmp/nonexistent_12345.md", &fm);
+	int rc = skill_parse_frontmatter(NULL, "/tmp/nonexistent_12345.md", &fm);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(SkillParseFrontmatterTest, NullParams) {
 	struct skill_frontmatter tmp;
-	EXPECT_NE(skill_parse_frontmatter(nullptr, &tmp), 0);
-	EXPECT_NE(skill_parse_frontmatter("/tmp/x", nullptr), 0);
+	EXPECT_NE(skill_parse_frontmatter(NULL, nullptr, &tmp), 0);
+	EXPECT_NE(skill_parse_frontmatter(NULL, "/tmp/x", nullptr), 0);
 }
 
 TEST_F(SkillParseFrontmatterTest, BlockScalarDescription) {
@@ -612,7 +612,7 @@ TEST_F(SkillParseFrontmatterTest, BlockScalarDescription) {
 		"  Line two.\n"
 		"---\n"
 		"Body.\n");
-	int rc = skill_parse_frontmatter(tmppath, &fm);
+	int rc = skill_parse_frontmatter(NULL, tmppath, &fm);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(fm.name, "block-fm");
 	EXPECT_NE(strstr(fm.description, "Line one."), nullptr);

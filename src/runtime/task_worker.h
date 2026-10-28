@@ -1,6 +1,7 @@
 #ifndef MORPH_RUNTIME_TASK_WORKER_H
 #define MORPH_RUNTIME_TASK_WORKER_H
 
+struct morph_log;
 #include "agent/tools/scheduled_tasks.h"
 #include "db/database.h"
 #include "runtime/tasks.h"
@@ -9,6 +10,7 @@
 #include <pthread.h>
 
 struct runtime_task_worker {
+	struct morph_log *logger;
 	pthread_t thread;
 	pthread_mutex_t lock;
 	pthread_cond_t cond;

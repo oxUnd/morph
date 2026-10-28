@@ -700,16 +700,16 @@ TEST_F(SyncTest, RecoversPreparedAndFinalizesAppliedRestoreJournals) {
 	ASSERT_EQ(morph_sync_restore_plan_from_json(json, &decoded), 0);
 	EXPECT_STREQ(decoded.target, plan.target);
 	free(json);
-	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_FALSE(file_exists(plan.staging));
 	EXPECT_FALSE(file_exists(plan.journal));
 
 	ASSERT_EQ(morph_sync_prepare_db_replace(&cfg, backups[0].snapshot_id,
 		&plan), 0);
 	ASSERT_EQ(morph_sync_apply_db_replace(&plan), 0);
-	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_TRUE(file_exists(plan.journal));
-	ASSERT_EQ(morph_sync_finalize_db_replacements(local), 0);
+	ASSERT_EQ(morph_sync_finalize_db_replacements(NULL, local), 0);
 	EXPECT_FALSE(file_exists(plan.rollback));
 	EXPECT_FALSE(file_exists(plan.journal));
 	morph_sync_backups_free(backups);
@@ -784,7 +784,7 @@ TEST_F(SyncTest, RecoversCrashAfterCurrentDatabaseWasMovedAside) {
 	free(updated);
 	cJSON_Delete(json);
 
-	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_EQ(SqliteCount(database), 2);
 	EXPECT_FALSE(file_exists(plan.rollback));
 	EXPECT_FALSE(file_exists(plan.journal));
@@ -886,7 +886,7 @@ TEST_F(SyncTest, IgnoresUntrustedRecoveryJournalWithoutTouchingTarget) {
 	ASSERT_EQ(file_write_all(plan.journal, tampered, strlen(tampered)), 0);
 	free(tampered);
 	cJSON_Delete(json);
-	ASSERT_EQ(morph_sync_recover_db_replacements(local), 0);
+	ASSERT_EQ(morph_sync_recover_db_replacements(NULL, local), 0);
 	EXPECT_EQ(SqliteCount(database), 1);
 	EXPECT_TRUE(file_exists(plan.journal));
 	ASSERT_EQ(file_write_all(plan.journal, original, strlen(original)), 0);

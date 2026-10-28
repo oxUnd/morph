@@ -1,4 +1,6 @@
 #include "img_qa.h"
+#include "agent/tool_runtime.h"
+#include "models/llm.h"
 #include "agent/tool.h"
 #include "agent/tool_context.h"
 #include "agent/tool_runtime.h"
@@ -77,7 +79,14 @@ static int img_qa_take_call_error(struct tool_result *result,
 static int img_qa_exec(const char *args_json, struct tool_result *result,
 		       void *user_data)
 {
-	struct img_qa_context *ctx = user_data;
+	struct img_qa_context local = {0};
+	struct model request_model;
+
+	if (user_data)
+		local = *(struct img_qa_context *)user_data;
+	local.llm =
+		model_bind_tool_request(local.llm, result ? result->runtime : NULL, &request_model);
+	struct img_qa_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 	struct model *llm = ctx ? ctx->llm : NULL;
 	int rc = 0;
@@ -177,10 +186,11 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 		goto out;
 	}
 
+	stream.runtime = result->runtime;
 	stream.buf = &buf;
 	stream.tool = "img_qa";
 	stream.kind = "text";
-	(void)tool_runtime_emit_stream("img_qa", "status",
+	(void)tool_runtime_emit_stream(result->runtime, "img_qa", "status",
 				       "sending image question to model");
 	rc = llm->chat_with_image(
 		llm, arena,

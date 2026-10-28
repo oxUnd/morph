@@ -131,10 +131,9 @@ static void *job_run(void *opaque)
 	int t = 0, r = 0, p = 0;
 	int rc;
 
-	tool_registry_init(&pending);
+	tool_registry_init(job->runtime->options.logger, &pending);
 	job->client->interrupt_check = job_interrupted;
 	job->client->interrupt_user_data = job;
-	http_set_interrupt_check(job_interrupted, job);
 	rc = runtime_mcp_client_connect(job->client, job_event, job);
 	if (rc == 0) {
 		job_state(job, RUNTIME_MCP_DISCOVERING);
@@ -150,7 +149,6 @@ static void *job_run(void *opaque)
 		if (rc == 0)
 			rc = job_publish(job, &pending);
 	}
-	http_set_interrupt_check(NULL, NULL);
 	job->client->interrupt_check = NULL;
 	job->client->interrupt_user_data = NULL;
 	tool_registry_cleanup(&pending);
@@ -189,7 +187,8 @@ int runtime_mcp_background_start(struct runtime *runtime)
 		job = &runtime->mcp_jobs[runtime->mcp_job_count];
 		rc = pthread_mutex_init(&job->lock, NULL);
 		if (rc != 0) {
-			log_warn("mcp: worker lock failed: %s", morph_strerror(-rc));
+			log_warn(job->runtime->options.logger, "mcp: worker lock failed: %s",
+				 morph_strerror(-rc));
 			continue;
 		}
 		job->runtime = runtime;

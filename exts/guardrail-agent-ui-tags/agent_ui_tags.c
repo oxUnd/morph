@@ -7,11 +7,9 @@
 static int tag_allowed(const char *name)
 {
 	if (!name) return 0;
-	static const char *allowed[] = {
-		"speak", "vocab", "sentence", "button",
-		"navigate", "highlight", "copy", NULL
-	};
-	for (const char **tag = allowed; *tag; tag++) {
+	static const char *const allowed[] = {"speak",	  "vocab",     "sentence", "button",
+					      "navigate", "highlight", "copy",	   NULL};
+	for (const char *const *tag = allowed; *tag; tag++) {
 		if (strcmp(name, *tag) == 0)
 			return 1;
 	}

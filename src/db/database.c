@@ -323,17 +323,18 @@ static const char credit_schema_sql[] =
 	"CREATE INDEX IF NOT EXISTS idx_credit_events_session "
 	"ON credit_events(session_id, created_at);";
 
-int db_open(struct db *db, const char *path)
+int db_open(struct morph_log *logger, struct db *db, const char *path)
 {
 	if (!db || !path)
 		return -EINVAL;
 	memset(db, 0, sizeof(*db));
+	db->logger = logger;
 	strncpy(db->path, path, sizeof(db->path) - 1);
 	int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
 		SQLITE_OPEN_FULLMUTEX;
 	int rc = sqlite3_open_v2(path, &db->handle, flags, NULL);
 	if (rc != SQLITE_OK) {
-		log_err("failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
+		log_err(logger, "failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
 		sqlite3_close(db->handle);
 		db->handle = NULL;
 		MORPH_RETURN(MORPH_ERR_DB);
@@ -342,7 +343,7 @@ int db_open(struct db *db, const char *path)
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
 	/* Multiple frontends and background workers may write this WAL database. */
 	sqlite3_busy_timeout(db->handle, 5000);
-	log_info("database opened: %s", path);
+	log_info(logger, "database opened: %s", path);
 	return 0;
 }
 
@@ -351,7 +352,7 @@ void db_close(struct db *db)
 	if (db && db->handle) {
 		sqlite3_close(db->handle);
 		db->handle = NULL;
-		log_info("database closed: %s", db->path);
+		log_info(db ? db->logger : NULL, "database closed: %s", db->path);
 	}
 }
 
@@ -362,7 +363,7 @@ int db_exec(struct db *db, const char *sql)
 	char *err = NULL;
 	int rc = sqlite3_exec(db->handle, sql, NULL, NULL, &err);
 	if (rc != SQLITE_OK) {
-		log_err("db exec error: %s", err);
+		log_err(db ? db->logger : NULL, "db exec error: %s", err);
 		sqlite3_free(err);
 		MORPH_RETURN(MORPH_ERR_DB);
 	}

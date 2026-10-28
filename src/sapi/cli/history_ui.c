@@ -25,14 +25,6 @@ struct history_view {
 	const char *message;
 };
 
-static volatile sig_atomic_t history_signal;
-
-static void history_handle_signal(int signal_number)
-{
-	if (signal_number != SIGWINCH)
-		history_signal = signal_number;
-}
-
 static const char *history_string(const cJSON *object, const char *key)
 {
 	const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, key);
@@ -234,6 +226,8 @@ static int history_entry_document(struct cli_context *ctx, const cJSON *entry,
 
 static int history_document(struct history_view *view)
 {
+	struct cli_context *ctx = view->ctx;
+	(void)ctx;
 	morph_buf_t text = {0};
 	int rc = morph_buf_init(&text, BUFSIZ);
 
@@ -269,8 +263,8 @@ static int history_wrap(struct history_view *view)
 		morph_buf_cstr(&view->document), width);
 }
 
-static int history_frame_line(morph_buf_t *frame, int columns, const char *text,
-	const char *style)
+static int history_frame_line(struct cli_context *ctx, morph_buf_t *frame, int columns,
+			      const char *text, const char *style)
 {
 	char clipped[BUFSIZ];
 	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
@@ -282,8 +276,8 @@ static int history_frame_line(morph_buf_t *frame, int columns, const char *text,
 	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
 		(size_t)(columns > 1 ? columns - 1 : 0), 0);
 	free(safe);
-	rc = morph_buf_printf(frame, "%s%s%s\n", cli_color_enabled() ? style : "",
-		clipped, cli_color_enabled() ? ANSI_RESET : "");
+	rc = morph_buf_printf(frame, "%s%s%s\n", cli_color_enabled(ctx) ? style : "", clipped,
+			      cli_color_enabled(ctx) ? ANSI_RESET : "");
 	return rc;
 }
 
@@ -427,7 +421,8 @@ static int history_render(struct history_view *view)
 		if (text.failed)
 			rc = -ENOMEM;
 		else
-			rc = history_frame_line(&frame, view->columns, morph_buf_cstr(&text), style);
+			rc = history_frame_line(view->ctx, &frame, view->columns,
+						morph_buf_cstr(&text), style);
 	}
 	if (rc == 0)
 		rc = tui_frame_present(&view->frame, stdout, view->columns,
@@ -524,11 +519,7 @@ int cli_history_view(struct cli_context *ctx, cJSON *report)
 	struct history_view view = {.ctx = ctx, .report = report, .rows = 24, .columns = 80};
 	struct tui_screen screen = {0};
 	cJSON *entry;
-	struct sigaction action = {0};
-	struct sigaction previous[4];
-	const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGWINCH};
 	const struct tui_screen_ops ops = {.update = history_update, .draw = history_draw};
-	int installed = 0;
 	int rc = morph_array_init(&view.matches, 32, sizeof(entry));
 
 	view.selection.flags = TUI_LIST_VIM;
@@ -537,39 +528,26 @@ int cli_history_view(struct cli_context *ctx, cJSON *report)
 	if (rc == 0) rc = history_filter(&view);
 	if (rc == 0 && view.matches.nelts)
 		view.selection.index = view.matches.nelts - 1;
-	history_signal = 0;
-	action.sa_handler = history_handle_signal;
-	sigemptyset(&action.sa_mask);
-	while (rc == 0 && installed < 4) {
-		if (sigaction(signals[installed], &action, &previous[installed]) != 0)
-			MORPH_SET_ERR(rc, -errno);
-		else
-			installed++;
-	}
-	screen.interrupted = &history_signal;
+	morph_signal_flag_set(&ctx->interrupted, 0);
+	screen.interrupted = &ctx->interrupted;
 	if (rc == 0)
 		rc = tui_screen_open(&screen, stdin, stdout,
 			TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
 	if (rc == 0) rc = tui_screen_run(&screen, &ops, &view);
-	int caught = history_signal;
+	int caught = morph_signal_flag_take(&ctx->interrupted);
 	int leave_rc = tui_screen_close(&screen);
 
 	if (caught && rc == -EINTR) rc = 0;
 	if (rc == 0) rc = leave_rc;
-	while (installed > 0) {
-		installed--;
-		(void)sigaction(signals[installed], &previous[installed], NULL);
-	}
 	morph_array_cleanup(&view.matches);
 	tui_text_view_cleanup(&view.document_view);
 	morph_buf_cleanup(&view.document);
 	tui_frame_cleanup(&view.frame);
 	tui_editor_cleanup(&view.query);
-	if (caught) raise(caught);
 	MORPH_RETURN(rc);
 }
 
-void cli_history_print(const cJSON *report, int limit, int all)
+void cli_history_print(struct cli_context *ctx, const cJSON *report, int limit, int all)
 {
 	const cJSON *entries = cJSON_GetObjectItemCaseSensitive(report, "entries");
 	int count = cJSON_GetArraySize(entries);
@@ -579,12 +557,13 @@ void cli_history_print(const cJSON *report, int limit, int all)
 	if (morph_buf_init(&line, 512) != 0)
 		return;
 
-	printf("History · %d saved entries · showing %d\n", count, count - first);
-	printf("Next turn (estimated): %lld replay items · %lld stored history tokens\n",
-		(long long)history_number(report, "active_items"),
-		(long long)history_number(report, "history_tokens"));
-	printf("History only; instructions, memory, tool definitions and new input are additional.\n"
-		"Selection may change after validation or compaction before send.\n");
+	printf(ctx, "History · %d saved entries · showing %d\n", count, count - first);
+	printf(ctx, "Next turn (estimated): %lld replay items · %lld stored history tokens\n",
+	       (long long)history_number(report, "active_items"),
+	       (long long)history_number(report, "history_tokens"));
+	printf(ctx, "History only; instructions, memory, tool definitions and new input are "
+		    "additional.\n"
+		    "Selection may change after validation or compaction before send.\n");
 	for (int i = first; i < count; i++) {
 		const cJSON *entry = cJSON_GetArrayItem(entries, i);
 		char preview[HISTORY_PREVIEW_MAX + 1];
@@ -596,12 +575,14 @@ void cli_history_print(const cJSON *report, int limit, int all)
 			history_label(entry), history_string(entry, "tool_name"),
 			(long long)history_number(entry, "token_count"), preview) != 0)
 			break;
-		(void)cli_print_untrusted_text(morph_buf_cstr(&line), UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		putchar('\n');
+		(void)cli_print_untrusted_text(ctx, morph_buf_cstr(&line),
+					       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		putchar(ctx, '\n');
 	}
 	morph_buf_cleanup(&line);
-	printf("IN direct · VIA SUMMARY condensed · OUT not sent · LEGACY not yet migrated\n"
-		"/history --entry N [--stored] · /history --last-request · /history --messages\n");
+	printf(ctx,
+	       "IN direct · VIA SUMMARY condensed · OUT not sent · LEGACY not yet migrated\n"
+	       "/history --entry N [--stored] · /history --last-request · /history --messages\n");
 }
 
 int cli_history_entry_print(struct cli_context *ctx, const cJSON *report,
@@ -621,9 +602,10 @@ int cli_history_entry_print(struct cli_context *ctx, const cJSON *report,
 		}
 	}
 	if (rc == 0)
-		(void)cli_print_untrusted_text(morph_buf_cstr(&text), UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_print_untrusted_text(ctx, morph_buf_cstr(&text),
+					       UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
-		putchar('\n');
+		putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
 	MORPH_RETURN(rc);
 }
@@ -637,9 +619,10 @@ int cli_history_request_print(struct cli_context *ctx)
 		return rc;
 	rc = history_request_document(ctx, &text);
 	if (rc == 0)
-		(void)cli_print_untrusted_text(morph_buf_cstr(&text), UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_print_untrusted_text(ctx, morph_buf_cstr(&text),
+					       UTF8_TERMINAL_TEXT_MULTILINE);
 	if (rc == 0)
-		putchar('\n');
+		putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
 	MORPH_RETURN(rc);
 }

@@ -1,6 +1,7 @@
 #ifndef SANDBOX_H
 #define SANDBOX_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -15,6 +16,7 @@ extern "C" {
 #define EXT_PERM_TEMP		(1 << 7)
 
 struct sandbox_config {
+	struct morph_log *logger;
 	unsigned int permissions;
 	int path_policy_enabled;
 	int read_all;
@@ -46,13 +48,13 @@ struct sandbox_config {
 };
 
 int sandbox_enter(struct sandbox_config *cfg);
-int sandbox_apply_seccomp(unsigned int permissions);
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
-			  int max_cpu_seconds, int max_file_size_mb,
-			  int max_processes, int max_open_files);
-int sandbox_apply_fs(const char **allowed_paths, int count,
+int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions);
+int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, int max_memory_mb,
+			  int max_cpu_seconds, int max_file_size_mb, int max_processes,
+			  int max_open_files);
+int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions);
-int sandbox_apply_env(const char *const *allowed_env, int count,
+int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, int count,
 		      unsigned int permissions);
 int sandbox_start_isolated_session(void);
 int sandbox_close_inherited_fds(void);

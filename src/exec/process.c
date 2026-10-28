@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "process.h"
 #include "sandbox.h"
 #include "util/buf.h"
@@ -558,6 +559,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 		return rc;
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		const char *shell = process_manager_shell(manager);
 
 		(void)setpgid(0, 0);
@@ -575,7 +577,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 		close(stdin_pipe[0]);
 		if (options->hook_mode) {
 			static const char *const allowed[] = {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"};
-			if (sandbox_apply_env(allowed, 5, 0) != 0)
+			if (sandbox_apply_env(options ? options->logger : NULL, allowed, 5, 0) != 0)
 				_exit(126);
 			(void)setenv("MORPH_HOOK_ACTIVE", "1", 1);
 			(void)sandbox_close_inherited_fds();
@@ -624,6 +626,7 @@ static int spawn_pty_process(struct process_manager *manager,
 	if (pid < 0)
 		MORPH_RETURN_ERRNO();
 	if (pid == 0) {
+		morph_signals_reset_child();
 		const char *shell = process_manager_shell(manager);
 
 		(void)setpgid(0, 0);

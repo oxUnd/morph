@@ -49,7 +49,7 @@ TEST(PlanTool, LongCreateOutputIsNotTruncated)
 	struct tool_registry tools;
 	struct plan_registry plans;
 
-	tool_registry_init(&tools);
+	tool_registry_init(NULL, &tools);
 	plan_registry_init(&plans);
 	ASSERT_EQ(plan_tool_init(&tools, &plans, nullptr), 0);
 
@@ -107,8 +107,8 @@ TEST(PlanTool, RegistryScopedPlanRegistry)
 	struct plan_registry plans1;
 	struct plan_registry plans2;
 
-	tool_registry_init(tools1.get());
-	tool_registry_init(tools2.get());
+	tool_registry_init(NULL, tools1.get());
+	tool_registry_init(NULL, tools2.get());
 	plan_registry_init(&plans1);
 	plan_registry_init(&plans2);
 	ASSERT_EQ(plan_tool_init(tools1.get(), &plans1, nullptr), 0);
@@ -158,7 +158,7 @@ TEST(PlanTool, PlanIdSelectsDuplicateNames)
 	struct tool_registry tools;
 	struct plan_registry plans;
 
-	tool_registry_init(&tools);
+	tool_registry_init(NULL, &tools);
 	plan_registry_init(&plans);
 	ASSERT_EQ(plan_tool_init(&tools, &plans, nullptr), 0);
 
@@ -208,7 +208,7 @@ TEST(PlanTool, LegacyNameUpdateStillWorks)
 	struct tool_registry tools;
 	struct plan_registry plans;
 
-	tool_registry_init(&tools);
+	tool_registry_init(NULL, &tools);
 	plan_registry_init(&plans);
 	ASSERT_EQ(plan_tool_init(&tools, &plans, nullptr), 0);
 
@@ -249,14 +249,14 @@ TEST(PlanTool, DurableCheckpointRestoresEvidenceAndRollsBackInvalidUpdates)
 {
 	struct db db{};
 	struct session session{};
-	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_open(NULL, &db, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "checkpoint", "test", &session), 0);
 	auto plans = std::make_unique<plan_registry>();
 	plan_registry_init(plans.get());
 	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
 	auto tools = std::make_unique<tool_registry>();
-	tool_registry_init(tools.get());
+	tool_registry_init(NULL, tools.get());
 	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
 	struct tool_result result{};
 	tool_result_init(&result);
@@ -305,9 +305,9 @@ TEST(PlanTool, VerificationReportBecomesStaleWhenAnInputChanges)
 	auto plans = std::make_unique<plan_registry>();
 	auto tools = std::make_unique<tool_registry>();
 	plan_registry_init(plans.get());
-	tool_registry_init(tools.get());
+	tool_registry_init(NULL, tools.get());
 	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
-	auto *tctx = tool_context_create(dir, dir);
+	auto *tctx = tool_context_create(NULL, dir, dir);
 	ASSERT_NE(tctx, nullptr);
 	plan_tool_set_context(tools.get(), tctx);
 	struct tool_result result{};
@@ -335,7 +335,7 @@ TEST(PlanTool, ConcurrentCreatesPreserveAllCheckpoints)
 	auto plans = std::make_unique<plan_registry>();
 	auto tools = std::make_unique<tool_registry>();
 	plan_registry_init(plans.get());
-	tool_registry_init(tools.get());
+	tool_registry_init(NULL, tools.get());
 	ASSERT_EQ(plan_tool_init(tools.get(), plans.get(), nullptr), 0);
 	std::vector<std::thread> workers;
 	for (int i = 0; i < 4; i++) workers.emplace_back([&, i] {

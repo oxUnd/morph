@@ -42,7 +42,7 @@ protected:
 
 	void SetUp() override
 	{
-		cli_set_color_enabled(0);
+		cli_set_color_enabled(&ctx, 0);
 		ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
@@ -56,7 +56,7 @@ protected:
 		cli_ui_cleanup(&ctx);
 		cli_presentation_cleanup(&ctx);
 		cli_terminal_cleanup(&ctx);
-		cli_set_color_enabled(1);
+		cli_set_color_enabled(&ctx, 1);
 	}
 };
 
@@ -69,6 +69,8 @@ static int cli_owner_call(void *opaque)
 {
 	cli_owner_call_data *data =
 		static_cast<cli_owner_call_data *>(opaque);
+	struct cli_context *ctx = data->ctx;
+	(void)ctx;
 
 	data->ran_on_owner = cli_ui_is_owner(data->ctx);
 	return 73;

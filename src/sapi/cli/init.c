@@ -22,11 +22,12 @@ struct cli_credit_warning {
 static int cli_credit_warning_on_owner(void *opaque)
 {
 	struct cli_credit_warning *warning = opaque;
+	struct cli_context *ctx = warning->ctx;
+	(void)ctx;
 
 	cli_terminal_history_begin(warning->ctx);
-	printf(ANSI_YELLOW "credits warning: %lld / %d today"
-	       ANSI_RESET "\n", (long long)warning->credits,
-	       warning->daily_limit);
+	printf(ctx, ANSI_YELLOW "credits warning: %lld / %d today" ANSI_RESET "\n",
+	       (long long)warning->credits, warning->daily_limit);
 	cli_terminal_history_end(warning->ctx);
 	return 0;
 }
@@ -59,19 +60,17 @@ static void cli_usage_observer(const struct model_usage *usage,
 	}
 }
 
-int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *db_path,
-	     const char *workdir, const char *session_name,
-	     enum cli_presentation_mode mode)
+static int cli_initialize(struct cli_context *ctx, const char *config_path, const char *db_path,
+			  const char *workdir, const char *session_name,
+			  enum cli_presentation_mode mode)
 {
 	struct runtime_options options;
 	int rc;
 
 	if (!ctx)
 		return -EINVAL;
-	memset(ctx, 0, sizeof(*ctx));
 	ctx->presentation_mode = mode;
-	cli_set_structured_output(mode == CLI_PRESENT_EVENTS_JSON);
+	cli_set_structured_output(ctx, mode == CLI_PRESENT_EVENTS_JSON);
 	ctx->event_cb = cli_event_callback;
 	ctx->event_user_data = ctx;
 	rc = cli_terminal_init(ctx, stdout, STDOUT_FILENO);
@@ -89,6 +88,7 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 		return rc;
 	}
 	memset(&options, 0, sizeof(options));
+	options.logger = ctx->logger;
 	options.startup_error = &ctx->startup_error;
 	options.config_path = config_path ? config_path : "~/.morph/config.toml";
 	options.db_path = db_path ? db_path : "~/.morph/data.db";
@@ -140,6 +140,32 @@ int cli_init(struct cli_context *ctx, const char *config_path,
 	}
 	rc = cli_sync_start(ctx);
 	if (rc != 0)
-		log_warn("failed to start sync worker: %s", morph_strerror(rc));
+		log_warn(ctx ? ctx->logger : NULL, "failed to start sync worker: %s",
+			 morph_strerror(rc));
 	return 0;
+}
+
+int cli_init(struct cli_context *ctx, struct morph_log *logger, const char *config_path,
+	     const char *db_path, const char *workdir, const char *session_name,
+	     enum cli_presentation_mode mode)
+{
+	if (!ctx)
+		MORPH_RETURN(-EINVAL);
+	memset(ctx, 0, sizeof(*ctx));
+	ctx->logger = logger;
+	int rc = morph_signal_listener_start(&ctx->signals, cli_signal_received, ctx);
+
+	if (rc == 0) {
+		rc = cli_initialize(ctx, config_path, db_path, workdir, session_name, mode);
+		if (rc != 0) {
+			morph_signal_listener_stop(&ctx->signals);
+		} else {
+			__atomic_store_n(&ctx->signals_ready, 1, __ATOMIC_RELEASE);
+			if (morph_signal_flag_get(&ctx->interrupted)) {
+				cli_shutdown(ctx);
+				MORPH_RETURN(-EINTR);
+			}
+		}
+	}
+	MORPH_RETURN(rc);
 }

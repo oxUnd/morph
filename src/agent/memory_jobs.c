@@ -47,6 +47,7 @@ struct memory_job {
 };
 
 struct memory_worker {
+	struct morph_log *logger;
 	pthread_mutex_t lock;
 	pthread_cond_t cv;
 	struct memory_job *head;
@@ -57,7 +58,7 @@ struct memory_worker {
 	int active;
 };
 
-struct memory_worker *memory_worker_create(void)
+struct memory_worker *memory_worker_create(struct morph_log *logger)
 {
 	struct memory_worker *worker = calloc(1, sizeof(*worker));
 
@@ -72,6 +73,7 @@ struct memory_worker *memory_worker_create(void)
 		free(worker);
 		return NULL;
 	}
+	worker->logger = logger;
 	return worker;
 }
 
@@ -290,7 +292,7 @@ static void *memory_async_worker(void *arg)
 		 * with the foreground db on the main thread. WAL keeps
 		 * concurrent reads/writes consistent. */
 		struct db worker_db = {0};
-		int rc = db_open(&worker_db, job->db_path);
+		int rc = db_open(worker ? worker->logger : NULL, &worker_db, job->db_path);
 		if (rc == 0) {
 			int claimed = memory_job_claim(&worker_db, job->opts.background_job_id);
 
@@ -307,12 +309,13 @@ static void *memory_async_worker(void *arg)
 				rc = claimed;
 			}
 			if (rc != 0 && rc != -ESTALE)
-				log_err("memory: background extraction failed: %s",
+				log_err(worker ? worker->logger : NULL,
+					"memory: background extraction failed: %s",
 					morph_strerror(rc));
 			db_close(&worker_db);
 		} else {
-			log_dbg("memory: async worker failed to open db: %d",
-				rc);
+			log_dbg(worker ? worker->logger : NULL,
+				"memory: async worker failed to open db: %d", rc);
 		}
 		memory_job_free(job);
 

@@ -1,4 +1,5 @@
 #include "tui/components.h"
+#include "util/signals.h"
 #include "util/error.h"
 
 #include <unistd.h>
@@ -26,7 +27,7 @@ int tui_screen_poll(struct tui_screen *screen, struct tui_event *event, int time
 	if (!screen || !event || !screen->session.active)
 		MORPH_RETURN(-EINVAL);
 	*event = (struct tui_event){.type = TUI_EVENT_TICK};
-	if (screen->interrupted && *screen->interrupted)
+	if (morph_signal_flag_get(screen->interrupted))
 		MORPH_RETURN(-EINTR);
 	int columns, rows;
 
@@ -63,7 +64,7 @@ int tui_screen_run(struct tui_screen *screen, const struct tui_screen_ops *ops, 
 	if (!screen || !ops || !ops->update || !ops->draw)
 		MORPH_RETURN(-EINVAL);
 	for (;;) {
-		if (screen->interrupted && *screen->interrupted)
+		if (morph_signal_flag_get(screen->interrupted))
 			MORPH_RETURN(-EINTR);
 		if (screen->dirty) {
 			int rc = ops->draw(data, screen);

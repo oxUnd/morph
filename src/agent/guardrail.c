@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "guardrail.h"
 #include "react.h"
 #include "models/llm.h"
@@ -418,7 +419,7 @@ int guardrail_rule_register(struct guardrail_config *cfg,
 	if (action_text)
 		strncpy(r->action_text, action_text, sizeof(r->action_text) - 1);
 	cfg->rule_count++;
-	log_dbg("guardrail: registered rule '%s' (hook=%d, type=%d)",
+	log_dbg(cfg ? cfg->logger : NULL, "guardrail: registered rule '%s' (hook=%d, type=%d)",
 		name, hook, type);
 	return 0;
 }
@@ -463,8 +464,8 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 		    char *reason_out, size_t reason_cap)
 {
 	if (!cfg->llm) {
-		log_warn("guardrail: LLM rule '%s' has no LLM model, skipping",
-			 rule->name);
+		log_warn(cfg ? cfg->logger : NULL,
+			 "guardrail: LLM rule '%s' has no LLM model, skipping", rule->name);
 		return GUARDRAIL_PASS;
 	}
 
@@ -497,8 +498,8 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 				    msgs, 1, NULL,
 				    llm_collect_cb, &collect);
 	if (status < 0 || collect.len == 0) {
-		log_warn("guardrail: LLM call failed for rule '%s', defaulting PASS",
-			 rule->name);
+		log_warn(cfg ? cfg->logger : NULL,
+			 "guardrail: LLM call failed for rule '%s', defaulting PASS", rule->name);
 		morph_buf_cleanup(&collect);
 		return GUARDRAIL_PASS;
 	}
@@ -507,7 +508,8 @@ guardrail_llm_check(const struct guardrail_rule *rule,
 	cJSON *root = cJSON_Parse(result_str);
 	free(result_str);
 	if (!root) {
-		log_warn("guardrail: LLM response not JSON for rule '%s', defaulting PASS",
+		log_warn(cfg ? cfg->logger : NULL,
+			 "guardrail: LLM response not JSON for rule '%s', defaulting PASS",
 			 rule->name);
 		return GUARDRAIL_PASS;
 	}
@@ -542,15 +544,17 @@ static const char *gr_check_text(const struct guardrail_rule *rule,
 	return NULL;
 }
 
-static enum guardrail_verdict
-guardrail_parse_check_result(const char *result_json,
-			     const struct guardrail_rule *rule,
-			     char *reason_out, size_t reason_cap)
+static enum guardrail_verdict guardrail_parse_check_result(struct morph_log *logger,
+							   const char *result_json,
+							   const struct guardrail_rule *rule,
+							   char *reason_out, size_t reason_cap)
 {
 	cJSON *root = cJSON_Parse(result_json);
 	if (!root) {
-		log_warn("guardrail: ext rule '%s' returned invalid JSON, "
-			 "defaulting PASS", rule->name);
+		log_warn(logger,
+			 "guardrail: ext rule '%s' returned invalid JSON, "
+			 "defaulting PASS",
+			 rule->name);
 		return GUARDRAIL_PASS;
 	}
 	cJSON *pass_item = cJSON_GetObjectItem(root, "pass");
@@ -565,28 +569,26 @@ guardrail_parse_check_result(const char *result_json,
 	return passed ? GUARDRAIL_PASS : GUARDRAIL_FAIL;
 }
 
-int guardrail_ext_so_load(struct guardrail_rule *rule)
+int guardrail_ext_so_load(struct morph_log *logger, struct guardrail_rule *rule)
 {
 	if (!rule || !rule->ext_entry[0]) return -EINVAL;
 	void *handle = dlopen(rule->ext_entry, RTLD_NOW | RTLD_LOCAL);
 	if (!handle) {
-		log_err("guardrail: dlopen %s failed: %s",
-			rule->ext_entry, dlerror());
+		log_err(logger, "guardrail: dlopen %s failed: %s", rule->ext_entry, dlerror());
 		return MORPH_ERR_LOAD;
 	}
 	void *sym = dlsym(handle, "guardrail_check");
 	guardrail_ext_check_fn fn = NULL;
 	memcpy(&fn, &sym, sizeof(fn));
 	if (!fn) {
-		log_err("guardrail: no 'guardrail_check' symbol in %s",
-			rule->ext_entry);
+		log_err(logger, "guardrail: no 'guardrail_check' symbol in %s", rule->ext_entry);
 		dlclose(handle);
 		return MORPH_ERR_LOAD;
 	}
 	rule->dl_handle = handle;
 	rule->ext_check = fn;
-	log_info("guardrail: loaded .so ext rule '%s' from %s",
-		 rule->name, rule->ext_entry);
+	log_info(logger, "guardrail: loaded .so ext rule '%s' from %s", rule->name,
+		 rule->ext_entry);
 	return 0;
 }
 
@@ -604,7 +606,8 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 		       char *reason_out, size_t reason_cap)
 {
 	if (!rule->ext_check) {
-		log_warn("guardrail: .so rule '%s' has no check fn", rule->name);
+		log_warn(ctx ? ctx->logger : NULL, "guardrail: .so rule '%s' has no check fn",
+			 rule->name);
 		return GUARDRAIL_PASS;
 	}
 	const char *text = gr_check_text(rule, ctx);
@@ -613,13 +616,15 @@ guardrail_ext_so_check(const struct guardrail_rule *rule,
 	int rc = rule->ext_check(text, rule->name, rule->description,
 				 &result_json);
 	if (rc != 0 || !result_json) {
-		log_warn("guardrail: .so rule '%s' returned %d, "
-			 "defaulting PASS", rule->name, rc);
+		log_warn(ctx ? ctx->logger : NULL,
+			 "guardrail: .so rule '%s' returned %d, "
+			 "defaulting PASS",
+			 rule->name, rc);
 		free(result_json);
 		return GUARDRAIL_PASS;
 	}
 	enum guardrail_verdict v = guardrail_parse_check_result(
-		result_json, rule, reason_out, reason_cap);
+		ctx ? ctx->logger : NULL, result_json, rule, reason_out, reason_cap);
 	free(result_json);
 	return v;
 }
@@ -653,7 +658,8 @@ guardrail_ext_exec_check(const struct guardrail_rule *rule,
 			 char *reason_out, size_t reason_cap)
 {
 	if (!rule->ext_entry[0]) {
-		log_warn("guardrail: ext rule '%s' has no entry path", rule->name);
+		log_warn(ctx ? ctx->logger : NULL, "guardrail: ext rule '%s' has no entry path",
+			 rule->name);
 		return GUARDRAIL_PASS;
 	}
 
@@ -691,6 +697,7 @@ guardrail_ext_exec_check(const struct guardrail_rule *rule,
 	}
 
 	if (pid == 0) {
+		morph_signals_reset_child();
 		close(stdin_pipe[1]); close(stdout_pipe[0]);
 		dup2(stdin_pipe[0], STDIN_FILENO);
 		dup2(stdout_pipe[1], STDOUT_FILENO);
@@ -740,7 +747,7 @@ guardrail_ext_exec_check(const struct guardrail_rule *rule,
 	if (!result_str) return GUARDRAIL_PASS;
 
 	enum guardrail_verdict v = guardrail_parse_check_result(
-		result_str, rule, reason_out, reason_cap);
+		ctx ? ctx->logger : NULL, result_str, rule, reason_out, reason_cap);
 	free(result_str);
 	return v;
 }
@@ -766,6 +773,10 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 		.triggered_rule = NULL
 	};
 	if (!cfg || !cfg->enabled) return r;
+	struct guardrail_eval_ctx evaluation = *eval;
+
+	evaluation.logger = cfg->logger;
+	eval = &evaluation;
 
 	for (int i = 0; i < cfg->rule_count; i++) {
 		const struct guardrail_rule *rule = &cfg->rules[i];
@@ -790,7 +801,8 @@ struct guardrail_result guardrail_run_hook(const struct guardrail_config *cfg,
 		if (v == GUARDRAIL_FAIL) {
 			r.verdict = GUARDRAIL_FAIL;
 			r.triggered_rule = rule;
-			log_info("guardrail[%s]: FAIL - %s", rule->name, r.reason);
+			log_info(cfg ? cfg->logger : NULL, "guardrail[%s]: FAIL - %s", rule->name,
+				 r.reason);
 			return r;
 		}
 	}

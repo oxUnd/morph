@@ -843,7 +843,8 @@ int memory_accept_input(struct db *db, int64_t session_id,
 	}
 	rc = memory_async_resume(db, opts);
 	if (rc != 0)
-		log_err("memory: recovering background jobs failed: %s", morph_strerror(rc));
+		log_err(db ? db->logger : NULL, "memory: recovering background jobs failed: %s",
+			morph_strerror(rc));
 	if (opts->hot_path_enabled)
 		return memory_capture_hot_path(db, session_id, input);
 	return 0;
@@ -2219,8 +2220,8 @@ static char *memory_llm_extract_json(struct model *llm, const char *user_input,
 	free(prompt);
 
 	if (rc != 0 || buf.len == 0) {
-		log_dbg("memory: LLM extraction failed (rc=%d, len=%zu)",
-			rc, buf.len);
+		log_dbg(llm ? llm->http.logger : NULL,
+			"memory: LLM extraction failed (rc=%d, len=%zu)", rc, buf.len);
 		morph_buf_cleanup(&buf);
 		return NULL;
 	}

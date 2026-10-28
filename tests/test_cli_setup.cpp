@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "sapi/cli/setup.h"
+#include "sapi/cli/cli.h"
 #include "sapi/cli/setup_ui.h"
 #include "config/config.h"
 #include "util/file.h"
@@ -23,6 +24,8 @@ protected:
 		rmdir(dir.c_str());
 	}
 	int run(const std::string &answers) {
+		struct cli_context _cli_output_context = {0};
+		struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 		FILE *input = tmpfile();
 		FILE *output = tmpfile();
 		if (!input || !output) {
@@ -32,7 +35,7 @@ protected:
 		}
 		fputs(answers.c_str(), input);
 		rewind(input);
-		int rc = cli_setup(path.c_str(), input, output);
+		int rc = cli_setup(_cli_output_context_ptr, path.c_str(), input, output);
 		fclose(input);
 		fclose(output);
 		return rc;
@@ -42,7 +45,7 @@ protected:
 TEST_F(CliSetupTest, SkipOptionalModels) {
 	ASSERT_GE(run(std::string(9, '\n')), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.model, "gpt-4o");
 	EXPECT_EQ(cfg.exec.network, 1);
 	EXPECT_EQ(cfg.models.text.context_limit, 128000);
@@ -57,7 +60,7 @@ TEST_F(CliSetupTest, SkipOptionalModels) {
 TEST_F(CliSetupTest, ConfigureBothMediaModels) {
 	ASSERT_GE(run("2\n\n\n\n\n\n\n1\n2\n2\n\n\n\n2\n1\n\n\n\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
 	EXPECT_EQ(cfg.models.text.context_limit, 1000000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 384000);
@@ -74,7 +77,7 @@ TEST_F(CliSetupTest, CustomAndInvalidInputsRoundTrip) {
 		"bad-name\nMORPH_SETUP_TEST_KEY\n1\n1\n2\n2\ncustom-video\n"
 		"https://example.test/api/v3\nCUSTOM_VIDEO_KEY\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.model, "my-\"model\\name");
 	EXPECT_STREQ(cfg.models.text.api_base, "http://localhost:8080/v1");
 	EXPECT_STREQ(cfg.models.text.api_key_env, "MORPH_SETUP_TEST_KEY");
@@ -89,24 +92,28 @@ TEST_F(CliSetupTest, CancellationDoesNotCreateFile) {
 }
 
 TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	ASSERT_EQ(file_write_all(path.c_str(), "# keep\n", 7), 0);
 	EXPECT_EQ(run(std::string(9, '\n')), -EEXIST);
 	char *contents = file_read_all(path.c_str(), nullptr);
 	ASSERT_NE(contents, nullptr);
 	EXPECT_STREQ(contents, "# keep\n");
 	free(contents);
-	EXPECT_EQ(cli_setup_if_missing(path.c_str(), 0), 0);
+	EXPECT_EQ(cli_setup_if_missing(&_cli_output_context, path.c_str(), 0), 0);
 }
 
 TEST_F(CliSetupTest, NonInteractiveDoesNotCreateConfig) {
-	EXPECT_EQ(cli_setup_if_missing(path.c_str(), 0), -ENOENT);
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	EXPECT_EQ(cli_setup_if_missing(&_cli_output_context, path.c_str(), 0), -ENOENT);
 	EXPECT_FALSE(file_exists(path.c_str()));
 }
 
 TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
 	ASSERT_GE(run("2\n\n\n\n\n\n\n2\n1\n\n\n\n\n\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
 	EXPECT_EQ(cfg.models.text.context_limit, 1000000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 384000);
@@ -123,7 +130,7 @@ TEST_F(CliSetupTest, VisionUsesChatAdapterIndependentlyOfImageGeneration) {
 TEST_F(CliSetupTest, VisionAcceptsArkEndpoint) {
 	ASSERT_GE(run("\n\n\n\n\n\n2\n3\nep-vision-test\n256000\n16000\n\n\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.vision.provider, "volcengine");
 	EXPECT_STREQ(cfg.models.vision.adapter, "openai-chat-compatible");
 	EXPECT_STREQ(cfg.models.vision.model, "ep-vision-test");
@@ -132,7 +139,7 @@ TEST_F(CliSetupTest, VisionAcceptsArkEndpoint) {
 TEST_F(CliSetupTest, VisionAcceptsDeepSeekWithDeepSeekAdapter) {
 	ASSERT_GE(run("\n\n\n\n\n\n2\n2\n\n\n\n\n\n\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.vision.provider, "deepseek");
 	EXPECT_STREQ(cfg.models.vision.adapter, "deepseek");
 	EXPECT_STREQ(cfg.models.vision.model, "deepseek-flash");
@@ -181,7 +188,7 @@ TEST_F(CliSetupTest, PlainPromptsValidateAndPersistCustomTokenLimits) {
 	ASSERT_GE(run("4\nmy-model\n0\n2147483648\n32000\n32000\n-1\n4096\n"
 		"http://localhost:8080/v1\nMORPH_SETUP_KEY\n1\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_EQ(cfg.models.text.context_limit, 32000);
 	EXPECT_EQ(cfg.models.text.max_tokens, 4096);
 }
@@ -189,7 +196,7 @@ TEST_F(CliSetupTest, PlainPromptsValidateAndPersistCustomTokenLimits) {
 TEST_F(CliSetupTest, DeepSeekThinkingCanBeEnabledInPlainSetup) {
 	ASSERT_GE(run("2\n\n\n\n2\n\n\n1\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_STREQ(cfg.models.text.adapter, "deepseek");
 	EXPECT_TRUE(cli_setup_thinking_enabled(&cfg.models.text));
 	EXPECT_STREQ(cfg.models.text.extra_body_json,
@@ -201,7 +208,7 @@ TEST_F(CliSetupTest, ThinkingPromptValidatesAndCanBeCancelled) {
 	EXPECT_FALSE(file_exists(path.c_str()));
 	ASSERT_GE(run("2\n\n\n\ninvalid\n1\n\n\n1\n1\n1\n"), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, path.c_str()), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, path.c_str()), 0);
 	EXPECT_FALSE(cli_setup_thinking_enabled(&cfg.models.text));
 }
 

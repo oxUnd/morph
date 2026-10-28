@@ -160,10 +160,8 @@ static int volcengine_execute(struct model *model,
 		return rc;
 	}
 	headers[0] = morph_buf_cstr(&auth);
-	rc = http_post_ex_timeout(morph_buf_cstr(&url), body_text,
-				  strlen(body_text),
-				  "application/json", headers, 1,
-				  model->timeout_seconds, &resp);
+	rc = http_post_ex_timeout(&model->http, morph_buf_cstr(&url), body_text, strlen(body_text),
+				  "application/json", headers, 1, model->timeout_seconds, &resp);
 	free(body_text);
 	morph_buf_cleanup(&url);
 	morph_buf_cleanup(&auth);

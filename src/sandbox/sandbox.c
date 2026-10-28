@@ -17,9 +17,9 @@
 
 extern char **environ;
 
-int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
-			  int max_cpu_seconds, int max_file_size_mb,
-			  int max_processes, int max_open_files)
+int sandbox_apply_rlimits(struct morph_log *logger, unsigned int permissions, int max_memory_mb,
+			  int max_cpu_seconds, int max_file_size_mb, int max_processes,
+			  int max_open_files)
 {
 	struct rlimit rl;
 
@@ -37,23 +37,22 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 			rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
 #ifdef RLIMIT_AS
 			if (setrlimit(RLIMIT_AS, &rl) != 0) {
-				log_warn("sandbox: setrlimit RLIMIT_AS failed: %s",
+				log_warn(logger, "sandbox: setrlimit RLIMIT_AS failed: %s",
 					 strerror(errno));
 			} else {
-				log_info("sandbox: RLIMIT_AS set to %dMB",
-					 max_memory_mb);
+				log_info(logger, "sandbox: RLIMIT_AS set to %dMB", max_memory_mb);
 			}
 #else
-			log_info("sandbox: RLIMIT_AS not available on this OS");
+			log_info(logger, "sandbox: RLIMIT_AS not available on this OS");
 #endif
 		} else {
-			log_info("sandbox: RLIMIT_AS skipped (EXT_PERM_EXEC set)");
+			log_info(logger, "sandbox: RLIMIT_AS skipped (EXT_PERM_EXEC set)");
 		}
 #ifdef RLIMIT_DATA
 		rl.rlim_cur = (rlim_t)max_memory_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_memory_mb * 1024 * 1024;
 		if (setrlimit(RLIMIT_DATA, &rl) != 0) {
-			log_warn("sandbox: setrlimit RLIMIT_DATA failed: %s",
+			log_warn(logger, "sandbox: setrlimit RLIMIT_DATA failed: %s",
 				 strerror(errno));
 		}
 #endif
@@ -63,11 +62,10 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 		rl.rlim_cur = (rlim_t)max_cpu_seconds;
 		rl.rlim_max = (rlim_t)max_cpu_seconds + 1;
 		if (setrlimit(RLIMIT_CPU, &rl) != 0) {
-			log_warn("sandbox: setrlimit RLIMIT_CPU failed: %s",
+			log_warn(logger, "sandbox: setrlimit RLIMIT_CPU failed: %s",
 				 strerror(errno));
 		} else {
-			log_info("sandbox: RLIMIT_CPU set to %ds",
-				 max_cpu_seconds);
+			log_info(logger, "sandbox: RLIMIT_CPU set to %ds", max_cpu_seconds);
 		}
 	}
 
@@ -75,11 +73,10 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 		rl.rlim_cur = (rlim_t)max_file_size_mb * 1024 * 1024;
 		rl.rlim_max = (rlim_t)max_file_size_mb * 1024 * 1024;
 		if (setrlimit(RLIMIT_FSIZE, &rl) != 0) {
-			log_warn("sandbox: setrlimit RLIMIT_FSIZE failed: %s",
+			log_warn(logger, "sandbox: setrlimit RLIMIT_FSIZE failed: %s",
 				 strerror(errno));
 		} else {
-			log_info("sandbox: RLIMIT_FSIZE set to %dMB",
-				 max_file_size_mb);
+			log_info(logger, "sandbox: RLIMIT_FSIZE set to %dMB", max_file_size_mb);
 		}
 	}
 
@@ -88,11 +85,10 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 		rl.rlim_cur = (rlim_t)max_processes;
 		rl.rlim_max = (rlim_t)max_processes;
 		if (setrlimit(RLIMIT_NPROC, &rl) != 0) {
-			log_warn("sandbox: setrlimit RLIMIT_NPROC failed: %s",
+			log_warn(logger, "sandbox: setrlimit RLIMIT_NPROC failed: %s",
 				 strerror(errno));
 		} else {
-			log_info("sandbox: RLIMIT_NPROC set to %d",
-				 max_processes);
+			log_info(logger, "sandbox: RLIMIT_NPROC set to %d", max_processes);
 		}
 	}
 #else
@@ -102,10 +98,9 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 	rl.rlim_cur = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
 	rl.rlim_max = max_open_files > 0 ? (rlim_t)max_open_files : 1024;
 	if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
-		log_warn("sandbox: setrlimit RLIMIT_NOFILE failed: %s",
-			 strerror(errno));
+		log_warn(logger, "sandbox: setrlimit RLIMIT_NOFILE failed: %s", strerror(errno));
 	} else {
-		log_info("sandbox: RLIMIT_NOFILE set to %d",
+		log_info(logger, "sandbox: RLIMIT_NOFILE set to %d",
 			 max_open_files > 0 ? max_open_files : 1024);
 	}
 
@@ -113,8 +108,7 @@ int sandbox_apply_rlimits(unsigned int permissions, int max_memory_mb,
 	rl.rlim_cur = 0;
 	rl.rlim_max = 0;
 	if (setrlimit(RLIMIT_CORE, &rl) != 0) {
-		log_warn("sandbox: setrlimit RLIMIT_CORE failed: %s",
-			 strerror(errno));
+		log_warn(logger, "sandbox: setrlimit RLIMIT_CORE failed: %s", strerror(errno));
 	}
 
 	(void)permissions;
@@ -160,13 +154,13 @@ static int env_in_allow_list(const char *name,
 	return 0;
 }
 
-int sandbox_apply_env(const char *const *allowed_env, int count,
+int sandbox_apply_env(struct morph_log *logger, const char *const *allowed_env, int count,
 		      unsigned int permissions)
 {
 	/* If ENV permission is set with no explicit allow list, leave
 	 * the environment untouched — the caller has opted in. */
 	if ((permissions & EXT_PERM_ENV) && (count <= 0 || !allowed_env)) {
-		log_info("sandbox: env unrestricted (EXT_PERM_ENV set)");
+		log_info(logger, "sandbox: env unrestricted (EXT_PERM_ENV set)");
 		return 0;
 	}
 
@@ -213,8 +207,7 @@ int sandbox_apply_env(const char *const *allowed_env, int count,
 	}
 	free(names);
 
-	log_info("sandbox: env filtered (%d vars removed, %d allowed)",
-		 removed, count);
+	log_info(logger, "sandbox: env filtered (%d vars removed, %d allowed)", removed, count);
 	return 0;
 }
 
@@ -430,7 +423,7 @@ static int sandbox_add_landlock_runtime_proc(int ruleset_fd, uint64_t access,
 	return 0;
 }
 
-int sandbox_apply_fs(const char **allowed_paths, int count,
+int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
 	int abi;
@@ -443,12 +436,11 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	abi = ll_get_abi();
 	if (abi < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS) {
-			log_err("sandbox: landlock not supported by kernel");
+			log_err(logger, "sandbox: landlock not supported by kernel");
 			return -ENOSYS;
 		}
 		int err = errno;
-		log_err("sandbox: landlock probe failed: %s",
-			strerror(err));
+		log_err(logger, "sandbox: landlock probe failed: %s", strerror(err));
 		MORPH_RETURN(-err);
 	}
 
@@ -519,8 +511,7 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	int ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0) {
 		int err = errno;
-		log_err("sandbox: landlock create_ruleset failed: %s",
-			 strerror(err));
+		log_err(logger, "sandbox: landlock create_ruleset failed: %s", strerror(err));
 		MORPH_RETURN(-err);
 	}
 
@@ -538,19 +529,20 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			continue;
 		int fd = open(allowed_paths[i], O_PATH | O_CLOEXEC);
 		if (fd < 0) {
-			log_warn("sandbox: landlock: cannot open path '%s': %s",
+			log_warn(logger, "sandbox: landlock: cannot open path '%s': %s",
 				 allowed_paths[i], strerror(errno));
 			continue;
 		}
 		if (ll_add_rule(ruleset_fd, fd, path_access) < 0) {
-			log_warn("sandbox: landlock: add_rule for '%s' failed: %s",
+			log_warn(logger, "sandbox: landlock: add_rule for '%s' failed: %s",
 				 allowed_paths[i], strerror(errno));
 			close(fd);
 			continue;
 		}
-		log_info("sandbox: landlock: allowed path '%s' "
-			 "(access=0x%llx)", allowed_paths[i],
-			 (unsigned long long)path_access);
+		log_info(logger,
+			 "sandbox: landlock: allowed path '%s' "
+			 "(access=0x%llx)",
+			 allowed_paths[i], (unsigned long long)path_access);
 		close(fd);
 	}
 	if (permissions & EXT_PERM_PTY) {
@@ -567,8 +559,7 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			return pty_rc;
 		}
 		if (abi < 5)
-			log_warn("sandbox: Landlock ABI %d cannot scope PTY ioctl",
-				 abi);
+			log_warn(logger, "sandbox: Landlock ABI %d cannot scope PTY ioctl", abi);
 	}
 	if (permissions & EXT_PERM_TEMP) {
 		uint64_t temp_access = handled &
@@ -640,12 +631,15 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 			if (fd < 0)
 				continue;
 			if (ll_add_rule(ruleset_fd, fd, read_access) < 0) {
-				log_warn("sandbox: landlock: system path "
+				log_warn(logger,
+					 "sandbox: landlock: system path "
 					 "'%s' add_rule failed: %s",
 					 sys_paths[i], strerror(errno));
 			} else {
-				log_info("sandbox: landlock: system path "
-					 "'%s' (read+exec)", sys_paths[i]);
+				log_info(logger,
+					 "sandbox: landlock: system path "
+					 "'%s' (read+exec)",
+					 sys_paths[i]);
 			}
 			close(fd);
 		}
@@ -666,27 +660,27 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
 		int err = errno;
-		log_err("sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s",
-			 strerror(err));
+		log_err(logger, "sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s", strerror(err));
 		close(ruleset_fd);
 		MORPH_RETURN(-err);
 	}
 
 	if (ll_restrict_self(ruleset_fd) < 0) {
 		int err = errno;
-		log_err("sandbox: landlock: restrict_self failed: %s",
-			 strerror(err));
+		log_err(logger, "sandbox: landlock: restrict_self failed: %s", strerror(err));
 		close(ruleset_fd);
 		MORPH_RETURN(-err);
 	}
 
 	close(ruleset_fd);
-	log_info("sandbox: landlock fs restrictions applied "
-		 "(perms=0x%x, %d allowed paths)", permissions, count);
+	log_info(logger,
+		 "sandbox: landlock fs restrictions applied "
+		 "(perms=0x%x, %d allowed paths)",
+		 permissions, count);
 	return 0;
 }
 
-static int sandbox_add_landlock_paths(int ruleset_fd, char **paths,
+static int sandbox_add_landlock_paths(struct morph_log *logger, int ruleset_fd, char **paths,
 				      int count, uint64_t access)
 {
 	for (int i = 0; i < count; i++) {
@@ -701,13 +695,13 @@ static int sandbox_add_landlock_paths(int ruleset_fd, char **paths,
 			 * exist on this host; skipping one must not
 			 * disable the whole sandbox.
 			 */
-			log_warn("sandbox: skipping policy path '%s': %s",
-				 paths[i], strerror(errno));
+			log_warn(logger, "sandbox: skipping policy path '%s': %s", paths[i],
+				 strerror(errno));
 			continue;
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
-			log_warn("sandbox: cannot add policy path '%s': %s",
-				 paths[i], strerror(errno));
+			log_warn(logger, "sandbox: cannot add policy path '%s': %s", paths[i],
+				 strerror(errno));
 			close(fd);
 			continue;
 		}
@@ -758,8 +752,8 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	if (ruleset_fd < 0)
 		MORPH_RETURN_ERRNO();
 	if (!cfg->read_all) {
-		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->read_paths,
-			cfg->read_paths_count, read_access);
+		rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, cfg->read_paths,
+						cfg->read_paths_count, read_access);
 		if (rc != 0) {
 			close(ruleset_fd);
 			return rc;
@@ -770,8 +764,8 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 
 				if (access(path, F_OK) != 0)
 					continue;
-				rc = sandbox_add_landlock_paths(ruleset_fd,
-					&path, 1, read_access);
+				rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, &path, 1,
+								read_access);
 				if (rc != 0) {
 					close(ruleset_fd);
 					return rc;
@@ -785,19 +779,19 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 			}
 		}
 	}
-	rc = sandbox_add_landlock_paths(ruleset_fd, cfg->write_paths,
-		cfg->write_paths_count, write_access);
+	rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, cfg->write_paths,
+					cfg->write_paths_count, write_access);
 	if (rc == 0) {
 		char *dev_null = (char *)"/dev/null";
 		uint64_t dev_null_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
 			(write_access & LANDLOCK_ACCESS_FS_TRUNCATE);
 
-		rc = sandbox_add_landlock_paths(ruleset_fd, &dev_null, 1,
-			dev_null_access);
+		rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, &dev_null, 1,
+						dev_null_access);
 	}
 	if (rc == 0)
-		rc = sandbox_add_landlock_paths(ruleset_fd, cfg->delete_paths,
-			cfg->delete_paths_count, delete_access);
+		rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, cfg->delete_paths,
+						cfg->delete_paths_count, delete_access);
 	if (rc == 0 && cfg->allow_pty) {
 		uint64_t pty_access = LANDLOCK_ACCESS_FS_WRITE_FILE |
 			(handled & LANDLOCK_ACCESS_FS_READ_FILE);
@@ -806,7 +800,7 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 			pty_access |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 		rc = sandbox_add_landlock_pty(ruleset_fd, pty_access);
 		if (rc == 0 && abi < 5)
-			log_warn("sandbox: Landlock ABI %d cannot scope PTY ioctl",
+			log_warn(cfg->logger, "sandbox: Landlock ABI %d cannot scope PTY ioctl",
 				 abi);
 	}
 	if (rc == 0 && cfg->allow_temp) {
@@ -1132,7 +1126,7 @@ static int sandbox_sbpl_network(morph_buf_t *profile,
 	return morph_buf_puts(profile, "(allow network*)\n");
 }
 
-int sandbox_apply_fs(const char **allowed_paths, int count,
+int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
 	/*
@@ -1144,8 +1138,8 @@ int sandbox_apply_fs(const char **allowed_paths, int count,
 	(void)allowed_paths;
 	(void)count;
 	(void)permissions;
-	log_info("sandbox: macOS fs restrictions deferred to "
-		 "sandbox_enter_darwin (SBPL profile)");
+	log_info(logger, "sandbox: macOS fs restrictions deferred to "
+			 "sandbox_enter_darwin (SBPL profile)");
 	return 0;
 }
 
@@ -1181,12 +1175,12 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 	if (!profile)
 		return -ENOMEM;
 
-	log_info("sandbox: macOS SBPL profile:\n%s", profile);
+	log_info(cfg ? cfg->logger : NULL, "sandbox: macOS SBPL profile:\n%s", profile);
 	rv = sandbox_init(profile, 0, &errorbuf);
 	free(profile);
 
 	if (rv != 0) {
-		log_warn("sandbox: sandbox_init failed: %s",
+		log_warn(cfg ? cfg->logger : NULL, "sandbox: sandbox_init failed: %s",
 			 errorbuf ? errorbuf : "unknown error");
 		if (errorbuf)
 			sandbox_free_error(errorbuf);
@@ -1196,7 +1190,7 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 	if (errorbuf)
 		sandbox_free_error(errorbuf);
 
-	log_info("sandbox: macOS sandbox_init applied");
+	log_info(cfg ? cfg->logger : NULL, "sandbox: macOS sandbox_init applied");
 	return 0;
 }
 
@@ -1204,14 +1198,14 @@ int sandbox_enter_darwin(struct sandbox_config *cfg)
 
 #else /* Neither Linux nor macOS */
 
-int sandbox_apply_fs(const char **allowed_paths, int count,
+int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int count,
 		     unsigned int permissions)
 {
 	(void)allowed_paths;
 	(void)count;
 	(void)permissions;
-	log_info("sandbox: filesystem path restrictions not available "
-		 "on this platform");
+	log_info(logger, "sandbox: filesystem path restrictions not available "
+			 "on this platform");
 	return 0;
 }
 
@@ -1332,7 +1326,7 @@ static int fb_deny_ip_socket(morph_array_t *fb, int nr)
 		(unsigned int)offsetof(struct seccomp_data, nr));
 }
 
-int sandbox_apply_seccomp(unsigned int permissions)
+int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 {
 	morph_array_t fb;
 	int rc;
@@ -1534,8 +1528,7 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	 */
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
 		rc = -errno;
-		log_err("sandbox: PR_SET_NO_NEW_PRIVS failed: %s",
-			strerror(errno));
+		log_err(logger, "sandbox: PR_SET_NO_NEW_PRIVS failed: %s", strerror(errno));
 		goto fail;
 	}
 
@@ -1545,13 +1538,14 @@ int sandbox_apply_seccomp(unsigned int permissions)
 	prog.filter = fb.elts;
 	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) < 0) {
 		rc = -errno;
-		log_err("sandbox: SECCOMP_MODE_FILTER failed: %s",
-			strerror(errno));
+		log_err(logger, "sandbox: SECCOMP_MODE_FILTER failed: %s", strerror(errno));
 		goto fail;
 	}
 
-	log_info("sandbox: seccomp denylist installed (%zu instructions, "
-		 "perms=0x%x)", fb.nelts, permissions);
+	log_info(logger,
+		 "sandbox: seccomp denylist installed (%zu instructions, "
+		 "perms=0x%x)",
+		 fb.nelts, permissions);
 	morph_array_cleanup(&fb);
 	return 0;
 
@@ -1567,11 +1561,11 @@ fail:
 
 #if !defined(__linux__)
 
-int sandbox_apply_seccomp(unsigned int permissions)
+int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 {
 	(void)permissions;
-	log_info("sandbox: seccomp-bpf not available on this platform, "
-		 "using rlimits only");
+	log_info(logger, "sandbox: seccomp-bpf not available on this platform, "
+			 "using rlimits only");
 	return 0;
 }
 
@@ -1638,21 +1632,19 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (cfg->development_runtime)
 		effective_permissions |= EXT_PERM_ENV;
 
-	log_info("sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d",
-		 cfg->permissions, cfg->max_memory_mb, cfg->max_cpu_seconds,
-		 cfg->max_file_size_mb, cfg->max_processes);
+	log_info(cfg ? cfg->logger : NULL,
+		 "sandbox_enter: perms=0x%x mem=%dMB cpu=%ds fsize=%dMB nproc=%d", cfg->permissions,
+		 cfg->max_memory_mb, cfg->max_cpu_seconds, cfg->max_file_size_mb,
+		 cfg->max_processes);
 
-	rc = sandbox_apply_env((const char *const *)cfg->allowed_env,
-			       cfg->allowed_env_count,
-			       effective_permissions);
+	rc = sandbox_apply_env(cfg ? cfg->logger : NULL, (const char *const *)cfg->allowed_env,
+			       cfg->allowed_env_count, effective_permissions);
 	if (rc < 0)
 		return rc;
 
-	rc = sandbox_apply_rlimits(effective_permissions, cfg->max_memory_mb,
-				   cfg->max_cpu_seconds,
-				   cfg->max_file_size_mb,
-				   cfg->max_processes,
-				   cfg->max_open_files);
+	rc = sandbox_apply_rlimits(cfg ? cfg->logger : NULL, effective_permissions,
+				   cfg->max_memory_mb, cfg->max_cpu_seconds, cfg->max_file_size_mb,
+				   cfg->max_processes, cfg->max_open_files);
 	if (rc < 0)
 		return rc;
 
@@ -1661,14 +1653,13 @@ int sandbox_enter(struct sandbox_config *cfg)
 		rc = sandbox_apply_path_policy(cfg);
 	else
 #endif
-		rc = sandbox_apply_fs((const char **)cfg->allowed_paths,
-				       cfg->allowed_paths_count,
-				       effective_permissions);
+		rc = sandbox_apply_fs(cfg ? cfg->logger : NULL, (const char **)cfg->allowed_paths,
+				      cfg->allowed_paths_count, effective_permissions);
 	if (rc < 0)
 		return rc;
 
 #ifdef __linux__
-	rc = sandbox_apply_seccomp(effective_permissions);
+	rc = sandbox_apply_seccomp(cfg->logger, effective_permissions);
 	if (rc < 0)
 		return rc;
 #elif defined(__APPLE__)
@@ -1676,7 +1667,7 @@ int sandbox_enter(struct sandbox_config *cfg)
 	if (rc < 0)
 		return rc;
 #else
-	log_err("sandbox: no platform-specific isolation available");
+	log_err(cfg->logger, "sandbox: no platform-specific isolation available");
 	return -ENOSYS;
 #endif
 

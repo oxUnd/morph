@@ -1,6 +1,7 @@
 #ifndef SUB_AGENT_H
 #define SUB_AGENT_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,7 +32,10 @@ struct sub_agent_entry {
 	struct model *llm;
 };
 
+struct tool_runtime_context;
+
 struct sub_agent_task {
+	int depth;
 	char id[SUB_AGENT_TASK_ID_MAX];
 	int64_t parent_session_id;
 	int64_t child_session_id;
@@ -65,6 +69,7 @@ struct sub_agent_trace_event {
 };
 
 struct sub_agent_runtime {
+	struct morph_log *logger;
 	struct sub_agent_entry entries[SUB_AGENT_MAX];
 	int entry_count;
 	struct sub_agent_task tasks[SUB_AGENT_TASK_MAX];
@@ -108,6 +113,7 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 			 struct compress_config *compress);
 
 void sub_agent_runtime_destroy(struct sub_agent_runtime *rt);
+void sub_agent_runtime_cancel(struct sub_agent_runtime *rt);
 
 int sub_agent_runtime_set_event_callback(struct sub_agent_runtime *rt,
 					 morph_event_cb cb, void *user);
@@ -139,24 +145,19 @@ struct tool_registry *
 sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 			      struct sub_agent_entry *entry);
 
-struct react_context *
-sub_agent_create_context(struct sub_agent_runtime *rt,
-			 struct sub_agent_entry *entry,
-			 const char *task);
+struct react_context *sub_agent_create_context(struct sub_agent_runtime *rt,
+					       const struct tool_runtime_context *runtime,
+					       struct sub_agent_entry *entry, const char *task);
 
-int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
-			  struct sub_agent_entry *entry,
-			  const char *task, char **result);
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+			  struct sub_agent_entry *entry, const char *task, char **result);
 
-int sub_agent_delegate(struct sub_agent_runtime *rt,
-		       const char *agent_name, const char *task,
-		       char **task_id_out);
+int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+		       const char *agent_name, const char *task, char **task_id_out);
 
-int sub_agent_fanout(struct sub_agent_runtime *rt,
-		     const char *agent_name,
-		     const char **tasks, int task_count,
-		     enum sub_agent_merge_strategy merge,
-		     char **result);
+int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+		     const char *agent_name, const char **tasks, int task_count,
+		     enum sub_agent_merge_strategy merge, char **result);
 
 int sub_agent_check_status(struct sub_agent_runtime *rt,
 			   const char *task_id,

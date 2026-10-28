@@ -39,9 +39,8 @@ static enum ext_purpose parse_purpose(const char *s)
 	return EXT_PURPOSE_TOOL;
 }
 
-static int parse_sandbox_capabilities(toml_datum_t arr,
-				      unsigned int *permissions,
-				      int *named_filesystem)
+static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr,
+				      unsigned int *permissions, int *named_filesystem)
 {
 	static const struct {
 		const char *name;
@@ -79,7 +78,7 @@ static int parse_sandbox_capabilities(toml_datum_t arr,
 			}
 		}
 		if (!found) {
-			log_err("unknown sandbox capability: %s", item.u.s);
+			log_err(logger, "unknown sandbox capability: %s", item.u.s);
 			MORPH_RETURN(-EINVAL);
 		}
 	}
@@ -117,7 +116,8 @@ static char *normalize_manifest_schema(char *schema, int is_output)
 	return out;
 }
 
-static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
+static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
+				struct ext_manifest *out)
 {
 	int named_filesystem = 0;
 	if (tbl.type != TOML_TABLE || !out)
@@ -160,8 +160,8 @@ static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 	{
 		toml_datum_t capabilities = toml_get(tbl,
 			"sandbox_capabilities");
-		int capability_rc = parse_sandbox_capabilities(capabilities,
-			&out->permissions, &named_filesystem);
+		int capability_rc = parse_sandbox_capabilities(
+			logger, capabilities, &out->permissions, &named_filesystem);
 
 		if (capability_rc != 0)
 			return capability_rc;
@@ -169,7 +169,7 @@ static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 	toml_datum_t ap = toml_get(tbl, "allowed_paths");
 	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
 	if (named_filesystem && out->allowed_paths_count == 0) {
-		log_err("filesystem capability requires allowed_paths");
+		log_err(logger, "filesystem capability requires allowed_paths");
 		MORPH_RETURN(-EINVAL);
 	}
 	MGET_INT("max_memory_mb", out->max_memory_mb);
@@ -212,29 +212,29 @@ static int manifest_parse_table(toml_datum_t tbl, struct ext_manifest *out)
 	parse_string_list(am, &out->allowed_mach_services,
 		&out->allowed_mach_services_count);
 
-	log_info("manifest parsed: name=%s type=%s purpose=%d",
-		 out->name, out->type, out->purpose);
+	log_info(logger, "manifest parsed: name=%s type=%s purpose=%d", out->name, out->type,
+		 out->purpose);
 	return 0;
 }
 
-int manifest_parse(const char *toml_data, struct ext_manifest *out)
+int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_manifest *out)
 {
 	if (!toml_data || !out)
 		return -EINVAL;
 
 	toml_result_t parsed = toml_parse(toml_data, (int)strlen(toml_data));
 	if (!parsed.ok) {
-		log_err("manifest parse error: %s", parsed.errmsg);
+		log_err(logger, "manifest parse error: %s", parsed.errmsg);
 		toml_free(parsed);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
-	int rc = manifest_parse_table(parsed.toptab, out);
+	int rc = manifest_parse_table(logger, parsed.toptab, out);
 	toml_free(parsed);
 	return rc;
 }
 
-int manifest_parse_file(const char *path, struct ext_manifest *out)
+int manifest_parse_file(struct morph_log *logger, const char *path, struct ext_manifest *out)
 {
 	FILE *file;
 	toml_result_t parsed;
@@ -248,12 +248,12 @@ int manifest_parse_file(const char *path, struct ext_manifest *out)
 	parsed = toml_parse_file(file);
 	fclose(file);
 	if (!parsed.ok) {
-		log_err("manifest parse error in %s: %s", path, parsed.errmsg);
+		log_err(logger, "manifest parse error in %s: %s", path, parsed.errmsg);
 		toml_free(parsed);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
-	rc = manifest_parse_table(parsed.toptab, out);
+	rc = manifest_parse_table(logger, parsed.toptab, out);
 	toml_free(parsed);
 	return rc;
 }

@@ -47,6 +47,8 @@ enum tool_artifact_kind {
 	TOOL_ARTIFACT_VIDEO,
 };
 
+struct morph_log;
+
 struct tool_artifact {
 	enum tool_artifact_kind kind;
 	char path[PATH_MAX];
@@ -74,7 +76,11 @@ struct tool_desc {
 	const char *input_format;
 };
 
+struct tool_runtime_context;
+
 struct tool_result {
+	/* Borrowed execution input, valid until the tool call returns. */
+	const struct tool_runtime_context *runtime;
 	cJSON *envelope;
 	morph_str_t text;
 	char *owned;
@@ -150,6 +156,7 @@ struct tool_entry {
 };
 
 struct tool_registry {
+	struct morph_log *logger;
 	struct tool_entry *entries;
 	morph_array_t storage;
 	int count;
@@ -159,7 +166,7 @@ struct tool_registry {
 	morph_strmap_t disabled_by_name;
 };
 
-void tool_registry_init(struct tool_registry *reg);
+void tool_registry_init(struct morph_log *logger, struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
 int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *spec);

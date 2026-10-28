@@ -6,12 +6,12 @@
 int main(void)
 {
 	struct ext ex;
-	int rc = ext_load(&ex, "exts/demo-translate");
+	int rc = ext_load(NULL, &ex, "exts/demo-translate");
 	if (rc < 0) {
-		rc = ext_load(&ex, "../exts/demo-translate");
+		rc = ext_load(NULL, &ex, "../exts/demo-translate");
 	}
 	if (rc < 0) {
-		rc = ext_load(&ex, "/Users/und/Work/c-family/morph/exts/demo-translate");
+		rc = ext_load(NULL, &ex, "/Users/und/Work/c-family/morph/exts/demo-translate");
 	}
 	if (rc < 0) {
 		printf("FAIL: ext_load failed (%d)\n", rc);

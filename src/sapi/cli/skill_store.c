@@ -70,7 +70,8 @@ static int directory_names(const char *path, morph_array_t *names)
 	return 0;
 }
 
-static int scan_directory(const char *path, morph_array_t *candidates, int depth)
+static int scan_directory(struct morph_log *logger, const char *path, morph_array_t *candidates,
+			  int depth)
 {
 	char skill_md[PATH_MAX];
 	struct stat st;
@@ -89,7 +90,7 @@ static int scan_directory(const char *path, morph_array_t *candidates, int depth
 
 		if (!S_ISREG(st.st_mode))
 			MORPH_RETURN(-EINVAL);
-		rc = skill_parse_file(skill_md, &candidate.fm, &body);
+		rc = skill_parse_file(logger, skill_md, &candidate.fm, &body);
 		free(body);
 		if (rc != 0)
 			return rc;
@@ -125,15 +126,15 @@ static int scan_directory(const char *path, morph_array_t *candidates, int depth
 		if (rc == 0 && lstat(child, &st) != 0)
 			MORPH_SET_ERR(rc, -errno);
 		if (rc == 0 && S_ISDIR(st.st_mode))
-			rc = scan_directory(child, candidates, depth + 1);
+			rc = scan_directory(logger, child, candidates, depth + 1);
 	}
 	names_cleanup(&names);
 	return rc;
 }
 
-int skill_store_scan(const char *root, morph_array_t *candidates)
+int skill_store_scan(struct morph_log *logger, const char *root, morph_array_t *candidates)
 {
-	return scan_directory(root, candidates, 0);
+	return scan_directory(logger, root, candidates, 0);
 }
 
 static int copy_file(const char *source, const char *destination, mode_t mode)

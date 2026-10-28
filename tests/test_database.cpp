@@ -21,26 +21,26 @@ protected:
 };
 
 TEST_F(DatabaseTest, OpenClose) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	db_close(&db);
 	EXPECT_EQ(file_exists(db_path), 1);
 }
 
 TEST_F(DatabaseTest, InitSchema) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
 }
 
 TEST_F(DatabaseTest, OpenNull) {
-	int rc = db_open(nullptr, "/tmp/test.db");
+	int rc = db_open(NULL, nullptr, "/tmp/test.db");
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(DatabaseTest, ExecValid) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -49,7 +49,7 @@ TEST_F(DatabaseTest, ExecValid) {
 }
 
 TEST_F(DatabaseTest, ExecInvalid) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -58,14 +58,14 @@ TEST_F(DatabaseTest, ExecInvalid) {
 }
 
 TEST_F(DatabaseTest, WALMode) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
 }
 
 TEST_F(DatabaseTest, SchemaTables) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -82,7 +82,7 @@ TEST_F(DatabaseTest, SchemaTables) {
 }
 
 TEST_F(DatabaseTest, SubAgentSessionTablesExist) {
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	for (const char *name : { "sub_agent_tasks", "sub_agent_events" }) {
 		sqlite3_stmt *stmt = nullptr;
@@ -96,7 +96,7 @@ TEST_F(DatabaseTest, SubAgentSessionTablesExist) {
 }
 
 TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -111,7 +111,7 @@ TEST_F(DatabaseTest, SchemaMigrationBaselineRecorded) {
 }
 
 TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(db_exec(&db,
 		"INSERT INTO sessions(id,name,model,created_at,updated_at) VALUES(1,'legacy','test',1,1);"
@@ -122,7 +122,7 @@ TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
 		"(1,3,'user_message','user','[Background receipt] memory_consolidation: user text',1,1);"
 		"DELETE FROM schema_migrations WHERE version=2;"), 0);
 	db_close(&db);
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	sqlite3_stmt *stmt = nullptr;
 	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
@@ -139,7 +139,7 @@ TEST_F(DatabaseTest, RetiresOnlyLegacyMemoryMaintenanceReceipts) {
 }
 
 TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -160,7 +160,7 @@ TEST_F(DatabaseTest, MessagesHaveTurnIdColumn) {
 }
 
 TEST_F(DatabaseTest, ForeignKeysEnabled) {
-	int rc = db_open(&db, db_path);
+	int rc = db_open(NULL, &db, db_path);
 	EXPECT_EQ(rc, 0);
 	rc = db_init_schema(&db);
 	EXPECT_EQ(rc, 0);
@@ -190,7 +190,7 @@ TEST_F(DatabaseTest, PermissionGrantPersistsAndDeduplicates)
 	struct permission_grant grant = {};
 	int count = 0;
 
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	snprintf(grant.subject, sizeof(grant.subject), "%s", "lark-cli");
 	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s",
@@ -212,7 +212,7 @@ TEST_F(DatabaseTest, PermissionGrantCanBeRevokedAndCleared)
 	int count = 0;
 	int deleted = 0;
 
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	snprintf(grant.subject, sizeof(grant.subject), "%s", "lark-cli");
 	snprintf(grant.resource_kind, sizeof(grant.resource_kind), "%s",

@@ -14,6 +14,8 @@
 #include "skill/skill.h"
 #include <limits.h>
 
+struct morph_log;
+
 struct runtime_models {
 	struct model *memory_text;
 	struct tokenizer *tokenizer;
@@ -25,6 +27,7 @@ struct runtime_models {
 };
 
 struct runtime_bootstrap_profile {
+	struct morph_log *logger;
 	struct config *config;
 	struct db *db;
 	struct tool_registry *tools;

@@ -18,6 +18,8 @@ enum setup_phase {
 };
 
 struct setup_ui {
+	volatile sig_atomic_t interrupted;
+	struct morph_signal_listener signals;
 	struct tui_screen screen;
 	FILE *output;
 	int fd;
@@ -40,11 +42,12 @@ int cli_setup_ui_available(FILE *input, FILE *output)
 	return tui_available(input, output);
 }
 
-static volatile sig_atomic_t setup_interrupted;
-
-static void setup_signal(int signal_number)
+static void setup_signal(int number, void *opaque)
 {
-	setup_interrupted = signal_number;
+	struct setup_ui *ui = opaque;
+
+	if (number != SIGWINCH)
+		morph_signal_flag_set(&ui->interrupted, number);
 }
 
 static int read_key(struct setup_ui *ui)
@@ -53,7 +56,7 @@ static int read_key(struct setup_ui *ui)
 		struct tui_event event;
 		int rc = tui_screen_poll(&ui->screen, &event, 100);
 
-		if (setup_interrupted)
+		if (morph_signal_flag_get(&ui->interrupted))
 			MORPH_RETURN(-ECANCELED);
 		if (rc == -EINTR)
 			continue;
@@ -699,33 +702,23 @@ static int review(struct setup_ui *ui, const char *path)
 	return selected;
 }
 
-int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
+int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input, FILE *output,
 			 struct config_model_entry entries[SETUP_MODEL_COUNT])
 {
-	struct setup_ui ui = {.output = output, .fd = fileno(input),
-		.output_fd = fileno(output), .color = cli_color_enabled() && !getenv("NO_COLOR"),
-		.entries = entries};
-	const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
-	struct sigaction old_actions[4];
-	struct sigaction action = {0};
-	action.sa_handler = setup_signal;
-	sigemptyset(&action.sa_mask);
-	setup_interrupted = 0;
-	int installed = 0;
-	for (; installed < 4; installed++) {
-		if (sigaction(signals[installed], &action, &old_actions[installed]) != 0) {
-			int signal_rc = -errno;
-			while (installed-- > 0)
-				sigaction(signals[installed], &old_actions[installed], NULL);
-			MORPH_RETURN(signal_rc);
-		}
-	}
-	ui.screen.interrupted = &setup_interrupted;
+	struct setup_ui ui = {.output = output,
+			      .fd = fileno(input),
+			      .output_fd = fileno(output),
+			      .color = cli_color_enabled(ctx) && !getenv("NO_COLOR"),
+			      .entries = entries};
+	int signal_rc = morph_signal_listener_start(&ui.signals, setup_signal, &ui);
+
+	if (signal_rc != 0)
+		MORPH_RETURN(signal_rc);
+	ui.screen.interrupted = &ui.interrupted;
 	int enter_rc = tui_screen_open(&ui.screen, input, output, TUI_SESSION_PASTE);
 
 	if (enter_rc != 0) {
-		while (installed-- > 0)
-			sigaction(signals[installed], &old_actions[installed], NULL);
+		morph_signal_listener_stop(&ui.signals);
 		return enter_rc;
 	}
 	fputs("\r\n  morph  /  First-time setup\r\n\r\n", output);
@@ -761,8 +754,7 @@ int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
 	int leave_rc = tui_screen_close(&ui.screen);
 
 	if (rc == 0) rc = leave_rc;
-	for (int i = 0; i < installed; i++)
-		sigaction(signals[i], &old_actions[i], NULL);
+	morph_signal_listener_stop(&ui.signals);
 	if (rc < 0) MORPH_RETURN(rc);
 	return 0;
 }

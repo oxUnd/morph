@@ -19,7 +19,7 @@ protected:
 	char other_path[256];
 
 	void SetUp() override {
-		tool_registry_init(&reg);
+		tool_registry_init(NULL, &reg);
 		snprintf(config_path, sizeof(config_path),
 			 "/tmp/morph_config_write_%d.toml", getpid());
 		snprintf(other_path, sizeof(other_path),
@@ -28,7 +28,7 @@ protected:
 		std::remove(other_path);
 		std::remove((std::string(config_path) + ".bak").c_str());
 		std::remove((std::string(config_path) + ".lock").c_str());
-		tctx = tool_context_create("/tmp", "/tmp");
+		tctx = tool_context_create(NULL, "/tmp", "/tmp");
 	}
 
 	void TearDown() override {

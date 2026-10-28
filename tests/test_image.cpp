@@ -25,11 +25,13 @@
 #include <stdio.h>
 #include <unistd.h>
 
-static char g_fake_img_qa_prompt[256];
-static char g_fake_img_qa_path[512];
-static int g_fake_img_qa_max_tokens;
-static long g_fake_img_qa_timeout_seconds;
-static int g_fake_img_qa_max_dim;
+struct FakeImageQaState {
+	char prompt[256]{};
+	char path[512]{};
+	int max_tokens{};
+	long timeout_seconds{};
+	int max_dim{};
+};
 
 static int fake_chat_with_image(struct model *self, struct arena *arena,
 				const char *system_prompt,
@@ -38,16 +40,14 @@ static int fake_chat_with_image(struct model *self, struct arena *arena,
 				const struct model_image_chat_options *opts,
 				sse_callback cb, void *user_data)
 {
-	(void)self;
+	auto &qa = *static_cast<FakeImageQaState *>(self->handle);
 	(void)arena;
 	(void)system_prompt;
-	snprintf(g_fake_img_qa_prompt, sizeof(g_fake_img_qa_prompt), "%s",
-		 prompt ? prompt : "");
-	snprintf(g_fake_img_qa_path, sizeof(g_fake_img_qa_path), "%s",
-		 image_path ? image_path : "");
-	g_fake_img_qa_max_tokens = opts ? opts->max_tokens : 0;
-	g_fake_img_qa_timeout_seconds = opts ? opts->timeout_seconds : 0;
-	g_fake_img_qa_max_dim = opts ? opts->max_dim : 0;
+	snprintf(qa.prompt, sizeof(qa.prompt), "%s", prompt ? prompt : "");
+	snprintf(qa.path, sizeof(qa.path), "%s", image_path ? image_path : "");
+	qa.max_tokens = opts ? opts->max_tokens : 0;
+	qa.timeout_seconds = opts ? opts->timeout_seconds : 0;
+	qa.max_dim = opts ? opts->max_dim : 0;
 	if (cb) {
 		int rc = cb("fake ", user_data);
 		if (rc != 0)
@@ -443,19 +443,19 @@ TEST(ImageGen, ProbeAndResizeFileExact) {
 }
 
 TEST(ImageRender, NullPath) {
-	int rc = image_render_terminal(NULL);
+	int rc = image_render_terminal(NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(ImageRender, EmptyPath) {
-	int rc = image_render_terminal("");
+	int rc = image_render_terminal(NULL, "");
 	EXPECT_NE(rc, 0);
 }
 
 TEST(ImageRender, ValidFileFallback) {
 	const char *path = "/tmp/test_render.png";
 	ASSERT_EQ(create_test_png(path), 0);
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 	EXPECT_EQ(rc, 0);
 	remove(path);
 }
@@ -464,7 +464,7 @@ TEST(ImageRender, KittyProtocol) {
 	const char *path = "/tmp/test_render.png";
 	ASSERT_EQ(create_test_png(path), 0);
 	setenv("KITTY_WINDOW_ID", "12345", 1);
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 	EXPECT_EQ(rc, 0);
 	unsetenv("KITTY_WINDOW_ID");
 	remove(path);
@@ -474,7 +474,7 @@ TEST(ImageRender, Iterm2Protocol) {
 	const char *path = "/tmp/test_render.png";
 	ASSERT_EQ(create_test_png(path), 0);
 	setenv("ITERM_PROFILE", "Default", 1);
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 	EXPECT_EQ(rc, 0);
 	unsetenv("ITERM_PROFILE");
 	remove(path);
@@ -483,16 +483,18 @@ TEST(ImageRender, Iterm2Protocol) {
 TEST(ImageRender, NonexistentFile) {
 	const char *path = "/tmp/nonexistent_test_img.png";
 	remove(path);
-	image_render_terminal(path);
+	image_render_terminal(NULL, path);
 	SUCCEED();  /* fallback to printing path is acceptable */
 }
 
 class ImgGenToolTest : public ::testing::Test {
 protected:
-	struct tool_registry reg;
-	void SetUp() override {
-		tool_registry_init(&reg);
-	}
+  FakeImageQaState qa;
+  struct tool_registry reg;
+  void SetUp() override
+  {
+	  tool_registry_init(NULL, &reg);
+  }
 	void TearDown() override {
 		tool_registry_cleanup(&reg);
 	}
@@ -692,7 +694,7 @@ TEST_F(ImgGenToolTest, InfoDeniesSymlinkEscape) {
 	ASSERT_EQ(create_test_png(outside), 0);
 	std::remove(link_path);
 	ASSERT_EQ(symlink(outside, link_path), 0);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_img_out");
 	ASSERT_NE(tctx, nullptr);
 	img_info_init(&reg, tctx);
 	struct tool_result result;
@@ -713,6 +715,7 @@ TEST_F(ImgGenToolTest, QaRegister) {
 	struct model fake = {};
 	fake.api_key[0] = 'x';
 	fake.chat_with_image = fake_chat_with_image;
+	fake.handle = &qa;
 	int rc = img_qa_init(&reg, &fake, NULL);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&reg, "img_qa");
@@ -724,6 +727,7 @@ TEST_F(ImgGenToolTest, QaMissingPath) {
 	struct model fake = {};
 	fake.api_key[0] = 'x';
 	fake.chat_with_image = fake_chat_with_image;
+	fake.handle = &qa;
 	img_qa_init(&reg, &fake, NULL);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -737,6 +741,7 @@ TEST_F(ImgGenToolTest, QaMissingPath) {
 TEST_F(ImgGenToolTest, QaRequiresConfiguredLlm) {
 	struct model fake = {};
 	fake.chat_with_image = fake_chat_with_image;
+	fake.handle = &qa;
 	img_qa_init(&reg, &fake, NULL);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -755,11 +760,12 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	struct model fake = {};
 	fake.api_key[0] = 'x';
 	fake.chat_with_image = fake_chat_with_image;
-	g_fake_img_qa_prompt[0] = '\0';
-	g_fake_img_qa_path[0] = '\0';
-	g_fake_img_qa_max_tokens = 0;
-	g_fake_img_qa_timeout_seconds = 0;
-	g_fake_img_qa_max_dim = 0;
+	fake.handle = &qa;
+	qa.prompt[0] = '\0';
+	qa.path[0] = '\0';
+	qa.max_tokens = 0;
+	qa.timeout_seconds = 0;
+	qa.max_dim = 0;
 	img_qa_init(&reg, &fake, NULL);
 	struct morph_event_recorder rec;
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -767,14 +773,13 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 	rt.event_cb = morph_event_recorder_cb;
 	rt.event_user_data = &rec;
 	rt.turn_id = "turn_img_qa";
-	tool_runtime_set_current(&rt);
 	struct tool_result result;
 	tool_result_init(&result);
+	result.runtime = &rt;
 	int rc = tool_exec(&reg, "img_qa",
 			   "{\"file_path\":\"/tmp/morph_img_qa.png\","
 			   "\"prompt\":\"OCR this\"}",
 			   &result);
-	tool_runtime_set_current(NULL);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
 	ASSERT_NE(result.data, nullptr);
@@ -783,11 +788,11 @@ TEST_F(ImgGenToolTest, QaCallsMultimodalLlm) {
 		ASSERT_TRUE(cJSON_IsString(text));
 		EXPECT_STREQ(text->valuestring, "fake image answer");
 	}
-	EXPECT_STREQ(g_fake_img_qa_prompt, "OCR this");
-	EXPECT_STREQ(g_fake_img_qa_path, path);
-	EXPECT_EQ(g_fake_img_qa_max_tokens, 1024);
-	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 120);
-	EXPECT_EQ(g_fake_img_qa_max_dim, 360);
+	EXPECT_STREQ(qa.prompt, "OCR this");
+	EXPECT_STREQ(qa.path, path);
+	EXPECT_EQ(qa.max_tokens, 1024);
+	EXPECT_EQ(qa.timeout_seconds, 120);
+	EXPECT_EQ(qa.max_dim, 360);
 	EXPECT_GE(morph_event_recorder_count(&rec), 3u);
 	bool saw_stream = false;
 	for (size_t i = 0; i < morph_event_recorder_count(&rec); i++) {
@@ -808,9 +813,10 @@ TEST_F(ImgGenToolTest, QaPassesExplicitOptions) {
 	struct model fake = {};
 	fake.api_key[0] = 'x';
 	fake.chat_with_image = fake_chat_with_image;
-	g_fake_img_qa_max_tokens = 0;
-	g_fake_img_qa_timeout_seconds = 0;
-	g_fake_img_qa_max_dim = 0;
+	fake.handle = &qa;
+	qa.max_tokens = 0;
+	qa.timeout_seconds = 0;
+	qa.max_dim = 0;
 	img_qa_init(&reg, &fake, NULL);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -820,9 +826,9 @@ TEST_F(ImgGenToolTest, QaPassesExplicitOptions) {
 			   "\"max_dim\":512}",
 			   &result);
 	EXPECT_EQ(rc, 0);
-	EXPECT_EQ(g_fake_img_qa_max_tokens, 77);
-	EXPECT_EQ(g_fake_img_qa_timeout_seconds, 12);
-	EXPECT_EQ(g_fake_img_qa_max_dim, 512);
+	EXPECT_EQ(qa.max_tokens, 77);
+	EXPECT_EQ(qa.timeout_seconds, 12);
+	EXPECT_EQ(qa.max_dim, 512);
 	tool_result_cleanup(&result);
 	std::remove(path);
 }
@@ -884,7 +890,7 @@ TEST_F(ImgGenToolTest, ResizeDeniesOutsideInput) {
 	const char *outside = "/tmp/morph_img_outside.png";
 	file_ensure_dir(work);
 	ASSERT_EQ(create_test_png(outside), 0);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_img_out");
 	ASSERT_NE(tctx, nullptr);
 	img_resize_init(&reg, tctx);
 	struct tool_result result;
@@ -937,7 +943,7 @@ TEST_F(ImgGenToolTest, ConvertDeniesOutsideInputBeforeOutput) {
 	const char *outside = "/tmp/morph_img_outside.png";
 	file_ensure_dir(work);
 	ASSERT_EQ(create_test_png(outside), 0);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_img_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_img_out");
 	ASSERT_NE(tctx, nullptr);
 	img_convert_init(&reg, tctx);
 	struct tool_result result;
@@ -1018,7 +1024,7 @@ TEST(ImageRender, KittyJpegProtocol) {
 	ASSERT_EQ(dup2(pipefd[1], STDOUT_FILENO), STDOUT_FILENO);
 	close(pipefd[1]);
 
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 
 	fflush(stdout);
 	dup2(old_stdout, STDOUT_FILENO);
@@ -1073,7 +1079,7 @@ TEST(ImageRender, KittyPngProtocol) {
 	ASSERT_EQ(dup2(pipefd[1], STDOUT_FILENO), STDOUT_FILENO);
 	close(pipefd[1]);
 
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 
 	fflush(stdout);
 	dup2(old_stdout, STDOUT_FILENO);

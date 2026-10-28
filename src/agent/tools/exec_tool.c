@@ -1,4 +1,5 @@
 #include "exec_tool.h"
+#include "agent/tool_runtime.h"
 #include "http/client.h"
 #include "agent/environment_context.h"
 #include "agent/tool_context.h"
@@ -545,6 +546,8 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			morph_strerror(rc));
 		return rc;
 	}
+	sandbox.logger = runtime->tool_context ? runtime->tool_context->logger : NULL;
+	options.logger = sandbox.logger;
 	options.sandbox = host ? NULL : &sandbox;
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
@@ -565,10 +568,11 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	return rc;
 }
 
-static int process_wait_cancelled(void *unused)
+static int process_wait_cancelled(void *opaque)
 {
-	(void)unused;
-	return http_wait_cancelable(0) < 0;
+	const struct tool_runtime_context *runtime = opaque;
+
+	return http_wait_cancelable(runtime ? &runtime->http : NULL, 0) < 0;
 }
 
 static int process_run(const char *args_json, struct tool_result *result,
@@ -641,7 +645,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 	}
 	rc = process_session_poll(runtime->manager, session_id, cursor_text ? &cursor : NULL,
 				  !strcmp(action, "poll") ? wait_ms : 0, process_wait_cancelled,
-				  NULL, &snapshot);
+				  (void *)result->runtime, &snapshot);
 	if (rc == 0) {
 		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
 		if (rc == 0 && result->data) {

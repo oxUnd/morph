@@ -36,7 +36,7 @@ protected:
 		env.cwd = cwd.c_str();
 		env.git_root = git ? root.c_str() : nullptr;
 		const char *out = nullptr;
-		EXPECT_EQ(project_context_build(&env, global.c_str(), storage, &out), 0);
+		EXPECT_EQ(project_context_build(NULL, &env, global.c_str(), storage, &out), 0);
 		return out ? out : "";
 	}
 };

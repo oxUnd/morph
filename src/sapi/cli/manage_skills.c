@@ -323,8 +323,8 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 	return rc;
 }
 
-static int skills_scan_source(const struct skills_source *source, const char *subdir,
-			      morph_array_t *candidates)
+static int skills_scan_source(struct morph_log *logger, const struct skills_source *source,
+			      const char *subdir, morph_array_t *candidates)
 {
 	char selected[PATH_MAX];
 	char resolved[PATH_MAX];
@@ -339,7 +339,7 @@ static int skills_scan_source(const struct skills_source *source, const char *su
 		MORPH_RETURN_ERRNO();
 	if (!path_is_within(resolved, source->root))
 		MORPH_RETURN(-EACCES);
-	rc = skill_store_scan(resolved, candidates);
+	rc = skill_store_scan(logger, resolved, candidates);
 	if (rc != 0)
 		return rc;
 	if (!candidates->nelts)
@@ -462,7 +462,8 @@ static cJSON *skills_metadata_create(const struct skills_source *source,
 	return metadata;
 }
 
-static int skills_add(const struct skills_options *options, const char *root)
+static int skills_add(struct morph_log *logger, const struct skills_options *options,
+		      const char *root)
 {
 	struct skills_source source = {0};
 	morph_array_t candidates = {0};
@@ -473,7 +474,7 @@ static int skills_add(const struct skills_options *options, const char *root)
 		return rc;
 	rc = skills_prepare(options->source, options->ref, 0, &source);
 	if (rc == 0)
-		rc = skills_scan_source(&source, options->path, &candidates);
+		rc = skills_scan_source(logger, &source, options->path, &candidates);
 	if (rc == 0 && options->list)
 		skills_candidates_print(&candidates);
 	if (rc == 0 && !options->list)
@@ -531,7 +532,7 @@ static int skills_list(const struct skills_options *options, const char *user_di
 
 	if (!registry)
 		MORPH_RETURN(-ENOMEM);
-	skill_registry_init(registry);
+	skill_registry_init(NULL, registry);
 	rc = skill_discover_configured(registry, options->global ? NULL : ".", user_dir);
 	if (rc >= 0 && !options->global) {
 		char *builtin = morph_data_find_alloc("skills");
@@ -569,7 +570,7 @@ static const char *metadata_string(const cJSON *metadata, const char *key)
 	return cJSON_IsString(item) ? item->valuestring : NULL;
 }
 
-static int skills_update_one(const char *root, const char *name)
+static int skills_update_one(struct morph_log *logger, const char *root, const char *name)
 {
 	char target[PATH_MAX];
 	struct skills_source source = {0};
@@ -596,7 +597,7 @@ static int skills_update_one(const char *root, const char *name)
 	if (rc == 0)
 		rc = skills_prepare(origin, *ref ? ref : NULL, strcmp(kind, "git") == 0, &source);
 	if (rc == 0)
-		rc = skills_scan_source(&source, path, &candidates);
+		rc = skills_scan_source(logger, &source, path, &candidates);
 	if (rc == 0) {
 		const struct skill_candidate *candidate = NULL;
 
@@ -630,7 +631,8 @@ out:
 	return rc;
 }
 
-static int skills_modify(const struct skills_options *options, const char *root)
+static int skills_modify(struct morph_log *logger, const struct skills_options *options,
+			 const char *root)
 {
 	char **names = NULL;
 	int count = 0;
@@ -674,7 +676,7 @@ static int skills_modify(const struct skills_options *options, const char *root)
 			if (rc == 0)
 				printf("Removed '%s' from %s.\n", name, root);
 		} else {
-			rc = skills_update_one(root, name);
+			rc = skills_update_one(logger, root, name);
 		}
 		cJSON_Delete(metadata);
 		if (rc != 0) {
@@ -686,7 +688,7 @@ static int skills_modify(const struct skills_options *options, const char *root)
 	return result ? result : rc;
 }
 
-int cli_manage_skills(int argc, char **argv, const char *config_path)
+int cli_manage_skills(struct morph_log *logger, int argc, char **argv, const char *config_path)
 {
 	struct skills_options options;
 	char *user_dir = NULL;
@@ -747,9 +749,9 @@ int cli_manage_skills(int argc, char **argv, const char *config_path)
 		}
 	}
 	if (strcmp(options.action, "add") == 0)
-		rc = skills_add(&options, root);
+		rc = skills_add(logger, &options, root);
 	else
-		rc = skills_modify(&options, root);
+		rc = skills_modify(logger, &options, root);
 out:
 	if (fd >= 0)
 		close(fd);

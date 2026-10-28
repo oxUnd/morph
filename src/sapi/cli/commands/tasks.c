@@ -47,7 +47,8 @@ fail:
 	return NULL;
 }
 
-static int print_task_list_tree(const struct scheduled_task *tasks, int count);
+static int print_task_list_tree(struct cli_context *ctx, const struct scheduled_task *tasks,
+				int count);
 static int append_task_show_markdown(morph_buf_t *buf,
 				     const struct scheduled_task *task);
 
@@ -63,18 +64,18 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 4) {
-		CMD_ERROR("usage: /tasks add <unix_time|+seconds> <title>");
+		CMD_ERROR(ctx, "usage: /tasks add <unix_time|+seconds> <title>");
 		return -EINVAL;
 	}
 	rc = parse_task_time_arg(argv[2], &next_run_at);
 	if (rc != 0) {
-		CMD_ERROR("invalid time: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid time: %s", argv[2]);
 		return rc;
 	}
 	title = task_join_title(argc, argv, 3);
 	if (!title || !title[0]) {
 		free(title);
-		CMD_ERROR("missing task title");
+		CMD_ERROR(ctx, "missing task title");
 		return -EINVAL;
 	}
 
@@ -105,10 +106,10 @@ static int cmd_tasks_add(struct cli_context *ctx, int argc, char **argv)
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
-		CMD_ERROR("failed to create task: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to create task: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("task created: #%lld", (long long)task.id);
+	CMD_OK(ctx, "task created: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
 }
@@ -126,18 +127,18 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 4) {
-		CMD_ERROR("usage: /tasks every <seconds> <prompt>");
+		CMD_ERROR(ctx, "usage: /tasks every <seconds> <prompt>");
 		return -EINVAL;
 	}
 	interval = strtol(argv[2], &end, 10);
 	if (!end || *end != '\0' || interval <= 0 || interval > INT_MAX) {
-		CMD_ERROR("invalid interval seconds: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid interval seconds: %s", argv[2]);
 		return -EINVAL;
 	}
 	title = task_join_title(argc, argv, 3);
 	if (!title || !title[0]) {
 		free(title);
-		CMD_ERROR("missing task prompt");
+		CMD_ERROR(ctx, "missing task prompt");
 		return -EINVAL;
 	}
 	payload = cJSON_CreateObject();
@@ -168,10 +169,10 @@ static int cmd_tasks_every(struct cli_context *ctx, int argc, char **argv)
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
-		CMD_ERROR("failed to create task: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to create task: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("recurring task created: #%lld", (long long)task.id);
+	CMD_OK(ctx, "recurring task created: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
 }
@@ -190,23 +191,23 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 5) {
-		CMD_ERROR("usage: /tasks update <id> <unix_time|+seconds> <title>");
+		CMD_ERROR(ctx, "usage: /tasks update <id> <unix_time|+seconds> <title>");
 		return -EINVAL;
 	}
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
-		CMD_ERROR("invalid task id: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return -EINVAL;
 	}
 	rc = parse_task_time_arg(argv[3], &next_run_at);
 	if (rc != 0) {
-		CMD_ERROR("invalid time: %s", argv[3]);
+		CMD_ERROR(ctx, "invalid time: %s", argv[3]);
 		return rc;
 	}
 	title = task_join_title(argc, argv, 4);
 	if (!title || !title[0]) {
 		free(title);
-		CMD_ERROR("missing task title");
+		CMD_ERROR(ctx, "missing task title");
 		return -EINVAL;
 	}
 	payload = cJSON_CreateObject();
@@ -235,10 +236,10 @@ static int cmd_tasks_update(struct cli_context *ctx, int argc, char **argv)
 	free(payload_json);
 	free(title);
 	if (rc != 0) {
-		CMD_ERROR("failed to update task: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to update task: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("task updated: #%lld", (long long)task.id);
+	CMD_OK(ctx, "task updated: #%lld", (long long)task.id);
 	scheduled_task_cleanup(&task);
 	return 0;
 }
@@ -254,16 +255,16 @@ static int cmd_tasks_list(struct cli_context *ctx, int argc, char **argv)
 		status = argv[2];
 	rc = runtime_task_list(ctx->runtime, status, 50, &tasks, &count);
 	if (rc != 0) {
-		CMD_ERROR("failed to list tasks: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to list tasks: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_HEADER("scheduled tasks (%d)", count);
+	CMD_HEADER(ctx, "scheduled tasks (%d)", count);
 	if (count == 0) {
-		printf(ANSI_DIM);
-		cli_tree_prefix(NULL, 0, 1, 0);
-		printf("no tasks" ANSI_RESET "\n");
+		printf(ctx, ANSI_DIM);
+		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		printf(ctx, "no tasks" ANSI_RESET "\n");
 	} else {
-		rc = print_task_list_tree(tasks, count);
+		rc = print_task_list_tree(ctx, tasks, count);
 	}
 	scheduled_task_free_list(tasks, count);
 	return rc;
@@ -279,21 +280,21 @@ static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 3) {
-		CMD_ERROR("usage: /tasks show <id>");
+		CMD_ERROR(ctx, "usage: /tasks show <id>");
 		return -EINVAL;
 	}
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
-		CMD_ERROR("invalid task id: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return -EINVAL;
 	}
 	memset(&task, 0, sizeof(task));
 	rc = runtime_task_get(ctx->runtime, (int64_t)id, &task);
 	if (rc != 0) {
-		CMD_ERROR("failed to load task: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to load task: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_HEADER("task");
+	CMD_HEADER(ctx, "task");
 	rc = morph_buf_init(&md, 2048);
 	if (rc != 0)
 		goto out;
@@ -301,9 +302,9 @@ static int cmd_tasks_show(struct cli_context *ctx, int argc, char **argv)
 	rc = append_task_show_markdown(&md, &task);
 	if (rc == 0) {
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			printf("%s", morph_buf_cstr(&md));
+			printf(ctx, "%s", morph_buf_cstr(&md));
 		else
-			cli_markdown_render_ansi(morph_buf_cstr(&md));
+			cli_markdown_render_ansi(ctx, morph_buf_cstr(&md));
 	}
 out:
 	if (md_ready)
@@ -319,20 +320,20 @@ static int cmd_tasks_cancel(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 3) {
-		CMD_ERROR("usage: /tasks cancel <id>");
+		CMD_ERROR(ctx, "usage: /tasks cancel <id>");
 		return -EINVAL;
 	}
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
-		CMD_ERROR("invalid task id: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid task id: %s", argv[2]);
 		return -EINVAL;
 	}
 	rc = runtime_task_cancel(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
-		CMD_ERROR("failed to cancel task: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to cancel task: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("task cancelled: #%lld", id);
+	CMD_OK(ctx, "task cancelled: #%lld", id);
 	return 0;
 }
 
@@ -351,10 +352,10 @@ static int cmd_tasks_run(struct cli_context *ctx, int argc, char **argv)
 		rc = 0;
 	}
 	if (rc != 0) {
-		CMD_ERROR("failed to run due tasks: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to run due tasks: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("processed due tasks: %d", ran);
+	CMD_OK(ctx, "processed due tasks: %d", ran);
 	return 0;
 }
 
@@ -377,7 +378,9 @@ static int cmd_tasks(struct cli_context *ctx, int argc, char **argv)
 	if (strcmp(sub, "run") == 0 || strcmp(sub, "due") == 0)
 		return cmd_tasks_run(ctx, argc, argv);
 
-	CMD_ERROR("usage: /tasks [list [status]|show <id>|add <unix_time|+seconds> <prompt>|every <seconds> <prompt>|update <id> <unix_time|+seconds> <prompt>|cancel <id>|run [limit]]");
+	CMD_ERROR(ctx, "usage: /tasks [list [status]|show <id>|add <unix_time|+seconds> "
+		       "<prompt>|every <seconds> <prompt>|update <id> <unix_time|+seconds> "
+		       "<prompt>|cancel <id>|run [limit]]");
 	return -EINVAL;
 }
 
@@ -507,7 +510,7 @@ static void task_list_schedule(const struct scheduled_task *task,
 		snprintf(schedule, schedule_size, "once");
 }
 
-static int print_active_task(const struct scheduled_task *task,
+static int print_active_task(struct cli_context *ctx, const struct scheduled_task *task,
 			     const char *ancestor, int is_last, int columns)
 {
 	char due[32];
@@ -537,15 +540,14 @@ static int print_active_task(const struct scheduled_task *task,
 		&summary, "#%lld  %s · %s · next %s · %s",
 		(long long)task->id, task->status, schedule, due, attempts);
 	if (rc == 0)
-		cli_list_item(ancestor, is_last,
-			      task_status_marker(task->status),
+		cli_list_item(ctx, ancestor, is_last, task_status_marker(task->status),
 			      morph_buf_cstr(&summary), prompt, 46, columns);
 	morph_buf_cleanup(&summary);
 	cJSON_Delete(payload);
 	return rc;
 }
 
-static void print_historical_task(const struct scheduled_task *task,
+static void print_historical_task(struct cli_context *ctx, const struct scheduled_task *task,
 				  int is_last, int columns)
 {
 	char label[96];
@@ -553,11 +555,12 @@ static void print_historical_task(const struct scheduled_task *task,
 
 	snprintf(label, sizeof(label), "#%lld  %s",
 		 (long long)task->id, task->status);
-	cli_list_item("  ", is_last, task_status_marker(task->status),
-		      label, description, 24, columns);
+	cli_list_item(ctx, "  ", is_last, task_status_marker(task->status), label, description, 24,
+		      columns);
 }
 
-static int print_task_list_tree(const struct scheduled_task *tasks, int count)
+static int print_task_list_tree(struct cli_context *ctx, const struct scheduled_task *tasks,
+				int count)
 {
 	int active_count = 0;
 	int history_count = 0;
@@ -575,24 +578,24 @@ static int print_task_list_tree(const struct scheduled_task *tasks, int count)
 			active_count++;
 	}
 	if (active_count > 0) {
-		cli_list_group("active", active_count, history_count == 0);
+		cli_list_group(ctx, "active", active_count, history_count == 0);
 		for (int i = 0; rc == 0 && i < count; i++) {
 			if (task_status_is_terminal(tasks[i].status))
 				continue;
 			active_index++;
-			rc = print_active_task(
-				&tasks[i], tui_tree_branch(history_count == 0, 1),
-				active_index == active_count, columns);
+			rc = print_active_task(ctx, &tasks[i],
+					       tui_tree_branch(history_count == 0, 1),
+					       active_index == active_count, columns);
 		}
 	}
 	if (rc == 0 && history_count > 0) {
-		cli_list_group("history", history_count, 1);
+		cli_list_group(ctx, "history", history_count, 1);
 		for (int i = 0; i < count; i++) {
 			if (!task_status_is_terminal(tasks[i].status))
 				continue;
 			history_index++;
-			print_historical_task(
-				&tasks[i], history_index == history_count, columns);
+			print_historical_task(ctx, &tasks[i], history_index == history_count,
+					      columns);
 		}
 	}
 	return rc;
@@ -728,12 +731,12 @@ static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
 	rc = runtime_notification_list(ctx->runtime, limit, &notifications,
 				       &count);
 	if (rc != 0) {
-		CMD_ERROR("failed to list inbox: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to list inbox: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_HEADER("inbox");
+	CMD_HEADER(ctx, "inbox");
 	if (count == 0) {
-		printf("No unread notifications.\n");
+		printf(ctx, "No unread notifications.\n");
 	} else {
 		rc = morph_buf_init(&md, 1024);
 		if (rc != 0)
@@ -747,9 +750,9 @@ static int cmd_inbox_list(struct cli_context *ctx, int argc, char **argv)
 							   &notifications[i]);
 		if (rc == 0) {
 			if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-				printf("%s", morph_buf_cstr(&md));
+				printf(ctx, "%s", morph_buf_cstr(&md));
 			else
-				cli_markdown_render_ansi(morph_buf_cstr(&md));
+				cli_markdown_render_ansi(ctx, morph_buf_cstr(&md));
 		}
 	}
 out:
@@ -766,21 +769,20 @@ static int cmd_inbox_read(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (argc < 3) {
-		CMD_ERROR("usage: /inbox read <id>");
+		CMD_ERROR(ctx, "usage: /inbox read <id>");
 		return -EINVAL;
 	}
 	id = strtoll(argv[2], &end, 10);
 	if (!end || *end != '\0' || id <= 0) {
-		CMD_ERROR("invalid notification id: %s", argv[2]);
+		CMD_ERROR(ctx, "invalid notification id: %s", argv[2]);
 		return -EINVAL;
 	}
 	rc = runtime_notification_mark_read(ctx->runtime, (int64_t)id);
 	if (rc != 0) {
-		CMD_ERROR("failed to mark notification read: %s",
-			  morph_strerror(rc));
+		CMD_ERROR(ctx, "failed to mark notification read: %s", morph_strerror(rc));
 		return rc;
 	}
-	CMD_OK("notification marked read: #%lld", id);
+	CMD_OK(ctx, "notification marked read: #%lld", id);
 	return 0;
 }
 
@@ -792,7 +794,7 @@ static int cmd_inbox(struct cli_context *ctx, int argc, char **argv)
 		return cmd_inbox_list(ctx, argc, argv);
 	if (strcmp(sub, "read") == 0)
 		return cmd_inbox_read(ctx, argc, argv);
-	CMD_ERROR("usage: /inbox [list [limit]|read <id>]");
+	CMD_ERROR(ctx, "usage: /inbox [list [limit]|read <id>]");
 	return -EINVAL;
 }
 

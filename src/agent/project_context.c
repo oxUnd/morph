@@ -69,8 +69,8 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 	return 0;
 }
 
-static int append_directory(morph_buf_t *buf, const char *directory,
-	int global, struct arena *arena, size_t *used)
+static int append_directory(struct morph_log *logger, morph_buf_t *buf, const char *directory,
+			    int global, struct arena *arena, size_t *used)
 {
 	static const char *const names[] = { "AGENTS.override.md", "AGENTS.md" };
 
@@ -85,8 +85,8 @@ static int append_directory(morph_buf_t *buf, const char *directory,
 		if (rc == -ENOMEM)
 			return rc;
 		if (rc != 0) {
-			log_warn("project guidance skipped '%s': %s", path,
-				morph_strerror(rc));
+			log_warn(logger, "project guidance skipped '%s': %s", path,
+				 morph_strerror(rc));
 			return morph_buf_printf(buf,
 				"Project guidance unavailable: %s (%s).\n",
 				path, morph_strerror(rc));
@@ -105,8 +105,8 @@ static int append_directory(morph_buf_t *buf, const char *directory,
 	return 0;
 }
 
-int project_context_build(const struct environment_context *environment,
-	const char *global_dir, struct arena *arena, const char **out)
+int project_context_build(struct morph_log *logger, const struct environment_context *environment,
+			  const char *global_dir, struct arena *arena, const char **out)
 {
 	morph_buf_t buf;
 	size_t used = 0;
@@ -119,7 +119,7 @@ int project_context_build(const struct environment_context *environment,
 	if (rc != 0)
 		return rc;
 	if (global_dir && *global_dir)
-		rc = append_directory(&buf, global_dir, 1, arena, &used);
+		rc = append_directory(logger, &buf, global_dir, 1, arena, &used);
 	if (rc != 0)
 		return rc;
 	if (environment->cwd) {
@@ -136,7 +136,7 @@ int project_context_build(const struct environment_context *environment,
 			char saved = directory[end];
 
 			directory[end] = '\0';
-			rc = append_directory(&buf, directory, 0, arena, &used);
+			rc = append_directory(logger, &buf, directory, 0, arena, &used);
 			directory[end] = saved;
 			if (rc != 0)
 				return rc;

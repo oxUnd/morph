@@ -49,11 +49,12 @@ static void *runtime_task_worker_main(void *arg)
 	memset(&scheduler_db, 0, sizeof(scheduler_db));
 	if (!worker || !worker->db_path[0])
 		return NULL;
-	if (db_open(&scheduler_db, worker->db_path) == 0 &&
+	if (db_open(worker ? worker->logger : NULL, &scheduler_db, worker->db_path) == 0 &&
 	    db_init_schema(&scheduler_db) == 0) {
 		opened = 1;
 	} else {
-		log_warn("runtime: task worker failed to open database");
+		log_warn(worker ? worker->logger : NULL,
+			 "runtime: task worker failed to open database");
 	}
 
 	while (opened) {
@@ -71,7 +72,7 @@ static void *runtime_task_worker_main(void *arg)
 			worker->runner_user_data, worker->notification_cb,
 			worker->notification_user_data);
 		if (rc < 0)
-			log_warn("runtime: task worker failed: %s",
+			log_warn(worker ? worker->logger : NULL, "runtime: task worker failed: %s",
 				 morph_strerror(rc));
 
 		pthread_mutex_lock(&worker->lock);
@@ -109,6 +110,7 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 	if (worker->started)
 		return 0;
 	memset(worker, 0, sizeof(*worker));
+	worker->logger = db->logger;
 	strncpy(worker->db_path, db->path, sizeof(worker->db_path) - 1);
 	worker->runner = runner;
 	worker->runner_user_data = runner_user_data;
@@ -131,7 +133,7 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 		return -rc;
 	}
 	worker->started = 1;
-	log_info("runtime: task worker started");
+	log_info(worker ? worker->logger : NULL, "runtime: task worker started");
 	return 0;
 }
 
@@ -148,5 +150,5 @@ void runtime_task_worker_stop(struct runtime_task_worker *worker)
 	pthread_mutex_destroy(&worker->lock);
 	worker->started = 0;
 	worker->stop = 0;
-	log_info("runtime: task worker stopped");
+	log_info(worker ? worker->logger : NULL, "runtime: task worker stopped");
 }

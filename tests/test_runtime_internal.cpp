@@ -43,13 +43,13 @@ protected:
 
 TEST_F(PromptLoadTest, NoSourceDiffersFromExplicitEmptyFile)
 {
-	ASSERT_EQ(morph_prompt_load(nullptr, "", &text), 0);
+	ASSERT_EQ(morph_prompt_load(NULL, nullptr, "", &text), 0);
 	EXPECT_EQ(text, nullptr);
 	auto path = write("empty.txt", " \t\r\n");
-	ASSERT_EQ(morph_prompt_load(path.c_str(), nullptr, &text), 0);
+	ASSERT_EQ(morph_prompt_load(NULL, path.c_str(), nullptr, &text), 0);
 	ASSERT_NE(text, nullptr);
 	EXPECT_STREQ(text, "");
-	EXPECT_EQ(morph_prompt_load(nullptr, nullptr, nullptr), -EINVAL);
+	EXPECT_EQ(morph_prompt_load(NULL, nullptr, nullptr, nullptr), -EINVAL);
 }
 
 TEST_F(PromptLoadTest, FilePrecedesSortedDirectoryFragments)
@@ -61,12 +61,12 @@ TEST_F(PromptLoadTest, FilePrecedesSortedDirectoryFragments)
 	write("fragments/15-empty.txt", "\n");
 	write("fragments/.hidden", "ignored");
 	auto path = write("base.txt", "base %s %d\n");
-	ASSERT_EQ(morph_prompt_load(path.c_str(), fragments.c_str(), &text), 0);
+	ASSERT_EQ(morph_prompt_load(NULL, path.c_str(), fragments.c_str(), &text), 0);
 	EXPECT_STREQ(text, "base %s %d\n\nfirst\n\nsecond");
 	std::string snapshot = text;
 	std::free(text);
 	text = nullptr;
-	ASSERT_EQ(morph_prompt_load(path.c_str(), fragments.c_str(), &text), 0);
+	ASSERT_EQ(morph_prompt_load(NULL, path.c_str(), fragments.c_str(), &text), 0);
 	EXPECT_EQ(snapshot, text);
 }
 
@@ -75,17 +75,17 @@ TEST_F(PromptLoadTest, LargeUtf8FileIsNotTruncated)
 	std::string content(3 * BUFSIZ, 'x');
 	content += "\xe4\xb8\xad\xe6\x96\x87";
 	auto path = write("large.txt", content);
-	ASSERT_EQ(morph_prompt_load(path.c_str(), "", &text), 0);
+	ASSERT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), 0);
 	EXPECT_EQ(content, text);
 }
 
 TEST_F(PromptLoadTest, RejectsInvalidEncodingAndEmbeddedNul)
 {
 	auto path = write("invalid.txt", std::string("a\0b", 3));
-	EXPECT_EQ(morph_prompt_load(path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), -EILSEQ);
 	EXPECT_EQ(text, nullptr);
 	write("invalid.txt", "\xff");
-	EXPECT_EQ(morph_prompt_load(path.c_str(), "", &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, path.c_str(), "", &text), -EILSEQ);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -93,11 +93,11 @@ TEST_F(PromptLoadTest, MissingSourcesDoNotReturnPartialContent)
 {
 	auto base = write("base.txt", "valid");
 	std::string missing = std::string(dir) + "/missing";
-	EXPECT_EQ(morph_prompt_load(missing.c_str(), "", &text), -ENOENT);
+	EXPECT_EQ(morph_prompt_load(NULL, missing.c_str(), "", &text), -ENOENT);
 	EXPECT_EQ(text, nullptr);
-	EXPECT_LT(morph_prompt_load(base.c_str(), missing.c_str(), &text), 0);
+	EXPECT_LT(morph_prompt_load(NULL, base.c_str(), missing.c_str(), &text), 0);
 	EXPECT_EQ(text, nullptr);
-	EXPECT_EQ(morph_prompt_load(dir, "", &text), -EINVAL);
+	EXPECT_EQ(morph_prompt_load(NULL, dir, "", &text), -EINVAL);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -105,7 +105,7 @@ TEST_F(PromptLoadTest, InvalidFragmentRejectsWholePrompt)
 {
 	write("10-good.txt", "valid");
 	write("20-bad.txt", "\xff");
-	EXPECT_EQ(morph_prompt_load("", dir, &text), -EILSEQ);
+	EXPECT_EQ(morph_prompt_load(NULL, "", dir, &text), -EILSEQ);
 	EXPECT_EQ(text, nullptr);
 }
 
@@ -115,7 +115,7 @@ TEST_F(PromptLoadTest, BootstrapLoadsReplacementSnapshot)
 	struct tool_registry tools{};
 	struct runtime_models models{};
 	struct runtime_bootstrap_profile profile{};
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	auto path = write("agent.txt", "Custom behavior");
 	std::strncpy(config.prompt.mode, "replace", sizeof(config.prompt.mode) - 1);
 	std::strncpy(config.prompt.system_prompt_file, path.c_str(),
@@ -143,7 +143,7 @@ TEST_F(PromptLoadTest, BootstrapPromptFailureReleasesPartialModels)
 	struct tool_registry tools{};
 	struct runtime_models models{};
 	struct runtime_bootstrap_profile profile{};
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	std::string missing = std::string(dir) + "/missing.txt";
 	std::strncpy(config.prompt.system_prompt_file, missing.c_str(),
 		sizeof(config.prompt.system_prompt_file) - 1);
@@ -218,7 +218,7 @@ TEST(RuntimeInternalTest, TurnScopeAppliesPerRequestUserIsolation)
 	struct runtime_request request{};
 	int marker = 7;
 
-	ASSERT_EQ(db_open(&db, ":memory:"), 0);
+	ASSERT_EQ(db_open(NULL, &db, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "scope-test", "mock", &current), 0);
 	std::strncpy(current.display_id, "display-42",
@@ -295,11 +295,11 @@ TEST(RuntimeInternalTest, RecordModelUsageAppliesCachedInputPrice)
 		      "/tmp/morph_runtime_cached_usage_%d.db", getpid());
 	std::remove(db_path);
 	struct db db{};
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 
 	struct config config{};
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	config.credits.cost_to_credit_coef = 1000.0;
 	config.credits.price_count = 1;
 	std::strncpy(config.credits.prices[0].provider, "moonshot",
@@ -337,10 +337,10 @@ TEST(RuntimeInternalTest, RecordModelUsageCanAttributeTenantUser)
 		      "/tmp/morph_runtime_tenant_usage_%d.db", getpid());
 	std::remove(db_path);
 	struct db db{};
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	struct config config{};
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	config.credits.cost_to_credit_coef = 1.0;
 	struct model_usage usage{};
 	std::strncpy(usage.kind, "model_text", sizeof(usage.kind) - 1);

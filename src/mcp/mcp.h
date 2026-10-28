@@ -31,6 +31,8 @@ enum mcp_transport_type {
 
 /* Discovery strings are owned by the caller-provided arena, without truncation. */
 /* MCP tool descriptor returned by tools/list */
+struct morph_log;
+
 struct mcp_tool_desc {
 	const char *name;
 	const char *title;
@@ -55,6 +57,7 @@ struct mcp_prompt_desc {
 
 /* One MCP server configuration */
 struct mcp_server_config {
+	struct morph_log *logger;
 	char name[MCP_NAME_MAX];
 	enum mcp_transport_type transport;
 	/* stdio */
@@ -113,6 +116,7 @@ struct mcp_client {
 
 /* Registry of all MCP server clients */
 struct mcp_registry {
+	struct morph_log *logger;
 	struct mcp_client *servers[MCP_MAX_SERVERS];
 	int count;
 	morph_strmap_t by_name;
@@ -120,7 +124,7 @@ struct mcp_registry {
 
 /* ----- Registry ----- */
 
-void mcp_registry_init(struct mcp_registry *reg);
+void mcp_registry_init(struct morph_log *logger, struct mcp_registry *reg);
 int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *cfg);
 struct mcp_client *mcp_registry_get(struct mcp_registry *reg, const char *name);
 int mcp_registry_count(struct mcp_registry *reg);

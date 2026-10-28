@@ -73,7 +73,7 @@ static void runtime_register_guardrail_extension(struct runtime_context *ctx,
 	strncpy(rule->ext_entry, entry, sizeof(rule->ext_entry) - 1);
 	if (strcmp(extension->manifest.type, "so") == 0) {
 		rule->ext_type = GUARDRAIL_EXT_SO;
-		(void)guardrail_ext_so_load(rule);
+		(void)guardrail_ext_so_load(ctx ? ctx->logger : NULL, rule);
 	} else {
 		rule->ext_type = GUARDRAIL_EXT_EXEC;
 	}
@@ -109,7 +109,7 @@ int runtime_extensions_load(struct runtime_context *ctx,
 		    file_path_join(path, sizeof(path), directory, names[i]) != 0)
 			continue;
 		memset(&loaded, 0, sizeof(loaded));
-		if (ext_load(&loaded, path) != 0 || !loaded.enabled) {
+		if (ext_load(ctx ? ctx->logger : NULL, &loaded, path) != 0 || !loaded.enabled) {
 			ext_unload(&loaded);
 			continue;
 		}

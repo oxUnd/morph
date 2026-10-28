@@ -1,4 +1,5 @@
 #include "ask_user.h"
+#include "agent/tool_runtime.h"
 #include "util/log.h"
 #include "cJSON.h"
 #include <errno.h>
@@ -129,10 +130,18 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 			 void *user_data)
 {
 	struct ask_user_context *ctx = user_data;
+	ask_user_callback_fn callback = result && result->runtime && result->runtime->ask_user_fn
+						? result->runtime->ask_user_fn
+					: ctx ? ctx->cb
+					      : NULL;
+	void *callback_data = result && result->runtime && result->runtime->ask_user_fn
+				      ? result->runtime->ask_user_user_data
+			      : ctx ? ctx->user_data
+				    : NULL;
 
 	if (!result)
 		return -EINVAL;
-	if (!ctx || !ctx->cb) {
+	if (!callback) {
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"ask_user callback not configured\"}"));
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
@@ -216,9 +225,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 
 	char **answers = NULL;
 	int answers_count = 0;
-	int rc = ctx->cb(question, choices, choices_count, selection_mode,
-			 min_choices, max_choices, &answers, &answers_count,
-			 ctx->user_data);
+	int rc = callback(question, choices, choices_count, selection_mode, min_choices,
+			  max_choices, &answers, &answers_count, callback_data);
 
 	if (rc < 0) {
 		if (answers) {
@@ -265,8 +273,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	(void)attach_ask_user_result(result, question, choices, choices_count,
 				     selection_mode, min_choices, max_choices,
 				     answers, answers_count, 0);
-	log_info("ask_user: question='%s' answers_count=%d", question,
-		 answers_count);
+	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
+		 "ask_user: question='%s' answers_count=%d", question, answers_count);
 	for (int i = 0; i < answers_count; i++)
 		free(answers[i]);
 	free(answers);
@@ -275,10 +283,9 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	return 0;
 }
 
-int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
-		  void *user_data)
+static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb, void *user_data)
 {
-	if (!reg || !cb)
+	if (!reg)
 		return -EINVAL;
 
 	struct ask_user_context *ctx = malloc(sizeof(*ctx));
@@ -319,4 +326,16 @@ int ask_user_init(struct tool_registry *reg, ask_user_callback_fn cb,
 	if (rc != 0)
 		free(ctx);
 	return rc;
+}
+
+int ask_user_init(struct tool_registry *reg, ask_user_callback_fn callback, void *user_data)
+{
+	if (!callback)
+		MORPH_RETURN(-EINVAL);
+	return ask_user_register(reg, callback, user_data);
+}
+
+int ask_user_init_deferred(struct tool_registry *reg)
+{
+	return ask_user_register(reg, NULL, NULL);
 }

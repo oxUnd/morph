@@ -8,7 +8,7 @@ class TokenizerTest : public ::testing::Test {
 protected:
 	struct tokenizer *tok;
 	void SetUp() override {
-		tok = tokenizer_create("gpt-4o", 128000);
+		tok = tokenizer_create(NULL, "gpt-4o", 128000);
 	}
 	void TearDown() override {
 		tokenizer_destroy(tok);
@@ -146,20 +146,20 @@ TEST_F(TokenizerTest, EstimateNull) {
 }
 
 TEST_F(TokenizerTest, DefaultContextLimit) {
-	struct tokenizer *t = tokenizer_create("test", 0);
+	struct tokenizer *t = tokenizer_create(NULL, "test", 0);
 	EXPECT_EQ(t->context_limit, 128000);
 	tokenizer_destroy(t);
 }
 
 TEST_F(TokenizerTest, CreateNullModel) {
-	struct tokenizer *t = tokenizer_create(nullptr, 128000);
+	struct tokenizer *t = tokenizer_create(NULL, nullptr, 128000);
 	EXPECT_NE(t, nullptr);
 	EXPECT_STREQ(t->model_name, "gpt-4o");
 	tokenizer_destroy(t);
 }
 
 TEST_F(TokenizerTest, ModelNameCl100k) {
-	struct tokenizer *t = tokenizer_create("cl100k_base", 8192);
+	struct tokenizer *t = tokenizer_create(NULL, "cl100k_base", 8192);
 	EXPECT_STREQ(t->model_name, "cl100k_base");
 	EXPECT_EQ(t->context_limit, 8192);
 	tokenizer_destroy(t);
@@ -216,7 +216,7 @@ TEST_F(TokenizerTest, ReActPromptEstimation) {
 
 TEST_F(TokenizerTest, BaseModelUsesSameVocabularyAsDatedVariant)
 {
-	auto *dated = tokenizer_create("gpt-4o-2024-08-06", 128000);
+	auto *dated = tokenizer_create(NULL, "gpt-4o-2024-08-06", 128000);
 	ASSERT_NE(dated, nullptr);
 	for (const char *text : {"你好世界", "我是一个AI助手", "hello world", "😀"})
 		EXPECT_EQ(tokenizer_count(tok, text), tokenizer_count(dated, text));
@@ -233,7 +233,7 @@ TEST(TokenizerEstimateTest, LeadingWhitespaceConsumesBudget)
 TEST(BpeCountTest, CountsAllPiecesBeyondBatchBoundary)
 {
 	for (auto encoding : {BPE_CL100K_BASE, BPE_O200K_BASE}) {
-		auto *encoder = bpe_encoder_create(encoding, nullptr);
+		auto *encoder = bpe_encoder_create(NULL, encoding, nullptr);
 		if (!encoder)
 			GTEST_SKIP() << "BPE vocabulary unavailable";
 		for (const char *unit : {" word", "123", "\nhello"}) {
@@ -249,7 +249,7 @@ TEST(BpeCountTest, CountsAllPiecesBeyondBatchBoundary)
 
 TEST(BpeCountTest, MalformedSuffixDoesNotDisappearFromBudget)
 {
-	auto *encoder = bpe_encoder_create(BPE_CL100K_BASE, nullptr);
+	auto *encoder = bpe_encoder_create(NULL, BPE_CL100K_BASE, nullptr);
 	if (!encoder)
 		GTEST_SKIP() << "BPE vocabulary unavailable";
 	std::string text = "hello ";
@@ -262,7 +262,7 @@ TEST(BpeCountTest, MalformedSuffixDoesNotDisappearFromBudget)
 TEST_F(TokenizerTest, DefaultAndBaseReasoningModelsUseTheResolvedVocabulary)
 {
 	for (const char *name : {static_cast<const char *>(nullptr), "o1", "o3", "o4"}) {
-		auto *other = tokenizer_create(name, 128000);
+		auto *other = tokenizer_create(NULL, name, 128000);
 		ASSERT_NE(other, nullptr);
 		for (const char *text : {"你好世界", "我是一个AI助手", "😀"})
 			EXPECT_EQ(tokenizer_count(other, text), tokenizer_count(tok, text));

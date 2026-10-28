@@ -7,6 +7,7 @@ set(TEST_SOURCES
 	test_hooks.cpp
 	test_error.cpp
 	test_log.cpp
+	test_state_ownership.cpp
 	test_file.cpp
 	test_database.cpp
 	test_scheduled_task.cpp
@@ -129,7 +130,30 @@ set_target_properties(morph-setup-pty-driver PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
 
+add_executable(morph-file-write-tests
+	${CMAKE_SOURCE_DIR}/exts/file-write/test_file_write.c
+	${CMAKE_SOURCE_DIR}/exts/file-write/file_write.c)
+target_include_directories(morph-file-write-tests PRIVATE
+	${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/vendor)
+target_link_libraries(morph-file-write-tests PRIVATE morph-tools)
+set_target_properties(morph-file-write-tests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
+add_test(NAME file_write_extension COMMAND morph-file-write-tests)
+
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(ENABLE_GLOBAL_STATE_AUDIT)
+	if(NOT Python3_Interpreter_FOUND)
+		message(FATAL_ERROR "Global state audit requires Python 3")
+	endif()
+	add_test(NAME global_state_audit
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_SOURCE_DIR}/scripts/audit_global_state.py
+			--build-dir ${CMAKE_BINARY_DIR})
+	set_tests_properties(global_state_audit PROPERTIES TIMEOUT 600)
+	add_test(NAME global_state_audit_selftest
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
+endif()
 if(Python3_Interpreter_FOUND AND UNIX)
 	add_test(NAME macos_mcp_adapter
 		COMMAND ${Python3_EXECUTABLE}

@@ -357,8 +357,8 @@ static int mcp_without_server(const toml_result_t *parsed,
 	return rc;
 }
 
-static int mcp_read_command(const struct mcp_options *options, const char *path,
-			    const toml_datum_t *servers)
+static int mcp_read_command(struct morph_log *logger, const struct mcp_options *options,
+			    const char *path, const toml_datum_t *servers)
 {
 	int count = servers->type == TOML_ARRAY ? servers->u.arr.size : 0;
 
@@ -410,8 +410,8 @@ static int mcp_read_command(const struct mcp_options *options, const char *path,
 
 		if (!config)
 			MORPH_RETURN(-ENOMEM);
-		config_set_defaults(config);
-		rc = config_load(config, path);
+		config_set_defaults(logger, config);
+		rc = config_load(logger, config, path);
 		if (rc == 0 && i >= config->mcp.server_count)
 			rc = -E2BIG;
 		if (rc == 0)
@@ -420,7 +420,7 @@ static int mcp_read_command(const struct mcp_options *options, const char *path,
 		free(config);
 		if (rc != 0)
 			return rc;
-		http_init();
+		http_init(logger);
 		rc = mcp_test_connection(&connection, message, sizeof(message));
 		http_cleanup();
 		printf("%s: %s\n", name.u.s, message);
@@ -431,8 +431,8 @@ static int mcp_read_command(const struct mcp_options *options, const char *path,
 	MORPH_RETURN(-ENOENT);
 }
 
-static int mcp_apply(const struct mcp_options *options, int argc, char **argv,
-		     const char *path)
+static int mcp_apply(struct morph_log *logger, const struct mcp_options *options, int argc,
+		     char **argv, const char *path)
 {
 	char *text = file_read_all(path, NULL);
 	toml_result_t parsed = {0};
@@ -460,7 +460,7 @@ static int mcp_apply(const struct mcp_options *options, int argc, char **argv,
 	}
 	servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
 	if (!add && !remove) {
-		rc = mcp_read_command(options, path, &servers);
+		rc = mcp_read_command(logger, options, path, &servers);
 		goto out;
 	}
 	if (servers.type == TOML_ARRAY) {
@@ -518,7 +518,7 @@ out:
 	return rc;
 }
 
-int cli_manage_mcp(int argc, char **argv, const char *config_path)
+int cli_manage_mcp(struct morph_log *logger, int argc, char **argv, const char *config_path)
 {
 	struct mcp_options options;
 	char *path;
@@ -569,7 +569,7 @@ int cli_manage_mcp(int argc, char **argv, const char *config_path)
 		}
 	}
 	if (rc == 0)
-		rc = mcp_apply(&options, argc, argv, path);
+		rc = mcp_apply(logger, &options, argc, argv, path);
 	if (fd >= 0)
 		close(fd);
 	free(lock_path);

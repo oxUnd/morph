@@ -1,4 +1,6 @@
 #include "vid_gen.h"
+#include "agent/tool_runtime.h"
+#include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/video_gen.h"
 #include "render/video.h"
@@ -41,7 +43,14 @@ static int is_supported_audio_path(const char *path)
 
 static int vid_gen_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
-	struct vid_gen_context *ctx = user_data;
+	struct vid_gen_context local = {0};
+	struct model request_model;
+
+	if (user_data)
+		local = *(struct vid_gen_context *)user_data;
+	local.video_llm = model_bind_tool_request(local.video_llm, result ? result->runtime : NULL,
+						  &request_model);
+	struct vid_gen_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
@@ -259,7 +268,8 @@ static int vid_gen_exec(const char *args_json, struct tool_result *result, void 
 	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_video(result, vid_res.path,
 				    vid_res.duration_seconds);
-	log_dbg("vid_gen: %s", msg);
+	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "vid_gen: %s",
+		msg);
 
 	return 0;
 }

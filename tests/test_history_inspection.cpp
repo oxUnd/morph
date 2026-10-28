@@ -17,7 +17,7 @@ protected:
 		WriteConfig("[memory]\nenabled=false\n[features]\nhooks=false\n");
 		Open();
 		ASSERT_EQ(runtime_session_create_and_select(instance, "history-test", &session), 0);
-		ASSERT_EQ(db_open(&db, database.c_str()), 0);
+		ASSERT_EQ(db_open(NULL, &db, database.c_str()), 0);
 	}
 
 	void TearDown() override
@@ -237,8 +237,7 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 	struct cli_context ctx{};
 	ctx.runtime = instance;
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
-	cli_set_color_enabled(0);
-
+	cli_set_color_enabled(&ctx, 0);
 
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/history --all");
@@ -251,7 +250,7 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry bad"), -EINVAL);
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry"), -EINVAL);
 
-	cli_set_color_enabled(1);
+	cli_set_color_enabled(&ctx, 1);
 }
 
 TEST_F(HistoryInspectionTest, SourceRecordingFailureRollsBackTheEntireCompaction)

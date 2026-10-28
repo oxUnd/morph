@@ -214,7 +214,7 @@ TEST_F(RuntimeExecuteTest, MemoryMaintenanceNeverEntersTheDispatchedPrompt)
 	struct session session{};
 	ASSERT_EQ(runtime_session_create_and_select(instance, "receipt-policy", &session), 0);
 	struct db handle{};
-	ASSERT_EQ(db_open(&handle, database.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &handle, database.c_str()), 0);
 	struct model_history_insert item{};
 	item.session_id = session.id;
 	item.kind = "background_receipt";
@@ -246,7 +246,7 @@ TEST_F(RuntimeExecuteTest, InputSnapshotFailureDoesNotPreventModelDispatch)
 	struct runtime_result result{};
 	struct db database_handle{};
 	OpenScripted();
-	ASSERT_EQ(db_open(&database_handle, database.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &database_handle, database.c_str()), 0);
 	ASSERT_EQ(db_exec(&database_handle, "CREATE TRIGGER fail_input_snapshot BEFORE INSERT ON "
 		"model_request_snapshots BEGIN SELECT RAISE(ABORT,'test failure'); END"), 0);
 	ASSERT_EQ(Execute("still execute this request", &result), 0);

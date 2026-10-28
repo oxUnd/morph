@@ -39,7 +39,7 @@ int permission_grant_save(struct db *db,
 
 out:
 	if (rc != 0)
-		log_warn("permission grant save failed: %s",
+		log_warn(db ? db->logger : NULL, "permission grant save failed: %s",
 			 sqlite3_errmsg(db->handle));
 	sqlite3_finalize(stmt);
 	return rc;
@@ -135,7 +135,7 @@ static int delete_grants(struct db *db, const char *sql,
 
 out:
 	if (rc != 0)
-		log_warn("permission grant delete failed: %s",
+		log_warn(db ? db->logger : NULL, "permission grant delete failed: %s",
 			 sqlite3_errmsg(db->handle));
 	sqlite3_finalize(stmt);
 	return rc;

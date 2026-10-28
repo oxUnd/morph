@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "sapi/cli/manage.h"
 #include "util/error.h"
 #include "util/file.h"
@@ -65,6 +66,7 @@ int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output)
 		MORPH_RETURN(error);
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		int null_fd = open("/dev/null", O_RDONLY);
 
 		close(descriptors[0]);

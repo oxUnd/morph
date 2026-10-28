@@ -1,6 +1,7 @@
 #ifndef MORPH_CLI_SETUP_UI_H
 #define MORPH_CLI_SETUP_UI_H
 
+struct cli_context;
 #include "config/config.h"
 #include <stdio.h>
 
@@ -27,7 +28,7 @@ void cli_setup_reset_token_limits(struct config_model_entry *entry);
 int cli_setup_token_ceiling(const struct config_model_entry *entry, int output);
 int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int *value);
 int cli_setup_ui_available(FILE *input, FILE *output);
-int cli_setup_ui_collect(const char *path, FILE *input, FILE *output,
+int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input, FILE *output,
 			 struct config_model_entry entries[SETUP_MODEL_COUNT]);
 
 #ifdef __cplusplus

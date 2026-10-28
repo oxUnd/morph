@@ -108,23 +108,23 @@ TEST(RenderFile, ExistingTextFile) {
 TEST(RenderImage, ValidPng) {
 	const char *path = "/tmp/morph_test_render_img.png";
 	ASSERT_EQ(create_test_png(path), 0);
-	int rc = image_render_terminal(path);
+	int rc = image_render_terminal(NULL, path);
 	EXPECT_EQ(rc, 0);
 	remove(path);
 }
 
 TEST(RenderImage, NullPath) {
-	int rc = image_render_terminal(NULL);
+	int rc = image_render_terminal(NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(RenderImage, EmptyPath) {
-	int rc = image_render_terminal("");
+	int rc = image_render_terminal(NULL, "");
 	EXPECT_NE(rc, 0);
 }
 
 TEST(RenderImage, NonexistentFile) {
-	int rc = image_render_terminal("/tmp/morph_test_no_such_file.png");
+	int rc = image_render_terminal(NULL, "/tmp/morph_test_no_such_file.png");
 	EXPECT_EQ(rc, 0);
 	remove("/tmp/morph_test_no_such_file.png");
 }
@@ -132,12 +132,12 @@ TEST(RenderImage, NonexistentFile) {
 /* ---- render command: video rendering (null/empty path) ---- */
 
 TEST(RenderVideo, NullPath) {
-	int rc = video_play(NULL, NULL);
+	int rc = video_play(NULL, NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 
 TEST(RenderVideo, PreviewNullPath) {
-	int rc = video_render_terminal_preview(NULL);
+	int rc = video_render_terminal_preview(NULL, NULL);
 	EXPECT_NE(rc, 0);
 }
 
@@ -156,7 +156,7 @@ TEST(RenderVideo, PreviewFallsBackToClickableFileLink) {
 	unsetenv("KITTY_WINDOW_ID");
 	unsetenv("ITERM_PROFILE");
 	testing::internal::CaptureStdout();
-	int rc = video_render_terminal_preview("/tmp/demo clip.mp4");
+	int rc = video_render_terminal_preview(NULL, "/tmp/demo clip.mp4");
 	std::string output = testing::internal::GetCapturedStdout();
 	if (had_term)
 		setenv("TERM", old_term.c_str(), 1);

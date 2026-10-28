@@ -21,7 +21,7 @@ protected:
 		ASSERT_NE(created, nullptr);
 		directory = created;
 		database = directory + "/data.db";
-		ASSERT_EQ(db_open(&db, database.c_str()), 0);
+		ASSERT_EQ(db_open(NULL, &db, database.c_str()), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 	}
 
@@ -46,7 +46,7 @@ TEST_F(RuntimeOutputTest, RecordsRecipeMetadataReferencesAndEmitsEvent)
 	struct tool_artifact_list artifacts{};
 	struct react_output_event event{};
 	int events = 0;
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	std::strncpy(config.models.image.provider, "test-provider",
 		      sizeof(config.models.image.provider) - 1);
 	std::strncpy(config.models.image.model, "test-image",
@@ -161,7 +161,7 @@ TEST(RuntimeOutputMigrationTest, AddsRecipeColumnsToExistingOutputsTable)
 	ASSERT_NE(directory, nullptr);
 	std::string database = std::string(directory) + "/data.db";
 	struct db db{};
-	ASSERT_EQ(db_open(&db, database.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &db, database.c_str()), 0);
 	ASSERT_EQ(db_exec(&db,
 		"CREATE TABLE outputs(id INTEGER PRIMARY KEY,session_id INTEGER,"
 		"kind TEXT NOT NULL,path TEXT NOT NULL,prompt TEXT,model TEXT,"

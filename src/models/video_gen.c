@@ -190,16 +190,17 @@ int video_gen_capabilities(const struct model *model,
 	return ops->capabilities(model, caps);
 }
 
-static int download_url(const char *url, const char *out_path)
+static int download_url(struct model *self, const char *url, const char *out_path)
 {
 	struct http_response resp = {0};
-	int rc = http_get(url, &resp);
+	int rc = http_get(&self->http, url, &resp);
 	if (rc < 0) {
-		log_err("video download failed: %s", url);
+		log_err(self ? self->http.logger : NULL, "video download failed: %s", url);
 		return rc;
 	}
 	if (resp.status_code != 200) {
-		log_err("video download returned HTTP %d", resp.status_code);
+		log_err(self ? self->http.logger : NULL, "video download returned HTTP %d",
+			resp.status_code);
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
@@ -254,7 +255,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (!api_key[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_key configured");
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -262,7 +263,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (!api_base[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no api_base configured");
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -364,8 +365,9 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		return -ENOMEM;
 	}
 
-	log_info("video_gen: request body (%zu bytes)", strlen(body_str));
-	log_dbg("video_gen: request body:\n%s", body_str);
+	log_info(self ? self->http.logger : NULL, "video_gen: request body (%zu bytes)",
+		 strlen(body_str));
+	log_dbg(self ? self->http.logger : NULL, "video_gen: request body:\n%s", body_str);
 
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header),
@@ -373,14 +375,14 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	const char *hdrs[] = { auth_header };
 
 	struct http_response resp = {0};
-	int rc = http_post_ex(submit_url, body_str, strlen(body_str),
+	int rc = http_post_ex(&self->http, submit_url, body_str, strlen(body_str),
 			      "application/json", hdrs, 1, &resp);
 	arena_reset(arena);
 
 	if (rc < 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit request failed (curl error %d)", rc);
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
 		return rc;
 	}
@@ -390,7 +392,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	char video_url[2048] = {0};
 
 	if (resp.status_code == 200 && resp.body.data) {
-		log_dbg("video_gen: submit response (%d):\n%s",
+		log_dbg(self ? self->http.logger : NULL, "video_gen: submit response (%d):\n%s",
 			resp.status_code, resp.body.data);
 		cJSON *root = cJSON_Parse(resp.body.data);
 		if (root) {
@@ -411,15 +413,15 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			}
 			cJSON_Delete(root);
 		} else {
-			log_err("video_gen: failed to parse submit response: %s",
-				resp.body.data);
+			log_err(self ? self->http.logger : NULL,
+				"video_gen: failed to parse submit response: %s", resp.body.data);
 		}
 	} else {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: submit HTTP %d, body: %s",
 			 resp.status_code,
 			 resp.body.data ? resp.body.data : "(empty)");
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 	}
 	http_response_free(&resp);
 
@@ -427,14 +429,15 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		if (!result->error_msg[0])
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: no task id in submit response");
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
 		MORPH_RETURN(MORPH_ERR_PROTOCOL);
 	}
 	if (task_status[0])
-		log_info("video_gen: task submitted: %s (status=%s)", task_id, task_status);
+		log_info(self ? self->http.logger : NULL,
+			 "video_gen: task submitted: %s (status=%s)", task_id, task_status);
 	else
-		log_info("video_gen: task submitted: %s", task_id);
+		log_info(self ? self->http.logger : NULL, "video_gen: task submitted: %s", task_id);
 
 	if (video_url[0]) {
 		arena_destroy(arena);
@@ -451,10 +454,11 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		sleep((unsigned int)poll_interval);
 
 		struct http_response qresp = {0};
-		int qrc = http_get_ex(query_url, hdrs, 1, &qresp);
+		int qrc = http_get_ex(&self->http, query_url, hdrs, 1, &qresp);
 
 		if (qrc < 0) {
-			log_warn("video_gen: query request failed, retrying...");
+			log_warn(self ? self->http.logger : NULL,
+				 "video_gen: query request failed, retrying...");
 			continue;
 		}
 
@@ -496,15 +500,17 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				 "video_gen: task %s failed: %s %s",
 				 task_id, err_code, err_msg);
-			log_err("%s", result->error_msg);
-			log_dbg("video_gen: poll response body:\n%s", qresp.body.data);
+			log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
+			log_dbg(self ? self->http.logger : NULL,
+				"video_gen: poll response body:\n%s", qresp.body.data);
 			cJSON_Delete(qroot);
 			http_response_free(&qresp);
 			arena_destroy(arena);
 			MORPH_RETURN(MORPH_ERR_API);
 		}
 
-		log_info("video_gen: task %s status=%s", task_id, st);
+		log_info(self ? self->http.logger : NULL, "video_gen: task %s status=%s", task_id,
+			 st);
 
 		cJSON_Delete(qroot);
 		http_response_free(&qresp);
@@ -515,7 +521,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 	if (!video_url[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: timed out for task: %s", task_id);
-		log_err("%s", result->error_msg);
+		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		return -ETIMEDOUT;
 	}
 
@@ -533,7 +539,7 @@ download:
 		 out_dir, (long long)time(NULL));
 	free(out_dir);
 
-	rc = download_url(result->url, out_path);
+	rc = download_url(self, result->url, out_path);
 	if (rc < 0)
 		return rc;
 
@@ -541,7 +547,8 @@ download:
 	result->duration_seconds = duration > 0 ? duration : 5;
 	result->status = 1;
 
-	log_dbg("video generated: %s (%ds)", out_path, result->duration_seconds);
+	log_dbg(self ? self->http.logger : NULL, "video generated: %s (%ds)", out_path,
+		result->duration_seconds);
 	video_report_usage(self, model_id, task_id, result);
 	return 0;
 }

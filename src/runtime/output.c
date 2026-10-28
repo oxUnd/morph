@@ -333,7 +333,7 @@ out:
 	return json;
 }
 
-char *runtime_output_get_json_from_database(const char *database_path,
+char *runtime_output_get_json_from_database(struct morph_log *logger, const char *database_path,
 					    const char *artifact_path)
 {
 	struct db db;
@@ -341,7 +341,7 @@ char *runtime_output_get_json_from_database(const char *database_path,
 
 	if (!database_path || !artifact_path)
 		return NULL;
-	if (db_open(&db, database_path) != 0)
+	if (db_open(logger, &db, database_path) != 0)
 		return NULL;
 	if (db_init_schema(&db) == 0)
 		json = runtime_output_get_json_by_path(&db, artifact_path);

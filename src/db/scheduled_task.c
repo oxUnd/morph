@@ -380,7 +380,7 @@ int scheduled_task_create_with_events(
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE) {
-		log_err("scheduled task create failed: %s",
+		log_err(db ? db->logger : NULL, "scheduled task create failed: %s",
 			sqlite3_errmsg(db->handle));
 		MORPH_RETURN(MORPH_ERR_DB);
 	}

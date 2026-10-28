@@ -12,6 +12,7 @@ void tool_result_init(struct tool_result *result)
 {
 	if (!result)
 		return;
+	result->runtime = NULL;
 	result->envelope = NULL;
 	result->text = (morph_str_t)MORPH_STR_NULL;
 	result->owned = NULL;
@@ -23,8 +24,10 @@ void tool_result_init(struct tool_result *result)
 
 void tool_result_clear(struct tool_result *result)
 {
+	const struct tool_runtime_context *runtime;
 	if (!result)
 		return;
+	runtime = result->runtime;
 	free(result->owned);
 	if (result->envelope) {
 		cJSON_Delete(result->envelope);
@@ -34,11 +37,14 @@ void tool_result_clear(struct tool_result *result)
 		cJSON_Delete(result->meta);
 	}
 	tool_result_init(result);
+	result->runtime = runtime;
 }
 
 void tool_result_cleanup(struct tool_result *result)
 {
 	tool_result_clear(result);
+	if (result)
+		result->runtime = NULL;
 }
 
 static int tool_result_set_owned_text(struct tool_result *result, char *data)
@@ -553,11 +559,12 @@ int tool_result_take_artifacts(struct tool_result *result, cJSON *artifacts)
 	return 0;
 }
 
-void tool_registry_init(struct tool_registry *reg)
+void tool_registry_init(struct morph_log *logger, struct tool_registry *reg)
 {
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	reg->logger = logger;
 	(void)morph_strmap_init(&reg->by_name, TOOL_REGISTRY_INITIAL_CAP);
 	(void)morph_strmap_init(&reg->disabled_by_name, TOOL_DISABLED_MAX);
 }
@@ -794,7 +801,7 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 	e->timeout_seconds = spec->timeout_seconds > 0 ? spec->timeout_seconds : 0;
 	reg->count++;
 	rebuild_tool_name_index(reg);
-	log_dbg("tool registered: %s", spec->name);
+	log_dbg(reg ? reg->logger : NULL, "tool registered: %s", spec->name);
 	return 0;
 }
 
@@ -820,7 +827,7 @@ int tool_unregister(struct tool_registry *reg, const char *name)
 	morph_array_pop(&reg->storage);
 	rebuild_tool_name_index(reg);
 	tool_enable_remove_disabled(reg, name);
-	log_dbg("tool unregistered: %s", name);
+	log_dbg(reg ? reg->logger : NULL, "tool unregistered: %s", name);
 	arena_destroy(descriptor_arena);
 	return 0;
 }
@@ -902,7 +909,7 @@ int tool_disable(struct tool_registry *reg, const char *name)
 			       reg->disabled[reg->disabled_count],
 			       reg->disabled[reg->disabled_count]);
 	reg->disabled_count++;
-	log_info("tool disabled: %s", name);
+	log_info(reg ? reg->logger : NULL, "tool disabled: %s", name);
 	return 0;
 }
 

@@ -34,15 +34,15 @@ static char *presentation_safe_dup(const char *text, size_t max_bytes,
 	return limited;
 }
 
-static void presentation_print_safe_inline(const char *text,
-					    size_t max_bytes)
+static void presentation_print_safe_inline(struct cli_context *ctx, const char *text,
+					   size_t max_bytes)
 {
 	char *safe = presentation_safe_dup(text ? text : "", max_bytes,
 		UTF8_TERMINAL_TEXT_SINGLE_LINE);
 
 	if (!safe)
 		return;
-	printf("%s", safe);
+	printf(ctx, "%s", safe);
 	free(safe);
 }
 
@@ -52,49 +52,50 @@ void cli_presentation_command_input(struct cli_context *ctx, const char *text)
 	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
 	    !text || text[0] != '/')
 		return;
-	if (cli_color_enabled())
-		printf(ANSI_RESET "\n" CLI_COMMAND_COLOR);
+	if (cli_color_enabled(ctx))
+		printf(ctx, ANSI_RESET "\n" CLI_COMMAND_COLOR);
 	else
-		putchar('\n');
-	presentation_print_safe_inline(text, SIZE_MAX);
-	if (cli_color_enabled())
-		printf(ANSI_RESET);
-	printf("\n\n");
+		putchar(ctx, '\n');
+	presentation_print_safe_inline(ctx, text, SIZE_MAX);
+	if (cli_color_enabled(ctx))
+		printf(ctx, ANSI_RESET);
+	printf(ctx, "\n\n");
 }
 
 /* Submitted user messages remain ordinary scrollback, separate from tools. */
-static void presentation_user_padding(void)
+static void presentation_user_padding(struct cli_context *ctx)
 {
-	printf(ANSI_RESET CLI_INPUT_BACKGROUND);
+	printf(ctx, ANSI_RESET CLI_INPUT_BACKGROUND);
 	(void)fwrite("\033[K", 1, 3, stdout);
-	printf(ANSI_RESET "\n");
+	printf(ctx, ANSI_RESET "\n");
 }
 
-static void presentation_user_row(const char *text, size_t length, int first)
+static void presentation_user_row(struct cli_context *ctx, const char *text, size_t length,
+				  int first)
 {
-	int color = cli_color_enabled();
+	int color = cli_color_enabled(ctx);
 
 	/* Erase with the active background, without padding scrollback with spaces. */
 	if (color) {
-		printf(ANSI_RESET CLI_INPUT_BACKGROUND);
+		printf(ctx, ANSI_RESET CLI_INPUT_BACKGROUND);
 		/* Trusted layout control bypasses the text output sanitizer. */
 		(void)fwrite("\033[K", 1, 3, stdout);
 	}
 	if (first) {
 		if (color)
-			printf(CLI_INPUT_MARKER_COLOR "› " ANSI_RESET CLI_INPUT_BACKGROUND);
+			printf(ctx, CLI_INPUT_MARKER_COLOR "› " ANSI_RESET CLI_INPUT_BACKGROUND);
 		else
-			printf("> ");
+			printf(ctx, "> ");
 	} else {
-		printf("  ");
+		printf(ctx, "  ");
 	}
-	printf("%.*s", (int)length, text);
+	printf(ctx, "%.*s", (int)length, text);
 	if (color)
-		printf(ANSI_RESET);
-	putchar('\n');
+		printf(ctx, ANSI_RESET);
+	putchar(ctx, '\n');
 }
 
-void cli_presentation_user_input(const char *text)
+void cli_presentation_user_input(struct cli_context *ctx, const char *text)
 {
 	char *safe;
 	char *line;
@@ -118,9 +119,9 @@ void cli_presentation_user_input(const char *text)
 	}
 	if (width < 8)
 		width = 8;
-	putchar('\n');
-	if (cli_color_enabled())
-		presentation_user_padding();
+	putchar(ctx, '\n');
+	if (cli_color_enabled(ctx))
+		presentation_user_padding(ctx);
 	line = safe;
 	while (line) {
 		char *newline = strchr(line, '\n');
@@ -132,14 +133,14 @@ void cli_presentation_user_input(const char *text)
 			const char *end = utf8_advance_display_width(cursor,
 				(size_t)(width - 2));
 
-			presentation_user_row(cursor, (size_t)(end - cursor), first);
+			presentation_user_row(ctx, cursor, (size_t)(end - cursor), first);
 			first = 0;
 			cursor = end;
 		} while (*cursor);
 		line = newline ? newline + 1 : NULL;
 	}
-	if (cli_color_enabled())
-		presentation_user_padding();
+	if (cli_color_enabled(ctx))
+		presentation_user_padding(ctx);
 	free(safe);
 }
 
@@ -153,9 +154,9 @@ static void presentation_status(struct cli_context *ctx, const char *text)
 	if (!ctx || !text || !text[0])
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("status: ");
-		presentation_print_safe_inline(text, CLI_EVENT_TEXT_MAX);
-		printf("\n");
+		printf(ctx, "status: ");
+		presentation_print_safe_inline(ctx, text, CLI_EVENT_TEXT_MAX);
+		printf(ctx, "\n");
 		fflush(stdout);
 		return;
 	}
@@ -242,19 +243,18 @@ static cJSON *event_item(const struct morph_event *ev, const char *name)
 	return cJSON_GetObjectItemCaseSensitive(ev->data, name);
 }
 
-static void print_tree_prefix(const int *ancestors_last, int depth,
+static void print_tree_prefix(struct cli_context *ctx, const int *ancestors_last, int depth,
 			      int is_last)
 {
-	cli_tree_prefix(ancestors_last, depth, is_last, 0);
+	cli_tree_prefix(ctx, ancestors_last, depth, is_last, 0);
 }
 
-static void print_tree_continuation_prefix(const int *ancestors_last,
-					   int depth, int is_last,
-					   size_t label_width)
+static void print_tree_continuation_prefix(struct cli_context *ctx, const int *ancestors_last,
+					   int depth, int is_last, size_t label_width)
 {
-	cli_tree_prefix(ancestors_last, depth, is_last, 1);
+	cli_tree_prefix(ctx, ancestors_last, depth, is_last, 1);
 	for (size_t i = 0; i < label_width + 2; i++)
-		putchar(' ');
+		putchar(ctx, ' ');
 }
 
 static const char *tree_wrap_end(const char *text, size_t width,
@@ -276,9 +276,8 @@ static const char *tree_wrap_end(const char *text, size_t width,
 	return *has_break ? space : end;
 }
 
-static void print_tree_string(const char *text, const char *label,
-			      int depth, int is_last,
-			      const int *ancestors_last)
+static void print_tree_string(struct cli_context *ctx, const char *text, const char *label,
+			      int depth, int is_last, const int *ancestors_last)
 {
 	char *display;
 	const char *line;
@@ -305,50 +304,49 @@ static void print_tree_string(const char *text, const char *label,
 	while (*line) {
 		end = tree_wrap_end(line, (size_t)available, &has_break);
 		if (first) {
-			print_tree_prefix(ancestors_last, depth, is_last);
+			print_tree_prefix(ctx, ancestors_last, depth, is_last);
 			if (label && label[0]) {
-				printf(ANSI_DIM);
-				presentation_print_safe_inline(label,
-					CLI_TREE_VALUE_MAX);
-				printf(":" ANSI_RESET " ");
+				printf(ctx, ANSI_DIM);
+				presentation_print_safe_inline(ctx, label, CLI_TREE_VALUE_MAX);
+				printf(ctx, ":" ANSI_RESET " ");
 			}
 			first = 0;
 		} else {
-			print_tree_continuation_prefix(
-				ancestors_last, depth, is_last, label_width);
+			print_tree_continuation_prefix(ctx, ancestors_last, depth, is_last,
+						       label_width);
 		}
 		if (*end && !has_break)
 			end = utf8_advance_display_width(
 				line, (size_t)(available - 1));
-		printf("%.*s", (int)(end - line), line);
+		printf(ctx, "%.*s", (int)(end - line), line);
 		if (*end && !has_break) {
-			printf("…\n");
+			printf(ctx, "…\n");
 			break;
 		}
-		printf("\n");
+		printf(ctx, "\n");
 		line = end;
 		while (*line == ' ')
 			line++;
 	}
 	if (first) {
-		print_tree_prefix(ancestors_last, depth, is_last);
+		print_tree_prefix(ctx, ancestors_last, depth, is_last);
 		if (label && label[0]) {
-			printf(ANSI_DIM);
-			presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
-			printf(":" ANSI_RESET " ");
+			printf(ctx, ANSI_DIM);
+			presentation_print_safe_inline(ctx, label, CLI_TREE_VALUE_MAX);
+			printf(ctx, ":" ANSI_RESET " ");
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	}
 	free(display);
 }
 
-static void print_tree_scalar(const cJSON *item)
+static void print_tree_scalar(struct cli_context *ctx, const cJSON *item)
 {
 	char *value;
 
 	value = cJSON_PrintUnformatted(item);
 	if (value) {
-		printf("%s", value);
+		printf(ctx, "%s", value);
 		free(value);
 	}
 }
@@ -359,18 +357,16 @@ static int json_child_count(const cJSON *item)
 		(cJSON_IsObject(item) ? cJSON_GetArraySize(item) : 0);
 }
 
-static void print_tree_container_summary(const cJSON *item)
+static void print_tree_container_summary(struct cli_context *ctx, const cJSON *item)
 {
 	int count = json_child_count(item);
 
-	printf("%s %d item%s",
-	       cJSON_IsArray(item) ? "[...]" : "{...}",
-	       count, count == 1 ? "" : "s");
+	printf(ctx, "%s %d item%s", cJSON_IsArray(item) ? "[...]" : "{...}", count,
+	       count == 1 ? "" : "s");
 }
 
-static void print_json_tree_node(const cJSON *item, const char *label,
-				 int depth, int is_last,
-				 int *ancestors_last, int collapse_depth,
+static void print_json_tree_node(struct cli_context *ctx, const cJSON *item, const char *label,
+				 int depth, int is_last, int *ancestors_last, int collapse_depth,
 				 int embedded_json_depth)
 {
 	int count;
@@ -384,49 +380,49 @@ static void print_json_tree_node(const cJSON *item, const char *label,
 		    depth == embedded_json_depth)
 			embedded = cJSON_Parse(item->valuestring);
 		if (cJSON_IsArray(embedded) || cJSON_IsObject(embedded)) {
-			print_json_tree_node(embedded, label, depth, is_last,
-					     ancestors_last, collapse_depth, -1);
+			print_json_tree_node(ctx, embedded, label, depth, is_last, ancestors_last,
+					     collapse_depth, -1);
 			cJSON_Delete(embedded);
 			return;
 		}
 		cJSON_Delete(embedded);
 		if (cJSON_IsString(item)) {
-			print_tree_string(item->valuestring, label, depth,
-					  is_last, ancestors_last);
+			print_tree_string(ctx, item->valuestring, label, depth, is_last,
+					  ancestors_last);
 			return;
 		}
-		print_tree_prefix(ancestors_last, depth, is_last);
+		print_tree_prefix(ctx, ancestors_last, depth, is_last);
 		if (label && label[0]) {
-			printf(ANSI_DIM);
-			presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
-			printf(":" ANSI_RESET " ");
+			printf(ctx, ANSI_DIM);
+			presentation_print_safe_inline(ctx, label, CLI_TREE_VALUE_MAX);
+			printf(ctx, ":" ANSI_RESET " ");
 		}
-		print_tree_scalar(item);
-		printf("\n");
+		print_tree_scalar(ctx, item);
+		printf(ctx, "\n");
 		return;
 	}
-	print_tree_prefix(ancestors_last, depth, is_last);
+	print_tree_prefix(ctx, ancestors_last, depth, is_last);
 	if (label && label[0]) {
-		printf(ANSI_DIM);
-		presentation_print_safe_inline(label, CLI_TREE_VALUE_MAX);
-		printf(":" ANSI_RESET);
+		printf(ctx, ANSI_DIM);
+		presentation_print_safe_inline(ctx, label, CLI_TREE_VALUE_MAX);
+		printf(ctx, ":" ANSI_RESET);
 	}
 	count = json_child_count(item);
 	if (count == 0) {
-		printf(" %s\n", cJSON_IsArray(item) ? "[]" : "{}");
+		printf(ctx, " %s\n", cJSON_IsArray(item) ? "[]" : "{}");
 		return;
 	}
 	if (depth >= collapse_depth) {
-		printf(" ");
-		print_tree_container_summary(item);
-		printf("\n");
+		printf(ctx, " ");
+		print_tree_container_summary(ctx, item);
+		printf(ctx, "\n");
 		return;
 	}
-	printf("\n");
+	printf(ctx, "\n");
 	ancestors_last[depth] = is_last;
 	if (depth + 1 >= CLI_TREE_DEPTH_MAX) {
-		print_tree_prefix(ancestors_last, depth + 1, 1);
-		printf(ANSI_DIM "… nested data" ANSI_RESET "\n");
+		print_tree_prefix(ctx, ancestors_last, depth + 1, 1);
+		printf(ctx, ANSI_DIM "… nested data" ANSI_RESET "\n");
 		return;
 	}
 	shown = count < CLI_TREE_ITEMS_MAX ? count : CLI_TREE_ITEMS_MAX;
@@ -444,18 +440,17 @@ static void print_json_tree_node(const cJSON *item, const char *label,
 			child_label = child->string ? child->string : "item";
 		}
 		child_last = index == shown - 1 && shown == count;
-		print_json_tree_node(child, child_label, depth + 1,
-				     child_last, ancestors_last,
+		print_json_tree_node(ctx, child, child_label, depth + 1, child_last, ancestors_last,
 				     collapse_depth, embedded_json_depth);
 		index++;
 	}
 	if (shown < count) {
-		print_tree_prefix(ancestors_last, depth + 1, 1);
-		printf(ANSI_DIM "… %d more" ANSI_RESET "\n", count - shown);
+		print_tree_prefix(ctx, ancestors_last, depth + 1, 1);
+		printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n", count - shown);
 	}
 }
 
-static void print_json_tree_children(const cJSON *item)
+static void print_json_tree_children(struct cli_context *ctx, const cJSON *item)
 {
 	int ancestors_last[CLI_TREE_DEPTH_MAX] = {0};
 	int count;
@@ -480,18 +475,17 @@ static void print_json_tree_children(const cJSON *item)
 		}
 		is_last = index == count - 1 &&
 			count <= CLI_TREE_ITEMS_MAX;
-		print_json_tree_node(child, label, 0, is_last,
-				     ancestors_last, CLI_TREE_DEPTH_MAX, -1);
+		print_json_tree_node(ctx, child, label, 0, is_last, ancestors_last,
+				     CLI_TREE_DEPTH_MAX, -1);
 		index++;
 	}
 	if (count > CLI_TREE_ITEMS_MAX) {
-		print_tree_prefix(ancestors_last, 0, 1);
-		printf(ANSI_DIM "… %d more" ANSI_RESET "\n",
-		       count - CLI_TREE_ITEMS_MAX);
+		print_tree_prefix(ctx, ancestors_last, 0, 1);
+		printf(ctx, ANSI_DIM "… %d more" ANSI_RESET "\n", count - CLI_TREE_ITEMS_MAX);
 	}
 }
 
-static void print_indented(const char *prefix, const char *content)
+static void print_indented(struct cli_context *ctx, const char *prefix, const char *content)
 {
 	char *display;
 	const char *line;
@@ -507,13 +501,13 @@ static void print_indented(const char *prefix, const char *content)
 		const char *end = strchr(line, '\n');
 		size_t len = end ? (size_t)(end - line) : strlen(line);
 
-		printf("%s%.*s\n", prefix, (int)len, line);
+		printf(ctx, "%s%.*s\n", prefix, (int)len, line);
 		line = end ? end + 1 : NULL;
 	}
 	free(display);
 }
 
-static void print_plain_labeled(const char *label, const char *content)
+static void print_plain_labeled(struct cli_context *ctx, const char *label, const char *content)
 {
 	char *display;
 
@@ -524,9 +518,9 @@ static void print_plain_labeled(const char *label, const char *content)
 	if (!display)
 		return;
 	if (strchr(display, '\n'))
-		printf("%s:\n%s\n", label, display);
+		printf(ctx, "%s:\n%s\n", label, display);
 	else
-		printf("%s: %s\n", label, display);
+		printf(ctx, "%s: %s\n", label, display);
 	free(display);
 }
 
@@ -564,10 +558,10 @@ static void presentation_print_stream(struct cli_context *ctx)
 		"reasoning" : (ctx->event_stream_kind == CLI_STREAM_CONTENT ?
 		"content" : "thought");
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		print_plain_labeled(label, content);
+		print_plain_labeled(ctx, label, content);
 	} else {
-		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
-		cli_markdown_render_ansi_with_media_indented(content, 2, media_callback, ctx);
+		printf(ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
+		cli_markdown_render_ansi_with_media_indented(ctx, content, 2, media_callback, ctx);
 	}
 reset:
 	if (ctx->event_stream_kind == CLI_STREAM_CONTENT)
@@ -608,9 +602,9 @@ static void presentation_plain_content(struct cli_context *ctx, const char *text
 			UTF8_TERMINAL_TEXT_MULTILINE);
 		if (safe) {
 			if (strchr(safe, '\n'))
-				printf("content:\n%s\n", safe);
+				printf(ctx, "content:\n%s\n", safe);
 			else
-				printf("content: %s\n", safe);
+				printf(ctx, "content: %s\n", safe);
 			free(safe);
 		}
 	}
@@ -683,7 +677,8 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 		rc = cli_transcript_reasoning_append(ctx, content + offset,
 			ctx->event_stream.len - offset, !ctx->event_stream_visible);
 		if (rc != 0) {
-			log_warn("Could not retain reasoning details: %s", morph_strerror(rc));
+			log_warn(ctx ? ctx->logger : NULL, "Could not retain reasoning details: %s",
+				 morph_strerror(rc));
 			return;
 		}
 		ctx->reasoning_stream_offset = ctx->event_stream.len;
@@ -702,8 +697,7 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 	if (finish) {
 		presentation_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
-		printf("\n" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
-			morph_buf_cstr(&preview));
+		printf(ctx, "\n" ANSI_DIM "\033[3m%s" ANSI_RESET "\n", morph_buf_cstr(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_terminal_reasoning_set(ctx, morph_buf_cstr(&preview));
 	}
@@ -748,10 +742,8 @@ static int presentation_patch_range(const char *line, size_t *old_line,
 		      old_line, &old_count, new_line, &new_count) == 4;
 }
 
-static void presentation_print_patch_line(const char *line, size_t len,
-					  const char *style,
-					  int in_hunk,
-					  size_t *old_line,
+static void presentation_print_patch_line(struct cli_context *ctx, const char *line, size_t len,
+					  const char *style, int in_hunk, size_t *old_line,
 					  size_t *new_line)
 {
 	char number[32] = "";
@@ -770,15 +762,14 @@ static void presentation_print_patch_line(const char *line, size_t len,
 		}
 	}
 	if (number[0]) {
-		printf("  │ " ANSI_DIM "%5s " ANSI_RESET "%s%.*s"
-		       ANSI_RESET "\n",
-		       number, style, (int)len, line);
+		printf(ctx, "  │ " ANSI_DIM "%5s " ANSI_RESET "%s%.*s" ANSI_RESET "\n", number,
+		       style, (int)len, line);
 		return;
 	}
-	printf("  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
+	printf(ctx, "  │ %s%.*s" ANSI_RESET "\n", style, (int)len, line);
 }
 
-void cli_presentation_patch_diff(const char *workdir, const char *input)
+void cli_presentation_patch_diff(struct cli_context *ctx, const char *workdir, const char *input)
 {
 	morph_buf_t preview;
 	char preview_error[256];
@@ -846,8 +837,7 @@ void cli_presentation_patch_diff(const char *workdir, const char *input)
 			in_hunk = 1;
 		else if (strncmp(line, "*** ", 4) == 0)
 			in_hunk = 0;
-		presentation_print_patch_line(line, len, style, in_hunk,
-			&old_line, &new_line);
+		presentation_print_patch_line(ctx, line, len, style, in_hunk, &old_line, &new_line);
 		lines++;
 		if (!end) {
 			line += len;
@@ -858,8 +848,8 @@ void cli_presentation_patch_diff(const char *workdir, const char *input)
 	if (*line)
 		truncated = 1;
 	if (truncated)
-		printf("  %s" ANSI_DIM "… patch display truncated" ANSI_RESET
-		       "\n", tui_tree_branch(1, 0));
+		printf(ctx, "  %s" ANSI_DIM "… patch display truncated" ANSI_RESET "\n",
+		       tui_tree_branch(1, 0));
 	free(display);
 	if (preview_ready)
 		morph_buf_cleanup(&preview);
@@ -906,21 +896,19 @@ static void presentation_tool_call(struct cli_context *ctx,
 						  CLI_EVENT_ARGS_MAX);
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("tool: %s", tool);
+		printf(ctx, "tool: %s", tool);
 		if (display[0])
-			printf(" %s", display);
-		printf("\n");
+			printf(ctx, " %s", display);
+		printf(ctx, "\n");
 		if (patch_input)
-			cli_presentation_patch_diff(presentation_workdir(ctx),
-						   patch_input);
+			cli_presentation_patch_diff(ctx, presentation_workdir(ctx), patch_input);
 	} else {
-		printf("\n" ANSI_YELLOW "◦" ANSI_RESET " "
-		       ANSI_BOLD "%s" ANSI_RESET "\n", title);
+		printf(ctx, "\n" ANSI_YELLOW "◦" ANSI_RESET " " ANSI_BOLD "%s" ANSI_RESET "\n",
+		       title);
 		if (patch_input)
-			cli_presentation_patch_diff(presentation_workdir(ctx),
-						   patch_input);
+			cli_presentation_patch_diff(ctx, presentation_workdir(ctx), patch_input);
 		else
-			print_json_tree_children(args_item);
+			print_json_tree_children(ctx, args_item);
 		presentation_status(ctx, "Running tool…");
 	}
 	free(args);
@@ -941,26 +929,25 @@ static void presentation_tool_end(struct cli_context *ctx,
 		title = tool && tool[0] ? tool : "Tool";
 	failed = !ev->name || strcmp(ev->name, "tool.result") != 0;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("status: ");
-		presentation_print_safe_inline(tool ? tool : "tool",
-			TOOL_NAME_MAX);
-		printf(" %s\n", failed ? "failed" : "completed");
+		printf(ctx, "status: ");
+		presentation_print_safe_inline(ctx, tool ? tool : "tool", TOOL_NAME_MAX);
+		printf(ctx, " %s\n", failed ? "failed" : "completed");
 		return;
 	}
 	if (failed) {
-		printf("  " ANSI_RED CLI_FEED_FAILED " ");
-		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
-		printf(" failed" ANSI_RESET);
+		printf(ctx, "  " ANSI_RED CLI_FEED_FAILED " ");
+		presentation_print_safe_inline(ctx, title, CLI_EVENT_TEXT_MAX);
+		printf(ctx, " failed" ANSI_RESET);
 		if (error && error[0]) {
-			printf(ANSI_DIM " · ");
-			presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
-			printf(ANSI_RESET);
+			printf(ctx, ANSI_DIM " · ");
+			presentation_print_safe_inline(ctx, error, CLI_EVENT_TEXT_MAX);
+			printf(ctx, ANSI_RESET);
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	} else {
-		printf("  " ANSI_GREEN CLI_FEED_DONE " ");
-		presentation_print_safe_inline(title, CLI_EVENT_TEXT_MAX);
-		printf(" completed" ANSI_RESET "\n");
+		printf(ctx, "  " ANSI_GREEN CLI_FEED_DONE " ");
+		presentation_print_safe_inline(ctx, title, CLI_EVENT_TEXT_MAX);
+		printf(ctx, " completed" ANSI_RESET "\n");
 	}
 }
 
@@ -977,7 +964,7 @@ static const char *plan_mark(const char *status, int active)
 	return CLI_FEED_PENDING;
 }
 
-static int presentation_plan(const struct morph_event *ev)
+static int presentation_plan(struct cli_context *ctx, const struct morph_event *ev)
 {
 	cJSON *result;
 	cJSON *plans;
@@ -1011,8 +998,8 @@ static int presentation_plan(const struct morph_event *ev)
 			if (cJSON_IsString(status) && strcmp(status->valuestring, "completed") == 0)
 				completed++;
 		}
-		printf("  " ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n",
-			completed, count);
+		printf(ctx, "  " ANSI_DIM "Plan · %d/%d completed" ANSI_RESET "\n", completed,
+		       count);
 		printed = 1;
 		cJSON_ArrayForEach(step, steps) {
 			cJSON *description;
@@ -1034,10 +1021,10 @@ static int presentation_plan(const struct morph_event *ev)
 			color = strcmp(mark, CLI_FEED_DONE) == 0 ? ANSI_GREEN :
 				strcmp(mark, CLI_FEED_FAILED) == 0 ? ANSI_RED :
 				strcmp(mark, CLI_FEED_RUNNING) == 0 ? ANSI_YELLOW : ANSI_DIM;
-			printf("  %s%s" ANSI_RESET " ", color, mark);
-			presentation_print_safe_inline(description->valuestring,
-				CLI_EVENT_TEXT_MAX);
-			printf("\n");
+			printf(ctx, "  %s%s" ANSI_RESET " ", color, mark);
+			presentation_print_safe_inline(ctx, description->valuestring,
+						       CLI_EVENT_TEXT_MAX);
+			printf(ctx, "\n");
 		}
 	}
 	return printed;
@@ -1055,15 +1042,15 @@ static void presentation_observation(struct cli_context *ctx,
 	if (!text || !text[0])
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		print_plain_labeled("observation", text);
-	} else if (presentation_plan(ev)) {
+		print_plain_labeled(ctx, "observation", text);
+	} else if (presentation_plan(ctx, ev)) {
 		return;
 	} else if (event_error_code(ev) < 0) {
 		morph_buf_t prefix = {0};
 		if (morph_buf_init(&prefix, 64) == 0) {
 			tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 			morph_buf_puts(&prefix, ANSI_RED "Error: " ANSI_RESET);
-			print_indented(morph_buf_cstr(&prefix), text);
+			print_indented(ctx, morph_buf_cstr(&prefix), text);
 			morph_buf_cleanup(&prefix);
 		}
 	} else {
@@ -1074,22 +1061,18 @@ static void presentation_observation(struct cli_context *ctx,
 		    cJSON_IsObject(structured)) {
 			int ancestors_last[CLI_TREE_DEPTH_MAX] = {0};
 
-			print_json_tree_node(structured, "result", 0, 1,
-					     ancestors_last,
-					     CLI_TREE_RESULT_DEPTH,
-					     CLI_TREE_EMBEDDED_JSON_DEPTH);
+			print_json_tree_node(ctx, structured, "result", 0, 1, ancestors_last,
+					     CLI_TREE_RESULT_DEPTH, CLI_TREE_EMBEDDED_JSON_DEPTH);
 		} else if (parsed) {
 			int ancestors_last[CLI_TREE_DEPTH_MAX] = {0};
 
-			print_json_tree_node(parsed, "result", 0, 1,
-					     ancestors_last,
-					     CLI_TREE_RESULT_DEPTH,
-					     CLI_TREE_EMBEDDED_JSON_DEPTH);
+			print_json_tree_node(ctx, parsed, "result", 0, 1, ancestors_last,
+					     CLI_TREE_RESULT_DEPTH, CLI_TREE_EMBEDDED_JSON_DEPTH);
 		} else {
 			morph_buf_t prefix = {0};
 			if (morph_buf_init(&prefix, 32) == 0) {
 				tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
-				print_indented(morph_buf_cstr(&prefix), text);
+				print_indented(ctx, morph_buf_cstr(&prefix), text);
 				morph_buf_cleanup(&prefix);
 			}
 		}
@@ -1105,9 +1088,9 @@ static void presentation_reflection(struct cli_context *ctx,
 	presentation_clear_status(ctx);
 	presentation_print_stream(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-		print_plain_labeled("guardrail", text);
+		print_plain_labeled(ctx, "guardrail", text);
 	else if (text && text[0])
-		print_indented(ANSI_YELLOW CLI_FEED_SYSTEM " Guardrail · " ANSI_RESET, text);
+		print_indented(ctx, ANSI_YELLOW CLI_FEED_SYSTEM " Guardrail · " ANSI_RESET, text);
 }
 
 static void presentation_token_label(int tokens, char *label, size_t size)
@@ -1136,7 +1119,7 @@ static void presentation_compaction(struct cli_context *ctx,
 		} else if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 			presentation_clear_status(ctx);
 			presentation_print_stream(ctx);
-			printf("\n");
+			printf(ctx, "\n");
 			cli_terminal_activity_set(ctx, "Compacting context…");
 		}
 		return;
@@ -1144,12 +1127,12 @@ static void presentation_compaction(struct cli_context *ctx,
 	presentation_clear_status(ctx);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		if (failed) {
-			printf("context: compression failed: ");
-			presentation_print_safe_inline(error ? error : "unknown error",
-				CLI_EVENT_TEXT_MAX);
-			printf("\n");
+			printf(ctx, "context: compression failed: ");
+			presentation_print_safe_inline(ctx, error ? error : "unknown error",
+						       CLI_EVENT_TEXT_MAX);
+			printf(ctx, "\n");
 		} else {
-			printf("context: compacted %d -> %d tokens\n", before, after);
+			printf(ctx, "context: compacted %d -> %d tokens\n", before, after);
 		}
 		fflush(stdout);
 		return;
@@ -1157,11 +1140,11 @@ static void presentation_compaction(struct cli_context *ctx,
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return;
 	if (elapsed < 0)
-		printf("\n");
+		printf(ctx, "\n");
 	if (failed) {
-		printf(ANSI_DIM ANSI_RED "◇ Context compression failed · ");
-		presentation_print_safe_inline(error ? error : "unknown error",
-			CLI_EVENT_TEXT_MAX);
+		printf(ctx, ANSI_DIM ANSI_RED "◇ Context compression failed · ");
+		presentation_print_safe_inline(ctx, error ? error : "unknown error",
+					       CLI_EVENT_TEXT_MAX);
 	} else {
 		char before_label[32];
 		char after_label[32];
@@ -1179,11 +1162,11 @@ static void presentation_compaction(struct cli_context *ctx,
 				before_label, after_label);
 		(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), line,
 			(size_t)(columns > 0 ? columns : 1), 0);
-		printf(ANSI_DIM "%s", clipped);
+		printf(ctx, ANSI_DIM "%s", clipped);
 	}
 	if (failed && elapsed >= 0)
-		printf(" · %llds", (long long)(elapsed / 1000));
-	printf(ANSI_RESET "\n\n");
+		printf(ctx, " · %llds", (long long)(elapsed / 1000));
+	printf(ctx, ANSI_RESET "\n\n");
 	fflush(stdout);
 	if (!failed && ctx->turn_active)
 		presentation_model_wait(ctx);
@@ -1211,23 +1194,23 @@ static void presentation_final(struct cli_context *ctx,
 		presentation_print_stream(ctx);
 	cli_markdown_stream_reset(ctx, 1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("final:\n");
+		printf(ctx, "final:\n");
 		if (text && text[0]) {
 			char *safe = presentation_safe_dup(text, SIZE_MAX,
 				UTF8_TERMINAL_TEXT_MULTILINE);
 
 			if (safe) {
-				printf("%s\n", safe);
+				printf(ctx, "%s\n", safe);
 				free(safe);
 			}
 		}
 	} else {
 		if (!had_stream)
-			printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
+			printf(ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {
-			printf("\n");
+			printf(ctx, "\n");
 			ctx->markdown_output.trailing_newlines = 1;
 		}
 		cli_markdown_finish_final(ctx);
@@ -1256,32 +1239,34 @@ static void presentation_turn_end(struct cli_context *ctx,
 	if ((outcome && strcmp(outcome, "cancelled") == 0) ||
 	    strcmp(ev->phase, "cancelled") == 0) {
 		if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-			printf("cancelled\n");
+			printf(ctx, "cancelled\n");
 		else
-			printf("\n" ANSI_DIM CLI_FEED_SYSTEM " Cancelled" ANSI_RESET "\n");
+			printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM " Cancelled" ANSI_RESET "\n");
 		ctx->final_rendered = 1;
 		return;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("error: ");
-		presentation_print_safe_inline(error ? error :
-			(outcome ? outcome : "turn failed"), CLI_EVENT_TEXT_MAX);
+		printf(ctx, "error: ");
+		presentation_print_safe_inline(ctx,
+					       error ? error : (outcome ? outcome : "turn failed"),
+					       CLI_EVENT_TEXT_MAX);
 		if (detail && detail[0]) {
-			printf(" (");
-			presentation_print_safe_inline(detail, CLI_EVENT_TEXT_MAX);
-			printf(")");
+			printf(ctx, " (");
+			presentation_print_safe_inline(ctx, detail, CLI_EVENT_TEXT_MAX);
+			printf(ctx, ")");
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	} else {
-		printf("\n" ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error" ANSI_RESET " ");
-		presentation_print_safe_inline(error ? error :
-			(outcome ? outcome : "turn failed"), CLI_EVENT_TEXT_MAX);
+		printf(ctx, "\n" ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error" ANSI_RESET " ");
+		presentation_print_safe_inline(ctx,
+					       error ? error : (outcome ? outcome : "turn failed"),
+					       CLI_EVENT_TEXT_MAX);
 		if (detail && detail[0]) {
-			printf(ANSI_DIM " (");
-			presentation_print_safe_inline(detail, CLI_EVENT_TEXT_MAX);
-			printf(")" ANSI_RESET);
+			printf(ctx, ANSI_DIM " (");
+			presentation_print_safe_inline(ctx, detail, CLI_EVENT_TEXT_MAX);
+			printf(ctx, ")" ANSI_RESET);
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	}
 	ctx->final_rendered = 1;
 }
@@ -1308,32 +1293,32 @@ static void presentation_auth(struct cli_context *ctx,
 			env_name = config->models.text.api_key_env;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("error: authentication required for ");
-		presentation_print_safe_inline(backend, CLI_EVENT_TEXT_MAX);
+		printf(ctx, "error: authentication required for ");
+		presentation_print_safe_inline(ctx, backend, CLI_EVENT_TEXT_MAX);
 		if (tool && tool[0]) {
-			printf(" tool ");
-			presentation_print_safe_inline(tool, TOOL_NAME_MAX);
+			printf(ctx, " tool ");
+			presentation_print_safe_inline(ctx, tool, TOOL_NAME_MAX);
 		}
 		if (env_name && env_name[0]) {
-			printf("; export ");
-			presentation_print_safe_inline(env_name, CLI_EVENT_TEXT_MAX);
+			printf(ctx, "; export ");
+			presentation_print_safe_inline(ctx, env_name, CLI_EVENT_TEXT_MAX);
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	} else {
-		printf("\n" ANSI_BOLD ANSI_YELLOW
-		       CLI_FEED_QUESTION " Authentication required" ANSI_RESET " for ");
-		presentation_print_safe_inline(backend, CLI_EVENT_TEXT_MAX);
+		printf(ctx, "\n" ANSI_BOLD ANSI_YELLOW CLI_FEED_QUESTION
+			    " Authentication required" ANSI_RESET " for ");
+		presentation_print_safe_inline(ctx, backend, CLI_EVENT_TEXT_MAX);
 		if (tool && tool[0]) {
-			printf(" tool " ANSI_BOLD);
-			presentation_print_safe_inline(tool, TOOL_NAME_MAX);
-			printf(ANSI_RESET);
+			printf(ctx, " tool " ANSI_BOLD);
+			presentation_print_safe_inline(ctx, tool, TOOL_NAME_MAX);
+			printf(ctx, ANSI_RESET);
 		}
 		if (env_name && env_name[0]) {
-			printf(ANSI_DIM " · export ");
-			presentation_print_safe_inline(env_name, CLI_EVENT_TEXT_MAX);
-			printf(ANSI_RESET);
+			printf(ctx, ANSI_DIM " · export ");
+			presentation_print_safe_inline(ctx, env_name, CLI_EVENT_TEXT_MAX);
+			printf(ctx, ANSI_RESET);
 		}
-		printf("\n");
+		printf(ctx, "\n");
 	}
 }
 
@@ -1352,50 +1337,46 @@ static void presentation_artifact(struct cli_context *ctx,
 	status_paused = presentation_pause_status(ctx);
 	(void)morph_strmap_set(&ctx->announced_artifacts, path, (void *)1);
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
-		printf("artifact: ");
-		presentation_print_safe_inline(kind ? kind : "file",
-			CLI_EVENT_TEXT_MAX);
-		printf(" ");
-		presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
-		printf("\n");
+		printf(ctx, "artifact: ");
+		presentation_print_safe_inline(ctx, kind ? kind : "file", CLI_EVENT_TEXT_MAX);
+		printf(ctx, " ");
+		presentation_print_safe_inline(ctx, path, CLI_EVENT_TEXT_MAX);
+		printf(ctx, "\n");
 		presentation_resume_status(ctx, status_paused);
 		return;
 	}
-	cli_tree_prefix(NULL, 0, 1, 0);
-	printf(ANSI_DIM);
-	presentation_print_safe_inline(kind ? kind : "artifact",
-		CLI_EVENT_TEXT_MAX);
-	printf(": ");
-	presentation_print_safe_inline(path, CLI_EVENT_TEXT_MAX);
-	printf(ANSI_RESET "\n");
+	cli_tree_prefix(ctx, NULL, 0, 1, 0);
+	printf(ctx, ANSI_DIM);
+	presentation_print_safe_inline(ctx, kind ? kind : "artifact", CLI_EVENT_TEXT_MAX);
+	printf(ctx, ": ");
+	presentation_print_safe_inline(ctx, path, CLI_EVENT_TEXT_MAX);
+	printf(ctx, ANSI_RESET "\n");
 	presentation_resume_status(ctx, status_paused);
 }
 
 static void presentation_mcp_tree_start(struct cli_context *ctx,
 					const char *server)
 {
-	printf("\n" ANSI_DIM CLI_FEED_SYSTEM ANSI_RESET " "
-	       ANSI_BOLD "MCP ");
-	presentation_print_safe_inline(server, CLI_EVENT_TEXT_MAX);
-	printf(ANSI_RESET "\n");
+	printf(ctx, "\n" ANSI_DIM CLI_FEED_SYSTEM ANSI_RESET " " ANSI_BOLD "MCP ");
+	presentation_print_safe_inline(ctx, server, CLI_EVENT_TEXT_MAX);
+	printf(ctx, ANSI_RESET "\n");
 	strncpy(ctx->mcp_tree_server, server,
 		sizeof(ctx->mcp_tree_server) - 1);
 	ctx->mcp_tree_server[sizeof(ctx->mcp_tree_server) - 1] = '\0';
 	ctx->mcp_tree_active = 1;
 }
 
-static void presentation_mcp_ready(const struct morph_event *ev)
+static void presentation_mcp_ready(struct cli_context *ctx, const struct morph_event *ev)
 {
 	cJSON *tools = event_item(ev, "tools");
 	cJSON *resources = event_item(ev, "resources");
 	cJSON *prompts = event_item(ev, "prompts");
 
-	printf(ANSI_GREEN CLI_FEED_DONE " Ready" ANSI_RESET);
+	printf(ctx, ANSI_GREEN CLI_FEED_DONE " Ready" ANSI_RESET);
 	if (cJSON_IsNumber(tools) && cJSON_IsNumber(resources) &&
 	    cJSON_IsNumber(prompts)) {
-		printf(ANSI_DIM " · %d tools, %d resources, %d prompts"
-		       ANSI_RESET, tools->valueint, resources->valueint,
-		       prompts->valueint);
+		printf(ctx, ANSI_DIM " · %d tools, %d resources, %d prompts" ANSI_RESET,
+		       tools->valueint, resources->valueint, prompts->valueint);
 	}
 }
 
@@ -1421,16 +1402,16 @@ static void presentation_mcp(struct cli_context *ctx,
 	is_last = failed ||
 		(ev->name && (strcmp(ev->name, "mcp.ready") == 0 ||
 			     strcmp(ev->name, "mcp.disconnected") == 0));
-	cli_tree_prefix(NULL, 0, is_last, 0);
+	cli_tree_prefix(ctx, NULL, 0, is_last, 0);
 	if (failed) {
-		printf(ANSI_RED CLI_FEED_FAILED " Failed" ANSI_RESET);
+		printf(ctx, ANSI_RED CLI_FEED_FAILED " Failed" ANSI_RESET);
 		if (error && error[0]) {
-			printf(ANSI_DIM " · ");
-			presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
-			printf(ANSI_RESET);
+			printf(ctx, ANSI_DIM " · ");
+			presentation_print_safe_inline(ctx, error, CLI_EVENT_TEXT_MAX);
+			printf(ctx, ANSI_RESET);
 		}
 	} else if (ev->name && strcmp(ev->name, "mcp.ready") == 0) {
-		presentation_mcp_ready(ev);
+		presentation_mcp_ready(ctx, ev);
 	} else {
 		if (ev->name && strcmp(ev->name, "mcp.connecting") == 0)
 			label = "Connecting";
@@ -1445,9 +1426,9 @@ static void presentation_mcp(struct cli_context *ctx,
 			label = "Disconnected";
 		else
 			label = ev->message ? ev->message : "Updated";
-		presentation_print_safe_inline(label, CLI_EVENT_TEXT_MAX);
+		presentation_print_safe_inline(ctx, label, CLI_EVENT_TEXT_MAX);
 	}
-	printf("\n");
+	printf(ctx, "\n");
 	if (is_last) {
 		ctx->mcp_tree_active = 0;
 		ctx->mcp_tree_server[0] = '\0';
@@ -1484,11 +1465,11 @@ static void presentation_auxiliary(struct cli_context *ctx,
 		if ((ev->name && strstr(ev->name, "failed")) ||
 		    event_error_code(ev) < 0) {
 			status_paused = presentation_pause_status(ctx);
-			printf("\n" ANSI_RED CLI_FEED_FAILED " Background · ");
-			presentation_print_safe_inline(ev->message ? ev->message :
-				(ev->name ? ev->name : "failed"),
+			printf(ctx, "\n" ANSI_RED CLI_FEED_FAILED " Background · ");
+			presentation_print_safe_inline(
+				ctx, ev->message ? ev->message : (ev->name ? ev->name : "failed"),
 				CLI_EVENT_TEXT_MAX);
-			printf(ANSI_RESET "\n");
+			printf(ctx, ANSI_RESET "\n");
 			presentation_resume_status(ctx, status_paused);
 		} else if (ev->phase &&
 			   (strcmp(ev->phase, "begin") == 0 ||
@@ -1510,14 +1491,14 @@ static void presentation_auxiliary(struct cli_context *ctx,
 			const char *error = event_string(ev, "error");
 
 			status_paused = presentation_pause_status(ctx);
-			printf("\n" ANSI_RED CLI_FEED_FAILED ANSI_RESET " MCP ");
-			presentation_print_safe_inline(server ? server : "server",
-				CLI_EVENT_TEXT_MAX);
-			printf(ANSI_DIM " · failed" ANSI_RESET "\n");
+			printf(ctx, "\n" ANSI_RED CLI_FEED_FAILED ANSI_RESET " MCP ");
+			presentation_print_safe_inline(ctx, server ? server : "server",
+						       CLI_EVENT_TEXT_MAX);
+			printf(ctx, ANSI_DIM " · failed" ANSI_RESET "\n");
 			if (error && error[0]) {
-				printf("  ");
-				presentation_print_safe_inline(error, CLI_EVENT_TEXT_MAX);
-				printf("\n");
+				printf(ctx, "  ");
+				presentation_print_safe_inline(ctx, error, CLI_EVENT_TEXT_MAX);
+				printf(ctx, "\n");
 			}
 			presentation_resume_status(ctx, status_paused);
 		}
@@ -1530,14 +1511,14 @@ static void presentation_auxiliary(struct cli_context *ctx,
 	else
 		return;
 	status_paused = presentation_pause_status(ctx);
-	printf("\n%s%s" ANSI_RESET " %s · ",
-		ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ?
-		ANSI_RED : ANSI_DIM,
-		ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ?
-		CLI_FEED_FAILED : CLI_FEED_SYSTEM, prefix);
-	presentation_print_safe_inline(ev->message ? ev->message :
-		(ev->name ? ev->name : ""), CLI_EVENT_TEXT_MAX);
-	printf(ANSI_RESET "\n");
+	printf(ctx, "\n%s%s" ANSI_RESET " %s · ",
+	       ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ? ANSI_RED : ANSI_DIM,
+	       ev->type == MORPH_EVENT_ERROR || event_error_code(ev) < 0 ? CLI_FEED_FAILED
+									 : CLI_FEED_SYSTEM,
+	       prefix);
+	presentation_print_safe_inline(ctx, ev->message ? ev->message : (ev->name ? ev->name : ""),
+				       CLI_EVENT_TEXT_MAX);
+	printf(ctx, ANSI_RESET "\n");
 	presentation_resume_status(ctx, status_paused);
 }
 
@@ -1547,6 +1528,13 @@ int cli_presentation_init(struct cli_context *ctx)
 
 	if (!ctx)
 		MORPH_RETURN(-EINVAL);
+	if (!ctx->prompt_lock_ready) {
+		int error = pthread_mutex_init(&ctx->prompt_lock, NULL);
+
+		if (error)
+			MORPH_RETURN(-error);
+		ctx->prompt_lock_ready = 1;
+	}
 	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
 	if (rc != 0)
 		return rc;
@@ -1619,6 +1607,10 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	if (ctx->prompt_lock_ready) {
+		pthread_mutex_destroy(&ctx->prompt_lock);
+		ctx->prompt_lock_ready = 0;
+	}
 	if (ctx->details_open)
 		cli_transcript_toggle(ctx);
 	cli_transcript_reset(ctx);
@@ -1702,9 +1694,9 @@ int cli_presentation_event(struct cli_context *ctx,
 			if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE) {
 				const char *display = event_string(ev, "display_text");
 
-				cli_presentation_user_input(display ? display : text);
+				cli_presentation_user_input(ctx, display ? display : text);
 			} else {
-				printf(ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
+				printf(ctx, ANSI_DIM "  Requirement applied" ANSI_RESET "\n");
 			}
 			presentation_model_wait(ctx);
 			return 0;

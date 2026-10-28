@@ -145,12 +145,12 @@ static int b64_decode(const char *src, size_t src_len,
 /*  Vocabulary loader                                                  */
 /* ------------------------------------------------------------------ */
 
-static int load_vocab(struct bpe_encoder *enc, const char *path)
+static int load_vocab(struct morph_log *logger, struct bpe_encoder *enc, const char *path)
 {
 	FILE *fp = fopen(path, "r");
 	if (!fp) {
 		int err = errno;
-		log_err("bpe: cannot open vocab: %s: %s", path, strerror(err));
+		log_err(logger, "bpe: cannot open vocab: %s: %s", path, strerror(err));
 		MORPH_RETURN(-err);
 	}
 
@@ -200,7 +200,7 @@ static int load_vocab(struct bpe_encoder *enc, const char *path)
 	}
 
 	fclose(fp);
-	log_info("bpe: loaded %d tokens from %s", count, path);
+	log_info(logger, "bpe: loaded %d tokens from %s", count, path);
 	return 0;
 }
 
@@ -972,8 +972,8 @@ static int bpe_merge_count(const struct bpe_encoder *enc,
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
-					const char *vocab_dir)
+struct bpe_encoder *bpe_encoder_create(struct morph_log *logger, enum bpe_encoding encoding,
+				       const char *vocab_dir)
 {
 	const char *filename = (encoding == BPE_O200K_BASE)
 		? "o200k_base.tiktoken" : "cl100k_base.tiktoken";
@@ -1000,8 +1000,10 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 	}
 
 	if (!found_path) {
-		log_warn("bpe: vocab %s not found, "
-			 "token counts will use estimation", filename);
+		log_warn(logger,
+			 "bpe: vocab %s not found, "
+			 "token counts will use estimation",
+			 filename);
 		return NULL;
 	}
 
@@ -1024,7 +1026,7 @@ struct bpe_encoder *bpe_encoder_create(enum bpe_encoding encoding,
 		free(enc);
 		return NULL;
 	}
-	int rc = load_vocab(enc, found_path);
+	int rc = load_vocab(logger, enc, found_path);
 	if (rc < 0) {
 		free(enc->ht);
 		morph_buf_cleanup(&enc->key_pool);

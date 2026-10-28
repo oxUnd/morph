@@ -1,12 +1,13 @@
 #ifndef MORPH_SYSTEM_PROMPT_H
 #define MORPH_SYSTEM_PROMPT_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* On success, out owns the loaded text, or NULL when no source is configured. */
-int morph_prompt_load(const char *file, const char *dir, char **out);
+int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out);
 
 #ifdef __cplusplus
 }

@@ -371,9 +371,8 @@ int agent_history_migrate_legacy_tool_call(struct tool_call *call,
 	return 0;
 }
 
-static int history_add_tool_calls(const struct model_history_item *item,
-				  morph_array_t *messages,
-				  struct arena *arena)
+static int history_add_tool_calls(struct morph_log *logger, const struct model_history_item *item,
+				  morph_array_t *messages, struct arena *arena)
 {
 	struct chat_message *message;
 	cJSON *calls;
@@ -382,7 +381,7 @@ static int history_add_tool_calls(const struct model_history_item *item,
 
 	root = item->payload_json ? cJSON_ParseWithOpts(item->payload_json, NULL, 1) : NULL;
 	if (!root) {
-		log_err("history replay: invalid tool payload at item %lld, sequence %lld",
+		log_err(logger, "history replay: invalid tool payload at item %lld, sequence %lld",
 			(long long)item->id, (long long)item->sequence_no);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
@@ -568,9 +567,9 @@ int agent_history_item_replayable(const struct model_history_item *item)
 		strcmp(item->kind, "compaction_summary") == 0;
 }
 
-int agent_history_build_chat_messages(const struct model_history_item *items,
-				      morph_array_t *messages,
-				      struct arena *arena)
+int agent_history_build_chat_messages(struct morph_log *logger,
+				      const struct model_history_item *items,
+				      morph_array_t *messages, struct arena *arena)
 {
 	const struct model_history_item *item = items;
 	int rc;
@@ -615,7 +614,7 @@ int agent_history_build_chat_messages(const struct model_history_item *items,
 			continue;
 		}
 		if (strcmp(item->kind, "assistant_tool_calls") == 0)
-			rc = history_add_tool_calls(item, messages, arena);
+			rc = history_add_tool_calls(logger, item, messages, arena);
 		else if (strcmp(item->kind, "tool_result") == 0)
 			rc = history_add_tool_result(item, messages, arena);
 		else if (strcmp(item->kind, "compaction_summary") == 0)
@@ -1199,7 +1198,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 	free(safe);
 	if (!limited)
 		MORPH_RETURN(-ENOMEM);
-	log_dbg("history tool result: %zu -> %zu bytes, truncated=%d",
+	log_dbg(ctx ? ctx->logger : NULL, "history tool result: %zu -> %zu bytes, truncated=%d",
 		content ? strlen(content) : 0, strlen(limited), was_truncated);
 	*prepared = limited;
 	if (truncated)
@@ -1506,7 +1505,7 @@ int agent_history_reload(struct react_context *ctx)
 	return 0;
 }
 
-static int history_validate_replay(const struct model_history_item *items)
+static int history_validate_replay(struct morph_log *logger, const struct model_history_item *items)
 {
 	struct arena *arena = arena_create(0);
 	morph_array_t messages = {0};
@@ -1516,7 +1515,7 @@ static int history_validate_replay(const struct model_history_item *items)
 		MORPH_RETURN(-ENOMEM);
 	rc = morph_array_init(&messages, 64, sizeof(struct chat_message));
 	if (rc == 0)
-		rc = agent_history_build_chat_messages(items, &messages, arena);
+		rc = agent_history_build_chat_messages(logger, items, &messages, arena);
 	if (rc == 0) {
 		struct agent_history_diagnostic diagnostic;
 
@@ -1644,7 +1643,8 @@ static int history_compact_checked(struct react_context *ctx,
 	if (rc == 0) {
 		candidate = model_history_list(ctx->history_db,
 			ctx->history_session_id, 1, &count);
-		rc = count < 0 ? MORPH_ERR_DB : history_validate_replay(candidate);
+		rc = count < 0 ? MORPH_ERR_DB
+			       : history_validate_replay(ctx ? ctx->logger : NULL, candidate);
 	}
 	if (rc == 0)
 		rc = db_exec(ctx->history_db, "RELEASE history_replay;");
@@ -1749,7 +1749,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 							      omitted_through);
 				if (rc != 0)
 					break;
-				log_warn("summary context recovery: omitted %d old tool groups",
+				log_warn(ctx ? ctx->logger : NULL,
+					 "summary context recovery: omitted %d old tool groups",
 					 pruned_groups);
 				attempt--;
 				continue;
@@ -1757,8 +1758,12 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != MORPH_ERR_PROTOCOL &&
 					     rc != -ETIMEDOUT))
 				break;
-			log_warn("history summary retry %d: %s", attempt + 1, morph_strerror(rc));
-			rc = http_wait_cancelable((unsigned int)(attempt + 1) * 1000u);
+			log_warn(ctx ? ctx->logger : NULL, "history summary retry %d: %s",
+				 attempt + 1, morph_strerror(rc));
+			rc = http_wait_cancelable(
+				&(struct http_control){.cancel_token = &ctx->cancel_token,
+						       .cancel_flag = &ctx->cancelled},
+				(unsigned int)(attempt + 1) * 1000u);
 			if (rc != 0)
 				break;
 		}
@@ -1830,9 +1835,10 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	(void)model_history_compaction_attempt_add(ctx->history_db,
 		ctx->history_session_id, ctx->turn_id, trigger_kind,
 		"completed", input_tokens, max_summary_tokens, 0, NULL);
-	log_info("model history compaction %s: %d input tokens, %d active items",
-		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed",
-		 input_tokens, count);
+	log_info(ctx ? ctx->logger : NULL,
+		 "model history compaction %s: %d input tokens, %d active items",
+		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed", input_tokens,
+		 count);
 	if (ctx->compress.compaction_warning_count > 0) {
 		int compactions = model_history_compaction_count(
 			ctx->history_db, ctx->history_session_id);
@@ -1840,8 +1846,10 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		if (compactions >= ctx->compress.compaction_warning_count) {
 			cJSON *data = cJSON_CreateObject();
 
-			log_warn("model history has been compacted %d times; "
-				 "consider starting a new session", compactions);
+			log_warn(ctx ? ctx->logger : NULL,
+				 "model history has been compacted %d times; "
+				 "consider starting a new session",
+				 compactions);
 			if (data) {
 				cJSON_AddNumberToObject(data, "count", compactions);
 				(void)morph_event_emit_simple(ctx->event_cb,
@@ -2184,7 +2192,8 @@ int agent_history_repair(struct db *db, int64_t session_id,
 			   !history_call_exists(items, item->tool_call_id,
 				item->provider_call_id)) {
 			active = 0;
-			log_warn("deactivating orphan history tool result %lld",
+			log_warn(db ? db->logger : NULL,
+				 "deactivating orphan history tool result %lld",
 				 (long long)item->id);
 		}
 		tokens = history_item_tokens(item, tokenizer, token_text);
@@ -2214,7 +2223,7 @@ int agent_history_repair(struct db *db, int64_t session_id,
 		    history_call_exists(items, item->tool_call_id,
 			item->provider_call_id))
 			continue;
-		log_warn("deactivating orphan history tool result %lld",
+		log_warn(db ? db->logger : NULL, "deactivating orphan history tool result %lld",
 			 (long long)item->id);
 		rc = history_update_item(db, item->id, 0, item->token_count);
 		if (rc != 0) {

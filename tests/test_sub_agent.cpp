@@ -214,8 +214,8 @@ protected:
 	struct model *llm;
 	char config_path[256];
 	void SetUp() override {
-		tool_registry_init(&tools);
-		tok = tokenizer_create("gpt-4o", 128000);
+		tool_registry_init(NULL, &tools);
+		tok = tokenizer_create(NULL, "gpt-4o", 128000);
 		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
@@ -371,7 +371,7 @@ merge_strategy = "synthesize"
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.count, 1);
 	EXPECT_STREQ(cfg.sub_agents.entries[0].name, "researcher");
@@ -391,7 +391,7 @@ disabled_tools = ["exec"]
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.entries[0].allowed_tools_count, 2);
 	EXPECT_STREQ(cfg.sub_agents.entries[0].allowed_tools[0], "test_tool");
@@ -407,7 +407,7 @@ description = "No policy specified"
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.entries[0].context_policy,
 		  SUB_AGENT_CTX_TASK_ONLY);
@@ -425,7 +425,7 @@ merge_strategy = "concat"
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.entries[0].context_policy,
 		  SUB_AGENT_CTX_FULL);
@@ -442,7 +442,7 @@ output_schema = '{"type":"object","properties":{"x":{"type":"string"}}}'
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(cfg.sub_agents.entries[0].output_schema, nullptr);
 	EXPECT_TRUE(strstr(cfg.sub_agents.entries[0].output_schema,
@@ -461,7 +461,7 @@ description = "Agent B"
 )";
 	write_config(toml);
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.sub_agents.count, 2);
 	EXPECT_STREQ(cfg.sub_agents.entries[0].name, "agent_a");
@@ -644,8 +644,8 @@ TEST_F(SubAgentTest, CreateContextBasic) {
 	sa_cfg.entries[0].max_iterations = 3;
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct react_context *child = sub_agent_create_context(
-		rt, &rt->entries[0], "test task");
+	struct react_context *child =
+		sub_agent_create_context(rt, nullptr, &rt->entries[0], "test task");
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->llm_model, llm);
 	EXPECT_EQ(child->max_iterations, 3);
@@ -665,8 +665,8 @@ TEST_F(SubAgentTest, CreateContextSystemPrompt) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	rt->entries[0].system_prompt = strdup("You are a specialist.");
 	rt->entry_count = 1;
-	struct react_context *child = sub_agent_create_context(
-		rt, &rt->entries[0], "do something");
+	struct react_context *child =
+		sub_agent_create_context(rt, nullptr, &rt->entries[0], "do something");
 	ASSERT_NE(child, nullptr);
 	ASSERT_NE(child->system_prompt, nullptr);
 	EXPECT_STREQ(child->system_prompt, "You are a specialist.");
@@ -693,8 +693,8 @@ TEST_F(SubAgentTest, CreateContextWithEmptyPromptReplacement)
 	strncpy(entry.system_prompt_file, config_path,
 		sizeof(entry.system_prompt_file) - 1);
 	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
-	struct react_context *child = sub_agent_create_context(
-		rt, &rt->entries[0], "task");
+	struct react_context *child =
+		sub_agent_create_context(rt, nullptr, &rt->entries[0], "task");
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->system_prompt_replace, 1);
 	ASSERT_NE(child->system_prompt, nullptr);
@@ -736,7 +736,7 @@ TEST_F(SubAgentTest, ReplacementRequestPreservesCoreAndChildRuntimeLimits)
 			cb("Done", user_data);
 		return 200;
 	};
-	auto *child = sub_agent_create_context(rt, entry, "task");
+	auto *child = sub_agent_create_context(rt, nullptr, entry, "task");
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(react_run(child, "task", nullptr, nullptr), 0);
 	EXPECT_EQ(static_cast<mock_llm_data *>(llm->handle)->call_count, 1);
@@ -773,8 +773,8 @@ TEST_F(SubAgentTest, CreateContextDepthIncrement) {
 		sizeof(sa_cfg.entries[0].name) - 1);
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
-	struct react_context *child = sub_agent_create_context(
-		rt, &rt->entries[0], "nested task");
+	struct react_context *child =
+		sub_agent_create_context(rt, nullptr, &rt->entries[0], "nested task");
 	ASSERT_NE(child, nullptr);
 	EXPECT_EQ(child->sub_agent_depth, 2);
 	struct tool_registry *child_tools = child->tools;
@@ -800,8 +800,7 @@ TEST_F(SubAgentTest, InvokeSyncWithMockLlm) {
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	char *result = nullptr;
-	int rc = sub_agent_invoke_sync(rt, &rt->entries[0],
-				       "test task", &result);
+	int rc = sub_agent_invoke_sync(rt, nullptr, &rt->entries[0], "test task", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
 	EXPECT_TRUE(strstr(result, "sub-agent result") != nullptr);
@@ -819,8 +818,7 @@ TEST_F(SubAgentTest, InvokeSyncDepthLimit) {
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	char *result = nullptr;
-	int rc = sub_agent_invoke_sync(rt, &rt->entries[0],
-				       "too deep", &result);
+	int rc = sub_agent_invoke_sync(rt, nullptr, &rt->entries[0], "too deep", &result);
 	EXPECT_EQ(rc, -ELOOP);
 	free(result);
 	sub_agent_runtime_destroy(rt);
@@ -830,12 +828,9 @@ TEST_F(SubAgentTest, InvokeSyncNullArgs) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	char *result = nullptr;
-	EXPECT_EQ(sub_agent_invoke_sync(nullptr, nullptr, nullptr, &result),
-		  -EINVAL);
-	EXPECT_EQ(sub_agent_invoke_sync(rt, nullptr, "task", &result),
-		  -EINVAL);
-	EXPECT_EQ(sub_agent_invoke_sync(rt, &rt->entries[0], "task", nullptr),
-		  -EINVAL);
+	EXPECT_EQ(sub_agent_invoke_sync(nullptr, nullptr, nullptr, nullptr, &result), -EINVAL);
+	EXPECT_EQ(sub_agent_invoke_sync(rt, nullptr, nullptr, "task", &result), -EINVAL);
+	EXPECT_EQ(sub_agent_invoke_sync(rt, nullptr, &rt->entries[0], "task", nullptr), -EINVAL);
 	sub_agent_runtime_destroy(rt);
 }
 
@@ -852,8 +847,7 @@ TEST_F(SubAgentTest, InvokeSyncLlmFailure) {
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	char *result = nullptr;
-	int rc = sub_agent_invoke_sync(rt, &rt->entries[0],
-				       "will fail", &result);
+	int rc = sub_agent_invoke_sync(rt, nullptr, &rt->entries[0], "will fail", &result);
 	EXPECT_NE(rc, 0);
 	free(result);
 	sub_agent_runtime_destroy(rt);
@@ -876,8 +870,7 @@ TEST_F(SubAgentTest, DelegateAndCheckStatus) {
 	sa_cfg.count = 1;
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	char *task_id = nullptr;
-	int rc = sub_agent_delegate(rt, "async_worker", "async task",
-				    &task_id);
+	int rc = sub_agent_delegate(rt, nullptr, "async_worker", "async task", &task_id);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(task_id, nullptr);
 	EXPECT_TRUE(strncmp(task_id, "sa_", 3) == 0);
@@ -901,7 +894,7 @@ TEST_F(SubAgentTest, DelegateDepthLimit) {
 		&tools, llm, tok, &cfg);
 	rt->depth = SUB_AGENT_MAX_DEPTH;
 	char *task_id = nullptr;
-	int rc = sub_agent_delegate(rt, "any", "task", &task_id);
+	int rc = sub_agent_delegate(rt, nullptr, "any", "task", &task_id);
 	EXPECT_EQ(rc, -ELOOP);
 	free(task_id);
 	sub_agent_runtime_destroy(rt);
@@ -911,7 +904,7 @@ TEST_F(SubAgentTest, DelegateInvalidAgent) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	char *task_id = nullptr;
-	int rc = sub_agent_delegate(rt, "nonexistent", "task", &task_id);
+	int rc = sub_agent_delegate(rt, nullptr, "nonexistent", "task", &task_id);
 	EXPECT_EQ(rc, -ENOENT);
 	free(task_id);
 	sub_agent_runtime_destroy(rt);
@@ -945,8 +938,8 @@ TEST_F(SubAgentTest, FanoutRaw) {
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	const char *tasks[] = {"task A", "task B"};
 	char *result = nullptr;
-	int rc = sub_agent_fanout(rt, "fanout_worker", tasks, 2,
-				  SUB_AGENT_MERGE_RAW, &result);
+	int rc = sub_agent_fanout(rt, nullptr, "fanout_worker", tasks, 2, SUB_AGENT_MERGE_RAW,
+				  &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
 	cJSON *arr = cJSON_Parse(result);
@@ -970,8 +963,8 @@ TEST_F(SubAgentTest, FanoutConcat) {
 	sub_agent_runtime_load_config(rt, &sa_cfg);
 	const char *tasks[] = {"single task"};
 	char *result = nullptr;
-	int rc = sub_agent_fanout(rt, "concat_worker", tasks, 1,
-				  SUB_AGENT_MERGE_CONCAT, &result);
+	int rc = sub_agent_fanout(rt, nullptr, "concat_worker", tasks, 1, SUB_AGENT_MERGE_CONCAT,
+				  &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result, nullptr);
 	free(result);
@@ -984,8 +977,7 @@ TEST_F(SubAgentTest, FanoutDepthLimit) {
 	rt->depth = SUB_AGENT_MAX_DEPTH;
 	const char *tasks[] = {"x"};
 	char *result = nullptr;
-	int rc = sub_agent_fanout(rt, "any", tasks, 1,
-				  SUB_AGENT_MERGE_RAW, &result);
+	int rc = sub_agent_fanout(rt, nullptr, "any", tasks, 1, SUB_AGENT_MERGE_RAW, &result);
 	EXPECT_EQ(rc, -ELOOP);
 	free(result);
 	sub_agent_runtime_destroy(rt);
@@ -996,8 +988,7 @@ TEST_F(SubAgentTest, FanoutInvalidAgent) {
 		&tools, llm, tok, &cfg);
 	const char *tasks[] = {"x"};
 	char *result = nullptr;
-	int rc = sub_agent_fanout(rt, "ghost", tasks, 1,
-				  SUB_AGENT_MERGE_RAW, &result);
+	int rc = sub_agent_fanout(rt, nullptr, "ghost", tasks, 1, SUB_AGENT_MERGE_RAW, &result);
 	EXPECT_EQ(rc, -ENOENT);
 	free(result);
 	sub_agent_runtime_destroy(rt);
@@ -1007,10 +998,10 @@ TEST_F(SubAgentTest, FanoutNullTasks) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	char *result = nullptr;
-	EXPECT_EQ(sub_agent_fanout(rt, "a", nullptr, 1,
-				   SUB_AGENT_MERGE_RAW, &result), -EINVAL);
-	EXPECT_EQ(sub_agent_fanout(rt, "a", nullptr, 0,
-				   SUB_AGENT_MERGE_RAW, &result), -EINVAL);
+	EXPECT_EQ(sub_agent_fanout(rt, nullptr, "a", nullptr, 1, SUB_AGENT_MERGE_RAW, &result),
+		  -EINVAL);
+	EXPECT_EQ(sub_agent_fanout(rt, nullptr, "a", nullptr, 0, SUB_AGENT_MERGE_RAW, &result),
+		  -EINVAL);
 	free(result);
 	sub_agent_runtime_destroy(rt);
 }
@@ -1040,51 +1031,19 @@ TEST_F(SubAgentTest, OutputSchemaNoLlm) {
 /* 11. Active Context Stack (Phase 1 regression)          */
 /* ====================================================== */
 
-TEST_F(SubAgentTest, ActiveCtxStackPushPop) {
-	struct react_context *ctx1 = react_context_create(
-		&tools, tok, &cfg, nullptr);
-	struct react_context *ctx2 = react_context_create(
-		&tools, tok, &cfg, nullptr);
-	ASSERT_NE(ctx1, nullptr);
-	ASSERT_NE(ctx2, nullptr);
-	EXPECT_EQ(react_active_count(), 0);
-	react_active_push(ctx1);
-	EXPECT_EQ(react_active_count(), 1);
-	react_active_push(ctx2);
-	EXPECT_EQ(react_active_count(), 2);
-	react_active_pop(ctx1);
-	EXPECT_EQ(react_active_count(), 1);
-	react_active_pop(ctx2);
-	EXPECT_EQ(react_active_count(), 0);
-	react_context_destroy(ctx1);
-	react_context_destroy(ctx2);
-}
-
-TEST_F(SubAgentTest, CancelActiveCancelsAll) {
-	struct react_context *ctx1 = react_context_create(
-		&tools, tok, &cfg, nullptr);
-	struct react_context *ctx2 = react_context_create(
-		&tools, tok, &cfg, nullptr);
-	ASSERT_NE(ctx1, nullptr);
-	ASSERT_NE(ctx2, nullptr);
-	react_active_push(ctx1);
-	react_active_push(ctx2);
-	EXPECT_EQ(ctx1->cancelled, 0);
-	EXPECT_EQ(ctx2->cancelled, 0);
-	react_cancel_active();
-	EXPECT_EQ(ctx1->cancelled, 1);
-	EXPECT_EQ(ctx2->cancelled, 1);
-	react_active_pop(ctx1);
-	react_active_pop(ctx2);
-	react_context_destroy(ctx1);
-	react_context_destroy(ctx2);
-	react_sigint_flag = 0;
-}
-
-TEST_F(SubAgentTest, CancelActiveEmpty) {
-	EXPECT_EQ(react_active_count(), 0);
-	EXPECT_NO_FATAL_FAILURE(react_cancel_active());
-	react_sigint_flag = 0;
+TEST_F(SubAgentTest, CancellationIsScopedToItsContext)
+{
+	struct react_context *first = react_context_create(&tools, tok, &cfg, nullptr);
+	struct react_context *second = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(first, nullptr);
+	ASSERT_NE(second, nullptr);
+	react_cancel(first);
+	EXPECT_EQ(first->cancelled, 1);
+	EXPECT_TRUE(morph_cancel_token_is_cancelled(&first->cancel_token));
+	EXPECT_EQ(second->cancelled, 0);
+	EXPECT_FALSE(morph_cancel_token_is_cancelled(&second->cancel_token));
+	react_context_destroy(first);
+	react_context_destroy(second);
 }
 
 /* ====================================================== */
@@ -1234,7 +1193,7 @@ TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 	snprintf(db_path, sizeof(db_path), "/tmp/ma_sa_session_%d.db",
 		 getpid());
 	std::remove(db_path);
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "parent", "mock-model", &parent), 0);
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
@@ -1247,8 +1206,9 @@ TEST_F(SubAgentTest, ChildSessionPersistsTaskEventsAndMessages) {
 	ASSERT_EQ(sub_agent_runtime_set_event_callback(
 		rt, morph_event_recorder_cb, &recorder), 0);
 
-	ASSERT_EQ(sub_agent_invoke_sync(rt, &rt->entries[0],
-		"implement isolation", &result), 0);
+	ASSERT_EQ(
+		sub_agent_invoke_sync(rt, nullptr, &rt->entries[0], "implement isolation", &result),
+		0);
 	ASSERT_NE(result, nullptr);
 	EXPECT_STREQ(result, "sub-agent result");
 	free(result);
@@ -1302,8 +1262,7 @@ TEST_F(SubAgentTest, SelectedChildStreamsOnlyItsOwnEvents) {
 	ASSERT_EQ(morph_event_recorder_init(&recorder), 0);
 	ASSERT_EQ(sub_agent_runtime_set_event_callback(
 		rt, morph_event_recorder_cb, &recorder), 0);
-	ASSERT_EQ(sub_agent_delegate(rt, "dev", "stream this task", &task_id),
-		0);
+	ASSERT_EQ(sub_agent_delegate(rt, nullptr, "dev", "stream this task", &task_id), 0);
 	ASSERT_NE(task_id, nullptr);
 	ASSERT_EQ(sub_agent_runtime_select_task(rt, task_id), 0);
 	for (int i = 0; i < 100; i++) {
@@ -1339,7 +1298,7 @@ TEST_F(SubAgentTest, PersistedTasksSurviveRuntimeRecreation) {
 	snprintf(db_path, sizeof(db_path), "/tmp/ma_sa_restore_%d.db",
 		 getpid());
 	std::remove(db_path);
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "parent", "mock-model", &parent), 0);
 	struct sub_agent_runtime *first = sub_agent_runtime_create(
@@ -1347,8 +1306,9 @@ TEST_F(SubAgentTest, PersistedTasksSurviveRuntimeRecreation) {
 	configure_worker(first, "review");
 	ASSERT_EQ(sub_agent_runtime_set_storage(first, &db), 0);
 	ASSERT_EQ(sub_agent_runtime_set_parent_session(first, parent.id), 0);
-	ASSERT_EQ(sub_agent_invoke_sync(first, &first->entries[0],
-		"review implementation", &result), 0);
+	ASSERT_EQ(sub_agent_invoke_sync(first, nullptr, &first->entries[0], "review implementation",
+					&result),
+		  0);
 	free(result);
 	sub_agent_runtime_destroy(first);
 
@@ -1376,8 +1336,9 @@ TEST_F(SubAgentTest, FanoutKeepsEachChildEventStreamSeparate) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);
 	configure_worker(rt, "worker");
-	ASSERT_EQ(sub_agent_fanout(rt, "worker", descriptions, 3,
-		SUB_AGENT_MERGE_RAW, &merged), 0);
+	ASSERT_EQ(sub_agent_fanout(rt, nullptr, "worker", descriptions, 3, SUB_AGENT_MERGE_RAW,
+				   &merged),
+		  0);
 	free(merged);
 	ASSERT_EQ(sub_agent_runtime_list_tasks(rt, 0, &tasks, &count), 0);
 	ASSERT_EQ(count, 3);

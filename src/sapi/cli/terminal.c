@@ -277,7 +277,7 @@ int cli_terminal_init(struct cli_context *ctx, FILE *output, int output_fd)
 	terminal->output = output ? output : stdout;
 	terminal->output_fd = output_fd;
 	terminal->is_terminal = output_fd >= 0 && isatty(output_fd);
-	terminal->transient = terminal->is_terminal && cli_color_enabled();
+	terminal->transient = terminal->is_terminal && cli_color_enabled(ctx);
 	terminal->columns = terminal_columns(terminal);
 	ctx->terminal = terminal;
 	return 0;
@@ -529,7 +529,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			(void)morph_buf_printf(&tool_text, "%s  %s", status_clipped, elapsed);
 			text = morph_buf_cstr(&tool_text);
 		} else if (!terminal->live_reasoning) {
-			tool_live = cli_transcript_live_text(ctx, &tool_text, cli_color_enabled());
+			tool_live =
+				cli_transcript_live_text(ctx, &tool_text, cli_color_enabled(ctx));
 			if (tool_live)
 				text = morph_buf_cstr(&tool_text);
 		}
@@ -558,7 +559,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 				CLI_FEED_RUNNING,
 				terminal->live_independent ? ANSI_DIM : "", status_clipped);
 		if (tool_live && morph_buf_init(&tool_body, 128) == 0) {
-			body_rows = cli_transcript_live_body(ctx, &tool_body, cli_color_enabled());
+			body_rows =
+				cli_transcript_live_body(ctx, &tool_body, cli_color_enabled(ctx));
 			if (body_rows)
 				fprintf(terminal->output, "\n%s", morph_buf_cstr(&tool_body));
 		}

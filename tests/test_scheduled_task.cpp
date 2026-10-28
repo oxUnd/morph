@@ -83,7 +83,7 @@ protected:
 		snprintf(db_path, sizeof(db_path), "/tmp/morph_task_test_%d.db",
 			 getpid());
 		std::remove(db_path);
-		ASSERT_EQ(db_open(&db, db_path), 0);
+		ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 	}
 
@@ -677,7 +677,7 @@ TEST_F(ScheduledTaskTest, ToolCreateDelaySecondsUsesTimeAnchor) {
 		"\"kind\":\"agent\",\"trigger_type\":\"once\","
 		"\"delay_seconds\":30,\"prompt\":\"say hi\"}";
 
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_result_init(&result);
 	ASSERT_EQ(scheduled_tasks_tool_init(&reg, &db), 0);
 	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);
@@ -711,7 +711,7 @@ TEST_F(ScheduledTaskTest, ToolCreateEmitsTaskCreatedEvent) {
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
 	events.cb = morph_event_recorder_cb;
 	events.user_data = &rec;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_result_init(&result);
 	ASSERT_EQ(scheduled_tasks_tool_init_events(&reg, &db, &events), 0);
 	ASSERT_EQ(scheduled_tasks_tool_set_time_anchor(&reg, 1000), 0);

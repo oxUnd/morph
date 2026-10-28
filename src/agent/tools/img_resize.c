@@ -1,3 +1,4 @@
+#include "agent/tool_runtime.h"
 #include "img_resize.h"
 #include "agent/tool_context.h"
 #include "util/log.h"
@@ -210,7 +211,8 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 		 final_path, target_w, target_h);
 	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_image(result, final_path, target_w, target_h);
-	log_dbg("img_resize: %s", msg);
+	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_resize: %s",
+		msg);
 
 	cJSON_Delete(root);
 	return 0;

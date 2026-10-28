@@ -286,8 +286,8 @@ next_line:
 	free(copy);
 }
 
-int skill_parse(const char *data, size_t len, struct skill_frontmatter *fm,
-		char **body_out)
+int skill_parse(struct morph_log *logger, const char *data, size_t len,
+		struct skill_frontmatter *fm, char **body_out)
 {
 	if (!data || !fm)
 		return -EINVAL;
@@ -297,7 +297,7 @@ int skill_parse(const char *data, size_t len, struct skill_frontmatter *fm,
 
 	const char *closing = find_closing_delim(data, len);
 	if (!closing) {
-		log_warn("skill_parse: no YAML frontmatter delimiters found");
+		log_warn(logger, "skill_parse: no YAML frontmatter delimiters found");
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
@@ -321,7 +321,7 @@ int skill_parse(const char *data, size_t len, struct skill_frontmatter *fm,
 	return 0;
 }
 
-int skill_parse_file(const char *path, struct skill_frontmatter *fm,
+int skill_parse_file(struct morph_log *logger, const char *path, struct skill_frontmatter *fm,
 		     char **body_out)
 {
 	if (!path || !fm)
@@ -330,16 +330,17 @@ int skill_parse_file(const char *path, struct skill_frontmatter *fm,
 	size_t len = 0;
 	char *data = file_read_all(path, &len);
 	if (!data) {
-		log_err("skill_parse_file: failed to read %s", path);
+		log_err(logger, "skill_parse_file: failed to read %s", path);
 		return -ENOENT;
 	}
 
-	int rc = skill_parse(data, len, fm, body_out);
+	int rc = skill_parse(logger, data, len, fm, body_out);
 	free(data);
 	return rc;
 }
 
-int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
+int skill_parse_frontmatter(struct morph_log *logger, const char *path,
+			    struct skill_frontmatter *fm)
 {
 	if (!path || !fm)
 		return -EINVAL;
@@ -347,7 +348,7 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 
 	FILE *f = fopen(path, "rb");
 	if (!f) {
-		log_err("skill_parse_frontmatter: failed to open %s", path);
+		log_err(logger, "skill_parse_frontmatter: failed to open %s", path);
 		MORPH_RETURN(-ENOENT);
 	}
 
@@ -355,7 +356,7 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 
 	if (!fgets(line, sizeof(line), f)) {
 		fclose(f);
-		log_warn("skill_parse_frontmatter: empty file %s", path);
+		log_warn(logger, "skill_parse_frontmatter: empty file %s", path);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
@@ -364,7 +365,7 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 		line[--llen] = '\0';
 	if (llen < 3 || memcmp(line, "---", 3) != 0) {
 		fclose(f);
-		log_warn("skill_parse_frontmatter: no opening --- in %s", path);
+		log_warn(logger, "skill_parse_frontmatter: no opening --- in %s", path);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 
@@ -398,7 +399,7 @@ int skill_parse_frontmatter(const char *path, struct skill_frontmatter *fm)
 
 	if (!found_closing) {
 		morph_buf_cleanup(&yaml_buf);
-		log_warn("skill_parse_frontmatter: no closing --- in %s", path);
+		log_warn(logger, "skill_parse_frontmatter: no closing --- in %s", path);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
 

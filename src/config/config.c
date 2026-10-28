@@ -458,11 +458,12 @@ static cJSON *config_toml_json(const toml_datum_t *value)
 	}
 }
 
-void config_set_defaults(struct config *cfg)
+void config_set_defaults(struct morph_log *logger, struct config *cfg)
 {
 	if (!cfg)
 		return;
 	memset(cfg, 0, sizeof(*cfg));
+	cfg->logger = logger;
 	cfg->hooks_enabled = 1;
 
 	strncpy(cfg->prompt.mode, "append", sizeof(cfg->prompt.mode) - 1);
@@ -896,36 +897,43 @@ static void config_expand_paths(struct config *cfg)
 	}
 }
 
+struct config_warning_context {
+	struct morph_log *logger;
+	const char *path;
+};
+
 static void config_log_warning(
 	const struct config_validation_error *warning, void *user_data)
 {
-	const char *path = user_data;
+	const struct config_warning_context *context = user_data;
+	const char *path = context->path;
+	struct morph_log *logger = context->logger;
 
 	if (!warning)
 		return;
-	log_warn("config warning %s:%d:%d: %s; ignoring %s",
-		path ? path : "<config>", warning->line, warning->column,
-		warning->message, warning->path);
+	log_warn(logger, "config warning %s:%d:%d: %s; ignoring %s", path ? path : "<config>",
+		 warning->line, warning->column, warning->message, warning->path);
 }
 
-int config_load(struct config *cfg, const char *path)
+int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 {
 	if (!cfg || !path)
 		return -EINVAL;
-	config_set_defaults(cfg);
+	config_set_defaults(logger, cfg);
 
 	FILE *f = fopen(path, "r");
 	if (!f) {
-		log_warn("config file not found: %s, using defaults", path);
+		log_warn(logger, "config file not found: %s, using defaults", path);
 		return 0;
 	}
 	struct config_validation_error validation = {0};
+	struct config_warning_context warnings = {logger, path};
 	int validation_rc = config_validate_file_with_warnings(path, &validation,
-		config_log_warning, (void *)path);
+							       config_log_warning, &warnings);
 	if (validation_rc != 0) {
 		fclose(f);
-		log_err("invalid config %s:%d:%d: %s", path,
-			validation.line, validation.column, validation.message);
+		log_err(logger, "invalid config %s:%d:%d: %s", path, validation.line,
+			validation.column, validation.message);
 		return validation_rc;
 	}
 
@@ -933,7 +941,7 @@ int config_load(struct config *cfg, const char *path)
 	fclose(f);
 
 	if (!parsed.ok) {
-		log_err("config parse error: %s", parsed.errmsg);
+		log_err(logger, "config parse error: %s", parsed.errmsg);
 		toml_free(parsed);
 		MORPH_RETURN(MORPH_ERR_PARSE);
 	}
@@ -1283,7 +1291,7 @@ int config_load(struct config *cfg, const char *path)
 
 	config_expand_paths(cfg);
 
-	log_info("config loaded from: %s", path);
+	log_info(logger, "config loaded from: %s", path);
 
 	return config_load_sub_agents(cfg, path);
 }
@@ -1434,62 +1442,59 @@ void config_print(const struct config *cfg)
 {
 	if (!cfg)
 		return;
-	log_info("Config:");
-	log_info("  [general] default_session=%s output_dir=%s",
+	log_info(cfg ? cfg->logger : NULL, "Config:");
+	log_info(cfg ? cfg->logger : NULL, "  [general] default_session=%s output_dir=%s",
 		 cfg->general.default_session, cfg->general.output_dir);
-	log_info("  [model.text] provider=%s model=%s api_base=%s",
-		 cfg->models.text.provider, cfg->models.text.model,
-		 cfg->models.text.api_base);
-	log_info("  [model.vision] provider=%s model=%s api_base=%s",
+	log_info(cfg ? cfg->logger : NULL, "  [model.text] provider=%s model=%s api_base=%s",
+		 cfg->models.text.provider, cfg->models.text.model, cfg->models.text.api_base);
+	log_info(cfg ? cfg->logger : NULL, "  [model.vision] provider=%s model=%s api_base=%s",
 		 cfg->models.vision.provider, cfg->models.vision.model,
 		 cfg->models.vision.api_base);
-	log_info("  [credits] daily_limit=%d currency=%s cost_coef=%.3f prices=%d",
-		 cfg->credits.daily_limit, cfg->credits.currency,
-		 cfg->credits.cost_to_credit_coef,
+	log_info(cfg ? cfg->logger : NULL,
+		 "  [credits] daily_limit=%d currency=%s cost_coef=%.3f prices=%d",
+		 cfg->credits.daily_limit, cfg->credits.currency, cfg->credits.cost_to_credit_coef,
 		 cfg->credits.price_count);
-	log_info("  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d max_empty=%d disabled=%d readonly=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
+	log_info(cfg ? cfg->logger : NULL,
+		 "  [react] max_iterations=%d tool_timeout=%d tool_max_retries=%d guardrail=%d/%d "
+		 "max_empty=%d disabled=%d readonly=%d hitl=%d hitl_readonly=%d hitl_tools=%d",
 		 cfg->react.max_iterations, cfg->react.tool_timeout_seconds,
-		 cfg->react.tool_max_retries,
-		 cfg->react.guardrail_enabled, cfg->react.guardrail_max_retries,
-		 cfg->react.guardrail_max_empty_rounds,
-		 cfg->react.disabled_tools_count,
-		 cfg->react.readonly_tools_count,
+		 cfg->react.tool_max_retries, cfg->react.guardrail_enabled,
+		 cfg->react.guardrail_max_retries, cfg->react.guardrail_max_empty_rounds,
+		 cfg->react.disabled_tools_count, cfg->react.readonly_tools_count,
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
-	log_info("  [exec] shell=%s timeout_ms=%d yield_ms=%d "
+	log_info(cfg ? cfg->logger : NULL,
+		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d "
 		 "inline=%d session=%d grace_ms=%d network=%d allow_host_execution=%d",
-		 cfg->exec.shell, cfg->exec.default_timeout_ms,
-		 cfg->exec.yield_time_ms, cfg->exec.max_inline_output,
-		 cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
+		 cfg->exec.shell, cfg->exec.default_timeout_ms, cfg->exec.yield_time_ms,
+		 cfg->exec.max_inline_output, cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
 		 cfg->exec.network, cfg->exec.allow_host_execution);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)
-		log_info("    disabled_tool: %s", cfg->react.disabled_tools[i]);
+		log_info(cfg ? cfg->logger : NULL, "    disabled_tool: %s",
+			 cfg->react.disabled_tools[i]);
 	for (int i = 0; i < cfg->react.readonly_tools_count; i++)
-		log_info("    readonly_tool: %s", cfg->react.readonly_tools[i]);
+		log_info(cfg ? cfg->logger : NULL, "    readonly_tool: %s",
+			 cfg->react.readonly_tools[i]);
 	for (int i = 0; i < cfg->react.hitl_tools_count; i++)
-		log_info("    hitl_tool: %s", cfg->react.hitl_tools[i]);
-	log_info("  [context] threshold=%.1f target=%.1f keep=%d "
+		log_info(cfg ? cfg->logger : NULL, "    hitl_tool: %s", cfg->react.hitl_tools[i]);
+	log_info(cfg ? cfg->logger : NULL,
+		 "  [context] threshold=%.1f target=%.1f keep=%d "
 		 "in_turn=%d reserve=%d",
-		 cfg->context.summarize_threshold_ratio,
-		 cfg->context.compress_target_ratio,
-		 cfg->context.keep_recent_rounds,
-		 cfg->context.in_turn_compaction,
+		 cfg->context.summarize_threshold_ratio, cfg->context.compress_target_ratio,
+		 cfg->context.keep_recent_rounds, cfg->context.in_turn_compaction,
 		 cfg->context.protocol_reserve_tokens);
-	log_info("  [memory] enabled=%d hot=%d cold=%d llm=%d facts=%d episodes=%d procedures=%d chars=%d",
-		 cfg->memory.enabled,
-		 cfg->memory.hot_path_enabled,
-		 cfg->memory.cold_path_enabled,
-		 cfg->memory.llm_extract_enabled,
-		 cfg->memory.max_facts,
-		 cfg->memory.max_episodes,
-		 cfg->memory.max_procedures,
-		 cfg->memory.max_context_chars);
+	log_info(cfg ? cfg->logger : NULL,
+		 "  [memory] enabled=%d hot=%d cold=%d llm=%d facts=%d episodes=%d procedures=%d "
+		 "chars=%d",
+		 cfg->memory.enabled, cfg->memory.hot_path_enabled, cfg->memory.cold_path_enabled,
+		 cfg->memory.llm_extract_enabled, cfg->memory.max_facts, cfg->memory.max_episodes,
+		 cfg->memory.max_procedures, cfg->memory.max_context_chars);
 	for (int i = 0; i < cfg->sub_agents.count; i++) {
 		const struct config_sub_agent *sa = &cfg->sub_agents.entries[i];
-		log_info("  [agent.sub_agents.%d] name=%s desc=%.60s max_iterations=%d ctx_policy=%s tools=%d",
-			 i, sa->name, sa->description,
-			 sa->max_iterations,
-			 sub_agent_ctx_policy_str(sa->context_policy),
-			 sa->allowed_tools_count);
+		log_info(cfg ? cfg->logger : NULL,
+			 "  [agent.sub_agents.%d] name=%s desc=%.60s max_iterations=%d "
+			 "ctx_policy=%s tools=%d",
+			 i, sa->name, sa->description, sa->max_iterations,
+			 sub_agent_ctx_policy_str(sa->context_policy), sa->allowed_tools_count);
 	}
 }

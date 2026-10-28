@@ -462,8 +462,8 @@ static int parse_steps_from_text(const char *text, const char **descs,
 	return count;
 }
 
-static int auto_decompose(struct model *llm, const char *goal,
-			  const char **step_descs, int max_steps)
+static int auto_decompose(const struct tool_runtime_context *runtime, struct model *llm,
+			  const char *goal, const char **step_descs, int max_steps)
 {
 	if (!goal || !step_descs || max_steps <= 0)
 		return -EINVAL;
@@ -493,7 +493,11 @@ static int auto_decompose(struct model *llm, const char *goal,
 		return rc2;
 	}
 
+	struct model request_model;
+
+	llm = model_bind_tool_request(llm, runtime, &request_model);
 	const char *messages[] = { prompt };
+	stream.runtime = runtime;
 	stream.tool = "plan";
 	stream.kind = "text";
 	stream.buf = &buf;
@@ -580,7 +584,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			/* Auto-decompose goal into steps using LLM */
 			const char *tmp_descs[PLAN_MAX_STEPS];
 			memset(tmp_descs, 0, sizeof(tmp_descs));
-			rc = auto_decompose(ctx->llm, goal, tmp_descs,
+			rc = auto_decompose(result->runtime, ctx->llm, goal, tmp_descs,
 					    PLAN_MAX_STEPS);
 			if (rc < 0) {
 				free_step_descs(tmp_descs, PLAN_MAX_STEPS);
@@ -647,8 +651,8 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			cJSON_Delete(root);
 			return rc;
 		}
-		log_info("plan: created '%s' with %d steps%s",
-			 p->name, p->step_count,
+		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
+			 "plan: created '%s' with %d steps%s", p->name, p->step_count,
 			 auto_decomposed ? " (auto)" : "");
 
 	} else if (strcmp(command, "update") == 0) {
@@ -714,9 +718,9 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 			cJSON_Delete(root);
 			return rc;
 		}
-		log_info("plan: updated '%s' step %d -> %s",
-			 p ? p->id : (plan_id ? plan_id : plan_name),
-			 step_id, status);
+		log_info(result && result->runtime ? result->runtime->http.logger : NULL,
+			 "plan: updated '%s' step %d -> %s",
+			 p ? p->id : (plan_id ? plan_id : plan_name), step_id, status);
 
 	} else if (strcmp(command, "get") == 0) {
 		cJSON *plan_id_item = cJSON_GetObjectItem(root, "plan_id");

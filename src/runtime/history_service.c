@@ -230,7 +230,8 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 		struct model_history_item one = *item;
 
 		one.next = NULL;
-		rc = agent_history_build_chat_messages(&one, &messages, arena);
+		rc = agent_history_build_chat_messages(runtime ? runtime->options.logger : NULL,
+						       &one, &messages, arena);
 	}
 	if (rc == 0)
 		rc = model_input_snapshot(ctx->llm, NULL, messages.elts, (int)messages.nelts,

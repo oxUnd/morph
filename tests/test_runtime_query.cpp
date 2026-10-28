@@ -30,29 +30,28 @@ protected:
 	struct db db;
 	struct config cfg;
 	struct tool_registry tools;
+	struct tool_runtime_context rt{};
 	char db_path[256];
 
 	void SetUp() override {
 		memset(&db, 0, sizeof(db));
-		config_set_defaults(&cfg);
-		tool_registry_init(&tools);
+		config_set_defaults(NULL, &cfg);
+		tool_registry_init(NULL, &tools);
 		snprintf(db_path, sizeof(db_path),
 			 "/tmp/morph_runtime_query_%d.db", getpid());
 		std::remove(db_path);
-		ASSERT_EQ(db_open(&db, db_path), 0);
+		ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 		ASSERT_EQ(runtime_query_tools_init(&tools), 0);
 	}
 
 	void TearDown() override {
-		tool_runtime_set_current(nullptr);
 		tool_registry_cleanup(&tools);
 		db_close(&db);
 		std::remove(db_path);
 	}
 
 	void SetRuntime(const struct session &s) {
-		struct tool_runtime_context rt;
 
 		memset(&rt, 0, sizeof(rt));
 		rt.db = &db;
@@ -61,7 +60,6 @@ protected:
 		rt.credit_session_id = s.display_id[0] ? s.display_id : s.name;
 		rt.memory_session_id = s.id;
 		rt.restrict_memory_to_user = 0;
-		tool_runtime_set_current(&rt);
 	}
 };
 
@@ -110,6 +108,7 @@ TEST_F(RuntimeQueryTest, CreditsReportsTodaySessionAndTotal)
 	ASSERT_EQ(credit_record_event(&db, &cfg.credits, &event, nullptr), 0);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "credits", "{}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	cJSON *root = result.data;
@@ -153,6 +152,7 @@ TEST_F(RuntimeQueryTest, MemoryQueriesSessionAndType)
 		  0);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"session\",\"type\":\"facts\"}",
 			    &result), 0);
@@ -196,6 +196,7 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 		  0);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory", "{}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	cJSON *root = cJSON_Parse(result.text.data);
@@ -211,6 +212,7 @@ TEST_F(RuntimeQueryTest, MemoryAllScopeIncludesMultipleSessions)
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"all\",\"type\":\"all\"}", &result),
 		  0);
@@ -256,6 +258,7 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
 	sqlite3_finalize(stmt);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory",
 			    "{\"scope\":\"session\",\"type\":\"episodes\"}",
 			    &result), 0);
@@ -268,6 +271,7 @@ TEST_F(RuntimeQueryTest, MemoryUsesConfiguredEpisodeLimitByDefault)
 	tool_result_cleanup(&result);
 
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(
 			  &tools, "memory",
 			  "{\"scope\":\"session\",\"type\":\"episodes\","
@@ -300,6 +304,7 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 	ASSERT_EQ(model_history_add(&db, &input, nullptr), 0);
 	struct tool_result result;
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory_preference",
 		"{\"key\":\"code.indent\",\"value\":\"four spaces\",\"scope\":\"personal\","
 		"\"evidence\":\"以后代码缩进使用四个空格\"}", &result), 0);
@@ -310,11 +315,13 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 	input.content = "以后代码缩进使用 Tab";
 	ASSERT_EQ(model_history_add(&db, &input, nullptr), 0);
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory_preference",
 		"{\"key\":\"code.indent\",\"value\":\"tab\",\"scope\":\"personal\","
 		"\"evidence\":\"以后代码缩进使用 Tab\"}", &result), 0);
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory_preference",
 		"{\"key\":\"code.indent\",\"value\":\"four spaces\",\"scope\":\"personal\","
 		"\"evidence\":\"以后代码缩进使用四个空格\"}", &result), 0);
@@ -349,6 +356,7 @@ TEST_F(RuntimeQueryTest, PreferenceToolCannotPromoteComplaintOrTemporaryRequest)
 		char *json = cJSON_PrintUnformatted(args);
 		struct tool_result result;
 		tool_result_init(&result);
+		result.runtime = &rt;
 		EXPECT_EQ(tool_exec(&tools, "memory_preference", json, &result), 0);
 		tool_result_cleanup(&result);
 		free(json);
@@ -381,6 +389,7 @@ TEST_F(RuntimeQueryTest, ExtractionOfSameInputCannotContradictCommittedLanguage)
 	ASSERT_EQ(memory_accept_input(&db, session.id, input.content, input.turn_id, &options), 0);
 	struct tool_result result;
 	tool_result_init(&result);
+	result.runtime = &rt;
 	ASSERT_EQ(tool_exec(&tools, "memory_preference",
 		"{\"key\":\"preferred_language\",\"value\":\"English\",\"scope\":\"personal\","
 		"\"evidence\":\"以后都用中文\"}", &result), 0);

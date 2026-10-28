@@ -140,7 +140,7 @@ static int read_file_all(const char *path, unsigned char **out, size_t *out_len)
  * On success: *out_data / *out_len is a malloc'd buffer the caller
  * must free; *out_fmt is set to 100.
  */
-static int load_as_png(const char *path, unsigned char **out_data,
+static int load_as_png(struct morph_log *logger, const char *path, unsigned char **out_data,
 		       size_t *out_len, int *out_fmt)
 {
 	unsigned char *raw = NULL;
@@ -162,8 +162,8 @@ static int load_as_png(const char *path, unsigned char **out_data,
 						      &w, &h, &ch, 4);
 	free(raw);
 	if (!pixels) {
-		log_warn("render_kitty: stbi_load_from_memory failed for '%s': %s",
-			 path, stbi_failure_reason());
+		log_warn(logger, "render_kitty: stbi_load_from_memory failed for '%s': %s", path,
+			 stbi_failure_reason());
 		return -EIO;
 	}
 
@@ -187,14 +187,14 @@ static int load_as_png(const char *path, unsigned char **out_data,
 	return 0;
 }
 
-static int render_kitty(const char *path)
+static int render_kitty(struct morph_log *logger, const char *path)
 {
 	unsigned char *data = NULL;
 	size_t rd = 0;
 	int fmt = 0;
-	int rc = load_as_png(path, &data, &rd, &fmt);
+	int rc = load_as_png(logger, path, &data, &rd, &fmt);
 	if (rc != 0) {
-		log_warn("render_kitty: load_as_png('%s') failed: %d", path, rc);
+		log_warn(logger, "render_kitty: load_as_png('%s') failed: %d", path, rc);
 		MORPH_RETURN(rc);
 	}
 
@@ -254,10 +254,11 @@ static int render_kitty(const char *path)
 	size_t b64_len = strlen(b64);
 
 	uint32_t image_id = morph_kitty_image_id_new();
-	log_dbg("render_kitty: path='%s' fmt=%d raw=%zu b64=%zu "
+	log_dbg(logger,
+		"render_kitty: path='%s' fmt=%d raw=%zu b64=%zu "
 		"cols=%d placement=%dx%d id=%u chunks=%zu",
-		 path, fmt, rd, b64_len, cols, disp_cols, disp_rows, image_id,
-		 (b64_len + 4095) / 4096);
+		path, fmt, rd, b64_len, cols, disp_cols, disp_rows, image_id,
+		(b64_len + 4095) / 4096);
 
 	fflush(stdout);
 
@@ -348,35 +349,35 @@ int image_terminal_protocol_available(void)
 	return detect_kitty() || detect_iterm2() || detect_sixel();
 }
 
-int image_render_terminal(const char *path)
+int image_render_terminal(struct morph_log *logger, const char *path)
 {
 	if (!path || !*path) {
-		log_warn("image_render: no path provided");
+		log_warn(logger, "image_render: no path provided");
 		return -EINVAL;
 	}
 
-	log_dbg("image_render: path='%s' kitty=%d iterm2=%d sixel=%d",
-		 path, detect_kitty(), detect_iterm2(), detect_sixel());
+	log_dbg(logger, "image_render: path='%s' kitty=%d iterm2=%d sixel=%d", path, detect_kitty(),
+		detect_iterm2(), detect_sixel());
 
 	if (detect_kitty()) {
-		log_dbg("image_render: trying kitty protocol");
-		if (render_kitty(path) == 0)
+		log_dbg(logger, "image_render: trying kitty protocol");
+		if (render_kitty(logger, path) == 0)
 			return 0;
-		log_warn("image_render: kitty protocol failed, trying fallback");
+		log_warn(logger, "image_render: kitty protocol failed, trying fallback");
 	}
 	if (detect_iterm2()) {
-		log_dbg("image_render: trying iterm2 protocol");
+		log_dbg(logger, "image_render: trying iterm2 protocol");
 		if (render_iterm2(path) == 0) {
 			write_all(STDOUT_FILENO, "\n", 1);
 			return 0;
 		}
 	}
 	if (detect_sixel()) {
-		log_dbg("image_render: trying sixel");
+		log_dbg(logger, "image_render: trying sixel");
 		if (render_sixel(path) == 0)
 			return 0;
 	}
-	log_dbg("image_render: no terminal protocol detected, printing path");
+	log_dbg(logger, "image_render: no terminal protocol detected, printing path");
 	printf("(image: %s)\n", path);
 	fflush(stdout);
 	return 0;

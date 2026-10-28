@@ -1,4 +1,6 @@
 #include "img_compose.h"
+#include "agent/tool_runtime.h"
+#include "models/llm.h"
 #include "agent/tool_context.h"
 #include "models/image_gen.h"
 #include "util/log.h"
@@ -187,7 +189,14 @@ static int compute_main_index(cJSON *arrows)
 static int img_compose_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
 {
-	struct img_compose_context *ctx = user_data;
+	struct img_compose_context local = {0};
+	struct model request_model;
+
+	if (user_data)
+		local = *(struct img_compose_context *)user_data;
+	local.image_llm = model_bind_tool_request(local.image_llm, result ? result->runtime : NULL,
+						  &request_model);
+	struct img_compose_context *ctx = user_data ? &local : NULL;
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)

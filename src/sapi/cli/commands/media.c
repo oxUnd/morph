@@ -14,12 +14,12 @@ int cli_attach_image(struct cli_context *ctx, const char *path)
 	if (!expanded)
 		MORPH_RETURN(-ENOMEM);
 	if (!file_exists(expanded)) {
-		CMD_ERROR("file not found: %s", expanded);
+		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
 		MORPH_RETURN(-ENOENT);
 	}
 	if (!stbi_info(expanded, &w, &h, &ch)) {
-		CMD_ERROR("not a valid image file: %s", expanded);
+		CMD_ERROR(ctx, "not a valid image file: %s", expanded);
 		free(expanded);
 		MORPH_RETURN(MORPH_ERR_FORMAT);
 	}
@@ -30,7 +30,7 @@ int cli_attach_image(struct cli_context *ctx, const char *path)
 				 credit_image_units_from_size(w, h), 0,
 				 config->models.image.provider,
 				 config->models.image.model, NULL);
-	CMD_OK("[IMAGE#1]");
+	CMD_OK(ctx, "[IMAGE#1]");
 	free(expanded);
 	return 0;
 }
@@ -40,7 +40,7 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 	const char *path = cli_cmd_arg(argc, argv, 1);
 
 	if (!path) {
-		CMD_ERROR("usage: /image <file_path>");
+		CMD_ERROR(ctx, "usage: /image <file_path>");
 		MORPH_RETURN(-EINVAL);
 	}
 	return cli_attach_image(ctx, path);
@@ -63,15 +63,15 @@ static int media_play_video(struct cli_context *ctx, const char *path)
 	const struct config *config = runtime_config_get(ctx->runtime);
 
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
-	    video_play(path, config->render.mpv_args) != 0) {
-		CMD_ERROR("failed to play video: %s", path);
+	    video_play(ctx ? ctx->logger : NULL, path, config->render.mpv_args) != 0) {
+		CMD_ERROR(ctx, "failed to play video: %s", path);
 		MORPH_RETURN(-EIO);
 	}
 	cli_record_media_credits(ctx, "video_input", 0, 1,
 				 config->models.video.provider,
 				 config->models.video.model,
 				 "{\"estimated\":true}");
-	CMD_OK("video loaded: %s", path);
+	CMD_OK(ctx, "video loaded: %s", path);
 	return 0;
 }
 
@@ -122,12 +122,12 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *path = cli_cmd_arg(argc, argv, 1);
 	if (!path) {
-		CMD_ERROR("usage: /render <file_path>");
+		CMD_ERROR(ctx, "usage: /render <file_path>");
 		return -EINVAL;
 	}
 	char *expanded = file_expand_path(path);
 	if (!file_exists(expanded)) {
-		CMD_ERROR("file not found: %s", expanded);
+		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
 		return -ENOENT;
 	}
@@ -138,37 +138,37 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
 		const struct config *config = runtime_config_get(ctx->runtime);
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
-		    video_play(expanded, config->render.mpv_args) != 0) {
-			CMD_ERROR("failed to play video: %s", expanded);
+		    video_play(ctx ? ctx->logger : NULL, expanded, config->render.mpv_args) != 0) {
+			CMD_ERROR(ctx, "failed to play video: %s", expanded);
 			free(expanded);
 			return -EIO;
 		}
-		CMD_OK("video: %s", expanded);
+		CMD_OK(ctx, "video: %s", expanded);
 	} else if (ext && (strcasecmp(ext, "png") == 0 || strcasecmp(ext, "jpg") == 0 ||
 			   strcasecmp(ext, "jpeg") == 0 || strcasecmp(ext, "gif") == 0 ||
 			   strcasecmp(ext, "webp") == 0 || strcasecmp(ext, "bmp") == 0 ||
 			   strcasecmp(ext, "tga") == 0 || strcasecmp(ext, "hdr") == 0)) {
 		int w = 0, h = 0, ch = 0;
 		if (!stbi_info(expanded, &w, &h, &ch)) {
-			CMD_ERROR("not a valid image file: %s", expanded);
+			CMD_ERROR(ctx, "not a valid image file: %s", expanded);
 			free(expanded);
 			MORPH_RETURN(MORPH_ERR_FORMAT);
 		}
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
-			image_render_terminal(expanded);
-		CMD_OK("image: %s (%dx%d)", expanded, w, h);
+			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
+		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;
 		char *text = file_read_all(expanded, &len);
 		if (!text) {
-			CMD_ERROR("failed to read file: %s", expanded);
+			CMD_ERROR(ctx, "failed to read file: %s", expanded);
 			free(expanded);
 			return -EIO;
 		}
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			printf("%s", text);
+			printf(ctx, "%s", text);
 		else
-			cli_markdown_render_ansi(text);
+			cli_markdown_render_ansi(ctx, text);
 		free(text);
 	}
 	free(expanded);

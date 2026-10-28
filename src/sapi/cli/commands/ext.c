@@ -139,7 +139,7 @@ static void ext_print_group(struct cli_context *ctx,
 	int name_width = ext_group_name_width(items, group->rank);
 	const char *ancestor = tui_tree_branch(is_last, 1);
 
-	cli_list_group(group->name, group->count, is_last);
+	cli_list_group(ctx, group->name, group->count, is_last);
 	morph_array_foreach(item, items, struct ext_tool_item) {
 		struct tool_desc desc;
 
@@ -148,10 +148,8 @@ static void ext_print_group(struct cli_context *ctx,
 		if (runtime_tool_info(ctx->runtime, item->index, &desc) != 0)
 			continue;
 		index++;
-		cli_list_item(ancestor, index == group->count,
-			      ext_tool_marker(item),
-			      desc.name, desc.description, name_width,
-			      columns);
+		cli_list_item(ctx, ancestor, index == group->count, ext_tool_marker(item),
+			      desc.name, desc.description, name_width, columns);
 	}
 }
 
@@ -171,10 +169,10 @@ static int ext_print_tools(struct cli_context *ctx)
 	rc = ext_collect_tools(ctx, &items, &enabled_count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("Tools %zu" ANSI_DIM " · %d enabled" ANSI_RESET,
-		   items.nelts, enabled_count);
+	CMD_HEADER(ctx, "Tools %zu" ANSI_DIM " · %d enabled" ANSI_RESET, items.nelts,
+		   enabled_count);
 	if (items.nelts == 0) {
-		printf("  " ANSI_DIM "(none)" ANSI_RESET "\n");
+		printf(ctx, "  " ANSI_DIM "(none)" ANSI_RESET "\n");
 		goto out;
 	}
 	for (int rank = 0; rank < 5; rank++) {
@@ -194,11 +192,11 @@ static int ext_print_tools(struct cli_context *ctx)
 	}
 	for (int i = 0; i < group_count; i++) {
 		if (i > 0)
-			putchar('\n');
+			putchar(ctx, '\n');
 		ext_print_group(ctx, &items, &groups[i],
 				i == group_count - 1, columns);
 	}
-	printf("\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
+	printf(ctx, "\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
 	return 0;
@@ -234,7 +232,7 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 	int index;
 
 	if (runtime_tool_find(ctx->runtime, name, &desc) != 0) {
-		CMD_ERROR("tool not found: %s", name);
+		CMD_ERROR(ctx, "tool not found: %s", name);
 		return -ENOENT;
 	}
 	index = ext_find_tool_index(ctx, name, &origin, &flags);
@@ -242,25 +240,20 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 		return index;
 	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
 		return -EIO;
-	CMD_HEADER("Tool %s", desc.name);
-	cli_list_value_field("Status", enabled ? "● enabled" : "× disabled",
-			     0, 12, columns);
-	cli_list_value_field("Source", ext_origin_display(origin), 0, 12,
+	CMD_HEADER(ctx, "Tool %s", desc.name);
+	cli_list_value_field(ctx, "Status", enabled ? "● enabled" : "× disabled", 0, 12, columns);
+	cli_list_value_field(ctx, "Source", ext_origin_display(origin), 0, 12, columns);
+	cli_list_value_field(ctx, "Access",
+			     (flags & TOOL_FLAG_READONLY) ? "read-only" : "read-write", 0, 12,
 			     columns);
-	cli_list_value_field("Access",
-			     (flags & TOOL_FLAG_READONLY) ?
-			     "read-only" : "read-write",
-			     0, 12, columns);
 	schema_count = (desc.input_schema[0] ? 1 : 0) +
 		(desc.output_schema[0] ? 1 : 0);
-	cli_list_text_field("Description", desc.description,
-			    schema_count == 0, columns);
+	cli_list_text_field(ctx, "Description", desc.description, schema_count == 0, columns);
 	if (desc.input_schema[0])
-		cli_list_json_field("Input schema", desc.input_schema,
-				    !desc.output_schema[0], columns);
-	if (desc.output_schema[0])
-		cli_list_json_field("Output schema", desc.output_schema, 1,
+		cli_list_json_field(ctx, "Input schema", desc.input_schema, !desc.output_schema[0],
 				    columns);
+	if (desc.output_schema[0])
+		cli_list_json_field(ctx, "Output schema", desc.output_schema, 1, columns);
 	return 0;
 }
 
@@ -273,7 +266,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR("usage: /ext info <name>");
+			CMD_ERROR(ctx, "usage: /ext info <name>");
 			return -EINVAL;
 		}
 		return ext_print_info(ctx, name);
@@ -287,7 +280,7 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 				yes = 1;
 		}
 		if (!source) {
-			CMD_ERROR("usage: /ext install <github-source-or-tree-url> [--yes]");
+			CMD_ERROR(ctx, "usage: /ext install <github-source-or-tree-url> [--yes]");
 			return -EINVAL;
 		}
 		struct ext_install_options opts;
@@ -298,26 +291,26 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		opts.in = stdin;
 		opts.out = stdout;
 		struct ext_install_result res;
-		int rc = ext_install_source(source, &opts, &res);
+		int rc = ext_install_source(ctx ? ctx->logger : NULL, source, &opts, &res);
 		if (rc < 0) {
-			CMD_ERROR("ext install failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "ext install failed: %s", morph_strerror(rc));
 			return rc;
 		}
-		CMD_OK("installed ext %s to %s", res.name, res.path);
+		CMD_OK(ctx, "installed ext %s to %s", res.name, res.path);
 		if (res.resolved_ref[0])
-			printf("  resolved_ref: %s\n", res.resolved_ref);
+			printf(ctx, "  resolved_ref: %s\n", res.resolved_ref);
 		return 0;
 	}
 	if (sub && strcmp(sub, "remove") == 0) {
-		CMD_ERROR("ext remove not yet implemented (M4)");
+		CMD_ERROR(ctx, "ext remove not yet implemented (M4)");
 		return 0;
 	}
 	if (sub && strcmp(sub, "enable") == 0) {
-		CMD_ERROR("ext enable not yet implemented (M4)");
+		CMD_ERROR(ctx, "ext enable not yet implemented (M4)");
 		return 0;
 	}
 	if (sub && strcmp(sub, "disable") == 0) {
-		CMD_ERROR("ext disable not yet implemented (M4)");
+		CMD_ERROR(ctx, "ext disable not yet implemented (M4)");
 		return 0;
 	}
 	return ext_print_tools(ctx);

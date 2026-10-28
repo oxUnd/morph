@@ -9,7 +9,7 @@ void handle_health(request_t *r)
 	struct fcgi_bridge_pool_status pool;
 	char buf[512];
 
-	fcgi_bridge_pool_status(&pool);
+	fcgi_bridge_pool_status(r->bridge, &pool);
 	snprintf(buf, sizeof(buf),
 		 "{\"status\":\"ok\",\"setup_required\":%s,\"ts\":%lld,"
 		 "\"runtime_pool\":{\"workers\":%d,\"busy\":%d,"

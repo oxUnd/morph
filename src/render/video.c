@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "video.h"
 #include "image.h"
 #include "util/buf.h"
@@ -75,6 +76,7 @@ static int video_extract_preview(const char *path, char *preview,
 		MORPH_RETURN(rc);
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		int null_fd = open("/dev/null", O_WRONLY);
 		char *const argv[] = {
 			(char *)"ffmpeg", (char *)"-loglevel", (char *)"error",
@@ -107,7 +109,7 @@ static void video_print_open_link(const char *url)
 	fflush(stdout);
 }
 
-int video_render_terminal_preview(const char *path)
+int video_render_terminal_preview(struct morph_log *logger, const char *path)
 {
 	morph_buf_t url;
 	char preview[PATH_MAX];
@@ -127,7 +129,7 @@ int video_render_terminal_preview(const char *path)
 	    video_extract_preview(path, preview, sizeof(preview)) == 0) {
 		printf("\n\033]8;;%s\033\\", morph_buf_cstr(&url));
 		fflush(stdout);
-		rc = image_render_terminal(preview);
+		rc = image_render_terminal(logger, preview);
 		printf("\033]8;;\033\\");
 		unlink(preview);
 		if (rc == 0) {
@@ -141,10 +143,10 @@ int video_render_terminal_preview(const char *path)
 	return 0;
 }
 
-int video_play(const char *path, const char *mpv_args)
+int video_play(struct morph_log *logger, const char *path, const char *mpv_args)
 {
 	if (!path) {
-		log_err("video_play: null path");
+		log_err(logger, "video_play: null path");
 		return -EINVAL;
 	}
 
@@ -170,12 +172,13 @@ int video_play(const char *path, const char *mpv_args)
 	pid_t pid = fork();
 	if (pid < 0) {
 		int err = errno;
-		log_err("video_play: fork failed");
+		log_err(logger, "video_play: fork failed");
 		free(buf);
 		MORPH_RETURN(-err);
 	}
 
 	if (pid == 0) {
+		morph_signals_reset_child();
 		execvp("mpv", argv);
 		_exit(127);
 	}
@@ -185,7 +188,7 @@ int video_play(const char *path, const char *mpv_args)
 	int wstatus;
 	waitpid(pid, &wstatus, 0);
 	if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 127) {
-		log_err("video_play: mpv not found");
+		log_err(logger, "video_play: mpv not found");
 		return -ENOENT;
 	}
 	return 0;

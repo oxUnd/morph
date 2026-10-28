@@ -43,7 +43,7 @@ protected:
 	struct mcp_registry reg;
 
 	void SetUp() override {
-		mcp_registry_init(&reg);
+		mcp_registry_init(NULL, &reg);
 	}
 
 	void TearDown() override {
@@ -475,7 +475,7 @@ TEST_F(McpNullParamTest, EnsureConnectedNullClient) {
 
 TEST_F(McpNullParamTest, RegisterServerToolsNullClient) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	EXPECT_EQ(mcp_register_server_tools(nullptr, &reg), -EINVAL);
 	tool_registry_cleanup(&reg);
 }
@@ -486,7 +486,7 @@ TEST_F(McpNullParamTest, RegisterServerToolsNullReg) {
 
 TEST_F(McpNullParamTest, RegisterServerResourcesNullClient) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	EXPECT_EQ(mcp_register_server_resources(nullptr, &reg), -EINVAL);
 	tool_registry_cleanup(&reg);
 }
@@ -497,7 +497,7 @@ TEST_F(McpNullParamTest, RegisterServerResourcesNullReg) {
 
 TEST_F(McpNullParamTest, RegisterServerPromptsNullClient) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	EXPECT_EQ(mcp_register_server_prompts(nullptr, &reg), -EINVAL);
 	tool_registry_cleanup(&reg);
 }
@@ -865,7 +865,7 @@ TEST_F(McpStdioFramingTest, DiscoveryPreservesLargeSchemasAndDescriptions)
 			"}]}}\n");
 	});
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	int rc = mcp_register_server_tools(&client, &registry);
 	producer.join();
 	EXPECT_EQ(rc, 1);
@@ -896,7 +896,7 @@ TEST_F(McpStdioFramingTest, DiscoveryFollowsPagesAndExceedsOldToolCount)
 		}
 	});
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	int rc = mcp_register_server_tools(&client, &registry);
 	producer.join();
 	EXPECT_EQ(rc, 200);
@@ -1082,7 +1082,7 @@ TEST(McpHttpPayloadTest, LongBearerTokenAndSessionHeaderAreNotTruncated)
 	snprintf(client.config.http_url, sizeof(client.config.http_url),
 		"http://127.0.0.1:%u/mcp", static_cast<unsigned>(ntohs(address.sin_port)));
 	strcpy(client.config.http_auth_token_env, "MORPH_TEST_MCP_LONG_TOKEN");
-	int init_rc = http_init();
+	int init_rc = http_init(NULL);
 	int connect_rc = init_rc == 0 ? mcp_connect_http(&client) : init_rc;
 	client.session_id = strdup(session.c_str());
 	client.protocol = mcp_protocol_find("2025-06-18");

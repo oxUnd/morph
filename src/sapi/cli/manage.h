@@ -1,12 +1,13 @@
 #ifndef MORPH_CLI_MANAGE_H
 #define MORPH_CLI_MANAGE_H
 
+struct morph_log;
 #include "util/buf.h"
 #include <stddef.h>
 
 /* Management commands run without opening a conversational runtime. */
-int cli_manage_mcp(int argc, char **argv, const char *config_path);
-int cli_manage_skills(int argc, char **argv, const char *config_path);
+int cli_manage_mcp(struct morph_log *logger, int argc, char **argv, const char *config_path);
+int cli_manage_skills(struct morph_log *logger, int argc, char **argv, const char *config_path);
 int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output);
 int cli_manage_atomic_write(const char *path, const char *data, size_t len);
 int cli_manage_lock(const char *path);

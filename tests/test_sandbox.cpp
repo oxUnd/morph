@@ -69,7 +69,7 @@ TEST(SandboxEnvTest, FiltersOutNonAllowedVars)
 		setenv("MORPH_TEST_KEEP", "ok", 1);
 
 		const char *allow[] = {"MORPH_TEST_KEEP"};
-		int rv = sandbox_apply_env(allow, 1, 0);
+		int rv = sandbox_apply_env(NULL, allow, 1, 0);
 		if (rv != 0)
 			return 10;
 
@@ -90,7 +90,7 @@ TEST(SandboxEnvTest, EnvPermBypassesFilter)
 {
 	int rc = run_in_child([]() {
 		setenv("MORPH_TEST_BYPASS", "v", 1);
-		int rv = sandbox_apply_env(NULL, 0, EXT_PERM_ENV);
+		int rv = sandbox_apply_env(NULL, NULL, 0, EXT_PERM_ENV);
 		if (rv != 0)
 			return 10;
 		if (getenv("MORPH_TEST_BYPASS") == NULL)
@@ -105,7 +105,7 @@ TEST(SandboxEnvTest, KeepsLcLocaleFamily)
 	int rc = run_in_child([]() {
 		setenv("LC_FOOBAR", "x", 1);
 		setenv("RANDOM_VAR_XYZ", "x", 1);
-		int rv = sandbox_apply_env(NULL, 0, 0);
+		int rv = sandbox_apply_env(NULL, NULL, 0, 0);
 		if (rv != 0)
 			return 10;
 		if (getenv("LC_FOOBAR") == NULL)
@@ -128,7 +128,7 @@ TEST(SandboxRlimitTest, FsizeBlocksLargeWrites)
 		 * instead of being killed. */
 		signal(SIGXFSZ, SIG_IGN);
 
-		int rv = sandbox_apply_rlimits(0, 0, 0, 1, 0, 0);
+		int rv = sandbox_apply_rlimits(NULL, 0, 0, 0, 1, 0, 0);
 		if (rv != 0)
 			return 10;
 
@@ -163,7 +163,7 @@ TEST(SandboxRlimitTest, FsizeBlocksLargeWrites)
 TEST(SandboxRlimitTest, CoreDumpDisabled)
 {
 	int rc = run_in_child([]() {
-		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 0);
+		int rv = sandbox_apply_rlimits(NULL, 0, 0, 0, 0, 0, 0);
 		if (rv != 0)
 			return 10;
 		struct rlimit rl;
@@ -179,7 +179,7 @@ TEST(SandboxRlimitTest, CoreDumpDisabled)
 TEST(SandboxRlimitTest, NofileDefaultsTo1024)
 {
 	int rc = run_in_child([]() {
-		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 0);
+		int rv = sandbox_apply_rlimits(NULL, 0, 0, 0, 0, 0, 0);
 		if (rv != 0)
 			return 10;
 		struct rlimit rl;
@@ -195,7 +195,7 @@ TEST(SandboxRlimitTest, NofileDefaultsTo1024)
 TEST(SandboxRlimitTest, NofileCustomLimit)
 {
 	int rc = run_in_child([]() {
-		int rv = sandbox_apply_rlimits(0, 0, 0, 0, 0, 4096);
+		int rv = sandbox_apply_rlimits(NULL, 0, 0, 0, 0, 0, 4096);
 		if (rv != 0)
 			return 10;
 		struct rlimit rl;
@@ -1180,8 +1180,8 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 		}
 		std::string home = base + "/home";
 		setenv("HOME", home.c_str(), 1);
-		struct tool_context *tctx = tool_context_create(
-			(base + "/work").c_str(), (base + "/work").c_str());
+		struct tool_context *tctx = tool_context_create(NULL, (base + "/work").c_str(),
+								(base + "/work").c_str());
 		if (!tctx)
 			return 11;
 		int approvals = 0;
@@ -1191,7 +1191,7 @@ TEST(SandboxToolPathsTest, ApprovalUsesTheSameDeveloperPresets)
 				return TOOL_OP_DENY;
 			}, &approvals);
 		struct tool_registry registry;
-		tool_registry_init(&registry);
+		tool_registry_init(NULL, &registry);
 		if (exec_tool_init(&registry, tctx, nullptr) != 0 ||
 		    request_permissions_init(&registry, tctx) != 0)
 			return 12;

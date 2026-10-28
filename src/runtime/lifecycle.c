@@ -166,7 +166,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	char *expanded_output = NULL;
 	int rc = 0;
 
-	config_set_defaults(&ctx->config);
+	config_set_defaults(runtime ? runtime->options.logger : NULL, &ctx->config);
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
 		expanded = file_expand_path(runtime->options.config_path);
 		if (!expanded)
@@ -174,7 +174,8 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 		strncpy(ctx->config_path, expanded,
 			sizeof(ctx->config_path) - 1);
 		if (file_exists(expanded)) {
-			rc = config_load(&ctx->config, expanded);
+			rc = config_load(runtime ? runtime->options.logger : NULL, &ctx->config,
+					 expanded);
 			if (rc != 0) {
 				snprintf(error->file, sizeof(error->file), "%s", expanded);
 				(void)config_validate_file(expanded, &error->detail);
@@ -236,7 +237,8 @@ static int runtime_open_database(struct runtime *runtime)
 		return -ENOMEM;
 	rc = runtime_sync_source_directory(runtime, expanded, source);
 	if (rc == 0)
-		rc = morph_sync_recover_db_replacements(source);
+		rc = morph_sync_recover_db_replacements(runtime ? runtime->options.logger : NULL,
+							source);
 	if (rc != 0) {
 		free(expanded);
 		return rc;
@@ -246,7 +248,7 @@ static int runtime_open_database(struct runtime *runtime)
 		(void)file_ensure_dir(dir);
 		free(dir);
 	}
-	rc = db_open(&ctx->database, expanded);
+	rc = db_open(runtime ? runtime->options.logger : NULL, &ctx->database, expanded);
 	free(expanded);
 	if (rc != 0)
 		return rc;
@@ -287,12 +289,15 @@ static int runtime_start_components(struct runtime *runtime)
 	memset(&profile, 0, sizeof(profile));
 	runtime_emit_startup(runtime, "startup.models", "begin",
 			     "Preparing models...");
+	profile.logger = runtime->options.logger;
 	profile.config = &ctx->config;
 	profile.tools = &ctx->tools;
 	profile.models = &models;
 	profile.workdir = ctx->workdir;
 	profile.event_cb = runtime->options.event_cb;
 	profile.event_user_data = runtime->options.event_user_data;
+	ctx->logger = runtime->options.logger;
+	ctx->tools.logger = ctx->logger;
 	ctx->usage_sink.callback = runtime_record_usage;
 	ctx->usage_sink.user_data = runtime;
 	profile.usage_sink = &ctx->usage_sink;
@@ -313,6 +318,7 @@ static int runtime_start_components(struct runtime *runtime)
 	ctx->skills = runtime->options.allocate_skill_registry
 		? NULL : &ctx->skill_storage;
 	memset(&profile, 0, sizeof(profile));
+	profile.logger = runtime->options.logger;
 	profile.config = &ctx->config;
 	profile.db = &ctx->database;
 	profile.tools = &ctx->tools;
@@ -352,6 +358,7 @@ static int runtime_start_components(struct runtime *runtime)
 
 	if (runtime->options.enable_sub_agents) {
 		memset(&profile, 0, sizeof(profile));
+		profile.logger = runtime->options.logger;
 		profile.config = &ctx->config;
 		profile.db = &ctx->database;
 		profile.tools = &ctx->tools;
@@ -366,17 +373,15 @@ static int runtime_start_components(struct runtime *runtime)
 
 	runtime_emit_startup(runtime, "startup.mcp", "begin",
 			     "Connecting services...");
-	(void)runtime_mcp_init_from_config(&ctx->mcp, &ctx->config.mcp,
-					   &ctx->tools,
-					   runtime->options.auto_connect_mcp &&
-					   !runtime->options.background_connect_mcp,
-					   runtime->options.event_cb,
-					   runtime->options.event_user_data);
+	(void)runtime_mcp_init_from_config(
+		runtime ? runtime->options.logger : NULL, &ctx->mcp, &ctx->config.mcp, &ctx->tools,
+		runtime->options.auto_connect_mcp && !runtime->options.background_connect_mcp,
+		runtime->options.event_cb, runtime->options.event_user_data);
 	runtime_emit_startup(runtime, "startup.mcp", "end",
 			     "Services configured");
 	runtime_context_configure_engine(ctx);
 	ctx->memory_options = runtime_context_memory_options(ctx);
-	ctx->memory_options.worker = memory_worker_create();
+	ctx->memory_options.worker = memory_worker_create(runtime ? runtime->options.logger : NULL);
 	if (!ctx->memory_options.worker)
 		MORPH_RETURN(-ENOMEM);
 	ctx->engine.memory_options = &ctx->memory_options;
@@ -434,6 +439,7 @@ static int runtime_start_components(struct runtime *runtime)
 				 (long long)ctx->current_session.id);
 		}
 		memset(&profile, 0, sizeof(profile));
+		profile.logger = runtime->options.logger;
 		profile.config = &ctx->config;
 		profile.tools = &ctx->tools;
 		profile.tool_context = &ctx->tctx;
@@ -499,9 +505,11 @@ int runtime_open(const struct runtime_options *options, struct runtime **out)
 
 		rc = runtime_sync_source_directory(runtime, NULL, source);
 		if (rc == 0) {
-			cleanup_rc = morph_sync_finalize_db_replacements(source);
+			cleanup_rc = morph_sync_finalize_db_replacements(
+				runtime ? runtime->options.logger : NULL, source);
 			if (cleanup_rc != 0) {
-				log_warn("database restore cleanup deferred: %s",
+				log_warn(runtime ? runtime->options.logger : NULL,
+					 "database restore cleanup deferred: %s",
 					 morph_strerror(cleanup_rc));
 			}
 		}
@@ -616,8 +624,10 @@ int runtime_execute_turn(struct runtime *runtime,
 
 void runtime_cancel_turn(struct runtime *runtime)
 {
-	if (runtime)
+	if (runtime) {
 		runtime_cancel(&runtime->context.engine);
+		sub_agent_runtime_cancel(runtime->context.sub_agents);
+	}
 }
 
 void runtime_record_usage(const struct model_usage *usage, void *user_data)
@@ -650,7 +660,8 @@ int runtime_prepare_turn(void *user_data, const struct runtime_request *request)
 		int title_rc = runtime_title_start(runtime, request);
 
 		if (title_rc != 0)
-			log_dbg("session title skipped: %s", morph_strerror(title_rc));
+			log_dbg(runtime ? runtime->options.logger : NULL,
+				"session title skipped: %s", morph_strerror(title_rc));
 	}
 	return rc;
 }

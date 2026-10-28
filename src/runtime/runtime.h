@@ -29,6 +29,8 @@ extern "C" {
  * agent, model, or tool registry behind it. Platform callbacks are injected at
  * creation time so the same runtime can serve CLI, Android, or another host.
  */
+struct morph_log;
+
 struct runtime;
 
 typedef enum hitl_verdict (*runtime_hitl_approval_fn)(
@@ -46,6 +48,7 @@ typedef void (*runtime_usage_observer_fn)(const struct model_usage *usage,
 typedef int (*runtime_after_models_fn)(struct react_context *react,
 	void *user_data);
 struct runtime_options {
+	struct morph_log *logger;
 	const char *config_path;
 	const char *db_path;
 	const char *workdir;

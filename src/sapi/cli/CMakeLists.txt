@@ -1,5 +1,6 @@
 add_library(morph-cli STATIC
 	banner.c
+	callbacks.c
 	cancel_input.c
 	clipboard.c
 	command_job.c
@@ -52,6 +53,8 @@ target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
 pkg_check_modules(CLI_WEBP REQUIRED IMPORTED_TARGET libwebp)
+pkg_check_modules(CLI_FFI REQUIRED IMPORTED_TARGET libffi)
+target_link_libraries(morph-cli PRIVATE PkgConfig::CLI_FFI)
 target_link_libraries(morph-cli PUBLIC PkgConfig::CLI_WEBP PRIVATE CURL::libcurl)
 target_compile_definitions(morph-cli PUBLIC MORPH_VERSION="${PROJECT_VERSION}")
 target_link_libraries(morph-cli PUBLIC

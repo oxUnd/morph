@@ -1,6 +1,7 @@
 #ifndef CLI_COMMAND_REGISTRY_H
 #define CLI_COMMAND_REGISTRY_H
 
+struct cli_context;
 #include "sapi/cli/internal.h"
 
 struct cli_command {
@@ -19,7 +20,7 @@ struct cli_command_group {
 const struct cli_command *cli_command_find(const char *name);
 const struct cli_command *cli_command_find_input(const char *input);
 int cli_command_dispatch(struct cli_context *ctx, const char *input);
-void cli_print_help(void);
+void cli_print_help(struct cli_context *ctx);
 char *cli_command_completion_generator(const char *text, int state);
 
 struct cli_command_group cli_share_commands(void);

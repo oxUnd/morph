@@ -251,3 +251,5 @@ reports, not guessed keyboard inactivity. Focus return cancels only automatic
 requests. The UI retains recap progress for its 32 most recently recapped
 sessions across navigation. Set `general.auto_recap=false` to disable automatic
 requests. Terminals without focus reporting retain manual `/recap` support.
+
+Runtime state and callback lifetimes are described in [State ownership](state-ownership.md).

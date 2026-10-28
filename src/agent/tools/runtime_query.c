@@ -30,7 +30,7 @@ static void summary_to_json(cJSON *parent, const char *name,
 static int credits_exec(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
-	const struct tool_runtime_context *rt = tool_runtime_get_current();
+	const struct tool_runtime_context *rt = result->runtime;
 	struct credit_summary today;
 	struct credit_summary session;
 	struct credit_summary total;
@@ -127,7 +127,7 @@ static void parse_memory_query(const char *args_json,
 static int memory_exec(const char *args_json, struct tool_result *result,
 		       void *user_data)
 {
-	const struct tool_runtime_context *rt = tool_runtime_get_current();
+	const struct tool_runtime_context *rt = result->runtime;
 	struct memory_query_options q;
 	cJSON *root;
 	char *json;
@@ -165,7 +165,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 static int preference_exec(const char *args_json, struct tool_result *result,
 			   void *user_data)
 {
-	const struct tool_runtime_context *rt = tool_runtime_get_current();
+	const struct tool_runtime_context *rt = result->runtime;
 	cJSON *args = cJSON_Parse(args_json);
 	cJSON *key = cJSON_GetObjectItemCaseSensitive(args, "key");
 	cJSON *value = cJSON_GetObjectItemCaseSensitive(args, "value");

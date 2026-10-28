@@ -1,6 +1,7 @@
 #ifndef GUARDRAIL_H
 #define GUARDRAIL_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,6 +40,7 @@ enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step 
 struct tool_artifact_list;
 
 struct guardrail_eval_ctx {
+	struct morph_log *logger;
 	const char *user_input;
 	const char *tool_name;
 	const char *tool_args;
@@ -96,6 +98,7 @@ struct guardrail_result {
 struct model;
 
 struct guardrail_config {
+	struct morph_log *logger;
 	int enabled;
 	int max_retries;
 	int max_empty_rounds;
@@ -113,7 +116,7 @@ int guardrail_rule_register(struct guardrail_config *cfg,
 			     const char *ext_entry,
 			     const char *action_text);
 
-int guardrail_ext_so_load(struct guardrail_rule *rule);
+int guardrail_ext_so_load(struct morph_log *logger, struct guardrail_rule *rule);
 void guardrail_ext_so_unload(struct guardrail_rule *rule);
 
 int guardrail_rule_disable(struct guardrail_config *cfg, const char *name);

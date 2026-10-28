@@ -65,7 +65,7 @@ static void cli_task_notification(const struct notification *notification,
 	if (!notification)
 		return;
 	if (ctx && cli_ui_post_notification(ctx, notification) != 0)
-		log_warn("failed to queue task notification");
+		log_warn(ctx ? ctx->logger : NULL, "failed to queue task notification");
 }
 
 void cli_process_due_tasks(struct cli_context *ctx)
@@ -76,7 +76,8 @@ void cli_process_due_tasks(struct cli_context *ctx)
 	rc = runtime_tasks_run_due_for_runtime(ctx->runtime, 50,
 		cli_scheduled_task_runner, ctx, cli_task_notification, ctx);
 	if (rc < 0)
-		log_warn("failed to process due tasks: %s", morph_strerror(rc));
+		log_warn(ctx ? ctx->logger : NULL, "failed to process due tasks: %s",
+			 morph_strerror(rc));
 }
 
 int cli_scheduler_start(struct cli_context *ctx)

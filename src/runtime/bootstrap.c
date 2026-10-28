@@ -147,8 +147,8 @@ static void runtime_configure_model(struct model *model,
 		model->context_limit = cfg->context_limit;
 }
 
-static struct model *runtime_create_model(const struct config_model_entry *cfg,
-					  int nullable_model)
+static struct model *runtime_create_model(struct morph_log *logger,
+					  const struct config_model_entry *cfg, int nullable_model)
 {
 	const char *api_key;
 	struct model *model;
@@ -156,10 +156,8 @@ static struct model *runtime_create_model(const struct config_model_entry *cfg,
 	if (!cfg || (!nullable_model && !cfg->model[0]))
 		return NULL;
 	api_key = runtime_api_key(cfg);
-	model = model_llm_create(cfg->provider,
-				 cfg->model,
-				 cfg->api_base[0] ? cfg->api_base : NULL,
-				 api_key ? api_key : "");
+	model = model_llm_create(logger, cfg->provider, cfg->model,
+				 cfg->api_base[0] ? cfg->api_base : NULL, api_key ? api_key : "");
 	runtime_configure_model(model, cfg);
 	return model;
 }
@@ -172,7 +170,7 @@ static int runtime_apply_system_prompt(struct react_context *react,
 
 	if (!react || !config)
 		MORPH_RETURN(-EINVAL);
-	rc = morph_prompt_load(config->prompt.system_prompt_file,
+	rc = morph_prompt_load(react ? react->logger : NULL, config->prompt.system_prompt_file,
 			       config->prompt.system_prompt_dir, &content);
 	if (rc != 0)
 		MORPH_RETURN(rc);
@@ -200,6 +198,7 @@ static void runtime_apply_guardrails(struct react_context *react,
 				     const struct config *config,
 				     struct model *llm)
 {
+	react->guardrail.logger = react->logger;
 	if (!react || !config)
 		return;
 	guardrail_register_builtin_rules(&react->guardrail);
@@ -230,7 +229,7 @@ static void runtime_apply_guardrails(struct react_context *react,
 						      cr->name);
 			if (r) {
 				r->ext_type = GUARDRAIL_EXT_SO;
-				guardrail_ext_so_load(r);
+				guardrail_ext_so_load(react ? react->logger : NULL, r);
 			}
 		}
 	}
@@ -256,25 +255,26 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	if (config->models.image.model[0] &&
 	    !image_gen_adapter_supported(config->models.image.provider,
 					 config->models.image.adapter)) {
-		log_err("unsupported image adapter '%s' for provider '%s'",
-			config->models.image.adapter[0]
-				? config->models.image.adapter : "(auto)",
+		log_err(profile ? profile->logger : NULL,
+			"unsupported image adapter '%s' for provider '%s'",
+			config->models.image.adapter[0] ? config->models.image.adapter : "(auto)",
 			config->models.image.provider);
 		MORPH_RETURN(-EINVAL);
 	}
 	if (config->models.video.model[0] &&
 	    !video_gen_adapter_supported(config->models.video.provider,
 					 config->models.video.adapter)) {
-		log_err("unsupported video adapter '%s' for provider '%s'",
-			config->models.video.adapter[0] ?
-				config->models.video.adapter : "(auto)",
+		log_err(profile ? profile->logger : NULL,
+			"unsupported video adapter '%s' for provider '%s'",
+			config->models.video.adapter[0] ? config->models.video.adapter : "(auto)",
 			config->models.video.provider);
 		MORPH_RETURN(-EINVAL);
 	}
 	memset(models, 0, sizeof(*models));
-	tool_registry_init(profile->tools);
-	models->tokenizer = tokenizer_create(config->models.text.model,
-					     config->models.text.context_limit);
+	tool_registry_init(profile ? profile->logger : NULL, profile->tools);
+	models->tokenizer =
+		tokenizer_create(profile ? profile->logger : NULL, config->models.text.model,
+				 config->models.text.context_limit);
 	if (!models->tokenizer)
 		return -ENOMEM;
 	memset(&compress_cfg, 0, sizeof(compress_cfg));
@@ -339,7 +339,8 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 			models->react->history_compaction_prompt =
 				file_read_all(path, NULL);
 		if (!models->react->history_compaction_prompt)
-			log_warn("cannot read compaction prompt '%s'; using built-in",
+			log_warn(profile ? profile->logger : NULL,
+				 "cannot read compaction prompt '%s'; using built-in",
 				 config->context.compaction_prompt_file);
 		free(path);
 	}
@@ -348,18 +349,21 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 		runtime_bootstrap_cleanup_models(models);
 		MORPH_RETURN(prompt_rc);
 	}
-	models->text = runtime_create_model(&config->models.text, 0);
+	models->text = runtime_create_model(profile->logger, &config->models.text, 0);
 	/* Background extraction must not mutate the foreground model or bill its turn. */
-	models->memory_text = runtime_create_model(&config->models.text, 0);
+	models->memory_text = runtime_create_model(profile->logger, &config->models.text, 0);
+	models->react->logger = profile->logger;
 	models->react->llm_model = models->text;
-	models->vision = runtime_create_model(&config->models.vision, 0);
-	models->image = runtime_create_model(&config->models.image, 1);
-	models->video = runtime_create_model(&config->models.video, 1);
+	models->vision = runtime_create_model(profile->logger, &config->models.vision, 0);
+	models->image = runtime_create_model(profile->logger, &config->models.image, 1);
+	models->video = runtime_create_model(profile->logger, &config->models.video, 1);
 	struct model *all[] = {models->text, models->vision, models->image, models->video};
 
 	for (size_t i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
-		if (all[i])
+		if (all[i]) {
 			all[i]->usage_sink = profile->usage_sink;
+			all[i]->http.logger = profile->logger;
+		}
 	}
 	runtime_apply_guardrails(models->react, config, models->text);
 	return 0;
@@ -379,7 +383,7 @@ static int runtime_discover_skills(struct runtime_bootstrap_profile *profile)
 	if (!*profile->skills)
 		return 0;
 	skills = *profile->skills;
-	skill_registry_init(skills);
+	skill_registry_init(profile ? profile->logger : NULL, skills);
 	int discover_rc = skill_discover_configured(skills,
 		profile->workdir ? profile->workdir : ".", profile->config->skill.dir);
 
@@ -414,7 +418,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	models = profile->models;
 	if (!*profile->tool_context) {
 		*profile->tool_context =
-			tool_context_create(profile->workdir,
+			tool_context_create(profile ? profile->logger : NULL, profile->workdir,
 					    config->general.output_dir);
 		if (!*profile->tool_context)
 			return -ENOMEM;
@@ -423,8 +427,9 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	rc = tool_context_set_grant_store(tctx, profile->db,
 					   profile->workdir);
 	if (rc != 0)
-		log_warn("failed to load persistent permission grants: %s",
-			 morph_strerror(rc));
+		log_warn(profile ? profile->logger : NULL,
+			 "failed to load persistent permission grants: %s", morph_strerror(rc));
+	tctx->logger = profile->logger;
 	if (profile->operation_approval_cb)
 		tool_context_set_operation_approval(
 			tctx, profile->operation_approval_cb,
@@ -439,8 +444,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	permission_profile = active_permission_profile(&config->react);
 	if (config->react.permission_active_profile[0] &&
 	    !permission_profile) {
-		log_err("active permission profile not found: %s",
-			  config->react.permission_active_profile);
+		log_err(profile ? profile->logger : NULL, "active permission profile not found: %s",
+			config->react.permission_active_profile);
 		MORPH_RETURN(-ENOENT);
 	}
 	if (permission_profile) {
@@ -491,7 +496,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	if (config->models.vision.model[0] && models->vision)
 		img_qa_init(profile->tools, models->vision, tctx);
 	else
-		log_info("img_qa unavailable: [model.vision] is not configured");
+		log_info(profile ? profile->logger : NULL,
+			 "img_qa unavailable: [model.vision] is not configured");
 	img_gen_init(profile->tools, models->image, tctx);
 	img_inpaint_init(profile->tools, models->image, tctx);
 	img_compose_init(profile->tools, models->image, tctx);
@@ -524,13 +530,15 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	}
 #else
 	if (profile->enable_config_write)
-		log_info("config_edit disabled for this runtime build");
+		log_info(profile->logger, "config_edit disabled for this runtime build");
 	if (profile->enable_exec)
-		log_info("exec disabled for this runtime build");
+		log_info(profile->logger, "exec disabled for this runtime build");
 #endif
+	if (profile->ask_user_cb)
+		ask_user_init(profile->tools, profile->ask_user_cb, profile->ask_user_user_data);
+	else
+		ask_user_init_deferred(profile->tools);
 	if (profile->ask_user_cb) {
-		ask_user_init(profile->tools, profile->ask_user_cb,
-			      profile->ask_user_user_data);
 		models->react->ask_user_fn = profile->ask_user_cb;
 		models->react->ask_user_data = profile->ask_user_user_data;
 	}
@@ -541,8 +549,8 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		if (rc == 0 && profile->tool_context)
 			plan_tool_set_context(profile->tools, *profile->tool_context);
 		if (rc < 0)
-			log_warn("failed to register plan tool: %s",
-				 morph_strerror(rc));
+			log_warn(profile ? profile->logger : NULL,
+				 "failed to register plan tool: %s", morph_strerror(rc));
 	}
 	if (profile->task_events)
 		rc = scheduled_tasks_tool_init_events(profile->tools,
@@ -551,7 +559,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	else
 		rc = scheduled_tasks_tool_init(profile->tools, profile->db);
 	if (rc < 0)
-		log_warn("failed to register tasks tool: %s",
+		log_warn(profile ? profile->logger : NULL, "failed to register tasks tool: %s",
 			 morph_strerror(rc));
 #ifndef MORPH_NO_SHELL
 	if (profile->enable_img_annotate) {
@@ -560,13 +568,14 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 				  profile->img_annotate_resume_cb,
 				  profile->img_annotate_user_data, tctx);
 	} else {
-		log_info("img_annotate disabled for this runtime profile");
+		log_info(profile ? profile->logger : NULL,
+			 "img_annotate disabled for this runtime profile");
 	}
 #else
 	if (profile->enable_img_annotate)
-		log_info("img_annotate disabled for this runtime build");
+		log_info(profile->logger, "img_annotate disabled for this runtime build");
 	else
-		log_info("img_annotate disabled for this runtime profile");
+		log_info(profile->logger, "img_annotate disabled for this runtime profile");
 #endif
 	rc = runtime_discover_skills(profile);
 	if (rc < 0)

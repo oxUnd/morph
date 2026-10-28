@@ -29,7 +29,7 @@ static int runtime_output_forward(const struct react_output_event *event,
 	output.event_user_data = forwarder->engine->react->event_user_data;
 	rc = runtime_output_record_event(&output, event);
 	if (rc != 0)
-		log_warn("failed to record generation output: %d", rc);
+		log_warn(forwarder->engine->logger, "failed to record generation output: %d", rc);
 	if (forwarder->request->output_cb)
 		return forwarder->request->output_cb(
 			event, forwarder->request->output_user_data);
@@ -57,6 +57,9 @@ int runtime_execute(struct runtime_engine *engine,
 	int usage_bound = 0;
 	int hitl_bound = 0;
 	int ask_user_bound = 0;
+	tool_operation_approval_fn old_operation_approval = NULL;
+	void *old_operation_user_data = NULL;
+	int operation_bound = 0;
 	int action_drain_bound = 0;
 	int rc;
 	int finish_rc;
@@ -107,6 +110,14 @@ int runtime_execute(struct runtime_engine *engine,
 		engine->react->ask_user_fn = request->ask_user_fn;
 		engine->react->ask_user_data = request->ask_user_user_data;
 		ask_user_bound = 1;
+	}
+	if (request->override_operation_approval && engine->tool_context) {
+		old_operation_approval = engine->tool_context->operation_approval_fn;
+		old_operation_user_data = engine->tool_context->operation_approval_user_data;
+		tool_context_set_operation_approval(engine->tool_context,
+						    request->operation_approval_fn,
+						    request->operation_approval_user_data);
+		operation_bound = 1;
 	}
 	if (request->override_action_drain) {
 		engine->react->prompt_pending_fn = request->prompt_pending_fn;
@@ -226,6 +237,9 @@ out:
 		engine->react->ask_user_fn = old_ask_user_fn;
 		engine->react->ask_user_data = old_ask_user_data;
 	}
+	if (operation_bound)
+		tool_context_set_operation_approval(engine->tool_context, old_operation_approval,
+						    old_operation_user_data);
 	if (action_drain_bound) {
 		engine->react->prompt_pending_fn = old_prompt_pending_fn;
 		engine->react->action_drain_fn = old_action_drain_fn;

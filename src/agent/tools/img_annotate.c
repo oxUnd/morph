@@ -1,3 +1,5 @@
+#include "util/signals.h"
+#include "agent/tool_runtime.h"
 #include "img_annotate.h"
 #include "agent/tool_context.h"
 #include "util/log.h"
@@ -38,7 +40,7 @@ static void img_annotate_context_destroy(void *user_data)
  * Returns a heap-allocated path the caller must free, or NULL on
  * unrecoverable error.
  */
-static char *find_editor_binary(void)
+static char *find_editor_binary(struct morph_log *logger)
 {
 	const char *env;
 	char buf[PATH_MAX + 64];
@@ -48,7 +50,7 @@ static char *find_editor_binary(void)
 	if (env && env[0]) {
 		if (file_exists(env))
 			return strdup(env);
-		log_warn("MORPH_EDITOR=%s not found, falling back", env);
+		log_warn(logger, "MORPH_EDITOR=%s not found, falling back", env);
 	}
 
 	/*
@@ -65,8 +67,8 @@ static char *find_editor_binary(void)
 			return strdup(buf);
 	}
 
-	log_info("img_annotate: morph-editor not found locally, "
-		 "will search $PATH");
+	log_info(logger, "img_annotate: morph-editor not found locally, "
+			 "will search $PATH");
 	return strdup("");
 }
 
@@ -200,7 +202,8 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		}
 	}
 
-	editor_path = find_editor_binary();
+	editor_path =
+		find_editor_binary(result && result->runtime ? result->runtime->http.logger : NULL);
 	if (!editor_path) {
 		for (i = 0; i < npaths; i++)
 			free(paths[i]);
@@ -242,6 +245,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 	}
 
 	if (pid == 0) {
+		morph_signals_reset_child();
 		/*
 		 * Child process: exec morph-editor with all
 		 * image paths.  morph-editor "open" subcommand

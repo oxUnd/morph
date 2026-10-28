@@ -10,7 +10,7 @@ protected:
 	struct tokenizer *tok;
 	struct arena *ar;
 	void SetUp() override {
-		tok = tokenizer_create("gpt-4o", 128000);
+		tok = tokenizer_create(NULL, "gpt-4o", 128000);
 		ar = arena_create(0);
 	}
 	void TearDown() override {

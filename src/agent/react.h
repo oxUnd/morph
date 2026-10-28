@@ -51,6 +51,8 @@ enum react_outcome {
 	REACT_OUTCOME_INTERNAL_ERROR,
 };
 
+struct morph_log;
+
 struct react_step {
 	enum react_step_type type;
 	int error_code;
@@ -124,6 +126,7 @@ typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 				     int timeout_sec);
 
 struct react_context {
+	struct morph_log *logger;
 	agent_hook_fn hook_fn;
 	void *hook_user;
 	int hook_stop_active;
@@ -227,13 +230,8 @@ react_context_create_for_session(struct session_store *store,
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
 void react_cancel(struct react_context *ctx);
-void react_cancel_active(void);
 int react_set_memory_context(struct react_context *ctx, const char *memory_context);
-extern volatile sig_atomic_t react_sigint_flag;
 
-int react_active_count(void);
-void react_active_push(struct react_context *ctx);
-void react_active_pop(struct react_context *ctx);
 
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name);
 void hitl_add_auto_approved(struct hitl_config *h, const char *tool_name);

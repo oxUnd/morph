@@ -1,6 +1,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -14,6 +15,7 @@ struct model;
 struct memory_worker;
 
 struct memory_options {
+	struct morph_log *logger;
 	/* Borrowed dependencies; the owner drains the worker before model teardown. */
 	struct memory_worker *worker;
 	struct model *llm;
@@ -39,7 +41,7 @@ enum memory_clear_scope {
 };
 
 /* Each runtime owns an independent queue and worker. */
-struct memory_worker *memory_worker_create(void);
+struct memory_worker *memory_worker_create(struct morph_log *logger);
 void memory_worker_destroy(struct memory_worker *worker);
 
 /* Accept explicit preferences before model execution, independently of outcome.

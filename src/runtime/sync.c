@@ -27,6 +27,8 @@ int runtime_sync_config_instance(
 		strncpy(source, ".", sizeof(source) - 1);
 	int rc = runtime_sync_config_from_config(&runtime->context.config.sync,
 		source, default_sync_dir, backend, out);
+	if (rc == 0)
+		out->logger = runtime->options.logger;
 	if (rc == 0 && runtime->context.tctx) {
 		const char *output = tool_context_output_dir(runtime->context.tctx);
 		if (output && output[0] == '/')

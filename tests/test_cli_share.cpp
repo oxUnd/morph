@@ -23,7 +23,7 @@ protected:
 		options.config_path = config_path.c_str();
 		Open(&options);
 		ASSERT_EQ(runtime_session_create_and_select(instance, "share-test", &current), 0);
-		ASSERT_EQ(db_open(&db, database.c_str()), 0);
+		ASSERT_EQ(db_open(NULL, &db, database.c_str()), 0);
 	}
 	void TearDown() override
 	{

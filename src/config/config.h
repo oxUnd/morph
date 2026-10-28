@@ -17,6 +17,8 @@ extern "C" {
 #define MORPH_MODEL_EXTRA_BODY_MAX 8192
 #endif
 
+struct morph_log;
+
 struct config_general {
 	int auto_recap;
 	char default_session[256];
@@ -321,6 +323,7 @@ struct config_sub_agents {
 };
 
 struct config {
+	struct morph_log *logger;
 	int hooks_enabled;
 	char hooks_json[CONFIG_HOOKS_JSON_MAX];
 	struct config_general general;
@@ -369,7 +372,7 @@ struct config_file_error {
 typedef void (*config_validation_warning_fn)(
 	const struct config_validation_error *warning, void *user_data);
 
-int config_load(struct config *cfg, const char *path);
+int config_load(struct morph_log *logger, struct config *cfg, const char *path);
 int config_load_sub_agents(struct config *cfg, const char *path);
 /* Validate without applying configuration. Returns 0 or a negative error. */
 int config_validate_text(const char *text, struct config_validation_error *error);
@@ -382,7 +385,7 @@ int config_validate_file_with_warnings(const char *path,
 	config_validation_warning_fn warning_fn, void *warning_user_data);
 /* Returns a malloc-owned semantic inventory as JSON; the caller must free it. */
 char *config_describe_text(const char *text, struct config_validation_error *error);
-void config_set_defaults(struct config *cfg);
+void config_set_defaults(struct morph_log *logger, struct config *cfg);
 void config_print(const struct config *cfg);
 
 #ifdef __cplusplus

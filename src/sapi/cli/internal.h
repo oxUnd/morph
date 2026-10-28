@@ -1,6 +1,7 @@
 #ifndef CLI_INTERNAL_H
 #define CLI_INTERNAL_H
 
+struct cli_context;
 /* Shared right gutter for conversation text and compact tool rows. */
 #define CLI_CONTENT_RIGHT_PADDING 2u
 
@@ -89,32 +90,30 @@
 #define CLI_RL_IGNORE_END   ""
 #endif
 
-#define CMD_HEADER(fmt, ...) \
-	printf("\n" ANSI_BOLD ANSI_CYAN "• " fmt ANSI_RESET "\n", \
-	       ##__VA_ARGS__)
-#define CMD_ERROR(fmt, ...) \
-	printf(ANSI_BOLD ANSI_RED "• Error  " ANSI_RESET fmt "\n", \
-	       ##__VA_ARGS__)
-#define CMD_OK(fmt, ...) \
-	printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+#define CMD_HEADER(ctx, fmt, ...)                                                                  \
+	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "• " fmt ANSI_RESET "\n", ##__VA_ARGS__)
+#define CMD_ERROR(ctx, fmt, ...)                                                                   \
+	printf(ctx, ANSI_BOLD ANSI_RED "• Error  " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+#define CMD_OK(ctx, fmt, ...)                                                                      \
+	printf(ctx, ANSI_BOLD ANSI_GREEN "• " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 
-extern volatile sig_atomic_t cli_sigint_received;
-void cli_sigint_handler(int sig);
-const char *cli_input_prompt(void);
-void cli_presentation_user_input(const char *text);
+void cli_request_cancel(struct cli_context *ctx);
+void cli_signal_received(int number, void *opaque);
+const char *cli_input_prompt(struct cli_context *ctx);
+void cli_presentation_user_input(struct cli_context *ctx, const char *text);
 void cli_presentation_command_input(struct cli_context *ctx, const char *text);
-void cli_print_welcome(const char *model, const char *directory);
+void cli_print_welcome(struct cli_context *ctx, const char *model, const char *directory);
 
-void print_padded(const char *s, int target_width);
+void print_padded(struct cli_context *ctx, const char *s, int target_width);
 /* Use for model, tool, file, database, MCP, and user-provided text. */
-int cli_print_untrusted_text(const char *text,
+int cli_print_untrusted_text(struct cli_context *ctx, const char *text,
 			     enum utf8_terminal_text_mode mode);
 const char *cli_cmd_arg(int argc, char **argv, int idx);
 int cli_argv_split(const char *input, char **argv, int max_args);
-int cli_command_capture_begin(morph_buf_t *output);
-int cli_command_capture_styled_begin(morph_buf_t *output);
-void cli_command_capture_end(void);
-int cli_command_capture_write(const char *bytes, size_t len);
+int cli_command_capture_begin(struct cli_context *ctx, morph_buf_t *output);
+int cli_command_capture_styled_begin(struct cli_context *ctx, morph_buf_t *output);
+void cli_command_capture_end(struct cli_context *ctx);
+int cli_command_capture_write(struct cli_context *ctx, const char *bytes, size_t len);
 int cli_transcript_capture_begin(struct cli_context *ctx);
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
 				      int64_t image_units,
@@ -136,7 +135,7 @@ void cli_presentation_finish(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 void cli_presentation_prepare_prompt(struct cli_context *ctx);
 void cli_presentation_flush_stream(struct cli_context *ctx);
-void cli_presentation_patch_diff(const char *workdir, const char *input);
+void cli_presentation_patch_diff(struct cli_context *ctx, const char *workdir, const char *input);
 int cli_presentation_event(struct cli_context *ctx,
 			   const struct morph_event *ev);
 int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev);
@@ -152,9 +151,9 @@ int cli_transcript_live_body(struct cli_context *ctx, morph_buf_t *text, int sty
 int cli_transcript_live_text(struct cli_context *ctx, morph_buf_t *text, int styled);
 
 struct cli_cancel_monitor;
-struct cli_cancel_monitor *cli_cancel_monitor_start(int fd);
+struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int fd);
 void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
-void cli_cancel_state_reset(void);
+void cli_cancel_state_reset(struct cli_context *ctx);
 
 void cli_process_due_tasks(struct cli_context *ctx);
 int cli_scheduled_task_runner(const struct scheduled_task *task,
@@ -164,17 +163,15 @@ int cli_scheduler_start(struct cli_context *ctx);
 int cli_sync_start(struct cli_context *ctx);
 
 void media_callback(const char *type, const char *path, void *user);
-void cli_markdown_render_ansi(const char *md);
+void cli_markdown_render_ansi(struct cli_context *ctx, const char *md);
 int cli_markdown_load_image(const char *url, char **path, void *user);
 void cli_markdown_release_image(char *path, void *user);
 typedef void (*cli_markdown_media_cb)(const char *type, const char *path,
 				      void *user);
-void cli_markdown_render_ansi_with_media(const char *md,
-					 cli_markdown_media_cb cb,
-					 void *user);
-void cli_markdown_render_ansi_with_media_indented(const char *md,
-						  unsigned int indent,
-						  cli_markdown_media_cb cb,
+void cli_markdown_render_ansi_with_media(struct cli_context *ctx, const char *md,
+					 cli_markdown_media_cb cb, void *user);
+void cli_markdown_render_ansi_with_media_indented(struct cli_context *ctx, const char *md,
+						  unsigned int indent, cli_markdown_media_cb cb,
 						  void *user);
 void cli_markdown_render_final(struct cli_context *ctx, const char *text);
 void cli_markdown_finish_final(struct cli_context *ctx);

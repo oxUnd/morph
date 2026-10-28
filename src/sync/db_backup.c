@@ -950,7 +950,7 @@ static int restore_chunk(const struct morph_sync_config *cfg, cJSON *item,
 	hash_bytes(data, data_size, actual_hash);
 	if (data_size != (size_t)size->valuedouble ||
 	    strcmp(actual_hash, hash->valuestring) != 0) {
-		log_err("database backup chunk failed verification: %s",
+		log_err(cfg ? cfg->logger : NULL, "database backup chunk failed verification: %s",
 			hash->valuestring);
 		free(data);
 		MORPH_RETURN(MORPH_ERR_FORMAT);
@@ -1027,7 +1027,8 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 	output = NULL;
 	if (stat(temporary, &st) != 0 ||
 	    (int64_t)st.st_size != (int64_t)expected_size->valuedouble) {
-		log_err("database restore size mismatch for %s", snapshot_id);
+		log_err(cfg ? cfg->logger : NULL, "database restore size mismatch for %s",
+			snapshot_id);
 		rc = MORPH_ERR_FORMAT;
 		goto out;
 	}
@@ -1036,7 +1037,7 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 		goto out;
 	if (strcmp(actual_hash, expected_hash->valuestring) != 0 ||
 	    !quick_check(temporary)) {
-		log_err("database restore integrity check failed for %s",
+		log_err(cfg ? cfg->logger : NULL, "database restore integrity check failed for %s",
 			snapshot_id);
 		rc = MORPH_ERR_FORMAT;
 		goto out;
@@ -1780,7 +1781,7 @@ int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan)
 	return rc;
 }
 
-static int restore_journals_process(const char *source_dir, int finalize)
+static int restore_journals_process(struct morph_log *logger, const char *source_dir, int finalize)
 {
 	char directory[PATH_MAX];
 	char journal[PATH_MAX];
@@ -1806,7 +1807,7 @@ static int restore_journals_process(const char *source_dir, int finalize)
 				     strcmp(journal, plan.journal) != 0))
 			rc = MORPH_ERR_FORMAT;
 		if (rc != 0) {
-			log_warn("ignoring invalid restore journal %s: %s", journal,
+			log_warn(logger, "ignoring invalid restore journal %s: %s", journal,
 				 morph_strerror(rc));
 			rc = 0;
 			continue;
@@ -1822,18 +1823,18 @@ static int restore_journals_process(const char *source_dir, int finalize)
 	return rc;
 }
 
-int morph_sync_recover_db_replacements(const char *source_dir)
+int morph_sync_recover_db_replacements(struct morph_log *logger, const char *source_dir)
 {
 	if (!source_dir)
 		MORPH_RETURN(-EINVAL);
-	return restore_journals_process(source_dir, 0);
+	return restore_journals_process(logger, source_dir, 0);
 }
 
-int morph_sync_finalize_db_replacements(const char *source_dir)
+int morph_sync_finalize_db_replacements(struct morph_log *logger, const char *source_dir)
 {
 	if (!source_dir)
 		MORPH_RETURN(-EINVAL);
-	return restore_journals_process(source_dir, 1);
+	return restore_journals_process(logger, source_dir, 1);
 }
 
 char *morph_sync_restore_plan_to_json(

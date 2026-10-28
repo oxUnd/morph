@@ -17,7 +17,12 @@ typedef struct {
 	char val[128];
 } fcgi_path_param_t;
 
+struct fcgi_bridge;
+struct fcgi_auth;
+
 typedef struct request_s {
+	struct fcgi_bridge *bridge;
+	struct fcgi_auth *auth;
 	FCGX_Request    *fcgx;
 
 	const char      *method;

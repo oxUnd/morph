@@ -374,12 +374,12 @@ static int save_config(const char *path, const char *text)
 	return 0;
 }
 
-int cli_setup(const char *path, FILE *input, FILE *output)
+int cli_setup(struct cli_context *ctx, const char *path, FILE *input, FILE *output)
 {
 	struct config_model_entry entries[SETUP_MODEL_COUNT] = {0};
 	const char *names[] = {"text", "vision", "image", "video"};
 	if (cli_setup_ui_available(input, output)) {
-		int rc = cli_setup_ui_collect(path, input, output, entries);
+		int rc = cli_setup_ui_collect(ctx, path, input, output, entries);
 		if (rc < 0) {
 			memset(entries, 0, sizeof(entries));
 			MORPH_RETURN(rc);
@@ -454,7 +454,7 @@ int cli_setup(const char *path, FILE *input, FILE *output)
 	return missing;
 }
 
-int cli_setup_if_missing(const char *path, int interactive)
+int cli_setup_if_missing(struct cli_context *ctx, const char *path, int interactive)
 {
 	char *expanded = file_expand_path(path ? path : "~/.morph/config.toml");
 	if (!expanded)
@@ -467,7 +467,7 @@ int cli_setup_if_missing(const char *path, int interactive)
 	int rc = -errno;
 	if (rc == -ENOENT) {
 		if (interactive && isatty(STDIN_FILENO) && isatty(STDERR_FILENO)) {
-			rc = cli_setup(expanded, stdin, stderr);
+			rc = cli_setup(ctx, expanded, stdin, stderr);
 		} else {
 			fprintf(stderr, "morph: configuration not found: %s\n"
 				"Run morph in a terminal without --prompt or --events to set up"

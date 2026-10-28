@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "sapi/cli/internal.h"
 #include "util/id.h"
 
@@ -28,6 +29,7 @@ static int clipboard_run(const char *const argv[], const char *stdout_path)
 		MORPH_RETURN(rc);
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		int null_fd = open("/dev/null", O_WRONLY);
 
 		if (output_fd >= 0 && dup2(output_fd, STDOUT_FILENO) < 0)

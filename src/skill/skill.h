@@ -17,6 +17,8 @@ extern "C" {
 #define SKILL_METADATA_KEY_MAX 64
 #define SKILL_METADATA_VAL_MAX 256
 
+struct morph_log;
+
 struct skill_metadata_entry {
 	char key[SKILL_METADATA_KEY_MAX];
 	char value[SKILL_METADATA_VAL_MAX];
@@ -33,6 +35,7 @@ struct skill_frontmatter {
 };
 
 struct skill_entry {
+	struct morph_log *logger;
 	struct skill_frontmatter fm;
 	char skill_dir[SKILL_PATH_MAX];
 	char skill_md_path[SKILL_PATH_MAX];
@@ -43,12 +46,13 @@ struct skill_entry {
 };
 
 struct skill_registry {
+	struct morph_log *logger;
 	struct skill_entry entries[SKILL_MAX_ENTRIES];
 	int count;
 	morph_strmap_t by_name;
 };
 
-void skill_registry_init(struct skill_registry *reg);
+void skill_registry_init(struct morph_log *logger, struct skill_registry *reg);
 void skill_registry_cleanup(struct skill_registry *reg);
 int skill_discover(struct skill_registry *reg, const char *dir_path);
 /* Project skills take precedence; NULL workdir omits project discovery. */

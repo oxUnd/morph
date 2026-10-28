@@ -35,7 +35,7 @@ protected:
 		directory = pattern;
 		config_path = directory + "/config.toml";
 		db_path = directory + "/data.db";
-		ASSERT_EQ(http_init(), 0);
+		ASSERT_EQ(http_init(NULL), 0);
 		std::ofstream script(directory + "/server.sh");
 		script << R"SH(
 : > "$2"

@@ -1,6 +1,7 @@
 #ifndef AGENT_HISTORY_H
 #define AGENT_HISTORY_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,9 +26,9 @@ struct agent_history_diagnostic {
 /* Payload eligibility; callers select the active window separately. */
 int agent_history_item_replayable(const struct model_history_item *item);
 
-int agent_history_build_chat_messages(const struct model_history_item *items,
-				      morph_array_t *messages,
-				      struct arena *arena);
+int agent_history_build_chat_messages(struct morph_log *logger,
+				      const struct model_history_item *items,
+				      morph_array_t *messages, struct arena *arena);
 int agent_history_record_request(struct react_context *ctx, const struct model *model,
 	const char *system_prompt, const struct chat_message *messages, int count,
 	const struct tool_desc *tools, int tool_count);

@@ -89,13 +89,13 @@ static void recap_failure(struct cli_context *ctx, int rc, int automatic)
 	if (rc == -ECANCELED)
 		return;
 	if (rc == -EBUSY)
-		CMD_ERROR("Wait for the current task to finish before running /recap.");
+		CMD_ERROR(ctx, "Wait for the current task to finish before running /recap.");
 	else if (rc == -EALREADY)
-		CMD_ERROR("A conversation recap is already being generated.");
+		CMD_ERROR(ctx, "A conversation recap is already being generated.");
 	else if (rc == -ENODATA)
-		CMD_ERROR("There is no conversation history to recap.");
+		CMD_ERROR(ctx, "There is no conversation history to recap.");
 	else
-		CMD_ERROR("Could not generate a recap: %s", morph_strerror(rc));
+		CMD_ERROR(ctx, "Could not generate a recap: %s", morph_strerror(rc));
 }
 
 int cli_recap_start(struct cli_context *ctx, int automatic)
@@ -174,7 +174,7 @@ static void recap_print_text(struct cli_context *ctx, const char *label, const c
 	if (!safe)
 		return;
 	if (columns <= indent + 3) {
-		printf("%s\n", label);
+		printf(ctx, "%s\n", label);
 		indent = 0;
 		first = 0;
 	}
@@ -184,9 +184,8 @@ static void recap_print_text(struct cli_context *ctx, const char *label, const c
 
 		if (end == line)
 			end = utf8_advance_codepoints(line, 1);
-		printf("%s%.*s%.*s\n", first ? label : "",
-			first ? 0 : (int)indent, "                                  ",
-			(int)(end - line), line);
+		printf(ctx, "%s%.*s%.*s\n", first ? label : "", first ? 0 : (int)indent,
+		       "                                  ", (int)(end - line), line);
 		first = 0;
 		line = end;
 		while (*line == ' ')
@@ -249,14 +248,14 @@ void cli_recap_event(struct cli_context *ctx, const struct morph_event *event)
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	cli_terminal_history_begin(ctx);
-	if (cli_color_enabled())
-		printf(ANSI_DIM "\033[3m");
+	if (cli_color_enabled(ctx))
+		printf(ctx, ANSI_DIM "\033[3m");
 	recap_print_text(ctx, "  ↳ Recap: ", summary);
 	if (next && next[0])
 		recap_print_text(ctx, "    Next: ", next);
-	if (cli_color_enabled())
-		printf(ANSI_RESET);
-	printf("\n");
+	if (cli_color_enabled(ctx))
+		printf(ctx, ANSI_RESET);
+	printf(ctx, "\n");
 	fflush(stdout);
 	cli_terminal_history_end(ctx);
 }

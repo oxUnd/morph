@@ -38,21 +38,21 @@ int morph_err_is_domain(morph_err_t err);
 #ifdef DEBUG
 #include "log.h"
 
-#define MORPH_RETURN(code)                                              \
-	do {                                                            \
-		morph_err_t _rc_ = (code);                              \
-		if (_rc_ < 0)                                           \
-			log_err("MORPH_RETURN: %s (%s:%d)",             \
-				morph_strerror(_rc_), __FILE__, __LINE__); \
-		return _rc_;                                            \
+#define MORPH_RETURN(code)                                                                         \
+	do {                                                                                       \
+		morph_err_t _rc_ = (code);                                                         \
+		if (_rc_ < 0)                                                                      \
+			log_diagnostic("MORPH_RETURN: %s (%s:%d)", morph_strerror(_rc_), __FILE__, \
+				       __LINE__);                                                  \
+		return _rc_;                                                                       \
 	} while (0)
 
-#define MORPH_SET_ERR(var, code)                                        \
-	do {                                                            \
-		(var) = (code);                                         \
-		if ((var) < 0)                                          \
-			log_err("MORPH_SET_ERR: %s (%s:%d)",            \
-				morph_strerror(var), __FILE__, __LINE__); \
+#define MORPH_SET_ERR(var, code)                                                                   \
+	do {                                                                                       \
+		(var) = (code);                                                                    \
+		if ((var) < 0)                                                                     \
+			log_diagnostic("MORPH_SET_ERR: %s (%s:%d)", morph_strerror(var), __FILE__, \
+				       __LINE__);                                                  \
 	} while (0)
 #else
 #define MORPH_RETURN(code) return (code)

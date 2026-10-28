@@ -2,6 +2,7 @@
 #define MORPH_FCGI_AGENT_BRIDGE_H
 
 struct config;
+struct fcgi_bridge;
 struct runtime;
 
 struct fcgi_bridge_pool_status {
@@ -15,17 +16,17 @@ struct fcgi_bridge_pool_status {
 	int idle_seconds;
 };
 
-int fcgi_bridge_init(const char *db_path);
-void fcgi_bridge_shutdown(void);
-struct runtime *fcgi_bridge_runtime(void);
-int fcgi_bridge_runtime_acquire(const char *session_id,
+int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path);
+void fcgi_bridge_shutdown(struct fcgi_bridge *pool);
+struct runtime *fcgi_bridge_runtime(struct fcgi_bridge *pool);
+int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
 				struct runtime **out);
-void fcgi_bridge_runtime_release(struct runtime *runtime);
-int fcgi_bridge_turn_begin(void);
-void fcgi_bridge_turn_end(void);
-int fcgi_bridge_runtime_count(void);
-void fcgi_bridge_pool_status(struct fcgi_bridge_pool_status *status);
-const struct config *fcgi_bridge_config(void);
-const char *fcgi_artifact_output_dir(void);
+void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runtime);
+int fcgi_bridge_turn_begin(struct fcgi_bridge *pool);
+void fcgi_bridge_turn_end(struct fcgi_bridge *pool);
+int fcgi_bridge_runtime_count(struct fcgi_bridge *pool);
+void fcgi_bridge_pool_status(struct fcgi_bridge *pool, struct fcgi_bridge_pool_status *status);
+const struct config *fcgi_bridge_config(struct fcgi_bridge *pool);
+const char *fcgi_artifact_output_dir(struct fcgi_bridge *pool);
 
 #endif

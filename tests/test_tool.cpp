@@ -47,10 +47,24 @@ static int register_test_tool(enum tool_origin origin, struct tool_registry *reg
 	return tool_register(reg, &spec);
 }
 
+struct DestroyState {
+	int calls{};
+	void *last{};
+};
+
+struct DestroyPayload {
+	DestroyState *state;
+	int value;
+};
+
 class ToolTest : public ::testing::Test {
 protected:
-	struct tool_registry reg;
-	void SetUp() override { tool_registry_init(&reg); }
+  DestroyState destruction;
+  struct tool_registry reg;
+  void SetUp() override
+  {
+	  tool_registry_init(NULL, &reg);
+  }
 	void TearDown() override { tool_registry_cleanup(&reg); }
 };
 
@@ -234,13 +248,11 @@ TEST_F(ToolTest, GrowsBeyondOldEntryLimit) {
 
 /* ---- user_data_destroy tests ---- */
 
-static int g_destroy_call_count;
-static void *g_destroy_last_ud;
-
 static void counting_destroy(void *ud)
 {
-	g_destroy_call_count++;
-	g_destroy_last_ud = ud;
+	auto *payload = static_cast<DestroyPayload *>(ud);
+	payload->state->calls++;
+	payload->state->last = ud;
 	free(ud);
 }
 
@@ -250,25 +262,25 @@ static void dummy_dtor(void *ud)
 }
 
 TEST_F(ToolTest, UserDataDestroyCalled) {
-	g_destroy_call_count = 0;
-	g_destroy_last_ud = nullptr;
-	int *val = (int *)malloc(sizeof(int));
-	*val = 42;
+	destruction.calls = 0;
+	destruction.last = nullptr;
+	auto *val = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
+	ASSERT_NE(val, nullptr);
+	*val = {&destruction, 42};
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "dtor_tool", "has dtor", nullptr, mock_tool_exec,
 		      val, counting_destroy);
 	tool_registry_cleanup(&reg);
-	EXPECT_EQ(g_destroy_call_count, 1);
-	EXPECT_EQ(g_destroy_last_ud, val);
+	EXPECT_EQ(destruction.calls, 1);
+	EXPECT_EQ(destruction.last, val);
 }
 
 TEST_F(ToolTest, UserDataDestroyNullUd) {
-	g_destroy_call_count = 0;
-	g_destroy_last_ud = nullptr;
-	static int dummy;
+	destruction.calls = 0;
+	destruction.last = nullptr;
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "null_ud", "null ud", nullptr, mock_tool_exec,
 		      nullptr, counting_destroy);
 	tool_registry_cleanup(&reg);
-	EXPECT_EQ(g_destroy_call_count, 0);
+	EXPECT_EQ(destruction.calls, 0);
 }
 
 TEST_F(ToolTest, UserDataDestroyFnNull) {
@@ -288,15 +300,16 @@ TEST_F(ToolTest, RegisterStoresUserDataDestroy) {
 }
 
 TEST_F(ToolTest, MixedUserDataDestroyTypes) {
-	g_destroy_call_count = 0;
+	destruction.calls = 0;
 
 	int *mcp_ud = (int *)calloc(1, sizeof(int));
 	*mcp_ud = 1;
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "mcp_tool", "mcp", nullptr, mock_tool_exec,
 		      mcp_ud, (tool_user_data_destroy_fn)free);
 
-	int *ext_ud = (int *)malloc(sizeof(int));
-	*ext_ud = 2;
+	auto *ext_ud = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
+	ASSERT_NE(ext_ud, nullptr);
+	*ext_ud = {&destruction, 2};
 	register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "ext_tool", "ext", nullptr, mock_tool_exec,
 		      ext_ud, counting_destroy);
 
@@ -304,8 +317,8 @@ TEST_F(ToolTest, MixedUserDataDestroyTypes) {
 		      nullptr, nullptr);
 
 	tool_registry_cleanup(&reg);
-	EXPECT_EQ(g_destroy_call_count, 1);
-	EXPECT_EQ(g_destroy_last_ud, ext_ud);
+	EXPECT_EQ(destruction.calls, 1);
+	EXPECT_EQ(destruction.last, ext_ud);
 }
 
 TEST_F(ToolTest, RegisterStoresOrigin) {
@@ -339,18 +352,18 @@ TEST_F(ToolTest, UnregisterRemovesEntryAndRebuildsIndex) {
 }
 
 TEST_F(ToolTest, UnregisterCallsDestroyAndClearsDisabled) {
-	g_destroy_call_count = 0;
-	g_destroy_last_ud = nullptr;
-	int *val = (int *)malloc(sizeof(int));
+	destruction.calls = 0;
+	destruction.last = nullptr;
+	auto *val = static_cast<DestroyPayload *>(malloc(sizeof(DestroyPayload)));
 	ASSERT_NE(val, nullptr);
-	*val = 7;
+	*val = {&destruction, 7};
 	ASSERT_EQ(register_test_tool(TOOL_ORIGIN_BUILTIN, &reg, "drop_me", "drop",
 				nullptr, mock_tool_exec, val,
 				counting_destroy), 0);
 	ASSERT_EQ(tool_disable(&reg, "drop_me"), 0);
 	ASSERT_EQ(tool_unregister(&reg, "drop_me"), 0);
-	EXPECT_EQ(g_destroy_call_count, 1);
-	EXPECT_EQ(g_destroy_last_ud, val);
+	EXPECT_EQ(destruction.calls, 1);
+	EXPECT_EQ(destruction.last, val);
 	EXPECT_FALSE(tool_is_disabled(&reg, "drop_me"));
 	EXPECT_EQ(reg.disabled_count, 0);
 	EXPECT_EQ(tool_unregister(&reg, "drop_me"), -ENOENT);
@@ -369,7 +382,7 @@ TEST_F(ToolTest, FileReadUsesWorkdirPolicy) {
 	const char *path = "/tmp/morph_tool_work/read.txt";
 	file_ensure_dir(work);
 	file_write_all(path, "hello\n", 6);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
 	struct tool_result result;
@@ -393,7 +406,7 @@ TEST_F(ToolTest, FileReadDeniesSymlinkEscape) {
 	file_write_all(secret, "secret\n", 7);
 	std::remove(link_path);
 	ASSERT_EQ(symlink(secret, link_path), 0);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_read_init(&reg, tctx), 0);
 	struct tool_result result;
@@ -415,7 +428,7 @@ TEST_F(ToolTest, FileListDeniesParentTraversal) {
 	const char *outside = "/tmp/morph_tool_outside";
 	file_ensure_dir(work);
 	file_ensure_dir(outside);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
 	struct tool_result result;
@@ -439,7 +452,7 @@ TEST_F(ToolTest, FileListAllowsOutputDir) {
 	file_ensure_dir(work);
 	file_ensure_dir(out);
 	file_write_all(artifact, "artifact", 8);
-	struct tool_context *tctx = tool_context_create(work, out);
+	struct tool_context *tctx = tool_context_create(NULL, work, out);
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_list_init(&reg, tctx), 0);
 	struct tool_result result;
@@ -462,7 +475,7 @@ TEST_F(ToolTest, FileInfoUsesResolvedWorkdirPath) {
 	const char *path = "/tmp/morph_tool_work/info.txt";
 	file_ensure_dir(work);
 	file_write_all(path, "info", 4);
-	struct tool_context *tctx = tool_context_create(work, "/tmp/morph_tool_out");
+	struct tool_context *tctx = tool_context_create(NULL, work, "/tmp/morph_tool_out");
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(file_info_init(&reg, tctx), 0);
 	struct tool_result result;

@@ -195,13 +195,13 @@ static void *title_worker(void *opaque)
 
 	title_event(job, "begin");
 	/* Isolate cancellation and billing from the foreground turn's TLS state. */
-	http_set_cancel_token(&job->cancel);
+	job->model->http.cancel_token = &job->cancel;
 	if (arena && !morph_cancel_token_is_cancelled(&job->cancel))
 		rc = job->model->chat_with_tools(job->model, arena,
 			title_instructions, &message, 1, NULL, 0, &response, NULL, NULL);
 	if (rc >= 0 && response.tool_call_count == 0)
 		title = runtime_title_parse(response.content);
-	if (db_open(&db, job->database) == 0) {
+	if (db_open(job->model ? job->model->http.logger : NULL, &db, job->database) == 0) {
 		title_record_usage(job, &db, &response.usage);
 		pthread_mutex_lock(&job->lock);
 		if (title && !morph_cancel_token_is_cancelled(&job->cancel))
@@ -210,11 +210,11 @@ static void *title_worker(void *opaque)
 		db_close(&db);
 	}
 	if (rc < 0)
-		log_dbg("session title generation failed: %s", morph_strerror(rc));
+		log_dbg(job->model ? job->model->http.logger : NULL,
+			"session title generation failed: %s", morph_strerror(rc));
 	free(title);
 	chat_response_free(&response);
 	arena_destroy(arena);
-	http_set_cancel_token(NULL);
 	title_event(job, "end");
 	pthread_mutex_lock(&job->lock);
 	job->done = 1;
@@ -275,8 +275,9 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	}
 	rc = session_get_by_id(&ctx->database, request->session_id, &job->session);
 	if (rc == 0) {
-		job->model = model_llm_create(source->provider, source->model_id,
-			source->api_base, source->api_key);
+		job->model =
+			model_llm_create(runtime ? runtime->options.logger : NULL, source->provider,
+					 source->model_id, source->api_base, source->api_key);
 		job->prompt = utf8_dup_clamped(input,
 			SESSION_TITLE_PROMPT_MAX_BYTES - strlen(title_instructions));
 		job->user_id = strdup(request->user_id ? request->user_id : "local");

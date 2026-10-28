@@ -225,7 +225,8 @@ int mcp_protocol_decode(const struct mcp_wire_reply *reply, int id,
 	return 0;
 }
 
-static int result_type(const struct mcp_protocol_adapter *adapter, cJSON *result)
+static int result_type(struct morph_log *logger, const struct mcp_protocol_adapter *adapter,
+		       cJSON *result)
 {
 	if (!adapter->per_request)
 		return 0;
@@ -234,7 +235,8 @@ static int result_type(const struct mcp_protocol_adapter *adapter, cJSON *result
 	if (!type || (cJSON_IsString(type) && strcmp(type->valuestring, "complete") == 0))
 		return 0;
 	if (cJSON_IsString(type) && strcmp(type->valuestring, "input_required") == 0) {
-		log_warn("mcp: server requested input without a supported client capability");
+		log_warn(logger,
+			 "mcp: server requested input without a supported client capability");
 		MORPH_RETURN(-ENOTSUP);
 	}
 	MORPH_RETURN(MORPH_ERR_PROTOCOL);
@@ -257,7 +259,7 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 	if (rc == 0) {
 		cJSON *result = cJSON_GetObjectItemCaseSensitive(object, "result");
 
-		rc = result_type(adapter, result);
+		rc = result_type(client ? client->config.logger : NULL, adapter, result);
 		if (rc == 0 && out) {
 			*out = cJSON_PrintUnformatted(result);
 			if (!*out)
@@ -270,8 +272,9 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 
 		/* Only the validated remote error denotes an absent RPC method. */
 		if (rc == MORPH_ERR_PROTOCOL && cJSON_IsNumber(code)) {
-			log_warn("mcp: %s on '%s': JSON-RPC %d: %s", method,
-				client->config.name, code->valueint, message->valuestring);
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: %s on '%s': JSON-RPC %d: %s", method, client->config.name,
+				 code->valueint, message->valuestring);
 			if (code->valueint == -32601)
 				MORPH_SET_ERR(rc, -ENOSYS);
 		}
@@ -279,8 +282,8 @@ static int request_locked(struct mcp_client *client, int id, const char *method,
 			*out = cJSON_PrintUnformatted(object);
 	}
 	if (rc != 0)
-		log_warn("mcp: %s on '%s' failed: %s", method,
-			client->config.name, morph_strerror(rc));
+		log_warn(client ? client->config.logger : NULL, "mcp: %s on '%s' failed: %s",
+			 method, client->config.name, morph_strerror(rc));
 	cJSON_Delete(object);
 	mcp_wire_reply_cleanup(&reply);
 	return rc;
@@ -376,15 +379,16 @@ static int modern_probe(struct mcp_client *client, int *legacy)
 
 	if (modern_error) {
 		/* This revision is our only modern codec: never negotiate an unknown date. */
-		log_warn("mcp: modern discovery rejected by '%s': %s", client->config.name,
-			reply.json ? reply.json : "missing response");
+		log_warn(client ? client->config.logger : NULL,
+			 "mcp: modern discovery rejected by '%s': %s", client->config.name,
+			 reply.json ? reply.json : "missing response");
 		MORPH_SET_ERR(rc, code->valueint == -32022 ? -EPROTONOSUPPORT : MORPH_ERR_PROTOCOL);
 	} else if (rc == 0) {
 		cJSON *result = cJSON_GetObjectItemCaseSensitive(object, "result");
 		cJSON *versions = cJSON_GetObjectItemCaseSensitive(result, "supportedVersions");
 		cJSON *caps = cJSON_GetObjectItemCaseSensitive(result, "capabilities");
 
-		rc = result_type(modern, result);
+		rc = result_type(client ? client->config.logger : NULL, modern, result);
 		if (rc == 0 && (!cJSON_IsArray(versions) || !cJSON_IsObject(caps)))
 			MORPH_SET_ERR(rc, MORPH_ERR_PROTOCOL);
 		if (rc == 0 && !version_list_contains(versions, modern->version))
@@ -509,8 +513,8 @@ int mcp_protocol_initialize(struct mcp_client *client)
 		snprintf(client->negotiated_version, sizeof(client->negotiated_version),
 			"%s", client->protocol->version);
 		client->connected = 1;
-		log_info("mcp: '%s' selected protocol %s", client->config.name,
-			client->negotiated_version);
+		log_info(client ? client->config.logger : NULL, "mcp: '%s' selected protocol %s",
+			 client->config.name, client->negotiated_version);
 	}
 	pthread_mutex_unlock(&client->lock);
 	return rc;

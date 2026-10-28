@@ -56,17 +56,18 @@ const char *image_gen_ext_from_magic(const unsigned char *data, size_t len)
 	return "png";
 }
 
-static int download_url(const char *url, const char *out_dir,
+static int download_url(const struct http_control *control, const char *url, const char *out_dir,
 			char *out_path, size_t out_cap)
 {
 	struct http_response resp = {0};
-	int rc = http_get(url, &resp);
+	int rc = http_get(control, url, &resp);
 	if (rc < 0) {
-		log_err("download failed: %s", url);
+		log_err(control ? control->logger : NULL, "download failed: %s", url);
 		return rc;
 	}
 	if (resp.status_code != 200) {
-		log_err("download returned HTTP %d", resp.status_code);
+		log_err(control ? control->logger : NULL, "download returned HTTP %d",
+			resp.status_code);
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
@@ -302,8 +303,8 @@ int image_provider_parse_response(struct model *model,
 	return 0;
 }
 
-static int image_materialize(const struct image_payload *payload,
-			     const char *output_dir,
+static int image_materialize(const struct http_control *control,
+			     const struct image_payload *payload, const char *output_dir,
 			     struct image_result *result)
 {
 	unsigned char *decoded = NULL;
@@ -325,8 +326,7 @@ static int image_materialize(const struct image_payload *payload,
 	if (payload->kind == IMAGE_PAYLOAD_URL) {
 		snprintf(result->url, sizeof(result->url), "%s",
 			 payload->data);
-		rc = download_url(payload->data, out_dir, out_path,
-				  sizeof(out_path));
+		rc = download_url(control, payload->data, out_dir, out_path, sizeof(out_path));
 		if (rc != 0)
 			goto out;
 	} else {
@@ -441,7 +441,7 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		image_payload_cleanup(&payload);
 		return rc;
 	}
-	rc = image_materialize(&payload, output_dir, result);
+	rc = image_materialize(&self->http, &payload, output_dir, result);
 	if (rc == 0)
 		image_report_usage(self, &payload, result);
 	image_payload_cleanup(&payload);

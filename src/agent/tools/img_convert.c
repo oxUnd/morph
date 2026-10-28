@@ -1,3 +1,4 @@
+#include "agent/tool_runtime.h"
 #include "img_convert.h"
 #include "agent/tool_context.h"
 #include "util/log.h"
@@ -186,7 +187,8 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 		 final_path, nfmt, w, h);
 	(void)tool_result_success_json_text(result, msg);
 	(void)tool_result_add_image(result, final_path, w, h);
-	log_dbg("img_convert: %s", msg);
+	log_dbg(result && result->runtime ? result->runtime->http.logger : NULL, "img_convert: %s",
+		msg);
 
 	cJSON_Delete(root);
 	return 0;

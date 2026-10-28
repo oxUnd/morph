@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "install.h"
 #include "ext.h"
 #include "manifest.h"
@@ -177,6 +178,7 @@ static int run_cmd(char *const argv[], const char *cwd)
 	if (pid < 0)
 		MORPH_RETURN_ERRNO();
 	if (pid == 0) {
+		morph_signals_reset_child();
 		if (cwd && chdir(cwd) != 0)
 			_exit(127);
 		execvp(argv[0], argv);
@@ -204,6 +206,7 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 		MORPH_RETURN(-err);
 	}
 	if (pid == 0) {
+		morph_signals_reset_child();
 		close(fds[0]);
 		dup2(fds[1], STDOUT_FILENO);
 		close(fds[1]);
@@ -472,9 +475,8 @@ static int validate_ext_name(const char *name)
 	return morph_name_valid(name, "-_.");
 }
 
-int ext_install_source(const char *source,
-		       const struct ext_install_options *opts,
-		       struct ext_install_result *result)
+int ext_install_source(struct morph_log *logger, const char *source,
+		       const struct ext_install_options *opts, struct ext_install_result *result)
 {
 	struct ext_source src;
 	char tmpl[PATH_MAX];
@@ -533,7 +535,7 @@ int ext_install_source(const char *source,
 				sizeof(manifest_path));
 	if (rc < 0)
 		goto out;
-	rc = manifest_parse_file(manifest_path, &m);
+	rc = manifest_parse_file(logger, manifest_path, &m);
 	if (rc < 0)
 		goto out;
 	if (!m.name[0] || !m.entry[0] || !validate_ext_name(m.name) ||
@@ -605,7 +607,6 @@ out:
 		(void)remove_tree(tmpl);
 	ext_manifest_cleanup(&m);
 	if (rc < 0)
-		log_err("ext install failed for %s: %s",
-			source, morph_strerror(rc));
+		log_err(logger, "ext install failed for %s: %s", source, morph_strerror(rc));
 	return rc;
 }

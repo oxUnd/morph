@@ -239,7 +239,8 @@ int tokenizer_estimate_tokens(const char *text)
 	return tokens > INT_MAX ? INT_MAX : (int)tokens;
 }
 
-struct tokenizer *tokenizer_create(const char *model_name, int context_limit)
+struct tokenizer *tokenizer_create(struct morph_log *logger, const char *model_name,
+				   int context_limit)
 {
 	struct tokenizer *tok = calloc(1, sizeof(*tok));
 	if (!tok)
@@ -258,7 +259,7 @@ struct tokenizer *tokenizer_create(const char *model_name, int context_limit)
 	    strcmp(name, "o4") == 0 || strstr(name, "o4-"))
 		enc = BPE_O200K_BASE;
 
-	tok->encoder = bpe_encoder_create(enc, NULL);
+	tok->encoder = bpe_encoder_create(logger, enc, NULL);
 	return tok;
 }
 

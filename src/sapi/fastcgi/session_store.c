@@ -159,12 +159,15 @@ static int init_default_quota_profiles(sqlite3 *db)
 	return 0;
 }
 
-struct session_store *session_store_open(const char *db_path)
+struct session_store *session_store_open(struct morph_log *logger, const char *db_path)
 {
 	struct session_store *s = calloc(1, sizeof(*s));
 	if (!s) return NULL;
 
-	if (db_open(&s->db, db_path) != 0) { free(s); return NULL; }
+	if (db_open(logger, &s->db, db_path) != 0) {
+		free(s);
+		return NULL;
+	}
 	if (db_init_schema(&s->db) != 0)   { db_close(&s->db); free(s); return NULL; }
 
 	char *err = NULL;

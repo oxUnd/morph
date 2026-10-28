@@ -11,7 +11,7 @@
 #define WELCOME_PADDING 2
 
 /* Small, inline brand asset; unsupported terminals keep the text wordmark. */
-static int welcome_logo(void)
+static int welcome_logo(struct cli_context *ctx)
 {
 	const char *term = getenv("TERM");
 	const char *program = getenv("TERM_PROGRAM");
@@ -27,8 +27,8 @@ static int welcome_logo(void)
 	morph_buf_t control;
 	int rc;
 
-	if (!cli_color_enabled() || !isatty(STDOUT_FILENO) ||
-	    getenv("TMUX") || getenv("STY") || (!kitty && !iterm))
+	if (!cli_color_enabled(ctx) || !isatty(STDOUT_FILENO) || getenv("TMUX") || getenv("STY") ||
+	    (!kitty && !iterm))
 		return 0;
 	if (morph_data_find(path, sizeof(path), "morph-logo.png") != 0)
 		return 0;
@@ -63,7 +63,7 @@ static int welcome_logo(void)
 	return rc == 0;
 }
 
-static void welcome_value(const char *value, size_t width, int keep_tail)
+static void welcome_value(struct cli_context *ctx, const char *value, size_t width, int keep_tail)
 {
 	char clipped[BUFSIZ];
 	char *safe = utf8_terminal_sanitize_dup(value, strlen(value),
@@ -73,7 +73,7 @@ static void welcome_value(const char *value, size_t width, int keep_tail)
 		return;
 	(void)utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
 		width, keep_tail);
-	printf("%s", clipped);
+	printf(ctx, "%s", clipped);
 	free(safe);
 }
 
@@ -82,38 +82,38 @@ struct welcome_hint {
 	const char *description;
 };
 
-static void welcome_hints(const struct welcome_hint *hints, size_t count,
-	size_t width, const char *color)
+static void welcome_hints(struct cli_context *ctx, const struct welcome_hint *hints, size_t count,
+			  size_t width, const char *color)
 {
 	size_t used = 0;
 
-	printf("  ");
+	printf(ctx, "  ");
 	for (size_t i = 0; i < count; i++) {
 		size_t length = utf8_display_width(hints[i].key) + 1 +
 			utf8_display_width(hints[i].description);
 
 		if (used && used + 3 + length > width) {
-			printf("\n  ");
+			printf(ctx, "\n  ");
 			used = 0;
 		}
 		if (used) {
-			printf(WELCOME_MUTED " · " ANSI_RESET);
+			printf(ctx, WELCOME_MUTED " · " ANSI_RESET);
 			used += 3;
 		}
-		printf("%s", color);
-		welcome_value(hints[i].key, width - used, 0);
-		printf(ANSI_RESET WELCOME_MUTED " ");
+		printf(ctx, "%s", color);
+		welcome_value(ctx, hints[i].key, width - used, 0);
+		printf(ctx, ANSI_RESET WELCOME_MUTED " ");
 		size_t key_width = utf8_display_width(hints[i].key) + 1;
 
 		if (key_width < width - used)
-			welcome_value(hints[i].description, width - used - key_width, 0);
-		printf(ANSI_RESET);
+			welcome_value(ctx, hints[i].description, width - used - key_width, 0);
+		printf(ctx, ANSI_RESET);
 		used += length;
 	}
-	putchar('\n');
+	putchar(ctx, '\n');
 }
 
-void cli_print_welcome(const char *model, const char *directory)
+void cli_print_welcome(struct cli_context *ctx, const char *model, const char *directory)
 {
 	static const struct welcome_hint commands[] = {
 		{ "/help", "commands" },
@@ -138,11 +138,13 @@ void cli_print_welcome(const char *model, const char *directory)
 		(size_t)(columns - 2 * WELCOME_PADDING) : 1;
 	model = model && model[0] ? model : "model";
 	directory = directory && directory[0] ? directory : ".";
-	printf("\n  ");
-	if (columns >= 30 && welcome_logo())
-		putchar(' ');
-	printf(WELCOME_TEXT ANSI_BOLD "morph" ANSI_RESET WELCOME_MUTED "  v%s"
-		ANSI_RESET "\n  " WELCOME_TEXT, MORPH_VERSION);
+	printf(ctx, "\n  ");
+	if (columns >= 30 && welcome_logo(ctx))
+		putchar(ctx, ' ');
+	printf(ctx,
+	       WELCOME_TEXT ANSI_BOLD "morph" ANSI_RESET WELCOME_MUTED "  v%s" ANSI_RESET
+				      "\n  " WELCOME_TEXT,
+	       MORPH_VERSION);
 	model_width = utf8_display_width(model);
 	path_width = utf8_display_width(directory);
 	if (model_width + 3 + path_width > width) {
@@ -150,14 +152,13 @@ void cli_print_welcome(const char *model, const char *directory)
 		if (model_width > 24)
 			model_width = 24;
 	}
-	welcome_value(model, model_width, 0);
+	welcome_value(ctx, model, model_width, 0);
 	if (width > model_width + 3) {
-		printf(ANSI_RESET WELCOME_MUTED " · " ANSI_RESET WELCOME_TEXT);
-		welcome_value(directory, width - model_width - 3, 1);
+		printf(ctx, ANSI_RESET WELCOME_MUTED " · " ANSI_RESET WELCOME_TEXT);
+		welcome_value(ctx, directory, width - model_width - 3, 1);
 	}
-	printf(ANSI_RESET "\n\n");
-	welcome_hints(commands, sizeof(commands) / sizeof(commands[0]), width,
-		WELCOME_ACCENT);
-	welcome_hints(keys, sizeof(keys) / sizeof(keys[0]), width, WELCOME_TEXT ANSI_BOLD);
-	putchar('\n');
+	printf(ctx, ANSI_RESET "\n\n");
+	welcome_hints(ctx, commands, sizeof(commands) / sizeof(commands[0]), width, WELCOME_ACCENT);
+	welcome_hints(ctx, keys, sizeof(keys) / sizeof(keys[0]), width, WELCOME_TEXT ANSI_BOLD);
+	putchar(ctx, '\n');
 }

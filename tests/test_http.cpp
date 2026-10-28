@@ -9,18 +9,21 @@
 
 class HttpTest : public ::testing::Test {
 protected:
-	void SetUp() override { http_init(); }
+  void SetUp() override
+  {
+	  http_init(NULL);
+  }
 	void TearDown() override { http_cleanup(); }
 };
 
 TEST_F(HttpTest, InitCleanup) {
 	EXPECT_NO_FATAL_FAILURE(http_cleanup());
-	EXPECT_NO_FATAL_FAILURE(http_init());
+	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
 }
 
 TEST_F(HttpTest, GetInvalid) {
 	struct http_response resp;
-	int rc = http_get("http://127.0.0.1:1/nonexistent", &resp);
+	int rc = http_get(NULL, "http://127.0.0.1:1/nonexistent", &resp);
 	EXPECT_NE(rc, 0);
 }
 
@@ -35,12 +38,12 @@ TEST_F(HttpTest, ResponseFreeNull) {
 
 TEST_F(HttpTest, GetNullUrl) {
 	struct http_response resp;
-	EXPECT_NE(http_get(nullptr, &resp), 0);
+	EXPECT_NE(http_get(NULL, nullptr, &resp), 0);
 }
 
 TEST_F(HttpTest, PostNullUrl) {
 	struct http_response resp;
-	EXPECT_NE(http_post(nullptr, "", 0, "", &resp), 0);
+	EXPECT_NE(http_post(NULL, nullptr, "", 0, "", &resp), 0);
 }
 
 TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
@@ -70,8 +73,7 @@ TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
 	snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
 		 static_cast<unsigned>(ntohs(addr.sin_port)));
 	struct http_response resp = {};
-	int rc = http_post_ex_timeout(url, "{}", 2, "application/json",
-				      nullptr, 0, 1, &resp);
+	int rc = http_post_ex_timeout(NULL, url, "{}", 2, "application/json", nullptr, 0, 1, &resp);
 
 	EXPECT_EQ(rc, -ETIMEDOUT);
 	http_response_free(&resp);
@@ -79,8 +81,8 @@ TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
 }
 
 TEST_F(HttpTest, DoubleInit) {
-	EXPECT_NO_FATAL_FAILURE(http_init());
-	EXPECT_NO_FATAL_FAILURE(http_init());
+	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
+	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
 }
 
 TEST(CancelTokenTest, ResetCancelAndQuery) {
@@ -96,17 +98,17 @@ TEST(CancelTokenTest, ResetCancelAndQuery) {
 TEST(CancelTokenTest, RetryWaitStopsWhenCancelled) {
 	struct morph_cancel_token token;
 	morph_cancel_token_reset(&token);
-	http_set_cancel_token(&token);
+	struct http_control control{};
+	control.cancel_token = &token;
 	std::thread canceller([&token]() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 		morph_cancel_token_cancel(&token);
 	});
 	auto started = std::chrono::steady_clock::now();
-	EXPECT_EQ(http_wait_cancelable(5000), -ECANCELED);
+	EXPECT_EQ(http_wait_cancelable(&control, 5000), -ECANCELED);
 	auto elapsed = std::chrono::steady_clock::now() - started;
 	EXPECT_LT(elapsed, std::chrono::seconds(1));
 	canceller.join();
-	http_set_cancel_token(nullptr);
 }
 
 /* ----- http_session tests ----- */
@@ -116,7 +118,7 @@ protected:
 	struct http_session session;
 
 	void SetUp() override {
-		http_init();
+		http_init(NULL);
 		memset(&session, 0, sizeof(session));
 	}
 
@@ -127,7 +129,7 @@ protected:
 };
 
 TEST_F(HttpSessionTest, InitCleanup) {
-	EXPECT_EQ(http_session_init(&session), 0);
+	EXPECT_EQ(http_session_init(NULL, &session), 0);
 	EXPECT_NE(session.curl, nullptr);
 	EXPECT_EQ(session.initialized, 1);
 	http_session_cleanup(&session);
@@ -136,7 +138,7 @@ TEST_F(HttpSessionTest, InitCleanup) {
 }
 
 TEST_F(HttpSessionTest, InitNull) {
-	EXPECT_NE(http_session_init(nullptr), 0);
+	EXPECT_NE(http_session_init(NULL, nullptr), 0);
 }
 
 TEST_F(HttpSessionTest, CleanupNull) {
@@ -144,7 +146,7 @@ TEST_F(HttpSessionTest, CleanupNull) {
 }
 
 TEST_F(HttpSessionTest, ResetClearsBuffers) {
-	ASSERT_EQ(http_session_init(&session), 0);
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
 	morph_buf_puts(&session.resp_body, "hello");
 	morph_buf_puts(&session.resp_headers, "X-Test: hi\r\n");
 	session.status_code = 200;
@@ -155,25 +157,27 @@ TEST_F(HttpSessionTest, ResetClearsBuffers) {
 }
 
 TEST_F(HttpSessionTest, PostInvalidUrl) {
-	ASSERT_EQ(http_session_init(&session), 0);
-	int rc = http_session_post(&session, "http://127.0.0.1:1/nonexistent",
-				   "{}", 2, "application/json", nullptr, 0, 5);
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
+	int rc = http_session_post(NULL, &session, "http://127.0.0.1:1/nonexistent", "{}", 2,
+				   "application/json", nullptr, 0, 5);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(HttpSessionTest, PostNullUrl) {
-	ASSERT_EQ(http_session_init(&session), 0);
-	EXPECT_NE(http_session_post(&session, nullptr, "{}", 2,
-				    "application/json", nullptr, 0, 30), 0);
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
+	EXPECT_NE(http_session_post(NULL, &session, nullptr, "{}", 2, "application/json", nullptr,
+				    0, 30),
+		  0);
 }
 
 TEST_F(HttpSessionTest, SessionNullArgs) {
-	EXPECT_NE(http_session_post(nullptr, "http://localhost/", "{}", 2,
-				    "application/json", nullptr, 0, 30), 0);
+	EXPECT_NE(http_session_post(NULL, nullptr, "http://localhost/", "{}", 2, "application/json",
+				    nullptr, 0, 30),
+		  0);
 }
 
 TEST_F(HttpSessionTest, BodyAndStatus) {
-	ASSERT_EQ(http_session_init(&session), 0);
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
 	const char *body = http_session_body(&session, nullptr);
 	ASSERT_NE(body, nullptr);
 	EXPECT_EQ(body[0], '\0');

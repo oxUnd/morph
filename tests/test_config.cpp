@@ -20,7 +20,7 @@ protected:
 
 TEST_F(ConfigTest, DefaultValues) {
 	struct config cfg;
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	EXPECT_STREQ(cfg.general.default_session, "default");
 	EXPECT_STREQ(cfg.general.log_level, "info");
 	EXPECT_STREQ(cfg.models.text.provider, "openai");
@@ -96,7 +96,7 @@ system_prompt_file = "/tmp/legacy.txt"
 )";
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_STREQ(cfg.prompt.mode, "replace");
 	EXPECT_STREQ(cfg.prompt.system_prompt_file, "/tmp/main.txt");
 	EXPECT_STREQ(cfg.prompt.system_prompt_dir, "/tmp/main.d");
@@ -113,7 +113,7 @@ TEST_F(ConfigTest, PromptRejectsUnknownModes)
 	     "[[agent.sub_agents]]\nname = \"child\"\nsystem_prompt_mode = \"off\"\n"}) {
 		ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 		struct config cfg;
-		EXPECT_NE(config_load(&cfg, config_path), 0);
+		EXPECT_NE(config_load(NULL, &cfg, config_path), 0);
 	}
 }
 
@@ -125,7 +125,7 @@ include = ["config.toml", "data.db", "skills", "tools", "exts", "output"]
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	ASSERT_EQ(cfg.sync.include_count, 8);
 	EXPECT_STREQ(cfg.sync.include[6], "ui-history.db");
 }
@@ -138,7 +138,7 @@ disabled_tools = []
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_EQ(cfg.react.disabled_tools_count, 0);
 	EXPECT_STREQ(cfg.react.disabled_tools[0], "");
 }
@@ -216,7 +216,7 @@ include = ["config.toml", "output"]
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "my_session");
 	EXPECT_STREQ(cfg.general.log_level, "debug");
@@ -275,7 +275,7 @@ include = ["config.toml", "output"]
 
 TEST_F(ConfigTest, LoadNonexistent) {
 	struct config cfg;
-	int rc = config_load(&cfg, "/tmp/nonexistent_config_xyz.toml");
+	int rc = config_load(NULL, &cfg, "/tmp/nonexistent_config_xyz.toml");
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "default");
 }
@@ -302,7 +302,7 @@ output_per_million = 10.0
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.credits.daily_limit, 100);
 	EXPECT_STREQ(cfg.credits.currency, "CNY");
@@ -323,13 +323,13 @@ output_per_million = 10.0
 
 TEST_F(ConfigTest, LoadNull) {
 	struct config cfg;
-	int rc = config_load(&cfg, nullptr);
+	int rc = config_load(NULL, &cfg, nullptr);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(ConfigTest, PrintConfig) {
 	struct config cfg;
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	EXPECT_NO_FATAL_FAILURE(config_print(&cfg));
 }
 
@@ -348,7 +348,7 @@ max_iterations = 20
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "partial_test");
 	EXPECT_EQ(cfg.react.max_iterations, 20);
@@ -365,7 +365,7 @@ default_session = "comment_test"
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_STREQ(cfg.general.default_session, "comment_test");
 }
@@ -389,7 +389,7 @@ args = ["-y", "other-server"]
 	file_write_all(config_path, toml, strlen(toml));
 
 	struct config cfg;
-	int rc = config_load(&cfg, config_path);
+	int rc = config_load(NULL, &cfg, config_path);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(cfg.mcp.server_count, 2);
 	EXPECT_EQ(cfg.mcp.servers[0].auto_connect, 1);
@@ -606,7 +606,7 @@ TEST_F(ConfigTest, IgnoresUnknownKeysInExistingFile)
 
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 	EXPECT_EQ(config_validate_file(config_path, &error), 0);
-	EXPECT_EQ(config_load(&cfg, config_path), 0);
+	EXPECT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_STREQ(cfg.general.log_level, "info");
 }
 
@@ -665,7 +665,7 @@ TEST_F(ConfigTest, McpProtocolVersionIsLoadedAndValidated)
 		"command = \"server\"\nprotocol_version = \"2026-07-28\"\n";
 	ASSERT_EQ(file_write_all(config_path, toml, strlen(toml)), 0);
 	struct config cfg;
-	ASSERT_EQ(config_load(&cfg, config_path), 0);
+	ASSERT_EQ(config_load(NULL, &cfg, config_path), 0);
 	EXPECT_STREQ(cfg.mcp.servers[0].protocol_version, "2026-07-28");
 	struct config_validation_error error = {};
 	EXPECT_LT(config_validate_text("[[mcp.servers]]\nname = \"bad\"\ntransport = \"stdio\"\n"

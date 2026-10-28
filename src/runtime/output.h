@@ -1,6 +1,7 @@
 #ifndef MORPH_RUNTIME_OUTPUT_H
 #define MORPH_RUNTIME_OUTPUT_H
 
+struct morph_log;
 #include "agent/react.h"
 #include "config/config.h"
 #include "db/database.h"
@@ -21,7 +22,7 @@ struct runtime_output_context {
 int runtime_output_record_event(const struct runtime_output_context *context,
 				const struct react_output_event *event);
 char *runtime_output_get_json_by_path(struct db *db, const char *path);
-char *runtime_output_get_json_from_database(const char *database_path,
+char *runtime_output_get_json_from_database(struct morph_log *logger, const char *database_path,
 					    const char *artifact_path);
 
 #endif

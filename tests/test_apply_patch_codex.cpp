@@ -6,7 +6,6 @@ extern "C" {
 }
 
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -70,13 +69,8 @@ std::vector<fs::path> scenario_directories()
 	return result;
 }
 
-class CodexApplyPatchScenarioTest :
-	public ::testing::TestWithParam<fs::path> {
-};
-
-TEST_P(CodexApplyPatchScenarioTest, MatchesExpectedFilesystemState)
+void check_scenario(const fs::path &scenario)
 {
-	const fs::path scenario = GetParam();
 	char workdir[] = "/tmp/morph-codex-patch-XXXXXX";
 	struct patch_result result{};
 	char error[BUFSIZ]{};
@@ -96,21 +90,16 @@ TEST_P(CodexApplyPatchScenarioTest, MatchesExpectedFilesystemState)
 	fs::remove_all(workdir, cleanup_error);
 }
 
-std::string scenario_name(
-	const ::testing::TestParamInfo<fs::path> &parameter)
+TEST(CodexApplyPatchScenarioTest, MatchesExpectedFilesystemState)
 {
-	std::string name = parameter.param.filename().string();
+	const auto scenarios = scenario_directories();
 
-	for (char &character : name) {
-		if (!std::isalnum(static_cast<unsigned char>(character)))
-			character = '_';
+	ASSERT_FALSE(scenarios.empty());
+	for (const auto &scenario : scenarios) {
+		SCOPED_TRACE(scenario.filename().string());
+		check_scenario(scenario);
 	}
-	return name;
 }
-
-INSTANTIATE_TEST_SUITE_P(CodexApplyPatchScenarios,
-	CodexApplyPatchScenarioTest,
-	::testing::ValuesIn(scenario_directories()), scenario_name);
 
 class CodexFocusedPatchTest : public ::testing::Test {
 protected:

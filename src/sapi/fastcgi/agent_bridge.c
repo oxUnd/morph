@@ -34,7 +34,8 @@ struct bridge_runtime_slot {
 	char session_id[FCGI_RUNTIME_SESSION_ID_MAX];
 };
 
-static struct {
+struct fcgi_bridge {
+	struct morph_log logger;
 	struct bridge_runtime_slot *slots;
 	int slot_count;
 	int min_workers;
@@ -53,50 +54,7 @@ static struct {
 	char config_path[PATH_MAX];
 	char db_path[PATH_MAX];
 	char output_dir[PATH_MAX];
-} g_pool = {
-	.lock = PTHREAD_MUTEX_INITIALIZER,
-	.changed = PTHREAD_COND_INITIALIZER,
 };
-
-/* Implemented by handlers/turns.c. */
-int fcgi_turn_ask_user(const char *question,
-		       const char *const *choices, int choices_count,
-		       const char *selection_mode, int min_choices,
-		       int max_choices, char ***answers, int *answers_count,
-		       void *turn_data);
-enum tool_operation_verdict
-fcgi_turn_operation_approval(const struct tool_operation *op,
-			     void *turn_data);
-
-static int bridge_ask_user(const char *question,
-			   const char *const *choices, int choices_count,
-			   const char *selection_mode, int min_choices,
-			   int max_choices, char ***answers,
-			   int *answers_count, void *user_data)
-{
-	const struct tool_runtime_context *tool_runtime;
-
-	(void)user_data;
-	tool_runtime = tool_runtime_get_current();
-	if (!tool_runtime || !tool_runtime->event_user_data)
-		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
-	return fcgi_turn_ask_user(question, choices, choices_count,
-		selection_mode, min_choices, max_choices, answers,
-		answers_count, tool_runtime->event_user_data);
-}
-
-static enum tool_operation_verdict bridge_operation_approval(
-	const struct tool_operation *op, void *user_data)
-{
-	const struct tool_runtime_context *tool_runtime;
-
-	(void)user_data;
-	tool_runtime = tool_runtime_get_current();
-	if (!tool_runtime || !tool_runtime->event_user_data)
-		return TOOL_OP_DENY;
-	return fcgi_turn_operation_approval(
-		op, tool_runtime->event_user_data);
-}
 
 static int bridge_env_int(const char *name, int fallback,
 			  int minimum, int maximum)
@@ -130,18 +88,16 @@ static int bridge_copy_path(char *dst, size_t dst_size, const char *src)
 	return 0;
 }
 
-static void bridge_runtime_options(struct runtime_options *options,
+static void bridge_runtime_options(struct fcgi_bridge *pool, struct runtime_options *options,
 				   int process_replica)
 {
 	memset(options, 0, sizeof(*options));
-	options->config_path = g_pool.config_path;
-	options->db_path = g_pool.db_path;
-	options->output_dir_override = g_pool.output_dir[0]
-		? g_pool.output_dir : NULL;
+	options->logger = &pool->logger;
+	options->config_path = pool->config_path;
+	options->db_path = pool->db_path;
+	options->output_dir_override = pool->output_dir[0] ? pool->output_dir : NULL;
 	options->default_dynamic_tools_mode = "server";
 	options->front_name = "fastcgi";
-	options->ask_user_cb = bridge_ask_user;
-	options->operation_approval_cb = bridge_operation_approval;
 	options->enable_exec = 1;
 	options->enable_apply_patch = 1;
 	options->enable_config_write = 1;
@@ -154,12 +110,12 @@ static void bridge_runtime_options(struct runtime_options *options,
 	options->process_replica = process_replica;
 }
 
-static int bridge_runtime_open(int process_replica, struct runtime **out)
+static int bridge_runtime_open(struct fcgi_bridge *pool, int process_replica, struct runtime **out)
 {
 	struct runtime_options options;
 	int rc;
 
-	bridge_runtime_options(&options, process_replica);
+	bridge_runtime_options(pool, &options, process_replica);
 	rc = runtime_open(&options, out);
 	if (rc != 0)
 		MORPH_RETURN(rc);
@@ -183,31 +139,30 @@ static void bridge_deadline(struct timespec *deadline, int seconds)
 	deadline->tv_sec += seconds;
 }
 
-static int bridge_find_free_slot(const char *session_id,
+static int bridge_find_free_slot(struct fcgi_bridge *pool, const char *session_id,
 				 int *session_busy)
 {
 	int free_slot = -1;
 
 	*session_busy = 0;
-	for (int i = 0; i < g_pool.slot_count; i++) {
-		if (g_pool.slots[i].busy &&
-		    strcmp(g_pool.slots[i].session_id, session_id) == 0) {
+	for (int i = 0; i < pool->slot_count; i++) {
+		if (pool->slots[i].busy && strcmp(pool->slots[i].session_id, session_id) == 0) {
 			*session_busy = 1;
 			return -1;
 		}
-		if (!g_pool.slots[i].busy && free_slot < 0)
+		if (!pool->slots[i].busy && free_slot < 0)
 			free_slot = i;
 	}
 	return free_slot;
 }
 
-static int bridge_find_expired_slot(time_t now)
+static int bridge_find_expired_slot(struct fcgi_bridge *pool, time_t now)
 {
-	for (int i = g_pool.slot_count - 1; i >= 0; i--) {
-		struct bridge_runtime_slot *slot = &g_pool.slots[i];
+	for (int i = pool->slot_count - 1; i >= 0; i--) {
+		struct bridge_runtime_slot *slot = &pool->slots[i];
 
 		if (slot->elastic && !slot->busy && slot->idle_since > 0 &&
-		    now - slot->idle_since >= g_pool.idle_seconds)
+		    now - slot->idle_since >= pool->idle_seconds)
 			return i;
 	}
 	return -1;
@@ -215,45 +170,42 @@ static int bridge_find_expired_slot(time_t now)
 
 static void *bridge_reaper_main(void *user_data)
 {
-	(void)user_data;
-	pthread_mutex_lock(&g_pool.lock);
-	while (!g_pool.stopping) {
+	struct fcgi_bridge *pool = user_data;
+	pthread_mutex_lock(&pool->lock);
+	while (!pool->stopping) {
 		struct bridge_runtime_slot victim;
 		struct timespec deadline;
 		int interval;
 		int index = -1;
 
-		if (g_pool.idle_seconds > 0 &&
-		    g_pool.slot_count > g_pool.min_workers)
-			index = bridge_find_expired_slot(time(NULL));
+		if (pool->idle_seconds > 0 && pool->slot_count > pool->min_workers)
+			index = bridge_find_expired_slot(pool, time(NULL));
 		if (index < 0) {
-			interval = g_pool.idle_seconds > 0 &&
-				g_pool.idle_seconds < FCGI_REAPER_INTERVAL_MAX
-				? g_pool.idle_seconds : FCGI_REAPER_INTERVAL_MAX;
+			interval = pool->idle_seconds > 0 &&
+						   pool->idle_seconds < FCGI_REAPER_INTERVAL_MAX
+					   ? pool->idle_seconds
+					   : FCGI_REAPER_INTERVAL_MAX;
 			bridge_deadline(&deadline, interval);
-			(void)pthread_cond_timedwait(&g_pool.changed,
-				&g_pool.lock, &deadline);
+			(void)pthread_cond_timedwait(&pool->changed, &pool->lock, &deadline);
 			continue;
 		}
-		victim = g_pool.slots[index];
-		g_pool.slot_count--;
-		if (index != g_pool.slot_count)
-			g_pool.slots[index] = g_pool.slots[g_pool.slot_count];
-		memset(&g_pool.slots[g_pool.slot_count], 0,
-		       sizeof(g_pool.slots[g_pool.slot_count]));
-		pthread_mutex_unlock(&g_pool.lock);
+		victim = pool->slots[index];
+		pool->slot_count--;
+		if (index != pool->slot_count)
+			pool->slots[index] = pool->slots[pool->slot_count];
+		memset(&pool->slots[pool->slot_count], 0, sizeof(pool->slots[pool->slot_count]));
+		pthread_mutex_unlock(&pool->lock);
 		runtime_close(victim.runtime);
-		log_info("fastcgi runtime pool shrank: workers=%d",
-			 fcgi_bridge_runtime_count());
-		pthread_mutex_lock(&g_pool.lock);
+		log_info(&pool->logger, "fastcgi runtime pool shrank: workers=%d",
+			 fcgi_bridge_runtime_count(pool));
+		pthread_mutex_lock(&pool->lock);
 	}
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_unlock(&pool->lock);
 	return NULL;
 }
 
-static int bridge_pool_configure(const char *db_path,
-				 const char *config_path,
-				 const char *output_dir)
+static int bridge_pool_configure(struct fcgi_bridge *pool, const char *db_path,
+				 const char *config_path, const char *output_dir)
 {
 	const char *legacy_workers = getenv("MORPH_FCGI_RUNTIME_WORKERS");
 	int legacy_default = FCGI_RUNTIME_MIN_DEFAULT;
@@ -262,36 +214,34 @@ static int bridge_pool_configure(const char *db_path,
 	if (legacy_workers && legacy_workers[0])
 		legacy_default = bridge_env_int("MORPH_FCGI_RUNTIME_WORKERS",
 			FCGI_RUNTIME_MIN_DEFAULT, 1, FCGI_RUNTIME_MAX_LIMIT);
-	g_pool.min_workers = bridge_env_int("MORPH_FCGI_RUNTIME_MIN_WORKERS",
-		legacy_default, 1, FCGI_RUNTIME_MAX_LIMIT);
-	g_pool.max_workers = bridge_env_int("MORPH_FCGI_RUNTIME_MAX_WORKERS",
-		FCGI_RUNTIME_MAX_DEFAULT, 1, FCGI_RUNTIME_MAX_LIMIT);
-	if (g_pool.max_workers < g_pool.min_workers)
-		g_pool.max_workers = g_pool.min_workers;
-	g_pool.queue_max = bridge_env_int("MORPH_FCGI_RUNTIME_QUEUE_MAX",
-		FCGI_RUNTIME_QUEUE_DEFAULT, 1, FCGI_RUNTIME_QUEUE_LIMIT);
-	g_pool.idle_seconds = bridge_env_int("MORPH_FCGI_RUNTIME_IDLE_SECONDS",
-		FCGI_RUNTIME_IDLE_DEFAULT, 0, INT_MAX);
-	g_pool.wait_seconds = bridge_env_int("MORPH_FCGI_RUNTIME_WAIT_SECONDS",
-		FCGI_RUNTIME_WAIT_DEFAULT, 1, INT_MAX);
-	rc = bridge_copy_path(g_pool.db_path, sizeof(g_pool.db_path), db_path);
+	pool->min_workers = bridge_env_int("MORPH_FCGI_RUNTIME_MIN_WORKERS", legacy_default, 1,
+					   FCGI_RUNTIME_MAX_LIMIT);
+	pool->max_workers = bridge_env_int("MORPH_FCGI_RUNTIME_MAX_WORKERS",
+					   FCGI_RUNTIME_MAX_DEFAULT, 1, FCGI_RUNTIME_MAX_LIMIT);
+	if (pool->max_workers < pool->min_workers)
+		pool->max_workers = pool->min_workers;
+	pool->queue_max = bridge_env_int("MORPH_FCGI_RUNTIME_QUEUE_MAX", FCGI_RUNTIME_QUEUE_DEFAULT,
+					 1, FCGI_RUNTIME_QUEUE_LIMIT);
+	pool->idle_seconds = bridge_env_int("MORPH_FCGI_RUNTIME_IDLE_SECONDS",
+					    FCGI_RUNTIME_IDLE_DEFAULT, 0, INT_MAX);
+	pool->wait_seconds = bridge_env_int("MORPH_FCGI_RUNTIME_WAIT_SECONDS",
+					    FCGI_RUNTIME_WAIT_DEFAULT, 1, INT_MAX);
+	rc = bridge_copy_path(pool->db_path, sizeof(pool->db_path), db_path);
 	if (rc != 0)
 		MORPH_RETURN(rc);
-	rc = bridge_copy_path(g_pool.config_path, sizeof(g_pool.config_path),
-		config_path);
+	rc = bridge_copy_path(pool->config_path, sizeof(pool->config_path), config_path);
 	if (rc != 0)
 		MORPH_RETURN(rc);
-	g_pool.output_dir[0] = '\0';
+	pool->output_dir[0] = '\0';
 	if (output_dir && output_dir[0]) {
-		rc = bridge_copy_path(g_pool.output_dir,
-			sizeof(g_pool.output_dir), output_dir);
+		rc = bridge_copy_path(pool->output_dir, sizeof(pool->output_dir), output_dir);
 		if (rc != 0)
 			MORPH_RETURN(rc);
 	}
 	return 0;
 }
 
-int fcgi_bridge_init(const char *db_path)
+static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 {
 	const char *config_path;
 	const char *output_dir;
@@ -303,12 +253,12 @@ int fcgi_bridge_init(const char *db_path)
 
 	if (!db_path || !db_path[0])
 		MORPH_RETURN(-EINVAL);
-	pthread_mutex_lock(&g_pool.lock);
-	if (g_pool.slots) {
-		pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
+	if (pool->slots) {
+		pthread_mutex_unlock(&pool->lock);
 		return 0;
 	}
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_unlock(&pool->lock);
 	home = getenv("HOME");
 	config_path = getenv("MORPH_FCGI_CONFIG");
 	if (!config_path || !config_path[0]) {
@@ -333,91 +283,93 @@ int fcgi_bridge_init(const char *db_path)
 	log_file = getenv("MORPH_FCGI_LOG_FILE");
 	if (!log_file || !log_file[0])
 		log_file = "/tmp/morph-fastcgi.log";
-	log_init(log_file, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
-	rc = bridge_pool_configure(db_path, config_path, output_dir);
+	rc = log_init(&pool->logger, log_file, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
+	if (rc != 0) {
+		free(expanded_output);
+		MORPH_RETURN(rc);
+	}
+	rc = bridge_pool_configure(pool, db_path, config_path, output_dir);
 	free(expanded_output);
 	if (rc != 0)
 		MORPH_RETURN(rc);
-	g_pool.slots = calloc((size_t)g_pool.max_workers,
-			      sizeof(*g_pool.slots));
-	if (!g_pool.slots)
+	pool->slots = calloc((size_t)pool->max_workers, sizeof(*pool->slots));
+	if (!pool->slots)
 		MORPH_RETURN(-ENOMEM);
-	g_pool.slot_count = 0;
-	g_pool.starting_workers = 0;
-	g_pool.waiting_turns = 0;
-	g_pool.outstanding_turns = 0;
-	g_pool.stopping = 0;
-	for (int i = 0; i < g_pool.min_workers; i++) {
-		rc = bridge_runtime_open(i > 0, &g_pool.slots[i].runtime);
+	pool->slot_count = 0;
+	pool->starting_workers = 0;
+	pool->waiting_turns = 0;
+	pool->outstanding_turns = 0;
+	pool->stopping = 0;
+	for (int i = 0; i < pool->min_workers; i++) {
+		rc = bridge_runtime_open(pool, i > 0, &pool->slots[i].runtime);
 		if (rc != 0) {
-			bridge_runtime_close_slots(g_pool.slots, i);
-			free(g_pool.slots);
-			g_pool.slots = NULL;
+			bridge_runtime_close_slots(pool->slots, i);
+			free(pool->slots);
+			pool->slots = NULL;
 			fprintf(stderr, "fcgi-bridge: runtime worker %d "
 				"initialization failed: %s\n", i,
 				morph_strerror(rc));
 			MORPH_RETURN(rc);
 		}
-		g_pool.slots[i].idle_since = time(NULL);
-		g_pool.slot_count++;
+		pool->slots[i].idle_since = time(NULL);
+		pool->slot_count++;
 	}
-	rc = pthread_create(&g_pool.reaper_thread, NULL,
-			    bridge_reaper_main, NULL);
+	rc = pthread_create(&pool->reaper_thread, NULL, bridge_reaper_main, pool);
 	if (rc != 0) {
-		bridge_runtime_close_slots(g_pool.slots, g_pool.slot_count);
-		free(g_pool.slots);
-		g_pool.slots = NULL;
-		g_pool.slot_count = 0;
+		bridge_runtime_close_slots(pool->slots, pool->slot_count);
+		free(pool->slots);
+		pool->slots = NULL;
+		pool->slot_count = 0;
 		MORPH_RETURN(-rc);
 	}
-	g_pool.reaper_started = 1;
-	log_info("fastcgi elastic runtime pool ready: min=%d max=%d queue=%d",
-		 g_pool.min_workers, g_pool.max_workers, g_pool.queue_max);
+	pool->reaper_started = 1;
+	log_info(&pool->logger, "fastcgi elastic runtime pool ready: min=%d max=%d queue=%d",
+		 pool->min_workers, pool->max_workers, pool->queue_max);
 	return 0;
 }
 
-void fcgi_bridge_shutdown(void)
+static void bridge_shutdown(struct fcgi_bridge *pool)
 {
 	struct bridge_runtime_slot *slots;
 	int slot_count;
 	int join_reaper;
 
-	pthread_mutex_lock(&g_pool.lock);
-	if (!g_pool.slots) {
-		pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
+	if (!pool->slots) {
+		pthread_mutex_unlock(&pool->lock);
 		return;
 	}
-	g_pool.stopping = 1;
-	join_reaper = g_pool.reaper_started;
-	g_pool.reaper_started = 0;
-	pthread_cond_broadcast(&g_pool.changed);
-	pthread_mutex_unlock(&g_pool.lock);
+	pool->stopping = 1;
+	join_reaper = pool->reaper_started;
+	pool->reaper_started = 0;
+	pthread_cond_broadcast(&pool->changed);
+	pthread_mutex_unlock(&pool->lock);
 	if (join_reaper)
-		pthread_join(g_pool.reaper_thread, NULL);
-	pthread_mutex_lock(&g_pool.lock);
-	while (g_pool.outstanding_turns > 0)
-		pthread_cond_wait(&g_pool.changed, &g_pool.lock);
-	slots = g_pool.slots;
-	slot_count = g_pool.slot_count;
-	g_pool.slots = NULL;
-	g_pool.slot_count = 0;
-	pthread_mutex_unlock(&g_pool.lock);
+		pthread_join(pool->reaper_thread, NULL);
+	pthread_mutex_lock(&pool->lock);
+	while (pool->outstanding_turns > 0)
+		pthread_cond_wait(&pool->changed, &pool->lock);
+	slots = pool->slots;
+	slot_count = pool->slot_count;
+	pool->slots = NULL;
+	pool->slot_count = 0;
+	pthread_mutex_unlock(&pool->lock);
 	bridge_runtime_close_slots(slots, slot_count);
 	free(slots);
 }
 
-struct runtime *fcgi_bridge_runtime(void)
+struct runtime *fcgi_bridge_runtime(struct fcgi_bridge *pool)
 {
 	struct runtime *runtime = NULL;
 
-	pthread_mutex_lock(&g_pool.lock);
-	if (g_pool.slots && g_pool.slot_count > 0)
-		runtime = g_pool.slots[0].runtime;
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
+	if (pool->slots && pool->slot_count > 0)
+		runtime = pool->slots[0].runtime;
+	pthread_mutex_unlock(&pool->lock);
 	return runtime;
 }
 
-int fcgi_bridge_runtime_acquire(const char *session_id,
+int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id,
 				struct runtime **out)
 {
 	struct timespec deadline;
@@ -428,20 +380,19 @@ int fcgi_bridge_runtime_acquire(const char *session_id,
 	if (!session_id || !session_id[0] || !out)
 		MORPH_RETURN(-EINVAL);
 	*out = NULL;
-	pthread_mutex_lock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
 	for (;;) {
 		struct runtime *created = NULL;
 		int session_busy;
 		int free_slot;
 
-		if (g_pool.stopping || !g_pool.slots) {
+		if (pool->stopping || !pool->slots) {
 			rc = -ESHUTDOWN;
 			break;
 		}
-		free_slot = bridge_find_free_slot(session_id, &session_busy);
+		free_slot = bridge_find_free_slot(pool, session_id, &session_busy);
 		if (!session_busy && free_slot >= 0) {
-			struct bridge_runtime_slot *slot =
-				&g_pool.slots[free_slot];
+			struct bridge_runtime_slot *slot = &pool->slots[free_slot];
 
 			slot->busy = 1;
 			slot->idle_since = 0;
@@ -452,145 +403,181 @@ int fcgi_bridge_runtime_acquire(const char *session_id,
 			break;
 		}
 		if (!session_busy &&
-		    g_pool.slot_count + g_pool.starting_workers <
-			g_pool.max_workers) {
-			g_pool.starting_workers++;
-			pthread_mutex_unlock(&g_pool.lock);
-			rc = bridge_runtime_open(1, &created);
-			pthread_mutex_lock(&g_pool.lock);
-			g_pool.starting_workers--;
-			pthread_cond_broadcast(&g_pool.changed);
+		    pool->slot_count + pool->starting_workers < pool->max_workers) {
+			pool->starting_workers++;
+			pthread_mutex_unlock(&pool->lock);
+			rc = bridge_runtime_open(pool, 1, &created);
+			pthread_mutex_lock(&pool->lock);
+			pool->starting_workers--;
+			pthread_cond_broadcast(&pool->changed);
 			if (rc != 0)
 				break;
-			if (g_pool.stopping || !g_pool.slots) {
-				pthread_mutex_unlock(&g_pool.lock);
+			if (pool->stopping || !pool->slots) {
+				pthread_mutex_unlock(&pool->lock);
 				runtime_close(created);
-				pthread_mutex_lock(&g_pool.lock);
+				pthread_mutex_lock(&pool->lock);
 				rc = -ESHUTDOWN;
 				break;
 			}
-			if (g_pool.slot_count >= g_pool.max_workers) {
-				pthread_mutex_unlock(&g_pool.lock);
+			if (pool->slot_count >= pool->max_workers) {
+				pthread_mutex_unlock(&pool->lock);
 				runtime_close(created);
-				pthread_mutex_lock(&g_pool.lock);
+				pthread_mutex_lock(&pool->lock);
 				continue;
 			}
-			g_pool.slots[g_pool.slot_count].runtime = created;
-			g_pool.slots[g_pool.slot_count].elastic = 1;
-			g_pool.slots[g_pool.slot_count].idle_since = time(NULL);
-			g_pool.slot_count++;
-			log_info("fastcgi runtime pool grew: workers=%d",
-				 g_pool.slot_count);
+			pool->slots[pool->slot_count].runtime = created;
+			pool->slots[pool->slot_count].elastic = 1;
+			pool->slots[pool->slot_count].idle_since = time(NULL);
+			pool->slot_count++;
+			log_info(&pool->logger, "fastcgi runtime pool grew: workers=%d",
+				 pool->slot_count);
 			continue;
 		}
 		if (!queued) {
-			if (g_pool.waiting_turns >= g_pool.queue_max) {
+			if (pool->waiting_turns >= pool->queue_max) {
 				rc = -EAGAIN;
 				break;
 			}
-			g_pool.waiting_turns++;
+			pool->waiting_turns++;
 			queued = 1;
 		}
 		if (!deadline_set) {
-			bridge_deadline(&deadline, g_pool.wait_seconds);
+			bridge_deadline(&deadline, pool->wait_seconds);
 			deadline_set = 1;
 		}
-		rc = pthread_cond_timedwait(&g_pool.changed, &g_pool.lock,
-					    &deadline);
+		rc = pthread_cond_timedwait(&pool->changed, &pool->lock, &deadline);
 		if (rc == ETIMEDOUT) {
 			rc = -ETIMEDOUT;
 			break;
 		}
 	}
 	if (queued)
-		g_pool.waiting_turns--;
-	pthread_mutex_unlock(&g_pool.lock);
+		pool->waiting_turns--;
+	pthread_mutex_unlock(&pool->lock);
 	if (rc != 0)
 		MORPH_RETURN(rc);
 	return 0;
 }
 
-void fcgi_bridge_runtime_release(struct runtime *runtime)
+void fcgi_bridge_runtime_release(struct fcgi_bridge *pool, struct runtime *runtime)
 {
 	if (!runtime)
 		return;
-	pthread_mutex_lock(&g_pool.lock);
-	for (int i = 0; i < g_pool.slot_count; i++) {
-		if (g_pool.slots[i].runtime != runtime)
+	pthread_mutex_lock(&pool->lock);
+	for (int i = 0; i < pool->slot_count; i++) {
+		if (pool->slots[i].runtime != runtime)
 			continue;
-		g_pool.slots[i].busy = 0;
-		g_pool.slots[i].idle_since = time(NULL);
-		g_pool.slots[i].session_id[0] = '\0';
-		pthread_cond_broadcast(&g_pool.changed);
+		pool->slots[i].busy = 0;
+		pool->slots[i].idle_since = time(NULL);
+		pool->slots[i].session_id[0] = '\0';
+		pthread_cond_broadcast(&pool->changed);
 		break;
 	}
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_unlock(&pool->lock);
 }
 
-int fcgi_bridge_turn_begin(void)
+int fcgi_bridge_turn_begin(struct fcgi_bridge *pool)
 {
-	pthread_mutex_lock(&g_pool.lock);
-	if (g_pool.stopping || !g_pool.slots) {
-		pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
+	if (pool->stopping || !pool->slots) {
+		pthread_mutex_unlock(&pool->lock);
 		MORPH_RETURN(-ESHUTDOWN);
 	}
-	g_pool.outstanding_turns++;
-	pthread_mutex_unlock(&g_pool.lock);
+	pool->outstanding_turns++;
+	pthread_mutex_unlock(&pool->lock);
 	return 0;
 }
 
-void fcgi_bridge_turn_end(void)
+void fcgi_bridge_turn_end(struct fcgi_bridge *pool)
 {
-	pthread_mutex_lock(&g_pool.lock);
-	if (g_pool.outstanding_turns > 0)
-		g_pool.outstanding_turns--;
-	if (g_pool.outstanding_turns == 0)
-		pthread_cond_broadcast(&g_pool.changed);
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_lock(&pool->lock);
+	if (pool->outstanding_turns > 0)
+		pool->outstanding_turns--;
+	if (pool->outstanding_turns == 0)
+		pthread_cond_broadcast(&pool->changed);
+	pthread_mutex_unlock(&pool->lock);
 }
 
-void fcgi_bridge_pool_status(struct fcgi_bridge_pool_status *status)
+void fcgi_bridge_pool_status(struct fcgi_bridge *pool, struct fcgi_bridge_pool_status *status)
 {
 	if (!status)
 		return;
 	memset(status, 0, sizeof(*status));
-	pthread_mutex_lock(&g_pool.lock);
-	status->workers = g_pool.slot_count;
-	status->min_workers = g_pool.min_workers;
-	status->max_workers = g_pool.max_workers;
-	status->starting_workers = g_pool.starting_workers;
-	status->waiting_turns = g_pool.waiting_turns;
-	status->queue_max = g_pool.queue_max;
-	status->idle_seconds = g_pool.idle_seconds;
-	for (int i = 0; i < g_pool.slot_count; i++)
-		if (g_pool.slots[i].busy)
+	pthread_mutex_lock(&pool->lock);
+	status->workers = pool->slot_count;
+	status->min_workers = pool->min_workers;
+	status->max_workers = pool->max_workers;
+	status->starting_workers = pool->starting_workers;
+	status->waiting_turns = pool->waiting_turns;
+	status->queue_max = pool->queue_max;
+	status->idle_seconds = pool->idle_seconds;
+	for (int i = 0; i < pool->slot_count; i++)
+		if (pool->slots[i].busy)
 			status->busy_workers++;
-	pthread_mutex_unlock(&g_pool.lock);
+	pthread_mutex_unlock(&pool->lock);
 }
 
-int fcgi_bridge_runtime_count(void)
+int fcgi_bridge_runtime_count(struct fcgi_bridge *pool)
 {
 	struct fcgi_bridge_pool_status status;
 
-	fcgi_bridge_pool_status(&status);
+	fcgi_bridge_pool_status(pool, &status);
 	return status.workers;
 }
 
-const struct config *fcgi_bridge_config(void)
+const struct config *fcgi_bridge_config(struct fcgi_bridge *pool)
 {
-	struct runtime *runtime = fcgi_bridge_runtime();
+	struct runtime *runtime = fcgi_bridge_runtime(pool);
 
 	return runtime ? runtime_config_get(runtime) : NULL;
 }
 
-const char *fcgi_artifact_output_dir(void)
+const char *fcgi_artifact_output_dir(struct fcgi_bridge *pool)
 {
-	const struct config *config = fcgi_bridge_config();
-	const char *env = getenv("MORPH_FCGI_OUTPUT_DIR");
-
-	if (env && env[0])
-		return env;
+	const struct config *config = fcgi_bridge_config(pool);
 	if (config && config->general.output_dir[0])
 		return config->general.output_dir;
 	return "/var/lib/morph/output";
+}
+
+int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
+{
+	struct fcgi_bridge *pool;
+	int error;
+
+	if (!out)
+		MORPH_RETURN(-EINVAL);
+	*out = NULL;
+	pool = calloc(1, sizeof(*pool));
+	if (!pool)
+		MORPH_RETURN(-ENOMEM);
+	error = pthread_mutex_init(&pool->lock, NULL);
+	if (error) {
+		free(pool);
+		MORPH_RETURN(-error);
+	}
+	error = pthread_cond_init(&pool->changed, NULL);
+	if (error) {
+		pthread_mutex_destroy(&pool->lock);
+		free(pool);
+		MORPH_RETURN(-error);
+	}
+	error = bridge_initialize(pool, db_path);
+	if (error) {
+		fcgi_bridge_shutdown(pool);
+		MORPH_RETURN(error);
+	}
+	*out = pool;
+	return 0;
+}
+
+void fcgi_bridge_shutdown(struct fcgi_bridge *pool)
+{
+	if (!pool)
+		return;
+	bridge_shutdown(pool);
+	log_shutdown(&pool->logger);
+	pthread_cond_destroy(&pool->changed);
+	pthread_mutex_destroy(&pool->lock);
+	free(pool);
 }

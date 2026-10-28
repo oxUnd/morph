@@ -26,10 +26,10 @@ protected:
 			      "/tmp/ma_test_memory_%d.db", getpid());
 		std::remove(db_path);
 		std::memset(&db, 0, sizeof(db));
-		ASSERT_EQ(db_open(&db, db_path), 0);
+		ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 		std::memset(&opts, 0, sizeof(opts));
-		opts.worker = memory_worker_create();
+		opts.worker = memory_worker_create(NULL);
 		ASSERT_NE(opts.worker, nullptr);
 		opts.enabled = 1;
 		opts.hot_path_enabled = 1;
@@ -563,7 +563,10 @@ TEST_F(MemoryTest, IndependentWritersResolveOneValuePerCanonicalKey)
 	std::atomic<int> failures{0};
 	auto write = [&](const char *key, const char *value) {
 		struct db connection = {};
-		if (db_open(&connection, db_path) != 0) { failures++; return; }
+		if (db_open(NULL, &connection, db_path) != 0) {
+			failures++;
+			return;
+		}
 		for (int i = 0; i < 20; i++) {
 			if (preference_set(&connection, session.id, "personal", key, value, "writer", nullptr))
 				failures++;
@@ -639,7 +642,7 @@ TEST_F(MemoryTest, IndependentWorkersDrainOnlyTheirOwnJobs)
 	model.chat = delayed_memory_chat;
 	std::strcpy(model.api_key, "mock");
 	std::unique_ptr<struct memory_worker, decltype(&memory_worker_destroy)> other(
-		memory_worker_create(), memory_worker_destroy);
+		memory_worker_create(NULL), memory_worker_destroy);
 	ASSERT_NE(other, nullptr);
 	struct memory_options second = opts;
 	second.worker = other.get();

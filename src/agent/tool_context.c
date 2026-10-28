@@ -485,7 +485,7 @@ static int path_exists_for_read(enum tool_path_op op, const char *path)
 	return 1;
 }
 
-struct tool_context *tool_context_create(const char *workdir,
+struct tool_context *tool_context_create(struct morph_log *logger, const char *workdir,
 					 const char *output_dir)
 {
 	struct tool_context *tctx = calloc(1, sizeof(*tctx));
@@ -493,6 +493,7 @@ struct tool_context *tool_context_create(const char *workdir,
 		return NULL;
 	resolve_into(tctx->workdir, sizeof(tctx->workdir), workdir);
 	resolve_into(tctx->output_dir, sizeof(tctx->output_dir), output_dir);
+	tctx->logger = logger;
 	tctx->operation_approval_fn = NULL;
 	tctx->operation_approval_user_data = NULL;
 	tctx->read_allowed_dirs_count = 0;
@@ -829,7 +830,7 @@ int tool_context_authorize_path(struct tool_context *tctx,
 	if (rc == 0)
 		return 0;
 
-	log_warn("%s path denied (outside root): %s",
+	log_warn(tctx ? tctx->logger : NULL, "%s path denied (outside root): %s",
 		 operation_kind_name(path_op_to_kind(op)), resolved);
 	return rc;
 }
@@ -995,9 +996,8 @@ static int persist_command_programs(struct tool_context *tctx,
 		if (rc < 0)
 			return rc;
 		else
-			log_info("persisted command '%s' %s", program,
-				 verdict == TOOL_OP_ALWAYS ?
-				 "always" : "for session");
+			log_info(tctx ? tctx->logger : NULL, "persisted command '%s' %s", program,
+				 verdict == TOOL_OP_ALWAYS ? "always" : "for session");
 	}
 	return 0;
 }
@@ -1032,8 +1032,8 @@ static int check_command_operation(struct tool_context *tctx,
 		return 0;
 	}
 	if (!tctx->operation_approval_fn) {
-		log_warn("command not allowed and no approval callback: %s",
-			 command);
+		log_warn(tctx ? tctx->logger : NULL,
+			 "command not allowed and no approval callback: %s", command);
 		MORPH_RETURN(-EPERM);
 	}
 	approval_operation = *op;
@@ -1054,7 +1054,7 @@ static int check_command_operation(struct tool_context *tctx,
 					tctx->operation_approval_user_data);
 	*verdict = v;
 	if (v == TOOL_OP_DENY) {
-		log_warn("command denied by user: %s", command);
+		log_warn(tctx ? tctx->logger : NULL, "command denied by user: %s", command);
 		MORPH_RETURN(-EACCES);
 	}
 	for (int i = 0; i < op->directories_count; i++) {
@@ -1083,12 +1083,11 @@ static int check_command_operation(struct tool_context *tctx,
 			if (rc < 0)
 				return rc;
 			else
-				log_info("persisted cwd '%s' %s", cwd,
-					 v == TOOL_OP_ALWAYS ?
-					 "always" : "for session");
+				log_info(tctx ? tctx->logger : NULL, "persisted cwd '%s' %s", cwd,
+					 v == TOOL_OP_ALWAYS ? "always" : "for session");
 		}
 	} else {
-		log_info("command approved once by user");
+		log_info(tctx ? tctx->logger : NULL, "command approved once by user");
 	}
 	return 0;
 }

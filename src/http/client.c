@@ -12,22 +12,17 @@
 #define HTTP_SSE_DEFAULT_TIMEOUT_SECONDS 300L
 #define HTTP_CONNECT_TIMEOUT_SECONDS 10L
 
-static int http_initialized = 0;
-static __thread volatile sig_atomic_t *http_cancel_flag = NULL;
-static __thread struct morph_cancel_token *http_cancel_token = NULL;
-static __thread int (*http_interrupt_check)(void *);
-static __thread void *http_interrupt_user_data;
-static volatile sig_atomic_t http_signal_cancelled = 0;
-
 static int curl_debug_cb(CURL *handle, curl_infotype type,
 			 char *data, size_t size, void *userp)
 {
 	(void)handle;
 	(void)userp;
 	if (type == CURLINFO_HEADER_OUT) {
-		log_dbg(">> %.*s", (int)size, data);
+		log_dbg(userp ? ((const struct http_control *)userp)->logger : NULL, ">> %.*s",
+			(int)size, data);
 	} else if (type == CURLINFO_HEADER_IN) {
-		log_dbg("<< %.*s", (int)size, data);
+		log_dbg(userp ? ((const struct http_control *)userp)->logger : NULL, "<< %.*s",
+			(int)size, data);
 	}
 	return 0;
 }
@@ -49,7 +44,7 @@ void http_apply_ca_env(CURL *curl)
 		curl_easy_setopt(curl, CURLOPT_CAPATH, ca_dir);
 }
 
-static void curl_apply_common_opts(CURL *curl, char *errbuf)
+static void curl_apply_common_opts(CURL *curl, char *errbuf, const struct http_control *control)
 {
 	/* Concurrent requests must not change process-wide signal handlers. */
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -62,59 +57,31 @@ static void curl_apply_common_opts(CURL *curl, char *errbuf)
 	if (getenv("MORPH_DEBUG")) {
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 		curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug_cb);
+		curl_easy_setopt(curl, CURLOPT_DEBUGDATA, control);
 	}
 }
 
-static void curl_log_error(const char *what, CURLcode rc, const char *errbuf)
+static void curl_log_error(struct morph_log *logger, const char *what, CURLcode rc,
+			   const char *errbuf)
 {
 	if (errbuf && *errbuf) {
-		log_err("%s failed: curl=%d %s (%s)", what, (int)rc,
-			curl_easy_strerror(rc), errbuf);
+		log_err(logger, "%s failed: curl=%d %s (%s)", what, (int)rc, curl_easy_strerror(rc),
+			errbuf);
 	} else {
-		log_err("%s failed: curl=%d %s", what, (int)rc,
-			curl_easy_strerror(rc));
+		log_err(logger, "%s failed: curl=%d %s", what, (int)rc, curl_easy_strerror(rc));
 	}
 }
 
-void http_set_interrupt_check(int (*check)(void *), void *user_data)
+static int http_cancelled(const struct http_control *control)
 {
-	http_interrupt_check = check;
-	http_interrupt_user_data = user_data;
+	if (!control)
+		return 0;
+	return morph_cancel_token_is_cancelled(control->cancel_token) ||
+	       (control->cancel_flag && __atomic_load_n(control->cancel_flag, __ATOMIC_RELAXED)) ||
+	       (control->interrupt_check && control->interrupt_check(control->interrupt_user_data));
 }
 
-void http_set_cancel_flag(volatile sig_atomic_t *flag)
-{
-	http_cancel_flag = flag;
-}
-
-void http_set_cancel_token(struct morph_cancel_token *token)
-{
-	http_cancel_token = token;
-}
-
-void http_cancel_from_signal(void)
-{
-	http_signal_cancelled = 1;
-}
-
-void http_clear_signal_cancel(void)
-{
-	http_signal_cancelled = 0;
-}
-
-static int http_cancelled(void)
-{
-	if (http_signal_cancelled)
-		return 1;
-	if (morph_cancel_token_is_cancelled(http_cancel_token))
-		return 1;
-	if (http_cancel_flag && *http_cancel_flag)
-		return 1;
-	return http_interrupt_check &&
-		http_interrupt_check(http_interrupt_user_data);
-}
-
-int http_wait_cancelable(unsigned int milliseconds)
+int http_wait_cancelable(const struct http_control *control, unsigned int milliseconds)
 {
 	const unsigned int slice_ms = 100;
 	unsigned int waited = 0;
@@ -124,73 +91,65 @@ int http_wait_cancelable(unsigned int milliseconds)
 		unsigned int current = milliseconds - waited;
 		if (current > slice_ms)
 			current = slice_ms;
-		if (http_cancelled())
+		if (http_cancelled(control))
 			return -ECANCELED;
 		delay.tv_sec = current / 1000;
 		delay.tv_nsec = (long)(current % 1000) * 1000000L;
 		while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
-			if (http_cancelled())
+			if (http_cancelled(control))
 				return -ECANCELED;
 		}
 		waited += current;
 	}
-	return http_cancelled() ? -ECANCELED : 0;
+	return http_cancelled(control) ? -ECANCELED : 0;
 }
 
 static int sse_xferinfo_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
 			   curl_off_t ultotal, curl_off_t ulnow)
 {
-	(void)clientp;
+	const struct http_control *control = clientp;
 	(void)dltotal;
 	(void)dlnow;
 	(void)ultotal;
 	(void)ulnow;
-	return http_cancelled() ? 1 : 0;
+	return http_cancelled(control) ? 1 : 0;
 }
 
-static void sse_apply_cancel_opts(CURL *curl)
+static void sse_apply_cancel_opts(CURL *curl, const struct http_control *control)
 {
 	curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 	curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, sse_xferinfo_cb);
-	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
+	curl_easy_setopt(curl, CURLOPT_XFERINFODATA, control);
 }
 
-static int sse_map_curl_error(CURLcode rc, const char *errbuf)
+static int sse_map_curl_error(const struct http_control *control, CURLcode rc, const char *errbuf)
 {
 	if (rc == CURLE_OK)
 		return 0;
-	if (http_cancelled() ||
-	    rc == CURLE_WRITE_ERROR ||
-	    rc == CURLE_ABORTED_BY_CALLBACK) {
-		log_info("http: request cancelled by user");
+	if (http_cancelled(control) || rc == CURLE_WRITE_ERROR || rc == CURLE_ABORTED_BY_CALLBACK) {
+		log_info(control ? control->logger : NULL, "http: request cancelled by user");
 		return -ECANCELED;
 	}
-	curl_log_error("sse request", rc, errbuf);
+	curl_log_error(control ? control->logger : NULL, "sse request", rc, errbuf);
 	return MORPH_ERR_NETWORK;
 }
 
-int http_init(void)
+int http_init(struct morph_log *logger)
 {
 	CURLcode rc;
 
-	if (http_initialized)
-		return 0;
 	rc = curl_global_init(CURL_GLOBAL_DEFAULT);
 	if (rc != CURLE_OK) {
-		log_err("curl_global_init failed: %s", curl_easy_strerror(rc));
+		log_err(logger, "curl_global_init failed: %s", curl_easy_strerror(rc));
 		MORPH_RETURN(MORPH_ERR_NETWORK);
 	}
-	http_initialized = 1;
-	log_info("http client initialized");
+	log_info(logger, "http client initialized");
 	return 0;
 }
 
 void http_cleanup(void)
 {
-	if (http_initialized) {
-		curl_global_cleanup();
-		http_initialized = 0;
-	}
+	curl_global_cleanup();
 }
 
 static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *data)
@@ -265,8 +224,8 @@ static int append_extra_headers(struct curl_slist **headers,
 	return 0;
 }
 
-static int do_request(const char *url, const char *method, const char *body,
-		      size_t body_len, const char *content_type,
+static int do_request(const struct http_control *control, const char *url, const char *method,
+		      const char *body, size_t body_len, const char *content_type,
 		      const char **extra_headers, int extra_header_count,
 		      struct http_response *resp, long timeout)
 {
@@ -278,16 +237,15 @@ static int do_request(const char *url, const char *method, const char *body,
 	int rc;
 	CURL *curl;
 
-	if (!http_initialized)
-		rc = http_init();
-	else
-		rc = 0;
+	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
 
 	curl = curl_easy_init();
-	if (!curl)
+	if (!curl) {
+		http_cleanup();
 		MORPH_RETURN(-ENOMEM);
+	}
 
 	rc = append_content_type_header(&headers, content_type);
 	if (rc != 0)
@@ -304,33 +262,33 @@ static int do_request(const char *url, const char *method, const char *body,
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, resp);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_apply_common_opts(curl, errbuf);
-	sse_apply_cancel_opts(curl);
+    curl_apply_common_opts(curl, errbuf, control);
+    sse_apply_cancel_opts(curl, control);
 
-	is_post = method && strcmp(method, "POST") == 0;
-	if (is_post) {
-		curl_easy_setopt(curl, CURLOPT_POST, 1L);
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-				 (curl_off_t)body_len);
-	} else if (method && strcmp(method, "GET") != 0) {
-		curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
-		if (body) {
-			curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-			curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-					 (curl_off_t)body_len);
-		}
-	}
+    is_post = method && strcmp(method, "POST") == 0;
+    if (is_post) {
+	    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+	    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
+	    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+    } else if (method && strcmp(method, "GET") != 0) {
+	    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+	    if (body) {
+		    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+		    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+	    }
+    }
 
 	curl_rc = curl_easy_perform(curl);
 	if (curl_rc != CURLE_OK) {
-		if (http_cancelled()) {
+		if (http_cancelled(control)) {
 			rc = -ECANCELED;
 		} else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
-			curl_log_error("http request", curl_rc, errbuf);
+			curl_log_error(control ? control->logger : NULL, "http request", curl_rc,
+				       errbuf);
 			rc = -ETIMEDOUT;
 		} else {
-			curl_log_error("http request", curl_rc, errbuf);
+			curl_log_error(control ? control->logger : NULL, "http request", curl_rc,
+				       errbuf);
 			rc = MORPH_ERR_NETWORK;
 		}
 		goto out;
@@ -342,65 +300,62 @@ out:
 	if (headers)
 		curl_slist_free_all(headers);
 	curl_easy_cleanup(curl);
+	http_cleanup();
 	return rc;
 }
 
-int http_get(const char *url, struct http_response *resp)
+int http_get(const struct http_control *control, const char *url, struct http_response *resp)
 {
 	if (!url || !resp)
 		MORPH_RETURN(-EINVAL);
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
+	return do_request(control, url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
 }
 
-int http_get_ex(const char *url, const char **extra_headers,
+int http_get_ex(const struct http_control *control, const char *url, const char **extra_headers,
 		int extra_header_count, struct http_response *resp)
 {
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "GET", NULL, 0, NULL, extra_headers,
-			  extra_header_count, resp, 30L);
+	return do_request(control, url, "GET", NULL, 0, NULL, extra_headers, extra_header_count,
+			  resp, 30L);
 }
 
-int http_post(const char *url, const char *body, size_t body_len,
-	      const char *content_type, struct http_response *resp)
+int http_post(const struct http_control *control, const char *url, const char *body,
+	      size_t body_len, const char *content_type, struct http_response *resp)
 {
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "POST", body, body_len, content_type, NULL, 0,
-			  resp, 60L);
+	return do_request(control, url, "POST", body, body_len, content_type, NULL, 0, resp, 60L);
 }
 
-int http_post_ex(const char *url, const char *body, size_t body_len,
-		 const char *content_type, const char **extra_headers,
+int http_post_ex(const struct http_control *control, const char *url, const char *body,
+		 size_t body_len, const char *content_type, const char **extra_headers,
 		 int extra_header_count, struct http_response *resp)
 {
 	if (!url || !resp)
 		return -EINVAL;
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "POST", body, body_len, content_type,
-			  extra_headers, extra_header_count, resp, 60L);
+	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
+			  extra_header_count, resp, 60L);
 }
 
-int http_post_ex_timeout(const char *url, const char *body, size_t body_len,
-			 const char *content_type,
-			 const char **extra_headers, int extra_header_count,
-			 long timeout_seconds, struct http_response *resp)
+int http_post_ex_timeout(const struct http_control *control, const char *url, const char *body,
+			 size_t body_len, const char *content_type, const char **extra_headers,
+			 int extra_header_count, long timeout_seconds, struct http_response *resp)
 {
 	if (!url || !resp)
 		MORPH_RETURN(-EINVAL);
 	memset(resp, 0, sizeof(*resp));
-	return do_request(url, "POST", body, body_len, content_type,
-			  extra_headers, extra_header_count, resp,
-			  timeout_seconds);
+	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
+			  extra_header_count, resp, timeout_seconds);
 }
 
-int http_post_multipart_ex(const char *url,
-			   const struct http_multipart_part *parts,
-			   int part_count, const char **extra_headers,
-			   int extra_header_count, long timeout_seconds,
+int http_post_multipart_ex(const struct http_control *control, const char *url,
+			   const struct http_multipart_part *parts, int part_count,
+			   const char **extra_headers, int extra_header_count, long timeout_seconds,
 			   struct http_response *resp)
 {
 	struct curl_slist *headers = NULL;
@@ -414,14 +369,14 @@ int http_post_multipart_ex(const char *url,
 	if (!url || !parts || part_count <= 0 || !resp)
 		MORPH_RETURN(-EINVAL);
 	memset(resp, 0, sizeof(*resp));
-	if (!http_initialized) {
-		rc = http_init();
-		if (rc != 0)
-			return rc;
-	}
+	rc = http_init(control ? control->logger : NULL);
+	if (rc != 0)
+		return rc;
 	curl = curl_easy_init();
-	if (!curl)
+	if (!curl) {
+		http_cleanup();
 		MORPH_RETURN(-ENOMEM);
+	}
 	mime = curl_mime_init(curl);
 	if (!mime) {
 		rc = -ENOMEM;
@@ -473,18 +428,20 @@ int http_post_multipart_ex(const char *url,
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
 			 HTTP_CONNECT_TIMEOUT_SECONDS);
-	curl_apply_common_opts(curl, errbuf);
-	sse_apply_cancel_opts(curl);
+	curl_apply_common_opts(curl, errbuf, control);
+	sse_apply_cancel_opts(curl, control);
 
 	curl_rc = curl_easy_perform(curl);
 	if (curl_rc != CURLE_OK) {
-		if (http_cancelled())
+		if (http_cancelled(control))
 			rc = -ECANCELED;
 		else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
-			curl_log_error("http multipart request", curl_rc, errbuf);
+			curl_log_error(control ? control->logger : NULL, "http multipart request",
+				       curl_rc, errbuf);
 			rc = -ETIMEDOUT;
 		} else {
-			curl_log_error("http multipart request", curl_rc, errbuf);
+			curl_log_error(control ? control->logger : NULL, "http multipart request",
+				       curl_rc, errbuf);
 			rc = MORPH_ERR_NETWORK;
 		}
 		goto out;
@@ -499,10 +456,12 @@ out:
 		curl_mime_free(mime);
 	if (curl)
 		curl_easy_cleanup(curl);
+	http_cleanup();
 	return rc;
 }
 
 struct sse_write_data {
+	const struct http_control *control;
 	http_callback cb;
 	void *user_data;
 	int callback_rc;
@@ -511,13 +470,14 @@ struct sse_write_data {
 static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 {
 	struct sse_write_data *swd = data;
+	const struct http_control *control = swd->control;
 	size_t total;
 
 	if (size != 0 && nmemb > SIZE_MAX / size)
 		return 0;
 	total = size * nmemb;
-	log_dbg("sse_write_cb: received %zu bytes", total);
-	if (http_cancelled())
+	log_dbg(control ? control->logger : NULL, "sse_write_cb: received %zu bytes", total);
+	if (http_cancelled(control))
 		return 0;
 	if (swd->cb) {
 		int rc = swd->cb((const char *)ptr, total, swd->user_data);
@@ -525,7 +485,7 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *data)
 			swd->callback_rc = rc;
 			return 0;
 		}
-		if (http_cancelled())
+		if (http_cancelled(control))
 			return 0;
 	}
 	return total;
@@ -557,11 +517,10 @@ static size_t sse_header_retry_after(char *ptr, size_t size, size_t count, void 
 	return len;
 }
 
-static int do_sse_request(const char *url, const char *body, size_t body_len,
-			  const char *content_type,
-			  const char **extra_headers, int extra_header_count,
-			  long idle_timeout,
-			  http_callback cb, void *user_data, struct http_sse_metadata *metadata)
+static int do_sse_request(const struct http_control *control, const char *url, const char *body,
+			  size_t body_len, const char *content_type, const char **extra_headers,
+			  int extra_header_count, long idle_timeout, http_callback cb,
+			  void *user_data, struct http_sse_metadata *metadata)
 {
 	struct http_sse_metadata local_metadata = {0};
 	if (!metadata) metadata = &local_metadata;
@@ -577,16 +536,15 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 
 	if (!url || !cb)
 		return -EINVAL;
-	if (!http_initialized)
-		rc = http_init();
-	else
-		rc = 0;
+	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
 		return rc;
 
 	curl = curl_easy_init();
-	if (!curl)
+	if (!curl) {
+		http_cleanup();
 		MORPH_RETURN(-ENOMEM);
+	}
 
 	snprintf(ct, sizeof(ct), "Content-Type: %s",
 		 content_type ? content_type : "application/json");
@@ -600,6 +558,7 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 	if (rc != 0)
 		goto out;
 
+	swd.control = control;
 	swd.cb = cb;
 	swd.user_data = user_data;
 	swd.callback_rc = 0;
@@ -618,15 +577,15 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, idle_timeout);
 		curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
 	}
-	curl_apply_common_opts(curl, errbuf);
-	sse_apply_cancel_opts(curl);
+	curl_apply_common_opts(curl, errbuf, control);
+	sse_apply_cancel_opts(curl, control);
 
 	curl_easy_setopt(curl, CURLOPT_POST, 1L);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
 
-	log_dbg("http sse: request timeout disabled, idle_timeout=%lds",
-		idle_timeout);
+	log_dbg(control ? control->logger : NULL,
+		"http sse: request timeout disabled, idle_timeout=%lds", idle_timeout);
 	curl_rc = curl_easy_perform(curl);
 
 	if (swd.callback_rc != 0) {
@@ -634,14 +593,16 @@ static int do_sse_request(const char *url, const char *body, size_t body_len,
 		goto out;
 	}
 	if (curl_rc != CURLE_OK) {
-		if (http_cancelled())
+		if (http_cancelled(control))
 			rc = -ECANCELED;
 		else if (curl_rc == CURLE_OPERATION_TIMEDOUT) {
-			log_warn("http sse: curl idle timeout "
-				 "(idle_timeout=%lds)", idle_timeout);
+			log_warn(control ? control->logger : NULL,
+				 "http sse: curl idle timeout "
+				 "(idle_timeout=%lds)",
+				 idle_timeout);
 			rc = -ETIMEDOUT;
 		} else {
-			rc = sse_map_curl_error(curl_rc, errbuf);
+			rc = sse_map_curl_error(control, curl_rc, errbuf);
 		}
 		goto out;
 	}
@@ -653,44 +614,47 @@ out:
 	if (headers)
 		curl_slist_free_all(headers);
 	curl_easy_cleanup(curl);
+	http_cleanup();
 	return rc;
 }
 
-int http_post_sse(const char *url, const char *body, size_t body_len,
-		   const char *content_type, http_callback cb, void *user_data)
+int http_post_sse(const struct http_control *control, const char *url, const char *body,
+		  size_t body_len, const char *content_type, http_callback cb, void *user_data)
 {
-	return do_sse_request(url, body, body_len, content_type, NULL, 0,
+	return do_sse_request(control, url, body, body_len, content_type, NULL, 0,
 			      HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, cb, user_data, NULL);
 }
 
-int http_post_sse_ex(const char *url, const char *body, size_t body_len,
-		     const char *content_type, const char **extra_headers,
+int http_post_sse_ex(const struct http_control *control, const char *url, const char *body,
+		     size_t body_len, const char *content_type, const char **extra_headers,
 		     int extra_header_count, http_callback cb, void *user_data)
 {
-	return do_sse_request(url, body, body_len, content_type, extra_headers,
-			      extra_header_count, HTTP_SSE_DEFAULT_TIMEOUT_SECONDS,
-			      cb, user_data, NULL);
+	return do_sse_request(control, url, body, body_len, content_type, extra_headers,
+			      extra_header_count, HTTP_SSE_DEFAULT_TIMEOUT_SECONDS, cb, user_data,
+			      NULL);
 }
 
-int http_post_sse_ex_timeout(const char *url, const char *body, size_t body_len,
-			     const char *content_type, const char **extra_headers,
-			     int extra_header_count, long timeout_seconds,
-			     http_callback cb, void *user_data)
+int http_post_sse_ex_timeout(const struct http_control *control, const char *url, const char *body,
+			     size_t body_len, const char *content_type, const char **extra_headers,
+			     int extra_header_count, long timeout_seconds, http_callback cb,
+			     void *user_data)
 {
 	long idle_timeout = timeout_seconds > 0 ? timeout_seconds :
 		HTTP_SSE_DEFAULT_TIMEOUT_SECONDS;
 
-	return do_sse_request(url, body, body_len, content_type, extra_headers,
+	return do_sse_request(control, url, body, body_len, content_type, extra_headers,
 			      extra_header_count, idle_timeout, cb, user_data, NULL);
 }
 
-int http_post_sse_ex_timeout_metadata(const char *url, const char *body, size_t body_len,
-	const char *content_type, const char **extra_headers, int extra_header_count,
-	long timeout_seconds, http_callback cb, void *user_data, struct http_sse_metadata *metadata)
+int http_post_sse_ex_timeout_metadata(const struct http_control *control, const char *url,
+				      const char *body, size_t body_len, const char *content_type,
+				      const char **extra_headers, int extra_header_count,
+				      long timeout_seconds, http_callback cb, void *user_data,
+				      struct http_sse_metadata *metadata)
 {
 	long idle_timeout = timeout_seconds > 0 ? timeout_seconds : HTTP_SSE_DEFAULT_TIMEOUT_SECONDS;
-	return do_sse_request(url, body, body_len, content_type, extra_headers,
-		extra_header_count, idle_timeout, cb, user_data, metadata);
+	return do_sse_request(control, url, body, body_len, content_type, extra_headers,
+			      extra_header_count, idle_timeout, cb, user_data, metadata);
 }
 
 void http_response_free(struct http_response *resp)
@@ -724,21 +688,28 @@ static size_t session_header_cb(void *ptr, size_t size, size_t nmemb, void *data
 	return total;
 }
 
-int http_session_init(struct http_session *s)
+int http_session_init(struct morph_log *logger, struct http_session *s)
 {
 	if (!s)
 		return -EINVAL;
-	if (!http_initialized) {
-		int rc = http_init();
-		if (rc != 0)
-			return rc;
-	}
+	int rc = http_init(logger);
+
+	if (rc != 0)
+		return rc;
 	memset(s, 0, sizeof(*s));
+	s->logger = logger;
 	s->curl = curl_easy_init();
-	if (!s->curl)
+	if (!s->curl) {
+		http_cleanup();
 		MORPH_RETURN(-ENOMEM);
-	morph_buf_init(&s->resp_body, 4096);
-	morph_buf_init(&s->resp_headers, 2048);
+	}
+	rc = morph_buf_init(&s->resp_body, 4096);
+	if (rc == 0)
+		rc = morph_buf_init(&s->resp_headers, 2048);
+	if (rc != 0) {
+		http_session_cleanup(s);
+		MORPH_RETURN(rc);
+	}
 	s->status_code = 0;
 	s->initialized = 1;
 	return 0;
@@ -751,6 +722,7 @@ void http_session_cleanup(struct http_session *s)
 	if (s->curl) {
 		curl_easy_cleanup(s->curl);
 		s->curl = NULL;
+		http_cleanup();
 	}
 	morph_buf_cleanup(&s->resp_body);
 	morph_buf_cleanup(&s->resp_headers);
@@ -766,13 +738,12 @@ void http_session_reset(struct http_session *s)
 	s->status_code = 0;
 }
 
-int http_session_post(struct http_session *s, const char *url,
-		      const char *body, size_t body_len,
-		      const char *content_type,
-		      const char **extra_headers, int extra_header_count,
-		      long timeout_seconds)
+int http_session_post(const struct http_control *control, struct http_session *s, const char *url,
+		      const char *body, size_t body_len, const char *content_type,
+		      const char **extra_headers, int extra_header_count, long timeout_seconds)
 {
 	struct curl_slist *headers = NULL;
+	struct http_control request_control = control ? *control : (struct http_control){0};
 	CURLcode curl_rc;
 	char errbuf[CURL_ERROR_SIZE];
 	long status = 0;
@@ -781,6 +752,9 @@ int http_session_post(struct http_session *s, const char *url,
 	if (!s || !s->curl || !url)
 		return -EINVAL;
 
+	if (!request_control.logger)
+		request_control.logger = s->logger;
+	control = &request_control;
 	http_session_reset(s);
 
 	rc = append_content_type_header(&headers, content_type);
@@ -802,16 +776,16 @@ int http_session_post(struct http_session *s, const char *url,
 	curl_easy_setopt(s->curl, CURLOPT_HEADERDATA, s);
 	curl_easy_setopt(s->curl, CURLOPT_TIMEOUT, timeout_seconds > 0 ? timeout_seconds : 30L);
 	curl_easy_setopt(s->curl, CURLOPT_CONNECTTIMEOUT, 10L);
-	curl_apply_common_opts(s->curl, errbuf);
-	sse_apply_cancel_opts(s->curl);
+	curl_apply_common_opts(s->curl, errbuf, control);
+	sse_apply_cancel_opts(s->curl, control);
 
 	curl_rc = curl_easy_perform(s->curl);
 	if (curl_rc != CURLE_OK) {
-		if (http_cancelled()) {
+		if (http_cancelled(control)) {
 			rc = -ECANCELED;
 		} else {
-			curl_log_error("http session request", curl_rc,
-				       errbuf);
+			curl_log_error(control ? control->logger : NULL, "http session request",
+				       curl_rc, errbuf);
 			rc = MORPH_ERR_NETWORK;
 		}
 		goto out;
@@ -822,6 +796,10 @@ int http_session_post(struct http_session *s, const char *url,
 
 out:
 	curl_easy_setopt(s->curl, CURLOPT_HTTPHEADER, NULL);
+	curl_easy_setopt(s->curl, CURLOPT_POSTFIELDS, NULL);
+	curl_easy_setopt(s->curl, CURLOPT_ERRORBUFFER, NULL);
+	curl_easy_setopt(s->curl, CURLOPT_DEBUGDATA, NULL);
+	curl_easy_setopt(s->curl, CURLOPT_XFERINFODATA, NULL);
 	if (headers)
 		curl_slist_free_all(headers);
 	return rc;

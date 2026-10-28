@@ -67,7 +67,7 @@ struct DynamicToolsTest : public ::testing::Test {
 		char *dir = mkdtemp(tmpl);
 		ASSERT_NE(dir, nullptr);
 		root = dir;
-		config_set_defaults(&cfg);
+		config_set_defaults(NULL, &cfg);
 		snprintf(cfg.dynamic_tools.session_dir,
 			 sizeof(cfg.dynamic_tools.session_dir),
 			 "%s/session", root.c_str());
@@ -76,8 +76,8 @@ struct DynamicToolsTest : public ::testing::Test {
 			 "%s/persistent", root.c_str());
 		cfg.dynamic_tools.default_timeout_seconds = 5;
 		cfg.dynamic_tools.promote_requires_approval = 0;
-		tool_registry_init(&reg);
-		tctx = tool_context_create(root.c_str(), root.c_str());
+		tool_registry_init(NULL, &reg);
+		tctx = tool_context_create(NULL, root.c_str(), root.c_str());
 		ASSERT_NE(tctx, nullptr);
 	}
 
@@ -171,10 +171,9 @@ TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
 	tool_registry_cleanup(&reg);
 
 	struct tool_registry reg2;
-	struct tool_context *tctx2 = tool_context_create(root.c_str(),
-							 root.c_str());
+	struct tool_context *tctx2 = tool_context_create(NULL, root.c_str(), root.c_str());
 
-	tool_registry_init(&reg2);
+	tool_registry_init(NULL, &reg2);
 	ASSERT_NE(tctx2, nullptr);
 	ASSERT_EQ(dynamic_tools_init(&reg2, tctx2, &cfg.dynamic_tools,
 				     "sess"), 0);
@@ -188,7 +187,7 @@ TEST_F(DynamicToolsTest, InitLoadsExistingSessionTools)
 	tool_result_cleanup(&result);
 	tool_registry_cleanup(&reg2);
 	tool_context_destroy(tctx2);
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 }
 
 TEST_F(DynamicToolsTest, SetSessionIdLoadsExistingSessionTools)
@@ -527,7 +526,7 @@ TEST_F(DynamicToolsTest, RelativeFsPathsAndExecUseToolContextRoots)
 	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
 	ASSERT_EQ(file_write_all(input.c_str(), "from-workdir", 12), 0);
 	tool_context_destroy(tctx);
-	tctx = tool_context_create(workdir.c_str(), output_dir.c_str());
+	tctx = tool_context_create(NULL, workdir.c_str(), output_dir.c_str());
 	ASSERT_NE(tctx, nullptr);
 	strncpy(cfg.dynamic_tools.local.allowed_read_paths[0],
 		workdir.c_str(), DYNAMIC_TOOL_ALLOW_LEN_MAX - 1);
@@ -583,7 +582,7 @@ TEST_F(DynamicToolsTest, RelativeMediaPathsUseToolContextRoots)
 	ASSERT_EQ(file_ensure_dir(workdir.c_str()), 0);
 	ASSERT_EQ(file_ensure_dir(output_dir.c_str()), 0);
 	tool_context_destroy(tctx);
-	tctx = tool_context_create(workdir.c_str(), output_dir.c_str());
+	tctx = tool_context_create(NULL, workdir.c_str(), output_dir.c_str());
 	ASSERT_NE(tctx, nullptr);
 	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
 
@@ -654,9 +653,8 @@ TEST_F(DynamicToolsTest, PromoteLoadsInNewRegistry)
 	tool_result_cleanup(&result);
 
 	struct tool_registry reg2;
-	struct tool_context *tctx2 = tool_context_create(root.c_str(),
-							 root.c_str());
-	tool_registry_init(&reg2);
+	struct tool_context *tctx2 = tool_context_create(NULL, root.c_str(), root.c_str());
+	tool_registry_init(NULL, &reg2);
 	ASSERT_EQ(dynamic_tools_init(&reg2, tctx2, &cfg.dynamic_tools,
 				     "other"), 0);
 	EXPECT_NE(tool_lookup(&reg2, "inc_js"), nullptr);

@@ -1,4 +1,5 @@
 #include "sub_agent_tools.h"
+#include "agent/tool_runtime.h"
 #include "util/log.h"
 #include "util/error.h"
 #include "cJSON.h"
@@ -37,7 +38,7 @@ static int agent_sync_exec(const char *args_json, struct tool_result *result,
 		return -ENOENT;
 	}
 	char *sub_result = NULL;
-	int rc = sub_agent_invoke_sync(bind->rt, entry, task, &sub_result);
+	int rc = sub_agent_invoke_sync(bind->rt, result->runtime, entry, task, &sub_result);
 	cJSON_Delete(root);
 	cJSON *out = cJSON_CreateObject();
 	if (rc == 0) {
@@ -112,7 +113,7 @@ int sub_agent_sync_init(struct tool_registry *reg,
 			free(bind);
 			return rc;
 		}
-		log_info("registered sub-agent tool: %s", name);
+		log_info(reg ? reg->logger : NULL, "registered sub-agent tool: %s", name);
 	}
 	return 0;
 }
@@ -143,7 +144,7 @@ static int delegate_exec(const char *args_json, struct tool_result *result,
 		return -EINVAL;
 	}
 	char *task_id = NULL;
-	int rc = sub_agent_delegate(rt, agent, task, &task_id);
+	int rc = sub_agent_delegate(rt, result->runtime, agent, task, &task_id);
 	cJSON_Delete(root);
 	cJSON *out = cJSON_CreateObject();
 	if (rc == 0) {
@@ -285,7 +286,7 @@ static int fanout_exec(const char *args_json, struct tool_result *result,
 			merge = SUB_AGENT_MERGE_RAW;
 	}
 	char *fanout_result = NULL;
-	int rc = sub_agent_fanout(rt, agent, tasks, n, merge, &fanout_result);
+	int rc = sub_agent_fanout(rt, result->runtime, agent, tasks, n, merge, &fanout_result);
 	free(tasks);
 	cJSON_Delete(root);
 	if (rc == 0 && fanout_result) {

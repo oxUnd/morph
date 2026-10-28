@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1465,14 +1466,34 @@ out_no_array:
 int morph_sync_once(const struct morph_sync_config *cfg,
 		    struct morph_sync_status *status)
 {
-	static pthread_mutex_t run_lock = PTHREAD_MUTEX_INITIALIZER;
+	char path[PATH_MAX];
 	int rc;
+	int lock_fd;
 
 	if (status)
 		memset(status, 0, sizeof(*status));
-	pthread_mutex_lock(&run_lock);
-	rc = sync_once_locked(cfg, status);
-	pthread_mutex_unlock(&run_lock);
+	if (!cfg || !cfg->source_dir[0])
+		MORPH_RETURN(-EINVAL);
+	rc = file_path_join(path, sizeof(path), cfg->source_dir, ".morph-sync");
+	if (rc == 0)
+		rc = file_ensure_dir(path);
+	if (rc == 0)
+		rc = file_path_append(path, sizeof(path), "/run.lock");
+	if (rc != 0)
+		MORPH_RETURN(rc);
+	lock_fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+	if (lock_fd < 0)
+		MORPH_RETURN(-errno);
+	do {
+		rc = flock(lock_fd, LOCK_EX);
+	} while (rc < 0 && errno == EINTR);
+	if (rc < 0)
+		rc = -errno;
+	else {
+		rc = sync_once_locked(cfg, status);
+		(void)flock(lock_fd, LOCK_UN);
+	}
+	close(lock_fd);
 	if (status && rc != 0 && !status->error_code) {
 		status->error_code = rc;
 		strncpy(status->last_error, morph_strerror(rc),

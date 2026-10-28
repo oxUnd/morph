@@ -147,7 +147,7 @@ TEST(VideoToolTest, SchemaExposesAudioInputs)
 {
 	struct tool_registry registry;
 
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(vid_gen_init(&registry, nullptr, nullptr), 0);
 	struct tool_entry *entry = tool_lookup(&registry, "vid_gen");
 	ASSERT_NE(entry, nullptr);

@@ -1,6 +1,7 @@
 #ifndef EXT_H
 #define EXT_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -44,6 +45,7 @@ struct ext_manifest {
 };
 
 struct ext {
+	struct morph_log *logger;
 	struct ext_manifest manifest;
 	char path[PATH_MAX];
 	void *dl_handle;
@@ -53,7 +55,7 @@ struct ext {
 	int enabled;
 };
 
-int ext_load(struct ext *ex, const char *dir_path);
+int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path);
 int ext_unload(struct ext *ex);
 int ext_run(struct ext *ex, const char *args_json, char **result_json);
 int ext_sandbox_config_prepare(const struct ext *ex,

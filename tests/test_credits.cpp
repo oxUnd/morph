@@ -28,7 +28,7 @@ TEST_F(CreditsTest, CalculatesFromConfiguredPrice) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
 	snprintf(cfg.credits.prices[0].provider,
@@ -58,7 +58,7 @@ TEST_F(CreditsTest, CalculatesCachedInputAtConfiguredDiscount) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
 	snprintf(cfg.credits.prices[0].provider,
@@ -90,7 +90,7 @@ TEST_F(CreditsTest, CachedInputUsesRegularPriceWhenDiscountIsMissing) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
 	snprintf(cfg.credits.prices[0].provider,
@@ -115,7 +115,7 @@ TEST_F(CreditsTest, ClampsInvalidCachedTokenCountsAndSupportsFreeCache) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.input_token_credit_coef = 5.0;
 	cfg.credits.price_count = 1;
@@ -148,7 +148,7 @@ TEST_F(CreditsTest, FallsBackToDirectCoefficients) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.input_token_credit_coef = 0.01;
 	cfg.credits.output_token_credit_coef = 0.02;
 
@@ -170,7 +170,7 @@ TEST_F(CreditsTest, CalculatesVolcengineImagePerImagePrice) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	snprintf(cfg.credits.currency, sizeof(cfg.credits.currency), "CNY");
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
@@ -200,7 +200,7 @@ TEST_F(CreditsTest, CalculatesDoubaoSeedLiteBasePriceCeiling) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	snprintf(cfg.credits.currency, sizeof(cfg.credits.currency), "CNY");
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
@@ -232,7 +232,7 @@ TEST_F(CreditsTest, CalculatesVolcengineVideoTokenPrice) {
 	struct credit_event event;
 	struct credit_charge charge;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	snprintf(cfg.credits.currency, sizeof(cfg.credits.currency), "CNY");
 	cfg.credits.cost_to_credit_coef = 1000.0;
 	cfg.credits.price_count = 1;
@@ -265,10 +265,10 @@ TEST_F(CreditsTest, RecordsAndSummarizesEvents) {
 	struct credit_summary today;
 	struct credit_summary session;
 
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	cfg.credits.input_token_credit_coef = 1.0;
 
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 
 	memset(&event, 0, sizeof(event));

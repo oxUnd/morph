@@ -1,6 +1,7 @@
 #ifndef MORPH_RUNTIME_ENGINE_H
 #define MORPH_RUNTIME_ENGINE_H
 
+struct morph_log;
 #include "agent/turn.h"
 #include "runtime/request.h"
 #include "runtime/result.h"
@@ -22,6 +23,8 @@ typedef void (*runtime_finish_turn_fn)(void *user_data,
 struct hook_manager;
 
 struct runtime_engine {
+	struct morph_log *logger;
+	struct tool_context *tool_context;
 	struct hook_manager *hooks;
 	struct db *db;
 	struct react_context *react;

@@ -67,7 +67,7 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 	cJSON_AddNumberToObject(root, "elapsed_seconds", elapsed);
 	json = cJSON_PrintUnformatted(root);
 	if (json) {
-		printf("%s\n", json);
+		printf(ctx, "%s\n", json);
 		free(json);
 	}
 	cJSON_Delete(root);
@@ -77,7 +77,6 @@ static void emit_trace_json(struct cli_context *ctx, double elapsed)
 void cli_run_once(struct cli_context *ctx, const char *prompt)
 {
 	struct cli_command_job job;
-	struct sigaction action;
 	struct timespec started;
 	struct timespec finished;
 	int saved_stdout = -1;
@@ -87,13 +86,8 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 
 	if (!ctx || !prompt)
 		return;
-	memset(&action, 0, sizeof(action));
-	action.sa_handler = cli_sigint_handler;
-	sigemptyset(&action.sa_mask);
-	action.sa_flags = 0;
-	sigaction(SIGINT, &action, NULL);
 	clock_gettime(CLOCK_MONOTONIC, &started);
-	cli_cancel_state_reset();
+	cli_cancel_state_reset(ctx);
 
 	/*
 	 * Trace mode keeps its historical contract: progress goes to stderr
@@ -126,5 +120,4 @@ void cli_run_once(struct cli_context *ctx, const char *prompt)
 		(double)(finished.tv_nsec - started.tv_nsec) / 1e9;
 	if (ctx->trace_json)
 		emit_trace_json(ctx, elapsed);
-	signal(SIGINT, SIG_DFL);
 }

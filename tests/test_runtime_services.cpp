@@ -47,7 +47,7 @@ static void create_session_import_fixture(const std::string &path, const char *n
 {
 	struct db source{};
 	struct session session{};
-	ASSERT_EQ(db_open(&source, path.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &source, path.c_str()), 0);
 	ASSERT_EQ(db_init_schema(&source), 0);
 	ASSERT_EQ(session_create(&source, name, "import-model", &session), 0);
 	ASSERT_EQ(session.id, 1);
@@ -114,7 +114,7 @@ TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalfo
 	struct runtime_session_import_result result{};
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	struct db changed{};
-	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(message_add(&changed, 1, "user", "second question", 2), 0);
 	db_close(&changed);
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
@@ -124,7 +124,7 @@ TEST_F(RuntimeFacadeTest, SessionImportBranchesChangedHistoryAndRollsBackOnMalfo
 	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &before, 0), 0);
 	EXPECT_EQ(before, 3);
 	runtime_session_list_free(sessions);
-	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(db_exec(&changed, "DROP TABLE messages; CREATE TABLE messages(session_id INTEGER, content TEXT); INSERT INTO messages VALUES(1,'broken');"), 0);
 	db_close(&changed);
 	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
@@ -197,7 +197,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrpha
 	create_session_import_fixture(source, "parent");
 	struct db changed{};
 	struct session child{};
-	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(session_create(&changed, "child", "model", &child), 0);
 	ASSERT_EQ(db_exec(&changed,
 		"INSERT INTO sub_agent_tasks(task_id,parent_session_id,child_session_id,"
@@ -221,7 +221,7 @@ TEST_F(RuntimeFacadeTest, SessionImportPreservesSubagentRelationsAndRejectsOrpha
 	ASSERT_EQ(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);
 	EXPECT_EQ(result.imported, 0);
 	EXPECT_EQ(result.unchanged, 2);
-	ASSERT_EQ(db_open(&changed, source.c_str()), 0);
+	ASSERT_EQ(db_open(NULL, &changed, source.c_str()), 0);
 	ASSERT_EQ(db_exec(&changed, "PRAGMA foreign_keys=OFF; UPDATE messages SET session_id=999;"), 0);
 	db_close(&changed);
 	EXPECT_NE(runtime_session_import_file(instance, source.c_str(), "device-a", &result), 0);

@@ -47,6 +47,7 @@ void runtime_context_configure_engine(struct runtime_context *ctx)
 		return;
 	runtime_engine_configure(&ctx->engine, &ctx->database, ctx->react,
 				 &ctx->execution_lock);
+	ctx->engine.tool_context = ctx->tctx;
 	ctx->engine.config = &ctx->config;
 	ctx->engine.hooks = &ctx->hooks;
 }
@@ -92,7 +93,7 @@ void runtime_context_select_plan_session(struct runtime_context *ctx,
 				    &ctx->active_plan_session_id,
 				    &ctx->plans, session_id);
 	if (session_id > 0 && plan_registry_bind(&ctx->plans, &ctx->database, session_id) != 0)
-		log_warn("cannot restore session plan checkpoint");
+		log_warn(ctx ? ctx->logger : NULL, "cannot restore session plan checkpoint");
 }
 
 void runtime_context_forget_plan_session(struct runtime_context *ctx,
@@ -149,6 +150,7 @@ runtime_context_memory_options(const struct runtime_context *ctx)
 		runtime_memory_options_from_config(ctx ? &ctx->config : NULL);
 
 	if (ctx) {
+		opts.logger = ctx->logger;
 		opts.worker = ctx->memory_options.worker;
 		opts.llm = ctx->memory_llm;
 	}

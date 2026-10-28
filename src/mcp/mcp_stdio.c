@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "util/error.h"
@@ -168,6 +169,26 @@ int mcp_stdio_exchange(struct mcp_client *client,
 
 /* ----- Public stdio transport functions ----- */
 
+static int stdio_pipe(int descriptors[2])
+{
+#ifdef __linux__
+	if (pipe2(descriptors, O_CLOEXEC) < 0)
+		MORPH_RETURN(-errno);
+#else
+	if (pipe(descriptors) < 0)
+		MORPH_RETURN(-errno);
+	if (fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) < 0 ||
+	    fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) < 0) {
+		int error = errno;
+
+		close(descriptors[0]);
+		close(descriptors[1]);
+		MORPH_RETURN(-error);
+	}
+#endif
+	return 0;
+}
+
 static int mcp_stdio_spawn(struct mcp_client *client)
 {
 	if (!client || !client->config.command[0] ||
@@ -177,21 +198,21 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		MORPH_RETURN(-EINVAL);
 
 	int to_child[2], from_child[2];
-	if (pipe(to_child) < 0) {
-		log_err("mcp stdio: pipe failed: %s", strerror(errno));
-		MORPH_RETURN_ERRNO();
-	}
-	if (pipe(from_child) < 0) {
-		int err = errno;
-		log_err("mcp stdio: pipe failed: %s", strerror(err));
+	int pipe_rc = stdio_pipe(to_child);
+
+	if (pipe_rc != 0)
+		MORPH_RETURN(pipe_rc);
+	pipe_rc = stdio_pipe(from_child);
+	if (pipe_rc != 0) {
 		close(to_child[0]);
 		close(to_child[1]);
-		MORPH_RETURN(-err);
+		MORPH_RETURN(pipe_rc);
 	}
 
 	struct arena *arena = arena_create(0);
 	morph_array_t environment;
 	posix_spawn_file_actions_t actions;
+	posix_spawnattr_t attributes;
 	char *argv[MCP_CMD_MAX + 2];
 	pid_t pid = -1;
 	int rc;
@@ -258,13 +279,6 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	for (int i = 0; i < client->config.cmd_args_count; i++)
 		argv[i + 1] = client->config.cmd_args[i];
 	argv[client->config.cmd_args_count + 1] = NULL;
-	if (fcntl(to_child[0], F_SETFD, FD_CLOEXEC) < 0 ||
-	    fcntl(to_child[1], F_SETFD, FD_CLOEXEC) < 0 ||
-	    fcntl(from_child[0], F_SETFD, FD_CLOEXEC) < 0 ||
-	    fcntl(from_child[1], F_SETFD, FD_CLOEXEC) < 0) {
-		MORPH_SET_ERR(rc, -errno);
-		goto out_close_pipes;
-	}
 	rc = posix_spawn_file_actions_init(&actions);
 	if (rc != 0) {
 		MORPH_SET_ERR(rc, -rc);
@@ -276,9 +290,26 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	if (rc == 0)
 		rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
 			"/dev/null", O_WRONLY, 0);
+	int attribute_rc = posix_spawnattr_init(&attributes);
+
+	if (attribute_rc == 0) {
+		sigset_t empty;
+		short flags = POSIX_SPAWN_SETSIGMASK;
+
+		sigemptyset(&empty);
+#ifdef __APPLE__
+		flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#endif
+		attribute_rc = posix_spawnattr_setsigmask(&attributes, &empty);
+		if (attribute_rc == 0)
+			attribute_rc = posix_spawnattr_setflags(&attributes, flags);
+		if (rc == 0 && attribute_rc == 0)
+			rc = posix_spawnp(&pid, client->config.command, &actions, &attributes, argv,
+					  environment.elts);
+		posix_spawnattr_destroy(&attributes);
+	}
 	if (rc == 0)
-		rc = posix_spawnp(&pid, client->config.command, &actions, NULL,
-			argv, environment.elts);
+		rc = attribute_rc;
 	posix_spawn_file_actions_destroy(&actions);
 	if (rc != 0) {
 		MORPH_SET_ERR(rc, -rc);
@@ -292,7 +323,8 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	client->stdin_fd = to_child[1];
 	client->stdout_fd = from_child[0];
 
-	log_info("mcp stdio: started '%s' (pid=%d)", client->config.name, pid);
+	log_info(client ? client->config.logger : NULL, "mcp stdio: started '%s' (pid=%d)",
+		 client->config.name, pid);
 	return 0;
 
 out_close_pipes:
@@ -304,16 +336,9 @@ out_close_pipes:
 	return rc;
 }
 
-/* Serialize pipe setup with spawn so other workers cannot inherit open pipes. */
 int mcp_stdio_connect(struct mcp_client *client)
 {
-	static pthread_mutex_t spawn_lock = PTHREAD_MUTEX_INITIALIZER;
-	int rc;
-
-	pthread_mutex_lock(&spawn_lock);
-	rc = mcp_stdio_spawn(client);
-	pthread_mutex_unlock(&spawn_lock);
-	return rc;
+	return mcp_stdio_spawn(client);
 }
 
 void mcp_stdio_disconnect(struct mcp_client *client)
@@ -350,8 +375,9 @@ void mcp_stdio_disconnect(struct mcp_client *client)
 				;
 		}
 
-		log_info("mcp stdio: disconnected '%s' (pid=%d)",
-			 client->config.name, client->server_pid);
+		log_info(client ? client->config.logger : NULL,
+			 "mcp stdio: disconnected '%s' (pid=%d)", client->config.name,
+			 client->server_pid);
 		client->server_pid = -1;
 	}
 

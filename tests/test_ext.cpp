@@ -84,7 +84,7 @@ TEST(ExtManifestTest, ParsesFrontsCategoriesAndBuildCommand)
 		"[build]\n"
 		"command = \"make build\"\n";
 	struct ext_manifest m;
-	ASSERT_EQ(manifest_parse(data, &m), 0);
+	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_STREQ(m.type, "exec");
 	EXPECT_STREQ(m.entry, "bin/demo");
 	ASSERT_EQ(m.fronts_count, 2);
@@ -105,7 +105,7 @@ TEST(ExtManifestTest, MissingFrontsMeansAllFronts)
 		"name = \"legacy\"\n"
 		"entry = \"legacy.sh\"\n";
 	struct ext_manifest m;
-	ASSERT_EQ(manifest_parse(data, &m), 0);
+	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_TRUE(ext_manifest_supports_front(&m, "cli"));
 	EXPECT_TRUE(ext_manifest_supports_front(&m, "fastcgi"));
 	ext_manifest_cleanup(&m);
@@ -120,7 +120,7 @@ TEST(ExtManifestTest, ParsesNamedSandboxCapabilities)
 		"\"process_info\", \"ipc\", \"temporary_directory\"]\n";
 	struct ext_manifest m;
 
-	ASSERT_EQ(manifest_parse(data, &m), 0);
+	ASSERT_EQ(manifest_parse(NULL, data, &m), 0);
 	EXPECT_NE(m.permissions & EXT_PERM_EXEC, 0U);
 	EXPECT_NE(m.permissions & EXT_PERM_PTY, 0U);
 	EXPECT_NE(m.permissions & EXT_PERM_PROCESS_INFO, 0U);
@@ -137,7 +137,7 @@ TEST(ExtManifestTest, RejectsUnknownSandboxCapability)
 		"sandbox_capabilities = [\"unrestricted_device\"]\n";
 	struct ext_manifest m;
 
-	EXPECT_EQ(manifest_parse(data, &m), -EINVAL);
+	EXPECT_EQ(manifest_parse(NULL, data, &m), -EINVAL);
 }
 
 TEST(ExtManifestTest, NamedFilesystemRequiresAllowedPaths)
@@ -148,7 +148,7 @@ TEST(ExtManifestTest, NamedFilesystemRequiresAllowedPaths)
 		"sandbox_capabilities = [\"filesystem\"]\n";
 	struct ext_manifest m;
 
-	EXPECT_EQ(manifest_parse(data, &m), -EINVAL);
+	EXPECT_EQ(manifest_parse(NULL, data, &m), -EINVAL);
 }
 
 TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
@@ -166,8 +166,7 @@ TEST(ExtManifestTest, ExampleExtManifestsFollowInstallSchema)
 		std::string full_dir = std::string(MORPH_TEST_SOURCE_DIR) +
 			"/" + dir;
 		std::string manifest = full_dir + "/manifest.toml";
-		ASSERT_EQ(manifest_parse_file(manifest.c_str(), &m), 0)
-			<< manifest;
+		ASSERT_EQ(manifest_parse_file(NULL, manifest.c_str(), &m), 0) << manifest;
 		EXPECT_STRNE(m.name, "") << manifest;
 		EXPECT_STRNE(m.entry, "") << manifest;
 		EXPECT_GT(m.fronts_count, 0) << manifest;
@@ -192,7 +191,7 @@ TEST(ExtRuntimeTest, ExecExtensionSandboxCanReadItsOwnEntry)
 	char cwd[PATH_MAX];
 
 	ASSERT_NE(getcwd(cwd, sizeof(cwd)), nullptr);
-	ASSERT_EQ(ext_load(&extension, directory.c_str()), 0);
+	ASSERT_EQ(ext_load(NULL, &extension, directory.c_str()), 0);
 	ASSERT_EQ(ext_sandbox_config_prepare(&extension, &config), 0);
 	ASSERT_EQ(config.read_paths_count, 2);
 	EXPECT_TRUE(path_is_within(extension.exec_path, config.read_paths[0]));
@@ -251,8 +250,8 @@ TEST(ExtInstallTest, InstallsTaggedMonorepoPackageWithBuild)
 	opts.yes = 1;
 
 	struct ext_install_result res;
-	ASSERT_EQ(ext_install_source(
-		"github:owner/repo@v0.1.0//packages/demo", &opts, &res), 0);
+	ASSERT_EQ(ext_install_source(NULL, "github:owner/repo@v0.1.0//packages/demo", &opts, &res),
+		  0);
 	EXPECT_STREQ(res.name, "demo-install");
 	EXPECT_EQ(strlen(res.resolved_ref), 40u);
 	EXPECT_TRUE(file_exists((install_dir + "/demo-install/bin/demo").c_str()));

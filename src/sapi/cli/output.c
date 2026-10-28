@@ -1,3 +1,4 @@
+#include "sapi/cli/callbacks.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
 #include "util/data.h"
@@ -54,15 +55,15 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		printf("\n" ANSI_BOLD "●" ANSI_RESET " ");
+		printf(output->ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
 		output->prefix_pending = 0;
 	}
 	if (output)
 		cli_markdown_track_tail(output, bytes, len);
-	captured = cli_command_capture_write(bytes, len);
+	captured = cli_command_capture_write(output->ctx, bytes, len);
 	if (captured)
 		return captured < 0 ? captured : 0;
-	if (cli_color_enabled())
+	if (cli_color_enabled(output->ctx))
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
 	for (i = 0u; i < len;) {
 		if ((unsigned char)bytes[i] == 0x1bu &&
@@ -95,22 +96,21 @@ static int cli_terminal_supports_kitty(void)
 	return term && strstr(term, "kitty");
 }
 
-static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
-						   unsigned int initial_column,
-						   int enable_math,
-						   cli_markdown_media_cb cb,
-						   void *user, struct cli_markdown_output *output)
+static struct morph_md_kitty *cli_markdown_create(struct cli_context *ctx, unsigned int indent,
+						  unsigned int initial_column, int enable_math,
+						  cli_markdown_media_cb cb, void *user,
+						  struct cli_markdown_output *output)
 {
 	struct morph_md_kitty_options options;
 	const char *font_path;
 
+	output->ctx = ctx;
 	memset(&options, 0, sizeof(options));
 	font_path = morph_data_find(output->font_path, sizeof(output->font_path),
 		"fonts/STIXTwoMath-Regular.ttf") == 0 ? output->font_path : NULL;
 	options.font_path = font_path;
 	options.features = MORPH_MD_FEATURE_GFM;
-	if (enable_math && cli_color_enabled() &&
-	    cli_terminal_supports_kitty() && font_path)
+	if (enable_math && cli_color_enabled(ctx) && cli_terminal_supports_kitty() && font_path)
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
 	options.user_data = output;
@@ -125,9 +125,8 @@ static struct morph_md_kitty *cli_markdown_create(unsigned int indent,
 	return morph_md_kitty_create(&options);
 }
 
-static int cli_markdown_render(const char *md, unsigned int indent,
-				unsigned int initial_column,
-				cli_markdown_media_cb cb, void *user)
+static int cli_markdown_render(struct cli_context *ctx, const char *md, unsigned int indent,
+			       unsigned int initial_column, cli_markdown_media_cb cb, void *user)
 {
 	struct cli_markdown_output output = {0};
 	struct morph_md_kitty *renderer;
@@ -144,16 +143,16 @@ static int cli_markdown_render(const char *md, unsigned int indent,
 		return 0;
 	normalized = agent_ui_normalize_markdown(safe);
 	content = normalized ? normalized : safe;
-	renderer = cli_markdown_create(indent, initial_column, 1, cb, user, &output);
+	renderer = cli_markdown_create(ctx, indent, initial_column, 1, cb, user, &output);
 	if (!renderer) {
-		log_warn("failed to initialize Kitty Markdown renderer");
+		log_warn(ctx ? ctx->logger : NULL, "failed to initialize Kitty Markdown renderer");
 		goto out;
 	}
 	rc = morph_md_kitty_append(renderer, content, strlen(content), 1);
 	if (rc == 0)
 		rc = morph_md_kitty_render(renderer);
 	if (rc != 0)
-		log_warn("Kitty Markdown rendering failed");
+		log_warn(ctx ? ctx->logger : NULL, "Kitty Markdown rendering failed");
 	morph_md_kitty_destroy(renderer);
 	fflush(stdout);
 out:
@@ -165,13 +164,13 @@ out:
 void cli_markdown_render_final(struct cli_context *ctx, const char *text)
 {
 	ctx->markdown_output.trailing_newlines =
-		cli_markdown_render(text, 2u, 2u, media_callback, ctx);
+		cli_markdown_render(ctx, text, 2u, 2u, media_callback, ctx);
 }
 
 void cli_markdown_finish_final(struct cli_context *ctx)
 {
 	while (ctx->markdown_output.trailing_newlines < 2) {
-		putchar('\n');
+		putchar(ctx, '\n');
 		ctx->markdown_output.trailing_newlines++;
 	}
 }
@@ -189,8 +188,8 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 	if (!ctx->markdown_stream) {
 		ctx->markdown_output.prefix_pending = 1;
 		ctx->markdown_output.trailing_newlines = 0;
-		ctx->markdown_stream = cli_markdown_create(
-			2u, 2u, 1, media_callback, ctx, &ctx->markdown_output);
+		ctx->markdown_stream = cli_markdown_create(ctx, 2u, 2u, 1, media_callback, ctx,
+							   &ctx->markdown_output);
 		if (!ctx->markdown_stream)
 			MORPH_RETURN(-ENOMEM);
 		ctx->markdown_stream_kind = kind;
@@ -264,30 +263,28 @@ void media_callback(const char *type, const char *path, void *user)
 				       (void *)1);
 	}
 	if (strcmp(type, "image") == 0) {
-		image_render_terminal(path);
+		image_render_terminal(ctx ? ctx->logger : NULL, path);
 	} else if (strcmp(type, "video") == 0) {
-		(void)video_render_terminal_preview(path);
+		(void)video_render_terminal_preview(ctx ? ctx->logger : NULL, path);
 	}
 }
 
-void cli_markdown_render_ansi(const char *md)
+void cli_markdown_render_ansi(struct cli_context *ctx, const char *md)
 {
-	cli_markdown_render(md, 0u, 0u, NULL, NULL);
+	cli_markdown_render(ctx, md, 0u, 0u, NULL, NULL);
 }
 
-void cli_markdown_render_ansi_with_media(const char *md,
-						cli_markdown_media_cb cb,
-						void *user)
+void cli_markdown_render_ansi_with_media(struct cli_context *ctx, const char *md,
+					 cli_markdown_media_cb cb, void *user)
 {
-	cli_markdown_render(md, 0u, 0u, cb, user);
+	cli_markdown_render(ctx, md, 0u, 0u, cb, user);
 }
 
-void cli_markdown_render_ansi_with_media_indented(const char *md,
-						  unsigned int indent,
-						  cli_markdown_media_cb cb,
+void cli_markdown_render_ansi_with_media_indented(struct cli_context *ctx, const char *md,
+						  unsigned int indent, cli_markdown_media_cb cb,
 						  void *user)
 {
-	cli_markdown_render(md, indent, indent, cb, user);
+	cli_markdown_render(ctx, md, indent, indent, cb, user);
 }
 
 static int cli_set_ask_user_answers(char ***answers,
@@ -500,6 +497,8 @@ struct cli_ask_user_call {
 static int cli_ask_user_on_owner(void *opaque)
 {
 	struct cli_ask_user_call *call = opaque;
+	struct cli_context *ctx = call->ctx;
+	(void)ctx;
 
 	return cli_ask_user_callback(call->question, call->choices,
 		call->choices_count, call->selection_mode, call->min_choices,
@@ -536,18 +535,17 @@ int cli_ask_user_callback(const char *question,
 
 	cli_stop_cancel_monitor(ctx);
 	cli_presentation_prepare_prompt(ctx);
-	printf(ANSI_BOLD ANSI_CYAN "? ");
-	(void)cli_print_untrusted_text(question,
-		UTF8_TERMINAL_TEXT_SINGLE_LINE);
-	printf(ANSI_RESET "\n");
+	printf(ctx, ANSI_BOLD ANSI_CYAN "? ");
+	(void)cli_print_untrusted_text(ctx, question, UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	printf(ctx, ANSI_RESET "\n");
 
 	char prompt[128];
 	if (choices && choices_count > 0) {
 		for (int i = 0; i < choices_count; i++) {
-			printf("  %d. ", i + 1);
-			(void)cli_print_untrusted_text(choices[i],
-				UTF8_TERMINAL_TEXT_SINGLE_LINE);
-			printf("\n");
+			printf(ctx, "  %d. ", i + 1);
+			(void)cli_print_untrusted_text(ctx, choices[i],
+						       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			printf(ctx, "\n");
 		}
 		if (multi && max_choices > 0) {
 			snprintf(prompt, sizeof(prompt),
@@ -579,20 +577,19 @@ int cli_ask_user_callback(const char *question,
 #ifdef HAVE_READLINE
 	{
 		char *input = NULL;
-		const char *readline_prompt =
-			cli_structured_output_enabled() ? "" : prompt;
+		const char *readline_prompt = cli_structured_output_enabled(ctx) ? "" : prompt;
 		FILE *tty = fopen("/dev/tty", "r");
 		if (tty) {
 			FILE *old_in = rl_instream;
 			rl_instream = tty;
-			input = readline(readline_prompt);
+			input = cli_readline_prompt(ctx, readline_prompt);
 			rl_instream = old_in;
 			fclose(tty);
 		} else {
-			input = readline(readline_prompt);
+			input = cli_readline_prompt(ctx, readline_prompt);
 		}
 		if (!input) {
-			printf("\n");
+			printf(ctx, "\n");
 			return -EIO;
 		}
 		if (input[0] != '\0')
@@ -628,7 +625,7 @@ int cli_ask_user_callback(const char *question,
 		printf("\n");
 		return -ENOTTY;
 	}
-	if (!fgets(buf, sizeof(buf), tty)) {
+	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf("\n");
 		return -EIO;
@@ -663,22 +660,23 @@ int cli_ask_user_callback(const char *question,
  *
  * scoped - Whether to offer separate session and persistent choices.
  */
-static int prompt_approval(const char *subject, int scoped, int ephemeral)
+static int prompt_approval(struct cli_context *ctx, const char *subject, int scoped, int ephemeral)
 {
-	static pthread_mutex_t prompt_lock = PTHREAD_MUTEX_INITIALIZER;
 	int v;
 
-	pthread_mutex_lock(&prompt_lock);
+	if (ctx && ctx->prompt_lock_ready)
+		pthread_mutex_lock(&ctx->prompt_lock);
 #ifdef HAVE_READLINE
 	const char *approval_prompt = scoped ? (ephemeral ?
 		"  [y]es once / [s]ession / [n]o: " :
 		"  [y]es once / [s]ession / [a]lways / [n]o: ") :
 		"  [y]es / [n]o / [a]lways: ";
-	char *rl_input = readline(cli_structured_output_enabled() ? "" :
-		approval_prompt);
+	char *rl_input =
+		cli_readline_prompt(ctx, cli_structured_output_enabled(ctx) ? "" : approval_prompt);
 	if (!rl_input) {
-		printf("\n");
-		pthread_mutex_unlock(&prompt_lock);
+		printf(ctx, "\n");
+		if (ctx && ctx->prompt_lock_ready)
+			pthread_mutex_unlock(&ctx->prompt_lock);
 		return 0;
 	}
 	if (!ephemeral && (rl_input[0] == 'a' || rl_input[0] == 'A'))
@@ -708,13 +706,15 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
 		printf("\n");
-		pthread_mutex_unlock(&prompt_lock);
+		if (ctx && ctx->prompt_lock_ready)
+			pthread_mutex_unlock(&ctx->prompt_lock);
 		return 0;
 	}
-	if (!fgets(buf, sizeof(buf), tty)) {
+	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
 		printf("\n");
-		pthread_mutex_unlock(&prompt_lock);
+		if (ctx && ctx->prompt_lock_ready)
+			pthread_mutex_unlock(&ctx->prompt_lock);
 		return 0;
 	}
 	fclose(tty);
@@ -730,20 +730,20 @@ static int prompt_approval(const char *subject, int scoped, int ephemeral)
 #endif
 
 	if (v > 0) {
-		printf(ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
-		(void)cli_print_untrusted_text(subject ? subject : "",
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf("%s)\n",
-		       v == 2 ? ", session" : (v == 3 ? ", always" : ""));
+		printf(ctx, ANSI_GREEN CLI_FEED_DONE " Approved" ANSI_RESET " (");
+		(void)cli_print_untrusted_text(ctx, subject ? subject : "",
+					       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ctx, "%s)\n", v == 2 ? ", session" : (v == 3 ? ", always" : ""));
 	} else {
-		printf(ANSI_RED CLI_FEED_SYSTEM " Denied" ANSI_RESET " (");
-		(void)cli_print_untrusted_text(subject ? subject : "",
-			UTF8_TERMINAL_TEXT_SINGLE_LINE);
-		printf(")\n");
+		printf(ctx, ANSI_RED CLI_FEED_SYSTEM " Denied" ANSI_RESET " (");
+		(void)cli_print_untrusted_text(ctx, subject ? subject : "",
+					       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+		printf(ctx, ")\n");
 	}
 
 	fflush(stdout);
-	pthread_mutex_unlock(&prompt_lock);
+	if (ctx && ctx->prompt_lock_ready)
+		pthread_mutex_unlock(&ctx->prompt_lock);
 	return v;
 }
 
@@ -785,6 +785,8 @@ struct cli_hitl_call {
 static int cli_hitl_on_owner(void *opaque)
 {
 	struct cli_hitl_call *call = opaque;
+	struct cli_context *ctx = call->ctx;
+	(void)ctx;
 
 	return (int)hitl_approval_callback(
 		call->tool_name, call->tool_args, call->ctx);
@@ -798,6 +800,8 @@ struct cli_operation_call {
 static int cli_operation_on_owner(void *opaque)
 {
 	struct cli_operation_call *call = opaque;
+	struct cli_context *ctx = call->ctx;
+	(void)ctx;
 
 	return (int)operation_approval_callback(call->operation, call->ctx);
 }
@@ -822,26 +826,26 @@ static size_t approval_card_width(void)
 	return columns > 82 ? 80u : (columns > 2 ? (size_t)columns - 2u : 1u);
 }
 
-static void approval_card_rule(size_t width, const char *title)
+static void approval_card_rule(struct cli_context *ctx, size_t width, const char *title)
 {
 	size_t used = 1;
 
-	printf(ANSI_YELLOW "%s", title ? "╭" : "╰");
+	printf(ctx, ANSI_YELLOW "%s", title ? "╭" : "╰");
 	if (title && width > 4) {
 		const char *end = utf8_advance_display_width(title, width - 4);
 
-		printf("─ " ANSI_BOLD);
+		printf(ctx, "─ " ANSI_BOLD);
 		fwrite(title, 1, (size_t)(end - title), stdout);
-		printf(ANSI_RESET ANSI_YELLOW " ");
+		printf(ctx, ANSI_RESET ANSI_YELLOW " ");
 		/* Approval titles contain only ASCII. */
 		used = 4u + (size_t)(end - title);
 	}
 	for (; used < width; used++)
-		printf("─");
-	printf(ANSI_RESET "\n");
+		printf(ctx, "─");
+	printf(ctx, ANSI_RESET "\n");
 }
 
-static void approval_card_field(size_t width, const char *label,
+static void approval_card_field(struct cli_context *ctx, size_t width, const char *label,
 				const char *value, const char *style)
 {
 	char *safe;
@@ -857,13 +861,13 @@ static void approval_card_field(size_t width, const char *label,
 		return;
 	if (width == 0) {
 		if (indent)
-			printf("%-8s ", label);
-		printf("%s%s" ANSI_RESET "\n", style, safe);
+			printf(ctx, "%-8s ", label);
+		printf(ctx, "%s%s" ANSI_RESET "\n", style, safe);
 		free(safe);
 		return;
 	}
 	if (indent && width < indent + 4u) {
-		approval_card_field(width, NULL, label, style);
+		approval_card_field(ctx, width, NULL, label, style);
 		indent = 0;
 	}
 	line = safe;
@@ -872,18 +876,18 @@ static void approval_card_field(size_t width, const char *label,
 		const char *end = utf8_advance_display_width(line, budget);
 
 		if (width >= 4u)
-			printf(ANSI_YELLOW "│ " ANSI_RESET);
+			printf(ctx, ANSI_YELLOW "│ " ANSI_RESET);
 		if (indent) {
 			size_t used = first ? utf8_display_width(label) : 0u;
 
 			if (first)
-				printf("%s", label);
+				printf(ctx, "%s", label);
 			for (; used < indent; used++)
-				putchar(' ');
+				putchar(ctx, ' ');
 		}
-		printf("%s", style);
+		printf(ctx, "%s", style);
 		fwrite(line, 1, (size_t)(end - line), stdout);
-		printf(ANSI_RESET "\n");
+		printf(ctx, ANSI_RESET "\n");
 		line = end;
 		first = 0;
 	} while (*line);
@@ -897,19 +901,19 @@ void cli_render_tool_approval(struct cli_context *ctx, const char *tool_name,
 		approval_card_width() : 0u;
 
 	if (width) {
-		printf("\n");
-		approval_card_rule(width, CLI_FEED_QUESTION " Approval required");
+		printf(ctx, "\n");
+		approval_card_rule(ctx, width, CLI_FEED_QUESTION " Approval required");
 	}
 	if (!width)
-		printf("approval: ");
-	approval_card_field(width, width ? "Tool" : NULL, tool_name, ANSI_BOLD);
+		printf(ctx, "approval: ");
+	approval_card_field(ctx, width, width ? "Tool" : NULL, tool_name, ANSI_BOLD);
 	if (tool_args && *tool_args && strcmp(tool_args, "{}") != 0) {
 		if (!width)
-			printf("args: ");
-		approval_card_field(width, width ? "Args" : NULL, tool_args, ANSI_DIM);
+			printf(ctx, "args: ");
+		approval_card_field(ctx, width, width ? "Args" : NULL, tool_args, ANSI_DIM);
 	}
 	if (width)
-		approval_card_rule(width, NULL);
+		approval_card_rule(ctx, width, NULL);
 }
 
 enum hitl_verdict hitl_approval_callback(const char *tool_name,
@@ -932,7 +936,7 @@ enum hitl_verdict hitl_approval_callback(const char *tool_name,
 	cli_presentation_prepare_prompt(ctx);
 	cli_render_tool_approval(ctx, tool_name, tool_args);
 
-	int v = prompt_approval(tool_name, 0, 0);
+	int v = prompt_approval(ctx, tool_name, 0, 0);
 	if (v == 2)
 		return HITL_ALWAYS;
 	if (v == 1)
@@ -1138,24 +1142,24 @@ void cli_render_operation_approval(struct cli_context *ctx,
 		 op->kind == TOOL_OP_PATH_DELETE);
 
 	if (width) {
-		printf("\n");
-		approval_card_rule(width, operation_approval_label(op));
+		printf(ctx, "\n");
+		approval_card_rule(ctx, width, operation_approval_label(op));
 	} else {
-		printf("approval: %s\n", operation_approval_label(op));
+		printf(ctx, "approval: %s\n", operation_approval_label(op));
 	}
 	if (op->tool_name && *op->tool_name)
-		approval_card_field(width, "Tool", op->tool_name, ANSI_BOLD);
+		approval_card_field(ctx, width, "Tool", op->tool_name, ANSI_BOLD);
 	if (op->kind != TOOL_OP_COMMAND && op->principal && *op->principal &&
 	    strcmp(op->principal, "*") != 0)
-		approval_card_field(width, "Subject", op->principal, ANSI_BOLD);
+		approval_card_field(ctx, width, "Subject", op->principal, ANSI_BOLD);
 	if (op->kind != TOOL_OP_COMMAND && op->principal &&
 	    strcmp(op->principal, "*") == 0)
-		approval_card_field(width, "Applies to", "All tools and commands", ANSI_BOLD);
+		approval_card_field(ctx, width, "Applies to", "All tools and commands", ANSI_BOLD);
 	if (op->reason && *op->reason)
-		approval_card_field(width, "Reason", op->reason, ANSI_BOLD);
+		approval_card_field(ctx, width, "Reason", op->reason, ANSI_BOLD);
 	if (op->kind == TOOL_OP_COMMAND) {
 		if (op->action)
-			approval_card_field(width, "Command", op->action, ANSI_BOLD);
+			approval_card_field(ctx, width, "Command", op->action, ANSI_BOLD);
 		if (op->programs_count > 0) {
 			morph_buf_t programs;
 
@@ -1165,48 +1169,55 @@ void cli_render_operation_approval(struct cli_context *ctx,
 						(void)morph_buf_puts(&programs, ", ");
 					(void)morph_buf_puts(&programs, op->programs[i]);
 				}
-				approval_card_field(width, "Programs",
-					morph_buf_cstr(&programs), ANSI_BOLD);
+				approval_card_field(ctx, width, "Programs",
+						    morph_buf_cstr(&programs), ANSI_BOLD);
 				morph_buf_cleanup(&programs);
 			}
 		}
 	} else if (op->target && *op->target) {
-		approval_card_field(width, "Target", op->target, ANSI_BOLD);
+		approval_card_field(ctx, width, "Target", op->target, ANSI_BOLD);
 	}
 	if (op->path_access)
-		approval_card_field(width, "Access",
-			tool_path_access_name(op->path_access), ANSI_BOLD);
+		approval_card_field(ctx, width, "Access", tool_path_access_name(op->path_access),
+				    ANSI_BOLD);
 	if (op->scope && *op->scope)
-		approval_card_field(width,
-			op->tool_name && strcmp(op->tool_name, "request_permissions") == 0 ?
-			"Lifetime" : operation_scope_label(op->kind), op->scope, ANSI_DIM);
+		approval_card_field(ctx, width,
+				    op->tool_name && strcmp(op->tool_name, "request_permissions") ==
+							     0
+					    ? "Lifetime"
+					    : operation_scope_label(op->kind),
+				    op->scope, ANSI_DIM);
 	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
-		approval_card_field(width, "Access", "read/write", ANSI_BOLD);
+		approval_card_field(ctx, width, "Access", "read/write", ANSI_BOLD);
 		for (int i = 0; i < op->directories_count; i++)
-			approval_card_field(width,
-				tui_tree_branch(i == op->directories_count - 1, 0),
-				op->directories[i].path, ANSI_DIM);
+			approval_card_field(ctx, width,
+					    tui_tree_branch(i == op->directories_count - 1, 0),
+					    op->directories[i].path, ANSI_DIM);
 	}
 	if (op->kind == TOOL_OP_COMMAND)
-		approval_card_field(width, NULL,
-			"'yes once' runs only the command shown; "
-			"'session' trusts the listed programs and workdir "
-			"until exit; 'always' remembers that trust for this "
-			"project.", ANSI_DIM);
+		approval_card_field(ctx, width, NULL,
+				    "'yes once' runs only the command shown; "
+				    "'session' trusts the listed programs and workdir "
+				    "until exit; 'always' remembers that trust for this "
+				    "project.",
+				    ANSI_DIM);
 	else if (ephemeral)
-		approval_card_field(width, NULL,
-			"'yes' allows this call; 'session' trusts "
-			"this capability until exit. It is never persisted.", ANSI_DIM);
+		approval_card_field(ctx, width, NULL,
+				    "'yes' allows this call; 'session' trusts "
+				    "this capability until exit. It is never persisted.",
+				    ANSI_DIM);
 	else if (op->path_access)
-		approval_card_field(width, NULL,
-			"Approves the listed access. 'session': until exit. "
-			"'always': remember for this project.", ANSI_DIM);
+		approval_card_field(ctx, width, NULL,
+				    "Approves the listed access. 'session': until exit. "
+				    "'always': remember for this project.",
+				    ANSI_DIM);
 	else
-		approval_card_field(width, NULL,
-			"'session' trusts this scope until exit; "
-			"'always' remembers it for this project.", ANSI_DIM);
+		approval_card_field(ctx, width, NULL,
+				    "'session' trusts this scope until exit; "
+				    "'always' remembers it for this project.",
+				    ANSI_DIM);
 	if (width)
-		approval_card_rule(width, NULL);
+		approval_card_rule(ctx, width, NULL);
 }
 
 enum tool_operation_verdict operation_approval_callback(
@@ -1232,7 +1243,7 @@ enum tool_operation_verdict operation_approval_callback(
 		(op->kind == TOOL_OP_PATH_WRITE ||
 		 op->kind == TOOL_OP_PATH_DELETE);
 
-	int v = prompt_approval(operation_approval_subject(op), 1, ephemeral);
+	int v = prompt_approval(ctx, operation_approval_subject(op), 1, ephemeral);
 	if (v == 3)
 		return TOOL_OP_ALWAYS;
 	if (v == 2)

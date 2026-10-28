@@ -1,10 +1,14 @@
 #ifndef CLI_H
 #define CLI_H
 
+struct morph_log;
 #include "config/config.h"
 #include "runtime/runtime.h"
 #include "sapi/cli/recap.h"
 #include "util/buf.h"
+#include "sapi/cli/composer.h"
+#include "sapi/cli/callbacks.h"
+#include "util/signals.h"
 #include "util/strmap.h"
 #include "util/utf8.h"
 #include <stdint.h>
@@ -38,12 +42,41 @@ struct cli_input_status {
 };
 
 struct cli_markdown_output {
+	struct cli_context *ctx;
 	char font_path[PATH_MAX];
 	int prefix_pending;
 	int trailing_newlines;
 };
 
+struct cli_output {
+	int color_disabled;
+	int structured;
+	morph_buf_t *capture;
+	int capture_styled;
+};
+
 struct cli_context {
+	struct morph_log *logger;
+	struct cli_output output;
+	pthread_mutex_t prompt_lock;
+	int prompt_lock_ready;
+	struct cli_callback *callbacks;
+	int callback_error;
+	struct cli_composer composer;
+	char *readline_ready_input;
+	int details_hint_visible;
+	int details_hint_column;
+	char *footer_text;
+	struct session *completion_sessions;
+	int completion_count;
+	int completion_index;
+	int completion_length;
+	struct morph_signal_listener signals;
+	int signals_ready;
+	volatile sig_atomic_t terminate_requested;
+	volatile sig_atomic_t interrupted;
+	volatile sig_atomic_t resized;
+
 	struct cli_recap_state recap;
 	struct runtime *runtime;
 	struct config_file_error startup_error;
@@ -92,22 +125,21 @@ struct cli_context {
 	void *event_user_data;
 };
 
-int cli_init(struct cli_context *ctx, const char *config_path,
-	     const char *db_path,
-	     const char *workdir, const char *session_name,
+int cli_init(struct cli_context *ctx, struct morph_log *logger, const char *config_path,
+	     const char *db_path, const char *workdir, const char *session_name,
 	     enum cli_presentation_mode mode);
 void cli_run(struct cli_context *ctx);
 void cli_run_once(struct cli_context *ctx, const char *prompt);
 void cli_shutdown(struct cli_context *ctx);
 int cli_handle_command(struct cli_context *ctx, const char *input);
-void cli_print_help(void);
-void cli_set_color_enabled(int enabled);
-int cli_color_enabled(void);
-int cli_printf(const char *fmt, ...);
-int cli_fputs(const char *text, FILE *stream);
-int cli_putchar(int ch);
+void cli_print_help(struct cli_context *ctx);
+void cli_set_color_enabled(struct cli_context *ctx, int enabled);
+int cli_color_enabled(struct cli_context *ctx);
+int cli_printf(struct cli_context *ctx, const char *fmt, ...);
+int cli_fputs(struct cli_context *ctx, const char *text, FILE *stream);
+int cli_putchar(struct cli_context *ctx, int ch);
 int cli_write_ndjson(const char *json);
-void cli_set_structured_output(int enabled);
-int cli_structured_output_enabled(void);
+void cli_set_structured_output(struct cli_context *ctx, int enabled);
+int cli_structured_output_enabled(struct cli_context *ctx);
 
 #endif

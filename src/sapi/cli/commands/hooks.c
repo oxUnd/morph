@@ -44,23 +44,27 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 			digest[i * 2 + 1] = hex[hash[i] & 15];
 		}
 		digest[64] = '\0';
-		printf("Workspace: %s\nReview token: %s\n"
+		printf(ctx,
+		       "Workspace: %s\nReview token: %s\n"
 		       "Trust: /hooks trust-project workspace %s\n",
 		       cwd, digest, digest);
 	} else if (strcmp(action, "list") == 0 || strcmp(action, "check") == 0) {
-		printf("Hooks (%d); configuration inspection never executes commands.\n",
+		printf(ctx, "Hooks (%d); configuration inspection never executes commands.\n",
 		       cJSON_GetArraySize(rows));
 		cJSON_ArrayForEach(row, rows)
 		{
-			printf("%s  %s  %s\n  source: %s\n  matcher: %s\n", hook_field(row, "id"),
-			       hook_field(row, "event"), hook_field(row, "state"),
-			       hook_field(row, "source"), hook_field(row, "matcher"));
+			printf(ctx, "%s  %s  %s\n  source: %s\n  matcher: %s\n",
+			       hook_field(row, "id"), hook_field(row, "event"),
+			       hook_field(row, "state"), hook_field(row, "source"),
+			       hook_field(row, "matcher"));
 		}
-		printf("Review: /hooks review <id>\nWorkspace review: /hooks project\n");
+		printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
 		if (cJSON_GetArraySize(rows) > 0) {
 			const char *digest = hook_field(cJSON_GetArrayItem(rows, 0), "review_digest");
-			printf("Trust all: /hooks trust-all workspace %s\n"
-			       "Reject all: /hooks deny-all workspace %s\n", digest, digest);
+			printf(ctx,
+			       "Trust all: /hooks trust-all workspace %s\n"
+			       "Reject all: /hooks deny-all workspace %s\n",
+			       digest, digest);
 		}
 	} else if (strcmp(action, "review") == 0 && argc == 3) {
 		rc = -ENOENT;
@@ -68,7 +72,8 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 		{
 			if (strcmp(hook_field(row, "id"), argv[2]) != 0)
 				continue;
-			printf("Source: %s\nCwd: %s\nState: %s\n"
+			printf(ctx,
+			       "Source: %s\nCwd: %s\nState: %s\n"
 			       "Previous definition:\n%s\nCurrent definition:\n%s\n"
 			       "Trust covers this definition, not mutable script contents.\n"
 			       "Trust: /hooks trust %s %s\n",
@@ -80,7 +85,7 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 			if (last) {
 				char *text = cJSON_Print(last);
 				if (text) {
-					printf("Last execution:\n%s\n", text);
+					printf(ctx, "Last execution:\n%s\n", text);
 					free(text);
 				}
 			}
@@ -89,10 +94,10 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 	} else if (argc == 4) {
 		rc = runtime_hooks_manage(ctx->runtime, action, argv[2], argv[3]);
 		if (rc == 0)
-			printf("Hook action completed: %s\n", action);
+			printf(ctx, "Hook action completed: %s\n", action);
 	} else {
-		printf("Usage: /hooks [list|check|project|review-all|review <id>|"
-		       "trust|enable|disable|revoke <id> <digest>]\n");
+		printf(ctx, "Usage: /hooks [list|check|project|review-all|review <id>|"
+			    "trust|enable|disable|revoke <id> <digest>]\n");
 		rc = -EINVAL;
 	}
 	cJSON_Delete(rows);

@@ -468,7 +468,7 @@ protected:
 
 	void SetUp() override
 	{
-		ASSERT_EQ(http_init(), 0);
+		ASSERT_EQ(http_init(NULL), 0);
 		client.config.transport = MCP_TRANSPORT_STREAMABLE_HTTP;
 		client.next_req_id = 1;
 		pthread_mutex_init(&client.lock, nullptr);
@@ -744,7 +744,7 @@ TEST(McpLiveServerTest, DiscoveryKeepsUsableCapabilities)
 	strcpy(config.command, command);
 	config.connect_timeout = 90;
 	struct mcp_registry servers;
-	mcp_registry_init(&servers);
+	mcp_registry_init(NULL, &servers);
 	std::unique_ptr<struct mcp_registry, decltype(&mcp_registry_cleanup)>
 		servers_guard(&servers, mcp_registry_cleanup);
 	ASSERT_EQ(mcp_registry_add(&servers, &config), 0);
@@ -752,7 +752,7 @@ TEST(McpLiveServerTest, DiscoveryKeepsUsableCapabilities)
 	ASSERT_NE(client, nullptr);
 	ASSERT_EQ(mcp_ensure_connected(client), 0);
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	std::unique_ptr<struct tool_registry, decltype(&tool_registry_cleanup)>
 		registry_guard(&registry, tool_registry_cleanup);
 	int tools = mcp_register_server_tools(client, &registry);

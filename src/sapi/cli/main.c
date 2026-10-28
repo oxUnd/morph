@@ -260,14 +260,13 @@ static const char *config_diagnostic_reason(
 	return reason;
 }
 
-static void print_config_diagnostic(int is_warning, const char *path,
+static void print_config_diagnostic(struct cli_context *ctx, int is_warning, const char *path,
 				    const struct config_validation_error *item)
 {
-	const char *color = cli_color_enabled() ?
-		(is_warning ? ANSI_YELLOW : ANSI_RED) : "";
-	const char *bold = cli_color_enabled() ? ANSI_BOLD : "";
-	const char *dim = cli_color_enabled() ? ANSI_DIM : "";
-	const char *reset = cli_color_enabled() ? ANSI_RESET : "";
+	const char *color = cli_color_enabled(ctx) ? (is_warning ? ANSI_YELLOW : ANSI_RED) : "";
+	const char *bold = cli_color_enabled(ctx) ? ANSI_BOLD : "";
+	const char *dim = cli_color_enabled(ctx) ? ANSI_DIM : "";
+	const char *reset = cli_color_enabled(ctx) ? ANSI_RESET : "";
 	const char *icon = is_warning ? "⚠" : "✗";
 	const char *title = is_warning ? "Configuration warning" :
 		"Invalid configuration";
@@ -286,16 +285,23 @@ static void print_config_diagnostic(int is_warning, const char *path,
 		config_diagnostic_reason(item));
 }
 
+struct config_warning_output {
+	struct cli_context *ctx;
+	const char *path;
+};
+
 static void print_config_warning(
 	const struct config_validation_error *warning, void *user_data)
 {
-	const char *path = user_data;
+	struct config_warning_output *output = user_data;
+	struct cli_context *ctx = output->ctx;
+	const char *path = output->path;
 
 	if (warning)
-		print_config_diagnostic(1, path, warning);
+		print_config_diagnostic(ctx, 1, path, warning);
 }
 
-static void print_config_error(const char *config_path, int rc)
+static void print_config_error(struct cli_context *ctx, const char *config_path, int rc)
 {
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path :
@@ -307,7 +313,7 @@ static void print_config_error(const char *config_path, int rc)
 
 	if ((validation_rc == MORPH_ERR_CONFIG ||
 	     validation_rc == MORPH_ERR_PARSE) && error.message[0]) {
-		print_config_diagnostic(0, display, &error);
+		print_config_diagnostic(ctx, 0, display, &error);
 	} else {
 		fprintf(stderr, "morph: failed to load configuration %s: %s\n",
 			display, morph_strerror(rc));
@@ -315,7 +321,7 @@ static void print_config_error(const char *config_path, int rc)
 	free(expanded);
 }
 
-static int preflight_config(const char *config_path)
+static int preflight_config(struct cli_context *ctx, const char *config_path)
 {
 	struct config_validation_error error = {0};
 	const char *requested = config_path ? config_path :
@@ -329,15 +335,16 @@ static int preflight_config(const char *config_path)
 		free(expanded);
 		return 0;
 	}
-	rc = config_validate_file_with_warnings(expanded, &error,
-		print_config_warning, expanded);
+	struct config_warning_output output = {.ctx = ctx, .path = expanded};
+
+	rc = config_validate_file_with_warnings(expanded, &error, print_config_warning, &output);
 	if (rc != 0)
-		print_config_diagnostic(0, expanded, &error);
+		print_config_diagnostic(ctx, 0, expanded, &error);
 	free(expanded);
 	return rc;
 }
 
-static int print_version(const char *config_path)
+static int print_version(struct cli_context *ctx, const char *config_path)
 {
 	struct utsname uts;
 	int rc = 0;
@@ -345,21 +352,21 @@ static int print_version(const char *config_path)
 	uname(&uts);
 
 	struct config cfg;
-	config_set_defaults(&cfg);
+	config_set_defaults(ctx ? ctx->logger : NULL, &cfg);
 
 	char *cfg_path = file_expand_path(config_path ? config_path :
 		"~/.morph/config.toml");
 	if (cfg_path) {
-		rc = config_load(&cfg, cfg_path);
+		rc = config_load(ctx ? ctx->logger : NULL, &cfg, cfg_path);
 		if (rc != 0) {
-			print_config_error(config_path, rc);
+			print_config_error(ctx, config_path, rc);
 			free(cfg_path);
 			return rc;
 		}
 	}
 
 	struct skill_registry skills;
-	skill_registry_init(&skills);
+	skill_registry_init(ctx ? ctx->logger : NULL, &skills);
 
 	(void)skill_discover_configured(&skills, ".", cfg.skill.dir);
 
@@ -397,106 +404,101 @@ static int print_version(const char *config_path)
 	if (!user)
 		user = "unknown";
 
-	printf("\n");
-	printf("" ANSI_BOLD ANSI_CYAN
-	       "  __  __    ____    _____    _____    _   _  \n"
-	       " |  \\/  |  / __ \\  |  __ \\  |  __ \\  | | | | \n"
-	       " | \\  / | | |  | | | |__) | | |__) | | |_| | \n"
-	       " | |\\/| | | |__| | |  _  /  |  ___/  |  _  | \n"
-	       " |_|  |_|  \\____/  |_| \\_\\  |_|      |_| |_| "
-	       ANSI_RESET "\n");
-	printf("           "
-	       ANSI_BOLD ANSI_CYAN "%s" ANSI_RESET "@"
-	       ANSI_BOLD ANSI_CYAN "%s" ANSI_RESET "\n",
+	printf(ctx, "\n");
+	printf(ctx, "" ANSI_BOLD ANSI_CYAN "  __  __    ____    _____    _____    _   _  \n"
+		    " |  \\/  |  / __ \\  |  __ \\  |  __ \\  | | | | \n"
+		    " | \\  / | | |  | | | |__) | | |__) | | |_| | \n"
+		    " | |\\/| | | |__| | |  _  /  |  ___/  |  _  | \n"
+		    " |_|  |_|  \\____/  |_| \\_\\  |_|      |_| |_| " ANSI_RESET "\n");
+	printf(ctx,
+	       "           " ANSI_BOLD ANSI_CYAN "%s" ANSI_RESET "@" ANSI_BOLD ANSI_CYAN
+	       "%s" ANSI_RESET "\n",
 	       user, uts.nodename);
-	printf("           " ANSI_DIM "──────────────────────────────────────"
-	       ANSI_RESET "\n");
-	printf("  " ICON_VERSION " " ANSI_BOLD ANSI_GREEN "Version"
-	       ANSI_RESET "     %s\n", MORPH_VERSION);
-	printf("  " ICON_OS " " ANSI_BOLD ANSI_GREEN "OS"
-	       ANSI_RESET "         %s %s\n", uts.sysname, uts.release);
-	printf("  " ICON_ARCH " " ANSI_BOLD ANSI_GREEN "Arch"
-	       ANSI_RESET "       %s\n", uts.machine);
-	printf("\n");
-	printf("  " ICON_LLM " " ANSI_BOLD ANSI_GREEN "LLM"
-	       ANSI_RESET "        " ANSI_YELLOW "%s" ANSI_RESET
-	       " / %s\n",
+	printf(ctx,
+	       "           " ANSI_DIM "──────────────────────────────────────" ANSI_RESET "\n");
+	printf(ctx, "  " ICON_VERSION " " ANSI_BOLD ANSI_GREEN "Version" ANSI_RESET "     %s\n",
+	       MORPH_VERSION);
+	printf(ctx, "  " ICON_OS " " ANSI_BOLD ANSI_GREEN "OS" ANSI_RESET "         %s %s\n",
+	       uts.sysname, uts.release);
+	printf(ctx, "  " ICON_ARCH " " ANSI_BOLD ANSI_GREEN "Arch" ANSI_RESET "       %s\n",
+	       uts.machine);
+	printf(ctx, "\n");
+	printf(ctx,
+	       "  " ICON_LLM " " ANSI_BOLD ANSI_GREEN "LLM" ANSI_RESET "        " ANSI_YELLOW
+	       "%s" ANSI_RESET " / %s\n",
 	       cfg.models.text.provider, cfg.models.text.model);
-	printf("  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Vision"
-	       ANSI_RESET "     " ANSI_YELLOW "%s" ANSI_RESET
-	       " / %s\n",
+	printf(ctx,
+	       "  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Vision" ANSI_RESET "     " ANSI_YELLOW
+	       "%s" ANSI_RESET " / %s\n",
 	       cfg.models.vision.provider[0] ? cfg.models.vision.provider : "-",
 	       cfg.models.vision.model[0] ? cfg.models.vision.model : "-");
-	printf("  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Image"
-	       ANSI_RESET "      " ANSI_YELLOW "%s" ANSI_RESET
-	       " / %s\n",
+	printf(ctx,
+	       "  " ICON_IMAGE " " ANSI_BOLD ANSI_GREEN "Image" ANSI_RESET "      " ANSI_YELLOW
+	       "%s" ANSI_RESET " / %s\n",
 	       cfg.models.image.provider, cfg.models.image.model);
-	printf("  " ICON_VIDEO " " ANSI_BOLD ANSI_GREEN "Video"
-	       ANSI_RESET "      " ANSI_YELLOW "%s" ANSI_RESET
-	       " / %s\n",
-	       cfg.models.video.provider,
-	       cfg.models.video.model[0] ? cfg.models.video.model : "-");
-	printf("  " ICON_REACT " " ANSI_BOLD ANSI_GREEN "React"
-	       ANSI_RESET "      %d iters, %ds tool timeout\n",
+	printf(ctx,
+	       "  " ICON_VIDEO " " ANSI_BOLD ANSI_GREEN "Video" ANSI_RESET "      " ANSI_YELLOW
+	       "%s" ANSI_RESET " / %s\n",
+	       cfg.models.video.provider, cfg.models.video.model[0] ? cfg.models.video.model : "-");
+	printf(ctx,
+	       "  " ICON_REACT " " ANSI_BOLD ANSI_GREEN "React" ANSI_RESET
+	       "      %d iters, %ds tool timeout\n",
 	       cfg.react.max_iterations, cfg.react.tool_timeout_seconds);
-	printf("  " ICON_MEMORY " " ANSI_BOLD ANSI_GREEN "Memory"
-	       ANSI_RESET "     " ANSI_YELLOW "%s" ANSI_RESET
-	       " (%d facts, %d episodes)\n",
-	       cfg.memory.enabled ? "on" : "off",
-	       cfg.memory.max_facts, cfg.memory.max_episodes);
-	printf("  " ICON_CONTEXT " " ANSI_BOLD ANSI_GREEN "Context"
-	       ANSI_RESET "    %.2f / %.2f compress\n",
-	       cfg.context.summarize_threshold_ratio,
-	       cfg.context.compress_target_ratio);
-	printf("  " ICON_TOOLS " " ANSI_BOLD ANSI_GREEN "Tools"
-	       ANSI_RESET "      %d built-in, "
-	       ANSI_YELLOW "exec on" ANSI_RESET "\n",
+	printf(ctx,
+	       "  " ICON_MEMORY " " ANSI_BOLD ANSI_GREEN "Memory" ANSI_RESET "     " ANSI_YELLOW
+	       "%s" ANSI_RESET " (%d facts, %d episodes)\n",
+	       cfg.memory.enabled ? "on" : "off", cfg.memory.max_facts, cfg.memory.max_episodes);
+	printf(ctx,
+	       "  " ICON_CONTEXT " " ANSI_BOLD ANSI_GREEN "Context" ANSI_RESET
+	       "    %.2f / %.2f compress\n",
+	       cfg.context.summarize_threshold_ratio, cfg.context.compress_target_ratio);
+	printf(ctx,
+	       "  " ICON_TOOLS " " ANSI_BOLD ANSI_GREEN "Tools" ANSI_RESET
+	       "      %d built-in, " ANSI_YELLOW "exec on" ANSI_RESET "\n",
 	       builtin_tools);
 
-	printf("  " ICON_SKILLS " " ANSI_BOLD ANSI_GREEN "Skills"
-	       ANSI_RESET "     %d discovered",
+	printf(ctx,
+	       "  " ICON_SKILLS " " ANSI_BOLD ANSI_GREEN "Skills" ANSI_RESET "     %d discovered",
 	       skills.count);
 	if (skills.count > 0) {
-		printf(" " ANSI_DIM "(");
+		printf(ctx, " " ANSI_DIM "(");
 		for (int i = 0; i < skills.count && i < 5; i++) {
 			if (i > 0)
-				printf(", ");
-			printf("%s", skills.entries[i].fm.name);
+				printf(ctx, ", ");
+			printf(ctx, "%s", skills.entries[i].fm.name);
 		}
 		if (skills.count > 5)
-			printf(", …");
-		printf(")" ANSI_RESET);
+			printf(ctx, ", …");
+		printf(ctx, ")" ANSI_RESET);
 	}
-	printf("\n");
+	printf(ctx, "\n");
 
-	printf("  " ICON_EXTS " " ANSI_BOLD ANSI_GREEN "Exts"
-	       ANSI_RESET "       %d", ext_count);
+	printf(ctx, "  " ICON_EXTS " " ANSI_BOLD ANSI_GREEN "Exts" ANSI_RESET "       %d",
+	       ext_count);
 	if (ext_count > 0) {
-		printf(" " ANSI_DIM "(");
+		printf(ctx, " " ANSI_DIM "(");
 		for (int i = 0; i < ext_count && i < 5; i++) {
 			if (i > 0)
-				printf(", ");
-			printf("%s", ext_dirs[i]);
+				printf(ctx, ", ");
+			printf(ctx, "%s", ext_dirs[i]);
 		}
 		if (ext_count > 5)
-			printf(", …");
-		printf(")" ANSI_RESET);
+			printf(ctx, ", …");
+		printf(ctx, ")" ANSI_RESET);
 	}
-	printf("\n");
+	printf(ctx, "\n");
 
-	printf("  " ICON_MCP " " ANSI_BOLD ANSI_GREEN "MCP"
-	       ANSI_RESET "        %d server%s",
-	       cfg.mcp.server_count,
-	       cfg.mcp.server_count == 1 ? "" : "s");
+	printf(ctx, "  " ICON_MCP " " ANSI_BOLD ANSI_GREEN "MCP" ANSI_RESET "        %d server%s",
+	       cfg.mcp.server_count, cfg.mcp.server_count == 1 ? "" : "s");
 	if (cfg.mcp.server_count > 0)
-		printf(" " ANSI_DIM "(stdio:%d, http:%d)" ANSI_RESET,
-		       mcp_stdio, mcp_http);
-	printf("\n");
+		printf(ctx, " " ANSI_DIM "(stdio:%d, http:%d)" ANSI_RESET, mcp_stdio, mcp_http);
+	printf(ctx, "\n");
 
-	printf("  " ICON_CONFIG " " ANSI_BOLD ANSI_GREEN "Config"
-	       ANSI_RESET "     " ANSI_DIM "%s" ANSI_RESET "\n",
+	printf(ctx,
+	       "  " ICON_CONFIG " " ANSI_BOLD ANSI_GREEN "Config" ANSI_RESET "     " ANSI_DIM
+	       "%s" ANSI_RESET "\n",
 	       cfg_path ? cfg_path : "none");
-	printf("\n");
+	printf(ctx, "\n");
 
 	if (ext_dirs)
 		file_free_list(ext_dirs, ext_count);
@@ -507,8 +509,11 @@ static int print_version(const char *config_path)
 
 int main(int argc, char *argv[])
 {
+	struct cli_context startup_context = {0};
+	struct cli_context *startup_ctx = &startup_context;
 	struct cli_options options;
-	struct cli_context ctx;
+	struct cli_context ctx = {0};
+	struct morph_log logger = {0};
 	enum cli_presentation_mode presentation_mode;
 	char log_path[PATH_MAX];
 	char *log_dir;
@@ -525,7 +530,7 @@ int main(int argc, char *argv[])
 	if (options.one_shot_prompt || options.events_json || !isatty(STDOUT_FILENO) ||
 	    (no_color && no_color[0]) || (term && strcmp(term, "dumb") == 0))
 		options.no_color = 1;
-	cli_set_color_enabled(!options.no_color);
+	cli_set_color_enabled(startup_ctx, !options.no_color);
 	if (options.show_help)
 		return cli_print_usage(&options);
 	if (options.command_index) {
@@ -555,25 +560,26 @@ int main(int argc, char *argv[])
 		int remaining = argc - options.command_index - 1;
 		char **arguments = argv + options.command_index + 1;
 
-		rc = strcmp(command, "mcp") == 0 ?
-			cli_manage_mcp(remaining, arguments, management_config) :
-			cli_manage_skills(remaining, arguments, management_config);
+		rc = strcmp(command, "mcp") == 0
+			     ? cli_manage_mcp(&logger, remaining, arguments, management_config)
+			     : cli_manage_skills(&logger, remaining, arguments, management_config);
 		free(management_config);
 		return rc;
 	}
 	if (!options.show_version) {
-		int setup_rc = cli_setup_if_missing(options.config_path,
-			!options.one_shot_prompt && !options.events_json);
+		int setup_rc =
+			cli_setup_if_missing(startup_ctx, options.config_path,
+					     !options.one_shot_prompt && !options.events_json);
 		if (setup_rc != 0)
 			return setup_rc < 0 ? 1 : 0;
 	}
-	if (preflight_config(options.config_path) != 0)
+	if (preflight_config(startup_ctx, options.config_path) != 0)
 		return 1;
 	if (options.show_version) {
 		if (options.events_json)
 			return emit_option_result("--version", MORPH_VERSION) == 0 ?
 				0 : 1;
-		return print_version(options.config_path) == 0 ? 0 : 1;
+		return print_version(startup_ctx, options.config_path) == 0 ? 0 : 1;
 	}
 	log_dir = file_expand_path("~/.morph/log");
 	if (!log_dir)
@@ -588,20 +594,29 @@ int main(int argc, char *argv[])
 			morph_strerror(rc));
 		return 1;
 	}
-	log_init(log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
-	http_init();
-	rc = cli_init(&ctx, options.config_path, NULL, options.workdir,
+	rc = log_init(&logger, log_path, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
+	if (rc != 0) {
+		fprintf(stderr, "morph: failed to open log: %s\n", morph_strerror(rc));
+		return 1;
+	}
+	rc = http_init(&logger);
+	if (rc != 0) {
+		log_shutdown(&logger);
+		return 1;
+	}
+	rc = cli_init(&ctx, &logger, options.config_path, NULL, options.workdir,
 		      options.session_name, presentation_mode);
+	cli_set_color_enabled(&ctx, !options.no_color);
 	if (rc < 0) {
-		log_err("failed to initialize: %s", morph_strerror(rc));
+		log_err(&logger, "failed to initialize: %s", morph_strerror(rc));
 		if (ctx.startup_error.file[0])
-			print_config_diagnostic(0, ctx.startup_error.file,
-				&ctx.startup_error.detail);
+			print_config_diagnostic(startup_ctx, 0, ctx.startup_error.file,
+						&ctx.startup_error.detail);
 		else
 			fprintf(stderr, "morph: failed to initialize: %s\n",
 				morph_strerror(rc));
 		http_cleanup();
-		log_shutdown();
+		log_shutdown(&logger);
 		return 1;
 	}
 	ctx.trace_json = options.trace_json;
@@ -623,32 +638,33 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "morph: restore failed: %s\n",
 					morph_strerror(rc));
 			}
-			rc = cli_init(&ctx, options.config_path, NULL, options.workdir,
+			rc = cli_init(&ctx, &logger, options.config_path, NULL, options.workdir,
 				      options.session_name, presentation_mode);
+			cli_set_color_enabled(&ctx, !options.no_color);
 			if (rc < 0 && file_exists(plan.rollback)) {
 				(void)morph_sync_rollback_db_replace(&plan);
 				restored = 0;
-				rc = cli_init(&ctx, options.config_path, NULL,
-					      options.workdir,
-					      options.session_name,
+				rc = cli_init(&ctx, &logger, options.config_path, NULL,
+					      options.workdir, options.session_name,
 					      presentation_mode);
+				cli_set_color_enabled(&ctx, !options.no_color);
 			}
 			if (rc < 0) {
 				fprintf(stderr, "morph: failed to restart: %s\n",
 					morph_strerror(rc));
 				http_cleanup();
-				log_shutdown();
+				log_shutdown(&logger);
 				return 1;
 			}
 			if (restored) {
-				printf(ANSI_BOLD ANSI_GREEN "• " ANSI_RESET
-				       "database restored; Morph restarted\n");
+				printf(startup_ctx, ANSI_BOLD ANSI_GREEN
+				       "• " ANSI_RESET "database restored; Morph restarted\n");
 			}
 			ctx.trace_json = options.trace_json;
 		}
 	}
 	cli_shutdown(&ctx);
 	http_cleanup();
-	log_shutdown();
+	log_shutdown(&logger);
 	return 0;
 }

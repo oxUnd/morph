@@ -51,7 +51,7 @@ protected:
 
 	void Start()
 	{
-		ASSERT_EQ(http_init(), 0);
+		ASSERT_EQ(http_init(NULL), 0);
 		listener = socket(AF_INET, SOCK_STREAM, 0);
 		ASSERT_GE(listener, 0);
 		sockaddr_in address{};

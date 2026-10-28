@@ -4,11 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static char *g_last_answer;
-static int g_last_choices_count;
-static char g_last_selection_mode[16];
-static int g_last_min_choices;
-static int g_last_max_choices;
+struct AskUserState {
+	int choices_count{};
+	char selection_mode[16]{};
+	int min_choices{};
+	int max_choices{};
+};
 
 static int set_mock_answers(char ***answers,
 			    int *answers_count,
@@ -49,21 +50,20 @@ static int mock_ask_user_cb(const char *question,
 			    void *user_data)
 {
 	(void)question;
-	(void)user_data;
-	g_last_choices_count = choices_count;
-	strncpy(g_last_selection_mode, selection_mode ? selection_mode : "",
-		sizeof(g_last_selection_mode) - 1);
-	g_last_min_choices = min_choices;
-	g_last_max_choices = max_choices;
+	auto &state = *static_cast<AskUserState *>(user_data);
+	state.choices_count = choices_count;
+	strncpy(state.selection_mode, selection_mode ? selection_mode : "",
+		sizeof(state.selection_mode) - 1);
+	state.min_choices = min_choices;
+	state.max_choices = max_choices;
 	if (choices && choices_count > 0) {
-		int count = strcmp(g_last_selection_mode, "multi") == 0 ?
-			(min_choices > 0 ? min_choices : 1) : 1;
+		int count = strcmp(state.selection_mode, "multi") == 0
+				    ? (min_choices > 0 ? min_choices : 1)
+				    : 1;
 		if (count > choices_count)
 			count = choices_count;
 		return set_mock_answers(answers, answers_count, choices, count);
-	} else if (g_last_answer) {
-		const char *values[] = { g_last_answer };
-		return set_mock_answers(answers, answers_count, values, 1);
+
 	} else {
 		const char *values[] = { "mock answer" };
 		return set_mock_answers(answers, answers_count, values, 1);
@@ -144,12 +144,12 @@ static int mock_ask_user_multi_cb(const char *question,
 				  void *user_data)
 {
 	(void)question;
-	(void)user_data;
-	g_last_choices_count = choices_count;
-	strncpy(g_last_selection_mode, selection_mode ? selection_mode : "",
-		sizeof(g_last_selection_mode) - 1);
-	g_last_min_choices = min_choices;
-	g_last_max_choices = max_choices;
+	auto &state = *static_cast<AskUserState *>(user_data);
+	state.choices_count = choices_count;
+	strncpy(state.selection_mode, selection_mode ? selection_mode : "",
+		sizeof(state.selection_mode) - 1);
+	state.min_choices = min_choices;
+	state.max_choices = max_choices;
 	int count = min_choices > 0 ? min_choices : 1;
 	if (max_choices > 0 && count > max_choices)
 		count = max_choices;
@@ -183,13 +183,13 @@ static int mock_ask_user_data_cb(const char *question,
 class AskUserToolTest : public ::testing::Test {
 protected:
 	struct tool_registry tools;
+	AskUserState state;
 	void SetUp() override {
-		tool_registry_init(&tools);
-		g_last_answer = nullptr;
-		g_last_choices_count = 0;
-		g_last_selection_mode[0] = '\0';
-		g_last_min_choices = 0;
-		g_last_max_choices = 0;
+		tool_registry_init(NULL, &tools);
+		state.choices_count = 0;
+		state.selection_mode[0] = '\0';
+		state.min_choices = 0;
+		state.max_choices = 0;
 	}
 	void TearDown() override {
 		tool_registry_cleanup(&tools);
@@ -197,7 +197,7 @@ protected:
 };
 
 TEST_F(AskUserToolTest, RegisterTool) {
-	int rc = ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	int rc = ask_user_init(&tools, mock_ask_user_cb, &state);
 	EXPECT_EQ(rc, 0);
 	struct tool_entry *e = tool_lookup(&tools, "ask_user");
 	ASSERT_NE(e, nullptr);
@@ -205,7 +205,7 @@ TEST_F(AskUserToolTest, RegisterTool) {
 }
 
 TEST_F(AskUserToolTest, NullRegistry) {
-	EXPECT_NE(ask_user_init(nullptr, mock_ask_user_cb, nullptr), 0);
+	EXPECT_NE(ask_user_init(nullptr, mock_ask_user_cb, &state), 0);
 }
 
 TEST_F(AskUserToolTest, NullCallback) {
@@ -213,7 +213,7 @@ TEST_F(AskUserToolTest, NullCallback) {
 }
 
 TEST_F(AskUserToolTest, QuestionOnly) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
@@ -238,7 +238,7 @@ TEST_F(AskUserToolTest, QuestionOnly) {
 }
 
 TEST_F(AskUserToolTest, QuestionWithChoices) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
@@ -246,7 +246,7 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 			   "\"choices\":[\"red\",\"green\",\"blue\"]}", &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.text.data, nullptr);
-	EXPECT_EQ(g_last_choices_count, 3);
+	EXPECT_EQ(state.choices_count, 3);
 	ASSERT_NE(result.data, nullptr);
 	cJSON *choices = cJSON_GetObjectItem(result.data, "choices");
 	ASSERT_TRUE(cJSON_IsArray(choices));
@@ -260,14 +260,14 @@ TEST_F(AskUserToolTest, QuestionWithChoices) {
 	cJSON *answer = cJSON_GetArrayItem(answers, 0);
 	ASSERT_TRUE(cJSON_IsString(answer));
 	EXPECT_STREQ(answer->valuestring, "red");
-	EXPECT_STREQ(g_last_selection_mode, "single");
-	EXPECT_EQ(g_last_min_choices, 1);
-	EXPECT_EQ(g_last_max_choices, 1);
+	EXPECT_STREQ(state.selection_mode, "single");
+	EXPECT_EQ(state.min_choices, 1);
+	EXPECT_EQ(state.max_choices, 1);
 	tool_result_cleanup(&result);
 }
 
 TEST_F(AskUserToolTest, MultiSelectReturnsAnswersArray) {
-	ask_user_init(&tools, mock_ask_user_multi_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_multi_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
@@ -279,9 +279,9 @@ TEST_F(AskUserToolTest, MultiSelectReturnsAnswersArray) {
 			   &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_STREQ(g_last_selection_mode, "multi");
-	EXPECT_EQ(g_last_min_choices, 2);
-	EXPECT_EQ(g_last_max_choices, 3);
+	EXPECT_STREQ(state.selection_mode, "multi");
+	EXPECT_EQ(state.min_choices, 2);
+	EXPECT_EQ(state.max_choices, 3);
 	cJSON *mode = cJSON_GetObjectItem(result.data, "selection_mode");
 	ASSERT_TRUE(cJSON_IsString(mode));
 	EXPECT_STREQ(mode->valuestring, "multi");
@@ -296,7 +296,7 @@ TEST_F(AskUserToolTest, MultiSelectReturnsAnswersArray) {
 }
 
 TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
-	ask_user_init(&tools, mock_ask_user_multi_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_multi_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
@@ -308,8 +308,8 @@ TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
 			   &result);
 	EXPECT_EQ(rc, 0);
 	ASSERT_NE(result.data, nullptr);
-	EXPECT_EQ(g_last_min_choices, 2);
-	EXPECT_EQ(g_last_max_choices, 2);
+	EXPECT_EQ(state.min_choices, 2);
+	EXPECT_EQ(state.max_choices, 2);
 	cJSON *min = cJSON_GetObjectItem(result.data, "min_choices");
 	cJSON *max = cJSON_GetObjectItem(result.data, "max_choices");
 	ASSERT_TRUE(cJSON_IsNumber(min));
@@ -323,7 +323,7 @@ TEST_F(AskUserToolTest, MultiSelectClampsImpossibleLimits) {
 }
 
 TEST_F(AskUserToolTest, MissingQuestion) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", "{}", &result);
@@ -334,7 +334,7 @@ TEST_F(AskUserToolTest, MissingQuestion) {
 }
 
 TEST_F(AskUserToolTest, EmptyQuestion) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user",
@@ -392,7 +392,7 @@ TEST_F(AskUserToolTest, EmptyStringAnswerIsNoInput) {
 
 TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
 	struct tool_registry other;
-	tool_registry_init(&other);
+	tool_registry_init(NULL, &other);
 	ask_user_init(&tools, mock_ask_user_data_cb, (void *)"first");
 	ask_user_init(&other, mock_ask_user_data_cb, (void *)"second");
 
@@ -426,7 +426,7 @@ TEST_F(AskUserToolTest, RegistryScopedCallbackData) {
 }
 
 TEST_F(AskUserToolTest, NullArgsJson) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", nullptr, &result);
@@ -435,7 +435,7 @@ TEST_F(AskUserToolTest, NullArgsJson) {
 }
 
 TEST_F(AskUserToolTest, MalformedJson) {
-	ask_user_init(&tools, mock_ask_user_cb, nullptr);
+	ask_user_init(&tools, mock_ask_user_cb, &state);
 	struct tool_result result;
 	tool_result_init(&result);
 	int rc = tool_exec(&tools, "ask_user", "not json", &result);
@@ -445,7 +445,7 @@ TEST_F(AskUserToolTest, MalformedJson) {
 
 TEST_F(AskUserToolTest, NoCallback) {
 	struct tool_registry reg2;
-	tool_registry_init(&reg2);
+	tool_registry_init(NULL, &reg2);
 	ask_user_init(&reg2, nullptr, nullptr);
 	struct tool_result result;
 	tool_result_init(&result);

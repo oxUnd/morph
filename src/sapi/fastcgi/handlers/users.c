@@ -212,7 +212,7 @@ void handle_login(request_t *r)
 	}
 
 	expires = (int64_t)time(NULL) + 24 * 3600;
-	auth_token_created(token, user.user_id, user.username, user.role, expires);
+	auth_token_created(r->auth, token, user.user_id, user.username, user.role, expires);
 	obj = cJSON_CreateObject();
 	if (!obj) { reply_500(r, "oom"); return; }
 	cJSON_AddStringToObject(obj, "token", token);
@@ -230,7 +230,7 @@ void handle_login(request_t *r)
 void handle_logout(request_t *r)
 {
 	if (r->auth_hdr && strncmp(r->auth_hdr, "Bearer ", 7) == 0) {
-		auth_token_revoked(r->auth_hdr + 7);
+		auth_token_revoked(r->auth, r->auth_hdr + 7);
 		login_token_revoke(r->auth_hdr + 7);
 	}
 	reply_204(r);

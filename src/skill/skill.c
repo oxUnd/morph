@@ -11,11 +11,12 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-void skill_registry_init(struct skill_registry *reg)
+void skill_registry_init(struct morph_log *logger, struct skill_registry *reg)
 {
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	reg->logger = logger;
 	(void)morph_strmap_init(&reg->by_name, SKILL_MAX_ENTRIES);
 }
 
@@ -141,45 +142,51 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 			continue;
 
 		if (stat(skill_md_path, &sub_st) != 0) {
-			log_dbg("skill_discover: no SKILL.md in %s", subdir);
+			log_dbg(reg ? reg->logger : NULL, "skill_discover: no SKILL.md in %s",
+				subdir);
 			continue;
 		}
 
 		struct skill_frontmatter fm;
 		memset(&fm, 0, sizeof(fm));
-		int rc = skill_parse_frontmatter(skill_md_path, &fm);
+		int rc = skill_parse_frontmatter(reg ? reg->logger : NULL, skill_md_path, &fm);
 		if (rc < 0) {
-			log_warn("skill_discover: failed to parse %s: %d",
+			log_warn(reg ? reg->logger : NULL, "skill_discover: failed to parse %s: %d",
 				 skill_md_path, rc);
 			continue;
 		}
 
 		if (fm.description[0] == '\0') {
-			log_warn("skill_discover: skipping %s, missing description",
+			log_warn(reg ? reg->logger : NULL,
+				 "skill_discover: skipping %s, missing description",
 				 fm.name[0] ? fm.name : ent->d_name);
 			continue;
 		}
 
 		if (fm.name[0] == '\0') {
 			strncpy(fm.name, ent->d_name, sizeof(fm.name) - 1);
-			log_dbg("skill_discover: using dir name as skill name: %s",
-				ent->d_name);
+			log_dbg(reg ? reg->logger : NULL,
+				"skill_discover: using dir name as skill name: %s", ent->d_name);
 		}
 
 		int existing = find_skill(reg, fm.name);
 		if (existing >= 0) {
-			log_info("skill_discover: '%s' already registered, skipping duplicate from %s",
+			log_info(reg ? reg->logger : NULL,
+				 "skill_discover: '%s' already registered, skipping duplicate from "
+				 "%s",
 				 fm.name, subdir);
 			continue;
 		}
 
 		if (reg->count >= SKILL_MAX_ENTRIES) {
-			log_warn("skill_discover: registry full, skipping %s", fm.name);
+			log_warn(reg ? reg->logger : NULL,
+				 "skill_discover: registry full, skipping %s", fm.name);
 			continue;
 		}
 
 		struct skill_entry *e = &reg->entries[reg->count];
 		memset(e, 0, sizeof(*e));
+		e->logger = reg->logger;
 		e->fm = fm;
 		strncpy(e->skill_dir, subdir, sizeof(e->skill_dir) - 1);
 		strncpy(e->skill_md_path, skill_md_path,
@@ -192,7 +199,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 		(void)morph_strmap_set(&reg->by_name, e->fm.name, e);
 		reg->count++;
 		discovered++;
-		log_info("skill_discover: found '%s'", fm.name);
+		log_info(reg ? reg->logger : NULL, "skill_discover: found '%s'", fm.name);
 	}
 
 	closedir(dir);
@@ -213,10 +220,11 @@ int skill_activate(struct skill_entry *skill)
 		char *body = NULL;
 		struct skill_frontmatter fm_tmp;
 		memset(&fm_tmp, 0, sizeof(fm_tmp));
-		int rc = skill_parse_file(skill->skill_md_path, &fm_tmp, &body);
+		int rc = skill_parse_file(skill ? skill->logger : NULL, skill->skill_md_path,
+					  &fm_tmp, &body);
 		if (rc < 0) {
-			log_err("skill_activate: failed to read %s: %d",
-				skill->skill_md_path, rc);
+			log_err(skill ? skill->logger : NULL,
+				"skill_activate: failed to read %s: %d", skill->skill_md_path, rc);
 			return rc;
 		}
 		free(skill->body);
@@ -225,7 +233,7 @@ int skill_activate(struct skill_entry *skill)
 	}
 
 	skill->activated = 1;
-	log_info("skill_activate: activated '%s'", skill->fm.name);
+	log_info(skill ? skill->logger : NULL, "skill_activate: activated '%s'", skill->fm.name);
 	return 0;
 }
 
@@ -237,7 +245,8 @@ void skill_deactivate(struct skill_entry *skill)
 	skill->body = NULL;
 	skill->body_loaded = 0;
 	skill->activated = 0;
-	log_info("skill_deactivate: deactivated '%s'", skill->fm.name);
+	log_info(skill ? skill->logger : NULL, "skill_deactivate: deactivated '%s'",
+		 skill->fm.name);
 }
 
 static int skill_entry_compare(const void *left, const void *right)

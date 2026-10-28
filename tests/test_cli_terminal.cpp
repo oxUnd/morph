@@ -23,13 +23,13 @@ protected:
 	void TearDown() override
 	{
 		cli_terminal_cleanup(&ctx);
-		cli_set_color_enabled(1);
+		cli_set_color_enabled(&ctx, 1);
 	}
 };
 
 TEST_F(CliTerminalTest, NonTerminalStatusPrintsOnlyWhenChanged)
 {
-	cli_set_color_enabled(0);
+	cli_set_color_enabled(&ctx, 0);
 	ASSERT_EQ(cli_terminal_init(&ctx, stdout, -1), 0);
 
 	testing::internal::CaptureStdout();
@@ -66,7 +66,7 @@ TEST_F(CliTerminalTest, TtyViewportCoalescesFramesAndRestoresComposer)
 	size.ws_col = 24;
 	size.ws_row = 12;
 	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
-	cli_set_color_enabled(1);
+	cli_set_color_enabled(&ctx, 1);
 	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
 
 	cli_terminal_live_set(&ctx, "first viewport frame");
@@ -131,7 +131,7 @@ TEST_F(CliTerminalTest, TtyViewportRendersAndConsumesPromptQueue)
 	ASSERT_EQ(cli_command_job_prompt(&job, "second adjustment", nullptr), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "third adjustment", nullptr), 0);
 	ASSERT_EQ(cli_command_job_prompt(&job, "fourth adjustment", nullptr), 0);
-	cli_set_color_enabled(1);
+	cli_set_color_enabled(&ctx, 1);
 	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
 
 	char bytes[BUFSIZ];

@@ -1,6 +1,7 @@
 #ifndef MORPH_SYNC_H
 #define MORPH_SYNC_H
 
+struct morph_log;
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,6 +43,7 @@ struct morph_sync_backend {
 };
 
 struct morph_sync_config {
+	struct morph_log *logger;
 	int enabled;
 	char source_dir[PATH_MAX];
 	/* Optional local directory mapped to the portable output/ namespace. */
@@ -120,8 +122,8 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 int morph_sync_apply_db_replace(struct morph_sync_restore_plan *plan);
 int morph_sync_commit_db_replace(struct morph_sync_restore_plan *plan);
 int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan);
-int morph_sync_recover_db_replacements(const char *source_dir);
-int morph_sync_finalize_db_replacements(const char *source_dir);
+int morph_sync_recover_db_replacements(struct morph_log *logger, const char *source_dir);
+int morph_sync_finalize_db_replacements(struct morph_log *logger, const char *source_dir);
 char *morph_sync_restore_plan_to_json(
 	const struct morph_sync_restore_plan *plan);
 int morph_sync_restore_plan_from_json(const char *json,

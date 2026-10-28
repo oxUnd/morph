@@ -172,7 +172,7 @@ int cli_transcript_capture_begin(struct cli_context *ctx)
 {
 	if (!ctx->transcript)
 		MORPH_RETURN(-EINVAL);
-	return cli_command_capture_styled_begin(&ctx->transcript->deferred);
+	return cli_command_capture_styled_begin(ctx, &ctx->transcript->deferred);
 }
 
 
@@ -401,7 +401,7 @@ static void restore_live(struct cli_context *ctx)
 	morph_buf_cleanup(&live);
 }
 
-static void print_inline(const char *text, int columns)
+static void print_inline(struct cli_context *ctx, const char *text, int columns)
 {
 	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
@@ -414,19 +414,21 @@ static void print_inline(const char *text, int columns)
 	end = utf8_advance_display_width(safe, (size_t)columns);
 	if (*end)
 		end = utf8_advance_display_width(safe, (size_t)(columns - 1));
-	printf("%.*s%s", (int)(end - safe), safe, *end ? "…" : "");
+	printf(ctx, "%.*s%s", (int)(end - safe), safe, *end ? "…" : "");
 	free(safe);
 }
 
 /* Compact feed lines share one width budget and never interpret shell text. */
-static void print_feed_line(const char *prefix, const char *text, const char *color)
+static void print_feed_line(struct cli_context *ctx, const char *prefix, const char *text,
+			    const char *color)
 {
 	if (transcript_columns() < 8)
 		return;
-	printf("%s%s", color, prefix);
-	print_inline(text, transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING -
-		(int)utf8_display_width(prefix));
-	printf(ANSI_RESET "\n");
+	printf(ctx, "%s%s", color, prefix);
+	print_inline(ctx, text,
+		     transcript_columns() - (int)CLI_CONTENT_RIGHT_PADDING -
+			     (int)utf8_display_width(prefix));
+	printf(ctx, ANSI_RESET "\n");
 }
 
 #define TOOL_PREVIEW_LINES 3
@@ -483,7 +485,7 @@ static void tool_preview_text(const struct transcript_tool *tool, const cJSON *d
 	}
 }
 
-static void print_tool_preview(const struct transcript_tool *tool)
+static void print_tool_preview(struct cli_context *ctx, const struct transcript_tool *tool)
 {
 	cJSON *json = cJSON_Parse(tool->result);
 	const cJSON *data = cJSON_GetObjectItemCaseSensitive(json, "data");
@@ -526,7 +528,7 @@ static void print_tool_preview(const struct transcript_tool *tool)
 		if (morph_buf_init(&prefix, 16) != 0)
 			break;
 		tui_tree_prefix(&prefix, NULL, 0, 1, shown != 0, 2);
-		print_feed_line(morph_buf_cstr(&prefix), line, color);
+		print_feed_line(ctx, morph_buf_cstr(&prefix), line, color);
 		morph_buf_cleanup(&prefix);
 		shown++;
 		if (!newline)
@@ -539,29 +541,29 @@ static void print_tool_preview(const struct transcript_tool *tool)
 		if (morph_buf_init(&hint, 64) == 0) {
 			(void)morph_buf_printf(&hint, "+ %zu %s (ctrl+o to expand)",
 				total - shown, total - shown == 1 ? "line" : "lines");
-			print_feed_line("    ", morph_buf_cstr(&hint), ANSI_DIM);
+			print_feed_line(ctx, "    ", morph_buf_cstr(&hint), ANSI_DIM);
 			morph_buf_cleanup(&hint);
 		}
 	}
 	free(safe);
 }
 
-static void print_tool(const struct transcript_tool *tool, int compact)
+static void print_tool(struct cli_context *ctx, const struct transcript_tool *tool, int compact)
 {
 	morph_buf_t line;
 
 	if (morph_buf_init(&line, 128) != 0)
 		return;
 	tool_row(tool, &line, 1);
-	printf("\n%s\n", morph_buf_cstr(&line));
+	printf(ctx, "\n%s\n", morph_buf_cstr(&line));
 	if (compact && tool->state)
-		print_tool_preview(tool);
+		print_tool_preview(ctx, tool);
 	morph_buf_cleanup(&line);
 }
 
 /* Details are complete terminal-safe text, including multiline strings inside
  * JSON envelopes. No tree depth, item count, or byte truncation is applied. */
-static void print_lines(const char *text)
+static void print_lines(struct cli_context *ctx, const char *text)
 {
 	char *safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
@@ -591,52 +593,52 @@ static void print_lines(const char *text)
 		}
 		if (end == line && *line != '\n')
 			end = line + utf8codepointcalcsize(line);
-		printf("    %s%.*s" ANSI_RESET "\n", style, (int)(end - line), line);
+		printf(ctx, "    %s%.*s" ANSI_RESET "\n", style, (int)(end - line), line);
 		line = *end == '\n' ? end + 1 : end;
 	}
 	free(safe);
 }
 
-static void print_value(const cJSON *value, int depth)
+static void print_value(struct cli_context *ctx, const cJSON *value, int depth)
 {
 	cJSON *child;
 	char *json;
 
 	if (cJSON_IsString(value)) {
-		print_lines(value->valuestring);
+		print_lines(ctx, value->valuestring);
 		return;
 	}
 	if (depth < 32 && (cJSON_IsObject(value) || cJSON_IsArray(value))) {
 		cJSON_ArrayForEach(child, value) {
 			if (child->string) {
-				printf("    " ANSI_DIM);
-				print_inline(child->string, transcript_columns() - 10);
-				printf(":" ANSI_RESET "\n");
+				printf(ctx, "    " ANSI_DIM);
+				print_inline(ctx, child->string, transcript_columns() - 10);
+				printf(ctx, ":" ANSI_RESET "\n");
 			}
-			print_value(child, depth + 1);
+			print_value(ctx, child, depth + 1);
 		}
 		return;
 	}
 	json = cJSON_Print(value);
 	if (json) {
-		print_lines(json);
+		print_lines(ctx, json);
 		free(json);
 	}
 }
 
-static void print_payload(const char *text)
+static void print_payload(struct cli_context *ctx, const char *text)
 {
 	cJSON *json = cJSON_Parse(text);
 
 	if (json) {
-		print_value(json, 0);
+		print_value(ctx, json, 0);
 		cJSON_Delete(json);
 	} else {
-		print_lines(text);
+		print_lines(ctx, text);
 	}
 }
 
-static void print_details(const struct transcript_tool *tool, int args,
+static void print_details(struct cli_context *ctx, const struct transcript_tool *tool, int args,
 			  const char *workdir)
 {
 	if (args) {
@@ -644,11 +646,10 @@ static void print_details(const struct transcript_tool *tool, int args,
 			cJSON *json = cJSON_Parse(tool->args);
 
 			if (tool->patch_preview[0])
-				cli_presentation_patch_diff(NULL,
-					tool->patch_preview);
+				cli_presentation_patch_diff(ctx, NULL, tool->patch_preview);
 			else
-				cli_presentation_patch_diff(workdir,
-					json_string(json, "input"));
+				cli_presentation_patch_diff(ctx, workdir,
+							    json_string(json, "input"));
 			cJSON_Delete(json);
 		} else if (strcmp(tool->name, "exec") == 0) {
 			cJSON *json = cJSON_Parse(tool->args);
@@ -657,19 +658,19 @@ static void print_details(const struct transcript_tool *tool, int args,
 			if (morph_buf_init(&command, 128) == 0) {
 				(void)cli_shell_style(&command, json_string(json, "command"),
 					transcript_columns() - 6);
-				printf("    $ %s\n", morph_buf_cstr(&command));
+				printf(ctx, "    $ %s\n", morph_buf_cstr(&command));
 				morph_buf_cleanup(&command);
 			}
 			cJSON_DeleteItemFromObjectCaseSensitive(json, "command");
 			if (json && json->child)
-				print_value(json, 0);
+				print_value(ctx, json, 0);
 			cJSON_Delete(json);
 		} else {
-			print_payload(tool->args);
+			print_payload(ctx, tool->args);
 		}
 	}
 	if (tool->stream.len) {
-		print_lines(morph_buf_cstr(&tool->stream));
+		print_lines(ctx, morph_buf_cstr(&tool->stream));
 	}
 	if (tool->result[0]) {
 		cJSON *json = cJSON_Parse(tool->result);
@@ -681,26 +682,27 @@ static void print_details(const struct transcript_tool *tool, int args,
 		    cJSON_IsString(cJSON_GetObjectItemCaseSensitive(data, "stdout"))) {
 			const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(data, "exit_code");
 
-			printf("\n");
-			print_lines(json_string(data, "stdout"));
-			print_lines(json_string(data, "stderr"));
+			printf(ctx, "\n");
+			print_lines(ctx, json_string(data, "stdout"));
+			print_lines(ctx, json_string(data, "stderr"));
 			if (cJSON_IsNumber(exit_code))
-				printf(ANSI_DIM "    exit %d\n" ANSI_RESET, exit_code->valueint);
+				printf(ctx, ANSI_DIM "    exit %d\n" ANSI_RESET,
+				       exit_code->valueint);
 			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "timed_out")))
-				print_lines("Command timed out");
+				print_lines(ctx, "Command timed out");
 			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stdout_truncated")) ||
 			    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stderr_truncated")))
-				print_lines("Output truncated by the tool");
+				print_lines(ctx, "Output truncated by the tool");
 		} else {
-			print_payload(tool->result);
+			print_payload(ctx, tool->result);
 		}
 		cJSON_Delete(json);
 	}
 	if (tool->error[0])
-		print_lines(tool->error);
+		print_lines(ctx, tool->error);
 }
 
-static void present_frame(struct cli_transcript *tr, morph_buf_t *frame,
+static void present_frame(struct cli_context *ctx, struct cli_transcript *tr, morph_buf_t *frame,
 			  int rows, int columns)
 {
 	const char *current = morph_buf_cstr(frame);
@@ -721,7 +723,7 @@ static void present_frame(struct cli_transcript *tr, morph_buf_t *frame,
 				writing = 1;
 			}
 			fprintf(stdout, "\033[%d;1H", row);
-			printf("%.*s" ANSI_RESET, (int)len, current);
+			printf(ctx, "%.*s" ANSI_RESET, (int)len, current);
 			fprintf(stdout, "\033[K");
 		}
 		current += len + (current[len] == '\n');
@@ -756,7 +758,7 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_row)
 		rows = size.ws_row;
 	height = rows > 5 ? rows - 4 : 1;
-	if (cli_command_capture_styled_begin(&page) != 0) {
+	if (cli_command_capture_styled_begin(ctx, &page) != 0) {
 		morph_buf_cleanup(&page);
 		return;
 	}
@@ -769,21 +771,21 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 
 			if (reasoning->after_tools > i)
 				break;
-			printf(ANSI_DIM "  " CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
-			print_lines(morph_buf_cstr(&reasoning->text));
-			printf("\n");
+			printf(ctx, ANSI_DIM "  " CLI_FEED_SYSTEM " Reasoning\n" ANSI_RESET);
+			print_lines(ctx, morph_buf_cstr(&reasoning->text));
+			printf(ctx, "\n");
 			reasoning_index++;
 		}
 		if (i < tr->tools.nelts) {
 			tool = morph_array_get(&tr->tools, i);
-			print_tool(tool, 0);
-			print_details(tool, 1, transcript_workdir(ctx));
-			printf("\n");
+			print_tool(ctx, tool, 0);
+			print_details(ctx, tool, 1, transcript_workdir(ctx));
+			printf(ctx, "\n");
 		}
 	}
 	if (!tr->tools.nelts && !tr->reasoning.nelts)
-		printf("  No activity yet.\n");
-	cli_command_capture_end();
+		printf(ctx, "  No activity yet.\n");
+	cli_command_capture_end(ctx);
 	for (const char *p = morph_buf_cstr(&page); *p; p++)
 		lines += *p == '\n';
 	if (scroll == INT_MAX)
@@ -808,13 +810,13 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 		morph_buf_cleanup(&page);
 		return;
 	}
-	if (cli_command_capture_styled_begin(&frame) != 0) {
+	if (cli_command_capture_styled_begin(ctx, &frame) != 0) {
 		morph_buf_cleanup(&frame);
 		morph_buf_cleanup(&page);
 		return;
 	}
-	printf(ANSI_BOLD "  Turn details" ANSI_RESET
-	       ANSI_DIM "  · %zu calls\n\n" ANSI_RESET, tr->tools.nelts);
+	printf(ctx, ANSI_BOLD "  Turn details" ANSI_RESET ANSI_DIM "  · %zu calls\n\n" ANSI_RESET,
+	       tr->tools.nelts);
 	line = morph_buf_cstr(&page);
 	for (size_t i = 0; i < tr->view_offset && *line; i++) {
 		const char *next = strchr(line, '\n');
@@ -827,14 +829,14 @@ void cli_transcript_view_render(struct cli_context *ctx, int scroll)
 		const char *style = strncmp(line, "    +", 5) == 0 ? ANSI_GREEN :
 			(strncmp(line, "    -", 5) == 0 ? ANSI_RED : ANSI_DIM);
 
-		printf("%s%.*s" ANSI_RESET "\n", style, (int)len, line);
+		printf(ctx, "%s%.*s" ANSI_RESET "\n", style, (int)len, line);
 		line = next ? next + 1 : line + len;
 	}
-	printf("\n");
-	print_inline("  ctrl+o / esc back · PgUp/PgDn scroll · End follow",
+	printf(ctx, "\n");
+	print_inline(ctx, "  ctrl+o / esc back · PgUp/PgDn scroll · End follow",
 		     transcript_columns() - 1);
-	cli_command_capture_end();
-	present_frame(tr, &frame, rows, transcript_columns());
+	cli_command_capture_end(ctx);
+	present_frame(ctx, tr, &frame, rows, transcript_columns());
 	morph_buf_cleanup(&frame);
 	morph_buf_cleanup(&page);
 }
@@ -892,7 +894,7 @@ void cli_transcript_finish(struct cli_context *ctx)
 			tool->state = -1;
 			tool->ended = transcript_now();
 			tool->error = "Interrupted before a result was received";
-			print_tool(tool, !ctx->tool_details);
+			print_tool(ctx, tool, !ctx->tool_details);
 		}
 	}
 	tr->finished = 1;
@@ -1142,7 +1144,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		if (!tool->result[0]) {
 			tool->result = save_text(tr, json_string(ev->data, "text"));
 			if (ctx->tool_details)
-				print_payload(tool->result);
+				print_payload(ctx, tool->result);
 		}
 		return 1;
 	}
@@ -1164,9 +1166,9 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		cli_presentation_flush_stream(ctx);
 		if (!quiet_poll &&
 		    (ctx->tool_details || !isatty(STDOUT_FILENO)))
-			print_tool(tool, !ctx->tool_details);
+			print_tool(ctx, tool, !ctx->tool_details);
 		if (ctx->tool_details)
-			print_details(tool, 1, transcript_workdir(ctx));
+			print_details(ctx, tool, 1, transcript_workdir(ctx));
 		restore_live(ctx);
 		return 1;
 	}
@@ -1182,7 +1184,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 			MORPH_RETURN(rc);
 		if (ctx->tool_details) {
 			cli_terminal_live_clear(ctx);
-			print_lines(morph_buf_cstr(&tool->stream) + offset);
+			print_lines(ctx, morph_buf_cstr(&tool->stream) + offset);
 		}
 		restore_live(ctx);
 		return 1;
@@ -1198,9 +1200,9 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	summarize_result(tr, tool);
 	cli_terminal_live_clear(ctx);
 	if (ctx->tool_details || !process_poll_is_running(tool))
-		print_tool(tool, !ctx->tool_details);
+		print_tool(ctx, tool, !ctx->tool_details);
 	if (ctx->tool_details) {
-		print_details(tool, 0, transcript_workdir(ctx));
+		print_details(ctx, tool, 0, transcript_workdir(ctx));
 	}
 
 	restore_live(ctx);

@@ -31,57 +31,6 @@
 #include <time.h>
 #include <limits.h>
 
-volatile sig_atomic_t react_sigint_flag = 0;
-
-#define REACT_ACTIVE_MAX 16
-
-static struct react_context *react_active_stack[REACT_ACTIVE_MAX];
-static int react_active_count_val = 0;
-static pthread_mutex_t react_active_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-int react_active_count(void)
-{
-	int c;
-
-	pthread_mutex_lock(&react_active_mutex);
-	c = react_active_count_val;
-	pthread_mutex_unlock(&react_active_mutex);
-	return c;
-}
-
-void react_active_push(struct react_context *ctx)
-{
-	pthread_mutex_lock(&react_active_mutex);
-	if (react_active_count_val < REACT_ACTIVE_MAX)
-		react_active_stack[react_active_count_val++] = ctx;
-	pthread_mutex_unlock(&react_active_mutex);
-}
-
-void react_active_pop(struct react_context *ctx)
-{
-	pthread_mutex_lock(&react_active_mutex);
-	for (int i = react_active_count_val - 1; i >= 0; i--) {
-		if (react_active_stack[i] == ctx) {
-			react_active_stack[i] =
-				react_active_stack[react_active_count_val - 1];
-			react_active_count_val--;
-			break;
-		}
-	}
-	pthread_mutex_unlock(&react_active_mutex);
-}
-
-void react_cancel_active(void)
-{
-	pthread_mutex_lock(&react_active_mutex);
-	for (int i = 0; i < react_active_count_val; i++) {
-		react_active_stack[i]->cancelled = 1;
-		morph_cancel_token_cancel(&react_active_stack[i]->cancel_token);
-	}
-	pthread_mutex_unlock(&react_active_mutex);
-	react_sigint_flag = 1;
-}
-
 /*
  * Check whether a tool requires human-in-the-loop approval.
  *
@@ -495,8 +444,6 @@ static int react_finish_run(struct react_context *ctx)
 {
 	int rc = react_finish(ctx);
 
-	react_sigint_flag = 0;
-	http_clear_signal_cancel();
 	if (ctx) {
 		ctx->runtime_context = NULL;
 		ctx->project_context = NULL;
@@ -833,8 +780,7 @@ static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 	deadline = timeout_seconds > 0 ? time(NULL) + timeout_seconds : 0;
 
 	pthread_mutex_lock(&call->mutex);
-	while (!call->completed && !(cancelled && *cancelled) &&
-	       !react_sigint_flag) {
+	while (!call->completed && !(cancelled && *cancelled)) {
 		if (deadline > 0 && time(NULL) >= deadline)
 			break;
 		clock_gettime(CLOCK_REALTIME, &ts);
@@ -845,8 +791,6 @@ static int join_tool_thread(pthread_t thread, volatile sig_atomic_t *cancelled,
 		}
 		pthread_cond_timedwait(&call->cond, &call->mutex, &ts);
 	}
-	if (!call->completed && react_sigint_flag && cancelled)
-		*cancelled = 1;
 	if (call->completed || !cancelled || !*cancelled) {
 		if (!call->completed && deadline > 0 &&
 		    time(NULL) >= deadline) {
@@ -932,8 +876,6 @@ static void *async_tool_exec(void *arg)
 		pthread_cond_wait(&call->cond, &call->mutex);
 	pthread_mutex_unlock(&call->mutex);
 
-	http_set_cancel_flag(&call->cancelled);
-	http_set_cancel_token(&call->cancel_token);
 
 	int notify_done = 0;
 
@@ -957,15 +899,20 @@ static void *async_tool_exec(void *arg)
 
 		tool_result_init(&res);
 		runtime = call->react->tool_runtime;
+		runtime.http.logger = call->react->logger;
+		runtime.http.cancel_flag = &call->cancelled;
+		runtime.http.cancel_token = &call->cancel_token;
 		runtime.event_cb = call->react->event_cb;
 		runtime.event_user_data = call->react->event_user_data;
 		runtime.turn_id = call->react->turn_id[0]
 			? call->react->turn_id : NULL;
 		runtime.tool_call_id = call->tool_call_id;
-		tool_runtime_set_current(&runtime);
+		runtime.ask_user_fn = call->react->ask_user_fn;
+		runtime.ask_user_user_data = call->react->ask_user_data;
+		runtime.sub_agent_depth = call->react->sub_agent_depth;
+		res.runtime = &runtime;
 		rc = tool_exec(call->tools, call->tool_name,
 			       call->tool_args, &res);
-		tool_runtime_set_current(NULL);
 
 		pthread_mutex_lock(&call->mutex);
 		int was_cancelled = call->cancelled;
@@ -999,8 +946,6 @@ static void *async_tool_exec(void *arg)
 		notify_done = !was_cancelled;
 	}
 
-	http_set_cancel_flag(NULL);
-	http_set_cancel_token(NULL);
 
 	if (notify_done) {
 		enum react_output_status status = call->rc < 0 ?
@@ -1122,6 +1067,7 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	struct react_context *ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
 		return NULL;
+	ctx->logger = tools ? tools->logger : NULL;
 	ctx->tools = tools;
 	ctx->tokenizer = tok;
 	ctx->max_iterations = 2048;
@@ -1709,11 +1655,6 @@ static int react_stream_cb(const char *token, void *user_data)
 		sd->acc_len += tlen;
 		sd->accumulated[sd->acc_len] = '\0';
 	}
-	if (react_sigint_flag) {
-		if (sd->cancelled)
-			*sd->cancelled = 1;
-		react_sigint_flag = 0;
-	}
 	if (sd->cancelled && *sd->cancelled)
 		return -EINTR;
 	if (sd->ctx->hook_stop_active)
@@ -1727,11 +1668,6 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 	struct react_stream_data *sd = user_data;
 
 	if (kind == LLM_STREAM_REASONING) {
-		if (react_sigint_flag) {
-			if (sd->cancelled)
-				*sd->cancelled = 1;
-			react_sigint_flag = 0;
-		}
 		if (sd->cancelled && *sd->cancelled)
 			return -EINTR;
 		react_output_emit(sd->user_cb, sd->user_data,
@@ -2018,8 +1954,9 @@ static int react_track_tool_failure(struct react_context *ctx,
 	if (ctx->tool_fail_count < ctx->tool_max_retries)
 		return 0;
 	const char *fail_name = ctx->tool_fail_name ? ctx->tool_fail_name : "(unknown)";
-	log_warn("react_run: tool '%s' failed %d times consecutively, forcing Final",
-		 fail_name, ctx->tool_fail_count);
+	log_warn(ctx ? ctx->logger : NULL,
+		 "react_run: tool '%s' failed %d times consecutively, forcing Final", fail_name,
+		 ctx->tool_fail_count);
 	char fail_msg[256];
 	snprintf(fail_msg, sizeof(fail_msg),
 		 "Tool '%s' repeatedly failed. Please try a different approach.",
@@ -2097,7 +2034,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	}
 
 	if (gr.verdict == GUARDRAIL_PASS) {
-		log_info("guardrail: PASS");
+		log_info(ctx ? ctx->logger : NULL, "guardrail: PASS");
 		return 0;
 	}
 	if (answer_is_empty &&
@@ -2107,7 +2044,7 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 		const char *detail =
 			"LLM repeatedly returned an empty response.";
 
-		log_warn("guardrail: %s", detail);
+		log_warn(ctx ? ctx->logger : NULL, "guardrail: %s", detail);
 		free(ctx->final_answer);
 		ctx->final_answer = strdup(detail);
 		if (!ctx->final_answer)
@@ -2119,9 +2056,8 @@ static int react_handle_guardrail_retry(struct react_context *ctx,
 	}
 
 	ctx->guardrail_retry_count++;
-	log_info("guardrail: %s (attempt %d/%d)",
-		 gr.reason, ctx->guardrail_retry_count,
-		 ctx->guardrail.max_retries);
+	log_info(ctx ? ctx->logger : NULL, "guardrail: %s (attempt %d/%d)", gr.reason,
+		 ctx->guardrail_retry_count, ctx->guardrail.max_retries);
 
 	struct react_step *refl_step = react_step_create(ctx->turn_arena,
 		REACT_STEP_REFLECTION, gr.reason, NULL, NULL, NULL);
@@ -2191,7 +2127,7 @@ static int react_check_input_guardrail(struct react_context *ctx,
 	if (gr.verdict != GUARDRAIL_FAIL)
 		return 0;
 
-	log_info("guardrail[input]: %s", gr.reason);
+	log_info(ctx ? ctx->logger : NULL, "guardrail[input]: %s", gr.reason);
 	action = (gr.triggered_rule && gr.triggered_rule->action_text[0])
 		? gr.triggered_rule->action_text : "";
 	snprintf(msg, sizeof(msg), "Input rejected: %s\n%s",
@@ -2400,8 +2336,8 @@ static int react_prepare_compacted_messages(struct react_context *ctx,
 		MORPH_RETURN(-ENOMEM);
 	rc = morph_array_init(replacement, 64, sizeof(struct chat_message));
 	if (rc == 0)
-		rc = agent_history_build_chat_messages(ctx->history_items,
-			replacement, *arena);
+		rc = agent_history_build_chat_messages(ctx ? ctx->logger : NULL, ctx->history_items,
+						       replacement, *arena);
 	return rc;
 }
 
@@ -2436,8 +2372,9 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	ctx->in_turn_compaction_count++;
 	snprintf(trigger_kind, sizeof(trigger_kind), "in_turn_%d",
 		ctx->in_turn_compaction_count);
-	log_info("react: in-turn compaction at iteration %d (%d >= %d tokens)",
-		 iteration, before_tokens, trigger_tokens);
+	log_info(ctx ? ctx->logger : NULL,
+		 "react: in-turn compaction at iteration %d (%d >= %d tokens)", iteration,
+		 before_tokens, trigger_tokens);
 	(void)react_emit_compaction_event(ctx, "react.compaction.begin",
 		"begin", iteration, before_tokens, before_tokens,
 		trigger_tokens, 0);
@@ -2463,8 +2400,10 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		} else {
 			previous_target_ratio = ctx->compress.compress_target_ratio;
 			target = target > overhead ? target - overhead : 0;
-			log_info("react: compaction budget: fixed=%d, history_target=%d, "
-				 "trigger=%d tokens", overhead, target, trigger_tokens);
+			log_info(ctx ? ctx->logger : NULL,
+				 "react: compaction budget: fixed=%d, history_target=%d, "
+				 "trigger=%d tokens",
+				 overhead, target, trigger_tokens);
 			ctx->compress.compress_target_ratio = (double)target /
 				(double)ctx->compress.max_context_tokens;
 			rc = agent_history_compact_with_trigger(ctx, 1, trigger_kind);
@@ -2483,9 +2422,10 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 			MORPH_SET_ERR(rc, after_tokens);
 		else if (after_tokens >= trigger_tokens) {
 			rc = MORPH_ERR_LLM;
-			log_err("react: active context remains over budget after "
-				"compaction (%d >= %d tokens)", after_tokens,
-				trigger_tokens);
+			log_err(ctx ? ctx->logger : NULL,
+				"react: active context remains over budget after "
+				"compaction (%d >= %d tokens)",
+				after_tokens, trigger_tokens);
 		}
 	}
 	if (rc == 0 && compacted) {
@@ -2493,7 +2433,8 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 						   ? ctx->ineffective_compactions + 1
 						   : 0;
 		if (ctx->ineffective_compactions >= 3) {
-			log_err("compaction thrashing: three checkpoints reduced context by less "
+			log_err(ctx ? ctx->logger : NULL,
+				"compaction thrashing: three checkpoints reduced context by less "
 				"than 5%%");
 			rc = MORPH_ERR_CONTEXT_LIMIT;
 		}
@@ -2516,7 +2457,7 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		(void)model_history_compaction_attempt_add(ctx->history_db,
 			ctx->history_session_id, ctx->turn_id, trigger_kind,
 			"failed", before_tokens, 0, rc, morph_strerror(rc));
-		log_err("react: in-turn compaction failed: %s",
+		log_err(ctx ? ctx->logger : NULL, "react: in-turn compaction failed: %s",
 			morph_strerror(rc));
 		(void)react_emit_compaction_event(ctx, "react.compaction.failed",
 			"failed", iteration, before_tokens, before_tokens,
@@ -2528,7 +2469,7 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	arena_destroy(ctx->message_arena);
 	ctx->message_arena = replacement_arena;
 	*messages = replacement;
-	log_info("react: in-turn compaction completed (%d -> %d tokens)",
+	log_info(ctx ? ctx->logger : NULL, "react: in-turn compaction completed (%d -> %d tokens)",
 		 before_tokens, after_tokens);
 	(void)react_emit_compaction_event(ctx, "react.compaction.completed",
 		"end", iteration, before_tokens, after_tokens,
@@ -2548,8 +2489,8 @@ static int react_prepare_messages(struct react_context *ctx,
 	if (morph_array_init(messages, 64, sizeof(struct chat_message)) < 0)
 		return -ENOMEM;
 	if (ctx->history_enabled) {
-		int rc = agent_history_build_chat_messages(ctx->history_items,
-			messages, ctx->message_arena);
+		int rc = agent_history_build_chat_messages(
+			ctx ? ctx->logger : NULL, ctx->history_items, messages, ctx->message_arena);
 
 		if (rc != 0)
 			return rc;
@@ -2596,7 +2537,7 @@ static void react_complete_max_iterations(struct react_context *ctx)
 	if (ctx->state == REACT_STATE_DONE || ctx->state == REACT_STATE_ABORT)
 		return;
 
-	log_warn("react_run: max iterations (%d) reached, aborting",
+	log_warn(ctx ? ctx->logger : NULL, "react_run: max iterations (%d) reached, aborting",
 		 ctx->max_iterations);
 	if (!ctx->final_answer) {
 		cur = ctx->steps;
@@ -2670,7 +2611,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		agent_history_record_request(ctx, llm, system_prompt, messages,
 			msg_count, active_tools, active_tool_count) : 0;
 	if (status != 0)
-		log_warn("could not capture model input: %s", morph_strerror(status));
+		log_warn(ctx ? ctx->logger : NULL, "could not capture model input: %s",
+			 morph_strerror(status));
 
 	memset(&sd, 0, sizeof(sd));
 	sd.ctx = ctx;
@@ -2684,8 +2626,13 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	if (sd.accumulated)
 		sd.accumulated[0] = '\0';
 
-	http_set_interrupt_check(ctx->prompt_pending_fn,
-				 ctx->action_drain_user_data);
+	struct model request_model = *llm;
+
+	llm = &request_model;
+	llm->http.cancel_token = &ctx->cancel_token;
+	llm->http.cancel_flag = &ctx->cancelled;
+	llm->http.interrupt_check = ctx->prompt_pending_fn;
+	llm->http.interrupt_user_data = ctx->action_drain_user_data;
 	if (llm->chat_with_tools_stream) {
 		status = llm->chat_with_tools_stream(
 			llm, arena, system_prompt, messages,
@@ -2710,7 +2657,6 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 		if (!hist_msgs && hist_n > 0) {
 			react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
 					 -ENOMEM, "internal_error");
-			http_set_interrupt_check(NULL, NULL);
 			MORPH_RETURN(-ENOMEM);
 		}
 		if (hist_msgs) {
@@ -2729,7 +2675,9 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			response->arena = arena;
 		}
 	}
-	http_set_interrupt_check(NULL, NULL);
+	((struct model *)ctx->llm_model)->error_info = llm->error_info;
+	memcpy(((struct model *)ctx->llm_model)->last_error, llm->last_error,
+	       sizeof(llm->last_error));
 	if (status >= 0) {
 		int flush_rc = react_stream_flush(&sd);
 		if (flush_rc != 0)
@@ -2745,7 +2693,7 @@ static int react_handle_llm_cancelled(struct react_context *ctx,
 
 	if (!ctx->cancelled)
 		return 0;
-	log_info("react_run: cancelled during LLM call");
+	log_info(ctx ? ctx->logger : NULL, "react_run: cancelled during LLM call");
 	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				"LLM call interrupted by user",
 				NULL, NULL, NULL);
@@ -2773,7 +2721,7 @@ static int react_handle_llm_error(struct react_context *ctx,
 
 	if (status >= 0)
 		return 0;
-	log_err("react_run: LLM call failed: %s", morph_strerror(status));
+	log_err(ctx ? ctx->logger : NULL, "react_run: LLM call failed: %s", morph_strerror(status));
 
 	if (model && model->last_error[0])
 		react_set_error_detail(ctx, model->last_error);
@@ -3091,7 +3039,7 @@ static const char *react_apply_tool_output_guardrail(
 	if (ggr.verdict != GUARDRAIL_FAIL)
 		return obs_text;
 
-	log_info("guardrail[tool_output]: %s", ggr.reason);
+	log_info(ctx ? ctx->logger : NULL, "guardrail[tool_output]: %s", ggr.reason);
 	gaction = (ggr.triggered_rule &&
 		   ggr.triggered_rule->action_text[0])
 		? ggr.triggered_rule->action_text
@@ -3191,11 +3139,6 @@ static int react_join_tool_calls(struct react_context *ctx,
 				 react_output_cb cb, void *user_data)
 {
 	int num_tools = response->tool_call_count;
-
-	if (react_sigint_flag) {
-		ctx->cancelled = 1;
-		react_sigint_flag = 0;
-	}
 
 	for (int i = 0; i < num_tools; i++) {
 		struct async_tool_call *call;
@@ -3434,11 +3377,6 @@ static int react_drain_actions(struct react_context *ctx,
 
 	if (prompt_count)
 		*prompt_count = 0;
-	if (react_sigint_flag) {
-		ctx->cancelled = 1;
-		morph_cancel_token_cancel(&ctx->cancel_token);
-		react_sigint_flag = 0;
-	}
 
 	while (ctx->action_drain_fn) {
 		cJSON *payload;
@@ -3539,7 +3477,7 @@ static int react_drain_actions(struct react_context *ctx,
 		return 0;
 
 	if (iteration >= 0) {
-		log_info("react_run: cancelled by user at iteration %d",
+		log_info(ctx ? ctx->logger : NULL, "react_run: cancelled by user at iteration %d",
 			 iteration);
 	}
 	react_set_result(ctx, REACT_OUTCOME_CANCELLED, -ECANCELED,
@@ -3564,10 +3502,11 @@ static void react_maybe_compress_context(struct react_context *ctx)
 				ctx->compress.summarize_user_data,
 				ctx->session_arena,
 				&cr);
-	log_info("auto-compress: detected+removed %d, summarized %d "
+	log_info(ctx ? ctx->logger : NULL,
+		 "auto-compress: detected+removed %d, summarized %d "
 		 "messages (%d -> %d tokens)",
-		 cr.messages_removed, cr.messages_summarized,
-		 cr.original_tokens, cr.compressed_tokens);
+		 cr.messages_removed, cr.messages_summarized, cr.original_tokens,
+		 cr.compressed_tokens);
 	free(cr.summary);
 	key_info_free(cr.preserved);
 	(void)rc;
@@ -3699,7 +3638,8 @@ static int react_retry_incomplete_final(struct react_context *ctx,
 	    !slots[1].content)
 		MORPH_RETURN(-ENOMEM);
 	ctx->incomplete_final_retry_count++;
-	log_warn("react: rejected continuation note as Final after compaction");
+	log_warn(ctx ? ctx->logger : NULL,
+		 "react: rejected continuation note as Final after compaction");
 	(void)react_emit_text_event(ctx, MORPH_EVENT_REACT,
 		"react.final.retry", "retry", "incomplete final response",
 		proposed);
@@ -3885,7 +3825,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 	}
 	ctx->history_error = 0;
 	morph_cancel_token_reset(&ctx->cancel_token);
-	http_clear_signal_cancel();
 	react_set_state(ctx, REACT_STATE_THINKING);
 	react_emit_text_event(ctx, MORPH_EVENT_REACT, "react.turn.begin",
 			      "begin", "turn started", user_input);
@@ -3964,8 +3903,9 @@ int react_run(struct react_context *ctx, const char *user_input,
 		global_dir = expanded_global;
 	}
 	if (context_rc == 0)
-		context_rc = project_context_build(&project_environment, global_dir,
-			ctx->turn_arena, &ctx->project_context);
+		context_rc =
+			project_context_build(ctx ? ctx->logger : NULL, &project_environment,
+					      global_dir, ctx->turn_arena, &ctx->project_context);
 	free(expanded_global);
 	if (context_rc != 0) {
 		react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, context_rc,
@@ -3997,9 +3937,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 
 	morph_array_t tool_descriptors = {0};
 
-	react_active_push(ctx);
-	http_set_cancel_flag(&ctx->cancelled);
-	http_set_cancel_token(&ctx->cancel_token);
 
 	for (int iteration = 0; iteration < ctx->max_iterations; iteration++) {
 		/* Persistent messages and steps own copies of response data. */
@@ -4084,12 +4021,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 		if (ctx->outcome != REACT_OUTCOME_NONE) {
 			chat_response_free(&response);
 			break;
-		}
-
-		if (react_sigint_flag) {
-			ctx->cancelled = 1;
-			morph_cancel_token_cancel(&ctx->cancel_token);
-			react_sigint_flag = 0;
 		}
 		if (react_handle_llm_cancelled(ctx, &response)) {
 			chat_response_free(&response);
@@ -4234,10 +4165,6 @@ int react_run(struct react_context *ctx, const char *user_input,
 		chat_response_free(&response);
 	}
 
-	http_set_cancel_flag(NULL);
-	http_set_cancel_token(NULL);
-	http_clear_signal_cancel();
-	react_active_pop(ctx);
 
 	react_complete_max_iterations(ctx);
 	react_append_final_message(ctx);

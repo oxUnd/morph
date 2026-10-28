@@ -70,10 +70,9 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 	int rc = runtime_session_create_and_select(ctx->runtime, name, &s);
 	if (rc == 0) {
 		ctx->session_auto_named = !auto_named;
-		CMD_OK("created and switched to session: %s [%s]", name,
-		       s.display_id);
+		CMD_OK(ctx, "created and switched to session: %s [%s]", name, s.display_id);
 	} else {
-		CMD_ERROR("failed to create session: %s", name);
+		CMD_ERROR(ctx, "failed to create session: %s", name);
 	}
 	return rc;
 }
@@ -82,7 +81,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
-		CMD_ERROR("usage: /switch <name|id|^N>");
+		CMD_ERROR(ctx, "usage: /switch <name|id|^N>");
 		return -EINVAL;
 	}
 
@@ -96,7 +95,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 			errno = 0;
 			long n = strtol(name + 1, &end, 10);
 			if (*end != '\0' || errno != 0 || n < 1) {
-				CMD_ERROR("session not found: %s", name);
+				CMD_ERROR(ctx, "session not found: %s", name);
 				return -ENOENT;
 			}
 			idx = (int)n;
@@ -130,24 +129,24 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		if (rc != 0)
 			return rc;
 		ctx->session_auto_named = 1;
-		CMD_OK("switched to session: %s", s.name);
+		CMD_OK(ctx, "switched to session: %s", s.name);
 	} else {
-		CMD_ERROR("session not found: %s", name);
+		CMD_ERROR(ctx, "session not found: %s", name);
 	}
 	return rc;
 }
 
 #define RESUME_PAGE_SIZE 10
 
-static int resume_page(struct session *list, int count, int page,
+static int resume_page(struct cli_context *ctx, struct session *list, int count, int page,
 		       int64_t current_id, int page_size)
 {
 	int start = page * page_size;
 	int end = count - start > page_size ?
 		start + page_size : count;
 
-	CMD_HEADER("resume · page %d/%d · %d sessions", page + 1,
-		   (count - 1) / page_size + 1, count);
+	CMD_HEADER(ctx, "resume · page %d/%d · %d sessions", page + 1, (count - 1) / page_size + 1,
+		   count);
 	for (int i = start; i < end; i++) {
 		char number[16];
 		morph_buf_t metadata;
@@ -163,10 +162,8 @@ static int resume_page(struct session *list, int count, int page,
 					 list[i].created_at);
 		if (rc == 0) {
 			snprintf(number, sizeof(number), "%d", i - start + 1);
-			cli_list_row(number, list[i].name,
-				     morph_buf_cstr(&metadata),
-				     list[i].id == current_id, i == end - 1,
-				     cli_list_columns());
+			cli_list_row(ctx, number, list[i].name, morph_buf_cstr(&metadata),
+				     list[i].id == current_id, i == end - 1, cli_list_columns());
 		}
 		morph_buf_cleanup(&metadata);
 		if (rc != 0)
@@ -428,7 +425,7 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 	if (argc > 1)
 		return cmd_switch(ctx, argc, argv);
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
-		CMD_ERROR("use /resume <name|id> in JSON mode");
+		CMD_ERROR(ctx, "use /resume <name|id> in JSON mode");
 		MORPH_RETURN(-EINVAL);
 	}
 	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
@@ -436,7 +433,7 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 		MORPH_RETURN(rc);
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	if (count == 0)
-		CMD_OK("no sessions to resume");
+		CMD_OK(ctx, "no sessions to resume");
 	if (count > 0 && cli_setup_ui_available(stdin, stdout)) {
 		int index;
 
@@ -446,9 +443,9 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 				list[index].id, &selected);
 			if (rc == 0) {
 				ctx->session_auto_named = 1;
-				CMD_OK("resumed session: %s", selected.name);
+				CMD_OK(ctx, "resumed session: %s", selected.name);
 			} else {
-				CMD_ERROR("failed to resume session: %s", morph_strerror(rc));
+				CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
 			}
 		}
 		runtime_session_list_free(list);
@@ -459,12 +456,13 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 		char *end;
 		long number;
 
-		rc = resume_page(list, count, page, current_id, RESUME_PAGE_SIZE);
+		rc = resume_page(ctx, list, count, page, current_id, RESUME_PAGE_SIZE);
 		if (rc != 0)
 			break;
-		printf("  Select 1-%d · n next · p previous · q cancel: ",
-		       count - page * RESUME_PAGE_SIZE > RESUME_PAGE_SIZE ?
-		       RESUME_PAGE_SIZE : count - page * RESUME_PAGE_SIZE);
+		printf(ctx, "  Select 1-%d · n next · p previous · q cancel: ",
+		       count - page * RESUME_PAGE_SIZE > RESUME_PAGE_SIZE
+			       ? RESUME_PAGE_SIZE
+			       : count - page * RESUME_PAGE_SIZE);
 		fflush(stdout);
 		if (!fgets(answer, sizeof(answer), stdin))
 			break;
@@ -472,7 +470,7 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 			int ch;
 
 			while ((ch = getchar()) != '\n' && ch != EOF) {}
-			CMD_ERROR("invalid selection");
+			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
 		answer[strcspn(answer, "\r\n")] = '\0';
@@ -482,14 +480,14 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 			if (page < (count - 1) / RESUME_PAGE_SIZE)
 				page++;
 			else
-				CMD_ERROR("already on the last page");
+				CMD_ERROR(ctx, "already on the last page");
 			continue;
 		}
 		if (strcmp(answer, "p") == 0) {
 			if (page > 0)
 				page--;
 			else
-				CMD_ERROR("already on the first page");
+				CMD_ERROR(ctx, "already on the first page");
 			continue;
 		}
 		errno = 0;
@@ -497,7 +495,7 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 		if (errno || end == answer || *end || number < 1 ||
 		    number > RESUME_PAGE_SIZE ||
 		    number > count - page * RESUME_PAGE_SIZE) {
-			CMD_ERROR("invalid selection");
+			CMD_ERROR(ctx, "invalid selection");
 			continue;
 		}
 		rc = runtime_session_select_existing(ctx->runtime,
@@ -505,9 +503,9 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 			&selected);
 		if (rc == 0) {
 			ctx->session_auto_named = 1;
-			CMD_OK("resumed session: %s", selected.name);
+			CMD_OK(ctx, "resumed session: %s", selected.name);
 		} else {
-			CMD_ERROR("failed to resume session: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
 		}
 		break;
 	}
@@ -519,16 +517,16 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *new_name = cli_cmd_arg(argc, argv, 1);
 	if (!new_name) {
-		CMD_ERROR("usage: /rename <new_name>");
+		CMD_ERROR(ctx, "usage: /rename <new_name>");
 		return -EINVAL;
 	}
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	int rc = runtime_session_rename_and_update(ctx->runtime, current_id, new_name);
 	if (rc == 0) {
-		CMD_OK("session renamed to: %s", new_name);
+		CMD_OK(ctx, "session renamed to: %s", new_name);
 	} else {
-		CMD_ERROR("failed to rename session");
+		CMD_ERROR(ctx, "failed to rename session");
 	}
 	return rc;
 }
@@ -537,7 +535,7 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
-		CMD_ERROR("usage: /delete <name|id>");
+		CMD_ERROR(ctx, "usage: /delete <name|id>");
 		return -EINVAL;
 	}
 	int64_t id = -1;
@@ -552,20 +550,20 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 			id = -1;
 	}
 	if (id < 0) {
-		CMD_ERROR("session not found: %s", name);
+		CMD_ERROR(ctx, "session not found: %s", name);
 		return -ENOENT;
 	}
 	int64_t current_id;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	if (id == current_id) {
-		CMD_ERROR("cannot delete current session, switch first");
+		CMD_ERROR(ctx, "cannot delete current session, switch first");
 		return -EINVAL;
 	}
 	int rc = runtime_session_delete_and_update(ctx->runtime, id);
 	if (rc == 0) {
-		CMD_OK("deleted session: %s", name);
+		CMD_OK(ctx, "deleted session: %s", name);
 	} else {
-		CMD_ERROR("failed to delete session");
+		CMD_ERROR(ctx, "failed to delete session");
 	}
 	return rc;
 }
@@ -659,7 +657,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			errno = 0;
 			sequence = strtoll(value, &end, 10);
 			if (errno || end == value || *end || sequence <= 0) {
-				CMD_ERROR("history entry must be a positive sequence number");
+				CMD_ERROR(ctx, "history entry must be a positive sequence number");
 				MORPH_RETURN(-EINVAL);
 			}
 		}
@@ -672,13 +670,13 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			errno = 0;
 			value = strtol(argv[i], &end, 10);
 			if (errno || *end || value <= 0 || value > INT_MAX) {
-				CMD_ERROR("history count must be a positive integer");
+				CMD_ERROR(ctx, "history count must be a positive integer");
 				MORPH_RETURN(-EINVAL);
 			}
 			n = (int)value;
 		}
 		else {
-			CMD_ERROR("unknown or incomplete history option: %s", argv[i]);
+			CMD_ERROR(ctx, "unknown or incomplete history option: %s", argv[i]);
 			MORPH_RETURN(-EINVAL);
 		}
 	}
@@ -692,19 +690,18 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			runtime_session_history_diagnose(ctx->runtime, &report);
 
 		if (rc != 0) {
-			CMD_ERROR("history %s failed: %s",
-				repair ? "repair" : "diagnosis",
-				morph_strerror(rc));
+			CMD_ERROR(ctx, "history %s failed: %s", repair ? "repair" : "diagnosis",
+				  morph_strerror(rc));
 			return rc;
 		}
-		printf("history: active=%d dangling=%d orphan=%d invalid=%d "
+		printf(ctx,
+		       "history: active=%d dangling=%d orphan=%d invalid=%d "
 		       "token_mismatches=%d",
-		       report.active_items, report.dangling_calls,
-		       report.orphan_results, report.invalid_payloads,
-		       report.token_mismatches);
+		       report.active_items, report.dangling_calls, report.orphan_results,
+		       report.invalid_payloads, report.token_mismatches);
 		if (repair)
-			printf(" repaired=%d", changed);
-		printf("\n");
+			printf(ctx, " repaired=%d", changed);
+		printf(ctx, "\n");
 		return 0;
 	}
 	if (export_path) {
@@ -716,11 +713,10 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 
 		runtime_session_model_history_free(items);
 		if (rc != 0) {
-			CMD_ERROR("history export failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "history export failed: %s", morph_strerror(rc));
 			return rc;
 		}
-		CMD_OK("exported %d model history items to %s", count,
-		       export_path);
+		CMD_OK(ctx, "exported %d model history items to %s", count, export_path);
 		return 0;
 	}
 	if (show_model) {
@@ -732,25 +728,24 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		int show = show_all ? count : (n > count ? count : n);
 		int skip = show_all ? 0 : count - show;
 
-		CMD_HEADER("%s model history (showing %s %d of %d)",
-			runtime_session_current_name(ctx->runtime),
-			show_all ? "all" : "active last", show, count);
+		CMD_HEADER(ctx, "%s model history (showing %s %d of %d)",
+			   runtime_session_current_name(ctx->runtime),
+			   show_all ? "all" : "active last", show, count);
 		for (int i = 0; i < skip && cur; i++)
 			cur = cur->next;
 		while (cur) {
-			printf(ANSI_DIM "[#%lld %s%s]" ANSI_RESET " ",
-				(long long)cur->sequence_no, cur->kind,
-				cur->active ? "" : " inactive");
+			printf(ctx, ANSI_DIM "[#%lld %s%s]" ANSI_RESET " ",
+			       (long long)cur->sequence_no, cur->kind,
+			       cur->active ? "" : " inactive");
 			if (strcmp(cur->kind, "tool_result") == 0) {
-				printf("%s: %d tokens%s\n",
-					cur->tool_name[0] ? cur->tool_name : "tool",
-					cur->token_count,
-					cur->truncated ? ", truncated" : "");
+				printf(ctx, "%s: %d tokens%s\n",
+				       cur->tool_name[0] ? cur->tool_name : "tool",
+				       cur->token_count, cur->truncated ? ", truncated" : "");
 			} else {
-				(void)cli_print_untrusted_text(
-					cur->content ? cur->content : "",
-					UTF8_TERMINAL_TEXT_MULTILINE);
-				printf("\n");
+				(void)cli_print_untrusted_text(ctx,
+							       cur->content ? cur->content : "",
+							       UTF8_TERMINAL_TEXT_MULTILINE);
+				printf(ctx, "\n");
 			}
 			cur = cur->next;
 		}
@@ -770,17 +765,17 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			 cli_setup_ui_available(stdin, stdout))
 			rc = cli_history_view(ctx, report);
 		else if (rc == 0)
-			cli_history_print(report, n, show_all);
+			cli_history_print(ctx, report, n, show_all);
 		cJSON_Delete(report);
 		if (rc != 0)
-			CMD_ERROR("history inspection failed: %s", morph_strerror(rc));
+			CMD_ERROR(ctx, "history inspection failed: %s", morph_strerror(rc));
 		return rc;
 	}
 	int count = 0;
 	struct message *msgs = runtime_session_messages_current(ctx->runtime, &count);
 	int show = show_all ? count : (n > count ? count : n);
 	int skip = show_all ? 0 : (count - show);
-	CMD_HEADER("%s (showing %s %d of %d)", runtime_session_current_name(ctx->runtime),
+	CMD_HEADER(ctx, "%s (showing %s %d of %d)", runtime_session_current_name(ctx->runtime),
 		   show_all ? "all" : "last", show, count);
 	struct message *cur = msgs;
 	for (int i = 0; i < skip && cur; i++)
@@ -789,20 +784,17 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		const char *role = cur->role;
 		const char *label = (strcmp(role, "user") == 0) ? "You" :
 				   (strcmp(role, "assistant") == 0) ? "AI" : role;
-		printf(ANSI_DIM "[%s]" ANSI_RESET " ", label);
+		printf(ctx, ANSI_DIM "[%s]" ANSI_RESET " ", label);
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			(void)cli_print_untrusted_text(
-				cur->content ? cur->content : "(empty)",
-				UTF8_TERMINAL_TEXT_MULTILINE);
+			(void)cli_print_untrusted_text(ctx, cur->content ? cur->content : "(empty)",
+						       UTF8_TERMINAL_TEXT_MULTILINE);
 		else if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
-			cli_markdown_render_ansi_with_media(cur->content,
-							    media_callback,
+			cli_markdown_render_ansi_with_media(ctx, cur->content, media_callback,
 							    NULL);
 		else
-			(void)cli_print_untrusted_text(
-				cur->content ? cur->content : "(empty)",
-				UTF8_TERMINAL_TEXT_MULTILINE);
-			printf("\n");
+			(void)cli_print_untrusted_text(ctx, cur->content ? cur->content : "(empty)",
+						       UTF8_TERMINAL_TEXT_MULTILINE);
+		printf(ctx, "\n");
 		cur = cur->next;
 	}
 	runtime_session_messages_free(msgs);

@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "ext.h"
 #include "loader.h"
 #include "util/file.h"
@@ -16,11 +17,12 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 
-int ext_load(struct ext *ex, const char *dir_path)
+int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 {
 	if (!ex || !dir_path)
 		return -EINVAL;
 	memset(ex, 0, sizeof(*ex));
+	ex->logger = logger;
 	strncpy(ex->path, dir_path, sizeof(ex->path) - 1);
 
 	char manifest_path[PATH_MAX];
@@ -31,33 +33,33 @@ int ext_load(struct ext *ex, const char *dir_path)
 		snprintf(manifest_path, sizeof(manifest_path),
 			 "%s/morph-ext.toml", dir_path);
 		if (stat(manifest_path, &st) != 0) {
-			log_err("ext manifest not found in: %s", dir_path);
+			log_err(logger, "ext manifest not found in: %s", dir_path);
 			return -ENOENT;
 		}
 	}
 
-	int rc = manifest_parse_file(manifest_path, &ex->manifest);
+	int rc = manifest_parse_file(logger, manifest_path, &ex->manifest);
 	if (rc < 0) {
-		log_err("failed to parse ext manifest: %s", manifest_path);
+		log_err(logger, "failed to parse ext manifest: %s", manifest_path);
 		return rc;
 	}
 
 	if (strcmp(ex->manifest.type, "exec") == 0) {
 		rc = ext_load_exec(ex, dir_path);
 		if (rc < 0) {
-			log_err("ext_load: failed to load exec ext %s: %d",
+			log_err(logger, "ext_load: failed to load exec ext %s: %d",
 				ex->manifest.name, rc);
 			return rc;
 		}
 	} else if (strcmp(ex->manifest.type, "so") == 0) {
 		rc = ext_load_so(ex, dir_path);
 		if (rc < 0) {
-			log_err("ext_load: failed to load so ext %s: %d",
-				ex->manifest.name, rc);
+			log_err(logger, "ext_load: failed to load so ext %s: %d", ex->manifest.name,
+				rc);
 			return rc;
 		}
 	} else {
-		log_warn("unknown ext type: %s", ex->manifest.type);
+		log_warn(logger, "unknown ext type: %s", ex->manifest.type);
 	}
 
 	if (!ex->manifest.input_schema || !ex->manifest.output_schema)
@@ -78,7 +80,7 @@ int ext_unload(struct ext *ex)
 	if (!ex)
 		return -EINVAL;
 	if (ex->dl_handle) {
-		log_info("ext_unload: dlclose %s", ex->manifest.name);
+		log_info(ex ? ex->logger : NULL, "ext_unload: dlclose %s", ex->manifest.name);
 		dlclose(ex->dl_handle);
 		ex->dl_handle = NULL;
 	}
@@ -219,6 +221,7 @@ int ext_sandbox_config_prepare(const struct ext *ex,
 	if (!read_paths)
 		MORPH_RETURN(-ENOMEM);
 	memset(config, 0, sizeof(*config));
+	config->logger = ex->logger;
 	config->read_paths = read_paths;
 	read_paths[0] = ext_resolve_sandbox_path(ex->path);
 	if (!read_paths[0]) {
@@ -273,21 +276,21 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		return ex->run(args_json, result_json);
 
 	if (strcmp(ex->manifest.type, "exec") == 0 && ex->exec_path[0]) {
-		log_info("executing ext: %s", ex->exec_path);
+		log_info(ex ? ex->logger : NULL, "executing ext: %s", ex->exec_path);
 
 		int stdin_pipe[2];
 		int stdout_pipe[2];
 		int stderr_pipe[2];
 
 		if (pipe(stdin_pipe) < 0) {
-			log_err("ext_run: pipe failed");
+			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
 			MORPH_RETURN_ERRNO();
 		}
 		if (pipe(stdout_pipe) < 0) {
 			int err = errno;
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
-			log_err("ext_run: pipe failed");
+			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
 			MORPH_RETURN(-err);
 		}
 		if (pipe(stderr_pipe) < 0) {
@@ -296,7 +299,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
-			log_err("ext_run: pipe failed");
+			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
 			MORPH_RETURN(-err);
 		}
 
@@ -309,11 +312,12 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdout_pipe[1]);
 			close(stderr_pipe[0]);
 			close(stderr_pipe[1]);
-			log_err("ext_run: fork failed");
+			log_err(ex ? ex->logger : NULL, "ext_run: fork failed");
 			MORPH_RETURN(-err);
 		}
 
 		if (pid == 0) {
+			morph_signals_reset_child();
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stderr_pipe[0]);
@@ -325,7 +329,6 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stderr_pipe[1]);
 			if (sandbox_start_isolated_session() != 0)
 				_exit(126);
-			log_shutdown();
 			if (sandbox_close_inherited_fds() != 0)
 				_exit(126);
 
@@ -399,8 +402,8 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		waitpid(pid, &status, 0);
 
 		if (child_stderr && child_stderr[0]) {
-			log_warn("ext %s stderr: %s",
-				 ex->manifest.name, child_stderr);
+			log_warn(ex ? ex->logger : NULL, "ext %s stderr: %s", ex->manifest.name,
+				 child_stderr);
 		}
 
 		if (rc < 0 || !raw_response) {
@@ -412,7 +415,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		/* If the child was killed (sandbox), report that */
 		if (WIFSIGNALED(status)) {
-			log_warn("ext %s killed by signal %d",
+			log_warn(ex ? ex->logger : NULL, "ext %s killed by signal %d",
 				 ex->manifest.name, WTERMSIG(status));
 			free(child_stderr);
 			free(raw_response);
@@ -463,6 +466,6 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		return 0;
 	}
 
-	log_info("ext_run: no run function for %s", ex->manifest.name);
+	log_info(ex ? ex->logger : NULL, "ext_run: no run function for %s", ex->manifest.name);
 	MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 }

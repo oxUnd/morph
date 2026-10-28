@@ -336,7 +336,7 @@ TEST_F(PatchTest, PreservesUpdatedFileMode)
 TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 {
 	struct tool_registry registry{};
-	struct tool_context *context = tool_context_create(dir, dir);
+	struct tool_context *context = tool_context_create(NULL, dir, dir);
 	struct tool_result result{};
 	const char *input =
 		"*** Begin Patch\n"
@@ -345,7 +345,7 @@ TEST_F(PatchTest, ToolAcceptsRawTextAndPublishesGrammar)
 		"*** End Patch";
 
 	ASSERT_NE(context, nullptr);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(apply_patch_init(&registry, context), 0);
 	struct tool_entry *entry = tool_lookup(&registry, "apply_patch");
 	ASSERT_NE(entry, nullptr);

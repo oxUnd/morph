@@ -166,7 +166,7 @@ int runtime_mcp_register_configured(struct mcp_registry *registry,
 
 	if (!registry || !config)
 		MORPH_RETURN(-EINVAL);
-	mcp_registry_init(registry);
+	mcp_registry_init(registry ? registry->logger : NULL, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
 		rc = runtime_mcp_server_config_from_config(&config->servers[i],
@@ -262,18 +262,16 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	return 0;
 }
 
-int runtime_mcp_init_from_config(struct mcp_registry *registry,
-				 const struct config_mcp *config,
-				 struct tool_registry *tools,
-				 int connect_configured,
-				 morph_event_cb event_cb,
+int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *registry,
+				 const struct config_mcp *config, struct tool_registry *tools,
+				 int connect_configured, morph_event_cb event_cb,
 				 void *event_user_data)
 {
 	int rc;
 
 	if (!registry || !config)
 		MORPH_RETURN(-EINVAL);
-	mcp_registry_init(registry);
+	mcp_registry_init(logger, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
 		struct mcp_client *client;
@@ -281,14 +279,14 @@ int runtime_mcp_init_from_config(struct mcp_registry *registry,
 		rc = runtime_mcp_server_config_from_config(&config->servers[i],
 							   &server);
 		if (rc != 0) {
-			log_warn("runtime: mcp config skipped at index %d: %s",
-				 i, morph_strerror(rc));
+			log_warn(logger, "runtime: mcp config skipped at index %d: %s", i,
+				 morph_strerror(rc));
 			continue;
 		}
 		rc = mcp_registry_add(registry, &server);
 		if (rc != 0) {
-			log_warn("runtime: mcp add failed for '%s': %s",
-				 server.name, morph_strerror(rc));
+			log_warn(logger, "runtime: mcp add failed for '%s': %s", server.name,
+				 morph_strerror(rc));
 			continue;
 		}
 		if (!connect_configured || !server.auto_connect)
@@ -299,8 +297,8 @@ int runtime_mcp_init_from_config(struct mcp_registry *registry,
 		rc = runtime_mcp_client_connect(client, event_cb,
 						event_user_data);
 		if (rc != 0) {
-			log_warn("runtime: mcp connect failed for '%s': %s",
-				 server.name, morph_strerror(rc));
+			log_warn(logger, "runtime: mcp connect failed for '%s': %s", server.name,
+				 morph_strerror(rc));
 			continue;
 		}
 		if (tools) {
@@ -308,15 +306,16 @@ int runtime_mcp_init_from_config(struct mcp_registry *registry,
 				client, tools, event_cb, event_user_data,
 				NULL, NULL, NULL);
 			if (rc != 0)
-				log_warn("runtime: mcp discovery failed for "
-					 "'%s': %s", server.name,
-					 morph_strerror(rc));
+				log_warn(logger,
+					 "runtime: mcp discovery failed for "
+					 "'%s': %s",
+					 server.name, morph_strerror(rc));
 		} else {
 			runtime_mcp_emit(event_cb, event_user_data, "mcp.ready",
 					 "ready", "MCP server ready", &server,
 					 -1, -1, -1, 0);
 		}
-		log_info("runtime: mcp auto-connected '%s'", server.name);
+		log_info(logger, "runtime: mcp auto-connected '%s'", server.name);
 	}
 	return 0;
 }

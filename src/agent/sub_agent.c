@@ -37,8 +37,6 @@ static void generate_task_id(int seq, char *out, size_t out_size)
 	snprintf(out, out_size, "sa_%d", seq);
 }
 
-static _Thread_local int sub_agent_thread_depth;
-
 struct sub_agent_event_sink {
 	struct sub_agent_runtime *rt;
 	struct sub_agent_task *task;
@@ -150,9 +148,10 @@ static void sub_agent_storage_update_task(struct sub_agent_runtime *rt,
 	free(result);
 }
 
-static struct sub_agent_task *sub_agent_task_create(
-	struct sub_agent_runtime *rt, struct sub_agent_entry *entry,
-	const char *description, const char *mode, int joined, int *error)
+static struct sub_agent_task *sub_agent_task_create(struct sub_agent_runtime *rt,
+						    struct sub_agent_entry *entry,
+						    const char *description, const char *mode,
+						    int joined, int depth, int *error)
 {
 	struct sub_agent_task *task;
 	char *task_description;
@@ -182,6 +181,7 @@ static struct sub_agent_task *sub_agent_task_create(
 	task = &rt->tasks[rt->task_count++];
 	memset(task, 0, sizeof(*task));
 	generate_task_id(rt->next_task_id++, task->id, sizeof(task->id));
+	task->depth = depth;
 	task->agent_index = (int)(entry - rt->entries);
 	task->parent_session_id = rt->parent_session_id;
 	strncpy(task->mode, mode, sizeof(task->mode) - 1);
@@ -310,6 +310,7 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 	struct sub_agent_runtime *rt = calloc(1, sizeof(*rt));
 	if (!rt)
 		return NULL;
+	rt->logger = parent_tools ? parent_tools->logger : NULL;
 	rt->parent_tools = parent_tools;
 	rt->default_llm = default_llm;
 	rt->tokenizer = tokenizer;
@@ -329,6 +330,20 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 		}
 	}
 	return rt;
+}
+
+void sub_agent_runtime_cancel(struct sub_agent_runtime *rt)
+{
+	if (!rt)
+		return;
+	pthread_mutex_lock(&rt->mutex);
+	for (int i = 0; i < rt->task_count; i++) {
+		pthread_mutex_lock(&rt->tasks[i].mutex);
+		if (rt->tasks[i].child_ctx)
+			react_cancel(rt->tasks[i].child_ctx);
+		pthread_mutex_unlock(&rt->tasks[i].mutex);
+	}
+	pthread_mutex_unlock(&rt->mutex);
 }
 
 void sub_agent_runtime_destroy(struct sub_agent_runtime *rt)
@@ -496,9 +511,8 @@ int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 	     i++) {
 		struct sub_agent_entry *e = &rt->entries[rt->entry_count];
 		e->cfg = cfg->entries[i];
-		int rc = morph_prompt_load(e->cfg.system_prompt_file,
-					  e->cfg.system_prompt_dir,
-					  &e->system_prompt);
+		int rc = morph_prompt_load(rt ? rt->logger : NULL, e->cfg.system_prompt_file,
+					   e->cfg.system_prompt_dir, &e->system_prompt);
 		if (rc != 0)
 			MORPH_RETURN(rc);
 		if (e->cfg.model[0])
@@ -509,7 +523,7 @@ int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 			e->cfg.max_iterations = 5;
 		rt->entry_count++;
 	}
-	log_info("sub-agent: loaded %d entries", rt->entry_count);
+	log_info(rt ? rt->logger : NULL, "sub-agent: loaded %d entries", rt->entry_count);
 	return 0;
 }
 
@@ -534,7 +548,7 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 	struct tool_registry *child = calloc(1, sizeof(*child));
 	if (!child)
 		return NULL;
-	tool_registry_init(child);
+	tool_registry_init(rt ? rt->logger : NULL, child);
 	if (!entry->cfg.allowed_tools_count) {
 		for (int i = 0; i < rt->parent_tools->count; i++) {
 			struct tool_entry *pe = &rt->parent_tools->entries[i];
@@ -592,10 +606,9 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 	return child;
 }
 
-struct react_context *
-sub_agent_create_context(struct sub_agent_runtime *rt,
-			 struct sub_agent_entry *entry,
-			 const char *task)
+struct react_context *sub_agent_create_context(struct sub_agent_runtime *rt,
+					       const struct tool_runtime_context *runtime,
+					       struct sub_agent_entry *entry, const char *task)
 {
 	if (!rt || !entry || !task)
 		return NULL;
@@ -617,7 +630,7 @@ sub_agent_create_context(struct sub_agent_runtime *rt,
 	child->llm_model = entry->llm;
 	react_set_event_callback(child, NULL, NULL);
 	child->max_iterations = entry->cfg.max_iterations;
-	child->sub_agent_depth = rt->depth + sub_agent_thread_depth + 1;
+	child->sub_agent_depth = (runtime ? runtime->sub_agent_depth : rt->depth) + 1;
 	child->system_prompt_replace =
 		strcmp(entry->cfg.system_prompt_mode, "replace") == 0;
 	if (entry->system_prompt) {
@@ -649,12 +662,12 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 
 	if (!rt || !entry || !task)
 		return -EINVAL;
-	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
+	if (task->depth >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
-	sub_agent_thread_depth++;
-	child = sub_agent_create_context(rt, entry, task->task_description);
+	struct tool_runtime_context runtime = {.sub_agent_depth = task->depth};
+
+	child = sub_agent_create_context(rt, &runtime, entry, task->task_description);
 	if (!child) {
-		sub_agent_thread_depth--;
 		MORPH_RETURN(-ENOMEM);
 	}
 	sink.rt = rt;
@@ -739,13 +752,11 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 		*result = strdup(task->result ? task->result : "(no answer)");
 	pthread_mutex_unlock(&task->mutex);
 	sub_agent_storage_update_task(rt, task);
-	sub_agent_thread_depth--;
 	return rc;
 }
 
-int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
-			  struct sub_agent_entry *entry,
-			  const char *task, char **result)
+int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+			  struct sub_agent_entry *entry, const char *task, char **result)
 {
 	struct sub_agent_task *task_record;
 	int create_rc;
@@ -753,10 +764,11 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt,
 
 	if (!rt || !entry || !task || !result)
 		return -EINVAL;
-	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
+	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
-	task_record = sub_agent_task_create(rt, entry, task, "tool", 1,
-					    &create_rc);
+	task_record =
+		sub_agent_task_create(rt, entry, task, "tool", 1,
+				      runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
 	if (!task_record)
 		MORPH_RETURN(create_rc);
 	sub_agent_emit_background_event(rt, "background.started", "begin",
@@ -809,9 +821,8 @@ static void *delegate_thread_fn(void *arg)
 	return NULL;
 }
 
-int sub_agent_delegate(struct sub_agent_runtime *rt,
-		       const char *agent_name, const char *task,
-		       char **task_id_out)
+int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+		       const char *agent_name, const char *task, char **task_id_out)
 {
 	struct sub_agent_entry *entry;
 	struct sub_agent_task *t;
@@ -821,13 +832,13 @@ int sub_agent_delegate(struct sub_agent_runtime *rt,
 
 	if (!rt || !agent_name || !task)
 		return -EINVAL;
-	if (rt->depth + sub_agent_thread_depth >= SUB_AGENT_MAX_DEPTH)
+	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
 	entry = sub_agent_find(rt, agent_name);
 	if (!entry)
 		MORPH_RETURN(-ENOENT);
 	t = sub_agent_task_create(rt, entry, task, "delegate", 0,
-				  &create_rc);
+				  runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
 	if (!t)
 		MORPH_RETURN(create_rc);
 	sub_agent_emit_background_event(rt, "background.started", "begin",
@@ -1142,6 +1153,7 @@ int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
 }
 
 struct fanout_worker_arg {
+	struct tool_runtime_context runtime;
 	struct sub_agent_runtime *rt;
 	struct sub_agent_entry *entry;
 	const char *task;
@@ -1152,20 +1164,17 @@ struct fanout_worker_arg {
 static void *fanout_worker_fn(void *arg)
 {
 	struct fanout_worker_arg *fw = arg;
-	fw->rc = sub_agent_invoke_sync(fw->rt, fw->entry, fw->task,
-				       &fw->result);
+	fw->rc = sub_agent_invoke_sync(fw->rt, &fw->runtime, fw->entry, fw->task, &fw->result);
 	return NULL;
 }
 
-int sub_agent_fanout(struct sub_agent_runtime *rt,
-		     const char *agent_name,
-		     const char **tasks, int task_count,
-		     enum sub_agent_merge_strategy merge,
-		     char **result)
+int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+		     const char *agent_name, const char **tasks, int task_count,
+		     enum sub_agent_merge_strategy merge, char **result)
 {
 	if (!rt || !agent_name || !tasks || task_count <= 0 || !result)
 		return -EINVAL;
-	if (rt->depth >= SUB_AGENT_MAX_DEPTH)
+	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
 		MORPH_RETURN(-ELOOP);
 	struct sub_agent_entry *entry = sub_agent_find(rt, agent_name);
 	if (!entry)
@@ -1188,8 +1197,11 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 						agent_name, -ENOMEM);
 		MORPH_RETURN(-ENOMEM);
 	}
-	rt->depth++;
 	for (int i = 0; i < n; i++) {
+		if (runtime)
+			workers[i].runtime = *runtime;
+		else
+			workers[i].runtime.sub_agent_depth = rt->depth;
 		workers[i].rt = rt;
 		workers[i].entry = entry;
 		workers[i].task = tasks[i];
@@ -1200,7 +1212,6 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 	}
 	for (int i = 0; i < n; i++)
 		pthread_join(threads[i], NULL);
-	rt->depth--;
 	int any_success = 0;
 	for (int i = 0; i < n; i++) {
 		if (workers[i].rc == 0)
@@ -1275,7 +1286,8 @@ int sub_agent_fanout(struct sub_agent_runtime *rt,
 				const char *msgs[] = { combined_buf.data };
 				morph_buf_t syn_buf;
 				if (morph_buf_init(&syn_buf, 8192) == 0) {
-					struct tool_runtime_stream_sink stream;
+					struct tool_runtime_stream_sink stream = {.runtime =
+											  runtime};
 					stream.tool = "fanout";
 					stream.kind = "text";
 					stream.buf = &syn_buf;

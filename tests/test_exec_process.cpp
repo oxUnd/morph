@@ -70,7 +70,7 @@ TEST(ExecToolTest, RegistersExecAndProcessTools)
 {
 	struct tool_registry registry;
 
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
 	EXPECT_NE(tool_lookup(&registry, "exec"), nullptr);
 	EXPECT_NE(tool_lookup(&registry, "process"), nullptr);
@@ -82,7 +82,7 @@ TEST(ExecToolTest, HostExecutionRequiresUserConfigOptIn)
 	struct tool_registry registry;
 	struct tool_result result;
 
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(&registry, "exec",
@@ -98,16 +98,16 @@ TEST(ExecToolTest, HostExecutionRequiresUserConfigOptIn)
 TEST(ExecToolTest, ExplicitHostExecutionRetainsApprovalAndReportsMode)
 {
 	struct config config;
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	config.exec.allow_host_execution = 1;
 	char work_template[] = "/tmp/morph_host_exec_XXXXXX";
 	ASSERT_NE(mkdtemp(work_template), nullptr);
-	auto *tctx = tool_context_create(work_template, work_template);
+	auto *tctx = tool_context_create(NULL, work_template, work_template);
 	ASSERT_NE(tctx, nullptr);
 	ExecApprovalState approval;
 	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, &config.exec), 0);
 	for (bool host : {false, true}) {
 		cJSON *args = cJSON_CreateObject();
@@ -138,14 +138,14 @@ TEST(ExecToolTest, ExplicitHostExecutionRetainsApprovalAndReportsMode)
 TEST(ExecToolTest, HostExecutionStillHonorsCommandDenial)
 {
 	struct config config;
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	config.exec.allow_host_execution = 1;
-	auto *tctx = tool_context_create("/tmp", "/tmp");
+	auto *tctx = tool_context_create(NULL, "/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(tctx,
 		[](const struct tool_operation *, void *) { return TOOL_OP_DENY; }, nullptr);
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, &config.exec), 0);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -185,10 +185,10 @@ TEST(ExecToolTest, LiveHostAutomationReadsFrontmostApplication)
 	if (!getenv("MORPH_TEST_HOST_AUTOMATION"))
 		GTEST_SKIP() << "Requires an unlocked Mac and existing macOS privacy consent.";
 	struct config config;
-	config_set_defaults(&config);
+	config_set_defaults(NULL, &config);
 	config.exec.allow_host_execution = 1;
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, nullptr, &config.exec), 0);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -217,9 +217,9 @@ TEST(ExecToolTest, ReportsUnavailableApprovalWithoutClaimingItIsPending)
 	struct tool_result result;
 
 	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	EXPECT_EQ(tool_exec(
@@ -247,11 +247,11 @@ TEST(ExecToolTest, CompoundCommandRequestsOneClearApproval)
 	ExecApprovalState approval;
 
 	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(
 		tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(
@@ -276,7 +276,7 @@ TEST(ExecToolTest, BackgroundTimeoutIsOptIn)
 	char work_template[] = "/tmp/morph_exec_background_XXXXXX";
 	char *workdir = mkdtemp(work_template);
 	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
 	ExecApprovalState approval;
 	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
@@ -288,7 +288,7 @@ TEST(ExecToolTest, BackgroundTimeoutIsOptIn)
 	config.max_session_output = 4096;
 	config.kill_grace_ms = 10;
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, &config), 0);
 	const char *requests[] = {
 		"{\"command\":\"sleep 0.2\",\"background\":true,\"yield_time_ms\":500}",
@@ -331,11 +331,11 @@ TEST(ExecToolTest, QuotedPythonOperatorsDoNotTriggerComplexSyntaxError)
 	ExecApprovalState approval;
 
 	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(
 		tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(
@@ -370,11 +370,11 @@ TEST(ExecToolTest, ExecutesQuotedProgramPathWithSpaces)
 	ASSERT_GT(snprintf(executable, sizeof(executable),
 			   "%s/quoted tool", workdir), 0);
 	ASSERT_EQ(symlink("/bin/echo", executable), 0);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(
 		tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	ASSERT_GT(snprintf(
@@ -405,11 +405,11 @@ TEST(ExecToolTest, ApprovalIncludesNestedAstCommands)
 	ExecApprovalState approval;
 
 	ASSERT_NE(workdir, nullptr);
-	struct tool_context *tctx = tool_context_create(workdir, workdir);
+	struct tool_context *tctx = tool_context_create(NULL, workdir, workdir);
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(
 		tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	ASSERT_EQ(tool_exec(
@@ -435,10 +435,10 @@ TEST(ExecToolTest, DynamicScriptsExecuteInsideWorkspace)
 	ASSERT_NE(mkdtemp(work_template), nullptr);
 	struct tool_registry registry;
 	ExecApprovalState approval;
-	auto *tctx = tool_context_create(work_template, work_template);
+	auto *tctx = tool_context_create(NULL, work_template, work_template);
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	const char *commands[] = {
 		"COMMAND=printf; \"$COMMAND\" '%s' variable",
@@ -481,11 +481,11 @@ TEST(ExecToolTest, ReadsFilesOutsideWorkspaceByDefault)
 
 	ASSERT_NE(realpath(__FILE__, path), nullptr);
 
-	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(
 		tctx, approve_exec_operation, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	tool_result_init(&result);
 	ASSERT_GT(snprintf(args, sizeof(args),
@@ -779,14 +779,15 @@ TEST(ExecToolTest, DynamicCommandsStillUseApprovalOutsideTrustedScope)
 {
 	struct tool_registry registry;
 	ExecApprovalState approval;
-	auto *tctx = tool_context_create("/tmp/morph-dynamic-work", "/tmp/morph-dynamic-work");
+	auto *tctx =
+		tool_context_create(NULL, "/tmp/morph-dynamic-work", "/tmp/morph-dynamic-work");
 	ASSERT_NE(tctx, nullptr);
 	tool_context_set_operation_approval(tctx,
 		[](const struct tool_operation *op, void *data) {
 			(void)approve_exec_operation(op, data);
 			return TOOL_OP_DENY;
 		}, &approval);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	struct tool_result result;
 	tool_result_init(&result);
@@ -813,10 +814,10 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 	std::string profile = base + "/profile";
 	ASSERT_EQ(file_ensure_dir(work.c_str()), 0);
 	ASSERT_EQ(file_ensure_dir(profile.c_str()), 0);
-	auto *tctx = tool_context_create(work.c_str(), work.c_str());
+	auto *tctx = tool_context_create(NULL, work.c_str(), work.c_str());
 	ASSERT_NE(tctx, nullptr);
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	char principal[TOOL_CONTEXT_CLI_NAME_MAX];
 	ASSERT_EQ(tool_context_command_principal("printf okay", principal, sizeof(principal)), 0);
@@ -849,7 +850,7 @@ TEST(ExecToolTest, SandboxReceivesProfileAfterMoreThan32SessionGrants)
 TEST(ExecToolTest, SessionApprovalAllowsRepeatedExecution)
 {
 	struct tool_registry registry;
-	auto *tctx = tool_context_create("/different-work", "/different-output");
+	auto *tctx = tool_context_create(NULL, "/different-work", "/different-output");
 	ASSERT_NE(tctx, nullptr);
 	int approvals = 0;
 	tool_context_set_operation_approval(tctx,
@@ -857,7 +858,7 @@ TEST(ExecToolTest, SessionApprovalAllowsRepeatedExecution)
 			++*static_cast<int *>(data);
 			return TOOL_OP_SESSION;
 		}, &approvals);
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	for (int attempt = 0; attempt < 2; attempt++) {
 		struct tool_result result;
@@ -888,7 +889,7 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 	std::filesystem::create_directories(work);
 	std::filesystem::create_directories(target);
 	std::filesystem::create_directories(sibling);
-	auto *tctx = tool_context_create(work.c_str(), work.c_str());
+	auto *tctx = tool_context_create(NULL, work.c_str(), work.c_str());
 	ASSERT_NE(tctx, nullptr);
 	int approvals = 0;
 	tool_context_set_operation_approval(tctx,
@@ -901,7 +902,7 @@ TEST(ExecToolTest, DirectoryPermissionsFollowPathsAcrossToolsAndPrograms)
 			return op->kind == TOOL_OP_COMMAND ? TOOL_OP_ALLOW : TOOL_OP_DENY;
 		}, &approvals);
 	struct tool_registry registry;
-	tool_registry_init(&registry);
+	tool_registry_init(NULL, &registry);
 	ASSERT_EQ(exec_tool_init(&registry, tctx, nullptr), 0);
 	ASSERT_EQ(request_permissions_init(&registry, tctx), 0);
 	auto request = [&](const char *capability, const char *scope) {

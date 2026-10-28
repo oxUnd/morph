@@ -1,3 +1,4 @@
+#include "agent/tool_runtime.h"
 #include "skill_activate.h"
 #include "util/log.h"
 #include "cJSON.h"
@@ -86,7 +87,8 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 	if (!message)
 		MORPH_RETURN(-ENOMEM);
 	(void)tool_result_success_json_text(result, message);
-	log_info("skill_activate: '%s' activated", name);
+	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
+		 "skill_activate: '%s' activated", name);
 	return 0;
 }
 

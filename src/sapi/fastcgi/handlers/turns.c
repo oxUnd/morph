@@ -36,6 +36,7 @@
 #define FCGI_ACTION_WAIT_SECONDS 300
 
 struct turn_job {
+	struct fcgi_bridge *bridge;
 	struct session_store *store;
 	char  session_id[64];
 	char  user_id[64];
@@ -60,9 +61,9 @@ struct turn_job {
 	char *pending_payload;
 };
 
-static const char *bridge_output_dir(void)
+static const char *bridge_output_dir(struct turn_job *j)
 {
-	return fcgi_artifact_output_dir();
+	return fcgi_artifact_output_dir(j->bridge);
 }
 
 static const char *artifact_mime(const char *kind, const char *path)
@@ -172,7 +173,7 @@ static struct turn_artifact *turn_artifact_get(struct turn_job *j,
 		return NULL;
 	}
 	free(expanded);
-	if (!relative_under_root(bridge_output_dir(), real, rel))
+	if (!relative_under_root(bridge_output_dir(j), real, rel))
 		return NULL;
 	for (int i = 0; i < j->artifacts_count; i++) {
 		if (strcmp(j->artifacts[i].path, real) == 0)
@@ -291,7 +292,7 @@ static int append_artifact_tag(morph_buf_t *buf, const struct turn_artifact *a)
 	return morph_buf_puts(buf, tag);
 }
 
-static int candidate_path(const char *token, char out[PATH_MAX])
+static int candidate_path(struct turn_job *j, const char *token, char out[PATH_MAX])
 {
 	if (!token || !*token)
 		return 0;
@@ -299,7 +300,7 @@ static int candidate_path(const char *token, char out[PATH_MAX])
 		snprintf(out, PATH_MAX, "%s", token);
 		return 1;
 	}
-	if (file_path_join(out, PATH_MAX, bridge_output_dir(), token) != 0)
+	if (file_path_join(out, PATH_MAX, bridge_output_dir(j), token) != 0)
 		return 0;
 	return 1;
 }
@@ -338,7 +339,7 @@ static char *render_media_refs(struct turn_job *j, const char *text)
 		snprintf(token, sizeof(token), "%.*s", (int)tok_len, start);
 		trim_candidate_path(token);
 		kind = artifact_kind_for_path(token);
-		if (!kind || !candidate_path(token, path)) {
+		if (!kind || !candidate_path(j, token, path)) {
 			morph_buf_append(&out, start, raw_len);
 			continue;
 		}
@@ -909,6 +910,12 @@ static void *turn_thread(void *arg)
 		request.hitl_cb = fcgi_turn_hitl;
 		request.hitl_user_data = j;
 		request.override_hitl = 1;
+		request.ask_user_fn = fcgi_turn_ask_user;
+		request.ask_user_user_data = j;
+		request.override_ask_user = 1;
+		request.operation_approval_fn = fcgi_turn_operation_approval;
+		request.operation_approval_user_data = j;
+		request.override_operation_approval = 1;
 		request.action_drain_fn = fcgi_turn_action_drain;
 		request.action_drain_user_data = j;
 		request.override_action_drain = 1;
@@ -928,10 +935,10 @@ static void *turn_thread(void *arg)
 			free(json);
 		}
 
-		run_rc = fcgi_bridge_runtime_acquire(j->session_id, &runtime);
+		run_rc = fcgi_bridge_runtime_acquire(j->bridge, j->session_id, &runtime);
 		if (run_rc == 0)
 			run_rc = runtime_execute_turn(runtime, &request, &result);
-		fcgi_bridge_runtime_release(runtime);
+		fcgi_bridge_runtime_release(j->bridge, runtime);
 		runtime = NULL;
 		if (run_rc != 0) {
 			cJSON *err = cJSON_CreateObject();
@@ -993,9 +1000,9 @@ static void *turn_thread(void *arg)
 	}
 
 out:
-	fcgi_bridge_runtime_release(runtime);
+	fcgi_bridge_runtime_release(j->bridge, runtime);
 	store_quota_end_turn(j->store, j->turn_id);
-	fcgi_bridge_turn_end();
+	fcgi_bridge_turn_end(j->bridge);
 	free(j->action_payload);
 	free(j->pending_payload);
 	free(j->input);
@@ -1020,6 +1027,7 @@ void handle_post_turn(request_t *r)
 
 	struct turn_job *j = calloc(1, sizeof(*j));
 	if (!j) { cJSON_Delete(root); free(body); reply_500(r, "oom"); return; }
+	j->bridge = r->bridge;
 	j->store = r->store;
 	snprintf(j->session_id, sizeof(j->session_id), "%s", sid);
 	snprintf(j->user_id,    sizeof(j->user_id),    "%s", r->user_id);
@@ -1051,7 +1059,7 @@ void handle_post_turn(request_t *r)
 		free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "oom"); return;
 	}
-	if (fcgi_bridge_turn_begin() != 0) {
+	if (fcgi_bridge_turn_begin(r->bridge) != 0) {
 		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_json(r, 503, "{\"error\":\"shutting_down\"}");
@@ -1060,7 +1068,7 @@ void handle_post_turn(request_t *r)
 
 	pthread_t tid;
 	if (pthread_create(&tid, NULL, turn_thread, j) != 0) {
-		fcgi_bridge_turn_end();
+		fcgi_bridge_turn_end(j->bridge);
 		store_quota_end_turn(r->store, j->turn_id);
 		free(j->input); free(j); cJSON_Delete(root); free(body);
 		reply_500(r, "thread spawn"); return;

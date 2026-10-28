@@ -1,24 +1,25 @@
 #ifndef CLI_LIST_UI_H
 #define CLI_LIST_UI_H
 
+struct cli_context;
 #include <stddef.h>
 #include "tui/tree.h"
 
-void cli_tree_prefix(const int *last, int depth, int is_last, int continuation);
+void cli_tree_prefix(struct cli_context *ctx, const int *last, int depth, int is_last,
+		     int continuation);
 
 int cli_list_columns(void);
 size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src);
-void cli_list_group(const char *name, int count, int is_last);
-void cli_list_item(const char *ancestor, int is_last, const char *marker,
-		   const char *name, const char *description, int name_width,
-		   int columns);
-void cli_list_row(const char *id, const char *name, const char *metadata,
+void cli_list_group(struct cli_context *ctx, const char *name, int count, int is_last);
+void cli_list_item(struct cli_context *ctx, const char *ancestor, int is_last, const char *marker,
+		   const char *name, const char *description, int name_width, int columns);
+void cli_list_row(struct cli_context *ctx, const char *id, const char *name, const char *metadata,
 		  int is_current, int is_last, int columns);
-void cli_list_value_field(const char *label, const char *value, int is_last,
-			  int label_width, int columns);
-void cli_list_text_field(const char *label, const char *value, int is_last,
+void cli_list_value_field(struct cli_context *ctx, const char *label, const char *value,
+			  int is_last, int label_width, int columns);
+void cli_list_text_field(struct cli_context *ctx, const char *label, const char *value, int is_last,
 			 int columns);
-void cli_list_json_field(const char *label, const char *json, int is_last,
+void cli_list_json_field(struct cli_context *ctx, const char *label, const char *json, int is_last,
 			 int columns);
 
 #endif

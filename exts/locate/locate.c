@@ -126,9 +126,8 @@ static void wgs84_to_gcj02(double lat, double lon,
  * We use CFRunLoopRun() with a CFRunLoopTimer -- NOT dispatch_after --
  * so the run loop processes events and the callbacks actually fire.
  *
- * g_loc_delegate is a file-scope global so the CFRunLoopTimer
- * callback can access it without passing an ObjC object pointer
- * through a C function context (which triggers SIGBUS on arm64).
+ * The timer receives a pointer to a stack-owned C timeout flag. No Objective-C
+ * object crosses the C callback boundary, and each request owns its state.
  *
  * IMPORTANT:  For the permission dialog to appear, the binary MUST
  * reside inside a .app bundle (Locate.app/Contents/MacOS/locate).
@@ -145,14 +144,10 @@ static void wgs84_to_gcj02(double lat, double lon,
  * retaining property getter entirely.
  */
 
-@class LocDel;
-static LocDel *g_loc_delegate;
-
 @interface LocDel : NSObject <CLLocationManagerDelegate>
 @property (strong) CLLocationManager *mgr;
 @property (strong) CLLocation *loc;
 @property (strong) NSError *err;
-@property int timedout;
 @end
 
 @implementation LocDel
@@ -229,8 +224,9 @@ static id ivar_read(LocDel *obj, const char *name)
 static void timeout_timer_cb(CFRunLoopTimerRef timer, void *info)
 {
 	(void)timer;
-	(void)info;
-	g_loc_delegate.timedout = 1;
+	int *timedout = info;
+
+	*timedout = 1;
 	CFRunLoopStop(CFRunLoopGetCurrent());
 }
 
@@ -248,7 +244,10 @@ static int get_location(double *lat, double *lon,
 	@autoreleasepool {
 		LocDel *d = [[LocDel alloc] init];
 		if (!d) return -ENOMEM;
-		g_loc_delegate = d;
+		int timedout = 0;
+		CFRunLoopTimerContext timer_context = {0};
+
+		timer_context.info = &timedout;
 
 		CLAuthorizationStatus st = [d.mgr authorizationStatus];
 
@@ -270,11 +269,8 @@ static int get_location(double *lat, double *lon,
 		 * reliable even without NSApplication / dispatch setup.
 		 */
 		CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
-			kCFAllocatorDefault,
-			CFAbsoluteTimeGetCurrent() + TIMEOUT_SEC,
-			0, 0, 0,
-			timeout_timer_cb,
-			NULL);
+			kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + TIMEOUT_SEC, 0, 0, 0,
+			timeout_timer_cb, &timer_context);
 		CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer,
 				  kCFRunLoopDefaultMode);
 
@@ -284,7 +280,8 @@ static int get_location(double *lat, double *lon,
 				      kCFRunLoopDefaultMode);
 		CFRelease(timer);
 
-		if (d.timedout) return -ETIMEDOUT;
+		if (timedout)
+			return -ETIMEDOUT;
 
 		/*
 		 * Read loc and err via direct ivar access, NOT property

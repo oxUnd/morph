@@ -235,8 +235,10 @@ TEST(CliListTest, UsesConfiguredColumnsWhenStdoutIsNotTerminal)
 
 TEST(CliListTest, LongItemUsesCompactContinuation)
 {
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
-	cli_list_item("", 1, nullptr, "a_very_long_registered_tool_name",
+	cli_list_item(_cli_output_context_ptr, "", 1, nullptr, "a_very_long_registered_tool_name",
 		      "First line\nSecond line with more details", 12, 40);
 	std::string output = testing::internal::GetCapturedStdout();
 
@@ -248,10 +250,13 @@ TEST(CliListTest, LongItemUsesCompactContinuation)
 
 TEST(CliListTest, JsonFieldRendersNestedTree)
 {
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
-	cli_list_json_field("Input schema",
+	cli_list_json_field(_cli_output_context_ptr, "Input schema",
 			    "{\"type\":\"object\",\"properties\":{"
-			    "\"query\":{\"type\":\"string\"}}}", 1, 80);
+			    "\"query\":{\"type\":\"string\"}}}",
+			    1, 80);
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("Input schema"), std::string::npos);
@@ -262,11 +267,13 @@ TEST(CliListTest, JsonFieldRendersNestedTree)
 
 TEST(CliListTest, SessionRowKeepsRelatedFieldsTogether)
 {
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
-	cli_list_row("ae2c6f9a", "查一下开放平台、前端架构绩效",
+	cli_list_row(_cli_output_context_ptr, "ae2c6f9a", "查一下开放平台、前端架构绩效",
 		     "3,086 tokens · 07-29 15:49", 0, 0, 80);
-	cli_list_row("a6f7b14c", "default", "0 tokens · 07-29 15:52",
-		     1, 1, 80);
+	cli_list_row(_cli_output_context_ptr, "a6f7b14c", "default", "0 tokens · 07-29 15:52", 1, 1,
+		     80);
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("├"), std::string::npos);
@@ -312,7 +319,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 
 	FILE *input = tmpfile();
 	ASSERT_NE(input, nullptr);
-	fputs("p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
+	fputs(&context, "p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
 	rewind(input);
 	int saved_stdin = dup(STDIN_FILENO);
 	ASSERT_GE(saved_stdin, 0);
@@ -343,7 +350,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	for (const char *answer : {"q\n", "\n", ""}) {
 		input = tmpfile();
 		ASSERT_NE(input, nullptr);
-		fputs(answer, input);
+		fputs(&context, answer, input);
 		rewind(input);
 		saved_stdin = dup(STDIN_FILENO);
 		ASSERT_GE(saved_stdin, 0);
@@ -372,10 +379,11 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 
 TEST(CliListTest, HelpUsesTreeLayout)
 {
-
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 
 	testing::internal::CaptureStdout();
-	cli_print_help();
+	cli_print_help(_cli_output_context_ptr);
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_NE(output.find("Commands"), std::string::npos);

@@ -1,4 +1,5 @@
 #include "llm.h"
+#include "agent/tool_runtime.h"
 #include "adapter.h"
 #include "agent/tool.h"
 #include "util/log.h"
@@ -20,6 +21,18 @@
 #include <stdio.h>
 
 #define LLM_IMAGE_QA_MAX_DIM 360
+
+struct model *model_bind_tool_request(const struct model *source,
+				      const struct tool_runtime_context *runtime,
+				      struct model *storage)
+{
+	if (!source || !storage)
+		return NULL;
+	*storage = *source;
+	if (runtime)
+		storage->http = runtime->http;
+	return storage;
+}
 
 void model_report_usage(const struct model *model, const struct model_usage *usage)
 {
@@ -83,7 +96,7 @@ static int extra_body_key_is_reserved(const char *key)
 	return 0;
 }
 
-static int add_extra_body_json(cJSON *root, const char *json)
+static int add_extra_body_json(struct morph_log *logger, cJSON *root, const char *json)
 {
 	cJSON *extra;
 	cJSON *item;
@@ -93,15 +106,15 @@ static int add_extra_body_json(cJSON *root, const char *json)
 	extra = cJSON_ParseWithOpts(json, NULL, 1);
 	if (!extra || !cJSON_IsObject(extra)) {
 		cJSON_Delete(extra);
-		log_err("extra_body_json must contain a valid JSON object");
+		log_err(logger, "extra_body_json must contain a valid JSON object");
 		MORPH_RETURN(MORPH_ERR_CONFIG);
 	}
 	cJSON_ArrayForEach(item, extra) {
 		cJSON *copy;
 
 		if (!item->string || extra_body_key_is_reserved(item->string)) {
-			log_err("extra_body_json contains reserved or invalid field: %s",
-				 item->string ? item->string : "<unnamed>");
+			log_err(logger, "extra_body_json contains reserved or invalid field: %s",
+				item->string ? item->string : "<unnamed>");
 			cJSON_Delete(extra);
 			MORPH_RETURN(MORPH_ERR_CONFIG);
 		}
@@ -152,11 +165,9 @@ static cJSON *build_simple_messages_cjson(const char *system_prompt,
 	return arr;
 }
 
-static int build_chat_body_json(struct arena *arena, const char *model_id,
-				const char *system_prompt,
-				const char **messages, int n,
-				int max_tokens, int stream,
-				const char *extra_body_json,
+static int build_chat_body_json(struct morph_log *logger, struct arena *arena, const char *model_id,
+				const char *system_prompt, const char **messages, int n,
+				int max_tokens, int stream, const char *extra_body_json,
 				char **out_body, size_t *out_body_len)
 {
 	cJSON *root;
@@ -187,7 +198,7 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens > 0 ? max_tokens : 4096);
-	int rc = add_extra_body_json(root, extra_body_json);
+	int rc = add_extra_body_json(logger, root, extra_body_json);
 	if (rc < 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -202,6 +213,7 @@ static int build_chat_body_json(struct arena *arena, const char *model_id,
 }
 
 struct llm_stream_ctx {
+	struct morph_log *logger;
 	sse_callback user_cb;
 	llm_stream_callback stream_cb;
 	void *user_data;
@@ -218,6 +230,7 @@ struct llm_stream_ctx {
 static void llm_stream_init(struct llm_stream_ctx *ctx, struct arena *arena,
 			     sse_callback cb, void *user_data)
 {
+	ctx->logger = NULL;
 	ctx->user_cb = cb;
 	ctx->stream_cb = NULL;
 	ctx->user_data = user_data;
@@ -445,11 +458,10 @@ static void llm_stream_parse_usage(struct llm_stream_ctx *ctx, cJSON *root)
 	usage_strncpy(ctx->usage.usage_source,
 		      sizeof(ctx->usage.usage_source), "provider");
 	if (ctx->usage.input_tokens > 0)
-		log_dbg("llm usage: prompt cache %lld/%lld input tokens (%.1f%% hit)",
-			(long long)ctx->usage.cached_tokens,
-			(long long)ctx->usage.input_tokens,
-			(double)ctx->usage.cached_tokens * 100.0 /
-				(double)ctx->usage.input_tokens);
+		log_dbg(ctx ? ctx->logger : NULL,
+			"llm usage: prompt cache %lld/%lld input tokens (%.1f%% hit)",
+			(long long)ctx->usage.cached_tokens, (long long)ctx->usage.input_tokens,
+			(double)ctx->usage.cached_tokens * 100.0 / (double)ctx->usage.input_tokens);
 }
 
 static void llm_stream_parse_finish_reason(struct llm_stream_ctx *ctx,
@@ -474,7 +486,7 @@ static int llm_sse_event_cb(const char *event, const char *data, void *ud)
 		return 0;
 
 	if (strcmp(data, "[DONE]") == 0) {
-		log_dbg("llm_sse_event_cb: [DONE]");
+		log_dbg(ctx ? ctx->logger : NULL, "llm_sse_event_cb: [DONE]");
 		return 0;
 	}
 
@@ -711,6 +723,7 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 		else
 			llm_stream_init(&ctx, arena, cb, user_data);
 
+		ctx.logger = self->http.logger;
 		snprintf(ctx.usage.phase, sizeof(ctx.usage.phase), "%s", usage_phase ? usage_phase : "turn");
 		struct sse_parser parser;
 		sse_parser_init(&parser, event_cb ? event_cb : llm_sse_event_cb,
@@ -723,10 +736,9 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 			memset(&hctx.error_buf, 0, sizeof(hctx.error_buf));
 
 		struct http_sse_metadata metadata = {0};
-		int status = http_post_sse_ex_timeout_metadata(url, body, body_len,
-						      "application/json",
-						      headers, 1, timeout,
-						      llm_http_cb, &hctx, &metadata);
+		int status = http_post_sse_ex_timeout_metadata(
+			&self->http, url, body, body_len, "application/json", headers, 1, timeout,
+			llm_http_cb, &hctx, &metadata);
 		sse_parser_free(&parser);
 
 		const char *detail = NULL;
@@ -746,12 +758,14 @@ static int llm_post_sse_with_retry(struct model *self, struct arena *arena,
 					 ? self->error_info.retry_after_seconds
 					 : llm_retry_delay_seconds(attempt);
 			if (detail)
-				log_warn("%s: HTTP %d (%s), retry %d/%d in %lds", operation, status,
+				log_warn(self ? self->http.logger : NULL,
+					 "%s: HTTP %d (%s), retry %d/%d in %lds", operation, status,
 					 detail, attempt + 1, retries, delay);
 			else
-				log_warn("%s: HTTP %d, retry %d/%d in %lds", operation, status,
+				log_warn(self ? self->http.logger : NULL,
+					 "%s: HTTP %d, retry %d/%d in %lds", operation, status,
 					 attempt + 1, retries, delay);
-			int wait_rc = http_wait_cancelable((unsigned int)delay * 1000);
+			int wait_rc = http_wait_cancelable(&self->http, (unsigned int)delay * 1000);
 			if (wait_rc < 0)
 				return wait_rc;
 			continue;
@@ -772,12 +786,13 @@ static int llm_chat(struct model *self, struct arena *arena,
 	long timeout;
 
 	if (!self || !self->api_key[0]) {
-		log_err("llm_chat: no API key configured");
+		log_err(self ? self->http.logger : NULL, "llm_chat: no API key configured");
 		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
-	log_dbg("llm_chat: start, model=%s, api_base=%s", self->model_id, self->api_base);
+	log_dbg(self ? self->http.logger : NULL, "llm_chat: start, model=%s, api_base=%s",
+		self->model_id, self->api_base);
 	max_tokens = opts && opts->max_tokens > 0
 		? opts->max_tokens
 		: self->max_tokens;
@@ -787,10 +802,9 @@ static int llm_chat(struct model *self, struct arena *arena,
 
 	char *body = NULL;
 	size_t body_len = 0;
-	int rc = build_chat_body_json(arena, self->model_id, system_prompt,
-				      messages, n, max_tokens, 1,
-				      self->extra_body_json,
-				      &body, &body_len);
+	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id,
+				      system_prompt, messages, n, max_tokens, 1,
+				      self->extra_body_json, &body, &body_len);
 	if (rc < 0)
 		return rc;
 
@@ -805,26 +819,29 @@ static int llm_chat(struct model *self, struct arena *arena,
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };
 
-	log_dbg("llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
+	log_dbg(self ? self->http.logger : NULL,
+		"llm_chat: sending SSE request to %s, timeout=%lds", url, timeout);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
 	int status = llm_post_sse_with_retry(self, arena, "llm_chat", opts ? opts->usage_phase : NULL, url,
 					     body, body_len, extra_headers,
 					     timeout, cb, NULL, NULL, user_data,
 					     &ctx, &detail);
-	log_dbg("llm_chat: SSE request done, status=%d", status);
+	log_dbg(self ? self->http.logger : NULL, "llm_chat: SSE request done, status=%d", status);
 
 	if (status < 0) {
 		model_set_last_error(self, "%s", detail ? detail : morph_strerror(status));
-		log_err("llm_chat: SSE request failed: %s", morph_strerror(status));
+		log_err(self ? self->http.logger : NULL, "llm_chat: SSE request failed: %s",
+			morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
 		if (detail)
-			log_err("llm_chat: API returned HTTP %d: %s",
-				status, detail);
+			log_err(self ? self->http.logger : NULL,
+				"llm_chat: API returned HTTP %d: %s", status, detail);
 		else
-			log_err("llm_chat: API returned HTTP %d", status);
+			log_err(self ? self->http.logger : NULL, "llm_chat: API returned HTTP %d",
+				status);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
 
@@ -858,7 +875,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 
 	model_clear_last_error(self);
 	if (!self || !self->api_key[0]) {
-		log_err("llm_chat_with_image: no API key configured");
+		log_err(self ? self->http.logger : NULL,
+			"llm_chat_with_image: no API key configured");
 		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -876,8 +894,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	char *data_uri = NULL;
 	int encode_rc = image_encode_data_uri(image_path, max_dim, &data_uri);
 	if (encode_rc < 0) {
-		log_err("llm_chat_with_image: failed to encode image: %s",
-			image_path);
+		log_err(self ? self->http.logger : NULL,
+			"llm_chat_with_image: failed to encode image: %s", image_path);
 		model_set_last_error(self, "failed to read or encode image: %s",
 				     image_path);
 		MORPH_RETURN(encode_rc);
@@ -944,7 +962,8 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens);
-	int extra_rc = add_extra_body_json(root, self->extra_body_json);
+	int extra_rc =
+		add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
 	if (extra_rc < 0) {
 		cJSON_Delete(root);
 		return extra_rc;
@@ -968,7 +987,9 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		 self->api_key);
 	const char *extra_headers[] = { auth_header };
 
-	log_dbg("llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, max_dim=%d, body=%zu",
+	log_dbg(self ? self->http.logger : NULL,
+		"llm_chat_with_image: sending SSE request to %s, timeout=%lds, max_tokens=%d, "
+		"max_dim=%d, body=%zu",
 		url, timeout, max_tokens, max_dim, body_len);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
@@ -977,22 +998,24 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 					     body, body_len, extra_headers,
 					     timeout, cb, NULL, NULL, user_data,
 					     &ctx, &detail);
-	log_dbg("llm_chat_with_image: SSE request done, status=%d", status);
+	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_image: SSE request done, status=%d",
+		status);
 
 	if (status < 0) {
-		log_err("llm_chat_with_image: SSE request failed: %d", status);
+		log_err(self ? self->http.logger : NULL,
+			"llm_chat_with_image: SSE request failed: %d", status);
 		model_set_last_error(self, "HTTP/SSE request failed: %s",
 				     morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
 		if (detail) {
-			log_err("llm_chat_with_image: API returned HTTP %d: %s",
-				status, detail);
+			log_err(self ? self->http.logger : NULL,
+				"llm_chat_with_image: API returned HTTP %d: %s", status, detail);
 			model_set_last_error(self, "HTTP %d: %s", status, detail);
 		} else {
-			log_err("llm_chat_with_image: API returned HTTP %d",
-				status);
+			log_err(self ? self->http.logger : NULL,
+				"llm_chat_with_image: API returned HTTP %d", status);
 			model_set_last_error(self, "HTTP %d from %s", status,
 					     self->api_base);
 		}
@@ -1566,7 +1589,8 @@ static int llm_responses_with_tools_impl(struct model *self,
 	if (!self || !arena || !response)
 		MORPH_RETURN(-EINVAL);
 	if (!self->api_key[0]) {
-		log_err("llm_responses_with_tools: no API key configured");
+		log_err(self ? self->http.logger : NULL,
+			"llm_responses_with_tools: no API key configured");
 		model_clear_last_error(self);
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
@@ -1594,7 +1618,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 	cJSON_AddBoolToObject(root, "stream", 1);
 	cJSON_AddNumberToObject(root, "max_output_tokens",
 		self->max_tokens > 0 ? self->max_tokens : 4096);
-	rc = add_extra_body_json(root, self->extra_body_json);
+	rc = add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
 	if (rc != 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -1644,7 +1668,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 			messages, msg_count, tools, tool_count, response,
 			thought_cb, stream_cb, stream_ud);
 	if (!self || !self->api_key[0]) {
-		log_err("llm_chat_with_tools: no API key configured");
+		log_err(self ? self->http.logger : NULL,
+			"llm_chat_with_tools: no API key configured");
 		model_clear_last_error(self);
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
@@ -1657,8 +1682,9 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	memset(response, 0, sizeof(*response));
 	response->arena = arena;
 
-	log_dbg("llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d",
-		self->model_id, tool_count, msg_count);
+	log_dbg(self ? self->http.logger : NULL,
+		"llm_chat_with_tools: start, model=%s, tools=%d, msgs=%d", self->model_id,
+		tool_count, msg_count);
 
 	cJSON *root = cJSON_CreateObject();
 	if (!root)
@@ -1696,7 +1722,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	}
 	cJSON_AddNumberToObject(root, "max_tokens",
 				self->max_tokens > 0 ? self->max_tokens : 4096);
-	int extra_rc = add_extra_body_json(root, self->extra_body_json);
+	int extra_rc =
+		add_extra_body_json(self ? self->http.logger : NULL, root, self->extra_body_json);
 	if (extra_rc < 0) {
 		cJSON_Delete(root);
 		return extra_rc;
@@ -1720,7 +1747,8 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 	const char *extra_headers[] = { auth_header };
 
 	long timeout = self->timeout_seconds > 0 ? self->timeout_seconds : 300L;
-	log_dbg("llm_chat_with_tools: sending SSE request to %s", url);
+	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_tools: sending SSE request to %s",
+		url);
 	struct llm_stream_ctx ctx;
 	const char *detail = NULL;
 	int status = llm_post_sse_with_retry(self, arena,
@@ -1728,23 +1756,25 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 					     body, strlen(body), extra_headers,
 					     timeout, thought_cb, stream_cb, NULL,
 					     stream_ud, &ctx, &detail);
-	log_dbg("llm_chat_with_tools: SSE request done, status=%d", status);
+	log_dbg(self ? self->http.logger : NULL, "llm_chat_with_tools: SSE request done, status=%d",
+		status);
 
 	if (status < 0) {
-		log_err("llm_chat_with_tools: SSE request failed: %d", status);
+		log_err(self ? self->http.logger : NULL,
+			"llm_chat_with_tools: SSE request failed: %d", status);
 		model_set_last_error(self, "HTTP/SSE request failed: %s",
 				     morph_strerror(status));
 		return status;
 	}
 	if (status >= 400) {
 		if (detail) {
-			log_err("llm_chat_with_tools: API returned HTTP %d: %s",
-				status, detail);
+			log_err(self ? self->http.logger : NULL,
+				"llm_chat_with_tools: API returned HTTP %d: %s", status, detail);
 			model_set_last_error(self, "HTTP %d: %s", status, detail);
 			response->content = (char *)detail;
 		} else {
-			log_err("llm_chat_with_tools: API returned HTTP %d",
-				status);
+			log_err(self ? self->http.logger : NULL,
+				"llm_chat_with_tools: API returned HTTP %d", status);
 			model_set_last_error(self, "HTTP %d from %s", status, url);
 		}
 		MORPH_RETURN(MORPH_ERR_API);
@@ -1805,9 +1835,9 @@ static int llm_generate(struct model *self, const char *prompt,
 	const char *messages[] = { prompt };
 	char *body = NULL;
 	size_t body_len = 0;
-	int rc = build_chat_body_json(arena, self->model_id, NULL, messages, 1,
-				      self->max_tokens, 0,
-				      self->extra_body_json, &body, &body_len);
+	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id, NULL,
+				      messages, 1, self->max_tokens, 0, self->extra_body_json,
+				      &body, &body_len);
 	if (rc < 0) {
 		arena_destroy(arena);
 		return rc;
@@ -1819,8 +1849,8 @@ static int llm_generate(struct model *self, const char *prompt,
 	char auth_header[512];
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", self->api_key);
 	const char *extra_headers[] = { auth_header };
-	rc = http_post_ex(url, body, body_len,
-			  "application/json", extra_headers, 1, &resp);
+	rc = http_post_ex(&self->http, url, body, body_len, "application/json", extra_headers, 1,
+			  &resp);
 	arena_destroy(arena);
 
 	if (rc < 0) {
@@ -1829,7 +1859,8 @@ static int llm_generate(struct model *self, const char *prompt,
 	}
 
 	if (resp.status_code != 200) {
-		log_err("llm_generate: API returned %d", resp.status_code);
+		log_err(self ? self->http.logger : NULL, "llm_generate: API returned %d",
+			resp.status_code);
 		http_response_free(&resp);
 		MORPH_RETURN(MORPH_ERR_API);
 	}
@@ -1848,12 +1879,13 @@ static void llm_destroy(struct model *self)
 		free(self);
 }
 
-struct model *model_llm_create(const char *provider, const char *model_id,
-			      const char *api_base, const char *api_key)
+struct model *model_llm_create(struct morph_log *logger, const char *provider, const char *model_id,
+			       const char *api_base, const char *api_key)
 {
 	struct model *m = calloc(1, sizeof(*m));
 	if (!m)
 		return NULL;
+	m->http.logger = logger;
 	strncpy(m->provider, provider ? provider : "openai", sizeof(m->provider) - 1);
 	strncpy(m->adapter, llm_adapter_infer(provider),
 		sizeof(m->adapter) - 1);

@@ -19,7 +19,7 @@ protected:
 	void SetUp() override {
 		snprintf(db_path, sizeof(db_path), "/tmp/ma_test_session_%d.db", getpid());
 		std::remove(db_path);
-		int rc = db_open(&db, db_path);
+		int rc = db_open(NULL, &db, db_path);
 		ASSERT_EQ(rc, 0);
 		rc = db_init_schema(&db);
 		ASSERT_EQ(rc, 0);
@@ -468,7 +468,7 @@ TEST_F(SessionTest, LegacyArchivedAnswerClosesRequestWithoutAssumingSuccess)
 	item.content = "Continue testing";
 	item.active = 1;
 	ASSERT_EQ(model_history_add(&db, &item, nullptr), 0);
-	struct tokenizer *tok = tokenizer_create("test", 4096);
+	struct tokenizer *tok = tokenizer_create(NULL, "test", 4096);
 	ASSERT_NE(tok, nullptr);
 	int changed = 0;
 	ASSERT_EQ(agent_history_repair(&db, s.id, tok, nullptr, &changed), 0);
@@ -484,7 +484,7 @@ TEST_F(SessionTest, LegacyArchivedAnswerClosesRequestWithoutAssumingSuccess)
 	morph_array_t messages = {};
 	struct chat_message slot = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
 	auto *request = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
 	EXPECT_NE(strstr(request->content, "execution ended: answered"), nullptr);
 	EXPECT_EQ(tokenizer_count(tok, request->content), items->token_count);
@@ -516,7 +516,7 @@ TEST_F(SessionTest, SnapshotBoundaryPrecedesLaterFinalAnswer)
 	morph_array_t messages = {};
 	struct chat_message slot = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(slot)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(&summary, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &summary, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
 	EXPECT_NE(strstr(message->content, "sequence 9"), nullptr);
@@ -753,7 +753,7 @@ TEST_F(SessionTest, ModelHistoryTruncatesUtf8ToolResultsAndRedactsSecrets) {
 
 TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
 {
-	auto *tokenizer = tokenizer_create("deepseek-flash", 128000);
+	auto *tokenizer = tokenizer_create(NULL, "deepseek-flash", 128000);
 	ASSERT_NE(tokenizer, nullptr);
 	std::string text = "HEAD ";
 	for (int i = 0; i < 3000; i++)
@@ -789,7 +789,7 @@ TEST_F(SessionTest, ToolResultTokenLimitIncludesRedactionAndOmissionMarker)
 
 TEST_F(SessionTest, ToolResultLimitPreservesLargeButLowTokenOutput)
 {
-	auto *tokenizer = tokenizer_create("deepseek-flash", 128000);
+	auto *tokenizer = tokenizer_create(NULL, "deepseek-flash", 128000);
 	ASSERT_NE(tokenizer, nullptr);
 	if (!tokenizer->encoder) {
 		tokenizer_destroy(tokenizer);
@@ -859,7 +859,7 @@ TEST_F(SessionTest, HistoryBuilderUsesProviderNeutralCallIds) {
 	result.tool_call_id = const_cast<char *>("local_1");
 	result.provider_call_id = const_cast<char *>("provider_1");
 	result.active = 1;
-	ASSERT_EQ(agent_history_build_chat_messages(&call, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &call, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	auto *assistant = static_cast<struct chat_message *>(
 		morph_array_get(&messages, 0));
@@ -893,7 +893,7 @@ TEST_F(SessionTest, HistoryBuilderMigratesLegacyBashExecCalls) {
 		"\\\"cwd\\\":\\\"/tmp\\\","
 		"\\\"write_paths\\\":[\\\"/tmp\\\"]}\"}]}");
 	item.active = 1;
-	ASSERT_EQ(agent_history_build_chat_messages(&item, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &item, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 1U);
 	auto *message = static_cast<struct chat_message *>(
 		morph_array_get(&messages, 0));
@@ -926,7 +926,7 @@ TEST_F(SessionTest, HistoryDiagnoseAndRepairNormalizesInvalidItems) {
 	struct model_history_insert invalid_arguments = {};
 	struct model_history_insert invalid_result = {};
 	struct model_history_insert orphan = {};
-	struct tokenizer *tokenizer = tokenizer_create("test", 4096);
+	struct tokenizer *tokenizer = tokenizer_create(NULL, "test", 4096);
 	struct agent_history_diagnostic diagnostic = {};
 	int changed = 0;
 	int count = 0;
@@ -1012,7 +1012,7 @@ TEST_F(SessionTest, FreeformToolHistoryPreservesRawInput) {
 	item.active = 1;
 	ASSERT_EQ(morph_array_init(&messages, 2,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(&item, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &item, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 1U);
 	auto *message = static_cast<struct chat_message *>(
 		morph_array_get(&messages, 0));
@@ -1064,7 +1064,7 @@ TEST_F(SessionTest, ToolCallRedactionPreservesJsonAndSourceTemplates) {
 	struct arena *arena = arena_create(0);
 	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
 	cJSON *args = cJSON_Parse(message->tool_calls[0].arguments);
@@ -1254,7 +1254,7 @@ TEST_F(SessionTest, BackgroundReceiptIsReplayableAndIdempotent) {
 	EXPECT_NE(std::strstr(items->content, "ios_release"), nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 1,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, items, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 1U);
 	auto *message = static_cast<struct chat_message *>(
 		morph_array_get(&messages, 0));
@@ -1297,7 +1297,7 @@ TEST_F(SessionTest, MemoryMaintenanceIsNeitherPersistedNorReplayed) {
 	morph_array_t messages;
 	struct chat_message message = {};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(&legacy, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &legacy, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 1U);
 	auto *actual = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
 	EXPECT_STREQ(actual->content, "archive created");

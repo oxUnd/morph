@@ -49,7 +49,7 @@ static int prompt_append_file(morph_buf_t *buf, const char *path)
 	return morph_buf_truncate(buf, n ? content_start + n : start);
 }
 
-static int prompt_append_directory(morph_buf_t *buf, const char *dir)
+static int prompt_append_directory(struct morph_log *logger, morph_buf_t *buf, const char *dir)
 {
 	char **files = NULL;
 	int count = 0;
@@ -64,8 +64,8 @@ static int prompt_append_directory(morph_buf_t *buf, const char *dir)
 		if (rc == 0)
 			rc = prompt_append_file(buf, path);
 		if (rc != 0) {
-			log_err("cannot load prompt fragment '%s/%s': %s",
-				dir, files[i], morph_strerror(rc));
+			log_err(logger, "cannot load prompt fragment '%s/%s': %s", dir, files[i],
+				morph_strerror(rc));
 			break;
 		}
 	}
@@ -73,24 +73,23 @@ static int prompt_append_directory(morph_buf_t *buf, const char *dir)
 	MORPH_RETURN(rc);
 }
 
-static int prompt_append_source(morph_buf_t *buf, const char *source,
-			       int is_directory)
+static int prompt_append_source(struct morph_log *logger, morph_buf_t *buf, const char *source,
+				int is_directory)
 {
 	char *path = file_expand_path(source);
 	int rc;
 
 	if (!path)
 		MORPH_RETURN(-ENOMEM);
-	rc = is_directory ? prompt_append_directory(buf, path) :
-		prompt_append_file(buf, path);
+	rc = is_directory ? prompt_append_directory(logger, buf, path)
+			  : prompt_append_file(buf, path);
 	if (rc != 0)
-		log_err("cannot load prompt source '%s': %s",
-			path, morph_strerror(rc));
+		log_err(logger, "cannot load prompt source '%s': %s", path, morph_strerror(rc));
 	free(path);
 	MORPH_RETURN(rc);
 }
 
-int morph_prompt_load(const char *file, const char *dir, char **out)
+int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out)
 {
 	morph_buf_t buf;
 	int rc;
@@ -104,9 +103,9 @@ int morph_prompt_load(const char *file, const char *dir, char **out)
 	if (rc != 0)
 		MORPH_RETURN(rc);
 	if (file && *file)
-		rc = prompt_append_source(&buf, file, 0);
+		rc = prompt_append_source(logger, &buf, file, 0);
 	if (rc == 0 && dir && *dir)
-		rc = prompt_append_source(&buf, dir, 1);
+		rc = prompt_append_source(logger, &buf, dir, 1);
 	if (rc == 0)
 		*out = morph_buf_detach(&buf);
 	morph_buf_cleanup(&buf);

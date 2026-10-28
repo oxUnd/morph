@@ -1,3 +1,4 @@
+#include "sapi/cli/callbacks.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
 
@@ -63,7 +64,7 @@ static int interaction_emit(struct cli_context *ctx, const char *name,
 	return rc;
 }
 
-static int interaction_read_line(morph_buf_t *line)
+static int interaction_read_line(struct cli_context *ctx, morph_buf_t *line)
 {
 	char chunk[BUFSIZ];
 
@@ -75,13 +76,13 @@ static int interaction_read_line(morph_buf_t *line)
 		int complete;
 		int rc;
 
-		if (!fgets(chunk, sizeof(chunk), stdin)) {
+		if (!cli_input_fgets(ctx, chunk, sizeof(chunk), stdin)) {
 			if (feof(stdin))
 				MORPH_RETURN(-ECANCELED);
 			if (errno == EINTR) {
 				clearerr(stdin);
-				if (cli_sigint_received) {
-					cli_sigint_received = 0;
+				if (morph_signal_flag_take(&ctx->interrupted) ||
+				    morph_signal_flag_get(&ctx->terminate_requested)) {
 					MORPH_RETURN(-ECANCELED);
 				}
 				continue;
@@ -153,6 +154,8 @@ static int interaction_parse_response(const char *json,
 static int interaction_request_on_owner(void *opaque)
 {
 	struct cli_interaction_call *call = opaque;
+	struct cli_context *ctx = call->ctx;
+	(void)ctx;
 	char request_id[CLI_INTERACTION_ID_MAX];
 	morph_buf_t line;
 	int rc;
@@ -173,7 +176,7 @@ static int interaction_request_on_owner(void *opaque)
 		cJSON *response = NULL;
 		int cancelled = 0;
 
-		rc = interaction_read_line(&line);
+		rc = interaction_read_line(call->ctx, &line);
 		if (rc != 0) {
 			(void)interaction_emit(call->ctx,
 				"interaction.cancelled", "failed", request_id,

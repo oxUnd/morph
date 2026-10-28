@@ -54,19 +54,21 @@ static int replay_feed(const char *path)
 
 int main(int argc, char **argv)
 {
+	struct cli_context _cli_output_context = {0};
+	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
 	struct cli_context ctx;
 	int rc;
 
 	if (argc == 3 && strcmp(argv[1], "--replay-events") == 0) {
 		(void)setlocale(LC_ALL, "");
-		cli_set_color_enabled(1);
+		cli_set_color_enabled(_cli_output_context_ptr, 1);
 		return replay_feed(argv[2]) == 0 ? 0 : 1;
 	}
 	if (argc != 4)
 		return 2;
 	(void)setlocale(LC_ALL, "");
-	http_init();
-	rc = cli_init(&ctx, argv[1], argv[3], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
+	http_init(NULL);
+	rc = cli_init(&ctx, NULL, argv[1], argv[3], argv[2], NULL, CLI_PRESENT_INTERACTIVE);
 	if (rc == 0) {
 		cli_run(&ctx);
 		cli_shutdown(&ctx);

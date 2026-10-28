@@ -385,25 +385,23 @@ static void cli_ui_render_notification(struct cli_context *ctx,
 	struct tm local;
 	time_t created = (time_t)item->notification_created_at;
 
-	printf("\n%s%s" ANSI_RESET " " ANSI_CYAN "[task]" ANSI_RESET " ",
-		color, mark);
+	printf(ctx, "\n%s%s" ANSI_RESET " " ANSI_CYAN "[task]" ANSI_RESET " ", color, mark);
 	if (item->notification_task_id > 0)
-		printf(ANSI_DIM "#%lld " ANSI_RESET,
-			(long long)item->notification_task_id);
-	(void)cli_print_untrusted_text(
-		item->notification_title ? item->notification_title : "Task",
-		UTF8_TERMINAL_TEXT_SINGLE_LINE);
-	printf(ANSI_DIM " · " ANSI_RESET "%s%s" ANSI_RESET "\n", color, status);
+		printf(ctx, ANSI_DIM "#%lld " ANSI_RESET, (long long)item->notification_task_id);
+	(void)cli_print_untrusted_text(ctx,
+				       item->notification_title ? item->notification_title : "Task",
+				       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+	printf(ctx, ANSI_DIM " · " ANSI_RESET "%s%s" ANSI_RESET "\n", color, status);
 	if (item->notification_body && item->notification_body[0]) {
-		printf("  ");
-		cli_markdown_render_ansi_with_media_indented(
-			item->notification_body, 2, media_callback, ctx);
+		printf(ctx, "  ");
+		cli_markdown_render_ansi_with_media_indented(ctx, item->notification_body, 2,
+							     media_callback, ctx);
 	}
-	printf("  " ANSI_DIM "inbox #%lld", (long long)item->notification_id);
+	printf(ctx, "  " ANSI_DIM "inbox #%lld", (long long)item->notification_id);
 	if (created > 0 && localtime_r(&created, &local) &&
 	    strftime(clock, sizeof(clock), "%H:%M:%S", &local) > 0)
-		printf(" · %s", clock);
-	printf(ANSI_RESET "\n\n");
+		printf(ctx, " · %s", clock);
+	printf(ctx, ANSI_RESET "\n\n");
 }
 
 int cli_ui_drain(struct cli_context *ctx)
@@ -457,7 +455,7 @@ int cli_ui_drain(struct cli_context *ctx)
 			cli_terminal_history_end(ctx);
 		}
 		if (captured)
-			cli_command_capture_end();
+			cli_command_capture_end(ctx);
 		if (first_error == 0 && rc != 0)
 			first_error = rc;
 		cli_ui_item_free(item);

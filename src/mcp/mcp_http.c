@@ -145,14 +145,16 @@ int mcp_http_build_request_url(const struct mcp_server_config *cfg,
 	}
 
 	if (!cfg->http_auth_token_env[0]) {
-		log_err("mcp http: URL uses %s but auth_token_env is not set",
+		log_err(cfg ? cfg->logger : NULL,
+			"mcp http: URL uses %s but auth_token_env is not set",
 			MCP_AUTH_TOKEN_PLACEHOLDER);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	token = getenv(cfg->http_auth_token_env);
 	if (!token || !token[0]) {
-		log_err("mcp http: URL uses %s but env var '%s' is not set",
+		log_err(cfg ? cfg->logger : NULL,
+			"mcp http: URL uses %s but env var '%s' is not set",
 			MCP_AUTH_TOKEN_PLACEHOLDER, cfg->http_auth_token_env);
 		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
 	}
@@ -305,9 +307,14 @@ int mcp_http_exchange(struct mcp_client *client,
 		goto out_free_headers;
 	long timeout = (long)(timeout_ms / 1000) + (timeout_ms % 1000 != 0);
 
-	rc = http_session_post(&client->session, url, request->json,
-		strlen(request->json), "application/json", headers.elts,
-		(int)headers.nelts, timeout);
+	struct http_control control = {
+		.logger = client->config.logger,
+		.interrupt_check = client->interrupt_check,
+		.interrupt_user_data = client->interrupt_user_data,
+	};
+	rc = http_session_post(&control, &client->session, url, request->json,
+			       strlen(request->json), "application/json", headers.elts,
+			       (int)headers.nelts, timeout);
 	if (rc != 0)
 		goto out_free_headers;
 	reply->http_status = http_session_status(&client->session);
@@ -339,9 +346,10 @@ int mcp_http_connect(struct mcp_client *client)
 	if (!client || !client->config.http_url[0])
 		return -EINVAL;
 
-	rc = http_session_init(&client->session);
+	rc = http_session_init(client ? client->config.logger : NULL, &client->session);
 	if (rc < 0) {
-		log_err("mcp http: session init failed: %s", morph_strerror(rc));
+		log_err(client ? client->config.logger : NULL, "mcp http: session init failed: %s",
+			morph_strerror(rc));
 		return rc;
 	}
 
@@ -349,7 +357,7 @@ int mcp_http_connect(struct mcp_client *client)
 	client->session_id = NULL;
 
 	log_url = mcp_http_redact_url_for_log(client->config.http_url);
-	log_info("mcp http: connecting to '%s' at %s",
+	log_info(client ? client->config.logger : NULL, "mcp http: connecting to '%s' at %s",
 		 client->config.name, log_url ? log_url : client->config.http_url);
 	free(log_url);
 	return 0;
@@ -363,5 +371,6 @@ void mcp_http_disconnect(struct mcp_client *client)
 	free(client->session_id);
 	client->session_id = NULL;
 	client->connected = 0;
-	log_info("mcp http: disconnected '%s'", client->config.name);
+	log_info(client ? client->config.logger : NULL, "mcp http: disconnected '%s'",
+		 client->config.name);
 }

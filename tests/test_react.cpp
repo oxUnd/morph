@@ -81,8 +81,8 @@ static int streaming_tool_fn(const char *args_json, struct tool_result *result,
 {
 	(void)args_json;
 	(void)user_data;
-	(void)tool_runtime_emit_stream("stream_tool", "text", "alpha ");
-	(void)tool_runtime_emit_stream("stream_tool", "text", "beta");
+	(void)tool_runtime_emit_stream(result->runtime, "stream_tool", "text", "alpha ");
+	(void)tool_runtime_emit_stream(result->runtime, "stream_tool", "text", "beta");
 	(void)tool_result_success_json_text(result, strdup("{\"result\":\"done\"}"));
 	return 0;
 }
@@ -893,8 +893,8 @@ protected:
 	struct compress_config cfg;
 	struct arena *ar;
 	void SetUp() override {
-		tool_registry_init(&tools);
-		tok = tokenizer_create("gpt-4o", 128000);
+		tool_registry_init(NULL, &tools);
+		tok = tokenizer_create(NULL, "gpt-4o", 128000);
 		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
@@ -919,8 +919,8 @@ protected:
 	struct model *llm;
 	struct mock_llm_data *llm_data;
 	void SetUp() override {
-		tool_registry_init(&tools);
-		tok = tokenizer_create("gpt-4o", 128000);
+		tool_registry_init(NULL, &tools);
+		tok = tokenizer_create(NULL, "gpt-4o", 128000);
 		memset(&cfg, 0, sizeof(cfg));
 		cfg.max_context_tokens = 128000;
 		cfg.max_history_rounds = 6;
@@ -1231,12 +1231,10 @@ TEST_F(ReactTest, NullContext) {
 }
 
 TEST_F(ReactTest, RunWithCallback) {
-	static int callback_count = 0;
-	callback_count = 0;
+	int callback_count = 0;
 	auto cb = [](const struct react_output_event *event, void *ud) -> int {
 		(void)event;
-		(void)ud;
-		callback_count++;
+		++*static_cast<int *>(ud);
 		return 0;
 	};
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
@@ -1244,7 +1242,7 @@ TEST_F(ReactTest, RunWithCallback) {
 	struct model *m = create_mock_llm("Thought: ok\nFinal: done");
 	ASSERT_NE(m, nullptr);
 	ctx->llm_model = m;
-	react_run(ctx, "test input", cb, nullptr);
+	react_run(ctx, "test input", cb, &callback_count);
 	react_context_destroy(ctx);
 	model_destroy(m);
 	EXPECT_GT(callback_count, 0);
@@ -1851,7 +1849,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	snprintf(db_path, sizeof(db_path),
 		 "/tmp/morph_react_compact_%d.db", getpid());
 	std::remove(db_path);
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "compact", "mock-model", &session), 0);
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -1925,7 +1923,7 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	struct morph_event_recorder rec;
 	snprintf(db_path, sizeof(db_path), "/tmp/morph_compact_budget_%d.db", getpid());
 	std::remove(db_path);
-	ASSERT_EQ(db_open(&db, db_path), 0);
+	ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
 	ASSERT_EQ(session_create(&db, "budget_rollback", "mock-model", &session), 0);
 	ASSERT_EQ(morph_event_recorder_init(&rec), 0);
@@ -2983,32 +2981,32 @@ TEST_F(MockLlmTest, GlobalToolTimeoutLetsLoopContinue) {
 
 class HttpTimeoutTest : public ::testing::Test {
 protected:
-	void SetUp() override { http_init(); }
+  void SetUp() override
+  {
+	  http_init(NULL);
+  }
 	void TearDown() override { http_cleanup(); }
 };
 
 TEST_F(HttpTimeoutTest, TimeoutFnNullUrl) {
 	struct sse_parser parser;
 	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout(nullptr, "", 0,
-					  "application/json", nullptr, 0, 10,
+	int rc = http_post_sse_ex_timeout(NULL, nullptr, "", 0, "application/json", nullptr, 0, 10,
 					  global_sse_write_adapter, &parser);
 	EXPECT_NE(rc, 0);
 	sse_parser_free(&parser);
 }
 
 TEST_F(HttpTimeoutTest, TimeoutFnNullCallback) {
-	int rc = http_post_sse_ex_timeout("http://127.0.0.1:1/test", "", 0,
-					  "application/json", nullptr, 0, 10,
-					  nullptr, nullptr);
+	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "", 0,
+					  "application/json", nullptr, 0, 10, nullptr, nullptr);
 	EXPECT_NE(rc, 0);
 }
 
 TEST_F(HttpTimeoutTest, TimeoutFnConnectRefused) {
 	struct sse_parser parser;
 	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout("http://127.0.0.1:1/test",
-					  "{}", 2,
+	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "{}", 2,
 					  "application/json", nullptr, 0, 2,
 					  global_sse_write_adapter, &parser);
 	EXPECT_NE(rc, 0);
@@ -3024,8 +3022,7 @@ static int global_global_sse_write_adapter(const char *data, size_t len, void *u
 TEST_F(HttpTimeoutTest, ZeroTimeoutUsesDefault) {
 	struct sse_parser parser;
 	sse_parser_init(&parser, nullptr, nullptr);
-	int rc = http_post_sse_ex_timeout("http://127.0.0.1:1/test",
-					  "{}", 2,
+	int rc = http_post_sse_ex_timeout(NULL, "http://127.0.0.1:1/test", "{}", 2,
 					  "application/json", nullptr, 0, 0,
 					  global_sse_write_adapter, &parser);
 	EXPECT_NE(rc, 0);
@@ -3228,7 +3225,7 @@ protected:
 	void SetUp() override {
 		memset(&srv, 0, sizeof(srv));
 		srv.server_fd = -1;
-		http_init();
+		http_init(NULL);
 	}
 	void TearDown() override {
 		if (srv.running || srv.thread_started || srv.server_fd >= 0)
@@ -3250,7 +3247,7 @@ TEST_F(MockServerTest, HttpGetSuccess) {
 	struct http_response resp3 = {0};
 	char url4[256];
 	snprintf(url4, sizeof(url4), "http://127.0.0.1:%d/test", srv.port);
-	int rc4 = http_get(url4, &resp3);
+	int rc4 = http_get(NULL, url4, &resp3);
 	EXPECT_EQ(rc4, 0);
 	EXPECT_EQ(resp3.status_code, 200);
 	EXPECT_NE(resp3.body.data, nullptr);
@@ -3266,8 +3263,7 @@ TEST_F(MockServerTest, HttpPostSuccess) {
 	struct http_response resp = {0};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/test", srv.port);
-	int rc = http_post(url, "{\"data\":1}", 10,
-			   "application/json", &resp);
+	int rc = http_post(NULL, url, "{\"data\":1}", 10, "application/json", &resp);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(resp.status_code, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
@@ -3284,7 +3280,7 @@ TEST_F(MockServerTest, HttpPostEmptyBodyUsesPost) {
 	struct http_response resp = {0};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/empty", srv.port);
-	int rc = http_post(url, "", 0, "application/json", &resp);
+	int rc = http_post(NULL, url, "", 0, "application/json", &resp);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(resp.status_code, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
@@ -3303,8 +3299,7 @@ TEST_F(MockServerTest, HttpPostExAddsExtraHeadersAndClearsResponse) {
 	const char *headers[] = { "X-Morph-Test: yes" };
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/headers", srv.port);
-	int rc = http_post_ex(url, "{}", 2, "application/json",
-			      headers, 1, &resp);
+	int rc = http_post_ex(NULL, url, "{}", 2, "application/json", headers, 1, &resp);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(resp.status_code, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
@@ -3319,21 +3314,21 @@ TEST_F(MockServerTest, HttpSessionPostReusesHandleWithHeaders) {
 	srv.response_status = 200;
 	START_MOCK_OR_SKIP(&srv);
 	struct http_session session;
-	ASSERT_EQ(http_session_init(&session), 0);
+	ASSERT_EQ(http_session_init(NULL, &session), 0);
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/api/session",
 		 srv.port);
 	const char *headers1[] = { "X-Morph-Session-Test: one" };
-	int rc = http_session_post(&session, url, "{\"n\":1}", 7,
-				   "application/json", headers1, 1, 5);
+	int rc = http_session_post(NULL, &session, url, "{\"n\":1}", 7, "application/json",
+				   headers1, 1, 5);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(http_session_status(&session), 200);
 	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: one"),
 		  nullptr);
 
 	const char *headers2[] = { "X-Morph-Session-Test: two" };
-	rc = http_session_post(&session, url, "{\"n\":2}", 7,
-			       "application/json", headers2, 1, 5);
+	rc = http_session_post(NULL, &session, url, "{\"n\":2}", 7, "application/json", headers2, 1,
+			       5);
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(http_session_status(&session), 200);
 	EXPECT_NE(strstr(srv.last_request, "X-Morph-Session-Test: two"),
@@ -3357,9 +3352,8 @@ TEST_F(MockServerTest, SSEStreamingResponse) {
 	sse_parser_init(&parser, sse_cb, &info);
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc = http_post_sse_ex(url, "{}", 2,
-				   "application/json", nullptr, 0,
-				   global_sse_write_adapter, &parser);
+	int rc = http_post_sse_ex(NULL, url, "{}", 2, "application/json", nullptr, 0,
+				  global_sse_write_adapter, &parser);
 	EXPECT_EQ(rc, 200);
 	EXPECT_GT(info.count, 0);
 	EXPECT_STREQ(srv.request_method, "POST");
@@ -3375,8 +3369,7 @@ TEST_F(MockServerTest, SSEWithTimeout) {
 	sse_parser_init(&parser2, nullptr, nullptr);
 	char url3[256];
 	snprintf(url3, sizeof(url3), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc3 = http_post_sse_ex_timeout(url3, "{}", 2,
-					   "application/json", nullptr, 0, 30,
+	int rc3 = http_post_sse_ex_timeout(NULL, url3, "{}", 2, "application/json", nullptr, 0, 30,
 					   global_sse_write_adapter, &parser2);
 	EXPECT_EQ(rc3, 200);
 	EXPECT_STREQ(srv.request_method, "POST");
@@ -3394,8 +3387,7 @@ TEST_F(MockServerTest, LlmStreamsReasoningWithoutAccumulatingIt) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 
 	struct arena *arena = arena_create(8192);
@@ -3446,8 +3438,8 @@ TEST_F(MockServerTest, DeepSeekAdapterCapturesReasoningContent) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
-		api_base, "test-key");
+	struct model *model =
+		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	EXPECT_STREQ(model->adapter, "deepseek");
 	struct arena *arena = arena_create(8192);
@@ -3479,8 +3471,8 @@ TEST_F(MockServerTest, DeepSeekThinkingReplaysReasoningWithoutToolChoice) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
-		api_base, "test-key");
+	struct model *model =
+		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -3530,8 +3522,8 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 	START_MOCK_OR_SKIP(&srv);
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
-	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
-		api_base, "test-key");
+	struct model *model =
+		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -3545,7 +3537,9 @@ TEST_F(MockServerTest, DeepSeekCompactedHistoryKeepsReasoningFields) {
 	answer.payload_json = const_cast<char *>("{\"reasoning_content\":\"Original reasoning\"}");
 	morph_array_t messages{};
 	ASSERT_EQ(morph_array_init(&messages, 4, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(&summary, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(model ? model->http.logger : NULL, &summary,
+						    &messages, arena),
+		  0);
 	/* Old non-thinking history has no reasoning to replay. */
 	struct chat_message *legacy = static_cast<struct chat_message *>(morph_array_push(&messages));
 	ASSERT_NE(legacy, nullptr);
@@ -3604,8 +3598,8 @@ TEST_F(MockServerTest, AdapterSelectionScopesDeepSeekHistoryRules) {
 			"{\"choices\":[{\"delta\":{\"content\":\"done\"}}]}";
 		SCOPED_TRACE(std::string(test.provider) + "/" + test.adapter +
 			(test.thinking ? "/thinking" : "/non-thinking"));
-		struct model *model = model_llm_create(test.provider, "deepseek-v4-flash",
-			api_base, "test-key");
+		struct model *model = model_llm_create(NULL, test.provider, "deepseek-v4-flash",
+						       api_base, "test-key");
 		ASSERT_NE(model, nullptr);
 		std::strcpy(model->adapter, test.adapter);
 		std::strcpy(model->extra_body_json, test.thinking ?
@@ -3666,8 +3660,8 @@ TEST_F(MockServerTest, DeepSeekDisabledThinkingUsesToolChoice) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("deepseek", "deepseek-v4-flash",
-		api_base, "test-key");
+	struct model *model =
+		model_llm_create(NULL, "deepseek", "deepseek-v4-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->extra_body_json,
 		"{\"thinking\":{\"type\":\"disabled\"}}");
@@ -3701,8 +3695,7 @@ TEST_F(MockServerTest, LlmMergesExtraBodyJsonIntoToolRequest) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	strncpy(model->extra_body_json,
 		"{\"reasoning_effort\":\"high\",\"chat_template_kwargs\":"
@@ -3750,8 +3743,7 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("openai", "gpt-test",
-		api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "openai", "gpt-test", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->adapter, "openai-responses");
 	struct arena *arena = arena_create(16384);
@@ -3784,8 +3776,8 @@ TEST_F(MockServerTest, ResponsesAdapterStreamsNativeCustomToolInput) {
 }
 
 TEST_F(MockServerTest, ResponsesAdapterRejectsMissingApiKeyBeforeRequest) {
-	struct model *model = model_llm_create("openai", "gpt-test",
-		"http://127.0.0.1:1/v1", "");
+	struct model *model =
+		model_llm_create(NULL, "openai", "gpt-test", "http://127.0.0.1:1/v1", "");
 	ASSERT_NE(model, nullptr);
 	std::strcpy(model->adapter, "openai-responses");
 	struct arena *arena = arena_create(8192);
@@ -3813,8 +3805,7 @@ TEST_F(MockServerTest, ChatAdapterFallsBackToStringFunctionArgument) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-		api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -3883,8 +3874,7 @@ TEST_F(MockServerTest, LlmRetriesTransientHttpErrorsBeforeStreaming) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	EXPECT_EQ(model->retry_count, 3);
 	struct arena *arena = arena_create(8192);
@@ -3924,8 +3914,7 @@ TEST_F(MockServerTest, LlmStopsAfterConfiguredRetriesAndKeepsLastError) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	model->retry_count = 1;
 	struct arena *arena = arena_create(8192);
@@ -3955,8 +3944,7 @@ TEST_F(MockServerTest, LlmDoesNotRetryNonTransientHttpErrors) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -3983,7 +3971,7 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	START_MOCK_OR_SKIP(&srv);
 	char base[256];
 	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
-	auto *model = model_llm_create("test", "mock-model", base, "test-key");
+	auto *model = model_llm_create(NULL, "test", "mock-model", base, "test-key");
 	ASSERT_NE(model, nullptr);
 	auto *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4017,13 +4005,15 @@ TEST_F(MockServerTest, SseRetryMetadataBelongsToTheRequest)
 	struct http_sse_metadata first{};
 	struct http_sse_metadata second{};
 	auto sink = [](const char *, size_t, void *) -> int { return 0; };
-	EXPECT_EQ(http_post_sse_ex_timeout_metadata(url, "{}", 2, "application/json",
-		nullptr, 0, 5, sink, nullptr, &first), 429);
+	EXPECT_EQ(http_post_sse_ex_timeout_metadata(NULL, url, "{}", 2, "application/json", nullptr,
+						    0, 5, sink, nullptr, &first),
+		  429);
 	EXPECT_EQ(first.retry_after_seconds, 3);
 	/* Reusing another request's output object cannot overwrite the first. */
 	second.retry_after_seconds = 99;
-	EXPECT_EQ(http_post_sse_ex_timeout_metadata(url, "{}", 2, "application/json",
-		nullptr, 0, 5, sink, nullptr, &second), 429);
+	EXPECT_EQ(http_post_sse_ex_timeout_metadata(NULL, url, "{}", 2, "application/json", nullptr,
+						    0, 5, sink, nullptr, &second),
+		  429);
 	EXPECT_EQ(second.retry_after_seconds, 3);
 	EXPECT_EQ(first.retry_after_seconds, 3);
 	mock_server_stop(&srv);
@@ -4038,7 +4028,7 @@ TEST_F(MockServerTest, LlmPreservesRetryAfterAndRateLimitCategory)
 
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
-	struct model *model = model_llm_create("test", "mock-model", api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	model->retry_count = 0;
 	struct arena *arena = arena_create(8192);
@@ -4069,7 +4059,7 @@ TEST_F(MockServerTest, LlmClassifiesContextOverflowWithoutBlindRetry)
 
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
-	struct model *model = model_llm_create("test", "mock-model", api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4103,8 +4093,7 @@ TEST_F(MockServerTest, LlmDoesNotRetryAfterStreamContentWasEmitted) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("test", "mock-model",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "test", "mock-model", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4141,8 +4130,7 @@ TEST_F(MockServerTest, LlmParsesKimiTopLevelCachedTokens) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("moonshot", "kimi-k3",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "moonshot", "kimi-k3", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4175,7 +4163,7 @@ TEST_F(MockServerTest, LlmParsesDeepSeekCacheHitsWithoutDoubleCounting)
 	START_MOCK_OR_SKIP(&srv);
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1", srv.port);
-	auto *model = model_llm_create("deepseek", "deepseek-flash", api_base, "test-key");
+	auto *model = model_llm_create(NULL, "deepseek", "deepseek-flash", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	auto *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4208,8 +4196,7 @@ TEST_F(MockServerTest, LlmUsesLargestCompatibleCachedTokenDetailOnce) {
 	char api_base[256];
 	snprintf(api_base, sizeof(api_base), "http://127.0.0.1:%d/v1",
 		 srv.port);
-	struct model *model = model_llm_create("openai", "gpt-test",
-					       api_base, "test-key");
+	struct model *model = model_llm_create(NULL, "openai", "gpt-test", api_base, "test-key");
 	ASSERT_NE(model, nullptr);
 	struct arena *arena = arena_create(8192);
 	ASSERT_NE(arena, nullptr);
@@ -4241,9 +4228,8 @@ TEST_F(MockServerTest, SSECallbackErrorPropagates) {
 	};
 	char url[256];
 	snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1/chat/completions", srv.port);
-	int rc = http_post_sse_ex(url, "{}", 2,
-				  "application/json", nullptr, 0,
-				  failing_cb, nullptr);
+	int rc = http_post_sse_ex(NULL, url, "{}", 2, "application/json", nullptr, 0, failing_cb,
+				  nullptr);
 	EXPECT_EQ(rc, -EIO);
 	mock_server_stop(&srv);
 }
@@ -4397,7 +4383,7 @@ protected:
 		ctx = react_context_create(&tools, tok, &cfg, nullptr);
 		ASSERT_NE(ctx, nullptr);
 		ctx->llm_model = llm;
-		tctx = tool_context_create("/tmp", "/tmp");
+		tctx = tool_context_create(NULL, "/tmp", "/tmp");
 		ASSERT_NE(tctx, nullptr);
 	}
 
@@ -4544,7 +4530,7 @@ TEST_F(PromptModeTest, CoreContractsSurviveReplacementWithoutDuplication)
 TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 {
 	auto *skills = new skill_registry{};
-	skill_registry_init(skills);
+	skill_registry_init(NULL, skills);
 	skills->count = 2;
 	for (int i = 0; i < 2; i++) {
 		auto *entry = &skills->entries[i];
@@ -4644,7 +4630,7 @@ TEST_F(MockLlmTest, SystemPromptAppearsInPrompt) {
 TEST_F(MockLlmTest, PatchInstructionsComeFromToolRegistration) {
 	struct capt_prompt_data *cd =
 		(struct capt_prompt_data *)calloc(1, sizeof(*cd));
-	struct tool_context *tctx = tool_context_create("/tmp", "/tmp");
+	struct tool_context *tctx = tool_context_create(NULL, "/tmp", "/tmp");
 	ASSERT_NE(tctx, nullptr);
 
 	cd->resp = "Final: answer";
@@ -5269,13 +5255,12 @@ TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 	tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slow_signal", "Slow tool", "{}",
 		      slow_signal_tool_fn, &state, nullptr);
 
-	std::thread interrupter([&state]() {
+	std::thread interrupter([&state, ctx]() {
 		for (int i = 0; i < 50 && !state.entered.load(); i++)
 			std::this_thread::sleep_for(
 				std::chrono::milliseconds(10));
 		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		react_sigint_flag = 1;
-		http_cancel_from_signal();
+		react_cancel(ctx);
 	});
 
 	auto start = std::chrono::steady_clock::now();
@@ -5299,8 +5284,6 @@ TEST_F(MockLlmTest, SigintCancelsBlockedToolJoinPromptly) {
 		  nullptr);
 
 	react_context_destroy(ctx);
-	http_clear_signal_cancel();
-	react_sigint_flag = 0;
 }
 
 /* ============================================= */
@@ -5677,15 +5660,13 @@ TEST_F(MockLlmTest, ToolOutputGuardrailRewritesObservation) {
 
 /* ---- HITL (Human-in-the-Loop) tests ---- */
 
-static int hitl_deny_count = 0;
-
 static enum hitl_verdict hitl_deny_callback(const char *tool_name,
 					     const char *tool_args,
 					     void *user_data)
 {
 	(void)tool_args;
-	(void)user_data;
-	hitl_deny_count++;
+	if (user_data)
+		++*static_cast<int *>(user_data);
 	if (strcmp(tool_name, "dangerous_tool") == 0)
 		return HITL_DENY;
 	return HITL_APPROVE;
@@ -5714,7 +5695,7 @@ static enum hitl_verdict hitl_approve_all_callback(const char *tool_name,
 
 TEST(HitlTest, NeedsApprovalDisabled) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
@@ -5727,7 +5708,7 @@ TEST(HitlTest, NeedsApprovalDisabled) {
 
 TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "test_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
@@ -5742,7 +5723,7 @@ TEST(HitlTest, NeedsApprovalEnabledAllTools) {
 
 TEST(HitlTest, NeedsApprovalSpecificTool) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
@@ -5759,7 +5740,7 @@ TEST(HitlTest, NeedsApprovalSpecificTool) {
 
 TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL,
 		      NULL);
@@ -5781,7 +5762,7 @@ TEST(HitlTest, NeedsApprovalInternalApprovalTool) {
 
 TEST(HitlTest, NeedsApprovalAutoApproved) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "exec", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
@@ -5797,7 +5778,7 @@ TEST(HitlTest, NeedsApprovalAutoApproved) {
 
 TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
@@ -5815,7 +5796,7 @@ TEST(HitlTest, NeedsApprovalReadonlyAutoApprove) {
 
 TEST(HitlTest, NeedsApprovalReadonlyNoAutoApprove) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
 	ASSERT_NE(e, nullptr);
@@ -5845,7 +5826,7 @@ TEST(HitlTest, AddAutoApprovedIdempotent) {
 
 TEST(HitlTest, ConfigDefaultsEnabled) {
 	struct config cfg;
-	config_set_defaults(&cfg);
+	config_set_defaults(NULL, &cfg);
 	EXPECT_EQ(cfg.react.hitl_enabled, 1);
 	EXPECT_EQ(cfg.react.hitl_tools_count, 0);
 	EXPECT_EQ(cfg.react.hitl_auto_approve_readonly, 1);
@@ -5853,7 +5834,7 @@ TEST(HitlTest, ConfigDefaultsEnabled) {
 
 TEST(HitlTest, ToolIsReadonly) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "file_read", "desc", "{}", test_tool_fn, NULL, NULL);
 	EXPECT_EQ(tool_is_readonly(&reg, "file_read"), 0);
 	struct tool_entry *e = tool_lookup(&reg, "file_read");
@@ -5865,7 +5846,7 @@ TEST(HitlTest, ToolIsReadonly) {
 
 TEST(HitlTest, DenyCallbackPreventsExecution) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "safe_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
@@ -5877,10 +5858,12 @@ TEST(HitlTest, DenyCallbackPreventsExecution) {
 	ctx->hitl.tools_count = 0;
 	ctx->hitl.approval_cb = hitl_deny_callback;
 	ctx->hitl.approval_user_data = NULL;
-	hitl_deny_count = 0;
-	enum hitl_verdict v1 = ctx->hitl.approval_cb("dangerous_tool", "{}", NULL);
+	int hitl_deny_count = 0;
+	ctx->hitl.approval_user_data = &hitl_deny_count;
+	enum hitl_verdict v1 =
+		ctx->hitl.approval_cb("dangerous_tool", "{}", ctx->hitl.approval_user_data);
 	EXPECT_EQ(v1, HITL_DENY);
-	enum hitl_verdict v2 = ctx->hitl.approval_cb("safe_tool", "{}", NULL);
+	enum hitl_verdict v2 = ctx->hitl.approval_cb("safe_tool", "{}", &hitl_deny_count);
 	EXPECT_EQ(v2, HITL_APPROVE);
 	EXPECT_EQ(hitl_deny_count, 2);
 	react_context_destroy(ctx);
@@ -5888,7 +5871,7 @@ TEST(HitlTest, DenyCallbackPreventsExecution) {
 
 TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 	struct tool_registry reg;
-	struct tokenizer *tok = tokenizer_create("gpt-4o", 128000);
+	struct tokenizer *tok = tokenizer_create(NULL, "gpt-4o", 128000);
 	struct compress_config ccfg = {0};
 	int dangerous_count = 0;
 	const char *responses[] = {
@@ -5898,7 +5881,7 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 	struct model *llm = create_multi_mock_llm(responses, 2);
 	struct multi_mock_data *data = (struct multi_mock_data *)llm->handle;
 
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}",
 		      call_count_tool_fn, &dangerous_count, NULL);
 	ccfg.max_context_tokens = 128000;
@@ -5914,7 +5897,8 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 	ctx->hitl.auto_approve_readonly = 0;
 	ctx->hitl.tools_count = 0;
 	ctx->hitl.approval_cb = hitl_deny_callback;
-	hitl_deny_count = 0;
+	int hitl_deny_count = 0;
+	ctx->hitl.approval_user_data = &hitl_deny_count;
 
 	struct morph_event_recorder rec;
 	ASSERT_EQ(0, morph_event_recorder_init(&rec));
@@ -5941,7 +5925,7 @@ TEST(HitlTest, DenyDuringReactRunSkipsToolExecution) {
 
 TEST(HitlTest, AlwaysCallbackAutoApproves) {
 	struct tool_registry reg;
-	tool_registry_init(&reg);
+	tool_registry_init(NULL, &reg);
 	tool_register(TOOL_ORIGIN_BUILTIN, &reg, "dangerous_tool", "desc", "{}", test_tool_fn, NULL, NULL);
 	struct compress_config ccfg = {0};
 	struct guardrail_config gcfg = {0};
@@ -5952,7 +5936,8 @@ TEST(HitlTest, AlwaysCallbackAutoApproves) {
 	ctx->hitl.tools_count = 0;
 	ctx->hitl.approval_cb = hitl_always_callback;
 	ctx->hitl.approval_user_data = NULL;
-	enum hitl_verdict v = ctx->hitl.approval_cb("dangerous_tool", "{}", NULL);
+	enum hitl_verdict v =
+		ctx->hitl.approval_cb("dangerous_tool", "{}", ctx->hitl.approval_user_data);
 	EXPECT_EQ(v, HITL_ALWAYS);
 	hitl_add_auto_approved(&ctx->hitl, "dangerous_tool");
 	EXPECT_EQ(hitl_needs_approval(ctx, "dangerous_tool"), 0);
@@ -6507,7 +6492,7 @@ static void register_agent_ui_tags_ext(struct guardrail_config *cfg,
 	struct guardrail_rule *rule = guardrail_rule_lookup(cfg, "guardrail-agent-ui-tags");
 	ASSERT_NE(rule, nullptr);
 	rule->ext_type = GUARDRAIL_EXT_SO;
-	ASSERT_EQ(guardrail_ext_so_load(rule), 0);
+	ASSERT_EQ(guardrail_ext_so_load(NULL, rule), 0);
 }
 
 TEST(Guardrail, AgentUiTagsExtSupportedTagsPass) {
@@ -6612,7 +6597,7 @@ TEST(Guardrail, ExtSoLoadBadPathFails) {
 	memset(&rule, 0, sizeof(rule));
 	strncpy(rule.name, "bad_so", sizeof(rule.name) - 1);
 	strncpy(rule.ext_entry, "/nonexistent/path.so", sizeof(rule.ext_entry) - 1);
-	int rc = guardrail_ext_so_load(&rule);
+	int rc = guardrail_ext_so_load(NULL, &rule);
 	EXPECT_NE(rc, 0);
 	EXPECT_EQ(rule.dl_handle, nullptr);
 	EXPECT_EQ(rule.ext_check, nullptr);
@@ -6664,7 +6649,7 @@ TEST_F(PromptModeTest, ActivatedSkillRefreshesUnderReplacementWithoutMemory)
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup("Custom behavior");
 	auto *skills = new skill_registry{};
-	skill_registry_init(skills);
+	skill_registry_init(NULL, skills);
 	skills->count = 1;
 	auto *entry = &skills->entries[0];
 	strcpy(entry->fm.name, "test-skill");
@@ -6725,7 +6710,7 @@ TEST_F(PromptModeTest, SkillActivationPolicySurvivesReplacement)
 TEST_F(PromptModeTest, SkillCatalogPreservesEveryEnabledDescription)
 {
 	auto *skills = new skill_registry{};
-	skill_registry_init(skills);
+	skill_registry_init(NULL, skills);
 	skills->count = SKILL_MAX_ENTRIES;
 	for (int i = 0; i < skills->count; i++) {
 		auto *entry = &skills->entries[i];

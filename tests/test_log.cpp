@@ -9,16 +9,18 @@
 
 class LogTest : public ::testing::Test {
 protected:
-	void SetUp() override {
-		char tmpl[] = "/tmp/morph_log_test_XXXXXX";
-		int fd = mkstemp(tmpl);
-		ASSERT_NE(fd, -1);
-		close(fd);
-		tmpfile = tmpl;
-		log_init(tmpfile.c_str(), LOG_DEBUG);
-	}
+  struct morph_log logger{};
+  void SetUp() override
+  {
+	  char tmpl[] = "/tmp/morph_log_test_XXXXXX";
+	  int fd = mkstemp(tmpl);
+	  ASSERT_NE(fd, -1);
+	  close(fd);
+	  tmpfile = tmpl;
+	  log_init(&logger, tmpfile.c_str(), LOG_DEBUG);
+  }
 	void TearDown() override {
-		log_shutdown();
+		log_shutdown(&logger);
 		if (!tmpfile.empty()) {
 			std::remove(tmpfile.c_str());
 			tmpfile.clear();
@@ -70,50 +72,50 @@ protected:
 };
 
 TEST_F(LogTest, InitShutdown) {
-	EXPECT_NO_FATAL_FAILURE(log_shutdown());
-	log_init(tmpfile.c_str(), LOG_INFO);
+	EXPECT_NO_FATAL_FAILURE(log_shutdown(&logger));
+	log_init(&logger, tmpfile.c_str(), LOG_INFO);
 }
 
 TEST_F(LogTest, WriteAll) {
-	log_info("test message %d", 42);
-	log_warn("warning message");
-	log_err("error message");
+	log_info(&logger, "test message %d", 42);
+	log_warn(&logger, "warning message");
+	log_err(&logger, "error message");
 }
 
 TEST_F(LogTest, WriteDebug) {
-	log_dbg("debug message");
+	log_dbg(&logger, "debug message");
 }
 
 TEST_F(LogTest, LevelFiltering) {
-	log_set_level(LOG_WARN);
-	log_info("should not appear");
-	log_warn("should appear");
-	log_err("should also appear");
-	log_set_level(LOG_DEBUG);
+	log_set_level(&logger, LOG_WARN);
+	log_info(&logger, "should not appear");
+	log_warn(&logger, "should appear");
+	log_err(&logger, "should also appear");
+	log_set_level(&logger, LOG_DEBUG);
 }
 
 TEST_F(LogTest, LevelStrings) {
-	log_write(LOG_DEBUG, "debug");
-	log_write(LOG_INFO, "info");
-	log_write(LOG_WARN, "warn");
-	log_write(LOG_ERROR, "error");
+	log_write(&logger, LOG_DEBUG, "debug");
+	log_write(&logger, LOG_INFO, "info");
+	log_write(&logger, LOG_WARN, "warn");
+	log_write(&logger, LOG_ERROR, "error");
 }
 
 TEST_F(LogTest, NullFile) {
-	log_shutdown();
-	log_init(nullptr, LOG_INFO);
-	log_info("test without file");
-	log_shutdown();
+	log_shutdown(&logger);
+	log_init(&logger, nullptr, LOG_INFO);
+	log_info(&logger, "test without file");
+	log_shutdown(&logger);
 }
 
 TEST_F(LogTest, FormatString) {
-	log_info("formatted: %s %d %f", "hello", 42, 3.14);
+	log_info(&logger, "formatted: %s %d %f", "hello", 42, 3.14);
 }
 
 TEST_F(LogTest, ContentWrittenAndFlushed) {
-	log_info("hello world");
-	log_warn("warning");
-	log_err("oops %d", 99);
+	log_info(&logger, "hello world");
+	log_warn(&logger, "warning");
+	log_err(&logger, "oops %d", 99);
 
 	auto lines = read_lines();
 	ASSERT_EQ(lines.size(), 3);
@@ -124,7 +126,7 @@ TEST_F(LogTest, ContentWrittenAndFlushed) {
 
 TEST_F(LogTest, MultipleWritesCount) {
 	for (int i = 0; i < 100; i++)
-		log_info("line %d", i);
+		log_info(&logger, "line %d", i);
 
 	auto lines = read_lines();
 	ASSERT_EQ(lines.size(), 100);
@@ -136,16 +138,40 @@ TEST_F(LogTest, MultipleWritesCount) {
 }
 
 TEST_F(LogTest, FflushBeforeShutdown) {
-	log_shutdown();
+	log_shutdown(&logger);
 
 	auto fp = std::fopen(tmpfile.c_str(), "w");
 	ASSERT_TRUE(fp);
 	std::fclose(fp);
 
-	log_init(tmpfile.c_str(), LOG_INFO);
-	log_info("before any close");
+	log_init(&logger, tmpfile.c_str(), LOG_INFO);
+	log_info(&logger, "before any close");
 
 	auto lines = read_lines();
 	ASSERT_EQ(lines.size(), 1);
 	EXPECT_TRUE(line_matches(lines[0], "INFO", "before any close"));
+}
+
+TEST_F(LogTest, InstancesHaveIndependentDestinationsLevelsAndLifetimes)
+{
+	struct morph_log other{};
+	const std::string other_path = tmpfile + ".second";
+
+	ASSERT_EQ(log_init(&other, other_path.c_str(), LOG_WARN), 0);
+	log_info(&logger, "first destination");
+	log_info(&other, "filtered message");
+	log_warn(&other, "second destination");
+	log_shutdown(&logger);
+	log_err(&other, "still open");
+	log_shutdown(&other);
+	auto first_lines = read_lines();
+	ASSERT_EQ(first_lines.size(), 1u);
+	EXPECT_TRUE(line_matches(first_lines[0], "INFO", "first destination"));
+	std::ifstream stream(other_path);
+	const std::string content((std::istreambuf_iterator<char>(stream)), {});
+	EXPECT_EQ(content.find("first destination"), std::string::npos);
+	EXPECT_EQ(content.find("filtered message"), std::string::npos);
+	EXPECT_NE(content.find("second destination"), std::string::npos);
+	EXPECT_NE(content.find("still open"), std::string::npos);
+	std::remove(other_path.c_str());
 }

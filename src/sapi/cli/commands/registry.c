@@ -175,7 +175,7 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 		rc = morph_buf_init(&output, BUFSIZ);
 		if (rc != 0)
 			MORPH_RETURN(rc);
-		rc = cli_command_capture_begin(&output);
+		rc = cli_command_capture_begin(ctx, &output);
 		if (rc != 0) {
 			morph_buf_cleanup(&output);
 			MORPH_RETURN(rc);
@@ -184,14 +184,14 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	}
 	e = cli_command_find(argv[0]);
 	if (!e) {
-		CMD_ERROR("unknown command: %s. Try /help", argv[0]);
+		CMD_ERROR(ctx, "unknown command: %s. Try /help", argv[0]);
 		rc = -ENOENT;
 	} else {
 		rc = e->handler(ctx, argc, argv);
 	}
 	if (!capture_active)
 		return rc;
-	cli_command_capture_end();
+	cli_command_capture_end(ctx);
 	event_rc = command_event_emit(ctx,
 		rc < 0 ? "command.failed" : "command.completed",
 		rc < 0 ? "failed" : "end", input, argc, argv,
@@ -202,7 +202,7 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	return rc;
 }
 
-void cli_print_help(void)
+void cli_print_help(struct cli_context *ctx)
 {
 	int group_start = 0;
 	int num_commands = 0;
@@ -211,7 +211,7 @@ void cli_print_help(void)
 	while (command_at(num_commands, NULL))
 		num_commands++;
 
-	printf("\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
+	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
 	while (group_start < num_commands) {
 		const char *category = NULL;
 		int group_end = group_start;
@@ -238,8 +238,7 @@ void cli_print_help(void)
 			i = alias_end + 1;
 		}
 		group_last = group_end == num_commands;
-		cli_list_group(category ? category : "Other", item_count,
-			       group_last);
+		cli_list_group(ctx, category ? category : "Other", item_count, group_last);
 		for (int i = group_start, item = 0; i < group_end; ) {
 			const char *desc = command_at(i, NULL)->desc;
 			int alias_end = i;
@@ -268,14 +267,13 @@ void cli_print_help(void)
 				snprintf(display, sizeof(display), "%s", command_at(i, NULL)->name);
 			}
 			item++;
-			cli_list_item(tui_tree_branch(group_last, 1), item == item_count,
-				      "", display, desc, 22, columns);
+			cli_list_item(ctx, tui_tree_branch(group_last, 1), item == item_count, "",
+				      display, desc, 22, columns);
 			i = alias_end + 1;
 		}
 		group_start = group_end;
 	}
-	printf("\n" ANSI_DIM "Use /help <command> for details."
-	       ANSI_RESET "\n");
+	printf(ctx, "\n" ANSI_DIM "Use /help <command> for details." ANSI_RESET "\n");
 }
 
 char *cli_command_completion_generator(const char *text, int state)

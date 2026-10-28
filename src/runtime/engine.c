@@ -15,6 +15,7 @@ void runtime_engine_configure(struct runtime_engine *engine,
 {
 	if (!engine)
 		return;
+	engine->logger = react ? react->logger : NULL;
 	engine->db = db;
 	engine->react = react;
 	engine->execution_lock = execution_lock;

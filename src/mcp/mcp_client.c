@@ -1,3 +1,4 @@
+#include "agent/tool_runtime.h"
 #include "mcp/mcp_internal.h"
 #include "cJSON.h"
 #include "util/arena.h"
@@ -23,11 +24,12 @@ static char *mcp_strdup_result(struct arena *arena, const char *s)
 
 /* ----- Registry ----- */
 
-void mcp_registry_init(struct mcp_registry *reg)
+void mcp_registry_init(struct morph_log *logger, struct mcp_registry *reg)
 {
 	if (!reg)
 		return;
 	memset(reg, 0, sizeof(*reg));
+	reg->logger = logger;
 	(void)morph_strmap_init(&reg->by_name, MCP_MAX_SERVERS);
 }
 
@@ -46,6 +48,7 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 		return -ENOMEM;
 
 	memcpy(&client->config, cfg, sizeof(*cfg));
+	client->config.logger = reg->logger;
 	client->connected = 0;
 	client->server_pid = -1;
 	client->stdin_fd = -1;
@@ -57,8 +60,7 @@ int mcp_registry_add(struct mcp_registry *reg, const struct mcp_server_config *c
 	(void)morph_strmap_set(&reg->by_name, client->config.name, client);
 	reg->count++;
 
-	log_info("mcp: registered server '%s' (transport=%s)",
-		 cfg->name,
+	log_info(reg ? reg->logger : NULL, "mcp: registered server '%s' (transport=%s)", cfg->name,
 		 cfg->transport == MCP_TRANSPORT_STDIO ? "stdio" : "http");
 	return 0;
 }
@@ -200,7 +202,7 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 		MORPH_RETURN(-EINVAL);
 	}
 
-	mcp_registry_init(&reg);
+	mcp_registry_init(cfg ? cfg->logger : NULL, &reg);
 	rc = mcp_registry_add(&reg, cfg);
 	if (rc < 0) {
 		mcp_test_message(message, message_cap, "%s", morph_strerror(rc));
@@ -242,8 +244,10 @@ static void mcp_disable_list_capability(struct mcp_client *client,
 	else if (strcmp(key, "prompts") == 0)
 		client->supports_prompts = 0;
 	pthread_mutex_unlock(&client->lock);
-	log_warn("mcp: '%s' advertised %s but %s is not implemented; "
-		"disabling this capability", client->config.name, key, method);
+	log_warn(client ? client->config.logger : NULL,
+		 "mcp: '%s' advertised %s but %s is not implemented; "
+		 "disabling this capability",
+		 client->config.name, key, method);
 }
 
 /* Collect every page, rejecting malformed lists and cyclic cursors. */
@@ -327,7 +331,8 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 	morph_strmap_cleanup(&cursors);
 	if (rc != 0) {
 		cJSON_Delete(items);
-		log_warn("mcp: %s failed: %s", method, morph_strerror(rc));
+		log_warn(client ? client->config.logger : NULL, "mcp: %s failed: %s", method,
+			 morph_strerror(rc));
 		return rc;
 	}
 	*out = items;
@@ -422,7 +427,9 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 		if (schema && cJSON_IsString(name)) {
 			rc = mcp_protocol_cache_tool(client, name->valuestring, schema);
 			if (rc == -EINVAL) {
-				log_warn("mcp: excluding tool '%s': invalid x-mcp-header annotation",
+				log_warn(
+					client ? client->config.logger : NULL,
+					"mcp: excluding tool '%s': invalid x-mcp-header annotation",
 					name->valuestring);
 				rc = 0;
 				continue;
@@ -501,7 +508,8 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	/* Parse the tools/call response without discarding structured content. */
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
-		log_err("mcp: tools/call response parse error");
+		log_err(out_result && out_result->runtime ? out_result->runtime->http.logger : NULL,
+			"mcp: tools/call response parse error");
 		(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
 		free(result);
 		MORPH_RETURN(MORPH_ERR_PARSE);
@@ -626,7 +634,9 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 
 	cJSON *obj = cJSON_Parse(result);
 	if (!obj) {
-		log_err("mcp: resources/read response parse error");
+		log_err(out_content && out_content->runtime ? out_content->runtime->http.logger
+							    : NULL,
+			"mcp: resources/read response parse error");
 		free(result);
 		return -EINVAL;
 	}
@@ -864,7 +874,8 @@ int mcp_register_server_tools(struct mcp_client *client,
 		struct mcp_tool_binding *binding = calloc(1,
 			sizeof(*binding) + strlen(tools[i].name) + 1);
 		if (!binding) {
-			log_err("mcp: failed to allocate tool binding");
+			log_err(client ? client->config.logger : NULL,
+				"mcp: failed to allocate tool binding");
 			first_error = -ENOMEM;
 			break;
 		}
@@ -875,7 +886,9 @@ int mcp_register_server_tools(struct mcp_client *client,
 		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_%s__%s",
 			 client->config.name, tools[i].name);
 		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
-			log_warn("mcp: capability name exceeds registry name limit: %s", tools[i].name);
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: capability name exceeds registry name limit: %s",
+				 tools[i].name);
 			free(binding);
 			if (first_error == 0)
 				first_error = -ENAMETOOLONG;
@@ -913,13 +926,15 @@ int mcp_register_server_tools(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register tool '%s': %s",
-				 tool_name, morph_strerror(rc));
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: failed to register tool '%s': %s", tool_name,
+				 morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
 		} else {
-			log_info("mcp: registered tool '%s' -> '%s'", tools[i].name, tool_name);
+			log_info(client ? client->config.logger : NULL,
+				 "mcp: registered tool '%s' -> '%s'", tools[i].name, tool_name);
 			registered++;
 		}
 	}
@@ -982,7 +997,8 @@ int mcp_register_server_resources(struct mcp_client *client,
 		struct mcp_resource_binding *binding = calloc(1,
 			sizeof(*binding) + strlen(res[i].uri) + 1);
 		if (!binding) {
-			log_err("mcp: failed to allocate resource binding");
+			log_err(client ? client->config.logger : NULL,
+				"mcp: failed to allocate resource binding");
 			first_error = -ENOMEM;
 			break;
 		}
@@ -993,7 +1009,9 @@ int mcp_register_server_resources(struct mcp_client *client,
 		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_res_%s__%s",
 			 client->config.name, res[i].name);
 		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
-			log_warn("mcp: capability name exceeds registry name limit: %s", res[i].name);
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: capability name exceeds registry name limit: %s",
+				 res[i].name);
 			free(binding);
 			if (first_error == 0)
 				first_error = -ENAMETOOLONG;
@@ -1038,8 +1056,9 @@ int mcp_register_server_resources(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register resource '%s': %s",
-				 tool_name, morph_strerror(rc));
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: failed to register resource '%s': %s", tool_name,
+				 morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
@@ -1047,7 +1066,8 @@ int mcp_register_server_resources(struct mcp_client *client,
 			struct tool_entry *e = tool_lookup(reg, tool_name);
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
-			log_info("mcp: registered resource '%s' -> '%s'", res[i].name, tool_name);
+			log_info(client ? client->config.logger : NULL,
+				 "mcp: registered resource '%s' -> '%s'", res[i].name, tool_name);
 			registered++;
 		}
 	}
@@ -1110,7 +1130,8 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		struct mcp_prompt_binding *binding = calloc(1,
 			sizeof(*binding) + strlen(prompts[i].name) + 1);
 		if (!binding) {
-			log_err("mcp: failed to allocate prompt binding");
+			log_err(client ? client->config.logger : NULL,
+				"mcp: failed to allocate prompt binding");
 			first_error = -ENOMEM;
 			break;
 		}
@@ -1121,7 +1142,9 @@ int mcp_register_server_prompts(struct mcp_client *client,
 		int name_len = snprintf(tool_name, sizeof(tool_name), "mcp_prompt_%s__%s",
 			 client->config.name, prompts[i].name);
 		if (name_len < 0 || (size_t)name_len >= sizeof(tool_name)) {
-			log_warn("mcp: capability name exceeds registry name limit: %s", prompts[i].name);
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: capability name exceeds registry name limit: %s",
+				 prompts[i].name);
 			free(binding);
 			if (first_error == 0)
 				first_error = -ENAMETOOLONG;
@@ -1158,8 +1181,9 @@ int mcp_register_server_prompts(struct mcp_client *client,
 
 		rc = tool_register(reg, &spec);
 		if (rc < 0) {
-			log_warn("mcp: failed to register prompt '%s': %s",
-				 tool_name, morph_strerror(rc));
+			log_warn(client ? client->config.logger : NULL,
+				 "mcp: failed to register prompt '%s': %s", tool_name,
+				 morph_strerror(rc));
 			free(binding);
 			if (first_error == 0)
 				first_error = rc;
@@ -1167,7 +1191,8 @@ int mcp_register_server_prompts(struct mcp_client *client,
 			struct tool_entry *e = tool_lookup(reg, tool_name);
 			if (e)
 				e->flags |= TOOL_FLAG_READONLY;
-			log_info("mcp: registered prompt '%s' -> '%s'", prompts[i].name, tool_name);
+			log_info(client ? client->config.logger : NULL,
+				 "mcp: registered prompt '%s' -> '%s'", prompts[i].name, tool_name);
 			registered++;
 		}
 	}

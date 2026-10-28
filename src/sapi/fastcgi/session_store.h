@@ -12,6 +12,7 @@
 #ifndef MORPH_FCGI_SESSION_STORE_H
 #define MORPH_FCGI_SESSION_STORE_H
 
+struct morph_log;
 #include <pthread.h>
 #include <stdint.h>
 
@@ -60,7 +61,7 @@ struct fcgi_user {
 };
 
 /* lifecycle */
-struct session_store *session_store_open(const char *db_path);
+struct session_store *session_store_open(struct morph_log *logger, const char *db_path);
 void                  session_store_close(struct session_store *s);
 
 /* sessions */

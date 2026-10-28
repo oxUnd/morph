@@ -32,6 +32,8 @@ enum tool_path_access {
 		TOOL_PATH_ACCESS_DELETE,
 };
 
+struct morph_log;
+
 struct tool_directory_access_request {
 	unsigned int access;
 	const char *principal;
@@ -87,6 +89,7 @@ struct tool_directory_capability {
 };
 
 struct tool_context {
+	struct morph_log *logger;
 	char workdir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	char output_dir[TOOL_CONTEXT_OUTPUT_DIR_MAX];
 	tool_operation_approval_fn operation_approval_fn;
@@ -113,7 +116,7 @@ struct tool_context {
 	int exec_profile_delete_dirs_count;
 };
 
-struct tool_context *tool_context_create(const char *workdir,
+struct tool_context *tool_context_create(struct morph_log *logger, const char *workdir,
 					 const char *output_dir);
 void tool_context_destroy(struct tool_context *tctx);
 const char *tool_context_workdir(const struct tool_context *tctx);

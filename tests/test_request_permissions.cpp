@@ -64,10 +64,10 @@ protected:
 		std::filesystem::create_directories(target);
 		std::filesystem::create_directories(sibling);
 		ASSERT_EQ(file_write_all(file.c_str(), "data", 4), 0);
-		context = tool_context_create(work.c_str(), work.c_str());
+		context = tool_context_create(NULL, work.c_str(), work.c_str());
 		ASSERT_NE(context, nullptr);
 		tool_context_set_operation_approval(context, approve, this);
-		tool_registry_init(&registry);
+		tool_registry_init(NULL, &registry);
 		ASSERT_EQ(request_permissions_init(&registry, context), 0);
 		tool_result_init(&result);
 	}
@@ -250,7 +250,7 @@ TEST_F(DirectoryPermissionTest, SessionChoiceKeepsAllGrantedOperationsAcrossTurn
 
 TEST_F(DirectoryPermissionTest, AlwaysPersistsTheWholeApprovedBatch)
 {
-	ASSERT_EQ(db_open(&database, ":memory:"), 0);
+	ASSERT_EQ(db_open(NULL, &database, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
 	ASSERT_EQ(tool_context_set_grant_store(context, &database, work.c_str()), 0);
 	verdict = TOOL_OP_ALWAYS;
@@ -270,7 +270,7 @@ TEST_F(DirectoryPermissionTest, AlwaysPersistsTheWholeApprovedBatch)
 
 TEST_F(DirectoryPermissionTest, PersistenceFailureRollsBackEveryOperation)
 {
-	ASSERT_EQ(db_open(&database, ":memory:"), 0);
+	ASSERT_EQ(db_open(NULL, &database, ":memory:"), 0);
 	ASSERT_EQ(db_init_schema(&database), 0);
 	ASSERT_EQ(tool_context_set_grant_store(context, &database, work.c_str()), 0);
 	ASSERT_EQ(db_exec(&database,

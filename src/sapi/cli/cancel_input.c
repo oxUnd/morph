@@ -7,6 +7,7 @@
 #define CLI_ESCAPE_SEQUENCE_WAIT_US 30000
 
 struct cli_cancel_monitor {
+	struct cli_context *ctx;
 	pthread_t thread;
 	volatile sig_atomic_t stop;
 	int fd;
@@ -37,7 +38,7 @@ static void *cancel_monitor_thread(void *user_data)
 {
 	struct cli_cancel_monitor *monitor = user_data;
 
-	while (!monitor->stop) {
+	while (!morph_signal_flag_get(&monitor->stop)) {
 		unsigned char ch;
 		ssize_t count = read(monitor->fd, &ch, sizeof(ch));
 
@@ -48,24 +49,49 @@ static void *cancel_monitor_thread(void *user_data)
 		}
 		if (count == 0 || ch != 0x1b)
 			continue;
-		if (escape_has_sequence_suffix(monitor->fd) || monitor->stop)
+		if (escape_has_sequence_suffix(monitor->fd) ||
+		    morph_signal_flag_get(&monitor->stop))
 			continue;
-		react_cancel_active();
-		http_cancel_from_signal();
-		cli_sigint_received = 1;
+		cli_request_cancel(monitor->ctx);
 		break;
 	}
 	return NULL;
 }
 
-void cli_cancel_state_reset(void)
+void cli_request_cancel(struct cli_context *ctx)
 {
-	react_sigint_flag = 0;
-	http_clear_signal_cancel();
-	cli_sigint_received = 0;
+	if (!ctx)
+		return;
+	morph_signal_flag_set(&ctx->interrupted, 1);
+	runtime_cancel_turn(ctx->runtime);
+	cli_ui_notify(ctx);
 }
 
-struct cli_cancel_monitor *cli_cancel_monitor_start(int fd)
+void cli_signal_received(int number, void *opaque)
+{
+	struct cli_context *ctx = opaque;
+
+	if (number == SIGWINCH)
+		morph_signal_flag_set(&ctx->resized, 1);
+	else {
+		morph_signal_flag_set(&ctx->interrupted, 1);
+		if (number != SIGINT)
+			morph_signal_flag_set(&ctx->terminate_requested, 1);
+	}
+	if (__atomic_load_n(&ctx->signals_ready, __ATOMIC_ACQUIRE)) {
+		if (number != SIGWINCH)
+			runtime_cancel_turn(ctx->runtime);
+		cli_ui_notify(ctx);
+	}
+}
+
+void cli_cancel_state_reset(struct cli_context *ctx)
+{
+	if (ctx)
+		morph_signal_flag_set(&ctx->interrupted, 0);
+}
+
+struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int fd)
 {
 	struct cli_cancel_monitor *monitor;
 	struct termios active_termios;
@@ -75,6 +101,7 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(int fd)
 	monitor = calloc(1, sizeof(*monitor));
 	if (!monitor)
 		return NULL;
+	monitor->ctx = ctx;
 	monitor->fd = fd;
 	if (tcgetattr(fd, &monitor->saved_termios) != 0) {
 		free(monitor);
@@ -101,7 +128,7 @@ void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor)
 {
 	if (!monitor)
 		return;
-	monitor->stop = 1;
+	morph_signal_flag_set(&monitor->stop, 1);
 	(void)pthread_join(monitor->thread, NULL);
 	(void)tcsetattr(monitor->fd, TCSANOW, &monitor->saved_termios);
 	free(monitor);

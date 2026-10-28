@@ -62,11 +62,11 @@ static int print_permissions(struct cli_context *ctx)
 	rc = runtime_permission_list(ctx->runtime, &grants, &count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("persistent permissions (%d)", count);
+	CMD_HEADER(ctx, "persistent permissions (%d)", count);
 	if (count == 0) {
-		printf(ANSI_DIM);
-		cli_tree_prefix(NULL, 0, 1, 0);
-		printf("none for this project" ANSI_RESET "\n");
+		printf(ctx, ANSI_DIM);
+		cli_tree_prefix(ctx, NULL, 0, 1, 0);
+		printf(ctx, "none for this project" ANSI_RESET "\n");
 		runtime_permission_list_free(grants);
 		return 0;
 	}
@@ -85,8 +85,7 @@ static int print_permissions(struct cli_context *ctx)
 		       strcmp(grants[i].subject, grants[end].subject) == 0)
 			end++;
 		group_last = ++group == group_count;
-		cli_list_group(grant_group_name(grants, i, end), end - i,
-			       group_last);
+		cli_list_group(ctx, grant_group_name(grants, i, end), end - i, group_last);
 		ancestor = tui_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
@@ -94,8 +93,8 @@ static int print_permissions(struct cli_context *ctx)
 			snprintf(label, sizeof(label), "#%lld  %s",
 				 (long long)grants[j].id,
 				 capability_name(grants[j].resource_kind));
-			cli_list_item(ancestor, j == end - 1, "", label,
-				      grants[j].resource, 24, columns);
+			cli_list_item(ctx, ancestor, j == end - 1, "", label, grants[j].resource,
+				      24, columns);
 		}
 		i = end;
 	}
@@ -129,22 +128,20 @@ static int confirm_clear(struct cli_context *ctx, int all_projects)
 	}
 
 	if (all_projects)
-		printf(ANSI_BOLD ANSI_RED
-		       "? Type \"clear all\" to revoke permissions "
-		       "for every project: " ANSI_RESET);
+		printf(ctx, ANSI_BOLD ANSI_RED "? Type \"clear all\" to revoke permissions "
+					       "for every project: " ANSI_RESET);
 	else
-		printf(ANSI_BOLD ANSI_YELLOW
-		       "? Revoke all persistent permissions for "
-		       "this project? [y/N]: " ANSI_RESET);
+		printf(ctx, ANSI_BOLD ANSI_YELLOW "? Revoke all persistent permissions for "
+						  "this project? [y/N]: " ANSI_RESET);
 	fflush(stdout);
 	tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		putchar('\n');
+		putchar(ctx, '\n');
 		return 0;
 	}
 	if (!fgets(answer, sizeof(answer), tty)) {
 		fclose(tty);
-		putchar('\n');
+		putchar(ctx, '\n');
 		return 0;
 	}
 	fclose(tty);
@@ -230,7 +227,7 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 
 		target = cli_cmd_arg(argc, argv, 2);
 		if (!target) {
-			CMD_ERROR("usage: /permissions revoke <id|program>");
+			CMD_ERROR(ctx, "usage: /permissions revoke <id|program>");
 			return -EINVAL;
 		}
 		errno = 0;
@@ -243,11 +240,10 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 		if (rc != 0)
 			return rc;
 		if (deleted == 0) {
-			CMD_ERROR("permission not found: %s", target);
+			CMD_ERROR(ctx, "permission not found: %s", target);
 			return -ENOENT;
 		}
-		CMD_OK("revoked %d persistent permission%s",
-		       deleted, deleted == 1 ? "" : "s");
+		CMD_OK(ctx, "revoked %d persistent permission%s", deleted, deleted == 1 ? "" : "s");
 		return 0;
 	}
 	if (strcmp(action, "clear") == 0) {
@@ -260,27 +256,26 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 			else if (strcmp(argv[i], "--yes") == 0)
 				confirmed = 1;
 			else {
-				CMD_ERROR("unknown option: %s", argv[i]);
+				CMD_ERROR(ctx, "unknown option: %s", argv[i]);
 				return -EINVAL;
 			}
 		}
 		if (!confirmed)
 			confirmed = confirm_clear(ctx, all_projects);
 		if (!confirmed) {
-			printf(ANSI_DIM "  cancelled" ANSI_RESET "\n");
+			printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
 			return 0;
 		}
 		rc = runtime_permission_clear(ctx->runtime, all_projects,
 					      &deleted);
 		if (rc != 0)
 			return rc;
-		CMD_OK("revoked %d persistent permission%s%s",
-		       deleted, deleted == 1 ? "" : "s",
-		       all_projects ? " across all projects" : "");
+		CMD_OK(ctx, "revoked %d persistent permission%s%s", deleted,
+		       deleted == 1 ? "" : "s", all_projects ? " across all projects" : "");
 		return 0;
 	}
-	CMD_ERROR("usage: /permissions [list|revoke <id|program>|"
-		  "clear [--all-projects] [--yes]]");
+	CMD_ERROR(ctx, "usage: /permissions [list|revoke <id|program>|"
+		       "clear [--all-projects] [--yes]]");
 	return -EINVAL;
 }
 

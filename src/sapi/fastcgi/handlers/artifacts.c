@@ -13,12 +13,12 @@
 #include "cJSON.h"
 #include "util/file.h"
 
-__attribute__((weak)) const char *fcgi_artifact_output_dir(void);
+__attribute__((weak)) const char *fcgi_artifact_output_dir(struct fcgi_bridge *bridge);
 
-static const char *artifact_root(void)
+static const char *artifact_root(request_t *r)
 {
 	if (fcgi_artifact_output_dir)
-		return fcgi_artifact_output_dir();
+		return fcgi_artifact_output_dir(r->bridge);
 	return "/var/lib/morph/output";
 }
 
@@ -132,7 +132,7 @@ void handle_get_artifact(request_t *r)
 		reply_404(r);
 		return;
 	}
-	if (!path_within_root(artifact_root(), a.relative_path, path)) {
+	if (!path_within_root(artifact_root(r), a.relative_path, path)) {
 		reply_404(r);
 		return;
 	}

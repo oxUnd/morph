@@ -1,6 +1,7 @@
 #ifndef MORPH_RUNTIME_MCP_H
 #define MORPH_RUNTIME_MCP_H
 
+struct morph_log;
 #include "config/config.h"
 #include "event/event.h"
 #include "mcp/mcp.h"
@@ -27,11 +28,9 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 				int *tools_count,
 				int *resources_count,
 				int *prompts_count);
-int runtime_mcp_init_from_config(struct mcp_registry *registry,
-				 const struct config_mcp *config,
-				 struct tool_registry *tools,
-				 int connect_configured,
-				 morph_event_cb event_cb,
+int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *registry,
+				 const struct config_mcp *config, struct tool_registry *tools,
+				 int connect_configured, morph_event_cb event_cb,
 				 void *event_user_data);
 
 #endif

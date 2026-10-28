@@ -66,10 +66,11 @@ int session_create(struct db *db, const char *name, const char *model,
 
 	if (rc != SQLITE_DONE) {
 		if (rc == SQLITE_CONSTRAINT) {
-			log_dbg("session already exists: %s", name);
+			log_dbg(db ? db->logger : NULL, "session already exists: %s", name);
 			return -EEXIST;
 		}
-		log_err("session create failed: %s", sqlite3_errmsg(db->handle));
+		log_err(db ? db->logger : NULL, "session create failed: %s",
+			sqlite3_errmsg(db->handle));
 		MORPH_RETURN(MORPH_ERR_DB);
 	}
 	if (out) {
@@ -81,10 +82,9 @@ int session_create(struct db *db, const char *name, const char *model,
 		out->created_at = now;
 		out->updated_at = now;
 	}
-	log_info("session created: %s (id=%lld, display=%s)",
+	log_info(db ? db->logger : NULL, "session created: %s (id=%lld, display=%s)",
 		 out ? out->name : name,
-		 out ? (long long)out->id :
-		       (long long)sqlite3_last_insert_rowid(db->handle),
+		 out ? (long long)out->id : (long long)sqlite3_last_insert_rowid(db->handle),
 		 display_id);
 	return 0;
 }

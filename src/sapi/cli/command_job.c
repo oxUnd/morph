@@ -11,6 +11,8 @@ struct cli_prompt {
 static void *cli_command_job_run(void *opaque)
 {
 	struct cli_command_job *job = opaque;
+	struct cli_context *ctx = job->ctx;
+	(void)ctx;
 	int result;
 
 	result = job->fn(job->ctx, job->input, job->user_data);
@@ -153,7 +155,8 @@ int cli_command_job_wait(struct cli_command_job *job)
 		if (rc < 0 && errno == EINTR)
 			continue;
 		if (rc < 0 && !warned) {
-			log_warn("command UI polling failed: %s", strerror(errno));
+			log_warn(ctx ? ctx->logger : NULL, "command UI polling failed: %s",
+				 strerror(errno));
 			warned = 1;
 		}
 		(void)cli_ui_drain(ctx);
@@ -246,6 +249,8 @@ int cli_command_job_prompt_snapshot(struct cli_command_job *job,
 int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
 {
 	struct cli_command_job *job = opaque;
+	struct cli_context *ctx = job->ctx;
+	(void)ctx;
 	struct cli_prompt *items;
 
 	(void)timeout;

@@ -258,8 +258,8 @@ static void recap_bill(struct runtime_recap_job *job, const struct model_usage *
 		.output_tokens = usage->output_tokens,
 	};
 
-	if (!runtime_model_usage_is_billable(usage) ||
-	    strcmp(job->database, ":memory:") == 0 || db_open(&db, job->database) != 0)
+	if (!runtime_model_usage_is_billable(usage) || strcmp(job->database, ":memory:") == 0 ||
+	    db_open(job->model ? job->model->http.logger : NULL, &db, job->database) != 0)
 		return;
 	metadata = runtime_model_usage_metadata(usage);
 	event.metadata_json = metadata;
@@ -278,7 +278,7 @@ static void *recap_worker(void *opaque)
 	int rc = -ENOMEM;
 
 	recap_event(job, "begin", NULL, 0);
-	http_set_cancel_token(&job->cancel);
+	job->model->http.cancel_token = &job->cancel;
 	if (arena)
 		rc = job->model->chat_with_tools(job->model, arena, recap_instructions,
 			&message, 1, NULL, 0, &response, NULL, NULL);
@@ -293,7 +293,6 @@ static void *recap_worker(void *opaque)
 	cJSON_Delete(result);
 	chat_response_free(&response);
 	arena_destroy(arena);
-	http_set_cancel_token(NULL);
 	pthread_mutex_lock(&job->lock);
 	job->done = 1;
 	pthread_mutex_unlock(&job->lock);
@@ -347,8 +346,9 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		rc = session_get_by_id(&ctx->database, job->progress.session_id, &session);
 	if (rc == 0) {
 		job->prompt = recap_history(&ctx->database, session.id);
-		job->model = model_llm_create(source->provider, source->model_id,
-			source->api_base, source->api_key);
+		job->model =
+			model_llm_create(runtime ? runtime->options.logger : NULL, source->provider,
+					 source->model_id, source->api_base, source->api_key);
 		if (!job->prompt || !job->model)
 			rc = -ENOMEM;
 	}

@@ -29,11 +29,11 @@ protected:
 		snprintf(db_path, sizeof(db_path), "/tmp/ma_test_agent_turn_%d.db",
 			 getpid());
 		std::remove(db_path);
-		ASSERT_EQ(db_open(&db, db_path), 0);
+		ASSERT_EQ(db_open(NULL, &db, db_path), 0);
 		ASSERT_EQ(db_init_schema(&db), 0);
 		ASSERT_EQ(session_create(&db, "agent_turn", "gpt-test",
 					 &sess), 0);
-		tok = tokenizer_create("gpt-test", 4096);
+		tok = tokenizer_create(NULL, "gpt-test", 4096);
 		ASSERT_NE(tok, nullptr);
 		react = react_context_create(nullptr, tok, nullptr, nullptr);
 		ASSERT_NE(react, nullptr);
@@ -598,7 +598,8 @@ TEST_F(AgentTurnTest, AssistantReasoningSurvivesHistoryReloadAndReset)
 	struct arena *arena = arena_create(0);
 	ASSERT_NE(arena, nullptr);
 	ASSERT_EQ(morph_array_init(&messages, 2, sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(react->history_items, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, react->history_items, &messages, arena),
+		  0);
 	ASSERT_EQ(messages.nelts, 1U);
 	auto *message = static_cast<struct chat_message *>(morph_array_get(&messages, 0));
 	EXPECT_STREQ(message->content, "Final answer");
@@ -624,7 +625,7 @@ TEST_F(AgentTurnTest, ChatHistoryPlacesSummaryBeforePreservedUser)
 	summary.content = const_cast<char *>("earlier context summary");
 	ASSERT_EQ(morph_array_init(&messages, 2,
 		sizeof(struct chat_message)), 0);
-	ASSERT_EQ(agent_history_build_chat_messages(&user, &messages, arena), 0);
+	ASSERT_EQ(agent_history_build_chat_messages(NULL, &user, &messages, arena), 0);
 	ASSERT_EQ(messages.nelts, 2U);
 	struct chat_message *built =
 		static_cast<struct chat_message *>(messages.elts);

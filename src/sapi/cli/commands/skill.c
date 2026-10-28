@@ -73,11 +73,10 @@ static int skill_print_list(struct cli_context *ctx)
 	rc = skill_collect(ctx, &items, &active_count);
 	if (rc != 0)
 		return rc;
-	CMD_HEADER("Skills %zu" ANSI_DIM " · %d active" ANSI_RESET,
-		   items.nelts, active_count);
+	CMD_HEADER(ctx, "Skills %zu" ANSI_DIM " · %d active" ANSI_RESET, items.nelts, active_count);
 	if (items.nelts == 0) {
-		printf("  " ANSI_DIM "(none — install to ~/.morph/skills/ "
-		       "or ~/.agents/skills/)" ANSI_RESET "\n");
+		printf(ctx, "  " ANSI_DIM "(none — install to ~/.morph/skills/ "
+			    "or ~/.agents/skills/)" ANSI_RESET "\n");
 		goto out;
 	}
 	rc = tui_tree_init(&tree);
@@ -111,12 +110,11 @@ static int skill_print_list(struct cli_context *ctx)
 	if (rc == 0)
 		rc = tui_tree_render(&tree, &output, columns, 0, SIZE_MAX);
 	if (rc == 0)
-		fputs(morph_buf_cstr(&output), stdout);
+		fputs(ctx, morph_buf_cstr(&output), stdout);
 	morph_buf_cleanup(&output);
 out_tree:
 	tui_tree_cleanup(&tree);
-	printf("\n  " ANSI_DIM "● active   ○ available   × disabled"
-	       ANSI_RESET "\n");
+	printf(ctx, "\n  " ANSI_DIM "● active   ○ available   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
 	MORPH_RETURN(rc);
@@ -144,7 +142,8 @@ static int skill_optional_field_count(const struct skill_entry *entry)
 	return count;
 }
 
-static void skill_print_metadata(const struct skill_entry *entry, int columns)
+static void skill_print_metadata(struct cli_context *ctx, const struct skill_entry *entry,
+				 int columns)
 {
 	cJSON *metadata = cJSON_CreateObject();
 	char *json;
@@ -156,7 +155,7 @@ static void skill_print_metadata(const struct skill_entry *entry, int columns)
 					entry->fm.metadata[i].value);
 	json = cJSON_PrintUnformatted(metadata);
 	if (json) {
-		cli_list_json_field("Metadata", json, 1, columns);
+		cli_list_json_field(ctx, "Metadata", json, 1, columns);
 		free(json);
 	}
 	cJSON_Delete(metadata);
@@ -169,33 +168,30 @@ static int skill_print_info(struct cli_context *ctx, const char *name)
 	int optional;
 
 	if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
-		CMD_ERROR("skill not found: %s", name);
+		CMD_ERROR(ctx, "skill not found: %s", name);
 		return -ENOENT;
 	}
-	CMD_HEADER("Skill %s", entry.fm.name);
-	cli_list_value_field("Status", skill_status(&entry), 0, 14,
-			     columns);
-	cli_list_value_field("Directory", entry.skill_dir, 0, 14, columns);
+	CMD_HEADER(ctx, "Skill %s", entry.fm.name);
+	cli_list_value_field(ctx, "Status", skill_status(&entry), 0, 14, columns);
+	cli_list_value_field(ctx, "Directory", entry.skill_dir, 0, 14, columns);
 	optional = skill_optional_field_count(&entry);
-	cli_list_text_field("Description", entry.fm.description,
-			    optional == 0, columns);
+	cli_list_text_field(ctx, "Description", entry.fm.description, optional == 0, columns);
 	if (entry.fm.license[0]) {
 		optional--;
-		cli_list_value_field("License", entry.fm.license,
-				     optional == 0, 14, columns);
+		cli_list_value_field(ctx, "License", entry.fm.license, optional == 0, 14, columns);
 	}
 	if (entry.fm.compatibility[0]) {
 		optional--;
-		cli_list_text_field("Compatibility", entry.fm.compatibility,
-				    optional == 0, columns);
+		cli_list_text_field(ctx, "Compatibility", entry.fm.compatibility, optional == 0,
+				    columns);
 	}
 	if (entry.fm.allowed_tools[0]) {
 		optional--;
-		cli_list_text_field("Allowed tools", entry.fm.allowed_tools,
-				    optional == 0, columns);
+		cli_list_text_field(ctx, "Allowed tools", entry.fm.allowed_tools, optional == 0,
+				    columns);
 	}
 	if (entry.fm.metadata_count > 0)
-		skill_print_metadata(&entry, columns);
+		skill_print_metadata(ctx, &entry, columns);
 	return 0;
 }
 
@@ -208,7 +204,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR("usage: /skill info <name>");
+			CMD_ERROR(ctx, "usage: /skill info <name>");
 			return -EINVAL;
 		}
 		return skill_print_info(ctx, name);
@@ -216,37 +212,38 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 	if (sub && strcmp(sub, "activate") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR("usage: /skill activate <name>");
+			CMD_ERROR(ctx, "usage: /skill activate <name>");
 			return -EINVAL;
 		}
 		struct skill_entry entry;
 		if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
-			CMD_ERROR("skill not found: %s", name);
+			CMD_ERROR(ctx, "skill not found: %s", name);
 			return -ENOENT;
 		}
 		int changed = 0;
 		int rc = runtime_skill_set_active(ctx->runtime, name, 1, &changed);
 		if (rc == 0 && changed)
-			CMD_OK("skill '%s' activated", name);
+			CMD_OK(ctx, "skill '%s' activated", name);
 		else if (rc < 0)
-			CMD_ERROR("failed to activate skill '%s': %s", name, morph_strerror(rc));
+			CMD_ERROR(ctx, "failed to activate skill '%s': %s", name,
+				  morph_strerror(rc));
 		else
-			CMD_OK("skill '%s' already activated", name);
+			CMD_OK(ctx, "skill '%s' already activated", name);
 		return rc < 0 ? rc : 0;
 	}
 	if (sub && strcmp(sub, "deactivate") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
 		if (!name) {
-			CMD_ERROR("usage: /skill deactivate <name>");
+			CMD_ERROR(ctx, "usage: /skill deactivate <name>");
 			return -EINVAL;
 		}
 		struct skill_entry entry;
 		if (runtime_skill_find(ctx->runtime, name, &entry) != 0) {
-			CMD_ERROR("skill not found: %s", name);
+			CMD_ERROR(ctx, "skill not found: %s", name);
 			return -ENOENT;
 		}
 		(void)runtime_skill_set_active(ctx->runtime, name, 0, NULL);
-		CMD_OK("skill '%s' deactivated", name);
+		CMD_OK(ctx, "skill '%s' deactivated", name);
 		return 0;
 	}
 	return skill_print_list(ctx);

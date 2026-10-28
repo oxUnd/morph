@@ -23,7 +23,10 @@
 
 #define RUNTIME_PLAN_SESSION_CACHE_MAX 32
 
+struct morph_log;
+
 struct runtime_context {
+	struct morph_log *logger;
 	struct model_usage_sink usage_sink;
 	struct hook_manager hooks;
 	struct config config;

@@ -1,6 +1,7 @@
 #ifndef MORPH_RUNTIME_HOOKS_H
 #define MORPH_RUNTIME_HOOKS_H
 
+struct morph_log;
 #include "agent/hooks.h"
 #include "config/config.h"
 #include "db/database.h"
@@ -13,6 +14,7 @@ extern "C" {
 #endif
 
 struct hook_manager {
+	struct morph_log *logger;
 	struct db *db;
 	const struct config *config;
 	char config_path[PATH_MAX];

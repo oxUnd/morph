@@ -6,89 +6,88 @@
 #undef fputs
 #undef putchar
 
-static int g_cli_color_enabled = 1;
-static int g_cli_structured_output;
-static _Thread_local morph_buf_t *g_cli_command_output;
-static _Thread_local int g_cli_capture_styled;
-
-void cli_set_color_enabled(int enabled)
+void cli_set_color_enabled(struct cli_context *ctx, int enabled)
 {
-	g_cli_color_enabled = enabled ? 1 : 0;
+	if (ctx)
+		ctx->output.color_disabled = !enabled;
 }
 
-int cli_color_enabled(void)
+int cli_color_enabled(struct cli_context *ctx)
 {
-	return g_cli_color_enabled;
+	return (!ctx || !ctx->output.color_disabled);
 }
 
-void cli_set_structured_output(int enabled)
+void cli_set_structured_output(struct cli_context *ctx, int enabled)
 {
-	g_cli_structured_output = enabled ? 1 : 0;
+	if (ctx)
+		ctx->output.structured = enabled ? 1 : 0;
 }
 
-int cli_structured_output_enabled(void)
+int cli_structured_output_enabled(struct cli_context *ctx)
 {
-	return g_cli_structured_output;
+	return (ctx && ctx->output.structured);
 }
 
-int cli_command_capture_begin(morph_buf_t *output)
+int cli_command_capture_begin(struct cli_context *ctx, morph_buf_t *output)
 {
-	if (!output || g_cli_command_output)
+	if (!ctx || !output || ctx->output.capture)
 		MORPH_RETURN(-EINVAL);
-	g_cli_command_output = output;
+	ctx->output.capture = output;
 	return 0;
 }
 
-void cli_command_capture_end(void)
+void cli_command_capture_end(struct cli_context *ctx)
 {
-	g_cli_command_output = NULL;
-	g_cli_capture_styled = 0;
+	if (!ctx)
+		return;
+	ctx->output.capture = NULL;
+	ctx->output.capture_styled = 0;
 }
 
-int cli_command_capture_write(const char *bytes, size_t len)
+int cli_command_capture_write(struct cli_context *ctx, const char *bytes, size_t len)
 {
 	int rc;
 	char *safe;
 
-	if (!g_cli_command_output)
+	if (!ctx || !ctx->output.capture)
 		return 0;
-	if (g_cli_capture_styled) {
-		rc = morph_buf_append(g_cli_command_output, bytes, len);
+	if (ctx->output.capture_styled) {
+		rc = morph_buf_append(ctx->output.capture, bytes, len);
 	} else {
 		safe = utf8_terminal_sanitize_dup(bytes, len,
 			UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
 			MORPH_RETURN(-ENOMEM);
-		rc = morph_buf_puts(g_cli_command_output, safe);
+		rc = morph_buf_puts(ctx->output.capture, safe);
 		free(safe);
 	}
 	return rc != 0 ? rc : 1;
 }
 
 /* Only for renderers whose untrusted inputs have already been sanitized. */
-int cli_command_capture_styled_begin(morph_buf_t *output)
+int cli_command_capture_styled_begin(struct cli_context *ctx, morph_buf_t *output)
 {
-	int rc = cli_command_capture_begin(output);
+	int rc = cli_command_capture_begin(ctx, output);
 
 	if (rc == 0)
-		g_cli_capture_styled = 1;
+		ctx->output.capture_styled = 1;
 	return rc;
 }
 
-static int cli_capture_text(const char *text)
+static int cli_capture_text(struct cli_context *ctx, const char *text)
 {
 	char *safe;
 	int rc;
 
-	if (!g_cli_command_output || !text)
+	if (!ctx || !ctx->output.capture || !text)
 		MORPH_RETURN(-EINVAL);
-	if (g_cli_capture_styled)
-		return morph_buf_puts(g_cli_command_output, text);
+	if (ctx->output.capture_styled)
+		return morph_buf_puts(ctx->output.capture, text);
 	safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
 		MORPH_RETURN(-ENOMEM);
-	rc = morph_buf_puts(g_cli_command_output, safe);
+	rc = morph_buf_puts(ctx->output.capture, safe);
 	free(safe);
 	return rc;
 }
@@ -189,7 +188,7 @@ static int cli_write_terminal_safe(const char *src, int allow_sgr)
 	return 0;
 }
 
-int cli_printf(const char *fmt, ...)
+int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 {
 	va_list ap;
 	int n;
@@ -210,19 +209,19 @@ int cli_printf(const char *fmt, ...)
 	}
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
-	if (g_cli_command_output) {
-		int rc = cli_capture_text(buf);
+	if (ctx && ctx->output.capture) {
+		int rc = cli_capture_text(ctx, buf);
 
 		free(buf);
 		if (rc != 0)
 			MORPH_RETURN(rc);
 		return n;
 	}
-	if (g_cli_structured_output) {
+	if ((ctx && ctx->output.structured)) {
 		free(buf);
 		return n;
 	}
-	if (cli_write_terminal_safe(buf, g_cli_color_enabled) != 0) {
+	if (cli_write_terminal_safe(buf, (!ctx || !ctx->output.color_disabled)) != 0) {
 		free(buf);
 		MORPH_RETURN(-EIO);
 	}
@@ -230,7 +229,7 @@ int cli_printf(const char *fmt, ...)
 	return n;
 }
 
-int cli_fputs(const char *text, FILE *stream)
+int cli_fputs(struct cli_context *ctx, const char *text, FILE *stream)
 {
 	int rc;
 
@@ -238,22 +237,22 @@ int cli_fputs(const char *text, FILE *stream)
 		MORPH_RETURN(-EINVAL);
 	if (stream != stdout)
 		return fputs(text, stream);
-	if (g_cli_command_output) {
-		rc = cli_capture_text(text);
+	if (ctx && ctx->output.capture) {
+		rc = cli_capture_text(ctx, text);
 		return rc == 0 ? 0 : EOF;
 	}
-	if (g_cli_structured_output)
+	if ((ctx && ctx->output.structured))
 		return 0;
-	return cli_write_terminal_safe(text, g_cli_color_enabled) == 0 ? 0 : EOF;
+	return cli_write_terminal_safe(text, (!ctx || !ctx->output.color_disabled)) == 0 ? 0 : EOF;
 }
 
-int cli_putchar(int ch)
+int cli_putchar(struct cli_context *ctx, int ch)
 {
 	char text[2] = {(char)ch, '\0'};
 
-	if (g_cli_command_output)
-		return cli_capture_text(text) == 0 ? ch : EOF;
-	if (g_cli_structured_output)
+	if (ctx && ctx->output.capture)
+		return cli_capture_text(ctx, text) == 0 ? ch : EOF;
+	if ((ctx && ctx->output.structured))
 		return ch;
 	return fputc(ch, stdout);
 }
@@ -271,7 +270,7 @@ int cli_write_ndjson(const char *json)
 	return 0;
 }
 
-int cli_print_untrusted_text(const char *text,
+int cli_print_untrusted_text(struct cli_context *ctx, const char *text,
 			     enum utf8_terminal_text_mode mode)
 {
 	char *safe;
@@ -282,7 +281,7 @@ int cli_print_untrusted_text(const char *text,
 	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
 	if (!safe)
 		MORPH_RETURN(-ENOMEM);
-	if (cli_fputs(safe, stdout) == EOF)
+	if (cli_fputs(ctx, safe, stdout) == EOF)
 		rc = -EIO;
 	free(safe);
 	if (rc != 0)
@@ -290,7 +289,7 @@ int cli_print_untrusted_text(const char *text,
 	return 0;
 }
 
-void print_padded(const char *s, int target_width)
+void print_padded(struct cli_context *ctx, const char *s, int target_width)
 {
 	char *safe;
 	size_t width;
@@ -305,11 +304,11 @@ void print_padded(const char *s, int target_width)
 		return;
 	width = utf8_display_width(safe);
 	dw = width > (size_t)INT_MAX ? INT_MAX : (int)width;
-	(void)cli_fputs(safe, stdout);
+	(void)cli_fputs(ctx, safe, stdout);
 	free(safe);
 	pad = target_width - dw;
 	for (int i = 0; i < pad; i++)
-		(void)cli_putchar(' ');
+		(void)cli_putchar(ctx, ' ');
 }
 
 void cli_record_media_credits(struct cli_context *ctx, const char *kind,
@@ -381,7 +380,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		owns_turn = 1;
 	}
 	if (ctx->presentation_mode == CLI_PRESENT_INTERACTIVE && !ctx->input_job)
-		ctx->cancel_monitor = cli_cancel_monitor_start(STDIN_FILENO);
+		ctx->cancel_monitor = cli_cancel_monitor_start(ctx, STDIN_FILENO);
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	struct runtime_request request = {
@@ -422,7 +421,7 @@ void cli_turn_begin(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
-	cli_cancel_state_reset();
+	cli_cancel_state_reset(ctx);
 	cli_presentation_reset(ctx);
 	ctx->turn_active = 1;
 	cli_terminal_turn_begin(ctx);
@@ -434,7 +433,7 @@ void cli_turn_finish(struct cli_context *ctx, int turn_rc)
 {
 	if (!ctx)
 		return;
-	cli_cancel_state_reset();
+	cli_cancel_state_reset(ctx);
 	cli_presentation_finish(ctx);
 	ctx->turn_active = 0;
 	cli_recap_turn_finished(ctx, cli_recap_now());
@@ -443,9 +442,9 @@ void cli_turn_finish(struct cli_context *ctx, int turn_rc)
 	    ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return;
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN)
-		printf("error: %s\n", morph_strerror(turn_rc));
+		printf(ctx, "error: %s\n", morph_strerror(turn_rc));
 	else
-		CMD_ERROR("%s", morph_strerror(turn_rc));
+		CMD_ERROR(ctx, "%s", morph_strerror(turn_rc));
 }
 
 /* ---- cli_shutdown ---- */
@@ -454,12 +453,14 @@ void cli_shutdown(struct cli_context *ctx)
 {
 	if (!ctx)
 		return;
+	morph_signal_listener_stop(&ctx->signals);
+	cli_callbacks_cleanup(ctx);
 	runtime_close(ctx->runtime);
 	ctx->runtime = NULL;
 	(void)cli_ui_drain(ctx);
 	cli_presentation_cleanup(ctx);
 	cli_ui_cleanup(ctx);
 	cli_terminal_cleanup(ctx);
-	cli_set_structured_output(0);
-	log_info("cli shutdown complete");
+	cli_set_structured_output(ctx, 0);
+	log_info(ctx ? ctx->logger : NULL, "cli shutdown complete");
 }

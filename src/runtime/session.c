@@ -88,7 +88,7 @@ void runtime_session_load_history(struct runtime_engine *engine,
 	runtime.session_id = session_id;
 	runtime.react = engine->react;
 	agent_session_load_history(&runtime);
-	log_info("runtime: loaded messages for session id=%lld",
+	log_info(engine ? engine->logger : NULL, "runtime: loaded messages for session id=%lld",
 		 (long long)session_id);
 }
 
