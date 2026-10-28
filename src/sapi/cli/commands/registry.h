@@ -20,6 +20,7 @@ void cli_print_help(void);
 char *cli_command_completion_generator(const char *text, int state);
 int cli_commands_init(void);
 
+int cli_register_share_commands(void);
 int cli_register_runtime_commands(void);
 int cli_register_session_commands(void);
 int cli_register_memory_commands(void);

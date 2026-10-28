@@ -24,6 +24,9 @@ add_library(morph-cli STATIC
 	setup.c
 	setup_ui.c
 	scheduler.c
+	share.c
+	share_save.c
+	commands/share.c
 	shell_style.c
 	terminal.c
 	transcript.c
@@ -41,6 +44,10 @@ add_library(morph-cli STATIC
 	commands/sync.c
 	commands/tasks.c
 )
+if(NOT TARGET morph-markdown-html)
+	message(FATAL_ERROR "morph CLI requires MORPH_MARKDOWN_BUILD_HTML=ON")
+endif()
+add_dependencies(morph-cli morph-data)
 target_include_directories(morph-cli PUBLIC
 	${CMAKE_SOURCE_DIR}/src
 )
@@ -60,6 +67,7 @@ target_link_libraries(morph-cli PUBLIC
 	morph-credits
 	morph-render
 	MorphMarkdown::Kitty
+	morph-markdown-html
 	morph-skill
 	morph-tools
 	morph-ext

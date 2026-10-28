@@ -217,12 +217,19 @@ add_compile_options(
 	$<$<COMPILE_LANG_AND_ID:C,Clang,AppleClang>:-Wno-gnu-zero-variadic-macro-arguments>
 )
 
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/misc/share/
+	DESTINATION ${CMAKE_INSTALL_DATADIR}/morph/share
+	FILES_MATCHING PATTERN "*.css" PATTERN "*.js")
+
 add_custom_target(morph-data ALL
 	COMMAND ${CMAKE_COMMAND} -E make_directory
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/fonts
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts
+	COMMAND ${CMAKE_COMMAND} -E copy_directory
+		${CMAKE_SOURCE_DIR}/misc/share
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/share
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different
 		${CMAKE_SOURCE_DIR}/misc/morph-logo.png
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/morph-logo.png

@@ -318,5 +318,8 @@ int cli_commands_init(void)
 	rc = cli_register_hook_commands();
 	if (rc != 0)
 		return rc;
+	rc = cli_register_share_commands();
+	if (rc != 0)
+		MORPH_RETURN(rc);
 	return cli_register_mcp_commands();
 }

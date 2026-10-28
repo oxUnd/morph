@@ -283,6 +283,7 @@ Common interactive commands:
 	/rename <name>	Rename current session.
 	/delete <name|id>	Delete a session.
 	/history [n|--all]	Show, diagnose, repair, or export history.
+	/share			Save the latest answered turn as offline HTML in ~/Downloads.
 	/model [name]	Show or change the text model for the session.
 	/config		Print loaded configuration.
 	/trace [--from-db]	Show the latest ReAct trace.

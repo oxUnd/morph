@@ -132,6 +132,8 @@ struct message *runtime_session_messages_current(struct runtime *runtime,
 					 int *count);
 void runtime_session_messages_free(struct message *messages);
 /* Read a session without selecting it. Caller frees the JSON on success. */
+/* Latest answered turn, including persisted tool results. Caller owns JSON. */
+int runtime_session_share_current(struct runtime *runtime, cJSON **out);
 int runtime_session_transcript_json(struct runtime *runtime, int64_t session_id,
 				    char **out);
 struct model_history_item *runtime_session_model_history_current(

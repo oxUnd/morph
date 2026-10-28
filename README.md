@@ -21,7 +21,7 @@ Sandbox, platform policy, extension manifests, and nested-macOS testing: [docs/s
 
 ## Build
 
-Requirements: CMake ≥ 3.20, SQLite3, libcurl, libwebp, and
+Requirements: CMake ≥ 3.20, SQLite3, libcurl, libwebp, libxml2, and
 [mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
 
 ```bash
