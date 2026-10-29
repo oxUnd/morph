@@ -601,6 +601,7 @@ int main(int argc, char *argv[])
 	}
 	rc = http_init(&logger);
 	if (rc != 0) {
+		fprintf(stderr, "morph: failed to initialize HTTP: %s\n", morph_strerror(rc));
 		log_shutdown(&logger);
 		return 1;
 	}

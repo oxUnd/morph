@@ -141,7 +141,7 @@ int http_init(struct morph_log *logger)
 	rc = curl_global_init(CURL_GLOBAL_DEFAULT);
 	if (rc != CURLE_OK) {
 		log_err(logger, "curl_global_init failed: %s", curl_easy_strerror(rc));
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+		MORPH_RETURN_LOG(logger, MORPH_ERR_NETWORK);
 	}
 	log_info(logger, "http client initialized");
 	return 0;
@@ -244,7 +244,7 @@ static int do_request(const struct http_control *control, const char *url, const
 	curl = curl_easy_init();
 	if (!curl) {
 		http_cleanup();
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -ENOMEM);
 	}
 
 	rc = append_content_type_header(&headers, content_type);
@@ -307,7 +307,7 @@ out:
 int http_get(const struct http_control *control, const char *url, struct http_response *resp)
 {
 	if (!url || !resp)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -EINVAL);
 	memset(resp, 0, sizeof(*resp));
 	return do_request(control, url, "GET", NULL, 0, NULL, NULL, 0, resp, 30L);
 }
@@ -347,7 +347,7 @@ int http_post_ex_timeout(const struct http_control *control, const char *url, co
 			 int extra_header_count, long timeout_seconds, struct http_response *resp)
 {
 	if (!url || !resp)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -EINVAL);
 	memset(resp, 0, sizeof(*resp));
 	return do_request(control, url, "POST", body, body_len, content_type, extra_headers,
 			  extra_header_count, resp, timeout_seconds);
@@ -367,7 +367,7 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 	int rc = 0;
 
 	if (!url || !parts || part_count <= 0 || !resp)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -EINVAL);
 	memset(resp, 0, sizeof(*resp));
 	rc = http_init(control ? control->logger : NULL);
 	if (rc != 0)
@@ -375,7 +375,7 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 	curl = curl_easy_init();
 	if (!curl) {
 		http_cleanup();
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -ENOMEM);
 	}
 	mime = curl_mime_init(curl);
 	if (!mime) {
@@ -543,7 +543,7 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 	curl = curl_easy_init();
 	if (!curl) {
 		http_cleanup();
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(control ? control->logger : NULL, -ENOMEM);
 	}
 
 	snprintf(ct, sizeof(ct), "Content-Type: %s",
@@ -701,14 +701,14 @@ int http_session_init(struct morph_log *logger, struct http_session *s)
 	s->curl = curl_easy_init();
 	if (!s->curl) {
 		http_cleanup();
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(logger, -ENOMEM);
 	}
 	rc = morph_buf_init(&s->resp_body, 4096);
 	if (rc == 0)
 		rc = morph_buf_init(&s->resp_headers, 2048);
 	if (rc != 0) {
 		http_session_cleanup(s);
-		MORPH_RETURN(rc);
+		MORPH_RETURN_LOG(logger, rc);
 	}
 	s->status_code = 0;
 	s->initialized = 1;

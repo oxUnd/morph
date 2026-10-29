@@ -79,7 +79,8 @@ def terminal_environment(directory, extra=None):
 
 
 class Terminal:
-    def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False, hooks_enabled=True):
+    def __init__(self, driver, directory, port, extra_env=None, memory_enabled=False,
+                 hooks_enabled=True, production=False, extra_config=''):
         config = directory / 'config.toml'
         config.write_text(f'''[general]
 output_dir = "{directory}/output"
@@ -95,9 +96,10 @@ model = "pty-test"
 api_base = "http://127.0.0.1:{port}/v1"
 api_key_env = "MORPH_PTY_API_KEY"
 retry_count = 0
-''')
-        self.child = pexpect.spawn(str(driver), [str(config), str(directory),
-                                               str(directory / 'data.db')],
+''' + extra_config)
+        arguments = (['-c', str(config), '-w', str(directory)] if production else
+                     [str(config), str(directory), str(directory / 'data.db')])
+        self.child = pexpect.spawn(str(driver), arguments,
                                    env=terminal_environment(directory, extra_env),
                                    encoding='utf-8', dimensions=(24, 80), timeout=8)
         self.screen = pyte.Screen(80, 24)

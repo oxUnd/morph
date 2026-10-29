@@ -19,7 +19,8 @@ int cli_recap_due(const struct cli_recap_state *state, int64_t now)
 	int64_t since = state->unfocused_since > state->last_finished ?
 		state->unfocused_since : state->last_finished;
 
-	if (!state->unfocused_since || !state->last_finished || state->pending ||
+	if (state->progress.session_id <= 0 || state->progress.history_id <= 0 ||
+	    !state->unfocused_since || !state->last_finished || state->pending ||
 	    state->progress.completed_turns < 3 ||
 	    (state->has_recap && state->progress.completed_turns - state->last_recapped_turns < 2))
 		return 0;
@@ -137,10 +138,22 @@ void cli_recap_tick(struct cli_context *ctx, int64_t now)
 	struct runtime_recap_progress progress;
 	struct cli_recap_state *state = &ctx->recap;
 	const struct config *config;
+	int64_t session_id;
 
 	if (!ctx->runtime || ctx->turn_active || ctx->details_open || now < state->next_poll)
 		return;
 	state->next_poll = now + 1000;
+	/* A new CLI has no session until its first submitted turn. */
+	if (runtime_session_current_id(ctx->runtime, &session_id) != 0)
+		return;
+	if (session_id <= 0) {
+		state->progress = (struct runtime_recap_progress){0};
+		state->has_recap = 0;
+		state->last_finished = 0;
+		state->retry_at = 0;
+		state->retried = 0;
+		return;
+	}
 	if (runtime_recap_progress(ctx->runtime, &progress) != 0)
 		return;
 	if (progress.session_id != state->progress.session_id) {

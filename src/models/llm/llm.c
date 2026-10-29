@@ -107,7 +107,7 @@ static int add_extra_body_json(struct morph_log *logger, cJSON *root, const char
 	if (!extra || !cJSON_IsObject(extra)) {
 		cJSON_Delete(extra);
 		log_err(logger, "extra_body_json must contain a valid JSON object");
-		MORPH_RETURN(MORPH_ERR_CONFIG);
+		MORPH_RETURN_LOG(logger, MORPH_ERR_CONFIG);
 	}
 	cJSON_ArrayForEach(item, extra) {
 		cJSON *copy;
@@ -116,13 +116,13 @@ static int add_extra_body_json(struct morph_log *logger, cJSON *root, const char
 			log_err(logger, "extra_body_json contains reserved or invalid field: %s",
 				item->string ? item->string : "<unnamed>");
 			cJSON_Delete(extra);
-			MORPH_RETURN(MORPH_ERR_CONFIG);
+			MORPH_RETURN_LOG(logger, MORPH_ERR_CONFIG);
 		}
 		copy = cJSON_Duplicate(item, 1);
 		if (!copy || !cJSON_AddItemToObject(root, item->string, copy)) {
 			cJSON_Delete(copy);
 			cJSON_Delete(extra);
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN_LOG(logger, -ENOMEM);
 		}
 	}
 	cJSON_Delete(extra);
@@ -791,7 +791,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 	if (!self || !self->api_key[0]) {
 		log_err(self ? self->http.logger : NULL, "llm_chat: no API key configured");
 		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 
 	log_dbg(self ? self->http.logger : NULL, "llm_chat: start, model=%s, api_base=%s",
@@ -846,7 +846,7 @@ static int llm_chat(struct model *self, struct arena *arena,
 		else
 			log_err(self ? self->http.logger : NULL, "llm_chat: API returned HTTP %d",
 				status);
-		MORPH_RETURN(MORPH_ERR_API);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
 
 	llm_usage_report(self, &ctx, body_len);
@@ -884,7 +884,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		log_err(self ? self->http.logger : NULL,
 			"llm_chat_with_image: no API key configured");
 		if (self) { model_clear_last_error(self); self->error_info.kind = MODEL_ERROR_CONFIG; }
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!arena || !prompt || !*prompt || !image_path || !*image_path)
 		return -EINVAL;
@@ -904,7 +904,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 			"llm_chat_with_image: failed to encode image: %s", image_path);
 		model_set_last_error(self, "failed to read or encode image: %s",
 				     image_path);
-		MORPH_RETURN(encode_rc);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, encode_rc);
 	}
 
 	cJSON *root = cJSON_CreateObject();
@@ -952,7 +952,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 		cJSON_Delete(image);
 		cJSON_Delete(user);
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 	}
 	cJSON_AddItemToObject(image, "image_url", image_url);
 	cJSON_AddItemToArray(content, image);
@@ -1025,7 +1025,7 @@ static int llm_chat_with_image(struct model *self, struct arena *arena,
 			model_set_last_error(self, "HTTP %d from %s", status,
 					     self->api_base);
 		}
-		MORPH_RETURN(MORPH_ERR_API);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
 
 	llm_usage_report(self, &ctx, body_len);
@@ -1358,7 +1358,7 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 
 	if (!out || msg_count < 0 || tool_count < 0 ||
 	    (msg_count && !messages) || (tool_count && !tools))
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -EINVAL);
 	*out = NULL;
 	root = cJSON_CreateObject();
 	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
@@ -1369,23 +1369,23 @@ int model_input_snapshot(const struct model *model, const char *system_prompt,
 		cJSON_Delete(root);
 		cJSON_Delete(input);
 		cJSON_Delete(definitions);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	if (!cJSON_AddItemToObject(root, adapter->responses_api ? "input" : "messages", input)) {
 		cJSON_Delete(input);
 		cJSON_Delete(definitions);
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	if (!cJSON_AddItemToObject(root, "tools", definitions)) {
 		cJSON_Delete(definitions);
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	if (adapter->responses_api && system_prompt && *system_prompt &&
 	    !cJSON_AddStringToObject(root, "instructions", system_prompt)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 	}
 	*out = root;
 	return 0;
@@ -1404,12 +1404,12 @@ int model_estimate_input_tokens(const struct model *model,
 
 	if (!count || !tokens || msg_count < 0 || tool_count < 0 ||
 	    (msg_count && !messages) || (tool_count && !tools))
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -EINVAL);
 	input = adapter->responses_api ? build_responses_input_cjson(messages, msg_count) :
 		build_structured_messages_cjson(system_prompt, messages, msg_count,
 			adapter, model);
 	if (!input)
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 	total = 16 + input_text_tokens(input, count, user_data);
 	cJSON_Delete(input);
 	if (adapter->responses_api && system_prompt && system_prompt[0])
@@ -1419,12 +1419,12 @@ int model_estimate_input_tokens(const struct model *model,
 			build_responses_tools_cjson(tools, tool_count) :
 			build_tools_cjson(tools, tool_count);
 		if (!wire_tools)
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 		/* Schema keys and constraints are part of the model-visible definition. */
 		json = cJSON_PrintUnformatted(wire_tools);
 		cJSON_Delete(wire_tools);
 		if (!json)
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN_LOG(model ? model->http.logger : NULL, -ENOMEM);
 		total += count(json, user_data);
 		free(json);
 	}
@@ -1593,14 +1593,14 @@ static int llm_responses_with_tools_impl(struct model *self,
 	int rc;
 
 	if (!self || !arena || !response)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -EINVAL);
 	if (!self->api_key[0]) {
 		log_err(self ? self->http.logger : NULL,
 			"llm_responses_with_tools: no API key configured");
 		model_clear_last_error(self);
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 	model_clear_last_error(self);
 	memset(response, 0, sizeof(*response));
@@ -1612,7 +1612,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 		cJSON_Delete(root);
 		cJSON_Delete(input);
 		cJSON_Delete(tool_array);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 	}
 	cJSON_AddStringToObject(root, "model", self->model_id);
 	if (system_prompt && *system_prompt)
@@ -1632,7 +1632,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 	body = morph_json_print(arena, root);
 	cJSON_Delete(root);
 	if (!body)
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 	snprintf(url, sizeof(url), "%s/responses", self->api_base);
 	snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s",
 		self->api_key);
@@ -1647,7 +1647,7 @@ static int llm_responses_with_tools_impl(struct model *self,
 	if (status >= 400) {
 		model_set_last_error(self, "HTTP %d: %s", status,
 			detail ? detail : "Responses API request failed");
-		MORPH_RETURN(MORPH_ERR_API);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
 	response->content = ctx.accumulated.len > 0 ? ctx.accumulated.data : NULL;
 	llm_stream_transfer_tool_calls(&ctx, response);
@@ -1679,7 +1679,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		model_clear_last_error(self);
 		self->error_info.kind = MODEL_ERROR_CONFIG;
 		model_set_last_error(self, "no API key configured");
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	}
 	if (!response)
 		return -EINVAL;
@@ -1694,7 +1694,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 
 	cJSON *root = cJSON_CreateObject();
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 	cJSON_AddStringToObject(root, "model", self->model_id);
 
 	cJSON *msgs_arr = build_structured_messages_cjson(system_prompt,
@@ -1702,7 +1702,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 							   adapter, self);
 	if (!msgs_arr) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 	}
 	cJSON_AddItemToObject(root, "messages", msgs_arr);
 
@@ -1710,7 +1710,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 		cJSON *tools_arr = build_tools_cjson(tools, tool_count);
 		if (!tools_arr) {
 			cJSON_Delete(root);
-			MORPH_RETURN(-ENOMEM);
+			MORPH_RETURN_LOG(self ? self->http.logger : NULL, -ENOMEM);
 		}
 		cJSON_AddItemToObject(root, "tools", tools_arr);
 		if (!adapter->supports_tool_choice ||
@@ -1783,7 +1783,7 @@ static int llm_chat_with_tools_impl(struct model *self, struct arena *arena,
 				"llm_chat_with_tools: API returned HTTP %d", status);
 			model_set_last_error(self, "HTTP %d from %s", status, url);
 		}
-		MORPH_RETURN(MORPH_ERR_API);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
 
 	if (ctx.accumulated.len > 0)
@@ -1869,7 +1869,7 @@ static int llm_generate(struct model *self, const char *prompt,
 		log_err(self ? self->http.logger : NULL, "llm_generate: API returned %d",
 			resp.status_code);
 		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
+		MORPH_RETURN_LOG(self ? self->http.logger : NULL, MORPH_ERR_API);
 	}
 
 	rc = 0;

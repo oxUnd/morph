@@ -91,14 +91,15 @@ static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_p
 	memset(out, 0, sizeof(*out));
 	out->session_id = runtime->context.current_session.id;
 	out->revision = runtime->recap_revision;
+	/* A deferred session has no history yet; polling it is a valid empty snapshot. */
 	if (out->session_id <= 0)
-		MORPH_RETURN(-ENODATA);
+		return 0;
 	rc = sqlite3_prepare_v2(runtime->context.database.handle,
 		"SELECT COALESCE(MAX(id),0),COALESCE(SUM(role='assistant'),0) "
 		"FROM messages WHERE session_id=? AND role IN ('user','assistant') "
 		"AND length(trim(content))>0", -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, out->session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -106,7 +107,7 @@ static int recap_progress_locked(struct runtime *runtime, struct runtime_recap_p
 		out->completed_turns = sqlite3_column_int(stmt, 1);
 	}
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc == SQLITE_ROW ? 0 : MORPH_ERR_DB);
+	MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, rc == SQLITE_ROW ? 0 : MORPH_ERR_DB);
 }
 
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out)
@@ -114,9 +115,9 @@ int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progres
 	int rc;
 
 	if (!runtime || !out)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EINVAL);
 	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		MORPH_RETURN(-EBUSY);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EBUSY);
 	rc = recap_progress_locked(runtime, out);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	return rc;
@@ -322,22 +323,22 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 		done = job->done;
 		pthread_mutex_unlock(&job->lock);
 		if (!done)
-			MORPH_RETURN(-EALREADY);
+			MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EALREADY);
 		pthread_join(job->thread, NULL);
 		recap_job_free(job);
 		runtime->recap_job = NULL;
 	}
 	if (!source || !source->api_key[0])
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_NOT_CONFIGURED);
 	if (ctx->current_session.id <= 0)
-		MORPH_RETURN(-ENODATA);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -ENODATA);
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		MORPH_RETURN(-ENOMEM);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -ENOMEM);
 	rc = pthread_mutex_init(&job->lock, NULL);
 	if (rc != 0) {
 		free(job);
-		MORPH_RETURN(-rc);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -rc);
 	}
 	rc = recap_progress_locked(runtime, &job->progress);
 	if (rc == 0 && job->progress.history_id == 0)
@@ -370,7 +371,7 @@ static int recap_start_locked(struct runtime *runtime, int automatic)
 	}
 	if (rc != 0) {
 		recap_job_free(job);
-		MORPH_RETURN(rc);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, rc);
 	}
 	runtime->recap_job = job;
 	runtime->recap_revision = job->progress.revision;
@@ -383,12 +384,12 @@ int runtime_recap_request(struct runtime *runtime, int automatic,
 	int rc;
 
 	if (!runtime || !runtime->options.event_cb)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EINVAL);
 	if (pthread_mutex_trylock(&runtime->context.execution_lock) != 0)
-		MORPH_RETURN(-EBUSY);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EBUSY);
 	if (automatic && !runtime->context.config.general.auto_recap) {
 		pthread_mutex_unlock(&runtime->context.execution_lock);
-		MORPH_RETURN(-ECANCELED);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -ECANCELED);
 	}
 	rc = recap_start_locked(runtime, automatic);
 	if (rc == 0 && out)

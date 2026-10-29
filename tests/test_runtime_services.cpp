@@ -4,6 +4,7 @@ extern "C" {
 #include "agent/tool.h"
 #include "db/scheduled_task.h"
 #include "runtime/runtime_internal.h"
+#include "runtime/recap.h"
 #include "runtime/sync.h"
 #include "cJSON.h"
 }
@@ -14,6 +15,39 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+
+TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
+{
+	struct runtime_options options{};
+	options.create_new_session = 1;
+	Open(&options);
+	ASSERT_EQ(instance->context.current_session.id, 0);
+	int active = -1, tokens = -1, tools = -1, compactions = -1, limit = -1;
+	struct runtime_recap_progress progress{};
+	int stats_rc, recap_rc;
+	testing::internal::CaptureStderr();
+	stats_rc = runtime_session_model_context_stats(instance, &active, &tokens,
+		&tools, &compactions, &limit);
+	recap_rc = runtime_recap_progress(instance, &progress);
+	std::string diagnostics = testing::internal::GetCapturedStderr();
+	EXPECT_EQ(stats_rc, 0);
+	EXPECT_EQ(recap_rc, 0);
+	EXPECT_TRUE(diagnostics.empty()) << diagnostics;
+	EXPECT_EQ(active, 0);
+	EXPECT_EQ(tokens, 0);
+	EXPECT_EQ(tools, 0);
+	EXPECT_EQ(compactions, 0);
+	EXPECT_EQ(limit, instance->context.tokenizer ?
+		instance->context.tokenizer->context_limit : 0);
+	EXPECT_EQ(progress.session_id, 0);
+	EXPECT_EQ(progress.history_id, 0);
+	EXPECT_EQ(progress.completed_turns, 0);
+	struct session *sessions = nullptr;
+	int count = -1;
+	ASSERT_EQ(runtime_session_list_all(instance, &sessions, &count, 0), 0);
+	EXPECT_EQ(count, 0);
+	runtime_session_list_free(sessions);
+}
 
 TEST_F(RuntimeFacadeTest, ProjectSkillsTakePrecedenceOverConfiguredUserSkills)
 {
