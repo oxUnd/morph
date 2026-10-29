@@ -1222,3 +1222,150 @@ TEST_F(ProcessTest, DetailInspectionReadsRetainedWindowWithoutAdvancingCursor)
 	EXPECT_GT(std::strlen(snapshot.stdout_text), 0u);
 	process_snapshot_cleanup(&snapshot);
 }
+
+TEST(ExecToolTest, ProcessAcceptsModelSelectedWaitsWithinDefaultRange)
+{
+	tool_registry registry{};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&registry, "exec", R"({"command":"printf verified"})", &result), 0);
+	const char *session = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	ASSERT_NE(session, nullptr);
+	std::string id = session;
+	tool_result_cleanup(&result);
+	for (const char *action : {"wait", "poll"}) {
+		for (const char *budget : {"0", "60001", "120000", "600000"}) {
+			std::string args = "{\"action\":\"" + std::string(action) +
+				"\",\"session_id\":\"" + id + "\",\"cursor\":\"0:0\",\"wait_ms\":" +
+				budget + "}";
+			tool_result_init(&result);
+			ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "status")),
+				"exited");
+			EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")),
+				"verified");
+			EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
+				std::strtod(budget, nullptr));
+			EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data,
+				"max_wait_ms")), 600000);
+			tool_result_cleanup(&result);
+		}
+	}
+	struct budget_case { const char *suffix; int expected; };
+	const budget_case cases[] = {{"", 30000}, {",\"wait_ms\":0", 0},
+		{",\"wait_ms\":600000", 600000}};
+	for (const auto &item : cases) {
+		std::string args = "{\"action\":\"wait\",\"session_id\":\"" + id + "\"" +
+			item.suffix + "}";
+		tool_result_init(&result);
+		ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
+			item.expected);
+		tool_result_cleanup(&result);
+	}
+	tool_registry_cleanup(&registry);
+}
+
+TEST(ExecToolTest, ProcessRejectsInvalidWaitValuesBeforeWritingInput)
+{
+	tool_registry registry{};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&registry, "exec",
+		R"({"command":"IFS= read -r line; printf 'read:%s' \"$line\"","background":true})",
+		&result), 0);
+	const char *session = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	ASSERT_NE(session, nullptr);
+	std::string id = session;
+	tool_result_cleanup(&result);
+	for (const char *budget : {"-1", "1.5", "120000.5", "\"120000\"", "null", "true", "600001", "1e100", "1e999"}) {
+		std::string args = "{\"action\":\"write\",\"session_id\":\"" + id +
+			"\",\"input\":\"bad\\n\",\"wait_ms\":" + budget + "}";
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&registry, "process", args.c_str(), &result), -EINVAL);
+		EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+			cJSON_GetObjectItem(result.envelope, "error"), "code")), "invalid_request");
+		tool_result_cleanup(&result);
+	}
+	tool_result_init(&result);
+	std::string write = "{\"action\":\"write\",\"session_id\":\"" + id +
+		"\",\"input\":\"good\\n\"}";
+	ASSERT_EQ(tool_exec(&registry, "process", write.c_str(), &result), 0);
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")), 0);
+	tool_result_cleanup(&result);
+	tool_result_init(&result);
+	std::string wait = "{\"action\":\"wait\",\"session_id\":\"" + id +
+		"\",\"wait_ms\":2000,\"cursor\":\"0:0\"}";
+	ASSERT_EQ(tool_exec(&registry, "process", wait.c_str(), &result), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")), "read:good");
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+}
+
+TEST_F(ProcessTest, RawWaitSupportsLongBudgetsAndRejectsDeadlineOverflow)
+{
+	process_snapshot snapshot{};
+	EXPECT_EQ(process_session_wait(manager, "not-needed", nullptr,
+		UINT64_MAX, nullptr, nullptr, &snapshot), -EOVERFLOW);
+	process_spawn_options options{};
+	options.command = "printf done";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	ASSERT_EQ(process_session_wait(manager, id, nullptr, 1200000,
+		nullptr, nullptr, &snapshot), 0);
+	EXPECT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_STREQ(snapshot.stdout_text, "done");
+	process_snapshot_cleanup(&snapshot);
+}
+
+TEST(ExecToolTest, ConfiguredWaitRangeControlsSchemaRuntimeAndToolTimeout)
+{
+	for (int maximum : {1200000, 1000}) {
+		struct config cfg;
+		config_set_defaults(nullptr, &cfg);
+		cfg.exec.max_wait_ms = maximum;
+		tool_registry registry{};
+		tool_registry_init(nullptr, &registry);
+		ASSERT_EQ(exec_tool_init(&registry, nullptr, &cfg.exec), 0);
+		auto *entry = tool_lookup(&registry, "process");
+		ASSERT_NE(entry, nullptr);
+		EXPECT_GE(entry->timeout_seconds * 1000, maximum);
+		cJSON *schema = cJSON_Parse(entry->desc.input_schema);
+		ASSERT_NE(schema, nullptr);
+		cJSON *wait = cJSON_GetObjectItem(cJSON_GetObjectItem(schema, "properties"), "wait_ms");
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "minimum")), 0);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "maximum")), maximum);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(wait, "default")),
+			std::min(30000, maximum));
+		cJSON_Delete(schema);
+		tool_result result{};
+		tool_result_init(&result);
+		ASSERT_EQ(tool_exec(&registry, "exec", "{\"command\":\"printf configured\"}", &result), 0);
+		std::string id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+		tool_result_cleanup(&result);
+		for (const auto &budget : {std::to_string(maximum), std::to_string(maximum + 1)}) {
+			std::string args = "{\"action\":\"wait\",\"session_id\":\"" + id +
+				"\",\"wait_ms\":" + budget + "}";
+			tool_result_init(&result);
+			bool allowed = std::stoi(budget) <= maximum;
+			EXPECT_EQ(tool_exec(&registry, "process", args.c_str(), &result),
+				allowed ? 0 : -EINVAL);
+			if (allowed)
+				EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data,
+					"wait_ms")), maximum);
+			tool_result_cleanup(&result);
+		}
+		tool_result_init(&result);
+		std::string args = "{\"action\":\"wait\",\"session_id\":\"" + id + "\"}";
+		ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
+		EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(result.data, "wait_ms")),
+			std::min(30000, maximum));
+		tool_result_cleanup(&result);
+		tool_registry_cleanup(&registry);
+	}
+}

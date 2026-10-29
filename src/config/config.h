@@ -10,6 +10,7 @@ extern "C" {
 #define SUB_AGENT_TOOL_NAME_MAX 64
 
 #define CONFIG_HOOKS_JSON_MAX 65536
+#define EXEC_MAX_WAIT_MS_DEFAULT 600000
 
 #define CONFIG_MAX_KEY_LEN 256
 #define CONFIG_MAX_VAL_LEN 2048
@@ -153,6 +154,7 @@ struct config_exec {
 	char shell[PATH_MAX];
 	int default_timeout_ms;
 	int yield_time_ms;
+	int max_wait_ms;
 	int max_inline_output;
 	int max_session_output;
 	int kill_grace_ms;

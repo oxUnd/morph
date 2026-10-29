@@ -46,6 +46,7 @@ TEST_F(ConfigTest, DefaultValues) {
 	EXPECT_STREQ(cfg.exec.shell, "/bin/bash");
 	EXPECT_EQ(cfg.exec.default_timeout_ms, 120000);
 	EXPECT_EQ(cfg.exec.yield_time_ms, 10000);
+	EXPECT_EQ(cfg.exec.max_wait_ms, 600000);
 	EXPECT_EQ(cfg.exec.max_inline_output, 32768);
 	EXPECT_EQ(cfg.exec.max_session_output, 1048576);
 	EXPECT_EQ(cfg.exec.kill_grace_ms, 500);
@@ -178,6 +179,7 @@ model = "doubao-seedance-2-0-fast-260128"
 shell = "/bin/zsh"
 default_timeout_ms = 0
 yield_time_ms = 2500
+max_wait_ms = 1200000
 max_inline_output = 16384
 max_session_output = 524288
 kill_grace_ms = 750
@@ -242,6 +244,7 @@ include = ["config.toml", "output"]
 	EXPECT_STREQ(cfg.exec.shell, "/bin/zsh");
 	EXPECT_EQ(cfg.exec.default_timeout_ms, 0);
 	EXPECT_EQ(cfg.exec.yield_time_ms, 2500);
+	EXPECT_EQ(cfg.exec.max_wait_ms, 1200000);
 	EXPECT_EQ(cfg.exec.max_inline_output, 16384);
 	EXPECT_EQ(cfg.exec.max_session_output, 524288);
 	EXPECT_EQ(cfg.exec.kill_grace_ms, 750);
@@ -670,4 +673,16 @@ TEST_F(ConfigTest, McpProtocolVersionIsLoadedAndValidated)
 	struct config_validation_error error = {};
 	EXPECT_LT(config_validate_text("[[mcp.servers]]\nname = \"bad\"\ntransport = \"stdio\"\n"
 		"command = \"server\"\nprotocol_version = \"2099-01-01\"\n", &error), 0);
+}
+
+TEST(ConfigValidationTest, ProcessMaximumWaitRequiresPositiveInteger)
+{
+	struct config_validation_error error = {};
+	for (const char *value : {"0", "-1", "1.5", "\"600000\"", "2147483648"}) {
+		std::string text = "[exec]\nmax_wait_ms = " + std::string(value) + "\n";
+		EXPECT_EQ(config_validate_text(text.c_str(), &error), MORPH_ERR_CONFIG);
+		EXPECT_STREQ(error.path, "exec.max_wait_ms");
+	}
+	EXPECT_EQ(config_validate_text("[exec]\nmax_wait_ms = 600000\n", &error), 0);
+	EXPECT_EQ(config_validate_text("[exec]\nmax_wait_ms = 1200000\n", &error), 0);
 }

@@ -887,9 +887,12 @@ static int session_collect(struct process_manager *manager, const char *session_
 {
 	uint64_t deadline;
 	int rc = 0;
-	if (!manager || !session_id || !snapshot || wait_ms > 60000)
+	if (!manager || !session_id || !snapshot)
 		MORPH_RETURN(-EINVAL);
-	deadline = process_now_ms() + wait_ms;
+	uint64_t now = process_now_ms();
+	if (wait_ms > UINT64_MAX - now)
+		MORPH_RETURN(-EOVERFLOW);
+	deadline = now + wait_ms;
 	pthread_mutex_lock(&manager->mutex);
 	for (;;) {
 		struct process_session *session = find_session(manager, session_id);

@@ -368,7 +368,7 @@ Workspace, task, and configuration tools include:
 Shell and process tools include:
 
 	exec		Run a shell command with workdir, timeout, and sessions.
-	process		Poll, write to, interrupt, or kill an exec session.
+	process		List, poll, wait, write, interrupt, or kill exec sessions.
 	request_permissions  Ask for the smallest additional filesystem access.
 
 The exec tool runs shell commands; the process tool manages the resulting
@@ -379,6 +379,7 @@ table:
 	shell = "/bin/bash"
 	default_timeout_ms = 120000
 	yield_time_ms = 10000
+	max_wait_ms = 600000
 	max_inline_output = 32768
 	max_session_output = 1048576
 	kill_grace_ms = 500
@@ -407,7 +408,21 @@ SSL_CERT_DIR, and CURL_CA_BUNDLE are inherited automatically; other
 non-essential variables are still filtered.
 
 Commands that outlive yield_time_ms return a session_id.  Continue them with
-the process tool, whose action is one of poll, write, interrupt, or kill.
+the process tool, whose action is one of list, poll, wait, write, interrupt,
+or kill. For poll and wait, the model chooses an integer wait_ms in the inclusive
+range 0 to exec.max_wait_ms. The maximum defaults to 600000 ms (10 minutes);
+omitting wait_ms uses 30000 ms (30 seconds), or the configured maximum if lower.
+Zero reads immediately. A completed process returns promptly; wait collects
+through intermediate output until exit or the collection budget expires.
+
+exec.max_wait_ms accepts a positive integer up to 2147483647. The tool schema
+advertises the configured range; invalid explicit wait_ms values are rejected
+rather than clamped, before writes or signals. Results report wait_ms and
+max_wait_ms. This is a collection budget, separate from the command's timeout_ms
+and exec.default_timeout_ms. Increasing it does not extend command execution.
+Restart Morph after changing the active config. Older versions used a fixed
+60000 ms maximum; a wait_ms validation error alone does not mean the child
+command failed. Inspect its session status, exit code, and output.
 
 Long-term trusted directories belong in a permission profile, which adds
 trusted roots at startup and never weakens the OS sandbox:

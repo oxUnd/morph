@@ -1,6 +1,7 @@
 # Current Morph Configuration
 
-Read this for setup, model settings, thinking, recaps, host execution, or config changes.
+Read this for setup, model settings, thinking, recaps, process waits, host execution,
+or config changes.
 The matching-version manual remains the full reference. In a source checkout,
 check `config.toml.example` and `src/config/schema.c` before proposing unfamiliar keys.
 
@@ -125,6 +126,39 @@ the selected adapter rather than copying a different provider's thinking syntax.
 - Thinking is shown as a one-line live preview, with an ellipsis for hidden text.
   Ctrl+O opens current-turn reasoning and tool details; Ctrl+O or Esc returns to
   the conversation. Do not describe the preview as discarded reasoning.
+
+## Process Wait Budgets
+
+Configure the maximum duration of an individual `process` collection call:
+
+```toml
+[exec]
+max_wait_ms = 600000
+```
+
+For `poll` and `wait`, the model chooses an integer `wait_ms` in the inclusive
+range `0` to `max_wait_ms`. The maximum defaults to 600000 ms (10 minutes).
+This does not make every call wait 10 minutes: omitting `wait_ms` uses 30000 ms
+(30 seconds), or the configured maximum if lower. `wait_ms = 0` reads immediately;
+`wait_ms = 120000` waits up to 2 minutes. A completed process returns promptly.
+The `wait` action continues collecting through intermediate output until exit
+or its collection budget expires.
+
+`max_wait_ms` accepts a positive integer up to 2147483647. For example, setting
+it to 1200000 permits waits up to 20 minutes. The tool schema advertises the
+configured range. Explicit values outside that range, fractions, and non-numbers
+are rejected rather than clamped; validation happens before writes or signals.
+Results report the effective `wait_ms` and configured `max_wait_ms`.
+
+This collection budget is separate from the command's execution timeout
+(`exec` argument `timeout_ms`, defaulted from `exec.default_timeout_ms`). Increasing
+the collection maximum does not extend a command's execution timeout. Changes
+require a normal Morph restart with the active config.
+
+If a `process` call fails immediately with a `wait_ms` range error, inspect its
+arguments and the installed version's advertised range. Older versions used a
+fixed 60000 ms maximum. This validation error does not establish that the child
+command failed; inspect its session status, exit code, and output.
 
 ## Explicit Host Execution
 

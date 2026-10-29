@@ -530,6 +530,7 @@ void config_set_defaults(struct morph_log *logger, struct config *cfg)
 	strncpy(cfg->exec.shell, "/bin/bash", sizeof(cfg->exec.shell) - 1);
 	cfg->exec.default_timeout_ms = 120000;
 	cfg->exec.yield_time_ms = 10000;
+	cfg->exec.max_wait_ms = EXEC_MAX_WAIT_MS_DEFAULT;
 	cfg->exec.max_inline_output = 32768;
 	cfg->exec.max_session_output = 1048576;
 	cfg->exec.kill_grace_ms = 500;
@@ -986,6 +987,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 		CFG_STR(exec, "shell", cfg->exec.shell);
 		CFG_INT(exec, "default_timeout_ms", cfg->exec.default_timeout_ms);
 		CFG_INT(exec, "yield_time_ms", cfg->exec.yield_time_ms);
+		CFG_INT(exec, "max_wait_ms", cfg->exec.max_wait_ms);
 		CFG_INT(exec, "max_inline_output", cfg->exec.max_inline_output);
 		CFG_INT(exec, "max_session_output", cfg->exec.max_session_output);
 		CFG_INT(exec, "kill_grace_ms", cfg->exec.kill_grace_ms);
@@ -1464,9 +1466,10 @@ void config_print(const struct config *cfg)
 		 cfg->react.hitl_enabled, cfg->react.hitl_auto_approve_readonly,
 		 cfg->react.hitl_tools_count);
 	log_info(cfg ? cfg->logger : NULL,
-		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d "
+		 "  [exec] shell=%s timeout_ms=%d yield_ms=%d max_wait_ms=%d "
 		 "inline=%d session=%d grace_ms=%d network=%d allow_host_execution=%d",
 		 cfg->exec.shell, cfg->exec.default_timeout_ms, cfg->exec.yield_time_ms,
+		 cfg->exec.max_wait_ms,
 		 cfg->exec.max_inline_output, cfg->exec.max_session_output, cfg->exec.kill_grace_ms,
 		 cfg->exec.network, cfg->exec.allow_host_execution);
 	for (int i = 0; i < cfg->react.disabled_tools_count; i++)

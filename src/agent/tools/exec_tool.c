@@ -10,12 +10,14 @@
 #include "sandbox/tool_paths.h"
 #include "path_policy.h"
 #include "util/bash_parse.h"
+#include "util/buf.h"
 #include "util/error.h"
 #include "util/id.h"
 #include "cJSON.h"
 
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -33,6 +35,7 @@ struct exec_runtime {
 	struct tool_context *tool_context;
 	uint64_t default_timeout_ms;
 	uint64_t default_yield_time_ms;
+	uint64_t max_wait_ms;
 	int network;
 	int allow_host_execution;
 };
@@ -85,6 +88,8 @@ static int exec_runtime_create(struct tool_context *tctx,
 		(uint64_t)exec_config->default_timeout_ms : EXEC_DEFAULT_TIMEOUT_MS;
 	runtime->default_yield_time_ms = exec_config ?
 		(uint64_t)exec_config->yield_time_ms : EXEC_DEFAULT_YIELD_MS;
+	runtime->max_wait_ms = exec_config && exec_config->max_wait_ms > 0 ?
+		(uint64_t)exec_config->max_wait_ms : EXEC_MAX_WAIT_MS_DEFAULT;
 	runtime->network = exec_config ? exec_config->network : 0;
 	runtime->allow_host_execution = exec_config ? exec_config->allow_host_execution : 0;
 	rc = pthread_mutex_init(&runtime->mutex, NULL);
@@ -650,6 +655,31 @@ static int process_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error(result, "process_not_found", "Process not found in this session.");
 		return rc;
 	}
+	memset(&snapshot, 0, sizeof(snapshot));
+	struct process_cursor cursor;
+	const char *cursor_text = json_string(root, "cursor");
+	const cJSON *wait_arg = cJSON_GetObjectItemCaseSensitive(root, "wait_ms");
+	uint64_t default_wait_ms = runtime->max_wait_ms < 30000 ? runtime->max_wait_ms : 30000;
+	double requested_wait_ms = wait_arg ? wait_arg->valuedouble : (double)default_wait_ms;
+	if (wait_arg && (!cJSON_IsNumber(wait_arg) || !isfinite(requested_wait_ms) ||
+	    requested_wait_ms < 0 || requested_wait_ms > (double)runtime->max_wait_ms ||
+	    floor(requested_wait_ms) != requested_wait_ms)) {
+		cJSON_Delete(root);
+		(void)tool_result_errorf(result, "invalid_request",
+			"wait_ms must be an integer from 0 to %llu; omit it to wait up to %llu ms",
+			(unsigned long long)runtime->max_wait_ms,
+			(unsigned long long)default_wait_ms);
+		MORPH_RETURN(-EINVAL);
+	}
+	int collects = !strcmp(action, "wait") || !strcmp(action, "poll");
+	uint64_t wait_ms = collects ? (uint64_t)requested_wait_ms : 0;
+	int used = 0;
+	if (cursor_text && (sscanf(cursor_text, "%zu:%zu%n", &cursor.stdout_offset,
+				   &cursor.stderr_offset, &used) != 2 ||
+			    cursor_text[used] != '\0')) {
+		cJSON_Delete(root);
+		MORPH_RETURN(-EINVAL);
+	}
 	if (strcmp(action, "write") == 0)
 		rc = process_session_write(runtime->manager, session_id,
 			input ? input : "", input ? strlen(input) : 0);
@@ -670,26 +700,6 @@ static int process_run(const char *args_json, struct tool_result *result,
 		(void)tool_result_error(result, code, strerror(-rc));
 		return rc;
 	}
-	memset(&snapshot, 0, sizeof(snapshot));
-	struct process_cursor cursor;
-	const char *cursor_text = json_string(root, "cursor");
-	const cJSON *wait_arg = cJSON_GetObjectItemCaseSensitive(root, "wait_ms");
-	if (wait_arg && (!cJSON_IsNumber(wait_arg) || wait_arg->valuedouble < 0 ||
-			 wait_arg->valuedouble > 60000 ||
-			 wait_arg->valuedouble != (double)wait_arg->valueint)) {
-		cJSON_Delete(root);
-		(void)tool_result_error(result, "invalid_request",
-					"wait_ms must be an integer from 0 to 60000");
-		MORPH_RETURN(-EINVAL);
-	}
-	uint64_t wait_ms = json_u64(root, "wait_ms", 30000);
-	int used = 0;
-	if (cursor_text && (sscanf(cursor_text, "%zu:%zu%n", &cursor.stdout_offset,
-				   &cursor.stderr_offset, &used) != 2 ||
-			    cursor_text[used] != '\0')) {
-		cJSON_Delete(root);
-		MORPH_RETURN(-EINVAL);
-	}
 	if (!strcmp(action, "wait"))
 		rc = process_session_wait(runtime->manager, session_id,
 			cursor_text ? &cursor : NULL, wait_ms, process_wait_cancelled,
@@ -702,13 +712,20 @@ static int process_run(const char *args_json, struct tool_result *result,
 		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
 		if (!rc && snapshot.state >= PROCESS_EXITED)
 			exec_jobs_observed(runtime->jobs, session_id);
-		if (rc == 0 && result->data) {
+		cJSON *data = cJSON_GetObjectItemCaseSensitive(result->envelope, "data");
+		if (rc == 0 && cJSON_IsObject(data)) {
 			int empty = (!snapshot.stdout_text || !snapshot.stdout_text[0]) &&
 				    (!snapshot.stderr_text || !snapshot.stderr_text[0]);
-			cJSON_AddBoolToObject(result->data, "empty_poll",
+			cJSON_AddBoolToObject(data, "empty_poll",
 					      !strcmp(action, "poll") && empty &&
 						  snapshot.state < PROCESS_EXITED);
-			cJSON_AddNumberToObject(result->data, "wait_ms", (double)wait_ms);
+			cJSON_AddNumberToObject(data, "wait_ms", (double)wait_ms);
+			cJSON_AddNumberToObject(data, "max_wait_ms", (double)runtime->max_wait_ms);
+			if (!strcmp(action, "wait") && snapshot.state < PROCESS_EXITED)
+				cJSON_AddStringToObject(data, "next_action",
+					"The process is still running. Wait again with action=wait "
+					"and the same session_id; wait_ms does not set "
+					"the process timeout.");
 		}
 	}
 	process_snapshot_cleanup(&snapshot);
@@ -800,26 +817,53 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	process_spec.origin = TOOL_ORIGIN_BUILTIN;
 	process_spec.name = "process";
 	process_spec.title = "Manage process";
-	process_spec.description =
-	    "List this session processes, wait for exit, poll output, write to, interrupt, or kill. "
-	    "Use action=wait for builds/tests: it waits for exit despite intermediate output. "
-	    "Use poll for interactive output. Both default to wait_ms=30000 (0-60000); "
-	    "wait_ms=0 reads immediately. Pass next_cursor as cursor for incremental output. "
-	    "Never start shell sleep or another delay tool just to wait for a process. "
-	    "Explicit cursors are replayable; output files contain redacted retained windows "
-	    "and are removed at runtime shutdown. Cancelling a wait does not stop the process.";
-	process_spec.input_schema =
-	    "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"action\":{"
-	    "\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\",\"write\",\"interrupt\",\"kill\"]},\"input\":{"
-	    "\"type\":\"string\"},\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":"
-	    "60000},\"cursor\":{\"type\":\"string\"}},\"required\":[\"action\"],"
-	    "\"additionalProperties\":false}";
+	morph_buf_t description = {0};
+	morph_buf_t schema = {0};
+	rc = morph_buf_init(&description, 1024);
+	if (rc == 0)
+		rc = morph_buf_init(&schema, 1024);
+	uint64_t default_wait_ms = runtime->max_wait_ms < 30000 ? runtime->max_wait_ms : 30000;
+	if (rc == 0)
+		rc = morph_buf_printf(&description,
+			"List this session processes, wait for exit, poll output, write to, "
+			"interrupt, "
+			"or kill. Use action=wait for builds/tests: it waits for exit despite "
+			"intermediate output. Use poll for interactive output. Choose wait_ms "
+			"from 0 to %llu ms; omit it for %llu ms. Zero reads immediately. "
+			"This per-call wait budget is not the process timeout. "
+			"If status is running, "
+			"wait again on the same session_id. Pass next_cursor as cursor for "
+			"incremental output. Never use shell sleep just to wait for a process. "
+			"Explicit cursors are replayable. Output files are redacted retained "
+			"windows removed at runtime shutdown. "
+			"Cancelling a wait leaves the process running.",
+			(unsigned long long)runtime->max_wait_ms,
+			(unsigned long long)default_wait_ms);
+	if (rc == 0)
+		rc = morph_buf_printf(&schema,
+			"{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},"
+			"\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\","
+			"\"write\",\"interrupt\",\"kill\"]},\"input\":{\"type\":\"string\"},"
+			"\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":%llu,"
+			"\"default\":%llu,\"description\":\"Choose this per-call wait budget in "
+			"milliseconds. Zero reads immediately. "
+			"This does not set the command timeout.\"},"
+			"\"cursor\":{\"type\":\"string\"}},\"required\":[\"action\"],"
+			"\"additionalProperties\":false}",
+			(unsigned long long)runtime->max_wait_ms,
+			(unsigned long long)default_wait_ms);
+	process_spec.description = morph_buf_cstr(&description);
+	process_spec.input_schema = morph_buf_cstr(&schema);
 	process_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	process_spec.exec = process_run;
 	process_spec.user_data = runtime;
 	process_spec.user_data_destroy = exec_runtime_destroy;
 	process_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
-	rc = tool_register(reg, &process_spec);
+	process_spec.timeout_seconds = (int)((runtime->max_wait_ms + 999) / 1000) + 30;
+	if (rc == 0)
+		rc = tool_register(reg, &process_spec);
+	morph_buf_cleanup(&description);
+	morph_buf_cleanup(&schema);
 	if (rc != 0) {
 		/* The exec registration owns the other runtime reference. */
 		exec_runtime_destroy(runtime);

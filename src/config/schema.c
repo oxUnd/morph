@@ -122,6 +122,7 @@ static const struct schema_entry schema[] = {
 	STRING("exec.shell", PATH_MAX - 1),
 	INT("exec.default_timeout_ms", 0, INT_MAX),
 	INT("exec.yield_time_ms", 0, INT_MAX),
+	INT("exec.max_wait_ms", 1, INT_MAX),
 	INT("exec.max_inline_output", 1024, INT_MAX),
 	INT("exec.max_session_output", 1024, INT_MAX),
 	INT("exec.kill_grace_ms", 0, INT_MAX),

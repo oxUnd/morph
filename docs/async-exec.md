@@ -51,11 +51,22 @@ The `process` tool supports:
 | `interrupt` | Signal the process group, then return its current snapshot |
 | `kill` | Request process-group termination, then return its current snapshot |
 
-`poll` and `wait` default to `wait_ms=30000`, with a maximum of 60000. Explicit
-`wait_ms=0` performs a nonblocking read. Pass the previous `next_cursor` as
+For `poll` and `wait`, the model chooses an integer `wait_ms` in the inclusive
+range `0` to `[exec].max_wait_ms`. The configured maximum defaults to 600000 ms
+(10 minutes); omitting `wait_ms` still uses 30000 ms, or the configured maximum
+if it is smaller. The tool schema and description advertise the actual range.
+Results report `wait_ms` and `max_wait_ms`. This is a collection budget, not the
+command timeout: a still-running result should be waited on again using the same
+session ID. Invalid types, negative, fractional and out-of-range budgets are
+rejected before any write or signal is applied. Explicit `wait_ms=0` performs a
+nonblocking read. Pass the previous `next_cursor` as
 `cursor` for replayable incremental output. UI inspection and completion notices
 do not advance this cursor. Cancelling a wait leaves the process running;
 stopping a process is a separate action.
+
+For example, `[exec] max_wait_ms = 1200000` permits the model to choose waits up
+to 20 minutes. The process tool's own timeout reserves time beyond that configured
+maximum so it does not prematurely end a valid long wait. Waits remain cancellable.
 
 Before accepting a final answer, the agent collects unobserved finite commands
 started by its current turn. It waits in the runtime without additional model
