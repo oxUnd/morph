@@ -21,6 +21,8 @@ Sandbox, platform policy, extension manifests, and nested-macOS testing: [docs/s
 
 Bounded file reads, pagination, and encoding handling: [docs/file-read.md](docs/file-read.md).
 
+Sorted directory listing and bounded pagination: [docs/file-list.md](docs/file-list.md).
+
 ## Build
 
 Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libffi, libwebp, libxml2, and

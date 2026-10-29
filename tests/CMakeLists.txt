@@ -31,6 +31,7 @@ set(TEST_SOURCES
 	test_dynamic_tools.cpp
 	test_tool.cpp
 	test_file_read.cpp
+	test_file_list.cpp
 	test_plan.cpp
 	test_patch.cpp
 	test_apply_patch_codex.cpp

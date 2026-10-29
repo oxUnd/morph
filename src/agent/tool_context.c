@@ -472,17 +472,17 @@ static int add_scoped_path_grant(struct tool_context *tctx,
 	return 0;
 }
 
-static int path_exists_for_read(enum tool_path_op op, const char *path)
+static int path_check_for_read(enum tool_path_op op, const char *path)
 {
 	struct stat st;
 
 	if (!path_op_is_read(op))
-		return 1;
+		return 0;
 	if (stat(path, &st) != 0)
-		return 0;
+		MORPH_RETURN(-errno);
 	if (op == TOOL_PATH_LIST && !S_ISDIR(st.st_mode))
-		return 0;
-	return 1;
+		MORPH_RETURN(-ENOTDIR);
+	return 0;
 }
 
 struct tool_context *tool_context_create(struct morph_log *logger, const char *workdir,
@@ -795,8 +795,9 @@ int tool_context_authorize_path(struct tool_context *tctx,
 	if (rc < 0)
 		return rc;
 
-	if (path_op_is_read(op) && !path_exists_for_read(op, resolved))
-		MORPH_RETURN(-ENOENT);
+	rc = path_check_for_read(op, resolved);
+	if (rc < 0)
+		MORPH_RETURN(rc);
 
 	if (policy_path_is_allowed(tctx, op, resolved))
 		return 0;
