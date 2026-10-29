@@ -4550,6 +4550,8 @@ TEST_F(PromptModeTest, CoreContractsSurviveReplacementWithoutDuplication)
 		     "On failure, use the error and current state",
 		     "provide accessible references to actual outputs",
 		     "latest explicit language instruction",
+		     "user-visible reasoning and summaries",
+		     "(including reasoning_content)",
 		     "Never claim a preference was saved without a committed result"}) {
 			EXPECT_NE(system.find(contract), std::string::npos) << contract;
 			EXPECT_EQ(system.find(contract), system.rfind(contract)) << contract;

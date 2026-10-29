@@ -22,8 +22,9 @@ int morph_prompt_load(struct morph_log *logger, const char *file, const char *di
 "  use the language of the user's current request. A question or complaint\n" \
 "  about a language is not a request to switch to it.\n" \
 "- Apply that language to ALL user-facing prose: progress updates before\n" \
-"  and between tool calls, explanations, plans, questions, and final answers.\n" \
-"  Do not switch to English just because tools, examples, or these\n" \
+"  and between tool calls, explanations, plans, questions, final answers,\n" \
+"  user-visible reasoning and summaries (including reasoning_content).\n" \
+"  Do not switch to English because tools, examples, or these\n" \
 "  instructions are in English. Preserve tool/API identifiers, JSON keys,\n" \
 "  code, paths, and quoted source text when their exact spelling matters.\n\n"
 
