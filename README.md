@@ -19,6 +19,8 @@ A terminal-native multimodal AI agent written in pure C. Orchestrates text, imag
 
 Sandbox, platform policy, extension manifests, and nested-macOS testing: [docs/sandbox.md](docs/sandbox.md).
 
+Bounded file reads, pagination, and encoding handling: [docs/file-read.md](docs/file-read.md).
+
 ## Build
 
 Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libffi, libwebp, libxml2, and

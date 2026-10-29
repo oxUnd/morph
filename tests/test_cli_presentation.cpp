@@ -2216,3 +2216,34 @@ TEST_F(CliPresentationTest, SlashHeadingDoesNotChangePlainOrJsonOutput)
 	cli_presentation_command_input(&ctx, "/share");
 	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\n/share\n\n");
 }
+
+TEST_F(CliPresentationTest, FileReadDetailsPrioritizeContentAndContinuation)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	cJSON *call = cJSON_Parse(
+		"{\"tool\":\"file_read\",\"tool_call_id\":\"read\","
+		"\"args\":{\"file_path\":\"sample.txt\"}}");
+	cJSON *response = cJSON_CreateObject();
+	cJSON_AddStringToObject(response, "tool", "file_read");
+	cJSON_AddStringToObject(response, "tool_call_id", "read");
+	cJSON_AddStringToObject(response, "result",
+		"{\"ok\":true,\"data\":{\"file_path\":\"sample.txt\","
+		"\"version\":\"INTERNAL_VERSION_MARKER\",\"encoding\":\"utf-8\","
+		"\"returned_lines\":2,\"truncated\":true,\"next_byte_offset\":123,"
+		"\"content\":\"FIRST_FILE_LINE\\nLAST_FILE_LINE\\n\"}}");
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_TOOL, "tool.call", "begin", call);
+	Emit(MORPH_EVENT_TOOL, "tool.result", "end", response);
+	(void)testing::internal::GetCapturedStdout();
+	testing::internal::CaptureStdout();
+	cli_transcript_toggle(&ctx);
+	std::string expanded = testing::internal::GetCapturedStdout();
+	EXPECT_NE(expanded.find("FIRST_FILE_LINE"), std::string::npos);
+	EXPECT_NE(expanded.find("LAST_FILE_LINE"), std::string::npos);
+	EXPECT_NE(expanded.find("2 returned lines"), std::string::npos);
+	EXPECT_NE(expanded.find("More content at byte offset 123"), std::string::npos);
+	EXPECT_EQ(expanded.find("INTERNAL_VERSION_MARKER"), std::string::npos);
+	cJSON_Delete(call);
+	cJSON_Delete(response);
+}

@@ -333,7 +333,7 @@ TOOLS AND PERMISSIONS					*morph-tools*
 
 Built-in read-only tools include:
 
-	file_read	File preview.
+	file_read	Bounded UTF-8 reads with lossless byte-cursor continuation.
 	file_list	Directory listing.
 	file_info	File metadata.
 	img_info	Image metadata.

@@ -693,6 +693,20 @@ static void print_details(struct cli_context *ctx, const struct transcript_tool 
 			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stdout_truncated")) ||
 			    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "stderr_truncated")))
 				print_lines(ctx, "Output truncated by the tool");
+		} else if (strcmp(tool->name, "file_read") == 0 &&
+			   cJSON_IsString(cJSON_GetObjectItemCaseSensitive(data, "content"))) {
+			const cJSON *count = cJSON_GetObjectItemCaseSensitive(data, "returned_lines");
+			const cJSON *next = cJSON_GetObjectItemCaseSensitive(data, "next_byte_offset");
+
+			printf(ctx, "\n");
+			if (cJSON_IsNumber(count))
+				printf(ctx, ANSI_DIM "    %.0f returned lines\n" ANSI_RESET,
+				       count->valuedouble);
+			if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(data, "truncated")) &&
+			    cJSON_IsNumber(next))
+				printf(ctx, ANSI_DIM "    More content at byte offset %.0f\n" ANSI_RESET,
+				       next->valuedouble);
+			print_lines(ctx, json_string(data, "content"));
 		} else {
 			print_payload(ctx, tool->result);
 		}

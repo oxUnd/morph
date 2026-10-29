@@ -131,3 +131,16 @@ TEST(Utf8TerminalSanitizeTest, DropsIncompleteUtf8AtStreamEnd)
 	EXPECT_STREQ(morph_buf_cstr(&output), "valid ");
 	morph_buf_cleanup(&output);
 }
+
+TEST(Utf8DecodeTest, RejectsNonScalarCodepoints)
+{
+	unsigned cp = 0;
+	size_t count = 0;
+
+	for (const char *input : {"\xed\xa0\x80", "\xed\xbf\xbf",
+				  "\xf4\x90\x80\x80", "\xf7\xbf\xbf\xbf"})
+		EXPECT_EQ(utf8_decode_codepoint(input, strlen(input), &cp, &count), 0);
+	EXPECT_EQ(utf8_decode_codepoint("\xf4\x8f\xbf\xbf", 4, &cp, &count), 1);
+	EXPECT_EQ(cp, 0x10ffffu);
+	EXPECT_EQ(count, 4u);
+}

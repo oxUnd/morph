@@ -1,222 +1,502 @@
 #include "file_read.h"
 #include "agent/tool_context.h"
-#include "util/log.h"
-#include "util/file.h"
+#include "agent/tool_runtime.h"
 #include "util/buf.h"
 #include "util/error.h"
-#include "cJSON.h"
+#include "util/utf8.h"
 #include <errno.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
+#include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-#define BINARY_CHECK_SIZE 4096
-#define MAX_LINE_LENGTH 65536
-#define MAX_CONTENT_SIZE (10 * 1024 * 1024)
+#define FILE_READ_DEFAULT_BYTES (50 * 1024)
+#define FILE_READ_MAX_BYTES (256 * 1024)
+#define FILE_READ_LINE_BYTES (16 * 1024)
+#define FILE_READ_MAX_INTEGER UINT64_C(9007199254740991)
 
-static int buf_append(morph_buf_t *b, const char *s, size_t n)
+struct read_options {
+	const char *path;
+	const char *expected_version;
+	uint64_t offset;
+	uint64_t byte_offset;
+	uint64_t limit;
+	uint64_t max_bytes;
+	int byte_mode;
+};
+
+struct file_reader {
+	int fd;
+	const struct http_control *control;
+	unsigned char chunk[BUFSIZ + 4];
+	size_t begin;
+	size_t end;
+	uint64_t position;
+	uint64_t size;
+};
+
+struct read_page {
+	morph_buf_t content;
+	uint64_t line;
+	uint64_t returned;
+	uint64_t line_bytes;
+	int known_lines;
+	int starts_mid_line;
+	int binary;
+	const char *encoding;
+	const char *reason;
+};
+
+static int read_integer(cJSON *root, const char *name, uint64_t min,
+			uint64_t max, uint64_t *value)
 {
-	if (!n)
+	cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
+
+	if (!item)
 		return 0;
-	if (b->len >= MAX_CONTENT_SIZE ||
-	    n > MAX_CONTENT_SIZE - b->len - 1)
-		MORPH_RETURN(-EFBIG);
-	return morph_buf_append(b, s, n);
+	if (!cJSON_IsNumber(item) || !(item->valuedouble >= (double)min) ||
+	    !(item->valuedouble <= (double)max))
+		MORPH_RETURN(-EINVAL);
+	uint64_t parsed = (uint64_t)item->valuedouble;
+	if ((double)parsed != item->valuedouble)
+		MORPH_RETURN(-EINVAL);
+	*value = parsed;
+	return 0;
 }
 
-static int is_binary(const char *data, size_t len)
+static int read_options_parse(cJSON *root, struct read_options *opts)
 {
-	size_t check = len < BINARY_CHECK_SIZE ? len : BINARY_CHECK_SIZE;
-	for (size_t i = 0; i < check; i++) {
-		if ((unsigned char)data[i] == 0)
-			return 1;
+	cJSON *path = cJSON_GetObjectItemCaseSensitive(root, "file_path");
+	cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "expected_version");
+
+	if (!cJSON_IsObject(root) || !cJSON_IsString(path) ||
+	    !path->valuestring[0] || utf8valid(path->valuestring) ||
+	    (version && !cJSON_IsString(version)))
+		MORPH_RETURN(-EINVAL);
+	opts->path = path->valuestring;
+	opts->expected_version = version ? version->valuestring : NULL;
+	opts->limit = 1000;
+	opts->max_bytes = FILE_READ_DEFAULT_BYTES;
+	opts->byte_mode = cJSON_HasObjectItem(root, "byte_offset");
+	if (opts->byte_mode && cJSON_HasObjectItem(root, "offset"))
+		MORPH_RETURN(-EINVAL);
+	if (read_integer(root, "offset", 0, FILE_READ_MAX_INTEGER, &opts->offset) < 0 ||
+	    read_integer(root, "byte_offset", 0, FILE_READ_MAX_INTEGER,
+			 &opts->byte_offset) < 0 ||
+	    read_integer(root, "limit", 1, 1000000, &opts->limit) < 0 ||
+	    read_integer(root, "max_lines", 1, 1000000, &opts->limit) < 0 ||
+	    read_integer(root, "max_bytes", 4, FILE_READ_MAX_BYTES, &opts->max_bytes) < 0)
+		MORPH_RETURN(-EINVAL);
+	return 0;
+}
+
+/* Keep read-ahead fixed, including when a single source line is enormous. */
+static int reader_fill(struct file_reader *reader)
+{
+	size_t available = reader->end - reader->begin;
+	if (available >= 4 || reader->position + available == reader->size)
+		return 0;
+	int rc = http_wait_cancelable(reader->control, 0);
+	if (rc < 0)
+		MORPH_RETURN(rc);
+	memmove(reader->chunk, reader->chunk + reader->begin, available);
+	reader->begin = 0;
+	reader->end = available;
+	while (reader->end < 4 && reader->position + reader->end < reader->size) {
+		size_t count = sizeof(reader->chunk) - reader->end;
+		uint64_t remaining = reader->size - reader->position - reader->end;
+		if (remaining < count)
+			count = (size_t)remaining;
+		ssize_t n = read(reader->fd, reader->chunk + reader->end, count);
+		if (n < 0) {
+			if (errno == EINTR) {
+				rc = http_wait_cancelable(reader->control, 0);
+				if (rc < 0)
+					MORPH_RETURN(rc);
+				continue;
+			}
+			MORPH_RETURN(-errno);
+		}
+		if (n == 0)
+			MORPH_RETURN(-ESTALE);
+		reader->end += (size_t)n;
 	}
 	return 0;
+}
+
+static void reader_consume(struct file_reader *reader, size_t count)
+{
+	reader->begin += count;
+	reader->position += count;
+}
+
+static int read_version(const struct stat *st, morph_buf_t *version)
+{
+#ifdef __APPLE__
+	const struct timespec modified = st->st_mtimespec;
+	const struct timespec changed = st->st_ctimespec;
+#else
+	const struct timespec modified = st->st_mtim;
+	const struct timespec changed = st->st_ctim;
+#endif
+	morph_buf_reset(version);
+	MORPH_RETURN(morph_buf_printf(version, "%ju:%ju:%jd:%jd:%ld:%jd:%ld",
+		(uintmax_t)st->st_dev, (uintmax_t)st->st_ino,
+		(intmax_t)st->st_size, (intmax_t)modified.tv_sec, modified.tv_nsec,
+		(intmax_t)changed.tv_sec, changed.tv_nsec));
+}
+
+static int reader_start(struct file_reader *reader, const struct read_options *opts,
+			struct read_page *page)
+{
+	int rc = reader_fill(reader);
+	if (rc < 0)
+		MORPH_RETURN(rc);
+	const unsigned char *p = reader->chunk;
+	size_t n = reader->end;
+
+	page->encoding = "utf-8";
+	if ((n >= 4 && !memcmp(p, "\x00\x00\xfe\xff", 4)) ||
+	    (n >= 4 && !memcmp(p, "\xff\xfe\x00\x00", 4))) {
+		page->encoding = "utf-32";
+		page->binary = 1;
+	} else if ((n >= 2 && !memcmp(p, "\xff\xfe", 2)) ||
+		   (n >= 2 && !memcmp(p, "\xfe\xff", 2))) {
+		page->encoding = "utf-16";
+		page->binary = 1;
+	}
+	if (page->binary)
+		return 0;
+	if (!opts->byte_mode || opts->byte_offset == 0) {
+		page->known_lines = 1;
+		if (n >= 3 && !memcmp(p, "\xef\xbb\xbf", 3))
+			reader_consume(reader, 3);
+		return 0;
+	}
+	if (opts->byte_offset > reader->size)
+		MORPH_RETURN(-EINVAL);
+	unsigned char previous;
+	ssize_t count = pread(reader->fd, &previous, 1, (off_t)opts->byte_offset - 1);
+	if (count < 0)
+		MORPH_RETURN(-errno);
+	if (count != 1)
+		MORPH_RETURN(-ESTALE);
+	page->starts_mid_line = previous != '\n';
+	if (opts->byte_offset == 3 && n >= 3 && !memcmp(p, "\xef\xbb\xbf", 3))
+		page->starts_mid_line = 0;
+	if (lseek(reader->fd, (off_t)opts->byte_offset, SEEK_SET) < 0)
+		MORPH_RETURN(-errno);
+	reader->begin = 0;
+	reader->end = 0;
+	reader->position = opts->byte_offset;
+	return 0;
+}
+
+static int reader_skip_lines(struct file_reader *reader, uint64_t offset,
+			     struct read_page *page)
+{
+	int partial = 0;
+
+	while (page->line < offset && reader->position < reader->size) {
+		int rc = reader_fill(reader);
+		if (rc < 0)
+			MORPH_RETURN(rc);
+		const unsigned char *p = reader->chunk + reader->begin;
+		size_t available = reader->end - reader->begin;
+		const unsigned char *newline = memchr(p, '\n', available);
+		size_t count = newline ? (size_t)(newline - p) + 1 : available;
+		reader_consume(reader, count);
+		partial = newline == NULL;
+		if (newline)
+			page->line++;
+	}
+	if (reader->position == reader->size && partial)
+		page->line++;
+	return 0;
+}
+
+static int reader_text(struct file_reader *reader, const struct read_options *opts,
+			struct read_page *page)
+{
+	while (reader->position < reader->size) {
+		if (page->returned >= opts->limit) {
+			page->reason = "line_limit";
+			break;
+		}
+		if (page->content.len >= opts->max_bytes) {
+			page->reason = "max_bytes";
+			break;
+		}
+		int rc = reader_fill(reader);
+		if (rc < 0)
+			MORPH_RETURN(rc);
+		const char *p = (const char *)reader->chunk + reader->begin;
+		unsigned cp;
+		size_t count;
+		if (*p == '\0') {
+			page->binary = 1;
+			page->encoding = "binary";
+			break;
+		}
+		if (!utf8_decode_codepoint(p, reader->end - reader->begin, &cp, &count)) {
+			/* A caller's cursor must point to a complete UTF-8 character. */
+			if (opts->byte_mode && reader->position == opts->byte_offset &&
+			    ((unsigned char)*p & 0xc0) == 0x80)
+				MORPH_RETURN(-EINVAL);
+			page->binary = 1;
+			page->encoding = "unknown";
+			break;
+		}
+		if (page->content.len + count > opts->max_bytes) {
+			page->reason = "max_bytes";
+			break;
+		}
+		if (cp != '\n' && page->line_bytes + count > FILE_READ_LINE_BYTES) {
+			page->reason = "line_length";
+			break;
+		}
+		rc = morph_buf_append(&page->content, p, count);
+		if (rc < 0)
+			MORPH_RETURN(rc);
+		reader_consume(reader, count);
+		page->line_bytes += count;
+		if (cp == '\n') {
+			page->line++;
+			page->returned++;
+			page->line_bytes = 0;
+		}
+	}
+	if (page->line_bytes)
+		page->returned++;
+	return 0;
+}
+
+static int read_binary_result(struct file_reader *reader, cJSON *out)
+{
+	unsigned char bytes[64];
+	char hex[sizeof(bytes) * 3 + 1];
+	ssize_t n = pread(reader->fd, bytes, sizeof(bytes), 0);
+
+	if (n < 0)
+		MORPH_RETURN(-errno);
+	for (size_t i = 0; i < (size_t)n; i++) {
+		hex[i * 3] = "0123456789abcdef"[bytes[i] >> 4];
+		hex[i * 3 + 1] = "0123456789abcdef"[bytes[i] & 15];
+		hex[i * 3 + 2] = ' ';
+	}
+	hex[n > 0 ? (size_t)n * 3 - 1 : 0] = '\0';
+	if (!cJSON_AddStringToObject(out, "preview", hex) ||
+	    !cJSON_AddStringToObject(out, "preview_format", "hex") ||
+	    !cJSON_AddStringToObject(out, "note",
+		"Binary or unsupported text encoding; content was not returned. "
+		"Convert UTF-16/32 or other encodings to UTF-8 before reading.") ||
+	    !cJSON_AddNumberToObject(out, "returned_lines", 0) ||
+	    !cJSON_AddNullToObject(out, "total_lines") ||
+	    !cJSON_AddBoolToObject(out, "truncated", 1))
+		MORPH_RETURN(-ENOMEM);
+	return 0;
+}
+
+static cJSON *read_optional_number(cJSON *out, const char *name, int known, uint64_t value)
+{
+	return known ? cJSON_AddNumberToObject(out, name, (double)value) :
+		cJSON_AddNullToObject(out, name);
+}
+
+static int read_text_result(struct file_reader *reader, const struct read_options *opts,
+			    struct read_page *page, cJSON *out)
+{
+	int more = reader->position < reader->size;
+	int partial = more && page->line_bytes != 0;
+	uint64_t total = page->line + (page->line_bytes != 0);
+	uint64_t start = opts->byte_mode ? 0 : opts->offset;
+
+	if (!cJSON_AddNumberToObject(out, "returned_lines", (double)page->returned) ||
+	    !cJSON_AddBoolToObject(out, "truncated", more) ||
+	    !cJSON_AddBoolToObject(out, "partial_line", partial) ||
+	    !cJSON_AddBoolToObject(out, "starts_mid_line", page->starts_mid_line) ||
+	    !read_optional_number(out, "total_lines", !more && page->known_lines, total) ||
+	    !read_optional_number(out, "line_start", page->known_lines,
+			  start < total ? start : total) ||
+	    !read_optional_number(out, "line_end", page->known_lines,
+			  page->line + (page->line_bytes != 0)) ||
+	    !read_optional_number(out, "next_offset", more && !partial && page->known_lines,
+			  page->line) ||
+	    !read_optional_number(out, "next_byte_offset", more, reader->position) ||
+	    !cJSON_AddStringToObject(out, "truncation_reason", page->reason ? page->reason : ""))
+		MORPH_RETURN(-ENOMEM);
+	if (more && !cJSON_AddStringToObject(out, "note",
+		"More content remains. Continue with byte_offset=next_byte_offset and "
+		"expected_version=version; omit offset. Line ranges are 0-based, end-exclusive. "
+		"A partial_line continues on the next page without dropping bytes."))
+		MORPH_RETURN(-ENOMEM);
+	if (!cJSON_AddStringToObject(out, "content", morph_buf_cstr(&page->content)))
+		MORPH_RETURN(-ENOMEM);
+	return 0;
+}
+
+static int read_open_file(struct file_reader *reader, const struct read_options *opts,
+			  struct tool_result *result)
+{
+	struct stat before;
+	struct stat after;
+	morph_buf_t version = {0};
+	morph_buf_t after_version = {0};
+	struct read_page page = {0};
+	cJSON *out = NULL;
+	int rc;
+
+	if (fstat(reader->fd, &before) < 0)
+		MORPH_RETURN(-errno);
+	if (!S_ISREG(before.st_mode))
+		MORPH_RETURN(S_ISDIR(before.st_mode) ? -EISDIR : -ENOTSUP);
+	if (before.st_size < 0 || (uintmax_t)before.st_size > FILE_READ_MAX_INTEGER)
+		MORPH_RETURN(-EOVERFLOW);
+	reader->size = (uint64_t)before.st_size;
+	if (opts->byte_offset > reader->size)
+		MORPH_RETURN(-EINVAL);
+	MORPH_SET_ERR(rc, morph_buf_init(&version, 128));
+	if (rc < 0)
+		MORPH_RETURN(rc);
+	MORPH_SET_ERR(rc, read_version(&before, &version));
+	if (rc < 0)
+		goto out_cleanup;
+	if (opts->expected_version && strcmp(opts->expected_version, morph_buf_cstr(&version))) {
+		MORPH_SET_ERR(rc, -ESTALE);
+		goto out_cleanup;
+	}
+	MORPH_SET_ERR(rc, morph_buf_init(&page.content, (size_t)opts->max_bytes + 1));
+	if (rc < 0)
+		goto out_cleanup;
+	MORPH_SET_ERR(rc, reader_start(reader, opts, &page));
+	if (rc < 0)
+		goto out_cleanup;
+	if (!page.binary && !opts->byte_mode) {
+		MORPH_SET_ERR(rc, reader_skip_lines(reader, opts->offset, &page));
+		if (rc < 0)
+			goto out_cleanup;
+	}
+	if (!page.binary) {
+		MORPH_SET_ERR(rc, reader_text(reader, opts, &page));
+		if (rc < 0)
+			goto out_cleanup;
+	}
+	out = cJSON_CreateObject();
+	if (!out || !cJSON_AddStringToObject(out, "file_path", opts->path) ||
+	    !cJSON_AddNumberToObject(out, "size", (double)reader->size) ||
+	    !cJSON_AddBoolToObject(out, "binary", page.binary) ||
+	    !cJSON_AddStringToObject(out, "encoding", page.encoding) ||
+	    !cJSON_AddStringToObject(out, "version", morph_buf_cstr(&version))) {
+		MORPH_SET_ERR(rc, -ENOMEM);
+		goto out_cleanup;
+	}
+	MORPH_SET_ERR(rc, page.binary ? read_binary_result(reader, out) :
+		      read_text_result(reader, opts, &page, out));
+	if (rc < 0)
+		goto out_cleanup;
+	if (fstat(reader->fd, &after) < 0) {
+		MORPH_SET_ERR(rc, -errno);
+		goto out_cleanup;
+	}
+	MORPH_SET_ERR(rc, morph_buf_init(&after_version, 128));
+	if (rc < 0)
+		goto out_cleanup;
+	MORPH_SET_ERR(rc, read_version(&after, &after_version));
+	if (rc < 0)
+		goto out_cleanup;
+	if (strcmp(morph_buf_cstr(&version), morph_buf_cstr(&after_version))) {
+		MORPH_SET_ERR(rc, -ESTALE);
+		goto out_cleanup;
+	}
+	MORPH_SET_ERR(rc, tool_result_success(result, out));
+	out = NULL;
+out_cleanup:
+	cJSON_Delete(out);
+	morph_buf_cleanup(&after_version);
+	morph_buf_cleanup(&page.content);
+	morph_buf_cleanup(&version);
+	MORPH_RETURN(rc);
 }
 
 static int file_read_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct tool_context *tctx = user_data;
-	if (!result) return -EINVAL;
+	struct read_options opts = {0};
+	char resolved[PATH_MAX];
+	int rc;
 
-	cJSON *root = cJSON_Parse(args_json);
-	if (!root) {
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"invalid JSON\"}"));
-		return -EINVAL;
-	}
-
-	cJSON *fp = cJSON_GetObjectItem(root, "file_path");
-	const char *file_path = cJSON_IsString(fp) ? fp->valuestring : NULL;
-	if (!file_path) {
+	if (!result)
+		MORPH_RETURN(-EINVAL);
+	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
+	rc = read_options_parse(root, &opts);
+	if (rc < 0) {
 		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup(
-			"{\"error\":\"missing 'file_path' parameter. "
-			"Usage: file_read({\\\"file_path\\\": \\\"path/to/file\\\"})\"}"));
-		return -EINVAL;
+		(void)tool_result_error(result, "invalid_arguments",
+			"Provide file_path, nonnegative integer offset OR byte_offset, "
+			"positive limit/max_lines (up to 1000000), and max_bytes (4..262144).");
+		MORPH_RETURN(rc);
 	}
-
-	long offset_val = 0;
-	cJSON *off = cJSON_GetObjectItem(root, "offset");
-	if (cJSON_IsNumber(off))
-		offset_val = (long)off->valuedouble;
-
-	long limit_val = 1000;
-	cJSON *lim = cJSON_GetObjectItem(root, "limit");
-	if (cJSON_IsNumber(lim) && lim->valuedouble > 0)
-		limit_val = (long)lim->valuedouble;
-	cJSON *ml = cJSON_GetObjectItem(root, "max_lines");
-	if (cJSON_IsNumber(ml) && ml->valuedouble > 0)
-		limit_val = (long)ml->valuedouble;
-
-	char resolved_path[PATH_MAX];
-	if (tctx) {
-		int rc = tool_context_authorize_path(tctx, TOOL_PATH_READ,
-						     file_path, resolved_path,
-						     sizeof(resolved_path));
-		if (rc < 0) {
-			cJSON_Delete(root);
-			if (rc == -ENOENT)
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"file not found or cannot be read\"}"));
-			else
-				(void)tool_result_success_json_text(result, strdup(
-					"{\"error\":\"read path outside workspace: permission denied\"}"));
-			return rc;
-		}
+	if (tctx)
+		rc = tool_context_authorize_path(tctx, TOOL_PATH_READ, opts.path,
+					 resolved, sizeof(resolved));
+	else if (strlen(opts.path) >= sizeof(resolved))
+		MORPH_SET_ERR(rc, -ENAMETOOLONG);
+	else
+		memcpy(resolved, opts.path, strlen(opts.path) + 1);
+	struct file_reader reader = {
+		.fd = -1,
+		.control = result->runtime ? &result->runtime->http : NULL,
+	};
+	if (rc == 0)
+		rc = http_wait_cancelable(reader.control, 0);
+	if (rc == 0) {
+		reader.fd = open(resolved, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW);
+		if (reader.fd < 0)
+			MORPH_SET_ERR(rc, -errno);
 	}
-	if (!tctx) {
-		strncpy(resolved_path, file_path, sizeof(resolved_path) - 1);
-		resolved_path[sizeof(resolved_path) - 1] = '\0';
-	}
-
-	size_t data_len = 0;
-	char *data = file_read_all(resolved_path, &data_len);
-
-	if (!data) {
-		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, strdup("{\"error\":\"file not found or cannot be read\"}"));
-		return -ENOENT;
-	}
-
-	int binary = is_binary(data, data_len);
-
-	cJSON *out = cJSON_CreateObject();
-	cJSON_AddStringToObject(out, "file_path", file_path);
-	cJSON_AddNumberToObject(out, "size", (double)data_len);
-
-	if (binary) {
-		char preview[256];
-		size_t plen = data_len < 250 ? data_len : 250;
-		for (size_t i = 0; i < plen; i++) {
-			unsigned char c = (unsigned char)data[i];
-			if (c < 32 && c != '\n' && c != '\r' && c != '\t')
-				preview[i] = '.';
-			else
-				preview[i] = (char)c;
-		}
-		preview[plen] = '\0';
-		cJSON_AddBoolToObject(out, "binary", 1);
-		cJSON_AddStringToObject(out, "preview", preview);
-		cJSON_AddNumberToObject(out, "total_lines", 0);
-		cJSON_AddNumberToObject(out, "returned_lines", 0);
-		char *str = cJSON_PrintUnformatted(out);
-		cJSON_Delete(out);
-		free(data);
-		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, str);
-		return 0;
-	}
-
-	cJSON_AddBoolToObject(out, "binary", 0);
-
-	long total_lines = 0;
-	for (const char *p = data; *p; p++) {
-		if (*p == '\n')
-			total_lines++;
-	}
-	if (total_lines == 0 && data_len > 0)
-		total_lines = 1;
-	if (data_len > 0 && data[data_len - 1] != '\n')
-		total_lines++;
-
-	cJSON_AddNumberToObject(out, "total_lines", (double)total_lines);
-
-	if (offset_val >= total_lines) {
-		cJSON_AddStringToObject(out, "content", "");
-		cJSON_AddNumberToObject(out, "returned_lines", 0);
-		cJSON_AddBoolToObject(out, "truncated", 0);
-		char *str = cJSON_PrintUnformatted(out);
-		cJSON_Delete(out);
-		free(data);
-		cJSON_Delete(root);
-		(void)tool_result_success_json_text(result, str);
-		return 0;
-	}
-
-	morph_buf_t buf;
-	int buf_ok = morph_buf_init(&buf, 65536);
-	if (buf_ok != 0) {
-		cJSON_Delete(out);
-		free(data);
-		cJSON_Delete(root);
-		MORPH_RETURN(buf_ok);
-	}
-	long line_idx = 0;
-	const char *p = data;
-	int truncated = 0;
-	int returned = 0;
-
-	while (*p) {
-		const char *nl = strchr(p, '\n');
-		size_t llen = nl ? (size_t)(nl - p) : strlen(p);
-		if (llen > MAX_LINE_LENGTH)
-			llen = MAX_LINE_LENGTH;
-
-		if (line_idx >= offset_val) {
-			if (buf_append(&buf, p, llen) < 0) {
-				truncated = 1;
-				break;
-			}
-			if (buf_append(&buf, "\n", 1) < 0) {
-				truncated = 1;
-				break;
-			}
-			returned++;
-			if (returned >= limit_val) {
-				if (nl) {
-					line_idx++;
-					p = nl + 1;
-					if (*p)
-						truncated = 1;
-				}
-				break;
-			}
-		}
-
-		line_idx++;
-		if (nl)
-			p = nl + 1;
-		else
-			break;
-	}
-
-	const char *content_str = morph_buf_cstr(&buf);
-	cJSON_AddStringToObject(out, "content", content_str ? content_str : "");
-	cJSON_AddNumberToObject(out, "returned_lines", returned);
-	cJSON_AddBoolToObject(out, "truncated", truncated);
-
-	char *str = cJSON_PrintUnformatted(out);
-	cJSON_Delete(out);
-	morph_buf_cleanup(&buf);
-	free(data);
+	if (rc == 0)
+		rc = read_open_file(&reader, &opts, result);
+	if (reader.fd >= 0)
+		close(reader.fd);
 	cJSON_Delete(root);
-	(void)tool_result_success_json_text(result, str);
-	return 0;
+	if (rc < 0) {
+		const char *message = rc == -ESTALE ?
+			"File changed; restart reading to obtain a new version." :
+			rc == -EPERM ? "read path outside workspace: permission denied" :
+			morph_strerror(rc);
+		(void)tool_result_error(result, "file_read_failed", message);
+	}
+	MORPH_RETURN(rc);
 }
 
 int file_read_init(struct tool_registry *reg, struct tool_context *tctx)
 {
-	if (!reg) return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "file_read", .description = "Read a text file's content. Provide file_path, optional offset (line number, 0-indexed, to start from), and limit/max_lines (max lines to return, default 1000). Binary files return a short hex preview instead.", .input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the text file to read\"},\"offset\":{\"type\":\"integer\",\"description\":\"Line number to start from (0-indexed)\"},\"limit\":{\"type\":\"integer\",\"description\":\"Max lines to return\"},\"max_lines\":{\"type\":\"integer\",\"description\":\"Max lines to return (alternative to limit)\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = file_read_exec, .user_data = tctx, .user_data_destroy = NULL });
+	if (!reg)
+		MORPH_RETURN(-EINVAL);
+	MORPH_RETURN(tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "file_read",
+		.description = "Read UTF-8 text verbatim with bounded memory. "
+			"offset is a 0-based line index; limit/max_lines defaults to 1000. "
+			"max_bytes defaults to 51200 (4..262144). Lines over 16384 bytes "
+			"return lossless fragments. Continue using byte_offset=next_byte_offset "
+			"and expected_version=version, omitting offset. total_lines is null "
+			"until EOF when known; line_start/line_end are 0-based, end-exclusive. "
+			"Binary/unsupported encodings return a hex preview, not text.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{"
+			"\"file_path\":{\"type\":\"string\"},"
+			"\"offset\":{\"type\":\"integer\",\"minimum\":0},"
+			"\"byte_offset\":{\"type\":\"integer\",\"minimum\":0},"
+			"\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000000},"
+			"\"max_lines\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000000},"
+			"\"max_bytes\":{\"type\":\"integer\",\"minimum\":4,\"maximum\":262144},"
+			"\"expected_version\":{\"type\":\"string\"}},\"required\":[\"file_path\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = file_read_exec,
+		.user_data = tctx,
+	}));
 }

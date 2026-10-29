@@ -47,6 +47,9 @@ int utf8_decode_codepoint(const char *s, size_t avail, unsigned *cp,
 	if (len == 1 && (unsigned char)*s >= 0x80)
 		return 0;
 	(void)utf8codepoint(s, &raw);
+	/* The vendor validator accepts surrogate and out-of-range code points. */
+	if (raw < 0 || raw > 0x10ffff || (raw >= 0xd800 && raw <= 0xdfff))
+		return 0;
 	*cp = (unsigned)raw;
 	*cp_len = len;
 	return 1;
