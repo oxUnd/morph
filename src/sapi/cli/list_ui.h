@@ -3,7 +3,7 @@
 
 struct cli_context;
 #include <stddef.h>
-#include "tui/tree.h"
+#include <morph/tui/tree.h>
 
 void cli_tree_prefix(struct cli_context *ctx, const int *last, int depth, int is_last,
 		     int continuation);

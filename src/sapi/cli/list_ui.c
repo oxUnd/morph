@@ -14,7 +14,7 @@ void cli_tree_prefix(struct cli_context *ctx, const int *last, int depth, int is
 	morph_buf_t output = {0};
 	if (depth < 0 || morph_buf_init(&output, 64) != 0)
 		return;
-	if (tui_tree_prefix(&output, last, (size_t)depth, is_last,
+	if (morph_tui_tree_prefix(&output, last, (size_t)depth, is_last,
 			    continuation, 2) == 0)
 		fputs(ctx, morph_buf_cstr(&output), stdout);
 	morph_buf_cleanup(&output);
@@ -130,7 +130,7 @@ void cli_list_group(struct cli_context *ctx, const char *name, int count, int is
 	}
 	cli_list_compact_text(compact, sizeof(compact), name ? name : "Other");
 	morph_buf_printf(&label, "%s  %d", compact, count);
-	if (!label.failed && tui_tree_row(&output, "", is_last, "",
+	if (!label.failed && morph_tui_tree_row(&output, "", is_last, "",
 		morph_buf_cstr(&label), "", 0, cli_list_columns(),
 		ANSI_BOLD, ANSI_RESET) == 0)
 		fputs(ctx, morph_buf_cstr(&output), stdout);
@@ -149,7 +149,7 @@ void cli_list_item(struct cli_context *ctx, const char *ancestor, int is_last, c
 		return;
 	cli_list_compact_text(compact, sizeof(compact), name);
 	cli_list_compact_text(detail, sizeof(detail), description);
-	if (tui_tree_row(&output, ancestor ? ancestor : "", is_last,
+	if (morph_tui_tree_row(&output, ancestor ? ancestor : "", is_last,
 			 marker ? marker : "", compact, detail, name_width,
 			 columns, ANSI_BOLD, ANSI_RESET) == 0)
 		fputs(ctx, morph_buf_cstr(&output), stdout);
@@ -159,8 +159,8 @@ void cli_list_item(struct cli_context *ctx, const char *ancestor, int is_last, c
 void cli_list_row(struct cli_context *ctx, const char *id, const char *name, const char *metadata,
 		  int is_current, int is_last, int columns)
 {
-	const char *branch = tui_tree_branch(is_last, 0);
-	const char *continuation = tui_tree_branch(is_last, 1);
+	const char *branch = morph_tui_tree_branch(is_last, 0);
+	const char *continuation = morph_tui_tree_branch(is_last, 1);
 	char compact[CLI_LIST_TEXT_MAX];
 	char safe_id[CLI_LIST_TEXT_MAX];
 	char safe_metadata[CLI_LIST_TEXT_MAX];
@@ -202,7 +202,7 @@ void cli_list_row(struct cli_context *ctx, const char *id, const char *name, con
 	cli_list_print_clipped(ctx, compact, name_width);
 	putchar(ctx, '\n');
 	printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "   " ANSI_DIM "%s%s" ANSI_RESET "\n",
-	       continuation, tui_tree_branch(1, 0), metadata);
+	       continuation, morph_tui_tree_branch(1, 0), metadata);
 }
 
 void cli_list_value_field(struct cli_context *ctx, const char *label, const char *value,

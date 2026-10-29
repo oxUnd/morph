@@ -13,7 +13,7 @@ interaction state, layout helpers, and presentation primitives.
 
 | Layer / component | Responsibility | Production consumers |
 | --- | --- | --- |
-| Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `tui_screen` |
+| Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
 | Input decoder | Stateful CSI/SS3 decoding, escape deadlines, UTF-8 byte input | All modal screens |
 | Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Hooks, session picker, and history use `run`; inline setup uses `poll` |
 | Rectangular layout | Insets, horizontal/vertical region allocation, clipping | Hooks cells/columns, session margins, and history header/body/footer sizing |
@@ -26,8 +26,14 @@ interaction state, layout helpers, and presentation primitives.
 | Drawing | Compose safe cells in memory and validate before output | Hooks and sessions, with application-specific styles |
 | Frame renderer | Reusable row-diff output, cache invalidation, no-op suppression | History |
 
-The public low-level API is `tui/tui.h`; layout, components, and screen hosting
-are in `tui/components.h`; hierarchical views use `tui/tree.h`. Implementations are divided into `terminal.c`,
+Public functions, struct/enum tags, and constants use the `morph_tui_` and
+`MORPH_TUI_` namespaces. Consumers link `morph-tui` to inherit the public include
+directories and include `<morph/tui.h>`, `<morph/tui/components.h>`, or
+`<morph/tui/tree.h>`. Headers live under `src/tui/include/`; the former `tui_*`
+names and `tui/` include paths are no longer provided.
+
+The public low-level API is `morph/tui.h`; layout, components, and screen hosting
+are in `morph/tui/components.h`; hierarchical views use `morph/tui/tree.h`. Implementations are divided into `terminal.c`,
 `input.c`, `screen.c`, `layout.c`, `list.c`, `editor.c`, `card.c`, `text_view.c`,
 `draw.c`, and `frame.c`.
 
@@ -39,15 +45,15 @@ and schedules the first draw. Closing an inactive screen is harmless. Streams
 belong to the caller and must remain open until after closing. Sessions must not
 overlap on one terminal.
 
-`tui_screen_run` drives this cycle:
+`morph_tui_screen_run` drives this cycle:
 
 1. Draw when dirty. The draw callback receives the current viewport.
 2. Poll a key, resize, tick, or EOF event without reading ahead across screens.
 3. Dispatch the event to the application update callback.
 4. Redraw, continue, or return for cleanup according to the callback result.
 
-Resize marks the host dirty automatically. Update returns `TUI_SCREEN_CONTINUE`,
-`TUI_SCREEN_REDRAW`, `TUI_SCREEN_CLOSE`, or a negative error. Draw returns zero
+Resize marks the host dirty automatically. Update returns `MORPH_TUI_SCREEN_CONTINUE`,
+`MORPH_TUI_SCREEN_REDRAW`, `MORPH_TUI_SCREEN_CLOSE`, or a negative error. Draw returns zero
 or a negative error. The host returns on EOF or callback failure; the caller
 still closes the screen. A modal screen's exit key does not consume bytes meant
 for the restored Readline composer.
@@ -73,18 +79,18 @@ active component. Domain actions run only after a component submits.
 - Rectangles have a one-based terminal origin and nonnegative dimensions;
   region-relative cells use zero-based offsets. Splits consume the available
   region and clamp to it, including empty regions.
-- Lists borrow item data. `tui_list_layout` clamps the selection when data or
+- Lists borrow item data. `morph_tui_list_layout` clamps the selection when data or
   viewport size changes and keeps it visible. Continuous and page-aligned
   windows are supported. Shortcut flags are explicit, so text fields do not
-  accidentally inherit menu bindings. `tui_scroll_update` clamps a document's
+  accidentally inherit menu bindings. `morph_tui_scroll_update` clamps a document's
   offset to its last complete viewport.
-- Menus return `TUI_SUBMIT`, `TUI_BACK`, or `TUI_CANCEL` separately from selection
+- Menus return `MORPH_TUI_SUBMIT`, `MORPH_TUI_BACK`, or `MORPH_TUI_CANCEL` separately from selection
   changes. They ignore pasted navigation and confirmation. Hook trust decisions
   remain in `runtime_hooks_manage`, including snapshot/digest validation and
   conservative default choices.
 - Editors initialize once and clean up on all exits. Their byte limit includes
   NUL. Submission and validity are separate: a required setup field must pass
-  `tui_editor_valid`; a search may be empty. Incomplete UTF-8 bytes can accumulate,
+  `morph_tui_editor_valid`; a search may be empty. Incomplete UTF-8 bytes can accumulate,
   but they cannot pass validity checks. Pasted control keys cannot submit, clear,
   or navigate the editor. Secret presentation uses a fixed mask, and cleanup
   wipes owned input storage. The application owns its final copy of a value.
@@ -96,18 +102,18 @@ active component. Domain actions run only after a component submits.
 
 ## Rendering contracts
 
-`tui_cell_append` accepts untrusted text and a trusted ANSI style. Initialize its
+`morph_tui_cell_append` accepts untrusted text and a trusted ANSI style. Initialize its
 command buffer with `morph_buf_init`; appends preserve errors on that buffer.
-`tui_region_cell` additionally clips to an allocated layout region. The shared
-`tui_output_write` rejects a failed buffer before any terminal output, then writes
+`morph_tui_region_cell` additionally clips to an allocated layout region. The shared
+`morph_tui_output_write` rejects a failed buffer before any terminal output, then writes
 and flushes the composed bytes. A construction error cannot expose a partial
 hooks screen. Actual I/O failure can still write a partial screen and must end
 the current interaction so its terminal modes can be restored.
 
-`tui_frame_present` accepts newline-separated, already sanitized and clipped
+`morph_tui_frame_present` accepts newline-separated, already sanitized and clipped
 rows with trusted styles. It builds the complete diff in memory and updates the
 previous-frame cache only after successful output. Identical frames emit no
-bytes. A resize, output-target change, explicit `tui_frame_invalidate`, or output
+bytes. A resize, output-target change, explicit `morph_tui_frame_invalidate`, or output
 failure forces a full repaint. External writes to its owned screen require
 invalidation before the next present. Cleanup releases both cached buffers.
 
@@ -145,8 +151,8 @@ and restoring the chat composer after closing a modal screen.
 
 ## Tree component
 
-`tui/tree.h` supports both retained trees and incremental reports. Initialize a
-`tui_tree`, add roots with `TUI_TREE_ROOT` and children with their parent index,
+`morph/tui/tree.h` supports both retained trees and incremental reports. Initialize a
+`morph_tui_tree`, add roots with `MORPH_TUI_TREE_ROOT` and children with their parent index,
 then render or draw it. Labels and descriptions are copied into its arena and
 sanitized; callers can release their input immediately. Indices remain stable
 when storage grows. Adding a node with an invalid parent records a sticky error.
@@ -158,14 +164,14 @@ expanded. Up/Down, Home/End and Page Up/Down use list navigation; Right expands 
 parent or enters its first child; Left collapses a parent or selects its parent.
 Enter submits, Escape/Ctrl-C cancel, and bracketed paste cannot navigate or submit. Selection and
 scroll position live in the component, and resize clamps them to the new page.
-`tui_tree_draw` fills an allocated rectangle, highlights the selected row with
+`morph_tui_tree_draw` fills an allocated rectangle, highlights the selected row with
 caller-supplied styles, and erases unused rows. It appends commands without I/O.
-`tui_tree_render` produces plain, newline-separated rows for transcript output;
+`morph_tui_tree_render` produces plain, newline-separated rows for transcript output;
 its `first` and `rows` parameters address visible nodes. Every row respects the
 requested display width, including CJK text and very narrow terminals. Skill
 names and descriptions use bounded columns; long text receives an ellipsis.
 
-`tui_tree_row`, `tui_tree_prefix`, and `tui_tree_branch` serve incremental reports
+`morph_tui_tree_row`, `morph_tui_tree_prefix`, and `morph_tui_tree_branch` serve incremental reports
 whose later siblings are not yet available. CLI adapters retain domain formatting
 (JSON limits, status colors, timestamps and receipts), while all branch geometry
 comes from this component. Help, extensions, permissions, tasks, sync, sessions,

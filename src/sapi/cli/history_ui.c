@@ -1,4 +1,4 @@
-#include "tui/components.h"
+#include <morph/tui/components.h>
 #include "sapi/cli/internal.h"
 #include "sapi/cli/history_ui.h"
 #include "sapi/cli/list_ui.h"
@@ -10,11 +10,11 @@ struct history_view {
 	struct cli_context *ctx;
 	cJSON *report;
 	morph_array_t matches;
-	struct tui_text_view document_view;
+	struct morph_tui_text_view document_view;
 	morph_buf_t document;
-	struct tui_frame frame;
-	struct tui_editor query;
-	struct tui_list selection;
+	struct morph_tui_frame frame;
+	struct morph_tui_editor query;
+	struct morph_tui_list selection;
 	size_t scroll;
 	int filter;
 	int searching;
@@ -100,7 +100,7 @@ static int history_filter(struct history_view *view)
 			MORPH_RETURN(-ENOMEM);
 		*slot = entry;
 	}
-	tui_list_layout(&view->selection, view->matches.nelts, view->selection.page);
+	morph_tui_list_layout(&view->selection, view->matches.nelts, view->selection.page);
 	return 0;
 }
 
@@ -259,7 +259,7 @@ static int history_wrap(struct history_view *view)
 {
 	size_t width = view->columns > 4 ? (size_t)view->columns - 4 : 1;
 
-	return tui_text_view_wrap(&view->document_view,
+	return morph_tui_text_view_wrap(&view->document_view,
 		morph_buf_cstr(&view->document), width);
 }
 
@@ -283,10 +283,10 @@ static int history_frame_line(struct cli_context *ctx, morph_buf_t *frame, int c
 
 static int history_page_size(const struct history_view *view)
 {
-	struct tui_rect area = {1, 1, view->columns, view->rows};
+	struct morph_tui_rect area = {1, 1, view->columns, view->rows};
 
-	(void)tui_rect_take_top(&area, view->detail ? 2 : 8);
-	struct tui_rect body = tui_rect_take_top(&area, area.height - 3);
+	(void)morph_tui_rect_take_top(&area, view->detail ? 2 : 8);
+	struct morph_tui_rect body = morph_tui_rect_take_top(&area, area.height - 3);
 
 	return body.height > 0 ? body.height : 1;
 }
@@ -304,9 +304,9 @@ static int history_render(struct history_view *view)
 		return rc;
 	}
 	int page = history_page_size(view);
-	tui_list_layout(&view->selection, view->matches.nelts, (size_t)page);
+	morph_tui_list_layout(&view->selection, view->matches.nelts, (size_t)page);
 	size_t first = view->selection.first;
-	view->scroll = tui_scroll_update(view->scroll,
+	view->scroll = morph_tui_scroll_update(view->scroll,
 		view->document_view.lines.nelts, (size_t)page, 0);
 	for (int row = 1; row <= view->rows && rc == 0; row++) {
 		const char *style = ANSI_DIM;
@@ -321,8 +321,8 @@ static int history_render(struct history_view *view)
 				"  morph / history / entry details" : "  morph / history");
 			style = ANSI_BOLD;
 		} else if (view->detail && row >= 3 && row < 3 + page) {
-			struct tui_text_line *line = morph_array_get(&view->document_view.lines,
-				view->scroll + (size_t)(row - 3));
+			struct morph_tui_text_line *line = morph_array_get(
+				&view->document_view.lines, view->scroll + (size_t)(row - 3));
 
 			if (line) {
 				(void)morph_buf_puts(&text, "  ");
@@ -425,14 +425,14 @@ static int history_render(struct history_view *view)
 						morph_buf_cstr(&text), style);
 	}
 	if (rc == 0)
-		rc = tui_frame_present(&view->frame, stdout, view->columns,
+		rc = morph_tui_frame_present(&view->frame, stdout, view->columns,
 			view->rows, morph_buf_cstr(&frame));
 	morph_buf_cleanup(&text);
 	morph_buf_cleanup(&frame);
 	return rc;
 }
 
-static int history_draw(void *data, const struct tui_screen *screen)
+static int history_draw(void *data, const struct morph_tui_screen *screen)
 {
 	struct history_view *view = data;
 	int resized = view->rows != screen->area.height ||
@@ -448,38 +448,39 @@ static int history_draw(void *data, const struct tui_screen *screen)
 	return history_render(view);
 }
 
-static int history_update(void *data, const struct tui_event *event)
+static int history_update(void *data, const struct morph_tui_event *event)
 {
 	struct history_view *view = data;
 
-	if (event->type != TUI_EVENT_KEY)
-		return TUI_SCREEN_CONTINUE;
+	if (event->type != MORPH_TUI_EVENT_KEY)
+		return MORPH_TUI_SCREEN_CONTINUE;
 	int key = event->key;
 
-	if (key == TUI_KEY_PASTE_BEGIN || key == TUI_KEY_PASTE_END) {
-		(void)tui_editor_update(&view->query, key);
-		return key == TUI_KEY_PASTE_END ? TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
+	if (key == MORPH_TUI_KEY_PASTE_BEGIN || key == MORPH_TUI_KEY_PASTE_END) {
+		(void)morph_tui_editor_update(&view->query, key);
+		return key == MORPH_TUI_KEY_PASTE_END ?
+			MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
 	}
 	if (event->pasting && !view->searching)
-		return TUI_SCREEN_CONTINUE;
+		return MORPH_TUI_SCREEN_CONTINUE;
 	if (!event->pasting && (key == 3 || key == 4))
-		return TUI_SCREEN_CLOSE;
+		return MORPH_TUI_SCREEN_CLOSE;
 	if (view->searching) {
-		int result = tui_editor_update(&view->query, key);
+		int result = morph_tui_editor_update(&view->query, key);
 
 		if (result < 0) return result;
-		if (result == TUI_SUBMIT || result == TUI_BACK)
+		if (result == MORPH_TUI_SUBMIT || result == MORPH_TUI_BACK)
 			view->searching = 0;
 		view->selection.index = 0;
 		int rc = history_filter(view);
 
 		if (rc != 0) return rc;
-		return view->query.pasting ? TUI_SCREEN_CONTINUE : TUI_SCREEN_REDRAW;
+		return view->query.pasting ? MORPH_TUI_SCREEN_CONTINUE : MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (key == 27 || key == 'q') {
-		if (!view->detail) return TUI_SCREEN_CLOSE;
+		if (!view->detail) return MORPH_TUI_SCREEN_CLOSE;
 		view->detail = 0;
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	if ((!view->detail && (key == '\r' || key == '\n') && history_selected(view)) ||
 	    key == 's' || (view->detail == 1 && key == 'v')) {
@@ -490,60 +491,61 @@ static int history_update(void *data, const struct tui_event *event)
 		int rc = history_document(view);
 
 		if (rc == 0) rc = history_wrap(view);
-		return rc != 0 ? rc : TUI_SCREEN_REDRAW;
+		return rc != 0 ? rc : MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (!view->detail && key == '/') {
 		view->searching = 1;
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (!view->detail && key == '\t') {
 		view->filter = (view->filter + 1) % 4;
 		view->selection.index = 0;
 		int rc = history_filter(view);
 
-		return rc != 0 ? rc : TUI_SCREEN_REDRAW;
+		return rc != 0 ? rc : MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (view->detail) {
 		size_t old = view->scroll;
 
-		view->scroll = tui_scroll_update(view->scroll, view->document_view.lines.nelts,
+		view->scroll = morph_tui_scroll_update(view->scroll,
+			view->document_view.lines.nelts,
 			(size_t)history_page_size(view), key);
-		return old != view->scroll ? TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
+		return old != view->scroll ? MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
 	}
-	return tui_list_update(&view->selection, key) ?
-		TUI_SCREEN_REDRAW : TUI_SCREEN_CONTINUE;
+	return morph_tui_list_update(&view->selection, key) ?
+		MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
 }
 
 int cli_history_view(struct cli_context *ctx, cJSON *report)
 {
 	struct history_view view = {.ctx = ctx, .report = report, .rows = 24, .columns = 80};
-	struct tui_screen screen = {0};
+	struct morph_tui_screen screen = {0};
 	cJSON *entry;
-	const struct tui_screen_ops ops = {.update = history_update, .draw = history_draw};
+	const struct morph_tui_screen_ops ops = {.update = history_update, .draw = history_draw};
 	int rc = morph_array_init(&view.matches, 32, sizeof(entry));
 
-	view.selection.flags = TUI_LIST_VIM;
+	view.selection.flags = MORPH_TUI_LIST_VIM;
 	if (rc == 0) rc = morph_buf_init(&view.document, BUFSIZ);
-	if (rc == 0) rc = tui_editor_init(&view.query, "", HISTORY_QUERY_MAX, 0);
+	if (rc == 0) rc = morph_tui_editor_init(&view.query, "", HISTORY_QUERY_MAX, 0);
 	if (rc == 0) rc = history_filter(&view);
 	if (rc == 0 && view.matches.nelts)
 		view.selection.index = view.matches.nelts - 1;
 	morph_signal_flag_set(&ctx->interrupted, 0);
 	screen.interrupted = &ctx->interrupted;
 	if (rc == 0)
-		rc = tui_screen_open(&screen, stdin, stdout,
-			TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
-	if (rc == 0) rc = tui_screen_run(&screen, &ops, &view);
+		rc = morph_tui_screen_open(&screen, stdin, stdout,
+			MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE);
+	if (rc == 0) rc = morph_tui_screen_run(&screen, &ops, &view);
 	int caught = morph_signal_flag_take(&ctx->interrupted);
-	int leave_rc = tui_screen_close(&screen);
+	int leave_rc = morph_tui_screen_close(&screen);
 
 	if (caught && rc == -EINTR) rc = 0;
 	if (rc == 0) rc = leave_rc;
 	morph_array_cleanup(&view.matches);
-	tui_text_view_cleanup(&view.document_view);
+	morph_tui_text_view_cleanup(&view.document_view);
 	morph_buf_cleanup(&view.document);
-	tui_frame_cleanup(&view.frame);
-	tui_editor_cleanup(&view.query);
+	morph_tui_frame_cleanup(&view.frame);
+	morph_tui_editor_cleanup(&view.query);
 	MORPH_RETURN(rc);
 }
 

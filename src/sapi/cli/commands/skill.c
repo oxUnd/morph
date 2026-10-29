@@ -65,7 +65,7 @@ static int skill_print_list(struct cli_context *ctx)
 	struct skill_list_item *item;
 	int active_count;
 	int columns = cli_list_columns();
-	struct tui_tree tree = {0};
+	struct morph_tui_tree tree = {0};
 	morph_buf_t output = {0};
 	int rc;
 
@@ -79,7 +79,7 @@ static int skill_print_list(struct cli_context *ctx)
 			    "or ~/.agents/skills/)" ANSI_RESET "\n");
 		goto out;
 	}
-	rc = tui_tree_init(&tree);
+	rc = morph_tui_tree_init(&tree);
 	if (rc != 0)
 		goto out;
 	rc = morph_buf_init(&output, 1024);
@@ -101,19 +101,19 @@ static int skill_print_list(struct cli_context *ctx)
 		if (label.failed)
 			rc = label.failed;
 		else
-			tui_tree_add(&tree, TUI_TREE_ROOT, morph_buf_cstr(&label),
+			morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, morph_buf_cstr(&label),
 				entry.fm.description);
 		morph_buf_cleanup(&label);
 		if (rc != 0)
 			break;
 	}
 	if (rc == 0)
-		rc = tui_tree_render(&tree, &output, columns, 0, SIZE_MAX);
+		rc = morph_tui_tree_render(&tree, &output, columns, 0, SIZE_MAX);
 	if (rc == 0)
 		fputs(ctx, morph_buf_cstr(&output), stdout);
 	morph_buf_cleanup(&output);
 out_tree:
-	tui_tree_cleanup(&tree);
+	morph_tui_tree_cleanup(&tree);
 	printf(ctx, "\n  " ANSI_DIM "● active   ○ available   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);

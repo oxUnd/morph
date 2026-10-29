@@ -1,4 +1,4 @@
-#include "tui/components.h"
+#include <morph/tui/components.h>
 #include "sapi/cli/hooks_ui.h"
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/setup_ui.h"
@@ -99,9 +99,9 @@ static const char *selected_state_style(const cJSON *row)
 static void cell(struct hook_screen *screen, int row, int column, int width,
 		 const char *text, const char *style)
 {
-	struct tui_rect area = {1, 1, screen->columns, screen->height};
+	struct morph_tui_rect area = {1, 1, screen->columns, screen->height};
 
-	(void)tui_region_cell(&screen->frame, area, row - 1, column - 1,
+	(void)morph_tui_region_cell(&screen->frame, area, row - 1, column - 1,
 			      width, text, style);
 }
 
@@ -318,13 +318,13 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 	int state_width = screen->width >= 68 ? 22 : screen->width >= 40 ? 16 : 0;
 	int source_width = screen->width >= 90 ? 10 : 0;
 	int event_width = screen->width >= 68 ? 22 : screen->width >= 40 ? 20 : screen->width;
-	struct tui_rect table = {3, 6, screen->width, 1};
-	struct tui_rect event_area = tui_rect_take_left(&table, event_width);
+	struct morph_tui_rect table = {3, 6, screen->width, 1};
+	struct morph_tui_rect event_area = morph_tui_rect_take_left(&table, event_width);
 	int command_column = table.x;
 	int command_width = table.width - state_width - source_width - 2;
 
-	(void)tui_rect_take_left(&table, command_width + 2);
-	struct tui_rect source_area = tui_rect_take_left(&table, source_width);
+	(void)morph_tui_rect_take_left(&table, command_width + 2);
+	struct morph_tui_rect source_area = morph_tui_rect_take_left(&table, source_width);
 	int source_column = source_area.x;
 	int state_column = table.x;
 
@@ -519,7 +519,7 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 	if (rc == 0)
 		rc = morph_buf_puts(&screen->frame, "\033[0m\033[?2026l");
 	if (rc == 0)
-		rc = tui_output_write(stdout, &screen->frame);
+		rc = morph_tui_output_write(stdout, &screen->frame);
 	morph_array_cleanup(&lines);
 	arena_destroy(arena);
 	return rc;
@@ -559,23 +559,23 @@ struct hook_controller {
 
 static void hook_choose(int *index, int count, int page, int key, unsigned flags)
 {
-	struct tui_menu menu = {0};
+	struct morph_tui_menu menu = {0};
 
 	menu.list.index = (size_t)*index;
 	menu.list.flags = flags;
-	if ((flags & TUI_LIST_WRAP) && key != TUI_KEY_UP && key != TUI_KEY_DOWN &&
+	if ((flags & MORPH_TUI_LIST_WRAP) && key != MORPH_TUI_KEY_UP && key != MORPH_TUI_KEY_DOWN &&
 	    key != 'k' && key != 'j' && key != '\t')
 		key = 0;
-	tui_list_layout(&menu.list, (size_t)count, page > 0 ? (size_t)page : 1);
-	(void)tui_menu_update(&menu, key);
+	morph_tui_list_layout(&menu.list, (size_t)count, page > 0 ? (size_t)page : 1);
+	(void)morph_tui_menu_update(&menu, key);
 	*index = (int)menu.list.index;
 }
 
-static int hooks_draw(void *data, const struct tui_screen *terminal)
+static int hooks_draw(void *data, const struct morph_tui_screen *terminal)
 {
 	struct hook_controller *controller = data;
 	struct hook_screen *screen = &controller->screen;
-	struct tui_rect body = tui_rect_inset(terminal->area, 2, 0);
+	struct morph_tui_rect body = morph_tui_rect_inset(terminal->area, 2, 0);
 
 	screen->height = terminal->area.height;
 	screen->columns = terminal->area.width;
@@ -583,41 +583,41 @@ static int hooks_draw(void *data, const struct tui_screen *terminal)
 	return render(screen, *controller->rows);
 }
 
-static int hooks_update(void *data, const struct tui_event *event)
+static int hooks_update(void *data, const struct morph_tui_event *event)
 {
 	struct hook_controller *controller = data;
 	struct hook_screen *screen = &controller->screen;
 	struct cli_context *ctx = controller->ctx;
 	cJSON **rows = controller->rows;
 
-	if (event->type != TUI_EVENT_KEY || event->pasting)
-		return TUI_SCREEN_CONTINUE;
+	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
+		return MORPH_TUI_SCREEN_CONTINUE;
 	int key = event->key;
 	int rc;
 
-	if (key == 3 || key == 4 || key == 'q') return TUI_SCREEN_CLOSE;
+	if (key == 3 || key == 4 || key == 'q') return MORPH_TUI_SCREEN_CLOSE;
 	if (key == 27) {
-		if (!screen->review) return TUI_SCREEN_CLOSE;
+		if (!screen->review) return MORPH_TUI_SCREEN_CLOSE;
 		screen->review = 0;
 		screen->scroll = 0;
 		screen->message[0] = '\0';
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (key == 'r' && !screen->review) {
 		rc = refresh(ctx, rows, screen);
 		if (rc != 0) return rc;
 		screen->message[0] = '\0';
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (screen->height < (screen->batch ? 20 : 12) ||
 	    screen->width < (screen->batch ? 40 : 24) ||
 	    (screen->review && screen->document_height == 0))
-		return TUI_SCREEN_CONTINUE;
+		return MORPH_TUI_SCREEN_CONTINUE;
 	if (screen->batch) {
 		hook_choose(&screen->choice, 3, 1, key,
-			TUI_LIST_WRAP | TUI_LIST_VIM | TUI_LIST_TAB);
-		if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN)
-			screen->scroll = (int)tui_scroll_update((size_t)screen->scroll,
+			MORPH_TUI_LIST_WRAP | MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_TAB);
+		if (key == MORPH_TUI_KEY_PAGE_UP || key == MORPH_TUI_KEY_PAGE_DOWN)
+			screen->scroll = (int)morph_tui_scroll_update((size_t)screen->scroll,
 				(size_t)cJSON_GetArraySize(*rows), (size_t)screen->page_size, key);
 		if (key == '\r' || key == '\n') {
 			if (screen->choice == 2) {
@@ -629,7 +629,7 @@ static int hooks_update(void *data, const struct tui_event *event)
 					screen->choice == 0 ? "trust-all" : "deny-all",
 					"workspace", field(row, "review_digest"));
 
-				if (result == 0) return TUI_SCREEN_CLOSE;
+				if (result == 0) return MORPH_TUI_SCREEN_CLOSE;
 				rc = refresh(ctx, rows, screen);
 				if (rc != 0) return rc;
 				screen->choice = 2;
@@ -638,14 +638,14 @@ static int hooks_update(void *data, const struct tui_event *event)
 					morph_strerror(result));
 			}
 		}
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	if (key == 'a' && !screen->review && cJSON_GetArraySize(*rows) > 0) {
 		rc = refresh(ctx, rows, screen);
 		if (rc != 0) return rc;
 		screen->batch = 1;
 		screen->choice = 2;
-		return TUI_SCREEN_REDRAW;
+		return MORPH_TUI_SCREEN_REDRAW;
 	}
 	const cJSON *row = cJSON_GetArrayItem(*rows, screen->focus);
 	struct hook_action items[3];
@@ -654,15 +654,15 @@ static int hooks_update(void *data, const struct tui_event *event)
 
 	if (screen->review) {
 		hook_choose(&screen->choice, count, 1, key,
-			TUI_LIST_WRAP | TUI_LIST_VIM | TUI_LIST_TAB);
-		if (key == TUI_KEY_PAGE_UP || key == TUI_KEY_PAGE_DOWN ||
-		    key == TUI_KEY_HOME || key == TUI_KEY_END)
-			screen->scroll = (int)tui_scroll_update((size_t)screen->scroll,
+			MORPH_TUI_LIST_WRAP | MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_TAB);
+		if (key == MORPH_TUI_KEY_PAGE_UP || key == MORPH_TUI_KEY_PAGE_DOWN ||
+		    key == MORPH_TUI_KEY_HOME || key == MORPH_TUI_KEY_END)
+			screen->scroll = (int)morph_tui_scroll_update((size_t)screen->scroll,
 				(size_t)screen->document_lines,
 				(size_t)screen->document_height, key);
 	}
 	if (key == '\r' || key == '\n') {
-		if (!row) return TUI_SCREEN_CONTINUE;
+		if (!row) return MORPH_TUI_SCREEN_CONTINUE;
 		if (!screen->review) {
 			rc = refresh(ctx, rows, screen);
 			if (rc != 0) return rc;
@@ -685,10 +685,11 @@ static int hooks_update(void *data, const struct tui_event *event)
 		}
 	} else if (!screen->review && total > 0) {
 		hook_choose(&screen->focus, total, screen->page_size, key,
-			TUI_LIST_VIM | TUI_LIST_HORIZONTAL_PAGES | TUI_LIST_PAGED);
+			MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_HORIZONTAL_PAGES |
+			MORPH_TUI_LIST_PAGED);
 		screen->scroll = 0;
 	}
-	return TUI_SCREEN_REDRAW;
+	return MORPH_TUI_SCREEN_REDRAW;
 }
 
 static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id, int batch)
@@ -696,8 +697,8 @@ static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id
 	struct hook_controller controller = {.ctx = ctx, .rows = rows,
 		.screen = {.batch = batch, .choice = batch ? 2 : 0, .page_size = 1}};
 	struct hook_screen *screen = &controller.screen;
-	struct tui_screen terminal = {0};
-	const struct tui_screen_ops ops = {.update = hooks_update, .draw = hooks_draw};
+	struct morph_tui_screen terminal = {0};
+	const struct morph_tui_screen_ops ops = {.update = hooks_update, .draw = hooks_draw};
 
 	if (review_id) {
 		const cJSON *row;
@@ -713,12 +714,12 @@ static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id
 
 		screen->choice = actions(row, items) - 1;
 	}
-	int rc = tui_screen_open(&terminal, stdin, stdout,
-		TUI_SESSION_ALTERNATE | TUI_SESSION_PASTE);
+	int rc = morph_tui_screen_open(&terminal, stdin, stdout,
+		MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE);
 
-	if (rc == 0) rc = tui_screen_run(&terminal, &ops, &controller);
+	if (rc == 0) rc = morph_tui_screen_run(&terminal, &ops, &controller);
 	morph_buf_cleanup(&screen->frame);
-	int leave_rc = tui_screen_close(&terminal);
+	int leave_rc = morph_tui_screen_close(&terminal);
 
 	if (rc == 0) rc = leave_rc;
 	MORPH_RETURN(rc);
