@@ -520,10 +520,14 @@ static int turn_should_keep_complete_history(const struct agent_turn *turn)
 {
 	const struct react_context *react;
 
-	if (!turn || !turn->runtime.react ||
-	    !turn_has_error_code(turn, MORPH_ERR_NOT_CONFIGURED))
+	if (!turn || !turn->runtime.react)
 		return 0;
 	react = turn->runtime.react;
+	/* A failed checkpoint must not discard work already performed this turn. */
+	if (react->in_turn_compaction_count > 0)
+		return 1;
+	if (!turn_has_error_code(turn, MORPH_ERR_NOT_CONFIGURED))
+		return 0;
 	return react->outcome == REACT_OUTCOME_LLM_ERROR ||
 		react->outcome == REACT_OUTCOME_MAX_ITERATIONS ||
 		react->outcome == REACT_OUTCOME_TOOL_ERROR ||

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
 #include "agent/history.h"
+#include "agent/plan.h"
 #include "agent/system_prompt.h"
 #include "agent/tools/skill_activate.h"
 #include "skill/skill.h"
@@ -33,6 +34,7 @@
 #include <atomic>
 #include <cstdio>
 #include <limits.h>
+#include <memory>
 #include <unistd.h>
 
 struct sse_test_info {
@@ -1839,6 +1841,7 @@ TEST_F(MockLlmTest, EmptyCompactionSummaryReplacesEarlierToolError)
 	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
 	ASSERT_NE(ctx, nullptr);
 	ctx->llm_model = llm;
+	ctx->history_compaction_prompt = strdup("Write a plain text checkpoint.");
 	ctx->last_error_detail = strdup(
 		"tool error: wait_ms must be an integer from 0 to 60000");
 	char *summary = nullptr;
@@ -1854,6 +1857,28 @@ TEST_F(MockLlmTest, EmptyCompactionSummaryReplacesEarlierToolError)
 	ASSERT_NE(summary, nullptr);
 	EXPECT_STREQ(summary, "Continuation checkpoint");
 	EXPECT_EQ(ctx->last_error_detail, nullptr);
+	free(summary);
+	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, DefaultCheckpointRequiresCompleteFields)
+{
+	llm = create_mock_llm("{\"objective\":\"Render the video\"}");
+	ASSERT_NE(llm, nullptr);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	char *summary = nullptr;
+	EXPECT_EQ(ctx->compress.summarize("Build passed; review pending.", ctx, &summary),
+		MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(summary, nullptr);
+	const char *complete = "{\"objective\":\"Render video\",\"constraints\":\"Chinese\","
+		"\"completed_work\":\"Build passed\",\"working_state\":\"/tmp/video.mp4\","
+		"\"pending_work\":\"Visual review\",\"verification\":\"Build exit 0\"}";
+	static_cast<mock_llm_data *>(llm->handle)->response = complete;
+	ASSERT_EQ(ctx->compress.summarize("Build passed; review pending.", ctx, &summary), 0);
+	ASSERT_NE(summary, nullptr);
+	EXPECT_STREQ(summary, complete);
 	free(summary);
 	react_context_destroy(ctx);
 }
@@ -1979,7 +2004,14 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	ctx->history_enabled = 1;
 	ctx->history_db = &db;
 	ctx->history_session_id = session.id;
-	ctx->compress.summarize = test_compress_cb;
+	ASSERT_EQ(db_exec(&db, "CREATE TABLE compaction_usage_probe(value INTEGER)"), 0);
+	ctx->compress.summarize_user_data = &db;
+	ctx->compress.summarize = [](const char *text, void *data, char **out) -> int {
+		auto *database = static_cast<struct db *>(data);
+		EXPECT_TRUE(sqlite3_get_autocommit(database->handle));
+		EXPECT_EQ(db_exec(database, "INSERT INTO compaction_usage_probe VALUES(1)"), 0);
+		return test_compress_cb(text, nullptr, out);
+	};
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup(std::string(8000, '!').c_str());
 	compaction_memory_probe error_probe = {ctx, &rec};
@@ -2002,6 +2034,11 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
 	EXPECT_STREQ(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0)), "failed");
 	EXPECT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+	sqlite3_finalize(stmt);
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle, "SELECT count(*) FROM compaction_usage_probe",
+		-1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_EQ(sqlite3_column_int(stmt, 0), 1);
 	sqlite3_finalize(stmt);
 	react_context_destroy(ctx);
 	morph_event_recorder_cleanup(&rec);
@@ -4070,6 +4107,91 @@ TEST_F(MockServerTest, UsagePhaseIsPassedPerCallWithoutLeakingToTheNextCall)
 	mock_server_stop(&srv);
 }
 
+TEST_F(MockServerTest, CompactionDisablesThinkingWithoutChangingNormalRequests)
+{
+	srv.response_body = "{\"choices\":[{\"delta\":{\"content\":\"Complete checkpoint\"},"
+		"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":20,"
+		"\"completion_tokens\":4}}";
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create(nullptr, "deepseek", "deepseek-flash", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	const char *extra = "{\"thinking\":{\"type\":\"enabled\"},"
+		"\"chat_template_kwargs\":{\"enable_thinking\":true,"
+		"\"reasoning_effort\":\"high\"},\"temperature\":0.5}";
+	std::strcpy(model->extra_body_json, extra);
+	auto *ctx = react_context_create(nullptr, nullptr, nullptr, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = model;
+	ctx->history_compaction_prompt = strdup("Write a plain text checkpoint.");
+	ctx->compress.compaction_summary_max_tokens = 4000;
+	char *summary = nullptr;
+	ASSERT_EQ(ctx->compress.summarize("Completed build and checks.", ctx, &summary), 0);
+	ASSERT_NE(summary, nullptr);
+	EXPECT_STREQ(summary, "Complete checkpoint");
+	free(summary);
+	const char *body = std::strstr(srv.last_request, "\r\n\r\n");
+	ASSERT_NE(body, nullptr);
+	cJSON *request = cJSON_Parse(body + 4);
+	ASSERT_NE(request, nullptr);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetObjectItem(request, "thinking"), "type")), "disabled");
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(request, "chat_template_kwargs"),
+		"enable_thinking"), nullptr);
+	EXPECT_EQ(cJSON_GetObjectItem(request, "max_tokens")->valueint, 4000);
+	EXPECT_DOUBLE_EQ(cJSON_GetObjectItem(request, "temperature")->valuedouble, 0.5);
+	cJSON_Delete(request);
+	EXPECT_STREQ(model->extra_body_json, extra);
+	const char *messages[] = {"normal turn"};
+	ASSERT_EQ(model->chat(model, ctx->iteration_arena, nullptr, messages, 1,
+		nullptr, nullptr, nullptr), 200);
+	EXPECT_NE(std::strstr(srv.last_request, "\"type\":\"enabled\""), nullptr);
+	EXPECT_NE(std::strstr(srv.last_request, "\"enable_thinking\":true"), nullptr);
+	react_context_destroy(ctx);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
+TEST_F(MockServerTest, CompactionRejectsTruncatedReasoningAndToolProtocol)
+{
+	const char *responses[] = {
+		"{\"choices\":[{\"delta\":{\"content\":\"Partial checkpoint\"},"
+			"\"finish_reason\":\"length\"}]}",
+		"{\"choices\":[{\"delta\":{\"reasoning_content\":\"Still thinking\"},"
+			"\"finish_reason\":\"length\"}],\"usage\":{\"completion_tokens\":4000,"
+			"\"completion_tokens_details\":{\"reasoning_tokens\":4000}}}",
+		"{\"choices\":[{\"delta\":{\"content\":\"<｜｜DSML｜｜ calls>\"},"
+			"\"finish_reason\":\"stop\"}]}",
+		"{\"choices\":[{\"delta\":{\"content\":\"   \"},"
+			"\"finish_reason\":\"stop\"}]}",
+		"{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+	};
+	srv.response_status = 200;
+	START_MOCK_OR_SKIP(&srv);
+	char base[256];
+	snprintf(base, sizeof(base), "http://127.0.0.1:%d/v1", srv.port);
+	auto *model = model_llm_create(nullptr, "test", "mock-model", base, "test-key");
+	ASSERT_NE(model, nullptr);
+	auto *ctx = react_context_create(nullptr, nullptr, nullptr, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = model;
+	ctx->history_compaction_prompt = strdup("Write a plain text checkpoint.");
+	for (const char *response : responses) {
+		srv.response_body = response;
+		char *summary = nullptr;
+		EXPECT_EQ(ctx->compress.summarize("Historical evidence", ctx, &summary),
+			MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(summary, nullptr);
+		ASSERT_NE(ctx->last_error_detail, nullptr);
+		EXPECT_NE(std::strstr(ctx->last_error_detail, "Context compression"), nullptr);
+	}
+	react_context_destroy(ctx);
+	model_destroy(model);
+	mock_server_stop(&srv);
+}
+
 TEST_F(MockServerTest, SseRetryMetadataBelongsToTheRequest)
 {
 	srv.response_body = "{\"error\":{\"message\":\"rate limited\"}}";
@@ -4340,6 +4462,8 @@ struct capt_prompt_data {
 	int tool_count;
 	int calls;
 	int activate_on_first_call;
+	const char *discover_query;
+	int initial_tool_count;
 };
 
 static void capt_store_structured_messages(struct capt_prompt_data *d,
@@ -4404,6 +4528,19 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	capt_store_structured_messages(d, messages, msg_count);
 
 	memset(response, 0, sizeof(*response));
+	if (d->discover_query && d->calls++ == 0) {
+		d->initial_tool_count = tool_count;
+		response->tool_calls = static_cast<tool_call *>(calloc(1,
+			sizeof(*response->tool_calls)));
+		response->tool_call_count = 1;
+		strcpy(response->tool_calls[0].id, "discovery-test");
+		strcpy(response->tool_calls[0].name, "tool_search");
+		cJSON *args = cJSON_CreateObject();
+		cJSON_AddStringToObject(args, "query", d->discover_query);
+		response->tool_calls[0].arguments = cJSON_PrintUnformatted(args);
+		cJSON_Delete(args);
+		return 200;
+	}
 	if (d->activate_on_first_call && d->calls++ == 0) {
 		response->tool_calls = static_cast<tool_call *>(calloc(1,
 			sizeof(*response->tool_calls)));
@@ -4632,7 +4769,7 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		auto boundary = first.find("Runtime limits:");
 		ASSERT_NE(boundary, std::string::npos);
 		EXPECT_LT(first.find("Stable custom prompt"), first.find("Available skills:"));
-		EXPECT_LT(first.find("- alpha:"), first.find("- zeta:"));
+		EXPECT_LT(first.find("- alpha\n"), first.find("- zeta\n"));
 		std::string dynamic = capt->prompt;
 		EXPECT_LT(dynamic.find("<skill name=\"alpha\""),
 			  dynamic.find("<skill name=\"zeta\""));
@@ -6785,7 +6922,191 @@ TEST_F(PromptModeTest, SkillActivationPolicySurvivesReplacement)
 	}
 }
 
-TEST_F(PromptModeTest, SkillCatalogPreservesEveryEnabledDescription)
+TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLeakage)
+{
+	ASSERT_EQ(tool_discovery_init(&tools), 0);
+	struct tool_spec remote = {};
+	remote.origin = TOOL_ORIGIN_MCP;
+	remote.name = "remote_render";
+	remote.description = "DEFERRED_SCHEMA_RENDER";
+	remote.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	remote.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	remote.exec = test_tool_fn;
+	ASSERT_EQ(tool_register(&tools, &remote), 0);
+	remote.name = "remote_disabled";
+	ASSERT_EQ(tool_register(&tools, &remote), 0);
+	ASSERT_EQ(tool_disable(&tools, remote.name), 0);
+	capt->discover_query = "remote_";
+	char path[] = "/tmp/morph-discovery-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	struct db db = {};
+	struct session session = {};
+	ASSERT_EQ(db_open(nullptr, &db, path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "discovery", "mock", &session), 0);
+	ctx->history_enabled = 1;
+	ctx->history_db = &db;
+	ctx->history_session_id = session.id;
+	ctx->compress.max_context_tokens = 128000;
+	ctx->compress.in_turn_compaction = 1;
+	ctx->compress.summarize_threshold_ratio = .8;
+	ctx->compress.compress_target_ratio = .5;
+	ctx->compress.compaction_summary_max_tokens = 1000;
+	ctx->compress.summarize = test_compress_cb;
+	ASSERT_EQ(react_set_event_callback(ctx,
+		[](const struct morph_event *event, void *data) -> int {
+			if (!strcmp(event->name, "react.observation"))
+				static_cast<react_context *>(data)->force_compaction = 1;
+			return 0;
+		}, ctx), 0);
+	ASSERT_EQ(react_run(ctx, "render remotely", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
+	EXPECT_EQ(model_history_compaction_count(&db, session.id), 1);
+	EXPECT_EQ(capt->tool_count, capt->initial_tool_count + 1);
+	ASSERT_NE(capt->tool_descs, nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "remote_render:"), nullptr);
+	EXPECT_EQ(strstr(capt->tool_descs, "remote_disabled:"), nullptr);
+	ASSERT_EQ(react_set_event_callback(ctx, nullptr, nullptr), 0);
+	ASSERT_EQ(react_run(ctx, "continue", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->tool_descs, "remote_render:"), nullptr);
+	ctx->history_enabled = 0;
+	model_history_free_list(ctx->history_items);
+	ctx->history_items = nullptr;
+	ASSERT_EQ(react_run(ctx, "a different session", nullptr, nullptr), 0);
+	EXPECT_EQ(strstr(capt->tool_descs, "remote_render:"), nullptr);
+	ASSERT_EQ(tool_disable(&tools, "tool_search"), 0);
+	ASSERT_EQ(react_run(ctx, "discovery disabled", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->tool_descs, "remote_render:"), nullptr);
+	ctx->history_db = nullptr;
+	db_close(&db);
+	unlink(path);
+}
+
+TEST_F(PromptModeTest, DeferredDefinitionsReduceFixedContextBeforeDiscovery)
+{
+	std::string description(2000, 'x');
+	for (int i = 0; i < 16; i++) {
+		std::string name = "bulk_remote_" + std::to_string(i);
+		struct tool_spec remote = {};
+		remote.origin = TOOL_ORIGIN_MCP;
+		remote.name = name.c_str();
+		remote.description = description.c_str();
+		remote.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+		remote.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+		remote.exec = test_tool_fn;
+		ASSERT_EQ(tool_register(&tools, &remote), 0);
+	}
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	int original_count = capt->tool_count;
+	size_t original_bytes = strlen(capt->tool_descs);
+	ASSERT_EQ(tool_discovery_init(&tools), 0);
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_EQ(capt->tool_count, original_count - 16 + 1);
+	EXPECT_LT(strlen(capt->tool_descs), original_bytes / 4);
+	EXPECT_EQ(strstr(capt->tool_descs, "bulk_remote_"), nullptr);
+	EXPECT_NE(strstr(capt->tool_descs, "tool_search:"), nullptr);
+}
+
+TEST_F(PromptModeTest, DurableArtifactsAndPlanEvidenceSurviveCompactionAndRestore)
+{
+	char path[] = "/tmp/morph-checkpoint-XXXXXX";
+	int fd = mkstemp(path);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	struct db db = {};
+	struct session session = {};
+	struct session foreign = {};
+	ASSERT_EQ(db_open(nullptr, &db, path), 0);
+	ASSERT_EQ(db_init_schema(&db), 0);
+	ASSERT_EQ(session_create(&db, "checkpoint", "mock", &session), 0);
+	ASSERT_EQ(session_create(&db, "other", "mock", &foreign), 0);
+	std::string sql = "INSERT INTO outputs(session_id,kind,path,tool_name,created_at) VALUES(" +
+		std::to_string(session.id) + ",'video','/tmp/rendered-video.mp4','vid_gen',1),(" +
+		std::to_string(foreign.id) + ",'image','/tmp/foreign-secret.png','img_gen',1)";
+	ASSERT_EQ(db_exec(&db, sql.c_str()), 0);
+	auto plans = std::make_unique<plan_registry>();
+	plan_registry_init(plans.get());
+	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
+	const char *steps[] = {"Render video", "Visual review"};
+	auto *plan = plan_create(plans.get(), "video", "Deliver reviewed video", steps, 2);
+	ASSERT_NE(plan, nullptr);
+	ASSERT_EQ(plan_update_step(plans.get(), "video", 1, "completed"), 0);
+	std::strcpy(plan->steps[0].evidence, "ffprobe exit 0: duration 40 seconds");
+	std::strcpy(plan->steps[0].artifact, "/tmp/rendered-video.mp4");
+	ASSERT_EQ(plan_registry_save(plans.get()), 0);
+	plan_registry_init(plans.get());
+	ASSERT_EQ(plan_registry_bind(plans.get(), &db, session.id), 0);
+	ctx->plans = plans.get();
+	ctx->history_enabled = 1;
+	ctx->history_db = &db;
+	ctx->history_session_id = session.id;
+	ctx->compress.max_context_tokens = 128000;
+	ctx->compress.compress_target_ratio = .5;
+	ctx->compress.compaction_summary_max_tokens = 1000;
+	ctx->compress.summarize = test_compress_cb;
+	ASSERT_EQ(react_set_turn_id(ctx, "durable-checkpoint"), 0);
+	ASSERT_EQ(agent_history_record_user(ctx, "Render and review video"), 0);
+	ASSERT_EQ(agent_history_reload(ctx), 0);
+	ASSERT_EQ(agent_history_compact(ctx, 1), 1);
+	ASSERT_EQ(react_run(ctx, "continue", nullptr, nullptr), 0);
+	ASSERT_NE(capt->prompt, nullptr);
+	EXPECT_NE(strstr(capt->prompt, "/tmp/rendered-video.mp4"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "ffprobe exit 0: duration 40 seconds"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "Visual review"), nullptr);
+	EXPECT_NE(strstr(capt->prompt, "do not prove"), nullptr);
+	EXPECT_EQ(strstr(capt->prompt, "foreign-secret"), nullptr);
+	ctx->plans = nullptr;
+	ctx->history_db = nullptr;
+	ctx->history_enabled = 0;
+	db_close(&db);
+	unlink(path);
+}
+
+TEST_F(PromptModeTest, ProcessCheckpointRefreshesWithinTheSameTurn)
+{
+	struct status_probe {
+		react_context *ctx;
+		bool exited;
+	} probe{ctx, false};
+	struct tool_spec exec = {};
+	exec.origin = TOOL_ORIGIN_BUILTIN;
+	exec.name = "exec";
+	exec.description = "Process checkpoint test";
+	exec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+	exec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+	exec.exec = test_tool_fn;
+	exec.user_data = &probe;
+	exec.background_list = [](void *data, int64_t, cJSON **out) -> int {
+		auto *status = static_cast<status_probe *>(data);
+		*out = cJSON_CreateArray();
+		cJSON *item = cJSON_CreateObject();
+		cJSON_AddStringToObject(item, "session_id", "proc-checkpoint");
+		cJSON_AddStringToObject(item, "turn_id", status->ctx->turn_id);
+		cJSON_AddStringToObject(item, "status", status->exited ? "exited" : "running");
+		cJSON_AddItemToArray(*out, item);
+		return 0;
+	};
+	ASSERT_EQ(tool_register(&tools, &exec), 0);
+	ASSERT_EQ(tool_discovery_init(&tools), 0);
+	capt->discover_query = "exec";
+	ASSERT_EQ(react_set_event_callback(ctx,
+		[](const struct morph_event *event, void *data) -> int {
+			if (!strcmp(event->name, "react.observation"))
+				static_cast<status_probe *>(data)->exited = true;
+			return 0;
+		}, &probe), 0);
+	ASSERT_EQ(react_run(ctx, "check process", nullptr, nullptr), 0);
+	ASSERT_NE(capt->prompt, nullptr);
+	EXPECT_NE(strstr(capt->prompt, "\"status\":\"exited\""), nullptr);
+	EXPECT_EQ(strstr(capt->prompt, "\"status\":\"running\""), nullptr);
+	EXPECT_EQ(strstr(capt->system_prompt, "proc-checkpoint"), nullptr);
+	ASSERT_EQ(react_set_event_callback(ctx, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_unregister(&tools, "exec"), 0);
+}
+
+TEST_F(PromptModeTest, SkillCatalogDefersDescriptionsWithoutLosingDiscoverability)
 {
 	auto *skills = new skill_registry{};
 	skill_registry_init(NULL, skills);
@@ -6814,15 +7135,24 @@ TEST_F(PromptModeTest, SkillCatalogPreservesEveryEnabledDescription)
 			EXPECT_NE(system.find("Available skills:"), std::string::npos);
 			for (int i = 1; i < skills->count; i++) {
 				auto *entry = &skills->entries[i];
-				std::string expected = std::string("- ") + entry->fm.name +
-					": " + entry->fm.description + "\n";
-				EXPECT_NE(system.find(expected), std::string::npos)
-					<< "Missing full description: " << entry->fm.name;
+				std::string expected = std::string("- ") + entry->fm.name + "\n";
+				EXPECT_NE(system.find(expected), std::string::npos);
+				EXPECT_EQ(system.find(entry->fm.description), std::string::npos);
 			}
 			EXPECT_EQ(system.find("- skill-0:"), std::string::npos);
 			EXPECT_EQ(system.find("DISABLED_BODY_MARKER"), std::string::npos);
 		}
 	}
+	struct tool_result matches;
+	tool_result_init(&matches);
+	ASSERT_EQ(tool_exec(&tools, "skill_search",
+		"{\"query\":\"DESCRIPTION_TAIL_MARKER\",\"offset\":56}", &matches), 0);
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(matches.data, "skills")), 7);
+	EXPECT_EQ(cJSON_GetObjectItem(matches.data, "total")->valueint, 63);
+	tool_result_cleanup(&matches);
+	ASSERT_EQ(tool_disable(&tools, "skill_search"), 0);
+	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
+	EXPECT_NE(strstr(capt->system_prompt, "DESCRIPTION_TAIL_MARKER"), nullptr);
 	ASSERT_EQ(tool_disable(&tools, "activate_skill"), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
 	EXPECT_EQ(strstr(capt->system_prompt, "Available skills:"), nullptr);

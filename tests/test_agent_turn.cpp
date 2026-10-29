@@ -482,6 +482,63 @@ TEST_F(AgentTurnTest, FailedTurnKeepsUserWithoutPoisoningNextTurn)
 	model_history_free_list(active);
 }
 
+TEST_F(AgentTurnTest, FailedCompactionKeepsExecutedWorkAndCheckpointOnResume)
+{
+	struct agent_session_runtime runtime = {};
+	runtime.db = &db;
+	runtime.session_id = sess.id;
+	runtime.react = react;
+	runtime.flags = AGENT_TURN_LOAD_HISTORY | AGENT_TURN_SAVE_MESSAGES;
+	struct agent_turn_input input = {};
+	input.model_input = "finish the video";
+	input.turn_id = "failed-compaction";
+	struct agent_turn turn;
+	ASSERT_EQ(agent_turn_begin(&turn, &runtime, &input), 0);
+	struct tool_call call = {};
+	std::strcpy(call.id, "provider-write");
+	std::strcpy(call.tool_call_id, "local-write");
+	std::strcpy(call.name, "exec");
+	call.arguments = const_cast<char *>("{\"command\":\"render video\"}");
+	ASSERT_EQ(agent_history_record_tool_calls(react, nullptr, nullptr, &call, 1), 0);
+	ASSERT_EQ(agent_history_record_tool_result(react, "local-write", "provider-write",
+		"exec", "Video rendered and verified at /tmp/video.mp4", 0), 0);
+	struct model_history_insert checkpoint = {};
+	checkpoint.session_id = sess.id;
+	checkpoint.turn_id = input.turn_id;
+	checkpoint.kind = "compaction_summary";
+	checkpoint.role = "system";
+	checkpoint.content = "Video rendered; final visual review pending.";
+	checkpoint.active = 1;
+	ASSERT_EQ(model_history_add(&db, &checkpoint, nullptr), 0);
+	react->in_turn_compaction_count = 2;
+	react->last_error_code = MORPH_ERR_PROTOCOL;
+	react->state = REACT_STATE_ABORT;
+	react->outcome = REACT_OUTCOME_LLM_ERROR;
+	ASSERT_EQ(agent_turn_finish(&turn, nullptr), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 4);
+
+	struct agent_turn_input continuation = {};
+	continuation.model_input = "continue";
+	continuation.turn_id = "resume-compaction";
+	struct agent_turn next;
+	ASSERT_EQ(agent_turn_begin(&next, &runtime, &continuation), 0);
+	bool found_result = false;
+	bool found_checkpoint = false;
+	for (auto *item = react->history_items; item; item = item->next) {
+		if (std::strcmp(item->kind, "tool_result") == 0) {
+			found_result = true;
+			EXPECT_NE(std::strstr(item->content, "/tmp/video.mp4"), nullptr);
+		}
+		if (std::strcmp(item->kind, "compaction_summary") == 0)
+			found_checkpoint = true;
+	}
+	EXPECT_TRUE(found_result);
+	EXPECT_TRUE(found_checkpoint);
+	react->state = REACT_STATE_DONE;
+	react->outcome = REACT_OUTCOME_SUCCESS;
+	ASSERT_EQ(agent_turn_finish(&next, nullptr), 0);
+}
+
 TEST_F(AgentTurnTest, MissingConfigurationKeepsCompleteToolHistory)
 {
 	struct agent_session_runtime runtime = {};
@@ -743,7 +800,7 @@ static int agent_turn_unicode_summary(const char *, void *, char **out)
 	return *out ? 0 : -ENOMEM;
 }
 
-TEST_F(AgentTurnTest, CompactionSummaryUsesTokenizerLimitForUnicode)
+TEST_F(AgentTurnTest, OversizedUnicodeCheckpointIsRejectedWithoutTruncation)
 {
 	struct model_history_insert item = {};
 	item.session_id = sess.id;
@@ -760,11 +817,12 @@ TEST_F(AgentTurnTest, CompactionSummaryUsesTokenizerLimitForUnicode)
 	react->compress.compaction_summary_max_tokens = 30;
 	react->compress.summarize = agent_turn_unicode_summary;
 	ASSERT_EQ(agent_history_reload(react), 0);
-	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_EQ(agent_history_compact(react, 1), MORPH_ERR_PROTOCOL);
 	ASSERT_NE(react->history_items, nullptr);
-	EXPECT_STREQ(react->history_items->kind, "compaction_summary");
-	EXPECT_LE(tokenizer_count(tok, react->history_items->content), 30);
-	EXPECT_EQ(utf8valid(react->history_items->content), nullptr);
+	EXPECT_STREQ(react->history_items->kind, "user_message");
+	EXPECT_STREQ(react->history_items->content, "objective");
+	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 1);
 }
 
 TEST_F(AgentTurnTest, RestoredAnswerUsesCurrentTokenizerBeforeBudgetSelection)
@@ -901,4 +959,135 @@ TEST_F(AgentTurnTest, GenericJsonTruncationReturnsAnExplicitPreview)
 	EXPECT_LE(tokenizer_count(react->tokenizer, prepared), 100);
 	cJSON_Delete(json);
 	free(prepared);
+}
+
+TEST_F(AgentTurnTest, RepeatedCompactionSummarizesOldFactsAndKeepsRecentExchanges)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.compaction_summary_max_tokens = 100;
+	react->compress.compaction_user_message_tokens = 80;
+	ASSERT_EQ(react_set_turn_id(react, "long-running-task"), 0);
+	ASSERT_EQ(agent_history_record_user(react, "Render the video and verify it"), 0);
+	auto add_group = [&](const char *id, const char *command, const char *result,
+		const char *reasoning) {
+		struct tool_call call = {};
+		std::strcpy(call.id, id);
+		std::strcpy(call.tool_call_id, id);
+		std::strcpy(call.name, "exec");
+		call.arguments = const_cast<char *>(command);
+		EXPECT_EQ(agent_history_record_tool_calls(react, "Visible action", reasoning,
+			&call, 1), 0);
+		EXPECT_EQ(agent_history_record_tool_result(react, id, id, "exec", result, 0), 0);
+	};
+	std::string bulky = "OLD_RENDER_EVIDENCE /tmp/video.mp4 ";
+	for (int i = 0; i < 1000; i++)
+		bulky += "frame passed ";
+	add_group("old-render", "{\"command\":\"render\"}", bulky.c_str(),
+		"PRIVATE_REASONING_MUST_NOT_ENTER_SUMMARY");
+	add_group("recent-review", "{\"command\":\"inspect-current-frame\"}",
+		"RECENT_EXACT_RESULT", "RECENT_REASONING");
+	std::string captured;
+	react->compress.summarize_user_data = &captured;
+	react->compress.summarize = [](const char *input, void *data, char **out) -> int {
+		*static_cast<std::string *>(data) = input;
+		*out = strdup("Video rendered at /tmp/video.mp4; review pending; render passed.");
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_NE(captured.find("OLD_RENDER_EVIDENCE"), std::string::npos);
+	EXPECT_NE(captured.find("Visible action"), std::string::npos);
+	EXPECT_EQ(captured.find("PRIVATE_REASONING"), std::string::npos);
+	EXPECT_EQ(captured.find("RECENT_EXACT_RESULT"), std::string::npos);
+	EXPECT_EQ(captured.find("inspect-current-frame"), std::string::npos);
+	bool kept = false;
+	for (auto *item = react->history_items; item; item = item->next) {
+		if (!std::strcmp(item->kind, "assistant_tool_calls")) {
+			kept = true;
+			EXPECT_NE(std::strstr(item->payload_json, "RECENT_REASONING"), nullptr);
+		}
+	}
+	EXPECT_TRUE(kept);
+	sqlite3_stmt *stmt = nullptr;
+	ASSERT_EQ(sqlite3_prepare_v2(db.handle,
+		"SELECT count(*) FROM history_summary_sources s JOIN model_history_items m "
+		"ON s.source_item_id=m.id WHERE m.tool_call_id='recent-review'",
+		-1, &stmt, nullptr), SQLITE_OK);
+	ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+	EXPECT_EQ(sqlite3_column_int(stmt, 0), 0);
+	sqlite3_finalize(stmt);
+	add_group("bulky-review", "{\"command\":\"review\"}", bulky.c_str(), "PRIVATE_REASONING_2");
+	add_group("new-review", "{\"command\":\"check-latest\"}", "LATEST_EXACT_RESULT", nullptr);
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_NE(captured.find("Video rendered at /tmp/video.mp4"), std::string::npos);
+	EXPECT_EQ(captured.find("PRIVATE_REASONING"), std::string::npos);
+	EXPECT_EQ(captured.find("LATEST_EXACT_RESULT"), std::string::npos);
+	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 2);
+}
+
+TEST_F(AgentTurnTest, CompactionRejectsHistoryGrowthAfterSnapshotWithoutLosingNewResults)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	ASSERT_EQ(react_set_turn_id(react, "snapshot-test"), 0);
+	ASSERT_EQ(agent_history_record_user(react, "original objective"), 0);
+	react->compress.summarize_user_data = react;
+	react->compress.summarize = [](const char *, void *data, char **out) -> int {
+		auto *ctx = static_cast<react_context *>(data);
+		EXPECT_TRUE(sqlite3_get_autocommit(ctx->history_db->handle));
+		struct model_history_insert item = {};
+		item.session_id = ctx->history_session_id;
+		item.kind = "background_receipt";
+		item.role = "system";
+		item.content = "New tool result arrived during generation";
+		item.active = 1;
+		EXPECT_EQ(model_history_add(ctx->history_db, &item, nullptr), 0);
+		*out = strdup("Earlier objective checkpoint");
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	EXPECT_EQ(agent_history_compact(react, 1), -EAGAIN);
+	EXPECT_EQ(model_history_count(&db, sess.id, 1), 2);
+	EXPECT_EQ(model_history_compaction_count(&db, sess.id), 0);
+	EXPECT_TRUE(sqlite3_get_autocommit(db.handle));
+}
+
+TEST_F(AgentTurnTest, OversizedCheckpointIsRewrittenWithoutLosingVerification)
+{
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = sess.id;
+	react->compress.max_context_tokens = 1000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.compaction_summary_max_tokens = 100;
+	ASSERT_EQ(react_set_turn_id(react, "rewrite-test"), 0);
+	ASSERT_EQ(agent_history_record_user(react, "original objective"), 0);
+	int attempts = 0;
+	react->compress.summarize_user_data = &attempts;
+	react->compress.summarize = [](const char *input, void *data, char **out) -> int {
+		if (++*static_cast<int *>(data) == 1) {
+			std::string large;
+			for (int i = 0; i < 1000; i++)
+				large += "completed work ";
+			large += "Verification: build passed; visual review pending";
+			*out = strdup(large.c_str());
+		} else {
+			EXPECT_NE(std::strstr(input, "at most 50 tokens"), nullptr);
+			*out = strdup("Completed: rendered. Pending: visual review. Verification: build passed.");
+		}
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	ASSERT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_EQ(attempts, 2);
+	ASSERT_NE(react->history_items, nullptr);
+	EXPECT_NE(std::strstr(react->history_items->content, "Verification: build passed."), nullptr);
 }

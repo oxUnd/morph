@@ -1393,8 +1393,33 @@ static const char *history_compaction_text(const struct model_history_item *item
 		*rendered = history_user_content(item);
 		return *rendered;
 	}
-	return strcmp(item->kind, "assistant_tool_calls") == 0 ?
-		item->payload_json : item->content;
+	if (strcmp(item->kind, "assistant_tool_calls") == 0 && item->payload_json) {
+		cJSON *payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
+		if (!payload)
+			return item->payload_json;
+		/* Reasoning stays on the replay path; checkpoints consume facts only. */
+		cJSON_DeleteItemFromObjectCaseSensitive(payload, "reasoning_content");
+		if (item->content && item->content[0] &&
+		    !cJSON_AddStringToObject(payload, "content", item->content)) {
+			cJSON_Delete(payload);
+			return NULL;
+		}
+		*rendered = cJSON_PrintUnformatted(payload);
+		cJSON_Delete(payload);
+		return *rendered;
+	}
+	return item->content;
+}
+
+static int history_retained(const morph_array_t *preserved,
+	const struct model_history_item *item)
+{
+	for (size_t i = 0; preserved && i < preserved->nelts; i++) {
+		const int64_t *id = morph_array_get(preserved, i);
+		if (*id == item->id)
+			return 1;
+	}
+	return 0;
 }
 
 /* Steering can interleave a call and its output; remove both from candidates. */
@@ -1429,7 +1454,7 @@ static int history_result_in_omitted_group(const struct model_history_item *item
 }
 
 static int history_compaction_input(const struct model_history_item *items, morph_buf_t *buf,
-				    int64_t omitted_through)
+				    int64_t omitted_through, const morph_array_t *preserved)
 {
 	const struct model_history_item *item = items;
 	if (omitted_through &&
@@ -1438,6 +1463,11 @@ static int history_compaction_input(const struct model_history_item *items, morp
 		MORPH_RETURN(-ENOMEM);
 
 	while (item) {
+		/* Keep user requests as objective references; exclude retained exchanges. */
+		if (strcmp(item->kind, "user_message") && history_retained(preserved, item)) {
+			item = item->next;
+			continue;
+		}
 		if ((!strcmp(item->kind, "assistant_tool_calls") &&
 		     item->sequence_no <= omitted_through) ||
 		    (!strcmp(item->kind, "tool_result") && omitted_through &&
@@ -1450,10 +1480,12 @@ static int history_compaction_input(const struct model_history_item *items, morp
 		const char *text = history_compaction_text(item, &rendered);
 		int rc = 0;
 
-		if (strcmp(item->kind, "user_message") == 0 && !rendered)
+		if (!text && agent_history_item_replayable(item) &&
+		    (item->content || item->payload_json))
 			MORPH_RETURN(-ENOMEM);
 		if (text && text[0] &&
 		    morph_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
+			history_retained(preserved, item) ? "retained_request_reference" :
 			item->kind, text) != 0)
 			rc = -ENOMEM;
 		free(rendered);
@@ -1586,7 +1618,8 @@ static int history_refresh_retention_tokens(struct react_context *ctx)
 	return 0;
 }
 
-static int history_record_summary_sources(struct react_context *ctx, int64_t summary_id)
+static int history_record_summary_sources(struct react_context *ctx, int64_t summary_id,
+	const morph_array_t *preserved)
 {
 	sqlite3_stmt *stmt = NULL;
 	int rc = sqlite3_prepare_v2(ctx->history_db->handle,
@@ -1597,6 +1630,8 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 	if (rc != SQLITE_OK)
 		MORPH_RETURN(MORPH_ERR_DB);
 	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
+		if (strcmp(item->kind, "user_message") && history_retained(preserved, item))
+			continue;
 		char *rendered = NULL;
 		const char *text = history_compaction_text(item, &rendered);
 		int has_text = text && text[0];
@@ -1622,9 +1657,10 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 
 /* Keep the old window until the new database window can actually replay. */
 static int history_compact_checked(struct react_context *ctx,
-	const char *summary, int summary_tokens, int user_budget,
-	int recent_budget, int input_tokens, int keep_rounds,
-	const char *trigger_kind, int record_sources, int *active_count)
+	const char *summary, int summary_tokens, int input_tokens,
+	const char *trigger_kind, int record_sources, int *active_count,
+	history_compaction_validator validate, void *user_data,
+	const morph_array_t *preserved, int64_t cutoff)
 {
 	struct model_history_item *candidate = NULL;
 	int64_t summary_id = 0;
@@ -1635,17 +1671,19 @@ static int history_compact_checked(struct react_context *ctx,
 		return rc;
 	rc = history_refresh_retention_tokens(ctx);
 	if (rc == 0)
-		rc = model_history_compact(ctx->history_db, ctx->history_session_id,
-			ctx->turn_id, summary, summary_tokens, user_budget, recent_budget,
-			input_tokens, keep_rounds, trigger_kind, &summary_id);
+		rc = model_history_compact_selected(ctx->history_db, ctx->history_session_id,
+			ctx->turn_id, summary, summary_tokens, input_tokens, trigger_kind,
+			&summary_id, preserved, cutoff);
 	if (rc == 0 && record_sources)
-		rc = history_record_summary_sources(ctx, summary_id);
+		rc = history_record_summary_sources(ctx, summary_id, preserved);
 	if (rc == 0) {
 		candidate = model_history_list(ctx->history_db,
 			ctx->history_session_id, 1, &count);
 		rc = count < 0 ? MORPH_ERR_DB
 			       : history_validate_replay(ctx ? ctx->logger : NULL, candidate);
 	}
+	if (rc == 0 && validate)
+		rc = validate(candidate, user_data);
 	if (rc == 0)
 		rc = db_exec(ctx->history_db, "RELEASE history_replay;");
 	if (rc != 0) {
@@ -1660,32 +1698,50 @@ static int history_compact_checked(struct react_context *ctx,
 	return 0;
 }
 
-/* Byte limits are only an initial estimate; verify with the active tokenizer. */
-static int history_limit_summary(struct react_context *ctx, char *summary,
-				 int max_tokens)
+static char *history_finish_summary(struct react_context *ctx, const char *summary,
+	int pruned_groups)
 {
-	int tokens = tokenizer_count(ctx->tokenizer, summary);
+	if (!pruned_groups)
+		return history_redact_all(ctx, summary);
+	morph_buf_t marked;
+	if (morph_buf_init(&marked, 256) != 0)
+		return NULL;
+	cJSON *root = cJSON_ParseWithOpts(summary, NULL, 1);
+	cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "working_state");
+	int rc = morph_buf_printf(&marked,
+		"%d older tool groups were omitted; their outcomes are unavailable.\n%s",
+		pruned_groups, cJSON_IsString(state) ? state->valuestring : summary);
+	char *text = NULL;
+	if (rc == 0 && cJSON_IsString(state)) {
+		if (cJSON_SetValuestring(state, morph_buf_cstr(&marked)))
+			text = cJSON_PrintUnformatted(root);
+	} else if (rc == 0) {
+		text = morph_buf_detach(&marked);
+	}
+	cJSON_Delete(root);
+	morph_buf_cleanup(&marked);
+	char *redacted = text ? history_redact_all(ctx, text) : NULL;
+	free(text);
+	return redacted;
+}
 
-	while (tokens > max_tokens && summary[0]) {
-		size_t len = strlen(summary);
-		size_t bytes = (size_t)((double)len *
-			(double)max_tokens / (double)tokens);
-
-		if (bytes >= len)
-			bytes = len - 1;
-		summary[utf8_clamp_bytes(summary, bytes)] = '\0';
-		tokens = tokenizer_count(ctx->tokenizer, summary);
+static int history_window_tokens(const struct react_context *ctx)
+{
+	int tokens = 0;
+	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
+		if (agent_history_item_replayable(item) && item->token_count > 0)
+			tokens = item->token_count > INT_MAX - tokens ? INT_MAX :
+				tokens + item->token_count;
 	}
 	return tokens;
 }
 
-int agent_history_compact_with_trigger(struct react_context *ctx, int force,
-	const char *trigger_kind_in)
+static int history_compact_selected(struct react_context *ctx, int force,
+	const char *trigger_kind_in, history_compaction_validator validate, void *user_data,
+	const morph_array_t *preserved, int64_t cutoff)
 {
-	struct model_history_item *item;
 	morph_buf_t input;
 	char *summary = NULL;
-	char *redacted = NULL;
 	int max_summary_tokens;
 	int user_budget;
 	int recent_budget;
@@ -1703,13 +1759,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	if (!ctx || !ctx->history_enabled || !ctx->history_db ||
 	    !ctx->compress.summarize || ctx->compress.max_context_tokens <= 0)
 		return 0;
-	for (item = ctx->history_items; item; item = item->next) {
-		if (!agent_history_item_replayable(item))
-			continue;
-		if (item->token_count > 0)
-			input_tokens = item->token_count > INT_MAX - input_tokens ?
-				INT_MAX : input_tokens + item->token_count;
-	}
+	input_tokens = history_window_tokens(ctx);
 	threshold = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.summarize_threshold_ratio);
 	if (!force && input_tokens < threshold)
@@ -1719,7 +1769,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	rc = morph_buf_init(&input, 8192);
 	if (rc != 0)
 		return rc;
-	rc = history_compaction_input(ctx->history_items, &input, omitted_through);
+	rc = history_compaction_input(ctx->history_items, &input, omitted_through, preserved);
 	if (rc == 0) {
 		for (int attempt = 0; attempt < 3; attempt++) {
 			struct timespec started = {0};
@@ -1735,19 +1785,34 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 				 ctx->compress.compaction_summary_max_tokens, pruned_groups);
 			rc = ctx->compress.summarize(morph_buf_cstr(&input),
 						     ctx->compress.summarize_user_data, &summary);
+			if (rc == 0 && summary && summary[0]) {
+				char *prepared = history_finish_summary(ctx, summary,
+					pruned_groups);
+				free(summary);
+				summary = prepared;
+				if (!summary)
+					MORPH_SET_ERR(rc, -ENOMEM);
+			}
 			double elapsed_ms = timed &&
 				clock_gettime(CLOCK_MONOTONIC, &finished) == 0 ?
 				(double)(finished.tv_sec - started.tv_sec) * 1000.0 +
 				(double)(finished.tv_nsec - started.tv_nsec) / 1000000.0 : 0.0;
 			int empty = !summary || !summary[0];
 
+			int limit = ctx->compress.compaction_summary_max_tokens;
+			if (rc == 0 && summary && summary[0] && limit > 0 &&
+			    tokenizer_count(ctx->tokenizer, summary) > limit) {
+				log_warn(ctx->logger, "history summary exceeds tokenizer budget; "
+					 "retrying without truncating checkpoint fields");
+				rc = MORPH_ERR_PROTOCOL;
+			}
 			log_write(ctx->logger, rc == 0 && !empty ? LOG_INFO : LOG_WARN,
 				  "history summary response: session=%lld turn=%s trigger=%s "
 				  "attempt=%d/3 elapsed_ms=%.0f result=%s summary_bytes=%zu "
 				  "error=%s",
 				  (long long)ctx->history_session_id, ctx->turn_id,
 				  trigger_kind, attempt + 1, elapsed_ms,
-				  rc != 0 ? "request_failed" : empty ? "empty_summary" : "ok",
+				  rc != 0 ? "failed" : empty ? "empty_summary" : "ok",
 				  summary ? strlen(summary) : 0, morph_strerror(rc));
 			if (rc == 0 && summary && summary[0])
 				break;
@@ -1758,6 +1823,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			if (rc == MORPH_ERR_CONTEXT_LIMIT && pruned_groups < 32) {
 				const struct model_history_item *group = ctx->history_items;
 				while (group && (group->sequence_no <= omitted_through ||
+						 history_retained(preserved, group) ||
 						 strcmp(group->kind, "assistant_tool_calls")))
 					group = group->next;
 				if (!group)
@@ -1771,7 +1837,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 				pruned_groups++;
 				morph_buf_reset(&input);
 				rc = history_compaction_input(ctx->history_items, &input,
-							      omitted_through);
+							      omitted_through, preserved);
 				if (rc != 0)
 					break;
 				log_warn(ctx ? ctx->logger : NULL,
@@ -1783,6 +1849,20 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != MORPH_ERR_PROTOCOL &&
 					     rc != -ETIMEDOUT))
 				break;
+			if (rc == MORPH_ERR_PROTOCOL) {
+				int target = ctx->compress.compaction_summary_max_tokens;
+				target = target > 0 ? target / (attempt + 2) : 1000;
+				if (morph_buf_printf(&input,
+					"\n\n[Checkpoint retry instruction: the previous response "
+					"was unusable. Return a complete, concise factual "
+					"checkpoint in at most %d tokens. Preserve completed "
+					"work, exact paths and pending checks. Do not "
+					"continue the task or call tools.]\n",
+					target > 0 ? target : 1) != 0) {
+					MORPH_SET_ERR(rc, -ENOMEM);
+					break;
+				}
+			}
 			log_warn(ctx->logger,
 				 "history summary retry scheduled: session=%lld turn=%s "
 				 "next_attempt=%d/3 delay_ms=%u error=%s",
@@ -1809,32 +1889,7 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			morph_strerror(failure));
 		MORPH_RETURN(failure);
 	}
-	if (pruned_groups) {
-		morph_buf_t marked;
-		if (morph_buf_init(&marked, 256) != 0) {
-			free(summary);
-			MORPH_RETURN(-ENOMEM);
-		}
-		rc = morph_buf_printf(
-		    &marked,
-		    "%d older tool groups were omitted; their outcomes are unavailable.\n%s",
-		    pruned_groups, summary);
-		free(summary);
-		if (rc != 0) {
-			morph_buf_cleanup(&marked);
-			return rc;
-		}
-		summary = morph_buf_detach(&marked);
-	}
-	redacted = history_redact_all(ctx, summary);
-	free(summary);
-	summary = redacted;
-	if (!summary)
-		MORPH_RETURN(-ENOMEM);
-	max_summary_tokens = ctx->compress.compaction_summary_max_tokens;
-	max_summary_tokens = max_summary_tokens > 0 ?
-		history_limit_summary(ctx, summary, max_summary_tokens) :
-		tokenizer_count(ctx->tokenizer, summary);
+	max_summary_tokens = tokenizer_count(ctx->tokenizer, summary);
 	if (!summary[0]) {
 		free(summary);
 		MORPH_RETURN(MORPH_ERR_PROTOCOL);
@@ -1850,10 +1905,8 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	recent_budget = target_budget - max_summary_tokens - user_budget;
 	if (recent_budget < 0)
 		recent_budget = 0;
-	rc = history_compact_checked(ctx, summary, max_summary_tokens,
-		user_budget, recent_budget, input_tokens,
-		ctx->compress.max_history_rounds,
-		trigger_kind, record_sources, &count);
+	rc = history_compact_checked(ctx, summary, max_summary_tokens, input_tokens,
+		trigger_kind, record_sources, &count, validate, user_data, preserved, cutoff);
 	free(summary);
 	if (rc != 0) {
 		(void)model_history_compaction_attempt_add(ctx->history_db,
@@ -1895,6 +1948,73 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		}
 	}
 	return 1;
+}
+
+int agent_history_compact_validated(struct react_context *ctx, int force,
+	const char *trigger_kind, history_compaction_validator validate, void *user_data)
+{
+	morph_array_t preserved = {0};
+	sqlite3_stmt *stmt = NULL;
+	int64_t cutoff = 0;
+	int rc;
+
+	if (!ctx || !ctx->history_enabled || !ctx->history_db || !ctx->history_items ||
+	    !ctx->compress.summarize || ctx->compress.max_context_tokens <= 0)
+		return 0;
+	int threshold = (int)((double)ctx->compress.max_context_tokens *
+		ctx->compress.summarize_threshold_ratio);
+	if (!force && history_window_tokens(ctx) < threshold)
+		return 0;
+	int target = (int)((double)ctx->compress.max_context_tokens *
+		ctx->compress.compress_target_ratio);
+	int reserve = ctx->compress.compaction_summary_max_tokens;
+	if (reserve <= 0)
+		reserve = target / 4 < 4096 ? target / 4 : 4096;
+	int available = target > reserve ? target - reserve : 0;
+	int users = ctx->compress.compaction_user_message_tokens;
+	users = users < available ? users : available;
+	if (users < 0)
+		users = 0;
+	rc = db_exec(ctx->history_db, "SAVEPOINT history_selection;");
+	if (rc != 0)
+		return rc;
+	rc = history_refresh_retention_tokens(ctx);
+	if (rc == 0)
+		rc = model_history_select_retained(ctx->history_db, ctx->history_session_id,
+			users, available - users, ctx->compress.max_history_rounds, &preserved);
+	if (rc == 0) {
+		rc = sqlite3_prepare_v2(ctx->history_db->handle,
+			"SELECT COALESCE(MAX(sequence_no),0) FROM model_history_items "
+			"WHERE session_id=?", -1, &stmt, NULL);
+		if (rc == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1, ctx->history_session_id);
+			rc = sqlite3_step(stmt);
+		}
+		if (rc == SQLITE_ROW) {
+			cutoff = sqlite3_column_int64(stmt, 0);
+			rc = 0;
+		} else {
+			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		}
+		sqlite3_finalize(stmt);
+	}
+	if (rc == 0)
+		rc = db_exec(ctx->history_db, "RELEASE history_selection;");
+	if (rc != 0) {
+		(void)db_exec(ctx->history_db,
+			"ROLLBACK TO history_selection; RELEASE history_selection;");
+	} else {
+		rc = history_compact_selected(ctx, force, trigger_kind, validate, user_data,
+			&preserved, cutoff);
+	}
+	morph_array_cleanup(&preserved);
+	return rc;
+}
+
+int agent_history_compact_with_trigger(struct react_context *ctx, int force,
+	const char *trigger_kind)
+{
+	return agent_history_compact_validated(ctx, force, trigger_kind, NULL, NULL);
 }
 
 int agent_history_compact(struct react_context *ctx, int force)

@@ -1013,13 +1013,106 @@ static int history_preserve_rounds(struct db *db, int64_t session_id,
 	return 0;
 }
 
-int model_history_compact(struct db *db, int64_t session_id,
+int model_history_select_retained(struct db *db, int64_t session_id,
+	int user_message_tokens, int recent_history_tokens, int keep_recent_rounds,
+	morph_array_t *preserved)
+{
+	sqlite3_stmt *stmt = NULL;
+	int recent_used_tokens = 0;
+	int failure = MORPH_ERR_DB;
+	int rc;
+
+	if (!db || !db->handle || session_id <= 0 || !preserved ||
+	    user_message_tokens < 0 || recent_history_tokens < 0 || keep_recent_rounds < 0)
+		MORPH_RETURN(-EINVAL);
+	rc = morph_array_init(preserved, 8, sizeof(int64_t));
+	if (rc != 0)
+		return rc;
+	/* User retention is a cap, not a reservation that wastes unused capacity.
+	 * Select pairs first, then spend the remaining combined budget once. */
+	rc = history_preserve_user_pairs(db, session_id, preserved,
+		&user_message_tokens);
+	if (rc == 0) {
+		recent_history_tokens = user_message_tokens > INT_MAX - recent_history_tokens ?
+			INT_MAX : recent_history_tokens + user_message_tokens;
+		rc = history_preserve_rounds(db, session_id, preserved,
+			keep_recent_rounds, &recent_history_tokens);
+	}
+	if (rc != 0) {
+		MORPH_SET_ERR(failure, rc);
+		goto out_cleanup;
+	}
+	if (recent_history_tokens > 0) {
+		const char *recent_sql =
+			"SELECT id,kind,token_count FROM model_history_items "
+			"WHERE session_id=? AND active=1 "
+			"AND kind NOT IN ('user_message','compaction_summary') "
+			"ORDER BY sequence_no DESC";
+		int need_tool_call = 0;
+		size_t group_start = preserved->nelts;
+
+		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
+		if (rc != SQLITE_OK)
+			goto out_cleanup;
+		sqlite3_bind_int64(stmt, 1, session_id);
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			const char *kind = (const char *)sqlite3_column_text(stmt, 1);
+			int tokens = sqlite3_column_int(stmt, 2);
+			int64_t *id;
+
+			if (history_preserved_contains(preserved,
+			    sqlite3_column_int64(stmt, 0)))
+				continue;
+			if (tokens < 0)
+				tokens = 0;
+			if (tokens > recent_history_tokens - recent_used_tokens) {
+				preserved->nelts = group_start;
+				rc = SQLITE_DONE;
+				break;
+			}
+			id = history_preserved_add(preserved,
+				sqlite3_column_int64(stmt, 0));
+			if (!id) {
+				rc = SQLITE_NOMEM;
+				break;
+			}
+			recent_used_tokens += tokens;
+			if (kind && strcmp(kind, "tool_result") == 0)
+				need_tool_call = 1;
+			else if (need_tool_call && kind &&
+				 strcmp(kind, "assistant_tool_calls") == 0)
+				need_tool_call = 0;
+			if (!need_tool_call)
+				group_start = preserved->nelts;
+			if (!need_tool_call &&
+			    recent_used_tokens >= recent_history_tokens) {
+				rc = SQLITE_DONE;
+				break;
+			}
+		}
+		if (need_tool_call)
+			preserved->nelts = group_start;
+		sqlite3_finalize(stmt);
+		stmt = NULL;
+		if (rc != SQLITE_DONE)
+			goto out_cleanup;
+	}
+	return 0;
+
+out_cleanup:
+	sqlite3_finalize(stmt);
+	morph_array_cleanup(preserved);
+	MORPH_RETURN(failure);
+}
+
+static int history_compact_window(struct db *db, int64_t session_id,
 			  const char *turn_id, const char *summary,
 			  int summary_tokens, int user_message_tokens,
 			  int recent_history_tokens, int input_tokens,
 			  int keep_recent_rounds,
 			  const char *trigger_kind,
-			  int64_t *summary_item_id)
+			  int64_t *summary_item_id, const morph_array_t *selected,
+			  int64_t expected_cutoff)
 {
 	const char *inactive_sql =
 		"UPDATE model_history_items SET active=0 "
@@ -1037,7 +1130,6 @@ int model_history_compact(struct db *db, int64_t session_id,
 	int64_t new_id = 0;
 	int64_t cutoff_sequence_no = 0;
 	int failure = MORPH_ERR_DB;
-	int recent_used_tokens = 0;
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !summary || !summary[0] ||
@@ -1054,74 +1146,22 @@ int model_history_compact(struct db *db, int64_t session_id,
 		morph_array_cleanup(&preserved);
 		return rc;
 	}
-	/* User retention is a cap, not a reservation that wastes unused capacity.
-	 * Select pairs first, then spend the remaining combined budget once. */
-	rc = history_preserve_user_pairs(db, session_id, &preserved,
-		&user_message_tokens);
-	if (rc == 0) {
-		recent_history_tokens = user_message_tokens > INT_MAX - recent_history_tokens ?
-			INT_MAX : recent_history_tokens + user_message_tokens;
-		rc = history_preserve_rounds(db, session_id, &preserved,
-			keep_recent_rounds, &recent_history_tokens);
-	}
-	if (rc != 0) {
-		MORPH_SET_ERR(failure, rc);
-		goto out_rollback;
-	}
-	if (recent_history_tokens > 0) {
-		const char *recent_sql =
-			"SELECT id,kind,token_count FROM model_history_items "
-			"WHERE session_id=? AND active=1 "
-			"AND kind NOT IN ('user_message','compaction_summary') "
-			"ORDER BY sequence_no DESC";
-		int need_tool_call = 0;
-		size_t group_start = preserved.nelts;
-
-		rc = sqlite3_prepare_v2(db->handle, recent_sql, -1, &stmt, NULL);
-		if (rc != SQLITE_OK)
+	if (selected) {
+		int64_t *ids = morph_array_push_n(&preserved, selected->nelts);
+		if (selected->nelts && !ids) {
+			MORPH_SET_ERR(failure, -ENOMEM);
 			goto out_rollback;
-		sqlite3_bind_int64(stmt, 1, session_id);
-		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-			const char *kind = (const char *)sqlite3_column_text(stmt, 1);
-			int tokens = sqlite3_column_int(stmt, 2);
-			int64_t *id;
-
-			if (history_preserved_contains(&preserved,
-			    sqlite3_column_int64(stmt, 0)))
-				continue;
-			if (tokens < 0)
-				tokens = 0;
-			if (tokens > recent_history_tokens - recent_used_tokens) {
-				preserved.nelts = group_start;
-				rc = SQLITE_DONE;
-				break;
-			}
-			id = history_preserved_add(&preserved,
-				sqlite3_column_int64(stmt, 0));
-			if (!id) {
-				rc = SQLITE_NOMEM;
-				break;
-			}
-			recent_used_tokens += tokens;
-			if (kind && strcmp(kind, "tool_result") == 0)
-				need_tool_call = 1;
-			else if (need_tool_call && kind &&
-				 strcmp(kind, "assistant_tool_calls") == 0)
-				need_tool_call = 0;
-			if (!need_tool_call)
-				group_start = preserved.nelts;
-			if (!need_tool_call &&
-			    recent_used_tokens >= recent_history_tokens) {
-				rc = SQLITE_DONE;
-				break;
-			}
 		}
-		if (need_tool_call)
-			preserved.nelts = group_start;
-		sqlite3_finalize(stmt);
-		stmt = NULL;
-		if (rc != SQLITE_DONE)
+		if (selected->nelts)
+			memcpy(ids, selected->elts, selected->nelts * sizeof(*ids));
+	} else {
+		morph_array_cleanup(&preserved);
+		rc = model_history_select_retained(db, session_id, user_message_tokens,
+			recent_history_tokens, keep_recent_rounds, &preserved);
+		if (rc != 0) {
+			MORPH_SET_ERR(failure, rc);
 			goto out_rollback;
+		}
 	}
 	rc = sqlite3_prepare_v2(db->handle,
 		"SELECT COALESCE(MAX(sequence_no),0) FROM model_history_items "
@@ -1137,6 +1177,10 @@ int model_history_compact(struct db *db, int64_t session_id,
 	stmt = NULL;
 	if (rc != SQLITE_OK)
 		goto out_rollback;
+	if (selected && cutoff_sequence_no != expected_cutoff) {
+		MORPH_SET_ERR(failure, -EAGAIN);
+		goto out_rollback;
+	}
 	rc = sqlite3_prepare_v2(db->handle, inactive_sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		goto out_rollback;
@@ -1205,6 +1249,27 @@ out_rollback:
 		"ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
 	morph_array_cleanup(&preserved);
 	MORPH_RETURN(failure);
+}
+
+int model_history_compact(struct db *db, int64_t session_id,
+	const char *turn_id, const char *summary, int summary_tokens,
+	int user_message_tokens, int recent_history_tokens, int input_tokens,
+	int keep_recent_rounds, const char *trigger_kind, int64_t *summary_item_id)
+{
+	return history_compact_window(db, session_id, turn_id, summary, summary_tokens,
+		user_message_tokens, recent_history_tokens, input_tokens, keep_recent_rounds,
+		trigger_kind, summary_item_id, NULL, 0);
+}
+
+int model_history_compact_selected(struct db *db, int64_t session_id,
+	const char *turn_id, const char *summary, int summary_tokens, int input_tokens,
+	const char *trigger_kind, int64_t *summary_item_id,
+	const morph_array_t *preserved, int64_t cutoff)
+{
+	if (!preserved)
+		MORPH_RETURN(-EINVAL);
+	return history_compact_window(db, session_id, turn_id, summary, summary_tokens,
+		0, 0, input_tokens, 0, trigger_kind, summary_item_id, preserved, cutoff);
 }
 
 int trace_save(struct db *db, int64_t session_id, int round_no,

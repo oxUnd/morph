@@ -63,6 +63,11 @@ int agent_history_maybe_compact(struct react_context *ctx);
 int agent_history_compact(struct react_context *ctx, int force);
 int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	const char *trigger_kind);
+/* Validate a candidate inside the short commit transaction, after generation. */
+typedef int (*history_compaction_validator)(const struct model_history_item *items,
+	void *user_data);
+int agent_history_compact_validated(struct react_context *ctx, int force,
+	const char *trigger_kind, history_compaction_validator validate, void *user_data);
 int agent_history_reload(struct react_context *ctx);
 int agent_history_repair_interrupted(struct db *db, int64_t session_id);
 int agent_history_diagnose(const struct model_history_item *items,

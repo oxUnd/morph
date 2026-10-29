@@ -324,6 +324,36 @@ TEST_F(HistoryInspectionTest, TransientSummaryFailureRetriesBeforeCommit)
 	react_context_destroy(react);
 }
 
+TEST_F(HistoryInspectionTest, InvalidSummaryRetryRequestsShorterCheckpoint)
+{
+	Add("user_message", "EXACT_OBJECTIVE");
+	auto *react = react_context_create(nullptr, nullptr, nullptr, nullptr);
+	ASSERT_NE(react, nullptr);
+	int attempts = 0;
+	react->history_enabled = 1;
+	react->history_db = &db;
+	react->history_session_id = session.id;
+	react->compress.max_context_tokens = 10000;
+	react->compress.compress_target_ratio = .5;
+	react->compress.compaction_summary_max_tokens = 4000;
+	react->compress.summarize_user_data = &attempts;
+	react->compress.summarize = [](const char *input, void *user, char **out) -> int {
+		EXPECT_NE(strstr(input, "EXACT_OBJECTIVE"), nullptr);
+		int attempt = ++*static_cast<int *>(user);
+		if (attempt == 1)
+			return MORPH_ERR_PROTOCOL;
+		EXPECT_NE(strstr(input, "Checkpoint retry instruction"), nullptr);
+		EXPECT_NE(strstr(input, "at most 2000 tokens"), nullptr);
+		*out = strdup("Objective and verified work checkpoint");
+		return *out ? 0 : -ENOMEM;
+	};
+	ASSERT_EQ(agent_history_reload(react), 0);
+	EXPECT_EQ(agent_history_compact(react, 1), 1);
+	EXPECT_EQ(attempts, 2);
+	EXPECT_EQ(model_history_compaction_count(&db, session.id), 1);
+	react_context_destroy(react);
+}
+
 TEST_F(HistoryInspectionTest, OverflowPrunesOnlyCandidateToolGroupsAndKeepsRequirements)
 {
 	Add("user_message", "EXACT_REQUIREMENT");
@@ -340,8 +370,9 @@ TEST_F(HistoryInspectionTest, OverflowPrunesOnlyCandidateToolGroupsAndKeepsRequi
 	strcpy(call.name, "exec");
 	call.arguments = const_cast<char *>("{}");
 	ASSERT_EQ(agent_history_record_tool_calls(react, "gather", nullptr, &call, 1), 0);
+	std::string bulky = "OLD_BULKY_TOOL_RESULT " + std::string(4000, 'x');
 	ASSERT_EQ(agent_history_record_tool_result(react, "old", "provider-old", "exec",
-						   "OLD_BULKY_TOOL_RESULT", 0),
+						   bulky.c_str(), 0),
 		  0);
 	react->compress.max_context_tokens = 1000;
 	react->compress.compress_target_ratio = .5;

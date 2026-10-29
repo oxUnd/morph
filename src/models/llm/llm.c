@@ -168,6 +168,7 @@ static cJSON *build_simple_messages_cjson(const char *system_prompt,
 static int build_chat_body_json(struct morph_log *logger, struct arena *arena, const char *model_id,
 				const char *system_prompt, const char **messages, int n,
 				int max_tokens, int stream, const char *extra_body_json,
+				const struct llm_adapter *adapter, int disable_thinking,
 				char **out_body, size_t *out_body_len)
 {
 	cJSON *root;
@@ -199,6 +200,8 @@ static int build_chat_body_json(struct morph_log *logger, struct arena *arena, c
 	cJSON_AddNumberToObject(root, "max_tokens",
 				max_tokens > 0 ? max_tokens : 4096);
 	int rc = add_extra_body_json(logger, root, extra_body_json);
+	if (rc == 0 && disable_thinking && adapter && adapter->disable_thinking)
+		rc = adapter->disable_thinking(root);
 	if (rc < 0) {
 		cJSON_Delete(root);
 		return rc;
@@ -804,7 +807,8 @@ static int llm_chat(struct model *self, struct arena *arena,
 	size_t body_len = 0;
 	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id,
 				      system_prompt, messages, n, max_tokens, 1,
-				      self->extra_body_json, &body, &body_len);
+				      self->extra_body_json, llm_adapter_resolve(self),
+				      opts ? opts->disable_thinking : 0, &body, &body_len);
 	if (rc < 0)
 		return rc;
 
@@ -846,6 +850,8 @@ static int llm_chat(struct model *self, struct arena *arena,
 	}
 
 	llm_usage_report(self, &ctx, body_len);
+	if (opts && opts->usage)
+		*opts->usage = ctx.usage;
 	return status;
 }
 
@@ -1836,7 +1842,8 @@ static int llm_generate(struct model *self, const char *prompt,
 	char *body = NULL;
 	size_t body_len = 0;
 	int rc = build_chat_body_json(self ? self->http.logger : NULL, arena, self->model_id, NULL,
-				      messages, 1, self->max_tokens, 0, self->extra_body_json,
+				      messages, 1, self->max_tokens, 0,
+				      self->extra_body_json, NULL, 0,
 				      &body, &body_len);
 	if (rc < 0) {
 		arena_destroy(arena);

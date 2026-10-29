@@ -1,12 +1,15 @@
 #include "tool.h"
+#include "tool_runtime.h"
 #include "util/buf.h"
 #include "util/arena.h"
 #include <stdint.h>
 #include "util/error.h"
 #include "util/log.h"
+#include "util/utf8.h"
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
 
 void tool_result_init(struct tool_result *result)
 {
@@ -942,4 +945,142 @@ int tool_has_flag(struct tool_registry *reg, const char *name,
 	if (!e)
 		return 0;
 	return (e->flags & flag) != 0;
+}
+
+int tool_is_deferred(struct tool_registry *reg, const char *name)
+{
+	struct tool_entry *entry = reg ? tool_lookup(reg, name) : NULL;
+
+	if (!entry || !tool_lookup(reg, "tool_search") ||
+	    tool_is_disabled(reg, "tool_search") || !strcmp(name, "tool_search"))
+		return 0;
+	return entry->origin != TOOL_ORIGIN_BUILTIN || (entry->flags & TOOL_FLAG_DEFERRED) ||
+		!strncmp(name, "img_", 4) || !strncmp(name, "vid_", 4);
+}
+
+char *tool_discovery_snapshot(struct tool_registry *reg)
+{
+	if (!reg)
+		return NULL;
+	cJSON *catalog = cJSON_CreateArray();
+	if (!catalog)
+		return NULL;
+	for (int i = 0; i < reg->count; i++) {
+		const struct tool_desc *desc = &reg->entries[i].desc;
+		if (tool_is_disabled(reg, desc->name))
+			continue;
+		cJSON *item = cJSON_CreateObject();
+		if (!item || !cJSON_AddStringToObject(item, "name", desc->name) ||
+		    !cJSON_AddStringToObject(item, "description", desc->description ?
+					 desc->description : "") ||
+		    !cJSON_AddItemToArray(catalog, item)) {
+			cJSON_Delete(item);
+			cJSON_Delete(catalog);
+			return NULL;
+		}
+	}
+	char *json = cJSON_PrintUnformatted(catalog);
+	cJSON_Delete(catalog);
+	return json;
+}
+
+static int tool_search_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct tool_registry *reg = user_data;
+	cJSON *input = args ? cJSON_ParseWithOpts(args, NULL, 1) : NULL;
+	const char *query = cJSON_GetStringValue(cJSON_GetObjectItem(input, "query"));
+	cJSON *offset_json = cJSON_GetObjectItem(input, "offset");
+	int offset = cJSON_IsNumber(offset_json) ? offset_json->valueint : 0;
+
+	if (!query || offset < 0 || (offset_json && (!cJSON_IsNumber(offset_json) ||
+	    offset_json->valuedouble != (double)offset))) {
+		cJSON_Delete(input);
+		return tool_result_error(result, "invalid_arguments",
+			"query is required and offset must be non-negative");
+	}
+	const char *snapshot = result->runtime ? result->runtime->tool_catalog_json : NULL;
+	char *owned_snapshot = snapshot ? NULL : tool_discovery_snapshot(reg);
+	if (!snapshot)
+		snapshot = owned_snapshot;
+	if (!snapshot) {
+		cJSON_Delete(input);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON *catalog = cJSON_ParseWithOpts(snapshot, NULL, 1);
+	free(owned_snapshot);
+	if (!cJSON_IsArray(catalog)) {
+		cJSON_Delete(input);
+		cJSON_Delete(catalog);
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	}
+	cJSON *data = cJSON_CreateObject();
+	cJSON *matches = cJSON_AddArrayToObject(data, "tools");
+	int count = 0;
+	int total = 0;
+	int rc = 0;
+
+	if (!data || !matches) {
+		cJSON_Delete(input);
+		cJSON_Delete(data);
+		cJSON_Delete(catalog);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON *entry;
+	cJSON_ArrayForEach(entry, catalog) {
+		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "name"));
+		const char *description = cJSON_GetStringValue(
+			cJSON_GetObjectItem(entry, "description"));
+		if (!name || !description || (query[0] && !strcasestr(name, query) &&
+		    !strcasestr(description, query)))
+			continue;
+		if (total++ < offset || count >= 8)
+			continue;
+		cJSON *item = cJSON_CreateObject();
+		size_t bytes = utf8_clamp_bytes(description, 512);
+		char *brief = strndup(description, bytes);
+
+		if (!item || !brief || !cJSON_AddStringToObject(item, "name", name) ||
+		    !cJSON_AddStringToObject(item, "description", brief) ||
+		    !cJSON_AddItemToArray(matches, item)) {
+			cJSON_Delete(item);
+			free(brief);
+			MORPH_SET_ERR(rc, -ENOMEM);
+			break;
+		}
+		free(brief);
+		count++;
+	}
+	if (rc == 0 && (!cJSON_AddNumberToObject(data, "total", total) ||
+	    !cJSON_AddNumberToObject(data, "next_offset", total > offset + count ?
+				    offset + count : -1)))
+		MORPH_SET_ERR(rc, -ENOMEM);
+	cJSON_Delete(input);
+	cJSON_Delete(catalog);
+	if (rc != 0) {
+		cJSON_Delete(data);
+		return rc;
+	}
+	return tool_result_success(result, data);
+}
+
+int tool_discovery_init(struct tool_registry *reg)
+{
+	return tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "tool_search",
+		.description = "Find tools by a case-insensitive name or description substring. "
+			"Use concise English keywords or an exact tool name. "
+			"Empty query lists tools; "
+			"offset pages through eight matches. Matching tools become available with "
+			"their full schemas on the next request. Search before using media, MCP, "
+			"extension or dynamic tools whose schemas are not loaded.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{"
+			"\"query\":{\"type\":\"string\"},"
+			"\"offset\":{\"type\":\"integer\",\"minimum\":0}},"
+			"\"required\":[\"query\"],\"additionalProperties\":false}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = tool_search_exec,
+		.user_data = reg,
+		.flags = TOOL_FLAG_READONLY,
+	});
 }

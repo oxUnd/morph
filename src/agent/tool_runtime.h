@@ -34,6 +34,7 @@ struct tool_runtime_context {
 	void *event_user_data;
 	const char *turn_id;
 	const char *tool_call_id;
+	const char *tool_catalog_json;
 };
 
 struct tool_runtime_stream_sink {

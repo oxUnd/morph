@@ -1,4 +1,5 @@
 #include "adapter.h"
+#include "util/error.h"
 #include <errno.h>
 #include <string.h>
 
@@ -36,6 +37,29 @@ static int deepseek_supports_tool_choice(const struct model *model)
 	return !deepseek_thinking_enabled(model);
 }
 
+static int deepseek_disable_thinking(cJSON *request)
+{
+	cJSON *thinking = cJSON_CreateObject();
+	if (!thinking)
+		MORPH_RETURN(-ENOMEM);
+	if (!cJSON_AddStringToObject(thinking, "type", "disabled")) {
+		cJSON_Delete(thinking);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON_DeleteItemFromObjectCaseSensitive(request, "thinking");
+	if (!cJSON_AddItemToObject(request, "thinking", thinking)) {
+		cJSON_Delete(thinking);
+		MORPH_RETURN(-ENOMEM);
+	}
+	cJSON *kwargs = cJSON_GetObjectItemCaseSensitive(request, "chat_template_kwargs");
+	if (cJSON_IsObject(kwargs)) {
+		cJSON_DeleteItemFromObjectCaseSensitive(kwargs, "enable_thinking");
+		cJSON_DeleteItemFromObjectCaseSensitive(kwargs, "reasoning_effort");
+	}
+	cJSON_DeleteItemFromObjectCaseSensitive(request, "reasoning_effort");
+	return 0;
+}
+
 static int deepseek_add_message_fields(const struct model *model, cJSON *message,
 				       const struct chat_message *chat_message)
 {
@@ -66,6 +90,7 @@ const struct llm_adapter *llm_deepseek_adapter(void)
 		.name = "deepseek",
 		.capture_reasoning = 1,
 		.supports_tool_choice = deepseek_supports_tool_choice,
+		.disable_thinking = deepseek_disable_thinking,
 		.add_message_fields = deepseek_add_message_fields,
 	};
 

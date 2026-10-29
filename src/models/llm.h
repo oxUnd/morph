@@ -87,6 +87,9 @@ struct model_chat_options {
 	int max_tokens;
 	long timeout_seconds;
 	const char *usage_phase;
+	/* Adapter-specific reasoning override, scoped to this request. */
+	int disable_thinking;
+	struct model_usage *usage;
 };
 
 struct model_image_chat_options {

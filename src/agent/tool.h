@@ -22,6 +22,7 @@ extern "C" {
 #define TOOL_FLAG_READONLY 0x01
 #define TOOL_FLAG_INTERNAL_APPROVAL 0x02
 #define TOOL_FLAG_DYNAMIC 0x04
+#define TOOL_FLAG_DEFERRED 0x08
 #define TOOL_ARTIFACT_MAX 32
 #define TOOL_ARTIFACT_LABEL_MAX 128
 #define TOOL_ARTIFACT_MIME_MAX 128
@@ -190,6 +191,10 @@ void tool_entry_cleanup_user_data(struct tool_registry *reg);
 int tool_disable(struct tool_registry *reg, const char *name);
 int tool_is_disabled(const struct tool_registry *reg, const char *name);
 int tool_is_readonly(struct tool_registry *reg, const char *name);
+int tool_is_deferred(struct tool_registry *reg, const char *name);
+int tool_discovery_init(struct tool_registry *reg);
+/* Caller owns the immutable catalog used by an asynchronous search request. */
+char *tool_discovery_snapshot(struct tool_registry *reg);
 int tool_has_flag(struct tool_registry *reg, const char *name,
 		  unsigned int flag);
 

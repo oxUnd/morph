@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "db/database.h"
+#include "util/array.h"
 #include <limits.h>
 #include <stdint.h>
 
@@ -133,6 +134,15 @@ int model_history_compact(struct db *db, int64_t session_id,
 			  int keep_recent_rounds,
 			  const char *trigger_kind,
 			  int64_t *summary_item_id);
+
+/* Freeze retention before generating a summary; commit exactly that selection. */
+int model_history_select_retained(struct db *db, int64_t session_id,
+	int user_message_tokens, int recent_history_tokens, int keep_recent_rounds,
+	morph_array_t *preserved);
+int model_history_compact_selected(struct db *db, int64_t session_id,
+	const char *turn_id, const char *summary, int summary_tokens, int input_tokens,
+	const char *trigger_kind, int64_t *summary_item_id,
+	const morph_array_t *preserved, int64_t cutoff);
 
 int trace_save(struct db *db, int64_t session_id, int round_no,
 	       const char *steps_json, int aborted);

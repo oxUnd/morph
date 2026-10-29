@@ -144,6 +144,8 @@ struct react_context {
 	ask_user_callback_fn ask_user_fn;
 	void *ask_user_data;
 	struct tool_registry *tools;
+	/* Per-turn discoveries survive compaction, without leaking across sessions. */
+	morph_strmap_t discovered_tools;
 	struct message_list *messages;
 	struct model_history_item *history_items;
 	struct db *history_db;

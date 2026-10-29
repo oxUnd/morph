@@ -125,6 +125,47 @@ complete tool exchanges, and shares unused user retention capacity with recent
 history. These rules apply to active in-turn compaction as well as persisted
 history; original transcript storage remains separate.
 
+Checkpoint generation and retries run outside the database transaction. The
+DeepSeek adapter disables thinking for checkpoint requests without changing
+normal turn settings. Truncated output, blank text, and tool protocol output are
+rejected; protocol retries request a shorter checkpoint. Provider finish reasons,
+reasoning usage, and content sizes are logged even when the checkpoint fails.
+Only candidate retention, replay validation, and the active request budget check
+run inside the commit savepoint. A rejected candidate rolls back without erasing
+request usage. Turns that attempted in-turn compaction retain their active tool
+history and earlier checkpoints on failure so a later continuation can recover
+work already performed.
+
+Retention is selected before checkpoint generation using the configured summary
+reserve and recent-history budgets. Retained tool exchanges are excluded from
+the summary input and from its source ancestry. User requests remain available
+as exact objective references. Tool-call reasoning is retained for provider
+replay but excluded from checkpoint input; visible narration, calls, arguments,
+and tool outcomes remain evidence. The commit uses the frozen selection and
+rejects history growth since the snapshot instead of consuming unrepresented
+results. Default checkpoints require six non-empty JSON string fields:
+`objective`, `constraints`, `completed_work`, `working_state`, `pending_work`,
+and `verification`. Custom compaction prompts retain their own output format.
+Over-budget checkpoints are rewritten within the bounded retry loop, never
+byte-clipped. Redaction and omission notices are included in the token check.
+
+Runtime tool registries expose `tool_search` for on-demand schemas. MCP,
+extension, dynamic, image and video tools are deferred until discovered or used
+in replayed history. Discovery state is local to a turn, survives compaction,
+and is restored from active history on continuation. Disabled tools remain
+disabled; disabling `tool_search` restores full schema advertisement. Search
+returns at most eight matches with a pagination offset.
+Tool searches run against an owned pre-dispatch catalog snapshot, so the search
+does not traverse live descriptors while sibling tools mutate the registry.
+Skill catalogs list names while `skill_search` retrieves full matching descriptions; activated skill
+instructions remain intact. Disabling skill search restores full descriptions.
+
+The dynamic request context refreshes process status and the latest eight
+session output records independently of conversation summaries. Artifact paths
+share an 8192-byte budget and remain whole. Plans retain their stored evidence,
+artifacts and pending steps when re-injected. Recorded status and output paths
+are reference evidence, not proof of verification or objective completion.
+
 ## Startup diagnostics
 
 Hosts may provide caller-owned `runtime_options.startup_error` storage. On a
