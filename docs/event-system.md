@@ -562,3 +562,16 @@ Phase 4:
 - No new hand-rolled buffers, arrays, maps, or UTF-8 helpers are introduced.
 - Existing public behavior remains compatible until the old callback is
   explicitly deprecated.
+
+## Background command lifecycle
+
+`process.started` and `process.completed` are `background` events independent of
+`tool.result`. Returning a running process session finishes the tool invocation,
+not the process. Lifecycle data contains `session_id` (the process ID),
+`owner_session_id` (the conversation ID), `turn_id`, `description`, `command`,
+`workdir`, `service`, `notify_only`, `status`, and `duration_ms`. Terminal states
+also carry an exit code or signal where applicable and a bounded output snapshot.
+The process monitor invokes completion observers outside its lock. The CLI event
+queue owns terminal updates; monitor threads never draw directly.
+
+See [asynchronous commands](async-exec.md) for waiting, retention, and UI behavior.

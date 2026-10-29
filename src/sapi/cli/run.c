@@ -1371,6 +1371,10 @@ void cli_run(struct cli_context *ctx)
 					if (!handled && job.active && strcmp(input, "/recap") == 0) {
 						command_rc = cli_recap_start(ctx, 0);
 						handled = 1;
+					} else if (!handled && job.active &&
+						   (!strcmp(input, "/jobs") || !strncmp(input, "/jobs ", 6))) {
+						command_rc = cli_command_dispatch(ctx, input);
+						handled = 1;
 					} else if (!handled && job.active && input[0] == '/') {
 						if (!cli_command_find_input(input))
 							CMD_ERROR(ctx,

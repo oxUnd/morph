@@ -4,6 +4,7 @@ extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/command_job.h"
 #include "sapi/cli/terminal.h"
+#include "sapi/cli/jobs_ui.h"
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx, const struct morph_event *event);
@@ -13,6 +14,8 @@ int cli_presentation_event(struct cli_context *ctx, const struct morph_event *ev
 #include <poll.h>
 #include <regex>
 #include <string>
+#include <chrono>
+#include <thread>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -22,6 +25,7 @@ protected:
 
 	void TearDown() override
 	{
+		cli_jobs_cleanup(&ctx);
 		cli_terminal_cleanup(&ctx);
 		cli_set_color_enabled(&ctx, 1);
 	}
@@ -356,6 +360,90 @@ TEST_F(CliTerminalTest, FinalOutputKeepsComposerRowWhileWorkerFinishes)
 		}
 	}
 	EXPECT_EQ(displacement, 0);
+	cli_terminal_cleanup(&ctx);
+	fclose(output);
+	close(slave);
+	close(master);
+}
+
+TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
+{
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
+		"description":"编译项目","command":"cmake --build build -j8","status":"running",
+		"duration_ms":42000,"stdout":"PRIVATE LOG SHOULD STAY IN DETAILS"})");
+	ASSERT_NE(data, nullptr);
+	morph_event event{};
+	event.name = "process.started";
+	event.data = data;
+	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
+	morph_buf_t output{};
+	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	EXPECT_EQ(cli_jobs_render(&ctx, &output, 80, 3, 0), 2);
+	std::string text = morph_buf_cstr(&output);
+	EXPECT_NE(text.find("编译项目\n    └─ cmake --build build -j8"), std::string::npos);
+	EXPECT_EQ(text.find("PRIVATE LOG"), std::string::npos);
+	EXPECT_NE(text.find("42s"), std::string::npos);
+	morph_buf_cleanup(&output);
+	cJSON_Delete(data);
+}
+
+TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndFailuresRemainUntilSeen)
+{
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
+		"description":"","command":"printf bad; exit 7","status":"exited","exit_code":7,
+		"duration_ms":100})");
+	ASSERT_NE(data, nullptr);
+	morph_event event{};
+	event.name = "process.completed";
+	event.data = data;
+	testing::internal::CaptureStdout();
+	ASSERT_EQ(cli_jobs_event(&ctx, &event), 1);
+	std::string receipt = testing::internal::GetCapturedStdout();
+	EXPECT_NE(receipt.find("exited 7"), std::string::npos);
+	morph_buf_t output{};
+	ASSERT_EQ(morph_buf_init(&output, 128), 0);
+	EXPECT_EQ(cli_jobs_render(&ctx, &output, 40, 3, 0), 1);
+	EXPECT_EQ(std::string(morph_buf_cstr(&output)).find("└"), std::string::npos);
+	EXPECT_NE(std::string(morph_buf_cstr(&output)).find("exit 7"), std::string::npos);
+	EXPECT_EQ(cli_jobs_visible(&ctx), 1);
+	cli_jobs_acknowledge(&ctx, "proc_job12345");
+	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
+	morph_buf_cleanup(&output);
+	cJSON_Delete(data);
+}
+
+TEST_F(CliTerminalTest, CompletedJobExpirySchedulesOneLastFrameWithoutAnActiveTurn)
+{
+	int master = posix_openpt(O_RDWR | O_NOCTTY);
+	ASSERT_GE(master, 0);
+	ASSERT_EQ(grantpt(master), 0);
+	ASSERT_EQ(unlockpt(master), 0);
+	int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
+	ASSERT_GE(slave, 0);
+	FILE *output = fdopen(dup(slave), "w");
+	ASSERT_NE(output, nullptr);
+	winsize size{};
+	size.ws_col = 80;
+	size.ws_row = 24;
+	ASSERT_EQ(ioctl(slave, TIOCSWINSZ, &size), 0);
+	ASSERT_EQ(cli_terminal_init(&ctx, output, slave), 0);
+	cJSON *data = cJSON_Parse(R"({"session_id":"proc_done1234","owner_session_id":0,
+		"description":"","command":"printf done","status":"exited","exit_code":0,
+		"duration_ms":100})");
+	morph_event event{};
+	event.name = "process.completed";
+	event.data = data;
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_jobs_event(&ctx, &event), 1);
+	(void)testing::internal::GetCapturedStdout();
+	cli_terminal_render_frame(&ctx, 1);
+	EXPECT_GE(cli_terminal_next_frame_ms(&ctx), 0);
+	std::this_thread::sleep_for(std::chrono::milliseconds(5100));
+	EXPECT_EQ(cli_jobs_visible(&ctx), 0);
+	EXPECT_GE(cli_terminal_next_frame_ms(&ctx), 0);
+	cli_terminal_render_frame(&ctx, 1);
+	EXPECT_EQ(cli_terminal_next_frame_ms(&ctx), -1);
+	cJSON_Delete(data);
 	cli_terminal_cleanup(&ctx);
 	fclose(output);
 	close(slave);

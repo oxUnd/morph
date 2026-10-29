@@ -64,6 +64,8 @@ struct process_session {
 	int exit_code;
 	int signal_number;
 	uint64_t started_ms;
+	uint64_t ended_ms;
+	int completion_sent;
 	uint64_t timeout_ms;
 	uint64_t kill_deadline_ms;
 	int timeout_requested;
@@ -78,6 +80,8 @@ struct process_manager {
 	pthread_t thread;
 	int thread_started;
 	int stopping;
+	process_completion_fn completed;
+	void *completed_user_data;
 	size_t spool_bytes;
 	size_t max_session_output;
 	size_t max_inline_output;
@@ -237,16 +241,15 @@ static struct process_session *find_session(struct process_manager *manager,
 
 static int append_snapshot_stream(const struct process_manager *manager,
 				  struct process_stream *stream, char **out,
-				  size_t *omitted, int *truncated)
+				  size_t *omitted, int *truncated, size_t limit)
 {
 	size_t start;
 	size_t length;
-	size_t limit = manager->max_inline_output;
 	morph_buf_t value;
 
 	*out = NULL;
 	*omitted = stream->omitted;
-	*truncated = 0;
+	*truncated = stream->omitted > 0;
 	if (stream->cursor < stream->base)
 		start = 0;
 	else
@@ -326,24 +329,25 @@ static void stream_spool(struct process_manager *manager, struct process_stream 
 	free(text);
 }
 
-static int snapshot_locked(struct process_manager *manager,
+static int snapshot_budget_locked(struct process_manager *manager,
 				   struct process_session *session,
-				   struct process_snapshot *snapshot)
+				   struct process_snapshot *snapshot, size_t limit)
 {
 	memset(snapshot, 0, sizeof(*snapshot));
 	snapshot->state = session->state;
 	snapshot->exit_code = session->exit_code;
 	snapshot->signal_number = session->signal_number;
-	snapshot->duration_ms = process_now_ms() - session->started_ms;
+	snapshot->duration_ms = (session->ended_ms ? session->ended_ms : process_now_ms()) -
+		session->started_ms;
 	if (append_snapshot_stream(manager, &session->stdout_stream,
 				   &snapshot->stdout_text,
 				   &snapshot->stdout_omitted_bytes,
-				   &snapshot->stdout_truncated) != 0)
+				   &snapshot->stdout_truncated, limit) != 0)
 		return -ENOMEM;
 	if (append_snapshot_stream(manager, &session->stderr_stream,
 				   &snapshot->stderr_text,
 				   &snapshot->stderr_omitted_bytes,
-				   &snapshot->stderr_truncated) != 0) {
+				   &snapshot->stderr_truncated, limit) != 0) {
 		free(snapshot->stdout_text);
 		snapshot->stdout_text = NULL;
 		return -ENOMEM;
@@ -357,6 +361,12 @@ static int snapshot_locked(struct process_manager *manager,
 	stream_spool(manager, &session->stdout_stream, snapshot->stdout_path);
 	stream_spool(manager, &session->stderr_stream, snapshot->stderr_path);
 	return 0;
+}
+
+static int snapshot_locked(struct process_manager *manager,
+	struct process_session *session, struct process_snapshot *snapshot)
+{
+	return snapshot_budget_locked(manager, session, snapshot, manager->max_inline_output);
 }
 
 static void drain_fd(struct process_manager *manager, int *fd,
@@ -396,6 +406,7 @@ static void drain_fd(struct process_manager *manager, int *fd,
 
 static void finish_session(struct process_session *session, int status)
 {
+	session->ended_ms = process_now_ms();
 	if (WIFEXITED(status)) {
 		session->exit_code = WEXITSTATUS(status);
 		session->state = session->timeout_requested ?
@@ -471,6 +482,19 @@ static void *process_monitor_thread(void *opaque)
 		for (size_t i = 0; i < manager->session_count; i++)
 			monitor_session(manager, &manager->sessions[i],
 					process_now_ms());
+		/* Completion callbacks may inspect a session without deadlocking. */
+		for (size_t i = 0; manager->completed && i < manager->session_count; i++) {
+			struct process_session *session = &manager->sessions[i];
+			char id[PROCESS_SESSION_ID_MAX];
+
+			if (session->state < PROCESS_EXITED || session->completion_sent)
+				continue;
+			session->completion_sent = 1;
+			snprintf(id, sizeof(id), "%s", session->id);
+			pthread_mutex_unlock(&manager->mutex);
+			manager->completed(id, manager->completed_user_data);
+			pthread_mutex_lock(&manager->mutex);
+		}
 		clock_gettime(CLOCK_REALTIME, &deadline);
 		deadline.tv_nsec += PROCESS_POLL_MS * 1000000L;
 		if (deadline.tv_nsec >= 1000000000L) {
@@ -705,6 +729,8 @@ int process_manager_create(const struct process_manager_config *config,
 		free(manager);
 		MORPH_RETURN(-rc);
 	}
+	manager->completed = config ? config->completed : NULL;
+	manager->completed_user_data = config ? config->completed_user_data : NULL;
 	rc = pthread_create(&manager->thread, NULL, process_monitor_thread,
 		manager);
 	if (rc != 0) {
@@ -854,10 +880,10 @@ int process_spawn(struct process_manager *manager,
 	return rc;
 }
 
-int process_session_poll(struct process_manager *manager, const char *session_id,
+static int session_collect(struct process_manager *manager, const char *session_id,
 			 const struct process_cursor *cursor, uint64_t wait_ms,
 			 int (*cancelled)(void *), void *cancel_data,
-			 struct process_snapshot *snapshot)
+			 struct process_snapshot *snapshot, int until_exit)
 {
 	uint64_t deadline;
 	int rc = 0;
@@ -889,10 +915,11 @@ int process_session_poll(struct process_manager *manager, const char *session_id
 			break;
 		}
 		if (session->state >= PROCESS_EXITED || process_now_ms() >= deadline ||
-		    session->stdout_stream.base + session->stdout_stream.data.len >
+		    (!until_exit &&
+		     (session->stdout_stream.base + session->stdout_stream.data.len >
 			start.stdout_offset ||
-		    session->stderr_stream.base + session->stderr_stream.data.len >
-			start.stderr_offset) {
+		      session->stderr_stream.base + session->stderr_stream.data.len >
+			start.stderr_offset))) {
 			size_t saved_out = session->stdout_stream.cursor;
 			size_t saved_err = session->stderr_stream.cursor;
 			session->stdout_stream.cursor = start.stdout_offset;
@@ -915,6 +942,72 @@ int process_session_poll(struct process_manager *manager, const char *session_id
 	}
 	pthread_mutex_unlock(&manager->mutex);
 	MORPH_RETURN(rc);
+}
+
+int process_session_poll(struct process_manager *manager, const char *session_id,
+			 const struct process_cursor *cursor, uint64_t wait_ms,
+			 int (*cancelled)(void *), void *cancel_data,
+			 struct process_snapshot *snapshot)
+{
+	return session_collect(manager, session_id, cursor, wait_ms, cancelled,
+			       cancel_data, snapshot, 0);
+}
+
+int process_session_wait(struct process_manager *manager, const char *session_id,
+			 const struct process_cursor *cursor, uint64_t wait_ms,
+			 int (*cancelled)(void *), void *cancel_data,
+			 struct process_snapshot *snapshot)
+{
+	return session_collect(manager, session_id, cursor, wait_ms, cancelled,
+			       cancel_data, snapshot, 1);
+}
+
+char *process_redact_text(const struct process_manager *manager, const char *text)
+{
+	return manager && text ? redact_text(manager, text, strlen(text)) : NULL;
+}
+
+int process_session_inspect(struct process_manager *manager, const char *session_id,
+			    int full_output, struct process_snapshot *snapshot)
+{
+	if (!manager || !session_id || !snapshot)
+		MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock(&manager->mutex);
+	struct process_session *session = find_session(manager, session_id);
+	int rc = -ENOENT;
+	if (session) {
+		size_t saved_out = session->stdout_stream.cursor;
+		size_t saved_err = session->stderr_stream.cursor;
+		session->stdout_stream.cursor = session->stdout_stream.base;
+		session->stderr_stream.cursor = session->stderr_stream.base;
+		rc = snapshot_budget_locked(manager, session, snapshot,
+			full_output ? manager->max_session_output : manager->max_inline_output);
+		session->stdout_stream.cursor = saved_out;
+		session->stderr_stream.cursor = saved_err;
+	}
+	pthread_mutex_unlock(&manager->mutex);
+	MORPH_RETURN(rc);
+}
+
+int process_session_status(struct process_manager *manager, const char *session_id,
+			   struct process_snapshot *snapshot)
+{
+	if (!manager || !session_id || !snapshot)
+		MORPH_RETURN(-EINVAL);
+	pthread_mutex_lock(&manager->mutex);
+	struct process_session *session = find_session(manager, session_id);
+	if (session) {
+		memset(snapshot, 0, sizeof(*snapshot));
+		snapshot->state = session->state;
+		snapshot->exit_code = session->exit_code;
+		snapshot->signal_number = session->signal_number;
+		snapshot->duration_ms =
+			(session->ended_ms ? session->ended_ms : process_now_ms()) -
+			session->started_ms;
+	}
+	int found = session != NULL;
+	pthread_mutex_unlock(&manager->mutex);
+	MORPH_RETURN(found ? 0 : -ENOENT);
 }
 
 int process_session_snapshot(struct process_manager *manager,

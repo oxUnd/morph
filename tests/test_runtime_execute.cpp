@@ -2,6 +2,9 @@
 
 extern "C" {
 #include "models/llm.h"
+#include "runtime/runtime_internal.h"
+#include "agent/tools/exec_tool.h"
+#include "agent/tool_runtime.h"
 }
 
 #include <atomic>
@@ -445,4 +448,75 @@ TEST_F(RuntimeExecuteTest, TrustedStopCommandRunsThroughRuntimeAndPersistsOneAns
 	}
 	EXPECT_EQ(assistant_count, 1);
 	runtime_session_messages_free(messages);
+}
+
+TEST_F(RuntimeFacadeTest, ProcessResultsSurviveRestartAndRespectSessionOwnership)
+{
+	struct Notices {
+		std::mutex lock;
+		std::condition_variable ready;
+		int completed = 0;
+	} notices;
+	WriteConfig("[memory]\nenabled=false\n");
+	runtime_options options{};
+	options.config_path = config_path.c_str();
+	options.enable_exec = 1;
+	options.operation_approval_cb = [](const tool_operation *, void *) { return TOOL_OP_ALLOW; };
+	options.event_user_data = &notices;
+	options.event_cb = [](const morph_event *event, void *opaque) -> int {
+		if (std::strcmp(event->name, "process.completed")) return 0;
+		auto *n = static_cast<Notices *>(opaque);
+		std::lock_guard<std::mutex> lock(n->lock);
+		n->completed++;
+		n->ready.notify_all();
+		return 0;
+	};
+	Open(&options);
+	int64_t owner = 0;
+	ASSERT_EQ(runtime_session_current_id(instance, &owner), 0);
+	tool_runtime_context context{};
+	context.memory_session_id = owner;
+	context.turn_id = "runtime-job-test";
+	auto start = [&](const char *args) {
+		tool_result result{};
+		tool_result_init(&result);
+		result.runtime = &context;
+		int rc = tool_exec(&instance->context.tools, "exec", args, &result);
+		EXPECT_EQ(rc, 0);
+		const char *value = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+		std::string id = value ? value : "";
+		tool_result_cleanup(&result);
+		return id;
+	};
+	std::string finished = start(R"({"command":"printf persisted; exit 7","background":true})");
+	{
+		std::unique_lock<std::mutex> lock(notices.lock);
+		ASSERT_TRUE(notices.ready.wait_for(lock, std::chrono::seconds(3),
+			[&] { return notices.completed > 0; }));
+	}
+	std::string service = start(R"({"command":"sleep 20","service":true})");
+	cJSON *jobs = nullptr;
+	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 2);
+	cJSON_Delete(jobs);
+	runtime_close(instance);
+	instance = nullptr;
+	Open(&options);
+	cJSON *data = nullptr;
+	ASSERT_EQ(runtime_process_read(instance, finished.c_str(), &data), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "stdout")), "persisted");
+	EXPECT_EQ(cJSON_GetNumberValue(cJSON_GetObjectItem(data, "exit_code")), 7);
+	EXPECT_EQ(cJSON_GetObjectItem(data, "stdout_path"), nullptr);
+	cJSON_Delete(data);
+	ASSERT_EQ(runtime_process_read(instance, service.c_str(), &data), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(data, "status")), "unavailable");
+	cJSON_Delete(data);
+	EXPECT_EQ(runtime_process_stop(instance, service.c_str()), -ENOENT);
+	struct session other{};
+	int created = 0;
+	ASSERT_EQ(runtime_session_select(instance, "other-process-session", &other, &created), 0);
+	ASSERT_EQ(runtime_process_list(instance, &jobs), 0);
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
+	cJSON_Delete(jobs);
+	EXPECT_EQ(runtime_process_read(instance, finished.c_str(), &data), -ENOENT);
 }

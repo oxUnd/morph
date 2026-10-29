@@ -3,6 +3,7 @@
 #include "agent/tools/exec_tool.h"
 #include "agent/tools/request_permissions.h"
 #include "agent/tool.h"
+#include "agent/tool_runtime.h"
 #include "agent/tool_context.h"
 #include "util/file.h"
 
@@ -18,6 +19,8 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <vector>
 #include <unistd.h>
 #include <fcntl.h>
@@ -1015,5 +1018,207 @@ TEST_F(ProcessTest, CancellingWaitLeavesChildRunning)
 		  -ECANCELED);
 	ASSERT_EQ(process_session_snapshot(manager, id, &snapshot), 0);
 	EXPECT_EQ(snapshot.state, PROCESS_RUNNING);
+	process_snapshot_cleanup(&snapshot);
+}
+
+TEST_F(ProcessTest, ExitWaitCollectsIntermediateOutputAndFreezesDuration)
+{
+	process_spawn_options options{};
+	options.command = "printf first; sleep .15; printf last; exit 7";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot{};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	process_snapshot_cleanup(&snapshot);
+	process_cursor cursor{};
+	ASSERT_EQ(process_session_wait(manager, id, &cursor, 2000, nullptr, nullptr, &snapshot), 0);
+	EXPECT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_EQ(snapshot.exit_code, 7);
+	EXPECT_STREQ(snapshot.stdout_text, "firstlast");
+	uint64_t duration = snapshot.duration_ms;
+	process_snapshot_cleanup(&snapshot);
+	std::this_thread::sleep_for(std::chrono::milliseconds(60));
+	ASSERT_EQ(process_session_status(manager, id, &snapshot), 0);
+	EXPECT_EQ(snapshot.duration_ms, duration);
+	EXPECT_EQ(snapshot.stdout_text, nullptr);
+}
+
+TEST_F(ProcessTest, ExitWaitCancellationDoesNotTerminateTheChild)
+{
+	process_spawn_options options{};
+	options.command = "sleep 2";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	process_snapshot snapshot{};
+	ASSERT_EQ(process_spawn(manager, &options, id, &snapshot), 0);
+	process_snapshot_cleanup(&snapshot);
+	EXPECT_EQ(process_session_wait(manager, id, nullptr, 2000,
+		[](void *) { return 1; }, nullptr, &snapshot), -ECANCELED);
+	ASSERT_EQ(process_session_status(manager, id, &snapshot), 0);
+	EXPECT_EQ(snapshot.state, PROCESS_RUNNING);
+}
+
+TEST(ProcessCompletionTest, CallbackCanReadStateAndFiresOnce)
+{
+	struct State {
+		process_manager *manager = nullptr;
+		std::mutex mutex;
+		std::condition_variable condition;
+		int calls = 0;
+		int rc = -1;
+		process_state status = PROCESS_STARTING;
+	} state;
+	process_manager_config config{};
+	config.completed_user_data = &state;
+	config.completed = [](const char *id, void *opaque) {
+		auto *s = static_cast<State *>(opaque);
+		process_snapshot snapshot{};
+		int rc = process_session_status(s->manager, id, &snapshot);
+		std::lock_guard<std::mutex> lock(s->mutex);
+		s->rc = rc;
+		s->status = snapshot.state;
+		s->calls++;
+		s->condition.notify_all();
+	};
+	ASSERT_EQ(process_manager_create(&config, &state.manager), 0);
+	process_spawn_options options{};
+	options.command = "printf completed";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(state.manager, &options, id, nullptr), 0);
+	{
+		std::unique_lock<std::mutex> lock(state.mutex);
+		EXPECT_TRUE(state.condition.wait_for(lock, std::chrono::seconds(3),
+			[&] { return state.calls > 0; }));
+		EXPECT_EQ(state.rc, 0);
+		EXPECT_EQ(state.status, PROCESS_EXITED);
+	}
+	process_manager_destroy(state.manager);
+	EXPECT_EQ(state.calls, 1);
+}
+
+TEST(ExecToolTest, AsyncJobsNotifyOnceKeepOwnershipAndDoNotConsumeToolOutput)
+{
+	struct Events {
+		std::mutex mutex;
+		std::condition_variable ready;
+		std::vector<std::string> names;
+		std::string output;
+	} events;
+	tool_registry registry{};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	ASSERT_EQ(exec_tool_set_event_callback(&registry,
+		[](const morph_event *event, void *opaque) -> int {
+			auto *s = static_cast<Events *>(opaque);
+			std::lock_guard<std::mutex> lock(s->mutex);
+			s->names.emplace_back(event->name);
+			const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(event->data, "stdout"));
+			if (text) s->output = text;
+			s->ready.notify_all();
+			return 0;
+		}, &events), 0);
+	tool_runtime_context context{};
+	context.memory_session_id = 42;
+	context.turn_id = "job-turn";
+	tool_result result{};
+	tool_result_init(&result);
+	result.runtime = &context;
+	ASSERT_EQ(tool_exec(&registry, "exec",
+		R"({"command":"sleep .15; printf complete","description":"编译项目","background":true})",
+		&result), 0);
+	std::string id = cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id"));
+	tool_result_cleanup(&result);
+	{
+		std::unique_lock<std::mutex> lock(events.mutex);
+		ASSERT_TRUE(events.ready.wait_for(lock, std::chrono::seconds(3), [&] {
+			return events.names.size() == 2;
+		}));
+		EXPECT_EQ(events.names[0], "process.started");
+		EXPECT_EQ(events.names[1], "process.completed");
+		EXPECT_EQ(events.output, "complete");
+	}
+	cJSON *jobs = nullptr;
+	ASSERT_EQ(exec_tool_jobs_list(&registry, 43, &jobs), 0);
+	EXPECT_EQ(cJSON_GetArraySize(jobs), 0);
+	cJSON_Delete(jobs);
+	cJSON *detail = nullptr;
+	ASSERT_EQ(exec_tool_job_read(&registry, 42, id.c_str(), &detail), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(detail, "description")), "编译项目");
+	cJSON_Delete(detail);
+	tool_result_init(&result);
+	result.runtime = &context;
+	std::string args = "{\"action\":\"poll\",\"session_id\":\"" + id + "\",\"wait_ms\":0}";
+	ASSERT_EQ(tool_exec(&registry, "process", args.c_str(), &result), 0);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "stdout")), "complete");
+	tool_result_cleanup(&result);
+	context.memory_session_id = 43;
+	tool_result_init(&result);
+	result.runtime = &context;
+	EXPECT_EQ(tool_exec(&registry, "process", args.c_str(), &result), -ENOENT);
+	tool_result_cleanup(&result);
+	tool_registry_cleanup(&registry);
+	EXPECT_EQ(events.names.size(), 2u);
+}
+
+TEST(ExecToolTest, ExplicitNotifyOnlyAndServicesDoNotHoldFinalization)
+{
+	tool_registry registry{};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	tool_runtime_context context{};
+	context.memory_session_id = 42;
+	context.turn_id = "notify-test";
+	for (const char *args : {
+		R"({"command":"sleep 2","background":true,"notify_only":true})",
+		R"({"command":"sleep 2","service":true})",
+		R"({"command":"sleep .1; printf verified","background":true})"}) {
+		tool_result result{};
+		tool_result_init(&result);
+		result.runtime = &context;
+		ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
+		tool_result_cleanup(&result);
+	}
+	tool_entry *entry = tool_lookup(&registry, "exec");
+	ASSERT_NE(entry->background_wait, nullptr);
+	cJSON *completed = nullptr;
+	ASSERT_EQ(entry->background_wait(entry->user_data, 42, "notify-test", nullptr,
+		nullptr, &completed), 0);
+	ASSERT_EQ(cJSON_GetArraySize(completed), 1);
+	EXPECT_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(
+		cJSON_GetArrayItem(completed, 0), "stdout")), "verified");
+	cJSON_Delete(completed);
+	cJSON *jobs = nullptr;
+	ASSERT_EQ(exec_tool_jobs_list(&registry, 42, &jobs), 0);
+	int running = 0;
+	cJSON *job;
+	cJSON_ArrayForEach(job, jobs) {
+		const char *state = cJSON_GetStringValue(cJSON_GetObjectItem(job, "status"));
+		if (state && std::strcmp(state, "running") == 0) running++;
+	}
+	EXPECT_EQ(running, 2);
+	cJSON_Delete(jobs);
+	tool_registry_cleanup(&registry);
+}
+
+TEST_F(ProcessTest, DetailInspectionReadsRetainedWindowWithoutAdvancingCursor)
+{
+	process_spawn_options options{};
+	options.command = "i=0; while [ $i -lt 5000 ]; do printf abcdefghij; i=$((i+1)); done";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot snapshot{};
+	process_cursor cursor{};
+	ASSERT_EQ(process_session_wait(manager, id, &cursor, 3000, nullptr, nullptr, &snapshot), 0);
+	ASSERT_EQ(snapshot.state, PROCESS_EXITED);
+	EXPECT_TRUE(snapshot.stdout_truncated);
+	process_snapshot_cleanup(&snapshot);
+	ASSERT_EQ(process_session_inspect(manager, id, 1, &snapshot), 0);
+	EXPECT_EQ(std::strlen(snapshot.stdout_text), 50000u);
+	EXPECT_FALSE(snapshot.stdout_truncated);
+	process_snapshot_cleanup(&snapshot);
+	ASSERT_EQ(process_session_poll(manager, id, nullptr, 0, nullptr, nullptr, &snapshot), 0);
+	EXPECT_GT(std::strlen(snapshot.stdout_text), 0u);
 	process_snapshot_cleanup(&snapshot);
 }

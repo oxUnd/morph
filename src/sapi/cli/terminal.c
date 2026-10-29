@@ -1,5 +1,6 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/terminal.h"
+#include "sapi/cli/jobs_ui.h"
 
 #include <sys/ioctl.h>
 
@@ -29,6 +30,7 @@ struct cli_terminal {
 	int live_visible;
 	int live_anchored;
 	int live_rows;
+	int job_rows;
 	int is_terminal;
 	int transient;
 	int update_active;
@@ -417,7 +419,8 @@ int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
 	    ctx->details_visible || terminal->work_state != CLI_WORK_RUNNING ||
 	    terminal->columns < 20 || terminal_columns(terminal) != terminal->columns)
 		return 0;
-	if ((terminal->content_dirty || terminal->live_independent) &&
+	if ((terminal->content_dirty || terminal->live_independent || cli_jobs_visible(ctx) ||
+	     terminal->job_rows) &&
 	    now >= terminal->next_content_ms)
 		return 0;
 	if (now < terminal->next_frame_ms)
@@ -449,6 +452,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	char queue_clipped[BUFSIZ];
 	morph_buf_t tool_text = {0};
 	morph_buf_t tool_body = {0};
+	morph_buf_t job_text = {0};
+	int job_rows = 0;
 	char *queue_items[CLI_TERMINAL_QUEUE_VISIBLE] = {0};
 	size_t queue_total = 0;
 	size_t queue_shown = 0;
@@ -487,7 +492,8 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	 * work row even if persistence keeps the worker alive for another tick. */
 	terminal->work_finalizing = ctx->final_rendered &&
 		terminal->work_state == CLI_WORK_RUNNING && !status_visible && !queue_shown;
-	if (!status_visible && queue_shown == 0 && !terminal->work_state) {
+	if (!status_visible && queue_shown == 0 && !terminal->work_state &&
+	    !cli_jobs_visible(ctx)) {
 		if (terminal->live_visible) {
 			terminal_clear_frame(terminal);
 			fflush(terminal->output);
@@ -495,6 +501,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			terminal->live_anchored = 0;
 			terminal->live_rows = 0;
 		}
+		terminal->job_rows = 0;
 		return;
 	}
 	/* Below the layout minimum, keep one bounded row and keep accepting input. */
@@ -514,6 +521,13 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		terminal->live_rows = 1;
 		terminal->next_frame_ms = now + CLI_TERMINAL_WORK_FRAME_MS;
 		return;
+	}
+	if (morph_buf_init(&job_text, 128) == 0) {
+		struct winsize area = {0};
+		int max_jobs = 3;
+		if (ioctl(terminal->output_fd, TIOCGWINSZ, &area) == 0 && area.ws_row < 20)
+			max_jobs = 1;
+		job_rows = cli_jobs_render(ctx, &job_text, columns, max_jobs, cli_color_enabled(ctx));
 	}
 	text = morph_buf_cstr(&terminal->live_text);
 	if (status_visible && morph_buf_init(&tool_text, 128) == 0) {
@@ -567,6 +581,13 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		if (queue_shown || terminal->work_state)
 			fputc('\n', terminal->output);
 	}
+	if (job_rows) {
+		if (status_visible && !queue_shown && !terminal->work_state)
+			fputc('\n', terminal->output);
+		fprintf(terminal->output, "%s", morph_buf_cstr(&job_text));
+		if (terminal->work_state || queue_shown)
+			fputc('\n', terminal->output);
+	}
 	if (terminal->work_state) {
 		if (!terminal->work_finalizing)
 			fputc('\n', terminal->output);
@@ -600,10 +621,12 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 			ANSI_RESET, queue_total - queue_shown);
 	morph_buf_cleanup(&tool_text);
 	morph_buf_cleanup(&tool_body);
+	morph_buf_cleanup(&job_text);
 	fflush(terminal->output);
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
-	terminal->live_rows = status_visible + tool_live +
+	terminal->job_rows = job_rows;
+	terminal->live_rows = job_rows + status_visible + tool_live +
 		(status_visible && terminal->live_reasoning) + body_rows +
 		(terminal->work_state ? (terminal->work_finalizing ? 1 : 2) : 0) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
@@ -625,7 +648,8 @@ int cli_terminal_next_frame_ms(const struct cli_context *ctx)
 		return -1;
 	terminal = ctx->terminal;
 	if (!terminal->transient ||
-	    (!terminal->live_active && terminal->work_state != CLI_WORK_RUNNING))
+	    (!terminal->live_active && terminal->work_state != CLI_WORK_RUNNING &&
+	     !cli_jobs_visible(ctx) && !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)
 		return 0;

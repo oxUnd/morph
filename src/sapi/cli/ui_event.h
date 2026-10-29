@@ -19,5 +19,6 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 		      void *data);
 void cli_ui_notify(struct cli_context *ctx);
 int cli_ui_drain(struct cli_context *ctx);
+int cli_ui_owner_call_pending(struct cli_context *ctx);
 
 #endif

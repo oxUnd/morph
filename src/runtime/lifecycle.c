@@ -348,6 +348,8 @@ static int runtime_start_components(struct runtime *runtime)
 	runtime_emit_startup(runtime, "startup.tools", "begin",
 			     "Loading tools and skills...");
 	rc = runtime_bootstrap_tools(&profile);
+	if (rc == 0)
+		rc = runtime_jobs_init(runtime);
 	if (rc != 0)
 		return rc;
 	if (runtime->options.enable_shell_exts) {
@@ -590,6 +592,7 @@ void runtime_close(struct runtime *runtime)
 		&runtime->context,
 		runtime->options.allocate_skill_registry);
 	runtime_bootstrap_cleanup(&cleanup);
+	runtime_jobs_cleanup(runtime);
 	if (runtime->context.execution_lock_ready)
 		pthread_mutex_unlock(&runtime->context.execution_lock);
 	runtime_context_cleanup_lock(&runtime->context);

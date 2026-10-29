@@ -463,3 +463,21 @@ int cli_ui_drain(struct cli_context *ctx)
 	fflush(stdout);
 	return first_error;
 }
+
+int cli_ui_owner_call_pending(struct cli_context *ctx)
+{
+	struct cli_ui *ui = ctx ? ctx->ui : NULL;
+	if (!ui) return 0;
+	int pending = 0;
+	pthread_mutex_lock(&ui->mutex);
+	morph_queue_t *link;
+	morph_queue_foreach(link, &ui->pending) {
+		struct cli_ui_item *item = morph_queue_data(link, struct cli_ui_item, link);
+		if (item->kind == CLI_UI_ITEM_OWNER_CALL) {
+			pending = 1;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&ui->mutex);
+	return pending;
+}

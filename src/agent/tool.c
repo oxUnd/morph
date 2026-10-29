@@ -794,6 +794,8 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 	*e = value;
 	e->exec = spec->exec;
 	e->get_environment = spec->get_environment;
+	e->background_list = spec->background_list;
+	e->background_wait = spec->background_wait;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
 	e->origin = spec->origin;

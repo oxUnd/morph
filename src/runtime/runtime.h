@@ -109,6 +109,11 @@ int runtime_execute_turn(struct runtime *runtime,
 			 struct runtime_result *result);
 void runtime_cancel_turn(struct runtime *runtime);
 
+/* Process views never acquire the turn lock and are available while working. */
+int runtime_process_list(struct runtime *runtime, cJSON **out);
+int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out);
+int runtime_process_stop(struct runtime *runtime, const char *id);
+
 int runtime_session_current(const struct runtime *runtime,
 			    struct session *out);
 int runtime_session_current_id(const struct runtime *runtime,

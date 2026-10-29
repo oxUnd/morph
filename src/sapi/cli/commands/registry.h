@@ -35,5 +35,6 @@ struct cli_command_group cli_mcp_commands(void);
 struct cli_command_group cli_sync_commands(void);
 struct cli_command_group cli_permission_commands(void);
 struct cli_command_group cli_hook_commands(void);
+struct cli_command_group cli_job_commands(void);
 
 #endif

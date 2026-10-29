@@ -6,7 +6,7 @@ static struct cli_command_group (*const command_groups[])(void) = {
 	cli_runtime_commands, cli_session_commands, cli_memory_commands,
 	cli_task_commands, cli_media_commands, cli_ext_commands,
 	cli_skill_commands, cli_sync_commands, cli_permission_commands,
-	cli_hook_commands, cli_share_commands, cli_mcp_commands,
+	cli_hook_commands, cli_share_commands, cli_mcp_commands, cli_job_commands,
 };
 
 static const struct cli_command *command_at(int index, const char **category)

@@ -126,6 +126,10 @@ struct prompt_context_input;
 typedef void (*tool_environment_fn)(void *user_data,
 	struct prompt_context_input *out);
 
+typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, cJSON **out);
+typedef int (*tool_background_wait_fn)(void *user_data, int64_t owner,
+	const char *turn_id, int (*cancelled)(void *), void *cancel_data, cJSON **out);
+
 struct tool_spec {
 	enum tool_origin origin;
 	const char *name;
@@ -137,6 +141,8 @@ struct tool_spec {
 	const char *input_format;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
+	tool_background_list_fn background_list;
+	tool_background_wait_fn background_wait;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	unsigned int flags;
@@ -148,6 +154,8 @@ struct tool_entry {
 	struct arena *descriptor_arena;
 	tool_exec_fn exec;
 	tool_environment_fn get_environment;
+	tool_background_list_fn background_list;
+	tool_background_wait_fn background_wait;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	enum tool_origin origin;

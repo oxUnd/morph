@@ -37,7 +37,13 @@ struct runtime {
 	struct runtime_title_job *title_jobs[RUNTIME_TITLE_JOB_MAX];
 	struct runtime_recap_job *recap_job;
 	uint64_t recap_revision;
+	pthread_mutex_t jobs_lock;
+	int jobs_lock_ready;
+	struct exec_jobs *jobs;
 };
+
+int runtime_jobs_init(struct runtime *runtime);
+void runtime_jobs_cleanup(struct runtime *runtime);
 
 void runtime_recap_invalidate(struct runtime *runtime);
 void runtime_recap_stop(struct runtime *runtime);

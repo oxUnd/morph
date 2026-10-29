@@ -22,6 +22,7 @@ add_library(morph-tools STATIC
 	runtime_query.c
 	dynamic_tools.c
 	exec_tool.c
+	exec_jobs.c
 	path_policy.c
 )
 

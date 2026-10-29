@@ -29,6 +29,7 @@ add_library(morph-cli STATIC
 	share_save.c
 	commands/share.c
 	shell_style.c
+	jobs_ui.c
 	terminal.c
 	transcript.c
 	ui_event.c
@@ -37,6 +38,7 @@ add_library(morph-cli STATIC
 	commands/media.c
 	commands/memory.c
 	commands/permissions.c
+	commands/jobs.c
 	commands/hooks.c
 	commands/registry.c
 	commands/runtime.c

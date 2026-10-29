@@ -13,7 +13,7 @@
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
   - workspace: apply_patch, config_edit, tasks, request_permissions
-  - shell: `exec`, `process` — `exec` AST-parses a command into its program set, approves per program (allow/session/always/deny), and returns a session for long-running work that `process` manages. Replaces the former `bash_exec`.
+  - shell: `exec`, `process` — `exec` AST-parses a command into its program set, approves per program (allow/session/always/deny), and returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.
   - dynamic tools: tool_create/promote/delete/history/diff/rollback
   - sub-agent: delegate, fanout
   - img_inpaint = bbox+label region i2i; img_compose = arrow+label cross-image fusion; both consume the img_annotate JSON verbatim.

@@ -1,4 +1,5 @@
 #include "exec_tool.h"
+#include "exec_jobs.h"
 #include "agent/tool_runtime.h"
 #include "http/client.h"
 #include "agent/environment_context.h"
@@ -28,6 +29,7 @@ struct exec_runtime {
 	pthread_mutex_t mutex;
 	int refs;
 	struct process_manager *manager;
+	struct exec_jobs *jobs;
 	struct tool_context *tool_context;
 	uint64_t default_timeout_ms;
 	uint64_t default_yield_time_ms;
@@ -50,6 +52,7 @@ static void exec_runtime_destroy(void *opaque)
 	if (!destroy)
 		return;
 	process_manager_destroy(runtime->manager);
+	exec_jobs_destroy(runtime->jobs);
 	pthread_mutex_destroy(&runtime->mutex);
 	free(runtime);
 }
@@ -89,12 +92,22 @@ static int exec_runtime_create(struct tool_context *tctx,
 		free(runtime);
 		MORPH_RETURN(-rc);
 	}
-	rc = process_manager_create(&config, &runtime->manager);
+	rc = exec_jobs_create(&runtime->jobs);
 	if (rc != 0) {
 		pthread_mutex_destroy(&runtime->mutex);
 		free(runtime);
 		return rc;
 	}
+	config.completed = exec_jobs_complete;
+	config.completed_user_data = runtime->jobs;
+	rc = process_manager_create(&config, &runtime->manager);
+	if (rc != 0) {
+		exec_jobs_destroy(runtime->jobs);
+		pthread_mutex_destroy(&runtime->mutex);
+		free(runtime);
+		return rc;
+	}
+	exec_jobs_bind(runtime->jobs, runtime->manager, NULL, NULL);
 	*out = runtime;
 	return 0;
 }
@@ -480,7 +493,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	memset(&options, 0, sizeof(options));
 	options.command = command;
 	options.workdir = workdir;
-	options.background = json_bool(root, "background", 0);
+	options.background = json_bool(root, "background", json_bool(root, "service", 0));
 	options.host_execution = host;
 	options.timeout_ms = json_u64(root, "timeout_ms",
 		options.background ? 0 : runtime->default_timeout_ms);
@@ -561,6 +574,20 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		process_snapshot_cleanup(&snapshot);
 		return rc;
 	}
+	if (snapshot.state < PROCESS_EXITED) {
+		const struct tool_runtime_context *context = result->runtime;
+		rc = exec_jobs_add(runtime->jobs, session_id, command,
+			json_string(root, "description"), workdir,
+			context ? context->memory_session_id : 0,
+			context ? context->turn_id : NULL, json_bool(root, "service", 0),
+			json_bool(root, "notify_only", 0));
+		if (rc != 0) {
+			(void)process_session_kill(runtime->manager, session_id);
+			process_snapshot_cleanup(&snapshot);
+			cJSON_Delete(root);
+			return rc;
+		}
+	}
 	rc = result_snapshot(result, session_id, command, workdir, &snapshot,
 		host ? "host" : "sandbox");
 	process_snapshot_cleanup(&snapshot);
@@ -597,11 +624,31 @@ static int process_run(const char *args_json, struct tool_result *result,
 	session_id = json_string(root, "session_id");
 	action = json_string(root, "action");
 	input = json_string(root, "input");
+	if (action && !strcmp(action, "list")) {
+		cJSON *jobs = NULL;
+		int64_t owner = result->runtime ? result->runtime->memory_session_id : 0;
+		rc = exec_jobs_list(runtime->jobs, owner, &jobs);
+		cJSON_Delete(root);
+		if (rc) return rc;
+		cJSON *data = cJSON_CreateObject();
+		if (!data) { cJSON_Delete(jobs); MORPH_RETURN(-ENOMEM); }
+		cJSON_AddItemToObject(data, "jobs", jobs);
+		rc = tool_result_success(result, data);
+		if (rc) cJSON_Delete(data);
+		return rc;
+	}
 	if (!session_id || !action) {
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "invalid_request",
 			"session_id and action are required");
 		MORPH_RETURN(-EINVAL);
+	}
+	rc = exec_jobs_authorize(runtime->jobs, session_id,
+		result->runtime ? result->runtime->memory_session_id : 0);
+	if (rc) {
+		cJSON_Delete(root);
+		(void)tool_result_error(result, "process_not_found", "Process not found in this session.");
+		return rc;
 	}
 	if (strcmp(action, "write") == 0)
 		rc = process_session_write(runtime->manager, session_id,
@@ -610,7 +657,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 		rc = process_session_interrupt(runtime->manager, session_id);
 	else if (strcmp(action, "kill") == 0)
 		rc = process_session_kill(runtime->manager, session_id);
-	else if (strcmp(action, "poll") == 0)
+	else if (strcmp(action, "poll") == 0 || strcmp(action, "wait") == 0)
 		rc = 0;
 	else
 		rc = -EINVAL;
@@ -635,7 +682,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 					"wait_ms must be an integer from 0 to 60000");
 		MORPH_RETURN(-EINVAL);
 	}
-	uint64_t wait_ms = json_u64(root, "wait_ms", 0);
+	uint64_t wait_ms = json_u64(root, "wait_ms", 30000);
 	int used = 0;
 	if (cursor_text && (sscanf(cursor_text, "%zu:%zu%n", &cursor.stdout_offset,
 				   &cursor.stderr_offset, &used) != 2 ||
@@ -643,11 +690,18 @@ static int process_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		MORPH_RETURN(-EINVAL);
 	}
-	rc = process_session_poll(runtime->manager, session_id, cursor_text ? &cursor : NULL,
-				  !strcmp(action, "poll") ? wait_ms : 0, process_wait_cancelled,
-				  (void *)result->runtime, &snapshot);
+	if (!strcmp(action, "wait"))
+		rc = process_session_wait(runtime->manager, session_id,
+			cursor_text ? &cursor : NULL, wait_ms, process_wait_cancelled,
+			(void *)result->runtime, &snapshot);
+	else
+		rc = process_session_poll(runtime->manager, session_id,
+			cursor_text ? &cursor : NULL, !strcmp(action, "poll") ? wait_ms : 0,
+			process_wait_cancelled, (void *)result->runtime, &snapshot);
 	if (rc == 0) {
 		rc = result_snapshot(result, session_id, NULL, NULL, &snapshot, NULL);
+		if (!rc && snapshot.state >= PROCESS_EXITED)
+			exec_jobs_observed(runtime->jobs, session_id);
 		if (rc == 0 && result->data) {
 			int empty = (!snapshot.stdout_text || !snapshot.stdout_text[0]) &&
 				    (!snapshot.stderr_text || !snapshot.stderr_text[0]);
@@ -660,6 +714,19 @@ static int process_run(const char *args_json, struct tool_result *result,
 	process_snapshot_cleanup(&snapshot);
 	cJSON_Delete(root);
 	return rc;
+}
+
+static int exec_background_list(void *opaque, int64_t owner, cJSON **out)
+{
+	struct exec_runtime *runtime = opaque;
+	return exec_jobs_list(runtime->jobs, owner, out);
+}
+
+static int exec_background_wait(void *opaque, int64_t owner, const char *turn_id,
+	int (*cancelled)(void *), void *cancel_data, cJSON **out)
+{
+	struct exec_runtime *runtime = opaque;
+	return exec_jobs_wait(runtime->jobs, owner, turn_id, cancelled, cancel_data, out);
 }
 
 static void exec_environment(void *opaque, struct prompt_context_input *out)
@@ -707,16 +774,20 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.input_schema =
 		"{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},"
 		"\"description\":{\"type\":\"string\",\"description\":"
-		"\"Short action summary for the user, e.g. Check HTTP timeout settings.\"},"
+		"\"Short action summary in the user response language, e.g. Check HTTP timeout settings.\"},"
 		"\"workdir\":{\"type\":\"string\"},\"timeout_ms\":{\"type\":\"integer\","
 		"\"minimum\":0},\"yield_time_ms\":{\"type\":\"integer\",\"minimum\":0},"
 		"\"pty\":{\"type\":\"boolean\"},\"host\":{\"type\":\"boolean\","
 		"\"description\":\"Explicit host execution; requires exec.allow_host_execution. Default false.\"},"
+		"\"notify_only\":{\"type\":\"boolean\",\"description\":\"Do not wait before ending the turn. Use only when the user explicitly asks to start a task and be notified later. Default false.\"},"
+		"\"service\":{\"type\":\"boolean\",\"description\":\"Persistent server or watcher; do not wait for exit before replying. Default false.\"},"
 		"\"background\":{\"type\":\"boolean\"},\"cmd\":{\"type\":\"string\"}},"
 		"\"required\":[\"command\"],\"additionalProperties\":false}";
 	exec_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	exec_spec.exec = exec_run;
 	exec_spec.get_environment = exec_environment;
+	exec_spec.background_list = exec_background_list;
+	exec_spec.background_wait = exec_background_wait;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;
 	exec_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
@@ -730,16 +801,18 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	process_spec.name = "process";
 	process_spec.title = "Manage process";
 	process_spec.description =
-	    "Poll, write to, interrupt, or kill a process. Use poll with wait_ms (0-60000) "
-	    "and next_cursor from the previous result to wait for new output instead of shell "
-	    "sleep. "
+	    "List this session processes, wait for exit, poll output, write to, interrupt, or kill. "
+	    "Use action=wait for builds/tests: it waits for exit despite intermediate output. "
+	    "Use poll for interactive output. Both default to wait_ms=30000 (0-60000); "
+	    "wait_ms=0 reads immediately. Pass next_cursor as cursor for incremental output. "
+	    "Never start shell sleep or another delay tool just to wait for a process. "
 	    "Explicit cursors are replayable; output files contain redacted retained windows "
 	    "and are removed at runtime shutdown. Cancelling a wait does not stop the process.";
 	process_spec.input_schema =
 	    "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\"},\"action\":{"
-	    "\"type\":\"string\",\"enum\":[\"poll\",\"write\",\"interrupt\",\"kill\"]},\"input\":{"
+	    "\"type\":\"string\",\"enum\":[\"list\",\"poll\",\"wait\",\"write\",\"interrupt\",\"kill\"]},\"input\":{"
 	    "\"type\":\"string\"},\"wait_ms\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":"
-	    "60000},\"cursor\":{\"type\":\"string\"}},\"required\":[\"session_id\",\"action\"],"
+	    "60000},\"cursor\":{\"type\":\"string\"}},\"required\":[\"action\"],"
 	    "\"additionalProperties\":false}";
 	process_spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	process_spec.exec = process_run;
@@ -753,4 +826,51 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 		return rc;
 	}
 	return 0;
+}
+
+static struct exec_runtime *exec_runtime_lookup(struct tool_registry *reg)
+{
+	struct tool_entry *entry = reg ? tool_lookup(reg, "exec") : NULL;
+	return entry && entry->exec == exec_run ? entry->user_data : NULL;
+}
+
+int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb,
+				 void *user_data)
+{
+	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	if (!runtime)
+		MORPH_RETURN(-ENOENT);
+	exec_jobs_bind(runtime->jobs, runtime->manager, cb, user_data);
+	return 0;
+}
+
+int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, cJSON **out)
+{
+	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	if (runtime)
+		return exec_jobs_list(runtime->jobs, owner, out);
+	*out = cJSON_CreateArray();
+	MORPH_RETURN(*out ? 0 : -ENOMEM);
+}
+
+int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
+			cJSON **out)
+{
+	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	if (!runtime)
+		MORPH_RETURN(-ENOENT);
+	return exec_jobs_read(runtime->jobs, owner, id, out);
+}
+
+int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id)
+{
+	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	if (!runtime) MORPH_RETURN(-ENOENT);
+	return exec_jobs_stop(runtime->jobs, owner, id);
+}
+
+struct exec_jobs *exec_tool_jobs_handle(struct tool_registry *reg)
+{
+	struct exec_runtime *runtime = exec_runtime_lookup(reg);
+	return runtime ? runtime->jobs : NULL;
 }

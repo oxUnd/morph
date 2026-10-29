@@ -24,11 +24,16 @@ enum process_state {
 	PROCESS_KILLED,
 };
 
+typedef void (*process_completion_fn)(const char *session_id, void *user_data);
+
 struct process_manager_config {
 	size_t max_session_output;
 	size_t max_inline_output;
 	uint64_t kill_grace_ms;
 	const char *shell;
+	/* Called outside the manager lock; joined before destroy returns. */
+	process_completion_fn completed;
+	void *completed_user_data;
 };
 
 struct process_manager;
@@ -84,6 +89,15 @@ int process_session_poll(struct process_manager *manager, const char *session_id
 			 const struct process_cursor *cursor, uint64_t wait_ms,
 			 int (*cancelled)(void *), void *cancel_data,
 			 struct process_snapshot *snapshot);
+int process_session_wait(struct process_manager *manager, const char *session_id,
+			 const struct process_cursor *cursor, uint64_t wait_ms,
+			 int (*cancelled)(void *), void *cancel_data,
+			 struct process_snapshot *snapshot);
+char *process_redact_text(const struct process_manager *manager, const char *text);
+int process_session_inspect(struct process_manager *manager, const char *session_id,
+			    int full_output, struct process_snapshot *snapshot);
+int process_session_status(struct process_manager *manager, const char *session_id,
+			   struct process_snapshot *snapshot);
 int process_session_snapshot(struct process_manager *manager,
 			     const char *session_id,
 			     struct process_snapshot *snapshot);

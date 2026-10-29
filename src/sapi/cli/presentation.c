@@ -1,4 +1,5 @@
 #include "sapi/cli/internal.h"
+#include "sapi/cli/jobs_ui.h"
 #include "sapi/cli/list_ui.h"
 #include "agent/patch.h"
 #include <sys/ioctl.h>
@@ -1613,6 +1614,7 @@ void cli_presentation_cleanup(struct cli_context *ctx)
 	}
 	if (ctx->details_open)
 		cli_transcript_toggle(ctx);
+	cli_jobs_cleanup(ctx);
 	cli_transcript_reset(ctx);
 	presentation_clear_status(ctx);
 	cli_markdown_stream_reset(ctx, 0);
@@ -1645,6 +1647,9 @@ int cli_presentation_event(struct cli_context *ctx,
 	}
 	if (!ctx->presentation_ready)
 		return 0;
+	int jobs_rc = cli_jobs_event(ctx, ev);
+	if (jobs_rc)
+		return jobs_rc < 0 ? jobs_rc : 0;
 	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 	    strcmp(ev->name, "session.recap") == 0) {
 		cli_recap_event(ctx, ev);
