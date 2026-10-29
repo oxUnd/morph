@@ -1,9 +1,9 @@
 #ifndef MORPH_UTIL_UTF8_H
 #define MORPH_UTIL_UTF8_H
 
-#include "utf8proc/utf8proc.h"
 #include "buf.h"
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,7 +11,7 @@ extern "C" {
 
 /* Compatibility names for existing callers; all decoding uses utf8proc. */
 typedef char utf8_int8_t;
-typedef utf8proc_int32_t utf8_int32_t;
+typedef int32_t utf8_int32_t;
 
 const char *utf8valid(const char *s);
 const char *utf8nvalid(const char *s, size_t len);
@@ -19,8 +19,22 @@ size_t utf8len(const char *s);
 size_t utf8nlen(const char *s, size_t len);
 char *utf8dup(const char *s);
 const char *utf8codepoint(const char *s, utf8_int32_t *cp);
-/* Expected prefix length, including incomplete input; not a validity check. */
-size_t utf8codepointcalcsize(const char *s);
+/* Unicode categories grouped independently of the backing library. */
+enum utf8_codepoint_class {
+	UTF8_CLASS_OTHER,
+	UTF8_CLASS_UPPER,
+	UTF8_CLASS_LOWER,
+	UTF8_CLASS_LETTER,
+	UTF8_CLASS_MARK,
+	UTF8_CLASS_NUMBER,
+	UTF8_CLASS_SEPARATOR,
+};
+
+enum utf8_codepoint_class utf8_classify_codepoint(unsigned cp);
+
+/* Conservative token-estimation policy, not an emoji-membership test. */
+int utf8_is_emoji_component_cp(unsigned cp);
+int utf8_is_continuation_byte(unsigned char byte);
 
 size_t utf8_encode_codepoint(unsigned cp, char dst[4]);
 

@@ -1,5 +1,8 @@
 # Unicode support
 
+Only `src/util/utf8.c` includes the upstream API; callers use `util/utf8.h`
+without depending on third-party types, property structures, or byte tables.
+
 The project vendors utf8proc 2.12.0 (Unicode 18.0.0) at
 `vendor/utf8proc/`, pinned to upstream commit
 `79cdd5ab40c79afa559f689ffc13b76812dee1ac`. Its generated Unicode database and
@@ -23,9 +26,8 @@ removed. Existing names such as `utf8valid`, `utf8nvalid`, `utf8len`,
   `utf8nvalid` never reads past its byte bound. Compatibility counting treats
   malformed bytes individually; bounded decoding is preferred for new callers.
 - `utf8codepoint` advances one byte with U+FFFD on malformed input, allowing
-  string traversal to make progress. `utf8codepointcalcsize` uses utf8proc's
-  leading-byte table for incomplete stream prefixes; it does not validate input.
-  Text traversal uses bounded decoding instead of this prefix-length adapter.
+  string traversal to make progress. Stream-prefix sizing is private to the
+  adapter; text traversal uses bounded decoding.
 - Character widths come from `utf8proc_charwidth`, independent of process locale.
   Combining and nonprinting characters have zero width; East Asian ambiguous
   characters use the library's default narrow width. These APIs measure code

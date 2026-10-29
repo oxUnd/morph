@@ -2,7 +2,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/sources.list")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sources.list" MORPH_UTIL_SOURCES)
 add_library(morph-util STATIC ${MORPH_UTIL_SOURCES})
-target_compile_definitions(morph-util PUBLIC UTF8PROC_STATIC)
+target_compile_definitions(morph-util PRIVATE UTF8PROC_STATIC)
 
 target_include_directories(morph-util PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}

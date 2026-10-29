@@ -232,27 +232,17 @@ static enum uc_class classify_cp(uint32_t cp)
 		return UC_OTHER;
 	}
 
-	if (cp > INT32_MAX)
-		return UC_OTHER;
-	switch (utf8proc_category((utf8proc_int32_t)cp)) {
-	case UTF8PROC_CATEGORY_LU:
-	case UTF8PROC_CATEGORY_LT:
+	switch (utf8_classify_codepoint(cp)) {
+	case UTF8_CLASS_UPPER:
 		return UC_UPPER;
-	case UTF8PROC_CATEGORY_LL:
+	case UTF8_CLASS_LOWER:
 		return UC_LOWER;
-	case UTF8PROC_CATEGORY_LM:
-	case UTF8PROC_CATEGORY_LO:
-	case UTF8PROC_CATEGORY_MN:
-	case UTF8PROC_CATEGORY_MC:
-	case UTF8PROC_CATEGORY_ME:
+	case UTF8_CLASS_LETTER:
+	case UTF8_CLASS_MARK:
 		return UC_OTHER_LETTER;
-	case UTF8PROC_CATEGORY_ND:
-	case UTF8PROC_CATEGORY_NL:
-	case UTF8PROC_CATEGORY_NO:
+	case UTF8_CLASS_NUMBER:
 		return UC_NUMBER;
-	case UTF8PROC_CATEGORY_ZS:
-	case UTF8PROC_CATEGORY_ZL:
-	case UTF8PROC_CATEGORY_ZP:
+	case UTF8_CLASS_SEPARATOR:
 		return UC_SPACE;
 	default:
 		return UC_OTHER;

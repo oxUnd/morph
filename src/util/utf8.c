@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include "utf8.h"
+#include "utf8proc/utf8proc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -72,12 +73,59 @@ const char *utf8codepoint(const char *s, utf8_int32_t *cp)
 	return s + count;
 }
 
-size_t utf8codepointcalcsize(const char *s)
+static size_t utf8_prefix_len(const char *s)
 {
 	if (!s)
 		return 0;
 	int size = utf8proc_utf8class[(unsigned char)*s];
 	return size > 0 ? (size_t)size : 1;
+}
+
+int utf8_is_continuation_byte(unsigned char byte)
+{
+	return byte >= 0x80u && byte < 0xc0u && utf8proc_utf8class[byte] == 0;
+}
+
+enum utf8_codepoint_class utf8_classify_codepoint(unsigned cp)
+{
+	if (cp > INT32_MAX)
+		return UTF8_CLASS_OTHER;
+	switch (utf8proc_category((utf8proc_int32_t)cp)) {
+	case UTF8PROC_CATEGORY_LU:
+	case UTF8PROC_CATEGORY_LT:
+		return UTF8_CLASS_UPPER;
+	case UTF8PROC_CATEGORY_LL:
+		return UTF8_CLASS_LOWER;
+	case UTF8PROC_CATEGORY_LM:
+	case UTF8PROC_CATEGORY_LO:
+		return UTF8_CLASS_LETTER;
+	case UTF8PROC_CATEGORY_MN:
+	case UTF8PROC_CATEGORY_MC:
+	case UTF8PROC_CATEGORY_ME:
+		return UTF8_CLASS_MARK;
+	case UTF8PROC_CATEGORY_ND:
+	case UTF8PROC_CATEGORY_NL:
+	case UTF8PROC_CATEGORY_NO:
+		return UTF8_CLASS_NUMBER;
+	case UTF8PROC_CATEGORY_ZS:
+	case UTF8PROC_CATEGORY_ZL:
+	case UTF8PROC_CATEGORY_ZP:
+		return UTF8_CLASS_SEPARATOR;
+	default:
+		return UTF8_CLASS_OTHER;
+	}
+}
+
+int utf8_is_emoji_component_cp(unsigned cp)
+{
+	if (cp > INT32_MAX)
+		return 0;
+	const utf8proc_property_t *property = utf8proc_get_property((utf8proc_int32_t)cp);
+	return property->boundclass == UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC ||
+	       property->boundclass == UTF8PROC_BOUNDCLASS_REGIONAL_INDICATOR ||
+	       property->boundclass == UTF8PROC_BOUNDCLASS_ZWJ ||
+	       (property->boundclass == UTF8PROC_BOUNDCLASS_EXTEND &&
+		(property->ignorable || property->charwidth == 2));
 }
 
 size_t utf8_encode_codepoint(unsigned cp, char dst[4])
@@ -503,12 +551,7 @@ int utf8_is_fullwidth_colon_cp(unsigned cp)
 
 int utf8_is_unicode_space_cp(unsigned cp)
 {
-	if (cp < 0x80 || cp > INT32_MAX)
-		return 0;
-	utf8proc_category_t category = utf8proc_category((utf8proc_int32_t)cp);
-
-	return category == UTF8PROC_CATEGORY_ZS || category == UTF8PROC_CATEGORY_ZL ||
-	       category == UTF8PROC_CATEGORY_ZP;
+	return cp >= 0x80 && utf8_classify_codepoint(cp) == UTF8_CLASS_SEPARATOR;
 }
 
 int utf8_is_latin_extended_cp(unsigned cp)
@@ -672,7 +715,7 @@ static int terminal_process_text_byte(
 		return terminal_append_text(sanitizer, out,
 			(const char *)&src[*index - 1], 1, c);
 	}
-	expected = (size_t)utf8codepointcalcsize(src + *index);
+	expected = (size_t)utf8_prefix_len(src + *index);
 	if (expected > 1 && expected <= sizeof(sanitizer->utf8_pending) &&
 	    src_len - *index < expected) {
 		sanitizer->utf8_pending_len = src_len - *index;
@@ -702,7 +745,7 @@ static int terminal_process_pending_utf8(
 	while (sanitizer->utf8_pending_len) {
 		unsigned char combined[4];
 		size_t saved = sanitizer->utf8_pending_len;
-		size_t expected = utf8codepointcalcsize((const char *)sanitizer->utf8_pending);
+		size_t expected = utf8_prefix_len((const char *)sanitizer->utf8_pending);
 		size_t needed = expected > saved ? expected - saved : 0;
 		size_t taken = *src_len < needed ? *src_len : needed;
 

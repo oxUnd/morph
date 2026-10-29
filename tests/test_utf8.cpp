@@ -260,3 +260,28 @@ TEST(Utf8TerminalSanitizeTest, EveryChunkBoundaryMatchesWholeInput)
 		free(expected);
 	}
 }
+
+TEST(Utf8ProcTest, ClassificationPreservesUnicodeSemanticsAtTheAdapterBoundary)
+{
+	EXPECT_EQ(utf8_classify_codepoint(0x0391), UTF8_CLASS_UPPER);
+	EXPECT_EQ(utf8_classify_codepoint(0x01c5), UTF8_CLASS_UPPER);
+	EXPECT_EQ(utf8_classify_codepoint(0x0431), UTF8_CLASS_LOWER);
+	EXPECT_EQ(utf8_classify_codepoint(0x4e2d), UTF8_CLASS_LETTER);
+	EXPECT_EQ(utf8_classify_codepoint(0x0301), UTF8_CLASS_MARK);
+	EXPECT_EQ(utf8_classify_codepoint(0x09e7), UTF8_CLASS_NUMBER);
+	EXPECT_EQ(utf8_classify_codepoint(0x202f), UTF8_CLASS_SEPARATOR);
+	EXPECT_EQ(utf8_classify_codepoint(0x2028), UTF8_CLASS_SEPARATOR);
+	for (unsigned cp : {0xd800u, 0x110000u, 0xffffffffu}) {
+		EXPECT_EQ(utf8_classify_codepoint(cp), UTF8_CLASS_OTHER);
+		EXPECT_EQ(utf8_is_emoji_component_cp(cp), 0);
+	}
+}
+
+TEST(Utf8ProcTest, ContinuationBytesAreDistinctFromMalformedLeadingBytes)
+{
+	for (unsigned byte = 0; byte <= 0xff; byte++) {
+		SCOPED_TRACE(byte);
+		EXPECT_EQ(utf8_is_continuation_byte(static_cast<unsigned char>(byte)),
+			  byte >= 0x80 && byte <= 0xbf);
+	}
+}
