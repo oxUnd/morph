@@ -96,7 +96,7 @@ static int skill_print_list(struct cli_context *ctx)
 			break;
 		/* Markers are data here; terminal styles stay out of the model. */
 		const char *marker = !item->enabled ? "×" :
-			(item->activated ? "●" : "○");
+			(item->activated ? CLI_FEED_DONE : CLI_FEED_PENDING);
 		morph_buf_printf(&label, "%s %s", marker, entry.fm.name);
 		if (label.failed)
 			rc = label.failed;
@@ -114,7 +114,8 @@ static int skill_print_list(struct cli_context *ctx)
 	morph_buf_cleanup(&output);
 out_tree:
 	morph_tui_tree_cleanup(&tree);
-	printf(ctx, "\n  " ANSI_DIM "● active   ○ available   × disabled" ANSI_RESET "\n");
+	printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " active   " CLI_FEED_PENDING
+	       " available   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
 	MORPH_RETURN(rc);
@@ -125,8 +126,8 @@ static const char *skill_status(const struct skill_entry *entry)
 	if (!entry->enabled)
 		return "× disabled";
 	if (entry->activated)
-		return "● active";
-	return "○ available";
+		return CLI_FEED_DONE " active";
+	return CLI_FEED_PENDING " available";
 }
 
 static int skill_optional_field_count(const struct skill_entry *entry)

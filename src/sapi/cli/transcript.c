@@ -233,7 +233,7 @@ static const char *tool_state_color(const struct transcript_tool *tool)
 static const char *tool_state_marker(const struct transcript_tool *tool)
 {
 	return tool->state < 0 && !tool->timed_out ? CLI_FEED_FAILED :
-		tool_is_running(tool) ? CLI_FEED_RUNNING : "●";
+		tool_is_running(tool) ? CLI_FEED_RUNNING : CLI_FEED_DONE;
 }
 
 static void tool_row(const struct transcript_tool *tool, morph_buf_t *row,

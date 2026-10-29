@@ -154,8 +154,10 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 			free(expanded);
 			MORPH_RETURN(MORPH_ERR_FORMAT);
 		}
-		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON)
+		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
+			(void)cli_command_result_begin(ctx);
 			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
+		}
 		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
 	} else {
 		size_t len = 0;

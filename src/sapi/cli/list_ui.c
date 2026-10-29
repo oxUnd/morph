@@ -187,7 +187,8 @@ void cli_list_row(struct cli_context *ctx, const char *id, const char *name, con
 	if (name_width > 52)
 		name_width = 52;
 	printf(ctx, "  " ANSI_DIM "%s" ANSI_RESET "%s%s%s " ANSI_DIM "%s" ANSI_RESET "  ", branch,
-	       is_current ? ANSI_GREEN : ANSI_DIM, is_current ? "●" : "○", ANSI_RESET, id);
+	       is_current ? ANSI_GREEN : ANSI_DIM,
+	       is_current ? CLI_FEED_DONE : CLI_FEED_PENDING, ANSI_RESET, id);
 	if (name_width >= 12) {
 		cli_list_print_clipped(ctx, compact, name_width);
 		printed_width = (int)utf8_display_width(compact);

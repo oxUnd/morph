@@ -91,17 +91,19 @@ struct cli_context;
 #endif
 
 #define CMD_HEADER(ctx, fmt, ...)                                                                  \
-	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "• " fmt ANSI_RESET "\n", ##__VA_ARGS__)
+	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "● " fmt ANSI_RESET "\n", ##__VA_ARGS__)
 #define CMD_ERROR(ctx, fmt, ...)                                                                   \
-	printf(ctx, ANSI_BOLD ANSI_RED "• Error  " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+	printf(ctx, ANSI_BOLD ANSI_RED CLI_FEED_FAILED " Error  " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 #define CMD_OK(ctx, fmt, ...)                                                                      \
-	printf(ctx, ANSI_BOLD ANSI_GREEN "• " ANSI_RESET fmt "\n", ##__VA_ARGS__)
+	printf(ctx, ANSI_BOLD ANSI_GREEN CLI_FEED_DONE " " ANSI_RESET fmt "\n", ##__VA_ARGS__)
 
 void cli_request_cancel(struct cli_context *ctx);
 void cli_signal_received(int number, void *opaque);
 const char *cli_input_prompt(struct cli_context *ctx);
 void cli_presentation_user_input(struct cli_context *ctx, const char *text);
 void cli_presentation_command_input(struct cli_context *ctx, const char *text);
+void cli_presentation_command_end(struct cli_context *ctx);
+int cli_command_result_begin(struct cli_context *ctx);
 void cli_print_welcome(struct cli_context *ctx, const char *model, const char *directory);
 
 void print_padded(struct cli_context *ctx, const char *s, int target_width);

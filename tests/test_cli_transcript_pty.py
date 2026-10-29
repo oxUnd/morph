@@ -93,8 +93,9 @@ def check_final_spacing(driver, port):
             terminal = Terminal(driver, Path(temp), port, hooks_enabled=False)
             release = None
             try:
-                terminal.child.setwinsize(32, 100)
-                terminal.screen = pyte.Screen(100, 32)
+                width = (120, 80, 60, 80, 60)[index]
+                terminal.child.setwinsize(24, width)
+                terminal.screen = pyte.Screen(width, 24)
                 terminal.stream = pyte.Stream(terminal.screen)
                 terminal.pump(1)
                 terminal.send('final spacing check\r')
@@ -114,6 +115,23 @@ def check_final_spacing(driver, port):
                     first = next(i for i, row in enumerate(rows) if 'first line' in row)
                     last = next(i for i, row in enumerate(rows) if 'FINAL_SENTINEL code' in row)
                     assert last - first == 2, text
+                prompt = max(i for i, row in enumerate(rows) if row.startswith('› '))
+                assert prompt == footer + 3, text
+                assert terminal.screen.buffer[footer + 1][0].bg != '1c1c1c', text
+                terminal.send('/share\r')
+                text = terminal.snapshot(f'share after final case {index}')
+                rows = text.splitlines()
+                footer = next(i for i, row in enumerate(rows) if 'Worked for' in row)
+                command = next(i for i, row in enumerate(rows) if row.rstrip() == '/share')
+                assert command == footer + 2, text
+                receipt = next(i for i, row in enumerate(rows)
+                               if 'saved conversation to ' in row)
+                assert receipt == command + 2, text
+                prompt = max(i for i, row in enumerate(rows) if row.startswith('› '))
+                last_receipt = max(i for i in range(receipt, prompt)
+                                   if rows[i].strip())
+                assert prompt == last_receipt + 3, text
+                assert terminal.screen.buffer[last_receipt + 1][0].bg != '1c1c1c', text
                 assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             finally:
                 if release:

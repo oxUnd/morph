@@ -178,7 +178,8 @@ void cli_terminal_turn_end(struct cli_context *ctx, int result)
 		if (result < 0 || !ctx->final_rendered)
 			fputc('\n', terminal->output);
 		terminal_work_row(terminal, cli_terminal_columns(ctx));
-		fputc('\n', terminal->output);
+		/* The completed turn owns the gap before the next history block. */
+		fprintf(terminal->output, "\n\n");
 		fflush(terminal->output);
 		terminal->work_state = CLI_WORK_NONE;
 	}
@@ -336,7 +337,7 @@ static void terminal_live_set(struct cli_context *ctx, const char *text,
 		terminal->next_frame_ms = next;
 	if (!terminal->transient) {
 		if (changed) {
-			fprintf(terminal->output, "• %s\n", clean);
+			fprintf(terminal->output, CLI_FEED_RUNNING " %s\n", clean);
 			fflush(terminal->output);
 		}
 		free(clean);
@@ -601,7 +602,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 
 		if (status_visible || terminal->work_state)
 			fputc('\n', terminal->output);
-		fprintf(terminal->output, "  " ANSI_DIM "•" ANSI_RESET
+		fprintf(terminal->output, "  " ANSI_DIM CLI_FEED_PENDING ANSI_RESET
 			" \033[38;5;252m%s" ANSI_RESET, heading);
 		if ((size_t)terminal->columns >= utf8_display_width(heading) + 25)
 			fprintf(terminal->output, ANSI_DIM
@@ -697,8 +698,8 @@ void cli_terminal_composer_resume(struct cli_context *ctx)
 		terminal->live_anchored = 1;
 	}
 	if (ctx->input_status.enabled && !ctx->input_status.padding_rows) {
-		/* Finalizing work uses the same reservation as its committed row. */
-		int padding = terminal->live_visible && !terminal->work_finalizing ? 2 : 1;
+		/* Reserve the same gap for live and committed status rows. */
+		int padding = terminal->live_visible ? 2 : 1;
 
 		if (padding == 2)
 			fprintf(terminal->output, ANSI_RESET "\033[2K\n");

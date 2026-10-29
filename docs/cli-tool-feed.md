@@ -9,6 +9,13 @@ for failures. Shapes and explicit labels also distinguish states without color.
 There is no separate summary/command row. Background process results retain a
 running marker and label until the process finishes.
 
+Command receipts, plans, approvals and MCP status share the large state markers:
+`●` for completed or active, `◉` for running, `◯` for pending or available,
+and `⊗` for failed. Selection lists retain filled versus hollow circles;
+disabled, cancelled and system states retain their distinct symbols. Queue
+headings use the pending marker. Password masks and Markdown list bullets
+belong to their content and are not status markers.
+
 The compact preview contains at most three physical output lines. The first uses
 `  └ ` and continuation lines align beneath its text. Additional lines are counted
 and shown as `+ N lines (ctrl+o to expand)`. Text payloads from files and MCP content
@@ -63,6 +70,16 @@ The successful duration row adds no leading separator. Other turn endings retain
 their existing spacing. Paragraphs, lists, tables, fenced code and trailing input
 newlines are checked through the real PTY event loop; interior paragraph/code
 blank lines remain intact. User input, reasoning and answer styling are unchanged.
+
+The committed duration row ends the turn with one blank normal-background row.
+Command results own the same trailing gap. A command's first visible result is
+preceded by one blank row, supplied lazily by the shared output writer; existing
+leading result newlines do not add another row. Commands without output leave
+only their trailing blank row. Submitted command lines add no leading gap, so a
+command follows either kind of completed block consistently. Composer
+padding belongs to the editable input and is cleared on submission; it must never
+serve as the history separator. Finalizing work reserves the same gap before
+commit so the composer stays on its row when background cleanup finishes.
 
 ## Visual review
 

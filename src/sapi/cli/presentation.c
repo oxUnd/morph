@@ -54,13 +54,23 @@ void cli_presentation_command_input(struct cli_context *ctx, const char *text)
 	    !text || text[0] != '/')
 		return;
 	if (cli_color_enabled(ctx))
-		printf(ctx, ANSI_RESET "\n" CLI_COMMAND_COLOR);
-	else
-		putchar(ctx, '\n');
+		printf(ctx, ANSI_RESET CLI_COMMAND_COLOR);
 	presentation_print_safe_inline(ctx, text, SIZE_MAX);
 	if (cli_color_enabled(ctx))
 		printf(ctx, ANSI_RESET);
-	printf(ctx, "\n\n");
+	putchar(ctx, '\n');
+	ctx->output.command_result_pending = 1;
+}
+
+/* Keep command results clear of the editable composer's background. */
+void cli_presentation_command_end(struct cli_context *ctx)
+{
+	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
+		return;
+	ctx->output.command_result_pending = 0;
+	if (cli_color_enabled(ctx))
+		printf(ctx, ANSI_RESET);
+	putchar(ctx, '\n');
 }
 
 /* Submitted user messages remain ordinary scrollback, separate from tools. */

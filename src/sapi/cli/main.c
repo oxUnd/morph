@@ -658,7 +658,7 @@ int main(int argc, char *argv[])
 			}
 			if (restored) {
 				printf(startup_ctx, ANSI_BOLD ANSI_GREEN
-				       "• " ANSI_RESET "database restored; Morph restarted\n");
+				       "● " ANSI_RESET "database restored; Morph restarted\n");
 			}
 			ctx.trace_json = options.trace_json;
 		}

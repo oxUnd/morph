@@ -35,6 +35,22 @@ def composer(terminal, expected=''):
     return row
 
 
+def result_gap(terminal, result, draft=''):
+    rows = terminal.screen.display
+    prompt_row = composer(terminal, draft)
+    output_row = max(index for index, row in enumerate(rows) if result in row)
+    if not rows[output_row].startswith('/'):
+        heading = max(index for index, row in enumerate(rows[:output_row])
+                      if row.startswith('/'))
+        assert output_row == heading + 2, '\n'.join(rows)
+        assert not rows[heading + 1].strip(), '\n'.join(rows)
+    assert prompt_row - output_row == 3, '\n'.join(rows)
+    gap = output_row + 1
+    assert not rows[gap].strip(), '\n'.join(rows)
+    assert all(terminal.screen.buffer[gap][column].bg != '1c1c1c'
+               for column in range(terminal.screen.columns)), '\n'.join(rows)
+
+
 def command_heading(terminal, command):
     rows = terminal.screen.display
     matches = [i for i, row in enumerate(rows) if row.rstrip() == command]
@@ -43,7 +59,6 @@ def command_heading(terminal, command):
     assert terminal.screen.buffer[row][0].fg == 'af87ff', rows[row]
     assert all(terminal.screen.buffer[row][column].bg != '1c1c1c'
                for column in range(terminal.screen.columns)), '\n'.join(rows)
-    assert row + 1 < len(rows) and not rows[row + 1].strip(), '\n'.join(rows)
     return row
 
 
@@ -65,15 +80,17 @@ def main():
             terminal.send('/new slash-rules\r')
             wait_for(terminal, lambda: 'created and switched to session: slash-rules' in
                      '\n'.join(terminal.screen.display))
-            composer(terminal)
+            result_gap(terminal, 'created and switched to session: slash-rules')
             for command, title in [('/hooks', 'Lifecycle hooks'),
                                    ('/resume', 'Resume a session'),
-                                   ('/history', 'history'), ('/hi', 'history')]:
+                                   ('/history', 'history'), ('/hi', 'history'),
+                                   ('/jobs', 'morph / jobs')]:
                 terminal.send(command + '\r')
                 wait_for(terminal, lambda: title in '\n'.join(terminal.screen.display))
                 terminal.send('\x1b')
                 composer(terminal)
                 command_heading(terminal, command)
+                result_gap(terminal, command)
                 print(f'PASS: {command} cancellation preserves its plain command heading')
             terminal.send('/model\r')
             display = '\n'.join(terminal.screen.display)
@@ -82,20 +99,49 @@ def main():
             heading_row = command_heading(terminal, '/model')
             output_row = next(index for index, row in enumerate(terminal.screen.display)
                               if 'current model: pty-test' in row)
-            assert output_row > heading_row
+            assert output_row == heading_row + 2, '\n'.join(terminal.screen.display)
             assert terminal.screen.buffer[output_row][0].bg != '1c1c1c'
+            result_gap(terminal, 'current model: pty-test')
             terminal.send('/rename slash-renamed\r')
             assert 'session renamed to: slash-renamed' in '\n'.join(terminal.screen.display)
             composer(terminal)
             command_heading(terminal, '/rename slash-renamed')
+            result_gap(terminal, 'session renamed to: slash-renamed')
+            terminal.send('/new gap-probe\r')
+            result_gap(terminal, 'created and switched to session: gap-probe')
+            terminal.send('/s ^1\r')
+            result_gap(terminal, 'switched to session: slash-renamed')
+            command_heading(terminal, '/s ^1')
+            rows = terminal.screen.display
+            heading = command_heading(terminal, '/s ^1')
+            previous = max(i for i, row in enumerate(rows)
+                           if 'created and switched to session: gap-probe' in row)
+            assert heading == previous + 2, '\n'.join(rows)
             terminal.send('/model-unknown\r')
             assert 'unknown command: /model-unknown' in '\n'.join(terminal.screen.display)
             composer(terminal, '/model-unknown')
+            result_gap(terminal, 'unknown command: /model-unknown', '/model-unknown')
             terminal.send('\x15/model\r')
             composer(terminal)
             terminal.send('\x1b[A')
             composer(terminal, '/model')
             terminal.send('\x15')
+            for command in ('/help /share', '/credits', '/permissions',
+                            '/tasks', '/memory show'):
+                terminal.send(command + '\r')
+                rows = terminal.screen.display
+                heading = command_heading(terminal, command)
+                first_result = next(i for i in range(heading + 1, len(rows))
+                                    if rows[i].strip())
+                assert first_result == heading + 2, '\n'.join(rows)
+                composer(terminal)
+            preview = Path(temp) / 'preview.md'
+            preview.write_text('MARKDOWN_GAP_PROBE\n')
+            terminal.send(f'/render {preview}\r')
+            rows = terminal.screen.display
+            heading = command_heading(terminal, f'/render {preview}')
+            result = next(i for i, row in enumerate(rows) if 'MARKDOWN_GAP_PROBE' in row)
+            assert result == heading + 2, '\n'.join(rows)
             assert Model.requests.empty(), 'local commands reached the model'
             print('PASS: results, receipts, error correction, and Readline recall')
             terminal.send('live probe\r')

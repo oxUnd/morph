@@ -1406,6 +1406,8 @@ void cli_run(struct cli_context *ctx)
 							command_rc = cli_handle_command(ctx, input);
 						}
 						(void)cli_ui_drain(ctx);
+						if (input[0] == '/' && ctx->running)
+							cli_presentation_command_end(ctx);
 					} else {
 						cli_turn_begin(ctx);
 						command_rc = cli_command_job_start(

@@ -52,6 +52,8 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		len -= 8;
 	if (!len)
 		return 0;
+	if (output && cli_command_result_begin(output->ctx) != 0)
+		MORPH_RETURN(-EIO);
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {

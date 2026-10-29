@@ -282,6 +282,8 @@ TEST(CliListTest, SessionRowKeepsRelatedFieldsTogether)
 	EXPECT_NE(output.find("3,086 tokens"), std::string::npos);
 	EXPECT_NE(output.find("07-29 15:49"), std::string::npos);
 	EXPECT_NE(output.find("●"), std::string::npos);
+	EXPECT_NE(output.find("◯"), std::string::npos);
+	EXPECT_EQ(output.find("○"), std::string::npos);
 	EXPECT_EQ(output.find("current"), std::string::npos);
 	EXPECT_EQ(output.find("Model"), std::string::npos);
 }

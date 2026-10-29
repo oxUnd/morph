@@ -38,6 +38,7 @@ void cli_presentation_finish(struct cli_context *ctx);
 const char *cli_input_prompt(struct cli_context *ctx);
 void cli_presentation_user_input(struct cli_context *ctx, const char *text);
 void cli_presentation_command_input(struct cli_context *ctx, const char *text);
+void cli_presentation_command_end(struct cli_context *ctx);
 struct cli_cancel_monitor;
 struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int fd);
 void cli_cancel_monitor_stop(struct cli_cancel_monitor *monitor);
@@ -1273,7 +1274,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	EXPECT_NE(output.find("├ Connected"), std::string::npos);
 	EXPECT_NE(output.find("├ Discovering capabilities"),
 		  std::string::npos);
-	EXPECT_NE(output.find("└ ◯ Ready · 12 tools, 3 resources, 2 prompts"),
+	EXPECT_NE(output.find("└ ● Ready · 12 tools, 3 resources, 2 prompts"),
 		  std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
 	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
@@ -1955,6 +1956,12 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	cJSON_AddStringToObject(active, "status", "in_progress");
 	cJSON_AddBoolToObject(active, "active", 1);
 	cJSON_AddItemToArray(steps, active);
+	cJSON_AddItemToArray(steps, cJSON_Parse(
+		"{\"description\":\"Review changes\",\"status\":\"pending\"}"));
+	cJSON_AddItemToArray(steps, cJSON_Parse(
+		"{\"description\":\"Failed check\",\"status\":\"failed\"}"));
+	cJSON_AddItemToArray(steps, cJSON_Parse(
+		"{\"description\":\"Skipped check\",\"status\":\"skipped\"}"));
 	cJSON_AddItemToObject(plan, "steps", steps);
 	cJSON_AddItemToArray(plans, plan);
 	cJSON_AddItemToObject(result, "plans", plans);
@@ -1965,9 +1972,12 @@ TEST_F(CliPresentationTest, InteractiveRendersStructuredPlan)
 	Emit(MORPH_EVENT_REACT, "react.observation", "end", event_data);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_NE(output.find("Plan · 1/2 completed"), std::string::npos);
-	EXPECT_NE(output.find("Inspect CLI"), std::string::npos);
-	EXPECT_NE(output.find("Implement presenter"), std::string::npos);
+	EXPECT_NE(output.find("Plan · 1/5 completed"), std::string::npos);
+	EXPECT_NE(output.find("● Inspect CLI"), std::string::npos);
+	EXPECT_NE(output.find("◉ Implement presenter"), std::string::npos);
+	EXPECT_NE(output.find("◯ Review changes"), std::string::npos);
+	EXPECT_NE(output.find("⊗ Failed check"), std::string::npos);
+	EXPECT_NE(output.find("– Skipped check"), std::string::npos);
 	EXPECT_EQ(output.find("{\"plans\""), std::string::npos);
 	cJSON_Delete(event_data);
 }
@@ -2201,7 +2211,8 @@ TEST_F(CliPresentationTest, SlashCommandHasAPlainSanitizedHeading)
 	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 	EXPECT_EQ(output.find("\033[48;"), std::string::npos);
 	EXPECT_EQ(output.find("›"), std::string::npos);
-	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
+	EXPECT_EQ(output.back(), '\n');
+	EXPECT_EQ(std::count(output.begin(), output.end(), '\n'), 1);
 }
 
 TEST_F(CliPresentationTest, SlashHeadingDoesNotChangePlainOrJsonOutput)
@@ -2214,7 +2225,47 @@ TEST_F(CliPresentationTest, SlashHeadingDoesNotChangePlainOrJsonOutput)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	testing::internal::CaptureStdout();
 	cli_presentation_command_input(&ctx, "/share");
-	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\n/share\n\n");
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "/share\n");
+}
+
+TEST_F(CliPresentationTest, SlashResultGapOnlyChangesInteractiveOutput)
+{
+	testing::internal::CaptureStdout();
+	cli_presentation_command_end(&ctx);
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	cli_presentation_command_end(&ctx);
+	EXPECT_TRUE(testing::internal::GetCapturedStdout().empty());
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	cli_presentation_command_end(&ctx);
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\n");
+	cli_set_color_enabled(&ctx, 1);
+	testing::internal::CaptureStdout();
+	cli_presentation_command_end(&ctx);
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\033[0m\n");
+}
+
+TEST_F(CliPresentationTest, SlashOutputGapIsDeferredAndNormalizesHeadingNewlines)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	cli_presentation_command_input(&ctx, "/hi");
+	cli_presentation_command_end(&ctx);
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "/hi\n\n");
+	for (const char *prefix : {"", "\n", "\n\n"}) {
+		testing::internal::CaptureStdout();
+		cli_presentation_command_input(&ctx, "/share");
+		cli_printf(&ctx, "%sSaved to ~/Downloads/share.html\n", prefix);
+		cli_presentation_command_end(&ctx);
+		EXPECT_EQ(testing::internal::GetCapturedStdout(),
+			"/share\n\nSaved to ~/Downloads/share.html\n\n");
+	}
+	testing::internal::CaptureStdout();
+	cli_presentation_command_input(&ctx, "/model");
+	cli_putchar(&ctx, '\n');
+	cli_fputs(&ctx, "\nCurrent model\n", stdout);
+	cli_presentation_command_end(&ctx);
+	EXPECT_EQ(testing::internal::GetCapturedStdout(), "/model\n\nCurrent model\n\n");
 }
 
 TEST_F(CliPresentationTest, FileReadDetailsPrioritizeContentAndContinuation)

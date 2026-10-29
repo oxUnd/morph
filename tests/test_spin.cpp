@@ -250,7 +250,7 @@ TEST(SpinRender, ShimmerPreservesUtf8AndMovesHighlight)
 		plain.data(), first.data(), first.size());
 	plain.resize(plain_len);
 	ASSERT_EQ(utf8valid(buf), nullptr);
-	EXPECT_NE(first.find("\033[1;36m•\033[0m "), std::string::npos);
+	EXPECT_NE(first.find("\033[1;36m●\033[0m "), std::string::npos);
 	EXPECT_NE(plain.find("Reasoning… 中文"), std::string::npos);
 
 	ctx.frame = 1;

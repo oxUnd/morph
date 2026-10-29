@@ -378,8 +378,9 @@ def main():
             assert completed_rows[worked_row].startswith('  Worked for '), completed
             assert worked_row > 0 and not completed_rows[worked_row - 1].strip(), completed
             assert not completed_rows[worked_row + 1].strip(), completed
-            assert terminal.screen.buffer[worked_row + 1][0].bg == '1c1c1c', completed
-            assert completed_rows[worked_row + 2].startswith('› '), completed
+            assert terminal.screen.buffer[worked_row + 1][0].bg != '1c1c1c', completed
+            assert terminal.screen.buffer[worked_row + 2][0].bg == '1c1c1c', completed
+            assert completed_rows[worked_row + 3].startswith('› '), completed
             assert 'Working ·' not in completed, completed
             assert completed.count('ctx ') == 1, completed
             assert ' cr' in completed, completed
@@ -392,7 +393,7 @@ def main():
             assert 'Worked for ' not in terminal.raw[idle_start:], terminal.raw[idle_start:]
             idle_rows = idle.splitlines()
             worked_row = next(i for i, row in enumerate(idle_rows) if 'Worked for ' in row)
-            assert idle_rows[worked_row + 2].startswith('› '), idle
+            assert idle_rows[worked_row + 3].startswith('› '), idle
             terminal.send('\x15\r')
             terminal.send('ask a question\r')
             ask_request, ask_release = terminal.request()

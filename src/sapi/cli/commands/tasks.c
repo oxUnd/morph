@@ -488,7 +488,7 @@ static int task_status_is_terminal(const char *status)
 static const char *task_status_marker(const char *status)
 {
 	if (!status)
-		return "○";
+		return CLI_FEED_PENDING;
 	if (strcmp(status, "completed") == 0)
 		return "✓";
 	if (strcmp(status, "failed") == 0)
@@ -496,8 +496,8 @@ static const char *task_status_marker(const char *status)
 	if (strcmp(status, "cancelled") == 0)
 		return "–";
 	if (strcmp(status, "running") == 0)
-		return "●";
-	return "○";
+		return CLI_FEED_RUNNING;
+	return CLI_FEED_PENDING;
 }
 
 static void task_list_schedule(const struct scheduled_task *task,

@@ -52,6 +52,7 @@ struct cli_markdown_output {
 struct cli_output {
 	int color_disabled;
 	int structured;
+	int command_result_pending;
 	morph_buf_t *capture;
 	int capture_styled;
 };

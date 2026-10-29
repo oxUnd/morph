@@ -42,6 +42,15 @@
 - Queries print their command/result heading and results in the normal output
   area. State changes print a concise success receipt. Neither uses user-message
   padding or the composer's background. Failures retain an explicit error.
+- Completed turns (including their duration row) and completed command groups
+  each own one trailing blank row on the normal background. Submitted command
+  lines add no leading blank row. Editable composer padding is transient and
+  must not supply history spacing. Check completed turn -> command -> receipt
+  -> next command at 120, 80 and 60 columns, including wrapped receipts.
+- Add one blank row between a submitted command and its first visible result.
+  Defer that row until a result exists: a command without output (including a
+  cancelled navigation panel) leaves only one trailing blank row. Normalize
+  result headings' leading newlines so they do not add a second result gap.
 - Unrecognized commands remain in the editable composer after the error, so the
   user can correct them. Do not forward slash commands as model steering text:
   while a turn is active, unsupported local commands report that they must wait

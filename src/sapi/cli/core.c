@@ -188,6 +188,32 @@ static int cli_write_terminal_safe(const char *src, int allow_sgr)
 	return 0;
 }
 
+int cli_command_result_begin(struct cli_context *ctx)
+{
+	if (!ctx || ctx->presentation_mode != CLI_PRESENT_INTERACTIVE ||
+	    !ctx->output.command_result_pending || ctx->output.capture ||
+	    ctx->output.structured)
+		return 0;
+	ctx->output.command_result_pending = 0;
+	if (fputc('\n', stdout) == EOF)
+		MORPH_RETURN(-EIO);
+	return 0;
+}
+
+/* Add the command/result gap only when a visible result actually arrives. */
+static int cli_write_output(struct cli_context *ctx, const char *text)
+{
+	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+	    ctx->output.command_result_pending) {
+		while (*text == '\n' || *text == '\r')
+			text++;
+		if (utf8_display_width_ansi(text) > 0 &&
+		    cli_command_result_begin(ctx) != 0)
+			MORPH_RETURN(-EIO);
+	}
+	return cli_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
+}
+
 int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 {
 	va_list ap;
@@ -221,7 +247,7 @@ int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 		free(buf);
 		return n;
 	}
-	if (cli_write_terminal_safe(buf, (!ctx || !ctx->output.color_disabled)) != 0) {
+	if (cli_write_output(ctx, buf) != 0) {
 		free(buf);
 		MORPH_RETURN(-EIO);
 	}
@@ -243,7 +269,7 @@ int cli_fputs(struct cli_context *ctx, const char *text, FILE *stream)
 	}
 	if ((ctx && ctx->output.structured))
 		return 0;
-	return cli_write_terminal_safe(text, (!ctx || !ctx->output.color_disabled)) == 0 ? 0 : EOF;
+	return cli_write_output(ctx, text) == 0 ? 0 : EOF;
 }
 
 int cli_putchar(struct cli_context *ctx, int ch)
@@ -254,6 +280,13 @@ int cli_putchar(struct cli_context *ctx, int ch)
 		return cli_capture_text(ctx, text) == 0 ? ch : EOF;
 	if ((ctx && ctx->output.structured))
 		return ch;
+	if (ctx && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
+	    ctx->output.command_result_pending) {
+		if (ch == '\n' || ch == '\r')
+			return ch;
+		if (cli_command_result_begin(ctx) != 0)
+			return EOF;
+	}
 	return fputc(ch, stdout);
 }
 
