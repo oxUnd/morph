@@ -999,12 +999,37 @@ static int summarize_cb(const char *text, void *user_data, char **out)
 	    (llm->max_tokens <= 0 ||
 	     llm->max_tokens > ctx->compress.compaction_summary_max_tokens))
 		options.max_tokens = ctx->compress.compaction_summary_max_tokens;
+	log_info(ctx->logger,
+		 "compaction model request: session=%lld turn=%s provider=%s model=%s "
+		 "max_tokens=%d input_bytes=%zu",
+		 (long long)ctx->history_session_id, ctx->turn_id,
+		 llm->provider, llm->model_id, options.max_tokens, strlen(text));
 	rc = llm->chat(llm, ctx->iteration_arena, sys, msgs, 1, &options,
 		       morph_buf_append_cb, &b);
 	if (rc < 0) {
+		react_set_error_detail(ctx, llm->last_error[0] ?
+			llm->last_error : morph_strerror(rc));
+		log_warn(ctx->logger,
+			 "compaction model request failed: session=%lld turn=%s "
+			 "error=%s received_bytes=%zu detail=%.512s",
+			 (long long)ctx->history_session_id, ctx->turn_id,
+			 morph_strerror(rc), b.len,
+			 ctx->last_error_detail ? ctx->last_error_detail : "unavailable");
 		morph_buf_cleanup(&b);
 		return rc;
 	}
+	if (b.len == 0) {
+		react_set_error_detail(ctx,
+			"Context compression returned an empty summary from the model.");
+		log_warn(ctx->logger,
+			 "compaction model returned empty summary: session=%lld turn=%s "
+			 "model_status=%d received_bytes=0 max_tokens=%d",
+			 (long long)ctx->history_session_id, ctx->turn_id,
+			 rc, options.max_tokens);
+		morph_buf_cleanup(&b);
+		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+	}
+	react_set_error_detail(ctx, NULL);
 	*out = morph_buf_detach(&b);
 	if (!*out) {
 		MORPH_RETURN(-ENOMEM);
@@ -2409,6 +2434,8 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 	if (before_tokens < trigger_tokens && !ctx->force_compaction)
 		return 0;
 	ctx->force_compaction = 0;
+	/* Compaction failures must not inherit earlier tool error details. */
+	react_set_error_detail(ctx, NULL);
 	ctx->in_turn_compaction_count++;
 	snprintf(trigger_kind, sizeof(trigger_kind), "in_turn_%d",
 		ctx->in_turn_compaction_count);
@@ -2497,8 +2524,12 @@ static int react_maybe_compact_active_window(struct react_context *ctx,
 		(void)model_history_compaction_attempt_add(ctx->history_db,
 			ctx->history_session_id, ctx->turn_id, trigger_kind,
 			"failed", before_tokens, 0, rc, morph_strerror(rc));
-		log_err(ctx ? ctx->logger : NULL, "react: in-turn compaction failed: %s",
-			morph_strerror(rc));
+		log_err(ctx->logger,
+			"react: in-turn compaction failed: session=%lld turn=%s "
+			"trigger=%s error=%s detail=%.512s",
+			(long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
+			morph_strerror(rc), ctx->last_error_detail ?
+			ctx->last_error_detail : "unavailable");
 		(void)react_emit_compaction_event(ctx, "react.compaction.failed",
 			"failed", iteration, before_tokens, before_tokens,
 			trigger_tokens, rc);

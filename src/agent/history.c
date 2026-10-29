@@ -1722,8 +1722,33 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 	rc = history_compaction_input(ctx->history_items, &input, omitted_through);
 	if (rc == 0) {
 		for (int attempt = 0; attempt < 3; attempt++) {
+			struct timespec started = {0};
+			struct timespec finished = {0};
+			int timed = clock_gettime(CLOCK_MONOTONIC, &started) == 0;
+
+			log_info(ctx->logger,
+				 "history summary request: session=%lld turn=%s trigger=%s "
+				 "attempt=%d/3 input_bytes=%zu history_tokens=%d "
+				 "summary_max_tokens=%d omitted_groups=%d",
+				 (long long)ctx->history_session_id, ctx->turn_id,
+				 trigger_kind, attempt + 1, input.len, input_tokens,
+				 ctx->compress.compaction_summary_max_tokens, pruned_groups);
 			rc = ctx->compress.summarize(morph_buf_cstr(&input),
 						     ctx->compress.summarize_user_data, &summary);
+			double elapsed_ms = timed &&
+				clock_gettime(CLOCK_MONOTONIC, &finished) == 0 ?
+				(double)(finished.tv_sec - started.tv_sec) * 1000.0 +
+				(double)(finished.tv_nsec - started.tv_nsec) / 1000000.0 : 0.0;
+			int empty = !summary || !summary[0];
+
+			log_write(ctx->logger, rc == 0 && !empty ? LOG_INFO : LOG_WARN,
+				  "history summary response: session=%lld turn=%s trigger=%s "
+				  "attempt=%d/3 elapsed_ms=%.0f result=%s summary_bytes=%zu "
+				  "error=%s",
+				  (long long)ctx->history_session_id, ctx->turn_id,
+				  trigger_kind, attempt + 1, elapsed_ms,
+				  rc != 0 ? "request_failed" : empty ? "empty_summary" : "ok",
+				  summary ? strlen(summary) : 0, morph_strerror(rc));
 			if (rc == 0 && summary && summary[0])
 				break;
 			if (rc == 0)
@@ -1758,8 +1783,12 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 			if (attempt == 2 || (rc != MORPH_ERR_NETWORK && rc != MORPH_ERR_PROTOCOL &&
 					     rc != -ETIMEDOUT))
 				break;
-			log_warn(ctx ? ctx->logger : NULL, "history summary retry %d: %s",
-				 attempt + 1, morph_strerror(rc));
+			log_warn(ctx->logger,
+				 "history summary retry scheduled: session=%lld turn=%s "
+				 "next_attempt=%d/3 delay_ms=%u error=%s",
+				 (long long)ctx->history_session_id, ctx->turn_id,
+				 attempt + 2, (unsigned int)(attempt + 1) * 1000u,
+				 morph_strerror(rc));
 			rc = http_wait_cancelable(
 				&(struct http_control){.cancel_token = &ctx->cancel_token,
 						       .cancel_flag = &ctx->cancelled},
@@ -1836,9 +1865,13 @@ int agent_history_compact_with_trigger(struct react_context *ctx, int force,
 		ctx->history_session_id, ctx->turn_id, trigger_kind,
 		"completed", input_tokens, max_summary_tokens, 0, NULL);
 	log_info(ctx ? ctx->logger : NULL,
-		 "model history compaction %s: %d input tokens, %d active items",
-		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed", input_tokens,
-		 count);
+		 "model history compaction %s: session=%lld turn=%s trigger=%s "
+		 "history_tokens=%d summary_tokens=%d active_items=%d "
+		 "user_budget=%d recent_budget=%d omitted_groups=%d",
+		 strncmp(trigger_kind, "in_turn_", 8) == 0 ? "prepared" : "committed",
+		 (long long)ctx->history_session_id, ctx->turn_id, trigger_kind,
+		 input_tokens, max_summary_tokens, count, user_budget, recent_budget,
+		 pruned_groups);
 	if (ctx->compress.compaction_warning_count > 0) {
 		int compactions = model_history_compaction_count(
 			ctx->history_db, ctx->history_session_id);

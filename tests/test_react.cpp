@@ -1832,6 +1832,44 @@ static int record_compaction_memory(const struct morph_event *event, void *data)
 	return morph_event_recorder_cb(event, probe->recorder);
 }
 
+TEST_F(MockLlmTest, EmptyCompactionSummaryReplacesEarlierToolError)
+{
+	llm = create_mock_llm("");
+	ASSERT_NE(llm, nullptr);
+	struct react_context *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->last_error_detail = strdup(
+		"tool error: wait_ms must be an integer from 0 to 60000");
+	char *summary = nullptr;
+	EXPECT_EQ(ctx->compress.summarize("Summarize the work.",
+		ctx->compress.summarize_user_data, &summary), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(summary, nullptr);
+	ASSERT_NE(ctx->last_error_detail, nullptr);
+	EXPECT_STREQ(ctx->last_error_detail,
+		"Context compression returned an empty summary from the model.");
+	static_cast<mock_llm_data *>(llm->handle)->response = "Continuation checkpoint";
+	EXPECT_EQ(ctx->compress.summarize("Summarize the work.",
+		ctx->compress.summarize_user_data, &summary), 0);
+	ASSERT_NE(summary, nullptr);
+	EXPECT_STREQ(summary, "Continuation checkpoint");
+	EXPECT_EQ(ctx->last_error_detail, nullptr);
+	free(summary);
+	react_context_destroy(ctx);
+}
+
+static int record_compaction_with_stale_tool_error(const struct morph_event *event,
+	void *data)
+{
+	auto *probe = static_cast<compaction_memory_probe *>(data);
+	if (strcmp(event->name, "react.thinking") == 0) {
+		free(probe->ctx->last_error_detail);
+		probe->ctx->last_error_detail = strdup(
+			"tool error: wait_ms must be an integer from 0 to 60000");
+	}
+	return morph_event_recorder_cb(event, probe->recorder);
+}
+
 TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 {
 	const char *responses[] = {
@@ -1944,8 +1982,11 @@ TEST_F(MockLlmTest, InTurnCompactionOverBudgetRollsBackCheckpoint)
 	ctx->compress.summarize = test_compress_cb;
 	ctx->system_prompt_replace = 1;
 	ctx->system_prompt = strdup(std::string(8000, '!').c_str());
-	ASSERT_EQ(react_set_event_callback(ctx, morph_event_recorder_cb, &rec), 0);
+	compaction_memory_probe error_probe = {ctx, &rec};
+	ASSERT_EQ(react_set_event_callback(ctx,
+		record_compaction_with_stale_tool_error, &error_probe), 0);
 	EXPECT_NE(react_run(ctx, "keep the original objective", nullptr, nullptr), 0);
+	EXPECT_EQ(ctx->last_error_detail, nullptr);
 	EXPECT_EQ(model_history_compaction_count(&db, session.id), 0);
 	EXPECT_EQ(model_history_count(&db, session.id, 0), 1);
 	EXPECT_EQ(model_history_count(&db, session.id, 1), 1);
