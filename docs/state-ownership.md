@@ -12,7 +12,7 @@ state and are outside this rule.
 | State | Owner and lifetime |
 | --- | --- |
 | Logging | CLI `main` or `fcgi_bridge` owns a `morph_log`; runtime components borrow its address. Stop writers before `log_shutdown`. A null logger disables ordinary logging. Debug error macros write stateless diagnostics to stderr. |
-| HTTP cancellation and tracing | Every call receives `http_control`. Models carry their default control; tool requests bind a local model copy to the request control. Borrowed cancellation tokens, callbacks and logger must remain alive until the call returns. |
+| HTTP cancellation and tracing | Every call receives `http_control`. Models carry their default control; tool requests bind a local model copy to the request control. ReAct keeps provider errors and partial-output metadata in its request context instead of writing them back to shared model configuration. Borrowed cancellation tokens, callbacks and logger must remain alive until the call returns. |
 | Tool execution | `tool_result.runtime` borrows the current `tool_runtime_context`. Clearing a result preserves the binding; cleanup removes it. Streaming, user questions and runtime queries use that binding. |
 | Subagents | The runtime owns tasks and child contexts. Each task captures its submission depth; concurrent tasks do not increment shared recursion state. Cancelling a runtime cancels its own active children. |
 | FastCGI | The server owns its bridge pool and authentication cache. Requests and turn jobs explicitly carry the bridge and auth pointers. Destroy services after joining request workers. Output roots are captured when a pool opens. |
@@ -49,8 +49,18 @@ on macOS. It uses the configured target's active preprocessor branches; run the
 check on each supported platform to check platform-specific code there.
 
 The audit rejects mutable arrays of pointers, typedef-hidden mutable objects,
-macro-generated definitions, TLS and local statics. Its self-tests also verify
+macro-generated definitions, TLS, local statics, and `const` C++ records with
+`mutable` members (including nested records, arrays and base classes). Its self-tests also verify
 that immutable data and third-party definitions are excluded. Runtime tests
 exercise independent loggers, output capture, native callbacks, cancellation,
 signal cleanup and bridge pools; PTY tests cover editing, window resizing,
 interrupts, slash commands and shutdown.
+
+Also check the fallback CLI branch with Readline explicitly disabled:
+
+```sh
+cmake -S . -B cmake-build-no-readline -DENABLE_READLINE=OFF \
+  -DENABLE_GLOBAL_STATE_AUDIT=ON -DBUILD_FASTCGI=ON
+cmake --build cmake-build-no-readline
+ctest --test-dir cmake-build-no-readline --output-on-failure
+```

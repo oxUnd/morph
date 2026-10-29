@@ -96,25 +96,27 @@ install(TARGETS morph
 	RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h
-	/opt/homebrew/opt/readline/include
-	/usr/local/opt/readline/include
-	/usr/include
-	NO_DEFAULT_PATH
-)
-find_library(MORPH_READLINE_LIBRARY readline
-	/opt/homebrew/opt/readline/lib
-	/usr/local/opt/readline/lib
-	/usr/lib
-	NO_DEFAULT_PATH
-)
-if(NOT MORPH_READLINE_INCLUDE_DIR)
-	find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h)
+if(ENABLE_READLINE)
+	find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h
+		/opt/homebrew/opt/readline/include
+		/usr/local/opt/readline/include
+		/usr/include
+		NO_DEFAULT_PATH
+	)
+	find_library(MORPH_READLINE_LIBRARY readline
+		/opt/homebrew/opt/readline/lib
+		/usr/local/opt/readline/lib
+		/usr/lib
+		NO_DEFAULT_PATH
+	)
+	if(NOT MORPH_READLINE_INCLUDE_DIR)
+		find_path(MORPH_READLINE_INCLUDE_DIR readline/readline.h)
+	endif()
+	if(NOT MORPH_READLINE_LIBRARY)
+		find_library(MORPH_READLINE_LIBRARY readline)
+	endif()
 endif()
-if(NOT MORPH_READLINE_LIBRARY)
-	find_library(MORPH_READLINE_LIBRARY readline)
-endif()
-if(MORPH_READLINE_INCLUDE_DIR AND MORPH_READLINE_LIBRARY)
+if(ENABLE_READLINE AND MORPH_READLINE_INCLUDE_DIR AND MORPH_READLINE_LIBRARY)
 	include(CheckCSourceCompiles)
 	set(CMAKE_REQUIRED_INCLUDES ${MORPH_READLINE_INCLUDE_DIR})
 	set(CMAKE_REQUIRED_LIBRARIES ${MORPH_READLINE_LIBRARY})
@@ -143,6 +145,8 @@ int main(void) { return rl_bracketed_paste_begin(1, 0); }
 	endif()
 	target_link_libraries(morph-cli PUBLIC ${MORPH_READLINE_LIBRARY})
 	message(STATUS "readline found: ${MORPH_READLINE_LIBRARY}")
-else()
+elseif(ENABLE_READLINE)
 	message(STATUS "readline not found, using fgets")
+else()
+	message(STATUS "readline disabled, using fgets")
 endif()

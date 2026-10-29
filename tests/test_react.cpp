@@ -2674,6 +2674,41 @@ TEST_F(MockLlmTest, LlmFailureReturnsAbort) {
 	react_context_destroy(ctx);
 }
 
+TEST_F(MockLlmTest, SharedModelKeepsRequestErrorsIsolated)
+{
+	llm = create_mock_llm("unused");
+	llm_data = static_cast<struct mock_llm_data *>(llm->handle);
+	llm->chat_with_tools = nullptr;
+	llm->chat = [](struct model *self, struct arena *, const char *, const char **messages,
+		       int count, const struct model_chat_options *, sse_callback, void *) {
+		std::snprintf(self->last_error, sizeof(self->last_error), "request failed: %s",
+			      count ? messages[count - 1] : "empty");
+		self->error_info.kind = MODEL_ERROR_SERVER;
+		return -EIO;
+	};
+	std::strcpy(llm->last_error, "configured sentinel");
+	llm->error_info.kind = MODEL_ERROR_AUTH;
+	struct react_context *first = react_context_create(&tools, tok, &cfg, nullptr);
+	struct react_context *second = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(first, nullptr);
+	ASSERT_NE(second, nullptr);
+	first->llm_model = llm;
+	second->llm_model = llm;
+	int first_rc = 0, second_rc = 0;
+	std::thread first_turn([&] { first_rc = react_run(first, "first", nullptr, nullptr); });
+	std::thread second_turn([&] { second_rc = react_run(second, "second", nullptr, nullptr); });
+	first_turn.join();
+	second_turn.join();
+	EXPECT_EQ(first_rc, -EIO);
+	EXPECT_EQ(second_rc, -EIO);
+	EXPECT_STREQ(first->last_error_detail, "request failed: first");
+	EXPECT_STREQ(second->last_error_detail, "request failed: second");
+	EXPECT_STREQ(llm->last_error, "configured sentinel");
+	EXPECT_EQ(llm->error_info.kind, MODEL_ERROR_AUTH);
+	react_context_destroy(first);
+	react_context_destroy(second);
+}
+
 TEST_F(MockLlmTest, LlmFailurePreservesProviderErrorDetail) {
 	llm = create_mock_llm("unused");
 	llm_data = (struct mock_llm_data *)llm->handle;

@@ -448,6 +448,7 @@ static int react_finish_run(struct react_context *ctx)
 		ctx->runtime_context = NULL;
 		ctx->project_context = NULL;
 		ctx->hook_context = NULL;
+		ctx->llm_error_detail = NULL;
 		ctx->turn_id_user_set = 0;
 		arena_reset(ctx->iteration_arena);
 		arena_reset(ctx->message_arena);
@@ -1162,6 +1163,8 @@ void react_reset(struct react_context *ctx)
 	ctx->outcome_reason[0] = '\0';
 	free(ctx->last_error_detail);
 	ctx->last_error_detail = NULL;
+	ctx->llm_error_detail = NULL;
+	ctx->llm_output_started = 0;
 	free(ctx->final_answer);
 	ctx->final_answer = NULL;
 	free(ctx->final_reasoning_content);
@@ -2584,6 +2587,8 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 	struct arena *arena = ctx->iteration_arena;
 	int status;
 
+	ctx->llm_error_detail = NULL;
+	ctx->llm_output_started = 0;
 	status = react_prepare_request_messages(ctx, llm, arena, &system_prompt,
 		&messages, &msg_count);
 	if (status != 0)
@@ -2675,9 +2680,12 @@ static int react_chat_once(struct react_context *ctx, struct model *llm,
 			response->arena = arena;
 		}
 	}
-	((struct model *)ctx->llm_model)->error_info = llm->error_info;
-	memcpy(((struct model *)ctx->llm_model)->last_error, llm->last_error,
-	       sizeof(llm->last_error));
+	ctx->llm_output_started = llm->error_info.output_started;
+	if (status < 0 && llm->last_error[0]) {
+		ctx->llm_error_detail = arena_strdup(arena, llm->last_error);
+		if (!ctx->llm_error_detail)
+			MORPH_RETURN(-ENOMEM);
+	}
 	if (status >= 0) {
 		int flush_rc = react_stream_flush(&sd);
 		if (flush_rc != 0)
@@ -2717,14 +2725,13 @@ static int react_handle_llm_error(struct react_context *ctx,
 {
 	const char *err_content = "LLM call failed";
 	struct react_step *err;
-	struct model *model = ctx->llm_model;
 
 	if (status >= 0)
 		return 0;
 	log_err(ctx ? ctx->logger : NULL, "react_run: LLM call failed: %s", morph_strerror(status));
 
-	if (model && model->last_error[0])
-		react_set_error_detail(ctx, model->last_error);
+	if (ctx->llm_error_detail)
+		react_set_error_detail(ctx, ctx->llm_error_detail);
 	else if (response->content && *response->content)
 		react_set_error_detail(ctx, response->content);
 	if (response->content && *response->content)
@@ -4041,7 +4048,7 @@ int react_run(struct react_context *ctx, const char *user_input,
 		}
 
 		if (status == MORPH_ERR_CONTEXT_LIMIT && ctx->history_enabled &&
-		    ctx->compress.in_turn_compaction && !llm->error_info.output_started &&
+		    ctx->compress.in_turn_compaction && !ctx->llm_output_started &&
 		    ctx->context_recovery_count < 2) {
 			ctx->context_recovery_count++;
 			ctx->force_compaction = 1;

@@ -71,13 +71,17 @@ def main():
                     _, release = terminal.request()
                     terminal.send('keep my draft')
                     release.set()
-                    terminal.pump(.55)
+                    deadline = time.monotonic() + 5
+                    while 'Inspecting' not in '\n'.join(terminal.screen.display):
+                        assert time.monotonic() < deadline, '\n'.join(terminal.screen.display)
+                        terminal.pump(.05)
                     early = terminal.snapshot(f'{width} columns: first reasoning preview')
                     early_rows = early.splitlines()
                     early_question = next(i for i, row in enumerate(early_rows)
                                           if row.startswith('› Check reasoning rendering'))
-                    early_preview = next(i for i, row in enumerate(early_rows)
-                                         if 'Inspecting' in row)
+                    early_preview = next((i for i, row in enumerate(early_rows)
+                                          if 'Inspecting' in row), None)
+                    assert early_preview is not None, early
                     early_distance = early_preview - early_question
                     assert early_rows[early_preview].startswith('Inspecting'), early
                     assert terminal.screen.buffer[early_preview][0].italics, early

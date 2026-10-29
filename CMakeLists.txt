@@ -18,6 +18,7 @@ endif()
 
 option(BUILD_TESTS "Build tests" ON)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(ENABLE_READLINE "Use Readline for interactive CLI input" ON)
 option(BUILD_FASTCGI "Build FastCGI front-end (morph-fastcgi)" OFF)
 
 if(ENABLE_ASAN)

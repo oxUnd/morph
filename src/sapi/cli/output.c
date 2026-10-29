@@ -622,12 +622,12 @@ int cli_ask_user_callback(const char *question,
 	char buf[1024] = {0};
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		printf("\n");
+		printf(ctx, "\n");
 		return -ENOTTY;
 	}
 	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
-		printf("\n");
+		printf(ctx, "\n");
 		return -EIO;
 	}
 	fclose(tty);
@@ -691,28 +691,27 @@ static int prompt_approval(struct cli_context *ctx, const char *subject, int sco
 	free(rl_input);
 #else
 	if (scoped && ephemeral)
-		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
-		       "[s]ession / [" ANSI_RED "n" ANSI_RESET "]o: ");
+		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+			    "[s]ession / [" ANSI_RED "n" ANSI_RESET "]o: ");
 	else if (scoped)
-		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
-		       "[s]ession / [a]lways / ["
-		       ANSI_RED "n" ANSI_RESET "]o: ");
+		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es once / "
+			    "[s]ession / [a]lways / [" ANSI_RED "n" ANSI_RESET "]o: ");
 	else
-		printf("  [" ANSI_GREEN "y" ANSI_RESET "]es / ["
-		       ANSI_RED "n" ANSI_RESET "]o / [a]lways: ");
+		printf(ctx, "  [" ANSI_GREEN "y" ANSI_RESET "]es / [" ANSI_RED "n" ANSI_RESET
+			    "]o / [a]lways: ");
 	fflush(stdout);
 
 	char buf[16];
 	FILE *tty = fopen("/dev/tty", "r");
 	if (!tty) {
-		printf("\n");
+		printf(ctx, "\n");
 		if (ctx && ctx->prompt_lock_ready)
 			pthread_mutex_unlock(&ctx->prompt_lock);
 		return 0;
 	}
 	if (!cli_input_fgets(ctx, buf, sizeof(buf), tty)) {
 		fclose(tty);
-		printf("\n");
+		printf(ctx, "\n");
 		if (ctx && ctx->prompt_lock_ready)
 			pthread_mutex_unlock(&ctx->prompt_lock);
 		return 0;

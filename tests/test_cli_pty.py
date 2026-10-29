@@ -126,6 +126,12 @@ retry_count = 0
 
     def snapshot(self, label):
         self.pump()
+        # xterm publishes synchronized updates only after private mode 2026 ends.
+        # A PTY read can stop between clearing a frame and repainting its contents.
+        deadline = time.monotonic() + 5
+        while 2026 << 5 in self.screen.mode:
+            assert time.monotonic() < deadline, 'synchronized terminal update did not finish'
+            self.pump(.03)
         text = '\n'.join(self.screen.display)
         self.snapshots.append((label, text))
         print('checked:', label, flush=True)

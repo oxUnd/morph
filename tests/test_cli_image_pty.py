@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 
 from test_cli_pty import Model, Terminal, http, pexpect
 
@@ -38,7 +39,10 @@ def main():
             terminal.pump(1)
             composer_raw_start = len(terminal.raw)
             terminal.send('Compare \x16\x16')
-            terminal.pump(2)
+            deadline = time.monotonic() + 8
+            while '[IMAGE#1][IMAGE#2]' not in '\n'.join(terminal.screen.display):
+                assert time.monotonic() < deadline, '\n'.join(terminal.screen.display)
+                terminal.pump(.05)
             screen = terminal.snapshot('two clipboard image chips')
             assert '[IMAGE#1][IMAGE#2]' in screen, screen
             chip_backgrounds = set()

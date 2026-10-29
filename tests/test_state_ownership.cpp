@@ -10,6 +10,7 @@ void cli_command_capture_end(struct cli_context *);
 }
 
 #include <chrono>
+#include <climits>
 #include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
@@ -33,6 +34,8 @@ TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
 	EXPECT_EQ(first_key(3, 10), 13);
 	EXPECT_EQ(second_key(7, 20), 27);
 	EXPECT_EQ(first_key(2, 10), 15);
+	EXPECT_EQ(first_key(0, INT_MIN), INT_MIN + 5);
+	EXPECT_EQ(second_key(0, -8), -1);
 	cli_callbacks_cleanup(&first);
 	EXPECT_EQ(second_key(1, 20), 28);
 	cli_callbacks_cleanup(&second);

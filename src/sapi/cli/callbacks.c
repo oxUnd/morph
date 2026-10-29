@@ -49,7 +49,8 @@ static void dispatch(ffi_cif *cif, void *result, void **args, void *opaque)
 	(void)cif;
 	switch (binding->kind) {
 	case CALLBACK_KEY:
-		*(int *)result = binding->target.key(ctx, *(int *)args[0], *(int *)args[1]);
+		*(ffi_arg *)result =
+			(ffi_arg)binding->target.key(ctx, *(int *)args[0], *(int *)args[1]);
 		break;
 	case CALLBACK_DISPLAY:
 		binding->target.display(ctx);
@@ -58,7 +59,7 @@ static void dispatch(ffi_cif *cif, void *result, void **args, void *opaque)
 		binding->target.line(ctx, *(char **)args[0]);
 		break;
 	case CALLBACK_GETC:
-		*(int *)result = binding->target.getc(ctx, *(FILE **)args[0]);
+		*(ffi_arg *)result = (ffi_arg)binding->target.getc(ctx, *(FILE **)args[0]);
 		break;
 	case CALLBACK_COMPLETE:
 		*(char ***)result = binding->target.complete(ctx, *(const char **)args[0],
@@ -78,6 +79,8 @@ static void *bind_callback(struct cli_context *ctx, enum callback_kind kind,
 	ffi_type *result = &ffi_type_void;
 	unsigned int count = 0;
 
+	if (!ctx)
+		return NULL;
 	for (binding = ctx->callbacks; binding; binding = binding->next) {
 		if (binding->kind == kind && !memcmp(&binding->target, &target, sizeof(target)))
 			return binding->code;

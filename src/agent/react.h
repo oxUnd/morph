@@ -165,6 +165,9 @@ struct react_context {
 	int last_error_code;
 	char outcome_reason[64];
 	char *last_error_detail;
+	/* Borrowed from iteration_arena for the current model request only. */
+	const char *llm_error_detail;
+	int llm_output_started;
 	char *tool_fail_name;
 	char *tool_fail_args;
 	int tool_fail_count;

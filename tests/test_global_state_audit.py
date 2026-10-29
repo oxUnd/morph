@@ -45,6 +45,18 @@ class GlobalStateAuditTest(unittest.TestCase):
             extern int external_declaration;
         '''), {'writable_pointer', 'writable_elements'})
 
+    def test_const_records_with_mutable_members(self):
+        self.assertEqual(self.audit('''
+            struct Mutable { mutable int value; };
+            struct Nested { Mutable member; };
+            struct Derived : Mutable {};
+            static const Mutable direct{};
+            static const Nested nested{};
+            static const Derived inherited{};
+            static const Mutable array[2]{};
+            static const Mutable *const pointer = nullptr;
+        '''), {'direct', 'nested', 'inherited', 'array'})
+
     def test_headers_macros_and_vendor_boundary(self):
         self.assertEqual(self.audit('''
             #include "src/fixture.h"

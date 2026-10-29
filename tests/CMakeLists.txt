@@ -155,6 +155,9 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
+	add_test(NAME cli_snapshot
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_snapshot.py)
+	set_tests_properties(cli_snapshot PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 10)
 	add_test(NAME macos_mcp_adapter
 		COMMAND ${Python3_EXECUTABLE}
 			${CMAKE_CURRENT_SOURCE_DIR}/test_macos_mcp_adapter.py)
@@ -174,7 +177,7 @@ if(Python3_Interpreter_FOUND AND UNIX)
 	set_tests_properties(cli_setup_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()
-if(Python3_Interpreter_FOUND AND UNIX AND MORPH_READLINE_LIBRARY)
+if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
 	add_test(NAME cli_mcp_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_mcp_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

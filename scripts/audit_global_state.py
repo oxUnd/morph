@@ -71,6 +71,8 @@ class Clang:
         self.bind("disposeString", None, String)
         self.bind("getCursorType", Type, Cursor)
         self.bind("getCanonicalType", Type, Type)
+        self.bind("getTypeDeclaration", Cursor, Type)
+        self.bind("CXXField_isMutable", C.c_uint, Cursor)
         self.bind("getTypeSpelling", String, Type)
         self.bind("isConstQualifiedType", C.c_uint, Type)
         self.bind("getArrayElementType", Type, Type)
@@ -93,14 +95,36 @@ class Clang:
         self.disposeString(value)
         return result
 
+    def has_mutable_field(self, kind):
+        kind = self.getCanonicalType(kind)
+        while kind.kind in (112, 114, 115, 116):
+            kind = self.getArrayElementType(kind)
+        if kind.kind != 105:  # Record; pointer targets have separate storage.
+            return False
+        mutable = False
+
+        @self.visit_type
+        def inspect(cursor, _parent, _data):
+            nonlocal mutable
+            if cursor.kind == 6:  # FieldDecl
+                mutable = bool(self.CXXField_isMutable(cursor)) or self.has_mutable_field(
+                    self.getCursorType(cursor))
+            elif cursor.kind == 44:  # CXXBaseSpecifier
+                mutable = self.has_mutable_field(self.getCursorType(cursor))
+            return 0 if mutable else 1
+
+        self.visitChildren(self.getTypeDeclaration(kind), inspect, None)
+        return mutable
+
     def immutable(self, kind):
         kind = self.getCanonicalType(kind)
+        qualified = False
         while True:
-            if self.isConstQualifiedType(kind):
-                return True
+            qualified |= bool(self.isConstQualifiedType(kind))
             if kind.kind not in (112, 114, 115, 116):
-                return False
+                break
             kind = self.getArrayElementType(kind)
+        return qualified and not self.has_mutable_field(kind)
 
     def audit(self, entry, root):
         args = entry.get("arguments") or shlex.split(entry["command"])
