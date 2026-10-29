@@ -232,38 +232,31 @@ static enum uc_class classify_cp(uint32_t cp)
 		return UC_OTHER;
 	}
 
-	if (utf8_is_cjk_cp(cp))
-		return UC_OTHER_LETTER;
-	if (utf8_is_hiragana_cp(cp))
-		return UC_OTHER_LETTER;
-	if (utf8_is_katakana_cp(cp))
-		return UC_OTHER_LETTER;
-	if (utf8_is_hangul_cp(cp))
-		return UC_OTHER_LETTER;
-	if ((cp >= 0x00C0 && cp <= 0x00D6) ||
-	    (cp >= 0x00D8 && cp <= 0x00DE) ||
-	    (cp >= 0x0100 && cp <= 0x024F && (cp & 1) == 0) ||
-	    (cp >= 0x1E00 && cp <= 0x1EFF && (cp & 1) == 0) ||
-	    (cp >= 0x0400 && cp <= 0x04FF && (cp & 1) == 0) ||
-	    (cp >= 0x0500 && cp <= 0x052F && (cp & 1) == 0))
+	if (cp > INT32_MAX)
+		return UC_OTHER;
+	switch (utf8proc_category((utf8proc_int32_t)cp)) {
+	case UTF8PROC_CATEGORY_LU:
+	case UTF8PROC_CATEGORY_LT:
 		return UC_UPPER;
-	if ((cp >= 0x00DF && cp <= 0x00F6) ||
-	    (cp >= 0x00F8 && cp <= 0x00FF) ||
-	    (cp >= 0x0100 && cp <= 0x024F && (cp & 1) == 1) ||
-	    (cp >= 0x1E00 && cp <= 0x1EFF && (cp & 1) == 1) ||
-	    (cp >= 0x0400 && cp <= 0x04FF && (cp & 1) == 1) ||
-	    (cp >= 0x0500 && cp <= 0x052F && (cp & 1) == 1))
+	case UTF8PROC_CATEGORY_LL:
 		return UC_LOWER;
-	if (cp >= 0x0300 && cp <= 0x036F)
+	case UTF8PROC_CATEGORY_LM:
+	case UTF8PROC_CATEGORY_LO:
+	case UTF8PROC_CATEGORY_MN:
+	case UTF8PROC_CATEGORY_MC:
+	case UTF8PROC_CATEGORY_ME:
 		return UC_OTHER_LETTER;
-	if ((cp >= 0x0660 && cp <= 0x0669) ||
-	    (cp >= 0x06F0 && cp <= 0x06F9) ||
-	    (cp >= 0x0966 && cp <= 0x096F) ||
-	    (cp >= 0xFF10 && cp <= 0xFF19))
+	case UTF8PROC_CATEGORY_ND:
+	case UTF8PROC_CATEGORY_NL:
+	case UTF8PROC_CATEGORY_NO:
 		return UC_NUMBER;
-	if (utf8_is_unicode_space_cp(cp))
+	case UTF8PROC_CATEGORY_ZS:
+	case UTF8PROC_CATEGORY_ZL:
+	case UTF8PROC_CATEGORY_ZP:
 		return UC_SPACE;
-	return UC_OTHER;
+	default:
+		return UC_OTHER;
+	}
 }
 
 static int is_letter(enum uc_class c)

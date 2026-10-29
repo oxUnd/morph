@@ -245,7 +245,8 @@ static int reader_text(struct file_reader *reader, const struct read_options *op
 		if (!utf8_decode_codepoint(p, reader->end - reader->begin, &cp, &count)) {
 			/* A caller's cursor must point to a complete UTF-8 character. */
 			if (opts->byte_mode && reader->position == opts->byte_offset &&
-			    ((unsigned char)*p & 0xc0) == 0x80)
+			    utf8proc_utf8class[(unsigned char)*p] == 0 &&
+			    (unsigned char)*p < 0xc0)
 				MORPH_RETURN(-EINVAL);
 			page->binary = 1;
 			page->encoding = "unknown";

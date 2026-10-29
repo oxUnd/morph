@@ -1,0 +1,2 @@
+# Preserve the upstream-generated Unicode database byte-for-byte.
+vendor/utf8proc/utf8proc_data.c -whitespace linguist-generated=true

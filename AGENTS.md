@@ -69,11 +69,11 @@ morph-cli → morph (executable)
 Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config, open runtime, `cli_run()`.
 
 ## Vendor
-`vendor/`: cJSON, stb_image{,_write,_resize2}, tomlc17, sheredom_utf8 — compiled in, never fetched.
+`vendor/`: cJSON, stb_image{,_write,_resize2}, tomlc17, utf8proc 2.12.0 — compiled in, never fetched.
 md4c is fetched by CMake FetchContent. stb write/resize2 have warning suppressions in `src/agent/tools/CMakeLists.txt`.
 
 ## UTF-8
-Always use `src/util/utf8.h` (`#include "util/utf8.h"` from outside `src/util/`, `"utf8.h"` inside); never hand-roll decode/encode/width. It wraps vendored `vendor/sheredom_utf8.h` (header-only, no link) and adds `utf8_*` extensions in `src/util/utf8.c` (link `morph-util`). Key calls: `utf8codepoint`, `utf8len`, `utf8valid`, `utf8dup`; extensions `utf8_safe_len`, `utf8_dup_clamped`, `utf8_sanitize_into`/`_inplace`, `utf8_cp_width`, `utf8_visible_len`, `utf8_skip_forward`, `utf8_copy_vis`, `utf8_is_cjk_cp`, `utf8_truncate`, `utf8_display_width`. The header is the source of truth.
+Always use `src/util/utf8.h` (`#include "util/utf8.h"` from outside `src/util/`, `"utf8.h"` inside); never hand-roll decode/encode/width. It wraps vendored `vendor/utf8proc/` (v2.12.0, Unicode 18.0.0), compiled into `morph-util` through the shared `src/util/sources.list` manifest. Decoding, encoding, validation, character width and general Unicode categories come from utf8proc. Legacy names `utf8codepoint`, `utf8len`, `utf8valid`, and `utf8dup` remain as compatibility adapters. Prefer bounded `utf8_decode_codepoint` / `utf8_encode_codepoint`, `utf8_clamp_bytes`, `utf8_sanitize_into` / `_inplace`, and `utf8_display_width` for new code. ANSI filtering, layout/clipping and tokenizer language-block policies remain application logic. The header is the source of truth.
 
 ## Core Data Structures (`src/util/`, link `morph-util`)
 Prefer these over hand-rolled equivalents.

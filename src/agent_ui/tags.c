@@ -3,6 +3,7 @@
 #include "util/buf.h"
 #include "util/strmap.h"
 #include "util/name.h"
+#include "util/utf8.h"
 #include "cJSON.h"
 
 #include <ctype.h>
@@ -281,62 +282,36 @@ static void skip_spaces(struct agent_ui_parser *p)
 static int consume_utf8_quote(const struct agent_ui_parser *p, size_t *pos,
 			      char *quote)
 {
-	unsigned char b0;
-	unsigned char b1;
-	unsigned char b2;
+	unsigned cp;
+	size_t count;
 
-	if (*pos >= p->len)
+	if (*pos >= p->len ||
+	    !utf8_decode_codepoint(p->input + *pos, p->len - *pos, &cp, &count))
 		return 0;
-	if (p->input[*pos] == '"' || p->input[*pos] == '\'') {
-		*quote = p->input[*pos];
-		(*pos)++;
-		return 1;
-	}
-	if (*pos + 2 >= p->len)
-		return 0;
-	b0 = (unsigned char)p->input[*pos];
-	b1 = (unsigned char)p->input[*pos + 1];
-	b2 = (unsigned char)p->input[*pos + 2];
-	if (b0 != 0xe2 || b1 != 0x80)
-		return 0;
-	if (b2 == 0x9c || b2 == 0x9d) {
+	if (cp == '"' || cp == 0x201c || cp == 0x201d)
 		*quote = '"';
-		*pos += 3;
-		return 1;
-	}
-	if (b2 == 0x98 || b2 == 0x99) {
+	else if (cp == '\'' || cp == 0x2018 || cp == 0x2019)
 		*quote = '\'';
-		*pos += 3;
-		return 1;
-	}
-	return 0;
+	else
+		return 0;
+	*pos += count;
+	return 1;
 }
 
 static int at_matching_utf8_quote(const struct agent_ui_parser *p,
 				  size_t pos, char quote, size_t *width)
 {
-	if (pos >= p->len)
+	unsigned cp;
+	size_t count;
+
+	if (pos >= p->len ||
+	    !utf8_decode_codepoint(p->input + pos, p->len - pos, &cp, &count))
 		return 0;
-	if (p->input[pos] == quote) {
-		*width = 1;
-		return 1;
-	}
-	if (pos + 2 >= p->len)
+	if (cp != (unsigned char)quote &&
+	    !(quote == '"' && cp == 0x201d) && !(quote == '\'' && cp == 0x2019))
 		return 0;
-	if ((unsigned char)p->input[pos] != 0xe2 ||
-	    (unsigned char)p->input[pos + 1] != 0x80)
-		return 0;
-	if (quote == '"' &&
-	    (unsigned char)p->input[pos + 2] == 0x9d) {
-		*width = 3;
-		return 1;
-	}
-	if (quote == '\'' &&
-	    (unsigned char)p->input[pos + 2] == 0x99) {
-		*width = 3;
-		return 1;
-	}
-	return 0;
+	*width = count;
+	return 1;
 }
 
 static int parse_attrs(struct agent_ui_parser *p, size_t end, cJSON *attrs)

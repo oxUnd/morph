@@ -549,7 +549,7 @@ LLM 调用前:
 | 动态工具图片处理 | libvips + cairo + pangocairo | ✓ | QuickJS Host API 的 image/canvas 能力 |
 | 终端图像 | 自实现 kitty/iterm2/sixel 协议 | ✓ | 缺失时回退路径 |
 | Token 计数 | BPE（CL100K/O200K）+ Unicode-Aware 估算 | ✓ | `src/util/bpe.c` + `src/agent/tokenizer.c` |
-| UTF-8 | sheredom/utf8.h + 项目扩展 | ✓ | vendored header-only + `src/util/utf8.c` |
+| UTF-8 | utf8proc 2.12.0 + 项目适配 | ✓ | vendored 静态库 + `src/util/utf8.c` |
 | 异步 / 子进程 | fork+exec + waitpid | ✓ | 无需额外事件循环库 |
 | 多线程 | pthreads | ✓ | — |
 | 持久化 | sqlite3（系统库） | ✓ | 单文件 DB |
@@ -1019,7 +1019,7 @@ morph/
 │       ├── arena / buf / array / str / strmap / queue / utf8 / error
 │       └── file / log / spin / base64 / image_util / bpe / id / cancel
 ├── vendor/
-│   ├── cJSON.c/h, toml.c/h, stb_image*.h, sheredom_utf8.h, re.c/h
+│   ├── cJSON.c/h, toml.c/h, stb_image*.h, utf8proc/, re.c/h
 │   ├── mathjax-c/
 │   └── tiktoken/
 │       ├── cl100k_base.tiktoken

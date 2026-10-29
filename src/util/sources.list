@@ -18,6 +18,7 @@ array.c
 json.c
 bash_parse.c
 ../../vendor/cJSON.c
+../../vendor/utf8proc/utf8proc.c
 ../../vendor/re.c
 sha256.c
 

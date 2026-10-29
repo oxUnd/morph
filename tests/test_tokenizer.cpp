@@ -2,7 +2,13 @@
 #include "agent/tokenizer.h"
 #include "agent/context.h"
 #include "util/bpe.h"
+#include "util/file.h"
+#include "util/base64.h"
+#include <filesystem>
+#include <memory>
+#include <set>
 #include <string.h>
+#include <unistd.h>
 
 class TokenizerTest : public ::testing::Test {
 protected:
@@ -268,4 +274,42 @@ TEST_F(TokenizerTest, DefaultAndBaseReasoningModelsUseTheResolvedVocabulary)
 			EXPECT_EQ(tokenizer_count(other, text), tokenizer_count(tok, text));
 		tokenizer_destroy(other);
 	}
+}
+
+TEST(BpeCountTest, UnicodeCategoriesDriveCaseAndDigitBoundaries)
+{
+	char temp[] = "/tmp/morph-bpe-unicode-XXXXXX";
+	ASSERT_NE(mkdtemp(temp), nullptr);
+	struct VocabularyDirectory {
+		std::string path;
+		~VocabularyDirectory()
+		{
+			std::error_code ignored;
+			std::filesystem::remove_all(path, ignored);
+		}
+	} directory = {temp};
+	std::string path = directory.path + "/o200k_base.tiktoken";
+	/* Prefix tokens provide every intermediate byte merge up to a whole word. */
+	std::string vocabulary;
+	std::set<std::string> prefixes;
+	int rank = 0;
+	for (const char *word : {"БВГ", "ΑΒΓ", "১২৩৪", "৪"}) {
+		for (size_t length = 2; length <= strlen(word); length++) {
+			if (!prefixes.insert(std::string(word, length)).second)
+				continue;
+			char *encoded = base64_encode(
+				reinterpret_cast<const unsigned char *>(word), length);
+			ASSERT_NE(encoded, nullptr);
+			vocabulary += std::string(encoded) + " " + std::to_string(rank++) + "\n";
+			free(encoded);
+		}
+	}
+	ASSERT_EQ(file_write_all(path.c_str(), vocabulary.data(), vocabulary.size()), 0);
+	std::unique_ptr<struct bpe_encoder, decltype(&bpe_encoder_destroy)> encoder(
+		bpe_encoder_create(nullptr, BPE_O200K_BASE, directory.path.c_str()),
+		bpe_encoder_destroy);
+	ASSERT_NE(encoder, nullptr);
+	EXPECT_EQ(bpe_count_tokens(encoder.get(), "БВГ"), 1);
+	EXPECT_EQ(bpe_count_tokens(encoder.get(), "ΑΒΓ"), 1);
+	EXPECT_EQ(bpe_count_tokens(encoder.get(), "১২৩৪"), 2);
 }

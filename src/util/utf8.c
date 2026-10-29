@@ -4,54 +4,129 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
-size_t utf8_clamp_bytes(const char *s, size_t max_bytes)
+/* Bound every iterator call, including non-terminated source chunks. */
+static utf8proc_ssize_t utf8_iterate_bytes(const char *s, size_t len,
+					utf8proc_int32_t *cp)
+{
+	if (len > 4)
+		len = 4;
+	return utf8proc_iterate((const utf8proc_uint8_t *)s,
+			       (utf8proc_ssize_t)len, cp);
+}
+
+const char *utf8nvalid(const char *s, size_t len)
+{
+	if (!s)
+		return NULL;
+	for (size_t pos = 0; pos < len && s[pos];) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t count = utf8_iterate_bytes(s + pos, len - pos, &cp);
+
+		if (count < 1)
+			return s + pos;
+		pos += (size_t)count;
+	}
+	return NULL;
+}
+
+const char *utf8valid(const char *s)
+{
+	return utf8nvalid(s, s ? strlen(s) : 0);
+}
+
+size_t utf8nlen(const char *s, size_t len)
+{
+	size_t count = 0;
+
+	if (!s)
+		return 0;
+	for (size_t pos = 0; pos < len && s[pos]; count++) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t bytes = utf8_iterate_bytes(s + pos, len - pos, &cp);
+
+		pos += bytes > 0 ? (size_t)bytes : 1;
+	}
+	return count;
+}
+
+size_t utf8len(const char *s)
+{
+	return utf8nlen(s, s ? strlen(s) : 0);
+}
+
+char *utf8dup(const char *s)
+{
+	return s ? strdup(s) : NULL;
+}
+
+const char *utf8codepoint(const char *s, utf8_int32_t *cp)
+{
+	if (!s || !cp)
+		return s;
+	utf8proc_ssize_t count = utf8proc_iterate((const utf8proc_uint8_t *)s, -1, cp);
+	if (count < 1) {
+		*cp = 0xfffd;
+		return s + 1;
+	}
+	return s + count;
+}
+
+size_t utf8codepointcalcsize(const char *s)
 {
 	if (!s)
 		return 0;
-	size_t len = strlen(s);
-	if (len <= max_bytes)
-		return len;
-	size_t pos = max_bytes;
-	while (pos > 0 && utf8nvalid(s, pos) != NULL)
-		pos--;
+	int size = utf8proc_utf8class[(unsigned char)*s];
+	return size > 0 ? (size_t)size : 1;
+}
+
+size_t utf8_encode_codepoint(unsigned cp, char dst[4])
+{
+	if (!dst || cp > INT32_MAX || !utf8proc_codepoint_valid((utf8proc_int32_t)cp))
+		return 0;
+	return (size_t)utf8proc_encode_char((utf8proc_int32_t)cp, (utf8proc_uint8_t *)dst);
+}
+
+size_t utf8_clamp_bytes(const char *s, size_t max_bytes)
+{
+	size_t pos = 0;
+
+	if (!s)
+		return 0;
+	size_t len = strnlen(s, max_bytes);
+	while (pos < len) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t count = utf8_iterate_bytes(s + pos, len - pos, &cp);
+
+		if (count < 1)
+			break;
+		pos += (size_t)count;
+	}
 	return pos;
 }
 
 size_t utf8_next_codepoint_len(const char *s, size_t avail)
 {
-	size_t cp_len;
+	utf8proc_int32_t cp;
 
-	if (!s || avail == 0 || *s == '\0')
+	if (!s || !avail || !*s)
 		return 0;
-	cp_len = (size_t)utf8codepointcalcsize(s);
-	if (cp_len == 0 || cp_len > avail)
-		return 1;
-	if (utf8nvalid(s, cp_len) != NULL)
-		return 1;
-	return cp_len;
+	utf8proc_ssize_t count = utf8_iterate_bytes(s, avail, &cp);
+	return count > 0 ? (size_t)count : 1;
 }
 
 int utf8_decode_codepoint(const char *s, size_t avail, unsigned *cp,
 			  size_t *cp_len)
 {
-	utf8_int32_t raw;
-	size_t len;
+	utf8proc_int32_t value;
 
-	if (!s || avail == 0 || !cp || !cp_len)
+	if (!s || !avail || !*s || !cp || !cp_len)
 		return 0;
-	len = utf8_next_codepoint_len(s, avail);
-	if (len == 0)
+	utf8proc_ssize_t count = utf8_iterate_bytes(s, avail, &value);
+	if (count < 1)
 		return 0;
-	if (len == 1 && (unsigned char)*s >= 0x80)
-		return 0;
-	(void)utf8codepoint(s, &raw);
-	/* The vendor validator accepts surrogate and out-of-range code points. */
-	if (raw < 0 || raw > 0x10ffff || (raw >= 0xd800 && raw <= 0xdfff))
-		return 0;
-	*cp = (unsigned)raw;
-	*cp_len = len;
+	*cp = (unsigned)value;
+	*cp_len = (size_t)count;
 	return 1;
 }
 
@@ -86,27 +161,23 @@ char *utf8_dup_clamped(const char *src, size_t max_bytes)
 
 size_t utf8_sanitize_into(char *dst, const char *src, size_t src_len)
 {
+	size_t written = 0;
+
 	if (!dst || !src)
 		return 0;
-	size_t i = 0;
-	size_t j = 0;
-	while (i < src_len) {
-		unsigned char c = (unsigned char)src[i];
-		if (c == 0) { i++; continue; }
-		if (c < 0x80) {
-			dst[j++] = (char)c;
-			i++;
+	for (size_t pos = 0; pos < src_len;) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t count = utf8_iterate_bytes(src + pos, src_len - pos, &cp);
+
+		if (count < 1 || cp == 0) {
+			pos++;
 			continue;
 		}
-		size_t cp_len = (size_t)utf8codepointcalcsize(src + i);
-		if (cp_len == 0 || i + cp_len > src_len) { i++; continue; }
-		const char *v = utf8nvalid(src + i, cp_len);
-		if (v != NULL) { i++; continue; }
-		for (size_t k = 0; k < cp_len; k++)
-			dst[j++] = src[i + k];
-		i += cp_len;
+		memmove(dst + written, src + pos, (size_t)count);
+		written += (size_t)count;
+		pos += (size_t)count;
 	}
-	return j;
+	return written;
 }
 
 void utf8_sanitize_inplace(char *s)
@@ -120,85 +191,38 @@ void utf8_sanitize_inplace(char *s)
 size_t utf8_copy_sanitized_clamped(char *dst, size_t dst_cap,
 				   const char *src, size_t max_bytes)
 {
-	size_t src_len;
-	size_t safe;
-	size_t clean;
+	size_t written = 0;
 
-	if (!dst || dst_cap == 0)
+	if (!dst || !dst_cap)
 		return 0;
 	if (!src) {
 		dst[0] = '\0';
 		return 0;
 	}
+	size_t len = strnlen(src, max_bytes);
+	for (size_t pos = 0; pos < len;) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t count = utf8_iterate_bytes(src + pos, len - pos, &cp);
 
-	src_len = strlen(src);
-	if (src_len > max_bytes)
-		src_len = max_bytes;
-	if (src_len >= dst_cap)
-		src_len = dst_cap - 1;
-	safe = utf8_clamp_bytes(src, src_len);
-	clean = utf8_sanitize_into(dst, src, safe);
-	dst[clean] = '\0';
-	return clean;
+		if (count < 1) {
+			pos++;
+			continue;
+		}
+		if ((size_t)count >= dst_cap - written)
+			break;
+		memmove(dst + written, src + pos, (size_t)count);
+		written += (size_t)count;
+		pos += (size_t)count;
+	}
+	dst[written] = '\0';
+	return written;
 }
 
 int utf8_codepoint_width(unsigned cp)
 {
-	if (cp == 0)
+	if (cp > INT32_MAX || !utf8proc_codepoint_valid((utf8proc_int32_t)cp))
 		return 0;
-	if (cp < 0x20)
-		return 0;
-	{
-		int w = wcwidth((wchar_t)cp);
-		if (w > 0)
-			return w;
-		if (w == 0)
-			return 0;
-	}
-	if (cp >= 0x0300 && cp <= 0x036F) return 0;
-	if (cp >= 0x0483 && cp <= 0x0489) return 0;
-	if (cp >= 0x1AB0 && cp <= 0x1AFF) return 0;
-	if (cp >= 0x1DC0 && cp <= 0x1DFF) return 0;
-	if (cp >= 0x20D0 && cp <= 0x20FF) return 0;
-	if (cp >= 0xFE20 && cp <= 0xFE2F) return 0;
-	if (cp == 0x00AD) return 0;
-	if (cp == 0x034F) return 0;
-	if (cp == 0x200B) return 0;
-	if (cp == 0x200C) return 0;
-	if (cp == 0x200D) return 0;
-	if (cp == 0x2060) return 0;
-	if (cp >= 0xFE00 && cp <= 0xFE0F) return 0;
-	if (cp >= 0xE0100 && cp <= 0xE01EF) return 0;
-	if ((cp >= 0x1100 && cp <= 0x115F) ||
-	    (cp >= 0x2329 && cp <= 0x232A) ||
-	    (cp >= 0x2E80 && cp <= 0x303E) ||
-	    (cp >= 0x3040 && cp <= 0x334F) ||
-	    (cp >= 0x3400 && cp <= 0x4DBF) ||
-	    (cp >= 0x4E00 && cp <= 0x9FFF) ||
-	    (cp >= 0xA000 && cp <= 0xA4CF) ||
-	    (cp >= 0xA960 && cp <= 0xA97C) ||
-	    (cp >= 0xAC00 && cp <= 0xD7A3) ||
-	    (cp >= 0xD7B0 && cp <= 0xD7C6) ||
-	    (cp >= 0xF900 && cp <= 0xFAFF) ||
-	    (cp >= 0xFE10 && cp <= 0xFE19) ||
-	    (cp >= 0xFE30 && cp <= 0xFE6F) ||
-	    (cp >= 0xFF01 && cp <= 0xFF60) ||
-	    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-	    (cp >= 0x20000 && cp <= 0x2FFFD) ||
-	    (cp >= 0x30000 && cp <= 0x3FFFD))
-		return 2;
-	if ((cp >= 0x1F600 && cp <= 0x1F64F) ||
-	    (cp >= 0x1F300 && cp <= 0x1F5FF) ||
-	    (cp >= 0x1F680 && cp <= 0x1F6FF) ||
-	    (cp >= 0x1F900 && cp <= 0x1F9FF) ||
-	    (cp >= 0x1FA00 && cp <= 0x1FA6F) ||
-	    (cp >= 0x1FA70 && cp <= 0x1FAFF) ||
-	    (cp >= 0x2600 && cp <= 0x26FF) ||
-	    (cp >= 0x2700 && cp <= 0x27BF) ||
-	    (cp >= 0x1F000 && cp <= 0x1F02F) ||
-	    (cp >= 0x1F0A0 && cp <= 0x1F0FF))
-		return 2;
-	return 1;
+	return utf8proc_charwidth((utf8proc_int32_t)cp);
 }
 
 size_t utf8_display_width(const char *s)
@@ -263,8 +287,11 @@ osc_done:
 
 const char *utf8_advance_codepoints(const char *s, size_t chars)
 {
+	if (!s)
+		return NULL;
 	while (*s && chars > 0) {
-		s += (size_t)utf8codepointcalcsize(s);
+		utf8_int32_t cp;
+		s = utf8codepoint(s, &cp);
 		chars--;
 	}
 	return s;
@@ -331,8 +358,8 @@ size_t utf8_copy_display_width(char *dst, size_t dst_cap, const char *src,
 	}
 	while (*src) {
 		utf8_int32_t cp;
-		(void)utf8codepoint(src, &cp);
-		size_t cb = (size_t)utf8codepointcalcsize(src);
+		const char *next = utf8codepoint(src, &cp);
+		size_t cb = (size_t)(next - src);
 		size_t w = (size_t)utf8_codepoint_width((unsigned)cp);
 		if (vis + w > max_width)
 			break;
@@ -440,10 +467,17 @@ const char *utf8_prev_codepoint(const char *start, const char *p)
 {
 	if (!start || !p || p <= start)
 		return start;
-	p--;
-	while (p > start && ((unsigned char)*p & 0xC0) == 0x80)
-		p--;
-	return p;
+	size_t available = (size_t)(p - start);
+	if (available > 4)
+		available = 4;
+	for (size_t back = 1; back <= available; back++) {
+		utf8proc_int32_t cp;
+		utf8proc_ssize_t count = utf8_iterate_bytes(p - back, back, &cp);
+
+		if (count == (utf8proc_ssize_t)back)
+			return p - back;
+	}
+	return p - 1;
 }
 
 int utf8_is_cjk_sentence_punct(unsigned cp)
@@ -469,10 +503,12 @@ int utf8_is_fullwidth_colon_cp(unsigned cp)
 
 int utf8_is_unicode_space_cp(unsigned cp)
 {
-	return cp == 0x00A0 || cp == 0x1680 || cp == 0x3000 ||
-	       (cp >= 0x2000 && cp <= 0x200A) ||
-	       cp == 0x2028 || cp == 0x2029 || cp == 0x202F ||
-	       cp == 0x205F;
+	if (cp < 0x80 || cp > INT32_MAX)
+		return 0;
+	utf8proc_category_t category = utf8proc_category((utf8proc_int32_t)cp);
+
+	return category == UTF8PROC_CATEGORY_ZS || category == UTF8PROC_CATEGORY_ZL ||
+	       category == UTF8PROC_CATEGORY_ZP;
 }
 
 int utf8_is_latin_extended_cp(unsigned cp)
@@ -663,47 +699,39 @@ static int terminal_process_pending_utf8(
 	struct utf8_terminal_sanitizer *sanitizer, morph_buf_t *out,
 	const char **src, size_t *src_len, int finish)
 {
-	unsigned char combined[4];
-	unsigned cp;
-	size_t expected;
-	size_t needed;
-	size_t cp_len;
-	int rc;
+	while (sanitizer->utf8_pending_len) {
+		unsigned char combined[4];
+		size_t saved = sanitizer->utf8_pending_len;
+		size_t expected = utf8codepointcalcsize((const char *)sanitizer->utf8_pending);
+		size_t needed = expected > saved ? expected - saved : 0;
+		size_t taken = *src_len < needed ? *src_len : needed;
 
-	if (sanitizer->utf8_pending_len == 0)
-		return 0;
-	expected = (size_t)utf8codepointcalcsize(
-		(const char *)sanitizer->utf8_pending);
-	if (expected == 0 || expected > sizeof(combined)) {
-		sanitizer->utf8_pending_len = 0;
-		return 0;
-	}
-	needed = expected - sanitizer->utf8_pending_len;
-	if (*src_len < needed) {
-		if (*src_len > 0) {
-			memcpy(sanitizer->utf8_pending +
-				sanitizer->utf8_pending_len, *src, *src_len);
-			sanitizer->utf8_pending_len += *src_len;
-			*src += *src_len;
-			*src_len = 0;
-		}
-		if (finish)
+		if (expected > sizeof(combined) || saved > sizeof(combined)) {
 			sanitizer->utf8_pending_len = 0;
-		return 0;
+			return 0;
+		}
+		memcpy(combined, sanitizer->utf8_pending, saved);
+		if (taken)
+			memcpy(combined + saved, *src, taken);
+		*src += taken;
+		*src_len -= taken;
+		size_t count = saved + taken;
+		if (count < expected && !finish) {
+			memcpy(sanitizer->utf8_pending, combined, count);
+			sanitizer->utf8_pending_len = count;
+			return 0;
+		}
+		sanitizer->utf8_pending_len = 0;
+		/* Reprocess malformed tails so valid bytes after a bad prefix survive. */
+		size_t skip = count < expected ? 1 : 0;
+		int rc = utf8_terminal_sanitize_feed(sanitizer, out,
+			(const char *)combined + skip, count - skip, finish && *src_len == 0);
+		if (rc < 0)
+			MORPH_RETURN(rc);
+		if (!*src_len)
+			return 0;
 	}
-	memcpy(combined, sanitizer->utf8_pending,
-		sanitizer->utf8_pending_len);
-	memcpy(combined + sanitizer->utf8_pending_len, *src, needed);
-	*src += needed;
-	*src_len -= needed;
-	sanitizer->utf8_pending_len = 0;
-	cp_len = expected;
-	if (!utf8_decode_codepoint((const char *)combined, cp_len, &cp,
-		&cp_len))
-		return 0;
-	rc = terminal_append_text(sanitizer, out, (const char *)combined,
-		cp_len, cp);
-	return rc;
+	return 0;
 }
 
 void utf8_terminal_sanitizer_init(struct utf8_terminal_sanitizer *sanitizer,
@@ -828,6 +856,12 @@ int utf8_terminal_sanitize_feed(struct utf8_terminal_sanitizer *sanitizer,
 		}
 	}
 	if (finish) {
+		const char *empty = "";
+		size_t remaining = 0;
+
+		rc = terminal_process_pending_utf8(sanitizer, out, &empty, &remaining, 1);
+		if (rc != 0)
+			return rc;
 		rc = terminal_flush_cr(sanitizer, out);
 		utf8_terminal_sanitizer_reset(sanitizer);
 		if (rc != 0)

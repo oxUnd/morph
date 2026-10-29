@@ -1505,9 +1505,7 @@ static int react_emit_final_delta(struct react_stream_data *sd,
 
 static size_t react_utf8_safe_len(const char *text, size_t len)
 {
-	while (len > 0 && utf8nvalid(text, len) != NULL)
-		len--;
-	return len;
+	return utf8_clamp_bytes(text, len);
 }
 
 static int react_stream_parse_emit(struct react_stream_data *sd)
