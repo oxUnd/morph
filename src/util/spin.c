@@ -97,7 +97,7 @@ static void spin_render_shimmer(struct spin_context *ctx, size_t budget)
 	fprintf(ctx->output, "\r\033[K\033[1;36m•\033[0m ");
 	p = message;
 	while (*p) {
-		size_t bytes = utf8codepointcalcsize(p);
+		size_t bytes = utf8_next_codepoint_len(p, strnlen(p, 4));
 		size_t shade = (index + (size_t)ctx->frame) % shade_count;
 
 		if (bytes == 0)

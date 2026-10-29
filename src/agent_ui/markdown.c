@@ -375,8 +375,8 @@ static int append_normalized_line(morph_buf_t *out, const char *line,
 		size_t indent = skip_indent(line, len);
 		size_t tail = indent;
 
-		for (int i = 0; i < line_fence_len; i++)
-			tail += utf8codepointcalcsize(line + tail);
+		for (int i = 0; i < line_fence_len && tail < len; i++)
+			tail += utf8_next_codepoint_len(line + tail, len - tail);
 		while (tail < len && (line[tail] == ' ' || line[tail] == '\t'))
 			tail++;
 		is_fence = indent <= 3 && !memchr(line, '\t', indent) &&

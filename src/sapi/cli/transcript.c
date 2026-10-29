@@ -592,7 +592,7 @@ static void print_lines(struct cli_context *ctx, const char *text)
 			}
 		}
 		if (end == line && *line != '\n')
-			end = line + utf8codepointcalcsize(line);
+			end = line + utf8_next_codepoint_len(line, strnlen(line, 4));
 		printf(ctx, "    %s%.*s" ANSI_RESET "\n", style, (int)(end - line), line);
 		line = *end == '\n' ? end + 1 : end;
 	}

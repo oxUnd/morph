@@ -87,19 +87,13 @@ static enum char_class classify_utf8(const unsigned char **p,
 		return CHAR_KATAKANA;
 	if (utf8_is_hangul_cp(cp))
 		return CHAR_HANGUL;
-	/* Emoji and symbols */
-	if ((cp >= 0x1F600 && cp <= 0x1F64F) ||
-	    (cp >= 0x1F300 && cp <= 0x1F5FF) ||
-	    (cp >= 0x1F680 && cp <= 0x1F6FF) ||
-	    (cp >= 0x1F900 && cp <= 0x1F9FF) ||
-	    (cp >= 0x1FA00 && cp <= 0x1FA6F) ||
-	    (cp >= 0x1FA70 && cp <= 0x1FAFF) ||
-	    (cp >= 0x2600 && cp <= 0x26FF) ||
-	    (cp >= 0x2700 && cp <= 0x27BF) ||
-	    (cp >= 0xFE00 && cp <= 0xFE0F) ||
-	    (cp >= 0x1F000 && cp <= 0x1F02F) ||
-	    (cp >= 0x1F0A0 && cp <= 0x1F0FF) ||
-	    cp == 0x200D || cp == 0xFE0F)
+	/* Weight pictographs and composition components using Unicode data. */
+	const utf8proc_property_t *property = utf8proc_get_property((utf8proc_int32_t)cp);
+	if (property->boundclass == UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC ||
+	    property->boundclass == UTF8PROC_BOUNDCLASS_REGIONAL_INDICATOR ||
+	    property->boundclass == UTF8PROC_BOUNDCLASS_ZWJ ||
+	    (property->boundclass == UTF8PROC_BOUNDCLASS_EXTEND &&
+	     (property->ignorable || property->charwidth == 2)))
 		return CHAR_EMOJI_OTHER;
 	if (utf8_is_latin_extended_cp(cp))
 		return CHAR_LATIN_EXTENDED;

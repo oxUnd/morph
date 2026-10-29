@@ -4,6 +4,7 @@
 #include "util/bpe.h"
 #include "util/file.h"
 #include "util/base64.h"
+#include "util/utf8.h"
 #include <filesystem>
 #include <memory>
 #include <set>
@@ -312,4 +313,25 @@ TEST(BpeCountTest, UnicodeCategoriesDriveCaseAndDigitBoundaries)
 	EXPECT_EQ(bpe_count_tokens(encoder.get(), "БВГ"), 1);
 	EXPECT_EQ(bpe_count_tokens(encoder.get(), "ΑΒΓ"), 1);
 	EXPECT_EQ(bpe_count_tokens(encoder.get(), "১২৩৪"), 2);
+}
+
+TEST(TokenizerEstimateTest, UnicodePropertiesReplaceEmojiBlockGuesses)
+{
+	struct EstimateCase {
+		unsigned cp;
+		int tokens;
+	};
+	const EstimateCase cases[] = {
+		{0x00a9, 3}, {0x3030, 3}, {0x1f600, 3}, {0x1f1e8, 3},
+		{0x1f3fb, 3}, {0xfe0f, 3}, {0xe0100, 3}, {0x200d, 3},
+		{0x0301, 2}, {0x2606, 2},
+	};
+	for (const auto &example : cases) {
+		SCOPED_TRACE(example.cp);
+		char bytes[4];
+		size_t count = utf8_encode_codepoint(example.cp, bytes);
+		ASSERT_GT(count, 0u);
+		std::string text(bytes, count);
+		EXPECT_EQ(tokenizer_estimate_tokens(text.c_str()), example.tokens);
+	}
 }

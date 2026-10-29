@@ -25,6 +25,7 @@ removed. Existing names such as `utf8valid`, `utf8nvalid`, `utf8len`,
 - `utf8codepoint` advances one byte with U+FFFD on malformed input, allowing
   string traversal to make progress. `utf8codepointcalcsize` uses utf8proc's
   leading-byte table for incomplete stream prefixes; it does not validate input.
+  Text traversal uses bounded decoding instead of this prefix-length adapter.
 - Character widths come from `utf8proc_charwidth`, independent of process locale.
   Combining and nonprinting characters have zero width; East Asian ambiguous
   characters use the library's default narrow width. These APIs measure code
@@ -34,6 +35,9 @@ removed. Existing names such as `utf8valid`, `utf8nvalid`, `utf8len`,
   decoder and never split a valid code point.
 - BPE letter/case/mark/number/space classification uses
   `utf8proc_category`, replacing hand-maintained category ranges.
+- The fallback token estimator uses utf8proc pictograph, regional-indicator,
+  joiner, and extending-character properties for its conservative emoji-component
+  weights. These weights are estimation policy, not an emoji-membership API.
 
 ANSI parsing, terminal escape filtering, CR/LF handling, column budgets,
 ellipsis placement, and language-block token-weight heuristics remain project
