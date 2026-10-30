@@ -10,7 +10,7 @@
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
 - **Tools** `src/agent/tools/`:
-  - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, tool_search, skill_search, agent_status, ask_user
+  - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
   - workspace: apply_patch, config_edit, tasks, request_permissions
   - shell: `exec`, `process` — `exec` AST-parses a command into its program set, approves per program (allow/session/always/deny), and returns a session for long-running work that `process` manages. `process` supports `list`, `poll`, `wait`, `write`, `interrupt`, `kill`; waits default to 30 seconds, and `wait` collects through intermediate output until exit. Async jobs emit `process.started` / `process.completed`, remain visible in the CLI task area, and are inspected through `/jobs`. Finite jobs are collected before finalizing unless `notify_only` was explicitly requested; persistent servers use `service`. Replaces the former `bash_exec`.

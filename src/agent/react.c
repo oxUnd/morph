@@ -656,7 +656,6 @@ struct async_tool_call {
 	char *tool_args;
 	char *tool_call_id;
 	char *provider_tool_call_id;
-	char *tool_catalog_json;
 	char *result;
 	cJSON *data;
 	cJSON *ui;
@@ -811,19 +810,15 @@ async_tool_call_create(struct tool_registry *tools,
 	call->tool_call_id = strdup(tool_call_id ? tool_call_id : "");
 	call->provider_tool_call_id = strdup(provider_tool_call_id ?
 					     provider_tool_call_id : "");
-	if (tool_name && !strcmp(tool_name, "tool_search"))
-		call->tool_catalog_json = tool_discovery_snapshot(tools);
 	call->output_cb = output_cb;
 	call->output_user_data = output_user_data;
 	morph_cancel_token_reset(&call->cancel_token);
 	if (!call->tool_name || !call->tool_args || !call->tool_call_id ||
-	    !call->provider_tool_call_id || (tool_name && !strcmp(tool_name, "tool_search") &&
-	    !call->tool_catalog_json)) {
+	    !call->provider_tool_call_id) {
 		free(call->tool_name);
 		free(call->tool_args);
 		free(call->tool_call_id);
 		free(call->provider_tool_call_id);
-		free(call->tool_catalog_json);
 		pthread_cond_destroy(&call->cond);
 		pthread_mutex_destroy(&call->mutex);
 		free(call);
@@ -842,7 +837,6 @@ static void async_tool_call_destroy(struct async_tool_call *call)
 	free(call->tool_args);
 	free(call->tool_call_id);
 	free(call->provider_tool_call_id);
-	free(call->tool_catalog_json);
 	free(call->result);
 	cJSON_Delete(call->data);
 	cJSON_Delete(call->ui);
@@ -1067,7 +1061,6 @@ static void *async_tool_exec(void *arg)
 		runtime.ask_user_fn = tool_callback_ask;
 		runtime.ask_user_user_data = call;
 		runtime.tool_call_id = call->tool_call_id;
-		runtime.tool_catalog_json = call->tool_catalog_json;
 		res.runtime = &runtime;
 		rc = morph_cancel_token_is_cancelled(&call->cancel_token)
 			     ? -ECANCELED
@@ -1311,10 +1304,6 @@ struct react_context *react_context_create(struct tool_registry *tools,
 	if (!ctx)
 		return NULL;
 	ctx->logger = tools ? tools->logger : NULL;
-	if (morph_strmap_init(&ctx->discovered_tools, 32) != 0) {
-		free(ctx);
-		return NULL;
-	}
 	ctx->tools = tools;
 	ctx->tokenizer = tok;
 	ctx->max_iterations = 2048;
@@ -1340,7 +1329,6 @@ struct react_context *react_context_create(struct tool_registry *tools,
 		arena_destroy(ctx->iteration_arena);
 		arena_destroy(ctx->message_arena);
 		arena_destroy(ctx->session_arena);
-		morph_strmap_cleanup(&ctx->discovered_tools);
 		free(ctx);
 		return NULL;
 	}
@@ -1387,7 +1375,6 @@ void react_context_destroy(struct react_context *ctx)
 	arena_destroy(ctx->message_arena);
 	if (ctx->session_arena)
 		arena_destroy(ctx->session_arena);
-	morph_strmap_cleanup(&ctx->discovered_tools);
 	free(ctx);
 }
 
@@ -1428,7 +1415,6 @@ void react_reset(struct react_context *ctx)
 	ctx->force_compaction = 0;
 	ctx->context_recovery_count = 0;
 	ctx->ineffective_compactions = 0;
-	morph_strmap_clear(&ctx->discovered_tools);
 	ctx->incomplete_final_retry_count = 0;
 	morph_signal_flag_set(&ctx->cancelled, 0);
 	morph_cancel_token_reset(&ctx->cancel_token);
@@ -1618,14 +1604,6 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 			return NULL;
 	}
 
-	if (react_has_active_tool(ctx, "tool_search")) {
-		rc = morph_buf_puts(&buf, "Media, MCP, extension and dynamic tool schemas "
-			"are loaded on demand. Use tool_search with a concise English keyword "
-			"or tool name to discover them before use.\n");
-		if (rc != 0)
-			return NULL;
-	}
-
 	if (react_has_active_tool(ctx, "plan")) {
 		rc = morph_buf_puts(&buf,
 			"For long multi-step tasks, persist requirements, acceptance criteria, decisions "
@@ -1640,12 +1618,6 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 		rc = morph_buf_puts(&buf, "\nAvailable skills:\n");
 		if (rc != 0)
 			return NULL;
-		if (react_has_active_tool(ctx, "skill_search")) {
-			rc = morph_buf_puts(&buf, "Use skill_search to read matching skill "
-				"descriptions before deciding which skill to activate.\n");
-			if (rc != 0)
-				return NULL;
-		}
 		const struct skill_entry *entries[SKILL_MAX_ENTRIES];
 		int count = skill_sorted_entries(ctx->skills, entries, SKILL_MAX_ENTRIES);
 
@@ -1656,11 +1628,8 @@ static char *build_system_prompt(struct react_context *ctx, struct arena *arena)
 
 			if (!entry->enabled)
 				continue;
-			if (react_has_active_tool(ctx, "skill_search"))
-				rc = morph_buf_printf(&buf, "- %s\n", entry->fm.name);
-			else
-				rc = morph_buf_printf(&buf, "- %s: %s\n",
-					entry->fm.name, entry->fm.description);
+			rc = morph_buf_printf(&buf, "- %s: %s\n",
+				entry->fm.name, entry->fm.description);
 			if (rc != 0)
 				return NULL;
 		}
@@ -2094,54 +2063,9 @@ static int react_typed_stream_cb(enum llm_stream_kind kind, const char *token,
 	return react_stream_cb(token, user_data);
 }
 
-static int react_discover_result(struct react_context *ctx, const cJSON *data)
-{
-	const cJSON *item;
-	cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(data, "tools")) {
-		const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(item, "name"));
-		if (name && morph_strmap_set(&ctx->discovered_tools, name, ctx) != 0)
-			return -ENOMEM;
-	}
-	return 0;
-}
-
-static int react_restore_discoveries(struct react_context *ctx)
-{
-	if (!ctx->tools || !tool_lookup(ctx->tools, "tool_search"))
-		return 0;
-	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
-		if (!strcmp(item->kind, "tool_result") && !strcmp(item->tool_name, "tool_search")) {
-			cJSON *envelope = item->content ? cJSON_Parse(item->content) : NULL;
-			int rc = react_discover_result(ctx, cJSON_GetObjectItem(envelope, "data"));
-			cJSON_Delete(envelope);
-			if (rc != 0)
-				return rc;
-		} else if (!strcmp(item->kind, "assistant_tool_calls")) {
-			cJSON *payload = item->payload_json ?
-				cJSON_Parse(item->payload_json) : NULL;
-			cJSON *call;
-			int rc = 0;
-			cJSON_ArrayForEach(call, cJSON_GetObjectItem(payload, "calls")) {
-				const char *name = cJSON_GetStringValue(
-					cJSON_GetObjectItem(call, "name"));
-				if (name && tool_lookup(ctx->tools, name))
-					rc = morph_strmap_set(&ctx->discovered_tools, name, ctx);
-				if (rc != 0)
-					break;
-			}
-			cJSON_Delete(payload);
-			if (rc != 0)
-				return rc;
-		}
-	}
-	return 0;
-}
-
 static int react_tool_visible(struct react_context *ctx, const char *name)
 {
-	return !tool_is_disabled(ctx->tools, name) &&
-		(!tool_is_deferred(ctx->tools, name) ||
-		 morph_strmap_contains(&ctx->discovered_tools, name));
+	return !tool_is_disabled(ctx->tools, name);
 }
 
 static int count_active_tools(struct react_context *ctx)
@@ -2625,9 +2549,6 @@ static int react_prepare_active_tools_locked(struct react_context *ctx, morph_ar
 		return -EINVAL;
 	*active_tools = NULL;
 	*active_tool_count = 0;
-	int discovery_rc = react_restore_discoveries(ctx);
-	if (discovery_rc != 0)
-		return discovery_rc;
 	has_tools = ctx->tools && ctx->tools->count > 0;
 	*active_tool_count = has_tools ? count_active_tools(ctx) : 0;
 	if (*active_tool_count <= 0)
@@ -3557,12 +3478,6 @@ static int react_record_tool_observation(struct react_context *ctx,
 					 react_output_cb cb, void *user_data)
 {
 	struct react_step *obs;
-
-	if (rc == 0 && !strcmp(call->tool_name, "tool_search")) {
-		int discovery_rc = react_discover_result(ctx, data);
-		if (discovery_rc != 0)
-			return discovery_rc;
-	}
 
 	obs = react_step_create(ctx->turn_arena, REACT_STEP_OBSERVATION,
 				obs_text, NULL, NULL, NULL);

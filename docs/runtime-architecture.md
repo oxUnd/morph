@@ -149,16 +149,11 @@ and `verification`. Custom compaction prompts retain their own output format.
 Over-budget checkpoints are rewritten within the bounded retry loop, never
 byte-clipped. Redaction and omission notices are included in the token check.
 
-Runtime tool registries expose `tool_search` for on-demand schemas. MCP,
-extension, dynamic, image and video tools are deferred until discovered or used
-in replayed history. Discovery state is local to a turn, survives compaction,
-and is restored from active history on continuation. Disabled tools remain
-disabled; disabling `tool_search` restores full schema advertisement. Search
-returns at most eight matches with a pagination offset.
-Tool searches run against an owned pre-dispatch catalog snapshot, so the search
-does not traverse live descriptors while sibling tools mutate the registry.
-Skill catalogs list names while `skill_search` retrieves full matching descriptions; activated skill
-instructions remain intact. Disabling skill search restores full descriptions.
+Runtime tool registries advertise full schemas for every enabled tool, including
+MCP, extension, dynamic, image and video tools. Disabled tools remain excluded.
+Skill catalogs include the names and full descriptions of enabled skills;
+`activate_skill` loads the selected skill's full instructions on demand.
+Activated skill instructions remain intact across context compaction.
 
 The dynamic request context refreshes process status and the latest eight
 session output records independently of conversation summaries. Artifact paths

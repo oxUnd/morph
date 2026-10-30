@@ -4509,7 +4509,7 @@ struct capt_prompt_data {
 	int tool_count;
 	int calls;
 	int activate_on_first_call;
-	const char *discover_query;
+	const char *first_tool_name;
 	int initial_tool_count;
 };
 
@@ -4575,17 +4575,14 @@ static int capt_prompt_chat_with_tools(struct model *self, struct arena *arena,
 	capt_store_structured_messages(d, messages, msg_count);
 
 	memset(response, 0, sizeof(*response));
-	if (d->discover_query && d->calls++ == 0) {
+	if (d->first_tool_name && d->calls++ == 0) {
 		d->initial_tool_count = tool_count;
 		response->tool_calls = static_cast<tool_call *>(calloc(1,
 			sizeof(*response->tool_calls)));
 		response->tool_call_count = 1;
-		strcpy(response->tool_calls[0].id, "discovery-test");
-		strcpy(response->tool_calls[0].name, "tool_search");
-		cJSON *args = cJSON_CreateObject();
-		cJSON_AddStringToObject(args, "query", d->discover_query);
-		response->tool_calls[0].arguments = cJSON_PrintUnformatted(args);
-		cJSON_Delete(args);
+		strcpy(response->tool_calls[0].id, "first-tool-test");
+		strcpy(response->tool_calls[0].name, d->first_tool_name);
+		response->tool_calls[0].arguments = strdup("{}");
 		return 200;
 	}
 	if (d->activate_on_first_call && d->calls++ == 0) {
@@ -4816,7 +4813,8 @@ TEST_F(PromptModeTest, DynamicContextPreservesTheFullSkillPrefix)
 		auto boundary = first.find("Runtime limits:");
 		ASSERT_NE(boundary, std::string::npos);
 		EXPECT_LT(first.find("Stable custom prompt"), first.find("Available skills:"));
-		EXPECT_LT(first.find("- alpha\n"), first.find("- zeta\n"));
+		EXPECT_LT(first.find("- alpha: Stable description\n"),
+			  first.find("- zeta: Stable description\n"));
 		std::string dynamic = capt->prompt;
 		EXPECT_LT(dynamic.find("<skill name=\"alpha\""),
 			  dynamic.find("<skill name=\"zeta\""));
@@ -6969,13 +6967,12 @@ TEST_F(PromptModeTest, SkillActivationPolicySurvivesReplacement)
 	}
 }
 
-TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLeakage)
+TEST_F(PromptModeTest, EnabledToolsStayVisibleAcrossCompactionAndSessions)
 {
-	ASSERT_EQ(tool_discovery_init(&tools), 0);
 	struct tool_spec remote = {};
 	remote.origin = TOOL_ORIGIN_MCP;
 	remote.name = "remote_render";
-	remote.description = "DEFERRED_SCHEMA_RENDER";
+	remote.description = "REMOTE_SCHEMA_RENDER";
 	remote.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
 	remote.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
 	remote.exec = test_tool_fn;
@@ -6983,8 +6980,8 @@ TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLe
 	remote.name = "remote_disabled";
 	ASSERT_EQ(tool_register(&tools, &remote), 0);
 	ASSERT_EQ(tool_disable(&tools, remote.name), 0);
-	capt->discover_query = "remote_";
-	char path[] = "/tmp/morph-discovery-XXXXXX";
+	capt->first_tool_name = "remote_render";
+	char path[] = "/tmp/morph-tools-XXXXXX";
 	int fd = mkstemp(path);
 	ASSERT_GE(fd, 0);
 	close(fd);
@@ -6992,7 +6989,7 @@ TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLe
 	struct session session = {};
 	ASSERT_EQ(db_open(nullptr, &db, path), 0);
 	ASSERT_EQ(db_init_schema(&db), 0);
-	ASSERT_EQ(session_create(&db, "discovery", "mock", &session), 0);
+	ASSERT_EQ(session_create(&db, "tools", "mock", &session), 0);
 	ctx->history_enabled = 1;
 	ctx->history_db = &db;
 	ctx->history_session_id = session.id;
@@ -7011,7 +7008,7 @@ TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLe
 	ASSERT_EQ(react_run(ctx, "render remotely", nullptr, nullptr), 0);
 	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
 	EXPECT_EQ(model_history_compaction_count(&db, session.id), 1);
-	EXPECT_EQ(capt->tool_count, capt->initial_tool_count + 1);
+	EXPECT_EQ(capt->tool_count, capt->initial_tool_count);
 	ASSERT_NE(capt->tool_descs, nullptr);
 	EXPECT_NE(strstr(capt->tool_descs, "remote_render:"), nullptr);
 	EXPECT_EQ(strstr(capt->tool_descs, "remote_disabled:"), nullptr);
@@ -7022,38 +7019,51 @@ TEST_F(PromptModeTest, ToolDiscoverySurvivesCompactionAndResumesWithoutSessionLe
 	model_history_free_list(ctx->history_items);
 	ctx->history_items = nullptr;
 	ASSERT_EQ(react_run(ctx, "a different session", nullptr, nullptr), 0);
-	EXPECT_EQ(strstr(capt->tool_descs, "remote_render:"), nullptr);
-	ASSERT_EQ(tool_disable(&tools, "tool_search"), 0);
-	ASSERT_EQ(react_run(ctx, "discovery disabled", nullptr, nullptr), 0);
 	EXPECT_NE(strstr(capt->tool_descs, "remote_render:"), nullptr);
+	EXPECT_EQ(strstr(capt->tool_descs, "remote_disabled:"), nullptr);
 	ctx->history_db = nullptr;
 	db_close(&db);
 	unlink(path);
 }
 
-TEST_F(PromptModeTest, DeferredDefinitionsReduceFixedContextBeforeDiscovery)
+TEST_F(PromptModeTest, AllEnabledToolOriginsAreAdvertisedBeforeUse)
 {
+	const struct {
+		enum tool_origin origin;
+		const char *name;
+	} cases[] = {
+		{TOOL_ORIGIN_BUILTIN, "img_test"},
+		{TOOL_ORIGIN_BUILTIN, "vid_test"},
+		{TOOL_ORIGIN_MCP, "remote_test"},
+		{TOOL_ORIGIN_EXT, "extension_test"},
+		{TOOL_ORIGIN_DYNAMIC_SESSION, "session_test"},
+		{TOOL_ORIGIN_DYNAMIC_PERSISTENT, "persistent_test"},
+	};
 	std::string description(2000, 'x');
-	for (int i = 0; i < 16; i++) {
-		std::string name = "bulk_remote_" + std::to_string(i);
-		struct tool_spec remote = {};
-		remote.origin = TOOL_ORIGIN_MCP;
-		remote.name = name.c_str();
-		remote.description = description.c_str();
-		remote.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
-		remote.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
-		remote.exec = test_tool_fn;
-		ASSERT_EQ(tool_register(&tools, &remote), 0);
-	}
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
 	int original_count = capt->tool_count;
-	size_t original_bytes = strlen(capt->tool_descs);
-	ASSERT_EQ(tool_discovery_init(&tools), 0);
+	for (const auto &item : cases) {
+		struct tool_spec spec = {};
+		spec.origin = item.origin;
+		spec.name = item.name;
+		spec.description = description.c_str();
+		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+		spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+		spec.exec = test_tool_fn;
+		ASSERT_EQ(tool_register(&tools, &spec), 0);
+	}
+	ASSERT_EQ(tool_disable(&tools, "extension_test"), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
-	EXPECT_EQ(capt->tool_count, original_count - 16 + 1);
-	EXPECT_LT(strlen(capt->tool_descs), original_bytes / 4);
-	EXPECT_EQ(strstr(capt->tool_descs, "bulk_remote_"), nullptr);
-	EXPECT_NE(strstr(capt->tool_descs, "tool_search:"), nullptr);
+	EXPECT_EQ(capt->tool_count, original_count + 5);
+	ASSERT_NE(capt->tool_descs, nullptr);
+	for (const auto &item : cases) {
+		std::string heading = std::string(item.name) + ":";
+		if (item.origin == TOOL_ORIGIN_EXT)
+			EXPECT_EQ(strstr(capt->tool_descs, heading.c_str()), nullptr);
+		else
+			EXPECT_NE(strstr(capt->tool_descs, heading.c_str()), nullptr);
+	}
+	EXPECT_NE(strstr(capt->tool_descs, description.c_str()), nullptr);
 }
 
 TEST_F(PromptModeTest, DurableArtifactsAndPlanEvidenceSurviveCompactionAndRestore)
@@ -7136,8 +7146,7 @@ TEST_F(PromptModeTest, ProcessCheckpointRefreshesWithinTheSameTurn)
 		return 0;
 	};
 	ASSERT_EQ(tool_register(&tools, &exec), 0);
-	ASSERT_EQ(tool_discovery_init(&tools), 0);
-	capt->discover_query = "exec";
+	capt->first_tool_name = "exec";
 	ASSERT_EQ(react_set_event_callback(ctx,
 		[](const struct morph_event *event, void *data) -> int {
 			if (!strcmp(event->name, "react.observation"))
@@ -7153,7 +7162,7 @@ TEST_F(PromptModeTest, ProcessCheckpointRefreshesWithinTheSameTurn)
 	ASSERT_EQ(tool_unregister(&tools, "exec"), 0);
 }
 
-TEST_F(PromptModeTest, SkillCatalogDefersDescriptionsWithoutLosingDiscoverability)
+TEST_F(PromptModeTest, SkillCatalogIncludesAllEnabledDescriptions)
 {
 	auto *skills = new skill_registry{};
 	skill_registry_init(NULL, skills);
@@ -7182,24 +7191,14 @@ TEST_F(PromptModeTest, SkillCatalogDefersDescriptionsWithoutLosingDiscoverabilit
 			EXPECT_NE(system.find("Available skills:"), std::string::npos);
 			for (int i = 1; i < skills->count; i++) {
 				auto *entry = &skills->entries[i];
-				std::string expected = std::string("- ") + entry->fm.name + "\n";
+				std::string expected = std::string("- ") + entry->fm.name +
+					": " + entry->fm.description + "\n";
 				EXPECT_NE(system.find(expected), std::string::npos);
-				EXPECT_EQ(system.find(entry->fm.description), std::string::npos);
 			}
 			EXPECT_EQ(system.find("- skill-0:"), std::string::npos);
 			EXPECT_EQ(system.find("DISABLED_BODY_MARKER"), std::string::npos);
 		}
 	}
-	struct tool_result matches;
-	tool_result_init(&matches);
-	ASSERT_EQ(tool_exec(&tools, "skill_search",
-		"{\"query\":\"DESCRIPTION_TAIL_MARKER\",\"offset\":56}", &matches), 0);
-	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(matches.data, "skills")), 7);
-	EXPECT_EQ(cJSON_GetObjectItem(matches.data, "total")->valueint, 63);
-	tool_result_cleanup(&matches);
-	ASSERT_EQ(tool_disable(&tools, "skill_search"), 0);
-	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
-	EXPECT_NE(strstr(capt->system_prompt, "DESCRIPTION_TAIL_MARKER"), nullptr);
 	ASSERT_EQ(tool_disable(&tools, "activate_skill"), 0);
 	ASSERT_EQ(react_run(ctx, "hello", nullptr, nullptr), 0);
 	EXPECT_EQ(strstr(capt->system_prompt, "Available skills:"), nullptr);

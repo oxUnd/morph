@@ -498,9 +498,6 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 			return rc;
 	}
 	runtime_query_tools_init(profile->tools);
-	rc = tool_discovery_init(profile->tools);
-	if (rc != 0)
-		return rc;
 	if (config->models.vision.model[0] && models->vision)
 		img_qa_init(profile->tools, models->vision, tctx);
 	else
