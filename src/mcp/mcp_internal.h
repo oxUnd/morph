@@ -61,7 +61,8 @@ int mcp_http_exchange(struct mcp_client *client,
 void mcp_wire_reply_cleanup(struct mcp_wire_reply *reply);
 
 /* Decode validates JSON-RPC framing and correlation, preserving remote errors. */
-int mcp_protocol_decode(const struct mcp_wire_reply *reply, int id, cJSON **out);
+int mcp_protocol_decode(struct morph_log *logger, const struct mcp_wire_reply *reply,
+	int id, cJSON **out);
 
 #ifdef __cplusplus
 }

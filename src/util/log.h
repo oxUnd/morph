@@ -30,7 +30,9 @@ void log_set_level(struct morph_log *logger, enum log_level level);
 void log_write(struct morph_log *logger, enum log_level level, const char *fmt, ...)
 	__attribute__((format(printf, 3, 4)));
 void log_shutdown(struct morph_log *logger);
-void log_diagnostic(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* Debug diagnostics use the owner's logger, never stdout/stderr. NULL disables them. */
+void log_diagnostic(struct morph_log *logger, const char *fmt, ...)
+	__attribute__((format(printf, 2, 3)));
 
 #define log_dbg(logger, fmt, ...) log_write(logger, LOG_DEBUG, fmt, ##__VA_ARGS__)
 #define log_info(logger, fmt, ...) log_write(logger, LOG_INFO, fmt, ##__VA_ARGS__)

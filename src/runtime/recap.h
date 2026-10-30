@@ -22,6 +22,7 @@ struct runtime_recap_progress {
 };
 
 /* Nonblocking snapshots and requests return -EBUSY during foreground execution. */
+/* Progress is an empty snapshot before the deferred session is created. */
 int runtime_recap_progress(struct runtime *runtime, struct runtime_recap_progress *out);
 int runtime_recap_request(struct runtime *runtime, int automatic,
 	struct runtime_recap_progress *out);

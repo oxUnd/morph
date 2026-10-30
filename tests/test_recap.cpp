@@ -67,6 +67,8 @@ TEST(RecapParser, RequiresBoundedStructuredOutput)
 TEST(RecapScheduling, RequiresUnfocusedIdleTimeAndNewProgress)
 {
 	struct cli_recap_state state{};
+	state.progress.session_id = 1;
+	state.progress.history_id = 2;
 	state.unfocused_since = 1000;
 	state.last_finished = 2000;
 	state.progress.completed_turns = 3;
@@ -86,6 +88,51 @@ TEST(RecapScheduling, RequiresUnfocusedIdleTimeAndNewProgress)
 	EXPECT_TRUE(cli_recap_due(&state, 2000 + CLI_RECAP_DELAY_MS));
 	state.unfocused_since = 0;
 	EXPECT_FALSE(cli_recap_due(&state, 2000 + CLI_RECAP_DELAY_MS));
+}
+
+TEST(RecapScheduling, MissingSessionOrHistoryNeverBecomesDueEvenForRetry)
+{
+	struct cli_recap_state state{};
+	state.unfocused_since = 1;
+	state.last_finished = 1;
+	state.progress.completed_turns = 3;
+	state.retry_at = 1;
+	EXPECT_FALSE(cli_recap_due(&state, 2 * CLI_RECAP_DELAY_MS));
+	state.progress.session_id = 1;
+	EXPECT_FALSE(cli_recap_due(&state, 2 * CLI_RECAP_DELAY_MS));
+	state.progress.history_id = 2;
+	EXPECT_TRUE(cli_recap_due(&state, 2 * CLI_RECAP_DELAY_MS));
+	state.progress.session_id = 0;
+	EXPECT_FALSE(cli_recap_due(&state, 2 * CLI_RECAP_DELAY_MS));
+}
+
+TEST_F(RuntimeFacadeTest, DeferredSessionSkipsRecapPollingAndClearsStaleRetry)
+{
+	struct runtime_options options{};
+	options.create_new_session = 1;
+	Open(&options);
+	struct cli_context ctx{};
+	ctx.runtime = instance;
+	ctx.recap.progress = {99, 100, 1, 3};
+	ctx.recap.has_recap = 1;
+	ctx.recap.last_finished = 1;
+	ctx.recap.retry_at = 1;
+	ctx.recap.retried = 1;
+	cli_recap_focus(&ctx, 0, 1);
+	/* The empty-session path must skip progress queries even while execution is locked. */
+	pthread_mutex_lock(&instance->context.execution_lock);
+	testing::internal::CaptureStderr();
+	for (int i = 1; i <= 3; i++)
+		cli_recap_tick(&ctx, i * CLI_RECAP_DELAY_MS);
+	std::string diagnostics = testing::internal::GetCapturedStderr();
+	pthread_mutex_unlock(&instance->context.execution_lock);
+	EXPECT_TRUE(diagnostics.empty()) << diagnostics;
+	EXPECT_EQ(ctx.recap.progress.session_id, 0);
+	EXPECT_EQ(ctx.recap.retry_at, 0);
+	EXPECT_EQ(ctx.recap.retried, 0);
+	EXPECT_FALSE(ctx.recap.has_recap);
+	EXPECT_FALSE(ctx.recap.pending);
+	EXPECT_EQ(instance->recap_job, nullptr);
 }
 
 TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)

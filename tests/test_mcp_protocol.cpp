@@ -653,7 +653,7 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 		struct mcp_wire_reply reply = {};
 		reply.json = const_cast<char *>(json);
 		cJSON *object = nullptr;
-		EXPECT_EQ(mcp_protocol_decode(&reply, 7, &object), MORPH_ERR_PROTOCOL);
+		EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
 		EXPECT_EQ(object, nullptr);
 	}
 	struct mcp_wire_reply reply = {};
@@ -661,7 +661,7 @@ TEST_F(McpCodecTest, DecoderRejectsInvalidFramingAndPreservesCorrelatedErrors)
 		R"({"jsonrpc":"2.0","id":7,"error":{"code":-32022,"message":"Unsupported"}})");
 	reply.http_status = 400;
 	cJSON *object = nullptr;
-	EXPECT_EQ(mcp_protocol_decode(&reply, 7, &object), MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(mcp_protocol_decode(nullptr, &reply, 7, &object), MORPH_ERR_PROTOCOL);
 	ASSERT_NE(object, nullptr);
 	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetObjectItem(object, "error"), "code")->valueint,
 		-32022);

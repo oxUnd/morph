@@ -11,7 +11,7 @@ state and are outside this rule.
 
 | State | Owner and lifetime |
 | --- | --- |
-| Logging | CLI `main` or `fcgi_bridge` owns a `morph_log`; runtime components borrow its address. Stop writers before `log_shutdown`. A null logger disables ordinary logging. Debug error macros write stateless diagnostics to stderr. |
+| Logging | CLI `main` or `fcgi_bridge` owns a `morph_log`; runtime components and background jobs borrow its address. Stop writers before `log_shutdown`. A null logger disables logging and diagnostics. Error macros never write to stdout or stderr. |
 | HTTP cancellation and tracing | Every call receives `http_control`. Models carry their default control; tool requests bind a local model copy to the request control. ReAct keeps provider errors and partial-output metadata in its request context instead of writing them back to shared model configuration. Borrowed cancellation tokens, callbacks and logger must remain alive until the call returns. |
 | Tool execution | `tool_result.runtime` borrows the current `tool_runtime_context`. Clearing a result preserves the binding; cleanup removes it. Streaming, user questions and runtime queries use that binding. |
 | Subagents | The runtime owns tasks and child contexts. Each task captures its submission depth; concurrent tasks do not increment shared recursion state. Cancelling a runtime cancels its own active children. |
@@ -25,6 +25,25 @@ Dependencies are explicit constructor arguments or fields of an owning context.
 Do not replace removed variables with singleton getters, TLS, environment-variable
 storage, or mutable function-local statics. Environment variables are startup
 configuration, not a place to store active request state.
+
+`MORPH_RETURN` and `MORPH_SET_ERR` preserve error codes without implicit output.
+Use `MORPH_RETURN_LOG(logger, code)` and
+`MORPH_SET_ERR_LOG(logger, var, code)` where an owning context supplies a logger.
+Their Debug diagnostics retain the operation, error description, source file and
+line in the owner's log at `LOG_DEBUG`; `MORPH_DEBUG=1` enables that level in the
+frontends. The `_ERRNO_LOG` variants capture `errno` before tracing, with the
+same `EIO` fallback as the context-free variants. Release builds do not evaluate
+logger expressions. There is no process-wide or thread-local default logger.
+Worker contexts carry their logger explicitly, so simultaneous runtimes cannot
+redirect each other's diagnostics. Context-free helpers remain silent; callers
+with context can trace an error as they propagate it.
+
+Negative return values can also represent expected states, such as a busy
+runtime or a rejected protocol probe. Callers decide whether these require
+retry, fallback or a user-visible error. Frontends render actionable failures
+through their normal output paths; CLI startup failures before UI initialization
+use explicit stderr messages. Diagnostic macros do not render UI or decide
+whether a returned error is fatal.
 
 libffi supplies the native callback adapters. libcurl 7.84 or newer is required
 for concurrent global initialization; each request or persistent HTTP session

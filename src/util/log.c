@@ -102,12 +102,12 @@ static void rotate_log(struct morph_log *logger)
 	rename(old_path, backup);
 }
 
-void log_write(struct morph_log *logger, enum log_level level, const char *fmt, ...)
+static void log_vwrite(struct morph_log *logger, enum log_level level,
+		       const char *fmt, va_list args)
 {
 	struct tm local;
 	char timestamp[32];
 	time_t now;
-	va_list args;
 
 	if (!logger || !logger->initialized || !fmt || level < LOG_DEBUG || level > LOG_ERROR)
 		return;
@@ -116,15 +116,22 @@ void log_write(struct morph_log *logger, enum log_level level, const char *fmt, 
 		now = time(NULL);
 		localtime_r(&now, &local);
 		strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &local);
-		va_start(args, fmt);
 		fprintf(logger->file, "[%s] [%s] ", timestamp, level_strings[level]);
 		vfprintf(logger->file, fmt, args);
 		fputc('\n', logger->file);
-		va_end(args);
 		fflush(logger->file);
 		rotate_log(logger);
 	}
 	pthread_mutex_unlock(&logger->lock);
+}
+
+void log_write(struct morph_log *logger, enum log_level level, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	log_vwrite(logger, level, fmt, args);
+	va_end(args);
 }
 
 void log_shutdown(struct morph_log *logger)
@@ -140,16 +147,13 @@ void log_shutdown(struct morph_log *logger)
 	pthread_mutex_destroy(&logger->lock);
 }
 
-void log_diagnostic(const char *fmt, ...)
+void log_diagnostic(struct morph_log *logger, const char *fmt, ...)
 {
 	va_list args;
+	int saved_errno = errno;
 
-	if (!fmt)
-		return;
-	flockfile(stderr);
 	va_start(args, fmt);
-	vfprintf(stderr, fmt, args);
+	log_vwrite(logger, LOG_DEBUG, fmt, args);
 	va_end(args);
-	fputc('\n', stderr);
-	funlockfile(stderr);
+	errno = saved_errno;
 }

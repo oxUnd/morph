@@ -6,6 +6,7 @@ set(TEST_SOURCES
 	test_arena.cpp
 	test_hooks.cpp
 	test_error.cpp
+	error_macro_probe.c
 	test_log.cpp
 	test_state_ownership.cpp
 	test_file.cpp
@@ -254,6 +255,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_recap_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)
 	set_tests_properties(cli_recap_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_empty_session_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_empty_session_pty.py
+			$<TARGET_FILE:morph> $<IF:$<CONFIG:Debug>,1,0>)
+	set_tests_properties(cli_empty_session_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	set_tests_properties(cli_memory_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)

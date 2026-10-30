@@ -29,7 +29,7 @@ static int mcp_parse_result(const char *json, char **out)
 	struct mcp_wire_reply reply = {};
 	reply.json = const_cast<char *>(json);
 	cJSON *object = nullptr;
-	int rc = mcp_protocol_decode(&reply, request_id, &object);
+	int rc = mcp_protocol_decode(nullptr, &reply, request_id, &object);
 	if (rc == 0 && out)
 		*out = cJSON_PrintUnformatted(cJSON_GetObjectItem(object, "result"));
 	cJSON_Delete(object);

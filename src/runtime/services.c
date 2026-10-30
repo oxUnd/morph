@@ -304,10 +304,13 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 
 	if (!runtime)
 		return -EINVAL;
-	items = model_history_list(&runtime->context.database,
-		runtime->context.current_session.id, 1, &count);
+	/* Deferred sessions have no persisted history or compactions. */
+	items = NULL;
+	if (runtime->context.current_session.id > 0)
+		items = model_history_list(&runtime->context.database,
+			runtime->context.current_session.id, 1, &count);
 	if (count < 0)
-		MORPH_RETURN(MORPH_ERR_DB);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	for (struct model_history_item *item = items; item; item = item->next) {
 		if (!agent_history_item_replayable(item))
 			continue;
@@ -317,8 +320,9 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 			tools += item->token_count;
 	}
 	model_history_free_list(items);
-	compact_count = model_history_compaction_count(
-		&runtime->context.database, runtime->context.current_session.id);
+	if (runtime->context.current_session.id > 0)
+		compact_count = model_history_compaction_count(
+			&runtime->context.database, runtime->context.current_session.id);
 	if (compact_count < 0)
 		return compact_count;
 	if (active_items)
@@ -346,12 +350,12 @@ int runtime_session_compaction_status(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !status)
-		MORPH_RETURN(-EINVAL);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EINVAL);
 	memset(status, 0, sizeof(*status));
 	rc = sqlite3_prepare_v2(runtime->context.database.handle, sql, -1,
 		&stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, runtime->context.current_session.id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {

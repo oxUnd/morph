@@ -6,6 +6,17 @@
 #include <string>
 #include <vector>
 #include <unistd.h>
+#include <thread>
+
+extern "C" {
+int error_probe_debug(void);
+int error_probe_return(struct morph_log *, int, int *, int *);
+int error_probe_set(struct morph_log *, int, int *);
+int error_probe_errno(struct morph_log *, int);
+int error_probe_without_context(int);
+}
+
+#include "util/error.h"
 
 class LogTest : public ::testing::Test {
 protected:
@@ -173,5 +184,108 @@ TEST_F(LogTest, InstancesHaveIndependentDestinationsLevelsAndLifetimes)
 	EXPECT_EQ(content.find("filtered message"), std::string::npos);
 	EXPECT_NE(content.find("second destination"), std::string::npos);
 	EXPECT_NE(content.find("still open"), std::string::npos);
+	std::remove(other_path.c_str());
+}
+
+TEST_F(LogTest, ErrorMacrosPreserveCodesAndLocationsWithoutTerminalOutput)
+{
+	int code_evaluations = 0, logger_evaluations = 0, set_evaluations = 0;
+	testing::internal::CaptureStdout();
+	testing::internal::CaptureStderr();
+	int returned = error_probe_return(&logger, MORPH_ERR_DB,
+		&code_evaluations, &logger_evaluations);
+	int assigned = error_probe_set(&logger, MORPH_ERR_PROTOCOL, &set_evaluations);
+	std::string errors = testing::internal::GetCapturedStderr();
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(returned, MORPH_ERR_DB);
+	EXPECT_EQ(assigned, MORPH_ERR_PROTOCOL);
+	EXPECT_EQ(code_evaluations, 1);
+	EXPECT_EQ(set_evaluations, 1);
+	EXPECT_EQ(logger_evaluations, error_probe_debug());
+	EXPECT_TRUE(errors.empty()) << errors;
+	EXPECT_TRUE(output.empty()) << output;
+	auto lines = read_lines();
+	ASSERT_EQ(lines.size(), error_probe_debug() ? 2u : 0u);
+	if (error_probe_debug()) {
+		EXPECT_NE(lines[0].find("[DEBUG] MORPH_RETURN: database error"), std::string::npos);
+		EXPECT_NE(lines[1].find("MORPH_SET_ERR: protocol error"), std::string::npos);
+		for (const auto &line : lines)
+			EXPECT_NE(line.find("error_macro_probe.c:"), std::string::npos);
+	}
+}
+
+TEST_F(LogTest, MissingContextSuccessAndFilteredDiagnosticsStaySilent)
+{
+	int codes = 0, contexts = 0;
+	testing::internal::CaptureStderr();
+	int returned = error_probe_without_context(0);
+	int assigned = error_probe_without_context(1);
+	int success = error_probe_return(&logger, 0, &codes, &contexts);
+	log_diagnostic(nullptr, "unbound diagnostic");
+	log_set_level(&logger, LOG_INFO);
+	log_diagnostic(&logger, "filtered diagnostic");
+	std::string errors = testing::internal::GetCapturedStderr();
+	EXPECT_TRUE(errors.empty()) << errors;
+	EXPECT_EQ(returned, MORPH_ERR_DB);
+	EXPECT_EQ(assigned, MORPH_ERR_DB);
+	EXPECT_EQ(success, 0);
+	EXPECT_EQ(codes, 1);
+	EXPECT_EQ(contexts, 0);
+	EXPECT_TRUE(read_lines().empty());
+}
+
+TEST_F(LogTest, ErrnoDiagnosticsPreserveTheOriginalErrnoAndFallback)
+{
+	for (int assign : {0, 1}) {
+		errno = ENOENT;
+		int result = error_probe_errno(&logger, assign);
+		int saved_errno = errno;
+		EXPECT_EQ(result, -ENOENT);
+		EXPECT_EQ(saved_errno, ENOENT);
+		errno = 0;
+		result = error_probe_errno(&logger, assign);
+		saved_errno = errno;
+		EXPECT_EQ(result, -EIO);
+		EXPECT_EQ(saved_errno, 0);
+	}
+	int codes = 0, contexts = 0;
+	errno = ERANGE;
+	int unknown = error_probe_return(&logger, -9999, &codes, &contexts);
+	int saved_errno = errno;
+	EXPECT_EQ(unknown, -9999);
+	EXPECT_EQ(saved_errno, ERANGE);
+}
+
+TEST_F(LogTest, ConcurrentDiagnosticsUseExplicitOwnersAndSurviveOtherShutdown)
+{
+	struct morph_log other{};
+	const std::string other_path = tmpfile + ".diagnostics";
+	ASSERT_EQ(log_init(&other, other_path.c_str(), LOG_DEBUG), 0);
+	testing::internal::CaptureStderr();
+	std::thread first([this] {
+		for (int i = 0; i < 20; i++)
+			log_diagnostic(&logger, "first diagnostic %d", i);
+	});
+	std::thread second([&other] {
+		for (int i = 0; i < 20; i++)
+			log_diagnostic(&other, "second diagnostic %d", i);
+	});
+	first.join();
+	second.join();
+	log_shutdown(&logger);
+	log_diagnostic(&logger, "closed owner");
+	log_diagnostic(&other, "other owner still active");
+	log_shutdown(&other);
+	std::string errors = testing::internal::GetCapturedStderr();
+	EXPECT_TRUE(errors.empty()) << errors;
+	auto lines = read_lines();
+	ASSERT_EQ(lines.size(), 20u);
+	for (const auto &line : lines)
+		EXPECT_NE(line.find("first diagnostic"), std::string::npos);
+	std::ifstream stream(other_path);
+	const std::string content((std::istreambuf_iterator<char>(stream)), {});
+	EXPECT_EQ(content.find("first diagnostic"), std::string::npos);
+	EXPECT_NE(content.find("second diagnostic 19"), std::string::npos);
+	EXPECT_NE(content.find("other owner still active"), std::string::npos);
 	std::remove(other_path.c_str());
 }

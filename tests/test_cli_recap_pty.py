@@ -55,6 +55,8 @@ def main():
             while '\x1b[?1004h' not in terminal.raw and time.monotonic() < deadline:
                 terminal.pump(.1)
             assert '\x1b[?1004h' in terminal.raw, terminal.raw[-4000:]
+            terminal.pump(2)
+            assert 'MORPH_RETURN:' not in terminal.raw, terminal.raw[-4000:]
             terminal.send('/recap\r')
             assert 'There is no conversation history to recap' in terminal.raw
             with sqlite3.connect(directory / 'data.db') as db:
