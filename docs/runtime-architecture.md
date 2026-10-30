@@ -224,7 +224,8 @@ Android and iOS hosts can opt in and render the same states using their native
 UI; they do not need to implement connection workers or tool registration.
 `runtime_close()` cancels and joins all startup workers before releasing MCP
 clients, tools, and event sinks. HTTP interruption uses the existing curl
-progress callback; stdio interruption is checked at most every 100 ms while
+progress callback and a transfer loop that checks cancellation every 50 ms;
+stdio interruption is checked at most every 100 ms while
 waiting for responses. Child-process termination is bounded and reaped.
 
 ## Background session titles

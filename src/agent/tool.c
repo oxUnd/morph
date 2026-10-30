@@ -856,6 +856,7 @@ static int tool_register_unlocked(struct tool_registry *reg, const struct tool_s
 	e->get_environment = spec->get_environment;
 	e->background_list = spec->background_list;
 	e->background_wait = spec->background_wait;
+	e->background_cancel = spec->background_cancel;
 	e->user_data = spec->user_data;
 	e->user_data_destroy = spec->user_data_destroy;
 	e->origin = spec->origin;
@@ -1037,6 +1038,7 @@ int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry
 		.get_environment = entry->get_environment,
 		.background_list = entry->background_list,
 		.background_wait = entry->background_wait,
+		.background_cancel = entry->background_cancel,
 		.user_data = entry->user_data,
 		.flags = entry->flags,
 		.timeout_seconds = entry->timeout_seconds,

@@ -600,6 +600,51 @@ TEST_F(ProcessTest, TimeoutKillsProcessGroup)
 	process_snapshot_cleanup(&snapshot);
 }
 
+TEST_F(ProcessTest, KillEscalatesWhenTheProcessIgnoresTerm)
+{
+	process_spawn_options options{};
+	options.command = "trap '' TERM; printf ready; while :; do sleep .05; done";
+	options.background = 1;
+	char id[PROCESS_SESSION_ID_MAX];
+	ASSERT_EQ(process_spawn(manager, &options, id, nullptr), 0);
+	process_snapshot snapshot{};
+	ASSERT_EQ(process_session_poll(manager, id, nullptr, 2000,
+		nullptr, nullptr, &snapshot), 0);
+	ASSERT_STREQ(snapshot.stdout_text, "ready");
+	process_snapshot_cleanup(&snapshot);
+	ASSERT_EQ(process_session_kill(manager, id), 0);
+	ASSERT_EQ(process_session_wait(manager, id, nullptr, 2000,
+		nullptr, nullptr, &snapshot), 0);
+	EXPECT_EQ(snapshot.state, PROCESS_KILLED);
+	EXPECT_EQ(snapshot.signal_number, SIGKILL);
+	process_snapshot_cleanup(&snapshot);
+}
+
+TEST_F(ProcessTest, CancellationStopsTheInitialYieldPromptly)
+{
+	std::atomic<bool> cancelled{false};
+	process_spawn_options options{};
+	options.command = "sleep 10";
+	options.yield_time_ms = 10000;
+	options.cancelled = [](void *opaque) {
+		return static_cast<std::atomic<bool> *>(opaque)->load() ? 1 : 0;
+	};
+	options.cancel_data = &cancelled;
+	char id[PROCESS_SESSION_ID_MAX];
+	std::thread canceller([&] {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		cancelled = true;
+	});
+	auto start = std::chrono::steady_clock::now();
+	int rc = process_spawn(manager, &options, id, nullptr);
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	canceller.join();
+	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+	ASSERT_NE(id[0], '\0');
+	EXPECT_EQ(process_session_kill(manager, id), 0);
+}
+
 /*
  * Regression test for a use-after-free in process_spawn().
  *
@@ -1198,6 +1243,47 @@ TEST(ExecToolTest, ExplicitNotifyOnlyAndServicesDoNotHoldFinalization)
 	}
 	EXPECT_EQ(running, 2);
 	cJSON_Delete(jobs);
+	tool_registry_cleanup(&registry);
+}
+
+TEST(ExecToolTest, TurnCancellationStopsOnlyOwnedJobsFromThatTurn)
+{
+	tool_registry registry{};
+	tool_registry_init(nullptr, &registry);
+	ASSERT_EQ(exec_tool_init(&registry, nullptr, nullptr), 0);
+	tool_runtime_context context{};
+	std::vector<std::string> ids;
+	for (int index = 0; index < 5; index++) {
+		context.memory_session_id = index == 4 ? 43 : 42;
+		context.turn_id = index == 3 ? "previous-turn" : "cancel-turn";
+		tool_result result{};
+		tool_result_init(&result);
+		result.runtime = &context;
+		const char *args = index == 1 ?
+			R"({"command":"sleep 10","service":true})" : index == 2 ?
+			R"({"command":"sleep 10","background":true,"notify_only":true})" :
+			R"({"command":"sleep 10","background":true})";
+		ASSERT_EQ(tool_exec(&registry, "exec", args, &result), 0);
+		ids.emplace_back(cJSON_GetStringValue(cJSON_GetObjectItem(result.data, "session_id")));
+		tool_result_cleanup(&result);
+	}
+	tool_entry *entry = tool_lookup(&registry, "exec");
+	ASSERT_NE(entry->background_cancel, nullptr);
+	entry->background_cancel(entry->user_data, 42, "cancel-turn");
+	for (size_t index = 0; index < ids.size(); index++) {
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		std::string status;
+		do {
+			cJSON *detail = nullptr;
+			ASSERT_EQ(exec_tool_job_read(&registry, index == 4 ? 43 : 42,
+				ids[index].c_str(), &detail), 0);
+			status = cJSON_GetStringValue(cJSON_GetObjectItem(detail, "status"));
+			cJSON_Delete(detail);
+			if (index >= 3 || status == "killed") break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		} while (std::chrono::steady_clock::now() < deadline);
+		EXPECT_EQ(status, index < 3 ? "killed" : "running");
+	}
 	tool_registry_cleanup(&registry);
 }
 

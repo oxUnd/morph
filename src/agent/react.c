@@ -34,6 +34,8 @@
 #include <time.h>
 #include <limits.h>
 
+static void react_cancel_background(struct react_context *ctx);
+
 /*
  * Check whether a tool requires human-in-the-loop approval.
  *
@@ -424,6 +426,7 @@ static int react_finish(struct react_context *ctx)
 		rc = -ECANCELED;
 
 	if (ctx->outcome == REACT_OUTCOME_CANCELLED) {
+		react_cancel_background(ctx);
 		event_name = "react.cancelled";
 		phase = "cancelled";
 		message = "turn cancelled";
@@ -1518,6 +1521,16 @@ static struct tool_entry *react_builtin_snapshot(struct react_context *ctx, cons
 	}
 	tool_registry_unlock(ctx->tools);
 	return entry != NULL ? snapshot : NULL;
+}
+
+static void react_cancel_background(struct react_context *ctx)
+{
+	struct tool_entry snapshot;
+	struct tool_entry *entry = react_builtin_snapshot(ctx, "exec", &snapshot);
+
+	if (entry && entry->background_cancel)
+		entry->background_cancel(entry->user_data,
+			ctx->tool_runtime.memory_session_id, ctx->turn_id);
 }
 
 static int append_process_checkpoint(struct react_context *ctx, morph_buf_t *buf)

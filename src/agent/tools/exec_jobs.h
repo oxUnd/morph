@@ -19,6 +19,7 @@ int exec_jobs_read_retained(struct exec_jobs *jobs, int64_t owner, const char *i
 int exec_jobs_read(struct exec_jobs *jobs, int64_t owner, const char *id, cJSON **out);
 
 int exec_jobs_stop(struct exec_jobs *jobs, int64_t owner, const char *id);
+void exec_jobs_cancel_turn(struct exec_jobs *jobs, int64_t owner, const char *turn_id);
 int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner);
 void exec_jobs_observed(struct exec_jobs *jobs, const char *id);
 int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,

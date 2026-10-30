@@ -48,7 +48,12 @@ dependencies and external environment changes cannot be detected.
 `cursor` (the previous result's `next_cursor`). The model chooses the wait within
 that range; omitting the value defaults to 30000 ms, or a smaller configured maximum.
 It returns when new output arrives, the child exits, the wait expires, or the
-request is cancelled. Cancelling a wait leaves the child running.
+request is cancelled. Cancelling a low-level wait leaves the child running.
+Cancelling the agent turn (Esc or Ctrl-C in the CLI) also stops processes started
+by that session and turn, including background, service, and notify-only jobs.
+Processes from earlier turns or other sessions retain their own lifecycle.
+The initial `exec` yield checks cancellation, and stop requests escalate from
+SIGTERM to SIGKILL after `[exec].kill_grace_ms`, even if the child ignores SIGTERM.
 
 Explicit cursors identify absolute stdout/stderr byte positions and do not consume
 shared output. Repeating a cursor replays the still-retained range, including any

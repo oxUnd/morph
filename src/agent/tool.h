@@ -131,6 +131,8 @@ typedef void (*tool_environment_fn)(void *user_data,
 typedef int (*tool_background_list_fn)(void *user_data, int64_t owner, cJSON **out);
 typedef int (*tool_background_wait_fn)(void *user_data, int64_t owner,
 	const char *turn_id, int (*cancelled)(void *), void *cancel_data, cJSON **out);
+typedef void (*tool_background_cancel_fn)(void *user_data, int64_t owner,
+	const char *turn_id);
 
 struct tool_spec {
 	enum tool_origin origin;
@@ -145,6 +147,7 @@ struct tool_spec {
 	tool_environment_fn get_environment;
 	tool_background_list_fn background_list;
 	tool_background_wait_fn background_wait;
+	tool_background_cancel_fn background_cancel;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	unsigned int flags;
@@ -161,6 +164,7 @@ struct tool_entry {
 	tool_environment_fn get_environment;
 	tool_background_list_fn background_list;
 	tool_background_wait_fn background_wait;
+	tool_background_cancel_fn background_cancel;
 	void *user_data;
 	tool_user_data_destroy_fn user_data_destroy;
 	enum tool_origin origin;

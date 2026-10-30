@@ -331,6 +331,22 @@ int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 	return 0;
 }
 
+void exec_jobs_cancel_turn(struct exec_jobs *jobs, int64_t owner, const char *turn_id)
+{
+	if (!jobs || !turn_id || !turn_id[0])
+		return;
+	pthread_mutex_lock(&jobs->lock);
+	struct exec_job *job;
+	morph_array_foreach(job, &jobs->entries, struct exec_job)
+	{
+		if (job_owned(job->data, owner) &&
+		    !strcmp(job_string(job->data, "turn_id"), turn_id))
+			(void)process_session_kill(jobs->manager,
+				job_string(job->data, "session_id"));
+	}
+	pthread_mutex_unlock(&jobs->lock);
+}
+
 int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner)
 {
 	pthread_mutex_lock(&jobs->lock);

@@ -414,8 +414,6 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 		cli_terminal_update_end(ctx);
 		return;
 	}
-	/* Owner calls may use blocking Readline for approval or ask_user. */
-	rl_callback_handler_remove();
 	(void)cli_ui_drain(ctx);
 	if (!ctx->details_open && cli_command_job_done(ctx->input_job))
 		cli_readline_finish_job(ctx);
@@ -423,9 +421,11 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 		cli_terminal_composer_resume(ctx);
 	/* Installing a callback paints its prompt immediately. Restore with an
 	 * empty prompt so the draft redraw is the sole prompt renderer. */
-	rl_callback_handler_install("", cli_callback_line(ctx, cli_readline_line_ready));
-	cli_readline_configure(ctx);
-	rl_set_prompt(cli_input_prompt(ctx));
+	if (!RL_ISSTATE(RL_STATE_CALLBACK)) {
+		rl_callback_handler_install("", cli_callback_line(ctx, cli_readline_line_ready));
+		cli_readline_configure(ctx);
+		rl_set_prompt(cli_input_prompt(ctx));
+	}
 	if (ctx->details_visible) {
 		rl_replace_line(draft, 0);
 		rl_point = point;
@@ -479,23 +479,6 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 	cli_terminal_render_frame(ctx, resized);
 	cli_readline_resume(ctx, draft, point);
 	cli_terminal_update_end(ctx);
-}
-
-static int cli_readline_getc(struct cli_context *ctx, FILE *stream)
-{
-	int ch = cli_poll_getc(ctx, stream);
-
-	if (ch == 0x1b && ctx && ctx->input_job && ctx->input_job->active) {
-		struct pollfd fd = {.fd = fileno(stream), .events = POLLIN};
-
-		/* Keep arrows, Alt+Enter and bracketed paste intact. A lone Esc
-		 * cancels without a second thread stealing composer keystrokes. */
-		if (poll(&fd, 1, 30) == 0) {
-			runtime_cancel_turn(ctx->runtime);
-			return 0;
-		}
-	}
-	return ch;
 }
 
 static int cli_readline_convert_images(struct cli_context *ctx)
@@ -1223,7 +1206,7 @@ void cli_run(struct cli_context *ctx)
 	ctx->input_status.enabled = 1;
 	ctx->readline_ready_input = NULL;
 	ctx->input_job = &job;
-	int (*reader)(FILE *) = cli_callback_getc(ctx, cli_readline_getc);
+	int (*reader)(FILE *) = cli_callback_getc(ctx, cli_poll_getc);
 	void (*display)(void) = cli_callback_display(ctx, cli_readline_redisplay);
 	char **(*completion)(const char *, int, int) = cli_callback_complete(ctx, cmd_completion);
 	void (*line_ready)(char *) = cli_callback_line(ctx, cli_readline_line_ready);

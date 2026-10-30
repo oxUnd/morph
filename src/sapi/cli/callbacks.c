@@ -1,5 +1,5 @@
 #include "callbacks.h"
-#include "cli.h"
+#include "internal.h"
 #include "util/error.h"
 #include <ffi.h>
 #include <stdlib.h>
@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/select.h>
 #ifdef HAVE_READLINE
 #include <readline/readline.h>
 #endif
@@ -274,18 +275,62 @@ Keymap cli_keymap_copy(Keymap source)
 	return source ? copy_keymap(source, ancestors, 0) : NULL;
 }
 
+/* macOS poll reports POLLNVAL for a valid /dev/tty descriptor. Approval and
+ * question prompts use that device, so wait with select for both input paths. */
+static int cli_readline_wait(int fd, int milliseconds)
+{
+	fd_set input;
+	struct timeval timeout = {
+		.tv_sec = milliseconds / 1000,
+		.tv_usec = (milliseconds % 1000) * 1000,
+	};
+
+	if (fd < 0 || fd >= FD_SETSIZE) {
+		errno = EINVAL;
+		return -EINVAL;
+	}
+	FD_ZERO(&input);
+	FD_SET(fd, &input);
+	int rc = select(fd + 1, &input, NULL, NULL, &timeout);
+
+	return rc < 0 ? morph_error_from_errno(errno) : rc;
+}
+
 int cli_poll_getc(struct cli_context *ctx, FILE *stream)
 {
-	struct pollfd descriptor = {.fd = fileno(stream), .events = POLLIN};
+	int fd = fileno(stream);
 
 	while (!ctx || !morph_signal_flag_get(&ctx->interrupted)) {
-		int ready = poll(&descriptor, 1, 100);
+		int ready = cli_readline_wait(fd, 100);
 
-		if (ready > 0)
-			return rl_getc(stream);
+		if (ready > 0) {
+			int ch = rl_getc(stream);
+
+			int suffix = 1;
+			if (ch == 0x1b) {
+				do {
+					suffix = cli_readline_wait(fd, 30);
+				} while (suffix < 0 && errno == EINTR);
+			}
+			if (ch == 0x1b && suffix == 0) {
+				/* Consume a lone Esc even when idle, so Readline never
+				 * waits for a prefix suffix and swallows the next edit. */
+				if (ctx && ctx->turn_active) {
+					if (!RL_ISSTATE(RL_STATE_CALLBACK)) {
+						cli_request_cancel(ctx);
+						rl_done = 1;
+						return EOF;
+					}
+					runtime_cancel_turn(ctx->runtime);
+				}
+				return 0;
+			}
+			return ch;
+		}
 		if (ready < 0 && errno != EINTR)
 			return EOF;
 	}
+	rl_done = 1;
 	return EOF;
 }
 

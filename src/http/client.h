@@ -57,6 +57,7 @@ struct http_multipart_part {
 struct http_session {
 	struct morph_log *logger;
 	CURL *curl;
+	void *multi;
 	morph_buf_t resp_body;
 	morph_buf_t resp_headers;
 	long status_code;

@@ -53,6 +53,10 @@ struct process_spawn_options {
 	int use_stdin_fd;
 	int stdin_fd;
 	struct sandbox_config *sandbox;
+	/* Borrowed for spawn/yield only. Cancellation during the initial yield
+	 * leaves session_id available for caller-owned process cleanup. */
+	int (*cancelled)(void *);
+	void *cancel_data;
 };
 
 struct process_cursor {

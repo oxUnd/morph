@@ -447,7 +447,7 @@ static void monitor_session(struct process_manager *manager,
 		(void)kill(-session->pgid, SIGTERM);
 		session->kill_deadline_ms = now + manager->kill_grace_ms;
 	}
-	if (session->timeout_requested && session->kill_deadline_ms > 0 &&
+	if (session->kill_deadline_ms > 0 &&
 		now >= session->kill_deadline_ms) {
 		(void)kill(-session->pgid, SIGKILL);
 		session->kill_deadline_ms = 0;
@@ -797,6 +797,9 @@ int process_spawn(struct process_manager *manager,
 
 	if (!manager || !options || !options->command || !session_id)
 		return -EINVAL;
+	session_id[0] = '\0';
+	if (options->cancelled && options->cancelled(options->cancel_data))
+		return -ECANCELED;
 	rc = validate_workdir(options->workdir);
 	if (rc != 0)
 		return rc;
@@ -857,12 +860,18 @@ int process_spawn(struct process_manager *manager,
 			 * the block this call was pointing at.
 			 */
 			session = &manager->sessions[session_index];
+			if (options->cancelled && options->cancelled(options->cancel_data)) {
+				rc = -ECANCELED;
+				break;
+			}
 			if (session->state >= PROCESS_EXITED)
 				break;
 			if (now >= deadline)
 				break;
 			clock_gettime(CLOCK_REALTIME, &wait_until);
 			uint64_t remain = deadline - now;
+			if (options->cancelled && remain > PROCESS_POLL_MS)
+				remain = PROCESS_POLL_MS;
 			wait_until.tv_sec += (time_t)(remain / 1000u);
 			wait_until.tv_nsec += (long)((remain % 1000u) * 1000000u);
 			if (wait_until.tv_nsec >= 1000000000L) {
@@ -874,7 +883,7 @@ int process_spawn(struct process_manager *manager,
 		}
 		session = &manager->sessions[session_index];
 	}
-	if (snapshot)
+	if (rc == 0 && snapshot)
 		rc = snapshot_locked(manager, session, snapshot);
 	pthread_mutex_unlock(&manager->mutex);
 	return rc;
@@ -1047,7 +1056,7 @@ static int signal_session(struct process_manager *manager,
 		rc = -EPIPE;
 	else if (kill(-session->pgid, signal_number) != 0)
 		rc = -errno;
-	else if (kill_request) {
+	else if (kill_request && !session->kill_requested) {
 		session->kill_requested = 1;
 		session->kill_deadline_ms = process_now_ms() +
 			manager->kill_grace_ms;

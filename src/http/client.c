@@ -81,6 +81,58 @@ static int http_cancelled(const struct http_control *control)
 	       (control->interrupt_check && control->interrupt_check(control->interrupt_user_data));
 }
 
+/* Drive transfers in bounded slices, including when a peer sends no bytes.
+ * curl_easy_perform's progress callback can otherwise be idle for a second. */
+static CURLcode http_perform_cancelable(CURL *curl, CURLM *shared_multi,
+				       const struct http_control *control)
+{
+	CURLM *multi = shared_multi ? shared_multi : curl_multi_init();
+	CURLcode result = CURLE_FAILED_INIT;
+	int running = 0;
+
+	if (!multi)
+		return CURLE_OUT_OF_MEMORY;
+	if (curl_multi_add_handle(multi, curl) != CURLM_OK) {
+		if (!shared_multi)
+			curl_multi_cleanup(multi);
+		return result;
+	}
+	for (;;) {
+		if (http_cancelled(control)) {
+			result = CURLE_ABORTED_BY_CALLBACK;
+			break;
+		}
+		if (curl_multi_perform(multi, &running) != CURLM_OK)
+			break;
+		if (!running) {
+			int remaining;
+			CURLMsg *message;
+
+			while ((message = curl_multi_info_read(multi, &remaining))) {
+				if (message->msg == CURLMSG_DONE && message->easy_handle == curl)
+					result = message->data.result;
+			}
+			break;
+		}
+#if LIBCURL_VERSION_NUM >= 0x074200
+		if (curl_multi_poll(multi, NULL, 0, 50, NULL) != CURLM_OK)
+			break;
+#else
+		int ready = 0;
+		if (curl_multi_wait(multi, NULL, 0, 25, &ready) != CURLM_OK)
+			break;
+		if (!ready && http_wait_cancelable(control, 25) != 0) {
+			result = CURLE_ABORTED_BY_CALLBACK;
+			break;
+		}
+#endif
+	}
+	(void)curl_multi_remove_handle(multi, curl);
+	if (!shared_multi)
+		(void)curl_multi_cleanup(multi);
+	return result;
+}
+
 int http_wait_cancelable(const struct http_control *control, unsigned int milliseconds)
 {
 	const unsigned int slice_ms = 100;
@@ -278,7 +330,7 @@ static int do_request(const struct http_control *control, const char *url, const
 	    }
     }
 
-	curl_rc = curl_easy_perform(curl);
+	curl_rc = http_perform_cancelable(curl, NULL, control);
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled(control)) {
 			rc = -ECANCELED;
@@ -431,7 +483,7 @@ int http_post_multipart_ex(const struct http_control *control, const char *url,
 	curl_apply_common_opts(curl, errbuf, control);
 	sse_apply_cancel_opts(curl, control);
 
-	curl_rc = curl_easy_perform(curl);
+	curl_rc = http_perform_cancelable(curl, NULL, control);
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled(control))
 			rc = -ECANCELED;
@@ -586,7 +638,7 @@ static int do_sse_request(const struct http_control *control, const char *url, c
 
 	log_dbg(control ? control->logger : NULL,
 		"http sse: request timeout disabled, idle_timeout=%lds", idle_timeout);
-	curl_rc = curl_easy_perform(curl);
+	curl_rc = http_perform_cancelable(curl, NULL, control);
 
 	if (swd.callback_rc != 0) {
 		rc = swd.callback_rc;
@@ -703,6 +755,12 @@ int http_session_init(struct morph_log *logger, struct http_session *s)
 		http_cleanup();
 		return MORPH_TRACE_ERROR(logger, -ENOMEM);
 	}
+	/* Keep the connection pool alive across cancellable session requests. */
+	s->multi = curl_multi_init();
+	if (!s->multi) {
+		http_session_cleanup(s);
+		return MORPH_TRACE_ERROR(logger, -ENOMEM);
+	}
 	rc = morph_buf_init(&s->resp_body, 4096);
 	if (rc == 0)
 		rc = morph_buf_init(&s->resp_headers, 2048);
@@ -719,6 +777,10 @@ void http_session_cleanup(struct http_session *s)
 {
 	if (!s)
 		return;
+	if (s->multi) {
+		curl_multi_cleanup(s->multi);
+		s->multi = NULL;
+	}
 	if (s->curl) {
 		curl_easy_cleanup(s->curl);
 		s->curl = NULL;
@@ -779,7 +841,7 @@ int http_session_post(const struct http_control *control, struct http_session *s
 	curl_apply_common_opts(s->curl, errbuf, control);
 	sse_apply_cancel_opts(s->curl, control);
 
-	curl_rc = curl_easy_perform(s->curl);
+	curl_rc = http_perform_cancelable(s->curl, s->multi, control);
 	if (curl_rc != CURLE_OK) {
 		if (http_cancelled(control)) {
 			rc = -ECANCELED;

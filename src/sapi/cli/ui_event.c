@@ -444,6 +444,13 @@ int cli_ui_drain(struct cli_context *ctx)
 		else if (item->kind == CLI_UI_ITEM_OWNER_CALL) {
 			int updating = cli_terminal_update_active(ctx);
 
+#ifdef HAVE_READLINE
+			/* Only interactive owner calls need a blocking prompt. Keep
+			 * normal event refreshes in Readline's terminal mode so input
+			 * cannot be echoed, erased or have CR translated by the TTY. */
+			if (RL_ISSTATE(RL_STATE_CALLBACK))
+				rl_callback_handler_remove();
+#endif
 			cli_terminal_update_end(ctx);
 			cli_ui_run_owner_call(item->owner_call);
 			if (updating)

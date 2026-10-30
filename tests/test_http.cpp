@@ -2,6 +2,8 @@
 #include "http/client.h"
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <thread>
@@ -83,6 +85,72 @@ TEST_F(HttpTest, PostTimeoutReturnsTimedOut) {
 TEST_F(HttpTest, DoubleInit) {
 	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
 	EXPECT_NO_FATAL_FAILURE(http_init(NULL));
+}
+
+TEST_F(HttpTest, CancellationInterruptsSilentPeersPromptly) {
+	for (int kind = 0; kind < 4; kind++) {
+		SCOPED_TRACE(kind);
+		int listener = socket(AF_INET, SOCK_STREAM, 0);
+		ASSERT_GE(listener, 0);
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr *>(&address),
+			sizeof(address)), 0);
+		socklen_t length = sizeof(address);
+		ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr *>(&address),
+			&length), 0);
+		ASSERT_EQ(listen(listener, 1), 0);
+		std::mutex mutex;
+		std::condition_variable condition;
+		bool finished = false;
+		std::thread server([&] {
+			int peer = accept(listener, nullptr, nullptr);
+			std::unique_lock<std::mutex> lock(mutex);
+			condition.wait_for(lock, std::chrono::seconds(3), [&] { return finished; });
+			if (peer >= 0) close(peer);
+			close(listener);
+		});
+		morph_cancel_token token{};
+		http_control control{};
+		control.cancel_token = &token;
+		std::thread canceller([&] {
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			morph_cancel_token_cancel(&token);
+		});
+		char url[128];
+		snprintf(url, sizeof(url), "http://127.0.0.1:%u/",
+			static_cast<unsigned>(ntohs(address.sin_port)));
+		http_response response{};
+		http_session session{};
+		EXPECT_EQ(http_session_init(nullptr, &session), 0);
+		http_multipart_part part{HTTP_MULTIPART_TEXT, "text", "test", nullptr};
+		auto start = std::chrono::steady_clock::now();
+		int rc;
+		if (kind == 0)
+			rc = http_post(&control, url, "{}", 2, "application/json", &response);
+		else if (kind == 1)
+			rc = http_post_sse(&control, url, "{}", 2, "application/json",
+				[](const char *, size_t, void *) { return 0; }, nullptr);
+		else if (kind == 2)
+			rc = http_post_multipart_ex(&control, url, &part, 1,
+				nullptr, 0, 3, &response);
+		else
+			rc = http_session_post(&control, &session, url, "{}", 2,
+				"application/json", nullptr, 0, 3);
+		auto elapsed = std::chrono::steady_clock::now() - start;
+		canceller.join();
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			finished = true;
+		}
+		condition.notify_all();
+		server.join();
+		http_response_free(&response);
+		http_session_cleanup(&session);
+		EXPECT_EQ(rc, -ECANCELED);
+		EXPECT_LT(elapsed, std::chrono::milliseconds(500));
+	}
 }
 
 TEST(CancelTokenTest, ResetCancelAndQuery) {

@@ -434,6 +434,13 @@ static int merge_path_grants(struct tool_context *tctx, const char *principal,
 	return 0;
 }
 
+static int process_wait_cancelled(void *opaque)
+{
+	const struct tool_runtime_context *runtime = opaque;
+
+	return http_wait_cancelable(runtime ? &runtime->http : NULL, 0) < 0;
+}
+
 static int exec_run(const char *args_json, struct tool_result *result,
 			void *user_data)
 {
@@ -567,15 +574,19 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	sandbox.logger = runtime->tool_context ? runtime->tool_context->logger : NULL;
 	options.logger = sandbox.logger;
 	options.sandbox = host ? NULL : &sandbox;
+	options.cancelled = process_wait_cancelled;
+	options.cancel_data = (void *)result->runtime;
 	memset(&snapshot, 0, sizeof(snapshot));
 	rc = process_spawn(runtime->manager, &options, session_id, &snapshot);
 	arena_destroy(path_arena);
 	if (rc != 0) {
+		if (rc == -ECANCELED && session_id[0])
+			(void)process_session_kill(runtime->manager, session_id);
 		const char *code = rc == -ENOENT ? "invalid_workdir" :
 			rc == -ENOTDIR ? "invalid_workdir" : "spawn_failed";
 
 		cJSON_Delete(root);
-		(void)tool_result_error(result, code, strerror(-rc));
+		(void)tool_result_error(result, code, morph_strerror(rc));
 		process_snapshot_cleanup(&snapshot);
 		return rc;
 	}
@@ -593,18 +604,18 @@ static int exec_run(const char *args_json, struct tool_result *result,
 			return rc;
 		}
 	}
+	/* A cancelled worker may register after its turn has already finished. */
+	if (process_wait_cancelled((void *)result->runtime)) {
+		(void)process_session_kill(runtime->manager, session_id);
+		process_snapshot_cleanup(&snapshot);
+		cJSON_Delete(root);
+		return -ECANCELED;
+	}
 	rc = result_snapshot(result, session_id, command, workdir, &snapshot,
 		host ? "host" : "sandbox");
 	process_snapshot_cleanup(&snapshot);
 	cJSON_Delete(root);
 	return rc;
-}
-
-static int process_wait_cancelled(void *opaque)
-{
-	const struct tool_runtime_context *runtime = opaque;
-
-	return http_wait_cancelable(runtime ? &runtime->http : NULL, 0) < 0;
 }
 
 static int process_run(const char *args_json, struct tool_result *result,
@@ -746,6 +757,12 @@ static int exec_background_wait(void *opaque, int64_t owner, const char *turn_id
 	return exec_jobs_wait(runtime->jobs, owner, turn_id, cancelled, cancel_data, out);
 }
 
+static void exec_background_cancel(void *opaque, int64_t owner, const char *turn_id)
+{
+	struct exec_runtime *runtime = opaque;
+	exec_jobs_cancel_turn(runtime->jobs, owner, turn_id);
+}
+
 static void exec_environment(void *opaque, struct prompt_context_input *out)
 {
 	struct exec_runtime *runtime = opaque;
@@ -805,6 +822,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	exec_spec.get_environment = exec_environment;
 	exec_spec.background_list = exec_background_list;
 	exec_spec.background_wait = exec_background_wait;
+	exec_spec.background_cancel = exec_background_cancel;
 	exec_spec.user_data = runtime;
 	exec_spec.user_data_destroy = exec_runtime_destroy;
 	exec_spec.flags = TOOL_FLAG_INTERNAL_APPROVAL;
