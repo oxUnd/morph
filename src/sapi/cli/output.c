@@ -1,6 +1,7 @@
 #include "sapi/cli/callbacks.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
+#include <morph/tui/components.h>
 #include "util/data.h"
 #include <morph/tui/tree.h>
 
@@ -355,8 +356,6 @@ static int cli_parse_multi_choice_answer(char *input,
 }
 
 struct cli_ask_user_validation {
-	const char *const *choices;
-	int choices_count;
 	const char *selection_mode;
 	int min_choices;
 	int max_choices;
@@ -384,20 +383,10 @@ static int cli_validate_ask_user_response(const cJSON *response_data,
 		return -EINVAL;
 	for (int i = 0; i < count; i++) {
 		cJSON *answer = cJSON_GetArrayItem(answers, i);
-		int matched = validation->choices_count == 0;
 
 		if (!cJSON_IsString(answer) || !answer->valuestring ||
 		    !answer->valuestring[0])
 			return MORPH_ERR_PROTOCOL;
-		for (int j = 0; j < validation->choices_count; j++) {
-			if (strcmp(answer->valuestring,
-				   validation->choices[j]) == 0) {
-				matched = 1;
-				break;
-			}
-		}
-		if (!matched)
-			return -EINVAL;
 		for (int j = 0; j < i; j++) {
 			cJSON *previous = cJSON_GetArrayItem(answers, j);
 
@@ -453,8 +442,6 @@ static int cli_json_ask_user(struct cli_context *ctx, const char *question,
 	}
 	cJSON_AddItemToObject(request, "choices", choices_json);
 	validation = (struct cli_ask_user_validation){
-		.choices = choices,
-		.choices_count = choices_count,
 		.selection_mode = selection_mode,
 		.min_choices = min_choices,
 		.max_choices = max_choices,
@@ -520,8 +507,11 @@ int cli_ask_user_callback(const char *question,
 {
 	struct cli_context *ctx = user_data;
 	int multi = selection_mode && strcmp(selection_mode, "multi") == 0;
-	if (!ctx || !answers || !answers_count)
+	if (!ctx || !answers || !answers_count || choices_count < 0 || choices_count > 64 ||
+	    min_choices < 0 || max_choices < 0)
 		return -EINVAL;
+	*answers = NULL;
+	*answers_count = 0;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
 		return cli_json_ask_user(ctx, question, choices, choices_count,
 			selection_mode, min_choices, max_choices, answers,
@@ -540,6 +530,63 @@ int cli_ask_user_callback(const char *question,
 	printf(ctx, ANSI_BOLD ANSI_CYAN "? ");
 	(void)cli_print_untrusted_text(ctx, question, UTF8_TERMINAL_TEXT_SINGLE_LINE);
 	printf(ctx, ANSI_RESET "\n");
+
+	if (choices && choices_count > 0 && isatty(STDOUT_FILENO)) {
+		FILE *tty = NULL;
+		FILE *input = stdin;
+
+		if (!isatty(STDIN_FILENO)) {
+			/* macOS poll rejects the /dev/tty alias. Open the actual
+			 * terminal device when standard input is redirected. */
+			const char *path = ttyname(STDOUT_FILENO);
+
+			tty = path ? fopen(path, "r") : NULL;
+			input = tty;
+		}
+		if (morph_tui_available(input, stdout)) {
+			struct morph_tui_select state = {0};
+			const struct morph_tui_select_options options = {
+				.items = choices, .interrupted = &ctx->interrupted,
+				.color = cli_color_enabled(ctx), .allow_custom = 1,
+			};
+			char *custom = NULL;
+			int rc = morph_tui_select_init(&state, (size_t)choices_count + 1,
+				multi, (size_t)min_choices,
+				multi ? (size_t)(max_choices ? max_choices : choices_count) : 1);
+
+			if (!rc)
+				rc = morph_tui_select_run(&state, &options, input, stdout, &custom);
+			if (rc == -ECANCELED || rc == -EINTR)
+				cli_request_cancel(ctx);
+			if (!rc) {
+				const char *values[64];
+				int count = 0;
+
+				for (int i = 0; i < choices_count && count < 64; i++) {
+					if (morph_tui_select_selected(&state, (size_t)i))
+						values[count++] = choices[i];
+				}
+				if (custom && count < 64)
+					values[count++] = custom;
+				rc = cli_set_ask_user_answers(answers, answers_count, values, count);
+				if (!rc) {
+					for (int i = 0; i < count; i++) {
+						printf(ctx, "  " ANSI_GREEN "✓ " ANSI_RESET);
+						(void)cli_print_untrusted_text(ctx, values[i],
+							UTF8_TERMINAL_TEXT_SINGLE_LINE);
+						printf(ctx, "\n");
+					}
+				}
+			}
+			morph_tui_select_cleanup(&state);
+			free(custom);
+			if (tty)
+				fclose(tty);
+			return rc;
+		}
+		if (tty)
+			fclose(tty);
+	}
 
 	char prompt[128];
 	if (choices && choices_count > 0) {

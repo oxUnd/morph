@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <initializer_list>
 #include <chrono>
 #include <csignal>
 #include <pthread.h>
@@ -326,6 +327,74 @@ TEST_F(TuiTest, MenusWrapAndIgnorePastedShortcutsAndConfirmation)
 	EXPECT_EQ(morph_tui_menu_update(&menu, '\n'), MORPH_TUI_UNHANDLED);
 }
 
+TEST_F(TuiTest, SelectSingleUsesFocusAndPreservesNavigationVisibility)
+{
+	struct morph_tui_select selection{};
+	ASSERT_EQ(morph_tui_select_init(&selection, 12, 0, 1, 1), 0);
+	morph_tui_list_layout(&selection.menu.list, 12, 3);
+	EXPECT_TRUE(morph_tui_select_selected(&selection, 0));
+	EXPECT_FALSE(morph_tui_select_selected(&selection, 12));
+	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_END), MORPH_TUI_CHANGED);
+	EXPECT_EQ(selection.menu.list.first, 9u);
+	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_DOWN), MORPH_TUI_CHANGED);
+	EXPECT_EQ(selection.menu.list.index, 0u);
+	EXPECT_EQ(morph_tui_select_update(&selection, '3'), MORPH_TUI_CHANGED);
+	EXPECT_TRUE(morph_tui_select_selected(&selection, 2));
+	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
+	EXPECT_EQ(morph_tui_select_update(&selection, 27), MORPH_TUI_BACK);
+	EXPECT_EQ(morph_tui_select_update(&selection, 3), MORPH_TUI_CANCEL);
+	morph_tui_select_cleanup(&selection);
+}
+
+TEST_F(TuiTest, SelectMultiEnforcesLimitsAndIgnoresPastedActions)
+{
+	struct morph_tui_select selection{};
+	ASSERT_EQ(morph_tui_select_init(&selection, 4, 1, 2, 2), 0);
+	for (size_t i = 0; i < 4; i++)
+		EXPECT_FALSE(morph_tui_select_selected(&selection, i));
+	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_CHANGED);
+	EXPECT_TRUE(selection.invalid);
+	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_PASTE_BEGIN),
+		MORPH_TUI_UNHANDLED);
+	for (int key : std::initializer_list<int>{' ', 'j', '\r', 27, 3})
+		EXPECT_EQ(morph_tui_select_update(&selection, key), MORPH_TUI_UNHANDLED);
+	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_PASTE_END),
+		MORPH_TUI_UNHANDLED);
+	EXPECT_EQ(selection.selected_count, 0u);
+	EXPECT_EQ(selection.menu.list.index, 0u);
+	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_select_update(&selection, 'j'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_select_update(&selection, 'j'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
+	EXPECT_TRUE(selection.invalid);
+	EXPECT_EQ(selection.selected_count, 2u);
+	EXPECT_FALSE(morph_tui_select_selected(&selection, 2));
+	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
+	EXPECT_FALSE(selection.invalid);
+	EXPECT_EQ(morph_tui_select_update(&selection, 'k'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
+	EXPECT_FALSE(morph_tui_select_selected(&selection, 1));
+	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_CHANGED);
+	EXPECT_TRUE(selection.invalid);
+	morph_tui_select_cleanup(&selection);
+	morph_tui_select_cleanup(&selection);
+}
+
+TEST_F(TuiTest, SelectValidatesConfigurationAndAllowsUnlimitedOrEmptySelection)
+{
+	struct morph_tui_select selection{};
+	EXPECT_EQ(morph_tui_select_init(nullptr, 2, 1, 0, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_select_init(&selection, 0, 1, 0, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_select_init(&selection, 2, 1, 3, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_select_init(&selection, 2, 1, 2, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 2), -EINVAL);
+	ASSERT_EQ(morph_tui_select_init(&selection, 2, 1, 0, 0), 0);
+	EXPECT_EQ(selection.maximum, 2u);
+	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
+	morph_tui_select_cleanup(&selection);
+}
+
 TEST_F(TuiTest, EditorEditsUnicodeInTheMiddleAndKeepsCursorVisible)
 {
 	struct morph_tui_editor editor{};
@@ -420,6 +489,68 @@ public:
 		if (master >= 0) close(master);
 	}
 };
+
+TEST_F(TuiTest, SelectPromptRunsWithoutCliAndRestoresTerminal)
+{
+	TuiPseudoTerminal pty;
+	ASSERT_NE(pty.terminal, nullptr);
+	struct termios before{}, after{};
+	ASSERT_EQ(tcgetattr(fileno(pty.terminal), &before), 0);
+	struct morph_tui_select selection{};
+	ASSERT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 1), 0);
+	const char *items[] = {"Blue", "Red\033[2J"};
+	struct morph_tui_select_options options{};
+	options.items = items;
+	ASSERT_EQ(write(pty.master, "j\n", 2), 2);
+	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, nullptr), 0);
+	EXPECT_TRUE(morph_tui_select_selected(&selection, 1));
+	ASSERT_EQ(tcgetattr(fileno(pty.terminal), &after), 0);
+	EXPECT_EQ(after.c_lflag & (ICANON | ECHO | ISIG | IEXTEN),
+		before.c_lflag & (ICANON | ECHO | ISIG | IEXTEN));
+	std::string rendered = take();
+	EXPECT_NE(rendered.find("Blue"), std::string::npos);
+	EXPECT_EQ(rendered.find("Other"), std::string::npos);
+	EXPECT_EQ(rendered.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(rendered.find("\033[0m"), std::string::npos);
+	EXPECT_EQ(rendered.find("\033[?1049h"), std::string::npos);
+	morph_tui_select_cleanup(&selection);
+}
+
+TEST_F(TuiTest, SelectPromptCustomAnswerUsesSharedEditorWithoutCli)
+{
+	TuiPseudoTerminal pty;
+	ASSERT_NE(pty.terminal, nullptr);
+	struct morph_tui_select selection{};
+	ASSERT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 1), 0);
+	const char *items[] = {"Blue"};
+	struct morph_tui_select_options options{};
+	options.items = items;
+	options.allow_custom = 1;
+	const char keys[] = "j\nGold\n";
+	ASSERT_EQ(write(pty.master, keys, sizeof(keys) - 1), sizeof(keys) - 1);
+	char *custom = nullptr;
+	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, &custom), 0);
+	EXPECT_STREQ(custom, "Gold");
+	EXPECT_TRUE(morph_tui_select_selected(&selection, 1));
+	free(custom);
+	morph_tui_select_cleanup(&selection);
+}
+
+TEST_F(TuiTest, SelectPromptInterruptionClosesSessionWithoutApplicationActions)
+{
+	TuiPseudoTerminal pty;
+	ASSERT_NE(pty.terminal, nullptr);
+	struct morph_tui_select selection{};
+	ASSERT_EQ(morph_tui_select_init(&selection, 1, 0, 1, 1), 0);
+	const char *items[] = {"Blue"};
+	volatile sig_atomic_t interrupted = 1;
+	struct morph_tui_select_options options{};
+	options.items = items;
+	options.interrupted = &interrupted;
+	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, nullptr), -EINTR);
+	EXPECT_NE(take().find("\033[?2004l\033[?25h"), std::string::npos);
+	morph_tui_select_cleanup(&selection);
+}
 
 TEST_F(TuiTest, ScreenPollReportsResizeAndPasteWithoutConsumingNextScreenInput)
 {

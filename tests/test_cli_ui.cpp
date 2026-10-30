@@ -522,6 +522,36 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 	free(answers);
 }
 
+TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicates)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	const char *choices[] = {"red", "blue"};
+	char **answers = nullptr;
+	int count = 0;
+	int rc = 0;
+	std::string input =
+		"{\"type\":\"interaction.response\",\"request_id\":\"interaction-1\","
+		"\"data\":{\"answers\":[\"red\"]}}\n"
+		"{\"type\":\"interaction.response\",\"request_id\":\"interaction-1\","
+		"\"data\":{\"answers\":[\"gold\",\"gold\"]}}\n"
+		"{\"type\":\"interaction.response\",\"request_id\":\"interaction-1\","
+		"\"data\":{\"answers\":[\"red\",\"gold\"]}}\n";
+	std::string output = run_structured_interaction(&ctx, input, [&] {
+		rc = cli_ask_user_callback("pick two colors", choices, 2,
+			"multi", 2, 2, &answers, &count, &ctx);
+	});
+	ASSERT_EQ(rc, 0);
+	ASSERT_EQ(count, 2);
+	EXPECT_STREQ(answers[0], "red");
+	EXPECT_STREQ(answers[1], "gold");
+	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
+	for (int i = 0; i < count; i++)
+		free(answers[i]);
+	free(answers);
+}
+
 TEST_F(CliUiTest, StructuredOperationApprovalMapsSessionDecision)
 {
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;

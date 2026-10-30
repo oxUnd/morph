@@ -62,6 +62,42 @@ struct morph_tui_menu {
 };
 
 int morph_tui_menu_update(struct morph_tui_menu *menu, int key);
+
+/* Select owns check state independently of labels and presentation.
+ * Zero-initialize, init once, and cleanup on every exit. A zero maximum means
+ * all items in multi mode. Invalid confirmation keeps the component open. */
+struct morph_tui_select {
+	struct morph_tui_menu menu;
+	morph_array_t checked;
+	size_t selected_count;
+	size_t minimum;
+	size_t maximum;
+	int multi;
+	int invalid;
+};
+
+int morph_tui_select_init(struct morph_tui_select *select, size_t count,
+			  int multi, size_t minimum, size_t maximum);
+int morph_tui_select_update(struct morph_tui_select *select, int key);
+int morph_tui_select_selected(const struct morph_tui_select *select, size_t index);
+void morph_tui_select_cleanup(struct morph_tui_select *select);
+
+/* Inline selector presentation. items are borrowed until run returns.
+ * With allow_custom, init state with one extra item reserved at the end;
+ * items contains only the regular labels. custom receives an owned answer
+ * if selected, or NULL. Without allow_custom, custom may be NULL.
+ * The caller owns signals and maps cancellation to application actions. */
+struct morph_tui_select_options {
+	const char *const *items;
+	const volatile sig_atomic_t *interrupted;
+	int color;
+	int allow_custom;
+};
+
+int morph_tui_select_run(struct morph_tui_select *select,
+			 const struct morph_tui_select_options *options,
+			 FILE *input, FILE *output, char **custom);
+
 int morph_tui_card_border(morph_buf_t *line, int width, int bottom);
 int morph_tui_card_row(morph_buf_t *line, int width, const char *text);
 

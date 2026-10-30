@@ -255,7 +255,8 @@ Stable interaction kinds and response payloads are:
 
 - `ask_user`: the request contains `question`, `choices`, `selection_mode`,
   `min_choices`, and `max_choices`; respond with `data.answers`, an array of
-  selected strings.
+  selected strings or custom answers. Suggested choices do not restrict the
+  answer text; selection counts and duplicate-answer checks still apply.
 - `tool_approval`: the request contains `tool_name`, `arguments_json`, and
   `allowed_decisions`; respond with `data.decision`.
 - `operation_approval`: the request contains the normalized operation fields,

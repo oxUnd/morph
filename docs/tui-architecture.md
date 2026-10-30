@@ -1,7 +1,7 @@
 # Project terminal UI framework
 
 `morph-tui` is the small terminal UI framework used by the setup wizard, session picker, hooks
-review, and history inspector. It depends only on `morph-util` and POSIX terminal
+review, history inspector, and `ask_user` selector. It depends only on `morph-util` and POSIX terminal
 APIs. It does not depend on CLI context, runtime services, model configuration,
 sessions, or agent types.
 
@@ -15,10 +15,11 @@ interaction state, layout helpers, and presentation primitives.
 | --- | --- | --- |
 | Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
 | Input decoder | Stateful CSI/SS3 decoding, escape deadlines, UTF-8 byte input | All modal screens |
-| Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Hooks, session picker, and history use `run`; inline setup uses `poll` |
+| Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Hooks, session picker, and history use `run`; inline setup and selects use `poll` |
 | Rectangular layout | Insets, horizontal/vertical region allocation, clipping | Hooks cells/columns, session margins, and history header/body/footer sizing |
 | List | Selection, visibility, paging, wrap/clamp, Home/End, configurable shortcuts | Setup choices, sessions, hook selection/decisions, history selection |
 | Menu | List interaction plus submit/back/cancel and paste isolation | Setup menus, session picker, and hook decisions |
+| Select | Single/multiple selection, checked state, limits, inline rendering, custom input, paste isolation | CLI `ask_user` choices |
 | Card | Width-aware borders and sanitized, padded content rows | Setup provider cards |
 | Editor | Cursor editing, UTF-8 backspace/movement, bounded input, paste, masking, validation | Setup fields/API keys and history search |
 | Text viewer | Borrowed document, wrapped line spans, viewport scrolling | History details and request inspector |
@@ -34,7 +35,7 @@ names and `tui/` include paths are no longer provided.
 
 The public low-level API is `morph/tui.h`; layout, components, and screen hosting
 are in `morph/tui/components.h`; hierarchical views use `morph/tui/tree.h`. Implementations are divided into `terminal.c`,
-`input.c`, `screen.c`, `layout.c`, `list.c`, `editor.c`, `card.c`, `text_view.c`,
+`input.c`, `screen.c`, `layout.c`, `list.c`, `select.c`, `select_prompt.c`, `editor.c`, `card.c`, `text_view.c`,
 `draw.c`, and `frame.c`.
 
 ## Interaction and screen lifecycle
@@ -94,6 +95,16 @@ active component. Domain actions run only after a component submits.
   but they cannot pass validity checks. Pasted control keys cannot submit, clear,
   or navigate the editor. Secret presentation uses a fixed mask, and cleanup
   wipes owned input storage. The application owns its final copy of a value.
+- Selects initialize once with item count, mode, and selection limits, then
+  clean up on all exits. Single mode confirms the focused item. Multi mode
+  toggles checks with Space and validates the count before Enter submits.
+  Arrow keys, Home/End, page keys, Tab, j/k, and digits move focus. Pasted keys
+  cannot toggle, submit, or cancel. `morph_tui_select_run` owns inline rendering
+  and optionally adds an Other item using the shared editor. In multi mode,
+  custom text counts as one answer and can accompany checked suggestions;
+  Enter saves it back to the list and `e` edits it again. Esc in the editor
+  returns to the list; Esc in the list cancels the turn. The CLI owner loop
+  preserves the composer draft while the selector owns terminal input.
 - Card functions append one row without a newline or style; the screen supplies
   placement and colors. Content is sanitized and clipped by display width.
 - A text viewer borrows sanitized UTF-8 text until the next wrap or cleanup.
