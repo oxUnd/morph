@@ -9,6 +9,9 @@ struct AskUserState {
 	char selection_mode[16]{};
 	int min_choices{};
 	int max_choices{};
+	ask_user_options options{};
+	int callback_rc{};
+	int calls{};
 };
 
 static int set_mock_answers(char ***answers,
@@ -45,12 +48,19 @@ static int mock_ask_user_cb(const char *question,
 			    const char *selection_mode,
 			    int min_choices,
 			    int max_choices,
+			  const struct ask_user_options *options,
 			    char ***answers,
 			    int *answers_count,
 			    void *user_data)
 {
+	(void)options;
 	(void)question;
 	auto &state = *static_cast<AskUserState *>(user_data);
+	state.calls++;
+	if (options)
+		state.options = *options;
+	if (state.callback_rc)
+		return state.callback_rc;
 	state.choices_count = choices_count;
 	strncpy(state.selection_mode, selection_mode ? selection_mode : "",
 		sizeof(state.selection_mode) - 1);
@@ -76,10 +86,12 @@ static int mock_ask_user_error_cb(const char *question,
 				  const char *selection_mode,
 				  int min_choices,
 				  int max_choices,
+			  const struct ask_user_options *options,
 				  char ***answers,
 				  int *answers_count,
 				  void *user_data)
 {
+	(void)options;
 	(void)question;
 	(void)choices;
 	(void)choices_count;
@@ -98,10 +110,12 @@ static int mock_ask_user_empty_cb(const char *question,
 				  const char *selection_mode,
 				  int min_choices,
 				  int max_choices,
+			  const struct ask_user_options *options,
 				  char ***answers,
 				  int *answers_count,
 				  void *user_data)
 {
+	(void)options;
 	(void)question;
 	(void)choices;
 	(void)choices_count;
@@ -118,10 +132,12 @@ static int mock_ask_user_invalid_empty_string_cb(const char *question,
 						const char *selection_mode,
 						int min_choices,
 						int max_choices,
+			  const struct ask_user_options *options,
 						char ***answers,
 						int *answers_count,
 						void *user_data)
 {
+	(void)options;
 	(void)question;
 	(void)choices;
 	(void)choices_count;
@@ -139,10 +155,12 @@ static int mock_ask_user_multi_cb(const char *question,
 				  const char *selection_mode,
 				  int min_choices,
 				  int max_choices,
+			  const struct ask_user_options *options,
 				  char ***answers,
 				  int *answers_count,
 				  void *user_data)
 {
+	(void)options;
 	(void)question;
 	auto &state = *static_cast<AskUserState *>(user_data);
 	state.choices_count = choices_count;
@@ -164,10 +182,12 @@ static int mock_ask_user_data_cb(const char *question,
 				 const char *selection_mode,
 				 int min_choices,
 				 int max_choices,
+			  const struct ask_user_options *options,
 				 char ***answers,
 				 int *answers_count,
 				 void *user_data)
 {
+	(void)options;
 	(void)question;
 	(void)choices;
 	(void)choices_count;
@@ -463,4 +483,125 @@ TEST_F(AskUserToolTest, ToolNotFound) {
 			   "{\"question\":\"test\"}", &result);
 	EXPECT_NE(rc, 0);
 	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, OptionalTimeoutAdoptsRecommendationAndIdentifiesSource)
+{
+	state.callback_rc = -ETIMEDOUT;
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", R"({"question":"Pick storage",
+		"choices":["JSON","SQLite"],"recommended_indices":[1],
+		"response_policy":"optional"})", &result), 0);
+	EXPECT_EQ(state.options.optional, 1);
+	EXPECT_EQ(state.options.timeout_seconds, 60);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring,
+		"timeout_recommended");
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_EQ(cJSON_GetArraySize(answers), 1);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "SQLite");
+	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, OptionalTimeoutWithoutRecommendationReturnsNoInput)
+{
+	state.callback_rc = -ETIMEDOUT;
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", R"({"question":"Preference?",
+		"response_policy":"optional","timeout_seconds":2})", &result), 0);
+	EXPECT_EQ(state.options.timeout_seconds, 2);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(result.data, "no_input")));
+	EXPECT_EQ(cJSON_GetArraySize(cJSON_GetObjectItem(result.data, "answers")), 0);
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring,
+		"timeout_no_input");
+	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, OptionalMultiTimeoutAdoptsWholeRecommendedCombination)
+{
+	state.callback_rc = -ETIMEDOUT;
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", R"({"question":"Checks?",
+		"choices":["build","test","install"],"selection_mode":"multi",
+		"min_choices":2,"max_choices":2,"recommended_indices":[0,1],
+		"response_policy":"optional"})", &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	cJSON *answers = cJSON_GetObjectItem(result.data, "answers");
+	ASSERT_EQ(cJSON_GetArraySize(answers), 2);
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 0)->valuestring, "build");
+	EXPECT_STREQ(cJSON_GetArrayItem(answers, 1)->valuestring, "test");
+	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, CancellationAndRequiredTimeoutNeverAdoptRecommendation)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	for (int rc : {-ECANCELED, -EINTR, -ETIMEDOUT}) {
+		state.callback_rc = rc;
+		tool_result result{};
+		tool_result_init(&result);
+		const char *args = rc == -ETIMEDOUT ?
+			R"({"question":"Critical input?","choices":["A","B"],
+			"recommended_indices":[1],"response_policy":"required",
+			"timeout_seconds":1})" :
+			R"({"question":"Preference?","choices":["A","B"],
+			"recommended_indices":[1],"response_policy":"optional"})";
+		EXPECT_EQ(tool_exec(&tools, "ask_user", args, &result), rc);
+		EXPECT_EQ(cJSON_GetObjectItem(result.data, "answers"), nullptr);
+		if (rc == -ETIMEDOUT)
+			EXPECT_EQ(state.options.timeout_seconds, 0);
+		tool_result_cleanup(&result);
+	}
+}
+
+TEST_F(AskUserToolTest, ExplicitAnswerOverridesRecommendation)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	tool_result result{};
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&tools, "ask_user", R"({"question":"Pick",
+		"choices":["A","B"],"recommended_indices":[1],
+		"response_policy":"optional"})", &result), 0);
+	ASSERT_NE(result.data, nullptr);
+	EXPECT_STREQ(cJSON_GetObjectItem(result.data, "resolution")->valuestring, "user");
+	EXPECT_STREQ(cJSON_GetArrayItem(cJSON_GetObjectItem(result.data, "answers"), 0)
+		->valuestring, "A");
+	tool_result_cleanup(&result);
+}
+
+TEST_F(AskUserToolTest, InvalidFallbackParametersNeverOpenPrompt)
+{
+	ASSERT_EQ(ask_user_init(&tools, mock_ask_user_cb, &state), 0);
+	const char *invalid[] = {
+		R"("recommended_indices":[-1])",
+		R"("recommended_indices":[2])",
+		R"("recommended_indices":[0.5])",
+		R"("recommended_indices":[0,0])",
+		R"("recommended_indices":[0,1])",
+		R"("recommended_indices":"first")",
+		R"("response_policy":"auto")",
+		R"("timeout_seconds":0)",
+		R"("timeout_seconds":-1)",
+		R"("timeout_seconds":1.5)",
+		R"("timeout_seconds":86401)",
+		R"("selection_mode":"multi","min_choices":2,"recommended_indices":[0])"
+	};
+	for (const char *parameters : invalid) {
+		std::string args = R"({"question":"Pick","choices":["A","B"],)";
+		args += parameters;
+		args += "}";
+		tool_result result{};
+		tool_result_init(&result);
+		EXPECT_EQ(tool_exec(&tools, "ask_user", args.c_str(), &result), -EINVAL)
+			<< parameters;
+		tool_result_cleanup(&result);
+	}
+	EXPECT_EQ(state.calls, 0);
 }

@@ -5,6 +5,8 @@
 #include "cJSON.h"
 
 struct cli_context;
+/* Reserved protocol frames arriving after a request closes are never chat input. */
+int cli_interaction_is_frame(const char *json);
 
 typedef int (*cli_interaction_validate_fn)(const cJSON *response_data,
 					   void *user_data);

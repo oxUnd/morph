@@ -1,6 +1,8 @@
 #include <morph/tui/components.h>
 #include "util/signals.h"
 #include "util/utf8.h"
+#include "util/child_io.h"
+#include "util/cancel.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +28,8 @@ struct select_view {
 	int input_invalid;
 	struct morph_tui_editor editor;
 	char *answer;
+	const char *hint;
+	int timeout_paused;
 };
 
 static void select_clear(struct select_view *view, morph_buf_t *frame,
@@ -151,6 +155,9 @@ static int select_draw(struct select_view *view, const struct morph_tui_screen *
 				 "  ↑↓ Move · Space toggle · Enter confirm · Esc cancel") :
 				"  ↑↓ Move · Enter confirm · Esc cancel", SELECT_DIM);
 	}
+	if (view->hint)
+		select_line(view, &frame, view->timeout_paused ?
+			"  Auto-continue paused while answering." : view->hint, SELECT_DIM);
 	if (label.failed)
 		frame.failed = label.failed;
 	if (rc)
@@ -223,6 +230,7 @@ int morph_tui_select_run(struct morph_tui_select *state,
 		.output = output, .color = options->color,
 		.allow_custom = options->allow_custom,
 		.state = state, .choices = options->items,
+		.hint = options->hint,
 	};
 	int rc = morph_tui_editor_init(&view.editor, "", BUFSIZ, 0);
 
@@ -234,7 +242,15 @@ int morph_tui_select_run(struct morph_tui_select *state,
 		return rc;
 	}
 	screen.interrupted = options->interrupted;
+	int64_t deadline = options->timeout_seconds > 0 ?
+		morph_io_now_ms() + (int64_t)options->timeout_seconds * 1000 : 0;
+	if (options->allow_custom && state->menu.list.count == 1)
+		view.editing = 1;
 	for (;;) {
+		if (morph_cancel_token_is_cancelled(options->cancel_token)) {
+			rc = -ECANCELED;
+			break;
+		}
 		if (screen.dirty) {
 			rc = select_draw(&view, &screen);
 			if (rc)
@@ -252,8 +268,18 @@ int morph_tui_select_run(struct morph_tui_select *state,
 			rc = -ECANCELED;
 			break;
 		}
-		if (event.type != MORPH_TUI_EVENT_KEY)
+		if (event.type != MORPH_TUI_EVENT_KEY) {
+			if (deadline && morph_io_now_ms() >= deadline) {
+				rc = -ETIMEDOUT;
+				break;
+			}
 			continue;
+		}
+		if (deadline) {
+			deadline = 0;
+			view.timeout_paused = 1;
+			screen.dirty = 1;
+		}
 		int result = select_update(&view, event.key);
 
 		if (result == MORPH_TUI_SUBMIT)
@@ -266,7 +292,7 @@ int morph_tui_select_run(struct morph_tui_select *state,
 			rc = result;
 			break;
 		}
-		screen.dirty = result == MORPH_TUI_CHANGED;
+		screen.dirty = screen.dirty || result == MORPH_TUI_CHANGED;
 	}
 	morph_buf_t ending = {0};
 	int ending_rc = morph_buf_init(&ending, 128);

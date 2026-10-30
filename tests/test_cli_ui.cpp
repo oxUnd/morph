@@ -7,6 +7,8 @@ extern "C" {
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/ui_event.h"
 #include "agent/tool_context.h"
+#include "agent/tools/ask_user.h"
+#include "util/cancel.h"
 #include "event/event.h"
 
 int cli_event_callback(const struct morph_event *event, void *user_data);
@@ -21,6 +23,7 @@ int cli_ask_user_callback(const char *question,
 			  const char *selection_mode,
 			  int min_choices,
 			  int max_choices,
+			  const struct ask_user_options *options,
 			  char ***answers,
 			  int *answers_count,
 			  void *user_data);
@@ -29,6 +32,7 @@ enum tool_operation_verdict operation_approval_callback(
 }
 
 #include <poll.h>
+#include <chrono>
 #include <cerrno>
 #include <functional>
 #include <string>
@@ -387,7 +391,8 @@ TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 
 static std::string run_structured_interaction(
 	struct cli_context *ctx, const std::string &input,
-	const std::function<void()> &worker_fn)
+	const std::function<void()> &worker_fn,
+	const std::function<void(int)> &feed = {})
 {
 	int input_pipe[2];
 	int saved_stdin;
@@ -407,7 +412,15 @@ static std::string run_structured_interaction(
 		close(saved_stdin);
 		return {};
 	}
-	close(input_pipe[1]);
+	std::thread feeder;
+	if (feed) {
+		feeder = std::thread([fd = input_pipe[1], feed] {
+			feed(fd);
+			close(fd);
+		});
+	} else {
+		close(input_pipe[1]);
+	}
 	if (dup2(input_pipe[0], STDIN_FILENO) < 0) {
 		close(input_pipe[0]);
 		close(saved_stdin);
@@ -424,6 +437,8 @@ static std::string run_structured_interaction(
 	(void)poll(&fd, 1, 1000);
 	(void)cli_ui_drain(ctx);
 	worker.join();
+	if (feeder.joinable())
+		feeder.join();
 	std::string output = testing::internal::GetCapturedStdout();
 
 	(void)dup2(saved_stdin, STDIN_FILENO);
@@ -503,7 +518,7 @@ TEST_F(CliUiTest, StructuredAskUserReturnsValidatedAnswers)
 
 	std::string output = run_structured_interaction(&ctx, input, [&] {
 		call_rc = cli_ask_user_callback("pick a color", choices, 2,
-			"single", 1, 1, &answers, &answers_count, &ctx);
+			"single", 1, 1, nullptr, &answers, &answers_count, &ctx);
 	});
 	EXPECT_EQ(call_rc, 0);
 	ASSERT_EQ(answers_count, 1);
@@ -540,7 +555,7 @@ TEST_F(CliUiTest, StructuredAskUserAllowsCustomAnswersButChecksLimitsAndDuplicat
 		"\"data\":{\"answers\":[\"red\",\"gold\"]}}\n";
 	std::string output = run_structured_interaction(&ctx, input, [&] {
 		rc = cli_ask_user_callback("pick two colors", choices, 2,
-			"multi", 2, 2, &answers, &count, &ctx);
+			"multi", 2, 2, nullptr, &answers, &count, &ctx);
 	});
 	ASSERT_EQ(rc, 0);
 	ASSERT_EQ(count, 2);
@@ -731,4 +746,117 @@ TEST_F(CliUiTest, StructuredDirectoryApprovalIncludesTheCombinedAccess)
 	EXPECT_STREQ(cJSON_GetObjectItem(payload, "access")->valuestring, "read/write/delete");
 	EXPECT_STREQ(cJSON_GetObjectItem(payload, "scope")->valuestring, "session");
 	cJSON_Delete(event);
+}
+
+TEST_F(CliUiTest, OptionalStructuredQuestionExpiresWithoutAReply)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	const char *choices[] = {"red", "blue"};
+	ask_user_options options{};
+	options.optional = 1;
+	options.timeout_seconds = 1;
+	options.recommended_count = 1;
+	options.recommended_indices[0] = 1;
+	char **answers = nullptr;
+	int count = 0;
+	int rc = 0;
+	std::string output = run_structured_interaction(&ctx, "", [&] {
+		rc = cli_ask_user_callback("Pick", choices, 2, "single", 1, 1,
+			&options, &answers, &count, &ctx);
+	}, [](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
+	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(answers, nullptr);
+	EXPECT_EQ(count, 0);
+	cJSON *event = find_json_event(output, "interaction.request");
+	ASSERT_NE(event, nullptr);
+	cJSON *request = cJSON_GetObjectItem(cJSON_GetObjectItem(event, "data"), "request");
+	EXPECT_EQ(cJSON_GetObjectItem(request, "timeout_seconds")->valueint, 1);
+	EXPECT_EQ(cJSON_GetArrayItem(cJSON_GetObjectItem(request, "recommended_indices"), 0)
+		->valueint, 1);
+	cJSON_Delete(event);
+	EXPECT_NE(output.find("timeout_recommended"), std::string::npos);
+	EXPECT_EQ(output.find("interaction.cancelled"), std::string::npos);
+}
+
+TEST_F(CliUiTest, StructuredEditingActivityPreventsAutomaticFallback)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	ask_user_options options{};
+	options.optional = 1;
+	options.timeout_seconds = 1;
+	char **answers = nullptr;
+	int count = 0;
+	int rc = 0;
+	std::string output = run_structured_interaction(&ctx,
+		"{\"type\":\"interaction.progress\",\"request_id\":\"interaction-1\"}\n", [&] {
+		rc = cli_ask_user_callback("Describe", nullptr, 0, "single", 0, 0,
+			&options, &answers, &count, &ctx);
+	}, [](int fd) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1400));
+		const char *reply = "{\"type\":\"interaction.response\","
+			"\"request_id\":\"interaction-1\",\"data\":{\"answers\":[\"custom\"]}}\n";
+		(void)write(fd, reply, strlen(reply));
+	});
+	ASSERT_EQ(rc, 0);
+	ASSERT_EQ(count, 1);
+	EXPECT_STREQ(answers[0], "custom");
+	free(answers[0]);
+	free(answers);
+	EXPECT_EQ(output.find("timeout_no_input"), std::string::npos);
+}
+
+TEST_F(CliUiTest, StaleReplyDoesNotDisableNextQuestionDeadline)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	ask_user_options options{};
+	options.optional = 1;
+	options.timeout_seconds = 1;
+	char **answers = nullptr;
+	int count = 0;
+	int rc = 0;
+	std::string output = run_structured_interaction(&ctx,
+		"{\"type\":\"interaction.response\",\"request_id\":\"expired\","
+		"\"data\":{\"answers\":[\"late\"]}}\n", [&] {
+		rc = cli_ask_user_callback("New question", nullptr, 0, "single", 0, 0,
+			&options, &answers, &count, &ctx);
+	}, [](int) { std::this_thread::sleep_for(std::chrono::milliseconds(1400)); });
+	EXPECT_EQ(rc, -ETIMEDOUT);
+	EXPECT_EQ(answers, nullptr);
+	EXPECT_NE(output.find("interaction.invalid_response"), std::string::npos);
+	EXPECT_NE(output.find("timeout_no_input"), std::string::npos);
+	EXPECT_TRUE(cli_interaction_is_frame(
+		"{\"type\":\"interaction.response\",\"request_id\":\"expired\",\"data\":{}}"));
+	EXPECT_FALSE(cli_interaction_is_frame("Hello"));
+}
+
+TEST_F(CliUiTest, RequiredStructuredQuestionObservesRuntimeCancellation)
+{
+	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
+	ctx.event_cb = cli_event_callback;
+	ctx.event_user_data = &ctx;
+	morph_cancel_token cancel{};
+	ask_user_options options{};
+	options.cancel_token = &cancel;
+	char **answers = nullptr;
+	int count = 0;
+	int rc = 0;
+	std::string output = run_structured_interaction(&ctx, "", [&] {
+		rc = cli_ask_user_callback("Required", nullptr, 0, "single", 0, 0,
+			&options, &answers, &count, &ctx);
+	}, [&cancel](int) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		morph_cancel_token_cancel(&cancel);
+		std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	});
+	EXPECT_EQ(rc, -ECANCELED);
+	EXPECT_EQ(answers, nullptr);
+	EXPECT_EQ(ctx.input_cancel_token, nullptr);
+	EXPECT_NE(output.find("interaction.cancelled"), std::string::npos);
+	EXPECT_EQ(output.find("timeout_no_input"), std::string::npos);
 }

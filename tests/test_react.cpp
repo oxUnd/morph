@@ -7529,7 +7529,7 @@ static int late_callback_tool(const char *, tool_result *result, void *opaque)
 		result->runtime->event_cb(&event, result->runtime->event_user_data));
 	char **answers = nullptr;
 	int count = 0;
-	state->late_ask_rc.store(result->runtime->ask_user_fn("late", nullptr, 0, "single", 0, 1,
+	state->late_ask_rc.store(result->runtime->ask_user_fn("late", nullptr, 0, "single", 0, 1, nullptr,
 							      &answers, &count,
 							      result->runtime->ask_user_user_data));
 	state->finished.store(1);

@@ -186,6 +186,7 @@ int cli_ask_user_callback(const char *question,
 			  const char *selection_mode,
 			  int min_choices,
 			  int max_choices,
+			  const struct ask_user_options *options,
 			  char ***answers,
 			  int *answers_count,
 			  void *user_data);

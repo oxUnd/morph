@@ -64,6 +64,9 @@ struct cli_context {
 	int prompt_lock_ready;
 	struct cli_callback *callbacks;
 	int callback_error;
+	int64_t input_deadline_ms;
+	int input_timed_out;
+	const struct morph_cancel_token *input_cancel_token;
 	struct cli_composer composer;
 	char *readline_ready_input;
 	int details_hint_visible;

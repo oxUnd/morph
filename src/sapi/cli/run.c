@@ -4,6 +4,7 @@
 #include "http/client.h"
 #include "sapi/cli/composer.h"
 #include "sapi/cli/hooks_ui.h"
+#include "sapi/cli/interaction.h"
 #include <sys/ioctl.h>
 
 #define CLI_STRUCTURED_POLL_TIMEOUT_MS 100
@@ -1014,7 +1015,7 @@ static void cli_run_structured(struct cli_context *ctx)
 					break;
 				}
 			}
-			if (input.len > 0) {
+			if (input.len > 0 && !cli_interaction_is_frame(morph_buf_cstr(&input))) {
 				cli_turn_begin(ctx);
 				rc = cli_command_job_start(&job, ctx,
 					morph_buf_cstr(&input));

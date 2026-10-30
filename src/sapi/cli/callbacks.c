@@ -1,6 +1,8 @@
 #include "callbacks.h"
 #include "internal.h"
 #include "util/error.h"
+#include "util/child_io.h"
+#include "util/cancel.h"
 #include <ffi.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,7 +165,8 @@ void cli_callbacks_cleanup(struct cli_context *ctx)
 }
 
 /* Preserve stdio's buffered input while waiting in bounded cancellation slices. */
-char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FILE *stream)
+char *cli_input_fgets_until(struct cli_context *ctx, char *buffer, size_t capacity,
+			    FILE *stream, int64_t *deadline)
 {
 	int fd = fileno(stream);
 	int flags = fcntl(fd, F_GETFL);
@@ -178,7 +181,8 @@ char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FI
 		return NULL;
 	while (length + 1 < capacity) {
 		if (ctx && (morph_signal_flag_get(&ctx->interrupted) ||
-			    morph_signal_flag_get(&ctx->terminate_requested))) {
+			    morph_signal_flag_get(&ctx->terminate_requested) ||
+			    morph_cancel_token_is_cancelled(ctx->input_cancel_token))) {
 			error = EINTR;
 			break;
 		}
@@ -186,6 +190,8 @@ char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FI
 		int ch = fgetc(stream);
 
 		if (ch != EOF) {
+			if (deadline)
+				*deadline = 0;
 			buffer[length++] = (char)ch;
 			if (ch == '\n')
 				break;
@@ -198,6 +204,10 @@ char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FI
 			break;
 		}
 		clearerr(stream);
+		if (deadline && *deadline > 0 && morph_io_now_ms() >= *deadline) {
+			error = ETIMEDOUT;
+			break;
+		}
 		struct pollfd descriptor = {.fd = fd, .events = POLLIN};
 
 		if (poll(&descriptor, 1, 100) < 0 && errno != EINTR) {
@@ -209,6 +219,11 @@ char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FI
 	buffer[length] = '\0';
 	errno = error;
 	return !error && length ? buffer : NULL;
+}
+
+char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FILE *stream)
+{
+	return cli_input_fgets_until(ctx, buffer, capacity, stream, NULL);
 }
 
 #ifdef HAVE_READLINE
@@ -300,10 +315,13 @@ int cli_poll_getc(struct cli_context *ctx, FILE *stream)
 {
 	int fd = fileno(stream);
 
-	while (!ctx || !morph_signal_flag_get(&ctx->interrupted)) {
+	while (!ctx || (!morph_signal_flag_get(&ctx->interrupted) &&
+		       !morph_cancel_token_is_cancelled(ctx->input_cancel_token))) {
 		int ready = cli_readline_wait(fd, 100);
 
 		if (ready > 0) {
+			if (ctx)
+				ctx->input_deadline_ms = 0;
 			int ch = rl_getc(stream);
 
 			int suffix = 1;
@@ -329,6 +347,12 @@ int cli_poll_getc(struct cli_context *ctx, FILE *stream)
 		}
 		if (ready < 0 && errno != EINTR)
 			return EOF;
+		if (ctx && ctx->input_deadline_ms > 0 &&
+		    morph_io_now_ms() >= ctx->input_deadline_ms) {
+			ctx->input_timed_out = 1;
+			rl_done = 1;
+			return EOF;
+		}
 	}
 	rl_done = 1;
 	return EOF;

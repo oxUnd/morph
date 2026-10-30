@@ -720,7 +720,9 @@ static int tool_callback_event(const struct morph_event *event, void *opaque)
 
 /** \brief Gate borrowed frontend question callbacks. */
 static int tool_callback_ask(const char *question, const char *const *choices, int count,
-			     const char *mode, int min, int max, char ***answers, int *answer_count,
+			     const char *mode, int min, int max,
+			     const struct ask_user_options *options,
+			     char ***answers, int *answer_count,
 			     void *opaque)
 {
 	struct async_tool_call *call = opaque;
@@ -730,7 +732,7 @@ static int tool_callback_ask(const char *question, const char *const *choices, i
 	if (tool_callback_enter(call)) {
 		rc = call->runtime.ask_user_fn
 			     ? call->runtime.ask_user_fn(question, choices, count, mode, min, max,
-							 answers, answer_count,
+							 options, answers, answer_count,
 							 call->runtime.ask_user_user_data)
 			     : -ENOSYS;
 		tool_callback_leave(call);
@@ -973,6 +975,9 @@ static int react_tool_call_timeout(struct react_context *ctx,
 	cJSON *root;
 	cJSON *arg_timeout;
 
+	/* Question callbacks own their idle deadline, including user activity. */
+	if (strcmp(tc->name, "ask_user") == 0)
+		return 0;
 	timeout = tool_timeout_seconds(ctx->tools, tc->name);
 	if (timeout <= 0)
 		timeout = ctx->tool_timeout_seconds;

@@ -1,6 +1,8 @@
 #include "sapi/cli/callbacks.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
+#include "util/child_io.h"
+#include "util/cancel.h"
 
 #define CLI_INTERACTION_ID_MAX 64
 #define CLI_INTERACTION_INPUT_MAX (1024 * 1024)
@@ -64,7 +66,7 @@ static int interaction_emit(struct cli_context *ctx, const char *name,
 	return rc;
 }
 
-static int interaction_read_line(struct cli_context *ctx, morph_buf_t *line)
+static int interaction_read_line(struct cli_context *ctx, morph_buf_t *line, int64_t *deadline)
 {
 	char chunk[BUFSIZ];
 
@@ -76,13 +78,14 @@ static int interaction_read_line(struct cli_context *ctx, morph_buf_t *line)
 		int complete;
 		int rc;
 
-		if (!cli_input_fgets(ctx, chunk, sizeof(chunk), stdin)) {
+		if (!cli_input_fgets_until(ctx, chunk, sizeof(chunk), stdin, deadline)) {
 			if (feof(stdin))
 				return -ECANCELED;
 			if (errno == EINTR) {
 				clearerr(stdin);
 				if (morph_signal_flag_take(&ctx->interrupted) ||
-				    morph_signal_flag_get(&ctx->terminate_requested)) {
+				    morph_signal_flag_get(&ctx->terminate_requested) ||
+				    morph_cancel_token_is_cancelled(ctx->input_cancel_token)) {
 					return -ECANCELED;
 				}
 				continue;
@@ -172,17 +175,44 @@ static int interaction_request_on_owner(void *opaque)
 	rc = morph_buf_init(&line, BUFSIZ);
 	if (rc != 0)
 		return rc;
+	cJSON *policy = cJSON_GetObjectItemCaseSensitive(call->request_data, "response_policy");
+	cJSON *timeout = cJSON_GetObjectItemCaseSensitive(call->request_data, "timeout_seconds");
+	int64_t deadline = strcmp(call->kind, "ask_user") == 0 &&
+		cJSON_IsString(policy) && strcmp(policy->valuestring, "optional") == 0 &&
+		cJSON_IsNumber(timeout) && timeout->valueint > 0 ?
+		morph_io_now_ms() + (int64_t)timeout->valueint * 1000 : 0;
 	for (;;) {
 		cJSON *response = NULL;
 		int cancelled = 0;
+		int64_t pending_deadline = deadline;
 
-		rc = interaction_read_line(call->ctx, &line);
+		rc = interaction_read_line(call->ctx, &line, &deadline);
 		if (rc != 0) {
+			cJSON *indices = cJSON_GetObjectItemCaseSensitive(call->request_data,
+				"recommended_indices");
+			const char *reason = rc == -ETIMEDOUT ?
+				(cJSON_GetArraySize(indices) ? "timeout_recommended" :
+				 "timeout_no_input") : morph_strerror(rc);
 			(void)interaction_emit(call->ctx,
-				"interaction.cancelled", "failed", request_id,
-				call->kind, NULL, morph_strerror(rc));
+				rc == -ETIMEDOUT ? "interaction.resolved" : "interaction.cancelled",
+				rc == -ETIMEDOUT ? "end" : "failed", request_id,
+				call->kind, NULL, reason);
 			morph_buf_cleanup(&line);
 			return rc;
+		}
+		/* Hosts can report editing activity before they have a complete answer. */
+		cJSON *progress = cJSON_Parse(morph_buf_cstr(&line));
+		cJSON *type = cJSON_GetObjectItemCaseSensitive(progress, "type");
+		cJSON *id = cJSON_GetObjectItemCaseSensitive(progress, "request_id");
+		int editing = cJSON_IsString(type) &&
+			strcmp(type->valuestring, "interaction.progress") == 0 &&
+			cJSON_IsString(id) && strcmp(id->valuestring, request_id) == 0;
+		if (cJSON_IsString(id) && strcmp(id->valuestring, request_id) != 0)
+			deadline = pending_deadline;
+		cJSON_Delete(progress);
+		if (editing) {
+			deadline = 0;
+			continue;
 		}
 		rc = interaction_parse_response(morph_buf_cstr(&line),
 			request_id, &response, &cancelled);
@@ -217,6 +247,19 @@ static int interaction_request_on_owner(void *opaque)
 		morph_buf_cleanup(&line);
 		return 0;
 	}
+}
+
+int cli_interaction_is_frame(const char *json)
+{
+	cJSON *root = cJSON_Parse(json);
+	cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+	cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "request_id");
+	int frame = cJSON_IsString(type) && cJSON_IsString(id) &&
+		(strcmp(type->valuestring, "interaction.response") == 0 ||
+		 strcmp(type->valuestring, "interaction.cancel") == 0 ||
+		 strcmp(type->valuestring, "interaction.progress") == 0);
+	cJSON_Delete(root);
+	return frame;
 }
 
 int cli_interaction_request(struct cli_context *ctx, const char *kind,

@@ -2,6 +2,7 @@
 #define MORPH_CLI_CALLBACKS_H
 
 #include <stdio.h>
+#include <stdint.h>
 #ifdef HAVE_READLINE
 #include <readline/keymaps.h>
 Keymap cli_keymap_copy(Keymap source);
@@ -26,6 +27,8 @@ char *(*cli_callback_generate(struct cli_context *ctx,
 			      char *(*callback)(struct cli_context *, const char *,
 						int)))(const char *, int);
 char *cli_input_fgets(struct cli_context *ctx, char *buffer, size_t capacity, FILE *stream);
+char *cli_input_fgets_until(struct cli_context *ctx, char *buffer, size_t capacity,
+			    FILE *stream, int64_t *deadline);
 int cli_poll_getc(struct cli_context *ctx, FILE *stream);
 char *cli_readline_prompt(struct cli_context *ctx, const char *prompt);
 void cli_callbacks_cleanup(struct cli_context *ctx);

@@ -36,13 +36,15 @@ def main():
                 release.set()
                 until(terminal, lambda text: '? ' + question in text)
 
-            def answer(expected):
+            def answer(expected, resolution=None):
                 body, release = terminal.request()
                 releases.append(release)
                 results = [json.loads(m['content']) for m in body['messages']
                            if m['role'] == 'tool' and 'ask_user_response' in m['content']]
                 result = results[-1].get('data', results[-1])
                 assert result['answers'] == expected, result
+                if resolution is not None:
+                    assert result['resolution'] == resolution, result
                 text = terminal.snapshot('restored composer')
                 assert 'preserved draft 中文' in text, text
                 assert 'Space toggle' not in text, text
@@ -61,6 +63,47 @@ def main():
                 terminal.send('\x1b[200~j \r\x1b[201~')
                 terminal.send('\x1b[B\r')
                 answer(['Red'])
+
+            for columns in (120, 80, 60):
+                terminal.child.setwinsize(24, columns)
+                terminal.screen.resize(24, columns)
+                terminal.pump(.2)
+                ask(f'Recommended color at {columns}', ['Blue', 'Red'],
+                    recommended_indices=[1], response_policy='optional', timeout_seconds=3)
+                text = terminal.snapshot('recommended choice preselected')
+                assert 'Red (Recommended)' in text, text
+                terminal.send('\r')
+                answer(['Red'], 'user')
+
+                ask(f'Automatic color at {columns}', ['Blue', 'Red'],
+                    recommended_indices=[1], response_policy='optional', timeout_seconds=1)
+                answer(['Red'], 'timeout_recommended')
+
+            ask('Editing prevents automatic choice', ['Blue', 'Red'],
+                recommended_indices=[1], response_policy='optional', timeout_seconds=2)
+            terminal.send('\x1b[A')
+            terminal.pump(2.2)
+            text = terminal.snapshot('automatic choice paused after navigation')
+            assert 'Auto-continue paused' in text, text
+            assert Model.requests.empty(), 'model continued before the user submitted'
+            terminal.send('\r')
+            answer(['Blue'], 'user')
+
+            ask('Recommended pair', ['Blue', 'Red', 'Green'],
+                selection_mode='multi', min_choices=2, max_choices=2,
+                recommended_indices=[0, 2], response_policy='optional', timeout_seconds=2)
+            terminal.send('\r')
+            answer(['Blue', 'Green'], 'user')
+
+            ask('Optional free text timeout', response_policy='optional', timeout_seconds=1)
+            answer([], 'timeout_no_input')
+
+            ask('Optional free text editing', response_policy='optional', timeout_seconds=2)
+            terminal.send('custom')
+            terminal.pump(2.2)
+            assert Model.requests.empty(), 'custom input lost to auto-continue'
+            terminal.send('\r')
+            answer(['custom'], 'user')
 
             ask('Describe another color', ['Blue', 'Red'])
             terminal.send('\x1b[F\r')
@@ -108,7 +151,7 @@ def main():
             assert 'preserved draft 中文' in text, text
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             print('PASS: select, limits, pagination, custom UTF-8 answers, paste, '
-                  'draft restoration, plain input, and cancellation')
+                  'recommendations, idle fallback, editing pause, draft restoration, plain input, and cancellation')
     finally:
         for release in releases:
             release.set()

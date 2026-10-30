@@ -7,11 +7,92 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/error.h"
+#include "util/cancel.h"
 
 struct ask_user_context {
 	ask_user_callback_fn cb;
 	void *user_data;
 };
+
+int ask_user_options_to_json(cJSON *data, const struct ask_user_options *options)
+{
+	struct ask_user_options defaults = {0};
+	if (!options)
+		options = &defaults;
+	if (!cJSON_IsObject(data) || options->recommended_count < 0 ||
+	    options->recommended_count > ASK_USER_CHOICES_MAX)
+		return -EINVAL;
+	cJSON *indices = cJSON_CreateArray();
+	if (!indices)
+		return -ENOMEM;
+	for (int i = 0; i < options->recommended_count; i++) {
+		cJSON *index = cJSON_CreateNumber(options->recommended_indices[i]);
+		if (!index) {
+			cJSON_Delete(indices);
+			return -ENOMEM;
+		}
+		cJSON_AddItemToArray(indices, index);
+	}
+	cJSON_AddItemToObject(data, "recommended_indices", indices);
+	if (!cJSON_AddStringToObject(data, "response_policy",
+		options->optional ? "optional" : "required") ||
+	    !cJSON_AddNumberToObject(data, "timeout_seconds", options->timeout_seconds))
+		return -ENOMEM;
+	return 0;
+}
+
+static int parse_ask_user_options(const cJSON *root, const char *const *choices,
+				 int choices_count,
+				 int min, int max, struct ask_user_options *options)
+{
+	cJSON *policy = cJSON_GetObjectItemCaseSensitive(root, "response_policy");
+	cJSON *timeout = cJSON_GetObjectItemCaseSensitive(root, "timeout_seconds");
+	cJSON *indices = cJSON_GetObjectItemCaseSensitive(root, "recommended_indices");
+	if (policy) {
+		if (!cJSON_IsString(policy) ||
+		    (strcmp(policy->valuestring, "optional") != 0 &&
+		     strcmp(policy->valuestring, "required") != 0))
+			return -EINVAL;
+		options->optional = strcmp(policy->valuestring, "optional") == 0;
+	}
+	options->timeout_seconds = options->optional ? ASK_USER_TIMEOUT_DEFAULT : 0;
+	if (timeout) {
+		if (!cJSON_IsNumber(timeout) || timeout->valuedouble < 1 ||
+		    timeout->valuedouble > 86400 ||
+		    timeout->valuedouble != (double)timeout->valueint)
+			return -EINVAL;
+		if (options->optional)
+			options->timeout_seconds = timeout->valueint;
+	}
+	if (!indices)
+		return 0;
+	cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "choices");
+	if (items && (!cJSON_IsArray(items) || cJSON_GetArraySize(items) != choices_count))
+		return -EINVAL;
+	if (!cJSON_IsArray(indices) || cJSON_GetArraySize(indices) > ASK_USER_CHOICES_MAX)
+		return -EINVAL;
+	int count = cJSON_GetArraySize(indices);
+	if (count && (count < min || (max > 0 && count > max)))
+		return -EINVAL;
+	for (int i = 0; i < count; i++) {
+		cJSON *index = cJSON_GetArrayItem(indices, i);
+		if (!cJSON_IsNumber(index) || index->valuedouble < 0 ||
+		    index->valuedouble >= choices_count ||
+		    index->valuedouble != (double)index->valueint)
+			return -EINVAL;
+		if (!choices[index->valueint][0])
+			return -EINVAL;
+		for (int j = 0; j < i; j++) {
+			if (options->recommended_indices[j] == index->valueint ||
+			    strcmp(choices[options->recommended_indices[j]],
+				   choices[index->valueint]) == 0)
+				return -EINVAL;
+		}
+		options->recommended_indices[i] = index->valueint;
+	}
+	options->recommended_count = count;
+	return 0;
+}
 
 static void ask_user_context_destroy(void *user_data)
 {
@@ -105,7 +186,9 @@ static int attach_ask_user_result(struct tool_result *result,
 				  int max_choices,
 				  char *const *answers,
 				  int answers_count,
-				  int no_input)
+				  int no_input,
+				  const struct ask_user_options *options,
+				  const char *resolution)
 {
 	cJSON *data = ask_user_data_to_json(question, choices, choices_count,
 					    selection_mode, min_choices,
@@ -113,6 +196,11 @@ static int attach_ask_user_result(struct tool_result *result,
 					    no_input);
 	if (!data)
 		return -ENOMEM;
+	if (ask_user_options_to_json(data, options) != 0 ||
+	    !cJSON_AddStringToObject(data, "resolution", resolution)) {
+		cJSON_Delete(data);
+		return -ENOMEM;
+	}
 
 	cJSON *ui = ask_user_ui_to_json(data);
 	if (!ui) {
@@ -154,6 +242,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	const char *choices[64] = {NULL};
 	int choices_count = 0;
 	char *choice_copies[64] = {NULL};
+	struct ask_user_options options = {0};
+	int options_rc = 0;
 
 	if (args_json && *args_json) {
 		cJSON *root = cJSON_Parse(args_json);
@@ -196,22 +286,31 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 					}
 				}
 			}
+			if (strcmp(selection_mode, "multi") == 0) {
+				if (min_choices <= 0)
+					min_choices = choices_count > 0 ? 1 : 0;
+				if (min_choices > choices_count)
+					min_choices = choices_count;
+				if (max_choices > choices_count)
+					max_choices = choices_count;
+				if (max_choices > 0 && max_choices < min_choices)
+					max_choices = min_choices;
+			} else {
+				min_choices = choices_count > 0 ? 1 : 0;
+				max_choices = choices_count > 0 ? 1 : 0;
+			}
+			options_rc = parse_ask_user_options(root, choices, choices_count,
+				min_choices, max_choices, &options);
 			cJSON_Delete(root);
 		}
 	}
 
-	if (strcmp(selection_mode, "multi") == 0) {
-		if (min_choices <= 0)
-			min_choices = choices_count > 0 ? 1 : 0;
-		if (min_choices > choices_count)
-			min_choices = choices_count;
-		if (max_choices > choices_count)
-			max_choices = choices_count;
-		if (max_choices > 0 && max_choices < min_choices)
-			max_choices = min_choices;
-	} else {
-		min_choices = choices_count > 0 ? 1 : 0;
-		max_choices = choices_count > 0 ? 1 : 0;
+	if (options_rc != 0) {
+		for (int i = 0; i < choices_count; i++)
+			free(choice_copies[i]);
+		(void)tool_result_error(result, "invalid_arguments",
+			"Invalid ask_user policy, timeout, or recommended indices.");
+		return options_rc;
 	}
 
 	if (question[0] == '\0') {
@@ -225,8 +324,37 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 
 	char **answers = NULL;
 	int answers_count = 0;
+	options.cancel_token = result->runtime ? result->runtime->http.cancel_token : NULL;
 	int rc = callback(question, choices, choices_count, selection_mode, min_choices,
-			  max_choices, &answers, &answers_count, callback_data);
+			  max_choices, &options, &answers, &answers_count, callback_data);
+	if (morph_cancel_token_is_cancelled(options.cancel_token))
+		rc = -ECANCELED;
+	const char *resolution = "user";
+	if (rc == -ETIMEDOUT && options.optional) {
+		/* A timeout never impersonates an explicit answer or cancellation. */
+		if (answers) {
+			for (int i = 0; i < answers_count; i++)
+				free(answers[i]);
+			free(answers);
+		}
+		answers = NULL;
+		answers_count = 0;
+		resolution = "timeout_no_input";
+		rc = 0;
+		if (options.recommended_count) {
+			answers = calloc((size_t)options.recommended_count, sizeof(*answers));
+			if (!answers)
+				rc = -ENOMEM;
+			for (int i = 0; !rc && i < options.recommended_count; i++) {
+				answers[i] = strdup(choices[options.recommended_indices[i]]);
+				if (!answers[i])
+					rc = -ENOMEM;
+				else
+					answers_count++;
+			}
+			resolution = "timeout_recommended";
+		}
+	}
 
 	if (rc < 0) {
 		if (answers) {
@@ -236,11 +364,8 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 		}
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		char err[256];
-		snprintf(err, sizeof(err),
-			 "{\"error\":\"failed to get user response (code %d)\"}",
-			 rc);
-		(void)tool_result_success_json_text(result, strdup(err));
+		(void)tool_result_errorf(result, "ask_user_failed",
+			"Failed to get user response: %s", morph_strerror(rc));
 		return rc;
 	}
 
@@ -259,20 +384,20 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (!answers || answers_count <= 0) {
 		if (answers)
 			free(answers);
-		(void)tool_result_success_json_text(result, strdup(
-			"User provided no input. Proceed with your best judgment."));
-		(void)attach_ask_user_result(result, question, choices,
+		if (strcmp(resolution, "user") == 0)
+			resolution = "no_input";
+		int result_rc = attach_ask_user_result(result, question, choices,
 					     choices_count, selection_mode,
 					     min_choices, max_choices,
-					     NULL, 0, 1);
+					     NULL, 0, 1, &options, resolution);
 		for (int i = 0; i < choices_count; i++)
 			free(choice_copies[i]);
-		return 0;
+		return result_rc;
 	}
 
-	(void)attach_ask_user_result(result, question, choices, choices_count,
+	int result_rc = attach_ask_user_result(result, question, choices, choices_count,
 				     selection_mode, min_choices, max_choices,
-				     answers, answers_count, 0);
+				     answers, answers_count, 0, &options, resolution);
 	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
 		 "ask_user: question='%s' answers_count=%d", question, answers_count);
 	for (int i = 0; i < answers_count; i++)
@@ -280,7 +405,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	free(answers);
 	for (int i = 0; i < choices_count; i++)
 		free(choice_copies[i]);
-	return 0;
+	return result_rc;
 }
 
 static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb, void *user_data)
@@ -294,11 +419,22 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 	ctx->cb = cb;
 	ctx->user_data = user_data;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "ask_user", .description = "Ask the user a question and wait for their response. "
+	int rc = tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.name = "ask_user",
+		.description = "Ask the user a question. For optional preferences use "
+		"response_policy=optional, with a 60-second idle timeout by default. "
+		"Use required only for critical missing information; required has no "
+		"automatic answer. Put preferred options in recommended_indices (zero-based). "
+		"Optional timeout adopts recommendations or returns no input. "
+		"Never treat timeout_recommended as the user choosing an answer. "
+		"For no_input or timeout_no_input on optional questions, proceed with "
+		"best judgment and state assumptions; do not repeat the same question. "
+		"For required questions, no input does not supply missing information. "
+		"Permissions must use the approval flow. "
 		"Use when: the request is ambiguous with multiple valid "
 		"interpretations; you need a decision between mutually "
-		"exclusive approaches; an action is irreversible or "
-		"destructive; you lack critical information. "
+		"exclusive approaches; you lack critical information. "
 		"Do NOT use when: you can make a reasonable default choice "
 		"(prefer action over inaction); the question is trivial; "
 		"you already have enough context. If unsure, proceed with "
@@ -306,7 +442,8 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 		"When presenting options, use 'choices' for structured "
 		"selection. Use selection_mode='multi' only when the user may "
 		"select more than one choice. Users may also provide their own "
-		"answer instead of the suggested choices.", .input_schema = "{\"type\":\"object\",\"properties\":{"
+		"answer instead of the suggested choices.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{"
 		"\"question\":{\"type\":\"string\","
 		"\"description\":\"The question to ask the user\"},"
 		"\"choices\":{\"type\":\"array\","
@@ -322,8 +459,23 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 		"multi-select.\"},"
 		"\"max_choices\":{\"type\":\"integer\","
 		"\"description\":\"Maximum number of choices allowed for "
-		"multi-select.\"}"
-		"},\"required\":[\"question\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = ask_user_exec, .user_data = ctx, .user_data_destroy = ask_user_context_destroy });
+		"multi-select.\"},"
+		"\"recommended_indices\":{\"type\":\"array\",\"uniqueItems\":true,"
+		"\"items\":{\"type\":\"integer\",\"minimum\":0},"
+		"\"description\":\"Zero-based recommended choice indices; "
+		"must satisfy selection limits.\"},"
+		"\"response_policy\":{\"type\":\"string\",\"enum\":[\"optional\",\"required\"],"
+		"\"description\":\"Use optional for preferences; required for "
+		"critical missing input. Defaults to required.\"},"
+		"\"timeout_seconds\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":86400,"
+		"\"description\":\"Idle timeout for optional questions. "
+		"Defaults to 60; ignored for required.\"}"
+		"},\"required\":[\"question\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = ask_user_exec,
+		.user_data = ctx,
+		.user_data_destroy = ask_user_context_destroy,
+	});
 	if (rc != 0)
 		free(ctx);
 	return rc;

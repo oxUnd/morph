@@ -92,6 +92,10 @@ struct morph_tui_select_options {
 	const volatile sig_atomic_t *interrupted;
 	int color;
 	int allow_custom;
+	/* Zero disables automatic expiry. Any answer key disables it permanently. */
+	int timeout_seconds;
+	const char *hint;
+	const struct morph_cancel_token *cancel_token;
 };
 
 int morph_tui_select_run(struct morph_tui_select *select,

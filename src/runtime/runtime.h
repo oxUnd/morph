@@ -35,10 +35,7 @@ struct runtime;
 
 typedef enum hitl_verdict (*runtime_hitl_approval_fn)(
 	const char *tool_name, const char *tool_args, void *user_data);
-typedef int (*runtime_ask_user_fn)(const char *question,
-	const char *const *choices, int choices_count,
-	const char *selection_mode, int min_choices, int max_choices,
-	char ***answers, int *answers_count, void *user_data);
+typedef ask_user_callback_fn runtime_ask_user_fn;
 typedef enum tool_operation_verdict (*runtime_operation_approval_fn)(
 	const struct tool_operation *op, void *user_data);
 typedef int (*runtime_platform_tools_fn)(struct tool_registry *tools,

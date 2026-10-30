@@ -171,6 +171,13 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
+	if(TARGET morph-fastcgi)
+		add_test(NAME fastcgi_ask_user_integration
+			COMMAND ${Python3_EXECUTABLE}
+				${CMAKE_CURRENT_SOURCE_DIR}/test_fastcgi_ask_user.py
+				$<TARGET_FILE:morph-fastcgi>)
+		set_tests_properties(fastcgi_ask_user_integration PROPERTIES TIMEOUT 45)
+	endif()
 	add_test(NAME cli_snapshot
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_snapshot.py)
 	set_tests_properties(cli_snapshot PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 10)

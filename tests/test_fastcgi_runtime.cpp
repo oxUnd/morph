@@ -18,6 +18,7 @@ extern "C" {
 
 extern "C" int fcgi_turn_ask_user(
 	const char *, const char *const *, int, const char *, int, int,
+	const struct ask_user_options *,
 	char ***, int *, void *)
 {
 	return -ENOTSUP;

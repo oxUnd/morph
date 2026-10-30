@@ -20,6 +20,8 @@
 #include "session.h"
 #include "util/error.h"
 #include "util/file.h"
+#include "util/child_io.h"
+#include "util/cancel.h"
 
 #include <pthread.h>
 #include <limits.h>
@@ -59,6 +61,7 @@ struct turn_job {
 	char *action_payload;
 	char pending_type[32];
 	char *pending_payload;
+	unsigned long long ask_sequence;
 };
 
 static const char *bridge_output_dir(struct turn_job *j)
@@ -637,6 +640,17 @@ static int fcgi_turn_action_drain(void *user_data, struct react_action *out,
 	got = action_pump_wait(j->store, j->session_id, timeout_sec, &record);
 	if (got <= 0)
 		return got;
+	/* Replies to closed questions must never become model steering messages. */
+	cJSON *payload = cJSON_Parse(record.payload_json);
+	cJSON *request_id = cJSON_GetObjectItemCaseSensitive(payload, "request_id");
+	int question_reply = strcmp(record.type, "answer") == 0 ||
+		strcmp(record.type, "progress") == 0 ||
+		(strcmp(record.type, "prompt") == 0 && cJSON_IsString(request_id));
+	cJSON_Delete(payload);
+	if (question_reply) {
+		turn_action_record_cleanup(&record);
+		return 0;
+	}
 	if (strcmp(record.type, "approve") == 0 ||
 	    strcmp(record.type, "reject") == 0 ||
 	    strcmp(record.type, "always") == 0) {
@@ -728,53 +742,130 @@ static int action_answers(const char *payload, char ***answers,
 	return 0;
 }
 
+static void publish_question_end(struct turn_job *j, const char *id, const char *resolution)
+{
+	cJSON *data = cJSON_CreateObject();
+	if (!data)
+		return;
+	cJSON_AddStringToObject(data, "request_id", id);
+	cJSON_AddStringToObject(data, "resolution", resolution);
+	publish_interaction(j, "interaction.resolved", resolution, data);
+}
+
 int fcgi_turn_ask_user(const char *question,
 		       const char *const *choices, int choices_count,
 		       const char *selection_mode, int min_choices,
-		       int max_choices, char ***answers, int *answers_count,
-		       void *turn_data)
+		       int max_choices, const struct ask_user_options *options,
+		       char ***answers, int *answers_count, void *turn_data)
 {
 	struct turn_job *j = turn_data;
-	struct action_record record;
-	cJSON *data;
-	cJSON *array;
-	int got;
-
-	(void)selection_mode;
-	(void)min_choices;
-	(void)max_choices;
 	if (!j || !answers || !answers_count)
 		return -EINVAL;
-	data = cJSON_CreateObject();
-	array = cJSON_CreateArray();
-	if (data && array) {
-		cJSON_AddStringToObject(data, "question", question ? question : "");
-		for (int i = 0; i < choices_count; i++)
-			cJSON_AddItemToArray(array,
-				cJSON_CreateString(choices[i] ? choices[i] : ""));
-		cJSON_AddItemToObject(data, "choices", array);
-		publish_interaction(j, "ask_user", "user input required", data);
-	} else {
+	*answers = NULL;
+	*answers_count = 0;
+	char request_id[128];
+	j->ask_sequence++;
+	snprintf(request_id, sizeof(request_id), "%s-ask-%llu", j->turn_id, j->ask_sequence);
+	cJSON *data = cJSON_CreateObject();
+	cJSON *array = cJSON_CreateArray();
+	if (!data || !array) {
 		cJSON_Delete(array);
 		cJSON_Delete(data);
+		return -ENOMEM;
 	}
-	memset(&record, 0, sizeof(record));
-	got = action_pump_wait(j->store, j->session_id,
-			       FCGI_ACTION_WAIT_SECONDS, &record);
-	if (got <= 0)
-		return got < 0 ? got : -ETIMEDOUT;
-	if (strcmp(record.type, "cancel") == 0) {
+	cJSON_AddItemToObject(data, "choices", array);
+	cJSON_AddStringToObject(data, "question", question ? question : "");
+	cJSON_AddStringToObject(data, "request_id", request_id);
+	cJSON_AddStringToObject(data, "selection_mode", selection_mode);
+	cJSON_AddNumberToObject(data, "min_choices", min_choices);
+	cJSON_AddNumberToObject(data, "max_choices", max_choices);
+	int rc = ask_user_options_to_json(data, options);
+	for (int i = 0; !rc && i < choices_count; i++) {
+		cJSON *choice = cJSON_CreateString(choices[i]);
+		if (!choice)
+			rc = -ENOMEM;
+		else
+			cJSON_AddItemToArray(array, choice);
+	}
+	if (rc) {
+		cJSON_Delete(data);
+		return rc;
+	}
+	publish_interaction(j, "ask_user", "user input required", data);
+	int64_t deadline = options && options->optional ?
+		morph_io_now_ms() + (int64_t)options->timeout_seconds * 1000 : 0;
+	for (;;) {
+		struct action_record record = {0};
+		if (options && morph_cancel_token_is_cancelled(options->cancel_token)) {
+			publish_question_end(j, request_id, "cancelled");
+			return -ECANCELED;
+		}
+		/* Recheck a monotonic deadline even after unrelated queue wakeups. */
+		int got = action_pump_wait(j->store, j->session_id, 1, &record);
+		if (got < 0)
+			return got;
+		if (!got) {
+			if (deadline && morph_io_now_ms() >= deadline) {
+				publish_question_end(j, request_id, options->recommended_count ?
+					"timeout_recommended" : "timeout_no_input");
+				return -ETIMEDOUT;
+			}
+			continue;
+		}
+		cJSON *payload = cJSON_Parse(record.payload_json);
+		cJSON *id = cJSON_GetObjectItemCaseSensitive(payload, "request_id");
+		int matching = cJSON_IsString(id) && strcmp(id->valuestring, request_id) == 0;
+		int scoped = cJSON_IsString(id);
+		cJSON_Delete(payload);
+		if (strcmp(record.type, "cancel") == 0 && (!scoped || matching)) {
+			turn_action_record_cleanup(&record);
+			publish_question_end(j, request_id, "cancelled");
+			return -ECANCELED;
+		}
+		if (strcmp(record.type, "progress") == 0) {
+			if (matching)
+				deadline = 0;
+			turn_action_record_cleanup(&record);
+			continue;
+		}
+		if (strcmp(record.type, "answer") != 0 && strcmp(record.type, "prompt") != 0) {
+			turn_save_pending_action(j, &record);
+			turn_action_record_cleanup(&record);
+			publish_question_end(j, request_id, "interrupted");
+			return -EAGAIN;
+		}
+		/* Legacy required prompts still accept unscoped replies. Optional
+		 * prompts require IDs so late answers cannot answer a new question. */
+		if (!matching && (scoped || (options && options->optional))) {
+			turn_action_record_cleanup(&record);
+			if (deadline && morph_io_now_ms() >= deadline) {
+				publish_question_end(j, request_id, options->recommended_count ?
+					"timeout_recommended" : "timeout_no_input");
+				return -ETIMEDOUT;
+			}
+			continue;
+		}
+		deadline = 0;
+		rc = action_answers(record.payload_json, answers, answers_count);
 		turn_action_record_cleanup(&record);
-		return -ECANCELED;
+		if (rc)
+			return rc;
+		int valid = *answers_count >= min_choices &&
+			(!max_choices || *answers_count <= max_choices);
+		for (int i = 0; i < *answers_count; i++) {
+			for (int k = 0; k < i; k++)
+				valid &= strcmp((*answers)[i], (*answers)[k]) != 0;
+		}
+		if (valid) {
+			publish_question_end(j, request_id, "user");
+			return 0;
+		}
+		for (int i = 0; i < *answers_count; i++)
+			free((*answers)[i]);
+		free(*answers);
+		*answers = NULL;
+		*answers_count = 0;
 	}
-	if (strcmp(record.type, "prompt") != 0 &&
-	    strcmp(record.type, "answer") != 0) {
-		turn_save_pending_action(j, &record);
-		return -EAGAIN;
-	}
-	got = action_answers(record.payload_json, answers, answers_count);
-	turn_action_record_cleanup(&record);
-	return got;
 }
 
 static int action_is_always(const char *payload)

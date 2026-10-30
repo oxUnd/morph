@@ -254,9 +254,16 @@ explicit cancellation emit `interaction.cancelled`. A valid response emits
 Stable interaction kinds and response payloads are:
 
 - `ask_user`: the request contains `question`, `choices`, `selection_mode`,
-  `min_choices`, and `max_choices`; respond with `data.answers`, an array of
+  `min_choices`, `max_choices`, `recommended_indices`, `response_policy`, and
+  `timeout_seconds`; respond with `data.answers`, an array of
   selected strings or custom answers. Suggested choices do not restrict the
   answer text; selection counts and duplicate-answer checks still apply.
+  Recommendations use zero-based indices and are preselected without being
+  submitted. Optional questions expire after 60 seconds by default, resolving
+  with reason `timeout_recommended` or `timeout_no_input`. Required questions
+  have no automatic resolution. A matching `interaction.progress` frame marks
+  editing activity and disables automatic resolution for the pending question.
+  Late frames remain protocol messages and never become chat input.
 - `tool_approval`: the request contains `tool_name`, `arguments_json`, and
   `allowed_decisions`; respond with `data.decision`.
 - `operation_approval`: the request contains the normalized operation fields,
