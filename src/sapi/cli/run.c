@@ -302,7 +302,7 @@ static void cli_readline_redisplay(struct cli_context *ctx)
 		fputs(ctx, ANSI_RESET, stdout);
 	cli_readline_color_images(ctx);
 	cli_readline_footer(ctx);
-	if (RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
+	if (!ctx->input_status.suspended && RL_ISSTATE(RL_STATE_CALLBACK) && rl_end == 0 &&
 	    isatty(STDOUT_FILENO) &&
 	    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col > 24) {
 		ctx->details_hint_column = size.ws_col - 17;
@@ -329,6 +329,9 @@ static void cli_readline_line_ready(struct cli_context *ctx, char *input)
 		}
 		return;
 	}
+	/* The event loop installs the next composer after committing this input.
+	 * Stop Readline from painting an automatic empty prompt in between. */
+	rl_callback_handler_remove();
 	free(ctx->readline_ready_input);
 	ctx->readline_ready_input = input;
 }

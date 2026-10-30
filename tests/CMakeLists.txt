@@ -273,6 +273,11 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_empty_session_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_composer_cleanup_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_composer_cleanup_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_composer_cleanup_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	set_tests_properties(cli_memory_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	set_tests_properties(cli_image_pty_integration PROPERTIES
