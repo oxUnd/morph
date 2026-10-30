@@ -1,5 +1,10 @@
 # Prompt 组装架构
 
+通用模板模块 `morph-prompt` 提供显式调用的字符串与文件渲染 API，支持变量、
+布尔条件和公共片段。调用方管理变量来源及渲染时机；现有 `[prompt]` 文件仍按
+普通文本加载，不会自动解释模板。语法、限制及后续角色配置的边界见
+[Prompt templates](prompt-templates.md)。
+
 Morph 按各自独立管理的来源组装模型输入：
 
 ```text

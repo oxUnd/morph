@@ -14,6 +14,7 @@ set(TEST_SOURCES
 	test_database.cpp
 	test_scheduled_task.cpp
 	test_cli_setup.cpp
+	test_prompt_template.cpp
 	test_config.cpp
 	test_config_write.cpp
 	test_credits.cpp

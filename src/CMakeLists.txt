@@ -48,6 +48,7 @@ target_include_directories(morph-credits PUBLIC
 target_link_libraries(morph-credits PUBLIC morph-util morph-db morph-config morph-persistence)
 
 add_subdirectory(render)
+add_subdirectory(prompt)
 add_subdirectory(agent)
 add_subdirectory(sandbox)
 add_subdirectory(exec)
