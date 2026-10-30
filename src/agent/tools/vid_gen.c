@@ -314,6 +314,7 @@ int vid_gen_init(struct tool_registry *reg, struct model *video_llm,
 		"in seconds\"}},\"required\":[\"prompt\"]}";
 	struct tool_spec spec = {
 		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
 		.name = "vid_gen",
 		.description = description,
 		.input_schema = input_schema,

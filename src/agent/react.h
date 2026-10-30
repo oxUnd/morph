@@ -111,6 +111,7 @@ struct hitl_config {
 	char tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int tools_count;
 	int auto_approve_readonly;
+	int auto_approve_media;
 	hitl_approval_cb approval_cb;
 	void *approval_user_data;
 	char auto_approved[HITL_AUTO_APPROVED_MAX][HITL_TOOL_NAME_MAX];

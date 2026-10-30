@@ -198,7 +198,11 @@ int img_convert_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_convert", .description = "Convert an image to another format (png/jpg/bmp/tga). "
+	return tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
+		.name = "img_convert",
+		.description = "Convert an image to another format (png/jpg/bmp/tga). "
 		"Provide file_path, format, optional output_path and quality (jpg only).", .input_schema = "{\"type\":\"object\",\"properties\":"
 		"{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},"
 		"\"format\":{\"type\":\"string\",\"enum\":[\"png\",\"jpg\",\"jpeg\",\"bmp\",\"tga\"],\"description\":\"Target image format\"},"

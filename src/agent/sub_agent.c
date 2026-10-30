@@ -318,6 +318,7 @@ sub_agent_runtime_create(struct tool_registry *parent_tools,
 	rt->tokenizer = tokenizer;
 	rt->compress = compress;
 	rt->depth = 0;
+	rt->auto_approve_readonly = 1;
 	rt->next_task_id = 0;
 	pthread_mutex_init(&rt->mutex, NULL);
 	pthread_mutex_init(&rt->storage_mutex, NULL);
@@ -597,6 +598,8 @@ struct react_context *sub_agent_create_context(struct sub_agent_runtime *rt,
 		return NULL;
 	}
 	child->llm_model = entry->llm;
+	child->hitl.auto_approve_readonly = rt->auto_approve_readonly;
+	child->hitl.auto_approve_media = rt->auto_approve_media;
 	react_set_event_callback(child, NULL, NULL);
 	child->max_iterations = entry->cfg.max_iterations;
 	child->sub_agent_depth = (runtime ? runtime->sub_agent_depth : rt->depth) + 1;

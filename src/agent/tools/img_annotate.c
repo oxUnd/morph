@@ -634,7 +634,11 @@ int img_annotate_init(struct tool_registry *reg,
 	ctx->cb_user_data = user_data;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_annotate", .description = "Open one or more images in the interactive terminal "
+	int rc = tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
+		.name = "img_annotate",
+		.description = "Open one or more images in the interactive terminal "
 		"image editor (morph-editor) for manual annotation. "
 		"Supports two annotation types: "
 		"1) bounding boxes (bboxes) to label regions of "

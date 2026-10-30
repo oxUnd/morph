@@ -6072,6 +6072,38 @@ TEST(HitlTest, NeedsApprovalReadonlyNoAutoApprove) {
 	react_context_destroy(ctx);
 }
 
+TEST(HitlTest, ReadonlyAndMediaAutoApprovalOverrideExplicitListWithoutDisablingOtherChecks) {
+	struct tool_registry reg;
+	tool_registry_init(NULL, &reg);
+	for (const char *name : {"media", "remote_read", "remote_write"})
+		ASSERT_EQ(tool_register(strcmp(name, "media") == 0 ?
+			TOOL_ORIGIN_BUILTIN : TOOL_ORIGIN_MCP, &reg, name, "test tool",
+			"{}", test_tool_fn, nullptr, nullptr), 0);
+	tool_lookup(&reg, "media")->flags |= TOOL_FLAG_MEDIA;
+	tool_lookup(&reg, "remote_read")->flags |= TOOL_FLAG_READONLY;
+	tool_lookup(&reg, "remote_write")->flags |= TOOL_FLAG_MEDIA;
+	struct compress_config ccfg = {0};
+	struct guardrail_config gcfg = {0};
+	struct react_context *ctx = react_context_create(&reg, nullptr, &ccfg, &gcfg);
+	ASSERT_NE(ctx, nullptr);
+	ctx->hitl.auto_approve_readonly = 1;
+	ctx->hitl.auto_approve_media = 1;
+	ctx->hitl.tools_count = 3;
+	strcpy(ctx->hitl.tools[0], "media");
+	strcpy(ctx->hitl.tools[1], "remote_read");
+	strcpy(ctx->hitl.tools[2], "remote_write");
+	EXPECT_EQ(hitl_needs_approval(ctx, "media"), 0);
+	EXPECT_FALSE(tool_is_readonly(&reg, "media"));
+	EXPECT_EQ(hitl_needs_approval(ctx, "remote_read"), 0);
+	EXPECT_EQ(hitl_needs_approval(ctx, "remote_write"), 1);
+	ctx->hitl.auto_approve_media = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "media"), 1);
+	ctx->hitl.tools_count = 0;
+	EXPECT_EQ(hitl_needs_approval(ctx, "remote_write"), 1);
+	react_context_destroy(ctx);
+	tool_registry_cleanup(&reg);
+}
+
 TEST(HitlTest, AddAutoApprovedIdempotent) {
 	struct hitl_config h;
 	memset(&h, 0, sizeof(h));

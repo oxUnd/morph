@@ -155,6 +155,7 @@ static const struct schema_entry schema[] = {
 	BOOL("react.hitl_enabled"),
 	STRINGS("react.hitl_tools", HITL_TOOLS_MAX, HITL_TOOL_NAME_MAX - 1),
 	BOOL("react.hitl_auto_approve_readonly"),
+	BOOL("react.hitl_auto_approve_media"),
 	TABLE("react.permissions"),
 	BOOL("react.permissions.request_tool_enabled"),
 	STRING("react.permissions.active_profile", PERMISSION_PROFILE_NAME_MAX - 1),

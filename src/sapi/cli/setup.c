@@ -1,6 +1,7 @@
 #include "setup.h"
 #include "setup_ui.h"
 #include "setup_config.h"
+#include "setup_mcp.h"
 #include "manage.h"
 #include "config/config.h"
 #include "util/buf.h"
@@ -262,6 +263,66 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	return rc;
 }
 
+const char *cli_setup_model_label(int kind)
+{
+	const char *names[] = {"Text model", "Vision model", "Image model", "Video model"};
+	return kind >= 0 && kind < SETUP_MODEL_COUNT ? names[kind] : "Model";
+}
+
+void cli_setup_prepare_model(struct cli_setup_state *state, int kind)
+{
+	int primary = cli_setup_provider_choice(SETUP_TEXT, &state->entries[SETUP_TEXT]);
+	int provider = kind == SETUP_VIDEO ? 1 : kind == SETUP_IMAGE ?
+		(primary == 3 ? 2 : 1) : primary <= 3 ? primary : 1;
+	struct config_model_entry *entry = &state->entries[kind];
+	cli_setup_model_defaults(kind, provider, entry);
+	const struct config_model_entry *text = &state->entries[SETUP_TEXT];
+	if (kind != SETUP_TEXT && strcmp(entry->provider, text->provider) == 0 &&
+	    (text->api_key[0] || text->api_key_env[0])) {
+		strcpy(entry->api_key, text->api_key);
+		strcpy(entry->api_key_env, text->api_key[0] ? "" : text->api_key_env);
+	}
+}
+
+void cli_setup_role_defaults(struct cli_setup_state *state)
+{
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+		struct config_model_entry *entry = &state->entries[i];
+		if (!cli_setup_role_requires(state->role, i) || entry->provider[0]) continue;
+		cli_setup_prepare_model(state, i);
+	}
+}
+
+int cli_setup_model_complete(int kind, const struct config_model_entry *entry)
+{
+	if (!entry->model[0] || !entry->api_base[0]) return 0;
+	if (!((strncmp(entry->api_base, "https://", 8) == 0 && entry->api_base[8]) ||
+	      (strncmp(entry->api_base, "http://", 7) == 0 && entry->api_base[7]))) return 0;
+	if (kind == SETUP_TEXT || kind == SETUP_VISION)
+		return entry->context_limit >= 2 && entry->max_tokens >= 1 &&
+			entry->max_tokens < entry->context_limit &&
+			entry->context_limit <= cli_setup_token_ceiling(entry, 0) &&
+			entry->max_tokens <= cli_setup_token_ceiling(entry, 1);
+	return 1;
+}
+
+void cli_setup_share_credentials(struct cli_setup_state *state, int kind,
+				 const char *previous_env)
+{
+	const struct config_model_entry *source = &state->entries[kind];
+	if (!previous_env || !*previous_env) return;
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+		struct config_model_entry *target = &state->entries[i];
+		if (i == kind || !target->model[0] || target->api_key[0] ||
+		    strcmp(target->provider, source->provider) != 0 ||
+		    strcmp(target->api_key_env, previous_env) != 0) continue;
+		const char *exported = getenv(target->api_key_env);
+		if (exported && *exported) continue;
+		strcpy(target->api_key, source->api_key);
+		strcpy(target->api_key_env, source->api_key_env);
+	}
+}
+
 static int configure_model(FILE *in, FILE *out, int kind,
 			   struct config_model_entry *entry)
 {
@@ -324,8 +385,10 @@ static int configure_model(FILE *in, FILE *out, int kind,
 			break;
 		fprintf(out, "Use an http:// or https:// URL.\n");
 	}
-	if (entry->api_key[0])
+	if (entry->api_key[0]) {
+		memset(entry->api_key_env, 0, sizeof(entry->api_key_env));
 		return 0;
+	}
 	for (;;) {
 		rc = prompt(in, out, "API key environment variable (not the key)",
 			entry->api_key_env,
@@ -380,50 +443,81 @@ static int save_config(const char *path, const char *text, int replace, int *pub
 	return rc;
 }
 
-static int collect_plain(struct cli_setup_state *state, const char *path,
-		FILE *input, FILE *output)
+static int collect_plain_custom(struct cli_setup_state *state, FILE *input, FILE *output)
 {
-	fprintf(output, "Welcome to morph setup: %s.\n"
-		"Press Enter to keep defaults; Ctrl-D cancels without saving.\n"
-		"API keys stay in environment variables.\n\nChoose your role:\n", path);
-	for (int i = 0; i < SETUP_ROLE_COUNT; i++) {
-		struct cli_setup_role role = cli_setup_role_get(i);
-		fprintf(output, "  %d) %s - %s\n", i + 1, role.label, role.description);
-	}
-	char fallback[16];
-	snprintf(fallback, sizeof(fallback), "%d", state->role + 1);
-	int rc = choice(input, output, "Role", fallback, SETUP_ROLE_COUNT);
-	if (rc < 0) return rc;
-	state->role = rc - 1;
-	state->replace_prompt = 1;
 	if (state->existing_prompt) {
-		rc = choice(input, output,
+		int selected = choice(input, output,
 			"Instructions: 1) Keep existing  2) Use role instructions", "1", 2);
-		if (rc < 0) return rc;
-		state->replace_prompt = rc == 2;
+		if (selected < 0) return selected;
+		state->replace_prompt = selected == 2;
 	}
-	const char *names[] = {"Text", "Vision", "Image", "Video"};
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
 		int required = cli_setup_role_requires(state->role, i);
-		fprintf(output, "\n%s model (%s)\n", names[i], required ? "required" : "optional");
+		fprintf(output, "\n%s (%s)\n", cli_setup_model_label(i),
+			required ? "required" : "optional");
 		if (!required) {
-			rc = choice(input, output, "1) Skip  2) Configure",
+			int selected = choice(input, output, "1) Skip  2) Configure",
 				state->entries[i].model[0] ? "2" : "1", 2);
-			if (rc < 0) return rc;
-			if (rc == 1) {
+			if (selected < 0) return selected;
+			if (selected == 1) {
 				memset(&state->entries[i], 0, sizeof(state->entries[i]));
 				continue;
 			}
 		}
-		rc = configure_model(input, output, i, &state->entries[i]);
-		if (rc < 0) return rc;
+		int rc = configure_model(input, output, i, &state->entries[i]);
+		if (rc != 0) return rc;
 	}
-	fprintf(output, "\nRole: %s\n", cli_setup_role_get(state->role).label);
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
-		fprintf(output, "%s: %s\n", names[i], state->entries[i].model[0] ?
-			state->entries[i].model : "Not configured");
-	rc = choice(input, output, "1) Save and exit  2) Cancel without saving", "1", 2);
-	return rc < 0 ? rc : rc == 2 ? -ECANCELED : 0;
+	return 0;
+}
+
+static int collect_plain(struct cli_setup_state *state, const char *path,
+		FILE *input, FILE *output)
+{
+	fprintf(output, "Welcome to morph setup: %s.\n"
+		"Choose a role, then accept the defaults or customize. Ctrl-D cancels.\n", path);
+	int choose_role = 1;
+	state->replace_prompt = !state->existing_prompt;
+	for (;;) {
+		if (choose_role) {
+			fputs("\nChoose your role:\n", output);
+			for (int i = 0; i < SETUP_ROLE_COUNT; i++) {
+				struct cli_setup_role role = cli_setup_role_get(i);
+				fprintf(output, "  %d) %s - %s\n", i + 1, role.label, role.description);
+			}
+			char fallback[16];
+			snprintf(fallback, sizeof(fallback), "%d", state->role + 1);
+			int selected = choice(input, output, "Role", fallback, SETUP_ROLE_COUNT);
+			if (selected < 0) return selected;
+			state->role = selected - 1;
+			cli_setup_role_defaults(state);
+			choose_role = 0;
+		}
+		fprintf(output, "\nReview your setup · %s\n", cli_setup_role_get(state->role).label);
+		int complete = 1;
+		for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+			struct config_model_entry *entry = &state->entries[i];
+			int required = cli_setup_role_requires(state->role, i);
+			fprintf(output, "%s (%s): %s\n", cli_setup_model_label(i),
+				required ? "required" : "optional", entry->model[0] ? entry->model : "Off");
+			if ((required || entry->model[0]) && !cli_setup_model_complete(i, entry))
+				complete = 0;
+		}
+		fprintf(output, "%s\nRead-only/media tools: auto-approved. Host execution: enabled.\n"
+			"Instructions: %s.\n", cli_setup_mcp_summary(state->role),
+			state->replace_prompt ? "Use role prompt" : "Keep existing");
+		int selected = choice(input, output,
+			"1) Save and exit  2) Customize  3) Change role  4) Cancel", "1", 4);
+		if (selected < 0) return selected;
+		if (selected == 4) return -ECANCELED;
+		if (selected == 1 && complete) return 0;
+		if (selected == 1) {
+			fputs("Complete the model name, API URL and valid token limits before saving.\n", output);
+			continue;
+		}
+		if (selected == 3) { choose_role = 1; continue; }
+		int rc = collect_plain_custom(state, input, output);
+		if (rc != 0) return rc;
+	}
 }
 
 static int load_existing(const char *path, struct cli_setup_state *state, char **original)
@@ -452,6 +546,7 @@ static int load_existing(const char *path, struct cli_setup_state *state, char *
 				state->entries[i] = *models[i];
 		toml_free(parsed);
 		state->role = cli_setup_config_role(*original);
+		state->existing_config = 1;
 		state->existing_prompt = config->prompt.system_prompt_file[0] ||
 			config->prompt.system_prompt_dir[0];
 	}
@@ -558,7 +653,7 @@ static int publish_setup(const char *path, const char *original, const char *tex
 	char *backup = NULL;
 	if (rc == 0) rc = unique_file(path, ".backup-XXXXXX", original, &backup);
 	if (rc == 0) rc = save_config(path, text, 1, NULL);
-	if (backup) fprintf(output, "Previous configuration backed up to %s.\n", backup);
+	if (backup) cli_setup_print(output, "Previous configuration backed up to %s.\n", backup);
 	free(backup);
 	close(lock);
 	return rc;
@@ -569,7 +664,8 @@ static int save_setup(struct cli_setup_state *state, const char *path,
 {
 	const char *names[] = {"text", "vision", "image", "video"};
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
-		if (cli_setup_role_requires(state->role, i) && !state->entries[i].model[0])
+		if (cli_setup_role_requires(state->role, i) &&
+		    !cli_setup_model_complete(i, &state->entries[i]))
 			return MORPH_ERR_NOT_CONFIGURED;
 	char *prompt_text = NULL;
 	char *snapshot = NULL;
@@ -605,9 +701,24 @@ static int save_setup(struct cli_setup_state *state, const char *path,
 				entry->context_limit, entry->max_tokens);
 	}
 	if (!original) morph_buf_puts(&patch, "\n[exec]\nnetwork = true\n");
+	else morph_buf_puts(&patch, "\n[exec]\n");
+	morph_buf_puts(&patch, "allow_host_execution = true\n"
+		"\n[react]\nhitl_auto_approve_readonly = true\nhitl_auto_approve_media = true\n");
 	if (rc == 0) rc = patch.failed;
 	if (rc == 0) rc = cli_setup_config_merge(original ? original : "",
 		morph_buf_cstr(&patch), &merged);
+	if (rc == 0) {
+		char *credentials = NULL;
+		rc = cli_setup_config_credentials(merged, &credentials);
+		free(merged);
+		merged = credentials;
+	}
+	if (rc == 0) {
+		char *mcp = NULL;
+		rc = cli_setup_mcp_apply(merged, state->role, &mcp);
+		free(merged);
+		merged = mcp;
+	}
 	struct config_validation_error error = {0};
 	if (rc == 0) rc = config_validate_text(merged, &error);
 	if (rc == 0) rc = publish_setup(path, original, merged, output);
@@ -641,20 +752,29 @@ static int setup_run(struct cli_context *ctx, const char *path,
 		collect_plain(&state, full, input, output);
 	if (rc == 0) rc = save_setup(&state, full, original, output);
 	if (rc == 0) {
-		fprintf(output, "\nConfiguration saved to %s.\n", full);
+		cli_setup_print(output, "\nConfiguration saved to %s.\n", full);
+		cli_setup_mcp_notes(state.role, output);
 		for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
 			struct config_model_entry *entry = &state.entries[i];
 			if (!entry->model[0] || entry->api_key[0]) continue;
 			const char *key = getenv(entry->api_key_env);
 			if (!key || !*key) {
-				fprintf(output, "Set the %s model key in your shell:\n"
+				rc = 1;
+				int shown = 0;
+				for (int previous = 0; previous < i; previous++)
+					if (state.entries[previous].model[0] && !state.entries[previous].api_key[0] &&
+					    strcmp(state.entries[previous].api_key_env, entry->api_key_env) == 0)
+						shown = 1;
+				if (shown) continue;
+				cli_setup_print(output, "Set the %s model key in your shell:\n"
 					"  export %s='<your-api-key>'\n",
 					i == SETUP_TEXT ? "text" : i == SETUP_VISION ? "vision" :
 					i == SETUP_IMAGE ? "image" : "video", entry->api_key_env);
 				rc = 1;
 			}
 		}
-		fprintf(output, "Setup complete. Run morph again with the same -c configuration to start.\n"
+		cli_setup_print(output,
+			"Setup complete. Run morph again with the same -c configuration to start.\n"
 			"To change these settings, run morph setup with the same -c path.\n");
 	}
 	memset(&state, 0, sizeof(state));

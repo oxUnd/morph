@@ -366,7 +366,11 @@ int img_inpaint_init(struct tool_registry *reg, struct model *image_llm,
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_inpaint", .description = "Regenerate labeled regions of an image. A bbox + label means "
+	int rc = tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
+		.name = "img_inpaint",
+		.description = "Regenerate labeled regions of an image. A bbox + label means "
 		"\"generate this content inside this box\". Pass the img_annotate "
 		"output (images[] + bboxes[]) verbatim; for each box the tool "
 		"deterministically builds a precise percentage-coordinate "

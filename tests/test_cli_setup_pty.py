@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import json
+import re
 
 try:
     import pexpect
@@ -18,7 +19,8 @@ except ImportError:
 
 class Terminal:
     def __init__(self, binary, path, ready=False, size=(24, 80), flags=(),
-                 production=False, no_color_env=False, role=1, setup_command=False):
+                 production=False, no_color_env=False, role=1, setup_command=False,
+                 accept_role=True):
         env = {k: v for k, v in os.environ.items()
                if not k.endswith('API_KEY') and k != 'NO_COLOR'}
         if no_color_env:
@@ -38,11 +40,9 @@ class Terminal:
         self.transcript = ''
         self.production = production
         self.wait('Choose your role')
-        self.child.send(f'{role}\r')
-        if path.exists():
-            self.wait('Prompt instructions')
-            self.child.send('1\r')
-        self.wait('Choose your provider')
+        if accept_role:
+            self.child.send(f'{role}\r')
+            self.wait('Review your setup')
 
     def wait(self, text):
         # A resize must actually be rendered before an old matching label can
@@ -110,13 +110,16 @@ class Terminal:
         self.child.close()
         self.assert_inline()
         assert self.child.exitstatus == 0, self.transcript
-        assert f'SETUP_RESULT={result} RAW_RESTORED=1' in self.transcript, self.transcript
-        if key_ready is not None:
-            assert f'SESSION_KEY_READY={key_ready}' in self.transcript
+        if self.production:
+            assert 'Setup complete.' in self.transcript
+        else:
+            assert f'SETUP_RESULT={result} RAW_RESTORED=1' in self.transcript, self.transcript
+            if key_ready is not None:
+                assert f'SESSION_KEY_READY={key_ready}' in self.transcript
         assert '\x1b[?2004l' in self.transcript and '\x1b[?25h' in self.transcript
 
     def save(self, result=0, key_ready=None):
-        self.child.send('\r')
+        self.child.send('8\r' if result == 1 else '\r')
         self.finish(result, key_ready)
         return self.path.read_text()
 
@@ -154,10 +157,12 @@ def assert_cards(t):
     assert cell.fg == 'cyan' and cell.bg != 'default', cell
 
 
-def skip_extras(t):
-    t.send('1\r', 'Create images with morph?')
-    t.send('1\r', 'Create videos with morph?')
-    t.send('1\r', '4/4  Save')
+def section(config, kind):
+    return config.split(f'[model.{kind}]', 1)[1].split('\n[', 1)[0]
+
+
+def missing(config, kind, key):
+    return not re.search(r'^\s*' + re.escape(key) + r'\s*=', section(config, kind), re.M)
 
 
 def tests(driver, directory, production):
@@ -169,92 +174,172 @@ def tests(driver, directory, production):
         terminals.append(term)
         return term
 
+    def context(t, name):
+        assert name + ' model ·' in '\n'.join(t.screen.display)
+
     try:
-        # Main flow is approachable, technical fields stay behind Advanced.
-        t = start('append-cards', ready=True)
-        assert_cards(t)
-        t.send('1\r', 'Make morph yours')
-        main = active_text(t, 'Make morph yours')
-        assert 'Advanced settings' in main
-        assert 'https://' not in main and '128000' not in main and '16384' not in main
-        assert_cards(t)
-        t.send('\r', 'Understand images with morph?')
-        assert_cards(t)
-        skip_extras(t)
-        assert '4/4  Save' in '\n'.join(t.screen.display)
+        # Role selection fits in a compact list; only the highlighted role has details.
+        labels = ('General assistant', 'Software developer', 'Photographer', 'Photo editor',
+                  'Writer', 'Designer', 'Video creator', 'Researcher')
+        for width, height in ((120, 24), (80, 24), (60, 24), (40, 14)):
+            t = start(f'role-list-{width}', ready=True, size=(height, width), accept_role=False)
+            screen = '\n'.join(t.screen.display)
+            assert not any(border in screen for border in ('┌', '┐', '│', '└', '┘')), screen
+            if height >= 20:
+                assert all(label in screen for label in labels), screen
+                assert screen.count('Models:') == 1, screen
+            assert '› 1  General assistant  (default)' in screen
+            assert not t.path.exists()
+            t.send('\x1b[200~7\n\x1b[201~', 'Choose your role')
+            assert '› 1  General assistant' in '\n'.join(t.screen.display)
+            t.send('7', 'Models: Text + Vision')
+            screen = '\n'.join(t.screen.display)
+            assert 'Models:Text+Vision+Image+Video' in re.sub(r'\s+', '', screen), screen
+            assert '› 7  Video creator' in screen
+            assert 'Everyday questions' not in screen
+            assert not t.path.exists()
+            t.resize(6, 28)
+            t.wait('Models: Text + Vision')
+            assert 'Image + Video' in '\n'.join(t.screen.display)
+            t.resize(height, width)
+            t.wait('Models: Text + Vision')
+            screen = '\n'.join(t.screen.display)
+            assert 'Models:Text+Vision+Image+Video' in re.sub(r'\s+', '', screen), screen
+            t.send('\r', 'Review your setup')
+            config = t.save()
+            assert 'model = ""' not in config
+            assert len(re.findall(r'✓ Role\s+· Video creator', t.history_text())) == 1
+
+        t = start('role-current', ready=True)
+        t.send('6\r', 'Change your role')
+        assert 'General assistant  (current)' in '\n'.join(t.screen.display)
+        t.send('5', 'Develop ideas, write drafts and revise prose.')
+        assert '› 5  Writer' in '\n'.join(t.screen.display)
+        assert 'General assistant  (current)' in '\n'.join(t.screen.display)
+        t.send('\x1b', 'Review your setup')
+        assert 'Vision model · Off' in '\n'.join(t.screen.display)
+        t.send('6\r', 'Change your role')
+        t.send('\r', 'Review your setup')
+        config = t.save()
+        assert 'role = "general"' in config
+        assert len(re.findall(r'✓ Role\s+· General assistant', t.history_text())) == 1
+
+        # Available credentials make first-run setup exactly role -> overview -> save.
+        t = start('defaults', ready=True)
+        screen = '\n'.join(t.screen.display)
+        assert '2/2  Review' in screen
+        assert 'Text model · gpt-4o' in screen and 'Vision model · Off' in screen
+        assert 'MCP: Exa' in screen and 'Host exec: on' in screen
+        assert 'Choose your provider' not in t.transcript
+        assert 'How should morph think?' not in t.transcript
         assert not t.path.exists()
-        review = active_text(t, "You're ready.")
-        assert 'ctx=' not in review and str(t.path) not in review
         config = t.save()
         assert config.count('model = ""') == 3
-        history = t.history_text()
-        assert history.count('✓ Text · OpenAI') == 1, history
-        assert '✓ Images · Skip for now' in history
-        assert '✓ Text · Continue' not in history
-        assert '↑↓ Choose' not in history
+        assert len(re.findall(r'✓ Role\s+· General assistant', t.history_text())) == 1
+        assert '✓ Vision · Skip' not in t.history_text()
 
-        # Exported keys skip account entry, but thinking is explicitly confirmed.
-        t = start('thinking-on', ready=True)
-        t.send('2\r', 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        assert_cards(t)
-        t.send('\t', '› On')
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
-        assert 'Text  Thinking On' in '\n'.join(t.screen.display)
-        assert thinking_value(t.save(), 'text') == 'enabled'
-
-        # No key: account comes first, no save until the final confirmation.
-        t = start('account-later')
-        t.send('2\r', 'Connect your account')
-        assert '2/4  Account' in '\n'.join(t.screen.display)
-        assert_cards(t)
-        t.send('3\r', 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('1\r', 'Understand images with morph?')
-        skip_extras(t)
+        # No credentials: saving a draft is one explicit overview action.
+        t = start('later')
+        assert 'Connect accounts and save' in '\n'.join(t.screen.display)
         config = t.save(1)
-        assert thinking_value(config, 'text') == 'disabled'
-        assert "export DEEPSEEK_API_KEY='<your-api-key>'" in t.transcript
+        assert 'export OPENAI_API_KEY=' in t.transcript
+        assert missing(config, 'text', 'api_key')
 
-        # Hidden paste cannot submit on embedded newline. No secret in output.
+        # Only the necessary account is requested on Finish; there is no model tour.
         secret = 'fixture-session-secret-123'
         t = start('secret')
-        t.send('1\r', 'Connect your account')
+        t.send('\r', 'Connect your account')
+        context(t, 'Text')
+        assert_cards(t)
         t.send('\r', 'Paste your API key')
+        context(t, 'Text')
         t.send('\r', 'Enter a value, or press Esc to go back.')
         t.send('\x1b[200~' + secret + '\n\x1b[201~', '••••••••')
-        assert 'Paste your API key' in '\n'.join(t.screen.display)
-        t.send('\r', 'Make morph yours')
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
-        config = t.save()
-        assert f'api_key = "{secret}"' in config and secret not in t.transcript
+        t.child.send('\r')
+        t.finish(0)
+        config = t.path.read_text()
+        assert secret in config and secret not in t.transcript
+        assert missing(config, 'text', 'api_key_env')
         assert t.path.stat().st_mode & 0o777 == 0o600
 
-        # Invalid env names are rejected; account-back keeps the selected provider.
         t = start('env-key')
-        t.send('2\r', 'Connect your account')
-        t.send('\x1b', 'Choose your provider')
         t.send('\r', 'Connect your account')
         t.send('2\r', 'API key environment variable')
+        context(t, 'Text')
         t.send('\x159INVALID\r', 'Start with a letter or underscore')
-        t.send('\x15SETUP_MISSING_API_KEY\r', 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('2\r', 'Understand images with morph?')
-        skip_extras(t)
-        config = t.save(1)
-        assert 'api_key_env = "SETUP_MISSING_API_KEY"' in config
+        t.child.send('\x15SETUP_MISSING_API_KEY\r')
+        t.finish(1)
+        assert missing(t.path.read_text(), 'text', 'api_key')
 
-        # Unicode model editing, URL validation, limits, and review edits.
-        t = start('advanced', ready=True)
-        t.send('2\r', 'Make morph yours')
-        t.send('4\r', 'Advanced settings')
-        t.send('2\r', 'Model name / endpoint ID')
-        t.send('\x15模型甲\x7f乙\r', 'Advanced settings')
-        assert '模型乙' in '\n'.join(t.screen.display)
+        # Four required model defaults are visible, with no four-provider wizard.
+        for width in (120, 80, 60):
+            t = start(f'video-{width}', ready=True, role=7, size=(24, width))
+            screen = '\n'.join(t.screen.display)
+            for kind in ('Text', 'Vision', 'Image', 'Video'):
+                assert f'{kind} model ·' in screen, screen
+            config = t.save()
+            assert 'model = ""' not in config
+            assert 'How should morph think?' not in t.transcript
+
+        # OpenAI text/vision/image use one account; video keeps its own provider.
+        t = start('video-accounts', role=7)
+        t.send('\r', 'Connect your account')
+        context(t, 'Text')
+        t.send('\r', 'Paste your API key')
+        t.send('fixture-openai-shared\r', 'Connect your account')
+        context(t, 'Video')
+        assert 'doubao-seedance' in '\n'.join(t.screen.display)
+        t.send('\r', 'Paste your API key')
+        t.child.send('fixture-video-key\r')
+        t.finish(0)
+        config = t.path.read_text()
+        for kind in ('text', 'vision', 'image'):
+            assert 'fixture-openai-shared' in section(config, kind)
+            assert missing(config, kind, 'api_key_env')
+        assert 'fixture-video-key' in section(config, 'video')
+        assert 'fixture-openai-shared' not in t.transcript
+        assert 'fixture-video-key' not in t.transcript
+
+        # Every edit retains an unambiguous model category and current model.
+        t = start('contexts', ready=True, role=7)
+        for number, kind in ((2, 'Text'), (3, 'Vision'), (4, 'Image'), (5, 'Video')):
+            t.send(f'{number}\r', 'Model settings')
+            context(t, kind)
+            t.send('3\r', 'Model name / endpoint ID')
+            context(t, kind)
+            t.send('\x1b', 'Model settings')
+            t.send('5\r', 'Advanced settings')
+            context(t, kind)
+            t.send('3\r', 'API base URL')
+            context(t, kind)
+            t.send('\x1b', 'Advanced settings')
+            t.send('\x1b', 'Model settings')
+            t.send('\x1b', 'Review your setup')
+        t.save()
+
+        # Thinking is an optional setting, not a forced confirmation.
+        t = start('thinking', ready=True)
+        t.send('2\r', 'Model settings')
+        t.send('2\r', 'Choose your provider')
+        context(t, 'Text')
+        t.send('2\r', 'Model settings')
+        assert 'Thinking · Off' in '\n'.join(t.screen.display)
+        t.send('6\r', 'How should morph think?')
+        context(t, 'Text')
+        t.send('2\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        assert thinking_value(t.save(), 'text') == 'enabled'
+
+        # Custom endpoints edit only the selected field and validate URLs/limits.
+        t = start('custom', ready=True)
+        t.send('2\r', 'Model settings')
+        t.send('2\r', 'Choose your provider')
+        t.send('4\r', 'Model settings')
+        t.send('3\r', 'Model name / endpoint ID')
+        t.send('模型甲\x7f乙\r', 'Model settings')
+        t.send('5\r', 'Advanced settings')
         t.send('3\r', 'API base URL')
-        t.send('\x15invalid\r', 'Enter a URL starting')
+        t.send('invalid\r', 'Enter a URL starting')
         t.send('\x15http://localhost:1234/v1\r', 'Advanced settings')
         t.send('5\r', 'Context window (tokens)')
         t.send('\x150\r', 'Invalid token count')
@@ -262,304 +347,191 @@ def tests(driver, directory, production):
         t.send('6\r', 'Max output (tokens)')
         t.send('\x1564000\r', 'Invalid token count')
         t.send('\x154096\r', 'Advanced settings')
-        t.send('\r', 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('2\r', 'Understand images with morph?')
-        skip_extras(t)
-        t.send('2\r', 'Choose your provider')
-        t.send('\r', 'Make morph yours')
-        assert 'Thinking · On' in active_text(t, 'Make morph yours')
-        t.send('4\r', 'Advanced settings')
-        advanced = active_text(t, 'Advanced settings')
-        assert '模型乙' in advanced and '64000 tokens' in advanced and '4096 tokens' in advanced
-        t.send('\x1b', 'Make morph yours')
-        t.send('\r', "You're ready.")
-        config = t.save()
+        t.send('\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        config = t.save(1)
         assert 'model = "模型乙"' in config
-        assert 'api_base = "http://localhost:1234/v1"' in config
         assert 'context_limit = 64000' in config and 'max_tokens = 4096' in config
 
-        # Custom endpoint cannot be continued until required fields are filled.
-        t = start('custom')
-        t.send('4\r', 'Connect your account')
-        t.send('3\r', 'Make morph yours')
-        t.send('\r', 'Advanced settings')
+        # Saving cannot bypass metadata required by a custom provider.
+        t = start('complete-custom', ready=True)
+        t.send('2\r', 'Model settings')
+        t.send('2\r', 'Choose your provider')
+        t.send('4\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        t.send('8\r', 'Advanced settings')
+        context(t, 'Text')
+        assert not t.path.exists()
         t.send('\r', 'Model name / endpoint ID')
-        model = 'custom-' + 'x' * 75 + '-tail'
-        t.send(model, '-tail')
-        t.send('\r', 'Advanced settings')
+        t.send('custom-deployment\r', 'Advanced settings')
         t.send('\r', 'API base URL')
-        t.send('https://example.test/v1\r', 'Advanced settings')
-        t.send('\r', 'Make morph yours')
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
-        config = t.save(1)
-        assert f'model = "{model}"' in config
+        t.send('http://localhost:1234/v1\r', 'Advanced settings')
+        t.send('\r', 'Review your setup')
+        assert 'custom-deployment' in t.save(1)
 
-        # Independent text / vision reasoning, back cancels a highlighted choice.
-        t = start('review-thinking', ready=True)
-        t.send('2\r\r', 'How should morph think?')
-        t.send('2\r', 'Understand images with morph?')
-        t.send('2\r', 'Choose your provider')
-        t.send('2\r\r', 'How should morph think?')
-        t.send('1\r', 'Create images with morph?')
-        t.send('1\r', 'Create videos with morph?')
-        t.send('1\r', "You're ready.")
-        screen = '\n'.join(t.screen.display)
-        assert 'Text  Thinking On' in screen and 'Vision  Thinking Off' in screen
-        t.send('2\r', 'Choose your provider')
-        t.send('\r', 'Make morph yours')
-        t.send('3\r', 'How should morph think?')
-        assert '› On' in '\n'.join(t.screen.display)
-        t.send('\x1b[A\x1b', 'Make morph yours')
-        assert 'Thinking · On' in active_text(t, 'Make morph yours')
-        t.send('3\r', 'How should morph think?')
-        t.send('1\r', 'Make morph yours')
-        t.send('\r', "You're ready.")
-        t.send('3\r', 'Understand images with morph?')
-        t.send('\r', 'Choose your provider')
-        t.send('\r', 'Make morph yours')
-        t.send('3\r', 'How should morph think?')
-        t.send('2\r', 'Make morph yours')
-        t.send('\r', "You're ready.")
+        # Optional capabilities stay off until explicitly enabled and can be removed.
+        t = start('optional', ready=True)
+        t.send('3\r', 'Enable this model?')
+        context(t, 'Vision')
+        t.send('\x1b', 'Review your setup')
+        t.send('3\r', 'Enable this model?')
+        t.send('\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        assert 'Vision model · gpt-4o' in '\n'.join(t.screen.display)
+        t.send('3\r', 'Model settings')
+        t.send('6\r', 'Review your setup')
+        assert 'Vision model · Off' in '\n'.join(t.screen.display)
+        assert 'model = ""' in section(t.save(), 'vision')
+
+        t = start('vision-isolation', ready=True)
+        t.send('3\r', 'Enable this model?')
+        t.send('\r', 'Model settings')
+        t.send('3\r', 'Model name / endpoint ID')
+        context(t, 'Vision')
+        t.send('\x15vision-fixture\r', 'Model settings')
+        t.send('\r', 'Review your setup')
         config = t.save()
-        assert thinking_value(config, 'text') == 'disabled'
-        assert thinking_value(config, 'vision') == 'enabled'
+        assert 'model = "vision-fixture"' in section(config, 'vision')
+        assert 'model = "gpt-4o"' in section(config, 'text')
 
-        # Provider changes reset provider-specific state and don't leak controls.
-        t = start('provider-switch', ready=True)
-        t.send('2\r', 'Make morph yours')
-        t.send('3\r', 'How should morph think?')
-        t.send('2\r', 'Make morph yours')
-        t.send('\x1b', 'Choose your provider')
-        t.send('1\r', 'Make morph yours')
-        assert 'Thinking' not in active_text(t, 'Make morph yours')
-        t.send('\x1b', 'Choose your provider')
-        t.send('2\r', 'Make morph yours')
-        assert 'Thinking · Off' in active_text(t, 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('1\r', 'Understand images with morph?')
-        skip_extras(t)
-        assert thinking_value(t.save(), 'text') == 'disabled'
+        t = start('change-role', ready=True)
+        t.send('6\r', 'Change your role')
+        t.send('7\r', 'Review your setup')
+        for kind in ('Text', 'Vision', 'Image', 'Video'):
+            assert f'{kind} model ·' in '\n'.join(t.screen.display)
+        assert 'model = ""' not in t.save()
 
-        # Moving between an editor and a compact viewport preserves the draft;
-        # cancelled edits never replace a previously accepted value.
-        t = start('edit-resize', ready=True)
-        t.send('1\r', 'Make morph yours')
-        t.send('3\r', 'Advanced settings')
-        t.send('2\r', 'Model name / endpoint ID')
+        # A small terminal keeps category and draft visible through resizing.
+        t = start('resize', ready=True)
+        t.send('2\r', 'Model settings')
+        t.send('3\r', 'Model name / endpoint ID')
         t.send('\x15中文-draft', '中文-draft')
-        t.resize(12, 36)
-        t.wait('中文-draft')
-        t.resize(24, 80)
-        t.wait('中文-draft')
-        t.send('\x1b', 'Advanced settings')
-        assert 'gpt-4o' in active_text(t, 'Advanced settings')
-        t.send('\x1b', 'Make morph yours')
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
+        for rows, columns in ((12, 36), (6, 28), (24, 80)):
+            t.resize(rows, columns)
+            t.wait('中文-draft')
+            context(t, 'Text')
+        t.send('\x1b', 'Model settings')
+        t.send('\x1b', 'Review your setup')
         assert 'model = "gpt-4o"' in t.save()
 
-        # Known model ceilings and the relationship between context / output are
-        # validated, and choosing a different model resets edited token limits.
-        t = start('model-limits', ready=True)
-        t.send('1\r', 'Make morph yours')
-        t.send('3\r', 'Advanced settings')
-        t.send('5\r', 'Context window (tokens)')
-        t.send('\x15200000\r', 'Invalid token count')
-        t.send('\x158192\r', 'Advanced settings')
-        t.send('6\r', 'Max output (tokens)')
-        t.send('8192\r', 'Invalid token count')
-        t.send('\x152048\r', 'Advanced settings')
-        t.send('2\r', 'Model name / endpoint ID')
-        t.send('\x15my-deployment\r', 'Advanced settings')
-        assert '128000 tokens' in active_text(t, 'Advanced settings')
-        t.send('\r', 'Make morph yours')
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
-        config = t.save()
-        assert 'model = "my-deployment"' in config
-        assert 'context_limit = 128000' in config and 'max_tokens = 16384' in config
+        for name, kwargs in (('no-color', {'flags': ('--no-color',)}),
+                             ('no-color-env', {'no_color_env': True})):
+            t = start(name, ready=True, **kwargs)
+            t.save()
+            assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
 
-        # Image and video accounts / models remain independent from text.
-        t = start('media', ready=True)
-        t.send('1\r\r', 'Understand images with morph?')
-        t.send('1\r', 'Create images with morph?')
-        t.send('2\r', 'Choose your provider')
-        t.send('2\r', 'Make morph yours')
-        t.send('\r', 'Create videos with morph?')
-        t.send('2\r', 'Choose your provider')
-        t.send('1\r\r', "You're ready.")
-        config = t.save()
-        assert 'adapter = "volcengine-images"' in config
-        assert 'adapter = "volcengine-videos"' in config
-        assert 'model = "doubao-seedance-2-0-mini-260615"' in config
-
-        # Optional capability can be removed from the final review.
-        t = start('skip-vision', ready=True)
-        t.send('1\r\r', 'Understand images with morph?')
-        t.send('2\r', 'Choose your provider')
-        t.send('1\r\r', 'Create images with morph?')
-        t.send('1\r', 'Create videos with morph?')
-        t.send('1\r', "You're ready.")
-        t.send('3\r', 'Understand images with morph?')
-        t.send('1\r', "You're ready.")
-        config = t.save()
-        assert config.count('model = ""') == 3
-
-        # Wide cards shrink into compact choices without losing selection, drafts,
-        # or shell scrollback. Grow back to bordered cards before continuing.
-        t = start('resize', ready=True)
-        t.send('2\r\r', 'How should morph think?')
-        t.send('\t', '› On')
-        for rows, columns in [(14, 40), (10, 32), (6, 28), (24, 80)]:
-            t.resize(rows, columns)
-            t.wait('› On')
-            assert 'Off · Faster responses' in '\n'.join(t.screen.display)
-        assert_cards(t)
-        t.send('\r', 'Understand images with morph?')
-        skip_extras(t)
-        assert thinking_value(t.save(), 'text') == 'enabled'
-
-        t = start('narrow', ready=True, size=(14, 40), flags=('--no-color',))
-        t.send('2\r', 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('\x1b', 'Make morph yours')
-        assert 'Thinking · Off' in active_text(t, 'Make morph yours')
-        t.send('\r', 'How should morph think?')
-        t.send('1\r', 'Understand images with morph?')
-        skip_extras(t)
-        assert 'Text  Thinking Off' in '\n'.join(t.screen.display)
-        config = t.save()
-        assert thinking_value(config, 'text') == 'disabled'
-        import re
-        assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
-
-        # NO_COLOR is respected independently from the --no-color flag.
-        t = start('no-color-env', ready=True, no_color_env=True)
-        t.send('1\r\r', 'Understand images with morph?')
-        skip_extras(t)
-        t.save()
-        assert not re.search(r'\x1b\[[0-9;]*m', t.transcript)
-
-        # Bracketed paste in a selection cannot activate a hidden save action.
         t = start('menu-paste', ready=True)
-        t.send('\x1b[200~2\n\x1b[201~', 'Choose your provider')
+        t.send('\x1b[200~1\n\x1b[201~', 'Review your setup')
         assert not t.path.exists()
         t.child.send('\x03')
         t.finish(-errno.ECANCELED)
 
-        for name, key, view in [('cancel-card', '\x03', 'Make morph yours'),
-                                ('cancel-edit', '\x04', 'Model name / endpoint ID')]:
+        for name, keys in (('cancel-review', '9\r'), ('cancel-key', '\x03')):
             t = start(name, ready=True)
-            t.send('1\r', 'Make morph yours')
-            if name == 'cancel-edit':
-                t.send('3\r', 'Advanced settings')
-                t.send('2\r', view)
-            t.child.send(key)
+            t.child.send(keys)
             t.finish(-errno.ECANCELED)
             assert not t.path.exists()
 
-        t = start('cancel-review', ready=True)
-        t.send('1\r\r', 'Understand images with morph?')
-        skip_extras(t)
-        t.child.send('7\r')
+        t = start('cancel-edit', ready=True)
+        t.send('2\r', 'Model settings')
+        t.send('3\r', 'Model name / endpoint ID')
+        t.child.send('\x04')
         t.finish(-errno.ECANCELED)
         assert not t.path.exists()
 
-        t = start('signal')
+        t = start('signal', ready=True)
         os.kill(t.child.pid, signal.SIGTERM)
         t.finish(-errno.ECANCELED)
         assert not t.path.exists()
 
-        # A video role requires all four models; there are no capability skip pages.
-        for columns in (120, 80, 60):
-            t = start(f'video-{columns}', ready=True, role=7, size=(24, columns))
-            assert 'Text model required' in '\n'.join(t.screen.display)
-            t.send('1\r\r', 'Vision model required')
-            t.send('1\r\r', 'Image model required')
-            t.send('1\r\r', 'Video model required')
-            t.send('1\r\r', "You're ready.")
-            config = t.save()
-            assert 'role = "video_creator"' in config and 'model = ""' not in config
-            assert 'Understand images with morph?' not in t.transcript
-            assert 'Create images with morph?' not in t.transcript
-            assert 'Create videos with morph?' not in t.transcript
-
-        # Switching the role on review rechecks the stronger model requirements.
-        t = start('change-role', ready=True)
-        t.send('1\r\r', 'Understand images with morph?')
-        skip_extras(t)
-        t.send('6\r', 'Choose your role')
-        t.send('7\r', 'Text model required')
-        t.send('1\r\r', 'Vision model required')
-        t.send('1\r\r', 'Image model required')
-        t.send('1\r\r', 'Video model required')
-        t.send('1\r\r', "You're ready.")
-        assert 'model = ""' not in t.save()
-
-        # Explicit setup and first-run setup exit even when all keys are present.
-        for explicit in (False, True):
-            path = directory / f'production-ready-{explicit}.toml'
-            t = Terminal(production, path, production=True, ready=True,
-                         setup_command=explicit)
-            terminals.append(t)
-            t.send('1\r\r', 'Understand images with morph?')
-            skip_extras(t)
-            t.send('\r', 'Setup complete.')
-            t.child.expect(pexpect.EOF)
-            t.child.close()
-            assert t.child.exitstatus == 0 and path.exists()
-            assert not (path.parent / '.morph/data.db').exists()
-            t.assert_inline()
-
-        # Re-running the explicit command loads saved defaults and keeps the prompt.
+        # Reconfiguration keeps custom instructions without another prompt dialog.
+        path = directory / 'reconfigure.toml'
+        path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
+                        "api_base='https://api.openai.com/v1'\napi_key='fixture-old-secret'\n"
+                        "[prompt]\nmode='append'\nsystem_prompt_file='/keep/custom.md'\n")
         original = path.read_text()
-        t = Terminal(production, path, production=True, ready=True, setup_command=True)
+        t = Terminal(production, path, production=True, setup_command=True)
         terminals.append(t)
-        t.send('1\r\r', 'Understand images with morph?')
-        skip_extras(t)
-        t.send('\r', 'Setup complete.')
-        t.child.expect(pexpect.EOF)
-        t.child.close()
-        assert t.child.exitstatus == 0
-        assert any(p.read_text() == original for p in path.parent.glob(path.name + '.backup-*'))
+        assert 'Instructions · Keep existing' in '\n'.join(t.screen.display)
+        assert 'Prompt instructions' not in t.transcript
+        t.send('2\r', 'Model settings')
+        t.send('4\r', 'Connect your account')
+        context(t, 'Text')
+        t.send('2\r', 'API key environment variable')
+        t.send('SETUP_MISSING_API_KEY\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        config = t.save(1)
+        assert missing(config, 'text', 'api_key')
+        assert 'fixture-old-secret' not in t.transcript
+        assert any(p.read_text() == original for p in directory.glob(path.name + '.backup-*'))
 
-        # Concurrent edits cannot be overwritten by a wizard opened earlier.
+        t = Terminal(production, path, production=True, setup_command=True)
+        terminals.append(t)
+        t.send('2\r', 'Model settings')
+        t.send('4\r', 'Connect your account')
+        t.send('1\r', 'Paste your API key')
+        t.send('fixture-new-secret\r', 'Model settings')
+        t.send('\r', 'Review your setup')
+        config = t.save()
+        assert missing(config, 'text', 'api_key_env')
+        assert 'fixture-new-secret' not in t.transcript
+
+        # Prompt replacement is opt-in from the overview, without an extra first-run step.
+        t = Terminal(production, path, production=True, setup_command=True)
+        terminals.append(t)
+        t.send('6\r', 'Change your role')
+        t.send('5\r', 'Review your setup')
+        t.send('7\r', 'Prompt instructions')
+        t.send('2\r', 'Review your setup')
+        config = t.save()
+        assert 'mode="replace"' in config or 'mode = "replace"' in config
+        assert '/keep/custom.md' not in config
+
+        # Saving after a concurrent change reports failure and keeps the external edit.
         t = Terminal(production, path, production=True, ready=True, setup_command=True)
         terminals.append(t)
-        t.send('1\r\r', 'Understand images with morph?')
-        skip_extras(t)
-        changed = path.read_text() + '\n# external edit during setup\n'
+        changed = path.read_text() + '\n# external edit\n'
         path.write_text(changed)
         t.child.send('\r')
         t.child.expect(pexpect.EOF)
         t.child.close()
         assert t.child.exitstatus == 1 and path.read_text() == changed
 
-        # Production entrypoint, both providers, no real keys or network calls.
-        for provider in ('1', '2'):
-            print('Setup scenario: production', provider, flush=True)
-            t = Terminal(production, directory / f'production-{provider}.toml', production=True)
+        # Production first run and explicit setup both save and exit before runtime init.
+        for explicit in (False, True):
+            path = directory / f'production-{explicit}.toml'
+            t = Terminal(production, path, production=True, ready=True, setup_command=explicit)
             terminals.append(t)
-            t.send(provider + '\r', 'Connect your account')
-            t.send('3\r', 'Make morph yours')
-            t.send('\r', 'How should morph think?' if provider == '2' else
-                   'Understand images with morph?')
-            if provider == '2':
-                t.send('2\r', 'Understand images with morph?')
-            skip_extras(t)
-            t.send('\r', 'Configuration saved')
-            t.child.expect(pexpect.EOF)
-            t.child.close()
-            assert t.child.exitstatus == 0 and t.path.exists()
-            t.assert_inline()
-            if provider == '2':
-                assert thinking_value(t.path.read_text(), 'text') == 'enabled'
+            t.save()
+            assert not (path.parent / '.morph/data.db').exists()
+        # Receipts, completion notes and wrapped Unicode paths share a stable margin.
+        for width in (120, 80, 60):
+            path = directory / (f'alignment-{width}-配置-' + 'x' * 70 + '.toml')
+            path.write_text("[model.text]\nprovider='openai'\nmodel='gpt-4o'\n"
+                            "api_base='https://api.openai.com/v1'\napi_key='fixture-key'\n")
+            t = Terminal(production, path, production=True, setup_command=True, size=(30, width))
+            terminals.append(t)
+            t.send('2\r', 'Model settings')
+            t.send('3\r', 'Model name / endpoint ID')
+            t.send('\x15long-model-' + 'x' * 70 + '-tail\r', 'Model settings')
+            t.send('\r', 'Review your setup')
+            t.save()
+            lines = t.history_text().splitlines()
+            receipts = [line for line in lines if re.search(r'✓ (Role|Text|Review)\s+·', line)]
+            assert len(receipts) == 3, t.history_text()
+            assert {line.index('·') for line in receipts} == {11}, receipts
+            review = next(i for i, line in enumerate(lines) if '✓ Review' in line)
+            completion = [line for line in lines[review + 1:] if line.strip()]
+            assert completion and all(line.startswith('  ') for line in completion), completion
+            assert any(line.startswith('  Previous configuration') for line in completion)
+            assert any(line.startswith('  Configuration saved') for line in completion)
+            if width < 100:
+                assert any(line.startswith(' ' * 13) and '-tail' in line for line in lines)
+            assert '\ufffd' not in t.transcript
         print(f'Setup PTY: {len(terminals)} scenarios passed, including production', flush=True)
     finally:
-        for term in terminals:
-            term.close()
+        for t in terminals:
+            t.close()
 
 
 if __name__ == '__main__':

@@ -324,6 +324,8 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	models->react->hitl.enabled = config->react.hitl_enabled;
 	models->react->hitl.auto_approve_readonly =
 		config->react.hitl_auto_approve_readonly;
+	models->react->hitl.auto_approve_media =
+		config->react.hitl_auto_approve_media;
 	models->react->hitl.tools_count = config->react.hitl_tools_count;
 	for (int i = 0; i < config->react.hitl_tools_count &&
 	     i < HITL_TOOLS_MAX; i++)
@@ -623,6 +625,8 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 				      &profile->models->react->compress);
 	if (!rt)
 		return -ENOMEM;
+	rt->auto_approve_readonly = profile->config->react.hitl_auto_approve_readonly;
+	rt->auto_approve_media = profile->config->react.hitl_auto_approve_media;
 	sub_agent_runtime_set_event_callback(rt, profile->event_cb,
 					     profile->event_user_data);
 	(void)sub_agent_runtime_set_storage(rt, profile->db);

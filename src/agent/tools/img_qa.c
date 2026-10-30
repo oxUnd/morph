@@ -230,7 +230,11 @@ int img_qa_init(struct tool_registry *reg, struct model *llm,
 		return -ENOMEM;
 	ctx->llm = llm;
 	ctx->tctx = tctx;
-	int rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_qa", .description = "Answer questions about an image using the multimodal LLM. "
+	int rc = tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_READONLY | TOOL_FLAG_MEDIA,
+		.name = "img_qa",
+		.description = "Answer questions about an image using the multimodal LLM. "
 		"Use this for image understanding, OCR, scene description, "
 		"visual comparison, and content analysis. User messages reference "
 		"local images as [Image: <path>]; pass that path as file_path and "

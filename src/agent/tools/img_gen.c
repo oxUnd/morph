@@ -203,6 +203,7 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 {
 	struct tool_spec spec = {
 		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
 		.name = "img_gen",
 		.description =
 			"Generate an image from a text prompt, with optional "

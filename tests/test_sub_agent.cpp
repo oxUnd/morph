@@ -658,6 +658,35 @@ TEST_F(SubAgentTest, CreateContextBasic) {
 	sub_agent_runtime_destroy(rt);
 }
 
+TEST_F(SubAgentTest, CreateContextInheritsExemptionsWithoutChangingToolAccess) {
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "media", "desc", "{}",
+		sa_test_tool_fn, nullptr, nullptr), 0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "write", "desc", "{}",
+		sa_test_tool_fn, nullptr, nullptr), 0);
+	tool_lookup(&tools, "media")->flags |= TOOL_FLAG_MEDIA;
+	struct sub_agent_runtime *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+	ASSERT_NE(rt, nullptr);
+	rt->auto_approve_media = 1;
+	struct config_sub_agents sa_cfg{};
+	strcpy(sa_cfg.entries[0].name, "media-worker");
+	strcpy(sa_cfg.entries[0].disabled_tools[0], "write");
+	sa_cfg.entries[0].disabled_tools_count = 1;
+	sa_cfg.count = 1;
+	ASSERT_EQ(sub_agent_runtime_load_config(rt, &sa_cfg), 0);
+	struct react_context *child = sub_agent_create_context(rt, nullptr, &rt->entries[0], "task");
+	ASSERT_NE(child, nullptr);
+	EXPECT_EQ(hitl_needs_approval(child, "media"), 0);
+	EXPECT_FALSE(tool_is_readonly(child->tools, "media"));
+	EXPECT_TRUE(tool_is_disabled(child->tools, "write"));
+	EXPECT_EQ(hitl_needs_approval(child, "write"), 1);
+	struct tool_registry *child_tools = child->tools;
+	react_context_destroy(child);
+	tool_registry_cleanup(child_tools);
+	free(child_tools);
+	sub_agent_runtime_destroy(rt);
+	tool_registry_cleanup(&tools);
+}
+
 TEST_F(SubAgentTest, CreateContextSystemPrompt) {
 	struct sub_agent_runtime *rt = sub_agent_runtime_create(
 		&tools, llm, tok, &cfg);

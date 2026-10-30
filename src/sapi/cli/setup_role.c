@@ -12,19 +12,19 @@ struct cli_setup_role cli_setup_role_get(int index)
 	const unsigned vision = text | (1u << SETUP_VISION);
 	const unsigned image = vision | (1u << SETUP_IMAGE);
 	const struct cli_setup_role roles[] = {
-		{"general", "General assistant", "Everyday questions and mixed tasks. Requires text.", text},
+		{"general", "General assistant", "Everyday questions, planning and mixed tasks.", text},
 		{"developer", "Software developer",
-		 "Build, debug, test and review software. Requires text.", text},
+		 "Build, debug, test and review software.", text},
 		{"photographer", "Photographer",
-		 "Plan shoots and critique photos. Requires text and vision.", vision},
+		 "Plan shoots and critique photographs.", vision},
 		{"photo_editor", "Photo editor",
-		 "Retouch and transform photos. Requires text, vision and images.", image},
-		{"writer", "Writer", "Develop ideas, draft and revise writing. Requires text.", text},
+		 "Retouch photographs and develop a consistent look.", image},
+		{"writer", "Writer", "Develop ideas, write drafts and revise prose.", text},
 		{"designer", "Designer",
-		 "Create and evaluate visual designs. Requires text, vision and images.", image},
-		{"video_creator", "Video creator", "Requires all four models: text, vision, images and video.",
+		 "Create visual designs and clear interfaces.", image},
+		{"video_creator", "Video creator", "Plan, generate and assemble video content.",
 		 image | (1u << SETUP_VIDEO)},
-		{"researcher", "Researcher", "Gather evidence and develop analyses. Requires text.", text},
+		{"researcher", "Researcher", "Gather evidence and build traceable analyses.", text},
 	};
 	return roles[index >= 0 && index < SETUP_ROLE_COUNT ? index : SETUP_GENERAL];
 }

@@ -234,6 +234,10 @@ add_custom_target(morph-data ALL
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/tiktoken
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/skills
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/prompts
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/scripts
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+		${CMAKE_SOURCE_DIR}/scripts/macos_mcp_adapter.py
+		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/scripts/macos_mcp_adapter.py
 	COMMAND ${CMAKE_COMMAND} -E copy_directory
 		${CMAKE_SOURCE_DIR}/misc/share
 		${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_DATADIR}/morph/share

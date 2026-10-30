@@ -36,14 +36,17 @@
 
 static void react_cancel_background(struct react_context *ctx);
 
-/*
- * Check whether a tool requires human-in-the-loop approval.
- *
- * ctx - ReAct context with HITL configuration
- * tool_name - Name of the tool to check
- *
- * Returns 1 if approval is required, 0 if auto-approved or HITL disabled.
- */
+static int hitl_builtin_media(struct tool_registry *tools, const char *name)
+{
+	tool_registry_lock(tools);
+	const struct tool_entry *entry = tool_lookup(tools, name);
+	int media = entry && entry->origin == TOOL_ORIGIN_BUILTIN &&
+		(entry->flags & TOOL_FLAG_MEDIA) != 0;
+	tool_registry_unlock(tools);
+	return media;
+}
+
+/* Returns 1 if approval is required, 0 if auto-approved or HITL disabled. */
 int hitl_needs_approval(struct react_context *ctx, const char *tool_name)
 {
 	if (!ctx || !tool_name)
@@ -57,6 +60,10 @@ int hitl_needs_approval(struct react_context *ctx, const char *tool_name)
 	}
 	if (tool_has_flag(ctx->tools, tool_name, TOOL_FLAG_INTERNAL_APPROVAL))
 		return 0;
+	if (h->auto_approve_readonly && tool_is_readonly(ctx->tools, tool_name))
+		return 0;
+	if (h->auto_approve_media && hitl_builtin_media(ctx->tools, tool_name))
+		return 0;
 	if (h->tools_count > 0) {
 		for (int i = 0; i < h->tools_count; i++) {
 			if (strcmp(h->tools[i], tool_name) == 0)
@@ -64,8 +71,6 @@ int hitl_needs_approval(struct react_context *ctx, const char *tool_name)
 		}
 		return 0;
 	}
-	if (h->auto_approve_readonly && tool_is_readonly(ctx->tools, tool_name))
-		return 0;
 	return 1;
 }
 

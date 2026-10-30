@@ -4,6 +4,7 @@
 extern "C" {
 #include "credits.h"
 #include "agent/system_prompt.h"
+#include "agent/tools/img_gen.h"
 #include "runtime/bootstrap.h"
 #include "runtime/context.h"
 #include "runtime/scheduler.h"
@@ -154,6 +155,28 @@ TEST_F(PromptLoadTest, BootstrapPromptFailureReleasesPartialModels)
 	EXPECT_EQ(runtime_bootstrap_models(&profile), -ENOENT);
 	EXPECT_EQ(models.react, nullptr);
 	EXPECT_EQ(models.tokenizer, nullptr);
+	runtime_bootstrap_cleanup_models(&models);
+	tool_registry_cleanup(&tools);
+}
+
+TEST_F(PromptLoadTest, BootstrapMediaApprovalUsesConfiguredPolicyAndMutationMetadata)
+{
+	struct config config{};
+	auto path = write("policy.toml", "[react]\nhitl_auto_approve_media=true\n");
+	ASSERT_EQ(config_load(nullptr, &config, path.c_str()), 0);
+	struct tool_registry tools{};
+	struct runtime_models models{};
+	struct runtime_bootstrap_profile profile{};
+	profile.config = &config;
+	profile.tools = &tools;
+	profile.models = &models;
+	profile.process_replica = 1;
+	ASSERT_EQ(runtime_bootstrap_models(&profile), 0);
+	ASSERT_NE(models.react, nullptr);
+	ASSERT_EQ(img_gen_init(&tools, nullptr, nullptr), 0);
+	EXPECT_EQ(hitl_needs_approval(models.react, "img_gen"), 0);
+	EXPECT_FALSE(tool_is_readonly(&tools, "img_gen"));
+	EXPECT_EQ(hitl_needs_approval(models.react, "unknown_mutating_tool"), 1);
 	runtime_bootstrap_cleanup_models(&models);
 	tool_registry_cleanup(&tools);
 }

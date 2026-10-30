@@ -144,6 +144,7 @@ struct config_react {
 	char hitl_tools[HITL_TOOLS_MAX][HITL_TOOL_NAME_MAX];
 	int hitl_tools_count;
 	int hitl_auto_approve_readonly;
+	int hitl_auto_approve_media;
 	int request_permissions_enabled;
 	char permission_active_profile[PERMISSION_PROFILE_NAME_MAX];
 	struct config_permission_profile

@@ -10,20 +10,34 @@ check `config.toml.example` and `src/config/schema.c` before proposing unfamilia
 Run `morph`, or `morph -c <new-config-path>`, in an interactive terminal with a
 missing config. Use `morph setup` or `morph setup -c <path>` to reconfigure an
 existing installation. There is no separate `--setup` flag. Setup follows Role →
-Account → Preferences → Save, using inline, append-mode cards instead of a full-screen UI.
+Overview → Save, using inline, append-mode choices instead of a full-screen UI.
 Completed answers remain in scrollback. Small terminals use compact choices.
 
 - Choose a role first. Video creator requires all four model sections: text,
   vision, image, and video. Photographer requires text and vision; Photo editor
   and Designer require text, vision, and image. Other roles require text.
-  Required models cannot be skipped; credentials can be completed later.
-- Choose a provider and connect an account using a hidden API key, an environment
-  variable name, or Set up later. Secret input is not echoed into the transcript.
-- Preferences expose Account, a Thinking choice for the DeepSeek adapter, and
+  Required models are prefilled and cannot be disabled; credentials can be completed later.
+- Accept defaults directly when keys are ready, or select a specific model to
+  edit it. Every editing page identifies Text, Vision, Image or Video, the provider
+  and current model. Connect accounts and save collects only missing accounts;
+  matching missing provider credentials are shared across default models.
+  Save for later skips connecting. Secret input is not echoed into the transcript.
+  Setup writes only one nonempty credential field per model: `api_key` or
+  `api_key_env`. Reconfiguration removes the unused counterpart.
+- Setup adds Exa for all roles, Playwright for development/research, macOS
+  Computer Use for development and visual roles on macOS, and a disconnected
+  Figma desktop entry for designers. Existing MCP definitions are preserved and
+  deduplicated. Missing local launchers leave their defaults disconnected;
+  packages may download on first connection. See `docs/setup-mcp.md`.
+- Setup enables `react.hitl_auto_approve_readonly`,
+  `react.hitl_auto_approve_media` and `exec.allow_host_execution`. These approval
+  exemptions preserve media mutation metadata, file access checks and exec's
+  per-program approval. Other existing policies and permission grants remain.
+- Model settings expose Account, a Thinking choice for the DeepSeek adapter, and
   Advanced settings. Advanced contains the model/endpoint, URL, credentials,
   context window, and output limit. Unknown/custom endpoints need their required
   fields filled in before continuing.
-- DeepSeek thinking defaults to Off in setup and is explicitly confirmed once.
+- DeepSeek thinking defaults to Off in setup without a mandatory confirmation.
   On means more time to reason; Off favors quicker replies. Text and Vision choices
   are independent. Switching providers resets provider-specific setup choices.
 - Model capabilities beyond the selected role requirements are optional and
@@ -36,7 +50,7 @@ Completed answers remain in scrollback. Small terminals use compact choices.
   with a new role snapshot without changing the original files.
 - Save and exit saves the config and always exits without opening the agent.
   Run Morph again to load the saved configuration. With missing credentials the action is
-  Save setup for later; Morph prints the needed exports and exits after saving.
+  Save for later; Morph prints each needed export once and exits after saving.
   Relaunch after setting those variables. Do not promise an API connection test:
   a Ready account means a configured/exported key is present, not verified by the provider.
 

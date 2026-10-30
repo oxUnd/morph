@@ -293,10 +293,15 @@ readonly_tools = [
 hitl_enabled = true
 # List of tool names requiring explicit approval.
 # If empty and hitl_enabled is true, ALL tools require approval
-# (except read-only tools when hitl_auto_approve_readonly is true).
+# (except tools covered by the auto-approval settings below).
 # hitl_tools = ["exec", "img_gen", "vid_gen"]
 # Automatically approve tools listed in readonly_tools without prompting.
 hitl_auto_approve_readonly = true
+# Automatically approve built-in image/video generation, editing and analysis.
+# Media tools retain their mutation metadata and filesystem access checks.
+# Auto-approval settings take precedence over hitl_tools.
+# Setup enables this; existing configurations retain the default false.
+hitl_auto_approve_media = false
 
 # ── Filesystem permission profiles ────────────
 # Profiles add trusted roots at startup and never disable the OS sandbox.

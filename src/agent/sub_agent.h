@@ -88,6 +88,8 @@ struct sub_agent_runtime {
 	pthread_mutex_t storage_mutex;
 	int mutexes_initialized;
 	int depth;
+	int auto_approve_readonly;
+	int auto_approve_media;
 	char trace_file[PATH_MAX];
 };
 

@@ -85,5 +85,17 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 int img_info_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg) return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_info", .description = "Get image metadata (dimensions, format, color channels). Provide file_path.", .input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{\"type\":\"string\",\"description\":\"Path to the image file\"}},\"required\":[\"file_path\"]}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = img_info_exec, .user_data = tctx, .user_data_destroy = NULL });
+	return tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_READONLY,
+		.name = "img_info",
+		.description = "Get image metadata (dimensions, format, color channels). "
+			"Provide file_path.",
+		.input_schema = "{\"type\":\"object\",\"properties\":{\"file_path\":{"
+			"\"type\":\"string\",\"description\":\"Path to the image file\"}},"
+			"\"required\":[\"file_path\"]}",
+		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
+		.exec = img_info_exec,
+		.user_data = tctx,
+	});
 }

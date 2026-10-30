@@ -1,5 +1,6 @@
 #include "setup_config.h"
 #include "setup_role.h"
+#include "config/config.h"
 #include "util/array.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -345,6 +346,243 @@ int cli_setup_config_merge(const char *old, const char *patch, char **out)
 	morph_buf_cleanup(&result);
 	toml_free(before);
 	toml_free(after);
+	return rc;
+}
+
+static int model_name(const char *key)
+{
+	return strcmp(key, "text") == 0 || strcmp(key, "vision") == 0 ||
+		strcmp(key, "image") == 0 || strcmp(key, "video") == 0;
+}
+
+static int unused_credential(const toml_datum_t *table, const char *key)
+{
+	if (strcmp(key, "api_key") != 0 && strcmp(key, "api_key_env") != 0) return 0;
+	const toml_datum_t *value = member(table, key);
+	if (!value || value->type != TOML_STRING) return 0;
+	const toml_datum_t *direct = member(table, "api_key");
+	return !value->u.s[0] || (strcmp(key, "api_key_env") == 0 &&
+		direct && direct->type == TOML_STRING && direct->u.s[0]);
+}
+
+/* The parsed value position identifies the assignment. Skip quoted tokens and
+ * comments while locating its key, including dotted keys in inline tables. */
+static size_t assignment_start(const char *text, size_t value, size_t *separator)
+{
+	size_t start = 0;
+	*separator = 0;
+	for (size_t at = 0; at < value; at++) {
+		if (text[at] == '"' || text[at] == '\'') at = string_end(text, at) - 1;
+		else if (text[at] == '#') {
+			while (at < value && text[at] != '\n') at++;
+			start = at + 1;
+		} else if (text[at] == '\n' || text[at] == '{' || text[at] == ',') {
+			start = at + 1;
+			if (text[at] != '\n') *separator = at;
+		}
+	}
+	while (start < value && strchr(" \t\r\n", text[start])) start++;
+	return start;
+}
+
+static int remove_credential(struct config_edits *edits, const toml_datum_t *value,
+		int inlined)
+{
+	const char *text = edits->source;
+	size_t separator;
+	size_t start = assignment_start(text, value_offset(text, value), &separator);
+	size_t end = value_end(text, value);
+	if (inlined) {
+		size_t next = end;
+		while (text[next]) {
+			if (strchr(" \t\r\n", text[next])) next++;
+			else if (text[next] == '#') {
+				while (text[next] && text[next] != '\n') next++;
+			} else break;
+		}
+		if (text[next] == ',') separator = next;
+		if (text[separator] == ',' && !edit_at(edits, separator, separator + 1, 0))
+			return -ENOMEM;
+	} else {
+		size_t line = start;
+		while (line && text[line - 1] != '\n') line--;
+		size_t tail = end;
+		while (text[tail] == ' ' || text[tail] == '\t' || text[tail] == '\r') tail++;
+		if (!text[tail] || text[tail] == '\n') {
+			start = line;
+			end = tail + (text[tail] == '\n' ? 1u : 0u);
+		}
+	}
+	return edit_at(edits, start, end, 0) ? 0 : -ENOMEM;
+}
+
+static int credential_result_matches(const toml_datum_t *before,
+		const toml_datum_t *after, int level)
+{
+	if (!before || before->type != TOML_TABLE) return equivalent(before, after);
+	if (!after || after->type != TOML_TABLE) return 0;
+	int count = before->u.tab.size;
+	for (int i = 0; i < before->u.tab.size; i++) {
+		const char *key = before->u.tab.key[i];
+		const toml_datum_t *next = member(after, key);
+		if (level == 2 && unused_credential(before, key)) {
+			if (next) return 0;
+			count--;
+			continue;
+		}
+		const toml_datum_t *previous = &before->u.tab.value[i];
+		int child = level == 0 && strcmp(key, "model") == 0 ? 1 :
+			level == 1 && model_name(key) ? 2 : -1;
+		if (child < 0 ? !equivalent(previous, next) :
+		    !credential_result_matches(previous, next, child)) return 0;
+	}
+	return count == after->u.tab.size;
+}
+
+int cli_setup_config_credentials(const char *text, char **out)
+{
+	if (!out) return -EINVAL;
+	*out = NULL;
+	if (!text) return -EINVAL;
+	if (strlen(text) > INT_MAX) return -EFBIG;
+	toml_result_t parsed = toml_parse(text, (int)strlen(text));
+	struct config_edits edits = {.source = text};
+	struct config_edit sizing = {0};
+	morph_buf_t result = {0};
+	int rc = parsed.ok ? morph_array_init(&edits.items, 8, sizeof(sizing)) : MORPH_ERR_PARSE;
+	const toml_datum_t *models = parsed.ok ? member(&parsed.toptab, "model") : NULL;
+	for (int i = 0; rc == 0 && models && models->type == TOML_TABLE &&
+	     i < models->u.tab.size; i++) {
+		const toml_datum_t *entry = &models->u.tab.value[i];
+		if (!model_name(models->u.tab.key[i]) || entry->type != TOML_TABLE) continue;
+		for (int k = 0; rc == 0 && k < entry->u.tab.size; k++)
+			if (unused_credential(entry, entry->u.tab.key[k]))
+				rc = remove_credential(&edits, &entry->u.tab.value[k],
+					(models->flag | entry->flag) & TOML_FLAG_INLINED);
+	}
+	if (rc == 0) rc = morph_buf_init(&result, 0);
+	if (rc == 0) {
+		if (edits.items.nelts > 1)
+			qsort(edits.items.elts, edits.items.nelts, edits.items.size, compare_edits);
+		size_t cursor = 0;
+		for (size_t i = 0; rc == 0 && i < edits.items.nelts; i++) {
+			struct config_edit *edit = morph_array_get(&edits.items, i);
+			if (edit->start > cursor)
+				rc = morph_buf_append(&result, text + cursor, edit->start - cursor);
+			if (edit->end > cursor) cursor = edit->end;
+		}
+		if (rc == 0) rc = morph_buf_puts(&result, text + cursor);
+	}
+	if (rc == 0) {
+		toml_result_t checked = toml_parse(morph_buf_cstr(&result), (int)result.len);
+		rc = checked.ok ? 0 : MORPH_ERR_PARSE;
+		if (rc == 0 && !credential_result_matches(&parsed.toptab, &checked.toptab, 0))
+			rc = MORPH_ERR_FORMAT;
+		toml_free(checked);
+	}
+	if (rc == 0) *out = morph_buf_detach(&result);
+	for (size_t i = 0; i < edits.items.nelts; i++) {
+		struct config_edit *edit = morph_array_get(&edits.items, i);
+		morph_buf_cleanup(&edit->text);
+	}
+	morph_array_cleanup(&edits.items);
+	morph_buf_cleanup(&result);
+	toml_free(parsed);
+	return rc;
+}
+
+static const char *string_member(const toml_datum_t *table, const char *key)
+{
+	const toml_datum_t *value = member(table, key);
+	return value && value->type == TOML_STRING ? value->u.s : "";
+}
+
+static int same_mcp(const toml_datum_t *before, const toml_datum_t *added)
+{
+	if (strcmp(string_member(before, "name"), string_member(added, "name")) == 0) return 1;
+	const char *url = string_member(before, "url");
+	const char *target = string_member(added, "url");
+	if (*url && *target && strcspn(url, "?") == strcspn(target, "?") &&
+	    strncmp(url, target, strcspn(url, "?")) == 0) return 1;
+	const char *name = string_member(added, "name");
+	const char *package = strcmp(name, "playwright") == 0 ? "@playwright/mcp" :
+		strcmp(name, "macos-computer-use") == 0 ? "macos-computer-use-kit" : NULL;
+	const toml_datum_t *args = member(before, "args");
+	for (int i = 0; package && args && args->type == TOML_ARRAY && i < args->u.arr.size; i++) {
+		const toml_datum_t *arg = &args->u.arr.elem[i];
+		size_t len = strlen(package);
+		if (arg->type == TOML_STRING && strncmp(arg->u.s, package, len) == 0 &&
+		    (!arg->u.s[len] || arg->u.s[len] == '@' || arg->u.s[len] == '=')) return 1;
+	}
+	const char *command = string_member(before, "command");
+	const char *base = strrchr(command, '/');
+	return strcmp(name, "macos-computer-use") == 0 &&
+		strcmp(base ? base + 1 : command, "macos-cu") == 0;
+}
+
+int cli_setup_config_mcp_add(const char *text, const char *server, char **out)
+{
+	if (!out) return -EINVAL;
+	*out = NULL;
+	if (!text || !server) return -EINVAL;
+	if (strlen(text) > INT_MAX || strlen(server) > INT_MAX) return -EFBIG;
+	struct config_validation_error error = {0};
+	int rc = config_validate_text(server, &error);
+	if (rc != 0) return rc;
+	toml_result_t before = toml_parse(text, (int)strlen(text));
+	toml_result_t preset = toml_parse(server, (int)strlen(server));
+	const toml_datum_t *mcp = before.ok ? member(&before.toptab, "mcp") : NULL;
+	const toml_datum_t *servers = member(mcp, "servers");
+	const toml_datum_t *list = preset.ok ? member(member(&preset.toptab, "mcp"), "servers") : NULL;
+	const toml_datum_t *added = list && list->type == TOML_ARRAY && list->u.arr.size == 1 ?
+		&list->u.arr.elem[0] : NULL;
+	rc = before.ok && added && added->type == TOML_TABLE ? 0 : MORPH_ERR_PARSE;
+	int count = servers && servers->type == TOML_ARRAY ? servers->u.arr.size : 0;
+	int exists = 0;
+	for (int i = 0; rc == 0 && i < count; i++)
+		if (same_mcp(&servers->u.arr.elem[i], added)) exists = 1;
+	morph_buf_t result = {0};
+	if (rc == 0 && exists) {
+		*out = strdup(text);
+		if (!*out) rc = -ENOMEM;
+	} else if (rc == 0 && count >= MCP_SERVER_MAX) {
+		rc = -ENOSPC;
+	} else if (rc == 0) {
+		rc = morph_buf_init(&result, 0);
+		if (rc == 0 && servers && (servers->flag & TOML_FLAG_INLINED)) {
+			size_t at = count ? value_end(text, &servers->u.arr.elem[count - 1]) :
+				value_offset(text, servers) + 1;
+			rc = morph_buf_append(&result, text, at);
+			if (rc == 0 && count) rc = morph_buf_puts(&result, ", ");
+			struct config_edits edits = {.patch = server};
+			if (rc == 0) rc = patch_value(&edits, added, &result, 0);
+			if (rc == 0) rc = morph_buf_puts(&result, text + at);
+		} else if (rc == 0 && mcp && (mcp->flag & TOML_FLAG_INLINED)) {
+			morph_buf_t patch = {0};
+			rc = morph_buf_init(&patch, 0);
+			if (rc == 0) rc = morph_buf_puts(&patch, "[mcp]\nservers = [");
+			struct config_edits edits = {.patch = server};
+			if (rc == 0) rc = patch_value(&edits, added, &patch, 0);
+			if (rc == 0) rc = morph_buf_puts(&patch, "]\n");
+			char *merged = NULL;
+			if (rc == 0) rc = cli_setup_config_merge(text, morph_buf_cstr(&patch), &merged);
+			if (rc == 0) rc = morph_buf_puts(&result, merged);
+			free(merged);
+			morph_buf_cleanup(&patch);
+		} else if (rc == 0) {
+			rc = morph_buf_puts(&result, text);
+			const char *eol = strstr(text, "\r\n") ? "\r\n" : "\n";
+			if (rc == 0) rc = morph_buf_puts(&result, eol);
+			for (const char *p = server; rc == 0 && *p; p++)
+				rc = *p == '\n' ? morph_buf_puts(&result, eol) : morph_buf_putc(&result, *p);
+		}
+		if (rc == 0 && result.len > INT_MAX) rc = -EFBIG;
+		if (rc == 0) rc = config_validate_text(morph_buf_cstr(&result), &error);
+		if (rc == 0) *out = morph_buf_detach(&result);
+	}
+	morph_buf_cleanup(&result);
+	toml_free(preset);
+	toml_free(before);
 	return rc;
 }
 

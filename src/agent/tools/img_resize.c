@@ -222,7 +222,11 @@ int img_resize_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
 		return -EINVAL;
-	return tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "img_resize", .description = "Resize an image to the given width/height. "
+	return tool_register(reg, &(struct tool_spec){
+		.origin = TOOL_ORIGIN_BUILTIN,
+		.flags = TOOL_FLAG_MEDIA,
+		.name = "img_resize",
+		.description = "Resize an image to the given width/height. "
 		"Provide file_path, width, height, optional output_path. "
 		"If only one of width/height is given, the other is computed "
 		"to preserve aspect ratio.", .input_schema = "{\"type\":\"object\",\"properties\":"
