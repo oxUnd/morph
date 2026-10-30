@@ -387,7 +387,7 @@ TEST_F(CliTerminalTest, JobsUseDescriptionAndIndentedCommandWithoutDefaultLogs)
 	cJSON_Delete(data);
 }
 
-TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndFailuresRemainUntilSeen)
+TEST_F(CliTerminalTest, JobsWithoutDescriptionStayOneLineAndInspectionHidesFailures)
 {
 	cJSON *data = cJSON_Parse(R"({"session_id":"proc_job12345","owner_session_id":0,
 		"description":"","command":"printf bad; exit 7","status":"exited","exit_code":7,

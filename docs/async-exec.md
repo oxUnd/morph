@@ -21,10 +21,12 @@ command uses one line. Commands are clipped to the available display width and
 control sequences are sanitized. At most three jobs appear, or one in short
 terminals, followed by an overflow count. Logs stay out of the task area.
 
-Successful jobs remain briefly and then disappear. Failed, timed-out, signaled,
-and killed jobs remain until their terminal result is inspected. Each completion
-also produces one history receipt. Jobs remain visible while the model works on
-other steps and after a turn has ended.
+Successful jobs remain for five seconds and then disappear. Failed, timed-out,
+signaled, and killed jobs remain for ten seconds. Inspecting a terminal result
+hides it immediately. Each completion also produces one history receipt, and
+results remain available through `/jobs` after leaving the task area. These
+timeouts apply while the model works on other steps and after a turn has ended;
+running jobs remain visible until they finish.
 
 `/jobs` opens the current conversation's live job list. Up/Down selects a command,
 Enter opens its command, working directory, state, exit code, and output. Output

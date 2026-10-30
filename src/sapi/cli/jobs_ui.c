@@ -5,6 +5,7 @@
 #include <morph/tui/components.h>
 
 #define CLI_JOB_SUCCESS_MS 5000
+#define CLI_JOB_FAILURE_MS 10000
 
 struct cli_job {
 	cJSON *data;
@@ -56,8 +57,8 @@ static int job_visible(const struct cli_context *ctx, const struct cli_job *job)
 	if (cJSON_GetNumberValue(cJSON_GetObjectItemCaseSensitive(job->data, "owner_session_id")) !=
 	    (double)owner)
 		return 0;
-	return job_running(job->data) || (!job->seen && job_failed(job->data)) ||
-	       (!job->seen && jobs_now() - job->updated < CLI_JOB_SUCCESS_MS);
+	int64_t retention = job_failed(job->data) ? CLI_JOB_FAILURE_MS : CLI_JOB_SUCCESS_MS;
+	return job_running(job->data) || (!job->seen && jobs_now() - job->updated < retention);
 }
 
 static int remember_job(struct cli_context *ctx, const cJSON *data)
@@ -176,7 +177,7 @@ int cli_jobs_render(struct cli_context *ctx, morph_buf_t *out, int columns, int 
 	if (!ctx->jobs || columns < 20)
 		return 0;
 	int rows = 0, shown = 0, total = 0;
-	/* Running work stays ahead of retained failures and recent successes. */
+	/* Running work stays ahead of recent failures and successes. */
 	for (int pass = 0; pass < 3; pass++) {
 		struct cli_job *job;
 		morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)

@@ -120,6 +120,13 @@ def main():
                           if 'Runtime process completion records' in str(m.get('content', ''))]
             assert completion and 'BUILD_FINISHED' in completion[0], body
             assert '"exit_code":7' in completion[0], completion
+            text = until(terminal, lambda text: any('└─' in row and 'exit 7' in row
+                                                   for row in text.splitlines()))
+            text = until(terminal, lambda text: not any('└─' in row and 'exit 7' in row
+                                                       for row in text.splitlines()), seconds=12)
+            assert 'keep my draft' in text, text
+            assert 'Worked for' not in text, text
+            assert not terminal.duplicate_prompts, terminal.duplicate_prompts
             release.delta = {'content': 'Verified build failure: exit 7.'}
             release.set()
             text = until(terminal, lambda text: 'Worked for' in text)
@@ -141,12 +148,16 @@ def main():
             terminal.send('Start a job and notify me later\r')
             _, release = terminal.request()
             releases.append(release)
-            release.delta = {'tool_calls': [{
-                'index': 0, 'id': 'notify_only_job', 'type': 'function',
-                'function': {'name': 'exec', 'arguments': json.dumps({
-                    'command': 'while [ ! -f release-notify ]; do sleep .05; done; printf NOTIFIED',
-                    'description': 'Notify-only verification',
-                    'background': True, 'notify_only': True})}}]}
+            release.delta = {'tool_calls': []}
+            for index, (description, suffix) in enumerate([
+                    ('Notify-only verification', 'printf NOTIFIED'),
+                    ('Notify-only failure', 'printf FAILED_NOTIFICATION; exit 9')]):
+                release.delta['tool_calls'].append({
+                    'index': index, 'id': f'notify_only_job_{index}', 'type': 'function',
+                    'function': {'name': 'exec', 'arguments': json.dumps({
+                        'command': 'while [ ! -f release-notify ]; do sleep .05; done; ' + suffix,
+                        'description': description,
+                        'background': True, 'notify_only': True})}})
             release.set()
             _, release = terminal.request()
             releases.append(release)
@@ -157,12 +168,34 @@ def main():
             assert 'Notify-only verification' in text, text
             terminal.send('idle draft')
             (directory / 'release-notify').touch()
-            text = until(terminal, lambda text: 'Notify-only verification · exited 0' in text)
+            text = until(terminal, lambda text: 'Notify-only verification · exited 0' in text
+                         and 'Notify-only failure · exited 9' in text)
             assert 'idle draft' in text, text
             assert Model.requests.empty(), 'notification caused an unsolicited model turn'
             terminal.pump(5.4)
             text = terminal.snapshot('idle completion expires while preserving the draft')
             assert 'idle draft' in text, text
+            assert not any('└─ while [ ! -f release-notify' in row and 'exit 9' not in row
+                           for row in terminal.screen.display), text
+            assert any('└─' in row and 'exit 9' in row
+                       for row in terminal.screen.display), text
+            text = until(terminal, lambda text: not any('└─ while [ ! -f release-notify' in row
+                                                       for row in text.splitlines()))
+            assert 'idle draft' in text, text
+            assert 'Notify-only failure · exited 9' in text, text
+            assert Model.requests.empty(), 'failure expiry caused an unsolicited model turn'
+            assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+            with sqlite3.connect(directory / 'data.db') as db:
+                records = db.execute('SELECT process_id,data_json FROM process_jobs').fetchall()
+            failure_id, data = next((pid, json.loads(data)) for pid, data in records
+                                    if json.loads(data)['description'] == 'Notify-only failure')
+            assert data['exit_code'] == 9 and 'FAILED_NOTIFICATION' in data['stdout'], data
+            terminal.send('\x15/jobs ' + failure_id[5:13] + '\r')
+            text = until(terminal, lambda text: 'morph / jobs / output' in text)
+            assert 'FAILED_NOTIFICATION' in text and 'exit 9' in text, text
+            terminal.send('\x1b')
+            terminal.send('\x1b')
+            text = terminal.snapshot('expired failure remains inspectable without reappearing')
             assert not any('└─ while [ ! -f release-notify' in row
                            for row in terminal.screen.display), text
             assert not terminal.duplicate_prompts, terminal.duplicate_prompts
