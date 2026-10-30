@@ -97,6 +97,143 @@ TEST_F(PromptTemplateTest, SupportsNestedAndInvertedBooleanSections) {
 	EXPECT_EQ(rendered, "ABCD");
 }
 
+TEST_F(PromptTemplateTest, SelectsExplicitIfElseBranchesWithExactWhitespace) {
+	const char *text = "begin\n{{ # if\tmodel.text.reasoning_enabled }}reasoning\n"
+		"{{ else }}standard\n{{ / if }}end\n";
+	for (int enabled : {0, 1, -2}) {
+		ASSERT_EQ(render(text, {
+			{"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL,
+			 nullptr, enabled}}), 0);
+		EXPECT_EQ(rendered, enabled ? "begin\nreasoning\nend\n" :
+			"begin\nstandard\nend\n");
+	}
+	for (const char *empty : {"{{#if flag}}{{/if}}", "{{#if flag}}{{else}}{{/if}}"}) {
+		for (int enabled : {0, 1}) {
+			ASSERT_EQ(render(empty, {{"flag", MORPH_PROMPT_TEMPLATE_BOOL,
+				nullptr, enabled}}), 0);
+			EXPECT_TRUE(rendered.empty());
+		}
+	}
+	ASSERT_EQ(render("{{#if flag}}yes{{/if}}",
+		{{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), 0);
+	EXPECT_TRUE(rendered.empty());
+}
+
+TEST_F(PromptTemplateTest, NestedIfElseAndLegacySectionsRespectParentSelection) {
+	const char *text = "{{#if outer}}A{{#if inner}}1{{else}}2{{/if}}"
+		"{{else}}{{^outer}}B{{/outer}}{{#if inner}}3{{else}}4{{/if}}{{/if}}"
+		"{{#hidden}}{{#if inner}}leak{{else}}leak{{/if}}{{/hidden}}"
+		"{{#if hidden}}{{#if inner}}leak{{else}}leak{{/if}}{{/if}}";
+	for (int outer : {0, 1}) {
+		for (int inner : {0, 1}) {
+			ASSERT_EQ(render(text, {
+				{"outer", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, outer},
+				{"inner", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, inner},
+				{"hidden", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}}), 0);
+			EXPECT_EQ(rendered, outer ? (inner ? "A1" : "A2") :
+				(inner ? "B3" : "B4"));
+		}
+	}
+}
+
+TEST_F(PromptTemplateTest, ExistingIfAndElseVariableNamesRetainTheirMeaning) {
+	ASSERT_EQ(render("{{if}}:{{else}}", {
+		{"if", MORPH_PROMPT_TEMPLATE_STRING, "one", 0},
+		{"else", MORPH_PROMPT_TEMPLATE_STRING, "two", 0}}), 0);
+	EXPECT_EQ(rendered, "one:two");
+	ASSERT_EQ(render("{{#if}}{{else}}{{/if}}{{#ifx}}x{{/ifx}}", {
+		{"if", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
+		{"ifx", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
+		{"else", MORPH_PROMPT_TEMPLATE_STRING, "legacy", 0}}), 0);
+	EXPECT_EQ(rendered, "legacyx");
+	ASSERT_EQ(render("{{#if flag}}{{#nested}}{{else}}{{/nested}}{{else}}other{{/if}}", {
+		{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
+		{"nested", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1},
+		{"else", MORPH_PROMPT_TEMPLATE_STRING, "value", 0}}), 0);
+	EXPECT_EQ(rendered, "value");
+}
+
+TEST_F(PromptTemplateTest, RejectsMalformedConditionalsWithoutImplicitExpressions) {
+	const std::vector<Variable> variables{{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 0}};
+	for (const char *text : {"{{#if }}x{{/if}}", "{{#if missing}}x{{/if}}",
+		"{{#if flag}}x{{else}}y{{else}}z{{/if}}", "{{#if flag}}x{{else}}y",
+		"{{#if flag}}x{{/flag}}", "{{#if flag}}x{{else if flag}}y{{/if}}",
+		"{{#if !flag}}x{{/if}}", "{{#if flag == true}}x{{/if}}",
+		"{{#if model == 'x'}}x{{/if}}", "{{#if flag}}{{#flag}}{{/if}}{{/flag}}",
+		"{{else}}", "{{/if}}"}) {
+		SCOPED_TRACE(text);
+		EXPECT_EQ(render(text, variables), MORPH_ERR_FORMAT);
+	}
+	EXPECT_EQ(render("{{#if flag}}x{{else}}y{{/if}}",
+		{{"flag", MORPH_PROMPT_TEMPLATE_STRING, "true", 0}}), MORPH_ERR_FORMAT);
+	EXPECT_EQ(render("line\n{{#if flag}}x{{else}}y{{else}}z{{/if}}", variables),
+		MORPH_ERR_FORMAT);
+	EXPECT_EQ(error.line, 2u);
+	EXPECT_EQ(error.column, 23u);
+}
+
+TEST_F(PromptTemplateTest, ValidatesBothConditionalBranchesAndAllPartialReferences) {
+	for (int enabled : {0, 1}) {
+		const std::vector<Variable> variables{
+			{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, enabled}};
+		EXPECT_EQ(render("{{#if flag}}{{missing}}{{else}}ok{{/if}}", variables),
+			MORPH_ERR_FORMAT);
+		EXPECT_EQ(render("{{#if flag}}ok{{else}}{{missing}}{{/if}}", variables),
+			MORPH_ERR_FORMAT);
+		write("main.txt", "{{#if flag}}{{>missing.txt}}{{else}}ok{{/if}}");
+		EXPECT_EQ(render_file("main.txt", variables), -ENOENT);
+		write("main.txt", "{{#if flag}}ok{{else}}{{>missing.txt}}{{/if}}");
+		EXPECT_EQ(render_file("main.txt", variables), -ENOENT);
+		write("main.txt", "{{#if flag}}ok{{else}}{{>bad.txt}}{{/if}}");
+		write("bad.txt", "{{#if flag}}unclosed");
+		EXPECT_EQ(render_file("main.txt", variables), MORPH_ERR_FORMAT);
+		EXPECT_STREQ(error.path, "bad.txt");
+	}
+}
+
+TEST_F(PromptTemplateTest, ComposesRoleAndModelGuidanceFromFreshCallerBindings) {
+	write("main.txt", "{{>role.txt}}\n{{#if model.text.reasoning_enabled}}"
+		"{{>models/reasoning.txt}}{{else}}{{>models/standard.txt}}{{/if}}");
+	write("role.txt", "Role: {{role.name}}");
+	write("models/reasoning.txt", "{{#if concise}}short{{else}}expanded{{/if}}");
+	write("models/standard.txt", "standard");
+	for (int enabled : {0, 1}) {
+		ASSERT_EQ(render_file("main.txt", {
+			{"role.name", MORPH_PROMPT_TEMPLATE_STRING, "Researcher", 0},
+			{"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL,
+			 nullptr, enabled},
+			{"concise", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}), 0);
+		EXPECT_EQ(rendered, enabled ? "Role: Researcher\nshort" :
+			"Role: Researcher\nstandard");
+	}
+	write("models/reasoning.txt", "{{else}}");
+	EXPECT_EQ(render_file("main.txt", {
+		{"role.name", MORPH_PROMPT_TEMPLATE_STRING, "Researcher", 0},
+		{"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}}),
+		MORPH_ERR_FORMAT);
+}
+
+TEST_F(PromptTemplateTest, ConditionalBranchesEnforceDepthAndSelectedOutputLimits) {
+	std::string opening, closing;
+	for (unsigned i = 0; i < MORPH_PROMPT_TEMPLATE_SECTION_DEPTH; i++) {
+		opening += "{{#if flag}}{{else}}";
+		closing += "{{/if}}";
+	}
+	const std::vector<Variable> variables{{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, 1}};
+	ASSERT_EQ(render(opening + closing, variables), 0);
+	EXPECT_TRUE(rendered.empty());
+	EXPECT_EQ(render("{{#if flag}}" + opening + closing + "{{/if}}", variables), -ELOOP);
+	std::string maximum(MORPH_PROMPT_TEMPLATE_OUTPUT_MAX, 'x');
+	for (int enabled : {0, 1}) {
+		int rc = render("{{#if flag}}ok{{else}}{{x}}x{{/if}}", {
+			{"flag", MORPH_PROMPT_TEMPLATE_BOOL, nullptr, enabled},
+			{"x", MORPH_PROMPT_TEMPLATE_STRING, maximum.c_str(), 0}});
+		EXPECT_EQ(rc, enabled ? 0 : -EFBIG);
+		if (enabled)
+			EXPECT_EQ(rendered, "ok");
+	}
+}
+
 TEST_F(PromptTemplateTest, CallersCanRefreshBindingsWithoutCachedState) {
 	const char *text = "{{assistant.name}}:{{#capabilities.vision}}vision{{/capabilities.vision}}"
 		"{{^capabilities.vision}}text{{/capabilities.vision}}";

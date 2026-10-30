@@ -39,15 +39,39 @@ Run Morph without a config to start the first-time setup wizard:
 
 	./build/bin/morph
 
-Follow three steps: Account, Preferences, and Start. Choose a provider and
-connect your account, then adjust only the preferences you need. Model names,
+Setup follows Role, Account, Preferences, and Save. Choose your role first;
+its required model capabilities cannot be skipped. Video creator requires text,
+vision, image and video models. General assistant, Software developer, Writer
+and Researcher require text; Photographer also requires vision; Photo editor
+and Designer require text, vision and image. Other capabilities are optional.
+Choose providers and connect your accounts. Model names,
 API URLs, context windows, and output limits are under Advanced settings.
 For DeepSeek, setup asks whether to enable thinking: Off (default) for faster
 responses, or On for more time to reason. The choice can be changed from the model's
 Thinking setting or the final review. Text and Vision choices are independent.
 Use arrows or Tab to move, Enter to select, Esc to go back, and Ctrl-C to exit
-without saving. Your config is written only after Start using morph (or Save
-setup for later when credentials are missing). The wizard uses append mode:
+without saving. Your config is written only after Save and exit (or Save setup
+for later when credentials are missing). Setup always exits after saving, even
+when API keys are present. Run Morph again to load the configuration and skills.
+To configure an existing installation, run:
+
+	morph setup
+	morph setup -c /path/to/config.toml
+
+Reconfiguration starts from saved values and creates a private backup before
+replacing the configuration. Unchanged settings are retained, including model
+options, MCP servers, hooks, permissions, and memory settings. Only changed
+values are replaced; unrelated text, comments and table layouts stay unchanged.
+The backup preserves the complete original configuration.
+Existing custom prompt sources can be kept, or replaced with role instructions
+in a private Markdown snapshot such as config.toml.prompts/developer.md.
+Unchanged snapshots are reused; customized prompt files are never overwritten.
+Role instructions are generated from shipped prompt templates. [setup].role
+records the last selected preset, while [prompt] controls the actual instructions.
+Bundled skills remain available through normal discovery; installing external
+skills is a separate "morph skills add" action and requires restarting Morph.
+
+The wizard uses inline append mode:
 completed answers remain in scrollback, and only the current card is redrawn.
 It never clears the screen or enters the alternate screen buffer. Narrow or
 short terminals use compact choices instead of cards.
@@ -267,6 +291,7 @@ CLI COMMANDS						*morph-cli*
 Shell management commands (no chat/model initialization):
 
 	morph mcp <add|list|get|remove|test> ...
+	morph setup [-c PATH]	Configure a new or existing installation and exit.
 	morph skills <add|list|remove|update> ...
 	morph skill ...	Alias for morph skills.
 

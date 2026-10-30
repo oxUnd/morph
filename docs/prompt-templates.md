@@ -12,10 +12,10 @@ the same API and choose their own rendering lifecycle and context.
 The implementation lives in `src/prompt/template.c`, with its API in
 `src/prompt/template.h`, in the `morph-prompt` static library. It depends only on
 `morph-util`; `morph-agent` links it publicly for agent and frontend consumers.
-This phase implements and tests the reusable API. It does not automatically
-reinterpret existing prompt files or change setup/runtime behavior. There is no
-role picker, role prompt, permission grant, model requirement, new configuration
-key, or new CLI command in this change.
+The renderer does not automatically reinterpret existing prompt files or change
+runtime behavior. The CLI setup consumer now renders shipped scenario templates
+into private snapshots; see [Setup](setup.md). Other producers opt in through
+the same API.
 
 This is a small, explicitly versioned Mustache-style subset, not a Mustache or
 Jinja compatibility implementation. It adds no dependency or scripting runtime.
@@ -93,13 +93,17 @@ free(prompt);
 The boolean in this example is supplied by the caller. It is not evidence that
 a tool is currently enabled or a model endpoint has been tested successfully.
 
-## Syntax version 1
+## Syntax version 2
+
+Version 2 adds explicit boolean `if` / `else` blocks. All version-1 templates
+retain their meaning; the function signatures and binding types are unchanged.
 
 | Syntax | Meaning |
 | --- | --- |
 | `{{scenario.role}}` | Insert a string binding verbatim |
 | `{{#style.concise}}...{{/style.concise}}` | Render a block when a boolean is true |
 | `{{^style.concise}}...{{/style.concise}}` | Render a block when a boolean is false |
+| `{{#if style.concise}}...{{else}}...{{/if}}` | Select one of two branches using a boolean binding |
 | `{{>common/delivery.txt}}` | Include a file relative to the bundle root |
 | `{{! explanation}}` | Discard a comment |
 | `\{{name}}` | Emit literal `{{name}}` |
@@ -110,6 +114,21 @@ must match their closing tags exactly. Sections may nest and span lines.
 Partials inherit the same immutable bindings, and each file must balance its
 own sections. Partial paths are exact filenames; there is no implicit extension
 or resolution relative to the including file.
+
+Explicit conditionals accept one boolean variable name. `else` is optional and
+may appear once, directly inside the corresponding `#if` block. Both branches
+may be empty and may contain nested conditionals, version-1 sections and partials.
+Close an explicit conditional with `{{/if}}`, not the condition's variable name.
+An inner block's `else` applies only to that block; an unselected parent cannot
+emit output through a nested `else`. A conditional cannot cross a partial's file
+boundary. Negation, comparisons, `else if` and arbitrary expressions are not
+supported; callers compute the boolean values explicitly.
+
+For backward compatibility, `if` and `else` remain valid binding names. Bare
+`{{else}}` is a branch delimiter only when the immediately enclosing section is
+an explicit `#if` block. Elsewhere it is an ordinary string substitution and
+requires a binding. The version-1 `{{#if}}...{{/if}}` form still refers to a
+boolean variable named `if`; the new form requires an argument after `if`.
 
 Whitespace outside tags is preserved exactly, including final newlines. There
 is no standalone-tag line removal, indentation propagation, automatic trimming,
@@ -137,7 +156,7 @@ rejected. Only regular files are read; special files cannot block rendering.
 Directory traversal uses `openat` relative to held directory descriptors,
 preventing a path-component symlink swap from escaping the root.
 
-Limits are part of the version-1 contract:
+Resource limits are unchanged from version 1:
 
 - 256 KiB of source per file; 1 MiB of source read per render, counting repeats.
 - 1 MiB of rendered output and 1 MiB of aggregate string-binding bytes.
@@ -166,7 +185,57 @@ Never render arbitrary user messages, retrieved text, tool outputs, or previousl
 rendered content as templates. Existing `[prompt]` files remain literal text;
 automatic runtime template loading needs an explicit opt-in design separately.
 
-Setup is one consumer. Future preset generation renders a prompt snapshot once:
+### Adapting prompts to models
+
+Prefer composition over duplicating a full role prompt for every model:
+
+1. Shared instructions define stable task and delivery behavior.
+2. Role partials define the domain workflow.
+3. Model adaptation partials contain only differences justified for the selected
+   model or configuration; boolean conditions select between those partials.
+
+For example, a caller could define this context and bundle:
+
+```text
+{{>roles/researcher.txt}}
+{{#if model.text.reasoning_enabled}}
+{{>models/reasoning.txt}}
+{{else}}
+{{>models/standard.txt}}
+{{/if}}
+```
+
+```c
+struct morph_prompt_template_variable variables[] = {
+	{"model.text.reasoning_enabled", MORPH_PROMPT_TEMPLATE_BOOL, NULL, 1},
+};
+```
+
+These names and paths illustrate a caller-owned contract; they are not built-in
+bindings, shipped model adapters or automatic setup integration. The boolean
+must reflect the actual selected text model's effective configuration, not a
+substring guess based on its display name or the selected image/video model.
+If a difference is tied to a particular provider/model family rather than a
+capability, keep that mapping explicit in the caller and default to shared
+instructions for unknown families. A capability flag is not an API setting:
+prompt text cannot enable reasoning, vision or tool access by itself.
+
+Only add model-specific guidance when a documented requirement or a comparative
+evaluation justifies it. Do not assume every model family needs its own complete
+prompt or that a configured reasoning mode needs verbose visible reasoning.
+Small differences can be inline branches; larger differences belong in partials.
+
+The rendering boundary matters. A setup-generated snapshot freezes the selected
+branch. Changing a model later does not re-render that plain-text file. To adapt
+automatically at startup, per subagent or after a model switch, an explicitly
+enabled template consumer must render after its actual model is resolved and
+refresh the relevant system instructions at that boundary. This does not require
+configuration hot reload or restarting the whole environment, but it is separate
+from this library's syntax support. Preserve the literal meaning of existing
+prompt files rather than treating every system prompt as executable template
+source. Dynamic tool availability and permissions remain runtime-owned context.
+
+Setup is one consumer. Preset generation renders a prompt snapshot once:
 
 1. Collect a preset selection and model choices without writing files.
 2. Build an explicit variable context from preset metadata and setup settings.
@@ -178,7 +247,7 @@ Setup is one consumer. Future preset generation renders a prompt snapshot once:
 The general template renderer implements step 3 only. It does not publish files,
 select append/replace mode, change configuration, or decide whether setup may finish.
 Template bundle resources can use the existing `prompts/` staging/install rules;
-the role phase will resolve that installed bundle and select its entry file.
+setup resolves that installed bundle and selects its entry file.
 
 Do not freeze the current date, cwd, tool list, activated skills, current model
 availability, or granted permissions into setup snapshots. Those facts may
@@ -208,14 +277,18 @@ requirements belong in executable preset metadata and setup validation, not in
 natural-language prompt conditions. Configuring a model is also distinct from
 having valid credentials and a functioning endpoint.
 
-This phase adds no manifest schema or role policies. A future manifest can name
-the template entry and supply its static bindings without changing syntax v1.
+The current setup uses an explicit role catalog for required models and template
+entries. External skill sources, permission suggestions, and generated key-file
+policies still need a separate manifest design; a manifest can supply static
+bindings without changing template syntax.
 
 ## Verification
 
 Unit tests exercise exact text output, UTF-8, strict typing and names, nested and
-inverted sections, literal escaping, rooted partial composition, diagnostics,
+inverted sections, explicit conditionals and their nesting/else scope,
+backward-compatible variable names, literal escaping, rooted partial composition, diagnostics,
 all-branch validation, cycles, symlinks, special files, and resource limits.
 They also load a rendered snapshot through the existing prompt loader to prove
-that no runtime template support is required. Existing setup tests verify that
-the current onboarding flow remains unchanged. No real model calls are needed.
+that no runtime template support is required. Existing setup tests verify role
+generation, required model configuration and snapshot preservation. No real
+model calls are needed to verify the template language.

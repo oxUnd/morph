@@ -8,10 +8,15 @@ check `config.toml.example` and `src/config/schema.c` before proposing unfamilia
 ## First Run
 
 Run `morph`, or `morph -c <new-config-path>`, in an interactive terminal with a
-missing config. There is no separate `--setup` flag. Setup follows Account →
-Preferences → Start, using inline, append-mode cards instead of a full-screen UI.
+missing config. Use `morph setup` or `morph setup -c <path>` to reconfigure an
+existing installation. There is no separate `--setup` flag. Setup follows Role →
+Account → Preferences → Save, using inline, append-mode cards instead of a full-screen UI.
 Completed answers remain in scrollback. Small terminals use compact choices.
 
+- Choose a role first. Video creator requires all four model sections: text,
+  vision, image, and video. Photographer requires text and vision; Photo editor
+  and Designer require text, vision, and image. Other roles require text.
+  Required models cannot be skipped; credentials can be completed later.
 - Choose a provider and connect an account using a hidden API key, an environment
   variable name, or Set up later. Secret input is not echoed into the transcript.
 - Preferences expose Account, a Thinking choice for the DeepSeek adapter, and
@@ -21,12 +26,16 @@ Completed answers remain in scrollback. Small terminals use compact choices.
 - DeepSeek thinking defaults to Off in setup and is explicitly confirmed once.
   On means more time to reason; Off favors quicker replies. Text and Vision choices
   are independent. Switching providers resets provider-specific setup choices.
-- Vision, image generation, and video generation are optional and separately
-  configurable. The final review can reopen any capability for changes.
+- Model capabilities beyond the selected role requirements are optional and
+  separately configurable. The final review can reopen any capability for changes.
 - Arrows/Tab move, Enter selects, Esc goes back, and Ctrl-C exits. Cancelling a
   selection or edit preserves the previous accepted value. Cancelling setup writes
-  no config; an existing config is not overwritten.
-- Start using morph saves the config. With missing credentials the action is
+  no config. Explicit reconfiguration preserves other settings and backs up the
+  old config before replacement. Unchanged fields, comments and table formatting
+  are preserved. Existing prompt sources can be kept or replaced
+  with a new role snapshot without changing the original files.
+- Save and exit saves the config and always exits without opening the agent.
+  Run Morph again to load the saved configuration. With missing credentials the action is
   Save setup for later; Morph prints the needed exports and exits after saving.
   Relaunch after setting those variables. Do not promise an API connection test:
   a Ready account means a configured/exported key is present, not verified by the provider.

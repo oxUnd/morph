@@ -23,6 +23,8 @@ add_library(morph-cli STATIC
 	recap.c
 	run.c
 	setup.c
+	setup_config.c
+	setup_role.c
 	setup_ui.c
 	scheduler.c
 	share.c

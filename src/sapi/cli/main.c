@@ -132,6 +132,7 @@ static const char cli_usage_text[] =
 	"Usage: morph [options]\n"
 	"\n"
 	"Commands:\n"
+	"  setup                Choose a role and configure models; save and exit\n"
 	"  mcp                  Manage MCP servers (add/list/get/remove/test)\n"
 	"  skills (skill)       Install and manage skills from Git or local paths\n"
 	"\n"
@@ -211,7 +212,7 @@ static int cli_parse_options(int argc, char **argv,
 		}
 	}
 	if (optind < argc) {
-		if (strcmp(argv[optind], "mcp") == 0 ||
+		if (strcmp(argv[optind], "setup") == 0 || strcmp(argv[optind], "mcp") == 0 ||
 		    strcmp(argv[optind], "skills") == 0 ||
 		    strcmp(argv[optind], "skill") == 0) {
 			options->command_index = optind;
@@ -560,7 +561,9 @@ int main(int argc, char *argv[])
 		int remaining = argc - options.command_index - 1;
 		char **arguments = argv + options.command_index + 1;
 
-		rc = strcmp(command, "mcp") == 0
+		rc = strcmp(command, "setup") == 0
+			     ? cli_setup_command(startup_ctx, remaining, arguments, management_config)
+			     : strcmp(command, "mcp") == 0
 			     ? cli_manage_mcp(&logger, remaining, arguments, management_config)
 			     : cli_manage_skills(&logger, remaining, arguments, management_config);
 		free(management_config);

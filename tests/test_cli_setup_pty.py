@@ -18,7 +18,7 @@ except ImportError:
 
 class Terminal:
     def __init__(self, binary, path, ready=False, size=(24, 80), flags=(),
-                 production=False, no_color_env=False):
+                 production=False, no_color_env=False, role=1, setup_command=False):
         env = {k: v for k, v in os.environ.items()
                if not k.endswith('API_KEY') and k != 'NO_COLOR'}
         if no_color_env:
@@ -28,13 +28,20 @@ class Terminal:
             env.update(OPENAI_API_KEY='fixture-openai', DEEPSEEK_API_KEY='fixture-deepseek',
                        VOLCENGINE_API_KEY='fixture-ark')
         self.path = path
+        arguments = (["setup", "-c", str(path)] if setup_command else
+                     ["-c", str(path)] if production else [str(path)])
         self.child = pexpect.spawn(str(binary),
-                                   (["-c", str(path)] if production else [str(path)]) + list(flags), env=env,
+                                   arguments + list(flags), env=env,
                                    encoding='utf-8', dimensions=size, timeout=5)
         self.screen = pyte.HistoryScreen(size[1], size[0], history=2000)
         self.stream = pyte.Stream(self.screen)
         self.transcript = ''
         self.production = production
+        self.wait('Choose your role')
+        self.child.send(f'{role}\r')
+        if path.exists():
+            self.wait('Prompt instructions')
+            self.child.send('1\r')
         self.wait('Choose your provider')
 
     def wait(self, text):
@@ -150,7 +157,7 @@ def assert_cards(t):
 def skip_extras(t):
     t.send('1\r', 'Create images with morph?')
     t.send('1\r', 'Create videos with morph?')
-    t.send('1\r', '3/3  Start')
+    t.send('1\r', '4/4  Save')
 
 
 def tests(driver, directory, production):
@@ -174,7 +181,7 @@ def tests(driver, directory, production):
         t.send('\r', 'Understand images with morph?')
         assert_cards(t)
         skip_extras(t)
-        assert '3/3  Start' in '\n'.join(t.screen.display)
+        assert '4/4  Save' in '\n'.join(t.screen.display)
         assert not t.path.exists()
         review = active_text(t, "You're ready.")
         assert 'ctx=' not in review and str(t.path) not in review
@@ -200,7 +207,7 @@ def tests(driver, directory, production):
         # No key: account comes first, no save until the final confirmation.
         t = start('account-later')
         t.send('2\r', 'Connect your account')
-        assert '1/3  Account' in '\n'.join(t.screen.display)
+        assert '2/4  Account' in '\n'.join(t.screen.display)
         assert_cards(t)
         t.send('3\r', 'Make morph yours')
         t.send('\r', 'How should morph think?')
@@ -456,7 +463,7 @@ def tests(driver, directory, production):
         t = start('cancel-review', ready=True)
         t.send('1\r\r', 'Understand images with morph?')
         skip_extras(t)
-        t.child.send('6\r')
+        t.child.send('7\r')
         t.finish(-errno.ECANCELED)
         assert not t.path.exists()
 
@@ -464,6 +471,71 @@ def tests(driver, directory, production):
         os.kill(t.child.pid, signal.SIGTERM)
         t.finish(-errno.ECANCELED)
         assert not t.path.exists()
+
+        # A video role requires all four models; there are no capability skip pages.
+        for columns in (120, 80, 60):
+            t = start(f'video-{columns}', ready=True, role=7, size=(24, columns))
+            assert 'Text model required' in '\n'.join(t.screen.display)
+            t.send('1\r\r', 'Vision model required')
+            t.send('1\r\r', 'Image model required')
+            t.send('1\r\r', 'Video model required')
+            t.send('1\r\r', "You're ready.")
+            config = t.save()
+            assert 'role = "video_creator"' in config and 'model = ""' not in config
+            assert 'Understand images with morph?' not in t.transcript
+            assert 'Create images with morph?' not in t.transcript
+            assert 'Create videos with morph?' not in t.transcript
+
+        # Switching the role on review rechecks the stronger model requirements.
+        t = start('change-role', ready=True)
+        t.send('1\r\r', 'Understand images with morph?')
+        skip_extras(t)
+        t.send('6\r', 'Choose your role')
+        t.send('7\r', 'Text model required')
+        t.send('1\r\r', 'Vision model required')
+        t.send('1\r\r', 'Image model required')
+        t.send('1\r\r', 'Video model required')
+        t.send('1\r\r', "You're ready.")
+        assert 'model = ""' not in t.save()
+
+        # Explicit setup and first-run setup exit even when all keys are present.
+        for explicit in (False, True):
+            path = directory / f'production-ready-{explicit}.toml'
+            t = Terminal(production, path, production=True, ready=True,
+                         setup_command=explicit)
+            terminals.append(t)
+            t.send('1\r\r', 'Understand images with morph?')
+            skip_extras(t)
+            t.send('\r', 'Setup complete.')
+            t.child.expect(pexpect.EOF)
+            t.child.close()
+            assert t.child.exitstatus == 0 and path.exists()
+            assert not (path.parent / '.morph/data.db').exists()
+            t.assert_inline()
+
+        # Re-running the explicit command loads saved defaults and keeps the prompt.
+        original = path.read_text()
+        t = Terminal(production, path, production=True, ready=True, setup_command=True)
+        terminals.append(t)
+        t.send('1\r\r', 'Understand images with morph?')
+        skip_extras(t)
+        t.send('\r', 'Setup complete.')
+        t.child.expect(pexpect.EOF)
+        t.child.close()
+        assert t.child.exitstatus == 0
+        assert any(p.read_text() == original for p in path.parent.glob(path.name + '.backup-*'))
+
+        # Concurrent edits cannot be overwritten by a wizard opened earlier.
+        t = Terminal(production, path, production=True, ready=True, setup_command=True)
+        terminals.append(t)
+        t.send('1\r\r', 'Understand images with morph?')
+        skip_extras(t)
+        changed = path.read_text() + '\n# external edit during setup\n'
+        path.write_text(changed)
+        t.child.send('\r')
+        t.child.expect(pexpect.EOF)
+        t.child.close()
+        assert t.child.exitstatus == 1 and path.read_text() == changed
 
         # Production entrypoint, both providers, no real keys or network calls.
         for provider in ('1', '2'):

@@ -12,6 +12,7 @@
 #define SETUP_BACK (-EAGAIN)
 
 enum setup_phase {
+	SETUP_ROLE,
 	SETUP_ACCOUNT,
 	SETUP_PREFERENCES,
 	SETUP_START
@@ -35,6 +36,7 @@ struct setup_ui {
 	int deferred[SETUP_MODEL_COUNT];
 	int thinking_confirmed[SETUP_MODEL_COUNT];
 	struct config_model_entry *entries;
+	struct cli_setup_state *state;
 };
 
 int cli_setup_ui_available(FILE *input, FILE *output)
@@ -124,7 +126,7 @@ static int frame_start(struct setup_ui *ui, morph_buf_t *frame,
 	morph_buf_puts(frame, "\033[?25l");
 	clear_active(ui, frame);
 	const char *progress[] = {
-		"1/3  Account", "2/3  Preferences", "3/3  Start"
+		"1/4  Role", "2/4  Account", "3/4  Preferences", "4/4  Save"
 	};
 	if (ui->rows >= 8)
 		line(ui, frame, "\033[2m", progress[ui->phase]);
@@ -158,7 +160,7 @@ static int record_answer(struct setup_ui *ui, const char *answer)
 	char safe[BUFSIZ];
 	utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
 	morph_buf_printf(&frame, "  %s✓ %s%s · %s\r\n",
-		ui->color ? "\033[32m" : "", names[ui->step],
+		ui->color ? "\033[32m" : "", ui->step < 0 ? "Role" : names[ui->step],
 		ui->color ? "\033[0m" : "", safe);
 	/* Committed text can wrap naturally and is never owned by a new frame. */
 	return frame_show(ui, &frame);
@@ -602,7 +604,12 @@ static int choose_provider(struct setup_ui *ui, int kind, int *provider)
 		kind == SETUP_VIDEO ? video_details : chat_details;
 	for (;;) {
 		ui->phase = kind == SETUP_TEXT ? SETUP_ACCOUNT : SETUP_PREFERENCES;
+		const char *required[] = {"Text model required for your role.",
+			"Vision model required for your role.", "Image model required for your role.",
+			"Video model required for your role."};
 		int selected = select_menu(ui, "Choose your provider",
+			cli_setup_role_requires(ui->state->role, kind) ?
+			required[kind] :
 			"Use your own account with any supported provider.",
 			items, descriptions, kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
 			kind == SETUP_VIDEO ? 2 : 3, *provider);
@@ -628,7 +635,7 @@ static int choose_provider(struct setup_ui *ui, int kind, int *provider)
 
 static int model_step(struct setup_ui *ui, int kind, int *provider)
 {
-	if (kind == SETUP_TEXT)
+	if (cli_setup_role_requires(ui->state->role, kind))
 		return choose_provider(ui, kind, provider);
 	struct config_model_entry *entry = &ui->entries[kind];
 	const char *items[] = {"Skip for now", "Set up this capability"};
@@ -664,7 +671,8 @@ static int review(struct setup_ui *ui, const char *path)
 	size_t offsets[SETUP_MODEL_COUNT];
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
 		struct config_model_entry *entry = &ui->entries[i];
-		if (entry->model[0] && !has_key(ui, entry)) ready = 0;
+		if ((entry->model[0] && !has_key(ui, entry)) ||
+		    (cli_setup_role_requires(ui->state->role, i) && !entry->model[0])) ready = 0;
 		offsets[i] = labels.len;
 		morph_buf_printf(&labels, "%s  ", names[i]);
 		if (entry->model[0] && strcmp(entry->adapter, "deepseek") == 0)
@@ -680,19 +688,25 @@ static int review(struct setup_ui *ui, const char *path)
 		morph_buf_putc(&labels, '\0');
 	}
 	if (labels.failed) { morph_buf_cleanup(&labels); return -ENOMEM; }
-	const char *items[SETUP_MODEL_COUNT + 2] = {
-		ready ? "Start using morph →" : "Save setup for later →"
+	const char *items[SETUP_MODEL_COUNT + 3] = {
+		ready ? "Save and exit →" : "Save setup for later →"
 	};
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
 		items[i + 1] = labels.data + offsets[i];
-	items[SETUP_MODEL_COUNT + 1] = "Cancel without saving";
+	items[SETUP_MODEL_COUNT + 1] = cli_setup_role_get(ui->state->role).label;
+	items[SETUP_MODEL_COUNT + 2] = "Cancel without saving";
 	(void)path;
 	ui->phase = SETUP_START;
 	int selected = menu(ui, ready ? "You're ready." : "Save your setup",
-		ready ? "Saved only when you choose Start using morph." :
+		ready ? "Save these settings, then run morph again to start." :
 		"Add your API key later to start chatting.",
-		items, SETUP_MODEL_COUNT + 2, 0);
+		items, SETUP_MODEL_COUNT + 3, 0);
 	if (selected == 0) {
+		for (int i = 0; i < SETUP_MODEL_COUNT; i++)
+			if (cli_setup_role_requires(ui->state->role, i) && !ui->entries[i].model[0]) {
+				morph_buf_cleanup(&labels);
+				return i + 1;
+			}
 		for (int i = 1; i <= SETUP_MODEL_COUNT; i++) {
 			rc = record_answer(ui, items[i]);
 			if (rc < 0) { selected = rc; break; }
@@ -703,13 +717,13 @@ static int review(struct setup_ui *ui, const char *path)
 }
 
 int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input, FILE *output,
-			 struct config_model_entry entries[SETUP_MODEL_COUNT])
+			 struct cli_setup_state *state)
 {
 	struct setup_ui ui = {.output = output,
 			      .fd = fileno(input),
 			      .output_fd = fileno(output),
 			      .color = cli_color_enabled(ctx) && !getenv("NO_COLOR"),
-			      .entries = entries};
+			      .step = -1, .entries = state->entries, .state = state};
 	int signal_rc = morph_signal_listener_start(&ui.signals, setup_signal, &ui);
 
 	if (signal_rc != 0)
@@ -721,24 +735,57 @@ int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input,
 		morph_signal_listener_stop(&ui.signals);
 		return enter_rc;
 	}
-	fputs("\r\n  morph  /  First-time setup\r\n\r\n", output);
-	int providers[SETUP_MODEL_COUNT] = {0};
+	fputs("\r\n  morph  /  Setup\r\n\r\n", output);
+	int providers[SETUP_MODEL_COUNT];
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
+		providers[i] = cli_setup_provider_choice(i, &state->entries[i]) - 1;
 	int rc = 0;
 	int reviewing = 0;
 	for (;;) {
-		if (ui.step < SETUP_MODEL_COUNT) {
+		if (ui.step < 0) {
+			const char *items[SETUP_ROLE_COUNT];
+			const char *descriptions[SETUP_ROLE_COUNT];
+			for (int i = 0; i < SETUP_ROLE_COUNT; i++) {
+				struct cli_setup_role role = cli_setup_role_get(i);
+				items[i] = role.label;
+				descriptions[i] = role.description;
+			}
+			ui.phase = SETUP_ROLE;
+			rc = select_menu(&ui, "Choose your role",
+				"Your role determines the required models and default instructions.",
+				items, descriptions, SETUP_ROLE_COUNT, state->role);
+			if (rc == SETUP_BACK) {
+				if (reviewing) { ui.step = SETUP_MODEL_COUNT; continue; }
+				rc = -ECANCELED;
+			}
+			if (rc < 0) break;
+			state->role = rc;
+			if (state->existing_prompt) {
+				const char *choices[] = {"Keep existing instructions", "Use role instructions"};
+				rc = menu(&ui, "Prompt instructions",
+					"Existing prompt files are preserved. Role instructions use a new file.",
+					choices, 2, state->replace_prompt);
+				if (rc == SETUP_BACK) continue;
+				if (rc < 0) break;
+				state->replace_prompt = rc;
+			} else state->replace_prompt = 1;
+			rc = record_answer(&ui, cli_setup_role_get(state->role).label);
+			if (rc < 0) break;
+			ui.step = 0;
+			reviewing = 0;
+		} else if (ui.step < SETUP_MODEL_COUNT) {
 			rc = model_step(&ui, ui.step, &providers[ui.step]);
 			if (rc == SETUP_BACK) {
 				if (reviewing) ui.step = SETUP_MODEL_COUNT;
-				else if (ui.step > 0) ui.step--;
-				else { rc = -ECANCELED; break; }
+				else ui.step--;
 			} else if (rc < 0) break;
 			else ui.step = reviewing ? SETUP_MODEL_COUNT : ui.step + 1;
 		} else {
 			reviewing = 1;
 			rc = review(&ui, path);
 			if (rc == 0) break;
-			if (rc == SETUP_MODEL_COUNT + 1) { rc = -ECANCELED; break; }
+			if (rc == SETUP_MODEL_COUNT + 2) { rc = -ECANCELED; break; }
+			if (rc == SETUP_MODEL_COUNT + 1) { ui.step = -1; continue; }
 			if (rc == SETUP_BACK) ui.step = SETUP_MODEL_COUNT - 1;
 			else if (rc < 0) break;
 			else ui.step = rc - 1;

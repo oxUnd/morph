@@ -1,5 +1,7 @@
 #include "setup.h"
 #include "setup_ui.h"
+#include "setup_config.h"
+#include "manage.h"
 #include "config/config.h"
 #include "util/buf.h"
 #include "util/error.h"
@@ -7,12 +9,25 @@
 #include "util/utf8.h"
 #include "util/name.h"
 #include "cJSON.h"
+#include "tomlc17.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+int cli_setup_provider_choice(int kind, const struct config_model_entry *entry)
+{
+	if (strcmp(entry->provider, "openai") == 0 || !entry->provider[0])
+		return 1;
+	if (kind == SETUP_TEXT || kind == SETUP_VISION)
+		return strcmp(entry->provider, "deepseek") == 0 ? 2 :
+			strcmp(entry->provider, "volcengine") == 0 ? 3 : 4;
+	if (kind == SETUP_IMAGE)
+		return strcmp(entry->provider, "volcengine") == 0 ? 2 : 3;
+	return strcmp(entry->provider, "volcengine") == 0 ? 1 : 2;
+}
 
 struct setup_preset {
 	const char *provider;
@@ -257,18 +272,25 @@ static int configure_model(FILE *in, FILE *out, int kind,
 		kind == SETUP_IMAGE ?
 		"Provider: 1) OpenAI  2) Volcengine  3) Other (OpenAI Images compatible)" :
 		"Provider: 1) Volcengine  2) Other (Volcengine Video compatible)";
-	int selected = choice(in, out, menu, "1",
+	int previous = cli_setup_provider_choice(kind, entry);
+	char fallback[16];
+	snprintf(fallback, sizeof(fallback), "%d", previous);
+	int selected = choice(in, out, menu, fallback,
 		kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
 		kind == SETUP_VIDEO ? 2 : 3);
 	if (selected < 0)
 		return selected;
-	cli_setup_model_defaults(kind, selected, entry);
+	if (!entry->provider[0] || selected != previous)
+		cli_setup_model_defaults(kind, selected, entry);
+	char previous_model[sizeof(entry->model)];
+	strcpy(previous_model, entry->model);
 	int rc = prompt(in, out, "Model name / endpoint ID", entry->model,
 		entry->model, sizeof(entry->model));
 	if (rc < 0)
 		return rc;
 	if (kind == SETUP_TEXT || kind == SETUP_VISION) {
-		cli_setup_reset_token_limits(entry);
+		if (strcmp(previous_model, entry->model) != 0)
+			cli_setup_reset_token_limits(entry);
 		rc = prompt_token_count(in, out, "Context window (tokens)", 2,
 			cli_setup_token_ceiling(entry, 0), &entry->context_limit);
 		if (rc < 0) return rc;
@@ -282,7 +304,7 @@ static int configure_model(FILE *in, FILE *out, int kind,
 	if (strcmp(entry->adapter, "deepseek") == 0) {
 		int thinking = choice(in, out,
 			"DeepSeek thinking: 1) Off (faster responses)  2) On (more time to reason)",
-			"1", 2);
+			cli_setup_thinking_enabled(entry) ? "2" : "1", 2);
 
 		if (thinking < 0)
 			return thinking;
@@ -302,6 +324,8 @@ static int configure_model(FILE *in, FILE *out, int kind,
 			break;
 		fprintf(out, "Use an http:// or https:// URL.\n");
 	}
+	if (entry->api_key[0])
+		return 0;
 	for (;;) {
 		rc = prompt(in, out, "API key environment variable (not the key)",
 			entry->api_key_env,
@@ -316,142 +340,359 @@ static int configure_model(FILE *in, FILE *out, int kind,
 
 static void append_field(morph_buf_t *buf, const char *key, const char *value)
 {
-	morph_buf_printf(buf, "%s = \"", key);
-	for (const char *p = value; *p; p++) {
-		if (*p == '\\' || *p == '"')
-			morph_buf_putc(buf, '\\');
-		morph_buf_putc(buf, *p);
-	}
-	morph_buf_puts(buf, "\"\n");
+	cJSON *string = cJSON_CreateString(value);
+	char *encoded = string ? cJSON_PrintUnformatted(string) : NULL;
+	cJSON_Delete(string);
+	if (!encoded) { buf->failed = -ENOMEM; return; }
+	morph_buf_printf(buf, "%s = %s\n", key, encoded);
+	free(encoded);
 }
 
-static int save_config(const char *path, const char *text)
+static int unique_file(const char *path, const char *suffix,
+		const char *text, char **created);
+
+static int save_config(const char *path, const char *text, int replace, int *published)
 {
+	if (published) *published = 0;
 	char *parent = strdup(path);
-	if (!parent)
-		return -ENOMEM;
+	if (!parent) return -ENOMEM;
 	char *slash = strrchr(parent, '/');
-	int rc = 0;
 	if (slash) {
-		if (slash == parent)
-			slash[1] = '\0';
-		else
-			*slash = '\0';
-		if (strlen(parent) >= PATH_MAX)
-			rc = -ENAMETOOLONG;
-		else
-			rc = file_ensure_dir(parent);
-	}
+		if (slash == parent) slash[1] = '\0';
+		else *slash = '\0';
+	} else strcpy(parent, ".");
+	int rc = file_ensure_dir(parent);
+	int directory = rc == 0 ? open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC) : -1;
+	if (rc == 0 && directory < 0) rc = morph_error_from_errno(errno);
 	free(parent);
-	if (rc < 0)
-		return rc;
-	char *temporary = file_path_append_alloc(path, ".setup-XXXXXX");
-	if (!temporary)
-		return -ENOMEM;
-	int fd = mkstemp(temporary);
-	if (fd < 0) {
-		rc = -errno;
-		free(temporary);
-		return rc;
+	if (rc != 0) return rc;
+	char *temporary = NULL;
+	rc = unique_file(path, ".setup-XXXXXX", text, &temporary);
+	if (rc == 0) {
+		int result = replace ? rename(temporary, path) : link(temporary, path);
+		if (result != 0) rc = morph_error_from_errno(errno);
+		else if (published) *published = 1;
 	}
-	FILE *file = fdopen(fd, "w");
-	if (!file) {
-		rc = -errno;
-		close(fd);
-	} else {
-		if (fputs(text, file) == EOF)
-			rc = errno ? -errno : -EIO;
-		if (fclose(file) != 0 && rc == 0)
-			rc = -errno;
-	}
-	/* Publish without replacing an existing file, including a symlink. */
-	if (rc == 0 && link(temporary, path) != 0)
-		rc = -errno;
-	unlink(temporary);
+	if (temporary) unlink(temporary);
 	free(temporary);
-	if (rc < 0)
+	if (rc == 0 && fsync(directory) != 0) rc = morph_error_from_errno(errno);
+	if (close(directory) != 0 && rc == 0) rc = morph_error_from_errno(errno);
+	return rc;
+}
+
+static int collect_plain(struct cli_setup_state *state, const char *path,
+		FILE *input, FILE *output)
+{
+	fprintf(output, "Welcome to morph setup: %s.\n"
+		"Press Enter to keep defaults; Ctrl-D cancels without saving.\n"
+		"API keys stay in environment variables.\n\nChoose your role:\n", path);
+	for (int i = 0; i < SETUP_ROLE_COUNT; i++) {
+		struct cli_setup_role role = cli_setup_role_get(i);
+		fprintf(output, "  %d) %s - %s\n", i + 1, role.label, role.description);
+	}
+	char fallback[16];
+	snprintf(fallback, sizeof(fallback), "%d", state->role + 1);
+	int rc = choice(input, output, "Role", fallback, SETUP_ROLE_COUNT);
+	if (rc < 0) return rc;
+	state->role = rc - 1;
+	state->replace_prompt = 1;
+	if (state->existing_prompt) {
+		rc = choice(input, output,
+			"Instructions: 1) Keep existing  2) Use role instructions", "1", 2);
+		if (rc < 0) return rc;
+		state->replace_prompt = rc == 2;
+	}
+	const char *names[] = {"Text", "Vision", "Image", "Video"};
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+		int required = cli_setup_role_requires(state->role, i);
+		fprintf(output, "\n%s model (%s)\n", names[i], required ? "required" : "optional");
+		if (!required) {
+			rc = choice(input, output, "1) Skip  2) Configure",
+				state->entries[i].model[0] ? "2" : "1", 2);
+			if (rc < 0) return rc;
+			if (rc == 1) {
+				memset(&state->entries[i], 0, sizeof(state->entries[i]));
+				continue;
+			}
+		}
+		rc = configure_model(input, output, i, &state->entries[i]);
+		if (rc < 0) return rc;
+	}
+	fprintf(output, "\nRole: %s\n", cli_setup_role_get(state->role).label);
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
+		fprintf(output, "%s: %s\n", names[i], state->entries[i].model[0] ?
+			state->entries[i].model : "Not configured");
+	rc = choice(input, output, "1) Save and exit  2) Cancel without saving", "1", 2);
+	return rc < 0 ? rc : rc == 2 ? -ECANCELED : 0;
+}
+
+static int load_existing(const char *path, struct cli_setup_state *state, char **original)
+{
+	struct stat st;
+	if (lstat(path, &st) != 0)
+		return errno == ENOENT ? 0 : morph_error_from_errno(errno);
+	if (!S_ISREG(st.st_mode)) return -EINVAL;
+	if (!state->reconfigure) return -EEXIST;
+	if (st.st_size > 1024 * 1024) return -EFBIG;
+	size_t len;
+	*original = file_read_all(path, &len);
+	if (!*original) return morph_error_from_errno(errno);
+	if (memchr(*original, '\0', len) || utf8nvalid(*original, len)) return -EILSEQ;
+	struct config *config = calloc(1, sizeof(*config));
+	if (!config) return -ENOMEM;
+	int rc = config_load(NULL, config, path);
+	if (rc == 0) {
+		const struct config_model_entry *models[] = {&config->models.text,
+			&config->models.vision, &config->models.image, &config->models.video};
+		const char *names[] = {"text", "vision", "image", "video"};
+		toml_result_t parsed = toml_parse(*original, (int)len);
+		toml_datum_t model = toml_get(parsed.toptab, "model");
+		for (int i = 0; i < SETUP_MODEL_COUNT; i++)
+			if (toml_get(model, names[i]).type == TOML_TABLE)
+				state->entries[i] = *models[i];
+		toml_free(parsed);
+		state->role = cli_setup_config_role(*original);
+		state->existing_prompt = config->prompt.system_prompt_file[0] ||
+			config->prompt.system_prompt_dir[0];
+	}
+	memset(config, 0, sizeof(*config));
+	free(config);
+	return rc;
+}
+
+static int unique_file(const char *path, const char *suffix, const char *text, char **created)
+{
+	*created = file_path_append_alloc(path, suffix);
+	if (!*created) return -ENOMEM;
+	size_t suffix_len = strlen(suffix);
+	int markdown = suffix_len >= 3 && strcmp(suffix + suffix_len - 3, ".md") == 0;
+	int fd = markdown ? mkstemps(*created, 3) : mkstemp(*created);
+	if (fd < 0) {
+		int rc = morph_error_from_errno(errno);
+		free(*created);
+		*created = NULL;
 		return rc;
-	return 0;
+	}
+	size_t offset = 0;
+	size_t len = strlen(text);
+	int rc = 0;
+	while (offset < len) {
+		ssize_t n = write(fd, text + offset, len - offset);
+		if (n < 0 && errno == EINTR) continue;
+		if (n <= 0) { rc = morph_error_from_errno(errno); break; }
+		offset += (size_t)n;
+	}
+	if (rc == 0 && fsync(fd) != 0) rc = morph_error_from_errno(errno);
+	if (close(fd) != 0 && rc == 0) rc = morph_error_from_errno(errno);
+	if (rc != 0) {
+		unlink(*created);
+		free(*created);
+		*created = NULL;
+	}
+	return rc;
+}
+
+static int role_snapshot(const char *path, int role, const char *text,
+		char **snapshot, int *created)
+{
+	*snapshot = NULL;
+	*created = 0;
+	char *directory = file_path_append_alloc(path, ".prompts");
+	if (!directory) return -ENOMEM;
+	int rc = file_ensure_dir(directory);
+	char *base = rc == 0 ? file_path_join_alloc(directory, cli_setup_role_get(role).id) : NULL;
+	char *named = base ? file_path_append_alloc(base, ".md") : NULL;
+	if (rc == 0 && !named) rc = -ENOMEM;
+	if (rc == 0) {
+		struct stat st;
+		if (lstat(named, &st) == 0 && S_ISREG(st.st_mode) &&
+		    st.st_size >= 0 && (size_t)st.st_size == strlen(text)) {
+			char *current = file_read_all(named, NULL);
+			int same = current && strcmp(current, text) == 0;
+			free(current);
+			if (same) {
+				*snapshot = named;
+				free(base);
+				free(directory);
+				return 0;
+			}
+		}
+		rc = save_config(named, text, 0, created);
+		if (rc == -EEXIST) {
+			/* Preserve a customized or concurrently published named snapshot. */
+			rc = unique_file(base, "-XXXXXX.md", text, snapshot);
+			if (rc == 0) {
+				*created = 1;
+				int fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+				if (fd < 0) rc = morph_error_from_errno(errno);
+				else {
+					if (fsync(fd) != 0) rc = morph_error_from_errno(errno);
+					if (close(fd) != 0 && rc == 0) rc = morph_error_from_errno(errno);
+				}
+			}
+		} else if (rc == 0 || *created) {
+			*snapshot = named;
+			named = NULL;
+		}
+	}
+	free(named);
+	free(base);
+	free(directory);
+	return rc;
+}
+
+static int publish_setup(const char *path, const char *original, const char *text, FILE *output)
+{
+	if (!original) return save_config(path, text, 0, NULL);
+	char *lock_path = file_path_append_alloc(path, ".lock");
+	if (!lock_path) return -ENOMEM;
+	int lock = cli_manage_lock(lock_path);
+	free(lock_path);
+	if (lock < 0) return lock;
+	struct stat st;
+	int rc = lstat(path, &st) == 0 ? 0 : morph_error_from_errno(errno);
+	if (rc == 0 && !S_ISREG(st.st_mode)) rc = -EINVAL;
+	char *current = rc == 0 ? file_read_all(path, NULL) : NULL;
+	if (rc == 0 && (!current || strcmp(current, original) != 0)) rc = -ESTALE;
+	free(current);
+	char *backup = NULL;
+	if (rc == 0) rc = unique_file(path, ".backup-XXXXXX", original, &backup);
+	if (rc == 0) rc = save_config(path, text, 1, NULL);
+	if (backup) fprintf(output, "Previous configuration backed up to %s.\n", backup);
+	free(backup);
+	close(lock);
+	return rc;
+}
+
+static int save_setup(struct cli_setup_state *state, const char *path,
+		const char *original, FILE *output)
+{
+	const char *names[] = {"text", "vision", "image", "video"};
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
+		if (cli_setup_role_requires(state->role, i) && !state->entries[i].model[0])
+			return MORPH_ERR_NOT_CONFIGURED;
+	char *prompt_text = NULL;
+	char *snapshot = NULL;
+	int snapshot_created = 0;
+	char *merged = NULL;
+	morph_buf_t patch = {0};
+	int rc = morph_buf_init(&patch, 0);
+	if (rc != 0) return rc;
+	if (state->replace_prompt) {
+		rc = cli_setup_role_render(state->role, &prompt_text);
+		if (rc == 0) rc = role_snapshot(path, state->role, prompt_text,
+			&snapshot, &snapshot_created);
+		if (rc == 0) {
+			morph_buf_puts(&patch, "[prompt]\nmode = \"replace\"\n");
+			append_field(&patch, "system_prompt_file", snapshot);
+			append_field(&patch, "system_prompt_dir", "");
+		}
+	}
+	morph_buf_puts(&patch, "\n[setup]\n");
+	append_field(&patch, "role", cli_setup_role_get(state->role).id);
+	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+		struct config_model_entry *entry = &state->entries[i];
+		morph_buf_printf(&patch, "\n[model.%s]\n", names[i]);
+		append_field(&patch, "provider", entry->provider);
+		append_field(&patch, "adapter", entry->adapter);
+		append_field(&patch, "model", entry->model);
+		append_field(&patch, "api_base", entry->api_base);
+		append_field(&patch, "api_key", entry->api_key);
+		append_field(&patch, "api_key_env", entry->api_key_env);
+		append_field(&patch, "extra_body_json", entry->extra_body_json);
+		if ((i == SETUP_TEXT || i == SETUP_VISION) && entry->model[0])
+			morph_buf_printf(&patch, "context_limit = %d\nmax_tokens = %d\n",
+				entry->context_limit, entry->max_tokens);
+	}
+	if (!original) morph_buf_puts(&patch, "\n[exec]\nnetwork = true\n");
+	if (rc == 0) rc = patch.failed;
+	if (rc == 0) rc = cli_setup_config_merge(original ? original : "",
+		morph_buf_cstr(&patch), &merged);
+	struct config_validation_error error = {0};
+	if (rc == 0) rc = config_validate_text(merged, &error);
+	if (rc == 0) rc = publish_setup(path, original, merged, output);
+	if (rc != 0 && snapshot && snapshot_created) {
+		/* A directory sync failure can follow a successful atomic replacement. */
+		char *published = file_read_all(path, NULL);
+		if (!published || !merged || strcmp(published, merged) != 0) unlink(snapshot);
+		free(published);
+	}
+	free(prompt_text);
+	free(snapshot);
+	free(merged);
+	morph_buf_cleanup(&patch);
+	return rc;
+}
+
+static int setup_run(struct cli_context *ctx, const char *path,
+		FILE *input, FILE *output, int reconfigure)
+{
+	struct cli_setup_state state = {.reconfigure = reconfigure};
+	char *original = NULL;
+	char current[PATH_MAX];
+	char *expanded = path ? file_expand_path(path) : NULL;
+	char *full = expanded && getcwd(current, sizeof(current)) ?
+		file_path_full_alloc(current, expanded) : NULL;
+	free(expanded);
+	if (!full) return -EINVAL;
+	int rc = load_existing(full, &state, &original);
+	if (rc == 0) rc = cli_setup_ui_available(input, output) ?
+		cli_setup_ui_collect(ctx, full, input, output, &state) :
+		collect_plain(&state, full, input, output);
+	if (rc == 0) rc = save_setup(&state, full, original, output);
+	if (rc == 0) {
+		fprintf(output, "\nConfiguration saved to %s.\n", full);
+		for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
+			struct config_model_entry *entry = &state.entries[i];
+			if (!entry->model[0] || entry->api_key[0]) continue;
+			const char *key = getenv(entry->api_key_env);
+			if (!key || !*key) {
+				fprintf(output, "Set the %s model key in your shell:\n"
+					"  export %s='<your-api-key>'\n",
+					i == SETUP_TEXT ? "text" : i == SETUP_VISION ? "vision" :
+					i == SETUP_IMAGE ? "image" : "video", entry->api_key_env);
+				rc = 1;
+			}
+		}
+		fprintf(output, "Setup complete. Run morph again with the same -c configuration to start.\n"
+			"To change these settings, run morph setup with the same -c path.\n");
+	}
+	memset(&state, 0, sizeof(state));
+	free(original);
+	free(full);
+	return rc;
 }
 
 int cli_setup(struct cli_context *ctx, const char *path, FILE *input, FILE *output)
 {
-	struct config_model_entry entries[SETUP_MODEL_COUNT] = {0};
-	const char *names[] = {"text", "vision", "image", "video"};
-	if (cli_setup_ui_available(input, output)) {
-		int rc = cli_setup_ui_collect(ctx, path, input, output, entries);
-		if (rc < 0) {
-			memset(entries, 0, sizeof(entries));
-			return rc;
+	return setup_run(ctx, path, input, output, 0);
+}
+
+int cli_setup_reconfigure(struct cli_context *ctx, const char *path, FILE *input, FILE *output)
+{
+	return setup_run(ctx, path, input, output, 1);
+}
+
+int cli_setup_command(struct cli_context *ctx, int argc, char **argv, const char *path)
+{
+	for (int i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+			fputs("Usage: morph setup [-c PATH]\n"
+				"Choose a role, configure its models, save and exit.\n", stdout);
+			return 0;
 		}
-	} else {
-		fprintf(output, "Welcome to morph! Let's create %s.\n"
-			"Press Enter to accept defaults; Ctrl-D cancels without saving.\n"
-			"API keys stay in environment variables.\n\nText model (required)\n", path);
-		for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
-			if (i > 0) {
-				int selected = choice(input, output, i == SETUP_VISION ?
-					"Configure vision (image understanding)? 1) Skip  2) Configure" :
-					i == SETUP_IMAGE ?
-					"Configure image generation? 1) Skip  2) Configure" :
-					"Configure video generation? 1) Skip  2) Configure", "1", 2);
-				if (selected < 0)
-					return selected;
-				if (selected == 1)
-					continue;
-			}
-			int rc = configure_model(input, output, i, &entries[i]);
-			if (rc < 0)
-				return rc;
+		if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) && i + 1 < argc)
+			path = argv[++i];
+		else if (strncmp(argv[i], "--config=", 9) == 0 && argv[i][9])
+			path = argv[i] + 9;
+		else {
+			fprintf(stderr, "morph: unexpected setup argument: %s\n", argv[i]);
+			return 2;
 		}
 	}
-	morph_buf_t buf;
-	int rc = morph_buf_init(&buf, 0);
-	if (rc < 0)
-		return rc;
-	morph_buf_puts(&buf, "# Created by morph first-run setup.\n");
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
-		morph_buf_printf(&buf, "\n[model.%s]\n", names[i]);
-		append_field(&buf, "provider", entries[i].provider);
-		append_field(&buf, "adapter", entries[i].adapter);
-		append_field(&buf, "model", entries[i].model);
-		append_field(&buf, "api_base", entries[i].api_base);
-		if (entries[i].api_key[0])
-			append_field(&buf, "api_key", entries[i].api_key);
-		else
-			append_field(&buf, "api_key_env", entries[i].api_key_env);
-		if (entries[i].extra_body_json[0])
-			append_field(&buf, "extra_body_json",
-				     entries[i].extra_body_json);
-		if ((i == SETUP_TEXT || i == SETUP_VISION) && entries[i].model[0])
-			morph_buf_printf(&buf, "context_limit = %d\nmax_tokens = %d\n",
-				entries[i].context_limit, entries[i].max_tokens);
-	}
-	morph_buf_puts(&buf, "\n[exec]\nnetwork = true\n");
-	struct config_validation_error error = {0};
-	rc = buf.failed ? -ENOMEM : config_validate_text(morph_buf_cstr(&buf), &error);
-	if (rc == 0)
-		rc = save_config(path, morph_buf_cstr(&buf));
-	morph_buf_cleanup(&buf);
-	if (rc < 0)
-		return rc;
-	fprintf(output, "\nConfiguration saved to %s.\n"
-		"You can edit this file later to add or change model capabilities.\n", path);
-	int missing = 0;
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
-		if (!entries[i].model[0] || entries[i].api_key[0])
-			continue;
-		const char *key = getenv(entries[i].api_key_env);
-		if (!key || !*key) {
-			fprintf(output, "Set the %s model key in your shell:\n"
-				"  export %s='<your-api-key>'\n", names[i], entries[i].api_key_env);
-			missing = 1;
-		}
-	}
-	if (missing)
-		fprintf(output, "Then run morph again with the same configuration.\n");
-	memset(entries, 0, sizeof(entries));
-	return missing;
+	int rc = cli_setup_reconfigure(ctx, path ? path : "~/.morph/config.toml", stdin, stderr);
+	if (rc < 0) fprintf(stderr, "morph: setup failed: %s\n", morph_strerror(rc));
+	return rc < 0 ? 1 : 0;
 }
 
 int cli_setup_if_missing(struct cli_context *ctx, const char *path, int interactive)
@@ -468,9 +709,10 @@ int cli_setup_if_missing(struct cli_context *ctx, const char *path, int interact
 	if (rc == -ENOENT) {
 		if (interactive && isatty(STDIN_FILENO) && isatty(STDERR_FILENO)) {
 			rc = cli_setup(ctx, expanded, stdin, stderr);
+			if (rc >= 0) rc = 1;
 		} else {
 			fprintf(stderr, "morph: configuration not found: %s\n"
-				"Run morph in a terminal without --prompt or --events to set up"
+				"Run morph setup to configure it"
 				" (use the same -c path if specified).\n", expanded);
 		}
 	}

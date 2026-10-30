@@ -3,6 +3,7 @@
 
 struct cli_context;
 #include "config/config.h"
+#include "setup_role.h"
 #include <stdio.h>
 
 #define CLI_SETUP_TOKEN_INPUT_MAX 32
@@ -13,6 +14,14 @@ enum cli_setup_model_kind {
 	SETUP_IMAGE,
 	SETUP_VIDEO,
 	SETUP_MODEL_COUNT
+};
+
+struct cli_setup_state {
+	struct config_model_entry entries[SETUP_MODEL_COUNT];
+	int role;
+	int existing_prompt;
+	int replace_prompt;
+	int reconfigure;
 };
 
 #ifdef __cplusplus
@@ -27,9 +36,10 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled);
 void cli_setup_reset_token_limits(struct config_model_entry *entry);
 int cli_setup_token_ceiling(const struct config_model_entry *entry, int output);
 int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int *value);
+int cli_setup_provider_choice(int kind, const struct config_model_entry *entry);
 int cli_setup_ui_available(FILE *input, FILE *output);
 int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input, FILE *output,
-			 struct config_model_entry entries[SETUP_MODEL_COUNT]);
+			 struct cli_setup_state *state);
 
 #ifdef __cplusplus
 }

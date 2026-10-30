@@ -34,6 +34,14 @@ struct template_source {
 	size_t position;
 };
 
+struct template_section {
+	morph_str_t name;
+	size_t opening;
+	size_t depth;
+	int conditional;
+	int enabled;
+};
+
 static int template_fail(struct template_context *ctx,
 		const struct template_source *source, size_t offset,
 		int code, const char *message)
@@ -201,9 +209,14 @@ static morph_str_t trim_tag(morph_str_t tag)
 static int render_file(struct template_context *ctx, const char *path, int emit);
 
 static int render_body(struct template_context *ctx, struct template_source *source,
-		morph_str_t section, size_t opening, size_t depth, int emit)
+		const struct template_section *section, int emit)
 {
 	const char *text = source->text;
+	int parent_emit = emit;
+	int alternate = 0;
+	size_t depth = section ? section->depth : 0;
+	if (section)
+		emit = emit && section->enabled;
 	for (;;) {
 		size_t start = source->position;
 		while (text[source->position] &&
@@ -216,7 +229,7 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 		if (rc != 0)
 			return rc;
 		if (!text[source->position])
-			return section.len ? template_fail(ctx, source, opening, MORPH_ERR_FORMAT,
+			return section ? template_fail(ctx, source, section->opening, MORPH_ERR_FORMAT,
 				"Section is missing its closing tag.") : 0;
 		if (text[source->position] == '\\') {
 			source->position++;
@@ -238,6 +251,15 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 		source->position = (size_t)(end - text) + 2;
 		if (!tag.len)
 			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT, "Empty template tag.");
+		if (section && section->conditional &&
+		    morph_strcmp(tag, (morph_str_t)MORPH_STRLIT("else")) == 0) {
+			if (alternate)
+				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
+					"Conditional section has more than one else tag.");
+			alternate = 1;
+			emit = parent_emit && !section->enabled;
+			continue;
+		}
 		char kind = *tag.data;
 		if (kind == '!')
 			continue;
@@ -265,11 +287,20 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 				return rc;
 			continue;
 		}
+		morph_str_t closing = tag;
+		int conditional = kind == '#' && tag.len >= 3 &&
+			memcmp(tag.data, "if", 2) == 0 && tag_space(tag.data[2]);
+		if (conditional) {
+			tag.data += 2;
+			tag.len -= 2;
+			tag = trim_tag(tag);
+			closing = (morph_str_t)MORPH_STRLIT("if");
+		}
 		if (!variable_name_valid(tag))
 			return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
 				"Invalid variable name or unsupported template syntax.");
 		if (kind == '/') {
-			if (morph_strcmp(tag, section) != 0)
+			if (!section || morph_strcmp(tag, section->name) != 0)
 				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
 					"Closing tag does not match the current section.");
 			return 0;
@@ -286,7 +317,9 @@ static int render_body(struct template_context *ctx, struct template_source *sou
 				return template_fail(ctx, source, offset, -ELOOP,
 					"Template section nesting limit exceeded.");
 			int enabled = kind == '#' ? variable->boolean != 0 : variable->boolean == 0;
-			rc = render_body(ctx, source, tag, offset, depth + 1, emit && enabled);
+			struct template_section child = {.name = closing, .opening = offset,
+				.depth = depth + 1, .conditional = conditional, .enabled = enabled};
+			rc = render_body(ctx, source, &child, emit);
 		} else {
 			if (variable->type != MORPH_PROMPT_TEMPLATE_STRING)
 				return template_fail(ctx, source, offset, MORPH_ERR_FORMAT,
@@ -338,7 +371,7 @@ static int render_file(struct template_context *ctx, const char *path, int emit)
 	ctx->active[ctx->depth].inode = st.st_ino;
 	ctx->depth++;
 	ctx->files++;
-	rc = render_body(ctx, &source, (morph_str_t){0}, 0, 0, emit);
+	rc = render_body(ctx, &source, NULL, emit);
 	ctx->depth--;
 	morph_buf_cleanup(&text);
 	return rc;
@@ -431,7 +464,7 @@ int morph_prompt_template_render(const char *text,
 		return template_fail(&ctx, &source, 0, rc, "Invalid template variable bindings.");
 	rc = morph_buf_init(&ctx.output, 0);
 	if (rc == 0)
-		rc = render_body(&ctx, &source, (morph_str_t){0}, 0, 0, 1);
+		rc = render_body(&ctx, &source, NULL, 1);
 	else
 		rc = template_fail(&ctx, &source, 0, rc, "Cannot allocate template output.");
 	if (rc == 0)
