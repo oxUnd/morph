@@ -484,6 +484,11 @@ static int db_migrate_output_columns(struct db *db)
 
 static int db_migrate_scheduled_task_columns(struct db *db)
 {
+	db_add_column_if_missing(db, "scheduled_tasks", "run_token", "TEXT NOT NULL DEFAULT ''");
+	int token_rc = db_exec(db, "SELECT run_token FROM scheduled_tasks LIMIT 0");
+	if (token_rc != 0) {
+		return token_rc;
+	}
 	db_add_column_if_missing(db, "scheduled_tasks", "source_session_id",
 				 "INTEGER REFERENCES sessions(id) ON DELETE SET NULL");
 	db_add_column_if_missing(db, "scheduled_tasks", "latest_session_id",

@@ -213,6 +213,7 @@ set(MORPH_MARKDOWN_BUILD_TESTS ${BUILD_TESTS} CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY ON CACHE BOOL "" FORCE)
 set(MORPH_MARKDOWN_BUILD_KITTY_DEMO OFF CACHE BOOL "" FORCE)
 add_subdirectory(fronts/morph-markdown)
+include(cmake/FixCmarkGfm.cmake)
 
 add_compile_options(
 	$<$<COMPILE_LANGUAGE:C>:-Wall>

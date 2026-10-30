@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "runtime/runtime_internal.h"
 #include "runtime/usage.h"
 #include "runtime/output.h"
@@ -73,6 +74,7 @@ int runtime_execute(struct runtime_engine *engine,
 	rc = runtime_lock_turn(engine, request, result);
 	if (rc != 0)
 		return rc;
+	react_drain_tools(engine->react);
 	old_event_cb = engine->react->event_cb;
 	old_event_user_data = engine->react->event_user_data;
 	old_hitl_cb = engine->react->hitl.approval_cb;
@@ -139,7 +141,7 @@ int runtime_execute(struct runtime_engine *engine,
 	session_runtime.flags = request->turn_flags ? request->turn_flags :
 		AGENT_TURN_DEFAULT_FLAGS;
 	memset(&turn, 0, sizeof(turn));
-	engine->react->cancelled = 0;
+	morph_signal_flag_set(&engine->react->cancelled, 0);
 	morph_cancel_token_reset(&engine->react->cancel_token);
 	rc = agent_turn_begin(&turn, &session_runtime,
 		&(struct agent_turn_input){
@@ -200,6 +202,7 @@ int runtime_execute(struct runtime_engine *engine,
 		rc = react_run(engine->react, request->model_input,
 			       runtime_output_forward, &output_forwarder);
 	}
+	react_drain_tools(engine->react);
 	engine->react->hook_fn = NULL;
 	engine->react->hook_user = NULL;
 	engine->react->hook_stop_active = 0;

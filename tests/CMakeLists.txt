@@ -3,6 +3,7 @@ include(GoogleTest)
 find_package(Threads REQUIRED)
 
 set(TEST_SOURCES
+	test_stability.cpp
 	test_arena.cpp
 	test_hooks.cpp
 	test_error.cpp

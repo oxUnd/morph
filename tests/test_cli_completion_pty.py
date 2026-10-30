@@ -24,7 +24,7 @@ def scenario(driver, server, height, width, wrapped):
             terminal.child.setwinsize(height, width)
             terminal.screen = pyte.Screen(width, height)
             terminal.stream = pyte.Stream(terminal.screen)
-            terminal.pump(1)
+            terminal.wait_for_composer()
             terminal.send('completion layout probe\r')
             _, release = terminal.request()
             terminal.pump(0.7)

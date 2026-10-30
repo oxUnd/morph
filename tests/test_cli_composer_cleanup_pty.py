@@ -56,7 +56,7 @@ def main():
                     terminal.screen = pyte.HistoryScreen(width, 24, history=2000)
                     terminal.stream = pyte.Stream(terminal.screen)
                     try:
-                        terminal.pump(1)
+                        terminal.wait_for_composer()
                         for turn in range(2):
                             terminal.send('hello world')
                             submitted = len(terminal.raw)

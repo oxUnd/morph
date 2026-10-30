@@ -1042,6 +1042,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 				struct config_guardrail_ext_rule *er =
 					&cfg->react.guardrail_ext_rules[
 						cfg->react.guardrail_ext_rule_count];
+				CFG_STR(et, "on_error", er->on_error);
 				CFG_STR(et, "name", er->name);
 				CFG_STR(et, "hook", er->hook);
 				CFG_STR(et, "ext_type", er->ext_type);

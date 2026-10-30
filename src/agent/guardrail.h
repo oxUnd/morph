@@ -7,12 +7,14 @@ extern "C" {
 #endif
 
 #include "util/arena.h"
+#include "util/cancel.h"
 #include <limits.h>
 #include <stddef.h>
 
 enum guardrail_verdict {
 	GUARDRAIL_PASS = 0,
 	GUARDRAIL_FAIL = 1,
+	GUARDRAIL_ERROR = 2,
 };
 
 enum guardrail_hook {
@@ -40,6 +42,8 @@ enum guardrail_retry_policy guardrail_tool_retry_policy(const struct react_step 
 struct tool_artifact_list;
 
 struct guardrail_eval_ctx {
+	const struct morph_cancel_token *cancel_token;
+	int *check_error; /* Internal per-check error output, borrowed during evaluation. */
 	struct morph_log *logger;
 	const char *user_input;
 	const char *tool_name;
@@ -76,6 +80,7 @@ typedef int (*guardrail_ext_check_fn)(const char *text,
 				      char **result_json);
 
 struct guardrail_rule {
+	int block_on_error; /* Zero preserves legacy continue-on-check-error behavior. */
 	char name[GUARDRAIL_NAME_MAX];
 	enum guardrail_hook hook;
 	enum guardrail_rule_type type;
@@ -90,6 +95,7 @@ struct guardrail_rule {
 };
 
 struct guardrail_result {
+	int check_error; /* Negative error when any check could not be completed. */
 	enum guardrail_verdict verdict;
 	char reason[GUARDRAIL_REASON_MAX];
 	const struct guardrail_rule *triggered_rule;

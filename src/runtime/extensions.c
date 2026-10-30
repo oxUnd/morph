@@ -17,11 +17,18 @@ int runtime_extensions_load(struct runtime_context *ctx,
 #include "runtime/context_owner.h"
 #include "agent/guardrail.h"
 #include "ext/ext.h"
+#include "agent/tool_runtime.h"
 #include "util/file.h"
 
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int runtime_ext_cancelled(void *opaque)
+{
+	const struct tool_result *result = opaque;
+	return result->runtime != NULL && http_wait_cancelable(&result->runtime->http, 0) != 0;
+}
 
 static int runtime_ext_exec(const char *args_json, struct tool_result *result,
 			    void *user_data)
@@ -32,7 +39,7 @@ static int runtime_ext_exec(const char *args_json, struct tool_result *result,
 
 	if (!extension)
 		return -EINVAL;
-	rc = ext_run(extension, args_json, &output);
+	rc = ext_run_cancelable(extension, args_json, &output, runtime_ext_cancelled, result);
 	if (output)
 		(void)tool_result_success_json_text(result, output);
 	return rc;

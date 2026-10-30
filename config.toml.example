@@ -260,9 +260,11 @@ guardrail_max_empty_rounds = 3
 ##   result_json must be malloc'd JSON: {"pass":bool,"reason":"..."}
 ## The subprocess receives JSON-RPC: {"text":"...", "rule":"...", "description":"..."}
 ## and must return: {"pass": true/false, "reason": "..."}
-## On timeout or process failure, defaults to PASS.
+## Checker failures are recorded separately; legacy behavior continues the turn.
+## Set on_error = "block" to reject answers when the checker is unavailable.
 # [[react.guardrail_ext_rules]]
 # name = "custom_check"
+# on_error = "continue" # or "block"
 # hook = "output"
 # ext_type = "exec"
 # ext_entry = "/path/to/guardrail-script"

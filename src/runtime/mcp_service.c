@@ -307,6 +307,7 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 	if (runtime_mcp_busy(runtime, client))
 		return -EAGAIN;
 	pthread_mutex_lock(&runtime->context.execution_lock);
+	pthread_mutex_lock(&runtime->context.tools.mutation_mutex);
 	int rc = runtime_mcp_client_discover(
 		client, &runtime->context.tools,
 		runtime->options.event_cb,
@@ -314,6 +315,7 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 		tools ? tools : &t,
 		resources ? resources : &r,
 		prompts ? prompts : &p);
+	pthread_mutex_unlock(&runtime->context.tools.mutation_mutex);
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	runtime_mcp_update_state(runtime, client,
 		rc == 0 ? RUNTIME_MCP_READY : RUNTIME_MCP_FAILED, rc);

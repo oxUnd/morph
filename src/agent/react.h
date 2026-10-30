@@ -125,7 +125,13 @@ struct react_action {
 typedef int (*react_action_drain_fn)(void *user, struct react_action *out,
 				     int timeout_sec);
 
+struct async_tool_call;
+struct react_thread_ops;
+
 struct react_context {
+	/* Optional internal adapter, borrowed until all workers have been drained. */
+	const struct react_thread_ops *thread_ops;
+	struct async_tool_call *retired_tool_calls;
 	struct morph_log *logger;
 	agent_hook_fn hook_fn;
 	void *hook_user;
@@ -232,8 +238,14 @@ react_context_create_for_session(struct session_store *store,
 				 const char *session_id,
 				 const char *user_id);
 
+/* Owner-thread only. Output/event/question callbacks are closed before return. Other
+ * borrowed tool dependencies must remain alive until drain/reset/destroy.
+ * Reset/destruction join retired workers and can block for non-cooperative tools. */
 int react_run(struct react_context *ctx, const char *user_input,
 	      react_output_cb cb, void *user_data);
+/* Join cancelled/timed-out workers before releasing borrowed dependencies.
+ * Owner-thread only; may block for a non-cooperative in-process tool. */
+void react_drain_tools(struct react_context *ctx);
 void react_cancel(struct react_context *ctx);
 int react_set_memory_context(struct react_context *ctx, const char *memory_context);
 

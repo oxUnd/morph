@@ -1353,51 +1353,11 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 
 static int patch_atomic_write(const char *path, const char *content, mode_t mode)
 {
-	char temporary[PATH_MAX];
-	int fd;
-	size_t len = strlen(content);
-	size_t written = 0;
-
-	if (snprintf(temporary, sizeof(temporary), "%s.morph-patch-XXXXXX",
-		path) >= (int)sizeof(temporary))
-		return -ENAMETOOLONG;
-	fd = mkstemp(temporary);
-	if (fd < 0)
-		return -errno;
-	if (fchmod(fd, mode) != 0) {
-		int rc = -errno;
-		(void)close(fd);
-		(void)unlink(temporary);
-		return rc;
+	int rc = file_write_atomic(path, content, strlen(content));
+	if (rc == 0 && chmod(path, mode) < 0) {
+		rc = -errno;
 	}
-	while (written < len) {
-		ssize_t count = write(fd, content + written, len - written);
-
-		if (count < 0) {
-			int rc = -errno;
-			(void)close(fd);
-			(void)unlink(temporary);
-			return rc;
-		}
-		written += (size_t)count;
-	}
-	if (fsync(fd) != 0) {
-		int rc = -errno;
-		(void)close(fd);
-		(void)unlink(temporary);
-		return rc;
-	}
-	if (close(fd) != 0) {
-		int rc = -errno;
-		(void)unlink(temporary);
-		return rc;
-	}
-	if (rename(temporary, path) != 0) {
-		int rc = -errno;
-		(void)unlink(temporary);
-		return rc;
-	}
-	return 0;
+	return rc;
 }
 
 static int patch_result_add(struct patch_result *result,

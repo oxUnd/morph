@@ -4,6 +4,8 @@
 #include "mcp.h"
 #include "util/array.h"
 
+#define MCP_STDIO_MAX_FRAME_BYTES (16u * 1024u * 1024u)
+
 #ifdef __cplusplus
 extern "C" {
 #endif

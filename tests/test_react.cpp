@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "agent/react.h"
+#include "agent/react_internal.h"
 #include "agent/history.h"
 #include "agent/plan.h"
 #include "agent/system_prompt.h"
@@ -5409,7 +5410,7 @@ static int self_cancel_tool_fn(const char *args_json, struct tool_result *result
 {
 	(void)args_json;
 	struct react_context *ctx = (struct react_context *)user_data;
-	ctx->cancelled = 1;
+	react_cancel(ctx);
 	(void)tool_result_success_json_text(result, strdup("{\"cancelled\":true}"));
 	return 0;
 }
@@ -7396,4 +7397,133 @@ TEST_F(MockLlmTest, HookAskDoesNotExecuteWithoutAnApprovalHandler)
 	EXPECT_EQ(react_run(ctx, "use tool", nullptr, nullptr), 0);
 	EXPECT_EQ(executions, 0);
 	react_context_destroy(ctx);
+}
+
+struct late_tool_state {
+	std::atomic<int> entered{0};
+	std::atomic<int> release{0};
+	std::atomic<int> late_event_rc{0};
+	std::atomic<int> late_ask_rc{0};
+	std::atomic<int> finished{0};
+};
+
+static int late_callback_tool(const char *, tool_result *result, void *opaque)
+{
+	auto *state = static_cast<late_tool_state *>(opaque);
+	state->entered.store(1);
+	while (!state->release.load()) {
+		std::this_thread::yield();
+	}
+	morph_event event{};
+	event.name = "late.event";
+	state->late_event_rc.store(
+		result->runtime->event_cb(&event, result->runtime->event_user_data));
+	char **answers = nullptr;
+	int count = 0;
+	state->late_ask_rc.store(result->runtime->ask_user_fn("late", nullptr, 0, "single", 0, 1,
+							      &answers, &count,
+							      result->runtime->ask_user_user_data));
+	state->finished.store(1);
+	return tool_result_success_text(result, "late result");
+}
+
+TEST_F(MockLlmTest, CancelledWorkersCannotCallAnExpiredRequest)
+{
+	const char *responses[] = {"Thought: use late tool.\nAction: late_callback({})\n"};
+	llm = create_multi_mock_llm(responses, 1);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	late_tool_state state;
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "late_callback", "Late callbacks",
+				"{}", late_callback_tool, &state, nullptr),
+		  0);
+	std::thread canceller([&] {
+		while (!state.entered.load()) {
+			std::this_thread::yield();
+		}
+		react_cancel(ctx);
+	});
+	EXPECT_EQ(react_run(ctx, "run tool", nullptr, nullptr), -ECANCELED);
+	canceller.join();
+	EXPECT_EQ(state.finished.load(), 0);
+	state.release.store(1);
+	react_context_destroy(ctx);
+	EXPECT_EQ(state.finished.load(), 1);
+	EXPECT_EQ(state.late_event_rc.load(), -ECANCELED);
+	EXPECT_EQ(state.late_ask_rc.load(), -ECANCELED);
+}
+
+TEST_F(MockLlmTest, JoinFailureRetiresWorkerAndReportsInfrastructureFailure)
+{
+	const char *responses[] = {"Action: join_failure({})"};
+	llm = create_multi_mock_llm(responses, 1);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int join_calls = 0;
+	react_thread_ops ops{};
+	ops.user_data = &join_calls;
+	ops.join = [](pthread_t thread, void *opaque) -> int {
+		int calls = ++*static_cast<int *>(opaque);
+		return calls == 1 ? EINVAL : pthread_join(thread, nullptr);
+	};
+	ctx->thread_ops = &ops;
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "join_failure", "Join failure", "{}",
+				test_tool_fn, nullptr, nullptr),
+		  0);
+	int rc = react_run(ctx, "run tool", nullptr, nullptr);
+	EXPECT_EQ(rc, -EINVAL);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_INTERNAL_ERROR);
+	EXPECT_STREQ(ctx->outcome_reason, "tool_worker_join_failed");
+	EXPECT_NE(ctx->retired_tool_calls, nullptr);
+	EXPECT_EQ(join_calls, 1);
+	react_context_destroy(ctx);
+	EXPECT_EQ(join_calls, 2);
+}
+
+static int wait_for_peer_tool(const char *, tool_result *result, void *opaque)
+{
+	auto *state = static_cast<late_tool_state *>(opaque);
+	while (!state->entered.load()) {
+		std::this_thread::yield();
+	}
+	return tool_result_success_text(result, "first result");
+}
+
+TEST_F(MockLlmTest, HistoryFailureRetiresEveryOutstandingWorker)
+{
+	db database{};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	ASSERT_EQ(db_exec(&database,
+			  "INSERT INTO sessions(id,name,model,created_at,updated_at) "
+			  "VALUES(1,'test','mock',1,1);"
+			  "CREATE TRIGGER reject_tool_history BEFORE INSERT ON model_history_items "
+			  "WHEN NEW.kind='tool_result' BEGIN SELECT RAISE(FAIL,'injected'); END;"),
+		  0);
+	slot_mock_data *data = nullptr;
+	llm = create_slot_mock_llm(&data);
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	ctx->history_db = &database;
+	ctx->history_session_id = 1;
+	ctx->history_enabled = 1;
+	late_tool_state state;
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_a", "First result", "{}",
+				wait_for_peer_tool, &state, nullptr),
+		  0);
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "slot_b", "Blocked peer", "{}",
+				late_callback_tool, &state, nullptr),
+		  0);
+	EXPECT_EQ(react_run(ctx, "run both tools", nullptr, nullptr), MORPH_ERR_DB);
+	EXPECT_NE(ctx->retired_tool_calls, nullptr);
+	EXPECT_EQ(state.finished.load(), 0);
+	state.release.store(1);
+	react_context_destroy(ctx);
+	EXPECT_EQ(state.finished.load(), 1);
+	EXPECT_EQ(state.late_event_rc.load(), -ECANCELED);
+	EXPECT_EQ(state.late_ask_rc.load(), -ECANCELED);
+	db_close(&database);
 }

@@ -7,6 +7,7 @@ extern "C" {
 
 #include <errno.h>
 #include <limits.h>
+#include <pthread.h>
 #include "cJSON.h"
 #include "util/str.h"
 #include "util/strmap.h"
@@ -150,7 +151,10 @@ struct tool_spec {
 	int timeout_seconds;
 };
 
+struct tool_binding;
+
 struct tool_entry {
+	struct tool_binding *binding;
 	struct tool_desc desc;
 	struct arena *descriptor_arena;
 	tool_exec_fn exec;
@@ -165,6 +169,10 @@ struct tool_entry {
 };
 
 struct tool_registry {
+	pthread_mutex_t mutex;
+	pthread_mutex_t mutation_mutex;
+	int mutex_ready;
+	int init_error;
 	struct morph_log *logger;
 	struct tool_entry *entries;
 	morph_array_t storage;
@@ -175,6 +183,21 @@ struct tool_registry {
 	morph_strmap_t disabled_by_name;
 };
 
+/* Recursive data lock: raw entry views require this lock and expire on mutation.
+ * Structural writes acquire mutation_mutex before this lock; do not call them
+ * while holding only a raw data lock. Cleanup requires joined execution owners. */
+void tool_registry_lock(struct tool_registry *reg);
+void tool_registry_unlock(struct tool_registry *reg);
+/* Atomic replacement; existing entries must contain replace_flags. Returns 1
+ * for replacement, 0 for insertion, negative error without consuming user data. */
+int tool_register_replace(struct tool_registry *reg, const struct tool_spec *spec,
+			  unsigned int replace_flags);
+/* Source entry must remain stable during this call; shares execution ownership. */
+int tool_register_copy(struct tool_registry *out, const struct tool_entry *entry);
+/* Shares retained tool bindings, with owned descriptors. out must be initialized
+ * and exclusively owned during copying. Source is locked internally. On failure
+ * a partial owned copy remains valid and requires registry cleanup. */
+int tool_registry_copy(struct tool_registry *out, struct tool_registry *source);
 void tool_registry_init(struct morph_log *logger, struct tool_registry *reg);
 void tool_registry_cleanup(struct tool_registry *reg);
 const char *tool_origin_name(enum tool_origin origin);
@@ -182,6 +205,8 @@ int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *
 int tool_register(struct tool_registry *reg, const struct tool_spec *spec);
 int tool_unregister(struct tool_registry *reg, const char *name);
 struct tool_entry *tool_lookup(struct tool_registry *reg, const char *name);
+/* Clears an initialized caller-owned result; cleanup is required on all paths.
+ * Returns zero only for business success. Arguments are borrowed until return. */
 int tool_exec(struct tool_registry *reg, const char *name,
 	      const char *args_json, struct tool_result *result);
 int tool_set_timeout(struct tool_registry *reg, const char *name,

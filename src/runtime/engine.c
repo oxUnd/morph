@@ -31,7 +31,7 @@ struct react_context *runtime_engine_active_react(struct runtime_engine *engine)
 {
 	if (!engine)
 		return NULL;
-	return engine->turn_state.active && engine->turn_state.react
-		? engine->turn_state.react
-		: engine->react;
+	/* The engine owns one stable ReAct context. Cancellation must not read
+	 * execution-thread-only turn bookkeeping without synchronization. */
+	return engine->react;
 }

@@ -1,4 +1,5 @@
 #include "util/signals.h"
+#include "util/child_io.h"
 #include "ext.h"
 #include "loader.h"
 #include "util/file.h"
@@ -136,41 +137,6 @@ void ext_user_data_destroy(void *user_data)
 	free(ex);
 }
 
-static int read_fd(int fd, char **out, size_t *out_len)
-{
-	morph_buf_t buf;
-	int rc = morph_buf_init(&buf, 8192);
-	if (rc != 0)
-		return rc;
-
-	while (1) {
-		if (buf.len + 4096 > buf.cap) {
-			int grow_rc = morph_buf_reserve(&buf, buf.cap);
-			if (grow_rc != 0) {
-				morph_buf_cleanup(&buf);
-				return -ENOMEM;
-			}
-		}
-		ssize_t n = read(fd, buf.data + buf.len,
-				 buf.cap - buf.len - 1);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			morph_buf_cleanup(&buf);
-			return -EIO;
-		}
-		if (n == 0)
-			break;
-		buf.len += (size_t)n;
-	}
-	buf.data[buf.len] = '\0';
-	size_t save_len = buf.len;
-	*out = morph_buf_detach(&buf);
-	if (out_len)
-		*out_len = save_len;
-	return 0;
-}
-
 static char *ext_resolve_sandbox_path(const char *path)
 {
 	char cwd[PATH_MAX];
@@ -266,10 +232,26 @@ int ext_sandbox_config_prepare(const struct ext *ex,
 	return 0;
 }
 
-int ext_run(struct ext *ex, const char *args_json, char **result_json)
+/**
+ * \brief Execute a borrowed extension with optional cooperative cancellation.
+ * \param[in] ex: Loaded extension; caller keeps it alive until return.
+ * \param[in] args_json: Borrowed JSON input until return.
+ * \param[out] result_json: Owned JSON to free, initialized to NULL on entry.
+ * \param[in] cancelled: Optional synchronous predicate; native code must cooperate.
+ * \param[in] user: Borrowed cancellation context until return.
+ * \return Zero on success, negative error otherwise; output may contain diagnostics.
+ */
+int ext_run_cancelable(struct ext *ex, const char *args_json, char **result_json,
+		       int (*cancelled)(void *), void *user)
 {
+	if (result_json != NULL) {
+		*result_json = NULL;
+	}
 	if (!ex || !args_json || !result_json)
 		return -EINVAL;
+	if (cancelled != NULL && cancelled(user)) {
+		return -ECANCELED;
+	}
 	if (!ex->enabled)
 		return -EACCES;
 	if (ex->run)
@@ -281,26 +263,25 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		int stdin_pipe[2];
 		int stdout_pipe[2];
 		int stderr_pipe[2];
+		int rc;
 
-		if (pipe(stdin_pipe) < 0) {
+		if ((rc = morph_io_pipe(stdin_pipe)) != 0) {
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			return morph_error_from_errno(errno);
+			return rc;
 		}
-		if (pipe(stdout_pipe) < 0) {
-			int err = errno;
+		if ((rc = morph_io_pipe(stdout_pipe)) != 0) {
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			return -err;
+			return rc;
 		}
-		if (pipe(stderr_pipe) < 0) {
-			int err = errno;
+		if ((rc = morph_io_pipe(stderr_pipe)) != 0) {
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			return -err;
+			return rc;
 		}
 
 		pid_t pid = fork();
@@ -361,45 +342,43 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdin_pipe[1]);
 			close(stdout_pipe[0]);
 			close(stderr_pipe[0]);
-			waitpid(pid, NULL, 0);
+			kill(pid, SIGKILL);
+			while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 			*result_json = strdup("{\"error\":\"failed to build JSON-RPC request\"}");
 			return -ENOMEM;
 		}
 
-		size_t req_len = strlen(request_str);
-		ssize_t written = 0;
-		while ((size_t)written < req_len) {
-			ssize_t n = write(stdin_pipe[1],
-					  request_str + written,
-					  req_len - (size_t)written);
-			if (n < 0) {
-				if (errno == EINTR)
-					continue;
-				free(request_str);
-				close(stdin_pipe[1]);
-				close(stdout_pipe[0]);
-				close(stderr_pipe[0]);
-				waitpid(pid, NULL, 0);
-				*result_json = strdup("{\"error\":\"failed to write to ext\"}");
-				return -EIO;
-			}
-			written += n;
+		morph_buf_t request = {0}, output = {0}, errors = {0};
+		rc = morph_buf_init(&request, strlen(request_str) + 2);
+		if (rc == 0) {
+			rc = morph_buf_puts(&request, request_str);
 		}
-		/* JSON-RPC is line-based: terminate with newline */
-		write(stdin_pipe[1], "\n", 1);
-		close(stdin_pipe[1]);
+		if (rc == 0) {
+			rc = morph_buf_putc(&request, '\n');
+		}
+		if (rc == 0) {
+			rc = morph_buf_init(&output, BUFSIZ);
+		}
+		if (rc == 0) {
+			rc = morph_buf_init(&errors, BUFSIZ);
+		}
 		free(request_str);
-
-		char *raw_response = NULL;
-		int rc = read_fd(stdout_pipe[0], &raw_response, NULL);
+		int status = 0;
+		if (rc == 0) {
+			rc = morph_child_exchange(pid, stdin_pipe[1], stdout_pipe[0],
+						  stderr_pipe[0], morph_buf_cstr(&request),
+						  request.len, 300000, 1024 * 1024, cancelled, user,
+						  &output, &errors, &status);
+		} else {
+			close(stdin_pipe[1]);
+			kill(pid, SIGKILL);
+			while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+		}
 		close(stdout_pipe[0]);
-
-		char *child_stderr = NULL;
-		read_fd(stderr_pipe[0], &child_stderr, NULL);
 		close(stderr_pipe[0]);
-
-		int status;
-		waitpid(pid, &status, 0);
+		morph_buf_cleanup(&request);
+		char *raw_response = morph_buf_detach(&output);
+		char *child_stderr = morph_buf_detach(&errors);
 
 		if (child_stderr && child_stderr[0]) {
 			log_warn(ex ? ex->logger : NULL, "ext %s stderr: %s", ex->manifest.name,
@@ -410,7 +389,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"failed to read ext output\"}");
-			return -EIO;
+			return rc < 0 ? rc : -EIO;
 		}
 
 		/* If the child was killed (sandbox), report that */
@@ -449,14 +428,17 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 		}
 
 		if (jr.has_error) {
-			char err_buf[1024];
-			snprintf(err_buf, sizeof(err_buf),
-				 "{\"error\":\"ext error: %s (code %d)\"}",
-				 jr.error_message ? jr.error_message : "unknown",
-				 jr.error_code);
-			*result_json = strdup(err_buf);
+			cJSON *error = cJSON_CreateObject();
+			if (error != NULL &&
+			    cJSON_AddStringToObject(error, "error",
+						    jr.error_message != NULL
+							    ? jr.error_message
+							    : "Extension protocol error")) {
+				*result_json = cJSON_PrintUnformatted(error);
+			}
+			cJSON_Delete(error);
 			jsonrpc_response_free(&jr);
-			return MORPH_ERR_PROTOCOL;
+			return *result_json == NULL ? -ENOMEM : MORPH_ERR_PROTOCOL;
 		}
 
 		*result_json = jr.result_json ? jr.result_json : strdup("{}");
@@ -468,4 +450,10 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 	log_info(ex ? ex->logger : NULL, "ext_run: no run function for %s", ex->manifest.name);
 	return MORPH_ERR_NOT_CONFIGURED;
+}
+
+/** \brief Execute an extension with the legacy non-cancellable contract. */
+int ext_run(struct ext *ex, const char *args_json, char **result_json)
+{
+	return ext_run_cancelable(ex, args_json, result_json, NULL, NULL);
 }

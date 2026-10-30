@@ -1,5 +1,8 @@
 #include "file.h"
 #include "array.h"
+#include "buf.h"
+#include <unistd.h>
+#include <fcntl.h>
 #include "error.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,17 +38,131 @@ char *file_read_all(const char *path, size_t *out_len)
 	return buf;
 }
 
+/**
+ * \brief Write a complete borrowed buffer, reporting buffered close failures.
+ * \param[in] path: Destination; may be modified on failure.
+ * \param[in] data: Borrowed bytes; NULL is allowed only for zero length.
+ * \param[in] len: Number of bytes.
+ * \return Zero on success, negative errno on failure.
+ */
 int file_write_all(const char *path, const char *data, size_t len)
 {
-	FILE *f = fopen(path, "wb");
-	if (!f)
-		return morph_error_from_errno(errno);
-	if (len > 0 && fwrite(data, 1, len, f) != len) {
-		fclose(f);
-		return -EIO;
+	FILE *file;
+	int rc = 0;
+
+	if (path == NULL || path[0] == '\0' || (data == NULL && len != 0)) {
+		return -EINVAL;
 	}
-	fclose(f);
-	return 0;
+	file = fopen(path, "wb");
+	if (file == NULL) {
+		return morph_error_from_errno(errno);
+	}
+	if (len > 0 && fwrite(data, 1, len, file) != len) {
+		rc = morph_error_from_errno(errno);
+	}
+	if (fclose(file) != 0 && rc == 0) {
+		rc = morph_error_from_errno(errno);
+	}
+	return rc;
+}
+
+/**
+ * \brief Commit a same-directory regular-file replacement and sync its directory.
+ * \param[in] path: Borrowed destination; symlinks and nonregular files are rejected.
+ * \param[in] data: Borrowed contents until return; nullable only for zero length.
+ * \param[in] len: Byte count.
+ * \return Zero on success, negative errno on failure. A post-rename sync error
+ *         may leave the replacement visible; temporary files are always removed.
+ */
+int file_write_atomic(const char *path, const char *data, size_t len)
+{
+	morph_buf_t temporary = {0};
+	struct stat st;
+	mode_t mode = 0600;
+	char *directory;
+	int rc, fd, directory_fd;
+	size_t offset = 0;
+
+	if (path == NULL || path[0] == '\0' || (data == NULL && len != 0)) {
+		return -EINVAL;
+	}
+	if (lstat(path, &st) == 0) {
+		if (!S_ISREG(st.st_mode)) {
+			return -EINVAL;
+		}
+		mode = st.st_mode & 0777;
+	} else if (errno != ENOENT) {
+		return -errno;
+	}
+	rc = morph_buf_init(&temporary, strlen(path) + 32);
+	if (rc == 0) {
+		rc = morph_buf_printf(&temporary, "%s.morph-XXXXXX", path);
+	}
+	if (rc != 0) {
+		morph_buf_cleanup(&temporary);
+		return rc;
+	}
+	directory = strdup(path);
+	if (directory == NULL) {
+		morph_buf_cleanup(&temporary);
+		return -ENOMEM;
+	}
+	char *slash = strrchr(directory, '/');
+	if (slash == NULL) {
+		strcpy(directory, ".");
+	} else if (slash == directory) {
+		slash[1] = '\0';
+	} else {
+		*slash = '\0';
+	}
+	directory_fd = open(directory, O_RDONLY | O_CLOEXEC);
+	free(directory);
+	if (directory_fd < 0) {
+		rc = -errno;
+		morph_buf_cleanup(&temporary);
+		return rc;
+	}
+	fd = mkstemp(temporary.data);
+	if (fd < 0) {
+		rc = -errno;
+		close(directory_fd);
+		morph_buf_cleanup(&temporary);
+		return rc;
+	}
+	if (fchmod(fd, mode) < 0) {
+		rc = -errno;
+	}
+	while (rc == 0 && offset < len) {
+		ssize_t count = write(fd, data + offset, len - offset);
+		if (count < 0 && errno == EINTR) {
+			continue;
+		}
+		if (count <= 0) {
+			rc = count == 0 ? -EIO : -errno;
+			break;
+		}
+		offset += (size_t)count;
+	}
+	if (rc == 0 && fsync(fd) < 0) {
+		rc = -errno;
+	}
+	if (close(fd) < 0 && rc == 0) {
+		rc = -errno;
+	}
+	if (rc == 0 && rename(temporary.data, path) < 0) {
+		rc = -errno;
+	}
+	if (rc == 0 && fsync(directory_fd) < 0) {
+		rc = -errno;
+	}
+	if (rc != 0) {
+		(void)unlink(temporary.data);
+	}
+	if (close(directory_fd) < 0 && rc == 0) {
+		rc = -errno;
+	}
+	morph_buf_cleanup(&temporary);
+	return rc;
 }
 
 int file_ensure_dir(const char *path)

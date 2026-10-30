@@ -462,7 +462,9 @@ int runtime_tool_count(const struct runtime *runtime)
 	if (!runtime)
 		return 0;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	count = runtime->context.tools.count;
+	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
 	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	return count;
 }
@@ -476,6 +478,7 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 	if (!runtime || index < 0)
 		return -EINVAL;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	tools = &runtime->context.tools;
 	if (index >= tools->count) {
 		rc = -EINVAL;
@@ -489,6 +492,7 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 		if (origin)
 			*origin = tools->entries[index].origin;
 	}
+	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
 	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	return rc;
 }
@@ -520,9 +524,11 @@ int runtime_tool_find(const struct runtime *runtime, const char *name, struct to
 	if (!runtime || !name || !out)
 		return -EINVAL;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
+	tool_registry_lock((struct tool_registry *)&runtime->context.tools);
 	entry = tool_lookup((struct tool_registry *)&runtime->context.tools, name);
 	if (entry)
 		*out = entry->desc;
+	tool_registry_unlock((struct tool_registry *)&runtime->context.tools);
 	pthread_mutex_unlock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	return entry ? 0 : -ENOENT;
 }

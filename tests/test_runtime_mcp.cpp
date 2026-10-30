@@ -10,6 +10,7 @@ extern "C" {
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -191,6 +192,29 @@ TEST_F(RuntimeMcpBackgroundTest, PublishesOnlyBetweenTurns)
 	EXPECT_EQ(instance->context.tools.count, before);
 	pthread_mutex_unlock(&instance->context.execution_lock);
 	ASSERT_TRUE(wait([&] { return state("gated", RUNTIME_MCP_READY); }));
+	EXPECT_EQ(runtime_tool_count(instance), before + 1);
+}
+
+TEST_F(RuntimeMcpBackgroundTest, PublicationWaitsForMutationWithoutBlockingCatalogQueries)
+{
+	server("mutation_gate", 1);
+	ASSERT_EQ(open(), 0);
+	pthread_mutex_lock(&instance->context.tools.mutation_mutex);
+	int before = instance->context.tools.count;
+	release("mutation_gate");
+	EXPECT_TRUE(wait([&] { return state("mutation_gate", RUNTIME_MCP_REGISTERING); }));
+	std::promise<int> queried;
+	auto result = queried.get_future();
+	std::thread query([&] { queried.set_value(runtime_tool_count(instance)); });
+	auto status = result.wait_for(std::chrono::milliseconds(500));
+	EXPECT_EQ(status, std::future_status::ready);
+	if (status == std::future_status::ready) {
+		EXPECT_EQ(result.get(), before);
+	}
+	EXPECT_FALSE(state("mutation_gate", RUNTIME_MCP_READY));
+	pthread_mutex_unlock(&instance->context.tools.mutation_mutex);
+	query.join();
+	ASSERT_TRUE(wait([&] { return state("mutation_gate", RUNTIME_MCP_READY); }));
 	EXPECT_EQ(runtime_tool_count(instance), before + 1);
 }
 

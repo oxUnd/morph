@@ -1,0 +1,24 @@
+# morph adaptation of the reviewed C style. Verified with clang-format 23.1.1.
+# Existing files are migrated only in behavior-changing regions.
+BasedOnStyle: LLVM
+UseTab: Always
+TabWidth: 8
+IndentWidth: 8
+ContinuationIndentWidth: 8
+ColumnLimit: 100
+BreakBeforeBraces: Linux
+IndentCaseLabels: false
+PointerAlignment: Right
+DerivePointerAlignment: false
+SortIncludes: Never
+InsertBraces: false
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Empty
+AlignEscapedNewlines: Right
+ForEachMacros:
+  - morph_array_foreach
+  - morph_queue_foreach
+  - morph_queue_foreach_safe
+  - cJSON_ArrayForEach

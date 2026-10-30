@@ -66,7 +66,8 @@ int runtime_session_compress(struct runtime *runtime,
 				     int *window_removed, int *kept);
 
 int runtime_tool_count(const struct runtime *runtime);
-/* Descriptor strings are borrowed until registry mutation or destruction. */
+/* Descriptor strings are borrowed until registry mutation or destruction.
+ * Callers must arrange quiescence while using strings; scalar queries synchronize internally. */
 int runtime_tool_info(const struct runtime *runtime, int index,
 		      struct tool_desc *out);
 int runtime_tool_flags(const struct runtime *runtime, int index,

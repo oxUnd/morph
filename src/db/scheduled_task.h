@@ -33,6 +33,7 @@ struct scheduled_task_input {
 };
 
 struct scheduled_task {
+	char run_token[64]; /* Owned run/revision identity copied into each task snapshot. */
 	int64_t id;
 	int64_t source_session_id;
 	int64_t latest_session_id;

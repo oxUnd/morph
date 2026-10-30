@@ -104,6 +104,7 @@ struct config_guardrail_llm_rule {
 };
 
 struct config_guardrail_ext_rule {
+	char on_error[16];
 	char name[CFG_GR_NAME_MAX];
 	char hook[32];
 	char ext_type[8];

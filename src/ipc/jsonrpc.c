@@ -34,10 +34,13 @@ char *jsonrpc_build_request(const struct jsonrpc_request *req)
 
 int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 {
-	if (!resp_str || !out)
+	if (out == NULL) {
 		return -EINVAL;
-
+	}
 	memset(out, 0, sizeof(*out));
+	if (resp_str == NULL) {
+		return -EINVAL;
+	}
 
 	cJSON *root = cJSON_Parse(resp_str);
 	if (!root)
@@ -54,8 +57,13 @@ int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 		if (cJSON_IsNumber(code))
 			out->error_code = code->valueint;
 		cJSON *msg = cJSON_GetObjectItem(error_item, "message");
-		if (cJSON_IsString(msg) && msg->valuestring)
+		if (cJSON_IsString(msg) && msg->valuestring) {
 			out->error_message = strdup(msg->valuestring);
+			if (out->error_message == NULL) {
+				cJSON_Delete(root);
+				return -ENOMEM;
+			}
+		}
 		cJSON_Delete(root);
 		return 0;
 	}
@@ -63,11 +71,19 @@ int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 	cJSON *result_item = cJSON_GetObjectItem(root, "result");
 	if (result_item) {
 		char *result_str = cJSON_PrintUnformatted(result_item);
+		if (result_str == NULL) {
+			cJSON_Delete(root);
+			return -ENOMEM;
+		}
 		out->result_json = result_str;
 	} else {
 		out->has_error = 1;
 		out->error_code = -32603;
 		out->error_message = strdup("response missing result");
+		if (out->error_message == NULL) {
+			cJSON_Delete(root);
+			return -ENOMEM;
+		}
 	}
 
 	cJSON_Delete(root);

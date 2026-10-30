@@ -1,3 +1,4 @@
+#include "util/signals.h"
 #include "runtime/hooks.h"
 #include "exec/process.h"
 #include "agent/tokenizer.h"
@@ -1140,7 +1141,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		}
 		return 0;
 	}
-	if ((manager->cancelled && *manager->cancelled) ||
+	if ((morph_signal_flag_get(manager->cancelled)) ||
 	    morph_cancel_token_is_cancelled(manager->cancel_token))
 		return -ECANCELED;
 	payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
@@ -1228,7 +1229,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	for (;;) {
 		int pending = 0;
 		struct hook_run *run;
-		int cancelled = (manager->cancelled && *manager->cancelled) ||
+		int cancelled = (morph_signal_flag_get(manager->cancelled)) ||
 				morph_cancel_token_is_cancelled(manager->cancel_token);
 
 		morph_array_foreach(run, &runs, struct hook_run)

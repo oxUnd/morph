@@ -223,6 +223,11 @@ static void runtime_apply_guardrails(struct react_context *react,
 					strcmp(cr->ext_type, "exec") == 0 ?
 					NULL : cr->ext_type,
 					cr->ext_entry, cr->action_text);
+		struct guardrail_rule *configured =
+			guardrail_rule_lookup(&react->guardrail, cr->name);
+		if (configured != NULL) {
+			configured->block_on_error = !strcmp(cr->on_error, "block");
+		}
 		if (strcmp(cr->ext_type, "so") == 0) {
 			struct guardrail_rule *r =
 				guardrail_rule_lookup(&react->guardrail,
@@ -660,6 +665,9 @@ void runtime_bootstrap_cleanup_models(struct runtime_models *models)
 {
 	if (!models)
 		return;
+	if (models->react) {
+		react_context_destroy(models->react);
+	}
 	if (models->memory_text)
 		model_destroy(models->memory_text);
 	if (models->text)
@@ -670,8 +678,6 @@ void runtime_bootstrap_cleanup_models(struct runtime_models *models)
 		model_destroy(models->image);
 	if (models->video)
 		model_destroy(models->video);
-	if (models->react)
-		react_context_destroy(models->react);
 	if (models->tokenizer)
 		tokenizer_destroy(models->tokenizer);
 	memset(models, 0, sizeof(*models));
@@ -693,6 +699,10 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		(*r->react)->sub_agent_info_count = 0;
 		react_context_destroy(*r->react);
 		*r->react = NULL;
+	}
+	if (r->sub_agents && *r->sub_agents) {
+		sub_agent_runtime_destroy(*r->sub_agents);
+		*r->sub_agents = NULL;
 	}
 	if (r->tokenizer && *r->tokenizer) {
 		tokenizer_destroy(*r->tokenizer);
@@ -725,10 +735,7 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		model_destroy(*r->video);
 		*r->video = NULL;
 	}
-	if (r->sub_agents && *r->sub_agents) {
-		sub_agent_runtime_destroy(*r->sub_agents);
-		*r->sub_agents = NULL;
-	}
+
 	if (r->skills && *r->skills) {
 		skill_registry_cleanup(*r->skills);
 		if (r->free_skill_registry) {

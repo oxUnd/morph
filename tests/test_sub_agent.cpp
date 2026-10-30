@@ -4,6 +4,7 @@
 #include "agent/tool.h"
 #include "agent/tokenizer.h"
 #include "agent/sub_agent.h"
+#include "agent/sub_agent_internal.h"
 #include "agent/context.h"
 #include "models/llm.h"
 #include "config/config.h"
@@ -1354,4 +1355,56 @@ TEST_F(SubAgentTest, FanoutKeepsEachChildEventStreamSeparate) {
 	}
 	sub_agent_runtime_free_task_list(tasks, count);
 	sub_agent_runtime_destroy(rt);
+}
+
+struct fanout_injection {
+	int submitted = 0;
+	int joined = 0;
+	int fail_after = 0;
+	bool fail_join = false;
+};
+
+static int injected_create(pthread_t *thread, void *(*worker)(void *), void *arg, void *opaque)
+{
+	auto *injection = static_cast<fanout_injection *>(opaque);
+	if (injection->submitted == injection->fail_after) {
+		return EAGAIN;
+	}
+	injection->submitted++;
+	return pthread_create(thread, nullptr, worker, arg);
+}
+
+static int injected_join(pthread_t thread, void *opaque)
+{
+	auto *injection = static_cast<fanout_injection *>(opaque);
+	injection->joined++;
+	if (injection->fail_join) {
+		return EIO;
+	}
+	return pthread_join(thread, nullptr);
+}
+
+TEST_F(SubAgentTest, FanoutSubmissionAndJoinFailuresReclaimStartedWorkers)
+{
+	for (int scenario = 0; scenario < 3; scenario++) {
+		auto *rt = sub_agent_runtime_create(&tools, llm, tok, &cfg);
+		ASSERT_NE(rt, nullptr);
+		config_sub_agents config{};
+		strcpy(config.entries[0].name, "worker");
+		config.entries[0].max_iterations = 1;
+		config.count = 1;
+		ASSERT_EQ(sub_agent_runtime_load_config(rt, &config), 0);
+		fanout_injection injection;
+		injection.fail_after = scenario == 0 ? 0 : scenario == 1 ? 1 : 2;
+		injection.fail_join = scenario == 2;
+		sub_agent_thread_ops ops{injected_create, injected_join, &injection};
+		const char *tasks[] = {"first", "second"};
+		char *result = reinterpret_cast<char *>(1);
+		EXPECT_LT(sub_agent_fanout_with_ops(rt, nullptr, "worker", tasks, 2,
+						    SUB_AGENT_MERGE_RAW, &result, &ops),
+			  0);
+		EXPECT_EQ(result, nullptr);
+		EXPECT_EQ(injection.joined, injection.submitted);
+		sub_agent_runtime_destroy(rt);
+	}
 }

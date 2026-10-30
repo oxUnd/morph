@@ -1,4 +1,5 @@
 #include "scheduled_task.h"
+#include "util/id.h"
 #include "util/array.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -9,6 +10,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/**
+ * \brief Execute and consume an update while retaining its connection change count.
+ * \param[in] db: Borrowed serialized SQLite connection.
+ * \param[in] stmt: Owned statement, finalized on every path.
+ * \return Changed row count, or a negative database error.
+ */
+static int task_step_changes(struct db *db, sqlite3_stmt *stmt)
+{
+	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
+	sqlite3_mutex_enter(mutex);
+	int rc = sqlite3_step(stmt);
+	int changed = sqlite3_changes(db->handle);
+	int final_rc = sqlite3_finalize(stmt);
+	sqlite3_mutex_leave(mutex);
+	return rc == SQLITE_DONE && final_rc == SQLITE_OK ? changed : MORPH_ERR_DB;
+}
 
 static int task_emit_event(const struct scheduled_task_event_sink *events,
 			   const char *name, const char *phase,
@@ -137,6 +155,8 @@ static int task_from_stmt(sqlite3_stmt *stmt, struct scheduled_task *task)
 		  (const char *)sqlite3_column_text(stmt, 16));
 	task->created_at = sqlite3_column_int64(stmt, 17);
 	task->updated_at = sqlite3_column_int64(stmt, 18);
+	copy_text(task->run_token, sizeof(task->run_token),
+		  (const char *)sqlite3_column_text(stmt, 19));
 
 	if ((sqlite3_column_type(stmt, 13) != SQLITE_NULL && !task->payload_json) ||
 	    (sqlite3_column_type(stmt, 14) != SQLITE_NULL && !task->policy_json) ||
@@ -414,12 +434,11 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 {
 	sqlite3_stmt *stmt = NULL;
 	int rc;
-	const char *sql =
-		"SELECT id,source_session_id,latest_session_id,title,kind,"
-		"status,trigger_type,next_run_at,"
-		"interval_seconds,timeout_at,attempts,max_attempts,action_type,"
-		"payload_json,policy_json,notify_json,last_error,created_at,"
-		"updated_at FROM scheduled_tasks WHERE id=?";
+	const char *sql = "SELECT id,source_session_id,latest_session_id,title,kind,"
+			  "status,trigger_type,next_run_at,"
+			  "interval_seconds,timeout_at,attempts,max_attempts,action_type,"
+			  "payload_json,policy_json,notify_json,last_error,created_at,"
+			  "updated_at,run_token FROM scheduled_tasks WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || !out)
 		return -EINVAL;
@@ -448,18 +467,22 @@ int scheduled_task_update_with_events(
 	int task_ready = 0;
 	int64_t now;
 	int rc;
-	const char *sql =
-		"UPDATE scheduled_tasks SET title=?,kind=?,status='pending',"
-		"trigger_type=?,"
-		"next_run_at=?,interval_seconds=?,timeout_at=?,max_attempts=?,"
-		"action_type=?,payload_json=?,policy_json=?,notify_json=?,"
-		"attempts=0,last_error=NULL,updated_at=? WHERE id=?";
+	char revision[64];
+	const char *sql = "UPDATE scheduled_tasks SET title=?,kind=?,status='pending',"
+			  "trigger_type=?,"
+			  "next_run_at=?,interval_seconds=?,timeout_at=?,max_attempts=?,"
+			  "action_type=?,payload_json=?,policy_json=?,notify_json=?,"
+			  "attempts=0,last_error=NULL,updated_at=?,run_token=? WHERE id=?";
 
 	if (!db || !db->handle || id <= 0)
 		return -EINVAL;
 	rc = scheduled_task_validate_input(input);
 	if (rc != 0)
 		return rc;
+	rc = morph_random_id("revision_", revision, sizeof(revision));
+	if (rc != 0) {
+		return rc;
+	}
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
@@ -488,12 +511,12 @@ int scheduled_task_update_with_events(
 	else
 		sqlite3_bind_null(stmt, 11);
 	sqlite3_bind_int64(stmt, 12, now);
-	sqlite3_bind_int64(stmt, 13, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	if (sqlite3_changes(db->handle) == 0)
+	sqlite3_bind_text(stmt, 13, revision, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 14, id);
+	rc = task_step_changes(db, stmt);
+	if (rc < 0)
+		return rc;
+	if (rc == 0)
 		return -ENOENT;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
@@ -548,20 +571,18 @@ int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out
 int scheduled_task_list(struct db *db, const char *status, int limit,
 			struct scheduled_task **out, int *count)
 {
-	const char *sql_all =
-		"SELECT id,source_session_id,latest_session_id,title,kind,"
-		"status,trigger_type,next_run_at,"
-		"interval_seconds,timeout_at,attempts,max_attempts,action_type,"
-		"payload_json,policy_json,notify_json,last_error,created_at,"
-		"updated_at FROM scheduled_tasks "
-		"ORDER BY updated_at DESC, id DESC LIMIT ?";
-	const char *sql_status =
-		"SELECT id,source_session_id,latest_session_id,title,kind,"
-		"status,trigger_type,next_run_at,"
-		"interval_seconds,timeout_at,attempts,max_attempts,action_type,"
-		"payload_json,policy_json,notify_json,last_error,created_at,"
-		"updated_at FROM scheduled_tasks WHERE status=? "
-		"ORDER BY updated_at DESC, id DESC LIMIT ?";
+	const char *sql_all = "SELECT id,source_session_id,latest_session_id,title,kind,"
+			      "status,trigger_type,next_run_at,"
+			      "interval_seconds,timeout_at,attempts,max_attempts,action_type,"
+			      "payload_json,policy_json,notify_json,last_error,created_at,"
+			      "updated_at,run_token FROM scheduled_tasks "
+			      "ORDER BY updated_at DESC, id DESC LIMIT ?";
+	const char *sql_status = "SELECT id,source_session_id,latest_session_id,title,kind,"
+				 "status,trigger_type,next_run_at,"
+				 "interval_seconds,timeout_at,attempts,max_attempts,action_type,"
+				 "payload_json,policy_json,notify_json,last_error,created_at,"
+				 "updated_at,run_token FROM scheduled_tasks WHERE status=? "
+				 "ORDER BY updated_at DESC, id DESC LIMIT ?";
 
 	return task_list_query(db, status ? sql_status : sql_all, status, -1,
 			       limit, out, count);
@@ -570,32 +591,30 @@ int scheduled_task_list(struct db *db, const char *status, int limit,
 int scheduled_task_list_due(struct db *db, int64_t now, int limit,
 			    struct scheduled_task **out, int *count)
 {
-	const char *sql =
-		"SELECT id,source_session_id,latest_session_id,title,kind,"
-		"status,trigger_type,next_run_at,"
-		"interval_seconds,timeout_at,attempts,max_attempts,action_type,"
-		"payload_json,policy_json,notify_json,last_error,created_at,"
-		"updated_at FROM scheduled_tasks "
-		"WHERE status IN ('pending','waiting') AND next_run_at <= ? "
-		"ORDER BY next_run_at ASC, id ASC LIMIT ?";
+	const char *sql = "SELECT id,source_session_id,latest_session_id,title,kind,"
+			  "status,trigger_type,next_run_at,"
+			  "interval_seconds,timeout_at,attempts,max_attempts,action_type,"
+			  "payload_json,policy_json,notify_json,last_error,created_at,"
+			  "updated_at,run_token FROM scheduled_tasks "
+			  "WHERE status IN ('pending','waiting') AND next_run_at <= ? "
+			  "ORDER BY next_run_at ASC, id ASC LIMIT ?";
 
 	if (!db || !db->handle || now < 0 || !out || !count)
 		return -EINVAL;
 	return task_list_query(db, sql, NULL, now, limit, out, count);
 }
 
-int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
-			      int64_t next_run_at, int attempts,
-			      int64_t latest_session_id,
-			      const char *last_error)
+static int task_update_run(struct db *db, int64_t id, const char *status, int64_t next_run_at,
+			   int attempts, int64_t latest_session_id, const char *last_error,
+			   const char *run_token)
 {
 	sqlite3_stmt *stmt = NULL;
 	int64_t now;
 	int rc;
-	const char *sql =
-		"UPDATE scheduled_tasks SET status=?,next_run_at=?,attempts=?,"
-		"latest_session_id=CASE WHEN ? > 0 THEN ? ELSE latest_session_id END,"
-		"last_error=?,updated_at=? WHERE id=?";
+	const char *sql = "UPDATE scheduled_tasks SET status=?,next_run_at=?,attempts=?,"
+			  "latest_session_id=CASE WHEN ? > 0 THEN ? ELSE latest_session_id END,"
+			  "last_error=?,updated_at=? WHERE id=? "
+			  "AND (? IS NULL OR (status='running' AND run_token=?))";
 
 	if (!db || !db->handle || id <= 0 || !status || next_run_at < 0 ||
 	    attempts < 0)
@@ -615,13 +634,26 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 		sqlite3_bind_null(stmt, 6);
 	sqlite3_bind_int64(stmt, 7, now);
 	sqlite3_bind_int64(stmt, 8, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	if (sqlite3_changes(db->handle) == 0)
-		return -ENOENT;
+	if (run_token != NULL) {
+		sqlite3_bind_text(stmt, 9, run_token, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 10, run_token, -1, SQLITE_TRANSIENT);
+	} else {
+		sqlite3_bind_null(stmt, 9);
+		sqlite3_bind_null(stmt, 10);
+	}
+	rc = task_step_changes(db, stmt);
+	if (rc < 0)
+		return rc;
+	if (rc == 0)
+		return run_token != NULL ? -ESTALE : -ENOENT;
 	return 0;
+}
+
+int scheduled_task_update_run(struct db *db, int64_t id, const char *status, int64_t next_run_at,
+			      int attempts, int64_t latest_session_id, const char *last_error)
+{
+	return task_update_run(db, id, status, next_run_at, attempts, latest_session_id, last_error,
+			       NULL);
 }
 
 int scheduled_task_recover_stale_running(struct db *db, int64_t now,
@@ -647,12 +679,11 @@ int scheduled_task_recover_stale_running(struct db *db, int64_t now,
 	sqlite3_bind_int64(stmt, 1, now);
 	sqlite3_bind_int64(stmt, 2, now);
 	sqlite3_bind_int64(stmt, 3, cutoff);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
+	rc = task_step_changes(db, stmt);
+	if (rc < 0)
+		return rc;
 	if (recovered)
-		*recovered = sqlite3_changes(db->handle);
+		*recovered = rc;
 	return 0;
 }
 
@@ -675,11 +706,10 @@ int scheduled_task_cancel_with_events(
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, now);
 	sqlite3_bind_int64(stmt, 2, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	if (sqlite3_changes(db->handle) == 0)
+	rc = task_step_changes(db, stmt);
+	if (rc < 0)
+		return rc;
+	if (rc == 0)
 		return -ENOENT;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
@@ -716,28 +746,34 @@ static char *task_payload_message(const struct scheduled_task *task)
 	return out;
 }
 
-static int task_claim_due(struct db *db, const struct scheduled_task *task)
+static int task_claim_due(struct db *db, struct scheduled_task *task)
 {
 	sqlite3_stmt *stmt = NULL;
 	int64_t now;
 	int rc;
+	char previous[64];
 	const char *sql =
-		"UPDATE scheduled_tasks SET status='running',updated_at=? "
-		"WHERE id=? AND status IN ('pending','waiting')";
+		"UPDATE scheduled_tasks SET status='running',updated_at=?,run_token=? "
+		"WHERE id=? AND status IN ('pending','waiting') AND next_run_at=? AND run_token=?";
 
 	if (!db || !db->handle || !task)
 		return -EINVAL;
+	memcpy(previous, task->run_token, sizeof(previous));
+	rc = morph_random_id("run_", task->run_token, sizeof(task->run_token));
+	if (rc != 0) {
+		return rc;
+	}
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, now);
-	sqlite3_bind_int64(stmt, 2, task->id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	return sqlite3_changes(db->handle) > 0 ? 1 : 0;
+	sqlite3_bind_text(stmt, 2, task->run_token, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 3, task->id);
+	sqlite3_bind_int64(stmt, 4, task->next_run_at);
+	sqlite3_bind_text(stmt, 5, previous, -1, SQLITE_TRANSIENT);
+	rc = task_step_changes(db, stmt);
+	return rc < 0 ? rc : (rc > 0 ? 1 : 0);
 }
 
 static const char *task_delivery_status(const struct scheduled_task *task)
@@ -772,31 +808,6 @@ static const char *task_delivery_status(const struct scheduled_task *task)
 	return "inbox";
 }
 
-static int task_finish_or_reschedule(struct db *db,
-				     const struct scheduled_task *task,
-				     int64_t now)
-{
-	int attempts;
-	int64_t next_run_at;
-
-	if (!db || !task)
-		return -EINVAL;
-	attempts = task->attempts + 1;
-	if (task->timeout_at > 0 && now >= task->timeout_at)
-		return scheduled_task_update_run(db, task->id, "timed_out", 0,
-						 attempts, 0, "task timed out");
-	if (task->max_attempts > 0 && attempts >= task->max_attempts)
-		return scheduled_task_update_run(db, task->id, "completed", 0,
-						 attempts, 0, NULL);
-	if (task->interval_seconds > 0) {
-		next_run_at = now + task->interval_seconds;
-		return scheduled_task_update_run(db, task->id, "waiting",
-						 next_run_at, attempts, 0, NULL);
-	}
-	return scheduled_task_update_run(db, task->id, "completed", 0,
-					 attempts, 0, NULL);
-}
-
 static int task_emit_notification_event(
 	const struct scheduled_task_event_sink *events,
 	const struct scheduled_task *task, const struct notification *notification);
@@ -805,6 +816,43 @@ static int task_emit_result_event(
 	const struct scheduled_task *task, const char *status,
 	int64_t next_run_at, int attempts, int error_code,
 	const char *reason, const struct notification *notification);
+
+/** \brief Commit one run and its notification atomically, before observer delivery. */
+static int task_commit_result(struct db *db, const struct scheduled_task *task, int64_t session_id,
+			      const char *level, const char *body, const char *status,
+			      int64_t next_run_at, int attempts, const char *last_error,
+			      struct notification *notification)
+{
+	/* Individual SQLite calls are serialized, but the whole transaction also
+	 * needs the recursive connection mutex against other users of this handle. */
+	sqlite3_mutex *mutex = sqlite3_db_mutex(db->handle);
+	sqlite3_mutex_enter(mutex);
+	int rc = db_exec(db, "SAVEPOINT task_result");
+	if (rc != 0) {
+		sqlite3_mutex_leave(mutex);
+		return rc;
+	}
+	rc = task_update_run(db, task->id, status, next_run_at, attempts, session_id, last_error,
+			     task->run_token);
+	if (rc == 0) {
+		rc = notification_create_for_session(db, task->id, session_id, level, task->title,
+						     body, task_delivery_status(task),
+						     notification);
+	}
+	if (rc == 0) {
+		rc = db_exec(db, "RELEASE task_result");
+	}
+	if (rc != 0) {
+		int rollback_rc = db_exec(db, "ROLLBACK TO task_result; RELEASE task_result;");
+		if (rollback_rc != 0) {
+			log_err(db->logger, "task result rollback failed: %s",
+				morph_strerror(rollback_rc));
+		}
+		notification_cleanup(notification);
+	}
+	sqlite3_mutex_leave(mutex);
+	return rc;
+}
 
 static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 			    int64_t now, struct notification *notification,
@@ -823,18 +871,13 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 	if (!body)
 		return -ENOMEM;
 
-	rc = notification_create(db, task->id, "info", task->title, body,
-				 task_delivery_status(task), notification);
-	free(body);
-	if (rc != 0)
-		return rc;
-	rc = task_emit_notification_event(events, task, notification);
-	if (rc != 0)
-		return rc;
 	attempts = task->attempts + 1;
 	if (task->timeout_at > 0 && now >= task->timeout_at) {
 		status = "timed_out";
 		reason = "timeout";
+	} else if (task->max_attempts > 0 && attempts >= task->max_attempts) {
+		status = "completed";
+		reason = "completed";
 	} else if (task->interval_seconds > 0) {
 		status = "waiting";
 		reason = "interval";
@@ -843,7 +886,12 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 		status = "completed";
 		reason = "completed";
 	}
-	rc = task_finish_or_reschedule(db, task, now);
+	rc = task_commit_result(db, task, 0, "info", body, status, next_run_at, attempts, NULL,
+				notification);
+	free(body);
+	if (rc == 0) {
+		rc = task_emit_notification_event(events, task, notification);
+	}
 	if (rc == 0)
 		rc = task_emit_result_event(events, task, status, next_run_at,
 					    attempts,
@@ -997,17 +1045,11 @@ static int run_due_agent(struct db *db, const struct scheduled_task *task,
 		error_code = rc;
 	}
 
-	nrc = notification_create_for_session(db, task->id, result.session_id,
-					      level, task->title, body,
-					      task_delivery_status(task),
-					      notification);
-	if (nrc == 0)
+	nrc = task_commit_result(db, task, result.session_id, level, body, status, next_run_at,
+				 attempts, last_error, notification);
+	if (nrc == 0) {
 		nrc = task_emit_notification_event(events, task, notification);
-	if (nrc == 0)
-		nrc = scheduled_task_update_run(db, task->id, status,
-						next_run_at, attempts,
-						result.session_id,
-						last_error);
+	}
 	if (nrc == 0)
 		nrc = task_emit_result_event(events, task, status, next_run_at,
 					     attempts, error_code, reason,
@@ -1072,17 +1114,11 @@ static int run_due_action(struct db *db, const struct scheduled_task *task,
 		error_code = rc;
 	}
 
-	nrc = notification_create_for_session(db, task->id, result.session_id,
-					      level, task->title, body,
-					      task_delivery_status(task),
-					      notification);
-	if (nrc == 0)
+	nrc = task_commit_result(db, task, result.session_id, level, body, status, next_run_at,
+				 attempts, last_error, notification);
+	if (nrc == 0) {
 		nrc = task_emit_notification_event(events, task, notification);
-	if (nrc == 0)
-		nrc = scheduled_task_update_run(db, task->id, status,
-						next_run_at, attempts,
-						result.session_id,
-						last_error);
+	}
 	if (nrc == 0)
 		nrc = task_emit_result_event(events, task, status, next_run_at,
 					     attempts, error_code, reason,
@@ -1148,17 +1184,11 @@ static int run_due_watch(struct db *db, const struct scheduled_task *task,
 		next_run_at = now + task_retry_after(task, &result);
 	}
 
-	nrc = notification_create_for_session(db, task->id, result.session_id,
-					      level, task->title, body,
-					      task_delivery_status(task),
-					      notification);
-	if (nrc == 0)
+	nrc = task_commit_result(db, task, result.session_id, level, body, status, next_run_at,
+				 attempts, last_error, notification);
+	if (nrc == 0) {
 		nrc = task_emit_notification_event(events, task, notification);
-	if (nrc == 0)
-		nrc = scheduled_task_update_run(db, task->id, status,
-						next_run_at, attempts,
-						result.session_id,
-						last_error);
+	}
 	if (nrc == 0)
 		nrc = task_emit_result_event(events, task, status, next_run_at,
 					     attempts, error_code, reason,
@@ -1180,21 +1210,35 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 	snprintf(body, sizeof(body),
 		 "Task kind '%s' is due but no runner is registered.",
 		 task->kind);
-	rc = notification_create(db, task->id, "warning", task->title, body,
-				 task_delivery_status(task), notification);
-	if (rc != 0)
-		return rc;
-	rc = task_emit_notification_event(events, task, notification);
-	if (rc != 0)
-		return rc;
 	attempts = task->attempts + 1;
-	rc = scheduled_task_update_run(db, task->id, "failed", 0, attempts,
-				       0, "no runner registered for task kind");
+	rc = task_commit_result(db, task, 0, "warning", body, "failed", 0, attempts,
+				"no runner registered for task kind", notification);
+	if (rc == 0) {
+		rc = task_emit_notification_event(events, task, notification);
+	}
 	if (rc == 0)
 		rc = task_emit_result_event(events, task, "failed", 0,
 					    attempts, -ENOSYS, "no_runner",
 					    notification);
 	return rc;
+}
+
+struct task_observer {
+	struct db *db;
+	const struct scheduled_task_event_sink *sink;
+};
+
+/** \brief Observe committed state without changing the execution outcome. */
+static int task_observe(const struct morph_event *event, void *opaque)
+{
+	struct task_observer *observer = opaque;
+	int rc = observer->sink != NULL && observer->sink->cb != NULL
+			 ? observer->sink->cb(event, observer->sink->user_data)
+			 : 0;
+	if (rc != 0) {
+		log_warn(observer->db->logger, "task observer failed: %s", morph_strerror(rc));
+	}
+	return 0;
 }
 
 int scheduled_task_run_due_collect_with_runner_events(
@@ -1203,6 +1247,10 @@ int scheduled_task_run_due_collect_with_runner_events(
 	struct notification **notifications, int *count,
 	const struct scheduled_task_event_sink *events)
 {
+	struct task_observer observer = {.db = db, .sink = events};
+	struct scheduled_task_event_sink observations = {.cb = task_observe,
+							 .user_data = &observer};
+	events = &observations;
 	struct scheduled_task *tasks = NULL;
 	morph_array_t arr;
 	int arr_ready = 0;
@@ -1226,6 +1274,10 @@ int scheduled_task_run_due_collect_with_runner_events(
 		struct notification *notification;
 		int claimed;
 
+		if (tasks[i].attempts >= INT_MAX || now > INT64_MAX - INT_MAX) {
+			rc = -EOVERFLOW;
+			goto out_fail;
+		}
 		claimed = task_claim_due(db, &tasks[i]);
 		if (claimed < 0) {
 			rc = claimed;
@@ -1252,6 +1304,7 @@ int scheduled_task_run_due_collect_with_runner_events(
 			rc = -ENOMEM;
 			goto out_fail;
 		}
+		memset(notification, 0, sizeof(*notification));
 		if (strcmp(tasks[i].kind, "agent") == 0)
 			rc = run_due_agent(db, &tasks[i], now, runner,
 					   runner_user_data, notification,
@@ -1500,11 +1553,10 @@ int notification_mark_read(struct db *db, int64_t id, int64_t read_at)
 		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, read_at);
 	sqlite3_bind_int64(stmt, 2, id);
-	rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE)
-		return MORPH_ERR_DB;
-	if (sqlite3_changes(db->handle) == 0)
+	rc = task_step_changes(db, stmt);
+	if (rc < 0)
+		return rc;
+	if (rc == 0)
 		return -ENOENT;
 	return 0;
 }
