@@ -1965,6 +1965,11 @@ int agent_history_compact_validated(struct react_context *ctx, int force,
 		ctx->compress.summarize_threshold_ratio);
 	if (!force && history_window_tokens(ctx) < threshold)
 		return 0;
+	const char *hook_trigger = force && (!trigger_kind ||
+		strcmp(trigger_kind, "manual") == 0) ? "manual" : "auto";
+	rc = agent_hook_compaction(ctx, "PreCompact", hook_trigger);
+	if (rc != 0)
+		return rc;
 	int target = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.compress_target_ratio);
 	int reserve = ctx->compress.compaction_summary_max_tokens;
@@ -2008,6 +2013,14 @@ int agent_history_compact_validated(struct react_context *ctx, int force,
 			&preserved, cutoff);
 	}
 	morph_array_cleanup(&preserved);
+	if (rc > 0) {
+		int hook_rc = agent_hook_compaction(ctx, "PostCompact", hook_trigger);
+
+		if (hook_rc == 0)
+			hook_rc = agent_hook_compaction(ctx, "SessionStart", "compact");
+		if (hook_rc != 0)
+			return hook_rc;
+	}
 	return rc;
 }
 

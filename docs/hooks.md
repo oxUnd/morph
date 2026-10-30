@@ -70,7 +70,12 @@ The batch review token covers every displayed definition; changes invalidate it,
 and the entire decision is saved atomically.
 
 `/hooks` opens a full-screen list with states and selected-hook details.
-Use Up/Down to select, Left/Right to page, r to refresh, and Enter to open Review. Review shows
+Use Up/Down to select, Left/Right to page, r to refresh, and Enter to open Review.
+Press **e** for a lifecycle-event overview with installed, active, and pending-review
+counts. Enter opens that event's handlers, including an explicit empty state;
+Esc returns to the event overview, then to all hooks. Unsupported handlers show
+why they cannot run. Unreviewed hooks can be disabled without granting trust.
+Review shows
 the complete definition, highlights changes from the trusted definition, and
 shows the latest recorded execution result. PgUp/PgDn and Home/End scroll long
 content; the list and review adapt when the terminal is resized.
@@ -126,11 +131,16 @@ not exposed as an agent tool. Treat database access as host authority.
 | `Stop` | Before accepting a successful final answer |
 | `SessionStart` | First execution in a selected session; source is startup or resume |
 | `SessionEnd` | Leaving a previously executed session or orderly runtime shutdown |
+| `PreCompact` | Before manual or automatic durable-history compaction |
+| `PostCompact` | After a successful durable-history compaction |
+| `Interrupt` | Once when an active root turn is cancelled |
 
 Tool matchers are POSIX extended regular expressions. Native names are supported;
 `exec` also matches `Bash`, and `apply_patch` matches `Edit` and `Write`. A match
 against several aliases still runs the handler once. Session matchers filter
-source/reason; Stop ignores matcher. Project discovery is rooted at the configured
+source/reason; compaction matchers filter `manual` or `auto`. `*`, an empty matcher,
+and an omitted matcher match all invocations. Stop, UserPromptSubmit, and Interrupt
+ignore matcher, including regex syntax. Project discovery is rooted at the configured
 workdir, without an ancestor-directory walk.
 
 Handlers matching one event start concurrently. A denial does not prevent
@@ -177,6 +187,22 @@ text is buffered until accepted. `continue: false` on Stop ends the attempt
 without opening another model round. Runtime errors and max-iteration exits
 are not successful completions and do not run Stop.
 
+SessionStart, PreCompact, and PostCompact honor `continue: false` and `stopReason`.
+A PreCompact stop prevents compaction; a PostCompact stop leaves the completed
+checkpoint intact and prevents the next model request. Successful compaction
+also runs SessionStart with `source: "compact"`; its context reaches the immediate
+continuation. These boundaries apply to `/compress` as well as automatic durable
+history compaction. The legacy in-memory trace compressor does not emit these
+events.
+
+Interrupt runs after cancellation, even when the turn's hook budget has expired.
+Its output cannot restart or prevent cancellation. It defaults to one second and
+accepts one through three seconds. It does not run for idle sessions or child agents.
+
+PostToolUse blocking feedback replaces the model-visible tool result. The original
+result remains in the tool completion trace and persisted `tool_meta` under
+`hook_original_tool_response`. Hook failures preserve normal tool output.
+
 Additional model context uses `hookSpecificOutput.additionalContext` with the
 matching `hookEventName`. SessionStart and UserPromptSubmit also accept plain
 text context. `additionalContextLimit` is an approximate token threshold,
@@ -184,10 +210,20 @@ default 2500; oversized context is saved under the configured output directory
 and replaced by a preview/path. Zero disables this per-handler threshold while
 shared resource limits remain active. Stop expects JSON, not plain text.
 
+Plain text from tool and compaction hooks is ignored. Unsupported output fields
+and incorrectly typed common fields fail the handler without applying a partial
+decision. Morph retains `PreToolUse.permissionDecision: "ask"` as an extension.
+
 Other nonzero exits, malformed protocol, timeout, or output overflow produce
 visible `hook.failed` diagnostics and continue in compatibility mode. An
 explicit supported block is distinct from a crashed checker. Inspect `/hooks
 review <id>` for the last exit code, duration, and bounded stderr.
+
+The terminal shows a transient status for hooks running longer than 300 ms.
+Quiet successes leave no transcript row. `systemMessage`, failures, and blocked
+outcomes are visible in both interactive and plain output; model-only context
+remains out of terminal output. JSON event consumers receive `hook.progress`
+alongside the existing lifecycle events, with duration and exit status on completion.
 
 ## Limits and compatibility
 
@@ -205,15 +241,19 @@ API-key variables are not inherited. `MORPH_HOOK_ACTIVE=1` suppresses recursive
 hooks in nested Morph processes. Reviewed hook commands run with host privileges;
 they do not inherit the tool exec sandbox.
 
-This release does not support PermissionRequest, compaction/sub-agent/Interrupt
+This release does not support PermissionRequest, sub-agent
 hooks, async handlers, MCP handlers, managed hooks, Windows overrides, or
 Codex's entire common-output field matrix. Such configured handlers are shown
 as unsupported/invalid and cannot be trusted as active hooks. Regex syntax,
-resource limits, session transition timing, PostToolUse feedback composition,
+resource limits, session transition timing,
 and same-turn Stop continuation are explicit compatibility differences.
 Review management is provided in the CLI and the public runtime facade;
 there is no new FastCGI administration endpoint or mobile review UI in this
 release. All frontends share the execution path and lifecycle events.
+
+The compatibility audit used the [official hook documentation](https://learn.chatgpt.com/docs/hooks)
+and [Codex source at 5e769a1](https://github.com/openai/codex/tree/5e769a1cdae3fd93efd5e7b9df71e39efb2223ab/codex-rs)
+on 2026-10-30, including the hook runtime, hook history cells, and hook browser.
 
 ## Example
 

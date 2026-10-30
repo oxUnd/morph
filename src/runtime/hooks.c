@@ -34,6 +34,7 @@ struct hook_entry {
 	char *definition;
 	char *previous;
 	char *status;
+	const char *diagnostic;
 	int supported;
 	int trusted;
 	int recorded;
@@ -83,7 +84,20 @@ static int event_supported(const char *event)
 {
 	return strcmp(event, "UserPromptSubmit") == 0 || strcmp(event, "PreToolUse") == 0 ||
 	       strcmp(event, "PostToolUse") == 0 || strcmp(event, "Stop") == 0 ||
-	       strcmp(event, "SessionStart") == 0 || strcmp(event, "SessionEnd") == 0;
+	       strcmp(event, "SessionStart") == 0 || strcmp(event, "SessionEnd") == 0 ||
+	       strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
+	       strcmp(event, "Interrupt") == 0;
+}
+
+static int event_ignores_matcher(const char *event)
+{
+	return strcmp(event, "Stop") == 0 || strcmp(event, "UserPromptSubmit") == 0 ||
+	       strcmp(event, "Interrupt") == 0;
+}
+
+static int event_short_timeout(const char *event)
+{
+	return strcmp(event, "SessionEnd") == 0 || strcmp(event, "Interrupt") == 0;
 }
 
 static void entry_cleanup(struct hook_entry *entry)
@@ -180,7 +194,7 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	entry->status_message = strdup(json_string(handler, "statusMessage"));
 	entry->project = project;
 	entry->timeout = cJSON_IsNumber(timeout) ? timeout->valueint
-						 : (strcmp(event, "SessionEnd") == 0 ? 1 : 600);
+						 : (event_short_timeout(event) ? 1 : 600);
 	entry->context_limit = cJSON_IsNumber(limit) ? limit->valueint : 2500;
 	if (!entry->source || !entry->event || !entry->matcher || !entry->command ||
 	    !entry->status_message) {
@@ -190,14 +204,14 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	if ((timeout &&
 	     (!cJSON_IsNumber(timeout) || timeout->valuedouble != (double)timeout->valueint)) ||
 	    entry->timeout < 1 || entry->timeout > 600 ||
-	    (strcmp(event, "SessionEnd") == 0 && entry->timeout > 3) ||
+	    (event_short_timeout(event) && entry->timeout > 3) ||
 	    (limit && (!cJSON_IsNumber(limit) || limit->valuedouble != (double)limit->valueint)) ||
 	    entry->context_limit < 0 || entry->context_limit > 32768 || strlen(matcher) > 1024 ||
 	    strlen(entry->command) >= PROCESS_COMMAND_MAX ||
 	    (!entry->command[0] && strcmp(json_string(handler, "type"), "command") == 0) ||
 	    !*json_string(handler, "type"))
 		valid = 0;
-	if (*matcher && strcmp(event, "Stop") != 0) {
+	if (*matcher && strcmp(matcher, "*") != 0 && !event_ignores_matcher(event)) {
 		entry->regex_ready = regcomp(&entry->regex, matcher, REG_EXTENDED | REG_NOSUB) == 0;
 		if (!entry->regex_ready)
 			valid = 0;
@@ -241,6 +255,12 @@ static int add_entry(struct hook_manager *manager, const char *source, const cha
 	}
 	entry->supported = portable && valid && event_supported(event) &&
 			   strcmp(json_string(handler, "type"), "command") == 0;
+	entry->diagnostic = !valid ? "Invalid command, timeout, context limit, or matcher regex."
+		: !event_supported(event) ? "This lifecycle event is not supported by Morph."
+		: strcmp(json_string(handler, "type"), "command") != 0 ?
+		  "Only command handlers are supported."
+		: !portable ? "Handler contains unsupported fields (for example async or commandWindows)."
+		: "";
 	entry->status = strdup(!valid ? "invalid" : !entry->supported ? "unsupported" : "");
 	if (!entry->status)
 		return -ENOMEM;
@@ -653,6 +673,9 @@ cJSON *hook_manager_list(struct hook_manager *manager)
 		cJSON_AddStringToObject(row, "previous_definition",
 					entry->previous ? entry->previous : "");
 		cJSON_AddStringToObject(row, "state", entry_state(manager, entry));
+		cJSON_AddStringToObject(row, "diagnostic", entry->diagnostic);
+		cJSON_AddStringToObject(row, "statusMessage", entry->status_message);
+		cJSON_AddNumberToObject(row, "additionalContextLimit", entry->context_limit);
 		cJSON_AddStringToObject(row, "cwd", manager->workdir);
 		char workspace_digest[65];
 		digest_text(manager->workdir, workspace_digest);
@@ -830,13 +853,15 @@ static int hook_matches(struct hook_entry *entry, const char *event, const cJSON
 
 	if (strcmp(entry->event, event) != 0)
 		return 0;
-	if (!entry->regex_ready || strcmp(event, "Stop") == 0)
+	if (!entry->regex_ready || event_ignores_matcher(event))
 		return 1;
 	name = json_string(input, "tool_name");
 	if (strcmp(event, "SessionStart") == 0)
 		name = json_string(input, "source");
 	if (strcmp(event, "SessionEnd") == 0)
 		name = json_string(input, "reason");
+	if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0)
+		name = json_string(input, "trigger");
 	if (strcmp(name, "exec") == 0)
 		alias = "Bash";
 	if (regexec(&entry->regex, name, 0, NULL, 0) == 0 ||
@@ -864,7 +889,7 @@ int hook_manager_has(struct hook_manager *manager, const char *event)
 }
 
 static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, const char *name,
-		      int rc, int blocked)
+		      int rc, int blocked, const struct hook_run *run)
 {
 	cJSON *data = cJSON_CreateObject();
 
@@ -875,6 +900,10 @@ static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, co
 	cJSON_AddStringToObject(data, "event", entry->event);
 	cJSON_AddStringToObject(data, "state", entry_state(manager, entry));
 	cJSON_AddBoolToObject(data, "blocked", blocked);
+	if (run) {
+		cJSON_AddNumberToObject(data, "duration_ms", (double)run->duration_ms);
+		cJSON_AddNumberToObject(data, "exit_code", run->exit_code);
+	}
 	if (rc < 0) {
 		cJSON_AddNumberToObject(data, "error_code", rc);
 		cJSON_AddStringToObject(data, "error", morph_strerror(rc));
@@ -887,9 +916,10 @@ static void hook_emit(struct hook_manager *manager, struct hook_entry *entry, co
 	}
 	(void)morph_event_emit_simple(
 	    manager->event_cb, manager->event_user, MORPH_EVENT_BACKGROUND, name,
-	    rc < 0 ? "failed" : "end",
+	    rc < 0 ? "failed" : strcmp(name, "hook.started") == 0 ? "begin" : "end",
 	    strcmp(name, "hook.skipped") == 0 ? "Hook skipped; inspect /hooks"
 	    : rc < 0			      ? "Hook failed; inspect /hooks"
+	    : blocked			      ? "Hook blocked processing; inspect /hooks"
 	    : strcmp(name, "hook.started") == 0 && *entry->status_message ? entry->status_message
 									  : "Hook lifecycle",
 	    data);
@@ -994,6 +1024,10 @@ static int decode_output(struct hook_manager *manager, struct hook_run *run, con
 	if (!root) {
 		if (strcmp(event, "SessionStart") == 0 || strcmp(event, "UserPromptSubmit") == 0)
 			return append_context(manager, context, run->entry, text);
+		if (strcmp(event, "PreToolUse") == 0 || strcmp(event, "PostToolUse") == 0 ||
+		    strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
+		    strcmp(event, "SessionEnd") == 0)
+			return 0;
 		return MORPH_ERR_PROTOCOL;
 	}
 	if (!cJSON_IsObject(root) || !json_unique_fields(root, 0)) {
@@ -1005,6 +1039,21 @@ static int decode_output(struct hook_manager *manager, struct hook_run *run, con
 			 strcmp(json_string(specific, "hookEventName"), event) != 0)) {
 		cJSON_Delete(root);
 		return MORPH_ERR_PROTOCOL;
+	}
+	const cJSON *cont = cJSON_GetObjectItemCaseSensitive(root, "continue");
+	const cJSON *stop = cJSON_GetObjectItemCaseSensitive(root, "stopReason");
+	const cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "systemMessage");
+	const cJSON *suppress = cJSON_GetObjectItemCaseSensitive(root, "suppressOutput");
+	const cJSON *extra = cJSON_GetObjectItemCaseSensitive(specific, "additionalContext");
+	if ((cont && !cJSON_IsBool(cont)) || (stop && !cJSON_IsString(stop)) ||
+	    (message && !cJSON_IsString(message)) || (suppress && !cJSON_IsBool(suppress)) ||
+	    (extra && !cJSON_IsString(extra))) {
+		cJSON_Delete(root);
+		return MORPH_ERR_PROTOCOL;
+	}
+	if (strcmp(event, "SessionEnd") == 0 || strcmp(event, "Interrupt") == 0) {
+		cJSON_Delete(root);
+		return 0;
 	}
 	if (strcmp(event, "PreToolUse") == 0) {
 		const char *decision = json_string(specific, "permissionDecision");
@@ -1032,20 +1081,25 @@ static int decode_output(struct hook_manager *manager, struct hook_run *run, con
 					rc = -ENOMEM;
 			}
 		}
-		if (cJSON_GetObjectItemCaseSensitive(root, "continue") ||
-		    cJSON_GetObjectItemCaseSensitive(root, "stopReason"))
+		if (cont || stop || suppress)
 			rc = MORPH_ERR_PROTOCOL;
 	} else if (strcmp(event, "Stop") == 0 || strcmp(event, "UserPromptSubmit") == 0 ||
-		   strcmp(event, "PostToolUse") == 0) {
-		const cJSON *cont = cJSON_GetObjectItemCaseSensitive(root, "continue");
+		   strcmp(event, "PostToolUse") == 0 || strcmp(event, "SessionStart") == 0 ||
+		   strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0) {
 		deny = strcmp(json_string(root, "decision"), "block") == 0 || cJSON_IsFalse(cont);
-		if (strcmp(event, "Stop") == 0 && cJSON_IsFalse(cont))
+		if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0 ||
+		    strcmp(event, "SessionStart") == 0)
+			deny = cJSON_IsFalse(cont);
+		if (cJSON_IsFalse(cont) && strcmp(event, "PostToolUse") != 0)
 			*terminate = 1;
+		if (strcmp(event, "PostToolUse") == 0 &&
+		    (suppress || cJSON_HasObjectItem(specific, "updatedMCPToolOutput")))
+			rc = MORPH_ERR_PROTOCOL;
 		feedback = json_string(root, "reason");
 		if (!*feedback)
 			feedback = json_string(root, "stopReason");
 	}
-	if (rc == 0)
+	if (rc == 0 && strcmp(event, "PreCompact") != 0 && strcmp(event, "PostCompact") != 0)
 		rc = append_context(manager, context, run->entry,
 				    json_string(specific, "additionalContext"));
 	if (rc == 0 && deny) {
@@ -1115,6 +1169,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	int rc = 0, blocked = 0, ask = 0, terminate = 0;
 	uint64_t started = hook_now_ms();
 	uint64_t elapsed;
+	int progress_shown = 0;
 
 	if (!manager || !output || !event)
 		return -EINVAL;
@@ -1130,7 +1185,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		    strcmp(entry_state(manager, entry), "trusted") == 0)
 			matching++;
 		else
-			hook_emit(manager, entry, "hook.skipped", 0, 0);
+			hook_emit(manager, entry, "hook.skipped", 0, 0, NULL);
 	}
 	if (!matching) {
 		if (strcmp(event, "UserPromptSubmit") == 0 && manager->session_context) {
@@ -1141,8 +1196,9 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		}
 		return 0;
 	}
-	if ((morph_signal_flag_get(manager->cancelled)) ||
-	    morph_cancel_token_is_cancelled(manager->cancel_token))
+	if (strcmp(event, "Interrupt") != 0 &&
+	    (morph_signal_flag_get(manager->cancelled) ||
+	     morph_cancel_token_is_cancelled(manager->cancel_token)))
 		return -ECANCELED;
 	payload = input ? cJSON_Duplicate(input, 1) : cJSON_CreateObject();
 	if (!payload)
@@ -1184,8 +1240,8 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		    strcmp(entry_state(manager, entry), "trusted") != 0) {
 			continue;
 		}
-		if (manager->remaining_ms == 0) {
-			hook_emit(manager, entry, "hook.failed", -ETIMEDOUT, 0);
+		if (manager->remaining_ms == 0 && strcmp(event, "Interrupt") != 0) {
+			hook_emit(manager, entry, "hook.failed", -ETIMEDOUT, 0, NULL);
 			continue;
 		}
 		run = morph_array_push(&runs);
@@ -1209,7 +1265,8 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 				options.command = entry->command;
 				options.workdir = manager->workdir;
 				options.timeout_ms = (uint64_t)entry->timeout * 1000u;
-				if (options.timeout_ms > manager->remaining_ms)
+				if (strcmp(event, "Interrupt") != 0 &&
+				    options.timeout_ms > manager->remaining_ms)
 					options.timeout_ms = manager->remaining_ms;
 				if (strcmp(event, "SessionEnd") == 0 && options.timeout_ms > 1000)
 					options.timeout_ms = 1000;
@@ -1217,7 +1274,7 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 				options.hook_mode = 1;
 				options.use_stdin_fd = 1;
 				options.stdin_fd = fileno(stdin_file);
-				hook_emit(manager, entry, "hook.started", 0, 0);
+				hook_emit(manager, entry, "hook.started", 0, 0, NULL);
 				run->rc = process_spawn(processes, &options, run->session, NULL);
 			}
 		}
@@ -1229,8 +1286,9 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	for (;;) {
 		int pending = 0;
 		struct hook_run *run;
-		int cancelled = (morph_signal_flag_get(manager->cancelled)) ||
-				morph_cancel_token_is_cancelled(manager->cancel_token);
+		int cancelled = strcmp(event, "Interrupt") != 0 &&
+			(morph_signal_flag_get(manager->cancelled) ||
+			 morph_cancel_token_is_cancelled(manager->cancel_token));
 
 		morph_array_foreach(run, &runs, struct hook_run)
 		{
@@ -1251,10 +1309,22 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 		}
 		if (cancelled) {
 			rc = (-ECANCELED);
-			goto out_cleanup;
+			break;
 		}
 		if (!pending)
 			break;
+		if (!progress_shown && hook_now_ms() - started >= 300) {
+			const char *message = "Running hooks";
+
+			if (runs.nelts == 1) {
+				struct hook_run *only = morph_array_get(&runs, 0);
+				message = *only->entry->status_message ?
+					only->entry->status_message : "Running hook";
+			}
+			(void)morph_event_emit_simple(manager->event_cb, manager->event_user,
+				MORPH_EVENT_BACKGROUND, "hook.progress", "progress", message, NULL);
+			progress_shown = 1;
+		}
 		struct timespec delay = {.tv_nsec = 10000000};
 		nanosleep(&delay, NULL);
 	}
@@ -1293,11 +1363,9 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 			  decode_rc < 0 ? "hook.failed"
 			  : decision	? "hook.blocked"
 					: "hook.completed",
-			  decode_rc, decision);
+			  decode_rc, decision, run);
 		cJSON *last =
 		    cJSON_GetArrayItem(manager->recent, cJSON_GetArraySize(manager->recent) - 1);
-		cJSON_AddNumberToObject(last, "duration_ms", (double)run->duration_ms);
-		cJSON_AddNumberToObject(last, "exit_code", run->exit_code);
 		char *diagnostic = utf8_dup_clamped(morph_buf_cstr(&run->err), 16384);
 		if (diagnostic) {
 			cJSON_AddStringToObject(last, "stderr", diagnostic);
@@ -1315,6 +1383,17 @@ int hook_manager_dispatch(void *opaque, const char *event, const cJSON *input, c
 	cJSON_AddBoolToObject(*output, "blocked", blocked);
 	cJSON_AddBoolToObject(*output, "ask", ask);
 	cJSON_AddBoolToObject(*output, "terminate", terminate);
+	if (strcmp(event, "SessionStart") == 0 &&
+	    strcmp(json_string(input, "source"), "compact") == 0) {
+		char *saved = strdup(morph_buf_cstr(&context));
+
+		if (!saved) {
+			rc = -ENOMEM;
+			goto out_cleanup;
+		}
+		free(manager->session_context);
+		manager->session_context = saved;
+	}
 	if (updated) {
 		cJSON_AddItemToObject(*output, "updatedInput", updated);
 		updated = NULL;

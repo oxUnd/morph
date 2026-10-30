@@ -448,6 +448,14 @@ static int react_finish(struct react_context *ctx)
 
 static int react_finish_run(struct react_context *ctx)
 {
+	if (ctx && ctx->hook_fn && ctx->outcome == REACT_OUTCOME_CANCELLED) {
+		cJSON *input = cJSON_CreateObject(), *output = NULL;
+
+		if (input)
+			(void)ctx->hook_fn(ctx->hook_user, "Interrupt", input, &output);
+		cJSON_Delete(input);
+		cJSON_Delete(output);
+	}
 	int rc = react_finish(ctx);
 
 	if (ctx) {
@@ -2643,6 +2651,29 @@ static int react_prepare_active_tools(struct react_context *ctx, morph_array_t *
 	return rc;
 }
 
+int agent_hook_compaction(struct react_context *ctx, const char *event, const char *trigger)
+{
+	cJSON *input, *output = NULL;
+	int rc;
+
+	if (!ctx || !ctx->hook_fn)
+		return 0;
+	input = cJSON_CreateObject();
+	if (!input || !cJSON_AddStringToObject(input,
+	    strcmp(event, "SessionStart") == 0 ? "source" : "trigger", trigger)) {
+		cJSON_Delete(input);
+		return -ENOMEM;
+	}
+	rc = react_hook_invoke(ctx, event, input, &output);
+	if (rc == 0 && (cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked")) ||
+	    cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")))) {
+		react_set_error_detail(ctx, react_hook_text(output, "reason"));
+		rc = -EPERM;
+	}
+	cJSON_Delete(output);
+	return rc;
+}
+
 static int react_prepare_request_messages(struct react_context *ctx,
 	const struct model *llm, struct arena *arena, const char **system_prompt,
 	struct chat_message **messages, int *msg_count)
@@ -3774,11 +3805,22 @@ static int react_join_tool_calls(struct react_context *ctx,
 			int hook_rc = react_hook_invoke(ctx, "PostToolUse", input, &output);
 			if (hook_rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "blocked"))) {
 				const char *feedback = react_hook_text(output, "reason");
-				morph_buf_t combined;
-				if (morph_buf_init_arena(&combined, ctx->turn_arena, 256) == 0 &&
-				    morph_buf_printf(&combined, "%s\n[PostToolUse feedback]\n%s",
-					obs_text, feedback) == 0)
-					obs_text = morph_buf_cstr(&combined);
+
+				if (!meta)
+					meta = cJSON_CreateObject();
+				char *replacement = arena_strdup(ctx->turn_arena, feedback);
+				if (!meta || !replacement || !cJSON_AddStringToObject(meta,
+				    "hook_original_tool_response", obs_text)) {
+					cJSON_Delete(output);
+					free(result);
+					cJSON_Delete(data);
+					cJSON_Delete(ui);
+					cJSON_Delete(meta);
+					react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR,
+						-ENOMEM, "hook_feedback_error");
+					goto out_cleanup_tool_calls;
+				}
+				obs_text = replacement;
 			}
 			cJSON_Delete(output);
 		}
@@ -4520,13 +4562,23 @@ int react_run(struct react_context *ctx, const char *user_input,
 			system_prompt = terminal_prompt.data;
 		}
 		has_tools = active_tool_count > 0;
+		const char *hook_context_before = ctx->hook_context;
 		status = react_maybe_compact_active_window(ctx, llm,
 			system_prompt, &messages, active_tools,
 			active_tool_count, iteration);
 		if (status < 0) {
-			react_set_result(ctx, REACT_OUTCOME_LLM_ERROR, status,
+			react_set_result(ctx, status == -EPERM ? REACT_OUTCOME_GUARDRAIL_DENIED :
+				REACT_OUTCOME_LLM_ERROR, status,
 				"context_compaction_failed");
 			break;
+		}
+		if (status > 0 && ctx->hook_context != hook_context_before) {
+			system_prompt = build_system_prompt(ctx, ctx->iteration_arena);
+			if (!system_prompt) {
+				react_set_result(ctx, REACT_OUTCOME_INTERNAL_ERROR, -ENOMEM,
+					"prompt_context_error");
+				break;
+			}
 		}
 
 		status = react_chat_once(ctx, llm, system_prompt,

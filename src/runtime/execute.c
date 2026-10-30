@@ -143,13 +143,9 @@ int runtime_execute(struct runtime_engine *engine,
 	memset(&turn, 0, sizeof(turn));
 	morph_signal_flag_set(&engine->react->cancelled, 0);
 	morph_cancel_token_reset(&engine->react->cancel_token);
-	rc = agent_turn_begin(&turn, &session_runtime,
-		&(struct agent_turn_input){
-			.model_input = request->model_input,
-			.stored_user_input = request->stored_user_input,
-			.turn_id = request->turn_id,
-		});
-	if (rc == 0 && engine->hooks && engine->hooks->ready) {
+	rc = 0;
+	/* Bind before begin: loading history may compact before storing the prompt. */
+	if (engine->hooks && engine->hooks->ready) {
 		struct hook_manager *hooks = engine->hooks;
 		cJSON *input = cJSON_CreateObject(), *output = NULL;
 		rc = hook_manager_reload(hooks);
@@ -174,6 +170,8 @@ int runtime_execute(struct runtime_engine *engine,
 			cJSON_AddStringToObject(input, "source", source);
 			if (rc == 0)
 				rc = hook_manager_dispatch(hooks, "SessionStart", input, &output);
+			if (rc == 0 && cJSON_IsTrue(cJSON_GetObjectItem(output, "terminate")))
+				rc = -EPERM;
 			free(hooks->session_context);
 			hooks->session_context = NULL;
 			const cJSON *extra = cJSON_GetObjectItem(output, "context");
@@ -184,23 +182,55 @@ int runtime_execute(struct runtime_engine *engine,
 			}
 		}
 		cJSON_Delete(input);
-		cJSON_Delete(output);
 		if (rc != 0) {
 			react_reset(engine->react);
+			const cJSON *reason = cJSON_GetObjectItem(output, "reason");
+			if (cJSON_IsString(reason)) {
+				engine->react->last_error_detail = strdup(reason->valuestring);
+				if (!engine->react->last_error_detail)
+					rc = -ENOMEM;
+			}
 			engine->react->outcome = rc == -ECANCELED ?
-				REACT_OUTCOME_CANCELLED : REACT_OUTCOME_INTERNAL_ERROR;
+				REACT_OUTCOME_CANCELLED : rc == -EPERM ?
+				REACT_OUTCOME_GUARDRAIL_DENIED : REACT_OUTCOME_INTERNAL_ERROR;
 			engine->react->state = REACT_STATE_ABORT;
 			engine->react->last_error_code = rc;
 		}
+		cJSON_Delete(output);
 		engine->react->hook_fn = hook_manager_dispatch;
 		engine->react->hook_user = hooks;
 		engine->react->hook_stop_active = hook_manager_has(hooks, "Stop");
+	}
+	if (rc == 0) {
+		rc = agent_turn_begin(&turn, &session_runtime,
+			&(struct agent_turn_input){
+				.model_input = request->model_input,
+				.stored_user_input = request->stored_user_input,
+				.turn_id = request->turn_id,
+			});
+		if (rc < 0) {
+			char *detail = engine->react->last_error_detail;
+
+			engine->react->last_error_detail = NULL;
+			react_reset(engine->react);
+			engine->react->last_error_detail = detail;
+			engine->react->outcome = rc == -ECANCELED ? REACT_OUTCOME_CANCELLED :
+				rc == -EPERM ? REACT_OUTCOME_GUARDRAIL_DENIED :
+				REACT_OUTCOME_INTERNAL_ERROR;
+			engine->react->state = REACT_STATE_ABORT;
+			engine->react->last_error_code = rc;
+		}
 	}
 	if (rc == 0) {
 		output_forwarder.request = request;
 		output_forwarder.engine = engine;
 		rc = react_run(engine->react, request->model_input,
 			       runtime_output_forward, &output_forwarder);
+	} else if (rc == -ECANCELED && engine->hooks) {
+		cJSON *output = NULL;
+
+		(void)hook_manager_dispatch(engine->hooks, "Interrupt", NULL, &output);
+		cJSON_Delete(output);
 	}
 	react_drain_tools(engine->react);
 	engine->react->hook_fn = NULL;

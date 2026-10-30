@@ -1657,6 +1657,33 @@ int cli_presentation_event(struct cli_context *ctx,
 	}
 	if (!ctx->presentation_ready)
 		return 0;
+	if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
+	    strncmp(ev->name, "hook.", 5) == 0) {
+		if (strcmp(ev->name, "hook.progress") == 0) {
+			presentation_status(ctx, ev->message ? ev->message : "Running hooks");
+		} else if (strcmp(ev->name, "hook.started") != 0) {
+			presentation_clear_status(ctx);
+			if (strcmp(ev->name, "hook.message") == 0 ||
+			    strcmp(ev->name, "hook.failed") == 0 ||
+			    strcmp(ev->name, "hook.blocked") == 0) {
+				int paused = presentation_pause_status(ctx);
+				const char *boundary = event_string(ev, "event");
+
+				printf(ctx, "\n" ANSI_YELLOW "  Hook%s%s · ",
+					boundary ? " " : "", boundary ? boundary : "");
+				presentation_print_safe_inline(ctx,
+					ev->message ? ev->message : ev->name, CLI_EVENT_TEXT_MAX);
+				const char *error = event_string(ev, "error");
+				if (error && *error) {
+					printf(ctx, ": ");
+					presentation_print_safe_inline(ctx, error, CLI_EVENT_TEXT_MAX);
+				}
+				printf(ctx, ANSI_RESET "\n");
+				presentation_resume_status(ctx, paused);
+			}
+		}
+		return 0;
+	}
 	int jobs_rc = cli_jobs_event(ctx, ev);
 	if (jobs_rc)
 		return jobs_rc < 0 ? jobs_rc : 0;

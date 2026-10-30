@@ -405,6 +405,25 @@ TEST_F(CliPresentationTest, OncePrintsThinkingStatusAsPlainText)
 	cJSON_Delete(thinking);
 }
 
+TEST_F(CliPresentationTest, HookMessagesPersistAndQuietSuccessLeavesNoOutput)
+{
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_BACKGROUND, "hook.started", "begin", nullptr);
+	Emit(MORPH_EVENT_BACKGROUND, "hook.completed", "end", nullptr);
+	std::string quiet = testing::internal::GetCapturedStdout();
+	EXPECT_TRUE(quiet.empty());
+
+	struct morph_event message{MORPH_EVENT_BACKGROUND, "hook.message", "end",
+		"Review failed\033[2J; run tests", nullptr, "turn_test"};
+	testing::internal::CaptureStdout();
+	ASSERT_EQ(cli_presentation_event(&ctx, &message), 0);
+	std::string warning = testing::internal::GetCapturedStdout();
+	EXPECT_NE(warning.find("Hook"), std::string::npos);
+	EXPECT_NE(warning.find("Review failed"), std::string::npos);
+	EXPECT_EQ(warning.find("\033[2J"), std::string::npos);
+	EXPECT_EQ(warning.find("\033"), std::string::npos);
+}
+
 TEST_F(CliPresentationTest, OncePrintsCompactionProgressAndResult)
 {
 	cJSON *begin = cJSON_CreateObject();

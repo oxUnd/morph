@@ -57,6 +57,8 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 			       hook_field(row, "id"), hook_field(row, "event"),
 			       hook_field(row, "state"), hook_field(row, "source"),
 			       hook_field(row, "matcher"));
+			if (*hook_field(row, "diagnostic"))
+				printf(ctx, "  unavailable: %s\n", hook_field(row, "diagnostic"));
 		}
 		printf(ctx, "Review: /hooks review <id>\nWorkspace review: /hooks project\n");
 		if (cJSON_GetArraySize(rows) > 0) {
@@ -81,6 +83,8 @@ static int cmd_hooks(struct cli_context *ctx, int argc, char **argv)
 			       hook_field(row, "state"), hook_field(row, "previous_definition"),
 			       hook_field(row, "definition"), hook_field(row, "id"),
 			       hook_field(row, "digest"));
+			if (*hook_field(row, "diagnostic"))
+				printf(ctx, "Unavailable: %s\n", hook_field(row, "diagnostic"));
 			const cJSON *last = cJSON_GetObjectItem(row, "last_run");
 			if (last) {
 				char *text = cJSON_Print(last);

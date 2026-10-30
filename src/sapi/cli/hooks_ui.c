@@ -40,6 +40,9 @@ struct hook_screen {
 	int focus;
 	int review;
 	int batch;
+	int events;
+	int event_focus;
+	int event_filter;
 	int scroll;
 	int choice;
 	int page_size;
@@ -120,7 +123,7 @@ static void selected(struct hook_screen *screen, int row, const char *text)
 	cell(screen, row, 2, 1, "▏", UI_BAR);
 }
 
-static int actions(const cJSON *row, struct hook_action items[3])
+static int actions(const cJSON *row, struct hook_action items[4])
 {
 	const char *state = field(row, "state");
 	int count = 0;
@@ -133,13 +136,89 @@ static int actions(const cJSON *row, struct hook_action items[3])
 		items[count++] = (struct hook_action){"revoke", "Revoke trust"};
 	} else if (strcmp(state, "project_untrusted") == 0) {
 		items[count++] = (struct hook_action){"trust-project", "Trust this workspace"};
+		items[count++] = (struct hook_action){"disable", "Disable hook"};
 	} else if (strcmp(state, "needs_review") == 0 ||
 		   strcmp(state, "changed / needs_review") == 0) {
 		items[count++] = (struct hook_action){"trust", "Trust current definition"};
+		items[count++] = (struct hook_action){"disable", "Disable hook"};
 	}
 	items[count++] = (struct hook_action){NULL,
 		strcmp(state, "trusted") == 0 ? "Back to hooks" : "Keep unchanged / Back to hooks"};
 	return count;
+}
+
+#define HOOK_EVENT_COUNT 12
+
+static const char *event_name(int index)
+{
+	const char *names[] = {"PreToolUse", "PermissionRequest", "PostToolUse",
+		"PreCompact", "PostCompact", "SessionStart", "SessionEnd",
+		"UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt"};
+
+	return index >= 0 && index < HOOK_EVENT_COUNT ? names[index] : "";
+}
+
+static int view_count(const struct hook_screen *screen, const cJSON *rows)
+{
+	const cJSON *row;
+	int count = 0;
+
+	if (!screen->event_filter)
+		return cJSON_GetArraySize(rows);
+	cJSON_ArrayForEach(row, rows) {
+		if (strcmp(field(row, "event"), event_name(screen->event_filter - 1)) == 0)
+			count++;
+	}
+	return count;
+}
+
+static const cJSON *view_row(const struct hook_screen *screen, const cJSON *rows, int index)
+{
+	const cJSON *row;
+
+	if (!screen->event_filter)
+		return cJSON_GetArrayItem(rows, index);
+	cJSON_ArrayForEach(row, rows) {
+		if (strcmp(field(row, "event"), event_name(screen->event_filter - 1)) == 0 &&
+		    index-- == 0)
+			return row;
+	}
+	return NULL;
+}
+
+static void events_frame(struct hook_screen *screen, const cJSON *rows)
+{
+	char label[160];
+	int page = screen->height - 10;
+	int start = screen->event_focus / page * page;
+	int end = start + page < HOOK_EVENT_COUNT ? start + page : HOOK_EVENT_COUNT;
+
+	cell(screen, 3, 3, screen->width, "Lifecycle events", UI_TEXT "\033[1m");
+	cell(screen, 4, 3, screen->width,
+		"Inspect installed, active, and pending hooks by event.", UI_DIM);
+	rule(screen, 5);
+	cell(screen, 6, 3, screen->width,
+		"EVENT                  INSTALLED  ACTIVE  REVIEW", UI_DIM);
+	for (int i = start; i < end; i++) {
+		const cJSON *row;
+		int installed = 0, active = 0, pending = 0;
+
+		cJSON_ArrayForEach(row, rows) {
+			if (strcmp(field(row, "event"), event_name(i)) != 0)
+				continue;
+			installed++;
+			active += strcmp(field(row, "state"), "trusted") == 0;
+			pending += strcmp(field(row, "state"), "needs_review") == 0 ||
+				strcmp(field(row, "state"), "changed / needs_review") == 0 ||
+				strcmp(field(row, "state"), "project_untrusted") == 0;
+		}
+		snprintf(label, sizeof(label), "%-22s %-10d %-7d %d",
+			event_name(i), installed, active, pending);
+		if (i == screen->event_focus) selected(screen, 7 + i - start, label);
+		else cell(screen, 7 + i - start, 3, screen->width, label, UI_TEXT);
+	}
+	cell(screen, screen->height, 3, screen->width,
+		"↑↓ Select  Enter Handlers  r Refresh  Esc All hooks", UI_DIM);
 }
 
 static int add_line(struct arena *arena, morph_array_t *lines, const char *text,
@@ -253,6 +332,10 @@ static int document(struct arena *arena, morph_array_t *lines, const cJSON *row,
 
 	for (size_t i = 0; rc == 0 && i < sizeof(keys) / sizeof(keys[0]); i++)
 		rc = detail_field(arena, lines, &buffer, labels[i], field(row, keys[i]), width);
+	if (rc == 0 && *field(row, "diagnostic"))
+		rc = detail_field(arena, lines, &buffer, "Unavailable", field(row, "diagnostic"), width);
+	if (rc == 0 && *field(row, "statusMessage"))
+		rc = detail_field(arena, lines, &buffer, "While running", field(row, "statusMessage"), width);
 	if (rc == 0) {
 		const cJSON *timeout = cJSON_GetObjectItemCaseSensitive(row, "timeout");
 		char number[32];
@@ -295,7 +378,7 @@ static int document(struct arena *arena, morph_array_t *lines, const cJSON *row,
 
 static void list_frame(struct hook_screen *screen, const cJSON *rows)
 {
-	int count = cJSON_GetArraySize(rows);
+	int count = view_count(screen, rows);
 	int trusted = 0, disabled = 0, review = 0;
 	const cJSON *row;
 	char label[128];
@@ -307,7 +390,9 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 			strcmp(field(row, "state"), "changed / needs_review") == 0 ||
 			strcmp(field(row, "state"), "project_untrusted") == 0;
 	}
-	cell(screen, 3, 3, screen->width, "Lifecycle hooks", UI_TEXT "\033[1m");
+	snprintf(label, sizeof(label), "Lifecycle hooks%s%s", screen->event_filter ? " · " : "",
+		screen->event_filter ? event_name(screen->event_filter - 1) : "");
+	cell(screen, 3, 3, screen->width, label, UI_TEXT "\033[1m");
 	snprintf(label, sizeof(label), "%d trusted · %d need review · %d disabled",
 		 trusted, review, disabled);
 	if (count > trusted + disabled + review)
@@ -336,7 +421,7 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 	int end = count - start > screen->page_size ? start + screen->page_size : count;
 
 	for (int i = start; i < end; i++) {
-		row = cJSON_GetArrayItem(rows, i);
+		row = view_row(screen, rows, i);
 		int y = 7 + i - start;
 		int focus = i == screen->focus;
 		const char *style = focus ? UI_SELECTED "\033[1m" : UI_TEXT;
@@ -346,11 +431,7 @@ static void list_frame(struct hook_screen *screen, const cJSON *rows)
 		if (command_width > 4)
 			cell(screen, y, command_column, command_width, field(row, "command"), style);
 		if (source_width) {
-			const char *source = field(row, "source");
-			const char *cwd = field(row, "cwd");
-			size_t length = strlen(cwd);
-			int project = length > 0 && strncmp(source, cwd, length) == 0 &&
-				strncmp(source + length, "/.morph/", 8) == 0;
+			int project = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(row, "project"));
 
 			cell(screen, y, source_column, source_width, project ? "Project" : "User", style);
 		}
@@ -413,10 +494,10 @@ static void render_batch(struct hook_screen *screen, const cJSON *rows)
 
 static int render(struct hook_screen *screen, const cJSON *rows)
 {
-	const cJSON *row = cJSON_GetArrayItem(rows, screen->focus);
+	const cJSON *row = view_row(screen, rows, screen->focus);
 	int height = screen->height;
 	int detail_start;
-	struct hook_action items[3];
+	struct hook_action items[4];
 	int action_count = actions(row, items);
 	struct arena *arena = arena_create(BUFSIZ);
 	morph_array_t lines = {0};
@@ -446,18 +527,22 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 		screen->document_height = 0;
 	} else if (screen->batch) {
 		render_batch(screen, rows);
-	} else if (cJSON_GetArraySize(rows) == 0) {
+	} else if (screen->events) {
+		events_frame(screen, rows);
+	} else if (view_count(screen, rows) == 0) {
 		screen->page_size = 1;
 		screen->document_height = 0;
 		screen->document_lines = 0;
-		cell(screen, 3, 3, screen->width, "Lifecycle hooks", UI_TEXT "\033[1m");
-		cell(screen, 6, 3, screen->width, "No hooks configured.", UI_TEXT);
+		cell(screen, 3, 3, screen->width, screen->event_filter ?
+			event_name(screen->event_filter - 1) : "Lifecycle hooks", UI_TEXT "\033[1m");
+		cell(screen, 6, 3, screen->width, screen->event_filter ?
+			"No hooks configured for this event." : "No hooks configured.", UI_TEXT);
 		if (height >= 14) {
 			cell(screen, 8, 3, screen->width, "Add hook definitions to:", UI_DIM);
 			cell(screen, 9, 3, screen->width, "~/.morph/hooks.json   (user)", UI_DIM);
 			cell(screen, 10, 3, screen->width, ".morph/hooks.json     (project)", UI_DIM);
 		}
-		cell(screen, height, 3, screen->width, "r Refresh  Esc Close", UI_DIM);
+		cell(screen, height, 3, screen->width, "e Events  r Refresh  Esc Back", UI_DIM);
 	} else {
 		if (screen->review) {
 			cell(screen, 3, 3, screen->width, field(row, "event"), UI_TEXT "\033[1m");
@@ -467,7 +552,7 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 		} else {
 			screen->page_size = height >= 24 ? (height - 20) / 2 : height - 10;
 			if (screen->page_size < 1) screen->page_size = 1;
-			int total = cJSON_GetArraySize(rows);
+			int total = view_count(screen, rows);
 			if (total > 0 && screen->page_size > total) screen->page_size = total;
 			list_frame(screen, rows);
 			int start = screen->focus / screen->page_size * screen->page_size;
@@ -501,9 +586,9 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 		}
 		cell(screen, height, 3, screen->width, screen->review ?
 		     "↑↓ Choose  Enter Confirm  PgUp/PgDn Scroll  Esc Back" :
-		     cJSON_GetArraySize(rows) > screen->page_size ?
-		     "↑↓ Select  Enter Review  a Review all  ←→ Page  r Refresh  Esc Close" :
-		     "↑↓ Select  Enter Review  a Review all  r Refresh  Esc Close", UI_DIM);
+		     view_count(screen, rows) > screen->page_size ?
+		     "↑↓ Select  Enter Review  e Events  a Review all  ←→ Page  r Refresh  Esc Close" :
+		     "↑↓ Select  Enter Review  e Events  a Review all  r Refresh  Esc Close", UI_DIM);
 	}
 	if (!screen->batch && *screen->message)
 		cell(screen, height - 1, 3, screen->width, screen->message, UI_AMBER);
@@ -528,7 +613,7 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *screen)
 {
 	cJSON *fresh = NULL;
-	const cJSON *row = cJSON_GetArrayItem(*rows, screen->focus);
+	const cJSON *row = view_row(screen, *rows, screen->focus);
 	char id[65];
 
 	snprintf(id, sizeof(id), "%s", field(row, "id"));
@@ -537,16 +622,17 @@ static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *sc
 	cJSON_Delete(*rows);
 	*rows = fresh;
 	screen->focus = 0;
-	cJSON_ArrayForEach(row, fresh) {
+	for (int i = 0; i < view_count(screen, fresh); i++) {
+		row = view_row(screen, fresh, i);
 		if (strcmp(field(row, "id"), id) == 0) break;
 		screen->focus++;
 	}
-	if (screen->focus >= cJSON_GetArraySize(fresh)) {
+	if (screen->focus >= view_count(screen, fresh)) {
 		screen->focus = 0;
 		screen->review = 0;
 	}
-	struct hook_action items[3];
-	screen->choice = actions(cJSON_GetArrayItem(fresh, screen->focus), items) - 1;
+	struct hook_action items[4];
+	screen->choice = actions(view_row(screen, fresh, screen->focus), items) - 1;
 	screen->scroll = 0;
 	return 0;
 }
@@ -597,7 +683,18 @@ static int hooks_update(void *data, const struct morph_tui_event *event)
 
 	if (key == 3 || key == 4 || key == 'q') return MORPH_TUI_SCREEN_CLOSE;
 	if (key == 27) {
-		if (!screen->review) return MORPH_TUI_SCREEN_CLOSE;
+		if (!screen->review) {
+			if (screen->events) {
+				screen->events = 0;
+				screen->event_filter = 0;
+				screen->focus = 0;
+			} else if (screen->event_filter) {
+				screen->events = 1;
+			} else {
+				return MORPH_TUI_SCREEN_CLOSE;
+			}
+			return MORPH_TUI_SCREEN_REDRAW;
+		}
 		screen->review = 0;
 		screen->scroll = 0;
 		screen->message[0] = '\0';
@@ -613,6 +710,22 @@ static int hooks_update(void *data, const struct morph_tui_event *event)
 	    screen->width < (screen->batch ? 40 : 24) ||
 	    (screen->review && screen->document_height == 0))
 		return MORPH_TUI_SCREEN_CONTINUE;
+	if (!screen->review && !screen->batch && key == 'e') {
+		screen->events = 1;
+		screen->scroll = 0;
+		return MORPH_TUI_SCREEN_REDRAW;
+	}
+	if (screen->events && !screen->batch) {
+		hook_choose(&screen->event_focus, HOOK_EVENT_COUNT, screen->height - 10, key,
+			MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_PAGED);
+		if (key == '\r' || key == '\n') {
+			screen->event_filter = screen->event_focus + 1;
+			screen->focus = 0;
+			screen->events = 0;
+			screen->scroll = 0;
+		}
+		return MORPH_TUI_SCREEN_REDRAW;
+	}
 	if (screen->batch) {
 		hook_choose(&screen->choice, 3, 1, key,
 			MORPH_TUI_LIST_WRAP | MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_TAB);
@@ -647,10 +760,10 @@ static int hooks_update(void *data, const struct morph_tui_event *event)
 		screen->choice = 2;
 		return MORPH_TUI_SCREEN_REDRAW;
 	}
-	const cJSON *row = cJSON_GetArrayItem(*rows, screen->focus);
-	struct hook_action items[3];
+	const cJSON *row = view_row(screen, *rows, screen->focus);
+	struct hook_action items[4];
 	int count = actions(row, items);
-	int total = cJSON_GetArraySize(*rows);
+	int total = view_count(screen, *rows);
 
 	if (screen->review) {
 		hook_choose(&screen->choice, count, 1, key,
@@ -666,7 +779,7 @@ static int hooks_update(void *data, const struct morph_tui_event *event)
 		if (!screen->review) {
 			rc = refresh(ctx, rows, screen);
 			if (rc != 0) return rc;
-			screen->review = cJSON_GetArraySize(*rows) > 0;
+			screen->review = view_count(screen, *rows) > 0;
 		} else if (!items[screen->choice].name) {
 			screen->review = 0;
 			screen->scroll = 0;

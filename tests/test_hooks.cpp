@@ -375,6 +375,134 @@ TEST_F(HooksTest, UnsupportedAndInvalidEntriesCannotBeTrusted)
 	cJSON_Delete(rows);
 }
 
+TEST_F(HooksTest, WildcardAndIgnoredMatchersFollowEventSemantics)
+{
+	for (const char *event : {"PreToolUse", "UserPromptSubmit", "Stop", "Interrupt"}) {
+		Define(event, "touch matched; printf '{}'",
+			strcmp(event, "PreToolUse") == 0 ? "*" : "[");
+		if (!hooks.ready)
+			Init();
+		else
+			ASSERT_EQ(hook_manager_reload(&hooks), 0);
+		TrustAll();
+		cJSON *out = Dispatch(event, R"({"tool_name":"file_read"})");
+		EXPECT_TRUE(std::filesystem::exists(directory + "/matched")) << event;
+		std::filesystem::remove(directory + "/matched");
+		cJSON_Delete(out);
+	}
+}
+
+TEST_F(HooksTest, CompactionMatcherAndContinueFalseStopWithoutContext)
+{
+	for (const char *event : {"PreCompact", "PostCompact"}) {
+		Define(event, "printf '{\"continue\":false,\"stopReason\":\"Policy stop\"}'",
+			"^manual$");
+		if (!hooks.ready)
+			Init();
+		else
+			ASSERT_EQ(hook_manager_reload(&hooks), 0);
+		TrustAll();
+		cJSON *out = Dispatch(event, R"({"trigger":"auto"})");
+		EXPECT_EQ(out, nullptr);
+		cJSON_Delete(out);
+		out = Dispatch(event, R"({"trigger":"manual"})");
+		EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(out, "terminate")));
+		EXPECT_NE(field(out, "reason").find("Policy stop"), std::string::npos);
+		EXPECT_TRUE(field(out, "context").empty());
+		cJSON_Delete(out);
+	}
+}
+
+TEST_F(HooksTest, InterruptRunsAfterCancellationAndExhaustedTurnBudget)
+{
+	Define("Interrupt", "cat > interrupted.json; printf '{\"continue\":false}'");
+	Init();
+	TrustAll();
+	volatile sig_atomic_t cancelled = 1;
+	hooks.cancelled = &cancelled;
+	hooks.remaining_ms = 0;
+	cJSON *out = Dispatch("Interrupt");
+	EXPECT_TRUE(std::filesystem::exists(directory + "/interrupted.json"));
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "blocked")));
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "terminate")));
+	hooks.cancelled = nullptr;
+	cJSON_Delete(out);
+}
+
+TEST_F(HooksTest, InterruptUsesShortTimeoutAndRejectsLongConfiguration)
+{
+	Write(R"({"hooks":{"Interrupt":[{"hooks":[
+		{"type":"command","command":"true"},
+		{"type":"command","command":"true","timeout":4}]}]}})");
+	Init();
+	cJSON *rows = hook_manager_list(&hooks);
+	EXPECT_EQ(cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "timeout")->valueint, 1);
+	EXPECT_EQ(field(cJSON_GetArrayItem(rows, 1), "state"), "invalid");
+	EXPECT_FALSE(field(cJSON_GetArrayItem(rows, 1), "diagnostic").empty());
+	cJSON_Delete(rows);
+}
+
+TEST_F(HooksTest, UnsupportedOutputCannotApplyPartialBlockOrRewrite)
+{
+	Define("PreToolUse", "printf '{\"suppressOutput\":false,\"hookSpecificOutput\":{"
+		"\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\"}}'");
+	Init();
+	TrustAll();
+	cJSON *out = Dispatch("PreToolUse");
+	EXPECT_FALSE(cJSON_IsTrue(cJSON_GetObjectItem(out, "blocked")));
+	cJSON_Delete(out);
+	cJSON *rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run"), "name"),
+		"hook.failed");
+	cJSON_Delete(rows);
+}
+
+TEST_F(HooksTest, ToolPlainTextIsIgnoredAndStartupCanStop)
+{
+	Define("PreToolUse", "printf 'tool checker log'");
+	Init();
+	TrustAll();
+	cJSON *out = Dispatch("PreToolUse");
+	EXPECT_TRUE(field(out, "context").empty());
+	cJSON_Delete(out);
+	cJSON *rows = hook_manager_list(&hooks);
+	EXPECT_EQ(field(cJSON_GetObjectItem(cJSON_GetArrayItem(rows, 0), "last_run"), "name"),
+		"hook.completed");
+	cJSON_Delete(rows);
+	Define("SessionStart", "printf '{\"continue\":false,\"stopReason\":\"Startup denied\"}'");
+	ASSERT_EQ(hook_manager_reload(&hooks), 0);
+	TrustAll();
+	out = Dispatch("SessionStart");
+	EXPECT_TRUE(cJSON_IsTrue(cJSON_GetObjectItem(out, "terminate")));
+	cJSON_Delete(out);
+}
+
+TEST_F(HooksTest, SlowHooksReportProgressAndBalancedCompletion)
+{
+	Define("PreToolUse", "sleep 0.4; printf '{}'", "*");
+	Init();
+	TrustAll();
+	std::vector<std::string> events;
+	hooks.event_user = &events;
+	hooks.event_cb = [](const struct morph_event *event, void *user) -> int {
+		auto *seen = static_cast<std::vector<std::string> *>(user);
+		seen->emplace_back(event->name);
+		if (strcmp(event->name, "hook.started") == 0)
+			EXPECT_STREQ(event->phase, "begin");
+		if (strcmp(event->name, "hook.completed") == 0)
+			EXPECT_GE(cJSON_GetObjectItem(event->data, "duration_ms")->valuedouble, 300);
+		return 0;
+	};
+	cJSON *out = Dispatch("PreToolUse");
+	ASSERT_EQ(events.size(), 3u);
+	EXPECT_EQ(events[0], "hook.started");
+	EXPECT_EQ(events[1], "hook.progress");
+	EXPECT_EQ(events[2], "hook.completed");
+	hooks.event_cb = nullptr;
+	hooks.event_user = nullptr;
+	cJSON_Delete(out);
+}
+
 TEST_F(HooksTest, MatcherAliasDoesNotMatchOtherTools)
 {
 	Define("PreToolUse", "echo denied >&2; exit 2", "^Bash$");

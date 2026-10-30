@@ -434,7 +434,29 @@ int runtime_session_compress(struct runtime *runtime,
 		react->history_enabled = 0;
 		return rc;
 	}
-	rc = agent_history_compact(react, 1);
+	struct hook_manager *hooks = &ctx->hooks;
+	int64_t previous_hook_session = hooks->session_id;
+
+	rc = hook_manager_reload(hooks);
+	if (rc == 0) {
+		hooks->session_id = ctx->current_session.id;
+		hooks->turn_id = react->turn_id;
+		hooks->model = ctx->config.models.text.model;
+		hooks->event_cb = react->event_cb;
+		hooks->event_user = react->event_user_data;
+		hooks->remaining_ms = 600000;
+		hooks->context_bytes = 0;
+		react->hook_fn = hook_manager_dispatch;
+		react->hook_user = hooks;
+		rc = agent_history_compact(react, 1);
+		react->hook_fn = NULL;
+		react->hook_user = NULL;
+	}
+	hooks->session_id = previous_hook_session;
+	hooks->turn_id = NULL;
+	hooks->event_cb = NULL;
+	hooks->event_user = NULL;
+	react->hook_context = NULL;
 	memcpy(react->turn_id, previous_turn_id, sizeof(react->turn_id));
 	react->turn_id_user_set = previous_turn_id_user_set;
 	react->history_db = NULL;

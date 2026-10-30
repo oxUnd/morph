@@ -5,6 +5,11 @@ implemented contract and compatibility limits. This design also records future
 work: managed policy, sandbox profiles, immediate in-turn host revocation,
 additional lifecycle events, and complete upstream protocol parity.
 
+The 2026-10-30 update adds durable-history compaction and root Interrupt events,
+event-based TUI browsing, visible execution feedback, and PostToolUse result
+replacement. The first-release matrix below remains the original rollout plan;
+the usage guide describes current support.
+
 Morph should support command hooks at stable agent lifecycle boundaries.
 Hooks can supply context, reject a pending tool call, inspect completed work,
 or request another pass before a successful answer is committed.

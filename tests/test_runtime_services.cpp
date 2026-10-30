@@ -49,6 +49,58 @@ TEST_F(RuntimeFacadeTest, DeferredSessionPollingIsEmptyAndSilent)
 	runtime_session_list_free(sessions);
 }
 
+TEST_F(RuntimeFacadeTest, ManualCompactionRunsTrustedHooksAndHonorsVeto)
+{
+	WriteConfig("[memory]\nenabled=false\n");
+	std::ofstream(directory + "/hooks.json") << R"({"hooks":{
+		"PreCompact":[{"matcher":"manual|auto","hooks":[{"type":"command",
+		"command":"printf '{\"continue\":false,\"stopReason\":\"Manual compaction blocked\"}'"}]}]}})";
+	struct runtime_options options{};
+	options.config_path = config_path.c_str();
+	Open(&options);
+	ASSERT_EQ(runtime_session_create_and_select(instance, "compact-hooks", nullptr), 0);
+	auto *react = instance->context.react;
+	ASSERT_NE(react, nullptr);
+	struct model_history_insert history{};
+	history.session_id = instance->context.current_session.id;
+	history.kind = "user_message";
+	history.role = "user";
+	history.content = "History to compact";
+	history.token_count = 10;
+	history.active = 1;
+	ASSERT_EQ(model_history_add(&instance->context.database, &history, nullptr), 0);
+	cJSON *rows = nullptr;
+	ASSERT_EQ(runtime_hooks_snapshot(instance, &rows), 0);
+	const cJSON *row = cJSON_GetArrayItem(rows, 0);
+	ASSERT_NE(row, nullptr);
+	ASSERT_EQ(runtime_hooks_manage(instance, "trust-all", "workspace",
+		cJSON_GetObjectItem(row, "review_digest")->valuestring), 0);
+	cJSON_Delete(rows);
+	int summaries = 0;
+	react->compress.summarize_user_data = &summaries;
+	react->compress.summarize = [](const char *, void *user, char **out) -> int {
+		++*static_cast<int *>(user);
+		*out = strdup("Checkpoint");
+		return 0;
+	};
+	EXPECT_EQ(runtime_session_compress(instance, nullptr, nullptr, nullptr), -EPERM);
+	EXPECT_EQ(summaries, 0);
+	EXPECT_EQ(react->hook_fn, nullptr);
+	ASSERT_NE(react->last_error_detail, nullptr);
+	EXPECT_NE(strstr(react->last_error_detail, "Manual compaction blocked"), nullptr);
+	react->compress.max_context_tokens = 100;
+	react->compress.summarize_threshold_ratio = 0.01;
+	struct runtime_request request{};
+	struct runtime_result result{};
+	request.session_id = instance->context.current_session.id;
+	request.model_input = "Continue after automatic compaction";
+	request.turn_id = "hook-auto-compact";
+	EXPECT_EQ(runtime_execute_turn(instance, &request, &result), -EPERM);
+	EXPECT_EQ(summaries, 0);
+	EXPECT_EQ(react->outcome, REACT_OUTCOME_GUARDRAIL_DENIED);
+	EXPECT_EQ(react->hook_fn, nullptr);
+}
+
 TEST_F(RuntimeFacadeTest, ProjectSkillsTakePrecedenceOverConfiguredUserSkills)
 {
 	std::string project = directory + "/.agents/skills/review";

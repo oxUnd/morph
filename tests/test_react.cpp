@@ -1812,6 +1812,7 @@ struct compaction_memory_probe {
 	struct morph_event_recorder *recorder;
 	int reclaimed = 0;
 	int observed = 0;
+	const char *expected_hook_context = nullptr;
 };
 
 static void compaction_memory_reclaimed(void *data)
@@ -1830,6 +1831,12 @@ static int record_compaction_memory(const struct morph_event *event, void *data)
 		cleanup->data = probe;
 	} else if (strcmp(event->name, "react.compaction.completed") == 0) {
 		EXPECT_EQ(probe->reclaimed, 1);
+		if (probe->expected_hook_context) {
+			EXPECT_NE(probe->ctx->hook_context, nullptr);
+			if (probe->ctx->hook_context)
+				EXPECT_NE(strstr(probe->ctx->hook_context,
+					probe->expected_hook_context), nullptr);
+		}
 		probe->observed++;
 	}
 	return morph_event_recorder_cb(event, probe->recorder);
@@ -1942,6 +1949,22 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	ctx->compress.summarize_user_data = nullptr;
 	ASSERT_EQ(react_set_turn_id(ctx, "turn_in_turn_compaction"), 0);
 	compaction_memory_probe memory_probe = {ctx, &rec};
+	memory_probe.expected_hook_context = "COMPACT_HOOK_CONTEXT";
+	std::string hook_order;
+	ctx->hook_user = &hook_order;
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *input, cJSON **out) -> int {
+		*out = cJSON_CreateObject();
+		if (strcmp(event, "PreCompact") == 0 || strcmp(event, "PostCompact") == 0) {
+			*static_cast<std::string *>(user) += std::string(event) + ":";
+			EXPECT_STREQ(cJSON_GetObjectItem(input, "trigger")->valuestring, "auto");
+		}
+		if (strcmp(event, "SessionStart") == 0) {
+			EXPECT_STREQ(cJSON_GetObjectItem(input, "source")->valuestring, "compact");
+			*static_cast<std::string *>(user) += "SessionStart:compact";
+			cJSON_AddStringToObject(*out, "context", "COMPACT_HOOK_CONTEXT");
+		}
+		return 0;
+	};
 	ASSERT_EQ(react_set_event_callback(ctx, record_compaction_memory, &memory_probe), 0);
 
 	EXPECT_EQ(react_run(ctx, "collect the large result", nullptr, nullptr),
@@ -1956,6 +1979,7 @@ TEST_F(MockLlmTest, CompactsWithinTurnAfterLargeToolResult)
 	EXPECT_EQ(ctx->in_turn_compaction_count, 1);
 	EXPECT_EQ(memory_probe.reclaimed, 1);
 	EXPECT_EQ(memory_probe.observed, 1);
+	EXPECT_EQ(hook_order, "PreCompact:PostCompact:SessionStart:compact");
 	EXPECT_EQ(ctx->incomplete_final_retry_count, 1);
 	EXPECT_TRUE(event_recorder_has_name(&rec,
 		"react.compaction.completed"));
@@ -2876,6 +2900,28 @@ static int drain_prompt_once(void *user_data, struct react_action *out,
 	out->type = "prompt";
 	out->payload_json = "{\"text\":\"also add tests\",\"display_text\":\"add tests\"}";
 	return 1;
+}
+
+TEST_F(MockLlmTest, InterruptHookRunsOnceAfterOwnerCancellation)
+{
+	setup_llm_with_response("Final: should not run");
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	int drains = 0, interrupts = 0;
+	ctx->hook_user = &interrupts;
+	ctx->hook_fn = [](void *user, const char *event, const cJSON *, cJSON **out) -> int {
+		*out = nullptr;
+		if (strcmp(event, "Interrupt") == 0)
+			++*static_cast<int *>(user);
+		return 0;
+	};
+	ASSERT_EQ(react_set_action_drain(ctx, drain_cancel_once, &drains), 0);
+	EXPECT_EQ(react_run(ctx, "cancel", nullptr, nullptr), -ECANCELED);
+	EXPECT_EQ(interrupts, 1);
+	EXPECT_EQ(llm_data->call_count, 0);
+	EXPECT_EQ(ctx->outcome, REACT_OUTCOME_CANCELLED);
+	react_context_destroy(ctx);
 }
 
 static int drain_prompt_after_first_call(void *user_data,
@@ -7205,6 +7251,7 @@ struct TestHookState {
 	bool deny_tool = false;
 	bool reject_input = false;
 	bool ask = false;
+	bool block_after = false;
 	std::string rewrite;
 };
 
@@ -7226,8 +7273,10 @@ static int test_lifecycle_hook(void *user, const char *event,
 		if (!state->rewrite.empty())
 			cJSON_AddItemToObject(*output, "updatedInput", cJSON_Parse(state->rewrite.c_str()));
 	}
-	if (strcmp(event, "PostToolUse") == 0)
+	if (strcmp(event, "PostToolUse") == 0) {
 		state->tool_after++;
+		block = state->block_after;
+	}
 	cJSON_AddBoolToObject(*output, "blocked", block);
 	cJSON_AddBoolToObject(*output, "ask", state->ask && strcmp(event, "PreToolUse") == 0);
 	cJSON_AddStringToObject(*output, "reason", "Run the focused verification.");
@@ -7342,6 +7391,66 @@ TEST_F(MockLlmTest, HookRewriteReachesToolAndPostHook)
 	EXPECT_EQ(state.tool_before, 1);
 	EXPECT_EQ(state.tool_after, 1);
 	react_context_destroy(ctx);
+}
+
+TEST_F(MockLlmTest, PostHookReplacesOriginalResultBeforeNextModelRequest)
+{
+	auto tool = [](const char *, struct tool_result *result, void *) -> int {
+		return tool_result_success_json_text(result, strdup("ORIGINAL_PRIVATE_TOOL_RESULT"));
+	};
+	ASSERT_EQ(tool_register(TOOL_ORIGIN_BUILTIN, &tools, "test_tool", "test", "{}",
+		tool, nullptr, nullptr), 0);
+	const char *responses[] = {"Action: test_tool({})", "Final: done"};
+	llm = create_multi_mock_llm(responses, 2);
+	llm->chat_with_tools = [](struct model *self, struct arena *arena, const char *prompt,
+		struct chat_message *messages, int count, struct tool_desc *descriptors, int tool_count,
+		struct chat_response *response, sse_callback cb, void *user) -> int {
+		for (int i = 0; i < count; i++) {
+			if (messages[i].role && strcmp(messages[i].role, "tool") == 0) {
+				EXPECT_EQ(strstr(messages[i].content, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
+				EXPECT_NE(strstr(messages[i].content, "Run the focused verification."), nullptr);
+			}
+		}
+		return mock_chat_with_tools(self, arena, prompt, messages, count, descriptors,
+			tool_count, response, cb, user);
+	};
+	auto *ctx = react_context_create(&tools, tok, &cfg, nullptr);
+	ASSERT_NE(ctx, nullptr);
+	ctx->llm_model = llm;
+	TestHookState state;
+	state.stops = 1;
+	state.block_after = true;
+	ctx->hook_fn = test_lifecycle_hook;
+	ctx->hook_user = &state;
+	struct db database{};
+	struct session session{};
+	ASSERT_EQ(db_open(nullptr, &database, ":memory:"), 0);
+	ASSERT_EQ(db_init_schema(&database), 0);
+	ASSERT_EQ(session_create(&database, "post-hook", "mock", &session), 0);
+	ctx->history_db = &database;
+	ctx->history_session_id = session.id;
+	ctx->history_enabled = 1;
+	EXPECT_EQ(react_run(ctx, "use tool", nullptr, nullptr), 0);
+	EXPECT_EQ(state.tool_after, 1);
+	int count = 0, results = 0;
+	auto *history = model_history_list(&database, session.id, 0, &count);
+	for (auto *item = history; item; item = item->next) {
+		if (strcmp(item->kind, "tool_result") != 0)
+			continue;
+		results++;
+		EXPECT_EQ(strstr(item->content, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
+		cJSON *payload = cJSON_Parse(item->payload_json);
+		cJSON *meta = cJSON_GetObjectItem(payload, "tool_meta");
+		cJSON *original = cJSON_GetObjectItem(meta, "hook_original_tool_response");
+		EXPECT_TRUE(cJSON_IsString(original));
+		if (cJSON_IsString(original))
+			EXPECT_NE(strstr(original->valuestring, "ORIGINAL_PRIVATE_TOOL_RESULT"), nullptr);
+		cJSON_Delete(payload);
+	}
+	EXPECT_EQ(results, 1);
+	model_history_free_list(history);
+	react_context_destroy(ctx);
+	db_close(&database);
 }
 
 TEST_F(MockLlmTest, HookTextToolRewritePreservesRawInputAndOwnership)

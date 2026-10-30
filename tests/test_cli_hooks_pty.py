@@ -86,6 +86,24 @@ def main():
             assert 'COMMAND' in text and 'SOURCE' in text and 'STATE' in text, text
             assert 'Needs review' in text and 'Workspace untrusted' in text, text
             assert not trust_rows()
+            terminal.send('e')
+            text = snapshot('lifecycle event overview')
+            assert 'Lifecycle events' in text and 'INSTALLED' in text, text
+            assert 'PreCompact' in text and 'Interrupt' in text, text
+            for columns in (80, 60):
+                resize(24, columns)
+                text = snapshot(f'event overview at {columns} columns')
+                assert 'INSTALLED' in text and 'PreCompact' in text, text
+            resize(40, 120)
+            terminal.send('\r')
+            text = snapshot('handlers filtered by event')
+            assert 'Showing 1–2 of 2' in text and 'SessionEnd' not in text, text
+            terminal.send('\x1b')
+            terminal.send('\x1b[B\r')
+            text = snapshot('empty permission event')
+            assert 'No hooks configured for this event.' in text, text
+            terminal.send('\x1b')
+            terminal.send('\x1b')
             text = review()
             assert 'Current definition' in text and command in text, text
             text = choose_first()
