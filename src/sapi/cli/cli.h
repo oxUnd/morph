@@ -53,8 +53,12 @@ struct cli_output {
 	int color_disabled;
 	int structured;
 	int command_result_pending;
+	/* Logical history tail, including deferred scrollback, capped at two. */
+	int trailing_newlines;
 	morph_buf_t *capture;
 	int capture_styled;
+	/* Captured history advances the tail; alternate-screen frames do not. */
+	int capture_history;
 };
 
 struct cli_context {

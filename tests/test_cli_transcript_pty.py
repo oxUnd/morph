@@ -80,6 +80,58 @@ def check_feed_replay(driver):
             child.close(force=True)
 
 
+def check_tool_spacing(driver):
+    events = []
+    preambles = [
+        ('PARAGRAPH_BEFORE_TOOL\n\n\n', False),
+        ('- LIST_BEFORE_TOOL\n\n', True),
+        ('```text\nCODE_FIRST\n\nCODE_LAST\n```\n\n', True),
+        ('Wrapped content ' * 12 + 'WRAPPED_END', False),
+    ]
+    for index, (text, streaming) in enumerate(preambles):
+        if index == 2:
+            events.append({'name': 'react.reasoning.delta',
+                           'data': {'text': 'REASONING_BETWEEN_TOOLS'}})
+        if streaming:
+            events.append({'name': 'react.content.delta', 'data': {'text': text}})
+        events.append({'name': 'react.content.end', 'data': {'text': text}})
+        events.append({'name': 'tool.call', 'data': {
+            'tool': 'exec', 'tool_call_id': str(index),
+            'args': {'command': f'printf TOOL_SPACING_{index}'}}})
+        if index < len(preambles) - 1:
+            events.append({'name': 'tool.result', 'data': {
+                'tool': 'exec', 'tool_call_id': str(index),
+                'result': json.dumps({'status': 'exited', 'exit_code': 0,
+                                      'stdout': f'RESULT_{index}'})}})
+    with tempfile.TemporaryDirectory(prefix='morph-tool-spacing-') as temp:
+        fixture = Path(temp) / 'events.jsonl'
+        fixture.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        for width in (120, 80, 60):
+            child = pexpect.spawn(str(driver), ['--replay-events', str(fixture)],
+                                  encoding='utf-8', dimensions=(48, width))
+            try:
+                child.expect('TOOL_SPACING_3')
+                raw = child.before + child.after
+                child.expect(pexpect.TIMEOUT, timeout=.2)
+                raw += child.before
+                screen = pyte.Screen(width, 48)
+                pyte.Stream(screen).feed(raw)
+                rows = screen.display
+                text = '\n'.join(rows)
+                for index in range(len(preambles)):
+                    header = next(i for i, row in enumerate(rows)
+                                  if f'Exec printf TOOL_SPACING_{index}' in row)
+                    previous = max(i for i in range(header) if rows[i].strip())
+                    assert header - previous == 2, text
+                first = next(i for i, row in enumerate(rows) if 'CODE_FIRST' in row)
+                last = next(i for i, row in enumerate(rows) if 'CODE_LAST' in row)
+                assert last - first == 2, text
+                assert 'WRAPPED_END' in text, text
+                print(f'checked: {width} columns: content/tool boundary spacing')
+            finally:
+                child.close(force=True)
+
+
 def check_final_spacing(driver, port):
     replies = [
         'FINAL_SENTINEL plain answer.',
@@ -142,6 +194,7 @@ def check_final_spacing(driver, port):
 def main():
     driver = Path(sys.argv[1]).resolve()
     check_feed_replay(driver)
+    check_tool_spacing(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -184,6 +237,10 @@ def main():
                        for row in rows), compact
             assert 'FIRST_PRIVATE_RESULT' in compact, compact
             assert 'SECOND_PRIVATE_RESULT' not in compact, compact
+            lines = compact.splitlines()
+            first_tool = next(i for i, row in enumerate(lines) if '● file_read' in row)
+            previous = max(i for i in range(first_tool) if lines[i].strip())
+            assert first_tool - previous == 2, compact
             terminal.send('草稿🙂 tail\x1b[D')
             terminal.send('\x0f')
             expanded = terminal.snapshot('expanded while model running')
@@ -217,7 +274,7 @@ def main():
             terminal.send('\x0f')
             switches = terminal.raw.count('\x1b[?1049')
             clears = terminal.raw.count('\x1b[2J')
-            final_release.delta = {'tool_calls': [
+            final_release.delta = {'content': 'DETAILS_PREAMBLE', 'tool_calls': [
                 {'index': 0, 'id': 'read-in-viewer', 'type': 'function',
                  'function': {'name': 'file_read', 'arguments': json.dumps({
                      'file_path': str(directory / 'first.txt')})}}]}
@@ -239,6 +296,11 @@ def main():
             assert 'file_read' in completed, completed
             assert 'succeeded' not in completed, completed
             assert '草稿🙂 taiXl' in completed, completed
+            lines = completed.splitlines()
+            preamble = next(i for i, row in enumerate(lines) if 'DETAILS_PREAMBLE' in row)
+            tool = next(i for i in range(preamble + 1, len(lines))
+                        if '● file_read' in lines[i])
+            assert tool - preamble == 2, completed
             terminal.send('\x0f')
             assert 'FIRST_PRIVATE_RESULT' in terminal.snapshot('expand after completion')
             terminal.send('\x0f')

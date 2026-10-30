@@ -172,7 +172,10 @@ int cli_transcript_capture_begin(struct cli_context *ctx)
 {
 	if (!ctx->transcript)
 		return -EINVAL;
-	return cli_command_capture_styled_begin(ctx, &ctx->transcript->deferred);
+	int rc = cli_command_capture_styled_begin(ctx, &ctx->transcript->deferred);
+	if (!rc)
+		ctx->output.capture_history = 1;
+	return rc;
 }
 
 
@@ -555,7 +558,10 @@ static void print_tool(struct cli_context *ctx, const struct transcript_tool *to
 	if (morph_buf_init(&line, 128) != 0)
 		return;
 	tool_row(tool, &line, 1);
-	printf(ctx, "\n%s\n", morph_buf_cstr(&line));
+	int gap = ctx->output.trailing_newlines < 2 ||
+		(ctx->output.capture && !ctx->output.capture_history);
+	printf(ctx, "%s%s\n", gap ? "\n" : "",
+	       morph_buf_cstr(&line));
 	if (compact && tool->state)
 		print_tool_preview(ctx, tool);
 	morph_buf_cleanup(&line);

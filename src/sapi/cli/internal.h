@@ -104,6 +104,7 @@ void cli_presentation_user_input(struct cli_context *ctx, const char *text);
 void cli_presentation_command_input(struct cli_context *ctx, const char *text);
 void cli_presentation_command_end(struct cli_context *ctx);
 int cli_command_result_begin(struct cli_context *ctx);
+void cli_output_track_tail(int *tail, const char *bytes, size_t len);
 void cli_print_welcome(struct cli_context *ctx, const char *model, const char *directory);
 
 void print_padded(struct cli_context *ctx, const char *s, int target_width);

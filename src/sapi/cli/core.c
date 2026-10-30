@@ -42,6 +42,7 @@ void cli_command_capture_end(struct cli_context *ctx)
 		return;
 	ctx->output.capture = NULL;
 	ctx->output.capture_styled = 0;
+	ctx->output.capture_history = 0;
 }
 
 int cli_command_capture_write(struct cli_context *ctx, const char *bytes, size_t len)
@@ -61,6 +62,8 @@ int cli_command_capture_write(struct cli_context *ctx, const char *bytes, size_t
 		rc = morph_buf_puts(ctx->output.capture, safe);
 		free(safe);
 	}
+	if (!rc && ctx->output.capture_history)
+		cli_output_track_tail(&ctx->output.trailing_newlines, bytes, len);
 	return rc != 0 ? rc : 1;
 }
 
@@ -76,20 +79,10 @@ int cli_command_capture_styled_begin(struct cli_context *ctx, morph_buf_t *outpu
 
 static int cli_capture_text(struct cli_context *ctx, const char *text)
 {
-	char *safe;
-	int rc;
-
 	if (!ctx || !ctx->output.capture || !text)
 		return -EINVAL;
-	if (ctx->output.capture_styled)
-		return morph_buf_puts(ctx->output.capture, text);
-	safe = utf8_terminal_sanitize_dup(text, strlen(text),
-		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	if (!safe)
-		return -ENOMEM;
-	rc = morph_buf_puts(ctx->output.capture, safe);
-	free(safe);
-	return rc;
+	int rc = cli_command_capture_write(ctx, text, strlen(text));
+	return rc < 0 ? rc : 0;
 }
 
 static const unsigned char *cli_skip_control_string(
@@ -200,6 +193,31 @@ int cli_command_result_begin(struct cli_context *ctx)
 	return 0;
 }
 
+/* Track committed text only; transient terminal frames own their own rows. */
+void cli_output_track_tail(int *tail, const char *bytes, size_t len)
+{
+	char *safe = utf8_terminal_sanitize_dup(bytes, len,
+		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
+	int newlines = 0;
+	size_t end;
+
+	if (!safe)
+		return;
+	end = strlen(safe);
+	while (end && strchr(" \t\r\n", safe[end - 1])) {
+		if (safe[--end] == '\n' && newlines < 2)
+			newlines++;
+	}
+	if (end)
+		*tail = newlines;
+	else {
+		*tail += newlines;
+		if (*tail > 2)
+			*tail = 2;
+	}
+	free(safe);
+}
+
 /* Add the command/result gap only when a visible result actually arrives. */
 static int cli_write_output(struct cli_context *ctx, const char *text)
 {
@@ -211,7 +229,10 @@ static int cli_write_output(struct cli_context *ctx, const char *text)
 		    cli_command_result_begin(ctx) != 0)
 			return -EIO;
 	}
-	return cli_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
+	int rc = cli_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
+	if (!rc && ctx && !ctx->details_visible)
+		cli_output_track_tail(&ctx->output.trailing_newlines, text, strlen(text));
+	return rc;
 }
 
 int cli_printf(struct cli_context *ctx, const char *fmt, ...)
@@ -287,7 +308,10 @@ int cli_putchar(struct cli_context *ctx, int ch)
 		if (cli_command_result_begin(ctx) != 0)
 			return EOF;
 	}
-	return fputc(ch, stdout);
+	int rc = fputc(ch, stdout);
+	if (rc != EOF && ctx && !ctx->details_visible)
+		cli_output_track_tail(&ctx->output.trailing_newlines, text, 1);
+	return rc;
 }
 
 int cli_write_ndjson(const char *json)

@@ -56,6 +56,12 @@ and the prompt/state separation in
 transient active block and its row accounting. On completion it clears that
 block before appending the final block to scrollback.
 
+Content and tool blocks share one blank row. The output writer tracks the
+committed text's trailing newlines, including Markdown output. Live and completed
+tools reuse an existing Markdown paragraph gap; code and table frames receive
+the missing separator. Transient frame row counts follow the same spacing so
+redraws preserve the composer position. Interior Markdown blank lines stay intact.
+
 ## Final spacing ownership
 
 The Markdown SDK ends a normal paragraph with two newlines and a framed code

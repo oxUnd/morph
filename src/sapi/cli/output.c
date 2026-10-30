@@ -9,33 +9,6 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 
-/* Renderer blocks end differently (paragraphs versus code/table frames). Track
- * visible trailing newlines so final spacing has a single owner. */
-static void cli_markdown_track_tail(struct cli_markdown_output *output,
-				     const char *bytes, size_t len)
-{
-	char *safe = utf8_terminal_sanitize_dup(bytes, len,
-		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
-	int newlines = 0;
-	size_t end;
-
-	if (!safe)
-		return;
-	end = strlen(safe);
-	while (end && strchr(" \t\r\n", safe[end - 1])) {
-		if (safe[--end] == '\n' && newlines < 2)
-			newlines++;
-	}
-	if (end)
-		output->trailing_newlines = newlines;
-	else {
-		output->trailing_newlines += newlines;
-		if (output->trailing_newlines > 2)
-			output->trailing_newlines = 2;
-	}
-	free(safe);
-}
-
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
 	struct cli_markdown_output *output = user;
@@ -63,10 +36,12 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		output->prefix_pending = 0;
 	}
 	if (output)
-		cli_markdown_track_tail(output, bytes, len);
+		cli_output_track_tail(&output->trailing_newlines, bytes, len);
 	captured = cli_command_capture_write(output->ctx, bytes, len);
 	if (captured)
 		return captured < 0 ? captured : 0;
+	if (output->ctx && !output->ctx->details_visible)
+		cli_output_track_tail(&output->ctx->output.trailing_newlines, bytes, len);
 	if (cli_color_enabled(output->ctx))
 		return fwrite(bytes, 1u, len, stdout) == len ? 0 : -EIO;
 	for (i = 0u; i < len;) {

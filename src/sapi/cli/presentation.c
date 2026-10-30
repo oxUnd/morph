@@ -708,7 +708,9 @@ static void presentation_reasoning_flush(struct cli_context *ctx, int finish)
 	if (finish) {
 		presentation_clear_status(ctx);
 		/* Commit one quiet narration line between tool blocks. */
-		printf(ctx, "\n" ANSI_DIM "\033[3m%s" ANSI_RESET "\n", morph_buf_cstr(&preview));
+		printf(ctx, "%s" ANSI_DIM "\033[3m%s" ANSI_RESET "\n",
+		       ctx->output.trailing_newlines < 2 ? "\n" : "",
+		       morph_buf_cstr(&preview));
 	} else if (isatty(STDOUT_FILENO)) {
 		cli_terminal_reasoning_set(ctx, morph_buf_cstr(&preview));
 	}

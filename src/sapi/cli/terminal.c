@@ -462,6 +462,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	int columns;
 	int budget;
 	int tool_live = 0;
+	int status_gap = 0;
 	int body_rows = 0;
 	int status_visible;
 
@@ -562,7 +563,9 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 		terminal_clear_current(terminal);
 	if (status_visible) {
 		/* Match the committed reasoning line from its first streaming frame. */
-		if (tool_live || terminal->live_reasoning)
+		status_gap = (tool_live || terminal->live_reasoning) &&
+			ctx->output.trailing_newlines < 2;
+		if (status_gap)
 			fputc('\n', terminal->output);
 		if (tool_live)
 			fprintf(terminal->output, "%s", text);
@@ -627,8 +630,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
 	terminal->job_rows = job_rows;
-	terminal->live_rows = job_rows + status_visible + tool_live +
-		(status_visible && terminal->live_reasoning) + body_rows +
+	terminal->live_rows = job_rows + status_visible + status_gap + body_rows +
 		(terminal->work_state ? (terminal->work_finalizing ? 1 : 2) : 0) +
 		(int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 		(queue_shown > 0 && (status_visible || terminal->work_state));
