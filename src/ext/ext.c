@@ -63,7 +63,7 @@ int ext_load(struct morph_log *logger, struct ext *ex, const char *dir_path)
 	}
 
 	if (!ex->manifest.input_schema || !ex->manifest.output_schema)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ex->tool_desc.name = ex->manifest.name;
 	ex->tool_desc.title = "";
 	ex->tool_desc.description = ex->manifest.description;
@@ -215,18 +215,18 @@ int ext_sandbox_config_prepare(const struct ext *ex,
 	int count;
 
 	if (!ex || !config)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	count = ex->manifest.allowed_paths_count;
 	read_paths = calloc((size_t)count + 1, sizeof(*read_paths));
 	if (!read_paths)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(config, 0, sizeof(*config));
 	config->logger = ex->logger;
 	config->read_paths = read_paths;
 	read_paths[0] = ext_resolve_sandbox_path(ex->path);
 	if (!read_paths[0]) {
 		ext_sandbox_config_cleanup(config);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	config->read_paths_count = 1;
 	for (int i = 0; i < count; i++) {
@@ -234,7 +234,7 @@ int ext_sandbox_config_prepare(const struct ext *ex,
 			ex->manifest.allowed_paths[i]);
 		if (!read_paths[i + 1]) {
 			ext_sandbox_config_cleanup(config);
-			MORPH_RETURN(-ENOENT);
+			return -ENOENT;
 		}
 		config->read_paths_count++;
 	}
@@ -284,14 +284,14 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		if (pipe(stdin_pipe) < 0) {
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (pipe(stdout_pipe) < 0) {
 			int err = errno;
 			close(stdin_pipe[0]);
 			close(stdin_pipe[1]);
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		if (pipe(stderr_pipe) < 0) {
 			int err = errno;
@@ -300,7 +300,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stdout_pipe[0]);
 			close(stdout_pipe[1]);
 			log_err(ex ? ex->logger : NULL, "ext_run: pipe failed");
-			MORPH_RETURN(-err);
+			return -err;
 		}
 
 		pid_t pid = fork();
@@ -313,7 +313,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			close(stderr_pipe[0]);
 			close(stderr_pipe[1]);
 			log_err(ex ? ex->logger : NULL, "ext_run: fork failed");
-			MORPH_RETURN(-err);
+			return -err;
 		}
 
 		if (pid == 0) {
@@ -420,7 +420,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 			free(child_stderr);
 			free(raw_response);
 			*result_json = strdup("{\"error\":\"ext process was terminated\"}");
-			MORPH_RETURN(MORPH_ERR_SANDBOX);
+			return MORPH_ERR_SANDBOX;
 		}
 		if (WIFEXITED(status) && WEXITSTATUS(status) != 0 &&
 		    raw_response[0] == '\0') {
@@ -433,8 +433,8 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				"{\"error\":\"extension process exited before "
 				"producing a JSON-RPC response\"}");
 			if (exit_code == 126)
-				MORPH_RETURN(MORPH_ERR_SANDBOX);
-			MORPH_RETURN(-ECHILD);
+				return MORPH_ERR_SANDBOX;
+			return -ECHILD;
 		}
 		free(child_stderr);
 
@@ -445,7 +445,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 
 		if (parse_rc < 0) {
 			*result_json = strdup("{\"error\":\"invalid JSON-RPC response\"}");
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 
 		if (jr.has_error) {
@@ -456,7 +456,7 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 				 jr.error_code);
 			*result_json = strdup(err_buf);
 			jsonrpc_response_free(&jr);
-			MORPH_RETURN(MORPH_ERR_PROTOCOL);
+			return MORPH_ERR_PROTOCOL;
 		}
 
 		*result_json = jr.result_json ? jr.result_json : strdup("{}");
@@ -467,5 +467,5 @@ int ext_run(struct ext *ex, const char *args_json, char **result_json)
 	}
 
 	log_info(ex ? ex->logger : NULL, "ext_run: no run function for %s", ex->manifest.name);
-	MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+	return MORPH_ERR_NOT_CONFIGURED;
 }

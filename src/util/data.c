@@ -21,10 +21,10 @@ static int copy_path(char *dst, size_t dst_size, const char *path)
 	size_t len;
 
 	if (!dst || dst_size == 0u || !path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	len = strlen(path);
 	if (len + 1u > dst_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	memcpy(dst, path, len + 1u);
 	return 0;
 }
@@ -61,29 +61,29 @@ static int executable_dir(char *dst, size_t dst_size)
 	uint32_t path_size = (uint32_t)sizeof(path);
 
 	if (_NSGetExecutablePath(path, &path_size) != 0)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 #elif defined(__linux__)
 	ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1u);
 
 	if (len < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	path[len] = '\0';
 #else
-	MORPH_RETURN(-ENOTSUP);
+	return -ENOTSUP;
 #endif
 
 	if (!realpath(path, resolved))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	slash = strrchr(resolved, '/');
 	if (!slash)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	if (slash == resolved)
 		slash[1] = '\0';
 	else
 		*slash = '\0';
 	rc = copy_path(dst, dst_size, resolved);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -95,18 +95,18 @@ int morph_executable_find(char *dst, size_t dst_size, const char *name)
 
 	if (!dst || dst_size == 0u || !name || !name[0] ||
 	    strchr(name, '/'))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = executable_dir(dir, sizeof(dir));
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = file_path_join(path, sizeof(path), dir, name);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	if (access(path, X_OK) != 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	rc = copy_path(dst, dst_size, path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -118,17 +118,17 @@ static int find_under_root(char *dst, size_t dst_size,
 	int rc;
 
 	if (!root || !root[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	rc = file_path_join(path, sizeof(path), root, relative_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	if (!realpath(path, resolved))
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	if (!path_is_within(resolved, root))
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	rc = copy_path(dst, dst_size, resolved);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -141,13 +141,13 @@ static int find_installed(char *dst, size_t dst_size,
 
 	rc = executable_dir(dir, sizeof(dir));
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = file_path_join(root, sizeof(root), dir, "../share/morph");
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = find_under_root(dst, dst_size, root, relative_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -156,10 +156,10 @@ int morph_data_find(char *dst, size_t dst_size, const char *relative_path)
 	int rc;
 
 	if (!dst || dst_size == 0u || !relative_path_valid(relative_path))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = find_installed(dst, dst_size, relative_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 

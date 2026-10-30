@@ -18,7 +18,7 @@ int runtime_session_get_or_create(struct runtime_engine *engine,
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = session_create(engine->db, name, model, out);
 	if (rc == -EEXIST) {
 		rc = session_get_by_name(engine->db, name, out);
@@ -44,7 +44,7 @@ int runtime_session_create(struct runtime_engine *engine,
 	int rc;
 
 	if (!engine || !engine->db || !name || !model || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = session_create(engine->db, name, model, out);
 	if (rc == 0)
 		(void)session_ensure_display_id(engine->db, out);
@@ -65,14 +65,14 @@ int runtime_session_rename(struct runtime_engine *engine,
 			   const char *new_name)
 {
 	if (!engine || !engine->db || id <= 0 || !new_name)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return session_rename(engine->db, id, new_name);
 }
 
 int runtime_session_delete(struct runtime_engine *engine, int64_t id)
 {
 	if (!engine || !engine->db || id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return session_delete(engine->db, id);
 }
 

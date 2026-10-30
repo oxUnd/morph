@@ -31,23 +31,23 @@ int preference_bind(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !owner || !*owner)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle,
 		"INSERT INTO memory_scopes(session_id,owner,project) VALUES(?,?,?) "
 		"ON CONFLICT(session_id) DO UPDATE SET project=excluded.project "
 		"WHERE memory_scopes.owner=excluded.owner",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, owner, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, project ? project : "", -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (!sqlite3_changes(db->handle))
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	return 0;
 }
 
@@ -69,7 +69,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	    (strcmp(scope, "personal") && strcmp(scope, "project") &&
 	     strcmp(scope, "session")) ||
 	    (value && (!*value || strlen(value) > 1024 || utf8valid(value))))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (value && !strcmp(key, "response.language")) {
 		if (!strcmp(value, "zh") || !strcmp(value, "中文"))
 			value = "Chinese";
@@ -86,14 +86,14 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 		"SELECT 1 FROM memory_scopes WHERE session_id=? "
 		"AND (?!='project' OR project!='')", -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, scope, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (rc != SQLITE_ROW)
-		MORPH_RETURN(rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB);
+		return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
 	/* One atomic append is the update. The latest revision per semantic key
 	 * is authoritative; NULL is a tombstone, not permission to resurrect it.
 	 * Only input ingestion / explicit commands call this API, never jobs. */
@@ -109,7 +109,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 		"AND (?1!='project' OR project!='') "
 		"ON CONFLICT DO NOTHING", -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, scope, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, key, -1, SQLITE_TRANSIENT);
 	if (value)
@@ -122,7 +122,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (!sqlite3_changes(db->handle)) {
 		rc = sqlite3_prepare_v2(db->handle,
 			"SELECT p.value IS ? FROM memory_preferences p "
@@ -132,7 +132,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 			"WHEN 'project' THEN s.project ELSE CAST(s.session_id AS TEXT) END",
 			-1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		if (value)
 			sqlite3_bind_text(stmt, 1, value, -1, SQLITE_TRANSIENT);
 		else
@@ -145,7 +145,7 @@ int preference_set(struct db *db, int64_t session_id, const char *scope,
 		int same = rc == SQLITE_ROW && sqlite3_column_int(stmt, 0);
 		sqlite3_finalize(stmt);
 		if (!same)
-			MORPH_RETURN(-ESTALE);
+			return -ESTALE;
 	}
 	return 0;
 }
@@ -219,12 +219,12 @@ int preference_clear_session(struct db *db, int64_t session_id)
 		-1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -238,7 +238,7 @@ int preference_candidate(struct db *db, int64_t session_id,
 		"VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING", -1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, kind, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, key, -1, SQLITE_TRANSIENT);
@@ -247,6 +247,6 @@ int preference_candidate(struct db *db, int64_t session_id,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }

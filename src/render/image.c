@@ -171,14 +171,14 @@ static int load_as_png(struct morph_log *logger, const char *path, unsigned char
 	sink.oom = 0;
 	if (morph_buf_init(&sink.buf, 4096) != 0) {
 		stbi_image_free(pixels);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	int wrote = stbi_write_png_to_func(png_sink_write, &sink,
 					   w, h, 4, pixels, w * 4);
 	stbi_image_free(pixels);
 	if (!wrote || sink.oom || sink.buf.len == 0) {
 		morph_buf_cleanup(&sink.buf);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 
 	*out_len = sink.buf.len;
@@ -195,7 +195,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 	int rc = load_as_png(logger, path, &data, &rd, &fmt);
 	if (rc != 0) {
 		log_warn(logger, "render_kitty: load_as_png('%s') failed: %d", path, rc);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 
 	int cols = terminal_cols();
@@ -221,7 +221,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 		    data, (int)rd, &pixel_width, &pixel_height, &channels) ||
 	    pixel_width <= 0 || pixel_height <= 0) {
 		free(data);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	memset(&ws, 0, sizeof(ws));
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
@@ -250,7 +250,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) MORPH_RETURN(-ENOMEM);
+	if (!b64) return -ENOMEM;
 	size_t b64_len = strlen(b64);
 
 	uint32_t image_id = morph_kitty_image_id_new();
@@ -298,7 +298,7 @@ static int render_kitty(struct morph_log *logger, const char *path)
 			kitty_stdout_write, NULL, image_id,
 			(unsigned int)row, (unsigned int)disp_cols);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		write_all(STDOUT_FILENO, "\n", 1);
 	}
 	return 0;
@@ -308,19 +308,19 @@ static int render_iterm2(const char *path)
 {
 	FILE *f = fopen(path, "rb");
 	if (!f)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	fseek(f, 0, SEEK_END);
 	long fsize = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (fsize <= 0) { fclose(f); MORPH_RETURN(-EIO); }
+	if (fsize <= 0) { fclose(f); return -EIO; }
 	unsigned char *data = malloc((size_t)fsize);
-	if (!data) { fclose(f); MORPH_RETURN(-ENOMEM); }
+	if (!data) { fclose(f); return -ENOMEM; }
 	size_t rd = fread(data, 1, (size_t)fsize, f);
 	fclose(f);
 
 	char *b64 = base64_encode(data, rd);
 	free(data);
-	if (!b64) MORPH_RETURN(-ENOMEM);
+	if (!b64) return -ENOMEM;
 	size_t b64_len = strlen(b64);
 
 	fflush(stdout);

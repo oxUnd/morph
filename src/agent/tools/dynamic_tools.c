@@ -259,7 +259,7 @@ static int read_fd_limited(int fd, morph_buf_t *buf, int limit)
 				continue;
 			if (errno == EAGAIN)
 				return 0;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (n == 0)
 			return 1;
@@ -306,7 +306,7 @@ static int read_pipes(int out_fd, int err_fd, morph_buf_t *out,
 		if (rc < 0) {
 			if (errno == EINTR)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (rc == 0) {
 			if (timeout_seconds > 0)
@@ -420,12 +420,12 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 	if (!dt || !result)
 		return -EINVAL;
 	if (pipe(stdin_pipe) < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (pipe(stdout_pipe) < 0) {
 		int e = errno;
 		close(stdin_pipe[0]);
 		close(stdin_pipe[1]);
-		MORPH_RETURN(-e);
+		return -e;
 	}
 	if (pipe(stderr_pipe) < 0) {
 		int e = errno;
@@ -433,7 +433,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdin_pipe[1]);
 		close(stdout_pipe[0]);
 		close(stdout_pipe[1]);
-		MORPH_RETURN(-e);
+		return -e;
 	}
 	pid = fork();
 	if (pid < 0) {
@@ -444,7 +444,7 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdout_pipe[1]);
 		close(stderr_pipe[0]);
 		close(stderr_pipe[1]);
-		MORPH_RETURN(-e);
+		return -e;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -622,7 +622,7 @@ static int register_dynamic_tool(struct tool_registry *reg,
 		};
 		rc = tool_entry_set_descriptor(existing, &descriptor);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (existing->user_data && existing->user_data_destroy)
 			existing->user_data_destroy(existing->user_data);
 		existing->exec = dynamic_tool_exec;
@@ -1252,12 +1252,12 @@ static int check_js_source(const char *source_path,
 	if (error_out)
 		*error_out = NULL;
 	if (pipe(output_pipe) < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	pid = fork();
 	if (pid < 0) {
 		close(output_pipe[0]);
 		close(output_pipe[1]);
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -1305,7 +1305,7 @@ static int check_js_source(const char *source_path,
 	}
 	close(output_pipe[0]);
 	if (waitpid(pid, &status, 0) < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		if (error_out && !*error_out) {
 			morph_buf_t err;

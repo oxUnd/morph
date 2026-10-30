@@ -29,21 +29,21 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 	if (fd < 0) {
 		if (errno == ENOENT || errno == ENOTDIR)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (fstat(fd, &info) != 0) {
 		int rc = -errno;
 		close(fd);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	if (!S_ISREG(info.st_mode) || info.st_size > PROJECT_CONTEXT_MAX_BYTES) {
 		close(fd);
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	data = arena_alloc(arena, PROJECT_CONTEXT_MAX_BYTES + 1);
 	if (!data) {
 		close(fd);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	while (len < PROJECT_CONTEXT_MAX_BYTES + 1) {
 		ssize_t n = read(fd, data + len, PROJECT_CONTEXT_MAX_BYTES + 1 - len);
@@ -52,7 +52,7 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 		if (n < 0) {
 			int rc = -errno;
 			close(fd);
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		if (!n)
 			break;
@@ -60,9 +60,9 @@ static int read_guidance(const char *path, struct arena *arena, char **text)
 	}
 	close(fd);
 	if (len > PROJECT_CONTEXT_MAX_BYTES)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	if (memchr(data, '\0', len) || utf8nvalid(data, len))
-		MORPH_RETURN(-EILSEQ);
+		return -EILSEQ;
 	data[len] = '\0';
 	if (strspn(data, " \t\r\n") != len)
 		*text = data;
@@ -113,7 +113,7 @@ int project_context_build(struct morph_log *logger, const struct environment_con
 	int rc;
 
 	if (!environment || !arena || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	rc = morph_buf_init_arena(&buf, arena, 1024);
 	if (rc != 0)
@@ -127,7 +127,7 @@ int project_context_build(struct morph_log *logger, const struct environment_con
 		char *directory = arena_strdup(arena, environment->cwd);
 
 		if (!directory)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		if (!root || !path_is_within(directory, root))
 			root = environment->cwd;
 		size_t end = strlen(root);

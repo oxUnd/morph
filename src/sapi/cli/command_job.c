@@ -37,16 +37,16 @@ int cli_command_job_init(struct cli_command_job *job)
 	int rc;
 
 	if (!job)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(job, 0, sizeof(*job));
 	rc = pthread_mutex_init(&job->mutex, NULL);
 	if (rc != 0)
-		MORPH_RETURN(-rc);
+		return -rc;
 	rc = morph_array_init(&job->prompts, MORPH_ARRAY_INIT_CAP,
 			      sizeof(prompt));
 	if (rc != 0) {
 		pthread_mutex_destroy(&job->mutex);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	return 0;
 }
@@ -83,10 +83,10 @@ int cli_command_job_start_fn(struct cli_command_job *job,
 	int thread_rc;
 
 	if (!job || !ctx || !input || !fn || job->active)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	job->input = strdup(input);
 	if (!job->input)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	job->ctx = ctx;
 	job->fn = fn;
 	job->user_data = user_data;
@@ -99,7 +99,7 @@ int cli_command_job_start_fn(struct cli_command_job *job,
 		job->active = 0;
 		free(job->input);
 		job->input = NULL;
-		MORPH_RETURN(-thread_rc);
+		return -thread_rc;
 	}
 	return 0;
 }
@@ -121,7 +121,7 @@ int cli_command_job_finish(struct cli_command_job *job)
 	int result;
 
 	if (!job || !job->active)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_join(job->thread, NULL);
 	result = job->result;
 	free(job->input);
@@ -139,7 +139,7 @@ int cli_command_job_wait(struct cli_command_job *job)
 	int warned = 0;
 
 	if (!job || !job->active || !job->ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx = job->ctx;
 	while (!cli_command_job_done(job)) {
 		struct pollfd fd;
@@ -175,24 +175,24 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text,
 	int distinct_display;
 
 	if (!job || !text || !text[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	distinct_display = display_text && strcmp(display_text, text) != 0;
 	payload = cJSON_CreateObject();
 	if (!payload)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(payload, "text", text)) {
 		cJSON_Delete(payload);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (distinct_display &&
 	    !cJSON_AddStringToObject(payload, "display_text", display_text)) {
 		cJSON_Delete(payload);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	prompt.text = strdup(text);
 	prompt.payload = json;
 	prompt.display_text = distinct_display ? strdup(display_text) : NULL;
@@ -200,7 +200,7 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text,
 		free(prompt.text);
 		free(prompt.display_text);
 		free(json);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	pthread_mutex_lock(&job->mutex);
 	slot = morph_array_push(&job->prompts);
@@ -211,7 +211,7 @@ int cli_command_job_prompt(struct cli_command_job *job, const char *text,
 		free(prompt.text);
 		free(prompt.display_text);
 		free(json);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -223,7 +223,7 @@ int cli_command_job_prompt_snapshot(struct cli_command_job *job,
 	size_t copied = 0;
 
 	if (!job || (!items && capacity > 0) || !total)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&job->mutex);
 	*total = job->prompts.nelts;
 	while (copied < capacity && copied < job->prompts.nelts) {
@@ -239,7 +239,7 @@ int cli_command_job_prompt_snapshot(struct cli_command_job *job,
 	if (copied < capacity && copied < *total) {
 		while (copied > 0)
 			free(items[--copied]);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }

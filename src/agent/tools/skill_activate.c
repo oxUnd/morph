@@ -16,7 +16,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		return -EINVAL;
 	if (!skills) {
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"skill system not initialized\"}"));
-		MORPH_RETURN(MORPH_ERR_NOT_INITIALIZED);
+		return MORPH_ERR_NOT_INITIALIZED;
 	}
 
 	char name[SKILL_NAME_MAX] = {0};
@@ -85,7 +85,7 @@ static int skill_activate_exec(const char *args_json, struct tool_result *result
 		"Skill activated. Its full instructions are supplied in the "
 		"active skill context on the next model request.");
 	if (!message)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	(void)tool_result_success_json_text(result, message);
 	log_info(result && result->runtime ? result->runtime->http.logger : NULL,
 		 "skill_activate: '%s' activated", name);
@@ -139,7 +139,7 @@ static int skill_search_exec(const char *args, struct tool_result *result, void 
 	cJSON_Delete(input);
 	if (rc < 0) {
 		cJSON_Delete(data);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	return tool_result_success(result, data);
 }

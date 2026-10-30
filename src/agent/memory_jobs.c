@@ -188,7 +188,7 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 	    !cJSON_AddBoolToObject(payload, "llm", job->opts.llm_extract_enabled) ||
 	    !cJSON_AddBoolToObject(payload, "episodes", job->opts.cold_path_enabled)) {
 		cJSON_Delete(payload);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	for (struct react_step *step = job->steps; step; step = step->next) {
 		cJSON *name;
@@ -199,13 +199,13 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 		if (!name || !cJSON_AddItemToArray(tools, name)) {
 			cJSON_Delete(name);
 			cJSON_Delete(payload);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 	}
 	json = cJSON_PrintUnformatted(payload);
 	cJSON_Delete(payload);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = sqlite3_prepare_v2(db->handle,
 		"INSERT INTO memory_jobs(session_id,generation,payload) VALUES(?,?,?)",
 		-1, &stmt, NULL);
@@ -218,7 +218,7 @@ static int memory_job_record(struct db *db, struct memory_job *job)
 	sqlite3_finalize(stmt);
 	free(json);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	job->opts.background_job_id = sqlite3_last_insert_rowid(db->handle);
 	return 0;
 }
@@ -233,13 +233,13 @@ static int memory_job_claim(struct db *db, int64_t id)
 		-1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, (int64_t)getpid());
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return sqlite3_changes(db->handle) ? 1 : 0;
 }
 
@@ -252,7 +252,7 @@ static int memory_job_complete(struct db *db, int64_t id, int error)
 		-1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, error == -ESTALE ? "cancelled" :
 		error ? "failed" : "completed", -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 2, error);
@@ -260,7 +260,7 @@ static int memory_job_complete(struct db *db, int64_t id, int error)
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -358,7 +358,7 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 		return 0;
 
 	if (!worker || !strcmp(db->path, ":memory:"))
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 
 	job = calloc(1, sizeof(*job));
 	if (!job)
@@ -375,7 +375,7 @@ int memory_consolidate_turn_async(struct db *db, int64_t session_id,
 	if (memory_prepare_session(db, session_id) != 0 ||
 	    memory_generation(db, session_id, &job->opts.generation) != 0) {
 		memory_job_free(job);
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	job->opts.generation_bound = 1;
 	if (!job->db_path || !job->user_input ||
@@ -524,7 +524,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 		"AS INTEGER)-30) ORDER BY id",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *state = (const char *)sqlite3_column_text(stmt, 4);
 		int64_t id = sqlite3_column_int64(stmt, 0);
@@ -551,13 +551,13 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 			sqlite3_finalize(reset);
 			if (result != SQLITE_DONE) {
 				sqlite3_finalize(stmt);
-				MORPH_RETURN(MORPH_ERR_DB);
+				return MORPH_ERR_DB;
 			}
 		}
 		job = memory_job_restore(db, stmt);
 		if (!job) {
 			sqlite3_finalize(stmt);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		job->opts.worker = worker;
 		job->opts.llm = opts->llm;
@@ -594,7 +594,7 @@ int memory_async_resume(struct db *db, const struct memory_options *opts)
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 

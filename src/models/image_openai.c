@@ -20,18 +20,18 @@ static int parse_dims(const char *size, long *width, long *height)
 	char *end = NULL;
 
 	if (!size || !width || !height)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	errno = 0;
 	*width = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != 'x')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	size = end + 1;
 	errno = 0;
 	*height = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != '\0')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (*width <= 0 || *height <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -57,7 +57,7 @@ static int openai_normalize_gpt_size(const char *size, char *out,
 		return 0;
 	}
 	if (parse_dims(size, &width, &height) != 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pixels = (long long)width * (long long)height;
 	short_edge = width < height ? width : height;
 	long_edge = width > height ? width : height;
@@ -65,7 +65,7 @@ static int openai_normalize_gpt_size(const char *size, char *out,
 	    width % 16 != 0 || height % 16 != 0 ||
 	    pixels < 655360LL || pixels > 8294400LL ||
 	    long_edge > short_edge * 3)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	snprintf(out, out_cap, "%ldx%ld", width, height);
 	return 0;
 }
@@ -83,11 +83,11 @@ static int openai_normalize_dalle_size(const struct model *model,
 		if (strcmp(normalized, "256x256") != 0 &&
 		    strcmp(normalized, "512x512") != 0 &&
 		    strcmp(normalized, "1024x1024") != 0)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	} else if (strcmp(normalized, "1024x1024") != 0 &&
 		   strcmp(normalized, "1024x1792") != 0 &&
 		   strcmp(normalized, "1792x1024") != 0) {
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	snprintf(out, out_cap, "%s", normalized);
 	return 0;
@@ -97,7 +97,7 @@ static int openai_normalize_size(const struct model *model, const char *size,
 				 char *out, size_t out_cap)
 {
 	if (!out || out_cap == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (openai_is_gpt_image(model))
 		return openai_normalize_gpt_size(size, out, out_cap);
 	return openai_normalize_dalle_size(model, size, out, out_cap);
@@ -107,7 +107,7 @@ static int openai_capabilities(const struct model *model,
 			       struct image_capabilities *caps)
 {
 	if (!caps)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(caps, 0, sizeof(*caps));
 	caps->supports_generate = 1;
 	if (openai_is_gpt_image(model)) {
@@ -126,7 +126,7 @@ static int openai_build_request_meta(const struct model *model,
 	int rc;
 
 	if (!model || !path || !url || !auth)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_init(url, strlen(model->api_base) + strlen(path) + 1);
 	if (rc != 0)
 		return rc;
@@ -160,7 +160,7 @@ static int openai_post_json(struct model *model,
 
 	body = cJSON_CreateObject();
 	if (!body)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cJSON_AddStringToObject(body, "model", model->model_id);
 	cJSON_AddStringToObject(body, "prompt", request->prompt);
 	cJSON_AddNumberToObject(body, "n", 1);
@@ -170,7 +170,7 @@ static int openai_post_json(struct model *model,
 	body_text = cJSON_PrintUnformatted(body);
 	cJSON_Delete(body);
 	if (!body_text)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	rc = openai_build_request_meta(model, "/images/generations",
 				       &url, &auth);
@@ -194,7 +194,7 @@ static int openai_post_json(struct model *model,
 			 resp.status_code,
 			 resp.body.data ? resp.body.data : "");
 		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
+		return MORPH_ERR_API;
 	}
 	rc = image_provider_parse_response(model, resp.body.data, payload);
 	http_response_free(&resp);
@@ -230,7 +230,7 @@ static int openai_post_edit(struct model *model,
 		(request->mask_path ? 1 : 0);
 	parts = calloc((size_t)part_count, sizeof(*parts));
 	if (!parts)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	parts[idx++] = (struct http_multipart_part){
 		HTTP_MULTIPART_TEXT, "model", model->model_id, NULL
 	};
@@ -275,7 +275,7 @@ static int openai_post_edit(struct model *model,
 			 resp.status_code,
 			 resp.body.data ? resp.body.data : "");
 		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
+		return MORPH_ERR_API;
 	}
 	rc = image_provider_parse_response(model, resp.body.data, payload);
 	http_response_free(&resp);
@@ -287,10 +287,10 @@ static int openai_execute(struct model *model,
 			  struct image_payload *payload)
 {
 	if (!model || !request || !request->prompt || !payload)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (request->reference_image_count > 0) {
 		if (!openai_is_gpt_image(model))
-			MORPH_RETURN(-ENOTSUP);
+			return -ENOTSUP;
 		return openai_post_edit(model, request, payload);
 	}
 	return openai_post_json(model, request, payload);

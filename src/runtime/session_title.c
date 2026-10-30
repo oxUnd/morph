@@ -126,7 +126,7 @@ static int title_save(struct db *db, const struct session *session, const char *
 		-1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	sqlite3_bind_text(stmt, 1, title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, session->id);
 	sqlite3_bind_text(stmt, 3, session->display_id, -1, SQLITE_TRANSIENT);
@@ -134,8 +134,8 @@ static int title_save(struct db *db, const struct session *session, const char *
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc == SQLITE_CONSTRAINT)
-		MORPH_RETURN_LOG(db->logger, -EEXIST);
-	MORPH_RETURN_LOG(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, -EEXIST);
+	return MORPH_TRACE_ERROR(db->logger, rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
 }
 
 static int title_save_unique(struct db *db, const struct session *session,
@@ -151,13 +151,13 @@ static int title_save_unique(struct db *db, const struct session *session,
 	end = utf8_advance_codepoints(title, SESSION_TITLE_MAX_CHARS - suffix_chars);
 	rc = morph_buf_init(&unique, SESSION_TITLE_MAX_CHARS * 4 + 1);
 	if (rc != 0)
-		MORPH_RETURN_LOG(db->logger, rc);
+		return MORPH_TRACE_ERROR(db->logger, rc);
 	(void)morph_buf_append(&unique, title, (size_t)(end - title));
 	(void)morph_buf_printf(&unique, " [%s]", session->display_id);
 	rc = unique.failed ? unique.failed :
 		title_save(db, session, morph_buf_cstr(&unique));
 	morph_buf_cleanup(&unique);
-	MORPH_RETURN_LOG(db->logger, rc);
+	return MORPH_TRACE_ERROR(db->logger, rc);
 }
 
 static void title_record_usage(struct runtime_title_job *job, struct db *db,
@@ -264,14 +264,14 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 			slot = i;
 	}
 	if (slot < 0)
-		MORPH_RETURN_LOG(runtime->options.logger, -EAGAIN);
+		return MORPH_TRACE_ERROR(runtime->options.logger, -EAGAIN);
 	job = calloc(1, sizeof(*job));
 	if (!job)
-		MORPH_RETURN_LOG(runtime->options.logger, -ENOMEM);
+		return MORPH_TRACE_ERROR(runtime->options.logger, -ENOMEM);
 	rc = pthread_mutex_init(&job->lock, NULL);
 	if (rc != 0) {
 		free(job);
-		MORPH_RETURN_LOG(runtime->options.logger, -rc);
+		return MORPH_TRACE_ERROR(runtime->options.logger, -rc);
 	}
 	rc = session_get_by_id(&ctx->database, request->session_id, &job->session);
 	if (rc == 0) {
@@ -299,7 +299,7 @@ int runtime_title_start(struct runtime *runtime, const struct runtime_request *r
 	}
 	if (rc != 0) {
 		title_job_free(job);
-		MORPH_RETURN_LOG(runtime->options.logger, rc);
+		return MORPH_TRACE_ERROR(runtime->options.logger, rc);
 	}
 	runtime->title_jobs[slot] = job;
 	return 0;

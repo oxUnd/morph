@@ -770,7 +770,7 @@ static int terminal_process_pending_utf8(
 		int rc = utf8_terminal_sanitize_feed(sanitizer, out,
 			(const char *)combined + skip, count - skip, finish && *src_len == 0);
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (!*src_len)
 			return 0;
 	}
@@ -805,7 +805,7 @@ int utf8_terminal_sanitize_feed(struct utf8_terminal_sanitizer *sanitizer,
 	int rc;
 
 	if (!sanitizer || !out || (!src && src_len > 0))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!src)
 		src = "";
 	rc = terminal_process_pending_utf8(sanitizer, out, &src, &src_len,

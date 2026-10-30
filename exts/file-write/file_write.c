@@ -35,10 +35,10 @@ static int json_result(struct tool_result *result, cJSON *obj)
 	char *s;
 
 	if (!result || !obj)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	s = cJSON_PrintUnformatted(obj);
 	if (!s)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return tool_result_success_json_text(result, s);
 }
 
@@ -50,7 +50,7 @@ static int json_error_result(struct tool_result *result, int code,
 
 	out = cJSON_CreateObject();
 	if (!out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cJSON_AddBoolToObject(out, "ok", 0);
 	cJSON_AddNumberToObject(out, "code", code);
 	cJSON_AddStringToObject(out, "error", message ? message : "error");
@@ -85,22 +85,22 @@ static int json_off_t(cJSON *root, const char *name, int required,
 	off_t converted;
 
 	if (!root || !name || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	item = cJSON_GetObjectItem(root, name);
 	if (!item) {
 		if (required)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		*out = default_value;
 		return 0;
 	}
 	if (!cJSON_IsNumber(item))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	value = item->valuedouble;
 	if (value < 0 || value > FILE_WRITE_JSON_INT_MAX)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	converted = (off_t)value;
 	if ((double)converted != value)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = converted;
 	return 0;
 }
@@ -110,9 +110,9 @@ static int path_parent(char *dst, size_t dst_size, const char *path)
 	char *slash;
 
 	if (!dst || dst_size == 0 || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strlen(path) + 1 > dst_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	snprintf(dst, dst_size, "%s", path);
 	slash = strrchr(dst, '/');
 	if (!slash)
@@ -140,16 +140,16 @@ static int stat_regular_or_missing(const char *path, int *exists)
 	struct stat st;
 
 	if (!path || !exists)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*exists = 0;
 	if (lstat(path, &st) != 0) {
 		if (errno == ENOENT)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	*exists = 1;
 	if (!S_ISREG(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -158,12 +158,12 @@ static int stat_file_or_empty_dir(const char *path, int *is_dir)
 	struct stat st;
 
 	if (!path || !is_dir)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (lstat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	*is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
 	if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -172,14 +172,14 @@ static int authorize_path(struct tool_context *tctx, enum tool_path_op op,
 			  size_t resolved_size)
 {
 	if (!path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (tctx)
 		return tool_context_authorize_path(tctx, op, path, resolved,
 						   resolved_size);
 	if (!resolved || resolved_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strlen(path) + 1 > resolved_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	snprintf(resolved, resolved_size, "%s", path);
 	return 0;
 }
@@ -212,7 +212,7 @@ static int decode_base64(const char *src, struct decoded_content *out)
 	int seen_pad;
 
 	if (!src || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	len = strlen(src);
 	clean_len = 0;
 	pad_count = 0;
@@ -222,18 +222,18 @@ static int decode_base64(const char *src, struct decoded_content *out)
 		if (*p == '=') {
 			pad_count++;
 		} else if (pad_count > 0 || b64_value(*p) < 0) {
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		clean_len++;
 	}
 	if (clean_len % 4 == 1 || pad_count > 2)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	cap = (len / 4 + 1) * 3;
 	if (cap > FILE_WRITE_MAX_CONTENT)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	buf = malloc(cap ? cap : 1);
 	if (!buf)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	accum = 0;
 	bits = 0;
@@ -250,12 +250,12 @@ static int decode_base64(const char *src, struct decoded_content *out)
 		}
 		if (seen_pad) {
 			free(buf);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		v = b64_value(*p);
 		if (v < 0) {
 			free(buf);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		accum = (accum << 6) | (unsigned int)v;
 		bits += 6;
@@ -263,7 +263,7 @@ static int decode_base64(const char *src, struct decoded_content *out)
 			bits -= 8;
 			if (n >= FILE_WRITE_MAX_CONTENT) {
 				free(buf);
-				MORPH_RETURN(-EFBIG);
+				return -EFBIG;
 			}
 			buf[n++] = (unsigned char)((accum >> bits) & 0xffu);
 		}
@@ -280,18 +280,18 @@ static int decode_content(const char *content, const char *encoding,
 	size_t len;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	out->data = NULL;
 	out->len = 0;
 	if (!content)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!encoding || strcmp(encoding, "utf8") == 0) {
 		len = strlen(content);
 		if (len > FILE_WRITE_MAX_CONTENT)
-			MORPH_RETURN(-EFBIG);
+			return -EFBIG;
 		out->data = malloc(len ? len : 1);
 		if (!out->data)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		if (len > 0)
 			memcpy(out->data, content, len);
 		out->len = len;
@@ -299,7 +299,7 @@ static int decode_content(const char *content, const char *encoding,
 	}
 	if (strcmp(encoding, "base64") == 0)
 		return decode_base64(content, out);
-	MORPH_RETURN(-EINVAL);
+	return -EINVAL;
 }
 
 static int write_full_fd(int fd, const unsigned char *data, size_t len)
@@ -314,10 +314,10 @@ static int write_full_fd(int fd, const unsigned char *data, size_t len)
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (n == 0)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		off += (size_t)n;
 	}
 	return 0;
@@ -337,11 +337,11 @@ static int atomic_write_file(const char *path, const unsigned char *data,
 	rc = snprintf(tmp, sizeof(tmp), "%s/.morph-write-%ld-%lld.tmp",
 		      dir, (long)getpid(), (long long)time(NULL));
 	if (rc < 0 || (size_t)rc >= sizeof(tmp))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 
 	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 
 	rc = write_full_fd(fd, data, len);
 	if (rc == 0 && fsync(fd) != 0)
@@ -368,7 +368,7 @@ static int create_file_exclusive(const char *path, const unsigned char *data,
 
 	fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = write_full_fd(fd, data, len);
 	if (rc == 0 && fsync(fd) != 0)
 		rc = -errno;
@@ -386,7 +386,7 @@ static int append_file(const char *path, const unsigned char *data, size_t len)
 
 	fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = write_full_fd(fd, data, len);
 	if (rc == 0 && fsync(fd) != 0)
 		rc = -errno;
@@ -402,7 +402,7 @@ static int copy_range_fd(int in_fd, int out_fd, off_t len,
 	off_t remaining;
 
 	if (!bytes_written || len < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	remaining = len;
 	while (remaining > 0) {
 		ssize_t n;
@@ -416,10 +416,10 @@ static int copy_range_fd(int in_fd, int out_fd, off_t len,
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (n == 0)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		rc = write_full_fd(out_fd, buf, (size_t)n);
 		if (rc < 0)
 			return rc;
@@ -443,15 +443,15 @@ static int atomic_patch_file(const char *path, off_t offset, off_t old_len,
 
 	if (!path || offset < 0 || old_len < 0 || !file_size_before ||
 	    !file_size_after)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (lstat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!S_ISREG(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (offset > st.st_size || old_len > st.st_size - offset)
-		MORPH_RETURN(-ERANGE);
+		return -ERANGE;
 	if (st.st_size - old_len > LLONG_MAX - (off_t)len)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 
 	rc = path_parent(dir, sizeof(dir), path);
 	if (rc < 0)
@@ -459,11 +459,11 @@ static int atomic_patch_file(const char *path, off_t offset, off_t old_len,
 	rc = snprintf(tmp, sizeof(tmp), "%s/.morph-patch-%ld-%lld.tmp",
 		      dir, (long)getpid(), (long long)time(NULL));
 	if (rc < 0 || (size_t)rc >= sizeof(tmp))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 
 	in_fd = open(path, O_RDONLY);
 	if (in_fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	out_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
 	if (out_fd < 0) {
 		rc = -errno;
@@ -514,16 +514,16 @@ static int copy_file(const char *src, const char *dst, int overwrite,
 	struct stat st;
 
 	if (!src || !dst || !bytes_written)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*bytes_written = 0;
 	if (lstat(src, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!S_ISREG(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	in_fd = open(src, O_RDONLY);
 	if (in_fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	flags = O_WRONLY | O_CREAT;
 	flags |= overwrite ? O_TRUNC : O_EXCL;
 	out_fd = open(dst, flags, 0600);
@@ -568,7 +568,7 @@ static int add_success(cJSON *out, const char *op, const char *path,
 		       const char *resolved_dst)
 {
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	cJSON_AddBoolToObject(out, "ok", 1);
 	cJSON_AddStringToObject(out, "op", op);
 	cJSON_AddStringToObject(out, "path", path ? path : "");
@@ -625,7 +625,7 @@ static int op_write_like(struct file_write_context *ctx, cJSON *root,
 	out = cJSON_CreateObject();
 	if (!out) {
 		free(decoded.data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	add_success(out, op, path, resolved, NULL, NULL);
 	cJSON_AddNumberToObject(out, "bytes_written", (double)decoded.len);
@@ -664,7 +664,7 @@ static int op_mkdir(struct file_write_context *ctx, cJSON *root,
 
 	out = cJSON_CreateObject();
 	if (!out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	add_success(out, "mkdir", path, resolved, NULL, NULL);
 	cJSON_AddBoolToObject(out, "created", existed ? 0 : 1);
 	rc = json_result(result, out);
@@ -716,7 +716,7 @@ static int op_patch(struct file_write_context *ctx, cJSON *root,
 	out = cJSON_CreateObject();
 	if (!out) {
 		free(decoded.data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	add_success(out, "patch", path, resolved, NULL, NULL);
 	cJSON_AddNumberToObject(out, "offset", (double)offset);
@@ -769,7 +769,7 @@ static int op_copy(struct file_write_context *ctx, cJSON *root,
 
 	out = cJSON_CreateObject();
 	if (!out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	add_success(out, "copy", path, resolved, dst_path, resolved_dst);
 	cJSON_AddNumberToObject(out, "bytes_written", (double)bytes_written);
 	cJSON_AddBoolToObject(out, "overwritten", overwrite);
@@ -825,7 +825,7 @@ static int op_rename(struct file_write_context *ctx, cJSON *root,
 
 	out = cJSON_CreateObject();
 	if (!out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	add_success(out, "rename", path, resolved, dst_path, resolved_dst);
 	cJSON_AddBoolToObject(out, "overwritten", exists);
 	rc = json_result(result, out);
@@ -861,7 +861,7 @@ static int op_delete(struct file_write_context *ctx, cJSON *root,
 
 	out = cJSON_CreateObject();
 	if (!out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	add_success(out, "delete", path, resolved, NULL, NULL);
 	cJSON_AddBoolToObject(out, "deleted", 1);
 	cJSON_AddBoolToObject(out, "directory", is_dir);
@@ -880,7 +880,7 @@ static int file_write_exec(const char *args_json, struct tool_result *result,
 	int rc;
 
 	if (!result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root)
 		return json_error_result(result, -EINVAL, "invalid JSON");
@@ -937,10 +937,10 @@ int file_write_tool_init(struct tool_registry *reg, struct tool_context *tctx)
 		"\"required\":[\"op\",\"path\"]}";
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ctx->tctx = tctx;
 	return tool_register(reg, &(struct tool_spec){
 		.origin = TOOL_ORIGIN_EXT,

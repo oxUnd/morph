@@ -19,7 +19,7 @@ static int share_prepare(sqlite3 *db, const char *sql, int64_t session_id,
 			 sqlite3_stmt **out)
 {
 	if (sqlite3_prepare_v2(db, sql, -1, out, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(*out, 1, session_id);
 	return 0;
 }
@@ -42,7 +42,7 @@ static int share_question(cJSON *document, const char *text)
 	if (!question || !cJSON_AddItemToArray(
 		cJSON_GetObjectItemCaseSensitive(document, "questions"), question)) {
 		cJSON_Delete(question);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -53,7 +53,7 @@ static int share_step(cJSON *document, sqlite3_stmt *row)
 	cJSON *payload = metadata[0] ? cJSON_Parse(metadata) : NULL;
 	if (metadata[0] && !cJSON_IsObject(payload)) {
 		cJSON_Delete(payload);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	const char *status = share_string(payload, "status");
 	cJSON *step = cJSON_CreateObject();
@@ -65,7 +65,7 @@ static int share_step(cJSON *document, sqlite3_stmt *row)
 	if (!ok || !cJSON_AddItemToArray(
 		cJSON_GetObjectItemCaseSensitive(document, "steps"), step)) {
 		cJSON_Delete(step);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -80,7 +80,7 @@ static int share_turn_complete(sqlite3 *db, int64_t session_id,
 		"AND turn_id=? AND sequence_no<? AND kind='user_message'",
 		session_id, &stmt);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, sequence);
 	int found = 0;
@@ -90,7 +90,7 @@ static int share_turn_complete(sqlite3 *db, int64_t session_id,
 		cJSON *payload = metadata[0] ? cJSON_Parse(metadata) : NULL;
 		if (metadata[0] && !cJSON_IsObject(payload)) {
 			cJSON_Delete(payload);
-			MORPH_SET_ERR(rc, MORPH_ERR_PARSE);
+			rc = (MORPH_ERR_PARSE);
 			break;
 		}
 		const cJSON *outcome = cJSON_GetObjectItemCaseSensitive(payload, "turn_outcome");
@@ -105,9 +105,9 @@ static int share_turn_complete(sqlite3 *db, int64_t session_id,
 		found = 1;
 	}
 	if (!rc && result != SQLITE_ROW && result != SQLITE_DONE)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc ? rc : found);
+	return rc ? rc : found;
 }
 
 static int share_turn_read(sqlite3 *db, int64_t session_id, const char *turn_id,
@@ -120,7 +120,7 @@ static int share_turn_read(sqlite3 *db, int64_t session_id, const char *turn_id,
 		"AND sequence_no<? AND kind IN ('user_message','tool_result') "
 		"ORDER BY sequence_no", session_id, &stmt);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, sequence);
 	int result;
@@ -131,9 +131,9 @@ static int share_turn_read(sqlite3 *db, int64_t session_id, const char *turn_id,
 			break;
 	}
 	if (!rc && result != SQLITE_DONE)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 /* Migrated messages have no turn ID; their nearest preceding user is the boundary. */
@@ -146,15 +146,15 @@ static int share_migrated_question(sqlite3 *db, int64_t session_id,
 		"AND sequence_no<? AND kind='user_message' "
 		"ORDER BY sequence_no DESC LIMIT 1", session_id, &stmt);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	sqlite3_bind_int64(stmt, 2, sequence);
 	int result = sqlite3_step(stmt);
 	if (result == SQLITE_ROW)
 		rc = share_question(document, share_column(stmt, 0));
 	else
-		MORPH_SET_ERR(rc, result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
+		rc = (result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int share_history(sqlite3 *db, int64_t session_id, cJSON **out)
@@ -165,7 +165,7 @@ static int share_history(sqlite3 *db, int64_t session_id, cJSON **out)
 		"WHERE session_id=? AND kind='assistant_message' AND length(content)>0 "
 		"ORDER BY sequence_no DESC", session_id, &stmt);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	static const char legacy_prefix[] = "legacy:message:";
 	int result;
 	while ((result = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -175,14 +175,14 @@ static int share_history(sqlite3 *db, int64_t session_id, cJSON **out)
 			strncmp(share_column(stmt, 3), legacy_prefix, sizeof(legacy_prefix) - 1) == 0;
 		int complete = turn[0] ? share_turn_complete(db, session_id, turn, sequence) : migrated;
 		if (complete < 0) {
-			MORPH_SET_ERR(rc, complete);
+			rc = (complete);
 			break;
 		}
 		if (!complete)
 			continue;
 		cJSON *document = share_document(share_column(stmt, 2));
 		if (!document) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		rc = migrated ? share_migrated_question(db, session_id, sequence, document) :
@@ -197,9 +197,9 @@ static int share_history(sqlite3 *db, int64_t session_id, cJSON **out)
 		rc = 0;
 	}
 	if (!rc && !*out)
-		MORPH_SET_ERR(rc, result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
+		rc = (result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int share_legacy(sqlite3 *db, int64_t session_id, cJSON **out)
@@ -214,7 +214,7 @@ static int share_legacy(sqlite3 *db, int64_t session_id, cJSON **out)
 		"AND NOT EXISTS(SELECT 1 FROM model_history_items WHERE session_id=a.session_id) "
 		"ORDER BY a.created_at DESC,a.id DESC LIMIT 1", session_id, &stmt);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	int result = sqlite3_step(stmt);
 	if (result == SQLITE_ROW) {
 		cJSON *document = share_document(share_column(stmt, 0));
@@ -224,26 +224,26 @@ static int share_legacy(sqlite3 *db, int64_t session_id, cJSON **out)
 		else
 			cJSON_Delete(document);
 	} else {
-		MORPH_SET_ERR(rc, result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
+		rc = (result == SQLITE_DONE ? -ENODATA : MORPH_ERR_DB);
 	}
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_session_share_current(struct runtime *runtime, cJSON **out)
 {
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	if (!runtime)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	int rc = pthread_mutex_trylock(&runtime->context.execution_lock);
 	if (rc)
-		MORPH_RETURN(-rc);
+		return -rc;
 	struct runtime_context *ctx = &runtime->context;
 	rc = share_history(ctx->database.handle, ctx->current_session.id, out);
 	if (rc == -ENODATA)
 		rc = share_legacy(ctx->database.handle, ctx->current_session.id, out);
 	pthread_mutex_unlock(&ctx->execution_lock);
-	MORPH_RETURN(rc);
+	return rc;
 }

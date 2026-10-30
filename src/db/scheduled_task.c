@@ -24,10 +24,10 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 	if (!events || !events->cb)
 		return 0;
 	if (!name || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	data = cJSON_CreateObject();
 	if (!data)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!cJSON_AddNumberToObject(data, "task_id", (double)task->id) ||
 	    !cJSON_AddNumberToObject(data, "source_session_id",
 				     (double)task->source_session_id) ||
@@ -45,23 +45,23 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 	    !cJSON_AddNumberToObject(data, "max_attempts",
 				     task->max_attempts)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (task->interval_seconds > 0 &&
 	    !cJSON_AddNumberToObject(data, "interval_seconds",
 				     task->interval_seconds)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (error_code != 0 &&
 	    !cJSON_AddNumberToObject(data, "error_code", error_code)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (reason &&
 	    !cJSON_AddStringToObject(data, "reason", reason)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (notification) {
 		if (!cJSON_AddNumberToObject(data, "notification_id",
@@ -76,7 +76,7 @@ static int task_emit_event(const struct scheduled_task_event_sink *events,
 					     notification->body ?
 					     notification->body : "")) {
 			cJSON_Delete(data);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 	}
 	rc = morph_event_emit_simple(events->cb, events->user_data,
@@ -109,7 +109,7 @@ static char *column_strdup(sqlite3_stmt *stmt, int col)
 static int task_from_stmt(sqlite3_stmt *stmt, struct scheduled_task *task)
 {
 	if (!stmt || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	memset(task, 0, sizeof(*task));
 	task->id = sqlite3_column_int64(stmt, 0);
@@ -142,7 +142,7 @@ static int task_from_stmt(sqlite3_stmt *stmt, struct scheduled_task *task)
 	    (sqlite3_column_type(stmt, 14) != SQLITE_NULL && !task->policy_json) ||
 	    (sqlite3_column_type(stmt, 15) != SQLITE_NULL && !task->notify_json)) {
 		scheduled_task_cleanup(task);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -151,7 +151,7 @@ static int notification_from_stmt(sqlite3_stmt *stmt,
 				  struct notification *notification)
 {
 	if (!stmt || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	memset(notification, 0, sizeof(*notification));
 	notification->id = sqlite3_column_int64(stmt, 0);
@@ -169,7 +169,7 @@ static int notification_from_stmt(sqlite3_stmt *stmt,
 		  (const char *)sqlite3_column_text(stmt, 8));
 
 	if (!notification->body)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -183,10 +183,10 @@ static int notification_get(struct db *db, int64_t id,
 		"delivery_status FROM notifications WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -196,8 +196,8 @@ static int notification_get(struct db *db, int64_t id,
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
-	MORPH_RETURN(-ENOENT);
+		return MORPH_ERR_DB;
+	return -ENOENT;
 }
 
 static int str_in_set(const char *s, const char *const *values, int count)
@@ -223,31 +223,31 @@ static int scheduled_task_validate_input(
 
 	if (!input || !input->title || !input->kind ||
 	    !input->trigger_type || !input->action_type)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!input->title[0] || !input->kind[0] ||
 	    !input->trigger_type[0] || !input->action_type[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strlen(input->title) >= SCHEDULED_TASK_TEXT_MAX ||
 	    strlen(input->kind) >= SCHEDULED_TASK_TYPE_MAX ||
 	    strlen(input->trigger_type) >= SCHEDULED_TASK_TYPE_MAX ||
 	    strlen(input->action_type) >= SCHEDULED_TASK_TYPE_MAX)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (!str_in_set(input->kind, kinds, (int)(sizeof(kinds) /
 	    sizeof(kinds[0]))))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!str_in_set(input->trigger_type, triggers,
 	    (int)(sizeof(triggers) / sizeof(triggers[0]))))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (input->next_run_at < 0 || input->interval_seconds < 0 ||
 	    input->timeout_at < 0 || input->max_attempts < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(input->trigger_type, "interval") == 0 &&
 	    input->interval_seconds <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if ((strcmp(input->kind, "agent") == 0 ||
 	     strcmp(input->kind, "action") == 0 ||
 	     strcmp(input->kind, "watch") == 0) && !input->payload_json)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -262,7 +262,7 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 	int rc;
 
 	if (!db || !db->handle || !sql || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (limit <= 0)
 		limit = 100;
 
@@ -301,7 +301,7 @@ static int task_list_query(struct db *db, const char *sql, const char *status,
 	sqlite3_finalize(stmt);
 	if (arr.nelts > INT_MAX) {
 		scheduled_task_free_list(arr.elts, (int)arr.nelts);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	*out = arr.elts;
 	*count = (int)arr.nelts;
@@ -312,7 +312,7 @@ out_fail:
 		sqlite3_finalize(stmt);
 	if (arr_ready)
 		scheduled_task_free_list(arr.elts, (int)arr.nelts);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int scheduled_task_create_with_events(
@@ -333,7 +333,7 @@ int scheduled_task_create_with_events(
 		" VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	if (!db || !db->handle)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = scheduled_task_validate_input(input);
 	if (rc != 0)
 		return rc;
@@ -341,7 +341,7 @@ int scheduled_task_create_with_events(
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 
 	if (input->source_session_id > 0)
 		sqlite3_bind_int64(stmt, 1, input->source_session_id);
@@ -382,7 +382,7 @@ int scheduled_task_create_with_events(
 	if (rc != SQLITE_DONE) {
 		log_err(db ? db->logger : NULL, "scheduled task create failed: %s",
 			sqlite3_errmsg(db->handle));
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 
 	memset(&task, 0, sizeof(task));
@@ -422,10 +422,10 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 		"updated_at FROM scheduled_tasks WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -435,8 +435,8 @@ int scheduled_task_get(struct db *db, int64_t id, struct scheduled_task *out)
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
-	MORPH_RETURN(-ENOENT);
+		return MORPH_ERR_DB;
+	return -ENOENT;
 }
 
 int scheduled_task_update_with_events(
@@ -456,14 +456,14 @@ int scheduled_task_update_with_events(
 		"attempts=0,last_error=NULL,updated_at=? WHERE id=?";
 
 	if (!db || !db->handle || id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = scheduled_task_validate_input(input);
 	if (rc != 0)
 		return rc;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, input->title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, input->kind, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, input->trigger_type, -1, SQLITE_TRANSIENT);
@@ -492,9 +492,9 @@ int scheduled_task_update_with_events(
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) == 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
 	if (rc != 0)
@@ -529,11 +529,11 @@ int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out
 	int rc;
 
 	if (!db || !db->handle || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
 		out->running = sqlite3_column_int64(stmt, 0);
@@ -541,7 +541,7 @@ int scheduled_task_count_active(struct db *db, struct scheduled_task_counts *out
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_ROW)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -580,7 +580,7 @@ int scheduled_task_list_due(struct db *db, int64_t now, int limit,
 		"ORDER BY next_run_at ASC, id ASC LIMIT ?";
 
 	if (!db || !db->handle || now < 0 || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return task_list_query(db, sql, NULL, now, limit, out, count);
 }
 
@@ -599,11 +599,11 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 
 	if (!db || !db->handle || id <= 0 || !status || next_run_at < 0 ||
 	    attempts < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, status, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, next_run_at);
 	sqlite3_bind_int(stmt, 3, attempts);
@@ -618,9 +618,9 @@ int scheduled_task_update_run(struct db *db, int64_t id, const char *status,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) == 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return 0;
 }
 
@@ -637,20 +637,20 @@ int scheduled_task_recover_stale_running(struct db *db, int64_t now,
 		"updated_at=? WHERE status='running' AND updated_at <= ?";
 
 	if (!db || !db->handle || now < 0 || stale_after_seconds < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	cutoff = now - stale_after_seconds;
 	if (cutoff < 0)
 		cutoff = 0;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, now);
 	sqlite3_bind_int64(stmt, 2, now);
 	sqlite3_bind_int64(stmt, 3, cutoff);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (recovered)
 		*recovered = sqlite3_changes(db->handle);
 	return 0;
@@ -668,19 +668,19 @@ int scheduled_task_cancel_with_events(
 		"WHERE id=?";
 
 	if (!db || !db->handle || id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, now);
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) == 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	memset(&task, 0, sizeof(task));
 	rc = scheduled_task_get(db, id, &task);
 	if (rc != 0)
@@ -726,17 +726,17 @@ static int task_claim_due(struct db *db, const struct scheduled_task *task)
 		"WHERE id=? AND status IN ('pending','waiting')";
 
 	if (!db || !db->handle || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, now);
 	sqlite3_bind_int64(stmt, 2, task->id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return sqlite3_changes(db->handle) > 0 ? 1 : 0;
 }
 
@@ -780,7 +780,7 @@ static int task_finish_or_reschedule(struct db *db,
 	int64_t next_run_at;
 
 	if (!db || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	attempts = task->attempts + 1;
 	if (task->timeout_at > 0 && now >= task->timeout_at)
 		return scheduled_task_update_run(db, task->id, "timed_out", 0,
@@ -821,7 +821,7 @@ static int run_due_reminder(struct db *db, const struct scheduled_task *task,
 	if (!body)
 		body = strdup(task->title);
 	if (!body)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	rc = notification_create(db, task->id, "info", task->title, body,
 				 task_delivery_status(task), notification);
@@ -901,7 +901,7 @@ static int task_emit_result_event(
 	const char *message = "task updated";
 
 	if (!status)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(status, "completed") == 0) {
 		name = "task.completed";
 		message = "task completed";
@@ -947,7 +947,7 @@ static int run_due_agent(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1035,7 +1035,7 @@ static int run_due_action(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1110,7 +1110,7 @@ static int run_due_watch(struct db *db, const struct scheduled_task *task,
 	int nrc;
 
 	if (!db || !task || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!runner)
 		return run_due_unsupported(db, task, notification, events);
 
@@ -1176,7 +1176,7 @@ static int run_due_unsupported(struct db *db, const struct scheduled_task *task,
 	int rc;
 
 	if (!db || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	snprintf(body, sizeof(body),
 		 "Task kind '%s' is due but no runner is registered.",
 		 task->kind);
@@ -1210,7 +1210,7 @@ int scheduled_task_run_due_collect_with_runner_events(
 	int rc;
 
 	if (!db || !db->handle || now < 0 || !notifications || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*notifications = NULL;
 	*count = 0;
 	rc = morph_array_init(&arr, 4, sizeof(struct notification));
@@ -1276,7 +1276,7 @@ int scheduled_task_run_due_collect_with_runner_events(
 	scheduled_task_free_list(tasks, task_count);
 	if (arr.nelts > INT_MAX) {
 		notification_free_list(arr.elts, (int)arr.nelts);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	*notifications = arr.elts;
 	*count = (int)arr.nelts;
@@ -1286,7 +1286,7 @@ out_fail:
 	scheduled_task_free_list(tasks, task_count);
 	if (arr_ready)
 		notification_free_list(arr.elts, (int)arr.nelts);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int scheduled_task_run_due_collect_with_runner(
@@ -1385,11 +1385,11 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 
 	if (!db || !db->handle || !level || !title || !body ||
 	    !delivery_status)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	now = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (task_id > 0)
 		sqlite3_bind_int64(stmt, 1, task_id);
 	else
@@ -1407,7 +1407,7 @@ int notification_create_for_session(struct db *db, int64_t task_id,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 
 	if (out)
 		return notification_get(db, sqlite3_last_insert_rowid(db->handle),
@@ -1437,7 +1437,7 @@ int notification_list_unread(struct db *db, int limit,
 		"ORDER BY created_at DESC, id DESC LIMIT ?";
 
 	if (!db || !db->handle || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (limit <= 0)
 		limit = 100;
 
@@ -1471,7 +1471,7 @@ int notification_list_unread(struct db *db, int limit,
 	sqlite3_finalize(stmt);
 	if (arr.nelts > INT_MAX) {
 		notification_free_list(arr.elts, (int)arr.nelts);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	*out = arr.elts;
 	*count = (int)arr.nelts;
@@ -1482,7 +1482,7 @@ out_fail:
 		sqlite3_finalize(stmt);
 	if (arr_ready)
 		notification_free_list(arr.elts, (int)arr.nelts);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int notification_mark_read(struct db *db, int64_t id, int64_t read_at)
@@ -1492,20 +1492,20 @@ int notification_mark_read(struct db *db, int64_t id, int64_t read_at)
 	const char *sql = "UPDATE notifications SET read_at=? WHERE id=?";
 
 	if (!db || !db->handle || id <= 0 || read_at < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (read_at == 0)
 		read_at = (int64_t)time(NULL);
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, read_at);
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) == 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return 0;
 }
 

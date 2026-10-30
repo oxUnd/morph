@@ -199,7 +199,7 @@ int mcp_test_connection(const struct mcp_server_config *cfg,
 
 	if (!cfg || !cfg->name[0]) {
 		mcp_test_message(message, message_cap, "invalid server config");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 
 	mcp_registry_init(cfg ? cfg->logger : NULL, &reg);
@@ -266,7 +266,7 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 		cJSON_Delete(items);
 		if (rc == 0)
 			morph_strmap_cleanup(&cursors);
-		MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+		return rc != 0 ? rc : -ENOMEM;
 	}
 	for (;;) {
 		int first_page = params == NULL;
@@ -288,11 +288,11 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 		cJSON *next = cJSON_GetObjectItemCaseSensitive(page, "nextCursor");
 
 		if (!cJSON_IsArray(list) || (next && !cJSON_IsString(next))) {
-			MORPH_SET_ERR(rc, MORPH_ERR_PROTOCOL);
+			rc = (MORPH_ERR_PROTOCOL);
 			break;
 		}
 		if (cJSON_GetArraySize(list) > INT_MAX - cJSON_GetArraySize(items)) {
-			MORPH_SET_ERR(rc, -EOVERFLOW);
+			rc = (-EOVERFLOW);
 			break;
 		}
 		while (list->child) {
@@ -300,14 +300,14 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 
 			if (!cJSON_AddItemToArray(items, item)) {
 				cJSON_Delete(item);
-				MORPH_SET_ERR(rc, -ENOMEM);
+				rc = (-ENOMEM);
 				break;
 			}
 		}
 		if (rc != 0 || !next)
 			break;
 		if (morph_strmap_contains(&cursors, next->valuestring)) {
-			MORPH_SET_ERR(rc, MORPH_ERR_PROTOCOL);
+			rc = (MORPH_ERR_PROTOCOL);
 			break;
 		}
 		rc = morph_strmap_set(&cursors, next->valuestring, client);
@@ -319,7 +319,7 @@ static int mcp_list_all(struct mcp_client *client, const char *method,
 			params = cJSON_PrintUnformatted(request);
 		cJSON_Delete(request);
 		if (!params) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		cJSON_Delete(page);
@@ -364,10 +364,10 @@ static int mcp_named_request(struct mcp_client *client, const char *method,
 	int rc;
 
 	if (!params)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(params, key, name)) {
 		cJSON_Delete(params);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (args) {
 		cJSON *arguments = cJSON_ParseWithOpts(args, NULL, 1);
@@ -375,18 +375,18 @@ static int mcp_named_request(struct mcp_client *client, const char *method,
 		if (!cJSON_IsObject(arguments)) {
 			cJSON_Delete(arguments);
 			cJSON_Delete(params);
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 		if (!cJSON_AddItemToObject(params, "arguments", arguments)) {
 			cJSON_Delete(arguments);
 			cJSON_Delete(params);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 	}
 	json = cJSON_PrintUnformatted(params);
 	cJSON_Delete(params);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = mcp_request(client, method, json, result);
 	free(json);
 	return rc;
@@ -396,7 +396,7 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 	struct mcp_tool_desc **out_tools, int *out_count)
 {
 	if (!client || !arena || !out_tools || !out_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_tools = NULL;
 	*out_count = 0;
 	cJSON *items = NULL;
@@ -409,13 +409,13 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	if (count > 0)
 		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
 	if (count > 0 && !entries) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *item;
 	int i = 0;
@@ -449,7 +449,7 @@ int mcp_list_tools(struct mcp_client *client, struct arena *arena,
 		    !entries[i].description ||
 		    !entries[i].input_schema) {
 			cJSON_Delete(items);
-			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}
@@ -478,7 +478,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 			int count = 0;
 
 			if (!discovery)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			int rc = mcp_list_tools(client, discovery, &tools, &count);
 
 			arena_destroy(discovery);
@@ -494,7 +494,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 	if (rc < 0 || !result) {
 		if (rc >= 0 && !result) {
 			(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"empty response\",\"isError\":true}"));
-			MORPH_RETURN(MORPH_ERR_PROTOCOL);
+			return MORPH_ERR_PROTOCOL;
 		}
 		(void)tool_result_successf(out_result,
 					 "{\"error\":\"MCP call failed\","
@@ -512,7 +512,7 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 			"mcp: tools/call response parse error");
 		(void)tool_result_success_json_text(out_result, strdup("{\"error\":\"response parse error\",\"isError\":true}"));
 		free(result);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 
 	cJSON *is_err = cJSON_GetObjectItem(obj, "isError");
@@ -539,15 +539,15 @@ int mcp_call_tool(struct mcp_client *client, struct arena *arena, const char *na
 
 		if (!cJSON_AddItemToObject(obj, "contentBlocks", blocks)) {
 			cJSON_Delete(blocks);
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 		}
 		if (rc == 0 && !cJSON_AddStringToObject(obj, "content", combined.data))
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 	}
 	if (rc == 0 && tool_error && !cJSON_HasObjectItem(obj, "error")) {
 		if (!cJSON_AddStringToObject(obj, "error", combined.len > 0 ?
 			combined.data : "MCP tool returned isError"))
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 	}
 	morph_buf_cleanup(&combined);
 	if (rc == 0) {
@@ -571,7 +571,7 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 	struct mcp_resource_desc **out_res, int *out_count)
 {
 	if (!client || !arena || !out_res || !out_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_res = NULL;
 	*out_count = 0;
 	cJSON *items = NULL;
@@ -584,13 +584,13 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	if (count > 0)
 		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
 	if (count > 0 && !entries) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *item;
 	int i = 0;
@@ -605,7 +605,7 @@ int mcp_list_resources(struct mcp_client *client, struct arena *arena,
 		    !entries[i].description ||
 		    !entries[i].mime_type) {
 			cJSON_Delete(items);
-			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}
@@ -668,7 +668,7 @@ int mcp_read_resource(struct mcp_client *client, struct arena *arena,
 		if (!text) {
 			cJSON_Delete(obj);
 			free(result);
-			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+			return rc != 0 ? rc : -ENOMEM;
 		}
 		(void)tool_result_success_json_text(out_content, text);
 	} else {
@@ -693,7 +693,7 @@ static int mcp_prompt_arguments_schema(struct arena *arena, cJSON *arguments,
 	int rc = 0;
 
 	if (!schema)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	properties = cJSON_AddObjectToObject(schema, "properties");
 	required = cJSON_AddArrayToObject(schema, "required");
 	if (!properties || !required ||
@@ -730,21 +730,21 @@ static int mcp_prompt_arguments_schema(struct arena *arena, cJSON *arguments,
 		goto out_free_schema_oom;
 	*destination = arena_strdup(arena, encoded);
 	if (!*destination)
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 	free(encoded);
 	cJSON_Delete(schema);
 	return rc;
 
 out_free_schema_oom:
 	cJSON_Delete(schema);
-	MORPH_RETURN(-ENOMEM);
+	return -ENOMEM;
 }
 
 int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 	struct mcp_prompt_desc **out_prompts, int *out_count)
 {
 	if (!client || !arena || !out_prompts || !out_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_prompts = NULL;
 	*out_count = 0;
 	cJSON *items = NULL;
@@ -757,13 +757,13 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 
 	if ((size_t)count > SIZE_MAX / sizeof(*entries)) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	if (count > 0)
 		entries = arena_alloc(arena, (size_t)count * sizeof(*entries));
 	if (count > 0 && !entries) {
 		cJSON_Delete(items);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *item;
 	int i = 0;
@@ -778,7 +778,7 @@ int mcp_list_prompts(struct mcp_client *client, struct arena *arena,
 		    !entries[i].description ||
 		    !entries[i].arguments_schema) {
 			cJSON_Delete(items);
-			MORPH_RETURN(rc != 0 ? rc : -ENOMEM);
+			return rc != 0 ? rc : -ENOMEM;
 		}
 		i++;
 	}

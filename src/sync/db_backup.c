@@ -79,13 +79,13 @@ static int hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
 
 	file = fopen(path, "rb");
 	if (!file)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	blake3_hasher_init(&hasher);
 	while ((read_size = fread(buffer, 1, sizeof(buffer), file)) > 0)
 		blake3_hasher_update(&hasher, buffer, read_size);
 	if (ferror(file)) {
 		fclose(file);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	fclose(file);
 	blake3_hasher_finalize(&hasher, hash, sizeof(hash));
@@ -116,31 +116,31 @@ static int copy_plain(const char *source, const char *destination)
 
 	input = fopen(source, "rb");
 	if (!input)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (ensure_parent(destination) != 0) {
 		fclose(input);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	output = fopen(destination, "wb");
 	if (!output) {
 		fclose(input);
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	while ((read_size = fread(buffer, 1, sizeof(buffer), input)) > 0) {
 		if (fwrite(buffer, 1, read_size, output) != read_size) {
 			fclose(input);
 			fclose(output);
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		}
 	}
 	if (ferror(input) || fflush(output) != 0) {
 		fclose(input);
 		fclose(output);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	fclose(input);
 	if (fclose(output) != 0)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	return 0;
 }
 
@@ -161,7 +161,7 @@ static int store_stat(const struct morph_sync_config *cfg, const char *rel,
 		return cfg->remote_backend->stat(cfg->remote_backend->user_data,
 					 rel, result);
 	if (store_path(cfg, rel, path) != 0)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (stat(path, &st) != 0)
 		return errno == ENOENT ? 0 : -errno;
 	result->exists = 1;
@@ -193,14 +193,14 @@ static int store_put(const struct morph_sync_config *cfg, const char *source,
 		return rc;
 	if (snprintf(temporary, sizeof(temporary), "%s.%s", destination,
 		     random_id) >= (int)sizeof(temporary))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = copy_plain(source, temporary);
 	if (rc != 0)
 		return rc;
 	if (rename(temporary, destination) != 0) {
 		int saved = errno;
 		(void)unlink(temporary);
-		MORPH_RETURN(-saved);
+		return -saved;
 	}
 	return 0;
 }
@@ -214,7 +214,7 @@ static int store_get(const struct morph_sync_config *cfg, const char *rel,
 		return cfg->remote_backend->copy_to_local(
 			cfg->remote_backend->user_data, rel, destination);
 	if (store_path(cfg, rel, source) != 0)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	return copy_plain(source, destination);
 }
 
@@ -415,7 +415,7 @@ static int db_cursor_put(const struct morph_sync_config *cfg,
 		return rc;
 	if (snprintf(value, sizeof(value), "%s %s", device, database_hash) >=
 	    (int)sizeof(value))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	return file_write_all(path, value, strlen(value));
 }
 
@@ -438,7 +438,7 @@ static int staging_path(const struct morph_sync_config *cfg, const char *suffix,
 		return rc;
 	if (snprintf(out, PATH_MAX, "%s/%s%s", directory, random_id,
 		     suffix ? suffix : "") >= PATH_MAX)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	return 0;
 }
 
@@ -469,7 +469,7 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 	if (stat(source, &st) != 0) {
 		if (errno == ENOENT)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	rc = staging_path(cfg, ".display.db", staging);
 	if (rc != 0)
@@ -480,12 +480,12 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 	if (sqlite3_open_v2(snapshot, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK ||
 	    sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS display", -1,
 			       &attach, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_remove_display;
 	}
 	sqlite3_bind_text(attach, 1, staging, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(attach) != SQLITE_DONE) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_remove_display;
 	}
 	if (sqlite3_exec(db,
@@ -496,7 +496,7 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 		"created_at,updated_at FROM display.ui_messages;"
 		"CREATE TABLE IF NOT EXISTS sync_ui_messages AS SELECT * FROM local_display WHERE 0;",
 		NULL, NULL, NULL) != SQLITE_OK)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	if (rc == 0 && sqlite3_table_column_metadata(db, "display",
 		"ui_session_identity", "identity", NULL, NULL, NULL, NULL, NULL) == SQLITE_OK &&
 	    sqlite3_table_column_metadata(db, "main", "sessions", "display_id",
@@ -506,7 +506,7 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 			"SELECT i.session_id FROM display.ui_session_identity i "
 			"JOIN main.sessions s ON s.id=i.session_id "
 			"WHERE i.identity<>s.display_id)", NULL, NULL, NULL) != SQLITE_OK)
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 	}
 
 	if (rc == 0 && sqlite3_exec(db,
@@ -515,7 +515,7 @@ static int snapshot_include_display(const struct morph_sync_config *cfg,
 		"INSERT INTO sync_ui_messages SELECT * FROM local_display;"
 		"CREATE INDEX IF NOT EXISTS sync_ui_session_seq "
 		"ON sync_ui_messages(session_id,seq); COMMIT", NULL, NULL, NULL) != SQLITE_OK)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 
 
 out_remove_display:
@@ -523,7 +523,7 @@ out_remove_display:
 	if (db)
 		sqlite3_close(db);
 	(void)unlink(staging);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int db_backup_create_one(const struct morph_sync_config *cfg,
@@ -551,7 +551,7 @@ static int db_backup_create_one(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!backend_valid(cfg) || !rel || !path || !status)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = staging_path(cfg, ".db", snapshot_path);
 	if (rc != 0)
 		return rc;
@@ -738,7 +738,7 @@ int sync_db_backup_create(const struct morph_sync_config *cfg,
 	}
 	if (snprintf(prefix, sizeof(prefix), "%s.conflict.", base) >=
 	    (int)sizeof(prefix))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = file_list_files(directory, &names, &count);
 	if (rc == -ENOENT)
 		return 0;
@@ -770,7 +770,7 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 
 	if (snprintf(rel, sizeof(rel), "%s/%s", DB_SNAPSHOT_DIR, name) >=
 	    (int)sizeof(rel))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (cfg->remote_backend) {
 		rc = staging_path(cfg, ".json", local);
 		if (rc != 0)
@@ -787,7 +787,7 @@ static int manifest_load(const struct morph_sync_config *cfg, const char *name,
 		text = file_read_all(direct, NULL);
 	}
 	if (!text)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	*out = cJSON_Parse(text);
 	free(text);
 	return *out ? 0 : MORPH_ERR_PARSE;
@@ -805,7 +805,7 @@ static int backup_from_json(cJSON *root, struct morph_sync_backup *backup)
 	if (!cJSON_IsString(snapshot_id) || !cJSON_IsString(path) ||
 	    !cJSON_IsString(device) || !cJSON_IsString(hash) ||
 	    !cJSON_IsNumber(created) || !cJSON_IsNumber(size))
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	memset(backup, 0, sizeof(*backup));
 	strncpy(backup->snapshot_id, snapshot_id->valuestring,
 		sizeof(backup->snapshot_id) - 1);
@@ -834,7 +834,7 @@ static int snapshot_scan_name(struct snapshot_scan *scan, const char *name)
 	backup = morph_array_push(scan->items);
 	if (!backup) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = backup_from_json(root, backup);
 	cJSON_Delete(root);
@@ -880,7 +880,7 @@ int morph_sync_backups(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!backend_valid(cfg) || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	*count = 0;
 	rc = morph_array_init(&items, 8, sizeof(struct morph_sync_backup));
@@ -935,29 +935,29 @@ static int restore_chunk(const struct morph_sync_config *cfg, cJSON *item,
 
 	if (!cJSON_IsString(hash) || strlen(hash->valuestring) != 64 ||
 	    !cJSON_IsNumber(size) || size->valuedouble < 0)
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	if (snprintf(object_rel, sizeof(object_rel), "%s/%.2s/%s",
 		     DB_OBJECT_DIR, hash->valuestring, hash->valuestring) >=
 	    (int)sizeof(object_rel))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = store_get(cfg, object_rel, temporary_chunk);
 	if (rc != 0)
 		return rc;
 	data = file_read_all(temporary_chunk, &data_size);
 	(void)unlink(temporary_chunk);
 	if (!data)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	hash_bytes(data, data_size, actual_hash);
 	if (data_size != (size_t)size->valuedouble ||
 	    strcmp(actual_hash, hash->valuestring) != 0) {
 		log_err(cfg ? cfg->logger : NULL, "database backup chunk failed verification: %s",
 			hash->valuestring);
 		free(data);
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 	if (fwrite(data, 1, data_size, output) != data_size) {
 		free(data);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	free(data);
 	return 0;
@@ -980,12 +980,12 @@ int morph_sync_restore_db(const struct morph_sync_config *cfg,
 
 	if (!backend_valid(cfg) || !snapshot_id_valid(snapshot_id) || !destination ||
 	    !destination[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (file_exists(destination))
-		MORPH_RETURN(-EEXIST);
+		return -EEXIST;
 	if (snprintf(manifest_name, sizeof(manifest_name), "%s.json",
 		     snapshot_id) >= (int)sizeof(manifest_name))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = manifest_load(cfg, manifest_name, &root);
 	if (rc != 0)
 		return rc;
@@ -1067,9 +1067,9 @@ static int store_delete(const struct morph_sync_config *cfg, const char *rel)
 		return cfg->remote_backend->delete_file(
 			cfg->remote_backend->user_data, rel);
 	if (store_path(cfg, rel, path) != 0)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (unlink(path) != 0 && errno != ENOENT)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1094,7 +1094,7 @@ static int retention_add_name(struct retention_scan *scan, const char *name)
 	stored = morph_array_push(scan->snapshots);
 	if (!stored) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	memset(stored, 0, sizeof(*stored));
 	strncpy(stored->name, name, sizeof(stored->name) - 1);
@@ -1179,7 +1179,7 @@ static int live_chunks_add(const struct morph_sync_config *cfg,
 	chunks = cJSON_GetObjectItem(root, "chunks");
 	if (!cJSON_IsArray(chunks)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	cJSON_ArrayForEach(item, chunks) {
 		cJSON *hash = cJSON_GetObjectItem(item, "hash");
@@ -1214,7 +1214,7 @@ static int object_gc_one(struct object_gc *gc, const char *name)
 		return 0;
 	if (snprintf(rel, sizeof(rel), "%s/%s", gc->directory, name) >=
 	    (int)sizeof(rel))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = store_stat(gc->cfg, rel, &st);
 	if (rc != 0)
 		return rc;
@@ -1243,7 +1243,7 @@ static int object_prefix_cb(const char *name, int is_dir, void *user_data)
 	child = *gc;
 	if (snprintf(child.directory, sizeof(child.directory), "%s/%s",
 		     DB_OBJECT_DIR, name) >= (int)sizeof(child.directory))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	gc->rc = gc->cfg->remote_backend->list(
 		gc->cfg->remote_backend->user_data, child.directory,
 		object_file_cb, &child);
@@ -1296,7 +1296,7 @@ int sync_db_backup_cleanup(const struct morph_sync_config *cfg)
 	int rc;
 
 	if (!backend_valid(cfg))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (cfg->retention_days <= 0)
 		return 0;
 	cutoff = (int64_t)time(NULL) -
@@ -1412,17 +1412,17 @@ static int restore_plan_source(const struct morph_sync_restore_plan *plan,
 	size_t length;
 
 	if (!plan)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	position = strstr(plan->journal, marker);
 	if (!position)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	length = (size_t)(position - plan->journal);
 	if (length == 0 || length >= PATH_MAX)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	memcpy(source, plan->journal, length);
 	source[length] = '\0';
 	if (!restore_plan_valid(source, plan))
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	return 0;
 }
 
@@ -1438,10 +1438,10 @@ static int restore_atomic_write(const char *path, const char *data,
 
 	if (snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
 	    (int)sizeof(temporary))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	fd = open(temporary, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	while (offset < length) {
 		ssize_t written = write(fd, data + offset, length - offset);
 
@@ -1474,7 +1474,7 @@ static int restore_sync_parent(const char *path)
 	int rc = 0;
 
 	if (!path || strlen(path) >= sizeof(parent))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	strncpy(parent, path, sizeof(parent) - 1);
 	parent[sizeof(parent) - 1] = '\0';
 	slash = strrchr(parent, '/');
@@ -1483,7 +1483,7 @@ static int restore_sync_parent(const char *path)
 	*slash = '\0';
 	fd = open(parent, O_RDONLY);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (fsync(fd) != 0 && errno != EINVAL && errno != EROFS)
 		rc = -errno;
 	if (close(fd) != 0 && rc == 0)
@@ -1494,7 +1494,7 @@ static int restore_sync_parent(const char *path)
 static int restore_unlink_optional(const char *path)
 {
 	if (unlink(path) != 0 && errno != ENOENT)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1507,7 +1507,7 @@ static int restore_journal_write(const struct morph_sync_restore_plan *plan,
 
 	root = cJSON_CreateObject();
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(root, "phase", phase) ||
 	    !cJSON_AddStringToObject(root, "token", plan->token) ||
 	    !cJSON_AddStringToObject(root, "snapshot_id", plan->snapshot_id) ||
@@ -1519,12 +1519,12 @@ static int restore_journal_write(const struct morph_sync_restore_plan *plan,
 	    !cJSON_AddStringToObject(root, "expected_hash",
 				     plan->expected_hash)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = restore_atomic_write(plan->journal, json, strlen(json));
 	free(json);
 	return rc;
@@ -1549,18 +1549,18 @@ static int restore_plan_from_json(const char *journal,
 
 	text = file_read_all(journal, NULL);
 	if (!text)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	root = cJSON_Parse(text);
 	free(text);
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	memset(plan, 0, sizeof(*plan));
 	item = cJSON_GetObjectItem(root, "phase");
 	if (!cJSON_IsString(item)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	strncpy(phase, item->valuestring, 15);
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
@@ -1568,7 +1568,7 @@ static int restore_plan_from_json(const char *journal,
 		if (!cJSON_IsString(item) ||
 		    strlen(item->valuestring) >= sizes[i]) {
 			cJSON_Delete(root);
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 		strncpy(values[i], item->valuestring, sizes[i] - 1);
 	}
@@ -1594,7 +1594,7 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!backend_valid(cfg) || !snapshot_id || !plan)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(plan, 0, sizeof(*plan));
 	rc = morph_sync_backups(cfg, NULL, &items, &count);
 	if (rc != 0)
@@ -1607,7 +1607,7 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 	}
 	if (found < 0 || !restore_rel_valid(items[found].path)) {
 		morph_sync_backups_free(items);
-		MORPH_RETURN(found < 0 ? -ENOENT : MORPH_ERR_FORMAT);
+		return found < 0 ? -ENOENT : MORPH_ERR_FORMAT;
 	}
 	strncpy(plan->snapshot_id, snapshot_id,
 		sizeof(plan->snapshot_id) - 1);
@@ -1626,7 +1626,7 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 		     plan->target, plan->token) >= (int)sizeof(plan->staging) ||
 	    snprintf(plan->rollback, sizeof(plan->rollback), "%s.%s.rollback",
 		     plan->target, plan->token) >= (int)sizeof(plan->rollback))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	rc = file_path_join(journal_dir, sizeof(journal_dir), cfg->source_dir,
 		".morph-sync/restore");
 	if (rc == 0)
@@ -1635,9 +1635,9 @@ int morph_sync_prepare_db_replace(const struct morph_sync_config *cfg,
 		return rc;
 	if (snprintf(plan->journal, sizeof(plan->journal), "%s/%s.json",
 		     journal_dir, plan->token) >= (int)sizeof(plan->journal))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (!restore_plan_valid(cfg->source_dir, plan))
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	if (sync_db_is_sqlite(plan->target)) {
 		memset(&status, 0, sizeof(status));
 		rc = db_backup_create_one(cfg, plan->path, plan->target,
@@ -1663,7 +1663,7 @@ static int restore_move_sidecar(const char *from, const char *to,
 	restore_sidecar_path(from, suffix, source);
 	restore_sidecar_path(to, suffix, destination);
 	if (file_exists(source) && rename(source, destination) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1675,23 +1675,23 @@ int morph_sync_apply_db_replace(struct morph_sync_restore_plan *plan)
 	int rc;
 
 	if (!plan)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = restore_plan_source(plan, source);
 	if (rc != 0)
 		return rc;
 	if (!quick_check(plan->staging))
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	rc = hash_file(plan->staging, actual_hash);
 	if (rc != 0)
 		return rc;
 	if (strcmp(actual_hash, plan->expected_hash) != 0)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	rc = restore_journal_write(plan, "applying");
 	if (rc != 0)
 		return rc;
 	if (file_exists(plan->target)) {
 		if (rename(plan->target, plan->rollback) != 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		moved = 1;
 		rc = restore_move_sidecar(plan->target, plan->rollback, "-wal");
 		if (rc == 0)
@@ -1735,7 +1735,7 @@ int morph_sync_commit_db_replace(struct morph_sync_restore_plan *plan)
 	int rc;
 
 	if (!plan || restore_plan_source(plan, source) != 0)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	rc = restore_unlink_optional(plan->rollback);
 	restore_sidecar_path(plan->rollback, "-wal", path);
 	if (rc == 0)
@@ -1758,13 +1758,13 @@ int morph_sync_rollback_db_replace(struct morph_sync_restore_plan *plan)
 	int rc;
 
 	if (!plan || restore_plan_source(plan, source) != 0)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	if (file_exists(plan->rollback)) {
 		rc = restore_unlink_optional(plan->target);
 		if (rc != 0)
 			return rc;
 		if (rename(plan->rollback, plan->target) != 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		rc = restore_move_sidecar(plan->rollback, plan->target, "-wal");
 		if (rc != 0)
 			return rc;
@@ -1826,14 +1826,14 @@ static int restore_journals_process(struct morph_log *logger, const char *source
 int morph_sync_recover_db_replacements(struct morph_log *logger, const char *source_dir)
 {
 	if (!source_dir)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return restore_journals_process(logger, source_dir, 0);
 }
 
 int morph_sync_finalize_db_replacements(struct morph_log *logger, const char *source_dir)
 {
 	if (!source_dir)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return restore_journals_process(logger, source_dir, 1);
 }
 
@@ -1881,12 +1881,12 @@ int morph_sync_restore_plan_from_json(const char *json,
 		plan ? sizeof(plan->expected_hash) : 0 };
 
 	if (!json || !plan)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(plan, 0, sizeof(*plan));
 	root = cJSON_Parse(json);
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 		cJSON *item = cJSON_GetObjectItem(root, names[i]);
@@ -1894,7 +1894,7 @@ int morph_sync_restore_plan_from_json(const char *json,
 		if (!cJSON_IsString(item) ||
 		    strlen(item->valuestring) >= sizes[i]) {
 			cJSON_Delete(root);
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 		strncpy(values[i], item->valuestring, sizes[i] - 1);
 	}

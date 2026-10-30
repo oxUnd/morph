@@ -44,7 +44,7 @@ int runtime_sync_config_from_config(const struct config_sync *config,
 				    struct morph_sync_config *out)
 {
 	if (!config || !source_dir || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	out->enabled = config->enabled;
 	out->interval_seconds = config->interval_seconds;
@@ -71,13 +71,13 @@ static int runtime_sync_worker_start(struct morph_sync_worker *worker,
 	int rc;
 
 	if (!worker || !started || !config)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (*started)
 		return 0;
 	if (!config->enabled)
 		return 0;
 	if (!config->sync_dir[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_sync_start(worker, config);
 	if (rc == 0)
 		*started = 1;
@@ -251,7 +251,7 @@ int runtime_sync_backups(struct runtime *runtime, const char *path,
 	int rc;
 
 	if (!runtime || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
 	return rc == 0 ? morph_sync_backups(&config, path, out, count) : rc;
 }
@@ -263,7 +263,7 @@ int runtime_sync_restore_db(struct runtime *runtime, const char *snapshot_id,
 	int rc;
 
 	if (!runtime || !snapshot_id || !destination)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);
 	return rc == 0 ? morph_sync_restore_db(&config, snapshot_id,
 						destination) : rc;
@@ -278,7 +278,7 @@ int runtime_sync_prepare_db_replace(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !snapshot_id || !plan)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	was_running = runtime_sync_running(runtime);
 	runtime_sync_stop_instance(runtime);
 	rc = runtime_sync_config_instance(runtime, NULL, NULL, &config);

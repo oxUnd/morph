@@ -77,11 +77,11 @@ int exec_jobs_create(struct exec_jobs **out)
 	struct exec_job entry;
 	struct exec_jobs *jobs = calloc(1, sizeof(*jobs));
 	if (!jobs)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	int rc = pthread_mutex_init(&jobs->lock, NULL);
 	if (rc) {
 		free(jobs);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	rc = morph_array_init(&jobs->entries, 8, sizeof(entry));
 	if (rc) {
@@ -155,7 +155,7 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 		cJSON_Delete(data);
 		free(safe_command);
 		free(safe_description);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	struct process_snapshot initial = {0};
 	(void)process_session_status(jobs->manager, id, &initial);
@@ -174,7 +174,7 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 	cJSON *event = ok ? cJSON_Duplicate(data, 1) : NULL;
 	if (!event) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	pthread_mutex_lock(&jobs->lock);
 	struct exec_job *job = morph_array_push(&jobs->entries);
@@ -184,7 +184,7 @@ int exec_jobs_add(struct exec_jobs *jobs, const char *id, const char *command,
 	if (!job) {
 		cJSON_Delete(data);
 		cJSON_Delete(event);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	emit_job(jobs, "process.started", event);
 	cJSON_Delete(event);
@@ -201,7 +201,7 @@ int exec_jobs_list(struct exec_jobs *jobs, int64_t owner, cJSON **out)
 	cJSON *array = cJSON_CreateArray();
 	int rc = 0;
 	if (!array)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	pthread_mutex_lock(&jobs->lock);
 	struct exec_job *job;
 	morph_array_foreach(job, &jobs->entries, struct exec_job)
@@ -222,7 +222,7 @@ int exec_jobs_list(struct exec_jobs *jobs, int64_t owner, cJSON **out)
 	pthread_mutex_unlock(&jobs->lock);
 	if (rc) {
 		cJSON_Delete(array);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	*out = array;
 	return 0;
@@ -237,7 +237,7 @@ static int read_job(struct exec_jobs *jobs, int64_t owner, const char *id, int f
 	cJSON *data = owned ? cJSON_Duplicate(job->data, 1) : NULL;
 	pthread_mutex_unlock(&jobs->lock);
 	if (!data)
-		MORPH_RETURN(owned ? -ENOMEM : -ENOENT);
+		return owned ? -ENOMEM : -ENOENT;
 	struct process_snapshot snapshot;
 	int rc = process_session_inspect(jobs->manager, id, full_output, &snapshot);
 	if (rc) {
@@ -280,7 +280,7 @@ int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 {
 	cJSON *results = cJSON_CreateArray();
 	if (!results)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	int rc = 0;
 	for (;;) {
 		char id[PROCESS_SESSION_ID_MAX] = {0};
@@ -325,7 +325,7 @@ int exec_jobs_wait(struct exec_jobs *jobs, int64_t owner, const char *turn_id,
 		rc = 0;
 	if (rc) {
 		cJSON_Delete(results);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	*out = results;
 	return 0;
@@ -337,7 +337,7 @@ int exec_jobs_authorize(struct exec_jobs *jobs, const char *id, int64_t owner)
 	struct exec_job *job = find_job(jobs, id);
 	int allowed = !job || job_owned(job->data, owner);
 	pthread_mutex_unlock(&jobs->lock);
-	MORPH_RETURN(allowed ? 0 : -ENOENT);
+	return allowed ? 0 : -ENOENT;
 }
 
 int exec_jobs_stop(struct exec_jobs *jobs, int64_t owner, const char *id)

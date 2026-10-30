@@ -39,7 +39,7 @@ int file_write_all(const char *path, const char *data, size_t len)
 {
 	FILE *f = fopen(path, "wb");
 	if (!f)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (len > 0 && fwrite(data, 1, len, f) != len) {
 		fclose(f);
 		return -EIO;
@@ -60,12 +60,12 @@ int file_ensure_dir(const char *path)
 		if (*p == '/') {
 			*p = '\0';
 			if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-				MORPH_RETURN_ERRNO();
+				return morph_error_from_errno(errno);
 			*p = '/';
 		}
 	}
 	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -102,18 +102,18 @@ int file_path_full(char *dst, size_t dst_size,
 		   const char *prefix, const char *path)
 {
 	if (!dst || dst_size == 0 || !path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	if (file_path_is_absolute(path)) {
 		size_t len = strlen(path);
 		if (len + 1 > dst_size)
-			MORPH_RETURN(-ENAMETOOLONG);
+			return -ENAMETOOLONG;
 		memcpy(dst, path, len + 1);
 		return 0;
 	}
 
 	if (!prefix)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return file_path_join(dst, dst_size, prefix, path);
 }
 
@@ -130,7 +130,7 @@ int file_path_join(char *dst, size_t dst_size,
 		   const char *dir, const char *name)
 {
 	if (!dst || dst_size == 0 || !dir || !name)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	size_t dir_len = strlen(dir);
 	size_t name_len = strlen(name);
@@ -142,13 +142,13 @@ int file_path_join(char *dst, size_t dst_size,
 	size_t out_name_len = name_len - name_off;
 	if (dir_len > SIZE_MAX - (need_sep ? 1u : 0u) ||
 	    dir_len + (need_sep ? 1u : 0u) > SIZE_MAX - out_name_len)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	size_t total = dir_len + (need_sep ? 1u : 0u) + out_name_len;
 
 	if (total == SIZE_MAX)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (total + 1 > dst_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 
 	memcpy(dst, dir, dir_len);
 	size_t pos = dir_len;
@@ -195,15 +195,15 @@ char *file_path_join_alloc(const char *dir, const char *name)
 int file_path_append(char *dst, size_t dst_size, const char *suffix)
 {
 	if (!dst || dst_size == 0 || !suffix)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	size_t len = strlen(dst);
 	size_t suffix_len = strlen(suffix);
 	if (len > SIZE_MAX - suffix_len)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	size_t total = len + suffix_len;
 	if (total == SIZE_MAX || total + 1 > dst_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 
 	memcpy(dst + len, suffix, suffix_len + 1);
 	return 0;

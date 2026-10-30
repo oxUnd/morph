@@ -26,7 +26,7 @@ static int memory_store_append_profile(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *text = (const char *)sqlite3_column_text(stmt, 0);
@@ -49,7 +49,7 @@ static int memory_store_append_facts(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *key = (const char *)sqlite3_column_text(stmt, 0);
@@ -84,7 +84,7 @@ static int memory_store_append_procedures(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *rule = (const char *)sqlite3_column_text(stmt, 0);
@@ -117,7 +117,7 @@ static int memory_store_append_episodes(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *summary = (const char *)sqlite3_column_text(stmt, 0);
@@ -158,7 +158,7 @@ static int memory_store_append_changes(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *key = (const char *)sqlite3_column_text(stmt, 0);
@@ -272,7 +272,7 @@ static int memory_store_append_one_session(
 		char *preferences = preference_render(db, s->id, opts->type == MEMORY_QUERY_CHANGES);
 
 		if (!preferences)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		if (*preferences)
 			rc = morph_buf_printf(buf, "Effective preferences\n%s", preferences);
 		free(preferences);
@@ -392,9 +392,9 @@ static int memory_store_exec_delete(struct db *db, const char *sql,
 	int rc;
 
 	if (!db || !db->handle || !sql)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);

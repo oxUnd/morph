@@ -122,7 +122,7 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 	int column = 0;
 
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	while (*p) {
 		const char *start = p;
 		const char *color = "";
@@ -177,6 +177,6 @@ int cli_shell_style(morph_buf_t *out, const char *text, int width)
 	}
 	free(safe);
 	if (out->failed)
-		MORPH_RETURN(out->failed);
+		return out->failed;
 	return 0;
 }

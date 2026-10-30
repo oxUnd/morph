@@ -6,7 +6,7 @@ static int cmd_share(struct cli_context *ctx, int argc, char **argv)
 	(void)argv;
 	if (argc != 1) {
 		CMD_ERROR(ctx, "usage: /share");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	cJSON *document = NULL;
 	int rc = runtime_session_share_current(ctx->runtime, &document);
@@ -15,7 +15,7 @@ static int cmd_share(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR(ctx, "no completed conversation is available to share");
 		else
 			CMD_ERROR(ctx, "share failed: %s", morph_strerror(rc));
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	char *path = NULL;
 	rc = cli_share_save(document, &path);
@@ -25,7 +25,7 @@ static int cmd_share(struct cli_context *ctx, int argc, char **argv)
 	else
 		CMD_OK(ctx, "saved conversation to %s", path);
 	free(path);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 struct cli_command_group cli_share_commands(void)

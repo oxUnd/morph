@@ -40,7 +40,7 @@ int mcp_protocol_add_header(struct arena *arena, morph_array_t *headers,
 	if (header_needs_encoding(value)) {
 		encoded = base64_encode((const unsigned char *)value, strlen(value));
 		if (!encoded)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		rc = morph_buf_printf(&buffer, "%s: =?base64?%s?=", name, encoded);
 	} else {
 		rc = morph_buf_printf(&buffer, "%s: %s", name, value);
@@ -51,7 +51,7 @@ int mcp_protocol_add_header(struct arena *arena, morph_array_t *headers,
 	const char **slot = morph_array_push(headers);
 
 	if (!slot)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*slot = morph_buf_cstr(&buffer);
 	return 0;
 }
@@ -81,11 +81,11 @@ static int validate_annotation(const cJSON *schema, int property,
 	if (!property || !cJSON_IsString(header) || !header_token_valid(header->valuestring) ||
 	    !cJSON_IsString(type) || (strcmp(type->valuestring, "string") != 0 &&
 	    strcmp(type->valuestring, "integer") != 0 && strcmp(type->valuestring, "boolean") != 0))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	char *key = strdup(header->valuestring);
 
 	if (!key)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	for (char *p = key; *p; p++) {
 		if (*p >= 'A' && *p <= 'Z')
 			*p = (char)(*p - 'A' + 'a');
@@ -162,7 +162,7 @@ int mcp_protocol_cache_tool(struct mcp_client *client, const char *name,
 	cJSON *copy = cJSON_Duplicate(schema, 1);
 
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	pthread_mutex_lock(&client->lock);
 	if (!client->tool_schemas.entries)
 		rc = morph_strmap_init(&client->tool_schemas, 16);
@@ -208,7 +208,7 @@ static int parameter_header(const cJSON *schema, const cJSON *value,
 	    (double)(int64_t)value->valuedouble == value->valuedouble)
 		rc = morph_buf_printf(&text, "%.0f", value->valuedouble);
 	else
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (rc != 0)
 		return rc;
 	return mcp_protocol_add_header(arena, headers, morph_buf_cstr(&name),
@@ -244,6 +244,6 @@ int mcp_protocol_tool_headers(struct mcp_client *client, const cJSON *params,
 		morph_strmap_get(&client->tool_schemas, name->valuestring) : NULL;
 
 	if (!schema)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return property_headers(schema, arguments, arena, headers);
 }

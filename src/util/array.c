@@ -7,7 +7,7 @@
 static int array_bytes(size_t cap, size_t elem_size, size_t *bytes)
 {
 	if (elem_size != 0 && cap > SIZE_MAX / elem_size)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	*bytes = cap * elem_size;
 	return 0;
 }
@@ -18,7 +18,7 @@ int morph_array_init(morph_array_t *a, size_t init_cap, size_t elem_size)
 	int rc;
 
 	if (!a || elem_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (init_cap == 0)
 		init_cap = MORPH_ARRAY_INIT_CAP;
 	rc = array_bytes(init_cap, elem_size, &bytes);
@@ -26,7 +26,7 @@ int morph_array_init(morph_array_t *a, size_t init_cap, size_t elem_size)
 		return rc;
 	a->elts = malloc(bytes);
 	if (!a->elts)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	a->nelts = 0;
 	a->cap = init_cap;
 	a->size = elem_size;
@@ -41,7 +41,7 @@ int morph_array_init_arena(morph_array_t *a, struct arena *arena,
 	int rc;
 
 	if (!a || !arena || elem_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (init_cap == 0)
 		init_cap = MORPH_ARRAY_INIT_CAP;
 	rc = array_bytes(init_cap, elem_size, &bytes);
@@ -49,7 +49,7 @@ int morph_array_init_arena(morph_array_t *a, struct arena *arena,
 		return rc;
 	a->elts = arena_alloc(arena, bytes);
 	if (!a->elts)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	a->nelts = 0;
 	a->cap = init_cap;
 	a->size = elem_size;
@@ -82,17 +82,17 @@ static int array_grow(morph_array_t *a, size_t min_cap)
 	while (new_cap < min_cap) {
 		size_t next = new_cap + new_cap / 2 + 8;
 		if (next <= new_cap)
-			MORPH_RETURN(-EOVERFLOW);
+			return -EOVERFLOW;
 		new_cap = next;
 	}
 	if (array_bytes(new_cap, a->size, &bytes) != 0)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	if (a->heap_alloc) {
 		new_elts = realloc(a->elts, bytes);
 		if (!new_elts)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 	} else {
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	a->elts = new_elts;
 	a->cap = new_cap;
@@ -150,7 +150,7 @@ void *morph_array_get(const morph_array_t *a, size_t i)
 int morph_array_reserve(morph_array_t *a, size_t min_cap)
 {
 	if (!a)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return array_grow(a, min_cap);
 }
 

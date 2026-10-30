@@ -37,7 +37,7 @@ static int directory_names(const char *path, morph_array_t *names)
 		return rc;
 	dir = opendir(path);
 	if (!dir) {
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 		names_cleanup(names);
 		return rc;
 	}
@@ -49,18 +49,18 @@ static int directory_names(const char *path, morph_array_t *names)
 			continue;
 		slot = morph_array_push(names);
 		if (!slot) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		*slot = strdup(entry->d_name);
 		if (!*slot) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		errno = 0;
 	}
 	if (rc == 0 && errno != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	closedir(dir);
 	if (rc != 0) {
 		names_cleanup(names);
@@ -79,7 +79,7 @@ static int scan_directory(struct morph_log *logger, const char *path, morph_arra
 	int rc;
 
 	if (depth > SKILL_TREE_DEPTH_MAX)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	rc = file_path_join(skill_md, sizeof(skill_md), path, "SKILL.md");
 	if (rc != 0)
 		return rc;
@@ -89,7 +89,7 @@ static int scan_directory(struct morph_log *logger, const char *path, morph_arra
 		struct skill_candidate *slot;
 
 		if (!S_ISREG(st.st_mode))
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		rc = skill_parse_file(logger, skill_md, &candidate.fm, &body);
 		free(body);
 		if (rc != 0)
@@ -98,21 +98,21 @@ static int scan_directory(struct morph_log *logger, const char *path, morph_arra
 		    !candidate.fm.description[0]) {
 			fprintf(stderr, "morph: skill needs a valid name and description: %s\n",
 				skill_md);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		if (candidates->nelts >= SKILL_MAX_ENTRIES)
-			MORPH_RETURN(-E2BIG);
+			return -E2BIG;
 		rc = cli_manage_copy_arg(candidate.path, sizeof(candidate.path), path);
 		if (rc != 0)
 			return rc;
 		slot = morph_array_push(candidates);
 		if (!slot)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		*slot = candidate;
 		return 0;
 	}
 	if (errno != ENOENT)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = directory_names(path, &names);
 	if (rc != 0)
 		return rc;
@@ -124,7 +124,7 @@ static int scan_directory(struct morph_log *logger, const char *path, morph_arra
 			continue;
 		rc = file_path_join(child, sizeof(child), path, name);
 		if (rc == 0 && lstat(child, &st) != 0)
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 		if (rc == 0 && S_ISDIR(st.st_mode))
 			rc = scan_directory(logger, child, candidates, depth + 1);
 	}
@@ -145,13 +145,13 @@ static int copy_file(const char *source, const char *destination, mode_t mode)
 	char buffer[BUFSIZ];
 
 	if (input < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	output = open(destination, O_CREAT | O_EXCL | O_WRONLY, mode & 0777);
 	if (output < 0) {
 		int error = -errno;
 
 		close(input);
-		MORPH_RETURN(error);
+		return error;
 	}
 	for (;;) {
 		ssize_t count = read(input, buffer, sizeof(buffer));
@@ -160,7 +160,7 @@ static int copy_file(const char *source, const char *destination, mode_t mode)
 		if (count < 0 && errno == EINTR)
 			continue;
 		if (count < 0) {
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 			break;
 		}
 		if (count == 0)
@@ -171,7 +171,7 @@ static int copy_file(const char *source, const char *destination, mode_t mode)
 			if (written < 0 && errno == EINTR)
 				continue;
 			if (written <= 0) {
-				MORPH_SET_ERR(rc, written < 0 ? -errno : -EIO);
+				rc = (written < 0 ? -errno : -EIO);
 				break;
 			}
 			offset += (size_t)written;
@@ -180,9 +180,9 @@ static int copy_file(const char *source, const char *destination, mode_t mode)
 			break;
 	}
 	if (rc == 0 && fchmod(output, mode & 0777) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	if (close(output) != 0 && rc == 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	close(input);
 	return rc;
 }
@@ -195,9 +195,9 @@ static int copy_tree(const char *root, const char *source, const char *destinati
 	int rc;
 
 	if (depth > SKILL_TREE_DEPTH_MAX)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	if (lstat(source, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (S_ISREG(st.st_mode))
 		return copy_file(source, destination, st.st_mode);
 	if (S_ISLNK(st.st_mode)) {
@@ -206,19 +206,19 @@ static int copy_tree(const char *root, const char *source, const char *destinati
 		ssize_t count = readlink(source, target, sizeof(target) - 1);
 
 		if (count < 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		target[count] = '\0';
 		if (count == (ssize_t)sizeof(target) - 1 || target[0] == '/' ||
 		    !realpath(source, resolved) || !path_is_within(resolved, root))
-			MORPH_RETURN(-EACCES);
+			return -EACCES;
 		if (symlink(target, destination) != 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		return 0;
 	}
 	if (!S_ISDIR(st.st_mode))
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	if (mkdir(destination, 0700) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = directory_names(source, &names);
 	if (rc != 0)
 		return rc;
@@ -251,15 +251,15 @@ static int remove_tree(const char *path, int depth)
 	int rc;
 
 	if (depth > 128)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	if (lstat(path, &st) != 0) {
 		if (errno == ENOENT)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (!S_ISDIR(st.st_mode)) {
 		if (unlink(path) != 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		return 0;
 	}
 	rc = directory_names(path, &names);
@@ -275,7 +275,7 @@ static int remove_tree(const char *path, int depth)
 	}
 	names_cleanup(&names);
 	if (rc == 0 && rmdir(path) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	return rc;
 }
 
@@ -292,15 +292,15 @@ static int digest_tree(blake3_hasher *hasher, const char *path, int depth)
 	char buffer[BUFSIZ];
 
 	if (depth > SKILL_TREE_DEPTH_MAX)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	if (lstat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (S_ISREG(st.st_mode)) {
 		int fd = open(path, O_RDONLY | O_NOFOLLOW);
 		const char *kind = st.st_mode & 0111 ? "executable" : "file";
 
 		if (fd < 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		blake3_hasher_update(hasher, kind, strlen(kind) + 1);
 		/* Include length so file content cannot mimic tree boundaries. */
 		int length = snprintf(buffer, sizeof(buffer), "%lld:", (long long)st.st_size);
@@ -313,7 +313,7 @@ static int digest_tree(blake3_hasher *hasher, const char *path, int depth)
 			if (count < 0 && errno == EINTR)
 				continue;
 			if (count < 0) {
-				MORPH_SET_ERR(rc, -errno);
+				rc = (-errno);
 				break;
 			}
 			if (count == 0)
@@ -327,14 +327,14 @@ static int digest_tree(blake3_hasher *hasher, const char *path, int depth)
 		ssize_t count = readlink(path, buffer, sizeof(buffer) - 1);
 
 		if (count < 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		buffer[count] = '\0';
 		blake3_hasher_update(hasher, "link", 5);
 		blake3_hasher_update(hasher, buffer, (size_t)count + 1);
 		return 0;
 	}
 	if (!S_ISDIR(st.st_mode))
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	blake3_hasher_update(hasher, "directory", 10);
 	rc = directory_names(path, &names);
 	if (rc != 0)
@@ -399,7 +399,7 @@ int skill_store_unmodified(const char *path, const cJSON *metadata)
 
 	if (!cJSON_IsString(expected)) {
 		fprintf(stderr, "morph: unmanaged skill, refusing replacement/removal: %s\n", path);
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	}
 	rc = skill_store_digest(path, digest);
 	if (rc != 0)
@@ -408,7 +408,7 @@ int skill_store_unmodified(const char *path, const cJSON *metadata)
 		fprintf(stderr, "morph: skill has local changes; "
 			"preserve them before retrying: %s\n",
 			path);
-		MORPH_RETURN(-EBUSY);
+		return -EBUSY;
 	}
 	return 0;
 }
@@ -430,14 +430,14 @@ int skill_store_install(const char *root, const struct skill_candidate *candidat
 		return rc;
 	exists = lstat(target, &st) == 0;
 	if (!exists && errno != ENOENT)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (exists) {
 		cJSON *previous;
 
 		if (!replace)
-			MORPH_RETURN(-EEXIST);
+			return -EEXIST;
 		if (!S_ISDIR(st.st_mode))
-			MORPH_RETURN(-ELOOP);
+			return -ELOOP;
 		previous = skill_store_metadata(target);
 		rc = skill_store_unmodified(target, previous);
 		cJSON_Delete(previous);
@@ -448,7 +448,7 @@ int skill_store_install(const char *root, const struct skill_candidate *candidat
 	if (rc != 0)
 		return rc;
 	if (!mkdtemp(temporary))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = file_path_join(stage, sizeof(stage), temporary, "skill");
 	if (rc == 0)
 		rc = file_path_join(backup, sizeof(backup), temporary, "previous");
@@ -470,16 +470,16 @@ int skill_store_install(const char *root, const struct skill_candidate *candidat
 		rc = cli_manage_atomic_write(metadata_path, json, strlen(json));
 	if (rc == 0 && exists) {
 		if (rename(target, backup) != 0)
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 		else
 			moved = 1;
 	}
 	if (rc == 0 && rename(stage, target) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	if (rc != 0 && moved && rename(backup, target) != 0) {
 		fprintf(stderr, "morph: previous skill preserved at %s\n", backup);
 		free(json);
-		MORPH_RETURN(-errno);
+		return -errno;
 	}
 	free(json);
 	int cleanup_rc = skill_store_remove(temporary);

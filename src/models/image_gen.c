@@ -69,7 +69,7 @@ static int download_url(const struct http_control *control, const char *url, con
 		log_err(control ? control->logger : NULL, "download returned HTTP %d",
 			resp.status_code);
 		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
+		return MORPH_ERR_API;
 	}
 	const char *ext = image_gen_ext_from_content_type(morph_buf_cstr(&resp.headers));
 	if (!ext)
@@ -115,21 +115,21 @@ int image_gen_validate_size(const char *size)
 	errno = 0;
 	width = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != 'x')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (width <= 0 || width > INT_MAX)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	size = end + 1;
 	errno = 0;
 	height = strtol(size, &end, 10);
 	if (errno != 0 || end == size || !end || *end != '\0')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (height <= 0 || height > INT_MAX)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	pixels = (long long)width * (long long)height;
 	if (pixels < min_pixels || pixels > max_pixels)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	return 0;
 }
@@ -215,7 +215,7 @@ int image_gen_validate_size_for_model(const struct model *model,
 	char normalized[64];
 
 	if (!ops)
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	return ops->normalize_size(model, size, normalized,
 				   sizeof(normalized));
 }
@@ -239,15 +239,15 @@ int image_provider_parse_response(struct model *model,
 	cJSON *usage;
 
 	if (!response_json || !payload)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(payload, 0, sizeof(*payload));
 	root = cJSON_Parse(response_json);
 	if (!root)
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	data = cJSON_GetObjectItem(root, "data");
 	if (!cJSON_IsArray(data) || cJSON_GetArraySize(data) == 0) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	first = cJSON_GetArrayItem(data, 0);
 	value = cJSON_GetObjectItem(first, "b64_json");
@@ -256,7 +256,7 @@ int image_provider_parse_response(struct model *model,
 		payload->data = strdup(value->valuestring);
 		if (!payload->data) {
 			cJSON_Delete(root);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 	} else {
 		value = cJSON_GetObjectItem(first, "url");
@@ -265,13 +265,13 @@ int image_provider_parse_response(struct model *model,
 			payload->data = strdup(value->valuestring);
 			if (!payload->data) {
 				cJSON_Delete(root);
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			}
 		}
 	}
 	if (!payload->data) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	value = cJSON_GetObjectItem(root, "output_format");
 	snprintf(payload->output_format, sizeof(payload->output_format), "%s",
@@ -315,11 +315,11 @@ static int image_materialize(const struct http_control *control,
 	int rc;
 
 	if (!payload || !payload->data || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	out_dir = file_expand_path(output_dir && output_dir[0]
 				   ? output_dir : "~/.morph/output");
 	if (!out_dir)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = file_ensure_dir(out_dir);
 	if (rc != 0)
 		goto out;
@@ -386,21 +386,21 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 	if (!prompt || !result || image_count < 0 ||
 	    image_count > IMAGE_GEN_MAX_REFERENCE_IMAGES ||
 	    (image_count > 0 && !image_paths))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < image_count; i++) {
 		if (!image_paths[i] || !image_paths[i][0])
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	}
 	memset(result, 0, sizeof(*result));
 	memset(&payload, 0, sizeof(payload));
 	if (!self || !self->api_key[0])
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	ops = image_provider_resolve(self);
 	if (!ops) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "unsupported image adapter for provider '%s'",
 			 self->provider);
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	}
 	rc = ops->normalize_size(self, size, normalized_size,
 				 sizeof(normalized_size));
@@ -413,16 +413,16 @@ int image_gen_create(struct model *self, const char *prompt, const char *style,
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support multiple reference "
 			 "images for model '%s'", ops->name, self->model_id);
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	}
 	if (image_count > 0 && !caps.supports_edit) {
 		snprintf(self->last_error, sizeof(self->last_error),
 			 "image adapter '%s' does not support reference edits "
 			 "for model '%s'", ops->name, self->model_id);
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	}
 	if (morph_buf_init(&prompt_buf, strlen(prompt) + 64) != 0)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = morph_buf_puts(&prompt_buf, style_prefix(style));
 	if (rc == 0)
 		rc = morph_buf_puts(&prompt_buf, prompt);

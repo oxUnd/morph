@@ -328,13 +328,13 @@ static int sandbox_add_landlock_pty(int ruleset_fd, uint64_t access)
 		if (fd < 0) {
 			if (errno == ENOENT)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 			int err = errno;
 
 			close(fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		close(fd);
 	}
@@ -359,13 +359,13 @@ static int sandbox_add_landlock_temp(int ruleset_fd, uint64_t access)
 		if (fd < 0) {
 			if (errno == ENOENT)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 			int err = errno;
 
 			close(fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		close(fd);
 	}
@@ -379,13 +379,13 @@ static int sandbox_add_landlock_ipc(int ruleset_fd, uint64_t access)
 	if (fd < 0) {
 		if (errno == ENOENT)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 		int err = errno;
 
 		close(fd);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 	close(fd);
 	return 0;
@@ -410,13 +410,13 @@ static int sandbox_add_landlock_runtime_proc(int ruleset_fd, uint64_t access,
 		if (fd < 0) {
 			if (errno == ENOENT)
 				continue;
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (ll_add_rule(ruleset_fd, fd, access) < 0) {
 			int err = errno;
 
 			close(fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		close(fd);
 	}
@@ -441,7 +441,7 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 		}
 		int err = errno;
 		log_err(logger, "sandbox: landlock probe failed: %s", strerror(err));
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	/*
@@ -512,7 +512,7 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 	if (ruleset_fd < 0) {
 		int err = errno;
 		log_err(logger, "sandbox: landlock create_ruleset failed: %s", strerror(err));
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	/*
@@ -591,14 +591,14 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 			int err = errno;
 
 			close(ruleset_fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		if (ll_add_rule(ruleset_fd, fd, dev_null_access) < 0) {
 			int err = errno;
 
 			close(fd);
 			close(ruleset_fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		close(fd);
 	}
@@ -662,14 +662,14 @@ int sandbox_apply_fs(struct morph_log *logger, const char **allowed_paths, int c
 		int err = errno;
 		log_err(logger, "sandbox: landlock: PR_SET_NO_NEW_PRIVS failed: %s", strerror(err));
 		close(ruleset_fd);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	if (ll_restrict_self(ruleset_fd) < 0) {
 		int err = errno;
 		log_err(logger, "sandbox: landlock: restrict_self failed: %s", strerror(err));
 		close(ruleset_fd);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	close(ruleset_fd);
@@ -732,12 +732,12 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 	int rc;
 
 	if (!cfg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	abi = ll_get_abi();
 	if (abi < 0) {
 		if (errno == EOPNOTSUPP || errno == ENOSYS)
-			MORPH_RETURN(-ENOSYS);
-		MORPH_RETURN_ERRNO();
+			return -ENOSYS;
+		return morph_error_from_errno(errno);
 	}
 	if (abi < 2)
 		delete_access &= ~LANDLOCK_ACCESS_FS_REFER;
@@ -750,7 +750,7 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 		handled |= LANDLOCK_ACCESS_FS_IOCTL_DEV;
 	ruleset_fd = ll_create_ruleset(handled);
 	if (ruleset_fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!cfg->read_all) {
 		rc = sandbox_add_landlock_paths(cfg->logger, ruleset_fd, cfg->read_paths,
 						cfg->read_paths_count, read_access);
@@ -823,13 +823,13 @@ static int sandbox_apply_path_policy(struct sandbox_config *cfg)
 		int err = errno;
 
 		close(ruleset_fd);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 	if (ll_restrict_self(ruleset_fd) < 0) {
 		int err = errno;
 
 		close(ruleset_fd);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 	close(ruleset_fd);
 	return 0;
@@ -866,13 +866,13 @@ static int sandbox_sbpl_path_rule(morph_buf_t *profile, const char *operations,
 	int rc;
 
 	if (!profile || !operations || !path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_printf(profile, "(allow %s (subpath \"", operations);
 	if (rc != 0)
 		return rc;
 	for (const unsigned char *p = (const unsigned char *)path; *p; p++) {
 		if (*p < 0x20 || *p == 0x7f)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		if (*p == '\\' || *p == '"')
 			rc = morph_buf_putc(profile, '\\');
 		if (rc == 0)
@@ -894,9 +894,9 @@ static int sandbox_sbpl_darwin_user_dir(morph_buf_t *profile, int name)
 	if (length == 0)
 		return 0;
 	if (length > sizeof(path))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	if (!realpath(path, resolved))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = sandbox_sbpl_path_rule(profile, "file-read*", resolved);
 	if (rc != 0)
 		return rc;
@@ -1574,7 +1574,7 @@ int sandbox_apply_seccomp(struct morph_log *logger, unsigned int permissions)
 int sandbox_start_isolated_session(void)
 {
 	if (setsid() < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1585,7 +1585,7 @@ int sandbox_close_inherited_fds(void)
 		    UINT_MAX, 0) == 0)
 		return 0;
 	if (errno != ENOSYS && errno != EINVAL)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 #endif
 	struct rlimit rl;
 	rlim_t limit;

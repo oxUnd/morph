@@ -978,14 +978,14 @@ static int iteration_memory_chat(struct model *self, struct arena *arena,
 	probe->calls++;
 	auto *cleanup = arena_cleanup_add(arena, 0);
 	if (!cleanup)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cleanup->handler = reclaim_iteration_probe;
 	cleanup->data = probe;
 	probe->pending++;
 	/* Overwrite reused request storage before inspecting retained messages. */
 	void *scratch = arena_alloc(arena, 1024 * 1024);
 	if (!scratch)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(scratch, 'x', 1024 * 1024);
 	for (int i = 0; i < message_count; i++) {
 		if (messages[i].tool_call_count == 0)
@@ -1010,7 +1010,7 @@ static int iteration_memory_chat(struct model *self, struct arena *arena,
 	response->tool_calls = static_cast<struct tool_call *>(
 		arena_alloc(arena, sizeof(*response->tool_calls)));
 	if (!response->tool_calls)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	response->tool_call_count = 1;
 	strcpy(response->tool_calls[0].name, "test_tool");
 	response->tool_calls[0].arguments = arena_strdup(arena, "{}");
@@ -1824,7 +1824,7 @@ static int record_compaction_memory(const struct morph_event *event, void *data)
 	if (strcmp(event->name, "react.compaction.begin") == 0) {
 		auto *cleanup = arena_cleanup_add(probe->ctx->message_arena, 0);
 		if (!cleanup)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		cleanup->handler = compaction_memory_reclaimed;
 		cleanup->data = probe;
 	} else if (strcmp(event->name, "react.compaction.completed") == 0) {

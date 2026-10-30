@@ -310,7 +310,7 @@ int runtime_session_model_context_stats(struct runtime *runtime,
 		items = model_history_list(&runtime->context.database,
 			runtime->context.current_session.id, 1, &count);
 	if (count < 0)
-		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	for (struct model_history_item *item = items; item; item = item->next) {
 		if (!agent_history_item_replayable(item))
 			continue;
@@ -350,12 +350,12 @@ int runtime_session_compaction_status(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !status)
-		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, -EINVAL);
+		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, -EINVAL);
 	memset(status, 0, sizeof(*status));
 	rc = sqlite3_prepare_v2(runtime->context.database.handle, sql, -1,
 		&stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN_LOG(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(runtime ? runtime->options.logger : NULL, MORPH_ERR_DB);
 	sqlite3_bind_int64(stmt, 1, runtime->context.current_session.id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -474,7 +474,7 @@ static int runtime_tool_get(const struct runtime *runtime, int index,
 	int rc = 0;
 
 	if (!runtime || index < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	tools = &runtime->context.tools;
 	if (index >= tools->count) {
@@ -518,7 +518,7 @@ int runtime_tool_find(const struct runtime *runtime, const char *name, struct to
 	struct tool_entry *entry;
 
 	if (!runtime || !name || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock((pthread_mutex_t *)&runtime->context.tool_registry_lock);
 	entry = tool_lookup((struct tool_registry *)&runtime->context.tools, name);
 	if (entry)
@@ -581,7 +581,7 @@ static int runtime_preferences_bind(struct runtime *runtime)
 	int rc;
 
 	if (!runtime)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = runtime_ensure_current_session(runtime);
 	if (rc != 0)
 		return rc;

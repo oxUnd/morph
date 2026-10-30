@@ -107,15 +107,15 @@ Prefer these over hand-rolled equivalents.
 - `typedef int morph_err_t` (`src/util/error.h`): `0` = success, `< 0` = error; never return bare `-1`.
 - Use POSIX `-errno` for system errors; return `-errno` (not a fixed code) from failing `pipe`/`fork`/`select`/`opendir` calls.
 - Use `MORPH_ERR_*` for domain errors: NOT_CONFIGURED (-257), NOT_INITIALIZED (-258), API (-259), NETWORK (-260), PARSE (-261), PROTOCOL (-262), DB (-263), FORMAT (-264), PROCESSING (-265), SANDBOX (-266), LOAD (-267), LLM (-268).
-- `MORPH_RETURN(code)` instead of `return code;`; with an owned logger, use `MORPH_RETURN_LOG(logger, code)` to trace `morph_strerror` + location at `LOG_DEBUG` in Debug builds. Neither writes to the terminal; Release skips logger evaluation.
-- `MORPH_SET_ERR(var, code)` before a centralized cleanup jump so the error is preserved; use `MORPH_SET_ERR_LOG(logger, var, code)` when a logger is available. Logging contexts are explicit, never global or thread-local.
+- Use explicit `return code;`. Optional `MORPH_TRACE_ERROR(logger, code)` is an expression that calls a typed tracing function with the source location; write `return MORPH_TRACE_ERROR(logger, code);` when tracing is useful. It never hides control flow and evaluates both arguments once in all builds. Diagnostics use `LOG_DEBUG` file logs, never terminal output.
+- Assign `rc = code;` before a cleanup jump. Use `rc = MORPH_TRACE_ERROR(logger, code);` for optional tracing. Capture syscall errors immediately with `rc = morph_error_from_errno(errno);` before cleanup. Logging contexts are explicit, never global or thread-local.
 - `morph_strerror(err)` for all user/LLM-facing messages; never raw `%d`.
 
 ## `goto`
 - Default: no `goto`. Use direct returns for validation and error paths without cleanup.
 - Use `goto` only when several exit paths share non-trivial cleanup. Prefer helper functions or local cleanup first.
 - Labels describe the action (`out_free_buffer`), never numbered. Use distinct cleanup levels in reverse acquisition order.
-- A centralized-cleanup function must preserve its error code via `MORPH_SET_ERR`/`MORPH_SET_ERRNO`; never fall through to success.
+- A centralized-cleanup function must preserve its error code with an explicit assignment before cleanup; never fall through to success.
 - Reference: [Linux kernel coding style §7](https://www.kernel.org/doc/html/latest/process/coding-style.html#centralized-exiting-of-functions).
 
 ## C Coding Conventions (REQUIREMENTS.md §6.11)
@@ -123,7 +123,7 @@ Prefer these over hand-rolled equivalents.
 - Source strings in English for errors, logs, status, UI, model instructions; keep non-English only as input data/fixtures/examples. Localization lives in a shared i18n layer, not business logic.
 - `sizeof(var)`, not `sizeof(type)`.
 - Use `<limits.h>` for system limits: paths → `PATH_MAX`; stdio → `BUFSIZ`; `strncpy` uses `sizeof(dst) - 1`. Do **not** use `NAME_MAX` for logical names (tool/skill names) — use app `#define`s like `TOOL_NAME_MAX`.
-- Negatives errno or `MORPH_ERR_*`; use `MORPH_RETURN(code)` for error returns.
+- Negatives errno or `MORPH_ERR_*`; use explicit `return code;` for error returns.
 - Memory: arena for scope-lived data, `morph_buf`/`morph_array` for growth; raw `malloc`/`free` needs NULL checks and cleanup on every path.
 - Multi-statement macros wrapped in `do { } while (0)`.
 - Naming: functions `snake_case`, types `struct foo`, macros `UPPER_CASE`.

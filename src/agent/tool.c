@@ -722,7 +722,7 @@ out:
 int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *spec)
 {
 	if (!entry || !spec || !spec->name)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	const char *values[] = {spec->name, spec->title, spec->description,
 		spec->input_schema, spec->output_schema, spec->input_format};
 	struct tool_desc desc = {0};
@@ -736,17 +736,17 @@ int tool_entry_set_descriptor(struct tool_entry *entry, const struct tool_spec *
 
 		if (bytes > SIZE_MAX - sizeof(entry->descriptor_arena) ||
 		    len > SIZE_MAX - bytes - sizeof(entry->descriptor_arena))
-			MORPH_RETURN(-EOVERFLOW);
+			return -EOVERFLOW;
 		bytes += len + sizeof(entry->descriptor_arena);
 	}
 	arena = arena_create(bytes);
 	if (!arena)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
 		*fields[i] = arena_strdup(arena, values[i] ? values[i] : "");
 		if (!*fields[i]) {
 			arena_destroy(arena);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 	}
 	desc.input_kind = spec->input_kind;
@@ -781,17 +781,17 @@ int tool_register(struct tool_registry *reg, const struct tool_spec *spec)
 
 	rc = tool_entry_set_descriptor(&value, spec);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	if (!reg->storage.elts)
 		rc = morph_array_init(&reg->storage, 8, sizeof(value));
 	if (rc != 0) {
 		arena_destroy(value.descriptor_arena);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	e = morph_array_push(&reg->storage);
 	if (!e) {
 		arena_destroy(value.descriptor_arena);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	reg->entries = reg->storage.elts;
 	*e = value;
@@ -1004,14 +1004,14 @@ static int tool_search_exec(const char *args, struct tool_result *result, void *
 		snapshot = owned_snapshot;
 	if (!snapshot) {
 		cJSON_Delete(input);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *catalog = cJSON_ParseWithOpts(snapshot, NULL, 1);
 	free(owned_snapshot);
 	if (!cJSON_IsArray(catalog)) {
 		cJSON_Delete(input);
 		cJSON_Delete(catalog);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	cJSON *data = cJSON_CreateObject();
 	cJSON *matches = cJSON_AddArrayToObject(data, "tools");
@@ -1023,7 +1023,7 @@ static int tool_search_exec(const char *args, struct tool_result *result, void *
 		cJSON_Delete(input);
 		cJSON_Delete(data);
 		cJSON_Delete(catalog);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *entry;
 	cJSON_ArrayForEach(entry, catalog) {
@@ -1044,7 +1044,7 @@ static int tool_search_exec(const char *args, struct tool_result *result, void *
 		    !cJSON_AddItemToArray(matches, item)) {
 			cJSON_Delete(item);
 			free(brief);
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		free(brief);
@@ -1053,7 +1053,7 @@ static int tool_search_exec(const char *args, struct tool_result *result, void *
 	if (rc == 0 && (!cJSON_AddNumberToObject(data, "total", total) ||
 	    !cJSON_AddNumberToObject(data, "next_offset", total > offset + count ?
 				    offset + count : -1)))
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 	cJSON_Delete(input);
 	cJSON_Delete(catalog);
 	if (rc != 0) {

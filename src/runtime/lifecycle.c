@@ -30,7 +30,7 @@ static int runtime_create_startup_session(struct runtime_context *ctx,
 	int rc = -EEXIST;
 
 	if (!ctx || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	now = time(NULL);
 	for (int i = 0; i < RUNTIME_NEW_SESSION_RETRIES && rc == -EEXIST; i++) {
 		if (i == 0) {
@@ -44,7 +44,7 @@ static int runtime_create_startup_session(struct runtime_context *ctx,
 			ctx->config.models.text.model, out);
 	}
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -55,7 +55,7 @@ int runtime_ensure_current_session(struct runtime *runtime)
 	int rc = 0;
 
 	if (!runtime)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx = &runtime->context;
 	if (ctx->current_session.id > 0)
 		return 0;
@@ -72,7 +72,7 @@ int runtime_ensure_current_session(struct runtime *runtime)
 	}
 	pthread_mutex_unlock(&ctx->execution_lock);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -140,13 +140,13 @@ static int runtime_sync_source_directory(const struct runtime *runtime,
 		} else {
 			expanded = file_expand_path(runtime->options.db_path);
 			if (!expanded)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			base = expanded;
 		}
 	}
 	if (strlen(base) >= PATH_MAX) {
 		free(expanded);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	strncpy(source, base, PATH_MAX - 1);
 	source[PATH_MAX - 1] = '\0';
@@ -170,7 +170,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 	if (runtime->options.config_path && runtime->options.config_path[0]) {
 		expanded = file_expand_path(runtime->options.config_path);
 		if (!expanded)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		strncpy(ctx->config_path, expanded,
 			sizeof(ctx->config_path) - 1);
 		if (file_exists(expanded)) {
@@ -193,7 +193,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 			runtime->options.output_dir_override);
 		if (!expanded_output) {
 			free(expanded);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		strncpy(ctx->config.general.output_dir, expanded_output,
 			sizeof(ctx->config.general.output_dir) - 1);
@@ -203,7 +203,7 @@ static int runtime_load_config(struct runtime *runtime, struct config_file_error
 		expanded_output = file_expand_path(ctx->config.general.output_dir);
 		if (!expanded_output) {
 			free(expanded);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		strncpy(ctx->config.general.output_dir, expanded_output,
 			sizeof(ctx->config.general.output_dir) - 1);
@@ -273,7 +273,7 @@ static int runtime_set_workdir(struct runtime *runtime)
 	}
 	rc = file_ensure_dir(ctx->config.general.output_dir);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -385,7 +385,7 @@ static int runtime_start_components(struct runtime *runtime)
 	ctx->memory_options = runtime_context_memory_options(ctx);
 	ctx->memory_options.worker = memory_worker_create(runtime ? runtime->options.logger : NULL);
 	if (!ctx->memory_options.worker)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ctx->engine.memory_options = &ctx->memory_options;
 	ctx->engine.prepare_turn = runtime_prepare_turn;
 	ctx->engine.finish_turn = runtime_finish_turn;

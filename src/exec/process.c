@@ -110,9 +110,9 @@ static int set_nonblocking(int fd)
 
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -515,11 +515,11 @@ static int validate_workdir(const char *workdir)
 	if (!workdir || !*workdir)
 		return 0;
 	if (stat(workdir, &info) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!S_ISDIR(info.st_mode))
-		MORPH_RETURN(-ENOTDIR);
+		return -ENOTDIR;
 	if (access(workdir, X_OK) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -534,7 +534,7 @@ static int session_reserve(struct process_manager *manager)
 	sessions = realloc(manager->sessions,
 		capacity * sizeof(*manager->sessions));
 	if (!sessions)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	manager->sessions = sessions;
 	manager->session_capacity = capacity;
 	return 0;
@@ -559,7 +559,7 @@ static int spawn_pipe_process(struct process_manager *manager,
 	pid_t pid;
 
 	if (pipe(stdout_pipe) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (pipe(stderr_pipe) != 0) {
 		int rc = -errno;
 		close(stdout_pipe[0]);
@@ -648,7 +648,7 @@ static int spawn_pty_process(struct process_manager *manager,
 
 	pid = forkpty(&master, NULL, NULL, NULL);
 	if (pid < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (pid == 0) {
 		morph_signals_reset_child();
 		const char *shell = process_manager_shell(manager);
@@ -678,7 +678,7 @@ static int spawn_pty_process(struct process_manager *manager,
 	(void)manager;
 	(void)options;
 	(void)session;
-	MORPH_RETURN(-ENOTSUP);
+	return -ENOTSUP;
 #endif
 }
 
@@ -689,11 +689,11 @@ int process_manager_create(const struct process_manager_config *config,
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	manager = calloc(1, sizeof(*manager));
 	if (!manager)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	manager->max_session_output = config && config->max_session_output ?
 		config->max_session_output : PROCESS_DEFAULT_MAX_SESSION_OUTPUT;
 	manager->max_inline_output = config && config->max_inline_output ?
@@ -721,13 +721,13 @@ int process_manager_create(const struct process_manager_config *config,
 	rc = pthread_mutex_init(&manager->mutex, NULL);
 	if (rc != 0) {
 		free(manager);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	rc = pthread_cond_init(&manager->condition, NULL);
 	if (rc != 0) {
 		pthread_mutex_destroy(&manager->mutex);
 		free(manager);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	manager->completed = config ? config->completed : NULL;
 	manager->completed_user_data = config ? config->completed_user_data : NULL;
@@ -737,7 +737,7 @@ int process_manager_create(const struct process_manager_config *config,
 		pthread_cond_destroy(&manager->condition);
 		pthread_mutex_destroy(&manager->mutex);
 		free(manager);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	manager->thread_started = 1;
 	*out = manager;
@@ -796,7 +796,7 @@ int process_spawn(struct process_manager *manager,
 	int rc;
 
 	if (!manager || !options || !options->command || !session_id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = validate_workdir(options->workdir);
 	if (rc != 0)
 		return rc;
@@ -888,10 +888,10 @@ static int session_collect(struct process_manager *manager, const char *session_
 	uint64_t deadline;
 	int rc = 0;
 	if (!manager || !session_id || !snapshot)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	uint64_t now = process_now_ms();
 	if (wait_ms > UINT64_MAX - now)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	deadline = now + wait_ms;
 	pthread_mutex_lock(&manager->mutex);
 	for (;;) {
@@ -944,7 +944,7 @@ static int session_collect(struct process_manager *manager, const char *session_
 		/* Never hold a session pointer across a wait: the array can grow. */
 	}
 	pthread_mutex_unlock(&manager->mutex);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int process_session_poll(struct process_manager *manager, const char *session_id,
@@ -974,7 +974,7 @@ int process_session_inspect(struct process_manager *manager, const char *session
 			    int full_output, struct process_snapshot *snapshot)
 {
 	if (!manager || !session_id || !snapshot)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
 	int rc = -ENOENT;
@@ -989,14 +989,14 @@ int process_session_inspect(struct process_manager *manager, const char *session
 		session->stderr_stream.cursor = saved_err;
 	}
 	pthread_mutex_unlock(&manager->mutex);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int process_session_status(struct process_manager *manager, const char *session_id,
 			   struct process_snapshot *snapshot)
 {
 	if (!manager || !session_id || !snapshot)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&manager->mutex);
 	struct process_session *session = find_session(manager, session_id);
 	if (session) {
@@ -1010,7 +1010,7 @@ int process_session_status(struct process_manager *manager, const char *session_
 	}
 	int found = session != NULL;
 	pthread_mutex_unlock(&manager->mutex);
-	MORPH_RETURN(found ? 0 : -ENOENT);
+	return found ? 0 : -ENOENT;
 }
 
 int process_session_snapshot(struct process_manager *manager,
@@ -1021,7 +1021,7 @@ int process_session_snapshot(struct process_manager *manager,
 	int rc;
 
 	if (!manager || !session_id || !snapshot)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session)
@@ -1060,7 +1060,7 @@ int process_session_interrupt(struct process_manager *manager,
 				      const char *session_id)
 {
 	if (!manager || !session_id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return signal_session(manager, session_id, SIGINT, 0);
 }
 
@@ -1068,7 +1068,7 @@ int process_session_kill(struct process_manager *manager,
 				  const char *session_id)
 {
 	if (!manager || !session_id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return signal_session(manager, session_id, SIGTERM, 1);
 }
 
@@ -1080,16 +1080,16 @@ int process_session_write(struct process_manager *manager,
 	size_t offset = 0;
 
 	if (!manager || !session_id || (!input && input_len > 0))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&manager->mutex);
 	session = find_session(manager, session_id);
 	if (!session) {
 		pthread_mutex_unlock(&manager->mutex);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	if (session->state >= PROCESS_EXITED || !session->stdin_open) {
 		pthread_mutex_unlock(&manager->mutex);
-		MORPH_RETURN(-EPIPE);
+		return -EPIPE;
 	}
 	while (offset < input_len) {
 		ssize_t written = write(session->stdin_fd, input + offset,
@@ -1106,7 +1106,7 @@ int process_session_write(struct process_manager *manager,
 			return -EAGAIN;
 		}
 		pthread_mutex_unlock(&manager->mutex);
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	pthread_mutex_unlock(&manager->mutex);
 	return 0;

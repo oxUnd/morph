@@ -66,12 +66,12 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 		&job->client->config, -1, -1, -1, 0);
 	for (;;) {
 		if (job_interrupted(job))
-			MORPH_RETURN_LOG(job->runtime->options.logger, -ECANCELED);
+			return MORPH_TRACE_ERROR(job->runtime->options.logger, -ECANCELED);
 		rc = pthread_mutex_trylock(&ctx->execution_lock);
 		if (rc == 0)
 			break;
 		if (rc != EBUSY)
-			MORPH_RETURN_LOG(job->runtime->options.logger, -rc);
+			return MORPH_TRACE_ERROR(job->runtime->options.logger, -rc);
 		nanosleep(&pause, NULL);
 	}
 	pthread_mutex_lock(&ctx->tool_registry_lock);

@@ -151,7 +151,7 @@ static int load_vocab(struct morph_log *logger, struct bpe_encoder *enc, const c
 	if (!fp) {
 		int err = errno;
 		log_err(logger, "bpe: cannot open vocab: %s: %s", path, strerror(err));
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	char line[1024];

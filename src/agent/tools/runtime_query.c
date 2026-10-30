@@ -57,7 +57,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 
 	root = cJSON_CreateObject();
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	summary_to_json(root, "today", &today);
 	summary_to_json(root, "session", &session);
 	summary_to_json(root, "total", &total);
@@ -71,7 +71,7 @@ static int credits_exec(const char *args_json, struct tool_result *result,
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return tool_result_success_json_text(result, json);
 }
 
@@ -145,12 +145,12 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	}
 	text = memory_query_render(rt->db, rt->memory_session_id, &q);
 	if (!text)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	root = cJSON_CreateObject();
 	if (!root) {
 		free(text);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(root, "scope", q.scope_all ? "all" : "session");
 	cJSON_AddStringToObject(root, "text", text);
@@ -158,7 +158,7 @@ static int memory_exec(const char *args_json, struct tool_result *result,
 	cJSON_Delete(root);
 	free(text);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return tool_result_success_json_text(result, json);
 }
 
@@ -233,7 +233,7 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		if (!response || !effective) {
 			cJSON_Delete(response);
 			free(effective);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddBoolToObject(response, "saved", 1);
 		cJSON_AddStringToObject(response, "effective_preferences", effective);
@@ -241,7 +241,7 @@ static int preference_exec(const char *args_json, struct tool_result *result,
 		json = cJSON_PrintUnformatted(response);
 		cJSON_Delete(response);
 		if (!json)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		return tool_result_success_json_text(result, json);
 	}
 }
@@ -252,7 +252,7 @@ int runtime_query_tools_init(struct tool_registry *reg)
 	struct tool_entry *e;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = tool_register(reg, &(struct tool_spec){ .origin = TOOL_ORIGIN_BUILTIN, .name = "credits", .description = "Query current credit usage, limits, and totals.", .input_schema = "{\"type\":\"object\",\"properties\":{},"
 			   "\"additionalProperties\":false}", .output_schema = TOOL_OBJECT_OUTPUT_SCHEMA, .exec = credits_exec, .user_data = NULL, .user_data_destroy = NULL });
 	if (rc != 0)

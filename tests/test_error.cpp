@@ -8,7 +8,7 @@
 static int return_errno_with_zero(void)
 {
 	errno = 0;
-	MORPH_RETURN_ERRNO();
+	return morph_error_from_errno(errno);
 }
 
 TEST(ErrorTest, ClassifiesErrnoAndDomainRanges)

@@ -30,7 +30,7 @@ static const char credit_schema_sql[] =
 int credit_store_init_schema(struct db *db)
 {
 	if (!db || !db->handle)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return db_exec(db, credit_schema_sql);
 }
 
@@ -47,10 +47,10 @@ int credit_store_record_event(struct db *db,
 	int rc;
 
 	if (!db || !db->handle || !event || !event->kind)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, event->user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, event->session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, event->kind, -1, SQLITE_TRANSIENT);
@@ -69,7 +69,7 @@ int credit_store_record_event(struct db *db,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -80,10 +80,10 @@ static int credit_store_summary_query(struct db *db, const char *sql,
 	sqlite3_stmt *stmt = NULL;
 
 	if (!db || !db->handle || !sql || !value || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, value, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		out->credits = sqlite3_column_int64(stmt, 0);

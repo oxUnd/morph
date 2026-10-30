@@ -102,7 +102,7 @@ int runtime_turn_scope_begin(struct runtime_turn_scope_context *ctx,
 {
 	if (!ctx || !ctx->scope || !ctx->db || !ctx->config || !request ||
 	    request->session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	{
 		int rc = preference_bind(ctx->db, request->session_id,
 			request->user_id && request->user_id[0] ? request->user_id : "local",

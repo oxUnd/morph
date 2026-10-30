@@ -25,13 +25,13 @@ int log_init(struct morph_log *logger, const char *file, enum log_level level)
 	int error;
 
 	if (!logger || level < LOG_DEBUG || level > LOG_ERROR)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(logger, 0, sizeof(*logger));
 	if (file && strlen(file) >= sizeof(logger->path))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	error = pthread_mutex_init(&logger->lock, NULL);
 	if (error)
-		MORPH_RETURN(-error);
+		return -error;
 	logger->level = level;
 	if (file) {
 		memcpy(logger->path, file, strlen(file) + 1);
@@ -41,7 +41,7 @@ int log_init(struct morph_log *logger, const char *file, enum log_level level)
 		if (!logger->file) {
 			error = errno;
 			pthread_mutex_destroy(&logger->lock);
-			MORPH_RETURN(-error);
+			return -error;
 		}
 	}
 	logger->initialized = 1;

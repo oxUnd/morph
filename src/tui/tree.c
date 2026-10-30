@@ -12,31 +12,31 @@ int morph_tui_tree_prefix(morph_buf_t *output, const int *ancestors_last,
 		    size_t depth, int is_last, int continuation, size_t indent)
 {
 	if (!output || (depth && !ancestors_last))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (size_t i = 0; i < indent; i++)
 		morph_buf_putc(output, ' ');
 	for (size_t i = 0; i < depth; i++)
 		morph_buf_puts(output, ancestors_last[i] ? "  " : "│ ");
 	morph_buf_puts(output, morph_tui_tree_branch(is_last, continuation));
-	MORPH_RETURN(output->failed);
+	return output->failed;
 }
 
 int morph_tui_tree_init(struct morph_tui_tree *tree)
 {
 	if (!tree)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(tree, 0, sizeof(*tree));
 	tree->first_root = MORPH_TUI_TREE_ROOT;
 	tree->last_root = MORPH_TUI_TREE_ROOT;
 	tree->arena = arena_create(4096);
 	if (!tree->arena)
-		MORPH_RETURN(tree->error = -ENOMEM);
+		return tree->error = -ENOMEM;
 	int rc = morph_array_init(&tree->nodes, 16, sizeof(struct morph_tui_tree_node));
 	if (!rc)
 		rc = morph_array_init(&tree->visible, 16, sizeof(size_t));
 	if (rc) {
 		morph_tui_tree_cleanup(tree);
-		MORPH_RETURN(tree->error = rc);
+		return tree->error = rc;
 	}
 	return 0;
 }
@@ -68,14 +68,14 @@ size_t morph_tui_tree_add(struct morph_tui_tree *tree, size_t parent,
 	if (!tree || tree->error)
 		return MORPH_TUI_TREE_ROOT;
 	if (!tree->arena || (parent != MORPH_TUI_TREE_ROOT && parent >= tree->nodes.nelts)) {
-		MORPH_SET_ERR(tree->error, -EINVAL);
+		tree->error = (-EINVAL);
 		return MORPH_TUI_TREE_ROOT;
 	}
 	const char *name = copy_text(tree, label);
 	const char *detail = copy_text(tree, description);
 	struct morph_tui_tree_node *node = name && detail ? morph_array_push(&tree->nodes) : NULL;
 	if (!node) {
-		MORPH_SET_ERR(tree->error, -ENOMEM);
+		tree->error = (-ENOMEM);
 		return MORPH_TUI_TREE_ROOT;
 	}
 	size_t index = tree->nodes.nelts - 1;
@@ -115,7 +115,7 @@ static int visit(struct morph_tui_tree *tree)
 	while (index != MORPH_TUI_TREE_ROOT) {
 		size_t *entry = morph_array_push(&tree->visible);
 		if (!entry)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		*entry = index;
 		struct morph_tui_tree_node *node = node_at(tree, index);
 		if (node->expanded && node->first_child != MORPH_TUI_TREE_ROOT) {
@@ -133,13 +133,13 @@ static int visit(struct morph_tui_tree *tree)
 static int refresh(struct morph_tui_tree *tree, size_t page)
 {
 	if (!tree->arena)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (tree->error)
-		MORPH_RETURN(tree->error);
+		return tree->error;
 	morph_array_clear(&tree->visible);
 	int rc = visit(tree);
 	if (rc)
-		MORPH_RETURN(tree->error = rc);
+		return tree->error = rc;
 	morph_tui_list_layout(&tree->list, tree->visible.nelts, page);
 	return 0;
 }
@@ -204,12 +204,12 @@ int morph_tui_tree_render(struct morph_tui_tree *tree, morph_buf_t *output, int 
 		    size_t first, size_t rows)
 {
 	if (!tree || !output || columns < 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (output->failed)
-		MORPH_RETURN(output->failed);
+		return output->failed;
 	int rc = refresh(tree, rows);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	for (size_t row = first; row < tree->visible.nelts && row - first < rows; row++) {
 		size_t index = *(size_t *)morph_array_get(&tree->visible, row);
 		struct morph_tui_tree_node *node = node_at(tree, index);
@@ -217,11 +217,11 @@ int morph_tui_tree_render(struct morph_tui_tree *tree, morph_buf_t *output, int 
 		morph_array_t path = {0};
 		rc = morph_buf_init(&line, 128);
 		if (rc)
-			MORPH_RETURN(rc);
+			return rc;
 		rc = morph_array_init(&path, 8, sizeof(int));
 		if (rc) {
 			morph_buf_cleanup(&line);
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		for (size_t p = node->parent; p != MORPH_TUI_TREE_ROOT;
 		     p = node_at(tree, p)->parent) {
@@ -280,7 +280,7 @@ int morph_tui_tree_render(struct morph_tui_tree *tree, morph_buf_t *output, int 
 		morph_array_cleanup(&path);
 		morph_buf_cleanup(&line);
 		if (rc)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	return 0;
 }
@@ -288,20 +288,20 @@ int morph_tui_tree_render(struct morph_tui_tree *tree, morph_buf_t *output, int 
 static int append_report_line(morph_buf_t *output, const char *line, int columns)
 {
 	if (utf8_display_width_ansi(line) <= (size_t)columns)
-		MORPH_RETURN(morph_buf_printf(output, "%s\n", line));
+		return morph_buf_printf(output, "%s\n", line);
 	char *plain = utf8_strip_ansi_dup(line, strlen(line), NULL);
 	char *clipped = plain ? malloc(strlen(plain) + 4) : NULL;
 	if (!plain || !clipped) {
 		free(plain);
 		free(clipped);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	utf8_copy_ellipsized_display_width(clipped, strlen(plain) + 4,
 		plain, (size_t)columns, 0);
 	int rc = morph_buf_printf(output, "%s\n", clipped);
 	free(clipped);
 	free(plain);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int morph_tui_tree_row(morph_buf_t *output, const char *ancestor, int is_last,
@@ -310,11 +310,11 @@ int morph_tui_tree_row(morph_buf_t *output, const char *ancestor, int is_last,
 {
 	if (!output || !ancestor || !marker || !label || !description ||
 	    !style || !reset || columns < 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	morph_buf_t line = {0};
 	int rc = morph_buf_init(&line, 128);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	char *safe = utf8_terminal_sanitize_dup(label, strlen(label),
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	char *detail = utf8_terminal_sanitize_dup(description, strlen(description),
@@ -366,23 +366,23 @@ int morph_tui_tree_row(morph_buf_t *output, const char *ancestor, int is_last,
 	free(detail);
 	free(safe);
 	morph_buf_cleanup(&line);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int morph_tui_tree_draw(struct morph_tui_tree *tree, morph_buf_t *commands,
 		  struct morph_tui_rect area, const char *normal, const char *selected)
 {
 	if (!tree || !commands || !normal || !selected)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (area.width <= 0 || area.height <= 0)
 		return 0;
 	int rc = refresh(tree, (size_t)area.height);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	morph_buf_t text = {0};
 	rc = morph_buf_init(&text, 256);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_tui_tree_render(tree, &text, area.width, tree->list.first,
 		(size_t)area.height);
 	char *line = text.data;
@@ -396,5 +396,5 @@ int morph_tui_tree_draw(struct morph_tui_tree *tree, morph_buf_t *commands,
 		line = end && end[1] ? end + 1 : NULL;
 	}
 	morph_buf_cleanup(&text);
-	MORPH_RETURN(rc);
+	return rc;
 }

@@ -7,13 +7,13 @@
 int morph_tui_text_view_wrap(struct morph_tui_text_view *view, const char *text, size_t width)
 {
 	if (!view || !text || !width)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!view->lines.elts) {
 		struct morph_tui_text_line line;
 		int rc = morph_array_init(&view->lines, 32, sizeof(line));
 
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	morph_array_clear(&view->lines);
 	view->text = text;
@@ -30,7 +30,7 @@ int morph_tui_text_view_wrap(struct morph_tui_text_view *view, const char *text,
 		struct morph_tui_text_line *line = morph_array_push(&view->lines);
 
 		if (!line)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		line->offset = (size_t)(start - text);
 		line->length = (size_t)(end - start);
 		start = *end == '\n' ? end + 1 : end;

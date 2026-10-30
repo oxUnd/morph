@@ -19,7 +19,7 @@ int morph_random_bytes(unsigned char *buf, size_t len)
 	if (len == 0)
 		return 0;
 	if (!buf)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 #ifdef __APPLE__
 	arc4random_buf(buf, len);
 	return 0;
@@ -29,7 +29,7 @@ int morph_random_bytes(unsigned char *buf, size_t len)
 
 	fd = open("/dev/urandom", O_RDONLY);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	off = 0;
 	while (off < len) {
 		ssize_t rd = read(fd, buf + off, len - off);
@@ -37,11 +37,11 @@ int morph_random_bytes(unsigned char *buf, size_t len)
 			int err = errno;
 
 			close(fd);
-			MORPH_RETURN(-err);
+			return -err;
 		}
 		if (rd == 0) {
 			close(fd);
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		}
 		off += (size_t)rd;
 	}
@@ -69,15 +69,15 @@ int morph_random_id_nbytes(const char *prefix, size_t random_bytes,
 	int rc;
 
 	if (!prefix || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (random_bytes == 0 || random_bytes > sizeof(raw))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_random_bytes(raw, random_bytes);
 	if (rc < 0)
 		return rc;
 	hex_encode(raw, random_bytes, hex);
 	if (snprintf(out, out_size, "%s%s", prefix, hex) >= (int)out_size)
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	return 0;
 }
 

@@ -1,4 +1,5 @@
 #include "error.h"
+#include "log.h"
 
 int morph_err_is_errno(morph_err_t err)
 {
@@ -91,4 +92,17 @@ const char *morph_strerror(morph_err_t err)
 			return strerror(-err);
 		return "unknown error";
 	}
+}
+
+
+morph_err_t morph_error_trace(struct morph_log *logger, morph_err_t code,
+			      const char *file, int line)
+{
+	int saved_errno = errno;
+
+	if (logger && code < 0)
+		log_diagnostic(logger, "Error trace: %s (%s:%d)",
+			morph_strerror(code), file, line);
+	errno = saved_errno;
+	return code;
 }

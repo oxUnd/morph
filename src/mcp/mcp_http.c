@@ -89,7 +89,7 @@ static int mcp_http_url_encode_append(morph_buf_t *buf, const char *src)
 	static const char hex[] = "0123456789ABCDEF";
 
 	if (!buf || !src)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	while (*src) {
 		unsigned char ch = (unsigned char)*src;
@@ -130,17 +130,17 @@ int mcp_http_build_request_url(const struct mcp_server_config *cfg,
 	int rc;
 
 	if (!cfg || !out_url)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_url = NULL;
 
 	url = cfg->http_url;
 	if (!url || !url[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	if (!mcp_http_url_uses_auth_token(url)) {
 		*out_url = strdup(url);
 		if (!*out_url)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		return 0;
 	}
 
@@ -148,7 +148,7 @@ int mcp_http_build_request_url(const struct mcp_server_config *cfg,
 		log_err(cfg ? cfg->logger : NULL,
 			"mcp http: URL uses %s but auth_token_env is not set",
 			MCP_AUTH_TOKEN_PLACEHOLDER);
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	token = getenv(cfg->http_auth_token_env);
@@ -156,7 +156,7 @@ int mcp_http_build_request_url(const struct mcp_server_config *cfg,
 		log_err(cfg ? cfg->logger : NULL,
 			"mcp http: URL uses %s but env var '%s' is not set",
 			MCP_AUTH_TOKEN_PLACEHOLDER, cfg->http_auth_token_env);
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	rc = morph_buf_init(&buf, strlen(url) + strlen(token));
@@ -267,9 +267,9 @@ int mcp_http_exchange(struct mcp_client *client,
 	int rc;
 
 	if (!client || !client->session.initialized)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (request->headers.nelts > INT_MAX - 2)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	rc = morph_array_init(&headers, request->headers.nelts + 2, sizeof(url));
 	if (rc != 0)
 		return rc;
@@ -277,7 +277,7 @@ int mcp_http_exchange(struct mcp_client *client,
 
 	if (!values) {
 		morph_array_cleanup(&headers);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	values[0] = "Accept: application/json, text/event-stream";
 	for (size_t i = 0; i < request->headers.nelts; i++)
@@ -288,7 +288,7 @@ int mcp_http_exchange(struct mcp_client *client,
 		const char *token = getenv(client->config.http_auth_token_env);
 
 		if (!token || !token[0]) {
-			MORPH_SET_ERR(rc, MORPH_ERR_NOT_CONFIGURED);
+			rc = (MORPH_ERR_NOT_CONFIGURED);
 			goto out_free_headers;
 		}
 		rc = morph_buf_init(&authorization, 128);
@@ -299,7 +299,7 @@ int mcp_http_exchange(struct mcp_client *client,
 		values[headers.nelts++] = morph_buf_cstr(&authorization);
 	}
 	if (headers.nelts > INT_MAX) {
-		MORPH_SET_ERR(rc, -EOVERFLOW);
+		rc = (-EOVERFLOW);
 		goto out_free_headers;
 	}
 	rc = mcp_http_build_request_url(&client->config, &url);
@@ -326,7 +326,7 @@ int mcp_http_exchange(struct mcp_client *client,
 		if (!reply->json)
 			reply->json = strdup(body);
 		if (!reply->json)
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 	}
 
 out_free_headers:

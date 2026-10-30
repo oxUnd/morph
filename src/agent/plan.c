@@ -333,7 +333,7 @@ static int plan_restore_text(const cJSON *obj, const char *key, char *dst, size_
 		return 0;
 	if (!cJSON_IsString(value) || strlen(value->valuestring) >= cap ||
 	    utf8valid(value->valuestring))
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	memcpy(dst, value->valuestring, strlen(value->valuestring) + 1);
 	return 0;
 }
@@ -343,10 +343,10 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 	struct plan_registry *copy;
 	int rc = 0;
 	if (!reg || !cJSON_IsArray(json) || cJSON_GetArraySize(json) > PLAN_MAX_PLANS)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	copy = calloc(1, sizeof(*copy));
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	copy->db = reg->db;
 	copy->session_id = reg->session_id;
 	copy->count = cJSON_GetArraySize(json);
@@ -401,7 +401,7 @@ int plan_registry_restore(struct plan_registry *reg, const cJSON *json)
 	if (rc == 0)
 		*reg = *copy;
 	free(copy);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int plan_registry_save(struct plan_registry *reg)
@@ -416,7 +416,7 @@ int plan_registry_save(struct plan_registry *reg)
 	text = json ? cJSON_PrintUnformatted(json) : NULL;
 	cJSON_Delete(json);
 	if (!text)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = sqlite3_prepare_v2(
 	    reg->db->handle,
 	    "INSERT INTO session_plans(session_id,state_json) VALUES(?,?) "
@@ -429,7 +429,7 @@ int plan_registry_save(struct plan_registry *reg)
 	}
 	sqlite3_finalize(stmt);
 	free(text);
-	MORPH_RETURN(rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
 int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session_id)
@@ -437,13 +437,13 @@ int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session
 	sqlite3_stmt *stmt = NULL;
 	int rc;
 	if (!reg || !db || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (reg->db == db && reg->session_id == session_id)
 		return 0;
 	rc = sqlite3_prepare_v2(
 	    db->handle, "SELECT state_json FROM session_plans WHERE session_id=?", -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -460,5 +460,5 @@ int plan_registry_bind(struct plan_registry *reg, struct db *db, int64_t session
 		reg->db = db;
 		reg->session_id = session_id;
 	}
-	MORPH_RETURN(rc);
+	return rc;
 }

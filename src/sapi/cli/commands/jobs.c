@@ -8,7 +8,7 @@ static int cmd_jobs(struct cli_context *ctx, int argc, char **argv)
 		id = cli_cmd_arg(argc, argv, 2);
 		if (!id) {
 			CMD_ERROR(ctx, "usage: /jobs stop <id>");
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		int rc = runtime_process_stop(ctx->runtime, id);
 		if (!rc)

@@ -52,23 +52,23 @@ static int video_add_reference(cJSON *content, const char *type,
 	if (len > *budget) {
 		free(uri);
 		cJSON_Delete(item);
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	value = morph_json_take_string(uri);
 	if (!value) {
 		cJSON_Delete(item);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!url || !cJSON_AddItemToObject(url, "url", value)) {
 		cJSON_Delete(value);
 		cJSON_Delete(item);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(item, "type", type) ||
 	    !cJSON_AddStringToObject(item, "role", role) ||
 	    !cJSON_AddItemToArray(content, item)) {
 		cJSON_Delete(item);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	*budget -= len;
 	return 0;
@@ -84,21 +84,21 @@ static int video_reference_uri(const char *path, int audio, size_t budget,
 	if (strncmp(path, "http://", 7) == 0 || strncmp(path, "https://", 8) == 0) {
 		*uri = strdup(path);
 		if (!*uri)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		return 0;
 	}
 	if (max_bytes > MORPH_MEDIA_MAX_FILE_BYTES)
 		max_bytes = MORPH_MEDIA_MAX_FILE_BYTES;
 	rc = morph_buf_init(&prefix, 64);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_buf_printf(&prefix, "data:%s;base64,",
 		video_reference_mime(path, audio));
 	if (rc == 0)
 		rc = base64_encode_file_prefixed(path, morph_buf_cstr(&prefix),
 			max_bytes, uri);
 	morph_buf_cleanup(&prefix);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static const struct video_provider_ops volcengine_video_provider;
@@ -158,12 +158,12 @@ static int volcengine_video_capabilities(const struct model *model,
 	int minor = 0;
 
 	if (!model || !caps)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(caps, 0, sizeof(*caps));
 	caps->supports_generate = 1;
 	caps->supports_reference_images = 1;
 	if (!model->model_id[0])
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	model_id = model->model_id;
 	if (!seedance_version(model_id, &major, &minor))
 		return 0;
@@ -183,10 +183,10 @@ int video_gen_capabilities(const struct model *model,
 	const struct video_provider_ops *ops;
 
 	if (!model || !caps)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ops = video_provider_resolve(model);
 	if (!ops)
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	return ops->capabilities(model, caps);
 }
 
@@ -202,7 +202,7 @@ static int download_url(struct model *self, const char *url, const char *out_pat
 		log_err(self ? self->http.logger : NULL, "video download returned HTTP %d",
 			resp.status_code);
 		http_response_free(&resp);
-		MORPH_RETURN(MORPH_ERR_API);
+		return MORPH_ERR_API;
 	}
 	rc = file_write_all(out_path, resp.body.data, resp.body.len);
 	http_response_free(&resp);
@@ -257,7 +257,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			 "video_gen: no api_key configured");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	if (!api_base[0]) {
@@ -265,7 +265,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			 "video_gen: no api_base configured");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	char submit_url[512];
@@ -301,7 +301,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 		cJSON_Delete(item);
 		cJSON_Delete(body_json);
 		arena_destroy(arena);
-		MORPH_RETURN(prompt_rc != 0 ? prompt_rc : -ENOMEM);
+		return prompt_rc != 0 ? prompt_rc : -ENOMEM;
 	}
 
 	size_t reference_budget = VIDEO_REFERENCE_MAX_ENCODED_BYTES;
@@ -321,7 +321,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			arena_destroy(arena);
 			snprintf(result->error_msg, sizeof(result->error_msg),
 				"video_gen: image reference: %s", morph_strerror(rc));
-			MORPH_RETURN(rc);
+			return rc;
 		}
 	}
 
@@ -346,7 +346,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 				arena_destroy(arena);
 				snprintf(result->error_msg, sizeof(result->error_msg),
 					"video_gen: media reference: %s", morph_strerror(rc));
-				MORPH_RETURN(rc);
+				return rc;
 			}
 		}
 	}
@@ -431,7 +431,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 				 "video_gen: no task id in submit response");
 		log_err(self ? self->http.logger : NULL, "%s", result->error_msg);
 		arena_destroy(arena);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	if (task_status[0])
 		log_info(self ? self->http.logger : NULL,
@@ -506,7 +506,7 @@ static int volcengine_video_execute(struct model *self, const char *prompt,
 			cJSON_Delete(qroot);
 			http_response_free(&qresp);
 			arena_destroy(arena);
-			MORPH_RETURN(MORPH_ERR_API);
+			return MORPH_ERR_API;
 		}
 
 		log_info(self ? self->http.logger : NULL, "video_gen: task %s status=%s", task_id,
@@ -573,7 +573,7 @@ static int video_capability_error(struct model *self,
 	if (self)
 		snprintf(self->last_error, sizeof(self->last_error), "%s",
 			 result->error_msg);
-	MORPH_RETURN(-ENOTSUP);
+	return -ENOTSUP;
 }
 
 int video_gen_create(struct model *self, const char *prompt,
@@ -596,36 +596,36 @@ int video_gen_create(struct model *self, const char *prompt,
 	    (num_videos > 0 && !video_paths) ||
 	    (num_audios > 0 && !audio_paths) ||
 	    generate_audio < -1 || generate_audio > 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 	if (!self->model_id[0]) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "video_gen: no model configured");
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	for (int i = 0; i < num_images; i++)
 		if (!image_paths[i] || !image_paths[i][0])
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	for (int i = 0; i < num_videos; i++)
 		if (!video_paths[i] || !video_paths[i][0])
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	for (int i = 0; i < num_audios; i++)
 		if (!audio_paths[i] || !audio_paths[i][0])
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 
 	ops = video_provider_resolve(self);
 	if (!ops) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "unsupported video adapter for provider '%s'",
 			 self->provider);
-		MORPH_RETURN(-ENOTSUP);
+		return -ENOTSUP;
 	}
 	rc = ops->capabilities(self, &caps);
 	if (rc != 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "unsupported video adapter for provider '%s'",
 			 self->provider);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	if (num_images > 0 && !caps.supports_reference_images)
 		return video_capability_error(self, result, "reference images");
@@ -639,12 +639,12 @@ int video_gen_create(struct model *self, const char *prompt,
 	if (num_audios > 0 && num_images == 0 && num_videos == 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "reference audio requires a reference image or video");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (num_audios > 0 && generate_audio == 0) {
 		snprintf(result->error_msg, sizeof(result->error_msg),
 			 "reference audio requires generate_audio=true");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (generate_audio == 1 && !caps.supports_generate_audio)
 		return video_capability_error(self, result, "audio generation");

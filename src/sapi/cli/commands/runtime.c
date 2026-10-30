@@ -556,7 +556,7 @@ static int cmd_recap(struct cli_context *ctx, int argc, char **argv)
 	(void)argv;
 	if (argc != 1) {
 		CMD_ERROR(ctx, "usage: /recap");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	return cli_recap_start(ctx, 0);
 }

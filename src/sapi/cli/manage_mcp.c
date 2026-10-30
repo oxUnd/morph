@@ -87,7 +87,7 @@ static int mcp_parse(int argc, char **argv, const char *path,
 			options->command_index = i + 1;
 			prefix_argc = i;
 			if (i + 1 == argc)
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			break;
 		}
 	}
@@ -103,7 +103,7 @@ static int mcp_parse(int argc, char **argv, const char *path,
 			break;
 		case 'e':
 			if (options->env_count == MCP_ENV_MAX)
-				MORPH_RETURN(-E2BIG);
+				return -E2BIG;
 			options->env[options->env_count++] = optarg;
 			break;
 		case MCP_OPTION_URL:
@@ -119,14 +119,14 @@ static int mcp_parse(int argc, char **argv, const char *path,
 			if (strcmp(optarg, "user") != 0) {
 				fputs("morph: MCP currently supports --scope user only\n",
 				      stderr);
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 			break;
 		case 'h':
 			options->action = "--help";
 			return 0;
 		default:
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 	}
 	if (optind < prefix_argc)
@@ -134,17 +134,17 @@ static int mcp_parse(int argc, char **argv, const char *path,
 	if (optind < prefix_argc && !options->url)
 		options->url = argv[optind++];
 	if (optind != prefix_argc)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(options->action, "list") != 0 &&
 	    (!options->name || !cli_manage_name_valid(options->name) ||
 	     strlen(options->name) >= MCP_SERVER_NAME_MAX))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(options->action, "add") != 0 &&
 	    (options->url || options->transport || options->token_env ||
 	     options->env_count || options->replace || options->command_index))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(options->action, "list") == 0 && options->name)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -157,7 +157,7 @@ static int mcp_quote(morph_buf_t *buffer, const char *text)
 
 	cJSON_Delete(item);
 	if (!quoted)
-		MORPH_RETURN(buffer->failed = -ENOMEM);
+		return buffer->failed = -ENOMEM;
 	rc = morph_buf_puts(buffer, quoted);
 	free(quoted);
 	return rc;
@@ -178,15 +178,15 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 		(options->url ? "http" : "stdio");
 
 	if (strcmp(transport, "http") != 0 && strcmp(transport, "stdio") != 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(transport, "http") == 0) {
 		if (!options->url || options->command_index || options->env_count ||
 		    (strncmp(options->url, "https://", 8) != 0 &&
 		     strncmp(options->url, "http://", 7) != 0) ||
 		    strlen(options->url) >= PATH_MAX)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	} else if (!options->command_index || options->url || options->token_env) {
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	morph_buf_puts(buffer, "\n[[mcp.servers]]\n");
 	mcp_field(buffer, "name", options->name);
@@ -196,7 +196,7 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 	if (options->token_env) {
 		if (!morph_env_name_valid(options->token_env) ||
 		    strlen(options->token_env) >= 64)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		mcp_field(buffer, "auth_token_env", options->token_env);
 	}
 	if (options->command_index) {
@@ -204,12 +204,12 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 
 		if (!argv[index][0] || strlen(argv[index]) >= 256 ||
 		    argc - index - 1 > MCP_CMD_ARGS_MAX)
-			MORPH_RETURN(-E2BIG);
+			return -E2BIG;
 		mcp_field(buffer, "command", argv[index++]);
 		morph_buf_puts(buffer, "args = [");
 		for (int i = index; i < argc; i++) {
 			if (strlen(argv[i]) >= MCP_CMD_ARG_LEN_MAX)
-				MORPH_RETURN(-E2BIG);
+				return -E2BIG;
 			if (i != index)
 				morph_buf_puts(buffer, ", ");
 			mcp_quote(buffer, argv[i]);
@@ -226,11 +226,11 @@ static int mcp_build(const struct mcp_options *options, int argc, char **argv,
 			if (!equal || equal == pair ||
 			    (size_t)(equal - pair) >= sizeof(key) ||
 			    strlen(equal + 1) >= MCP_ENV_VAL_MAX)
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			memcpy(key, pair, (size_t)(equal - pair));
 			key[equal - pair] = '\0';
 			if (!morph_env_name_valid(key))
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			if (i)
 				morph_buf_puts(buffer, ", ");
 			mcp_quote(buffer, key);
@@ -271,7 +271,7 @@ static int mcp_headers(const toml_datum_t *node, const toml_datum_t *selected,
 			struct mcp_header *header = morph_array_push(headers);
 
 			if (!header)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			header->line = node->lineno;
 			header->remove = remove;
 		}
@@ -409,7 +409,7 @@ static int mcp_read_command(struct morph_log *logger, const struct mcp_options *
 		int rc;
 
 		if (!config)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		config_set_defaults(logger, config);
 		rc = config_load(logger, config, path);
 		if (rc == 0 && i >= config->mcp.server_count)
@@ -428,7 +428,7 @@ static int mcp_read_command(struct morph_log *logger, const struct mcp_options *
 	}
 	if (strcmp(options->action, "list") == 0)
 		return 0;
-	MORPH_RETURN(-ENOENT);
+	return -ENOENT;
 }
 
 static int mcp_apply(struct morph_log *logger, const struct mcp_options *options, int argc,
@@ -447,15 +447,15 @@ static int mcp_apply(struct morph_log *logger, const struct mcp_options *options
 	if (!text && errno == ENOENT)
 		text = strdup("");
 	if (!text)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	if (strlen(text) > 1024 * 1024) {
-		MORPH_SET_ERR(rc, -EFBIG);
+		rc = (-EFBIG);
 		goto out;
 	}
 	parsed = toml_parse(text, (int)strlen(text));
 	if (!parsed.ok) {
 		fprintf(stderr, "morph: invalid config: %s\n", parsed.errmsg);
-		MORPH_SET_ERR(rc, MORPH_ERR_PARSE);
+		rc = (MORPH_ERR_PARSE);
 		goto out;
 	}
 	servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
@@ -468,7 +468,7 @@ static int mcp_apply(struct morph_log *logger, const struct mcp_options *options
 			fputs("morph: convert inline MCP servers to "
 			      "[[mcp.servers]] before editing\n",
 			      stderr);
-			MORPH_SET_ERR(rc, -ENOTSUP);
+			rc = (-ENOTSUP);
 			goto out;
 		}
 		for (int i = 0; i < servers.u.arr.size; i++) {
@@ -476,7 +476,7 @@ static int mcp_apply(struct morph_log *logger, const struct mcp_options *options
 
 			if (name.type == TOML_STRING && strcmp(name.u.s, options->name) == 0) {
 				if (selected) {
-					MORPH_SET_ERR(rc, -EEXIST);
+					rc = (-EEXIST);
 					goto out;
 				}
 				selected = &servers.u.arr.elem[i];
@@ -486,11 +486,11 @@ static int mcp_apply(struct morph_log *logger, const struct mcp_options *options
 	if ((add && selected && !options->replace) ||
 	    (add && !selected && servers.type == TOML_ARRAY &&
 	     servers.u.arr.size >= MCP_SERVER_MAX)) {
-		MORPH_SET_ERR(rc, -EEXIST);
+		rc = (-EEXIST);
 		goto out;
 	}
 	if (remove && !selected) {
-		MORPH_SET_ERR(rc, -ENOENT);
+		rc = (-ENOENT);
 		goto out;
 	}
 	rc = morph_buf_init(&output, 0);

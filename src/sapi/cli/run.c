@@ -511,7 +511,7 @@ static int cli_readline_convert_images(struct cli_context *ctx)
 		int command;
 
 		if (!name)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		command = cli_command_find(name) != NULL;
 		free(name);
 		if (command)
@@ -539,7 +539,7 @@ static int cli_readline_compose_image(struct cli_context *ctx, const char *path)
 	(void)ctx;
 	rc = cli_composer_add_image(&ctx->composer, path, &label);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rl_begin_undo_group();
 	(void)rl_insert_text(label);
 	rl_end_undo_group();

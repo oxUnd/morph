@@ -52,7 +52,7 @@ static int strmap_find_slot(const morph_strmap_t *m, const char *key,
 	size_t idx;
 
 	if (!m || !m->entries || m->cap == 0 || !slot || !found)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	mask = m->cap - 1;
 	idx = hash & mask;
@@ -111,10 +111,10 @@ static int strmap_rehash(morph_strmap_t *m, size_t min_cap)
 	int rc;
 
 	if (!m)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	new_cap = strmap_next_cap(min_cap);
 	if (new_cap == 0)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	rc = morph_strmap_init(&next, new_cap);
 	if (rc != 0)
 		return rc;
@@ -142,7 +142,7 @@ static int strmap_maybe_grow(morph_strmap_t *m)
 	size_t used;
 
 	if (!m || m->cap == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	used = m->count + m->deleted + 1;
 	if (used * 100 <= m->cap * STRMAP_MAX_LOAD)
 		return 0;
@@ -154,15 +154,15 @@ int morph_strmap_init(morph_strmap_t *m, size_t init_cap)
 	size_t cap;
 
 	if (!m)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (init_cap == 0)
 		init_cap = MORPH_STRMAP_INIT_CAP;
 	cap = strmap_next_cap(init_cap);
 	if (cap == 0)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	m->entries = calloc(cap, sizeof(m->entries[0]));
 	if (!m->entries)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	m->count = 0;
 	m->cap = cap;
 	m->deleted = 0;
@@ -212,7 +212,7 @@ int morph_strmap_set(morph_strmap_t *m, const char *key, void *value)
 	int rc;
 
 	if (!m || !m->entries || !key)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = strmap_maybe_grow(m);
 	if (rc != 0)
 		return rc;
@@ -220,7 +220,7 @@ int morph_strmap_set(morph_strmap_t *m, const char *key, void *value)
 	hash = strmap_hash(key, key_len);
 	copy = strmap_key_dup(key, key_len);
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = strmap_insert_owned(m, copy, key_len, hash, value);
 	if (rc != 0)
 		free(copy);

@@ -56,7 +56,7 @@ int runtime_jobs_init(struct runtime *runtime)
 {
 	int rc = pthread_mutex_init(&runtime->jobs_lock, NULL);
 	if (rc)
-		MORPH_RETURN(-rc);
+		return -rc;
 	runtime->jobs_lock_ready = 1;
 	rc = sqlite3_exec(
 		runtime->context.database.handle,
@@ -67,7 +67,7 @@ int runtime_jobs_init(struct runtime *runtime)
 		"CREATE INDEX IF NOT EXISTS process_jobs_session ON process_jobs(session_id);",
 		NULL, NULL, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	runtime->jobs = exec_tool_jobs_handle(&runtime->context.tools);
 	rc = exec_tool_set_event_callback(&runtime->context.tools, runtime_process_event, runtime);
 	return rc == -ENOENT ? 0 : rc;
@@ -96,7 +96,7 @@ static void stored_job_unavailable(cJSON *data)
 int runtime_process_list(struct runtime *runtime, cJSON **out)
 {
 	if (!runtime || !out || !runtime->jobs_lock_ready)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	int64_t owner = runtime->context.current_session.id;
 	cJSON *jobs = NULL;
 	int rc = runtime->jobs ? exec_jobs_list(runtime->jobs, owner, &jobs) : 0;
@@ -157,7 +157,7 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 		rc = MORPH_ERR_DB;
 	if (rc) {
 		cJSON_Delete(jobs);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	*out = jobs;
 	return 0;
@@ -166,10 +166,10 @@ int runtime_process_list(struct runtime *runtime, cJSON **out)
 static int resolve_job(struct runtime *runtime, const char *id, char **resolved)
 {
 	if (!id || !*id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!strncmp(id, "proc_", 5)) {
 		*resolved = strdup(id);
-		MORPH_RETURN(*resolved ? 0 : -ENOMEM);
+		return *resolved ? 0 : -ENOMEM;
 	}
 	cJSON *jobs = NULL, *job;
 	int rc = runtime_process_list(runtime, &jobs);
@@ -184,14 +184,14 @@ static int resolve_job(struct runtime *runtime, const char *id, char **resolved)
 			continue;
 		if (match) {
 			cJSON_Delete(jobs);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		match = candidate;
 	}
 	*resolved = match ? strdup(match) : NULL;
 	rc = match ? (*resolved ? 0 : -ENOMEM) : -ENOENT;
 	cJSON_Delete(jobs);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_process_read(struct runtime *runtime, const char *id, cJSON **out)

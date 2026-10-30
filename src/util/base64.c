@@ -67,36 +67,36 @@ int base64_encode_file_prefixed(const char *path, const char *prefix,
 	int rc = 0;
 
 	if (!path || !prefix || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	file = fopen(path, "rb");
 	if (!file)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (fstat(fileno(file), &st) != 0) {
 		rc = -errno;
 		fclose(file);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	if (!S_ISREG(st.st_mode) || st.st_size <= 0) {
 		fclose(file);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if ((uintmax_t)st.st_size > max_bytes ||
 	    (uintmax_t)st.st_size > (SIZE_MAX / 4) * 3 - 2) {
 		fclose(file);
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	length = (size_t)st.st_size;
 	prefix_len = strlen(prefix);
 	capacity = (length + 2) / 3 * 4 + 1;
 	if (prefix_len > SIZE_MAX - capacity) {
 		fclose(file);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	encoded = malloc(prefix_len + capacity);
 	if (!encoded) {
 		fclose(file);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	memcpy(encoded, prefix, prefix_len);
 	offset = prefix_len;
@@ -119,7 +119,7 @@ int base64_encode_file_prefixed(const char *path, const char *prefix,
 	fclose(file);
 	if (rc != 0) {
 		free(encoded);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	*out = encoded;
 	return 0;

@@ -123,10 +123,10 @@ int runtime_mcp_server_config_from_config(const struct config_mcp_server *config
 					  struct mcp_server_config *out)
 {
 	if (!config || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (config->args_count < 0 || config->args_count > MCP_CMD_MAX ||
 	    config->env_count < 0 || config->env_count > MCP_ENV_MAX)
-		MORPH_RETURN(-E2BIG);
+		return -E2BIG;
 	memset(out, 0, sizeof(*out));
 	strncpy(out->name, config->name, MCP_NAME_MAX - 1);
 	out->transport = strcmp(config->transport, "http") == 0
@@ -165,7 +165,7 @@ int runtime_mcp_register_configured(struct mcp_registry *registry,
 	int rc;
 
 	if (!registry || !config)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	mcp_registry_init(registry ? registry->logger : NULL, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;
@@ -187,7 +187,7 @@ int runtime_mcp_client_connect(struct mcp_client *client,
 	int rc;
 
 	if (!client)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.connecting",
 			 "begin", "Connecting MCP server", &client->config,
 			 -1, -1, -1, 0);
@@ -210,7 +210,7 @@ int runtime_mcp_client_disconnect(struct mcp_client *client,
 				  void *event_user_data)
 {
 	if (!client)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	mcp_disconnect(client);
 	client->discovery_error = 0;
 	client->capabilities_registered = 0;
@@ -234,7 +234,7 @@ int runtime_mcp_client_discover(struct mcp_client *client,
 	int rc;
 
 	if (!client || !tools)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	runtime_mcp_emit(event_cb, event_user_data, "mcp.discovering",
 			 "begin", "Discovering MCP capabilities",
 			 &client->config, -1, -1, -1, 0);
@@ -270,7 +270,7 @@ int runtime_mcp_init_from_config(struct morph_log *logger, struct mcp_registry *
 	int rc;
 
 	if (!registry || !config)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	mcp_registry_init(logger, registry);
 	for (int i = 0; i < config->server_count; i++) {
 		struct mcp_server_config server;

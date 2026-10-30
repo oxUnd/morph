@@ -152,7 +152,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	int rc = 0;
 
 	if (!root || !input || !owned_payload_json)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(input, 0, sizeof(*input));
 	input->source_session_id = 0;
 	*owned_payload_json = NULL;
@@ -172,7 +172,7 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (cJSON_IsNumber(item)) {
 		int64_t delay = (int64_t)item->valuedouble;
 		if (delay < 0)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		if (!has_next_run_at) {
 			if (time_anchor <= 0)
 				time_anchor = (int64_t)time(NULL);
@@ -194,12 +194,12 @@ static int bind_create_input(cJSON *root, struct scheduled_task_input *input,
 	if (cJSON_IsString(item) && item->valuestring[0]) {
 		payload = cJSON_CreateObject();
 		if (!payload)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		cJSON_AddStringToObject(payload, "prompt", item->valuestring);
 		payload_json = cJSON_PrintUnformatted(payload);
 		cJSON_Delete(payload);
 		if (!payload_json)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		input->payload_json = payload_json;
 		*owned_payload_json = payload_json;
 	}
@@ -399,7 +399,7 @@ static int scheduled_tasks_tool_run(const char *args_json,
 	char *out;
 
 	if (!ctx || !ctx->db || !ctx->db->handle)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = cJSON_Parse(args_json ? args_json : "{}");
 	if (!root) {
 		(void)tool_result_success_json_text(result, json_error("invalid JSON"));
@@ -438,10 +438,10 @@ int scheduled_tasks_tool_init_events(
 	int rc;
 
 	if (!reg || !db)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ctx->db = db;
 	ctx->time_anchor = (int64_t)time(NULL);
 	if (events)
@@ -487,10 +487,10 @@ int scheduled_tasks_tool_set_time_anchor(struct tool_registry *reg,
 	struct scheduled_tasks_tool_context *ctx;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	entry = tool_lookup(reg, "tasks");
 	if (!entry || !entry->user_data)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	ctx = entry->user_data;
 	ctx->time_anchor = time_anchor > 0 ? time_anchor : (int64_t)time(NULL);
 	return 0;
@@ -503,10 +503,10 @@ int scheduled_tasks_tool_set_source_session(struct tool_registry *reg,
 	struct scheduled_tasks_tool_context *ctx;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	entry = tool_lookup(reg, "tasks");
 	if (!entry || !entry->user_data)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	ctx = entry->user_data;
 	ctx->source_session_id = session_id > 0 ? session_id : 0;
 	return 0;

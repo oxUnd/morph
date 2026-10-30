@@ -14,13 +14,13 @@ int fcgi_read_body(request_t *r, char **out, size_t *len)
 		*out = calloc(1, 1);
 		return *out ? 0 : -ENOMEM;
 	}
-	if (r->content_length > FCGI_MAX_BODY_BYTES) MORPH_RETURN(-EFBIG);
+	if (r->content_length > FCGI_MAX_BODY_BYTES) return -EFBIG;
 
 	char *buf = malloc((size_t)r->content_length + 1);
-	if (!buf) MORPH_RETURN(-ENOMEM);
+	if (!buf) return -ENOMEM;
 
 	int got = FCGX_GetStr(buf, r->content_length, r->fcgx->in);
-	if (got != r->content_length) { free(buf); MORPH_RETURN(-EIO); }
+	if (got != r->content_length) { free(buf); return -EIO; }
 	buf[got] = '\0';
 	*out = buf;
 	*len = (size_t)got;
@@ -145,7 +145,7 @@ void sse_write_heartbeat(request_t *r)
 
 int sse_flush(request_t *r)
 {
-	if (FCGX_FFlush(r->fcgx->out) < 0) MORPH_RETURN(-EIO);
-	if (FCGX_GetError(r->fcgx->out)  != 0) MORPH_RETURN(-EIO);
+	if (FCGX_FFlush(r->fcgx->out) < 0) return -EIO;
+	if (FCGX_GetError(r->fcgx->out)  != 0) return -EIO;
 	return 0;
 }

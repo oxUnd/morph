@@ -30,15 +30,15 @@ static int img_gen_validate_public_size(const struct model *image_llm,
 	int rc;
 
 	if (!size || !*size || strcmp(size, "auto") == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(size, "2k") != 0 && strcmp(size, "4k") != 0 &&
 	    image_gen_validate_size(size) < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = image_llm
 		? image_gen_validate_size_for_model(image_llm, size)
 		: image_gen_validate_size(size);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -55,7 +55,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 	struct tool_context *tctx = ctx ? ctx->tctx : NULL;
 
 	if (!result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	cJSON *root = cJSON_Parse(args_json);
 	const char *prompt = NULL;
@@ -115,13 +115,13 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"missing 'prompt' parameter. "
 			"Usage: img_gen({\\\"prompt\\\": \\\"a cat\\\"})\"}"));
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (reference_error) {
 		(void)tool_result_successf(result, "invalid reference images: %s",
 					   reference_error);
 		cJSON_Delete(root);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 
 	if (img_gen_validate_public_size(ctx ? ctx->image_llm : NULL,
@@ -131,7 +131,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 			"{\"error\":\"invalid size for the configured image model; "
 			"use 2k, 4k, or WIDTHxHEIGHT with total pixels between "
 			"2560x1440 and 4096x4096, subject to model limits\"}"));
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 
 	const char *output_dir = tctx ? tool_context_output_dir(tctx) : NULL;
@@ -156,7 +156,7 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 						result, strdup(
 						"{\"error\":\"read path outside "
 						"workspace: permission denied\"}"));
-				MORPH_RETURN(rc);
+				return rc;
 			}
 			references_to_send[i] = resolved_references[i];
 		}
@@ -180,13 +180,13 @@ static int img_gen_exec(const char *args_json, struct tool_result *result, void 
 			(void)tool_result_success_json_text(
 				result,
 				strdup("{\"error\":\"image generation failed\"}"));
-		MORPH_RETURN(rc);
+		return rc;
 	}
 
 	size_t msg_len = strlen(img_res.path) + 64;
 	char *msg = malloc(msg_len);
 	if (!msg)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	snprintf(msg, msg_len, "image generated: %s (%dx%d)",
 		 img_res.path, img_res.width, img_res.height);
 	(void)tool_result_success_json_text(result, msg);
@@ -246,11 +246,11 @@ int img_gen_init(struct tool_registry *reg, struct model *image_llm,
 	int rc;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	ctx = malloc(sizeof(*ctx));
 	if (!ctx)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ctx->image_llm = image_llm;
 	ctx->tctx = tctx;
 	spec.user_data = ctx;

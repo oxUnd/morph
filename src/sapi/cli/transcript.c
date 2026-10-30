@@ -93,11 +93,11 @@ static int transcript_init(struct cli_context *ctx)
 	struct transcript_reasoning reasoning;
 
 	if (!tr)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	tr->arena = arena_create(BUFSIZ);
 	if (!tr->arena) {
 		free(tr);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	/* Arena-backed arrays have fixed capacity; event/tool counts are unbounded. */
 	if (morph_array_init(&tr->tools,
@@ -105,18 +105,18 @@ static int transcript_init(struct cli_context *ctx)
 		morph_array_cleanup(&tr->tools);
 		arena_destroy(tr->arena);
 		free(tr);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	ctx->transcript = tr;
 	if (morph_array_init(&tr->reasoning, MORPH_ARRAY_INIT_CAP,
 			     sizeof(reasoning)) != 0) {
 		cli_transcript_reset(ctx);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (morph_buf_init(&tr->deferred, BUFSIZ) != 0 ||
 	    morph_buf_init(&tr->previous_frame, BUFSIZ) != 0) {
 		cli_transcript_reset(ctx);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -149,12 +149,12 @@ int cli_transcript_reasoning_append(struct cli_context *ctx, const char *text,
 	int rc;
 
 	if (!ctx->transcript && transcript_init(ctx) != 0)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	tr = ctx->transcript;
 	if (begin || !tr->reasoning.nelts) {
 		reasoning = morph_array_push(&tr->reasoning);
 		if (!reasoning)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		memset(reasoning, 0, sizeof(*reasoning));
 		reasoning->after_tools = tr->tools.nelts;
 		rc = morph_buf_init(&reasoning->text, BUFSIZ);
@@ -171,7 +171,7 @@ int cli_transcript_reasoning_append(struct cli_context *ctx, const char *text,
 int cli_transcript_capture_begin(struct cli_context *ctx)
 {
 	if (!ctx->transcript)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return cli_command_capture_styled_begin(ctx, &ctx->transcript->deferred);
 }
 
@@ -984,7 +984,7 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	};
 
 	if (!tool)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(tool, 0, sizeof(*tool));
 	tool->id = save_text(tr, json_string(data, "tool_call_id"));
 	tool->name = save_text(tr, json_string(data, "tool"));
@@ -1056,9 +1056,9 @@ static int add_tool(struct cli_transcript *tr, const cJSON *data,
 	utf8_terminal_sanitizer_init(&tool->sanitizer,
 		UTF8_TERMINAL_TEXT_MULTILINE);
 	if (morph_buf_init_arena(&tool->stream, tr->arena, 128) != 0)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (tr->allocation_failed)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -1150,7 +1150,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (ctx->presentation_mode != CLI_PRESENT_INTERACTIVE)
 		return 0;
 	if (!ctx->transcript && transcript_init(ctx) != 0)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	tr = ctx->transcript;
 	if (strcmp(name, "react.observation") == 0 &&
 	    strcmp(json_string(ev->data, "tool"), "plan") != 0 &&
@@ -1167,7 +1167,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 	if (strcmp(name, "tool.call") == 0) {
 		rc = add_tool(tr, ev->data, transcript_workdir(ctx));
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	tool = find_tool(tr, ev->data);
 	if (!tool)
@@ -1195,7 +1195,7 @@ int cli_transcript_event(struct cli_context *ctx, const struct morph_event *ev)
 		rc = utf8_terminal_sanitize_feed(&tool->sanitizer, &tool->stream,
 			text, strlen(text), 0);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (ctx->tool_details) {
 			cli_terminal_live_clear(ctx);
 			print_lines(ctx, morph_buf_cstr(&tool->stream) + offset);

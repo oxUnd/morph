@@ -76,13 +76,13 @@ static void cli_ui_complete_owner_call(struct cli_ui_owner_call *call,
 static int cli_ui_dup_optional(const char *source, char **out)
 {
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	if (!source)
 		return 0;
 	*out = strdup(source);
 	if (!*out)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -92,14 +92,14 @@ static int cli_ui_set_fd_flags(int fd)
 
 	flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	flags = fcntl(fd, F_GETFD, 0);
 	if (flags < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	return 0;
 }
 
@@ -139,7 +139,7 @@ static int cli_ui_enqueue(struct cli_context *ctx,
 	struct cli_ui *ui;
 
 	if (!ctx || !ctx->ui || !item)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ui = ctx->ui;
 	pthread_mutex_lock(&ui->mutex);
 	morph_queue_insert_tail(&ui->pending, &item->link);
@@ -156,24 +156,24 @@ int cli_ui_init(struct cli_context *ctx)
 	int rc;
 
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ui = calloc(1, sizeof(*ui));
 	if (!ui)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ui->wake_read = -1;
 	ui->wake_write = -1;
 	morph_queue_init(&ui->pending);
 	mutex_rc = pthread_mutex_init(&ui->mutex, NULL);
 	if (mutex_rc != 0) {
 		free(ui);
-		MORPH_RETURN(-mutex_rc);
+		return -mutex_rc;
 	}
 	ui->mutex_initialized = 1;
 	if (pipe(wake_fds) != 0) {
 		rc = -errno;
 		pthread_mutex_destroy(&ui->mutex);
 		free(ui);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	rc = cli_ui_set_fd_flags(wake_fds[0]);
 	if (rc == 0)
@@ -183,7 +183,7 @@ int cli_ui_init(struct cli_context *ctx)
 		close(wake_fds[1]);
 		pthread_mutex_destroy(&ui->mutex);
 		free(ui);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	ui->wake_read = wake_fds[0];
 	ui->wake_write = wake_fds[1];
@@ -245,10 +245,10 @@ int cli_ui_post_morph_event(struct cli_context *ctx,
 	int rc;
 
 	if (!ctx || !event)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	item = calloc(1, sizeof(*item));
 	if (!item)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	item->kind = CLI_UI_ITEM_MORPH_EVENT;
 	item->event.type = event->type;
 	rc = cli_ui_dup_optional(event->name, &item->name);
@@ -265,7 +265,7 @@ int cli_ui_post_morph_event(struct cli_context *ctx,
 	}
 	if (rc != 0) {
 		cli_ui_item_free(item);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	item->event.name = item->name;
 	item->event.phase = item->phase;
@@ -274,7 +274,7 @@ int cli_ui_post_morph_event(struct cli_context *ctx,
 	rc = cli_ui_enqueue(ctx, item);
 	if (rc != 0) {
 		cli_ui_item_free(item);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	return 0;
 }
@@ -286,10 +286,10 @@ int cli_ui_post_notification(struct cli_context *ctx,
 	int rc;
 
 	if (!ctx || !notification)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	item = calloc(1, sizeof(*item));
 	if (!item)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	item->kind = CLI_UI_ITEM_NOTIFICATION;
 	item->notification_id = notification->id;
 	item->notification_task_id = notification->task_id;
@@ -303,12 +303,12 @@ int cli_ui_post_notification(struct cli_context *ctx,
 				 &item->notification_body);
 	if (rc != 0) {
 		cli_ui_item_free(item);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	rc = cli_ui_enqueue(ctx, item);
 	if (rc != 0) {
 		cli_ui_item_free(item);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	return 0;
 }
@@ -323,17 +323,17 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 	int rc;
 
 	if (!ctx || !ctx->ui || !fn)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (cli_ui_is_owner(ctx))
 		return fn(data);
 	memset(&call, 0, sizeof(call));
 	mutex_rc = pthread_mutex_init(&call.mutex, NULL);
 	if (mutex_rc != 0)
-		MORPH_RETURN(-mutex_rc);
+		return -mutex_rc;
 	cond_rc = pthread_cond_init(&call.cond, NULL);
 	if (cond_rc != 0) {
 		pthread_mutex_destroy(&call.mutex);
-		MORPH_RETURN(-cond_rc);
+		return -cond_rc;
 	}
 	call.fn = fn;
 	call.data = data;
@@ -341,7 +341,7 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 	if (!item) {
 		pthread_cond_destroy(&call.cond);
 		pthread_mutex_destroy(&call.mutex);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	item->kind = CLI_UI_ITEM_OWNER_CALL;
 	item->owner_call = &call;
@@ -350,7 +350,7 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 		free(item);
 		pthread_cond_destroy(&call.cond);
 		pthread_mutex_destroy(&call.mutex);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	pthread_mutex_lock(&call.mutex);
 	while (!call.complete)
@@ -413,9 +413,9 @@ int cli_ui_drain(struct cli_context *ctx)
 	int first_error = 0;
 
 	if (!ctx || !ctx->ui)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!cli_ui_is_owner(ctx))
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	ui = ctx->ui;
 	cli_ui_consume_wake(ui);
 	morph_queue_init(&local);

@@ -26,17 +26,22 @@ Do not replace removed variables with singleton getters, TLS, environment-variab
 storage, or mutable function-local statics. Environment variables are startup
 configuration, not a place to store active request state.
 
-`MORPH_RETURN` and `MORPH_SET_ERR` preserve error codes without implicit output.
-Use `MORPH_RETURN_LOG(logger, code)` and
-`MORPH_SET_ERR_LOG(logger, var, code)` where an owning context supplies a logger.
-Their Debug diagnostics retain the operation, error description, source file and
-line in the owner's log at `LOG_DEBUG`; `MORPH_DEBUG=1` enables that level in the
-frontends. The `_ERRNO_LOG` variants capture `errno` before tracing, with the
-same `EIO` fallback as the context-free variants. Release builds do not evaluate
-logger expressions. There is no process-wide or thread-local default logger.
-Worker contexts carry their logger explicitly, so simultaneous runtimes cannot
-redirect each other's diagnostics. Context-free helpers remain silent; callers
-with context can trace an error as they propagate it.
+Use native `return code;` and `rc = code;` so control flow and cleanup remain
+visible. `morph_error_from_errno(errno)` captures a syscall's errno before
+cleanup; zero maps to `-EIO`. `MORPH_TRACE_ERROR(logger, code)` is only a source
+location adapter for the ordinary typed `morph_error_trace` function. It has no
+return statement, assignment, temporary variables or build-dependent branches.
+Both arguments evaluate once in every build, including on success. Logger
+expressions must be free of business side effects; argument evaluation order is
+ordinary C function-call order, not a sequencing guarantee.
+
+Tracing returns the code unchanged, preserves errno and uses the explicitly
+owned logger at `LOG_DEBUG`. `MORPH_DEBUG=1` enables these file diagnostics in
+both Debug and Release frontends. Null loggers disable diagnostics; no macro or
+tracing function writes to stdout/stderr. Worker contexts carry their logger
+explicitly, so simultaneous runtimes cannot redirect each other's diagnostics.
+Tests compile the same C probes with and without DEBUG and compare evaluation,
+return values, assignment expressions, local-name safety and errno conversion.
 
 Negative return values can also represent expected states, such as a busy
 runtime or a rejected protocol probe. Callers decide whether these require

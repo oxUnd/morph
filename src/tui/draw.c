@@ -10,12 +10,12 @@ int morph_tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 			    const char *style, int right)
 {
 	if (!commands)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (commands->failed)
-		MORPH_RETURN(commands->failed);
+		return commands->failed;
 	if (!text || !style) {
-		MORPH_SET_ERR(commands->failed, -EINVAL);
-		MORPH_RETURN(commands->failed);
+		commands->failed = (-EINVAL);
+		return commands->failed;
 	}
 	if (row < 1 || row > rows || column < 1 || column > columns || width <= 0)
 		return 0;
@@ -25,8 +25,8 @@ int morph_tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe) {
-		MORPH_SET_ERR(commands->failed, -ENOMEM);
-		MORPH_RETURN(commands->failed);
+		commands->failed = (-ENOMEM);
+		return commands->failed;
 	}
 	/* Ellipsis may add three bytes even when replacing one ASCII byte. */
 	size_t capacity = strlen(safe) + 4;
@@ -34,8 +34,8 @@ int morph_tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 
 	if (!clipped) {
 		free(safe);
-		MORPH_SET_ERR(commands->failed, -ENOMEM);
-		MORPH_RETURN(commands->failed);
+		commands->failed = (-ENOMEM);
+		return commands->failed;
 	}
 	utf8_copy_ellipsized_display_width(clipped, capacity, safe, (size_t)width, 0);
 	int padding = width - (int)utf8_display_width(clipped);
@@ -45,22 +45,22 @@ int morph_tui_cell_append_aligned(morph_buf_t *commands, int columns, int rows,
 
 	free(clipped);
 	free(safe);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int morph_tui_output_write(FILE *output, const morph_buf_t *commands)
 {
 	if (!output || !commands)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (commands->failed)
-		MORPH_RETURN(commands->failed);
+		return commands->failed;
 	if (!commands->len)
 		return 0;
 	errno = 0;
 	if (fwrite(commands->data, 1, commands->len, output) != commands->len)
-		MORPH_RETURN(errno ? -errno : -EIO);
+		return errno ? -errno : -EIO;
 	if (fflush(output) != 0 || ferror(output))
-		MORPH_RETURN(errno ? -errno : -EIO);
+		return errno ? -errno : -EIO;
 	return 0;
 }
 
@@ -71,12 +71,12 @@ int morph_tui_cell(FILE *output, int columns, int rows, int row, int column,
 	int rc = morph_buf_init(&commands, 128);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_tui_cell_append(&commands, columns, rows, row, column, width, text, style);
 	if (rc == 0)
 		rc = morph_tui_output_write(output, &commands);
 	morph_buf_cleanup(&commands);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int morph_tui_cell_append(morph_buf_t *commands, int columns, int rows,

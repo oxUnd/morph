@@ -19,7 +19,7 @@ int runtime_task_run_due_collect(struct db *db, int limit,
 	int64_t now;
 
 	if (!db || !runner)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (limit <= 0)
 		limit = 20;
 	now = (int64_t)time(NULL);
@@ -106,7 +106,7 @@ int runtime_task_worker_start(struct runtime_task_worker *worker,
 	int rc;
 
 	if (!worker || !db || !db->path[0] || !runner)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (worker->started)
 		return 0;
 	memset(worker, 0, sizeof(*worker));

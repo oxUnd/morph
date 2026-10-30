@@ -66,7 +66,7 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 		struct cli_job entry;
 		ctx->jobs = calloc(1, sizeof(*ctx->jobs));
 		if (!ctx->jobs)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		int rc = morph_array_init(&ctx->jobs->entries, 8, sizeof(entry));
 		if (rc) {
 			free(ctx->jobs);
@@ -76,7 +76,7 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 	}
 	cJSON *copy = cJSON_Duplicate(data, 1);
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	struct cli_job *job;
 	morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)
 	{
@@ -90,7 +90,7 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 	job = morph_array_push(&ctx->jobs->entries);
 	if (!job) {
 		cJSON_Delete(copy);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	*job = (struct cli_job){.data = copy, .updated = jobs_now()};
 	return 0;
@@ -269,7 +269,7 @@ static int jobs_refresh(struct jobs_view *view)
 	char *selected_id = selected ? strdup(job_string(selected, "session_id")) : NULL;
 	if (selected && !selected_id) {
 		cJSON_Delete(jobs);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_Delete(view->jobs);
 	view->jobs = jobs;

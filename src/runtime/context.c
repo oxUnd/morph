@@ -155,7 +155,7 @@ int runtime_tool_context_for_session(struct db *db,
 	const char *credit_session_id = NULL;
 
 	if (!db || !config || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	out->db = db;
 	out->config = config;

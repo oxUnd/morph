@@ -117,9 +117,9 @@ int runtime_mcp_connect(struct runtime *runtime, const char *name)
 	int rc;
 
 	if (!client)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	rc = runtime_mcp_client_connect(client, runtime->options.event_cb,
 		runtime->options.event_user_data);
 	runtime_mcp_update_state(runtime, client,
@@ -133,7 +133,7 @@ int runtime_mcp_disconnect(struct runtime *runtime, const char *name)
 	int rc;
 
 	if (!client)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	struct runtime_mcp_job *job = runtime_mcp_job_find(runtime, client);
 	if (job && runtime_mcp_busy(runtime, client)) {
 		pthread_mutex_lock(&job->lock);
@@ -158,7 +158,7 @@ static int runtime_mcp_copy_list(void **out, int count, const void *items,
 	if (count <= 0)
 		return 0;
 	if ((size_t)count > SIZE_MAX / item_size)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	size_t bytes = (size_t)count * item_size;
 
 	for (int i = 0; i < count; i++) {
@@ -170,14 +170,14 @@ static int runtime_mcp_copy_list(void **out, int count, const void *items,
 			size_t length = strlen(value) + 1;
 
 			if (length > SIZE_MAX - bytes)
-				MORPH_RETURN(-EOVERFLOW);
+				return -EOVERFLOW;
 			bytes += length;
 		}
 	}
 	char *copy = malloc(bytes);
 
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memcpy(copy, items, (size_t)count * item_size);
 	char *destination = copy + (size_t)count * item_size;
 
@@ -214,7 +214,7 @@ int runtime_mcp_list_tools(struct runtime *runtime, const char *name,
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -245,7 +245,7 @@ int runtime_mcp_list_resources(struct runtime *runtime, const char *name,
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -275,7 +275,7 @@ int runtime_mcp_list_prompts(struct runtime *runtime, const char *name,
 	if (!client || !out || !count)
 		return client ? -EINVAL : -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	arena = arena_create(0);
 	if (!arena)
 		return -ENOMEM;
@@ -305,7 +305,7 @@ int runtime_mcp_discover(struct runtime *runtime, const char *name,
 	if (!client)
 		return -ENOENT;
 	if (runtime_mcp_busy(runtime, client))
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	int rc = runtime_mcp_client_discover(
 		client, &runtime->context.tools,

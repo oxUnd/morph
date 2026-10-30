@@ -11,10 +11,10 @@
 static int history_lock(struct runtime *runtime)
 {
 	if (!runtime)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	int rc = pthread_mutex_trylock(&runtime->context.execution_lock);
 
-	MORPH_RETURN(rc == 0 ? 0 : -rc);
+	return rc == 0 ? 0 : -rc;
 }
 
 static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered)
@@ -31,7 +31,7 @@ static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered
 	int error = 0;
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, ctx->current_session.id);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		char key[32];
@@ -42,7 +42,7 @@ static int history_coverage(struct runtime_context *ctx, morph_strmap_t *covered
 			break;
 	}
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+	return error ? error : rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
 static cJSON *history_entry(const struct model_history_item *item,
@@ -123,7 +123,7 @@ static int history_legacy_entries(struct runtime_context *ctx, cJSON *entries)
 		}
 	}
 	message_free_list(messages);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
@@ -140,7 +140,7 @@ int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	rc = history_lock(runtime);
 	if (rc != 0)
@@ -192,7 +192,7 @@ int runtime_session_history_inspect(struct runtime *runtime, cJSON **out)
 	pthread_mutex_unlock(&ctx->execution_lock);
 	if (rc != 0) {
 		cJSON_Delete(root);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	*out = root;
 	return 0;
@@ -208,7 +208,7 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 	int rc;
 
 	if (!out || sequence <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	rc = history_lock(runtime);
 	if (rc != 0)
@@ -240,7 +240,7 @@ int runtime_session_history_entry_input(struct runtime *runtime, int64_t sequenc
 	arena_destroy(arena);
 	model_history_free_list(items);
 	pthread_mutex_unlock(&ctx->execution_lock);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_session_last_request(struct runtime *runtime, cJSON **out)
@@ -250,7 +250,7 @@ int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	rc = history_lock(runtime);
 	if (rc != 0)
@@ -284,7 +284,7 @@ int runtime_session_last_request(struct runtime *runtime, cJSON **out)
 	pthread_mutex_unlock(&ctx->execution_lock);
 	if (rc != SQLITE_ROW) {
 		cJSON_Delete(root);
-		MORPH_RETURN(rc == SQLITE_DONE ? -ENODATA : rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB);
+		return rc == SQLITE_DONE ? -ENODATA : rc == SQLITE_NOMEM ? -ENOMEM : MORPH_ERR_DB;
 	}
 	*out = root;
 	return 0;

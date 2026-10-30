@@ -31,7 +31,7 @@ int cli_structured_output_enabled(struct cli_context *ctx)
 int cli_command_capture_begin(struct cli_context *ctx, morph_buf_t *output)
 {
 	if (!ctx || !output || ctx->output.capture)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx->output.capture = output;
 	return 0;
 }
@@ -57,7 +57,7 @@ int cli_command_capture_write(struct cli_context *ctx, const char *bytes, size_t
 		safe = utf8_terminal_sanitize_dup(bytes, len,
 			UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 		if (!safe)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		rc = morph_buf_puts(ctx->output.capture, safe);
 		free(safe);
 	}
@@ -80,13 +80,13 @@ static int cli_capture_text(struct cli_context *ctx, const char *text)
 	int rc;
 
 	if (!ctx || !ctx->output.capture || !text)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (ctx->output.capture_styled)
 		return morph_buf_puts(ctx->output.capture, text);
 	safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = morph_buf_puts(ctx->output.capture, safe);
 	free(safe);
 	return rc;
@@ -139,7 +139,7 @@ static int cli_write_terminal_safe(const char *src, int allow_sgr)
 					    fwrite(start, 1,
 						(size_t)(cursor - start), stdout) !=
 						(size_t)(cursor - start))
-						MORPH_RETURN(-EIO);
+						return -EIO;
 				}
 				continue;
 			}
@@ -157,9 +157,9 @@ static int cli_write_terminal_safe(const char *src, int allow_sgr)
 
 			if (cp == '\n' || cp == '\t') {
 				if (fputc((int)cp, stdout) == EOF)
-					MORPH_RETURN(-EIO);
+					return -EIO;
 			} else if (cli_write_visible_control(cp) != 0) {
-				MORPH_RETURN(-EIO);
+				return -EIO;
 			}
 			continue;
 		}
@@ -175,15 +175,15 @@ static int cli_write_terminal_safe(const char *src, int allow_sgr)
 			}
 			if (cp >= 0x80u && cp <= 0x9fu) {
 				if (cli_write_visible_control(cp) != 0)
-					MORPH_RETURN(-EIO);
+					return -EIO;
 			} else if (fwrite(cursor, 1, cp_len, stdout) != cp_len) {
-				MORPH_RETURN(-EIO);
+				return -EIO;
 			}
 			cursor += cp_len;
 			continue;
 		}
 		if (fputc(*cursor++, stdout) == EOF)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 	}
 	return 0;
 }
@@ -196,7 +196,7 @@ int cli_command_result_begin(struct cli_context *ctx)
 		return 0;
 	ctx->output.command_result_pending = 0;
 	if (fputc('\n', stdout) == EOF)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	return 0;
 }
 
@@ -209,7 +209,7 @@ static int cli_write_output(struct cli_context *ctx, const char *text)
 			text++;
 		if (utf8_display_width_ansi(text) > 0 &&
 		    cli_command_result_begin(ctx) != 0)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 	}
 	return cli_write_terminal_safe(text, !ctx || !ctx->output.color_disabled);
 }
@@ -231,7 +231,7 @@ int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 	char *buf = malloc((size_t)n + 1);
 	if (!buf) {
 		va_end(ap);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	vsnprintf(buf, (size_t)n + 1, fmt, ap);
 	va_end(ap);
@@ -240,7 +240,7 @@ int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 
 		free(buf);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		return n;
 	}
 	if ((ctx && ctx->output.structured)) {
@@ -249,7 +249,7 @@ int cli_printf(struct cli_context *ctx, const char *fmt, ...)
 	}
 	if (cli_write_output(ctx, buf) != 0) {
 		free(buf);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	free(buf);
 	return n;
@@ -260,7 +260,7 @@ int cli_fputs(struct cli_context *ctx, const char *text, FILE *stream)
 	int rc;
 
 	if (!text || !stream)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (stream != stdout)
 		return fputs(text, stream);
 	if (ctx && ctx->output.capture) {
@@ -295,10 +295,10 @@ int cli_write_ndjson(const char *json)
 	size_t len;
 
 	if (!json)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	len = strlen(json);
 	if (fwrite(json, 1, len, stdout) != len || fputc('\n', stdout) == EOF)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	fflush(stdout);
 	return 0;
 }
@@ -313,12 +313,12 @@ int cli_print_untrusted_text(struct cli_context *ctx, const char *text,
 		return 0;
 	safe = utf8_terminal_sanitize_dup(text, strlen(text), mode, NULL);
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (cli_fputs(ctx, safe, stdout) == EOF)
 		rc = -EIO;
 	free(safe);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -373,7 +373,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 
 		if (handled) {
 			if (rc != 0)
-				MORPH_RETURN(rc);
+				return rc;
 			return 0;
 		}
 	}
@@ -393,7 +393,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 		int rc = morph_buf_init(&input_buf, 256);
 
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		has_input_buf = 1;
 		rc = morph_buf_printf(&input_buf,
 			"[Image: %s]\n"
@@ -402,7 +402,7 @@ int cli_handle_command(struct cli_context *ctx, const char *input)
 			ctx->image_path, input);
 		if (rc != 0) {
 			morph_buf_cleanup(&input_buf);
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		effective_input = morph_buf_cstr(&input_buf);
 		ctx->image_path[0] = '\0';

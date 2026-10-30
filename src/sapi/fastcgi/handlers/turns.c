@@ -683,13 +683,13 @@ static int action_answers(const char *payload, char ***answers,
 	int written = 0;
 
 	if (!answers || !answers_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*answers = NULL;
 	*answers_count = 0;
 	root = cJSON_Parse(payload ? payload : "{}");
 	if (!cJSON_IsObject(root)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	items = cJSON_GetObjectItem(root, "answers");
 	text = cJSON_GetObjectItem(root, "text");
@@ -704,7 +704,7 @@ static int action_answers(const char *payload, char ***answers,
 	values = calloc((size_t)count, sizeof(*values));
 	if (!values) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	for (int i = 0; i < count; i++) {
 		cJSON *item = cJSON_IsArray(items)
@@ -718,7 +718,7 @@ static int action_answers(const char *payload, char ***answers,
 				free(values[k]);
 			free(values);
 			cJSON_Delete(root);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		written++;
 	}
@@ -744,7 +744,7 @@ int fcgi_turn_ask_user(const char *question,
 	(void)min_choices;
 	(void)max_choices;
 	if (!j || !answers || !answers_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	data = cJSON_CreateObject();
 	array = cJSON_CreateArray();
 	if (data && array) {
@@ -762,15 +762,15 @@ int fcgi_turn_ask_user(const char *question,
 	got = action_pump_wait(j->store, j->session_id,
 			       FCGI_ACTION_WAIT_SECONDS, &record);
 	if (got <= 0)
-		MORPH_RETURN(got < 0 ? got : -ETIMEDOUT);
+		return got < 0 ? got : -ETIMEDOUT;
 	if (strcmp(record.type, "cancel") == 0) {
 		turn_action_record_cleanup(&record);
-		MORPH_RETURN(-ECANCELED);
+		return -ECANCELED;
 	}
 	if (strcmp(record.type, "prompt") != 0 &&
 	    strcmp(record.type, "answer") != 0) {
 		turn_save_pending_action(j, &record);
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	}
 	got = action_answers(record.payload_json, answers, answers_count);
 	turn_action_record_cleanup(&record);

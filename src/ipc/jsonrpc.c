@@ -35,13 +35,13 @@ char *jsonrpc_build_request(const struct jsonrpc_request *req)
 int jsonrpc_parse_response(const char *resp_str, struct jsonrpc_response *out)
 {
 	if (!resp_str || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	memset(out, 0, sizeof(*out));
 
 	cJSON *root = cJSON_Parse(resp_str);
 	if (!root)
-		MORPH_RETURN(-EPROTO);
+		return -EPROTO;
 
 	cJSON *id_item = cJSON_GetObjectItem(root, "id");
 	if (cJSON_IsNumber(id_item))

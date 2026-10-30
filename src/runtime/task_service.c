@@ -28,7 +28,7 @@ int runtime_task_count_active(struct runtime *runtime,
 			      struct scheduled_task_counts *out)
 {
 	if (!runtime)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return scheduled_task_count_active(&runtime->context.database, out);
 }
 

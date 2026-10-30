@@ -14,11 +14,11 @@ static int clipboard_run(const char *const argv[], const char *stdout_path)
 	int status;
 
 	if (!argv || !argv[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (stdout_path) {
 		output_fd = open(stdout_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 		if (output_fd < 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 	}
 	pid = fork();
 	if (pid < 0) {
@@ -26,7 +26,7 @@ static int clipboard_run(const char *const argv[], const char *stdout_path)
 
 		if (output_fd >= 0)
 			close(output_fd);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -51,10 +51,10 @@ static int clipboard_run(const char *const argv[], const char *stdout_path)
 		if (waited >= 0)
 			break;
 		if (errno != EINTR)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return 0;
 }
 
@@ -67,24 +67,24 @@ static int clipboard_output_path(struct cli_context *ctx, char **out_path)
 	int rc;
 
 	if (!ctx || !ctx->runtime || !out_path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_path = NULL;
 	config = runtime_config_get(ctx->runtime);
 	if (!config || !config->general.output_dir[0])
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	rc = file_ensure_dir(config->general.output_dir);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_random_id("clipboard_", id, sizeof(id));
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	filename = file_path_append_alloc(id, ".png");
 	if (!filename)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	path = file_path_join_alloc(config->general.output_dir, filename);
 	free(filename);
 	if (!path)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*out_path = path;
 	return 0;
 }
@@ -113,7 +113,7 @@ static int clipboard_save_platform_image(const char *png_path)
 
 	tiff_path = file_path_append_alloc(png_path, ".tiff");
 	if (!tiff_path)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	osascript_argv[0] = "osascript";
 	osascript_argv[1] = "-e";
 	osascript_argv[2] = script;
@@ -134,7 +134,7 @@ static int clipboard_save_platform_image(const char *png_path)
 	(void)unlink(tiff_path);
 	free(tiff_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -155,7 +155,7 @@ static int clipboard_save_platform_image(const char *png_path)
 	if (rc != 0)
 		rc = clipboard_run(xclip_argv, png_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -170,16 +170,16 @@ int cli_clipboard_save_image(struct cli_context *ctx, char **out_path)
 	int rc;
 
 	if (!out_path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_path = NULL;
 	rc = clipboard_output_path(ctx, &path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = clipboard_save_platform_image(path);
 	if (rc != 0 || !stbi_info(path, &width, &height, &channels)) {
 		(void)unlink(path);
 		free(path);
-		MORPH_RETURN(rc != 0 ? rc : MORPH_ERR_FORMAT);
+		return rc != 0 ? rc : MORPH_ERR_FORMAT;
 	}
 	*out_path = path;
 	return 0;

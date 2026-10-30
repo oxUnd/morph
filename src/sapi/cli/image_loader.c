@@ -37,7 +37,7 @@ static int image_fetch(const char *url, morph_buf_t *buffer)
 	long status = 0;
 
 	if (!curl)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	http_apply_ca_env(curl);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
@@ -53,9 +53,9 @@ static int image_fetch(const char *url, morph_buf_t *buffer)
 	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
 	curl_easy_cleanup(curl);
 	if (result != CURLE_OK)
-		MORPH_RETURN(MORPH_ERR_NETWORK);
+		return MORPH_ERR_NETWORK;
 	if (status < 200 || status >= 300)
-		MORPH_RETURN(MORPH_ERR_API);
+		return MORPH_ERR_API;
 	return 0;
 }
 
@@ -71,20 +71,20 @@ static int image_read(const char *url, morph_buf_t *buffer)
 	if (strncmp(url, "https://", 8) == 0 || strncmp(url, "http://", 7) == 0)
 		return image_fetch(url, buffer);
 	if (stat(path, &info) != 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (!S_ISREG(info.st_mode) || info.st_size > CLI_IMAGE_MAX_BYTES)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	file = fopen(path, "rb");
 	if (!file)
-		MORPH_RETURN(-errno);
+		return -errno;
 	while ((count = fread(bytes, 1, sizeof(bytes), file)) > 0) {
 		if (image_receive(bytes, 1, count, buffer) != count) {
-			MORPH_SET_ERR(rc, -EFBIG);
+			rc = (-EFBIG);
 			break;
 		}
 	}
 	if (ferror(file))
-		MORPH_SET_ERR(rc, -EIO);
+		rc = (-EIO);
 	fclose(file);
 	return rc;
 }
@@ -122,7 +122,7 @@ int cli_markdown_load_image(const char *url, char **path, void *user)
 
 	(void)user;
 	if (!url || !path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*path = NULL;
 	rc = morph_buf_init(&buffer, BUFSIZ);
 	if (rc != 0)
@@ -131,12 +131,12 @@ int cli_markdown_load_image(const char *url, char **path, void *user)
 	pixels = rc == 0 ? image_decode(&buffer, &w, &h) : NULL;
 	morph_buf_cleanup(&buffer);
 	if (!pixels)
-		MORPH_RETURN(rc != 0 ? rc : MORPH_ERR_FORMAT);
+		return rc != 0 ? rc : MORPH_ERR_FORMAT;
 	fd = mkstemp(temporary);
 	if (fd < 0) {
 		rc = -errno;
 		free(pixels);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	close(fd);
 	rc = stbi_write_png(temporary, w, h, 4, pixels, w * 4);
@@ -145,7 +145,7 @@ int cli_markdown_load_image(const char *url, char **path, void *user)
 		*path = strdup(temporary);
 	if (!*path) {
 		unlink(temporary);
-		MORPH_RETURN(rc ? -ENOMEM : -EIO);
+		return rc ? -ENOMEM : -EIO;
 	}
 	return 0;
 }

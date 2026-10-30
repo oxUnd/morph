@@ -12,11 +12,11 @@ static int share_write(int fd, const morph_buf_t *html)
 		if (size < 0 && errno == EINTR)
 			continue;
 		if (size <= 0)
-			MORPH_RETURN(size < 0 ? -errno : -EIO);
+			return size < 0 ? -errno : -EIO;
 		written += (size_t)size;
 	}
 	if (fsync(fd) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -27,17 +27,17 @@ static int share_publish(const char *directory, const char *stamp,
 	morph_buf_t staging = {0};
 	int rc = morph_buf_init(&staging, 128);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_buf_printf(&staging, "%s/.morph-share-%s-XXXXXX", directory, stamp);
 	if (rc) {
 		morph_buf_cleanup(&staging);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	int fd = mkstemp(staging.data);
 	if (fd < 0) {
-		MORPH_SET_ERRNO(rc);
+		rc = morph_error_from_errno(errno);
 		morph_buf_cleanup(&staging);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	/* Remove the staging basename's leading dot for the public filename. */
 	const char *base = strrchr(staging.data, '/') + 1;
@@ -46,19 +46,19 @@ static int share_publish(const char *directory, const char *stamp,
 	free(target);
 	int linked = 0;
 	if (!published)
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 	else
 		rc = share_write(fd, html);
 	if (close(fd) != 0 && !rc)
-		MORPH_SET_ERRNO(rc);
+		rc = morph_error_from_errno(errno);
 	if (!rc) {
 		if (link(staging.data, published) != 0)
-			MORPH_SET_ERRNO(rc);
+			rc = morph_error_from_errno(errno);
 		else
 			linked = 1;
 	}
 	if (unlink(staging.data) != 0 && !rc)
-		MORPH_SET_ERRNO(rc);
+		rc = morph_error_from_errno(errno);
 	if (rc) {
 		if (linked)
 			(void)unlink(published);
@@ -67,18 +67,18 @@ static int share_publish(const char *directory, const char *stamp,
 		*out_path = published;
 	}
 	morph_buf_cleanup(&staging);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int cli_share_save(const cJSON *document, char **out_path)
 {
 	if (!out_path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out_path = NULL;
 	morph_buf_t html = {0};
 	int rc = morph_buf_init(&html, 4096);
 	if (rc)
-		MORPH_RETURN(rc);
+		return rc;
 	char *directory = NULL;
 	time_t now = time(NULL);
 	rc = cli_share_html(document, now, &html);
@@ -86,12 +86,12 @@ int cli_share_save(const cJSON *document, char **out_path)
 		goto out_free_document;
 	const char *home = getenv("HOME");
 	if (!home || !home[0]) {
-		MORPH_SET_ERR(rc, -ENOENT);
+		rc = (-ENOENT);
 		goto out_free_document;
 	}
 	directory = file_path_join_alloc(home, "Downloads");
 	if (!directory) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_document;
 	}
 	rc = file_ensure_dir(directory);
@@ -101,12 +101,12 @@ int cli_share_save(const cJSON *document, char **out_path)
 	char stamp[32];
 	if (!localtime_r(&now, &local) ||
 	    !strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local)) {
-		MORPH_SET_ERR(rc, -EINVAL);
+		rc = (-EINVAL);
 		goto out_free_document;
 	}
 	rc = share_publish(directory, stamp, &html, out_path);
 out_free_document:
 	free(directory);
 	morph_buf_cleanup(&html);
-	MORPH_RETURN(rc);
+	return rc;
 }

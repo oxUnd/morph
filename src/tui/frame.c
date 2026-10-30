@@ -7,7 +7,7 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 		      int columns, int rows, const char *lines)
 {
 	if (!frame || !output || !lines || columns < 1 || rows < 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	int resized = frame->rows != rows || frame->columns != columns ||
 		frame->target != output;
 	size_t size = strlen(lines);
@@ -19,20 +19,20 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 		int rc = morph_buf_init(&frame->previous, BUFSIZ);
 
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	if (!frame->output.data) {
 		int rc = morph_buf_init(&frame->output, BUFSIZ);
 
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	/* Allocate before output; commit the previous frame only after flush. */
 	int rc = morph_buf_reserve(&frame->previous,
 		size > frame->previous.len ? size - frame->previous.len : 0);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	const char *current = lines;
 	const char *previous = morph_buf_cstr(&frame->previous);
 	morph_buf_t *commands = &frame->output;
@@ -58,14 +58,14 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 	rc = morph_tui_output_write(output, commands);
 	if (rc != 0) {
 		morph_tui_frame_invalidate(frame);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	morph_buf_reset(&frame->previous);
 	rc = morph_buf_append(&frame->previous, lines, size);
 	frame->rows = rc == 0 ? rows : 0;
 	frame->columns = columns;
 	frame->target = output;
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 void morph_tui_frame_invalidate(struct morph_tui_frame *frame)

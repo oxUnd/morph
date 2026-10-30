@@ -149,7 +149,7 @@ static int add_line(struct arena *arena, morph_array_t *lines, const char *text,
 		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	const char *cursor = safe;
 	int rc = 0;
 
@@ -162,7 +162,7 @@ static int add_line(struct arena *arena, morph_array_t *lines, const char *text,
 		struct hook_line *line = morph_array_push(lines);
 
 		if (!copy || !line) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			break;
 		}
 		memcpy(copy, cursor, length);
@@ -188,7 +188,7 @@ static int diff_property(struct arena *arena, morph_array_t *lines, morph_buf_t 
 {
 	char *json = cJSON_PrintUnformatted(value);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	morph_buf_reset(buffer);
 	int rc = morph_buf_printf(buffer, "%s  \"%s\": %s%s", prefix, value->string,
 				 json, value->next ? "," : "");
@@ -209,7 +209,7 @@ static int definition_lines(struct arena *arena, morph_array_t *lines, morph_buf
 	if (!cJSON_IsObject(current)) {
 		cJSON_Delete(current);
 		cJSON_Delete(previous);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	int rc = add_line(arena, lines, previous ? "Definition changes" : "Current definition",
 			  UI_TEXT "\033[1m", width);
@@ -421,7 +421,7 @@ static int render(struct hook_screen *screen, const cJSON *rows)
 	struct arena *arena = arena_create(BUFSIZ);
 	morph_array_t lines = {0};
 
-	if (!arena) MORPH_RETURN(-ENOMEM);
+	if (!arena) return -ENOMEM;
 	struct hook_line element;
 	int rc = morph_array_init(&lines, 32, sizeof(element));
 	if (rc != 0) {
@@ -708,7 +708,7 @@ static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id
 			if (strcmp(field(row, "id"), review_id) == 0) { found = 1; break; }
 			screen->focus++;
 		}
-		if (!found) MORPH_RETURN(-ENOENT);
+		if (!found) return -ENOENT;
 		screen->review = 1;
 		struct hook_action items[3];
 
@@ -722,7 +722,7 @@ static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id
 	int leave_rc = morph_tui_screen_close(&terminal);
 
 	if (rc == 0) rc = leave_rc;
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int cli_hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id)

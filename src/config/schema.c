@@ -593,7 +593,7 @@ static int validate_active_permission_directories(
 				snprintf(path, sizeof(path),
 					 "react.permission_profiles[].%s", keys[k]);
 				if (!expanded)
-					MORPH_RETURN(-ENOMEM);
+					return -ENOMEM;
 				stat_rc = stat(expanded, &st);
 				saved_errno = errno;
 				if (stat_rc == 0 && S_ISDIR(st.st_mode)) {
@@ -795,7 +795,7 @@ static int config_validate_text_internal(const char *text,
 	if (error)
 		memset(error, 0, sizeof(*error));
 	if (!text)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	text_len = strlen(text);
 	if (text_len > (size_t)INT_MAX)
 		return set_error(error, CONFIG_VALIDATION_LIMIT, NULL, NULL,
@@ -869,11 +869,11 @@ int config_validate_file_with_warnings(const char *path,
 	int rc;
 
 	if (!path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	errno = 0;
 	text = file_read_all(path, &length);
 	if (!text)
-		MORPH_RETURN(errno ? -errno : -EIO);
+		return errno ? -errno : -EIO;
 	(void)length;
 	rc = config_validate_text_internal(text, error, warning_fn,
 		warning_user_data, 1);

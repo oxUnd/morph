@@ -9,19 +9,19 @@ int cli_attach_image(struct cli_context *ctx, const char *path)
 	int ch = 0;
 
 	if (!ctx || !path || !path[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_exists(expanded)) {
 		CMD_ERROR(ctx, "file not found: %s", expanded);
 		free(expanded);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	if (!stbi_info(expanded, &w, &h, &ch)) {
 		CMD_ERROR(ctx, "not a valid image file: %s", expanded);
 		free(expanded);
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
 	ctx->image_path[sizeof(ctx->image_path) - 1] = '\0';
@@ -41,7 +41,7 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 
 	if (!path) {
 		CMD_ERROR(ctx, "usage: /image <file_path>");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	return cli_attach_image(ctx, path);
 }
@@ -65,7 +65,7 @@ static int media_play_video(struct cli_context *ctx, const char *path)
 	if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON &&
 	    video_play(ctx ? ctx->logger : NULL, path, config->render.mpv_args) != 0) {
 		CMD_ERROR(ctx, "failed to play video: %s", path);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	cli_record_media_credits(ctx, "video_input", 0, 1,
 				 config->models.video.provider,
@@ -88,11 +88,11 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 	int rc = 0;
 
 	if (!ctx || !input || !handled)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*handled = 0;
 	copy = strdup(input);
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	argc = cli_argv_split(copy, argv, 3);
 	if (argc != 1) {
 		free(copy);
@@ -101,7 +101,7 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 	expanded = file_expand_path(argv[0]);
 	free(copy);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_exists(expanded)) {
 		free(expanded);
 		return 0;
@@ -115,7 +115,7 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 	}
 	free(expanded);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 static int cmd_render(struct cli_context *ctx, int argc, char **argv)
@@ -152,7 +152,7 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 		if (!stbi_info(expanded, &w, &h, &ch)) {
 			CMD_ERROR(ctx, "not a valid image file: %s", expanded);
 			free(expanded);
-			MORPH_RETURN(MORPH_ERR_FORMAT);
+			return MORPH_ERR_FORMAT;
 		}
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
 			(void)cli_command_result_begin(ctx);
