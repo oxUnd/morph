@@ -53,7 +53,7 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	if (!len)
 		return 0;
 	if (output && cli_command_result_begin(output->ctx) != 0)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
@@ -193,7 +193,7 @@ int cli_markdown_stream_append(struct cli_context *ctx, const char *delta,
 		ctx->markdown_stream = cli_markdown_create(ctx, 2u, 2u, 1, media_callback, ctx,
 							   &ctx->markdown_output);
 		if (!ctx->markdown_stream)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		ctx->markdown_stream_kind = kind;
 		ctx->markdown_stream_visible = 1;
 		utf8_terminal_sanitizer_init(&ctx->markdown_stream_sanitizer,
@@ -370,10 +370,10 @@ static int cli_validate_ask_user_response(const cJSON *response_data,
 	int count;
 
 	if (!validation || !cJSON_IsObject(response_data))
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	answers = cJSON_GetObjectItemCaseSensitive(response_data, "answers");
 	if (!cJSON_IsArray(answers))
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	count = cJSON_GetArraySize(answers);
 	if (count < validation->min_choices || count > 64 ||
 	    (validation->max_choices > 0 &&
@@ -381,14 +381,14 @@ static int cli_validate_ask_user_response(const cJSON *response_data,
 	    ((!validation->selection_mode ||
 	      strcmp(validation->selection_mode, "multi") != 0) &&
 	     count > 1))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < count; i++) {
 		cJSON *answer = cJSON_GetArrayItem(answers, i);
 		int matched = validation->choices_count == 0;
 
 		if (!cJSON_IsString(answer) || !answer->valuestring ||
 		    !answer->valuestring[0])
-			MORPH_RETURN(MORPH_ERR_PROTOCOL);
+			return MORPH_ERR_PROTOCOL;
 		for (int j = 0; j < validation->choices_count; j++) {
 			if (strcmp(answer->valuestring,
 				   validation->choices[j]) == 0) {
@@ -397,13 +397,13 @@ static int cli_validate_ask_user_response(const cJSON *response_data,
 			}
 		}
 		if (!matched)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		for (int j = 0; j < i; j++) {
 			cJSON *previous = cJSON_GetArrayItem(answers, j);
 
 			if (strcmp(answer->valuestring,
 				   previous->valuestring) == 0)
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 		}
 	}
 	return 0;
@@ -429,7 +429,7 @@ static int cli_json_ask_user(struct cli_context *ctx, const char *question,
 	if (!request || !choices_json) {
 		cJSON_Delete(request);
 		cJSON_Delete(choices_json);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(request, "question",
 				     question ? question : "") ||
@@ -439,7 +439,7 @@ static int cli_json_ask_user(struct cli_context *ctx, const char *question,
 	    !cJSON_AddNumberToObject(request, "max_choices", max_choices)) {
 		cJSON_Delete(choices_json);
 		cJSON_Delete(request);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	for (int i = 0; i < choices_count; i++) {
 		cJSON *choice = cJSON_CreateString(choices[i] ? choices[i] : "");
@@ -447,7 +447,7 @@ static int cli_json_ask_user(struct cli_context *ctx, const char *question,
 		if (!choice) {
 			cJSON_Delete(choices_json);
 			cJSON_Delete(request);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddItemToArray(choices_json, choice);
 	}
@@ -463,7 +463,7 @@ static int cli_json_ask_user(struct cli_context *ctx, const char *question,
 		cli_validate_ask_user_response, &validation, &response);
 	cJSON_Delete(request);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	items = cJSON_GetObjectItemCaseSensitive(response, "answers");
 	count = cJSON_GetArraySize(items);
 	for (int i = 0; i < count; i++)
@@ -1032,7 +1032,7 @@ static int cli_json_add_optional_string(cJSON *object, const char *name,
 	if (!value || !value[0])
 		return 0;
 	if (!cJSON_AddStringToObject(object, name, value))
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 

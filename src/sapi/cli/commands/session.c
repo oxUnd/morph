@@ -153,7 +153,7 @@ static int resume_page(struct cli_context *ctx, struct session *list, int count,
 		int rc = morph_buf_init(&metadata, 64);
 
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		rc = morph_buf_printf(&metadata, "%s · ", list[i].display_id);
 		if (rc == 0)
 			rc = append_token_count(&metadata, list[i].token_used);
@@ -167,7 +167,7 @@ static int resume_page(struct cli_context *ctx, struct session *list, int count,
 		}
 		morph_buf_cleanup(&metadata);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	return 0;
 }
@@ -251,7 +251,7 @@ static int resume_frame(morph_buf_t *frame, struct session *list, int count, int
 	int rc = morph_buf_init(&tokens, 32);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	morph_buf_reset(frame);
 	morph_buf_printf(frame, "\033[?2026h%s\033[H\033[J", RESUME_NORMAL);
 	if (layout->columns < 5) {
@@ -410,7 +410,7 @@ static int resume_pick(struct session *list, int count, int *selected)
 
 	if (rc == 0) rc = leave_rc;
 	morph_buf_cleanup(&picker.frame);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
@@ -426,11 +426,11 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 		return cmd_switch(ctx, argc, argv);
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		CMD_ERROR(ctx, "use /resume <name|id> in JSON mode");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	(void)runtime_session_current_id(ctx->runtime, &current_id);
 	if (count == 0)
 		CMD_OK(ctx, "no sessions to resume");
@@ -578,14 +578,14 @@ static int history_export_items(struct model_history_item *items,
 
 	if (!array || !path) {
 		cJSON_Delete(array);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
 		cJSON *entry = cJSON_CreateObject();
 
 		if (!entry) {
 			cJSON_Delete(array);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddNumberToObject(entry, "sequence_no",
 			(double)item->sequence_no);
@@ -610,11 +610,11 @@ static int history_export_items(struct model_history_item *items,
 	json = cJSON_Print(array);
 	cJSON_Delete(array);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	expanded = file_expand_path(path);
 	if (!expanded) {
 		free(json);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = file_write_all(expanded, json, strlen(json));
 	free(expanded);
@@ -658,7 +658,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			sequence = strtoll(value, &end, 10);
 			if (errno || end == value || *end || sequence <= 0) {
 				CMD_ERROR(ctx, "history entry must be a positive sequence number");
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 		}
 		else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
@@ -671,13 +671,13 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			value = strtol(argv[i], &end, 10);
 			if (errno || *end || value <= 0 || value > INT_MAX) {
 				CMD_ERROR(ctx, "history count must be a positive integer");
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 			n = (int)value;
 		}
 		else {
 			CMD_ERROR(ctx, "unknown or incomplete history option: %s", argv[i]);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 	}
 	if (n <= 0)

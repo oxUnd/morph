@@ -30,7 +30,7 @@ int ext_load_so(struct ext *ex, const char *path)
 	if (!handle) {
 		log_err(ex ? ex->logger : NULL, "ext_load_so: dlopen %s failed: %s", full_path,
 			dlerror());
-		MORPH_RETURN(MORPH_ERR_LOAD);
+		return MORPH_ERR_LOAD;
 	}
 
 	typedef int (*run_fn)(const char *, char **);

@@ -41,15 +41,15 @@ static int deepseek_disable_thinking(cJSON *request)
 {
 	cJSON *thinking = cJSON_CreateObject();
 	if (!thinking)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!cJSON_AddStringToObject(thinking, "type", "disabled")) {
 		cJSON_Delete(thinking);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_DeleteItemFromObjectCaseSensitive(request, "thinking");
 	if (!cJSON_AddItemToObject(request, "thinking", thinking)) {
 		cJSON_Delete(thinking);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON *kwargs = cJSON_GetObjectItemCaseSensitive(request, "chat_template_kwargs");
 	if (cJSON_IsObject(kwargs)) {

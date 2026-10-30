@@ -23,3 +23,4 @@ bash_parse.c
 sha256.c
 
 signals.c
+child_io.c

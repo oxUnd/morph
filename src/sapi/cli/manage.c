@@ -37,7 +37,7 @@ int cli_manage_error(int rc, const char *context)
 int cli_manage_copy_arg(char *dst, size_t cap, const char *src)
 {
 	if (strlen(src) >= cap)
-		MORPH_RETURN(-E2BIG);
+		return -E2BIG;
 	memcpy(dst, src, strlen(src) + 1);
 	return 0;
 }
@@ -56,14 +56,14 @@ int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output)
 	char buffer[BUFSIZ];
 
 	if (pipe(descriptors) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	pid = fork();
 	if (pid < 0) {
 		int error = -errno;
 
 		close(descriptors[0]);
 		close(descriptors[1]);
-		MORPH_RETURN(error);
+		return error;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -87,14 +87,14 @@ int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output)
 		if (count < 0 && errno == EINTR)
 			continue;
 		if (count < 0) {
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 			break;
 		}
 		if (count == 0)
 			break;
 		if (output && rc == 0) {
 			if (output->len + (size_t)count > 1024 * 1024)
-				MORPH_SET_ERR(rc, -EFBIG);
+				rc = (-EFBIG);
 			else
 				rc = morph_buf_append(output, buffer, (size_t)count);
 		}
@@ -102,12 +102,12 @@ int cli_manage_run(const char *dir, char *const argv[], morph_buf_t *output)
 	close(descriptors[0]);
 	while (waitpid(pid, &status, 0) < 0) {
 		if (errno != EINTR)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 	}
 	if (rc != 0)
 		return rc;
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		MORPH_RETURN(MORPH_ERR_PROCESSING);
+		return MORPH_ERR_PROCESSING;
 	return 0;
 }
 
@@ -120,32 +120,32 @@ int cli_manage_atomic_write(const char *path, const char *data, size_t len)
 	int fd;
 
 	if (!temporary)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	fd = mkstemp(temporary);
 	if (fd < 0) {
 		int error = -errno;
 
 		free(temporary);
-		MORPH_RETURN(error);
+		return error;
 	}
 	if (stat(path, &st) == 0 && fchmod(fd, st.st_mode & 0777) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	while (rc == 0 && offset < len) {
 		ssize_t count = write(fd, data + offset, len - offset);
 
 		if (count < 0 && errno == EINTR)
 			continue;
 		if (count <= 0)
-			MORPH_SET_ERR(rc, count < 0 ? -errno : -EIO);
+			rc = (count < 0 ? -errno : -EIO);
 		else
 			offset += (size_t)count;
 	}
 	if (rc == 0 && fsync(fd) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	if (close(fd) != 0 && rc == 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	if (rc == 0 && rename(temporary, path) != 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	if (rc != 0)
 		unlink(temporary);
 	free(temporary);
@@ -157,12 +157,12 @@ int cli_manage_lock(const char *path)
 	int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
 
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (flock(fd, LOCK_EX) != 0) {
 		int error = -errno;
 
 		close(fd);
-		MORPH_RETURN(error);
+		return error;
 	}
 	return fd;
 }

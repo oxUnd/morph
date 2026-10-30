@@ -268,14 +268,14 @@ int cli_terminal_init(struct cli_context *ctx, FILE *output, int output_fd)
 	int rc;
 
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	terminal = calloc(1, sizeof(*terminal));
 	if (!terminal)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = morph_buf_init(&terminal->live_text, BUFSIZ);
 	if (rc != 0) {
 		free(terminal);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	terminal->output = output ? output : stdout;
 	terminal->output_fd = output_fd;

@@ -12,15 +12,15 @@ int prompt_context_build(const struct prompt_context_provider *providers,
 	int rc;
 
 	if (!out || !arena || (!providers && count))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	for (size_t i = 0; i < count; i++) {
 		if (!providers[i].name || !*providers[i].name ||
 		    !providers[i].collect_render)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		for (size_t j = 0; j < i; j++) {
 			if (!strcmp(providers[i].name, providers[j].name))
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 		}
 	}
 	rc = morph_buf_init_arena(&buf, arena, 1024);
@@ -32,7 +32,7 @@ int prompt_context_build(const struct prompt_context_provider *providers,
 			return rc;
 	}
 	if (buf.failed)
-		MORPH_RETURN(buf.failed);
+		return buf.failed;
 	*out = morph_buf_cstr(&buf);
 	return 0;
 }

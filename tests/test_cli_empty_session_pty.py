@@ -58,7 +58,7 @@ class StartupModel(http.server.BaseHTTPRequestHandler):
 
 def assert_quiet(terminal, database):
     assert terminal.child.isalive(), terminal.raw[-4000:]
-    for error in ('MORPH_RETURN:', 'MORPH_SET_ERR:', 'database error',
+    for error in ('MORPH_RETURN:', 'MORPH_SET_ERR:', 'Error trace:', 'database error',
                   'No message available', 'No message available on STREAM',
                   'Generating recap', 'Recap:'):
         assert error not in terminal.raw, terminal.raw[-4000:]
@@ -71,7 +71,6 @@ def assert_quiet(terminal, database):
 
 def main():
     binary = Path(sys.argv[1]).resolve()
-    expect_debug_trace = len(sys.argv) > 2 and sys.argv[2] == '1'
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), StartupModel)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -106,10 +105,9 @@ auto_connect = true
                         assert StartupModel.mcp_methods == [
                             'server/discover', 'initialize', 'notifications/initialized'
                         ], StartupModel.mcp_methods
-                    if expect_debug_trace:
-                        log = (directory / 'home/.morph/log/agent.log').read_text()
-                        assert 'MORPH_RETURN: protocol error' in log, log[-3000:]
-                        assert 'src/mcp/mcp_protocol.c:' in log, log[-3000:]
+                    log = (directory / 'home/.morph/log/agent.log').read_text()
+                    assert 'Error trace: protocol error' in log, log[-3000:]
+                    assert 'src/mcp/mcp_protocol.c:' in log, log[-3000:]
                     screen = terminal.snapshot(f'empty startup at {columns} columns')
                     assert '0 / 128k' in screen, screen
                     terminal.send('unsent startup draft')

@@ -57,7 +57,7 @@ static int validate_config_content(const char *content, char *errbuf,
 	int rc;
 
 	if (!content)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (errbuf_size > 0)
 		errbuf[0] = '\0';
 	rc = config_validate_text(content, &error);
@@ -77,7 +77,7 @@ static int ensure_parent_dir(const char *path)
 	char *dir;
 
 	if (!path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	strncpy(tmp, path, sizeof(tmp) - 1);
 	tmp[sizeof(tmp) - 1] = '\0';
 	dir = dirname(tmp);
@@ -95,10 +95,10 @@ static int validate_patch_scope(const char *patch, char *error,
 	int updates = 0;
 
 	if (!patch || strlen(patch) > CONFIG_EDIT_MAX_SIZE)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	copy = strdup(patch);
 	if (!copy)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	for (line = strtok_r(copy, "\n", &save); line;
 	     line = strtok_r(NULL, "\n", &save)) {
 		char *begin = line;
@@ -118,7 +118,7 @@ static int validate_patch_scope(const char *patch, char *error,
 					 "patch may only update %s",
 					 CONFIG_EDIT_PATCH_FILE);
 				free(copy);
-				MORPH_RETURN(-EACCES);
+				return -EACCES;
 			}
 			updates++;
 		} else if (strncmp(begin, "*** Add File: ", 14) == 0 ||
@@ -127,7 +127,7 @@ static int validate_patch_scope(const char *patch, char *error,
 			snprintf(error, error_size,
 				 "config_edit only accepts an update patch");
 			free(copy);
-			MORPH_RETURN(-EACCES);
+			return -EACCES;
 		}
 	}
 	free(copy);
@@ -135,7 +135,7 @@ static int validate_patch_scope(const char *patch, char *error,
 		snprintf(error, error_size,
 			 "patch must contain exactly one update for %s",
 			 CONFIG_EDIT_PATCH_FILE);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	return 0;
 }
@@ -151,14 +151,14 @@ static int build_content_from_patch(const char *old_content,
 	int rc;
 
 	if (!old_content || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	stage_path[0] = '\0';
 	*out = NULL;
 	rc = validate_patch_scope(patch, error, error_size);
 	if (rc != 0)
 		return rc;
 	if (!mkdtemp(temp_dir))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = file_path_join(stage_path, sizeof(stage_path), temp_dir,
 		CONFIG_EDIT_PATCH_FILE);
 	if (rc == 0)
@@ -198,9 +198,9 @@ static int write_all_fd(int fd, const char *data, size_t len)
 		if (count < 0 && errno == EINTR)
 			continue;
 		if (count < 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		if (count == 0)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		written += (size_t)count;
 	}
 	return 0;
@@ -216,17 +216,17 @@ static int atomic_write_config(const char *path, const char *content,
 	int rc;
 
 	if (!path || !content)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	strncpy(parent_copy, path, sizeof(parent_copy) - 1);
 	parent_copy[sizeof(parent_copy) - 1] = '\0';
 	parent = dirname(parent_copy);
 	if (snprintf(temporary, sizeof(temporary),
 		     "%s/.morph-config-edit-XXXXXX", parent) >=
 	    (int)sizeof(temporary))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	fd = mkstemp(temporary);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = fchmod(fd, mode);
 	if (rc == 0)
 		rc = write_all_fd(fd, content, strlen(content));
@@ -283,16 +283,16 @@ static int config_edit_exec(const char *args_json, struct tool_result *result,
 	errbuf[0] = '\0';
 
 	if (!result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!ctx || !ctx->config_path[0]) {
 		(void)tool_result_error(result, "tool_failed",
 					     "config_edit is not configured");
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	root = cJSON_Parse(args_json);
 	if (!root) {
 		(void)tool_result_error(result, "tool_failed", "invalid JSON");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	cJSON *path_item = cJSON_GetObjectItem(root, "path");
 	cJSON *content_item = cJSON_GetObjectItem(root, "content");
@@ -562,10 +562,10 @@ int config_edit_init(struct tool_registry *reg, struct tool_context *tctx,
 	int rc;
 
 	if (!reg || !config_path || !config_path[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	ctx->tctx = tctx;
 	strncpy(ctx->config_path, config_path, sizeof(ctx->config_path) - 1);
 	spec.user_data = ctx;

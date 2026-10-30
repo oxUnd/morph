@@ -35,7 +35,7 @@ static const char *const history_tables[] = {"messages",
 static int import_exec(sqlite3 *db, const char *sql)
 {
 	if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -43,11 +43,11 @@ static int import_check(sqlite3 *db, const char *sql)
 {
 	sqlite3_stmt *stmt = NULL;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	int step = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (step != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	return 0;
 }
 
@@ -96,12 +96,12 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 		if (sql.failed) {
 			int error = sql.failed;
 			morph_buf_cleanup(&sql);
-			MORPH_RETURN(error);
+			return error;
 		}
 		int rc = sqlite3_prepare_v2(db, morph_buf_cstr(&sql), -1, &stmt, NULL);
 		morph_buf_cleanup(&sql);
 		if (rc != SQLITE_OK)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		sqlite3_bind_int64(stmt, 1, session_id);
 		blake3_hasher_update(&hasher, table, strlen(table) + 1);
 		while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -129,7 +129,7 @@ static int import_revision(sqlite3 *db, int64_t session_id, char hash[65])
 		}
 		sqlite3_finalize(stmt);
 		if (step != SQLITE_DONE)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 	}
 	blake3_hasher_finalize(&hasher, digest, sizeof(digest));
 	for (size_t i = 0; i < sizeof(digest); i++) {
@@ -165,7 +165,7 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 		if (sqlite3_prepare_v2(db,
 			"SELECT origin FROM incoming.sync_session_origins WHERE session_id=?",
 			-1, &stmt, NULL) != SQLITE_OK) {
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 			goto out_free_session;
 		}
 		sqlite3_bind_int64(stmt, 1, old_id);
@@ -178,13 +178,13 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 		stmt = NULL;
 	}
 	if (identity.failed) {
-		MORPH_SET_ERR(rc, identity.failed);
+		rc = (identity.failed);
 		goto out_free_session;
 	}
 	if (sqlite3_prepare_v2(db,
 		"SELECT session_id FROM sync_import_receipts WHERE origin=? AND revision=?",
 		-1, &stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_session;
 	}
 	sqlite3_bind_text(stmt, 1, morph_buf_cstr(&identity), -1, SQLITE_TRANSIENT);
@@ -197,25 +197,25 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 		if (sqlite3_prepare_v2(db,
 			"INSERT INTO import_session_map(old_id,new_id,is_new) "
 			"SELECT ?,id,0 FROM sessions WHERE id=?", -1, &stmt, NULL) != SQLITE_OK) {
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 			goto out_free_session;
 		}
 		sqlite3_bind_int64(stmt, 1, old_id);
 		sqlite3_bind_int64(stmt, 2, previous_id);
 		if (sqlite3_step(stmt) != SQLITE_DONE) {
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 			goto out_free_session;
 		}
 		result->unchanged++;
 		goto out_free_session;
 	}
 	if (step != SQLITE_DONE) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_session;
 	}
 	char *base = utf8_dup_clamped(name ? name : "Imported conversation", 180);
 	if (!base) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_session;
 	}
 	morph_buf_puts(&title, base);
@@ -227,7 +227,7 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	}
 	free(base);
 	if (title.failed) {
-		MORPH_SET_ERR(rc, title.failed);
+		rc = (title.failed);
 		goto out_free_session;
 	}
 	rc = session_create(&target, morph_buf_cstr(&title), model, &session);
@@ -236,13 +236,13 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	if (sqlite3_prepare_v2(db,
 		"INSERT INTO import_session_map(old_id,new_id) VALUES(?,?)",
 		-1, &stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_session;
 	}
 	sqlite3_bind_int64(stmt, 1, old_id);
 	sqlite3_bind_int64(stmt, 2, session.id);
 	if (sqlite3_step(stmt) != SQLITE_DONE)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (rc != 0)
@@ -250,14 +250,14 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 	if (sqlite3_prepare_v2(db,
 		"INSERT INTO sync_import_receipts(origin,revision,session_id) VALUES(?,?,?)",
 		-1, &stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_session;
 	}
 	sqlite3_bind_text(stmt, 1, morph_buf_cstr(&identity), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, revision, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, session.id);
 	if (sqlite3_step(stmt) != SQLITE_DONE)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (rc == 0 && sqlite3_prepare_v2(db,
@@ -266,9 +266,9 @@ static int import_session(sqlite3 *db, sqlite3_stmt *source, const char *origin,
 		sqlite3_bind_int64(stmt, 1, session.id);
 		sqlite3_bind_text(stmt, 2, morph_buf_cstr(&identity), -1, SQLITE_TRANSIENT);
 		if (sqlite3_step(stmt) != SQLITE_DONE)
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 	} else {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	}
 	if (rc == 0)
 		result->imported++;
@@ -277,7 +277,7 @@ out_free_session:
 	sqlite3_finalize(stmt);
 	morph_buf_cleanup(&identity);
 	morph_buf_cleanup(&title);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int64_t import_offset(sqlite3 *db, const char *table)
@@ -313,14 +313,14 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 	if (!import_has_column(db, "incoming", table, "session_id"))
 		return 0;
 	if (offset < 0)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	morph_buf_init(&sql, 128);
 	morph_buf_init(&columns, 128);
 	morph_buf_init(&values, 128);
 	morph_buf_printf(&sql, "PRAGMA main.table_info(%s)", table);
 	if (sql.failed || sqlite3_prepare_v2(db, morph_buf_cstr(&sql), -1,
 		&stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_columns;
 	}
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -346,7 +346,7 @@ static int import_table(sqlite3 *db, const char *table, int64_t message_offset,
 			morph_buf_printf(&values, "s.\"%s\"", name);
 	}
 	if (step != SQLITE_DONE || count == 0 || columns.failed || values.failed) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_free_columns;
 	}
 	morph_buf_cleanup(&sql);
@@ -362,7 +362,7 @@ out_free_columns:
 	morph_buf_cleanup(&sql);
 	morph_buf_cleanup(&columns);
 	morph_buf_cleanup(&values);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_session_import_file(struct runtime *runtime, const char *path,
@@ -375,22 +375,22 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 	int transaction = 0;
 
 	if (!runtime || !path || !origin || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 	if (!file_exists(path))
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	rc = pthread_mutex_trylock(&runtime->context.execution_lock);
 	if (rc != 0)
-		MORPH_RETURN(-rc);
+		return -rc;
 	if (sqlite3_open_v2(sqlite3_db_filename(runtime->context.database.handle, "main"),
 		&db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_close_import;
 	}
 	sqlite3_busy_timeout(db, 5000);
 	(void)sqlite3_db_config(db, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, NULL);
 	if (sqlite3_prepare_v2(db, "ATTACH DATABASE ? AS incoming", -1, &stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_close_import;
 	}
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
@@ -399,7 +399,7 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 	stmt = NULL;
 	if (step != SQLITE_DONE || !import_has_column(db, "incoming", "sessions", "display_id") ||
 	    !import_has_column(db, "incoming", "messages", "session_id")) {
-		MORPH_SET_ERR(rc, MORPH_ERR_FORMAT);
+		rc = (MORPH_ERR_FORMAT);
 		goto out_close_import;
 	}
 	rc = import_check(db, "PRAGMA incoming.foreign_key_check");
@@ -439,7 +439,7 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 	if (sqlite3_prepare_v2(db,
 		"SELECT id,display_id,name,model FROM incoming.sessions ORDER BY id",
 		-1, &stmt, NULL) != SQLITE_OK) {
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 		goto out_close_import;
 	}
 	while ((step = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -450,11 +450,11 @@ int runtime_session_import_file(struct runtime *runtime, const char *path,
 	sqlite3_finalize(stmt);
 	stmt = NULL;
 	if (rc == 0 && step != SQLITE_DONE)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	int64_t message_offset = import_offset(db, "messages");
 	int64_t model_offset = import_offset(db, "model_history_items");
 	if (message_offset < 0 || model_offset < 0)
-		MORPH_SET_ERR(rc, MORPH_ERR_DB);
+		rc = (MORPH_ERR_DB);
 	if (rc == 0)
 		rc = import_exec(db, "UPDATE sessions SET (created_at,updated_at,token_used)="
 			"(SELECT s.created_at,s.updated_at,s.token_used FROM incoming.sessions s "
@@ -516,7 +516,7 @@ out_close_import:
 	pthread_mutex_unlock(&runtime->context.execution_lock);
 	if (rc != 0)
 		memset(result, 0, sizeof(*result));
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int runtime_sync_import_backup(struct runtime *runtime,
@@ -532,7 +532,7 @@ int runtime_sync_import_backup(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !cfg || !snapshot_id || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 	rc = morph_sync_backups(cfg, "data.db", &backups, &count);
 	if (rc != 0)
@@ -543,7 +543,7 @@ int runtime_sync_import_backup(struct runtime *runtime,
 	}
 	morph_sync_backups_free(backups);
 	if (!origin[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	rc = file_path_join(directory, sizeof(directory), cfg->sync_dir, ".morph-sync/import");
 	if (rc == 0)
 		rc = file_ensure_dir(directory);
@@ -557,5 +557,5 @@ int runtime_sync_import_backup(struct runtime *runtime,
 	if (rc == 0)
 		rc = runtime_session_import_file(runtime, path, origin, result);
 	(void)unlink(path);
-	MORPH_RETURN(rc);
+	return rc;
 }

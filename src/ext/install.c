@@ -165,7 +165,7 @@ static int wait_child(pid_t pid)
 	while (waitpid(pid, &status, 0) < 0) {
 		if (errno == EINTR)
 			continue;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		return -EIO;
@@ -176,7 +176,7 @@ static int run_cmd(char *const argv[], const char *cwd)
 {
 	pid_t pid = fork();
 	if (pid < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (pid == 0) {
 		morph_signals_reset_child();
 		if (cwd && chdir(cwd) != 0)
@@ -196,14 +196,14 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 
 	int fds[2];
 	if (pipe(fds) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 
 	pid_t pid = fork();
 	if (pid < 0) {
 		int err = errno;
 		close(fds[0]);
 		close(fds[1]);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -225,7 +225,7 @@ static int run_cmd_capture(char *const argv[], const char *cwd,
 				continue;
 			close(fds[0]);
 			(void)wait_child(pid);
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		}
 		if (n == 0)
 			break;
@@ -333,17 +333,17 @@ static int remove_tree(const char *path)
 	if (lstat(path, &st) != 0) {
 		if (errno == ENOENT)
 			return 0;
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
 		if (unlink(path) != 0)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		return 0;
 	}
 
 	DIR *dir = opendir(path);
 	if (!dir)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	int rc = 0;
 	struct dirent *ent;
 	while ((ent = readdir(dir)) != NULL) {
@@ -362,7 +362,7 @@ static int remove_tree(const char *path)
 	if (rc < 0)
 		return rc;
 	if (rmdir(path) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -370,12 +370,12 @@ static int copy_file(const char *src, const char *dst, mode_t mode)
 {
 	int in = open(src, O_RDONLY);
 	if (in < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, mode & 0777);
 	if (out < 0) {
 		int err = errno;
 		close(in);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	char buf[BUFSIZ];
@@ -420,10 +420,10 @@ static int copy_symlink(const char *src, const char *dst)
 	char target[PATH_MAX];
 	ssize_t n = readlink(src, target, sizeof(target) - 1);
 	if (n < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	target[n] = '\0';
 	if (symlink(target, dst) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -431,7 +431,7 @@ static int copy_tree(const char *src, const char *dst)
 {
 	struct stat st;
 	if (lstat(src, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 
 	if (S_ISLNK(st.st_mode))
 		return copy_symlink(src, dst);
@@ -441,12 +441,12 @@ static int copy_tree(const char *src, const char *dst)
 		return 0;
 
 	if (mkdir(dst, st.st_mode & 0777) != 0 && errno != EEXIST)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	(void)chmod(dst, st.st_mode & 0777);
 
 	DIR *dir = opendir(src);
 	if (!dir)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	int rc = 0;
 	struct dirent *ent;
 	while ((ent = readdir(dir)) != NULL) {
@@ -511,7 +511,7 @@ int ext_install_source(struct morph_log *logger, const char *source,
 	if (rc < 0)
 		return rc;
 	if (!mkdtemp(tmpl))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	cleanup_tmp = 1;
 
 	rc = file_path_join(repo_dir, sizeof(repo_dir), tmpl, "repo");

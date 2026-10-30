@@ -72,7 +72,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	     chh->valuedouble < 0 || chh->valuedouble > MORPH_IMAGE_MAX_DIMENSION))) {
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "image_too_large", "Invalid image dimensions");
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	int target_w = cJSON_IsNumber(cw) ? (int)cw->valuedouble : 0;
 	int target_h = cJSON_IsNumber(chh) ? (int)chh->valuedouble : 0;
@@ -112,7 +112,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 	if (!src) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 
 	/* Maintain aspect ratio if only one dim is given */
@@ -131,7 +131,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 		stbi_image_free(src);
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "image_too_large", "Image exceeds pixel limit");
-		MORPH_RETURN(size_rc);
+		return size_rc;
 	}
 	unsigned char *dst = malloc(dst_bytes);
 	if (!dst) {
@@ -148,7 +148,7 @@ static int img_resize_exec(const char *args_json, struct tool_result *result, vo
 		free(dst);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"resize failed\"}"));
-		MORPH_RETURN(MORPH_ERR_PROCESSING);
+		return MORPH_ERR_PROCESSING;
 	}
 	stbi_image_free(src);
 

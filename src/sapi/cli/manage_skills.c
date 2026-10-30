@@ -112,7 +112,7 @@ static int skills_parse(int argc, char **argv, const char *config,
 			break;
 		case SKILLS_OPTION_SKILL:
 			if (options->name_count == SKILL_MAX_ENTRIES)
-				MORPH_RETURN(-E2BIG);
+				return -E2BIG;
 			options->names[options->name_count++] = optarg;
 			break;
 		case SKILLS_OPTION_LIST:
@@ -128,35 +128,35 @@ static int skills_parse(int argc, char **argv, const char *config,
 			options->action = "--help";
 			return 0;
 		default:
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 	}
 	if (strcmp(options->action, "add") == 0 && optind < argc)
 		options->source = argv[optind++];
 	while (optind < argc) {
 		if (options->name_count == SKILL_MAX_ENTRIES)
-			MORPH_RETURN(-E2BIG);
+			return -E2BIG;
 		options->names[options->name_count++] = argv[optind++];
 	}
 	if (strcmp(options->action, "add") == 0) {
 		if (!options->source || (options->all && options->name_count) ||
 		    (options->list && (options->all || options->name_count || options->replace)))
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	} else if (options->path || options->ref || options->list || options->all ||
 		   options->replace || (strcmp(options->action, "list") == 0 &&
 		   options->name_count)) {
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (strcmp(options->action, "remove") == 0 && !options->name_count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < options->name_count; i++) {
 		if (!cli_manage_name_valid(options->names[i]) ||
 		    strlen(options->names[i]) >= SKILL_NAME_MAX)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	}
 	if ((options->ref && (!*options->ref || options->ref[0] == '-')) ||
 	    (options->path && !*options->path))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -168,25 +168,25 @@ static int skills_user_dir(const char *config_path, char **out)
 	toml_datum_t dir;
 
 	if (!path)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	text = file_read_all(path, NULL);
 	free(path);
 	if (!text) {
 		if (config_path || errno != ENOENT)
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		*out = file_expand_path("~/.morph/skills");
 		return *out ? 0 : -ENOMEM;
 	}
 	if (strlen(text) > 1024 * 1024) {
 		free(text);
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	parsed = toml_parse(text, (int)strlen(text));
 	free(text);
 	if (!parsed.ok) {
 		fprintf(stderr, "morph: invalid config: %s\n", parsed.errmsg);
 		toml_free(parsed);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	dir = toml_get(toml_get(parsed.toptab, "skill"), "dir");
 	*out = file_expand_path(dir.type == TOML_STRING && dir.u.s[0] ?
@@ -223,7 +223,7 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 	memset(prepared, 0, sizeof(*prepared));
 	if (local) {
 		if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
-			MORPH_RETURN(-ENOTDIR);
+			return -ENOTDIR;
 		rc = cli_manage_copy_arg(prepared->source, sizeof(prepared->source), resolved);
 		if (rc != 0)
 			return rc;
@@ -233,7 +233,7 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 		prepared->git = force_git || file_exists(git_dir);
 		if (!prepared->git) {
 			if (ref)
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			return cli_manage_copy_arg(prepared->root,
 				sizeof(prepared->root), resolved);
 		}
@@ -248,11 +248,11 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 
 			if (!slash || slash == source || strchr(slash + 1, '/') ||
 			    (size_t)(slash - source) >= sizeof(owner))
-				MORPH_RETURN(-ENOENT);
+				return -ENOENT;
 			memcpy(owner, source, (size_t)(slash - source));
 			owner[slash - source] = '\0';
 			if (!cli_manage_name_valid(owner) || !skills_repo_name_valid(slash + 1))
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			size_t length_source = strlen(source);
 			const char *suffix = length_source > 4 &&
 				strcmp(source + length_source - 4, ".git") == 0 ? "" : ".git";
@@ -266,10 +266,10 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 			return rc;
 	}
 	if (prepared->source[0] == '-')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	cache = file_expand_path("~/.morph/cache/skills");
 	if (!cache)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = file_ensure_dir(cache);
 	if (rc == 0)
 		rc = file_path_join(prepared->temporary, sizeof(prepared->temporary),
@@ -279,7 +279,7 @@ static int skills_prepare(const char *source, const char *ref, int force_git,
 		return rc;
 	if (!mkdtemp(prepared->temporary)) {
 		prepared->temporary[0] = '\0';
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	rc = file_path_join(prepared->root, sizeof(prepared->root), prepared->temporary, "repo");
 	if (rc != 0)
@@ -334,16 +334,16 @@ static int skills_scan_source(struct morph_log *logger, const struct skills_sour
 	if (rc != 0)
 		return rc;
 	if (subdir && file_path_is_absolute(subdir))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!realpath(selected, resolved))
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!path_is_within(resolved, source->root))
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	rc = skill_store_scan(logger, resolved, candidates);
 	if (rc != 0)
 		return rc;
 	if (!candidates->nelts)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	for (size_t i = 0; i < candidates->nelts; i++) {
 		const struct skill_candidate *candidate = morph_array_get(candidates, i);
 
@@ -354,7 +354,7 @@ static int skills_scan_source(struct morph_log *logger, const struct skills_sour
 				fprintf(stderr, "morph: duplicate skill name '%s'; "
 					"narrow the source with --path\n",
 					candidate->fm.name);
-				MORPH_RETURN(-EEXIST);
+				return -EEXIST;
 			}
 		}
 	}
@@ -394,7 +394,7 @@ static int skills_select(const struct skills_options *options,
 			if (!found) {
 				fprintf(stderr, "morph: skill not found in source: %s\n",
 					options->names[i]);
-				MORPH_RETURN(-ENOENT);
+				return -ENOENT;
 			}
 		}
 		return 0;
@@ -406,7 +406,7 @@ static int skills_select(const struct skills_options *options,
 	skills_candidates_print(candidates);
 	if (options->yes || !isatty(STDIN_FILENO)) {
 		fputs("morph: multiple skills; select with --skill NAME or --all\n", stderr);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	fputs("Select skill numbers (comma/space separated), or 'all': ", stderr);
 	fflush(stderr);
@@ -416,7 +416,7 @@ static int skills_select(const struct skills_options *options,
 	int count = 0;
 
 	if (!fgets(input, sizeof(input), stdin))
-		MORPH_RETURN(-ECANCELED);
+		return -ECANCELED;
 	for (token = strtok_r(input, ", \t\r\n", &save); token;
 	     token = strtok_r(NULL, ", \t\r\n", &save)) {
 		char *end;
@@ -431,7 +431,7 @@ static int skills_select(const struct skills_options *options,
 		errno = 0;
 		index = strtoul(token, &end, 10);
 		if (errno || *end || index == 0 || index > candidates->nelts)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		selected[index - 1] = 1;
 		count++;
 	}
@@ -531,7 +531,7 @@ static int skills_list(const struct skills_options *options, const char *user_di
 	int rc;
 
 	if (!registry)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	skill_registry_init(NULL, registry);
 	rc = skill_discover_configured(registry, options->global ? NULL : ".", user_dir);
 	if (rc >= 0 && !options->global) {
@@ -590,7 +590,7 @@ static int skills_update_one(struct morph_log *logger, const char *root, const c
 	const char *ref = metadata_string(metadata, "ref");
 
 	if (!origin || !kind || !path || !ref) {
-		MORPH_SET_ERR(rc, MORPH_ERR_FORMAT);
+		rc = (MORPH_ERR_FORMAT);
 		goto out;
 	}
 	rc = morph_array_init(&candidates, 1, sizeof(struct skill_candidate));
@@ -608,7 +608,7 @@ static int skills_update_one(struct morph_log *logger, const char *root, const c
 				candidate = entry;
 		}
 		if (!candidate)
-			MORPH_SET_ERR(rc, -ENOENT);
+			rc = (-ENOENT);
 		else {
 			cJSON *updated = skills_metadata_create(&source, candidate,
 				*ref ? ref : NULL);
@@ -720,7 +720,7 @@ int cli_manage_skills(struct morph_log *logger, int argc, char **argv, const cha
 	}
 	root = options.global ? strdup(user_dir) : strdup(".agents/skills");
 	if (!root) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out;
 	}
 	if (!options.list) {
@@ -728,23 +728,23 @@ int cli_manage_skills(struct morph_log *logger, int argc, char **argv, const cha
 		if (rc != 0)
 			goto out;
 		if (!realpath(root, resolved)) {
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 			goto out;
 		}
 		free(root);
 		root = strdup(resolved);
 		if (!root) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out;
 		}
 		lock = file_path_join_alloc(root, ".morph-skills.lock");
 		if (!lock) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out;
 		}
 		fd = cli_manage_lock(lock);
 		if (fd < 0) {
-			MORPH_SET_ERR(rc, fd);
+			rc = (fd);
 			goto out;
 		}
 	}

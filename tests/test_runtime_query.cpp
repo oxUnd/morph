@@ -322,9 +322,13 @@ TEST_F(RuntimeQueryTest, ExplicitPreferenceToolReplacesGenericPreferenceAndRejec
 	tool_result_cleanup(&result);
 	tool_result_init(&result);
 	result.runtime = &rt;
-	ASSERT_EQ(tool_exec(&tools, "memory_preference",
-		"{\"key\":\"code.indent\",\"value\":\"four spaces\",\"scope\":\"personal\","
-		"\"evidence\":\"以后代码缩进使用四个空格\"}", &result), 0);
+	ASSERT_LT(
+		tool_exec(
+			&tools, "memory_preference",
+			"{\"key\":\"code.indent\",\"value\":\"four spaces\",\"scope\":\"personal\","
+			"\"evidence\":\"以后代码缩进使用四个空格\"}",
+			&result),
+		0);
 	tool_result_cleanup(&result);
 	char *effective = preference_render(&db, session.id, 0);
 	ASSERT_NE(effective, nullptr);
@@ -357,7 +361,7 @@ TEST_F(RuntimeQueryTest, PreferenceToolCannotPromoteComplaintOrTemporaryRequest)
 		struct tool_result result;
 		tool_result_init(&result);
 		result.runtime = &rt;
-		EXPECT_EQ(tool_exec(&tools, "memory_preference", json, &result), 0);
+		EXPECT_LT(tool_exec(&tools, "memory_preference", json, &result), 0);
 		tool_result_cleanup(&result);
 		free(json);
 		cJSON_Delete(args);
@@ -390,9 +394,12 @@ TEST_F(RuntimeQueryTest, ExtractionOfSameInputCannotContradictCommittedLanguage)
 	struct tool_result result;
 	tool_result_init(&result);
 	result.runtime = &rt;
-	ASSERT_EQ(tool_exec(&tools, "memory_preference",
-		"{\"key\":\"preferred_language\",\"value\":\"English\",\"scope\":\"personal\","
-		"\"evidence\":\"以后都用中文\"}", &result), 0);
+	ASSERT_LT(tool_exec(&tools, "memory_preference",
+			    "{\"key\":\"preferred_language\",\"value\":\"English\",\"scope\":"
+			    "\"personal\","
+			    "\"evidence\":\"以后都用中文\"}",
+			    &result),
+		  0);
 	tool_result_cleanup(&result);
 	char *effective = preference_render(&db, session.id, 0);
 	ASSERT_NE(effective, nullptr);

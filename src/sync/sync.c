@@ -57,7 +57,7 @@ static int ensure_parent_dir(const char *path)
 	char *slash;
 
 	if (!path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	strncpy(dir, path, sizeof(dir) - 1);
 	dir[sizeof(dir) - 1] = '\0';
 	slash = strrchr(dir, '/');
@@ -101,17 +101,17 @@ static int hash_file(const char *path, char out[MORPH_SYNC_HASH_LEN])
 	size_t n;
 
 	if (!path || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	f = fopen(path, "rb");
 	if (!f)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	blake3_hasher_init(&hasher);
 	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
 		blake3_hasher_update(&hasher, buf, n);
 	}
 	if (ferror(f)) {
 		fclose(f);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	fclose(f);
 	blake3_hasher_finalize(&hasher, hash, BLAKE3_OUT_LEN);
@@ -196,7 +196,7 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 	if (!pair) {
 		pair = morph_array_push(pairs);
 		if (!pair)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		memset(pair, 0, sizeof(*pair));
 		strncpy(pair->path, rel, sizeof(pair->path) - 1);
 	}
@@ -207,7 +207,7 @@ static int add_file(morph_array_t *pairs, const char *root, const char *rel,
 		return rc;
 	rc = stat(file->full, &st);
 	if (rc != 0) {
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	file->exists = 1;
 	file->size = (int64_t)st.st_size;
@@ -236,7 +236,7 @@ static int add_remote_backend_file(morph_array_t *pairs,
 	if (!pair) {
 		pair = morph_array_push(pairs);
 		if (!pair)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		memset(pair, 0, sizeof(*pair));
 		strncpy(pair->path, rel, sizeof(pair->path) - 1);
 	}
@@ -256,11 +256,11 @@ static int refresh_file(struct sync_file *file)
 	int rc;
 
 	if (!file || !file->full[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = stat(file->full, &st);
 	if (rc != 0) {
 		if (errno != ENOENT)
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		file->exists = 0;
 		file->hash[0] = '\0';
 		file->size = 0;
@@ -280,7 +280,7 @@ static int refresh_remote_backend_file(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!cfg || !file || !file->path[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(&st, 0, sizeof(st));
 	rc = cfg->remote_backend->stat(cfg->remote_backend->user_data,
 				       file->path, &st);
@@ -353,7 +353,7 @@ static int scan_dir(morph_array_t *pairs, const char *root, const char *rel_dir,
 	if (!dir && errno == ENOENT)
 		return 0;
 	if (!dir)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	while ((ent = readdir(dir)) != NULL) {
 		char child_rel[PATH_MAX];
 		char child_full[PATH_MAX];
@@ -376,7 +376,7 @@ static int scan_dir(morph_array_t *pairs, const char *root, const char *rel_dir,
 		if (rc != 0)
 			break;
 		if (stat(child_full, &st) != 0) {
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 			break;
 		}
 		if (S_ISDIR(st.st_mode)) {
@@ -401,7 +401,7 @@ static int scan_remote_backend_dir(morph_array_t *pairs,
 	int rc;
 
 	if (!cfg || !cfg->remote_backend || !cfg->remote_backend->list)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.pairs = pairs;
 	ctx.cfg = cfg;
@@ -450,7 +450,7 @@ static int scan_include(morph_array_t *pairs, const char *root,
 	if (rc != 0 && errno == ENOENT)
 		return 0;
 	if (rc != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (S_ISDIR(st.st_mode))
 		return scan_dir(pairs, root, include, remote_side);
 	return add_file(pairs, root, include, remote_side);
@@ -490,7 +490,7 @@ static int scan_output(morph_array_t *pairs, const struct morph_sync_config *cfg
 		if (!pair) {
 			pair = morph_array_push(pairs);
 			if (!pair) {
-				MORPH_SET_ERR(rc, -ENOMEM);
+				rc = (-ENOMEM);
 				break;
 			}
 			memset(pair, 0, sizeof(*pair));
@@ -500,14 +500,14 @@ static int scan_output(morph_array_t *pairs, const struct morph_sync_config *cfg
 		strncpy(pair->local.path, path, sizeof(pair->local.path) - 1);
 	}
 	morph_array_cleanup(&files);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int scan_side(morph_array_t *pairs, const char *root,
 		     const struct morph_sync_config *cfg, int remote_side)
 {
 	if (!root || !root[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < cfg->include_count; i++) {
 		int rc;
 		if (remote_side && sync_has_remote_backend(cfg))
@@ -542,7 +542,7 @@ static int manifest_open(sqlite3 **out, const char *sync_dir)
 		return rc;
 	if (sqlite3_open_v2(path, out, SQLITE_OPEN_READWRITE |
 	    SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	rc = sqlite3_exec(*out,
 		"CREATE TABLE IF NOT EXISTS entries("
 		"path TEXT PRIMARY KEY,"
@@ -575,7 +575,7 @@ static int manifest_open(sqlite3 **out, const char *sync_dir)
 		"device_id TEXT);",
 		NULL, NULL, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	(void)sqlite3_exec(*out,
 		"ALTER TABLE entries ADD COLUMN local_size INTEGER NOT NULL DEFAULT 0",
 		NULL, NULL, NULL);
@@ -610,7 +610,7 @@ static int manifest_get(sqlite3 *db, const char *path,
 		"FROM entries WHERE path=?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -662,7 +662,7 @@ static int manifest_put(sqlite3 *db, const struct sync_pair *pair,
 		"updated_at=excluded.updated_at",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, pair->path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, pair->local.exists ?
 			  pair->local.hash : "", -1, SQLITE_TRANSIENT);
@@ -696,7 +696,7 @@ static int manifest_conflict(sqlite3 *db, const struct sync_pair *pair)
 		" VALUES(?,?,?,?)",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, pair->path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, pair->local.hash, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, pair->remote.hash, -1, SQLITE_TRANSIENT);
@@ -715,7 +715,7 @@ static int manifest_resolve_db_conflicts(sqlite3 *db, const char *path)
 		"UPDATE conflicts SET resolved_at=? WHERE path=? AND resolved_at=0",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, (int64_t)time(NULL));
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
@@ -733,7 +733,7 @@ static int manifest_trash(sqlite3 *db, const char *path,
 		"INSERT INTO trash(path,trash_path,created_at) VALUES(?,?,?)",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, trash_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, (int64_t)time(NULL));
@@ -755,7 +755,7 @@ static int manifest_tombstone(sqlite3 *db, const char *path)
 		"deleted_at=excluded.deleted_at,device_id=excluded.device_id",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
 	sqlite3_bind_text(stmt, 3, device, -1, SQLITE_TRANSIENT);
@@ -772,7 +772,7 @@ static int manifest_clear_tombstone(sqlite3 *db, const char *path)
 	rc = sqlite3_prepare_v2(db, "DELETE FROM tombstones WHERE path=?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
@@ -787,7 +787,7 @@ static int manifest_delete_trash(sqlite3 *db, int64_t id)
 	rc = sqlite3_prepare_v2(db, "DELETE FROM trash WHERE id=?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
@@ -834,27 +834,27 @@ static int copy_file_plain(const char *src, const char *dst)
 
 	in = fopen(src, "rb");
 	if (!in)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	out = fopen(dst, "wb");
 	if (!out) {
 		fclose(in);
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	}
 	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
 		if (fwrite(buf, 1, n, out) != n) {
 			fclose(in);
 			fclose(out);
-			MORPH_RETURN(-EIO);
+			return -EIO;
 		}
 	}
 	if (ferror(in) || fflush(out) != 0) {
 		fclose(in);
 		fclose(out);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	fclose(in);
 	if (fclose(out) != 0)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	return 0;
 }
 
@@ -891,7 +891,7 @@ static int copy_atomic(const struct morph_sync_config *cfg, const char *src,
 	if (rc != 0)
 		return rc;
 	if (rename(staging, dst) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -900,7 +900,7 @@ static int copy_local_to_remote(const struct morph_sync_config *cfg,
 				int sqlite_source)
 {
 	if (!sync_has_remote_backend(cfg))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return cfg->remote_backend->copy_from_local(
 		cfg->remote_backend->user_data, local_path, remote_rel,
 		sqlite_source);
@@ -916,7 +916,7 @@ static int copy_remote_to_local_atomic(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!sync_has_remote_backend(cfg))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sync_path_join(meta, sizeof(meta), cfg->sync_dir, SYNC_META_DIR);
 	if (rc != 0)
 		return rc;
@@ -937,7 +937,7 @@ static int copy_remote_to_local_atomic(const struct morph_sync_config *cfg,
 	if (rc != 0)
 		return rc;
 	if (rename(staging, local_path) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1005,7 +1005,7 @@ static int move_to_trash(sqlite3 *db, const struct morph_sync_config *cfg,
 	if (rc != 0)
 		return rc;
 	if (unlink(path) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	rc = manifest_trash(db, rel, trash);
 	if (rc != 0)
 		return rc;
@@ -1023,7 +1023,7 @@ static int move_remote_to_trash(sqlite3 *db,
 	int rc;
 
 	if (!sync_has_remote_backend(cfg))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sync_path_join(meta, sizeof(meta), cfg->sync_dir, SYNC_META_DIR);
 	if (rc != 0)
 		return rc;
@@ -1378,7 +1378,7 @@ static int cleanup_trash(sqlite3 *db, const struct morph_sync_config *cfg)
 		"SELECT id,trash_path FROM trash WHERE created_at<?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, cutoff);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		sqlite3_int64 id = sqlite3_column_int64(stmt, 0);
@@ -1410,7 +1410,7 @@ static int sync_once_locked(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!cfg || !cfg->source_dir[0] || !cfg->sync_dir[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!status)
 		status = &local_status;
 	memset(status, 0, sizeof(*status));
@@ -1473,17 +1473,17 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 	if (status)
 		memset(status, 0, sizeof(*status));
 	if (!cfg || !cfg->source_dir[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = file_path_join(path, sizeof(path), cfg->source_dir, ".morph-sync");
 	if (rc == 0)
 		rc = file_ensure_dir(path);
 	if (rc == 0)
 		rc = file_path_append(path, sizeof(path), "/run.lock");
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	lock_fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
 	if (lock_fd < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	do {
 		rc = flock(lock_fd, LOCK_EX);
 	} while (rc < 0 && errno == EINTR);
@@ -1499,7 +1499,7 @@ int morph_sync_once(const struct morph_sync_config *cfg,
 		strncpy(status->last_error, morph_strerror(rc),
 			sizeof(status->last_error) - 1);
 	}
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static void *sync_worker_main(void *arg)
@@ -1543,24 +1543,24 @@ int morph_sync_start(struct morph_sync_worker *worker,
 	int rc;
 
 	if (!worker || !cfg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (worker->started)
 		return 0;
 	memset(worker, 0, sizeof(*worker));
 	worker->cfg = *cfg;
 	rc = pthread_mutex_init(&worker->lock, NULL);
 	if (rc != 0)
-		MORPH_RETURN(-rc);
+		return -rc;
 	rc = pthread_cond_init(&worker->cond, NULL);
 	if (rc != 0) {
 		pthread_mutex_destroy(&worker->lock);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	rc = pthread_create(&worker->thread, NULL, sync_worker_main, worker);
 	if (rc != 0) {
 		pthread_cond_destroy(&worker->cond);
 		pthread_mutex_destroy(&worker->lock);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	worker->started = 1;
 	return 0;
@@ -1585,7 +1585,7 @@ int morph_sync_worker_status(struct morph_sync_worker *worker,
 			     struct morph_sync_status *status)
 {
 	if (!worker || !status)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!worker->started) {
 		memset(status, 0, sizeof(*status));
 		return 0;
@@ -1610,7 +1610,7 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 	int rc;
 
 	if (!cfg || !cfg->source_dir[0] || !cfg->sync_dir[0] || trash_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = manifest_open(&manifest, cfg->sync_dir);
 	if (rc != 0)
 		return rc;
@@ -1619,14 +1619,14 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK) {
 		sqlite3_close(manifest);
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int64(stmt, 1, trash_id);
 	rc = sqlite3_step(stmt);
 	if (rc != SQLITE_ROW) {
 		sqlite3_finalize(stmt);
 		sqlite3_close(manifest);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	rel = (const char *)sqlite3_column_text(stmt, 0);
 	trash_path = (const char *)sqlite3_column_text(stmt, 1);
@@ -1637,7 +1637,7 @@ int morph_sync_restore_trash(const struct morph_sync_config *cfg,
 	sqlite3_finalize(stmt);
 	if (!rel_buf[0] || !trash_buf[0]) {
 		sqlite3_close(manifest);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	memset(&pair, 0, sizeof(pair));
 	strncpy(pair.path, rel_buf, sizeof(pair.path) - 1);

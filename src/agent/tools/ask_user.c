@@ -144,7 +144,7 @@ static int ask_user_exec(const char *args_json, struct tool_result *result,
 	if (!callback) {
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"ask_user callback not configured\"}"));
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	char question[1024] = {0};
@@ -331,7 +331,7 @@ static int ask_user_register(struct tool_registry *reg, ask_user_callback_fn cb,
 int ask_user_init(struct tool_registry *reg, ask_user_callback_fn callback, void *user_data)
 {
 	if (!callback)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return ask_user_register(reg, callback, user_data);
 }
 

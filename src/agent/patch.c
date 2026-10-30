@@ -164,11 +164,11 @@ static int patch_string_array_push(morph_array_t *array, const char *text,
 	char **slot = morph_array_push(array);
 
 	if (!slot)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*slot = strndup(text, len);
 	if (!*slot) {
 		array->nelts--;
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -217,7 +217,7 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			*cursor = '\0';
 			slot = morph_array_push(lines);
 			if (!slot)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			*slot = start;
 			cursor += 2;
 			start = cursor;
@@ -230,7 +230,7 @@ static int patch_split_lines(char *copy, morph_array_t *lines)
 			*cursor = '\0';
 			slot = morph_array_push(lines);
 			if (!slot)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			*slot = start;
 			if (done)
 				break;
@@ -246,7 +246,7 @@ static int patch_append_add_line(morph_buf_t *content, const char *line)
 	int rc;
 
 	if (line[0] != '+')
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_puts(content, line + 1);
 	if (rc == 0)
 		rc = morph_buf_putc(content, '\n');
@@ -320,7 +320,7 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 		if (header == PATCH_HEADER_MOVE) {
 			hunk->move_path = strndup(value, value_len);
 			if (!hunk->move_path)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			(*index)++;
 		}
 	}
@@ -335,7 +335,7 @@ static int patch_parse_update(char **lines, size_t *index, size_t end,
 			break;
 		chunk = morph_array_push(&hunk->chunks);
 		if (!chunk)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		rc = patch_chunk_init(chunk);
 		if (rc != 0) {
 			hunk->chunks.nelts--;
@@ -545,7 +545,7 @@ static int patch_reject_symlink_components(const char *root, const char *path,
 	struct stat st;
 
 	if (strlen(root) >= sizeof(current))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	strncpy(current, root, sizeof(current) - 1);
 	current[sizeof(current) - 1] = '\0';
 	while (*part) {
@@ -554,7 +554,7 @@ static int patch_reject_symlink_components(const char *root, const char *path,
 		size_t used = strlen(current);
 
 		if (used + len + 2 > sizeof(current))
-			MORPH_RETURN(-ENAMETOOLONG);
+			return -ENAMETOOLONG;
 		current[used++] = '/';
 		memcpy(current + used, part, len);
 		current[used + len] = '\0';
@@ -592,7 +592,7 @@ static int patch_parent_ensure(const char *path)
 	char *slash;
 
 	if (strlen(path) >= sizeof(parent))
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	strncpy(parent, path, sizeof(parent) - 1);
 	parent[sizeof(parent) - 1] = '\0';
 	slash = strrchr(parent, '/');
@@ -801,11 +801,11 @@ static int patch_compute_replacements(morph_array_t *source,
 
 			memset(&context, 0, sizeof(context));
 			if (morph_array_init(&context, 1, sizeof(char *)) != 0)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			char **slot = morph_array_push(&context);
 			if (!slot) {
 				morph_array_cleanup(&context);
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			}
 			*slot = context_value;
 			matched = patch_seek_sequence(source, &context, cursor, 0,
@@ -846,7 +846,7 @@ static int patch_compute_replacements(morph_array_t *source,
 		}
 		replacement = morph_array_push(replacements);
 		if (!replacement)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		*replacement = (struct patch_replacement){
 			.start = found,
 			.old_count = old_count,
@@ -972,7 +972,7 @@ static int patch_diff_push(morph_array_t *ops, enum patch_diff_kind kind,
 	struct patch_diff_op *op = morph_array_push(ops);
 
 	if (!op)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	op->kind = kind;
 	op->text = text;
 	return 0;
@@ -1021,7 +1021,7 @@ static int patch_diff_block(char **old_lines, size_t old_count,
 	}
 	table = calloc(rows * cols, sizeof(*table));
 	if (!table)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	for (i = 1; i < rows; i++) {
 		for (j = 1; j < cols; j++) {
 			if (strcmp(old_lines[i - 1], new_lines[j - 1]) == 0)
@@ -1316,7 +1316,7 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 	int rc;
 
 	if (!workdir || !input || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(&hunks, 0, sizeof(hunks));
 	if (error && error_size > 0)
 		error[0] = '\0';
@@ -1328,11 +1328,11 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 			"patch is not valid UTF-8");
 	root = file_resolve_path(workdir);
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
 	if (rc == 0)
@@ -1353,51 +1353,11 @@ int patch_preview(const char *workdir, const char *input, morph_buf_t *out,
 
 static int patch_atomic_write(const char *path, const char *content, mode_t mode)
 {
-	char temporary[PATH_MAX];
-	int fd;
-	size_t len = strlen(content);
-	size_t written = 0;
-
-	if (snprintf(temporary, sizeof(temporary), "%s.morph-patch-XXXXXX",
-		path) >= (int)sizeof(temporary))
-		MORPH_RETURN(-ENAMETOOLONG);
-	fd = mkstemp(temporary);
-	if (fd < 0)
-		MORPH_RETURN(-errno);
-	if (fchmod(fd, mode) != 0) {
-		int rc = -errno;
-		(void)close(fd);
-		(void)unlink(temporary);
-		return rc;
+	int rc = file_write_atomic(path, content, strlen(content));
+	if (rc == 0 && chmod(path, mode) < 0) {
+		rc = -errno;
 	}
-	while (written < len) {
-		ssize_t count = write(fd, content + written, len - written);
-
-		if (count < 0) {
-			int rc = -errno;
-			(void)close(fd);
-			(void)unlink(temporary);
-			return rc;
-		}
-		written += (size_t)count;
-	}
-	if (fsync(fd) != 0) {
-		int rc = -errno;
-		(void)close(fd);
-		(void)unlink(temporary);
-		return rc;
-	}
-	if (close(fd) != 0) {
-		int rc = -errno;
-		(void)unlink(temporary);
-		return rc;
-	}
-	if (rename(temporary, path) != 0) {
-		int rc = -errno;
-		(void)unlink(temporary);
-		return rc;
-	}
-	return 0;
+	return rc;
 }
 
 static int patch_result_add(struct patch_result *result,
@@ -1406,11 +1366,11 @@ static int patch_result_add(struct patch_result *result,
 	struct patch_change *change = morph_array_push(&result->changes);
 
 	if (!change)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(change, 0, sizeof(*change));
 	if (strlen(path) >= sizeof(change->path)) {
 		result->changes.nelts--;
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	strncpy(change->path, path, sizeof(change->path) - 1);
 	change->action = hunk->action;
@@ -1512,7 +1472,7 @@ int patch_apply(const char *workdir, const char *input,
 	int rc;
 
 	if (!workdir || !input || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 	memset(&hunks, 0, sizeof(hunks));
 	if (error && error_size > 0)
@@ -1525,11 +1485,11 @@ int patch_apply(const char *workdir, const char *input,
 			"patch is not valid UTF-8");
 	root = file_resolve_path(workdir);
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	copy = strdup(input);
 	if (!copy) {
 		free(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = morph_array_init(&hunks, 4, sizeof(struct patch_hunk));
 	if (rc == 0)

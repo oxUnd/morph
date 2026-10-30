@@ -52,11 +52,29 @@ static void job_state(struct runtime_mcp_job *job, enum runtime_mcp_state state)
 
 static int job_event(const struct morph_event *event, void *opaque);
 
+/** \brief Acquire an owner lock without preventing background job cancellation. */
+static int job_lock(struct runtime_mcp_job *job, pthread_mutex_t *mutex)
+{
+	struct timespec pause = {.tv_nsec = 10000000};
+	for (;;) {
+		if (job_interrupted(job)) {
+			return -ECANCELED;
+		}
+		int rc = pthread_mutex_trylock(mutex);
+		if (rc == 0) {
+			return 0;
+		}
+		if (rc != EBUSY) {
+			return -rc;
+		}
+		nanosleep(&pause, NULL);
+	}
+}
+
 /* Transfer ownership only between turns. Discovery never touches live tools. */
 static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pending)
 {
 	struct runtime_context *ctx = &job->runtime->context;
-	struct timespec pause = { .tv_nsec = 10000000 };
 	int rc;
 	int added = 0;
 
@@ -64,17 +82,19 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 	runtime_mcp_emit(job_event, job, "mcp.registering", "pending",
 		"Waiting to register MCP capabilities between turns",
 		&job->client->config, -1, -1, -1, 0);
-	for (;;) {
-		if (job_interrupted(job))
-			MORPH_RETURN_LOG(job->runtime->options.logger, -ECANCELED);
-		rc = pthread_mutex_trylock(&ctx->execution_lock);
-		if (rc == 0)
-			break;
-		if (rc != EBUSY)
-			MORPH_RETURN_LOG(job->runtime->options.logger, -rc);
-		nanosleep(&pause, NULL);
+	rc = job_lock(job, &ctx->execution_lock);
+	if (rc != 0) {
+		return MORPH_TRACE_ERROR(job->runtime->options.logger, rc);
+	}
+	rc = job_lock(job, &ctx->tools.mutation_mutex);
+	if (rc != 0) {
+		pthread_mutex_unlock(&ctx->execution_lock);
+		return MORPH_TRACE_ERROR(job->runtime->options.logger, rc);
 	}
 	pthread_mutex_lock(&ctx->tool_registry_lock);
+	/* Background sub-agents can still mutate the parent registry between turns.
+	 * Keep lookup/copy publication exclusive, with mutation before the data lock. */
+	tool_registry_lock(&ctx->tools);
 	for (int i = 0; i < pending->count; i++) {
 		struct tool_entry *entry = &pending->entries[i];
 		struct tool_spec spec = {
@@ -97,18 +117,18 @@ static int job_publish(struct runtime_mcp_job *job, struct tool_registry *pendin
 			rc = -EEXIST;
 			break;
 		}
-		rc = tool_register(&ctx->tools, &spec);
+		rc = tool_register_copy(&ctx->tools, entry);
 		if (rc != 0)
 			break;
-		entry->user_data = NULL;
-		entry->user_data_destroy = NULL;
 		added++;
 	}
 	if (rc != 0) {
 		for (int i = 0; i < added; i++)
 			(void)tool_unregister(&ctx->tools, pending->entries[i].desc.name);
 	}
+	tool_registry_unlock(&ctx->tools);
 	pthread_mutex_unlock(&ctx->tool_registry_lock);
+	pthread_mutex_unlock(&ctx->tools.mutation_mutex);
 	pthread_mutex_unlock(&ctx->execution_lock);
 	return rc;
 }

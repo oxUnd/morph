@@ -3,6 +3,7 @@ include(GoogleTest)
 find_package(Threads REQUIRED)
 
 set(TEST_SOURCES
+	test_stability.cpp
 	test_arena.cpp
 	test_hooks.cpp
 	test_error.cpp
@@ -80,6 +81,18 @@ set(TEST_SOURCES
 )
 
 add_executable(morph-tests ${TEST_SOURCES})
+add_library(morph-error-release-probe OBJECT error_macro_probe.c)
+target_include_directories(morph-error-release-probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(morph-error-release-probe PRIVATE -UDEBUG -DNDEBUG)
+target_compile_definitions(morph-error-release-probe PRIVATE
+	error_probe_return=error_release_probe_return
+	error_probe_set=error_release_probe_set
+	error_probe_errno=error_release_probe_errno
+	error_probe_without_context=error_release_probe_without_context
+	error_probe_wide=error_release_probe_wide
+	error_probe_local_name=error_release_probe_local_name
+	error_probe_assignment=error_release_probe_assignment)
+target_sources(morph-tests PRIVATE $<TARGET_OBJECTS:morph-error-release-probe>)
 set_target_properties(morph-tests PROPERTIES
 	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}
 )
@@ -258,8 +271,13 @@ if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIB
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	add_test(NAME cli_empty_session_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_empty_session_pty.py
-			$<TARGET_FILE:morph> $<IF:$<CONFIG:Debug>,1,0>)
+			$<TARGET_FILE:morph>)
 	set_tests_properties(cli_empty_session_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 90)
+	add_test(NAME cli_composer_cleanup_pty_integration
+		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_composer_cleanup_pty.py
+			$<TARGET_FILE:morph>)
+	set_tests_properties(cli_composer_cleanup_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 	set_tests_properties(cli_memory_pty_integration PROPERTIES
 		SKIP_RETURN_CODE 77 TIMEOUT 90)

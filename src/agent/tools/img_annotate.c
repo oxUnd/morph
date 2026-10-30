@@ -95,7 +95,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			"Usage: img_annotate({\\\"path\\\": \\\"image.jpg\\\"}) "
 			"or img_annotate({\\\"paths\\\": "
 			"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 
 	{
@@ -104,7 +104,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		if (!root) {
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"invalid JSON arguments\"}"));
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 
 		/*
@@ -118,7 +118,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"'paths' array is empty\"}"));
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 			if (sz > MAX_IMAGES) {
 				cJSON_Delete(root);
@@ -127,7 +127,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					 "{\"error\":\"too many images "
 					 "(max %d)\"}", MAX_IMAGES);
 				(void)tool_result_success_json_text(result, strdup(err));
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 			for (i = 0; i < sz; i++) {
 				cJSON *item = cJSON_GetArrayItem(arr, i);
@@ -140,7 +140,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					(void)tool_result_success_json_text(result, strdup(
 						"{\"error\":\"'paths' contains "
 						"invalid entry\"}"));
-					MORPH_RETURN(-EINVAL);
+					return -EINVAL;
 				}
 				paths[npaths++] = strdup(item->valuestring);
 			}
@@ -156,7 +156,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					"\\\"image.jpg\\\"}) or "
 					"img_annotate({\\\"paths\\\": "
 					"[\\\"a.jpg\\\",\\\"b.jpg\\\"]})\"}"));
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			}
 			paths[npaths++] = strdup(p->valuestring);
 		}
@@ -188,7 +188,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			if (!paths[i]) {
 				for (int j = 0; j < npaths; j++)
 					free(paths[j]);
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			}
 		} else if (!file_exists(paths[i])) {
 			char err[1100];
@@ -198,7 +198,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			(void)tool_result_success_json_text(result, strdup(err));
 			for (int j = 0; j < npaths; j++)
 				free(paths[j]);
-			MORPH_RETURN(-ENOENT);
+			return -ENOENT;
 		}
 	}
 
@@ -210,7 +210,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"could not locate morph-editor binary. "
 			"Set MORPH_EDITOR env var or install morph-editor.\"}"));
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 
 	if (pipe(pipefd) < 0) {
@@ -220,7 +220,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			free(paths[i]);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"pipe() failed\"}"));
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	if (ctx && ctx->pause_fn)
@@ -241,7 +241,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			free(paths[i]);
 		(void)tool_result_success_json_text(result, strdup(
 			"{\"error\":\"fork() failed\"}"));
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	if (pid == 0) {
@@ -306,7 +306,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"error\":\"out of memory "
 				"reading editor output\"}"));
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 
 		char tmp[4096];
@@ -327,7 +327,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					(void)tool_result_success_json_text(result, strdup(
 						"{\"error\":\"out of memory "
 						"reading editor output\"}"));
-					MORPH_RETURN(-ENOMEM);
+					return -ENOMEM;
 				}
 			}
 			memcpy(buf.data + buf.len, tmp, (size_t)n);
@@ -371,7 +371,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 					 "with code %d\"}",
 					 WEXITSTATUS(status));
 				(void)tool_result_success_json_text(result, strdup(err));
-				MORPH_RETURN(-EIO);
+				return -EIO;
 			}
 			(void)tool_result_success_json_text(result, strdup(
 				"{\"images\":[],\"bboxes\":[],\"arrows\":[]}"));
@@ -610,7 +610,7 @@ static int img_annotate_exec(const char *args_json, struct tool_result *result,
 			for (i = 0; i < npaths; i++)
 				free(paths[i]);
 			(void)tool_result_success_json_text(result, tmp_str);
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 	}
 

@@ -53,7 +53,7 @@ int credit_calculate(const struct config_credits *cfg,
 	double credits = 0.0;
 
 	if (!cfg || !event || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	memset(out, 0, sizeof(*out));
 	price = credit_find_price(cfg, event);
@@ -107,7 +107,7 @@ int credit_record_event(struct db *db, const struct config_credits *cfg,
 	int rc;
 
 	if (!db || !db->handle || !cfg || !event || !event->kind)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	rc = credit_calculate(cfg, event, &charge);
 	if (rc != 0)
@@ -150,7 +150,7 @@ int credit_summary_today(struct db *db, const char *user_id,
 	int rc;
 
 	if (!db || !db->handle || !user_id || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_today(db, user_id, &summary);
 	if (rc != 0)
@@ -166,7 +166,7 @@ int credit_summary_total(struct db *db, const char *user_id,
 	int rc;
 
 	if (!db || !db->handle || !user_id || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_total(db, user_id, &summary);
 	if (rc != 0)
@@ -182,7 +182,7 @@ int credit_summary_session(struct db *db, const char *session_id,
 	int rc;
 
 	if (!db || !db->handle || !session_id || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	rc = credit_store_summary_session(db, session_id, &summary);
 	if (rc != 0)

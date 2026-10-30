@@ -36,12 +36,12 @@ static int collect_requests(cJSON *file_system, struct arena *arena,
 		if (!paths)
 			continue;
 		if (!cJSON_IsArray(paths))
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		cJSON_ArrayForEach(path, paths) {
 			char canonical[PATH_MAX];
 
 			if (!cJSON_IsString(path))
-				MORPH_RETURN(-EINVAL);
+				return -EINVAL;
 			*failed_path = path->valuestring;
 			/* Merge before validating a path created by the same write request. */
 			int rc = tool_context_resolve_directory_access(path->valuestring,
@@ -65,7 +65,7 @@ static int collect_requests(cJSON *file_system, struct arena *arena,
 
 			entry = copy ? morph_array_push(requests) : NULL;
 			if (!entry)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			entry->path = copy;
 			entry->access = permissions[i].access;
 		}
@@ -145,7 +145,7 @@ static int request_permissions_run(const char *args_json,
 	arena = arena_create(0);
 	if (!arena) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = morph_array_init(&requests, 8, sizeof(*entry));
 	if (rc != 0)
@@ -161,13 +161,13 @@ static int request_permissions_run(const char *args_json,
 
 	if (!data || !cJSON_AddStringToObject(data, "scope", scope) ||
 	    !cJSON_AddStringToObject(data, "principal", "*")) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_request;
 	}
 	for (size_t i = 0; i < sizeof(permissions) / sizeof(permissions[0]); i++) {
 		granted[i] = cJSON_AddArrayToObject(data, permissions[i].name);
 		if (!granted[i]) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out_free_request;
 		}
 	}
@@ -192,7 +192,7 @@ static int request_permissions_run(const char *args_json,
 
 			if (!path || !cJSON_AddItemToArray(granted[i], path)) {
 				cJSON_Delete(path);
-				MORPH_SET_ERR(rc, -ENOMEM);
+				rc = (-ENOMEM);
 				goto out_free_request;
 			}
 		}
@@ -229,7 +229,7 @@ int request_permissions_init(struct tool_registry *reg,
 	int rc;
 
 	if (!reg || !tctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = tool_register(reg, &(struct tool_spec){
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "request_permissions",

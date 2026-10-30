@@ -89,11 +89,13 @@ typedef struct {
     const unsigned char *json;
     size_t position;
 } error;
-static error global_error = { NULL, 0 };
+/* morph: preserve GetErrorPtr compatibility without sharing parser state between threads. */
+static _Thread_local error global_error = { NULL, 0 };
 
 CJSON_PUBLIC(const char *) cJSON_GetErrorPtr(void)
 {
-    return (const char*) (global_error.json + global_error.position);
+    return global_error.json == NULL ? NULL :
+        (const char*) (global_error.json + global_error.position);
 }
 
 CJSON_PUBLIC(char *) cJSON_GetStringValue(const cJSON * const item)

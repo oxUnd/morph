@@ -9,11 +9,20 @@
 #include <thread>
 
 extern "C" {
-int error_probe_debug(void);
 int error_probe_return(struct morph_log *, int, int *, int *);
 int error_probe_set(struct morph_log *, int, int *);
 int error_probe_errno(struct morph_log *, int);
 int error_probe_without_context(int);
+long long error_probe_wide(void);
+int error_probe_local_name(void);
+int error_probe_assignment(void);
+int error_release_probe_return(struct morph_log *, int, int *, int *);
+int error_release_probe_set(struct morph_log *, int, int *);
+int error_release_probe_errno(struct morph_log *, int);
+int error_release_probe_without_context(int);
+long long error_release_probe_wide(void);
+int error_release_probe_local_name(void);
+int error_release_probe_assignment(void);
 }
 
 #include "util/error.h"
@@ -187,7 +196,7 @@ TEST_F(LogTest, InstancesHaveIndependentDestinationsLevelsAndLifetimes)
 	std::remove(other_path.c_str());
 }
 
-TEST_F(LogTest, ErrorMacrosPreserveCodesAndLocationsWithoutTerminalOutput)
+TEST_F(LogTest, ExplicitErrorsPreserveCodesAndLocationsWithoutTerminalOutput)
 {
 	int code_evaluations = 0, logger_evaluations = 0, set_evaluations = 0;
 	testing::internal::CaptureStdout();
@@ -201,14 +210,14 @@ TEST_F(LogTest, ErrorMacrosPreserveCodesAndLocationsWithoutTerminalOutput)
 	EXPECT_EQ(assigned, MORPH_ERR_PROTOCOL);
 	EXPECT_EQ(code_evaluations, 1);
 	EXPECT_EQ(set_evaluations, 1);
-	EXPECT_EQ(logger_evaluations, error_probe_debug());
+	EXPECT_EQ(logger_evaluations, 1);
 	EXPECT_TRUE(errors.empty()) << errors;
 	EXPECT_TRUE(output.empty()) << output;
 	auto lines = read_lines();
-	ASSERT_EQ(lines.size(), error_probe_debug() ? 2u : 0u);
-	if (error_probe_debug()) {
-		EXPECT_NE(lines[0].find("[DEBUG] MORPH_RETURN: database error"), std::string::npos);
-		EXPECT_NE(lines[1].find("MORPH_SET_ERR: protocol error"), std::string::npos);
+	ASSERT_EQ(lines.size(), 2u);
+	{
+		EXPECT_NE(lines[0].find("[DEBUG] Error trace: database error"), std::string::npos);
+		EXPECT_NE(lines[1].find("Error trace: protocol error"), std::string::npos);
 		for (const auto &line : lines)
 			EXPECT_NE(line.find("error_macro_probe.c:"), std::string::npos);
 	}
@@ -230,7 +239,7 @@ TEST_F(LogTest, MissingContextSuccessAndFilteredDiagnosticsStaySilent)
 	EXPECT_EQ(assigned, MORPH_ERR_DB);
 	EXPECT_EQ(success, 0);
 	EXPECT_EQ(codes, 1);
-	EXPECT_EQ(contexts, 0);
+	EXPECT_EQ(contexts, 1);
 	EXPECT_TRUE(read_lines().empty());
 }
 
@@ -288,4 +297,37 @@ TEST_F(LogTest, ConcurrentDiagnosticsUseExplicitOwnersAndSurviveOtherShutdown)
 	EXPECT_NE(content.find("second diagnostic 19"), std::string::npos);
 	EXPECT_NE(content.find("other owner still active"), std::string::npos);
 	std::remove(other_path.c_str());
+}
+
+TEST_F(LogTest, ExplicitErrorControlFlowMatchesAcrossBuildModes)
+{
+	for (auto probe : {error_probe_return, error_release_probe_return}) {
+		for (int code : {0, 5, static_cast<int>(MORPH_ERR_DB)}) {
+			int codes = 0, contexts = 0;
+			EXPECT_EQ(probe(&logger, code, &codes, &contexts), code);
+			EXPECT_EQ(codes, 1);
+			EXPECT_EQ(contexts, 1);
+		}
+	}
+	for (auto probe : {error_probe_set, error_release_probe_set}) {
+		int evaluations = 0;
+		EXPECT_EQ(probe(&logger, MORPH_ERR_DB, &evaluations), MORPH_ERR_DB);
+		EXPECT_EQ(evaluations, 1);
+	}
+	for (auto probe : {error_probe_errno, error_release_probe_errno}) {
+		for (int assign : {0, 1}) {
+			errno = 0;
+			EXPECT_EQ(probe(&logger, assign), -EIO);
+			errno = ENOENT;
+			EXPECT_EQ(probe(&logger, assign), -ENOENT);
+		}
+	}
+	EXPECT_EQ(error_probe_wide(), 4294967296LL);
+	EXPECT_EQ(error_release_probe_wide(), 4294967296LL);
+	EXPECT_EQ(error_probe_local_name(), -5);
+	EXPECT_EQ(error_release_probe_local_name(), -5);
+	EXPECT_EQ(error_probe_assignment(), -5);
+	EXPECT_EQ(error_release_probe_assignment(), -5);
+	EXPECT_EQ(error_probe_without_context(0), MORPH_ERR_DB);
+	EXPECT_EQ(error_release_probe_without_context(0), MORPH_ERR_DB);
 }

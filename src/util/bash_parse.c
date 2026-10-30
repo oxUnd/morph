@@ -46,33 +46,33 @@ static int copy_static_program(const char *source, TSNode node,
 	int quoted = 0;
 
 	if (!source || ts_node_is_null(node) || !out || out_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (ts_node_named_child_count(node) != 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	literal = ts_node_named_child(node, 0);
 	start = ts_node_start_byte(node);
 	end = ts_node_end_byte(node);
 	if (end <= start)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	len = (size_t)(end - start);
 	if (len >= 2 &&
 	    ((source[start] == '\'' && source[end - 1] == '\'') ||
 	     (source[start] == '"' && source[end - 1] == '"'))) {
 		if (!quoted_program_is_static(literal))
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		quoted = 1;
 		offset = 1;
 		len -= 2;
 	}
 	if (len == 0 || len + 1 > out_size)
-		MORPH_RETURN(len == 0 ? -ENOENT : -ENAMETOOLONG);
+		return len == 0 ? -ENOENT : -ENAMETOOLONG;
 	for (size_t i = 0; i < len; i++) {
 		unsigned char ch =
 			(unsigned char)source[(size_t)start + offset + i];
 
 		if ((!quoted && !is_static_program_char(ch)) ||
 		    (quoted && source[start] == '"' && ch == '\\'))
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	}
 	memcpy(out, source + (size_t)start + offset, len);
 	out[len] = '\0';
@@ -115,7 +115,7 @@ static int append_command(const char *source, TSNode node,
 
 	command = morph_array_push(&result->commands);
 	if (!command)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(command, 0, sizeof(*command));
 	command->start_byte = (size_t)ts_node_start_byte(node);
 	command->end_byte = (size_t)ts_node_end_byte(node);
@@ -142,7 +142,7 @@ static int visit_node(const char *source, TSNode node,
 
 	if (depth > BASH_PARSE_MAX_DEPTH) {
 		result->has_error = 1;
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	type = ts_node_type(node);
 	if (node_marks_compound(type))
@@ -173,7 +173,7 @@ int bash_parse_analyze(const char *source, struct bash_parse_result *result)
 	int rc;
 
 	if (!source || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(result, 0, sizeof(*result));
 	rc = morph_array_init(&result->commands, 4,
 			      sizeof(struct bash_parse_command));
@@ -182,24 +182,24 @@ int bash_parse_analyze(const char *source, struct bash_parse_result *result)
 	source_len = strlen(source);
 	if (source_len > UINT32_MAX) {
 		bash_parse_result_cleanup(result);
-		MORPH_RETURN(-E2BIG);
+		return -E2BIG;
 	}
 	parser = ts_parser_new();
 	if (!parser) {
 		bash_parse_result_cleanup(result);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!ts_parser_set_language(parser, tree_sitter_bash())) {
 		ts_parser_delete(parser);
 		bash_parse_result_cleanup(result);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	tree = ts_parser_parse_string(parser, NULL, source,
 				      (uint32_t)source_len);
 	if (!tree) {
 		ts_parser_delete(parser);
 		bash_parse_result_cleanup(result);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	root = ts_tree_root_node(tree);
 	result->has_error = ts_node_has_error(root) ? 1 : 0;
@@ -240,7 +240,7 @@ static int copy_first_field(const char *source, char *out, size_t out_size,
 	int rc;
 
 	if (!source || !out || out_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = bash_parse_analyze(source, &result);
 	if (rc != 0)
 		return rc;

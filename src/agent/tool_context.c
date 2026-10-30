@@ -38,7 +38,7 @@ static int add_persistent_grant(struct tool_context *tctx,
 	struct permission_grant *stored;
 
 	if (!tctx || !grant)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	morph_array_foreach(existing, &tctx->persistent_grants,
 			    struct permission_grant) {
 		if ((grant->id > 0 && existing->id == grant->id) ||
@@ -50,7 +50,7 @@ static int add_persistent_grant(struct tool_context *tctx,
 	}
 	stored = morph_array_push(&tctx->persistent_grants);
 	if (!stored)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*stored = *grant;
 	return 0;
 }
@@ -143,14 +143,14 @@ int tool_context_command_principal(const char *command, char *out,
 	int rc;
 
 	if (!command || !out || out_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = command_program_word(command, program, sizeof(program));
 	if (rc != 0)
 		return rc;
 	if (strchr(program, '/')) {
 		char *resolved = file_resolve_path(program);
 		if (!resolved)
-			MORPH_RETURN(-ENOENT);
+			return -ENOENT;
 		snprintf(out, out_size, "%s", resolved);
 		free(resolved);
 		return 0;
@@ -162,7 +162,7 @@ int tool_context_command_principal(const char *command, char *out,
 		char *dir;
 
 		if (!copy)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		for (dir = strtok_r(copy, ":", &save); dir;
 		     dir = strtok_r(NULL, ":", &save)) {
 			char candidate[PATH_MAX];
@@ -196,7 +196,7 @@ static int add_directory_capability(
 		return count;
 	resolved = file_resolve_path(path);
 	if (!resolved)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(resolved)) {
 		free(resolved);
 		return count;
@@ -243,7 +243,7 @@ int tool_context_discover_cli_dirs(
 
 	if (!tctx || !command || !*command || !directories ||
 	    max_directories <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (tool_context_command_name(command, name, sizeof(name)) != 0)
 		return 0;
 	home_env = getenv("HOME");
@@ -251,7 +251,7 @@ int tool_context_discover_cli_dirs(
 		return 0;
 	home = file_resolve_path(home_env);
 	if (!home)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	snprintf(dot_name, sizeof(dot_name), ".%s", name);
 	add_cli_candidate(candidates, &candidate_count, home, dot_name);
 	xdg = getenv("XDG_CONFIG_HOME");
@@ -387,24 +387,24 @@ static int resolve_user_path(struct tool_context *tctx,
 	char *rp;
 
 	if (!tctx || !path || !resolved || resolved_size == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	base = path_op_is_read(op) ? tctx->workdir : tctx->output_dir;
 	if ((!base || !*base) && !file_path_is_absolute(expanded))
 		base = "";
 	if (file_path_full(candidate, sizeof(candidate), base, expanded) != 0) {
 		free(expanded);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	free(expanded);
 
 	rp = file_resolve_path(candidate);
 	if (!rp)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	snprintf(resolved, resolved_size, "%s", rp);
 	free(rp);
 	return 0;
@@ -417,7 +417,7 @@ static int add_allowed_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
 	const char *to_store;
 
 	if (!dirs || !count || !dir)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	resolved = file_resolve_path(dir);
 	to_store = resolved ? resolved : dir;
 	for (int i = 0; i < *count; i++) {
@@ -428,11 +428,11 @@ static int add_allowed_dir(char dirs[][TOOL_CONTEXT_ALLOW_PATH_MAX],
 	}
 	if (*count >= TOOL_CONTEXT_ALLOW_MAX) {
 		free(resolved);
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	}
 	if (strlen(to_store) >= TOOL_CONTEXT_ALLOW_PATH_MAX) {
 		free(resolved);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	snprintf(dirs[*count], TOOL_CONTEXT_ALLOW_PATH_MAX, "%s", to_store);
 	(*count)++;
@@ -449,7 +449,7 @@ static int add_scoped_path_grant(struct tool_context *tctx,
 	struct tool_scoped_grant *existing;
 
 	if (!tctx || !subject || !*subject || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	morph_array_foreach(existing, &tctx->scoped_grants,
 			    struct tool_scoped_grant) {
 		if (existing->kind == kind &&
@@ -467,7 +467,7 @@ static int add_scoped_path_grant(struct tool_context *tctx,
 	grant.turn_only = !!turn_only;
 	existing = morph_array_push(&tctx->scoped_grants);
 	if (!existing)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*existing = grant;
 	return 0;
 }
@@ -479,9 +479,9 @@ static int path_check_for_read(enum tool_path_op op, const char *path)
 	if (!path_op_is_read(op))
 		return 0;
 	if (stat(path, &st) != 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (op == TOOL_PATH_LIST && !S_ISDIR(st.st_mode))
-		MORPH_RETURN(-ENOTDIR);
+		return -ENOTDIR;
 	return 0;
 }
 
@@ -612,7 +612,7 @@ static int load_grant(const struct permission_grant *grant, void *user_data)
 int tool_context_reload_persistent_grants(struct tool_context *tctx)
 {
 	if (!tctx || !tctx->grant_db || !tctx->grant_project_root[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	morph_array_clear(&tctx->persistent_grants);
 	return permission_grant_each(tctx->grant_db,
 				     tctx->grant_project_root,
@@ -626,10 +626,10 @@ int tool_context_set_grant_store(struct tool_context *tctx, struct db *db,
 	int rc;
 
 	if (!tctx || !db || !project_root || !*project_root)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	resolved = file_resolve_path(project_root);
 	if (!resolved)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	snprintf(tctx->grant_project_root, sizeof(tctx->grant_project_root),
 		 "%s", resolved);
 	free(resolved);
@@ -649,7 +649,7 @@ static int save_grant(struct tool_context *tctx, const char *subject,
 	int rc;
 
 	if (!tctx || !kind || !*kind || !resource || !*resource)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(&grant, 0, sizeof(grant));
 	snprintf(grant.subject, sizeof(grant.subject), "%s",
 		 subject ? subject : "*");
@@ -690,12 +690,12 @@ int tool_context_add_builtin_path(struct tool_context *tctx,
 	unsigned int operations;
 
 	if (!tctx || !path || op < TOOL_PATH_READ || op > TOOL_PATH_DELETE)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (stat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	canonical = file_resolve_path(path);
 	if (!canonical)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	operations = 1u << (unsigned int)op;
 	if (op == TOOL_PATH_READ && S_ISDIR(st.st_mode))
 		operations |= 1u << TOOL_PATH_LIST;
@@ -710,7 +710,7 @@ int tool_context_add_builtin_path(struct tool_context *tctx,
 	entry = morph_array_push(&tctx->builtin_paths);
 	if (!entry) {
 		free(canonical);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	entry->path = canonical;
 	entry->operations = operations;
@@ -785,7 +785,7 @@ int tool_context_authorize_path(struct tool_context *tctx,
 	struct tool_operation operation;
 
 	if (!tctx || !path || op < TOOL_PATH_READ || op > TOOL_PATH_DELETE)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!resolved || resolved_size == 0) {
 		resolved = path_buf;
 		resolved_size = sizeof(path_buf);
@@ -797,7 +797,7 @@ int tool_context_authorize_path(struct tool_context *tctx,
 
 	rc = path_check_for_read(op, resolved);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 
 	if (policy_path_is_allowed(tctx, op, resolved))
 		return 0;
@@ -840,15 +840,15 @@ int tool_context_allow_command_pattern(struct tool_context *tctx,
 				       const char *pattern)
 {
 	if (!tctx || !pattern || !*pattern)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strlen(pattern) >= TOOL_CONTEXT_ACTION_MAX)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	for (int i = 0; i < tctx->allowed_commands_count; i++) {
 		if (strcmp(tctx->allowed_commands[i], pattern) == 0)
 			return 0;
 	}
 	if (tctx->allowed_commands_count >= TOOL_CONTEXT_ALLOW_MAX)
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	snprintf(tctx->allowed_commands[tctx->allowed_commands_count],
 		 TOOL_CONTEXT_ACTION_MAX, "%s", pattern);
 	tctx->allowed_commands_count++;
@@ -861,12 +861,12 @@ int tool_context_allow_command_scope(struct tool_context *tctx, const char *path
 	const char *stored;
 
 	if (!tctx || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (strcmp(path, "*") == 0) {
 		stored = "*";
 	} else {
 		if (!realpath(path, resolved))
-			MORPH_RETURN_ERRNO();
+			return morph_error_from_errno(errno);
 		stored = resolved;
 	}
 	for (int i = 0; i < tctx->exec_allowed_dirs_count; i++) {
@@ -874,7 +874,7 @@ int tool_context_allow_command_scope(struct tool_context *tctx, const char *path
 			return 0;
 	}
 	if (tctx->exec_allowed_dirs_count >= TOOL_CONTEXT_ALLOW_MAX)
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	snprintf(tctx->exec_allowed_dirs[tctx->exec_allowed_dirs_count],
 		 TOOL_CONTEXT_ALLOW_PATH_MAX, "%s", stored);
 	tctx->exec_allowed_dirs_count++;
@@ -1016,7 +1016,7 @@ static int check_command_operation(struct tool_context *tctx,
 	enum tool_operation_verdict v;
 
 	if (!command)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (cwd && realpath(cwd, resolved_cwd)) {
 		if ((tctx->workdir[0] &&
 		     path_is_within(resolved_cwd, tctx->workdir)) ||
@@ -1035,7 +1035,7 @@ static int check_command_operation(struct tool_context *tctx,
 	if (!tctx->operation_approval_fn) {
 		log_warn(tctx ? tctx->logger : NULL,
 			 "command not allowed and no approval callback: %s", command);
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	}
 	approval_operation = *op;
 	if (!approval_operation.reason) {
@@ -1056,7 +1056,7 @@ static int check_command_operation(struct tool_context *tctx,
 	*verdict = v;
 	if (v == TOOL_OP_DENY) {
 		log_warn(tctx ? tctx->logger : NULL, "command denied by user: %s", command);
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	}
 	for (int i = 0; i < op->directories_count; i++) {
 		char resolved[PATH_MAX];
@@ -1101,7 +1101,7 @@ static int check_path_operation(struct tool_context *tctx,
 	enum tool_operation_verdict v;
 
 	if (!op->target)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (op->kind == TOOL_OP_PATH_DELETE) {
 		allow_dirs = tctx->delete_allowed_dirs;
 		allow_count = &tctx->delete_allowed_dirs_count;
@@ -1139,11 +1139,11 @@ static int check_path_operation(struct tool_context *tctx,
 		path_op == TOOL_PATH_DELETE ? "delete_path" : "tool_write_path", canonical))
 		return 0;
 	if (!tctx->operation_approval_fn)
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	v = tctx->operation_approval_fn(op,
 					tctx->operation_approval_user_data);
 	if (v == TOOL_OP_DENY)
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	if (v == TOOL_OP_SESSION || v == TOOL_OP_ALWAYS) {
 		char parent[PATH_MAX];
 		char *slash;
@@ -1212,22 +1212,22 @@ int tool_context_request_write_access(struct tool_context *tctx,
 	enum tool_operation_verdict verdict;
 
 	if (!tctx || !principal || !*principal || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!resolved || resolved_size == 0) {
 		resolved = local;
 		resolved_size = sizeof(local);
 	}
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
 		free(expanded);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	canonical = file_resolve_path(expanded);
 	free(expanded);
 	if (!canonical)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	snprintf(resolved, resolved_size, "%s", canonical);
 	free(canonical);
 
@@ -1236,7 +1236,7 @@ int tool_context_request_write_access(struct tool_context *tctx,
 	    scoped_write_is_allowed(tctx, principal, resolved))
 		return 0;
 	if (!tctx->operation_approval_fn)
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_WRITE;
 	op.tool_name = "exec";
@@ -1247,7 +1247,7 @@ int tool_context_request_write_access(struct tool_context *tctx,
 	verdict = tctx->operation_approval_fn(
 		&op, tctx->operation_approval_user_data);
 	if (verdict == TOOL_OP_DENY)
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	return tool_context_grant_write_access(
 		tctx, principal, resolved, 0, verdict,
 		resolved, resolved_size);
@@ -1265,16 +1265,16 @@ int tool_context_grant_write_access(
 	int rc;
 
 	if (!tctx || !principal || !*principal || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (verdict != TOOL_OP_ALLOW && verdict != TOOL_OP_SESSION &&
 	    verdict != TOOL_OP_ALWAYS)
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
 		free(expanded);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (create) {
 		rc = file_ensure_dir(expanded);
@@ -1290,12 +1290,12 @@ int tool_context_grant_write_access(
 	}
 	if (!S_ISDIR(st.st_mode)) {
 		free(expanded);
-		MORPH_RETURN(-ENOTDIR);
+		return -ENOTDIR;
 	}
 	canonical = file_resolve_path(expanded);
 	free(expanded);
 	if (!canonical) {
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!resolved || resolved_size == 0) {
 		resolved = local;
@@ -1303,7 +1303,7 @@ int tool_context_grant_write_access(
 	}
 	if (strlen(canonical) + 1 > resolved_size) {
 		free(canonical);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	snprintf(resolved, resolved_size, "%s", canonical);
 	if (verdict == TOOL_OP_SESSION)
@@ -1328,7 +1328,7 @@ static int append_grant_path(morph_array_t *paths, const char *path)
 	const char **slot = morph_array_push(paths);
 
 	if (!slot)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*slot = path;
 	return 0;
 }
@@ -1344,7 +1344,7 @@ int tool_context_collect_path_grants(const struct tool_context *tctx,
 
 	if (!tctx || !principal || !paths || paths->size != sizeof(const char *) ||
 	    (op != TOOL_PATH_WRITE && op != TOOL_PATH_DELETE))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	morph_array_foreach(grant, &tctx->scoped_grants, struct tool_scoped_grant) {
 		if (grant->kind != op ||
 		    (strcmp(grant->subject, principal) != 0 &&
@@ -1424,7 +1424,7 @@ int tool_context_add_exec_profile_path(struct tool_context *tctx,
 	int rc;
 
 	if (!tctx || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (op == TOOL_PATH_WRITE) {
 		dirs = tctx->exec_profile_write_dirs;
 		count = &tctx->exec_profile_write_dirs_count;
@@ -1432,14 +1432,14 @@ int tool_context_add_exec_profile_path(struct tool_context *tctx,
 		dirs = tctx->exec_profile_delete_dirs;
 		count = &tctx->exec_profile_delete_dirs_count;
 	} else {
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
 		free(expanded);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (stat(expanded, &st) != 0) {
 		rc = -errno;
@@ -1449,12 +1449,12 @@ int tool_context_add_exec_profile_path(struct tool_context *tctx,
 	}
 	if (!S_ISDIR(st.st_mode)) {
 		free(expanded);
-		MORPH_RETURN(-ENOTDIR);
+		return -ENOTDIR;
 	}
 	resolved = file_resolve_path(expanded);
 	free(expanded);
 	if (!resolved)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = add_allowed_dir(dirs, count, resolved);
 	free(resolved);
 	return rc;
@@ -1499,19 +1499,19 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	enum tool_operation_verdict verdict;
 
 	if (!tctx || !principal || !*principal || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!resolved || resolved_size == 0) {
 		resolved = local;
 		resolved_size = sizeof(local);
 	}
 	if (!file_path_is_absolute(path))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	canonical = file_resolve_path(path);
 	if (!canonical)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (strlen(canonical) + 1 > resolved_size) {
 		free(canonical);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	snprintf(resolved, resolved_size, "%s", canonical);
 	if (scoped_delete_is_allowed(tctx, principal, canonical)) {
@@ -1520,7 +1520,7 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	}
 	free(canonical);
 	if (!tctx->operation_approval_fn)
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	memset(&op, 0, sizeof(op));
 	op.kind = TOOL_OP_PATH_DELETE;
 	op.tool_name = "exec";
@@ -1531,7 +1531,7 @@ int tool_context_request_delete_access(struct tool_context *tctx,
 	verdict = tctx->operation_approval_fn(
 		&op, tctx->operation_approval_user_data);
 	if (verdict == TOOL_OP_DENY)
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	if (verdict == TOOL_OP_ALWAYS)
 		return save_grant(tctx, principal, "delete_path", resolved);
 	if (verdict == TOOL_OP_SESSION)
@@ -1550,13 +1550,13 @@ int tool_context_grant_delete_access(struct tool_context *tctx,
 	int rc;
 
 	if (!tctx || !principal || !*principal || !path || !*path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	expanded = file_expand_path(path);
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(expanded)) {
 		free(expanded);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (stat(expanded, &st) != 0) {
 		rc = -errno;
@@ -1565,19 +1565,19 @@ int tool_context_grant_delete_access(struct tool_context *tctx,
 	}
 	if (!S_ISDIR(st.st_mode)) {
 		free(expanded);
-		MORPH_RETURN(-ENOTDIR);
+		return -ENOTDIR;
 	}
 	canonical = file_resolve_path(expanded);
 	free(expanded);
 	if (!canonical)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!resolved || resolved_size == 0) {
 		resolved = local;
 		resolved_size = sizeof(local);
 	}
 	if (strlen(canonical) + 1 > resolved_size) {
 		free(canonical);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	snprintf(resolved, resolved_size, "%s", canonical);
 	rc = add_scoped_path_grant(tctx, TOOL_PATH_DELETE,
@@ -1621,33 +1621,33 @@ int tool_context_resolve_directory_access(const char *path, unsigned int access,
 {
 	if (!path || !*path || !access || (access & ~(unsigned int)TOOL_PATH_ACCESS_ALL) ||
 	    !resolved || !resolved_size)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	char *expanded = file_expand_path(path);
 
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (!file_path_is_absolute(expanded) || strlen(expanded) >= PATH_MAX) {
 		int rc = strlen(expanded) >= PATH_MAX ? -ENAMETOOLONG : -EINVAL;
 
 		free(expanded);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	char *canonical = file_resolve_path(expanded);
 
 	free(expanded);
 	if (!canonical)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	struct stat st;
 	int rc = 0;
 
 	if (stat(canonical, &st) != 0) {
 		if (errno != ENOENT || !(access & TOOL_PATH_ACCESS_WRITE))
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 	} else if (!S_ISDIR(st.st_mode)) {
-		MORPH_SET_ERR(rc, -ENOTDIR);
+		rc = (-ENOTDIR);
 	}
 	if (rc == 0 && strlen(canonical) >= resolved_size)
-		MORPH_SET_ERR(rc, -ENAMETOOLONG);
+		rc = (-ENAMETOOLONG);
 	if (rc == 0)
 		memcpy(resolved, canonical, strlen(canonical) + 1);
 	free(canonical);
@@ -1698,7 +1698,7 @@ static int store_directory_access(struct tool_context *tctx,
 	size_t before = storage->nelts;
 
 	if (before > SIZE_MAX - 3)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	int rc = morph_array_reserve(storage, before + 3);
 	int transaction = persistent && tctx->grant_db && tctx->grant_project_root[0];
 
@@ -1762,7 +1762,7 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	if (!tctx || !request || !request->principal || !*request->principal ||
 	    strlen(request->principal) >= TOOL_GRANT_SUBJECT_MAX ||
 	    !request->command || !*request->command)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = tool_context_resolve_directory_access(request->path, request->access,
 		canonical, sizeof(canonical));
 	if (rc != 0)
@@ -1772,7 +1772,7 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 		resolved_size = sizeof(local);
 	}
 	if (strlen(canonical) >= resolved_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	memcpy(resolved, canonical, strlen(canonical) + 1);
 	for (size_t i = 0; i < sizeof(directory_access_kinds) / sizeof(directory_access_kinds[0]);
 	     i++) {
@@ -1784,7 +1784,7 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	if (!pending)
 		return 0;
 	if (!tctx->operation_approval_fn)
-		MORPH_RETURN(-EPERM);
+		return -EPERM;
 	struct tool_operation operation = {0};
 
 	operation.kind = (pending & (pending - 1u)) ? TOOL_OP_DIRECTORY_ACCESS :
@@ -1800,21 +1800,21 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	char *details = directory_access_details(&operation);
 
 	if (!details)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	operation.details_json = details;
 	enum tool_operation_verdict verdict = tctx->operation_approval_fn(
 		&operation, tctx->operation_approval_user_data);
 
 	free(details);
 	if (verdict == TOOL_OP_DENY)
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	if (verdict != TOOL_OP_ALLOW && verdict != TOOL_OP_SESSION && verdict != TOOL_OP_ALWAYS)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	struct stat st;
 
 	if (stat(canonical, &st) != 0) {
 		if (errno != ENOENT || !(request->access & TOOL_PATH_ACCESS_WRITE))
-			MORPH_RETURN(-errno);
+			return -errno;
 		rc = file_ensure_dir(canonical);
 		if (rc != 0)
 			return rc;
@@ -1826,7 +1826,7 @@ int tool_context_request_directory_access(struct tool_context *tctx,
 	if (rc != 0)
 		return rc;
 	if (strcmp(checked, canonical) != 0)
-		MORPH_RETURN(-ESTALE);
+		return -ESTALE;
 	return store_directory_access(tctx, request, canonical, pending, verdict);
 }
 
@@ -1885,9 +1885,9 @@ int tool_context_check_operation_verdict(
 	enum tool_operation_verdict *verdict)
 {
 	if (!tctx || !op)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!verdict)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*verdict = TOOL_OP_DENY;
 	switch (op->kind) {
 	case TOOL_OP_COMMAND:
@@ -1921,12 +1921,12 @@ int tool_context_check_operation_verdict(
 	case TOOL_OP_NETWORK:
 	case TOOL_OP_EXTERNAL_SEND:
 		if (!tctx->operation_approval_fn)
-			MORPH_RETURN(-EPERM);
+			return -EPERM;
 		*verdict = tctx->operation_approval_fn(
 			op, tctx->operation_approval_user_data);
 		if (*verdict == TOOL_OP_DENY)
-			MORPH_RETURN(-EACCES);
+			return -EACCES;
 		return 0;
 	}
-	MORPH_RETURN(-EINVAL);
+	return -EINVAL;
 }

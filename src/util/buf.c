@@ -8,7 +8,7 @@
 static int buf_add_size(size_t a, size_t b, size_t *out)
 {
 	if (a > SIZE_MAX - b)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	*out = a + b;
 	return 0;
 }
@@ -23,14 +23,14 @@ static int buf_grow(morph_buf_t *b, size_t needed)
 	if (needed <= b->cap)
 		return 0;
 	if (needed > MORPH_BUF_MAX_CAP) {
-		MORPH_SET_ERR(b->failed, -EFBIG);
+		b->failed = (-EFBIG);
 		return b->failed;
 	}
 	new_cap = b->cap ? b->cap : MORPH_BUF_DEFAULT_CAP;
 	while (new_cap < needed) {
 		size_t next = new_cap + new_cap / 2 + 32;
 		if (next <= new_cap) {
-			MORPH_SET_ERR(b->failed, -EOVERFLOW);
+			b->failed = (-EOVERFLOW);
 			return b->failed;
 		}
 		if (next > MORPH_BUF_MAX_CAP) {
@@ -40,33 +40,33 @@ static int buf_grow(morph_buf_t *b, size_t needed)
 		new_cap = next;
 	}
 	if (new_cap > MORPH_BUF_MAX_CAP) {
-		MORPH_SET_ERR(b->failed, -EFBIG);
+		b->failed = (-EFBIG);
 		return b->failed;
 	}
 
 	if (b->heap_alloc) {
 		char *new_data = realloc(b->data, new_cap);
 		if (!new_data) {
-			MORPH_SET_ERR(b->failed, -ENOMEM);
+			b->failed = (-ENOMEM);
 			return b->failed;
 		}
 		b->data = new_data;
 	} else if (b->arena) {
 		char *new_data = arena_alloc(b->arena, new_cap);
 		if (!new_data) {
-			MORPH_SET_ERR(b->failed, -ENOMEM);
+			b->failed = (-ENOMEM);
 			return b->failed;
 		}
 		memcpy(new_data, b->data, b->len);
 		b->data = new_data;
 	} else {
-		MORPH_SET_ERR(b->failed, -ENOMEM);
+		b->failed = (-ENOMEM);
 		return b->failed;
 	}
 	b->cap = new_cap;
 	rc = buf_add_size(b->len, 1, &needed);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return b->failed;
 	}
 	if (needed <= b->cap)
@@ -77,14 +77,14 @@ static int buf_grow(morph_buf_t *b, size_t needed)
 int morph_buf_init(morph_buf_t *b, size_t init_cap)
 {
 	if (!b)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (init_cap == 0)
 		init_cap = MORPH_BUF_DEFAULT_CAP;
 	if (init_cap > MORPH_BUF_MAX_CAP)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	b->data = malloc(init_cap);
 	if (!b->data)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	b->len = 0;
 	b->cap = init_cap;
 	b->heap_alloc = 1;
@@ -97,14 +97,14 @@ int morph_buf_init(morph_buf_t *b, size_t init_cap)
 int morph_buf_init_arena(morph_buf_t *b, struct arena *a, size_t init_cap)
 {
 	if (!b || !a)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (init_cap == 0)
 		init_cap = MORPH_BUF_DEFAULT_CAP;
 	if (init_cap > MORPH_BUF_MAX_CAP)
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	b->data = arena_alloc(a, init_cap);
 	if (!b->data)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	b->len = 0;
 	b->cap = init_cap;
 	b->heap_alloc = 0;
@@ -144,7 +144,7 @@ int morph_buf_append(morph_buf_t *b, const char *src, size_t n)
 	int rc;
 
 	if (!b || (!src && n > 0))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (b->failed)
 		return b->failed;
 	if (n == 0)
@@ -152,12 +152,12 @@ int morph_buf_append(morph_buf_t *b, const char *src, size_t n)
 
 	rc = buf_add_size(b->len, n, &needed);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return rc;
 	}
 	rc = buf_add_size(needed, 1, &needed);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return rc;
 	}
 	rc = buf_grow(b, needed);
@@ -190,7 +190,7 @@ int morph_buf_vprintf(morph_buf_t *b, const char *fmt, va_list ap)
 	int rc;
 
 	if (!b || !fmt)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (b->failed)
 		return b->failed;
 
@@ -198,17 +198,17 @@ int morph_buf_vprintf(morph_buf_t *b, const char *fmt, va_list ap)
 	needed = vsnprintf(NULL, 0, fmt, ap2);
 	va_end(ap2);
 	if (needed < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	needed_size = (size_t)needed;
 	rc = buf_add_size(b->len, needed_size, &needed_total);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return rc;
 	}
 	rc = buf_add_size(needed_total, 1, &needed_total);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return rc;
 	}
 	rc = buf_grow(b, needed_total);
@@ -219,7 +219,7 @@ int morph_buf_vprintf(morph_buf_t *b, const char *fmt, va_list ap)
 				       b->cap - b->len,
 				       fmt, ap);
 		if (written < 0)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		b->len += (size_t)written;
 		b->data[b->len] = '\0';
 	}
@@ -292,12 +292,12 @@ int morph_buf_reserve(morph_buf_t *b, size_t extra)
 	int rc;
 
 	if (!b)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (b->failed)
 		return b->failed;
 	rc = buf_add_size(b->len, extra, &needed);
 	if (rc != 0) {
-		MORPH_SET_ERR(b->failed, rc);
+		b->failed = (rc);
 		return rc;
 	}
 	return buf_grow(b, needed);
@@ -306,7 +306,7 @@ int morph_buf_reserve(morph_buf_t *b, size_t extra)
 int morph_buf_truncate(morph_buf_t *b, size_t new_len)
 {
 	if (!b)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (b->failed)
 		return b->failed;
 	if (new_len >= b->len)

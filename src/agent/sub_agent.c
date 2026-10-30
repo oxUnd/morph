@@ -1,3 +1,5 @@
+#include "sub_agent_internal.h"
+#include "util/signals.h"
 #include "sub_agent.h"
 #include "tool_runtime.h"
 #include "guardrail.h"
@@ -101,7 +103,7 @@ static int sub_agent_storage_exec_task(struct sub_agent_runtime *rt,
 	}
 	pthread_mutex_unlock(&rt->storage_mutex);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -514,7 +516,7 @@ int sub_agent_runtime_load_config(struct sub_agent_runtime *rt,
 		int rc = morph_prompt_load(rt ? rt->logger : NULL, e->cfg.system_prompt_file,
 					   e->cfg.system_prompt_dir, &e->system_prompt);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (e->cfg.model[0])
 			e->llm = rt->default_llm;
 		else
@@ -549,56 +551,23 @@ sub_agent_build_tool_registry(struct sub_agent_runtime *rt,
 	if (!child)
 		return NULL;
 	tool_registry_init(rt ? rt->logger : NULL, child);
-	if (!entry->cfg.allowed_tools_count) {
-		for (int i = 0; i < rt->parent_tools->count; i++) {
-			struct tool_entry *pe = &rt->parent_tools->entries[i];
-			if (strncmp(pe->desc.name, "agent_", 6) == 0 ||
-			    strcmp(pe->desc.name, "delegate") == 0 ||
-			    strcmp(pe->desc.name, "fanout") == 0 ||
-			    strcmp(pe->desc.name, "agent_status") == 0)
-				continue;
-			if (tool_is_disabled(rt->parent_tools, pe->desc.name))
-				continue;
-			struct tool_spec spec = {
-				.origin = pe->origin,
-				.name = pe->desc.name,
-				.title = pe->desc.title,
-				.description = pe->desc.description,
-				.input_schema = pe->desc.input_schema,
-				.output_schema = pe->desc.output_schema,
-				.input_kind = pe->desc.input_kind,
-				.input_format = pe->desc.input_format,
-				.exec = pe->exec,
-				.get_environment = pe->get_environment,
-				.user_data = pe->user_data,
-				.flags = pe->flags,
-				.timeout_seconds = pe->timeout_seconds,
-			};
-			(void)tool_register(child, &spec);
+	if (tool_registry_copy(child, rt->parent_tools) != 0) {
+		tool_registry_cleanup(child);
+		free(child);
+		return NULL;
+	}
+	for (int i = child->count - 1; i >= 0; i--) {
+		const char *name = child->entries[i].desc.name;
+		int allowed = entry->cfg.allowed_tools_count == 0;
+		for (int j = 0; j < entry->cfg.allowed_tools_count; j++) {
+			if (!strcmp(name, entry->cfg.allowed_tools[j])) {
+				allowed = 1;
+			}
 		}
-	} else {
-		for (int i = 0; i < entry->cfg.allowed_tools_count; i++) {
-			const char *tname = entry->cfg.allowed_tools[i];
-			struct tool_entry *pe = tool_lookup(rt->parent_tools,
-							   tname);
-			if (!pe)
-				continue;
-			struct tool_spec spec = {
-				.origin = pe->origin,
-				.name = pe->desc.name,
-				.title = pe->desc.title,
-				.description = pe->desc.description,
-				.input_schema = pe->desc.input_schema,
-				.output_schema = pe->desc.output_schema,
-				.input_kind = pe->desc.input_kind,
-				.input_format = pe->desc.input_format,
-				.exec = pe->exec,
-				.get_environment = pe->get_environment,
-				.user_data = pe->user_data,
-				.flags = pe->flags,
-				.timeout_seconds = pe->timeout_seconds,
-			};
-			(void)tool_register(child, &spec);
+		if (!allowed || tool_is_disabled(rt->parent_tools, name) ||
+		    !strncmp(name, "agent_", 6) || !strcmp(name, "delegate") ||
+		    !strcmp(name, "fanout")) {
+			(void)tool_unregister(child, name);
 		}
 	}
 	for (int i = 0; i < entry->cfg.disabled_tools_count; i++)
@@ -663,12 +632,12 @@ static int sub_agent_run_task(struct sub_agent_runtime *rt,
 	if (!rt || !entry || !task)
 		return -EINVAL;
 	if (task->depth >= SUB_AGENT_MAX_DEPTH)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	struct tool_runtime_context runtime = {.sub_agent_depth = task->depth};
 
 	child = sub_agent_create_context(rt, &runtime, entry, task->task_description);
 	if (!child) {
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	sink.rt = rt;
 	sink.task = task;
@@ -765,12 +734,12 @@ int sub_agent_invoke_sync(struct sub_agent_runtime *rt, const struct tool_runtim
 	if (!rt || !entry || !task || !result)
 		return -EINVAL;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	task_record =
 		sub_agent_task_create(rt, entry, task, "tool", 1,
 				      runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
 	if (!task_record)
-		MORPH_RETURN(create_rc);
+		return create_rc;
 	sub_agent_emit_background_event(rt, "background.started", "begin",
 					"sub-agent started",
 					entry->cfg.name, task_record->id,
@@ -833,14 +802,14 @@ int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_c
 	if (!rt || !agent_name || !task)
 		return -EINVAL;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	entry = sub_agent_find(rt, agent_name);
 	if (!entry)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	t = sub_agent_task_create(rt, entry, task, "delegate", 0,
 				  runtime ? runtime->sub_agent_depth : rt->depth, &create_rc);
 	if (!t)
-		MORPH_RETURN(create_rc);
+		return create_rc;
 	sub_agent_emit_background_event(rt, "background.started", "begin",
 					"sub-agent delegate started",
 					entry->cfg.name, t->id, task, 0);
@@ -857,7 +826,7 @@ int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_c
 						"sub-agent delegate failed",
 						entry->cfg.name, t->id, task,
 						-ENOMEM);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	da->rt = rt;
 	da->entry = entry;
@@ -876,7 +845,7 @@ int sub_agent_delegate(struct sub_agent_runtime *rt, const struct tool_runtime_c
 						"sub-agent delegate failed",
 						entry->cfg.name, t->id, task,
 						-rc);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	if (task_id_out)
 		*task_id_out = strdup(t->id);
@@ -898,7 +867,7 @@ int sub_agent_check_status(struct sub_agent_runtime *rt,
 	found = sub_agent_task_find_locked(rt, task_id);
 	pthread_mutex_unlock(&rt->mutex);
 	if (!found)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	pthread_mutex_lock(&found->mutex);
 	st = found->status;
 	res = found->result ? strdup(found->result) : NULL;
@@ -1153,6 +1122,7 @@ int sub_agent_runtime_task_events(struct sub_agent_runtime *rt,
 }
 
 struct fanout_worker_arg {
+	volatile sig_atomic_t finished;
 	struct tool_runtime_context runtime;
 	struct sub_agent_runtime *rt;
 	struct sub_agent_entry *entry;
@@ -1165,20 +1135,41 @@ static void *fanout_worker_fn(void *arg)
 {
 	struct fanout_worker_arg *fw = arg;
 	fw->rc = sub_agent_invoke_sync(fw->rt, &fw->runtime, fw->entry, fw->task, &fw->result);
+	__atomic_store_n(&fw->finished, 1, __ATOMIC_RELEASE);
 	return NULL;
 }
 
-int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
-		     const char *agent_name, const char **tasks, int task_count,
-		     enum sub_agent_merge_strategy merge, char **result)
+/**
+ * \brief Execute fanout using optional instance-local platform operations.
+ * \param[in,out] rt: Borrowed runtime, kept alive through worker reclamation.
+ * \param[in] runtime: Optional borrowed execution context until all workers finish.
+ * \param[in] agent_name: Borrowed configured agent name.
+ * \param[in] tasks: Borrowed task strings through worker completion.
+ * \param[in] task_count: Positive number of tasks.
+ * \param[in] merge: Existing result merge policy.
+ * \param[out] result: Owned merged text to free, initialized to NULL on entry.
+ * \param[in] ops: Optional borrowed platform seam; NULL uses pthread directly.
+ * \return Zero on success, negative error after reclaiming every started worker.
+ */
+int sub_agent_fanout_with_ops(struct sub_agent_runtime *rt,
+			      const struct tool_runtime_context *runtime, const char *agent_name,
+			      const char **tasks, int task_count,
+			      enum sub_agent_merge_strategy merge, char **result,
+			      const struct sub_agent_thread_ops *ops)
 {
+	int started = 0;
+	int thread_rc = 0;
+
+	if (result != NULL) {
+		*result = NULL;
+	}
 	if (!rt || !agent_name || !tasks || task_count <= 0 || !result)
 		return -EINVAL;
 	if ((runtime ? runtime->sub_agent_depth : rt->depth) >= SUB_AGENT_MAX_DEPTH)
-		MORPH_RETURN(-ELOOP);
+		return -ELOOP;
 	struct sub_agent_entry *entry = sub_agent_find(rt, agent_name);
 	if (!entry)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	sub_agent_emit_background_event(rt, "background.started", "begin",
 					"sub-agent fanout started",
 					entry->cfg.name, NULL, agent_name, 0);
@@ -1195,7 +1186,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 						"sub-agent fanout failed",
 						entry->cfg.name, NULL,
 						agent_name, -ENOMEM);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	for (int i = 0; i < n; i++) {
 		if (runtime)
@@ -1207,11 +1198,41 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 		workers[i].task = tasks[i];
 		workers[i].result = NULL;
 		workers[i].rc = 0;
-		pthread_create(&threads[i], NULL, fanout_worker_fn,
-			       &workers[i]);
+		thread_rc =
+			ops != NULL && ops->create != NULL
+				? ops->create(&threads[i], fanout_worker_fn, &workers[i],
+					      ops->user_data)
+				: pthread_create(&threads[i], NULL, fanout_worker_fn, &workers[i]);
+		if (thread_rc != 0) {
+			thread_rc = -thread_rc;
+			break;
+		}
+		started++;
 	}
-	for (int i = 0; i < n; i++)
-		pthread_join(threads[i], NULL);
+	for (int i = 0; i < started; i++) {
+		int join_rc = ops != NULL && ops->join != NULL
+				      ? ops->join(threads[i], ops->user_data)
+				      : pthread_join(threads[i], NULL);
+		if (join_rc != 0) {
+			while (!__atomic_load_n(&workers[i].finished, __ATOMIC_ACQUIRE)) {
+				struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+				nanosleep(&pause, NULL);
+			}
+			(void)pthread_detach(threads[i]);
+		}
+
+		if (join_rc != 0 && thread_rc == 0) {
+			thread_rc = -join_rc;
+		}
+	}
+	if (thread_rc != 0) {
+		for (int i = 0; i < started; i++) {
+			free(workers[i].result);
+		}
+		free(workers);
+		free(threads);
+		return thread_rc;
+	}
 	int any_success = 0;
 	for (int i = 0; i < n; i++) {
 		if (workers[i].rc == 0)
@@ -1229,7 +1250,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 						entry->cfg.name, NULL,
 						agent_name,
 						first_err ? first_err : -EIO);
-		MORPH_RETURN(first_err ? first_err : -EIO);
+		return first_err ? first_err : -EIO;
 	}
 	if (merge == SUB_AGENT_MERGE_RAW) {
 		cJSON *arr = cJSON_CreateArray();
@@ -1254,7 +1275,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 				free(workers[i].result);
 			free(workers);
 			free(threads);
-			MORPH_RETURN(buf_rc);
+			return buf_rc;
 		}
 		for (int i = 0; i < n; i++) {
 			const char *r = workers[i].result
@@ -1268,7 +1289,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 					free(workers[j].result);
 				free(workers);
 				free(threads);
-				MORPH_RETURN(buf_rc);
+				return buf_rc;
 			}
 		}
 		struct model *llm = entry->llm;
@@ -1314,7 +1335,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 				free(workers[i].result);
 			free(workers);
 			free(threads);
-			MORPH_RETURN(buf_rc);
+			return buf_rc;
 		}
 		for (int i = 0; i < n; i++) {
 			const char *r = workers[i].result
@@ -1326,7 +1347,7 @@ int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_con
 					free(workers[j].result);
 				free(workers);
 				free(threads);
-				MORPH_RETURN(buf_rc);
+				return buf_rc;
 			}
 		}
 		*result = morph_buf_detach(&combined_buf);
@@ -1435,4 +1456,13 @@ void sub_agent_trace_write(struct sub_agent_runtime *rt,
 	}
 	cJSON_Delete(obj);
 	fclose(f);
+}
+
+/** \brief Fan out tasks, returning NULL output on submission or join failure. */
+int sub_agent_fanout(struct sub_agent_runtime *rt, const struct tool_runtime_context *runtime,
+		     const char *agent_name, const char **tasks, int task_count,
+		     enum sub_agent_merge_strategy merge, char **result)
+{
+	return sub_agent_fanout_with_ops(rt, runtime, agent_name, tasks, task_count, merge, result,
+					 NULL);
 }

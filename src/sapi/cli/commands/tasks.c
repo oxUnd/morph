@@ -522,7 +522,7 @@ static int print_active_task(struct cli_context *ctx, const struct scheduled_tas
 	int rc;
 
 	if (!task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	notification_time_string(task->next_run_at, due, sizeof(due));
 	if (task->max_attempts > 0)
 		snprintf(attempts, sizeof(attempts), "%d/%d",
@@ -570,7 +570,7 @@ static int print_task_list_tree(struct cli_context *ctx, const struct scheduled_
 	int rc = 0;
 
 	if (!tasks || count <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < count; i++) {
 		if (task_status_is_terminal(tasks[i].status))
 			history_count++;
@@ -632,7 +632,7 @@ static int append_task_show_markdown(morph_buf_t *buf,
 	int rc;
 
 	if (!buf || !task)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	notification_time_string(task->next_run_at, due, sizeof(due));
 	notification_time_string(task->created_at, created, sizeof(created));
 	notification_time_string(task->updated_at, updated, sizeof(updated));
@@ -687,7 +687,7 @@ static int append_notification_table_row(morph_buf_t *buf,
 	int rc;
 
 	if (!buf || !n)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	notification_time_string(n->created_at, created, sizeof(created));
 	rc = morph_buf_printf(buf, "| %lld | ",
 			      (long long)n->id);

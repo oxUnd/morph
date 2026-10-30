@@ -66,14 +66,14 @@ int skill_discover_configured(struct skill_registry *reg, const char *workdir,
 	int initial;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	initial = reg->count;
 
 	if (workdir && *workdir) {
 		char *project = file_path_join_alloc(workdir, ".agents/skills");
 
 		if (!project)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		char *resolved = file_resolve_path(project);
 
 		rc = resolved ? skill_discover(reg, resolved) : -ENOMEM;
@@ -118,7 +118,7 @@ int skill_discover(struct skill_registry *reg, const char *dir_path)
 	if (!dir) {
 		int err = errno;
 		free(expanded);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	int discovered = 0;
@@ -261,9 +261,9 @@ int skill_sorted_entries(const struct skill_registry *reg,
 			 const struct skill_entry **entries, size_t capacity)
 {
 	if (!reg || !entries)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if ((size_t)reg->count > capacity)
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	for (int i = 0; i < reg->count; i++)
 		entries[i] = &reg->entries[i];
 	qsort(entries, (size_t)reg->count, sizeof(entries[0]), skill_entry_compare);
@@ -284,7 +284,7 @@ int skill_build_activated_instructions_checked(struct skill_registry *reg, char 
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	if (!reg)
 		return 0;
@@ -315,7 +315,7 @@ int skill_build_activated_instructions_checked(struct skill_registry *reg, char 
 			rc = -ENOMEM;
 	}
 	morph_buf_cleanup(&buf);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 char *skill_build_activated_instructions(struct skill_registry *reg)

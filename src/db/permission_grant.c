@@ -18,7 +18,7 @@ int permission_grant_save(struct db *db,
 	if (!db || !db->handle || !grant || !grant->subject[0] ||
 	    !grant->resource_kind[0] || !grant->resource[0] ||
 	    !grant->project_root[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK) {
 		rc = MORPH_ERR_DB;
 		goto out;
@@ -57,9 +57,9 @@ int permission_grant_each(struct db *db, const char *project_root,
 	int rc = 0;
 
 	if (!db || !db->handle || !project_root || !*project_root || !fn)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_bind_text(stmt, 1, project_root, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
 		rc = MORPH_ERR_DB;
@@ -107,10 +107,10 @@ static int delete_grants(struct db *db, const char *sql,
 	int rc = 0;
 
 	if (!db || !db->handle || !sql || !deleted)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*deleted = 0;
 	if (sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (project_root &&
 	    sqlite3_bind_text(stmt, bind_index++, project_root, -1,
 			      SQLITE_TRANSIENT) != SQLITE_OK) {
@@ -145,7 +145,7 @@ int permission_grant_delete_id(struct db *db, const char *project_root,
 			       int64_t id, int *deleted)
 {
 	if (!project_root || !*project_root || id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants WHERE project_root=? AND id=?",
 		project_root, NULL, id, deleted);
@@ -155,7 +155,7 @@ int permission_grant_delete_subject(struct db *db, const char *project_root,
 				    const char *subject, int *deleted)
 {
 	if (!project_root || !*project_root || !subject || !*subject)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants "
 		"WHERE project_root=? AND subject=?",
@@ -166,7 +166,7 @@ int permission_grant_clear_project(struct db *db, const char *project_root,
 				   int *deleted)
 {
 	if (!project_root || !*project_root)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return delete_grants(db,
 		"DELETE FROM permission_grants WHERE project_root=?",
 		project_root, NULL, 0, deleted);

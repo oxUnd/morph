@@ -61,7 +61,7 @@ static int open_listen(const char *spec)
 	int fd = FCGX_OpenSocket(socket_spec, backlog);
 	if (fd < 0) {
 		fprintf(stderr, "FCGX_OpenSocket(%s) failed\n", spec);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	if (socket_spec[0] == '/')
 		chmod(socket_spec, 0660);
@@ -79,13 +79,13 @@ static int configure_trust_param(struct fcgi_server *server, const char *header)
 	off = strlen(server->trust_param);
 	for (const unsigned char *p = (const unsigned char *)header; *p; p++) {
 		if (off + 1 >= sizeof(server->trust_param))
-			MORPH_RETURN(-ENAMETOOLONG);
+			return -ENAMETOOLONG;
 		if (morph_name_char_valid((char)*p, NULL))
 			server->trust_param[off++] = (char)toupper(*p);
 		else if (*p == '-')
 			server->trust_param[off++] = '_';
 		else
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	}
 	server->trust_param[off] = '\0';
 	return 0;

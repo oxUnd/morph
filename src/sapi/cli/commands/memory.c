@@ -48,7 +48,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		char *jobs = runtime_memory_background_render(ctx->runtime);
 
 		if (!jobs)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		CMD_HEADER(ctx, "Background jobs: queued = pending; completed = finished");
 		(void)cli_print_untrusted_text(ctx, jobs, UTF8_TERMINAL_TEXT_MULTILINE);
 		free(jobs);
@@ -65,7 +65,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		if (!key || (setting && !value) || argc > (setting ? 5 : 4)) {
 			CMD_ERROR(ctx, "/memory set <key> <value> [personal|project|session]"
 				       "; /memory unset <key> [personal|project|session]");
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 		rc = runtime_preference_set(ctx->runtime, scope ? scope : "personal", key, value);
 		if (rc != 0) {
@@ -97,7 +97,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 			free(history);
 			free(effective);
 			CMD_ERROR(ctx, "Failed to read preferences");
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		}
 		CMD_HEADER(ctx, "Effective preferences (session > project > personal; "
 				"explicit settings override legacy records)");

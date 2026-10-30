@@ -47,7 +47,7 @@ static int prompt(FILE *in, FILE *out, const char *label,
 		ssize_t len = getline(&line, &capacity, in);
 		if (len < 0) {
 			free(line);
-			MORPH_RETURN(-ECANCELED);
+			return -ECANCELED;
 		}
 		int embedded_nul = memchr(line, '\0', (size_t)len) != NULL;
 		while (len > 0 && isspace((unsigned char)line[len - 1]))
@@ -77,7 +77,7 @@ static int choice(FILE *in, FILE *out, const char *label,
 	for (;;) {
 		int rc = prompt(in, out, label, fallback, value, sizeof(value));
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (strlen(value) == 1 && value[0] >= '1' &&
 		    value[0] <= '0' + max)
 			return value[0] - '0';
@@ -133,14 +133,14 @@ int cli_setup_token_ceiling(const struct config_model_entry *entry, int output)
 int cli_setup_parse_token_count(const char *text, int minimum, int maximum, int *value)
 {
 	if (!text || !*text || !value)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (const char *p = text; *p; p++)
 		if (*p < '0' || *p > '9')
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 	errno = 0;
 	long parsed = strtol(text, NULL, 10);
 	if (errno == ERANGE || parsed < minimum || parsed > maximum)
-		MORPH_RETURN(-ERANGE);
+		return -ERANGE;
 	*value = (int)parsed;
 	return 0;
 }
@@ -154,7 +154,7 @@ static int prompt_token_count(FILE *in, FILE *out, const char *label,
 		snprintf(fallback, sizeof(fallback), "%d", *value);
 	for (;;) {
 		int rc = prompt(in, out, label, fallback, answer, sizeof(answer));
-		if (rc < 0) MORPH_RETURN(rc);
+		if (rc < 0) return rc;
 		rc = cli_setup_parse_token_count(answer, minimum, maximum, value);
 		if (rc == 0) return 0;
 		fprintf(out, "Enter a whole token count from %d to %d.\n", minimum, maximum);
@@ -209,17 +209,17 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	int rc = 0;
 
 	if (strcmp(entry->adapter, "deepseek") != 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (entry->extra_body_json[0]) {
 		root = cJSON_ParseWithOpts(entry->extra_body_json, NULL, 1);
 		if (!cJSON_IsObject(root)) {
 			cJSON_Delete(root);
-			MORPH_RETURN(MORPH_ERR_PARSE);
+			return MORPH_ERR_PARSE;
 		}
 	} else {
 		root = cJSON_CreateObject();
 		if (!root)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 	}
 	thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
 	if (!cJSON_IsObject(thinking)) {
@@ -228,19 +228,19 @@ int cli_setup_set_thinking(struct config_model_entry *entry, int enabled)
 	}
 	if (!thinking) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_DeleteItemFromObjectCaseSensitive(thinking, "type");
 	if (!cJSON_AddStringToObject(thinking, "type", enabled ? "enabled" : "disabled")) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (strlen(json) >= sizeof(entry->extra_body_json))
-		MORPH_SET_ERR(rc, -E2BIG);
+		rc = (-E2BIG);
 	else
 		strcpy(entry->extra_body_json, json);
 	free(json);
@@ -261,23 +261,23 @@ static int configure_model(FILE *in, FILE *out, int kind,
 		kind == SETUP_TEXT || kind == SETUP_VISION ? 4 :
 		kind == SETUP_VIDEO ? 2 : 3);
 	if (selected < 0)
-		MORPH_RETURN(selected);
+		return selected;
 	cli_setup_model_defaults(kind, selected, entry);
 	int rc = prompt(in, out, "Model name / endpoint ID", entry->model,
 		entry->model, sizeof(entry->model));
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	if (kind == SETUP_TEXT || kind == SETUP_VISION) {
 		cli_setup_reset_token_limits(entry);
 		rc = prompt_token_count(in, out, "Context window (tokens)", 2,
 			cli_setup_token_ceiling(entry, 0), &entry->context_limit);
-		if (rc < 0) MORPH_RETURN(rc);
+		if (rc < 0) return rc;
 		int ceiling = cli_setup_token_ceiling(entry, 1);
 		if (ceiling >= entry->context_limit) ceiling = entry->context_limit - 1;
 		if (entry->max_tokens > ceiling) entry->max_tokens = 0;
 		rc = prompt_token_count(in, out, "Max output (tokens)", 1, ceiling,
 			&entry->max_tokens);
-		if (rc < 0) MORPH_RETURN(rc);
+		if (rc < 0) return rc;
 	}
 	if (strcmp(entry->adapter, "deepseek") == 0) {
 		int thinking = choice(in, out,
@@ -285,7 +285,7 @@ static int configure_model(FILE *in, FILE *out, int kind,
 			"1", 2);
 
 		if (thinking < 0)
-			MORPH_RETURN(thinking);
+			return thinking;
 		rc = cli_setup_set_thinking(entry, thinking == 2);
 		if (rc != 0)
 			return rc;
@@ -294,7 +294,7 @@ static int configure_model(FILE *in, FILE *out, int kind,
 		rc = prompt(in, out, "API base URL", entry->api_base,
 			entry->api_base, sizeof(entry->api_base));
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if ((strncmp(entry->api_base, "https://", 8) == 0 &&
 		     entry->api_base[8]) ||
 		    (strncmp(entry->api_base, "http://", 7) == 0 &&
@@ -307,7 +307,7 @@ static int configure_model(FILE *in, FILE *out, int kind,
 			entry->api_key_env,
 			entry->api_key_env, sizeof(entry->api_key_env));
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (morph_env_name_valid(entry->api_key_env))
 			return 0;
 		fprintf(out, "Use letters, digits and underscores; start with a letter or underscore.\n");
@@ -329,7 +329,7 @@ static int save_config(const char *path, const char *text)
 {
 	char *parent = strdup(path);
 	if (!parent)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	char *slash = strrchr(parent, '/');
 	int rc = 0;
 	if (slash) {
@@ -344,15 +344,15 @@ static int save_config(const char *path, const char *text)
 	}
 	free(parent);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	char *temporary = file_path_append_alloc(path, ".setup-XXXXXX");
 	if (!temporary)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	int fd = mkstemp(temporary);
 	if (fd < 0) {
 		rc = -errno;
 		free(temporary);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	FILE *file = fdopen(fd, "w");
 	if (!file) {
@@ -370,7 +370,7 @@ static int save_config(const char *path, const char *text)
 	unlink(temporary);
 	free(temporary);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -382,7 +382,7 @@ int cli_setup(struct cli_context *ctx, const char *path, FILE *input, FILE *outp
 		int rc = cli_setup_ui_collect(ctx, path, input, output, entries);
 		if (rc < 0) {
 			memset(entries, 0, sizeof(entries));
-			MORPH_RETURN(rc);
+			return rc;
 		}
 	} else {
 		fprintf(output, "Welcome to morph! Let's create %s.\n"
@@ -396,19 +396,19 @@ int cli_setup(struct cli_context *ctx, const char *path, FILE *input, FILE *outp
 					"Configure image generation? 1) Skip  2) Configure" :
 					"Configure video generation? 1) Skip  2) Configure", "1", 2);
 				if (selected < 0)
-					MORPH_RETURN(selected);
+					return selected;
 				if (selected == 1)
 					continue;
 			}
 			int rc = configure_model(input, output, i, &entries[i]);
 			if (rc < 0)
-				MORPH_RETURN(rc);
+				return rc;
 		}
 	}
 	morph_buf_t buf;
 	int rc = morph_buf_init(&buf, 0);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	morph_buf_puts(&buf, "# Created by morph first-run setup.\n");
 	for (int i = 0; i < SETUP_MODEL_COUNT; i++) {
 		morph_buf_printf(&buf, "\n[model.%s]\n", names[i]);
@@ -434,7 +434,7 @@ int cli_setup(struct cli_context *ctx, const char *path, FILE *input, FILE *outp
 		rc = save_config(path, morph_buf_cstr(&buf));
 	morph_buf_cleanup(&buf);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	fprintf(output, "\nConfiguration saved to %s.\n"
 		"You can edit this file later to add or change model capabilities.\n", path);
 	int missing = 0;
@@ -458,7 +458,7 @@ int cli_setup_if_missing(struct cli_context *ctx, const char *path, int interact
 {
 	char *expanded = file_expand_path(path ? path : "~/.morph/config.toml");
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	struct stat st;
 	if (lstat(expanded, &st) == 0) {
 		free(expanded);
@@ -480,6 +480,6 @@ int cli_setup_if_missing(struct cli_context *ctx, const char *path, int interact
 		fprintf(stderr, "morph: setup failed: %s\n", morph_strerror(rc));
 	free(expanded);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return rc;
 }

@@ -23,7 +23,7 @@ static int video_file_url(const char *path, morph_buf_t *url)
 	int rc;
 
 	if (!path || !url)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_puts(url, "file://");
 	for (cursor = (const unsigned char *)path; rc == 0 && *cursor;
 	     cursor++) {
@@ -44,11 +44,11 @@ static int video_wait_child(pid_t pid)
 		waited = waitpid(pid, &status, 0);
 	} while (waited < 0 && errno == EINTR);
 	if (waited < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
-			MORPH_RETURN(-ENOENT);
-		MORPH_RETURN(-EIO);
+			return -ENOENT;
+		return -EIO;
 	}
 	return 0;
 }
@@ -62,18 +62,18 @@ static int video_extract_preview(const char *path, char *preview,
 	int rc;
 
 	if (!path || !preview || preview_size < sizeof("/tmp/morph-video-XXXXXX"))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	strncpy(preview, "/tmp/morph-video-XXXXXX", preview_size - 1u);
 	preview[preview_size - 1u] = '\0';
 	fd = mkstemp(preview);
 	if (fd < 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	close(fd);
 	pid = fork();
 	if (pid < 0) {
 		rc = -errno;
 		unlink(preview);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -98,7 +98,7 @@ static int video_extract_preview(const char *path, char *preview,
 	if (rc != 0 || stat(preview, &info) != 0 ||
 	    !S_ISREG(info.st_mode) || info.st_size <= 0) {
 		unlink(preview);
-		MORPH_RETURN(rc != 0 ? rc : -EIO);
+		return rc != 0 ? rc : -EIO;
 	}
 	return 0;
 }
@@ -116,7 +116,7 @@ int video_render_terminal_preview(struct morph_log *logger, const char *path)
 	int rc;
 
 	if (!path || !path[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_init(&url, 128u);
 	if (rc != 0)
 		return rc;
@@ -174,7 +174,7 @@ int video_play(struct morph_log *logger, const char *path, const char *mpv_args)
 		int err = errno;
 		log_err(logger, "video_play: fork failed");
 		free(buf);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 
 	if (pid == 0) {

@@ -77,11 +77,11 @@ static int exec_runtime_create(struct tool_context *tctx,
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	runtime = calloc(1, sizeof(*runtime));
 	if (!runtime)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	runtime->refs = 2;
 	runtime->tool_context = tctx;
 	runtime->default_timeout_ms = exec_config ?
@@ -95,7 +95,7 @@ static int exec_runtime_create(struct tool_context *tctx,
 	rc = pthread_mutex_init(&runtime->mutex, NULL);
 	if (rc != 0) {
 		free(runtime);
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	rc = exec_jobs_create(&runtime->jobs);
 	if (rc != 0) {
@@ -164,12 +164,12 @@ static int policy_check(struct exec_runtime *runtime, const char *command,
 	if (runtime->tool_context) {
 		if (analysis.commands.nelts >= (size_t)INT_MAX) {
 			bash_parse_result_cleanup(&analysis);
-			MORPH_RETURN(-E2BIG);
+			return -E2BIG;
 		}
 		programs = calloc(analysis.commands.nelts + 1, sizeof(*programs));
 		if (!programs) {
 			bash_parse_result_cleanup(&analysis);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		for (size_t i = 0; i < analysis.commands.nelts; i++) {
 			const struct bash_parse_command *parsed =
@@ -276,7 +276,7 @@ static int result_snapshot(struct tool_result *result,
 	int rc;
 
 	if (!data)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cJSON_AddStringToObject(data, "session_id", session_id);
 	if (command)
 		cJSON_AddStringToObject(data, "command", command);
@@ -418,7 +418,7 @@ static int merge_path_grants(struct tool_context *tctx, const char *principal,
 
 		if (!merged) {
 			morph_array_cleanup(&grants);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		memcpy(merged, old, (size_t)old_count * sizeof(*merged));
 		memcpy(merged + old_count, grants.elts, grants.nelts * sizeof(*merged));
@@ -459,12 +459,12 @@ static int exec_run(const char *args_json, struct tool_result *result,
 	int rc;
 
 	if (!runtime || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
 		(void)tool_result_error(result, "invalid_request",
 			"exec arguments must be a JSON object");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	command = json_string(root, "command");
 	if (!command)
@@ -476,14 +476,14 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "invalid_request",
 			"command is required");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	host = json_bool(root, "host", 0);
 	if (host && !runtime->allow_host_execution) {
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "host_execution_disabled",
 			"Host execution requires exec.allow_host_execution=true in the user config.");
-		MORPH_RETURN(-EACCES);
+		return -EACCES;
 	}
 	if (!workdir && runtime->tool_context)
 		workdir = tool_context_workdir(runtime->tool_context);
@@ -552,7 +552,7 @@ static int exec_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "sandbox_policy_failed",
 			morph_strerror(-ENOMEM));
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	rc = merge_path_grants(runtime->tool_context, principal, &sandbox, path_arena);
 	if (rc == 0)
@@ -619,12 +619,12 @@ static int process_run(const char *args_json, struct tool_result *result,
 	int rc;
 
 	if (!runtime || !result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = args_json ? cJSON_Parse(args_json) : NULL;
 	if (!root) {
 		(void)tool_result_error(result, "invalid_request",
 			"process arguments must be a JSON object");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	session_id = json_string(root, "session_id");
 	action = json_string(root, "action");
@@ -636,7 +636,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		if (rc) return rc;
 		cJSON *data = cJSON_CreateObject();
-		if (!data) { cJSON_Delete(jobs); MORPH_RETURN(-ENOMEM); }
+		if (!data) { cJSON_Delete(jobs); return -ENOMEM; }
 		cJSON_AddItemToObject(data, "jobs", jobs);
 		rc = tool_result_success(result, data);
 		if (rc) cJSON_Delete(data);
@@ -646,7 +646,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 		cJSON_Delete(root);
 		(void)tool_result_error(result, "invalid_request",
 			"session_id and action are required");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	rc = exec_jobs_authorize(runtime->jobs, session_id,
 		result->runtime ? result->runtime->memory_session_id : 0);
@@ -669,7 +669,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 			"wait_ms must be an integer from 0 to %llu; omit it to wait up to %llu ms",
 			(unsigned long long)runtime->max_wait_ms,
 			(unsigned long long)default_wait_ms);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	int collects = !strcmp(action, "wait") || !strcmp(action, "poll");
 	uint64_t wait_ms = collects ? (uint64_t)requested_wait_ms : 0;
@@ -678,7 +678,7 @@ static int process_run(const char *args_json, struct tool_result *result,
 				   &cursor.stderr_offset, &used) != 2 ||
 			    cursor_text[used] != '\0')) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (strcmp(action, "write") == 0)
 		rc = process_session_write(runtime->manager, session_id,
@@ -764,7 +764,7 @@ int exec_tool_init(struct tool_registry *reg, struct tool_context *tctx,
 	int rc;
 
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = tool_path_policy_init(tctx);
 	if (rc != 0)
 		return rc;
@@ -883,7 +883,7 @@ int exec_tool_set_event_callback(struct tool_registry *reg, morph_event_cb cb,
 {
 	struct exec_runtime *runtime = exec_runtime_lookup(reg);
 	if (!runtime)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	exec_jobs_bind(runtime->jobs, runtime->manager, cb, user_data);
 	return 0;
 }
@@ -894,7 +894,7 @@ int exec_tool_jobs_list(struct tool_registry *reg, int64_t owner, cJSON **out)
 	if (runtime)
 		return exec_jobs_list(runtime->jobs, owner, out);
 	*out = cJSON_CreateArray();
-	MORPH_RETURN(*out ? 0 : -ENOMEM);
+	return *out ? 0 : -ENOMEM;
 }
 
 int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
@@ -902,14 +902,14 @@ int exec_tool_job_read(struct tool_registry *reg, int64_t owner, const char *id,
 {
 	struct exec_runtime *runtime = exec_runtime_lookup(reg);
 	if (!runtime)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return exec_jobs_read(runtime->jobs, owner, id, out);
 }
 
 int exec_tool_job_stop(struct tool_registry *reg, int64_t owner, const char *id)
 {
 	struct exec_runtime *runtime = exec_runtime_lookup(reg);
-	if (!runtime) MORPH_RETURN(-ENOENT);
+	if (!runtime) return -ENOENT;
 	return exec_jobs_stop(runtime->jobs, owner, id);
 }
 

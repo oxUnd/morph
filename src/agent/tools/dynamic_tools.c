@@ -1,4 +1,6 @@
 #include "util/signals.h"
+#include "util/child_io.h"
+#include "sandbox/sandbox.h"
 #include "agent/tool_runtime.h"
 #include "dynamic_tools.h"
 #include "ipc/jsonrpc.h"
@@ -37,6 +39,7 @@
 #define DYN_TOOL_HISTORY_LIMIT 20
 
 struct dynamic_tool {
+	char *source;
 	char name[TOOL_NAME_MAX];
 	char description[TOOL_DESC_MAX];
 	char input_schema[TOOL_SCHEMA_MAX];
@@ -65,7 +68,6 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			      const char *dir,
 			      enum tool_origin origin);
 static int remove_tree(const char *path);
-static int copy_file(const char *src, const char *dst);
 
 struct tool_checkpoint {
 	char id[16];
@@ -248,92 +250,21 @@ static int effective_caps(struct dynamic_tool *dt,
 	return 0;
 }
 
-static int read_fd_limited(int fd, morph_buf_t *buf, int limit)
+/** \brief Release the binding-owned immutable source snapshot. */
+static void dynamic_tool_destroy(void *opaque)
 {
-	char tmp[BUFSIZ];
-
-	while (1) {
-		ssize_t n = read(fd, tmp, sizeof(tmp));
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			if (errno == EAGAIN)
-				return 0;
-			MORPH_RETURN_ERRNO();
-		}
-		if (n == 0)
-			return 1;
-		if ((int)buf->len < limit) {
-			size_t keep = (size_t)n;
-			if (buf->len + keep > (size_t)limit)
-				keep = (size_t)limit - buf->len;
-			if (keep > 0 && morph_buf_append(buf, tmp, keep) != 0)
-				return -ENOMEM;
-		}
+	struct dynamic_tool *tool = opaque;
+	if (tool != NULL) {
+		free(tool->source);
+		free(tool);
 	}
 }
 
-static int read_pipes(int out_fd, int err_fd, morph_buf_t *out,
-		      morph_buf_t *err, int timeout_seconds, int output_limit,
-		      int *timed_out)
+/** \brief Adapt a borrowed tool request cancellation control. */
+static int dynamic_cancelled(void *opaque)
 {
-	int out_open = 1;
-	int err_open = 1;
-	int max_fd = out_fd > err_fd ? out_fd : err_fd;
-	time_t deadline = time(NULL) + timeout_seconds;
-
-	fcntl(out_fd, F_SETFL, O_NONBLOCK);
-	fcntl(err_fd, F_SETFL, O_NONBLOCK);
-	while (out_open || err_open) {
-		fd_set rfds;
-		time_t now;
-		struct timeval tv;
-		int rc;
-
-		now = time(NULL);
-		if (timeout_seconds > 0 && now >= deadline) {
-			*timed_out = 1;
-			return 0;
-		}
-		FD_ZERO(&rfds);
-		if (out_open)
-			FD_SET(out_fd, &rfds);
-		if (err_open)
-			FD_SET(err_fd, &rfds);
-		tv.tv_sec = timeout_seconds > 0 ? deadline - now : 30;
-		tv.tv_usec = 0;
-		rc = select(max_fd + 1, &rfds, NULL, NULL, &tv);
-		if (rc < 0) {
-			if (errno == EINTR)
-				continue;
-			MORPH_RETURN_ERRNO();
-		}
-		if (rc == 0) {
-			if (timeout_seconds > 0)
-				*timed_out = 1;
-			return 0;
-		}
-		if (out_open && FD_ISSET(out_fd, &rfds)) {
-			rc = read_fd_limited(out_fd, out, output_limit);
-			if (rc < 0)
-				return rc;
-			if (rc > 0)
-				out_open = 0;
-		}
-		if (err_open && FD_ISSET(err_fd, &rfds)) {
-			rc = read_fd_limited(err_fd, err, output_limit);
-			if (rc < 0)
-				return rc;
-			if (rc > 0)
-				err_open = 0;
-		}
-	}
-	return 0;
-}
-
-static void dynamic_tool_destroy(void *user_data)
-{
-	free(user_data);
+	const struct tool_result *result = opaque;
+	return result->runtime != NULL && http_wait_cancelable(&result->runtime->http, 0) != 0;
 }
 
 static int set_child_env(struct dynamic_tool *dt)
@@ -411,29 +342,45 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 	int stderr_pipe[2];
 	pid_t pid;
 	char *request_str = NULL;
-	morph_buf_t out;
-	morph_buf_t err;
+	morph_buf_t out = {0};
+	morph_buf_t err = {0};
 	int rc;
-	int timed_out = 0;
+
 	int status = 0;
 
 	if (!dt || !result)
 		return -EINVAL;
-	if (pipe(stdin_pipe) < 0)
-		MORPH_RETURN_ERRNO();
-	if (pipe(stdout_pipe) < 0) {
-		int e = errno;
+	char snapshot[] = "/tmp/morph-tool-XXXXXX";
+	int snapshot_fd = mkstemp(snapshot);
+	if (snapshot_fd < 0) {
+		return -errno;
+	}
+	rc = dt->source != NULL ? file_write_all(snapshot, dt->source, strlen(dt->source))
+				: -ENOENT;
+	if (rc != 0) {
+		close(snapshot_fd);
+		unlink(snapshot);
+		return rc;
+	}
+	close(snapshot_fd);
+
+	if ((rc = morph_io_pipe(stdin_pipe)) != 0) {
+		unlink(snapshot);
+		return rc;
+	}
+	if ((rc = morph_io_pipe(stdout_pipe)) != 0) {
 		close(stdin_pipe[0]);
 		close(stdin_pipe[1]);
-		MORPH_RETURN(-e);
+		unlink(snapshot);
+		return rc;
 	}
-	if (pipe(stderr_pipe) < 0) {
-		int e = errno;
+	if ((rc = morph_io_pipe(stderr_pipe)) != 0) {
 		close(stdin_pipe[0]);
 		close(stdin_pipe[1]);
 		close(stdout_pipe[0]);
 		close(stdout_pipe[1]);
-		MORPH_RETURN(-e);
+		unlink(snapshot);
+		return rc;
 	}
 	pid = fork();
 	if (pid < 0) {
@@ -444,10 +391,14 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdout_pipe[1]);
 		close(stderr_pipe[0]);
 		close(stderr_pipe[1]);
-		MORPH_RETURN(-e);
+		unlink(snapshot);
+		return -e;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
+		if (sandbox_start_isolated_session() != 0) {
+			_exit(126);
+		}
 		const char *workdir;
 
 		close(stdin_pipe[1]);
@@ -473,10 +424,8 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		}
 		char runner_storage[PATH_MAX];
 		const char *runner = runner_path(runner_storage);
-		execl(runner, runner,
-		      dt->source_path, (char *)NULL);
-		execlp("morph-js-runner", "morph-js-runner",
-		       dt->source_path, (char *)NULL);
+		execl(runner, runner, snapshot, (char *)NULL);
+		execlp("morph-js-runner", "morph-js-runner", snapshot, (char *)NULL);
 		_exit(127);
 	}
 	close(stdin_pipe[0]);
@@ -494,51 +443,48 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 		close(stdin_pipe[1]);
 		close(stdout_pipe[0]);
 		close(stderr_pipe[0]);
-		waitpid(pid, NULL, 0);
+		kill(pid, SIGKILL);
+		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+		unlink(snapshot);
 		return tool_result_error(result, "tool_failed",
 					      "failed to build dynamic tool request");
 	}
-	{
-		size_t len = strlen(request_str);
-		size_t written = 0;
-		while (written < len) {
-			ssize_t n = write(stdin_pipe[1], request_str + written,
-					  len - written);
-			if (n < 0) {
-				if (errno == EINTR)
-					continue;
-				break;
-			}
-			written += (size_t)n;
-		}
-		write(stdin_pipe[1], "\n", 1);
+	morph_buf_t request = {0};
+	rc = morph_buf_init(&request, strlen(request_str) + 2);
+	if (rc == 0) {
+		rc = morph_buf_puts(&request, request_str);
+	}
+	if (rc == 0) {
+		rc = morph_buf_putc(&request, '\n');
 	}
 	free(request_str);
-	close(stdin_pipe[1]);
-	if (morph_buf_init(&out, 8192) != 0 ||
-	    morph_buf_init(&err, 1024) != 0) {
-		close(stdout_pipe[0]);
-		close(stderr_pipe[0]);
-		waitpid(pid, NULL, 0);
-		return -ENOMEM;
+	if (rc == 0) {
+		rc = morph_buf_init(&out, 8192);
 	}
-	rc = read_pipes(stdout_pipe[0], stderr_pipe[0], &out, &err,
-			dt->cfg->default_timeout_seconds,
-			dt->cfg->default_max_output_bytes > 0
-				? dt->cfg->default_max_output_bytes
-				: DYN_TOOL_OUTPUT_LIMIT,
-			&timed_out);
+	if (rc == 0) {
+		rc = morph_buf_init(&err, 1024);
+	}
+	if (rc == 0) {
+		int seconds = dt->cfg->default_timeout_seconds;
+		int milliseconds = seconds <= 0		      ? 300000
+				   : seconds > INT_MAX / 1000 ? INT_MAX
+							      : seconds * 1000;
+		rc = morph_child_exchange(pid, stdin_pipe[1], stdout_pipe[0], stderr_pipe[0],
+					  morph_buf_cstr(&request), request.len, milliseconds,
+					  dt->cfg->default_max_output_bytes > 0
+						  ? (size_t)dt->cfg->default_max_output_bytes
+						  : DYN_TOOL_OUTPUT_LIMIT,
+					  dynamic_cancelled, result, &out, &err, &status);
+	} else {
+		close(stdin_pipe[1]);
+		kill(pid, SIGKILL);
+		while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+	}
 	close(stdout_pipe[0]);
 	close(stderr_pipe[0]);
-	if (timed_out) {
-		kill(pid, SIGKILL);
-		waitpid(pid, &status, 0);
-		morph_buf_cleanup(&out);
-		morph_buf_cleanup(&err);
-		(void)tool_result_error(result, "tool_failed", "dynamic tool timed out");
-		return -ETIMEDOUT;
-	}
-	waitpid(pid, &status, 0);
+	unlink(snapshot);
+	morph_buf_cleanup(&request);
+
 	if (err.len > 0)
 		log_warn(result && result->runtime ? result->runtime->http.logger : NULL,
 			 "dynamic tool %s stderr: %s", dt->name, morph_buf_cstr(&err));
@@ -605,66 +551,24 @@ static int dynamic_tool_exec(const char *args_json, struct tool_result *result,
 static int register_dynamic_tool(struct tool_registry *reg,
 				 struct dynamic_tool *dt)
 {
-	struct tool_entry *existing;
-	int rc;
-
-	if (!reg || !dt)
+	if (reg == NULL || dt == NULL) {
 		return -EINVAL;
-	existing = tool_lookup(reg, dt->name);
-	if (existing) {
-		if (!(existing->flags & TOOL_FLAG_DYNAMIC))
-			return -EEXIST;
-		struct tool_spec descriptor = {
-			.name = dt->name,
-			.description = dt->description,
-			.input_schema = dt->input_schema,
-			.output_schema = dt->output_schema,
-		};
-		rc = tool_entry_set_descriptor(existing, &descriptor);
-		if (rc != 0)
-			MORPH_RETURN(rc);
-		if (existing->user_data && existing->user_data_destroy)
-			existing->user_data_destroy(existing->user_data);
-		existing->exec = dynamic_tool_exec;
-		existing->user_data = dt;
-		existing->user_data_destroy = dynamic_tool_destroy;
-		existing->origin = dt->origin;
-		existing->timeout_seconds =
-			dt->cfg->default_timeout_seconds > 0
-			? dt->cfg->default_timeout_seconds
-			: tool_context_default_timeout(dt->tctx);
-		existing->flags |= TOOL_FLAG_DYNAMIC;
-		log_dbg(reg ? reg->logger : NULL, "dynamic tool replaced: %s", dt->name);
-		return 1;
 	}
-		struct tool_spec spec = {
-			.origin = dt->origin,
-			.name = dt->name,
-			.description = dt->description,
-			.input_schema = dt->input_schema,
-			.output_schema = dt->output_schema,
-			.exec = dynamic_tool_exec,
-			.user_data = dt,
-			.user_data_destroy = dynamic_tool_destroy,
-			.flags = TOOL_FLAG_DYNAMIC,
-			.timeout_seconds = dt->cfg->default_timeout_seconds > 0
-				? dt->cfg->default_timeout_seconds
-				: tool_context_default_timeout(dt->tctx),
-		};
-		rc = tool_register(reg, &spec);
-	if (rc < 0)
-		return rc;
-	{
-		struct tool_entry *entry = tool_lookup(reg, dt->name);
-		if (entry) {
-			entry->flags |= TOOL_FLAG_DYNAMIC;
-			entry->timeout_seconds =
-				dt->cfg->default_timeout_seconds > 0
-				? dt->cfg->default_timeout_seconds
-				: tool_context_default_timeout(dt->tctx);
-		}
-	}
-	return 0;
+	struct tool_spec spec = {
+		.origin = dt->origin,
+		.name = dt->name,
+		.description = dt->description,
+		.input_schema = dt->input_schema,
+		.output_schema = dt->output_schema,
+		.exec = dynamic_tool_exec,
+		.user_data = dt,
+		.user_data_destroy = dynamic_tool_destroy,
+		.flags = TOOL_FLAG_DYNAMIC,
+		.timeout_seconds = dt->cfg->default_timeout_seconds > 0
+					   ? dt->cfg->default_timeout_seconds
+					   : tool_context_default_timeout(dt->tctx),
+	};
+	return tool_register_replace(reg, &spec, TOOL_FLAG_DYNAMIC);
 }
 
 static char *schema_to_string(cJSON *item)
@@ -822,6 +726,51 @@ static int tool_create_fail(struct tool_result *result, const char *stage,
 		"provided by this stage.");
 }
 
+/** \brief Publish a coherent tool snapshot using metadata as its commit record. */
+static int copy_tool_snapshot(const char *source_meta, const char *source_file,
+			      const char *destination_meta, const char *destination_file)
+{
+	char *text = file_read_all(source_meta, NULL);
+	cJSON *meta = text != NULL ? cJSON_Parse(text) : NULL;
+	char *legacy = NULL;
+	char *serialized = NULL;
+	int rc = 0;
+	free(text);
+	if (meta == NULL) {
+		return MORPH_ERR_PARSE;
+	}
+	const cJSON *field = cJSON_GetObjectItem(meta, "source");
+	const char *source = cJSON_GetStringValue(field);
+	if (field != NULL && source == NULL) {
+		rc = MORPH_ERR_FORMAT;
+	}
+	if (rc == 0 && source == NULL) {
+		legacy = file_read_all(source_file, NULL);
+		if (legacy == NULL) {
+			rc = -ENOENT;
+		} else if (!cJSON_AddStringToObject(meta, "source", legacy)) {
+			rc = -ENOMEM;
+		}
+		source = legacy;
+	}
+	if (rc == 0) {
+		serialized = cJSON_PrintUnformatted(meta);
+		if (serialized == NULL) {
+			rc = -ENOMEM;
+		}
+	}
+	if (rc == 0) {
+		rc = file_write_atomic(destination_file, source, strlen(source));
+	}
+	if (rc == 0) {
+		rc = file_write_atomic(destination_meta, serialized, strlen(serialized));
+	}
+	free(serialized);
+	free(legacy);
+	cJSON_Delete(meta);
+	return rc;
+}
+
 static int write_tool_files(struct dynamic_tool *dt, const char *source)
 {
 	cJSON *meta = NULL;
@@ -832,7 +781,43 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 	rc = file_ensure_dir(dt->dir);
 	if (rc < 0)
 		return rc;
-	rc = file_write_all(dt->source_path, source, strlen(source));
+	/* Upgrade legacy metadata before changing its source mirror. */
+	char previous_path[PATH_MAX];
+	rc = file_path_join(previous_path, sizeof(previous_path), dt->dir, DYN_TOOL_META_FILE);
+	if (rc != 0) {
+		return rc;
+	}
+	if (file_exists(previous_path)) {
+		char *old_text = file_read_all(previous_path, NULL);
+		cJSON *old = old_text != NULL ? cJSON_Parse(old_text) : NULL;
+		free(old_text);
+		if (old == NULL) {
+			return MORPH_ERR_PARSE;
+		}
+		if (!cJSON_HasObjectItem(old, "source")) {
+			char *previous = file_read_all(dt->source_path, NULL);
+			if (previous == NULL || !cJSON_AddStringToObject(old, "source", previous)) {
+				free(previous);
+				cJSON_Delete(old);
+				return -ENOMEM;
+			}
+			free(previous);
+			char *upgraded = cJSON_PrintUnformatted(old);
+			rc = upgraded != NULL
+				     ? file_write_atomic(previous_path, upgraded, strlen(upgraded))
+				     : -ENOMEM;
+			free(upgraded);
+		}
+		cJSON_Delete(old);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+	dt->source = strdup(source);
+	if (dt->source == NULL) {
+		return -ENOMEM;
+	}
+	rc = file_write_atomic(dt->source_path, source, strlen(source));
 	if (rc < 0)
 		return rc;
 	rc = file_path_join(meta_path, sizeof(meta_path), dt->dir,
@@ -842,15 +827,22 @@ static int write_tool_files(struct dynamic_tool *dt, const char *source)
 	meta = cJSON_CreateObject();
 	if (!meta)
 		return -ENOMEM;
-	cJSON_AddStringToObject(meta, "name", dt->name);
-	cJSON_AddStringToObject(meta, "description", dt->description);
-	cJSON_AddStringToObject(meta, "input_schema", dt->input_schema);
-	cJSON_AddStringToObject(meta, "output_schema", dt->output_schema);
+	if (!cJSON_AddStringToObject(meta, "source", source)) {
+		cJSON_Delete(meta);
+		return -ENOMEM;
+	}
+	if (!cJSON_AddStringToObject(meta, "name", dt->name) ||
+	    !cJSON_AddStringToObject(meta, "description", dt->description) ||
+	    !cJSON_AddStringToObject(meta, "input_schema", dt->input_schema) ||
+	    !cJSON_AddStringToObject(meta, "output_schema", dt->output_schema)) {
+		cJSON_Delete(meta);
+		return -ENOMEM;
+	}
 	meta_json = cJSON_PrintUnformatted(meta);
 	cJSON_Delete(meta);
 	if (!meta_json)
 		return -ENOMEM;
-	rc = file_write_all(meta_path, meta_json, strlen(meta_json));
+	rc = file_write_atomic(meta_path, meta_json, strlen(meta_json));
 	free(meta_json);
 	return rc;
 }
@@ -1000,7 +992,7 @@ static int write_checkpoint_meta(const char *checkpoint_dir,
 	cJSON_Delete(root);
 	if (!json)
 		return -ENOMEM;
-	rc = file_write_all(path, json, strlen(json));
+	rc = file_write_atomic(path, json, strlen(json));
 	free(json);
 	return rc;
 }
@@ -1183,12 +1175,11 @@ static int create_tool_checkpoint(const char *tool_dir,
 			rc = tool_file_paths(checkpoint_dir, cp_meta,
 					     sizeof(cp_meta), cp_source,
 					     sizeof(cp_source));
-		if (rc == 0)
-			rc = copy_file(old_meta, cp_meta);
-		if (rc == 0)
-			rc = copy_file(old_source, cp_source);
 		if (rc == 0) {
-			source = file_read_all(old_source, &source_len);
+			rc = copy_tool_snapshot(old_meta, old_source, cp_meta, cp_source);
+		}
+		if (rc == 0) {
+			source = file_read_all(cp_source, &source_len);
 			if (!source)
 				rc = -ENOENT;
 		}
@@ -1233,10 +1224,9 @@ static int restore_tool_checkpoint(const char *tool_dir,
 	if (rc == 0)
 		rc = tool_file_paths(tool_dir, dst_meta, sizeof(dst_meta),
 				     dst_source, sizeof(dst_source));
-	if (rc == 0)
-		rc = copy_file(old_meta, dst_meta);
-	if (rc == 0)
-		rc = copy_file(old_source, dst_source);
+	if (rc == 0) {
+		rc = copy_tool_snapshot(old_meta, old_source, dst_meta, dst_source);
+	}
 	return rc;
 }
 
@@ -1251,13 +1241,15 @@ static int check_js_source(const char *source_path,
 
 	if (error_out)
 		*error_out = NULL;
-	if (pipe(output_pipe) < 0)
-		MORPH_RETURN_ERRNO();
+	int pipe_rc = morph_io_pipe(output_pipe);
+	if (pipe_rc != 0)
+		return pipe_rc;
 	pid = fork();
 	if (pid < 0) {
+		int rc = -errno;
 		close(output_pipe[0]);
 		close(output_pipe[1]);
-		MORPH_RETURN_ERRNO();
+		return rc;
 	}
 	if (pid == 0) {
 		morph_signals_reset_child();
@@ -1266,6 +1258,9 @@ static int check_js_source(const char *source_path,
 		dup2(output_pipe[1], STDOUT_FILENO);
 		dup2(output_pipe[1], STDERR_FILENO);
 		close(output_pipe[1]);
+		if (sandbox_start_isolated_session() != 0 || sandbox_close_inherited_fds() != 0) {
+			_exit(126);
+		}
 		execl(runner, runner, "--check",
 		      source_path, (char *)NULL);
 		first_errno = errno;
@@ -1280,32 +1275,31 @@ static int check_js_source(const char *source_path,
 		_exit(127);
 	}
 	close(output_pipe[1]);
-	if (error_out) {
-		morph_buf_t err;
-		char tmp[512];
-		if (morph_buf_init(&err, 512) == 0) {
-			for (;;) {
-				ssize_t n = read(output_pipe[0], tmp, sizeof(tmp));
-				if (n < 0 && errno == EINTR)
-					continue;
-				if (n <= 0)
-					break;
-				if (err.len < 8192) {
-					size_t keep = (size_t)n;
-					if (err.len + keep > 8192)
-						keep = 8192 - err.len;
-					(void)morph_buf_append(&err, tmp, keep);
-				}
-			}
-			if (err.len > 0)
-				*error_out = morph_buf_detach(&err);
-			else
-				morph_buf_cleanup(&err);
+	morph_buf_t output = {0}, errors = {0};
+	int input_fd = open("/dev/null", O_WRONLY);
+	int rc = input_fd < 0 ? -errno : morph_buf_init(&output, 512);
+	if (rc == 0) {
+		rc = morph_buf_init(&errors, 16);
+	}
+	if (rc == 0) {
+		rc = morph_child_exchange(pid, input_fd, output_pipe[0], -1, "", 0, 30000, 8192,
+					  NULL, NULL, &output, &errors, &status);
+	} else {
+		if (input_fd >= 0) {
+			close(input_fd);
 		}
+		kill(pid, SIGKILL);
+		while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
 	}
 	close(output_pipe[0]);
-	if (waitpid(pid, &status, 0) < 0)
-		MORPH_RETURN_ERRNO();
+	morph_buf_cleanup(&errors);
+	if (error_out != NULL && output.len != 0) {
+		*error_out = morph_buf_detach(&output);
+	}
+	morph_buf_cleanup(&output);
+	if (rc != 0) {
+		return rc;
+	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
 		if (error_out && !*error_out) {
 			morph_buf_t err;
@@ -1344,6 +1338,34 @@ static int check_js_source(const char *source_path,
 	return 0;
 }
 
+/**
+ * \brief Validate an unpublished source snapshot before touching committed files.
+ * \param[in] source: Borrowed candidate text until return.
+ * \param[out] error_out: Owned checker diagnostic, initialized by the checker.
+ * \return Zero on success, negative error otherwise; temporary file is removed.
+ */
+static int check_unpublished_source(const char *source, char **error_out)
+{
+	char path[] = "/tmp/morph-tool-check-XXXXXX";
+	int fd = mkstemp(path);
+	int rc;
+	*error_out = NULL;
+	if (fd < 0) {
+		return -errno;
+	}
+	rc = close(fd) == 0 ? 0 : -errno;
+	if (rc == 0) {
+		rc = file_write_all(path, source, strlen(source));
+	}
+	if (rc == 0) {
+		rc = check_js_source(path, error_out);
+	}
+	if (unlink(path) != 0 && rc == 0) {
+		rc = -errno;
+	}
+	return rc;
+}
+
 static int load_tool_from_dir(struct tool_registry *reg,
 			      struct tool_context *tctx,
 			      const struct config_dynamic_tools *cfg,
@@ -1368,7 +1390,7 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			    DYN_TOOL_SOURCE_FILE);
 	if (rc < 0)
 		return rc;
-	if (!file_exists(meta_path) || !file_exists(source_path))
+	if (!file_exists(meta_path))
 		return -ENOENT;
 	meta_text = file_read_all(meta_path, NULL);
 	if (!meta_text)
@@ -1390,7 +1412,7 @@ static int load_tool_from_dir(struct tool_registry *reg,
 		if (!cJSON_IsString(name) || !name->valuestring ||
 		    !valid_tool_name(name->valuestring)) {
 			cJSON_Delete(meta);
-			free(dt);
+			dynamic_tool_destroy(dt);
 			return -EINVAL;
 		}
 		strncpy(dt->name, name->valuestring, sizeof(dt->name) - 1);
@@ -1405,7 +1427,7 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			}
 			if (!schema) {
 				cJSON_Delete(meta);
-				free(dt);
+				dynamic_tool_destroy(dt);
 				return -ENOMEM;
 			}
 			strncpy(dt->input_schema, schema,
@@ -1418,12 +1440,26 @@ static int load_tool_from_dir(struct tool_registry *reg,
 			}
 			if (!schema) {
 				cJSON_Delete(meta);
-				free(dt);
+				dynamic_tool_destroy(dt);
 				return -ENOMEM;
 			}
 			strncpy(dt->output_schema, schema,
 				sizeof(dt->output_schema) - 1);
 			free(schema);
+		}
+		const cJSON *source_field = cJSON_GetObjectItem(meta, "source");
+		if (source_field != NULL && !cJSON_IsString(source_field)) {
+			cJSON_Delete(meta);
+			dynamic_tool_destroy(dt);
+			return MORPH_ERR_FORMAT;
+		}
+		const char *embedded_source = cJSON_GetStringValue(source_field);
+		dt->source = embedded_source != NULL ? strdup(embedded_source)
+						     : file_read_all(source_path, NULL);
+		if (dt->source == NULL) {
+			cJSON_Delete(meta);
+			dynamic_tool_destroy(dt);
+			return -ENOMEM;
 		}
 	strncpy(dt->source_path, source_path, sizeof(dt->source_path) - 1);
 	strncpy(dt->dir, dir, sizeof(dt->dir) - 1);
@@ -1433,10 +1469,14 @@ static int load_tool_from_dir(struct tool_registry *reg,
 	cJSON_Delete(meta);
 	if (tool_lookup(reg, dt->name) &&
 	    !(tool_lookup(reg, dt->name)->flags & TOOL_FLAG_DYNAMIC)) {
-		free(dt);
+		dynamic_tool_destroy(dt);
 		return -EEXIST;
 	}
-	return register_dynamic_tool(reg, dt);
+	rc = register_dynamic_tool(reg, dt);
+	if (rc < 0) {
+		dynamic_tool_destroy(dt);
+	}
+	return rc;
 }
 
 static int create_context_dir(const struct dynamic_tools_context *ctx,
@@ -1454,8 +1494,8 @@ static int create_context_dir(const struct dynamic_tools_context *ctx,
 	return file_path_join(dir, dir_size, session_root, name);
 }
 
-static int tool_create_exec(const char *args_json, struct tool_result *result,
-			    void *user_data)
+static int tool_create_exec_serialized(const char *args_json, struct tool_result *result,
+				       void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *root;
@@ -1529,9 +1569,9 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		morph_buf_cleanup(&arg_err);
 	}
 	stage = "validate_source_size";
-	if ((int)strlen(source_item->valuestring) >
-	    ctx->cfg->max_source_bytes) {
-		int len = (int)strlen(source_item->valuestring);
+	if (ctx->cfg->max_source_bytes < 0 ||
+	    strlen(source_item->valuestring) > (size_t)ctx->cfg->max_source_bytes) {
+		size_t len = strlen(source_item->valuestring);
 		int max_len = ctx->cfg->max_source_bytes;
 		morph_buf_t detail;
 		int out_rc;
@@ -1542,9 +1582,9 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 						"diagnostic buffer");
 		}
 		(void)morph_buf_printf(&detail,
-			"source_js too large: got %d bytes, maximum is %d "
-			"bytes. Split the logic or remove embedded data.",
-			len, max_len);
+				       "source_js too large: got %zu bytes, maximum is %d "
+				       "bytes. Split the logic or remove embedded data.",
+				       len, max_len);
 		out_rc = tool_create_fail(result, stage, -EFBIG,
 					  morph_buf_cstr(&detail));
 		morph_buf_cleanup(&detail);
@@ -1664,10 +1704,19 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 				    dt->dir, DYN_TOOL_SOURCE_FILE);
 	}
 	if (rc == 0) {
+		stage = "check_js";
+		rc = check_unpublished_source(source_item->valuestring, &check_error);
+	}
+	if (rc == 0) {
 		stage = "create_checkpoint";
-		rc = create_tool_checkpoint(dt->dir, existing, dt->name,
-					    &checkpoint, checkpoint_dir,
-					    sizeof(checkpoint_dir));
+		/* Approval callbacks may have grown or replaced registry entries. */
+		existing = tool_lookup(ctx->reg, dt->name);
+		if (existing != NULL && !(existing->flags & TOOL_FLAG_DYNAMIC)) {
+			rc = -EEXIST;
+		} else {
+			rc = create_tool_checkpoint(dt->dir, existing, dt->name, &checkpoint,
+						    checkpoint_dir, sizeof(checkpoint_dir));
+		}
 		if (rc == 0) {
 			strncpy(checkpoint.new_hash, new_hash,
 				sizeof(checkpoint.new_hash) - 1);
@@ -1678,10 +1727,6 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		stage = "write_tool_files";
 		rc = write_tool_files(dt, source_item->valuestring);
 	}
-	if (rc == 0) {
-		stage = "check_js";
-		rc = check_js_source(dt->source_path, &check_error);
-	}
 	if (rc == 0 && check_error) {
 		free(check_error);
 		check_error = NULL;
@@ -1691,7 +1736,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 		rc = register_dynamic_tool(ctx->reg, dt);
 		register_rc = rc;
 	}
-	if (rc == 0 && checkpoint_created) {
+	if (rc >= 0 && checkpoint_created) {
 		int meta_rc;
 
 		stage = "update_checkpoint";
@@ -1715,7 +1760,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 			char *formatted = format_check_error(dt ? dt->source_path :
 							     NULL, check_error);
 			int out_rc;
-			free(dt);
+			dynamic_tool_destroy(dt);
 			if (formatted) {
 				out_rc = tool_result_error(result, "tool_failed",
 								formatted);
@@ -1727,7 +1772,7 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 			free(check_error);
 			return out_rc;
 		}
-		free(dt);
+		dynamic_tool_destroy(dt);
 		return tool_create_fail(result, stage, rc, NULL);
 	}
 	return tool_result_successf(result,
@@ -1743,17 +1788,17 @@ static int tool_create_exec(const char *args_json, struct tool_result *result,
 				  new_hash);
 }
 
-static int copy_file(const char *src, const char *dst)
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_create_exec(const char *args, struct tool_result *result, void *user_data)
 {
-	char *data;
-	size_t len;
-	int rc;
-
-	data = file_read_all(src, &len);
-	if (!data)
-		return -ENOENT;
-	rc = file_write_all(dst, data, len);
-	free(data);
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_create_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
 	return rc;
 }
 
@@ -1840,8 +1885,8 @@ static int dynamic_tool_delete_path_allowed(
 	return allowed;
 }
 
-static int tool_promote_exec(const char *args_json, struct tool_result *result,
-			     void *user_data)
+static int tool_promote_exec_serialized(const char *args_json, struct tool_result *result,
+					void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *root;
@@ -1903,10 +1948,9 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 	if (rc == 0)
 		rc = file_path_join(dst_js, sizeof(dst_js), dst_dir,
 				    DYN_TOOL_SOURCE_FILE);
-	if (rc == 0)
-		rc = copy_file(src_meta, dst_meta);
-	if (rc == 0)
-		rc = copy_file(src_js, dst_js);
+	if (rc == 0) {
+		rc = copy_tool_snapshot(src_meta, src_js, dst_meta, dst_js);
+	}
 	if (rc == 0)
 		rc = load_tool_from_dir(ctx->reg, ctx->tctx, ctx->cfg, dst_dir,
 					TOOL_ORIGIN_DYNAMIC_PERSISTENT);
@@ -1919,8 +1963,22 @@ static int tool_promote_exec(const char *args_json, struct tool_result *result,
 				  name);
 }
 
-static int tool_delete_exec(const char *args_json, struct tool_result *result,
-			    void *user_data)
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_promote_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_promote_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
+	return rc;
+}
+
+static int tool_delete_exec_serialized(const char *args_json, struct tool_result *result,
+				       void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	struct tool_entry *entry;
@@ -2018,6 +2076,20 @@ static int tool_delete_exec(const char *args_json, struct tool_result *result,
 				  name);
 }
 
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_delete_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_delete_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
+	return rc;
+}
+
 static int parse_tool_name_arg(const char *args_json, const char *tool_name,
 			       cJSON **root_out, char name[TOOL_NAME_MAX])
 {
@@ -2056,8 +2128,8 @@ static int result_take_cjson(struct tool_result *result, cJSON *root)
 	return tool_result_success_json_text(result, json);
 }
 
-static int tool_history_exec(const char *args_json, struct tool_result *result,
-			     void *user_data)
+static int tool_history_exec_serialized(const char *args_json, struct tool_result *result,
+					void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	cJSON *args = NULL;
@@ -2149,6 +2221,20 @@ static int tool_history_exec(const char *args_json, struct tool_result *result,
 	return result_take_cjson(result, out);
 }
 
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_history_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_history_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
+	return rc;
+}
+
 static char *read_optional_file(const char *path)
 {
 	if (!path || !file_exists(path))
@@ -2214,8 +2300,8 @@ static int append_whole_file_diff(morph_buf_t *buf, const char *label,
 	return 0;
 }
 
-static int tool_diff_exec(const char *args_json, struct tool_result *result,
-			  void *user_data)
+static int tool_diff_exec_serialized(const char *args_json, struct tool_result *result,
+				     void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	struct tool_entry *entry;
@@ -2315,6 +2401,20 @@ static int tool_diff_exec(const char *args_json, struct tool_result *result,
 	return result_take_cjson(result, out);
 }
 
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_diff_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_diff_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
+	return rc;
+}
+
 static int reload_persistent_if_present(struct dynamic_tools_context *ctx,
 					const char *name)
 {
@@ -2332,8 +2432,8 @@ static int reload_persistent_if_present(struct dynamic_tools_context *ctx,
 	return rc < 0 ? rc : 0;
 }
 
-static int tool_rollback_exec(const char *args_json, struct tool_result *result,
-			      void *user_data)
+static int tool_rollback_exec_serialized(const char *args_json, struct tool_result *result,
+					 void *user_data)
 {
 	struct dynamic_tools_context *ctx = user_data;
 	struct tool_entry *entry;
@@ -2425,6 +2525,20 @@ static int tool_rollback_exec(const char *args_json, struct tool_result *result,
 		"{\"name\":\"%s\",\"status\":\"rolled_back\","
 		"\"checkpoint_id\":\"%s\",\"state\":\"present\"}",
 		name, cp.id);
+}
+
+/** \brief Serialize dynamic catalog operations without locking tool callbacks. */
+static int tool_rollback_exec(const char *args, struct tool_result *result, void *user_data)
+{
+	struct dynamic_tools_context *context = user_data;
+	if (context == NULL) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&context->reg->mutation_mutex);
+	int rc = dynamic_cancelled(result) ? -ECANCELED
+					   : tool_rollback_exec_serialized(args, result, user_data);
+	pthread_mutex_unlock(&context->reg->mutation_mutex);
+	return rc;
 }
 
 static void dynamic_tools_context_destroy(void *user_data)

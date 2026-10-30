@@ -150,7 +150,7 @@ int cli_init(struct cli_context *ctx, struct morph_log *logger, const char *conf
 	     enum cli_presentation_mode mode)
 {
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->logger = logger;
 	int rc = morph_signal_listener_start(&ctx->signals, cli_signal_received, ctx);
@@ -163,9 +163,9 @@ int cli_init(struct cli_context *ctx, struct morph_log *logger, const char *conf
 			__atomic_store_n(&ctx->signals_ready, 1, __ATOMIC_RELEASE);
 			if (morph_signal_flag_get(&ctx->interrupted)) {
 				cli_shutdown(ctx);
-				MORPH_RETURN(-EINTR);
+				return -EINTR;
 			}
 		}
 	}
-	MORPH_RETURN(rc);
+	return rc;
 }

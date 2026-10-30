@@ -246,9 +246,9 @@ TEST_F(DynamicToolsTest, EmptySessionDoesNotFallbackToDefault)
 	EXPECT_EQ(tool_lookup(&reg, "default_tool"), nullptr);
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("empty_session_tool", source).c_str(),
-			    &result), 0);
+	ASSERT_LT(tool_exec(&reg, "tool_create", create_args("empty_session_tool", source).c_str(),
+			    &result),
+		  0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find(
 			  "create_tool_dir"),
@@ -429,9 +429,9 @@ TEST_F(DynamicToolsTest, ToolCreateDoesNotOverwriteStaticTool)
 	struct tool_result result;
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("static_tool", source).c_str(),
-			    &result), 0);
+	ASSERT_LT(
+		tool_exec(&reg, "tool_create", create_args("static_tool", source).c_str(), &result),
+		0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("already exists"),
 		  std::string::npos);
@@ -739,8 +739,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRejectsStaticTool)
 	struct tool_result result;
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_delete",
-			    "{\"name\":\"static_tool\"}", &result), 0);
+	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"static_tool\"}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("only delete dynamic"),
 		  std::string::npos);
@@ -824,8 +823,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesPersistentPathMismatch)
 	ASSERT_NE(tool_lookup(&reg, "mismatch_tool"), nullptr);
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_delete",
-			    "{\"name\":\"mismatch_tool\"}", &result), 0);
+	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"mismatch_tool\"}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
 		  std::string::npos);
@@ -856,8 +854,7 @@ TEST_F(DynamicToolsTest, ToolDeleteRefusesSessionPathMismatch)
 	ASSERT_NE(tool_lookup(&reg, "session_mismatch"), nullptr);
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_delete",
-			    "{\"name\":\"session_mismatch\"}", &result), 0);
+	ASSERT_LT(tool_exec(&reg, "tool_delete", "{\"name\":\"session_mismatch\"}", &result), 0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("deletion refused"),
 		  std::string::npos);
@@ -1142,9 +1139,9 @@ TEST_F(DynamicToolsTest, ToolCreateRejectsRequire)
 	struct tool_result result;
 
 	tool_result_init(&result);
-	ASSERT_EQ(tool_exec(&reg, "tool_create",
-			    create_args("bad_require", source).c_str(),
-			    &result), 0);
+	ASSERT_LT(
+		tool_exec(&reg, "tool_create", create_args("bad_require", source).c_str(), &result),
+		0);
 	ASSERT_NE(result.text.data, nullptr);
 	EXPECT_NE(std::string(result.text.data).find("forbidden token"),
 		  std::string::npos);
@@ -1250,4 +1247,91 @@ TEST_F(DynamicToolsTest, FilesystemAllowlistRejectsSiblingPrefixesAndSymlinks)
 		tool_result_cleanup(&result);
 	}
 	EXPECT_FALSE(file_exists((sibling + "/result").c_str()));
+}
+
+TEST_F(DynamicToolsTest, MetadataCommitKeepsSourceCoherentAfterInterruptedMirrorWrite)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("committed",
+					"function run(args) { return {version: 'committed'}; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	std::string source = root + "/session/sess/committed/tool.js";
+	ASSERT_EQ(file_write_all(source.c_str(), "throw new Error('uncommitted');", 31), 0);
+	tool_registry_cleanup(&reg);
+	tool_registry_init(nullptr, &reg);
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "committed", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("committed"), std::string::npos);
+	tool_result_cleanup(&result);
+}
+
+TEST_F(DynamicToolsTest, InvalidSourceNeverCreatesAPublishedToolDirectory)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result result;
+	tool_result_init(&result);
+	EXPECT_LT(tool_exec(&reg, "tool_create",
+			    create_args("invalid_candidate", "function run(").c_str(), &result),
+		  0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("check_js"), std::string::npos);
+	EXPECT_FALSE(file_exists((root + "/session/sess/invalid_candidate").c_str()));
+	EXPECT_EQ(tool_lookup(&reg, "invalid_candidate"), nullptr);
+	tool_result_cleanup(&result);
+}
+
+static enum tool_operation_verdict grow_registry_during_approval(const tool_operation *, void *user)
+{
+	auto *reg = static_cast<tool_registry *>(user);
+	for (int i = 0; i < 128; ++i) {
+		std::string name = "approval_growth_" + std::to_string(i);
+		tool_spec spec{};
+		spec.name = name.c_str();
+		spec.description = "Approval registry growth";
+		spec.input_schema = TOOL_EMPTY_INPUT_SCHEMA;
+		spec.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA;
+		spec.exec = static_tool_exec;
+		if (tool_register(reg, &spec) != 0) {
+			return TOOL_OP_DENY;
+		}
+	}
+	return TOOL_OP_ALLOW;
+}
+
+TEST_F(DynamicToolsTest, ApprovalRegistryGrowthCannotInvalidateTheCheckpointSource)
+{
+	ASSERT_EQ(dynamic_tools_init(&reg, tctx, &cfg.dynamic_tools, "sess"), 0);
+	tool_result result;
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("approved_update",
+					"function run(args) { return {version: 1}; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	cfg.dynamic_tools.create_requires_approval = 1;
+	tool_context_set_operation_approval(tctx, grow_registry_during_approval, &reg);
+	tool_result_init(&result);
+	EXPECT_EQ(tool_exec(&reg, "tool_create",
+			    create_args("approved_update",
+					"function run(args) { return {version: 2}; }")
+				    .c_str(),
+			    &result),
+		  0);
+	tool_result_cleanup(&result);
+	tool_context_set_operation_approval(tctx, nullptr, nullptr);
+	tool_result_init(&result);
+	ASSERT_EQ(tool_exec(&reg, "approved_update", "{}", &result), 0);
+	ASSERT_NE(result.text.data, nullptr);
+	EXPECT_NE(std::string(result.text.data).find("\"version\":2"), std::string::npos);
+	tool_result_cleanup(&result);
 }

@@ -145,6 +145,14 @@ retry_count = 0
         self.child.send(text)
         self.pump()
 
+    def wait_for_composer(self, timeout=8):
+        # Early input can be translated by the startup TTY before Readline
+        # installs its raw mode; the footer hint is rendered after that point.
+        deadline = time.monotonic() + timeout
+        while 'ctrl+o details' not in self.raw:
+            assert time.monotonic() < deadline, self.raw[-4000:]
+            self.pump(.05)
+
     def request(self):
         until = time.monotonic() + 8
         while time.monotonic() < until:

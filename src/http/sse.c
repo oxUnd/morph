@@ -9,7 +9,7 @@ static int sse_line_field(const char *line, size_t line_len,
 	const char *colon;
 
 	if (!line || !field || !field_len || !value || !value_len)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	colon = memchr(line, ':', line_len);
 	*field = line;

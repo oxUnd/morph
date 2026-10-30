@@ -32,20 +32,20 @@ int morph_tui_session_enter(struct morph_tui_session *session, FILE *input, FILE
 	struct termios raw;
 
 	if (!session || !input || !output)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (session->active)
-		MORPH_RETURN(-EBUSY);
+		return -EBUSY;
 	int fd = fileno(input);
 
 	if (tcgetattr(fd, &session->saved) != 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	raw = session->saved;
 	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
 	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
 	raw.c_cc[VMIN] = 1;
 	raw.c_cc[VTIME] = 0;
 	if (tcsetattr(fd, TCSANOW, &raw) != 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	session->input_fd = fd;
 	session->output = output;
 	session->flags = flags;
@@ -59,7 +59,7 @@ int morph_tui_session_enter(struct morph_tui_session *session, FILE *input, FILE
 		int rc = errno ? -errno : -EIO;
 
 		(void)morph_tui_session_leave(session);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	return 0;
 }
@@ -78,13 +78,13 @@ int morph_tui_session_leave(struct morph_tui_session *session)
 	if (session->flags & MORPH_TUI_SESSION_ALTERNATE)
 		fputs("\033[?1049l", session->output);
 	if (fflush(session->output) != 0 || ferror(session->output))
-		MORPH_SET_ERR(rc, errno ? -errno : -EIO);
+		rc = (errno ? -errno : -EIO);
 	if (tcsetattr(session->input_fd, TCSANOW, &session->saved) != 0) {
 		if (rc == 0)
-			MORPH_SET_ERR(rc, -errno);
+			rc = (-errno);
 	} else {
 		session->active = 0;
 	}
-	MORPH_RETURN(rc);
+	return rc;
 }
 

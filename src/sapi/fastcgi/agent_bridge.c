@@ -81,10 +81,10 @@ static int bridge_copy_path(char *dst, size_t dst_size, const char *src)
 	int written;
 
 	if (!dst || dst_size == 0 || !src || !src[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	written = snprintf(dst, dst_size, "%s", src);
 	if (written < 0 || (size_t)written >= dst_size)
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	return 0;
 }
 
@@ -118,7 +118,7 @@ static int bridge_runtime_open(struct fcgi_bridge *pool, int process_replica, st
 	bridge_runtime_options(pool, &options, process_replica);
 	rc = runtime_open(&options, out);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -228,15 +228,15 @@ static int bridge_pool_configure(struct fcgi_bridge *pool, const char *db_path,
 					    FCGI_RUNTIME_WAIT_DEFAULT, 1, INT_MAX);
 	rc = bridge_copy_path(pool->db_path, sizeof(pool->db_path), db_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = bridge_copy_path(pool->config_path, sizeof(pool->config_path), config_path);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	pool->output_dir[0] = '\0';
 	if (output_dir && output_dir[0]) {
 		rc = bridge_copy_path(pool->output_dir, sizeof(pool->output_dir), output_dir);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 	return 0;
 }
@@ -252,7 +252,7 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	int rc;
 
 	if (!db_path || !db_path[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	pthread_mutex_lock(&pool->lock);
 	if (pool->slots) {
 		pthread_mutex_unlock(&pool->lock);
@@ -263,7 +263,7 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	config_path = getenv("MORPH_FCGI_CONFIG");
 	if (!config_path || !config_path[0]) {
 		if (!home || !home[0])
-			MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+			return MORPH_ERR_NOT_CONFIGURED;
 		snprintf(default_config, sizeof(default_config),
 			 "%s/.morph/config.toml", home);
 		config_path = default_config;
@@ -272,11 +272,11 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	if (output_dir && output_dir[0]) {
 		expanded_output = file_expand_path(output_dir);
 		if (!expanded_output)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		rc = file_ensure_dir(expanded_output);
 		if (rc != 0) {
 			free(expanded_output);
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		output_dir = expanded_output;
 	}
@@ -286,15 +286,15 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 	rc = log_init(&pool->logger, log_file, getenv("MORPH_DEBUG") ? LOG_DEBUG : LOG_INFO);
 	if (rc != 0) {
 		free(expanded_output);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	rc = bridge_pool_configure(pool, db_path, config_path, output_dir);
 	free(expanded_output);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	pool->slots = calloc((size_t)pool->max_workers, sizeof(*pool->slots));
 	if (!pool->slots)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	pool->slot_count = 0;
 	pool->starting_workers = 0;
 	pool->waiting_turns = 0;
@@ -309,7 +309,7 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 			fprintf(stderr, "fcgi-bridge: runtime worker %d "
 				"initialization failed: %s\n", i,
 				morph_strerror(rc));
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		pool->slots[i].idle_since = time(NULL);
 		pool->slot_count++;
@@ -320,7 +320,7 @@ static int bridge_initialize(struct fcgi_bridge *pool, const char *db_path)
 		free(pool->slots);
 		pool->slots = NULL;
 		pool->slot_count = 0;
-		MORPH_RETURN(-rc);
+		return -rc;
 	}
 	pool->reaper_started = 1;
 	log_info(&pool->logger, "fastcgi elastic runtime pool ready: min=%d max=%d queue=%d",
@@ -378,7 +378,7 @@ int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id
 	int rc;
 
 	if (!session_id || !session_id[0] || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	pthread_mutex_lock(&pool->lock);
 	for (;;) {
@@ -455,7 +455,7 @@ int fcgi_bridge_runtime_acquire(struct fcgi_bridge *pool, const char *session_id
 		pool->waiting_turns--;
 	pthread_mutex_unlock(&pool->lock);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -481,7 +481,7 @@ int fcgi_bridge_turn_begin(struct fcgi_bridge *pool)
 	pthread_mutex_lock(&pool->lock);
 	if (pool->stopping || !pool->slots) {
 		pthread_mutex_unlock(&pool->lock);
-		MORPH_RETURN(-ESHUTDOWN);
+		return -ESHUTDOWN;
 	}
 	pool->outstanding_turns++;
 	pthread_mutex_unlock(&pool->lock);
@@ -546,26 +546,26 @@ int fcgi_bridge_init(struct fcgi_bridge **out, const char *db_path)
 	int error;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	pool = calloc(1, sizeof(*pool));
 	if (!pool)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	error = pthread_mutex_init(&pool->lock, NULL);
 	if (error) {
 		free(pool);
-		MORPH_RETURN(-error);
+		return -error;
 	}
 	error = pthread_cond_init(&pool->changed, NULL);
 	if (error) {
 		pthread_mutex_destroy(&pool->lock);
 		free(pool);
-		MORPH_RETURN(-error);
+		return -error;
 	}
 	error = bridge_initialize(pool, db_path);
 	if (error) {
 		fcgi_bridge_shutdown(pool);
-		MORPH_RETURN(error);
+		return error;
 	}
 	*out = pool;
 	return 0;

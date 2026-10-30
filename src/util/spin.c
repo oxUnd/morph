@@ -1,3 +1,4 @@
+#include "signals.h"
 #include "spin.h"
 #include "utf8.h"
 #include <string.h>
@@ -275,7 +276,7 @@ static void *spin_thread_func(void *arg)
 		}
 		if (ctx->active && ctx->running) {
 			ctx->frame++;
-			if (ctx->cancel_flag && *ctx->cancel_flag) {
+			if (morph_signal_flag_get(ctx->cancel_flag)) {
 				pthread_mutex_unlock(&ctx->mutex);
 				break;
 			}

@@ -2555,7 +2555,7 @@ void spin_set_cancel_flag(struct spin_context *ctx, volatile sig_atomic_t *flag)
 
 - Tab 缩进（8 字符宽）；软上限 80，硬上限 100
 - 函数名 `snake_case`，类型 `struct foo`；宏全大写
-- 错误码使用负 `errno`（`-EINVAL` / `-ENOMEM`）或 `MORPH_ERR_*`（`src/util/error.h`）；错误返回必须使用 `MORPH_RETURN(code)` 而非裸 `return code;`
+- 错误码使用负 `errno`（`-EINVAL` / `-ENOMEM`）或 `MORPH_ERR_*`（`src/util/error.h`）；错误返回使用显式 `return code;`，清理路径使用显式错误码赋值；需要诊断时使用 `MORPH_TRACE_ERROR(logger, code)` 表达式
 - `goto out;` 必须传播错误码：`int rc = 0; ... if ((rc = call()) < 0) goto out; ... out: return rc;`，禁止无条件 `return 0`
 - 系统调用失败返回 `-errno`，禁止硬编码 `-EIO`
 - 用户/LLM 面向消息使用 `morph_strerror(rc)`，禁止裸 `%d`
@@ -2590,10 +2590,11 @@ enum morph_error {
 };
 ```
 
-### 7.2 错误处理宏
+### 7.2 错误返回与诊断
 
-- `MORPH_RETURN(code)`：debug 模式日志 + 返回；release 模式直接返回
-- `MORPH_SET_ERR(var, code)`：debug 模式日志 + 赋值；release 模式直接赋值
+- 使用原生 `return code;` 和 `rc = code;`，不以宏隐藏控制流或赋值
+- `MORPH_TRACE_ERROR(logger, code)` 仅补充源码位置，调用普通函数并原样返回错误码；Debug/Release 的参数类型与求值次数相同，日志由显式 logger 的级别控制
+- `morph_error_from_errno(errno)` 在失败位置捕获 errno 并转换为负错误码，errno 为零时回退到 `-EIO`
 - `morph_strerror(err)`：返回所有错误码（POSIX + 自定义）的人类可读字符串
 
 ---

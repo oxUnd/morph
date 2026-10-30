@@ -22,12 +22,12 @@ static int prompt_append_file(morph_buf_t *buf, const char *path)
 	int rc = 0;
 
 	if (stat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!S_ISREG(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	stream = fopen(path, "rb");
 	if (!stream)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (start)
 		rc = morph_buf_puts(buf, "\n\n");
 	content_start = buf->len;
@@ -38,12 +38,12 @@ static int prompt_append_file(morph_buf_t *buf, const char *path)
 	if (fclose(stream) != 0 && rc == 0)
 		rc = -errno;
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 
 	n = buf->len - content_start;
 	if (memchr(buf->data + content_start, '\0', n) ||
 	    utf8nvalid(buf->data + content_start, n))
-		MORPH_RETURN(-EILSEQ);
+		return -EILSEQ;
 	while (n > 0 && strchr("\r\n \t", buf->data[content_start + n - 1]))
 		n--;
 	return morph_buf_truncate(buf, n ? content_start + n : start);
@@ -56,7 +56,7 @@ static int prompt_append_directory(struct morph_log *logger, morph_buf_t *buf, c
 	int rc = file_list_files(dir, &files, &count);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	for (int i = 0; i < count; i++) {
 		char path[PATH_MAX];
 
@@ -70,7 +70,7 @@ static int prompt_append_directory(struct morph_log *logger, morph_buf_t *buf, c
 		}
 	}
 	file_free_list(files, count);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int prompt_append_source(struct morph_log *logger, morph_buf_t *buf, const char *source,
@@ -80,13 +80,13 @@ static int prompt_append_source(struct morph_log *logger, morph_buf_t *buf, cons
 	int rc;
 
 	if (!path)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = is_directory ? prompt_append_directory(logger, buf, path)
 			  : prompt_append_file(buf, path);
 	if (rc != 0)
 		log_err(logger, "cannot load prompt source '%s': %s", path, morph_strerror(rc));
 	free(path);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int morph_prompt_load(struct morph_log *logger, const char *file, const char *dir, char **out)
@@ -95,13 +95,13 @@ int morph_prompt_load(struct morph_log *logger, const char *file, const char *di
 	int rc;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	if ((!file || !*file) && (!dir || !*dir))
 		return 0;
 	rc = morph_buf_init(&buf, 1024);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	if (file && *file)
 		rc = prompt_append_source(logger, &buf, file, 0);
 	if (rc == 0 && dir && *dir)
@@ -109,5 +109,5 @@ int morph_prompt_load(struct morph_log *logger, const char *file, const char *di
 	if (rc == 0)
 		*out = morph_buf_detach(&buf);
 	morph_buf_cleanup(&buf);
-	MORPH_RETURN(rc);
+	return rc;
 }

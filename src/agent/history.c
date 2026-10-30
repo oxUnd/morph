@@ -208,11 +208,11 @@ static int history_add_text_message(morph_array_t *messages,
 	struct chat_message *message = history_push_message(messages);
 
 	if (!message)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	message->role = arena_strdup(arena, role ? role : "user");
 	message->content = arena_strdup(arena, content ? content : "");
 	if (!message->role || !message->content)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -227,7 +227,7 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	int rc;
 
 	if (!ctx || !model)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!ctx->history_enabled || !ctx->history_db || ctx->history_session_id <= 0)
 		return 0;
 	rc = model_input_snapshot(model, system_prompt, messages, count, tools, tool_count, &input);
@@ -236,11 +236,11 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	json = cJSON_PrintUnformatted(input);
 	cJSON_Delete(input);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	safe = history_redact_json(ctx, json);
 	free(json);
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = sqlite3_prepare_v2(ctx->history_db->handle,
 		"INSERT INTO model_request_snapshots(session_id,turn_id,provider,model,"
 		"input_json,created_at) VALUES(?,?,?,?,?,strftime('%s','now')) "
@@ -257,7 +257,7 @@ int agent_history_record_request(struct react_context *ctx, const struct model *
 	}
 	sqlite3_finalize(stmt);
 	free(safe);
-	MORPH_RETURN(rc == SQLITE_DONE ? 0 : MORPH_ERR_DB);
+	return rc == SQLITE_DONE ? 0 : MORPH_ERR_DB;
 }
 
 static int history_tool_arguments_valid(const cJSON *arguments)
@@ -309,27 +309,27 @@ int agent_history_normalize_tool_arguments(const char *arguments,
 	char *json;
 
 	if (!normalized)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*normalized = NULL;
 	parsed = cJSON_ParseWithOpts(raw, NULL, 1);
 	if (cJSON_IsObject(parsed)) {
 		cJSON_Delete(parsed);
 		*normalized = strdup(raw);
 		if (!*normalized)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		return 0;
 	}
 	cJSON_Delete(parsed);
 	fallback = cJSON_CreateObject();
 	if (!fallback)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cJSON_AddStringToObject(fallback, "_morph_invalid_arguments", raw);
 	cJSON_AddStringToObject(fallback, "_morph_recovery",
 		"Reissue this tool call with a valid JSON object.");
 	json = cJSON_PrintUnformatted(fallback);
 	cJSON_Delete(fallback);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*normalized = json;
 	return 0;
 }
@@ -356,13 +356,13 @@ int agent_history_migrate_legacy_tool_call(struct tool_call *call,
 	normalized = cJSON_PrintUnformatted(arguments);
 	cJSON_Delete(arguments);
 	if (!normalized)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	if (arena) {
 		char *copy = arena_strdup(arena, normalized);
 
 		free(normalized);
 		if (!copy)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		call->arguments = copy;
 	} else {
 		free(call->arguments);
@@ -383,18 +383,18 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 	if (!root) {
 		log_err(logger, "history replay: invalid tool payload at item %lld, sequence %lld",
 			(long long)item->id, (long long)item->sequence_no);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	calls = cJSON_GetObjectItem(root, "calls");
 	count = cJSON_IsArray(calls) ? cJSON_GetArraySize(calls) : 0;
 	if (count <= 0) {
 		cJSON_Delete(root);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	message = history_push_message(messages);
 	if (!message) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	message->role = arena_strdup(arena, "assistant");
 	message->content = item->content && item->content[0] ?
@@ -408,7 +408,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 	if (!message->role || !message->tool_calls ||
 	    (cJSON_IsString(reasoning) && !message->reasoning_content)) {
 		cJSON_Delete(root);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	memset(message->tool_calls, 0,
 	       (size_t)count * sizeof(*message->tool_calls));
@@ -427,7 +427,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 		    !cJSON_IsString(local_id) || !cJSON_IsString(name) ||
 		    !history_tool_call_input(call, &input_kind, &input)) {
 			cJSON_Delete(root);
-			MORPH_RETURN(MORPH_ERR_PROTOCOL);
+			return MORPH_ERR_PROTOCOL;
 		}
 		/* Replayed IDs are provider-neutral Morph IDs. */
 		snprintf(tool_call->id, sizeof(tool_call->id), "%s",
@@ -441,7 +441,7 @@ static int history_add_tool_calls(struct morph_log *logger, const struct model_h
 		tool_call->arguments = arena_strdup(arena, input);
 		if (!tool_call->arguments) {
 			cJSON_Delete(root);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		int migrate_rc = agent_history_migrate_legacy_tool_call(
 			tool_call, arena);
@@ -464,13 +464,13 @@ static int history_add_tool_result(const struct model_history_item *item,
 		item->tool_call_id : item->provider_call_id;
 
 	if (!message)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	message->role = arena_strdup(arena, "tool");
 	message->content = arena_strdup(arena,
 		item->content ? item->content : "");
 	message->tool_call_id = arena_strdup(arena, call_id ? call_id : "");
 	if (!message->role || !message->content || !message->tool_call_id)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -486,13 +486,13 @@ static int history_add_assistant_message(const struct model_history_item *item,
 		return rc;
 	payload = cJSON_ParseWithOpts(item->payload_json, NULL, 1);
 	if (!payload)
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	reasoning = cJSON_GetObjectItemCaseSensitive(payload, "reasoning_content");
 	message = morph_array_get(messages, messages->nelts - 1);
 	if (cJSON_IsString(reasoning)) {
 		message->reasoning_content = arena_strdup(arena, reasoning->valuestring);
 		if (!message->reasoning_content)
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 	}
 	cJSON_Delete(payload);
 	return rc;
@@ -531,7 +531,7 @@ static int history_item_tokens(const struct model_history_item *item,
 		int tokens;
 
 		if (!rendered)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		tokens = tokenizer_count(tokenizer, rendered);
 		free(rendered);
 		return tokens;
@@ -575,7 +575,7 @@ int agent_history_build_chat_messages(struct morph_log *logger,
 	int rc;
 
 	if (!messages || !arena)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	while (item) {
 		if (strcmp(item->kind, "compaction_summary") == 0) {
 			morph_buf_t snapshot;
@@ -595,7 +595,7 @@ int agent_history_build_chat_messages(struct morph_log *logger,
 				morph_buf_cstr(&snapshot));
 
 			if (!reference)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			rc = history_add_text_message(messages, arena, "assistant",
 				reference);
 			if (rc != 0)
@@ -623,7 +623,7 @@ int agent_history_build_chat_messages(struct morph_log *logger,
 			char *content = history_user_content(item);
 
 			if (!content)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			rc = history_add_text_message(messages, arena, "user",
 				content);
 			free(content);
@@ -661,7 +661,7 @@ static int history_store(struct react_context *ctx,
 	if ((insert->content && !content) || (insert->payload_json && !payload)) {
 		free(content);
 		free(payload);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	safe = *insert;
 	safe.content = content;
@@ -750,16 +750,16 @@ int agent_history_record_assistant(struct react_context *ctx,
 		int rc;
 
 		if (!payload)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		if (!cJSON_AddStringToObject(payload, "reasoning_content",
 			ctx->final_reasoning_content)) {
 			cJSON_Delete(payload);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		json = cJSON_PrintUnformatted(payload);
 		cJSON_Delete(payload);
 		if (!json)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		item.payload_json = json;
 		rc = history_store(ctx, &item);
 		free(json);
@@ -797,7 +797,7 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 	if (rc != SQLITE_OK) {
 		sqlite3_finalize(select);
 		sqlite3_finalize(update);
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int64(select, 1, session_id);
 	if (turn_id)
@@ -818,7 +818,7 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 		if (old && !cJSON_IsObject(payload)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			MORPH_SET_ERR(error, MORPH_ERR_PARSE);
+			error = (MORPH_ERR_PARSE);
 			break;
 		}
 		if (!payload || !outcome ||
@@ -827,14 +827,14 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 		    !cJSON_AddNumberToObject(outcome, "error_code", error_code)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			MORPH_SET_ERR(error, -ENOMEM);
+			error = (-ENOMEM);
 			break;
 		}
 		cJSON_DeleteItemFromObjectCaseSensitive(payload, "turn_outcome");
 		if (!cJSON_AddItemToObject(payload, "turn_outcome", outcome)) {
 			cJSON_Delete(outcome);
 			cJSON_Delete(payload);
-			MORPH_SET_ERR(error, -ENOMEM);
+			error = (-ENOMEM);
 			break;
 		}
 		json = cJSON_PrintUnformatted(payload);
@@ -845,7 +845,7 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 			rendered = history_user_content(&item);
 		if (!rendered) {
 			free(json);
-			MORPH_SET_ERR(error, -ENOMEM);
+			error = (-ENOMEM);
 			break;
 		}
 		sqlite3_bind_text(update, 1, json, -1, SQLITE_TRANSIENT);
@@ -854,7 +854,7 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 		free(rendered);
 		free(json);
 		if (sqlite3_step(update) != SQLITE_DONE) {
-			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			error = (MORPH_ERR_DB);
 			break;
 		}
 		if (changed)
@@ -867,7 +867,7 @@ static int history_store_turn_outcomes(struct db *db, int64_t session_id,
 	if (error)
 		return error;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -899,13 +899,13 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 	int rc;
 
 	if (!ctx || !calls || call_count <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = cJSON_CreateObject();
 	array = cJSON_CreateArray();
 	if (!root || !array) {
 		cJSON_Delete(root);
 		cJSON_Delete(array);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddItemToObject(root, "calls", array);
 	if (reasoning_content)
@@ -917,7 +917,7 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 
 		if (!call) {
 			cJSON_Delete(root);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddStringToObject(call, "tool_call_id",
 			calls[i].tool_call_id);
@@ -944,7 +944,7 @@ int agent_history_record_tool_calls(struct react_context *ctx,
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	item.session_id = ctx->history_session_id;
 	item.turn_id = ctx->turn_id;
 	item.kind = "assistant_tool_calls";
@@ -1165,17 +1165,17 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 	int was_truncated = 0;
 
 	if (!ctx || !prepared)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	/* Repair malformed tool bytes before redaction or UTF-8 boundary selection. */
 	limited = strdup(content ? content : "");
 	if (!limited)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	utf8_sanitize_inplace(limited);
 	/* Redaction may expand short secrets into longer replacement strings. */
 	safe = history_redact_all(ctx, limited);
 	free(limited);
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	{
 		cJSON *root = cJSON_ParseWithOpts(safe, NULL, 1);
 		int budget = ctx->history_tool_result_tokens > 0
@@ -1188,7 +1188,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 			cJSON_Delete(root);
 			if (!limited) {
 				free(safe);
-				MORPH_RETURN(-E2BIG);
+				return -E2BIG;
 			}
 		} else {
 			limited =
@@ -1197,7 +1197,7 @@ int agent_history_prepare_tool_content(struct react_context *ctx,
 	}
 	free(safe);
 	if (!limited)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	log_dbg(ctx ? ctx->logger : NULL, "history tool result: %zu -> %zu bytes, truncated=%d",
 		content ? strlen(content) : 0, strlen(limited), was_truncated);
 	*prepared = limited;
@@ -1220,7 +1220,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 	int rc;
 
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = agent_history_prepare_tool_content(ctx, content, &stored,
 		&truncated);
 	if (rc != 0)
@@ -1239,7 +1239,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 	metadata = cJSON_CreateObject();
 	if (!metadata) {
 		free(stored);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(metadata, "status",
 		error_code == -ETIMEDOUT ? "timed_out" :
@@ -1260,7 +1260,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 		if (!original) {
 			cJSON_Delete(metadata);
 			free(stored);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		utf8_sanitize_inplace(original);
 		redacted = history_redact_all(ctx, original);
@@ -1269,7 +1269,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 			free(redacted);
 			cJSON_Delete(metadata);
 			free(stored);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		free(redacted);
 	}
@@ -1298,7 +1298,7 @@ int agent_history_record_tool_result_ex(struct react_context *ctx,
 	cJSON_Delete(metadata);
 	if (!payload) {
 		free(stored);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	item.payload_json = payload;
 	item.token_count = tokenizer_count(ctx->tokenizer, stored);
@@ -1333,7 +1333,7 @@ int agent_history_record_receipt(struct react_context *ctx,
 	int rc;
 
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	/* Memory maintenance is UI/log telemetry, not conversation evidence. */
 	if (task && strcmp(task, "memory_consolidation") == 0)
 		return 0;
@@ -1352,7 +1352,7 @@ int agent_history_record_receipt(struct react_context *ctx,
 	payload = cJSON_CreateObject();
 	if (!payload) {
 		morph_buf_cleanup(&text);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(payload, "name", name ? name : "");
 	cJSON_AddStringToObject(payload, "phase", phase ? phase : "");
@@ -1363,7 +1363,7 @@ int agent_history_record_receipt(struct react_context *ctx,
 	cJSON_Delete(payload);
 	if (!json) {
 		morph_buf_cleanup(&text);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	snprintf(key, sizeof(key), "receipt:%s:%s:%s:%d",
 		ctx->turn_id[0] ? ctx->turn_id : "unknown",
@@ -1460,7 +1460,7 @@ static int history_compaction_input(const struct model_history_item *items, morp
 	if (omitted_through &&
 	    morph_buf_puts(buf, "Earlier tool groups were omitted to fit the summary request; do "
 				"not infer their results.\n") != 0)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	while (item) {
 		/* Keep user requests as objective references; exclude retained exchanges. */
@@ -1482,7 +1482,7 @@ static int history_compaction_input(const struct model_history_item *items, morp
 
 		if (!text && agent_history_item_replayable(item) &&
 		    (item->content || item->payload_json))
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		if (text && text[0] &&
 		    morph_buf_printf(buf, "[%s/%s]\n%s\n\n", label,
 			history_retained(preserved, item) ? "retained_request_reference" :
@@ -1490,7 +1490,7 @@ static int history_compaction_input(const struct model_history_item *items, morp
 			rc = -ENOMEM;
 		free(rendered);
 		if (rc != 0)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		item = item->next;
 	}
 	return 0;
@@ -1503,11 +1503,11 @@ int agent_history_reload(struct react_context *ctx)
 
 	if (!ctx || !ctx->history_enabled || !ctx->history_db ||
 	    ctx->history_session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	items = model_history_list(ctx->history_db, ctx->history_session_id, 1,
 		&count);
 	if (!items && count != 0)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	for (struct model_history_item *item = items; item; item = item->next) {
 		cJSON *payload;
 		const cJSON *original;
@@ -1544,7 +1544,7 @@ static int history_validate_replay(struct morph_log *logger, const struct model_
 	int rc;
 
 	if (!arena)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = morph_array_init(&messages, 64, sizeof(struct chat_message));
 	if (rc == 0)
 		rc = agent_history_build_chat_messages(logger, items, &messages, arena);
@@ -1581,7 +1581,7 @@ static int history_refresh_retention_tokens(struct react_context *ctx)
 	if (rc != SQLITE_OK) {
 		sqlite3_finalize(select);
 		sqlite3_finalize(update);
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int64(select, 1, ctx->history_session_id);
 	while ((rc = sqlite3_step(select)) == SQLITE_ROW) {
@@ -1596,14 +1596,14 @@ static int history_refresh_retention_tokens(struct react_context *ctx)
 		int tokens = history_item_tokens(&item, ctx->tokenizer, text);
 
 		if (tokens < 0) {
-			MORPH_SET_ERR(error, tokens);
+			error = (tokens);
 			break;
 		}
 
 		sqlite3_bind_int(update, 1, tokens);
 		sqlite3_bind_int64(update, 2, sqlite3_column_int64(select, 0));
 		if (sqlite3_step(update) != SQLITE_DONE) {
-			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			error = (MORPH_ERR_DB);
 			break;
 		}
 		sqlite3_reset(update);
@@ -1614,7 +1614,7 @@ static int history_refresh_retention_tokens(struct react_context *ctx)
 	if (error)
 		return error;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -1628,7 +1628,7 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 	int error = 0;
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	for (const struct model_history_item *item = ctx->history_items; item; item = item->next) {
 		if (strcmp(item->kind, "user_message") && history_retained(preserved, item))
 			continue;
@@ -1652,7 +1652,7 @@ static int history_record_summary_sources(struct react_context *ctx, int64_t sum
 		sqlite3_clear_bindings(stmt);
 	}
 	sqlite3_finalize(stmt);
-	MORPH_RETURN(error ? error : rc == SQLITE_DONE || rc == SQLITE_OK ? 0 : MORPH_ERR_DB);
+	return error ? error : rc == SQLITE_DONE || rc == SQLITE_OK ? 0 : MORPH_ERR_DB;
 }
 
 /* Keep the old window until the new database window can actually replay. */
@@ -1791,7 +1791,7 @@ static int history_compact_selected(struct react_context *ctx, int force,
 				free(summary);
 				summary = prepared;
 				if (!summary)
-					MORPH_SET_ERR(rc, -ENOMEM);
+					rc = (-ENOMEM);
 			}
 			double elapsed_ms = timed &&
 				clock_gettime(CLOCK_MONOTONIC, &finished) == 0 ?
@@ -1859,7 +1859,7 @@ static int history_compact_selected(struct react_context *ctx, int force,
 					"work, exact paths and pending checks. Do not "
 					"continue the task or call tools.]\n",
 					target > 0 ? target : 1) != 0) {
-					MORPH_SET_ERR(rc, -ENOMEM);
+					rc = (-ENOMEM);
 					break;
 				}
 			}
@@ -1887,12 +1887,12 @@ static int history_compact_selected(struct react_context *ctx, int force,
 			ctx->history_session_id, ctx->turn_id, trigger_kind,
 			"failed", input_tokens, 0, failure,
 			morph_strerror(failure));
-		MORPH_RETURN(failure);
+		return failure;
 	}
 	max_summary_tokens = tokenizer_count(ctx->tokenizer, summary);
 	if (!summary[0]) {
 		free(summary);
-		MORPH_RETURN(MORPH_ERR_PROTOCOL);
+		return MORPH_ERR_PROTOCOL;
 	}
 	user_budget = (int)((double)ctx->compress.max_context_tokens *
 		ctx->compress.compress_target_ratio) - max_summary_tokens;
@@ -1994,7 +1994,7 @@ int agent_history_compact_validated(struct react_context *ctx, int force,
 			cutoff = sqlite3_column_int64(stmt, 0);
 			rc = 0;
 		} else {
-			MORPH_SET_ERR(rc, MORPH_ERR_DB);
+			rc = (MORPH_ERR_DB);
 		}
 		sqlite3_finalize(stmt);
 	}
@@ -2059,7 +2059,7 @@ int agent_history_repair_interrupted(struct db *db, int64_t session_id)
 	int rc = 0;
 
 	if (!db || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	items = model_history_list(db, session_id, 1, &count);
 	for (item = items; item && rc == 0; item = item->next) {
 		cJSON *root;
@@ -2179,7 +2179,7 @@ int agent_history_diagnose(const struct model_history_item *items,
 	const struct model_history_item *item;
 
 	if (!diagnostic)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(diagnostic, 0, sizeof(*diagnostic));
 	for (item = items; item; item = item->next) {
 		const char *token_text = item->content;
@@ -2248,14 +2248,14 @@ static int history_update_item(struct db *db, int64_t id, int active,
 
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int(stmt, 1, active);
 	sqlite3_bind_int(stmt, 2, token_count);
 	sqlite3_bind_int64(stmt, 3, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -2270,14 +2270,14 @@ int agent_history_repair(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!db || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = db_exec(db, "BEGIN IMMEDIATE;");
 	if (rc != 0)
 		return rc;
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
 		(void)db_exec(db, "ROLLBACK;");
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	rc = agent_history_diagnose(items, tokenizer,
 		before ? before : &local);
@@ -2302,7 +2302,7 @@ int agent_history_repair(struct db *db, int64_t session_id,
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
 		(void)db_exec(db, "ROLLBACK;");
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
 		const char *token_text = item->content;
@@ -2369,7 +2369,7 @@ int agent_history_repair(struct db *db, int64_t session_id,
 	items = model_history_list(db, session_id, 1, &count);
 	if (!items && count != 0) {
 		(void)db_exec(db, "ROLLBACK;");
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	for (struct model_history_item *item = items; item; item = item->next) {
 		if (strcmp(item->kind, "tool_result") != 0 ||

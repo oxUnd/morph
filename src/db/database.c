@@ -337,7 +337,7 @@ int db_open(struct morph_log *logger, struct db *db, const char *path)
 		log_err(logger, "failed to open db %s: %s", path, sqlite3_errmsg(db->handle));
 		sqlite3_close(db->handle);
 		db->handle = NULL;
-		MORPH_RETURN_LOG(logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(logger, MORPH_ERR_DB);
 	}
 	sqlite3_exec(db->handle, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 	sqlite3_exec(db->handle, "PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
@@ -365,7 +365,7 @@ int db_exec(struct db *db, const char *sql)
 	if (rc != SQLITE_OK) {
 		log_err(db ? db->logger : NULL, "db exec error: %s", err);
 		sqlite3_free(err);
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	}
 	return 0;
 }
@@ -435,13 +435,13 @@ static int db_migrate_memory_columns(struct db *db)
 	if (!db_table_has_column(db, "memory_preferences", "origin") ||
 	    !db_table_has_column(db, "memory_preferences", "source_order") ||
 	    !db_table_has_column(db, "memory_scopes", "generation"))
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	db_add_column_if_missing(db, "memory_episodes", "job_id", "INTEGER");
 	if (!db_table_has_column(db, "memory_episodes", "job_id"))
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	if (db_exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_episode_job "
 		"ON memory_episodes(job_id) WHERE job_id IS NOT NULL") != 0)
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	db_add_column_if_missing(db, "memory_facts", "category",
 				 "TEXT DEFAULT 'general'");
 	db_add_column_if_missing(db, "memory_facts", "importance",
@@ -484,6 +484,11 @@ static int db_migrate_output_columns(struct db *db)
 
 static int db_migrate_scheduled_task_columns(struct db *db)
 {
+	db_add_column_if_missing(db, "scheduled_tasks", "run_token", "TEXT NOT NULL DEFAULT ''");
+	int token_rc = db_exec(db, "SELECT run_token FROM scheduled_tasks LIMIT 0");
+	if (token_rc != 0) {
+		return token_rc;
+	}
 	db_add_column_if_missing(db, "scheduled_tasks", "source_session_id",
 				 "INTEGER REFERENCES sessions(id) ON DELETE SET NULL");
 	db_add_column_if_missing(db, "scheduled_tasks", "latest_session_id",
@@ -500,13 +505,13 @@ static int db_retire_memory_receipts(struct db *db)
 		"SELECT 1 FROM schema_migrations WHERE version=2", -1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc == SQLITE_ROW)
 		return 0;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	rc = db_exec(db, "SAVEPOINT retire_memory_receipts;");
 	if (rc != 0)
 		return rc;
@@ -545,7 +550,7 @@ int db_init_schema(struct db *db)
 	db_add_column_if_missing(db, "model_history_items",
 		"idempotency_key", "TEXT");
 	if (!db_table_has_column(db, "model_history_items", "idempotency_key"))
-		MORPH_RETURN_LOG(db->logger, MORPH_ERR_DB);
+		return MORPH_TRACE_ERROR(db->logger, MORPH_ERR_DB);
 	rc = db_exec(db,
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_model_history_idempotency "
 		"ON model_history_items(session_id,idempotency_key) "

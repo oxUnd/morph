@@ -97,7 +97,7 @@ static int history_filter(struct history_view *view)
 		cJSON **slot = morph_array_push(&view->matches);
 
 		if (!slot)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		*slot = entry;
 	}
 	morph_tui_list_layout(&view->selection, view->matches.nelts, view->selection.page);
@@ -152,7 +152,7 @@ static int history_json_text(const cJSON *json, morph_buf_t *text)
 	int rc;
 
 	if (!pretty)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = morph_buf_puts(text, pretty);
 	free(pretty);
 	return rc;
@@ -272,7 +272,7 @@ static int history_frame_line(struct cli_context *ctx, morph_buf_t *frame, int c
 	int rc;
 
 	if (!safe)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	utf8_copy_ellipsized_display_width(clipped, sizeof(clipped), safe,
 		(size_t)(columns > 1 ? columns - 1 : 0), 0);
 	free(safe);
@@ -546,7 +546,7 @@ int cli_history_view(struct cli_context *ctx, cJSON *report)
 	morph_buf_cleanup(&view.document);
 	morph_tui_frame_cleanup(&view.frame);
 	morph_tui_editor_cleanup(&view.query);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 void cli_history_print(struct cli_context *ctx, const cJSON *report, int limit, int all)
@@ -609,7 +609,7 @@ int cli_history_entry_print(struct cli_context *ctx, const cJSON *report,
 	if (rc == 0)
 		putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int cli_history_request_print(struct cli_context *ctx)
@@ -626,5 +626,5 @@ int cli_history_request_print(struct cli_context *ctx)
 	if (rc == 0)
 		putchar(ctx, '\n');
 	morph_buf_cleanup(&text);
-	MORPH_RETURN(rc);
+	return rc;
 }

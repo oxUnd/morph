@@ -8,6 +8,10 @@ extern "C" {
 #include <stddef.h>
 
 char *file_read_all(const char *path, size_t *out_len);
+/* Atomic regular-file replacement. Borrows path/data; preserves existing mode,
+ * creates new files as 0600 and rejects symlinks. On a post-rename sync failure,
+ * returns an error although the new file may already be visible. */
+int file_write_atomic(const char *path, const char *data, size_t len);
 int file_write_all(const char *path, const char *data, size_t len);
 int file_ensure_dir(const char *path);
 int file_exists(const char *path);

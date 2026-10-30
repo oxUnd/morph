@@ -19,7 +19,8 @@ def until(terminal, predicate, seconds=8):
     while time.monotonic() < deadline:
         terminal.pump(.05)
         text = '\n'.join(terminal.screen.display)
-        if predicate(text):
+        # A marker may arrive before the synchronized frame repaints the draft.
+        if predicate(text) and 2026 << 5 not in terminal.screen.mode:
             return text
     raise AssertionError('\n'.join(terminal.screen.display))
 

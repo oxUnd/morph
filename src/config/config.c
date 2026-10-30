@@ -944,7 +944,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 	if (!parsed.ok) {
 		log_err(logger, "config parse error: %s", parsed.errmsg);
 		toml_free(parsed);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	cfg_table_t *tbl = &parsed.toptab;
 
@@ -959,7 +959,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 			free(text);
 			cJSON_Delete(json);
 			toml_free(parsed);
-			MORPH_RETURN(MORPH_ERR_CONFIG);
+			return MORPH_ERR_CONFIG;
 		}
 		memcpy(cfg->hooks_json, text, strlen(text) + 1);
 		free(text);
@@ -1042,6 +1042,7 @@ int config_load(struct morph_log *logger, struct config *cfg, const char *path)
 				struct config_guardrail_ext_rule *er =
 					&cfg->react.guardrail_ext_rules[
 						cfg->react.guardrail_ext_rule_count];
+				CFG_STR(et, "on_error", er->on_error);
 				CFG_STR(et, "name", er->name);
 				CFG_STR(et, "hook", er->hook);
 				CFG_STR(et, "ext_type", er->ext_type);
@@ -1343,7 +1344,7 @@ int config_load_sub_agents(struct config *cfg, const char *path)
 	fclose(f);
 	if (!parsed.ok) {
 		toml_free(parsed);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 	cfg_table_t *tbl = &parsed.toptab;
 

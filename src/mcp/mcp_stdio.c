@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "mcp/mcp_internal.h"
+#include "util/child_io.h"
 #include "cJSON.h"
 #include "util/error.h"
 #include "util/log.h"
@@ -21,63 +22,6 @@
 extern char **environ;
 
 /* ----- Internal: stdio send/recv ----- */
-
-static int mcp_stdio_send_bytes(struct mcp_client *client, const char *json)
-{
-	size_t len = strlen(json);
-	size_t total = 0;
-	while (total < len) {
-		ssize_t n = write(client->stdin_fd, json + total, len - total);
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
-			MORPH_RETURN(-errno);
-		}
-		if (n == 0)
-			MORPH_RETURN(-EPIPE);
-		total += (size_t)n;
-	}
-	ssize_t newline;
-	do {
-		newline = write(client->stdin_fd, "\n", 1);
-	} while (newline < 0 && errno == EINTR);
-	if (newline < 0)
-		MORPH_RETURN(-errno);
-	return 0;
-}
-
-/* A dead server must report EPIPE without delivering SIGPIPE to the host. */
-static int mcp_stdio_send(struct mcp_client *client, const char *json)
-{
-#ifdef __APPLE__
-	if (fcntl(client->stdin_fd, F_SETNOSIGPIPE, 1) < 0)
-		MORPH_RETURN(-errno);
-	return mcp_stdio_send_bytes(client, json);
-#else
-	sigset_t blocked, previous, pending;
-	int was_pending;
-	int rc;
-
-	sigemptyset(&blocked);
-	sigaddset(&blocked, SIGPIPE);
-	rc = pthread_sigmask(SIG_BLOCK, &blocked, &previous);
-	if (rc != 0)
-		MORPH_RETURN(-rc);
-	sigpending(&pending);
-	was_pending = sigismember(&pending, SIGPIPE);
-	rc = mcp_stdio_send_bytes(client, json);
-	if (rc == -EPIPE && !was_pending) {
-		sigpending(&pending);
-		if (sigismember(&pending, SIGPIPE)) {
-			int signal_number;
-
-			(void)sigwait(&blocked, &signal_number);
-		}
-	}
-	(void)pthread_sigmask(SIG_SETMASK, &previous, NULL);
-	return rc;
-#endif
-}
 
 static int64_t mcp_stdio_now_ms(void)
 {
@@ -104,17 +48,17 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 	for (;;) {
 		if (client->interrupt_check &&
 		    client->interrupt_check(client->interrupt_user_data))
-			MORPH_RETURN(-ECANCELED);
+			return -ECANCELED;
 		int64_t remaining = deadline - mcp_stdio_now_ms();
 		if (remaining <= 0)
-			MORPH_RETURN(-ETIMEDOUT);
+			return -ETIMEDOUT;
 		char *newline = memchr(buffer->data, '\n', buffer->len);
 		if (newline) {
 			size_t length = (size_t)(newline - buffer->data);
 			char *line = strndup(buffer->data, length);
 
 			if (!line)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			memmove(buffer->data, newline + 1, buffer->len - length - 1);
 			buffer->len -= length + 1;
 			buffer->data[buffer->len] = '\0';
@@ -137,7 +81,7 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 		if (ready < 0) {
 			if (errno == EINTR)
 				continue;
-			MORPH_RETURN(-errno);
+			return -errno;
 		}
 		if (ready == 0)
 			continue;
@@ -146,48 +90,51 @@ static int mcp_stdio_recv(struct mcp_client *client, int req_id,
 		if (received < 0) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;
-			MORPH_RETURN(-errno);
+			return -errno;
 		}
 		if (received == 0)
-			MORPH_RETURN(-EPIPE);
+			return -EPIPE;
+		if ((size_t)received > MCP_STDIO_MAX_FRAME_BYTES ||
+		    buffer->len > MCP_STDIO_MAX_FRAME_BYTES - (size_t)received) {
+			return -EFBIG;
+		}
 		rc = morph_buf_append(buffer, chunk, (size_t)received);
 		if (rc != 0)
 			return rc;
 	}
 }
 
-int mcp_stdio_exchange(struct mcp_client *client,
-	const struct mcp_wire_request *request, int timeout_ms,
-	struct mcp_wire_reply *reply)
+int mcp_stdio_exchange(struct mcp_client *client, const struct mcp_wire_request *request,
+		       int timeout_ms, struct mcp_wire_reply *reply)
 {
-	int rc = mcp_stdio_send(client, request->json);
-
-	if (rc != 0 || request->id < 0)
+	int64_t deadline = morph_io_now_ms() + timeout_ms;
+	int rc = morph_io_write(client->stdin_fd, request->json, strlen(request->json), deadline,
+				client->interrupt_check, client->interrupt_user_data);
+	if (rc == 0) {
+		rc = morph_io_write(client->stdin_fd, "\n", 1, deadline, client->interrupt_check,
+				    client->interrupt_user_data);
+	}
+	if (rc != 0) {
+		/* A partial line cannot safely be followed by another request. */
+		mcp_stdio_disconnect(client);
 		return rc;
-	return mcp_stdio_recv(client, request->id, timeout_ms, &reply->json);
+	}
+	if (request->id < 0) {
+		return 0;
+	}
+	int64_t remaining = deadline - morph_io_now_ms();
+	if (remaining <= 0) {
+		return -ETIMEDOUT;
+	}
+	rc = mcp_stdio_recv(client, request->id, (int)remaining, &reply->json);
+	if (rc == -EFBIG) {
+		mcp_stdio_disconnect(client);
+	}
+	return rc;
 }
 
 /* ----- Public stdio transport functions ----- */
 
-static int stdio_pipe(int descriptors[2])
-{
-#ifdef __linux__
-	if (pipe2(descriptors, O_CLOEXEC) < 0)
-		MORPH_RETURN(-errno);
-#else
-	if (pipe(descriptors) < 0)
-		MORPH_RETURN(-errno);
-	if (fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) < 0 ||
-	    fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) < 0) {
-		int error = errno;
-
-		close(descriptors[0]);
-		close(descriptors[1]);
-		MORPH_RETURN(-error);
-	}
-#endif
-	return 0;
-}
 
 static int mcp_stdio_spawn(struct mcp_client *client)
 {
@@ -195,18 +142,18 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	    client->config.cmd_args_count < 0 ||
 	    client->config.cmd_args_count > MCP_CMD_MAX ||
 	    client->config.env_count < 0 || client->config.env_count > MCP_ENV_MAX)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	int to_child[2], from_child[2];
-	int pipe_rc = stdio_pipe(to_child);
+	int pipe_rc = morph_io_pipe(to_child);
 
 	if (pipe_rc != 0)
-		MORPH_RETURN(pipe_rc);
-	pipe_rc = stdio_pipe(from_child);
+		return pipe_rc;
+	pipe_rc = morph_io_pipe(from_child);
 	if (pipe_rc != 0) {
 		close(to_child[0]);
 		close(to_child[1]);
-		MORPH_RETURN(pipe_rc);
+		return pipe_rc;
 	}
 
 	struct arena *arena = arena_create(0);
@@ -222,7 +169,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		close(to_child[1]);
 		close(from_child[0]);
 		close(from_child[1]);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	size_t environment_count = 0;
 	for (char **item = environ; *item; item++)
@@ -245,7 +192,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 			char **slot = morph_array_push(&environment);
 
 			if (!slot) {
-				MORPH_SET_ERR(rc, -ENOMEM);
+				rc = (-ENOMEM);
 				goto out_close_pipes;
 			}
 			*slot = *item;
@@ -264,14 +211,14 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 			goto out_close_pipes;
 		slot = morph_array_push(&environment);
 		if (!slot) {
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out_close_pipes;
 		}
 		*slot = (char *)morph_buf_cstr(&value);
 	}
 	char **last = morph_array_push(&environment);
 	if (!last) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_close_pipes;
 	}
 	*last = NULL;
@@ -281,7 +228,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 	argv[client->config.cmd_args_count + 1] = NULL;
 	rc = posix_spawn_file_actions_init(&actions);
 	if (rc != 0) {
-		MORPH_SET_ERR(rc, -rc);
+		rc = (-rc);
 		goto out_close_pipes;
 	}
 	rc = posix_spawn_file_actions_adddup2(&actions, to_child[0], STDIN_FILENO);
@@ -312,7 +259,7 @@ static int mcp_stdio_spawn(struct mcp_client *client)
 		rc = attribute_rc;
 	posix_spawn_file_actions_destroy(&actions);
 	if (rc != 0) {
-		MORPH_SET_ERR(rc, -rc);
+		rc = (-rc);
 		goto out_close_pipes;
 	}
 	arena_destroy(arena);

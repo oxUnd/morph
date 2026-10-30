@@ -49,13 +49,13 @@ static int entry_name_validate(const char *name)
 	size_t len = strlen(name);
 
 	if (len == 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (size_t pos = 0; pos < len;) {
 		unsigned cp;
 		size_t count;
 
 		if (!utf8_decode_codepoint(name + pos, len - pos, &cp, &count))
-			MORPH_RETURN(-EILSEQ);
+			return -EILSEQ;
 		pos += count;
 	}
 	return 0;
@@ -70,10 +70,10 @@ static int list_integer(cJSON *root, const char *key, size_t min,
 		return 0;
 	if (!cJSON_IsNumber(item) || !(item->valuedouble >= (double)min) ||
 	    !(item->valuedouble <= (double)max))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	size_t number = (size_t)item->valuedouble;
 	if ((double)number != item->valuedouble)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*value = number;
 	return 0;
 }
@@ -85,27 +85,27 @@ static int list_options_parse(cJSON *root, struct list_options *opts)
 
 	if (!cJSON_IsObject(root) || !cJSON_IsString(path) ||
 	    entry_name_validate(path->valuestring) < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	opts->path = path->valuestring;
 	opts->limit = FILE_LIST_DEFAULT_LIMIT;
 	opts->max_bytes = FILE_LIST_DEFAULT_BYTES;
 	if (list_integer(root, "limit", 1, FILE_LIST_MAX_LIMIT, &opts->limit) < 0 ||
 	    list_integer(root, "max_bytes", FILE_LIST_MIN_BYTES,
 			 FILE_LIST_MAX_BYTES, &opts->max_bytes) < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!after)
 		return 0;
 	cJSON *name = cJSON_GetObjectItemCaseSensitive(after, "name");
 	cJSON *type = cJSON_GetObjectItemCaseSensitive(after, "type");
 	if (!cJSON_IsObject(after) || !cJSON_IsString(name) || !cJSON_IsString(type))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	const char *kind = type->valuestring;
 	if (strcmp(kind, "dir") && strcmp(kind, "file") && strcmp(kind, "symlink") &&
 	    strcmp(kind, "fifo") && strcmp(kind, "socket") && strcmp(kind, "char") &&
 	    strcmp(kind, "block") && strcmp(kind, "unknown"))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (entry_name_validate(name->valuestring) < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	opts->after.name = name->valuestring;
 	opts->after.type = kind;
 	opts->has_after = 1;
@@ -128,7 +128,7 @@ static const char *entry_type(DIR *directory, const struct dirent *entry, int *e
 #endif
 	struct stat st;
 	if (fstatat(dirfd(directory), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) < 0) {
-		MORPH_SET_ERR(*error, -errno);
+		*error = (-errno);
 		return NULL;
 	}
 	if (S_ISDIR(st.st_mode)) return "dir";
@@ -151,13 +151,13 @@ static int list_keep_entry(morph_array_t *items, const struct list_entry *entry,
 		return 0;
 	char *name = strdup(entry->name);
 	if (!name)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	if (items->nelts < capacity) {
 		struct list_entry *slot = morph_array_push(items);
 		if (!slot) {
 			free(name);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		*slot = *entry;
 		slot->name = name;
@@ -200,13 +200,13 @@ static int list_scan(DIR *directory, const struct list_options *opts,
 		if ((*total % 64) == 0) {
 			int rc = http_wait_cancelable(control, 0);
 			if (rc < 0)
-				MORPH_RETURN(rc);
+				return rc;
 		}
 		errno = 0;
 		struct dirent *entry = readdir(directory);
 		if (!entry) {
 			if (errno)
-				MORPH_RETURN(-errno);
+				return -errno;
 			return 0;
 		}
 		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, ".."))
@@ -215,17 +215,17 @@ static int list_scan(DIR *directory, const struct list_options *opts,
 		struct list_entry candidate = {0};
 		int rc = entry_name_validate(entry->d_name);
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 		candidate.name = entry->d_name;
 		candidate.type = entry_type(directory, entry, &rc);
 		if (!candidate.type)
-			MORPH_RETURN(rc);
+			return rc;
 		if (opts->has_after && entry_compare(&candidate, &opts->after) <= 0)
 			continue;
 		(*eligible)++;
 		rc = list_keep_entry(items, &candidate, opts->limit);
 		if (rc < 0)
-			MORPH_RETURN(rc);
+			return rc;
 	}
 }
 
@@ -255,19 +255,19 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 	if (!out || !entries) {
 		cJSON_Delete(entries);
 		cJSON_Delete(out);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!cJSON_AddItemToObject(out, "entries", entries)) {
 		cJSON_Delete(entries);
 		cJSON_Delete(out);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	qsort(items->elts, items->nelts, items->size, entry_compare);
 	for (size_t i = 0; i < items->nelts; i++) {
 		if ((i % 64) == 0) {
 			const struct http_control *control = result->runtime ?
 				&result->runtime->http : NULL;
-			MORPH_SET_ERR(rc, http_wait_cancelable(control, 0));
+			rc = (http_wait_cancelable(control, 0));
 			if (rc < 0)
 				goto out_free_json;
 		}
@@ -276,7 +276,7 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 		char *json = item ? cJSON_PrintUnformatted(item) : NULL;
 		if (!json) {
 			cJSON_Delete(item);
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out_free_json;
 		}
 		size_t length = strlen(json) + (returned != 0);
@@ -284,14 +284,14 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 		if (bytes + length > opts->max_bytes) {
 			cJSON_Delete(item);
 			if (returned == 0) {
-				MORPH_SET_ERR(rc, -EFBIG);
+				rc = (-EFBIG);
 				goto out_free_json;
 			}
 			break;
 		}
 		if (!cJSON_AddItemToArray(entries, item)) {
 			cJSON_Delete(item);
-			MORPH_SET_ERR(rc, -ENOMEM);
+			rc = (-ENOMEM);
 			goto out_free_json;
 		}
 		bytes += length;
@@ -302,7 +302,7 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 		cJSON_CreateNull();
 	if (!next || !cJSON_AddItemToObject(out, "next_after", next)) {
 		cJSON_Delete(next);
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_json;
 	}
 	if (!cJSON_AddStringToObject(out, "dir_path", opts->path) ||
@@ -311,20 +311,20 @@ static int list_result(const struct list_options *opts, morph_array_t *items,
 	    !cJSON_AddBoolToObject(out, "truncated", more) ||
 	    !cJSON_AddStringToObject(out, "truncation_reason",
 		more ? (returned < items->nelts ? "max_bytes" : "limit") : "")) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_json;
 	}
 	if (more && !cJSON_AddStringToObject(out, "note",
 		"Continue with after=next_after and the same dir_path. "
 		"Directory contents may change between pages.")) {
-		MORPH_SET_ERR(rc, -ENOMEM);
+		rc = (-ENOMEM);
 		goto out_free_json;
 	}
-	MORPH_SET_ERR(rc, tool_result_success(result, out));
+	rc = (tool_result_success(result, out));
 	out = NULL;
 out_free_json:
 	cJSON_Delete(out);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int file_list_exec(const char *args_json, struct tool_result *result, void *user_data)
@@ -338,7 +338,7 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 	DIR *directory = NULL;
 
 	if (!result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	cJSON *root = args_json ? cJSON_Parse(args_json) : NULL;
 	int rc = list_options_parse(root, &opts);
 	if (rc < 0) {
@@ -346,40 +346,40 @@ static int file_list_exec(const char *args_json, struct tool_result *result, voi
 		(void)tool_result_error(result, "invalid_arguments",
 			"Provide dir_path, limit (1..10000), max_bytes (2048..1048576), "
 			"and optional after={name,type} from next_after.");
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	const struct http_control *control = result->runtime ? &result->runtime->http : NULL;
-	MORPH_SET_ERR(rc, http_wait_cancelable(control, 0));
+	rc = (http_wait_cancelable(control, 0));
 	if (rc < 0)
 		goto out_cleanup;
 	if (tctx) {
-		MORPH_SET_ERR(rc, tool_context_authorize_path(tctx, TOOL_PATH_LIST,
+		rc = (tool_context_authorize_path(tctx, TOOL_PATH_LIST,
 							     opts.path, resolved, sizeof(resolved)));
 		if (rc < 0)
 			goto out_cleanup;
 	} else if (strlen(opts.path) >= sizeof(resolved)) {
-		MORPH_SET_ERR(rc, -ENAMETOOLONG);
+		rc = (-ENAMETOOLONG);
 		goto out_cleanup;
 	} else {
 		memcpy(resolved, opts.path, strlen(opts.path) + 1);
 	}
 	directory = opendir(resolved);
 	if (!directory) {
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 		goto out_cleanup;
 	}
 	struct list_entry sample;
-	MORPH_SET_ERR(rc, morph_array_init(&items, opts.limit, sizeof(sample)));
+	rc = (morph_array_init(&items, opts.limit, sizeof(sample)));
 	if (rc < 0)
 		goto out_cleanup;
-	MORPH_SET_ERR(rc, list_scan(directory, &opts, control, &items, &total, &eligible));
+	rc = (list_scan(directory, &opts, control, &items, &total, &eligible));
 	if (rc == 0)
-		MORPH_SET_ERR(rc, http_wait_cancelable(control, 0));
+		rc = (http_wait_cancelable(control, 0));
 	if (closedir(directory) < 0 && rc == 0)
-		MORPH_SET_ERR(rc, -errno);
+		rc = (-errno);
 	directory = NULL;
 	if (rc == 0)
-		MORPH_SET_ERR(rc, list_result(&opts, &items, total, eligible, result));
+		rc = (list_result(&opts, &items, total, eligible, result));
 out_cleanup:
 	if (directory)
 		closedir(directory);
@@ -396,14 +396,14 @@ out_cleanup:
 			morph_strerror(rc);
 		(void)tool_result_error(result, "file_list_failed", message);
 	}
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 {
 	if (!reg)
-		MORPH_RETURN(-EINVAL);
-	MORPH_RETURN(tool_register(reg, &(struct tool_spec){
+		return -EINVAL;
+	return tool_register(reg, &(struct tool_spec){
 		.origin = TOOL_ORIGIN_BUILTIN,
 		.name = "file_list",
 		.description = "List one directory, including hidden and ignored entries. "
@@ -421,5 +421,5 @@ int file_list_init(struct tool_registry *reg, struct tool_context *tctx)
 		.output_schema = TOOL_OBJECT_OUTPUT_SCHEMA,
 		.exec = file_list_exec,
 		.user_data = tctx,
-	}));
+	});
 }

@@ -11,6 +11,9 @@ struct morph_cancel_token {
 	volatile sig_atomic_t cancelled;
 };
 
+/* Concurrent cancellation/read is supported through these accessors only.
+ * Reset requires exclusive ownership after all previous readers have stopped.
+ * A set token is a request to stop, not evidence that any worker has exited. */
 void morph_cancel_token_reset(struct morph_cancel_token *token);
 void morph_cancel_token_cancel(struct morph_cancel_token *token);
 int morph_cancel_token_is_cancelled(const struct morph_cancel_token *token);

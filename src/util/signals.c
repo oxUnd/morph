@@ -21,7 +21,7 @@ int morph_signals_block(void)
 	application_signals(&signals);
 	int error = pthread_sigmask(SIG_BLOCK, &signals, NULL);
 
-	MORPH_RETURN(error ? -error : 0);
+	return error ? -error : 0;
 }
 
 void morph_signals_reset_child(void)
@@ -58,13 +58,13 @@ int morph_signal_listener_start(struct morph_signal_listener *listener,
 				void (*callback)(int, void *), void *user_data)
 {
 	if (!listener || !callback)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(listener, 0, sizeof(*listener));
 	application_signals(&listener->signals);
 	int error = pthread_sigmask(SIG_BLOCK, &listener->signals, &listener->previous);
 
 	if (error)
-		MORPH_RETURN(-error);
+		return -error;
 	struct sigaction disposition = {0};
 
 	disposition.sa_handler = keep_signal_pending;
@@ -72,7 +72,7 @@ int morph_signal_listener_start(struct morph_signal_listener *listener,
 	if (sigaction(SIGWINCH, &disposition, &listener->previous_winch) != 0) {
 		error = errno;
 		(void)pthread_sigmask(SIG_SETMASK, &listener->previous, NULL);
-		MORPH_RETURN(-error);
+		return -error;
 	}
 	listener->callback = callback;
 	listener->user_data = user_data;
@@ -80,7 +80,7 @@ int morph_signal_listener_start(struct morph_signal_listener *listener,
 	if (error) {
 		(void)sigaction(SIGWINCH, &listener->previous_winch, NULL);
 		(void)pthread_sigmask(SIG_SETMASK, &listener->previous, NULL);
-		MORPH_RETURN(-error);
+		return -error;
 	}
 	listener->started = 1;
 	return 0;

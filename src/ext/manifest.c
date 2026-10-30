@@ -59,13 +59,13 @@ static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr
 	if (arr.type == TOML_UNKNOWN)
 		return 0;
 	if (arr.type != TOML_ARRAY || !permissions)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	for (int i = 0; i < arr.u.arr.size; i++) {
 		toml_datum_t item = arr.u.arr.elem[i];
 		int found = 0;
 
 		if (item.type != TOML_STRING)
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		for (size_t j = 0; j < sizeof(capabilities) /
 					      sizeof(capabilities[0]); j++) {
 			if (strcmp(item.u.s, capabilities[j].name) == 0) {
@@ -79,7 +79,7 @@ static int parse_sandbox_capabilities(struct morph_log *logger, toml_datum_t arr
 		}
 		if (!found) {
 			log_err(logger, "unknown sandbox capability: %s", item.u.s);
-			MORPH_RETURN(-EINVAL);
+			return -EINVAL;
 		}
 	}
 	return 0;
@@ -170,7 +170,7 @@ static int manifest_parse_table(struct morph_log *logger, toml_datum_t tbl,
 	parse_string_list(ap, &out->allowed_paths, &out->allowed_paths_count);
 	if (named_filesystem && out->allowed_paths_count == 0) {
 		log_err(logger, "filesystem capability requires allowed_paths");
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	MGET_INT("max_memory_mb", out->max_memory_mb);
 	MGET_INT("max_cpu_seconds", out->max_cpu_seconds);
@@ -226,7 +226,7 @@ int manifest_parse(struct morph_log *logger, const char *toml_data, struct ext_m
 	if (!parsed.ok) {
 		log_err(logger, "manifest parse error: %s", parsed.errmsg);
 		toml_free(parsed);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 
 	int rc = manifest_parse_table(logger, parsed.toptab, out);
@@ -244,13 +244,13 @@ int manifest_parse_file(struct morph_log *logger, const char *path, struct ext_m
 		return -EINVAL;
 	file = fopen(path, "r");
 	if (!file)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	parsed = toml_parse_file(file);
 	fclose(file);
 	if (!parsed.ok) {
 		log_err(logger, "manifest parse error in %s: %s", path, parsed.errmsg);
 		toml_free(parsed);
-		MORPH_RETURN(MORPH_ERR_PARSE);
+		return MORPH_ERR_PARSE;
 	}
 
 	rc = manifest_parse_table(logger, parsed.toptab, out);

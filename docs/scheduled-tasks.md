@@ -48,7 +48,13 @@ Tasks 系统用于处理“现在不能立即完成、需要稍后或周期性�
 
 ## 数据模型
 
-现有表结构继续保留，避免过早迁移：
+任务 claim 以状态、到期时间及旧 run_token 条件更新，并生成新的运行身份。
+完成必须匹配当前 running 状态和身份；运行中取消、更新或旧执行者迟到返回
+`-ESTALE`，不能覆写新状态。执行器在事务外运行，完成状态与通知在同一短
+SAVEPOINT 中提交。事件回调失败会记录诊断，不使已提交任务重新执行；通知可从
+inbox 查询。这些保证不等于外部副作用 exactly-once，也没有引入租约或心跳。
+
+保留现有任务和通知结构；兼容迁移补充运行身份 `run_token`：
 
 ```text
 scheduled_tasks
@@ -69,6 +75,7 @@ scheduled_tasks
 - last_error
 - created_at
 - updated_at
+- run_token
 
 notifications
 - id

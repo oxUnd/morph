@@ -15,7 +15,7 @@ int tool_path_policy_init(struct tool_context *tctx)
 		return 0;
 	arena = arena_create(0);
 	if (!arena)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cfg.path_policy_enabled = 1;
 	cfg.allow_temp = 1;
 	rc = sandbox_prepare_tool_paths(&cfg, arena);

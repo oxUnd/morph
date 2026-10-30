@@ -169,11 +169,11 @@ static int runtime_apply_system_prompt(struct react_context *react,
 	int rc;
 
 	if (!react || !config)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_prompt_load(react ? react->logger : NULL, config->prompt.system_prompt_file,
 			       config->prompt.system_prompt_dir, &content);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	free(react->system_prompt);
 	react->system_prompt = content;
 	react->system_prompt_replace =
@@ -223,6 +223,11 @@ static void runtime_apply_guardrails(struct react_context *react,
 					strcmp(cr->ext_type, "exec") == 0 ?
 					NULL : cr->ext_type,
 					cr->ext_entry, cr->action_text);
+		struct guardrail_rule *configured =
+			guardrail_rule_lookup(&react->guardrail, cr->name);
+		if (configured != NULL) {
+			configured->block_on_error = !strcmp(cr->on_error, "block");
+		}
 		if (strcmp(cr->ext_type, "so") == 0) {
 			struct guardrail_rule *r =
 				guardrail_rule_lookup(&react->guardrail,
@@ -259,7 +264,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 			"unsupported image adapter '%s' for provider '%s'",
 			config->models.image.adapter[0] ? config->models.image.adapter : "(auto)",
 			config->models.image.provider);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	if (config->models.video.model[0] &&
 	    !video_gen_adapter_supported(config->models.video.provider,
@@ -268,7 +273,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 			"unsupported video adapter '%s' for provider '%s'",
 			config->models.video.adapter[0] ? config->models.video.adapter : "(auto)",
 			config->models.video.provider);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	memset(models, 0, sizeof(*models));
 	tool_registry_init(profile ? profile->logger : NULL, profile->tools);
@@ -347,7 +352,7 @@ int runtime_bootstrap_models(struct runtime_bootstrap_profile *profile)
 	int prompt_rc = runtime_apply_system_prompt(models->react, config);
 	if (prompt_rc != 0) {
 		runtime_bootstrap_cleanup_models(models);
-		MORPH_RETURN(prompt_rc);
+		return prompt_rc;
 	}
 	models->text = runtime_create_model(profile->logger, &config->models.text, 0);
 	/* Background extraction must not mutate the foreground model or bill its turn. */
@@ -446,7 +451,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 	    !permission_profile) {
 		log_err(profile ? profile->logger : NULL, "active permission profile not found: %s",
 			config->react.permission_active_profile);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	if (permission_profile) {
 		for (int i = 0;
@@ -480,7 +485,7 @@ int runtime_bootstrap_tools(struct runtime_bootstrap_profile *profile)
 		char *dir = file_expand_path(config->skill.dir);
 
 		if (!dir)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		rc = file_ensure_dir(dir);
 		if (rc == 0)
 			rc = tool_context_add_builtin_path(tctx, TOOL_PATH_READ, dir);
@@ -627,7 +632,7 @@ int runtime_bootstrap_sub_agents(struct runtime_bootstrap_profile *profile,
 	rc = sub_agent_runtime_load_config(rt, &profile->config->sub_agents);
 	if (rc < 0) {
 		sub_agent_runtime_destroy(rt);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	sub_agent_tools_register_all(profile->tools, rt);
 	profile->models->react->sub_agent_depth = 0;
@@ -660,6 +665,9 @@ void runtime_bootstrap_cleanup_models(struct runtime_models *models)
 {
 	if (!models)
 		return;
+	if (models->react) {
+		react_context_destroy(models->react);
+	}
 	if (models->memory_text)
 		model_destroy(models->memory_text);
 	if (models->text)
@@ -670,8 +678,6 @@ void runtime_bootstrap_cleanup_models(struct runtime_models *models)
 		model_destroy(models->image);
 	if (models->video)
 		model_destroy(models->video);
-	if (models->react)
-		react_context_destroy(models->react);
 	if (models->tokenizer)
 		tokenizer_destroy(models->tokenizer);
 	memset(models, 0, sizeof(*models));
@@ -693,6 +699,10 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		(*r->react)->sub_agent_info_count = 0;
 		react_context_destroy(*r->react);
 		*r->react = NULL;
+	}
+	if (r->sub_agents && *r->sub_agents) {
+		sub_agent_runtime_destroy(*r->sub_agents);
+		*r->sub_agents = NULL;
 	}
 	if (r->tokenizer && *r->tokenizer) {
 		tokenizer_destroy(*r->tokenizer);
@@ -725,10 +735,7 @@ void runtime_bootstrap_cleanup(struct runtime_shutdown_resources *r)
 		model_destroy(*r->video);
 		*r->video = NULL;
 	}
-	if (r->sub_agents && *r->sub_agents) {
-		sub_agent_runtime_destroy(*r->sub_agents);
-		*r->sub_agents = NULL;
-	}
+
 	if (r->skills && *r->skills) {
 		skill_registry_cleanup(*r->skills);
 		if (r->free_skill_registry) {

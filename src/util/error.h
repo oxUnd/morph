@@ -35,61 +35,22 @@ const char *morph_errname(morph_err_t err);
 int morph_err_is_errno(morph_err_t err);
 int morph_err_is_domain(morph_err_t err);
 
-/* Context-free returns never emit diagnostics. Pass an owned logger explicitly
- * with the _LOG variants to retain source locations in Debug file logs.
- * Release builds do not evaluate the logger expression. */
-#ifdef DEBUG
-#include "log.h"
+struct morph_log;
 
-#define MORPH_RETURN_LOG(logger, code)                                                 \
-	do {                                                                          \
-		morph_err_t _rc_ = (code);                                             \
-		if (_rc_ < 0) {                                                       \
-			int _saved_errno_ = errno;                                    \
-			log_diagnostic((logger), "MORPH_RETURN: %s (%s:%d)",            \
-				morph_strerror(_rc_), __FILE__, __LINE__);              \
-			errno = _saved_errno_;                                        \
-		}                                                                     \
-		return _rc_;                                                          \
-	} while (0)
+/* Capture errno at the failing operation, before cleanup can overwrite it. */
+static inline morph_err_t morph_error_from_errno(int captured_errno)
+{
+	return captured_errno ? -captured_errno : -EIO;
+}
 
-#define MORPH_SET_ERR_LOG(logger, var, code)                                           \
-	do {                                                                          \
-		morph_err_t _rc_ = (code);                                             \
-		(var) = _rc_;                                                         \
-		if (_rc_ < 0) {                                                       \
-			int _saved_errno_ = errno;                                    \
-			log_diagnostic((logger), "MORPH_SET_ERR: %s (%s:%d)",           \
-				morph_strerror(_rc_), __FILE__, __LINE__);              \
-			errno = _saved_errno_;                                        \
-		}                                                                     \
-	} while (0)
-#else
-#define MORPH_RETURN_LOG(logger, code) return (code)
-#define MORPH_SET_ERR_LOG(logger, var, code) ((var) = (code))
-#endif
+/* Return the code unchanged; tracing is controlled by the explicit logger's level.
+ * All arguments are evaluated once in every build configuration. */
+morph_err_t morph_error_trace(struct morph_log *logger, morph_err_t code,
+			      const char *file, int line);
 
-#define MORPH_RETURN(code) MORPH_RETURN_LOG(NULL, code)
-#define MORPH_SET_ERR(var, code) MORPH_SET_ERR_LOG(NULL, var, code)
-
-#define MORPH_RETURN_ERRNO_LOG(logger)                                                \
-	do {                                                                          \
-		int _err_ = errno;                                                    \
-		if (_err_ == 0)                                                       \
-			_err_ = EIO;                                                  \
-		MORPH_RETURN_LOG(logger, -_err_);                                      \
-	} while (0)
-
-#define MORPH_SET_ERRNO_LOG(logger, var)                                               \
-	do {                                                                          \
-		int _err_ = errno;                                                    \
-		if (_err_ == 0)                                                       \
-			_err_ = EIO;                                                  \
-		MORPH_SET_ERR_LOG(logger, var, -_err_);                                \
-	} while (0)
-
-#define MORPH_RETURN_ERRNO() MORPH_RETURN_ERRNO_LOG(NULL)
-#define MORPH_SET_ERRNO(var) MORPH_SET_ERRNO_LOG(NULL, var)
+/* This expression only supplies the call-site location; it never returns or assigns. */
+#define MORPH_TRACE_ERROR(logger, code) \
+	morph_error_trace((logger), (code), __FILE__, __LINE__)
 
 #ifdef __cplusplus
 }

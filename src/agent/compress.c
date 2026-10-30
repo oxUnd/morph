@@ -211,7 +211,7 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 		if (morph_buf_printf(&text_buf, "[%s]: %s\n",
 				     cur->role, cur->content) != 0) {
 			morph_buf_cleanup(&text_buf);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		split = cur;
 		idx++;
@@ -228,19 +228,19 @@ int compress_summarize(struct message_list **head, int keep_rounds,
 	morph_buf_cleanup(&text_buf);
 	if (rc < 0 || !summary || !summary[0]) {
 		free(summary);
-		MORPH_RETURN(rc < 0 ? rc : MORPH_ERR_PROTOCOL);
+		return rc < 0 ? rc : MORPH_ERR_PROTOCOL;
 	}
 
 	struct message_list *summary_msg = arena_alloc(session, sizeof(*summary_msg));
 	if (!summary_msg) {
 		free(summary);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	summary_msg->role = arena_strdup(session, "system");
 	summary_msg->content = arena_strdup(session, summary);
 	free(summary);
 	if (!summary_msg->role || !summary_msg->content)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	summary_msg->token_count = tokenizer_estimate_tokens(summary_msg->content);
 	summary_msg->is_reference = 1;
 

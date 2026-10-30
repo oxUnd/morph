@@ -111,7 +111,8 @@ protected:
 		std::string json = "{\"permissions\":{\"file_system\":" + permissions +
 			"},\"scope\":\"" + scope +
 			"\",\"justification\":\"Maintain project files\"}";
-		ASSERT_EQ(tool_exec(&registry, "request_permissions", json.c_str(), &result), 0);
+		int rc = tool_exec(&registry, "request_permissions", json.c_str(), &result);
+		EXPECT_EQ(rc == 0, cJSON_IsTrue(cJSON_GetObjectItem(result.envelope, "ok")));
 		ASSERT_EQ(tool_result_finalize(&result), 0);
 	}
 

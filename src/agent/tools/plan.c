@@ -468,7 +468,7 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 	if (!goal || !step_descs || max_steps <= 0)
 		return -EINVAL;
 	if (!llm || !llm->chat || !llm->api_key[0])
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 
 	char prompt[2048];
 	snprintf(prompt, sizeof(prompt),
@@ -507,12 +507,12 @@ static int auto_decompose(const struct tool_runtime_context *runtime, struct mod
 
 	if (status < 0 || buf.len == 0) {
 		morph_buf_cleanup(&buf);
-		MORPH_RETURN(MORPH_ERR_LLM);
+		return MORPH_ERR_LLM;
 	}
 
 	char *text = morph_buf_detach(&buf);
 	if (!text)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	int count = parse_steps_from_text(text, step_descs, max_steps);
 	free(text);
 	return count;
@@ -531,7 +531,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 	if (!result)
 		return -EINVAL;
 	if (!ctx || !ctx->plans)
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 
 	cJSON *root = cJSON_Parse(args_json);
 	if (!root) {
@@ -591,7 +591,7 @@ static int plan_tool_exec_inner(const char *args_json, struct tool_result *resul
 				cJSON_Delete(root);
 				(void)tool_result_success_json_text(result, strdup(
 					"{\"error\":\"auto-decompose failed\"}"));
-				MORPH_RETURN(rc);
+				return rc;
 			}
 			if (rc > 0) {
 				step_count = rc;
@@ -802,13 +802,13 @@ static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 	int fd;
 	int rc;
 	if (!ctx->tctx || !path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = tool_context_authorize_path(ctx->tctx, TOOL_PATH_READ, path, resolved, PATH_MAX);
 	if (rc != 0)
 		return rc;
 	fd = open(resolved, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
 	if (fd < 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (fstat(fd, &st) != 0) {
 		rc = -errno;
 		close(fd);
@@ -816,7 +816,7 @@ static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 	}
 	if (!S_ISREG(st.st_mode) || st.st_size > 64 * 1024 * 1024) {
 		close(fd);
-		MORPH_RETURN(-EFBIG);
+		return -EFBIG;
 	}
 	sha256_init(&hash);
 	size_t total = 0;
@@ -834,7 +834,7 @@ static int plan_file_digest(struct plan_tool_context *ctx, const char *path,
 		total += (size_t)n;
 		if (total > 64u * 1024u * 1024u) {
 			close(fd);
-			MORPH_RETURN(-EFBIG);
+			return -EFBIG;
 		}
 		sha256_update(&hash, buf, (size_t)n);
 	}
@@ -857,14 +857,14 @@ static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args,
 	if (!cJSON_IsArray(files) || cJSON_GetArraySize(files) < 1 ||
 	    cJSON_GetArraySize(files) > 16 || !report || !outcome ||
 	    (strcmp(outcome, "passed") && strcmp(outcome, "failed")))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	state = cJSON_CreateObject();
 	inputs = state ? cJSON_AddArrayToObject(state, "inputs") : NULL;
 	if (!inputs || !cJSON_AddStringToObject(state, "status", "current") ||
 	    !cJSON_AddStringToObject(state, "outcome", outcome) ||
 	    !cJSON_AddStringToObject(state, "report", report)) {
 		cJSON_Delete(state);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	/* Include the report itself so replacing its contents invalidates reuse. */
 	for (int i = -1; i < cJSON_GetArraySize(files); i++) {
@@ -900,7 +900,7 @@ static int plan_capture_report(struct plan_tool_context *ctx, const cJSON *args,
 	}
 	free(text);
 	cJSON_Delete(state);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 void plan_tool_set_context(struct tool_registry *reg, struct tool_context *tctx)
@@ -944,7 +944,7 @@ static int plan_refresh_reports(struct plan_tool_context *ctx)
 			char *text = cJSON_PrintUnformatted(state);
 			if (!text) {
 				cJSON_Delete(state);
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			}
 			snprintf(p->verification, sizeof(p->verification), "%s", text);
 			free(text);
@@ -976,7 +976,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	int rc;
 	if (!ctx || !ctx->plans || !command) {
 		cJSON_Delete(args);
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	}
 	rc = plan_refresh_reports(ctx);
 	if (rc != 0) {
@@ -986,7 +986,7 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	before = plan_registry_json(ctx->plans);
 	if (!before) {
 		cJSON_Delete(args);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!strcmp(command, "checkpoint") || !strcmp(command, "verify"))
 		rc = 0;
@@ -1069,13 +1069,13 @@ static int plan_tool_exec_checked(const char *args_json, struct tool_result *res
 	cJSON_Delete(state);
 	cJSON_Delete(before);
 	cJSON_Delete(args);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static int plan_tool_exec(const char *args_json, struct tool_result *result, void *user_data)
 {
 	struct plan_tool_context *ctx = user_data;
-	if (!ctx) MORPH_RETURN(-EINVAL);
+	if (!ctx) return -EINVAL;
 	pthread_mutex_lock(&ctx->mutex);
 	int rc = plan_tool_exec_checked(args_json, result, user_data);
 	pthread_mutex_unlock(&ctx->mutex);
@@ -1092,7 +1092,7 @@ int plan_tool_init(struct tool_registry *reg, struct plan_registry *plans,
 	if (!ctx)
 		return -ENOMEM;
 	int mutex_rc = pthread_mutex_init(&ctx->mutex, NULL);
-	if (mutex_rc != 0) { free(ctx); MORPH_RETURN(-mutex_rc); }
+	if (mutex_rc != 0) { free(ctx); return -mutex_rc; }
 	ctx->tctx = NULL;
 	ctx->plans = plans;
 	ctx->llm = llm;

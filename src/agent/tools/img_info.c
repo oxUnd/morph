@@ -66,7 +66,7 @@ static int img_info_exec(const char *args_json, struct tool_result *result, void
 	if (!stbi_info(resolved_path, &w, &h, &ch)) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"not a valid image\"}"));
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 
 	cJSON *out = cJSON_CreateObject();

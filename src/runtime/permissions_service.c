@@ -22,7 +22,7 @@ static int collect_permission(const struct permission_grant *grant,
 
 	item = morph_array_push(&state->grants);
 	if (!item)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	memset(item, 0, sizeof(*item));
 	item->id = grant->id;
 	item->created_at = grant->created_at;
@@ -45,12 +45,12 @@ int runtime_permission_list(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !out || !count)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = NULL;
 	*count = 0;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tctx->grant_project_root[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	rc = morph_array_init(&state.grants, 8,
 			      sizeof(struct runtime_permission_grant));
 	if (rc != 0)
@@ -91,10 +91,10 @@ int runtime_permission_revoke_id(struct runtime *runtime, int64_t id,
 	int rc;
 
 	if (!runtime || !deleted || id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tctx->grant_project_root[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = permission_grant_delete_id(&runtime->context.database,
 					tctx->grant_project_root,
@@ -111,10 +111,10 @@ int runtime_permission_revoke_subject(struct runtime *runtime,
 	int rc;
 
 	if (!runtime || !subject || !*subject || !deleted)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tctx->grant_project_root[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	rc = permission_grant_delete_subject(&runtime->context.database,
 					     tctx->grant_project_root,
@@ -131,10 +131,10 @@ int runtime_permission_clear(struct runtime *runtime, int all_projects,
 	int rc;
 
 	if (!runtime || !deleted)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	tctx = runtime->context.tctx;
 	if (!tctx || !tctx->grant_project_root[0])
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	pthread_mutex_lock(&runtime->context.execution_lock);
 	if (all_projects)
 		rc = permission_grant_clear_all(&runtime->context.database,

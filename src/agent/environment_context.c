@@ -126,7 +126,7 @@ static int xml_field(morph_buf_t *out, const char *name, const char *value)
 		remaining -= bytes;
 	}
 	if (out->failed)
-		MORPH_RETURN(out->failed);
+		return out->failed;
 	if (out->len == content_start)
 		return morph_buf_truncate(out, start);
 	return morph_buf_printf(out, "</%s>\n", name);
@@ -137,7 +137,7 @@ int environment_context_render(const struct environment_context *ctx,
 {
 	int rc;
 	if (!ctx || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	const struct { const char *name; const char *value; } fields[] = {
 		{ "cwd", ctx->cwd },
 		{ "shell", shell_name(ctx->shell) },
@@ -169,7 +169,7 @@ static void *collect_alloc(struct environment_collector *collector, size_t size)
 	void *result = arena_alloc(collector->arena, size);
 
 	if (!result)
-		MORPH_SET_ERR(collector->error, -ENOMEM);
+		collector->error = (-ENOMEM);
 	return result;
 }
 #endif
@@ -182,7 +182,7 @@ static const char *copy_value(struct environment_collector *collector, const cha
 		return NULL;
 	copy = arena_strdup(collector->arena, value);
 	if (!copy)
-		MORPH_SET_ERR(collector->error, -ENOMEM);
+		collector->error = (-ENOMEM);
 	return copy;
 }
 
@@ -257,7 +257,7 @@ static const char *join_path(struct environment_collector *collector, const char
 	if (rc == 0)
 		rc = morph_buf_printf(&buf, "%s/%s", base, name);
 	if (rc != 0) {
-		MORPH_SET_ERR(collector->error, rc);
+		collector->error = (rc);
 		return NULL;
 	}
 	return morph_buf_cstr(&buf);
@@ -492,7 +492,7 @@ int environment_context_collect(struct environment_context *out,
 	int have_local;
 
 	if (!out || !arena)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(out, 0, sizeof(*out));
 	out->cwd = full_path(collector, input ? input->cwd : NULL);
 	if (out->cwd && path_kind(collector, out->cwd) != 2)
@@ -538,11 +538,11 @@ int environment_context_collect(struct environment_context *out,
 		if (rc == 0)
 			rc = morph_buf_printf(&buf, "UTC%.3s:%.2s", offset, offset + 3);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		out->timezone = morph_buf_cstr(&buf);
 	}
 	collect_git(out, collector);
 	if (collector->error)
-		MORPH_RETURN(collector->error);
+		return collector->error;
 	return 0;
 }

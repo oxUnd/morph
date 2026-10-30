@@ -21,7 +21,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 	int rc;
 
 	if (!input || !result || !tool_context)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = patch_apply(tool_context_workdir(tool_context), input,
 			 &patch_result, error, sizeof(error));
 	if (rc != 0) {
@@ -36,7 +36,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 		cJSON_Delete(data);
 		cJSON_Delete(files);
 		patch_result_cleanup(&patch_result);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddBoolToObject(data, "changed", 1);
 	cJSON_AddStringToObject(data, "workspace_root",
@@ -50,7 +50,7 @@ static int apply_patch_exec(const char *input, struct tool_result *result,
 		if (!item) {
 			cJSON_Delete(data);
 			patch_result_cleanup(&patch_result);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddStringToObject(item, "path", change->path);
 		cJSON_AddStringToObject(item, "action",
@@ -89,10 +89,10 @@ int apply_patch_init(struct tool_registry *registry,
 		"%import common.NEWLINE\"}";
 
 	if (!registry || !tool_context)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	workspace_root = tool_context_workdir(tool_context);
 	if (!workspace_root || !workspace_root[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_buf_init(&description, 1024);
 	if (rc != 0)
 		return rc;

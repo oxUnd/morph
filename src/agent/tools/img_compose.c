@@ -211,7 +211,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 	if (!ctx || !ctx->image_llm || !ctx->image_llm->api_key[0]) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"no image model configured\"}"));
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 
 	cJSON *owned = NULL;
@@ -302,7 +302,7 @@ static int img_compose_exec(const char *args_json, struct tool_result *result,
 			cJSON_Delete(owned);
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load target image\"}"));
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 
 	cJSON *labels = cJSON_CreateArray();

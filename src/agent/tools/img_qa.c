@@ -55,10 +55,10 @@ static int img_qa_take_call_error(struct tool_result *result,
 	int rc;
 
 	if (!result)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	root = cJSON_CreateObject();
 	if (!root)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	cJSON_AddStringToObject(root, "error", "image QA LLM call failed");
 	if (llm && llm->last_error[0])
 		cJSON_AddStringToObject(root, "detail", llm->last_error);
@@ -69,7 +69,7 @@ static int img_qa_take_call_error(struct tool_result *result,
 	json = cJSON_PrintUnformatted(root);
 	cJSON_Delete(root);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = tool_result_success_json_text(result, json);
 	if (rc < 0)
 		free(json);
@@ -107,7 +107,7 @@ static int img_qa_exec(const char *args_json, struct tool_result *result,
 	if (!llm || !llm->api_key[0]) {
 		(void)tool_result_success_json_text(result,
 			strdup("{\"error\":\"no multimodal LLM configured\"}"));
-		MORPH_RETURN(MORPH_ERR_NOT_CONFIGURED);
+		return MORPH_ERR_NOT_CONFIGURED;
 	}
 	if (!llm->chat_with_image) {
 		(void)tool_result_success_json_text(result,

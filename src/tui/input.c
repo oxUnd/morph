@@ -39,7 +39,7 @@ static int sequence_key(const char *sequence)
 int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 {
 	if (!input)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	input->deadline_ms = 0;
 	if (byte == 27) {
 		input->state = INPUT_ESCAPE;
@@ -78,7 +78,7 @@ int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 int morph_tui_input_expire(struct morph_tui_input *input)
 {
 	if (!input)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	int key = input->state == INPUT_ESCAPE ? 27 : 0;
 
 	input->state = INPUT_TEXT;
@@ -92,7 +92,7 @@ static int monotonic_ms(int64_t *value)
 	struct timespec now;
 
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-		MORPH_RETURN(-errno);
+		return -errno;
 	*value = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 	return 0;
 }
@@ -109,13 +109,13 @@ int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeou
 	int64_t now;
 
 	if (!input)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (input_fd < 0)
-		MORPH_RETURN(-EBADF);
+		return -EBADF;
 	int rc = monotonic_ms(&now);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	int64_t deadline = timeout_ms < 0 ? INT64_MAX : now + timeout_ms;
 
 	for (;;) {
@@ -135,15 +135,15 @@ int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeou
 		int ready = poll(&fd, 1, wait);
 
 		if (ready < 0)
-			MORPH_RETURN(-errno);
+			return -errno;
 		if (fd.revents & POLLNVAL)
-			MORPH_RETURN(-EBADF);
+			return -EBADF;
 		if (ready) {
 			unsigned char byte;
 			ssize_t count = read(input_fd, &byte, sizeof(byte));
 
 			if (count < 0)
-				MORPH_RETURN(-errno);
+				return -errno;
 			if (!count) {
 				int key = morph_tui_input_expire(input);
 
@@ -156,7 +156,7 @@ int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeou
 		}
 		rc = monotonic_ms(&now);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		if (ready)
 			input->deadline_ms = now + MORPH_TUI_ESCAPE_TIMEOUT_MS;
 		if (!ready && input->state != INPUT_TEXT && now >= input->deadline_ms)

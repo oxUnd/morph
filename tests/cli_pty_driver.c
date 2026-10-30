@@ -15,7 +15,7 @@ static int replay_feed(const char *path)
 	int rc;
 
 	if (!input)
-		MORPH_RETURN(-errno);
+		return -errno;
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	ctx.presentation_ready = 1;
 	ctx.turn_active = 1;
@@ -30,7 +30,7 @@ static int replay_feed(const char *path)
 
 		if (!cJSON_IsString(name)) {
 			cJSON_Delete(json);
-			MORPH_SET_ERR(rc, MORPH_ERR_PARSE);
+			rc = (MORPH_ERR_PARSE);
 			break;
 		}
 		event.name = name->valuestring;

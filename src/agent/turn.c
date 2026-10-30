@@ -40,7 +40,7 @@ static const char *turn_id_value(const struct agent_turn *turn)
 static void turn_set_first_error(int *rc, int err)
 {
 	if (err < 0 && *rc == 0)
-		MORPH_SET_ERR(*rc, err);
+		*rc = (err);
 }
 
 static int turn_emit_background(const struct agent_session_runtime *runtime,
@@ -58,7 +58,7 @@ static int turn_validate_runtime(const struct agent_session_runtime *runtime)
 {
 	if (!runtime || !runtime->db || !runtime->db->handle ||
 	    runtime->session_id <= 0 || !runtime->react)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -100,7 +100,7 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 	runtime->react->history_items = model_history_list(
 		runtime->db, runtime->session_id, 1, &count);
 	if (!runtime->react->history_items && count != 0)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 
 	count = 0;
 	list = message_list(runtime->db, runtime->session_id, &count);
@@ -112,7 +112,7 @@ int agent_session_load_history(const struct agent_session_runtime *runtime)
 				    cur->content, cur->token_count);
 		if (!m) {
 			message_free_list(list);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		m->compressed = cur->compressed;
 		msg_list_append(&runtime->react->messages, m);
@@ -148,7 +148,7 @@ int agent_turn_begin(struct agent_turn *turn,
 	int rc;
 
 	if (!turn || !input || !input->model_input)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	memset(turn, 0, sizeof(*turn));
 
 	rc = turn_validate_runtime(runtime);
@@ -252,47 +252,47 @@ static int turn_save_trace(struct agent_turn *turn)
 
 	arr = cJSON_CreateArray();
 	if (!arr)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	cur = turn->runtime.react->steps;
 	while (cur) {
 		cJSON *obj = cJSON_CreateObject();
 		if (!obj) {
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (!cJSON_AddStringToObject(obj, "type",
 					     react_step_type_name(cur->type))) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (cur->content &&
 		    !cJSON_AddStringToObject(obj, "content", cur->content)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (cur->tool_name &&
 		    !cJSON_AddStringToObject(obj, "tool_name",
 					     cur->tool_name)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (cur->tool_args &&
 		    !cJSON_AddStringToObject(obj, "tool_args",
 					     cur->tool_args)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (cur->tool_call_id &&
 		    !cJSON_AddStringToObject(obj, "tool_call_id",
 					     cur->tool_call_id)) {
 			cJSON_Delete(obj);
 			cJSON_Delete(arr);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		if (cur->error_code < 0)
 			cJSON_AddNumberToObject(obj, "error_code",
@@ -311,7 +311,7 @@ static int turn_save_trace(struct agent_turn *turn)
 	json = cJSON_PrintUnformatted(arr);
 	cJSON_Delete(arr);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	round_no = trace_get_next_round_no(turn->runtime.db,
 					   turn->runtime.session_id);
@@ -404,7 +404,7 @@ static int turn_persist_assistant(struct agent_turn *turn,
 
 	*assistant_for_memory = rendered ? rendered : strdup(answer);
 	if (!*assistant_for_memory)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	return 0;
 }
 
@@ -544,9 +544,9 @@ int agent_turn_finish(struct agent_turn *turn, struct agent_turn_result *result)
 	int step_rc;
 
 	if (!turn || !turn->begun)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (turn->finished)
-		MORPH_RETURN(-EALREADY);
+		return -EALREADY;
 	step_rc = turn_validate_runtime(&turn->runtime);
 	if (step_rc != 0)
 		return step_rc;

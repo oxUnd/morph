@@ -40,18 +40,18 @@ static int emit_option_event(const char *name, const char *phase,
 	if (!data || !args) {
 		cJSON_Delete(data);
 		cJSON_Delete(args);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(data, "command", command) ||
 	    !cJSON_AddStringToObject(data, "input", command)) {
 		cJSON_Delete(args);
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (output && !cJSON_AddStringToObject(data, "output", output)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	event = (struct morph_event){
 		.type = MORPH_EVENT_COMMAND,
@@ -64,7 +64,7 @@ static int emit_option_event(const char *name, const char *phase,
 	json = morph_event_to_json_string(&event);
 	cJSON_Delete(data);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = cli_write_ndjson(json);
 	free(json);
 	return rc;

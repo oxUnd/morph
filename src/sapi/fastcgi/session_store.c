@@ -154,7 +154,7 @@ static int init_default_quota_profiles(sqlite3 *db)
 	if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
 		fprintf(stderr, "fcgi quota profiles: %s\n", err ? err : "?");
 		sqlite3_free(err);
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	}
 	return 0;
 }
@@ -248,7 +248,7 @@ int store_create_user(struct session_store *s, const char *username,
 	int rc;
 
 	if (!s || !username_valid(username) || !password || strlen(password) < 8)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = fcgi_random_id("usr_", user_id, sizeof(user_id));
 	if (rc < 0)
 		return rc;
@@ -257,7 +257,7 @@ int store_create_user(struct session_store *s, const char *username,
 		return rc;
 
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, username, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, hash, -1, SQLITE_TRANSIENT);
@@ -267,21 +267,21 @@ int store_create_user(struct session_store *s, const char *username,
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc == SQLITE_CONSTRAINT)
-		MORPH_RETURN(-EEXIST);
+		return -EEXIST;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 
 	profile = role && strcmp(role, "admin") == 0 ? "admin" : "free";
 	sql = "INSERT OR REPLACE INTO fcgi_user_quota(user_id,profile)"
 	      " VALUES(?,?)";
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, profile, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 
 	sql = "INSERT OR IGNORE INTO fcgi_usage_storage(user_id,used_bytes)"
 	      " VALUES(?,0)";
@@ -365,13 +365,13 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 	char *json = NULL;
 
 	if (!s || !user_id || !out_json)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &stmt, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(stmt, 1, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt) != SQLITE_ROW) {
 		sqlite3_finalize(stmt);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 
 	root = cJSON_CreateObject();
@@ -386,7 +386,7 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 		cJSON_Delete(conc);
 		cJSON_Delete(credits);
 		sqlite3_finalize(stmt);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	cJSON_AddStringToObject(root, "profile",
 		(const char *)sqlite3_column_text(stmt, 0));
@@ -439,7 +439,7 @@ int store_user_quota_json(struct session_store *s, const char *user_id,
 	cJSON_Delete(root);
 	sqlite3_finalize(stmt);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -473,7 +473,7 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 	int64_t now = now_unix();
 
 	if (!s || !user_id || !session_id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = fcgi_random_id("turn_", turn_id, sizeof(turn_id));
 	if (rc < 0)
 		return rc;
@@ -486,7 +486,7 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 	if (sqlite3_step(st) != SQLITE_ROW) {
 		sqlite3_finalize(st);
 		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 	daily_limit = sqlite3_column_int(st, 0);
 	concurrent_limit = sqlite3_column_int(st, 1);
@@ -496,11 +496,11 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 
 	if (daily_limit >= 0 && used_turns >= daily_limit) {
 		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		MORPH_RETURN(-EDQUOT);
+		return -EDQUOT;
 	}
 	if (concurrent_limit >= 0 && running >= concurrent_limit) {
 		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	}
 
 	if (sqlite3_prepare_v2(s->db.handle, usql, -1, &st, NULL) != SQLITE_OK)
@@ -530,7 +530,7 @@ int store_quota_begin_turn(struct session_store *s, const char *user_id,
 
 fail:
 	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-	MORPH_RETURN(-EIO);
+	return -EIO;
 }
 
 void store_quota_end_turn(struct session_store *s, const char *turn_id)
@@ -607,12 +607,12 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 
 	if (!s || !user_id || !session_id || !kind || !mime ||
 	    !filename || !relative_path)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = fcgi_random_id("art_", id, sizeof(id));
 	if (rc < 0)
 		return rc;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, session_id, -1, SQLITE_TRANSIENT);
@@ -625,7 +625,7 @@ int store_artifact_register(struct session_store *s, const char *user_id,
 	rc = sqlite3_step(st);
 	sqlite3_finalize(st);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 
 	sql = "INSERT INTO fcgi_usage_storage(user_id,used_bytes)"
 	      " VALUES(?,?) "
@@ -668,9 +668,9 @@ int store_artifact_get(struct session_store *s, const char *artifact_id,
 	int found = 0;
 
 	if (!s || !artifact_id || !user_id || !out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(st, 1, artifact_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(st) == SQLITE_ROW) {
@@ -710,15 +710,15 @@ int store_artifact_list_json(struct session_store *s, const char *user_id,
 	char *json;
 
 	if (!s || !user_id || !session_id || !out_json)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK)
-		MORPH_RETURN(-EIO);
+		return -EIO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, session_id, -1, SQLITE_TRANSIENT);
 	json = artifact_json_array(st);
 	sqlite3_finalize(st);
 	if (!json)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*out_json = json;
 	return 0;
 }
@@ -727,13 +727,13 @@ int store_create_session(struct session_store *s, const char *user_id,
 			 const char *name, const char *model,
 			 char out_session_id[64]) {
 	struct session sess;
-	if (session_create(&s->db, name, model, &sess) != 0) MORPH_RETURN(-EIO);
-	if (session_ensure_display_id(&s->db, &sess) != 0) MORPH_RETURN(-EIO);
+	if (session_create(&s->db, name, model, &sess) != 0) return -EIO;
+	if (session_ensure_display_id(&s->db, &sess) != 0) return -EIO;
 	snprintf(out_session_id, 64, "%s", sess.display_id);
 
 	const char *sql = "INSERT OR REPLACE INTO fcgi_session_owner(session_id,user_id) VALUES(?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text(st, 1, out_session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, user_id,        -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(st);
@@ -761,15 +761,15 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 		"JOIN sessions s ON s.display_id = o.session_id "
 		"WHERE o.user_id=? ORDER BY s.updated_at DESC";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
 
 	morph_buf_t buf;
-	if (morph_buf_init(&buf, 1024) < 0) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+	if (morph_buf_init(&buf, 1024) < 0) { sqlite3_finalize(st); return -ENOMEM; }
 	if (morph_buf_puts(&buf, "{\"items\":[") != 0) {
 		morph_buf_cleanup(&buf);
 		sqlite3_finalize(st);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 
 	int first = 1;
@@ -788,14 +788,14 @@ int store_list_sessions_json(struct session_store *s, const char *user_id,
 			(long long)ca, (long long)ua) != 0) {
 			morph_buf_cleanup(&buf);
 			sqlite3_finalize(st);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		first = 0;
 	}
 	sqlite3_finalize(st);
 	if (morph_buf_puts(&buf, "]}") != 0) {
 		morph_buf_cleanup(&buf);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	*out_json = morph_buf_detach(&buf);
 	return 0;
@@ -823,7 +823,7 @@ int store_delete_session(struct session_store *s, const char *session_id,
 	int rc;
 
 	if (!s || !session_id || !user_id)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 
 	sqlite3_exec(s->db.handle, "BEGIN IMMEDIATE", NULL, NULL, NULL);
 
@@ -836,7 +836,7 @@ int store_delete_session(struct session_store *s, const char *session_id,
 	sqlite3_finalize(st);
 	if (rc != SQLITE_ROW) {
 		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	}
 
 	if (sqlite3_prepare_v2(s->db.handle, chk_turns, -1,
@@ -848,7 +848,7 @@ int store_delete_session(struct session_store *s, const char *session_id,
 	sqlite3_finalize(st);
 	if (running > 0) {
 		sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-		MORPH_RETURN(-EAGAIN);
+		return -EAGAIN;
 	}
 
 	for (int i = 0; del_tables[i]; i++) {
@@ -872,21 +872,21 @@ int store_delete_session(struct session_store *s, const char *session_id,
 
 fail:
 	sqlite3_exec(s->db.handle, "ROLLBACK", NULL, NULL, NULL);
-	MORPH_RETURN(-EIO);
+	return -EIO;
 }
 
 int events_publish(struct session_store *s, const char *session_id,
 		   const char *type, const char *payload) {
 	const char *sql = "INSERT INTO fcgi_events(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, type,       -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 4, now_unix());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
+	if (rc != SQLITE_DONE) return -EIO;
 
 	pthread_mutex_lock(&s->mu);
 	pthread_cond_broadcast(&s->cv);
@@ -900,7 +900,7 @@ static int events_fetch_after(struct session_store *s, const char *session_id,
 		"SELECT id,type,payload,ts FROM fcgi_events "
 		"WHERE session_id=? AND id>? ORDER BY id LIMIT 1";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, last_id);
 
@@ -941,14 +941,14 @@ int actions_enqueue(struct session_store *s, const char *session_id,
 		    const char *type, const char *payload) {
 	const char *sql = "INSERT INTO fcgi_actions(session_id,type,payload,ts) VALUES(?,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, session_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, type,       -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, payload ? payload : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 4, now_unix());
 	int rc = sqlite3_step(st);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
+	if (rc != SQLITE_DONE) return -EIO;
 
 	actions_signal(s, session_id);
 	return 0;
@@ -1019,15 +1019,15 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 		"SELECT id,parent_id,kind,x,y,w,h,content_ref,meta,updated_at "
 		"FROM fcgi_canvas_nodes WHERE session_id=? ORDER BY updated_at";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
 
 	morph_buf_t buf;
-	if (morph_buf_init(&buf, 2048) < 0) { sqlite3_finalize(st); MORPH_RETURN(-ENOMEM); }
+	if (morph_buf_init(&buf, 2048) < 0) { sqlite3_finalize(st); return -ENOMEM; }
 	if (morph_buf_puts(&buf, "{\"nodes\":[") != 0) {
 		morph_buf_cleanup(&buf);
 		sqlite3_finalize(st);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	int first = 1;
 	while (sqlite3_step(st) == SQLITE_ROW) {
@@ -1055,14 +1055,14 @@ int canvas_list_json(struct session_store *s, const char *session_id,
 			(long long)up) != 0) {
 			morph_buf_cleanup(&buf);
 			sqlite3_finalize(st);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		first = 0;
 	}
 	sqlite3_finalize(st);
 	if (morph_buf_puts(&buf, "]}") != 0) {
 		morph_buf_cleanup(&buf);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	*out_json = morph_buf_detach(&buf);
 	return 0;
@@ -1082,7 +1082,7 @@ int canvas_add_node(struct session_store *s, const char *session_id,
 		"INSERT INTO fcgi_canvas_nodes(id,session_id,kind,x,y,w,h,meta,created_at,updated_at) "
 		"VALUES(?,?,'node',0,0,0,0,?,?,?)";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, out_node_id, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 2, session_id,  -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text (st, 3, node_json ? node_json : "{}", -1, SQLITE_TRANSIENT);
@@ -1099,7 +1099,7 @@ int canvas_patch_node(struct session_store *s, const char *session_id,
 		"UPDATE fcgi_canvas_nodes SET meta=?, updated_at=? "
 		"WHERE id=? AND session_id=?";
 	sqlite3_stmt *st = NULL;
-	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) MORPH_RETURN(-EIO);
+	if (sqlite3_prepare_v2(s->db.handle, sql, -1, &st, NULL) != SQLITE_OK) return -EIO;
 	sqlite3_bind_text (st, 1, patch_json ? patch_json : "{}", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(st, 2, now_unix());
 	sqlite3_bind_text (st, 3, node_id,    -1, SQLITE_TRANSIENT);
@@ -1107,7 +1107,7 @@ int canvas_patch_node(struct session_store *s, const char *session_id,
 	int rc = sqlite3_step(st);
 	int changes = sqlite3_changes(s->db.handle);
 	sqlite3_finalize(st);
-	if (rc != SQLITE_DONE) MORPH_RETURN(-EIO);
+	if (rc != SQLITE_DONE) return -EIO;
 	return changes > 0 ? 0 : -ENOENT;
 }
 
@@ -1122,7 +1122,7 @@ static int ensure_sess_dir(void)
 	if (stat(SESS_DIR, &st) == 0 && S_ISDIR(st.st_mode))
 		return 0;
 	if (mkdir(SESS_DIR, 0700) != 0 && errno != EEXIST)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	return 0;
 }
 
@@ -1145,25 +1145,25 @@ int login_token_create(const char *user_id, const char *username,
 	if (rc < 0) return rc;
 
 	obj = cJSON_CreateObject();
-	if (!obj) MORPH_RETURN(-ENOMEM);
+	if (!obj) return -ENOMEM;
 	cJSON_AddStringToObject(obj, "user_id", user_id ? user_id : "");
 	cJSON_AddStringToObject(obj, "username", username ? username : "");
 	cJSON_AddStringToObject(obj, "role", role ? role : "user");
 	cJSON_AddNumberToObject(obj, "expires_at", (double)expires);
 	json = cJSON_PrintUnformatted(obj);
 	cJSON_Delete(obj);
-	if (!json) MORPH_RETURN(-ENOMEM);
+	if (!json) return -ENOMEM;
 
 	if (file_path_join_append(path, sizeof(path), SESS_DIR, token,
 				  ".json") != 0) {
 		free(json);
-		MORPH_RETURN(-ENAMETOOLONG);
+		return -ENAMETOOLONG;
 	}
 	fp = fopen(path, "wx");
 	if (!fp) {
 		int err = errno;
 		free(json);
-		MORPH_RETURN(-err);
+		return -err;
 	}
 	fwrite(json, 1, strlen(json), fp);
 	fclose(fp);

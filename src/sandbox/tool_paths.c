@@ -264,7 +264,7 @@ static int append_unique(morph_array_t *paths, char *path)
 	char **slot = morph_array_push(paths);
 
 	if (!slot)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	*slot = path;
 	return 0;
 }
@@ -283,7 +283,7 @@ static int copy_paths(morph_array_t *dst, char **src, int count,
 		if (realpath(path, resolved)) {
 			path = arena_strdup(arena, resolved);
 			if (!path)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 		}
 		rc = append_unique(dst, path);
 		if (rc != 0)
@@ -310,7 +310,7 @@ static int resolve_tool_path(struct arena *arena,
 			return 0;
 		*result = arena_strdup(arena, temp);
 		if (!*result)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		return 0;
 	}
 #endif
@@ -343,7 +343,7 @@ static int resolve_tool_path(struct arena *arena,
 				entry->suffix);
 	}
 	if (path.failed)
-		MORPH_RETURN(path.failed);
+		return path.failed;
 	*result = (char *)morph_buf_cstr(&path);
 	return 0;
 }
@@ -359,9 +359,9 @@ static int prepare_path(const char *path, enum path_kind kind)
 			return rc;
 	}
 	if (stat(path, &st) != 0)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (kind == PATH_DEVICE ? !S_ISCHR(st.st_mode) : !S_ISDIR(st.st_mode))
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return 0;
 }
 
@@ -385,7 +385,7 @@ static int append_tool_path(struct morph_log *logger, struct arena *arena,
 	log_dbg(logger, "sandbox: tool path %s: %s", entry->tool, resolved);
 	owned = arena_strdup(arena, resolved);
 	if (!owned)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	rc = append_unique(reads, owned);
 	if (rc == 0)
 		rc = append_unique(writes, owned);
@@ -407,7 +407,7 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 	if (!cfg || !arena || !cfg->path_policy_enabled ||
 	    cfg->read_paths_count < 0 || cfg->write_paths_count < 0 ||
 	    cfg->delete_paths_count < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!home_env || !realpath(home_env, home) || strcmp(home, "/") == 0)
 		return 0;
 	for (size_t i = 0; i < sizeof(tool_paths) / sizeof(tool_paths[0]); i++) {
@@ -450,7 +450,7 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 			char *save = NULL;
 
 			if (!parts)
-				MORPH_RETURN(-ENOMEM);
+				return -ENOMEM;
 			for (part = strtok_r(parts, ":", &save); part;
 			     part = strtok_r(NULL, ":", &save)) {
 				rc = append_tool_path(cfg ? cfg->logger : NULL, arena, entry, part,
@@ -469,7 +469,7 @@ int sandbox_prepare_tool_paths(struct sandbox_config *cfg, struct arena *arena)
 	}
 	if (reads.nelts > INT_MAX || writes.nelts > INT_MAX ||
 	    deletes.nelts > INT_MAX)
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	cfg->read_paths = reads.elts;
 	cfg->read_paths_count = (int)reads.nelts;
 	cfg->write_paths = writes.elts;

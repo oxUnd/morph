@@ -35,19 +35,19 @@ static int command_event_emit(struct cli_context *ctx, const char *name,
 	int rc;
 
 	if (!ctx || !name || !phase || argc < 1 || !argv || !argv[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	data = cJSON_CreateObject();
 	args = cJSON_CreateArray();
 	if (!data || !args) {
 		cJSON_Delete(data);
 		cJSON_Delete(args);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (!cJSON_AddStringToObject(data, "command", argv[0]) ||
 	    !cJSON_AddStringToObject(data, "input", input ? input : "")) {
 		cJSON_Delete(args);
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	for (int i = 1; i < argc; i++) {
 		cJSON *arg = cJSON_CreateString(argv[i]);
@@ -55,21 +55,21 @@ static int command_event_emit(struct cli_context *ctx, const char *name,
 		if (!arg) {
 			cJSON_Delete(args);
 			cJSON_Delete(data);
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		}
 		cJSON_AddItemToArray(args, arg);
 	}
 	cJSON_AddItemToObject(data, "args", args);
 	if (output && !cJSON_AddStringToObject(data, "output", output)) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	if (command_rc < 0 &&
 	    (!cJSON_AddNumberToObject(data, "error_code", command_rc) ||
 	     !cJSON_AddStringToObject(data, "error",
 				      morph_strerror(command_rc)))) {
 		cJSON_Delete(data);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	event = (struct morph_event){
 		.type = MORPH_EVENT_COMMAND,
@@ -162,23 +162,23 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	const struct cli_command *e;
 
 	if (!input)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	snprintf(buf, sizeof(buf), "%s", input);
 	argc = cli_argv_split(buf, argv, 32);
 	if (argc < 1)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		event_rc = command_event_emit(ctx, "command.started", "begin",
 			input, argc, argv, NULL, 0);
 		if (event_rc != 0)
-			MORPH_RETURN(event_rc);
+			return event_rc;
 		rc = morph_buf_init(&output, BUFSIZ);
 		if (rc != 0)
-			MORPH_RETURN(rc);
+			return rc;
 		rc = cli_command_capture_begin(ctx, &output);
 		if (rc != 0) {
 			morph_buf_cleanup(&output);
-			MORPH_RETURN(rc);
+			return rc;
 		}
 		capture_active = 1;
 	}
@@ -198,7 +198,7 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 		morph_buf_cstr(&output), rc);
 	morph_buf_cleanup(&output);
 	if (event_rc != 0)
-		MORPH_RETURN(event_rc);
+		return event_rc;
 	return rc;
 }
 

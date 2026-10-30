@@ -16,13 +16,13 @@ int morph_tui_editor_init(struct morph_tui_editor *editor, const char *text,
 		    size_t limit, int secret)
 {
 	if (!editor || !text || !limit)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (editor->text.data)
-		MORPH_RETURN(-EBUSY);
+		return -EBUSY;
 	if (strlen(text) >= limit)
-		MORPH_RETURN(-E2BIG);
+		return -E2BIG;
 	if (utf8valid(text))
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	*editor = (struct morph_tui_editor){.limit = limit, .secret = secret};
 	int rc = morph_buf_init(&editor->text, limit < BUFSIZ ? limit : BUFSIZ);
 
@@ -30,7 +30,7 @@ int morph_tui_editor_init(struct morph_tui_editor *editor, const char *text,
 		rc = morph_buf_puts(&editor->text, text);
 	if (rc != 0) {
 		morph_tui_editor_cleanup(editor);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	editor->cursor = editor->text.len;
 	return 0;
@@ -45,7 +45,7 @@ int morph_tui_editor_valid(const struct morph_tui_editor *editor)
 int morph_tui_editor_update(struct morph_tui_editor *editor, int key)
 {
 	if (!editor || !editor->text.data)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (key == MORPH_TUI_KEY_PASTE_BEGIN) {
 		editor->pasting = 1;
 		return MORPH_TUI_UNHANDLED;
@@ -106,7 +106,7 @@ int morph_tui_editor_update(struct morph_tui_editor *editor, int key)
 	int rc = morph_buf_reserve(text, 1);
 
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	memmove(text->data + editor->cursor + 1, text->data + editor->cursor,
 		text->len - editor->cursor + 1);
 	text->data[editor->cursor++] = (char)key;
@@ -118,7 +118,7 @@ int morph_tui_editor_view(struct morph_tui_editor *editor, morph_buf_t *text,
 		    size_t width, size_t *cursor_column)
 {
 	if (!editor || !text || !cursor_column || !editor->text.data)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*cursor_column = 0;
 	if (!width)
 		return 0;

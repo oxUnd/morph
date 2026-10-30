@@ -307,9 +307,9 @@ static int memory_write_fact(struct db *db, int64_t session_id,
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_ROW && rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (old_id && !old_value)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 
 	/* Same value as the current fact: refresh metadata only, no
 	 * supersession needed. */
@@ -610,14 +610,14 @@ int memory_prepare_session(struct db *db, int64_t session_id)
 		"SELECT 1 FROM memory_scopes WHERE session_id=?", -1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc == SQLITE_ROW)
 		return 0;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return preference_bind(db, session_id, "local", "");
 }
 
@@ -673,7 +673,7 @@ static int memory_migrate_preferences(struct db *db, int64_t session_id)
 		-1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		const char *key = (const char *)sqlite3_column_text(stmt, 1);
@@ -718,16 +718,16 @@ static int memory_migrate_preferences(struct db *db, int64_t session_id)
 	}
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	rc = sqlite3_prepare_v2(db->handle,
 		"UPDATE memory_scopes SET migrated=1 WHERE session_id=?", -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -829,7 +829,7 @@ int memory_accept_input(struct db *db, int64_t session_id,
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
 			(void)db_exec(db, "ROLLBACK");
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		}
 	}
 	rc = memory_migrate_preferences(db, session_id);
@@ -1282,7 +1282,7 @@ int memory_build_context_checked(struct db *db, int64_t session_id,
 	int rc = 0;
 
 	if (!out)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	*out = memory_build_context_impl(db, session_id, query, opts, &rc);
 	return rc;
 }
@@ -1912,7 +1912,7 @@ int memory_clear(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!db || !db->handle || scope < MEMORY_CLEAR_ALL || scope > MEMORY_CLEAR_PROCEDURES)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = memory_prepare_session(db, session_id);
 	if (rc != 0)
 		return rc;
@@ -2235,14 +2235,14 @@ int memory_generation(struct db *db, int64_t session_id, int64_t *generation)
 		"SELECT generation FROM memory_scopes WHERE session_id=?", -1, &stmt, NULL);
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW)
 		*generation = sqlite3_column_int64(stmt, 0);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_ROW)
-		MORPH_RETURN(rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB);
+		return rc == SQLITE_DONE ? -ENOENT : MORPH_ERR_DB;
 	return 0;
 }
 

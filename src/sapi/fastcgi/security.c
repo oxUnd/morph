@@ -137,7 +137,7 @@ int fcgi_password_hash(const char *password, char *out, size_t out_size)
 	int rc;
 
 	if (!password || !out || !*password)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_random_bytes(salt, sizeof(salt));
 	if (rc < 0)
 		return rc;
@@ -147,7 +147,7 @@ int fcgi_password_hash(const char *password, char *out, size_t out_size)
 	hex_encode(hash, sizeof(hash), hash_hex);
 	if (snprintf(out, out_size, "pbkdf2-sha256$%d$%s$%s",
 		     PWD_ITERATIONS, salt_hex, hash_hex) >= (int)out_size)
-		MORPH_RETURN(-ENOSPC);
+		return -ENOSPC;
 	return 0;
 }
 

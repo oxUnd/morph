@@ -18,7 +18,7 @@ int cli_composer_init(struct cli_composer *composer)
 	memset(composer, 0, sizeof(*composer));
 	rc = morph_array_init(&composer->images, MORPH_ARRAY_INIT_CAP, sizeof(image));
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return 0;
 }
 
@@ -42,23 +42,23 @@ int cli_composer_add_image(struct cli_composer *composer, const char *path,
 	int channels;
 
 	if (!expanded)
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	absolute = realpath(expanded, NULL);
 	free(expanded);
 	if (!absolute)
-		MORPH_RETURN_ERRNO();
+		return morph_error_from_errno(errno);
 	if (!stbi_info(absolute, &width, &height, &channels)) {
 		free(absolute);
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 	if (composer->next_image == SIZE_MAX) {
 		free(absolute);
-		MORPH_RETURN(-EOVERFLOW);
+		return -EOVERFLOW;
 	}
 	image = morph_array_push(&composer->images);
 	if (!image) {
 		free(absolute);
-		MORPH_RETURN(-ENOMEM);
+		return -ENOMEM;
 	}
 	image->path = absolute;
 	image->width = width;
@@ -85,11 +85,11 @@ int cli_composer_convert_paths(struct cli_composer *composer, const char *input,
 	*output = NULL;
 	rc = morph_buf_init(&path, BUFSIZ);
 	if (rc != 0)
-		MORPH_RETURN(rc);
+		return rc;
 	rc = morph_buf_init(&result, strlen(input) + 1);
 	if (rc != 0) {
 		morph_buf_cleanup(&path);
-		MORPH_RETURN(rc);
+		return rc;
 	}
 	while (*cursor) {
 		const char *start;
@@ -144,7 +144,7 @@ int cli_composer_convert_paths(struct cli_composer *composer, const char *input,
 	morph_buf_cleanup(&result);
 	morph_buf_cleanup(&path);
 	if (rc < 0)
-		MORPH_RETURN(rc);
+		return rc;
 	return rc;
 }
 

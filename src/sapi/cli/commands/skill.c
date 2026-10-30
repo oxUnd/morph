@@ -118,7 +118,7 @@ out_tree:
 	       " available   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
-	MORPH_RETURN(rc);
+	return rc;
 }
 
 static const char *skill_status(const struct skill_entry *entry)

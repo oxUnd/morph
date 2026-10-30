@@ -1538,12 +1538,12 @@ int cli_presentation_init(struct cli_context *ctx)
 	int rc;
 
 	if (!ctx)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (!ctx->prompt_lock_ready) {
 		int error = pthread_mutex_init(&ctx->prompt_lock, NULL);
 
 		if (error)
-			MORPH_RETURN(-error);
+			return -error;
 		ctx->prompt_lock_ready = 1;
 	}
 	rc = morph_buf_init(&ctx->event_stream, BUFSIZ);
@@ -1641,7 +1641,7 @@ int cli_presentation_event(struct cli_context *ctx,
 	const char *text;
 
 	if (!ctx || !ev)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
 		if (ev->type == MORPH_EVENT_BACKGROUND && ev->name &&
 		    strcmp(ev->name, "session.recap") == 0)
@@ -1649,7 +1649,7 @@ int cli_presentation_event(struct cli_context *ctx,
 		char *json = morph_event_to_json_string(ev);
 
 		if (!json)
-			MORPH_RETURN(-ENOMEM);
+			return -ENOMEM;
 		int rc = cli_write_ndjson(json);
 
 		free(json);

@@ -128,7 +128,7 @@ static int img_convert_exec(const char *args_json, struct tool_result *result, v
 	if (!data) {
 		cJSON_Delete(root);
 		(void)tool_result_success_json_text(result, strdup("{\"error\":\"failed to load image\"}"));
-		MORPH_RETURN(MORPH_ERR_FORMAT);
+		return MORPH_ERR_FORMAT;
 	}
 
 	char final_path[PATH_MAX];

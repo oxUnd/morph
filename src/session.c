@@ -54,7 +54,7 @@ int session_create(struct db *db, const char *name, const char *model,
 		}
 		rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		sqlite3_bind_text(stmt, 1, display_id, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 2, name_buf, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, model_buf[0] ? model_buf : "", -1, SQLITE_TRANSIENT);
@@ -71,7 +71,7 @@ int session_create(struct db *db, const char *name, const char *model,
 		}
 		log_err(db ? db->logger : NULL, "session create failed: %s",
 			sqlite3_errmsg(db->handle));
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	if (out) {
 		memset(out, 0, sizeof(*out));
@@ -98,7 +98,7 @@ int session_get_by_name(struct db *db, const char *name, struct session *out)
 			  " FROM sessions WHERE name=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -130,7 +130,7 @@ int session_get_by_id(const struct db *db, int64_t id, struct session *out)
 			  " FROM sessions WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -162,7 +162,7 @@ int session_get_by_display_id(struct db *db, const char *display_id, struct sess
 			  " FROM sessions WHERE display_id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, display_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	if (rc == SQLITE_ROW) {
@@ -211,7 +211,7 @@ int session_list(struct db *db, struct session **out, int *count,
 	sqlite3_stmt *stmt;
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 
 	if (filter && filter[0]) {
 		char pattern[260];
@@ -268,7 +268,7 @@ int session_count(struct db *db)
 	const char *sql = "SELECT COUNT(*) FROM sessions";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	rc = sqlite3_step(stmt);
 	int count = 0;
 	if (rc == SQLITE_ROW)
@@ -285,7 +285,7 @@ int session_rename(struct db *db, int64_t id, const char *new_name)
 	const char *sql = "UPDATE sessions SET name=?, updated_at=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, new_name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
 	sqlite3_bind_int64(stmt, 3, id);
@@ -293,9 +293,9 @@ int session_rename(struct db *db, int64_t id, const char *new_name)
 	int changed = sqlite3_changes(db->handle);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (changed <= 0)
-		MORPH_RETURN(-ENOENT);
+		return -ENOENT;
 	return 0;
 }
 
@@ -310,13 +310,13 @@ int session_delete(struct db *db, int64_t id)
 		"WHERE parent_session_id=?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -328,14 +328,14 @@ int session_update_model(struct db *db, int64_t id, const char *model)
 	const char *sql = "UPDATE sessions SET model=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, model, -1, SQLITE_TRANSIENT);
 	/* Model synchronization also runs when merely opening a session. */
 	sqlite3_bind_int64(stmt, 2, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -347,14 +347,14 @@ int session_update_tokens(struct db *db, int64_t id, int64_t added_tokens)
 	const char *sql = "UPDATE sessions SET token_used = token_used + ?, updated_at = ? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, added_tokens);
 	sqlite3_bind_int64(stmt, 2, (int64_t)time(NULL));
 	sqlite3_bind_int64(stmt, 3, id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -380,7 +380,7 @@ int message_add_with_turn_id(struct db *db, int64_t session_id,
 		"AND role=?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, role, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, content, -1, SQLITE_TRANSIENT);
@@ -402,7 +402,7 @@ int message_add_with_turn_id(struct db *db, int64_t session_id,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -414,7 +414,7 @@ int message_delete(struct db *db, int64_t message_id)
 	const char *sql = "DELETE FROM messages WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, message_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
@@ -480,7 +480,7 @@ int message_count(struct db *db, int64_t session_id)
 	const char *sql = "SELECT COUNT(*) FROM messages WHERE session_id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	int count = 0;
@@ -507,10 +507,10 @@ int model_history_add(struct db *db,
 
 	if (!db || !db->handle || !item || item->session_id <= 0 ||
 	    !item->kind || !item->kind[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, item->session_id);
 	if (item->turn_id)
 		sqlite3_bind_text(stmt, 2, item->turn_id, -1, SQLITE_TRANSIENT);
@@ -558,9 +558,9 @@ int model_history_add(struct db *db,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) == 0 && !item->idempotency_key)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	if (sqlite3_changes(db->handle) > 0) {
 		if (out_id)
 			*out_id = sqlite3_last_insert_rowid(db->handle);
@@ -571,7 +571,7 @@ int model_history_add(struct db *db,
 
 		rc = sqlite3_prepare_v2(db->handle, lookup, -1, &stmt, NULL);
 		if (rc != SQLITE_OK)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 		sqlite3_bind_int64(stmt, 1, item->session_id);
 		sqlite3_bind_text(stmt, 2, item->idempotency_key, -1,
 				  SQLITE_TRANSIENT);
@@ -583,7 +583,7 @@ int model_history_add(struct db *db,
 		}
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_OK)
-			MORPH_RETURN(MORPH_ERR_DB);
+			return MORPH_ERR_DB;
 	}
 	return 0;
 }
@@ -714,11 +714,11 @@ int model_history_count(struct db *db, int64_t session_id, int active_only)
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, active_only ? sql_active : sql_all,
 				-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		count = sqlite3_column_int(stmt, 0);
@@ -736,16 +736,16 @@ int model_history_deactivate_turn(struct db *db, int64_t session_id,
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !turn_id || !turn_id[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -761,16 +761,16 @@ int model_history_deactivate_turn_except_user(struct db *db,
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0 || !turn_id || !turn_id[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -781,12 +781,12 @@ int model_history_compaction_count(struct db *db, int64_t session_id)
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle,
 		"SELECT COUNT(*) FROM history_compactions WHERE session_id=?",
 		-1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		count = sqlite3_column_int(stmt, 0);
@@ -808,10 +808,10 @@ int model_history_compaction_attempt_add(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || session_id <= 0 || !trigger_kind ||
 	    !status)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	if (turn_id)
 		sqlite3_bind_text(stmt, 2, turn_id, -1, SQLITE_TRANSIENT);
@@ -829,7 +829,7 @@ int model_history_compaction_attempt_add(struct db *db, int64_t session_id,
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -850,7 +850,7 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 	int rc;
 
 	if (!db || !db->handle || session_id <= 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	count = model_history_count(db, session_id, 0);
 	if (count < 0)
 		return count;
@@ -858,12 +858,12 @@ int model_history_migrate_messages(struct db *db, int64_t session_id)
 		return 0;
 	rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -911,7 +911,7 @@ static int history_preserve_user_pairs(struct db *db, int64_t session_id,
 	int error = 0;
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		int64_t user_id = sqlite3_column_int64(stmt, 0);
@@ -928,7 +928,7 @@ static int history_preserve_user_pairs(struct db *db, int64_t session_id,
 			continue;
 		if (!history_preserved_add(preserved, user_id) ||
 		    (answer_id && !history_preserved_add(preserved, answer_id))) {
-			MORPH_SET_ERR(error, -ENOMEM);
+			error = (-ENOMEM);
 			break;
 		}
 		*budget -= (int)cost;
@@ -937,7 +937,7 @@ static int history_preserve_user_pairs(struct db *db, int64_t session_id,
 	if (error)
 		return error;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -960,11 +960,11 @@ static int history_preserve_rounds(struct db *db, int64_t session_id,
 	int error = 0;
 
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	rc = sqlite3_prepare_v2(db->handle, rows_sql, -1, &rows, NULL);
 	if (rc != SQLITE_OK) {
 		sqlite3_finalize(turns);
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	}
 	sqlite3_bind_int64(turns, 1, session_id);
 	sqlite3_bind_int(turns, 2, rounds);
@@ -981,7 +981,7 @@ static int history_preserve_rounds(struct db *db, int64_t session_id,
 				cost += sqlite3_column_int(rows, 1);
 		}
 		if (row_rc != SQLITE_DONE) {
-			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			error = (MORPH_ERR_DB);
 			break;
 		}
 		sqlite3_reset(rows);
@@ -992,12 +992,12 @@ static int history_preserve_rounds(struct db *db, int64_t session_id,
 		while ((row_rc = sqlite3_step(rows)) == SQLITE_ROW) {
 			if (!history_preserved_add(preserved,
 			    sqlite3_column_int64(rows, 0))) {
-				MORPH_SET_ERR(error, -ENOMEM);
+				error = (-ENOMEM);
 				break;
 			}
 		}
 		if (!error && row_rc != SQLITE_DONE)
-			MORPH_SET_ERR(error, MORPH_ERR_DB);
+			error = (MORPH_ERR_DB);
 		if (error)
 			break;
 		sqlite3_reset(rows);
@@ -1009,7 +1009,7 @@ static int history_preserve_rounds(struct db *db, int64_t session_id,
 	if (error)
 		return error;
 	if (rc != SQLITE_DONE)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	return 0;
 }
 
@@ -1024,7 +1024,7 @@ int model_history_select_retained(struct db *db, int64_t session_id,
 
 	if (!db || !db->handle || session_id <= 0 || !preserved ||
 	    user_message_tokens < 0 || recent_history_tokens < 0 || keep_recent_rounds < 0)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_array_init(preserved, 8, sizeof(int64_t));
 	if (rc != 0)
 		return rc;
@@ -1039,7 +1039,7 @@ int model_history_select_retained(struct db *db, int64_t session_id,
 			keep_recent_rounds, &recent_history_tokens);
 	}
 	if (rc != 0) {
-		MORPH_SET_ERR(failure, rc);
+		failure = (rc);
 		goto out_cleanup;
 	}
 	if (recent_history_tokens > 0) {
@@ -1102,7 +1102,7 @@ int model_history_select_retained(struct db *db, int64_t session_id,
 out_cleanup:
 	sqlite3_finalize(stmt);
 	morph_array_cleanup(preserved);
-	MORPH_RETURN(failure);
+	return failure;
 }
 
 static int history_compact_window(struct db *db, int64_t session_id,
@@ -1137,7 +1137,7 @@ static int history_compact_window(struct db *db, int64_t session_id,
 	    recent_history_tokens < 0 ||
 	    keep_recent_rounds < 0 || !trigger_kind ||
 	    !trigger_kind[0])
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	rc = morph_array_init(&preserved, 8, sizeof(int64_t));
 	if (rc != 0)
 		return rc;
@@ -1149,7 +1149,7 @@ static int history_compact_window(struct db *db, int64_t session_id,
 	if (selected) {
 		int64_t *ids = morph_array_push_n(&preserved, selected->nelts);
 		if (selected->nelts && !ids) {
-			MORPH_SET_ERR(failure, -ENOMEM);
+			failure = (-ENOMEM);
 			goto out_rollback;
 		}
 		if (selected->nelts)
@@ -1159,7 +1159,7 @@ static int history_compact_window(struct db *db, int64_t session_id,
 		rc = model_history_select_retained(db, session_id, user_message_tokens,
 			recent_history_tokens, keep_recent_rounds, &preserved);
 		if (rc != 0) {
-			MORPH_SET_ERR(failure, rc);
+			failure = (rc);
 			goto out_rollback;
 		}
 	}
@@ -1178,7 +1178,7 @@ static int history_compact_window(struct db *db, int64_t session_id,
 	if (rc != SQLITE_OK)
 		goto out_rollback;
 	if (selected && cutoff_sequence_no != expected_cutoff) {
-		MORPH_SET_ERR(failure, -EAGAIN);
+		failure = (-EAGAIN);
 		goto out_rollback;
 	}
 	rc = sqlite3_prepare_v2(db->handle, inactive_sql, -1, &stmt, NULL);
@@ -1248,7 +1248,7 @@ out_rollback:
 	(void)db_exec(db,
 		"ROLLBACK TO model_history_compact; RELEASE model_history_compact;");
 	morph_array_cleanup(&preserved);
-	MORPH_RETURN(failure);
+	return failure;
 }
 
 int model_history_compact(struct db *db, int64_t session_id,
@@ -1267,7 +1267,7 @@ int model_history_compact_selected(struct db *db, int64_t session_id,
 	const morph_array_t *preserved, int64_t cutoff)
 {
 	if (!preserved)
-		MORPH_RETURN(-EINVAL);
+		return -EINVAL;
 	return history_compact_window(db, session_id, turn_id, summary, summary_tokens,
 		0, 0, input_tokens, 0, trigger_kind, summary_item_id, preserved, cutoff);
 }
@@ -1282,7 +1282,7 @@ int trace_save(struct db *db, int64_t session_id, int round_no,
 			  " VALUES(?,?,?,?,?)";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_int64(stmt, 1, session_id);
 	sqlite3_bind_int(stmt, 2, round_no);
 	sqlite3_bind_text(stmt, 3, steps_json, -1, SQLITE_TRANSIENT);
@@ -1334,7 +1334,7 @@ int session_ensure_display_id(struct db *db, struct session *s)
 	const char *sql = "UPDATE sessions SET display_id=? WHERE id=?";
 	int rc = sqlite3_prepare_v2(db->handle, sql, -1, &stmt, NULL);
 	if (rc != SQLITE_OK)
-		MORPH_RETURN(MORPH_ERR_DB);
+		return MORPH_ERR_DB;
 	sqlite3_bind_text(stmt, 1, id_str, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, s->id);
 	rc = sqlite3_step(stmt);
@@ -1343,7 +1343,7 @@ int session_ensure_display_id(struct db *db, struct session *s)
 		memcpy(s->display_id, id_str, sizeof(s->display_id));
 		return 0;
 	}
-	MORPH_RETURN(MORPH_ERR_DB);
+	return MORPH_ERR_DB;
 }
 
 int trace_get_next_round_no(struct db *db, int64_t session_id)
