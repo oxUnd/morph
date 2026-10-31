@@ -474,7 +474,12 @@ static void cli_readline_render_frame(struct cli_context *ctx, int resized)
 		return;
 	}
 	if (resized) {
-		rl_resize_terminal();
+		struct winsize size = {0};
+
+		/* rl_resize_terminal also repaints the suspended prompt. Update
+		 * geometry without drawing; resume owns the sole composer redraw. */
+		if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0)
+			rl_set_screen_size(size.ws_row, size.ws_col);
 		cli_terminal_resize(ctx);
 	}
 	cli_terminal_render_frame(ctx, resized);
