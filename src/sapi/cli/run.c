@@ -1128,24 +1128,24 @@ struct cli_readline_app {
 };
 
 static void cli_readline_app_schedule(struct cli_readline_app *state,
-				      struct morph_tui_app *app)
+				      struct morph_tui_core_app *app)
 {
 	struct cli_context *ctx = state->ctx;
 	int timeout = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
 
 	if (timeout < 0 || timeout > 1000)
 		timeout = 1000;
-	if (morph_tui_app_depth(app) > 1)
+	if (morph_tui_core_app_depth(app) > 1)
 		timeout = 1000;
 	else if (!ctx->details_open && cli_command_job_done(state->job))
 		timeout = 0;
-	morph_tui_app_schedule(app, timeout);
-	morph_tui_app_set_input_enabled(app, ctx->running);
+	morph_tui_core_app_schedule(app, timeout);
+	morph_tui_core_app_set_input_enabled(app, ctx->running);
 	if (!ctx->running && !state->job->active)
-		morph_tui_app_stop(app, 0);
+		morph_tui_core_app_stop(app, 0);
 }
 
-static int cli_readline_app_appear(void *data, struct morph_tui_app *app)
+static int cli_readline_app_appear(void *data, struct morph_tui_core_app *app)
 {
 	struct cli_readline_app *state = data;
 	struct cli_context *ctx = state->ctx;
@@ -1179,7 +1179,7 @@ static int cli_readline_app_appear(void *data, struct morph_tui_app *app)
 	return 0;
 }
 
-static void cli_readline_app_disappear(void *data, struct morph_tui_app *app)
+static void cli_readline_app_disappear(void *data, struct morph_tui_core_app *app)
 {
 	struct cli_readline_app *state = data;
 	struct cli_context *ctx = state->ctx;
@@ -1195,7 +1195,7 @@ static void cli_readline_app_disappear(void *data, struct morph_tui_app *app)
 	cli_terminal_set_hidden(ctx, 1);
 }
 
-static int cli_readline_app_draw(void *data, const struct morph_tui_screen *screen)
+static int cli_readline_app_draw(void *data, const struct morph_tui_core_screen *screen)
 {
 	struct cli_readline_app *state = data;
 
@@ -1205,12 +1205,12 @@ static int cli_readline_app_draw(void *data, const struct morph_tui_screen *scre
 	return 0;
 }
 
-static int cli_readline_app_event(void *data, struct morph_tui_app *app,
-				  const struct morph_tui_event *event)
+static int cli_readline_app_event(void *data, struct morph_tui_core_app *app,
+				  const struct morph_tui_core_event *event)
 {
 	struct cli_readline_app *state = data;
 	struct cli_context *ctx = state->ctx;
-	int modal = morph_tui_app_depth(app) > 1;
+	int modal = morph_tui_core_app_depth(app) > 1;
 
 	cli_recap_tick(ctx, cli_recap_now());
 	if (morph_signal_flag_get(&ctx->terminate_requested))
@@ -1218,13 +1218,13 @@ static int cli_readline_app_event(void *data, struct morph_tui_app *app,
 	if (morph_signal_flag_take(&ctx->resized)) {
 		cli_terminal_resize(ctx);
 		if (modal)
-			morph_tui_app_invalidate(app, MORPH_TUI_INVALIDATE_LAYOUT);
+			morph_tui_core_app_invalidate(app, MORPH_TUI_CORE_INVALIDATE_LAYOUT);
 		else if (state->callback_installed)
 			cli_readline_render_frame(ctx, 1);
 	}
 	if (morph_signal_flag_take(&ctx->interrupted)) {
 		if (modal) {
-			int rc = morph_tui_app_dismiss(app, 0);
+			int rc = morph_tui_core_app_dismiss(app, 0);
 
 			if (rc < 0)
 				return rc;
@@ -1241,14 +1241,14 @@ static int cli_readline_app_event(void *data, struct morph_tui_app *app,
 	if (modal && cli_ui_owner_call_pending(ctx)) {
 		/* An interactive runtime request needs its own input scope. Return
 		 * to the composer before invoking the legacy prompt adapter. */
-		if (!morph_tui_app_transition_pending(app)) {
-			int rc = morph_tui_app_dismiss(app, 0);
+		if (!morph_tui_core_app_transition_pending(app)) {
+			int rc = morph_tui_core_app_dismiss(app, 0);
 
 			if (rc < 0)
 				return rc;
 		}
-		(void)morph_tui_app_wake(app);
-	} else if (event->type == MORPH_TUI_EVENT_WAKE) {
+		(void)morph_tui_core_app_wake(app);
+	} else if (event->type == MORPH_TUI_CORE_EVENT_WAKE) {
 		if (modal) {
 			int rc = cli_command_capture_styled_begin(ctx, &state->deferred);
 
@@ -1276,19 +1276,19 @@ static int cli_readline_app_event(void *data, struct morph_tui_app *app,
 			cli_readline_resume(ctx, draft, point);
 		cli_terminal_update_end(ctx);
 	}
-	if (!modal && event->type == MORPH_TUI_EVENT_TICK)
-		morph_tui_app_invalidate(app, MORPH_TUI_INVALIDATE_DISPLAY);
+	if (!modal && event->type == MORPH_TUI_CORE_EVENT_TICK)
+		morph_tui_core_app_invalidate(app, MORPH_TUI_CORE_INVALIDATE_DISPLAY);
 	cli_readline_app_schedule(state, app);
 	return 0;
 }
 
-static int cli_readline_app_input(void *data, struct morph_tui_app *app,
-				  const struct morph_tui_event *event)
+static int cli_readline_app_input(void *data, struct morph_tui_core_app *app,
+				  const struct morph_tui_core_event *event)
 {
 	struct cli_readline_app *state = data;
 	struct cli_context *ctx = state->ctx;
 
-	if (event->type != MORPH_TUI_EVENT_INPUT_READY)
+	if (event->type != MORPH_TUI_CORE_EVENT_INPUT_READY)
 		return 0;
 	int rc = cli_readline_app_event(data, app, event);
 
@@ -1388,7 +1388,7 @@ static int cli_readline_app_input(void *data, struct morph_tui_app *app,
 				}
 				(void)cli_ui_drain(ctx);
 				if (input[0] == '/' && ctx->running) {
-					if (morph_tui_app_transition_pending(app))
+					if (morph_tui_core_app_transition_pending(app))
 						ctx->application_command = 1;
 					else
 						cli_presentation_command_end(ctx);
@@ -1405,7 +1405,7 @@ static int cli_readline_app_input(void *data, struct morph_tui_app *app,
 			free(submitted);
 		if (input != retry_command)
 			free(input);
-		if (ctx->running && !morph_tui_app_transition_pending(app)) {
+		if (ctx->running && !morph_tui_core_app_transition_pending(app)) {
 			ctx->input_status.updated = 0;
 			ctx->input_status.suspended = 0;
 			cli_terminal_composer_resume(ctx);
@@ -1540,29 +1540,35 @@ void cli_run(struct cli_context *ctx)
 	rl_attempted_completion_function = completion;
 	(void)line_ready;
 	struct cli_readline_app state = {.ctx = ctx, .job = &job};
-	const struct morph_tui_app_options app_options = {
-		.input = stdin, .output = stdout,
-		.event = cli_readline_app_event, .data = &state,
+	const struct morph_tui_core_app_options app_options = {
+		.input = stdin,
+		.output = stdout,
+		.event = cli_readline_app_event,
+		.data = &state,
 	};
-	const struct morph_tui_controller_ops app_ops = {
-		.event = cli_readline_app_input, .draw = cli_readline_app_draw,
-		.appear = cli_readline_app_appear, .disappear = cli_readline_app_disappear,
+	const struct morph_tui_core_controller_ops app_ops = {
+		.event = cli_readline_app_input,
+		.draw = cli_readline_app_draw,
+		.appear = cli_readline_app_appear,
+		.disappear = cli_readline_app_disappear,
 	};
-	const struct morph_tui_controller root = {
-		.ops = &app_ops, .data = &state, .input_mode = MORPH_TUI_INPUT_EXTERNAL,
+	const struct morph_tui_core_controller root = {
+		.ops = &app_ops,
+		.data = &state,
+		.input_mode = MORPH_TUI_CORE_INPUT_EXTERNAL,
 	};
 	int app_rc = morph_buf_init(&state.deferred, BUFSIZ);
 
 	if (!app_rc)
-		app_rc = morph_tui_app_create(&app_options, &ctx->application);
+		app_rc = morph_tui_core_app_create(&app_options, &ctx->application);
 	if (!app_rc) {
 		ctx->application_output = &state.deferred;
 		cli_ui_attach_app(ctx, ctx->application);
-		app_rc = morph_tui_app_present(ctx->application, &root);
+		app_rc = morph_tui_core_app_present(ctx->application, &root);
 		if (!app_rc)
-			app_rc = morph_tui_app_run(ctx->application);
+			app_rc = morph_tui_core_app_run(ctx->application);
 		cli_ui_attach_app(ctx, NULL);
-		morph_tui_app_destroy(ctx->application);
+		morph_tui_core_app_destroy(ctx->application);
 		ctx->application = NULL;
 		ctx->application_output = NULL;
 		cli_terminal_set_hidden(ctx, 0);

@@ -4,12 +4,12 @@
 /* Convenience umbrella for existing screen consumers. Implementations include
  * the specific module headers they use. */
 #include <morph/tui.h>
-#include <morph/tui/card.h>
-#include <morph/tui/editor.h>
-#include <morph/tui/layout.h>
-#include <morph/tui/list.h>
-#include <morph/tui/screen.h>
-#include <morph/tui/select.h>
-#include <morph/tui/text_view.h>
+#include <morph/tui/widgets/card.h>
+#include <morph/tui/widgets/editor.h>
+#include <morph/tui/core/layout.h>
+#include <morph/tui/widgets/list.h>
+#include <morph/tui/core/screen.h>
+#include <morph/tui/widgets/select.h>
+#include <morph/tui/widgets/text_view.h>
 
 #endif

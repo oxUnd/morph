@@ -32,7 +32,7 @@ enum setup_action {
 struct setup_ui {
 	volatile sig_atomic_t interrupted;
 	struct morph_signal_listener signals;
-	struct morph_tui_screen screen;
+	struct morph_tui_core_screen screen;
 	FILE *output;
 	int fd;
 	int output_fd;
@@ -52,7 +52,7 @@ struct setup_ui {
 
 int cli_setup_ui_available(FILE *input, FILE *output)
 {
-	return morph_tui_available(input, output);
+	return morph_tui_terminal_available(input, output);
 }
 
 int cli_setup_print(FILE *output, const char *format, ...)
@@ -66,7 +66,7 @@ int cli_setup_print(FILE *output, const char *format, ...)
 	}
 	morph_buf_t text = {0};
 	morph_buf_t rendered = {0};
-	struct morph_tui_text_view view = {0};
+	struct morph_tui_widget_text_view view = {0};
 	int rc = morph_buf_init(&text, 0);
 	if (rc == 0) rc = morph_buf_vprintf(&text, format, args);
 	va_end(args);
@@ -74,18 +74,20 @@ int cli_setup_print(FILE *output, const char *format, ...)
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL) : NULL;
 	if (rc == 0 && !safe) rc = -ENOMEM;
 	int columns, rows;
-	morph_tui_dimensions(fileno(output), &columns, &rows);
+	morph_tui_terminal_dimensions(fileno(output), &columns, &rows);
 	size_t width = columns > 4 ? (size_t)columns - 4 : 1;
-	if (rc == 0) rc = morph_tui_text_view_wrap(&view, safe, width);
+	if (rc == 0)
+		rc = morph_tui_widget_text_view_wrap(&view, safe, width);
 	if (rc == 0) rc = morph_buf_init(&rendered, 0);
 	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_text_line *row = morph_array_get(&view.lines, i);
+		const struct morph_tui_widget_text_line *row = morph_array_get(&view.lines, i);
 		if (row->length) rc = morph_buf_puts(&rendered, "  ");
 		if (rc == 0) rc = morph_buf_append(&rendered, safe + row->offset, row->length);
 		if (rc == 0) rc = morph_buf_puts(&rendered, "\r\n");
 	}
-	if (rc == 0) rc = morph_tui_output_write(output, &rendered);
-	morph_tui_text_view_cleanup(&view);
+	if (rc == 0)
+		rc = morph_tui_render_draw_write(output, &rendered);
+	morph_tui_widget_text_view_cleanup(&view);
 	morph_buf_cleanup(&rendered);
 	morph_buf_cleanup(&text);
 	free(safe);
@@ -103,8 +105,8 @@ static void setup_signal(int number, void *opaque)
 static int read_key(struct setup_ui *ui)
 {
 	for (;;) {
-		struct morph_tui_event event;
-		int rc = morph_tui_screen_poll(&ui->screen, &event, 100);
+		struct morph_tui_core_event event;
+		int rc = morph_tui_core_screen_poll(&ui->screen, &event, 100);
 
 		if (morph_signal_flag_get(&ui->interrupted))
 			return -ECANCELED;
@@ -112,18 +114,18 @@ static int read_key(struct setup_ui *ui)
 			continue;
 		if (rc != 0)
 			return rc;
-		if (event.type == MORPH_TUI_EVENT_EOF)
+		if (event.type == MORPH_TUI_CORE_EVENT_EOF)
 			return -ECANCELED;
-		if (event.type == MORPH_TUI_EVENT_RESIZE)
+		if (event.type == MORPH_TUI_CORE_EVENT_RESIZE)
 			return 0;
-		if (event.type == MORPH_TUI_EVENT_KEY)
+		if (event.type == MORPH_TUI_CORE_EVENT_KEY)
 			return event.key;
 	}
 }
 
 static void dimensions(struct setup_ui *ui)
 {
-	morph_tui_dimensions(ui->output_fd, &ui->columns, &ui->rows);
+	morph_tui_terminal_dimensions(ui->output_fd, &ui->columns, &ui->rows);
 }
 
 /* The cursor normally rests on the blank line below the active prompt.
@@ -204,7 +206,7 @@ static int frame_start(struct setup_ui *ui, morph_buf_t *frame,
 static int frame_show(struct setup_ui *ui, morph_buf_t *frame)
 {
 	morph_buf_puts(frame, "\033[?2026l");
-	int rc = morph_tui_output_write(ui->output, frame);
+	int rc = morph_tui_render_draw_write(ui->output, frame);
 	ui->active_lines = ui->frame_lines;
 	morph_buf_cleanup(frame);
 	if (rc < 0)
@@ -222,20 +224,20 @@ static int record_answer(struct setup_ui *ui, const char *answer)
 	const char *names[] = {"Text", "Vision", "Images", "Video", "Review"};
 	char safe[BUFSIZ];
 	utf8_copy_sanitized_clamped(safe, sizeof(safe), answer, sizeof(safe) - 1);
-	struct morph_tui_text_view view = {0};
+	struct morph_tui_widget_text_view view = {0};
 	size_t width = ui->columns > 15 ? (size_t)ui->columns - 15 : 1;
-	rc = morph_tui_text_view_wrap(&view, safe, width);
+	rc = morph_tui_widget_text_view_wrap(&view, safe, width);
 	if (rc == 0) rc = morph_buf_printf(&frame, "  %s✓ %-6s%s · ",
 		ui->color ? "\033[32m" : "", ui->step < 0 ? "Role" : names[ui->step],
 		ui->color ? "\033[0m" : "");
 	if (rc == 0 && !view.lines.nelts) rc = morph_buf_puts(&frame, "\r\n");
 	for (size_t i = 0; rc == 0 && i < view.lines.nelts; i++) {
-		const struct morph_tui_text_line *row = morph_array_get(&view.lines, i);
+		const struct morph_tui_widget_text_line *row = morph_array_get(&view.lines, i);
 		if (i) rc = morph_buf_puts(&frame, "             ");
 		if (rc == 0) rc = morph_buf_append(&frame, safe + row->offset, row->length);
 		if (rc == 0) rc = morph_buf_puts(&frame, "\r\n");
 	}
-	morph_tui_text_view_cleanup(&view);
+	morph_tui_widget_text_view_cleanup(&view);
 	if (rc != 0) { morph_buf_cleanup(&frame); return rc; }
 	/* Committed rows are not owned by a subsequent editable frame. */
 	return frame_show(ui, &frame);
@@ -247,7 +249,8 @@ static void card_border(struct setup_ui *ui, morph_buf_t *frame, int selected,
 	morph_buf_t border = {0};
 	int rc = morph_buf_init(&border, 128);
 
-	if (rc == 0) rc = morph_tui_card_border(&border, width, bottom);
+	if (rc == 0)
+		rc = morph_tui_widget_card_border(&border, width, bottom);
 	if (rc == 0)
 		line(ui, frame, selected ? "\033[36m" : "\033[2m",
 			morph_buf_cstr(&border));
@@ -261,7 +264,8 @@ static void card_text(struct setup_ui *ui, morph_buf_t *frame, const char *text,
 	morph_buf_t row = {0};
 	int rc = morph_buf_init(&row, 128);
 
-	if (rc == 0) rc = morph_tui_card_row(&row, width, text);
+	if (rc == 0)
+		rc = morph_tui_widget_card_row(&row, width, text);
 	if (rc == 0) line(ui, frame, style, morph_buf_cstr(&row));
 	if (rc != 0) frame->failed = (rc);
 	morph_buf_cleanup(&row);
@@ -269,7 +273,7 @@ static void card_text(struct setup_ui *ui, morph_buf_t *frame, const char *text,
 
 struct role_preview {
 	morph_buf_t models;
-	struct morph_tui_text_view blocks[3];
+	struct morph_tui_widget_text_view blocks[3];
 	size_t visible[3];
 	int rows;
 	int gap;
@@ -277,7 +281,8 @@ struct role_preview {
 
 static void role_preview_cleanup(struct role_preview *preview)
 {
-	for (int i = 0; i < 3; i++) morph_tui_text_view_cleanup(&preview->blocks[i]);
+	for (int i = 0; i < 3; i++)
+		morph_tui_widget_text_view_cleanup(&preview->blocks[i]);
 	morph_buf_cleanup(&preview->models);
 }
 
@@ -303,7 +308,7 @@ static int role_preview_init(struct setup_ui *ui, int selected, struct role_prev
 	for (int n = 0; rc == 0 && n < 3; n++) {
 		int i = order[n];
 		if ((i == 0 && ui->rows < 14) || (i == 2 && ui->rows < 20)) continue;
-		rc = morph_tui_text_view_wrap(&preview->blocks[i], text[i], width);
+		rc = morph_tui_widget_text_view_wrap(&preview->blocks[i], text[i], width);
 		if (rc != 0) break;
 		size_t lines = preview->blocks[i].lines.nelts;
 		if (i != 1 && lines > budget) continue;
@@ -321,9 +326,10 @@ static void role_preview_draw(struct setup_ui *ui, morph_buf_t *frame,
 {
 	if (preview->gap) line(ui, frame, "", "");
 	for (int i = 0; i < 3; i++) {
-		const struct morph_tui_text_view *block = &preview->blocks[i];
+		const struct morph_tui_widget_text_view *block = &preview->blocks[i];
 		for (size_t row = 0; row < preview->visible[i]; row++) {
-			const struct morph_tui_text_line *span = morph_array_get(&block->lines, row);
+			const struct morph_tui_widget_text_line *span =
+				morph_array_get(&block->lines, row);
 			morph_buf_puts(frame, ui->color ? "  \033[2m" : "  ");
 			morph_buf_append(frame, block->text + span->offset, span->length);
 			morph_buf_puts(frame, ui->color ? "\033[0m\r\n" : "\r\n");
@@ -335,11 +341,11 @@ static void role_preview_draw(struct setup_ui *ui, morph_buf_t *frame,
 static int select_menu(struct setup_ui *ui, const char *title, const char *detail,
 	const char *const *items, const char *const *descriptions, int count, int selected)
 {
-	struct morph_tui_menu menu_state = {0};
+	struct morph_tui_widget_menu menu_state = {0};
 
 	menu_state.list.index = (size_t)selected;
-	menu_state.list.flags = MORPH_TUI_LIST_WRAP | MORPH_TUI_LIST_VIM |
-		MORPH_TUI_LIST_TAB | MORPH_TUI_LIST_DIGITS;
+	menu_state.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_VIM |
+				MORPH_TUI_WIDGET_LIST_TAB | MORPH_TUI_WIDGET_LIST_DIGITS;
 	for (;;) {
 		morph_buf_t frame;
 		int roles = ui->phase == SETUP_ROLE;
@@ -357,7 +363,7 @@ static int select_menu(struct setup_ui *ui, const char *title, const char *detai
 		int cards = !roles && descriptions && ui->columns >= 44 && available >= 8;
 		int visible = cards ? available / 4 : available;
 		if (visible < 1) visible = 1;
-		morph_tui_list_layout(&menu_state.list, (size_t)count, (size_t)visible);
+		morph_tui_widget_list_layout(&menu_state.list, (size_t)count, (size_t)visible);
 		selected = (int)menu_state.list.index;
 		int first = (int)menu_state.list.first;
 		for (int i = first; i < count && i < first + visible; i++) {
@@ -404,11 +410,14 @@ static int select_menu(struct setup_ui *ui, const char *title, const char *detai
 			return rc;
 		int key = read_key(ui);
 		if (key < 0) return key;
-		int result = morph_tui_menu_update(&menu_state, key);
+		int result = morph_tui_widget_menu_update(&menu_state, key);
 
-		if (result == MORPH_TUI_CANCEL) return -ECANCELED;
-		if (result == MORPH_TUI_BACK) return SETUP_BACK;
-		if (result == MORPH_TUI_SUBMIT) return (int)menu_state.list.index;
+		if (result == MORPH_TUI_WIDGET_CANCEL)
+			return -ECANCELED;
+		if (result == MORPH_TUI_WIDGET_BACK)
+			return SETUP_BACK;
+		if (result == MORPH_TUI_WIDGET_SUBMIT)
+			return (int)menu_state.list.index;
 	}
 }
 
@@ -421,13 +430,13 @@ static int menu(struct setup_ui *ui, const char *title, const char *detail,
 static int edit(struct setup_ui *ui, const char *title, const char *detail,
 		char *value, size_t capacity, int secret)
 {
-	struct morph_tui_editor editor = {0};
+	struct morph_tui_widget_editor editor = {0};
 	morph_buf_t shown = {0};
-	int rc = morph_tui_editor_init(&editor, secret ? "" : value, capacity, secret);
+	int rc = morph_tui_widget_editor_init(&editor, secret ? "" : value, capacity, secret);
 
 	if (rc == 0) rc = morph_buf_init(&shown, 128);
 	if (rc != 0) {
-		morph_tui_editor_cleanup(&editor);
+		morph_tui_widget_editor_cleanup(&editor);
 		return rc;
 	}
 	const char *validation = NULL;
@@ -443,7 +452,7 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 		size_t column;
 
 		morph_buf_reset(&shown);
-		rc = morph_tui_editor_view(&editor, &shown, width, &column);
+		rc = morph_tui_widget_editor_view(&editor, &shown, width, &column);
 		if (rc != 0) {
 			morph_buf_cleanup(&frame);
 			break;
@@ -462,13 +471,19 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 		int key = read_key(ui);
 
 		if (key < 0) { rc = key; break; }
-		int result = morph_tui_editor_update(&editor, key);
+		int result = morph_tui_widget_editor_update(&editor, key);
 
 		if (result < 0) { rc = result; break; }
-		if (result == MORPH_TUI_CANCEL) { rc = -ECANCELED; break; }
-		if (result == MORPH_TUI_BACK) { rc = SETUP_BACK; break; }
-		if (result == MORPH_TUI_SUBMIT) {
-			if (morph_tui_editor_valid(&editor)) {
+		if (result == MORPH_TUI_WIDGET_CANCEL) {
+			rc = -ECANCELED;
+			break;
+		}
+		if (result == MORPH_TUI_WIDGET_BACK) {
+			rc = SETUP_BACK;
+			break;
+		}
+		if (result == MORPH_TUI_WIDGET_SUBMIT) {
+			if (morph_tui_widget_editor_valid(&editor)) {
 				memcpy(value, editor.text.data, editor.text.len + 1);
 				rc = record_answer(ui, secret ?
 					"API key entered (hidden)" : value);
@@ -476,11 +491,11 @@ static int edit(struct setup_ui *ui, const char *title, const char *detail,
 			}
 			validation = editor.text.len ? "Enter valid UTF-8 text." :
 				"Enter a value, or press Esc to go back.";
-		} else if (result == MORPH_TUI_CHANGED) {
+		} else if (result == MORPH_TUI_WIDGET_CHANGED) {
 			validation = NULL;
 		}
 	}
-	morph_tui_editor_cleanup(&editor);
+	morph_tui_widget_editor_cleanup(&editor);
 	morph_buf_cleanup(&shown);
 	return rc;
 }
@@ -853,7 +868,8 @@ int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input,
 	if (signal_rc != 0)
 		return signal_rc;
 	ui.screen.interrupted = &ui.interrupted;
-	int enter_rc = morph_tui_screen_open(&ui.screen, input, output, MORPH_TUI_SESSION_PASTE);
+	int enter_rc = morph_tui_core_screen_open(&ui.screen, input, output,
+						  MORPH_TUI_TERMINAL_SESSION_PASTE);
 
 	if (enter_rc != 0) {
 		morph_signal_listener_stop(&ui.signals);
@@ -915,7 +931,7 @@ int cli_setup_ui_collect(struct cli_context *ctx, const char *path, FILE *input,
 		ending_rc = frame_show(&ui, &ending);
 	}
 	if (rc == 0 && ending_rc < 0) rc = ending_rc;
-	int leave_rc = morph_tui_screen_close(&ui.screen);
+	int leave_rc = morph_tui_core_screen_close(&ui.screen);
 
 	if (rc == 0) rc = leave_rc;
 	morph_signal_listener_stop(&ui.signals);

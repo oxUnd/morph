@@ -1,15 +1,16 @@
-#include <morph/tui/text_view.h>
+#include <morph/tui/widgets/text_view.h>
 #include "util/error.h"
 #include "util/utf8.h"
 
 #include <string.h>
 
-int morph_tui_text_view_wrap(struct morph_tui_text_view *view, const char *text, size_t width)
+int morph_tui_widget_text_view_wrap(struct morph_tui_widget_text_view *view, const char *text,
+				    size_t width)
 {
 	if (!view || !text || !width)
 		return -EINVAL;
 	if (!view->lines.elts) {
-		struct morph_tui_text_line line;
+		struct morph_tui_widget_text_line line;
 		int rc = morph_array_init(&view->lines, 32, sizeof(line));
 
 		if (rc != 0)
@@ -27,7 +28,7 @@ int morph_tui_text_view_wrap(struct morph_tui_text_view *view, const char *text,
 			end = newline;
 		if (end == start && *start != '\n')
 			end = utf8_advance_codepoints(start, 1);
-		struct morph_tui_text_line *line = morph_array_push(&view->lines);
+		struct morph_tui_widget_text_line *line = morph_array_push(&view->lines);
 
 		if (!line)
 			return -ENOMEM;
@@ -38,7 +39,7 @@ int morph_tui_text_view_wrap(struct morph_tui_text_view *view, const char *text,
 	return 0;
 }
 
-void morph_tui_text_view_cleanup(struct morph_tui_text_view *view)
+void morph_tui_widget_text_view_cleanup(struct morph_tui_widget_text_view *view)
 {
 	if (!view)
 		return;

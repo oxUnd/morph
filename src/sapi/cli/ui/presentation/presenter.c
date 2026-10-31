@@ -862,7 +862,7 @@ void cli_presentation_patch_diff(struct cli_context *ctx, const char *workdir, c
 		truncated = 1;
 	if (truncated)
 		printf(ctx, "  %s" ANSI_DIM "… patch display truncated" ANSI_RESET "\n",
-		       morph_tui_tree_branch(1, 0));
+		       morph_tui_widget_tree_branch(1, 0));
 	free(display);
 	if (preview_ready)
 		morph_buf_cleanup(&preview);
@@ -1061,7 +1061,7 @@ static void presentation_observation(struct cli_context *ctx,
 	} else if (event_error_code(ev) < 0) {
 		morph_buf_t prefix = {0};
 		if (morph_buf_init(&prefix, 64) == 0) {
-			morph_tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+			morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 			morph_buf_puts(&prefix, ANSI_RED "Error: " ANSI_RESET);
 			print_indented(ctx, morph_buf_cstr(&prefix), text);
 			morph_buf_cleanup(&prefix);
@@ -1084,7 +1084,7 @@ static void presentation_observation(struct cli_context *ctx,
 		} else {
 			morph_buf_t prefix = {0};
 			if (morph_buf_init(&prefix, 32) == 0) {
-				morph_tui_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
+				morph_tui_widget_tree_prefix(&prefix, NULL, 0, 1, 0, 2);
 				print_indented(ctx, morph_buf_cstr(&prefix), text);
 				morph_buf_cleanup(&prefix);
 			}

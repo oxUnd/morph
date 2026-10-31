@@ -1,6 +1,6 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/ui/event_queue.h"
-#include <morph/tui/application.h>
+#include <morph/tui/core/application.h>
 
 #include "util/queue.h"
 
@@ -42,7 +42,7 @@ struct cli_ui_item {
 };
 
 struct cli_ui {
-	struct morph_tui_app *application;
+	struct morph_tui_core_app *application;
 	pthread_mutex_t mutex;
 	morph_queue_t pending;
 	pthread_t owner;
@@ -113,7 +113,7 @@ static void cli_ui_wake(struct cli_ui *ui)
 		return;
 	pthread_mutex_lock(&ui->mutex);
 	if (ui->application)
-		(void)morph_tui_app_wake(ui->application);
+		(void)morph_tui_core_app_wake(ui->application);
 	pthread_mutex_unlock(&ui->mutex);
 	unsigned char byte = 1;
 	ssize_t count;
@@ -246,7 +246,7 @@ int cli_ui_wake_fd(const struct cli_context *ctx)
 	return ctx && ctx->ui ? ctx->ui->wake_read : -1;
 }
 
-void cli_ui_attach_app(struct cli_context *ctx, struct morph_tui_app *app)
+void cli_ui_attach_app(struct cli_context *ctx, struct morph_tui_core_app *app)
 {
 	if (!ctx || !ctx->ui)
 		return;
@@ -254,7 +254,7 @@ void cli_ui_attach_app(struct cli_context *ctx, struct morph_tui_app *app)
 	ctx->ui->application = app;
 	pthread_mutex_unlock(&ctx->ui->mutex);
 	if (app)
-		(void)morph_tui_app_wake(app);
+		(void)morph_tui_core_app_wake(app);
 }
 
 int cli_ui_post_morph_event(struct cli_context *ctx,

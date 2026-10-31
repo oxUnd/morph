@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <morph/tui/components.h>
-#include <morph/tui/tree.h>
+#include <morph/tui/widgets/tree.h>
 #include "util/utf8.h"
 
 #include <cerrno>
@@ -37,73 +37,86 @@ protected:
 
 TEST_F(TuiTest, DecodesNavigationPasteAndUtf8Bytes)
 {
-	struct morph_tui_input input_state{};
+	struct morph_tui_terminal_input input_state{};
 	int fds[2];
 	ASSERT_EQ(pipe(fds), 0);
 	const char input[] = "a\033[A\033OB\033[C\033[D\033[H\033[4~"
 		"\033[5~\033[6~\033[200~\033[201~\xe4\xb8\xad\033[99~z";
 	ASSERT_EQ(write(fds[1], input, sizeof(input) - 1), sizeof(input) - 1);
-	const int expected[] = {'a', MORPH_TUI_KEY_UP, MORPH_TUI_KEY_DOWN, MORPH_TUI_KEY_RIGHT,
-		MORPH_TUI_KEY_LEFT, MORPH_TUI_KEY_HOME, MORPH_TUI_KEY_END, MORPH_TUI_KEY_PAGE_UP,
-		MORPH_TUI_KEY_PAGE_DOWN, MORPH_TUI_KEY_PASTE_BEGIN, MORPH_TUI_KEY_PASTE_END,
-		0xe4, 0xb8, 0xad, 0, 'z'};
+	const int expected[] = {'a',
+				MORPH_TUI_TERMINAL_KEY_UP,
+				MORPH_TUI_TERMINAL_KEY_DOWN,
+				MORPH_TUI_TERMINAL_KEY_RIGHT,
+				MORPH_TUI_TERMINAL_KEY_LEFT,
+				MORPH_TUI_TERMINAL_KEY_HOME,
+				MORPH_TUI_TERMINAL_KEY_END,
+				MORPH_TUI_TERMINAL_KEY_PAGE_UP,
+				MORPH_TUI_TERMINAL_KEY_PAGE_DOWN,
+				MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN,
+				MORPH_TUI_TERMINAL_KEY_PASTE_END,
+				0xe4,
+				0xb8,
+				0xad,
+				0,
+				'z'};
 	for (int key : expected)
-		EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), key);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), 0);
+		EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0), key);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0), 0);
 	ASSERT_EQ(write(fds[1], "\033", 1), 1);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 100), 27);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 100), 27);
 	close(fds[1]);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), -ECANCELED);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0), -ECANCELED);
 	close(fds[0]);
-	EXPECT_EQ(morph_tui_input_read(&input_state, -1, 0), -EBADF);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, -1, 0), -EBADF);
 }
 
 TEST_F(TuiTest, PartialSequenceSurvivesPollingBoundaries)
 {
-	struct morph_tui_input input_state{};
+	struct morph_tui_terminal_input input_state{};
 	int fds[2];
 	ASSERT_EQ(pipe(fds), 0);
 	ASSERT_EQ(write(fds[1], "\033[", 2), 2);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), 0);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0), 0);
 	ASSERT_EQ(write(fds[1], "A", 1), 1);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), MORPH_TUI_KEY_UP);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0),
+		  MORPH_TUI_TERMINAL_KEY_UP);
 	ASSERT_EQ(write(fds[1], "\033[", 2), 2);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 100), 0);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 100), 0);
 	ASSERT_EQ(write(fds[1], "x", 1), 1);
-	EXPECT_EQ(morph_tui_input_read(&input_state, fds[0], 0), 'x');
+	EXPECT_EQ(morph_tui_terminal_input_read(&input_state, fds[0], 0), 'x');
 	close(fds[0]);
 	close(fds[1]);
 }
 
 TEST_F(TuiTest, CellSanitizesControlsAndClipsCjkToViewport)
 {
-	ASSERT_EQ(morph_tui_cell(output, 8, 2, 1, 6, 20, "中文abc\033[2J", ""), 0);
+	ASSERT_EQ(morph_tui_render_draw_cell(output, 8, 2, 1, 6, 20, "中文abc\033[2J", ""), 0);
 	std::string text = take();
 	EXPECT_EQ(text.find("\033[1;6H"), 0U);
 	EXPECT_EQ(text.find("\033[2J"), std::string::npos);
 	EXPECT_NE(text.find("中"), std::string::npos);
 	EXPECT_EQ(text.find("文"), std::string::npos);
-	ASSERT_EQ(morph_tui_cell(output, 8, 2, 2, 8, 1, "x", ""), 0);
+	ASSERT_EQ(morph_tui_render_draw_cell(output, 8, 2, 2, 8, 1, "x", ""), 0);
 	EXPECT_EQ(take(), "\033[2;8Hx");
-	ASSERT_EQ(morph_tui_cell(output, 8, 2, 0, 1, 2, "x", ""), 0);
+	ASSERT_EQ(morph_tui_render_draw_cell(output, 8, 2, 0, 1, 2, "x", ""), 0);
 	EXPECT_TRUE(take().empty());
 }
 
 TEST_F(TuiTest, FramesOnlyRedrawChangedRowsAndInvalidateOnResize)
 {
-	struct morph_tui_frame frame{};
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\ntwo\n"), 0);
+	struct morph_tui_render_frame frame{};
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 3, "one\ntwo\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\ntwo\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 3, "one\ntwo\n"), 0);
 	EXPECT_TRUE(take().empty());
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\nshort\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 3, "one\nshort\n"), 0);
 	EXPECT_EQ(take(), "\033[?2026h\033[2;1Hshort\033[0m\033[K\033[?2026l");
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 3, "one\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 3, "one\n"), 0);
 	EXPECT_NE(take().find("\033[2;1H\033[0m\033[K"), std::string::npos);
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 40, 2, "one\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 40, 2, "one\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
-	morph_tui_frame_cleanup(&frame);
-	morph_tui_frame_cleanup(&frame);
+	morph_tui_render_frame_cleanup(&frame);
+	morph_tui_render_frame_cleanup(&frame);
 }
 
 TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
@@ -116,14 +129,16 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	ASSERT_NE(input, nullptr);
 	struct termios before{}, during{}, after{};
 	ASSERT_EQ(tcgetattr(fileno(input), &before), 0);
-	struct morph_tui_session session{};
-	ASSERT_EQ(morph_tui_session_enter(&session, input, output,
-		MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE), 0);
+	struct morph_tui_terminal_session session{};
+	ASSERT_EQ(morph_tui_terminal_session_enter(&session, input, output,
+						   MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
+							   MORPH_TUI_TERMINAL_SESSION_PASTE),
+		  0);
 	ASSERT_EQ(tcgetattr(fileno(input), &during), 0);
 	EXPECT_EQ(during.c_lflag & (ICANON | ECHO | ISIG | IEXTEN), 0U);
-	EXPECT_EQ(morph_tui_session_enter(&session, input, output, 0), -EBUSY);
+	EXPECT_EQ(morph_tui_terminal_session_enter(&session, input, output, 0), -EBUSY);
 	EXPECT_EQ(take(), "\033[?1049h\033[?25l\033[?2004h");
-	ASSERT_EQ(morph_tui_session_leave(&session), 0);
+	ASSERT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	ASSERT_EQ(tcgetattr(fileno(input), &after), 0);
 	/* BSD sets PENDIN when changing input processing on a PTY. */
 #ifdef PENDIN
@@ -138,16 +153,18 @@ TEST_F(TuiTest, SessionRestoresTermiosAndScreenModes)
 	EXPECT_EQ(after.c_cc[VMIN], before.c_cc[VMIN]);
 	EXPECT_EQ(after.c_cc[VTIME], before.c_cc[VTIME]);
 	EXPECT_EQ(take(), "\033[?2004l\033[0m\033[?25h\033[?1049l");
-	EXPECT_EQ(morph_tui_session_leave(&session), 0);
+	EXPECT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_TRUE(take().empty());
 	/* Inline sessions must preserve NO_COLOR's absence of SGR output. */
-	ASSERT_EQ(morph_tui_session_enter(&session, input, output, MORPH_TUI_SESSION_PASTE), 0);
+	ASSERT_EQ(morph_tui_terminal_session_enter(&session, input, output,
+						   MORPH_TUI_TERMINAL_SESSION_PASTE),
+		  0);
 	EXPECT_EQ(take(), "\033[?25l\033[?2004h");
-	ASSERT_EQ(morph_tui_session_leave(&session), 0);
+	ASSERT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_EQ(take(), "\033[?2004l\033[?25h");
 	FILE *unwritable = fopen("/dev/null", "r");
 	ASSERT_NE(unwritable, nullptr);
-	EXPECT_LT(morph_tui_session_enter(&session, input, unwritable, 0), 0);
+	EXPECT_LT(morph_tui_terminal_session_enter(&session, input, unwritable, 0), 0);
 	EXPECT_FALSE(session.active);
 	ASSERT_EQ(tcgetattr(fileno(input), &after), 0);
 	EXPECT_EQ(after.c_lflag & (ICANON | ECHO | ISIG | IEXTEN),
@@ -161,59 +178,59 @@ TEST_F(TuiTest, FailedSessionDoesNotEmitTerminalControls)
 {
 	FILE *input = tmpfile();
 	ASSERT_NE(input, nullptr);
-	struct morph_tui_session session{};
-	EXPECT_EQ(morph_tui_session_enter(&session, input, output, 0), -ENOTTY);
-	EXPECT_EQ(morph_tui_session_leave(&session), 0);
+	struct morph_tui_terminal_session session{};
+	EXPECT_EQ(morph_tui_terminal_session_enter(&session, input, output, 0), -ENOTTY);
+	EXPECT_EQ(morph_tui_terminal_session_leave(&session), 0);
 	EXPECT_TRUE(take().empty());
 	int columns = 0, rows = 0;
-	morph_tui_dimensions(-1, &columns, &rows);
+	morph_tui_terminal_dimensions(-1, &columns, &rows);
 	EXPECT_EQ(columns, 80);
 	EXPECT_EQ(rows, 24);
-	EXPECT_FALSE(morph_tui_available(input, output));
+	EXPECT_FALSE(morph_tui_terminal_available(input, output));
 	fclose(input);
 }
 
 TEST_F(TuiTest, PureDecoderDiscardsOverlongSequencesAndResynchronizes)
 {
-	struct morph_tui_input input{};
-	EXPECT_EQ(morph_tui_input_feed(&input, 27), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, '['), 0);
-	for (int i = 0; i < MORPH_TUI_INPUT_SEQUENCE_MAX + 20; i++)
-		EXPECT_EQ(morph_tui_input_feed(&input, '1'), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, '~'), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 'q'), 'q');
-	EXPECT_EQ(morph_tui_input_feed(&input, 27), 0);
-	EXPECT_EQ(morph_tui_input_expire(&input), 27);
-	EXPECT_EQ(morph_tui_input_expire(&input), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 27), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, '['), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 27), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 'O'), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 'F'), MORPH_TUI_KEY_END);
+	struct morph_tui_terminal_input input{};
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 27), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, '['), 0);
+	for (int i = 0; i < MORPH_TUI_TERMINAL_INPUT_SEQUENCE_MAX + 20; i++)
+		EXPECT_EQ(morph_tui_terminal_input_feed(&input, '1'), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, '~'), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 'q'), 'q');
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 27), 0);
+	EXPECT_EQ(morph_tui_terminal_input_expire(&input), 27);
+	EXPECT_EQ(morph_tui_terminal_input_expire(&input), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 27), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, '['), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 27), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 'O'), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 'F'), MORPH_TUI_TERMINAL_KEY_END);
 }
 
 TEST_F(TuiTest, InterruptedReadPreservesPendingSequence)
 {
-	struct morph_tui_input input{};
+	struct morph_tui_terminal_input input{};
 	int fds[2];
 	ASSERT_EQ(pipe(fds), 0);
 	struct sigaction handler{}, previous{};
 	handler.sa_handler = +[](int) {};
 	sigemptyset(&handler.sa_mask);
 	ASSERT_EQ(sigaction(SIGUSR1, &handler, &previous), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, 27), 0);
-	EXPECT_EQ(morph_tui_input_feed(&input, '['), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, 27), 0);
+	EXPECT_EQ(morph_tui_terminal_input_feed(&input, '['), 0);
 	pthread_t reader = pthread_self();
 	std::thread interrupt([reader] {
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		(void)pthread_kill(reader, SIGUSR1);
 	});
-	int rc = morph_tui_input_read(&input, fds[0], 1000);
+	int rc = morph_tui_terminal_input_read(&input, fds[0], 1000);
 	interrupt.join();
 	(void)sigaction(SIGUSR1, &previous, nullptr);
 	EXPECT_EQ(rc, -EINTR);
 	EXPECT_EQ(write(fds[1], "B", 1), 1);
-	EXPECT_EQ(morph_tui_input_read(&input, fds[0], 0), MORPH_TUI_KEY_DOWN);
+	EXPECT_EQ(morph_tui_terminal_input_read(&input, fds[0], 0), MORPH_TUI_TERMINAL_KEY_DOWN);
 	close(fds[0]);
 	close(fds[1]);
 }
@@ -222,234 +239,248 @@ TEST_F(TuiTest, CellCompositionHasNoIoAndPropagatesErrorsBeforeOutput)
 {
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
-	EXPECT_EQ(morph_tui_cell_append(&commands, 10, 2, 1, 1, 4, "abc", ""), 0);
+	EXPECT_EQ(morph_tui_render_draw_cell_append(&commands, 10, 2, 1, 1, 4, "abc", ""), 0);
 	EXPECT_TRUE(take().empty());
-	EXPECT_EQ(morph_tui_output_write(output, &commands), 0);
+	EXPECT_EQ(morph_tui_render_draw_write(output, &commands), 0);
 	EXPECT_EQ(take(), "\033[1;1Habc ");
 	/* A later drawing error must reject the entire composed screen. */
-	EXPECT_EQ(morph_tui_cell_append(&commands, 10, 2, 1, 1, 4, nullptr, ""), -EINVAL);
-	EXPECT_EQ(morph_tui_output_write(output, &commands), -EINVAL);
+	EXPECT_EQ(morph_tui_render_draw_cell_append(&commands, 10, 2, 1, 1, 4, nullptr, ""),
+		  -EINVAL);
+	EXPECT_EQ(morph_tui_render_draw_write(output, &commands), -EINVAL);
 	EXPECT_TRUE(take().empty());
 	morph_buf_cleanup(&commands);
 }
 
 TEST_F(TuiTest, FrameInvalidationAndOutputFailureForceFullRepaint)
 {
-	struct morph_tui_frame frame{};
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 2, "one\n"), 0);
+	struct morph_tui_render_frame frame{};
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 2, "one\n"), 0);
 	(void)take();
-	morph_tui_frame_invalidate(&frame);
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 2, "one\n"), 0);
+	morph_tui_render_frame_invalidate(&frame);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 2, "one\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
 	FILE *unwritable = fopen("/dev/null", "r");
 	ASSERT_NE(unwritable, nullptr);
-	EXPECT_LT(morph_tui_frame_present(&frame, unwritable, 80, 2, "two\n"), 0);
+	EXPECT_LT(morph_tui_render_frame_present(&frame, unwritable, 80, 2, "two\n"), 0);
 	fclose(unwritable);
 	EXPECT_EQ(std::string(morph_buf_cstr(&frame.previous)), "one\n");
-	ASSERT_EQ(morph_tui_frame_present(&frame, output, 80, 2, "two\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, output, 80, 2, "two\n"), 0);
 	EXPECT_NE(take().find("\033[2J"), std::string::npos);
 	FILE *other = tmpfile();
 	ASSERT_NE(other, nullptr);
-	ASSERT_EQ(morph_tui_frame_present(&frame, other, 80, 2, "two\n"), 0);
+	ASSERT_EQ(morph_tui_render_frame_present(&frame, other, 80, 2, "two\n"), 0);
 	EXPECT_GT(ftell(other), 0);
 	fclose(other);
-	morph_tui_frame_cleanup(&frame);
+	morph_tui_render_frame_cleanup(&frame);
 }
 
 TEST_F(TuiTest, LayoutRegionsClampAndClipAtTheirOwnBoundary)
 {
-	struct morph_tui_rect area{1, 1, 20, 10};
-	struct morph_tui_rect body = morph_tui_rect_inset(area, 2, 1);
+	struct morph_tui_core_layout_rect area{1, 1, 20, 10};
+	struct morph_tui_core_layout_rect body = morph_tui_core_layout_rect_inset(area, 2, 1);
 	EXPECT_EQ(body.x, 3);
 	EXPECT_EQ(body.y, 2);
 	EXPECT_EQ(body.width, 16);
 	EXPECT_EQ(body.height, 8);
-	struct morph_tui_rect title = morph_tui_rect_take_top(&body, 2);
+	struct morph_tui_core_layout_rect title = morph_tui_core_layout_rect_take_top(&body, 2);
 	EXPECT_EQ(title.height, 2);
 	EXPECT_EQ(body.y, 4);
-	struct morph_tui_rect left = morph_tui_rect_take_left(&body, 100);
+	struct morph_tui_core_layout_rect left = morph_tui_core_layout_rect_take_left(&body, 100);
 	EXPECT_EQ(left.width, 16);
 	EXPECT_EQ(body.width, 0);
-	EXPECT_EQ(morph_tui_rect_take_top(&body, -1).height, 0);
+	EXPECT_EQ(morph_tui_core_layout_rect_take_top(&body, -1).height, 0);
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
-	ASSERT_EQ(morph_tui_region_cell(&commands, title, 0, 15, 8, "abc", ""), 0);
+	ASSERT_EQ(morph_tui_core_layout_cell(&commands, title, 0, 15, 8, "abc", ""), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&commands)), "\033[2;18H…");
 	morph_buf_reset(&commands);
-	EXPECT_EQ(morph_tui_region_cell(&commands, body, 0, 0, 2, "x", ""), 0);
+	EXPECT_EQ(morph_tui_core_layout_cell(&commands, body, 0, 0, 2, "x", ""), 0);
 	EXPECT_EQ(commands.len, 0U);
 	morph_buf_cleanup(&commands);
 }
 
 TEST_F(TuiTest, ListsPreserveSelectionVisibilityAndHandleShrinkingData)
 {
-	struct morph_tui_list list{};
-	list.flags = MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_HORIZONTAL_PAGES | MORPH_TUI_LIST_PAGED;
-	morph_tui_list_layout(&list, 12, 5);
-	EXPECT_TRUE(morph_tui_list_update(&list, MORPH_TUI_KEY_PAGE_DOWN));
+	struct morph_tui_widget_list list{};
+	list.flags = MORPH_TUI_WIDGET_LIST_VIM | MORPH_TUI_WIDGET_LIST_HORIZONTAL_PAGES |
+		     MORPH_TUI_WIDGET_LIST_PAGED;
+	morph_tui_widget_list_layout(&list, 12, 5);
+	EXPECT_TRUE(morph_tui_widget_list_update(&list, MORPH_TUI_TERMINAL_KEY_PAGE_DOWN));
 	EXPECT_EQ(list.index, 5U);
 	EXPECT_EQ(list.first, 5U);
-	EXPECT_TRUE(morph_tui_list_update(&list, MORPH_TUI_KEY_END));
+	EXPECT_TRUE(morph_tui_widget_list_update(&list, MORPH_TUI_TERMINAL_KEY_END));
 	EXPECT_EQ(list.index, 11U);
 	EXPECT_EQ(list.first, 10U);
-	morph_tui_list_layout(&list, 3, 5);
+	morph_tui_widget_list_layout(&list, 3, 5);
 	EXPECT_EQ(list.index, 2U);
 	EXPECT_EQ(list.first, 0U);
-	morph_tui_list_layout(&list, 0, 0);
+	morph_tui_widget_list_layout(&list, 0, 0);
 	EXPECT_EQ(list.index, 0U);
 	EXPECT_EQ(list.first, 0U);
-	EXPECT_FALSE(morph_tui_list_update(&list, MORPH_TUI_KEY_DOWN));
-	EXPECT_EQ(morph_tui_scroll_update(0, 15, 5, MORPH_TUI_KEY_END), 10U);
-	EXPECT_EQ(morph_tui_scroll_update(10, 15, 5, MORPH_TUI_KEY_DOWN), 10U);
-	EXPECT_EQ(morph_tui_scroll_update(10, 3, 5, 0), 0U);
+	EXPECT_FALSE(morph_tui_widget_list_update(&list, MORPH_TUI_TERMINAL_KEY_DOWN));
+	EXPECT_EQ(morph_tui_widget_scroll_update(0, 15, 5, MORPH_TUI_TERMINAL_KEY_END), 10U);
+	EXPECT_EQ(morph_tui_widget_scroll_update(10, 15, 5, MORPH_TUI_TERMINAL_KEY_DOWN), 10U);
+	EXPECT_EQ(morph_tui_widget_scroll_update(10, 3, 5, 0), 0U);
 }
 
 TEST_F(TuiTest, MenusWrapAndIgnorePastedShortcutsAndConfirmation)
 {
-	struct morph_tui_menu menu{};
-	menu.list.flags = MORPH_TUI_LIST_WRAP | MORPH_TUI_LIST_TAB | MORPH_TUI_LIST_DIGITS;
-	morph_tui_list_layout(&menu.list, 3, 3);
-	EXPECT_EQ(morph_tui_menu_update(&menu, MORPH_TUI_KEY_UP), MORPH_TUI_CHANGED);
+	struct morph_tui_widget_menu menu{};
+	menu.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_TAB |
+			  MORPH_TUI_WIDGET_LIST_DIGITS;
+	morph_tui_widget_list_layout(&menu.list, 3, 3);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, MORPH_TUI_TERMINAL_KEY_UP),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(menu.list.index, 2U);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '\t'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '\t'), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(menu.list.index, 0U);
-	EXPECT_EQ(morph_tui_menu_update(&menu, MORPH_TUI_KEY_PASTE_BEGIN), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '3'), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '\n'), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_menu_update(&menu, 27), MORPH_TUI_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '3'), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '\n'), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, 27), MORPH_TUI_WIDGET_UNHANDLED);
 	EXPECT_EQ(menu.list.index, 0U);
-	EXPECT_EQ(morph_tui_menu_update(&menu, MORPH_TUI_KEY_PASTE_END), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '3'), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '\n'), MORPH_TUI_SUBMIT);
-	EXPECT_EQ(morph_tui_menu_update(&menu, 27), MORPH_TUI_BACK);
-	EXPECT_EQ(morph_tui_menu_update(&menu, 3), MORPH_TUI_CANCEL);
-	morph_tui_list_layout(&menu.list, 0, 1);
-	EXPECT_EQ(morph_tui_menu_update(&menu, '\n'), MORPH_TUI_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, MORPH_TUI_TERMINAL_KEY_PASTE_END),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '3'), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '\n'), MORPH_TUI_WIDGET_SUBMIT);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, 27), MORPH_TUI_WIDGET_BACK);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, 3), MORPH_TUI_WIDGET_CANCEL);
+	morph_tui_widget_list_layout(&menu.list, 0, 1);
+	EXPECT_EQ(morph_tui_widget_menu_update(&menu, '\n'), MORPH_TUI_WIDGET_UNHANDLED);
 }
 
 TEST_F(TuiTest, SelectSingleUsesFocusAndPreservesNavigationVisibility)
 {
-	struct morph_tui_select selection{};
-	ASSERT_EQ(morph_tui_select_init(&selection, 12, 0, 1, 1), 0);
-	morph_tui_list_layout(&selection.menu.list, 12, 3);
-	EXPECT_TRUE(morph_tui_select_selected(&selection, 0));
-	EXPECT_FALSE(morph_tui_select_selected(&selection, 12));
-	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_END), MORPH_TUI_CHANGED);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 12, 0, 1, 1), 0);
+	morph_tui_widget_list_layout(&selection.menu.list, 12, 3);
+	EXPECT_TRUE(morph_tui_widget_select_selected(&selection, 0));
+	EXPECT_FALSE(morph_tui_widget_select_selected(&selection, 12));
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, MORPH_TUI_TERMINAL_KEY_END),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(selection.menu.list.first, 9u);
-	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_DOWN), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, MORPH_TUI_TERMINAL_KEY_DOWN),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(selection.menu.list.index, 0u);
-	EXPECT_EQ(morph_tui_select_update(&selection, '3'), MORPH_TUI_CHANGED);
-	EXPECT_TRUE(morph_tui_select_selected(&selection, 2));
-	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
-	EXPECT_EQ(morph_tui_select_update(&selection, 27), MORPH_TUI_BACK);
-	EXPECT_EQ(morph_tui_select_update(&selection, 3), MORPH_TUI_CANCEL);
-	morph_tui_select_cleanup(&selection);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '3'), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_TRUE(morph_tui_widget_select_selected(&selection, 2));
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '\r'), MORPH_TUI_WIDGET_SUBMIT);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, 27), MORPH_TUI_WIDGET_BACK);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, 3), MORPH_TUI_WIDGET_CANCEL);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, SelectMultiEnforcesLimitsAndIgnoresPastedActions)
 {
-	struct morph_tui_select selection{};
-	ASSERT_EQ(morph_tui_select_init(&selection, 4, 1, 2, 2), 0);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 4, 1, 2, 2), 0);
 	for (size_t i = 0; i < 4; i++)
-		EXPECT_FALSE(morph_tui_select_selected(&selection, i));
-	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_CHANGED);
+		EXPECT_FALSE(morph_tui_widget_select_selected(&selection, i));
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '\r'), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_TRUE(selection.invalid);
-	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_PASTE_BEGIN),
-		MORPH_TUI_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN),
+		  MORPH_TUI_WIDGET_UNHANDLED);
 	for (int key : std::initializer_list<int>{' ', 'j', '\r', 27, 3})
-		EXPECT_EQ(morph_tui_select_update(&selection, key), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_select_update(&selection, MORPH_TUI_KEY_PASTE_END),
-		MORPH_TUI_UNHANDLED);
+		EXPECT_EQ(morph_tui_widget_select_update(&selection, key),
+			  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, MORPH_TUI_TERMINAL_KEY_PASTE_END),
+		  MORPH_TUI_WIDGET_UNHANDLED);
 	EXPECT_EQ(selection.selected_count, 0u);
 	EXPECT_EQ(selection.menu.list.index, 0u);
-	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_select_update(&selection, 'j'), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_select_update(&selection, 'j'), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, ' '), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, 'j'), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, ' '), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, 'j'), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, ' '), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_TRUE(selection.invalid);
 	EXPECT_EQ(selection.selected_count, 2u);
-	EXPECT_FALSE(morph_tui_select_selected(&selection, 2));
-	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
+	EXPECT_FALSE(morph_tui_widget_select_selected(&selection, 2));
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '\r'), MORPH_TUI_WIDGET_SUBMIT);
 	EXPECT_FALSE(selection.invalid);
-	EXPECT_EQ(morph_tui_select_update(&selection, 'k'), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_select_update(&selection, ' '), MORPH_TUI_CHANGED);
-	EXPECT_FALSE(morph_tui_select_selected(&selection, 1));
-	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, 'k'), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, ' '), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_FALSE(morph_tui_widget_select_selected(&selection, 1));
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '\r'), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_TRUE(selection.invalid);
-	morph_tui_select_cleanup(&selection);
-	morph_tui_select_cleanup(&selection);
+	morph_tui_widget_select_cleanup(&selection);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, SelectValidatesConfigurationAndAllowsUnlimitedOrEmptySelection)
 {
-	struct morph_tui_select selection{};
-	EXPECT_EQ(morph_tui_select_init(nullptr, 2, 1, 0, 0), -EINVAL);
-	EXPECT_EQ(morph_tui_select_init(&selection, 0, 1, 0, 0), -EINVAL);
-	EXPECT_EQ(morph_tui_select_init(&selection, 2, 1, 3, 0), -EINVAL);
-	EXPECT_EQ(morph_tui_select_init(&selection, 2, 1, 2, 1), -EINVAL);
-	EXPECT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 2), -EINVAL);
-	ASSERT_EQ(morph_tui_select_init(&selection, 2, 1, 0, 0), 0);
+	struct morph_tui_widget_select selection{};
+	EXPECT_EQ(morph_tui_widget_select_init(nullptr, 2, 1, 0, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_select_init(&selection, 0, 1, 0, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_select_init(&selection, 2, 1, 3, 0), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_select_init(&selection, 2, 1, 2, 1), -EINVAL);
+	EXPECT_EQ(morph_tui_widget_select_init(&selection, 2, 0, 1, 2), -EINVAL);
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 2, 1, 0, 0), 0);
 	EXPECT_EQ(selection.maximum, 2u);
-	EXPECT_EQ(morph_tui_select_update(&selection, '\r'), MORPH_TUI_SUBMIT);
-	morph_tui_select_cleanup(&selection);
+	EXPECT_EQ(morph_tui_widget_select_update(&selection, '\r'), MORPH_TUI_WIDGET_SUBMIT);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, EditorEditsUnicodeInTheMiddleAndKeepsCursorVisible)
 {
-	struct morph_tui_editor editor{};
-	ASSERT_EQ(morph_tui_editor_init(&editor, "中文ab", 32, 0), 0);
-	EXPECT_EQ(morph_tui_editor_init(&editor, "other", 32, 0), -EBUSY);
-	EXPECT_EQ(morph_tui_editor_update(&editor, MORPH_TUI_KEY_HOME), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_editor_update(&editor, MORPH_TUI_KEY_RIGHT), MORPH_TUI_CHANGED);
+	struct morph_tui_widget_editor editor{};
+	ASSERT_EQ(morph_tui_widget_editor_init(&editor, "中文ab", 32, 0), 0);
+	EXPECT_EQ(morph_tui_widget_editor_init(&editor, "other", 32, 0), -EBUSY);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, MORPH_TUI_TERMINAL_KEY_HOME),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, MORPH_TUI_TERMINAL_KEY_RIGHT),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(editor.cursor, 3U);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 'x'), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 'x'), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(std::string(morph_buf_cstr(&editor.text)), "中x文ab");
-	EXPECT_EQ(morph_tui_editor_update(&editor, 127), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 127), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 127), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 127), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(std::string(morph_buf_cstr(&editor.text)), "文ab");
-	EXPECT_EQ(morph_tui_editor_update(&editor, MORPH_TUI_KEY_END), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, MORPH_TUI_TERMINAL_KEY_END),
+		  MORPH_TUI_WIDGET_CHANGED);
 	morph_buf_t visible{};
 	ASSERT_EQ(morph_buf_init(&visible, 32), 0);
 	size_t column = 0;
-	ASSERT_EQ(morph_tui_editor_view(&editor, &visible, 3, &column), 0);
+	ASSERT_EQ(morph_tui_widget_editor_view(&editor, &visible, 3, &column), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&visible)), "ab");
 	EXPECT_EQ(column, 2U);
-	EXPECT_TRUE(morph_tui_editor_valid(&editor));
-	morph_tui_editor_cleanup(&editor);
-	morph_tui_editor_cleanup(&editor);
+	EXPECT_TRUE(morph_tui_widget_editor_valid(&editor));
+	morph_tui_widget_editor_cleanup(&editor);
+	morph_tui_widget_editor_cleanup(&editor);
 	morph_buf_cleanup(&visible);
 }
 
 TEST_F(TuiTest, EditorBoundsPasteAndSecretRendering)
 {
-	struct morph_tui_editor editor{};
-	ASSERT_EQ(morph_tui_editor_init(&editor, "", 5, 1), 0);
-	EXPECT_EQ(morph_tui_editor_update(&editor, MORPH_TUI_KEY_PASTE_BEGIN), MORPH_TUI_UNHANDLED);
+	struct morph_tui_widget_editor editor{};
+	ASSERT_EQ(morph_tui_widget_editor_init(&editor, "", 5, 1), 0);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN),
+		  MORPH_TUI_WIDGET_UNHANDLED);
 	for (int key : {'a', 'b', 'c', 'd', 'e'})
-		EXPECT_EQ(morph_tui_editor_update(&editor, key), MORPH_TUI_CHANGED);
+		EXPECT_EQ(morph_tui_widget_editor_update(&editor, key), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(editor.text.len, 4U);
 	EXPECT_TRUE(editor.overflow);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 21), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_editor_update(&editor, '\n'), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_editor_update(&editor, MORPH_TUI_KEY_PASTE_END), MORPH_TUI_CHANGED);
-	EXPECT_FALSE(morph_tui_editor_valid(&editor));
-	EXPECT_EQ(morph_tui_editor_update(&editor, 127), MORPH_TUI_CHANGED);
-	EXPECT_TRUE(morph_tui_editor_valid(&editor));
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 21), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, '\n'), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, MORPH_TUI_TERMINAL_KEY_PASTE_END),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_FALSE(morph_tui_widget_editor_valid(&editor));
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 127), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_TRUE(morph_tui_widget_editor_valid(&editor));
 	morph_buf_t visible{};
 	ASSERT_EQ(morph_buf_init(&visible, 32), 0);
 	size_t column = 0;
-	ASSERT_EQ(morph_tui_editor_view(&editor, &visible, 3, &column), 0);
+	ASSERT_EQ(morph_tui_widget_editor_view(&editor, &visible, 3, &column), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&visible)), "•••");
 	EXPECT_EQ(column, 3U);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 21), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 21), MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(editor.text.len, 0U);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 0xe4), MORPH_TUI_CHANGED);
-	EXPECT_FALSE(morph_tui_editor_valid(&editor));
-	EXPECT_EQ(morph_tui_editor_update(&editor, 0xb8), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_editor_update(&editor, 0xad), MORPH_TUI_CHANGED);
-	EXPECT_TRUE(morph_tui_editor_valid(&editor));
-	morph_tui_editor_cleanup(&editor);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 0xe4), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_FALSE(morph_tui_widget_editor_valid(&editor));
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 0xb8), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_editor_update(&editor, 0xad), MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_TRUE(morph_tui_widget_editor_valid(&editor));
+	morph_tui_widget_editor_cleanup(&editor);
 	morph_buf_cleanup(&visible);
 }
 
@@ -457,20 +488,21 @@ TEST_F(TuiTest, CardAndDocumentComponentsRespectDisplayWidth)
 {
 	morph_buf_t row{};
 	ASSERT_EQ(morph_buf_init(&row, 32), 0);
-	ASSERT_EQ(morph_tui_card_row(&row, 8, "中文abc\033[2J"), 0);
+	ASSERT_EQ(morph_tui_widget_card_row(&row, 8, "中文abc\033[2J"), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&row)), "│ 中…  │");
 	morph_buf_reset(&row);
-	ASSERT_EQ(morph_tui_card_border(&row, 8, 0), 0);
+	ASSERT_EQ(morph_tui_widget_card_border(&row, 8, 0), 0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&row)), "┌──────┐");
 	morph_buf_cleanup(&row);
-	struct morph_tui_text_view view{};
-	ASSERT_EQ(morph_tui_text_view_wrap(&view, "中文ab\n\nlast", 3), 0);
+	struct morph_tui_widget_text_view view{};
+	ASSERT_EQ(morph_tui_widget_text_view_wrap(&view, "中文ab\n\nlast", 3), 0);
 	ASSERT_EQ(view.lines.nelts, 6U);
-	auto line = static_cast<struct morph_tui_text_line *>(morph_array_get(&view.lines, 0));
+	auto line =
+		static_cast<struct morph_tui_widget_text_line *>(morph_array_get(&view.lines, 0));
 	EXPECT_EQ(std::string(view.text + line->offset, line->length), "中");
-	ASSERT_EQ(morph_tui_text_view_wrap(&view, "中", 1), 0);
+	ASSERT_EQ(morph_tui_widget_text_view_wrap(&view, "中", 1), 0);
 	EXPECT_EQ(view.lines.nelts, 1U);
-	morph_tui_text_view_cleanup(&view);
+	morph_tui_widget_text_view_cleanup(&view);
 }
 
 class TuiPseudoTerminal {
@@ -496,14 +528,15 @@ TEST_F(TuiTest, SelectPromptRunsWithoutCliAndRestoresTerminal)
 	ASSERT_NE(pty.terminal, nullptr);
 	struct termios before{}, after{};
 	ASSERT_EQ(tcgetattr(fileno(pty.terminal), &before), 0);
-	struct morph_tui_select selection{};
-	ASSERT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 1), 0);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 2, 0, 1, 1), 0);
 	const char *items[] = {"Blue", "Red\033[2J"};
-	struct morph_tui_select_options options{};
+	struct morph_tui_widget_select_options options{};
 	options.items = items;
 	ASSERT_EQ(write(pty.master, "j\n", 2), 2);
-	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, nullptr), 0);
-	EXPECT_TRUE(morph_tui_select_selected(&selection, 1));
+	EXPECT_EQ(morph_tui_widget_select_run(&selection, &options, pty.terminal, output, nullptr),
+		  0);
+	EXPECT_TRUE(morph_tui_widget_select_selected(&selection, 1));
 	ASSERT_EQ(tcgetattr(fileno(pty.terminal), &after), 0);
 	EXPECT_EQ(after.c_lflag & (ICANON | ECHO | ISIG | IEXTEN),
 		before.c_lflag & (ICANON | ECHO | ISIG | IEXTEN));
@@ -513,136 +546,144 @@ TEST_F(TuiTest, SelectPromptRunsWithoutCliAndRestoresTerminal)
 	EXPECT_EQ(rendered.find("\033[2J"), std::string::npos);
 	EXPECT_EQ(rendered.find("\033[0m"), std::string::npos);
 	EXPECT_EQ(rendered.find("\033[?1049h"), std::string::npos);
-	morph_tui_select_cleanup(&selection);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, SelectPromptCustomAnswerUsesSharedEditorWithoutCli)
 {
 	TuiPseudoTerminal pty;
 	ASSERT_NE(pty.terminal, nullptr);
-	struct morph_tui_select selection{};
-	ASSERT_EQ(morph_tui_select_init(&selection, 2, 0, 1, 1), 0);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 2, 0, 1, 1), 0);
 	const char *items[] = {"Blue"};
-	struct morph_tui_select_options options{};
+	struct morph_tui_widget_select_options options{};
 	options.items = items;
 	options.allow_custom = 1;
 	const char keys[] = "j\nGold\n";
 	ASSERT_EQ(write(pty.master, keys, sizeof(keys) - 1), sizeof(keys) - 1);
 	char *custom = nullptr;
-	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, &custom), 0);
+	EXPECT_EQ(morph_tui_widget_select_run(&selection, &options, pty.terminal, output, &custom),
+		  0);
 	EXPECT_STREQ(custom, "Gold");
-	EXPECT_TRUE(morph_tui_select_selected(&selection, 1));
+	EXPECT_TRUE(morph_tui_widget_select_selected(&selection, 1));
 	free(custom);
-	morph_tui_select_cleanup(&selection);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, SelectPromptInterruptionClosesSessionWithoutApplicationActions)
 {
 	TuiPseudoTerminal pty;
 	ASSERT_NE(pty.terminal, nullptr);
-	struct morph_tui_select selection{};
-	ASSERT_EQ(morph_tui_select_init(&selection, 1, 0, 1, 1), 0);
+	struct morph_tui_widget_select selection{};
+	ASSERT_EQ(morph_tui_widget_select_init(&selection, 1, 0, 1, 1), 0);
 	const char *items[] = {"Blue"};
 	volatile sig_atomic_t interrupted = 1;
-	struct morph_tui_select_options options{};
+	struct morph_tui_widget_select_options options{};
 	options.items = items;
 	options.interrupted = &interrupted;
-	EXPECT_EQ(morph_tui_select_run(&selection, &options, pty.terminal, output, nullptr), -EINTR);
+	EXPECT_EQ(morph_tui_widget_select_run(&selection, &options, pty.terminal, output, nullptr),
+		  -EINTR);
 	EXPECT_NE(take().find("\033[?2004l\033[?25h"), std::string::npos);
-	morph_tui_select_cleanup(&selection);
+	morph_tui_widget_select_cleanup(&selection);
 }
 
 TEST_F(TuiTest, ScreenPollReportsResizeAndPasteWithoutConsumingNextScreenInput)
 {
 	TuiPseudoTerminal pty;
 	ASSERT_NE(pty.terminal, nullptr);
-	struct morph_tui_screen screen{};
-	ASSERT_EQ(morph_tui_screen_open(&screen, pty.terminal, pty.terminal,
-		MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE), 0);
+	struct morph_tui_core_screen screen{};
+	ASSERT_EQ(morph_tui_core_screen_open(&screen, pty.terminal, pty.terminal,
+					     MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
+						     MORPH_TUI_TERMINAL_SESSION_PASTE),
+		  0);
 	struct winsize size{};
 	size.ws_col = 60;
 	size.ws_row = 18;
 	ASSERT_EQ(ioctl(fileno(pty.terminal), TIOCSWINSZ, &size), 0);
-	struct morph_tui_event event{};
-	ASSERT_EQ(morph_tui_screen_poll(&screen, &event, 0), 0);
-	EXPECT_EQ(event.type, MORPH_TUI_EVENT_RESIZE);
+	struct morph_tui_core_event event{};
+	ASSERT_EQ(morph_tui_core_screen_poll(&screen, &event, 0), 0);
+	EXPECT_EQ(event.type, MORPH_TUI_CORE_EVENT_RESIZE);
 	EXPECT_EQ(screen.area.width, 60);
 	EXPECT_EQ(screen.area.height, 18);
 	const char keys[] = "\033[200~x\033[201~qz";
 	ASSERT_EQ(write(pty.master, keys, sizeof(keys) - 1), sizeof(keys) - 1);
-	const int expected[] = {MORPH_TUI_KEY_PASTE_BEGIN, 'x', MORPH_TUI_KEY_PASTE_END, 'q'};
+	const int expected[] = {MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN, 'x',
+				MORPH_TUI_TERMINAL_KEY_PASTE_END, 'q'};
 	for (int key : expected) {
-		ASSERT_EQ(morph_tui_screen_poll(&screen, &event, 100), 0);
-		EXPECT_EQ(event.type, MORPH_TUI_EVENT_KEY);
+		ASSERT_EQ(morph_tui_core_screen_poll(&screen, &event, 100), 0);
+		EXPECT_EQ(event.type, MORPH_TUI_CORE_EVENT_KEY);
 		EXPECT_EQ(event.key, key);
 		EXPECT_EQ(event.pasting, key == 'q' ? 0 : 1);
 	}
 	unsigned char remaining = 0;
 	ASSERT_EQ(read(fileno(pty.terminal), &remaining, 1), 1);
 	EXPECT_EQ(remaining, 'z');
-	EXPECT_EQ(morph_tui_screen_close(&screen), 0);
-	EXPECT_EQ(morph_tui_screen_close(&screen), 0);
+	EXPECT_EQ(morph_tui_core_screen_close(&screen), 0);
+	EXPECT_EQ(morph_tui_core_screen_close(&screen), 0);
 }
 
-struct morph_tui_loop_test_state {
-	struct morph_tui_menu menu{};
+struct tui_core_screen_test_state {
+	struct morph_tui_widget_menu menu{};
 	int draws = 0;
 	int selected = -1;
 };
 
-static int morph_tui_loop_test_draw(void *data, const struct morph_tui_screen *)
+static int tui_core_screen_test_draw(void *data, const struct morph_tui_core_screen *)
 {
-	auto state = static_cast<morph_tui_loop_test_state *>(data);
+	auto state = static_cast<tui_core_screen_test_state *>(data);
 	state->draws++;
 	state->selected = static_cast<int>(state->menu.list.index);
 	return 0;
 }
 
-static int morph_tui_loop_test_update(void *data, const struct morph_tui_event *event)
+static int tui_core_screen_test_update(void *data, const struct morph_tui_core_event *event)
 {
-	auto state = static_cast<morph_tui_loop_test_state *>(data);
-	if (event->type != MORPH_TUI_EVENT_KEY) return MORPH_TUI_SCREEN_CONTINUE;
-	int result = morph_tui_menu_update(&state->menu, event->key);
-	return result == MORPH_TUI_SUBMIT ? MORPH_TUI_SCREEN_CLOSE :
-		result == MORPH_TUI_CHANGED ? MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
+	auto state = static_cast<tui_core_screen_test_state *>(data);
+	if (event->type != MORPH_TUI_CORE_EVENT_KEY)
+		return MORPH_TUI_CORE_SCREEN_CONTINUE;
+	int result = morph_tui_widget_menu_update(&state->menu, event->key);
+	return result == MORPH_TUI_WIDGET_SUBMIT    ? MORPH_TUI_CORE_SCREEN_CLOSE
+	       : result == MORPH_TUI_WIDGET_CHANGED ? MORPH_TUI_CORE_SCREEN_REDRAW
+						    : MORPH_TUI_CORE_SCREEN_CONTINUE;
 }
 
 TEST_F(TuiTest, ScreenLoopOwnsUpdateAndRedrawAndReturnsForCleanup)
 {
 	TuiPseudoTerminal pty;
 	ASSERT_NE(pty.terminal, nullptr);
-	struct morph_tui_screen screen{};
-	ASSERT_EQ(morph_tui_screen_open(&screen, pty.terminal, output, 0), 0);
-	struct morph_tui_loop_test_state state{};
-	state.menu.list.flags = MORPH_TUI_LIST_VIM;
-	morph_tui_list_layout(&state.menu.list, 3, 3);
-	const struct morph_tui_screen_ops ops{morph_tui_loop_test_update, morph_tui_loop_test_draw};
+	struct morph_tui_core_screen screen{};
+	ASSERT_EQ(morph_tui_core_screen_open(&screen, pty.terminal, output, 0), 0);
+	struct tui_core_screen_test_state state{};
+	state.menu.list.flags = MORPH_TUI_WIDGET_LIST_VIM;
+	morph_tui_widget_list_layout(&state.menu.list, 3, 3);
+	const struct morph_tui_core_screen_ops ops{tui_core_screen_test_update,
+						   tui_core_screen_test_draw};
 	ASSERT_EQ(write(pty.master, "j\n", 2), 2);
-	EXPECT_EQ(morph_tui_screen_run(&screen, &ops, &state), 0);
+	EXPECT_EQ(morph_tui_core_screen_run(&screen, &ops, &state), 0);
 	EXPECT_EQ(state.draws, 2);
 	EXPECT_EQ(state.selected, 1);
 	EXPECT_TRUE(screen.session.active);
-	EXPECT_EQ(morph_tui_screen_close(&screen), 0);
+	EXPECT_EQ(morph_tui_core_screen_close(&screen), 0);
 }
 
 TEST_F(TuiTest, ScreenFailureAndCancellationReturnWithoutLosingCleanupOwnership)
 {
 	TuiPseudoTerminal pty;
 	ASSERT_NE(pty.terminal, nullptr);
-	struct morph_tui_screen screen{};
-	ASSERT_EQ(morph_tui_screen_open(&screen, pty.terminal, output, 0), 0);
-	struct morph_tui_loop_test_state state{};
-	const struct morph_tui_screen_ops failing{
-		morph_tui_loop_test_update,
-		+[](void *, const struct morph_tui_screen *) { return -EIO; }
-	};
-	EXPECT_EQ(morph_tui_screen_run(&screen, &failing, &state), -EIO);
+	struct morph_tui_core_screen screen{};
+	ASSERT_EQ(morph_tui_core_screen_open(&screen, pty.terminal, output, 0), 0);
+	struct tui_core_screen_test_state state{};
+	const struct morph_tui_core_screen_ops failing{
+		tui_core_screen_test_update,
+		+[](void *, const struct morph_tui_core_screen *) { return -EIO; }};
+	EXPECT_EQ(morph_tui_core_screen_run(&screen, &failing, &state), -EIO);
 	EXPECT_TRUE(screen.session.active);
 	volatile sig_atomic_t cancelled = 1;
 	screen.interrupted = &cancelled;
-	const struct morph_tui_screen_ops normal{morph_tui_loop_test_update, morph_tui_loop_test_draw};
-	EXPECT_EQ(morph_tui_screen_run(&screen, &normal, &state), -EINTR);
-	EXPECT_EQ(morph_tui_screen_close(&screen), 0);
+	const struct morph_tui_core_screen_ops normal{tui_core_screen_test_update,
+						      tui_core_screen_test_draw};
+	EXPECT_EQ(morph_tui_core_screen_run(&screen, &normal, &state), -EINTR);
+	EXPECT_EQ(morph_tui_core_screen_close(&screen), 0);
 	EXPECT_FALSE(screen.session.active);
 }
 
@@ -650,45 +691,50 @@ TEST_F(TuiTest, NumericCellsAlignInsideTheirAllocatedWidth)
 {
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 128), 0);
-	ASSERT_EQ(morph_tui_cell_append_aligned(&commands, 10, 2, 1, 2, 5,
-		"42", "", 1), 0);
+	ASSERT_EQ(morph_tui_render_draw_cell_append_aligned(&commands, 10, 2, 1, 2, 5, "42", "", 1),
+		  0);
 	EXPECT_EQ(std::string(morph_buf_cstr(&commands)), "\033[1;2H   42");
 	morph_buf_cleanup(&commands);
 }
 
 TEST_F(TuiTest, TreeTraversesOutOfOrderChildrenAndCollapses)
 {
-	struct morph_tui_tree tree{};
-	ASSERT_EQ(morph_tui_tree_init(&tree), 0);
-	size_t root = morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "Root", "");
-	morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "Other", "");
-	size_t child = morph_tui_tree_add(&tree, root, "Child", "");
+	struct morph_tui_widget_tree tree{};
+	ASSERT_EQ(morph_tui_widget_tree_init(&tree), 0);
+	size_t root = morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "Root", "");
+	morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "Other", "");
+	size_t child = morph_tui_widget_tree_add(&tree, root, "Child", "");
 	morph_buf_t text{};
 	ASSERT_EQ(morph_buf_init(&text, 128), 0);
-	ASSERT_EQ(morph_tui_tree_render(&tree, &text, 40, 0, 10), 0);
+	ASSERT_EQ(morph_tui_widget_tree_render(&tree, &text, 40, 0, 10), 0);
 	EXPECT_STREQ(morph_buf_cstr(&text), "  ├ ▾ Root\n  │ └ Child\n  └ Other\n");
-	EXPECT_EQ(morph_tui_tree_selected(&tree), root);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_RIGHT, 2), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_tree_selected(&tree), child);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_LEFT, 2), MORPH_TUI_CHANGED);
-	EXPECT_EQ(morph_tui_tree_selected(&tree), root);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_LEFT, 2), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_tree_selected(&tree), root);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_RIGHT, 2),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_tree_selected(&tree), child);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_LEFT, 2),
+		  MORPH_TUI_WIDGET_CHANGED);
+	EXPECT_EQ(morph_tui_widget_tree_selected(&tree), root);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_LEFT, 2),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(tree.visible.nelts, 2u);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_END, 1), MORPH_TUI_CHANGED);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_END, 1),
+		  MORPH_TUI_WIDGET_CHANGED);
 	EXPECT_EQ(tree.list.first, 1u);
-	morph_tui_tree_cleanup(&tree);
+	morph_tui_widget_tree_cleanup(&tree);
 	morph_buf_cleanup(&text);
 }
 
 TEST_F(TuiTest, TreeClipsUtf8AndSanitizesTerminalControls)
 {
-	struct morph_tui_tree tree{};
-	ASSERT_EQ(morph_tui_tree_init(&tree), 0);
-	morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "中文名称名称\033[2J", "description");
+	struct morph_tui_widget_tree tree{};
+	ASSERT_EQ(morph_tui_widget_tree_init(&tree), 0);
+	morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "中文名称名称\033[2J",
+				  "description");
 	for (int width : {1, 4, 9, 20, 80}) {
 		morph_buf_t text{};
 		ASSERT_EQ(morph_buf_init(&text, 128), 0);
-		ASSERT_EQ(morph_tui_tree_render(&tree, &text, width, 0, 10), 0);
+		ASSERT_EQ(morph_tui_widget_tree_render(&tree, &text, width, 0, 10), 0);
 		std::string row = morph_buf_cstr(&text);
 		row.pop_back();
 		EXPECT_LE(utf8_display_width(row.c_str()), static_cast<size_t>(width));
@@ -696,38 +742,42 @@ TEST_F(TuiTest, TreeClipsUtf8AndSanitizesTerminalControls)
 		EXPECT_EQ(utf8valid(row.c_str()), nullptr);
 		morph_buf_cleanup(&text);
 	}
-	morph_tui_tree_cleanup(&tree);
+	morph_tui_widget_tree_cleanup(&tree);
 }
 
 TEST_F(TuiTest, TreeRejectsInvalidParentsAndPreservesStickyErrors)
 {
-	struct morph_tui_tree tree{};
-	ASSERT_EQ(morph_tui_tree_init(&tree), 0);
-	EXPECT_EQ(morph_tui_tree_add(&tree, 3, "invalid", ""), MORPH_TUI_TREE_ROOT);
+	struct morph_tui_widget_tree tree{};
+	ASSERT_EQ(morph_tui_widget_tree_init(&tree), 0);
+	EXPECT_EQ(morph_tui_widget_tree_add(&tree, 3, "invalid", ""), MORPH_TUI_WIDGET_TREE_ROOT);
 	EXPECT_EQ(tree.error, -EINVAL);
-	EXPECT_EQ(morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "later", ""), MORPH_TUI_TREE_ROOT);
+	EXPECT_EQ(morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "later", ""),
+		  MORPH_TUI_WIDGET_TREE_ROOT);
 	EXPECT_EQ(tree.nodes.nelts, 0u);
-	morph_tui_tree_cleanup(&tree);
+	morph_tui_widget_tree_cleanup(&tree);
 }
 
 TEST_F(TuiTest, TreeViewportScrollsAndErasesUnusedRows)
 {
-	struct morph_tui_tree tree{};
-	ASSERT_EQ(morph_tui_tree_init(&tree), 0);
+	struct morph_tui_widget_tree tree{};
+	ASSERT_EQ(morph_tui_widget_tree_init(&tree), 0);
 	for (int i = 0; i < 30; i++) {
 		std::string label = "Node " + std::to_string(i);
-		ASSERT_NE(morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, label.c_str(), ""), MORPH_TUI_TREE_ROOT);
+		ASSERT_NE(morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT,
+						    label.c_str(), ""),
+			  MORPH_TUI_WIDGET_TREE_ROOT);
 	}
-	morph_tui_tree_update(&tree, MORPH_TUI_KEY_END, 3);
+	morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_END, 3);
 	morph_buf_t commands{};
 	ASSERT_EQ(morph_buf_init(&commands, 256), 0);
-	ASSERT_EQ(morph_tui_tree_draw(&tree, &commands, {2, 3, 20, 3}, "\033[0m", "\033[7m"), 0);
+	ASSERT_EQ(morph_tui_widget_tree_draw(&tree, &commands, {2, 3, 20, 3}, "\033[0m", "\033[7m"),
+		  0);
 	std::string text = morph_buf_cstr(&commands);
 	EXPECT_NE(text.find("Node 29"), std::string::npos);
 	EXPECT_EQ(text.find("Node 0"), std::string::npos);
 	EXPECT_NE(text.find("\033[5;2H\033[7m"), std::string::npos);
 	morph_buf_cleanup(&commands);
-	morph_tui_tree_cleanup(&tree);
+	morph_tui_widget_tree_cleanup(&tree);
 }
 
 TEST_F(TuiTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
@@ -735,8 +785,10 @@ TEST_F(TuiTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
 	for (int width : {1, 4, 12, 40, 80}) {
 		morph_buf_t text{};
 		ASSERT_EQ(morph_buf_init(&text, 128), 0);
-		ASSERT_EQ(morph_tui_tree_row(&text, "│ │ │ ", 1, "○", "中文很长的名称名称名称",
-			"description description description", 28, width, "", ""), 0);
+		ASSERT_EQ(morph_tui_widget_tree_row(
+				  &text, "│ │ │ ", 1, "○", "中文很长的名称名称名称",
+				  "description description description", 28, width, "", ""),
+			  0);
 		std::string value = morph_buf_cstr(&text);
 		size_t start = 0;
 		for (size_t end; (end = value.find('\n', start)) != std::string::npos;) {
@@ -750,17 +802,21 @@ TEST_F(TuiTest, StreamingTreeRowsBoundLongNamesAndDeepPrefixes)
 
 TEST_F(TuiTest, TreeIgnoresPastedNavigationAndSubmitsOnlyRealKeys)
 {
-	struct morph_tui_tree tree{};
-	ASSERT_EQ(morph_tui_tree_init(&tree), 0);
-	morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "First", "");
-	morph_tui_tree_add(&tree, MORPH_TUI_TREE_ROOT, "Second", "");
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_PASTE_BEGIN, 2), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_DOWN, 2), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_tree_update(&tree, '\r', 2), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_PASTE_END, 2), MORPH_TUI_UNHANDLED);
+	struct morph_tui_widget_tree tree{};
+	ASSERT_EQ(morph_tui_widget_tree_init(&tree), 0);
+	morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "First", "");
+	morph_tui_widget_tree_add(&tree, MORPH_TUI_WIDGET_TREE_ROOT, "Second", "");
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN, 2),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_DOWN, 2),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, '\r', 2), MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_PASTE_END, 2),
+		  MORPH_TUI_WIDGET_UNHANDLED);
 	EXPECT_EQ(tree.list.index, 0u);
-	EXPECT_EQ(morph_tui_tree_update(&tree, MORPH_TUI_KEY_RIGHT, 2), MORPH_TUI_UNHANDLED);
-	EXPECT_EQ(morph_tui_tree_update(&tree, '\r', 2), MORPH_TUI_SUBMIT);
-	EXPECT_EQ(morph_tui_tree_update(&tree, 27, 2), MORPH_TUI_CANCEL);
-	morph_tui_tree_cleanup(&tree);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, MORPH_TUI_TERMINAL_KEY_RIGHT, 2),
+		  MORPH_TUI_WIDGET_UNHANDLED);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, '\r', 2), MORPH_TUI_WIDGET_SUBMIT);
+	EXPECT_EQ(morph_tui_widget_tree_update(&tree, 27, 2), MORPH_TUI_WIDGET_CANCEL);
+	morph_tui_widget_tree_cleanup(&tree);
 }

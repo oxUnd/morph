@@ -4,7 +4,7 @@
 #include <morph/tui/components.h>
 #include "util/data.h"
 #include "util/child_io.h"
-#include <morph/tui/tree.h>
+#include <morph/tui/widgets/tree.h>
 
 #include <limits.h>
 #include <sys/ioctl.h>
@@ -538,8 +538,8 @@ static int cli_ask_user_prompt(const char *question,
 			tty = path ? fopen(path, "r") : NULL;
 			input = tty;
 		}
-		if (morph_tui_available(input, stdout)) {
-			struct morph_tui_select state = {0};
+		if (morph_tui_terminal_available(input, stdout)) {
+			struct morph_tui_widget_select state = {0};
 			char *labels[ASK_USER_CHOICES_MAX] = {0};
 			const char *items[ASK_USER_CHOICES_MAX] = {0};
 			int label_rc = 0;
@@ -559,31 +559,37 @@ static int cli_ask_user_prompt(const char *question,
 				if (label_rc)
 					break;
 			}
-			const struct morph_tui_select_options select_options = {
-				.items = items, .interrupted = &ctx->interrupted,
-				.color = cli_color_enabled(ctx), .allow_custom = 1,
-				.timeout_seconds = timeout, .hint = hint,
+			const struct morph_tui_widget_select_options select_options = {
+				.items = items,
+				.interrupted = &ctx->interrupted,
+				.color = cli_color_enabled(ctx),
+				.allow_custom = 1,
+				.timeout_seconds = timeout,
+				.hint = hint,
 				.cancel_token = options ? options->cancel_token : NULL,
 			};
 			char *custom = NULL;
-			int rc = label_rc ? label_rc :
-				morph_tui_select_init(&state, (size_t)choices_count + 1,
-				multi, (size_t)min_choices,
-				multi ? (size_t)(max_choices ? max_choices : choices_count) : 1);
+			int rc = label_rc ? label_rc
+					  : morph_tui_widget_select_init(
+						    &state, (size_t)choices_count + 1, multi,
+						    (size_t)min_choices,
+						    multi ? (size_t)(max_choices ? max_choices
+										 : choices_count)
+							  : 1);
 
 			if (!rc && options && options->recommended_count) {
 				if (multi) {
 					for (int i = 0; i < options->recommended_count; i++) {
 						state.menu.list.index =
 							(size_t)options->recommended_indices[i];
-						(void)morph_tui_select_update(&state, ' ');
+						(void)morph_tui_widget_select_update(&state, ' ');
 					}
 				}
 				state.menu.list.index = (size_t)options->recommended_indices[0];
 			}
 			if (!rc)
-				rc = morph_tui_select_run(&state, &select_options,
-					input, stdout, &custom);
+				rc = morph_tui_widget_select_run(&state, &select_options, input,
+								 stdout, &custom);
 			if (rc == -ECANCELED || rc == -EINTR)
 				cli_request_cancel(ctx);
 			if (!rc) {
@@ -591,7 +597,7 @@ static int cli_ask_user_prompt(const char *question,
 				int count = 0;
 
 				for (int i = 0; i < choices_count && count < 64; i++) {
-					if (morph_tui_select_selected(&state, (size_t)i))
+					if (morph_tui_widget_select_selected(&state, (size_t)i))
 						values[count++] = choices[i];
 				}
 				if (custom && count < 64)
@@ -606,7 +612,7 @@ static int cli_ask_user_prompt(const char *question,
 					}
 				}
 			}
-			morph_tui_select_cleanup(&state);
+			morph_tui_widget_select_cleanup(&state);
 			for (int i = 0; i < choices_count; i++)
 				free(labels[i]);
 			free(custom);
@@ -1322,9 +1328,10 @@ void cli_render_operation_approval(struct cli_context *ctx,
 	if (op->kind == TOOL_OP_COMMAND && op->directories_count > 0) {
 		approval_card_field(ctx, width, "Access", "read/write", ANSI_BOLD);
 		for (int i = 0; i < op->directories_count; i++)
-			approval_card_field(ctx, width,
-					    morph_tui_tree_branch(i == op->directories_count - 1, 0),
-					    op->directories[i].path, ANSI_DIM);
+			approval_card_field(
+				ctx, width,
+				morph_tui_widget_tree_branch(i == op->directories_count - 1, 0),
+				op->directories[i].path, ANSI_DIM);
 	}
 	if (op->kind == TOOL_OP_COMMAND)
 		approval_card_field(ctx, width, NULL,

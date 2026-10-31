@@ -1,11 +1,11 @@
-#include <morph/tui/card.h>
+#include <morph/tui/widgets/card.h>
 #include "util/error.h"
 #include "util/utf8.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-int morph_tui_card_border(morph_buf_t *line, int width, int bottom)
+int morph_tui_widget_card_border(morph_buf_t *line, int width, int bottom)
 {
 	if (!line || width < 2)
 		return -EINVAL;
@@ -16,7 +16,7 @@ int morph_tui_card_border(morph_buf_t *line, int width, int bottom)
 	return line->failed;
 }
 
-int morph_tui_card_row(morph_buf_t *line, int width, const char *text)
+int morph_tui_widget_card_row(morph_buf_t *line, int width, const char *text)
 {
 	if (!line || !text || width < 4)
 		return -EINVAL;

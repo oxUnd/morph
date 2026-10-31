@@ -24,3 +24,8 @@ target_include_directories(morph-tui PUBLIC
 	${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 target_link_libraries(morph-tui PUBLIC morph-util PRIVATE PkgConfig::TUI_LIBUV)
+
+option(BUILD_TUI_SAMPLES "Build terminal UI examples" OFF)
+if(BUILD_TUI_SAMPLES AND NOT MORPH_TUI_SAMPLES_STANDALONE)
+	add_subdirectory(samples)
+endif()

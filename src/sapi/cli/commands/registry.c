@@ -267,8 +267,8 @@ void cli_print_help(struct cli_context *ctx)
 				snprintf(display, sizeof(display), "%s", command_at(i, NULL)->name);
 			}
 			item++;
-			cli_list_item(ctx, morph_tui_tree_branch(group_last, 1), item == item_count, "",
-				      display, desc, 22, columns);
+			cli_list_item(ctx, morph_tui_widget_tree_branch(group_last, 1),
+				      item == item_count, "", display, desc, 22, columns);
 			i = alias_end + 1;
 		}
 		group_start = group_end;

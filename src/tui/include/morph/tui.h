@@ -3,9 +3,9 @@
 
 /* Convenience umbrella for terminal primitives. Implementations include their
  * module headers directly; public declarations live in those headers. */
-#include <morph/tui/draw.h>
-#include <morph/tui/frame.h>
-#include <morph/tui/input.h>
-#include <morph/tui/terminal.h>
+#include <morph/tui/render/draw.h>
+#include <morph/tui/render/frame.h>
+#include <morph/tui/terminal/input.h>
+#include <morph/tui/terminal/terminal.h>
 
 #endif

@@ -1,11 +1,11 @@
-#include <morph/tui/frame.h>
-#include <morph/tui/draw.h>
+#include <morph/tui/render/frame.h>
+#include <morph/tui/render/draw.h>
 #include "util/error.h"
 
 #include <string.h>
 
-int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
-		      int columns, int rows, const char *lines)
+int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *output, int columns,
+				   int rows, const char *lines)
 {
 	if (!frame || !output || !lines || columns < 1 || rows < 1)
 		return -EINVAL;
@@ -56,9 +56,9 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 		previous += old_length + (previous[old_length] == '\n');
 	}
 	morph_buf_puts(commands, "\033[?2026l");
-	rc = morph_tui_output_write(output, commands);
+	rc = morph_tui_render_draw_write(output, commands);
 	if (rc != 0) {
-		morph_tui_frame_invalidate(frame);
+		morph_tui_render_frame_invalidate(frame);
 		return rc;
 	}
 	morph_buf_reset(&frame->previous);
@@ -69,7 +69,7 @@ int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output,
 	return rc;
 }
 
-void morph_tui_frame_invalidate(struct morph_tui_frame *frame)
+void morph_tui_render_frame_invalidate(struct morph_tui_render_frame *frame)
 {
 	if (!frame)
 		return;
@@ -78,11 +78,11 @@ void morph_tui_frame_invalidate(struct morph_tui_frame *frame)
 	frame->target = NULL;
 }
 
-void morph_tui_frame_cleanup(struct morph_tui_frame *frame)
+void morph_tui_render_frame_cleanup(struct morph_tui_render_frame *frame)
 {
 	if (!frame)
 		return;
 	morph_buf_cleanup(&frame->previous);
 	morph_buf_cleanup(&frame->output);
-	morph_tui_frame_invalidate(frame);
+	morph_tui_render_frame_invalidate(frame);
 }

@@ -3,25 +3,25 @@
 
 struct cli_screen {
 	struct cli_context *ctx;
-	struct morph_tui_screen_ops ops;
+	struct morph_tui_core_screen_ops ops;
 	void *data;
 	void (*complete)(void *data, int result);
 };
 
-static int cli_screen_event(void *data, struct morph_tui_app *app,
-			    const struct morph_tui_event *event)
+static int cli_screen_event(void *data, struct morph_tui_core_app *app,
+			    const struct morph_tui_core_event *event)
 {
 	struct cli_screen *screen = data;
 	int rc = screen->ops.update(screen->data, event);
 
-	if (rc == MORPH_TUI_SCREEN_CLOSE)
-		return morph_tui_app_dismiss(app, 0);
-	if (rc == MORPH_TUI_SCREEN_REDRAW)
-		morph_tui_app_invalidate(app, MORPH_TUI_INVALIDATE_DISPLAY);
+	if (rc == MORPH_TUI_CORE_SCREEN_CLOSE)
+		return morph_tui_core_app_dismiss(app, 0);
+	if (rc == MORPH_TUI_CORE_SCREEN_REDRAW)
+		morph_tui_core_app_invalidate(app, MORPH_TUI_CORE_INVALIDATE_DISPLAY);
 	return rc < 0 ? rc : 1;
 }
 
-static int cli_screen_draw(void *data, const struct morph_tui_screen *terminal)
+static int cli_screen_draw(void *data, const struct morph_tui_core_screen *terminal)
 {
 	struct cli_screen *screen = data;
 
@@ -48,16 +48,16 @@ static void cli_screen_close(void *data, int result)
 	struct cli_screen *screen = data;
 	struct cli_context *ctx = screen->ctx;
 
-	if (morph_tui_app_depth(ctx->application) <= 1) {
+	if (morph_tui_core_app_depth(ctx->application) <= 1) {
 		int rc = cli_application_flush(ctx);
 
 		if (rc) {
 			result = rc;
-			morph_tui_app_stop(ctx->application, rc);
+			morph_tui_core_app_stop(ctx->application, rc);
 		}
 	}
 	screen->complete(screen->data, result);
-	if (ctx->application_command && morph_tui_app_depth(ctx->application) <= 1) {
+	if (ctx->application_command && morph_tui_core_app_depth(ctx->application) <= 1) {
 		ctx->application_command = 0;
 		if (result < 0 && result != -ECANCELED)
 			CMD_ERROR(ctx, "%s", morph_strerror(result));
@@ -66,9 +66,8 @@ static void cli_screen_close(void *data, int result)
 	free(screen);
 }
 
-int cli_screen_present(struct cli_context *ctx,
-		       const struct morph_tui_screen_ops *ops, void *data,
-		       void (*complete)(void *data, int result))
+int cli_screen_present(struct cli_context *ctx, const struct morph_tui_core_screen_ops *ops,
+		       void *data, void (*complete)(void *data, int result))
 {
 	if (!ctx || !ctx->application || !ops || !ops->update || !ops->draw || !complete)
 		return -EINVAL;
@@ -78,16 +77,20 @@ int cli_screen_present(struct cli_context *ctx,
 		return -ENOMEM;
 	*screen = (struct cli_screen){.ctx = ctx, .ops = *ops,
 		.data = data, .complete = complete};
-	static const struct morph_tui_controller_ops controller_ops = {
-		.event = cli_screen_event, .draw = cli_screen_draw, .close = cli_screen_close,
+	static const struct morph_tui_core_controller_ops controller_ops = {
+		.event = cli_screen_event,
+		.draw = cli_screen_draw,
+		.close = cli_screen_close,
 	};
-	struct morph_tui_controller controller = {
-		.ops = &controller_ops, .data = screen,
-		.input_mode = MORPH_TUI_INPUT_KEYS,
-		.terminal_flags = MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE,
+	struct morph_tui_core_controller controller = {
+		.ops = &controller_ops,
+		.data = screen,
+		.input_mode = MORPH_TUI_CORE_INPUT_KEYS,
+		.terminal_flags =
+			MORPH_TUI_TERMINAL_SESSION_ALTERNATE | MORPH_TUI_TERMINAL_SESSION_PASTE,
 		.tick_ms = 100,
 	};
-	int rc = morph_tui_app_present(ctx->application, &controller);
+	int rc = morph_tui_core_app_present(ctx->application, &controller);
 
 	if (rc)
 		free(screen);

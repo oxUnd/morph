@@ -72,7 +72,9 @@ def main():
                             while terminal.raw.count('Worked for ') < turn + 1:
                                 assert time.monotonic() < deadline, terminal.raw[-4000:]
                                 terminal.pump(.05)
-                            terminal.pump(.2)
+                            # The duration row can arrive before the frame's
+                            # composer redraw and synchronized-update end marker.
+                            terminal.snapshot(f'completed turn {turn + 1} at {width} columns')
                             output = terminal.raw[submitted:]
                             thought = output.index('The user says')
                             committed = output.rfind('hello world', 0, thought)

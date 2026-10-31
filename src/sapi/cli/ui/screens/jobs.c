@@ -251,9 +251,9 @@ struct jobs_view {
 	struct cli_context *ctx;
 	cJSON *jobs;
 	cJSON *details;
-	struct morph_tui_frame frame;
-	struct morph_tui_list selection;
-	struct morph_tui_text_view lines;
+	struct morph_tui_render_frame frame;
+	struct morph_tui_widget_list selection;
+	struct morph_tui_widget_text_view lines;
 	morph_buf_t document;
 	int detail;
 	int64_t refreshed;
@@ -303,7 +303,7 @@ static int jobs_refresh(struct jobs_view *view)
 	return 0;
 }
 
-static int jobs_draw(void *data, const struct morph_tui_screen *screen)
+static int jobs_draw(void *data, const struct morph_tui_core_screen *screen)
 {
 	struct jobs_view *view = data;
 	int columns = screen->area.width, rows = screen->area.height;
@@ -316,8 +316,8 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 		return rc;
 	}
 	int page = rows > 5 ? rows - 5 : 1;
-	morph_tui_list_layout(&view->selection, (size_t)cJSON_GetArraySize(view->jobs),
-			      (size_t)page);
+	morph_tui_widget_list_layout(&view->selection, (size_t)cJSON_GetArraySize(view->jobs),
+				     (size_t)page);
 	if (view->detail && view->details) {
 		morph_buf_reset(&view->document);
 		(void)morph_buf_printf(&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
@@ -349,10 +349,11 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 		}
 		free(safe);
 		if (!rc)
-			rc = morph_tui_text_view_wrap(&view->lines, morph_buf_cstr(&view->document),
-						      (size_t)(columns > 4 ? columns - 4 : 1));
-		view->scroll = morph_tui_scroll_update(view->scroll, view->lines.lines.nelts,
-						       (size_t)page, 0);
+			rc = morph_tui_widget_text_view_wrap(
+				&view->lines, morph_buf_cstr(&view->document),
+				(size_t)(columns > 4 ? columns - 4 : 1));
+		view->scroll = morph_tui_widget_scroll_update(view->scroll, view->lines.lines.nelts,
+							      (size_t)page, 0);
 	}
 	for (int row = 0; row < rows && !rc; row++) {
 		morph_buf_reset(&line);
@@ -363,7 +364,7 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 			style = ANSI_BOLD;
 		} else if (row >= 2 && row < page + 2) {
 			if (view->detail) {
-				struct morph_tui_text_line *text = morph_array_get(
+				struct morph_tui_widget_text_line *text = morph_array_get(
 					&view->lines.lines, view->scroll + (size_t)(row - 2));
 				if (text) {
 					(void)morph_buf_puts(&line, "  ");
@@ -398,33 +399,33 @@ static int jobs_draw(void *data, const struct morph_tui_screen *screen)
 				      clipped, cli_color_enabled(view->ctx) ? ANSI_RESET : "");
 	}
 	if (!rc)
-		rc = morph_tui_frame_present(&view->frame, stdout, columns, rows,
-					     morph_buf_cstr(&frame));
+		rc = morph_tui_render_frame_present(&view->frame, stdout, columns, rows,
+						    morph_buf_cstr(&frame));
 	morph_buf_cleanup(&frame);
 	morph_buf_cleanup(&line);
 	return rc;
 }
 
-static int jobs_update(void *data, const struct morph_tui_event *event)
+static int jobs_update(void *data, const struct morph_tui_core_event *event)
 {
 	struct jobs_view *view = data;
-	if (event->type == MORPH_TUI_EVENT_TICK) {
+	if (event->type == MORPH_TUI_CORE_EVENT_TICK) {
 		/* Yield the terminal to permission/interaction dialogs on the owner. */
 		if (cli_ui_owner_call_pending(view->ctx))
-			return MORPH_TUI_SCREEN_CLOSE;
+			return MORPH_TUI_CORE_SCREEN_CLOSE;
 		if (jobs_now() - view->refreshed < 1000)
-			return MORPH_TUI_SCREEN_CONTINUE;
+			return MORPH_TUI_CORE_SCREEN_CONTINUE;
 		int rc = jobs_refresh(view);
-		return rc ? rc : MORPH_TUI_SCREEN_REDRAW;
+		return rc ? rc : MORPH_TUI_CORE_SCREEN_REDRAW;
 	}
-	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
-		return MORPH_TUI_SCREEN_CONTINUE;
+	if (event->type != MORPH_TUI_CORE_EVENT_KEY || event->pasting)
+		return MORPH_TUI_CORE_SCREEN_CONTINUE;
 	int key = event->key;
 	if (key == 27 || key == 'q' || key == 3 || key == 4) {
 		if (view->detail && key != 3 && key != 4)
 			view->detail = 0;
 		else
-			return MORPH_TUI_SCREEN_CLOSE;
+			return MORPH_TUI_CORE_SCREEN_CLOSE;
 	} else if (key == 'k') {
 		cJSON *job = cJSON_GetArrayItem(view->jobs, (int)view->selection.index);
 		if (job) {
@@ -436,23 +437,23 @@ static int jobs_update(void *data, const struct morph_tui_event *event)
 		view->detail = 1;
 		view->scroll = 0;
 	} else if (view->detail) {
-		if (key == MORPH_TUI_KEY_UP && view->scroll)
+		if (key == MORPH_TUI_TERMINAL_KEY_UP && view->scroll)
 			view->scroll--;
-		if (key == MORPH_TUI_KEY_DOWN)
+		if (key == MORPH_TUI_TERMINAL_KEY_DOWN)
 			view->scroll++;
-		if (key == MORPH_TUI_KEY_PAGE_UP)
+		if (key == MORPH_TUI_TERMINAL_KEY_PAGE_UP)
 			view->scroll = view->scroll > 10 ? view->scroll - 10 : 0;
-		if (key == MORPH_TUI_KEY_PAGE_DOWN)
+		if (key == MORPH_TUI_TERMINAL_KEY_PAGE_DOWN)
 			view->scroll += 10;
-		if (key == MORPH_TUI_KEY_HOME)
+		if (key == MORPH_TUI_TERMINAL_KEY_HOME)
 			view->scroll = 0;
-		if (key == MORPH_TUI_KEY_END)
+		if (key == MORPH_TUI_TERMINAL_KEY_END)
 			view->scroll = view->lines.lines.nelts;
 	} else {
-		(void)morph_tui_list_update(&view->selection, key);
+		(void)morph_tui_widget_list_update(&view->selection, key);
 	}
 	int rc = jobs_refresh(view);
-	return rc ? rc : MORPH_TUI_SCREEN_REDRAW;
+	return rc ? rc : MORPH_TUI_CORE_SCREEN_REDRAW;
 }
 
 static void jobs_close(void *data, int result)
@@ -463,16 +464,16 @@ static void jobs_close(void *data, int result)
 	cJSON_Delete(view->jobs);
 	cJSON_Delete(view->details);
 	morph_buf_cleanup(&view->document);
-	morph_tui_frame_cleanup(&view->frame);
-	morph_tui_text_view_cleanup(&view->lines);
+	morph_tui_render_frame_cleanup(&view->frame);
+	morph_tui_widget_text_view_cleanup(&view->lines);
 	free(view);
 }
 
 int cli_jobs_view(struct cli_context *ctx, const char *id)
 {
 	struct jobs_view view = {.ctx = ctx};
-	struct morph_tui_screen screen = {0};
-	const struct morph_tui_screen_ops ops = {.draw = jobs_draw, .update = jobs_update};
+	struct morph_tui_core_screen screen = {0};
+	const struct morph_tui_core_screen_ops ops = {.draw = jobs_draw, .update = jobs_update};
 	int rc = morph_buf_init(&view.document, BUFSIZ);
 	if (!rc)
 		rc = jobs_refresh(&view);
@@ -514,11 +515,12 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 	}
 	screen.interrupted = &ctx->interrupted;
 	if (!rc)
-		rc = morph_tui_screen_open(&screen, stdin, stdout,
-					   MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE);
+		rc = morph_tui_core_screen_open(&screen, stdin, stdout,
+						MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
+							MORPH_TUI_TERMINAL_SESSION_PASTE);
 	if (!rc)
-		rc = morph_tui_screen_run(&screen, &ops, &view);
-	int leave_rc = morph_tui_screen_close(&screen);
+		rc = morph_tui_core_screen_run(&screen, &ops, &view);
+	int leave_rc = morph_tui_core_screen_close(&screen);
 	if (rc == -EINTR)
 		rc = 0;
 	if (!rc)
@@ -527,7 +529,7 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 	cJSON_Delete(view.jobs);
 	cJSON_Delete(view.details);
 	morph_buf_cleanup(&view.document);
-	morph_tui_frame_cleanup(&view.frame);
-	morph_tui_text_view_cleanup(&view.lines);
+	morph_tui_render_frame_cleanup(&view.frame);
+	morph_tui_widget_text_view_cleanup(&view.lines);
 	return rc;
 }
