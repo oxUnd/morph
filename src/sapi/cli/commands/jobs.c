@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/jobs_ui.h"
+#include "sapi/cli/ui/screens/jobs.h"
 
 static int cmd_jobs(struct cli_context *ctx, int argc, char **argv)
 {

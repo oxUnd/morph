@@ -10,6 +10,63 @@ The framework covers the components these screens currently need. Application
 code owns domain data and actions; the framework owns terminal mechanics,
 interaction state, layout helpers, and presentation primitives.
 
+## Directory and include conventions
+
+Framework sources are grouped by responsibility. Public headers live only in
+`include/morph/`; implementation directories are not public include paths.
+
+```text
+src/tui/
+  include/morph/
+    tui.h                    terminal primitive convenience umbrella
+    tui/
+      application.h          application API
+      controller.h           controller descriptor and lifecycle callbacks
+      event.h                typed events
+      screen.h               standalone screen host
+      terminal.h, input.h    terminal sessions and input decoder
+      draw.h, frame.h        drawing and frame submission
+      layout.h               rectangular geometry
+      list.h, select.h       list, menu, and selection components
+      editor.h, card.h        text editing and card rows
+      text_view.h, tree.h    document and hierarchy components
+      components.h           component convenience umbrella
+  core/                      application, standalone host, and layout
+  terminal/                  POSIX terminal modes and byte decoding
+  render/                    drawing and frame diffs
+  widgets/                   reusable interaction and presentation components
+  CMakeLists.txt
+
+src/sapi/cli/
+  main.c, init.c, run.c       frontend entry and orchestration
+  commands/                  slash-command handlers
+  setup/                     wizard, providers, roles, and configuration
+  ui/
+    application.c, .h        framework-to-CLI controller adapter
+    event_queue.c, .h        owner-thread queue and wakeup bridge
+    runtime_events.c         runtime event callback
+    recap.c, .h              recap presentation state
+    input/                   Readline callbacks, composer, paste, cancellation
+    presentation/            feed, transcript, terminal output, media, styles
+    screens/                 history, hooks, and jobs pages
+```
+
+- Include framework APIs as `<morph/tui/module.h>`. Each implementation includes
+  its own module header and the dependencies it uses directly. `tui.h` and
+  `components.h` remain convenience umbrellas for consumers; they own no types
+  or declarations. Application and controller headers do not include widgets.
+- Keep terminal protocols in `terminal/`, output primitives in `render/`, and
+  reusable controls in `widgets/`. Framework code depends on `morph-util` and
+  platform libraries; runtime DTOs, command semantics, and CLI state stay in the
+  frontend. Create further directories when an implemented module needs them.
+- CLI headers stay beside their implementations and use project-relative
+  includes such as `"sapi/cli/ui/screens/history.h"`. A file already placed in
+  `screens/` does not repeat an `_ui` suffix. The general `event_queue` and
+  runtime-specific `runtime_events` names distinguish the two event adapters.
+- List source files explicitly in each target's `CMakeLists.txt`, grouped to
+  match the directories. Update include sites and documentation in the same
+  change as a move. Keep tests in the existing `tests/test_<module>` layout.
+
 ## Application and controller host
 
 `<morph/tui/application.h>` exposes an explicitly owned application. Its private
@@ -77,7 +134,7 @@ in-memory buffer; bounded spill storage belongs with the transcript migration.
 | Application | libuv scheduling, controller presentation, input ownership, invalidation, teardown | Interactive chat, hooks, sessions, history, jobs |
 | Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
 | Input decoder | Stateful CSI/SS3 decoding, escape deadlines, UTF-8 byte input | All modal screens |
-| Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Hooks, session picker, and history use `run`; inline setup and selects use `poll` |
+| Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Standalone modal screens use `run`; inline setup and selects use `poll` |
 | Rectangular layout | Insets, horizontal/vertical region allocation, clipping | Hooks cells/columns, session margins, and history header/body/footer sizing |
 | List | Selection, visibility, paging, wrap/clamp, Home/End, configurable shortcuts | Setup choices, sessions, hook selection/decisions, history selection |
 | Menu | List interaction plus submit/back/cancel and paste isolation | Setup menus, session picker, and hook decisions |
@@ -90,16 +147,9 @@ in-memory buffer; bounded spill storage belongs with the transcript migration.
 | Frame renderer | Reusable row-diff output, cache invalidation, no-op suppression | History |
 
 Public functions, struct/enum tags, and constants use the `morph_tui_` and
-`MORPH_TUI_` namespaces. Consumers link `morph-tui` to inherit the public include
-directories and include `<morph/tui.h>`, `<morph/tui/components.h>`, or
-`<morph/tui/tree.h>`. Headers live under `src/tui/include/`; the former `tui_*`
-names and `tui/` include paths are no longer provided.
-
-Application hosting uses `morph/tui/application.h`. The public low-level API is
-`morph/tui.h`; layout, components, and standalone screen hosting
-are in `morph/tui/components.h`; hierarchical views use `morph/tui/tree.h`. Implementations are divided into `application.c`, `terminal.c`,
-`input.c`, `screen.c`, `layout.c`, `list.c`, `select.c`, `select_prompt.c`, `editor.c`, `card.c`, `text_view.c`,
-`draw.c`, and `frame.c`.
+`MORPH_TUI_` namespaces. Consumers link `morph-tui` to inherit its include
+directories. Headers use the module paths documented above; the former `tui_*`
+symbols and `tui/` include prefix are not provided.
 
 ## Interaction and screen lifecycle
 

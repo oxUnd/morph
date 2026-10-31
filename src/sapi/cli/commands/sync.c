@@ -1,6 +1,6 @@
 #include "sapi/cli/commands/registry.h"
 #include "sapi/cli/interaction.h"
-#include "sapi/cli/list_ui.h"
+#include "sapi/cli/ui/presentation/list.h"
 
 static void print_sync_field(struct cli_context *ctx, const char *ancestor, int is_last,
 			     const char *name, const char *value, int columns)

@@ -1,5 +1,5 @@
 #include "sapi/cli/cli.h"
-#include "sapi/cli/setup.h"
+#include "sapi/cli/setup/setup.h"
 #include "sapi/cli/manage.h"
 #include "config/config.h"
 #include "skill/skill.h"

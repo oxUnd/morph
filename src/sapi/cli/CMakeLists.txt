@@ -1,55 +1,68 @@
 add_library(morph-cli STATIC
-	application.c
-	banner.c
-	callbacks.c
-	cancel_input.c
-	clipboard.c
+	# Frontend orchestration and services
 	command_job.c
-	composer.c
 	core.c
-	events.c
 	init.c
-	image_loader.c
 	interaction.c
-	list_ui.c
-	hooks_ui.c
-	history_ui.c
 	manage.c
 	manage_mcp.c
 	manage_skills.c
-	skill_store.c
 	once.c
-	output.c
-	presentation.c
-	recap.c
 	run.c
-	setup.c
-	setup_config.c
-	setup_mcp.c
-	setup_role.c
-	setup_ui.c
 	scheduler.c
 	share.c
 	share_save.c
-	commands/share.c
-	shell_style.c
-	jobs_ui.c
-	terminal.c
-	transcript.c
-	ui_event.c
+	skill_store.c
+
+	# Local command handlers
 	commands/ext.c
+	commands/hooks.c
+	commands/jobs.c
 	commands/mcp.c
 	commands/media.c
 	commands/memory.c
 	commands/permissions.c
-	commands/jobs.c
-	commands/hooks.c
 	commands/registry.c
 	commands/runtime.c
 	commands/session.c
+	commands/share.c
 	commands/skill.c
 	commands/sync.c
 	commands/tasks.c
+
+	# Application and runtime event adapters
+	ui/application.c
+	ui/event_queue.c
+	ui/recap.c
+	ui/runtime_events.c
+
+	# Terminal input adapters
+	ui/input/callbacks.c
+	ui/input/cancel.c
+	ui/input/clipboard.c
+	ui/input/composer.c
+
+	# CLI presentation and media
+	ui/presentation/banner.c
+	ui/presentation/image_loader.c
+	ui/presentation/list.c
+	ui/presentation/output.c
+	ui/presentation/presenter.c
+	ui/presentation/shell_style.c
+	ui/presentation/terminal.c
+	ui/presentation/transcript.c
+
+	# Interactive pages
+	ui/screens/history.c
+	ui/screens/hooks.c
+	ui/screens/jobs.c
+
+	# Setup wizard and configuration
+	setup/config.c
+	setup/mcp.c
+	setup/role.c
+	setup/setup.c
+	setup/ui.c
 )
 if(NOT TARGET morph-markdown-html)
 	message(FATAL_ERROR "morph CLI requires MORPH_MARKDOWN_BUILD_HTML=ON")

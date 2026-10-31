@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "sapi/cli/setup.h"
+#include "sapi/cli/setup/setup.h"
 #include "sapi/cli/cli.h"
-#include "sapi/cli/setup_ui.h"
-#include "sapi/cli/setup_config.h"
-#include "sapi/cli/setup_mcp.h"
+#include "sapi/cli/setup/ui.h"
+#include "sapi/cli/setup/config.h"
+#include "sapi/cli/setup/mcp.h"
 #include "agent/system_prompt.h"
 #include <filesystem>
 #include "config/config.h"

@@ -1,5 +1,5 @@
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/list_ui.h"
+#include "sapi/cli/ui/presentation/list.h"
 
 /* Built-in command groups are immutable; lookup requires no registration. */
 static struct cli_command_group (*const command_groups[])(void) = {

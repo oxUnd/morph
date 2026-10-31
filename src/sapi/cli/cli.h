@@ -4,10 +4,10 @@
 struct morph_log;
 #include "config/config.h"
 #include "runtime/runtime.h"
-#include "sapi/cli/recap.h"
+#include "sapi/cli/ui/recap.h"
 #include "util/buf.h"
-#include "sapi/cli/composer.h"
-#include "sapi/cli/callbacks.h"
+#include "sapi/cli/ui/input/composer.h"
+#include "sapi/cli/ui/input/callbacks.h"
 #include "util/signals.h"
 #include "util/strmap.h"
 #include "util/utf8.h"

@@ -1,5 +1,5 @@
 #include "sapi/cli/cli.h"
-#include "sapi/cli/setup.h"
+#include "sapi/cli/setup/setup.h"
 #include "config/config.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -3,8 +3,8 @@
 extern "C" {
 #include "sapi/cli/cli.h"
 #include "sapi/cli/command_job.h"
-#include "sapi/cli/terminal.h"
-#include "sapi/cli/jobs_ui.h"
+#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/ui/screens/jobs.h"
 int cli_presentation_init(struct cli_context *ctx);
 void cli_presentation_cleanup(struct cli_context *ctx);
 int cli_presentation_event(struct cli_context *ctx, const struct morph_event *event);

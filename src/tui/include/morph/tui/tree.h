@@ -1,8 +1,10 @@
 #ifndef MORPH_TUI_TREE_H
 #define MORPH_TUI_TREE_H
 
-#include <morph/tui/components.h>
+#include <morph/tui/layout.h>
+#include <morph/tui/list.h>
 #include "util/arena.h"
+#include "util/array.h"
 #include <stdint.h>
 
 #ifdef __cplusplus

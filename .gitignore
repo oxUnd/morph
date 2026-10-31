@@ -61,7 +61,7 @@ exts/**/package-lock.json
 
 # Debug
 *.dSYM/
-core
+/core
 vgcore.*
 cscope.files
 cscope.out

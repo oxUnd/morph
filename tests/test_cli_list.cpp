@@ -4,8 +4,8 @@ extern "C" {
 #include "runtime/runtime.h"
 #include "sapi/cli/cli.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/list_ui.h"
-#include "sapi/cli/composer.h"
+#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/ui/input/composer.h"
 #include "util/file.h"
 #include "event/event.h"
 

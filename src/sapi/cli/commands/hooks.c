@@ -1,7 +1,7 @@
 #include "sapi/cli/commands/registry.h"
 #include "util/sha256.h"
-#include "sapi/cli/hooks_ui.h"
-#include "sapi/cli/setup_ui.h"
+#include "sapi/cli/ui/screens/hooks.h"
+#include "sapi/cli/setup/ui.h"
 
 static const char *hook_field(const cJSON *row, const char *key)
 {

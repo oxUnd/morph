@@ -1,8 +1,8 @@
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/list_ui.h"
-#include "sapi/cli/setup_ui.h"
-#include "sapi/cli/history_ui.h"
-#include "sapi/cli/application.h"
+#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/setup/ui.h"
+#include "sapi/cli/ui/screens/history.h"
+#include "sapi/cli/ui/application.h"
 
 #include <morph/tui/components.h>
 

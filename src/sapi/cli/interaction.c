@@ -1,4 +1,4 @@
-#include "sapi/cli/callbacks.h"
+#include "sapi/cli/ui/input/callbacks.h"
 #include "sapi/cli/internal.h"
 #include "sapi/cli/interaction.h"
 #include "util/child_io.h"

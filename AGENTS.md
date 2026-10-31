@@ -9,6 +9,7 @@
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
+- **TUI** `src/tui/`: public module headers in `include/morph/tui/`; implementations in `core/`, `terminal/`, `render/`, and `widgets/`. CLI adapters live in `src/sapi/cli/ui/` (`input/`, `presentation/`, `screens/`); setup lives in `src/sapi/cli/setup/`. Include framework modules as `<morph/tui/module.h>` and CLI headers by their full `sapi/cli/...` path. Keep convenience umbrellas out of framework implementations. See `docs/tui-architecture.md` for directory and dependency rules.
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
@@ -23,7 +24,7 @@
 - **Exts** `src/ext/`, `src/ipc/`: sandboxed subprocesses (JSON-RPC) with TOML manifest (`entry`, `permissions`, `args_schema`); examples in `exts/`.
 - **Context compression** `src/agent/compress.c`, triggered at `summarize_threshold_ratio` (0.8).
 - **Sandbox** `src/sandbox/`: Linux seccomp-BPF denylist (default ALLOW, denies escape-relevant syscalls) + Landlock + rlimits; macOS Seatbelt via `sandbox_init`.
-- **Events** `src/event/`: unified dotted names across startup/MCP/ReAct/tools/HITL/tasks. Renderers in `src/sapi/cli/events.c` and `src/sapi/fastcgi/event_sink.c`. See `docs/event-system.md`.
+- **Events** `src/event/`: unified dotted names across startup/MCP/ReAct/tools/HITL/tasks. Renderers in `src/sapi/cli/ui/runtime_events.c` and `src/sapi/fastcgi/event_sink.c`. See `docs/event-system.md`.
 - **Scheduled tasks** `src/runtime/task_*.c`. See `docs/scheduled-tasks.md`.
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
@@ -73,6 +74,7 @@ morph-agent (react, context, compress, tokenizer, tool, plan)
 morph-tools, morph-skill, morph-mcp
 morph-config
 morph-runtime ← morph-agent, config, credits, event, mcp, session, skill, sync, tools
+morph-tui ← morph-util, libuv (core, terminal, render, widgets)
 morph-cli → morph (executable)
 ```
 Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config, open runtime, `cli_run()`.
@@ -94,7 +96,7 @@ Prefer these over hand-rolled equivalents.
 - **`morph_queue_t`** `queue.h` — intrusive doubly-linked list, header-only (`morph_queue_init`, `insert_head/tail`, `remove`, `foreach`/`foreach_safe`, `morph_queue_data`).
 
 ## Dependencies
-- Required: SQLite3, libcurl, CMake ≥ 3.20.
+- Required: SQLite3, libcurl, libuv ≥ 1.44, CMake ≥ 3.20.
 - Fetched: md4c v0.5.3, GoogleTest v1.14.0.
 - Optional: readline (auto-detected; falls back to fgets); libseccomp (Linux sandbox).
 

@@ -1,0 +1,34 @@
+#ifndef MORPH_CLI_UI_PRESENTATION_TERMINAL_H
+#define MORPH_CLI_UI_PRESENTATION_TERMINAL_H
+
+#include <stdio.h>
+#include <stdint.h>
+
+struct cli_context;
+
+int cli_terminal_init(struct cli_context *ctx, FILE *output, int output_fd);
+void cli_terminal_cleanup(struct cli_context *ctx);
+void cli_terminal_update_begin(struct cli_context *ctx);
+void cli_terminal_update_end(struct cli_context *ctx);
+int cli_terminal_update_active(const struct cli_context *ctx);
+void cli_terminal_turn_begin(struct cli_context *ctx);
+void cli_terminal_turn_end(struct cli_context *ctx, int result);
+void cli_terminal_live_set(struct cli_context *ctx, const char *text);
+void cli_terminal_reasoning_set(struct cli_context *ctx, const char *text);
+void cli_terminal_live_clear(struct cli_context *ctx);
+void cli_terminal_activity_set(struct cli_context *ctx, const char *text);
+int64_t cli_terminal_activity_elapsed_ms(const struct cli_context *ctx);
+int cli_terminal_columns(const struct cli_context *ctx);
+void cli_terminal_queue_changed(struct cli_context *ctx);
+void cli_terminal_render_frame(struct cli_context *ctx, int force);
+int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows);
+int cli_terminal_next_frame_ms(const struct cli_context *ctx);
+void cli_terminal_composer_suspend(struct cli_context *ctx);
+void cli_terminal_composer_resume(struct cli_context *ctx);
+void cli_terminal_history_begin(struct cli_context *ctx);
+void cli_terminal_history_end(struct cli_context *ctx);
+void cli_terminal_resize(struct cli_context *ctx);
+void cli_terminal_set_hidden(struct cli_context *ctx, int hidden);
+int cli_terminal_live_active(const struct cli_context *ctx);
+
+#endif

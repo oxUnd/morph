@@ -1,8 +1,7 @@
 #ifndef MORPH_TUI_APPLICATION_H
 #define MORPH_TUI_APPLICATION_H
 
-#include <morph/tui/components.h>
-#include <stdint.h>
+#include <morph/tui/controller.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,39 +9,9 @@ extern "C" {
 
 struct morph_tui_app;
 
-enum morph_tui_input_mode {
-	/* The controller reads input, for example through a Readline adapter. */
-	MORPH_TUI_INPUT_EXTERNAL,
-	/* The application owns raw mode and delivers decoded key events. */
-	MORPH_TUI_INPUT_KEYS
-};
-
 enum morph_tui_invalidation {
 	MORPH_TUI_INVALIDATE_DISPLAY = 1,
 	MORPH_TUI_INVALIDATE_LAYOUT = 2
-};
-
-/* Event handlers return zero if unhandled, one if handled, or an error.
- * Layout and drawing run after event dispatch and deferred transitions.
- * close runs once after removal, including shutdown and failed presentation;
- * it may release data. All callbacks execute on the creating thread. */
-struct morph_tui_controller_ops {
-	int (*event)(void *data, struct morph_tui_app *app,
-		     const struct morph_tui_event *event);
-	int (*layout)(void *data, const struct morph_tui_rect *area);
-	int (*draw)(void *data, const struct morph_tui_screen *screen);
-	int (*appear)(void *data, struct morph_tui_app *app);
-	void (*disappear)(void *data, struct morph_tui_app *app);
-	void (*close)(void *data, int result);
-};
-
-struct morph_tui_controller {
-	const struct morph_tui_controller_ops *ops;
-	void *data;
-	enum morph_tui_input_mode input_mode;
-	int terminal_flags;
-	/* Zero disables periodic ticks; decoded screens also probe for resize. */
-	int tick_ms;
 };
 
 struct morph_tui_app_options {

@@ -1,10 +1,10 @@
-#include "sapi/cli/callbacks.h"
+#include "sapi/cli/ui/input/callbacks.h"
 #include "sapi/cli/internal.h"
-#include "sapi/cli/application.h"
+#include "sapi/cli/ui/application.h"
 #include "sapi/cli/commands/registry.h"
 #include "http/client.h"
-#include "sapi/cli/composer.h"
-#include "sapi/cli/hooks_ui.h"
+#include "sapi/cli/ui/input/composer.h"
+#include "sapi/cli/ui/screens/hooks.h"
 #include "sapi/cli/interaction.h"
 #include <sys/ioctl.h>
 

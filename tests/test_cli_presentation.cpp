@@ -2,9 +2,9 @@
 
 extern "C" {
 #include "sapi/cli/cli.h"
-#include "sapi/cli/terminal.h"
-#include "sapi/cli/list_ui.h"
-#include "sapi/cli/shell_style.h"
+#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/ui/presentation/shell_style.h"
 #include "util/utf8.h"
 #include "util/file.h"
 #include "agent/react.h"
