@@ -1,5 +1,6 @@
 #include "sapi/cli/callbacks.h"
 #include "sapi/cli/internal.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
 #include "http/client.h"
 #include "sapi/cli/composer.h"
@@ -415,7 +416,7 @@ static void cli_readline_drain_ui(struct cli_context *ctx)
 		cli_terminal_update_end(ctx);
 		return;
 	}
-	(void)cli_ui_drain(ctx);
+	(void)cli_ui_drain_batch(ctx);
 	if (!ctx->details_open && cli_command_job_done(ctx->input_job))
 		cli_readline_finish_job(ctx);
 	if (!ctx->details_visible)
@@ -1115,6 +1116,317 @@ static void cli_run_plain(struct cli_context *ctx)
 	morph_buf_cleanup(&input);
 }
 
+
+#ifdef HAVE_READLINE
+struct cli_readline_app {
+	struct cli_context *ctx;
+	struct cli_command_job *job;
+	int callback_installed;
+	char *draft;
+	int point;
+	morph_buf_t deferred;
+};
+
+static void cli_readline_app_schedule(struct cli_readline_app *state,
+				      struct morph_tui_app *app)
+{
+	struct cli_context *ctx = state->ctx;
+	int timeout = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
+
+	if (timeout < 0 || timeout > 1000)
+		timeout = 1000;
+	if (morph_tui_app_depth(app) > 1)
+		timeout = 1000;
+	else if (!ctx->details_open && cli_command_job_done(state->job))
+		timeout = 0;
+	morph_tui_app_schedule(app, timeout);
+	morph_tui_app_set_input_enabled(app, ctx->running);
+	if (!ctx->running && !state->job->active)
+		morph_tui_app_stop(app, 0);
+}
+
+static int cli_readline_app_appear(void *data, struct morph_tui_app *app)
+{
+	struct cli_readline_app *state = data;
+	struct cli_context *ctx = state->ctx;
+
+	cli_terminal_set_hidden(ctx, 0);
+	int rc = cli_application_flush(ctx);
+
+	if (rc)
+		return rc;
+	if (cli_command_job_done(state->job))
+		cli_readline_finish_job(ctx);
+	ctx->input_status.updated = 0;
+	ctx->input_status.suspended = 0;
+	if (!ctx->running) {
+		cli_readline_app_schedule(state, app);
+		return 0;
+	}
+	cli_terminal_composer_resume(ctx);
+	rl_callback_handler_install(state->draft ? "" : cli_input_prompt(ctx),
+		cli_callback_line(ctx, cli_readline_line_ready));
+	state->callback_installed = 1;
+	cli_readline_configure(ctx);
+	if (state->draft) {
+		char *draft = state->draft;
+
+		state->draft = NULL;
+		rl_set_prompt(cli_input_prompt(ctx));
+		cli_readline_resume(ctx, draft, state->point);
+	}
+	cli_readline_app_schedule(state, app);
+	return 0;
+}
+
+static void cli_readline_app_disappear(void *data, struct morph_tui_app *app)
+{
+	struct cli_readline_app *state = data;
+	struct cli_context *ctx = state->ctx;
+
+	(void)app;
+	if (state->callback_installed) {
+		free(state->draft);
+		state->draft = cli_readline_suspend(ctx, &state->point);
+		rl_callback_handler_remove();
+		state->callback_installed = 0;
+	}
+	cli_terminal_update_end(ctx);
+	cli_terminal_set_hidden(ctx, 1);
+}
+
+static int cli_readline_app_draw(void *data, const struct morph_tui_screen *screen)
+{
+	struct cli_readline_app *state = data;
+
+	(void)screen;
+	if (state->callback_installed)
+		cli_readline_render_frame(state->ctx, 0);
+	return 0;
+}
+
+static int cli_readline_app_event(void *data, struct morph_tui_app *app,
+				  const struct morph_tui_event *event)
+{
+	struct cli_readline_app *state = data;
+	struct cli_context *ctx = state->ctx;
+	int modal = morph_tui_app_depth(app) > 1;
+
+	cli_recap_tick(ctx, cli_recap_now());
+	if (morph_signal_flag_get(&ctx->terminate_requested))
+		ctx->running = 0;
+	if (morph_signal_flag_take(&ctx->resized)) {
+		cli_terminal_resize(ctx);
+		if (modal)
+			morph_tui_app_invalidate(app, MORPH_TUI_INVALIDATE_LAYOUT);
+		else if (state->callback_installed)
+			cli_readline_render_frame(ctx, 1);
+	}
+	if (morph_signal_flag_take(&ctx->interrupted)) {
+		if (modal) {
+			int rc = morph_tui_app_dismiss(app, 0);
+
+			if (rc < 0)
+				return rc;
+		} else {
+			if (ctx->details_open)
+				cli_transcript_toggle(ctx);
+			if (state->callback_installed) {
+				rl_replace_line("", 0);
+				rl_point = 0;
+				cli_readline_redisplay(ctx);
+			}
+		}
+	}
+	if (modal && cli_ui_owner_call_pending(ctx)) {
+		/* An interactive runtime request needs its own input scope. Return
+		 * to the composer before invoking the legacy prompt adapter. */
+		if (!morph_tui_app_transition_pending(app)) {
+			int rc = morph_tui_app_dismiss(app, 0);
+
+			if (rc < 0)
+				return rc;
+		}
+		(void)morph_tui_app_wake(app);
+	} else if (event->type == MORPH_TUI_EVENT_WAKE) {
+		if (modal) {
+			int rc = cli_command_capture_styled_begin(ctx, &state->deferred);
+
+			if (rc)
+				return rc;
+			ctx->output.capture_history = 1;
+			(void)cli_ui_drain_batch(ctx);
+			cli_command_capture_end(ctx);
+			if (state->deferred.failed)
+				return state->deferred.failed;
+		} else if (state->callback_installed) {
+			cli_readline_drain_ui(ctx);
+		} else {
+			(void)cli_ui_drain_batch(ctx);
+		}
+	}
+	if (!modal && !ctx->details_open && cli_command_job_done(state->job)) {
+		int point;
+
+		cli_terminal_update_begin(ctx);
+		char *draft = cli_readline_suspend(ctx, &point);
+
+		cli_readline_finish_job(ctx);
+		if (draft)
+			cli_readline_resume(ctx, draft, point);
+		cli_terminal_update_end(ctx);
+	}
+	if (!modal && event->type == MORPH_TUI_EVENT_TICK)
+		morph_tui_app_invalidate(app, MORPH_TUI_INVALIDATE_DISPLAY);
+	cli_readline_app_schedule(state, app);
+	return 0;
+}
+
+static int cli_readline_app_input(void *data, struct morph_tui_app *app,
+				  const struct morph_tui_event *event)
+{
+	struct cli_readline_app *state = data;
+	struct cli_context *ctx = state->ctx;
+
+	if (event->type != MORPH_TUI_EVENT_INPUT_READY)
+		return 0;
+	int rc = cli_readline_app_event(data, app, event);
+
+	if (rc < 0 || !ctx->running)
+		return rc;
+
+	int previous_point = rl_point;
+	int image_start;
+	int image_end;
+
+	if (ctx->details_open) {
+		cli_readline_details_input(ctx);
+		return 1;
+	}
+	if (!state->job->active)
+		cli_cancel_state_reset(ctx);
+	cli_readline_clear_footer(ctx);
+	rl_callback_read_char();
+	if (!ctx->readline_ready_input &&
+	    cli_composer_image_span(&ctx->composer, rl_line_buffer, rl_point, 0,
+				    &image_start, &image_end) &&
+	    rl_point > image_start) {
+		rl_point = rl_point < previous_point ? image_start : image_end;
+		cli_readline_redisplay(ctx);
+	}
+	if (ctx->readline_ready_input) {
+		char *input = ctx->readline_ready_input;
+		char *submitted = input;
+		char *retry_command = NULL;
+
+		ctx->readline_ready_input = NULL;
+		cli_readline_clear_footer(ctx);
+		rl_callback_handler_remove();
+		state->callback_installed = 0;
+		if (isatty(STDOUT_FILENO))
+			fprintf(stdout, "\033[?1004l");
+		cli_terminal_composer_suspend(ctx);
+		if (input[0] != '\0') {
+			int handled = 0;
+			int command_rc;
+
+			if (input[0] == '/')
+				cli_presentation_command_input(ctx, input);
+			else if (!state->job->active)
+				cli_presentation_user_input(ctx, input);
+			add_history(input);
+			if (input[0] != '/') {
+				char *expanded =
+					cli_composer_expand(&ctx->composer, input);
+
+				if (expanded) {
+					cli_composer_record_images(&ctx->composer,
+								   ctx, input);
+					input = expanded;
+				} else {
+					handled = 1;
+					CMD_ERROR(ctx, "%s",
+						  morph_strerror(-ENOMEM));
+				}
+			}
+			if (!handled && state->job->active && strcmp(input, "/recap") == 0) {
+				command_rc = cli_recap_start(ctx, 0);
+				handled = 1;
+			} else if (!handled && state->job->active &&
+				   (!strcmp(input, "/jobs") || !strncmp(input, "/jobs ", 6))) {
+				command_rc = cli_command_dispatch(ctx, input);
+				handled = 1;
+			} else if (!handled && state->job->active && input[0] == '/') {
+				if (!cli_command_find_input(input))
+					CMD_ERROR(ctx,
+						  "unknown command: %s. Try /help",
+						  input);
+				else
+					CMD_ERROR(ctx,
+						  "wait for the active turn "
+						  "before running this command");
+				retry_command = input;
+				handled = 1;
+			} else if (!handled && state->job->active) {
+				command_rc = cli_command_job_prompt(
+					state->job, input, submitted);
+				if (command_rc != 0)
+					CMD_ERROR(ctx, "%s",
+						  morph_strerror(command_rc));
+				else
+					cli_terminal_queue_changed(ctx);
+				handled = 1;
+			} else if (!handled) {
+				command_rc = cli_handle_media_path(
+					ctx, input, &handled);
+			}
+			if (handled || input[0] == '/') {
+				if (!handled) {
+					if (!cli_command_find_input(input))
+						retry_command = input;
+					command_rc = cli_handle_command(ctx, input);
+				}
+				(void)cli_ui_drain(ctx);
+				if (input[0] == '/' && ctx->running) {
+					if (morph_tui_app_transition_pending(app))
+						ctx->application_command = 1;
+					else
+						cli_presentation_command_end(ctx);
+				}
+			} else {
+				cli_turn_begin(ctx);
+				command_rc = cli_command_job_start(
+					state->job, ctx, input);
+				if (command_rc != 0)
+					cli_turn_finish(ctx, command_rc);
+			}
+		}
+		if (submitted != input)
+			free(submitted);
+		if (input != retry_command)
+			free(input);
+		if (ctx->running && !morph_tui_app_transition_pending(app)) {
+			ctx->input_status.updated = 0;
+			ctx->input_status.suspended = 0;
+			cli_terminal_composer_resume(ctx);
+			rl_callback_handler_install(
+				cli_input_prompt(ctx),
+				cli_callback_line(ctx, cli_readline_line_ready));
+			cli_readline_configure(ctx);
+			state->callback_installed = 1;
+			if (retry_command) {
+				rl_replace_line(retry_command, 0);
+				rl_point = rl_end;
+				cli_readline_redisplay(ctx);
+			}
+		}
+		free(retry_command);
+	}
+	cli_readline_app_schedule(state, app);
+	return 1;
+}
+#endif
+
 void cli_run(struct cli_context *ctx)
 {
 	const struct config *config;
@@ -1226,210 +1538,41 @@ void cli_run(struct cli_context *ctx)
 	rl_getc_function = reader;
 	rl_redisplay_function = display;
 	rl_attempted_completion_function = completion;
-	cli_terminal_composer_resume(ctx);
-	rl_callback_handler_install(cli_input_prompt(ctx), line_ready);
-	callback_installed = 1;
-	cli_readline_configure(ctx);
-	while (ctx->running || job.active) {
-		if (morph_signal_flag_get(&ctx->terminate_requested)) {
-			ctx->running = 0;
-			if (!job.active)
-				break;
-		}
-		struct pollfd fds[2];
-		int nfds = 1;
-		int wake_fd = cli_ui_wake_fd(ctx);
-		int timeout_ms = ctx->details_open ? 250 : cli_terminal_next_frame_ms(ctx);
-		int rc;
+	(void)line_ready;
+	struct cli_readline_app state = {.ctx = ctx, .job = &job};
+	const struct morph_tui_app_options app_options = {
+		.input = stdin, .output = stdout,
+		.event = cli_readline_app_event, .data = &state,
+	};
+	const struct morph_tui_controller_ops app_ops = {
+		.event = cli_readline_app_input, .draw = cli_readline_app_draw,
+		.appear = cli_readline_app_appear, .disappear = cli_readline_app_disappear,
+	};
+	const struct morph_tui_controller root = {
+		.ops = &app_ops, .data = &state, .input_mode = MORPH_TUI_INPUT_EXTERNAL,
+	};
+	int app_rc = morph_buf_init(&state.deferred, BUFSIZ);
 
-		cli_recap_tick(ctx, cli_recap_now());
-		if (callback_installed && (timeout_ms < 0 || timeout_ms > 1000))
-			timeout_ms = 1000;
-		if (!ctx->details_open && cli_command_job_done(&job))
-			timeout_ms = 0;
-
-		fds[0].fd = ctx->running ? STDIN_FILENO : -1;
-		fds[0].events = POLLIN;
-		fds[0].revents = 0;
-		if (wake_fd >= 0) {
-			fds[1].fd = wake_fd;
-			fds[1].events = POLLIN;
-			fds[1].revents = 0;
-			nfds = 2;
-		}
-		rc = poll(fds, (nfds_t)nfds, timeout_ms);
-		if (morph_signal_flag_take(&ctx->resized)) {
-			if (callback_installed)
-				cli_readline_render_frame(ctx, 1);
-			else {
-				cli_terminal_resize(ctx);
-				cli_terminal_render_frame(ctx, 1);
-			}
-		}
-		if (morph_signal_flag_take(&ctx->interrupted)) {
-			if (ctx->details_open)
-				cli_transcript_toggle(ctx);
-			if (callback_installed) {
-				rl_replace_line("", 0);
-				rl_point = 0;
-				cli_readline_redisplay(ctx);
-			}
-		}
-		if (rc < 0) {
-			if (errno == EINTR)
-				continue;
-			CMD_ERROR(ctx, "input polling failed: %s", strerror(errno));
-			break;
-		}
-		if (rc == 0) {
-			if (callback_installed)
-				cli_readline_render_frame(ctx, 0);
-			else
-				cli_terminal_render_frame(ctx, 0);
-			if (ctx->details_open || !cli_command_job_done(&job))
-				continue;
-		}
-		if (nfds == 2 && (fds[1].revents & POLLIN)) {
-			if (callback_installed)
-				cli_readline_drain_ui(ctx);
-			else
-				(void)cli_ui_drain(ctx);
-		}
-		if (cli_command_job_done(&job) && !ctx->details_open) {
-			int point;
-
-			cli_terminal_update_begin(ctx);
-			char *draft = cli_readline_suspend(ctx, &point);
-			cli_readline_finish_job(ctx);
-			if (draft)
-				cli_readline_resume(ctx, draft, point);
-			cli_terminal_update_end(ctx);
-		}
-		if (fds[0].revents & (POLLIN | POLLHUP)) {
-			int previous_point = rl_point;
-			int image_start;
-			int image_end;
-
-			if (ctx->details_open) {
-				cli_readline_details_input(ctx);
-				continue;
-			}
-			if (!job.active)
-				cli_cancel_state_reset(ctx);
-			cli_readline_clear_footer(ctx);
-			rl_callback_read_char();
-			if (!ctx->readline_ready_input &&
-			    cli_composer_image_span(&ctx->composer, rl_line_buffer, rl_point, 0,
-						    &image_start, &image_end) &&
-			    rl_point > image_start) {
-				rl_point = rl_point < previous_point ? image_start : image_end;
-				cli_readline_redisplay(ctx);
-			}
-			if (ctx->readline_ready_input) {
-				char *input = ctx->readline_ready_input;
-				char *submitted = input;
-				char *retry_command = NULL;
-
-				ctx->readline_ready_input = NULL;
-				cli_readline_clear_footer(ctx);
-				rl_callback_handler_remove();
-				callback_installed = 0;
-				if (isatty(STDOUT_FILENO))
-					fprintf(stdout, "\033[?1004l");
-				cli_terminal_composer_suspend(ctx);
-				if (input[0] != '\0') {
-					int handled = 0;
-					int command_rc;
-
-					if (input[0] == '/')
-						cli_presentation_command_input(ctx, input);
-					else if (!job.active)
-						cli_presentation_user_input(ctx, input);
-					add_history(input);
-					if (input[0] != '/') {
-						char *expanded =
-							cli_composer_expand(&ctx->composer, input);
-
-						if (expanded) {
-							cli_composer_record_images(&ctx->composer,
-										   ctx, input);
-							input = expanded;
-						} else {
-							handled = 1;
-							CMD_ERROR(ctx, "%s",
-								  morph_strerror(-ENOMEM));
-						}
-					}
-					if (!handled && job.active && strcmp(input, "/recap") == 0) {
-						command_rc = cli_recap_start(ctx, 0);
-						handled = 1;
-					} else if (!handled && job.active &&
-						   (!strcmp(input, "/jobs") || !strncmp(input, "/jobs ", 6))) {
-						command_rc = cli_command_dispatch(ctx, input);
-						handled = 1;
-					} else if (!handled && job.active && input[0] == '/') {
-						if (!cli_command_find_input(input))
-							CMD_ERROR(ctx,
-								  "unknown command: %s. Try /help",
-								  input);
-						else
-							CMD_ERROR(ctx,
-								  "wait for the active turn "
-								  "before running this command");
-						retry_command = input;
-						handled = 1;
-					} else if (!handled && job.active) {
-						command_rc = cli_command_job_prompt(
-							&job, input, submitted);
-						if (command_rc != 0)
-							CMD_ERROR(ctx, "%s",
-								  morph_strerror(command_rc));
-						else
-							cli_terminal_queue_changed(ctx);
-						handled = 1;
-					} else if (!handled) {
-						command_rc = cli_handle_media_path(
-							ctx, input, &handled);
-					}
-					if (handled || input[0] == '/') {
-						if (!handled) {
-							if (!cli_command_find_input(input))
-								retry_command = input;
-							command_rc = cli_handle_command(ctx, input);
-						}
-						(void)cli_ui_drain(ctx);
-						if (input[0] == '/' && ctx->running)
-							cli_presentation_command_end(ctx);
-					} else {
-						cli_turn_begin(ctx);
-						command_rc = cli_command_job_start(
-							&job, ctx, input);
-						if (command_rc != 0)
-							cli_turn_finish(ctx, command_rc);
-					}
-				}
-				if (submitted != input)
-					free(submitted);
-				if (input != retry_command)
-					free(input);
-				if (ctx->running) {
-					ctx->input_status.updated = 0;
-					ctx->input_status.suspended = 0;
-					cli_terminal_composer_resume(ctx);
-					rl_callback_handler_install(
-						cli_input_prompt(ctx),
-						cli_callback_line(ctx, cli_readline_line_ready));
-					cli_readline_configure(ctx);
-					callback_installed = 1;
-					if (retry_command) {
-						rl_replace_line(retry_command, 0);
-						rl_point = rl_end;
-						cli_readline_redisplay(ctx);
-					}
-				}
-				free(retry_command);
-			}
-		}
+	if (!app_rc)
+		app_rc = morph_tui_app_create(&app_options, &ctx->application);
+	if (!app_rc) {
+		ctx->application_output = &state.deferred;
+		cli_ui_attach_app(ctx, ctx->application);
+		app_rc = morph_tui_app_present(ctx->application, &root);
+		if (!app_rc)
+			app_rc = morph_tui_app_run(ctx->application);
+		cli_ui_attach_app(ctx, NULL);
+		morph_tui_app_destroy(ctx->application);
+		ctx->application = NULL;
+		ctx->application_output = NULL;
+		cli_terminal_set_hidden(ctx, 0);
+	}
+	free(state.draft);
+	morph_buf_cleanup(&state.deferred);
+	callback_installed = state.callback_installed;
+	if (app_rc < 0) {
+		runtime_cancel_turn(ctx->runtime);
+		CMD_ERROR(ctx, "UI application failed: %s", morph_strerror(app_rc));
 	}
 	if (ctx->details_open)
 		cli_transcript_toggle(ctx);
@@ -1445,7 +1588,7 @@ void cli_run(struct cli_context *ctx)
 	if (callback_installed)
 		rl_callback_handler_remove();
 	if (job.active) {
-		int turn_rc = cli_command_job_finish(&job);
+		int turn_rc = cli_command_job_wait(&job);
 
 		(void)cli_ui_drain(ctx);
 		cli_turn_finish(ctx, turn_rc);

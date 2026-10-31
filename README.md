@@ -27,7 +27,7 @@ Unicode decoding, validation, and terminal widths use vendored [utf8proc](docs/u
 
 ## Build
 
-Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libffi, libwebp, libxml2, and
+Requirements: CMake ≥ 3.20, SQLite3, libcurl ≥ 7.84, libuv ≥ 1.44, libffi, libwebp, libxml2, and
 [mathjax-c](https://github.com/oxUnd/mathjax-c). Optional: readline.
 
 Instance ownership and the optional mutable-global AST check: [docs/state-ownership.md](docs/state-ownership.md).

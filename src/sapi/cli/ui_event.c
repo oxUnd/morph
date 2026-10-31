@@ -1,9 +1,12 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/ui_event.h"
+#include <morph/tui/application.h>
 
 #include "util/queue.h"
 
 #include <fcntl.h>
+
+#define CLI_UI_EVENT_BUDGET 64
 
 enum cli_ui_item_kind {
 	CLI_UI_ITEM_MORPH_EVENT,
@@ -39,6 +42,7 @@ struct cli_ui_item {
 };
 
 struct cli_ui {
+	struct morph_tui_app *application;
 	pthread_mutex_t mutex;
 	morph_queue_t pending;
 	pthread_t owner;
@@ -105,11 +109,15 @@ static int cli_ui_set_fd_flags(int fd)
 
 static void cli_ui_wake(struct cli_ui *ui)
 {
+	if (!ui || ui->wake_write < 0)
+		return;
+	pthread_mutex_lock(&ui->mutex);
+	if (ui->application)
+		(void)morph_tui_app_wake(ui->application);
+	pthread_mutex_unlock(&ui->mutex);
 	unsigned char byte = 1;
 	ssize_t count;
 
-	if (!ui || ui->wake_write < 0)
-		return;
 	do {
 		count = write(ui->wake_write, &byte, sizeof(byte));
 	} while (count < 0 && errno == EINTR);
@@ -238,6 +246,17 @@ int cli_ui_wake_fd(const struct cli_context *ctx)
 	return ctx && ctx->ui ? ctx->ui->wake_read : -1;
 }
 
+void cli_ui_attach_app(struct cli_context *ctx, struct morph_tui_app *app)
+{
+	if (!ctx || !ctx->ui)
+		return;
+	pthread_mutex_lock(&ctx->ui->mutex);
+	ctx->ui->application = app;
+	pthread_mutex_unlock(&ctx->ui->mutex);
+	if (app)
+		(void)morph_tui_app_wake(app);
+}
+
 int cli_ui_post_morph_event(struct cli_context *ctx,
 			    const struct morph_event *event)
 {
@@ -362,14 +381,15 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 	return rc;
 }
 
-static void cli_ui_run_owner_call(struct cli_ui_owner_call *call)
+static int cli_ui_run_owner_call(struct cli_ui_owner_call *call)
 {
 	int result;
 
 	if (!call)
-		return;
+		return -EINVAL;
 	result = call->fn(call->data);
 	cli_ui_complete_owner_call(call, result);
+	return result;
 }
 
 static void cli_ui_render_notification(struct cli_context *ctx,
@@ -404,7 +424,7 @@ static void cli_ui_render_notification(struct cli_context *ctx,
 	printf(ctx, ANSI_RESET "\n\n");
 }
 
-int cli_ui_drain(struct cli_context *ctx)
+static int cli_ui_drain_limit(struct cli_context *ctx, int limit)
 {
 	struct cli_ui *ui;
 	morph_queue_t local;
@@ -420,8 +440,20 @@ int cli_ui_drain(struct cli_context *ctx)
 	cli_ui_consume_wake(ui);
 	morph_queue_init(&local);
 	pthread_mutex_lock(&ui->mutex);
-	morph_queue_add(&local, &ui->pending);
+	if (!limit)
+		morph_queue_add(&local, &ui->pending);
+	else {
+		for (int i = 0; i < limit && !morph_queue_empty(&ui->pending); i++) {
+			link = morph_queue_head(&ui->pending);
+			morph_queue_remove(link);
+			morph_queue_insert_tail(&local, link);
+		}
+	}
+	int remaining = !morph_queue_empty(&ui->pending);
+
 	pthread_mutex_unlock(&ui->mutex);
+	if (remaining)
+		cli_ui_wake(ui);
 	morph_queue_foreach_safe(link, next, &local) {
 		struct cli_ui_item *item = morph_queue_data(
 			link, struct cli_ui_item, link);
@@ -452,7 +484,12 @@ int cli_ui_drain(struct cli_context *ctx)
 				rl_callback_handler_remove();
 #endif
 			cli_terminal_update_end(ctx);
-			cli_ui_run_owner_call(item->owner_call);
+			int result = cli_ui_run_owner_call(item->owner_call);
+
+			/* A prompt consumes its cancellation key. Do not apply that
+			 * key again to the composer draft restored by its adapter. */
+			if (result == -ECANCELED || result == -EINTR)
+				cli_cancel_state_reset(ctx);
 			if (updating)
 				cli_terminal_update_begin(ctx);
 		}
@@ -469,6 +506,16 @@ int cli_ui_drain(struct cli_context *ctx)
 	}
 	fflush(stdout);
 	return first_error;
+}
+
+int cli_ui_drain(struct cli_context *ctx)
+{
+	return cli_ui_drain_limit(ctx, 0);
+}
+
+int cli_ui_drain_batch(struct cli_context *ctx)
+{
+	return cli_ui_drain_limit(ctx, CLI_UI_EVENT_BUDGET);
 }
 
 int cli_ui_owner_call_pending(struct cli_context *ctx)

@@ -1,5 +1,6 @@
 #include "sapi/cli/internal.h"
 #include "sapi/cli/jobs_ui.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/terminal.h"
 #include "sapi/cli/list_ui.h"
 #include <morph/tui/components.h>
@@ -454,6 +455,19 @@ static int jobs_update(void *data, const struct morph_tui_event *event)
 	return rc ? rc : MORPH_TUI_SCREEN_REDRAW;
 }
 
+static void jobs_close(void *data, int result)
+{
+	struct jobs_view *view = data;
+
+	(void)result;
+	cJSON_Delete(view->jobs);
+	cJSON_Delete(view->details);
+	morph_buf_cleanup(&view->document);
+	morph_tui_frame_cleanup(&view->frame);
+	morph_tui_text_view_cleanup(&view->lines);
+	free(view);
+}
+
 int cli_jobs_view(struct cli_context *ctx, const char *id)
 {
 	struct jobs_view view = {.ctx = ctx};
@@ -484,6 +498,19 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 				rc = jobs_refresh(&view);
 		}
 		cJSON_Delete(details);
+	}
+	if (!rc && ctx->application) {
+		struct jobs_view *owned = calloc(1, sizeof(*owned));
+
+		if (!owned)
+			rc = -ENOMEM;
+		else {
+			*owned = view;
+			rc = cli_screen_present(ctx, &ops, owned, jobs_close);
+			if (!rc)
+				return 0;
+			free(owned);
+		}
 	}
 	screen.interrupted = &ctx->interrupted;
 	if (!rc)

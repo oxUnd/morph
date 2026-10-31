@@ -20,6 +20,7 @@ enum cli_work_state {
 };
 
 struct cli_terminal {
+	int hidden;
 	FILE *output;
 	int output_fd;
 	morph_buf_t live_text;
@@ -55,7 +56,7 @@ void cli_terminal_update_begin(struct cli_context *ctx)
 {
 	struct cli_terminal *terminal = ctx ? ctx->terminal : NULL;
 
-	if (!terminal || !terminal->transient || terminal->update_active)
+	if (!terminal || terminal->hidden || !terminal->transient || terminal->update_active)
 		return;
 	fprintf(terminal->output, "\033[?2026h");
 	terminal->update_active = 1;
@@ -416,7 +417,7 @@ int cli_terminal_render_tick(struct cli_context *ctx, int cursor_rows)
 	int64_t now = terminal_now_ms();
 	int distance;
 
-	if (!terminal || !terminal->transient || !terminal->live_visible ||
+	if (!terminal || terminal->hidden || !terminal->transient || !terminal->live_visible ||
 	    ctx->details_visible || terminal->work_state != CLI_WORK_RUNNING ||
 	    terminal->columns < 20 || terminal_columns(terminal) != terminal->columns)
 		return 0;
@@ -466,7 +467,7 @@ void cli_terminal_render_frame(struct cli_context *ctx, int force)
 	int body_rows = 0;
 	int status_visible;
 
-	if (!ctx || !ctx->terminal || ctx->details_visible)
+	if (!ctx || !ctx->terminal || ctx->terminal->hidden || ctx->details_visible)
 		return;
 	terminal = ctx->terminal;
 	if (!terminal->transient)
@@ -739,6 +740,12 @@ void cli_terminal_resize(struct cli_context *ctx)
 		return;
 	ctx->terminal->columns = terminal_columns(ctx->terminal);
 	ctx->terminal->next_frame_ms = 0;
+}
+
+void cli_terminal_set_hidden(struct cli_context *ctx, int hidden)
+{
+	if (ctx && ctx->terminal)
+		ctx->terminal->hidden = hidden != 0;
 }
 
 int cli_terminal_live_active(const struct cli_context *ctx)

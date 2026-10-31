@@ -72,6 +72,7 @@ set(TEST_SOURCES
 	test_cli_presentation.cpp
 	test_cli_terminal.cpp
 	test_tui.cpp
+	test_tui_application.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
 	test_kitty_protocol.cpp
@@ -202,6 +203,12 @@ if(Python3_Interpreter_FOUND AND UNIX)
 		SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX AND ENABLE_READLINE AND MORPH_READLINE_LIBRARY)
+	add_test(NAME cli_application_pty_integration
+		COMMAND ${Python3_EXECUTABLE}
+			${CMAKE_CURRENT_SOURCE_DIR}/test_cli_application_pty.py
+			$<TARGET_FILE:morph-cli-pty-driver>)
+	set_tests_properties(cli_application_pty_integration PROPERTIES
+		SKIP_RETURN_CODE 77 TIMEOUT 45)
 	add_test(NAME cli_select_pty_integration
 		COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cli_select_pty.py
 			$<TARGET_FILE:morph-cli-pty-driver>)

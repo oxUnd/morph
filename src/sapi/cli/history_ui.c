@@ -1,6 +1,7 @@
 #include <morph/tui/components.h>
 #include "sapi/cli/internal.h"
 #include "sapi/cli/history_ui.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/list_ui.h"
 
 #define HISTORY_QUERY_MAX 256
@@ -516,36 +517,59 @@ static int history_update(void *data, const struct morph_tui_event *event)
 		MORPH_TUI_SCREEN_REDRAW : MORPH_TUI_SCREEN_CONTINUE;
 }
 
+static void history_close(void *data, int result)
+{
+	struct history_view *view = data;
+
+	(void)result;
+	morph_array_cleanup(&view->matches);
+	morph_tui_text_view_cleanup(&view->document_view);
+	morph_buf_cleanup(&view->document);
+	morph_tui_frame_cleanup(&view->frame);
+	morph_tui_editor_cleanup(&view->query);
+	cJSON_Delete(view->report);
+	free(view);
+}
+
 int cli_history_view(struct cli_context *ctx, cJSON *report)
 {
-	struct history_view view = {.ctx = ctx, .report = report, .rows = 24, .columns = 80};
+	struct history_view *view = calloc(1, sizeof(*view));
 	struct morph_tui_screen screen = {0};
 	cJSON *entry;
 	const struct morph_tui_screen_ops ops = {.update = history_update, .draw = history_draw};
-	int rc = morph_array_init(&view.matches, 32, sizeof(entry));
+	if (!view)
+		return -ENOMEM;
+	*view = (struct history_view){.ctx = ctx, .rows = 24, .columns = 80};
+	view->report = cJSON_Duplicate(report, 1);
+	int rc = view->report ? morph_array_init(&view->matches, 32, sizeof(entry)) : -ENOMEM;
 
-	view.selection.flags = MORPH_TUI_LIST_VIM;
-	if (rc == 0) rc = morph_buf_init(&view.document, BUFSIZ);
-	if (rc == 0) rc = morph_tui_editor_init(&view.query, "", HISTORY_QUERY_MAX, 0);
-	if (rc == 0) rc = history_filter(&view);
-	if (rc == 0 && view.matches.nelts)
-		view.selection.index = view.matches.nelts - 1;
+	view->selection.flags = MORPH_TUI_LIST_VIM;
+	if (rc == 0) rc = morph_buf_init(&view->document, BUFSIZ);
+	if (rc == 0) rc = morph_tui_editor_init(&view->query, "", HISTORY_QUERY_MAX, 0);
+	if (rc == 0) rc = history_filter(view);
+	if (rc == 0 && view->matches.nelts)
+		view->selection.index = view->matches.nelts - 1;
+	if (!rc && ctx->application) {
+		rc = cli_screen_present(ctx, &ops, view, history_close);
+		if (!rc)
+			return 0;
+	}
+	if (rc) {
+		history_close(view, rc);
+		return rc;
+	}
 	morph_signal_flag_set(&ctx->interrupted, 0);
 	screen.interrupted = &ctx->interrupted;
 	if (rc == 0)
 		rc = morph_tui_screen_open(&screen, stdin, stdout,
 			MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE);
-	if (rc == 0) rc = morph_tui_screen_run(&screen, &ops, &view);
+	if (rc == 0) rc = morph_tui_screen_run(&screen, &ops, view);
 	int caught = morph_signal_flag_take(&ctx->interrupted);
 	int leave_rc = morph_tui_screen_close(&screen);
 
 	if (caught && rc == -EINTR) rc = 0;
 	if (rc == 0) rc = leave_rc;
-	morph_array_cleanup(&view.matches);
-	morph_tui_text_view_cleanup(&view.document_view);
-	morph_buf_cleanup(&view.document);
-	morph_tui_frame_cleanup(&view.frame);
-	morph_tui_editor_cleanup(&view.query);
+	history_close(view, rc);
 	return rc;
 }
 

@@ -1,5 +1,6 @@
 #include <morph/tui/components.h>
 #include "sapi/cli/hooks_ui.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/setup_ui.h"
 #include "runtime/runtime.h"
@@ -640,6 +641,7 @@ static int refresh(struct cli_context *ctx, cJSON **rows, struct hook_screen *sc
 struct hook_controller {
 	struct cli_context *ctx;
 	cJSON **rows;
+	cJSON *owned_rows;
 	struct hook_screen screen;
 };
 
@@ -805,6 +807,16 @@ static int hooks_update(void *data, const struct morph_tui_event *event)
 	return MORPH_TUI_SCREEN_REDRAW;
 }
 
+static void hooks_close(void *data, int result)
+{
+	struct hook_controller *controller = data;
+
+	(void)result;
+	morph_buf_cleanup(&controller->screen.frame);
+	cJSON_Delete(controller->owned_rows);
+	free(controller);
+}
+
 static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id, int batch)
 {
 	struct hook_controller controller = {.ctx = ctx, .rows = rows,
@@ -826,6 +838,21 @@ static int hooks_ui(struct cli_context *ctx, cJSON **rows, const char *review_id
 		struct hook_action items[3];
 
 		screen->choice = actions(row, items) - 1;
+	}
+	if (ctx->application) {
+		struct hook_controller *owned = calloc(1, sizeof(*owned));
+
+		if (!owned)
+			return -ENOMEM;
+		*owned = controller;
+		owned->owned_rows = cJSON_Duplicate(*rows, 1);
+		owned->rows = &owned->owned_rows;
+		int rc = owned->owned_rows ?
+			cli_screen_present(ctx, &ops, owned, hooks_close) : -ENOMEM;
+
+		if (rc)
+			hooks_close(owned, rc);
+		return rc;
 	}
 	int rc = morph_tui_screen_open(&terminal, stdin, stdout,
 		MORPH_TUI_SESSION_ALTERNATE | MORPH_TUI_SESSION_PASTE);

@@ -5,12 +5,14 @@
 #include "db/scheduled_task.h"
 
 struct cli_context;
+struct morph_tui_app;
 typedef int (*cli_ui_owner_call_fn)(void *data);
 
 int cli_ui_init(struct cli_context *ctx);
 void cli_ui_cleanup(struct cli_context *ctx);
 int cli_ui_is_owner(const struct cli_context *ctx);
 int cli_ui_wake_fd(const struct cli_context *ctx);
+void cli_ui_attach_app(struct cli_context *ctx, struct morph_tui_app *app);
 int cli_ui_post_morph_event(struct cli_context *ctx,
 			    const struct morph_event *event);
 int cli_ui_post_notification(struct cli_context *ctx,
@@ -19,6 +21,7 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 		      void *data);
 void cli_ui_notify(struct cli_context *ctx);
 int cli_ui_drain(struct cli_context *ctx);
+int cli_ui_drain_batch(struct cli_context *ctx);
 int cli_ui_owner_call_pending(struct cli_context *ctx);
 
 #endif

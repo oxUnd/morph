@@ -28,6 +28,7 @@ void cli_terminal_composer_resume(struct cli_context *ctx);
 void cli_terminal_history_begin(struct cli_context *ctx);
 void cli_terminal_history_end(struct cli_context *ctx);
 void cli_terminal_resize(struct cli_context *ctx);
+void cli_terminal_set_hidden(struct cli_context *ctx, int hidden);
 int cli_terminal_live_active(const struct cli_context *ctx);
 
 #endif

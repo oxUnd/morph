@@ -142,6 +142,49 @@ TEST_F(CliUiTest, TaskMutationsAvoidDuplicateToolOutput)
 		  std::string::npos);
 }
 
+TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
+{
+	int result = 0;
+	std::thread worker([&] {
+		result = cli_ui_call_owner(&ctx, +[](void *data) {
+			auto *context = static_cast<struct cli_context *>(data);
+
+			morph_signal_flag_set(&context->interrupted, 1);
+			return -ECANCELED;
+		}, &ctx);
+	});
+	struct pollfd ready{};
+	ready.fd = cli_ui_wake_fd(&ctx);
+	ready.events = POLLIN;
+	EXPECT_EQ(poll(&ready, 1, 1000), 1);
+	EXPECT_EQ(cli_ui_drain_batch(&ctx), 0);
+	worker.join();
+	EXPECT_EQ(result, -ECANCELED);
+	EXPECT_EQ(morph_signal_flag_get(&ctx.interrupted), 0);
+}
+
+TEST_F(CliUiTest, BoundedDrainYieldsAndKeepsQueuedEventsOrderedAndSignaled)
+{
+	struct morph_event event{};
+	event.type = MORPH_EVENT_BACKGROUND;
+	event.name = "session.title";
+	event.phase = "begin";
+	for (int i = 0; i < 130; i++)
+		ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
+	event.phase = "end";
+	ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_ui_drain_batch(&ctx), 0);
+	EXPECT_GT(ctx.input_status.session_titles_pending, 0);
+	EXPECT_LT(ctx.input_status.session_titles_pending, 130);
+	struct pollfd ready{};
+	ready.fd = cli_ui_wake_fd(&ctx);
+	ready.events = POLLIN;
+	EXPECT_EQ(poll(&ready, 1, 0), 1);
+	ASSERT_EQ(cli_ui_drain(&ctx), 0);
+	EXPECT_EQ(ctx.input_status.session_titles_pending, 129);
+	EXPECT_EQ(poll(&ready, 1, 0), 0);
+}
+
 TEST_F(CliUiTest, TaskLifecycleWithNotificationDoesNotRepeatResult)
 {
 	struct morph_event event{};

@@ -1,7 +1,8 @@
 # Project terminal UI framework
 
-`morph-tui` is the small terminal UI framework used by the setup wizard, session picker, hooks
-review, history inspector, and `ask_user` selector. It depends only on `morph-util` and POSIX terminal
+`morph-tui` is the terminal UI framework used by the interactive CLI, setup wizard,
+session picker, hooks review, history inspector, and `ask_user` selector. It depends
+on `morph-util`, libuv 1.44 or newer, and POSIX terminal
 APIs. It does not depend on CLI context, runtime services, model configuration,
 sessions, or agent types.
 
@@ -9,10 +10,71 @@ The framework covers the components these screens currently need. Application
 code owns domain data and actions; the framework owns terminal mechanics,
 interaction state, layout helpers, and presentation primitives.
 
+## Application and controller host
+
+`<morph/tui/application.h>` exposes an explicitly owned application. Its private
+libuv loop watches terminal readiness, uses an async handle for cross-thread
+wakeup, and schedules controller ticks, application ticks, escape deadlines,
+and resize probes with a timer. Public headers do not expose libuv types. The
+application has one terminal window, an active controller stack, and deferred
+presentation transitions. It does not use the default libuv loop or a singleton.
+
+The owner thread creates, steps/runs, and destroys the application. Workers can
+call `morph_tui_app_wake` and `morph_tui_app_post`. Posts transfer payload ownership
+only on success, preserve order, and release each payload once after delivery or
+shutdown. An async wake is a notification, never a message count; queued messages
+remain distinct when libuv coalesces wakeups. Dispatch uses a bounded batch before
+yielding to other event sources. Producers must stop or detach before destruction.
+
+Controllers provide event, layout, draw, appear, disappear, and close callbacks.
+Events return handled/unhandled or a negative error. Display/layout invalidation
+is separate. Presentation copies the controller descriptor and defers changes
+until callbacks finish. Dismissal targets the controller active at the time of
+the request, so duplicate dismissal cannot close the underlying page. Close runs
+once, after removal, and may free the page model. Reentrant stepping is rejected.
+
+Each step commits pending transitions, resolves terminal dimensions, lays out and
+draws invalid content, runs one libuv iteration, then commits and renders changes.
+Invalidation coalesces across a batch. Before each render the current dimensions
+are checked, preventing a resize wake from rendering an old-width frame. Existing
+page draw callbacks still use their current renderers; canvas composition, a
+retained view hierarchy, and responder routing are subsequent migration layers.
+
+`MORPH_TUI_INPUT_EXTERNAL` gives readiness exclusively to an input adapter, currently
+Readline for chat. `MORPH_TUI_INPUT_KEYS` gives decoding and terminal modes to the
+application. Appear/disappear callbacks transfer input ownership. Only one adapter
+reads the terminal, and key decoding does not consume input for the next page.
+The application owns raw/paste/alternate-screen transitions and restores original
+termios and descriptor flags on destruction. In particular, it reverses the
+nonblocking flag set by `uv_poll_init`: stdin and stdout may share an open file
+description, and nonblocking stdio can truncate a large terminal frame.
+
+The CLI root controller adapts the existing composer, footer, live feed, and
+transcript viewer. History, hooks, resume, and jobs are presented on the same
+application rather than running nested polling loops. Page snapshots outlive
+command dispatch and are released on close. Opening a panel suspends Readline;
+closing it restores the composer. Runtime messages continue to update state,
+while sanitized scrollback output is buffered until the panel leaves. Command
+completion and session-selection receipts run after leaving alternate screen.
+
+The CLI attaches its existing owner queue to application wakeups and detaches it
+under the queue mutex before destroying the application. Signal handling stays
+with the existing sigwait listener, which sets flags and wakes the application;
+libuv does not install competing signal handlers. JSON and plain modes retain
+their existing input/output contracts.
+
+Standalone startup review, setup, and legacy synchronous tool prompts continue
+to use the screen polling API below. Interactive runtime requests currently close
+an open navigation panel before invoking that prompt adapter. Replacing those
+blocking prompt adapters, adding responder/view/canvas layers, and replacing
+Readline remain explicit follow-up work. Deferred panel output is currently an
+in-memory buffer; bounded spill storage belongs with the transcript migration.
+
 ## Layers and current consumers
 
 | Layer / component | Responsibility | Production consumers |
 | --- | --- | --- |
+| Application | libuv scheduling, controller presentation, input ownership, invalidation, teardown | Interactive chat, hooks, sessions, history, jobs |
 | Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
 | Input decoder | Stateful CSI/SS3 decoding, escape deadlines, UTF-8 byte input | All modal screens |
 | Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Hooks, session picker, and history use `run`; inline setup and selects use `poll` |
@@ -33,8 +95,9 @@ directories and include `<morph/tui.h>`, `<morph/tui/components.h>`, or
 `<morph/tui/tree.h>`. Headers live under `src/tui/include/`; the former `tui_*`
 names and `tui/` include paths are no longer provided.
 
-The public low-level API is `morph/tui.h`; layout, components, and screen hosting
-are in `morph/tui/components.h`; hierarchical views use `morph/tui/tree.h`. Implementations are divided into `terminal.c`,
+Application hosting uses `morph/tui/application.h`. The public low-level API is
+`morph/tui.h`; layout, components, and standalone screen hosting
+are in `morph/tui/components.h`; hierarchical views use `morph/tui/tree.h`. Implementations are divided into `application.c`, `terminal.c`,
 `input.c`, `screen.c`, `layout.c`, `list.c`, `select.c`, `select_prompt.c`, `editor.c`, `card.c`, `text_view.c`,
 `draw.c`, and `frame.c`.
 
@@ -149,6 +212,16 @@ widget tree. There is one active component per current screen mode, so focus
 routing remains explicit and does not need a global focus registry.
 
 ## Validation
+
+`tests/test_tui_application.cpp` covers deferred presentation, lifecycle order,
+duplicate dismissals, owner-thread enforcement, reentrancy, cross-thread message
+order and ownership, timer/invalidation phases, partial startup, output errors,
+resize geometry, incremental keys, and terminal restoration. The application and
+terminal primitives also run together under AddressSanitizer and UBSan.
+
+`tests/test_cli_application_pty.py` covers background completion while a panel is
+open, deferred output, modal paste isolation, resize, input handoff to Readline,
+and shutdown through the production CLI loop.
 
 `tests/test_tui.cpp` covers terminal restoration, incremental/overlong/interrupted
 input, clipping, frame invalidation and I/O failure, geometry, list changes,

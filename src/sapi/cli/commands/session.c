@@ -2,6 +2,7 @@
 #include "sapi/cli/list_ui.h"
 #include "sapi/cli/setup_ui.h"
 #include "sapi/cli/history_ui.h"
+#include "sapi/cli/application.h"
 
 #include <morph/tui/components.h>
 
@@ -349,6 +350,8 @@ static int resume_frame(morph_buf_t *frame, struct session *list, int count, int
 }
 
 struct resume_picker {
+	struct cli_context *ctx;
+	int selection;
 	struct session *sessions;
 	int count;
 	int *selected;
@@ -413,6 +416,53 @@ static int resume_pick(struct session *list, int count, int *selected)
 	return rc;
 }
 
+static void resume_close(void *data, int result)
+{
+	struct resume_picker *picker = data;
+	struct cli_context *ctx = picker->ctx;
+
+	if (!result && picker->selection >= 0) {
+		struct session selected;
+		int rc = runtime_session_select_existing(ctx->runtime,
+			picker->sessions[picker->selection].id, &selected);
+
+		if (!rc) {
+			ctx->session_auto_named = 1;
+			CMD_OK(ctx, "resumed session: %s", selected.name);
+		} else {
+			CMD_ERROR(ctx, "failed to resume session: %s", morph_strerror(rc));
+		}
+	}
+	runtime_session_list_free(picker->sessions);
+	morph_buf_cleanup(&picker->frame);
+	free(picker);
+}
+
+static int resume_present(struct cli_context *ctx, struct session *list, int count)
+{
+	struct resume_picker *picker = calloc(1, sizeof(*picker));
+	const struct morph_tui_screen_ops ops = {.update = resume_update, .draw = resume_draw};
+
+	if (!picker)
+		return -ENOMEM;
+	picker->ctx = ctx;
+	picker->sessions = list;
+	picker->count = count;
+	picker->selection = -1;
+	picker->selected = &picker->selection;
+	picker->menu.list.flags = MORPH_TUI_LIST_VIM | MORPH_TUI_LIST_TAB |
+		MORPH_TUI_LIST_HORIZONTAL_PAGES | MORPH_TUI_LIST_PAGED;
+	int rc = morph_buf_init(&picker->frame, BUFSIZ);
+
+	if (!rc)
+		rc = cli_screen_present(ctx, &ops, picker, resume_close);
+	if (rc) {
+		morph_buf_cleanup(&picker->frame);
+		free(picker);
+	}
+	return rc;
+}
+
 static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 {
 	struct session *list = NULL;
@@ -435,6 +485,12 @@ static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
 	if (count == 0)
 		CMD_OK(ctx, "no sessions to resume");
 	if (count > 0 && cli_setup_ui_available(stdin, stdout)) {
+		if (ctx->application) {
+			rc = resume_present(ctx, list, count);
+			if (rc)
+				runtime_session_list_free(list);
+			return rc;
+		}
 		int index;
 
 		rc = resume_pick(list, count, &index);
