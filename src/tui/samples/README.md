@@ -11,6 +11,10 @@ samples/
     CMakeLists.txt           morph-tui-minimal executable target
     README.md                purpose, build commands, and controls
     main.c                   executable entry point and controller
+  controls/                  text field, list, and modal controller
+    CMakeLists.txt
+    README.md
+    main.c
 ```
 
 - Use lowercase `snake_case` directory names and `morph-tui-<name>` target names
@@ -26,7 +30,8 @@ samples/
 
 | Sample | Demonstrates |
 | --- | --- |
-| [minimal](minimal/README.md) | Application, controller events, menu, layout, drawing, resize, and terminal cleanup |
+| [minimal](minimal/README.md) | View tree, list activation, automatic layout/drawing, and application runner |
+| [controls](controls/README.md) | Text input, focus traversal, Unicode, paste, and modal focus restoration |
 
 Build the collection with CMake 3.20+, a C11 compiler, pkg-config, and libuv
 1.44+. Utility sources come from the project's shared manifest. The standalone

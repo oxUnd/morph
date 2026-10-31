@@ -43,11 +43,9 @@ int cli_application_flush(struct cli_context *ctx)
 	return 0;
 }
 
-static void cli_screen_close(void *data, int result)
+void cli_application_panel_complete(struct cli_context *ctx, void *data,
+				    void (*complete)(void *, int), int result)
 {
-	struct cli_screen *screen = data;
-	struct cli_context *ctx = screen->ctx;
-
 	if (morph_tui_core_app_depth(ctx->application) <= 1) {
 		int rc = cli_application_flush(ctx);
 
@@ -56,13 +54,20 @@ static void cli_screen_close(void *data, int result)
 			morph_tui_core_app_stop(ctx->application, rc);
 		}
 	}
-	screen->complete(screen->data, result);
+	complete(data, result);
 	if (ctx->application_command && morph_tui_core_app_depth(ctx->application) <= 1) {
 		ctx->application_command = 0;
 		if (result < 0 && result != -ECANCELED)
 			CMD_ERROR(ctx, "%s", morph_strerror(result));
 		cli_presentation_command_end(ctx);
 	}
+}
+
+static void cli_screen_close(void *data, int result)
+{
+	struct cli_screen *screen = data;
+
+	cli_application_panel_complete(screen->ctx, screen->data, screen->complete, result);
 	free(screen);
 }
 
@@ -75,8 +80,7 @@ int cli_screen_present(struct cli_context *ctx, const struct morph_tui_core_scre
 
 	if (!screen)
 		return -ENOMEM;
-	*screen = (struct cli_screen){.ctx = ctx, .ops = *ops,
-		.data = data, .complete = complete};
+	*screen = (struct cli_screen){.ctx = ctx, .ops = *ops, .data = data, .complete = complete};
 	static const struct morph_tui_core_controller_ops controller_ops = {
 		.event = cli_screen_event,
 		.draw = cli_screen_draw,

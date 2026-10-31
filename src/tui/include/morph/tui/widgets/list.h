@@ -3,6 +3,7 @@
 
 #include <morph/tui/terminal/input.h>
 #include <stddef.h>
+#include <morph/tui/widgets/base.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +46,25 @@ struct morph_tui_widget_menu {
 };
 
 int morph_tui_widget_menu_update(struct morph_tui_widget_menu *menu, int key);
+
+/* Retained list control: copied items, built-in drawing, scrolling, focus,
+ * invalidation, and ACTIVATE/CHANGED actions. Constructors join builder scope. */
+struct morph_tui_core_view *
+morph_tui_widget_list_view_create(struct morph_tui_core_builder *,
+				  struct morph_tui_core_view *parent, const char *const *items,
+				  size_t count, int tag,
+				  const struct morph_tui_core_view_options *options);
+int morph_tui_widget_list_view_set_items(struct morph_tui_core_view *, const char *const *items,
+					 size_t count);
+size_t morph_tui_widget_list_view_selected(const struct morph_tui_core_view *);
+int morph_tui_widget_list_view_select(struct morph_tui_core_view *, size_t index);
+int morph_tui_widget_list_view_set_navigation(struct morph_tui_core_view *, unsigned flags);
+
+/* Data sources are borrowed until replaced or controller destruction. The
+ * callback's text need only survive until the next callback invocation. */
+typedef const char *(*morph_tui_widget_list_source_fn)(void *data, size_t index);
+int morph_tui_widget_list_view_set_source(struct morph_tui_core_view *, size_t count,
+					  morph_tui_widget_list_source_fn text, void *data);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,5 @@
 #include <morph/tui/core/application.h>
+#include "view_internal.h"
 #include "util/array.h"
 #include "util/error.h"
 #include "util/queue.h"
@@ -35,6 +36,7 @@ struct core_app_message {
 };
 
 struct morph_tui_core_app {
+	struct morph_tui_core_window *window;
 	struct morph_tui_core_app_options options;
 	uv_loop_t loop;
 	uv_poll_t input;
@@ -72,13 +74,19 @@ static int64_t core_app_now(void)
 
 static struct core_app_controller *core_app_top(const struct morph_tui_core_app *app)
 {
-	return app->controllers.nelts ?
-		morph_array_get(&app->controllers, app->controllers.nelts - 1) : NULL;
+	return app->controllers.nelts
+		       ? morph_array_get(&app->controllers, app->controllers.nelts - 1)
+		       : NULL;
 }
 
 int morph_tui_core_app_is_owner(const struct morph_tui_core_app *app)
 {
 	return app && pthread_equal(app->owner, pthread_self());
+}
+
+struct morph_tui_core_window *morph_tui_core_app_window(struct morph_tui_core_app *app)
+{
+	return app ? app->window : NULL;
 }
 
 static int core_app_system_event(enum morph_tui_core_event_type type)
@@ -110,8 +118,7 @@ static void core_app_dispatch(struct morph_tui_core_app *app,
 		rc = app->options.event(app->options.data, app, event);
 	struct core_app_controller *top = core_app_top(app);
 
-	if (!rc && !app->stopping && top && top->descriptor.ops->event &&
-	    !app->transitions.nelts)
+	if (!rc && !app->stopping && top && top->descriptor.ops->event && !app->transitions.nelts)
 		rc = top->descriptor.ops->event(top->descriptor.data, app, event);
 	if (rc < 0)
 		morph_tui_core_app_stop(app, rc);
@@ -191,8 +198,7 @@ static void core_app_woken(uv_async_t *handle)
 	core_app_dispatch(app, &wake);
 	for (int i = 0; i < CORE_APP_EVENT_BUDGET && !app->stopping; i++) {
 		pthread_mutex_lock(&app->mutex);
-		morph_queue_t *link = morph_queue_empty(&app->messages) ? NULL :
-			app->messages.next;
+		morph_queue_t *link = morph_queue_empty(&app->messages) ? NULL : app->messages.next;
 
 		if (link)
 			morph_queue_remove(link);
@@ -234,8 +240,7 @@ static void core_app_timer_fired(uv_timer_t *handle)
 	if (top && top->descriptor.input_mode == MORPH_TUI_CORE_INPUT_KEYS) {
 		if (now >= app->resize_at)
 			core_app_probe_size(app);
-		if (app->screen.input.deadline_ms > 0 &&
-		    now >= app->screen.input.deadline_ms)
+		if (app->screen.input.deadline_ms > 0 && now >= app->screen.input.deadline_ms)
 			core_app_read_key(app);
 	}
 	if (tick) {
@@ -250,8 +255,7 @@ static void core_app_arm_timer(struct morph_tui_core_app *app)
 	struct core_app_controller *top = core_app_top(app);
 	int64_t deadline = app->scheduled_at;
 
-	if (top && top->descriptor.tick_ms > 0 &&
-	    (deadline < 0 || top->tick_at < deadline))
+	if (top && top->descriptor.tick_ms > 0 && (deadline < 0 || top->tick_at < deadline))
 		deadline = top->tick_at;
 	if (top && top->descriptor.input_mode == MORPH_TUI_CORE_INPUT_KEYS) {
 		if (deadline < 0 || app->resize_at < deadline)
@@ -303,8 +307,7 @@ static int core_app_terminal_mode(struct morph_tui_core_app *app)
 	int raw = top && top->descriptor.input_mode == MORPH_TUI_CORE_INPUT_KEYS;
 	int flags = raw ? top->descriptor.terminal_flags : 0;
 
-	if (app->screen.session.active && raw &&
-	    app->screen.session.flags == flags)
+	if (app->screen.session.active && raw && app->screen.session.flags == flags)
 		return 0;
 	int rc = morph_tui_terminal_session_leave(&app->screen.session);
 
@@ -313,8 +316,7 @@ static int core_app_terminal_mode(struct morph_tui_core_app *app)
 	if (!rc && raw)
 		rc = morph_tui_terminal_session_enter(&app->screen.session, app->options.input,
 						      app->options.output, flags);
-	if (!rc && fcntl(fileno(app->options.input), F_SETFL,
-		app->saved_flags) < 0)
+	if (!rc && fcntl(fileno(app->options.input), F_SETFL, app->saved_flags) < 0)
 		rc = -errno;
 	return rc;
 }
@@ -331,7 +333,7 @@ int morph_tui_core_app_present(struct morph_tui_core_app *app,
 	if (app->stopping)
 		return -ECANCELED;
 	int rc = morph_array_reserve(&app->controllers,
-		app->controllers.nelts + app->transitions.nelts + 1);
+				     app->controllers.nelts + app->transitions.nelts + 1);
 
 	if (rc)
 		return rc;
@@ -502,8 +504,8 @@ int morph_tui_core_app_step(struct morph_tui_core_app *app, int wait)
 		rc = core_app_render(app);
 	if (!rc && !app->stopping) {
 		core_app_arm_timer(app);
-		(void)uv_run(&app->loop, wait && !app->transitions.nelts ?
-			UV_RUN_ONCE : UV_RUN_NOWAIT);
+		(void)uv_run(&app->loop,
+			     wait && !app->transitions.nelts ? UV_RUN_ONCE : UV_RUN_NOWAIT);
 		rc = core_app_transitions_commit(app);
 		if (!rc)
 			rc = core_app_render(app);
@@ -610,15 +612,18 @@ int morph_tui_core_app_create(const struct morph_tui_core_app_options *options,
 		rc = morph_array_init(&app->transitions, 8, sizeof(transition));
 	if (!rc) {
 		rc = uv_async_init(&app->loop, &app->wake, core_app_woken);
-		if (!rc) app->initialized = 1;
+		if (!rc)
+			app->initialized = 1;
 	}
 	if (!rc) {
 		rc = uv_timer_init(&app->loop, &app->timer);
-		if (!rc) app->initialized = 2;
+		if (!rc)
+			app->initialized = 2;
 	}
 	if (!rc) {
 		rc = uv_poll_init(&app->loop, &app->input, fileno(options->input));
-		if (!rc) app->initialized = 3;
+		if (!rc)
+			app->initialized = 3;
 	}
 	app->wake.data = app;
 	app->timer.data = app;
@@ -629,6 +634,8 @@ int morph_tui_core_app_create(const struct morph_tui_core_app_options *options,
 	 * this application is the terminal's only input consumer. */
 	if (!rc && fcntl(fileno(options->input), F_SETFL, app->saved_flags) < 0)
 		rc = -errno;
+	if (!rc)
+		rc = core_window_create(app, &app->window);
 	if (rc) {
 		morph_tui_core_app_destroy(app);
 		return rc;
@@ -695,6 +702,7 @@ void morph_tui_core_app_destroy(struct morph_tui_core_app *app)
 	(void)fcntl(fileno(app->options.input), F_SETFL, app->saved_flags);
 	morph_array_cleanup(&app->controllers);
 	morph_array_cleanup(&app->transitions);
+	core_window_destroy(app->window);
 	pthread_mutex_destroy(&app->mutex);
 	free(app);
 }

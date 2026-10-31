@@ -20,17 +20,18 @@ src/tui/
   include/morph/
     tui.h                    terminal primitive convenience umbrella
     tui/
-      core/                  application, controller, event, screen, layout
+      core/                  application, runner, window, controller, view, event, layout
       terminal/              terminal session and input decoder
-      render/                draw and frame submission
-      widgets/               list, select, editor, card, text_view, tree
+      render/                canvas, surface, backend, draw, frame
+      widgets/               base, label, stack, list, text_field, document, legacy controls
       components.h           component convenience umbrella
-  core/                      application, standalone host, and layout
+  core/                      application, view controllers, view tree, window, layout
   terminal/                  POSIX terminal modes and byte decoding
-  render/                    drawing and frame diffs
+  render/                    cell surface, clipped canvas, drawing, frame diffs
   widgets/                   reusable interaction and presentation components
   samples/                   catalog and shared standalone build setup
     minimal/                 main.c, CMakeLists.txt, README.md
+    controls/                text input, focus, and modal presentation
   CMakeLists.txt
 
 src/sapi/cli/
@@ -119,9 +120,9 @@ once, after removal, and may free the page model. Reentrant stepping is rejected
 Each step commits pending transitions, resolves terminal dimensions, lays out and
 draws invalid content, runs one libuv iteration, then commits and renders changes.
 Invalidation coalesces across a batch. Before each render the current dimensions
-are checked, preventing a resize wake from rendering an old-width frame. Existing
-page draw callbacks still use their current renderers; canvas composition, a
-retained view hierarchy, and responder routing are subsequent migration layers.
+are checked, preventing a resize wake from rendering an old-width frame. View
+controllers use the retained view, canvas, and responder machinery described
+below. Legacy controller draw callbacks continue to use their existing renderers.
 
 `MORPH_TUI_CORE_INPUT_EXTERNAL` gives readiness exclusively to an input adapter, currently
 Readline for chat. `MORPH_TUI_CORE_INPUT_KEYS` gives decoding and terminal modes to the
@@ -149,9 +150,133 @@ their existing input/output contracts.
 Standalone startup review, setup, and legacy synchronous tool prompts continue
 to use the screen polling API below. Interactive runtime requests currently close
 an open navigation panel before invoking that prompt adapter. Replacing those
-blocking prompt adapters, adding responder/view/canvas layers, and replacing
-Readline remain explicit follow-up work. Deferred panel output is currently an
+blocking prompt adapters and replacing Readline remain explicit follow-up work. Deferred panel output is currently an
 in-memory buffer; bounded spill storage belongs with the transcript migration.
+
+## Retained application interface
+
+New applications include `<morph/tui/core/runner.h>`, create a root view
+controller specification, and call `morph_tui_core_application_main`. Ordinary
+pages implement `build` and, when needed, `action`; they do not implement screen
+drawing, byte decoding, signal handlers, resize arithmetic, or terminal cleanup.
+The lower-level `morph_tui_core_app_*` API remains the explicit host used by CLI
+adapters. Both interfaces share one libuv application and controller stack.
+
+### Extensible bases
+
+C subclasses embed their base as the first member. Method tables are borrowed
+and must outlive the instance. Omitted optional methods retain base behavior.
+There is no type-registration singleton or global application object.
+
+| Base | Extension contract | Allocation and lifetime |
+| --- | --- | --- |
+| `morph_tui_core_application` | Optional launch, event, prepare-termination, and termination methods | Caller owns the instance; the runner owns runtime state during run |
+| `morph_tui_core_view_controller` | Build, action, event, appear, disappear, destroy | Specification selects instance size; host owns accepted instances |
+| `morph_tui_core_view` | Optional measure, layout, canvas draw, event, destroy | Builder allocates subclass instances in the controller scope |
+| `morph_tui_widget_base` | Embeds View and adds tags, action bindings, action emission | Built-in and custom widgets use the same factory and dispatch path |
+| `morph_tui_core_layout` | Measure and arrange methods | Borrowed by a view; normally embedded in a custom container |
+| `morph_tui_render_backend` | Present a composed surface; optional invalidate | Caller-owned backend installed on the default window |
+
+View and widget callbacks receive the base pointer; casting to a struct whose
+first member is that base recovers subclass state. Factories accept
+`sizeof(instance)` so the framework can allocate the complete subclass.
+Custom containers can inspect children and call public measure/arrange methods.
+A custom rendering backend receives the same cell surface as the terminal
+backend; it can serialize rows and inspect the desired cursor for capture or
+another output target. The default window delegates composition to views and
+presentation to the installed backend.
+
+### Construction and ownership
+
+A build callback receives a scoped builder. The first view with no parent is
+the root; every other view must name a parent from the same controller. Builders
+record the first error, and subsequent constructors stop. Call
+`morph_tui_core_builder_fail` to include errors from application-specific build
+steps. A failed build never presents a partial interface.
+
+The controller owns all view instances and their hierarchy. View instance/state
+storage uses an arena; growing child arrays and replaceable strings have
+explicit cleanup. Children are destroyed before their parents, exactly once.
+Controller `destroy` follows view teardown and must not dereference released
+views. It also runs for build/presentation failure after scope initialization.
+Argument or allocation failures before scope initialization leave caller data
+untouched. Specification `data` is borrowed; callers retain its ownership unless
+their own controller explicitly moves or releases it.
+
+Label text and ordinary list items are copied. Data-source lists borrow their
+callback and context, fetch visible rows only, and copy action text for the full
+callback duration. A callback can replace its sender's items without invalidating
+its action payload. An explicit widget action binding overrides the controller's
+action method; its context remains caller-owned.
+
+View construction and mutation run only on the application owner thread.
+Setters reject worker calls with `-EPERM`. Workers post owned messages through
+the host; messages should carry model data, not borrowed pointers to views that
+may have closed. Producers must finish before application teardown.
+
+### Layout, focus, and actions
+
+View coordinates are zero-based and relative to their parent. This differs
+from the one-based legacy terminal rectangles; terminal coordinates are confined
+to output adapters. Views use intrinsic or fixed dimensions, minimum/maximum
+sizes, padding, and growth weights. Stack containers measure children and then
+arrange them horizontally or vertically, distribute remaining space subject to
+maximums, and support stretch/start/center/end cross-axis alignment. Hidden
+children consume no space. Tiny viewports produce bounded or empty regions.
+
+The window tracks the active controller; each controller retains its focus.
+Tab and Shift-Tab traverse focusable views in tree order, skipping hidden
+ancestors. An unhandled input proceeds from the focused view through its parents
+to the controller, the window handler, and the Application delegate before
+default page commands. Custom parent views can
+handle child input using the same optional event method.
+
+View-controller input distinguishes command keys, complete UTF-8 text, and pasted
+text. UTF-8 sanitizer state belongs to each controller/input target. A bracketed
+paste retains its original target and never reaches page shortcuts; controls
+receive its boundaries and text without executing pasted navigation or submit.
+The low-level host and legacy adapters retain their byte-key contract.
+
+List owns selection, viewport, drawing, and ACTIVATE/CHANGED actions. TextField
+reuses Editor for bounded editing, supplies display and cursor state, and emits
+CHANGED/SUBMIT. The document control owns sanitized multiline text, wrapping,
+scrolling, and clipping. Widgets redraw themselves on state changes. Label text
+changes request layout as well as display. `tick_ms` is an optional controller
+business timer, disabled by default.
+
+Escape and Ctrl-C/Ctrl-D close a page after its responders decline the event.
+An optional printable `quit_key` follows the same path, so a focused text field
+can accept `q` as text. Modal controllers use deferred presentation; the parent
+retains its view tree and focus while hidden and resumes them on dismissal.
+
+### Drawing and lifecycle
+
+Invalidations coalesce in the host. Layout runs before composition, followed by
+frame comparison and output. Canvas draws in local coordinates with inherited
+clipping and typed styles. Surface cells track wide-character continuations and
+combining marks; input text is sanitized through `util/utf8.h`. Clearing and
+composing a full visible surface keeps overlap/resize behavior deterministic;
+row diffs suppress unchanged terminal rows. This uses the project's Unicode
+width policy rather than claiming full emoji-grapheme shaping.
+
+Standalone Application defaults to stdin/stdout, alternate screen, decoded keys,
+bracketed paste, and the existing signal listener bridged to app wakeups. Signals
+need no application polling tick. The host retains its resize-probe fallback.
+Application delegates receive termination signals as SIGNAL events with the
+signal number in `code`; consuming a wake does not suppress signal handling.
+The optional `prepare_termination` hook runs with a stopped, live runtime so
+applications can join producers before destruction. Terminal and descriptor
+restoration precedes the final Application termination hook
+and error reporting. `application_run` returns framework results;
+`application_main` reports errors and converts them into process exit status.
+
+Applications embedded in a host use `external_signals`, or present a view
+controller directly on an existing `morph_tui_core_app`. They reuse the host's
+signal policy. No competing libuv signal handlers are installed. The production
+`/jobs` page uses retained list/document controls on the CLI's existing app;
+its CLI adapter still flushes deferred output and completes command groups after
+the panel leaves. Legacy standalone screen adapters remain available for startup
+and setup migration.
 
 ## Layers and current consumers
 
@@ -338,13 +463,19 @@ use these paths. Patch gutters and approval card borders are separate components
 not hierarchical views. JSON event envelopes and noninteractive command behavior
 retain their existing dispatch paths.
 
-## Minimal sample
+## Samples
 
-`src/tui/samples/minimal/main.c` demonstrates application setup, controller events,
-a menu widget, layout, drawing, resize, and terminal restoration. Build it
-independently with `cmake -S src/tui/samples -B /tmp/morph-tui-samples`, then
-`cmake --build /tmp/morph-tui-samples` and run
-`/tmp/morph-tui-samples/bin/morph-tui-minimal`. Its standalone build uses only
-libuv, POSIX APIs, and the required utility modules from the shared manifest;
-it performs no dependency downloads. The main build enables the same executable
-with `-DBUILD_TUI_SAMPLES=ON`. See [sample instructions](../src/tui/samples/minimal/README.md).
+`src/tui/samples/minimal/main.c` builds a label/list/label view tree and handles
+one activation action. Its application runner manages terminal and signal
+lifecycle, layout, focus, redraw, rendering buffers, and cleanup.
+`src/tui/samples/controls/main.c` adds a text field, Tab/Shift-Tab traversal,
+UTF-8 input, paste isolation, modal presentation, and restoration of the same
+focused control. Both use public framework APIs without CLI or runtime services.
+
+Configure independently with `cmake -S src/tui/samples -B /tmp/morph-tui-samples`,
+then `cmake --build /tmp/morph-tui-samples`. Run
+`/tmp/morph-tui-samples/bin/morph-tui-minimal` or `morph-tui-controls` from that
+same `bin/` directory. The standalone build uses libuv, POSIX APIs, and utility
+modules from the shared manifest, without downloads. The main build enables
+both targets with `-DBUILD_TUI_SAMPLES=ON`. See the
+[sample catalog](../src/tui/samples/README.md).

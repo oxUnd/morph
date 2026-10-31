@@ -73,6 +73,7 @@ set(TEST_SOURCES
 	test_cli_terminal.cpp
 	test_tui.cpp
 	test_tui_application.cpp
+	test_tui_views.cpp
 	test_cli_ui.cpp
 	test_utf8.cpp
 	test_kitty_protocol.cpp
@@ -173,6 +174,13 @@ if(ENABLE_GLOBAL_STATE_AUDIT)
 			${CMAKE_CURRENT_SOURCE_DIR}/test_global_state_audit.py)
 endif()
 if(Python3_Interpreter_FOUND AND UNIX)
+	if(TARGET morph-tui-minimal AND TARGET morph-tui-controls)
+		add_test(NAME tui_samples_pty_integration
+			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_samples_pty.py
+				$<TARGET_FILE:morph-tui-minimal> $<TARGET_FILE:morph-tui-controls>)
+		set_tests_properties(tui_samples_pty_integration PROPERTIES
+			SKIP_RETURN_CODE 77 TIMEOUT 45)
+	endif()
 	if(TARGET morph-fastcgi)
 		add_test(NAME fastcgi_ask_user_integration
 			COMMAND ${Python3_EXECUTABLE}

@@ -4,6 +4,9 @@
 #include "sapi/cli/ui/presentation/terminal.h"
 #include "sapi/cli/ui/presentation/list.h"
 #include <morph/tui/components.h>
+#include <morph/tui/core/view_controller.h>
+#include <morph/tui/widgets/label.h>
+#include <morph/tui/widgets/stack.h>
 
 #define CLI_JOB_SUCCESS_MS 5000
 #define CLI_JOB_FAILURE_MS 10000
@@ -80,8 +83,7 @@ static int remember_job(struct cli_context *ctx, const cJSON *data)
 	if (!copy)
 		return -ENOMEM;
 	struct cli_job *job;
-	morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)
-	{
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
 		if (!strcmp(job_string(job->data, "session_id"), job_string(data, "session_id"))) {
 			cJSON_Delete(job->data);
 			job->data = copy;
@@ -103,7 +105,8 @@ void cli_jobs_cleanup(struct cli_context *ctx)
 	if (!ctx->jobs)
 		return;
 	struct cli_job *job;
-	morph_array_foreach(job, &ctx->jobs->entries, struct cli_job) cJSON_Delete(job->data);
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job)
+		cJSON_Delete(job->data);
 	morph_array_cleanup(&ctx->jobs->entries);
 	free(ctx->jobs);
 	ctx->jobs = NULL;
@@ -147,8 +150,7 @@ int cli_jobs_visible(const struct cli_context *ctx)
 	if (!ctx->jobs)
 		return 0;
 	struct cli_job *job;
-	morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)
-	{
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
 		if (job_visible(ctx, job))
 			return 1;
 	}
@@ -181,8 +183,7 @@ int cli_jobs_render(struct cli_context *ctx, morph_buf_t *out, int columns, int 
 	/* Running work stays ahead of recent failures and successes. */
 	for (int pass = 0; pass < 3; pass++) {
 		struct cli_job *job;
-		morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)
-		{
+		morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
 			if (!job_visible(ctx, job))
 				continue;
 			int priority = job_running(job->data) ? 0 : job_failed(job->data) ? 1 : 2;
@@ -240,8 +241,7 @@ void cli_jobs_acknowledge(struct cli_context *ctx, const char *id)
 	if (!ctx->jobs)
 		return;
 	struct cli_job *job;
-	morph_array_foreach(job, &ctx->jobs->entries, struct cli_job)
-	{
+	morph_array_foreach (job, &ctx->jobs->entries, struct cli_job) {
 		if (!strcmp(job_string(job->data, "session_id"), id))
 			job->seen = 1;
 	}
@@ -278,8 +278,7 @@ static int jobs_refresh(struct jobs_view *view)
 	if (selected_id) {
 		cJSON *entry;
 		size_t index = 0;
-		cJSON_ArrayForEach(entry, jobs)
-		{
+		cJSON_ArrayForEach (entry, jobs) {
 			if (!strcmp(job_string(entry, "session_id"), selected_id)) {
 				view->selection.index = index;
 				break;
@@ -303,6 +302,25 @@ static int jobs_refresh(struct jobs_view *view)
 	return 0;
 }
 
+static int jobs_document(struct jobs_view *view)
+{
+	morph_buf_reset(&view->document);
+	(void)morph_buf_printf(
+		&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
+		job_string(view->details, "description"), job_string(view->details, "command"),
+		job_string(view->details, "workdir"), job_string(view->details, "status"));
+	const cJSON *exit_code = cJSON_GetObjectItemCaseSensitive(view->details, "exit_code");
+	if (cJSON_IsNumber(exit_code))
+		(void)morph_buf_printf(&view->document, " · exit %d", exit_code->valueint);
+	(void)morph_buf_printf(&view->document, "\n\n%s%s", job_string(view->details, "stdout"),
+			       job_string(view->details, "stderr"));
+	if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stdout_truncated")) ||
+	    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(view->details, "stderr_truncated")))
+		(void)morph_buf_puts(&view->document,
+				     "\n[Output truncated; retained window shown]");
+	return view->document.failed;
+}
+
 static int jobs_draw(void *data, const struct morph_tui_core_screen *screen)
 {
 	struct jobs_view *view = data;
@@ -319,25 +337,12 @@ static int jobs_draw(void *data, const struct morph_tui_core_screen *screen)
 	morph_tui_widget_list_layout(&view->selection, (size_t)cJSON_GetArraySize(view->jobs),
 				     (size_t)page);
 	if (view->detail && view->details) {
-		morph_buf_reset(&view->document);
-		(void)morph_buf_printf(&view->document, "%s\n%s\nDirectory: %s\nStatus: %s",
-				       job_string(view->details, "description"),
-				       job_string(view->details, "command"),
-				       job_string(view->details, "workdir"),
-				       job_string(view->details, "status"));
-		const cJSON *exit_code =
-			cJSON_GetObjectItemCaseSensitive(view->details, "exit_code");
-		if (cJSON_IsNumber(exit_code))
-			(void)morph_buf_printf(&view->document, " · exit %d", exit_code->valueint);
-		(void)morph_buf_printf(&view->document, "\n\n%s%s",
-				       job_string(view->details, "stdout"),
-				       job_string(view->details, "stderr"));
-		if (cJSON_IsTrue(
-			    cJSON_GetObjectItemCaseSensitive(view->details, "stdout_truncated")) ||
-		    cJSON_IsTrue(
-			    cJSON_GetObjectItemCaseSensitive(view->details, "stderr_truncated")))
-			(void)morph_buf_puts(&view->document,
-					     "\n[Output truncated; retained window shown]");
+		rc = jobs_document(view);
+		if (rc) {
+			morph_buf_cleanup(&frame);
+			morph_buf_cleanup(&line);
+			return rc;
+		}
 		char *safe = utf8_terminal_sanitize_dup(morph_buf_cstr(&view->document),
 							view->document.len,
 							UTF8_TERMINAL_TEXT_MULTILINE, NULL);
@@ -456,17 +461,167 @@ static int jobs_update(void *data, const struct morph_tui_core_event *event)
 	return rc ? rc : MORPH_TUI_CORE_SCREEN_REDRAW;
 }
 
-static void jobs_close(void *data, int result)
+static void jobs_cleanup(struct jobs_view *view)
 {
-	struct jobs_view *view = data;
-
-	(void)result;
 	cJSON_Delete(view->jobs);
 	cJSON_Delete(view->details);
 	morph_buf_cleanup(&view->document);
 	morph_tui_render_frame_cleanup(&view->frame);
 	morph_tui_widget_text_view_cleanup(&view->lines);
-	free(view);
+}
+
+struct cli_jobs_controller {
+	struct morph_tui_core_view_controller base;
+	struct jobs_view view;
+	struct morph_tui_core_view *title, *list, *document, *message;
+	char row[BUFSIZ];
+	int presented;
+};
+
+static const char *jobs_controller_row(void *data, size_t index)
+{
+	struct cli_jobs_controller *page = data;
+	cJSON *job = cJSON_GetArrayItem(page->view.jobs, (int)index);
+
+	snprintf(page->row, sizeof(page->row), "%.8s  %-11s  %s", job_short_id(job),
+		 job_string(job, "status"), job_string(job, "command"));
+	return page->row;
+}
+
+static int jobs_controller_sync(struct cli_jobs_controller *page, int focus)
+{
+	struct jobs_view *view = &page->view;
+	size_t count = (size_t)cJSON_GetArraySize(view->jobs);
+	int rc =
+		morph_tui_widget_list_view_set_source(page->list, count, jobs_controller_row, page);
+
+	morph_tui_widget_list_layout(&view->selection, count, view->selection.page);
+	if (!rc && count)
+		rc = morph_tui_widget_list_view_select(page->list, view->selection.index);
+	if (!rc)
+		rc = morph_tui_core_view_set_hidden(page->list, view->detail);
+	if (!rc)
+		rc = morph_tui_core_view_set_hidden(page->document, !view->detail);
+	if (!rc)
+		rc = morph_tui_widget_label_set_text(
+			page->title, view->detail ? "morph / jobs / output" : "morph / jobs");
+	if (!rc)
+		rc = morph_tui_widget_label_set_text(
+			page->message,
+			view->message ? view->message
+				      : (!count ? "No background jobs in this session." : ""));
+	if (!rc && view->detail && view->details) {
+		rc = jobs_document(view);
+		if (!rc)
+			rc = morph_tui_widget_text_view_set_text(page->document,
+								 morph_buf_cstr(&view->document));
+	}
+	if (!rc && focus)
+		rc = morph_tui_core_view_focus(view->detail ? page->document : page->list);
+	return rc;
+}
+
+static void jobs_controller_build(struct morph_tui_core_view_controller *controller,
+				  struct morph_tui_core_builder *builder)
+{
+	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
+	struct jobs_view *source = controller->data;
+
+	/* Move the model into the controller. The caller's cleanup remains valid
+	 * when allocation fails before build or construction fails after the move. */
+	page->view = *source;
+	memset(source, 0, sizeof(*source));
+	controller->data = NULL;
+	const struct morph_tui_core_view_options inset = {.padding = 1};
+	const struct morph_tui_core_view_options fill = {.grow = 1};
+	struct morph_tui_core_view *root = morph_tui_widget_stack_create(
+		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &inset);
+
+	page->title = morph_tui_widget_label_create(builder, root, "morph / jobs", NULL);
+	morph_tui_widget_label_create(builder, root, "", NULL);
+	page->list = morph_tui_widget_list_view_create(builder, root, NULL, 0, 0, &fill);
+	page->document = morph_tui_widget_text_view_create(builder, root, "", &fill);
+	page->message = morph_tui_widget_label_create(builder, root, "", NULL);
+	morph_tui_widget_label_create(
+		builder, root, "Up/Down · Enter output · k stop · r refresh · Esc back", NULL);
+	if (!morph_tui_core_builder_error(builder)) {
+		morph_tui_widget_list_view_set_navigation(page->list, 0);
+		morph_tui_core_builder_fail(builder, jobs_controller_sync(page, 1));
+	}
+}
+
+static int jobs_controller_action(struct morph_tui_core_view_controller *controller,
+				  const struct morph_tui_widget_action *action)
+{
+	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
+
+	page->view.selection.index = action->index;
+	if (action->type != MORPH_TUI_WIDGET_ACTION_ACTIVATE)
+		return 0;
+	page->view.detail = 1;
+	int rc = jobs_refresh(&page->view);
+
+	return rc ? rc : jobs_controller_sync(page, 1);
+}
+
+static int jobs_controller_event(struct morph_tui_core_view_controller *controller,
+				 const struct morph_tui_core_event *event)
+{
+	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
+	struct jobs_view *view = &page->view;
+	int focus = 0;
+
+	if (event->type == MORPH_TUI_CORE_EVENT_TICK) {
+		if (jobs_now() - view->refreshed < 1000)
+			return 0;
+	} else if (event->type == MORPH_TUI_CORE_EVENT_KEY ||
+		   event->type == MORPH_TUI_CORE_EVENT_TEXT) {
+		if ((event->key == 27 || event->key == 'q') && view->detail) {
+			view->detail = 0;
+			focus = 1;
+		} else if (event->key == 'k') {
+			cJSON *job = cJSON_GetArrayItem(view->jobs, (int)view->selection.index);
+
+			if (job) {
+				int rc = runtime_process_stop(view->ctx->runtime,
+							      job_string(job, "session_id"));
+
+				view->message = rc ? morph_strerror(rc) : "Stop requested";
+			}
+		} else if (event->key != 'r')
+			return 0;
+	} else
+		return 0;
+	int rc = jobs_refresh(view);
+
+	if (!rc)
+		rc = jobs_controller_sync(page, focus);
+	return rc ? rc : 1;
+}
+
+static void jobs_controller_cleanup(void *data, int result)
+{
+	struct cli_jobs_controller *page = data;
+
+	(void)result;
+	jobs_cleanup(&page->view);
+}
+
+static int jobs_controller_appear(struct morph_tui_core_view_controller *controller)
+{
+	((struct cli_jobs_controller *)controller)->presented = 1;
+	return 0;
+}
+
+static void jobs_controller_destroy(struct morph_tui_core_view_controller *controller, int result)
+{
+	struct cli_jobs_controller *page = (struct cli_jobs_controller *)controller;
+
+	if (page->presented)
+		cli_application_panel_complete(page->view.ctx, page, jobs_controller_cleanup,
+					       result);
+	else
+		jobs_controller_cleanup(page, result);
 }
 
 int cli_jobs_view(struct cli_context *ctx, const char *id)
@@ -483,8 +638,7 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 		if (!rc) {
 			cJSON *job;
 			size_t index = 0;
-			cJSON_ArrayForEach(job, view.jobs)
-			{
+			cJSON_ArrayForEach (job, view.jobs) {
 				if (!strcmp(job_string(job, "session_id"),
 					    job_string(details, "session_id"))) {
 					view.selection.index = index;
@@ -501,18 +655,27 @@ int cli_jobs_view(struct cli_context *ctx, const char *id)
 		cJSON_Delete(details);
 	}
 	if (!rc && ctx->application) {
-		struct jobs_view *owned = calloc(1, sizeof(*owned));
+		struct cli_jobs_controller page;
+		static const struct morph_tui_core_view_controller_ops controller_ops = {
+			.build = jobs_controller_build,
+			.action = jobs_controller_action,
+			.event = jobs_controller_event,
+			.destroy = jobs_controller_destroy,
+			.appear = jobs_controller_appear,
+		};
+		const struct morph_tui_core_view_controller_spec spec = {
+			.ops = &controller_ops,
+			.data = &view,
+			.size = sizeof(page),
+			.quit_key = 'q',
+			.tick_ms = 1000,
+		};
 
-		if (!owned)
-			rc = -ENOMEM;
-		else {
-			*owned = view;
-			rc = cli_screen_present(ctx, &ops, owned, jobs_close);
-			if (!rc)
-				return 0;
-			free(owned);
-		}
+		rc = morph_tui_core_view_controller_present(ctx->application, &spec);
+		if (!rc)
+			return 0;
 	}
+
 	screen.interrupted = &ctx->interrupted;
 	if (!rc)
 		rc = morph_tui_core_screen_open(&screen, stdin, stdout,

@@ -2,6 +2,10 @@ pkg_check_modules(TUI_LIBUV REQUIRED IMPORTED_TARGET libuv>=1.44)
 
 add_library(morph-tui STATIC
 	core/application.c
+	core/runner.c
+	core/view.c
+	core/view_controller.c
+	core/window.c
 	core/layout.c
 	core/screen.c
 
@@ -9,14 +13,21 @@ add_library(morph-tui STATIC
 	terminal/terminal.c
 
 	render/draw.c
+	render/canvas.c
 	render/frame.c
 
 	widgets/card.c
+	widgets/base.c
+	widgets/label.c
+	widgets/stack.c
+	widgets/list_view.c
+	widgets/text_field.c
 	widgets/editor.c
 	widgets/list.c
 	widgets/select.c
 	widgets/select_prompt.c
 	widgets/text_view.c
+	widgets/document.c
 	widgets/tree.c
 )
 target_include_directories(morph-tui PUBLIC

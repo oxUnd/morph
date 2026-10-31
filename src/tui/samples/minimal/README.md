@@ -1,7 +1,10 @@
 # Minimal TUI sample
 
-`main.c` shows an application, a controller, a menu widget, deferred redraw,
-resize handling, and terminal cleanup. It needs no model configuration or API key.
+`main.c` builds a view tree (labels, a vertical stack, and a list), handles an
+activation action, and enters the default application runner. The controller
+embeds the public ViewController base. The framework owns layout, focus,
+redraw, rendering buffers, signal handling, and terminal cleanup. The sample
+needs no model configuration or API key.
 
 From the repository root, configure the samples collection with CMake 3.20+,
 a C11 compiler, pkg-config, and libuv 1.44+, then build this sample's target.

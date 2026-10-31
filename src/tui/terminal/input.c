@@ -23,6 +23,8 @@ static int terminal_input_sequence_key(const char *sequence)
 		return MORPH_TUI_TERMINAL_KEY_UP;
 	if (strcmp(sequence, "B") == 0)
 		return MORPH_TUI_TERMINAL_KEY_DOWN;
+	if (strcmp(sequence, "Z") == 0)
+		return MORPH_TUI_TERMINAL_KEY_BACK_TAB;
 	if (strcmp(sequence, "C") == 0)
 		return MORPH_TUI_TERMINAL_KEY_RIGHT;
 	if (strcmp(sequence, "D") == 0)

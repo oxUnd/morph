@@ -2,6 +2,7 @@
 #define MORPH_TUI_CORE_LAYOUT_H
 
 #include "util/buf.h"
+#include <morph/tui/core/view.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +14,16 @@ struct morph_tui_core_layout_rect {
 	int y;
 	int width;
 	int height;
+};
+
+/* Embed this base in custom layout managers. A view borrows its manager. */
+struct morph_tui_core_layout_ops {
+	int (*measure)(struct morph_tui_core_layout *, struct morph_tui_core_view *, int width,
+		       struct morph_tui_core_view_size *);
+	int (*arrange)(struct morph_tui_core_layout *, struct morph_tui_core_view *);
+};
+struct morph_tui_core_layout {
+	const struct morph_tui_core_layout_ops *ops;
 };
 
 struct morph_tui_core_layout_rect
