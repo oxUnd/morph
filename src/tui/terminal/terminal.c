@@ -1,4 +1,4 @@
-#include <morph/tui/terminal/terminal.h>
+#include <morph/tui/terminal.h>
 #include "util/error.h"
 
 #include <stdlib.h>
@@ -10,8 +10,8 @@ int morph_tui_terminal_available(FILE *input, FILE *output)
 {
 	const char *term = getenv("TERM");
 
-	return input && output && isatty(fileno(input)) &&
-		isatty(fileno(output)) && (!term || strcmp(term, "dumb") != 0);
+	return input && output && isatty(fileno(input)) && isatty(fileno(output)) &&
+	       (!term || strcmp(term, "dumb") != 0);
 }
 
 void morph_tui_terminal_dimensions(int output_fd, int *columns, int *rows)
@@ -21,8 +21,10 @@ void morph_tui_terminal_dimensions(int output_fd, int *columns, int *rows)
 	*columns = 80;
 	*rows = 24;
 	if (ioctl(output_fd, TIOCGWINSZ, &size) == 0) {
-		if (size.ws_col) *columns = size.ws_col;
-		if (size.ws_row) *rows = size.ws_row;
+		if (size.ws_col)
+			*columns = size.ws_col;
+		if (size.ws_row)
+			*rows = size.ws_row;
 	}
 }
 
@@ -40,8 +42,8 @@ int morph_tui_terminal_session_enter(struct morph_tui_terminal_session *session,
 	if (tcgetattr(fd, &session->saved) != 0)
 		return -errno;
 	raw = session->saved;
-	raw.c_lflag &= (tcflag_t)~(ICANON | ECHO | ISIG | IEXTEN);
-	raw.c_iflag &= (tcflag_t)~(IXON | ICRNL);
+	raw.c_lflag &= (tcflag_t) ~(ICANON | ECHO | ISIG | IEXTEN);
+	raw.c_iflag &= (tcflag_t) ~(IXON | ICRNL);
 	raw.c_cc[VMIN] = 1;
 	raw.c_cc[VTIME] = 0;
 	if (tcsetattr(fd, TCSANOW, &raw) != 0)
@@ -87,4 +89,3 @@ int morph_tui_terminal_session_leave(struct morph_tui_terminal_session *session)
 	}
 	return rc;
 }
-

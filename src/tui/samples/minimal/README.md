@@ -29,7 +29,8 @@ Run in a terminal. Use Up/Down or j/k to move, Enter to select, and q, Escape,
 or Ctrl-C to exit. Pasted navigation cannot activate controls. Resize updates
 the layout; exiting restores terminal modes.
 
-Public names follow their layer: `morph_tui_core_*`, `morph_tui_terminal_*`,
-`morph_tui_render_*`, and `morph_tui_widget_*`. Header paths mirror the source
-directories, such as `<morph/tui/widgets/list.h>`. File-local sample helpers use
-the `sample_minimal_` prefix; `main` is the executable entry point.
+Public names describe objects: `morph_tui_application_*`, `morph_tui_view_*`,
+and `morph_tui_canvas_*`; controls use `morph_tui_widget_*`. Applications can
+include `<morph/tui.h>` or individual object headers. Implementation layers stay
+private. File-local sample helpers use `sample_minimal_*`; `main` is the entry
+point.

@@ -35,3 +35,4 @@ endif()
 
 add_subdirectory(minimal)
 add_subdirectory(controls)
+add_subdirectory(customization)

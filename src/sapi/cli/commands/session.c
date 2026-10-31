@@ -193,12 +193,12 @@ struct resume_layout {
 	int updated_column;
 };
 
-static struct resume_layout resume_dimensions(const struct morph_tui_core_screen *screen)
+static struct resume_layout resume_dimensions(const struct morph_tui_screen *screen)
 {
 	struct resume_layout layout = {.rows = screen->area.height,
 		.columns = screen->area.width};
-	struct morph_tui_core_layout_rect body =
-		morph_tui_core_layout_rect_inset(screen->area, 2, 0);
+	struct morph_tui_terminal_rect body =
+		morph_tui_terminal_rect_inset(screen->area, 2, 0);
 
 	layout.width = body.width > 0 ? body.width : 1;
 	layout.first_row = layout.rows >= 14 ? 8 : layout.rows >= 6 ? 3 :
@@ -230,7 +230,7 @@ static void resume_cell(morph_buf_t *frame, const struct resume_layout *layout,
 	char compact[BUFSIZ];
 
 	cli_list_compact_text(compact, sizeof(compact), text);
-	(void)morph_tui_render_draw_cell_append_aligned(frame, layout->columns, layout->rows, row,
+	(void)morph_tui_draw_cell_append_aligned(frame, layout->columns, layout->rows, row,
 							column, width, compact, style, right);
 }
 
@@ -261,7 +261,7 @@ static int resume_frame(morph_buf_t *frame, struct session *list, int count, int
 			list[focus].name, RESUME_SELECTED, 0);
 		morph_buf_puts(frame, "\033[0m\033[?2026l");
 		morph_buf_cleanup(&tokens);
-		return morph_tui_render_draw_write(stdout, frame);
+		return morph_tui_draw_write(stdout, frame);
 	}
 	if (layout->rows >= 14) {
 		resume_cell(frame, layout, 1, 3, 5, "morph", RESUME_ACCENT, 0);
@@ -346,7 +346,7 @@ static int resume_frame(morph_buf_t *frame, struct session *list, int count, int
 	}
 	morph_buf_puts(frame, "\033[0m\033[?2026l");
 	if (rc == 0)
-		rc = morph_tui_render_draw_write(stdout, frame);
+		rc = morph_tui_draw_write(stdout, frame);
 	morph_buf_cleanup(&tokens);
 	return rc;
 }
@@ -357,46 +357,46 @@ struct resume_picker {
 	struct session *sessions;
 	int count;
 	int *selected;
-	struct morph_tui_widget_menu menu;
+	struct morph_tui_widget_menu_state menu;
 	struct resume_layout layout;
 	morph_buf_t frame;
 };
 
-static int resume_draw(void *data, const struct morph_tui_core_screen *screen)
+static int resume_draw(void *data, const struct morph_tui_screen *screen)
 {
 	struct resume_picker *picker = data;
 
 	picker->layout = resume_dimensions(screen);
-	morph_tui_widget_list_layout(&picker->menu.list, (size_t)picker->count,
+	morph_tui_widget_list_state_layout(&picker->menu.list, (size_t)picker->count,
 				     (size_t)picker->layout.page_size);
 	return resume_frame(&picker->frame, picker->sessions, picker->count,
 		(int)picker->menu.list.index, &picker->layout);
 }
 
-static int resume_update(void *data, const struct morph_tui_core_event *event)
+static int resume_update(void *data, const struct morph_tui_event *event)
 {
 	struct resume_picker *picker = data;
 
-	if (event->type != MORPH_TUI_CORE_EVENT_KEY || event->pasting)
-		return MORPH_TUI_CORE_SCREEN_CONTINUE;
+	if (event->type != MORPH_TUI_EVENT_KEY || event->pasting)
+		return MORPH_TUI_SCREEN_CONTINUE;
 	int key = event->key;
 
 	if (key == 'q')
-		return MORPH_TUI_CORE_SCREEN_CLOSE;
+		return MORPH_TUI_SCREEN_CLOSE;
 	if (key == 'n')
-		key = MORPH_TUI_TERMINAL_KEY_PAGE_DOWN;
+		key = MORPH_TUI_KEY_PAGE_DOWN;
 	if (key == 'p')
-		key = MORPH_TUI_TERMINAL_KEY_PAGE_UP;
-	int result = morph_tui_widget_menu_update(&picker->menu, key);
+		key = MORPH_TUI_KEY_PAGE_UP;
+	int result = morph_tui_widget_menu_state_update(&picker->menu, key);
 
 	if (result == MORPH_TUI_WIDGET_SUBMIT) {
 		*picker->selected = (int)picker->menu.list.index;
-		return MORPH_TUI_CORE_SCREEN_CLOSE;
+		return MORPH_TUI_SCREEN_CLOSE;
 	}
 	if (result == MORPH_TUI_WIDGET_BACK || result == MORPH_TUI_WIDGET_CANCEL)
-		return MORPH_TUI_CORE_SCREEN_CLOSE;
-	return result == MORPH_TUI_WIDGET_CHANGED ? MORPH_TUI_CORE_SCREEN_REDRAW
-						  : MORPH_TUI_CORE_SCREEN_CONTINUE;
+		return MORPH_TUI_SCREEN_CLOSE;
+	return result == MORPH_TUI_WIDGET_CHANGED ? MORPH_TUI_SCREEN_REDRAW
+						  : MORPH_TUI_SCREEN_CONTINUE;
 }
 
 /* Own a temporary screen so navigation never fills the transcript. */
@@ -404,8 +404,8 @@ static int resume_pick(struct session *list, int count, int *selected)
 {
 	struct resume_picker picker = {.sessions = list, .count = count,
 		.selected = selected};
-	struct morph_tui_core_screen screen = {0};
-	const struct morph_tui_core_screen_ops ops = {.update = resume_update, .draw = resume_draw};
+	struct morph_tui_screen screen = {0};
+	const struct morph_tui_screen_ops ops = {.update = resume_update, .draw = resume_draw};
 	int rc = morph_buf_init(&picker.frame, BUFSIZ);
 
 	*selected = -1;
@@ -413,12 +413,12 @@ static int resume_pick(struct session *list, int count, int *selected)
 				 MORPH_TUI_WIDGET_LIST_HORIZONTAL_PAGES |
 				 MORPH_TUI_WIDGET_LIST_PAGED;
 	if (rc == 0)
-		rc = morph_tui_core_screen_open(&screen, stdin, stdout,
+		rc = morph_tui_screen_open(&screen, stdin, stdout,
 						MORPH_TUI_TERMINAL_SESSION_ALTERNATE |
 							MORPH_TUI_TERMINAL_SESSION_PASTE);
 	if (rc == 0)
-		rc = morph_tui_core_screen_run(&screen, &ops, &picker);
-	int leave_rc = morph_tui_core_screen_close(&screen);
+		rc = morph_tui_screen_run(&screen, &ops, &picker);
+	int leave_rc = morph_tui_screen_close(&screen);
 
 	if (rc == 0) rc = leave_rc;
 	morph_buf_cleanup(&picker.frame);
@@ -450,7 +450,7 @@ static void resume_close(void *data, int result)
 static int resume_present(struct cli_context *ctx, struct session *list, int count)
 {
 	struct resume_picker *picker = calloc(1, sizeof(*picker));
-	const struct morph_tui_core_screen_ops ops = {.update = resume_update, .draw = resume_draw};
+	const struct morph_tui_screen_ops ops = {.update = resume_update, .draw = resume_draw};
 
 	if (!picker)
 		return -ENOMEM;

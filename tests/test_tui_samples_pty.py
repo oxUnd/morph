@@ -25,6 +25,8 @@ class Sample:
         self.screen = pyte.Screen(80, 24)
         self.stream = pyte.Stream(self.screen)
         self.decoder = codecs.getincrementaldecoder('utf-8')()
+        self.frames = 0
+        self.frame_tail = ''
         self.child = subprocess.Popen([binary], stdin=self.slave, stdout=self.slave,
                                       stderr=self.slave, env={**os.environ, 'TERM': 'xterm-256color'})
 
@@ -35,7 +37,12 @@ class Sample:
 
     def pump(self):
         if select.select([self.master], [], [], .03)[0]:
-            self.stream.feed(self.decoder.decode(os.read(self.master, 65536)))
+            text = self.decoder.decode(os.read(self.master, 65536))
+            marker = '\x1b[?2026l'
+            pending = self.frame_tail + text
+            self.frames += pending.count(marker)
+            self.frame_tail = pending[-(len(marker) - 1):]
+            self.stream.feed(text)
 
     def until(self, predicate):
         deadline = time.monotonic() + 5
@@ -117,9 +124,65 @@ def controls(binary):
         app.close()
 
 
+def customization(binary):
+    app = Sample(binary)
+    dashboard = 'morph-tui customization / Dashboard'
+    inspector = 'Inspector / custom page'
+    help_title = 'Help / interaction routing'
+    try:
+        app.until(lambda text: 'Launch message delivered to the page' in text)
+        app.send('+ ')
+        app.until(lambda text: 'value 4 | step 5' in text)
+        app.send('\r')
+        app.until(lambda text: inspector in text)
+        app.send('+\t\x15Grace\r')
+        app.until(lambda text: 'Name saved to shared model' in text)
+        app.send('\x1b')
+        app.until(lambda text: dashboard in text and 'value 9 | step 5' in text and 'Grace' in text)
+        app.send('+')
+        app.until(lambda text: 'value 14 | step 5' in text)
+        app.send('r')
+        app.until(lambda text: 'Page shortcut: r reset counter' in text and 'value 0' in text)
+        app.send('\t\x15r?q')
+        app.until(lambda text: 'r?q' in text and 'Editing draft' in text)
+        app.send('\x15Draft\t?')
+        app.until(lambda text: help_title in text)
+        app.send('\x1b')
+        app.until(lambda text: dashboard in text and 'Draft' in text)
+        app.send('\x1b[Z\r')
+        app.until(lambda text: 'Bound action: name saved' in text)
+        app.send('\x1b[Z\x0c')
+        app.until(lambda text: 'App shortcut: redraw requested' in text)
+        app.send('\t\t\x1b[B\r')
+        app.until(lambda text: help_title in text)
+        app.send('\x1b')
+        app.until(lambda text: dashboard in text)
+        app.send('\x1b[H\r')
+        app.until(lambda text: inspector in text and 'Draft' in text)
+        app.send('\x1b')
+        app.until(lambda text: dashboard in text)
+        before = app.frames
+        app.resize(12, 60)
+        app.child.send_signal(signal.SIGWINCH)
+        app.until(lambda text: app.frames > before and dashboard in text)
+        app.finish('q')
+    finally:
+        app.close()
+    app = Sample(binary)
+    try:
+        app.until(lambda text: dashboard in text)
+        app.send('\r')
+        app.until(lambda text: inspector in text)
+        app.finish(number=signal.SIGTERM)
+    finally:
+        app.close()
+
+
 if __name__ == '__main__':
     minimal(sys.argv[1])
     controls(sys.argv[2])
+    if len(sys.argv) > 3:
+        customization(sys.argv[3])
     for binary in sys.argv[1:]:
         result = subprocess.run([binary], input=b'', stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         assert result.returncode != 0

@@ -53,8 +53,8 @@ void morph_tui_widget_tree_cleanup(struct morph_tui_widget_tree *tree)
 
 static const char *widget_tree_copy_text(struct morph_tui_widget_tree *tree, const char *text)
 {
-	char *safe = utf8_terminal_sanitize_dup(text ? text : "",
-		text ? strlen(text) : 0, UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+	char *safe = utf8_terminal_sanitize_dup(text ? text : "", text ? strlen(text) : 0,
+						UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	if (!safe)
 		return NULL;
 	const char *copy = arena_strdup(tree->arena, safe);
@@ -147,7 +147,7 @@ static int widget_tree_refresh(struct morph_tui_widget_tree *tree, size_t page)
 	int rc = widget_tree_visit(tree);
 	if (rc)
 		return tree->error = rc;
-	morph_tui_widget_list_layout(&tree->list, tree->visible.nelts, page);
+	morph_tui_widget_list_state_layout(&tree->list, tree->visible.nelts, page);
 	return 0;
 }
 
@@ -163,8 +163,8 @@ int morph_tui_widget_tree_update(struct morph_tui_widget_tree *tree, int key, si
 {
 	if (!tree)
 		return MORPH_TUI_WIDGET_UNHANDLED;
-	if (key == MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN || key == MORPH_TUI_TERMINAL_KEY_PASTE_END) {
-		tree->pasting = key == MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN;
+	if (key == MORPH_TUI_KEY_PASTE_BEGIN || key == MORPH_TUI_KEY_PASTE_END) {
+		tree->pasting = key == MORPH_TUI_KEY_PASTE_BEGIN;
 		return MORPH_TUI_WIDGET_UNHANDLED;
 	}
 	if (tree->pasting || widget_tree_refresh(tree, page))
@@ -179,13 +179,13 @@ int morph_tui_widget_tree_update(struct morph_tui_widget_tree *tree, int key, si
 		return MORPH_TUI_WIDGET_SUBMIT;
 	size_t old_index = tree->list.index;
 	int old_expanded = node->expanded;
-	if (key == MORPH_TUI_TERMINAL_KEY_LEFT || key == MORPH_TUI_TERMINAL_KEY_RIGHT) {
-		if (key == MORPH_TUI_TERMINAL_KEY_RIGHT && widget_tree_has_children(tree, index)) {
+	if (key == MORPH_TUI_KEY_LEFT || key == MORPH_TUI_KEY_RIGHT) {
+		if (key == MORPH_TUI_KEY_RIGHT && widget_tree_has_children(tree, index)) {
 			if (node->expanded)
 				tree->list.index++;
 			else
 				node->expanded = 1;
-		} else if (key == MORPH_TUI_TERMINAL_KEY_LEFT) {
+		} else if (key == MORPH_TUI_KEY_LEFT) {
 			if (widget_tree_has_children(tree, index) && node->expanded)
 				node->expanded = 0;
 			else if (node->parent != MORPH_TUI_WIDGET_TREE_ROOT) {
@@ -200,7 +200,7 @@ int morph_tui_widget_tree_update(struct morph_tui_widget_tree *tree, int key, si
 			       ? MORPH_TUI_WIDGET_CHANGED
 			       : MORPH_TUI_WIDGET_UNHANDLED;
 	}
-	return morph_tui_widget_list_update(&tree->list, key);
+	return morph_tui_widget_list_state_update(&tree->list, key);
 }
 
 static int widget_tree_last_sibling(const struct morph_tui_widget_tree *tree, size_t index)
@@ -262,12 +262,12 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 				if (!label)
 					rc = -ENOMEM;
 				else {
-					utf8_copy_ellipsized_display_width(label,
-						strlen(node->label) + 4, node->label,
+					utf8_copy_ellipsized_display_width(
+						label, strlen(node->label) + 4, node->label,
 						(size_t)width, 0);
 					int padding = width - (int)utf8_display_width(label);
-					morph_buf_printf(&line, "%s%*s  %s", label,
-						padding, "", node->description);
+					morph_buf_printf(&line, "%s%*s  %s", label, padding, "",
+							 node->description);
 					free(label);
 				}
 			} else {
@@ -278,7 +278,8 @@ int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t
 				rc = -ENOMEM;
 			else {
 				utf8_copy_ellipsized_display_width(clipped, line.len + 4,
-					morph_buf_cstr(&line), (size_t)columns, 0);
+								   morph_buf_cstr(&line),
+								   (size_t)columns, 0);
 				morph_buf_printf(output, "%s\n", clipped);
 				free(clipped);
 			}
@@ -304,8 +305,7 @@ static int widget_tree_append_report_line(morph_buf_t *output, const char *line,
 		free(clipped);
 		return -ENOMEM;
 	}
-	utf8_copy_ellipsized_display_width(clipped, strlen(plain) + 4,
-		plain, (size_t)columns, 0);
+	utf8_copy_ellipsized_display_width(clipped, strlen(plain) + 4, plain, (size_t)columns, 0);
 	int rc = morph_buf_printf(output, "%s\n", clipped);
 	free(clipped);
 	free(plain);
@@ -316,17 +316,17 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 			      const char *marker, const char *label, const char *description,
 			      int label_width, int columns, const char *style, const char *reset)
 {
-	if (!output || !ancestor || !marker || !label || !description ||
-	    !style || !reset || columns < 1)
+	if (!output || !ancestor || !marker || !label || !description || !style || !reset ||
+	    columns < 1)
 		return -EINVAL;
 	morph_buf_t line = {0};
 	int rc = morph_buf_init(&line, 128);
 	if (rc)
 		return rc;
 	char *safe = utf8_terminal_sanitize_dup(label, strlen(label),
-		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+						UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	char *detail = utf8_terminal_sanitize_dup(description, strlen(description),
-		UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
+						  UTF8_TERMINAL_TEXT_SINGLE_LINE, NULL);
 	char *clipped = safe ? malloc(strlen(safe) + 4) : NULL;
 	char *clipped_detail = detail ? malloc(strlen(detail) + 4) : NULL;
 	if (!safe || !detail || !clipped || !clipped_detail) {
@@ -342,16 +342,17 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 			label_width = available;
 		if (label_width < 0)
 			label_width = 0;
-		utf8_copy_ellipsized_display_width(clipped, strlen(safe) + 4,
-			safe, (size_t)label_width, 0);
+		utf8_copy_ellipsized_display_width(clipped, strlen(safe) + 4, safe,
+						   (size_t)label_width, 0);
 		int used = (int)utf8_display_width(clipped);
 		morph_buf_printf(&line, "  %s%s%s%s%s%s%s", ancestor,
 				 morph_tui_widget_tree_branch(is_last, 0), marker,
 				 marker[0] ? " " : "", style, clipped, reset);
 		int inline_detail = detail[0] && columns - prefix - mark - label_width - 2 >= 18;
 		if (inline_detail) {
-			utf8_copy_ellipsized_display_width(clipped_detail, strlen(detail) + 4,
-				detail, (size_t)(columns - prefix - mark - label_width - 2), 0);
+			utf8_copy_ellipsized_display_width(
+				clipped_detail, strlen(detail) + 4, detail,
+				(size_t)(columns - prefix - mark - label_width - 2), 0);
 			morph_buf_printf(&line, "%*s  %s", label_width - used, "", clipped_detail);
 		}
 		rc = widget_tree_append_report_line(output, morph_buf_cstr(&line), columns);
@@ -360,7 +361,7 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 			if (width < 0)
 				width = 0;
 			utf8_copy_ellipsized_display_width(clipped_detail, strlen(detail) + 4,
-				detail, (size_t)width, 0);
+							   detail, (size_t)width, 0);
 			morph_buf_reset(&line);
 			morph_buf_printf(&line, "  %s%s  %s", ancestor,
 					 morph_tui_widget_tree_branch(is_last, 1), clipped_detail);
@@ -379,7 +380,7 @@ int morph_tui_widget_tree_row(morph_buf_t *output, const char *ancestor, int is_
 }
 
 int morph_tui_widget_tree_draw(struct morph_tui_widget_tree *tree, morph_buf_t *commands,
-			       struct morph_tui_core_layout_rect area, const char *normal,
+			       struct morph_tui_terminal_rect area, const char *normal,
 			       const char *selected)
 {
 	if (!tree || !commands || !normal || !selected)
@@ -400,7 +401,7 @@ int morph_tui_widget_tree_draw(struct morph_tui_widget_tree *tree, morph_buf_t *
 		char *end = line ? strchr(line, '\n') : NULL;
 		if (end)
 			*end = '\0';
-		rc = morph_tui_core_layout_cell(
+		rc = morph_tui_draw_region_cell(
 			commands, area, row, 0, area.width, line ? line : "",
 			tree->list.first + (size_t)row == tree->list.index ? selected : normal);
 		line = end && end[1] ? end + 1 : NULL;

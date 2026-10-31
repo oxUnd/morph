@@ -1,7 +1,7 @@
 #ifndef MORPH_TUI_WIDGET_TREE_H
 #define MORPH_TUI_WIDGET_TREE_H
 
-#include <morph/tui/core/layout.h>
+#include <morph/tui/layout.h>
 #include <morph/tui/widgets/list.h>
 #include "util/arena.h"
 #include "util/array.h"
@@ -28,7 +28,7 @@ struct morph_tui_widget_tree {
 	struct arena *arena;
 	morph_array_t nodes;
 	morph_array_t visible;
-	struct morph_tui_widget_list list;
+	struct morph_tui_widget_list_state list;
 	size_t first_root;
 	size_t last_root;
 	int error;
@@ -45,7 +45,7 @@ size_t morph_tui_widget_tree_selected(const struct morph_tui_widget_tree *tree);
 int morph_tui_widget_tree_render(struct morph_tui_widget_tree *tree, morph_buf_t *output,
 				 int columns, size_t first, size_t rows);
 int morph_tui_widget_tree_draw(struct morph_tui_widget_tree *tree, morph_buf_t *commands,
-			       struct morph_tui_core_layout_rect area, const char *normal,
+			       struct morph_tui_terminal_rect area, const char *normal,
 			       const char *selected);
 /* Shared geometry for incremental reports that cannot retain a full model. */
 /* Marker and styles are trusted terminal formatting; text is sanitized. */

@@ -4,8 +4,8 @@
 
 #include <string.h>
 
-int morph_tui_widget_text_view_wrap(struct morph_tui_widget_text_view *view, const char *text,
-				    size_t width)
+int morph_tui_widget_text_layout_wrap(struct morph_tui_widget_text_layout *view, const char *text,
+				      size_t width)
 {
 	if (!view || !text || !width)
 		return -EINVAL;
@@ -39,7 +39,7 @@ int morph_tui_widget_text_view_wrap(struct morph_tui_widget_text_view *view, con
 	return 0;
 }
 
-void morph_tui_widget_text_view_cleanup(struct morph_tui_widget_text_view *view)
+void morph_tui_widget_text_layout_cleanup(struct morph_tui_widget_text_layout *view)
 {
 	if (!view)
 		return;

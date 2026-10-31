@@ -16,7 +16,7 @@ struct morph_cancel_token;
  * Zero-initialize, init once, and cleanup on every exit. A zero maximum means
  * all items in multi mode. Invalid confirmation keeps the component open. */
 struct morph_tui_widget_select {
-	struct morph_tui_widget_menu menu;
+	struct morph_tui_widget_menu_state menu;
 	morph_array_t checked;
 	size_t selected_count;
 	size_t minimum;

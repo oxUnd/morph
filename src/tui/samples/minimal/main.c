@@ -1,30 +1,27 @@
-#include <morph/tui/core/runner.h>
-#include <morph/tui/widgets/label.h>
-#include <morph/tui/widgets/list.h>
-#include <morph/tui/widgets/stack.h>
+#include <morph/tui.h>
 
 struct sample_minimal_page {
-	struct morph_tui_core_view_controller base;
-	struct morph_tui_core_view *status;
+	struct morph_tui_view_controller base;
+	struct morph_tui_view *status;
 };
 
-static void sample_minimal_build(struct morph_tui_core_view_controller *controller,
-				 struct morph_tui_core_builder *builder)
+static void sample_minimal_build(struct morph_tui_view_controller *controller,
+				 struct morph_tui_builder *builder)
 {
 	struct sample_minimal_page *page = (struct sample_minimal_page *)controller;
 	const char *items[] = {"Alpha", "Beta", "Gamma"};
-	const struct morph_tui_core_view_options fill = {.grow = 1};
-	struct morph_tui_core_view *root = morph_tui_widget_stack_create(
+	const struct morph_tui_view_options fill = {.grow = 1};
+	struct morph_tui_view *root = morph_tui_widget_stack_create(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 1, NULL);
 
 	morph_tui_widget_label_create(builder, root, "morph-tui minimal", NULL);
 	morph_tui_widget_label_create(builder, root,
 				      "Up/Down or j/k: move; Enter: select; q/Esc: quit", NULL);
-	morph_tui_widget_list_view_create(builder, root, items, 3, 0, &fill);
+	morph_tui_widget_list_create(builder, root, items, 3, 0, &fill);
 	page->status = morph_tui_widget_label_create(builder, root, "Selected: none", NULL);
 }
 
-static int sample_minimal_action(struct morph_tui_core_view_controller *controller,
+static int sample_minimal_action(struct morph_tui_view_controller *controller,
 				 const struct morph_tui_widget_action *action)
 {
 	struct sample_minimal_page *page = (struct sample_minimal_page *)controller;
@@ -37,16 +34,16 @@ static int sample_minimal_action(struct morph_tui_core_view_controller *controll
 int main(void)
 {
 	struct sample_minimal_page page;
-	const struct morph_tui_core_view_controller_ops ops = {
+	const struct morph_tui_view_controller_ops ops = {
 		.build = sample_minimal_build,
 		.action = sample_minimal_action,
 	};
-	const struct morph_tui_core_view_controller_spec root = {
+	const struct morph_tui_view_controller_spec root = {
 		.ops = &ops,
 		.size = sizeof(page),
 		.quit_key = 'q',
 	};
-	struct morph_tui_core_application application = {0};
+	struct morph_tui_application application = {0};
 
-	return morph_tui_core_application_main(&application, &root);
+	return morph_tui_application_main(&application, &root);
 }

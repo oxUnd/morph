@@ -1,11 +1,10 @@
-#include <morph/tui/core/screen.h>
+#include <morph/tui/screen.h>
 #include "util/signals.h"
 #include "util/error.h"
 
 #include <unistd.h>
 
-int morph_tui_core_screen_open(struct morph_tui_core_screen *screen, FILE *input, FILE *output,
-			       int flags)
+int morph_tui_screen_open(struct morph_tui_screen *screen, FILE *input, FILE *output, int flags)
 {
 	if (!screen || !input || !output)
 		return -EINVAL;
@@ -13,7 +12,7 @@ int morph_tui_core_screen_open(struct morph_tui_core_screen *screen, FILE *input
 
 	if (rc != 0)
 		return rc;
-	screen->input = (struct morph_tui_terminal_input){0};
+	screen->input = (struct morph_tui_input){0};
 	screen->output_fd = fileno(output);
 	screen->area.x = 1;
 	screen->area.y = 1;
@@ -23,12 +22,12 @@ int morph_tui_core_screen_open(struct morph_tui_core_screen *screen, FILE *input
 	return 0;
 }
 
-int morph_tui_core_screen_poll(struct morph_tui_core_screen *screen,
-			       struct morph_tui_core_event *event, int timeout_ms)
+int morph_tui_screen_poll(struct morph_tui_screen *screen, struct morph_tui_event *event,
+			  int timeout_ms)
 {
 	if (!screen || !event || !screen->session.active)
 		return -EINVAL;
-	*event = (struct morph_tui_core_event){.type = MORPH_TUI_CORE_EVENT_TICK};
+	*event = (struct morph_tui_event){.type = MORPH_TUI_EVENT_TICK};
 	if (morph_signal_flag_get(screen->interrupted))
 		return -EINTR;
 	int columns, rows;
@@ -38,32 +37,31 @@ int morph_tui_core_screen_poll(struct morph_tui_core_screen *screen,
 		screen->area.width = columns;
 		screen->area.height = rows;
 		screen->dirty = 1;
-		event->type = MORPH_TUI_CORE_EVENT_RESIZE;
+		event->type = MORPH_TUI_EVENT_RESIZE;
 		return 0;
 	}
-	int key =
-		morph_tui_terminal_input_read(&screen->input, screen->session.input_fd, timeout_ms);
+	int key = morph_tui_input_read(&screen->input, screen->session.input_fd, timeout_ms);
 
 	if (key == -ECANCELED) {
-		event->type = MORPH_TUI_CORE_EVENT_EOF;
+		event->type = MORPH_TUI_EVENT_EOF;
 		return 0;
 	}
 	if (key < 0)
 		return key;
 	if (!key)
 		return 0;
-	if (key == MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN)
+	if (key == MORPH_TUI_KEY_PASTE_BEGIN)
 		screen->pasting = 1;
-	event->type = MORPH_TUI_CORE_EVENT_KEY;
+	event->type = MORPH_TUI_EVENT_KEY;
 	event->key = key;
 	event->pasting = screen->pasting;
-	if (key == MORPH_TUI_TERMINAL_KEY_PASTE_END)
+	if (key == MORPH_TUI_KEY_PASTE_END)
 		screen->pasting = 0;
 	return 0;
 }
 
-int morph_tui_core_screen_run(struct morph_tui_core_screen *screen,
-			      const struct morph_tui_core_screen_ops *ops, void *data)
+int morph_tui_screen_run(struct morph_tui_screen *screen, const struct morph_tui_screen_ops *ops,
+			 void *data)
 {
 	if (!screen || !ops || !ops->update || !ops->draw)
 		return -EINVAL;
@@ -77,26 +75,26 @@ int morph_tui_core_screen_run(struct morph_tui_core_screen *screen,
 				return rc;
 			screen->dirty = 0;
 		}
-		struct morph_tui_core_event event;
-		int rc = morph_tui_core_screen_poll(screen, &event, 100);
+		struct morph_tui_event event;
+		int rc = morph_tui_screen_poll(screen, &event, 100);
 
 		if (rc == -EINTR)
 			continue;
 		if (rc != 0)
 			return rc;
-		if (event.type == MORPH_TUI_CORE_EVENT_EOF)
+		if (event.type == MORPH_TUI_EVENT_EOF)
 			return 0;
 		rc = ops->update(data, &event);
 		if (rc < 0)
 			return rc;
-		if (rc == MORPH_TUI_CORE_SCREEN_CLOSE)
+		if (rc == MORPH_TUI_SCREEN_CLOSE)
 			return 0;
-		if (rc == MORPH_TUI_CORE_SCREEN_REDRAW)
+		if (rc == MORPH_TUI_SCREEN_REDRAW)
 			screen->dirty = 1;
 	}
 }
 
-int morph_tui_core_screen_close(struct morph_tui_core_screen *screen)
+int morph_tui_screen_close(struct morph_tui_screen *screen)
 {
 	if (!screen)
 		return 0;

@@ -45,6 +45,19 @@ def empty_prompts(terminal):
     return [row for row in rows if row.split('ctrl+o details')[0].strip() in ('>', '›')]
 
 
+def restored_composer_snapshot(terminal, label):
+    # Output completion and composer restoration can arrive in separate
+    # frames. Wait for a live composer; the caller still counts all prompts,
+    # including scrollback, so duplicate/orphan prompts remain failures.
+    deadline = time.monotonic() + 8
+    while True:
+        text = terminal.snapshot(label)
+        if any(row.split('ctrl+o details')[0].strip() in ('>', '›')
+               for row in terminal.screen.display):
+            return text
+        assert time.monotonic() < deadline, terminal.screen.display
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), ComposerModel)
@@ -74,7 +87,8 @@ def main():
                                 terminal.pump(.05)
                             # The duration row can arrive before the frame's
                             # composer redraw and synchronized-update end marker.
-                            terminal.snapshot(f'completed turn {turn + 1} at {width} columns')
+                            restored_composer_snapshot(
+                                terminal, f'completed turn {turn + 1} at {width} columns')
                             output = terminal.raw[submitted:]
                             thought = output.index('The user says')
                             committed = output.rfind('hello world', 0, thought)
@@ -90,12 +104,16 @@ def main():
                                 while 'Naming session' in '\n'.join(terminal.screen.display):
                                     assert time.monotonic() < deadline, terminal.screen.display
                                     terminal.pump(.05)
+                                restored_composer_snapshot(
+                                    terminal, f'metadata completion at {width} columns')
                                 assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                                 # A window notification restores one composer per frame.
                                 start = len(terminal.raw)
                                 terminal.screen.resize(lines=24, columns=width + 4)
                                 terminal.child.setwinsize(24, width + 4)
                                 terminal.pump(.3)
+                                restored_composer_snapshot(
+                                    terminal, f'resize restoration at {width + 4} columns')
                                 frames = re.findall(r'\x1b\[\?2026h(.*?)\x1b\[\?2026l',
                                                     terminal.raw[start:], re.S)
                                 assert frames, repr(terminal.raw[start:])
@@ -105,6 +123,8 @@ def main():
                                 assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                                 terminal.send('\r\x1b[O\x1b[I')
                                 terminal.pump(1.1)
+                                restored_composer_snapshot(
+                                    terminal, f'focus restoration at {width + 4} columns')
                                 assert len(empty_prompts(terminal)) == 1, terminal.screen.display
                         with sqlite3.connect(Path(temp) / 'home/.morph/data.db') as database:
                             assert database.execute(

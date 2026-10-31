@@ -14,8 +14,8 @@ static void widget_editor_wipe(void *data, size_t length)
 		*bytes++ = 0;
 }
 
-int morph_tui_widget_editor_init(struct morph_tui_widget_editor *editor, const char *text,
-				 size_t limit, int secret)
+int morph_tui_widget_editor_state_init(struct morph_tui_widget_editor_state *editor,
+				       const char *text, size_t limit, int secret)
 {
 	if (!editor || !text || !limit)
 		return -EINVAL;
@@ -25,34 +25,34 @@ int morph_tui_widget_editor_init(struct morph_tui_widget_editor *editor, const c
 		return -E2BIG;
 	if (utf8valid(text))
 		return MORPH_ERR_FORMAT;
-	*editor = (struct morph_tui_widget_editor){.limit = limit, .secret = secret};
+	*editor = (struct morph_tui_widget_editor_state){.limit = limit, .secret = secret};
 	int rc = morph_buf_init(&editor->text, limit < BUFSIZ ? limit : BUFSIZ);
 
 	if (rc == 0)
 		rc = morph_buf_puts(&editor->text, text);
 	if (rc != 0) {
-		morph_tui_widget_editor_cleanup(editor);
+		morph_tui_widget_editor_state_cleanup(editor);
 		return rc;
 	}
 	editor->cursor = editor->text.len;
 	return 0;
 }
 
-int morph_tui_widget_editor_valid(const struct morph_tui_widget_editor *editor)
+int morph_tui_widget_editor_state_valid(const struct morph_tui_widget_editor_state *editor)
 {
-	return editor && !editor->overflow && !editor->text.failed &&
-		editor->text.len && !utf8valid(morph_buf_cstr(&editor->text));
+	return editor && !editor->overflow && !editor->text.failed && editor->text.len &&
+	       !utf8valid(morph_buf_cstr(&editor->text));
 }
 
-int morph_tui_widget_editor_update(struct morph_tui_widget_editor *editor, int key)
+int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *editor, int key)
 {
 	if (!editor || !editor->text.data)
 		return -EINVAL;
-	if (key == MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN) {
+	if (key == MORPH_TUI_KEY_PASTE_BEGIN) {
 		editor->pasting = 1;
 		return MORPH_TUI_WIDGET_UNHANDLED;
 	}
-	if (key == MORPH_TUI_TERMINAL_KEY_PASTE_END) {
+	if (key == MORPH_TUI_KEY_PASTE_END) {
 		editor->pasting = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
@@ -74,8 +74,9 @@ int morph_tui_widget_editor_update(struct morph_tui_widget_editor *editor, int k
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
 	if ((key == 127 || key == 8) && editor->cursor) {
-		size_t previous = (size_t)(utf8_prev_codepoint(text->data,
-			text->data + editor->cursor) - text->data);
+		size_t previous =
+			(size_t)(utf8_prev_codepoint(text->data, text->data + editor->cursor) -
+				 text->data);
 
 		memmove(text->data + previous, text->data + editor->cursor,
 			text->len - editor->cursor + 1);
@@ -84,21 +85,22 @@ int morph_tui_widget_editor_update(struct morph_tui_widget_editor *editor, int k
 		editor->overflow = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_TERMINAL_KEY_LEFT && editor->cursor) {
-		editor->cursor = (size_t)(utf8_prev_codepoint(text->data,
-			text->data + editor->cursor) - text->data);
+	if (key == MORPH_TUI_KEY_LEFT && editor->cursor) {
+		editor->cursor =
+			(size_t)(utf8_prev_codepoint(text->data, text->data + editor->cursor) -
+				 text->data);
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_TERMINAL_KEY_RIGHT && editor->cursor < text->len) {
+	if (key == MORPH_TUI_KEY_RIGHT && editor->cursor < text->len) {
 		editor->cursor += utf8_next_codepoint_len(text->data + editor->cursor,
-			text->len - editor->cursor);
+							  text->len - editor->cursor);
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_TERMINAL_KEY_HOME || key == 1) {
+	if (key == MORPH_TUI_KEY_HOME || key == 1) {
 		editor->cursor = 0;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
-	if (key == MORPH_TUI_TERMINAL_KEY_END || key == 5) {
+	if (key == MORPH_TUI_KEY_END || key == 5) {
 		editor->cursor = text->len;
 		return MORPH_TUI_WIDGET_CHANGED;
 	}
@@ -119,8 +121,8 @@ int morph_tui_widget_editor_update(struct morph_tui_widget_editor *editor, int k
 	return MORPH_TUI_WIDGET_CHANGED;
 }
 
-int morph_tui_widget_editor_view(struct morph_tui_widget_editor *editor, morph_buf_t *text,
-				 size_t width, size_t *cursor_column)
+int morph_tui_widget_editor_state_view(struct morph_tui_widget_editor_state *editor,
+				       morph_buf_t *text, size_t width, size_t *cursor_column)
 {
 	if (!editor || !text || !cursor_column || !editor->text.data)
 		return -EINVAL;
@@ -147,12 +149,12 @@ int morph_tui_widget_editor_view(struct morph_tui_widget_editor *editor, morph_b
 	return morph_buf_append(text, start, (size_t)(end - start));
 }
 
-void morph_tui_widget_editor_cleanup(struct morph_tui_widget_editor *editor)
+void morph_tui_widget_editor_state_cleanup(struct morph_tui_widget_editor_state *editor)
 {
 	if (!editor)
 		return;
 	if (editor->text.data)
 		widget_editor_wipe(editor->text.data, editor->text.cap);
 	morph_buf_cleanup(&editor->text);
-	*editor = (struct morph_tui_widget_editor){0};
+	*editor = (struct morph_tui_widget_editor_state){0};
 }

@@ -27,7 +27,7 @@ struct cli_terminal;
 struct cli_command_job;
 struct cli_transcript;
 struct cli_jobs;
-struct morph_tui_core_app;
+struct morph_tui_application;
 
 struct cli_input_status {
 	int enabled;
@@ -91,7 +91,7 @@ struct cli_context {
 	struct runtime *runtime;
 	struct config_file_error startup_error;
 	struct cli_ui *ui;
-	struct morph_tui_core_app *application;
+	struct morph_tui_application *application;
 	morph_buf_t *application_output;
 	int application_command;
 	struct cli_terminal *terminal;

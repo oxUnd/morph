@@ -14,7 +14,7 @@ int morph_tui_widget_select_init(struct morph_tui_widget_select *select, size_t 
 	select->maximum = multi ? (maximum ? maximum : count) : 1;
 	select->menu.list.flags = MORPH_TUI_WIDGET_LIST_WRAP | MORPH_TUI_WIDGET_LIST_VIM |
 				  MORPH_TUI_WIDGET_LIST_TAB | MORPH_TUI_WIDGET_LIST_DIGITS;
-	morph_tui_widget_list_layout(&select->menu.list, count, count);
+	morph_tui_widget_list_state_layout(&select->menu.list, count, count);
 	unsigned char checked = 0;
 	int rc = morph_array_init(&select->checked, count, sizeof(checked));
 
@@ -45,13 +45,12 @@ int morph_tui_widget_select_update(struct morph_tui_widget_select *select, int k
 {
 	if (!select || !select->checked.nelts)
 		return -EINVAL;
-	int result = morph_tui_widget_menu_update(&select->menu, key);
+	int result = morph_tui_widget_menu_state_update(&select->menu, key);
 
-	if (select->menu.pasting || key == MORPH_TUI_TERMINAL_KEY_PASTE_END)
+	if (select->menu.pasting || key == MORPH_TUI_KEY_PASTE_END)
 		return MORPH_TUI_WIDGET_UNHANDLED;
 	if (select->multi && key == ' ') {
-		unsigned char *checked = morph_array_get(&select->checked,
-							 select->menu.list.index);
+		unsigned char *checked = morph_array_get(&select->checked, select->menu.list.index);
 
 		select->invalid = !*checked && select->selected_count == select->maximum;
 		if (!select->invalid) {
@@ -65,7 +64,7 @@ int morph_tui_widget_select_update(struct morph_tui_widget_select *select, int k
 	}
 	if (result == MORPH_TUI_WIDGET_SUBMIT && select->multi) {
 		select->invalid = select->selected_count < select->minimum ||
-			select->selected_count > select->maximum;
+				  select->selected_count > select->maximum;
 		if (select->invalid)
 			return MORPH_TUI_WIDGET_CHANGED;
 	}

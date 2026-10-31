@@ -1,7 +1,7 @@
 #ifndef MORPH_TUI_WIDGET_EDITOR_H
 #define MORPH_TUI_WIDGET_EDITOR_H
 
-#include <morph/tui/terminal/input.h>
+#include <morph/tui/input.h>
 #include "util/buf.h"
 
 #ifdef __cplusplus
@@ -10,7 +10,7 @@ extern "C" {
 
 /* UTF-8 byte input is accumulated without hand-written encoding logic.
  * limit includes the final NUL. Cleanup wipes owned input, including secrets. */
-struct morph_tui_widget_editor {
+struct morph_tui_widget_editor_state {
 	morph_buf_t text;
 	size_t cursor;
 	size_t limit;
@@ -19,13 +19,13 @@ struct morph_tui_widget_editor {
 	int overflow;
 };
 
-int morph_tui_widget_editor_init(struct morph_tui_widget_editor *editor, const char *text,
-				 size_t limit, int secret);
-int morph_tui_widget_editor_update(struct morph_tui_widget_editor *editor, int key);
-int morph_tui_widget_editor_valid(const struct morph_tui_widget_editor *editor);
-int morph_tui_widget_editor_view(struct morph_tui_widget_editor *editor, morph_buf_t *text,
-				 size_t width, size_t *cursor_column);
-void morph_tui_widget_editor_cleanup(struct morph_tui_widget_editor *editor);
+int morph_tui_widget_editor_state_init(struct morph_tui_widget_editor_state *editor,
+				       const char *text, size_t limit, int secret);
+int morph_tui_widget_editor_state_update(struct morph_tui_widget_editor_state *editor, int key);
+int morph_tui_widget_editor_state_valid(const struct morph_tui_widget_editor_state *editor);
+int morph_tui_widget_editor_state_view(struct morph_tui_widget_editor_state *editor,
+				       morph_buf_t *text, size_t width, size_t *cursor_column);
+void morph_tui_widget_editor_state_cleanup(struct morph_tui_widget_editor_state *editor);
 
 #ifdef __cplusplus
 }

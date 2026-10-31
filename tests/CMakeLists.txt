@@ -178,6 +178,13 @@ if(Python3_Interpreter_FOUND AND UNIX)
 		add_test(NAME tui_samples_pty_integration
 			COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_samples_pty.py
 				$<TARGET_FILE:morph-tui-minimal> $<TARGET_FILE:morph-tui-controls>)
+		if(TARGET morph-tui-customization)
+			add_test(NAME tui_customization_pty_integration
+				COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_customization_pty.py
+					$<TARGET_FILE:morph-tui-customization>)
+			set_tests_properties(tui_customization_pty_integration PROPERTIES
+				SKIP_RETURN_CODE 77 TIMEOUT 45)
+		endif()
 		set_tests_properties(tui_samples_pty_integration PROPERTIES
 			SKIP_RETURN_CODE 77 TIMEOUT 45)
 	endif()

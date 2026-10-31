@@ -18,12 +18,16 @@ Framework sources are grouped by responsibility. Public headers live only in
 ```text
 src/tui/
   include/morph/
-    tui.h                    terminal primitive convenience umbrella
+    tui.h                    application-facing convenience umbrella
     tui/
-      core/                  application, runner, window, controller, view, event, layout
-      terminal/              terminal session and input decoder
-      render/                canvas, surface, backend, draw, frame
-      widgets/               base, label, stack, list, text_field, document, legacy controls
+      application.h          one Application for standalone and embedded use
+      view.h, widget.h       extensible view and widget bases
+      view_controller.h      extensible pages
+      window.h, layout.h     window and layout contracts
+      canvas.h, renderer.h   drawing and renderer contracts
+      event.h                typed events
+      controller.h, ...      advanced input/screen adapters
+      widgets/               label, stack, list, text_field, document, state helpers
       components.h           component convenience umbrella
   core/                      application, view controllers, view tree, window, layout
   terminal/                  POSIX terminal modes and byte decoding
@@ -32,6 +36,7 @@ src/tui/
   samples/                   catalog and shared standalone build setup
     minimal/                 main.c, CMakeLists.txt, README.md
     controls/                text input, focus, and modal presentation
+    customization/           custom widget, pages, bindings, and app shortcuts
   CMakeLists.txt
 
 src/sapi/cli/
@@ -48,8 +53,10 @@ src/sapi/cli/
     screens/                 history, hooks, and jobs pages
 ```
 
-- Include framework APIs as `<morph/tui/<layer>/<module>.h>`, for example
-  `<morph/tui/widgets/list.h>`. Each implementation includes
+- Include domain APIs as `<morph/tui/<object>.h>`, such as
+  `<morph/tui/application.h>` and `<morph/tui/canvas.h>`. Control headers use
+  `<morph/tui/widgets/list.h>`. Public include paths do not mirror implementation
+  layers. Each implementation includes
   its own module header and the dependencies it uses directly. `tui.h` and
   `components.h` remain convenience umbrellas for consumers; they own no types
   or declarations. Application and controller headers do not include widgets.
@@ -71,32 +78,37 @@ src/sapi/cli/
 
 ## Symbol naming
 
-Public functions, struct/enum tags, and constants carry their owning layer.
-The plural `widgets/` directory uses the singular `widget` namespace.
+Public names describe the object an application uses. Implementation directory
+names such as `core` and `render` do not appear in public object names.
 
-| Source directory | Public prefix | Example |
+| Object | Example public name | Header |
 | --- | --- | --- |
-| `core/` | `morph_tui_core_` | `morph_tui_core_app_run` |
-| `terminal/` | `morph_tui_terminal_` | `morph_tui_terminal_input_read` |
-| `render/` | `morph_tui_render_` | `morph_tui_render_frame_present` |
-| `widgets/` | `morph_tui_widget_` | `morph_tui_widget_list_update` |
+| Application | `morph_tui_application_run` | `application.h` |
+| View / ViewController | `morph_tui_view_set_hidden`, `morph_tui_view_controller_present` | `view.h`, `view_controller.h` |
+| Window / Layout | `morph_tui_window_set_renderer`, `morph_tui_layout` | `window.h`, `layout.h` |
+| Canvas / Renderer | `morph_tui_canvas_text`, `morph_tui_renderer` | `canvas.h`, `renderer.h` |
+| Widget / Control | `morph_tui_widget_create`, `morph_tui_widget_list_create` | `widget.h`, `widgets/list.h` |
 
-Types follow the same rule, such as `struct morph_tui_widget_list`. Public
-constants use the uppercase form, such as `MORPH_TUI_WIDGET_LIST_VIM` and
-`MORPH_TUI_CORE_EVENT_KEY`. Shared widget results use `MORPH_TUI_WIDGET_*`.
-Convenience umbrella guards are the only top-level namespace names.
+Constants follow the same vocabulary, for example `MORPH_TUI_EVENT_KEY`,
+`MORPH_TUI_STYLE_SELECTED`, and `MORPH_TUI_WIDGET_ACTION_CHANGED`. Low-level
+list/menu/editor models explicitly include `_state`; document wrapping uses
+`morph_tui_widget_text_layout`. This distinguishes reusable interaction state
+from retained controls without two similarly named List constructors.
+
+The branch intentionally renames old headers and symbols together. It does not
+maintain forwarding headers or aliases for the former implementation-prefixed API.
 
 File-local functions, private types, and private constants include both layer
 and module: `core_app_dispatch`, `terminal_input_sequence_key`,
 `widget_tree_refresh`, `struct widget_select_prompt_view`, and
 `CORE_APP_EVENT_BUDGET`. They remain private through static linkage where
 applicable. Samples use `sample_<name>_*`; executable entry points use `main`.
-Rename declarations, definitions, callers, and documentation together. Old
-unqualified API names and forwarding aliases are not maintained on this branch.
+Rename declarations, definitions, callers, and documentation together. Private
+headers such as `core/application_loop.h` stay outside the public include tree.
 
 ## Application and controller host
 
-`<morph/tui/core/application.h>` exposes an explicitly owned application. Its private
+`<morph/tui/application.h>` exposes an explicitly owned application. Its private
 libuv loop watches terminal readiness, uses an async handle for cross-thread
 wakeup, and schedules controller ticks, application ticks, escape deadlines,
 and resize probes with a timer. Public headers do not expose libuv types. The
@@ -104,7 +116,7 @@ application has one terminal window, an active controller stack, and deferred
 presentation transitions. It does not use the default libuv loop or a singleton.
 
 The owner thread creates, steps/runs, and destroys the application. Workers can
-call `morph_tui_core_app_wake` and `morph_tui_core_app_post`. Posts transfer payload ownership
+call `morph_tui_application_wake` and `morph_tui_application_post`. Posts transfer payload ownership
 only on success, preserve order, and release each payload once after delivery or
 shutdown. An async wake is a notification, never a message count; queued messages
 remain distinct when libuv coalesces wakeups. Dispatch uses a bounded batch before
@@ -124,8 +136,8 @@ are checked, preventing a resize wake from rendering an old-width frame. View
 controllers use the retained view, canvas, and responder machinery described
 below. Legacy controller draw callbacks continue to use their existing renderers.
 
-`MORPH_TUI_CORE_INPUT_EXTERNAL` gives readiness exclusively to an input adapter, currently
-Readline for chat. `MORPH_TUI_CORE_INPUT_KEYS` gives decoding and terminal modes to the
+`MORPH_TUI_INPUT_EXTERNAL` gives readiness exclusively to an input adapter, currently
+Readline for chat. `MORPH_TUI_INPUT_KEYS` gives decoding and terminal modes to the
 application. Appear/disappear callbacks transfer input ownership. Only one adapter
 reads the terminal, and key decoding does not consume input for the next page.
 The application owns raw/paste/alternate-screen transitions and restores original
@@ -155,12 +167,14 @@ in-memory buffer; bounded spill storage belongs with the transcript migration.
 
 ## Retained application interface
 
-New applications include `<morph/tui/core/runner.h>`, create a root view
-controller specification, and call `morph_tui_core_application_main`. Ordinary
+New applications can include `<morph/tui.h>`, create a root view controller
+specification, and call `morph_tui_application_main`. Individual domain headers
+remain available for precise dependencies. Ordinary
 pages implement `build` and, when needed, `action`; they do not implement screen
 drawing, byte decoding, signal handlers, resize arithmetic, or terminal cleanup.
-The lower-level `morph_tui_core_app_*` API remains the explicit host used by CLI
-adapters. Both interfaces share one libuv application and controller stack.
+The same Application exposes init/deinit, run/step, messaging, window access,
+and advanced controller adapters. The libuv loop is private; applications and
+CLI integrations never obtain a separate App or runtime pointer.
 
 ### Extensible bases
 
@@ -170,28 +184,28 @@ There is no type-registration singleton or global application object.
 
 | Base | Extension contract | Allocation and lifetime |
 | --- | --- | --- |
-| `morph_tui_core_application` | Optional launch, event, prepare-termination, and termination methods | Caller owns the instance; the runner owns runtime state during run |
-| `morph_tui_core_view_controller` | Build, action, event, appear, disappear, destroy | Specification selects instance size; host owns accepted instances |
-| `morph_tui_core_view` | Optional measure, layout, canvas draw, event, destroy | Builder allocates subclass instances in the controller scope |
-| `morph_tui_widget_base` | Embeds View and adds tags, action bindings, action emission | Built-in and custom widgets use the same factory and dispatch path |
-| `morph_tui_core_layout` | Measure and arrange methods | Borrowed by a view; normally embedded in a custom container |
-| `morph_tui_render_backend` | Present a composed surface; optional invalidate | Caller-owned backend installed on the default window |
+| `morph_tui_application` | Optional launch, event, prepare-termination, and termination methods | Caller-owned init/deinit or factory-owned create/destroy; one state per initialized Application |
+| `morph_tui_view_controller` | Build, action, event, appear, disappear, destroy | Specification selects instance size; host owns accepted instances |
+| `morph_tui_view` | Optional measure, layout, canvas draw, event, destroy | Builder allocates subclass instances in the controller scope |
+| `morph_tui_widget` | Embeds View and adds tags, action bindings, action emission | Built-in and custom widgets use the same factory and dispatch path |
+| `morph_tui_layout` | Measure and arrange methods | Borrowed by a view; normally embedded in a custom container |
+| `morph_tui_renderer` | Present a composed surface; optional invalidate | Caller-owned Renderer installed on the default window |
 
 View and widget callbacks receive the base pointer; casting to a struct whose
 first member is that base recovers subclass state. Factories accept
 `sizeof(instance)` so the framework can allocate the complete subclass.
 Custom containers can inspect children and call public measure/arrange methods.
-A custom rendering backend receives the same cell surface as the terminal
+A custom Renderer receives the same cell surface as the terminal
 backend; it can serialize rows and inspect the desired cursor for capture or
 another output target. The default window delegates composition to views and
-presentation to the installed backend.
+presentation to the installed Renderer.
 
 ### Construction and ownership
 
 A build callback receives a scoped builder. The first view with no parent is
 the root; every other view must name a parent from the same controller. Builders
 record the first error, and subsequent constructors stop. Call
-`morph_tui_core_builder_fail` to include errors from application-specific build
+`morph_tui_builder_fail` to include errors from application-specific build
 steps. A failed build never presents a partial interface.
 
 The controller owns all view instances and their hierarchy. View instance/state
@@ -259,19 +273,27 @@ composing a full visible surface keeps overlap/resize behavior deterministic;
 row diffs suppress unchanged terminal rows. This uses the project's Unicode
 width policy rather than claiming full emoji-grapheme shaping.
 
+Application `init` establishes streams, window, and signal policy, then calls
+its optional launch method exactly once. The default root page is built after
+launch, so views can use initialized application model data. `run` and `step`
+operate on that same object; state lasts until `deinit`. `create`/`destroy` are
+conveniences for a heap-owned default instance. `main` combines init, root
+presentation, run, deinit, and exit-status reporting. It rejects an already
+initialized instance without destroying the host.
+
 Standalone Application defaults to stdin/stdout, alternate screen, decoded keys,
 bracketed paste, and the existing signal listener bridged to app wakeups. Signals
 need no application polling tick. The host retains its resize-probe fallback.
 Application delegates receive termination signals as SIGNAL events with the
 signal number in `code`; consuming a wake does not suppress signal handling.
-The optional `prepare_termination` hook runs with a stopped, live runtime so
-applications can join producers before destruction. Terminal and descriptor
+The optional `prepare_termination` hook runs with the stopped Application still
+initialized so subclasses can join producers before destruction. Terminal and descriptor
 restoration precedes the final Application termination hook
-and error reporting. `application_run` returns framework results;
-`application_main` reports errors and converts them into process exit status.
+and error reporting. `application_run` returns framework results; `application_main` reports errors
+and converts them into process exit status.
 
 Applications embedded in a host use `external_signals`, or present a view
-controller directly on an existing `morph_tui_core_app`. They reuse the host's
+controller directly on an existing `morph_tui_application`. They reuse the host's
 signal policy. No competing libuv signal handlers are installed. The production
 `/jobs` page uses retained list/document controls on the CLI's existing app;
 its CLI adapter still flushes deferred output and completes command groups after
@@ -283,7 +305,7 @@ and setup migration.
 | Layer / component | Responsibility | Production consumers |
 | --- | --- | --- |
 | Application | libuv scheduling, controller presentation, input ownership, invalidation, teardown | Interactive chat, hooks, sessions, history, jobs |
-| Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_core_screen` |
+| Terminal session | Save/restore termios, cursor, alternate screen, bracketed paste | All modal screens through `morph_tui_screen` |
 | Input decoder | Stateful CSI/SS3 decoding, escape deadlines, UTF-8 byte input | All modal screens |
 | Screen host | Typed key/resize/tick/EOF events, paste context, dirty redraw, update/draw loop | Standalone modal screens use `run`; inline setup and selects use `poll` |
 | Rectangular layout | Insets, horizontal/vertical region allocation, clipping | Hooks cells/columns, session margins, and history header/body/footer sizing |
@@ -308,15 +330,15 @@ and schedules the first draw. Closing an inactive screen is harmless. Streams
 belong to the caller and must remain open until after closing. Sessions must not
 overlap on one terminal.
 
-`morph_tui_core_screen_run` drives this cycle:
+`morph_tui_screen_run` drives this cycle:
 
 1. Draw when dirty. The draw callback receives the current viewport.
 2. Poll a key, resize, tick, or EOF event without reading ahead across screens.
 3. Dispatch the event to the application update callback.
 4. Redraw, continue, or return for cleanup according to the callback result.
 
-Resize marks the host dirty automatically. Update returns `MORPH_TUI_CORE_SCREEN_CONTINUE`,
-`MORPH_TUI_CORE_SCREEN_REDRAW`, `MORPH_TUI_CORE_SCREEN_CLOSE`, or a negative error. Draw returns zero
+Resize marks the host dirty automatically. Update returns `MORPH_TUI_SCREEN_CONTINUE`,
+`MORPH_TUI_SCREEN_REDRAW`, `MORPH_TUI_SCREEN_CLOSE`, or a negative error. Draw returns zero
 or a negative error. The host returns on EOF or callback failure; the caller
 still closes the screen. A modal screen's exit key does not consume bytes meant
 for the restored Readline composer.
@@ -342,7 +364,7 @@ active component. Domain actions run only after a component submits.
 - Rectangles have a one-based terminal origin and nonnegative dimensions;
   region-relative cells use zero-based offsets. Splits consume the available
   region and clamp to it, including empty regions.
-- Lists borrow item data. `morph_tui_widget_list_layout` clamps the selection when data or
+- Lists borrow item data. `morph_tui_widget_list_state_layout` clamps the selection when data or
   viewport size changes and keeps it visible. Continuous and page-aligned
   windows are supported. Shortcut flags are explicit, so text fields do not
   accidentally inherit menu bindings. `morph_tui_widget_scroll_update` clamps a document's
@@ -353,7 +375,7 @@ active component. Domain actions run only after a component submits.
   conservative default choices.
 - Editors initialize once and clean up on all exits. Their byte limit includes
   NUL. Submission and validity are separate: a required setup field must pass
-  `morph_tui_widget_editor_valid`; a search may be empty. Incomplete UTF-8 bytes can accumulate,
+  `morph_tui_widget_editor_state_valid`; a search may be empty. Incomplete UTF-8 bytes can accumulate,
   but they cannot pass validity checks. Pasted control keys cannot submit, clear,
   or navigate the editor. Secret presentation uses a fixed mask, and cleanup
   wipes owned input storage. The application owns its final copy of a value.
@@ -375,18 +397,18 @@ active component. Domain actions run only after a component submits.
 
 ## Rendering contracts
 
-`morph_tui_render_draw_cell_append` accepts untrusted text and a trusted ANSI style. Initialize its
+`morph_tui_draw_cell_append` accepts untrusted text and a trusted ANSI style. Initialize its
 command buffer with `morph_buf_init`; appends preserve errors on that buffer.
-`morph_tui_core_layout_cell` additionally clips to an allocated layout region. The shared
-`morph_tui_render_draw_write` rejects a failed buffer before any terminal output, then writes
+`morph_tui_draw_region_cell` additionally clips to an allocated layout region. The shared
+`morph_tui_draw_write` rejects a failed buffer before any terminal output, then writes
 and flushes the composed bytes. A construction error cannot expose a partial
 hooks screen. Actual I/O failure can still write a partial screen and must end
 the current interaction so its terminal modes can be restored.
 
-`morph_tui_render_frame_present` accepts newline-separated, already sanitized and clipped
+`morph_tui_frame_present` accepts newline-separated, already sanitized and clipped
 rows with trusted styles. It builds the complete diff in memory and updates the
 previous-frame cache only after successful output. Identical frames emit no
-bytes. A resize, output-target change, explicit `morph_tui_render_frame_invalidate`, or output
+bytes. A resize, output-target change, explicit `morph_tui_frame_invalidate`, or output
 failure forces a full repaint. External writes to its owned screen require
 invalidation before the next present. Cleanup releases both cached buffers.
 
@@ -472,10 +494,17 @@ lifecycle, layout, focus, redraw, rendering buffers, and cleanup.
 UTF-8 input, paste isolation, modal presentation, and restoration of the same
 focused control. Both use public framework APIs without CLI or runtime services.
 
+The [customization demo](../src/tui/samples/customization/README.md) is the
+extension tutorial: a Widget subclass draws a counter and interprets its keys;
+Dashboard and Inspector subclasses compose different view trees over one model;
+a bound field action, page reset command, and Application help/redraw shortcuts
+show each interaction scope. Application launch initializes model resources
+before pages are built, and termination releases them after page teardown.
+
 Configure independently with `cmake -S src/tui/samples -B /tmp/morph-tui-samples`,
 then `cmake --build /tmp/morph-tui-samples`. Run
 `/tmp/morph-tui-samples/bin/morph-tui-minimal` or `morph-tui-controls` from that
 same `bin/` directory. The standalone build uses libuv, POSIX APIs, and utility
 modules from the shared manifest, without downloads. The main build enables
-both targets with `-DBUILD_TUI_SAMPLES=ON`. See the
+all targets with `-DBUILD_TUI_SAMPLES=ON`. See the
 [sample catalog](../src/tui/samples/README.md).

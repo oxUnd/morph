@@ -1,4 +1,4 @@
-#include <morph/tui/render/canvas.h>
+#include <morph/tui/canvas.h>
 #include "util/array.h"
 #include "util/error.h"
 #include "util/utf8.h"
@@ -13,18 +13,18 @@ struct render_canvas_cell {
 	int span;
 };
 
-struct morph_tui_render_surface {
+struct morph_tui_surface {
 	morph_array_t cells;
 	int width, height;
 	int cursor_x, cursor_y, cursor_visible;
 };
 
-int morph_tui_render_surface_create(struct morph_tui_render_surface **out)
+int morph_tui_surface_create(struct morph_tui_surface **out)
 {
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
-	struct morph_tui_render_surface *surface = calloc(1, sizeof(*surface));
+	struct morph_tui_surface *surface = calloc(1, sizeof(*surface));
 	struct render_canvas_cell cell;
 
 	if (!surface)
@@ -39,7 +39,7 @@ int morph_tui_render_surface_create(struct morph_tui_render_surface **out)
 	return 0;
 }
 
-void morph_tui_render_surface_destroy(struct morph_tui_render_surface *surface)
+void morph_tui_surface_destroy(struct morph_tui_surface *surface)
 {
 	if (!surface)
 		return;
@@ -52,7 +52,7 @@ void morph_tui_render_surface_destroy(struct morph_tui_render_surface *surface)
 	free(surface);
 }
 
-void morph_tui_render_canvas_cursor(struct morph_tui_render_canvas *canvas, int x, int y)
+void morph_tui_canvas_cursor(struct morph_tui_canvas *canvas, int x, int y)
 {
 	if (!canvas || !canvas->surface || x < 0 || y < 0 || x >= canvas->width ||
 	    y >= canvas->height)
@@ -68,7 +68,7 @@ void morph_tui_render_canvas_cursor(struct morph_tui_render_canvas *canvas, int 
 	canvas->surface->cursor_visible = 1;
 }
 
-int morph_tui_render_surface_cursor(const struct morph_tui_render_surface *surface, int *x, int *y)
+int morph_tui_surface_cursor(const struct morph_tui_surface *surface, int *x, int *y)
 {
 	if (!surface || !x || !y)
 		return 0;
@@ -77,7 +77,7 @@ int morph_tui_render_surface_cursor(const struct morph_tui_render_surface *surfa
 	return surface->cursor_visible;
 }
 
-int morph_tui_render_surface_resize(struct morph_tui_render_surface *surface, int width, int height)
+int morph_tui_surface_resize(struct morph_tui_surface *surface, int width, int height)
 {
 	if (!surface || width < 0 || height < 0)
 		return -EINVAL;
@@ -95,11 +95,11 @@ int morph_tui_render_surface_resize(struct morph_tui_render_surface *surface, in
 	}
 	surface->width = width;
 	surface->height = height;
-	morph_tui_render_surface_clear(surface);
+	morph_tui_surface_clear(surface);
 	return 0;
 }
 
-void morph_tui_render_surface_clear(struct morph_tui_render_surface *surface)
+void morph_tui_surface_clear(struct morph_tui_surface *surface)
 {
 	if (!surface)
 		return;
@@ -113,10 +113,9 @@ void morph_tui_render_surface_clear(struct morph_tui_render_surface *surface)
 	}
 }
 
-void morph_tui_render_canvas_root(struct morph_tui_render_surface *surface,
-				  struct morph_tui_render_canvas *canvas)
+void morph_tui_canvas_root(struct morph_tui_surface *surface, struct morph_tui_canvas *canvas)
 {
-	*canvas = (struct morph_tui_render_canvas){
+	*canvas = (struct morph_tui_canvas){
 		.surface = surface,
 		.width = surface->width,
 		.height = surface->height,
@@ -125,8 +124,8 @@ void morph_tui_render_canvas_root(struct morph_tui_render_surface *surface,
 	};
 }
 
-void morph_tui_render_canvas_child(const struct morph_tui_render_canvas *parent, int x, int y,
-				   int width, int height, struct morph_tui_render_canvas *child)
+void morph_tui_canvas_child(const struct morph_tui_canvas *parent, int x, int y, int width,
+			    int height, struct morph_tui_canvas *child)
 {
 	*child = *parent;
 	int64_t left = (int64_t)parent->x + x, top = (int64_t)parent->y + y;
@@ -153,13 +152,13 @@ void morph_tui_render_canvas_child(const struct morph_tui_render_canvas *parent,
 		child->bottom = (int)bottom;
 }
 
-static struct render_canvas_cell *render_canvas_cell(struct morph_tui_render_surface *surface,
-						     int x, int y)
+static struct render_canvas_cell *render_canvas_cell(struct morph_tui_surface *surface, int x,
+						     int y)
 {
 	return morph_array_get(&surface->cells, (size_t)y * (size_t)surface->width + (size_t)x);
 }
 
-static void render_canvas_erase(struct morph_tui_render_surface *surface, int x, int y)
+static void render_canvas_erase(struct morph_tui_surface *surface, int x, int y)
 {
 	struct render_canvas_cell *cell = render_canvas_cell(surface, x, y);
 
@@ -179,7 +178,7 @@ static void render_canvas_erase(struct morph_tui_render_surface *surface, int x,
 	cell->span = 1;
 }
 
-int morph_tui_render_canvas_fill(struct morph_tui_render_canvas *canvas, unsigned style)
+int morph_tui_canvas_fill(struct morph_tui_canvas *canvas, unsigned style)
 {
 	if (!canvas || !canvas->surface)
 		return -EINVAL;
@@ -192,8 +191,8 @@ int morph_tui_render_canvas_fill(struct morph_tui_render_canvas *canvas, unsigne
 	return 0;
 }
 
-int morph_tui_render_canvas_text(struct morph_tui_render_canvas *canvas, int x, int y,
-				 const char *text, unsigned style)
+int morph_tui_canvas_text(struct morph_tui_canvas *canvas, int x, int y, const char *text,
+			  unsigned style)
 {
 	if (!canvas || !canvas->surface || !text)
 		return -EINVAL;
@@ -263,7 +262,7 @@ int morph_tui_render_canvas_text(struct morph_tui_render_canvas *canvas, int x, 
 	return rc;
 }
 
-int morph_tui_render_surface_rows(struct morph_tui_render_surface *surface, morph_buf_t *rows)
+int morph_tui_surface_rows(struct morph_tui_surface *surface, morph_buf_t *rows)
 {
 	if (!surface || !rows)
 		return -EINVAL;
@@ -279,11 +278,11 @@ int morph_tui_render_surface_rows(struct morph_tui_render_surface *surface, morp
 			if (cell->style != style) {
 				style = cell->style;
 				morph_buf_puts(rows, "\033[0m");
-				if (style & MORPH_TUI_RENDER_STYLE_BOLD)
+				if (style & MORPH_TUI_STYLE_BOLD)
 					morph_buf_puts(rows, "\033[1m");
-				if (style & MORPH_TUI_RENDER_STYLE_DIM)
+				if (style & MORPH_TUI_STYLE_DIM)
 					morph_buf_puts(rows, "\033[2m");
-				if (style & MORPH_TUI_RENDER_STYLE_SELECTED)
+				if (style & MORPH_TUI_STYLE_SELECTED)
 					morph_buf_puts(rows, "\033[7m");
 			}
 			if (cell->text.len)

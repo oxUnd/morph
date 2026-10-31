@@ -25,5 +25,5 @@ Run in a terminal; no model configuration or API key is required.
 - Pasted text cannot execute page shortcuts, navigate the list, or submit.
 
 See [the framework guide](../../../../docs/tui-architecture.md) for the
-Application, ViewController, View/Widget, Layout, and rendering backend extension
+Application, ViewController, View/Widget, Layout, and Renderer extension
 contracts. File-local helpers use the `sample_controls_` prefix.

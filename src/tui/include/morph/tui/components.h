@@ -6,9 +6,9 @@
 #include <morph/tui.h>
 #include <morph/tui/widgets/card.h>
 #include <morph/tui/widgets/editor.h>
-#include <morph/tui/core/layout.h>
+#include <morph/tui/layout.h>
 #include <morph/tui/widgets/list.h>
-#include <morph/tui/core/screen.h>
+#include <morph/tui/screen.h>
 #include <morph/tui/widgets/select.h>
 #include <morph/tui/widgets/text_view.h>
 

@@ -1,16 +1,15 @@
-#include <morph/tui/render/frame.h>
-#include <morph/tui/render/draw.h>
+#include <morph/tui/frame.h>
+#include <morph/tui/draw.h>
 #include "util/error.h"
 
 #include <string.h>
 
-int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *output, int columns,
-				   int rows, const char *lines)
+int morph_tui_frame_present(struct morph_tui_frame *frame, FILE *output, int columns, int rows,
+			    const char *lines)
 {
 	if (!frame || !output || !lines || columns < 1 || rows < 1)
 		return -EINVAL;
-	int resized = frame->rows != rows || frame->columns != columns ||
-		frame->target != output;
+	int resized = frame->rows != rows || frame->columns != columns || frame->target != output;
 	size_t size = strlen(lines);
 
 	if (!resized && frame->previous.len == size &&
@@ -30,7 +29,7 @@ int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *o
 	}
 	/* Allocate before output; commit the previous frame only after flush. */
 	int rc = morph_buf_reserve(&frame->previous,
-		size > frame->previous.len ? size - frame->previous.len : 0);
+				   size > frame->previous.len ? size - frame->previous.len : 0);
 
 	if (rc != 0)
 		return rc;
@@ -46,8 +45,7 @@ int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *o
 		size_t length = strcspn(current, "\n");
 		size_t old_length = strcspn(previous, "\n");
 
-		if (resized || length != old_length ||
-		    memcmp(current, previous, length) != 0) {
+		if (resized || length != old_length || memcmp(current, previous, length) != 0) {
 			morph_buf_printf(commands, "\033[%d;1H", row);
 			morph_buf_append(commands, current, length);
 			morph_buf_puts(commands, "\033[0m\033[K");
@@ -56,9 +54,9 @@ int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *o
 		previous += old_length + (previous[old_length] == '\n');
 	}
 	morph_buf_puts(commands, "\033[?2026l");
-	rc = morph_tui_render_draw_write(output, commands);
+	rc = morph_tui_draw_write(output, commands);
 	if (rc != 0) {
-		morph_tui_render_frame_invalidate(frame);
+		morph_tui_frame_invalidate(frame);
 		return rc;
 	}
 	morph_buf_reset(&frame->previous);
@@ -69,7 +67,7 @@ int morph_tui_render_frame_present(struct morph_tui_render_frame *frame, FILE *o
 	return rc;
 }
 
-void morph_tui_render_frame_invalidate(struct morph_tui_render_frame *frame)
+void morph_tui_frame_invalidate(struct morph_tui_frame *frame)
 {
 	if (!frame)
 		return;
@@ -78,11 +76,11 @@ void morph_tui_render_frame_invalidate(struct morph_tui_render_frame *frame)
 	frame->target = NULL;
 }
 
-void morph_tui_render_frame_cleanup(struct morph_tui_render_frame *frame)
+void morph_tui_frame_cleanup(struct morph_tui_frame *frame)
 {
 	if (!frame)
 		return;
 	morph_buf_cleanup(&frame->previous);
 	morph_buf_cleanup(&frame->output);
-	morph_tui_render_frame_invalidate(frame);
+	morph_tui_frame_invalidate(frame);
 }

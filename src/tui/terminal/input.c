@@ -1,4 +1,4 @@
-#include <morph/tui/terminal/input.h>
+#include <morph/tui/input.h>
 #include "util/error.h"
 
 #include <limits.h>
@@ -20,33 +20,33 @@ enum terminal_input_state {
 static int terminal_input_sequence_key(const char *sequence)
 {
 	if (strcmp(sequence, "A") == 0)
-		return MORPH_TUI_TERMINAL_KEY_UP;
+		return MORPH_TUI_KEY_UP;
 	if (strcmp(sequence, "B") == 0)
-		return MORPH_TUI_TERMINAL_KEY_DOWN;
+		return MORPH_TUI_KEY_DOWN;
 	if (strcmp(sequence, "Z") == 0)
-		return MORPH_TUI_TERMINAL_KEY_BACK_TAB;
+		return MORPH_TUI_KEY_BACK_TAB;
 	if (strcmp(sequence, "C") == 0)
-		return MORPH_TUI_TERMINAL_KEY_RIGHT;
+		return MORPH_TUI_KEY_RIGHT;
 	if (strcmp(sequence, "D") == 0)
-		return MORPH_TUI_TERMINAL_KEY_LEFT;
+		return MORPH_TUI_KEY_LEFT;
 	if (strcmp(sequence, "H") == 0 || strcmp(sequence, "1~") == 0 ||
 	    strcmp(sequence, "7~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_HOME;
+		return MORPH_TUI_KEY_HOME;
 	if (strcmp(sequence, "F") == 0 || strcmp(sequence, "4~") == 0 ||
 	    strcmp(sequence, "8~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_END;
+		return MORPH_TUI_KEY_END;
 	if (strcmp(sequence, "5~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_PAGE_UP;
+		return MORPH_TUI_KEY_PAGE_UP;
 	if (strcmp(sequence, "6~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_PAGE_DOWN;
+		return MORPH_TUI_KEY_PAGE_DOWN;
 	if (strcmp(sequence, "200~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_PASTE_BEGIN;
+		return MORPH_TUI_KEY_PASTE_BEGIN;
 	if (strcmp(sequence, "201~") == 0)
-		return MORPH_TUI_TERMINAL_KEY_PASTE_END;
+		return MORPH_TUI_KEY_PASTE_END;
 	return 0;
 }
 
-int morph_tui_terminal_input_feed(struct morph_tui_terminal_input *input, unsigned char byte)
+int morph_tui_input_feed(struct morph_tui_input *input, unsigned char byte)
 {
 	if (!input)
 		return -EINVAL;
@@ -86,7 +86,7 @@ int morph_tui_terminal_input_feed(struct morph_tui_terminal_input *input, unsign
 	return key;
 }
 
-int morph_tui_terminal_input_expire(struct morph_tui_terminal_input *input)
+int morph_tui_input_expire(struct morph_tui_input *input)
 {
 	if (!input)
 		return -EINVAL;
@@ -115,8 +115,7 @@ static int terminal_input_remaining_ms(int64_t deadline, int64_t now)
 	return remaining <= 0 ? 0 : remaining > INT_MAX ? INT_MAX : (int)remaining;
 }
 
-int morph_tui_terminal_input_read(struct morph_tui_terminal_input *input, int input_fd,
-				  int timeout_ms)
+int morph_tui_input_read(struct morph_tui_input *input, int input_fd, int timeout_ms)
 {
 	int64_t now;
 
@@ -137,7 +136,7 @@ int morph_tui_terminal_input_read(struct morph_tui_terminal_input *input, int in
 			if (!input->deadline_ms)
 				input->deadline_ms = now + TERMINAL_INPUT_ESCAPE_TIMEOUT_MS;
 			if (now >= input->deadline_ms)
-				return morph_tui_terminal_input_expire(input);
+				return morph_tui_input_expire(input);
 			int escape_wait = terminal_input_remaining_ms(input->deadline_ms, now);
 
 			if (wait < 0 || escape_wait < wait)
@@ -157,11 +156,11 @@ int morph_tui_terminal_input_read(struct morph_tui_terminal_input *input, int in
 			if (count < 0)
 				return -errno;
 			if (!count) {
-				int key = morph_tui_terminal_input_expire(input);
+				int key = morph_tui_input_expire(input);
 
 				return key ? key : -ECANCELED;
 			}
-			int key = morph_tui_terminal_input_feed(input, byte);
+			int key = morph_tui_input_feed(input, byte);
 
 			if (key || input->state == TERMINAL_INPUT_TEXT)
 				return key;
@@ -172,7 +171,7 @@ int morph_tui_terminal_input_read(struct morph_tui_terminal_input *input, int in
 		if (ready)
 			input->deadline_ms = now + TERMINAL_INPUT_ESCAPE_TIMEOUT_MS;
 		if (!ready && input->state != TERMINAL_INPUT_TEXT && now >= input->deadline_ms)
-			return morph_tui_terminal_input_expire(input);
+			return morph_tui_input_expire(input);
 		if ((!ready || timeout_ms > 0) && now >= deadline)
 			return 0;
 	}
