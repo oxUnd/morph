@@ -33,11 +33,4 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 	add_subdirectory("${MORPH_SOURCE_ROOT}/src/tui" "${CMAKE_CURRENT_BINARY_DIR}/tui")
 endif()
 
-add_executable(morph-tui-minimal minimal.c)
-target_link_libraries(morph-tui-minimal PRIVATE morph-tui)
-target_compile_options(morph-tui-minimal PRIVATE
-	-Wall -Wextra -Wpedantic -Wshadow -Wconversion
-)
-set_target_properties(morph-tui-minimal PROPERTIES
-	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-)
+add_subdirectory(minimal)

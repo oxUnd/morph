@@ -29,7 +29,8 @@ src/tui/
   terminal/                  POSIX terminal modes and byte decoding
   render/                    drawing and frame diffs
   widgets/                   reusable interaction and presentation components
-  samples/                   standalone minimal application and build
+  samples/                   catalog and shared standalone build setup
+    minimal/                 main.c, CMakeLists.txt, README.md
   CMakeLists.txt
 
 src/sapi/cli/
@@ -62,6 +63,10 @@ src/sapi/cli/
 - List source files explicitly in each target's `CMakeLists.txt`, grouped to
   match the directories. Update include sites and documentation in the same
   change as a move. Keep tests in the existing `tests/test_<module>` layout.
+- Put each sample in `samples/<name>/` with `main.c`, `CMakeLists.txt`, and
+  `README.md`. The parent directory owns the catalog, shared standalone setup,
+  and explicit `add_subdirectory` entries. Each sample owns its executable
+  target and documentation. See [sample conventions](../src/tui/samples/README.md).
 
 ## Symbol naming
 
@@ -335,11 +340,11 @@ retain their existing dispatch paths.
 
 ## Minimal sample
 
-`src/tui/samples/minimal.c` demonstrates application setup, controller events,
+`src/tui/samples/minimal/main.c` demonstrates application setup, controller events,
 a menu widget, layout, drawing, resize, and terminal restoration. Build it
 independently with `cmake -S src/tui/samples -B /tmp/morph-tui-samples`, then
 `cmake --build /tmp/morph-tui-samples` and run
 `/tmp/morph-tui-samples/bin/morph-tui-minimal`. Its standalone build uses only
 libuv, POSIX APIs, and the required utility modules from the shared manifest;
 it performs no dependency downloads. The main build enables the same executable
-with `-DBUILD_TUI_SAMPLES=ON`. See [sample instructions](../src/tui/samples/README.md).
+with `-DBUILD_TUI_SAMPLES=ON`. See [sample instructions](../src/tui/samples/minimal/README.md).

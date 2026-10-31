@@ -1,12 +1,37 @@
-# Minimal TUI sample
+# TUI samples
 
-`minimal.c` shows an application, a controller, a menu widget, deferred redraw,
-resize handling, and terminal cleanup. It needs no model configuration or API key.
+Each sample lives in a named directory and owns its source, executable target,
+and usage instructions:
 
-Build the sample by itself with CMake 3.20+, a C11 compiler, pkg-config, and
-libuv 1.44+. Utility sources are selected from the project's shared manifest;
-the standalone build does not configure the agent, networking, database, or
-media targets and does not download dependencies.
+```text
+samples/
+  CMakeLists.txt             shared standalone setup and explicit sample list
+  README.md                  catalog and directory conventions
+  minimal/
+    CMakeLists.txt           morph-tui-minimal executable target
+    README.md                purpose, build commands, and controls
+    main.c                   executable entry point and controller
+```
+
+- Use lowercase `snake_case` directory names and `morph-tui-<name>` target names
+  (replace underscores with hyphens in target names).
+- Every sample has `main.c`, `CMakeLists.txt`, and `README.md`. Add other source
+  and header files beside `main.c` when needed; put sample assets in `assets/`.
+- The parent build owns shared dependency setup and lists samples explicitly
+  with `add_subdirectory`. Each child build defines its target and links
+  `morph-tui`; it does not duplicate framework or utility sources.
+- File-local helpers use `sample_<name>_*`; `main` is the entry point. Follow
+  the project's C conventions and include the public TUI module headers.
+- Keep generated files in the chosen build directory.
+
+| Sample | Demonstrates |
+| --- | --- |
+| [minimal](minimal/README.md) | Application, controller events, menu, layout, drawing, resize, and terminal cleanup |
+
+Build the collection with CMake 3.20+, a C11 compiler, pkg-config, and libuv
+1.44+. Utility sources come from the project's shared manifest. The standalone
+build does not configure agent, networking, database, or media targets and does
+not download dependencies.
 
 ```sh
 cmake -S src/tui/samples -B /tmp/morph-tui-samples
@@ -14,7 +39,7 @@ cmake --build /tmp/morph-tui-samples
 /tmp/morph-tui-samples/bin/morph-tui-minimal
 ```
 
-Or enable the sample in the main build:
+Or enable samples in the main build:
 
 ```sh
 cmake -S . -B build -DBUILD_TUI_SAMPLES=ON
@@ -22,11 +47,4 @@ cmake --build build --target morph-tui-minimal
 ./build/bin/morph-tui-minimal
 ```
 
-Run in a terminal. Use Up/Down or j/k to move, Enter to select, and q, Escape,
-or Ctrl-C to exit. Pasted navigation cannot activate controls. Resize updates
-the layout; exiting restores terminal modes.
-
-Public names follow their layer: `morph_tui_core_*`, `morph_tui_terminal_*`,
-`morph_tui_render_*`, and `morph_tui_widget_*`. Header paths mirror the source
-directories, such as `<morph/tui/widgets/list.h>`. File-local sample helpers use
-the `sample_minimal_` prefix; `main` is the executable entry point.
+Run samples in a terminal. See each sample's README for its controls.
