@@ -15,11 +15,26 @@ int morph_tui_builder_error(const struct morph_tui_builder *builder)
 	return builder ? builder->error : -EINVAL;
 }
 
+static int core_view_insets_valid(struct morph_tui_view_insets insets)
+{
+	return insets.top >= 0 && insets.right >= 0 && insets.bottom >= 0 && insets.left >= 0 &&
+	       insets.left <= INT_MAX - insets.right && insets.top <= INT_MAX - insets.bottom;
+}
+
 static int core_view_options_valid(const struct morph_tui_view_options *options)
 {
+	if (!core_view_insets_valid(options->margin) || !core_view_insets_valid(options->padding))
+		return 0;
+	int horizontal = options->margin.left + options->margin.right;
+	int vertical = options->margin.top + options->margin.bottom;
+
 	return options->width >= 0 && options->height >= 0 && options->min_width >= 0 &&
 	       options->min_height >= 0 && options->max_width >= 0 && options->max_height >= 0 &&
-	       options->grow >= 0 && options->padding >= 0 && options->padding <= INT_MAX / 2 &&
+	       options->grow >= 0 && options->width <= INT_MAX - horizontal &&
+	       options->min_width <= INT_MAX - horizontal &&
+	       options->max_width <= INT_MAX - horizontal &&
+	       options->height <= INT_MAX - vertical && options->min_height <= INT_MAX - vertical &&
+	       options->max_height <= INT_MAX - vertical &&
 	       (!options->max_width || options->max_width >= options->min_width) &&
 	       (!options->max_height || options->max_height >= options->min_height) &&
 	       options->alignment >= MORPH_TUI_VIEW_STRETCH &&
@@ -102,24 +117,72 @@ struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *vie
 	return view ? view->state->frame : (struct morph_tui_view_rect){0};
 }
 
+struct morph_tui_view_insets morph_tui_view_insets_all(int cells)
+{
+	return (struct morph_tui_view_insets){cells, cells, cells, cells};
+}
+
+static struct morph_tui_view_rect core_view_inset(struct morph_tui_view_rect rect,
+						  struct morph_tui_view_insets insets)
+{
+	int horizontal = insets.left + insets.right;
+	int vertical = insets.top + insets.bottom;
+
+	rect.x += insets.left < rect.width ? insets.left : rect.width;
+	rect.y += insets.top < rect.height ? insets.top : rect.height;
+	rect.width = rect.width > horizontal ? rect.width - horizontal : 0;
+	rect.height = rect.height > vertical ? rect.height - vertical : 0;
+	return rect;
+}
+
 struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view)
 {
 	if (!view)
 		return (struct morph_tui_view_rect){0};
 	struct morph_tui_view_rect frame = view->state->frame;
-	int pad = view->state->options.padding;
 
-	return (struct morph_tui_view_rect){
-		.x = pad < frame.width ? pad : frame.width,
-		.y = pad < frame.height ? pad : frame.height,
-		.width = frame.width > pad * 2 ? frame.width - pad * 2 : 0,
-		.height = frame.height > pad * 2 ? frame.height - pad * 2 : 0,
-	};
+	frame.x = 0;
+	frame.y = 0;
+	return core_view_inset(frame, view->state->options.padding);
 }
 
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view)
 {
 	return view ? view->state->options : (struct morph_tui_view_options){0};
+}
+
+static int core_view_set_insets(struct morph_tui_view *view, struct morph_tui_view_insets insets,
+				int padding)
+{
+	if (!view)
+		return -EINVAL;
+	if (!morph_tui_view_is_owner(view))
+		return -EPERM;
+	struct morph_tui_view_options opts = view->state->options;
+	struct morph_tui_view_insets old = padding ? opts.padding : opts.margin;
+
+	if (padding)
+		opts.padding = insets;
+	else
+		opts.margin = insets;
+	if (!core_view_options_valid(&opts))
+		return -EINVAL;
+	if (old.top == insets.top && old.right == insets.right && old.bottom == insets.bottom &&
+	    old.left == insets.left)
+		return 0;
+	view->state->options = opts;
+	morph_tui_view_invalidate(view, 1);
+	return 0;
+}
+
+int morph_tui_view_set_margin(struct morph_tui_view *view, struct morph_tui_view_insets insets)
+{
+	return core_view_set_insets(view, insets, 0);
+}
+
+int morph_tui_view_set_padding(struct morph_tui_view *view, struct morph_tui_view_insets insets)
+{
+	return core_view_set_insets(view, insets, 1);
 }
 
 int morph_tui_view_is_owner(const struct morph_tui_view *view)
@@ -147,7 +210,13 @@ int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_
 	if (view->state->hidden)
 		return 0;
 	struct morph_tui_view_options opts = view->state->options;
-	int inner = width > opts.padding * 2 ? width - opts.padding * 2 : 0;
+	int margin_width = opts.margin.left + opts.margin.right;
+	int margin_height = opts.margin.top + opts.margin.bottom;
+	int padding_width = opts.padding.left + opts.padding.right;
+	int padding_height = opts.padding.top + opts.padding.bottom;
+	int inner = width > margin_width ? width - margin_width : 0;
+
+	inner = inner > padding_width ? inner - padding_width : 0;
 	struct morph_tui_layout *manager = view->state->layout;
 	int rc = 0;
 
@@ -157,17 +226,21 @@ int morph_tui_view_measure(struct morph_tui_view *view, int width, struct morph_
 		rc = view->ops->measure(view, inner, size);
 	if (rc)
 		return rc;
-	if (size->width < 0 || size->height < 0 || size->width > INT_MAX - 2 * opts.padding ||
-	    size->height > INT_MAX - 2 * opts.padding)
+	if (size->width < 0 || size->height < 0 || size->width > INT_MAX - padding_width ||
+	    size->height > INT_MAX - padding_height)
 		return -EOVERFLOW;
-	size->width += opts.padding * 2;
-	size->height += opts.padding * 2;
+	size->width += padding_width;
+	size->height += padding_height;
 	if (opts.width)
 		size->width = opts.width;
 	if (opts.height)
 		size->height = opts.height;
 	size->width = core_view_extent(size->width, opts.min_width, opts.max_width);
 	size->height = core_view_extent(size->height, opts.min_height, opts.max_height);
+	if (size->width > INT_MAX - margin_width || size->height > INT_MAX - margin_height)
+		return -EOVERFLOW;
+	size->width += margin_width;
+	size->height += margin_height;
 	return 0;
 }
 
@@ -179,7 +252,7 @@ int morph_tui_view_arrange(struct morph_tui_view *view, struct morph_tui_view_re
 		return -EOVERFLOW;
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
-	view->state->frame = frame;
+	view->state->frame = core_view_inset(frame, view->state->options.margin);
 	struct morph_tui_layout *manager = view->state->layout;
 
 	if (manager && manager->ops && manager->ops->arrange)

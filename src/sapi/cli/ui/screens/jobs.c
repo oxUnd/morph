@@ -532,7 +532,7 @@ static void jobs_controller_build(struct morph_tui_view_controller *controller,
 	page->view = *source;
 	memset(source, 0, sizeof(*source));
 	controller->data = NULL;
-	const struct morph_tui_view_options inset = {.padding = 1};
+	const struct morph_tui_view_options inset = {.padding = {1, 1, 1, 1}};
 	const struct morph_tui_view_options fill = {.grow = 1};
 	struct morph_tui_view *root = morph_tui_widget_stack_create(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &inset);

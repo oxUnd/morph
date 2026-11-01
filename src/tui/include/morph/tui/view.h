@@ -29,13 +29,19 @@ enum morph_tui_view_alignment {
 	MORPH_TUI_VIEW_END
 };
 
+struct morph_tui_view_insets {
+	int top, right, bottom, left;
+};
+
 /* Zero means intrinsic size. Positive grow shares remaining stack space.
- * Padding applies on all sides. All dimensions are terminal cell counts. */
+ * Sizes include padding and exclude margin. Insets are nonnegative cell counts;
+ * margins add between siblings and are never painted by the view. */
 struct morph_tui_view_options {
 	int width, height;
 	int min_width, min_height;
 	int max_width, max_height;
-	int grow, padding;
+	int grow;
+	struct morph_tui_view_insets margin, padding;
 	enum morph_tui_view_alignment alignment;
 };
 
@@ -66,8 +72,14 @@ struct morph_tui_view *morph_tui_view_child(const struct morph_tui_view *view, s
 struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *view);
 /* Local content rectangle after padding; draw receives a canvas of this size. */
 struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view);
+struct morph_tui_view_insets morph_tui_view_insets_all(int cells);
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view);
+int morph_tui_view_set_margin(struct morph_tui_view *, struct morph_tui_view_insets);
+int morph_tui_view_set_padding(struct morph_tui_view *, struct morph_tui_view_insets);
 int morph_tui_view_is_owner(const struct morph_tui_view *view);
+/* Measurement includes margins. Arrange accepts that outer allocation and
+ * stores a frame inside the margins, including padding. Root views follow
+ * the same rules; custom layouts must not apply margins a second time. */
 int morph_tui_view_measure(struct morph_tui_view *view, int width,
 			   struct morph_tui_view_size *size);
 int morph_tui_view_arrange(struct morph_tui_view *view, struct morph_tui_view_rect frame);

@@ -59,12 +59,10 @@ static int widget_stack_measure(struct morph_tui_layout *layout, struct morph_tu
 static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tui_view *view)
 {
 	struct widget_stack *stack = (struct widget_stack *)view;
-	struct morph_tui_view_rect frame = morph_tui_view_frame(view);
-	struct morph_tui_view_options options = morph_tui_view_get_options(view);
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
 	int vertical = stack->axis == MORPH_TUI_WIDGET_STACK_VERTICAL;
-	int pad = options.padding;
-	int width = frame.width > 2 * pad ? frame.width - 2 * pad : 0;
-	int height = frame.height > 2 * pad ? frame.height - 2 * pad : 0;
+	int width = content.width;
+	int height = content.height;
 	int available = vertical ? height : width;
 	int64_t used = 0;
 
@@ -83,14 +81,17 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 		struct morph_tui_view_options opts = morph_tui_view_get_options(child);
 		int fixed = vertical ? opts.height : opts.width;
 		int weight = fixed ? 0 : opts.grow;
-		int span = weight ? (vertical ? opts.min_height : opts.min_width)
+		int margin = vertical ? opts.margin.top + opts.margin.bottom
+				      : opts.margin.left + opts.margin.right;
+		int maximum = vertical ? opts.max_height : opts.max_width;
+		int span = weight ? (vertical ? opts.min_height : opts.min_width) + margin
 				  : (vertical ? measured.height : measured.width);
 		struct widget_stack_item *item = morph_array_push(&stack->plan);
 
 		if (!item)
 			return -ENOMEM;
 		*item = (struct widget_stack_item){child, span, weight,
-						   vertical ? opts.max_height : opts.max_width};
+						   maximum ? maximum + margin : 0};
 		used += span;
 		if (stack->plan.nelts > 1)
 			used += stack->spacing;
@@ -136,6 +137,8 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 		int cross = vertical ? width : height;
 		int fixed = vertical ? opts.width : opts.height;
 		int maximum = vertical ? opts.max_width : opts.max_height;
+		int margin = vertical ? opts.margin.left + opts.margin.right
+				      : opts.margin.top + opts.margin.bottom;
 		int full_cross = cross;
 		struct morph_tui_view_size measured;
 		int measure_rc = morph_tui_view_measure(item.view, width, &measured);
@@ -147,20 +150,21 @@ static int widget_stack_arrange(struct morph_tui_layout *layout, struct morph_tu
 		if (opts.alignment != MORPH_TUI_VIEW_STRETCH && cross > intrinsic)
 			cross = intrinsic;
 
-		if (fixed && cross > fixed)
-			cross = fixed;
-		if (maximum && cross > maximum)
-			cross = maximum;
+		if (fixed && cross > fixed + margin)
+			cross = fixed + margin;
+		if (maximum && cross > maximum + margin)
+			cross = maximum + margin;
 		int span = item.span < available - offset ? item.span : available - offset;
 		int cross_offset = opts.alignment == MORPH_TUI_VIEW_CENTER
 					   ? (full_cross - cross) / 2
 				   : opts.alignment == MORPH_TUI_VIEW_END ? full_cross - cross
 									  : 0;
 		struct morph_tui_view_rect rect =
-			vertical ? (struct morph_tui_view_rect){pad + cross_offset, pad + offset,
-								cross, span}
-				 : (struct morph_tui_view_rect){pad + offset, pad + cross_offset,
-								span, cross};
+			vertical ? (struct morph_tui_view_rect){content.x + cross_offset,
+								content.y + offset, cross, span}
+				 : (struct morph_tui_view_rect){content.x + offset,
+								content.y + cross_offset, span,
+								cross};
 		int rc = morph_tui_view_arrange(item.view, rect);
 
 		if (rc)

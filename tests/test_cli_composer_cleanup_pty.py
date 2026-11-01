@@ -95,6 +95,15 @@ def main():
                             assert committed >= 0, repr(output)
                             assert 'ctrl+o details' not in output[:committed], repr(output)
                             assert len(empty_prompts(terminal)) == 1, terminal.screen.display
+                            rows = terminal.screen.display
+                            question = max(i for i, row in enumerate(rows)
+                                            if row.startswith(('› hello world', '> hello world')))
+                            reasoning = max(i for i, row in enumerate(rows) if 'The user says' in row)
+                            bottom = question + (1 if color else 0)
+                            assert reasoning == bottom + 2, '\n'.join(rows)
+                            assert not rows[bottom + 1].strip(), '\n'.join(rows)
+                            assert all(terminal.screen.buffer[bottom + 1][column].bg != '1c1c1c'
+                                       for column in range(terminal.screen.columns)), '\n'.join(rows)
                             if turn == 0:
                                 # Complete metadata after the turn is already idle.
                                 assert server.title_started.is_set(), terminal.raw[-4000:]

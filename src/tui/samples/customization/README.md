@@ -38,6 +38,21 @@ closes the active page; `q` also closes the Dashboard and Help when a text field
 has not consumed it. Paste never executes controls, submit, or shortcuts.
 Resize the terminal while visiting each page; layout and clipping are automatic.
 
+Pages use vertical margins for space outside the page and horizontal padding
+for space inside it. Configure edges independently through View options:
+
+```c
+const struct morph_tui_view_options inset = {
+	.margin = {.top = 1, .bottom = 1},
+	.padding = {.left = 1, .right = 1},
+};
+```
+
+The layout includes margins in space allocation and clips drawing to the padded
+content rectangle. Custom components use the same options; their draw callbacks
+receive local content coordinates. `morph_tui_view_insets_all(1)` provides equal
+edges, and `morph_tui_view_set_margin` / `_set_padding` update an existing view.
+
 ## Where to change the code
 
 ```text

@@ -15,6 +15,24 @@ import pyte
 REASONING = 'Inspecting the current state carefully.\n检查推理输出是否完整，中文换行也要保持正确。'
 
 
+def input_margins(terminal, text):
+    rows = terminal.screen.display
+    question = next(i for i, row in enumerate(rows)
+                    if row.startswith('› Check reasoning rendering'))
+    top = bottom = question
+    while top > 0 and terminal.screen.buffer[top - 1][0].bg == '1c1c1c':
+        top -= 1
+    while bottom + 1 < len(rows) and terminal.screen.buffer[bottom + 1][0].bg == '1c1c1c':
+        bottom += 1
+    for margin in (top - 1, bottom + 1):
+        assert 0 <= margin < len(rows), '\n'.join(rows)
+        assert not rows[margin].strip(), '\n'.join(rows)
+        assert all(terminal.screen.buffer[margin][column].bg != '1c1c1c'
+                   for column in range(terminal.screen.columns)), '\n'.join(rows)
+    following = next(i for i, row in enumerate(rows) if text in row)
+    assert following == bottom + 2, '\n'.join(rows)
+
+
 class ReasoningModel(Model):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -55,7 +73,8 @@ def main():
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        for width, inspect_details in ((80, False), (40, False), (80, True), (40, True)):
+        for width, inspect_details in ((120, False), (80, False), (60, False),
+                                       (40, False), (80, True), (40, True)):
             with tempfile.TemporaryDirectory(prefix='morph-reasoning-pty-') as temp:
                 terminal = Terminal(Path(sys.argv[1]).resolve(), Path(temp),
                                     server.server_port, hooks_enabled=False)
@@ -67,7 +86,12 @@ def main():
                     terminal.child.setwinsize(30, width)
                     terminal.screen.resize(lines=30, columns=width)
                     terminal.pump(.5)
-                    terminal.send('Check reasoning rendering\r')
+                    question = 'Check reasoning rendering'
+                    if width == 60:
+                        question += '\nWrap 中文 input ' + 'with padding and margin ' * 4
+                        terminal.send('\x1b[200~' + question + '\x1b[201~\r')
+                    else:
+                        terminal.send(question + '\r')
                     _, release = terminal.request()
                     terminal.send('keep my draft')
                     release.set()
@@ -85,6 +109,7 @@ def main():
                     early_distance = early_preview - early_question
                     assert early_rows[early_preview].startswith('Inspecting'), early
                     assert terminal.screen.buffer[early_preview][0].italics, early
+                    input_margins(terminal, 'Inspecting')
                     terminal.pump(1.65)
                     streaming = terminal.snapshot(f'{width} columns: live reasoning and draft')
                     compact = ''.join(streaming.split())
@@ -98,6 +123,7 @@ def main():
                     preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
                     preview_distance = preview_row - question_row
                     assert preview_distance == early_distance, streaming
+                    input_margins(terminal, 'Inspecting')
                     if inspect_details:
                         terminal.send('\x0f')
                         details = terminal.snapshot(f'{width} columns: live reasoning details')
@@ -125,6 +151,7 @@ def main():
                                         if row.startswith('› Check reasoning rendering'))
                     preview_row = next(i for i, row in enumerate(rows) if 'Inspecting' in row)
                     assert preview_row - question_row == preview_distance, text
+                    input_margins(terminal, 'Inspecting')
                     assert not terminal.duplicate_prompts, terminal.duplicate_prompts
                 finally:
                     if release:

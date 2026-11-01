@@ -942,6 +942,33 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	cJSON_Delete(final);
 }
 
+TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStreaming)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	for (int color : {0, 1}) {
+		cli_set_color_enabled(&ctx, color);
+		for (bool streaming : {false, true}) {
+			cli_presentation_reset(&ctx);
+			ctx.output.trailing_newlines = 0;
+			cJSON *answer = TextData("Done");
+			testing::internal::CaptureStdout();
+			cli_presentation_user_input(&ctx, "Review");
+			if (streaming)
+				Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", answer);
+			Emit(MORPH_EVENT_REACT, "react.final", "end", answer);
+			std::string output = testing::internal::GetCapturedStdout();
+			char *plain =
+				utf8_terminal_sanitize_dup(output.c_str(), output.size(),
+							   UTF8_TERMINAL_TEXT_MULTILINE, nullptr);
+			ASSERT_NE(plain, nullptr);
+			std::string expected = color ? "› Review\n\n\n● " : "> Review\n\n● ";
+			EXPECT_NE(std::string(plain).find(expected), std::string::npos) << plain;
+			free(plain);
+			cJSON_Delete(answer);
+		}
+	}
+}
+
 TEST_F(CliPresentationTest, InteractiveReasoningRespectsDisabledColor)
 {
 	cJSON *reasoning = TextData("Checking constraints");
@@ -2097,7 +2124,8 @@ TEST(CliUserInputTest, SeparatesMultilineInputAndSanitizesTerminalControls)
 	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	EXPECT_EQ(output.substr(0, 1), "\n");
 	EXPECT_EQ(output.back(), '\n');
-	EXPECT_EQ(output.find("\n\n"), std::string::npos);
+	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
+	EXPECT_EQ(output.substr(1, output.size() - 3).find("\n\n"), std::string::npos);
 	cli_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
@@ -2122,7 +2150,7 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	cli_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
-TEST(CliUserInputTest, ShortMessageHasNoInternalPaddingRows)
+TEST(CliUserInputTest, ShortMessageHasOuterMarginsWithoutInternalPaddingRows)
 {
 	struct cli_context _cli_output_context = {0};
 	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
@@ -2130,7 +2158,7 @@ TEST(CliUserInputTest, ShortMessageHasNoInternalPaddingRows)
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input(_cli_output_context_ptr, "Review");
 	std::string output = testing::internal::GetCapturedStdout();
-	EXPECT_EQ(output, "\n> Review\n");
+	EXPECT_EQ(output, "\n> Review\n\n");
 	cli_set_color_enabled(_cli_output_context_ptr, 1);
 }
 

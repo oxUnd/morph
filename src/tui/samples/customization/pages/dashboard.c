@@ -36,7 +36,8 @@ static void sample_customization_page_dashboard_build(struct morph_tui_view_cont
 	struct sample_customization_page_dashboard *page =
 		(struct sample_customization_page_dashboard *)base;
 	struct sample_customization_application *app = base->data;
-	const struct morph_tui_view_options inset = {.padding = 1};
+	const struct morph_tui_view_options inset = {.margin = {.top = 1, .bottom = 1},
+						     .padding = {.left = 1, .right = 1}};
 	const struct morph_tui_view_options fill = {.grow = 1};
 	const char *choices[] = {"Inspect shared state", "Open help", "Reset counter"};
 	struct morph_tui_view *root = morph_tui_widget_stack_create(

@@ -3,7 +3,8 @@
 static void sample_customization_page_help_build(struct morph_tui_view_controller *base,
 						 struct morph_tui_builder *builder)
 {
-	const struct morph_tui_view_options inset = {.padding = 1};
+	const struct morph_tui_view_options inset = {.margin = {.top = 1, .bottom = 1},
+						     .padding = {.left = 1, .right = 1}};
 	const struct morph_tui_view_options fill = {.grow = 1};
 	struct morph_tui_view *root = morph_tui_widget_stack_create(
 		builder, NULL, MORPH_TUI_WIDGET_STACK_VERTICAL, 1, &inset);

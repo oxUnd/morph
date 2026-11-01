@@ -32,7 +32,8 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
 	 * actually writes, so Readline cannot erase a dangling marker meanwhile. */
 	if (output && output->prefix_pending) {
-		printf(output->ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
+		printf(output->ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+		       output->ctx->output.trailing_newlines < 2 ? "\n" : "");
 		output->prefix_pending = 0;
 	}
 	if (output)

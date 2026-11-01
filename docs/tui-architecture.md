@@ -237,7 +237,7 @@ may have closed. Producers must finish before application teardown.
 View coordinates are zero-based and relative to their parent. This differs
 from the one-based legacy terminal rectangles; terminal coordinates are confined
 to output adapters. Views use intrinsic or fixed dimensions, minimum/maximum
-sizes, padding, and growth weights. Stack containers measure children and then
+sizes, margin, padding, and growth weights. Stack containers measure children and then
 arrange them horizontally or vertically, distribute remaining space subject to
 maximums, and support stretch/start/center/end cross-axis alignment. Hidden
 children consume no space. Tiny viewports produce bounded or empty regions.
@@ -245,6 +245,33 @@ children consume no space. Tiny viewports produce bounded or empty regions.
 and input callbacks use its dimensions for wrapping and scrolling; the draw
 callback receives a canvas of the same size. Custom controls should use this
 shared geometry rather than deriving a viewport from the outer frame.
+
+Margin and padding use `morph_tui_view_insets` with `top`, `right`, `bottom`, and
+`left` cell counts. For example:
+
+```c
+const struct morph_tui_view_options box = {
+	.margin = {.top = 1, .bottom = 1},
+	.padding = {.left = 2, .right = 2},
+};
+```
+
+`morph_tui_view_insets_all(1)` supplies equal edges. The previous scalar
+`.padding = 1` is now `.padding = {1, 1, 1, 1}` in static initializers.
+Fixed/minimum/maximum sizes include padding and exclude margin. Measurement
+returns the outer size including margins; `view_arrange` receives an outer slot
+and stores the frame inside those margins. Custom layouts pass the allocated
+slot directly without subtracting margins themselves. Roots follow the same
+rules. Sibling margins add alongside stack spacing; they do not collapse.
+Margins remain unpainted, while the draw canvas excludes padding. Hidden views
+consume neither margin nor padding. Oversized insets produce bounded empty
+frames; negative or overflowing insets are rejected. `view_set_margin` and
+`view_set_padding` validate owner-thread access and coalesce layout invalidation.
+
+Submitted CLI input keeps its colored inner padding and owns one normal-background
+row above and below its box. Reasoning, answers, and tool blocks reuse that
+separator. Streaming and committed output share the same position; local slash
+commands retain their separate plain-line presentation.
 
 The window tracks the active controller; each controller retains its focus.
 Tab and Shift-Tab traverse focusable views in tree order, skipping hidden

@@ -11,6 +11,7 @@
 #include "util/utf8.h"
 
 #include <chrono>
+#include <climits>
 #include <cstdlib>
 #include <fcntl.h>
 #include <functional>
@@ -216,7 +217,7 @@ TEST_F(TuiViewsTest, PaddedListNavigationUsesTheContentViewport)
 		    struct morph_tui_builder *builder) {
 			auto *data = static_cast<TuiViewModel *>(controller->data);
 			struct morph_tui_view_options options{};
-			options.padding = 1;
+			options.padding = morph_tui_view_insets_all(1);
 			const char *items[] = {"row0", "row1", "row2", "row3", "row4",
 					       "row5", "row6", "row7", "row8", "row9"};
 			data->list = morph_tui_widget_list_create(builder, nullptr, items, 10, 0,
@@ -256,6 +257,144 @@ TEST_F(TuiViewsTest, PaddedListNavigationUsesTheContentViewport)
 	EXPECT_LE(content.y, morph_tui_view_frame(model.list).height);
 }
 
+TEST_F(TuiViewsTest, InsetsSeparateOuterAllocationFrameAndContentForCustomLayouts)
+{
+	static const struct morph_tui_view_controller_ops inset_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			struct morph_tui_view_options root{};
+			root.margin = {1, 2, 1, 3};
+			root.padding = {1, 2, 1, 1};
+			data->root = morph_tui_widget_stack_create(
+				builder, nullptr, MORPH_TUI_WIDGET_STACK_VERTICAL, 0, &root);
+			struct morph_tui_view_options child{};
+			child.grow = 1;
+			child.margin = {1, 3, 0, 2};
+			child.padding = {0, 1, 0, 1};
+			data->label =
+				morph_tui_widget_label_create(builder, data->root, "X", &child);
+		},
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &inset_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	struct morph_tui_view_rect root = morph_tui_view_frame(model.root);
+	EXPECT_EQ(root.x, 3);
+	EXPECT_EQ(root.y, 1);
+	EXPECT_EQ(root.width, 25);
+	EXPECT_EQ(root.height, 6);
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(model.root);
+	EXPECT_EQ(content.x, 1);
+	EXPECT_EQ(content.y, 1);
+	EXPECT_EQ(content.width, 22);
+	EXPECT_EQ(content.height, 4);
+	struct morph_tui_view_rect child = morph_tui_view_frame(model.label);
+	EXPECT_EQ(child.x, 3);
+	EXPECT_EQ(child.y, 2);
+	EXPECT_EQ(child.width, 17);
+	EXPECT_EQ(child.height, 3);
+	struct morph_tui_view_size measured{};
+	ASSERT_EQ(morph_tui_view_measure(model.label, 22, &measured), 0);
+	EXPECT_EQ(measured.width, 8);
+	EXPECT_EQ(measured.height, 2);
+	EXPECT_NE(frame.find("       X"), std::string::npos);
+
+	/* Arrange consumes an outer slot for custom containers just as for Stack. */
+	ASSERT_EQ(morph_tui_view_arrange(model.label, {0, 0, 20, 5}), 0);
+	child = morph_tui_view_frame(model.label);
+	EXPECT_EQ(child.x, 2);
+	EXPECT_EQ(child.y, 1);
+	EXPECT_EQ(child.width, 15);
+	EXPECT_EQ(child.height, 4);
+}
+
+TEST_F(TuiViewsTest, HorizontalGrowthAndCrossAlignmentIncludeMarginsOutsideSizeLimits)
+{
+	static const struct morph_tui_view_controller_ops inset_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			data->root = morph_tui_widget_stack_create(
+				builder, nullptr, MORPH_TUI_WIDGET_STACK_HORIZONTAL, 0, nullptr);
+			struct morph_tui_view_options first{};
+			first.grow = 1;
+			first.max_width = 4;
+			first.height = 2;
+			first.alignment = MORPH_TUI_VIEW_CENTER;
+			first.margin = {1, 2, 3, 1};
+			data->label =
+				morph_tui_widget_label_create(builder, data->root, "one", &first);
+			struct morph_tui_view_options second{};
+			second.grow = 1;
+			second.margin = {0, 1, 0, 2};
+			data->field =
+				morph_tui_widget_label_create(builder, data->root, "two", &second);
+		},
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &inset_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	struct morph_tui_view_rect first = morph_tui_view_frame(model.label);
+	struct morph_tui_view_rect second = morph_tui_view_frame(model.field);
+	EXPECT_EQ(first.x, 1);
+	EXPECT_EQ(first.y, 2);
+	EXPECT_EQ(first.width, 4);
+	EXPECT_EQ(first.height, 2);
+	EXPECT_EQ(second.x, 9);
+	EXPECT_EQ(second.width, 20);
+	EXPECT_EQ(second.height, 8);
+	ASSERT_EQ(morph_tui_view_set_hidden(model.label, 1), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	second = morph_tui_view_frame(model.field);
+	EXPECT_EQ(second.x, 2);
+	EXPECT_EQ(second.width, 27);
+}
+
+TEST_F(TuiViewsTest, InsetSettersInvalidateLayoutAndRejectInvalidOrWorkerChanges)
+{
+	ASSERT_EQ(present(), 0);
+	struct morph_tui_view_insets margin{1, 2, 0, 3};
+	struct morph_tui_view_insets padding{0, 1, 0, 2};
+	ASSERT_EQ(morph_tui_view_set_margin(model.list, margin), 0);
+	ASSERT_EQ(morph_tui_view_set_padding(model.list, padding), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(morph_tui_view_frame(model.list).x, 3);
+	EXPECT_EQ(morph_tui_view_frame(model.list).width, 25);
+	EXPECT_EQ(morph_tui_view_content_rect(model.list).width, 22);
+	int before = frames;
+	ASSERT_EQ(morph_tui_view_set_margin(model.list, margin), 0);
+	ASSERT_EQ(morph_tui_view_set_padding(model.list, padding), 0);
+	EXPECT_EQ(morph_tui_view_set_margin(model.list, {-1, 0, 0, 0}), -EINVAL);
+	EXPECT_EQ(morph_tui_view_set_padding(model.list, {0, INT_MAX, 0, 1}), -EINVAL);
+	std::thread worker([&] {
+		EXPECT_EQ(morph_tui_view_set_margin(model.list, {}), -EPERM);
+		EXPECT_EQ(morph_tui_view_set_padding(model.list, {}), -EPERM);
+	});
+	worker.join();
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(frames, before);
+	EXPECT_EQ(morph_tui_view_get_options(model.list).margin.top, 1);
+	/* Excessive but valid insets yield bounded empty frames on tiny terminals. */
+	ASSERT_EQ(morph_tui_view_set_margin(model.list, morph_tui_view_insets_all(20)), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(morph_tui_view_frame(model.list).width, 0);
+	EXPECT_EQ(morph_tui_view_frame(model.list).height, 0);
+	EXPECT_EQ(morph_tui_view_content_rect(model.list).width, 0);
+}
+
 TEST_F(TuiViewsTest, PaddedDocumentScrollReachesTheLastLineAndPreservesOffsetOnRefresh)
 {
 	static const char text[] =
@@ -265,7 +404,7 @@ TEST_F(TuiViewsTest, PaddedDocumentScrollReachesTheLastLineAndPreservesOffsetOnR
 		    struct morph_tui_builder *builder) {
 			auto *data = static_cast<TuiViewModel *>(controller->data);
 			struct morph_tui_view_options options{};
-			options.padding = 1;
+			options.padding = morph_tui_view_insets_all(1);
 			data->field =
 				morph_tui_widget_text_view_create(builder, nullptr, text, &options);
 		},

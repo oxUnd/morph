@@ -2,6 +2,7 @@
 #include "sapi/cli/ui/screens/jobs.h"
 #include "sapi/cli/ui/presentation/list.h"
 #include "agent/patch.h"
+#include <morph/tui/view.h>
 #include <sys/ioctl.h>
 
 #define CLI_STREAM_NONE      0
@@ -108,6 +109,10 @@ static void presentation_user_row(struct cli_context *ctx, const char *text, siz
 
 void cli_presentation_user_input(struct cli_context *ctx, const char *text)
 {
+	const struct morph_tui_view_options box = {
+		.margin = {.top = 1, .bottom = 1},
+		.padding = {.top = 1, .bottom = 1},
+	};
 	char *safe;
 	char *line;
 	struct winsize size = {0};
@@ -117,7 +122,7 @@ void cli_presentation_user_input(struct cli_context *ctx, const char *text)
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col)
 		width = size.ws_col - 1;
 
-	if (!text || !*text)
+	if (!ctx || !text || !*text)
 		return;
 	safe = utf8_terminal_sanitize_dup(text, strlen(text),
 		UTF8_TERMINAL_TEXT_MULTILINE, NULL);
@@ -130,9 +135,12 @@ void cli_presentation_user_input(struct cli_context *ctx, const char *text)
 	}
 	if (width < 8)
 		width = 8;
-	putchar(ctx, '\n');
+	/* Share a preceding block's separator, keeping outer margins unpainted. */
+	for (int row = ctx->output.trailing_newlines >= 2 ? 1 : 0; row < box.margin.top; row++)
+		putchar(ctx, '\n');
 	if (cli_color_enabled(ctx))
-		presentation_user_padding(ctx);
+		for (int row = 0; row < box.padding.top; row++)
+			presentation_user_padding(ctx);
 	line = safe;
 	while (line) {
 		char *newline = strchr(line, '\n');
@@ -151,7 +159,10 @@ void cli_presentation_user_input(struct cli_context *ctx, const char *text)
 		line = newline ? newline + 1 : NULL;
 	}
 	if (cli_color_enabled(ctx))
-		presentation_user_padding(ctx);
+		for (int row = 0; row < box.padding.bottom; row++)
+			presentation_user_padding(ctx);
+	for (int row = 0; row < box.margin.bottom; row++)
+		putchar(ctx, '\n');
 	free(safe);
 }
 
@@ -571,7 +582,8 @@ static void presentation_print_stream(struct cli_context *ctx)
 	if (ctx->presentation_mode == CLI_PRESENT_ONCE_PLAIN) {
 		print_plain_labeled(ctx, label, content);
 	} else {
-		printf(ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
+		printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+		       ctx->output.trailing_newlines < 2 ? "\n" : "");
 		cli_markdown_render_ansi_with_media_indented(ctx, content, 2, media_callback, ctx);
 	}
 reset:
@@ -1219,7 +1231,8 @@ static void presentation_final(struct cli_context *ctx,
 		}
 	} else {
 		if (!had_stream)
-			printf(ctx, "\n" ANSI_BOLD "●" ANSI_RESET " ");
+			printf(ctx, "%s" ANSI_BOLD "●" ANSI_RESET " ",
+			       ctx->output.trailing_newlines < 2 ? "\n" : "");
 		if (!had_stream && text && text[0]) {
 			cli_markdown_render_final(ctx, text);
 		} else if (!had_stream) {

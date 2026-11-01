@@ -29,6 +29,15 @@
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
 ## CLI Slash Command Presentation
+- TUI View options use four-edge `morph_tui_view_insets` for margin and padding.
+  Measure returns the outer size including margin; arrange accepts an outer slot
+  and applies margin once. Size limits include padding and exclude margin.
+  Custom layouts use `morph_tui_view_content_rect` and pass allocated outer slots
+  directly to child arrange calls. Sibling margins add without collapsing.
+- Submitted chat boxes own one normal-background row above and below their
+  colored padding. Reasoning, answers, and tools share that outer separator;
+  streaming previews and committed output keep the same position. Keep local
+  slash-command spacing governed by the separate rules below.
 - Treat slash commands as local UI/actions, separate from chat user messages.
   Do not commit submitted slash commands as `› /command` chat bubbles or retain
   their editable background in scrollback. Keep each submitted command visible
