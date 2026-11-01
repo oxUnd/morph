@@ -410,6 +410,39 @@ TEST_F(CliUiTest, CommandWaitPumpsSynchronousOwnerCall)
 	cli_command_job_cleanup(&job);
 }
 
+TEST_F(CliUiTest, ShutdownCancelsQueuedAndFutureOwnerCallsWithoutDroppingOutput)
+{
+	struct cli_command_job job{};
+	cli_owner_call_data data{&ctx, 0};
+
+	ASSERT_EQ(cli_command_job_init(&job), 0);
+	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "test", cli_command_with_owner_call, &data),
+		  0);
+	struct pollfd fd{};
+	fd.fd = cli_ui_wake_fd(&ctx);
+	fd.events = POLLIN;
+	EXPECT_EQ(poll(&fd, 1, 1000), 1);
+	struct morph_event event{
+		MORPH_EVENT_ERROR, "background.error", "end", "shutdown output", nullptr, nullptr};
+	ASSERT_EQ(cli_ui_post_morph_event(&ctx, &event), 0);
+	ASSERT_EQ(cli_ui_stop_owner_calls(&ctx), 0);
+	EXPECT_FALSE(cli_ui_owner_call_pending(&ctx));
+	/* Joining cannot depend on pumping a prompt after the UI has stopped. */
+	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
+	EXPECT_EQ(data.ran_on_owner, 0);
+	EXPECT_EQ(cli_ui_call_owner(&ctx, cli_owner_call, &data), -ECANCELED);
+	ASSERT_EQ(cli_command_job_start_fn(&job, &ctx, "late test", cli_command_with_owner_call,
+					   &data),
+		  0);
+	EXPECT_EQ(cli_command_job_finish(&job), -ECANCELED);
+	EXPECT_EQ(data.ran_on_owner, 0);
+	testing::internal::CaptureStdout();
+	EXPECT_EQ(cli_ui_drain(&ctx), 0);
+	EXPECT_NE(testing::internal::GetCapturedStdout().find("shutdown output"),
+		  std::string::npos);
+	cli_command_job_cleanup(&job);
+}
+
 TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 {
 	cli_owner_call_data data{&ctx, 0};

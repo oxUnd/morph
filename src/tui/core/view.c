@@ -102,6 +102,21 @@ struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *vie
 	return view ? view->state->frame : (struct morph_tui_view_rect){0};
 }
 
+struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view)
+{
+	if (!view)
+		return (struct morph_tui_view_rect){0};
+	struct morph_tui_view_rect frame = view->state->frame;
+	int pad = view->state->options.padding;
+
+	return (struct morph_tui_view_rect){
+		.x = pad < frame.width ? pad : frame.width,
+		.y = pad < frame.height ? pad : frame.height,
+		.width = frame.width > pad * 2 ? frame.width - pad * 2 : 0,
+		.height = frame.height > pad * 2 ? frame.height - pad * 2 : 0,
+	};
+}
+
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view)
 {
 	return view ? view->state->options : (struct morph_tui_view_options){0};
@@ -194,6 +209,8 @@ int morph_tui_view_set_hidden(struct morph_tui_view *view, int hidden)
 		return -EINVAL;
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
+	if (view->state->hidden == !!hidden)
+		return 0;
 	view->state->hidden = !!hidden;
 	if (!core_view_can_focus(view->state->controller->state->focus))
 		view->state->controller->state->focus = NULL;
@@ -218,6 +235,8 @@ int morph_tui_view_set_focusable(struct morph_tui_view *view, int focusable)
 		return -EINVAL;
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
+	if (view->state->focusable == !!focusable)
+		return 0;
 	view->state->focusable = !!focusable;
 	if (!focusable && morph_tui_view_focused(view))
 		view->state->controller->state->focus = NULL;
@@ -231,6 +250,8 @@ int morph_tui_view_focus(struct morph_tui_view *view)
 		return -EINVAL;
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
+	if (morph_tui_view_focused(view))
+		return 0;
 	view->state->controller->state->focus = view;
 	morph_tui_view_invalidate(view, 0);
 	return 0;
@@ -308,11 +329,10 @@ int core_view_draw(struct morph_tui_view *view, struct morph_tui_canvas *parent)
 	morph_tui_canvas_child(parent, frame.x, frame.y, frame.width, frame.height, &canvas);
 	if (canvas.left >= canvas.right || canvas.top >= canvas.bottom)
 		return 0;
-	int pad = view->state->options.padding;
+	struct morph_tui_view_rect rect = morph_tui_view_content_rect(view);
 	struct morph_tui_canvas content;
 
-	morph_tui_canvas_child(&canvas, pad, pad, frame.width > pad * 2 ? frame.width - pad * 2 : 0,
-			       frame.height > pad * 2 ? frame.height - pad * 2 : 0, &content);
+	morph_tui_canvas_child(&canvas, rect.x, rect.y, rect.width, rect.height, &content);
 	int rc = view->ops && view->ops->draw ? view->ops->draw(view, &content) : 0;
 
 	for (size_t i = 0; i < view->state->children.nelts && !rc; i++)

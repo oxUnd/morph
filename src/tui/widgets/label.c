@@ -42,16 +42,24 @@ int morph_tui_widget_label_set_text(struct morph_tui_view *view, const char *tex
 		return -EINVAL;
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
+	struct widget_label *label = (struct widget_label *)view;
+
+	if (label->text && strcmp(label->text, text) == 0)
+		return 0;
 	char *copy = utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_SINGLE_LINE,
 						NULL);
 
 	if (!copy)
 		return -ENOMEM;
-	struct widget_label *label = (struct widget_label *)view;
+	if (label->text && strcmp(label->text, copy) == 0) {
+		free(copy);
+		return 0;
+	}
+	int resized = !label->text || utf8_display_width(label->text) != utf8_display_width(copy);
 
 	free(label->text);
 	label->text = copy;
-	morph_tui_view_invalidate(view, 1);
+	morph_tui_view_invalidate(view, resized);
 	return 0;
 }
 

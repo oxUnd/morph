@@ -116,6 +116,13 @@ static int core_view_controller_event(void *data, struct morph_tui_application *
 
 	if (event->type != MORPH_TUI_EVENT_KEY)
 		return core_view_controller_dispatch(data, app, event);
+	/* Resolve focus before binding a paste or incremental text to its target. */
+	if (!core_view_can_focus(state->focus)) {
+		int rc = core_view_focus_next(controller, 0);
+
+		if (rc)
+			return rc;
+	}
 	if (event->key == MORPH_TUI_KEY_PASTE_BEGIN)
 		state->paste_target = state->focus;
 	struct morph_tui_view *target = event->pasting ? state->paste_target : state->focus;

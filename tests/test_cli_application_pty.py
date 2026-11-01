@@ -1,7 +1,10 @@
 """Shared application loop: background output, modal ownership, and recovery."""
 import http.server
+import os
 from pathlib import Path
+import signal
 import sys
+import termios
 import tempfile
 import threading
 import time
@@ -70,7 +73,30 @@ def main():
             terminal.child.expect(pexpect.EOF)
             terminal.child.close()
             assert terminal.child.exitstatus == 0, terminal.raw[-2000:]
-            print('PASS: deferred output, modal paste isolation, resize, input handoff, shutdown')
+        for modal in (False, True):
+            with tempfile.TemporaryDirectory(prefix='morph-application-exit-') as temp:
+                terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
+                terminal.screen = AlternateScreen(80, 24)
+                terminal.stream = pyte.Stream(terminal.screen)
+                terminal.wait_for_composer()
+                terminal.send('Keep working until termination\r')
+                _, release = terminal.request()
+                if modal:
+                    terminal.send('/jobs\r')
+                    until(terminal, lambda text: 'morph / jobs' in text)
+                os.kill(terminal.child.pid, signal.SIGTERM)
+                terminal.child.expect(pexpect.EOF, timeout=5)
+                terminal.raw += terminal.child.before
+                flags = termios.tcgetattr(terminal.child.child_fd)[3]
+                assert flags & termios.ICANON, 'terminal remains in raw mode after shutdown'
+                assert flags & termios.ECHO, 'terminal echo was not restored'
+                if modal:
+                    assert '\x1b[?1049l' in terminal.raw, terminal.raw[-2000:]
+                terminal.child.close()
+                assert terminal.child.exitstatus == 0, terminal.raw[-2000:]
+                release.set()
+        print('PASS: deferred output, modal ownership, resize, input handoff, '
+              'and termination during active work at root and in a modal')
     finally:
         if release:
             release.set()

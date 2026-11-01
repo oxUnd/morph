@@ -7,6 +7,7 @@
 #include <morph/tui/widgets/list.h>
 #include <morph/tui/widgets/stack.h>
 #include <morph/tui/widgets/text_field.h>
+#include <morph/tui/widgets/text_view.h>
 #include "util/utf8.h"
 
 #include <chrono>
@@ -193,6 +194,109 @@ TEST_F(TuiViewsTest, LayoutAndControlsNeedNoApplicationDrawOrKeyForwarding)
 	EXPECT_EQ(frames, before + 1);
 }
 
+TEST_F(TuiViewsTest, RepeatedStateUpdatesDoNotScheduleFrames)
+{
+	ASSERT_EQ(present(), 0);
+	int before = frames;
+
+	ASSERT_EQ(morph_tui_widget_label_set_text(model.label, "Ready"), 0);
+	ASSERT_EQ(morph_tui_widget_label_set_text(model.label, "\033[31mReady\033[0m"), 0);
+	ASSERT_EQ(morph_tui_view_set_hidden(model.list, 0), 0);
+	ASSERT_EQ(morph_tui_view_set_focusable(model.field, 1), 0);
+	ASSERT_EQ(morph_tui_view_focus(model.field), 0);
+	ASSERT_EQ(morph_tui_widget_list_select(model.list, 0), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(frames, before);
+}
+
+TEST_F(TuiViewsTest, PaddedListNavigationUsesTheContentViewport)
+{
+	static const struct morph_tui_view_controller_ops padded_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			struct morph_tui_view_options options{};
+			options.padding = 1;
+			const char *items[] = {"row0", "row1", "row2", "row3", "row4",
+					       "row5", "row6", "row7", "row8", "row9"};
+			data->list = morph_tui_widget_list_create(builder, nullptr, items, 10, 0,
+								  &options);
+		},
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &padded_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(model.list);
+	EXPECT_EQ(content.x, 1);
+	EXPECT_EQ(content.y, 1);
+	EXPECT_EQ(content.width, 28);
+	EXPECT_EQ(content.height, 6);
+	send("\033[6~");
+	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 6U);
+	EXPECT_NE(frame.find("row6"), std::string::npos);
+	send("\033[F");
+	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 9U);
+	EXPECT_NE(frame.find("row9"), std::string::npos);
+
+	struct winsize size{};
+	size.ws_col = 1;
+	size.ws_row = 1;
+	ASSERT_EQ(ioctl(fileno(input), TIOCSWINSZ, &size), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	content = morph_tui_view_content_rect(model.list);
+	EXPECT_EQ(content.width, 0);
+	EXPECT_EQ(content.height, 0);
+	EXPECT_LE(content.x, morph_tui_view_frame(model.list).width);
+	EXPECT_LE(content.y, morph_tui_view_frame(model.list).height);
+}
+
+TEST_F(TuiViewsTest, PaddedDocumentScrollReachesTheLastLineAndPreservesOffsetOnRefresh)
+{
+	static const char text[] =
+		"line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9";
+	static const struct morph_tui_view_controller_ops padded_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			struct morph_tui_view_options options{};
+			options.padding = 1;
+			data->field =
+				morph_tui_widget_text_view_create(builder, nullptr, text, &options);
+		},
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &padded_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	send("\033[F");
+	EXPECT_NE(frame.find("line9"), std::string::npos);
+	EXPECT_EQ(frame.find("line0"), std::string::npos);
+	int before = frames;
+	std::string previous = frame;
+	ASSERT_EQ(morph_tui_widget_text_view_set_text(model.field, text), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	EXPECT_EQ(frames, before);
+	EXPECT_EQ(frame, previous);
+	send("\033[H\033[6~");
+	EXPECT_NE(frame.find("line6"), std::string::npos);
+	EXPECT_NE(frame.find("line9"), std::string::npos);
+	send("\033[F");
+	before = frames;
+	send("\033[B");
+	EXPECT_EQ(frames, before);
+}
+
 TEST_F(TuiViewsTest, PrintableQuitKeyBelongsToEditorAndUnicodeArrivesWhole)
 {
 	ASSERT_EQ(present(), 0);
@@ -215,6 +319,36 @@ TEST_F(TuiViewsTest, PasteCannotNavigateSubmitOrInvokePageShortcuts)
 	send("\033[200~qj\r\033[201~");
 	EXPECT_EQ(morph_tui_widget_list_selected(model.list), 0U);
 	EXPECT_EQ(morph_tui_application_depth(app), 1U);
+}
+
+TEST_F(TuiViewsTest, PasteAfterHidingFocusUsesTheNextAvailableField)
+{
+	static const struct morph_tui_view_controller_ops fields_ops = {
+		+[](struct morph_tui_view_controller *controller,
+		    struct morph_tui_builder *builder) {
+			auto *data = static_cast<TuiViewModel *>(controller->data);
+			data->root = morph_tui_widget_stack_create(
+				builder, nullptr, MORPH_TUI_WIDGET_STACK_VERTICAL, 0, nullptr);
+			data->field = morph_tui_widget_text_field_create(builder, data->root, "",
+									 32, 0, nullptr);
+			data->list = morph_tui_widget_text_field_create(builder, data->root, "", 32,
+									0, nullptr);
+		},
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr,
+		nullptr};
+	struct morph_tui_view_controller_spec spec{};
+	spec.ops = &fields_ops;
+	spec.data = &model;
+	ASSERT_EQ(morph_tui_view_controller_present(app, &spec), 0);
+	ASSERT_EQ(morph_tui_application_step(app, 0), 0);
+	ASSERT_EQ(morph_tui_view_set_hidden(model.field, 1), 0);
+	send("\033[200~q你好\033[201~");
+	EXPECT_EQ(morph_tui_window_focus(morph_tui_application_window(app)), model.list);
+	EXPECT_STREQ(morph_tui_widget_text_field_text(model.list), "q你好");
+	EXPECT_STREQ(morph_tui_widget_text_field_text(model.field), "");
 }
 
 TEST_F(TuiViewsTest, FocusTraversalAndModalRestoreTheSameControl)

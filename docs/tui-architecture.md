@@ -153,9 +153,13 @@ closing it restores the composer. Runtime messages continue to update state,
 while sanitized scrollback output is buffered until the panel leaves. Command
 completion and session-selection receipts run after leaving alternate screen.
 
-The CLI attaches its existing owner queue to application wakeups and detaches it
-under the queue mutex before destroying the application. Signal handling stays
-with the existing sigwait listener, which sets flags and wakes the application;
+The CLI embeds an Application subclass. Its `prepare_termination` hook cancels
+queued and future synchronous owner calls, cancels and joins the command worker,
+then detaches the owner queue under its mutex. The Application remains alive
+throughout that join. Pending output is retained and drained after terminal
+restoration; shutdown cannot open another interactive prompt. Termination signals
+stop the loop immediately, including while a modal page is visible. Signal
+handling stays with the existing sigwait listener, which sets flags and wakes the application;
 libuv does not install competing signal handlers. JSON and plain modes retain
 their existing input/output contracts.
 
@@ -237,6 +241,10 @@ sizes, padding, and growth weights. Stack containers measure children and then
 arrange them horizontally or vertically, distribute remaining space subject to
 maximums, and support stretch/start/center/end cross-axis alignment. Hidden
 children consume no space. Tiny viewports produce bounded or empty regions.
+`morph_tui_view_content_rect` returns the local rectangle after padding. Layout
+and input callbacks use its dimensions for wrapping and scrolling; the draw
+callback receives a canvas of the same size. Custom controls should use this
+shared geometry rather than deriving a viewport from the outer frame.
 
 The window tracks the active controller; each controller retains its focus.
 Tab and Shift-Tab traverse focusable views in tree order, skipping hidden
@@ -254,8 +262,12 @@ The low-level host and legacy adapters retain their byte-key contract.
 List owns selection, viewport, drawing, and ACTIVATE/CHANGED actions. TextField
 reuses Editor for bounded editing, supplies display and cursor state, and emits
 CHANGED/SUBMIT. The document control owns sanitized multiline text, wrapping,
-scrolling, and clipping. Widgets redraw themselves on state changes. Label text
-changes request layout as well as display. `tick_ms` is an optional controller
+scrolling, and clipping. Reapplying the same hidden state, focusability/focus,
+list selection, or Label/TextView text does not schedule a frame.
+Label text changes request layout only when their
+display width changes. Refreshing a list data source always requests display
+because its borrowed contents may have changed; layout is required only when
+the count changes. `tick_ms` is an optional controller
 business timer, disabled by default.
 
 Escape and Ctrl-C/Ctrl-D close a page after its responders decline the event.
@@ -428,9 +440,9 @@ These are design influences, not new dependencies or copied upstream code:
 | [Bubble Tea model](https://github.com/charmbracelet/bubbletea#the-model) | Application state updates separated from view generation | Typed events and update/draw callbacks with explicit redraw/close results |
 | [FTXUI modules](https://github.com/ArthurSonzogni/FTXUI#short-gallery) | Separate rendering, layout, and interaction | Independent geometry, interaction state, and drawing modules |
 
-The current framework uses explicit C state components rather than a retained
-widget tree. There is one active component per current screen mode, so focus
-routing remains explicit and does not need a global focus registry.
+Legacy screen adapters compose explicit interaction-state objects and route
+focus themselves. Retained pages own a view tree and use per-controller focus
+and responder routing through the public View/Widget interfaces.
 
 ## Validation
 
@@ -442,7 +454,13 @@ terminal primitives also run together under AddressSanitizer and UBSan.
 
 `tests/test_cli_application_pty.py` covers background completion while a panel is
 open, deferred output, modal paste isolation, resize, input handoff to Readline,
-and shutdown through the production CLI loop.
+and termination during active work at the root or in a modal, including terminal
+restoration. `tests/test_cli_ui.cpp` checks that shutdown releases waiting owner
+calls, rejects late requests, and retains queued output without pumping prompts.
+
+`tests/test_tui_views.cpp` covers content geometry and padded scrolling, focus
+and paste handoff, redundant-update suppression, custom subclasses and layout,
+action propagation, controller scope cleanup, and worker mutation rejection.
 
 `tests/test_tui.cpp` covers terminal restoration, incremental/overlong/interrupted
 input, clipping, frame invalidation and I/O failure, geometry, list changes,

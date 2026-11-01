@@ -1119,13 +1119,33 @@ static void cli_run_plain(struct cli_context *ctx)
 
 #ifdef HAVE_READLINE
 struct cli_readline_app {
+	struct morph_tui_application base;
 	struct cli_context *ctx;
 	struct cli_command_job *job;
+	int finished_job, job_result;
 	int callback_installed;
 	char *draft;
 	int point;
 	morph_buf_t deferred;
 };
+
+static void cli_readline_app_prepare_termination(struct morph_tui_application *app, int result)
+{
+	struct cli_readline_app *state = (struct cli_readline_app *)app;
+	struct cli_context *ctx = state->ctx;
+
+	(void)result;
+	ctx->running = 0;
+	/* A worker may be waiting for an owner call. Release it before joining;
+	 * preserve queued output for presentation after terminal restoration. */
+	(void)cli_ui_stop_owner_calls(ctx);
+	if (state->job->active) {
+		runtime_cancel_turn(ctx->runtime);
+		state->job_result = cli_command_job_finish(state->job);
+		state->finished_job = 1;
+	}
+	cli_ui_attach_app(ctx, NULL);
+}
 
 static void cli_readline_app_schedule(struct cli_readline_app *state,
 				      struct morph_tui_application *app)
@@ -1213,8 +1233,11 @@ static int cli_readline_app_event(void *data, struct morph_tui_application *app,
 	int modal = morph_tui_application_depth(app) > 1;
 
 	cli_recap_tick(ctx, cli_recap_now());
-	if (morph_signal_flag_get(&ctx->terminate_requested))
+	if (morph_signal_flag_get(&ctx->terminate_requested)) {
 		ctx->running = 0;
+		morph_tui_application_stop(app, 0);
+		return 1;
+	}
 	if (morph_signal_flag_take(&ctx->resized)) {
 		cli_terminal_resize(ctx);
 		if (modal)
@@ -1540,6 +1563,11 @@ void cli_run(struct cli_context *ctx)
 	rl_attempted_completion_function = completion;
 	(void)line_ready;
 	struct cli_readline_app state = {.ctx = ctx, .job = &job};
+	static const struct morph_tui_application_ops lifecycle_ops = {
+		.prepare_termination = cli_readline_app_prepare_termination,
+	};
+
+	state.base.ops = &lifecycle_ops;
 	const struct morph_tui_application_options app_options = {
 		.external_signals = 1,
 		.input = stdin,
@@ -1561,18 +1589,22 @@ void cli_run(struct cli_context *ctx)
 	int app_rc = morph_buf_init(&state.deferred, BUFSIZ);
 
 	if (!app_rc)
-		app_rc = morph_tui_application_create(&app_options, &ctx->application);
+		app_rc = morph_tui_application_init(&state.base, &app_options);
 	if (!app_rc) {
+		ctx->application = &state.base;
 		ctx->application_output = &state.deferred;
 		cli_ui_attach_app(ctx, ctx->application);
 		app_rc = morph_tui_application_present_controller(ctx->application, &root);
 		if (!app_rc)
 			app_rc = morph_tui_application_run(ctx->application);
-		cli_ui_attach_app(ctx, NULL);
-		morph_tui_application_destroy(ctx->application);
+		morph_tui_application_deinit(ctx->application);
+		cli_terminal_set_hidden(ctx, 0);
+		int flush_rc = cli_application_flush(ctx);
+
+		if (!app_rc)
+			app_rc = flush_rc;
 		ctx->application = NULL;
 		ctx->application_output = NULL;
-		cli_terminal_set_hidden(ctx, 0);
 	}
 	free(state.draft);
 	morph_buf_cleanup(&state.deferred);
@@ -1594,11 +1626,9 @@ void cli_run(struct cli_context *ctx)
 	ctx->footer_text = NULL;
 	if (callback_installed)
 		rl_callback_handler_remove();
-	if (job.active) {
-		int turn_rc = cli_command_job_wait(&job);
-
+	if (state.finished_job) {
 		(void)cli_ui_drain(ctx);
-		cli_turn_finish(ctx, turn_rc);
+		cli_turn_finish(ctx, state.job_result);
 	}
 out_release_readline:
 	memset(&ctx->input_status, 0, sizeof(ctx->input_status));

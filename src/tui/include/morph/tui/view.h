@@ -64,6 +64,8 @@ struct morph_tui_view_controller *morph_tui_view_owner(const struct morph_tui_vi
 size_t morph_tui_view_child_count(const struct morph_tui_view *view);
 struct morph_tui_view *morph_tui_view_child(const struct morph_tui_view *view, size_t index);
 struct morph_tui_view_rect morph_tui_view_frame(const struct morph_tui_view *view);
+/* Local content rectangle after padding; draw receives a canvas of this size. */
+struct morph_tui_view_rect morph_tui_view_content_rect(const struct morph_tui_view *view);
 struct morph_tui_view_options morph_tui_view_get_options(const struct morph_tui_view *view);
 int morph_tui_view_is_owner(const struct morph_tui_view *view);
 int morph_tui_view_measure(struct morph_tui_view *view, int width,

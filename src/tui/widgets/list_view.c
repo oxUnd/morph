@@ -37,10 +37,10 @@ static int widget_list_view_measure(struct morph_tui_view *view, int width,
 static int widget_list_view_layout(struct morph_tui_view *view)
 {
 	struct widget_list_view *list = (struct widget_list_view *)view;
-	struct morph_tui_view_rect frame = morph_tui_view_frame(view);
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
 
 	morph_tui_widget_list_state_layout(&list->menu.list, list->menu.list.count,
-					   frame.height > 0 ? (size_t)frame.height : 1);
+					   content.height > 0 ? (size_t)content.height : 1);
 	return 0;
 }
 
@@ -162,12 +162,13 @@ int morph_tui_widget_list_set_source(struct morph_tui_view *view, size_t count,
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
 	struct widget_list_view *list = (struct widget_list_view *)view;
+	int resized = list->menu.list.count != count;
 
 	widget_list_view_clear(list);
 	list->source = text;
 	list->source_data = data;
 	morph_tui_widget_list_state_layout(&list->menu.list, count, list->menu.list.page);
-	morph_tui_view_invalidate(view, 1);
+	morph_tui_view_invalidate(view, resized);
 	return 0;
 }
 
@@ -198,6 +199,8 @@ int morph_tui_widget_list_select(struct morph_tui_view *view, size_t index)
 
 	if (index >= list->menu.list.count)
 		return -ERANGE;
+	if (list->menu.list.index == index)
+		return 0;
 	list->menu.list.index = index;
 	morph_tui_widget_list_state_layout(&list->menu.list, list->menu.list.count,
 					   list->menu.list.page);

@@ -27,9 +27,8 @@ static int widget_document_measure(struct morph_tui_view *view, int width,
 static int widget_document_layout(struct morph_tui_view *view)
 {
 	struct widget_document *document = (struct widget_document *)view;
-	struct morph_tui_view_rect frame = morph_tui_view_frame(view);
-	struct morph_tui_view_options opts = morph_tui_view_get_options(view);
-	int width = frame.width > opts.padding * 2 ? frame.width - opts.padding * 2 : 1;
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
+	int width = content.width > 0 ? content.width : 1;
 	int rc = 0;
 
 	if (document->width != width) {
@@ -38,7 +37,7 @@ static int widget_document_layout(struct morph_tui_view *view)
 		if (!rc)
 			document->width = width;
 	}
-	int height = frame.height > opts.padding * 2 ? frame.height - opts.padding * 2 : 1;
+	int height = content.height > 0 ? content.height : 1;
 
 	document->offset = morph_tui_widget_scroll_update(
 		document->offset, document->lines.lines.nelts, (size_t)height, 0);
@@ -77,12 +76,14 @@ static int widget_document_event(struct morph_tui_view *view, const struct morph
 	    key != MORPH_TUI_KEY_PAGE_DOWN && key != MORPH_TUI_KEY_HOME && key != MORPH_TUI_KEY_END)
 		return 0;
 	struct widget_document *document = (struct widget_document *)view;
-	struct morph_tui_view_rect frame = morph_tui_view_frame(view);
+	struct morph_tui_view_rect content = morph_tui_view_content_rect(view);
+	size_t old_offset = document->offset;
 
-	document->offset =
-		morph_tui_widget_scroll_update(document->offset, document->lines.lines.nelts,
-					       frame.height > 0 ? (size_t)frame.height : 1, key);
-	morph_tui_view_invalidate(view, 0);
+	document->offset = morph_tui_widget_scroll_update(
+		document->offset, document->lines.lines.nelts,
+		content.height > 0 ? (size_t)content.height : 1, key);
+	if (document->offset != old_offset)
+		morph_tui_view_invalidate(view, 0);
 	return 1;
 }
 
@@ -102,11 +103,18 @@ int morph_tui_widget_text_view_set_text(struct morph_tui_view *view, const char 
 	if (!morph_tui_view_is_owner(view))
 		return -EPERM;
 	struct widget_document *document = (struct widget_document *)view;
+
+	if (document->text && strcmp(document->text, text) == 0)
+		return 0;
 	char *copy =
 		utf8_terminal_sanitize_dup(text, strlen(text), UTF8_TERMINAL_TEXT_MULTILINE, NULL);
 
 	if (!copy)
 		return -ENOMEM;
+	if (document->text && strcmp(document->text, copy) == 0) {
+		free(copy);
+		return 0;
+	}
 	free(document->text);
 	document->text = copy;
 	document->width = 0;

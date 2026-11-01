@@ -19,6 +19,8 @@ int cli_ui_post_notification(struct cli_context *ctx,
 			     const struct notification *notification);
 int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 		      void *data);
+/* Owner-only shutdown gate: cancel queued/future calls while retaining output. */
+int cli_ui_stop_owner_calls(struct cli_context *ctx);
 void cli_ui_notify(struct cli_context *ctx);
 int cli_ui_drain(struct cli_context *ctx);
 int cli_ui_drain_batch(struct cli_context *ctx);

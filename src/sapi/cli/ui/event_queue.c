@@ -49,6 +49,7 @@ struct cli_ui {
 	int wake_read;
 	int wake_write;
 	int mutex_initialized;
+	int owner_calls_stopped;
 };
 
 static void cli_ui_item_free(struct cli_ui_item *item)
@@ -150,6 +151,10 @@ static int cli_ui_enqueue(struct cli_context *ctx,
 		return -EINVAL;
 	ui = ctx->ui;
 	pthread_mutex_lock(&ui->mutex);
+	if (item->kind == CLI_UI_ITEM_OWNER_CALL && ui->owner_calls_stopped) {
+		pthread_mutex_unlock(&ui->mutex);
+		return -ECANCELED;
+	}
 	morph_queue_insert_tail(&ui->pending, &item->link);
 	pthread_mutex_unlock(&ui->mutex);
 	cli_ui_wake(ui);
@@ -343,8 +348,15 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 
 	if (!ctx || !ctx->ui || !fn)
 		return -EINVAL;
-	if (cli_ui_is_owner(ctx))
+	if (cli_ui_is_owner(ctx)) {
+		pthread_mutex_lock(&ctx->ui->mutex);
+		int stopped = ctx->ui->owner_calls_stopped;
+
+		pthread_mutex_unlock(&ctx->ui->mutex);
+		if (stopped)
+			return -ECANCELED;
 		return fn(data);
+	}
 	memset(&call, 0, sizeof(call));
 	mutex_rc = pthread_mutex_init(&call.mutex, NULL);
 	if (mutex_rc != 0)
@@ -381,13 +393,45 @@ int cli_ui_call_owner(struct cli_context *ctx, cli_ui_owner_call_fn fn,
 	return rc;
 }
 
-static int cli_ui_run_owner_call(struct cli_ui_owner_call *call)
+int cli_ui_stop_owner_calls(struct cli_context *ctx)
+{
+	if (!ctx || !ctx->ui)
+		return -EINVAL;
+	if (!cli_ui_is_owner(ctx))
+		return -EPERM;
+	struct cli_ui *ui = ctx->ui;
+	morph_queue_t cancelled;
+	morph_queue_t *link, *next;
+
+	morph_queue_init(&cancelled);
+	pthread_mutex_lock(&ui->mutex);
+	ui->owner_calls_stopped = 1;
+	morph_queue_foreach_safe (link, next, &ui->pending) {
+		struct cli_ui_item *item = morph_queue_data(link, struct cli_ui_item, link);
+
+		if (item->kind == CLI_UI_ITEM_OWNER_CALL) {
+			morph_queue_remove(link);
+			morph_queue_insert_tail(&cancelled, link);
+		}
+	}
+	pthread_mutex_unlock(&ui->mutex);
+	morph_queue_foreach_safe (link, next, &cancelled) {
+		struct cli_ui_item *item = morph_queue_data(link, struct cli_ui_item, link);
+
+		morph_queue_remove(link);
+		cli_ui_complete_owner_call(item->owner_call, -ECANCELED);
+		cli_ui_item_free(item);
+	}
+	return 0;
+}
+
+static int cli_ui_run_owner_call(struct cli_context *ctx, struct cli_ui_owner_call *call)
 {
 	int result;
 
 	if (!call)
 		return -EINVAL;
-	result = call->fn(call->data);
+	result = cli_ui_call_owner(ctx, call->fn, call->data);
 	cli_ui_complete_owner_call(call, result);
 	return result;
 }
@@ -484,7 +528,7 @@ static int cli_ui_drain_limit(struct cli_context *ctx, int limit)
 				rl_callback_handler_remove();
 #endif
 			cli_terminal_update_end(ctx);
-			int result = cli_ui_run_owner_call(item->owner_call);
+			int result = cli_ui_run_owner_call(ctx, item->owner_call);
 
 			/* A prompt consumes its cancellation key. Do not apply that
 			 * key again to the composer draft restored by its adapter. */
