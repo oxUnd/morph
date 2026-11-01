@@ -235,10 +235,11 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 			} else if (!handled && state->job->active && input[0] == '/') {
 				if (!cli_command_find_input(input))
 					CMD_ERROR(ctx, "unknown command: %s. Try /help", input);
-				else
+				else {
 					CMD_ERROR(ctx, "wait for the active turn "
 						       "before running this command");
-				retry_command = input;
+					retry_command = input;
+				}
 				handled = 1;
 			} else if (!handled && state->job->active) {
 				command_rc = cli_command_job_prompt(state->job, input, submitted);
@@ -252,8 +253,6 @@ static int cli_chat_page_input(void *data, struct morph_tui_application *app,
 			}
 			if (handled || input[0] == '/') {
 				if (!handled) {
-					if (!cli_command_find_input(input))
-						retry_command = input;
 					command_rc = cli_turn_execute(ctx, input);
 				}
 				(void)cli_event_queue_drain(ctx);

@@ -74,13 +74,14 @@
   Defer that row until a result exists: a command without output (including a
   cancelled navigation panel) leaves only one trailing blank row. Normalize
   result headings' leading newlines so they do not add a second result gap.
-- Unrecognized commands remain in the editable composer after the error, so the
-  user can correct them. Do not forward slash commands as model steering text:
-  while a turn is active, unsupported local commands report that they must wait
-  and keep the input for retry; explicitly supported commands such as `/recap`
+- Unrecognized commands print an error and clear the editable composer, both
+  idle and during an active turn. Keep them in Readline history for Up/Down
+  recall. Do not forward slash commands as model steering text: while a turn is
+  active, known commands that cannot run yet report that they must wait and
+  keep the input for retry; explicitly supported commands such as `/recap`
   retain their existing behavior.
 - Keep JSON command events and non-interactive output contracts unchanged.
-  Verify panel cancellation, queries, receipts, unknown-command correction,
+  Verify panel cancellation, queries, receipts, unknown-command input clearing,
   command recall, and the absence of stale/duplicate composer backgrounds in PTY
   tests whenever command submission or display routing changes.
 

@@ -23,12 +23,20 @@ def wait_for(terminal, predicate):
                          '\n'.join(terminal.screen.display))
 
 
-def composer(terminal, expected=''):
+def editor_input(terminal, expected=''):
     rows = terminal.screen.display
     prompts = [index for index, row in enumerate(rows) if row.startswith('› ')]
-    assert len(prompts) == 1, '\n'.join(rows)
-    row = prompts[0]
-    assert rows[row].startswith('› ' + expected), '\n'.join(rows)
+    assert prompts, '\n'.join(rows)
+    row = prompts[-1]
+    input_text = rows[row][2:].split('ctrl+o details', 1)[0].rstrip()
+    assert input_text == expected, '\n'.join(rows)
+    return row
+
+
+def composer(terminal, expected=''):
+    rows = terminal.screen.display
+    row = editor_input(terminal, expected)
+    assert sum(line.startswith('› ') for line in rows) == 1, '\n'.join(rows)
     backgrounds = [index for index in range(terminal.screen.lines)
                    if terminal.screen.buffer[index][0].bg == '1c1c1c']
     assert backgrounds == [row - 1, row, row + 1], (backgrounds, '\n'.join(rows))
@@ -117,11 +125,20 @@ def main():
             previous = max(i for i, row in enumerate(rows)
                            if 'created and switched to session: gap-probe' in row)
             assert heading == previous + 2, '\n'.join(rows)
-            terminal.send('/model-unknown\r')
-            assert 'unknown command: /model-unknown' in '\n'.join(terminal.screen.display)
-            composer(terminal, '/model-unknown')
-            result_gap(terminal, 'unknown command: /model-unknown', '/model-unknown')
-            terminal.send('\x15/model\r')
+            for columns in (120, 80, 60):
+                terminal.child.setwinsize(32, columns)
+                terminal.screen.resize(lines=32, columns=columns)
+                terminal.pump(.2)
+                for command in ('/exts', '/model-unknown'):
+                    terminal.send(command + '\r')
+                    result_gap(terminal, 'unknown command: ' + command)
+                    terminal.send('\x1b[A')
+                    composer(terminal, command)
+                    terminal.send('\x15')
+            terminal.child.setwinsize(32, 100)
+            terminal.screen.resize(lines=32, columns=100)
+            terminal.pump(.2)
+            terminal.send('/model\r')
             composer(terminal)
             terminal.send('\x1b[A')
             composer(terminal, '/model')
@@ -143,22 +160,26 @@ def main():
             result = next(i for i, row in enumerate(rows) if 'MARKDOWN_GAP_PROBE' in row)
             assert result == heading + 2, '\n'.join(rows)
             assert Model.requests.empty(), 'local commands reached the model'
-            print('PASS: results, receipts, error correction, and Readline recall')
+            print('PASS: results, receipts, unknown-command clearing, and Readline recall')
             terminal.send('live probe\r')
             _, release = terminal.request()
             terminal.send('/hooks\r')
             assert 'wait for the active turn' in '\n'.join(terminal.screen.display)
+            editor_input(terminal, '/hooks')
             assert Model.requests.empty(), 'local command became model steering'
             terminal.send('\x15/model-unknown\r')
             assert 'unknown command: /model-unknown' in '\n'.join(terminal.screen.display)
+            editor_input(terminal)
             assert Model.requests.empty(), 'unknown command reached the model'
             release.delta = {'content': '\n'.join(f'Answer {index}' for index in range(64))}
             release.set()
             terminal.pump(1)
+            composer(terminal)
+            terminal.send('\x1b[A')
             composer(terminal, '/model-unknown')
             terminal.send('\x15/quit\r')
             terminal.child.expect_exact(pexpect.EOF)
-            print('PASS: busy commands stay local and retain editable input')
+            print('PASS: busy commands stay local; only known deferred commands retain input')
         finally:
             if release:
                 release.set()
