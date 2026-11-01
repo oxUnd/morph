@@ -39,6 +39,54 @@ struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx,
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <thread>
+#include <vector>
+
+TEST(CliMarkdownImageTest, BlockPreviewsFitBoundsAndShowOriginalPathAndAlt)
+{
+	struct cli_application ctx{};
+	char source[] = "/tmp/morph-cli-preview-XXXXXX";
+	int fd = mkstemp(source);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	const int sizes[][2] = {{1600, 300}, {1600, 900}, {900, 1600}, {12, 36}};
+	for (const auto &size : sizes) {
+		SCOPED_TRACE(std::to_string(size[0]) + "x" + std::to_string(size[1]));
+		std::vector<unsigned char> pixels(
+			static_cast<size_t>(size[0]) * static_cast<size_t>(size[1]) * 3u, 180);
+		ASSERT_NE(stbi_write_png(source, size[0], size[1], 3, pixels.data(),
+					 size[0] * 3), 0);
+		std::string markdown = "![First **photo** `alt`](file://" +
+			std::string(source) + ")\n\n";
+		testing::internal::CaptureStdout();
+		cli_markdown_render_ansi(&ctx, markdown.c_str());
+		std::string output = testing::internal::GetCapturedStdout();
+		auto image = output.find("\033_Ga=T,f=100,");
+		ASSERT_NE(image, std::string::npos);
+		unsigned int columns = 0, rows = 0;
+		ASSERT_EQ(sscanf(output.c_str() + image,
+			"\033_Ga=T,f=100,i=%*u,U=1,q=2,c=%u,r=%u", &columns, &rows), 2);
+		EXPECT_GT(columns, 0u);
+		EXPECT_LE(columns, 48u);
+		EXPECT_GT(rows, 0u);
+		EXPECT_LE(rows, 12u);
+		/* Terminal cells are 9x18 pixels without a terminal size query.
+		 * Allow one cell of rounding when preserving the source aspect ratio. */
+		double expected_columns = static_cast<double>(rows) * 2.0 * size[0] / size[1];
+		EXPECT_LE(static_cast<double>(columns), expected_columns + 1.0);
+		EXPECT_GE(static_cast<double>(columns),
+			  static_cast<double>(rows - 1u) * 2.0 * size[0] / size[1] - 1.0);
+		if (size[0] == 12) {
+			EXPECT_EQ(columns, 2u);
+			EXPECT_EQ(rows, 2u);
+		}
+		std::string caption = "(\033]8;;file://" + std::string(source) +
+			"\033\\" + source + "\033]8;;\033\\ · First photo alt)";
+		EXPECT_NE(output.find(caption), std::string::npos);
+		EXPECT_LT(image, output.find(caption));
+		EXPECT_EQ(output.find("morph-markdown-image-"), std::string::npos);
+	}
+	EXPECT_EQ(unlink(source), 0);
+}
 
 TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 {
@@ -701,6 +749,34 @@ TEST_F(CliPresentationTest, InteractiveStreamsFinalMarkdownDeltas)
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(final);
+}
+
+TEST_F(CliPresentationTest, StreamingImageCaptionAppearsOnceAndAllowsEmptyAlt)
+{
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	std::string source = std::string(dir) + "/photo.png";
+	unsigned char pixels[12 * 36 * 3];
+	memset(pixels, 180, sizeof(pixels));
+	ASSERT_NE(stbi_write_png(source.c_str(), 12, 36, 3, pixels, 36), 0);
+	std::string markdown = "![](" + source + ")\n\n";
+	std::string caption = "(\033]8;;file://" + source + "\033\\" + source +
+		"\033]8;;\033\\)";
+	cJSON *body = TextData(markdown.c_str());
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	std::string partial = testing::internal::GetCapturedStdout();
+	EXPECT_NE(partial.find("\033_Ga=T,f=100,"), std::string::npos);
+	EXPECT_NE(partial.find(caption), std::string::npos);
+	EXPECT_EQ(partial.find(caption), partial.rfind(caption));
+	EXPECT_EQ(partial.find(" · "), std::string::npos);
+
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.final", "end", body);
+	std::string final_output = testing::internal::GetCapturedStdout();
+	EXPECT_EQ(final_output.find(caption), std::string::npos);
+	EXPECT_EQ(final_output.find("\033_Ga=T,f=100,"), std::string::npos);
+	cJSON_Delete(body);
 }
 
 TEST_F(CliPresentationTest, StreamPrefixWaitsForVisibleMarkdown)

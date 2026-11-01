@@ -10,6 +10,9 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 
+#define CLI_MARKDOWN_IMAGE_MAX_COLUMNS 48u
+#define CLI_MARKDOWN_IMAGE_MAX_ROWS 12u
+
 static int cli_markdown_write(const char *bytes, size_t len, void *user)
 {
 	struct cli_markdown_output *output = user;
@@ -100,6 +103,9 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 	options.media_user_data = user;
 	options.load_image = cli_image_loader_load;
 	options.release_image = cli_image_loader_release;
+	options.image_max_width_columns = CLI_MARKDOWN_IMAGE_MAX_COLUMNS;
+	options.image_max_height_rows = CLI_MARKDOWN_IMAGE_MAX_ROWS;
+	options.image_caption = 1;
 	options.terminal_fd = STDOUT_FILENO;
 	options.content_padding_left_columns = indent;
 	options.content_padding_right_columns = CLI_CONTENT_RIGHT_PADDING;
