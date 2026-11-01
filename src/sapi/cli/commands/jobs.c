@@ -1,10 +1,11 @@
+#include "sapi/cli/commands/jobs.h"
 #include "cJSON.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/ui/screens/jobs.h"
+#include "sapi/cli/pages/jobs.h"
 
-static int cmd_jobs(struct cli_context *ctx, int argc, char **argv)
+static int cli_jobs_command_jobs(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *id = cli_cmd_arg(argc, argv, 1);
 	if (id && !strcmp(id, "stop")) {
@@ -47,7 +48,8 @@ static int cmd_jobs(struct cli_context *ctx, int argc, char **argv)
 struct cli_command_group cli_job_commands(void)
 {
 	static const struct cli_command commands[] = {
-		{"/jobs", cmd_jobs, "Inspect background commands", "/jobs [id|stop id]"},
+		{"/jobs", cli_jobs_command_jobs, "Inspect background commands",
+		 "/jobs [id|stop id]"},
 	};
 	return (struct cli_command_group){commands, (int)(sizeof(commands) / sizeof(commands[0])),
 					  "Runtime"};

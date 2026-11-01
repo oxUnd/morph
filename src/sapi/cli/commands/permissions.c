@@ -1,13 +1,14 @@
+#include "sapi/cli/commands/permissions.h"
 #include "cJSON.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/interaction.h"
-#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/adapters/protocol/interaction.h"
+#include "sapi/cli/widgets/list.h"
 
 #include <stdint.h>
 
-static const char *subject_name(const char *subject)
+static const char *cli_permissions_subject_name(const char *subject)
 {
 	const char *slash;
 
@@ -17,7 +18,7 @@ static const char *subject_name(const char *subject)
 	return slash && slash[1] ? slash + 1 : subject;
 }
 
-static const char *capability_name(const char *resource_kind)
+static const char *cli_permissions_capability_name(const char *resource_kind)
 {
 	if (!resource_kind)
 		return "";
@@ -29,17 +30,17 @@ static const char *capability_name(const char *resource_kind)
 	return resource_kind;
 }
 
-static const char *grant_group_name(
-	const struct runtime_permission_grant *grants, int start, int end)
+static const char *cli_permissions_grant_group_name(const struct runtime_permission_grant *grants,
+						    int start, int end)
 {
 	for (int i = start; i < end; i++) {
 		if (strcmp(grants[i].resource_kind, "command") == 0)
 			return grants[i].resource;
 	}
-	return subject_name(grants[start].subject);
+	return cli_permissions_subject_name(grants[start].subject);
 }
 
-static int compare_grants(const void *left, const void *right)
+static int cli_permissions_compare_grants(const void *left, const void *right)
 {
 	const struct runtime_permission_grant *a = left;
 	const struct runtime_permission_grant *b = right;
@@ -54,7 +55,7 @@ static int compare_grants(const void *left, const void *right)
 	return 0;
 }
 
-static int print_permissions(struct cli_context *ctx)
+static int cli_permissions_print_permissions(struct cli_application *ctx)
 {
 	struct runtime_permission_grant *grants = NULL;
 	int count = 0;
@@ -73,10 +74,9 @@ static int print_permissions(struct cli_context *ctx)
 		runtime_permission_list_free(grants);
 		return 0;
 	}
-	qsort(grants, (size_t)count, sizeof(grants[0]), compare_grants);
+	qsort(grants, (size_t)count, sizeof(grants[0]), cli_permissions_compare_grants);
 	for (int i = 0; i < count; i++) {
-		if (i == 0 || strcmp(grants[i - 1].subject,
-				    grants[i].subject) != 0)
+		if (i == 0 || strcmp(grants[i - 1].subject, grants[i].subject) != 0)
 			group_count++;
 	}
 	for (int i = 0, group = 0; i < count;) {
@@ -84,18 +84,17 @@ static int print_permissions(struct cli_context *ctx)
 		int group_last;
 		const char *ancestor;
 
-		while (end < count &&
-		       strcmp(grants[i].subject, grants[end].subject) == 0)
+		while (end < count && strcmp(grants[i].subject, grants[end].subject) == 0)
 			end++;
 		group_last = ++group == group_count;
-		cli_list_group(ctx, grant_group_name(grants, i, end), end - i, group_last);
+		cli_list_group(ctx, cli_permissions_grant_group_name(grants, i, end), end - i,
+			       group_last);
 		ancestor = morph_tui_widget_tree_branch(group_last, 1);
 		for (int j = i; j < end; j++) {
 			char label[96];
 
-			snprintf(label, sizeof(label), "#%lld  %s",
-				 (long long)grants[j].id,
-				 capability_name(grants[j].resource_kind));
+			snprintf(label, sizeof(label), "#%lld  %s", (long long)grants[j].id,
+				 cli_permissions_capability_name(grants[j].resource_kind));
 			cli_list_item(ctx, ancestor, j == end - 1, "", label, grants[j].resource,
 				      24, columns);
 		}
@@ -105,7 +104,7 @@ static int print_permissions(struct cli_context *ctx)
 	return 0;
 }
 
-static int confirm_clear(struct cli_context *ctx, int all_projects)
+static int cli_permissions_confirm_clear(struct cli_application *ctx, int all_projects)
 {
 	char answer[64];
 	FILE *tty;
@@ -117,15 +116,12 @@ static int confirm_clear(struct cli_context *ctx, int all_projects)
 
 		if (!request)
 			return 0;
-		if (!cJSON_AddStringToObject(request, "action",
-					     "clear_permissions") ||
-		    !cJSON_AddBoolToObject(request, "all_projects",
-					   all_projects)) {
+		if (!cJSON_AddStringToObject(request, "action", "clear_permissions") ||
+		    !cJSON_AddBoolToObject(request, "all_projects", all_projects)) {
 			cJSON_Delete(request);
 			return 0;
 		}
-		rc = cli_interaction_confirm(ctx, "command_confirmation",
-			request, &confirmed);
+		rc = cli_interaction_confirm(ctx, "command_confirmation", request, &confirmed);
 		cJSON_Delete(request);
 		return rc == 0 && confirmed;
 	}
@@ -154,8 +150,8 @@ static int confirm_clear(struct cli_context *ctx, int all_projects)
 	return answer[0] == 'y' || answer[0] == 'Y';
 }
 
-static int revoke_subject_matches(struct cli_context *ctx,
-				  const char *name, int *deleted)
+static int cli_permissions_revoke_subject_matches(struct cli_application *ctx, const char *name,
+						  int *deleted)
 {
 	struct runtime_permission_grant *grants = NULL;
 	morph_array_t subjects;
@@ -176,11 +172,11 @@ static int revoke_subject_matches(struct cli_context *ctx,
 		int exists = 0;
 
 		if (strcmp(grants[i].subject, name) != 0 &&
-		    strcmp(subject_name(grants[i].subject), name) != 0 &&
+		    strcmp(cli_permissions_subject_name(grants[i].subject), name) != 0 &&
 		    !(strcmp(grants[i].resource_kind, "command") == 0 &&
 		      strcmp(grants[i].resource, name) == 0))
 			continue;
-		morph_array_foreach(stored, &subjects, char *) {
+		morph_array_foreach (stored, &subjects, char *) {
 			if (strcmp(*stored, grants[i].subject) == 0) {
 				exists = 1;
 				break;
@@ -198,11 +194,11 @@ static int revoke_subject_matches(struct cli_context *ctx,
 	{
 		char **subject;
 
-		morph_array_foreach(subject, &subjects, char *) {
+		morph_array_foreach (subject, &subjects, char *) {
 			int subject_deleted = 0;
 
-			rc = runtime_permission_revoke_subject(
-				ctx->runtime, *subject, &subject_deleted);
+			rc = runtime_permission_revoke_subject(ctx->runtime, *subject,
+							       &subject_deleted);
 			if (rc != 0)
 				goto out;
 			*deleted += subject_deleted;
@@ -215,7 +211,7 @@ out:
 	return rc;
 }
 
-static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
+static int cli_permissions_command_permissions(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *action = cli_cmd_arg(argc, argv, 1);
 	const char *target;
@@ -223,7 +219,7 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 	int rc;
 
 	if (!action || strcmp(action, "list") == 0)
-		return print_permissions(ctx);
+		return cli_permissions_print_permissions(ctx);
 	if (strcmp(action, "revoke") == 0) {
 		char *end;
 		long long id;
@@ -236,10 +232,9 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 		errno = 0;
 		id = strtoll(target, &end, 10);
 		if (errno == 0 && *end == '\0' && id > 0)
-			rc = runtime_permission_revoke_id(
-				ctx->runtime, (int64_t)id, &deleted);
+			rc = runtime_permission_revoke_id(ctx->runtime, (int64_t)id, &deleted);
 		else
-			rc = revoke_subject_matches(ctx, target, &deleted);
+			rc = cli_permissions_revoke_subject_matches(ctx, target, &deleted);
 		if (rc != 0)
 			return rc;
 		if (deleted == 0) {
@@ -264,13 +259,12 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 			}
 		}
 		if (!confirmed)
-			confirmed = confirm_clear(ctx, all_projects);
+			confirmed = cli_permissions_confirm_clear(ctx, all_projects);
 		if (!confirmed) {
 			printf(ctx, ANSI_DIM "  cancelled" ANSI_RESET "\n");
 			return 0;
 		}
-		rc = runtime_permission_clear(ctx->runtime, all_projects,
-					      &deleted);
+		rc = runtime_permission_clear(ctx->runtime, all_projects, &deleted);
 		if (rc != 0)
 			return rc;
 		CMD_OK(ctx, "revoked %d persistent permission%s%s", deleted,
@@ -282,18 +276,19 @@ static int cmd_permissions(struct cli_context *ctx, int argc, char **argv)
 	return -EINVAL;
 }
 
-static const struct cli_command permission_commands[] = {
-	{ "/permissions", cmd_permissions,
-	  "View or revoke persistent tool permissions",
-	  "/permissions [list|revoke <id|program>|"
-	  "clear [--all-projects] [--yes]]" },
-	{ "/perms", cmd_permissions, "Alias for /permissions",
-	  "/perms [list|revoke <id|program>|clear]" },
+static const struct cli_command cli_permissions_entries[] = {
+	{"/permissions", cli_permissions_command_permissions,
+	 "View or revoke persistent tool permissions",
+	 "/permissions [list|revoke <id|program>|"
+	 "clear [--all-projects] [--yes]]"},
+	{"/perms", cli_permissions_command_permissions, "Alias for /permissions",
+	 "/perms [list|revoke <id|program>|clear]"},
 };
 
 struct cli_command_group cli_permission_commands(void)
 {
 	return (struct cli_command_group){
-		permission_commands, (int)(sizeof(permission_commands) /
-		      sizeof(permission_commands[0])), "Security"};
+		cli_permissions_entries,
+		(int)(sizeof(cli_permissions_entries) / sizeof(cli_permissions_entries[0])),
+		"Security"};
 }

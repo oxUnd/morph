@@ -1,19 +1,20 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "sapi/cli/ui/input/cancel.h"
-#include "sapi/cli/ui/input/readline.h"
-#include "sapi/cli/ui/presentation/image_loader.h"
-#include "sapi/cli/ui/presentation/markdown.h"
-#include "sapi/cli/ui/presentation/presenter.h"
-#include "sapi/cli/ui/presentation/banner.h"
-#include "sapi/cli/ui/interactions/approval.h"
-#include "sapi/cli/ui/presentation/transcript.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/cli.h"
-#include "sapi/cli/ui/presentation/terminal.h"
-#include "sapi/cli/ui/presentation/list.h"
-#include "sapi/cli/ui/presentation/shell_style.h"
+#include "sapi/cli/services/turn.h"
+#include "sapi/cli/adapters/input/cancel.h"
+#include "sapi/cli/adapters/input/readline.h"
+#include "sapi/cli/adapters/media/image_loader.h"
+#include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/widgets/banner.h"
+#include "sapi/cli/pages/approval.h"
+#include "sapi/cli/widgets/transcript.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/widgets/shell_style.h"
 #include "util/utf8.h"
 #include "util/file.h"
 #include "agent/react.h"
@@ -24,7 +25,7 @@ extern "C" {
 #include "stb_image.h"
 
 struct cli_cancel_monitor;
-struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_context *ctx, int fd);
+struct cli_cancel_monitor *cli_cancel_monitor_start(struct cli_application *ctx, int fd);
 }
 
 #include <string>
@@ -61,8 +62,8 @@ TEST(CliShellStyleTest, ColorsCommandsStringsAndOperatorsWithoutChangingText)
 
 TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	char directory[] = "/tmp/morph-cli-images-XXXXXX";
 	ASSERT_NE(mkdtemp(directory), nullptr);
 	unsigned char pixels[12 * 36 * 3];
@@ -111,8 +112,8 @@ TEST(CliMarkdownImageTest, SupportedFormatsRenderInsideTableAndReleaseFiles)
 
 TEST(CliMarkdownImageTest, MissingImageStaysInsideTable)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
 	cli_markdown_render_ansi(_cli_output_context_ptr,
 				 "| image |\n|---|\n| ![](/missing.jpg) |\n");
@@ -124,8 +125,8 @@ TEST(CliMarkdownImageTest, MissingImageStaysInsideTable)
 
 TEST(CliMarkdownImageTest, RemoteGifRendersInsideTable)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	static const unsigned char gif[] = {
 		'G','I','F','8','9','a',1,0,1,0,0x80,0,0,
 		0,0,0,255,255,255,0x2c,0,0,0,0,1,0,1,0,0,
@@ -195,19 +196,19 @@ TEST(CliShellStyleTest, SummaryHidesOnlyLiteralCurrentDirectoryPrefix)
 
 class CliPresentationTest : public ::testing::Test {
 protected:
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	char dir[PATH_MAX]{};
 
 	void SetUp() override
 	{
-		cli_set_color_enabled(&ctx, 0);
+		cli_output_set_color_enabled(&ctx, 0);
 		ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
 		std::strcpy(dir, "/tmp/morph-cli-presentation-XXXXXX");
 		ASSERT_NE(mkdtemp(dir), nullptr);
 		std::strcpy(ctx.workdir, dir);
-		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
+		ASSERT_EQ(cli_feed_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
 	}
 
@@ -216,9 +217,9 @@ protected:
 		std::error_code error;
 
 		cli_presentation_cleanup(&ctx);
-		cli_terminal_cleanup(&ctx);
+		cli_feed_cleanup(&ctx);
 		std::filesystem::remove_all(dir, error);
-		cli_set_color_enabled(&ctx, 1);
+		cli_output_set_color_enabled(&ctx, 1);
 	}
 
 	void Emit(enum morph_event_type type, const char *name,
@@ -240,9 +241,9 @@ protected:
 
 TEST(CliInputPromptTest, AnsiSequencesAreMarkedAsInvisible)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 	const unsigned char *prompt = reinterpret_cast<const unsigned char *>(
 		cli_readline_input_prompt(_cli_output_context_ptr));
 	int ignored = 0;
@@ -276,7 +277,7 @@ TEST(CliCancelMonitorTest, StandaloneEscapeRequestsCancellation)
 	ASSERT_NE(slave_name, nullptr);
 	int slave = open(slave_name, O_RDWR | O_NOCTTY);
 	ASSERT_GE(slave, 0);
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	struct cli_cancel_monitor *monitor = cli_cancel_monitor_start(&ctx, slave);
 	ASSERT_NE(monitor, nullptr);
 
@@ -302,7 +303,7 @@ TEST(CliCancelMonitorTest, EscapeSequenceDoesNotCancel)
 	ASSERT_NE(slave_name, nullptr);
 	int slave = open(slave_name, O_RDWR | O_NOCTTY);
 	ASSERT_GE(slave, 0);
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	struct cli_cancel_monitor *monitor = cli_cancel_monitor_start(&ctx, slave);
 	ASSERT_NE(monitor, nullptr);
 
@@ -452,7 +453,7 @@ TEST_F(CliPresentationTest, InteractivePrintsPersistentCompactionResult)
 	EXPECT_EQ(output.find("iteration"), std::string::npos);
 	EXPECT_EQ(output.find("pass"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 	cJSON_Delete(completed);
 }
 
@@ -464,15 +465,15 @@ TEST_F(CliPresentationTest, CompactionReplacesLiveStateWithOneIndependentHistory
 	cJSON_AddNumberToObject(data, "after_tokens", 68804);
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.compaction.begin", "begin", data);
-	EXPECT_GE(cli_terminal_activity_elapsed_ms(&ctx), 0);
+	EXPECT_GE(cli_feed_activity_elapsed_ms(&ctx), 0);
 	Emit(MORPH_EVENT_REACT, "react.compaction.completed", "end", data);
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_NE(output.find("\n◇ Context compacted  104k → 69k · 0s\n\n"),
 		std::string::npos);
 	EXPECT_EQ(output.find("Context compacted"), output.rfind("Context compacted"));
 	EXPECT_EQ(output.find("└"), std::string::npos);
-	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 	cJSON_Delete(data);
 }
 
@@ -513,7 +514,7 @@ TEST_F(CliPresentationTest, CompactionFailureIsIndependentAndSanitizesError)
 		std::string::npos);
 	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
 	EXPECT_EQ(output.find("iteration"), std::string::npos);
-	EXPECT_EQ(cli_terminal_activity_elapsed_ms(&ctx), -1);
+	EXPECT_EQ(cli_feed_activity_elapsed_ms(&ctx), -1);
 	cJSON_Delete(data);
 }
 
@@ -656,7 +657,7 @@ TEST_F(CliPresentationTest, InteractiveColorsToolAndFinalMarkersDifferently)
 	cJSON *args = cJSON_CreateObject();
 	cJSON *final = TextData("Done");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 
 	cJSON_AddStringToObject(call, "tool", "file_list");
 	cJSON_AddItemToObject(call, "args", args);
@@ -835,7 +836,7 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 	for (auto mode : {CLI_PRESENT_ONCE_PLAIN, CLI_PRESENT_INTERACTIVE}) {
 		cli_presentation_reset(&ctx);
 		ctx.presentation_mode = mode;
-		cli_set_color_enabled(&ctx, 1);
+		cli_output_set_color_enabled(&ctx, 1);
 		cJSON *data = cJSON_CreateObject();
 		cJSON_AddStringToObject(data, "outcome", "cancelled");
 		cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
@@ -858,7 +859,7 @@ TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 TEST_F(CliPresentationTest, FailedTurnStillUsesErrorStatus)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	cJSON *data = cJSON_CreateObject();
 	cJSON_AddStringToObject(data, "outcome", "internal_error");
 	cJSON_AddNumberToObject(data, "error_code", -ECANCELED);
@@ -890,7 +891,7 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	cJSON *answer = TextData("Done");
 	cJSON *final = TextData("fallback final payload");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", first);
@@ -918,7 +919,7 @@ TEST_F(CliPresentationTest, InteractiveCollapsesReasoningIntoDetails)
 	EXPECT_EQ(ctx.event_stream_visible, 0);
 	EXPECT_EQ(ctx.final_rendered, 1);
 
-	cli_set_color_enabled(&ctx, 0);
+	cli_output_set_color_enabled(&ctx, 0);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(answer);
@@ -929,7 +930,7 @@ TEST_F(CliPresentationTest, AnswerSharesSubmittedInputMarginWithAndWithoutStream
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	for (int color : {0, 1}) {
-		cli_set_color_enabled(&ctx, color);
+		cli_output_set_color_enabled(&ctx, color);
 		for (bool streaming : {false, true}) {
 			cli_presentation_reset(&ctx);
 			ctx.output.trailing_newlines = 0;
@@ -991,7 +992,7 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitFinalEscapeSequence)
 	cJSON *second = TextData("2Jafter");
 	cJSON *final = TextData("fallback");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.final.delta", "delta", first);
@@ -1002,7 +1003,7 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitFinalEscapeSequence)
 	EXPECT_NE(output.find("beforeafter"), std::string::npos);
 	EXPECT_EQ(output.find("2Jafter"), std::string::npos);
 	EXPECT_EQ(output.find("fallback"), std::string::npos);
-	cli_set_color_enabled(&ctx, 0);
+	cli_output_set_color_enabled(&ctx, 0);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(final);
@@ -1014,7 +1015,7 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 	cJSON *second = TextData("ret\aafter");
 	cJSON *final = TextData("done");
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 
 	testing::internal::CaptureStdout();
 	Emit(MORPH_EVENT_REACT, "react.reasoning.delta", "delta", first);
@@ -1031,7 +1032,7 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 	EXPECT_NE(output.find("beforeafter"), std::string::npos);
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find("52;c"), std::string::npos);
-	cli_set_color_enabled(&ctx, 0);
+	cli_output_set_color_enabled(&ctx, 0);
 	cJSON_Delete(first);
 	cJSON_Delete(second);
 	cJSON_Delete(final);
@@ -1039,11 +1040,11 @@ TEST_F(CliPresentationTest, InteractiveStripsSplitReasoningOscSequence)
 
 TEST(CliOutputSafetyTest, PrintfBlocksDangerousSequencesButKeepsTrustedSgr)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 	testing::internal::CaptureStdout();
-	cli_printf(_cli_output_context_ptr, "\033[31mtrusted\033[0m %s\n",
+	cli_output_printf(_cli_output_context_ptr, "\033[31mtrusted\033[0m %s\n",
 		   "bad\033[2J\033]52;c;secret\aend");
 	std::string output = testing::internal::GetCapturedStdout();
 
@@ -1052,7 +1053,7 @@ TEST(CliOutputSafetyTest, PrintfBlocksDangerousSequencesButKeepsTrustedSgr)
 	EXPECT_NE(output.find("badend"), std::string::npos);
 	EXPECT_EQ(output.find("secret"), std::string::npos);
 	EXPECT_EQ(output.find("\033[2J"), std::string::npos);
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 }
 
 TEST_F(CliPresentationTest, InteractiveToolThoughtDoesNotHideLaterFinal)
@@ -1105,7 +1106,7 @@ TEST_F(CliPresentationTest, TurnBeginsWithoutRedundantStartingStatus)
 	std::string output = testing::internal::GetCapturedStdout();
 
 	EXPECT_EQ(output.find("Starting…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 }
 
 TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
@@ -1120,7 +1121,7 @@ TEST_F(CliPresentationTest, SteeringDoesNotRestoreThinkingStatus)
 	EXPECT_NE(output.find("updated requirement"), std::string::npos);
 	EXPECT_EQ(output.find("Requirement applied"), std::string::npos);
 	EXPECT_EQ(output.find("Thinking…"), std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 	cJSON_Delete(steer);
 }
 
@@ -1145,12 +1146,12 @@ TEST_F(CliPresentationTest, PreparingPromptClearsLiveStatus)
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 
 	testing::internal::CaptureStdout();
-	cli_terminal_live_set(&ctx, "Running tool…");
-	ASSERT_EQ(cli_terminal_live_active(&ctx), 1);
+	cli_feed_live_set(&ctx, "Running tool…");
+	ASSERT_EQ(cli_feed_live_active(&ctx), 1);
 	cli_presentation_prepare_prompt(&ctx);
 	std::string output = testing::internal::GetCapturedStdout();
 
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 0);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 0);
 	EXPECT_NE(output.find("Running tool…"), std::string::npos);
 }
 
@@ -1200,7 +1201,7 @@ TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 	};
 
 	testing::internal::CaptureStdout();
-	cli_terminal_live_set(&ctx, "Thinking…");
+	cli_feed_live_set(&ctx, "Thinking…");
 	ASSERT_EQ(cli_presentation_event(&ctx, &begin), 0);
 	ASSERT_EQ(cli_presentation_event(&ctx, &end), 0);
 	std::string output = testing::internal::GetCapturedStdout();
@@ -1208,7 +1209,7 @@ TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 	EXPECT_NE(output.find("Thinking…"), std::string::npos);
 	EXPECT_EQ(output.find("memory consolidation queued"),
 		  std::string::npos);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 
 	cJSON_Delete(started);
 	cJSON_Delete(ready);
@@ -1217,7 +1218,7 @@ TEST_F(CliPresentationTest, BackgroundLifecyclePreservesForegroundStatus)
 TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivity)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_terminal_live_set(&ctx, "Thinking...");
+	cli_feed_live_set(&ctx, "Thinking...");
 	struct morph_event event{
 		MORPH_EVENT_BACKGROUND, "session.title", "begin",
 		"Naming session...", nullptr, nullptr
@@ -1235,7 +1236,7 @@ TEST_F(CliPresentationTest, SessionTitleEventsOnlyUpdateFooterAndPreserveActivit
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(ctx.input_status.session_titles_pending, 0);
 	EXPECT_TRUE(output.empty());
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 }
 
 TEST_F(CliPresentationTest, InteractiveRendersMcpFailureAsOneTree)
@@ -1289,7 +1290,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	cJSON_AddNumberToObject(ready, "prompts", 2);
 
 	testing::internal::CaptureStdout();
-	cli_terminal_live_set(&ctx, "Thinking…");
+	cli_feed_live_set(&ctx, "Thinking…");
 	Emit(MORPH_EVENT_MCP, "mcp.connecting", "begin", connecting);
 	Emit(MORPH_EVENT_MCP, "mcp.connected", "end", connected);
 	Emit(MORPH_EVENT_MCP, "mcp.discovering", "begin", discovering);
@@ -1306,7 +1307,7 @@ TEST_F(CliPresentationTest, InteractiveRendersMcpSuccessAsOneTree)
 	EXPECT_NE(output.find("└ ● Ready · 12 tools, 3 resources, 2 prompts"),
 		  std::string::npos);
 	EXPECT_EQ(ctx.mcp_tree_active, 0);
-	EXPECT_EQ(cli_terminal_live_active(&ctx), 1);
+	EXPECT_EQ(cli_feed_live_active(&ctx), 1);
 
 	cJSON_Delete(connecting);
 	cJSON_Delete(connected);
@@ -1610,7 +1611,7 @@ TEST_F(CliPresentationTest, CompactShellFailureShowsReasonWithoutFullOutput)
 TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	cJSON *call = cJSON_Parse(
 		"{\"tool\":\"exec\",\"tool_call_id\":\"probe\",\"args\":{"
 		"\"description\":\"Resolve endpoint DNS\","
@@ -1650,7 +1651,7 @@ TEST_F(CliPresentationTest, CompactFeedUsesActualToolNameAndCommandOnOneLine)
 TEST_F(CliPresentationTest, AppendFeedTimeoutIsAmberAndRetainsFailureState)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	cJSON *call = cJSON_Parse(
 		"{\"tool\":\"exec\",\"tool_call_id\":\"timeout\",\"args\":{"
 		"\"description\":\"Probe HTTPS connection\",\"command\":\"curl -I https://exa.ai\"}}");
@@ -1760,7 +1761,7 @@ TEST_F(CliPresentationTest, CompactProcessPollShowsCommandOnlyWhenFinished)
 TEST_F(CliPresentationTest, ShellColorsSurviveFullScreenCapture)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	cJSON *call = cJSON_Parse(
 		"{\"tool\":\"exec\",\"args\":{\"command\":\"rg 'hello' src/ | head\"}}");
 	testing::internal::CaptureStdout();
@@ -2016,7 +2017,7 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 	const char *configured = getenv("COLUMNS");
 	std::string saved = configured ? configured : "";
 	bool had_columns = configured != nullptr;
-	struct cli_context ctx = {};
+	struct cli_application ctx = {};
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 	std::string long_value;
 	for (int i = 0; i < 30; i++)
@@ -2095,9 +2096,9 @@ TEST(CliApprovalCardTest, WrapsEveryFieldWithinMatchingBorders)
 
 TEST(CliUserInputTest, SeparatesMultilineInputAndSanitizesTerminalControls)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input(_cli_output_context_ptr, "Fix 中文🙂\nsecond\tline\033[2J");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -2109,14 +2110,14 @@ TEST(CliUserInputTest, SeparatesMultilineInputAndSanitizesTerminalControls)
 	EXPECT_EQ(output.back(), '\n');
 	EXPECT_EQ(output.substr(output.size() - 2), "\n\n");
 	EXPECT_EQ(output.substr(1, output.size() - 3).find("\n\n"), std::string::npos);
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 	std::string input;
 	for (int i = 0; i < 160; i++)
 		input += "中文🙂";
@@ -2130,29 +2131,29 @@ TEST(CliUserInputTest, WrapsWithoutTruncatingWideText)
 	EXPECT_EQ(count, 160u);
 	EXPECT_EQ(utf8valid(output.c_str()), nullptr);
 	EXPECT_EQ(output.find("truncated"), std::string::npos);
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliUserInputTest, ShortMessageHasOuterMarginsWithoutInternalPaddingRows)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 	testing::internal::CaptureStdout();
 	cli_presentation_user_input(_cli_output_context_ptr, "Review");
 	std::string output = testing::internal::GetCapturedStdout();
 	EXPECT_EQ(output, "\n> Review\n\n");
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	const char *columns = getenv("COLUMNS");
 	std::string saved = columns ? columns : "";
 	bool had_columns = columns != nullptr;
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 	for (int width : {40, 80, 120}) {
 		ASSERT_EQ(setenv("COLUMNS", std::to_string(width).c_str(), 1), 0);
 		testing::internal::CaptureStdout();
@@ -2178,18 +2179,18 @@ TEST(CliWelcomeTest, FitsCompactLayoutAndWrapsHintsAtNarrowWidths)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	const char *columns = getenv("COLUMNS");
 	std::string saved = columns ? columns : "";
 	bool had_columns = columns != nullptr;
 	ASSERT_EQ(setenv("COLUMNS", "40", 1), 0);
-	cli_set_color_enabled(_cli_output_context_ptr, 0);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 0);
 	testing::internal::CaptureStdout();
 	cli_banner_print(_cli_output_context_ptr, "model\033[2J",
 			 "/very/long/中文/workspace/path/ending");
@@ -2201,12 +2202,12 @@ TEST(CliWelcomeTest, SanitizesMetadataAndKeepsLongPathTail)
 		setenv("COLUMNS", saved.c_str(), 1);
 	else
 		unsetenv("COLUMNS");
-	cli_set_color_enabled(_cli_output_context_ptr, 1);
+	cli_output_set_color_enabled(_cli_output_context_ptr, 1);
 }
 
 TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)
 {
-	struct cli_context context = {};
+	struct cli_application context = {};
 	context.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
 	struct tool_operation operation = {};
 	operation.kind = TOOL_OP_PATH_DELETE;
@@ -2230,7 +2231,7 @@ TEST(CliApprovalCardTest, DirectoryBatchDisplaysAllRequestedAccessAndLifetime)
 TEST_F(CliPresentationTest, SlashCommandHasAPlainSanitizedHeading)
 {
 	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	testing::internal::CaptureStdout();
 	cli_presentation_command_input(&ctx, "/rename 中文\033[2J\nname");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -2266,7 +2267,7 @@ TEST_F(CliPresentationTest, SlashResultGapOnlyChangesInteractiveOutput)
 	testing::internal::CaptureStdout();
 	cli_presentation_command_end(&ctx);
 	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\n");
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 	testing::internal::CaptureStdout();
 	cli_presentation_command_end(&ctx);
 	EXPECT_EQ(testing::internal::GetCapturedStdout(), "\033[0m\n");
@@ -2282,15 +2283,15 @@ TEST_F(CliPresentationTest, SlashOutputGapIsDeferredAndNormalizesHeadingNewlines
 	for (const char *prefix : {"", "\n", "\n\n"}) {
 		testing::internal::CaptureStdout();
 		cli_presentation_command_input(&ctx, "/share");
-		cli_printf(&ctx, "%sSaved to ~/Downloads/share.html\n", prefix);
+		cli_output_printf(&ctx, "%sSaved to ~/Downloads/share.html\n", prefix);
 		cli_presentation_command_end(&ctx);
 		EXPECT_EQ(testing::internal::GetCapturedStdout(),
 			"/share\n\nSaved to ~/Downloads/share.html\n\n");
 	}
 	testing::internal::CaptureStdout();
 	cli_presentation_command_input(&ctx, "/model");
-	cli_putchar(&ctx, '\n');
-	cli_fputs(&ctx, "\nCurrent model\n", stdout);
+	cli_output_putchar(&ctx, '\n');
+	cli_output_fputs(&ctx, "\nCurrent model\n", stdout);
 	cli_presentation_command_end(&ctx);
 	EXPECT_EQ(testing::internal::GetCapturedStdout(), "/model\n\nCurrent model\n\n");
 }

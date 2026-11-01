@@ -1,77 +1,82 @@
 add_library(morph-cli STATIC
-	# Frontend orchestration and services
-	command_job.c
-	core.c
-	init.c
-	interaction.c
-	manage.c
-	manage_mcp.c
-	manage_skills.c
-	once.c
-	run.c
-	scheduler.c
-	share.c
-	share_save.c
-	skill_store.c
+	# Application
+	application.c
 
-	# Local command handlers
+	# Application models
+	models/composer.c
+
+	# Page controllers
+	pages/approval.c
+	pages/chat.c
+	pages/history.c
+	pages/hooks.c
+	pages/jobs.c
+	pages/question.c
+	pages/resume.c
+	pages/setup/controls.c
+	pages/setup/wizard.c
+
+	# Application widgets
+	widgets/banner.c
+	widgets/feed.c
+	widgets/list.c
+	widgets/shell_style.c
+	widgets/transcript.c
+
+	# Commands
 	commands/ext.c
 	commands/hooks.c
 	commands/jobs.c
 	commands/mcp.c
+	commands/mcp_manage.c
 	commands/media.c
 	commands/memory.c
+	commands/options.c
 	commands/permissions.c
 	commands/registry.c
 	commands/runtime.c
 	commands/session.c
 	commands/share.c
 	commands/skill.c
+	commands/skills_manage.c
 	commands/sync.c
 	commands/tasks.c
 
-	# Application and runtime event adapters
-	ui/application.c
-	ui/event_queue.c
-	ui/recap.c
-	ui/runtime_events.c
+	# Application services
+	services/command_job.c
+	services/configuration/config.c
+	services/configuration/mcp.c
+	services/configuration/model.c
+	services/configuration/role.c
+	services/event_queue.c
+	services/management.c
+	services/recap.c
+	services/scheduler.c
+	services/share_store.c
+	services/skill_store.c
+	services/turn.c
 
-	# Terminal input adapters
-	ui/input/callbacks.c
-	ui/input/cancel.c
-	ui/input/clipboard.c
-	ui/input/composer.c
-	ui/input/keymap.c
-	ui/input/reader.c
-	ui/input/readline.c
+	# Platform and protocol adapters
+	adapters/input/callbacks.c
+	adapters/input/cancel.c
+	adapters/input/clipboard.c
+	adapters/input/keymap.c
+	adapters/input/reader.c
+	adapters/input/readline.c
+	adapters/media/image_loader.c
+	adapters/media/renderer.c
+	adapters/protocol/interaction.c
+	adapters/runtime/events.c
+	adapters/runtime/observer.c
 
-	# CLI presentation and media
-	ui/presentation/banner.c
-	ui/presentation/image_loader.c
-	ui/presentation/list.c
-	ui/presentation/markdown.c
-	ui/presentation/media.c
-	ui/presentation/presenter.c
-	ui/presentation/shell_style.c
-	ui/presentation/terminal.c
-	ui/presentation/transcript.c
+	# Application presentation
+	presentation/about.c
+	presentation/diagnostics.c
+	presentation/markdown.c
+	presentation/output.c
+	presentation/presenter.c
+	presentation/share.c
 
-	# Runtime interaction adapters
-	ui/interactions/approval.c
-	ui/interactions/question.c
-
-	# Interactive pages
-	ui/screens/history.c
-	ui/screens/hooks.c
-	ui/screens/jobs.c
-	ui/screens/resume.c
-
-	# Setup wizard and configuration
-	setup/config.c
-	setup/mcp.c
-	setup/role.c
-	setup/setup.c
-	setup/ui.c
 )
 if(NOT TARGET morph-markdown-html)
 	message(FATAL_ERROR "morph CLI requires MORPH_MARKDOWN_BUILD_HTML=ON")

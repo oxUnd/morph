@@ -39,19 +39,18 @@ src/tui/
     customization/           custom widget, pages, bindings, and app shortcuts
   CMakeLists.txt
 
-src/sapi/cli/
-  main.c, init.c, run.c       frontend entry and orchestration
-  commands/                  slash-command handlers
-  setup/                     wizard, providers, roles, and configuration
-  ui/
-    application.c, .h        Application subclass, root controller, panel lifecycle
-    event_queue.c, .h        owner-thread queue and wakeup bridge
-    runtime_events.c         runtime event callback
-    recap.c, .h              recap presentation state
-    input/                   callback bindings, reader, keymaps, Readline, composer
-    interactions/            questions, approvals, and runtime decision mapping
-    presentation/            feed, transcript, Markdown, terminal, media, styles
-    screens/                 history, hooks, jobs, and resume pages
+src/sapi/cli/                 complete TUI application
+  main.c                     process bootstrap
+  application.c, .h          Application subclass, modes and lifecycle
+  application_internal.h     shared implementation conveniences
+  models/                    composer, presentation and setup data
+  pages/                     chat, navigation, questions, approvals and setup
+  widgets/                   app-specific feed, transcript, banner and lists
+  commands/                  slash actions and management entry points
+  services/                  jobs, runtime actions, configuration and storage
+  adapters/                  input, runtime, interaction protocol and media
+  presentation/              text/Markdown/HTML formatting and output policy
+  CMakeLists.txt, README.md
 ```
 
 - Include domain APIs as `<morph/tui/<object>.h>`, such as
@@ -65,15 +64,11 @@ src/sapi/cli/
   reusable controls in `widgets/`. Framework code depends on `morph-util` and
   platform libraries; runtime DTOs, command semantics, and CLI state stay in the
   frontend. Create further directories when an implemented module needs them.
-- CLI headers stay beside their implementations and use project-relative
-  includes such as `"sapi/cli/ui/screens/history.h"`. A file already placed in
-  `screens/` does not repeat an `_ui` suffix. The general `event_queue` and
-  runtime-specific `runtime_events` names distinguish the two event adapters.
-  Each module owns its interface; `internal.h` carries no UI declarations or
-  domain/SDK dependency collection. Command handlers dispatch pages, while
-  `run.c` selects frontend execution modes. Application/Readline implementations
-  live under `ui/`. See [CLI UI module conventions](../src/sapi/cli/ui/README.md)
-  for the complete module map and naming rules.
+- Consumers follow the [TUI application directory conventions](tui-application-layout.md).
+  The entire CLI is one Application, including commands, configuration and
+  noninteractive modes. Its embedded TUI base owns the interactive host; pages
+  and platform adapters belong to the same app. See the
+  [CLI module map](../src/sapi/cli/README.md) for module ownership and extension.
 - List source files explicitly in each target's `CMakeLists.txt`, grouped to
   match the directories. Update include sites and documentation in the same
   change as a move. Keep tests in the existing `tests/test_<module>` layout.

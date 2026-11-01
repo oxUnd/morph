@@ -55,6 +55,9 @@ edges, and `morph_tui_view_set_margin` / `_set_padding` update an existing view.
 See the [box model guide](../../../../docs/tui-box-model.md) for measurement,
 allocation, coordinate, and clipping rules.
 
+The files below follow the shared [TUI application directory conventions](../../../../docs/tui-application-layout.md),
+also used by the complete CLI application.
+
 ## Where to change the code
 
 ```text

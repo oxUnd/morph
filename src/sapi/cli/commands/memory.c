@@ -1,9 +1,10 @@
+#include "sapi/cli/commands/memory.h"
 #include "agent/memory.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 
-static const char *memory_scope_display(enum memory_clear_scope scope)
+static const char *cli_memory_scope_display(enum memory_clear_scope scope)
 {
 	switch (scope) {
 	case MEMORY_CLEAR_ALL:
@@ -19,7 +20,7 @@ static const char *memory_scope_display(enum memory_clear_scope scope)
 	}
 }
 
-static int memory_parse_scope(const char *name, enum memory_clear_scope *scope)
+static int cli_memory_parse_scope(const char *name, enum memory_clear_scope *scope)
 {
 	if (!scope)
 		return -EINVAL;
@@ -35,15 +36,14 @@ static int memory_parse_scope(const char *name, enum memory_clear_scope *scope)
 		*scope = MEMORY_CLEAR_EPISODES;
 		return 0;
 	}
-	if (strcmp(name, "procedures") == 0 ||
-	    strcmp(name, "rules") == 0) {
+	if (strcmp(name, "procedures") == 0 || strcmp(name, "rules") == 0) {
 		*scope = MEMORY_CLEAR_PROCEDURES;
 		return 0;
 	}
 	return -EINVAL;
 }
 
-static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
+static int cli_memory_command_memory(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
 
@@ -53,7 +53,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		if (!jobs)
 			return MORPH_ERR_DB;
 		CMD_HEADER(ctx, "Background jobs: queued = pending; completed = finished");
-		(void)cli_print_untrusted_text(ctx, jobs, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, jobs, UTF8_TERMINAL_TEXT_MULTILINE);
 		free(jobs);
 		return 0;
 	}
@@ -86,8 +86,8 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		{
 			char *effective = runtime_preferences_render(ctx->runtime, 0);
 
-			(void)cli_print_untrusted_text(ctx, effective ? effective : "",
-						       UTF8_TERMINAL_TEXT_MULTILINE);
+			(void)cli_output_print_untrusted(ctx, effective ? effective : "",
+							 UTF8_TERMINAL_TEXT_MULTILINE);
 			free(effective);
 		}
 		return 0;
@@ -104,10 +104,10 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		}
 		CMD_HEADER(ctx, "Effective preferences (session > project > personal; "
 				"explicit settings override legacy records)");
-		(void)cli_print_untrusted_text(ctx, effective, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, effective, UTF8_TERMINAL_TEXT_MULTILINE);
 		CMD_HEADER(ctx, "Preference history and sources; "
 				"unset removes a scope override and restores inheritance");
-		(void)cli_print_untrusted_text(ctx, history, UTF8_TERMINAL_TEXT_MULTILINE);
+		(void)cli_output_print_untrusted(ctx, history, UTF8_TERMINAL_TEXT_MULTILINE);
 		free(history);
 		free(effective);
 		return 0;
@@ -121,7 +121,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		 */
 		char *rendered = runtime_memory_render_current(ctx->runtime, 0);
 		CMD_HEADER(ctx, "memory (%s)", runtime_session_current_name(ctx->runtime));
-		(void)cli_print_untrusted_text(
+		(void)cli_output_print_untrusted(
 			ctx, rendered ? rendered : "No long-term memory stored for this session.",
 			UTF8_TERMINAL_TEXT_MULTILINE);
 		printf(ctx, "\n");
@@ -132,7 +132,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 	if (strcmp(sub, "clear") == 0) {
 		enum memory_clear_scope scope = MEMORY_CLEAR_ALL;
 		const char *target = cli_cmd_arg(argc, argv, 2);
-		if (memory_parse_scope(target, &scope) != 0) {
+		if (cli_memory_parse_scope(target, &scope) != 0) {
 			CMD_ERROR(ctx, "usage: /memory clear [all|facts|episodes|procedures]");
 			return -EINVAL;
 		}
@@ -142,7 +142,7 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 		}
 		CMD_OK(ctx,
 		       "cleared %s memory for session: %s (personal/project preferences retained)",
-		       memory_scope_display(scope), runtime_session_current_name(ctx->runtime));
+		       cli_memory_scope_display(scope), runtime_session_current_name(ctx->runtime));
 		return 0;
 	}
 
@@ -150,16 +150,18 @@ static int cmd_memory(struct cli_context *ctx, int argc, char **argv)
 	return -EINVAL;
 }
 
-static const struct cli_command memory_commands[] = {
-	{ "/memory",  cmd_memory,  "Show or clear long-term memory",    "/memory [show|history|explain|set|unset|clear|jobs]" },
-	{ "/mem",     cmd_memory,  "Alias for /memory",                 "/mem [show|clear] [all|facts|episodes|procedures]" },
+static const struct cli_command cli_memory_entries[] = {
+	{"/memory", cli_memory_command_memory, "Show or clear long-term memory",
+	 "/memory [show|history|explain|set|unset|clear|jobs]"},
+	{"/mem", cli_memory_command_memory, "Alias for /memory",
+	 "/mem [show|clear] [all|facts|episodes|procedures]"},
 };
 
 struct cli_command_group cli_memory_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = memory_commands,
-		.count = (int)(sizeof(memory_commands) / sizeof(memory_commands[0])),
+		.entries = cli_memory_entries,
+		.count = (int)(sizeof(cli_memory_entries) / sizeof(cli_memory_entries[0])),
 		.category = "Memory",
 	};
 }

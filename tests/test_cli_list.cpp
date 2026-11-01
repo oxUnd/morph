@@ -1,13 +1,14 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "sapi/cli/ui/runtime_events.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/adapters/runtime/events.h"
 #include "sapi/cli/commands/media.h"
 #include "runtime/runtime.h"
-#include "sapi/cli/cli.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/ui/presentation/list.h"
-#include "sapi/cli/ui/input/composer.h"
+#include "sapi/cli/widgets/list.h"
+#include "sapi/cli/models/composer.h"
 #include "util/file.h"
 #include "event/event.h"
 
@@ -31,7 +32,7 @@ extern "C" {
 #include <termios.h>
 #include <unistd.h>
 
-static void resume_terminal_pick(struct cli_context *context, const char *keys,
+static void resume_terminal_pick(struct cli_application *context, const char *keys,
 				int64_t expected, unsigned short rows)
 {
 	int master = posix_openpt(O_RDWR | O_NOCTTY);
@@ -155,7 +156,6 @@ static int cli_test_write_png(const char *path)
 TEST(CliMediaInputTest, RemovesLegacyMediaCommands)
 {
 
-
 	EXPECT_EQ(cli_command_find("/img"), nullptr);
 	EXPECT_EQ(cli_command_find("/paste"), nullptr);
 	EXPECT_EQ(cli_command_find("/video"), nullptr);
@@ -170,7 +170,7 @@ TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
 	char *directory = mkdtemp(pattern);
 	struct runtime_options options{};
 	struct runtime *runtime = nullptr;
-	struct cli_context context{};
+	struct cli_application context{};
 	std::string database;
 	std::string image;
 	std::string input;
@@ -188,7 +188,7 @@ TEST(CliMediaInputTest, QuotedImagePathAttachesWithoutCommand)
 	context.runtime = runtime;
 
 	testing::internal::CaptureStdout();
-	int rc = cli_handle_media_path(&context, input.c_str(), &handled);
+	int rc = cli_media_handle_path(&context, input.c_str(), &handled);
 	(void)testing::internal::GetCapturedStdout();
 	EXPECT_EQ(rc, 0);
 	EXPECT_EQ(handled, 1);
@@ -234,8 +234,8 @@ TEST(CliListTest, UsesConfiguredColumnsWhenStdoutIsNotTerminal)
 
 TEST(CliListTest, LongItemUsesCompactContinuation)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
 	cli_list_item(_cli_output_context_ptr, "", 1, nullptr, "a_very_long_registered_tool_name",
 		      "First line\nSecond line with more details", 12, 40);
@@ -249,8 +249,8 @@ TEST(CliListTest, LongItemUsesCompactContinuation)
 
 TEST(CliListTest, JsonFieldRendersNestedTree)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
 	cli_list_json_field(_cli_output_context_ptr, "Input schema",
 			    "{\"type\":\"object\",\"properties\":{"
@@ -266,8 +266,8 @@ TEST(CliListTest, JsonFieldRendersNestedTree)
 
 TEST(CliListTest, SessionRowKeepsRelatedFieldsTogether)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	testing::internal::CaptureStdout();
 	cli_list_row(_cli_output_context_ptr, "ae2c6f9a", "查一下开放平台、前端架构绩效",
 		     "3,086 tokens · 07-29 15:49", 0, 0, 80);
@@ -295,7 +295,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	std::string database = std::string(directory) + "/data.db";
 	struct runtime_options options{};
 	struct runtime *runtime = nullptr;
-	struct cli_context context{};
+	struct cli_application context{};
 	options.db_path = database.c_str();
 	options.workdir = directory;
 	options.front_name = "test";
@@ -317,10 +317,9 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	int64_t small_selected = sessions[2].id;
 	runtime_session_list_free(sessions);
 
-
 	FILE *input = tmpfile();
 	ASSERT_NE(input, nullptr);
-	cli_fputs(&context, "p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
+	cli_output_fputs(&context, "p\ninvalid\nn\np\nn\nn\nn\n10\n1\n", input);
 	rewind(input);
 	int saved_stdin = dup(STDIN_FILENO);
 	ASSERT_GE(saved_stdin, 0);
@@ -351,7 +350,7 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 	for (const char *answer : {"q\n", "\n", ""}) {
 		input = tmpfile();
 		ASSERT_NE(input, nullptr);
-		cli_fputs(&context, answer, input);
+		cli_output_fputs(&context, answer, input);
 		rewind(input);
 		saved_stdin = dup(STDIN_FILENO);
 		ASSERT_GE(saved_stdin, 0);
@@ -380,8 +379,8 @@ TEST(CliListTest, ResumePagesAndSelectsWithoutClearingScreen)
 
 TEST(CliListTest, HelpUsesTreeLayout)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 
 	testing::internal::CaptureStdout();
 	cli_print_help(_cli_output_context_ptr);
@@ -402,7 +401,7 @@ TEST(CliListTest, HelpUsesTreeLayout)
 
 TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 {
-	struct cli_context context{};
+	struct cli_application context{};
 
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	context.event_cb = cli_runtime_events_callback;
@@ -437,7 +436,7 @@ TEST(CliListTest, JsonModeWrapsHelpAsCommandEvents)
 
 TEST(CliListTest, JsonModeReportsUnknownCommandWithoutBareText)
 {
-	struct cli_context context{};
+	struct cli_application context{};
 
 	context.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	context.event_cb = cli_runtime_events_callback;
@@ -473,7 +472,7 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	char *directory = mkdtemp(pattern);
 	struct runtime_options options{};
 	struct runtime *runtime = nullptr;
-	struct cli_context context{};
+	struct cli_application context{};
 	struct morph_sync_backup *backups = nullptr;
 	int backup_count = 0;
 	std::string root;
@@ -508,8 +507,6 @@ TEST(CliListTest, SyncQueriesUseGroupedTrees)
 	options.front_name = "test";
 	ASSERT_EQ(runtime_open(&options, &runtime), 0);
 	context.runtime = runtime;
-
-
 
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/sync now");
@@ -590,7 +587,7 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	char *directory = mkdtemp(pattern);
 	struct runtime_options options{};
 	struct runtime *runtime = nullptr;
-	struct cli_context context{};
+	struct cli_application context{};
 	struct session current{};
 	struct scheduled_task_input input{};
 	struct scheduled_task active{};
@@ -621,7 +618,6 @@ TEST(CliListTest, TasksCommandUsesActiveAndCompactHistoryTrees)
 	ASSERT_EQ(runtime_task_create(runtime, &input, &history), 0);
 	ASSERT_EQ(runtime_task_cancel(runtime, history.id), 0);
 
-
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&context, "/tasks");
 	std::string output = testing::internal::GetCapturedStdout();
@@ -650,34 +646,34 @@ TEST(CliMediaInputTest, ComposerKeepsImageReferencesAndAtomicBoundaries)
 	ASSERT_NE(directory, nullptr);
 	std::string path = std::string(directory) + "/目录 image.png";
 	ASSERT_EQ(cli_test_write_png(path.c_str()), 0);
-	struct cli_composer composer;
-	ASSERT_EQ(cli_composer_init(&composer), 0);
+	struct cli_composer_model composer;
+	ASSERT_EQ(cli_composer_model_init(&composer), 0);
 	const char *label;
-	ASSERT_EQ(cli_composer_add_image(&composer, path.c_str(), &label), 0);
+	ASSERT_EQ(cli_composer_model_add_image(&composer, path.c_str(), &label), 0);
 	EXPECT_STREQ(label, "[IMAGE#1]");
-	ASSERT_EQ(cli_composer_add_image(&composer, path.c_str(), &label), 0);
+	ASSERT_EQ(cli_composer_model_add_image(&composer, path.c_str(), &label), 0);
 	EXPECT_STREQ(label, "[IMAGE#2]");
-	char *expanded = cli_composer_expand(&composer, "只看 [IMAGE#2]");
+	char *expanded = cli_composer_model_expand(&composer, "只看 [IMAGE#2]");
 	ASSERT_NE(expanded, nullptr);
 	EXPECT_NE(std::string(expanded).find(path), std::string::npos);
 	EXPECT_EQ(std::string(expanded).find("IMAGE#1"), std::string::npos);
 	free(expanded);
 	int start;
 	int end;
-	ASSERT_EQ(cli_composer_image_span(&composer, "a[IMAGE#2]b", 10, 1,
+	ASSERT_EQ(cli_composer_model_image_span(&composer, "a[IMAGE#2]b", 10, 1,
 					  &start, &end), 1);
 	EXPECT_EQ(start, 1);
 	EXPECT_EQ(end, 10);
-	EXPECT_EQ(cli_composer_image_span(&composer, "a[IMAGE#2]b", 10, 0,
+	EXPECT_EQ(cli_composer_model_image_span(&composer, "a[IMAGE#2]b", 10, 0,
 					 &start, &end), 0);
 	std::string escaped = path;
 	escaped.replace(escaped.find(' '), 1, "\\ ");
 	std::string input = "before\n\t\"" + path + "\"  " + escaped + "\nafter";
 	char *converted = nullptr;
-	ASSERT_EQ(cli_composer_convert_paths(&composer, input.c_str(), &converted), 2);
+	ASSERT_EQ(cli_composer_model_convert_paths(&composer, input.c_str(), &converted), 2);
 	ASSERT_NE(converted, nullptr);
 	EXPECT_STREQ(converted, "before\n\t[IMAGE#3]  [IMAGE#4]\nafter");
 	free(converted);
-	cli_composer_cleanup(&composer);
+	cli_composer_model_cleanup(&composer);
 	std::filesystem::remove_all(directory);
 }

@@ -9,7 +9,7 @@
 - **ReAct** `src/agent/react.c`: Thought → Action → Observation → Guardrail → Final, via OpenAI Function Calling (not text parsing).
 - **Models**: `llm` (text chat), `image_gen`, `video_gen`, each configured independently.
 - **Runtime facade** `src/runtime/`: process-level owner. Frontends hold an opaque `struct runtime *` and enter through `runtime_execute_turn()`; they never reimplement init/exec/persistence/shutdown. See `docs/runtime-architecture.md`.
-- **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. CLI adapters live in `src/sapi/cli/ui/` and setup in `src/sapi/cli/setup/`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
+- **TUI** `src/tui/`: implementation sources stay in `core/`, `terminal/`, `render/`, and `widgets/`. Public APIs name domain objects (`morph_tui_application_*`, `morph_tui_view_*`, `morph_tui_canvas_*`) rather than implementation layers; controls use `morph_tui_widget_*`. Include `<morph/tui/application.h>`, `<morph/tui/view.h>`, or `<morph/tui/widgets/list.h>`; consumers may use `<morph/tui.h>`. Keep implementation headers private and convenience umbrellas out of framework implementations. Application is one extensible object for init/deinit, run/step, messages, embedding, and main; there is no separate public App/runtime object. Custom types embed public base structs first and override optional method tables. Mutable view operations belong to the UI owner thread; workers post model messages. The entire CLI follows the TUI application layout under `src/sapi/cli/`; its root Application owns modes and lifecycle, with pages, widgets, models, services, commands, presentation and adapters. See `docs/tui-application-layout.md`. Samples live in `src/tui/samples/<name>/` with `main.c`, `CMakeLists.txt`, and `README.md`; `customization/` demonstrates custom components, pages, and interactions. See `docs/tui-architecture.md`.
 - **Tools** `src/agent/tools/`:
   - read-only: credits, memory, memory_preference, file_read/list/info, img_info, plan, activate_skill, agent_status, ask_user
   - media: img_gen, img_qa, img_inpaint, img_compose, img_annotate, img_resize, img_convert, vid_gen
@@ -24,19 +24,23 @@
 - **Exts** `src/ext/`, `src/ipc/`: sandboxed subprocesses (JSON-RPC) with TOML manifest (`entry`, `permissions`, `args_schema`); examples in `exts/`.
 - **Context compression** `src/agent/compress.c`, triggered at `summarize_threshold_ratio` (0.8).
 - **Sandbox** `src/sandbox/`: Linux seccomp-BPF denylist (default ALLOW, denies escape-relevant syscalls) + Landlock + rlimits; macOS Seatbelt via `sandbox_init`.
-- **Events** `src/event/`: unified dotted names across startup/MCP/ReAct/tools/HITL/tasks. Renderers in `src/sapi/cli/ui/runtime_events.c` and `src/sapi/fastcgi/event_sink.c`. See `docs/event-system.md`.
+- **Events** `src/event/`: unified dotted names across startup/MCP/ReAct/tools/HITL/tasks. Renderers in `src/sapi/cli/adapters/runtime/events.c` and `src/sapi/fastcgi/event_sink.c`. See `docs/event-system.md`.
 - **Scheduled tasks** `src/runtime/task_*.c`. See `docs/scheduled-tasks.md`.
 - **Dynamic JS tools**: embedded QuickJS in `src/js_runner/`. See `docs/quickjs-tools.md`.
 
 ## CLI Slash Command Presentation
-- CLI UI module ownership and naming follow
-  [src/sapi/cli/ui/README.md](src/sapi/cli/ui/README.md). Keep Application and
-  Readline implementations under `ui/`, page implementations under `ui/screens/`,
-  and question/approval adapters under `ui/interactions/`. Every implementation
-  includes its sibling module header first and imports other interfaces directly.
-  `internal.h` owns no UI declarations or domain/SDK include collection.
-  Run `cli_ui_layout_conventions` alongside CLI/TUI behavior regressions after
-  moving modules, adding interfaces, or changing private names.
+- CLI application module ownership and naming follow
+  [src/sapi/cli/README.md](src/sapi/cli/README.md) and
+  [the shared application layout](docs/tui-application-layout.md). The complete
+  CLI is the application; its root `application.c/.h` owns the embedded TUI base
+  and all execution modes. Keep page controllers in `pages/`, reusable app
+  components in `widgets/`, models in `models/`, use cases in `services/`,
+  external integrations in `adapters/`, command actions in `commands/` and
+  formatting in `presentation/`. Every implementation includes its sibling
+  header first and imports other interfaces directly. `application_internal.h`
+  owns no function declarations or domain SDK include collection. Run
+  `cli_application_layout_conventions` alongside CLI/TUI behavior regressions
+  after moving modules, adding interfaces or changing private names.
 - TUI View options use four-edge `morph_tui_view_insets` for margin and padding.
   Measure returns the outer size including margin; arrange accepts an outer slot
   and applies margin once. Size limits include padding and exclude margin.
@@ -95,7 +99,7 @@ morph-runtime ← morph-agent, config, credits, event, mcp, session, skill, sync
 morph-tui ← morph-util, libuv (core, terminal, render, widgets)
 morph-cli → morph (executable)
 ```
-Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config, open runtime, `cli_run()`.
+Entrypoint: `src/sapi/cli/main.c` → logging, HTTP, config, open runtime, `cli_application_run()`.
 
 ## Vendor
 `vendor/`: cJSON, stb_image{,_write,_resize2}, tomlc17, utf8proc 2.12.0 — compiled in, never fetched.

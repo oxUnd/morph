@@ -1,21 +1,22 @@
+#include "sapi/cli/commands/skill.h"
 #include "cJSON.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/widgets/list.h"
 #include "util/array.h"
 
-struct skill_list_item {
+struct cli_skill_list_item {
 	int index;
 	int enabled;
 	int activated;
 	char name[SKILL_NAME_MAX];
 };
 
-static int skill_item_compare(const void *left, const void *right)
+static int cli_skill_item_compare(const void *left, const void *right)
 {
-	const struct skill_list_item *a = left;
-	const struct skill_list_item *b = right;
+	const struct cli_skill_list_item *a = left;
+	const struct cli_skill_list_item *b = right;
 	int state_a = !a->enabled ? 2 : (a->activated ? 0 : 1);
 	int state_b = !b->enabled ? 2 : (b->activated ? 0 : 1);
 
@@ -24,20 +25,19 @@ static int skill_item_compare(const void *left, const void *right)
 	return strcmp(a->name, b->name);
 }
 
-static int skill_collect(struct cli_context *ctx, morph_array_t *items,
-			 int *active_count)
+static int cli_skill_collect(struct cli_application *ctx, morph_array_t *items, int *active_count)
 {
 	int count = runtime_skill_count(ctx->runtime);
 	int rc;
 
 	*active_count = 0;
 	rc = morph_array_init(items, (size_t)(count > 0 ? count : 1),
-			      sizeof(struct skill_list_item));
+			      sizeof(struct cli_skill_list_item));
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < count; i++) {
 		struct skill_entry entry;
-		struct skill_list_item *item;
+		struct cli_skill_list_item *item;
 
 		rc = runtime_skill_info(ctx->runtime, i, &entry);
 		if (rc != 0)
@@ -55,17 +55,17 @@ static int skill_collect(struct cli_context *ctx, morph_array_t *items,
 		if (entry.activated)
 			(*active_count)++;
 	}
-	qsort(items->elts, items->nelts, items->size, skill_item_compare);
+	qsort(items->elts, items->nelts, items->size, cli_skill_item_compare);
 	return 0;
 out:
 	morph_array_cleanup(items);
 	return rc;
 }
 
-static int skill_print_list(struct cli_context *ctx)
+static int cli_skill_print_list(struct cli_application *ctx)
 {
 	morph_array_t items;
-	struct skill_list_item *item;
+	struct cli_skill_list_item *item;
 	int active_count;
 	int columns = cli_list_columns();
 	struct morph_tui_widget_tree tree = {0};
@@ -73,7 +73,7 @@ static int skill_print_list(struct cli_context *ctx)
 	int rc;
 
 	memset(&items, 0, sizeof(items));
-	rc = skill_collect(ctx, &items, &active_count);
+	rc = cli_skill_collect(ctx, &items, &active_count);
 	if (rc != 0)
 		return rc;
 	CMD_HEADER(ctx, "Skills %zu" ANSI_DIM " · %d active" ANSI_RESET, items.nelts, active_count);
@@ -88,7 +88,7 @@ static int skill_print_list(struct cli_context *ctx)
 	rc = morph_buf_init(&output, 1024);
 	if (rc != 0)
 		goto out_tree;
-	morph_array_foreach(item, &items, struct skill_list_item) {
+	morph_array_foreach (item, &items, struct cli_skill_list_item) {
 		struct skill_entry entry;
 		morph_buf_t label = {0};
 
@@ -98,8 +98,8 @@ static int skill_print_list(struct cli_context *ctx)
 		if (rc != 0)
 			break;
 		/* Markers are data here; terminal styles stay out of the model. */
-		const char *marker = !item->enabled ? "×" :
-			(item->activated ? CLI_FEED_DONE : CLI_FEED_PENDING);
+		const char *marker =
+			!item->enabled ? "×" : (item->activated ? CLI_FEED_DONE : CLI_FEED_PENDING);
 		morph_buf_printf(&label, "%s %s", marker, entry.fm.name);
 		if (label.failed)
 			rc = label.failed;
@@ -118,13 +118,13 @@ static int skill_print_list(struct cli_context *ctx)
 out_tree:
 	morph_tui_widget_tree_cleanup(&tree);
 	printf(ctx, "\n  " ANSI_DIM CLI_FEED_DONE " active   " CLI_FEED_PENDING
-	       " available   × disabled" ANSI_RESET "\n");
+		    " available   × disabled" ANSI_RESET "\n");
 out:
 	morph_array_cleanup(&items);
 	return rc;
 }
 
-static const char *skill_status(const struct skill_entry *entry)
+static const char *cli_skill_status(const struct skill_entry *entry)
 {
 	if (!entry->enabled)
 		return "× disabled";
@@ -133,7 +133,7 @@ static const char *skill_status(const struct skill_entry *entry)
 	return CLI_FEED_PENDING " available";
 }
 
-static int skill_optional_field_count(const struct skill_entry *entry)
+static int cli_skill_optional_field_count(const struct skill_entry *entry)
 {
 	int count = entry->fm.metadata_count > 0 ? 1 : 0;
 
@@ -146,8 +146,8 @@ static int skill_optional_field_count(const struct skill_entry *entry)
 	return count;
 }
 
-static void skill_print_metadata(struct cli_context *ctx, const struct skill_entry *entry,
-				 int columns)
+static void cli_skill_print_metadata(struct cli_application *ctx, const struct skill_entry *entry,
+				     int columns)
 {
 	cJSON *metadata = cJSON_CreateObject();
 	char *json;
@@ -165,7 +165,7 @@ static void skill_print_metadata(struct cli_context *ctx, const struct skill_ent
 	cJSON_Delete(metadata);
 }
 
-static int skill_print_info(struct cli_context *ctx, const char *name)
+static int cli_skill_print_info(struct cli_application *ctx, const char *name)
 {
 	struct skill_entry entry;
 	int columns = cli_list_columns();
@@ -176,9 +176,9 @@ static int skill_print_info(struct cli_context *ctx, const char *name)
 		return -ENOENT;
 	}
 	CMD_HEADER(ctx, "Skill %s", entry.fm.name);
-	cli_list_value_field(ctx, "Status", skill_status(&entry), 0, 14, columns);
+	cli_list_value_field(ctx, "Status", cli_skill_status(&entry), 0, 14, columns);
 	cli_list_value_field(ctx, "Directory", entry.skill_dir, 0, 14, columns);
-	optional = skill_optional_field_count(&entry);
+	optional = cli_skill_optional_field_count(&entry);
 	cli_list_text_field(ctx, "Description", entry.fm.description, optional == 0, columns);
 	if (entry.fm.license[0]) {
 		optional--;
@@ -195,15 +195,15 @@ static int skill_print_info(struct cli_context *ctx, const char *name)
 				    columns);
 	}
 	if (entry.fm.metadata_count > 0)
-		skill_print_metadata(ctx, &entry, columns);
+		cli_skill_print_metadata(ctx, &entry, columns);
 	return 0;
 }
 
-static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
+static int cli_skill_command_skill(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
-		return skill_print_list(ctx);
+		return cli_skill_print_list(ctx);
 	}
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
@@ -211,7 +211,7 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR(ctx, "usage: /skill info <name>");
 			return -EINVAL;
 		}
-		return skill_print_info(ctx, name);
+		return cli_skill_print_info(ctx, name);
 	}
 	if (sub && strcmp(sub, "activate") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
@@ -250,19 +250,19 @@ static int cmd_skill(struct cli_context *ctx, int argc, char **argv)
 		CMD_OK(ctx, "skill '%s' deactivated", name);
 		return 0;
 	}
-	return skill_print_list(ctx);
+	return cli_skill_print_list(ctx);
 }
 
-static const struct cli_command skill_commands[] = {
-	{ "/skill",   cmd_skill,   "List or manage skills",             "/skill list" },
-	{ "/sk",      cmd_skill,   "Alias for /skill",                  "/sk list" },
+static const struct cli_command cli_skill_entries[] = {
+	{"/skill", cli_skill_command_skill, "List or manage skills", "/skill list"},
+	{"/sk", cli_skill_command_skill, "Alias for /skill", "/sk list"},
 };
 
 struct cli_command_group cli_skill_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = skill_commands,
-		.count = (int)(sizeof(skill_commands) / sizeof(skill_commands[0])),
+		.entries = cli_skill_entries,
+		.count = (int)(sizeof(cli_skill_entries) / sizeof(cli_skill_entries[0])),
 		.category = "Skills",
 	};
 }

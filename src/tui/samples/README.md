@@ -1,5 +1,9 @@
 # TUI samples
 
+Samples follow the shared [TUI application layout](../../../docs/tui-application-layout.md).
+Create only the directories the sample needs; the CLI uses the same layout for a
+complete application with services and adapters.
+
 Each sample lives in a named directory and owns its source, executable target,
 and usage instructions:
 

@@ -1,16 +1,16 @@
+#include "sapi/cli/commands/mcp.h"
 #include "mcp/mcp.h"
 #include "config/config.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
 
-static int mcp_event_tree_visible(const struct cli_context *ctx)
+static int cli_mcp_event_tree_visible(const struct cli_application *ctx)
 {
-	return ctx && ctx->presentation_ready &&
-		ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
+	return ctx && ctx->presentation_ready && ctx->presentation_mode == CLI_PRESENT_INTERACTIVE;
 }
 
-static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
+static int cli_mcp_command_mcp(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
 
@@ -26,13 +26,11 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			struct runtime_mcp_status *mc = &info;
 			if (runtime_mcp_info(ctx->runtime, i, &info) != 0)
 				continue;
-			const char *states[] = {
-				"disconnected", "connecting", "discovering",
-				"registering", "ready", "failed"
-			};
+			const char *states[] = {"disconnected", "connecting", "discovering",
+						"registering",	"ready",      "failed"};
 			const char *status = states[mc->state];
-			const char *transport = mc->config.transport ==
-				MCP_TRANSPORT_STDIO ? "stdio" : "http";
+			const char *transport =
+				mc->config.transport == MCP_TRANSPORT_STDIO ? "stdio" : "http";
 
 			printf(ctx, "  %s%-20s%s  [%s]  %s\n", ANSI_BOLD, mc->config.name,
 			       ANSI_RESET, transport, status);
@@ -103,8 +101,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		struct mcp_prompt_desc *prompts = NULL;
 		int count = 0;
-		int rc = runtime_mcp_list_prompts(ctx->runtime, name,
-						  &prompts, &count);
+		int rc = runtime_mcp_list_prompts(ctx->runtime, name, &prompts, &count);
 		if (rc < 0) {
 			CMD_ERROR(ctx, "failed to list prompts: %s", morph_strerror(rc));
 			return rc;
@@ -128,8 +125,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR(ctx, "MCP server not found: %s", name);
 			return -ENOENT;
 		}
-		if (info.state == RUNTIME_MCP_CONNECTING ||
-		    info.state == RUNTIME_MCP_DISCOVERING ||
+		if (info.state == RUNTIME_MCP_CONNECTING || info.state == RUNTIME_MCP_DISCOVERING ||
 		    info.state == RUNTIME_MCP_REGISTERING) {
 			CMD_OK(ctx, "MCP server '%s' is initializing", name);
 			return 0;
@@ -140,7 +136,7 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		}
 		int rc = runtime_mcp_connect(ctx->runtime, name);
 		if (rc < 0) {
-			if (!mcp_event_tree_visible(ctx))
+			if (!cli_mcp_event_tree_visible(ctx))
 				CMD_ERROR(ctx, "failed to connect to '%s': %s", name,
 					  morph_strerror(rc));
 			return rc;
@@ -148,15 +144,14 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 		int tools;
 		int resources;
 		int prompts;
-		rc = runtime_mcp_discover(ctx->runtime, name, &tools,
-					  &resources, &prompts);
+		rc = runtime_mcp_discover(ctx->runtime, name, &tools, &resources, &prompts);
 		if (rc < 0) {
-			if (!mcp_event_tree_visible(ctx))
+			if (!cli_mcp_event_tree_visible(ctx))
 				CMD_ERROR(ctx, "failed to discover '%s': %s", name,
 					  morph_strerror(rc));
 			return rc;
 		}
-		if (!mcp_event_tree_visible(ctx))
+		if (!cli_mcp_event_tree_visible(ctx))
 			CMD_OK(ctx, "MCP server '%s' connected", name);
 		return 0;
 	}
@@ -188,15 +183,15 @@ static int cmd_mcp(struct cli_context *ctx, int argc, char **argv)
 	return -EINVAL;
 }
 
-static const struct cli_command mcp_commands[] = {
-	{ "/mcp",     cmd_mcp,     "List or manage MCP servers",        "/mcp list" },
+static const struct cli_command cli_mcp_entries[] = {
+	{"/mcp", cli_mcp_command_mcp, "List or manage MCP servers", "/mcp list"},
 };
 
 struct cli_command_group cli_mcp_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = mcp_commands,
-		.count = (int)(sizeof(mcp_commands) / sizeof(mcp_commands[0])),
+		.entries = cli_mcp_entries,
+		.count = (int)(sizeof(cli_mcp_entries) / sizeof(cli_mcp_entries[0])),
 		.category = "MCP",
 	};
 }

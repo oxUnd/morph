@@ -1,18 +1,31 @@
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/internal.h"
+#include "sapi/cli/commands/ext.h"
+#include "sapi/cli/commands/hooks.h"
+#include "sapi/cli/commands/jobs.h"
+#include "sapi/cli/commands/mcp.h"
+#include "sapi/cli/commands/media.h"
+#include "sapi/cli/commands/memory.h"
+#include "sapi/cli/commands/permissions.h"
+#include "sapi/cli/commands/runtime.h"
+#include "sapi/cli/commands/session.h"
+#include "sapi/cli/commands/share.h"
+#include "sapi/cli/commands/skill.h"
+#include "sapi/cli/commands/sync.h"
+#include "sapi/cli/commands/tasks.h"
+#include "sapi/cli/application_internal.h"
 #include "cJSON.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/widgets/list.h"
 
 /* Built-in command groups are immutable; lookup requires no registration. */
 static struct cli_command_group (*const command_groups[])(void) = {
-	cli_runtime_commands, cli_session_commands, cli_memory_commands,
-	cli_task_commands, cli_media_commands, cli_ext_commands,
-	cli_skill_commands, cli_sync_commands, cli_permission_commands,
-	cli_hook_commands, cli_share_commands, cli_mcp_commands, cli_job_commands,
+	cli_runtime_commands,	 cli_session_commands, cli_memory_commands, cli_task_commands,
+	cli_media_commands,	 cli_ext_commands,     cli_skill_commands,  cli_sync_commands,
+	cli_permission_commands, cli_hook_commands,    cli_share_commands,  cli_mcp_commands,
+	cli_job_commands,
 };
 
-static const struct cli_command *command_at(int index, const char **category)
+static const struct cli_command *cli_registry_command_at(int index, const char **category)
 {
 	for (size_t i = 0; i < sizeof(command_groups) / sizeof(command_groups[0]); i++) {
 		struct cli_command_group group = command_groups[i]();
@@ -27,10 +40,9 @@ static const struct cli_command *command_at(int index, const char **category)
 	return NULL;
 }
 
-static int command_event_emit(struct cli_context *ctx, const char *name,
-			      const char *phase, const char *input,
-			      int argc, char **argv, const char *output,
-			      int command_rc)
+static int cli_registry_command_event_emit(struct cli_application *ctx, const char *name,
+					   const char *phase, const char *input, int argc,
+					   char **argv, const char *output, int command_rc)
 {
 	cJSON *data;
 	cJSON *args;
@@ -69,8 +81,7 @@ static int command_event_emit(struct cli_context *ctx, const char *name,
 	}
 	if (command_rc < 0 &&
 	    (!cJSON_AddNumberToObject(data, "error_code", command_rc) ||
-	     !cJSON_AddStringToObject(data, "error",
-				      morph_strerror(command_rc)))) {
+	     !cJSON_AddStringToObject(data, "error", morph_strerror(command_rc)))) {
 		cJSON_Delete(data);
 		return -ENOMEM;
 	}
@@ -93,7 +104,7 @@ const struct cli_command *cli_command_find(const char *name)
 
 	if (!name)
 		return NULL;
-	for (int i = 0; (command = command_at(i, NULL)); i++) {
+	for (int i = 0; (command = cli_registry_command_at(i, NULL)); i++) {
 		if (strcmp(command->name, name) == 0)
 			return command;
 	}
@@ -106,8 +117,9 @@ const struct cli_command *cli_command_find_input(const char *input)
 
 	if (!input)
 		return NULL;
-	while (isspace((unsigned char)*input)) input++;
-	for (int i = 0; (command = command_at(i, NULL)); i++) {
+	while (isspace((unsigned char)*input))
+		input++;
+	for (int i = 0; (command = cli_registry_command_at(i, NULL)); i++) {
 		size_t length = strlen(command->name);
 
 		if (strncmp(input, command->name, length) == 0 &&
@@ -153,7 +165,7 @@ const char *cli_cmd_arg(int argc, char **argv, int idx)
 	return (idx >= 0 && idx < argc) ? argv[idx] : NULL;
 }
 
-int cli_command_dispatch(struct cli_context *ctx, const char *input)
+int cli_command_dispatch(struct cli_application *ctx, const char *input)
 {
 	char buf[8192];
 	char *argv[32];
@@ -171,14 +183,14 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	if (argc < 1)
 		return -EINVAL;
 	if (ctx && ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON) {
-		event_rc = command_event_emit(ctx, "command.started", "begin",
-			input, argc, argv, NULL, 0);
+		event_rc = cli_registry_command_event_emit(ctx, "command.started", "begin", input,
+							   argc, argv, NULL, 0);
 		if (event_rc != 0)
 			return event_rc;
 		rc = morph_buf_init(&output, BUFSIZ);
 		if (rc != 0)
 			return rc;
-		rc = cli_command_capture_begin(ctx, &output);
+		rc = cli_output_capture_begin(ctx, &output);
 		if (rc != 0) {
 			morph_buf_cleanup(&output);
 			return rc;
@@ -194,24 +206,23 @@ int cli_command_dispatch(struct cli_context *ctx, const char *input)
 	}
 	if (!capture_active)
 		return rc;
-	cli_command_capture_end(ctx);
-	event_rc = command_event_emit(ctx,
-		rc < 0 ? "command.failed" : "command.completed",
-		rc < 0 ? "failed" : "end", input, argc, argv,
-		morph_buf_cstr(&output), rc);
+	cli_output_capture_end(ctx);
+	event_rc = cli_registry_command_event_emit(
+		ctx, rc < 0 ? "command.failed" : "command.completed", rc < 0 ? "failed" : "end",
+		input, argc, argv, morph_buf_cstr(&output), rc);
 	morph_buf_cleanup(&output);
 	if (event_rc != 0)
 		return event_rc;
 	return rc;
 }
 
-void cli_print_help(struct cli_context *ctx)
+void cli_print_help(struct cli_application *ctx)
 {
 	int group_start = 0;
 	int num_commands = 0;
 	int columns = cli_list_columns();
 
-	while (command_at(num_commands, NULL))
+	while (cli_registry_command_at(num_commands, NULL))
 		num_commands++;
 
 	printf(ctx, "\n" ANSI_BOLD ANSI_CYAN "Commands" ANSI_RESET "\n");
@@ -221,53 +232,53 @@ void cli_print_help(struct cli_context *ctx)
 		int item_count = 0;
 		int group_last;
 
-		(void)command_at(group_start, &category);
+		(void)cli_registry_command_at(group_start, &category);
 		while (group_end < num_commands) {
 			const char *next_category = NULL;
 
-			(void)command_at(group_end, &next_category);
+			(void)cli_registry_command_at(group_end, &next_category);
 			if ((category == NULL) != (next_category == NULL) ||
 			    (category && strcmp(category, next_category) != 0))
 				break;
 			group_end++;
 		}
-		for (int i = group_start; i < group_end; ) {
+		for (int i = group_start; i < group_end;) {
 			int alias_end = i;
 			while (alias_end + 1 < group_end &&
-			       command_at(alias_end + 1, NULL)->handler ==
-			       command_at(i, NULL)->handler)
+			       cli_registry_command_at(alias_end + 1, NULL)->handler ==
+				       cli_registry_command_at(i, NULL)->handler)
 				alias_end++;
 			item_count++;
 			i = alias_end + 1;
 		}
 		group_last = group_end == num_commands;
 		cli_list_group(ctx, category ? category : "Other", item_count, group_last);
-		for (int i = group_start, item = 0; i < group_end; ) {
-			const char *desc = command_at(i, NULL)->desc;
+		for (int i = group_start, item = 0; i < group_end;) {
+			const char *desc = cli_registry_command_at(i, NULL)->desc;
 			int alias_end = i;
 			char display[128];
 			while (alias_end + 1 < group_end &&
-			       command_at(alias_end + 1, NULL)->handler ==
-			       command_at(i, NULL)->handler)
+			       cli_registry_command_at(alias_end + 1, NULL)->handler ==
+				       cli_registry_command_at(i, NULL)->handler)
 				alias_end++;
 			if (alias_end > i && strncmp(desc, "Alias for", 9) == 0)
-				desc = command_at(alias_end, NULL)->desc;
+				desc = cli_registry_command_at(alias_end, NULL)->desc;
 			if (alias_end > i) {
-				const char *pri = command_at(i, NULL)->name;
-				const char *alt = command_at(i + 1, NULL)->name;
+				const char *pri = cli_registry_command_at(i, NULL)->name;
+				const char *alt = cli_registry_command_at(i + 1, NULL)->name;
 				const char *shorter = strlen(pri) <= strlen(alt) ? pri : alt;
 				const char *longer = strlen(pri) <= strlen(alt) ? alt : pri;
 				const char *s = shorter + 1;
 				const char *l = longer + 1;
 				size_t slen = strlen(s);
 				if (strncmp(s, l, slen) == 0)
-					snprintf(display, sizeof(display), "/%s[%s]", s,
-						 l + slen);
+					snprintf(display, sizeof(display), "/%s[%s]", s, l + slen);
 				else
 					snprintf(display, sizeof(display), "%s,%s", shorter,
 						 longer);
 			} else {
-				snprintf(display, sizeof(display), "%s", command_at(i, NULL)->name);
+				snprintf(display, sizeof(display), "%s",
+					 cli_registry_command_at(i, NULL)->name);
 			}
 			item++;
 			cli_list_item(ctx, morph_tui_widget_tree_branch(group_last, 1),
@@ -288,7 +299,7 @@ char *cli_command_completion_generator(const char *text, int state)
 	if (!text || state < 0)
 		return NULL;
 	length = strlen(text);
-	for (int i = 0; (command = command_at(i, NULL)); i++) {
+	for (int i = 0; (command = cli_registry_command_at(i, NULL)); i++) {
 		if (strncmp(command->name, text, length) == 0 && match++ == state)
 			return strdup(command->name);
 	}

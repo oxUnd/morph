@@ -1,26 +1,27 @@
+#include "sapi/cli/commands/ext.h"
 #include "ext/ext.h"
 #include "ext/install.h"
 #include "config/config.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/ui/presentation/list.h"
+#include "sapi/cli/widgets/list.h"
 #include "util/array.h"
 
-struct ext_tool_item {
+struct cli_ext_tool_item {
 	int index;
 	int enabled;
 	enum tool_origin origin;
 	char name[TOOL_NAME_MAX];
 };
 
-struct ext_tool_group {
+struct cli_ext_tool_group {
 	const char *name;
 	int count;
 	int rank;
 };
 
-static int ext_origin_rank(enum tool_origin origin)
+static int cli_ext_origin_rank(enum tool_origin origin)
 {
 	switch (origin) {
 	case TOOL_ORIGIN_BUILTIN:
@@ -37,7 +38,7 @@ static int ext_origin_rank(enum tool_origin origin)
 	}
 }
 
-static const char *ext_origin_display(enum tool_origin origin)
+static const char *cli_ext_origin_display(enum tool_origin origin)
 {
 	switch (origin) {
 	case TOOL_ORIGIN_BUILTIN:
@@ -55,12 +56,12 @@ static const char *ext_origin_display(enum tool_origin origin)
 	}
 }
 
-static int ext_tool_compare(const void *left, const void *right)
+static int cli_ext_tool_compare(const void *left, const void *right)
 {
-	const struct ext_tool_item *a = left;
-	const struct ext_tool_item *b = right;
-	int rank_a = ext_origin_rank(a->origin);
-	int rank_b = ext_origin_rank(b->origin);
+	const struct cli_ext_tool_item *a = left;
+	const struct cli_ext_tool_item *b = right;
+	int rank_a = cli_ext_origin_rank(a->origin);
+	int rank_b = cli_ext_origin_rank(b->origin);
 
 	if (rank_a != rank_b)
 		return rank_a - rank_b;
@@ -69,19 +70,19 @@ static int ext_tool_compare(const void *left, const void *right)
 	return strcmp(a->name, b->name);
 }
 
-static int ext_collect_tools(struct cli_context *ctx, morph_array_t *items,
-			     int *enabled_count)
+static int cli_ext_collect_tools(struct cli_application *ctx, morph_array_t *items,
+				 int *enabled_count)
 {
 	int count = runtime_tool_count(ctx->runtime);
 	int rc;
 
 	*enabled_count = 0;
 	rc = morph_array_init(items, (size_t)(count > 0 ? count : 1),
-			      sizeof(struct ext_tool_item));
+			      sizeof(struct cli_ext_tool_item));
 	if (rc != 0)
 		return rc;
 	for (int i = 0; i < count; i++) {
-		struct ext_tool_item *item;
+		struct cli_ext_tool_item *item;
 		struct tool_desc desc;
 
 		rc = runtime_tool_info(ctx->runtime, i, &desc);
@@ -104,28 +105,27 @@ static int ext_collect_tools(struct cli_context *ctx, morph_array_t *items,
 		if (item->enabled)
 			(*enabled_count)++;
 	}
-	qsort(items->elts, items->nelts, items->size, ext_tool_compare);
+	qsort(items->elts, items->nelts, items->size, cli_ext_tool_compare);
 	return 0;
 out:
 	morph_array_cleanup(items);
 	return rc;
 }
 
-static const char *ext_tool_marker(const struct ext_tool_item *item)
+static const char *cli_ext_tool_marker(const struct cli_ext_tool_item *item)
 {
-	return item->enabled ? ANSI_GREEN "●" ANSI_RESET :
-		ANSI_RED "×" ANSI_RESET;
+	return item->enabled ? ANSI_GREEN "●" ANSI_RESET : ANSI_RED "×" ANSI_RESET;
 }
 
-static int ext_group_name_width(const morph_array_t *items, int rank)
+static int cli_ext_group_name_width(const morph_array_t *items, int rank)
 {
 	int width = 12;
-	struct ext_tool_item *item;
+	struct cli_ext_tool_item *item;
 
-	morph_array_foreach(item, items, struct ext_tool_item) {
+	morph_array_foreach (item, items, struct cli_ext_tool_item) {
 		size_t item_width;
 
-		if (ext_origin_rank(item->origin) != rank)
+		if (cli_ext_origin_rank(item->origin) != rank)
 			continue;
 		item_width = utf8_display_width(item->name);
 		if (item_width > (size_t)width)
@@ -134,36 +134,33 @@ static int ext_group_name_width(const morph_array_t *items, int rank)
 	return width;
 }
 
-static void ext_print_group(struct cli_context *ctx,
-			    const morph_array_t *items,
-			    const struct ext_tool_group *group,
-			    int is_last, int columns)
+static void cli_ext_print_group(struct cli_application *ctx, const morph_array_t *items,
+				const struct cli_ext_tool_group *group, int is_last, int columns)
 {
-	struct ext_tool_item *item;
+	struct cli_ext_tool_item *item;
 	int index = 0;
-	int name_width = ext_group_name_width(items, group->rank);
+	int name_width = cli_ext_group_name_width(items, group->rank);
 	const char *ancestor = morph_tui_widget_tree_branch(is_last, 1);
 
 	cli_list_group(ctx, group->name, group->count, is_last);
-	morph_array_foreach(item, items, struct ext_tool_item) {
+	morph_array_foreach (item, items, struct cli_ext_tool_item) {
 		struct tool_desc desc;
 
-		if (ext_origin_rank(item->origin) != group->rank)
+		if (cli_ext_origin_rank(item->origin) != group->rank)
 			continue;
 		if (runtime_tool_info(ctx->runtime, item->index, &desc) != 0)
 			continue;
 		index++;
-		cli_list_item(ctx, ancestor, index == group->count, ext_tool_marker(item),
+		cli_list_item(ctx, ancestor, index == group->count, cli_ext_tool_marker(item),
 			      desc.name, desc.description, name_width, columns);
 	}
 }
 
-static int ext_print_tools(struct cli_context *ctx)
+static int cli_ext_print_tools(struct cli_application *ctx)
 {
-	static const char *const group_names[] = {
-		"Built-in", "Extensions", "MCP", "Dynamic", "Other"
-	};
-	struct ext_tool_group groups[5];
+	static const char *const group_names[] = {"Built-in", "Extensions", "MCP", "Dynamic",
+						  "Other"};
+	struct cli_ext_tool_group groups[5];
 	morph_array_t items;
 	int group_count = 0;
 	int enabled_count;
@@ -171,7 +168,7 @@ static int ext_print_tools(struct cli_context *ctx)
 	int rc;
 
 	memset(&items, 0, sizeof(items));
-	rc = ext_collect_tools(ctx, &items, &enabled_count);
+	rc = cli_ext_collect_tools(ctx, &items, &enabled_count);
 	if (rc != 0)
 		return rc;
 	CMD_HEADER(ctx, "Tools %zu" ANSI_DIM " · %d enabled" ANSI_RESET, items.nelts,
@@ -182,10 +179,10 @@ static int ext_print_tools(struct cli_context *ctx)
 	}
 	for (int rank = 0; rank < 5; rank++) {
 		int count = 0;
-		struct ext_tool_item *item;
+		struct cli_ext_tool_item *item;
 
-		morph_array_foreach(item, &items, struct ext_tool_item) {
-			if (ext_origin_rank(item->origin) == rank)
+		morph_array_foreach (item, &items, struct cli_ext_tool_item) {
+			if (cli_ext_origin_rank(item->origin) == rank)
 				count++;
 		}
 		if (count == 0)
@@ -198,8 +195,7 @@ static int ext_print_tools(struct cli_context *ctx)
 	for (int i = 0; i < group_count; i++) {
 		if (i > 0)
 			putchar(ctx, '\n');
-		ext_print_group(ctx, &items, &groups[i],
-				i == group_count - 1, columns);
+		cli_ext_print_group(ctx, &items, &groups[i], i == group_count - 1, columns);
 	}
 	printf(ctx, "\n  " ANSI_DIM "● enabled   × disabled" ANSI_RESET "\n");
 out:
@@ -207,16 +203,15 @@ out:
 	return 0;
 }
 
-static int ext_find_tool_index(struct cli_context *ctx, const char *name,
-			       enum tool_origin *origin, unsigned *flags)
+static int cli_ext_find_tool_index(struct cli_application *ctx, const char *name,
+				   enum tool_origin *origin, unsigned *flags)
 {
 	int count = runtime_tool_count(ctx->runtime);
 
 	for (int i = 0; i < count; i++) {
 		struct tool_desc desc;
 
-		if (runtime_tool_info(ctx->runtime, i, &desc) != 0 ||
-		    strcmp(desc.name, name) != 0)
+		if (runtime_tool_info(ctx->runtime, i, &desc) != 0 || strcmp(desc.name, name) != 0)
 			continue;
 		if (runtime_tool_origin(ctx->runtime, i, origin) != 0 ||
 		    runtime_tool_flags(ctx->runtime, i, flags) != 0)
@@ -226,7 +221,7 @@ static int ext_find_tool_index(struct cli_context *ctx, const char *name,
 	return -ENOENT;
 }
 
-static int ext_print_info(struct cli_context *ctx, const char *name)
+static int cli_ext_print_info(struct cli_application *ctx, const char *name)
 {
 	struct tool_desc desc;
 	enum tool_origin origin;
@@ -240,19 +235,18 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 		CMD_ERROR(ctx, "tool not found: %s", name);
 		return -ENOENT;
 	}
-	index = ext_find_tool_index(ctx, name, &origin, &flags);
+	index = cli_ext_find_tool_index(ctx, name, &origin, &flags);
 	if (index < 0)
 		return index;
 	if (runtime_tool_enabled(ctx->runtime, index, &enabled) != 0)
 		return -EIO;
 	CMD_HEADER(ctx, "Tool %s", desc.name);
 	cli_list_value_field(ctx, "Status", enabled ? "● enabled" : "× disabled", 0, 12, columns);
-	cli_list_value_field(ctx, "Source", ext_origin_display(origin), 0, 12, columns);
+	cli_list_value_field(ctx, "Source", cli_ext_origin_display(origin), 0, 12, columns);
 	cli_list_value_field(ctx, "Access",
 			     (flags & TOOL_FLAG_READONLY) ? "read-only" : "read-write", 0, 12,
 			     columns);
-	schema_count = (desc.input_schema[0] ? 1 : 0) +
-		(desc.output_schema[0] ? 1 : 0);
+	schema_count = (desc.input_schema[0] ? 1 : 0) + (desc.output_schema[0] ? 1 : 0);
 	cli_list_text_field(ctx, "Description", desc.description, schema_count == 0, columns);
 	if (desc.input_schema[0])
 		cli_list_json_field(ctx, "Input schema", desc.input_schema, !desc.output_schema[0],
@@ -262,11 +256,11 @@ static int ext_print_info(struct cli_context *ctx, const char *name)
 	return 0;
 }
 
-static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
+static int cli_ext_command_ext(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *sub = cli_cmd_arg(argc, argv, 1);
 	if (sub && strcmp(sub, "list") == 0) {
-		return ext_print_tools(ctx);
+		return cli_ext_print_tools(ctx);
 	}
 	if (sub && strcmp(sub, "info") == 0) {
 		const char *name = cli_cmd_arg(argc, argv, 2);
@@ -274,14 +268,13 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 			CMD_ERROR(ctx, "usage: /ext info <name>");
 			return -EINVAL;
 		}
-		return ext_print_info(ctx, name);
+		return cli_ext_print_info(ctx, name);
 	}
 	if (sub && strcmp(sub, "install") == 0) {
 		const char *source = cli_cmd_arg(argc, argv, 2);
 		int yes = 0;
 		for (int i = 3; i < argc; i++) {
-			if (strcmp(argv[i], "--yes") == 0 ||
-			    strcmp(argv[i], "-y") == 0)
+			if (strcmp(argv[i], "--yes") == 0 || strcmp(argv[i], "-y") == 0)
 				yes = 1;
 		}
 		if (!source) {
@@ -318,19 +311,19 @@ static int cmd_ext(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR(ctx, "ext disable not yet implemented (M4)");
 		return 0;
 	}
-	return ext_print_tools(ctx);
+	return cli_ext_print_tools(ctx);
 }
 
-static const struct cli_command ext_commands[] = {
-	{ "/ext",     cmd_ext,     "List or manage tools and exts",     "/ext list" },
-	{ "/x",       cmd_ext,     "Alias for /ext",                    "/x list" },
+static const struct cli_command cli_ext_entries[] = {
+	{"/ext", cli_ext_command_ext, "List or manage tools and exts", "/ext list"},
+	{"/x", cli_ext_command_ext, "Alias for /ext", "/x list"},
 };
 
 struct cli_command_group cli_ext_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = ext_commands,
-		.count = (int)(sizeof(ext_commands) / sizeof(ext_commands[0])),
+		.entries = cli_ext_entries,
+		.count = (int)(sizeof(cli_ext_entries) / sizeof(cli_ext_entries[0])),
 		.category = "Extensions",
 	};
 }

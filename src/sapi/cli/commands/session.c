@@ -1,22 +1,22 @@
+#include "sapi/cli/commands/session.h"
 #include "cJSON.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/ui/presentation/markdown.h"
-#include "sapi/cli/ui/presentation/media.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/markdown.h"
+#include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/commands/registry.h"
-#include "sapi/cli/setup/ui.h"
-#include "sapi/cli/ui/screens/history.h"
-#include "sapi/cli/ui/screens/resume.h"
+#include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/pages/history.h"
+#include "sapi/cli/pages/resume.h"
 
-static int cmd_new(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_new(struct cli_application *ctx, int argc, char **argv)
 {
 	char name_buf[256];
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	int auto_named = 0;
 	if (!name) {
 		auto_named = 1;
-		snprintf(name_buf, sizeof(name_buf), "new_%lld",
-			 (long long)time(NULL));
+		snprintf(name_buf, sizeof(name_buf), "new_%lld", (long long)time(NULL));
 		name = name_buf;
 	}
 	struct session s;
@@ -30,7 +30,7 @@ static int cmd_new(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
-static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_switch(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
@@ -55,8 +55,7 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 		}
 		struct session *list;
 		int count = 0;
-		rc = runtime_session_list_query(ctx->runtime, &list, &count, 0,
-						NULL);
+		rc = runtime_session_list_query(ctx->runtime, &list, &count, 0, NULL);
 		if (rc != 0)
 			return rc;
 		struct session current;
@@ -89,14 +88,14 @@ static int cmd_switch(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
-static int cmd_resume(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_resume(struct cli_application *ctx, int argc, char **argv)
 {
 	if (argc > 1)
-		return cmd_switch(ctx, argc, argv);
+		return cli_session_command_switch(ctx, argc, argv);
 	return cli_resume_show(ctx);
 }
 
-static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_rename(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *new_name = cli_cmd_arg(argc, argv, 1);
 	if (!new_name) {
@@ -114,7 +113,7 @@ static int cmd_rename(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
-static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_delete(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	if (!name) {
@@ -151,8 +150,7 @@ static int cmd_delete(struct cli_context *ctx, int argc, char **argv)
 	return rc;
 }
 
-static int history_export_items(struct model_history_item *items,
-				const char *path)
+static int cli_session_history_export_items(struct model_history_item *items, const char *path)
 {
 	cJSON *array = cJSON_CreateArray();
 	char *expanded;
@@ -170,14 +168,11 @@ static int history_export_items(struct model_history_item *items,
 			cJSON_Delete(array);
 			return -ENOMEM;
 		}
-		cJSON_AddNumberToObject(entry, "sequence_no",
-			(double)item->sequence_no);
-		cJSON_AddStringToObject(entry, "turn_id",
-			item->turn_id ? item->turn_id : "");
+		cJSON_AddNumberToObject(entry, "sequence_no", (double)item->sequence_no);
+		cJSON_AddStringToObject(entry, "turn_id", item->turn_id ? item->turn_id : "");
 		cJSON_AddStringToObject(entry, "kind", item->kind);
 		cJSON_AddStringToObject(entry, "role", item->role);
-		cJSON_AddStringToObject(entry, "content",
-			item->content ? item->content : "");
+		cJSON_AddStringToObject(entry, "content", item->content ? item->content : "");
 		if (item->payload_json) {
 			cJSON *payload = cJSON_Parse(item->payload_json);
 
@@ -186,8 +181,7 @@ static int history_export_items(struct model_history_item *items,
 		}
 		cJSON_AddBoolToObject(entry, "active", item->active);
 		cJSON_AddBoolToObject(entry, "truncated", item->truncated);
-		cJSON_AddNumberToObject(entry, "token_count",
-			item->token_count);
+		cJSON_AddNumberToObject(entry, "token_count", item->token_count);
 		cJSON_AddItemToArray(array, entry);
 	}
 	json = cJSON_Print(array);
@@ -205,7 +199,7 @@ static int history_export_items(struct model_history_item *items,
 	return rc;
 }
 
-static int cmd_history(struct cli_context *ctx, int argc, char **argv)
+static int cli_session_command_history(struct cli_application *ctx, int argc, char **argv)
 {
 	int n = 20;
 	int show_all = 0;
@@ -236,15 +230,15 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			char *end;
 			const char *value = argv[++i];
 
-			if (*value == '#') value++;
+			if (*value == '#')
+				value++;
 			errno = 0;
 			sequence = strtoll(value, &end, 10);
 			if (errno || end == value || *end || sequence <= 0) {
 				CMD_ERROR(ctx, "history entry must be a positive sequence number");
 				return -EINVAL;
 			}
-		}
-		else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
+		} else if (strcmp(argv[i], "--export") == 0 && i + 1 < argc)
 			export_path = argv[++i];
 		else if (argv[i][0] && isdigit((unsigned char)argv[i][0])) {
 			char *end;
@@ -257,8 +251,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 				return -EINVAL;
 			}
 			n = (int)value;
-		}
-		else {
+		} else {
 			CMD_ERROR(ctx, "unknown or incomplete history option: %s", argv[i]);
 			return -EINVAL;
 		}
@@ -268,9 +261,8 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	if (diagnose || repair) {
 		struct agent_history_diagnostic report = {0};
 		int changed = 0;
-		int rc = repair ? runtime_session_history_repair(ctx->runtime,
-			&report, &changed) :
-			runtime_session_history_diagnose(ctx->runtime, &report);
+		int rc = repair ? runtime_session_history_repair(ctx->runtime, &report, &changed)
+				: runtime_session_history_diagnose(ctx->runtime, &report);
 
 		if (rc != 0) {
 			CMD_ERROR(ctx, "history %s failed: %s", repair ? "repair" : "diagnosis",
@@ -289,10 +281,9 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (export_path) {
 		int count = 0;
-		struct model_history_item *items =
-			runtime_session_model_history_current(ctx->runtime,
-				show_all ? 0 : 1, &count);
-		int rc = history_export_items(items, export_path);
+		struct model_history_item *items = runtime_session_model_history_current(
+			ctx->runtime, show_all ? 0 : 1, &count);
+		int rc = cli_session_history_export_items(items, export_path);
 
 		runtime_session_model_history_free(items);
 		if (rc != 0) {
@@ -304,9 +295,8 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (show_model) {
 		int count = 0;
-		struct model_history_item *items =
-			runtime_session_model_history_current(ctx->runtime,
-				show_all ? 0 : 1, &count);
+		struct model_history_item *items = runtime_session_model_history_current(
+			ctx->runtime, show_all ? 0 : 1, &count);
 		struct model_history_item *cur = items;
 		int show = show_all ? count : (n > count ? count : n);
 		int skip = show_all ? 0 : count - show;
@@ -325,9 +315,9 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 				       cur->tool_name[0] ? cur->tool_name : "tool",
 				       cur->token_count, cur->truncated ? ", truncated" : "");
 			} else {
-				(void)cli_print_untrusted_text(ctx,
-							       cur->content ? cur->content : "",
-							       UTF8_TERMINAL_TEXT_MULTILINE);
+				(void)cli_output_print_untrusted(ctx,
+								 cur->content ? cur->content : "",
+								 UTF8_TERMINAL_TEXT_MULTILINE);
 				printf(ctx, "\n");
 			}
 			cur = cur->next;
@@ -345,7 +335,7 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 			rc = cli_history_entry_print(ctx, report, sequence, stored);
 		else if (rc == 0 && argc == 1 &&
 			 ctx->presentation_mode == CLI_PRESENT_INTERACTIVE &&
-			 cli_setup_ui_available(stdin, stdout))
+			 cli_setup_controls_available(stdin, stdout))
 			rc = cli_history_view(ctx, report);
 		else if (rc == 0)
 			cli_history_print(ctx, report, n, show_all);
@@ -365,18 +355,21 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 		cur = cur->next;
 	while (cur) {
 		const char *role = cur->role;
-		const char *label = (strcmp(role, "user") == 0) ? "You" :
-				   (strcmp(role, "assistant") == 0) ? "AI" : role;
+		const char *label = (strcmp(role, "user") == 0)	       ? "You"
+				    : (strcmp(role, "assistant") == 0) ? "AI"
+								       : role;
 		printf(ctx, ANSI_DIM "[%s]" ANSI_RESET " ", label);
 		if (ctx->presentation_mode == CLI_PRESENT_EVENTS_JSON)
-			(void)cli_print_untrusted_text(ctx, cur->content ? cur->content : "(empty)",
-						       UTF8_TERMINAL_TEXT_MULTILINE);
+			(void)cli_output_print_untrusted(ctx,
+							 cur->content ? cur->content : "(empty)",
+							 UTF8_TERMINAL_TEXT_MULTILINE);
 		else if (strcmp(role, "assistant") == 0 && cur->content && *cur->content)
-			cli_markdown_render_ansi_with_media(ctx, cur->content, cli_media_render,
+			cli_markdown_render_ansi_with_media(ctx, cur->content, cli_renderer_media,
 							    NULL);
 		else
-			(void)cli_print_untrusted_text(ctx, cur->content ? cur->content : "(empty)",
-						       UTF8_TERMINAL_TEXT_MULTILINE);
+			(void)cli_output_print_untrusted(ctx,
+							 cur->content ? cur->content : "(empty)",
+							 UTF8_TERMINAL_TEXT_MULTILINE);
 		printf(ctx, "\n");
 		cur = cur->next;
 	}
@@ -384,25 +377,29 @@ static int cmd_history(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static const struct cli_command session_commands[] = {
-	{ "/new",     cmd_new,     "Create a new session",              "/new [name]" },
-	{ "/n",       cmd_new,     "Alias for /new",                    "/n [name]" },
-	{ "/resume",  cmd_resume,  "Choose a session to resume",         "/resume [name|id]" },
-	{ "/switch",  cmd_switch,  "Switch to another session",         "/switch <name|id|^N>" },
-	{ "/s",       cmd_switch,  "Alias for /switch",                 "/s <name|id|^N>" },
-	{ "/rename",  cmd_rename,  "Rename current session",            "/rename <new_name>" },
-	{ "/rn",      cmd_rename,  "Alias for /rename",                 "/rn <new_name>" },
-	{ "/delete",  cmd_delete,  "Delete a session",                  "/delete <name|id>" },
-	{ "/del",     cmd_delete,  "Alias for /delete",                 "/del <name|id>" },
-	{ "/history", cmd_history, "Inspect full history and context membership", "/history [n|--all|--messages|--model|--last-request|--entry N [--stored]|--diagnose|--repair|--export path]" },
-	{ "/hi",      cmd_history, "Alias for /history",                "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]" },
+static const struct cli_command cli_session_entries[] = {
+	{"/new", cli_session_command_new, "Create a new session", "/new [name]"},
+	{"/n", cli_session_command_new, "Alias for /new", "/n [name]"},
+	{"/resume", cli_session_command_resume, "Choose a session to resume", "/resume [name|id]"},
+	{"/switch", cli_session_command_switch, "Switch to another session",
+	 "/switch <name|id|^N>"},
+	{"/s", cli_session_command_switch, "Alias for /switch", "/s <name|id|^N>"},
+	{"/rename", cli_session_command_rename, "Rename current session", "/rename <new_name>"},
+	{"/rn", cli_session_command_rename, "Alias for /rename", "/rn <new_name>"},
+	{"/delete", cli_session_command_delete, "Delete a session", "/delete <name|id>"},
+	{"/del", cli_session_command_delete, "Alias for /delete", "/del <name|id>"},
+	{"/history", cli_session_command_history, "Inspect full history and context membership",
+	 "/history [n|--all|--messages|--model|--last-request|--entry N "
+	 "[--stored]|--diagnose|--repair|--export path]"},
+	{"/hi", cli_session_command_history, "Alias for /history",
+	 "/hi [n|--all|--messages|--model|--last-request|--entry N [--stored]]"},
 };
 
 struct cli_command_group cli_session_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = session_commands,
-		.count = (int)(sizeof(session_commands) / sizeof(session_commands[0])),
+		.entries = cli_session_entries,
+		.count = (int)(sizeof(cli_session_entries) / sizeof(cli_session_entries[0])),
 		.category = "Sessions",
 	};
 }

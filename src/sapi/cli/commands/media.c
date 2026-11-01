@@ -1,16 +1,17 @@
 #include "sapi/cli/commands/media.h"
-#include "sapi/cli/internal.h"
+#include "sapi/cli/services/turn.h"
+#include "sapi/cli/application_internal.h"
 #include "ext/ext.h"
 #include "credits.h"
 #include "config/config.h"
 #include "render/image.h"
 #include "render/video.h"
 #include "stb_image.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/ui/presentation/markdown.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/commands/registry.h"
 
-int cli_attach_image(struct cli_context *ctx, const char *path)
+int cli_media_attach_image(struct cli_application *ctx, const char *path)
 {
 	char *expanded;
 	const struct config *config;
@@ -36,16 +37,15 @@ int cli_attach_image(struct cli_context *ctx, const char *path)
 	strncpy(ctx->image_path, expanded, sizeof(ctx->image_path) - 1);
 	ctx->image_path[sizeof(ctx->image_path) - 1] = '\0';
 	config = runtime_config_get(ctx->runtime);
-	cli_record_media_credits(ctx, "image_input",
-				 credit_image_units_from_size(w, h), 0,
-				 config->models.image.provider,
-				 config->models.image.model, NULL);
+	cli_turn_record_media_credits(ctx, "image_input", credit_image_units_from_size(w, h), 0,
+				      config->models.image.provider, config->models.image.model,
+				      NULL);
 	CMD_OK(ctx, "[IMAGE#1]");
 	free(expanded);
 	return 0;
 }
 
-static int cmd_image(struct cli_context *ctx, int argc, char **argv)
+static int cli_media_command_image(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *path = cli_cmd_arg(argc, argv, 1);
 
@@ -53,10 +53,10 @@ static int cmd_image(struct cli_context *ctx, int argc, char **argv)
 		CMD_ERROR(ctx, "usage: /image <file_path>");
 		return -EINVAL;
 	}
-	return cli_attach_image(ctx, path);
+	return cli_media_attach_image(ctx, path);
 }
 
-static int media_path_is_video(const char *path)
+static int cli_media_path_is_video(const char *path)
 {
 	const char *ext = strrchr(path, '.');
 
@@ -64,11 +64,11 @@ static int media_path_is_video(const char *path)
 		return 0;
 	ext++;
 	return strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
-		strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
-		strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0;
+	       strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
+	       strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0;
 }
 
-static int media_play_video(struct cli_context *ctx, const char *path)
+static int cli_media_play_video(struct cli_application *ctx, const char *path)
 {
 	const struct config *config = runtime_config_get(ctx->runtime);
 
@@ -77,16 +77,13 @@ static int media_play_video(struct cli_context *ctx, const char *path)
 		CMD_ERROR(ctx, "failed to play video: %s", path);
 		return -EIO;
 	}
-	cli_record_media_credits(ctx, "video_input", 0, 1,
-				 config->models.video.provider,
-				 config->models.video.model,
-				 "{\"estimated\":true}");
+	cli_turn_record_media_credits(ctx, "video_input", 0, 1, config->models.video.provider,
+				      config->models.video.model, "{\"estimated\":true}");
 	CMD_OK(ctx, "video loaded: %s", path);
 	return 0;
 }
 
-int cli_handle_media_path(struct cli_context *ctx, const char *input,
-			  int *handled)
+int cli_media_handle_path(struct cli_application *ctx, const char *input, int *handled)
 {
 	char *copy;
 	char *expanded;
@@ -118,17 +115,17 @@ int cli_handle_media_path(struct cli_context *ctx, const char *input,
 	}
 	if (stbi_info(expanded, &width, &height, &channels)) {
 		*handled = 1;
-		rc = cli_attach_image(ctx, expanded);
-	} else if (media_path_is_video(expanded)) {
+		rc = cli_media_attach_image(ctx, expanded);
+	} else if (cli_media_path_is_video(expanded)) {
 		*handled = 1;
-		rc = media_play_video(ctx, expanded);
+		rc = cli_media_play_video(ctx, expanded);
 	}
 	free(expanded);
 	if (rc != 0)
 		return rc;
 	return 0;
 }
-static int cmd_render(struct cli_context *ctx, int argc, char **argv)
+static int cli_media_command_render(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *path = cli_cmd_arg(argc, argv, 1);
 	if (!path) {
@@ -142,7 +139,8 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 		return -ENOENT;
 	}
 	const char *ext = strrchr(expanded, '.');
-	if (ext) ext++;
+	if (ext)
+		ext++;
 	if (ext && (strcasecmp(ext, "mp4") == 0 || strcasecmp(ext, "mov") == 0 ||
 		    strcasecmp(ext, "avi") == 0 || strcasecmp(ext, "mkv") == 0 ||
 		    strcasecmp(ext, "webm") == 0 || strcasecmp(ext, "flv") == 0)) {
@@ -165,7 +163,7 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 			return MORPH_ERR_FORMAT;
 		}
 		if (ctx->presentation_mode != CLI_PRESENT_EVENTS_JSON) {
-			(void)cli_command_result_begin(ctx);
+			(void)cli_output_result_begin(ctx);
 			image_render_terminal(ctx ? ctx->logger : NULL, expanded);
 		}
 		CMD_OK(ctx, "image: %s (%dx%d)", expanded, w, h);
@@ -187,17 +185,18 @@ static int cmd_render(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static const struct cli_command media_commands[] = {
-	{ "/image",   cmd_image,   "Inject an image into context",      "/image <file_path>" },
-	{ "/render",  cmd_render,  "Render a file (image/video/markdown)", "/render <file_path>" },
-	{ "/r",       cmd_render,  "Alias for /render",                 "/r <file_path>" },
+static const struct cli_command cli_media_entries[] = {
+	{"/image", cli_media_command_image, "Inject an image into context", "/image <file_path>"},
+	{"/render", cli_media_command_render, "Render a file (image/video/markdown)",
+	 "/render <file_path>"},
+	{"/r", cli_media_command_render, "Alias for /render", "/r <file_path>"},
 };
 
 struct cli_command_group cli_media_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = media_commands,
-		.count = (int)(sizeof(media_commands) / sizeof(media_commands[0])),
+		.entries = cli_media_entries,
+		.count = (int)(sizeof(cli_media_entries) / sizeof(cli_media_entries[0])),
 		.category = "Media",
 	};
 }

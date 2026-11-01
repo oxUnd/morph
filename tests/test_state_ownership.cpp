@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "sapi/cli/ui/input/reader.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/cli.h"
-#include "sapi/cli/ui/input/callbacks.h"
+#include "sapi/cli/adapters/input/reader.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/adapters/input/callbacks.h"
 #include "http/client.h"
 #include "util/signals.h"
 }
@@ -16,7 +16,7 @@ extern "C" {
 #include <unistd.h>
 #include <thread>
 
-static int instance_key(struct cli_context *ctx, int count, int key)
+static int instance_key(struct cli_application *ctx, int count, int key)
 {
 	ctx->completion_index += count;
 	return ctx->completion_index + key;
@@ -24,7 +24,7 @@ static int instance_key(struct cli_context *ctx, int count, int key)
 
 TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
 {
-	struct cli_context first{}, second{};
+	struct cli_application first{}, second{};
 	auto first_key = cli_callback_key(&first, instance_key);
 	auto second_key = cli_callback_key(&second, instance_key);
 
@@ -43,26 +43,26 @@ TEST(StateOwnershipTest, NativeCallbacksKeepTheirOwnContext)
 
 TEST(StateOwnershipTest, OutputCaptureAndPresentationOptionsAreIndependent)
 {
-	struct cli_context first{}, second{};
+	struct cli_application first{}, second{};
 	morph_buf_t first_text{}, second_text{};
 
 	ASSERT_EQ(morph_buf_init(&first_text, 32), 0);
 	ASSERT_EQ(morph_buf_init(&second_text, 32), 0);
-	ASSERT_EQ(cli_command_capture_begin(&first, &first_text), 0);
-	ASSERT_EQ(cli_command_capture_begin(&second, &second_text), 0);
-	cli_set_color_enabled(&first, 0);
-	cli_set_structured_output(&second, 1);
-	EXPECT_FALSE(cli_color_enabled(&first));
-	EXPECT_TRUE(cli_color_enabled(&second));
-	EXPECT_FALSE(cli_structured_output_enabled(&first));
-	EXPECT_TRUE(cli_structured_output_enabled(&second));
-	cli_printf(&first, "first %d", 1);
-	cli_printf(&second, "second %d", 2);
-	cli_command_capture_end(&first);
-	cli_printf(&second, " continued");
+	ASSERT_EQ(cli_output_capture_begin(&first, &first_text), 0);
+	ASSERT_EQ(cli_output_capture_begin(&second, &second_text), 0);
+	cli_output_set_color_enabled(&first, 0);
+	cli_output_set_structured(&second, 1);
+	EXPECT_FALSE(cli_output_color_enabled(&first));
+	EXPECT_TRUE(cli_output_color_enabled(&second));
+	EXPECT_FALSE(cli_output_is_structured(&first));
+	EXPECT_TRUE(cli_output_is_structured(&second));
+	cli_output_printf(&first, "first %d", 1);
+	cli_output_printf(&second, "second %d", 2);
+	cli_output_capture_end(&first);
+	cli_output_printf(&second, " continued");
 	EXPECT_STREQ(morph_buf_cstr(&first_text), "first 1");
 	EXPECT_STREQ(morph_buf_cstr(&second_text), "second 2 continued");
-	cli_command_capture_end(&second);
+	cli_output_capture_end(&second);
 	morph_buf_cleanup(&first_text);
 	morph_buf_cleanup(&second_text);
 }
@@ -116,7 +116,7 @@ TEST(StateOwnershipTest, BufferedInputCanBeCancelledWithoutLosingFollowingLines)
 	ASSERT_EQ(pipe(descriptors), 0);
 	FILE *input = fdopen(descriptors[0], "r");
 	ASSERT_NE(input, nullptr);
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	char text[32];
 	int original_flags = fcntl(descriptors[0], F_GETFL);
 	std::thread cancel([&ctx] {

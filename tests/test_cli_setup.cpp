@@ -1,9 +1,13 @@
+extern "C" {
+#include "sapi/cli/services/configuration/model.h"
+#include "sapi/cli/services/configuration/role.h"
+}
 #include <gtest/gtest.h>
-#include "sapi/cli/setup/setup.h"
-#include "sapi/cli/cli.h"
-#include "sapi/cli/setup/ui.h"
-#include "sapi/cli/setup/config.h"
-#include "sapi/cli/setup/mcp.h"
+#include "sapi/cli/pages/setup/wizard.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/pages/setup/controls.h"
+#include "sapi/cli/services/configuration/config.h"
+#include "sapi/cli/services/configuration/mcp.h"
 #include "agent/system_prompt.h"
 #include <filesystem>
 #include "config/config.h"
@@ -38,8 +42,8 @@ protected:
 		return run_input(answers.substr(0, role + 1) + "2\n" + answers.substr(role + 1), update);
 	}
 	int run_input(const std::string &answers, bool update = false) {
-		struct cli_context _cli_output_context = {0};
-		struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+		struct cli_application _cli_output_context = {0};
+		struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 		FILE *input = tmpfile();
 		FILE *output = tmpfile();
 		if (!input || !output) {
@@ -123,35 +127,35 @@ TEST_F(CliSetupTest, DefaultsStillRequireSaveAndCannotHideIncompleteCustomModels
 
 TEST(CliSetupDefaults, SharesOnlyMissingCredentialsFromTheSameConfiguredSource) {
 	struct cli_setup_state state{};
-	state.role = SETUP_VIDEO_CREATOR;
+	state.role = CLI_SETUP_VIDEO_CREATOR;
 	cli_setup_role_defaults(&state);
 	const char *env = "MORPH_SETUP_TEST_MISSING_SHARED_KEY";
-	for (int i = 0; i <= SETUP_IMAGE; i++) strcpy(state.entries[i].api_key_env, env);
-	strcpy(state.entries[SETUP_IMAGE].api_key, "keep-existing-account");
-	strcpy(state.entries[SETUP_TEXT].api_key, "shared-fixture-key");
-	state.entries[SETUP_TEXT].api_key_env[0] = '\0';
-	cli_setup_share_credentials(&state, SETUP_TEXT, env);
-	EXPECT_STREQ(state.entries[SETUP_VISION].api_key, "shared-fixture-key");
-	EXPECT_STREQ(state.entries[SETUP_VISION].api_key_env, "");
-	EXPECT_STREQ(state.entries[SETUP_IMAGE].api_key, "keep-existing-account");
-	EXPECT_STREQ(state.entries[SETUP_VIDEO].api_key, "");
+	for (int i = 0; i <= CLI_SETUP_IMAGE; i++) strcpy(state.entries[i].api_key_env, env);
+	strcpy(state.entries[CLI_SETUP_IMAGE].api_key, "keep-existing-account");
+	strcpy(state.entries[CLI_SETUP_TEXT].api_key, "shared-fixture-key");
+	state.entries[CLI_SETUP_TEXT].api_key_env[0] = '\0';
+	cli_setup_share_credentials(&state, CLI_SETUP_TEXT, env);
+	EXPECT_STREQ(state.entries[CLI_SETUP_VISION].api_key, "shared-fixture-key");
+	EXPECT_STREQ(state.entries[CLI_SETUP_VISION].api_key_env, "");
+	EXPECT_STREQ(state.entries[CLI_SETUP_IMAGE].api_key, "keep-existing-account");
+	EXPECT_STREQ(state.entries[CLI_SETUP_VIDEO].api_key, "");
 }
 
 TEST(CliSetupDefaults, NewlyRequiredModelsReuseAnExistingProviderAccount) {
 	struct cli_setup_state state{};
-	cli_setup_model_defaults(SETUP_TEXT, 1, &state.entries[SETUP_TEXT]);
-	strcpy(state.entries[SETUP_TEXT].api_key, "existing-fixture-key");
-	state.entries[SETUP_TEXT].api_key_env[0] = '\0';
-	state.role = SETUP_PHOTO_EDITOR;
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 1, &state.entries[CLI_SETUP_TEXT]);
+	strcpy(state.entries[CLI_SETUP_TEXT].api_key, "existing-fixture-key");
+	state.entries[CLI_SETUP_TEXT].api_key_env[0] = '\0';
+	state.role = CLI_SETUP_PHOTO_EDITOR;
 	cli_setup_role_defaults(&state);
-	for (int kind : {SETUP_VISION, SETUP_IMAGE}) {
+	for (int kind : {CLI_SETUP_VISION, CLI_SETUP_IMAGE}) {
 		EXPECT_STREQ(state.entries[kind].api_key, "existing-fixture-key");
 		EXPECT_STREQ(state.entries[kind].api_key_env, "");
 	}
-	state.role = SETUP_VIDEO_CREATOR;
+	state.role = CLI_SETUP_VIDEO_CREATOR;
 	cli_setup_role_defaults(&state);
-	EXPECT_STREQ(state.entries[SETUP_VIDEO].api_key, "");
-	EXPECT_STREQ(state.entries[SETUP_TEXT].api_key, "existing-fixture-key");
+	EXPECT_STREQ(state.entries[CLI_SETUP_VIDEO].api_key, "");
+	EXPECT_STREQ(state.entries[CLI_SETUP_TEXT].api_key, "existing-fixture-key");
 }
 
 TEST_F(CliSetupTest, SetupWritesOnlyTheSelectedCredentialSource) {
@@ -269,8 +273,8 @@ TEST_F(CliSetupTest, CancellationDoesNotCreateFile) {
 }
 
 TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	ASSERT_EQ(file_write_all(path.c_str(), "# keep\n", 7), 0);
 	EXPECT_EQ(run_custom(std::string(9, '\n')), -EEXIST);
 	char *contents = file_read_all(path.c_str(), nullptr);
@@ -281,8 +285,8 @@ TEST_F(CliSetupTest, NeverOverwriteExistingConfig) {
 }
 
 TEST_F(CliSetupTest, NonInteractiveDoesNotCreateConfig) {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	EXPECT_EQ(cli_setup_if_missing(&_cli_output_context, path.c_str(), 0), -ENOENT);
 	EXPECT_FALSE(file_exists(path.c_str()));
 }
@@ -330,17 +334,17 @@ TEST_F(CliSetupTest, VisionAcceptsDeepSeekWithDeepSeekAdapter) {
 
 TEST(CliSetupTokens, ModelChangesResetLimitsToEditableDefaults) {
 	struct config_model_entry entry = {};
-	cli_setup_model_defaults(SETUP_TEXT, 1, &entry);
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 1, &entry);
 	EXPECT_EQ(entry.context_limit, 128000);
 	EXPECT_EQ(entry.max_tokens, 16384);
 	strcpy(entry.model, "gpt-4o-unknown-version");
 	cli_setup_reset_token_limits(&entry);
 	EXPECT_EQ(entry.context_limit, 128000);
 	EXPECT_EQ(entry.max_tokens, 16384);
-	cli_setup_model_defaults(SETUP_TEXT, 2, &entry);
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
 	EXPECT_EQ(entry.context_limit, 1000000);
 	EXPECT_EQ(entry.max_tokens, 384000);
-	cli_setup_model_defaults(SETUP_VISION, 4, &entry);
+	cli_setup_model_defaults(CLI_SETUP_VISION, 4, &entry);
 	strcpy(entry.model, "gpt-4o");
 	cli_setup_reset_token_limits(&entry);
 	EXPECT_EQ(entry.context_limit, 128000);
@@ -490,17 +494,17 @@ TEST_F(CliSetupTest, RolePromptReplacementPreservesOriginalPromptFiles) {
 }
 
 TEST_F(CliSetupTest, EveryRoleRendersAndUsesExplicitModelRequirements) {
-	for (int i = 0; i < SETUP_ROLE_COUNT; i++) {
+	for (int i = 0; i < CLI_SETUP_ROLE_COUNT; i++) {
 		char *text = nullptr;
 		ASSERT_EQ(cli_setup_role_render(i, &text), 0);
 		ASSERT_NE(text, nullptr);
 		EXPECT_EQ(std::string(text).find("{{"), std::string::npos);
 		EXPECT_NE(std::string(text).find(cli_setup_role_get(i).label), std::string::npos);
-		EXPECT_TRUE(cli_setup_role_requires(i, SETUP_TEXT));
+		EXPECT_TRUE(cli_setup_role_requires(i, CLI_SETUP_TEXT));
 		free(text);
 	}
-	for (int i = 0; i < SETUP_MODEL_COUNT; i++)
-		EXPECT_TRUE(cli_setup_role_requires(SETUP_VIDEO_CREATOR, i));
+	for (int i = 0; i < CLI_SETUP_MODEL_COUNT; i++)
+		EXPECT_TRUE(cli_setup_role_requires(CLI_SETUP_VIDEO_CREATOR, i));
 }
 
 TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
@@ -510,7 +514,7 @@ TEST_F(CliSetupTest, ReconfigureUsesSavedVideoRoleAndNeverAddsSkipSteps) {
 	EXPECT_NE(transcript.find("Video model (required)"), std::string::npos);
 	char *saved = file_read_all(path.c_str(), nullptr);
 	ASSERT_NE(saved, nullptr);
-	EXPECT_EQ(cli_setup_config_role(saved), SETUP_VIDEO_CREATOR);
+	EXPECT_EQ(cli_setup_config_role(saved), CLI_SETUP_VIDEO_CREATOR);
 	free(saved);
 }
 
@@ -539,12 +543,12 @@ TEST_F(CliSetupTest, SetupConfigMergeSupportsInlineTablesAndUnrelatedArrays) {
 	EXPECT_NE(std::string(merged).find("echo keep"), std::string::npos);
 	struct config_validation_error error{};
 	EXPECT_EQ(config_validate_text(merged, &error), 0) << error.message;
-	EXPECT_EQ(cli_setup_config_role(merged), SETUP_VIDEO_CREATOR);
+	EXPECT_EQ(cli_setup_config_role(merged), CLI_SETUP_VIDEO_CREATOR);
 	free(merged);
 }
 
 TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) {
-	for (int role = 0; role < SETUP_ROLE_COUNT; role++) {
+	for (int role = 0; role < CLI_SETUP_ROLE_COUNT; role++) {
 		char *configured = nullptr;
 		ASSERT_EQ(cli_setup_mcp_apply("# keep\n[exec]\nnetwork=false\n", role,
 			&configured), 0);
@@ -555,12 +559,12 @@ TEST_F(CliSetupTest, McpDefaultsVaryByRoleAndReapplicationKeepsExistingEntries) 
 		ASSERT_EQ(servers.type, TOML_ARRAY);
 		EXPECT_STREQ(toml_get(servers.u.arr.elem[0], "name").u.s, "exa");
 		EXPECT_STREQ(toml_get(servers.u.arr.elem[0], "url").u.s, "https://mcp.exa.ai/mcp");
-		int expected = 1 + (role == SETUP_DEVELOPER || role == SETUP_RESEARCHER ? 1 : 0) +
-			(role == SETUP_DESIGNER ? 1 : 0);
+		int expected = 1 + (role == CLI_SETUP_DEVELOPER || role == CLI_SETUP_RESEARCHER ? 1 : 0) +
+			(role == CLI_SETUP_DESIGNER ? 1 : 0);
 #ifdef __APPLE__
-		if (role == SETUP_DEVELOPER || role == SETUP_PHOTOGRAPHER ||
-		    role == SETUP_PHOTO_EDITOR || role == SETUP_DESIGNER ||
-		    role == SETUP_VIDEO_CREATOR) expected++;
+		if (role == CLI_SETUP_DEVELOPER || role == CLI_SETUP_PHOTOGRAPHER ||
+		    role == CLI_SETUP_PHOTO_EDITOR || role == CLI_SETUP_DESIGNER ||
+		    role == CLI_SETUP_VIDEO_CREATOR) expected++;
 #endif
 		EXPECT_EQ(servers.u.arr.size, expected);
 		char *again = nullptr;
@@ -627,7 +631,7 @@ TEST_F(CliSetupTest, LocalMcpDefaultsReflectLaunchersWithoutRunningOrInstallingT
 			}
 		}
 		char *configured = nullptr;
-		ASSERT_EQ(cli_setup_mcp_apply("", SETUP_DEVELOPER, &configured), 0);
+		ASSERT_EQ(cli_setup_mcp_apply("", CLI_SETUP_DEVELOPER, &configured), 0);
 		toml_result_t parsed = toml_parse(configured, static_cast<int>(strlen(configured)));
 		ASSERT_TRUE(parsed.ok);
 		toml_datum_t servers = toml_get(toml_get(parsed.toptab, "mcp"), "servers");
@@ -740,10 +744,10 @@ TEST_F(CliSetupTest, RoleSnapshotsHaveReadableNamesAndReuseUnchangedContent) {
 
 TEST(CliSetupThinking, OnlyDeepSeekChangesAndOtherOptionsSurvive) {
 	struct config_model_entry entry{};
-	cli_setup_model_defaults(SETUP_TEXT, 1, &entry);
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 1, &entry);
 	EXPECT_EQ(cli_setup_set_thinking(&entry, 1), -EINVAL);
 	EXPECT_STREQ(entry.extra_body_json, "");
-	cli_setup_model_defaults(SETUP_TEXT, 2, &entry);
+	cli_setup_model_defaults(CLI_SETUP_TEXT, 2, &entry);
 	strcpy(entry.extra_body_json,
 		"{\"reasoning_effort\":\"high\",\"thinking\":{\"type\":\"disabled\"}}");
 	ASSERT_EQ(cli_setup_set_thinking(&entry, 1), 0);

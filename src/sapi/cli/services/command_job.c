@@ -1,0 +1,306 @@
+#include "sapi/cli/services/command_job.h"
+#include "sapi/cli/services/turn.h"
+#include "cJSON.h"
+#include "sapi/cli/services/event_queue.h"
+#include "sapi/cli/application_internal.h"
+
+#define CLI_COMMAND_JOB_COMMAND_POLL_TIMEOUT_MS 100
+
+struct cli_command_job_prompt {
+	char *text;
+	char *payload;
+	char *display_text;
+};
+
+static void *cli_command_job_run(void *opaque)
+{
+	struct cli_command_job *job = opaque;
+	struct cli_application *ctx = job->ctx;
+	(void)ctx;
+	int result;
+
+	result = job->fn(job->ctx, job->input, job->user_data);
+	pthread_mutex_lock(&job->mutex);
+	job->result = result;
+	job->done = 1;
+	pthread_mutex_unlock(&job->mutex);
+	cli_event_queue_notify(job->ctx);
+	return NULL;
+}
+
+static int cli_command_job_command_handle(struct cli_application *ctx, const char *input,
+					  void *user_data)
+{
+	(void)user_data;
+	return cli_turn_execute(ctx, input);
+}
+
+int cli_command_job_init(struct cli_command_job *job)
+{
+	struct cli_command_job_prompt prompt;
+	int rc;
+
+	if (!job)
+		return -EINVAL;
+	memset(job, 0, sizeof(*job));
+	rc = pthread_mutex_init(&job->mutex, NULL);
+	if (rc != 0)
+		return -rc;
+	rc = morph_array_init(&job->prompts, MORPH_ARRAY_INIT_CAP, sizeof(prompt));
+	if (rc != 0) {
+		pthread_mutex_destroy(&job->mutex);
+		return rc;
+	}
+	return 0;
+}
+
+void cli_command_job_cleanup(struct cli_command_job *job)
+{
+	if (!job)
+		return;
+	if (job->active)
+		(void)cli_command_job_finish(job);
+	for (size_t i = 0; i < job->prompts.nelts; i++) {
+		struct cli_command_job_prompt *prompt = morph_array_get(&job->prompts, i);
+
+		free(prompt->text);
+		free(prompt->payload);
+		free(prompt->display_text);
+	}
+	morph_array_cleanup(&job->prompts);
+	free(job->delivered_prompt);
+	pthread_mutex_destroy(&job->mutex);
+}
+
+int cli_command_job_start(struct cli_command_job *job, struct cli_application *ctx,
+			  const char *input)
+{
+	return cli_command_job_start_fn(job, ctx, input, cli_command_job_command_handle, NULL);
+}
+
+int cli_command_job_start_fn(struct cli_command_job *job, struct cli_application *ctx,
+			     const char *input, cli_command_job_fn fn, void *user_data)
+{
+	int thread_rc;
+
+	if (!job || !ctx || !input || !fn || job->active)
+		return -EINVAL;
+	job->input = strdup(input);
+	if (!job->input)
+		return -ENOMEM;
+	job->ctx = ctx;
+	job->fn = fn;
+	job->user_data = user_data;
+	job->done = 0;
+	job->result = 0;
+	job->active = 1;
+	thread_rc = pthread_create(&job->thread, NULL, cli_command_job_run, job);
+	if (thread_rc != 0) {
+		job->active = 0;
+		free(job->input);
+		job->input = NULL;
+		return -thread_rc;
+	}
+	return 0;
+}
+
+int cli_command_job_done(struct cli_command_job *job)
+{
+	int done;
+
+	if (!job || !job->active)
+		return 0;
+	pthread_mutex_lock(&job->mutex);
+	done = job->done;
+	pthread_mutex_unlock(&job->mutex);
+	return done;
+}
+
+int cli_command_job_finish(struct cli_command_job *job)
+{
+	int result;
+
+	if (!job || !job->active)
+		return -EINVAL;
+	pthread_join(job->thread, NULL);
+	result = job->result;
+	free(job->input);
+	job->input = NULL;
+	job->fn = NULL;
+	job->user_data = NULL;
+	job->active = 0;
+	job->done = 0;
+	return result;
+}
+
+int cli_command_job_wait(struct cli_command_job *job)
+{
+	struct cli_application *ctx;
+	int warned = 0;
+
+	if (!job || !job->active || !job->ctx)
+		return -EINVAL;
+	ctx = job->ctx;
+	while (!cli_command_job_done(job)) {
+		struct pollfd fd;
+		int wake_fd = cli_event_queue_wake_fd(ctx);
+		int nfds = wake_fd >= 0 ? 1 : 0;
+		int rc;
+
+		fd.fd = wake_fd;
+		fd.events = POLLIN;
+		fd.revents = 0;
+		rc = poll(nfds > 0 ? &fd : NULL, (nfds_t)nfds,
+			  CLI_COMMAND_JOB_COMMAND_POLL_TIMEOUT_MS);
+		if (rc < 0 && errno == EINTR)
+			continue;
+		if (rc < 0 && !warned) {
+			log_warn(ctx ? ctx->logger : NULL, "command UI polling failed: %s",
+				 strerror(errno));
+			warned = 1;
+		}
+		(void)cli_event_queue_drain(ctx);
+	}
+	(void)cli_event_queue_drain(ctx);
+	return cli_command_job_finish(job);
+}
+
+int cli_command_job_prompt(struct cli_command_job *job, const char *text, const char *display_text)
+{
+	cJSON *payload;
+	char *json;
+	struct cli_command_job_prompt prompt;
+	struct cli_command_job_prompt *slot;
+	int distinct_display;
+
+	if (!job || !text || !text[0])
+		return -EINVAL;
+	distinct_display = display_text && strcmp(display_text, text) != 0;
+	payload = cJSON_CreateObject();
+	if (!payload)
+		return -ENOMEM;
+	if (!cJSON_AddStringToObject(payload, "text", text)) {
+		cJSON_Delete(payload);
+		return -ENOMEM;
+	}
+	if (distinct_display && !cJSON_AddStringToObject(payload, "display_text", display_text)) {
+		cJSON_Delete(payload);
+		return -ENOMEM;
+	}
+	json = cJSON_PrintUnformatted(payload);
+	cJSON_Delete(payload);
+	if (!json)
+		return -ENOMEM;
+	prompt.text = strdup(text);
+	prompt.payload = json;
+	prompt.display_text = distinct_display ? strdup(display_text) : NULL;
+	if (!prompt.text || (distinct_display && !prompt.display_text)) {
+		free(prompt.text);
+		free(prompt.display_text);
+		free(json);
+		return -ENOMEM;
+	}
+	pthread_mutex_lock(&job->mutex);
+	slot = morph_array_push(&job->prompts);
+	if (slot)
+		*slot = prompt;
+	pthread_mutex_unlock(&job->mutex);
+	if (!slot) {
+		free(prompt.text);
+		free(prompt.display_text);
+		free(json);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+int cli_command_job_prompt_snapshot(struct cli_command_job *job, char **items, size_t capacity,
+				    size_t *total)
+{
+	size_t copied = 0;
+
+	if (!job || (!items && capacity > 0) || !total)
+		return -EINVAL;
+	pthread_mutex_lock(&job->mutex);
+	*total = job->prompts.nelts;
+	while (copied < capacity && copied < job->prompts.nelts) {
+		struct cli_command_job_prompt *prompt = morph_array_get(&job->prompts, copied);
+
+		items[copied] = strdup(prompt->display_text ? prompt->display_text : prompt->text);
+		if (!items[copied])
+			break;
+		copied++;
+	}
+	pthread_mutex_unlock(&job->mutex);
+	if (copied < capacity && copied < *total) {
+		while (copied > 0)
+			free(items[--copied]);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+/* The returned payload stays valid until the next drain, including when the
+ * producer appends another prompt while ReAct is processing this one. */
+int cli_command_job_drain(void *opaque, struct react_action *out, int timeout)
+{
+	struct cli_command_job *job = opaque;
+	struct cli_application *ctx = job->ctx;
+	(void)ctx;
+	struct cli_command_job_prompt *items;
+
+	(void)timeout;
+	pthread_mutex_lock(&job->mutex);
+	free(job->delivered_prompt);
+	job->delivered_prompt = NULL;
+	if (job->prompts.nelts > 0) {
+		items = job->prompts.elts;
+		job->delivered_prompt = items[0].payload;
+		free(items[0].text);
+		free(items[0].display_text);
+		job->prompts.nelts--;
+		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
+	}
+	pthread_mutex_unlock(&job->mutex);
+	out->type = "prompt";
+	out->payload_json = job->delivered_prompt;
+	if (out->payload_json && job->ctx)
+		cli_event_queue_notify(job->ctx);
+	return out->payload_json ? 1 : 0;
+}
+
+/* Called after joining the worker: submissions that missed the final drain
+ * become the next turn instead of disappearing at the completion boundary. */
+char *cli_command_job_take_prompt(struct cli_command_job *job, char **display_text)
+{
+	struct cli_command_job_prompt *items;
+	char *text = NULL;
+
+	if (display_text)
+		*display_text = NULL;
+	pthread_mutex_lock(&job->mutex);
+	if (job->prompts.nelts > 0) {
+		items = job->prompts.elts;
+		text = items[0].text;
+		if (display_text)
+			*display_text = items[0].display_text;
+		else
+			free(items[0].display_text);
+		free(items[0].payload);
+		job->prompts.nelts--;
+		memmove(items, items + 1, job->prompts.nelts * sizeof(*items));
+	}
+	pthread_mutex_unlock(&job->mutex);
+	return text;
+}
+
+int cli_command_job_prompt_pending(void *opaque)
+{
+	struct cli_command_job *job = opaque;
+	int pending;
+
+	pthread_mutex_lock(&job->mutex);
+	pending = job->prompts.nelts > 0;
+	pthread_mutex_unlock(&job->mutex);
+	return pending;
+}

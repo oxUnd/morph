@@ -1,0 +1,26 @@
+#ifndef MORPH_CLI_WIDGETS_LIST_H
+#define MORPH_CLI_WIDGETS_LIST_H
+
+struct cli_application;
+#include <stddef.h>
+#include <morph/tui/widgets/tree.h>
+
+void cli_list_tree_prefix(struct cli_application *ctx, const int *last, int depth, int is_last,
+			  int continuation);
+
+int cli_list_columns(void);
+size_t cli_list_compact_text(char *dst, size_t dst_cap, const char *src);
+void cli_list_group(struct cli_application *ctx, const char *name, int count, int is_last);
+void cli_list_item(struct cli_application *ctx, const char *ancestor, int is_last,
+		   const char *marker, const char *name, const char *description, int name_width,
+		   int columns);
+void cli_list_row(struct cli_application *ctx, const char *id, const char *name,
+		  const char *metadata, int is_current, int is_last, int columns);
+void cli_list_value_field(struct cli_application *ctx, const char *label, const char *value,
+			  int is_last, int label_width, int columns);
+void cli_list_text_field(struct cli_application *ctx, const char *label, const char *value,
+			 int is_last, int columns);
+void cli_list_json_field(struct cli_application *ctx, const char *label, const char *json,
+			 int is_last, int columns);
+
+#endif

@@ -1,13 +1,14 @@
+#include "sapi/cli/commands/runtime.h"
 #include "ext/ext.h"
 #include "credits.h"
 #include "config/config.h"
 #include "cJSON.h"
-#include "sapi/cli/internal.h"
-#include "sapi/cli/core.h"
-#include "sapi/cli/ui/recap.h"
+#include "sapi/cli/application_internal.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/services/recap.h"
 #include "sapi/cli/commands/registry.h"
 
-static int cmd_quit(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_quit(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
@@ -16,7 +17,7 @@ static int cmd_quit(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_help(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_help(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)ctx;
 	const char *topic = cli_cmd_arg(argc, argv, 1);
@@ -40,7 +41,7 @@ static int cmd_help(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_model(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_model(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *name = cli_cmd_arg(argc, argv, 1);
 	struct session current;
@@ -56,8 +57,8 @@ static int cmd_model(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static void print_trace_steps(struct cli_context *ctx, struct react_step *steps, int count,
-			      const char *state_name)
+static void cli_runtime_print_trace_steps(struct cli_application *ctx, struct react_step *steps,
+					  int count, const char *state_name)
 {
 	struct react_step *cur = steps;
 	int step = 1;
@@ -65,20 +66,34 @@ static void print_trace_steps(struct cli_context *ctx, struct react_step *steps,
 		const char *color = "";
 		switch (cur->type) {
 		case REACT_STEP_CONTENT:
-		case REACT_STEP_THOUGHT:	color = ANSI_DIM; break;
-		case REACT_STEP_ACTION:		color = ANSI_YELLOW; break;
-		case REACT_STEP_OBSERVATION:	color = ANSI_DIM; break;
-		case REACT_STEP_REFLECTION:	color = ANSI_CYAN; break;
-		case REACT_STEP_FINAL:		color = ANSI_GREEN; break;
-		case REACT_STEP_REASONING:	color = ANSI_DIM; break;
-		default:			color = ""; break;
+		case REACT_STEP_THOUGHT:
+			color = ANSI_DIM;
+			break;
+		case REACT_STEP_ACTION:
+			color = ANSI_YELLOW;
+			break;
+		case REACT_STEP_OBSERVATION:
+			color = ANSI_DIM;
+			break;
+		case REACT_STEP_REFLECTION:
+			color = ANSI_CYAN;
+			break;
+		case REACT_STEP_FINAL:
+			color = ANSI_GREEN;
+			break;
+		case REACT_STEP_REASONING:
+			color = ANSI_DIM;
+			break;
+		default:
+			color = "";
+			break;
 		}
 		printf(ctx, "  %d. %s[%s]%s", step, color, react_step_type_name(cur->type),
 		       ANSI_RESET);
 		if (cur->content) {
 			printf(ctx, " ");
-			(void)cli_print_untrusted_text(ctx, cur->content,
-						       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			(void)cli_output_print_untrusted(ctx, cur->content,
+							 UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		}
 		if (cur->tool_name)
 			printf(ctx, ANSI_DIM " (tool: %s)" ANSI_RESET, cur->tool_name);
@@ -90,15 +105,16 @@ static void print_trace_steps(struct cli_context *ctx, struct react_step *steps,
 	       state_name ? state_name : "n/a", count);
 }
 
-static void print_runtime_trace(struct cli_context *ctx, const struct runtime_turn_status *status)
+static void cli_runtime_print_runtime_trace(struct cli_application *ctx,
+					    const struct runtime_turn_status *status)
 {
 	for (int i = 0; status && i < status->step_count; i++) {
 		const struct runtime_trace_step *step = &status->steps[i];
 		printf(ctx, "  %d. [%s]", i + 1, react_step_type_name(step->type));
 		if (step->content) {
 			printf(ctx, " ");
-			(void)cli_print_untrusted_text(ctx, step->content,
-						       UTF8_TERMINAL_TEXT_SINGLE_LINE);
+			(void)cli_output_print_untrusted(ctx, step->content,
+							 UTF8_TERMINAL_TEXT_SINGLE_LINE);
 		}
 		if (step->tool_name)
 			printf(ctx, ANSI_DIM " (tool: %s)" ANSI_RESET, step->tool_name);
@@ -108,7 +124,8 @@ static void print_runtime_trace(struct cli_context *ctx, const struct runtime_tu
 	       status ? react_state_name(status->state) : "n/a", status ? status->step_count : 0);
 }
 
-static struct react_step *json_to_react_steps(struct arena *arena, const char *json, int *out_count)
+static struct react_step *cli_runtime_json_to_react_steps(struct arena *arena, const char *json,
+							  int *out_count)
 {
 	if (!json)
 		return NULL;
@@ -125,15 +142,23 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 		if (!cJSON_IsObject(obj))
 			continue;
 		cJSON *type_item = cJSON_GetObjectItem(obj, "type");
-		const char *type_name = cJSON_IsString(type_item) ? type_item->valuestring : "Unknown";
+		const char *type_name =
+			cJSON_IsString(type_item) ? type_item->valuestring : "Unknown";
 		enum react_step_type type = REACT_STEP_THOUGHT;
-		if (strcmp(type_name, "Thought") == 0)		type = REACT_STEP_THOUGHT;
-		else if (strcmp(type_name, "Action") == 0)	type = REACT_STEP_ACTION;
-		else if (strcmp(type_name, "Observation") == 0)	type = REACT_STEP_OBSERVATION;
-		else if (strcmp(type_name, "Reflection") == 0)	type = REACT_STEP_REFLECTION;
-		else if (strcmp(type_name, "Final") == 0)	type = REACT_STEP_FINAL;
-		else if (strcmp(type_name, "Reasoning") == 0)	type = REACT_STEP_REASONING;
-		else if (strcmp(type_name, "Content") == 0)	type = REACT_STEP_CONTENT;
+		if (strcmp(type_name, "Thought") == 0)
+			type = REACT_STEP_THOUGHT;
+		else if (strcmp(type_name, "Action") == 0)
+			type = REACT_STEP_ACTION;
+		else if (strcmp(type_name, "Observation") == 0)
+			type = REACT_STEP_OBSERVATION;
+		else if (strcmp(type_name, "Reflection") == 0)
+			type = REACT_STEP_REFLECTION;
+		else if (strcmp(type_name, "Final") == 0)
+			type = REACT_STEP_FINAL;
+		else if (strcmp(type_name, "Reasoning") == 0)
+			type = REACT_STEP_REASONING;
+		else if (strcmp(type_name, "Content") == 0)
+			type = REACT_STEP_CONTENT;
 		cJSON *content = cJSON_GetObjectItem(obj, "content");
 		cJSON *tool_name = cJSON_GetObjectItem(obj, "tool_name");
 		cJSON *tool_args = cJSON_GetObjectItem(obj, "tool_args");
@@ -147,9 +172,7 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 				snprintf(args_buf, ab_len, "%s(%s)", tn, tool_args->valuestring);
 		}
 		struct react_step *s = react_step_create(
-			arena,
-			type,
-			cJSON_IsString(content) ? content->valuestring : NULL,
+			arena, type, cJSON_IsString(content) ? content->valuestring : NULL,
 			cJSON_IsString(tool_name) ? tool_name->valuestring : NULL,
 			args_buf ? args_buf : NULL,
 			cJSON_IsString(tool_call_id) ? tool_call_id->valuestring : NULL);
@@ -165,7 +188,7 @@ static struct react_step *json_to_react_steps(struct arena *arena, const char *j
 	return head.next;
 }
 
-static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_trace(struct cli_application *ctx, int argc, char **argv)
 {
 	int from_db = 0;
 	for (int i = 1; i < argc; i++) {
@@ -174,8 +197,7 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 	}
 	if (from_db) {
 		int round_no = 0, aborted = 0;
-		char *json = runtime_trace_load_latest_current(ctx->runtime,
-						       &round_no, &aborted);
+		char *json = runtime_trace_load_latest_current(ctx->runtime, &round_no, &aborted);
 		if (!json) {
 			printf(ctx, "no traces saved in DB for this session\n");
 			return 0;
@@ -184,9 +206,10 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 			   aborted ? "aborted" : "completed");
 		int count = 0;
 		struct arena *arena = arena_create(64 * 1024);
-		struct react_step *steps = json_to_react_steps(arena, json, &count);
+		struct react_step *steps = cli_runtime_json_to_react_steps(arena, json, &count);
 		if (steps) {
-			print_trace_steps(ctx, steps, count, aborted ? "ABORT" : "DONE");
+			cli_runtime_print_trace_steps(ctx, steps, count,
+						      aborted ? "ABORT" : "DONE");
 		} else {
 			printf(ctx, "  (raw) %s\n", json);
 		}
@@ -196,19 +219,18 @@ static int cmd_trace(struct cli_context *ctx, int argc, char **argv)
 	}
 	struct runtime_turn_status status;
 	struct session current;
-	if (runtime_turn_status_get(ctx->runtime, &status) != 0 ||
-	    status.step_count == 0) {
+	if (runtime_turn_status_get(ctx->runtime, &status) != 0 || status.step_count == 0) {
 		printf(ctx, "no ReAct trace for current turn\n");
 		return 0;
 	}
 	(void)runtime_session_current(ctx->runtime, &current);
 	CMD_HEADER(ctx, "ReAct trace (%s)", current.name);
-	print_runtime_trace(ctx, &status);
+	cli_runtime_print_runtime_trace(ctx, &status);
 	runtime_turn_status_cleanup(&status);
 	return 0;
 }
 
-static int cmd_credits(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_credits(struct cli_application *ctx, int argc, char **argv)
 {
 	struct credit_summary today;
 	struct credit_summary session;
@@ -239,7 +261,7 @@ static int cmd_credits(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_context(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_context(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
@@ -253,8 +275,8 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 		runtime_session_messages_current(ctx->runtime, &transcript_count);
 
 	runtime_session_messages_free(transcript);
-	(void)runtime_session_model_context_stats(ctx->runtime, &active_items,
-		&total_tokens, &tool_tokens, &compactions, &limit);
+	(void)runtime_session_model_context_stats(ctx->runtime, &active_items, &total_tokens,
+						  &tool_tokens, &compactions, &limit);
 	double pct = limit > 0 ? (double)total_tokens / limit * 100.0 : 0.0;
 	printf(ctx,
 	       "context: %s%d / %d tokens (%.1f%%)%s | model items: %d | "
@@ -263,11 +285,9 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 	       pct >= 80.0 ? ANSI_RESET : "", active_items, transcript_count, tool_tokens,
 	       compactions);
 	{
-		static const char *const kinds[] = {
-			"user_message", "assistant_message",
-			"assistant_tool_calls", "tool_result",
-			"compaction_summary", "background_receipt"
-		};
+		static const char *const kinds[] = {"user_message",	    "assistant_message",
+						    "assistant_tool_calls", "tool_result",
+						    "compaction_summary",   "background_receipt"};
 		int count = 0;
 		struct model_history_item *items =
 			runtime_session_model_history_current(ctx->runtime, 1, &count);
@@ -277,8 +297,7 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 			int kind_count = 0;
 			int kind_tokens = 0;
 
-			for (struct model_history_item *item = items; item;
-			     item = item->next) {
+			for (struct model_history_item *item = items; item; item = item->next) {
 				if (strcmp(item->kind, kinds[i]) == 0) {
 					kind_count++;
 					kind_tokens += item->token_count;
@@ -301,7 +320,7 @@ static int cmd_context(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_compress(struct cli_application *ctx, int argc, char **argv)
 {
 	int window_removed = 0;
 	int kept = 0;
@@ -309,8 +328,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 
 	(void)argc;
 	(void)argv;
-	rc = runtime_session_compress(ctx->runtime, NULL,
-					      &window_removed, &kept);
+	rc = runtime_session_compress(ctx->runtime, NULL, &window_removed, &kept);
 	if (rc < 0) {
 		CMD_ERROR(ctx, "compression failed: %s", morph_strerror(rc));
 		return rc;
@@ -320,7 +338,7 @@ static int cmd_compress(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_save(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_save(struct cli_application *ctx, int argc, char **argv)
 {
 	const char *fmt = cli_cmd_arg(argc, argv, 1);
 	if (!fmt)
@@ -330,17 +348,15 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 	struct session current;
 	(void)runtime_session_current(ctx->runtime, &current);
 	char filename[PATH_MAX];
-	snprintf(filename, sizeof(filename), "%s_%lld.%s",
-		 current.name,
-		 (long long)time(NULL), fmt);
+	snprintf(filename, sizeof(filename), "%s_%lld.%s", current.name, (long long)time(NULL),
+		 fmt);
 	CMD_HEADER(ctx, "saving session to %s", filename);
 	FILE *f = fopen(filename, "w");
 	if (f) {
 		fprintf(f, "# Session: %s\n\n", current.name);
 		struct message *cur = msgs;
 		while (cur) {
-			fprintf(f, "**%s**: %s\n\n", cur->role,
-				cur->content ? cur->content : "");
+			fprintf(f, "**%s**: %s\n\n", cur->role, cur->content ? cur->content : "");
 			cur = cur->next;
 		}
 		fclose(f);
@@ -352,7 +368,7 @@ static int cmd_save(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_config(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_config(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)argc;
 	(void)argv;
@@ -448,7 +464,8 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf(ctx, "  exec.network = %d\n", (*runtime_config_get(ctx->runtime)).exec.network);
 	if ((*runtime_config_get(ctx->runtime)).react.disabled_tools_count > 0) {
 		printf(ctx, "  disabled_tools =");
-		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count; i++)
+		for (int i = 0; i < (*runtime_config_get(ctx->runtime)).react.disabled_tools_count;
+		     i++)
 			printf(ctx, " %s",
 			       (*runtime_config_get(ctx->runtime)).react.disabled_tools[i]);
 		printf(ctx, "\n");
@@ -524,7 +541,8 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	printf(ctx, ANSI_BOLD "[mcp]" ANSI_RESET "\n");
 	printf(ctx, "  server_count = %d\n", (*runtime_config_get(ctx->runtime)).mcp.server_count);
 	for (int i = 0; i < (*runtime_config_get(ctx->runtime)).mcp.server_count; i++) {
-		const struct config_mcp_server *s = &(*runtime_config_get(ctx->runtime)).mcp.servers[i];
+		const struct config_mcp_server *s =
+			&(*runtime_config_get(ctx->runtime)).mcp.servers[i];
 		printf(ctx, "  [[mcp.servers.%d]]\n", i);
 		printf(ctx, "    name = %s\n", s->name);
 		printf(ctx, "    transport = %s\n", s->transport);
@@ -538,7 +556,7 @@ static int cmd_config(struct cli_context *ctx, int argc, char **argv)
 	}
 	return 0;
 }
-static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_export_alias(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)ctx;
 	(void)argc;
@@ -547,7 +565,7 @@ static int cmd_export_alias(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_clear(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)ctx;
 	(void)argc;
@@ -557,7 +575,7 @@ static int cmd_clear(struct cli_context *ctx, int argc, char **argv)
 	return 0;
 }
 
-static int cmd_recap(struct cli_context *ctx, int argc, char **argv)
+static int cli_runtime_command_recap(struct cli_application *ctx, int argc, char **argv)
 {
 	(void)argv;
 	if (argc != 1) {
@@ -567,34 +585,37 @@ static int cmd_recap(struct cli_context *ctx, int argc, char **argv)
 	return cli_recap_start(ctx, 0);
 }
 
-static const struct cli_command runtime_commands[] = {
-	{ "/quit",    cmd_quit,    "Exit the program",                  "" },
-	{ "/q",       cmd_quit,    "Alias for /quit",                   "" },
-	{ "/help",    cmd_help,    "Show help for commands",            "/help [command]" },
-	{ "/h",       cmd_help,    "Alias for /help",                   "/h [command]" },
-	{ "/model",   cmd_model,   "View or switch the LLM model",      "/model [name]" },
-	{ "/m",       cmd_model,   "Alias for /model",                  "/m [name]" },
-	{ "/trace",   cmd_trace,   "Show ReAct trace for current turn", "/trace [--from-db]" },
-	{ "/t",       cmd_trace,   "Alias for /trace",                  "/t [--from-db]" },
-	{ "/context", cmd_context, "Show token usage and context info", "/context" },
-	{ "/ctx",     cmd_context, "Alias for /context",                "/ctx" },
-	{ "/credits", cmd_credits, "Show credit usage and estimated cost", "/credits" },
-	{ "/compress",cmd_compress,"Manually compress context window",  "/compress" },
-	{ "/recap",   cmd_recap,   "Summarize the current conversation", "/recap" },
-	{ "/cp",      cmd_compress,"Alias for /compress",               "/cp" },
-	{ "/save",    cmd_save,    "Export session to a file",          "/save [format]" },
-	{ "/config",  cmd_config,  "View current configuration",        "/config" },
-	{ "/cfg",     cmd_config,  "Alias for /config",                 "/cfg" },
-	{ "/export",  cmd_export_alias, "Alias for /save",              "/export <format>" },
-	{ "/clear",   cmd_clear,   "Clear the terminal screen",         "/clear" },
-	{ "/cl",      cmd_clear,   "Alias for /clear",                  "/cl" },
+static const struct cli_command cli_runtime_entries[] = {
+	{"/quit", cli_runtime_command_quit, "Exit the program", ""},
+	{"/q", cli_runtime_command_quit, "Alias for /quit", ""},
+	{"/help", cli_runtime_command_help, "Show help for commands", "/help [command]"},
+	{"/h", cli_runtime_command_help, "Alias for /help", "/h [command]"},
+	{"/model", cli_runtime_command_model, "View or switch the LLM model", "/model [name]"},
+	{"/m", cli_runtime_command_model, "Alias for /model", "/m [name]"},
+	{"/trace", cli_runtime_command_trace, "Show ReAct trace for current turn",
+	 "/trace [--from-db]"},
+	{"/t", cli_runtime_command_trace, "Alias for /trace", "/t [--from-db]"},
+	{"/context", cli_runtime_command_context, "Show token usage and context info", "/context"},
+	{"/ctx", cli_runtime_command_context, "Alias for /context", "/ctx"},
+	{"/credits", cli_runtime_command_credits, "Show credit usage and estimated cost",
+	 "/credits"},
+	{"/compress", cli_runtime_command_compress, "Manually compress context window",
+	 "/compress"},
+	{"/recap", cli_runtime_command_recap, "Summarize the current conversation", "/recap"},
+	{"/cp", cli_runtime_command_compress, "Alias for /compress", "/cp"},
+	{"/save", cli_runtime_command_save, "Export session to a file", "/save [format]"},
+	{"/config", cli_runtime_command_config, "View current configuration", "/config"},
+	{"/cfg", cli_runtime_command_config, "Alias for /config", "/cfg"},
+	{"/export", cli_runtime_command_export_alias, "Alias for /save", "/export <format>"},
+	{"/clear", cli_runtime_command_clear, "Clear the terminal screen", "/clear"},
+	{"/cl", cli_runtime_command_clear, "Alias for /clear", "/cl"},
 };
 
 struct cli_command_group cli_runtime_commands(void)
 {
 	return (struct cli_command_group){
-		.entries = runtime_commands,
-		.count = (int)(sizeof(runtime_commands) / sizeof(runtime_commands[0])),
+		.entries = cli_runtime_entries,
+		.count = (int)(sizeof(cli_runtime_entries) / sizeof(cli_runtime_entries[0])),
 		.category = "Core",
 	};
 }

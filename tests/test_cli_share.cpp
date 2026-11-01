@@ -1,7 +1,8 @@
 #include "runtime_test_support.hpp"
 
 extern "C" {
-#include "sapi/cli/share.h"
+#include "sapi/cli/services/share_store.h"
+#include "sapi/cli/presentation/share.h"
 #include "sapi/cli/commands/registry.h"
 #include "util/file.h"
 }
@@ -129,8 +130,8 @@ TEST_F(ShareTest, RepeatedExportsPublishDistinctVisibleFiles)
 	ASSERT_EQ(setenv("HOME", directory.c_str(), 1), 0);
 	char *first = nullptr;
 	char *second = nullptr;
-	int first_rc = cli_share_save(document, &first);
-	int second_rc = cli_share_save(document, &second);
+	int first_rc = cli_share_store_save(document, &first);
+	int second_rc = cli_share_store_save(document, &second);
 	if (home) setenv("HOME", saved.c_str(), 1);
 	else unsetenv("HOME");
 	ASSERT_EQ(first_rc, 0);
@@ -170,7 +171,7 @@ TEST_F(ShareTest, SaveFailureDoesNotReturnAPathOrLeaveStagingFiles)
 	std::string saved = home ? home : "";
 	ASSERT_EQ(setenv("HOME", directory.c_str(), 1), 0);
 	char *path = nullptr;
-	int rc = cli_share_save(document, &path);
+	int rc = cli_share_store_save(document, &path);
 	if (home) setenv("HOME", saved.c_str(), 1);
 	else unsetenv("HOME");
 	EXPECT_LT(rc, 0);
@@ -274,7 +275,7 @@ TEST_F(ShareTest, PartialWriteFailureLeavesNoPublishedOrStagingFile)
 			_exit(2);
 		signal(SIGXFSZ, SIG_IGN);
 		char *path = nullptr;
-		int rc = cli_share_save(document, &path);
+		int rc = cli_share_store_save(document, &path);
 		_exit(rc == -EFBIG && !path ? 0 : 1);
 	}
 	int status = 0;

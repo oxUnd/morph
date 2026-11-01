@@ -1,5 +1,6 @@
-#include "sapi/cli/cli.h"
-#include "sapi/cli/setup/setup.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/pages/setup/wizard.h"
 #include "config/config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,10 +10,10 @@
 
 int main(int argc, char **argv)
 {
-	struct cli_context _cli_output_context = {0};
-	struct cli_context *_cli_output_context_ptr = &_cli_output_context;
+	struct cli_application _cli_output_context = {0};
+	struct cli_application *_cli_output_context_ptr = &_cli_output_context;
 	if (argc < 2) return 2;
-	cli_set_color_enabled(_cli_output_context_ptr,
+	cli_output_set_color_enabled(_cli_output_context_ptr,
 			      argc < 3 || strcmp(argv[2], "--no-color") != 0);
 	struct termios before;
 	struct termios after;

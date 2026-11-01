@@ -1,11 +1,11 @@
 #include "model_metadata_test_support.hpp"
 
 extern "C" {
-#include "sapi/cli/ui/presentation/presenter.h"
+#include "sapi/cli/presentation/presenter.h"
 #include "runtime/recap.h"
-#include "sapi/cli/cli.h"
-#include "sapi/cli/ui/recap.h"
-#include "sapi/cli/ui/presentation/terminal.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/services/recap.h"
+#include "sapi/cli/widgets/feed.h"
 }
 
 class RecapTest : public RuntimeMetadataTest {
@@ -33,7 +33,7 @@ protected:
 		return data;
 	}
 
-	std::string Render(cJSON *data, struct cli_context *ctx)
+	std::string Render(cJSON *data, struct cli_application *ctx)
 	{
 		struct morph_event event{MORPH_EVENT_BACKGROUND, "session.recap", "end",
 			"Conversation recap finished", data, nullptr};
@@ -111,7 +111,7 @@ TEST_F(RuntimeFacadeTest, DeferredSessionSkipsRecapPollingAndClearsStaleRetry)
 	struct runtime_options options{};
 	options.create_new_session = 1;
 	Open(&options);
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.recap.progress = {99, 100, 1, 3};
 	ctx.recap.has_recap = 1;
@@ -188,7 +188,7 @@ TEST_F(RecapTest, BackgroundRequestUsesOnlyVisibleBoundedHistory)
 TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ASSERT_EQ(runtime_recap_request(instance, 0, &ctx.recap.request), 0);
 	ctx.recap.pending = 1;
@@ -208,7 +208,7 @@ TEST_F(RecapTest, RecapRendersWithoutInventingNextAndPreservesDraftState)
 TEST_F(RecapTest, StructuredModeSettlesTheRequestWithoutHumanText)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.presentation_mode = CLI_PRESENT_EVENTS_JSON;
 	ASSERT_EQ(runtime_recap_request(instance, 0, &ctx.recap.request), 0);
@@ -234,7 +234,7 @@ TEST_F(RecapTest, StructuredModeSettlesTheRequestWithoutHumanText)
 TEST_F(RecapTest, SwitchingAwayAndBackDiscardsCompletedResult)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	int64_t origin = instance->context.current_session.id;
 	ASSERT_EQ(runtime_recap_request(instance, 0, &ctx.recap.request), 0);
@@ -254,7 +254,7 @@ TEST_F(RecapTest, SwitchingAwayAndBackDiscardsCompletedResult)
 TEST_F(RecapTest, NewMessagesInvalidateQueuedResult)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ASSERT_EQ(runtime_recap_request(instance, 0, &ctx.recap.request), 0);
 	ctx.recap.pending = 1;
@@ -278,7 +278,7 @@ TEST_F(RecapTest, AutomaticRecapCanBeDisabledButManualStillWorks)
 		ASSERT_EQ(message_add(&instance->context.database,
 			instance->context.current_session.id, "assistant", "Done", 1), 0);
 	}
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
 	ctx.recap.unfocused_since = 1;
@@ -306,7 +306,7 @@ TEST_F(RecapTest, IdleUnfocusedProgressAutomaticallyRequestsOneRecap)
 		ASSERT_EQ(message_add(&instance->context.database,
 			instance->context.current_session.id, "assistant", "Done", 1), 0);
 	}
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
 	ASSERT_EQ(runtime_recap_progress(instance, &ctx.recap.progress), 0);
@@ -329,7 +329,7 @@ TEST_F(RecapTest, FastAutomaticFailureKeepsItsBoundedRetryDeadline)
 {
 	Conversation();
 	answer = "invalid output";
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
 	ASSERT_EQ(cli_recap_start(&ctx, 1), 0);
@@ -349,7 +349,7 @@ TEST_F(RecapTest, FastAutomaticFailureKeepsItsBoundedRetryDeadline)
 TEST_F(RecapTest, FocusReturnCancelsAutomaticAndShutdownIsBounded)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
 	ASSERT_EQ(cli_recap_start(&ctx, 1), 0);
@@ -366,7 +366,7 @@ TEST_F(RecapTest, FocusReturnCancelsAutomaticAndShutdownIsBounded)
 TEST_F(RecapTest, ManualRecapSurvivesFocusReturnAndSwitchingRemembersProgress)
 {
 	Conversation();
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.input_status.enabled = 1;
 	int64_t origin = instance->context.current_session.id;

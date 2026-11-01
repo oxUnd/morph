@@ -1,7 +1,8 @@
 #include "runtime_test_support.hpp"
 
 extern "C" {
-#include "sapi/cli/cli.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/application.h"
 #include "sapi/cli/commands/registry.h"
 #include "util/arena.h"
 #include "util/error.h"
@@ -235,10 +236,10 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 {
 	Add("user_message", "user text");
 	Add("tool_result", "tool output");
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 	ctx.runtime = instance;
 	ctx.presentation_mode = CLI_PRESENT_ONCE_PLAIN;
-	cli_set_color_enabled(&ctx, 0);
+	cli_output_set_color_enabled(&ctx, 0);
 
 	testing::internal::CaptureStdout();
 	int rc = cli_command_dispatch(&ctx, "/history --all");
@@ -251,7 +252,7 @@ TEST_F(HistoryInspectionTest, PlainHistoryIncludesToolsAndPreservesCompatibility
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry bad"), -EINVAL);
 	EXPECT_EQ(cli_command_dispatch(&ctx, "/history --entry"), -EINVAL);
 
-	cli_set_color_enabled(&ctx, 1);
+	cli_output_set_color_enabled(&ctx, 1);
 }
 
 TEST_F(HistoryInspectionTest, SourceRecordingFailureRollsBackTheEntireCompaction)

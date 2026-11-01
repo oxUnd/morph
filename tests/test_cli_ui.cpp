@@ -1,15 +1,16 @@
 #include <gtest/gtest.h>
 
 extern "C" {
-#include "sapi/cli/ui/interactions/question.h"
-#include "sapi/cli/ui/runtime_events.h"
-#include "sapi/cli/ui/presentation/presenter.h"
-#include "sapi/cli/ui/interactions/approval.h"
-#include "sapi/cli/cli.h"
-#include "sapi/cli/interaction.h"
-#include "sapi/cli/command_job.h"
-#include "sapi/cli/ui/presentation/terminal.h"
-#include "sapi/cli/ui/event_queue.h"
+#include "sapi/cli/presentation/output.h"
+#include "sapi/cli/pages/question.h"
+#include "sapi/cli/adapters/runtime/events.h"
+#include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/pages/approval.h"
+#include "sapi/cli/application.h"
+#include "sapi/cli/adapters/protocol/interaction.h"
+#include "sapi/cli/services/command_job.h"
+#include "sapi/cli/widgets/feed.h"
+#include "sapi/cli/services/event_queue.h"
 #include "agent/tool_context.h"
 #include "agent/tools/ask_user.h"
 #include "util/cancel.h"
@@ -28,15 +29,15 @@ extern "C" {
 
 class CliUiTest : public ::testing::Test {
 protected:
-	struct cli_context ctx{};
+	struct cli_application ctx{};
 
 	void SetUp() override
 	{
-		cli_set_color_enabled(&ctx, 0);
+		cli_output_set_color_enabled(&ctx, 0);
 		ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
 		ctx.presentation_ready = 1;
 		ctx.turn_active = 1;
-		ASSERT_EQ(cli_terminal_init(&ctx, stdout, STDOUT_FILENO), 0);
+		ASSERT_EQ(cli_feed_init(&ctx, stdout, STDOUT_FILENO), 0);
 		ASSERT_EQ(cli_presentation_init(&ctx), 0);
 		ASSERT_EQ(cli_event_queue_init(&ctx), 0);
 	}
@@ -45,13 +46,13 @@ protected:
 	{
 		cli_event_queue_cleanup(&ctx);
 		cli_presentation_cleanup(&ctx);
-		cli_terminal_cleanup(&ctx);
-		cli_set_color_enabled(&ctx, 1);
+		cli_feed_cleanup(&ctx);
+		cli_output_set_color_enabled(&ctx, 1);
 	}
 };
 
 struct cli_owner_call_data {
-	struct cli_context *ctx;
+	struct cli_application *ctx;
 	int ran_on_owner;
 };
 
@@ -59,14 +60,14 @@ static int cli_owner_call(void *opaque)
 {
 	cli_owner_call_data *data =
 		static_cast<cli_owner_call_data *>(opaque);
-	struct cli_context *ctx = data->ctx;
+	struct cli_application *ctx = data->ctx;
 	(void)ctx;
 
 	data->ran_on_owner = cli_event_queue_is_owner(data->ctx);
 	return 73;
 }
 
-static int cli_command_with_owner_call(struct cli_context *ctx,
+static int cli_command_with_owner_call(struct cli_application *ctx,
 			       const char *input, void *opaque)
 {
 	(void)input;
@@ -133,7 +134,7 @@ TEST_F(CliUiTest, CancelledOwnerPromptConsumesItsInterruptBeforeComposerRestore)
 		result = cli_event_queue_call_owner(
 			&ctx,
 			+[](void *data) {
-				auto *context = static_cast<struct cli_context *>(data);
+				auto *context = static_cast<struct cli_application *>(data);
 
 				morph_signal_flag_set(&context->interrupted, 1);
 				return -ECANCELED;
@@ -446,7 +447,7 @@ TEST_F(CliUiTest, PendingOwnerCallSurvivesConsumedWakeSignal)
 }
 
 static std::string run_structured_interaction(
-	struct cli_context *ctx, const std::string &input,
+	struct cli_application *ctx, const std::string &input,
 	const std::function<void()> &worker_fn,
 	const std::function<void(int)> &feed = {})
 {
