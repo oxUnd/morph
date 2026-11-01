@@ -1254,9 +1254,9 @@ static void cli_presenter_turn_end(struct cli_application *ctx, const struct mor
 	if (ctx->final_rendered)
 		return;
 	cli_presenter_plain_content(ctx, NULL);
-	cli_markdown_stream_reset(ctx, 1);
 	cli_presenter_clear_status(ctx);
 	cli_presenter_print_stream(ctx);
+	cli_markdown_stream_reset(ctx, 1);
 	error = cli_presenter_event_string(ev, "error");
 	detail = cli_presenter_event_string(ev, "detail");
 	outcome = cli_presenter_event_string(ev, "outcome");

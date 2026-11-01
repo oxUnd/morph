@@ -30,5 +30,9 @@ void cli_feed_history_end(struct cli_application *ctx);
 void cli_feed_resize(struct cli_application *ctx);
 void cli_feed_set_hidden(struct cli_application *ctx, int hidden);
 int cli_feed_live_active(const struct cli_application *ctx);
+int cli_feed_can_preview(const struct cli_application *ctx);
+/* Renderer-owned ANSI text, already wrapped to the terminal content width. */
+int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
+				 size_t len, int prefix);
 
 #endif

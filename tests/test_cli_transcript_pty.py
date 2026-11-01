@@ -7,10 +7,123 @@ import tempfile
 import threading
 import time
 import copy
+import queue
 
 from test_cli_pty import Model, Terminal
 import pyte
 import pexpect
+
+
+class PacedMarkdownModel(Model):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.end_headers()
+        is_title = any(message.get('role') == 'system' and
+                       message.get('content', '').startswith('Summarize the user')
+                       for message in body.get('messages', []))
+        chunks = queue.Queue()
+        if is_title:
+            chunks.put('{"title":"Markdown preview"}')
+            chunks.put(None)
+        else:
+            self.requests.put((body, chunks))
+        try:
+            while True:
+                text = chunks.get(timeout=15)
+                if text is None:
+                    break
+                event = {'choices': [{'index': 0, 'delta': {'content': text}}]}
+                self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode())
+                self.wfile.flush()
+            self.wfile.write(b'data: {"choices":[{"index":0,"delta":{},'
+                             b'"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, queue.Empty):
+            pass
+
+
+def check_mutable_markdown_preview(driver):
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), PacedMarkdownModel)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for width in (120, 80, 60):
+            with tempfile.TemporaryDirectory(prefix='morph-markdown-preview-') as temp:
+                terminal = Terminal(driver, Path(temp), server.server_port, hooks_enabled=False)
+                terminal.child.setwinsize(24, width)
+                terminal.screen = pyte.HistoryScreen(width, 24, history=2000)
+                terminal.stream = pyte.Stream(terminal.screen)
+                chunks = None
+                try:
+                    terminal.wait_for_composer()
+                    terminal.send('stream Markdown gradually\r')
+                    _, chunks = terminal.request()
+                    chunks.put('FIRST_PREVIEW')
+                    first = terminal.snapshot(f'{width}: partial word before newline or final')
+                    assert first.count('FIRST_PREVIEW') == 1, first
+                    terminal.send('draft🙂')
+                    chunks.put(' **bold** 中文🙂' + ' wrap' * 26)
+                    inline = terminal.snapshot(f'{width}: inline Markdown updates in place')
+                    assert inline.count('FIRST_PREVIEW') == 1, inline
+                    assert 'bold' in inline and '**bold**' not in inline, inline
+                    assert 'draft🙂' in inline, inline
+                    chunks.put('\n\nSECOND_PREVIEW')
+                    second = terminal.snapshot(f'{width}: committed block plus mutable tail')
+                    assert second.count('FIRST_PREVIEW') == 1, second
+                    assert second.count('SECOND_PREVIEW') == 1, second
+                    chunks.put('\n\n| a | b |\n|---|---|\n| LIVE_TABLE | value |\n')
+                    table = terminal.snapshot(f'{width}: table previews before its final boundary')
+                    assert 'LIVE_TABLE' in table and 'draft🙂' in table, table
+                    chunks.put('\n```c\nint value = 1;')
+                    code = terminal.snapshot(f'{width}: open code block before closing fence')
+                    assert 'int value = 1;' in code, code
+                    resized_width = 80 if width == 60 else 60
+                    terminal.child.setwinsize(24, resized_width)
+                    terminal.screen.resize(24, resized_width)
+                    resized = terminal.snapshot(f'{width}: resize with mutable Markdown')
+                    assert 'draft🙂' in resized and 'int value = 1;' in resized, resized
+                    chunks.put('\n' + ''.join(f'LIVE_ROW_{i:03d}\n' for i in range(50)))
+                    growing = terminal.snapshot(f'{width}: tall preview stays inside viewport')
+                    assert 'LIVE_ROW_049' in growing and 'draft🙂' in growing, growing
+                    terminal.send('\x15' + 'LONG_DRAFT_' * 45 + 'DRAFT_END')
+                    long_draft = terminal.snapshot(f'{width}: preview reserves wrapped draft rows')
+                    assert 'LIVE_ROW_049' in long_draft and 'DRAFT_END' in long_draft, long_draft
+                    terminal.send('\x15draft🙂')
+                    chunks.put('```\n\nFINAL_PREVIEW')
+                    tail = terminal.snapshot(f'{width}: code commits and last partial tail appears')
+                    assert 'FINAL_PREVIEW' in tail and 'draft🙂' in tail, tail
+                    chunks.put(None)
+                    terminal.pump(.5)
+                    completed = terminal.snapshot(f'{width}: final keeps one composer and tail')
+                    assert completed.count('FINAL_PREVIEW') == 1, completed
+                    assert 'draft🙂' in completed, completed
+                    history = '\n'.join(''.join(cell.data for _, cell in sorted(line.items()))
+                                        for line in terminal.screen.history.top)
+                    combined = history + '\n' + completed
+                    for marker in ('FIRST_PREVIEW', 'SECOND_PREVIEW', 'LIVE_TABLE',
+                                   'int value = 1;', 'LIVE_ROW_049'):
+                        assert combined.count(marker) == 1, (marker, combined)
+                    assert not terminal.duplicate_prompts, terminal.duplicate_prompts
+                    assert '\x1b[3J' not in terminal.raw, terminal.raw
+                    if width == 80:
+                        terminal.send('\x15cancel a partial answer\r')
+                        _, chunks = terminal.request()
+                        chunks.put('CANCEL_PREVIEW')
+                        partial = terminal.snapshot('partial response is visible before cancellation')
+                        assert partial.count('CANCEL_PREVIEW') == 1, partial
+                        terminal.send('\x1b')
+                        chunks.put(None)
+                        terminal.pump(1)
+                        cancelled = terminal.snapshot('cancellation commits the partial answer once')
+                        assert cancelled.count('CANCEL_PREVIEW') == 1, cancelled
+                finally:
+                    if chunks is not None:
+                        chunks.put(None)
+                    terminal.child.close(force=True)
+    finally:
+        server.shutdown()
 
 
 class AlternateScreen(pyte.Screen):
@@ -193,6 +306,7 @@ def check_final_spacing(driver, port):
 
 def main():
     driver = Path(sys.argv[1]).resolve()
+    check_mutable_markdown_preview(driver)
     check_feed_replay(driver)
     check_tool_spacing(driver)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model)

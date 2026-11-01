@@ -38,6 +38,20 @@ Live layout uses the actual terminal width. Below 20 columns, a clipped
 headers and previews use a one-column ellipsis, including narrow Unicode text.
 Normal conversation output continues to use native terminal scrollback.
 
+Markdown deltas preview unfinished paragraphs, inline formatting, code blocks
+and tables in the same transient region above the composer. The SDK sends
+replacement ANSI text separately from stable history output; it never moves the
+cursor to rewrite committed Markdown. A preview follows the last rows that fit
+after reserving space for the draft, work status and queued messages. Resizing
+reflows only the mutable tail. Stable blocks clear the old preview before being
+appended once, and completion or cancellation commits the remaining content.
+
+Preview rendering does not load images, invoke media callbacks or create math
+bitmaps. Those run when content becomes stable. Changes confined to the mutable
+tail reuse the stable boundary and render only that tail, avoiding repeated
+whole-document snapshots for each token. Plain and JSON modes retain their
+existing output behavior.
+
 Nonempty `NO_COLOR`, `TERM=dumb`, `--no-color` and redirected stdout disable
 colors. Non-TTY stdin/stdout and dumb terminals use the existing line-oriented
 input path and plain event presenter, without Readline repainting, graphical

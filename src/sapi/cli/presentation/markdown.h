@@ -22,6 +22,7 @@ void cli_markdown_render_ansi_with_media_indented(struct cli_application *ctx, c
 void cli_markdown_render_final(struct cli_application *ctx, const char *text);
 void cli_markdown_finish_final(struct cli_application *ctx);
 int cli_markdown_stream_append(struct cli_application *ctx, const char *delta, int kind);
+int cli_markdown_stream_refresh(struct cli_application *ctx);
 void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output);
 
 #endif

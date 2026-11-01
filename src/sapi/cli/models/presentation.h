@@ -15,6 +15,7 @@ struct cli_input_status {
 	int padding_rows;
 	int distance;
 	int footer_rows;
+	int composer_rows;
 	int suspended;
 	int64_t updated;
 	int tokens;

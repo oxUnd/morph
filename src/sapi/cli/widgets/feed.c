@@ -13,6 +13,7 @@
 #define CLI_FEED_TERMINAL_WORK_FRAME_MS 1000
 #define CLI_FEED_TERMINAL_STATUS_MAX 2000
 #define CLI_FEED_TERMINAL_QUEUE_VISIBLE 3
+#define CLI_FEED_PREVIEW_RESERVED_ROWS 12
 
 enum cli_feed_work_state {
 	CLI_FEED_TERMINAL_WORK_NONE,
@@ -27,6 +28,8 @@ struct cli_feed {
 	FILE *output;
 	int output_fd;
 	morph_buf_t live_text;
+	morph_buf_t markdown_preview;
+	int markdown_preview_prefix;
 	int live_active;
 	int live_independent;
 	int live_reasoning;
@@ -281,6 +284,12 @@ int cli_feed_init(struct cli_application *ctx, FILE *output, int output_fd)
 		free(terminal);
 		return rc;
 	}
+	rc = morph_buf_init(&terminal->markdown_preview, BUFSIZ);
+	if (rc != 0) {
+		morph_buf_cleanup(&terminal->live_text);
+		free(terminal);
+		return rc;
+	}
 	terminal->output = output ? output : stdout;
 	terminal->output_fd = output_fd;
 	terminal->is_terminal = output_fd >= 0 && isatty(output_fd);
@@ -300,6 +309,7 @@ void cli_feed_cleanup(struct cli_application *ctx)
 	cli_feed_live_clear(ctx);
 	cli_feed_update_end(ctx);
 	morph_buf_cleanup(&terminal->live_text);
+	morph_buf_cleanup(&terminal->markdown_preview);
 	free(terminal);
 	ctx->terminal = NULL;
 }
@@ -449,6 +459,68 @@ int cli_feed_render_tick(struct cli_application *ctx, int cursor_rows)
 	return 1;
 }
 
+int cli_feed_can_preview(const struct cli_application *ctx)
+{
+	return ctx && ctx->terminal && ctx->terminal->transient;
+}
+
+int cli_feed_markdown_preview_set(struct cli_application *ctx, const char *text,
+				 size_t len, int prefix)
+{
+	struct cli_feed *terminal = ctx ? ctx->terminal : NULL;
+	int rc;
+
+	if (!terminal || (!text && len > 0u))
+		return -EINVAL;
+	morph_buf_reset(&terminal->markdown_preview);
+	rc = morph_buf_append(&terminal->markdown_preview, text, len);
+	if (rc != 0)
+		return rc;
+	terminal->markdown_preview_prefix = prefix;
+	terminal->content_dirty = 1;
+	terminal->next_content_ms = 0;
+	terminal->next_frame_ms = 0;
+	return 0;
+}
+
+static int cli_feed_render_markdown_preview(struct cli_application *ctx, int reserved)
+{
+	struct cli_feed *terminal = ctx->terminal;
+	struct winsize area = {0};
+	const char *text = morph_buf_cstr(&terminal->markdown_preview);
+	const char *cursor;
+	int rows = 1;
+	int limit;
+	int gap;
+
+	if (!terminal->markdown_preview.len)
+		return 0;
+	(void)ioctl(terminal->output_fd, TIOCGWINSZ, &area);
+	limit = (area.ws_row > 0 ? area.ws_row : 24) - reserved;
+	if (limit < 1)
+		return 0;
+	for (cursor = text; *cursor; cursor++)
+		if (*cursor == '\n')
+			rows++;
+	/* Keep every mutable row inside the viewport; committed history above it
+	 * must never be erased when a paragraph grows beyond one screen. */
+	while (rows > limit) {
+		text = strchr(text, '\n') + 1;
+		rows--;
+	}
+	gap = terminal->markdown_preview_prefix && ctx->output.trailing_newlines < 2;
+	if (gap)
+		fputc('\n', terminal->output);
+	if (terminal->markdown_preview_prefix) {
+		if (text != morph_buf_cstr(&terminal->markdown_preview) &&
+		    text[0] == ' ' && text[1] == ' ')
+			text += 2;
+		fprintf(terminal->output, ANSI_BOLD "●" ANSI_RESET " ");
+	}
+	fprintf(terminal->output, "%s" ANSI_RESET, text);
+	return rows + gap;
+}
+
 void cli_feed_render_frame(struct cli_application *ctx, int force)
 {
 	struct cli_feed *terminal;
@@ -469,6 +541,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	int status_gap = 0;
 	int body_rows = 0;
 	int status_visible;
+	int preview_rows = 0;
+	int preview_reserved;
 
 	if (!ctx || !ctx->terminal || ctx->terminal->hidden || ctx->details_visible)
 		return;
@@ -498,7 +572,8 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	terminal->work_finalizing = ctx->final_rendered &&
 				    terminal->work_state == CLI_FEED_TERMINAL_WORK_RUNNING &&
 				    !status_visible && !queue_shown;
-	if (!status_visible && queue_shown == 0 && !terminal->work_state &&
+	if (!status_visible && !terminal->markdown_preview.len &&
+	    queue_shown == 0 && !terminal->work_state &&
 	    !cli_jobs_visible(ctx)) {
 		if (terminal->live_visible) {
 			cli_feed_clear_frame(terminal);
@@ -567,6 +642,13 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 		cli_feed_clear_frame(terminal);
 	else
 		cli_feed_clear_current(terminal);
+	preview_reserved = ctx->input_status.composer_rows + 6;
+	if (preview_reserved < CLI_FEED_PREVIEW_RESERVED_ROWS)
+		preview_reserved = CLI_FEED_PREVIEW_RESERVED_ROWS;
+	preview_rows = cli_feed_render_markdown_preview(
+		ctx, preview_reserved + job_rows + (int)queue_shown);
+	if (preview_rows && (status_visible || job_rows || terminal->work_state || queue_shown))
+		fputc('\n', terminal->output);
 	if (status_visible) {
 		/* Match the committed reasoning line from its first streaming frame. */
 		status_gap = (tool_live || terminal->live_reasoning) &&
@@ -634,7 +716,7 @@ void cli_feed_render_frame(struct cli_application *ctx, int force)
 	terminal->live_visible = 1;
 	terminal->live_anchored = 0;
 	terminal->job_rows = job_rows;
-	terminal->live_rows = job_rows + status_visible + status_gap + body_rows +
+	terminal->live_rows = preview_rows + job_rows + status_visible + status_gap + body_rows +
 			      (terminal->work_state ? (terminal->work_finalizing ? 1 : 2) : 0) +
 			      (int)queue_shown + (queue_shown > 0) + (queue_total > queue_shown) +
 			      (queue_shown > 0 && (status_visible || terminal->work_state));
@@ -656,7 +738,8 @@ int cli_feed_next_frame_ms(const struct cli_application *ctx)
 		return -1;
 	terminal = ctx->terminal;
 	if (!terminal->transient ||
-	    (!terminal->live_active && terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
+	    (!terminal->live_active && !terminal->markdown_preview.len &&
+	     terminal->work_state != CLI_FEED_TERMINAL_WORK_RUNNING &&
 	     !cli_jobs_visible(ctx) && !terminal->job_rows))
 		return -1;
 	if (!terminal->live_visible)

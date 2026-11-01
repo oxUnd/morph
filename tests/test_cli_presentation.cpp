@@ -907,6 +907,24 @@ TEST_F(CliPresentationTest, CancelledNativeAnswerPreservesSanitizedPartialConten
 	cJSON_Delete(outcome);
 }
 
+TEST_F(CliPresentationTest, CancelledInteractiveAnswerCommitsPartialContentOnce)
+{
+	cJSON *body = TextData("Partial interactive answer");
+	cJSON *outcome = cJSON_CreateObject();
+	cJSON_AddStringToObject(outcome, "outcome", "cancelled");
+	ctx.presentation_mode = CLI_PRESENT_INTERACTIVE;
+	testing::internal::CaptureStdout();
+	Emit(MORPH_EVENT_REACT, "react.content.delta", "delta", body);
+	Emit(MORPH_EVENT_REACT, "react.turn.end", "cancelled", outcome);
+	std::string output = testing::internal::GetCapturedStdout();
+	EXPECT_NE(output.find("Partial interactive answer"), std::string::npos);
+	EXPECT_EQ(output.find("Partial interactive answer"),
+		  output.rfind("Partial interactive answer"));
+	EXPECT_EQ(ctx.markdown_stream, nullptr);
+	cJSON_Delete(body);
+	cJSON_Delete(outcome);
+}
+
 TEST_F(CliPresentationTest, CancelledTurnUsesNeutralStatus)
 {
 	for (auto mode : {CLI_PRESENT_ONCE_PLAIN, CLI_PRESENT_INTERACTIVE}) {

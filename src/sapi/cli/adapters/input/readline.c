@@ -11,6 +11,7 @@
 #include "sapi/cli/adapters/input/keymap.h"
 #include "sapi/cli/adapters/input/clipboard.h"
 #include "sapi/cli/presentation/presenter.h"
+#include "sapi/cli/presentation/markdown.h"
 #include "sapi/cli/services/recap.h"
 #include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/widgets/transcript.h"
@@ -162,6 +163,7 @@ static void cli_readline_footer(struct cli_application *ctx)
 		return;
 	cli_readline_position(ctx, rl_point, size.ws_col, &row, &column);
 	cli_readline_position(ctx, rl_end, size.ws_col, &last_row, &last_column);
+	ctx->input_status.composer_rows = last_row + 1;
 	if (last_row >= size.ws_row - 2)
 		return;
 	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0 && now.tv_sec != ctx->input_status.updated) {
@@ -353,10 +355,14 @@ void cli_readline_line_ready(struct cli_application *ctx, char *input)
 char *cli_readline_suspend(struct cli_application *ctx, int *point)
 {
 	char *draft = strdup(rl_line_buffer ? rl_line_buffer : "");
+	int row;
+	int column;
 
 	*point = rl_point;
 	if (!draft)
 		return NULL;
+	cli_readline_position(ctx, rl_end, cli_feed_columns(ctx), &row, &column);
+	ctx->input_status.composer_rows = row + 1;
 	cli_transcript_view_suspend(ctx);
 	cli_readline_clear_footer(ctx);
 	ctx->input_status.suspended = 1;
@@ -454,6 +460,8 @@ void cli_readline_render_frame(struct cli_application *ctx, int resized)
 	int point;
 	char *draft;
 
+	if (resized)
+		(void)cli_markdown_stream_refresh(ctx);
 	if (ctx->details_visible) {
 		if (resized)
 			cli_feed_resize(ctx);

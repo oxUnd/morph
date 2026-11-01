@@ -2,6 +2,7 @@
 #include "morph_markdown_kitty.h"
 #include "agent_ui/agent_ui.h"
 #include "sapi/cli/presentation/output.h"
+#include "sapi/cli/widgets/feed.h"
 #include "sapi/cli/adapters/media/image_loader.h"
 #include "sapi/cli/adapters/media/renderer.h"
 #include "sapi/cli/application_internal.h"
@@ -31,6 +32,8 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 		len -= 8;
 	if (!len)
 		return 0;
+	if (output)
+		cli_feed_history_begin(output->ctx);
 	if (output && cli_output_result_begin(output->ctx) != 0)
 		return -EIO;
 	/* The renderer buffers incomplete blocks. Emit the prefix only when it
@@ -68,6 +71,13 @@ static int cli_markdown_write(const char *bytes, size_t len, void *user)
 	return 0;
 }
 
+static int cli_markdown_preview(const char *bytes, size_t len, void *user)
+{
+	struct cli_markdown_output *output = user;
+
+	return cli_feed_markdown_preview_set(output->ctx, bytes, len, output->prefix_pending);
+}
+
 static int cli_markdown_terminal_supports_kitty(void)
 {
 	const char *term;
@@ -81,7 +91,7 @@ static int cli_markdown_terminal_supports_kitty(void)
 static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, unsigned int indent,
 						  unsigned int initial_column, int enable_math,
 						  cli_markdown_media_cb cb, void *user,
-						  struct cli_markdown_output *output)
+						  struct cli_markdown_output *output, int preview)
 {
 	struct morph_md_kitty_options options;
 	const char *font_path;
@@ -99,6 +109,8 @@ static struct morph_md_kitty *cli_markdown_create(struct cli_application *ctx, u
 		options.features |= MORPH_MD_FEATURE_MATH;
 	options.write = cli_markdown_write;
 	options.user_data = output;
+	if (preview && cli_feed_can_preview(ctx))
+		options.preview = cli_markdown_preview;
 	options.media = cb;
 	options.media_user_data = user;
 	options.load_image = cli_image_loader_load;
@@ -130,7 +142,7 @@ static int cli_markdown_render(struct cli_application *ctx, const char *md, unsi
 		return 0;
 	normalized = agent_ui_normalize_markdown(safe);
 	content = normalized ? normalized : safe;
-	renderer = cli_markdown_create(ctx, indent, initial_column, 1, cb, user, &output);
+	renderer = cli_markdown_create(ctx, indent, initial_column, 1, cb, user, &output, 0);
 	if (!renderer) {
 		log_warn(ctx ? ctx->logger : NULL, "failed to initialize Kitty Markdown renderer");
 		goto out;
@@ -175,7 +187,7 @@ int cli_markdown_stream_append(struct cli_application *ctx, const char *delta, i
 		ctx->markdown_output.prefix_pending = 1;
 		ctx->markdown_output.trailing_newlines = 0;
 		ctx->markdown_stream = cli_markdown_create(ctx, 2u, 2u, 1, cli_renderer_media, ctx,
-							   &ctx->markdown_output);
+							   &ctx->markdown_output, 1);
 		if (!ctx->markdown_stream)
 			return -ENOMEM;
 		ctx->markdown_stream_kind = kind;
@@ -199,6 +211,11 @@ int cli_markdown_stream_append(struct cli_application *ctx, const char *delta, i
 	return morph_md_kitty_render(ctx->markdown_stream);
 }
 
+int cli_markdown_stream_refresh(struct cli_application *ctx)
+{
+	return ctx && ctx->markdown_stream ? morph_md_kitty_render(ctx->markdown_stream) : 0;
+}
+
 void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output)
 {
 	morph_buf_t safe;
@@ -206,6 +223,8 @@ void cli_markdown_stream_reset(struct cli_application *ctx, int finish_output)
 
 	if (!ctx)
 		return;
+	if (ctx->terminal)
+		(void)cli_feed_markdown_preview_set(ctx, NULL, 0u, 0);
 	if (finish_output && ctx->markdown_stream) {
 		if (morph_buf_init(&safe, 16) == 0) {
 			safe_ready = 1;
